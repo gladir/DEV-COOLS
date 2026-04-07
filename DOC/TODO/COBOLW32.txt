@@ -365,7 +365,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
             Labels pour debut/fin de boucle et paragraphes
             10 fonctions accesseurs
 
-  TODO 12 - PARSEUR : MOVE, INITIALIZE ET TRANSFERT DE DONNEES [A FAIRE]
+  TODO 12 - PARSEUR : MOVE, INITIALIZE ET TRANSFERT DE DONNEES [IMPLEMENTE]
             MOVE :
               MOVE source TO dest-1 [dest-2 ...]
               MOVE CORRESPONDING groupe-1 TO groupe-2

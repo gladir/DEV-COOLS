@@ -373,7 +373,7 @@
             Labels pour debut/fin de boucle et paragraphes
             10 fonctions accesseurs
 
-  TODO 12 - PARSEUR : MOVE, INITIALIZE ET TRANSFERT DE DONNEES [A FAIRE]
+  TODO 12 - PARSEUR : MOVE, INITIALIZE ET TRANSFERT DE DONNEES [IMPLEMENTE]
             MOVE :
               MOVE source TO dest-1 [dest-2 ...]
               MOVE CORRESPONDING groupe-1 TO groupe-2
@@ -9507,6 +9507,782 @@ Begin
 End;
 
 
+{ ============================================================ }
+{ TODO 12 - PARSEUR : MOVE, INITIALIZE ET TRANSFERT DE DONNEES }
+{           Generation 80386 : MOV, REP MOVSB, STOSB           }
+{ ============================================================ }
+
+Const
+  { Categories de MOVE }
+  MOV_NONE           = 0;   { pas de MOVE actif                        }
+  MOV_ALPHA_TO_ALPHA = 1;   { alphanumerique -> alphanumerique          }
+  MOV_NUM_TO_NUM     = 2;   { numerique -> numerique                    }
+  MOV_NUM_TO_ALPHA   = 3;   { numerique -> alphanumerique               }
+  MOV_ALPHA_TO_NUM   = 4;   { alphanumerique -> numerique               }
+  MOV_GROUP_TO_GROUP = 5;   { groupe -> groupe (transfert alpha)        }
+  MOV_FIGURATIVE     = 6;   { constante figurative (SPACES, ZEROS...)   }
+  MOV_CORRESPONDING  = 7;   { MOVE CORRESPONDING                       }
+
+  { Categories d INITIALIZE }
+  INI_NONE           = 0;   { pas de categorie                          }
+  INI_ALPHA_SPACES   = 1;   { alphanumerique initialise a SPACES        }
+  INI_NUM_ZEROS      = 2;   { numerique initialise a ZEROS              }
+  INI_REPLACING      = 3;   { REPLACING category BY literal             }
+
+  { Categories de SET pour niveaux 88 }
+  SET_NONE           = 0;   { pas de SET actif                          }
+  SET_COND_TRUE      = 1;   { SET condition-88 TO TRUE                  }
+  SET_COND_FALSE     = 2;   { SET condition-88 TO FALSE                 }
+
+  { Limites }
+  MVT_MAX_DESTINATIONS = 16;  { max de destinations pour un MOVE        }
+  MVT_MAX_REPLACING    = 8;   { max de clauses REPLACING                }
+  MVT_MAX_CORR_FIELDS  = 64;  { max de champs correspondants           }
+
+Var
+  MvtInitialized     : Boolean;   { True si InitMoveState appele           }
+  MvtStateCount      : Integer;   { compteur d etat general                }
+  MvtLabelNum        : Integer;   { compteur de labels internes            }
+  MvtMoveCount       : Integer;   { nombre total de MOVE                   }
+  MvtMoveAlphaAlpha  : Integer;   { MOVE alpha -> alpha                    }
+  MvtMoveNumNum      : Integer;   { MOVE num -> num                        }
+  MvtMoveNumAlpha    : Integer;   { MOVE num -> alpha                      }
+  MvtMoveAlphaNum    : Integer;   { MOVE alpha -> num                      }
+  MvtMoveGroupGroup  : Integer;   { MOVE groupe -> groupe                  }
+  MvtMoveFigurative  : Integer;   { MOVE constante figurative              }
+  MvtMoveCorrCount   : Integer;   { MOVE CORRESPONDING                     }
+  MvtMultiDestCount  : Integer;   { MOVE avec destinations multiples       }
+  MvtInitializeCount : Integer;   { nombre de INITIALIZE                   }
+  MvtInitReplacCount : Integer;   { nombre de clauses REPLACING            }
+  MvtSetCondCount    : Integer;   { nombre de SET condition-88 TO TRUE     }
+  MvtTruncateCount   : Integer;   { nombre de troncatures detectees        }
+  MvtPaddingCount    : Integer;   { nombre de remplissages (padding)       }
+  MvtConversionCount : Integer;   { nombre de conversions de type          }
+  MvtTotalGenerated  : Integer;   { total d instructions generees          }
+
+{ ------------------------------------------------------------ }
+{ InitMoveState : initialiser l etat du module MOVE/INITIALIZE }
+{ ------------------------------------------------------------ }
+
+Procedure InitMoveState;
+Begin
+  MvtInitialized     := True;
+  MvtStateCount      := 0;
+  MvtLabelNum        := 0;
+  MvtMoveCount       := 0;
+  MvtMoveAlphaAlpha  := 0;
+  MvtMoveNumNum      := 0;
+  MvtMoveNumAlpha    := 0;
+  MvtMoveAlphaNum    := 0;
+  MvtMoveGroupGroup  := 0;
+  MvtMoveFigurative  := 0;
+  MvtMoveCorrCount   := 0;
+  MvtMultiDestCount  := 0;
+  MvtInitializeCount := 0;
+  MvtInitReplacCount := 0;
+  MvtSetCondCount    := 0;
+  MvtTruncateCount   := 0;
+  MvtPaddingCount    := 0;
+  MvtConversionCount := 0;
+  MvtTotalGenerated  := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMvtLabel : generer un label interne unique pour MOVE       }
+{ Retourne un label de la forme _COBL_MVT_nnn                  }
+{ ------------------------------------------------------------ }
+
+Function GenMvtLabel : TString;
+Begin
+  Inc(MvtLabelNum);
+  GenMvtLabel := '_COBL_MVT_' + ItoSI(MvtLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ MvtMoveCategoryName : nom lisible de la categorie de MOVE    }
+{ ------------------------------------------------------------ }
+
+Function MvtMoveCategoryName(Cat : Integer) : TString;
+Begin
+  Case Cat Of
+    MOV_NONE           : MvtMoveCategoryName := 'NONE';
+    MOV_ALPHA_TO_ALPHA : MvtMoveCategoryName := 'ALPHA->ALPHA';
+    MOV_NUM_TO_NUM     : MvtMoveCategoryName := 'NUM->NUM';
+    MOV_NUM_TO_ALPHA   : MvtMoveCategoryName := 'NUM->ALPHA';
+    MOV_ALPHA_TO_NUM   : MvtMoveCategoryName := 'ALPHA->NUM';
+    MOV_GROUP_TO_GROUP : MvtMoveCategoryName := 'GROUP->GROUP';
+    MOV_FIGURATIVE     : MvtMoveCategoryName := 'FIGURATIVE';
+    MOV_CORRESPONDING  : MvtMoveCategoryName := 'CORRESPONDING';
+  Else
+    MvtMoveCategoryName := 'INCONNU(' + ItoSI(Cat) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ MvtInitCategoryName : nom lisible de la categorie INITIALIZE }
+{ ------------------------------------------------------------ }
+
+Function MvtInitCategoryName(Cat : Integer) : TString;
+Begin
+  Case Cat Of
+    INI_NONE         : MvtInitCategoryName := 'NONE';
+    INI_ALPHA_SPACES : MvtInitCategoryName := 'ALPHA->SPACES';
+    INI_NUM_ZEROS    : MvtInitCategoryName := 'NUM->ZEROS';
+    INI_REPLACING    : MvtInitCategoryName := 'REPLACING';
+  Else
+    MvtInitCategoryName := 'INCONNU(' + ItoSI(Cat) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ MvtSetCategoryName : nom lisible de la categorie SET         }
+{ ------------------------------------------------------------ }
+
+Function MvtSetCategoryName(Cat : Integer) : TString;
+Begin
+  Case Cat Of
+    SET_NONE       : MvtSetCategoryName := 'NONE';
+    SET_COND_TRUE  : MvtSetCategoryName := 'COND-88 TRUE';
+    SET_COND_FALSE : MvtSetCategoryName := 'COND-88 FALSE';
+  Else
+    MvtSetCategoryName := 'INCONNU(' + ItoSI(Cat) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DetermineMovCategory : determiner la categorie de transfert  }
+{ selon les types COBOL de la source et de la destination       }
+{ ------------------------------------------------------------ }
+
+Function DetermineMovCategory(SrcType, DstType : Integer) : Integer;
+Begin
+  { Si un des deux est un groupe, transfert alphanumerique }
+  If (SrcType = CBT_GROUP) Or (DstType = CBT_GROUP) Then
+    DetermineMovCategory := MOV_GROUP_TO_GROUP
+  Else If (SrcType = CBT_ALPHA) Or (SrcType = CBT_ALPHANUMERIC) Or
+          (SrcType = CBT_EDITED_ALPHA) Then Begin
+    If (DstType = CBT_ALPHA) Or (DstType = CBT_ALPHANUMERIC) Or
+       (DstType = CBT_EDITED_ALPHA) Then
+      DetermineMovCategory := MOV_ALPHA_TO_ALPHA
+    Else If (DstType = CBT_NUMERIC) Or (DstType = CBT_PACKED) Or
+            (DstType = CBT_BINARY) Or (DstType = CBT_EDITED_NUM) Then
+      DetermineMovCategory := MOV_ALPHA_TO_NUM
+    Else
+      DetermineMovCategory := MOV_ALPHA_TO_ALPHA;
+  End
+  Else If (SrcType = CBT_NUMERIC) Or (SrcType = CBT_PACKED) Or
+          (SrcType = CBT_BINARY) Or (SrcType = CBT_EDITED_NUM) Or
+          (SrcType = CBT_COMP1) Or (SrcType = CBT_COMP2) Then Begin
+    If (DstType = CBT_NUMERIC) Or (DstType = CBT_PACKED) Or
+       (DstType = CBT_BINARY) Or (DstType = CBT_EDITED_NUM) Or
+       (DstType = CBT_COMP1) Or (DstType = CBT_COMP2) Then
+      DetermineMovCategory := MOV_NUM_TO_NUM
+    Else
+      DetermineMovCategory := MOV_NUM_TO_ALPHA;
+  End
+  Else
+    DetermineMovCategory := MOV_ALPHA_TO_ALPHA;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMoveAlphaToAlpha : generer le code 80386 pour un MOVE     }
+{ alphanumerique vers alphanumerique                            }
+{   LEA ESI, [source]                                           }
+{   LEA EDI, [destination]                                      }
+{   MOV ECX, taille_dest                                        }
+{   CLD                                                         }
+{   REP MOVSB     ; copie min(src_len, dst_len) octets          }
+{   Si src < dst : remplir le reste avec des espaces (STOSB)    }
+{ ------------------------------------------------------------ }
+
+Procedure GenMoveAlphaToAlpha(Src, Dst : TString; SrcLen, DstLen : Integer);
+Begin
+  WriteLn('; MOVE alpha->alpha ', Src, ' TO ', Dst);
+  WriteLn('  LEA ESI, [', Src, ']');
+  WriteLn('  LEA EDI, [', Dst, ']');
+  If SrcLen >= DstLen Then Begin
+    { Source plus longue ou egale : copie exacte, troncature }
+    WriteLn('  MOV ECX, ', DstLen);
+    WriteLn('  CLD');
+    WriteLn('  REP MOVSB');
+    If SrcLen > DstLen Then
+      Inc(MvtTruncateCount);
+  End
+  Else Begin
+    { Source plus courte : copie + padding espaces }
+    WriteLn('  MOV ECX, ', SrcLen);
+    WriteLn('  CLD');
+    WriteLn('  REP MOVSB');
+    WriteLn('  MOV AL, 32');   { espace = $20 }
+    WriteLn('  MOV ECX, ', DstLen - SrcLen);
+    WriteLn('  REP STOSB');
+    Inc(MvtPaddingCount);
+  End;
+  Inc(MvtMoveAlphaAlpha);
+  Inc(MvtTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMoveNumToNum : generer le code 80386 pour un MOVE         }
+{ numerique vers numerique (alignement sur point decimal)       }
+{   Charger la valeur source dans EAX                           }
+{   Ajuster les decimales si necessaire                         }
+{   Stocker dans la destination                                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenMoveNumToNum(Src, Dst : TString; SrcSize, DstSize : Integer;
+                          SrcDec, DstDec : Integer);
+Begin
+  WriteLn('; MOVE num->num ', Src, ' TO ', Dst);
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  LEA ESI, [', Src, ']');
+  WriteLn('  LEA EDI, [', Dst, ']');
+  { Charger la source en tant que nombre }
+  WriteLn('  CALL ', PFX_RT, 'LOAD_NUM');
+  { Ajuster les decimales : multiplier ou diviser par 10 }
+  If SrcDec < DstDec Then Begin
+    WriteLn('  ; ajuster decimales: ', SrcDec, ' -> ', DstDec);
+    WriteLn('  MOV ECX, ', DstDec - SrcDec);
+    WriteLn('  CALL ', PFX_RT, 'SCALE_UP');
+  End
+  Else If SrcDec > DstDec Then Begin
+    WriteLn('  ; ajuster decimales: ', SrcDec, ' -> ', DstDec);
+    WriteLn('  MOV ECX, ', SrcDec - DstDec);
+    WriteLn('  CALL ', PFX_RT, 'SCALE_DOWN');
+    Inc(MvtTruncateCount);
+  End;
+  { Stocker dans la destination }
+  WriteLn('  CALL ', PFX_RT, 'STORE_NUM');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  Inc(MvtMoveNumNum);
+  Inc(MvtTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMoveNumToAlpha : generer le code 80386 pour un MOVE       }
+{ numerique vers alphanumerique (conversion en chaine)          }
+{ ------------------------------------------------------------ }
+
+Procedure GenMoveNumToAlpha(Src, Dst : TString; SrcSize, DstLen : Integer);
+Begin
+  WriteLn('; MOVE num->alpha ', Src, ' TO ', Dst);
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  LEA ESI, [', Src, ']');
+  WriteLn('  LEA EDI, [', Dst, ']');
+  WriteLn('  MOV ECX, ', DstLen);
+  WriteLn('  CALL ', PFX_RT, 'NUM_TO_ALPHA');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  Inc(MvtMoveNumAlpha);
+  Inc(MvtConversionCount);
+  Inc(MvtTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMoveAlphaToNum : generer le code 80386 pour un MOVE       }
+{ alphanumerique vers numerique (conversion numerique)          }
+{ ------------------------------------------------------------ }
+
+Procedure GenMoveAlphaToNum(Src, Dst : TString; SrcLen, DstSize : Integer);
+Begin
+  WriteLn('; MOVE alpha->num ', Src, ' TO ', Dst);
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  LEA ESI, [', Src, ']');
+  WriteLn('  LEA EDI, [', Dst, ']');
+  WriteLn('  MOV ECX, ', SrcLen);
+  WriteLn('  CALL ', PFX_RT, 'ALPHA_TO_NUM');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  Inc(MvtMoveAlphaNum);
+  Inc(MvtConversionCount);
+  Inc(MvtTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMoveGroupToGroup : generer le code 80386 pour un MOVE     }
+{ groupe vers groupe (transfert alphanumerique simple)          }
+{ ------------------------------------------------------------ }
+
+Procedure GenMoveGroupToGroup(Src, Dst : TString; SrcLen, DstLen : Integer);
+Begin
+  WriteLn('; MOVE group->group ', Src, ' TO ', Dst);
+  WriteLn('  LEA ESI, [', Src, ']');
+  WriteLn('  LEA EDI, [', Dst, ']');
+  If SrcLen >= DstLen Then Begin
+    WriteLn('  MOV ECX, ', DstLen);
+    WriteLn('  CLD');
+    WriteLn('  REP MOVSB');
+    If SrcLen > DstLen Then
+      Inc(MvtTruncateCount);
+  End
+  Else Begin
+    WriteLn('  MOV ECX, ', SrcLen);
+    WriteLn('  CLD');
+    WriteLn('  REP MOVSB');
+    WriteLn('  MOV AL, 32');
+    WriteLn('  MOV ECX, ', DstLen - SrcLen);
+    WriteLn('  REP STOSB');
+    Inc(MvtPaddingCount);
+  End;
+  Inc(MvtMoveGroupGroup);
+  Inc(MvtTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMoveFigurative : generer le code 80386 pour un MOVE       }
+{ d une constante figurative (SPACES, ZEROS, HIGH-VALUES...)   }
+{   MOV AL, valeur_figurative                                   }
+{   LEA EDI, [destination]                                      }
+{   MOV ECX, taille_dest                                        }
+{   CLD                                                         }
+{   REP STOSB                                                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenMoveFigurative(FigValue : Integer; Dst : TString; DstLen : Integer);
+Begin
+  WriteLn('; MOVE figurative TO ', Dst);
+  WriteLn('  MOV AL, ', FigValue);
+  WriteLn('  LEA EDI, [', Dst, ']');
+  WriteLn('  MOV ECX, ', DstLen);
+  WriteLn('  CLD');
+  WriteLn('  REP STOSB');
+  Inc(MvtMoveFigurative);
+  Inc(MvtTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMoveCorresponding : generer le code 80386 pour un MOVE    }
+{ CORRESPONDING (transfert des champs de meme nom)             }
+{ Appel a une routine runtime qui parcourt les groupes          }
+{ ------------------------------------------------------------ }
+
+Procedure GenMoveCorresponding(SrcGroup, DstGroup : TString);
+Begin
+  WriteLn('; MOVE CORRESPONDING ', SrcGroup, ' TO ', DstGroup);
+  WriteLn('  LEA ESI, [', SrcGroup, ']');
+  WriteLn('  LEA EDI, [', DstGroup, ']');
+  WriteLn('  CALL ', PFX_RT, 'MOVE_CORR');
+  Inc(MvtMoveCorrCount);
+  Inc(MvtTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenInitAlpha : generer le code 80386 pour initialiser un     }
+{ champ alphanumerique a SPACES                                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenInitAlpha(Dst : TString; DstLen : Integer);
+Begin
+  WriteLn('; INITIALIZE alpha -> SPACES : ', Dst);
+  WriteLn('  MOV AL, 32');        { espace = $20 }
+  WriteLn('  LEA EDI, [', Dst, ']');
+  WriteLn('  MOV ECX, ', DstLen);
+  WriteLn('  CLD');
+  WriteLn('  REP STOSB');
+  Inc(MvtTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenInitNumeric : generer le code 80386 pour initialiser un   }
+{ champ numerique a ZEROS                                       }
+{ ------------------------------------------------------------ }
+
+Procedure GenInitNumeric(Dst : TString; DstLen : Integer);
+Begin
+  WriteLn('; INITIALIZE numeric -> ZEROS : ', Dst);
+  WriteLn('  MOV AL, 48');        { zero ASCII = $30 }
+  WriteLn('  LEA EDI, [', Dst, ']');
+  WriteLn('  MOV ECX, ', DstLen);
+  WriteLn('  CLD');
+  WriteLn('  REP STOSB');
+  Inc(MvtTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenInitGroup : generer le code 80386 pour initialiser un     }
+{ groupe entier (chaque sous-champ selon sa categorie)          }
+{ ------------------------------------------------------------ }
+
+Procedure GenInitGroup(Dst : TString; DstLen : Integer);
+Begin
+  WriteLn('; INITIALIZE group : ', Dst);
+  WriteLn('  LEA EDI, [', Dst, ']');
+  WriteLn('  MOV ECX, ', DstLen);
+  WriteLn('  CALL ', PFX_RT, 'INIT_GROUP');
+  Inc(MvtTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSetCondition88 : generer le code 80386 pour               }
+{ SET condition-88 TO TRUE                                      }
+{ -> MOVE premiere valeur du 88 TO variable-parent              }
+{ ------------------------------------------------------------ }
+
+Procedure GenSetCondition88(CondName, ParentName, Value : TString;
+                            ParentLen : Integer);
+Begin
+  WriteLn('; SET ', CondName, ' TO TRUE -> MOVE ', Value, ' TO ', ParentName);
+  WriteLn('  LEA ESI, [', Value, ']');
+  WriteLn('  LEA EDI, [', ParentName, ']');
+  WriteLn('  MOV ECX, ', ParentLen);
+  WriteLn('  CLD');
+  WriteLn('  REP MOVSB');
+  Inc(MvtSetCondCount);
+  Inc(MvtTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ FigurativeByteValue : retourne la valeur d octet pour        }
+{ une constante figurative COBOL                                }
+{ ------------------------------------------------------------ }
+
+Function FigurativeByteValue(KwCode : Integer) : Integer;
+Begin
+  Case KwCode Of
+    KW_SPACES      : FigurativeByteValue := 32;    { espace }
+    KW_ZEROS       : FigurativeByteValue := 48;    { zero ASCII }
+    KW_HIGH_VALUES : FigurativeByteValue := 255;   { $FF }
+    KW_LOW_VALUES  : FigurativeByteValue := 0;     { $00 }
+  Else
+    FigurativeByteValue := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMoveStatement : parser une instruction MOVE              }
+{   MOVE source TO dest-1 [dest-2 ...]                          }
+{   MOVE CORRESPONDING groupe-1 TO groupe-2                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseMoveStatement;
+Var
+  SrcName    : TString;
+  DstName    : TString;
+  IsFig      : Boolean;
+  IsCorr     : Boolean;
+  FigKw      : Integer;
+  DestCount  : Integer;
+Begin
+  Inc(MvtStateCount);
+  Inc(MvtMoveCount);
+
+  { On est positionne sur le token apres MOVE }
+  LexNextToken;
+
+  { Verifier CORRESPONDING / CORR }
+  IsCorr := False;
+  If (CurTokType = TOK_KEYWORD) And
+     ((CurTokNum = KW_CORRESPONDING) Or (CurTokNum = KW_CORR)) Then Begin
+    IsCorr := True;
+    LexNextToken;
+  End;
+
+  { Lire la source }
+  IsFig := False;
+  FigKw := 0;
+  If CurTokType = TOK_KEYWORD Then Begin
+    { Constante figurative ? }
+    If (CurTokNum = KW_SPACES) Or (CurTokNum = KW_ZEROS) Or
+       (CurTokNum = KW_HIGH_VALUES) Or (CurTokNum = KW_LOW_VALUES) Then Begin
+      IsFig := True;
+      FigKw := CurTokNum;
+      SrcName := KeywordName(CurTokNum);
+    End
+    Else If CurTokNum = KW_ALL Then Begin
+      { ALL 'x' : lire le litteral suivant }
+      LexNextToken;
+      IsFig := True;
+      FigKw := KW_ALL;
+      SrcName := 'ALL ' + CurTokStr;
+    End
+    Else
+      SrcName := CurTokStr;
+  End
+  Else
+    SrcName := CurTokStr;
+
+  LexNextToken;
+
+  { Attendre TO }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+    LexNextToken
+  Else
+    WarnMsg('MOVE : TO attendu');
+
+  { Lire les destinations (une ou plusieurs) }
+  DestCount := 0;
+  While (CurTokType = TOK_IDENT) Or
+        ((CurTokType = TOK_KEYWORD) And (CurTokNum >= 80)) Do Begin
+    DstName := CurTokStr;
+    Inc(DestCount);
+
+    If IsCorr Then
+      GenMoveCorresponding(SrcName, DstName)
+    Else If IsFig Then Begin
+      { Constante figurative : on utilise STOSB }
+      If FigKw = KW_ALL Then
+        WriteLn('; MOVE ALL (runtime) TO ', DstName)
+      Else
+        GenMoveFigurative(FigurativeByteValue(FigKw), DstName, 1);
+    End
+    Else Begin
+      { MOVE normal : determiner la categorie selon les types }
+      { Pour l instant, generer un appel runtime generique    }
+      WriteLn('; MOVE ', SrcName, ' TO ', DstName);
+      WriteLn('  LEA ESI, [', AsmIdent(SrcName), ']');
+      WriteLn('  LEA EDI, [', AsmIdent(DstName), ']');
+      WriteLn('  CALL ', PFX_RT, 'MOVE_GENERIC');
+      Inc(MvtTotalGenerated);
+    End;
+
+    LexNextToken;
+
+    { Si le token suivant n est pas un identifiant, on arrete }
+    If (CurTokType <> TOK_IDENT) Then
+      Break;
+  End;
+
+  If DestCount > 1 Then
+    Inc(MvtMultiDestCount);
+
+  If Opts.Verbose Then
+    WriteLn('  [MOVE] source=', SrcName,
+            ' destinations=', DestCount,
+            ' corr=', IsCorr,
+            ' fig=', IsFig);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInitializeStatement : parser une instruction INITIALIZE  }
+{   INITIALIZE id-1 [id-2 ...]                                  }
+{     [REPLACING category BY literal/id]                         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInitializeStatement;
+Var
+  IdName    : TString;
+  IdCount   : Integer;
+  HasRepl   : Boolean;
+  ReplCount : Integer;
+Begin
+  Inc(MvtStateCount);
+  Inc(MvtInitializeCount);
+
+  { On est positionne sur le token apres INITIALIZE }
+  LexNextToken;
+
+  { Lire les identificateurs a initialiser }
+  IdCount := 0;
+  While (CurTokType = TOK_IDENT) Or
+        ((CurTokType = TOK_KEYWORD) And (CurTokNum >= 80)) Do Begin
+    IdName := CurTokStr;
+    Inc(IdCount);
+
+    { Generer le code d initialisation generique }
+    WriteLn('; INITIALIZE ', IdName);
+    WriteLn('  LEA EDI, [', AsmIdent(IdName), ']');
+    WriteLn('  CALL ', PFX_RT, 'INITIALIZE');
+    Inc(MvtTotalGenerated);
+
+    LexNextToken;
+
+    { Verifier si c est REPLACING ou un autre identifiant }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_REPLACING) Then
+      Break;
+    If CurTokType <> TOK_IDENT Then
+      Break;
+  End;
+
+  { Clause REPLACING optionnelle }
+  HasRepl := False;
+  ReplCount := 0;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_REPLACING) Then Begin
+    HasRepl := True;
+    { Parser REPLACING category BY literal/id }
+    While (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_REPLACING) Do Begin
+      LexNextToken;
+      { Lire la categorie : ALPHABETIC, ALPHANUMERIC, NUMERIC, etc. }
+      If (CurTokType = TOK_KEYWORD) Or (CurTokType = TOK_IDENT) Then Begin
+        WriteLn(';   REPLACING ', CurTokStr);
+        LexNextToken;
+      End;
+      { Attendre BY }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then Begin
+        LexNextToken;
+        { Lire le litteral ou identifiant de remplacement }
+        WriteLn(';   BY ', CurTokStr);
+        LexNextToken;
+      End;
+      Inc(ReplCount);
+      Inc(MvtInitReplacCount);
+    End;
+  End;
+
+  If Opts.Verbose Then
+    WriteLn('  [INITIALIZE] ids=', IdCount,
+            ' replacing=', HasRepl,
+            ' replCount=', ReplCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSetStatement : parser une instruction SET pour           }
+{ niveaux 88 (conditions)                                        }
+{   SET condition-88 TO TRUE                                     }
+{   -> MOVE premiere-valeur TO variable-parent                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSetStatement;
+Var
+  CondName : TString;
+Begin
+  Inc(MvtStateCount);
+
+  { On est positionne sur le token apres SET }
+  LexNextToken;
+
+  { Lire le nom de la condition 88 }
+  CondName := CurTokStr;
+  LexNextToken;
+
+  { Attendre TO }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+    LexNextToken
+  Else
+    WarnMsg('SET : TO attendu');
+
+  { Attendre TRUE }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TRUE) Then Begin
+    WriteLn('; SET ', CondName, ' TO TRUE');
+    WriteLn('  LEA EDI, [', AsmIdent(CondName), ']');
+    WriteLn('  CALL ', PFX_RT, 'SET_COND_TRUE');
+    Inc(MvtSetCondCount);
+    Inc(MvtTotalGenerated);
+    LexNextToken;
+  End
+  Else
+    WarnMsg('SET : TRUE attendu (seul SET ... TO TRUE supporte)');
+
+  If Opts.Verbose Then
+    WriteLn('  [SET] condition=', CondName, ' TO TRUE');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMoveTransferStatement : dispatcher MOVE/INITIALIZE/SET  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseMoveTransferStatement;
+Begin
+  If (CurTokType = TOK_KEYWORD) Then Begin
+    Case CurTokNum Of
+      KW_MOVE       : ParseMoveStatement;
+      KW_INITIALIZE : ParseInitializeStatement;
+      KW_SET        : ParseSetStatement;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsMoveKeyword : tester si le mot-cle courant est un          }
+{ mot-cle de transfert de donnees (MOVE/INITIALIZE/SET)        }
+{ ------------------------------------------------------------ }
+
+Function IsMoveKeyword(Kw : Integer) : Boolean;
+Begin
+  IsMoveKeyword := (Kw = KW_MOVE) Or
+                   (Kw = KW_INITIALIZE) Or
+                   (Kw = KW_SET);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpMoveState : afficher l etat du module MOVE/INITIALIZE    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpMoveState;
+Begin
+  WriteLn('--- Etat module MOVE/INITIALIZE ---');
+  WriteLn('  Initialise          : ', MvtInitialized);
+  WriteLn('  MOVE total          : ', MvtMoveCount);
+  WriteLn('  MOVE alpha->alpha   : ', MvtMoveAlphaAlpha);
+  WriteLn('  MOVE num->num       : ', MvtMoveNumNum);
+  WriteLn('  MOVE num->alpha     : ', MvtMoveNumAlpha);
+  WriteLn('  MOVE alpha->num     : ', MvtMoveAlphaNum);
+  WriteLn('  MOVE group->group   : ', MvtMoveGroupGroup);
+  WriteLn('  MOVE figurative     : ', MvtMoveFigurative);
+  WriteLn('  MOVE CORRESPONDING  : ', MvtMoveCorrCount);
+  WriteLn('  Destinations mult.  : ', MvtMultiDestCount);
+  WriteLn('  INITIALIZE          : ', MvtInitializeCount);
+  WriteLn('  REPLACING clauses   : ', MvtInitReplacCount);
+  WriteLn('  SET condition-88    : ', MvtSetCondCount);
+  WriteLn('  Troncatures         : ', MvtTruncateCount);
+  WriteLn('  Remplissages        : ', MvtPaddingCount);
+  WriteLn('  Conversions type    : ', MvtConversionCount);
+  WriteLn('  Total genere        : ', MvtTotalGenerated);
+End;
+
+{ 10 fonctions accesseurs pour TODO 12                         }
+
+Function IsMvtInitialized : Boolean;
+Begin
+  IsMvtInitialized := MvtInitialized;
+End;
+
+Function IsMvtEmpty : Boolean;
+Begin
+  IsMvtEmpty := (MvtTotalGenerated = 0);
+End;
+
+Function GetMvtTotalGenerated : Integer;
+Begin
+  GetMvtTotalGenerated := MvtTotalGenerated;
+End;
+
+Function GetMvtStatus : TString;
+Begin
+  If Not MvtInitialized Then
+    GetMvtStatus := 'NON INITIALISE'
+  Else
+    GetMvtStatus := 'MOVE=' + ItoSI(MvtMoveCount) +
+                    ' INIT=' + ItoSI(MvtInitializeCount) +
+                    ' SET88=' + ItoSI(MvtSetCondCount) +
+                    ' CORR=' + ItoSI(MvtMoveCorrCount) +
+                    ' CONV=' + ItoSI(MvtConversionCount);
+End;
+
+Function GetMvtMoveCount : Integer;
+Begin
+  GetMvtMoveCount := MvtMoveCount;
+End;
+
+Function GetMvtInitializeCount : Integer;
+Begin
+  GetMvtInitializeCount := MvtInitializeCount;
+End;
+
+Function GetMvtSetCondCount : Integer;
+Begin
+  GetMvtSetCondCount := MvtSetCondCount;
+End;
+
+Function GetMvtCorrCount : Integer;
+Begin
+  GetMvtCorrCount := MvtMoveCorrCount;
+End;
+
+Function GetMvtConversionCount : Integer;
+Begin
+  GetMvtConversionCount := MvtConversionCount;
+End;
+
+Function GetMvtStateCount : Integer;
+Begin
+  GetMvtStateCount := MvtStateCount;
+End;
+
+
 { ------------------------------------------------------------ }
 { LexScanIdent : identificateur COBOL (lettres, chiffres, -)   }
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
@@ -10200,6 +10976,9 @@ Begin
 
   { Initialiser le module PERFORM et boucles }
   InitPerformState;
+
+  { Initialiser le module MOVE/INITIALIZE/SET }
+  InitMoveState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
