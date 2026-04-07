@@ -1489,6 +1489,7 @@ Const
   ============================================================ }
 
 { DC Luminance BITS - 16 valeurs indiquant le nombre de codes par longueur }
+  JPEG_DC_LUM_BITS_00 = 0;      { Indice 0 non utilise (compatibilite) }
   JPEG_DC_LUM_BITS_01 = 0;      { Codes de 1 bit: 0 }
   JPEG_DC_LUM_BITS_02 = 1;      { Codes de 2 bits: 1 }
   JPEG_DC_LUM_BITS_03 = 5;      { Codes de 3 bits: 5 }
@@ -1529,6 +1530,7 @@ Const
   ============================================================ }
 
 { DC Chrominance BITS - 16 valeurs indiquant le nombre de codes par longueur }
+  JPEG_DC_CHR_BITS_00 = 0;      { Indice 0 non utilise (compatibilite) }
   JPEG_DC_CHR_BITS_01 = 0;      { Codes de 1 bit: 0 }
   JPEG_DC_CHR_BITS_02 = 3;      { Codes de 2 bits: 3 }
   JPEG_DC_CHR_BITS_03 = 1;      { Codes de 3 bits: 1 }
@@ -2073,8 +2075,8 @@ Const
   JPEG_BIT_BUFFER_SIZE = 8192;         { Taille du buffer en octets }
   JPEG_BITS_PER_BYTE = 8;              { Bits par octet }
 
-{ Codes Huffman speciaux }
-  JPEG_HUFF_MAX_CODE_LEN = 16;         { Longueur max d'un code Huffman }
+{ Codes Huffman speciaux - definis dans Partie 3 }
+{ JPEG_HUFF_MAX_CODE_LEN deja defini plus haut }
   JPEG_HUFF_MAX_CODES = 256;           { Nombre max de codes par table }
 
 { Constantes pour le byte stuffing }
@@ -2154,9 +2156,7 @@ Const
 { Parametres par defaut de l'encodeur }
   JPEG_DEFAULT_QUALITY = 75;           { Qualite par defaut (1-100) }
   JPEG_DEFAULT_DPI = 72;               { Resolution par defaut }
-  JPEG_MAX_WIDTH = 65535;              { Largeur maximale }
-  JPEG_MAX_HEIGHT = 65535;             { Hauteur maximale }
-  JPEG_MAX_COMPONENTS = 3;             { Nombre max de composantes }
+{ JPEG_MAX_WIDTH, JPEG_MAX_HEIGHT, JPEG_MAX_COMPONENTS deja definis dans Partie 1 }
 
 { ============================================================
   TYPES
@@ -20043,7 +20043,7 @@ Begin
   { Ecrire l'amplitude si categorie > 0 }
   If Category > 0 Then
   Begin
-    Amplitude := JPEG_GetACAmplitude(Value);
+    Amplitude := JPEG_GetACAmplitude(Value, Category);
     JPEG_WriteBits(Amplitude, Category);
   End;
   
