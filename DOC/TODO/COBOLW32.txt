@@ -156,7 +156,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
               (EMP-NOM OF EMP-RECORD)
             10 fonctions accesseurs
 
-  TODO 05 - GESTION DES NIVEAUX ET HIERARCHIE COBOL [A FAIRE]
+  TODO 05 - GESTION DES NIVEAUX ET HIERARCHIE COBOL [IMPLEMENTE]
             Niveaux COBOL : 01-49 (hierarchie), 66 (RENAMES),
               77 (independant), 88 (condition)
             Construction de l arbre hierarchique :

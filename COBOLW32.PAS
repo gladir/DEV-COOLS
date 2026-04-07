@@ -164,7 +164,7 @@
               (EMP-NOM OF EMP-RECORD)
             10 fonctions accesseurs
 
-  TODO 05 - GESTION DES NIVEAUX ET HIERARCHIE COBOL [A FAIRE]
+  TODO 05 - GESTION DES NIVEAUX ET HIERARCHIE COBOL [IMPLEMENTE]
             Niveaux COBOL : 01-49 (hierarchie), 66 (RENAMES),
               77 (independant), 88 (condition)
             Construction de l arbre hierarchique :
@@ -2702,6 +2702,600 @@ Begin
 End;
 
 
+{ ============================================================ }
+{ TODO 05 - GESTION DES NIVEAUX ET HIERARCHIE COBOL            }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+
+Const
+  { Niveaux speciaux COBOL }
+  LVL_RECORD     = 1;    { niveau 01 : debut de record/groupe      }
+  LVL_RENAMES    = 66;   { niveau 66 : RENAMES                     }
+  LVL_INDEPEND   = 77;   { niveau 77 : independant (pas de groupe) }
+  LVL_CONDITION  = 88;   { niveau 88 : condition nommee            }
+  LVL_MIN_HIER   = 1;    { niveau minimum hierarchique             }
+  LVL_MAX_HIER   = 49;   { niveau maximum hierarchique             }
+
+  { Limites pour la pile de niveaux }
+  HLV_MAX_DEPTH   = 50;  { profondeur max de la pile de niveaux    }
+  HLV_MAX_RECORDS = 256; { nombre max de records 01                }
+
+Var
+  { Pile de niveaux pour construction de la hierarchie }
+  HlvLevelStack  : Array[0..HLV_MAX_DEPTH - 1] Of Integer;  { niveaux }
+  HlvParentStack : Array[0..HLV_MAX_DEPTH - 1] Of Integer;  { index sym }
+  HlvDepth       : Integer;   { profondeur courante                  }
+  HlvCurRecord   : Integer;   { index du record 01 courant (-1=aucun)}
+  HlvInitialized : Boolean;
+  HlvStateCount  : Integer;   { compteur d etats                     }
+  HlvRecordCount : Integer;   { nombre de records 01 traites         }
+  HlvTotalSize   : LongInt;   { taille totale de tous les records    }
+  HlvRedefinesCount : Integer; { nombre de REDEFINES traites         }
+  HlvRenamesCount   : Integer; { nombre de RENAMES traites           }
+  HlvConditionCount : Integer; { nombre de conditions 88 traitees    }
+
+{ ------------------------------------------------------------ }
+{ InitLevelState : initialise la pile et les compteurs          }
+{ ------------------------------------------------------------ }
+
+Procedure InitLevelState;
+Var I : Integer;
+Begin
+  HlvDepth       := 0;
+  HlvCurRecord   := -1;
+  HlvInitialized := True;
+  HlvStateCount  := 0;
+  HlvRecordCount := 0;
+  HlvTotalSize   := 0;
+  HlvRedefinesCount := 0;
+  HlvRenamesCount   := 0;
+  HlvConditionCount := 0;
+  For I := 0 To HLV_MAX_DEPTH - 1 Do
+  Begin
+    HlvLevelStack[I]  := 0;
+    HlvParentStack[I] := -1;
+  End;
+  Inc(HlvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsValidLevel : verifie si un numero de niveau COBOL est valide}
+{ Niveaux valides : 01-49, 66, 77, 88                          }
+{ ------------------------------------------------------------ }
+
+Function IsValidLevel(Lv : Integer) : Boolean;
+Begin
+  IsValidLevel := ((Lv >= LVL_MIN_HIER) And (Lv <= LVL_MAX_HIER))
+                  Or (Lv = LVL_RENAMES)
+                  Or (Lv = LVL_INDEPEND)
+                  Or (Lv = LVL_CONDITION);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsSpecialLevel : teste si un niveau est special (66, 77, 88) }
+{ ------------------------------------------------------------ }
+
+Function IsSpecialLevel(Lv : Integer) : Boolean;
+Begin
+  IsSpecialLevel := (Lv = LVL_RENAMES)
+                    Or (Lv = LVL_INDEPEND)
+                    Or (Lv = LVL_CONDITION);
+End;
+
+{ ------------------------------------------------------------ }
+{ LevelCategoryName : nom de la categorie d un niveau           }
+{   01       -> Record                                          }
+{   02-49    -> Hierarchical                                    }
+{   66       -> Renames                                         }
+{   77       -> Independent                                     }
+{   88       -> Condition                                       }
+{ ------------------------------------------------------------ }
+
+Function LevelCategoryName(Lv : Integer) : TString;
+Begin
+  If Lv = LVL_RECORD Then
+    LevelCategoryName := 'Record'
+  Else If (Lv >= 2) And (Lv <= LVL_MAX_HIER) Then
+    LevelCategoryName := 'Hierarchical'
+  Else If Lv = LVL_RENAMES Then
+    LevelCategoryName := 'Renames'
+  Else If Lv = LVL_INDEPEND Then
+    LevelCategoryName := 'Independent'
+  Else If Lv = LVL_CONDITION Then
+    LevelCategoryName := 'Condition'
+  Else
+    LevelCategoryName := '(invalid)';
+End;
+
+{ ------------------------------------------------------------ }
+{ PushLevel : empiler un niveau et l index du symbole associe   }
+{ ------------------------------------------------------------ }
+
+Procedure PushLevel(Lv : Integer; SymIdx : Integer);
+Begin
+  If HlvDepth >= HLV_MAX_DEPTH Then
+  Begin
+    WarnMsg('Profondeur de niveaux COBOL depasse (max ' +
+            ItoSI(HLV_MAX_DEPTH) + ')');
+    Exit;
+  End;
+  HlvLevelStack[HlvDepth]  := Lv;
+  HlvParentStack[HlvDepth] := SymIdx;
+  Inc(HlvDepth);
+  Inc(HlvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ PopLevel : depiler jusqu a atteindre un niveau < Lv           }
+{ Retourne l index du nouveau parent ou -1                      }
+{ ------------------------------------------------------------ }
+
+Function PopLevel(Lv : Integer) : Integer;
+Begin
+  { Remonter la pile : depiler tant que le sommet a un niveau >= Lv }
+  While (HlvDepth > 0) And (HlvLevelStack[HlvDepth - 1] >= Lv) Do
+  Begin
+    Dec(HlvDepth);
+    Inc(HlvStateCount);
+  End;
+  { Le parent est maintenant le sommet de la pile }
+  If HlvDepth > 0 Then
+    PopLevel := HlvParentStack[HlvDepth - 1]
+  Else
+    PopLevel := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindParentForLevel : trouver le parent correct pour un niveau }
+{ donné selon la hiérarchie COBOL                               }
+{ Niveau 01 : pas de parent (-1)                                }
+{ Niveau 77 : pas de parent (-1)                                }
+{ Niveau 88 : parent = dernier symbole ajouté                  }
+{ Niveau 66 : parent = record 01 courant                        }
+{ Niveaux 02-49 : dernier symbole dont le niveau < Lv          }
+{ ------------------------------------------------------------ }
+
+Function FindParentForLevel(Lv : Integer) : Integer;
+Begin
+  If (Lv = LVL_RECORD) Or (Lv = LVL_INDEPEND) Then
+  Begin
+    { Niveau 01 ou 77 : pas de parent }
+    FindParentForLevel := -1;
+  End
+  Else If Lv = LVL_CONDITION Then
+  Begin
+    { Niveau 88 : parent = dernier symbole non-88 dans la table }
+    If SymCount > 0 Then
+      FindParentForLevel := SymCount - 1
+    Else
+      FindParentForLevel := -1;
+  End
+  Else If Lv = LVL_RENAMES Then
+  Begin
+    { Niveau 66 : parent = record 01 courant }
+    FindParentForLevel := HlvCurRecord;
+  End
+  Else
+  Begin
+    { Niveaux 02-49 : depiler et trouver le parent }
+    FindParentForLevel := PopLevel(Lv);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ BuildHierarchy : construire l arbre hierarchique en parcourant}
+{ la table des symboles. Assigne ParentIdx, detecte les records }
+{ et gere la pile de niveaux                                    }
+{ ------------------------------------------------------------ }
+
+Procedure BuildHierarchy;
+Var
+  I, Lv, ParIdx : Integer;
+Begin
+  HlvDepth     := 0;
+  HlvCurRecord := -1;
+  HlvRecordCount := 0;
+
+  For I := 0 To SymCount - 1 Do
+  Begin
+    Lv := SymTab[I].Level;
+
+    If Not IsValidLevel(Lv) Then
+    Begin
+      WarnMsg('Niveau invalide ' + ItoSI(Lv) +
+              ' pour le symbole ' + SymTab[I].Name);
+      Continue;
+    End;
+
+    If Lv = LVL_RECORD Then
+    Begin
+      { Nouveau record 01 : reset de la pile }
+      HlvDepth := 0;
+      HlvCurRecord := I;
+      Inc(HlvRecordCount);
+      SymTab[I].ParentIdx := -1;
+      SymTab[I].IsGroup   := True;
+      PushLevel(Lv, I);
+    End
+    Else If Lv = LVL_INDEPEND Then
+    Begin
+      { Niveau 77 : independant, pas de parent }
+      SymTab[I].ParentIdx := -1;
+    End
+    Else If Lv = LVL_CONDITION Then
+    Begin
+      { Niveau 88 : parent = dernier symbole ajouté avant celui-ci }
+      ParIdx := FindParentForLevel(Lv);
+      SymTab[I].ParentIdx := ParIdx;
+      SymTab[I].SymType   := CBT_CONDITION;
+      Inc(HlvConditionCount);
+    End
+    Else If Lv = LVL_RENAMES Then
+    Begin
+      { Niveau 66 : parent = record 01 courant }
+      SymTab[I].ParentIdx := HlvCurRecord;
+      Inc(HlvRenamesCount);
+    End
+    Else
+    Begin
+      { Niveaux 02-49 : hierarchique }
+      ParIdx := FindParentForLevel(Lv);
+      SymTab[I].ParentIdx := ParIdx;
+      { Si le parent n est pas un groupe, le marquer comme tel }
+      If (ParIdx >= 0) And (Not SymTab[ParIdx].IsGroup) Then
+        SymTab[ParIdx].IsGroup := True;
+      PushLevel(Lv, I);
+    End;
+  End;
+  Inc(HlvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ CalcGroupSize : calculer la taille d un groupe recursivement  }
+{ Additionne les PicSize des enfants directs                    }
+{ Pour les sous-groupes, recurse                                }
+{ Tient compte de OCCURS pour multiplier la taille              }
+{ ------------------------------------------------------------ }
+
+Function CalcGroupSize(GrpIdx : Integer) : Integer;
+Var
+  I, Size, ChildSize, Occ : Integer;
+Begin
+  Size := 0;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If SymTab[I].ParentIdx = GrpIdx Then
+    Begin
+      { Ignorer les niveaux 88 et 66 dans le calcul de taille }
+      If (SymTab[I].Level = LVL_CONDITION) Or
+         (SymTab[I].Level = LVL_RENAMES) Then
+        Continue;
+      { Ignorer les REDEFINES (partagent la meme memoire) }
+      If SymTab[I].RedefinedIdx >= 0 Then
+        Continue;
+
+      If SymTab[I].IsGroup Then
+        ChildSize := CalcGroupSize(I)
+      Else
+        ChildSize := SymTab[I].PicSize;
+
+      Occ := SymTab[I].Occurs;
+      If Occ > 1 Then
+        ChildSize := ChildSize * Occ;
+
+      Size := Size + ChildSize;
+    End;
+  End;
+  { Mettre a jour la taille du groupe }
+  SymTab[GrpIdx].PicSize := Size;
+  CalcGroupSize := Size;
+End;
+
+{ ------------------------------------------------------------ }
+{ CalcRecordOffsets : calculer les offsets dans un record 01     }
+{ Parcourt les enfants directs dans l ordre et assigne l offset  }
+{ ------------------------------------------------------------ }
+
+Procedure CalcRecordOffsets(RecIdx : Integer);
+Var
+  I, CurOffset, ChildSize, Occ : Integer;
+Begin
+  CurOffset := 0;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If SymTab[I].ParentIdx = RecIdx Then
+    Begin
+      { Ignorer niveaux 88 et 66 }
+      If (SymTab[I].Level = LVL_CONDITION) Or
+         (SymTab[I].Level = LVL_RENAMES) Then
+        Continue;
+
+      { REDEFINES : meme offset que le champ redefini }
+      If SymTab[I].RedefinedIdx >= 0 Then
+      Begin
+        SymTab[I].Offset := SymTab[SymTab[I].RedefinedIdx].Offset;
+        { Calculer les offsets des sous-champs si c est un groupe }
+        If SymTab[I].IsGroup Then
+          CalcRecordOffsets(I);
+        Continue;
+      End;
+
+      SymTab[I].Offset := CurOffset;
+
+      If SymTab[I].IsGroup Then
+      Begin
+        CalcRecordOffsets(I);
+        ChildSize := SymTab[I].PicSize;
+      End
+      Else
+        ChildSize := SymTab[I].PicSize;
+
+      Occ := SymTab[I].Occurs;
+      If Occ > 1 Then
+        ChildSize := ChildSize * Occ;
+
+      CurOffset := CurOffset + ChildSize;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ HandleRedefines : traiter la clause REDEFINES                 }
+{ Assigne l offset du champ redefini et verifie la coherence    }
+{ ------------------------------------------------------------ }
+
+Procedure HandleRedefines;
+Var
+  I, RedIdx : Integer;
+Begin
+  HlvRedefinesCount := 0;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If SymTab[I].RedefinedIdx >= 0 Then
+    Begin
+      RedIdx := SymTab[I].RedefinedIdx;
+      { Verifier que le champ redefini existe }
+      If (RedIdx >= 0) And (RedIdx < SymCount) Then
+      Begin
+        { L offset est le meme que le champ redefini }
+        SymTab[I].Offset := SymTab[RedIdx].Offset;
+        Inc(HlvRedefinesCount);
+      End
+      Else
+        WarnMsg('REDEFINES invalide pour ' + SymTab[I].Name +
+                ' : index ' + ItoSI(RedIdx));
+    End;
+  End;
+  Inc(HlvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ HandleRenames : traiter le niveau 66 (RENAMES)                }
+{ Le niveau 66 regroupe un ensemble de champs contigus          }
+{ ------------------------------------------------------------ }
+
+Procedure HandleRenames;
+Var
+  I : Integer;
+Begin
+  HlvRenamesCount := 0;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If SymTab[I].Level = LVL_RENAMES Then
+    Begin
+      { Le parent est le record 01 }
+      { Le type est alphanumerique par defaut (regroupement) }
+      If SymTab[I].SymType = CBT_NONE Then
+        SymTab[I].SymType := CBT_ALPHANUMERIC;
+      Inc(HlvRenamesCount);
+    End;
+  End;
+  Inc(HlvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ HandleCondition88 : traiter les conditions nommees (niveau 88)}
+{ Le niveau 88 definit des conditions sur le champ parent       }
+{ SET FINI TO TRUE -> MOVE valeur TO parent                     }
+{ ------------------------------------------------------------ }
+
+Procedure HandleCondition88;
+Var
+  I : Integer;
+Begin
+  HlvConditionCount := 0;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If SymTab[I].Level = LVL_CONDITION Then
+    Begin
+      { Le type est toujours CBT_CONDITION }
+      SymTab[I].SymType := CBT_CONDITION;
+      { Pas de PIC propre, pas de taille }
+      SymTab[I].PicStr  := '';
+      SymTab[I].PicSize := 0;
+      Inc(HlvConditionCount);
+    End;
+  End;
+  Inc(HlvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ResolveAllHierarchy : resolution complete de la hierarchie    }
+{ 1. BuildHierarchy : parents, pile de niveaux                  }
+{ 2. HandleRedefines : partage memoire                          }
+{ 3. HandleRenames : regroupements niveau 66                    }
+{ 4. HandleCondition88 : conditions nommees                     }
+{ 5. CalcGroupSize : tailles de tous les groupes                }
+{ 6. CalcRecordOffsets : offsets dans chaque record              }
+{ ------------------------------------------------------------ }
+
+Procedure ResolveAllHierarchy;
+Var
+  I : Integer;
+Begin
+  { Etape 1 : construire l arbre hierarchique }
+  BuildHierarchy;
+
+  { Etape 2 : traiter les REDEFINES }
+  HandleRedefines;
+
+  { Etape 3 : traiter les RENAMES (niveau 66) }
+  HandleRenames;
+
+  { Etape 4 : traiter les conditions 88 }
+  HandleCondition88;
+
+  { Etape 5 : calculer les tailles des groupes (bottom-up) }
+  { On traite tous les records 01 et les niveaux 77 }
+  HlvTotalSize := 0;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If (SymTab[I].Level = LVL_RECORD) Or
+       (SymTab[I].Level = LVL_INDEPEND) Then
+    Begin
+      If SymTab[I].IsGroup Then
+        CalcGroupSize(I);
+      HlvTotalSize := HlvTotalSize + SymTab[I].PicSize;
+    End;
+  End;
+
+  { Etape 6 : calculer les offsets dans chaque record }
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If SymTab[I].Level = LVL_RECORD Then
+      CalcRecordOffsets(I);
+  End;
+
+  Inc(HlvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpHierarchy : afficher la hierarchie avec indentation       }
+{ ------------------------------------------------------------ }
+
+Procedure DumpHierarchy;
+
+  Procedure DumpChildren(ParIdx : Integer; Indent : Integer);
+  Var
+    I, J : Integer;
+  Begin
+    For I := 0 To SymCount - 1 Do
+    Begin
+      If SymTab[I].ParentIdx = ParIdx Then
+      Begin
+        { Indentation }
+        For J := 1 To Indent Do
+          Write('  ');
+        Write(SymTab[I].Level:2, ' ', SymTab[I].Name);
+        If SymTab[I].IsGroup Then
+          Write(' (GROUP, ', SymTab[I].PicSize, ' bytes)')
+        Else If SymTab[I].PicStr <> '' Then
+          Write(' PIC ', SymTab[I].PicStr,
+                ' (', SymTab[I].PicSize, ' bytes)');
+        If SymTab[I].Level = LVL_CONDITION Then
+        Begin
+          Write(' VALUES: ');
+          For J := 0 To SymTab[I].CondValCount - 1 Do
+          Begin
+            If J > 0 Then Write(', ');
+            Write(SymTab[I].CondValues[J]);
+          End;
+        End;
+        If SymTab[I].RedefinedIdx >= 0 Then
+          Write(' REDEFINES ', SymTab[SymTab[I].RedefinedIdx].Name);
+        If SymTab[I].Occurs > 0 Then
+          Write(' OCCURS ', SymTab[I].Occurs);
+        Write(' @', SymTab[I].Offset);
+        WriteLn;
+        { Recurse pour les enfants }
+        If SymTab[I].IsGroup Then
+          DumpChildren(I, Indent + 1);
+      End;
+    End;
+  End;
+
+Var
+  I : Integer;
+Begin
+  WriteLn('--- Hierarchie COBOL (', HlvRecordCount, ' records) ---');
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If (SymTab[I].Level = LVL_RECORD) Or
+       (SymTab[I].Level = LVL_INDEPEND) Then
+    Begin
+      Write(SymTab[I].Level:2, ' ', SymTab[I].Name);
+      If SymTab[I].IsGroup Then
+        Write(' (GROUP, ', SymTab[I].PicSize, ' bytes)')
+      Else
+        Write(' PIC ', SymTab[I].PicStr,
+              ' (', SymTab[I].PicSize, ' bytes)');
+      WriteLn;
+      If SymTab[I].IsGroup Then
+        DumpChildren(I, 1);
+    End;
+  End;
+  WriteLn('--- Total : ', HlvTotalSize, ' bytes ---');
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs pour TODO 05                         }
+{ ------------------------------------------------------------ }
+
+Function IsHlvInitialized : Boolean;
+Begin
+  IsHlvInitialized := HlvInitialized;
+End;
+
+Function IsHlvEmpty : Boolean;
+Begin
+  IsHlvEmpty := (HlvRecordCount = 0);
+End;
+
+Function GetHlvRecordCount : Integer;
+Begin
+  GetHlvRecordCount := HlvRecordCount;
+End;
+
+Function GetHlvStatus : TString;
+Begin
+  If Not HlvInitialized Then
+    GetHlvStatus := 'Not initialized'
+  Else
+    GetHlvStatus := 'Initialized (' + ItoS(HlvRecordCount) +
+                    ' records, ' + ItoS(HlvTotalSize) + ' bytes)';
+End;
+
+Function GetHlvDepth : Integer;
+Begin
+  GetHlvDepth := HlvDepth;
+End;
+
+Function GetHlvTotalSize : LongInt;
+Begin
+  GetHlvTotalSize := HlvTotalSize;
+End;
+
+Function GetHlvRedefinesCount : Integer;
+Begin
+  GetHlvRedefinesCount := HlvRedefinesCount;
+End;
+
+Function GetHlvRenamesCount : Integer;
+Begin
+  GetHlvRenamesCount := HlvRenamesCount;
+End;
+
+Function GetHlvConditionCount : Integer;
+Begin
+  GetHlvConditionCount := HlvConditionCount;
+End;
+
+Function GetHlvStateCount : Integer;
+Begin
+  GetHlvStateCount := HlvStateCount;
+End;
+
+
 { ------------------------------------------------------------ }
 { LexScanIdent : identificateur COBOL (lettres, chiffres, -)   }
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
@@ -3357,6 +3951,7 @@ Begin
   LexOpened  := False;
   KwInitialized := False;
   SymInitialized := False;
+  HlvInitialized := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -3369,6 +3964,9 @@ Begin
 
   { Initialiser la table des symboles }
   SymInit;
+
+  { Initialiser la gestion des niveaux }
+  InitLevelState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
