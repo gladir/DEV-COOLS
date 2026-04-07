@@ -2943,6 +2943,10 @@ Var
   CurrentClass: String;
   CurrentRecordIdx: Integer;
   RecordFields: String;
+  LastEntityLine: Integer;
+  LastEntityIdx: Integer;
+  CommentText: String;
+  PBrace: Integer;
 Begin
   Assign(F, FileName);
   {$I-}
@@ -2959,6 +2963,8 @@ Begin
   CurrentClass := '';
   CurrentRecordIdx := 0;
   RecordFields := '';
+  LastEntityLine := 0;
+  LastEntityIdx := 0;
 
   While Not Eof(F) Do
   Begin
@@ -2966,6 +2972,53 @@ Begin
     Inc(LineNum);
     TrimmedLine := TrimLine(Line);
     UpperLine := UpStr(TrimmedLine);
+
+    (* Capturer le commentaire qui suit une declaration *)
+    If (LastEntityIdx > 0) And (LineNum = LastEntityLine + 1) Then
+    Begin
+      PBrace := Pos('{', TrimmedLine);
+      If (PBrace > 0) And (Copy(TrimmedLine, PBrace, 2) <> '{$') Then
+      Begin
+        (* Extraire le texte du commentaire *)
+        CommentText := '';
+        P := Pos('}', TrimmedLine);
+        If P > PBrace Then
+        Begin
+          (* Commentaire sur une seule ligne *)
+          CommentText := Copy(TrimmedLine, PBrace + 1, P - PBrace - 1);
+          CommentText := TrimLine(CommentText);
+        End
+        Else
+        Begin
+          (* Commentaire multi-lignes : lire jusqu'a la fermeture *)
+          CommentText := Copy(TrimmedLine, PBrace + 1,
+            Length(TrimmedLine) - PBrace);
+          While Not Eof(F) Do
+          Begin
+            ReadLn(F, Line);
+            Inc(LineNum);
+            P := Pos('}', Line);
+            If P > 0 Then
+            Begin
+              CommentText := CommentText + ' ' +
+                TrimLine(Copy(Line, 1, P - 1));
+              Break;
+            End
+            Else
+              CommentText := CommentText + ' ' + TrimLine(Line);
+          End;
+          CommentText := TrimLine(CommentText);
+        End;
+        If CommentText <> '' Then
+        Begin
+          Entities[LastEntityIdx].BriefDesc := CommentText;
+          Entities[LastEntityIdx].DocComment := CommentText;
+        End;
+        LastEntityIdx := 0;
+        Continue;
+      End;
+      LastEntityIdx := 0;
+    End;
 
     { Gerer les commentaires }
     If InComment Then
@@ -3131,6 +3184,8 @@ Begin
         Entities[EntityCount].Signature := ExtractPascalSignature(TrimmedLine, True);
         Entities[EntityCount].Parameters := ExtractPascalParams(TrimmedLine);
         Entities[EntityCount].ReturnType := ''; { Procedure n'a pas de type retour }
+        LastEntityLine := LineNum;
+        LastEntityIdx := EntityCount;
       End;
       Continue;
     End;
@@ -3150,6 +3205,8 @@ Begin
         Entities[EntityCount].Signature := ExtractPascalSignature(TrimmedLine, False);
         Entities[EntityCount].Parameters := ExtractPascalParams(TrimmedLine);
         Entities[EntityCount].ReturnType := ExtractPascalReturnType(TrimmedLine);
+        LastEntityLine := LineNum;
+        LastEntityIdx := EntityCount;
       End;
       Continue;
     End;
