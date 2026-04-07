@@ -12,7 +12,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
   ============================================================
 
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [A FAIRE]
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm, FreeFormat)
             ParseArgs : analyser argv (source.cbl [-o sortie] [-v]
