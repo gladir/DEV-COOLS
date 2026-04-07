@@ -391,7 +391,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
               transferts memoire, routines runtime pour conversions
             10 fonctions accesseurs
 
-  TODO 13 - PARSEUR : OPERATIONS SUR CHAINES (STRING, UNSTRING, INSPECT) [A FAIRE]
+  TODO 13 - PARSEUR : OPERATIONS SUR CHAINES (STRING, UNSTRING, INSPECT) [IMPLEMENTE]
             STRING :
               STRING source-1 [DELIMITED BY delim-1]
                      source-2 [DELIMITED BY delim-2]

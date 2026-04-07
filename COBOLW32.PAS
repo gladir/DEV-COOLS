@@ -399,7 +399,7 @@
               transferts memoire, routines runtime pour conversions
             10 fonctions accesseurs
 
-  TODO 13 - PARSEUR : OPERATIONS SUR CHAINES (STRING, UNSTRING, INSPECT) [A FAIRE]
+  TODO 13 - PARSEUR : OPERATIONS SUR CHAINES (STRING, UNSTRING, INSPECT) [IMPLEMENTE]
             STRING :
               STRING source-1 [DELIMITED BY delim-1]
                      source-2 [DELIMITED BY delim-2]
@@ -1747,6 +1747,10 @@ Const
   KW_DEPENDING         = 221;
   KW_PARAGRAPH         = 222;
 
+  { Mots-cles supplementaires pour STRING/UNSTRING/INSPECT }
+  KW_CHARACTERS        = 223;
+  KW_FOR               = 224;
+
   { Nombre total de mots-cles definis }
   KW_TOTAL_KEYWORDS    = 155;  { nombre approximatif de mots-cles }
 
@@ -1980,6 +1984,8 @@ Begin
   Else If S = 'TEST'              Then LookupKeyword := KW_TEST
   Else If S = 'DEPENDING'         Then LookupKeyword := KW_DEPENDING
   Else If S = 'PARAGRAPH'         Then LookupKeyword := KW_PARAGRAPH
+  Else If S = 'CHARACTERS'        Then LookupKeyword := KW_CHARACTERS
+  Else If S = 'FOR'               Then LookupKeyword := KW_FOR
   Else LookupKeyword := KW_NONE;
 End;
 
@@ -2182,6 +2188,8 @@ Begin
     KW_TEST              : KeywordName := 'TEST';
     KW_DEPENDING         : KeywordName := 'DEPENDING';
     KW_PARAGRAPH         : KeywordName := 'PARAGRAPH';
+    KW_CHARACTERS        : KeywordName := 'CHARACTERS';
+    KW_FOR               : KeywordName := 'FOR';
   Else
     KeywordName := '?KW' + ItoSI(KW);
   End;
@@ -10283,8 +10291,1184 @@ Begin
 End;
 
 
+{ ============================================================ }
+{ TODO 13 - PARSEUR : OPERATIONS SUR CHAINES                   }
+{           STRING, UNSTRING, INSPECT, sous-chaines             }
+{ ============================================================ }
+
+Const
+  { Types d operations STRING }
+  SOP_NONE             = 0;   { pas d operation en cours                  }
+  SOP_STRING           = 1;   { concatenation STRING                      }
+  SOP_UNSTRING         = 2;   { decomposition UNSTRING                    }
+  SOP_INSPECT_TALLY    = 3;   { INSPECT TALLYING                          }
+  SOP_INSPECT_REPLACE  = 4;   { INSPECT REPLACING                         }
+  SOP_INSPECT_CONVERT  = 5;   { INSPECT CONVERTING                        }
+  SOP_SUBSTRING_REF    = 6;   { reference de sous-chaine id(pos:len)      }
+
+  { Types de recherche INSPECT }
+  ISP_ALL              = 0;   { compter/remplacer toutes les occurrences  }
+  ISP_LEADING          = 1;   { compter/remplacer les premieres           }
+  ISP_FIRST            = 2;   { remplacer la premiere seulement           }
+  ISP_CHARACTERS       = 3;   { tous les caracteres                       }
+
+  { Types de borne BEFORE/AFTER }
+  ISB_NONE             = 0;   { pas de borne                              }
+  ISB_BEFORE           = 1;   { BEFORE INITIAL                            }
+  ISB_AFTER            = 2;   { AFTER INITIAL                             }
+
+  { Limites }
+  STR_MAX_SOURCES      = 16;  { max de sources pour STRING                }
+  STR_MAX_DELIMITERS   = 16;  { max de delimiteurs pour UNSTRING          }
+  STR_MAX_DESTINATIONS = 16;  { max de destinations pour UNSTRING         }
+  STR_MAX_TALLY_CLAUSES = 8;  { max de clauses TALLYING FOR               }
+  STR_MAX_REPLACE_CLAUSES = 8; { max de clauses REPLACING                 }
+
+Var
+  StrInitialized       : Boolean;   { True si InitStringState appele         }
+  StrStateCount        : Integer;   { compteur d etat general                }
+  StrLabelNum          : Integer;   { compteur de labels internes            }
+  StrStringCount       : Integer;   { nombre de STRING                       }
+  StrUnstringCount     : Integer;   { nombre de UNSTRING                     }
+  StrInspectTallyCount : Integer;   { nombre de INSPECT TALLYING             }
+  StrInspectReplCount  : Integer;   { nombre de INSPECT REPLACING            }
+  StrInspectConvCount  : Integer;   { nombre de INSPECT CONVERTING           }
+  StrSubstringRefCount : Integer;   { nombre de references sous-chaine       }
+  StrPointerCount      : Integer;   { nombre de clauses WITH POINTER         }
+  StrOverflowCount     : Integer;   { nombre de clauses ON OVERFLOW          }
+  StrDelimitedCount    : Integer;   { nombre de clauses DELIMITED BY         }
+  StrTallyingCount     : Integer;   { nombre de clauses TALLYING IN          }
+  StrBeforeAfterCount  : Integer;   { nombre de clauses BEFORE/AFTER         }
+  StrAllCount          : Integer;   { nombre de qualificatifs ALL            }
+  StrLeadingCount      : Integer;   { nombre de qualificatifs LEADING        }
+  StrFirstCount        : Integer;   { nombre de qualificatifs FIRST          }
+  StrCharactersCount   : Integer;   { nombre de qualificatifs CHARACTERS     }
+  StrTotalGenerated    : Integer;   { total d instructions generees          }
+
 { ------------------------------------------------------------ }
-{ LexScanIdent : identificateur COBOL (lettres, chiffres, -)   }
+{ InitStringState : initialiser l etat du module STRING/INSPECT }
+{ ------------------------------------------------------------ }
+
+Procedure InitStringState;
+Begin
+  StrInitialized       := True;
+  StrStateCount        := 0;
+  StrLabelNum          := 0;
+  StrStringCount       := 0;
+  StrUnstringCount     := 0;
+  StrInspectTallyCount := 0;
+  StrInspectReplCount  := 0;
+  StrInspectConvCount  := 0;
+  StrSubstringRefCount := 0;
+  StrPointerCount      := 0;
+  StrOverflowCount     := 0;
+  StrDelimitedCount    := 0;
+  StrTallyingCount     := 0;
+  StrBeforeAfterCount  := 0;
+  StrAllCount          := 0;
+  StrLeadingCount      := 0;
+  StrFirstCount        := 0;
+  StrCharactersCount   := 0;
+  StrTotalGenerated    := 0;
+  Inc(StrStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrLabel : genere un label unique pour le module STRING    }
+{ ------------------------------------------------------------ }
+
+Function GenStrLabel : TString;
+Begin
+  Inc(StrLabelNum);
+  GenStrLabel := '_COBSTR_' + ItoSI(StrLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ StrOpTypeName : retourne le nom d un type d operation chaine }
+{ ------------------------------------------------------------ }
+
+Function StrOpTypeName(OpType : Integer) : TString;
+Begin
+  Case OpType Of
+    SOP_NONE            : StrOpTypeName := 'NONE';
+    SOP_STRING          : StrOpTypeName := 'STRING';
+    SOP_UNSTRING        : StrOpTypeName := 'UNSTRING';
+    SOP_INSPECT_TALLY   : StrOpTypeName := 'INSPECT-TALLYING';
+    SOP_INSPECT_REPLACE : StrOpTypeName := 'INSPECT-REPLACING';
+    SOP_INSPECT_CONVERT : StrOpTypeName := 'INSPECT-CONVERTING';
+    SOP_SUBSTRING_REF   : StrOpTypeName := 'SUBSTRING-REF';
+  Else
+    StrOpTypeName := '?SOP' + ItoSI(OpType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ InspectTypeName : retourne le nom d un type de recherche     }
+{ ------------------------------------------------------------ }
+
+Function InspectTypeName(IType : Integer) : TString;
+Begin
+  Case IType Of
+    ISP_ALL        : InspectTypeName := 'ALL';
+    ISP_LEADING    : InspectTypeName := 'LEADING';
+    ISP_FIRST      : InspectTypeName := 'FIRST';
+    ISP_CHARACTERS : InspectTypeName := 'CHARACTERS';
+  Else
+    InspectTypeName := '?ISP' + ItoSI(IType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ BoundTypeName : retourne le nom d un type de borne           }
+{ ------------------------------------------------------------ }
+
+Function BoundTypeName(BType : Integer) : TString;
+Begin
+  Case BType Of
+    ISB_NONE   : BoundTypeName := 'NONE';
+    ISB_BEFORE : BoundTypeName := 'BEFORE';
+    ISB_AFTER  : BoundTypeName := 'AFTER';
+  Else
+    BoundTypeName := '?ISB' + ItoSI(BType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStringConcat : genere le code 80386 pour STRING            }
+{   Appelle la routine runtime _COBRT_STRING_CONCAT             }
+{   ECX = pointeur destination, EDX = taille destination        }
+{   ESI = pointeur source, EDI = taille source                  }
+{   Gere la concatenation sequentielle avec pointeur            }
+{ ------------------------------------------------------------ }
+
+Procedure GenStringConcat(Const Src, Dest : TString; SrcLen, DestLen : Integer);
+Begin
+  WriteLn(';   STRING ', Src, ' INTO ', Dest);
+  WriteLn('  LEA ESI, [', Src, ']');
+  WriteLn('  MOV ECX, ', SrcLen);
+  WriteLn('  LEA EDI, [', Dest, ']');
+  WriteLn('  MOV EDX, ', DestLen);
+  WriteLn('  CALL _COBRT_STRING_CONCAT');
+  Inc(StrTotalGenerated, 5);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStringDelimited : genere le code pour STRING DELIMITED BY }
+{   Copie la source jusqu au delimiteur dans la destination     }
+{   ESI = source, ECX = taille source, EBX = delimiteur        }
+{ ------------------------------------------------------------ }
+
+Procedure GenStringDelimited(Const Src, Delim, Dest : TString);
+Begin
+  WriteLn(';   STRING ', Src, ' DELIMITED BY ', Delim);
+  WriteLn('  LEA ESI, [', Src, ']');
+  WriteLn('  LEA EBX, [', Delim, ']');
+  WriteLn('  LEA EDI, [', Dest, ']');
+  WriteLn('  CALL _COBRT_STRING_DELIMITED');
+  Inc(StrTotalGenerated, 4);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStringPointer : genere le code pour WITH POINTER           }
+{   Charge le pointeur de position dans EAX                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenStringPointer(Const PtrVar : TString);
+Begin
+  WriteLn(';   WITH POINTER ', PtrVar);
+  WriteLn('  MOV EAX, [', PtrVar, ']');
+  WriteLn('  DEC EAX');
+  WriteLn('  ADD EDI, EAX');
+  Inc(StrTotalGenerated, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStringPointerUpdate : met a jour le pointeur apres STRING }
+{ ------------------------------------------------------------ }
+
+Procedure GenStringPointerUpdate(Const PtrVar : TString);
+Begin
+  WriteLn(';   mise a jour POINTER ', PtrVar);
+  WriteLn('  INC EAX');
+  WriteLn('  MOV [', PtrVar, '], EAX');
+  Inc(StrTotalGenerated, 2);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStringOverflowCheck : genere le test ON OVERFLOW           }
+{   Compare la position actuelle avec la taille destination     }
+{ ------------------------------------------------------------ }
+
+Procedure GenStringOverflowCheck(Const LblOverflow, LblEnd : TString);
+Begin
+  WriteLn(';   ON OVERFLOW check');
+  WriteLn('  CMP EAX, EDX');
+  WriteLn('  JG ', LblOverflow);
+  WriteLn('  JMP ', LblEnd);
+  WriteLn(LblOverflow, ':');
+  Inc(StrTotalGenerated, 4);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenUnstringSource : genere le code pour UNSTRING source       }
+{   Prepare la source pour decomposition                        }
+{ ------------------------------------------------------------ }
+
+Procedure GenUnstringSource(Const Src : TString; SrcLen : Integer);
+Begin
+  WriteLn(';   UNSTRING ', Src);
+  WriteLn('  LEA ESI, [', Src, ']');
+  WriteLn('  MOV ECX, ', SrcLen);
+  Inc(StrTotalGenerated, 2);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenUnstringDelimitedBy : genere le code DELIMITED BY          }
+{   Cherche le delimiteur dans la source                        }
+{ ------------------------------------------------------------ }
+
+Procedure GenUnstringDelimitedBy(Const Delim : TString; IsOr : Boolean);
+Begin
+  If IsOr Then
+    WriteLn(';   OR DELIMITED BY ', Delim)
+  Else
+    WriteLn(';   DELIMITED BY ', Delim);
+  WriteLn('  LEA EBX, [', Delim, ']');
+  WriteLn('  CALL _COBRT_UNSTRING_FIND_DELIM');
+  Inc(StrTotalGenerated, 2);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenUnstringInto : genere le code INTO pour UNSTRING           }
+{   Copie le segment dans la destination                        }
+{ ------------------------------------------------------------ }
+
+Procedure GenUnstringInto(Const Dest : TString; DestLen : Integer);
+Begin
+  WriteLn(';   INTO ', Dest);
+  WriteLn('  LEA EDI, [', Dest, ']');
+  WriteLn('  MOV EDX, ', DestLen);
+  WriteLn('  CALL _COBRT_UNSTRING_COPY_SEGMENT');
+  Inc(StrTotalGenerated, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenUnstringDelimiterIn : genere DELIMITER IN pour UNSTRING    }
+{ ------------------------------------------------------------ }
+
+Procedure GenUnstringDelimiterIn(Const DelimVar : TString);
+Begin
+  WriteLn(';   DELIMITER IN ', DelimVar);
+  WriteLn('  LEA EDI, [', DelimVar, ']');
+  WriteLn('  CALL _COBRT_UNSTRING_STORE_DELIM');
+  Inc(StrTotalGenerated, 2);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenUnstringCountIn : genere COUNT IN pour UNSTRING            }
+{ ------------------------------------------------------------ }
+
+Procedure GenUnstringCountIn(Const CntVar : TString);
+Begin
+  WriteLn(';   COUNT IN ', CntVar);
+  WriteLn('  MOV [', CntVar, '], EAX');
+  Inc(StrTotalGenerated, 1);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenUnstringTallyingIn : genere TALLYING IN pour UNSTRING      }
+{ ------------------------------------------------------------ }
+
+Procedure GenUnstringTallyingIn(Const TallyVar : TString);
+Begin
+  WriteLn(';   TALLYING IN ', TallyVar);
+  WriteLn('  INC DWORD PTR [', TallyVar, ']');
+  Inc(StrTotalGenerated, 1);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenInspectTallying : genere le code pour INSPECT TALLYING     }
+{   Compte les occurrences d un motif dans la chaine            }
+{ ------------------------------------------------------------ }
+
+Procedure GenInspectTallying(Const Source, Counter, Pattern : TString;
+                              SrcLen : Integer; SearchType : Integer);
+Begin
+  WriteLn(';   INSPECT ', Source, ' TALLYING ', Counter,
+          ' FOR ', InspectTypeName(SearchType), ' ', Pattern);
+  WriteLn('  LEA ESI, [', Source, ']');
+  WriteLn('  MOV ECX, ', SrcLen);
+  WriteLn('  LEA EBX, [', Pattern, ']');
+  WriteLn('  MOV EDX, ', SearchType);
+  WriteLn('  CALL _COBRT_INSPECT_TALLY');
+  WriteLn('  ADD [', Counter, '], EAX');
+  Inc(StrTotalGenerated, 6);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenInspectBeforeAfter : genere la borne BEFORE/AFTER INITIAL }
+{ ------------------------------------------------------------ }
+
+Procedure GenInspectBeforeAfter(Const Bound : TString; BoundType : Integer);
+Begin
+  WriteLn(';   ', BoundTypeName(BoundType), ' INITIAL ', Bound);
+  WriteLn('  LEA EDX, [', Bound, ']');
+  WriteLn('  MOV EAX, ', BoundType);
+  WriteLn('  CALL _COBRT_INSPECT_SET_BOUND');
+  Inc(StrTotalGenerated, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenInspectReplacing : genere le code pour INSPECT REPLACING   }
+{   Remplace les occurrences d un motif par un autre            }
+{ ------------------------------------------------------------ }
+
+Procedure GenInspectReplacing(Const Source, OldPat, NewPat : TString;
+                               SrcLen : Integer; SearchType : Integer);
+Begin
+  WriteLn(';   INSPECT ', Source, ' REPLACING ',
+          InspectTypeName(SearchType), ' ', OldPat, ' BY ', NewPat);
+  WriteLn('  LEA ESI, [', Source, ']');
+  WriteLn('  MOV ECX, ', SrcLen);
+  WriteLn('  LEA EBX, [', OldPat, ']');
+  WriteLn('  LEA EDX, [', NewPat, ']');
+  WriteLn('  PUSH ', SearchType);
+  WriteLn('  CALL _COBRT_INSPECT_REPLACE');
+  Inc(StrTotalGenerated, 6);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenInspectConverting : genere le code INSPECT CONVERTING      }
+{   Convertit caractere par caractere selon une table           }
+{ ------------------------------------------------------------ }
+
+Procedure GenInspectConverting(Const Source, FromStr, ToStr : TString;
+                                SrcLen : Integer);
+Begin
+  WriteLn(';   INSPECT ', Source, ' CONVERTING ', FromStr, ' TO ', ToStr);
+  WriteLn('  LEA ESI, [', Source, ']');
+  WriteLn('  MOV ECX, ', SrcLen);
+  WriteLn('  LEA EBX, [', FromStr, ']');
+  WriteLn('  LEA EDX, [', ToStr, ']');
+  WriteLn('  CALL _COBRT_INSPECT_CONVERT');
+  Inc(StrTotalGenerated, 5);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSubstringRef : genere le code pour reference sous-chaine   }
+{   id(position:longueur) -> calcule adresse + longueur         }
+{ ------------------------------------------------------------ }
+
+Procedure GenSubstringRef(Const Ident : TString; Pos, Len : Integer);
+Begin
+  WriteLn(';   reference sous-chaine ', Ident, '(', Pos, ':', Len, ')');
+  WriteLn('  LEA ESI, [', Ident, ']');
+  WriteLn('  ADD ESI, ', Pos - 1);
+  WriteLn('  MOV ECX, ', Len);
+  Inc(StrTotalGenerated, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStringSourceClause : parse une clause source de STRING   }
+{   source-n [DELIMITED BY delim-n | SIZE]                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStringSourceClause;
+Var
+  SrcName  : TString;
+  DelName  : TString;
+  HasDelim : Boolean;
+Begin
+  { Lire l identifiant ou litteral source }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Or
+     (CurTokType = TOK_INTEGER) Then
+  Begin
+    SrcName := CurTokStr;
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('STRING: source attendue');
+    Exit;
+  End;
+
+  { Verifier DELIMITED BY }
+  HasDelim := False;
+  DelName := '';
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DELIMITED) Then
+  Begin
+    LexNextToken;
+    { Optionnel: BY }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then
+      LexNextToken;
+
+    { SIZE ou un delimiteur specifique }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SIZE) Then
+    Begin
+      DelName := 'SIZE';
+      LexNextToken;
+    End
+    Else If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Then
+    Begin
+      DelName := CurTokStr;
+      LexNextToken;
+    End;
+    HasDelim := True;
+    Inc(StrDelimitedCount);
+  End;
+
+  If HasDelim And (DelName <> 'SIZE') Then
+    GenStringDelimited(SrcName, DelName, 'EDI')
+  Else
+    GenStringConcat(SrcName, 'EDI', 0, 0);
+
+  Inc(StrStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStringStatement : parse l instruction STRING complete     }
+{   STRING source-1 [DELIMITED BY delim-1]                      }
+{          source-2 [DELIMITED BY delim-2] ...                  }
+{     INTO destination                                          }
+{     [WITH POINTER ptr]                                        }
+{     [ON OVERFLOW instructions]                                }
+{   END-STRING                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStringStatement;
+Var
+  DestName  : TString;
+  PtrName   : TString;
+  HasPtr    : Boolean;
+  LblOvf    : TString;
+  LblEnd    : TString;
+Begin
+  Inc(StrStringCount);
+  WriteLn('; STRING statement');
+  LexNextToken;   { consommer STRING }
+
+  { Parser les sources avec leurs delimiteurs }
+  While Not LexEOF And
+        (CurTokType <> TOK_KEYWORD) Or
+        ((CurTokNum <> KW_INTO) And (CurTokNum <> KW_END_STRING) And
+         (CurTokNum <> KW_ON)) Do
+  Begin
+    ParseStringSourceClause;
+    If LexEOF Then Exit;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INTO) Then
+      Break;
+  End;
+
+  { INTO destination }
+  DestName := '';
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INTO) Then
+  Begin
+    LexNextToken;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      DestName := CurTokStr;
+      LexNextToken;
+    End;
+  End;
+
+  { WITH POINTER ptr }
+  HasPtr := False;
+  PtrName := '';
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WITH) Then
+  Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_POINTER) Then
+    Begin
+      LexNextToken;
+      If CurTokType = TOK_IDENT Then
+      Begin
+        PtrName := CurTokStr;
+        HasPtr := True;
+        Inc(StrPointerCount);
+        LexNextToken;
+      End;
+    End;
+  End;
+
+  If HasPtr Then
+    GenStringPointer(PtrName);
+
+  { ON OVERFLOW instructions }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then
+  Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_OVERFLOW) Then
+    Begin
+      LexNextToken;
+      Inc(StrOverflowCount);
+      LblOvf := GenStrLabel;
+      LblEnd := GenStrLabel;
+      GenStringOverflowCheck(LblOvf, LblEnd);
+      { Les instructions de overflow seraient parsees ici }
+      WriteLn(LblEnd, ':');
+    End;
+  End;
+
+  If HasPtr Then
+    GenStringPointerUpdate(PtrName);
+
+  { END-STRING }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_STRING) Then
+    LexNextToken;
+
+  Inc(StrTotalGenerated);
+  Inc(StrStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUnstringIntoClause : parse une clause INTO de UNSTRING   }
+{   dest-n [DELIMITER IN d-n] [COUNT IN c-n]                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseUnstringIntoClause;
+Var
+  DestName  : TString;
+  DelimName : TString;
+  CntName   : TString;
+Begin
+  { Lire la destination }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    DestName := CurTokStr;
+    LexNextToken;
+    GenUnstringInto(DestName, 0);
+  End
+  Else
+  Begin
+    WarnMsg('UNSTRING INTO: destination attendue');
+    Exit;
+  End;
+
+  { DELIMITER IN }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DELIMITER) Then
+  Begin
+    LexNextToken;
+    { Optionnel: IN }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INTO) Then
+      LexNextToken;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      DelimName := CurTokStr;
+      GenUnstringDelimiterIn(DelimName);
+      LexNextToken;
+    End;
+  End;
+
+  { COUNT IN }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_COUNT) Then
+  Begin
+    LexNextToken;
+    { Optionnel: IN }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INTO) Then
+      LexNextToken;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      CntName := CurTokStr;
+      GenUnstringCountIn(CntName);
+      LexNextToken;
+    End;
+  End;
+
+  Inc(StrStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUnstringStatement : parse l instruction UNSTRING          }
+{   UNSTRING source                                             }
+{     DELIMITED BY delim-1 [OR delim-2]                         }
+{     INTO dest-1 [DELIMITER IN d-1] [COUNT IN c-1]             }
+{          dest-2 ...                                           }
+{     [WITH POINTER ptr]                                        }
+{     [TALLYING IN compteur]                                    }
+{     [ON OVERFLOW instructions]                                }
+{   END-UNSTRING                                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseUnstringStatement;
+Var
+  SrcName : TString;
+  PtrName : TString;
+  TlyName : TString;
+  LblOvf  : TString;
+  LblEnd  : TString;
+Begin
+  Inc(StrUnstringCount);
+  WriteLn('; UNSTRING statement');
+  LexNextToken;   { consommer UNSTRING }
+
+  { Source }
+  SrcName := '';
+  If CurTokType = TOK_IDENT Then
+  Begin
+    SrcName := CurTokStr;
+    GenUnstringSource(SrcName, 0);
+    LexNextToken;
+  End;
+
+  { DELIMITED BY }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DELIMITED) Then
+  Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then
+      LexNextToken;
+    If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Then
+    Begin
+      GenUnstringDelimitedBy(CurTokStr, False);
+      Inc(StrDelimitedCount);
+      LexNextToken;
+    End;
+
+    { OR delim-2 [OR delim-3 ...] }
+    While (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_OR) Do
+    Begin
+      LexNextToken;
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Then
+      Begin
+        GenUnstringDelimitedBy(CurTokStr, True);
+        Inc(StrDelimitedCount);
+        LexNextToken;
+      End;
+    End;
+  End;
+
+  { INTO destinations }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INTO) Then
+  Begin
+    LexNextToken;
+    While Not LexEOF And (CurTokType = TOK_IDENT) Do
+      ParseUnstringIntoClause;
+  End;
+
+  { WITH POINTER ptr }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WITH) Then
+  Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_POINTER) Then
+    Begin
+      LexNextToken;
+      If CurTokType = TOK_IDENT Then
+      Begin
+        PtrName := CurTokStr;
+        GenStringPointer(PtrName);
+        Inc(StrPointerCount);
+        LexNextToken;
+      End;
+    End;
+  End;
+
+  { TALLYING IN compteur }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TALLYING) Then
+  Begin
+    LexNextToken;
+    { Optionnel: IN }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INTO) Then
+      LexNextToken;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      TlyName := CurTokStr;
+      GenUnstringTallyingIn(TlyName);
+      Inc(StrTallyingCount);
+      LexNextToken;
+    End;
+  End;
+
+  { ON OVERFLOW }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then
+  Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_OVERFLOW) Then
+    Begin
+      LexNextToken;
+      Inc(StrOverflowCount);
+      LblOvf := GenStrLabel;
+      LblEnd := GenStrLabel;
+      GenStringOverflowCheck(LblOvf, LblEnd);
+      WriteLn(LblEnd, ':');
+    End;
+  End;
+
+  { END-UNSTRING }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_UNSTRING) Then
+    LexNextToken;
+
+  Inc(StrTotalGenerated);
+  Inc(StrStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBeforeAfterClause : parse [BEFORE/AFTER INITIAL pattern] }
+{ Retourne le type de borne (ISB_NONE/BEFORE/AFTER)            }
+{ ------------------------------------------------------------ }
+
+Function ParseBeforeAfterClause : Integer;
+Var
+  BType : Integer;
+Begin
+  BType := ISB_NONE;
+  If (CurTokType = TOK_KEYWORD) And
+     ((CurTokNum = KW_BEFORE) Or (CurTokNum = KW_AFTER)) Then
+  Begin
+    If CurTokNum = KW_BEFORE Then
+      BType := ISB_BEFORE
+    Else
+      BType := ISB_AFTER;
+    LexNextToken;
+
+    { Optionnel: INITIAL }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INITIAL) Then
+      LexNextToken;
+
+    { Pattern de borne }
+    If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Then
+    Begin
+      GenInspectBeforeAfter(CurTokStr, BType);
+      Inc(StrBeforeAfterCount);
+      LexNextToken;
+    End;
+  End;
+  ParseBeforeAfterClause := BType;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInspectTallyClause : parse FOR ALL/LEADING/CHARACTERS   }
+{   FOR ALL/LEADING literal [BEFORE/AFTER INITIAL literal]      }
+{   FOR CHARACTERS [BEFORE/AFTER INITIAL literal]               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInspectTallyClause(Const Source, Counter : TString;
+                                   SrcLen : Integer);
+Var
+  SearchType : Integer;
+  Pattern    : TString;
+  Dummy      : Integer;
+Begin
+  { FOR }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FOR) Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('INSPECT TALLYING: FOR attendu');
+    Exit;
+  End;
+
+  { ALL, LEADING ou CHARACTERS }
+  SearchType := ISP_ALL;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ALL) Then
+  Begin
+    SearchType := ISP_ALL;
+    Inc(StrAllCount);
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_LEADING) Then
+  Begin
+    SearchType := ISP_LEADING;
+    Inc(StrLeadingCount);
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CHARACTERS) Then
+  Begin
+    SearchType := ISP_CHARACTERS;
+    Inc(StrCharactersCount);
+    LexNextToken;
+    { CHARACTERS n a pas de pattern: passe directement a BEFORE/AFTER }
+    Dummy := ParseBeforeAfterClause;
+    GenInspectTallying(Source, Counter, 'ALL_CHARS', SrcLen, SearchType);
+    Exit;
+  End;
+
+  { Pattern a chercher }
+  Pattern := '';
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Then
+  Begin
+    Pattern := CurTokStr;
+    LexNextToken;
+  End;
+
+  { BEFORE/AFTER INITIAL }
+  Dummy := ParseBeforeAfterClause;
+
+  GenInspectTallying(Source, Counter, Pattern, SrcLen, SearchType);
+  Inc(StrStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInspectReplaceClause : parse ALL/LEADING/FIRST x BY y   }
+{   ALL/LEADING/FIRST old BY new [BEFORE/AFTER INITIAL z]       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInspectReplaceClause(Const Source : TString;
+                                     SrcLen : Integer);
+Var
+  SearchType : Integer;
+  OldPat     : TString;
+  NewPat     : TString;
+  Dummy      : Integer;
+Begin
+  SearchType := ISP_ALL;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ALL) Then
+  Begin
+    SearchType := ISP_ALL;
+    Inc(StrAllCount);
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_LEADING) Then
+  Begin
+    SearchType := ISP_LEADING;
+    Inc(StrLeadingCount);
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FIRST) Then
+  Begin
+    SearchType := ISP_FIRST;
+    Inc(StrFirstCount);
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CHARACTERS) Then
+  Begin
+    SearchType := ISP_CHARACTERS;
+    Inc(StrCharactersCount);
+    LexNextToken;
+  End;
+
+  { Ancien pattern }
+  OldPat := '';
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Then
+  Begin
+    OldPat := CurTokStr;
+    LexNextToken;
+  End;
+
+  { BY }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then
+    LexNextToken;
+
+  { Nouveau pattern }
+  NewPat := '';
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Then
+  Begin
+    NewPat := CurTokStr;
+    LexNextToken;
+  End;
+
+  { BEFORE/AFTER INITIAL }
+  Dummy := ParseBeforeAfterClause;
+
+  GenInspectReplacing(Source, OldPat, NewPat, SrcLen, SearchType);
+  Inc(StrStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInspectTallying : parse INSPECT id TALLYING              }
+{   id-cnt FOR ALL/LEADING/CHARACTERS pattern                   }
+{   [BEFORE/AFTER INITIAL bound] ...                            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInspectTallying(Const Source : TString; SrcLen : Integer);
+Var
+  Counter : TString;
+Begin
+  Inc(StrInspectTallyCount);
+  WriteLn('; INSPECT TALLYING');
+
+  { Identifiant compteur }
+  Counter := '';
+  If CurTokType = TOK_IDENT Then
+  Begin
+    Counter := CurTokStr;
+    LexNextToken;
+  End;
+
+  { Parser les clauses FOR ... }
+  While Not LexEOF And
+        (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FOR) Do
+  Begin
+    ParseInspectTallyClause(Source, Counter, SrcLen);
+    Inc(StrTallyingCount);
+  End;
+
+  Inc(StrTotalGenerated);
+  Inc(StrStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInspectReplacing : parse INSPECT id REPLACING            }
+{   ALL/LEADING/FIRST/CHARACTERS old BY new                     }
+{   [BEFORE/AFTER INITIAL bound] ...                            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInspectReplacing(Const Source : TString; SrcLen : Integer);
+Begin
+  Inc(StrInspectReplCount);
+  WriteLn('; INSPECT REPLACING');
+
+  { Parser les clauses de remplacement }
+  While Not LexEOF And
+        (CurTokType = TOK_KEYWORD) And
+        ((CurTokNum = KW_ALL) Or (CurTokNum = KW_LEADING) Or
+         (CurTokNum = KW_FIRST) Or (CurTokNum = KW_CHARACTERS)) Do
+    ParseInspectReplaceClause(Source, SrcLen);
+
+  Inc(StrTotalGenerated);
+  Inc(StrStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInspectConverting : parse INSPECT id CONVERTING          }
+{   INSPECT id CONVERTING 'abc' TO 'xyz'                        }
+{   [BEFORE/AFTER INITIAL bound]                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInspectConverting(Const Source : TString; SrcLen : Integer);
+Var
+  FromStr : TString;
+  ToStr   : TString;
+  Dummy   : Integer;
+Begin
+  Inc(StrInspectConvCount);
+  WriteLn('; INSPECT CONVERTING');
+
+  { Chaine source de conversion }
+  FromStr := '';
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Then
+  Begin
+    FromStr := CurTokStr;
+    LexNextToken;
+  End;
+
+  { TO }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+    LexNextToken;
+
+  { Chaine destination de conversion }
+  ToStr := '';
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_STRING) Then
+  Begin
+    ToStr := CurTokStr;
+    LexNextToken;
+  End;
+
+  { BEFORE/AFTER INITIAL }
+  Dummy := ParseBeforeAfterClause;
+
+  GenInspectConverting(Source, FromStr, ToStr, SrcLen);
+  Inc(StrTotalGenerated);
+  Inc(StrStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInspectStatement : parse l instruction INSPECT           }
+{   INSPECT id TALLYING ...                                     }
+{   INSPECT id REPLACING ...                                    }
+{   INSPECT id CONVERTING ...                                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInspectStatement;
+Var
+  Source  : TString;
+Begin
+  WriteLn('; INSPECT statement');
+  LexNextToken;   { consommer INSPECT }
+
+  { Identifiant a inspecter }
+  Source := '';
+  If CurTokType = TOK_IDENT Then
+  Begin
+    Source := CurTokStr;
+    LexNextToken;
+  End;
+
+  { Determiner le type d INSPECT }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TALLYING) Then
+  Begin
+    LexNextToken;
+    ParseInspectTallying(Source, 0);
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_REPLACING) Then
+  Begin
+    LexNextToken;
+    ParseInspectReplacing(Source, 0);
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CONVERTING) Then
+  Begin
+    LexNextToken;
+    ParseInspectConverting(Source, 0);
+  End
+  Else
+    WarnMsg('INSPECT: TALLYING, REPLACING ou CONVERTING attendu');
+
+  Inc(StrStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSubstringReference : parse reference sous-chaine         }
+{   id(position:longueur) pour extraire/modifier                }
+{   Appele apres avoir lu l identifiant et la parenthese        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSubstringReference(Const Ident : TString);
+Var
+  Pos : Integer;
+  Len : Integer;
+Begin
+  Inc(StrSubstringRefCount);
+  WriteLn('; reference sous-chaine ', Ident);
+
+  { Position }
+  Pos := 1;
+  If CurTokType = TOK_INTEGER Then
+  Begin
+    Pos := CurTokNum;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_IDENT Then
+    LexNextToken;
+
+  { Separateur : (deux-points) - dans le format COBOL, }
+  { le ':' est traite comme un separateur special        }
+  { On avance simplement si on trouve un token inconnu   }
+  If (CurTokType <> TOK_INTEGER) And (CurTokType <> TOK_IDENT) And
+     (CurTokType <> TOK_RPAREN) Then
+    LexNextToken;
+
+  { Longueur }
+  Len := 0;
+  If CurTokType = TOK_INTEGER Then
+  Begin
+    Len := CurTokNum;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_IDENT Then
+    LexNextToken;
+
+  { Parenthese fermante }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+
+  GenSubstringRef(Ident, Pos, Len);
+  Inc(StrTotalGenerated);
+  Inc(StrStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStringOpStatement : dispatch des operations sur chaines  }
+{   STRING, UNSTRING ou INSPECT                                 }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStringOpStatement;
+Begin
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_STRING) Then
+    ParseStringStatement
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_UNSTRING) Then
+    ParseUnstringStatement
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INSPECT) Then
+    ParseInspectStatement;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsStringKeyword : verifie si le mot-cle courant est lie       }
+{                   aux operations sur chaines                  }
+{ ------------------------------------------------------------ }
+
+Function IsStringKeyword(KW : Integer) : Boolean;
+Begin
+  IsStringKeyword := (KW = KW_STRING) Or (KW = KW_UNSTRING) Or
+                     (KW = KW_INSPECT) Or (KW = KW_DELIMITED) Or
+                     (KW = KW_DELIMITER) Or (KW = KW_TALLYING) Or
+                     (KW = KW_REPLACING) Or (KW = KW_CONVERTING) Or
+                     (KW = KW_CHARACTERS) Or (KW = KW_FOR) Or
+                     (KW = KW_END_STRING) Or (KW = KW_END_UNSTRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpStringState : affiche l etat du module STRING/INSPECT     }
+{ ------------------------------------------------------------ }
+
+Procedure DumpStringState;
+Begin
+  WriteLn('--- String/Inspect State ---');
+  WriteLn('  Initialized     : ', StrInitialized);
+  WriteLn('  STRING count    : ', StrStringCount);
+  WriteLn('  UNSTRING count  : ', StrUnstringCount);
+  WriteLn('  INSPECT TALLY   : ', StrInspectTallyCount);
+  WriteLn('  INSPECT REPLACE : ', StrInspectReplCount);
+  WriteLn('  INSPECT CONVERT : ', StrInspectConvCount);
+  WriteLn('  Substring refs  : ', StrSubstringRefCount);
+  WriteLn('  POINTER clauses : ', StrPointerCount);
+  WriteLn('  OVERFLOW clauses: ', StrOverflowCount);
+  WriteLn('  DELIMITED count : ', StrDelimitedCount);
+  WriteLn('  TALLYING count  : ', StrTallyingCount);
+  WriteLn('  BEFORE/AFTER    : ', StrBeforeAfterCount);
+  WriteLn('  ALL count       : ', StrAllCount);
+  WriteLn('  LEADING count   : ', StrLeadingCount);
+  WriteLn('  FIRST count     : ', StrFirstCount);
+  WriteLn('  CHARACTERS count: ', StrCharactersCount);
+  WriteLn('  Total generated : ', StrTotalGenerated);
+  WriteLn('  State count     : ', StrStateCount);
+End;
+
+{ 10 fonctions accesseurs pour TODO 13                         }
+
+Function IsStrInitialized : Boolean;
+Begin
+  IsStrInitialized := StrInitialized;
+End;
+
+Function IsStrEmpty : Boolean;
+Begin
+  IsStrEmpty := (StrTotalGenerated = 0);
+End;
+
+Function GetStrTotalGenerated : Integer;
+Begin
+  GetStrTotalGenerated := StrTotalGenerated;
+End;
+
+Function GetStrStatus : TString;
+Begin
+  If Not StrInitialized Then
+    GetStrStatus := 'NON INITIALISE'
+  Else
+    GetStrStatus := 'STRING=' + ItoSI(StrStringCount) +
+                    ' UNSTRING=' + ItoSI(StrUnstringCount) +
+                    ' TALLY=' + ItoSI(StrInspectTallyCount) +
+                    ' REPL=' + ItoSI(StrInspectReplCount) +
+                    ' CONV=' + ItoSI(StrInspectConvCount);
+End;
+
+Function GetStrStringCount : Integer;
+Begin
+  GetStrStringCount := StrStringCount;
+End;
+
+Function GetStrUnstringCount : Integer;
+Begin
+  GetStrUnstringCount := StrUnstringCount;
+End;
+
+Function GetStrInspectTallyCount : Integer;
+Begin
+  GetStrInspectTallyCount := StrInspectTallyCount;
+End;
+
+Function GetStrInspectReplCount : Integer;
+Begin
+  GetStrInspectReplCount := StrInspectReplCount;
+End;
+
+Function GetStrInspectConvCount : Integer;
+Begin
+  GetStrInspectConvCount := StrInspectConvCount;
+End;
+
+Function GetStrStateCount : Integer;
+Begin
+  GetStrStateCount := StrStateCount;
+End;
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
 { COBOL est insensible a la casse : tout est converti en       }
 { majuscules dans CurTokStr                                     }
@@ -10943,6 +12127,7 @@ Begin
   EcInitialized  := False;
   AgnInitialized := False;
   CtlInitialized := False;
+  StrInitialized := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -10979,6 +12164,9 @@ Begin
 
   { Initialiser le module MOVE/INITIALIZE/SET }
   InitMoveState;
+
+  { Initialiser le module STRING/UNSTRING/INSPECT }
+  InitStringState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
