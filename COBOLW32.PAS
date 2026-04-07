@@ -570,7 +570,7 @@
               Boucle de recherche avec CMP/JE/JNE/JMP
             10 fonctions accesseurs
 
-  TODO 19 - PARSEUR : SORT ET MERGE [A FAIRE]
+  TODO 19 - PARSEUR : SORT ET MERGE [IMPLEMENTE]
             SORT :
               SORT nom-fichier-tri
                 ON ASCENDING/DESCENDING KEY nom-cle-1 [nom-cle-2]
@@ -1782,8 +1782,12 @@ Const
   KW_UP                = 244;  { UP }
   KW_DOWN              = 245;  { DOWN }
 
+  { Mots-cles pour TODO 19 : SORT ET MERGE }
+  KW_ORDER             = 246;  { ORDER }
+  KW_END_SORT          = 247;  { END-SORT }
+
   { Nombre total de mots-cles definis }
-  KW_TOTAL_KEYWORDS    = 176;  { nombre approximatif de mots-cles }
+  KW_TOTAL_KEYWORDS    = 179;  { nombre approximatif de mots-cles }
 
 Var
   { Variables du module de mots-cles }
@@ -2038,6 +2042,8 @@ Begin
   Else If S = 'DESCENDING'        Then LookupKeyword := KW_DESCENDING
   Else If S = 'UP'                Then LookupKeyword := KW_UP
   Else If S = 'DOWN'              Then LookupKeyword := KW_DOWN
+  Else If S = 'ORDER'             Then LookupKeyword := KW_ORDER
+  Else If S = 'END-SORT'          Then LookupKeyword := KW_END_SORT
   Else LookupKeyword := KW_NONE;
 End;
 
@@ -2263,6 +2269,8 @@ Begin
     KW_DESCENDING        : KeywordName := 'DESCENDING';
     KW_UP                : KeywordName := 'UP';
     KW_DOWN              : KeywordName := 'DOWN';
+    KW_ORDER             : KeywordName := 'ORDER';
+    KW_END_SORT          : KeywordName := 'END-SORT';
   Else
     KeywordName := '?KW' + ItoSI(KW);
   End;
@@ -15894,6 +15902,1134 @@ Function GetTblStateCount : Integer;
 Begin
   GetTblStateCount := TblStateCount;
 End;
+
+{ ============================================================ }
+{ TODO 19 - PARSEUR : SORT ET MERGE                             }
+{           SORT, MERGE, RELEASE, RETURN, SD                    }
+{ ============================================================ }
+
+Const
+  { Types de tri }
+  SRT_SORT_NONE        = 0;   { pas de tri                                  }
+  SRT_SORT_USING       = 1;   { SORT ... USING fichier-entree               }
+  SRT_SORT_INPUT_PROC  = 2;   { SORT ... INPUT PROCEDURE IS section         }
+
+  { Types de sortie de tri }
+  SRT_OUT_NONE         = 0;   { pas de sortie                               }
+  SRT_OUT_GIVING       = 1;   { SORT ... GIVING fichier-sortie              }
+  SRT_OUT_OUTPUT_PROC  = 2;   { SORT ... OUTPUT PROCEDURE IS section        }
+
+  { Types de cle de tri }
+  SRT_KEY_NONE         = 0;   { pas de cle                                  }
+  SRT_KEY_ASCENDING    = 1;   { ASCENDING KEY                               }
+  SRT_KEY_DESCENDING   = 2;   { DESCENDING KEY                              }
+
+  { Types d algorithme interne }
+  SRT_ALG_INSERTION    = 0;   { tri par insertion (petites tables)           }
+  SRT_ALG_QUICKSORT    = 1;   { quicksort (tables moyennes/grandes)         }
+  SRT_ALG_EXTERNAL     = 2;   { tri externe avec fichiers temporaires       }
+
+  { Limites }
+  SRT_MAX_KEYS         = 16;  { nombre max de cles de tri par SORT/MERGE    }
+  SRT_MAX_SORT_FILES   = 16;  { nombre max de fichiers SD geres             }
+  SRT_MAX_USING        = 8;   { nombre max de fichiers USING (MERGE)        }
+  SRT_MAX_DEPTH        = 8;   { profondeur max d imbrication SORT           }
+
+Type
+  TSortKey = Record
+    Name       : TString;     { nom du champ cle                            }
+    KeyOrder   : Integer;     { SRT_KEY_ASCENDING ou SRT_KEY_DESCENDING     }
+  End;
+
+  TSortEntry = Record
+    SDName      : TString;    { nom du fichier SD (Sort Description)        }
+    AsmLabel    : TString;    { label ASM associe                           }
+    RecordName  : TString;    { nom du record du SD                         }
+    RecordSize  : Integer;    { taille du record en octets                  }
+    Keys        : Array[0..SRT_MAX_KEYS-1] Of TSortKey;
+    KeyCount    : Integer;    { nombre de cles                              }
+    Duplicates  : Boolean;    { WITH DUPLICATES IN ORDER                    }
+    InputType   : Integer;    { SRT_SORT_USING ou SRT_SORT_INPUT_PROC       }
+    OutputType  : Integer;    { SRT_OUT_GIVING ou SRT_OUT_OUTPUT_PROC       }
+    UsingFile   : TString;    { fichier USING (si InputType=USING)          }
+    GivingFile  : TString;    { fichier GIVING (si OutputType=GIVING)       }
+    InputProc   : TString;    { section INPUT PROCEDURE                     }
+    InputThru   : TString;    { section THRU de INPUT PROCEDURE             }
+    OutputProc  : TString;    { section OUTPUT PROCEDURE                    }
+    OutputThru  : TString;    { section THRU de OUTPUT PROCEDURE            }
+  End;
+
+Var
+  SrtInitialized       : Boolean;   { True si InitSortMergeState appele   }
+  SrtStateCount        : Integer;   { compteur d etat general             }
+  SrtLabelNum          : Integer;   { compteur de labels internes         }
+  SrtSortFiles         : Array[0..SRT_MAX_SORT_FILES-1] Of TSortEntry;
+  SrtSortFileCount     : Integer;   { nombre de fichiers SD enregistres   }
+  SrtSortCount         : Integer;   { nombre d instructions SORT          }
+  SrtMergeCount        : Integer;   { nombre d instructions MERGE         }
+  SrtReleaseCount      : Integer;   { nombre d instructions RELEASE       }
+  SrtReturnCount       : Integer;   { nombre d instructions RETURN        }
+  SrtSortUsingCount    : Integer;   { nombre de SORT avec USING           }
+  SrtSortInputCount    : Integer;   { nombre de SORT avec INPUT PROCEDURE }
+  SrtSortGivingCount   : Integer;   { nombre de SORT avec GIVING          }
+  SrtSortOutputCount   : Integer;   { nombre de SORT avec OUTPUT PROCEDURE}
+  SrtMergeUsingCount   : Integer;   { nombre de MERGE USING               }
+  SrtMergeGivingCount  : Integer;   { nombre de MERGE GIVING              }
+  SrtKeyAscCount       : Integer;   { nombre de cles ASCENDING            }
+  SrtKeyDescCount      : Integer;   { nombre de cles DESCENDING           }
+  SrtDuplicateCount    : Integer;   { nombre de WITH DUPLICATES           }
+  SrtDepth             : Integer;   { profondeur courante                 }
+  SrtMaxDepth          : Integer;   { profondeur maximale atteinte        }
+  SrtTotalGenerated    : Integer;   { total d instructions generees       }
+
+{ ------------------------------------------------------------ }
+{ InitSortMergeState : initialiser l etat du module sort/merge  }
+{ ------------------------------------------------------------ }
+
+Procedure InitSortMergeState;
+Var I, J : Integer;
+Begin
+  SrtInitialized       := True;
+  SrtStateCount        := 0;
+  SrtLabelNum          := 0;
+  SrtSortFileCount     := 0;
+  SrtSortCount         := 0;
+  SrtMergeCount        := 0;
+  SrtReleaseCount      := 0;
+  SrtReturnCount       := 0;
+  SrtSortUsingCount    := 0;
+  SrtSortInputCount    := 0;
+  SrtSortGivingCount   := 0;
+  SrtSortOutputCount   := 0;
+  SrtMergeUsingCount   := 0;
+  SrtMergeGivingCount  := 0;
+  SrtKeyAscCount       := 0;
+  SrtKeyDescCount      := 0;
+  SrtDuplicateCount    := 0;
+  SrtDepth             := 0;
+  SrtMaxDepth          := 0;
+  SrtTotalGenerated    := 0;
+  For I := 0 To SRT_MAX_SORT_FILES - 1 Do Begin
+    SrtSortFiles[I].SDName      := '';
+    SrtSortFiles[I].AsmLabel    := '';
+    SrtSortFiles[I].RecordName  := '';
+    SrtSortFiles[I].RecordSize  := 0;
+    SrtSortFiles[I].KeyCount    := 0;
+    SrtSortFiles[I].Duplicates  := False;
+    SrtSortFiles[I].InputType   := SRT_SORT_NONE;
+    SrtSortFiles[I].OutputType  := SRT_OUT_NONE;
+    SrtSortFiles[I].UsingFile   := '';
+    SrtSortFiles[I].GivingFile  := '';
+    SrtSortFiles[I].InputProc   := '';
+    SrtSortFiles[I].InputThru   := '';
+    SrtSortFiles[I].OutputProc  := '';
+    SrtSortFiles[I].OutputThru  := '';
+    For J := 0 To SRT_MAX_KEYS - 1 Do Begin
+      SrtSortFiles[I].Keys[J].Name     := '';
+      SrtSortFiles[I].Keys[J].KeyOrder := SRT_KEY_NONE;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSrtLabel : genere un label unique pour le module sort       }
+{ ------------------------------------------------------------ }
+
+Function GenSrtLabel : TString;
+Begin
+  Inc(SrtLabelNum);
+  GenSrtLabel := '_COBSRT_L' + ItoSI(SrtLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ SrtSortTypeName : nom du type de source de tri                }
+{ ------------------------------------------------------------ }
+
+Function SrtSortTypeName(ST : Integer) : TString;
+Begin
+  Case ST Of
+    SRT_SORT_NONE       : SrtSortTypeName := 'NONE';
+    SRT_SORT_USING      : SrtSortTypeName := 'USING';
+    SRT_SORT_INPUT_PROC : SrtSortTypeName := 'INPUT-PROCEDURE';
+  Else
+    SrtSortTypeName := '?SORT-TYPE' + ItoSI(ST);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SrtOutputTypeName : nom du type de sortie de tri              }
+{ ------------------------------------------------------------ }
+
+Function SrtOutputTypeName(OT : Integer) : TString;
+Begin
+  Case OT Of
+    SRT_OUT_NONE        : SrtOutputTypeName := 'NONE';
+    SRT_OUT_GIVING      : SrtOutputTypeName := 'GIVING';
+    SRT_OUT_OUTPUT_PROC : SrtOutputTypeName := 'OUTPUT-PROCEDURE';
+  Else
+    SrtOutputTypeName := '?OUT-TYPE' + ItoSI(OT);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SrtKeyOrderName : nom du type d ordre de cle                  }
+{ ------------------------------------------------------------ }
+
+Function SrtKeyOrderName(KO : Integer) : TString;
+Begin
+  Case KO Of
+    SRT_KEY_NONE       : SrtKeyOrderName := 'NONE';
+    SRT_KEY_ASCENDING  : SrtKeyOrderName := 'ASCENDING';
+    SRT_KEY_DESCENDING : SrtKeyOrderName := 'DESCENDING';
+  Else
+    SrtKeyOrderName := '?KEY-ORDER' + ItoSI(KO);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SrtAlgorithmName : nom de l algorithme de tri                 }
+{ ------------------------------------------------------------ }
+
+Function SrtAlgorithmName(AL : Integer) : TString;
+Begin
+  Case AL Of
+    SRT_ALG_INSERTION : SrtAlgorithmName := 'INSERTION';
+    SRT_ALG_QUICKSORT : SrtAlgorithmName := 'QUICKSORT';
+    SRT_ALG_EXTERNAL  : SrtAlgorithmName := 'EXTERNAL';
+  Else
+    SrtAlgorithmName := '?ALG' + ItoSI(AL);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindSortFile : cherche un fichier SD par nom                  }
+{ Retourne l index dans SrtSortFiles ou -1 si non trouve        }
+{ ------------------------------------------------------------ }
+
+Function FindSortFile(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  FindSortFile := -1;
+  For I := 0 To SrtSortFileCount - 1 Do
+    If SrtSortFiles[I].SDName = Name Then Begin
+      FindSortFile := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddSortFile : ajoute un fichier SD dans la table              }
+{ Retourne l index du fichier ajoute                            }
+{ ------------------------------------------------------------ }
+
+Function AddSortFile(Const Name : TString) : Integer;
+Begin
+  If SrtSortFileCount >= SRT_MAX_SORT_FILES Then Begin
+    WarnMsg('Nombre maximal de fichiers SD atteint (' +
+            ItoSI(SRT_MAX_SORT_FILES) + ')');
+    AddSortFile := -1;
+    Exit;
+  End;
+  SrtSortFiles[SrtSortFileCount].SDName   := Name;
+  SrtSortFiles[SrtSortFileCount].AsmLabel := '_COBSD_' + AsmIdent(Name);
+  SrtSortFiles[SrtSortFileCount].KeyCount := 0;
+  AddSortFile := SrtSortFileCount;
+  Inc(SrtSortFileCount);
+  Inc(SrtStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddSortKey : ajoute une cle de tri a un fichier SD            }
+{ ------------------------------------------------------------ }
+
+Procedure AddSortKey(FileIdx : Integer; Const KeyName : TString;
+                     Order : Integer);
+Begin
+  If (FileIdx < 0) Or (FileIdx >= SrtSortFileCount) Then Exit;
+  If SrtSortFiles[FileIdx].KeyCount >= SRT_MAX_KEYS Then Begin
+    WarnMsg('Nombre maximal de cles de tri atteint (' +
+            ItoSI(SRT_MAX_KEYS) + ')');
+    Exit;
+  End;
+  With SrtSortFiles[FileIdx] Do Begin
+    Keys[KeyCount].Name     := KeyName;
+    Keys[KeyCount].KeyOrder := Order;
+    Inc(KeyCount);
+  End;
+  If Order = SRT_KEY_ASCENDING Then
+    Inc(SrtKeyAscCount)
+  Else If Order = SRT_KEY_DESCENDING Then
+    Inc(SrtKeyDescCount);
+  Inc(SrtStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSortCompareKeys : genere le code de comparaison des cles   }
+{ Compare deux enregistrements selon les cles definies          }
+{ Utilise REP CMPSB pour les champs, JL/JG selon l ordre        }
+{ ------------------------------------------------------------ }
+
+Procedure GenSortCompareKeys(FileIdx : Integer);
+Var
+  I    : Integer;
+  LblEq, LblLt, LblGt, LblEnd : TString;
+Begin
+  If (FileIdx < 0) Or (FileIdx >= SrtSortFileCount) Then Exit;
+  LblEnd := GenSrtLabel;
+  For I := 0 To SrtSortFiles[FileIdx].KeyCount - 1 Do Begin
+    LblEq := GenSrtLabel;
+    LblLt := GenSrtLabel;
+    LblGt := GenSrtLabel;
+    { Charger adresse du champ cle dans ESI (record 1) et EDI (record 2) }
+    WriteLn('    ; Compare cle ', I, ': ',
+            SrtSortFiles[FileIdx].Keys[I].Name);
+    WriteLn('    LEA ESI, [EAX + offset_', AsmIdent(
+            SrtSortFiles[FileIdx].Keys[I].Name), ']');
+    WriteLn('    LEA EDI, [EBX + offset_', AsmIdent(
+            SrtSortFiles[FileIdx].Keys[I].Name), ']');
+    WriteLn('    MOV ECX, size_', AsmIdent(
+            SrtSortFiles[FileIdx].Keys[I].Name));
+    WriteLn('    REPE CMPSB');
+    WriteLn('    JE ', LblEq);
+    If SrtSortFiles[FileIdx].Keys[I].KeyOrder = SRT_KEY_ASCENDING Then Begin
+      WriteLn('    JB ', LblLt);
+      WriteLn('    JMP ', LblGt);
+    End Else Begin
+      WriteLn('    JA ', LblLt);
+      WriteLn('    JMP ', LblGt);
+    End;
+    WriteLn(LblLt, ':');
+    WriteLn('    MOV EAX, -1');
+    WriteLn('    JMP ', LblEnd);
+    WriteLn(LblGt, ':');
+    WriteLn('    MOV EAX, 1');
+    WriteLn('    JMP ', LblEnd);
+    WriteLn(LblEq, ':');
+    Inc(SrtTotalGenerated, 10);
+  End;
+  { Si toutes les cles sont egales }
+  WriteLn('    XOR EAX, EAX');
+  WriteLn(LblEnd, ':');
+  Inc(SrtTotalGenerated, 2);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSortInsertionSort : genere un tri par insertion en memoire  }
+{ Pour les petites tables (< 256 elements)                      }
+{ ------------------------------------------------------------ }
+
+Procedure GenSortInsertionSort(FileIdx : Integer);
+Var LblOuter, LblInner, LblDone, LblShift, LblNoShift : TString;
+Begin
+  If (FileIdx < 0) Or (FileIdx >= SrtSortFileCount) Then Exit;
+  LblOuter  := GenSrtLabel;
+  LblInner  := GenSrtLabel;
+  LblDone   := GenSrtLabel;
+  LblShift  := GenSrtLabel;
+  LblNoShift := GenSrtLabel;
+  WriteLn('    ; --- Tri par insertion ---');
+  WriteLn('    MOV ECX, 1                  ; i = 1');
+  WriteLn(LblOuter, ':');
+  WriteLn('    CMP ECX, [', SrtSortFiles[FileIdx].AsmLabel, '_count]');
+  WriteLn('    JGE ', LblDone);
+  WriteLn('    PUSH ECX');
+  WriteLn('    ; Sauvegarder element[i] dans buffer temporaire');
+  WriteLn('    CALL ', SrtSortFiles[FileIdx].AsmLabel, '_save_temp');
+  WriteLn('    MOV EDX, ECX                ; j = i');
+  WriteLn(LblInner, ':');
+  WriteLn('    CMP EDX, 0');
+  WriteLn('    JLE ', LblNoShift);
+  WriteLn('    ; Comparer element[j-1] avec temp');
+  WriteLn('    CALL ', SrtSortFiles[FileIdx].AsmLabel, '_compare');
+  WriteLn('    CMP EAX, 0');
+  WriteLn('    JLE ', LblNoShift);
+  WriteLn(LblShift, ':');
+  WriteLn('    ; Decaler element[j-1] vers element[j]');
+  WriteLn('    CALL ', SrtSortFiles[FileIdx].AsmLabel, '_shift');
+  WriteLn('    DEC EDX');
+  WriteLn('    JMP ', LblInner);
+  WriteLn(LblNoShift, ':');
+  WriteLn('    ; Inserer temp a la position j');
+  WriteLn('    CALL ', SrtSortFiles[FileIdx].AsmLabel, '_insert_temp');
+  WriteLn('    POP ECX');
+  WriteLn('    INC ECX');
+  WriteLn('    JMP ', LblOuter);
+  WriteLn(LblDone, ':');
+  Inc(SrtTotalGenerated, 20);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSortQuickSort : genere un appel au quicksort runtime       }
+{ Pour les tables moyennes et grandes                           }
+{ ------------------------------------------------------------ }
+
+Procedure GenSortQuickSort(FileIdx : Integer);
+Begin
+  If (FileIdx < 0) Or (FileIdx >= SrtSortFileCount) Then Exit;
+  WriteLn('    ; --- Quicksort via routine runtime ---');
+  WriteLn('    PUSH DWORD [', SrtSortFiles[FileIdx].AsmLabel, '_count]');
+  WriteLn('    PUSH DWORD ', SrtSortFiles[FileIdx].RecordSize);
+  WriteLn('    PUSH DWORD ', SrtSortFiles[FileIdx].AsmLabel, '_base');
+  WriteLn('    PUSH DWORD ', SrtSortFiles[FileIdx].AsmLabel, '_compare');
+  WriteLn('    CALL _COBRT_QUICKSORT');
+  WriteLn('    ADD ESP, 16');
+  Inc(SrtTotalGenerated, 7);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSortExternal : genere un tri externe avec fichiers temp     }
+{ Utilise GetTempPathA et CreateFileA de Win32                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenSortExternal(FileIdx : Integer);
+Var LblTemp : TString;
+Begin
+  If (FileIdx < 0) Or (FileIdx >= SrtSortFileCount) Then Exit;
+  LblTemp := GenSrtLabel;
+  WriteLn('    ; --- Tri externe via fichiers temporaires Win32 ---');
+  WriteLn('    ; Obtenir le chemin temporaire');
+  WriteLn('    PUSH DWORD ', LblTemp);
+  WriteLn('    PUSH DWORD 260');
+  WriteLn('    CALL _GetTempPathA@8');
+  WriteLn('    ; Creer fichier temporaire pour le tri');
+  WriteLn('    PUSH DWORD 0');
+  WriteLn('    PUSH DWORD 0');
+  WriteLn('    PUSH DWORD 2                 ; CREATE_ALWAYS');
+  WriteLn('    PUSH DWORD 0');
+  WriteLn('    PUSH DWORD 0');
+  WriteLn('    PUSH DWORD 0C0000000h        ; GENERIC_READ | GENERIC_WRITE');
+  WriteLn('    PUSH DWORD ', LblTemp);
+  WriteLn('    CALL _CreateFileA@28');
+  WriteLn('    MOV [', SrtSortFiles[FileIdx].AsmLabel, '_tmphandle], EAX');
+  WriteLn('    ; Effectuer le tri externe via runtime');
+  WriteLn('    PUSH DWORD [', SrtSortFiles[FileIdx].AsmLabel, '_tmphandle]');
+  WriteLn('    PUSH DWORD [', SrtSortFiles[FileIdx].AsmLabel, '_count]');
+  WriteLn('    PUSH DWORD ', SrtSortFiles[FileIdx].RecordSize);
+  WriteLn('    PUSH DWORD ', SrtSortFiles[FileIdx].AsmLabel, '_base');
+  WriteLn('    PUSH DWORD ', SrtSortFiles[FileIdx].AsmLabel, '_compare');
+  WriteLn('    CALL _COBRT_EXTERNAL_SORT');
+  WriteLn('    ADD ESP, 20');
+  WriteLn('    ; Fermer le fichier temporaire');
+  WriteLn('    PUSH DWORD [', SrtSortFiles[FileIdx].AsmLabel, '_tmphandle]');
+  WriteLn('    CALL _CloseHandle@4');
+  Inc(SrtTotalGenerated, 25);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSortUsing : genere le code pour SORT ... USING fichier     }
+{ Lecture du fichier d entree dans le buffer de tri              }
+{ ------------------------------------------------------------ }
+
+Procedure GenSortUsing(FileIdx : Integer; Const FileName : TString);
+Var LblLoop, LblDone : TString;
+Begin
+  LblLoop := GenSrtLabel;
+  LblDone := GenSrtLabel;
+  WriteLn('    ; SORT USING ', FileName);
+  WriteLn('    ; Ouvrir le fichier d entree');
+  WriteLn('    CALL _COBRT_OPEN_INPUT_', AsmIdent(FileName));
+  WriteLn('    XOR ECX, ECX               ; compteur d enregistrements');
+  WriteLn(LblLoop, ':');
+  WriteLn('    ; Lire un enregistrement');
+  WriteLn('    CALL _COBRT_READ_', AsmIdent(FileName));
+  WriteLn('    CMP EAX, 0                  ; fin de fichier ?');
+  WriteLn('    JE ', LblDone);
+  WriteLn('    ; Copier dans le buffer de tri');
+  WriteLn('    PUSH ECX');
+  WriteLn('    CALL ', SrtSortFiles[FileIdx].AsmLabel, '_add_record');
+  WriteLn('    POP ECX');
+  WriteLn('    INC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    MOV [', SrtSortFiles[FileIdx].AsmLabel, '_count], ECX');
+  WriteLn('    ; Fermer le fichier d entree');
+  WriteLn('    CALL _COBRT_CLOSE_', AsmIdent(FileName));
+  Inc(SrtTotalGenerated, 15);
+  Inc(SrtSortUsingCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSortGiving : genere le code pour SORT ... GIVING fichier   }
+{ Ecriture du buffer trie dans le fichier de sortie             }
+{ ------------------------------------------------------------ }
+
+Procedure GenSortGiving(FileIdx : Integer; Const FileName : TString);
+Var LblLoop, LblDone : TString;
+Begin
+  LblLoop := GenSrtLabel;
+  LblDone := GenSrtLabel;
+  WriteLn('    ; SORT GIVING ', FileName);
+  WriteLn('    ; Ouvrir le fichier de sortie');
+  WriteLn('    CALL _COBRT_OPEN_OUTPUT_', AsmIdent(FileName));
+  WriteLn('    XOR ECX, ECX               ; index courant');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, [', SrtSortFiles[FileIdx].AsmLabel, '_count]');
+  WriteLn('    JGE ', LblDone);
+  WriteLn('    ; Ecrire l enregistrement');
+  WriteLn('    PUSH ECX');
+  WriteLn('    CALL ', SrtSortFiles[FileIdx].AsmLabel, '_get_record');
+  WriteLn('    CALL _COBRT_WRITE_', AsmIdent(FileName));
+  WriteLn('    POP ECX');
+  WriteLn('    INC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    ; Fermer le fichier de sortie');
+  WriteLn('    CALL _COBRT_CLOSE_', AsmIdent(FileName));
+  Inc(SrtTotalGenerated, 14);
+  Inc(SrtSortGivingCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSortInputProcedure : genere le code pour INPUT PROCEDURE   }
+{ Appel de la section d entree qui utilise RELEASE              }
+{ ------------------------------------------------------------ }
+
+Procedure GenSortInputProcedure(FileIdx : Integer;
+                                 Const Sect1, Sect2 : TString);
+Begin
+  WriteLn('    ; INPUT PROCEDURE IS ', Sect1);
+  If Sect2 <> '' Then
+    WriteLn('    ;   THRU ', Sect2);
+  WriteLn('    CALL _COB_', AsmIdent(Sect1));
+  If Sect2 <> '' Then
+    WriteLn('    ; (execution de ', Sect1, ' THRU ', Sect2, ')');
+  Inc(SrtTotalGenerated, 2);
+  Inc(SrtSortInputCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSortOutputProcedure : genere le code pour OUTPUT PROCEDURE }
+{ Appel de la section de sortie qui utilise RETURN              }
+{ ------------------------------------------------------------ }
+
+Procedure GenSortOutputProcedure(FileIdx : Integer;
+                                  Const Sect1, Sect2 : TString);
+Begin
+  WriteLn('    ; OUTPUT PROCEDURE IS ', Sect1);
+  If Sect2 <> '' Then
+    WriteLn('    ;   THRU ', Sect2);
+  WriteLn('    CALL _COB_', AsmIdent(Sect1));
+  If Sect2 <> '' Then
+    WriteLn('    ; (execution de ', Sect1, ' THRU ', Sect2, ')');
+  Inc(SrtTotalGenerated, 2);
+  Inc(SrtSortOutputCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRelease : genere le code pour RELEASE record [FROM id]     }
+{ Ajoute un enregistrement au buffer de tri pendant INPUT PROC  }
+{ ------------------------------------------------------------ }
+
+Procedure GenRelease(Const RecName : TString; Const FromId : TString);
+Begin
+  WriteLn('    ; RELEASE ', RecName);
+  If FromId <> '' Then Begin
+    WriteLn('    ; FROM ', FromId);
+    WriteLn('    LEA ESI, [', AsmIdent(FromId), ']');
+    WriteLn('    LEA EDI, [', AsmIdent(RecName), ']');
+    WriteLn('    MOV ECX, size_', AsmIdent(RecName));
+    WriteLn('    REP MOVSB');
+    Inc(SrtTotalGenerated, 5);
+  End;
+  WriteLn('    LEA EAX, [', AsmIdent(RecName), ']');
+  WriteLn('    CALL _COBRT_SORT_ADD_RECORD');
+  Inc(SrtTotalGenerated, 3);
+  Inc(SrtReleaseCount);
+  Inc(SrtStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenReturn : genere le code pour RETURN file INTO id AT END    }
+{ Recupere un enregistrement du buffer trie pendant OUTPUT PROC }
+{ ------------------------------------------------------------ }
+
+Procedure GenReturn(Const FileName : TString; Const IntoId : TString;
+                    Const LblAtEnd : TString);
+Begin
+  WriteLn('    ; RETURN ', FileName);
+  WriteLn('    CALL _COBRT_SORT_GET_RECORD');
+  WriteLn('    CMP EAX, 0');
+  WriteLn('    JE ', LblAtEnd);
+  If IntoId <> '' Then Begin
+    WriteLn('    ; INTO ', IntoId);
+    WriteLn('    LEA ESI, [', AsmIdent(FileName), '_record]');
+    WriteLn('    LEA EDI, [', AsmIdent(IntoId), ']');
+    WriteLn('    MOV ECX, size_', AsmIdent(IntoId));
+    WriteLn('    REP MOVSB');
+    Inc(SrtTotalGenerated, 5);
+  End;
+  Inc(SrtTotalGenerated, 4);
+  Inc(SrtReturnCount);
+  Inc(SrtStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMerge : genere le code pour MERGE avec plusieurs USING     }
+{ Fusion ordonnee de plusieurs fichiers d entree                }
+{ ------------------------------------------------------------ }
+
+Procedure GenMerge(FileIdx : Integer;
+                   Const UsingFiles : Array Of TString;
+                   UsingCount : Integer;
+                   Const GivingFile : TString);
+Var
+  I : Integer;
+  LblLoop, LblDone, LblNext : TString;
+Begin
+  If (FileIdx < 0) Or (FileIdx >= SrtSortFileCount) Then Exit;
+  WriteLn('    ; --- MERGE ---');
+  { Ouvrir tous les fichiers USING }
+  For I := 0 To UsingCount - 1 Do Begin
+    WriteLn('    ; Ouvrir fichier USING ', UsingFiles[I]);
+    WriteLn('    CALL _COBRT_OPEN_INPUT_', AsmIdent(UsingFiles[I]));
+    Inc(SrtTotalGenerated, 2);
+  End;
+  { Ouvrir le fichier GIVING }
+  WriteLn('    CALL _COBRT_OPEN_OUTPUT_', AsmIdent(GivingFile));
+  LblLoop := GenSrtLabel;
+  LblDone := GenSrtLabel;
+  WriteLn(LblLoop, ':');
+  WriteLn('    ; Trouver le plus petit element parmi les fichiers');
+  WriteLn('    PUSH DWORD ', UsingCount);
+  WriteLn('    PUSH DWORD ', SrtSortFiles[FileIdx].AsmLabel, '_compare');
+  WriteLn('    CALL _COBRT_MERGE_FIND_MIN');
+  WriteLn('    ADD ESP, 8');
+  WriteLn('    CMP EAX, -1                 ; tous les fichiers epuises ?');
+  WriteLn('    JE ', LblDone);
+  WriteLn('    ; Ecrire l enregistrement dans le fichier GIVING');
+  WriteLn('    CALL _COBRT_WRITE_', AsmIdent(GivingFile));
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  { Fermer tous les fichiers }
+  For I := 0 To UsingCount - 1 Do Begin
+    WriteLn('    CALL _COBRT_CLOSE_', AsmIdent(UsingFiles[I]));
+    Inc(SrtTotalGenerated, 1);
+  End;
+  WriteLn('    CALL _COBRT_CLOSE_', AsmIdent(GivingFile));
+  Inc(SrtTotalGenerated, 12);
+  Inc(SrtMergeCount);
+  Inc(SrtMergeUsingCount, UsingCount);
+  Inc(SrtMergeGivingCount);
+  Inc(SrtStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSortKeyClause : parse ON ASCENDING/DESCENDING KEY        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSortKeyClause(FileIdx : Integer);
+Var Order : Integer;
+Begin
+  { ON est optionnel }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then
+    LexNextToken;
+
+  { ASCENDING ou DESCENDING }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ASCENDING) Then Begin
+    Order := SRT_KEY_ASCENDING;
+    LexNextToken;
+  End Else If (CurTokType = TOK_KEYWORD) And
+              (CurTokNum = KW_DESCENDING) Then Begin
+    Order := SRT_KEY_DESCENDING;
+    LexNextToken;
+  End Else Begin
+    WarnMsg('ASCENDING ou DESCENDING attendu dans SORT');
+    Exit;
+  End;
+
+  { KEY est optionnel }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_KEY) Then
+    LexNextToken;
+
+  { IS est optionnel }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+    LexNextToken;
+
+  { Lire les noms de cles (un ou plusieurs identifiants) }
+  While (CurTokType = TOK_IDENT) Do Begin
+    AddSortKey(FileIdx, CurTokStr, Order);
+    LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSortDuplicatesClause : parse WITH DUPLICATES IN ORDER    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSortDuplicatesClause(FileIdx : Integer);
+Begin
+  { WITH est optionnel }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WITH) Then
+    LexNextToken;
+
+  { DUPLICATES }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DUPLICATES) Then
+    LexNextToken
+  Else
+    Exit;
+
+  { IN est optionnel }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IN) Then
+    LexNextToken;
+
+  { ORDER est optionnel }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ORDER) Then
+    LexNextToken;
+
+  If (FileIdx >= 0) And (FileIdx < SrtSortFileCount) Then
+    SrtSortFiles[FileIdx].Duplicates := True;
+  Inc(SrtDuplicateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSortStatement : parse l instruction SORT complete         }
+{ SORT file ON ASC/DESC KEY keys                                }
+{   [WITH DUPLICATES IN ORDER]                                  }
+{   USING file | INPUT PROCEDURE IS sect [THRU sect]            }
+{   GIVING file | OUTPUT PROCEDURE IS sect [THRU sect]          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSortStatement;
+Var
+  FileIdx  : Integer;
+  SDName   : TString;
+  Sect1    : TString;
+  Sect2    : TString;
+Begin
+  { SORT deja consomme par le parseur appelant }
+  Inc(SrtDepth);
+  If SrtDepth > SrtMaxDepth Then
+    SrtMaxDepth := SrtDepth;
+
+  { Nom du fichier SD }
+  If CurTokType <> TOK_IDENT Then Begin
+    WarnMsg('Nom de fichier SD attendu apres SORT');
+    Dec(SrtDepth);
+    Exit;
+  End;
+  SDName := CurTokStr;
+  LexNextToken;
+
+  { Chercher ou creer l entree }
+  FileIdx := FindSortFile(SDName);
+  If FileIdx < 0 Then
+    FileIdx := AddSortFile(SDName);
+
+  { ON ASCENDING/DESCENDING KEY (une ou plusieurs clauses) }
+  While (CurTokType = TOK_KEYWORD) And
+        ((CurTokNum = KW_ON) Or (CurTokNum = KW_ASCENDING) Or
+         (CurTokNum = KW_DESCENDING)) Do
+    ParseSortKeyClause(FileIdx);
+
+  { WITH DUPLICATES IN ORDER (optionnel) }
+  If (CurTokType = TOK_KEYWORD) And
+     ((CurTokNum = KW_WITH) Or (CurTokNum = KW_DUPLICATES)) Then
+    ParseSortDuplicatesClause(FileIdx);
+
+  { Source des donnees : USING ou INPUT PROCEDURE }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_USING) Then Begin
+    LexNextToken;
+    If CurTokType = TOK_IDENT Then Begin
+      If (FileIdx >= 0) And (FileIdx < SrtSortFileCount) Then Begin
+        SrtSortFiles[FileIdx].InputType := SRT_SORT_USING;
+        SrtSortFiles[FileIdx].UsingFile := CurTokStr;
+      End;
+      GenSortUsing(FileIdx, CurTokStr);
+      LexNextToken;
+    End;
+  End Else If (CurTokType = TOK_KEYWORD) And
+              (CurTokNum = KW_INPUT) Then Begin
+    LexNextToken;
+    { PROCEDURE }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PROCEDURE) Then
+      LexNextToken;
+    { IS }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+      LexNextToken;
+    Sect1 := '';
+    Sect2 := '';
+    If CurTokType = TOK_IDENT Then Begin
+      Sect1 := CurTokStr;
+      LexNextToken;
+    End;
+    { THRU/THROUGH optionnel }
+    If (CurTokType = TOK_KEYWORD) And
+       ((CurTokNum = KW_THRU) Or (CurTokNum = KW_THROUGH)) Then Begin
+      LexNextToken;
+      If CurTokType = TOK_IDENT Then Begin
+        Sect2 := CurTokStr;
+        LexNextToken;
+      End;
+    End;
+    If (FileIdx >= 0) And (FileIdx < SrtSortFileCount) Then Begin
+      SrtSortFiles[FileIdx].InputType  := SRT_SORT_INPUT_PROC;
+      SrtSortFiles[FileIdx].InputProc  := Sect1;
+      SrtSortFiles[FileIdx].InputThru  := Sect2;
+    End;
+    GenSortInputProcedure(FileIdx, Sect1, Sect2);
+  End;
+
+  { Effectuer le tri }
+  GenSortQuickSort(FileIdx);
+
+  { Destination : GIVING ou OUTPUT PROCEDURE }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_GIVING) Then Begin
+    LexNextToken;
+    If CurTokType = TOK_IDENT Then Begin
+      If (FileIdx >= 0) And (FileIdx < SrtSortFileCount) Then Begin
+        SrtSortFiles[FileIdx].OutputType := SRT_OUT_GIVING;
+        SrtSortFiles[FileIdx].GivingFile := CurTokStr;
+      End;
+      GenSortGiving(FileIdx, CurTokStr);
+      LexNextToken;
+    End;
+  End Else If (CurTokType = TOK_KEYWORD) And
+              (CurTokNum = KW_OUTPUT) Then Begin
+    LexNextToken;
+    { PROCEDURE }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PROCEDURE) Then
+      LexNextToken;
+    { IS }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+      LexNextToken;
+    Sect1 := '';
+    Sect2 := '';
+    If CurTokType = TOK_IDENT Then Begin
+      Sect1 := CurTokStr;
+      LexNextToken;
+    End;
+    { THRU/THROUGH optionnel }
+    If (CurTokType = TOK_KEYWORD) And
+       ((CurTokNum = KW_THRU) Or (CurTokNum = KW_THROUGH)) Then Begin
+      LexNextToken;
+      If CurTokType = TOK_IDENT Then Begin
+        Sect2 := CurTokStr;
+        LexNextToken;
+      End;
+    End;
+    If (FileIdx >= 0) And (FileIdx < SrtSortFileCount) Then Begin
+      SrtSortFiles[FileIdx].OutputType := SRT_OUT_OUTPUT_PROC;
+      SrtSortFiles[FileIdx].OutputProc := Sect1;
+      SrtSortFiles[FileIdx].OutputThru := Sect2;
+    End;
+    GenSortOutputProcedure(FileIdx, Sect1, Sect2);
+  End;
+
+  Inc(SrtSortCount);
+  Inc(SrtStateCount);
+  Dec(SrtDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMergeStatement : parse l instruction MERGE complete       }
+{ MERGE file ON ASC/DESC KEY keys                               }
+{   USING file1 file2 [file3 ...]                               }
+{   GIVING file-sortie                                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseMergeStatement;
+Var
+  FileIdx    : Integer;
+  SDName     : TString;
+  UsingFiles : Array[0..SRT_MAX_USING-1] Of TString;
+  UsingCount : Integer;
+  GivingFile : TString;
+  I          : Integer;
+Begin
+  { MERGE deja consomme par le parseur appelant }
+
+  { Nom du fichier SD }
+  If CurTokType <> TOK_IDENT Then Begin
+    WarnMsg('Nom de fichier SD attendu apres MERGE');
+    Exit;
+  End;
+  SDName := CurTokStr;
+  LexNextToken;
+
+  { Chercher ou creer l entree }
+  FileIdx := FindSortFile(SDName);
+  If FileIdx < 0 Then
+    FileIdx := AddSortFile(SDName);
+
+  { ON ASCENDING/DESCENDING KEY (une ou plusieurs clauses) }
+  While (CurTokType = TOK_KEYWORD) And
+        ((CurTokNum = KW_ON) Or (CurTokNum = KW_ASCENDING) Or
+         (CurTokNum = KW_DESCENDING)) Do
+    ParseSortKeyClause(FileIdx);
+
+  { USING fichier1 fichier2 [fichier3 ...] }
+  UsingCount := 0;
+  For I := 0 To SRT_MAX_USING - 1 Do
+    UsingFiles[I] := '';
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_USING) Then Begin
+    LexNextToken;
+    While (CurTokType = TOK_IDENT) And (UsingCount < SRT_MAX_USING) Do Begin
+      UsingFiles[UsingCount] := CurTokStr;
+      Inc(UsingCount);
+      LexNextToken;
+    End;
+  End;
+
+  { GIVING fichier-sortie }
+  GivingFile := '';
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_GIVING) Then Begin
+    LexNextToken;
+    If CurTokType = TOK_IDENT Then Begin
+      GivingFile := CurTokStr;
+      LexNextToken;
+    End;
+  End;
+
+  GenMerge(FileIdx, UsingFiles, UsingCount, GivingFile);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseReleaseStatement : parse RELEASE record [FROM id]        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseReleaseStatement;
+Var
+  RecName : TString;
+  FromId  : TString;
+Begin
+  { RELEASE deja consomme }
+
+  { Nom du record }
+  If CurTokType <> TOK_IDENT Then Begin
+    WarnMsg('Nom de record attendu apres RELEASE');
+    Exit;
+  End;
+  RecName := CurTokStr;
+  LexNextToken;
+
+  { FROM optionnel }
+  FromId := '';
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FROM) Then Begin
+    LexNextToken;
+    If CurTokType = TOK_IDENT Then Begin
+      FromId := CurTokStr;
+      LexNextToken;
+    End;
+  End;
+
+  GenRelease(RecName, FromId);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseReturnStatement : parse RETURN file [INTO id]            }
+{                         AT END instructions END-RETURN        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseReturnStatement;
+Var
+  FileName  : TString;
+  IntoId    : TString;
+  LblAtEnd  : TString;
+  LblEnd    : TString;
+Begin
+  { RETURN deja consomme }
+
+  { Nom du fichier SD }
+  If CurTokType <> TOK_IDENT Then Begin
+    WarnMsg('Nom de fichier SD attendu apres RETURN');
+    Exit;
+  End;
+  FileName := CurTokStr;
+  LexNextToken;
+
+  { INTO optionnel }
+  IntoId := '';
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INTO) Then Begin
+    LexNextToken;
+    If CurTokType = TOK_IDENT Then Begin
+      IntoId := CurTokStr;
+      LexNextToken;
+    End;
+  End;
+
+  LblAtEnd := GenSrtLabel;
+  LblEnd   := GenSrtLabel;
+
+  GenReturn(FileName, IntoId, LblAtEnd);
+
+  { Code normal (pas AT END) }
+  WriteLn('    JMP ', LblEnd);
+
+  { AT END }
+  WriteLn(LblAtEnd, ':');
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AT) Then
+    LexNextToken;
+  If (CurTokType = TOK_IDENT) And (CurTokStr = 'END') Then
+    LexNextToken;
+  { Les instructions AT END seraient parsees ici }
+  WriteLn('    ; AT END instructions');
+
+  WriteLn(LblEnd, ':');
+
+  { END-RETURN optionnel }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_RETURN) Then
+    LexNextToken;
+
+  Inc(SrtTotalGenerated, 4);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSortMergeStatement : dispatch SORT, MERGE, RELEASE,      }
+{                           RETURN selon le mot-cle courant     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSortMergeStatement;
+Begin
+  If CurTokType <> TOK_KEYWORD Then Exit;
+  Case CurTokNum Of
+    KW_SORT : Begin
+      LexNextToken;
+      ParseSortStatement;
+    End;
+    KW_MERGE : Begin
+      LexNextToken;
+      ParseMergeStatement;
+    End;
+    KW_RELEASE : Begin
+      LexNextToken;
+      ParseReleaseStatement;
+    End;
+    KW_RETURN : Begin
+      LexNextToken;
+      ParseReturnStatement;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsSortMergeKeyword : True si le mot-cle est gere par ce       }
+{                      module (SORT, MERGE, RELEASE, RETURN)    }
+{ ------------------------------------------------------------ }
+
+Function IsSortMergeKeyword(KW : Integer) : Boolean;
+Begin
+  IsSortMergeKeyword := (KW = KW_SORT) Or (KW = KW_MERGE) Or
+                         (KW = KW_RELEASE) Or (KW = KW_RETURN);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpSortMergeState : affiche l etat du module sort/merge      }
+{ ------------------------------------------------------------ }
+
+Procedure DumpSortMergeState;
+Var I, J : Integer;
+Begin
+  WriteLn('=== Sort/Merge State ===');
+  WriteLn('  Initialized    : ', SrtInitialized);
+  WriteLn('  StateCount     : ', SrtStateCount);
+  WriteLn('  SD files       : ', SrtSortFileCount);
+  WriteLn('  SORT count     : ', SrtSortCount);
+  WriteLn('  MERGE count    : ', SrtMergeCount);
+  WriteLn('  RELEASE count  : ', SrtReleaseCount);
+  WriteLn('  RETURN count   : ', SrtReturnCount);
+  WriteLn('  SORT USING     : ', SrtSortUsingCount);
+  WriteLn('  SORT INPUT PROC: ', SrtSortInputCount);
+  WriteLn('  SORT GIVING    : ', SrtSortGivingCount);
+  WriteLn('  SORT OUTPUT PROC:', SrtSortOutputCount);
+  WriteLn('  MERGE USING    : ', SrtMergeUsingCount);
+  WriteLn('  MERGE GIVING   : ', SrtMergeGivingCount);
+  WriteLn('  Keys ASC       : ', SrtKeyAscCount);
+  WriteLn('  Keys DESC      : ', SrtKeyDescCount);
+  WriteLn('  DUPLICATES     : ', SrtDuplicateCount);
+  WriteLn('  Max depth      : ', SrtMaxDepth);
+  WriteLn('  Total generated: ', SrtTotalGenerated);
+  If SrtSortFileCount > 0 Then Begin
+    WriteLn('  --- SD Files ---');
+    For I := 0 To SrtSortFileCount - 1 Do Begin
+      WriteLn('  [', I, '] SD=', SrtSortFiles[I].SDName,
+              ' asm=', SrtSortFiles[I].AsmLabel,
+              ' rec=', SrtSortFiles[I].RecordName,
+              ' size=', SrtSortFiles[I].RecordSize,
+              ' dup=', SrtSortFiles[I].Duplicates);
+      WriteLn('      input=', SrtSortTypeName(SrtSortFiles[I].InputType),
+              ' output=', SrtOutputTypeName(SrtSortFiles[I].OutputType));
+      If SrtSortFiles[I].UsingFile <> '' Then
+        WriteLn('      USING ', SrtSortFiles[I].UsingFile);
+      If SrtSortFiles[I].GivingFile <> '' Then
+        WriteLn('      GIVING ', SrtSortFiles[I].GivingFile);
+      If SrtSortFiles[I].InputProc <> '' Then Begin
+        Write('      INPUT PROCEDURE ', SrtSortFiles[I].InputProc);
+        If SrtSortFiles[I].InputThru <> '' Then
+          Write(' THRU ', SrtSortFiles[I].InputThru);
+        WriteLn;
+      End;
+      If SrtSortFiles[I].OutputProc <> '' Then Begin
+        Write('      OUTPUT PROCEDURE ', SrtSortFiles[I].OutputProc);
+        If SrtSortFiles[I].OutputThru <> '' Then
+          Write(' THRU ', SrtSortFiles[I].OutputThru);
+        WriteLn;
+      End;
+      For J := 0 To SrtSortFiles[I].KeyCount - 1 Do
+        WriteLn('      KEY ', SrtKeyOrderName(
+                SrtSortFiles[I].Keys[J].KeyOrder),
+                ' ', SrtSortFiles[I].Keys[J].Name);
+    End;
+  End;
+End;
+
+{ 10 fonctions accesseurs pour TODO 19                         }
+
+Function IsSrtInitialized : Boolean;
+Begin
+  IsSrtInitialized := SrtInitialized;
+End;
+
+Function IsSrtEmpty : Boolean;
+Begin
+  IsSrtEmpty := (SrtTotalGenerated = 0);
+End;
+
+Function GetSrtTotalGenerated : Integer;
+Begin
+  GetSrtTotalGenerated := SrtTotalGenerated;
+End;
+
+Function GetSrtStatus : TString;
+Begin
+  If Not SrtInitialized Then
+    GetSrtStatus := 'NON INITIALISE'
+  Else
+    GetSrtStatus := 'SORT=' + ItoSI(SrtSortCount) +
+                    ' MERGE=' + ItoSI(SrtMergeCount) +
+                    ' RELEASE=' + ItoSI(SrtReleaseCount) +
+                    ' RETURN=' + ItoSI(SrtReturnCount);
+End;
+
+Function GetSrtSortCount : Integer;
+Begin
+  GetSrtSortCount := SrtSortCount;
+End;
+
+Function GetSrtMergeCount : Integer;
+Begin
+  GetSrtMergeCount := SrtMergeCount;
+End;
+
+Function GetSrtReleaseCount : Integer;
+Begin
+  GetSrtReleaseCount := SrtReleaseCount;
+End;
+
+Function GetSrtReturnCount : Integer;
+Begin
+  GetSrtReturnCount := SrtReturnCount;
+End;
+
+Function GetSrtMaxDepth : Integer;
+Begin
+  GetSrtMaxDepth := SrtMaxDepth;
+End;
+
+Function GetSrtStateCount : Integer;
+Begin
+  GetSrtStateCount := SrtStateCount;
+End;
+
 { COBOL est insensible a la casse : tout est converti en       }
 { majuscules dans CurTokStr                                     }
 { ------------------------------------------------------------ }
@@ -16557,6 +17693,7 @@ Begin
   PdvInitialized := False;
   CalInitialized := False;
   TblInitialized := False;
+  SrtInitialized := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -16611,6 +17748,9 @@ Begin
 
   { Initialiser le module Tables/Indexation (OCCURS, SEARCH) }
   InitTableIndexState;
+
+  { Initialiser le module Sort/Merge (SORT, MERGE, RELEASE, RETURN) }
+  InitSortMergeState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;

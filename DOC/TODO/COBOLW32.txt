@@ -562,7 +562,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
               Boucle de recherche avec CMP/JE/JNE/JMP
             10 fonctions accesseurs
 
-  TODO 19 - PARSEUR : SORT ET MERGE [A FAIRE]
+  TODO 19 - PARSEUR : SORT ET MERGE [IMPLEMENTE]
             SORT :
               SORT nom-fichier-tri
                 ON ASCENDING/DESCENDING KEY nom-cle-1 [nom-cle-2]
