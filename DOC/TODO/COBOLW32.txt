@@ -212,7 +212,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
             Detecter DECIMAL-POINT IS COMMA pour les litteraux
             10 fonctions accesseurs
 
-  TODO 07 - PARSEUR : DATA DIVISION (FILE SECTION, WORKING-STORAGE) [A FAIRE]
+  TODO 07 - PARSEUR : DATA DIVISION (FILE SECTION, WORKING-STORAGE) [IMPLEMENTE]
             DATA DIVISION (optionnelle) :
               FILE SECTION :
                 FD nom-fichier

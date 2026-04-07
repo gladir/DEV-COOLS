@@ -220,7 +220,7 @@
             Detecter DECIMAL-POINT IS COMMA pour les litteraux
             10 fonctions accesseurs
 
-  TODO 07 - PARSEUR : DATA DIVISION (FILE SECTION, WORKING-STORAGE) [A FAIRE]
+  TODO 07 - PARSEUR : DATA DIVISION (FILE SECTION, WORKING-STORAGE) [IMPLEMENTE]
             DATA DIVISION (optionnelle) :
               FILE SECTION :
                 FD nom-fichier
@@ -4109,6 +4109,1125 @@ Begin
 End;
 
 
+{ ============================================================ }
+{ TODO 07 - PARSEUR : DATA DIVISION                            }
+{           (FILE SECTION, WORKING-STORAGE, LINKAGE)           }
+{ ============================================================ }
+
+Const
+  DDV_MAX_FD_ENTRIES = 16;   { nombre max d entrees FD/SD            }
+  DDV_PIC_MAX_SIZE   = 64;   { taille max d une chaine PICTURE       }
+
+Var
+  DdvInitialized        : Boolean;   { module initialise ?               }
+  DdvStateCount         : Integer;   { compteur d etats                  }
+  DdvDataDivSeen        : Boolean;   { DATA DIVISION rencontree ?        }
+  DdvCurrentSection     : Integer;   { section courante (SEC_*)          }
+  DdvFileSectionCount   : Integer;   { items dans FILE SECTION           }
+  DdvWorkingStorageCount : Integer;  { items dans WORKING-STORAGE        }
+  DdvLinkageCount       : Integer;   { items dans LINKAGE SECTION        }
+  DdvFDCount            : Integer;   { nombre d entrees FD/SD            }
+  DdvPicAnalysisCount   : Integer;   { clauses PIC analysees             }
+  DdvTotalItems         : Integer;   { total items de donnees parses     }
+  DdvOccursCount        : Integer;   { clauses OCCURS rencontrees        }
+
+{ ------------------------------------------------------------ }
+{ InitDataDivState : initialisation de l etat du parseur       }
+{ DATA DIVISION                                                }
+{ ------------------------------------------------------------ }
+
+Procedure InitDataDivState;
+Begin
+  DdvInitialized         := True;
+  DdvStateCount          := 1;
+  DdvDataDivSeen         := False;
+  DdvCurrentSection      := SEC_NONE;
+  DdvFileSectionCount    := 0;
+  DdvWorkingStorageCount := 0;
+  DdvLinkageCount        := 0;
+  DdvFDCount             := 0;
+  DdvPicAnalysisCount    := 0;
+  DdvTotalItems          := 0;
+  DdvOccursCount         := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ AnalyzePicture : analyser une chaine PICTURE COBOL           }
+{ Determine la taille en octets, les decimales, le signe et    }
+{ le type du symbole (CBT_ALPHA, CBT_NUMERIC, etc.)            }
+{ ------------------------------------------------------------ }
+
+Procedure AnalyzePicture(Const PicStr : TString;
+                         Var PicSize : Integer;
+                         Var PicDecimals : Integer;
+                         Var IsSigned : Boolean;
+                         Var SymType : Integer);
+Var
+  I, Len, RepCount : Integer;
+  Ch        : Char;
+  HasA      : Boolean;
+  HasX      : Boolean;
+  Has9      : Boolean;
+  HasV      : Boolean;
+  HasS      : Boolean;
+  HasEdit   : Boolean;
+  AfterV    : Integer;
+  DigitSize : Integer;
+  U         : TString;
+Begin
+  PicSize     := 0;
+  PicDecimals := 0;
+  IsSigned    := False;
+  SymType     := CBT_ALPHANUMERIC;
+  HasA        := False;
+  HasX        := False;
+  Has9        := False;
+  HasV        := False;
+  HasS        := False;
+  HasEdit     := False;
+  AfterV      := 0;
+  DigitSize   := 0;
+
+  U   := UpCaseStr(PicStr);
+  Len := Length(U);
+  I   := 1;
+
+  While I <= Len Do Begin
+    Ch := U[I];
+
+    { Verifier repetition : X(n) }
+    RepCount := 1;
+    If (I < Len) And (U[I + 1] = '(') Then Begin
+      Inc(I, 2); { sauter le caractere et '(' }
+      RepCount := 0;
+      While (I <= Len) And (U[I] >= '0') And (U[I] <= '9') Do Begin
+        RepCount := RepCount * 10 + (Ord(U[I]) - Ord('0'));
+        Inc(I);
+      End;
+      If (I <= Len) And (U[I] = ')') Then
+        Inc(I);
+      If RepCount < 1 Then
+        RepCount := 1;
+    End Else
+      Inc(I);
+
+    Case Ch Of
+      'A' : Begin
+        HasA := True;
+        PicSize := PicSize + RepCount;
+      End;
+      'X' : Begin
+        HasX := True;
+        PicSize := PicSize + RepCount;
+      End;
+      '9' : Begin
+        Has9 := True;
+        PicSize := PicSize + RepCount;
+        DigitSize := DigitSize + RepCount;
+        If HasV Then
+          AfterV := AfterV + RepCount;
+      End;
+      'V' : Begin
+        HasV := True;
+        { V ne prend pas d octet }
+      End;
+      'S' : Begin
+        HasS    := True;
+        IsSigned := True;
+        { S ne prend pas d octet en DISPLAY par defaut }
+      End;
+      'P' : Begin
+        Has9 := True;
+        { P : mise a l echelle, pas d octet supplementaire }
+        If HasV Then
+          AfterV := AfterV + RepCount;
+      End;
+      'Z', '*', '$' : Begin
+        HasEdit := True;
+        PicSize := PicSize + RepCount;
+        DigitSize := DigitSize + RepCount;
+      End;
+      ',', '/', 'B', '0' : Begin
+        HasEdit := True;
+        PicSize := PicSize + RepCount;
+      End;
+      '.' : Begin
+        HasEdit := True;
+        PicSize := PicSize + RepCount;
+        HasV := True; { le point explicite joue le role de V }
+      End;
+      '+', '-' : Begin
+        HasEdit := True;
+        PicSize := PicSize + RepCount;
+        IsSigned := True;
+      End;
+      'C' : Begin
+        { CR : 2 caracteres d edition }
+        If (I <= Len) And (U[I] = 'R') Then Begin
+          Inc(I);
+          HasEdit  := True;
+          IsSigned := True;
+          PicSize  := PicSize + (2 * RepCount);
+        End;
+      End;
+      'D' : Begin
+        { DB : 2 caracteres d edition }
+        If (I <= Len) And (U[I] = 'B') Then Begin
+          Inc(I);
+          HasEdit  := True;
+          IsSigned := True;
+          PicSize  := PicSize + (2 * RepCount);
+        End;
+      End;
+    End; { Case }
+  End; { While }
+
+  PicDecimals := AfterV;
+
+  { Determiner le type }
+  If HasEdit Then Begin
+    If HasA Or HasX Then
+      SymType := CBT_EDITED_ALPHA
+    Else
+      SymType := CBT_EDITED_NUM;
+  End Else If HasX Then
+    SymType := CBT_ALPHANUMERIC
+  Else If HasA And (Not Has9) Then
+    SymType := CBT_ALPHA
+  Else If Has9 Or HasV Or HasS Then
+    SymType := CBT_NUMERIC
+  Else
+    SymType := CBT_ALPHANUMERIC;
+
+  Inc(DdvPicAnalysisCount);
+  Inc(DdvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUsageClause : parser la clause USAGE                    }
+{ Retourne la constante USG_* et ajuste la taille si binaire   }
+{ ------------------------------------------------------------ }
+
+Function ParseUsageClause(Var PicSize : Integer;
+                          DigitCount : Integer) : Integer;
+Var
+  Usg : Integer;
+Begin
+  Usg := USG_DISPLAY;
+
+  { Consommer IS (optionnel) }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+    LexNextToken;
+
+  If CurTokType = TOK_KEYWORD Then Begin
+    Case CurTokNum Of
+      KW_DISPLAY : Begin
+        Usg := USG_DISPLAY;
+        LexNextToken;
+      End;
+      KW_COMP, KW_BINARY : Begin
+        Usg := USG_COMP;
+        LexNextToken;
+        { Ajuster la taille en octets selon le nombre de chiffres }
+        If DigitCount <= 4 Then
+          PicSize := 2
+        Else If DigitCount <= 9 Then
+          PicSize := 4
+        Else
+          PicSize := 8;
+      End;
+      KW_COMP_1 : Begin
+        Usg := USG_COMP1;
+        LexNextToken;
+        PicSize := 4; { flottant simple = 4 octets }
+      End;
+      KW_COMP_2 : Begin
+        Usg := USG_COMP2;
+        LexNextToken;
+        PicSize := 8; { flottant double = 8 octets }
+      End;
+      KW_COMP_3, KW_PACKED_DECIMAL : Begin
+        Usg := USG_COMP3;
+        LexNextToken;
+        { COMP-3 : (n+1)/2 octets arrondis vers le haut }
+        PicSize := (DigitCount + 2) Div 2;
+      End;
+      KW_INDEX : Begin
+        Usg := USG_INDEX;
+        LexNextToken;
+        PicSize := 4; { index = 4 octets }
+      End;
+      KW_POINTER : Begin
+        Usg := USG_POINTER;
+        LexNextToken;
+        PicSize := 4; { pointeur = 4 octets }
+      End;
+      Else Begin
+        { Mot-cle non reconnu, laisser DISPLAY }
+      End;
+    End;
+  End;
+
+  ParseUsageClause := Usg;
+  Inc(DdvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseValueClause : parser la clause VALUE IS ...             }
+{ Retourne la valeur sous forme de chaine                      }
+{ ------------------------------------------------------------ }
+
+Function ParseValueClause : TString;
+Var
+  V : TString;
+Begin
+  V := '';
+
+  { Consommer IS (optionnel) }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+    LexNextToken;
+
+  If CurTokType = TOK_STRING Then Begin
+    V := CurTokStr;
+    LexNextToken;
+  End Else If CurTokType = TOK_INTEGER Then Begin
+    V := CurTokStr;
+    LexNextToken;
+  End Else If CurTokType = TOK_DECIMAL Then Begin
+    V := CurTokStr;
+    LexNextToken;
+  End Else If CurTokType = TOK_KEYWORD Then Begin
+    Case CurTokNum Of
+      KW_SPACES : Begin
+        V := 'SPACES';
+        LexNextToken;
+      End;
+      KW_ZERO, KW_ZEROS, KW_ZEROES : Begin
+        V := 'ZEROS';
+        LexNextToken;
+      End;
+      KW_HIGH_VALUES, KW_HIGH_VALUE : Begin
+        V := 'HIGH-VALUES';
+        LexNextToken;
+      End;
+      KW_LOW_VALUES, KW_LOW_VALUE : Begin
+        V := 'LOW-VALUES';
+        LexNextToken;
+      End;
+      KW_ALL : Begin
+        LexNextToken;
+        If CurTokType = TOK_STRING Then Begin
+          V := 'ALL ' + CurTokStr;
+          LexNextToken;
+        End Else Begin
+          V := 'ALL ' + CurTokStr;
+          LexNextToken;
+        End;
+      End;
+      Else Begin
+        V := CurTokStr;
+        LexNextToken;
+      End;
+    End;
+  End Else Begin
+    V := CurTokStr;
+    LexNextToken;
+  End;
+
+  ParseValueClause := V;
+  Inc(DdvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOccursClause : parser la clause OCCURS                  }
+{ OCCURS n TIMES ou OCCURS n TO m DEPENDING ON var             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseOccursClause(Var OccCount : Integer;
+                            Var OccMin : Integer;
+                            Var OccDep : TString);
+Begin
+  OccCount := 0;
+  OccMin   := 0;
+  OccDep   := '';
+
+  { Lire le nombre }
+  If CurTokType = TOK_INTEGER Then Begin
+    OccCount := CurTokNum;
+    LexNextToken;
+  End;
+
+  { OCCURS n TO m DEPENDING ON var ? }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then Begin
+    OccMin := OccCount; { n est le minimum }
+    LexNextToken;
+    If CurTokType = TOK_INTEGER Then Begin
+      OccCount := CurTokNum; { m est le maximum }
+      LexNextToken;
+    End;
+    { DEPENDING }
+    If (CurTokType = TOK_IDENT) And
+       (UpCaseStr(CurTokStr) = 'DEPENDING') Then Begin
+      LexNextToken;
+      { ON }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then
+        LexNextToken;
+      { Nom de la variable }
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+        OccDep := CurTokStr;
+        LexNextToken;
+      End;
+    End;
+  End;
+
+  { TIMES (optionnel) }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TIMES) Then
+    LexNextToken;
+
+  { Clauses supplementaires : KEY, INDEXED BY }
+  While (Not LexEOF) And (CurTokType <> TOK_DOT) Do Begin
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_KEY) Then Begin
+      LexNextToken;
+      { IS (optionnel) }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+        LexNextToken;
+      { Nom de cle }
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+        LexNextToken;
+    End Else If (CurTokType = TOK_KEYWORD) And
+                (CurTokNum = KW_INDEXED) Then Begin
+      LexNextToken;
+      { BY }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then
+        LexNextToken;
+      { Nom d index }
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+        LexNextToken;
+    End Else
+      Break;
+  End;
+
+  Inc(DdvOccursCount);
+  Inc(DdvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDataItem : parser un item de donnees COBOL              }
+{ Lit le niveau, le nom, puis les clauses PIC, VALUE, USAGE,   }
+{ OCCURS, REDEFINES, etc. jusqu au point terminateur           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDataItem(Section : Integer);
+Var
+  Level     : Integer;
+  ItemName  : TString;
+  Idx       : Integer;
+  PicStr    : TString;
+  PicSize   : Integer;
+  PicDec    : Integer;
+  PicSigned : Boolean;
+  PicType   : Integer;
+  ItemUsage : Integer;
+  ItemValue : TString;
+  OccCount  : Integer;
+  OccMin    : Integer;
+  OccDep    : TString;
+  RedefName : TString;
+  RedIdx    : Integer;
+  IsGroupItem : Boolean;
+  HasPic    : Boolean;
+  DigitCount : Integer;
+  DoneClauses : Boolean;
+  CondVal   : TString;
+Begin
+  Level := CurTokNum;
+  LexNextToken;
+
+  { Lire le nom (ou FILLER) }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FILLER) Then Begin
+    ItemName := 'FILLER';
+    LexNextToken;
+  End Else If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+    ItemName := CurTokStr;
+    LexNextToken;
+  End Else Begin
+    ItemName := 'FILLER';
+  End;
+
+  { Initialisations }
+  PicStr      := '';
+  PicSize     := 0;
+  PicDec      := 0;
+  PicSigned   := False;
+  PicType     := CBT_GROUP;
+  ItemUsage   := USG_DISPLAY;
+  ItemValue   := '';
+  OccCount    := 0;
+  OccMin      := 0;
+  OccDep      := '';
+  RedefName   := '';
+  HasPic      := False;
+  IsGroupItem := True;
+  DigitCount  := 0;
+
+  { Niveau 88 : condition nommee }
+  If Level = LVL_CONDITION Then Begin
+    PicType     := CBT_CONDITION;
+    IsGroupItem := False;
+    Idx := SymAdd(ItemName, Level, PicType, Section);
+
+    { Parser VALUE IS / VALUES ARE }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_VALUE) Then Begin
+      LexNextToken;
+      { IS / ARE (optionnel) }
+      If (CurTokType = TOK_KEYWORD) And
+         ((CurTokNum = KW_IS) Or (CurTokNum = KW_ARE)) Then
+        LexNextToken;
+    End;
+
+    { Lire les valeurs de condition }
+    While (Not LexEOF) And (CurTokType <> TOK_DOT) Do Begin
+      CondVal := '';
+      If CurTokType = TOK_STRING Then Begin
+        CondVal := CurTokStr;
+        LexNextToken;
+      End Else If (CurTokType = TOK_INTEGER) Or
+                  (CurTokType = TOK_DECIMAL) Then Begin
+        CondVal := CurTokStr;
+        LexNextToken;
+      End Else If CurTokType = TOK_KEYWORD Then Begin
+        Case CurTokNum Of
+          KW_SPACES : Begin CondVal := 'SPACES'; LexNextToken; End;
+          KW_ZERO, KW_ZEROS, KW_ZEROES : Begin
+            CondVal := 'ZEROS'; LexNextToken;
+          End;
+          KW_HIGH_VALUES, KW_HIGH_VALUE : Begin
+            CondVal := 'HIGH-VALUES'; LexNextToken;
+          End;
+          KW_LOW_VALUES, KW_LOW_VALUE : Begin
+            CondVal := 'LOW-VALUES'; LexNextToken;
+          End;
+          KW_THRU, KW_THROUGH : Begin
+            LexNextToken;
+            Continue;
+          End;
+          Else Begin
+            CondVal := CurTokStr;
+            LexNextToken;
+          End;
+        End;
+      End Else Begin
+        LexNextToken;
+        Continue;
+      End;
+
+      If (CondVal <> '') And (Idx >= 0) Then Begin
+        If SymTab[Idx].CondValCount < MAX_COND_VALUES Then Begin
+          SymTab[Idx].CondValues[SymTab[Idx].CondValCount] := CondVal;
+          Inc(SymTab[Idx].CondValCount);
+        End;
+      End;
+    End;
+
+    { Consommer le point }
+    If CurTokType = TOK_DOT Then
+      LexNextToken;
+
+    Inc(DdvTotalItems);
+    Inc(DdvStateCount);
+    Exit;
+  End;
+
+  { Niveau 66 : RENAMES }
+  If Level = LVL_RENAMES Then Begin
+    PicType     := CBT_ALPHANUMERIC;
+    IsGroupItem := False;
+    Idx := SymAdd(ItemName, Level, PicType, Section);
+
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_RENAMES) Then Begin
+      LexNextToken;
+      { Nom du champ redefini }
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+        RedefName := CurTokStr;
+        LexNextToken;
+      End;
+      { THRU/THROUGH (optionnel) }
+      If (CurTokType = TOK_KEYWORD) And
+         ((CurTokNum = KW_THRU) Or (CurTokNum = KW_THROUGH)) Then Begin
+        LexNextToken;
+        { Nom de fin }
+        If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+          LexNextToken;
+      End;
+    End;
+
+    { Resoudre REDEFINES }
+    If (Idx >= 0) And (RedefName <> '') Then Begin
+      RedIdx := SymFind(RedefName);
+      If RedIdx >= 0 Then
+        SymTab[Idx].RedefinedIdx := RedIdx;
+    End;
+
+    SkipToNextSentence;
+    Inc(DdvTotalItems);
+    Inc(DdvStateCount);
+    Exit;
+  End;
+
+  { Parser les clauses jusqu au point terminateur }
+  DoneClauses := False;
+  While (Not LexEOF) And (CurTokType <> TOK_DOT) And
+        (Not DoneClauses) Do Begin
+    If CurTokType = TOK_KEYWORD Then Begin
+      Case CurTokNum Of
+        KW_PIC, KW_PICTURE : Begin
+          LexNextToken;
+          { IS (optionnel) }
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+            LexNextToken;
+          { Lire la chaine PICTURE }
+          If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Or
+             (CurTokType = TOK_INTEGER) Then Begin
+            PicStr := CurTokStr;
+            LexNextToken;
+          End;
+          HasPic      := True;
+          IsGroupItem := False;
+          AnalyzePicture(PicStr, PicSize, PicDec, PicSigned, PicType);
+          DigitCount := PicSize;
+        End;
+        KW_VALUE : Begin
+          LexNextToken;
+          ItemValue := ParseValueClause;
+        End;
+        KW_USAGE : Begin
+          LexNextToken;
+          ItemUsage := ParseUsageClause(PicSize, DigitCount);
+        End;
+        KW_COMP : Begin
+          ItemUsage := USG_COMP;
+          LexNextToken;
+          If DigitCount <= 4 Then PicSize := 2
+          Else If DigitCount <= 9 Then PicSize := 4
+          Else PicSize := 8;
+        End;
+        KW_COMP_1 : Begin
+          ItemUsage := USG_COMP1;
+          LexNextToken;
+          PicSize := 4;
+        End;
+        KW_COMP_2 : Begin
+          ItemUsage := USG_COMP2;
+          LexNextToken;
+          PicSize := 8;
+        End;
+        KW_COMP_3, KW_PACKED_DECIMAL : Begin
+          ItemUsage := USG_COMP3;
+          LexNextToken;
+          PicSize := (DigitCount + 2) Div 2;
+        End;
+        KW_BINARY : Begin
+          ItemUsage := USG_COMP;
+          LexNextToken;
+          If DigitCount <= 4 Then PicSize := 2
+          Else If DigitCount <= 9 Then PicSize := 4
+          Else PicSize := 8;
+        End;
+        KW_INDEX : Begin
+          ItemUsage := USG_INDEX;
+          LexNextToken;
+          PicSize := 4;
+        End;
+        KW_OCCURS : Begin
+          LexNextToken;
+          ParseOccursClause(OccCount, OccMin, OccDep);
+        End;
+        KW_REDEFINES : Begin
+          LexNextToken;
+          If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+            RedefName := CurTokStr;
+            LexNextToken;
+          End;
+        End;
+        KW_BLANK : Begin
+          LexNextToken;
+          { WHEN ZERO / WHEN ZEROS }
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WHEN) Then
+            LexNextToken;
+          If (CurTokType = TOK_KEYWORD) And
+             ((CurTokNum = KW_ZERO) Or (CurTokNum = KW_ZEROS) Or
+              (CurTokNum = KW_ZEROES)) Then
+            LexNextToken;
+        End;
+        KW_JUSTIFIED : Begin
+          LexNextToken;
+          { RIGHT (optionnel, traite comme identifiant) }
+          If (CurTokType = TOK_IDENT) And
+             (UpCaseStr(CurTokStr) = 'RIGHT') Then
+            LexNextToken;
+        End;
+        KW_SIGN : Begin
+          LexNextToken;
+          { IS (optionnel) }
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+            LexNextToken;
+          { LEADING / TRAILING }
+          If (CurTokType = TOK_KEYWORD) And
+             ((CurTokNum = KW_LEADING) Or (CurTokNum = KW_TRAILING)) Then
+            LexNextToken;
+          { SEPARATE CHARACTER }
+          If (CurTokType = TOK_IDENT) And
+             (UpCaseStr(CurTokStr) = 'SEPARATE') Then Begin
+            LexNextToken;
+            If (CurTokType = TOK_IDENT) And
+               (UpCaseStr(CurTokStr) = 'CHARACTER') Then
+              LexNextToken;
+          End;
+        End;
+        KW_SYNCHRONIZED : Begin
+          LexNextToken;
+          { LEFT / RIGHT (optionnel) }
+          If (CurTokType = TOK_IDENT) And
+             ((UpCaseStr(CurTokStr) = 'LEFT') Or
+              (UpCaseStr(CurTokStr) = 'RIGHT')) Then
+            LexNextToken;
+        End;
+        Else Begin
+          { Mot-cle non gere dans les clauses : sortir }
+          DoneClauses := True;
+        End;
+      End;
+    End Else Begin
+      { Token non mot-cle et non point : sauter }
+      LexNextToken;
+    End;
+  End;
+
+  { Determiner le type final }
+  If Not HasPic Then Begin
+    If (Level = LVL_RECORD) Or
+       ((Level >= LVL_MIN_HIER) And (Level <= LVL_MAX_HIER)) Then Begin
+      PicType     := CBT_GROUP;
+      IsGroupItem := True;
+    End;
+    If Level = LVL_INDEPEND Then Begin
+      PicType     := CBT_ALPHANUMERIC;
+      IsGroupItem := False;
+    End;
+  End;
+
+  { Ajouter dans la table des symboles }
+  Idx := SymAdd(ItemName, Level, PicType, Section);
+  If Idx >= 0 Then Begin
+    SymTab[Idx].PicStr      := PicStr;
+    SymTab[Idx].PicSize     := PicSize;
+    SymTab[Idx].PicDecimals := PicDec;
+    SymTab[Idx].IsSigned    := PicSigned;
+    SymTab[Idx].IsGroup     := IsGroupItem;
+    SymTab[Idx].Value       := ItemValue;
+    SymTab[Idx].Usage       := ItemUsage;
+    SymTab[Idx].Occurs      := OccCount;
+    SymTab[Idx].OccursMin   := OccMin;
+    SymTab[Idx].OccursDep   := OccDep;
+
+    { Resoudre REDEFINES }
+    If RedefName <> '' Then Begin
+      RedIdx := SymFind(RedefName);
+      If RedIdx >= 0 Then
+        SymTab[Idx].RedefinedIdx := RedIdx;
+    End;
+
+    { Compteur par section }
+    Case Section Of
+      SEC_FILE            : Inc(DdvFileSectionCount);
+      SEC_WORKING_STORAGE : Inc(DdvWorkingStorageCount);
+      SEC_LINKAGE         : Inc(DdvLinkageCount);
+    End;
+  End;
+
+  { Consommer le point }
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+
+  Inc(DdvTotalItems);
+  Inc(DdvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFDEntry : parser une entree FD ou SD                    }
+{ FD nom-fichier [clauses...]. suivie de records 01            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFDEntry;
+Var
+  FDName   : TString;
+  Idx      : Integer;
+  FDType   : Integer;
+  Done     : Boolean;
+  U        : TString;
+Begin
+  { FD ou SD ? }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SD) Then
+    FDType := CBT_FILE
+  Else
+    FDType := CBT_FILE;
+
+  LexNextToken; { consommer FD/SD }
+
+  { Lire le nom du fichier }
+  FDName := '';
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+    FDName := CurTokStr;
+    LexNextToken;
+  End;
+
+  { Ajouter le fichier dans la table des symboles (niveau 0) }
+  Idx := SymAdd(FDName, 0, FDType, SEC_FILE);
+
+  { Parser les clauses FD jusqu au point }
+  Done := False;
+  While (Not LexEOF) And (CurTokType <> TOK_DOT) And (Not Done) Do Begin
+    If (CurTokType = TOK_KEYWORD) Then Begin
+      Case CurTokNum Of
+        KW_LABEL : Begin
+          LexNextToken;
+          { RECORD IS / RECORDS ARE }
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_RECORD) Then
+            LexNextToken;
+          If (CurTokType = TOK_KEYWORD) And
+             ((CurTokNum = KW_IS) Or (CurTokNum = KW_ARE)) Then
+            LexNextToken;
+          { STANDARD / OMITTED }
+          If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+            LexNextToken;
+        End;
+        KW_RECORD : Begin
+          LexNextToken;
+          { CONTAINS }
+          If (CurTokType = TOK_IDENT) And
+             (UpCaseStr(CurTokStr) = 'CONTAINS') Then
+            LexNextToken;
+          { Nombre }
+          If CurTokType = TOK_INTEGER Then
+            LexNextToken;
+          { TO (optionnel pour RECORD CONTAINS n TO m) }
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then Begin
+            LexNextToken;
+            If CurTokType = TOK_INTEGER Then
+              LexNextToken;
+          End;
+          { CHARACTERS }
+          If (CurTokType = TOK_IDENT) And
+             (UpCaseStr(CurTokStr) = 'CHARACTERS') Then
+            LexNextToken;
+        End;
+        Else Begin
+          { BLOCK CONTAINS, DATA RECORD IS, etc. : avancer }
+          U := UpCaseStr(CurTokStr);
+          LexNextToken;
+          If U = 'BLOCK' Then Begin
+            { CONTAINS }
+            If (CurTokType = TOK_IDENT) And
+               (UpCaseStr(CurTokStr) = 'CONTAINS') Then
+              LexNextToken;
+            { Nombre }
+            If CurTokType = TOK_INTEGER Then
+              LexNextToken;
+            { RECORDS }
+            If (CurTokType = TOK_KEYWORD) And
+               (CurTokNum = KW_RECORD) Then
+              LexNextToken
+            Else If (CurTokType = TOK_IDENT) And
+                    (UpCaseStr(CurTokStr) = 'RECORDS') Then
+              LexNextToken;
+          End;
+        End;
+      End;
+    End Else Begin
+      U := UpCaseStr(CurTokStr);
+      If U = 'BLOCK' Then Begin
+        LexNextToken;
+        If (CurTokType = TOK_IDENT) And
+           (UpCaseStr(CurTokStr) = 'CONTAINS') Then
+          LexNextToken;
+        If CurTokType = TOK_INTEGER Then
+          LexNextToken;
+        If (CurTokType = TOK_IDENT) And
+           (UpCaseStr(CurTokStr) = 'RECORDS') Then
+          LexNextToken;
+      End Else If U = 'DATA' Then Begin
+        LexNextToken;
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_RECORD) Then
+          LexNextToken;
+        If (CurTokType = TOK_KEYWORD) And
+           ((CurTokNum = KW_IS) Or (CurTokNum = KW_ARE)) Then
+          LexNextToken;
+        If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+          LexNextToken;
+      End Else
+        LexNextToken;
+    End;
+  End;
+
+  { Consommer le point apres les clauses FD }
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+
+  Inc(DdvFDCount);
+
+  { Parser les records qui suivent (01, etc.) }
+  While (Not LexEOF) Do Begin
+    { Nouveau FD/SD ou section = fin des records }
+    If (CurTokType = TOK_KEYWORD) Then Begin
+      If (CurTokNum = KW_FD) Or (CurTokNum = KW_SD) Then
+        Break;
+      If (CurTokNum = KW_WORKING_STORAGE) Or (CurTokNum = KW_LINKAGE) Or
+         (CurTokNum = KW_PROCEDURE) Or (CurTokNum = KW_LOCAL_STORAGE) Or
+         (CurTokNum = KW_SCREEN) Or (CurTokNum = KW_REPORT) Then
+        Break;
+    End;
+    { Niveau numerique : c est un data item }
+    If CurTokType = TOK_INTEGER Then
+      ParseDataItem(SEC_FILE)
+    Else
+      SkipToNextSentence;
+  End;
+
+  Inc(DdvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFileSection : parser la FILE SECTION                    }
+{ Contient des entrees FD/SD et leurs records                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFileSection;
+Begin
+  DdvCurrentSection := SEC_FILE;
+  Inc(DdvStateCount);
+
+  { Consommer SECTION }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SECTION) Then
+    LexNextToken;
+  { Consommer le point }
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+
+  { Parser les entrees FD/SD }
+  While (Not LexEOF) Do Begin
+    If (CurTokType = TOK_KEYWORD) Then Begin
+      If (CurTokNum = KW_FD) Or (CurTokNum = KW_SD) Then
+        ParseFDEntry
+      Else If (CurTokNum = KW_WORKING_STORAGE) Or (CurTokNum = KW_LINKAGE) Or
+              (CurTokNum = KW_PROCEDURE) Or (CurTokNum = KW_LOCAL_STORAGE) Or
+              (CurTokNum = KW_SCREEN) Or (CurTokNum = KW_REPORT) Then
+        Break
+      Else
+        SkipToNextSentence;
+    End Else If CurTokType = TOK_INTEGER Then
+      ParseDataItem(SEC_FILE)
+    Else
+      SkipToNextSentence;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseWorkingStorageSection : parser la WORKING-STORAGE SECTION}
+{ Contient des items 77 et des groupes 01                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseWorkingStorageSection;
+Begin
+  DdvCurrentSection := SEC_WORKING_STORAGE;
+  Inc(DdvStateCount);
+
+  { Consommer SECTION }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SECTION) Then
+    LexNextToken;
+  { Consommer le point }
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+
+  { Parser les items de donnees }
+  While (Not LexEOF) Do Begin
+    If (CurTokType = TOK_KEYWORD) Then Begin
+      If (CurTokNum = KW_FILE) Or (CurTokNum = KW_LINKAGE) Or
+         (CurTokNum = KW_PROCEDURE) Or (CurTokNum = KW_LOCAL_STORAGE) Or
+         (CurTokNum = KW_SCREEN) Or (CurTokNum = KW_REPORT) Then
+        Break
+      Else
+        SkipToNextSentence;
+    End Else If CurTokType = TOK_INTEGER Then
+      ParseDataItem(SEC_WORKING_STORAGE)
+    Else
+      SkipToNextSentence;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLinkageSection : parser la LINKAGE SECTION              }
+{ Meme format que WORKING-STORAGE                              }
+{ ------------------------------------------------------------ }
+
+Procedure ParseLinkageSection;
+Begin
+  DdvCurrentSection := SEC_LINKAGE;
+  Inc(DdvStateCount);
+
+  { Consommer SECTION }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SECTION) Then
+    LexNextToken;
+  { Consommer le point }
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+
+  { Parser les items de donnees }
+  While (Not LexEOF) Do Begin
+    If (CurTokType = TOK_KEYWORD) Then Begin
+      If (CurTokNum = KW_FILE) Or (CurTokNum = KW_WORKING_STORAGE) Or
+         (CurTokNum = KW_PROCEDURE) Or (CurTokNum = KW_LOCAL_STORAGE) Or
+         (CurTokNum = KW_SCREEN) Or (CurTokNum = KW_REPORT) Then
+        Break
+      Else
+        SkipToNextSentence;
+    End Else If CurTokType = TOK_INTEGER Then
+      ParseDataItem(SEC_LINKAGE)
+    Else
+      SkipToNextSentence;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDataDivision : parser la DATA DIVISION                  }
+{ Dispatche vers FILE, WORKING-STORAGE et LINKAGE SECTION      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDataDivision;
+Var
+  Done : Boolean;
+Begin
+  DdvDataDivSeen := True;
+  DdvCurrentSection := SEC_NONE;
+  Inc(DdvStateCount);
+
+  { Consommer DIVISION }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DIVISION) Then
+    LexNextToken;
+  { Consommer le point }
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+
+  Done := False;
+  While (Not LexEOF) And (Not Done) Do Begin
+    If CurTokType = TOK_KEYWORD Then Begin
+      Case CurTokNum Of
+        KW_FILE : Begin
+          LexNextToken;
+          ParseFileSection;
+        End;
+        KW_WORKING_STORAGE : Begin
+          LexNextToken;
+          ParseWorkingStorageSection;
+        End;
+        KW_LINKAGE : Begin
+          LexNextToken;
+          ParseLinkageSection;
+        End;
+        { Fin de la DATA DIVISION }
+        KW_PROCEDURE : Begin
+          Done := True;
+        End;
+        Else Begin
+          SkipToNextSentence;
+        End;
+      End;
+    End Else Begin
+      SkipToNextSentence;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpDataDivision : afficher un resume de la DATA DIVISION    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpDataDivision;
+Begin
+  WriteLn('--- DATA DIVISION ---');
+  If Not DdvDataDivSeen Then Begin
+    WriteLn('  (non presente)');
+    Exit;
+  End;
+  WriteLn('  FD/SD           : ', DdvFDCount);
+  WriteLn('  FILE SECTION    : ', DdvFileSectionCount, ' items');
+  WriteLn('  WORKING-STORAGE : ', DdvWorkingStorageCount, ' items');
+  WriteLn('  LINKAGE         : ', DdvLinkageCount, ' items');
+  WriteLn('  TOTAL ITEMS     : ', DdvTotalItems);
+  WriteLn('  PIC analyses    : ', DdvPicAnalysisCount);
+  WriteLn('  OCCURS clauses  : ', DdvOccursCount);
+End;
+
+{ 10 fonctions accesseurs pour TODO 07                         }
+
+Function IsDdvInitialized : Boolean;
+Begin
+  IsDdvInitialized := DdvInitialized;
+End;
+
+Function IsDdvEmpty : Boolean;
+Begin
+  IsDdvEmpty := (DdvTotalItems = 0) And (DdvFDCount = 0);
+End;
+
+Function GetDdvTotalItems : Integer;
+Begin
+  GetDdvTotalItems := DdvTotalItems;
+End;
+
+Function GetDdvStatus : TString;
+Begin
+  If Not DdvInitialized Then
+    GetDdvStatus := 'NON INITIALISE'
+  Else If Not DdvDataDivSeen Then
+    GetDdvStatus := 'ABSENT'
+  Else
+    GetDdvStatus := 'FD=' + ItoSI(DdvFDCount) +
+                    ' WS=' + ItoSI(DdvWorkingStorageCount) +
+                    ' LK=' + ItoSI(DdvLinkageCount) +
+                    ' TOTAL=' + ItoSI(DdvTotalItems);
+End;
+
+Function GetDdvFDCount : Integer;
+Begin
+  GetDdvFDCount := DdvFDCount;
+End;
+
+Function GetDdvFileSectionCount : Integer;
+Begin
+  GetDdvFileSectionCount := DdvFileSectionCount;
+End;
+
+Function GetDdvWorkingStorageCount : Integer;
+Begin
+  GetDdvWorkingStorageCount := DdvWorkingStorageCount;
+End;
+
+Function GetDdvLinkageCount : Integer;
+Begin
+  GetDdvLinkageCount := DdvLinkageCount;
+End;
+
+Function GetDdvPicAnalysisCount : Integer;
+Begin
+  GetDdvPicAnalysisCount := DdvPicAnalysisCount;
+End;
+
+Function GetDdvStateCount : Integer;
+Begin
+  GetDdvStateCount := DdvStateCount;
+End;
+
+
 { ------------------------------------------------------------ }
 { LexScanIdent : identificateur COBOL (lettres, chiffres, -)   }
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
@@ -4784,6 +5903,9 @@ Begin
 
   { Initialiser le parseur ID/ENV DIVISION }
   InitParserIdEnv;
+
+  { Initialiser le parseur DATA DIVISION }
+  InitDataDivState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
