@@ -237,7 +237,7 @@ Turbo Pascal / Free Pascal (-Mtp)
          Function GenerateCargoToml(Const AppName: String): String
            generer le fichier Cargo.toml pour le projet Rust
 
-  TODO 09 - GENERATION DU CODE RUST PRINCIPAL [A FAIRE]
+  TODO 09 - GENERATION DU CODE RUST PRINCIPAL [IMPLEMENTE]
          Function GenerateMainRs(Const Opts: TOptions): String
            generer le fichier main.rs avec :
            - imports tauri (use tauri::*)
