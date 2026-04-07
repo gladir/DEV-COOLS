@@ -7197,7 +7197,11 @@ Begin
   { Input }
   SetConfigOption('INPUT', '', 0, False);
   SetConfigOption('INPUT_ENCODING', 'UTF-8', 0, False);
-  SetConfigOption('FILE_PATTERNS', '*.c *.cc *.cxx *.cpp *.c++ *.java *.ii *.ixx *.ipp *.i++ *.inl *.idl *.ddl *.odl *.h *.hh *.hxx *.hpp *.h++ *.l *.cs *.d *.php *.php4 *.php5 *.phtml *.inc *.m *.markdown *.md *.mm *.dox *.py *.pyw *.f90 *.f95 *.f03 *.f08 *.f18 *.f *.for *.vhd *.vhdl *.ucf *.qsf *.ice *.pas *.pp *.p', 0, False);
+  SetConfigOption('FILE_PATTERNS', '*.c *.cc *.cxx *.cpp *.c++ *.java '+
+    '*.ii *.ixx *.ipp *.i++ *.inl *.idl *.ddl *.odl *.h *.hh *.hxx *.hpp *.h++ *.l *.cs '+
+    '*.d *.php *.php4 *.php5 *.phtml *.inc *.m *.markdown *.md *.mm *.dox '+
+    '*.py *.pyw *.f90 *.f95 *.f03 *.f08 *.f18 *.f *.for *.vhd *.vhdl *.ucf *.qsf '+
+    '*.ice *.pas *.pp *.p', 0, False);
   SetConfigOption('RECURSIVE', 'NO', 0, False);
   SetConfigOption('EXCLUDE', '', 0, False);
   SetConfigOption('EXCLUDE_SYMLINKS', 'NO', 0, False);
