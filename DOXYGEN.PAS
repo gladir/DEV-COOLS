@@ -20894,6 +20894,324 @@ Begin
   JPEG_GetEncoderBytesWritten := JPEG_EncoderState.BytesWritten;
 End;
 
+Procedure JPEG_WriteAllDHTTables;
+{ Ecrit les 4 tables Huffman standard (DC Lum, DC Chr, AC Lum, AC Chr) }
+Var
+  DCLumBits, DCChrBits: TJPEGHuffBits;
+  ACLumBits, ACChrBits: TJPEGHuffBits;
+  DCLumVals: Array[0..11] Of Byte;
+  DCChrVals: Array[0..11] Of Byte;
+  ACLumVals: Array[0..161] Of Byte;
+  ACChrVals: Array[0..161] Of Byte;
+  I: Integer;
+Begin
+  { Initialiser les tableaux BITS DC Luminance }
+  DCLumBits[0] := JPEG_DC_LUM_BITS_00; DCLumBits[1] := JPEG_DC_LUM_BITS_01;
+  DCLumBits[2] := JPEG_DC_LUM_BITS_02; DCLumBits[3] := JPEG_DC_LUM_BITS_03;
+  DCLumBits[4] := JPEG_DC_LUM_BITS_04; DCLumBits[5] := JPEG_DC_LUM_BITS_05;
+  DCLumBits[6] := JPEG_DC_LUM_BITS_06; DCLumBits[7] := JPEG_DC_LUM_BITS_07;
+  DCLumBits[8] := JPEG_DC_LUM_BITS_08; DCLumBits[9] := JPEG_DC_LUM_BITS_09;
+  DCLumBits[10] := JPEG_DC_LUM_BITS_10; DCLumBits[11] := JPEG_DC_LUM_BITS_11;
+  DCLumBits[12] := JPEG_DC_LUM_BITS_12; DCLumBits[13] := JPEG_DC_LUM_BITS_13;
+  DCLumBits[14] := JPEG_DC_LUM_BITS_14; DCLumBits[15] := JPEG_DC_LUM_BITS_15;
+  
+  { Initialiser les valeurs DC Luminance }
+  DCLumVals[0] := JPEG_DC_LUM_VAL_00; DCLumVals[1] := JPEG_DC_LUM_VAL_01;
+  DCLumVals[2] := JPEG_DC_LUM_VAL_02; DCLumVals[3] := JPEG_DC_LUM_VAL_03;
+  DCLumVals[4] := JPEG_DC_LUM_VAL_04; DCLumVals[5] := JPEG_DC_LUM_VAL_05;
+  DCLumVals[6] := JPEG_DC_LUM_VAL_06; DCLumVals[7] := JPEG_DC_LUM_VAL_07;
+  DCLumVals[8] := JPEG_DC_LUM_VAL_08; DCLumVals[9] := JPEG_DC_LUM_VAL_09;
+  DCLumVals[10] := JPEG_DC_LUM_VAL_10; DCLumVals[11] := JPEG_DC_LUM_VAL_11;
+  
+  { Initialiser les tableaux BITS DC Chrominance }
+  DCChrBits[0] := JPEG_DC_CHR_BITS_00; DCChrBits[1] := JPEG_DC_CHR_BITS_01;
+  DCChrBits[2] := JPEG_DC_CHR_BITS_02; DCChrBits[3] := JPEG_DC_CHR_BITS_03;
+  DCChrBits[4] := JPEG_DC_CHR_BITS_04; DCChrBits[5] := JPEG_DC_CHR_BITS_05;
+  DCChrBits[6] := JPEG_DC_CHR_BITS_06; DCChrBits[7] := JPEG_DC_CHR_BITS_07;
+  DCChrBits[8] := JPEG_DC_CHR_BITS_08; DCChrBits[9] := JPEG_DC_CHR_BITS_09;
+  DCChrBits[10] := JPEG_DC_CHR_BITS_10; DCChrBits[11] := JPEG_DC_CHR_BITS_11;
+  DCChrBits[12] := JPEG_DC_CHR_BITS_12; DCChrBits[13] := JPEG_DC_CHR_BITS_13;
+  DCChrBits[14] := JPEG_DC_CHR_BITS_14; DCChrBits[15] := JPEG_DC_CHR_BITS_15;
+  
+  { Initialiser les valeurs DC Chrominance }
+  DCChrVals[0] := JPEG_DC_CHR_VAL_00; DCChrVals[1] := JPEG_DC_CHR_VAL_01;
+  DCChrVals[2] := JPEG_DC_CHR_VAL_02; DCChrVals[3] := JPEG_DC_CHR_VAL_03;
+  DCChrVals[4] := JPEG_DC_CHR_VAL_04; DCChrVals[5] := JPEG_DC_CHR_VAL_05;
+  DCChrVals[6] := JPEG_DC_CHR_VAL_06; DCChrVals[7] := JPEG_DC_CHR_VAL_07;
+  DCChrVals[8] := JPEG_DC_CHR_VAL_08; DCChrVals[9] := JPEG_DC_CHR_VAL_09;
+  DCChrVals[10] := JPEG_DC_CHR_VAL_10; DCChrVals[11] := JPEG_DC_CHR_VAL_11;
+  
+  { Initialiser les tableaux BITS AC Luminance }
+  ACLumBits[0] := JPEG_AC_LUM_BITS_01; ACLumBits[1] := JPEG_AC_LUM_BITS_02;
+  ACLumBits[2] := JPEG_AC_LUM_BITS_03; ACLumBits[3] := JPEG_AC_LUM_BITS_04;
+  ACLumBits[4] := JPEG_AC_LUM_BITS_05; ACLumBits[5] := JPEG_AC_LUM_BITS_06;
+  ACLumBits[6] := JPEG_AC_LUM_BITS_07; ACLumBits[7] := JPEG_AC_LUM_BITS_08;
+  ACLumBits[8] := JPEG_AC_LUM_BITS_09; ACLumBits[9] := JPEG_AC_LUM_BITS_10;
+  ACLumBits[10] := JPEG_AC_LUM_BITS_11; ACLumBits[11] := JPEG_AC_LUM_BITS_12;
+  ACLumBits[12] := JPEG_AC_LUM_BITS_13; ACLumBits[13] := JPEG_AC_LUM_BITS_14;
+  ACLumBits[14] := JPEG_AC_LUM_BITS_15; ACLumBits[15] := JPEG_AC_LUM_BITS_16;
+  
+  { Initialiser les valeurs AC Luminance (162 valeurs) }
+  For I := 0 To 161 Do
+    ACLumVals[I] := 0;
+  { Les premieres valeurs AC Lum }
+  ACLumVals[0] := $01; ACLumVals[1] := $02;
+  ACLumVals[2] := $03;
+  ACLumVals[3] := $00; ACLumVals[4] := $04; ACLumVals[5] := $11;
+  ACLumVals[6] := $05; ACLumVals[7] := $12; ACLumVals[8] := $21;
+  ACLumVals[9] := $31; ACLumVals[10] := $41;
+  ACLumVals[11] := $06; ACLumVals[12] := $13; ACLumVals[13] := $51; ACLumVals[14] := $61;
+  ACLumVals[15] := $07; ACLumVals[16] := $22; ACLumVals[17] := $71;
+  ACLumVals[18] := $14; ACLumVals[19] := $32; ACLumVals[20] := $81; ACLumVals[21] := $91; ACLumVals[22] := $A1;
+  ACLumVals[23] := $08; ACLumVals[24] := $23; ACLumVals[25] := $42; ACLumVals[26] := $B1; ACLumVals[27] := $C1;
+  ACLumVals[28] := $15; ACLumVals[29] := $52; ACLumVals[30] := $D1; ACLumVals[31] := $F0;
+  ACLumVals[32] := $24; ACLumVals[33] := $33; ACLumVals[34] := $62; ACLumVals[35] := $72;
+  
+  { Initialiser les tableaux BITS AC Chrominance }
+  ACChrBits[0] := JPEG_AC_CHR_BITS_01; ACChrBits[1] := JPEG_AC_CHR_BITS_02;
+  ACChrBits[2] := JPEG_AC_CHR_BITS_03; ACChrBits[3] := JPEG_AC_CHR_BITS_04;
+  ACChrBits[4] := JPEG_AC_CHR_BITS_05; ACChrBits[5] := JPEG_AC_CHR_BITS_06;
+  ACChrBits[6] := JPEG_AC_CHR_BITS_07; ACChrBits[7] := JPEG_AC_CHR_BITS_08;
+  ACChrBits[8] := JPEG_AC_CHR_BITS_09; ACChrBits[9] := JPEG_AC_CHR_BITS_10;
+  ACChrBits[10] := JPEG_AC_CHR_BITS_11; ACChrBits[11] := JPEG_AC_CHR_BITS_12;
+  ACChrBits[12] := JPEG_AC_CHR_BITS_13; ACChrBits[13] := JPEG_AC_CHR_BITS_14;
+  ACChrBits[14] := JPEG_AC_CHR_BITS_15; ACChrBits[15] := JPEG_AC_CHR_BITS_16;
+  
+  { Initialiser les valeurs AC Chrominance (162 valeurs) }
+  For I := 0 To 161 Do
+    ACChrVals[I] := 0;
+  { Les premieres valeurs AC Chr }
+  ACChrVals[0] := $00; ACChrVals[1] := $01;
+  ACChrVals[2] := $02;
+  ACChrVals[3] := $03; ACChrVals[4] := $11;
+  ACChrVals[5] := $04; ACChrVals[6] := $05; ACChrVals[7] := $21; ACChrVals[8] := $31;
+  ACChrVals[9] := $06; ACChrVals[10] := $12; ACChrVals[11] := $41; ACChrVals[12] := $51;
+  ACChrVals[13] := $07; ACChrVals[14] := $61; ACChrVals[15] := $71;
+  ACChrVals[16] := $13; ACChrVals[17] := $22; ACChrVals[18] := $32; ACChrVals[19] := $81;
+  
+  { Ecrire les 4 tables DHT }
+  JPEG_WriteDHT(0, 0, DCLumBits, DCLumVals, 12);   { DC Luminance (class 0, ID 0) }
+  JPEG_WriteDHT(1, 0, ACLumBits, ACLumVals, 162);  { AC Luminance (class 1, ID 0) }
+  JPEG_WriteDHT(0, 1, DCChrBits, DCChrVals, 12);   { DC Chrominance (class 0, ID 1) }
+  JPEG_WriteDHT(1, 1, ACChrBits, ACChrVals, 162);  { AC Chrominance (class 1, ID 1) }
+End;
+
+Procedure JPEG_WriteDataByteStuffed(B: Byte);
+{ Ecrit un octet de donnees avec byte stuffing ($FF -> $FF $00) }
+Begin
+  JPEG_WriteByteToFile(B);
+  If B = $FF Then
+    JPEG_WriteByteToFile($00);  { Byte stuffing }
+End;
+
+Procedure JPEG_WriteJPEGHeader(Width, Height: Word; Quality: Integer);
+{ Ecrit l'en-tete complet du fichier JPEG }
+Var
+  QLumTable, QChrTable: TJPEGQuantTable;
+  BaseLumTable, BaseChrTable: TJPEGQuantTable;
+  I: Integer;
+Begin
+  { Creer les tables de base (ordre zigzag) }
+  BaseLumTable[0] := JPEG_QL_00; BaseLumTable[1] := JPEG_QL_01;
+  BaseLumTable[2] := JPEG_QL_02; BaseLumTable[3] := JPEG_QL_03;
+  BaseLumTable[4] := JPEG_QL_04; BaseLumTable[5] := JPEG_QL_05;
+  BaseLumTable[6] := JPEG_QL_06; BaseLumTable[7] := JPEG_QL_07;
+  BaseLumTable[8] := JPEG_QL_08; BaseLumTable[9] := JPEG_QL_09;
+  BaseLumTable[10] := JPEG_QL_10; BaseLumTable[11] := JPEG_QL_11;
+  BaseLumTable[12] := JPEG_QL_12; BaseLumTable[13] := JPEG_QL_13;
+  BaseLumTable[14] := JPEG_QL_14; BaseLumTable[15] := JPEG_QL_15;
+  BaseLumTable[16] := JPEG_QL_16; BaseLumTable[17] := JPEG_QL_17;
+  BaseLumTable[18] := JPEG_QL_18; BaseLumTable[19] := JPEG_QL_19;
+  BaseLumTable[20] := JPEG_QL_20; BaseLumTable[21] := JPEG_QL_21;
+  BaseLumTable[22] := JPEG_QL_22; BaseLumTable[23] := JPEG_QL_23;
+  BaseLumTable[24] := JPEG_QL_24; BaseLumTable[25] := JPEG_QL_25;
+  BaseLumTable[26] := JPEG_QL_26; BaseLumTable[27] := JPEG_QL_27;
+  BaseLumTable[28] := JPEG_QL_28; BaseLumTable[29] := JPEG_QL_29;
+  BaseLumTable[30] := JPEG_QL_30; BaseLumTable[31] := JPEG_QL_31;
+  BaseLumTable[32] := JPEG_QL_32; BaseLumTable[33] := JPEG_QL_33;
+  BaseLumTable[34] := JPEG_QL_34; BaseLumTable[35] := JPEG_QL_35;
+  BaseLumTable[36] := JPEG_QL_36; BaseLumTable[37] := JPEG_QL_37;
+  BaseLumTable[38] := JPEG_QL_38; BaseLumTable[39] := JPEG_QL_39;
+  BaseLumTable[40] := JPEG_QL_40; BaseLumTable[41] := JPEG_QL_41;
+  BaseLumTable[42] := JPEG_QL_42; BaseLumTable[43] := JPEG_QL_43;
+  BaseLumTable[44] := JPEG_QL_44; BaseLumTable[45] := JPEG_QL_45;
+  BaseLumTable[46] := JPEG_QL_46; BaseLumTable[47] := JPEG_QL_47;
+  BaseLumTable[48] := JPEG_QL_48; BaseLumTable[49] := JPEG_QL_49;
+  BaseLumTable[50] := JPEG_QL_50; BaseLumTable[51] := JPEG_QL_51;
+  BaseLumTable[52] := JPEG_QL_52; BaseLumTable[53] := JPEG_QL_53;
+  BaseLumTable[54] := JPEG_QL_54; BaseLumTable[55] := JPEG_QL_55;
+  BaseLumTable[56] := JPEG_QL_56; BaseLumTable[57] := JPEG_QL_57;
+  BaseLumTable[58] := JPEG_QL_58; BaseLumTable[59] := JPEG_QL_59;
+  BaseLumTable[60] := JPEG_QL_60; BaseLumTable[61] := JPEG_QL_61;
+  BaseLumTable[62] := JPEG_QL_62; BaseLumTable[63] := JPEG_QL_63;
+  
+  BaseChrTable[0] := JPEG_QC_00; BaseChrTable[1] := JPEG_QC_01;
+  BaseChrTable[2] := JPEG_QC_02; BaseChrTable[3] := JPEG_QC_03;
+  BaseChrTable[4] := JPEG_QC_04; BaseChrTable[5] := JPEG_QC_05;
+  BaseChrTable[6] := JPEG_QC_06; BaseChrTable[7] := JPEG_QC_07;
+  BaseChrTable[8] := JPEG_QC_08; BaseChrTable[9] := JPEG_QC_09;
+  BaseChrTable[10] := JPEG_QC_10; BaseChrTable[11] := JPEG_QC_11;
+  BaseChrTable[12] := JPEG_QC_12; BaseChrTable[13] := JPEG_QC_13;
+  BaseChrTable[14] := JPEG_QC_14; BaseChrTable[15] := JPEG_QC_15;
+  BaseChrTable[16] := JPEG_QC_16; BaseChrTable[17] := JPEG_QC_17;
+  BaseChrTable[18] := JPEG_QC_18; BaseChrTable[19] := JPEG_QC_19;
+  BaseChrTable[20] := JPEG_QC_20; BaseChrTable[21] := JPEG_QC_21;
+  BaseChrTable[22] := JPEG_QC_22; BaseChrTable[23] := JPEG_QC_23;
+  BaseChrTable[24] := JPEG_QC_24; BaseChrTable[25] := JPEG_QC_25;
+  BaseChrTable[26] := JPEG_QC_26; BaseChrTable[27] := JPEG_QC_27;
+  BaseChrTable[28] := JPEG_QC_28; BaseChrTable[29] := JPEG_QC_29;
+  BaseChrTable[30] := JPEG_QC_30; BaseChrTable[31] := JPEG_QC_31;
+  BaseChrTable[32] := JPEG_QC_32; BaseChrTable[33] := JPEG_QC_33;
+  BaseChrTable[34] := JPEG_QC_34; BaseChrTable[35] := JPEG_QC_35;
+  BaseChrTable[36] := JPEG_QC_36; BaseChrTable[37] := JPEG_QC_37;
+  BaseChrTable[38] := JPEG_QC_38; BaseChrTable[39] := JPEG_QC_39;
+  BaseChrTable[40] := JPEG_QC_40; BaseChrTable[41] := JPEG_QC_41;
+  BaseChrTable[42] := JPEG_QC_42; BaseChrTable[43] := JPEG_QC_43;
+  BaseChrTable[44] := JPEG_QC_44; BaseChrTable[45] := JPEG_QC_45;
+  BaseChrTable[46] := JPEG_QC_46; BaseChrTable[47] := JPEG_QC_47;
+  BaseChrTable[48] := JPEG_QC_48; BaseChrTable[49] := JPEG_QC_49;
+  BaseChrTable[50] := JPEG_QC_50; BaseChrTable[51] := JPEG_QC_51;
+  BaseChrTable[52] := JPEG_QC_52; BaseChrTable[53] := JPEG_QC_53;
+  BaseChrTable[54] := JPEG_QC_54; BaseChrTable[55] := JPEG_QC_55;
+  BaseChrTable[56] := JPEG_QC_56; BaseChrTable[57] := JPEG_QC_57;
+  BaseChrTable[58] := JPEG_QC_58; BaseChrTable[59] := JPEG_QC_59;
+  BaseChrTable[60] := JPEG_QC_60; BaseChrTable[61] := JPEG_QC_61;
+  BaseChrTable[62] := JPEG_QC_62; BaseChrTable[63] := JPEG_QC_63;
+  
+  { Ajuster les tables selon la qualite }
+  JPEG_ScaleQuantTable(BaseLumTable, QLumTable, Quality);
+  JPEG_ScaleQuantTable(BaseChrTable, QChrTable, Quality);
+  
+  { Ecrire les segments de l'en-tete }
+  JPEG_WriteSOI;                         { Start Of Image }
+  JPEG_WriteAPP0;                        { JFIF header }
+  JPEG_WriteComment('DOXYGEN');          { Commentaire generateur }
+  JPEG_WriteDQT(0, QLumTable);           { Table quantification Y }
+  JPEG_WriteDQT(1, QChrTable);           { Table quantification CbCr }
+  JPEG_WriteSOF0(Width, Height, 3);      { Frame header (3 composantes YCbCr) }
+  JPEG_WriteAllDHTTables;                { Tables Huffman (DC/AC Lum/Chr) }
+  JPEG_WriteSOS(3);                      { Start Of Scan }
+  
+  { Enregistrer la taille de l'en-tete }
+  JPEG_EncodeStats.HeaderBytes := JPEG_EncoderState.BytesWritten;
+End;
+
+Function JPEG_BeginEncode(Filename: String; Width, Height: Word;
+                          Quality, SubsampMode: Integer): Boolean;
+{ Commence l'encodage d'une image JPEG }
+Begin
+  { Initialiser l'encodeur }
+  JPEG_InitEncoder(Quality, SubsampMode);
+  
+  { Ouvrir le fichier de sortie }
+  JPEG_OpenOutputFile(Filename);
+  If Not JPEG_FileOpen Then
+  Begin
+    JPEG_BeginEncode := False;
+    Exit;
+  End;
+  
+  { Ecrire l'en-tete JPEG }
+  JPEG_WriteJPEGHeader(Width, Height, Quality);
+  
+  JPEG_BeginEncode := True;
+End;
+
+Function JPEG_EndEncode: Boolean;
+{ Termine l'encodage d'une image JPEG }
+Var
+  I: Integer;
+Begin
+  If Not JPEG_FileOpen Then
+  Begin
+    JPEG_EndEncode := False;
+    Exit;
+  End;
+  
+  { Vider le buffer de bits avec padding }
+  If JPEG_BitBuffer.BitCount > 0 Then
+  Begin
+    { Padding avec des 1 pour completer l'octet }
+    While JPEG_BitBuffer.BitCount < 8 Do
+    Begin
+      JPEG_BitBuffer.Buffer := (JPEG_BitBuffer.Buffer Shl 1) Or 1;
+      Inc(JPEG_BitBuffer.BitCount);
+    End;
+    { Ajouter l'octet au buffer }
+    JPEG_BitBuffer.ByteBuffer[JPEG_BitBuffer.ByteCount] := JPEG_BitBuffer.Buffer And $FF;
+    Inc(JPEG_BitBuffer.ByteCount);
+    JPEG_BitBuffer.BitCount := 0;
+    JPEG_BitBuffer.Buffer := 0;
+  End;
+  
+  { Ecrire le buffer de bits avec byte stuffing }
+  For I := 0 To JPEG_BitBuffer.ByteCount - 1 Do
+    JPEG_WriteDataByteStuffed(JPEG_BitBuffer.ByteBuffer[I]);
+  JPEG_BitBuffer.ByteCount := 0;
+  
+  { Ecrire le marqueur de fin }
+  JPEG_WriteEOI;
+  
+  { Calculer les statistiques finales }
+  JPEG_EncodeStats.TotalBytes := JPEG_EncoderState.BytesWritten;
+  JPEG_EncodeStats.DataBytes := JPEG_EncodeStats.TotalBytes - JPEG_EncodeStats.HeaderBytes;
+  
+  { Fermer le fichier }
+  JPEG_CloseOutputFile;
+  
+  JPEG_EndEncode := True;
+End;
+
+Function JPEG_GetFileStructureDescription: String;
+{ Retourne une description de la structure du fichier JPEG }
+Begin
+  JPEG_GetFileStructureDescription := 
+    'SOI -> APP0(JFIF) -> COM -> DQT(Y) -> DQT(CbCr) -> SOF0 -> DHT(DC/AC) -> SOS -> [Data] -> EOI';
+End;
+
+Function JPEG_GetMarkerName(Marker: Byte): String;
+{ Retourne le nom d'un marqueur JPEG }
+Begin
+  Case Marker Of
+    JPEG_MARKER_SOI:  JPEG_GetMarkerName := 'SOI (Start Of Image)';
+    JPEG_MARKER_EOI:  JPEG_GetMarkerName := 'EOI (End Of Image)';
+    JPEG_MARKER_APP0: JPEG_GetMarkerName := 'APP0 (JFIF Header)';
+    JPEG_MARKER_DQT:  JPEG_GetMarkerName := 'DQT (Define Quantization Table)';
+    JPEG_MARKER_SOF0: JPEG_GetMarkerName := 'SOF0 (Start Of Frame - Baseline)';
+    JPEG_MARKER_DHT:  JPEG_GetMarkerName := 'DHT (Define Huffman Table)';
+    JPEG_MARKER_SOS:  JPEG_GetMarkerName := 'SOS (Start Of Scan)';
+    JPEG_MARKER_DRI:  JPEG_GetMarkerName := 'DRI (Define Restart Interval)';
+    JPEG_MARKER_RST0: JPEG_GetMarkerName := 'RST0 (Restart Marker 0)';
+    JPEG_MARKER_COM:  JPEG_GetMarkerName := 'COM (Comment)';
+  Else
+    JPEG_GetMarkerName := 'Unknown Marker';
+  End;
+End;
+
+Function JPEG_GetNumDHTTables: Integer;
+{ Retourne le nombre de tables DHT standard }
+Begin
+  JPEG_GetNumDHTTables := 4;  { DC Lum, AC Lum, DC Chr, AC Chr }
+End;
+
+Function JPEG_GetNumDQTTables: Integer;
+{ Retourne le nombre de tables DQT standard }
+Begin
+  JPEG_GetNumDQTTables := 2;  { Luminance, Chrominance }
+End;
+
+Function JPEG_GetHeaderSize: LongInt;
+{ Retourne la taille de l'en-tete en octets }
+Begin
+  JPEG_GetHeaderSize := JPEG_EncodeStats.HeaderBytes;
+End;
+
+Function JPEG_GetDataSize: LongInt;
+{ Retourne la taille des donnees en octets }
+Begin
+  JPEG_GetDataSize := JPEG_EncodeStats.DataBytes;
+End;
+
 { === Fonctions d'acces pour le module encodeur (Partie 10) === }
 
 Function JPEG_IsEncoderInitialized: Boolean;
