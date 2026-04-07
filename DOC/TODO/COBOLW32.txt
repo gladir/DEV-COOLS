@@ -455,7 +455,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
               CloseHandle, SetFilePointer pour implementation
             10 fonctions accesseurs
 
-  TODO 15 - PARSEUR : ACCEPT ET DISPLAY (E/S CONSOLE) [A FAIRE]
+  TODO 15 - PARSEUR : ACCEPT ET DISPLAY (E/S CONSOLE) [IMPLEMENTE]
             DISPLAY :
               DISPLAY lit-1 [lit-2 ...] [UPON CONSOLE/PRINTER]
               DISPLAY identifiant [WITH NO ADVANCING]

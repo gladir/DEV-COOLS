@@ -463,7 +463,7 @@
               CloseHandle, SetFilePointer pour implementation
             10 fonctions accesseurs
 
-  TODO 15 - PARSEUR : ACCEPT ET DISPLAY (E/S CONSOLE) [A FAIRE]
+  TODO 15 - PARSEUR : ACCEPT ET DISPLAY (E/S CONSOLE) [IMPLEMENTE]
             DISPLAY :
               DISPLAY lit-1 [lit-2 ...] [UPON CONSOLE/PRINTER]
               DISPLAY identifiant [WITH NO ADVANCING]
@@ -1756,8 +1756,20 @@ Const
   KW_AT                = 226;
   KW_PAGE              = 227;
 
+  { Mots-cles supplementaires pour ACCEPT/DISPLAY }
+  KW_CONSOLE           = 228;
+  KW_PRINTER           = 229;
+  KW_DATE              = 230;
+  KW_DAY               = 231;
+  KW_TIME              = 232;
+  KW_RUN               = 233;
+  KW_NO                = 234;
+  KW_END_DISPLAY       = 235;  { END-DISPLAY }
+  KW_END_ACCEPT        = 236;  { END-ACCEPT }
+  KW_DAY_OF_WEEK       = 237;  { DAY-OF-WEEK }
+
   { Nombre total de mots-cles definis }
-  KW_TOTAL_KEYWORDS    = 158;  { nombre approximatif de mots-cles }
+  KW_TOTAL_KEYWORDS    = 168;  { nombre approximatif de mots-cles }
 
 Var
   { Variables du module de mots-cles }
@@ -1994,6 +2006,16 @@ Begin
   Else If S = 'INVALID'           Then LookupKeyword := KW_INVALID
   Else If S = 'AT'                Then LookupKeyword := KW_AT
   Else If S = 'PAGE'              Then LookupKeyword := KW_PAGE
+  Else If S = 'CONSOLE'           Then LookupKeyword := KW_CONSOLE
+  Else If S = 'PRINTER'           Then LookupKeyword := KW_PRINTER
+  Else If S = 'DATE'              Then LookupKeyword := KW_DATE
+  Else If S = 'DAY'               Then LookupKeyword := KW_DAY
+  Else If S = 'DAY-OF-WEEK'       Then LookupKeyword := KW_DAY_OF_WEEK
+  Else If S = 'TIME'              Then LookupKeyword := KW_TIME
+  Else If S = 'RUN'               Then LookupKeyword := KW_RUN
+  Else If S = 'NO'                Then LookupKeyword := KW_NO
+  Else If S = 'END-DISPLAY'       Then LookupKeyword := KW_END_DISPLAY
+  Else If S = 'END-ACCEPT'        Then LookupKeyword := KW_END_ACCEPT
   Else LookupKeyword := KW_NONE;
 End;
 
@@ -2201,6 +2223,16 @@ Begin
     KW_INVALID           : KeywordName := 'INVALID';
     KW_AT                : KeywordName := 'AT';
     KW_PAGE              : KeywordName := 'PAGE';
+    KW_CONSOLE           : KeywordName := 'CONSOLE';
+    KW_PRINTER           : KeywordName := 'PRINTER';
+    KW_DATE              : KeywordName := 'DATE';
+    KW_DAY               : KeywordName := 'DAY';
+    KW_DAY_OF_WEEK       : KeywordName := 'DAY-OF-WEEK';
+    KW_TIME              : KeywordName := 'TIME';
+    KW_RUN               : KeywordName := 'RUN';
+    KW_NO                : KeywordName := 'NO';
+    KW_END_DISPLAY       : KeywordName := 'END-DISPLAY';
+    KW_END_ACCEPT        : KeywordName := 'END-ACCEPT';
   Else
     KeywordName := '?KW' + ItoSI(KW);
   End;
@@ -12639,6 +12671,722 @@ Function GetFioStateCount : Integer;
 Begin
   GetFioStateCount := FioStateCount;
 End;
+
+{ ============================================================ }
+{ TODO 15 - PARSEUR : ACCEPT ET DISPLAY (E/S CONSOLE)         }
+{           DISPLAY, ACCEPT, STOP RUN                          }
+{ ============================================================ }
+
+Const
+  { Types de source/destination pour ACCEPT/DISPLAY }
+  ADS_NONE             = 0;   { pas de source/destination specifique       }
+  ADS_CONSOLE          = 1;   { UPON CONSOLE / FROM CONSOLE                }
+  ADS_PRINTER          = 2;   { UPON PRINTER                               }
+  ADS_DATE             = 3;   { FROM DATE (YYMMDD)                         }
+  ADS_DAY              = 4;   { FROM DAY (YYDDD)                           }
+  ADS_DAY_OF_WEEK      = 5;   { FROM DAY-OF-WEEK (1-7)                     }
+  ADS_TIME             = 6;   { FROM TIME (HHMMSSCC)                       }
+
+  { Types d operations ACCEPT/DISPLAY }
+  ADO_NONE             = 0;   { pas d operation                            }
+  ADO_DISPLAY          = 1;   { instruction DISPLAY                        }
+  ADO_ACCEPT           = 2;   { instruction ACCEPT                         }
+  ADO_STOP_RUN         = 3;   { instruction STOP RUN                       }
+  ADO_STOP_LITERAL     = 4;   { instruction STOP literal                   }
+
+  { Limites }
+  ADS_MAX_OPERANDS     = 16;  { max d operandes dans un DISPLAY            }
+  ADS_MAX_LINE_LEN     = 132; { longueur max d une ligne affichee          }
+
+Var
+  AdsInitialized       : Boolean;   { True si InitAcceptDisplayState appele }
+  AdsStateCount        : Integer;   { compteur d etat general               }
+  AdsLabelNum          : Integer;   { compteur de labels internes           }
+  AdsDisplayCount      : Integer;   { nombre de DISPLAY                     }
+  AdsDisplayUponCount  : Integer;   { nombre de DISPLAY UPON                }
+  AdsDisplayNoAdvCount : Integer;   { nombre de WITH NO ADVANCING           }
+  AdsDisplayOperands   : Integer;   { total d operandes affiches            }
+  AdsDisplayLitCount   : Integer;   { nombre d operandes litteraux          }
+  AdsDisplayIdCount    : Integer;   { nombre d operandes identificateurs    }
+  AdsDisplayNumCount   : Integer;   { nombre d operandes numeriques         }
+  AdsAcceptCount       : Integer;   { nombre de ACCEPT                      }
+  AdsAcceptConsoleCount: Integer;   { nombre de ACCEPT FROM CONSOLE         }
+  AdsAcceptDateCount   : Integer;   { nombre de ACCEPT FROM DATE            }
+  AdsAcceptDayCount    : Integer;   { nombre de ACCEPT FROM DAY             }
+  AdsAcceptDayWeekCount: Integer;   { nombre de ACCEPT FROM DAY-OF-WEEK     }
+  AdsAcceptTimeCount   : Integer;   { nombre de ACCEPT FROM TIME            }
+  AdsStopRunCount      : Integer;   { nombre de STOP RUN                    }
+  AdsStopLiteralCount  : Integer;   { nombre de STOP literal                }
+  AdsConversionCount   : Integer;   { nombre de conversions num->chaine     }
+  AdsCrLfCount         : Integer;   { nombre de CR/LF generes               }
+  AdsTotalGenerated    : Integer;   { total d instructions generees         }
+
+{ ------------------------------------------------------------ }
+{ InitAcceptDisplayState : initialiser l etat du module         }
+{ ACCEPT/DISPLAY/STOP                                           }
+{ ------------------------------------------------------------ }
+
+Procedure InitAcceptDisplayState;
+Begin
+  AdsInitialized       := True;
+  AdsStateCount        := 0;
+  AdsLabelNum          := 0;
+  AdsDisplayCount      := 0;
+  AdsDisplayUponCount  := 0;
+  AdsDisplayNoAdvCount := 0;
+  AdsDisplayOperands   := 0;
+  AdsDisplayLitCount   := 0;
+  AdsDisplayIdCount    := 0;
+  AdsDisplayNumCount   := 0;
+  AdsAcceptCount       := 0;
+  AdsAcceptConsoleCount:= 0;
+  AdsAcceptDateCount   := 0;
+  AdsAcceptDayCount    := 0;
+  AdsAcceptDayWeekCount:= 0;
+  AdsAcceptTimeCount   := 0;
+  AdsStopRunCount      := 0;
+  AdsStopLiteralCount  := 0;
+  AdsConversionCount   := 0;
+  AdsCrLfCount         := 0;
+  AdsTotalGenerated    := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAdsLabel : genere un label unique pour ACCEPT/DISPLAY      }
+{ ------------------------------------------------------------ }
+
+Function GenAdsLabel : TString;
+Begin
+  Inc(AdsLabelNum);
+  GenAdsLabel := '_COBADS_L' + ItoSI(AdsLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ AdsSourceTypeName : retourne le nom d un type de source       }
+{ ------------------------------------------------------------ }
+
+Function AdsSourceTypeName(Src : Integer) : TString;
+Begin
+  Case Src Of
+    ADS_NONE        : AdsSourceTypeName := 'NONE';
+    ADS_CONSOLE     : AdsSourceTypeName := 'CONSOLE';
+    ADS_PRINTER     : AdsSourceTypeName := 'PRINTER';
+    ADS_DATE        : AdsSourceTypeName := 'DATE';
+    ADS_DAY         : AdsSourceTypeName := 'DAY';
+    ADS_DAY_OF_WEEK : AdsSourceTypeName := 'DAY-OF-WEEK';
+    ADS_TIME        : AdsSourceTypeName := 'TIME';
+  Else
+    AdsSourceTypeName := '?SRC' + ItoSI(Src);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AdsOpTypeName : retourne le nom d un type d operation         }
+{ ------------------------------------------------------------ }
+
+Function AdsOpTypeName(Op : Integer) : TString;
+Begin
+  Case Op Of
+    ADO_NONE         : AdsOpTypeName := 'NONE';
+    ADO_DISPLAY      : AdsOpTypeName := 'DISPLAY';
+    ADO_ACCEPT       : AdsOpTypeName := 'ACCEPT';
+    ADO_STOP_RUN     : AdsOpTypeName := 'STOP-RUN';
+    ADO_STOP_LITERAL : AdsOpTypeName := 'STOP-LITERAL';
+  Else
+    AdsOpTypeName := '?OP' + ItoSI(Op);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenGetStdHandle : genere code pour GetStdHandle               }
+{ HandleType : -10 = STD_INPUT_HANDLE, -11 = STD_OUTPUT_HANDLE }
+{ Resultat dans EAX                                             }
+{ ------------------------------------------------------------ }
+
+Procedure GenGetStdHandle(HandleType : Integer);
+Begin
+  WriteLn('  push ', HandleType, '              ; nStdHandle');
+  WriteLn('  call _GetStdHandle@4');
+  Inc(AdsTotalGenerated, 2);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenWriteConsole : genere le code pour ecrire sur stdout       }
+{ via WriteFile(hStdOut, lpBuffer, nBytes, lpWritten, 0)       }
+{ Adresse du buffer dans ESI, longueur dans ECX                }
+{ ------------------------------------------------------------ }
+
+Procedure GenWriteConsole;
+Var
+  LblWritten : TString;
+Begin
+  LblWritten := GenAdsLabel;
+  WriteLn('  ; WriteFile(hStdOut, buffer, length, &written, 0)');
+  WriteLn('  push 0                 ; lpOverlapped');
+  WriteLn('  push offset ', LblWritten, ' ; lpNumberOfBytesWritten');
+  WriteLn('  push ecx               ; nNumberOfBytesToWrite');
+  WriteLn('  push esi               ; lpBuffer');
+  WriteLn('  push -11               ; STD_OUTPUT_HANDLE');
+  WriteLn('  call _GetStdHandle@4');
+  WriteLn('  push eax               ; hFile');
+  WriteLn('  call _WriteFile@20');
+  Inc(AdsTotalGenerated, 9);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenReadConsole : genere le code pour lire depuis stdin        }
+{ via ReadFile(hStdIn, lpBuffer, nBytes, lpRead, 0)            }
+{ Adresse du buffer dans EDI, longueur max dans ECX            }
+{ ------------------------------------------------------------ }
+
+Procedure GenReadConsole;
+Var
+  LblRead : TString;
+Begin
+  LblRead := GenAdsLabel;
+  WriteLn('  ; ReadFile(hStdIn, buffer, maxlen, &bytesRead, 0)');
+  WriteLn('  push 0                 ; lpOverlapped');
+  WriteLn('  push offset ', LblRead, '    ; lpNumberOfBytesRead');
+  WriteLn('  push ecx               ; nNumberOfBytesToRead');
+  WriteLn('  push edi               ; lpBuffer');
+  WriteLn('  push -10               ; STD_INPUT_HANDLE');
+  WriteLn('  call _GetStdHandle@4');
+  WriteLn('  push eax               ; hFile');
+  WriteLn('  call _ReadFile@20');
+  Inc(AdsTotalGenerated, 9);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDisplayLiteral : affiche un litteral chaine sur la console }
+{ Genere : push len, push offset str, WriteFile sur stdout     }
+{ ------------------------------------------------------------ }
+
+Procedure GenDisplayLiteral(S : TString);
+Var
+  LblStr : TString;
+Begin
+  LblStr := GenAdsLabel;
+  WriteLn('; DISPLAY literal "', S, '"');
+  WriteLn('  lea esi, [', LblStr, ']');
+  WriteLn('  mov ecx, ', Length(S));
+  GenWriteConsole;
+  Inc(AdsDisplayLitCount);
+  Inc(AdsDisplayOperands);
+  Inc(AdsTotalGenerated, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDisplayIdent : affiche un identificateur sur la console    }
+{ Charge l adresse et la taille du champ, puis WriteFile       }
+{ ------------------------------------------------------------ }
+
+Procedure GenDisplayIdent(Ident : TString; Size : Integer);
+Begin
+  WriteLn('; DISPLAY ident ', Ident);
+  WriteLn('  lea esi, [', AsmIdent(Ident), ']');
+  WriteLn('  mov ecx, ', Size);
+  GenWriteConsole;
+  Inc(AdsDisplayIdCount);
+  Inc(AdsDisplayOperands);
+  Inc(AdsTotalGenerated, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDisplayNumeric : affiche un identificateur numerique       }
+{ Convertit la valeur numerique en chaine puis affiche          }
+{ Appelle la routine runtime _COBRT_NUM_TO_STR                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenDisplayNumeric(Ident : TString; Size : Integer);
+Begin
+  WriteLn('; DISPLAY numeric ', Ident);
+  WriteLn('  lea esi, [', AsmIdent(Ident), ']');
+  WriteLn('  mov ecx, ', Size);
+  WriteLn('  call ', _COBRT_NUM_TO_STR');
+  WriteLn('  ; EAX = adresse chaine, ECX = longueur');
+  WriteLn('  mov esi, eax');
+  GenWriteConsole;
+  Inc(AdsDisplayNumCount);
+  Inc(AdsDisplayOperands);
+  Inc(AdsConversionCount);
+  Inc(AdsTotalGenerated, 5);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDisplayCrLf : genere le code pour afficher CR+LF (13, 10) }
+{ Sauf si WITH NO ADVANCING est specifie                       }
+{ ------------------------------------------------------------ }
+
+Procedure GenDisplayCrLf;
+Var
+  LblCrLf : TString;
+Begin
+  LblCrLf := GenAdsLabel;
+  WriteLn('; Retour a la ligne (CR+LF)');
+  WriteLn('  lea esi, [', LblCrLf, ']   ; CR+LF');
+  WriteLn('  mov ecx, 2');
+  GenWriteConsole;
+  Inc(AdsCrLfCount);
+  Inc(AdsTotalGenerated, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAcceptConsole : genere le code pour ACCEPT FROM CONSOLE    }
+{ Lit une ligne depuis stdin dans l identificateur              }
+{ ------------------------------------------------------------ }
+
+Procedure GenAcceptConsole(Ident : TString; Size : Integer);
+Begin
+  WriteLn('; ACCEPT ', Ident, ' FROM CONSOLE');
+  WriteLn('  lea edi, [', AsmIdent(Ident), ']');
+  WriteLn('  mov ecx, ', Size);
+  GenReadConsole;
+  Inc(AdsAcceptConsoleCount);
+  Inc(AdsTotalGenerated, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAcceptDate : genere le code pour ACCEPT id FROM DATE       }
+{ Date systeme au format YYMMDD (6 caracteres)                 }
+{ Appelle GetLocalTime (Win32 API)                              }
+{ ------------------------------------------------------------ }
+
+Procedure GenAcceptDate(Ident : TString);
+Begin
+  WriteLn('; ACCEPT ', Ident, ' FROM DATE (YYMMDD)');
+  WriteLn('  sub esp, 16            ; SYSTEMTIME structure (16 bytes)');
+  WriteLn('  push esp');
+  WriteLn('  call _GetLocalTime@4');
+  WriteLn('  ; Extraire annee (mod 100), mois, jour');
+  WriteLn('  movzx eax, word [esp+0]  ; wYear');
+  WriteLn('  mov edx, 0');
+  WriteLn('  mov ecx, 100');
+  WriteLn('  div ecx                ; EDX = year mod 100');
+  WriteLn('  ; Convertir en YYMMDD ASCII dans le champ');
+  WriteLn('  lea edi, [', AsmIdent(Ident), ']');
+  WriteLn('  call ', _COBRT_FORMAT_DATE');
+  WriteLn('  add esp, 16            ; liberer SYSTEMTIME');
+  Inc(AdsAcceptDateCount);
+  Inc(AdsTotalGenerated, 12);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAcceptDay : genere le code pour ACCEPT id FROM DAY         }
+{ Jour julien au format YYDDD (5 caracteres)                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenAcceptDay(Ident : TString);
+Begin
+  WriteLn('; ACCEPT ', Ident, ' FROM DAY (YYDDD)');
+  WriteLn('  sub esp, 16            ; SYSTEMTIME structure');
+  WriteLn('  push esp');
+  WriteLn('  call _GetLocalTime@4');
+  WriteLn('  ; Calculer le jour julien (1-366)');
+  WriteLn('  lea edi, [', AsmIdent(Ident), ']');
+  WriteLn('  call ', _COBRT_FORMAT_DAY');
+  WriteLn('  add esp, 16');
+  Inc(AdsAcceptDayCount);
+  Inc(AdsTotalGenerated, 8);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAcceptDayOfWeek : genere le code pour ACCEPT FROM          }
+{ DAY-OF-WEEK (1 caractere, 1=lundi..7=dimanche)               }
+{ ------------------------------------------------------------ }
+
+Procedure GenAcceptDayOfWeek(Ident : TString);
+Var
+  LblOk : TString;
+Begin
+  LblOk := GenAdsLabel;
+  WriteLn('; ACCEPT ', Ident, ' FROM DAY-OF-WEEK (1-7)');
+  WriteLn('  sub esp, 16            ; SYSTEMTIME structure');
+  WriteLn('  push esp');
+  WriteLn('  call _GetLocalTime@4');
+  WriteLn('  movzx eax, word [esp+4]  ; wDayOfWeek (0=dim)');
+  WriteLn('  ; Convertir 0=dim en 7, 1=lun en 1, etc.');
+  WriteLn('  test eax, eax');
+  WriteLn('  jnz ', LblOk);
+  WriteLn('  mov eax, 7');
+  WriteLn(LblOk, ':');
+  WriteLn('  add al, 30h            ; ASCII digit');
+  WriteLn('  mov [', AsmIdent(Ident), '], al');
+  WriteLn('  add esp, 16');
+  Inc(AdsAcceptDayWeekCount);
+  Inc(AdsTotalGenerated, 12);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAcceptTime : genere le code pour ACCEPT id FROM TIME       }
+{ Heure systeme au format HHMMSSCC (8 caracteres)              }
+{ CC = centisecondes                                            }
+{ ------------------------------------------------------------ }
+
+Procedure GenAcceptTime(Ident : TString);
+Begin
+  WriteLn('; ACCEPT ', Ident, ' FROM TIME (HHMMSSCC)');
+  WriteLn('  sub esp, 16            ; SYSTEMTIME structure');
+  WriteLn('  push esp');
+  WriteLn('  call _GetLocalTime@4');
+  WriteLn('  ; Extraire heure, minute, seconde, milliseconde/10');
+  WriteLn('  lea edi, [', AsmIdent(Ident), ']');
+  WriteLn('  call ', _COBRT_FORMAT_TIME');
+  WriteLn('  add esp, 16');
+  Inc(AdsAcceptTimeCount);
+  Inc(AdsTotalGenerated, 8);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStopRun : genere le code pour STOP RUN                    }
+{ Appelle ExitProcess(0) pour terminer le programme             }
+{ ------------------------------------------------------------ }
+
+Procedure GenStopRun;
+Begin
+  WriteLn('; STOP RUN');
+  WriteLn('  push 0                 ; uExitCode');
+  WriteLn('  call _ExitProcess@4');
+  Inc(AdsStopRunCount);
+  Inc(AdsTotalGenerated, 2);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStopLiteral : genere le code pour STOP literal            }
+{ Affiche le litteral puis termine avec ExitProcess(0)          }
+{ ------------------------------------------------------------ }
+
+Procedure GenStopLiteral(S : TString);
+Begin
+  WriteLn('; STOP literal "', S, '"');
+  GenDisplayLiteral(S);
+  GenDisplayCrLf;
+  WriteLn('  push 0                 ; uExitCode');
+  WriteLn('  call _ExitProcess@4');
+  Inc(AdsStopLiteralCount);
+  Inc(AdsTotalGenerated, 2);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDisplayStatement : analyser DISPLAY                     }
+{ DISPLAY lit-1 [lit-2 ...] [UPON CONSOLE/PRINTER]            }
+{   [WITH NO ADVANCING]                                         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDisplayStatement;
+Var
+  UponTarget   : Integer;
+  NoAdvancing  : Boolean;
+  OperandCount : Integer;
+Begin
+  Inc(AdsStateCount);
+  UponTarget := ADS_CONSOLE;
+  NoAdvancing := False;
+  OperandCount := 0;
+
+  { Traiter les operandes (litteraux, identificateurs) }
+  While (CurTokType <> TOK_DOT) And
+        Not ((CurTokType = TOK_KEYWORD) And
+             ((CurTokNum = KW_UPON) Or (CurTokNum = KW_WITH) Or
+              (CurTokNum = KW_END_DISPLAY))) Do
+  Begin
+    If CurTokType = TOK_STRING Then Begin
+      GenDisplayLiteral(CurTokStr);
+      Inc(OperandCount);
+      LexNextToken;
+    End
+    Else If CurTokType = TOK_INTEGER Then Begin
+      { Litteraux numeriques : convertir en chaine }
+      GenDisplayLiteral(ItoSI(CurTokNum));
+      Inc(OperandCount);
+      LexNextToken;
+    End
+    Else If CurTokType = TOK_IDENT Then Begin
+      { Identificateur : afficher le contenu du champ }
+      GenDisplayIdent(CurTokStr, 0);
+      Inc(OperandCount);
+      LexNextToken;
+    End
+    Else If (CurTokType = TOK_KEYWORD) And
+            Not ((CurTokNum = KW_UPON) Or (CurTokNum = KW_WITH) Or
+                 (CurTokNum = KW_END_DISPLAY)) Then Begin
+      { Mot-cle figuratif comme SPACES, ZEROS, etc. }
+      GenDisplayLiteral(CurTokStr);
+      Inc(OperandCount);
+      LexNextToken;
+    End
+    Else
+      Break;
+  End;
+
+  { Clause UPON CONSOLE/PRINTER }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_UPON) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) Then Begin
+      Case CurTokNum Of
+        KW_CONSOLE : UponTarget := ADS_CONSOLE;
+        KW_PRINTER : UponTarget := ADS_PRINTER;
+      Else
+        WarnMsg('DISPLAY UPON : CONSOLE ou PRINTER attendu');
+      End;
+      LexNextToken;
+    End
+    Else If CurTokType = TOK_IDENT Then Begin
+      { Nom mnemonique defini dans SPECIAL-NAMES }
+      If CurTokStr = 'CONSOLE' Then
+        UponTarget := ADS_CONSOLE
+      Else If CurTokStr = 'PRINTER' Then
+        UponTarget := ADS_PRINTER
+      Else If CurTokStr = 'SYSOUT' Then
+        UponTarget := ADS_CONSOLE;
+      LexNextToken;
+    End;
+    Inc(AdsDisplayUponCount);
+  End;
+
+  { Clause WITH NO ADVANCING }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WITH) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NO) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ADVANCING) Then Begin
+        NoAdvancing := True;
+        Inc(AdsDisplayNoAdvCount);
+        LexNextToken;
+      End;
+    End;
+  End;
+
+  { Generer CR/LF sauf si NO ADVANCING }
+  If Not NoAdvancing Then
+    GenDisplayCrLf;
+
+  { Consommer END-DISPLAY optionnel }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_DISPLAY) Then
+    LexNextToken;
+
+  Inc(AdsDisplayCount);
+  Inc(AdsTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAcceptStatement : analyser ACCEPT                       }
+{ ACCEPT id [FROM CONSOLE/DATE/DAY/DAY-OF-WEEK/TIME]          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAcceptStatement;
+Var
+  Ident      : TString;
+  FromSource : Integer;
+Begin
+  Inc(AdsStateCount);
+  FromSource := ADS_CONSOLE;  { par defaut, lire depuis la console }
+
+  { Identificateur destination }
+  If CurTokType <> TOK_IDENT Then Begin
+    WarnMsg('ACCEPT : identificateur attendu');
+    Exit;
+  End;
+  Ident := CurTokStr;
+  LexNextToken;
+
+  { Clause FROM optionnelle }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FROM) Then Begin
+    LexNextToken;
+    If CurTokType = TOK_KEYWORD Then Begin
+      Case CurTokNum Of
+        KW_CONSOLE     : Begin FromSource := ADS_CONSOLE;     LexNextToken; End;
+        KW_DATE        : Begin FromSource := ADS_DATE;        LexNextToken; End;
+        KW_DAY         : Begin FromSource := ADS_DAY;         LexNextToken; End;
+        KW_DAY_OF_WEEK : Begin FromSource := ADS_DAY_OF_WEEK; LexNextToken; End;
+        KW_TIME        : Begin FromSource := ADS_TIME;        LexNextToken; End;
+      Else Begin
+        WarnMsg('ACCEPT FROM : source invalide ' + CurTokStr);
+        LexNextToken;
+      End;
+      End;
+    End
+    Else If CurTokType = TOK_IDENT Then Begin
+      { Nom mnemonique }
+      If CurTokStr = 'CONSOLE' Then
+        FromSource := ADS_CONSOLE
+      Else If CurTokStr = 'DATE' Then
+        FromSource := ADS_DATE
+      Else If CurTokStr = 'DAY' Then
+        FromSource := ADS_DAY
+      Else If CurTokStr = 'TIME' Then
+        FromSource := ADS_TIME;
+      LexNextToken;
+    End;
+  End;
+
+  { Generer le code selon la source }
+  Case FromSource Of
+    ADS_CONSOLE     : GenAcceptConsole(Ident, 80);
+    ADS_DATE        : GenAcceptDate(Ident);
+    ADS_DAY         : GenAcceptDay(Ident);
+    ADS_DAY_OF_WEEK : GenAcceptDayOfWeek(Ident);
+    ADS_TIME        : GenAcceptTime(Ident);
+  End;
+
+  { Consommer END-ACCEPT optionnel }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_ACCEPT) Then
+    LexNextToken;
+
+  Inc(AdsAcceptCount);
+  Inc(AdsTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStopStatement : analyser STOP                           }
+{ STOP RUN : terminer le programme                              }
+{ STOP literal : afficher le litteral puis terminer             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStopStatement;
+Begin
+  Inc(AdsStateCount);
+
+  { STOP RUN }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_RUN) Then Begin
+    LexNextToken;
+    GenStopRun;
+  End
+  { STOP literal }
+  Else If CurTokType = TOK_STRING Then Begin
+    GenStopLiteral(CurTokStr);
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_INTEGER Then Begin
+    GenStopLiteral(ItoSI(CurTokNum));
+    LexNextToken;
+  End
+  Else Begin
+    { STOP sans argument = STOP RUN }
+    GenStopRun;
+  End;
+
+  Inc(AdsTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAcceptDisplayStatement : dispatch les instructions       }
+{ ACCEPT, DISPLAY, STOP                                         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAcceptDisplayStatement;
+Begin
+  If CurTokType <> TOK_KEYWORD Then Exit;
+
+  Case CurTokNum Of
+    KW_DISPLAY : Begin LexNextToken; ParseDisplayStatement; End;
+    KW_ACCEPT  : Begin LexNextToken; ParseAcceptStatement; End;
+    KW_STOP    : Begin LexNextToken; ParseStopStatement; End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsAcceptDisplayKeyword : teste si un mot-cle est lie a       }
+{ ACCEPT/DISPLAY/STOP                                           }
+{ ------------------------------------------------------------ }
+
+Function IsAcceptDisplayKeyword(KW : Integer) : Boolean;
+Begin
+  IsAcceptDisplayKeyword := (KW = KW_DISPLAY) Or (KW = KW_ACCEPT) Or
+                            (KW = KW_STOP) Or (KW = KW_UPON) Or
+                            (KW = KW_CONSOLE) Or (KW = KW_PRINTER) Or
+                            (KW = KW_DATE) Or (KW = KW_DAY) Or
+                            (KW = KW_DAY_OF_WEEK) Or (KW = KW_TIME) Or
+                            (KW = KW_RUN) Or (KW = KW_NO) Or
+                            (KW = KW_END_DISPLAY) Or (KW = KW_END_ACCEPT);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpAcceptDisplayState : affiche l etat du module             }
+{ ACCEPT/DISPLAY/STOP                                           }
+{ ------------------------------------------------------------ }
+
+Procedure DumpAcceptDisplayState;
+Begin
+  WriteLn('--- Accept/Display State ---');
+  WriteLn('  Initialized       : ', AdsInitialized);
+  WriteLn('  DISPLAY count     : ', AdsDisplayCount);
+  WriteLn('    UPON             : ', AdsDisplayUponCount);
+  WriteLn('    NO ADVANCING     : ', AdsDisplayNoAdvCount);
+  WriteLn('    Operands total   : ', AdsDisplayOperands);
+  WriteLn('    Literal operands : ', AdsDisplayLitCount);
+  WriteLn('    Ident operands   : ', AdsDisplayIdCount);
+  WriteLn('    Numeric operands : ', AdsDisplayNumCount);
+  WriteLn('  ACCEPT count      : ', AdsAcceptCount);
+  WriteLn('    FROM CONSOLE     : ', AdsAcceptConsoleCount);
+  WriteLn('    FROM DATE        : ', AdsAcceptDateCount);
+  WriteLn('    FROM DAY         : ', AdsAcceptDayCount);
+  WriteLn('    FROM DAY-OF-WEEK : ', AdsAcceptDayWeekCount);
+  WriteLn('    FROM TIME        : ', AdsAcceptTimeCount);
+  WriteLn('  STOP RUN count    : ', AdsStopRunCount);
+  WriteLn('  STOP literal      : ', AdsStopLiteralCount);
+  WriteLn('  Conversions       : ', AdsConversionCount);
+  WriteLn('  CR/LF generated   : ', AdsCrLfCount);
+  WriteLn('  Total generated   : ', AdsTotalGenerated);
+  WriteLn('  State count       : ', AdsStateCount);
+End;
+
+{ 10 fonctions accesseurs pour TODO 15                         }
+
+Function IsAdsInitialized : Boolean;
+Begin
+  IsAdsInitialized := AdsInitialized;
+End;
+
+Function IsAdsEmpty : Boolean;
+Begin
+  IsAdsEmpty := (AdsTotalGenerated = 0);
+End;
+
+Function GetAdsTotalGenerated : Integer;
+Begin
+  GetAdsTotalGenerated := AdsTotalGenerated;
+End;
+
+Function GetAdsStatus : TString;
+Begin
+  If Not AdsInitialized Then
+    GetAdsStatus := 'NON INITIALISE'
+  Else
+    GetAdsStatus := 'DISPLAY=' + ItoSI(AdsDisplayCount) +
+                    ' ACCEPT=' + ItoSI(AdsAcceptCount) +
+                    ' STOP-RUN=' + ItoSI(AdsStopRunCount);
+End;
+
+Function GetAdsDisplayCount : Integer;
+Begin
+  GetAdsDisplayCount := AdsDisplayCount;
+End;
+
+Function GetAdsAcceptCount : Integer;
+Begin
+  GetAdsAcceptCount := AdsAcceptCount;
+End;
+
+Function GetAdsStopRunCount : Integer;
+Begin
+  GetAdsStopRunCount := AdsStopRunCount;
+End;
+
+Function GetAdsConversionCount : Integer;
+Begin
+  GetAdsConversionCount := AdsConversionCount;
+End;
+
+Function GetAdsCrLfCount : Integer;
+Begin
+  GetAdsCrLfCount := AdsCrLfCount;
+End;
+
+Function GetAdsStateCount : Integer;
+Begin
+  GetAdsStateCount := AdsStateCount;
+End;
+
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
 { COBOL est insensible a la casse : tout est converti en       }
 { majuscules dans CurTokStr                                     }
@@ -13299,6 +14047,7 @@ Begin
   CtlInitialized := False;
   StrInitialized := False;
   FioInitialized := False;
+  AdsInitialized := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -13341,6 +14090,9 @@ Begin
 
   { Initialiser le module E/S fichiers }
   InitFileIOState;
+
+  { Initialiser le module ACCEPT/DISPLAY/STOP }
+  InitAcceptDisplayState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
