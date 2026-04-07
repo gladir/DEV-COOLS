@@ -3690,15 +3690,18 @@ End;
 Function ExtractPascalReturnType(Const Line: String): String;
 { Extrait le type de retour d'une fonction Pascal (apres le :) }
 Var
-  PColon, PEnd, I: Integer;
-  S: String;
+  PColon, PEnd, PSemi, I: Integer;
+  SearchStart: Integer;
 Begin
   ExtractPascalReturnType := '';
   { Trouver le : apres la parenthese fermante }
   PEnd := Pos(')', Line);
-  If PEnd = 0 Then PEnd := 1;
+  If PEnd = 0 Then 
+    SearchStart := 1
+  Else
+    SearchStart := PEnd;
   PColon := 0;
-  For I := PEnd To Length(Line) Do
+  For I := SearchStart To Length(Line) Do
   Begin
     If Line[I] = ':' Then
     Begin
@@ -3707,29 +3710,23 @@ Begin
     End;
   End;
   If PColon = 0 Then Exit;
-  { Extraire le type jusqu'au ; ou la fin }
-  S := '';
-  For I := PColon + 1 To Length(Line) Do
-  Begin
-    If Line[I] = ';' Then Break;
-    S := S + Line[I];
-  End;
-  ExtractPascalReturnType := TrimLine(S);
+  { Trouver la position du ; }
+  PSemi := Pos(';', Line);
+  If (PSemi = 0) Or (PSemi < PColon) Then 
+    PSemi := Length(Line) + 1;
+  { Extraire le type }
+  ExtractPascalReturnType := TrimLine(Copy(Line, PColon + 1, PSemi - PColon - 1));
 End;
 
 Function ExtractPascalSignature(Const Line: String; IsProcedure: Boolean): String;
 { Extrait la signature complete d'une procedure/fonction Pascal }
 Var
-  PEnd, I: Integer;
-  S: String;
+  PEnd: Integer;
 Begin
-  S := '';
   { Trouver la fin de la declaration (;) }
   PEnd := Pos(';', Line);
-  If PEnd = 0 Then PEnd := Length(Line);
-  For I := 1 To PEnd - 1 Do
-    S := S + Line[I];
-  ExtractPascalSignature := TrimLine(S);
+  If PEnd = 0 Then PEnd := Length(Line) + 1;
+  ExtractPascalSignature := TrimLine(Copy(Line, 1, PEnd - 1));
 End;
 
 Procedure ExtractEntitiesC(Const FileName: String);
