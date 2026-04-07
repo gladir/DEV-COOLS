@@ -131,7 +131,7 @@
               sont traites comme un seul token
             10 fonctions accesseurs
 
-  TODO 04 - TABLE DES SYMBOLES COBOL (32 BITS) [A FAIRE]
+  TODO 04 - TABLE DES SYMBOLES COBOL (32 BITS) [IMPLEMENTE]
             Enregistrement TSymbol :
               Name      : nom COBOL (WS-NOM, EMP-RECORD)
               AsmName   : label ASM correspondant (_COB_WS_NOM)
@@ -2292,6 +2292,416 @@ Begin
 End;
 
 
+{ ============================================================ }
+{ TODO 04 - TABLE DES SYMBOLES COBOL (32 BITS) [IMPLEMENTE]   }
+{ ============================================================ }
+
+Const
+  { Types de donnees COBOL (CBT_*) }
+  CBT_NONE           = 0;   { non defini / inconnu                  }
+  CBT_ALPHA          = 1;   { alphabetique (PIC A)                  }
+  CBT_NUMERIC        = 2;   { numerique affichable (PIC 9)          }
+  CBT_ALPHANUMERIC   = 3;   { alphanumerique (PIC X)                }
+  CBT_PACKED         = 4;   { decimal condense (COMP-3)             }
+  CBT_BINARY         = 5;   { binaire (COMP, COMP-4, BINARY)        }
+  CBT_INDEX          = 6;   { index (USAGE INDEX)                   }
+  CBT_POINTER        = 7;   { pointeur (USAGE POINTER)              }
+  CBT_GROUP          = 8;   { groupe (pas de PIC)                   }
+  CBT_FILE           = 9;   { fichier (FD/SD)                       }
+  CBT_CONDITION      = 10;  { condition (niveau 88)                 }
+  CBT_COMP1          = 11;  { flottant simple precision (COMP-1)    }
+  CBT_COMP2          = 12;  { flottant double precision (COMP-2)    }
+  CBT_EDITED_NUM     = 13;  { numerique edite (PIC Z, *, $, etc.)   }
+  CBT_EDITED_ALPHA   = 14;  { alphanumerique edite (PIC B, 0, /)    }
+
+  { Sections de la DATA DIVISION (SEC_*) }
+  SEC_NONE            = 0;   { pas de section                       }
+  SEC_WORKING_STORAGE = 1;   { WORKING-STORAGE SECTION              }
+  SEC_FILE            = 2;   { FILE SECTION                         }
+  SEC_LINKAGE         = 3;   { LINKAGE SECTION                      }
+  SEC_LOCAL_STORAGE   = 4;   { LOCAL-STORAGE SECTION                }
+  SEC_SCREEN          = 5;   { SCREEN SECTION                       }
+  SEC_REPORT          = 6;   { REPORT SECTION                       }
+
+  { Clause USAGE (USG_*) }
+  USG_DISPLAY         = 0;   { DISPLAY (par defaut)                 }
+  USG_COMP            = 1;   { COMP / COMPUTATIONAL / BINARY        }
+  USG_COMP1           = 2;   { COMP-1 (flottant simple)             }
+  USG_COMP2           = 3;   { COMP-2 (flottant double)             }
+  USG_COMP3           = 4;   { COMP-3 / PACKED-DECIMAL              }
+  USG_COMP4           = 5;   { COMP-4 (synonyme COMP/BINARY)        }
+  USG_COMP5           = 6;   { COMP-5 (binaire natif)               }
+  USG_INDEX           = 7;   { INDEX                                }
+  USG_POINTER         = 8;   { POINTER                              }
+
+  { Tailles en octets }
+  CBT_SIZE_INDEX     = 4;   { index COBOL = 32 bits                 }
+  CBT_SIZE_POINTER   = 4;   { pointeur = 32 bits                    }
+  CBT_SIZE_COMP1     = 4;   { COMP-1 = 32 bits flottant             }
+  CBT_SIZE_COMP2     = 8;   { COMP-2 = 64 bits flottant             }
+
+  { Nombre maximum de valeurs pour un niveau 88 }
+  MAX_COND_VALUES    = 16;
+
+Type
+  { Entree dans la table des symboles COBOL }
+  TSymbol = Record
+    Name         : String[64];   { nom COBOL (WS-NOM, EMP-RECORD)    }
+    AsmName      : String[64];   { label ASM (_COB_WS_NOM)           }
+    Level        : Integer;      { niveau (01-49, 66, 77, 88)        }
+    SymType      : Integer;      { CBT_ALPHA, CBT_NUMERIC, ...       }
+    PicStr       : String[64];   { chaine PICTURE originale           }
+    PicSize      : Integer;      { taille en octets                   }
+    PicDecimals  : Integer;      { decimales (V dans PIC)             }
+    IsSigned     : Boolean;      { PIC S9(...)                        }
+    IsGroup      : Boolean;      { True si groupe (pas de PIC)        }
+    ParentIdx    : Integer;      { index du symbole parent (-1=aucun) }
+    Offset       : Integer;      { offset dans le groupe/record       }
+    Value        : String[64];   { valeur initiale (VALUE)            }
+    IsGlobal     : Boolean;      { portee globale                     }
+    Section      : Integer;      { SEC_WORKING_STORAGE, etc.          }
+    Occurs       : Integer;      { repetitions (OCCURS)               }
+    OccursMin    : Integer;      { OCCURS min (DEPENDING ON)          }
+    OccursDep    : String[64];   { variable DEPENDING ON              }
+    RedefinedIdx : Integer;      { index redefini (REDEFINES, -1=non) }
+    CondValues   : Array[0..MAX_COND_VALUES - 1] Of String[32];
+    CondValCount : Integer;      { nombre de valeurs niveau 88        }
+    Usage        : Integer;      { USG_DISPLAY, USG_COMP, etc.        }
+    IsExternal   : Boolean;      { clause EXTERNAL                    }
+    IsFiller     : Boolean;      { True si FILLER                     }
+  End;
+
+Var
+  { Table des symboles }
+  SymTab           : Array[0..MAX_SYM - 1] Of TSymbol;
+  SymCount         : Integer;
+  SymInitialized   : Boolean;
+  SymStateCount    : Integer;
+
+{ ------------------------------------------------------------ }
+{ CobTypeName : nom textuel d un type COBOL                    }
+{ ------------------------------------------------------------ }
+
+Function CobTypeName(T : Integer) : TString;
+Begin
+  Case T Of
+    CBT_NONE         : CobTypeName := '(none)';
+    CBT_ALPHA        : CobTypeName := 'Alphabetic';
+    CBT_NUMERIC      : CobTypeName := 'Numeric';
+    CBT_ALPHANUMERIC : CobTypeName := 'Alphanumeric';
+    CBT_PACKED       : CobTypeName := 'Packed-Decimal';
+    CBT_BINARY       : CobTypeName := 'Binary';
+    CBT_INDEX        : CobTypeName := 'Index';
+    CBT_POINTER      : CobTypeName := 'Pointer';
+    CBT_GROUP        : CobTypeName := 'Group';
+    CBT_FILE         : CobTypeName := 'File';
+    CBT_CONDITION    : CobTypeName := 'Condition';
+    CBT_COMP1        : CobTypeName := 'Comp-1';
+    CBT_COMP2        : CobTypeName := 'Comp-2';
+    CBT_EDITED_NUM   : CobTypeName := 'Numeric-Edited';
+    CBT_EDITED_ALPHA : CobTypeName := 'Alphanumeric-Edited';
+  Else
+    CobTypeName := '?CBT' + ItoSI(T);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CobUsageName : nom textuel d une clause USAGE                }
+{ ------------------------------------------------------------ }
+
+Function CobUsageName(U : Integer) : TString;
+Begin
+  Case U Of
+    USG_DISPLAY : CobUsageName := 'DISPLAY';
+    USG_COMP    : CobUsageName := 'COMP';
+    USG_COMP1   : CobUsageName := 'COMP-1';
+    USG_COMP2   : CobUsageName := 'COMP-2';
+    USG_COMP3   : CobUsageName := 'COMP-3';
+    USG_COMP4   : CobUsageName := 'COMP-4';
+    USG_COMP5   : CobUsageName := 'COMP-5';
+    USG_INDEX   : CobUsageName := 'INDEX';
+    USG_POINTER : CobUsageName := 'POINTER';
+  Else
+    CobUsageName := '?USG' + ItoSI(U);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CobSectionName : nom textuel d une section DATA              }
+{ ------------------------------------------------------------ }
+
+Function CobSectionName(SC : Integer) : TString;
+Begin
+  Case SC Of
+    SEC_NONE            : CobSectionName := '(none)';
+    SEC_WORKING_STORAGE : CobSectionName := 'WORKING-STORAGE';
+    SEC_FILE            : CobSectionName := 'FILE';
+    SEC_LINKAGE         : CobSectionName := 'LINKAGE';
+    SEC_LOCAL_STORAGE   : CobSectionName := 'LOCAL-STORAGE';
+    SEC_SCREEN          : CobSectionName := 'SCREEN';
+    SEC_REPORT          : CobSectionName := 'REPORT';
+  Else
+    CobSectionName := '?SEC' + ItoSI(SC);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymInit : initialiser la table des symboles                  }
+{ ------------------------------------------------------------ }
+
+Procedure SymInit;
+Var
+  I, J : Integer;
+Begin
+  SymCount       := 0;
+  SymInitialized := True;
+  SymStateCount  := 0;
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name         := '';
+    SymTab[I].AsmName      := '';
+    SymTab[I].Level        := 0;
+    SymTab[I].SymType      := CBT_NONE;
+    SymTab[I].PicStr       := '';
+    SymTab[I].PicSize      := 0;
+    SymTab[I].PicDecimals  := 0;
+    SymTab[I].IsSigned     := False;
+    SymTab[I].IsGroup      := False;
+    SymTab[I].ParentIdx    := -1;
+    SymTab[I].Offset       := 0;
+    SymTab[I].Value        := '';
+    SymTab[I].IsGlobal     := False;
+    SymTab[I].Section      := SEC_NONE;
+    SymTab[I].Occurs       := 0;
+    SymTab[I].OccursMin    := 0;
+    SymTab[I].OccursDep    := '';
+    SymTab[I].RedefinedIdx := -1;
+    For J := 0 To MAX_COND_VALUES - 1 Do
+      SymTab[I].CondValues[J] := '';
+    SymTab[I].CondValCount := 0;
+    SymTab[I].Usage        := USG_DISPLAY;
+    SymTab[I].IsExternal   := False;
+    SymTab[I].IsFiller     := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymAdd : ajouter un symbole dans la table                    }
+{ Retourne l index du nouveau symbole ou -1 si plein           }
+{ ------------------------------------------------------------ }
+
+Function SymAdd(Const AName : TString; ALevel : Integer;
+                AType : Integer; ASection : Integer) : Integer;
+Var
+  Idx, J : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    FatalError('Table des symboles pleine (max ' + ItoSI(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  Idx := SymCount;
+  SymTab[Idx].Name         := AName;
+  SymTab[Idx].Level        := ALevel;
+  SymTab[Idx].SymType      := AType;
+  SymTab[Idx].Section      := ASection;
+  SymTab[Idx].PicStr       := '';
+  SymTab[Idx].PicSize      := 0;
+  SymTab[Idx].PicDecimals  := 0;
+  SymTab[Idx].IsSigned     := False;
+  SymTab[Idx].IsGroup      := (AType = CBT_GROUP);
+  SymTab[Idx].ParentIdx    := -1;
+  SymTab[Idx].Offset       := 0;
+  SymTab[Idx].Value        := '';
+  SymTab[Idx].IsGlobal     := False;
+  SymTab[Idx].Occurs       := 0;
+  SymTab[Idx].OccursMin    := 0;
+  SymTab[Idx].OccursDep    := '';
+  SymTab[Idx].RedefinedIdx := -1;
+  For J := 0 To MAX_COND_VALUES - 1 Do
+    SymTab[Idx].CondValues[J] := '';
+  SymTab[Idx].CondValCount := 0;
+  SymTab[Idx].Usage        := USG_DISPLAY;
+  SymTab[Idx].IsExternal   := False;
+  SymTab[Idx].IsFiller     := (UpCaseStr(AName) = 'FILLER');
+
+  { Generer le label assembleur }
+  If SymTab[Idx].IsFiller Then
+    SymTab[Idx].AsmName := PFX_VAR + 'FILLER_' + ItoSI(Idx)
+  Else If ALevel = 0 Then
+    { Fichier (FD/SD) }
+    SymTab[Idx].AsmName := PFX_FLD + AsmIdent(AName)
+  Else If ASection = SEC_FILE Then
+    SymTab[Idx].AsmName := PFX_ENT + AsmIdent(AName)
+  Else
+    SymTab[Idx].AsmName := PFX_VAR + AsmIdent(AName);
+
+  Inc(SymCount);
+  Inc(SymStateCount);
+  SymAdd := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFind : chercher un symbole par nom (insensible a la casse) }
+{ Retourne l index ou -1 si non trouve                          }
+{ ------------------------------------------------------------ }
+
+Function SymFind(Const S : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  SymFind := -1;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If UpCaseStr(SymTab[I].Name) = U Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFindQualified : chercher symbole qualifie (NOM OF PARENT) }
+{ En COBOL on peut ecrire EMP-NOM OF EMP-RECORD pour lever     }
+{ l ambiguite si plusieurs champs ont le meme nom               }
+{ Retourne l index ou -1 si non trouve                          }
+{ ------------------------------------------------------------ }
+
+Function SymFindQualified(Const AName : TString;
+                          Const AParent : TString) : Integer;
+Var
+  I, P : Integer;
+  UN, UP : TString;
+Begin
+  UN := UpCaseStr(AName);
+  UP := UpCaseStr(AParent);
+  SymFindQualified := -1;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If UpCaseStr(SymTab[I].Name) = UN Then
+    Begin
+      { Verifier la parentee }
+      P := SymTab[I].ParentIdx;
+      While P >= 0 Do
+      Begin
+        If UpCaseStr(SymTab[P].Name) = UP Then
+        Begin
+          SymFindQualified := I;
+          Exit;
+        End;
+        P := SymTab[P].ParentIdx;
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymDump : afficher le contenu de la table (debug)            }
+{ ------------------------------------------------------------ }
+
+Procedure SymDump;
+Var I : Integer;
+Begin
+  WriteLn('--- Table des symboles COBOL (', SymCount, ' entrees) ---');
+  For I := 0 To SymCount - 1 Do
+  Begin
+    Write('  [', I:4, '] Lv ', SymTab[I].Level:2);
+    Write(' ', SymTab[I].Name);
+    If SymTab[I].IsGroup Then
+      Write(' (GROUP)')
+    Else If SymTab[I].PicStr <> '' Then
+      Write(' PIC ', SymTab[I].PicStr,
+            ' (', SymTab[I].PicSize, ' bytes)');
+    If SymTab[I].IsSigned Then
+      Write(' SIGNED');
+    If SymTab[I].PicDecimals > 0 Then
+      Write(' V', SymTab[I].PicDecimals);
+    If SymTab[I].Usage <> USG_DISPLAY Then
+      Write(' USAGE ', CobUsageName(SymTab[I].Usage));
+    If SymTab[I].Value <> '' Then
+      Write(' VALUE ', SymTab[I].Value);
+    If SymTab[I].Occurs > 0 Then
+      Write(' OCCURS ', SymTab[I].Occurs);
+    If SymTab[I].IsFiller Then
+      Write(' (FILLER)');
+    If SymTab[I].IsExternal Then
+      Write(' EXTERNAL');
+    If SymTab[I].RedefinedIdx >= 0 Then
+      Write(' REDEFINES [', SymTab[I].RedefinedIdx, ']');
+    If SymTab[I].ParentIdx >= 0 Then
+      Write(' parent=[', SymTab[I].ParentIdx, ']');
+    Write(' sec=', CobSectionName(SymTab[I].Section));
+    Write(' asm=', SymTab[I].AsmName);
+    WriteLn;
+  End;
+  WriteLn('--- Fin de la table ---');
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs pour TODO 04                         }
+{ ------------------------------------------------------------ }
+
+Function IsSymInitialized : Boolean;
+Begin
+  IsSymInitialized := SymInitialized;
+End;
+
+Function IsSymEmpty : Boolean;
+Begin
+  IsSymEmpty := (SymCount = 0);
+End;
+
+Function GetSymCount : Integer;
+Begin
+  GetSymCount := SymCount;
+End;
+
+Function GetSymStatus : TString;
+Begin
+  If Not SymInitialized Then
+    GetSymStatus := 'Not initialized'
+  Else
+    GetSymStatus := 'Initialized (' + ItoS(SymCount) + ' symbols)';
+End;
+
+Function GetSymMaxSymbols : Integer;
+Begin
+  GetSymMaxSymbols := MAX_SYM;
+End;
+
+Function GetSymStateCount : Integer;
+Begin
+  GetSymStateCount := SymStateCount;
+End;
+
+Function GetSymTypeCount : Integer;
+Begin
+  { Nombre de types CBT_* definis }
+  GetSymTypeCount := 15;
+End;
+
+Function GetSymSectionCount : Integer;
+Begin
+  { Nombre de sections SEC_* definies }
+  GetSymSectionCount := 7;
+End;
+
+Function GetSymUsageCount : Integer;
+Begin
+  { Nombre de clauses USG_* definies }
+  GetSymUsageCount := 9;
+End;
+
+Function GetSymMaxCondValues : Integer;
+Begin
+  GetSymMaxCondValues := MAX_COND_VALUES;
+End;
+
+
 { ------------------------------------------------------------ }
 { LexScanIdent : identificateur COBOL (lettres, chiffres, -)   }
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
@@ -2946,6 +3356,7 @@ Begin
   BcActive   := False;
   LexOpened  := False;
   KwInitialized := False;
+  SymInitialized := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -2955,6 +3366,9 @@ Begin
 
   { Initialiser le module de mots-cles }
   InitKeywordState;
+
+  { Initialiser la table des symboles }
+  SymInit;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;

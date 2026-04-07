@@ -123,7 +123,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
               sont traites comme un seul token
             10 fonctions accesseurs
 
-  TODO 04 - TABLE DES SYMBOLES COBOL (32 BITS) [A FAIRE]
+  TODO 04 - TABLE DES SYMBOLES COBOL (32 BITS) [IMPLEMENTE]
             Enregistrement TSymbol :
               Name      : nom COBOL (WS-NOM, EMP-RECORD)
               AsmName   : label ASM correspondant (_COB_WS_NOM)
