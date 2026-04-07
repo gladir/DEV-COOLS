@@ -244,7 +244,7 @@
               verifier que le nom ne contient pas de caracteres interdits
               verifier que le nom n est pas reserve (CON, PRN, etc.)
 
-  TODO 08 - CONFIGURATION TAURI [A FAIRE]
+  TODO 08 - CONFIGURATION TAURI [IMPLEMENTE]
             Type TTauriConfig : record
               Package : record
                 ProductName : String
@@ -2134,7 +2134,371 @@ Begin
 End;
 
 { ============================================================
-  TODO 08-25 : A IMPLEMENTER
+  TODO 08 - CONFIGURATION TAURI [IMPLEMENTE]
+  ============================================================ }
+
+Const
+  { Constantes pour Tauri config }
+  TAURI_MAX_ICONS = 4;
+  TAURI_VERSION = '1.0.0';
+  TAURI_CSP_DEFAULT = 'default-src ''self''';
+
+Type
+  { Sous-record Package }
+  TTauriPackage = Record
+    ProductName : String;
+    Version     : String;
+    Identifier  : String;
+  End;
+
+  { Sous-record Build }
+  TTauriBuild = Record
+    DistDir            : String;
+    DevPath            : String;
+    BeforeDevCommand   : String;
+    BeforeBuildCommand : String;
+  End;
+
+  { Sous-record Bundle }
+  TTauriBundle = Record
+    Active  : Boolean;
+    Targets : String;
+    Icon    : Array[1..TAURI_MAX_ICONS] Of String;
+    IconCount : Integer;
+  End;
+
+  { Sous-record Security }
+  TTauriSecurity = Record
+    Csp : String;
+  End;
+
+  { Sous-record TauriSection }
+  TTauriSection = Record
+    Bundle   : TTauriBundle;
+    Windows  : TWindowConfig;
+    Security : TTauriSecurity;
+  End;
+
+  { Record principal TTauriConfig }
+  TTauriConfig = Record
+    Package : TTauriPackage;
+    Build   : TTauriBuild;
+    Tauri   : TTauriSection;
+  End;
+
+Var
+  { Variables d'etat pour le module Tauri Config }
+  TcfInitialized   : Boolean;
+  TcfStateCount    : Integer;
+  TcfConfigCount   : Integer;
+  TcfJsonGenCount  : Integer;
+  TcfWriteCount    : Integer;
+  TcfCargoGenCount : Integer;
+  TcfIconCount     : Integer;
+
+{ Initialiser l'etat du module Tauri Config }
+Procedure InitTauriConfigState;
+Begin
+  TcfInitialized := True;
+  TcfStateCount := 0;
+  TcfConfigCount := 0;
+  TcfJsonGenCount := 0;
+  TcfWriteCount := 0;
+  TcfCargoGenCount := 0;
+  TcfIconCount := 0;
+End;
+
+{ Initialiser une configuration Tauri depuis les options }
+Procedure InitTauriConfig(Var Cfg: TTauriConfig; Const Opts: TOptions);
+Var
+  WinCfg: TWindowConfig;
+Begin
+  Inc(TcfStateCount);
+  Inc(TcfConfigCount);
+
+  { Initialiser Package }
+  Cfg.Package.ProductName := Opts.AppName;
+  Cfg.Package.Version := TAURI_VERSION;
+  Cfg.Package.Identifier := GenerateIdentifier(Opts.AppName);
+
+  { Initialiser Build }
+  Cfg.Build.DistDir := '../dist';
+  Cfg.Build.DevPath := '../dist';
+  Cfg.Build.BeforeDevCommand := '';
+  Cfg.Build.BeforeBuildCommand := '';
+
+  { Initialiser Bundle }
+  Cfg.Tauri.Bundle.Active := True;
+  If Opts.Targets <> '' Then
+    Cfg.Tauri.Bundle.Targets := Opts.Targets
+  Else
+    Cfg.Tauri.Bundle.Targets := 'all';
+
+  { Initialiser les icones }
+  Cfg.Tauri.Bundle.Icon[1] := 'icons/32x32.png';
+  Cfg.Tauri.Bundle.Icon[2] := 'icons/128x128.png';
+  Cfg.Tauri.Bundle.Icon[3] := 'icons/128x128@2x.png';
+  Cfg.Tauri.Bundle.Icon[4] := 'icons/icon.icns';
+  Cfg.Tauri.Bundle.IconCount := TAURI_MAX_ICONS;
+  Inc(TcfIconCount, TAURI_MAX_ICONS);
+
+  { Initialiser Windows depuis les options }
+  InitWindowConfig(WinCfg, Opts);
+  Cfg.Tauri.Windows := WinCfg;
+
+  { Initialiser Security }
+  Cfg.Tauri.Security.Csp := TAURI_CSP_DEFAULT;
+End;
+
+{ Generer le JSON pour la configuration Tauri }
+Function TauriConfigToJson(Const Cfg: TTauriConfig): String;
+Var
+  Json: String;
+  I: Integer;
+Begin
+  Inc(TcfStateCount);
+  Inc(TcfJsonGenCount);
+
+  Json := '{' + Chr(10);
+
+  { Section package }
+  Json := Json + '  "package": {' + Chr(10);
+  Json := Json + '    "productName": "' + EscapeJson(Cfg.Package.ProductName) + '",' + Chr(10);
+  Json := Json + '    "version": "' + EscapeJson(Cfg.Package.Version) + '"' + Chr(10);
+  Json := Json + '  },' + Chr(10);
+
+  { Section build }
+  Json := Json + '  "build": {' + Chr(10);
+  Json := Json + '    "distDir": "' + EscapeJson(Cfg.Build.DistDir) + '",' + Chr(10);
+  Json := Json + '    "devPath": "' + EscapeJson(Cfg.Build.DevPath) + '"';
+  If Cfg.Build.BeforeDevCommand <> '' Then
+  Begin
+    Json := Json + ',' + Chr(10);
+    Json := Json + '    "beforeDevCommand": "' + EscapeJson(Cfg.Build.BeforeDevCommand) + '"';
+  End;
+  If Cfg.Build.BeforeBuildCommand <> '' Then
+  Begin
+    Json := Json + ',' + Chr(10);
+    Json := Json + '    "beforeBuildCommand": "' + EscapeJson(Cfg.Build.BeforeBuildCommand) + '"';
+  End;
+  Json := Json + Chr(10) + '  },' + Chr(10);
+
+  { Section tauri }
+  Json := Json + '  "tauri": {' + Chr(10);
+
+  { Sous-section bundle }
+  Json := Json + '    "bundle": {' + Chr(10);
+  If Cfg.Tauri.Bundle.Active Then
+    Json := Json + '      "active": true,' + Chr(10)
+  Else
+    Json := Json + '      "active": false,' + Chr(10);
+  Json := Json + '      "targets": "' + EscapeJson(Cfg.Tauri.Bundle.Targets) + '",' + Chr(10);
+  Json := Json + '      "icon": [' + Chr(10);
+  For I := 1 To Cfg.Tauri.Bundle.IconCount Do
+  Begin
+    Json := Json + '        "' + EscapeJson(Cfg.Tauri.Bundle.Icon[I]) + '"';
+    If I < Cfg.Tauri.Bundle.IconCount Then
+      Json := Json + ',';
+    Json := Json + Chr(10);
+  End;
+  Json := Json + '      ]' + Chr(10);
+  Json := Json + '    },' + Chr(10);
+
+  { Sous-section windows }
+  Json := Json + '    "windows": [' + Chr(10);
+  Json := Json + '      {' + Chr(10);
+  Json := Json + '        "title": "' + EscapeJson(Cfg.Tauri.Windows.Title) + '",' + Chr(10);
+  Json := Json + '        "width": ' + IntToStr(Cfg.Tauri.Windows.Width) + ',' + Chr(10);
+  Json := Json + '        "height": ' + IntToStr(Cfg.Tauri.Windows.Height) + ',' + Chr(10);
+  Json := Json + '        "minWidth": ' + IntToStr(Cfg.Tauri.Windows.MinWidth) + ',' + Chr(10);
+  Json := Json + '        "minHeight": ' + IntToStr(Cfg.Tauri.Windows.MinHeight) + ',' + Chr(10);
+  If Cfg.Tauri.Windows.Resizable Then
+    Json := Json + '        "resizable": true,' + Chr(10)
+  Else
+    Json := Json + '        "resizable": false,' + Chr(10);
+  If Cfg.Tauri.Windows.Fullscreen Then
+    Json := Json + '        "fullscreen": true,' + Chr(10)
+  Else
+    Json := Json + '        "fullscreen": false,' + Chr(10);
+  If Cfg.Tauri.Windows.Transparent Then
+    Json := Json + '        "transparent": true,' + Chr(10)
+  Else
+    Json := Json + '        "transparent": false,' + Chr(10);
+  If Cfg.Tauri.Windows.Decorations Then
+    Json := Json + '        "decorations": true,' + Chr(10)
+  Else
+    Json := Json + '        "decorations": false,' + Chr(10);
+  If Cfg.Tauri.Windows.AlwaysOnTop Then
+    Json := Json + '        "alwaysOnTop": true,' + Chr(10)
+  Else
+    Json := Json + '        "alwaysOnTop": false,' + Chr(10);
+  If Cfg.Tauri.Windows.Center Then
+    Json := Json + '        "center": true' + Chr(10)
+  Else
+    Json := Json + '        "center": false' + Chr(10);
+  Json := Json + '      }' + Chr(10);
+  Json := Json + '    ],' + Chr(10);
+
+  { Sous-section security }
+  Json := Json + '    "security": {' + Chr(10);
+  Json := Json + '      "csp": "' + EscapeJson(Cfg.Tauri.Security.Csp) + '"' + Chr(10);
+  Json := Json + '    }' + Chr(10);
+
+  Json := Json + '  }' + Chr(10);
+  Json := Json + '}';
+
+  TauriConfigToJson := Json;
+End;
+
+{ Ecrire la configuration Tauri dans un fichier }
+Procedure WriteTauriConfig(Const WorkDir: String; Const Cfg: TTauriConfig);
+Var
+  F: Text;
+  FilePath: String;
+  Json: String;
+Begin
+  Inc(TcfStateCount);
+  Inc(TcfWriteCount);
+
+  FilePath := ConcatPath(WorkDir, 'tauri.conf.json');
+  Json := TauriConfigToJson(Cfg);
+
+  {$I-}
+  Assign(F, FilePath);
+  Rewrite(F);
+  If IOResult <> 0 Then
+  Begin
+    FatalError('Impossible de creer le fichier: ' + FilePath);
+    Exit;
+  End;
+
+  Write(F, Json);
+  Close(F);
+  {$I+}
+End;
+
+{ Generer le contenu du fichier Cargo.toml }
+Function GenerateCargoToml(Const AppName: String): String;
+Var
+  Toml: String;
+  PkgName: String;
+Begin
+  Inc(TcfStateCount);
+  Inc(TcfCargoGenCount);
+
+  PkgName := GeneratePackageName(AppName);
+
+  Toml := '[package]' + Chr(10);
+  Toml := Toml + 'name = "' + PkgName + '"' + Chr(10);
+  Toml := Toml + 'version = "0.1.0"' + Chr(10);
+  Toml := Toml + 'description = "A Tauri App - ' + AppName + '"' + Chr(10);
+  Toml := Toml + 'authors = ["you"]' + Chr(10);
+  Toml := Toml + 'license = ""' + Chr(10);
+  Toml := Toml + 'repository = ""' + Chr(10);
+  Toml := Toml + 'default-run = "' + PkgName + '"' + Chr(10);
+  Toml := Toml + 'edition = "2021"' + Chr(10);
+  Toml := Toml + 'rust-version = "1.60"' + Chr(10);
+  Toml := Toml + Chr(10);
+
+  Toml := Toml + '[build-dependencies]' + Chr(10);
+  Toml := Toml + 'tauri-build = { version = "1.5.0", features = [] }' + Chr(10);
+  Toml := Toml + Chr(10);
+
+  Toml := Toml + '[dependencies]' + Chr(10);
+  Toml := Toml + 'serde_json = "1.0"' + Chr(10);
+  Toml := Toml + 'serde = { version = "1.0", features = ["derive"] }' + Chr(10);
+  Toml := Toml + 'tauri = { version = "1.5.0", features = [] }' + Chr(10);
+  Toml := Toml + Chr(10);
+
+  Toml := Toml + '[features]' + Chr(10);
+  Toml := Toml + 'default = [ "custom-protocol" ]' + Chr(10);
+  Toml := Toml + 'custom-protocol = [ "tauri/custom-protocol" ]' + Chr(10);
+
+  GenerateCargoToml := Toml;
+End;
+
+{ Ecrire le fichier Cargo.toml }
+Procedure WriteCargoToml(Const WorkDir: String; Const AppName: String);
+Var
+  F: Text;
+  FilePath: String;
+  Toml: String;
+Begin
+  Inc(TcfStateCount);
+
+  FilePath := ConcatPath(WorkDir, 'Cargo.toml');
+  Toml := GenerateCargoToml(AppName);
+
+  {$I-}
+  Assign(F, FilePath);
+  Rewrite(F);
+  If IOResult <> 0 Then
+  Begin
+    FatalError('Impossible de creer le fichier: ' + FilePath);
+    Exit;
+  End;
+
+  Write(F, Toml);
+  Close(F);
+  {$I+}
+End;
+
+{ ============================================================
+  Accesseurs pour TODO 08 - CONFIGURATION TAURI
+  ============================================================ }
+
+Function IsTcfInitialized: Boolean;
+Begin
+  IsTcfInitialized := TcfInitialized;
+End;
+
+Function IsTcfEmpty: Boolean;
+Begin
+  IsTcfEmpty := (TcfConfigCount = 0) And (TcfJsonGenCount = 0);
+End;
+
+Function GetTcfStateCount: Integer;
+Begin
+  GetTcfStateCount := TcfStateCount;
+End;
+
+Function GetTcfConfigCount: Integer;
+Begin
+  GetTcfConfigCount := TcfConfigCount;
+End;
+
+Function GetTcfJsonGenCount: Integer;
+Begin
+  GetTcfJsonGenCount := TcfJsonGenCount;
+End;
+
+Function GetTcfWriteCount: Integer;
+Begin
+  GetTcfWriteCount := TcfWriteCount;
+End;
+
+Function GetTcfCargoGenCount: Integer;
+Begin
+  GetTcfCargoGenCount := TcfCargoGenCount;
+End;
+
+Function GetTcfIconCount: Integer;
+Begin
+  GetTcfIconCount := TcfIconCount;
+End;
+
+Function GetTcfMaxIcons: Integer;
+Begin
+  GetTcfMaxIcons := TAURI_MAX_ICONS;
+End;
+
+Function GetTcfDefaultCsp: String;
+Begin
+  GetTcfDefaultCsp := TAURI_CSP_DEFAULT;
+End;
+
+{ ============================================================
+  TODO 09-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -2241,6 +2605,7 @@ End;
 Procedure Run(Var O: TOptions);
 Var
   AppId, PkgName: String;
+  TauriCfg: TTauriConfig;
 Begin
   If O.Verbose Then
   Begin
@@ -2254,6 +2619,9 @@ Begin
   { Initialiser le module AppName }
   InitAppNameState;
 
+  { Initialiser le module Tauri Config }
+  InitTauriConfigState;
+
   { Generer le nom de l'application si non specifie }
   O.AppName := GenerateAppName(O);
 
@@ -2264,6 +2632,9 @@ Begin
   AppId := GenerateIdentifier(O.AppName);
   PkgName := GeneratePackageName(O.AppName);
 
+  { Initialiser la configuration Tauri }
+  InitTauriConfig(TauriCfg, O);
+
   WriteLn('Application : ', O.AppName);
   WriteLn('Identifiant : ', AppId);
   WriteLn('Package     : ', PkgName);
@@ -2272,13 +2643,12 @@ Begin
   WriteLn('Plateforme  : ', PlatformName(GetPlatform));
   WriteLn;
 
-  { TODO: Implementer les TODOs 08-25 }
-  WriteLn('*** NOTE: TODOs 01-07 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 08-25 restent a implementer ***');
+  { TODO: Implementer les TODOs 09-25 }
+  WriteLn('*** NOTE: TODOs 01-08 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 09-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 08: Configuration Tauri');
   WriteLn('  - TODO 09: Generation du code Rust principal');
   WriteLn('  - TODO 10: Gestion des raccourcis clavier');
   WriteLn('  - TODO 11: Mode fenetre immersive');

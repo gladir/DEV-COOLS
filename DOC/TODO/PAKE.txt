@@ -201,7 +201,7 @@ Turbo Pascal / Free Pascal (-Mtp)
            verifier que le nom ne contient pas de caracteres interdits
            verifier que le nom n'est pas reserve (CON, PRN, etc.)
 
-  TODO 08 - CONFIGURATION TAURI [A FAIRE]
+  TODO 08 - CONFIGURATION TAURI [IMPLEMENTE]
          Type TTauriConfig : record
            Package : record
              ProductName : String
