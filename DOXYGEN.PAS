@@ -7856,6 +7856,9 @@ Procedure ParseCommandLine(Var O: TOptions);
 Var
   I: Integer;
   Arg, UpperArg: String;
+  WildArg, WildDir: String;
+  WildJ: Integer;
+  WildSR: SearchRec;
 Begin
   InitOptions(O);
   I := 1;
@@ -7933,13 +7936,42 @@ Begin
     Else If (UpperArg = '-INPUT') Then
     Begin
       (* Extension DEV-COOLS : fichier source direct, supporte multi-fichiers *)
+      (* Supporte les caracteres generiques: -INPUT *.PAS, -INPUT A*.PAS *)
       If I < ParamCount Then
       Begin
         Inc(I);
-        If O.InputFileCount < 64 Then
+        WildArg := ParamStr(I);
+        If (Pos('*', WildArg) > 0) Or (Pos('?', WildArg) > 0) Then
         Begin
-          Inc(O.InputFileCount);
-          O.InputFiles[O.InputFileCount] := ParamStr(I);
+          (* Expansion des caracteres generiques *)
+          WildDir := '';
+          WildJ := Length(WildArg);
+          While (WildJ > 0) And (WildArg[WildJ] <> '\') And
+                (WildArg[WildJ] <> '/') Do
+            Dec(WildJ);
+          If WildJ > 0 Then
+            WildDir := Copy(WildArg, 1, WildJ);
+          FindFirst(WildArg, AnyFile, WildSR);
+          While DosError = 0 Do
+          Begin
+            If (WildSR.Attr And Directory) = 0 Then
+            Begin
+              If O.InputFileCount < 64 Then
+              Begin
+                Inc(O.InputFileCount);
+                O.InputFiles[O.InputFileCount] := WildDir + WildSR.Name;
+              End;
+            End;
+            FindNext(WildSR);
+          End;
+        End
+        Else
+        Begin
+          If O.InputFileCount < 64 Then
+          Begin
+            Inc(O.InputFileCount);
+            O.InputFiles[O.InputFileCount] := WildArg;
+          End;
         End;
       End
       Else
