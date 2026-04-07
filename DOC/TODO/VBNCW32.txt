@@ -1,0 +1,832 @@
+  VBNCW32.PAS - Compilateur Visual Basic .NET vers assembleur
+  80386 pour Windows 32 bits
+  Free Pascal (-Mtp)
+  Cible : MASM .386 / .MODEL FLAT, PE Win32
+
+  Par defaut produit un fichier .EXE (PE Windows 32 bits).
+  Avec le parametre -obj, produit uniquement un fichier .OBJ (COFF).
+  Avec le parametre -asm, produit egalement un fichier .ASM lisible.
+  Supporte toutes les exemples SAMPLES\VBNET\*
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
+              EmitExe, EmitObj, EmitAsm, OptionStrict, OptionExplicit,
+              OptionInfer)
+            ParseArgs : analyser argv (source.vb [-o sortie] [-v]
+              [-d] [-w] [-obj] [-asm] [-strict] [-h])
+            Par defaut : produire un .EXE Windows 32 bits (PE)
+            -obj : produire uniquement un .OBJ (format COFF 32 bits)
+            -asm : produire egalement un listing assembleur .ASM lisible
+            -o nom : specifier le nom du fichier de sortie
+            -strict : activer Option Strict On
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Detecter l extension .vb du fichier source
+            Version, Date, aide en ligne (option -h)
+            Constantes PE/COFF : PE_DOS_MAGIC ($5A4D), PE_PE_SIG,
+              PE_MACHINE_I386, PE_OPT_SIZE, PE_MAGIC_32,
+              PE_IMG_BASE ($00400000), PE_SEC_ALIGN (4096),
+              PE_FILE_ALIGN (512), PE_SUBSYS_CUI (console),
+              PE_SUBSYS_GUI (Windows)
+            Constantes binaires : MAX_BIN_CODE (65536),
+              MAX_BIN_DATA (65536), MAX_BIN_LBL (4096),
+              MAX_BIN_FIX (8192)
+            Limites internes (32 bits) : MAX_SYM=4096, MAX_PROC=512,
+              MAX_LOCAL=256, MAX_PARAM=64, MAX_DEPTH=32,
+              MAX_LABEL=4096, MAX_STR=255, MAX_FIELD=128,
+              MAX_CLASS=256, MAX_ENUM=128, MAX_TYPE=256,
+              MAX_NAMESPACE=64, MAX_IMPORTS=128, MAX_INTERFACE=128
+            Prefixes de nommage ASM : _VBN_ (variable globale),
+              _VBNF_ (SUB/FUNCTION), _VBNK_ (constante chaine),
+              _VBNRT_ (routine runtime), _VBNL_ (label interne),
+              _VBNA_ (tableau), _VBNS_ (Structure),
+              _VBNC_ (Class), _VBNE_ (Enum), _VBNP_ (Property),
+              _VBNI_ (Interface), _VBNNS_ (Namespace)
+            Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
+
+  TODO 02 - TOKENISEUR VISUAL BASIC .NET (LEXER) [IMPLEMENTE]
+            Procedure LexInit : ouvrir le fichier source, initialiser
+              l etat du lexeur (ligne, colonne, caractere courant)
+            Procedure LexClose : fermer le fichier source
+            Procedure LexNextChar / LexPeekChar
+            Procedure LexNextToken : reconnaitre les tokens VB.NET :
+              - Identificateurs : lettres, chiffres, _ (max 255 cars)
+                VB.NET est insensible a la casse
+              - Suffixes de type : %, &, !, #, @, $ sur identificateurs
+                (compatibilite, deconseille en VB.NET)
+              - Litteraux numeriques : 123, 1.5, 1E3, 1.5D3
+              - Litteraux hexadecimaux : &HFF, &HFFFF
+              - Litteraux octaux : &O77
+              - Litteraux binaires : &B1010 (nouveau VB.NET)
+              - Litteraux chaines : "texte" (guillemets doubles)
+                Guillemet double dans chaine : ""
+              - Caractere litteral : "A"c (nouveau VB.NET)
+              - Commentaires : ' (apostrophe) ou REM en debut
+              - Commentaires XML : ''' (triple apostrophe, VB.NET)
+              - Continuation de ligne : _ (underscore en fin de ligne)
+              - Continuation implicite apres , ( . + - & et operateurs
+              - Operateurs : + - * / \ Mod ^ = <> < > <= >= &
+              - Operateurs raccourcis : += -= *= /= \= &= ^=
+              - Separateurs : ( ) , . : ;
+              - Operateurs logiques : And Or Not Xor
+              - Operateurs court-circuit : AndAlso OrElse (VB.NET)
+              - Operateur Is / IsNot pour comparaison de references
+              - Operateur Like pour comparaison de motifs
+              - Operateur TypeOf...Is pour verification de type
+              - Operateur AddressOf pour delegation
+            Types de tokens (TOK_IDENT, TOK_INTEGER, TOK_LONG,
+              TOK_SINGLE, TOK_DOUBLE, TOK_DECIMAL, TOK_STRING,
+              TOK_CHAR, TOK_DATE,
+              TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH,
+              TOK_BACKSLASH, TOK_CARET, TOK_AMP, TOK_MOD,
+              TOK_PLUSEQ, TOK_MINUSEQ, TOK_STAREQ, TOK_SLASHEQ,
+              TOK_BSLASHEQ, TOK_AMPEQ, TOK_CARETEQ,
+              TOK_LPAREN, TOK_RPAREN, TOK_COMMA, TOK_DOT,
+              TOK_COLON, TOK_SEMI, TOK_EQ, TOK_NE, TOK_LT,
+              TOK_GT, TOK_LE, TOK_GE, TOK_HASH, TOK_EXCL,
+              TOK_NEWLINE, TOK_EOF)
+            Stocker dans CurTokType / CurTokStr / CurTokNum
+
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES VISUAL BASIC .NET [IMPLEMENTE]
+            Function IsKeyword(Const s: String): Integer
+            Mots-cles complets a reconnaitre :
+              AddHandler AddressOf And AndAlso As
+              Boolean ByRef Byte ByVal
+              Call Case Catch CBool CByte CChar CDate CDbl
+              CDec Char CInt Class CLng CObj Const
+              Continue CSByte CShort CSng CStr CType CUInt
+              CULng CUShort
+              Date Decimal Declare Default Delegate Dim
+              DirectCast Do Double
+              Each Else ElseIf End Enum Erase Error Event
+              Exit
+              False Finally For Friend Function
+              Get GetType Global GoTo
+              Handles
+              If Implements Imports In Inherits Integer
+              Interface Is IsNot
+              Let Lib Like Long Loop
+              Me Mod Module MustInherit MustOverride MyBase
+              MyClass
+              Namespace Narrowing New Next Not Nothing
+              NotInheritable NotOverridable
+              Object Of On Operator Option Optional Or OrElse
+              Overloads Overridable Overrides
+              ParamArray Partial Private Property Protected Public
+              RaiseEvent ReadOnly ReDim REM RemoveHandler
+              Resume Return
+              SByte Select Set Shadows Shared Short Single
+              Static Step Stop String Structure Sub SyncLock
+              Then Throw To True Try TryCast TypeOf
+              UInteger ULong UShort Using
+              When While Widening With WithEvents WriteOnly
+              Xor
+            Mots-cles de fonctions intrinseques :
+              Abs Asc Atn Chr Cos Exp Fix Hex
+              InStr Int LCase Left Len Log
+              LTrim Mid Oct Right RTrim Sgn Sin
+              Space Sqr Str Tan Trim UCase Val
+              CInt CLng CSng CDbl CStr CBool CByte
+              IsNumeric IsDate IsArray IsNothing
+              MsgBox InputBox
+            Mots-cles contextuels :
+              Assembly Auto Ansi Unicode Preserve
+              Optional ByRef ByVal ParamArray
+            Constantes KW_ADDHANDLER..KW_XOR (environ 220 mots-cles)
+
+  TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]
+            Type TSymKind : SK_CONST, SK_VAR, SK_PARAM,
+              SK_SUB, SK_FUNCTION, SK_PROPERTY, SK_STRUCTURE,
+              SK_ENUM, SK_ENUM_MEMBER, SK_CLASS, SK_MODULE,
+              SK_FIELD, SK_EVENT, SK_LABEL, SK_NAMESPACE,
+              SK_INTERFACE, SK_DELEGATE
+            Type TSymEntry : Name (String[255]), AsmLabel (String[64]),
+              Kind (TSymKind), DataType (Integer),
+              StoreClass (Integer), BpOffset (Integer),
+              ArrayDims (Integer), ArrayBase (Integer),
+              IsStatic (Boolean), IsPublic (Boolean),
+              IsOptional (Boolean), DefaultVal (String[64]),
+              HasDefault (Boolean), ByRef (Boolean),
+              ParamIdx (Integer), ClassIdx (Integer),
+              InitStr (String[64]), InitNum (LongInt),
+              HasInit (Boolean), IsConst (Boolean),
+              IsShared (Boolean), IsReadOnly (Boolean),
+              IsOverridable (Boolean), IsOverrides (Boolean),
+              NamespaceIdx (Integer)
+            SymTab[0..MAX_SYM-1] / SymCount
+            ProcTab[0..MAX_PROC-1] / ProcCount
+            Procedure InitSymTable / Function FindSym / Function AddSym
+            Function FindProc / Function AddProc
+            Types VB.NET internes et tailles 32 bits :
+              Boolean (DD, 4 octets, True=-1/False=0),
+              Byte (DB, 1 octet non signe, 0-255),
+              SByte (DB, 1 octet signe, -128..127),
+              Short (DW, 16 bits signe, -32768..32767),
+              UShort (DW, 16 bits non signe, 0..65535),
+              Integer (DD, 32 bits signe - note: VB.NET Integer=32 bits),
+              UInteger (DD, 32 bits non signe),
+              Long (DQ, 64 bits signe - note: VB.NET Long=64 bits),
+              ULong (DQ, 64 bits non signe),
+              Single (DD, flottant 32 bits IEEE 754),
+              Double (DQ, flottant 64 bits IEEE 754),
+              Decimal (16 octets, 128 bits, stub),
+              Char (DW, 2 octets Unicode UTF-16),
+              String (pointeur DD, reference vers tampon),
+              Date (DQ, 64 bits),
+              Object (pointeur DD, reference)
+            Classes d entreposage : STORE_AUTO (pile EBP),
+              STORE_STATIC (segment .DATA), STORE_PARAM (EBP+n),
+              STORE_GLOBAL (.DATA), STORE_CONSTANT (immediate),
+              STORE_SHARED (segment .DATA, acces via classe)
+
+  TODO 05 - GESTION DES PORTEES (NAMESPACE, MODULE, CLASS, STRUCTURE) [IMPLEMENTE]
+            Pile de portees : chaque portee maintient ses propres
+              variables locales, un offset EBP courant, un label sortie
+            Procedure EnterScope(kind: Integer; proc_idx: Integer)
+            Procedure LeaveScope
+            Function AllocLocalEbp(bytes: Integer): Integer
+            Function CurrentEbpTop: Integer
+            Portees supportees : SCOPE_GLOBAL, SCOPE_NAMESPACE,
+              SCOPE_MODULE, SCOPE_CLASS, SCOPE_STRUCTURE,
+              SCOPE_SUB, SCOPE_FUNCTION, SCOPE_PROPERTY,
+              SCOPE_BLOCK, SCOPE_TRY, SCOPE_CATCH, SCOPE_FINALLY
+            Compteur d offset EBP pour allocation variables locales
+            Offset EBP negatif pour locales [EBP-n]
+            Offset EBP positif pour parametres [EBP+8], [EBP+12]...
+            Convention STDCALL Win32 : parametres droite a gauche
+            Variables Shared : allouees en .DATA, acces via nom classe
+            Resolution de noms qualifies (Namespace.Class.Member)
+
+  TODO 06 - PARSEUR : IMPORTS, NAMESPACE ET MODULE [IMPLEMENTE]
+            Procedure ParseImports
+            Syntaxe :
+              Imports System
+              Imports System.IO
+              Imports Microsoft.VisualBasic
+              Imports alias = Namespace.Complet
+            Reconnaitre les espaces de noms importes et resoudre
+              les references non qualifiees
+            Procedure ParseNamespace
+            Syntaxe :
+              Namespace MonApplication
+                ...
+              End Namespace
+            Namespace imbrique : Namespace A.B.C
+            Procedure ParseModule
+            Syntaxe :
+              Module NomModule
+                Sub Main()
+                  ...
+                End Sub
+              End Module
+            Module est le conteneur standard pour Sub Main
+            Option Explicit On|Off
+            Option Strict On|Off (conversion implicite interdite si On)
+            Option Compare Binary|Text
+            Option Infer On|Off (inference de type)
+            Generer le label du point d entree _VBNF_MAIN
+            Generer le prologue PE : appel a Main apres init runtime
+
+  TODO 07 - PARSEUR : DECLARATIONS (DIM, PUBLIC, PRIVATE, CONST) [IMPLEMENTE]
+            Procedure ParseDim / ParsePublic / ParsePrivate / ParseConst
+            Syntaxe :
+              Dim x As Integer
+              Dim s As String
+              Dim x As Integer = 42 (initialisation VB.NET)
+              Dim x As Integer, y As String (declarations multiples)
+              Dim arr(10) As Integer
+              Dim arr() As Integer (tableau dynamique)
+              Public gVar As String
+              Private mVar As Integer
+              Protected pVar As Integer (dans Class)
+              Friend fVar As Integer (acces assembly)
+              Static sVar As Integer
+              Shared shVar As Integer (dans Class/Module)
+              Const PI As Double = 3.14159
+              Const MAX_SIZE As Integer = 100
+              ReadOnly roVar As Integer = 10
+            Types reconnus : Boolean, Byte, SByte, Short, UShort,
+              Integer, UInteger, Long, ULong, Single, Double,
+              Decimal, Char, String, Date, Object
+            Types Structure utilisateur (As NomStructure)
+            Types Class utilisateur (As NomClasse)
+            Allouer en .DATA (niveau module) ou pile EBP (locales)
+            Static : toujours en .DATA meme dans Sub/Function
+            Shared : en .DATA, accessible via NomClasse.membre
+
+  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS) [IMPLEMENTE]
+            Function ParseExpr: Integer
+            Function ParseOrExpr: Integer     (Or / Xor / OrElse)
+            Function ParseAndExpr: Integer    (And / AndAlso)
+            Function ParseNotExpr: Integer    (Not)
+            Function ParseCompExpr: Integer   (= <> < > <= >= Like Is IsNot TypeOf)
+            Function ParseConcatExpr: Integer (& pour chaines)
+            Function ParseAddExpr: Integer    (+ / -)
+            Function ParseModExpr: Integer    (Mod)
+            Function ParseIntDivExpr: Integer (\ division entiere)
+            Function ParseMulExpr: Integer    (* / /)
+            Function ParsePowExpr: Integer    (^ puissance)
+            Function ParseUnaryExpr: Integer  (- / + / Not / AddressOf)
+            Function ParsePrimaryExpr: Integer
+              Constante numerique -> MOV EAX, imm32
+              Constante chaine    -> LEA EAX, [_VBNK_n]
+              Constante caractere -> MOV EAX, imm16 ("A"c)
+              Variable scalaire   -> MOV EAX, [_VBN_x] ou [EBP-n]
+              Appel de fonction   -> CALL _VBNF_nom
+              Appel de methode    -> objet.methode(args)
+              Acces membre        -> objet.membre
+              DirectCast(expr, Type)
+              CType(expr, Type)
+              TryCast(expr, Type)
+              New NomClasse() (construction)
+              Parentheses
+              True (-1), False (0), Nothing (0)
+            Priorite des operateurs VB.NET (du plus faible au plus fort) :
+              OrElse, Or, Xor, AndAlso, And, Not, comparaisons,
+              &, + -, Mod, \, * /, ^, - unaire, AddressOf
+            Operateurs d affectation composes :
+              += -= *= /= \= &= ^=
+
+  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
+            Procedure GenLoadVar(sym_idx: Integer)
+              Integer/Short : MOV EAX, DWORD PTR [_VBN_x] ou [EBP-n]
+              String : LEA EAX, [_VBN_x] ou [EBP-n]
+              Boolean : MOVZX EAX, BYTE PTR [_VBN_x]
+              Byte : MOVZX EAX, BYTE PTR [_VBN_x]
+              Char : MOVZX EAX, WORD PTR [_VBN_x] (16 bits Unicode)
+            Procedure GenStoreVar(sym_idx: Integer)
+              MOV DWORD PTR [_VBN_x], EAX ou MOV [EBP-n], EAX
+            Procedure GenBinOp(op: Integer)
+              + : ADD EAX, EBX
+              - : SUB EAX, EBX
+              * : IMUL EAX, EBX
+              / : flottant via FPU ou CALL _VBNRT_DIV
+              \ : CDQ + IDIV EBX (division entiere)
+              Mod : CDQ + IDIV EBX -> MOV EAX, EDX
+              ^ : CALL _VBNRT_POW (puissance)
+              & : CALL _VBNRT_STRCAT (concatenation)
+            Procedure GenCompare(op: Integer)
+              CMP EAX, EBX + SETcc AL + MOVZX EAX, AL
+              Resultat VB.NET : True = -1 ($FFFFFFFF), False = 0
+            Procedure GenLogicalOp(op: Integer)
+              And : AND EAX, EBX
+              Or  : OR EAX, EBX
+              Xor : XOR EAX, EBX
+              Not : NOT EAX
+            Procedure GenShortCircuit(op: Integer)
+              AndAlso : CMP EAX, 0 / JE label_false (court-circuit)
+              OrElse  : CMP EAX, 0 / JNE label_true (court-circuit)
+            Procedure GenCompoundAssign(op: Integer)
+              += -= *= /= \= &= ^=
+            Primitives d emission : Emit, EmitLabel, EmitComment,
+              EmitData, EmitBss
+
+  TODO 10 - PARSEUR : STRUCTURES DE CONTROLE (IF, SELECT CASE) [IMPLEMENTE]
+            Procedure ParseIf
+            Syntaxe :
+              If condition Then
+                instructions
+              ElseIf condition Then
+                instructions
+              Else
+                instructions
+              End If
+              If condition Then instruction  (forme sur une ligne)
+            Generer : CMP EAX, 0 + JE label_else/endif
+            Procedure ParseSelectCase
+            Syntaxe :
+              Select Case expression
+                Case valeur
+                  instructions
+                Case valeur1 To valeur2
+                  instructions
+                Case Is > valeur
+                  instructions
+                Case valeur1, valeur2, valeur3
+                  instructions
+                Case Else
+                  instructions
+              End Select
+            Generer : serie de CMP + JE pour chaque Case
+            Procedure ParseGoTo
+              GoTo label -> JMP label
+              Labels nommes uniquement (pas de labels numeriques en VB.NET)
+            Note : GoSub n est plus supporte en VB.NET
+
+  TODO 11 - PARSEUR : BOUCLES (FOR/NEXT, DO/LOOP, WHILE/END WHILE, FOR EACH) [IMPLEMENTE]
+            Procedure ParseFor
+            Syntaxe :
+              For i = debut To fin [Step pas]
+                instructions
+                [Exit For]
+                [Continue For]
+              Next [i]
+            Generer : MOV compteur, debut / label_boucle:
+              CMP compteur, fin / JG label_fin (Step positif)
+              JL label_fin (Step negatif) / ... / ADD compteur, pas
+              JMP label_boucle / label_fin:
+            Procedure ParseDoLoop
+            Syntaxe :
+              Do [While|Until condition]
+                instructions
+                [Exit Do]
+                [Continue Do]
+              Loop [While|Until condition]
+            Procedure ParseWhile
+            Syntaxe (VB.NET utilise End While et non Wend) :
+              While condition
+                instructions
+                [Exit While]
+                [Continue While]
+              End While
+            Procedure ParseForEach
+            Syntaxe :
+              For Each element In collection
+                instructions
+                [Exit For]
+                [Continue For]
+              Next [element]
+            Continue For / Continue Do / Continue While :
+              JMP vers label_continue de la boucle (VB.NET uniquement)
+            Exit For / Exit Do / Exit While :
+              JMP vers label_fin de la boucle
+
+  TODO 12 - PARSEUR : SUB ET FUNCTION (PROCEDURES ET FONCTIONS) [IMPLEMENTE]
+            Procedure ParseSub
+            Syntaxe :
+              [Public|Private|Protected|Friend] [Shared] [Overloads]
+                [Overrides|Overridable|NotOverridable|MustOverride]
+                Sub nom([params])
+                instructions
+                [Exit Sub]
+                [Return]
+              End Sub
+            Procedure ParseFunction
+            Syntaxe :
+              [Public|Private|Protected|Friend] [Shared] [Overloads]
+                [Overrides|Overridable|NotOverridable|MustOverride]
+                Function nom([params]) As type
+                instructions
+                Return valeur
+                [Exit Function]
+              End Function
+            Parametres :
+              ByVal x As Integer (passage par valeur, defaut en VB.NET)
+              ByRef x As Integer (passage par reference)
+              Optional x As Integer = 0 (parametre optionnel)
+              ParamArray args() As Integer (tableau de parametres)
+            Generer prologue STDCALL :
+              PUSH EBP / MOV EBP, ESP / SUB ESP, taille_locales
+            Generer epilogue :
+              MOV ESP, EBP / POP EBP / RET n (n = taille params)
+            Valeur de retour Function : dans EAX (entier/pointeur)
+            Instruction Return : MOV EAX, valeur + JMP epilogue
+            Note : ByVal est le defaut en VB.NET (ByRef en VB6)
+            Appel : PUSH params / CALL _VBNF_nom
+
+  TODO 13 - PARSEUR : FONCTIONS INTRINSEQUES ET METHODES SYSTEME [IMPLEMENTE]
+            Fonctions de chaines compatibles VB6 :
+              Len(s) -> CALL _VBNRT_LEN
+              Left(s, n), Right(s, n), Mid(s, start[, len])
+              LTrim(s), RTrim(s), Trim(s)
+              UCase(s), LCase(s)
+              InStr([start,] s1, s2)
+              Replace(s, find, replace)
+              Space(n), Asc(s), Chr(n)
+            Methodes de String (.NET) :
+              s.Length, s.Substring(start[, len])
+              s.ToUpper(), s.ToLower()
+              s.IndexOf(s2), s.Contains(s2)
+              s.StartsWith(s2), s.EndsWith(s2)
+              s.Replace(old, new), s.Trim()
+              s.Split(delim), String.Join(sep, arr)
+              s.Insert(pos, s2), s.Remove(start[, count])
+              s.PadLeft(n), s.PadRight(n)
+            Fonctions de conversion :
+              CInt(x), CLng(x), CSng(x), CDbl(x), CStr(x),
+              CBool(x), CByte(x), CChar(x), CDec(x),
+              CShort(x), CUShort(x), CUInt(x), CULng(x), CSByte(x)
+              Val(s), Str(n), Hex(n), Oct(n)
+              CType(expr, Type), DirectCast(expr, Type),
+              TryCast(expr, Type)
+              Convert.ToInt32(x), Convert.ToString(x) (stub)
+            Fonctions mathematiques :
+              Math.Abs(x), Math.Sign(x), Math.Sqrt(x)
+              Math.Exp(x), Math.Log(x)
+              Math.Sin(x), Math.Cos(x), Math.Tan(x), Math.Atan(x)
+              Math.Pow(x, y), Math.Max(a, b), Math.Min(a, b)
+              Math.Floor(x), Math.Ceiling(x), Math.Round(x)
+              Abs(x), Sgn(x), Sqr(x) (compatibilite VB)
+            Fonctions d information :
+              IsNumeric(x), IsDate(x), IsArray(x), IsNothing(x)
+              TypeOf x Is Type, GetType(Type)
+              TypeName(x)
+            Generer CALL _VBNRT_xxx pour chaque fonction runtime
+
+  TODO 14 - PARSEUR : OPERATIONS SUR CHAINES ET CLASSE STRING [IMPLEMENTE]
+            Operateur & : concatenation de chaines
+              Generer PUSH ptr_s1 / PUSH ptr_s2 / CALL _VBNRT_STRCAT
+            Operateur + : concatenation si les deux operandes sont String
+            Operateur &= : concatenation et affectation
+            Chaines en VB.NET : type reference immutable
+              Pointeur DD vers tampon null-terminated
+              Allocation dynamique via _VBNRT_STRALLOC
+              Liberation via _VBNRT_STRFREE
+            Comparaison de chaines :
+              Option Compare Binary (defaut, sensible casse)
+              Option Compare Text (insensible casse)
+              String.Compare(s1, s2)
+              Operateur Like avec motifs (*, ?, #, [charlist])
+            Caractere Char :
+              Dim c As Char = "A"c
+              AscW(c), ChrW(n) (Unicode)
+              Asc(c), Chr(n) (ANSI)
+            Interpolation : non supportee (VB 14+, hors portee)
+            Methodes String appelees en notation pointee :
+              s.Length -> CALL _VBNRT_LEN
+              s.ToUpper() -> CALL _VBNRT_UCASE
+              s.Substring(n, m) -> CALL _VBNRT_MID
+
+  TODO 15 - PARSEUR : TABLEAUX (DIM, REDIM, ERASE) [IMPLEMENTE]
+            Tableaux statiques :
+              Dim arr(10) As Integer -> 11 elements (0 a 10)
+              Dim mat(3, 3) As Integer -> matrice 4x4
+              Base toujours 0 en VB.NET (pas de Option Base 1)
+            Allouer en .DATA (global) ou pile (local)
+            Tableaux dynamiques :
+              Dim arr() As Integer -> pointeur DD, pas de taille
+              ReDim arr(n) -> CALL _VBNRT_REDIM (allouer/reallouer)
+              ReDim Preserve arr(n) -> conserver les donnees
+              Erase arr -> CALL _VBNRT_ERASE (liberer/reinitialiser)
+            Initialisation de tableau VB.NET :
+              Dim arr() As Integer = {1, 2, 3, 4, 5}
+              Dim arr() As Integer = New Integer() {1, 2, 3}
+            Fonctions de tableau :
+              arr.Length -> nombre total d elements
+              arr.GetLength(dim) -> taille d une dimension
+              arr.GetUpperBound(dim) -> borne superieure
+              UBound(arr[, dim]) -> borne superieure (compat VB)
+              LBound(arr[, dim]) -> toujours 0
+              IsArray(x) -> Boolean
+            Acces : arr(index) -> calcul offset + chargement
+              MOV EAX, [base + index * taille_element]
+            Tableaux multi-dimensionnels :
+              Calcul offset = ((i1 * dim2 + i2) * dim3 + i3) * taille
+
+  TODO 16 - PARSEUR : STRUCTURES (STRUCTURE...END STRUCTURE) ET ENUM [IMPLEMENTE]
+            Procedure ParseStructure
+            Syntaxe (VB.NET utilise Structure et non Type) :
+              [Public|Private|Friend] Structure NomStructure
+                Public champ1 As Integer
+                Public champ2 As String
+                Private champ3 As Double
+                Public Sub NouvelleMethode()
+                  ...
+                End Sub
+              End Structure
+            Calcul de la taille totale et des offsets de champs
+            Les Structure peuvent avoir des methodes (Sub/Function)
+            Les Structure sont des types valeur (pile, pas tas)
+            Acces aux champs : variable.champ
+              LEA EAX, [_VBN_var + offset_champ]
+            Procedure ParseEnum
+            Syntaxe :
+              [Public|Private|Friend] Enum NomEnum
+                Valeur1 = 0
+                Valeur2 = 1
+                Valeur3 = 10
+              End Enum
+            Chaque membre Enum est une constante Integer
+            Valeurs auto-incrementees si non specifiees
+            Acces qualifie : NomEnum.Valeur1
+
+  TODO 17 - PARSEUR : CLASSES ET HERITAGE (CLASS, INHERITS, IMPLEMENTS) [IMPLEMENTE]
+            Procedure ParseClass
+            Syntaxe :
+              [Public|Private|Friend] [MustInherit|NotInheritable]
+                Class NomClasse
+                [Inherits ClasseParente]
+                [Implements Interface1, Interface2]
+                Public champ As Integer
+                Private _donnee As String
+                Public Sub New()  (constructeur)
+                  ...
+                End Sub
+                Protected Overrides Sub Finalize() (destructeur)
+                  ...
+                End Sub
+                Public [Overridable|Overrides|MustOverride|Shared]
+                  Sub Methode()
+                  ...
+                End Sub
+                Public Property NomProp() As Type
+                  Get
+                    Return _donnee
+                  End Get
+                  Set(ByVal value As Type)
+                    _donnee = value
+                  End Set
+                End Property
+              End Class
+            Procedure ParseInterface
+            Syntaxe :
+              [Public|Private|Friend] Interface INomInterface
+                Sub Methode(params)
+                Function Calcul(params) As Type
+                Property Prop() As Type
+              End Interface
+            MustInherit : classe abstraite (ne peut etre instanciee)
+            NotInheritable : classe scellee (ne peut etre heritee)
+            Overridable : methode pouvant etre redefinir
+            Overrides : redefinition d une methode de base
+            MustOverride : methode abstraite (pas de corps)
+            NotOverridable : empecher redefinition ulterieure
+            Shared : membre statique accessible via NomClasse.Membre
+            Creation d instances :
+              Dim obj As New NomClasse()
+              Dim obj As NomClasse = New NomClasse()
+            Me : reference a l instance courante (pointeur This)
+            MyBase : reference a la classe parente
+            MyClass : reference non virtuelle a la classe courante
+            Generer table de pointeurs de methodes virtuelles en .DATA
+
+  TODO 18 - PARSEUR : GESTION DES EXCEPTIONS (TRY/CATCH/FINALLY/THROW) [IMPLEMENTE]
+            Procedure ParseTry
+            Syntaxe (VB.NET utilise le modele structure) :
+              Try
+                instructions
+              Catch ex As ExceptionType [When condition]
+                instructions
+              Catch ex As Exception
+                instructions
+              Finally
+                instructions
+              End Try
+            Mecanisme d implementation :
+              Etablir un cadre SEH (Structured Exception Handling)
+              Win32 : chaine FS:[0] + handler de filtre
+              Chaque Catch filtre par type d exception
+              Finally : bloc toujours execute (cleanup)
+            Instruction Throw :
+              Throw New Exception("message")
+              Throw (re-lancer l exception courante)
+            Variable ex dans Catch :
+              ex.Message -> chaine du message d erreur
+              ex.StackTrace -> trace de pile (stub)
+              ex.InnerException -> exception imbriquee (stub)
+            Catch multiples : tester du plus specifique au plus general
+              Catch ex As DivideByZeroException
+              Catch ex As OverflowException
+              Catch ex As Exception (attrape-tout)
+            When optionnel : filtre conditionnel sur Catch
+            Generer code pour etablir/retirer le cadre SEH Win32
+
+  TODO 19 - PARSEUR : E/S CONSOLE ET FICHIERS [IMPLEMENTE]
+            Console.WriteLine :
+              Console.WriteLine("texte")
+              Console.WriteLine("format {0} {1}", arg0, arg1) (stub)
+              Console.Write("texte") (sans saut de ligne)
+            Generer : PUSH ptr_chaine / CALL _VBNRT_PRINT
+            Console.ReadLine :
+              Dim s As String = Console.ReadLine()
+            Generer : CALL _VBNRT_INPUT
+            Console.ReadKey (stub)
+            E/S fichiers compatibles VB :
+              FileOpen(n, fichier, OpenMode.Input|Output|Append|Binary)
+              FileClose(n)
+              PrintLine(n, texte)
+              LineInput(n) -> String
+              WriteLine(n, val1, val2)
+              EOF(n), LOF(n), FreeFile()
+            Generer appels Win32 API :
+              GetStdHandle pour handles console
+              WriteFile / ReadFile pour E/S console
+              CreateFileA pour Open
+              CloseHandle pour Close
+            Numero de fichier : 1 a 511, mapper vers handles Win32
+            MsgBox(texte[, boutons][, titre]) -> MessageBoxA
+            InputBox(prompt[, titre][, defaut]) -> boite de saisie
+
+  TODO 20 - BIBLIOTHEQUE RUNTIME (CHAINES, CONVERSION, E/S VIA WIN32 API) [IMPLEMENTE]
+            Generer les routines runtime en assembleur 80386 :
+            Routines chaines :
+              _VBNRT_LEN : longueur de chaine (null-terminated)
+              _VBNRT_STRCAT : concatenation
+              _VBNRT_STRCMP : comparaison
+              _VBNRT_STRCPY : copie
+              _VBNRT_STRALLOC : allocation (HeapAlloc)
+              _VBNRT_STRFREE : liberation (HeapFree)
+              _VBNRT_LEFT, _VBNRT_RIGHT, _VBNRT_MID
+              _VBNRT_LTRIM, _VBNRT_RTRIM, _VBNRT_TRIM
+              _VBNRT_UCASE, _VBNRT_LCASE
+              _VBNRT_INSTR, _VBNRT_REPLACE
+              _VBNRT_INDEXOF, _VBNRT_CONTAINS
+              _VBNRT_STARTSWITH, _VBNRT_ENDSWITH
+              _VBNRT_SUBSTR : Substring .NET
+              _VBNRT_INSERT, _VBNRT_REMOVE
+              _VBNRT_PADLEFT, _VBNRT_PADRIGHT
+              _VBNRT_SPLIT, _VBNRT_JOIN
+            Routines conversion :
+              _VBNRT_VAL : chaine vers nombre
+              _VBNRT_STR : nombre vers chaine
+              _VBNRT_CINT, _VBNRT_CLNG, _VBNRT_CSTR
+              _VBNRT_CBOOL, _VBNRT_CBYTE, _VBNRT_CCHAR
+              _VBNRT_CDBL, _VBNRT_CSNG, _VBNRT_CSHORT
+            Routines mathematiques :
+              _VBNRT_POW : puissance (^ operateur)
+              _VBNRT_SQR, _VBNRT_ABS, _VBNRT_SGN
+              _VBNRT_SIN, _VBNRT_COS, _VBNRT_TAN, _VBNRT_ATN
+              _VBNRT_EXP, _VBNRT_LOG
+              _VBNRT_FLOOR, _VBNRT_CEILING, _VBNRT_ROUND
+              _VBNRT_MAX, _VBNRT_MIN
+            Routines E/S console :
+              _VBNRT_PRINT : affichage via WriteFile(hStdOut)
+              _VBNRT_PRINTLN : affichage + saut de ligne
+              _VBNRT_INPUT : lecture via ReadFile(hStdIn)
+              _VBNRT_MSGBOX : affichage MessageBoxA (user32)
+              _VBNRT_INPUTBOX : saisie via boite de dialogue
+            Routines tableaux :
+              _VBNRT_REDIM, _VBNRT_ERASE
+              _VBNRT_ARRLENGTH, _VBNRT_ARRGETLENGTH
+              _VBNRT_ARRGETUPPERBOUND
+            Routines memoire :
+              _VBNRT_HEAPINIT, _VBNRT_HEAPALLOC, _VBNRT_HEAPFREE
+            Routines exceptions :
+              _VBNRT_THROWEX, _VBNRT_SEHSETUP, _VBNRT_SEHTEARDOWN
+            Point d entree : _VBNRT_INIT (initialiser runtime) et
+              _VBNRT_EXIT (terminer programme, ExitProcess)
+
+  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [IMPLEMENTE]
+            Procedure WritePE(const outfile: String)
+            Generer un executable PE Windows 32 bits complet :
+            En-tete DOS (MZ stub) : 64 octets + message DOS
+            Signature PE : 'PE\0\0'
+            En-tete COFF :
+              Machine = IMAGE_FILE_MACHINE_I386 ($014C)
+              NumberOfSections = 3 (.text, .data, .rdata)
+              SizeOfOptionalHeader = $E0
+              Characteristics = EXECUTABLE_IMAGE | 32BIT_MACHINE
+            En-tete optionnel PE32 :
+              Magic = $010B (PE32)
+              AddressOfEntryPoint = RVA du _VBNF_MAIN
+              ImageBase = $00400000
+              SectionAlignment = $1000 (4096)
+              FileAlignment = $200 (512)
+              Subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI (console)
+                ou IMAGE_SUBSYSTEM_WINDOWS_GUI (fenetres)
+              SizeOfStackReserve = $100000, SizeOfHeapReserve = $100000
+            Sections :
+              .text : code executable (Read, Execute)
+              .data : donnees initialisees (Read, Write)
+              .rdata : donnees en lecture seule, Import Table
+            Table d importation :
+              IMAGE_IMPORT_DESCRIPTOR pour chaque DLL
+              Import Lookup Table + Import Name Table
+              Thunks pour chaque fonction importee
+            Resolution des fixups internes (labels, appels)
+            Padding des sections a FileAlignment
+
+  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [IMPLEMENTE]
+            Procedure WriteCOFF(const outfile: String)
+            Generer un fichier objet COFF 32 bits :
+            En-tete COFF :
+              Machine = $014C (i386)
+              NumberOfSections = 3 (.text, .data, .bss)
+              PointerToSymbolTable, NumberOfSymbols
+            Sections :
+              .text : code avec relocations
+              .data : donnees initialisees
+              .bss  : donnees non initialisees
+            Table des symboles COFF :
+              Symboles externes (fonctions importees)
+              Symboles publics (procedures exportees)
+              Symboles de section (.text, .data, .bss)
+            Table des relocations :
+              IMAGE_REL_I386_DIR32 pour adresses absolues
+              IMAGE_REL_I386_REL32 pour appels relatifs (CALL)
+            Table des chaines longues (noms > 8 caracteres)
+            Compatible avec le linker Microsoft LINK.EXE
+            Compatible avec les fichiers .OBJ de MASM et TASM
+
+  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [IMPLEMENTE]
+            Procedure WriteASM(const outfile: String)
+            Generer un fichier .ASM lisible (syntaxe MASM) :
+            En-tete :
+              .386
+              .MODEL FLAT, STDCALL
+              OPTION CASEMAP:NONE
+            Section INCLUDELIB :
+              INCLUDELIB kernel32.lib
+              INCLUDELIB user32.lib
+              INCLUDELIB msvcrt.lib
+            Section .DATA :
+              Variables globales avec DB/DW/DD/DQ
+              Constantes chaine avec DB 'texte', 0
+            Section .DATA? :
+              Variables non initialisees (BSS)
+            Section EXTERN :
+              Declarations des fonctions importees
+              EXTERN ExitProcess@4:PROC
+              EXTERN WriteFile@20:PROC
+            Section .CODE :
+              Procedures et fonctions avec labels
+              Routines runtime (_VBNRT_*)
+              Point d entree _start / Main
+            Commentaires preserves dans le listing
+            Indentation et formatage lisible
+
+  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, USER32, MSVCRT) [IMPLEMENTE]
+            Imports kernel32.dll :
+              ExitProcess, GetStdHandle, WriteFile, ReadFile,
+              GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc,
+              CreateFileA, CloseHandle, ReadFile, WriteFile,
+              SetFilePointer, GetFileSize, DeleteFileA,
+              GetCommandLineA, GetModuleHandleA,
+              GetLastError, SetLastError,
+              MoveFileA, CopyFileA, GetCurrentDirectoryA,
+              SetCurrentDirectoryA, CreateDirectoryA,
+              FindFirstFileA, FindNextFileA, FindClose,
+              GetTickCount, Sleep, GetEnvironmentVariableA,
+              RtlUnwind (pour gestion SEH/exceptions)
+            Imports user32.dll :
+              MessageBoxA, GetDesktopWindow
+            Imports msvcrt.dll (si necessaire) :
+              _itoa, _ltoa, atoi, atol, sprintf, sscanf,
+              _gcvt, strtod, sin, cos, tan, atan, sqrt,
+              exp, log, pow, fabs, fmod, srand, rand
+            Generer la table d importation PE :
+              IMAGE_IMPORT_DESCRIPTOR par DLL
+              Hint/Name Table avec noms de fonctions
+              Import Address Table (IAT) avec thunks
+            Generer les EXTERN pour le mode .ASM
+            Generer les symboles externes pour le mode .OBJ
+
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\VBNET\* [IMPLEMENTE]
+            Optimisations peephole :
+              MOV EAX, 0 -> XOR EAX, EAX
+              PUSH EAX / POP EAX -> (eliminer)
+              MOV EAX, [x] / MOV [x], EAX -> (eliminer deuxieme)
+              ADD EAX, 1 -> INC EAX
+              SUB EAX, 1 -> DEC EAX
+              IMUL EAX, 2 -> SHL EAX, 1
+              IMUL EAX, 4 -> SHL EAX, 2
+            Verification : compiler et executer les exemples
+              SAMPLES\VBNET\HELLO.VB    - Hello World
+              SAMPLES\VBNET\CALC.VB     - Calculatrice simple
+              SAMPLES\VBNET\FIBONACCI.VB - Suite de Fibonacci
+              SAMPLES\VBNET\FACTORI.VB  - Factorielle
+              SAMPLES\VBNET\ARRAY.VB    - Operations sur tableaux
+              SAMPLES\VBNET\STRING.VB   - Operations sur chaines
+              SAMPLES\VBNET\FILEIO.VB   - Entrees/sorties fichiers
+              SAMPLES\VBNET\SELECTCS.VB - Select Case
+              SAMPLES\VBNET\LOOPS.VB    - Boucles For/Do/While
+              SAMPLES\VBNET\STRUCTUR.VB - Structures et Enum
+              SAMPLES\VBNET\SUBS.VB     - Sub et Function
+              SAMPLES\VBNET\TRYCATCH.VB - Try/Catch/Finally
+            Tests de regression pour chaque TODO
+            Verification des 3 modes de sortie :
+              .EXE (defaut), .OBJ (-obj), .ASM (-asm)
+            Mesure de la taille des executables generes

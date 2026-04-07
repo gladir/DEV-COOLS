@@ -5,3 +5,5 @@
 *.obj
 *.ppu
 VBCW32
+VBNCW32
+BINLINUX/VBNCW32
