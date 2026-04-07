@@ -299,28 +299,39 @@
               generer un index.html minimal qui charge l URL
               avec redirection ou iframe selon la configuration
 
-  TODO 10 - GESTION DES RACCOURCIS CLAVIER [A FAIRE]
+  TODO 10 - GESTION DES RACCOURCIS CLAVIER [IMPLEMENTE]
             Type TShortcut : record
               Key       : String (ex: 'CmdOrCtrl+W')
-              Action    : String (ex: 'close', 'minimize', 'reload')
+              Action    : Integer (KBD_ACTION_* constantes)
               Enabled   : Boolean
             End
-            Constantes de raccourcis par defaut :
-              SHORTCUT_CLOSE    : CmdOrCtrl+W -> cacher fenetre
-              SHORTCUT_QUIT     : CmdOrCtrl+Q -> quitter
-              SHORTCUT_RELOAD   : CmdOrCtrl+R -> recharger page
-              SHORTCUT_ZOOM_IN  : CmdOrCtrl+= -> zoom avant
-              SHORTCUT_ZOOM_OUT : CmdOrCtrl+- -> zoom arriere
-              SHORTCUT_ZOOM_RESET : CmdOrCtrl+0 -> reset zoom
-              SHORTCUT_BACK     : CmdOrCtrl+[ -> page precedente
-              SHORTCUT_FORWARD  : CmdOrCtrl+] -> page suivante
-              SHORTCUT_DEVTOOLS : CmdOrCtrl+Shift+I -> DevTools
-              SHORTCUT_FULLSCREEN : F11 -> plein ecran
+            Constantes d actions :
+              KBD_ACTION_NONE = 0, KBD_ACTION_CLOSE = 1, KBD_ACTION_QUIT = 2,
+              KBD_ACTION_RELOAD = 3, KBD_ACTION_ZOOM_IN = 4,
+              KBD_ACTION_ZOOM_OUT = 5, KBD_ACTION_ZOOM_RESET = 6,
+              KBD_ACTION_BACK = 7, KBD_ACTION_FORWARD = 8,
+              KBD_ACTION_DEVTOOLS = 9, KBD_ACTION_FULLSCREEN = 10
+            Constantes de touches :
+              KBD_KEY_CLOSE = CmdOrCtrl+W, KBD_KEY_QUIT = CmdOrCtrl+Q,
+              KBD_KEY_RELOAD = CmdOrCtrl+R, KBD_KEY_ZOOM_IN = CmdOrCtrl+=,
+              KBD_KEY_ZOOM_OUT = CmdOrCtrl+-, KBD_KEY_ZOOM_RESET = CmdOrCtrl+0,
+              KBD_KEY_BACK = CmdOrCtrl+[, KBD_KEY_FORWARD = CmdOrCtrl+],
+              KBD_KEY_DEVTOOLS = CmdOrCtrl+Shift+I, KBD_KEY_FULLSCREEN = F11
+            KBD_MAX_SHORTCUTS = 16
+            KbdInitialized/KbdStateCount/KbdShortcuts/KbdShortcutCount/
+            KbdRegisterCount/KbdGenerateCount/KbdDisabledCount vars
+            Procedure InitShortcutState
+            Function ShortcutActionName(Action: Integer): String
+            Function AddShortcut(Const Key: String; Action: Integer;
+              Enabled: Boolean): Boolean
+            Procedure RegisterDefaultShortcuts(DisableWebShortcuts: Boolean)
+            Function GenerateShortcutActionCode(Action: Integer): String
             Function GenerateShortcutsRs(Const Opts: TOptions): String
-              generer le code Rust pour les raccourcis clavier
-              utiliser tauri::GlobalShortcut
-            Procedure RegisterDefaultShortcuts(Var Shortcuts: Array Of TShortcut)
-              initialiser la liste des raccourcis par defaut
+            Function GetActiveShortcutCount: Integer
+            10 accesseurs (IsKbdInitialized/IsKbdEmpty/GetKbdStateCount/
+            GetKbdShortcutCount/GetKbdRegisterCount/GetKbdGenerateCount/
+            GetKbdDisabledCount/GetKbdActiveCount/GetKbdMaxShortcuts/
+            GetKbdDefaultKey)
 
   TODO 11 - MODE FENETRE IMMERSIVE [A FAIRE]
             Constantes de modes de fenetre :
@@ -2866,7 +2877,310 @@ Begin
 End;
 
 { ============================================================
-  TODO 10-25 : A IMPLEMENTER
+  TODO 10 - GESTION DES RACCOURCIS CLAVIER [IMPLEMENTE]
+  ============================================================ }
+
+Const
+  { Constantes pour les actions de raccourcis }
+  KBD_ACTION_NONE      = 0;
+  KBD_ACTION_CLOSE     = 1;
+  KBD_ACTION_QUIT      = 2;
+  KBD_ACTION_RELOAD    = 3;
+  KBD_ACTION_ZOOM_IN   = 4;
+  KBD_ACTION_ZOOM_OUT  = 5;
+  KBD_ACTION_ZOOM_RESET = 6;
+  KBD_ACTION_BACK      = 7;
+  KBD_ACTION_FORWARD   = 8;
+  KBD_ACTION_DEVTOOLS  = 9;
+  KBD_ACTION_FULLSCREEN = 10;
+
+  { Nombre maximum de raccourcis }
+  KBD_MAX_SHORTCUTS = 16;
+
+  { Chaines de touches par defaut }
+  KBD_KEY_CLOSE     = 'CmdOrCtrl+W';
+  KBD_KEY_QUIT      = 'CmdOrCtrl+Q';
+  KBD_KEY_RELOAD    = 'CmdOrCtrl+R';
+  KBD_KEY_ZOOM_IN   = 'CmdOrCtrl+=';
+  KBD_KEY_ZOOM_OUT  = 'CmdOrCtrl+-';
+  KBD_KEY_ZOOM_RESET = 'CmdOrCtrl+0';
+  KBD_KEY_BACK      = 'CmdOrCtrl+[';
+  KBD_KEY_FORWARD   = 'CmdOrCtrl+]';
+  KBD_KEY_DEVTOOLS  = 'CmdOrCtrl+Shift+I';
+  KBD_KEY_FULLSCREEN = 'F11';
+
+Type
+  { Record pour un raccourci clavier }
+  TShortcut = Record
+    Key     : String[32];  { Combinaison de touches (ex: 'CmdOrCtrl+W') }
+    Action  : Integer;     { Action a executer (KBD_ACTION_*) }
+    Enabled : Boolean;     { Raccourci actif ou non }
+  End;
+
+  { Tableau de raccourcis }
+  TShortcutArray = Array[1..KBD_MAX_SHORTCUTS] Of TShortcut;
+
+Var
+  { Variables d'etat pour le module Keyboard Shortcuts }
+  KbdInitialized    : Boolean;
+  KbdStateCount     : Integer;
+  KbdShortcuts      : TShortcutArray;
+  KbdShortcutCount  : Integer;
+  KbdRegisterCount  : Integer;
+  KbdGenerateCount  : Integer;
+  KbdDisabledCount  : Integer;
+
+{ Initialiser l'etat du module Keyboard Shortcuts }
+Procedure InitShortcutState;
+Var
+  I: Integer;
+Begin
+  KbdInitialized := True;
+  KbdStateCount := 0;
+  KbdShortcutCount := 0;
+  KbdRegisterCount := 0;
+  KbdGenerateCount := 0;
+  KbdDisabledCount := 0;
+  For I := 1 To KBD_MAX_SHORTCUTS Do
+  Begin
+    KbdShortcuts[I].Key := '';
+    KbdShortcuts[I].Action := KBD_ACTION_NONE;
+    KbdShortcuts[I].Enabled := False;
+  End;
+End;
+
+{ Retourner le nom d'une action }
+Function ShortcutActionName(Action: Integer): String;
+Begin
+  Case Action Of
+    KBD_ACTION_NONE:       ShortcutActionName := 'none';
+    KBD_ACTION_CLOSE:      ShortcutActionName := 'close';
+    KBD_ACTION_QUIT:       ShortcutActionName := 'quit';
+    KBD_ACTION_RELOAD:     ShortcutActionName := 'reload';
+    KBD_ACTION_ZOOM_IN:    ShortcutActionName := 'zoom_in';
+    KBD_ACTION_ZOOM_OUT:   ShortcutActionName := 'zoom_out';
+    KBD_ACTION_ZOOM_RESET: ShortcutActionName := 'zoom_reset';
+    KBD_ACTION_BACK:       ShortcutActionName := 'back';
+    KBD_ACTION_FORWARD:    ShortcutActionName := 'forward';
+    KBD_ACTION_DEVTOOLS:   ShortcutActionName := 'devtools';
+    KBD_ACTION_FULLSCREEN: ShortcutActionName := 'fullscreen';
+  Else
+    ShortcutActionName := 'unknown';
+  End;
+End;
+
+{ Ajouter un raccourci a la liste }
+Function AddShortcut(Const Key: String; Action: Integer; Enabled: Boolean): Boolean;
+Begin
+  Inc(KbdStateCount);
+  If KbdShortcutCount >= KBD_MAX_SHORTCUTS Then
+  Begin
+    AddShortcut := False;
+    Exit;
+  End;
+  Inc(KbdShortcutCount);
+  KbdShortcuts[KbdShortcutCount].Key := Key;
+  KbdShortcuts[KbdShortcutCount].Action := Action;
+  KbdShortcuts[KbdShortcutCount].Enabled := Enabled;
+  AddShortcut := True;
+End;
+
+{ Enregistrer les raccourcis par defaut }
+Procedure RegisterDefaultShortcuts(DisableWebShortcuts: Boolean);
+Begin
+  Inc(KbdStateCount);
+  Inc(KbdRegisterCount);
+
+  { Reinitialiser la liste }
+  KbdShortcutCount := 0;
+
+  { Ajouter les raccourcis par defaut }
+  If Not DisableWebShortcuts Then
+  Begin
+    AddShortcut(KBD_KEY_CLOSE, KBD_ACTION_CLOSE, True);
+    AddShortcut(KBD_KEY_QUIT, KBD_ACTION_QUIT, True);
+    AddShortcut(KBD_KEY_RELOAD, KBD_ACTION_RELOAD, True);
+    AddShortcut(KBD_KEY_ZOOM_IN, KBD_ACTION_ZOOM_IN, True);
+    AddShortcut(KBD_KEY_ZOOM_OUT, KBD_ACTION_ZOOM_OUT, True);
+    AddShortcut(KBD_KEY_ZOOM_RESET, KBD_ACTION_ZOOM_RESET, True);
+    AddShortcut(KBD_KEY_BACK, KBD_ACTION_BACK, True);
+    AddShortcut(KBD_KEY_FORWARD, KBD_ACTION_FORWARD, True);
+    AddShortcut(KBD_KEY_DEVTOOLS, KBD_ACTION_DEVTOOLS, True);
+    AddShortcut(KBD_KEY_FULLSCREEN, KBD_ACTION_FULLSCREEN, True);
+  End
+  Else
+  Begin
+    Inc(KbdDisabledCount);
+    { Meme avec raccourcis web desactives, garder quit et devtools }
+    AddShortcut(KBD_KEY_QUIT, KBD_ACTION_QUIT, True);
+    AddShortcut(KBD_KEY_DEVTOOLS, KBD_ACTION_DEVTOOLS, True);
+  End;
+End;
+
+{ Generer le code Rust pour la gestion des actions }
+Function GenerateShortcutActionCode(Action: Integer): String;
+Begin
+  Case Action Of
+    KBD_ACTION_CLOSE:
+      GenerateShortcutActionCode := 'window.hide().ok();';
+    KBD_ACTION_QUIT:
+      GenerateShortcutActionCode := 'std::process::exit(0);';
+    KBD_ACTION_RELOAD:
+      GenerateShortcutActionCode := 'window.eval("window.location.reload();").ok();';
+    KBD_ACTION_ZOOM_IN:
+      GenerateShortcutActionCode := 'window.eval("document.body.style.zoom = (parseFloat(document.body.style.zoom || 1) + 0.1).toString();").ok();';
+    KBD_ACTION_ZOOM_OUT:
+      GenerateShortcutActionCode := 'window.eval("document.body.style.zoom = (parseFloat(document.body.style.zoom || 1) - 0.1).toString();").ok();';
+    KBD_ACTION_ZOOM_RESET:
+      GenerateShortcutActionCode := 'window.eval("document.body.style.zoom = ''1'';").ok();';
+    KBD_ACTION_BACK:
+      GenerateShortcutActionCode := 'window.eval("window.history.back();").ok();';
+    KBD_ACTION_FORWARD:
+      GenerateShortcutActionCode := 'window.eval("window.history.forward();").ok();';
+    KBD_ACTION_DEVTOOLS:
+      GenerateShortcutActionCode := 'window.open_devtools();';
+    KBD_ACTION_FULLSCREEN:
+      GenerateShortcutActionCode := 'let is_fs = window.is_fullscreen().unwrap_or(false); window.set_fullscreen(!is_fs).ok();';
+  Else
+    GenerateShortcutActionCode := '// Unknown action';
+  End;
+End;
+
+{ Generer le code Rust pour les raccourcis clavier }
+Function GenerateShortcutsRs(Const Opts: TOptions): String;
+Var
+  Rs: String;
+  I: Integer;
+Begin
+  Inc(KbdStateCount);
+  Inc(KbdGenerateCount);
+
+  { Enregistrer les raccourcis par defaut }
+  RegisterDefaultShortcuts(Opts.DisableWebShortcuts);
+
+  Rs := '// shortcuts.rs - Generated by PAKE ' + PAKE_VERSION + #13#10;
+  Rs := Rs + '// Keyboard shortcuts handling' + #13#10;
+  Rs := Rs + #13#10;
+  Rs := Rs + 'use tauri::{GlobalShortcutManager, Manager};' + #13#10;
+  Rs := Rs + #13#10;
+
+  { Fonction pour enregistrer les raccourcis }
+  Rs := Rs + 'pub fn register_shortcuts(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {' + #13#10;
+  Rs := Rs + '    let window = app.get_window("main").ok_or("Window not found")?;' + #13#10;
+  Rs := Rs + '    let mut shortcut_manager = app.global_shortcut_manager();' + #13#10;
+  Rs := Rs + #13#10;
+
+  { Generer le code pour chaque raccourci actif }
+  For I := 1 To KbdShortcutCount Do
+  Begin
+    If KbdShortcuts[I].Enabled Then
+    Begin
+      Rs := Rs + '    // ' + ShortcutActionName(KbdShortcuts[I].Action) + ' shortcut' + #13#10;
+      Rs := Rs + '    {' + #13#10;
+      Rs := Rs + '        let win = window.clone();' + #13#10;
+      Rs := Rs + '        shortcut_manager.register("' + KbdShortcuts[I].Key + '", move || {' + #13#10;
+      Rs := Rs + '            ' + GenerateShortcutActionCode(KbdShortcuts[I].Action) + #13#10;
+      Rs := Rs + '        })?;' + #13#10;
+      Rs := Rs + '    }' + #13#10;
+      Rs := Rs + #13#10;
+    End;
+  End;
+
+  Rs := Rs + '    Ok(())' + #13#10;
+  Rs := Rs + '}' + #13#10;
+  Rs := Rs + #13#10;
+
+  { Fonction pour desenregistrer les raccourcis }
+  Rs := Rs + 'pub fn unregister_shortcuts(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {' + #13#10;
+  Rs := Rs + '    let mut shortcut_manager = app.global_shortcut_manager();' + #13#10;
+  Rs := Rs + '    shortcut_manager.unregister_all()?;' + #13#10;
+  Rs := Rs + '    Ok(())' + #13#10;
+  Rs := Rs + '}' + #13#10;
+
+  GenerateShortcutsRs := Rs;
+End;
+
+{ Obtenir le nombre de raccourcis actifs }
+Function GetActiveShortcutCount: Integer;
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To KbdShortcutCount Do
+    If KbdShortcuts[I].Enabled Then
+      Inc(Count);
+  GetActiveShortcutCount := Count;
+End;
+
+{ ============================================================
+  Accesseurs pour TODO 10 - GESTION DES RACCOURCIS CLAVIER
+  ============================================================ }
+
+Function IsKbdInitialized: Boolean;
+Begin
+  IsKbdInitialized := KbdInitialized;
+End;
+
+Function IsKbdEmpty: Boolean;
+Begin
+  IsKbdEmpty := (KbdShortcutCount = 0);
+End;
+
+Function GetKbdStateCount: Integer;
+Begin
+  GetKbdStateCount := KbdStateCount;
+End;
+
+Function GetKbdShortcutCount: Integer;
+Begin
+  GetKbdShortcutCount := KbdShortcutCount;
+End;
+
+Function GetKbdRegisterCount: Integer;
+Begin
+  GetKbdRegisterCount := KbdRegisterCount;
+End;
+
+Function GetKbdGenerateCount: Integer;
+Begin
+  GetKbdGenerateCount := KbdGenerateCount;
+End;
+
+Function GetKbdDisabledCount: Integer;
+Begin
+  GetKbdDisabledCount := KbdDisabledCount;
+End;
+
+Function GetKbdActiveCount: Integer;
+Begin
+  GetKbdActiveCount := GetActiveShortcutCount;
+End;
+
+Function GetKbdMaxShortcuts: Integer;
+Begin
+  GetKbdMaxShortcuts := KBD_MAX_SHORTCUTS;
+End;
+
+Function GetKbdDefaultKey(Action: Integer): String;
+Begin
+  Case Action Of
+    KBD_ACTION_CLOSE:      GetKbdDefaultKey := KBD_KEY_CLOSE;
+    KBD_ACTION_QUIT:       GetKbdDefaultKey := KBD_KEY_QUIT;
+    KBD_ACTION_RELOAD:     GetKbdDefaultKey := KBD_KEY_RELOAD;
+    KBD_ACTION_ZOOM_IN:    GetKbdDefaultKey := KBD_KEY_ZOOM_IN;
+    KBD_ACTION_ZOOM_OUT:   GetKbdDefaultKey := KBD_KEY_ZOOM_OUT;
+    KBD_ACTION_ZOOM_RESET: GetKbdDefaultKey := KBD_KEY_ZOOM_RESET;
+    KBD_ACTION_BACK:       GetKbdDefaultKey := KBD_KEY_BACK;
+    KBD_ACTION_FORWARD:    GetKbdDefaultKey := KBD_KEY_FORWARD;
+    KBD_ACTION_DEVTOOLS:   GetKbdDefaultKey := KBD_KEY_DEVTOOLS;
+    KBD_ACTION_FULLSCREEN: GetKbdDefaultKey := KBD_KEY_FULLSCREEN;
+  Else
+    GetKbdDefaultKey := '';
+  End;
+End;
+
+{ ============================================================
+  TODO 11-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -2993,6 +3307,9 @@ Begin
   { Initialiser le module Rust Generation }
   InitRustGenState;
 
+  { Initialiser le module raccourcis clavier }
+  InitShortcutState;
+
   { Generer le nom de l'application si non specifie }
   O.AppName := GenerateAppName(O);
 
@@ -3006,21 +3323,24 @@ Begin
   { Initialiser la configuration Tauri }
   InitTauriConfig(TauriCfg, O);
 
+  { Enregistrer les raccourcis par defaut }
+  RegisterDefaultShortcuts(O.DisableWebShortcuts);
+
   WriteLn('Application : ', O.AppName);
   WriteLn('Identifiant : ', AppId);
   WriteLn('Package     : ', PkgName);
   WriteLn('URL         : ', O.Url);
   WriteLn('Fenetre     : ', O.Width, 'x', O.Height);
   WriteLn('Plateforme  : ', PlatformName(GetPlatform));
+  WriteLn('Raccourcis  : ', GetKbdActiveCount, ' actifs');
   WriteLn;
 
-  { TODO: Implementer les TODOs 10-25 }
-  WriteLn('*** NOTE: TODOs 01-09 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 10-25 restent a implementer ***');
+  { TODO: Implementer les TODOs 11-25 }
+  WriteLn('*** NOTE: TODOs 01-10 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 11-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 10: Gestion des raccourcis clavier');
   WriteLn('  - TODO 11: Mode fenetre immersive');
   WriteLn('  - TODO 12: Injection CSS personnalise');
   WriteLn('  - TODO 13: Injection JavaScript personnalise');

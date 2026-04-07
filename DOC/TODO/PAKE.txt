@@ -256,28 +256,39 @@ Turbo Pascal / Free Pascal (-Mtp)
            generer un index.html minimal qui charge l'URL
            avec redirection ou iframe selon la configuration
 
-  TODO 10 - GESTION DES RACCOURCIS CLAVIER [A FAIRE]
+  TODO 10 - GESTION DES RACCOURCIS CLAVIER [IMPLEMENTE]
          Type TShortcut : record
            Key       : String (ex: 'CmdOrCtrl+W')
-           Action    : String (ex: 'close', 'minimize', 'reload')
+           Action    : Integer (KBD_ACTION_* constantes)
            Enabled   : Boolean
          End
-         Constantes de raccourcis par defaut :
-           SHORTCUT_CLOSE    : CmdOrCtrl+W -> cacher fenetre
-           SHORTCUT_QUIT     : CmdOrCtrl+Q -> quitter
-           SHORTCUT_RELOAD   : CmdOrCtrl+R -> recharger page
-           SHORTCUT_ZOOM_IN  : CmdOrCtrl+= -> zoom avant
-           SHORTCUT_ZOOM_OUT : CmdOrCtrl+- -> zoom arriere
-           SHORTCUT_ZOOM_RESET : CmdOrCtrl+0 -> reset zoom
-           SHORTCUT_BACK     : CmdOrCtrl+[ -> page precedente
-           SHORTCUT_FORWARD  : CmdOrCtrl+] -> page suivante
-           SHORTCUT_DEVTOOLS : CmdOrCtrl+Shift+I -> DevTools
-           SHORTCUT_FULLSCREEN : F11 -> plein ecran
+         Constantes d'actions :
+           KBD_ACTION_NONE = 0, KBD_ACTION_CLOSE = 1, KBD_ACTION_QUIT = 2,
+           KBD_ACTION_RELOAD = 3, KBD_ACTION_ZOOM_IN = 4,
+           KBD_ACTION_ZOOM_OUT = 5, KBD_ACTION_ZOOM_RESET = 6,
+           KBD_ACTION_BACK = 7, KBD_ACTION_FORWARD = 8,
+           KBD_ACTION_DEVTOOLS = 9, KBD_ACTION_FULLSCREEN = 10
+         Constantes de touches :
+           KBD_KEY_CLOSE = CmdOrCtrl+W, KBD_KEY_QUIT = CmdOrCtrl+Q,
+           KBD_KEY_RELOAD = CmdOrCtrl+R, KBD_KEY_ZOOM_IN = CmdOrCtrl+=,
+           KBD_KEY_ZOOM_OUT = CmdOrCtrl+-, KBD_KEY_ZOOM_RESET = CmdOrCtrl+0,
+           KBD_KEY_BACK = CmdOrCtrl+[, KBD_KEY_FORWARD = CmdOrCtrl+],
+           KBD_KEY_DEVTOOLS = CmdOrCtrl+Shift+I, KBD_KEY_FULLSCREEN = F11
+         KBD_MAX_SHORTCUTS = 16
+         KbdInitialized/KbdStateCount/KbdShortcuts/KbdShortcutCount/
+         KbdRegisterCount/KbdGenerateCount/KbdDisabledCount vars
+         Procedure InitShortcutState
+         Function ShortcutActionName(Action: Integer): String
+         Function AddShortcut(Const Key: String; Action: Integer;
+           Enabled: Boolean): Boolean
+         Procedure RegisterDefaultShortcuts(DisableWebShortcuts: Boolean)
+         Function GenerateShortcutActionCode(Action: Integer): String
          Function GenerateShortcutsRs(Const Opts: TOptions): String
-           generer le code Rust pour les raccourcis clavier
-           utiliser tauri::GlobalShortcut
-         Procedure RegisterDefaultShortcuts(Var Shortcuts: Array Of TShortcut)
-           initialiser la liste des raccourcis par defaut
+         Function GetActiveShortcutCount: Integer
+         10 accesseurs (IsKbdInitialized/IsKbdEmpty/GetKbdStateCount/
+         GetKbdShortcutCount/GetKbdRegisterCount/GetKbdGenerateCount/
+         GetKbdDisabledCount/GetKbdActiveCount/GetKbdMaxShortcuts/
+         GetKbdDefaultKey)
 
   TODO 11 - MODE FENETRE IMMERSIVE [A FAIRE]
          Constantes de modes de fenetre :
