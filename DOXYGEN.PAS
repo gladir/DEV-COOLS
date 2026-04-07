@@ -7477,10 +7477,11 @@ Begin
   WriteLn;
 End;
 
-Procedure ShowHelp;
-Begin
-  ShowVersion;
-  WriteLn('Usage: doxygen [options] [config-file]');
+Procedure ShowHelp;Begin
+  WriteLn('DOXYGEN - Cette commande permet de lancer le g‚n‚rateur ',
+          'de documentation.');
+  WriteLn;
+  WriteLn('Syntaxe: DOXYGEN [options] [config-file]');
   WriteLn;
   WriteLn('Options standard doxygen:');
   WriteLn('  -h, --help        Afficher cette aide et quitter');
@@ -7543,7 +7544,6 @@ Begin
   If Not Opts.Quiet Then
   Begin
     WriteLn('DOXYGEN ', DOXYGEN_VERSION, ' - Generateur de documentation');
-    WriteLn('(c) 2026 Gladir.com - Licence MIT');
     WriteLn;
   End;
 End;
