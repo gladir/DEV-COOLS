@@ -110,7 +110,7 @@ Turbo Pascal / Free Pascal (-Mtp)
          Procedure ValidateUrl(Const Url: String)
            appeler IsValidUrl, lever FatalError si invalide
 
-  TODO 04 - DETECTION DU SYSTEME D'EXPLOITATION [A FAIRE]
+  TODO 04 - DETECTION DU SYSTEME D'EXPLOITATION [IMPLEMENTE]
          Constantes de plateformes :
            PLATFORM_UNKNOWN = 0, PLATFORM_WINDOWS = 1,
            PLATFORM_MACOS = 2, PLATFORM_LINUX = 3

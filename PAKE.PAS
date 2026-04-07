@@ -153,7 +153,7 @@
             Procedure ValidateUrl(Const Url: String)
               appeler IsValidUrl, lever FatalError si invalide
 
-  TODO 04 - DETECTION DU SYSTEME D'EXPLOITATION [A FAIRE]
+  TODO 04 - DETECTION DU SYSTEME D'EXPLOITATION [IMPLEMENTE]
             Constantes de plateformes :
               PLATFORM_UNKNOWN = 0, PLATFORM_WINDOWS = 1,
               PLATFORM_MACOS = 2, PLATFORM_LINUX = 3
@@ -1285,7 +1285,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 04 : DETECTION DU SYSTEME D'EXPLOITATION [A FAIRE]
+  TODO 04 : DETECTION DU SYSTEME D'EXPLOITATION [IMPLEMENTE]
   ============================================================ }
 
 Function GetPlatform: Integer;
@@ -1336,28 +1336,24 @@ End;
 
 Function IsRustInstalled: Boolean;
 { Verifie si Rust/Cargo est installe en testant cargo --version }
-Var
-  ExitCode: Integer;
 Begin
   {$IFDEF WINDOWS}
-  ExitCode := ExecuteProcess('cmd', '/c cargo --version >nul 2>&1');
+  Exec(GetEnv('COMSPEC'), '/c cargo --version >nul 2>&1');
   {$ELSE}
-  ExitCode := ExecuteProcess('/bin/sh', '-c "cargo --version >/dev/null 2>&1"');
+  Exec('/bin/sh', '-c "cargo --version >/dev/null 2>&1"');
   {$ENDIF}
-  IsRustInstalled := (ExitCode = 0);
+  IsRustInstalled := (DosError = 0) And (DosExitCode = 0);
 End;
 
 Function IsTauriInstalled: Boolean;
 { Verifie si Tauri CLI est installe en testant cargo tauri --version }
-Var
-  ExitCode: Integer;
 Begin
   {$IFDEF WINDOWS}
-  ExitCode := ExecuteProcess('cmd', '/c cargo tauri --version >nul 2>&1');
+  Exec(GetEnv('COMSPEC'), '/c cargo tauri --version >nul 2>&1');
   {$ELSE}
-  ExitCode := ExecuteProcess('/bin/sh', '-c "cargo tauri --version >/dev/null 2>&1"');
+  Exec('/bin/sh', '-c "cargo tauri --version >/dev/null 2>&1"');
   {$ENDIF}
-  IsTauriInstalled := (ExitCode = 0);
+  IsTauriInstalled := (DosError = 0) And (DosExitCode = 0);
 End;
 
 Procedure CheckPrerequisites;
@@ -1574,7 +1570,7 @@ Begin
   WriteLn;
 
   { TODO: Implementer les TODOs 05-25 }
-  WriteLn('*** NOTE: TODOs 01-03 [IMPLEMENTE], TODO 04 partiellement implemente ***');
+  WriteLn('*** NOTE: TODOs 01-04 [IMPLEMENTE] ***');
   WriteLn('*** Les TODOs 05-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
