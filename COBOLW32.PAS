@@ -728,7 +728,7 @@
             Commentaires preserves dans le listing
             10 fonctions accesseurs
 
-  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, USER32, MSVCRT) [A FAIRE]
+  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, USER32, MSVCRT) [IMPLEMENTE]
             Imports kernel32.dll :
               ExitProcess, GetStdHandle, WriteFile, ReadFile,
               GetProcessHeap, HeapAlloc, HeapFree,
@@ -1799,8 +1799,11 @@ Const
   { Mots-cles pour TODO 23 : ASM LISTING WRITER }
   KW_ASM               = 252;  { ASM }
 
+  { Mots-cles pour TODO 24 : IMPORTS API WIN32 }
+  KW_IMPORTS           = 253;  { IMPORTS }
+
   { Nombre total de mots-cles definis }
-  KW_TOTAL_KEYWORDS    = 184;  { nombre approximatif de mots-cles }
+  KW_TOTAL_KEYWORDS    = 185;  { nombre approximatif de mots-cles }
 
 Var
   { Variables du module de mots-cles }
@@ -21427,6 +21430,679 @@ Begin
   GetAsmStateCount := AsmStateCount;
 End;
 
+{ ============================================================ }
+{ TODO 24 - IMPORTS API WIN32 ET LIAISON                       }
+{           (KERNEL32, USER32, MSVCRT)                         }
+{ ============================================================ }
+
+Const
+  { Types de DLL }
+  IMP_DLL_NONE         = 0;           { pas de DLL                              }
+  IMP_DLL_KERNEL32     = 1;           { kernel32.dll                            }
+  IMP_DLL_USER32       = 2;           { user32.dll                              }
+  IMP_DLL_MSVCRT       = 3;           { msvcrt.dll                              }
+
+  { Categories de fonctions importees }
+  IMP_CAT_NONE         = 0;           { pas de categorie                        }
+  IMP_CAT_PROCESS      = 1;           { gestion processus (ExitProcess...)      }
+  IMP_CAT_IO           = 2;           { E/S console et fichiers                 }
+  IMP_CAT_MEMORY       = 3;           { gestion memoire (HeapAlloc...)          }
+  IMP_CAT_FILE         = 4;           { operations fichiers (CreateFileA...)    }
+  IMP_CAT_SYSTEM       = 5;           { info systeme (GetCommandLineA...)       }
+  IMP_CAT_DATETIME     = 6;           { date/heure (GetLocalTime)               }
+  IMP_CAT_DYNLOAD      = 7;           { chargement dynamique (LoadLibraryA...)  }
+  IMP_CAT_FORMAT       = 8;           { formatage (sprintf, sscanf)             }
+  IMP_CAT_CONVERT      = 9;           { conversions (_itoa, atoi, atol)         }
+  IMP_CAT_MEMOPS       = 10;          { operations memoire C (memcpy...)        }
+  IMP_CAT_SORT         = 11;          { tri (qsort)                             }
+  IMP_CAT_UI           = 12;          { interface utilisateur (MessageBoxA)     }
+
+  { Limites }
+  IMP_MAX_DLLS         = 8;           { nombre max de DLL importees             }
+  IMP_MAX_FUNCTIONS    = 64;          { nombre max de fonctions par DLL         }
+  IMP_MAX_TOTAL_FUNCS  = 128;         { nombre max total de fonctions           }
+  IMP_MAX_IAT_ENTRIES  = 128;         { nombre max d entrees IAT                }
+  IMP_MAX_HINT_NAME    = 128;         { nombre max d entrees Hint/Name          }
+
+Type
+  TImpFunction = Record
+    Name           : TString;         { nom de la fonction (ExitProcess)        }
+    Decorated      : TString;         { nom decore (_ExitProcess@4)             }
+    DllIndex       : Integer;         { index dans le tableau de DLLs           }
+    Category       : Integer;         { IMP_CAT_* categorie fonctionnelle       }
+    ParamBytes     : Integer;         { taille parametres en octets (stdcall)   }
+    IsUsed         : Boolean;         { True si reellement utilisee             }
+    HintIndex      : Integer;         { index dans Hint/Name Table              }
+    IatIndex       : Integer;         { index dans l IAT                        }
+  End;
+
+  TImpDll = Record
+    Name           : TString;         { nom de la DLL (kernel32.dll)            }
+    LibName        : TString;         { nom lib pour ASM (kernel32.lib)         }
+    DllType        : Integer;         { IMP_DLL_KERNEL32/USER32/MSVCRT          }
+    FuncStart      : Integer;         { index de la premiere fonction            }
+    FuncCount      : Integer;         { nombre de fonctions dans cette DLL      }
+    IsUsed         : Boolean;         { True si au moins une fonction utilisee  }
+  End;
+
+Var
+  ImpInitialized         : Boolean;   { True si InitImportState appele          }
+  ImpStateCount          : Integer;   { compteur d etat general                 }
+  ImpDlls                : Array[0..IMP_MAX_DLLS-1] Of TImpDll;
+  ImpDllCount            : Integer;   { nombre de DLLs enregistrees             }
+  ImpFunctions           : Array[0..IMP_MAX_TOTAL_FUNCS-1] Of TImpFunction;
+  ImpFuncCount           : Integer;   { nombre total de fonctions               }
+  ImpUsedFuncCount       : Integer;   { nombre de fonctions marquees utilisees  }
+  ImpUsedDllCount        : Integer;   { nombre de DLLs avec fonctions utilisees }
+  ImpKernelFuncCount     : Integer;   { fonctions kernel32                      }
+  ImpUserFuncCount       : Integer;   { fonctions user32                        }
+  ImpMsvcrtFuncCount     : Integer;   { fonctions msvcrt                        }
+  ImpProcessCount        : Integer;   { fonctions categorie PROCESS             }
+  ImpIoCount             : Integer;   { fonctions categorie IO                  }
+  ImpMemoryCount         : Integer;   { fonctions categorie MEMORY              }
+  ImpFileCount           : Integer;   { fonctions categorie FILE                }
+  ImpSystemCount         : Integer;   { fonctions categorie SYSTEM              }
+  ImpDateTimeCount       : Integer;   { fonctions categorie DATETIME            }
+  ImpDynLoadCount        : Integer;   { fonctions categorie DYNLOAD             }
+  ImpFormatCount         : Integer;   { fonctions categorie FORMAT              }
+  ImpConvertCount        : Integer;   { fonctions categorie CONVERT             }
+  ImpMemOpsCount         : Integer;   { fonctions categorie MEMOPS              }
+  ImpSortCount           : Integer;   { fonctions categorie SORT                }
+  ImpUiCount             : Integer;   { fonctions categorie UI                  }
+  ImpPeGenCount          : Integer;   { compteur de generations PE import       }
+  ImpAsmGenCount         : Integer;   { compteur de generations ASM extern      }
+  ImpCofGenCount         : Integer;   { compteur de generations COFF extern     }
+  ImpTotalRegistered     : Integer;   { total de fonctions enregistrees         }
+
+{ ------------------------------------------------------------ }
+{ InitImportState : initialiser l etat du module Imports Win32  }
+{ Enregistre toutes les fonctions API connues par DLL           }
+{ ------------------------------------------------------------ }
+
+Procedure InitImportState;
+
+  Procedure RegDll(DName, LName : TString; DType : Integer);
+  Begin
+    If ImpDllCount < IMP_MAX_DLLS Then Begin
+      ImpDlls[ImpDllCount].Name := DName;
+      ImpDlls[ImpDllCount].LibName := LName;
+      ImpDlls[ImpDllCount].DllType := DType;
+      ImpDlls[ImpDllCount].FuncStart := ImpFuncCount;
+      ImpDlls[ImpDllCount].FuncCount := 0;
+      ImpDlls[ImpDllCount].IsUsed := False;
+      Inc(ImpDllCount);
+    End;
+  End;
+
+  Procedure RegFunc(FName, FDeco : TString; DIdx, Cat, PBytes : Integer);
+  Begin
+    If ImpFuncCount < IMP_MAX_TOTAL_FUNCS Then Begin
+      ImpFunctions[ImpFuncCount].Name := FName;
+      ImpFunctions[ImpFuncCount].Decorated := FDeco;
+      ImpFunctions[ImpFuncCount].DllIndex := DIdx;
+      ImpFunctions[ImpFuncCount].Category := Cat;
+      ImpFunctions[ImpFuncCount].ParamBytes := PBytes;
+      ImpFunctions[ImpFuncCount].IsUsed := False;
+      ImpFunctions[ImpFuncCount].HintIndex := 0;
+      ImpFunctions[ImpFuncCount].IatIndex := 0;
+      Inc(ImpFuncCount);
+      If DIdx < ImpDllCount Then
+        Inc(ImpDlls[DIdx].FuncCount);
+      Case Cat Of
+        IMP_CAT_PROCESS  : Inc(ImpProcessCount);
+        IMP_CAT_IO       : Inc(ImpIoCount);
+        IMP_CAT_MEMORY   : Inc(ImpMemoryCount);
+        IMP_CAT_FILE     : Inc(ImpFileCount);
+        IMP_CAT_SYSTEM   : Inc(ImpSystemCount);
+        IMP_CAT_DATETIME : Inc(ImpDateTimeCount);
+        IMP_CAT_DYNLOAD  : Inc(ImpDynLoadCount);
+        IMP_CAT_FORMAT   : Inc(ImpFormatCount);
+        IMP_CAT_CONVERT  : Inc(ImpConvertCount);
+        IMP_CAT_MEMOPS   : Inc(ImpMemOpsCount);
+        IMP_CAT_SORT     : Inc(ImpSortCount);
+        IMP_CAT_UI       : Inc(ImpUiCount);
+      End;
+      Inc(ImpTotalRegistered);
+    End;
+  End;
+
+Var
+  DK, DU, DM : Integer;  { index DLL kernel32, user32, msvcrt }
+  I : Integer;
+Begin
+  ImpInitialized := True;
+  ImpStateCount := 0;
+  ImpDllCount := 0;
+  ImpFuncCount := 0;
+  ImpUsedFuncCount := 0;
+  ImpUsedDllCount := 0;
+  ImpKernelFuncCount := 0;
+  ImpUserFuncCount := 0;
+  ImpMsvcrtFuncCount := 0;
+  ImpProcessCount := 0;
+  ImpIoCount := 0;
+  ImpMemoryCount := 0;
+  ImpFileCount := 0;
+  ImpSystemCount := 0;
+  ImpDateTimeCount := 0;
+  ImpDynLoadCount := 0;
+  ImpFormatCount := 0;
+  ImpConvertCount := 0;
+  ImpMemOpsCount := 0;
+  ImpSortCount := 0;
+  ImpUiCount := 0;
+  ImpPeGenCount := 0;
+  ImpAsmGenCount := 0;
+  ImpCofGenCount := 0;
+  ImpTotalRegistered := 0;
+
+  For I := 0 To IMP_MAX_DLLS - 1 Do Begin
+    ImpDlls[I].Name := '';
+    ImpDlls[I].LibName := '';
+    ImpDlls[I].DllType := IMP_DLL_NONE;
+    ImpDlls[I].FuncStart := 0;
+    ImpDlls[I].FuncCount := 0;
+    ImpDlls[I].IsUsed := False;
+  End;
+  For I := 0 To IMP_MAX_TOTAL_FUNCS - 1 Do Begin
+    ImpFunctions[I].Name := '';
+    ImpFunctions[I].Decorated := '';
+    ImpFunctions[I].DllIndex := 0;
+    ImpFunctions[I].Category := IMP_CAT_NONE;
+    ImpFunctions[I].ParamBytes := 0;
+    ImpFunctions[I].IsUsed := False;
+    ImpFunctions[I].HintIndex := 0;
+    ImpFunctions[I].IatIndex := 0;
+  End;
+
+  { Enregistrer les DLLs }
+  DK := ImpDllCount;
+  RegDll('kernel32.dll', 'kernel32.lib', IMP_DLL_KERNEL32);
+  DU := ImpDllCount;
+  RegDll('user32.dll', 'user32.lib', IMP_DLL_USER32);
+  DM := ImpDllCount;
+  RegDll('msvcrt.dll', 'msvcrt.lib', IMP_DLL_MSVCRT);
+
+  { --- kernel32.dll : Processus --- }
+  RegFunc('ExitProcess', '_ExitProcess@4', DK, IMP_CAT_PROCESS, 4);
+  RegFunc('GetModuleHandleA', '_GetModuleHandleA@4', DK, IMP_CAT_PROCESS, 4);
+
+  { --- kernel32.dll : E/S console --- }
+  RegFunc('GetStdHandle', '_GetStdHandle@4', DK, IMP_CAT_IO, 4);
+  RegFunc('WriteFile', '_WriteFile@20', DK, IMP_CAT_IO, 20);
+  RegFunc('ReadFile', '_ReadFile@20', DK, IMP_CAT_IO, 20);
+
+  { --- kernel32.dll : Memoire --- }
+  RegFunc('GetProcessHeap', '_GetProcessHeap@0', DK, IMP_CAT_MEMORY, 0);
+  RegFunc('HeapAlloc', '_HeapAlloc@12', DK, IMP_CAT_MEMORY, 12);
+  RegFunc('HeapFree', '_HeapFree@12', DK, IMP_CAT_MEMORY, 12);
+
+  { --- kernel32.dll : Fichiers --- }
+  RegFunc('CreateFileA', '_CreateFileA@28', DK, IMP_CAT_FILE, 28);
+  RegFunc('CloseHandle', '_CloseHandle@4', DK, IMP_CAT_FILE, 4);
+  RegFunc('SetFilePointer', '_SetFilePointer@16', DK, IMP_CAT_FILE, 16);
+  RegFunc('GetFileSize', '_GetFileSize@8', DK, IMP_CAT_FILE, 8);
+  RegFunc('DeleteFileA', '_DeleteFileA@4', DK, IMP_CAT_FILE, 4);
+  RegFunc('MoveFileA', '_MoveFileA@8', DK, IMP_CAT_FILE, 8);
+  RegFunc('FindFirstFileA', '_FindFirstFileA@8', DK, IMP_CAT_FILE, 8);
+  RegFunc('FindNextFileA', '_FindNextFileA@8', DK, IMP_CAT_FILE, 8);
+  RegFunc('FindClose', '_FindClose@4', DK, IMP_CAT_FILE, 4);
+
+  { --- kernel32.dll : Systeme --- }
+  RegFunc('GetCommandLineA', '_GetCommandLineA@0', DK, IMP_CAT_SYSTEM, 0);
+  RegFunc('GetLastError', '_GetLastError@0', DK, IMP_CAT_SYSTEM, 0);
+  RegFunc('SetLastError', '_SetLastError@4', DK, IMP_CAT_SYSTEM, 4);
+  RegFunc('GetTempPathA', '_GetTempPathA@8', DK, IMP_CAT_SYSTEM, 8);
+
+  { --- kernel32.dll : Date/Heure --- }
+  RegFunc('GetLocalTime', '_GetLocalTime@4', DK, IMP_CAT_DATETIME, 4);
+
+  { --- kernel32.dll : Chargement dynamique --- }
+  RegFunc('LoadLibraryA', '_LoadLibraryA@4', DK, IMP_CAT_DYNLOAD, 4);
+  RegFunc('GetProcAddress', '_GetProcAddress@8', DK, IMP_CAT_DYNLOAD, 8);
+  RegFunc('FreeLibrary', '_FreeLibrary@4', DK, IMP_CAT_DYNLOAD, 4);
+
+  ImpKernelFuncCount := ImpFuncCount;
+
+  { --- user32.dll : Interface utilisateur --- }
+  RegFunc('MessageBoxA', '_MessageBoxA@16', DU, IMP_CAT_UI, 16);
+
+  ImpUserFuncCount := ImpFuncCount - ImpKernelFuncCount;
+
+  { --- msvcrt.dll : Formatage --- }
+  RegFunc('sprintf', '_sprintf', DM, IMP_CAT_FORMAT, 0);
+  RegFunc('sscanf', '_sscanf', DM, IMP_CAT_FORMAT, 0);
+
+  { --- msvcrt.dll : Conversions --- }
+  RegFunc('_itoa', '__itoa', DM, IMP_CAT_CONVERT, 0);
+  RegFunc('atoi', '_atoi', DM, IMP_CAT_CONVERT, 0);
+  RegFunc('atol', '_atol', DM, IMP_CAT_CONVERT, 0);
+
+  { --- msvcrt.dll : Operations memoire --- }
+  RegFunc('memcpy', '_memcpy', DM, IMP_CAT_MEMOPS, 0);
+  RegFunc('memset', '_memset', DM, IMP_CAT_MEMOPS, 0);
+  RegFunc('memcmp', '_memcmp', DM, IMP_CAT_MEMOPS, 0);
+
+  { --- msvcrt.dll : Tri --- }
+  RegFunc('qsort', '_qsort', DM, IMP_CAT_SORT, 0);
+
+  ImpMsvcrtFuncCount := ImpFuncCount - ImpKernelFuncCount - ImpUserFuncCount;
+
+  Inc(ImpStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ImpDllTypeName : retourne le nom d un type de DLL             }
+{ ------------------------------------------------------------ }
+
+Function ImpDllTypeName(DType : Integer) : TString;
+Begin
+  Case DType Of
+    IMP_DLL_NONE     : ImpDllTypeName := 'NONE';
+    IMP_DLL_KERNEL32 : ImpDllTypeName := 'KERNEL32';
+    IMP_DLL_USER32   : ImpDllTypeName := 'USER32';
+    IMP_DLL_MSVCRT   : ImpDllTypeName := 'MSVCRT';
+  Else
+    ImpDllTypeName := '?DLL' + ItoSI(DType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ImpFuncCatName : retourne le nom d une categorie de fonction  }
+{ ------------------------------------------------------------ }
+
+Function ImpFuncCatName(Cat : Integer) : TString;
+Begin
+  Case Cat Of
+    IMP_CAT_NONE     : ImpFuncCatName := 'NONE';
+    IMP_CAT_PROCESS  : ImpFuncCatName := 'PROCESS';
+    IMP_CAT_IO       : ImpFuncCatName := 'IO';
+    IMP_CAT_MEMORY   : ImpFuncCatName := 'MEMORY';
+    IMP_CAT_FILE     : ImpFuncCatName := 'FILE';
+    IMP_CAT_SYSTEM   : ImpFuncCatName := 'SYSTEM';
+    IMP_CAT_DATETIME : ImpFuncCatName := 'DATETIME';
+    IMP_CAT_DYNLOAD  : ImpFuncCatName := 'DYNLOAD';
+    IMP_CAT_FORMAT   : ImpFuncCatName := 'FORMAT';
+    IMP_CAT_CONVERT  : ImpFuncCatName := 'CONVERT';
+    IMP_CAT_MEMOPS   : ImpFuncCatName := 'MEMOPS';
+    IMP_CAT_SORT     : ImpFuncCatName := 'SORT';
+    IMP_CAT_UI       : ImpFuncCatName := 'UI';
+  Else
+    ImpFuncCatName := '?CAT' + ItoSI(Cat);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindImpDll : chercher une DLL par nom                         }
+{ Retourne l index ou -1 si non trouvee                         }
+{ ------------------------------------------------------------ }
+
+Function FindImpDll(DName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  FindImpDll := -1;
+  For I := 0 To ImpDllCount - 1 Do
+    If ImpDlls[I].Name = DName Then Begin
+      FindImpDll := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddImpDll : ajouter une DLL a la liste                        }
+{ Retourne l index ou -1 si plein                               }
+{ ------------------------------------------------------------ }
+
+Function AddImpDll(DName, LName : TString; DType : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := FindImpDll(DName);
+  If Idx >= 0 Then Begin
+    AddImpDll := Idx;
+    Exit;
+  End;
+  If ImpDllCount >= IMP_MAX_DLLS Then Begin
+    AddImpDll := -1;
+    Exit;
+  End;
+  ImpDlls[ImpDllCount].Name := DName;
+  ImpDlls[ImpDllCount].LibName := LName;
+  ImpDlls[ImpDllCount].DllType := DType;
+  ImpDlls[ImpDllCount].FuncStart := ImpFuncCount;
+  ImpDlls[ImpDllCount].FuncCount := 0;
+  ImpDlls[ImpDllCount].IsUsed := False;
+  AddImpDll := ImpDllCount;
+  Inc(ImpDllCount);
+  Inc(ImpStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ FindImpFunction : chercher une fonction importee par nom      }
+{ Retourne l index ou -1 si non trouvee                         }
+{ ------------------------------------------------------------ }
+
+Function FindImpFunction(FName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  FindImpFunction := -1;
+  For I := 0 To ImpFuncCount - 1 Do
+    If ImpFunctions[I].Name = FName Then Begin
+      FindImpFunction := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddImpFunction : ajouter une fonction importee                }
+{ Retourne l index ou -1 si plein                               }
+{ ------------------------------------------------------------ }
+
+Function AddImpFunction(FName, FDeco : TString;
+                        DIdx, Cat, PBytes : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := FindImpFunction(FName);
+  If Idx >= 0 Then Begin
+    AddImpFunction := Idx;
+    Exit;
+  End;
+  If ImpFuncCount >= IMP_MAX_TOTAL_FUNCS Then Begin
+    AddImpFunction := -1;
+    Exit;
+  End;
+  ImpFunctions[ImpFuncCount].Name := FName;
+  ImpFunctions[ImpFuncCount].Decorated := FDeco;
+  ImpFunctions[ImpFuncCount].DllIndex := DIdx;
+  ImpFunctions[ImpFuncCount].Category := Cat;
+  ImpFunctions[ImpFuncCount].ParamBytes := PBytes;
+  ImpFunctions[ImpFuncCount].IsUsed := False;
+  ImpFunctions[ImpFuncCount].HintIndex := 0;
+  ImpFunctions[ImpFuncCount].IatIndex := 0;
+  If DIdx < ImpDllCount Then
+    Inc(ImpDlls[DIdx].FuncCount);
+  AddImpFunction := ImpFuncCount;
+  Inc(ImpFuncCount);
+  Inc(ImpTotalRegistered);
+  Inc(ImpStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkImpFunctionUsed : marquer une fonction comme utilisee     }
+{ Met a jour les compteurs de DLLs utilisees                    }
+{ ------------------------------------------------------------ }
+
+Procedure MarkImpFunctionUsed(FName : TString);
+Var
+  Idx, DIdx : Integer;
+Begin
+  Idx := FindImpFunction(FName);
+  If Idx < 0 Then Exit;
+  If ImpFunctions[Idx].IsUsed Then Exit;
+  ImpFunctions[Idx].IsUsed := True;
+  Inc(ImpUsedFuncCount);
+  DIdx := ImpFunctions[Idx].DllIndex;
+  If (DIdx >= 0) And (DIdx < ImpDllCount) Then Begin
+    If Not ImpDlls[DIdx].IsUsed Then Begin
+      ImpDlls[DIdx].IsUsed := True;
+      Inc(ImpUsedDllCount);
+    End;
+  End;
+  Inc(ImpStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ CountUsedFuncsForDll : compter fonctions utilisees par DLL    }
+{ ------------------------------------------------------------ }
+
+Function CountUsedFuncsForDll(DIdx : Integer) : Integer;
+Var
+  I, Cnt : Integer;
+Begin
+  Cnt := 0;
+  For I := 0 To ImpFuncCount - 1 Do
+    If (ImpFunctions[I].DllIndex = DIdx) And ImpFunctions[I].IsUsed Then
+      Inc(Cnt);
+  CountUsedFuncsForDll := Cnt;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPeImportDescriptor : generer IMAGE_IMPORT_DESCRIPTOR       }
+{ pour une DLL dans le buffer PE                                }
+{ Chaque descripteur fait 20 octets :                           }
+{   OriginalFirstThunk (4), TimeDateStamp (4),                  }
+{   ForwarderChain (4), Name RVA (4), FirstThunk (4)            }
+{ Ecrit dans le buffer PE fourni                                }
+{ ------------------------------------------------------------ }
+
+Procedure GenPeImportDescriptor(Var Buf : Array Of Byte;
+                                Var Pos : LongInt;
+                                MaxSize : LongInt;
+                                NameRva, OftRva, FtRva : LongInt);
+Begin
+  { OriginalFirstThunk = RVA vers Hint/Name Table }
+  WritePeDWord(Buf, Pos, MaxSize, OftRva);
+  { TimeDateStamp = 0 }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { ForwarderChain = 0 }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { Name = RVA vers le nom de la DLL }
+  WritePeDWord(Buf, Pos, MaxSize, NameRva);
+  { FirstThunk = RVA vers l IAT }
+  WritePeDWord(Buf, Pos, MaxSize, FtRva);
+  Inc(ImpPeGenCount);
+  Inc(ImpStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPeImportTable : generer la table d importation PE          }
+{ Complete avec descripteurs, Hint/Name Table et IAT            }
+{ N inclut que les DLLs et fonctions reellement utilisees       }
+{ ------------------------------------------------------------ }
+
+Procedure GenPeImportTable;
+Var
+  I, J    : Integer;
+  HintIdx : Integer;
+  IatIdx  : Integer;
+Begin
+  HintIdx := 0;
+  IatIdx := 0;
+  { Assigner les index Hint/Name et IAT pour les fonctions utilisees }
+  For I := 0 To ImpDllCount - 1 Do Begin
+    If Not ImpDlls[I].IsUsed Then Continue;
+    For J := 0 To ImpFuncCount - 1 Do Begin
+      If (ImpFunctions[J].DllIndex <> I) Then Continue;
+      If Not ImpFunctions[J].IsUsed Then Continue;
+      ImpFunctions[J].HintIndex := HintIdx;
+      ImpFunctions[J].IatIndex := IatIdx;
+      Inc(HintIdx);
+      Inc(IatIdx);
+    End;
+    { Terminateur NULL pour cette DLL }
+    Inc(HintIdx);
+    Inc(IatIdx);
+  End;
+  Inc(ImpPeGenCount);
+  Inc(ImpStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsmExternsForImports : generer les EXTERN ASM              }
+{ pour toutes les fonctions marquees comme utilisees            }
+{ ------------------------------------------------------------ }
+
+Procedure GenAsmExternsForImports;
+Var
+  I : Integer;
+Begin
+  For I := 0 To ImpFuncCount - 1 Do Begin
+    If Not ImpFunctions[I].IsUsed Then Continue;
+    AddAsmExtern(ImpFunctions[I].Name,
+                 ImpFunctions[I].Decorated,
+                 True);
+  End;
+  { Ajouter les INCLUDELIB pour les DLLs utilisees }
+  For I := 0 To ImpDllCount - 1 Do Begin
+    If Not ImpDlls[I].IsUsed Then Continue;
+    AddAsmLib(ImpDlls[I].LibName);
+  End;
+  Inc(ImpAsmGenCount);
+  Inc(ImpStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCofExternsForImports : generer les symboles externes COFF  }
+{ pour toutes les fonctions marquees comme utilisees            }
+{ ------------------------------------------------------------ }
+
+Procedure GenCofExternsForImports;
+Var
+  I : Integer;
+Begin
+  For I := 0 To ImpFuncCount - 1 Do Begin
+    If Not ImpFunctions[I].IsUsed Then Continue;
+    AddCofSymbol(ImpFunctions[I].Decorated, 0, 0, COF_SYM_EXTERNAL, True);
+  End;
+  Inc(ImpCofGenCount);
+  Inc(ImpStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseImportOption : analyser les options d imports             }
+{ Marque les imports de base comme utilises                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseImportOption(OptStr : TString);
+Begin
+  If (OptStr = '-imports') Or (OptStr = '-IMPORTS') Then Begin
+    { Marquer les imports fondamentaux comme utilises }
+    MarkImpFunctionUsed('ExitProcess');
+    MarkImpFunctionUsed('GetStdHandle');
+    MarkImpFunctionUsed('WriteFile');
+    MarkImpFunctionUsed('ReadFile');
+    MarkImpFunctionUsed('GetProcessHeap');
+    MarkImpFunctionUsed('HeapAlloc');
+    MarkImpFunctionUsed('HeapFree');
+  End;
+  Inc(ImpStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsImportKeyword : verifier si un mot-cle est Import           }
+{ ------------------------------------------------------------ }
+
+Function IsImportKeyword(KW : Integer) : Boolean;
+Begin
+  IsImportKeyword := (KW = KW_IMPORTS);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpImportState : afficher l etat du module Imports Win32     }
+{ ------------------------------------------------------------ }
+
+Procedure DumpImportState;
+Var
+  I : Integer;
+Begin
+  WriteLn('=== Win32 Import State ===');
+  WriteLn('  Initialized       : ', ImpInitialized);
+  WriteLn('  DLLs registered   : ', ImpDllCount);
+  WriteLn('  DLLs used         : ', ImpUsedDllCount);
+  WriteLn('  Funcs registered  : ', ImpFuncCount);
+  WriteLn('  Funcs used        : ', ImpUsedFuncCount);
+  WriteLn('  Kernel32 funcs    : ', ImpKernelFuncCount);
+  WriteLn('  User32 funcs      : ', ImpUserFuncCount);
+  WriteLn('  Msvcrt funcs      : ', ImpMsvcrtFuncCount);
+  WriteLn('  Cat PROCESS       : ', ImpProcessCount);
+  WriteLn('  Cat IO            : ', ImpIoCount);
+  WriteLn('  Cat MEMORY        : ', ImpMemoryCount);
+  WriteLn('  Cat FILE          : ', ImpFileCount);
+  WriteLn('  Cat SYSTEM        : ', ImpSystemCount);
+  WriteLn('  Cat DATETIME      : ', ImpDateTimeCount);
+  WriteLn('  Cat DYNLOAD       : ', ImpDynLoadCount);
+  WriteLn('  Cat FORMAT        : ', ImpFormatCount);
+  WriteLn('  Cat CONVERT       : ', ImpConvertCount);
+  WriteLn('  Cat MEMOPS        : ', ImpMemOpsCount);
+  WriteLn('  Cat SORT          : ', ImpSortCount);
+  WriteLn('  Cat UI            : ', ImpUiCount);
+  WriteLn('  PE gen count      : ', ImpPeGenCount);
+  WriteLn('  ASM gen count     : ', ImpAsmGenCount);
+  WriteLn('  COFF gen count    : ', ImpCofGenCount);
+  WriteLn('  Total registered  : ', ImpTotalRegistered);
+  WriteLn('  State count       : ', ImpStateCount);
+  For I := 0 To ImpDllCount - 1 Do
+    WriteLn('  DLL[', I, '] : ', ImpDlls[I].Name,
+            ' type=', ImpDllTypeName(ImpDlls[I].DllType),
+            ' funcs=', ImpDlls[I].FuncCount,
+            ' used=', ImpDlls[I].IsUsed);
+  For I := 0 To ImpFuncCount - 1 Do
+    If ImpFunctions[I].IsUsed Then
+      WriteLn('  Used[', I, '] : ', ImpFunctions[I].Decorated,
+              ' cat=', ImpFuncCatName(ImpFunctions[I].Category),
+              ' dll=', ImpFunctions[I].DllIndex);
+End;
+
+{ 10 fonctions accesseurs pour TODO 24                         }
+
+Function IsImpInitialized : Boolean;
+Begin
+  IsImpInitialized := ImpInitialized;
+End;
+
+Function IsImpEmpty : Boolean;
+Begin
+  IsImpEmpty := (ImpFuncCount = 0);
+End;
+
+Function GetImpTotalRegistered : Integer;
+Begin
+  GetImpTotalRegistered := ImpTotalRegistered;
+End;
+
+Function GetImpStatus : TString;
+Begin
+  If Not ImpInitialized Then
+    GetImpStatus := 'NON INITIALISE'
+  Else
+    GetImpStatus := 'DLLS=' + ItoSI(ImpDllCount) +
+                    ' FUNCS=' + ItoSI(ImpFuncCount) +
+                    ' USED=' + ItoSI(ImpUsedFuncCount);
+End;
+
+Function GetImpUsedFuncCount : Integer;
+Begin
+  GetImpUsedFuncCount := ImpUsedFuncCount;
+End;
+
+Function GetImpUsedDllCount : Integer;
+Begin
+  GetImpUsedDllCount := ImpUsedDllCount;
+End;
+
+Function GetImpDllCount : Integer;
+Begin
+  GetImpDllCount := ImpDllCount;
+End;
+
+Function GetImpFuncCount : Integer;
+Begin
+  GetImpFuncCount := ImpFuncCount;
+End;
+
+Function GetImpPeGenCount : Integer;
+Begin
+  GetImpPeGenCount := ImpPeGenCount;
+End;
+
+Function GetImpStateCount : Integer;
+Begin
+  GetImpStateCount := ImpStateCount;
+End;
+
 Procedure LexScanIdent;
 Var
   S     : TString;
@@ -22091,6 +22767,7 @@ Begin
   PeInitialized  := False;
   CofInitialized := False;
   AsmInitialized := False;
+  ImpInitialized := False;
   ParseArgs;
 
   { Affichage de la banniere en mode verbeux }
@@ -22158,6 +22835,9 @@ Begin
 
   { Initialiser le module generateur de listing assembleur (.ASM MASM) }
   InitAsmWriterState;
+
+  { Initialiser le module Imports API Win32 (kernel32, user32, msvcrt) }
+  InitImportState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
