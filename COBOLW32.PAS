@@ -285,7 +285,7 @@
             Generation d un arbre d expression intermediaire
             10 fonctions accesseurs
 
-  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [A FAIRE]
+  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
             Arithmetique sur donnees DISPLAY (PIC 9) :
               Conversion DISPLAY -> registre 32 bits (entier)
               Operation en registre (ADD, SUB, IMUL, IDIV)
@@ -6435,6 +6435,1155 @@ Begin
 End;
 
 
+{ ============================================================ }
+{ TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386}
+{           (DISPLAY, COMP/BINARY, COMP-3, instructions COBOL) }
+{ ============================================================ }
+
+Const
+  { Types d operateurs arithmetiques internes }
+  AOP_NONE          = 0;    { pas d operation                          }
+  AOP_ADD           = 1;    { addition                                 }
+  AOP_SUB           = 2;    { soustraction                             }
+  AOP_MUL           = 3;    { multiplication                           }
+  AOP_DIV           = 4;    { division                                 }
+  AOP_POWER         = 5;    { puissance                                }
+  AOP_NEGATE        = 6;    { negation unaire                          }
+
+  { Types de donnees pour la generation }
+  ADT_DISPLAY       = 0;    { PIC 9 : DISPLAY (ASCII decimal)          }
+  ADT_COMP          = 1;    { COMP/BINARY : entier binaire 32 bits     }
+  ADT_PACKED        = 2;    { COMP-3 : decimal condense (BCD)          }
+  ADT_COMP1         = 3;    { COMP-1 : flottant simple precision       }
+  ADT_COMP2         = 4;    { COMP-2 : flottant double precision       }
+
+  { Instructions arithmetiques COBOL }
+  AIS_ADD           = 0;    { ADD ... TO ...                           }
+  AIS_SUBTRACT      = 1;    { SUBTRACT ... FROM ...                    }
+  AIS_MULTIPLY      = 2;    { MULTIPLY ... BY ...                      }
+  AIS_DIVIDE        = 3;    { DIVIDE ... INTO/BY ...                   }
+  AIS_COMPUTE       = 4;    { COMPUTE ... = expression                 }
+
+  { Limites }
+  AGN_MAX_ARGS      = 8;    { max d operandes dans ADD/SUBTRACT        }
+  AGN_MAX_LABELS    = 256;  { max labels generes pour sauts            }
+  AGN_MAX_STACK     = 64;   { profondeur max pile d evaluation         }
+
+  { Nombre de types de donnees, d operations et d instructions }
+  AGN_NUM_DATA_TYPES  = 5;
+  AGN_NUM_OPS         = 7;
+  AGN_NUM_INSTRUCTIONS = 5;
+
+Var
+  { Etat du module }
+  AgnInitialized   : Boolean;
+  AgnStateCount    : Integer;
+
+  { Compteur de labels generes }
+  AgnLabelNum      : Integer;
+
+  { Compteurs d instructions }
+  AgnAddCount      : Integer;
+  AgnSubtractCount : Integer;
+  AgnMultiplyCount : Integer;
+  AgnDivideCount   : Integer;
+  AgnComputeCount  : Integer;
+
+  { Compteurs de clauses }
+  AgnRoundedCount  : Integer;
+  AgnSizeErrCount  : Integer;
+
+  { Compteurs de types de donnees traites }
+  AgnDisplayOps    : Integer;
+  AgnCompOps       : Integer;
+  AgnPackedOps     : Integer;
+
+  { Total des operations generees }
+  AgnTotalGenerated : Integer;
+
+{ ------------------------------------------------------------ }
+{ InitArithGenState : initialisation du module de generation    }
+{   arithmetique 80386 pour les operations COBOL               }
+{ ------------------------------------------------------------ }
+
+Procedure InitArithGenState;
+Begin
+  AgnInitialized   := True;
+  AgnStateCount    := AgnStateCount + 1;
+  AgnLabelNum      := 0;
+  AgnAddCount      := 0;
+  AgnSubtractCount := 0;
+  AgnMultiplyCount := 0;
+  AgnDivideCount   := 0;
+  AgnComputeCount  := 0;
+  AgnRoundedCount  := 0;
+  AgnSizeErrCount  := 0;
+  AgnDisplayOps    := 0;
+  AgnCompOps       := 0;
+  AgnPackedOps     := 0;
+  AgnTotalGenerated := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenArithLabel : generer un label unique pour les sauts        }
+{   dans le code arithmetique genere                           }
+{ ------------------------------------------------------------ }
+
+Function GenArithLabel : TString;
+Begin
+  AgnLabelNum := AgnLabelNum + 1;
+  GenArithLabel := '_COBAG_L' + ItoS(AgnLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ AgnDataTypeName : nom textuel d un type de donnee            }
+{ ------------------------------------------------------------ }
+
+Function AgnDataTypeName(DT : Integer) : TString;
+Begin
+  Case DT Of
+    ADT_DISPLAY : AgnDataTypeName := 'DISPLAY';
+    ADT_COMP    : AgnDataTypeName := 'COMP/BINARY';
+    ADT_PACKED  : AgnDataTypeName := 'COMP-3/PACKED';
+    ADT_COMP1   : AgnDataTypeName := 'COMP-1';
+    ADT_COMP2   : AgnDataTypeName := 'COMP-2';
+  Else
+    AgnDataTypeName := 'UNKNOWN(' + ItoS(DT) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ArithOpName : nom textuel d une operation arithmetique        }
+{ ------------------------------------------------------------ }
+
+Function ArithOpName(Op : Integer) : TString;
+Begin
+  Case Op Of
+    AOP_NONE   : ArithOpName := 'NONE';
+    AOP_ADD    : ArithOpName := 'ADD';
+    AOP_SUB    : ArithOpName := 'SUB';
+    AOP_MUL    : ArithOpName := 'MUL';
+    AOP_DIV    : ArithOpName := 'DIV';
+    AOP_POWER  : ArithOpName := 'POWER';
+    AOP_NEGATE : ArithOpName := 'NEGATE';
+  Else
+    ArithOpName := 'OP(' + ItoS(Op) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ArithInstrName : nom textuel d une instruction COBOL arithm  }
+{ ------------------------------------------------------------ }
+
+Function ArithInstrName(Instr : Integer) : TString;
+Begin
+  Case Instr Of
+    AIS_ADD      : ArithInstrName := 'ADD';
+    AIS_SUBTRACT : ArithInstrName := 'SUBTRACT';
+    AIS_MULTIPLY : ArithInstrName := 'MULTIPLY';
+    AIS_DIVIDE   : ArithInstrName := 'DIVIDE';
+    AIS_COMPUTE  : ArithInstrName := 'COMPUTE';
+  Else
+    ArithInstrName := 'INSTR(' + ItoS(Instr) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLoadDisplay : generer le code pour charger une variable    }
+{   DISPLAY (PIC 9) dans le registre EAX                       }
+{   Chaque caractere ASCII '0'-'9' est converti en chiffre,    }
+{   puis accumule : EAX = EAX * 10 + digit                    }
+{   VarName = label ASM de la variable DISPLAY                  }
+{   VarSize = taille en octets (nombre de chiffres)            }
+{   HasSign = True si PIC S9 (signe en tete)                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenLoadDisplay(VarName : TString; VarSize : Integer;
+                         HasSign : Boolean);
+Var
+  LblLoop : TString;
+Begin
+  AgnDisplayOps := AgnDisplayOps + 1;
+  AgnTotalGenerated := AgnTotalGenerated + 1;
+  LblLoop := GenArithLabel;
+  WriteLn('    ; Charger DISPLAY ' + VarName + ' (' +
+          ItoS(VarSize) + ' chiffres) dans EAX');
+  WriteLn('    XOR  EAX, EAX');
+  If HasSign Then Begin
+    WriteLn('    MOV  BL, [' + VarName + ']');
+    WriteLn('    LEA  ESI, [' + VarName + '+1]');
+    WriteLn('    MOV  ECX, ' + ItoS(VarSize - 1));
+  End Else Begin
+    WriteLn('    LEA  ESI, [' + VarName + ']');
+    WriteLn('    MOV  ECX, ' + ItoS(VarSize));
+  End;
+  WriteLn(LblLoop + '_CVT:');
+  WriteLn('    IMUL EAX, EAX, 10');
+  WriteLn('    XOR  EDX, EDX');
+  WriteLn('    MOV  DL, [ESI]');
+  WriteLn('    SUB  DL, 30h');
+  WriteLn('    ADD  EAX, EDX');
+  WriteLn('    INC  ESI');
+  WriteLn('    DEC  ECX');
+  WriteLn('    JNZ  ' + LblLoop + '_CVT');
+  If HasSign Then Begin
+    WriteLn('    CMP  BL, 2Dh');
+    WriteLn('    JNE  ' + LblLoop + '_POS');
+    WriteLn('    NEG  EAX');
+    WriteLn(LblLoop + '_POS:');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStoreDisplay : generer le code pour stocker EAX dans une  }
+{   variable DISPLAY (PIC 9)                                   }
+{   EAX est divise successivement par 10, les restes donnent   }
+{   les chiffres ASCII de droite a gauche                      }
+{ ------------------------------------------------------------ }
+
+Procedure GenStoreDisplay(VarName : TString; VarSize : Integer;
+                          HasSign : Boolean);
+Var
+  LblLoop : TString;
+Begin
+  AgnDisplayOps := AgnDisplayOps + 1;
+  AgnTotalGenerated := AgnTotalGenerated + 1;
+  LblLoop := GenArithLabel;
+  WriteLn('    ; Stocker EAX dans DISPLAY ' + VarName);
+  If HasSign Then Begin
+    WriteLn('    MOV  BL, 2Bh');
+    WriteLn('    TEST EAX, EAX');
+    WriteLn('    JNS  ' + LblLoop + '_NS');
+    WriteLn('    MOV  BL, 2Dh');
+    WriteLn('    NEG  EAX');
+    WriteLn(LblLoop + '_NS:');
+    WriteLn('    MOV  [' + VarName + '], BL');
+    WriteLn('    LEA  EDI, [' + VarName + '+' +
+            ItoS(VarSize - 1) + ']');
+    WriteLn('    MOV  ECX, ' + ItoS(VarSize - 1));
+  End Else Begin
+    WriteLn('    LEA  EDI, [' + VarName + '+' +
+            ItoS(VarSize - 1) + ']');
+    WriteLn('    MOV  ECX, ' + ItoS(VarSize));
+  End;
+  WriteLn(LblLoop + '_STR:');
+  WriteLn('    XOR  EDX, EDX');
+  WriteLn('    MOV  EBX, 10');
+  WriteLn('    DIV  EBX');
+  WriteLn('    ADD  DL, 30h');
+  WriteLn('    MOV  [EDI], DL');
+  WriteLn('    DEC  EDI');
+  WriteLn('    DEC  ECX');
+  WriteLn('    JNZ  ' + LblLoop + '_STR');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLoadComp : charger une variable COMP/BINARY dans EAX      }
+{   Les donnees COMP sont deja en binaire (1, 2 ou 4 octets)  }
+{ ------------------------------------------------------------ }
+
+Procedure GenLoadComp(VarName : TString; VarSize : Integer);
+Begin
+  AgnCompOps := AgnCompOps + 1;
+  AgnTotalGenerated := AgnTotalGenerated + 1;
+  WriteLn('    ; Charger COMP ' + VarName + ' dans EAX');
+  Case VarSize Of
+    1 : Begin
+          WriteLn('    XOR  EAX, EAX');
+          WriteLn('    MOV  AL, [' + VarName + ']');
+        End;
+    2 : Begin
+          WriteLn('    XOR  EAX, EAX');
+          WriteLn('    MOV  AX, [' + VarName + ']');
+        End;
+    4 : WriteLn('    MOV  EAX, [' + VarName + ']');
+  Else
+    WriteLn('    MOV  EAX, [' + VarName + ']');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStoreComp : stocker EAX dans une variable COMP/BINARY     }
+{ ------------------------------------------------------------ }
+
+Procedure GenStoreComp(VarName : TString; VarSize : Integer);
+Begin
+  AgnCompOps := AgnCompOps + 1;
+  AgnTotalGenerated := AgnTotalGenerated + 1;
+  WriteLn('    ; Stocker EAX dans COMP ' + VarName);
+  Case VarSize Of
+    1 : WriteLn('    MOV  [' + VarName + '], AL');
+    2 : WriteLn('    MOV  [' + VarName + '], AX');
+    4 : WriteLn('    MOV  [' + VarName + '], EAX');
+  Else
+    WriteLn('    MOV  [' + VarName + '], EAX');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLoadPacked : charger une variable COMP-3 (packed decimal) }
+{   dans EAX en decompactant les chiffres BCD                 }
+{   Format BCD condense : chaque octet contient 2 chiffres     }
+{   Le dernier demi-octet (nibble bas) = signe (C=+, D=-)     }
+{ ------------------------------------------------------------ }
+
+Procedure GenLoadPacked(VarName : TString; VarSize : Integer);
+Var
+  LblLoop, LblSign : TString;
+Begin
+  AgnPackedOps := AgnPackedOps + 1;
+  AgnTotalGenerated := AgnTotalGenerated + 1;
+  LblLoop := GenArithLabel;
+  LblSign := GenArithLabel;
+  WriteLn('    ; Decompactage BCD ' + VarName + ' -> EAX');
+  WriteLn('    XOR  EAX, EAX');
+  WriteLn('    LEA  ESI, [' + VarName + ']');
+  WriteLn('    MOV  ECX, ' + ItoS(VarSize));
+  WriteLn(LblLoop + '_BCD:');
+  WriteLn('    XOR  EDX, EDX');
+  WriteLn('    MOV  DL, [ESI]');
+  { Demi-octet haut = premier chiffre }
+  WriteLn('    MOV  EBX, EDX');
+  WriteLn('    SHR  EBX, 4');
+  WriteLn('    IMUL EAX, EAX, 10');
+  WriteLn('    ADD  EAX, EBX');
+  { Si dernier octet, demi-octet bas = signe }
+  WriteLn('    DEC  ECX');
+  WriteLn('    JZ   ' + LblSign + '_SGN');
+  { Demi-octet bas = deuxieme chiffre }
+  WriteLn('    AND  EDX, 0Fh');
+  WriteLn('    IMUL EAX, EAX, 10');
+  WriteLn('    ADD  EAX, EDX');
+  WriteLn('    INC  ESI');
+  WriteLn('    JMP  ' + LblLoop + '_BCD');
+  WriteLn(LblSign + '_SGN:');
+  WriteLn('    AND  EDX, 0Fh');
+  WriteLn('    CMP  DL, 0Dh');
+  WriteLn('    JNE  ' + LblSign + '_END');
+  WriteLn('    NEG  EAX');
+  WriteLn(LblSign + '_END:');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStorePacked : stocker EAX dans une variable COMP-3        }
+{   en recompactant le binaire en BCD condense                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenStorePacked(VarName : TString; VarSize : Integer);
+Var
+  LblSgn, LblLoop : TString;
+Begin
+  AgnPackedOps := AgnPackedOps + 1;
+  AgnTotalGenerated := AgnTotalGenerated + 1;
+  LblSgn  := GenArithLabel;
+  LblLoop := GenArithLabel;
+  WriteLn('    ; Recompactage EAX -> BCD ' + VarName);
+  WriteLn('    MOV  BL, 0Ch');
+  WriteLn('    TEST EAX, EAX');
+  WriteLn('    JNS  ' + LblSgn + '_PS');
+  WriteLn('    MOV  BL, 0Dh');
+  WriteLn('    NEG  EAX');
+  WriteLn(LblSgn + '_PS:');
+  WriteLn('    LEA  EDI, [' + VarName + '+' +
+          ItoS(VarSize - 1) + ']');
+  WriteLn('    MOV  ECX, ' + ItoS(VarSize));
+  { Dernier octet : chiffre haut + signe bas }
+  WriteLn('    XOR  EDX, EDX');
+  WriteLn('    MOV  ESI, 10');
+  WriteLn('    DIV  ESI');
+  WriteLn('    SHL  DL, 4');
+  WriteLn('    OR   DL, BL');
+  WriteLn('    MOV  [EDI], DL');
+  WriteLn('    DEC  EDI');
+  WriteLn('    DEC  ECX');
+  WriteLn('    JZ   ' + LblLoop + '_DONE');
+  { Octets precedents : 2 chiffres par octet }
+  WriteLn(LblLoop + '_PCK:');
+  WriteLn('    XOR  EDX, EDX');
+  WriteLn('    DIV  ESI');
+  WriteLn('    MOV  BH, DL');
+  WriteLn('    XOR  EDX, EDX');
+  WriteLn('    DIV  ESI');
+  WriteLn('    SHL  DL, 4');
+  WriteLn('    OR   DL, BH');
+  WriteLn('    MOV  [EDI], DL');
+  WriteLn('    DEC  EDI');
+  WriteLn('    DEC  ECX');
+  WriteLn('    JNZ  ' + LblLoop + '_PCK');
+  WriteLn(LblLoop + '_DONE:');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenArithOp : generer l operation arithmetique en registre     }
+{   EAX = EAX op EBX (resultat dans EAX)                      }
+{ ------------------------------------------------------------ }
+
+Procedure GenArithOp(Op : Integer);
+Var
+  LblPow, LblEnd : TString;
+Begin
+  AgnTotalGenerated := AgnTotalGenerated + 1;
+  WriteLn('    ; Operation ' + ArithOpName(Op));
+  Case Op Of
+    AOP_ADD : Begin
+      WriteLn('    ADD  EAX, EBX');
+    End;
+    AOP_SUB : Begin
+      WriteLn('    SUB  EAX, EBX');
+    End;
+    AOP_MUL : Begin
+      WriteLn('    IMUL EAX, EBX');
+    End;
+    AOP_DIV : Begin
+      WriteLn('    CDQ');
+      WriteLn('    IDIV EBX');
+    End;
+    AOP_POWER : Begin
+      LblPow := GenArithLabel;
+      LblEnd := GenArithLabel;
+      WriteLn('    MOV  ECX, EBX');
+      WriteLn('    MOV  EBX, EAX');
+      WriteLn('    MOV  EAX, 1');
+      WriteLn('    TEST ECX, ECX');
+      WriteLn('    JZ   ' + LblEnd);
+      WriteLn(LblPow + ':');
+      WriteLn('    IMUL EAX, EBX');
+      WriteLn('    DEC  ECX');
+      WriteLn('    JNZ  ' + LblPow);
+      WriteLn(LblEnd + ':');
+    End;
+    AOP_NEGATE : Begin
+      WriteLn('    NEG  EAX');
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRoundResult : generer le code d arrondi si ROUNDED actif  }
+{   Arrondi au plus proche : si reste >= 5, ajouter 1          }
+{   Decimals = nombre de decimales dans la PIC source          }
+{ ------------------------------------------------------------ }
+
+Procedure GenRoundResult(Decimals : Integer);
+Var
+  LblNoRound : TString;
+Begin
+  If Decimals <= 0 Then Exit;
+  AgnRoundedCount := AgnRoundedCount + 1;
+  AgnTotalGenerated := AgnTotalGenerated + 1;
+  LblNoRound := GenArithLabel;
+  WriteLn('    ; Arrondi ROUNDED (' + ItoS(Decimals) + ' dec)');
+  WriteLn('    MOV  EBX, EAX');
+  WriteLn('    CDQ');
+  WriteLn('    MOV  ECX, 10');
+  WriteLn('    IDIV ECX');
+  WriteLn('    CMP  EDX, 5');
+  WriteLn('    JL   ' + LblNoRound);
+  WriteLn('    INC  EAX');
+  WriteLn(LblNoRound + ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSizeCheck : generer la verification de debordement         }
+{   ON SIZE ERROR / NOT ON SIZE ERROR                          }
+{   MaxVal = valeur maximale que la variable cible peut contenir}
+{ ------------------------------------------------------------ }
+
+Procedure GenSizeCheck(LblSizeErr, LblNoSizeErr : TString;
+                       MaxVal : LongInt);
+Begin
+  AgnSizeErrCount := AgnSizeErrCount + 1;
+  AgnTotalGenerated := AgnTotalGenerated + 1;
+  WriteLn('    ; Verification ON SIZE ERROR (max=' +
+          ItoS(MaxVal) + ')');
+  WriteLn('    CMP  EAX, ' + ItoS(MaxVal));
+  WriteLn('    JG   ' + LblSizeErr);
+  WriteLn('    CMP  EAX, -' + ItoS(MaxVal));
+  WriteLn('    JL   ' + LblSizeErr);
+  WriteLn('    JMP  ' + LblNoSizeErr);
+  WriteLn(LblSizeErr + ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenExprEvalNode : generer le code pour evaluer un noeud de   }
+{   l arbre d expression arithmetique sur la pile 80386        }
+{   Utilise les noeuds de ExprNodes (TODO 08)                  }
+{   Le resultat est dans EAX                                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenExprEvalNode(NodeIdx : Integer);
+Var
+  NT : Integer;
+Begin
+  If (NodeIdx < 0) Or (NodeIdx >= ExprNodeCount) Then Begin
+    WriteLn('    ; Noeud invalide ' + ItoS(NodeIdx));
+    WriteLn('    XOR  EAX, EAX');
+    Exit;
+  End;
+  NT := ExprNodes[NodeIdx].NodeType;
+  Case NT Of
+    EXP_INTEGER_LIT : Begin
+      WriteLn('    MOV  EAX, ' +
+              ItoS(ExprNodes[NodeIdx].IntVal));
+    End;
+    EXP_DECIMAL_LIT : Begin
+      { Conversion approchee en entier pour evaluation simple }
+      WriteLn('    ; Litteral decimal (approche entiere)');
+      WriteLn('    MOV  EAX, ' +
+              ItoS(Round(ExprNodes[NodeIdx].RealVal)));
+    End;
+    EXP_IDENTIFIER : Begin
+      WriteLn('    ; Charger ' + ExprNodes[NodeIdx].StrVal);
+      WriteLn('    MOV  EAX, [' +
+              AsmIdent(ExprNodes[NodeIdx].StrVal) + ']');
+    End;
+    EXP_QUALIFIED : Begin
+      WriteLn('    ; Charger ' + ExprNodes[NodeIdx].StrVal +
+              ' OF ' + ExprNodes[NodeIdx].QualGroup);
+      WriteLn('    MOV  EAX, [' +
+              AsmIdent(ExprNodes[NodeIdx].StrVal) + ']');
+    End;
+    EXP_FIGURATIVE : Begin
+      WriteLn('    ; Constante figurative ' +
+              ExprNodes[NodeIdx].StrVal);
+      WriteLn('    XOR  EAX, EAX');
+    End;
+    EXP_STRING_LIT : Begin
+      WriteLn('    ; Litteral chaine (non arithmetique)');
+      WriteLn('    XOR  EAX, EAX');
+    End;
+    EXP_ADD : Begin
+      GenExprEvalNode(ExprNodes[NodeIdx].LeftIdx);
+      WriteLn('    PUSH EAX');
+      GenExprEvalNode(ExprNodes[NodeIdx].RightIdx);
+      WriteLn('    MOV  EBX, EAX');
+      WriteLn('    POP  EAX');
+      GenArithOp(AOP_ADD);
+    End;
+    EXP_SUB : Begin
+      GenExprEvalNode(ExprNodes[NodeIdx].LeftIdx);
+      WriteLn('    PUSH EAX');
+      GenExprEvalNode(ExprNodes[NodeIdx].RightIdx);
+      WriteLn('    MOV  EBX, EAX');
+      WriteLn('    POP  EAX');
+      GenArithOp(AOP_SUB);
+    End;
+    EXP_MUL : Begin
+      GenExprEvalNode(ExprNodes[NodeIdx].LeftIdx);
+      WriteLn('    PUSH EAX');
+      GenExprEvalNode(ExprNodes[NodeIdx].RightIdx);
+      WriteLn('    MOV  EBX, EAX');
+      WriteLn('    POP  EAX');
+      GenArithOp(AOP_MUL);
+    End;
+    EXP_DIV : Begin
+      GenExprEvalNode(ExprNodes[NodeIdx].LeftIdx);
+      WriteLn('    PUSH EAX');
+      GenExprEvalNode(ExprNodes[NodeIdx].RightIdx);
+      WriteLn('    MOV  EBX, EAX');
+      WriteLn('    POP  EAX');
+      GenArithOp(AOP_DIV);
+    End;
+    EXP_POWER : Begin
+      GenExprEvalNode(ExprNodes[NodeIdx].LeftIdx);
+      WriteLn('    PUSH EAX');
+      GenExprEvalNode(ExprNodes[NodeIdx].RightIdx);
+      WriteLn('    MOV  EBX, EAX');
+      WriteLn('    POP  EAX');
+      GenArithOp(AOP_POWER);
+    End;
+    EXP_NEGATE : Begin
+      GenExprEvalNode(ExprNodes[NodeIdx].LeftIdx);
+      GenArithOp(AOP_NEGATE);
+    End;
+    EXP_SUBSCRIPT : Begin
+      WriteLn('    ; Acces indexe ' + ExprNodes[NodeIdx].StrVal);
+      WriteLn('    MOV  EAX, [' +
+              AsmIdent(ExprNodes[NodeIdx].StrVal) + ']');
+    End;
+    EXP_SUBSTRING : Begin
+      WriteLn('    ; Sous-chaine ' + ExprNodes[NodeIdx].StrVal);
+      WriteLn('    MOV  EAX, [' +
+              AsmIdent(ExprNodes[NodeIdx].StrVal) + ']');
+    End;
+  Else
+    WriteLn('    ; Noeud type inconnu ' + ItoS(NT));
+    WriteLn('    XOR  EAX, EAX');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAddStatement : parser et generer le code pour ADD       }
+{   ADD id-1 [id-2 ...] TO id-n [GIVING id-m]                 }
+{   [ROUNDED] [ON SIZE ERROR stmt] [NOT ON SIZE ERROR stmt]    }
+{   [END-ADD]                                                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAddStatement;
+Var
+  Operands     : Array[1..8] Of TString;
+  OpCount      : Integer;
+  TargetVar    : TString;
+  GivingVar    : TString;
+  HasGiving    : Boolean;
+  HasRounded   : Boolean;
+  I            : Integer;
+Begin
+  AgnAddCount := AgnAddCount + 1;
+  OpCount := 0;
+  HasGiving := False;
+  HasRounded := False;
+  GivingVar := '';
+  { Collecter les operandes avant TO }
+  While (CurTokType = TOK_IDENT) Or (CurTokType = TOK_INTEGER) Or
+        (CurTokType = TOK_DECIMAL) Do Begin
+    If OpCount < AGN_MAX_ARGS Then Begin
+      OpCount := OpCount + 1;
+      Operands[OpCount] := CurTokStr;
+    End;
+    LexNextToken;
+  End;
+  { Attendre TO }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+    LexNextToken;
+  { Variable cible }
+  If CurTokType = TOK_IDENT Then Begin
+    TargetVar := CurTokStr;
+    LexNextToken;
+  End Else
+    TargetVar := '';
+  { Clause GIVING optionnelle }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_GIVING) Then Begin
+    LexNextToken;
+    HasGiving := True;
+    If CurTokType = TOK_IDENT Then Begin
+      GivingVar := CurTokStr;
+      LexNextToken;
+    End;
+  End;
+  { Clause ROUNDED optionnelle }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ROUNDED) Then Begin
+    HasRounded := True;
+    LexNextToken;
+  End;
+  { ON SIZE ERROR optionnelle - sauter les mots-cles }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SIZE) Then
+      LexNextToken;
+    { Sauter ERROR (identificateur, pas un mot-cle) }
+    If (CurTokType = TOK_IDENT) And (CurTokStr = 'ERROR') Then
+      LexNextToken;
+    { Sauter le corps de l instruction SIZE ERROR }
+    SkipToNextSentence;
+  End;
+  { NOT ON SIZE ERROR optionnelle }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NOT) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then
+      LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SIZE) Then
+      LexNextToken;
+    If (CurTokType = TOK_IDENT) And (CurTokStr = 'ERROR') Then
+      LexNextToken;
+    SkipToNextSentence;
+  End;
+  { END-ADD optionnel }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_ADD) Then
+    LexNextToken;
+  { Generation du code assembleur }
+  WriteLn('    ; === ADD statement ===');
+  { Charger le premier operande }
+  If OpCount >= 1 Then Begin
+    WriteLn('    MOV  EAX, [' + AsmIdent(Operands[1]) + ']');
+  End;
+  { Additionner les operandes suivants }
+  For I := 2 To OpCount Do Begin
+    WriteLn('    ADD  EAX, [' + AsmIdent(Operands[I]) + ']');
+  End;
+  { Additionner la variable cible (ADD x TO y = y + x) }
+  If TargetVar <> '' Then Begin
+    WriteLn('    ADD  EAX, [' + AsmIdent(TargetVar) + ']');
+  End;
+  If HasRounded Then
+    GenRoundResult(1);
+  { Stocker le resultat }
+  If HasGiving And (GivingVar <> '') Then Begin
+    WriteLn('    MOV  [' + AsmIdent(GivingVar) + '], EAX');
+  End Else If TargetVar <> '' Then Begin
+    WriteLn('    MOV  [' + AsmIdent(TargetVar) + '], EAX');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSubtractStatement : parser et generer SUBTRACT          }
+{   SUBTRACT id-1 [id-2 ...] FROM id-n [GIVING id-m]          }
+{   [ROUNDED] [ON SIZE ERROR ...] [END-SUBTRACT]               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSubtractStatement;
+Var
+  Operands     : Array[1..8] Of TString;
+  OpCount      : Integer;
+  TargetVar    : TString;
+  GivingVar    : TString;
+  HasGiving    : Boolean;
+  HasRounded   : Boolean;
+  I            : Integer;
+Begin
+  AgnSubtractCount := AgnSubtractCount + 1;
+  OpCount := 0;
+  HasGiving := False;
+  HasRounded := False;
+  GivingVar := '';
+  { Collecter les operandes avant FROM }
+  While (CurTokType = TOK_IDENT) Or (CurTokType = TOK_INTEGER) Or
+        (CurTokType = TOK_DECIMAL) Do Begin
+    If OpCount < AGN_MAX_ARGS Then Begin
+      OpCount := OpCount + 1;
+      Operands[OpCount] := CurTokStr;
+    End;
+    LexNextToken;
+  End;
+  { Attendre FROM }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FROM) Then
+    LexNextToken;
+  { Variable cible }
+  If CurTokType = TOK_IDENT Then Begin
+    TargetVar := CurTokStr;
+    LexNextToken;
+  End Else
+    TargetVar := '';
+  { Clause GIVING optionnelle }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_GIVING) Then Begin
+    LexNextToken;
+    HasGiving := True;
+    If CurTokType = TOK_IDENT Then Begin
+      GivingVar := CurTokStr;
+      LexNextToken;
+    End;
+  End;
+  { Clause ROUNDED optionnelle }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ROUNDED) Then Begin
+    HasRounded := True;
+    LexNextToken;
+  End;
+  { ON SIZE ERROR / NOT ON SIZE ERROR - sauter }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SIZE) Then
+      LexNextToken;
+    If (CurTokType = TOK_IDENT) And (CurTokStr = 'ERROR') Then
+      LexNextToken;
+    SkipToNextSentence;
+  End;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NOT) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then
+      LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SIZE) Then
+      LexNextToken;
+    If (CurTokType = TOK_IDENT) And (CurTokStr = 'ERROR') Then
+      LexNextToken;
+    SkipToNextSentence;
+  End;
+  { END-SUBTRACT optionnel }
+  If (CurTokType = TOK_KEYWORD) And
+     (CurTokNum = KW_END_SUBTRACT) Then
+    LexNextToken;
+  { Generation du code assembleur }
+  WriteLn('    ; === SUBTRACT statement ===');
+  { Charger la variable cible }
+  If TargetVar <> '' Then
+    WriteLn('    MOV  EAX, [' + AsmIdent(TargetVar) + ']');
+  { Soustraire chaque operande }
+  For I := 1 To OpCount Do Begin
+    WriteLn('    SUB  EAX, [' + AsmIdent(Operands[I]) + ']');
+  End;
+  If HasRounded Then
+    GenRoundResult(1);
+  { Stocker le resultat }
+  If HasGiving And (GivingVar <> '') Then Begin
+    WriteLn('    MOV  [' + AsmIdent(GivingVar) + '], EAX');
+  End Else If TargetVar <> '' Then Begin
+    WriteLn('    MOV  [' + AsmIdent(TargetVar) + '], EAX');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMultiplyStatement : parser et generer MULTIPLY          }
+{   MULTIPLY id-1 BY id-2 [GIVING id-3]                       }
+{   [ROUNDED] [ON SIZE ERROR ...] [END-MULTIPLY]               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseMultiplyStatement;
+Var
+  Operand1     : TString;
+  Operand2     : TString;
+  GivingVar    : TString;
+  HasGiving    : Boolean;
+  HasRounded   : Boolean;
+Begin
+  AgnMultiplyCount := AgnMultiplyCount + 1;
+  HasGiving := False;
+  HasRounded := False;
+  GivingVar := '';
+  { Premier operande }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_INTEGER) Then Begin
+    Operand1 := CurTokStr;
+    LexNextToken;
+  End Else
+    Operand1 := '';
+  { Attendre BY }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then
+    LexNextToken;
+  { Deuxieme operande }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_INTEGER) Then Begin
+    Operand2 := CurTokStr;
+    LexNextToken;
+  End Else
+    Operand2 := '';
+  { Clause GIVING optionnelle }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_GIVING) Then Begin
+    LexNextToken;
+    HasGiving := True;
+    If CurTokType = TOK_IDENT Then Begin
+      GivingVar := CurTokStr;
+      LexNextToken;
+    End;
+  End;
+  { Clause ROUNDED optionnelle }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ROUNDED) Then Begin
+    HasRounded := True;
+    LexNextToken;
+  End;
+  { ON SIZE ERROR / NOT ON SIZE ERROR }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SIZE) Then
+      LexNextToken;
+    If (CurTokType = TOK_IDENT) And (CurTokStr = 'ERROR') Then
+      LexNextToken;
+    SkipToNextSentence;
+  End;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NOT) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then
+      LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SIZE) Then
+      LexNextToken;
+    If (CurTokType = TOK_IDENT) And (CurTokStr = 'ERROR') Then
+      LexNextToken;
+    SkipToNextSentence;
+  End;
+  { END-MULTIPLY optionnel }
+  If (CurTokType = TOK_KEYWORD) And
+     (CurTokNum = KW_END_MULTIPLY) Then
+    LexNextToken;
+  { Generation du code assembleur }
+  WriteLn('    ; === MULTIPLY statement ===');
+  WriteLn('    MOV  EAX, [' + AsmIdent(Operand1) + ']');
+  WriteLn('    MOV  EBX, [' + AsmIdent(Operand2) + ']');
+  GenArithOp(AOP_MUL);
+  If HasRounded Then
+    GenRoundResult(1);
+  If HasGiving And (GivingVar <> '') Then
+    WriteLn('    MOV  [' + AsmIdent(GivingVar) + '], EAX')
+  Else If Operand2 <> '' Then
+    WriteLn('    MOV  [' + AsmIdent(Operand2) + '], EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDivideStatement : parser et generer DIVIDE              }
+{   DIVIDE id-1 INTO id-2 [GIVING id-3] [REMAINDER id-4]      }
+{   DIVIDE id-1 BY id-2 [GIVING id-3] [REMAINDER id-4]        }
+{   [ROUNDED] [ON SIZE ERROR ...] [END-DIVIDE]                 }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDivideStatement;
+Var
+  Operand1     : TString;
+  Operand2     : TString;
+  GivingVar    : TString;
+  RemainderVar : TString;
+  HasGiving    : Boolean;
+  HasRemainder : Boolean;
+  HasRounded   : Boolean;
+  UseInto      : Boolean;
+Begin
+  AgnDivideCount := AgnDivideCount + 1;
+  HasGiving    := False;
+  HasRemainder := False;
+  HasRounded   := False;
+  UseInto      := False;
+  GivingVar    := '';
+  RemainderVar := '';
+  { Premier operande }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_INTEGER) Then Begin
+    Operand1 := CurTokStr;
+    LexNextToken;
+  End Else
+    Operand1 := '';
+  { INTO ou BY }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INTO) Then Begin
+    UseInto := True;
+    LexNextToken;
+  End Else If (CurTokType = TOK_KEYWORD) And
+              (CurTokNum = KW_BY) Then Begin
+    UseInto := False;
+    LexNextToken;
+  End;
+  { Deuxieme operande }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_INTEGER) Then Begin
+    Operand2 := CurTokStr;
+    LexNextToken;
+  End Else
+    Operand2 := '';
+  { Clause GIVING optionnelle }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_GIVING) Then Begin
+    LexNextToken;
+    HasGiving := True;
+    If CurTokType = TOK_IDENT Then Begin
+      GivingVar := CurTokStr;
+      LexNextToken;
+    End;
+  End;
+  { Clause REMAINDER optionnelle }
+  If (CurTokType = TOK_KEYWORD) And
+     (CurTokNum = KW_REMAINDER) Then Begin
+    LexNextToken;
+    HasRemainder := True;
+    If CurTokType = TOK_IDENT Then Begin
+      RemainderVar := CurTokStr;
+      LexNextToken;
+    End;
+  End;
+  { Clause ROUNDED optionnelle }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ROUNDED) Then Begin
+    HasRounded := True;
+    LexNextToken;
+  End;
+  { ON SIZE ERROR / NOT ON SIZE ERROR }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SIZE) Then
+      LexNextToken;
+    If (CurTokType = TOK_IDENT) And (CurTokStr = 'ERROR') Then
+      LexNextToken;
+    SkipToNextSentence;
+  End;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NOT) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then
+      LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SIZE) Then
+      LexNextToken;
+    If (CurTokType = TOK_IDENT) And (CurTokStr = 'ERROR') Then
+      LexNextToken;
+    SkipToNextSentence;
+  End;
+  { END-DIVIDE optionnel }
+  If (CurTokType = TOK_KEYWORD) And
+     (CurTokNum = KW_END_DIVIDE) Then
+    LexNextToken;
+  { Generation du code assembleur }
+  WriteLn('    ; === DIVIDE statement ===');
+  If UseInto Then Begin
+    { DIVIDE X INTO Y  =>  Y = Y / X }
+    WriteLn('    MOV  EAX, [' + AsmIdent(Operand2) + ']');
+    WriteLn('    MOV  EBX, [' + AsmIdent(Operand1) + ']');
+  End Else Begin
+    { DIVIDE X BY Y  =>  X / Y }
+    WriteLn('    MOV  EAX, [' + AsmIdent(Operand1) + ']');
+    WriteLn('    MOV  EBX, [' + AsmIdent(Operand2) + ']');
+  End;
+  GenArithOp(AOP_DIV);
+  If HasRemainder And (RemainderVar <> '') Then Begin
+    WriteLn('    MOV  [' + AsmIdent(RemainderVar) + '], EDX');
+  End;
+  If HasRounded Then
+    GenRoundResult(1);
+  If HasGiving And (GivingVar <> '') Then
+    WriteLn('    MOV  [' + AsmIdent(GivingVar) + '], EAX')
+  Else If UseInto And (Operand2 <> '') Then
+    WriteLn('    MOV  [' + AsmIdent(Operand2) + '], EAX')
+  Else If (Not UseInto) And (Operand1 <> '') Then
+    WriteLn('    MOV  [' + AsmIdent(Operand1) + '], EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseComputeStatement : parser et generer COMPUTE            }
+{   COMPUTE id-1 [ROUNDED] = expression arithmetique           }
+{   Parsing complet de l expression avec priorite              }
+{   Evaluation sur la pile 80386                               }
+{   [ON SIZE ERROR ...] [END-COMPUTE]                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseComputeStatement;
+Var
+  TargetVar  : TString;
+  HasRounded : Boolean;
+  RootIdx    : Integer;
+Begin
+  AgnComputeCount := AgnComputeCount + 1;
+  HasRounded := False;
+  { Variable cible }
+  If CurTokType = TOK_IDENT Then Begin
+    TargetVar := CurTokStr;
+    LexNextToken;
+  End Else
+    TargetVar := '';
+  { Clause ROUNDED avant le = }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ROUNDED) Then Begin
+    HasRounded := True;
+    LexNextToken;
+  End;
+  { Attendre le signe = }
+  If CurTokType = TOK_EQ Then
+    LexNextToken;
+  { Parser l expression arithmetique complete via TODO 08 }
+  RootIdx := ParseExpression;
+  { ON SIZE ERROR / NOT ON SIZE ERROR }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SIZE) Then
+      LexNextToken;
+    If (CurTokType = TOK_IDENT) And (CurTokStr = 'ERROR') Then
+      LexNextToken;
+    SkipToNextSentence;
+  End;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NOT) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then
+      LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SIZE) Then
+      LexNextToken;
+    If (CurTokType = TOK_IDENT) And (CurTokStr = 'ERROR') Then
+      LexNextToken;
+    SkipToNextSentence;
+  End;
+  { END-COMPUTE optionnel }
+  If (CurTokType = TOK_KEYWORD) And
+     (CurTokNum = KW_END_COMPUTE) Then
+    LexNextToken;
+  { Generation du code assembleur }
+  WriteLn('    ; === COMPUTE ' + TargetVar + ' ===');
+  { Evaluer l expression sur la pile 80386 }
+  GenExprEvalNode(RootIdx);
+  If HasRounded Then
+    GenRoundResult(1);
+  { Stocker le resultat }
+  If TargetVar <> '' Then
+    WriteLn('    MOV  [' + AsmIdent(TargetVar) + '], EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArithmeticStatement : dispatcher pour les instructions  }
+{   arithmetiques COBOL (ADD, SUBTRACT, MULTIPLY, DIVIDE,     }
+{   COMPUTE)                                                    }
+{   Appele quand le token courant est un verbe arithmetique    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArithmeticStatement;
+Var
+  SaveKW : Integer;
+Begin
+  If CurTokType <> TOK_KEYWORD Then Exit;
+  SaveKW := CurTokNum;
+  LexNextToken;
+  Case SaveKW Of
+    KW_ADD      : ParseAddStatement;
+    KW_SUBTRACT : ParseSubtractStatement;
+    KW_MULTIPLY : ParseMultiplyStatement;
+    KW_DIVIDE   : ParseDivideStatement;
+    KW_COMPUTE  : ParseComputeStatement;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpArithGenState : afficher l etat du module de generation  }
+{   arithmetique (compteurs et statistiques)                   }
+{ ------------------------------------------------------------ }
+
+Procedure DumpArithGenState;
+Begin
+  WriteLn('=== Generation arithmetique 80386 ===');
+  WriteLn('  Initialise          : ',
+          AgnInitialized);
+  WriteLn('  Labels generes      : ', AgnLabelNum);
+  WriteLn('  Instructions ADD    : ', AgnAddCount);
+  WriteLn('  Instructions SUB    : ', AgnSubtractCount);
+  WriteLn('  Instructions MUL    : ', AgnMultiplyCount);
+  WriteLn('  Instructions DIV    : ', AgnDivideCount);
+  WriteLn('  Instructions COMPUTE: ', AgnComputeCount);
+  WriteLn('  Clauses ROUNDED     : ', AgnRoundedCount);
+  WriteLn('  Clauses SIZE ERROR  : ', AgnSizeErrCount);
+  WriteLn('  Operations DISPLAY  : ', AgnDisplayOps);
+  WriteLn('  Operations COMP     : ', AgnCompOps);
+  WriteLn('  Operations PACKED   : ', AgnPackedOps);
+  WriteLn('  Total genere        : ', AgnTotalGenerated);
+End;
+
+{ 10 fonctions accesseurs pour TODO 09                         }
+
+Function IsAgnInitialized : Boolean;
+Begin
+  IsAgnInitialized := AgnInitialized;
+End;
+
+Function IsAgnEmpty : Boolean;
+Begin
+  IsAgnEmpty := (AgnTotalGenerated = 0);
+End;
+
+Function GetAgnTotalGenerated : Integer;
+Begin
+  GetAgnTotalGenerated := AgnTotalGenerated;
+End;
+
+Function GetAgnStatus : TString;
+Begin
+  If Not AgnInitialized Then
+    GetAgnStatus := 'NON INITIALISE'
+  Else
+    GetAgnStatus := 'ADD=' + ItoSI(AgnAddCount) +
+                    ' SUB=' + ItoSI(AgnSubtractCount) +
+                    ' MUL=' + ItoSI(AgnMultiplyCount) +
+                    ' DIV=' + ItoSI(AgnDivideCount) +
+                    ' CMP=' + ItoSI(AgnComputeCount);
+End;
+
+Function GetAgnAddCount : Integer;
+Begin
+  GetAgnAddCount := AgnAddCount;
+End;
+
+Function GetAgnSubtractCount : Integer;
+Begin
+  GetAgnSubtractCount := AgnSubtractCount;
+End;
+
+Function GetAgnMultiplyCount : Integer;
+Begin
+  GetAgnMultiplyCount := AgnMultiplyCount;
+End;
+
+Function GetAgnDivideCount : Integer;
+Begin
+  GetAgnDivideCount := AgnDivideCount;
+End;
+
+Function GetAgnComputeCount : Integer;
+Begin
+  GetAgnComputeCount := AgnComputeCount;
+End;
+
+Function GetAgnStateCount : Integer;
+Begin
+  GetAgnStateCount := AgnStateCount;
+End;
+
+
 { ------------------------------------------------------------ }
 { LexScanIdent : identificateur COBOL (lettres, chiffres, -)   }
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
@@ -7093,6 +8242,7 @@ Begin
   HlvInitialized := False;
   ParInitialized := False;
   EcInitialized  := False;
+  AgnInitialized := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -7117,6 +8267,9 @@ Begin
 
   { Initialiser le parseur d expressions et conditions }
   InitExprCondState;
+
+  { Initialiser le generateur d arithmetique 80386 }
+  InitArithGenState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;

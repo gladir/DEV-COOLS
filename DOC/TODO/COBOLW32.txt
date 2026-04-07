@@ -277,7 +277,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
             Generation d un arbre d expression intermediaire
             10 fonctions accesseurs
 
-  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [A FAIRE]
+  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
             Arithmetique sur donnees DISPLAY (PIC 9) :
               Conversion DISPLAY -> registre 32 bits (entier)
               Operation en registre (ADD, SUB, IMUL, IDIV)
