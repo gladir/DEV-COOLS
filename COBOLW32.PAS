@@ -640,7 +640,7 @@
               _COB_FILE_STATUS, _COB_RETURN_CODE
             10 fonctions accesseurs
 
-  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [A FAIRE]
+  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [IMPLEMENTE]
             Structure PE32 complete :
               DOS Header (64 octets) avec DOS stub
               Signature PE "PE\0\0"
@@ -1790,8 +1790,11 @@ Const
   KW_FUNCTION          = 248;  { FUNCTION }
   KW_STDCALL           = 249;  { STDCALL }
 
+  { Mots-cles pour TODO 21 : PE WRITER }
+  KW_GUI               = 250;  { GUI }
+
   { Nombre total de mots-cles definis }
-  KW_TOTAL_KEYWORDS    = 181;  { nombre approximatif de mots-cles }
+  KW_TOTAL_KEYWORDS    = 182;  { nombre approximatif de mots-cles }
 
 Var
   { Variables du module de mots-cles }
@@ -18792,6 +18795,1055 @@ Begin
   GetRtlStateCount := RtlStateCount;
 End;
 
+{ ============================================================ }
+{ TODO 21 - ECRIVAIN BINAIRE PE                                }
+{           (GENERATION .EXE WINDOWS 32 BITS)                  }
+{ ============================================================ }
+
+Const
+  { Constantes du DOS Header (PE_DOS_MAGIC deja defini en haut) }
+  PE_DOS_HEADER_SIZE   = 64;        { taille du DOS header en octets          }
+  PE_DOS_STUB_SIZE     = 64;        { taille du DOS stub en octets            }
+
+  { Constantes PE Signature et COFF Header }
+  { PE_PE_SIG et PE_MACHINE_I386 deja definis en haut              }
+  PE_COFF_HEADER_SIZE  = 20;        { taille COFF File Header                 }
+  PE_NUM_SECTIONS      = 3;         { .text, .rdata, .data                    }
+
+  { Constantes Optional Header }
+  PE_OPT_HEADER_SIZE   = 224;       { taille Optional Header PE32             }
+  { PE_MAGIC_32, PE_IMG_BASE, PE_SEC_ALIGN, PE_FILE_ALIGN,         }
+  { PE_SUBSYS_CUI deja definis en haut                              }
+  PE_SUBSYS_CONSOLE    = 3;         { Subsystem : CUI (Console)               }
+  PE_SUBSYS_GUI        = 2;         { Subsystem : GUI (Windows)               }
+  PE_NUM_DATA_DIRS     = 16;        { nombre de DataDirectory entries         }
+
+  { Indices de sections }
+  PE_SECT_NONE         = 0;         { pas de section                          }
+  PE_SECT_TEXT         = 1;         { section .text (code)                    }
+  PE_SECT_RDATA        = 2;         { section .rdata (imports)                }
+  PE_SECT_DATA         = 3;         { section .data (donnees)                 }
+
+  { Caracteristiques de sections (LongInt) }
+  PE_SCN_CODE          = $00000020; { section contient du code                }
+  PE_SCN_IDATA         = $00000040; { section contient des donnees init       }
+  PE_SCN_UDATA         = $00000080; { section contient des donnees non init   }
+  PE_SCN_EXEC          = $20000000; { section executable                      }
+  PE_SCN_READ          = $40000000; { section lisible                         }
+
+  { Types de fixup }
+  PE_FIX_NONE          = 0;         { pas de fixup                            }
+  PE_FIX_ABSOLUTE      = 1;         { adresse absolue (ImageBase + RVA)       }
+  PE_FIX_RELATIVE      = 2;         { adresse relative (pour CALL/JMP)        }
+  PE_FIX_IAT           = 3;         { reference dans l IAT                    }
+
+  { Limites }
+  PE_MAX_SECTIONS      = 8;         { nombre max de sections                  }
+  PE_MAX_IMPORTS       = 64;        { nombre max de symboles importes         }
+  PE_MAX_DLLS          = 8;         { nombre max de DLLs importees            }
+  PE_MAX_FIXUPS        = 512;       { nombre max de fixups                    }
+  PE_MAX_CODE_SIZE     = 65536;     { taille max du code genere               }
+  PE_MAX_DATA_SIZE     = 65536;     { taille max des donnees                  }
+  PE_STACK_RESERVE     = $100000;   { taille reserve de pile (1 Mo)           }
+  PE_STACK_COMMIT      = $1000;     { taille commit de pile (4 Ko)            }
+  PE_HEAP_RESERVE      = $100000;   { taille reserve de tas (1 Mo)            }
+  PE_HEAP_COMMIT       = $1000;     { taille commit de tas (4 Ko)             }
+
+Type
+  TPeSectionEntry = Record
+    Name           : TString;       { nom de section (.text, .rdata, .data)   }
+    VirtualSize    : LongInt;       { taille en memoire                       }
+    VirtualAddr    : LongInt;       { RVA (adresse virtuelle relative)        }
+    RawSize        : LongInt;       { taille dans le fichier (aligne)         }
+    RawOffset      : LongInt;       { offset dans le fichier                  }
+    Characteristics : LongInt;      { flags (CODE/READ/WRITE/EXEC)            }
+  End;
+
+  TPeFixupEntry = Record
+    Offset         : LongInt;       { offset dans le code/data                }
+    TargetRVA      : LongInt;       { RVA cible                               }
+    FixupType      : Integer;       { PE_FIX_* type                           }
+    SectionIdx     : Integer;       { section contenant le fixup              }
+  End;
+
+  TPeImportEntry = Record
+    Name           : TString;       { nom du symbole importe                  }
+    DllName        : TString;       { nom de la DLL                           }
+    Hint           : Integer;       { hint/ordinal                            }
+    IatOffset      : LongInt;       { offset dans l IAT                       }
+  End;
+
+Var
+  PeInitialized          : Boolean;   { True si InitPeWriterState appele      }
+  PeStateCount           : Integer;   { compteur d etat general               }
+  PeLabelNum             : Integer;   { compteur de labels internes            }
+  PeSections             : Array[0..PE_MAX_SECTIONS-1] Of TPeSectionEntry;
+  PeSectionCount         : Integer;   { nombre de sections definies            }
+  PeFixups               : Array[0..PE_MAX_FIXUPS-1] Of TPeFixupEntry;
+  PeFixupCount           : Integer;   { nombre de fixups enregistres           }
+  PeImports              : Array[0..PE_MAX_IMPORTS-1] Of TPeImportEntry;
+  PeImportCount          : Integer;   { nombre d imports enregistres           }
+  PeCodeBuffer           : Array[0..PE_MAX_CODE_SIZE-1] Of Byte;
+  PeCodeSize             : LongInt;   { taille courante du code                }
+  PeDataBuffer           : Array[0..PE_MAX_DATA_SIZE-1] Of Byte;
+  PeDataSize             : LongInt;   { taille courante des donnees            }
+  PeSubsystem            : Integer;   { PE_SUBSYS_CONSOLE ou GUI               }
+  PeImageBase            : LongInt;   { adresse de base de l image             }
+  PeEntryPointRVA        : LongInt;   { RVA du point d entree                  }
+  PeDosHeaderCount       : Integer;   { nombre de DOS headers generes          }
+  PeCoffHeaderCount      : Integer;   { nombre de COFF headers generes         }
+  PeOptHeaderCount       : Integer;   { nombre de Optional headers generes     }
+  PeSectHeaderCount      : Integer;   { nombre de Section headers generes      }
+  PeTextSectionCount     : Integer;   { nombre de sections .text generees      }
+  PeRdataSectionCount    : Integer;   { nombre de sections .rdata generees     }
+  PeDataSectionCount     : Integer;   { nombre de sections .data generees      }
+  PeImportDirCount       : Integer;   { nombre de Import Directories generes   }
+  PeIatCount             : Integer;   { nombre de IAT generes                  }
+  PeFixupResolvedCount   : Integer;   { nombre de fixups resolus               }
+  PeFileWrittenCount     : Integer;   { nombre de fichiers PE ecrits           }
+  PeTotalGenerated       : Integer;   { total d octets generes                 }
+
+{ ------------------------------------------------------------ }
+{ InitPeWriterState : initialiser l etat du module PE Writer   }
+{ Doit etre appele avant toute utilisation du module           }
+{ ------------------------------------------------------------ }
+
+Procedure InitPeWriterState;
+Var
+  I : LongInt;
+Begin
+  PeInitialized := True;
+  PeStateCount  := 0;
+  PeLabelNum    := 0;
+  PeSectionCount := 0;
+  PeFixupCount  := 0;
+  PeImportCount := 0;
+  PeCodeSize    := 0;
+  PeDataSize    := 0;
+  PeSubsystem   := PE_SUBSYS_CONSOLE;
+  PeImageBase   := PE_IMG_BASE;
+  PeEntryPointRVA := 0;
+  PeDosHeaderCount     := 0;
+  PeCoffHeaderCount    := 0;
+  PeOptHeaderCount     := 0;
+  PeSectHeaderCount    := 0;
+  PeTextSectionCount   := 0;
+  PeRdataSectionCount  := 0;
+  PeDataSectionCount   := 0;
+  PeImportDirCount     := 0;
+  PeIatCount           := 0;
+  PeFixupResolvedCount := 0;
+  PeFileWrittenCount   := 0;
+  PeTotalGenerated     := 0;
+  For I := 0 To PE_MAX_SECTIONS - 1 Do Begin
+    PeSections[I].Name := '';
+    PeSections[I].VirtualSize := 0;
+    PeSections[I].VirtualAddr := 0;
+    PeSections[I].RawSize := 0;
+    PeSections[I].RawOffset := 0;
+    PeSections[I].Characteristics := 0;
+  End;
+  For I := 0 To PE_MAX_CODE_SIZE - 1 Do
+    PeCodeBuffer[I] := 0;
+  For I := 0 To PE_MAX_DATA_SIZE - 1 Do
+    PeDataBuffer[I] := 0;
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPeLabel : generer un label unique pour le module PE        }
+{ ------------------------------------------------------------ }
+
+Function GenPeLabel : TString;
+Begin
+  Inc(PeLabelNum);
+  GenPeLabel := '_PE_L' + ItoS(PeLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions de noms                                            }
+{ ------------------------------------------------------------ }
+
+Function PeSectionName(SectType : Integer) : TString;
+Begin
+  Case SectType Of
+    PE_SECT_NONE  : PeSectionName := 'NONE';
+    PE_SECT_TEXT  : PeSectionName := '.text';
+    PE_SECT_RDATA : PeSectionName := '.rdata';
+    PE_SECT_DATA  : PeSectionName := '.data';
+  Else
+    PeSectionName := 'UNKNOWN';
+  End;
+End;
+
+Function PeSubsystemName(Subsys : Integer) : TString;
+Begin
+  Case Subsys Of
+    PE_SUBSYS_CONSOLE : PeSubsystemName := 'CONSOLE (CUI)';
+    PE_SUBSYS_GUI     : PeSubsystemName := 'GUI (Windows)';
+  Else
+    PeSubsystemName := 'UNKNOWN';
+  End;
+End;
+
+Function PeFixupTypeName(FType : Integer) : TString;
+Begin
+  Case FType Of
+    PE_FIX_NONE     : PeFixupTypeName := 'NONE';
+    PE_FIX_ABSOLUTE : PeFixupTypeName := 'ABSOLUTE';
+    PE_FIX_RELATIVE : PeFixupTypeName := 'RELATIVE';
+    PE_FIX_IAT      : PeFixupTypeName := 'IAT';
+  Else
+    PeFixupTypeName := 'UNKNOWN';
+  End;
+End;
+
+Function PeMachineName : TString;
+Begin
+  PeMachineName := 'IMAGE_FILE_MACHINE_I386 ($014C)';
+End;
+
+{ ------------------------------------------------------------ }
+{ Routines d ecriture binaire bas niveau                       }
+{ ------------------------------------------------------------ }
+
+Procedure WritePeByte(Var Buf : Array Of Byte; Var Pos : LongInt;
+                      MaxSize : LongInt; B : Byte);
+Begin
+  If Pos < MaxSize Then Begin
+    Buf[Pos] := B;
+    Inc(Pos);
+    Inc(PeTotalGenerated);
+  End;
+End;
+
+Procedure WritePeWord(Var Buf : Array Of Byte; Var Pos : LongInt;
+                      MaxSize : LongInt; W : Word);
+Begin
+  WritePeByte(Buf, Pos, MaxSize, Lo(W));
+  WritePeByte(Buf, Pos, MaxSize, Hi(W));
+End;
+
+Procedure WritePeDWord(Var Buf : Array Of Byte; Var Pos : LongInt;
+                       MaxSize : LongInt; DW : LongInt);
+Begin
+  WritePeWord(Buf, Pos, MaxSize, Word(DW And $FFFF));
+  WritePeWord(Buf, Pos, MaxSize, Word((DW Shr 16) And $FFFF));
+End;
+
+Procedure WritePeString(Var Buf : Array Of Byte; Var Pos : LongInt;
+                        MaxSize : LongInt; S : TString; FieldLen : Integer);
+Var
+  I : Integer;
+Begin
+  For I := 1 To FieldLen Do Begin
+    If I <= Length(S) Then
+      WritePeByte(Buf, Pos, MaxSize, Ord(S[I]))
+    Else
+      WritePeByte(Buf, Pos, MaxSize, 0);
+  End;
+End;
+
+Procedure WritePeBlock(Var Buf : Array Of Byte; Var Pos : LongInt;
+                       MaxSize : LongInt; Count : LongInt; Value : Byte);
+Var
+  I : LongInt;
+Begin
+  For I := 1 To Count Do
+    WritePeByte(Buf, Pos, MaxSize, Value);
+End;
+
+Function AlignUp(Value, Alignment : LongInt) : LongInt;
+Begin
+  If (Value Mod Alignment) = 0 Then
+    AlignUp := Value
+  Else
+    AlignUp := Value + (Alignment - (Value Mod Alignment));
+End;
+
+Procedure WritePeAlign(Var Buf : Array Of Byte; Var Pos : LongInt;
+                       MaxSize : LongInt; Alignment : LongInt);
+Var
+  Target : LongInt;
+Begin
+  Target := AlignUp(Pos, Alignment);
+  While Pos < Target Do
+    WritePeByte(Buf, Pos, MaxSize, 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ FindPeSection : chercher une section par type                }
+{ Retourne l index dans PeSections[] ou -1 si non trouvee       }
+{ ------------------------------------------------------------ }
+
+Function FindPeSection(SectType : Integer) : Integer;
+Var
+  I : Integer;
+  SName : TString;
+Begin
+  SName := PeSectionName(SectType);
+  FindPeSection := -1;
+  For I := 0 To PeSectionCount - 1 Do
+    If PeSections[I].Name = SName Then Begin
+      FindPeSection := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPeSection : ajouter une section PE                        }
+{ ------------------------------------------------------------ }
+
+Function AddPeSection(SectType : Integer; Chars : LongInt) : Integer;
+Begin
+  AddPeSection := -1;
+  If PeSectionCount >= PE_MAX_SECTIONS Then Exit;
+  PeSections[PeSectionCount].Name := PeSectionName(SectType);
+  PeSections[PeSectionCount].VirtualSize := 0;
+  PeSections[PeSectionCount].VirtualAddr := 0;
+  PeSections[PeSectionCount].RawSize := 0;
+  PeSections[PeSectionCount].RawOffset := 0;
+  PeSections[PeSectionCount].Characteristics := Chars;
+  AddPeSection := PeSectionCount;
+  Inc(PeSectionCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPeImport : ajouter un symbole importe                     }
+{ ------------------------------------------------------------ }
+
+Function AddPeImport(AName, ADll : TString; AHint : Integer) : Integer;
+Begin
+  AddPeImport := -1;
+  If PeImportCount >= PE_MAX_IMPORTS Then Exit;
+  PeImports[PeImportCount].Name := AName;
+  PeImports[PeImportCount].DllName := ADll;
+  PeImports[PeImportCount].Hint := AHint;
+  PeImports[PeImportCount].IatOffset := 0;
+  AddPeImport := PeImportCount;
+  Inc(PeImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPeFixup : ajouter un fixup pour resolution ulterieure     }
+{ ------------------------------------------------------------ }
+
+Function AddPeFixup(AOffset, ATarget : LongInt;
+                    AType, ASect : Integer) : Integer;
+Begin
+  AddPeFixup := -1;
+  If PeFixupCount >= PE_MAX_FIXUPS Then Exit;
+  PeFixups[PeFixupCount].Offset := AOffset;
+  PeFixups[PeFixupCount].TargetRVA := ATarget;
+  PeFixups[PeFixupCount].FixupType := AType;
+  PeFixups[PeFixupCount].SectionIdx := ASect;
+  AddPeFixup := PeFixupCount;
+  Inc(PeFixupCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDosHeader : generer le DOS Header (64 octets)             }
+{ Signature MZ + champs DOS + offset vers PE Header            }
+{ ------------------------------------------------------------ }
+
+Procedure GenDosHeader(Var Buf : Array Of Byte; Var Pos : LongInt;
+                       MaxSize : LongInt; PeOffset : LongInt);
+Var
+  SavePos : LongInt;
+Begin
+  SavePos := Pos;
+  { e_magic : MZ }
+  WritePeWord(Buf, Pos, MaxSize, PE_DOS_MAGIC);
+  { e_cblp a e_ovno : champs DOS standard (remplis zeros) }
+  WritePeBlock(Buf, Pos, MaxSize, 58, 0);
+  { e_lfanew : offset vers PE signature (a l offset 60 = $3C) }
+  Pos := SavePos + 60;
+  WritePeDWord(Buf, Pos, MaxSize, PeOffset);
+  Inc(PeDosHeaderCount);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDosStub : generer le DOS stub (message 16 bits)           }
+{ "This program cannot be run in DOS mode.\r\n$"               }
+{ ------------------------------------------------------------ }
+
+Procedure GenDosStub(Var Buf : Array Of Byte; Var Pos : LongInt;
+                     MaxSize : LongInt);
+Var
+  StubMsg : TString;
+  I : Integer;
+Begin
+  { Instruction : INT 21h pour afficher le message puis INT 20h }
+  WritePeByte(Buf, Pos, MaxSize, $0E);   { PUSH CS }
+  WritePeByte(Buf, Pos, MaxSize, $1F);   { POP DS }
+  WritePeByte(Buf, Pos, MaxSize, $BA);   { MOV DX, offset msg }
+  WritePeByte(Buf, Pos, MaxSize, $0E);   { offset low byte }
+  WritePeByte(Buf, Pos, MaxSize, $00);   { offset high byte }
+  WritePeByte(Buf, Pos, MaxSize, $B4);   { MOV AH, 09h }
+  WritePeByte(Buf, Pos, MaxSize, $09);
+  WritePeByte(Buf, Pos, MaxSize, $CD);   { INT 21h }
+  WritePeByte(Buf, Pos, MaxSize, $21);
+  WritePeByte(Buf, Pos, MaxSize, $B8);   { MOV AX, 4C01h }
+  WritePeByte(Buf, Pos, MaxSize, $01);
+  WritePeByte(Buf, Pos, MaxSize, $4C);
+  WritePeByte(Buf, Pos, MaxSize, $CD);   { INT 21h }
+  WritePeByte(Buf, Pos, MaxSize, $21);
+  { Message }
+  StubMsg := 'This program cannot be run in DOS mode.'#13#10'$';
+  For I := 1 To Length(StubMsg) Do
+    WritePeByte(Buf, Pos, MaxSize, Ord(StubMsg[I]));
+  { Padding a la taille du stub }
+  While (Pos Mod 16) <> 0 Do
+    WritePeByte(Buf, Pos, MaxSize, 0);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPeSignature : generer la signature PE "PE\0\0"            }
+{ ------------------------------------------------------------ }
+
+Procedure GenPeSignature(Var Buf : Array Of Byte; Var Pos : LongInt;
+                         MaxSize : LongInt);
+Begin
+  WritePeDWord(Buf, Pos, MaxSize, PE_PE_SIG);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCoffHeader : generer le COFF File Header (20 octets)      }
+{ Machine, NumberOfSections, TimeDateStamp, etc.                }
+{ ------------------------------------------------------------ }
+
+Procedure GenCoffHeader(Var Buf : Array Of Byte; Var Pos : LongInt;
+                        MaxSize : LongInt; NumSect : Integer;
+                        OptHdrSize : Integer);
+Begin
+  { Machine }
+  WritePeWord(Buf, Pos, MaxSize, PE_MACHINE_I386);
+  { NumberOfSections }
+  WritePeWord(Buf, Pos, MaxSize, Word(NumSect));
+  { TimeDateStamp (0 pour simplifier) }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { PointerToSymbolTable (0 = pas de symboles COFF) }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { NumberOfSymbols }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { SizeOfOptionalHeader }
+  WritePeWord(Buf, Pos, MaxSize, Word(OptHdrSize));
+  { Characteristics : EXECUTABLE | 32BIT }
+  WritePeWord(Buf, Pos, MaxSize, $0102);
+  Inc(PeCoffHeaderCount);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenOptionalHeader : generer l Optional Header PE32           }
+{ 224 octets incluant les 16 DataDirectory entries              }
+{ ------------------------------------------------------------ }
+
+Procedure GenOptionalHeader(Var Buf : Array Of Byte; Var Pos : LongInt;
+                            MaxSize : LongInt;
+                            CodeSize, RdataSize, DataSize : LongInt;
+                            EntryRVA : LongInt;
+                            TextRVA, RdataRVA, DataRVA : LongInt;
+                            ImageSize : LongInt;
+                            HeadersSize : LongInt;
+                            ImportRVA, ImportSize : LongInt);
+Var
+  I : Integer;
+Begin
+  { Magic : PE32 }
+  WritePeWord(Buf, Pos, MaxSize, PE_MAGIC_32);
+  { MajorLinkerVersion, MinorLinkerVersion }
+  WritePeByte(Buf, Pos, MaxSize, 1);
+  WritePeByte(Buf, Pos, MaxSize, 0);
+  { SizeOfCode }
+  WritePeDWord(Buf, Pos, MaxSize, CodeSize);
+  { SizeOfInitializedData }
+  WritePeDWord(Buf, Pos, MaxSize, RdataSize + DataSize);
+  { SizeOfUninitializedData }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { AddressOfEntryPoint }
+  WritePeDWord(Buf, Pos, MaxSize, EntryRVA);
+  { BaseOfCode }
+  WritePeDWord(Buf, Pos, MaxSize, TextRVA);
+  { BaseOfData }
+  WritePeDWord(Buf, Pos, MaxSize, DataRVA);
+  { ImageBase }
+  WritePeDWord(Buf, Pos, MaxSize, PeImageBase);
+  { SectionAlignment }
+  WritePeDWord(Buf, Pos, MaxSize, PE_SEC_ALIGN);
+  { FileAlignment }
+  WritePeDWord(Buf, Pos, MaxSize, PE_FILE_ALIGN);
+  { MajorOperatingSystemVersion }
+  WritePeWord(Buf, Pos, MaxSize, 4);
+  { MinorOperatingSystemVersion }
+  WritePeWord(Buf, Pos, MaxSize, 0);
+  { MajorImageVersion }
+  WritePeWord(Buf, Pos, MaxSize, 0);
+  { MinorImageVersion }
+  WritePeWord(Buf, Pos, MaxSize, 0);
+  { MajorSubsystemVersion }
+  WritePeWord(Buf, Pos, MaxSize, 4);
+  { MinorSubsystemVersion }
+  WritePeWord(Buf, Pos, MaxSize, 0);
+  { Win32VersionValue (reserve) }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { SizeOfImage }
+  WritePeDWord(Buf, Pos, MaxSize, ImageSize);
+  { SizeOfHeaders }
+  WritePeDWord(Buf, Pos, MaxSize, HeadersSize);
+  { CheckSum (0 pour les executables) }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { Subsystem }
+  WritePeWord(Buf, Pos, MaxSize, Word(PeSubsystem));
+  { DllCharacteristics }
+  WritePeWord(Buf, Pos, MaxSize, 0);
+  { SizeOfStackReserve }
+  WritePeDWord(Buf, Pos, MaxSize, PE_STACK_RESERVE);
+  { SizeOfStackCommit }
+  WritePeDWord(Buf, Pos, MaxSize, PE_STACK_COMMIT);
+  { SizeOfHeapReserve }
+  WritePeDWord(Buf, Pos, MaxSize, PE_HEAP_RESERVE);
+  { SizeOfHeapCommit }
+  WritePeDWord(Buf, Pos, MaxSize, PE_HEAP_COMMIT);
+  { LoaderFlags (reserve) }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { NumberOfRvaAndSizes }
+  WritePeDWord(Buf, Pos, MaxSize, PE_NUM_DATA_DIRS);
+  { DataDirectory[0] : Export Table (vide) }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { DataDirectory[1] : Import Table }
+  WritePeDWord(Buf, Pos, MaxSize, ImportRVA);
+  WritePeDWord(Buf, Pos, MaxSize, ImportSize);
+  { DataDirectory[2..15] : les 14 restants (vides) }
+  For I := 2 To PE_NUM_DATA_DIRS - 1 Do Begin
+    WritePeDWord(Buf, Pos, MaxSize, 0);
+    WritePeDWord(Buf, Pos, MaxSize, 0);
+  End;
+  Inc(PeOptHeaderCount);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSectionHeader : generer un Section Header (40 octets)     }
+{ ------------------------------------------------------------ }
+
+Procedure GenSectionHeader(Var Buf : Array Of Byte; Var Pos : LongInt;
+                           MaxSize : LongInt;
+                           SName : TString;
+                           VSize, VAddr, RSize, ROffset : LongInt;
+                           Chars : LongInt);
+Begin
+  { Name (8 octets, padde avec des zeros) }
+  WritePeString(Buf, Pos, MaxSize, SName, 8);
+  { VirtualSize }
+  WritePeDWord(Buf, Pos, MaxSize, VSize);
+  { VirtualAddress (RVA) }
+  WritePeDWord(Buf, Pos, MaxSize, VAddr);
+  { SizeOfRawData }
+  WritePeDWord(Buf, Pos, MaxSize, RSize);
+  { PointerToRawData }
+  WritePeDWord(Buf, Pos, MaxSize, ROffset);
+  { PointerToRelocations }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { PointerToLinenumbers }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { NumberOfRelocations }
+  WritePeWord(Buf, Pos, MaxSize, 0);
+  { NumberOfLinenumbers }
+  WritePeWord(Buf, Pos, MaxSize, 0);
+  { Characteristics }
+  WritePeDWord(Buf, Pos, MaxSize, Chars);
+  Inc(PeSectHeaderCount);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenTextSection : generer le contenu de la section .text       }
+{ Copie le buffer de code genere                                }
+{ ------------------------------------------------------------ }
+
+Procedure GenTextSection(Var Buf : Array Of Byte; Var Pos : LongInt;
+                         MaxSize : LongInt);
+Var
+  I : LongInt;
+Begin
+  For I := 0 To PeCodeSize - 1 Do
+    WritePeByte(Buf, Pos, MaxSize, PeCodeBuffer[I]);
+  WritePeAlign(Buf, Pos, MaxSize, PE_FILE_ALIGN);
+  Inc(PeTextSectionCount);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRdataSection : generer la section .rdata (imports)         }
+{ Contient l Import Directory et les tables de noms             }
+{ ------------------------------------------------------------ }
+
+Procedure GenRdataSection(Var Buf : Array Of Byte; Var Pos : LongInt;
+                          MaxSize : LongInt);
+Begin
+  { Le contenu detaille de .rdata (Import Directory, IAT, noms)    }
+  { sera rempli par GenImportDirectory et GenImportAddressTable     }
+  { Ici on reserve l espace et on aligne                            }
+  WritePeAlign(Buf, Pos, MaxSize, PE_FILE_ALIGN);
+  Inc(PeRdataSectionCount);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDataSection : generer la section .data                     }
+{ Copie le buffer de donnees initialisees                        }
+{ ------------------------------------------------------------ }
+
+Procedure GenDataSection(Var Buf : Array Of Byte; Var Pos : LongInt;
+                         MaxSize : LongInt);
+Var
+  I : LongInt;
+Begin
+  For I := 0 To PeDataSize - 1 Do
+    WritePeByte(Buf, Pos, MaxSize, PeDataBuffer[I]);
+  WritePeAlign(Buf, Pos, MaxSize, PE_FILE_ALIGN);
+  Inc(PeDataSectionCount);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenImportDirectory : generer les IMAGE_IMPORT_DESCRIPTOR      }
+{ Un descripteur par DLL + terminateur null                      }
+{ ------------------------------------------------------------ }
+
+Procedure GenImportDirectory(Var Buf : Array Of Byte; Var Pos : LongInt;
+                             MaxSize : LongInt;
+                             IltRVA, IatRVA, NameRVA : LongInt);
+Begin
+  { IMAGE_IMPORT_DESCRIPTOR pour kernel32.dll }
+  { OriginalFirstThunk (ILT RVA) }
+  WritePeDWord(Buf, Pos, MaxSize, IltRVA);
+  { TimeDateStamp }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  { ForwarderChain }
+  WritePeDWord(Buf, Pos, MaxSize, LongInt(-1));
+  { Name RVA }
+  WritePeDWord(Buf, Pos, MaxSize, NameRVA);
+  { FirstThunk (IAT RVA) }
+  WritePeDWord(Buf, Pos, MaxSize, IatRVA);
+  { Terminateur null (20 octets de zeros) }
+  WritePeBlock(Buf, Pos, MaxSize, 20, 0);
+  Inc(PeImportDirCount);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenImportAddressTable : generer l IAT avec les thunks         }
+{ ------------------------------------------------------------ }
+
+Procedure GenImportAddressTable(Var Buf : Array Of Byte; Var Pos : LongInt;
+                                MaxSize : LongInt;
+                                HintNameRVA : LongInt);
+Begin
+  { Thunk entry pointant vers Hint/Name }
+  WritePeDWord(Buf, Pos, MaxSize, HintNameRVA);
+  { Terminateur null }
+  WritePeDWord(Buf, Pos, MaxSize, 0);
+  Inc(PeIatCount);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenHintNameEntry : generer une entree Hint/Name               }
+{ ------------------------------------------------------------ }
+
+Procedure GenHintNameEntry(Var Buf : Array Of Byte; Var Pos : LongInt;
+                           MaxSize : LongInt;
+                           Hint : Integer; FuncName : TString);
+Var
+  I : Integer;
+Begin
+  { Hint (2 octets) }
+  WritePeWord(Buf, Pos, MaxSize, Word(Hint));
+  { Name (chaine terminee par zero) }
+  For I := 1 To Length(FuncName) Do
+    WritePeByte(Buf, Pos, MaxSize, Ord(FuncName[I]));
+  WritePeByte(Buf, Pos, MaxSize, 0);
+  { Alignement sur 2 octets }
+  If (Pos Mod 2) <> 0 Then
+    WritePeByte(Buf, Pos, MaxSize, 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFixups : resoudre tous les fixups enregistres              }
+{ Applique les adresses absolues/relatives dans les buffers     }
+{ ------------------------------------------------------------ }
+
+Procedure GenFixups;
+Var
+  I : Integer;
+  Target : LongInt;
+  Offset : LongInt;
+Begin
+  For I := 0 To PeFixupCount - 1 Do Begin
+    Offset := PeFixups[I].Offset;
+    Case PeFixups[I].FixupType Of
+      PE_FIX_ABSOLUTE : Begin
+        Target := PeImageBase + PeFixups[I].TargetRVA;
+        If (PeFixups[I].SectionIdx = PE_SECT_TEXT) And
+           (Offset + 3 < PE_MAX_CODE_SIZE) Then Begin
+          PeCodeBuffer[Offset]     := Byte(Target And $FF);
+          PeCodeBuffer[Offset + 1] := Byte((Target Shr 8) And $FF);
+          PeCodeBuffer[Offset + 2] := Byte((Target Shr 16) And $FF);
+          PeCodeBuffer[Offset + 3] := Byte((Target Shr 24) And $FF);
+        End;
+      End;
+      PE_FIX_RELATIVE : Begin
+        { Adresse relative = Target - (Offset + 4) }
+        Target := PeFixups[I].TargetRVA - (Offset + 4);
+        If (PeFixups[I].SectionIdx = PE_SECT_TEXT) And
+           (Offset + 3 < PE_MAX_CODE_SIZE) Then Begin
+          PeCodeBuffer[Offset]     := Byte(Target And $FF);
+          PeCodeBuffer[Offset + 1] := Byte((Target Shr 8) And $FF);
+          PeCodeBuffer[Offset + 2] := Byte((Target Shr 16) And $FF);
+          PeCodeBuffer[Offset + 3] := Byte((Target Shr 24) And $FF);
+        End;
+      End;
+      PE_FIX_IAT : Begin
+        Target := PeImageBase + PeFixups[I].TargetRVA;
+        If (PeFixups[I].SectionIdx = PE_SECT_TEXT) And
+           (Offset + 3 < PE_MAX_CODE_SIZE) Then Begin
+          PeCodeBuffer[Offset]     := Byte(Target And $FF);
+          PeCodeBuffer[Offset + 1] := Byte((Target Shr 8) And $FF);
+          PeCodeBuffer[Offset + 2] := Byte((Target Shr 16) And $FF);
+          PeCodeBuffer[Offset + 3] := Byte((Target Shr 24) And $FF);
+        End;
+      End;
+    End;
+    Inc(PeFixupResolvedCount);
+  End;
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPeFile : generer le fichier PE complet                     }
+{ Assemble toutes les parties : DOS + PE + sections             }
+{ Ecrit le resultat dans un fichier binaire                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenPeFile(FileName : TString);
+Var
+  FileBuf  : Array[0..PE_MAX_CODE_SIZE + PE_MAX_DATA_SIZE - 1] Of Byte;
+  FilePos  : LongInt;
+  FileMax  : LongInt;
+  F        : File;
+  HeadersSize  : LongInt;
+  PeHdrOffset  : LongInt;
+  TextRVA      : LongInt;
+  TextRawOfs   : LongInt;
+  TextRawSize  : LongInt;
+  RdataRVA     : LongInt;
+  RdataRawOfs  : LongInt;
+  RdataRawSize : LongInt;
+  DataRVA      : LongInt;
+  DataRawOfs   : LongInt;
+  DataRawSize  : LongInt;
+  ImageSize    : LongInt;
+  ImportRVA    : LongInt;
+  ImportSize   : LongInt;
+  IltRVA       : LongInt;
+  IatRVA       : LongInt;
+  NameRVA      : LongInt;
+  HintRVA      : LongInt;
+  DllName      : TString;
+  I            : LongInt;
+Begin
+  FileMax := PE_MAX_CODE_SIZE + PE_MAX_DATA_SIZE;
+  FilePos := 0;
+  For I := 0 To FileMax - 1 Do
+    FileBuf[I] := 0;
+
+  { Calculer la disposition des sections }
+  PeHdrOffset := PE_DOS_HEADER_SIZE + PE_DOS_STUB_SIZE;
+  { Aligner PeHdrOffset sur 8 }
+  PeHdrOffset := AlignUp(PeHdrOffset, 8);
+  HeadersSize := PeHdrOffset + 4 + PE_COFF_HEADER_SIZE +
+                 PE_OPT_HEADER_SIZE + (PE_NUM_SECTIONS * 40);
+  HeadersSize := AlignUp(HeadersSize, PE_FILE_ALIGN);
+
+  TextRVA     := PE_SEC_ALIGN;
+  TextRawOfs  := HeadersSize;
+  TextRawSize := AlignUp(PeCodeSize, PE_FILE_ALIGN);
+  If TextRawSize = 0 Then TextRawSize := PE_FILE_ALIGN;
+
+  RdataRVA     := TextRVA + AlignUp(PeCodeSize, PE_SEC_ALIGN);
+  If AlignUp(PeCodeSize, PE_SEC_ALIGN) = 0 Then
+    RdataRVA := TextRVA + PE_SEC_ALIGN;
+  RdataRawOfs  := TextRawOfs + TextRawSize;
+
+  { Calculer taille rdata : import directory (40) + ILT (8) + IAT (8) }
+  { + nom DLL (~16) + hint/name entries (~32) }
+  RdataRawSize := AlignUp(128, PE_FILE_ALIGN);
+
+  DataRVA      := RdataRVA + AlignUp(128, PE_SEC_ALIGN);
+  If AlignUp(128, PE_SEC_ALIGN) = 0 Then
+    DataRVA := RdataRVA + PE_SEC_ALIGN;
+  DataRawOfs   := RdataRawOfs + RdataRawSize;
+  DataRawSize  := AlignUp(PeDataSize, PE_FILE_ALIGN);
+  If DataRawSize = 0 Then DataRawSize := PE_FILE_ALIGN;
+
+  ImageSize := DataRVA + AlignUp(PeDataSize, PE_SEC_ALIGN);
+  If AlignUp(PeDataSize, PE_SEC_ALIGN) = 0 Then
+    ImageSize := DataRVA + PE_SEC_ALIGN;
+
+  { Import Table RVA et taille (dans .rdata) }
+  ImportRVA  := RdataRVA;
+  ImportSize := 40; { 1 descriptor + null terminator }
+
+  PeEntryPointRVA := TextRVA;
+
+  { Resoudre les fixups avant l ecriture }
+  GenFixups;
+
+  { === Generer le DOS Header === }
+  GenDosHeader(FileBuf, FilePos, FileMax, PeHdrOffset);
+
+  { === Generer le DOS Stub === }
+  FilePos := PE_DOS_HEADER_SIZE;
+  GenDosStub(FileBuf, FilePos, FileMax);
+
+  { === Aligner sur PeHdrOffset === }
+  FilePos := PeHdrOffset;
+
+  { === Generer la signature PE === }
+  GenPeSignature(FileBuf, FilePos, FileMax);
+
+  { === Generer le COFF Header === }
+  GenCoffHeader(FileBuf, FilePos, FileMax, PE_NUM_SECTIONS,
+                PE_OPT_HEADER_SIZE);
+
+  { === Generer l Optional Header === }
+  GenOptionalHeader(FileBuf, FilePos, FileMax,
+                    TextRawSize, RdataRawSize, DataRawSize,
+                    PeEntryPointRVA,
+                    TextRVA, RdataRVA, DataRVA,
+                    ImageSize, HeadersSize,
+                    ImportRVA, ImportSize);
+
+  { === Generer les Section Headers === }
+  GenSectionHeader(FileBuf, FilePos, FileMax, '.text',
+                   PeCodeSize, TextRVA, TextRawSize, TextRawOfs,
+                   PE_SCN_CODE Or PE_SCN_EXEC Or PE_SCN_READ);
+  GenSectionHeader(FileBuf, FilePos, FileMax, '.rdata',
+                   128, RdataRVA, RdataRawSize, RdataRawOfs,
+                   PE_SCN_IDATA Or PE_SCN_READ);
+  GenSectionHeader(FileBuf, FilePos, FileMax, '.data',
+                   PeDataSize, DataRVA, DataRawSize, DataRawOfs,
+                   LongInt(PE_SCN_IDATA) Or LongInt(PE_SCN_READ) Or
+                   LongInt(-2147483648));
+
+  { === Generer la section .text === }
+  FilePos := TextRawOfs;
+  GenTextSection(FileBuf, FilePos, FileMax);
+
+  { === Generer la section .rdata (imports) === }
+  FilePos := RdataRawOfs;
+
+  { Calculer les RVAs relatifs dans .rdata }
+  { Import Directory commence au debut de .rdata }
+  { ILT apres le directory (40 octets) }
+  IltRVA  := RdataRVA + 40;
+  { IAT apres le ILT (8 octets = 1 thunk + null) }
+  IatRVA  := RdataRVA + 48;
+  { Nom de la DLL apres le IAT (8 octets) }
+  NameRVA := RdataRVA + 56;
+  DllName := 'kernel32.dll';
+  { Hint/Name entry apres le nom de DLL }
+  HintRVA := RdataRVA + 56 + LongInt(Length(DllName)) + 1;
+  { Aligner sur 2 }
+  If (HintRVA Mod 2) <> 0 Then Inc(HintRVA);
+
+  { Generer l Import Directory }
+  GenImportDirectory(FileBuf, FilePos, FileMax,
+                     IltRVA, IatRVA, NameRVA);
+
+  { Generer l ILT (Import Lookup Table) }
+  WritePeDWord(FileBuf, FilePos, FileMax, HintRVA);
+  WritePeDWord(FileBuf, FilePos, FileMax, 0); { terminateur }
+
+  { Generer l IAT (identique a l ILT avant chargement) }
+  GenImportAddressTable(FileBuf, FilePos, FileMax, HintRVA);
+
+  { Nom de la DLL }
+  For I := 1 To Length(DllName) Do
+    WritePeByte(FileBuf, FilePos, FileMax, Ord(DllName[I]));
+  WritePeByte(FileBuf, FilePos, FileMax, 0);
+
+  { Aligner sur 2 pour Hint/Name }
+  If (FilePos Mod 2) <> 0 Then
+    WritePeByte(FileBuf, FilePos, FileMax, 0);
+
+  { Hint/Name entry pour ExitProcess }
+  GenHintNameEntry(FileBuf, FilePos, FileMax, 0, 'ExitProcess');
+
+  { Padding du reste de .rdata }
+  FilePos := RdataRawOfs + RdataRawSize;
+
+  { === Generer la section .data === }
+  FilePos := DataRawOfs;
+  GenDataSection(FileBuf, FilePos, FileMax);
+
+  { === Ecrire le fichier === }
+  {$I-}
+  Assign(F, FileName);
+  Rewrite(F, 1);
+  {$I+}
+  If IOResult <> 0 Then Begin
+    WriteLn('*** ERREUR: Impossible de creer ', FileName);
+    Exit;
+  End;
+
+  I := DataRawOfs + DataRawSize;
+  BlockWrite(F, FileBuf, I);
+  Close(F);
+
+  Inc(PeFileWrittenCount);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePeOutputOption : analyser l option de sortie PE          }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePeOutputOption(OptStr : TString);
+Begin
+  If (OptStr = '-exe') Or (OptStr = '-EXE') Then
+    PeSubsystem := PE_SUBSYS_CONSOLE
+  Else If (OptStr = '-gui') Or (OptStr = '-GUI') Then
+    PeSubsystem := PE_SUBSYS_GUI;
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePeSubsystem : analyser le sous-systeme PE                }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePeSubsystem(SubsysStr : TString);
+Begin
+  If (SubsysStr = 'CONSOLE') Or (SubsysStr = 'CUI') Then
+    PeSubsystem := PE_SUBSYS_CONSOLE
+  Else If (SubsysStr = 'GUI') Or (SubsysStr = 'WINDOWS') Then
+    PeSubsystem := PE_SUBSYS_GUI
+  Else
+    PeSubsystem := PE_SUBSYS_CONSOLE;
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsPeWriterKeyword : verifier si un mot-cle est PE Writer     }
+{ ------------------------------------------------------------ }
+
+Function IsPeWriterKeyword(KW : Integer) : Boolean;
+Begin
+  IsPeWriterKeyword := (KW = KW_CONSOLE) Or (KW = KW_GUI);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpPeWriterState : afficher l etat du module PE Writer       }
+{ ------------------------------------------------------------ }
+
+Procedure DumpPeWriterState;
+Var
+  I : Integer;
+Begin
+  WriteLn('=== PE Writer State ===');
+  WriteLn('  Initialized     : ', PeInitialized);
+  WriteLn('  Subsystem       : ', PeSubsystemName(PeSubsystem));
+  WriteLn('  ImageBase       : $', HexStr(PeImageBase, 8));
+  WriteLn('  EntryPoint RVA  : $', HexStr(PeEntryPointRVA, 8));
+  WriteLn('  Code size       : ', PeCodeSize, ' bytes');
+  WriteLn('  Data size       : ', PeDataSize, ' bytes');
+  WriteLn('  Sections        : ', PeSectionCount);
+  WriteLn('  Imports         : ', PeImportCount);
+  WriteLn('  Fixups          : ', PeFixupCount);
+  WriteLn('  Fixups resolved : ', PeFixupResolvedCount);
+  WriteLn('  DOS headers     : ', PeDosHeaderCount);
+  WriteLn('  COFF headers    : ', PeCoffHeaderCount);
+  WriteLn('  Optional hdrs   : ', PeOptHeaderCount);
+  WriteLn('  Section hdrs    : ', PeSectHeaderCount);
+  WriteLn('  .text sections  : ', PeTextSectionCount);
+  WriteLn('  .rdata sections : ', PeRdataSectionCount);
+  WriteLn('  .data sections  : ', PeDataSectionCount);
+  WriteLn('  Import dirs     : ', PeImportDirCount);
+  WriteLn('  IAT entries     : ', PeIatCount);
+  WriteLn('  Files written   : ', PeFileWrittenCount);
+  WriteLn('  Total generated : ', PeTotalGenerated, ' bytes');
+  WriteLn('  State count     : ', PeStateCount);
+  For I := 0 To PeImportCount - 1 Do
+    WriteLn('  Import[', I, '] : ', PeImports[I].Name,
+            ' from ', PeImports[I].DllName,
+            ' hint=', PeImports[I].Hint);
+End;
+
+{ 10 fonctions accesseurs pour TODO 21                         }
+
+Function IsPeInitialized : Boolean;
+Begin
+  IsPeInitialized := PeInitialized;
+End;
+
+Function IsPeEmpty : Boolean;
+Begin
+  IsPeEmpty := (PeTotalGenerated = 0);
+End;
+
+Function GetPeTotalGenerated : Integer;
+Begin
+  GetPeTotalGenerated := PeTotalGenerated;
+End;
+
+Function GetPeStatus : TString;
+Begin
+  If Not PeInitialized Then
+    GetPeStatus := 'NON INITIALISE'
+  Else
+    GetPeStatus := 'SUBSYS=' + PeSubsystemName(PeSubsystem) +
+                   ' CODE=' + ItoSI(PeCodeSize) +
+                   ' DATA=' + ItoSI(PeDataSize) +
+                   ' IMPORTS=' + ItoSI(PeImportCount) +
+                   ' FIXUPS=' + ItoSI(PeFixupCount);
+End;
+
+Function GetPeCodeSize : LongInt;
+Begin
+  GetPeCodeSize := PeCodeSize;
+End;
+
+Function GetPeDataSize : LongInt;
+Begin
+  GetPeDataSize := PeDataSize;
+End;
+
+Function GetPeImportCount : Integer;
+Begin
+  GetPeImportCount := PeImportCount;
+End;
+
+Function GetPeFixupCount : Integer;
+Begin
+  GetPeFixupCount := PeFixupCount;
+End;
+
+Function GetPeFileWrittenCount : Integer;
+Begin
+  GetPeFileWrittenCount := PeFileWrittenCount;
+End;
+
+Function GetPeStateCount : Integer;
+Begin
+  GetPeStateCount := PeStateCount;
+End;
+
 Procedure LexScanIdent;
 Var
   S     : TString;
@@ -19453,6 +20505,7 @@ Begin
   TblInitialized := False;
   SrtInitialized := False;
   RtlInitialized := False;
+  PeInitialized  := False;
   ParseArgs;
 
   { Affichage de la banniere en mode verbeux }
@@ -19511,6 +20564,9 @@ Begin
 
   { Initialiser le module Runtime Library COBOL (chaines, BCD, E/S) }
   InitRuntimeState;
+
+  { Initialiser le module ecrivain binaire PE (generation .EXE Win32) }
+  InitPeWriterState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
