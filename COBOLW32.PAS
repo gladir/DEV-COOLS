@@ -1404,6 +1404,20 @@ Begin
   CurTokCol   := 0;
   LexTokCount := 0;
   LexNextLine;
+  { Format fixe : sauter les lignes de commentaire initiales et }
+  { positionner le curseur en zone A (colonne 8)                }
+  If Not Opts.FreeFormat Then Begin
+    While (Not LexEOF) And (Length(LexLine) >= COB_COL_IND) And
+          ((LexLine[COB_COL_IND] = '*') Or
+           (LexLine[COB_COL_IND] = '/')) Do
+      LexNextLine;
+    If Not LexEOF Then Begin
+      If Length(LexLine) >= COB_COL_AREA_A Then
+        LexColNo := COB_COL_AREA_A
+      Else
+        LexColNo := Length(LexLine) + 1;
+    End;
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -23590,6 +23604,20 @@ End;
 { Programme principal                                          }
 { ============================================================ }
 
+Procedure ShowParseResults;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('Tokens analyses  : ', GetLexTokCount);
+  If IsParIdDivSeen Then
+    WriteLn('IDENTIFICATION   : ', GetParProgramId);
+  If IsParEnvDivSeen Then
+    WriteLn('ENVIRONMENT      : oui');
+  If IsDdvInitialized And (GetDdvTotalItems > 0) Then
+    WriteLn('DATA DIVISION    : ', GetDdvTotalItems, ' items');
+  If IsPdvInitialized And (GetPdvParagraphCount > 0) Then
+    WriteLn('PROCEDURE DIV    : ', GetPdvParagraphCount, ' paragraphes');
+End;
+
 Procedure Run;
 Begin
   { Initialisation des compteurs }
@@ -23696,11 +23724,47 @@ Begin
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
+  { Lire le premier token }
+  LexNextToken;
+
+  { Boucle principale de compilation : parcourir les DIVISION }
+  While (Not LexEOF) And (CurTokType <> TOK_EOF) Do Begin
+    If (CurTokType = TOK_KEYWORD) Then Begin
+      Case CurTokNum Of
+        KW_IDENTIFICATION : Begin
+          LexNextToken;  { Avancer apres IDENTIFICATION }
+          ParseIdentificationDiv;
+        End;
+        KW_ENVIRONMENT : Begin
+          LexNextToken;  { Avancer apres ENVIRONMENT }
+          ParseEnvironmentDiv;
+        End;
+        KW_DATA : Begin
+          LexNextToken;  { Avancer apres DATA }
+          ParseDataDivision;
+        End;
+        KW_PROCEDURE : Begin
+          ParseProcedureDivision;
+        End;
+        Else Begin
+          { Mot-cle hors division : avancer }
+          LexNextToken;
+        End;
+      End;
+    End Else Begin
+      { Token non mot-cle hors d une division : avancer }
+      LexNextToken;
+    End;
+  End;
+
   { Fermer le fichier source }
   LexClose;
 
   { Statistiques finales }
   ShowStats;
+
+  { Resultats detailles du parsing }
+  ShowParseResults;
 
   { Nettoyage }
   Cleanup;
