@@ -1049,6 +1049,7 @@ Const
   HTML_SEARCH_FILE   = 'search.js';
   HTML_INDEX_FILE    = 'index.html';
   HTML_CLASSES_FILE  = 'classes.html';
+  HTML_FUNCTIONS_FILE = 'functions.html';
   HTML_FILES_FILE    = 'files.html';
   HTML_NAMESPACES_FILE = 'namespaces.html';
   HTML_HIERARCHY_FILE = 'hierarchy.html';
@@ -8801,6 +8802,7 @@ Begin
   HtmlHeader := HtmlHeader + '<div class="nav">';
   HtmlHeader := HtmlHeader + '<a href="index.html">Index</a>';
   HtmlHeader := HtmlHeader + '<a href="classes.html">Classes</a>';
+  HtmlHeader := HtmlHeader + '<a href="functions.html">Fonctions</a>';
   HtmlHeader := HtmlHeader + '<a href="files.html">Fichiers</a>';
   HtmlHeader := HtmlHeader + '</div><div class="content">';
   
@@ -8858,6 +8860,7 @@ Begin
   Write(F, '<div class="nav">');
   Write(F, '<a href="index.html">Index</a>');
   Write(F, '<a href="classes.html">Classes</a>');
+  Write(F, '<a href="functions.html">Fonctions</a>');
   WriteLn(F, '<a href="files.html">Fichiers</a>');
   Write(F, '</div><div class="content">');
 End;
@@ -8952,6 +8955,7 @@ Begin
   WriteLn(OutFile, '<h2>Navigation</h2>');
   WriteLn(OutFile, '<ul>');
   WriteLn(OutFile, '<li><a href="classes.html">Liste des classes</a></li>');
+  WriteLn(OutFile, '<li><a href="functions.html">Liste des fonctions</a></li>');
   WriteLn(OutFile, '<li><a href="files.html">Liste des fichiers</a></li>');
   WriteLn(OutFile, '<li><a href="namespaces.html">Liste des namespaces</a></li>');
   WriteLn(OutFile, '<li><a href="hierarchy.html">Hierarchie des classes</a></li>');
@@ -8994,6 +8998,44 @@ Begin
     WriteLn(OutFile, '</ul>')
   Else
     WriteLn(OutFile, '<p>Aucune classe documentee.</p>');
+  
+  WriteHtmlFooter(OutFile);
+End;
+
+Procedure GenerateHtmlFunctions(Var OutFile: Text);
+{ Genere la page de liste des fonctions (functions.html) }
+Var
+  I: Integer;
+  HasFunctions: Boolean;
+Begin
+  WriteHtmlHeader(OutFile, 'Fonctions');
+  
+  WriteLn(OutFile, '<h1>Liste des fonctions</h1>');
+  
+  HasFunctions := False;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_FUNCTION, ENT_METHOD, ENT_PROCEDURE] Then
+    Begin
+      If Not HasFunctions Then
+      Begin
+        WriteLn(OutFile, '<ul>');
+        HasFunctions := True;
+      End;
+      WriteLn(OutFile, '<li>');
+      WriteLn(OutFile, '<a href="', EscapeHtml(Entities[I].Name), '.html">',
+        EscapeHtml(Entities[I].Name), '</a>');
+      WriteLn(OutFile, ' [', EntityKindToStr(Entities[I].Kind), ']');
+      If Entities[I].BriefDesc <> '' Then
+        WriteLn(OutFile, ' - ', EscapeHtml(Entities[I].BriefDesc));
+      WriteLn(OutFile, '</li>');
+    End;
+  End;
+  
+  If HasFunctions Then
+    WriteLn(OutFile, '</ul>')
+  Else
+    WriteLn(OutFile, '<p>Aucune fonction documentee.</p>');
   
   WriteHtmlFooter(OutFile);
 End;
@@ -9310,6 +9352,20 @@ Begin
   Else
     WarnMsg('Impossible de creer classes.html');
   
+  { Generer la page des fonctions }
+  Assign(F, HtmlOutputDir + 'functions.html');
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateHtmlFunctions(F);
+    Close(F);
+    InfoMsg('Page fonctions generee: functions.html');
+  End
+  Else
+    WarnMsg('Impossible de creer functions.html');
+  
   { Generer la page des fichiers }
   Assign(F, HtmlOutputDir + 'files.html');
   {$I-}
@@ -9371,7 +9427,7 @@ Begin
   WriteLn;
   WriteLn('Generation HTML terminee.');
   WriteLn('  Repertoire: ', HtmlOutputDir);
-  WriteLn('  Fichiers generes: ', EntityCount + 5);
+  WriteLn('  Fichiers generes: ', EntityCount + 6);
 End;
 
 { Fonctions accesseurs pour le generateur HTML }
