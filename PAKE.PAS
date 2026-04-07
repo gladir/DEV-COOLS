@@ -92,7 +92,7 @@
             Procedure ShowVersion : afficher la version et quitter
             Afficher la banniere de version au demarrage si Verbose
 
-  TODO 02 - FONCTIONS UTILITAIRES [A FAIRE]
+  TODO 02 - FONCTIONS UTILITAIRES [IMPLEMENTE]
             Function IntToStr(N: LongInt): String
               convertit un entier en chaine decimale
             Function StrToInt(Const S: String): LongInt
@@ -863,7 +863,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 02 : FONCTIONS UTILITAIRES [A FAIRE]
+  TODO 02 : FONCTIONS UTILITAIRES [IMPLEMENTE]
   ============================================================ }
 
 Function IntToStr(N: LongInt): String;
@@ -927,6 +927,30 @@ Begin
     Trim := Copy(S, I, J - I + 1);
 End;
 
+Function TrimLeft(Const S: String): String;
+Var
+  I: Integer;
+Begin
+  I := 1;
+  While (I <= Length(S)) And (S[I] = ' ') Do Inc(I);
+  If I > Length(S) Then
+    TrimLeft := ''
+  Else
+    TrimLeft := Copy(S, I, Length(S) - I + 1);
+End;
+
+Function TrimRight(Const S: String): String;
+Var
+  J: Integer;
+Begin
+  J := Length(S);
+  While (J >= 1) And (S[J] = ' ') Do Dec(J);
+  If J < 1 Then
+    TrimRight := ''
+  Else
+    TrimRight := Copy(S, 1, J);
+End;
+
 Function FileExists(Const FName: String): Boolean;
 Var
   F: File;
@@ -971,6 +995,118 @@ Begin
   While (I > 0) And (Path[I] <> '\') And (Path[I] <> '/') Do
     Dec(I);
   ExtractFileName := Copy(Path, I + 1, Length(Path) - I);
+End;
+
+Function ExtractFileDir(Const Path: String): String;
+Var
+  I: Integer;
+Begin
+  I := Length(Path);
+  While (I > 0) And (Path[I] <> '\') And (Path[I] <> '/') Do
+    Dec(I);
+  If I > 0 Then
+    ExtractFileDir := Copy(Path, 1, I - 1)
+  Else
+    ExtractFileDir := '';
+End;
+
+Function CreateDir(Const DirName: String): Boolean;
+Begin
+  MkDir(DirName);
+  CreateDir := (IOResult = 0);
+End;
+
+Function ChangeFileExt(Const FName, NewExt: String): String;
+Var
+  I: Integer;
+  BaseName: String;
+Begin
+  I := Length(FName);
+  While (I > 0) And (FName[I] <> '.') And (FName[I] <> '\') And (FName[I] <> '/') Do
+    Dec(I);
+  If (I > 0) And (FName[I] = '.') Then
+    BaseName := Copy(FName, 1, I - 1)
+  Else
+    BaseName := FName;
+  ChangeFileExt := BaseName + NewExt;
+End;
+
+Function ConcatPath(Const Dir, Name: String): String;
+Var
+  Sep: Char;
+Begin
+  {$IFDEF WINDOWS}
+  Sep := '\';
+  {$ELSE}
+  Sep := '/';
+  {$ENDIF}
+  If Length(Dir) = 0 Then
+    ConcatPath := Name
+  Else If (Dir[Length(Dir)] = '\') Or (Dir[Length(Dir)] = '/') Then
+    ConcatPath := Dir + Name
+  Else
+    ConcatPath := Dir + Sep + Name;
+End;
+
+Function QuoteStr(Const S: String): String;
+Begin
+  QuoteStr := '"' + S + '"';
+End;
+
+Function EscapeJson(Const S: String): String;
+Var
+  R: String;
+  I: Integer;
+  C: Char;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    C := S[I];
+    Case C Of
+      '"':  R := R + '\"';
+      '\':  R := R + '\\';
+      '/':  R := R + '\/';
+      #8:   R := R + '\b';
+      #9:   R := R + '\t';
+      #10:  R := R + '\n';
+      #12:  R := R + '\f';
+      #13:  R := R + '\r';
+    Else
+      If Ord(C) < 32 Then
+        R := R + '\u00' + Chr(Ord('0') + (Ord(C) Div 16)) + Chr(Ord('0') + (Ord(C) Mod 16))
+      Else
+        R := R + C;
+    End;
+  End;
+  EscapeJson := R;
+End;
+
+Function EscapeShell(Const S: String): String;
+Var
+  R: String;
+  I: Integer;
+  C: Char;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    C := S[I];
+    {$IFDEF WINDOWS}
+    { Sous Windows, echapper les caracteres speciaux pour cmd.exe }
+    If C In ['"', '%', '!', '^', '&', '<', '>', '|'] Then
+      R := R + '^' + C
+    Else
+      R := R + C;
+    {$ELSE}
+    { Sous Unix, echapper les caracteres speciaux pour sh/bash }
+    If C In ['''', '"', '\', '$', '`', '!', '*', '?', '[', ']', '(', ')', '{', '}', '|', '&', ';', '<', '>', ' ', #9, #10] Then
+      R := R + '\' + C
+    Else
+      R := R + C;
+    {$ENDIF}
+  End;
+  EscapeShell := R;
 End;
 
 { ============================================================
@@ -1195,7 +1331,7 @@ Begin
   WriteLn;
 
   { TODO: Implementer les TODOs 05-25 }
-  WriteLn('*** NOTE: TODO 01 [IMPLEMENTE], TODOs 02-04 partiellement implementes ***');
+  WriteLn('*** NOTE: TODOs 01-02 [IMPLEMENTE], TODOs 03-04 partiellement implementes ***');
   WriteLn('*** Les TODOs 05-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
