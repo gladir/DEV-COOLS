@@ -539,7 +539,7 @@
             Appel dynamique avec LoadLibraryA/GetProcAddress
             10 fonctions accesseurs
 
-  TODO 18 - PARSEUR : TABLES ET INDEXATION (OCCURS, SEARCH) [A FAIRE]
+  TODO 18 - PARSEUR : TABLES ET INDEXATION (OCCURS, SEARCH) [IMPLEMENTE]
             Clause OCCURS :
               OCCURS n TIMES
               OCCURS n TO m TIMES DEPENDING ON id
@@ -1776,8 +1776,14 @@ Const
   KW_CANCEL            = 240;  { CANCEL }
   KW_EXCEPTION         = 241;  { EXCEPTION }
 
+  { Mots-cles pour TODO 18 : TABLES ET INDEXATION }
+  KW_ASCENDING         = 242;  { ASCENDING }
+  KW_DESCENDING        = 243;  { DESCENDING }
+  KW_UP                = 244;  { UP }
+  KW_DOWN              = 245;  { DOWN }
+
   { Nombre total de mots-cles definis }
-  KW_TOTAL_KEYWORDS    = 172;  { nombre approximatif de mots-cles }
+  KW_TOTAL_KEYWORDS    = 176;  { nombre approximatif de mots-cles }
 
 Var
   { Variables du module de mots-cles }
@@ -2028,6 +2034,10 @@ Begin
   Else If S = 'USE'               Then LookupKeyword := KW_USE
   Else If S = 'CANCEL'            Then LookupKeyword := KW_CANCEL
   Else If S = 'EXCEPTION'         Then LookupKeyword := KW_EXCEPTION
+  Else If S = 'ASCENDING'         Then LookupKeyword := KW_ASCENDING
+  Else If S = 'DESCENDING'        Then LookupKeyword := KW_DESCENDING
+  Else If S = 'UP'                Then LookupKeyword := KW_UP
+  Else If S = 'DOWN'              Then LookupKeyword := KW_DOWN
   Else LookupKeyword := KW_NONE;
 End;
 
@@ -2249,6 +2259,10 @@ Begin
     KW_USE               : KeywordName := 'USE';
     KW_CANCEL            : KeywordName := 'CANCEL';
     KW_EXCEPTION         : KeywordName := 'EXCEPTION';
+    KW_ASCENDING         : KeywordName := 'ASCENDING';
+    KW_DESCENDING        : KeywordName := 'DESCENDING';
+    KW_UP                : KeywordName := 'UP';
+    KW_DOWN              : KeywordName := 'DOWN';
   Else
     KeywordName := '?KW' + ItoSI(KW);
   End;
@@ -14918,7 +14932,968 @@ Begin
   GetCalStateCount := CalStateCount;
 End;
 
-{ Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
+{ ============================================================ }
+{ TODO 18 - PARSEUR : TABLES ET INDEXATION (OCCURS, SEARCH)    }
+{           SEARCH, SEARCH ALL, SET index, calcul d offset     }
+{ ============================================================ }
+
+Const
+  { Types de reference d indice }
+  IDX_NONE             = 0;   { pas d indice                               }
+  IDX_NUMERIC          = 1;   { indice numerique litteral : TABLE(3)       }
+  IDX_VARIABLE         = 2;   { indice variable : TABLE(WS-IDX)           }
+  IDX_INDEX            = 3;   { index COBOL : TABLE(IDX-1) offset direct   }
+
+  { Types de recherche }
+  SRC_NONE             = 0;   { pas de recherche                           }
+  SRC_LINEAR           = 1;   { SEARCH (recherche lineaire)                }
+  SRC_BINARY           = 2;   { SEARCH ALL (recherche binaire)             }
+
+  { Types de tri de cle OCCURS }
+  KEY_NONE             = 0;   { pas de cle                                  }
+  KEY_ASCENDING        = 1;   { ASCENDING KEY                               }
+  KEY_DESCENDING       = 2;   { DESCENDING KEY                              }
+
+  { Types d operation SET pour index/indice }
+  SET_IDX_NONE         = 0;   { pas d operation SET index                   }
+  SET_IDX_TO           = 1;   { SET idx TO valeur                           }
+  SET_IDX_UP           = 2;   { SET idx UP BY n                             }
+  SET_IDX_DOWN         = 3;   { SET idx DOWN BY n                           }
+
+  { Limites }
+  TBL_MAX_DIMENSIONS   = 3;   { nombre max de dimensions (indices)          }
+  TBL_MAX_KEYS         = 8;   { nombre max de cles KEY IS par table         }
+  TBL_MAX_INDEXES      = 8;   { nombre max d index INDEXED BY par table     }
+  TBL_MAX_TABLES       = 128; { nombre max de tables OCCURS gerees          }
+  TBL_MAX_WHEN         = 32;  { nombre max de clauses WHEN par SEARCH       }
+  TBL_MAX_SEARCH_DEPTH = 16;  { profondeur max d imbrication SEARCH         }
+
+Type
+  TTableKey = Record
+    Name       : TString;     { nom de la cle                               }
+    KeyOrder   : Integer;     { KEY_ASCENDING ou KEY_DESCENDING              }
+  End;
+
+  TTableEntry = Record
+    Name        : TString;    { nom de la table (item OCCURS)               }
+    AsmBase     : TString;    { label ASM de la base de la table            }
+    OccursMin   : Integer;    { minimum (OCCURS n TO m)                     }
+    OccursMax   : Integer;    { maximum (OCCURS n ou n TO m)                }
+    DependingOn : TString;    { nom de la variable DEPENDING ON (ou '')     }
+    ElementSize : Integer;    { taille d un element en octets               }
+    Dimensions  : Integer;    { nombre de dimensions (1, 2 ou 3)            }
+    Keys        : Array[0..TBL_MAX_KEYS-1] Of TTableKey;
+    KeyCount    : Integer;    { nombre de cles KEY IS                       }
+    Indexes     : Array[0..TBL_MAX_INDEXES-1] Of TString;
+    IndexCount  : Integer;    { nombre d index INDEXED BY                   }
+    IsVariable  : Boolean;    { True si OCCURS n TO m DEPENDING ON          }
+  End;
+
+Var
+  TblInitialized       : Boolean;   { True si InitTableIndexState appele  }
+  TblStateCount        : Integer;   { compteur d etat general             }
+  TblLabelNum          : Integer;   { compteur de labels internes         }
+  TblTables            : Array[0..TBL_MAX_TABLES-1] Of TTableEntry;
+  TblTableCount        : Integer;   { nombre de tables enregistrees       }
+  TblSearchCount       : Integer;   { nombre de SEARCH                    }
+  TblSearchAllCount    : Integer;   { nombre de SEARCH ALL                }
+  TblSearchDepth       : Integer;   { profondeur courante de SEARCH       }
+  TblMaxSearchDepth    : Integer;   { profondeur maximale atteinte        }
+  TblSetIdxToCount     : Integer;   { nombre de SET idx TO                }
+  TblSetIdxUpCount     : Integer;   { nombre de SET idx UP BY             }
+  TblSetIdxDownCount   : Integer;   { nombre de SET idx DOWN BY           }
+  TblNumericIdxCount   : Integer;   { nombre d indices numeriques         }
+  TblVariableIdxCount  : Integer;   { nombre d indices variables          }
+  TblIndexIdxCount     : Integer;   { nombre d index COBOL                }
+  TblMultiDimCount     : Integer;   { nombre d acces multi-dimensions     }
+  TblWhenCount         : Integer;   { nombre de clauses WHEN              }
+  TblAtEndCount        : Integer;   { nombre de clauses AT END            }
+  TblEndSearchCount    : Integer;   { nombre de END-SEARCH                }
+  TblKeyAscCount       : Integer;   { nombre de cles ASCENDING            }
+  TblKeyDescCount      : Integer;   { nombre de cles DESCENDING           }
+  TblTotalGenerated    : Integer;   { total d instructions generees       }
+
+{ ------------------------------------------------------------ }
+{ InitTableIndexState : initialiser l etat du module tables     }
+{ ------------------------------------------------------------ }
+
+Procedure InitTableIndexState;
+Var I, J : Integer;
+Begin
+  TblInitialized       := True;
+  TblStateCount        := 0;
+  TblLabelNum          := 0;
+  TblTableCount        := 0;
+  TblSearchCount       := 0;
+  TblSearchAllCount    := 0;
+  TblSearchDepth       := 0;
+  TblMaxSearchDepth    := 0;
+  TblSetIdxToCount     := 0;
+  TblSetIdxUpCount     := 0;
+  TblSetIdxDownCount   := 0;
+  TblNumericIdxCount   := 0;
+  TblVariableIdxCount  := 0;
+  TblIndexIdxCount     := 0;
+  TblMultiDimCount     := 0;
+  TblWhenCount         := 0;
+  TblAtEndCount        := 0;
+  TblEndSearchCount    := 0;
+  TblKeyAscCount       := 0;
+  TblKeyDescCount      := 0;
+  TblTotalGenerated    := 0;
+  For I := 0 To TBL_MAX_TABLES - 1 Do Begin
+    TblTables[I].Name        := '';
+    TblTables[I].AsmBase     := '';
+    TblTables[I].OccursMin   := 0;
+    TblTables[I].OccursMax   := 0;
+    TblTables[I].DependingOn := '';
+    TblTables[I].ElementSize := 0;
+    TblTables[I].Dimensions  := 0;
+    TblTables[I].KeyCount    := 0;
+    TblTables[I].IndexCount  := 0;
+    TblTables[I].IsVariable  := False;
+    For J := 0 To TBL_MAX_KEYS - 1 Do Begin
+      TblTables[I].Keys[J].Name     := '';
+      TblTables[I].Keys[J].KeyOrder := KEY_NONE;
+    End;
+    For J := 0 To TBL_MAX_INDEXES - 1 Do
+      TblTables[I].Indexes[J] := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenTblLabel : genere un label unique pour le module tables     }
+{ ------------------------------------------------------------ }
+
+Function GenTblLabel : TString;
+Begin
+  Inc(TblLabelNum);
+  GenTblLabel := '_COBTBL_L' + ItoSI(TblLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ IdxTypeName : nom du type d indice                            }
+{ ------------------------------------------------------------ }
+
+Function IdxTypeName(IT : Integer) : TString;
+Begin
+  Case IT Of
+    IDX_NONE     : IdxTypeName := 'NONE';
+    IDX_NUMERIC  : IdxTypeName := 'NUMERIC';
+    IDX_VARIABLE : IdxTypeName := 'VARIABLE';
+    IDX_INDEX    : IdxTypeName := 'INDEX';
+  Else
+    IdxTypeName := 'UNKNOWN(' + ItoSI(IT) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SearchTypeName : nom du type de recherche                     }
+{ ------------------------------------------------------------ }
+
+Function SearchTypeName(ST : Integer) : TString;
+Begin
+  Case ST Of
+    SRC_NONE   : SearchTypeName := 'NONE';
+    SRC_LINEAR : SearchTypeName := 'SEARCH (lineaire)';
+    SRC_BINARY : SearchTypeName := 'SEARCH ALL (binaire)';
+  Else
+    SearchTypeName := 'UNKNOWN(' + ItoSI(ST) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ KeyOrderName : nom de l ordre de cle                          }
+{ ------------------------------------------------------------ }
+
+Function KeyOrderName(KO : Integer) : TString;
+Begin
+  Case KO Of
+    KEY_NONE       : KeyOrderName := 'NONE';
+    KEY_ASCENDING  : KeyOrderName := 'ASCENDING';
+    KEY_DESCENDING : KeyOrderName := 'DESCENDING';
+  Else
+    KeyOrderName := 'UNKNOWN(' + ItoSI(KO) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SetIdxTypeName : nom du type d operation SET index             }
+{ ------------------------------------------------------------ }
+
+Function SetIdxTypeName(SIT : Integer) : TString;
+Begin
+  Case SIT Of
+    SET_IDX_NONE : SetIdxTypeName := 'NONE';
+    SET_IDX_TO   : SetIdxTypeName := 'SET TO';
+    SET_IDX_UP   : SetIdxTypeName := 'SET UP BY';
+    SET_IDX_DOWN : SetIdxTypeName := 'SET DOWN BY';
+  Else
+    SetIdxTypeName := 'UNKNOWN(' + ItoSI(SIT) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindTable : cherche une table par nom                         }
+{ Retourne l index ou -1 si non trouve                          }
+{ ------------------------------------------------------------ }
+
+Function FindTable(Const TName : TString) : Integer;
+Var I : Integer;
+Begin
+  FindTable := -1;
+  For I := 0 To TblTableCount - 1 Do
+    If TblTables[I].Name = TName Then Begin
+      FindTable := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddTable : ajouter une table a la liste                       }
+{ Retourne l index ou -1 si table pleine                        }
+{ ------------------------------------------------------------ }
+
+Function AddTable(Const TName : TString; OMin, OMax : Integer;
+                  ElemSize : Integer; Const DepOn : TString) : Integer;
+Var Idx : Integer;
+Begin
+  { Verifier si deja enregistree }
+  Idx := FindTable(TName);
+  If Idx >= 0 Then Begin
+    AddTable := Idx;
+    Exit;
+  End;
+  { Ajouter une nouvelle entree }
+  If TblTableCount >= TBL_MAX_TABLES Then Begin
+    WarnMsg('Table des OCCURS pleine, max=' + ItoSI(TBL_MAX_TABLES));
+    AddTable := -1;
+    Exit;
+  End;
+  TblTables[TblTableCount].Name        := TName;
+  TblTables[TblTableCount].AsmBase     := '_COBT_' + AsmIdent(TName);
+  TblTables[TblTableCount].OccursMin   := OMin;
+  TblTables[TblTableCount].OccursMax   := OMax;
+  TblTables[TblTableCount].DependingOn := DepOn;
+  TblTables[TblTableCount].ElementSize := ElemSize;
+  TblTables[TblTableCount].Dimensions  := 1;
+  TblTables[TblTableCount].KeyCount    := 0;
+  TblTables[TblTableCount].IndexCount  := 0;
+  TblTables[TblTableCount].IsVariable  := (DepOn <> '');
+  AddTable := TblTableCount;
+  Inc(TblTableCount);
+  Inc(TblStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddTableKey : ajouter une cle KEY IS a une table              }
+{ ------------------------------------------------------------ }
+
+Procedure AddTableKey(TblIdx : Integer; Const KName : TString;
+                      KOrder : Integer);
+Begin
+  If (TblIdx < 0) Or (TblIdx >= TblTableCount) Then Exit;
+  If TblTables[TblIdx].KeyCount >= TBL_MAX_KEYS Then Begin
+    WarnMsg('Trop de cles KEY IS, max=' + ItoSI(TBL_MAX_KEYS));
+    Exit;
+  End;
+  TblTables[TblIdx].Keys[TblTables[TblIdx].KeyCount].Name := KName;
+  TblTables[TblIdx].Keys[TblTables[TblIdx].KeyCount].KeyOrder := KOrder;
+  Inc(TblTables[TblIdx].KeyCount);
+  If KOrder = KEY_ASCENDING Then Inc(TblKeyAscCount)
+  Else If KOrder = KEY_DESCENDING Then Inc(TblKeyDescCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddTableIndex : ajouter un index INDEXED BY a une table       }
+{ ------------------------------------------------------------ }
+
+Procedure AddTableIndex(TblIdx : Integer; Const IName : TString);
+Begin
+  If (TblIdx < 0) Or (TblIdx >= TblTableCount) Then Exit;
+  If TblTables[TblIdx].IndexCount >= TBL_MAX_INDEXES Then Begin
+    WarnMsg('Trop d index INDEXED BY, max=' + ItoSI(TBL_MAX_INDEXES));
+    Exit;
+  End;
+  TblTables[TblIdx].Indexes[TblTables[TblIdx].IndexCount] := IName;
+  Inc(TblTables[TblIdx].IndexCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenIndexOffset : genere le calcul d offset pour un indice     }
+{ base + (indice - 1) * taille-element                         }
+{ Resultat dans EAX = adresse de l element                      }
+{ ------------------------------------------------------------ }
+
+Procedure GenIndexOffset(Const TableName : TString;
+                         Const IndexExpr : TString;
+                         IdxType : Integer; ElemSize : Integer);
+Begin
+  WriteLn('  ; Calcul offset dans ', TableName, ' indice=', IndexExpr,
+          ' type=', IdxTypeName(IdxType), ' taille=', ElemSize);
+  Case IdxType Of
+    IDX_NUMERIC : Begin
+      { Indice litteral : offset = (N-1) * taille }
+      WriteLn('  LEA EAX, [', AsmIdent(TableName), ']');
+      WriteLn('  ADD EAX, ', IndexExpr, '  ; offset pre-calcule');
+      Inc(TblTotalGenerated, 2);
+      Inc(TblNumericIdxCount);
+    End;
+    IDX_VARIABLE : Begin
+      { Variable indice : charger la variable, calculer (val-1)*taille }
+      WriteLn('  MOV EBX, DWORD [', AsmIdent(IndexExpr), ']');
+      WriteLn('  DEC EBX  ; indice COBOL base 1 -> base 0');
+      WriteLn('  IMUL EBX, ', ElemSize);
+      WriteLn('  LEA EAX, [', AsmIdent(TableName), ']');
+      WriteLn('  ADD EAX, EBX');
+      Inc(TblTotalGenerated, 5);
+      Inc(TblVariableIdxCount);
+    End;
+    IDX_INDEX : Begin
+      { Index COBOL : contient deja l offset en octets }
+      WriteLn('  MOV EBX, DWORD [', AsmIdent(IndexExpr), ']');
+      WriteLn('  LEA EAX, [', AsmIdent(TableName), ']');
+      WriteLn('  ADD EAX, EBX');
+      Inc(TblTotalGenerated, 3);
+      Inc(TblIndexIdxCount);
+    End;
+  End;
+  Inc(TblStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMultiDimOffset : genere le calcul d offset multi-dimension }
+{ TABLE(I, J) -> base + ((I-1)*dim2 + (J-1)) * taille          }
+{ Resultat dans EAX                                             }
+{ ------------------------------------------------------------ }
+
+Procedure GenMultiDimOffset(Const TableName : TString;
+                            Const Idx1, Idx2 : TString;
+                            Dim2Size, ElemSize : Integer);
+Begin
+  WriteLn('  ; Offset 2D dans ', TableName, '(', Idx1, ', ', Idx2, ')');
+  WriteLn('  MOV EAX, DWORD [', AsmIdent(Idx1), ']');
+  WriteLn('  DEC EAX  ; base 1 -> base 0');
+  WriteLn('  IMUL EAX, ', Dim2Size);
+  WriteLn('  MOV EBX, DWORD [', AsmIdent(Idx2), ']');
+  WriteLn('  DEC EBX');
+  WriteLn('  ADD EAX, EBX');
+  WriteLn('  IMUL EAX, ', ElemSize);
+  WriteLn('  LEA EBX, [', AsmIdent(TableName), ']');
+  WriteLn('  ADD EAX, EBX');
+  Inc(TblTotalGenerated, 10);
+  Inc(TblMultiDimCount);
+  Inc(TblStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSetIndexTo : genere SET idx TO valeur                       }
+{ Convertit la valeur en offset : (valeur-1) * taille           }
+{ ------------------------------------------------------------ }
+
+Procedure GenSetIndexTo(Const IdxName : TString;
+                        Const ValueExpr : TString;
+                        ElemSize : Integer);
+Begin
+  WriteLn('  ; SET ', IdxName, ' TO ', ValueExpr);
+  WriteLn('  MOV EAX, DWORD [', AsmIdent(ValueExpr), ']');
+  WriteLn('  DEC EAX  ; base 1 -> base 0');
+  WriteLn('  IMUL EAX, ', ElemSize);
+  WriteLn('  MOV DWORD [', AsmIdent(IdxName), '], EAX');
+  Inc(TblTotalGenerated, 4);
+  Inc(TblSetIdxToCount);
+  Inc(TblStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSetIndexUp : genere SET idx UP BY n                         }
+{ Ajoute n * taille a l index                                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenSetIndexUp(Const IdxName : TString;
+                        Const NExpr : TString;
+                        ElemSize : Integer);
+Begin
+  WriteLn('  ; SET ', IdxName, ' UP BY ', NExpr);
+  WriteLn('  MOV EAX, DWORD [', AsmIdent(NExpr), ']');
+  WriteLn('  IMUL EAX, ', ElemSize);
+  WriteLn('  ADD DWORD [', AsmIdent(IdxName), '], EAX');
+  Inc(TblTotalGenerated, 3);
+  Inc(TblSetIdxUpCount);
+  Inc(TblStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSetIndexDown : genere SET idx DOWN BY n                     }
+{ Soustrait n * taille de l index                               }
+{ ------------------------------------------------------------ }
+
+Procedure GenSetIndexDown(Const IdxName : TString;
+                          Const NExpr : TString;
+                          ElemSize : Integer);
+Begin
+  WriteLn('  ; SET ', IdxName, ' DOWN BY ', NExpr);
+  WriteLn('  MOV EAX, DWORD [', AsmIdent(NExpr), ']');
+  WriteLn('  IMUL EAX, ', ElemSize);
+  WriteLn('  SUB DWORD [', AsmIdent(IdxName), '], EAX');
+  Inc(TblTotalGenerated, 3);
+  Inc(TblSetIdxDownCount);
+  Inc(TblStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSearchLinear : genere une boucle SEARCH (lineaire)          }
+{ Incremente l index et teste la condition WHEN                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenSearchLinear(Const TableName, IdxName : TString;
+                          MaxOccurs, ElemSize : Integer);
+Var LblLoop, LblEnd, LblAtEnd : TString;
+Begin
+  LblLoop  := GenTblLabel;
+  LblEnd   := GenTblLabel;
+  LblAtEnd := GenTblLabel;
+  WriteLn('  ; SEARCH ', TableName, ' lineaire via ', IdxName);
+  WriteLn('  ; Initialisation : index deja positionne');
+  WriteLn(LblLoop, ':');
+  { Verifier si index depasse la limite }
+  WriteLn('  MOV EAX, DWORD [', AsmIdent(IdxName), ']');
+  WriteLn('  CMP EAX, ', MaxOccurs * ElemSize);
+  WriteLn('  JGE ', LblAtEnd, '  ; depasse -> AT END');
+  { Ici le code de condition WHEN sera genere par le parseur }
+  WriteLn('  ; (placeholder : WHEN condition -> JE ', LblEnd, ')');
+  { Incrementer l index }
+  WriteLn('  ADD DWORD [', AsmIdent(IdxName), '], ', ElemSize);
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblAtEnd, ':');
+  WriteLn('  ; AT END (element non trouve)');
+  WriteLn(LblEnd, ':');
+  Inc(TblTotalGenerated, 10);
+  Inc(TblSearchCount);
+  Inc(TblStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSearchBinary : genere une boucle SEARCH ALL (binaire)       }
+{ Recherche dichotomique sur une table triee                    }
+{ ------------------------------------------------------------ }
+
+Procedure GenSearchBinary(Const TableName, KeyName : TString;
+                          MaxOccurs, ElemSize, KeyOffset : Integer);
+Var LblLoop, LblEnd, LblAtEnd, LblLower, LblUpper : TString;
+Begin
+  LblLoop  := GenTblLabel;
+  LblEnd   := GenTblLabel;
+  LblAtEnd := GenTblLabel;
+  LblLower := GenTblLabel;
+  LblUpper := GenTblLabel;
+  WriteLn('  ; SEARCH ALL ', TableName, ' binaire sur cle ', KeyName);
+  { Initialiser bornes : low=0, high=max-1 }
+  WriteLn('  MOV DWORD [_COBTBL_LOW], 0');
+  WriteLn('  MOV DWORD [_COBTBL_HIGH], ', MaxOccurs - 1);
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV EAX, DWORD [_COBTBL_LOW]');
+  WriteLn('  CMP EAX, DWORD [_COBTBL_HIGH]');
+  WriteLn('  JG ', LblAtEnd, '  ; low > high -> non trouve');
+  { Calculer mid = (low + high) / 2 }
+  WriteLn('  ADD EAX, DWORD [_COBTBL_HIGH]');
+  WriteLn('  SHR EAX, 1  ; mid = (low+high)/2');
+  WriteLn('  MOV DWORD [_COBTBL_MID], EAX');
+  { Calculer adresse element mid : base + mid * taille }
+  WriteLn('  IMUL EAX, ', ElemSize);
+  WriteLn('  LEA EBX, [', AsmIdent(TableName), ']');
+  WriteLn('  ADD EBX, EAX  ; EBX = adresse element mid');
+  { Comparer la cle (placeholder) }
+  WriteLn('  ; (placeholder : comparer cle a EBX+', KeyOffset, ')');
+  WriteLn('  ; JE ', LblEnd, ' (trouve)');
+  WriteLn('  ; JL ', LblLower, ' (chercher dans moitie basse)');
+  WriteLn('  ; JG ', LblUpper, ' (chercher dans moitie haute)');
+  WriteLn(LblLower, ':');
+  WriteLn('  MOV EAX, DWORD [_COBTBL_MID]');
+  WriteLn('  DEC EAX');
+  WriteLn('  MOV DWORD [_COBTBL_HIGH], EAX');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblUpper, ':');
+  WriteLn('  MOV EAX, DWORD [_COBTBL_MID]');
+  WriteLn('  INC EAX');
+  WriteLn('  MOV DWORD [_COBTBL_LOW], EAX');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblAtEnd, ':');
+  WriteLn('  ; AT END (element non trouve)');
+  WriteLn(LblEnd, ':');
+  Inc(TblTotalGenerated, 24);
+  Inc(TblSearchAllCount);
+  Inc(TblStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOccursKeys : parser les clauses KEY IS de OCCURS         }
+{   [ASCENDING|DESCENDING] KEY [IS] nom-cle [nom-cle ...]     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseOccursKeys(TblIdx : Integer);
+Var KOrder : Integer;
+Begin
+  While (CurTokType = TOK_KEYWORD) And
+        ((CurTokNum = KW_ASCENDING) Or (CurTokNum = KW_DESCENDING)) Do Begin
+    If CurTokNum = KW_ASCENDING Then
+      KOrder := KEY_ASCENDING
+    Else
+      KOrder := KEY_DESCENDING;
+    LexNextToken;
+
+    { Consommer KEY optionnel }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_KEY) Then
+      LexNextToken;
+
+    { Consommer IS optionnel }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+      LexNextToken;
+
+    { Lire les noms de cles }
+    While (CurTokType = TOK_IDENT) Do Begin
+      AddTableKey(TblIdx, CurTokStr, KOrder);
+      LexNextToken;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOccursIndexed : parser la clause INDEXED BY de OCCURS    }
+{   INDEXED [BY] idx-1 [idx-2 ...]                             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseOccursIndexed(TblIdx : Integer);
+Begin
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INDEXED) Then Begin
+    LexNextToken;
+
+    { Consommer BY optionnel }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then
+      LexNextToken;
+
+    { Lire les noms d index }
+    While (CurTokType = TOK_IDENT) Do Begin
+      AddTableIndex(TblIdx, CurTokStr);
+      LexNextToken;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOccursTableClause : parser la clause OCCURS complete     }
+{   OCCURS n TIMES                                              }
+{   OCCURS n TO m TIMES DEPENDING ON ident                     }
+{   Avec optionnel KEY IS et INDEXED BY                         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseOccursTableClause(Const ItemName : TString;
+                                 ElemSize : Integer);
+Var
+  OMin, OMax : Integer;
+  DepOn      : TString;
+  TblIdx     : Integer;
+Begin
+  { OCCURS deja consomme }
+  OMin  := 0;
+  OMax  := 0;
+  DepOn := '';
+
+  { Lire le premier nombre }
+  If CurTokType = TOK_INTEGER Then Begin
+    OMax := CurTokNum;
+    LexNextToken;
+  End Else Begin
+    WarnMsg('Nombre attendu apres OCCURS');
+    Exit;
+  End;
+
+  { Verifier si c est OCCURS n TO m }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then Begin
+    LexNextToken;
+    OMin := OMax;
+    If CurTokType = TOK_INTEGER Then Begin
+      OMax := CurTokNum;
+      LexNextToken;
+    End Else Begin
+      WarnMsg('Nombre max attendu apres TO');
+      Exit;
+    End;
+  End;
+
+  { Consommer TIMES optionnel }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TIMES) Then
+    LexNextToken;
+
+  { DEPENDING ON ident }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DEPENDING) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then
+      LexNextToken;
+    If CurTokType = TOK_IDENT Then Begin
+      DepOn := CurTokStr;
+      LexNextToken;
+    End Else
+      WarnMsg('Identifiant attendu apres DEPENDING ON');
+  End;
+
+  { Enregistrer la table }
+  TblIdx := AddTable(ItemName, OMin, OMax, ElemSize, DepOn);
+
+  { Parser les clauses KEY IS }
+  ParseOccursKeys(TblIdx);
+
+  { Parser la clause INDEXED BY }
+  ParseOccursIndexed(TblIdx);
+
+  Inc(TblStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSetIndexStatement : parser SET pour index/indice          }
+{   SET idx TO valeur                                           }
+{   SET idx UP BY n                                             }
+{   SET idx DOWN BY n                                           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSetIndexStatement;
+Var
+  IdxName : TString;
+Begin
+  { SET deja consomme, token courant = nom de l index }
+  If CurTokType <> TOK_IDENT Then Begin
+    WarnMsg('Identifiant d index attendu apres SET');
+    Exit;
+  End;
+  IdxName := CurTokStr;
+  LexNextToken;
+
+  { SET idx TO valeur }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then Begin
+    LexNextToken;
+    If CurTokType = TOK_IDENT Then Begin
+      GenSetIndexTo(IdxName, CurTokStr, 4);
+      LexNextToken;
+    End Else If CurTokType = TOK_INTEGER Then Begin
+      WriteLn('  ; SET ', IdxName, ' TO ', CurTokNum);
+      WriteLn('  MOV EAX, ', CurTokNum);
+      WriteLn('  DEC EAX');
+      WriteLn('  IMUL EAX, 4  ; taille par defaut');
+      WriteLn('  MOV DWORD [', AsmIdent(IdxName), '], EAX');
+      Inc(TblTotalGenerated, 4);
+      Inc(TblSetIdxToCount);
+      Inc(TblStateCount);
+      LexNextToken;
+    End;
+  End
+  { SET idx UP BY n }
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_UP) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then
+      LexNextToken;
+    If CurTokType = TOK_IDENT Then Begin
+      GenSetIndexUp(IdxName, CurTokStr, 4);
+      LexNextToken;
+    End Else If CurTokType = TOK_INTEGER Then Begin
+      WriteLn('  ; SET ', IdxName, ' UP BY ', CurTokNum);
+      WriteLn('  ADD DWORD [', AsmIdent(IdxName), '], ',
+              CurTokNum * 4);
+      Inc(TblTotalGenerated);
+      Inc(TblSetIdxUpCount);
+      Inc(TblStateCount);
+      LexNextToken;
+    End;
+  End
+  { SET idx DOWN BY n }
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DOWN) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then
+      LexNextToken;
+    If CurTokType = TOK_IDENT Then Begin
+      GenSetIndexDown(IdxName, CurTokStr, 4);
+      LexNextToken;
+    End Else If CurTokType = TOK_INTEGER Then Begin
+      WriteLn('  ; SET ', IdxName, ' DOWN BY ', CurTokNum);
+      WriteLn('  SUB DWORD [', AsmIdent(IdxName), '], ',
+              CurTokNum * 4);
+      Inc(TblTotalGenerated);
+      Inc(TblSetIdxDownCount);
+      Inc(TblStateCount);
+      LexNextToken;
+    End;
+  End;
+
+  { Consommer le point terminal }
+  If (CurTokType = TOK_DOT) Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSearchStatement : parser l instruction SEARCH             }
+{   SEARCH nom-table                                            }
+{     [AT END instructions]                                     }
+{     WHEN condition instructions                               }
+{   END-SEARCH                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSearchStatement;
+Var
+  TableName : TString;
+  TblIdx    : Integer;
+  IdxName   : TString;
+  MaxOccurs : Integer;
+  ElemSize  : Integer;
+  LblEnd    : TString;
+Begin
+  { SEARCH deja consomme }
+  LblEnd := GenTblLabel;
+
+  Inc(TblSearchDepth);
+  If TblSearchDepth > TblMaxSearchDepth Then
+    TblMaxSearchDepth := TblSearchDepth;
+
+  { Verifier SEARCH ALL }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ALL) Then Begin
+    LexNextToken;
+    { SEARCH ALL }
+    If CurTokType = TOK_IDENT Then Begin
+      TableName := CurTokStr;
+      LexNextToken;
+      TblIdx := FindTable(TableName);
+      If TblIdx >= 0 Then Begin
+        If TblTables[TblIdx].KeyCount > 0 Then
+          GenSearchBinary(TableName,
+                          TblTables[TblIdx].Keys[0].Name,
+                          TblTables[TblIdx].OccursMax,
+                          TblTables[TblIdx].ElementSize,
+                          0)
+        Else Begin
+          WarnMsg('SEARCH ALL requiert une cle KEY IS pour ' + TableName);
+          GenSearchBinary(TableName, '', 10, 4, 0);
+        End;
+      End Else Begin
+        WarnMsg('Table ' + TableName + ' non trouvee pour SEARCH ALL');
+        GenSearchBinary(TableName, '', 10, 4, 0);
+      End;
+    End Else
+      WarnMsg('Nom de table attendu apres SEARCH ALL');
+  End
+  Else Begin
+    { SEARCH (lineaire) }
+    If CurTokType = TOK_IDENT Then Begin
+      TableName := CurTokStr;
+      LexNextToken;
+      TblIdx := FindTable(TableName);
+      If TblIdx >= 0 Then Begin
+        MaxOccurs := TblTables[TblIdx].OccursMax;
+        ElemSize  := TblTables[TblIdx].ElementSize;
+        If TblTables[TblIdx].IndexCount > 0 Then
+          IdxName := TblTables[TblIdx].Indexes[0]
+        Else
+          IdxName := '_COBTBL_IDX';
+        GenSearchLinear(TableName, IdxName, MaxOccurs, ElemSize);
+      End Else Begin
+        WarnMsg('Table ' + TableName + ' non trouvee pour SEARCH');
+        GenSearchLinear(TableName, '_COBTBL_IDX', 10, 4);
+      End;
+    End Else
+      WarnMsg('Nom de table attendu apres SEARCH');
+  End;
+
+  { Parser VARYING (optionnel) }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_VARYING) Then Begin
+    LexNextToken;
+    If CurTokType = TOK_IDENT Then
+      LexNextToken;
+  End;
+
+  { Parser AT END }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AT) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_IDENT) And (CurTokStr = 'END') Then Begin
+      LexNextToken;
+      Inc(TblAtEndCount);
+      { Sauter les instructions AT END }
+      While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) Do Begin
+        If (CurTokType = TOK_KEYWORD) Then Begin
+          If (CurTokNum = KW_WHEN) Or (CurTokNum = KW_END_SEARCH) Then
+            Break;
+        End;
+        LexNextToken;
+      End;
+    End;
+  End;
+
+  { Parser les clauses WHEN }
+  While (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WHEN) Do Begin
+    LexNextToken;
+    Inc(TblWhenCount);
+    { Sauter la condition et les instructions }
+    While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) Do Begin
+      If (CurTokType = TOK_KEYWORD) Then Begin
+        If (CurTokNum = KW_WHEN) Or (CurTokNum = KW_END_SEARCH) Then
+          Break;
+      End;
+      LexNextToken;
+    End;
+  End;
+
+  { END-SEARCH }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_SEARCH) Then Begin
+    LexNextToken;
+    Inc(TblEndSearchCount);
+  End;
+
+  { Consommer le point terminal }
+  If (CurTokType = TOK_DOT) Then
+    LexNextToken;
+
+  WriteLn(LblEnd, ':');
+  Inc(TblTotalGenerated);
+
+  Dec(TblSearchDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTableIndexStatement : dispatche les instructions tables   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTableIndexStatement;
+Begin
+  If (CurTokType = TOK_KEYWORD) Then Begin
+    If CurTokNum = KW_SEARCH Then Begin
+      LexNextToken;
+      ParseSearchStatement;
+    End
+    Else If CurTokNum = KW_SET Then Begin
+      LexNextToken;
+      ParseSetIndexStatement;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsTableKeyword : verifie si un mot-cle est lie aux tables     }
+{ ------------------------------------------------------------ }
+
+Function IsTableKeyword(KW : Integer) : Boolean;
+Begin
+  IsTableKeyword := (KW = KW_SEARCH) Or (KW = KW_OCCURS) Or
+                    (KW = KW_INDEXED) Or (KW = KW_INDEX) Or
+                    (KW = KW_KEY) Or (KW = KW_ASCENDING) Or
+                    (KW = KW_DESCENDING) Or (KW = KW_UP) Or
+                    (KW = KW_DOWN) Or (KW = KW_END_SEARCH) Or
+                    (KW = KW_VARYING) Or (KW = KW_ALL) Or
+                    (KW = KW_WHEN) Or (KW = KW_AT);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpTableState : afficher l etat du module tables              }
+{ ------------------------------------------------------------ }
+
+Procedure DumpTableState;
+Var I, J : Integer;
+Begin
+  WriteLn('=== Tables/Indexation State ===');
+  WriteLn('  Initialise           : ', TblInitialized);
+  WriteLn('  Tables enregistrees  : ', TblTableCount);
+  WriteLn('  SEARCH               : ', TblSearchCount);
+  WriteLn('  SEARCH ALL           : ', TblSearchAllCount);
+  WriteLn('  Max profondeur SEARCH: ', TblMaxSearchDepth);
+  WriteLn('  SET idx TO           : ', TblSetIdxToCount);
+  WriteLn('  SET idx UP BY        : ', TblSetIdxUpCount);
+  WriteLn('  SET idx DOWN BY      : ', TblSetIdxDownCount);
+  WriteLn('  Indices numeriques   : ', TblNumericIdxCount);
+  WriteLn('  Indices variables    : ', TblVariableIdxCount);
+  WriteLn('  Index COBOL          : ', TblIndexIdxCount);
+  WriteLn('  Acces multi-dim      : ', TblMultiDimCount);
+  WriteLn('  Clauses WHEN         : ', TblWhenCount);
+  WriteLn('  Clauses AT END       : ', TblAtEndCount);
+  WriteLn('  END-SEARCH           : ', TblEndSearchCount);
+  WriteLn('  Cles ASCENDING       : ', TblKeyAscCount);
+  WriteLn('  Cles DESCENDING      : ', TblKeyDescCount);
+  WriteLn('  Total genere         : ', TblTotalGenerated);
+  WriteLn('  State count          : ', TblStateCount);
+  If TblTableCount > 0 Then Begin
+    WriteLn('  --- Tables OCCURS ---');
+    For I := 0 To TblTableCount - 1 Do Begin
+      WriteLn('    [', I, '] ', TblTables[I].Name,
+              ' -> ', TblTables[I].AsmBase,
+              ' occurs=', TblTables[I].OccursMin, '..',
+              TblTables[I].OccursMax,
+              ' elem=', TblTables[I].ElementSize,
+              ' dim=', TblTables[I].Dimensions,
+              ' var=', TblTables[I].IsVariable);
+      If TblTables[I].DependingOn <> '' Then
+        WriteLn('      DEPENDING ON ', TblTables[I].DependingOn);
+      For J := 0 To TblTables[I].KeyCount - 1 Do
+        WriteLn('      KEY ', KeyOrderName(TblTables[I].Keys[J].KeyOrder),
+                ' ', TblTables[I].Keys[J].Name);
+      For J := 0 To TblTables[I].IndexCount - 1 Do
+        WriteLn('      INDEXED BY ', TblTables[I].Indexes[J]);
+    End;
+  End;
+End;
+
+{ 10 fonctions accesseurs pour TODO 18                         }
+
+Function IsTblInitialized : Boolean;
+Begin
+  IsTblInitialized := TblInitialized;
+End;
+
+Function IsTblEmpty : Boolean;
+Begin
+  IsTblEmpty := (TblTotalGenerated = 0);
+End;
+
+Function GetTblTotalGenerated : Integer;
+Begin
+  GetTblTotalGenerated := TblTotalGenerated;
+End;
+
+Function GetTblStatus : TString;
+Begin
+  If Not TblInitialized Then
+    GetTblStatus := 'NON INITIALISE'
+  Else
+    GetTblStatus := 'TABLES=' + ItoSI(TblTableCount) +
+                    ' SEARCH=' + ItoSI(TblSearchCount) +
+                    ' SEARCH-ALL=' + ItoSI(TblSearchAllCount) +
+                    ' SET-IDX=' + ItoSI(TblSetIdxToCount +
+                        TblSetIdxUpCount + TblSetIdxDownCount);
+End;
+
+Function GetTblTableCount : Integer;
+Begin
+  GetTblTableCount := TblTableCount;
+End;
+
+Function GetTblSearchCount : Integer;
+Begin
+  GetTblSearchCount := TblSearchCount;
+End;
+
+Function GetTblSearchAllCount : Integer;
+Begin
+  GetTblSearchAllCount := TblSearchAllCount;
+End;
+
+Function GetTblSetIdxCount : Integer;
+Begin
+  GetTblSetIdxCount := TblSetIdxToCount + TblSetIdxUpCount +
+                       TblSetIdxDownCount;
+End;
+
+Function GetTblMaxSearchDepth : Integer;
+Begin
+  GetTblMaxSearchDepth := TblMaxSearchDepth;
+End;
+
+Function GetTblStateCount : Integer;
+Begin
+  GetTblStateCount := TblStateCount;
+End;
 { COBOL est insensible a la casse : tout est converti en       }
 { majuscules dans CurTokStr                                     }
 { ------------------------------------------------------------ }
@@ -15581,6 +16556,7 @@ Begin
   AdsInitialized := False;
   PdvInitialized := False;
   CalInitialized := False;
+  TblInitialized := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -15632,6 +16608,9 @@ Begin
 
   { Initialiser le module CALL/CANCEL/Liaison inter-programmes }
   InitCallState;
+
+  { Initialiser le module Tables/Indexation (OCCURS, SEARCH) }
+  InitTableIndexState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;

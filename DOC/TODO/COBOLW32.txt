@@ -531,7 +531,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
             Appel dynamique avec LoadLibraryA/GetProcAddress
             10 fonctions accesseurs
 
-  TODO 18 - PARSEUR : TABLES ET INDEXATION (OCCURS, SEARCH) [A FAIRE]
+  TODO 18 - PARSEUR : TABLES ET INDEXATION (OCCURS, SEARCH) [IMPLEMENTE]
             Clause OCCURS :
               OCCURS n TIMES
               OCCURS n TO m TIMES DEPENDING ON id
