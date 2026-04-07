@@ -8032,6 +8032,7 @@ Procedure GenerateHtmlFile(Const Entity: TEntity; Var OutFile: Text);
 { Genere la page HTML pour une entite }
 Var
   IsStruct: Boolean;
+  ImgExt: String;
 Begin
   WriteHtmlHeader(OutFile, Entity.Name);
 
@@ -8086,6 +8087,52 @@ Begin
     WriteLn(OutFile, '<div class="returntype">');
     WriteLn(OutFile, '<h3>Type de retour</h3>');
     WriteLn(OutFile, '<p><code>', EscapeHtml(Entity.ReturnType), '</code></p>');
+    WriteLn(OutFile, '</div>');
+  End;
+
+  { Class diagrams (pour les classes/structures/unions) }
+  If IsStruct And (Opts.PngOutput Or Opts.SvgOutput Or
+     Opts.JpegOutput) Then
+  Begin
+    If Opts.SvgOutput Then ImgExt := '.svg'
+    Else If Opts.JpegOutput Then ImgExt := '.jpg'
+    Else ImgExt := '.png';
+
+    WriteLn(OutFile, '<div class="diagrams">');
+    WriteLn(OutFile, '<h3>Diagrammes</h3>');
+
+    { Diagramme de classe }
+    WriteLn(OutFile, '<div class="diagram">');
+    WriteLn(OutFile, '<h4>Diagramme de classe</h4>');
+    WriteLn(OutFile, '<img src="../../', CLASSDIAG_OUTPUT_DIR, '/',
+      CLASSDIAG_CLASS_PREFIX, EscapeHtml(Entity.Name), ImgExt, '"',
+      ' alt="Diagramme de classe ', EscapeHtml(Entity.Name), '">');
+    WriteLn(OutFile, '</div>');
+
+    { Diagramme de collaboration }
+    WriteLn(OutFile, '<div class="diagram">');
+    WriteLn(OutFile, '<h4>Diagramme de collaboration</h4>');
+    WriteLn(OutFile, '<img src="../../', CLASSDIAG_OUTPUT_DIR, '/',
+      CLASSDIAG_COLLAB_PREFIX, EscapeHtml(Entity.Name), ImgExt, '"',
+      ' alt="Diagramme de collaboration ', EscapeHtml(Entity.Name), '">');
+    WriteLn(OutFile, '</div>');
+
+    { Diagramme d'heritage }
+    WriteLn(OutFile, '<div class="diagram">');
+    WriteLn(OutFile, '<h4>Graphe d''heritage</h4>');
+    WriteLn(OutFile, '<img src="../../', CLASSDIAG_OUTPUT_DIR, '/',
+      CLASSDIAG_INHERIT_PREFIX, EscapeHtml(Entity.Name), ImgExt, '"',
+      ' alt="Graphe d heritage ', EscapeHtml(Entity.Name), '">');
+    WriteLn(OutFile, '</div>');
+
+    { Diagramme UML }
+    WriteLn(OutFile, '<div class="diagram">');
+    WriteLn(OutFile, '<h4>Diagramme UML</h4>');
+    WriteLn(OutFile, '<img src="../../', CLASSDIAG_OUTPUT_DIR, '/',
+      CLASSDIAG_UML_PREFIX, EscapeHtml(Entity.Name), ImgExt, '"',
+      ' alt="Diagramme UML ', EscapeHtml(Entity.Name), '">');
+    WriteLn(OutFile, '</div>');
+
     WriteLn(OutFile, '</div>');
   End;
 
