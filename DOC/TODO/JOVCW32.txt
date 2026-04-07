@@ -95,7 +95,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Fonction LookupKeyword : retourner KW_xxx ou TOK_IDENT
             10 fonctions accesseurs
 
-  TODO 04 - TABLE DES SYMBOLES JOVIAL 73 (32 BITS) [A FAIRE]
+  TODO 04 - TABLE DES SYMBOLES JOVIAL 73 (32 BITS) [IMPLEMENTE]
             Enregistrement TSymbol :
               Name      : nom Jovial (X, SCORE, COLOR)
               AsmName   : label ASM correspondant (_JV_X, _JV_SCORE)

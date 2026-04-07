@@ -103,7 +103,7 @@
             Fonction LookupKeyword : retourner KW_xxx ou TOK_IDENT
             10 fonctions accesseurs
 
-  TODO 04 - TABLE DES SYMBOLES JOVIAL 73 (32 BITS) [A FAIRE]
+  TODO 04 - TABLE DES SYMBOLES JOVIAL 73 (32 BITS) [IMPLEMENTE]
             Enregistrement TSymbol :
               Name      : nom Jovial (X, SCORE, COLOR)
               AsmName   : label ASM correspondant (_JV_X, _JV_SCORE)
@@ -2165,6 +2165,409 @@ End;
 
 
 { ============================================================ }
+{ TODO 04 - TABLE DES SYMBOLES JOVIAL 73 (32 BITS)             }
+{                                               [IMPLEMENTE]  }
+{ ============================================================ }
+
+Const
+  { Types de symboles (SK_*) }
+  SK_NONE         = 0;   { non defini                                }
+  SK_ITEM         = 1;   { variable (ITEM X I 16)                    }
+  SK_TABLE        = 2;   { tableau (TABLE T(5) I 16)                 }
+  SK_PROCEDURE    = 3;   { procedure (PROCEDURE P)                   }
+  SK_FUNCTION     = 4;   { fonction (FUNCTION F)                     }
+  SK_CONSTANT     = 5;   { constante                                 }
+  SK_STATUS_VAL   = 6;   { valeur d enumeration STATUS               }
+  SK_LABEL        = 7;   { label (cible de GOTO)                     }
+  SK_DEFINE       = 8;   { macro (DEFINE)                            }
+  SK_PARAM        = 9;   { parametre de procedure/fonction           }
+
+  { Types de donnees Jovial (JT_*) }
+  JT_NONE         = 0;   { non defini                                }
+  JT_INTEGER      = 1;   { entier signe (I 8, I 16, I 32)           }
+  JT_STATUS       = 2;   { enumeration (S n)                         }
+  JT_BITS         = 3;   { champ de bits (B n)                       }
+  JT_FLOATING     = 4;   { reel (F, IEEE 754 32 bits)                }
+
+  { Portees (SCOPE_*) }
+  SCOPE_NONE      = 0;   { pas de portee definie                     }
+  SCOPE_GLOBAL    = 1;   { globale (au niveau MODULE)                }
+  SCOPE_LOCAL     = 2;   { locale (dans une PROCEDURE/FUNCTION)      }
+  SCOPE_PARAM     = 3;   { parametre formel                          }
+  SCOPE_MODULE    = 4;   { visible dans le MODULE courant            }
+  SCOPE_COMPOOL   = 5;   { exportee via COMPOOL                      }
+
+  { Nombre max de valeurs STATUS par symbole }
+  MAX_STATUS_VALS = 32;
+
+Type
+  { Entree dans la table des symboles Jovial }
+  TSymbol = Record
+    Name         : String[64];   { nom Jovial (X, SCORE, COLOR)       }
+    AsmName      : String[64];   { label ASM (_JV_X, _JV_SCORE)      }
+    SymKind      : Integer;      { SK_ITEM, SK_TABLE, SK_PROCEDURE... }
+    ItemType     : Integer;      { JT_INTEGER, JT_STATUS, JT_BITS... }
+    BitSize      : Integer;      { taille en bits (8, 16, 32)         }
+    ByteSize     : Integer;      { taille en octets apres alignement  }
+    Scope        : Integer;      { SCOPE_GLOBAL, SCOPE_LOCAL, ...     }
+    Offset       : Integer;      { offset dans le segment de donnees  }
+    Value        : LongInt;      { valeur initiale ou constante       }
+    ProcIdx      : Integer;      { index dans table des procedures    }
+    StatusValues : Array[0..MAX_STATUS_VALS - 1] Of String[32];
+    StatusCount  : Integer;      { nombre de valeurs STATUS           }
+    IsExported   : Boolean;      { True si exporte via COMPOOL        }
+    TableSize    : Integer;      { taille du tableau (0 si pas TABLE) }
+    ScopeDepth   : Integer;      { profondeur de portee a la creation }
+  End;
+
+Var
+  { Table des symboles }
+  SymTab           : Array[0..MAX_SYM - 1] Of TSymbol;
+  SymCount         : Integer;
+  SymInitialized   : Boolean;
+  SymStateCount    : Integer;
+  SymScopeDepth    : Integer;   { profondeur de portee courante      }
+  SymCurScope      : Integer;   { portee courante (SCOPE_*)          }
+  SymAddCount      : Integer;   { nombre d ajouts effectues          }
+  SymFindCount     : Integer;   { nombre de recherches effectuees    }
+  SymLabelNum      : Integer;   { generateur de labels uniques       }
+
+{ ------------------------------------------------------------ }
+{ SymKindName : nom textuel d un type de symbole                }
+{ ------------------------------------------------------------ }
+
+Function SymKindName(SK : Integer) : TString;
+Begin
+  Case SK Of
+    SK_NONE       : SymKindName := '(none)';
+    SK_ITEM       : SymKindName := 'ITEM';
+    SK_TABLE      : SymKindName := 'TABLE';
+    SK_PROCEDURE  : SymKindName := 'PROCEDURE';
+    SK_FUNCTION   : SymKindName := 'FUNCTION';
+    SK_CONSTANT   : SymKindName := 'CONSTANT';
+    SK_STATUS_VAL : SymKindName := 'STATUS-VAL';
+    SK_LABEL      : SymKindName := 'LABEL';
+    SK_DEFINE     : SymKindName := 'DEFINE';
+    SK_PARAM      : SymKindName := 'PARAM';
+  Else
+    SymKindName := '?SK(' + ItoSI(SK) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ItemTypeName : nom textuel d un type de donnee Jovial         }
+{ ------------------------------------------------------------ }
+
+Function ItemTypeName(JT : Integer) : TString;
+Begin
+  Case JT Of
+    JT_NONE     : ItemTypeName := '(none)';
+    JT_INTEGER  : ItemTypeName := 'INTEGER';
+    JT_STATUS   : ItemTypeName := 'STATUS';
+    JT_BITS     : ItemTypeName := 'BITS';
+    JT_FLOATING : ItemTypeName := 'FLOATING';
+  Else
+    ItemTypeName := '?JT(' + ItoSI(JT) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ScopeName : nom textuel d une portee                          }
+{ ------------------------------------------------------------ }
+
+Function ScopeName(SC : Integer) : TString;
+Begin
+  Case SC Of
+    SCOPE_NONE    : ScopeName := '(none)';
+    SCOPE_GLOBAL  : ScopeName := 'GLOBAL';
+    SCOPE_LOCAL   : ScopeName := 'LOCAL';
+    SCOPE_PARAM   : ScopeName := 'PARAM';
+    SCOPE_MODULE  : ScopeName := 'MODULE';
+    SCOPE_COMPOOL : ScopeName := 'COMPOOL';
+  Else
+    ScopeName := '?SCOPE(' + ItoSI(SC) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSymLabel : generer un label unique pour la table            }
+{ ------------------------------------------------------------ }
+
+Function GenSymLabel : TString;
+Begin
+  Inc(SymLabelNum);
+  GenSymLabel := PFX_LBL + 'SYM_' + ItoSI(SymLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ SymInit : initialiser la table des symboles                  }
+{ ------------------------------------------------------------ }
+
+Procedure SymInit;
+Var
+  I, J : Integer;
+Begin
+  SymCount       := 0;
+  SymInitialized := True;
+  SymStateCount  := 0;
+  SymScopeDepth  := 0;
+  SymCurScope    := SCOPE_GLOBAL;
+  SymAddCount    := 0;
+  SymFindCount   := 0;
+  SymLabelNum    := 0;
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].AsmName     := '';
+    SymTab[I].SymKind     := SK_NONE;
+    SymTab[I].ItemType    := JT_NONE;
+    SymTab[I].BitSize     := 0;
+    SymTab[I].ByteSize    := 0;
+    SymTab[I].Scope       := SCOPE_NONE;
+    SymTab[I].Offset      := 0;
+    SymTab[I].Value       := 0;
+    SymTab[I].ProcIdx     := -1;
+    For J := 0 To MAX_STATUS_VALS - 1 Do
+      SymTab[I].StatusValues[J] := '';
+    SymTab[I].StatusCount := 0;
+    SymTab[I].IsExported  := False;
+    SymTab[I].TableSize   := 0;
+    SymTab[I].ScopeDepth  := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymAdd : ajouter un symbole dans la table                    }
+{ Retourne l index du nouveau symbole ou -1 si plein           }
+{ ------------------------------------------------------------ }
+
+Function SymAdd(Const AName : TString; AKind : Integer;
+                AType : Integer; AScope : Integer) : Integer;
+Var
+  Idx, J : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    FatalError('Table des symboles pleine (max ' + ItoSI(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  Idx := SymCount;
+  SymTab[Idx].Name       := AName;
+  SymTab[Idx].SymKind    := AKind;
+  SymTab[Idx].ItemType   := AType;
+  SymTab[Idx].BitSize    := 0;
+  SymTab[Idx].ByteSize   := 0;
+  SymTab[Idx].Scope      := AScope;
+  SymTab[Idx].Offset     := 0;
+  SymTab[Idx].Value      := 0;
+  SymTab[Idx].ProcIdx    := -1;
+  For J := 0 To MAX_STATUS_VALS - 1 Do
+    SymTab[Idx].StatusValues[J] := '';
+  SymTab[Idx].StatusCount := 0;
+  SymTab[Idx].IsExported  := False;
+  SymTab[Idx].TableSize   := 0;
+  SymTab[Idx].ScopeDepth  := SymScopeDepth;
+
+  { Generer le label assembleur selon le type }
+  Case AKind Of
+    SK_ITEM       : SymTab[Idx].AsmName := PFX_VAR + AsmIdent(AName);
+    SK_TABLE      : SymTab[Idx].AsmName := PFX_TAB + AsmIdent(AName);
+    SK_PROCEDURE  : SymTab[Idx].AsmName := PFX_PROC + AsmIdent(AName);
+    SK_FUNCTION   : SymTab[Idx].AsmName := PFX_PROC + AsmIdent(AName);
+    SK_CONSTANT   : SymTab[Idx].AsmName := PFX_CONST + AsmIdent(AName);
+    SK_STATUS_VAL : SymTab[Idx].AsmName := PFX_STAT + AsmIdent(AName);
+    SK_LABEL      : SymTab[Idx].AsmName := PFX_LBL + AsmIdent(AName);
+    SK_DEFINE     : SymTab[Idx].AsmName := '';
+    SK_PARAM      : SymTab[Idx].AsmName := PFX_VAR + AsmIdent(AName);
+  Else
+    SymTab[Idx].AsmName := PFX_VAR + AsmIdent(AName);
+  End;
+
+  Inc(SymCount);
+  Inc(SymStateCount);
+  Inc(SymAddCount);
+  SymAdd := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFind : chercher un symbole par nom (insensible a la casse) }
+{ Retourne l index ou -1 si non trouve                          }
+{ ------------------------------------------------------------ }
+
+Function SymFind(Const S : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  Inc(SymFindCount);
+  SymFind := -1;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If UpCaseStr(SymTab[I].Name) = U Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFindLocal : chercher un symbole dans la portee courante    }
+{ Ne retourne que les symboles du niveau de portee courant      }
+{ Retourne l index ou -1 si non trouve                          }
+{ ------------------------------------------------------------ }
+
+Function SymFindLocal(Const S : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  Inc(SymFindCount);
+  SymFindLocal := -1;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If (UpCaseStr(SymTab[I].Name) = U) And
+       (SymTab[I].ScopeDepth = SymScopeDepth) Then
+    Begin
+      SymFindLocal := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymSetScope : changer la portee courante                      }
+{ Utilise lors de l entree/sortie de MODULE, PROCEDURE, etc.    }
+{ ------------------------------------------------------------ }
+
+Procedure SymSetScope(NewScope : Integer; Enter : Boolean);
+Begin
+  If Enter Then
+  Begin
+    Inc(SymScopeDepth);
+    SymCurScope := NewScope;
+  End
+  Else
+  Begin
+    If SymScopeDepth > 0 Then
+      Dec(SymScopeDepth);
+    If SymScopeDepth = 0 Then
+      SymCurScope := SCOPE_GLOBAL
+    Else
+      SymCurScope := SCOPE_LOCAL;
+  End;
+  Inc(SymStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ SymDump : afficher le contenu de la table (debug)            }
+{ ------------------------------------------------------------ }
+
+Procedure SymDump;
+Var
+  I, J : Integer;
+Begin
+  WriteLn('--- Table des symboles Jovial (', SymCount, ' entrees) ---');
+  For I := 0 To SymCount - 1 Do
+  Begin
+    Write('  [', I:4, '] ', SymKindName(SymTab[I].SymKind));
+    Write(' ', SymTab[I].Name);
+    If SymTab[I].ItemType <> JT_NONE Then
+      Write(' ', ItemTypeName(SymTab[I].ItemType));
+    If SymTab[I].BitSize > 0 Then
+      Write(' ', SymTab[I].BitSize, ' bits');
+    If SymTab[I].ByteSize > 0 Then
+      Write(' (', SymTab[I].ByteSize, ' bytes)');
+    If SymTab[I].TableSize > 0 Then
+      Write(' TABLE(', SymTab[I].TableSize, ')');
+    If SymTab[I].StatusCount > 0 Then
+    Begin
+      Write(' STATUS(');
+      For J := 0 To SymTab[I].StatusCount - 1 Do
+      Begin
+        If J > 0 Then Write(',');
+        Write(SymTab[I].StatusValues[J]);
+      End;
+      Write(')');
+    End;
+    If SymTab[I].Value <> 0 Then
+      Write(' val=', SymTab[I].Value);
+    If SymTab[I].IsExported Then
+      Write(' EXPORTED');
+    Write(' scope=', ScopeName(SymTab[I].Scope));
+    Write(' depth=', SymTab[I].ScopeDepth);
+    If SymTab[I].AsmName <> '' Then
+      Write(' asm=', SymTab[I].AsmName);
+    WriteLn;
+  End;
+  WriteLn('--- Fin de la table ---');
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 04)                             }
+{ ------------------------------------------------------------ }
+
+Function IsSymInitialized : Boolean;
+Begin
+  IsSymInitialized := SymInitialized;
+End;
+
+Function IsSymEmpty : Boolean;
+Begin
+  IsSymEmpty := (SymCount = 0);
+End;
+
+Function GetSymCount : Integer;
+Begin
+  GetSymCount := SymCount;
+End;
+
+Function GetSymStatus : TString;
+Begin
+  If Not SymInitialized Then
+    GetSymStatus := 'Not initialized'
+  Else
+    GetSymStatus := 'Initialized (' + ItoS(SymCount) + ' symbols)';
+End;
+
+Function GetSymMaxSymbols : Integer;
+Begin
+  GetSymMaxSymbols := MAX_SYM;
+End;
+
+Function GetSymStateCount : Integer;
+Begin
+  GetSymStateCount := SymStateCount;
+End;
+
+Function GetSymKindCount : Integer;
+Begin
+  { Nombre de types SK_* definis (sans SK_NONE) }
+  GetSymKindCount := 9;
+End;
+
+Function GetSymTypeCount : Integer;
+Begin
+  { Nombre de types JT_* definis (sans JT_NONE) }
+  GetSymTypeCount := 4;
+End;
+
+Function GetSymScopeCount : Integer;
+Begin
+  { Nombre de portees SCOPE_* definies (sans SCOPE_NONE) }
+  GetSymScopeCount := 5;
+End;
+
+Function GetSymMaxStatusVals : Integer;
+Begin
+  GetSymMaxStatusVals := MAX_STATUS_VALS;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -2178,6 +2581,7 @@ Begin
   BcActive   := False;
   LexOpened  := False;
   KwInitialized := False;
+  SymInitialized := False;
 
   ParseArgs;
 
@@ -2186,6 +2590,9 @@ Begin
 
   { Initialiser le module de mots-cles }
   InitKeywordState;
+
+  { Initialiser la table des symboles }
+  SymInit;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
