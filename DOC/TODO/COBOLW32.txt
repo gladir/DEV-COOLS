@@ -83,7 +83,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
             Gestion des continuations de ligne (- en colonne 7)
             10 fonctions accesseurs
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES COBOL [A FAIRE]
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES COBOL [IMPLEMENTE]
             Tous les mots reserves COBOL-85 :
               DIVISIONS : IDENTIFICATION, ENVIRONMENT, DATA, PROCEDURE
               SECTIONS : CONFIGURATION, INPUT-OUTPUT, FILE-CONTROL,
