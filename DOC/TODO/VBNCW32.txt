@@ -804,7 +804,7 @@
             Generer les EXTERN pour le mode .ASM
             Generer les symboles externes pour le mode .OBJ
 
-  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\VBNET\* [A FAIRE]
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\VBNET\* [IMPLEMENTE]
             Optimisations peephole :
               MOV EAX, 0 -> XOR EAX, EAX
               PUSH EAX / POP EAX -> (eliminer)

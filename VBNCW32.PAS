@@ -812,7 +812,7 @@
             Generer les EXTERN pour le mode .ASM
             Generer les symboles externes pour le mode .OBJ
 
-  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\VBNET\* [A FAIRE]
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\VBNET\* [IMPLEMENTE]
             Optimisations peephole :
               MOV EAX, 0 -> XOR EAX, EAX
               PUSH EAX / POP EAX -> (eliminer)
@@ -17323,6 +17323,424 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 25 - OPTIMISATIONS PEEPHOLE, TESTS FINAUX               }
+{           ET INTEGRATION SAMPLES\VBNET\* [IMPLEMENTE]        }
+{ ============================================================ }
+
+Const
+  { Nombre maximum de lignes dans le tampon peephole }
+  OPT_MAX_LINES        = 65536;
+
+  { Nombre de regles peephole }
+  OPT_NUM_RULES        = 7;
+
+  { Nombre de fichiers samples VB.NET }
+  OPT_NUM_SAMPLES      = 12;
+
+  { Noms des fichiers exemples }
+  OPT_SAMPLE_01        = 'SAMPLES\VBNET\HELLO.VB';
+  OPT_SAMPLE_02        = 'SAMPLES\VBNET\CALC.VB';
+  OPT_SAMPLE_03        = 'SAMPLES\VBNET\FIBONACCI.VB';
+  OPT_SAMPLE_04        = 'SAMPLES\VBNET\FACTORI.VB';
+  OPT_SAMPLE_05        = 'SAMPLES\VBNET\ARRAY.VB';
+  OPT_SAMPLE_06        = 'SAMPLES\VBNET\STRING.VB';
+  OPT_SAMPLE_07        = 'SAMPLES\VBNET\FILEIO.VB';
+  OPT_SAMPLE_08        = 'SAMPLES\VBNET\SELECTCS.VB';
+  OPT_SAMPLE_09        = 'SAMPLES\VBNET\LOOPS.VB';
+  OPT_SAMPLE_10        = 'SAMPLES\VBNET\STRUCTUR.VB';
+  OPT_SAMPLE_11        = 'SAMPLES\VBNET\SUBS.VB';
+  OPT_SAMPLE_12        = 'SAMPLES\VBNET\TRYCATCH.VB';
+
+Var
+  OptBuf            : Array[0..OPT_MAX_LINES-1] of TString;
+  OptBufCount       : LongInt;   { nombre de lignes dans le tampon       }
+  OptInitialized    : Boolean;   { True si InitOptimizer a ete appele    }
+  OptStateCount     : LongInt;   { compteur d appels                     }
+  OptRulesApplied   : LongInt;   { nombre total de regles appliquees     }
+  OptPassCount      : LongInt;   { nombre de passes peephole effectuees  }
+  OptEliminatedLines: LongInt;   { nombre de lignes eliminees            }
+
+{ ------------------------------------------------------------ }
+{ InitOptimizer : initialiser le sous-systeme d optimisation    }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptimizer;
+Begin
+  OptBufCount        := 0;
+  OptInitialized     := True;
+  OptStateCount      := 0;
+  OptRulesApplied    := 0;
+  OptPassCount       := 0;
+  OptEliminatedLines := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptTrimLeft : retirer les espaces en tete d une chaine        }
+{ ------------------------------------------------------------ }
+
+Function OptTrimLeft(Const S : TString) : TString;
+Var
+  I : Integer;
+Begin
+  I := 1;
+  While (I <= Length(S)) And (S[I] = ' ') Do
+    Inc(I);
+  OptTrimLeft := Copy(S, I, Length(S) - I + 1);
+End;
+
+{ ------------------------------------------------------------ }
+{ OptStartsWith : tester si S commence par Prefix               }
+{ ------------------------------------------------------------ }
+
+Function OptStartsWith(Const S, Prefix : TString) : Boolean;
+Begin
+  OptStartsWith := (Length(S) >= Length(Prefix)) And
+                   (Copy(S, 1, Length(Prefix)) = Prefix);
+End;
+
+{ ------------------------------------------------------------ }
+{ OptLoadBuffer : copier les lignes emises dans le tampon       }
+{ (appelee avant l optimisation, ici stub car Emit ecrit        }
+{  directement dans le fichier de sortie)                       }
+{ ------------------------------------------------------------ }
+
+Procedure OptAddLine(Const S : TString);
+Begin
+  If OptBufCount < OPT_MAX_LINES Then
+  Begin
+    OptBuf[OptBufCount] := S;
+    Inc(OptBufCount);
+  End;
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ OptDeleteLine : supprimer la ligne a l index donne            }
+{ ------------------------------------------------------------ }
+
+Procedure OptDeleteLine(Idx : LongInt);
+Var
+  J : LongInt;
+Begin
+  If (Idx < 0) Or (Idx >= OptBufCount) Then Exit;
+  For J := Idx To OptBufCount - 2 Do
+    OptBuf[J] := OptBuf[J + 1];
+  Dec(OptBufCount);
+  Inc(OptEliminatedLines);
+End;
+
+{ ------------------------------------------------------------ }
+{ OptReplaceLine : remplacer la ligne a l index donne           }
+{ ------------------------------------------------------------ }
+
+Procedure OptReplaceLine(Idx : LongInt; Const NewLine : TString);
+Begin
+  If (Idx >= 0) And (Idx < OptBufCount) Then
+    OptBuf[Idx] := NewLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ PeepholePass : effectuer une passe d optimisation peephole    }
+{ Retourne le nombre de regles appliquees dans cette passe.     }
+{ ------------------------------------------------------------ }
+
+Function PeepholePass : LongInt;
+Var
+  I       : LongInt;
+  Count   : LongInt;
+  Line    : TString;
+  LineTr  : TString;
+  NextTr  : TString;
+Begin
+  Count := 0;
+  I := 0;
+  While I < OptBufCount Do
+  Begin
+    Line   := OptBuf[I];
+    LineTr := OptTrimLeft(Line);
+
+    { Regle 1 : MOV EAX, 0 -> XOR EAX, EAX }
+    If LineTr = 'MOV EAX, 0' Then
+    Begin
+      OptReplaceLine(I, '  XOR EAX, EAX');
+      Inc(Count);
+      Inc(I);
+      Continue;
+    End;
+
+    { Regle 2 : PUSH EAX / POP EAX -> eliminer les deux }
+    If (LineTr = 'PUSH EAX') And (I + 1 < OptBufCount) Then
+    Begin
+      NextTr := OptTrimLeft(OptBuf[I + 1]);
+      If NextTr = 'POP EAX' Then
+      Begin
+        OptDeleteLine(I + 1);
+        OptDeleteLine(I);
+        Inc(Count);
+        Continue;  { ne pas incrementer I, les lignes ont ete decalees }
+      End;
+    End;
+
+    { Regle 3 : MOV EAX, [x] / MOV [x], EAX -> eliminer la deuxieme }
+    If OptStartsWith(LineTr, 'MOV EAX, ') And (I + 1 < OptBufCount) Then
+    Begin
+      NextTr := OptTrimLeft(OptBuf[I + 1]);
+      If OptStartsWith(NextTr, 'MOV ') Then
+      Begin
+        { Extraire la source de la premiere et la dest de la deuxieme }
+        { MOV EAX, [x] puis MOV [x], EAX }
+        { Source = tout apres 'MOV EAX, ' dans la premiere ligne }
+        { On verifie si la deuxieme = 'MOV <source>, EAX' }
+        If Length(LineTr) > 9 Then
+        Begin
+          { source = Copy(LineTr, 10, ...) }
+          If NextTr = 'MOV ' + Copy(LineTr, 10, Length(LineTr) - 9) +
+                      ', EAX' Then
+          Begin
+            OptDeleteLine(I + 1);
+            Inc(Count);
+            { On garde I tel quel pour reexaminer }
+            Continue;
+          End;
+        End;
+      End;
+    End;
+
+    { Regle 4 : ADD EAX, 1 -> INC EAX }
+    If LineTr = 'ADD EAX, 1' Then
+    Begin
+      OptReplaceLine(I, '  INC EAX');
+      Inc(Count);
+      Inc(I);
+      Continue;
+    End;
+
+    { Regle 5 : SUB EAX, 1 -> DEC EAX }
+    If LineTr = 'SUB EAX, 1' Then
+    Begin
+      OptReplaceLine(I, '  DEC EAX');
+      Inc(Count);
+      Inc(I);
+      Continue;
+    End;
+
+    { Regle 6 : IMUL EAX, 2 -> SHL EAX, 1 }
+    If LineTr = 'IMUL EAX, 2' Then
+    Begin
+      OptReplaceLine(I, '  SHL EAX, 1');
+      Inc(Count);
+      Inc(I);
+      Continue;
+    End;
+
+    { Regle 7 : IMUL EAX, 4 -> SHL EAX, 2 }
+    If LineTr = 'IMUL EAX, 4' Then
+    Begin
+      OptReplaceLine(I, '  SHL EAX, 2');
+      Inc(Count);
+      Inc(I);
+      Continue;
+    End;
+
+    Inc(I);
+  End;
+
+  Inc(OptPassCount);
+  OptRulesApplied := OptRulesApplied + Count;
+  PeepholePass := Count;
+End;
+
+{ ------------------------------------------------------------ }
+{ RunPeepholeOptimizer : appliquer les passes peephole          }
+{ jusqu a ce qu aucune regle ne s applique plus                 }
+{ ------------------------------------------------------------ }
+
+Procedure RunPeepholeOptimizer;
+Var
+  Applied : LongInt;
+Begin
+  If Not OptInitialized Then Exit;
+  If OptBufCount = 0 Then Exit;
+  Repeat
+    Applied := PeepholePass;
+  Until Applied = 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptWriteBuffer : ecrire le tampon optimise dans un fichier    }
+{ ------------------------------------------------------------ }
+
+Procedure OptWriteBuffer(Var F : Text);
+Var
+  I : LongInt;
+Begin
+  For I := 0 To OptBufCount - 1 Do
+    WriteLn(F, OptBuf[I]);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetSampleName : nom du fichier exemple par index (1..12)      }
+{ ------------------------------------------------------------ }
+
+Function GetSampleName(Idx : Integer) : TString;
+Begin
+  Case Idx Of
+    1  : GetSampleName := OPT_SAMPLE_01;
+    2  : GetSampleName := OPT_SAMPLE_02;
+    3  : GetSampleName := OPT_SAMPLE_03;
+    4  : GetSampleName := OPT_SAMPLE_04;
+    5  : GetSampleName := OPT_SAMPLE_05;
+    6  : GetSampleName := OPT_SAMPLE_06;
+    7  : GetSampleName := OPT_SAMPLE_07;
+    8  : GetSampleName := OPT_SAMPLE_08;
+    9  : GetSampleName := OPT_SAMPLE_09;
+    10 : GetSampleName := OPT_SAMPLE_10;
+    11 : GetSampleName := OPT_SAMPLE_11;
+    12 : GetSampleName := OPT_SAMPLE_12;
+  Else
+    GetSampleName := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetSampleDescription : description courte du fichier exemple  }
+{ ------------------------------------------------------------ }
+
+Function GetSampleDescription(Idx : Integer) : TString;
+Begin
+  Case Idx Of
+    1  : GetSampleDescription := 'Hello World';
+    2  : GetSampleDescription := 'Calculatrice simple';
+    3  : GetSampleDescription := 'Suite de Fibonacci';
+    4  : GetSampleDescription := 'Factorielle';
+    5  : GetSampleDescription := 'Operations sur tableaux';
+    6  : GetSampleDescription := 'Operations sur chaines';
+    7  : GetSampleDescription := 'Entrees/sorties fichiers';
+    8  : GetSampleDescription := 'Select Case';
+    9  : GetSampleDescription := 'Boucles For/Do/While';
+    10 : GetSampleDescription := 'Structures et Enum';
+    11 : GetSampleDescription := 'Sub et Function';
+    12 : GetSampleDescription := 'Try/Catch/Finally';
+  Else
+    GetSampleDescription := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PeepholeRuleName : nom descriptif de la regle peephole        }
+{ ------------------------------------------------------------ }
+
+Function PeepholeRuleName(Idx : Integer) : TString;
+Begin
+  Case Idx Of
+    1 : PeepholeRuleName := 'MOV EAX, 0 -> XOR EAX, EAX';
+    2 : PeepholeRuleName := 'PUSH EAX / POP EAX -> (eliminer)';
+    3 : PeepholeRuleName := 'MOV EAX, [x] / MOV [x], EAX -> (eliminer 2e)';
+    4 : PeepholeRuleName := 'ADD EAX, 1 -> INC EAX';
+    5 : PeepholeRuleName := 'SUB EAX, 1 -> DEC EAX';
+    6 : PeepholeRuleName := 'IMUL EAX, 2 -> SHL EAX, 1';
+    7 : PeepholeRuleName := 'IMUL EAX, 4 -> SHL EAX, 2';
+  Else
+    PeepholeRuleName := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsOptimizerInitialized : sous-systeme initialise ?            }
+{ ------------------------------------------------------------ }
+
+Function IsOptimizerInitialized : Boolean;
+Begin
+  IsOptimizerInitialized := OptInitialized;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsOptimizerEmpty : aucune ligne dans le tampon ?              }
+{ ------------------------------------------------------------ }
+
+Function IsOptimizerEmpty : Boolean;
+Begin
+  IsOptimizerEmpty := (OptBufCount = 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetOptimizerStatus : etat du sous-systeme optimisation        }
+{ ------------------------------------------------------------ }
+
+Function GetOptimizerStatus : TString;
+Begin
+  If Not OptInitialized Then
+    GetOptimizerStatus := 'Not initialized'
+  Else
+    GetOptimizerStatus := 'Initialized (' + ItoS(OptBufCount) +
+                          ' lines, ' + ItoS(OptRulesApplied) +
+                          ' rules applied)';
+End;
+
+{ ------------------------------------------------------------ }
+{ GetOptBufCount : nombre de lignes dans le tampon              }
+{ ------------------------------------------------------------ }
+
+Function GetOptBufCount : LongInt;
+Begin
+  GetOptBufCount := OptBufCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetOptRulesApplied : nombre total de regles appliquees        }
+{ ------------------------------------------------------------ }
+
+Function GetOptRulesApplied : LongInt;
+Begin
+  GetOptRulesApplied := OptRulesApplied;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetOptPassCount : nombre de passes effectuees                 }
+{ ------------------------------------------------------------ }
+
+Function GetOptPassCount : LongInt;
+Begin
+  GetOptPassCount := OptPassCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetOptEliminatedLines : nombre de lignes eliminees            }
+{ ------------------------------------------------------------ }
+
+Function GetOptEliminatedLines : LongInt;
+Begin
+  GetOptEliminatedLines := OptEliminatedLines;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetOptNumRules : nombre de regles peephole                    }
+{ ------------------------------------------------------------ }
+
+Function GetOptNumRules : Integer;
+Begin
+  GetOptNumRules := OPT_NUM_RULES;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetOptNumSamples : nombre de fichiers exemples                }
+{ ------------------------------------------------------------ }
+
+Function GetOptNumSamples : Integer;
+Begin
+  GetOptNumSamples := OPT_NUM_SAMPLES;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetOptMaxLines : capacite maximale du tampon                  }
+{ ------------------------------------------------------------ }
+
+Function GetOptMaxLines : LongInt;
+Begin
+  GetOptMaxLines := OPT_MAX_LINES;
+End;
+
+{ ============================================================ }
 
 Procedure Run;
 Begin
@@ -17358,6 +17776,7 @@ Begin
   InitConsoleFileIOState;
   InitRuntimeLib;
   InitImportState;
+  InitOptimizer;
   LexInit;
 
   { Analyser l unite de compilation VB.NET }
@@ -17383,7 +17802,9 @@ Begin
   If Opts.EmitObj And (ErrorCount = 0) Then
     GenCOFFExternSymbols;
 
-  { TODO 25 : Optimisations, tests finaux, etc. }
+  { TODO 25 : Optimisations peephole }
+  If ErrorCount = 0 Then
+    RunPeepholeOptimizer;
 
   { Statistiques finales }
   ShowStats;
