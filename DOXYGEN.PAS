@@ -2009,6 +2009,37 @@ Const
   JPEG_AC_ZRL = $F0;            { Zero Run Length - 16 zeros consecutifs }
 
 { ============================================================
+  CONSTANTES JPEG - GENERATEUR INTEGRE (SANS OUTIL EXTERNE)
+  Partie 4: Transformation DCT (Discrete Cosine Transform) 8x8
+  ============================================================ }
+
+{ La DCT (Discrete Cosine Transform) est une transformation mathematique
+  qui convertit un bloc 8x8 de pixels en un bloc 8x8 de coefficients
+  frequentiels. C'est le coeur de la compression JPEG.
+  
+  Formule de la DCT-II 2D:
+  F(u,v) = (1/4) * C(u) * C(v) * SUM[x=0..7, y=0..7] f(x,y) *
+           cos((2x+1)*u*pi/16) * cos((2y+1)*v*pi/16)
+  
+  ou C(k) = 1/sqrt(2) si k=0, sinon C(k) = 1
+  
+  Le coefficient DC (u=0,v=0) represente la moyenne du bloc.
+  Les coefficients AC representent les variations de frequence. }
+
+{ Constantes mathematiques pour la DCT }
+  JPEG_PI = 3.14159265358979323846;   { PI pour les calculs trigonometriques }
+  JPEG_DCT_SIZE = 8;                   { Taille du bloc DCT (8x8) }
+  JPEG_DCT_SIZE2 = 64;                 { Nombre total de coefficients (8*8) }
+  
+{ Facteur de normalisation pour la DCT }
+  JPEG_DCT_NORM = 0.25;                { 1/4 pour la normalisation 2D }
+  JPEG_DCT_SQRT2_INV = 0.70710678118654752440; { 1/sqrt(2) pour C(0) }
+  JPEG_DCT_SQRT8_INV = 0.35355339059327376220; { 1/sqrt(8) = 1/(2*sqrt(2)) }
+  
+{ Decalage pour centrer les pixels autour de zero avant DCT }
+  JPEG_LEVEL_SHIFT = 128;              { Pour convertir 0..255 en -128..127 }
+
+{ ============================================================
   TYPES
   ============================================================ }
 Type
@@ -2047,6 +2078,20 @@ Type
     AC_Lum: TJPEGHuffACTable;  { Table AC luminance (Y) }
     AC_Chr: TJPEGHuffACTable;  { Table AC chrominance (Cb, Cr) }
   End;
+  
+  { Types pour la transformation DCT JPEG (Partie 4) }
+  
+  { Bloc 8x8 de pixels (valeurs entieres 0-255 ou -128..127 apres centrage) }
+  TJPEGPixelBlock = Array[0..7, 0..7] Of Integer;
+  
+  { Bloc 8x8 de coefficients DCT (valeurs flottantes) }
+  TJPEGDCTBlock = Array[0..7, 0..7] Of Real;
+  
+  { Bloc 8x8 de coefficients DCT quantifies (valeurs entieres) }
+  TJPEGQuantBlock = Array[0..7, 0..7] Of Integer;
+  
+  { Table de cosinus pre-calcules pour DCT 8x8 }
+  TJPEGCosTable = Array[0..7, 0..7] Of Real;
   
   TOptions = Record
     ConfigFile   : String;
@@ -2612,6 +2657,10 @@ Var
   { Variables pour le generateur Visio VDX integre }
   VdxGraph           : TVdxGraph;
   VdxInitialized     : Boolean;
+
+  { Variables pour la transformation DCT JPEG (Partie 4) }
+  JPEG_CosTable      : TJPEGCosTable;   { Table de cosinus pre-calcules }
+  JPEG_DCTInitialized: Boolean;         { Table initialisee? }
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -18164,6 +18213,270 @@ Begin
   WriteLn('Erreurs: ', Stats.ErrorCount);
   WriteLn('Temps: ', Stats.ProcessingTime:0:1, ' s');
   WriteLn('Taille sortie: ', FormatSize(Stats.OutputSize));
+End;
+
+{ ============================================================
+  GENERATEUR JPEG INTEGRE - PARTIE 4
+  Transformation DCT (Discrete Cosine Transform) 8x8
+  ============================================================ }
+
+{ La DCT est implementee en deux passes (separable):
+  1. DCT horizontale sur chaque ligne
+  2. DCT verticale sur chaque colonne
+  
+  Cela reduit la complexite de O(N^4) a O(N^3) pour un bloc NxN. }
+
+Procedure JPEG_InitCosTable;
+{ Initialise la table des cosinus pre-calcules pour la DCT 8x8
+  cos((2x+1) * u * pi / 16) pour x,u = 0..7 }
+Var
+  X, U: Integer;
+Begin
+  For X := 0 To 7 Do
+    For U := 0 To 7 Do
+      JPEG_CosTable[X, U] := Cos((2.0 * X + 1.0) * U * JPEG_PI / 16.0);
+  JPEG_DCTInitialized := True;
+End;
+
+Procedure JPEG_InitDCT;
+{ Initialise le module DCT (tables de cosinus) }
+Begin
+  If Not JPEG_DCTInitialized Then
+    JPEG_InitCosTable;
+End;
+
+Function JPEG_Alpha(U: Integer): Real;
+{ Calcule le facteur de normalisation C(u) pour la DCT
+  C(0) = 1/sqrt(2), C(u) = 1 pour u > 0 }
+Begin
+  If U = 0 Then
+    JPEG_Alpha := JPEG_DCT_SQRT2_INV
+  Else
+    JPEG_Alpha := 1.0;
+End;
+
+Procedure JPEG_DCT_Forward(Var Pixels: TJPEGPixelBlock;
+                           Var Coeffs: TJPEGDCTBlock);
+{ Applique la DCT-II 2D sur un bloc 8x8 de pixels
+  
+  Entree:
+    Pixels - Bloc 8x8 de pixels (valeurs 0-255 seront centrees)
+  
+  Sortie:
+    Coeffs - Bloc 8x8 de coefficients DCT (valeurs flottantes)
+  
+  La transformation est effectuee en deux passes (separable):
+  1. DCT 1D sur les lignes (horizontale)
+  2. DCT 1D sur les colonnes (verticale)
+  
+  Formule DCT-II 2D:
+  F(u,v) = (1/4) * C(u) * C(v) * SUM[x,y] (f(x,y) - 128) *
+           cos((2x+1)*u*pi/16) * cos((2y+1)*v*pi/16)
+}
+Var
+  U, V, X, Y: Integer;
+  Sum: Real;
+  Temp: TJPEGDCTBlock;
+  CenteredPixel: Real;
+Begin
+  { S'assurer que les tables sont initialisees }
+  If Not JPEG_DCTInitialized Then
+    JPEG_InitCosTable;
+  
+  { Passe 1: DCT horizontale (sur les lignes) }
+  For Y := 0 To 7 Do
+  Begin
+    For U := 0 To 7 Do
+    Begin
+      Sum := 0.0;
+      For X := 0 To 7 Do
+      Begin
+        { Centrer les pixels autour de 0 (Level Shift) }
+        CenteredPixel := Pixels[Y, X] - JPEG_LEVEL_SHIFT;
+        Sum := Sum + CenteredPixel * JPEG_CosTable[X, U];
+      End;
+      { Appliquer le facteur de normalisation }
+      Temp[Y, U] := Sum * JPEG_Alpha(U) * 0.5;
+    End;
+  End;
+  
+  { Passe 2: DCT verticale (sur les colonnes) }
+  For U := 0 To 7 Do
+  Begin
+    For V := 0 To 7 Do
+    Begin
+      Sum := 0.0;
+      For Y := 0 To 7 Do
+        Sum := Sum + Temp[Y, U] * JPEG_CosTable[Y, V];
+      { Appliquer le facteur de normalisation }
+      Coeffs[V, U] := Sum * JPEG_Alpha(V) * 0.5;
+    End;
+  End;
+End;
+
+Procedure JPEG_DCT_Inverse(Var Coeffs: TJPEGDCTBlock;
+                           Var Pixels: TJPEGPixelBlock);
+{ Applique la DCT-II inverse (IDCT) sur un bloc 8x8 de coefficients
+  
+  Entree:
+    Coeffs - Bloc 8x8 de coefficients DCT (valeurs flottantes)
+  
+  Sortie:
+    Pixels - Bloc 8x8 de pixels reconstruits (valeurs 0-255)
+  
+  Formule IDCT:
+  f(x,y) = (1/4) * SUM[u,v] C(u)*C(v) * F(u,v) *
+           cos((2x+1)*u*pi/16) * cos((2y+1)*v*pi/16) + 128
+}
+Var
+  U, V, X, Y: Integer;
+  Sum: Real;
+  Temp: TJPEGDCTBlock;
+  PixelVal: Real;
+Begin
+  { S'assurer que les tables sont initialisees }
+  If Not JPEG_DCTInitialized Then
+    JPEG_InitCosTable;
+  
+  { Passe 1: IDCT verticale (sur les colonnes) }
+  For U := 0 To 7 Do
+  Begin
+    For Y := 0 To 7 Do
+    Begin
+      Sum := 0.0;
+      For V := 0 To 7 Do
+        Sum := Sum + JPEG_Alpha(V) * Coeffs[V, U] * JPEG_CosTable[Y, V];
+      Temp[Y, U] := Sum * 0.5;
+    End;
+  End;
+  
+  { Passe 2: IDCT horizontale (sur les lignes) }
+  For Y := 0 To 7 Do
+  Begin
+    For X := 0 To 7 Do
+    Begin
+      Sum := 0.0;
+      For U := 0 To 7 Do
+        Sum := Sum + JPEG_Alpha(U) * Temp[Y, U] * JPEG_CosTable[X, U];
+      PixelVal := Sum * 0.5 + JPEG_LEVEL_SHIFT;
+      
+      { Clipping: limiter a l'intervalle [0, 255] }
+      If PixelVal < 0 Then
+        Pixels[Y, X] := 0
+      Else If PixelVal > 255 Then
+        Pixels[Y, X] := 255
+      Else
+        Pixels[Y, X] := Round(PixelVal);
+    End;
+  End;
+End;
+
+Procedure JPEG_Quantize(Var Coeffs: TJPEGDCTBlock;
+                        Var QuantTable: TJPEGQuantTable;
+                        Var Quantized: TJPEGQuantBlock);
+{ Quantifie les coefficients DCT avec la table de quantification
+  
+  Entree:
+    Coeffs - Bloc 8x8 de coefficients DCT (flottants)
+    QuantTable - Table de quantification 64 elements (ordre zigzag)
+  
+  Sortie:
+    Quantized - Bloc 8x8 de coefficients quantifies (entiers)
+  
+  Formule: Fq(u,v) = Round(F(u,v) / Q(u,v))
+}
+Var
+  U, V, Idx: Integer;
+  QVal: Real;
+Begin
+  For V := 0 To 7 Do
+  Begin
+    For U := 0 To 7 Do
+    Begin
+      { L'index dans la table de quantification suit l'ordre ligne par ligne }
+      Idx := V * 8 + U;
+      QVal := QuantTable[Idx];
+      If QVal < 1 Then QVal := 1;  { Eviter division par zero }
+      Quantized[V, U] := Round(Coeffs[V, U] / QVal);
+    End;
+  End;
+End;
+
+Procedure JPEG_Dequantize(Var Quantized: TJPEGQuantBlock;
+                          Var QuantTable: TJPEGQuantTable;
+                          Var Coeffs: TJPEGDCTBlock);
+{ Dequantifie les coefficients DCT (operation inverse)
+  
+  Formule: F(u,v) = Fq(u,v) * Q(u,v)
+}
+Var
+  U, V, Idx: Integer;
+Begin
+  For V := 0 To 7 Do
+  Begin
+    For U := 0 To 7 Do
+    Begin
+      Idx := V * 8 + U;
+      Coeffs[V, U] := Quantized[V, U] * QuantTable[Idx];
+    End;
+  End;
+End;
+
+Function JPEG_GetDCCoeff(Var Quantized: TJPEGQuantBlock): Integer;
+{ Retourne le coefficient DC (position 0,0) d'un bloc quantifie }
+Begin
+  JPEG_GetDCCoeff := Quantized[0, 0];
+End;
+
+Function JPEG_CountNonZeroAC(Var Quantized: TJPEGQuantBlock): Integer;
+{ Compte le nombre de coefficients AC non-nuls dans un bloc quantifie
+  (tous les coefficients sauf le DC en position 0,0) }
+Var
+  U, V, Count: Integer;
+Begin
+  Count := 0;
+  For V := 0 To 7 Do
+    For U := 0 To 7 Do
+      If Not ((V = 0) And (U = 0)) Then  { Exclure DC }
+        If Quantized[V, U] <> 0 Then
+          Inc(Count);
+  JPEG_CountNonZeroAC := Count;
+End;
+
+Function JPEG_IsDCTInitialized: Boolean;
+{ Indique si le module DCT est initialise }
+Begin
+  JPEG_IsDCTInitialized := JPEG_DCTInitialized;
+End;
+
+Procedure JPEG_ClearDCTBlock(Var Block: TJPEGDCTBlock);
+{ Met a zero tous les coefficients d'un bloc DCT }
+Var
+  U, V: Integer;
+Begin
+  For V := 0 To 7 Do
+    For U := 0 To 7 Do
+      Block[V, U] := 0.0;
+End;
+
+Procedure JPEG_ClearPixelBlock(Var Block: TJPEGPixelBlock);
+{ Met a zero tous les pixels d'un bloc }
+Var
+  X, Y: Integer;
+Begin
+  For Y := 0 To 7 Do
+    For X := 0 To 7 Do
+      Block[Y, X] := 0;
+End;
+
+Procedure JPEG_ClearQuantBlock(Var Block: TJPEGQuantBlock);
+{ Met a zero tous les coefficients quantifies d'un bloc }
+Var
+  U, V: Integer;
+Begin
+  For V := 0 To 7 Do
+    For U := 0 To 7 Do
+      Block[V, U] := 0;
 End;
 
 { ============================================================
