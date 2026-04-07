@@ -2093,6 +2093,14 @@ Type
   { Table de cosinus pre-calcules pour DCT 8x8 }
   TJPEGCosTable = Array[0..7, 0..7] Of Real;
   
+  { Types pour le Zigzag reordering JPEG (Partie 5) }
+  
+  { Tableau lineaire de 64 coefficients en ordre zigzag }
+  TJPEGZigzagBlock = Array[0..63] Of Integer;
+  
+  { Table de correspondance pour conversion zigzag/matriciel }
+  TJPEGZigzagTable = Array[0..63] Of Byte;
+  
   TOptions = Record
     ConfigFile   : String;
     InputFile    : String;
@@ -2661,6 +2669,11 @@ Var
   { Variables pour la transformation DCT JPEG (Partie 4) }
   JPEG_CosTable      : TJPEGCosTable;   { Table de cosinus pre-calcules }
   JPEG_DCTInitialized: Boolean;         { Table initialisee? }
+
+  { Variables pour le Zigzag reordering JPEG (Partie 5) }
+  JPEG_ZigzagTable   : TJPEGZigzagTable;  { Ordre matriciel -> zigzag }
+  JPEG_InvZigzagTable: TJPEGZigzagTable;  { Ordre zigzag -> matriciel }
+  JPEG_ZigzagInitialized: Boolean;        { Tables initialisees? }
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -12521,7 +12534,7 @@ Procedure LayoutVdxGraph;
 Var
   I, Row, Col: Integer;
   MaxCols, MaxRows: Integer;
-  StartX, StartY: Integer;
+  StartX, StartY: Real;
   CellWidth, CellHeight: Real;
 Begin
   If VdxGraph.NodeCount = 0 Then Exit;
@@ -18477,6 +18490,415 @@ Begin
   For V := 0 To 7 Do
     For U := 0 To 7 Do
       Block[V, U] := 0;
+End;
+
+{ ============================================================
+  GENERATEUR JPEG INTEGRE - PARTIE 5
+  Zigzag Reordering - Reorganisation des 64 coefficients DCT
+  ============================================================ }
+
+{ Dans JPEG, les 64 coefficients DCT d'un bloc 8x8 sont reorganises
+  selon un parcours en zigzag avant l'encodage entropique.
+  
+  Ce parcours zigzag permet de grouper les coefficients de basse
+  frequence (coin superieur gauche) au debut de la sequence lineaire
+  et les hautes frequences (coin inferieur droit) a la fin.
+  
+  Comme les hautes frequences sont souvent nulles apres quantification,
+  le parcours zigzag facilite l'encodage RLE (Run-Length Encoding).
+  
+  Parcours zigzag 8x8:
+   0  1  5  6 14 15 27 28
+   2  4  7 13 16 26 29 42
+   3  8 12 17 25 30 41 43
+   9 11 18 24 31 40 44 53
+  10 19 23 32 39 45 52 54
+  20 22 33 38 46 51 55 60
+  21 34 37 47 50 56 59 61
+  35 36 48 49 57 58 62 63 }
+
+Procedure JPEG_InitZigzagTable;
+{ Initialise les tables de correspondance zigzag
+  - JPEG_ZigzagTable[i] = position matricielle pour position zigzag i
+  - JPEG_InvZigzagTable[j] = position zigzag pour position matricielle j
+  
+  La position matricielle est: row * 8 + col
+  La table utilise les constantes JPEG_ZZ_xx definies dans la Partie 2 }
+Begin
+  { Table zigzag: indice zigzag -> position matricielle }
+  JPEG_ZigzagTable[0]  := JPEG_ZZ_00;   { 0 -> 0 }
+  JPEG_ZigzagTable[1]  := JPEG_ZZ_01;   { 1 -> 1 }
+  JPEG_ZigzagTable[2]  := JPEG_ZZ_02;   { 2 -> 8 }
+  JPEG_ZigzagTable[3]  := JPEG_ZZ_03;   { 3 -> 16 }
+  JPEG_ZigzagTable[4]  := JPEG_ZZ_04;   { 4 -> 9 }
+  JPEG_ZigzagTable[5]  := JPEG_ZZ_05;   { 5 -> 2 }
+  JPEG_ZigzagTable[6]  := JPEG_ZZ_06;   { 6 -> 3 }
+  JPEG_ZigzagTable[7]  := JPEG_ZZ_07;   { 7 -> 10 }
+  JPEG_ZigzagTable[8]  := JPEG_ZZ_08;   { 8 -> 17 }
+  JPEG_ZigzagTable[9]  := JPEG_ZZ_09;   { 9 -> 24 }
+  JPEG_ZigzagTable[10] := JPEG_ZZ_10;   { 10 -> 32 }
+  JPEG_ZigzagTable[11] := JPEG_ZZ_11;   { 11 -> 25 }
+  JPEG_ZigzagTable[12] := JPEG_ZZ_12;   { 12 -> 18 }
+  JPEG_ZigzagTable[13] := JPEG_ZZ_13;   { 13 -> 11 }
+  JPEG_ZigzagTable[14] := JPEG_ZZ_14;   { 14 -> 4 }
+  JPEG_ZigzagTable[15] := JPEG_ZZ_15;   { 15 -> 5 }
+  JPEG_ZigzagTable[16] := JPEG_ZZ_16;   { 16 -> 12 }
+  JPEG_ZigzagTable[17] := JPEG_ZZ_17;   { 17 -> 19 }
+  JPEG_ZigzagTable[18] := JPEG_ZZ_18;   { 18 -> 26 }
+  JPEG_ZigzagTable[19] := JPEG_ZZ_19;   { 19 -> 33 }
+  JPEG_ZigzagTable[20] := JPEG_ZZ_20;   { 20 -> 40 }
+  JPEG_ZigzagTable[21] := JPEG_ZZ_21;   { 21 -> 48 }
+  JPEG_ZigzagTable[22] := JPEG_ZZ_22;   { 22 -> 41 }
+  JPEG_ZigzagTable[23] := JPEG_ZZ_23;   { 23 -> 34 }
+  JPEG_ZigzagTable[24] := JPEG_ZZ_24;   { 24 -> 27 }
+  JPEG_ZigzagTable[25] := JPEG_ZZ_25;   { 25 -> 20 }
+  JPEG_ZigzagTable[26] := JPEG_ZZ_26;   { 26 -> 13 }
+  JPEG_ZigzagTable[27] := JPEG_ZZ_27;   { 27 -> 6 }
+  JPEG_ZigzagTable[28] := JPEG_ZZ_28;   { 28 -> 7 }
+  JPEG_ZigzagTable[29] := JPEG_ZZ_29;   { 29 -> 14 }
+  JPEG_ZigzagTable[30] := JPEG_ZZ_30;   { 30 -> 21 }
+  JPEG_ZigzagTable[31] := JPEG_ZZ_31;   { 31 -> 28 }
+  JPEG_ZigzagTable[32] := JPEG_ZZ_32;   { 32 -> 35 }
+  JPEG_ZigzagTable[33] := JPEG_ZZ_33;   { 33 -> 42 }
+  JPEG_ZigzagTable[34] := JPEG_ZZ_34;   { 34 -> 49 }
+  JPEG_ZigzagTable[35] := JPEG_ZZ_35;   { 35 -> 56 }
+  JPEG_ZigzagTable[36] := JPEG_ZZ_36;   { 36 -> 57 }
+  JPEG_ZigzagTable[37] := JPEG_ZZ_37;   { 37 -> 50 }
+  JPEG_ZigzagTable[38] := JPEG_ZZ_38;   { 38 -> 43 }
+  JPEG_ZigzagTable[39] := JPEG_ZZ_39;   { 39 -> 36 }
+  JPEG_ZigzagTable[40] := JPEG_ZZ_40;   { 40 -> 29 }
+  JPEG_ZigzagTable[41] := JPEG_ZZ_41;   { 41 -> 22 }
+  JPEG_ZigzagTable[42] := JPEG_ZZ_42;   { 42 -> 15 }
+  JPEG_ZigzagTable[43] := JPEG_ZZ_43;   { 43 -> 23 }
+  JPEG_ZigzagTable[44] := JPEG_ZZ_44;   { 44 -> 30 }
+  JPEG_ZigzagTable[45] := JPEG_ZZ_45;   { 45 -> 37 }
+  JPEG_ZigzagTable[46] := JPEG_ZZ_46;   { 46 -> 44 }
+  JPEG_ZigzagTable[47] := JPEG_ZZ_47;   { 47 -> 51 }
+  JPEG_ZigzagTable[48] := JPEG_ZZ_48;   { 48 -> 58 }
+  JPEG_ZigzagTable[49] := JPEG_ZZ_49;   { 49 -> 59 }
+  JPEG_ZigzagTable[50] := JPEG_ZZ_50;   { 50 -> 52 }
+  JPEG_ZigzagTable[51] := JPEG_ZZ_51;   { 51 -> 45 }
+  JPEG_ZigzagTable[52] := JPEG_ZZ_52;   { 52 -> 38 }
+  JPEG_ZigzagTable[53] := JPEG_ZZ_53;   { 53 -> 31 }
+  JPEG_ZigzagTable[54] := JPEG_ZZ_54;   { 54 -> 39 }
+  JPEG_ZigzagTable[55] := JPEG_ZZ_55;   { 55 -> 46 }
+  JPEG_ZigzagTable[56] := JPEG_ZZ_56;   { 56 -> 53 }
+  JPEG_ZigzagTable[57] := JPEG_ZZ_57;   { 57 -> 60 }
+  JPEG_ZigzagTable[58] := JPEG_ZZ_58;   { 58 -> 61 }
+  JPEG_ZigzagTable[59] := JPEG_ZZ_59;   { 59 -> 54 }
+  JPEG_ZigzagTable[60] := JPEG_ZZ_60;   { 60 -> 47 }
+  JPEG_ZigzagTable[61] := JPEG_ZZ_61;   { 61 -> 55 }
+  JPEG_ZigzagTable[62] := JPEG_ZZ_62;   { 62 -> 62 }
+  JPEG_ZigzagTable[63] := JPEG_ZZ_63;   { 63 -> 63 }
+  
+  { Table inverse: position matricielle -> indice zigzag }
+  JPEG_InvZigzagTable[0]  := 0;   JPEG_InvZigzagTable[1]  := 1;
+  JPEG_InvZigzagTable[2]  := 5;   JPEG_InvZigzagTable[3]  := 6;
+  JPEG_InvZigzagTable[4]  := 14;  JPEG_InvZigzagTable[5]  := 15;
+  JPEG_InvZigzagTable[6]  := 27;  JPEG_InvZigzagTable[7]  := 28;
+  JPEG_InvZigzagTable[8]  := 2;   JPEG_InvZigzagTable[9]  := 4;
+  JPEG_InvZigzagTable[10] := 7;   JPEG_InvZigzagTable[11] := 13;
+  JPEG_InvZigzagTable[12] := 16;  JPEG_InvZigzagTable[13] := 26;
+  JPEG_InvZigzagTable[14] := 29;  JPEG_InvZigzagTable[15] := 42;
+  JPEG_InvZigzagTable[16] := 3;   JPEG_InvZigzagTable[17] := 8;
+  JPEG_InvZigzagTable[18] := 12;  JPEG_InvZigzagTable[19] := 17;
+  JPEG_InvZigzagTable[20] := 25;  JPEG_InvZigzagTable[21] := 30;
+  JPEG_InvZigzagTable[22] := 41;  JPEG_InvZigzagTable[23] := 43;
+  JPEG_InvZigzagTable[24] := 9;   JPEG_InvZigzagTable[25] := 11;
+  JPEG_InvZigzagTable[26] := 18;  JPEG_InvZigzagTable[27] := 24;
+  JPEG_InvZigzagTable[28] := 31;  JPEG_InvZigzagTable[29] := 40;
+  JPEG_InvZigzagTable[30] := 44;  JPEG_InvZigzagTable[31] := 53;
+  JPEG_InvZigzagTable[32] := 10;  JPEG_InvZigzagTable[33] := 19;
+  JPEG_InvZigzagTable[34] := 23;  JPEG_InvZigzagTable[35] := 32;
+  JPEG_InvZigzagTable[36] := 39;  JPEG_InvZigzagTable[37] := 45;
+  JPEG_InvZigzagTable[38] := 52;  JPEG_InvZigzagTable[39] := 54;
+  JPEG_InvZigzagTable[40] := 20;  JPEG_InvZigzagTable[41] := 22;
+  JPEG_InvZigzagTable[42] := 33;  JPEG_InvZigzagTable[43] := 38;
+  JPEG_InvZigzagTable[44] := 46;  JPEG_InvZigzagTable[45] := 51;
+  JPEG_InvZigzagTable[46] := 55;  JPEG_InvZigzagTable[47] := 60;
+  JPEG_InvZigzagTable[48] := 21;  JPEG_InvZigzagTable[49] := 34;
+  JPEG_InvZigzagTable[50] := 37;  JPEG_InvZigzagTable[51] := 47;
+  JPEG_InvZigzagTable[52] := 50;  JPEG_InvZigzagTable[53] := 56;
+  JPEG_InvZigzagTable[54] := 59;  JPEG_InvZigzagTable[55] := 61;
+  JPEG_InvZigzagTable[56] := 35;  JPEG_InvZigzagTable[57] := 36;
+  JPEG_InvZigzagTable[58] := 48;  JPEG_InvZigzagTable[59] := 49;
+  JPEG_InvZigzagTable[60] := 57;  JPEG_InvZigzagTable[61] := 58;
+  JPEG_InvZigzagTable[62] := 62;  JPEG_InvZigzagTable[63] := 63;
+  
+  JPEG_ZigzagInitialized := True;
+End;
+
+Procedure JPEG_InitZigzag;
+{ Initialise le module Zigzag (tables de correspondance) }
+Begin
+  If Not JPEG_ZigzagInitialized Then
+    JPEG_InitZigzagTable;
+End;
+
+Procedure JPEG_QuantBlockToZigzag(Var Block: TJPEGQuantBlock;
+                                   Var Zigzag: TJPEGZigzagBlock);
+{ Convertit un bloc 8x8 quantifie en tableau lineaire ordre zigzag
+  
+  Entree:
+    Block - Bloc 8x8 de coefficients quantifies (entiers)
+  
+  Sortie:
+    Zigzag - Tableau lineaire de 64 coefficients en ordre zigzag
+  
+  Le coefficient DC (Block[0,0]) est toujours en Zigzag[0].
+  Les coefficients AC suivent le parcours en zigzag. }
+Var
+  I, MatPos, Row, Col: Integer;
+Begin
+  If Not JPEG_ZigzagInitialized Then
+    JPEG_InitZigzagTable;
+  
+  For I := 0 To 63 Do
+  Begin
+    { Obtenir la position matricielle pour l'indice zigzag I }
+    MatPos := JPEG_ZigzagTable[I];
+    Row := MatPos Div 8;
+    Col := MatPos Mod 8;
+    Zigzag[I] := Block[Row, Col];
+  End;
+End;
+
+Procedure JPEG_ZigzagToQuantBlock(Var Zigzag: TJPEGZigzagBlock;
+                                   Var Block: TJPEGQuantBlock);
+{ Convertit un tableau lineaire ordre zigzag en bloc 8x8 quantifie
+  (operation inverse de JPEG_QuantBlockToZigzag)
+  
+  Entree:
+    Zigzag - Tableau lineaire de 64 coefficients en ordre zigzag
+  
+  Sortie:
+    Block - Bloc 8x8 de coefficients quantifies (entiers) }
+Var
+  I, MatPos, Row, Col: Integer;
+Begin
+  If Not JPEG_ZigzagInitialized Then
+    JPEG_InitZigzagTable;
+  
+  For I := 0 To 63 Do
+  Begin
+    { Obtenir la position matricielle pour l'indice zigzag I }
+    MatPos := JPEG_ZigzagTable[I];
+    Row := MatPos Div 8;
+    Col := MatPos Mod 8;
+    Block[Row, Col] := Zigzag[I];
+  End;
+End;
+
+Procedure JPEG_DCTBlockToZigzag(Var Block: TJPEGDCTBlock;
+                                 Var Zigzag: TJPEGZigzagBlock);
+{ Convertit un bloc 8x8 DCT (flottant) en tableau lineaire zigzag (entier)
+  Les valeurs sont arrondies a l'entier le plus proche.
+  
+  Note: Generalement, on utilise JPEG_QuantBlockToZigzag apres
+  quantification. Cette fonction est utile pour debug/tests. }
+Var
+  I, MatPos, Row, Col: Integer;
+Begin
+  If Not JPEG_ZigzagInitialized Then
+    JPEG_InitZigzagTable;
+  
+  For I := 0 To 63 Do
+  Begin
+    MatPos := JPEG_ZigzagTable[I];
+    Row := MatPos Div 8;
+    Col := MatPos Mod 8;
+    Zigzag[I] := Round(Block[Row, Col]);
+  End;
+End;
+
+Procedure JPEG_ZigzagToDCTBlock(Var Zigzag: TJPEGZigzagBlock;
+                                 Var Block: TJPEGDCTBlock);
+{ Convertit un tableau lineaire zigzag (entier) en bloc 8x8 DCT (flottant)
+  (operation inverse de JPEG_DCTBlockToZigzag) }
+Var
+  I, MatPos, Row, Col: Integer;
+Begin
+  If Not JPEG_ZigzagInitialized Then
+    JPEG_InitZigzagTable;
+  
+  For I := 0 To 63 Do
+  Begin
+    MatPos := JPEG_ZigzagTable[I];
+    Row := MatPos Div 8;
+    Col := MatPos Mod 8;
+    Block[Row, Col] := Zigzag[I];
+  End;
+End;
+
+Function JPEG_GetZigzagIndex(Row, Col: Integer): Integer;
+{ Retourne l'indice zigzag pour une position matricielle (row, col)
+  Row et Col doivent etre dans [0..7] }
+Var
+  MatPos: Integer;
+Begin
+  If Not JPEG_ZigzagInitialized Then
+    JPEG_InitZigzagTable;
+  
+  MatPos := Row * 8 + Col;
+  If (MatPos >= 0) And (MatPos <= 63) Then
+    JPEG_GetZigzagIndex := JPEG_InvZigzagTable[MatPos]
+  Else
+    JPEG_GetZigzagIndex := -1;  { Erreur: position invalide }
+End;
+
+Procedure JPEG_GetMatrixPos(ZigzagIdx: Integer; Var Row, Col: Integer);
+{ Retourne la position matricielle (row, col) pour un indice zigzag
+  ZigzagIdx doit etre dans [0..63] }
+Var
+  MatPos: Integer;
+Begin
+  If Not JPEG_ZigzagInitialized Then
+    JPEG_InitZigzagTable;
+  
+  If (ZigzagIdx >= 0) And (ZigzagIdx <= 63) Then
+  Begin
+    MatPos := JPEG_ZigzagTable[ZigzagIdx];
+    Row := MatPos Div 8;
+    Col := MatPos Mod 8;
+  End
+  Else
+  Begin
+    Row := -1;  { Erreur: indice invalide }
+    Col := -1;
+  End;
+End;
+
+Function JPEG_FindLastNonZero(Var Zigzag: TJPEGZigzagBlock): Integer;
+{ Trouve l'indice du dernier coefficient non-nul dans un bloc zigzag
+  
+  Retourne:
+    -1 si tous les coefficients sont nuls (bloc vide)
+    0..63 l'indice du dernier coefficient non-nul
+  
+  Cette fonction est utile pour l'encodage RLE car elle permet
+  de savoir ou s'arrete la sequence de coefficients AC. }
+Var
+  I: Integer;
+Begin
+  For I := 63 DownTo 0 Do
+  Begin
+    If Zigzag[I] <> 0 Then
+    Begin
+      JPEG_FindLastNonZero := I;
+      Exit;
+    End;
+  End;
+  JPEG_FindLastNonZero := -1;  { Tous les coefficients sont nuls }
+End;
+
+Function JPEG_CountZerosBeforeIndex(Var Zigzag: TJPEGZigzagBlock;
+                                     StartIdx, EndIdx: Integer): Integer;
+{ Compte le nombre de zeros consecutifs entre StartIdx et EndIdx (inclus)
+  
+  Cette fonction est utile pour l'encodage RLE des coefficients AC.
+  Dans JPEG, les zeros consecutifs sont encodes avec le coefficient
+  non-nul suivant sous forme (RunLength, Value). }
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := StartIdx To EndIdx Do
+  Begin
+    If (I >= 0) And (I <= 63) Then
+    Begin
+      If Zigzag[I] = 0 Then
+        Inc(Count)
+      Else
+        Break;  { Arret au premier non-nul }
+    End;
+  End;
+  JPEG_CountZerosBeforeIndex := Count;
+End;
+
+Function JPEG_GetZigzagDC(Var Zigzag: TJPEGZigzagBlock): Integer;
+{ Retourne le coefficient DC (indice 0) du bloc zigzag }
+Begin
+  JPEG_GetZigzagDC := Zigzag[0];
+End;
+
+Procedure JPEG_SetZigzagDC(Var Zigzag: TJPEGZigzagBlock; Value: Integer);
+{ Modifie le coefficient DC (indice 0) du bloc zigzag }
+Begin
+  Zigzag[0] := Value;
+End;
+
+Function JPEG_CountNonZeroZigzag(Var Zigzag: TJPEGZigzagBlock): Integer;
+{ Compte le nombre total de coefficients non-nuls dans un bloc zigzag }
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 0 To 63 Do
+    If Zigzag[I] <> 0 Then
+      Inc(Count);
+  JPEG_CountNonZeroZigzag := Count;
+End;
+
+Function JPEG_CountNonZeroACZigzag(Var Zigzag: TJPEGZigzagBlock): Integer;
+{ Compte le nombre de coefficients AC non-nuls (indices 1-63) }
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To 63 Do  { Exclure DC (indice 0) }
+    If Zigzag[I] <> 0 Then
+      Inc(Count);
+  JPEG_CountNonZeroACZigzag := Count;
+End;
+
+Procedure JPEG_ClearZigzagBlock(Var Zigzag: TJPEGZigzagBlock);
+{ Met a zero tous les coefficients d'un bloc zigzag }
+Var
+  I: Integer;
+Begin
+  For I := 0 To 63 Do
+    Zigzag[I] := 0;
+End;
+
+Procedure JPEG_CopyZigzagBlock(Var Src, Dest: TJPEGZigzagBlock);
+{ Copie un bloc zigzag source vers un bloc destination }
+Var
+  I: Integer;
+Begin
+  For I := 0 To 63 Do
+    Dest[I] := Src[I];
+End;
+
+Function JPEG_IsZigzagInitialized: Boolean;
+{ Indique si le module Zigzag est initialise }
+Begin
+  JPEG_IsZigzagInitialized := JPEG_ZigzagInitialized;
+End;
+
+Function JPEG_GetZigzagTableValue(Index: Integer): Integer;
+{ Retourne la valeur de la table zigzag a l'indice donne
+  (position matricielle pour position zigzag) }
+Begin
+  If Not JPEG_ZigzagInitialized Then
+    JPEG_InitZigzagTable;
+  
+  If (Index >= 0) And (Index <= 63) Then
+    JPEG_GetZigzagTableValue := JPEG_ZigzagTable[Index]
+  Else
+    JPEG_GetZigzagTableValue := -1;
+End;
+
+Function JPEG_GetInvZigzagTableValue(Index: Integer): Integer;
+{ Retourne la valeur de la table zigzag inverse a l'indice donne
+  (position zigzag pour position matricielle) }
+Begin
+  If Not JPEG_ZigzagInitialized Then
+    JPEG_InitZigzagTable;
+  
+  If (Index >= 0) And (Index <= 63) Then
+    JPEG_GetInvZigzagTableValue := JPEG_InvZigzagTable[Index]
+  Else
+    JPEG_GetInvZigzagTableValue := -1;
 End;
 
 { ============================================================
