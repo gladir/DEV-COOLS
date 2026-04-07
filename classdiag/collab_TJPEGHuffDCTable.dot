@@ -1,0 +1,10 @@
+digraph "TJPEGHuffDCTable_collaboration" {
+  rankdir=LR;
+  fontname="Helvetica";
+  fontsize=10;
+  node [shape=box, fontname="Helvetica", fontsize=10];
+  edge [fontname="Helvetica", fontsize=8];
+
+  TJPEGHuffDCTable [label="TJPEGHuffDCTable", fillcolor="#3498DB", style=filled];
+
+}

@@ -1049,6 +1049,7 @@ Const
   HTML_SEARCH_FILE   = 'search.js';
   HTML_INDEX_FILE    = 'index.html';
   HTML_CLASSES_FILE  = 'classes.html';
+  HTML_FUNCTIONS_FILE = 'functions.html';
   HTML_FILES_FILE    = 'files.html';
   HTML_NAMESPACES_FILE = 'namespaces.html';
   HTML_HIERARCHY_FILE = 'hierarchy.html';
@@ -1206,10 +1207,10 @@ Const
   PNG_FILTER_UP         = 2;         { Filtre: up }
   PNG_COMPRESSION       = 0;         { Compression zlib }
   PNG_INTERLACE_NONE    = 0;         { Pas d'entrelacement }
-  PNG_MAX_WIDTH         = 4096;      { Largeur maximale }
-  PNG_MAX_HEIGHT        = 4096;      { Hauteur maximale }
-  PNG_DEFAULT_WIDTH     = 800;       { Largeur par defaut }
-  PNG_DEFAULT_HEIGHT    = 600;       { Hauteur par defaut }
+  PNG_MAX_WIDTH         = 1024;      { Largeur maximale }
+  PNG_MAX_HEIGHT        = 1024;      { Hauteur maximale }
+  PNG_DEFAULT_WIDTH     = 400;       { Largeur par defaut }
+  PNG_DEFAULT_HEIGHT    = 300;       { Hauteur par defaut }
   PNG_NODE_WIDTH        = 120;       { Largeur d'un noeud }
   PNG_NODE_HEIGHT       = 40;        { Hauteur d'un noeud }
   PNG_NODE_MARGIN       = 30;        { Marge entre les noeuds }
@@ -3673,6 +3674,61 @@ Begin
   TrimLine := Copy(S, L, R - L + 1);
 End;
 
+Function ExtractPascalParams(Const Line: String): String;
+{ Extrait les parametres d'une declaration de fonction/procedure Pascal }
+Var
+  PStart, PEnd: Integer;
+Begin
+  ExtractPascalParams := '';
+  PStart := Pos('(', Line);
+  If PStart = 0 Then Exit;
+  PEnd := Pos(')', Line);
+  If (PEnd = 0) Or (PEnd <= PStart) Then Exit;
+  ExtractPascalParams := Copy(Line, PStart + 1, PEnd - PStart - 1);
+End;
+
+Function ExtractPascalReturnType(Const Line: String): String;
+{ Extrait le type de retour d'une fonction Pascal (apres le :) }
+Var
+  PColon, PEnd, PSemi, I: Integer;
+  SearchStart: Integer;
+Begin
+  ExtractPascalReturnType := '';
+  { Trouver le : apres la parenthese fermante }
+  PEnd := Pos(')', Line);
+  If PEnd = 0 Then 
+    SearchStart := 1
+  Else
+    SearchStart := PEnd;
+  PColon := 0;
+  For I := SearchStart To Length(Line) Do
+  Begin
+    If Line[I] = ':' Then
+    Begin
+      PColon := I;
+      Break;
+    End;
+  End;
+  If PColon = 0 Then Exit;
+  { Trouver la position du ; }
+  PSemi := Pos(';', Line);
+  If (PSemi = 0) Or (PSemi < PColon) Then 
+    PSemi := Length(Line) + 1;
+  { Extraire le type }
+  ExtractPascalReturnType := TrimLine(Copy(Line, PColon + 1, PSemi - PColon - 1));
+End;
+
+Function ExtractPascalSignature(Const Line: String; IsProcedure: Boolean): String;
+{ Extrait la signature complete d'une procedure/fonction Pascal }
+Var
+  PEnd: Integer;
+Begin
+  { Trouver la fin de la declaration (;) }
+  PEnd := Pos(';', Line);
+  If PEnd = 0 Then PEnd := Length(Line) + 1;
+  ExtractPascalSignature := TrimLine(Copy(Line, 1, PEnd - 1));
+End;
+
 Procedure ExtractEntitiesC(Const FileName: String);
 { Extraction des entites pour C/C++ }
 Var
@@ -3872,7 +3928,10 @@ Var
   Name: String;
   InComment, InBraceComment: Boolean;
   InClass, InInterface: Boolean;
+  InRecord: Boolean;
   CurrentClass: String;
+  CurrentRecordIdx: Integer;
+  RecordFields: String;
 Begin
   Assign(F, FileName);
   {$I-}
@@ -3885,7 +3944,10 @@ Begin
   InBraceComment := False;
   InClass := False;
   InInterface := False;
+  InRecord := False;
   CurrentClass := '';
+  CurrentRecordIdx := 0;
+  RecordFields := '';
   
   While Not Eof(F) Do
   Begin
@@ -3976,7 +4038,39 @@ Begin
         Dec(P);
       End;
       If Name <> '' Then
+      Begin
         AddEntity(ENT_STRUCT, Name, Name, FileName, LineNum, VIS_PUBLIC);
+        InRecord := True;
+        CurrentRecordIdx := EntityCount;
+        RecordFields := '';
+      End;
+      Continue;
+    End;
+    
+    { Collecter les champs si dans un record }
+    If InRecord Then
+    Begin
+      { Detecter la fin du record }
+      If (UpperLine = 'END;') Or (Copy(UpperLine, 1, 4) = 'END;') Or
+         (Copy(UpperLine, 1, 3) = 'END') Then
+      Begin
+        { Stocker les champs dans la signature de l'entite }
+        If (CurrentRecordIdx > 0) And (CurrentRecordIdx <= EntityCount) Then
+          Entities[CurrentRecordIdx].Signature := RecordFields;
+        InRecord := False;
+        CurrentRecordIdx := 0;
+        RecordFields := '';
+      End
+      Else
+      Begin
+        { Ajouter le champ a la liste }
+        If (TrimmedLine <> '') And (Pos(':', TrimmedLine) > 0) Then
+        Begin
+          If RecordFields <> '' Then
+            RecordFields := RecordFields + '; ';
+          RecordFields := RecordFields + TrimmedLine;
+        End;
+      End;
       Continue;
     End;
     
@@ -4022,6 +4116,10 @@ Begin
             FileName, LineNum, VIS_PUBLIC)
         Else
           AddEntity(ENT_FUNCTION, Name, Name, FileName, LineNum, VIS_PUBLIC);
+        { Remplir les informations supplementaires }
+        Entities[EntityCount].Signature := ExtractPascalSignature(TrimmedLine, True);
+        Entities[EntityCount].Parameters := ExtractPascalParams(TrimmedLine);
+        Entities[EntityCount].ReturnType := ''; { Procedure n'a pas de type retour }
       End;
       Continue;
     End;
@@ -4037,6 +4135,10 @@ Begin
             FileName, LineNum, VIS_PUBLIC)
         Else
           AddEntity(ENT_FUNCTION, Name, Name, FileName, LineNum, VIS_PUBLIC);
+        { Remplir les informations supplementaires }
+        Entities[EntityCount].Signature := ExtractPascalSignature(TrimmedLine, False);
+        Entities[EntityCount].Parameters := ExtractPascalParams(TrimmedLine);
+        Entities[EntityCount].ReturnType := ExtractPascalReturnType(TrimmedLine);
       End;
       Continue;
     End;
@@ -4326,10 +4428,19 @@ Begin
   Close(F);
 End;
 
+{ Declaration forward pour ExtractFileName }
+Function ExtractFileName(Const Path: String): String; Forward;
+
 Procedure ExtractEntities(Const FileName: String; Lang: TSourceLanguage);
 { Dispatcher vers l extracteur specifique au langage }
+Var
+  BaseName: String;
 Begin
   InitEntities;
+  
+  { Creer une entite ENT_FILE pour le fichier lui-meme }
+  BaseName := ExtractFileName(FileName);
+  AddEntity(ENT_FILE, BaseName, FileName, FileName, 1, VIS_PUBLIC);
   
   Case Lang Of
     LANG_C, LANG_CPP, LANG_CSHARP, LANG_D, LANG_OBJC:
@@ -7196,7 +7307,11 @@ Begin
   { Input }
   SetConfigOption('INPUT', '', 0, False);
   SetConfigOption('INPUT_ENCODING', 'UTF-8', 0, False);
-  SetConfigOption('FILE_PATTERNS', '*.c *.cc *.cxx *.cpp *.c++ *.java *.ii *.ixx *.ipp *.i++ *.inl *.idl *.ddl *.odl *.h *.hh *.hxx *.hpp *.h++ *.l *.cs *.d *.php *.php4 *.php5 *.phtml *.inc *.m *.markdown *.md *.mm *.dox *.py *.pyw *.f90 *.f95 *.f03 *.f08 *.f18 *.f *.for *.vhd *.vhdl *.ucf *.qsf *.ice *.pas *.pp *.p', 0, False);
+  SetConfigOption('FILE_PATTERNS', '*.c *.cc *.cxx *.cpp *.c++ *.java '+
+    '*.ii *.ixx *.ipp *.i++ *.inl *.idl *.ddl *.odl *.h *.hh *.hxx *.hpp *.h++ *.l *.cs '+
+    '*.d *.php *.php4 *.php5 *.phtml *.inc *.m *.markdown *.md *.mm *.dox '+
+    '*.py *.pyw *.f90 *.f95 *.f03 *.f08 *.f18 *.f *.for *.vhd *.vhdl *.ucf *.qsf '+
+    '*.ice *.pas *.pp *.p', 0, False);
   SetConfigOption('RECURSIVE', 'NO', 0, False);
   SetConfigOption('EXCLUDE', '', 0, False);
   SetConfigOption('EXCLUDE_SYMLINKS', 'NO', 0, False);
@@ -8611,6 +8726,11 @@ End;
 { Declaration forward pour GenerateHtmlDocumentation (definie dans TODO 12) }
 Procedure GenerateHtmlDocumentation; Forward;
 
+{ Declarations forward pour les generateurs de diagrammes (TODO 17-19) }
+Procedure GenerateCallGraphDocumentation; Forward;
+Procedure GenerateDepGraphDocumentation; Forward;
+Procedure GenerateClassDiagramDocumentation; Forward;
+
 Procedure ValidateInputFile(Const FileName: String);
 Var
   Lang: TSourceLanguage;
@@ -8720,6 +8840,34 @@ Begin
     WriteLn('Generation de la documentation HTML...');
     WriteLn;
     GenerateHtmlDocumentation;
+    
+    { Generer les diagrammes de classes si demande (TODO 19) }
+    If (GetConfigValue('HAVE_DOT') = 'YES') Or
+       (GetConfigValue('HAVE_DOT') = 'yes') Or
+       Opts.SvgOutput Or Opts.PngOutput Or Opts.JpegOutput Or Opts.VdxOutput Then
+    Begin
+      { Definir le format de sortie }
+      If Opts.SvgOutput Then
+        ClassDiagFormat := 'svg'
+      Else If Opts.PngOutput Then
+        ClassDiagFormat := 'png'
+      Else If Opts.VdxOutput Then
+        ClassDiagFormat := 'vdx'
+      Else
+        ClassDiagFormat := 'png'; { Par defaut PNG }
+      
+      WriteLn;
+      WriteLn('Generation des diagrammes de classes...');
+      GenerateClassDiagramDocumentation;
+      
+      WriteLn;
+      WriteLn('Generation des graphes d''appels...');
+      GenerateCallGraphDocumentation;
+      
+      WriteLn;
+      WriteLn('Generation des graphes de dependances...');
+      GenerateDepGraphDocumentation;
+    End;
   End
   Else
   Begin
@@ -8801,6 +8949,7 @@ Begin
   HtmlHeader := HtmlHeader + '<div class="nav">';
   HtmlHeader := HtmlHeader + '<a href="index.html">Index</a>';
   HtmlHeader := HtmlHeader + '<a href="classes.html">Classes</a>';
+  HtmlHeader := HtmlHeader + '<a href="functions.html">Fonctions</a>';
   HtmlHeader := HtmlHeader + '<a href="files.html">Fichiers</a>';
   HtmlHeader := HtmlHeader + '</div><div class="content">';
   
@@ -8858,6 +9007,7 @@ Begin
   Write(F, '<div class="nav">');
   Write(F, '<a href="index.html">Index</a>');
   Write(F, '<a href="classes.html">Classes</a>');
+  Write(F, '<a href="functions.html">Fonctions</a>');
   WriteLn(F, '<a href="files.html">Fichiers</a>');
   Write(F, '</div><div class="content">');
 End;
@@ -8870,6 +9020,8 @@ End;
 
 Procedure GenerateHtmlFile(Const Entity: TEntity; Var OutFile: Text);
 { Genere la page HTML pour une entite }
+Var
+  IsStruct: Boolean;
 Begin
   WriteHtmlHeader(OutFile, Entity.Name);
   
@@ -8877,36 +9029,64 @@ Begin
   WriteLn(OutFile, '<h2>', EscapeHtml(EntityKindToStr(Entity.Kind)), ': ',
     EscapeHtml(Entity.Name), '</h2>');
   
-  { Signature }
+  IsStruct := Entity.Kind In [ENT_STRUCT, ENT_CLASS, ENT_UNION];
+  
+  { Signature ou Champs selon le type d'entite }
   If Entity.Signature <> '' Then
   Begin
     WriteLn(OutFile, '<div class="signature">');
-    WriteLn(OutFile, EscapeHtml(Entity.Signature));
+    If IsStruct Then
+      WriteLn(OutFile, '<h3>Champs</h3>')
+    Else
+      WriteLn(OutFile, '<h3>Signature</h3>');
+    WriteLn(OutFile, '<pre><code>', EscapeHtml(Entity.Signature), '</code></pre>');
     WriteLn(OutFile, '</div>');
   End;
   
   { Brief description }
   If Entity.BriefDesc <> '' Then
+  Begin
+    WriteLn(OutFile, '<div class="brief">');
+    WriteLn(OutFile, '<h3>Resume</h3>');
     WriteLn(OutFile, '<p><strong>', EscapeHtml(Entity.BriefDesc), '</strong></p>');
+    WriteLn(OutFile, '</div>');
+  End;
   
   { Detailed description }
   If Entity.DetailedDesc <> '' Then
+  Begin
+    WriteLn(OutFile, '<div class="detailed">');
+    WriteLn(OutFile, '<h3>Description detaillee</h3>');
     WriteLn(OutFile, '<p>', EscapeHtml(Entity.DetailedDesc), '</p>');
-  
-  { Return type }
-  If Entity.ReturnType <> '' Then
-    WriteLn(OutFile, '<p>Type de retour: <code>', EscapeHtml(Entity.ReturnType), '</code></p>');
+    WriteLn(OutFile, '</div>');
+  End;
   
   { Parameters }
   If Entity.Parameters <> '' Then
-    WriteLn(OutFile, '<p>Parametres: <code>', EscapeHtml(Entity.Parameters), '</code></p>');
+  Begin
+    WriteLn(OutFile, '<div class="parameters">');
+    WriteLn(OutFile, '<h3>Parametres</h3>');
+    WriteLn(OutFile, '<p><code>', EscapeHtml(Entity.Parameters), '</code></p>');
+    WriteLn(OutFile, '</div>');
+  End;
+  
+  { Return type }
+  If Entity.ReturnType <> '' Then
+  Begin
+    WriteLn(OutFile, '<div class="returntype">');
+    WriteLn(OutFile, '<h3>Type de retour</h3>');
+    WriteLn(OutFile, '<p><code>', EscapeHtml(Entity.ReturnType), '</code></p>');
+    WriteLn(OutFile, '</div>');
+  End;
   
   { File location }
-  WriteLn(OutFile, '<p class="location">');
-  WriteLn(OutFile, 'Defini dans <code>', EscapeHtml(Entity.FileName), '</code>');
+  WriteLn(OutFile, '<div class="location">');
+  WriteLn(OutFile, '<h3>Emplacement</h3>');
+  WriteLn(OutFile, '<p>Defini dans <code>', EscapeHtml(Entity.FileName), '</code>');
   If Entity.Line > 0 Then
     Write(OutFile, ' a la ligne ', Entity.Line);
   WriteLn(OutFile, '</p>');
+  WriteLn(OutFile, '</div>');
   
   WriteLn(OutFile, '</div>');
   
@@ -8952,6 +9132,7 @@ Begin
   WriteLn(OutFile, '<h2>Navigation</h2>');
   WriteLn(OutFile, '<ul>');
   WriteLn(OutFile, '<li><a href="classes.html">Liste des classes</a></li>');
+  WriteLn(OutFile, '<li><a href="functions.html">Liste des fonctions</a></li>');
   WriteLn(OutFile, '<li><a href="files.html">Liste des fichiers</a></li>');
   WriteLn(OutFile, '<li><a href="namespaces.html">Liste des namespaces</a></li>');
   WriteLn(OutFile, '<li><a href="hierarchy.html">Hierarchie des classes</a></li>');
@@ -8994,6 +9175,44 @@ Begin
     WriteLn(OutFile, '</ul>')
   Else
     WriteLn(OutFile, '<p>Aucune classe documentee.</p>');
+  
+  WriteHtmlFooter(OutFile);
+End;
+
+Procedure GenerateHtmlFunctions(Var OutFile: Text);
+{ Genere la page de liste des fonctions (functions.html) }
+Var
+  I: Integer;
+  HasFunctions: Boolean;
+Begin
+  WriteHtmlHeader(OutFile, 'Fonctions');
+  
+  WriteLn(OutFile, '<h1>Liste des fonctions</h1>');
+  
+  HasFunctions := False;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_FUNCTION, ENT_METHOD, ENT_PROCEDURE] Then
+    Begin
+      If Not HasFunctions Then
+      Begin
+        WriteLn(OutFile, '<ul>');
+        HasFunctions := True;
+      End;
+      WriteLn(OutFile, '<li>');
+      WriteLn(OutFile, '<a href="', EscapeHtml(Entities[I].Name), '.html">',
+        EscapeHtml(Entities[I].Name), '</a>');
+      WriteLn(OutFile, ' [', EntityKindToStr(Entities[I].Kind), ']');
+      If Entities[I].BriefDesc <> '' Then
+        WriteLn(OutFile, ' - ', EscapeHtml(Entities[I].BriefDesc));
+      WriteLn(OutFile, '</li>');
+    End;
+  End;
+  
+  If HasFunctions Then
+    WriteLn(OutFile, '</ul>')
+  Else
+    WriteLn(OutFile, '<p>Aucune fonction documentee.</p>');
   
   WriteHtmlFooter(OutFile);
 End;
@@ -9310,6 +9529,20 @@ Begin
   Else
     WarnMsg('Impossible de creer classes.html');
   
+  { Generer la page des fonctions }
+  Assign(F, HtmlOutputDir + 'functions.html');
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateHtmlFunctions(F);
+    Close(F);
+    InfoMsg('Page fonctions generee: functions.html');
+  End
+  Else
+    WarnMsg('Impossible de creer functions.html');
+  
   { Generer la page des fichiers }
   Assign(F, HtmlOutputDir + 'files.html');
   {$I-}
@@ -9371,7 +9604,7 @@ Begin
   WriteLn;
   WriteLn('Generation HTML terminee.');
   WriteLn('  Repertoire: ', HtmlOutputDir);
-  WriteLn('  Fichiers generes: ', EntityCount + 5);
+  WriteLn('  Fichiers generes: ', EntityCount + 6);
 End;
 
 { Fonctions accesseurs pour le generateur HTML }
@@ -11396,11 +11629,51 @@ Begin
   CalcCrc := UpdateCrc(LongInt($FFFFFFFF), Data, Len) Xor LongInt($FFFFFFFF);
 End;
 
+Procedure FreePngGraph;
+{ Libere la memoire utilisee par le graphe PNG }
+Var
+  I: Integer;
+  OldNodeCount, OldEdgeCount: Integer;
+Begin
+  { Sauvegarder les compteurs avant reset }
+  OldNodeCount := PngGraph.NodeCount;
+  OldEdgeCount := PngGraph.EdgeCount;
+  
+  { Liberer les strings seulement pour les noeuds/aretes utilises }
+  { Cela evite de parcourir tous les MAX_PNG_NODES/EDGES inutilement }
+  For I := 1 To OldNodeCount Do
+  Begin
+    PngGraph.Nodes[I].Id := '';
+    PngGraph.Nodes[I].Name := '';
+    PngGraph.Nodes[I].Shape := '';
+  End;
+  
+  For I := 1 To OldEdgeCount Do
+  Begin
+    PngGraph.Edges[I].FromId := '';
+    PngGraph.Edges[I].ToId := '';
+    PngGraph.Edges[I].Style := '';
+    PngGraph.Edges[I].LabelText := '';
+  End;
+  
+  { Liberer le titre }
+  PngGraph.Title := '';
+  
+  { Reset des compteurs }
+  PngGraph.NodeCount := 0;
+  PngGraph.EdgeCount := 0;
+  PngInitialized := False;
+End;
+
 Procedure InitPngGraph;
 { Initialise le graphe PNG }
 Var
   I: Integer;
 Begin
+  { Si deja initialise, d'abord liberer l'ancien contenu }
+  If PngInitialized Then
+    FreePngGraph;
+  
   PngGraph.Title := '';
   PngGraph.Width := PNG_DEFAULT_WIDTH;
   PngGraph.Height := PNG_DEFAULT_HEIGHT;
@@ -11410,6 +11683,8 @@ Begin
   PngGraph.NodeCount := 0;
   PngGraph.EdgeCount := 0;
   
+  { Initialiser seulement les premiers noeuds/aretes necessaires }
+  { Les autres seront initialises a la demande dans AddPngNode/AddPngEdge }
   For I := 1 To MAX_PNG_NODES Do
   Begin
     PngGraph.Nodes[I].Id := '';
@@ -11599,15 +11874,18 @@ Begin
   WritePngByte(F, PNG_SIGNATURE_8);
 End;
 
-Procedure WritePngChunk(Var F: File; ChunkType: String; Const Data: Array Of Byte; DataLen: Integer);
+Procedure WritePngChunk(Var F: File; ChunkType: String; Const Data: Array Of Byte; DataLen: LongInt);
 { Ecrit un chunk PNG complet avec CRC }
 Var
-  TypeAndData: Array[0..65535] Of Byte;
-  I: Integer;
+  TypeAndData: Array Of Byte;
+  I: LongInt;
   Crc: LongInt;
 Begin
   { Longueur des donnees }
   WritePngDWord(F, DataLen);
+  
+  { Allouer le buffer pour type + donnees }
+  SetLength(TypeAndData, DataLen + 4);
   
   { Type du chunk (4 caracteres) }
   For I := 1 To 4 Do
@@ -11628,6 +11906,9 @@ Begin
   { Calculer et ecrire le CRC }
   Crc := CalcCrc(TypeAndData, DataLen + 4);
   WritePngDWord(F, Crc);
+  
+  { Liberer la memoire }
+  SetLength(TypeAndData, 0);
 End;
 
 Procedure WritePngIHDR(Var F: File; Width, Height: Integer);
@@ -11672,9 +11953,11 @@ Var
   CompData: Array Of Byte;
   RawLen, CompLen: LongInt;
   X, Y, Idx: Integer;
-  BlockLen: Word;
   Adler32: LongInt;
   S1, S2: LongInt;
+  NumBlocks, BlockNum: Integer;
+  CompIdx, SrcIdx: LongInt;
+  ActualBlockLen, Remaining: LongInt;
 Begin
   { Taille des donnees brutes: (1 + Width * 3) * Height }
   RawLen := (1 + Width * 3) * Height;
@@ -11711,36 +11994,67 @@ Begin
   Adler32 := (S2 Shl 16) Or S1;
   
   { Creer le flux zlib non-compresse (stored blocks) }
+  { Les donnees sont divisees en blocs de 65535 bytes max }
   { Format: zlib header (2 bytes) + stored blocks + Adler-32 (4 bytes) }
-  CompLen := 2 + 5 + RawLen + 4; { Header + block header + data + adler }
+  
+  { Calculer le nombre de blocs necessaires }
+  NumBlocks := (RawLen + 65534) Div 65535;
+  If NumBlocks < 1 Then NumBlocks := 1;
+  
+  { Calculer la taille totale: header + (5 bytes header * nb blocs) + data + adler }
+  CompLen := 2 + (5 * NumBlocks) + RawLen + 4;
   SetLength(CompData, CompLen);
   
   { En-tete zlib }
   CompData[0] := $78; { CMF: deflate, 32K window }
   CompData[1] := $01; { FLG: no dict, check bits }
   
-  { Bloc stored (non-compresse) }
-  CompData[2] := $01; { BFINAL=1 (dernier bloc), BTYPE=00 (stored) }
+  CompIdx := 2;
+  SrcIdx := 0;
   
-  { Longueur du bloc (little-endian) }
-  BlockLen := RawLen;
-  CompData[3] := Lo(BlockLen);
-  CompData[4] := Hi(BlockLen);
-  
-  { Complement de la longueur }
-  CompData[5] := Lo(Not BlockLen);
-  CompData[6] := Hi(Not BlockLen);
-  
-  { Copier les donnees brutes }
-  For Idx := 0 To RawLen - 1 Do
-    CompData[7 + Idx] := RawData[Idx];
+  { Ecrire les blocs stored }
+  For BlockNum := 1 To NumBlocks Do
+  Begin
+    { Calculer la taille de ce bloc }
+    Remaining := RawLen - SrcIdx;
+    If Remaining > 65535 Then
+      ActualBlockLen := 65535
+    Else
+      ActualBlockLen := Remaining;
+    
+    { BFINAL=1 si dernier bloc, BTYPE=00 (stored) }
+    If BlockNum = NumBlocks Then
+      CompData[CompIdx] := $01  { BFINAL=1 }
+    Else
+      CompData[CompIdx] := $00; { BFINAL=0 }
+    Inc(CompIdx);
+    
+    { Longueur du bloc (little-endian) }
+    CompData[CompIdx] := ActualBlockLen And $FF;
+    Inc(CompIdx);
+    CompData[CompIdx] := (ActualBlockLen Shr 8) And $FF;
+    Inc(CompIdx);
+    
+    { Complement de la longueur }
+    CompData[CompIdx] := (Not ActualBlockLen) And $FF;
+    Inc(CompIdx);
+    CompData[CompIdx] := ((Not ActualBlockLen) Shr 8) And $FF;
+    Inc(CompIdx);
+    
+    { Copier les donnees de ce bloc }
+    For Idx := 0 To ActualBlockLen - 1 Do
+    Begin
+      CompData[CompIdx] := RawData[SrcIdx];
+      Inc(CompIdx);
+      Inc(SrcIdx);
+    End;
+  End;
   
   { Adler-32 (big-endian) }
-  Idx := 7 + RawLen;
-  CompData[Idx] := (Adler32 Shr 24) And $FF;
-  CompData[Idx + 1] := (Adler32 Shr 16) And $FF;
-  CompData[Idx + 2] := (Adler32 Shr 8) And $FF;
-  CompData[Idx + 3] := Adler32 And $FF;
+  CompData[CompIdx] := (Adler32 Shr 24) And $FF;
+  CompData[CompIdx + 1] := (Adler32 Shr 16) And $FF;
+  CompData[CompIdx + 2] := (Adler32 Shr 8) And $FF;
+  CompData[CompIdx + 3] := Adler32 And $FF;
   
   WritePngChunk(F, 'IDAT', CompData, CompLen);
   
@@ -12219,8 +12533,11 @@ End;
 Procedure RenderDotToPng(Const DotFile, PngFile: String);
 { Fonction principale: lit un fichier DOT et genere un PNG }
 Begin
+  { Liberer l'ancien graphe s'il existe }
+  If PngInitialized Then
+    FreePngGraph;
+  
   { Reinitialiser le graphe }
-  PngInitialized := False;
   InitPngGraph;
   
   { Parser le fichier DOT }
@@ -12228,6 +12545,9 @@ Begin
   
   { Generer le PNG }
   RenderPngGraph(PngFile);
+  
+  { Liberer la memoire apres generation }
+  FreePngGraph;
   
   If Not Opts.Quiet Then
     WriteLn('PNG genere (built-in): ', PngFile);
@@ -12249,11 +12569,48 @@ End;
   - Generation de l'image SVG vectorielle
   ============================================================ }
 
+Procedure FreeSvgGraph;
+{ Libere la memoire utilisee par le graphe SVG }
+Var
+  I: Integer;
+  OldNodeCount, OldEdgeCount: Integer;
+Begin
+  OldNodeCount := SvgGraph.NodeCount;
+  OldEdgeCount := SvgGraph.EdgeCount;
+  
+  For I := 1 To OldNodeCount Do
+  Begin
+    SvgGraph.Nodes[I].Id := '';
+    SvgGraph.Nodes[I].Name := '';
+    SvgGraph.Nodes[I].FillColor := '';
+    SvgGraph.Nodes[I].StrokeColor := '';
+    SvgGraph.Nodes[I].Shape := '';
+  End;
+  
+  For I := 1 To OldEdgeCount Do
+  Begin
+    SvgGraph.Edges[I].FromId := '';
+    SvgGraph.Edges[I].ToId := '';
+    SvgGraph.Edges[I].StrokeColor := '';
+    SvgGraph.Edges[I].Style := '';
+    SvgGraph.Edges[I].LabelText := '';
+  End;
+  
+  SvgGraph.Title := '';
+  SvgGraph.BgColor := '';
+  SvgGraph.NodeCount := 0;
+  SvgGraph.EdgeCount := 0;
+  SvgInitialized := False;
+End;
+
 Procedure InitSvgGraph;
 { Initialise le graphe SVG }
 Var
   I: Integer;
 Begin
+  If SvgInitialized Then
+    FreeSvgGraph;
+  
   SvgGraph.Title := '';
   SvgGraph.Width := SVG_DEFAULT_WIDTH;
   SvgGraph.Height := SVG_DEFAULT_HEIGHT;
@@ -12729,8 +13086,11 @@ End;
 Procedure RenderDotToSvg(Const DotFile, SvgFile: String);
 { Fonction principale: lit un fichier DOT et genere un SVG }
 Begin
+  { Liberer l'ancien graphe s'il existe }
+  If SvgInitialized Then
+    FreeSvgGraph;
+  
   { Reinitialiser le graphe }
-  SvgInitialized := False;
   InitSvgGraph;
   
   { Parser le fichier DOT }
@@ -12738,6 +13098,9 @@ Begin
   
   { Generer le SVG }
   RenderSvgGraph(SvgFile);
+  
+  { Liberer la memoire apres generation }
+  FreeSvgGraph;
   
   If Not Opts.Quiet Then
     WriteLn('SVG genere (built-in): ', SvgFile);
@@ -12762,11 +13125,44 @@ End;
   - Generation du fichier VDX complet
   ============================================================ }
 
+Procedure FreeVdxGraph;
+{ Libere la memoire utilisee par le graphe Visio VDX }
+Var
+  I: Integer;
+  OldNodeCount, OldEdgeCount: Integer;
+Begin
+  OldNodeCount := VdxGraph.NodeCount;
+  OldEdgeCount := VdxGraph.EdgeCount;
+  
+  For I := 1 To OldNodeCount Do
+  Begin
+    VdxGraph.Nodes[I].Name := '';
+    VdxGraph.Nodes[I].FillColor := '';
+    VdxGraph.Nodes[I].LineColor := '';
+    VdxGraph.Nodes[I].TextId := '';
+  End;
+  
+  For I := 1 To OldEdgeCount Do
+  Begin
+    VdxGraph.Edges[I].LineColor := '';
+    VdxGraph.Edges[I].LabelText := '';
+  End;
+  
+  VdxGraph.Title := '';
+  VdxGraph.BgColor := '';
+  VdxGraph.NodeCount := 0;
+  VdxGraph.EdgeCount := 0;
+  VdxInitialized := False;
+End;
+
 Procedure InitVdxGraph;
 { Initialise le graphe Visio VDX }
 Var
   I: Integer;
 Begin
+  If VdxInitialized Then
+    FreeVdxGraph;
+  
   VdxGraph.Title := 'Doxygen Graph';
   VdxGraph.PageWidth := VDX_DEFAULT_WIDTH;
   VdxGraph.PageHeight := VDX_DEFAULT_HEIGHT;
@@ -13328,6 +13724,9 @@ Begin
   
   If Not Opts.Quiet Then
     WriteLn('Visio VDX genere (built-in): ', VdxFile);
+  
+  { Liberer la memoire du graphe apres generation }
+  FreeVdxGraph;
 End;
 
 { ============================================================
