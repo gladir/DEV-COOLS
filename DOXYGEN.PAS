@@ -11629,11 +11629,51 @@ Begin
   CalcCrc := UpdateCrc(LongInt($FFFFFFFF), Data, Len) Xor LongInt($FFFFFFFF);
 End;
 
+Procedure FreePngGraph;
+{ Libere la memoire utilisee par le graphe PNG }
+Var
+  I: Integer;
+  OldNodeCount, OldEdgeCount: Integer;
+Begin
+  { Sauvegarder les compteurs avant reset }
+  OldNodeCount := PngGraph.NodeCount;
+  OldEdgeCount := PngGraph.EdgeCount;
+  
+  { Liberer les strings seulement pour les noeuds/aretes utilises }
+  { Cela evite de parcourir tous les MAX_PNG_NODES/EDGES inutilement }
+  For I := 1 To OldNodeCount Do
+  Begin
+    PngGraph.Nodes[I].Id := '';
+    PngGraph.Nodes[I].Name := '';
+    PngGraph.Nodes[I].Shape := '';
+  End;
+  
+  For I := 1 To OldEdgeCount Do
+  Begin
+    PngGraph.Edges[I].FromId := '';
+    PngGraph.Edges[I].ToId := '';
+    PngGraph.Edges[I].Style := '';
+    PngGraph.Edges[I].LabelText := '';
+  End;
+  
+  { Liberer le titre }
+  PngGraph.Title := '';
+  
+  { Reset des compteurs }
+  PngGraph.NodeCount := 0;
+  PngGraph.EdgeCount := 0;
+  PngInitialized := False;
+End;
+
 Procedure InitPngGraph;
 { Initialise le graphe PNG }
 Var
   I: Integer;
 Begin
+  { Si deja initialise, d'abord liberer l'ancien contenu }
+  If PngInitialized Then
+    FreePngGraph;
+  
   PngGraph.Title := '';
   PngGraph.Width := PNG_DEFAULT_WIDTH;
   PngGraph.Height := PNG_DEFAULT_HEIGHT;
@@ -11643,6 +11683,8 @@ Begin
   PngGraph.NodeCount := 0;
   PngGraph.EdgeCount := 0;
   
+  { Initialiser seulement les premiers noeuds/aretes necessaires }
+  { Les autres seront initialises a la demande dans AddPngNode/AddPngEdge }
   For I := 1 To MAX_PNG_NODES Do
   Begin
     PngGraph.Nodes[I].Id := '';
@@ -12491,8 +12533,11 @@ End;
 Procedure RenderDotToPng(Const DotFile, PngFile: String);
 { Fonction principale: lit un fichier DOT et genere un PNG }
 Begin
+  { Liberer l'ancien graphe s'il existe }
+  If PngInitialized Then
+    FreePngGraph;
+  
   { Reinitialiser le graphe }
-  PngInitialized := False;
   InitPngGraph;
   
   { Parser le fichier DOT }
@@ -12500,6 +12545,9 @@ Begin
   
   { Generer le PNG }
   RenderPngGraph(PngFile);
+  
+  { Liberer la memoire apres generation }
+  FreePngGraph;
   
   If Not Opts.Quiet Then
     WriteLn('PNG genere (built-in): ', PngFile);
@@ -12521,11 +12569,48 @@ End;
   - Generation de l'image SVG vectorielle
   ============================================================ }
 
+Procedure FreeSvgGraph;
+{ Libere la memoire utilisee par le graphe SVG }
+Var
+  I: Integer;
+  OldNodeCount, OldEdgeCount: Integer;
+Begin
+  OldNodeCount := SvgGraph.NodeCount;
+  OldEdgeCount := SvgGraph.EdgeCount;
+  
+  For I := 1 To OldNodeCount Do
+  Begin
+    SvgGraph.Nodes[I].Id := '';
+    SvgGraph.Nodes[I].Name := '';
+    SvgGraph.Nodes[I].FillColor := '';
+    SvgGraph.Nodes[I].StrokeColor := '';
+    SvgGraph.Nodes[I].Shape := '';
+  End;
+  
+  For I := 1 To OldEdgeCount Do
+  Begin
+    SvgGraph.Edges[I].FromId := '';
+    SvgGraph.Edges[I].ToId := '';
+    SvgGraph.Edges[I].StrokeColor := '';
+    SvgGraph.Edges[I].Style := '';
+    SvgGraph.Edges[I].LabelText := '';
+  End;
+  
+  SvgGraph.Title := '';
+  SvgGraph.BgColor := '';
+  SvgGraph.NodeCount := 0;
+  SvgGraph.EdgeCount := 0;
+  SvgInitialized := False;
+End;
+
 Procedure InitSvgGraph;
 { Initialise le graphe SVG }
 Var
   I: Integer;
 Begin
+  If SvgInitialized Then
+    FreeSvgGraph;
+  
   SvgGraph.Title := '';
   SvgGraph.Width := SVG_DEFAULT_WIDTH;
   SvgGraph.Height := SVG_DEFAULT_HEIGHT;
@@ -13001,8 +13086,11 @@ End;
 Procedure RenderDotToSvg(Const DotFile, SvgFile: String);
 { Fonction principale: lit un fichier DOT et genere un SVG }
 Begin
+  { Liberer l'ancien graphe s'il existe }
+  If SvgInitialized Then
+    FreeSvgGraph;
+  
   { Reinitialiser le graphe }
-  SvgInitialized := False;
   InitSvgGraph;
   
   { Parser le fichier DOT }
@@ -13010,6 +13098,9 @@ Begin
   
   { Generer le SVG }
   RenderSvgGraph(SvgFile);
+  
+  { Liberer la memoire apres generation }
+  FreeSvgGraph;
   
   If Not Opts.Quiet Then
     WriteLn('SVG genere (built-in): ', SvgFile);
@@ -13034,11 +13125,44 @@ End;
   - Generation du fichier VDX complet
   ============================================================ }
 
+Procedure FreeVdxGraph;
+{ Libere la memoire utilisee par le graphe Visio VDX }
+Var
+  I: Integer;
+  OldNodeCount, OldEdgeCount: Integer;
+Begin
+  OldNodeCount := VdxGraph.NodeCount;
+  OldEdgeCount := VdxGraph.EdgeCount;
+  
+  For I := 1 To OldNodeCount Do
+  Begin
+    VdxGraph.Nodes[I].Name := '';
+    VdxGraph.Nodes[I].FillColor := '';
+    VdxGraph.Nodes[I].LineColor := '';
+    VdxGraph.Nodes[I].TextId := '';
+  End;
+  
+  For I := 1 To OldEdgeCount Do
+  Begin
+    VdxGraph.Edges[I].LineColor := '';
+    VdxGraph.Edges[I].LabelText := '';
+  End;
+  
+  VdxGraph.Title := '';
+  VdxGraph.BgColor := '';
+  VdxGraph.NodeCount := 0;
+  VdxGraph.EdgeCount := 0;
+  VdxInitialized := False;
+End;
+
 Procedure InitVdxGraph;
 { Initialise le graphe Visio VDX }
 Var
   I: Integer;
 Begin
+  If VdxInitialized Then
+    FreeVdxGraph;
+  
   VdxGraph.Title := 'Doxygen Graph';
   VdxGraph.PageWidth := VDX_DEFAULT_WIDTH;
   VdxGraph.PageHeight := VDX_DEFAULT_HEIGHT;
