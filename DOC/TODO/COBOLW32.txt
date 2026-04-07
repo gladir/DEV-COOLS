@@ -45,7 +45,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
               _COBS_ (section), _COBE_ (entree fichier)
             Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
 
-  TODO 02 - TOKENISEUR COBOL (LEXER) [A FAIRE]
+  TODO 02 - TOKENISEUR COBOL (LEXER) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source

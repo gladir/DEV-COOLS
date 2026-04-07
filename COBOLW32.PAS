@@ -53,7 +53,7 @@
               _COBS_ (section), _COBE_ (entree fichier)
             Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
 
-  TODO 02 - TOKENISEUR COBOL (LEXER) [A FAIRE]
+  TODO 02 - TOKENISEUR COBOL (LEXER) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source
@@ -1253,6 +1253,900 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 02 - TOKENISEUR COBOL (LEXER)          [IMPLEMENTE]   }
+{ ============================================================ }
+
+Const
+  { Types de tokens }
+  TOK_EOF        = 0;    { fin de fichier                          }
+  TOK_IDENT      = 1;    { identificateur COBOL (WS-NOM, etc.)     }
+  TOK_INTEGER    = 2;    { litteral entier (123)                   }
+  TOK_DECIMAL    = 3;    { litteral decimal (1.5, 3.14)            }
+  TOK_STRING     = 4;    { litteral chaine ('texte' ou "texte")    }
+  TOK_HEX_STRING = 5;    { litteral hexadecimal (X'FF' ou X"FF")   }
+  TOK_PLUS       = 10;   { +                                       }
+  TOK_MINUS      = 11;   { -                                       }
+  TOK_STAR       = 12;   { *                                       }
+  TOK_SLASH      = 13;   { /                                       }
+  TOK_POWER      = 14;   { ** (exponentiation)                     }
+  TOK_LPAREN     = 20;   { (                                       }
+  TOK_RPAREN     = 21;   { )                                       }
+  TOK_COMMA      = 22;   { ,                                       }
+  TOK_DOT        = 23;   { . (terminateur d instruction COBOL)     }
+  TOK_EQ         = 30;   { =                                       }
+  TOK_NE         = 31;   { <> (NOT EQUAL)                          }
+  TOK_LT         = 32;   { <                                       }
+  TOK_GT         = 33;   { >                                       }
+  TOK_LE         = 34;   { <=                                      }
+  TOK_GE         = 35;   { >=                                      }
+  TOK_NEWLINE    = 40;   { fin de ligne logique                    }
+
+  { Constantes de format fixe COBOL }
+  COB_COL_SEQ_END  = 6;   { colonnes 1-6 : numero de sequence      }
+  COB_COL_IND      = 7;   { colonne 7 : indicateur                 }
+  COB_COL_AREA_A   = 8;   { colonnes 8-11 : zone A                 }
+  COB_COL_AREA_B   = 12;  { colonnes 12-72 : zone B                }
+  COB_COL_COMMENT  = 73;  { colonnes 73-80 : zone de commentaire   }
+  COB_COL_RIGHT    = 72;  { derniere colonne utile (format fixe)   }
+
+Var
+  { Fichier source }
+  LexSrcF    : Text;          { handle du fichier source              }
+  LexOpened  : Boolean;        { fichier ouvert ?                      }
+  LexLine    : TString;        { ligne courante                        }
+  LexLineNo  : Integer;        { numero de ligne courante              }
+  LexColNo   : Integer;        { colonne courante dans LexLine         }
+  LexEOF     : Boolean;        { fin de fichier atteinte ?             }
+
+  { Token courant }
+  CurTokType : Integer;        { type de token (TOK_*)                 }
+  CurTokStr  : TString;        { valeur textuelle du token             }
+  CurTokNum  : LongInt;        { valeur numerique (entier)             }
+  CurTokReal : Real;           { valeur numerique (reel)               }
+  CurTokLine : Integer;        { ligne du token                        }
+  CurTokCol  : Integer;        { colonne du token                      }
+
+  { Compteur de tokens }
+  LexTokCount : LongInt;       { nombre total de tokens emis           }
+
+{ ------------------------------------------------------------ }
+{ Fonctions de classification de caracteres                    }
+{ ------------------------------------------------------------ }
+
+Function IsDigit(Ch : Char) : Boolean;
+Begin
+  IsDigit := (Ch >= '0') And (Ch <= '9');
+End;
+
+Function IsHexDigit(Ch : Char) : Boolean;
+Begin
+  IsHexDigit := ((Ch >= '0') And (Ch <= '9')) Or
+                ((Ch >= 'A') And (Ch <= 'F')) Or
+                ((Ch >= 'a') And (Ch <= 'f'));
+End;
+
+Function HexVal(Ch : Char) : Integer;
+Begin
+  If (Ch >= '0') And (Ch <= '9') Then
+    HexVal := Ord(Ch) - Ord('0')
+  Else If (Ch >= 'A') And (Ch <= 'F') Then
+    HexVal := Ord(Ch) - Ord('A') + 10
+  Else
+    HexVal := Ord(Ch) - Ord('a') + 10;
+End;
+
+Function IsWhitespace(Ch : Char) : Boolean;
+Begin
+  IsWhitespace := (Ch = ' ') Or (Ch = #9);
+End;
+
+{ COBOL identifiers can contain letters, digits and hyphens (-) }
+{ Hyphens are allowed in the middle but not at start or end     }
+Function IsCobolIdentStart(Ch : Char) : Boolean;
+Begin
+  IsCobolIdentStart := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                        ((Ch >= 'a') And (Ch <= 'z'));
+End;
+
+Function IsCobolIdentCont(Ch : Char) : Boolean;
+Begin
+  IsCobolIdentCont := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                      ((Ch >= 'a') And (Ch <= 'z')) Or
+                      ((Ch >= '0') And (Ch <= '9')) Or
+                      (Ch = '-');
+End;
+
+{ ------------------------------------------------------------ }
+{ LexNextLine : lire la prochaine ligne du fichier source      }
+{ ------------------------------------------------------------ }
+
+Procedure LexNextLine;
+Begin
+  If LexEOF Then Exit;
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End
+  Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexInit : ouvrir le fichier source et initialiser le lexeur  }
+{ ------------------------------------------------------------ }
+
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  {$I-}
+  Reset(LexSrcF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
+  LexOpened   := True;
+  LexLineNo   := 0;
+  LexColNo    := 1;
+  LexEOF      := False;
+  LexLine     := '';
+  CurTokType  := TOK_EOF;
+  CurTokStr   := '';
+  CurTokNum   := 0;
+  CurTokReal  := 0.0;
+  CurTokLine  := 0;
+  CurTokCol   := 0;
+  LexTokCount := 0;
+  LexNextLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexClose : fermer le fichier source                          }
+{ ------------------------------------------------------------ }
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexSkipWhitespace                                            }
+{ ------------------------------------------------------------ }
+
+Procedure LexSkipWhitespace;
+Begin
+  While (LexColNo <= Length(LexLine)) And
+        IsWhitespace(LexLine[LexColNo]) Do
+    Inc(LexColNo);
+End;
+
+{ ------------------------------------------------------------ }
+{ LexIsCommentLine : determine si la ligne courante est un     }
+{ commentaire (format fixe: * ou / en colonne 7)               }
+{ ------------------------------------------------------------ }
+
+Function LexIsCommentLine : Boolean;
+Begin
+  If Opts.FreeFormat Then
+  Begin
+    { Format libre : pas de lignes commentaires implicites }
+    LexIsCommentLine := False;
+  End
+  Else
+  Begin
+    { Format fixe : colonne 7 = * (commentaire) ou / (saut page) }
+    If Length(LexLine) >= COB_COL_IND Then
+      LexIsCommentLine := (LexLine[COB_COL_IND] = '*') Or
+                           (LexLine[COB_COL_IND] = '/')
+    Else
+      LexIsCommentLine := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexIsDebugLine : determine si la ligne est une ligne debug   }
+{ (colonne 7 = D ou d en format fixe)                          }
+{ ------------------------------------------------------------ }
+
+Function LexIsDebugLine : Boolean;
+Begin
+  If Opts.FreeFormat Then
+    LexIsDebugLine := False
+  Else If Length(LexLine) >= COB_COL_IND Then
+    LexIsDebugLine := (LexLine[COB_COL_IND] = 'D') Or
+                       (LexLine[COB_COL_IND] = 'd')
+  Else
+    LexIsDebugLine := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexIsContinuationLine : determine si la ligne est une        }
+{ continuation (colonne 7 = - en format fixe)                  }
+{ ------------------------------------------------------------ }
+
+Function LexIsContinuationLine : Boolean;
+Begin
+  If Opts.FreeFormat Then
+    LexIsContinuationLine := False
+  Else If Length(LexLine) >= COB_COL_IND Then
+    LexIsContinuationLine := (LexLine[COB_COL_IND] = '-')
+  Else
+    LexIsContinuationLine := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexPrepareFixedLine : positionne LexColNo apres la zone de   }
+{ sequence et l indicateur (format fixe: debut en colonne 8)    }
+{ ------------------------------------------------------------ }
+
+Procedure LexPrepareFixedLine;
+Begin
+  If Not Opts.FreeFormat Then
+  Begin
+    { Ignorer les colonnes 1-7, commencer en colonne 8 (zone A) }
+    If Length(LexLine) >= COB_COL_AREA_A Then
+      LexColNo := COB_COL_AREA_A
+    Else
+      LexColNo := Length(LexLine) + 1;
+  End
+  Else
+    LexColNo := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexEffectiveEnd : retourne la derniere colonne utile         }
+{ Format fixe : colonne 72, format libre : fin de ligne        }
+{ ------------------------------------------------------------ }
+
+Function LexEffectiveEnd : Integer;
+Begin
+  If Opts.FreeFormat Then
+    LexEffectiveEnd := Length(LexLine)
+  Else
+  Begin
+    If Length(LexLine) > COB_COL_RIGHT Then
+      LexEffectiveEnd := COB_COL_RIGHT
+    Else
+      LexEffectiveEnd := Length(LexLine);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanIdent : identificateur COBOL (lettres, chiffres, -)   }
+{ Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
+{ COBOL est insensible a la casse : tout est converti en       }
+{ majuscules dans CurTokStr                                     }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanIdent;
+Var
+  S     : TString;
+  EndCol : Integer;
+Begin
+  S := '';
+  EndCol := LexEffectiveEnd;
+
+  { Lire lettres, chiffres et tirets }
+  While (LexColNo <= EndCol) And
+        IsCobolIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+
+  { Retirer les tirets en fin d identificateur }
+  While (Length(S) > 0) And (S[Length(S)] = '-') Do
+  Begin
+    Dec(LexColNo);
+    Delete(S, Length(S), 1);
+  End;
+
+  { COBOL est insensible a la casse }
+  CurTokStr  := UpCaseStr(S);
+  CurTokType := TOK_IDENT;
+  CurTokNum  := 0;
+  CurTokReal := 0.0;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanNumber : litteral numerique COBOL                     }
+{ Entier : 123, +5, -3                                         }
+{ Decimal : 1.5, 3.14                                          }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanNumber;
+Var
+  N       : LongInt;
+  IsReal  : Boolean;
+  FracDiv : Real;
+  FracVal : Real;
+  FltVal  : Real;
+  S       : TString;
+  EndCol  : Integer;
+Begin
+  N       := 0;
+  IsReal  := False;
+  FracVal := 0.0;
+  FracDiv := 10.0;
+  S       := '';
+  EndCol  := LexEffectiveEnd;
+
+  { Partie entiere }
+  While (LexColNo <= EndCol) And
+        IsDigit(LexLine[LexColNo]) Do
+  Begin
+    N := N * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+    S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+
+  { Partie decimale }
+  If (LexColNo <= EndCol) And (LexLine[LexColNo] = '.') Then
+  Begin
+    { Verifier que ce n est pas le terminateur d instruction }
+    { Le point est decimal si suivi d un chiffre }
+    If (LexColNo < EndCol) And IsDigit(LexLine[LexColNo + 1]) Then
+    Begin
+      IsReal := True;
+      S := S + '.';
+      Inc(LexColNo);
+      While (LexColNo <= EndCol) And
+            IsDigit(LexLine[LexColNo]) Do
+      Begin
+        FracVal := FracVal + (Ord(LexLine[LexColNo]) - Ord('0')) / FracDiv;
+        FracDiv := FracDiv * 10.0;
+        S := S + LexLine[LexColNo];
+        Inc(LexColNo);
+      End;
+    End;
+  End;
+
+  If IsReal Then
+  Begin
+    FltVal := N + FracVal;
+    CurTokType := TOK_DECIMAL;
+    CurTokReal := FltVal;
+    If FltVal > 2147483647.0 Then CurTokNum := 2147483647
+    Else If FltVal < -2147483647.0 Then CurTokNum := -2147483647
+    Else CurTokNum := Trunc(FltVal);
+    CurTokStr := S;
+  End
+  Else
+  Begin
+    CurTokType := TOK_INTEGER;
+    CurTokNum  := N;
+    CurTokReal := 0.0;
+    CurTokStr  := S;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanString : chaine COBOL entre apostrophes ou guillemets  }
+{ 'texte' ou "texte"                                           }
+{ Doublement du delimiteur pour inserer le caractere lui-meme   }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanString;
+Var
+  S     : TString;
+  Delim : Char;
+  EndCol : Integer;
+Begin
+  S := '';
+  Delim := LexLine[LexColNo];
+  EndCol := LexEffectiveEnd;
+  Inc(LexColNo); { sauter le delimiteur ouvrant }
+
+  While LexColNo <= EndCol Do
+  Begin
+    If LexLine[LexColNo] = Delim Then
+    Begin
+      Inc(LexColNo);
+      { Delimiteur double : '' ou "" -> un seul caractere }
+      If (LexColNo <= EndCol) And (LexLine[LexColNo] = Delim) Then
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + Delim;
+        Inc(LexColNo);
+      End
+      Else
+        Break; { fin de chaine }
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + LexLine[LexColNo];
+      Inc(LexColNo);
+    End;
+  End;
+
+  CurTokType := TOK_STRING;
+  CurTokStr  := S;
+  CurTokNum  := 0;
+  CurTokReal := 0.0;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanHexString : litteral hexadecimal COBOL X'FF' ou X"FF" }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanHexString;
+Var
+  S     : TString;
+  Delim : Char;
+  EndCol : Integer;
+Begin
+  S := '';
+  Inc(LexColNo); { sauter le X }
+  EndCol := LexEffectiveEnd;
+
+  If LexColNo > EndCol Then
+  Begin
+    CurTokType := TOK_HEX_STRING;
+    CurTokStr  := '';
+    CurTokNum  := 0;
+    CurTokReal := 0.0;
+    Exit;
+  End;
+
+  Delim := LexLine[LexColNo];
+  Inc(LexColNo); { sauter le delimiteur ouvrant }
+
+  While (LexColNo <= EndCol) And (LexLine[LexColNo] <> Delim) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+
+  If (LexColNo <= EndCol) And (LexLine[LexColNo] = Delim) Then
+    Inc(LexColNo); { sauter le delimiteur fermant }
+
+  CurTokType := TOK_HEX_STRING;
+  CurTokStr  := UpCaseStr(S);
+  CurTokNum  := 0;
+  CurTokReal := 0.0;
+End;
+
+{ ------------------------------------------------------------ }
+{ PrintToken : affichage debug de chaque token                 }
+{ ------------------------------------------------------------ }
+
+Procedure PrintToken;
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', CurTokLine, ',', CurTokCol, '] ');
+  Case CurTokType Of
+    TOK_EOF        : Write('EOF');
+    TOK_IDENT      : Write('IDENT(', CurTokStr, ')');
+    TOK_INTEGER    : Write('INT(', CurTokNum, ')');
+    TOK_DECIMAL    : Write('DEC(', CurTokStr, ')');
+    TOK_STRING     : Write('STR(''', CurTokStr, ''')');
+    TOK_HEX_STRING : Write('HEX(X''', CurTokStr, ''')');
+    TOK_PLUS       : Write('PLUS');
+    TOK_MINUS      : Write('MINUS');
+    TOK_STAR       : Write('STAR');
+    TOK_SLASH      : Write('SLASH');
+    TOK_POWER      : Write('POWER');
+    TOK_LPAREN     : Write('LPAREN');
+    TOK_RPAREN     : Write('RPAREN');
+    TOK_COMMA      : Write('COMMA');
+    TOK_DOT        : Write('DOT');
+    TOK_EQ         : Write('EQ');
+    TOK_NE         : Write('NE');
+    TOK_LT         : Write('LT');
+    TOK_GT         : Write('GT');
+    TOK_LE         : Write('LE');
+    TOK_GE         : Write('GE');
+    TOK_NEWLINE    : Write('NEWLINE');
+  Else
+    Write('TOK(', CurTokType, ')');
+  End;
+  WriteLn;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexNextToken : reconnaitre le prochain token COBOL           }
+{ Gere le format fixe (colonnes) et le format libre            }
+{ ------------------------------------------------------------ }
+
+Procedure LexNextToken;
+Var
+  Ch     : Char;
+  Done   : Boolean;
+  EndCol : Integer;
+Begin
+  Done := False;
+  While Not Done Do
+  Begin
+    { Avancer si on est en fin de ligne }
+    EndCol := LexEffectiveEnd;
+    While (Not LexEOF) And (LexColNo > EndCol) Do
+    Begin
+      LexNextLine;
+      If LexEOF Then Break;
+
+      { Sauter les lignes de commentaire (format fixe: * ou / en col 7) }
+      While (Not LexEOF) And LexIsCommentLine Do
+        LexNextLine;
+
+      If LexEOF Then Break;
+
+      { Sauter les lignes debug (D en colonne 7) sauf si mode debug }
+      While (Not LexEOF) And LexIsDebugLine And
+            (Not Opts.DebugMode) Do
+        LexNextLine;
+
+      If LexEOF Then Break;
+
+      { Format libre : detecter les commentaires *> }
+      If Opts.FreeFormat Then
+      Begin
+        LexColNo := 1;
+        LexSkipWhitespace;
+        If (LexColNo < Length(LexLine)) And
+           (LexLine[LexColNo] = '*') And
+           (LexLine[LexColNo + 1] = '>') Then
+        Begin
+          { Ligne de commentaire en format libre }
+          LexNextLine;
+          Continue;
+        End;
+      End
+      Else
+      Begin
+        { Format fixe : gestion de la continuation (- en colonne 7) }
+        If LexIsContinuationLine Then
+        Begin
+          { Continuation : commencer apres les espaces en zone B }
+          LexPrepareFixedLine;
+          LexSkipWhitespace;
+        End
+        Else
+          LexPrepareFixedLine;
+      End;
+
+      EndCol := LexEffectiveEnd;
+    End;
+
+    If LexEOF Then
+    Begin
+      CurTokLine := LexLineNo;
+      CurTokCol  := LexColNo;
+      CurTokType := TOK_EOF;
+      CurTokStr  := '';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Done := True;
+      Inc(LexTokCount);
+      PrintToken;
+      Exit;
+    End;
+
+    { Sauter les espaces }
+    LexSkipWhitespace;
+    EndCol := LexEffectiveEnd;
+    If LexColNo > EndCol Then
+      Continue;
+
+    CurTokLine := LexLineNo;
+    CurTokCol  := LexColNo;
+    Ch := LexLine[LexColNo];
+
+    { Format libre : commentaire *> en milieu de ligne }
+    If Opts.FreeFormat And (Ch = '*') And
+       (LexColNo < Length(LexLine)) And
+       (LexLine[LexColNo + 1] = '>') Then
+    Begin
+      LexColNo := Length(LexLine) + 1;
+      Continue;
+    End
+
+    { Identificateur COBOL (commence par une lettre) }
+    Else If IsCobolIdentStart(Ch) Then
+    Begin
+      { Verifier X'...' ou X"..." pour les litteraux hexadecimaux }
+      If ((Ch = 'X') Or (Ch = 'x')) And
+         (LexColNo < EndCol) And
+         ((LexLine[LexColNo + 1] = '''') Or
+          (LexLine[LexColNo + 1] = '"')) Then
+      Begin
+        LexScanHexString;
+        Done := True;
+      End
+      Else
+      Begin
+        LexScanIdent;
+        Done := True;
+      End;
+    End
+
+    { Litteral numerique }
+    Else If IsDigit(Ch) Then
+    Begin
+      LexScanNumber;
+      Done := True;
+    End
+
+    { Signe + ou - suivi d un chiffre au debut d un nombre }
+    Else If ((Ch = '+') Or (Ch = '-')) And
+            (LexColNo < EndCol) And
+            IsDigit(LexLine[LexColNo + 1]) And
+            { Seulement si le token precedent n est pas un ident/nombre }
+            ((CurTokType = TOK_EOF) Or (CurTokType = TOK_DOT) Or
+             (CurTokType = TOK_LPAREN) Or (CurTokType = TOK_COMMA) Or
+             (CurTokType = TOK_EQ) Or (CurTokType = TOK_NE) Or
+             (CurTokType = TOK_LT) Or (CurTokType = TOK_GT) Or
+             (CurTokType = TOK_LE) Or (CurTokType = TOK_GE) Or
+             (CurTokType = TOK_NEWLINE)) Then
+    Begin
+      { Signe faisant partie d un nombre }
+      { Traite comme operateur suivi de nombre : on emet l operateur }
+      If Ch = '+' Then
+        CurTokType := TOK_PLUS
+      Else
+        CurTokType := TOK_MINUS;
+      CurTokStr  := Ch;
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Chaine entre apostrophes ou guillemets }
+    Else If (Ch = '''') Or (Ch = '"') Then
+    Begin
+      LexScanString;
+      Done := True;
+    End
+
+    { Operateur ** (puissance) }
+    Else If (Ch = '*') And (LexColNo < EndCol) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      CurTokType := TOK_POWER;
+      CurTokStr  := '**';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo, 2);
+      Done := True;
+    End
+
+    { Operateur * }
+    Else If Ch = '*' Then
+    Begin
+      CurTokType := TOK_STAR;
+      CurTokStr  := '*';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Operateur + }
+    Else If Ch = '+' Then
+    Begin
+      CurTokType := TOK_PLUS;
+      CurTokStr  := '+';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Operateur - }
+    Else If Ch = '-' Then
+    Begin
+      CurTokType := TOK_MINUS;
+      CurTokStr  := '-';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Operateur / }
+    Else If Ch = '/' Then
+    Begin
+      CurTokType := TOK_SLASH;
+      CurTokStr  := '/';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Point : terminateur d instruction COBOL }
+    Else If Ch = '.' Then
+    Begin
+      CurTokType := TOK_DOT;
+      CurTokStr  := '.';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Parenthese ouvrante }
+    Else If Ch = '(' Then
+    Begin
+      CurTokType := TOK_LPAREN;
+      CurTokStr  := '(';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Parenthese fermante }
+    Else If Ch = ')' Then
+    Begin
+      CurTokType := TOK_RPAREN;
+      CurTokStr  := ')';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Virgule }
+    Else If Ch = ',' Then
+    Begin
+      CurTokType := TOK_COMMA;
+      CurTokStr  := ',';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { = (egal) }
+    Else If Ch = '=' Then
+    Begin
+      CurTokType := TOK_EQ;
+      CurTokStr  := '=';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { < : LT, <=, <> }
+    Else If Ch = '<' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= EndCol) And (LexLine[LexColNo] = '=') Then
+      Begin
+        CurTokType := TOK_LE;
+        CurTokStr  := '<=';
+        Inc(LexColNo);
+      End
+      Else If (LexColNo <= EndCol) And (LexLine[LexColNo] = '>') Then
+      Begin
+        CurTokType := TOK_NE;
+        CurTokStr  := '<>';
+        Inc(LexColNo);
+      End
+      Else
+      Begin
+        CurTokType := TOK_LT;
+        CurTokStr  := '<';
+      End;
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Done := True;
+    End
+
+    { > : GT, >= }
+    Else If Ch = '>' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= EndCol) And (LexLine[LexColNo] = '=') Then
+      Begin
+        CurTokType := TOK_GE;
+        CurTokStr  := '>=';
+        Inc(LexColNo);
+      End
+      Else
+      Begin
+        CurTokType := TOK_GT;
+        CurTokStr  := '>';
+      End;
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Done := True;
+    End
+
+    { Caractere inconnu : avertissement et avancer }
+    Else
+    Begin
+      WarnMsg('caractere inattendu: ''' + Ch + ''' (ASCII ' +
+              ItoSI(Ord(Ch)) + ') ligne ' + ItoS(LexLineNo) +
+              ' colonne ' + ItoSI(LexColNo));
+      Inc(LexColNo);
+    End;
+  End;
+
+  If Done Then
+  Begin
+    Inc(LexTokCount);
+    PrintToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 02)                             }
+{ ------------------------------------------------------------ }
+
+Function IsLexOpened : Boolean;
+Begin
+  IsLexOpened := LexOpened;
+End;
+
+Function IsLexEOF : Boolean;
+Begin
+  IsLexEOF := LexEOF;
+End;
+
+Function GetLexLineNo : Integer;
+Begin
+  GetLexLineNo := LexLineNo;
+End;
+
+Function GetLexColNo : Integer;
+Begin
+  GetLexColNo := LexColNo;
+End;
+
+Function GetLexTokCount : LongInt;
+Begin
+  GetLexTokCount := LexTokCount;
+End;
+
+Function GetCurTokType : Integer;
+Begin
+  GetCurTokType := CurTokType;
+End;
+
+Function GetCurTokStr : TString;
+Begin
+  GetCurTokStr := CurTokStr;
+End;
+
+Function GetCurTokNum : LongInt;
+Begin
+  GetCurTokNum := CurTokNum;
+End;
+
+Function GetCurTokLine : Integer;
+Begin
+  GetCurTokLine := CurTokLine;
+End;
+
+Function GetLexStatus : TString;
+Begin
+  If Not LexOpened Then
+    GetLexStatus := 'Not opened'
+  Else If LexEOF Then
+    GetLexStatus := 'EOF at line ' + ItoS(LexLineNo) +
+                    ' (' + ItoS(LexTokCount) + ' tokens)'
+  Else
+    GetLexStatus := 'Line ' + ItoS(LexLineNo) +
+                    ' col ' + ItoSI(LexColNo) +
+                    ' (' + ItoS(LexTokCount) + ' tokens)';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -1264,12 +2158,19 @@ Begin
   TotalLines := 0;
   OutFOpen   := False;
   BcActive   := False;
+  LexOpened  := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
 
   { Affichage de la banniere en mode verbeux }
   ShowBanner;
+
+  { Ouvrir le fichier source et initialiser le lexeur }
+  LexInit;
+
+  { Fermer le fichier source }
+  LexClose;
 
   { Statistiques finales }
   ShowStats;
