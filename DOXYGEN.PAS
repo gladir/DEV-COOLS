@@ -1406,7 +1406,8 @@ Type
 
   TOptions = Record
     ConfigFile   : String;
-    InputFile    : String;
+    InputFiles   : Array[1..64] Of String;
+    InputFileCount: Integer;
     OutputDir    : String;
     GenConfig    : Boolean;
     UpdateConfig : Boolean;
@@ -3544,8 +3545,6 @@ Procedure ExtractEntities(Const FileName: String; Lang: TSourceLanguage);
 Var
   BaseName: String;
 Begin
-  InitEntities;
-
   { Creer une entite ENT_FILE pour le fichier lui-meme }
   BaseName := ExtractFileName(FileName);
   AddEntity(ENT_FILE, BaseName, FileName, FileName, 1, VIS_PUBLIC);
@@ -7653,7 +7652,7 @@ End;
 Procedure InitOptions(Var O: TOptions);
 Begin
   O.ConfigFile   := '';
-  O.InputFile    := '';
+  O.InputFileCount := 0;
   O.OutputDir    := '';
   O.GenConfig    := False;
   O.UpdateConfig := False;
@@ -7756,11 +7755,15 @@ Begin
     End
     Else If (UpperArg = '-INPUT') Then
     Begin
-      { Extension DEV-COOLS : fichier source direct }
+      (* Extension DEV-COOLS : fichier source direct, supporte multi-fichiers *)
       If I < ParamCount Then
       Begin
         Inc(I);
-        O.InputFile := ParamStr(I);
+        If O.InputFileCount < 64 Then
+        Begin
+          Inc(O.InputFileCount);
+          O.InputFiles[O.InputFileCount] := ParamStr(I);
+        End;
       End
       Else
         FatalError('Option -INPUT requiert un nom de fichier');
@@ -7938,6 +7941,7 @@ Begin
   { Extraire les entites du code source (TODO 08) }
   WriteLn;
   WriteLn('Extraction des entites du code source...');
+  InitEntities;
   ExtractEntities(FileName, Lang);
 
   If EntityCount > 0 Then
@@ -21348,6 +21352,8 @@ End;
   ============================================================ }
 
 Procedure Run;
+Var
+  I: Integer;
 Begin
   ParseCommandLine(Opts);
 
@@ -21366,7 +21372,7 @@ Begin
   ShowBanner;
 
   { Extension DEV-COOLS : traitement direct d'un fichier source }
-  If Opts.InputFile <> '' Then
+  If Opts.InputFileCount > 0 Then
   Begin
     { Appliquer l'option SVG si specifiee pour le mode InputFile }
     If Opts.SvgOutput Then
@@ -21400,7 +21406,49 @@ Begin
       If Not Opts.Quiet Then
         WriteLn('Format de sortie Microsoft Visio (VDX) active');
     End;
-    ProcessInputFile(Opts.InputFile);
+    InitEntities;
+    For I := 1 To Opts.InputFileCount Do
+    Begin
+      WriteLn('Traitement de ', Opts.InputFiles[I]);
+      ExtractEntities(Opts.InputFiles[I],
+        DetectLanguageFromExt(Opts.InputFiles[I]));
+      WriteLn('Entites documentees extraites: ', EntityCount);
+    End;
+
+    If EntityCount > 0 Then
+    Begin
+      WriteLn;
+      WriteLn('Generation de la documentation HTML...');
+      WriteLn;
+      GenerateHtmlDocumentation;
+
+      If Opts.SvgOutput Or Opts.PngOutput Or Opts.JpegOutput
+         Or Opts.VdxOutput Then
+      Begin
+        If Opts.SvgOutput Then
+          ClassDiagFormat := 'svg'
+        Else If Opts.PngOutput Then
+          ClassDiagFormat := 'png'
+        Else If Opts.JpegOutput Then
+          ClassDiagFormat := 'jpg'
+        Else If Opts.VdxOutput Then
+          ClassDiagFormat := 'vdx'
+        Else
+          ClassDiagFormat := 'png';
+
+        WriteLn;
+        WriteLn('Generation des diagrammes de classes...');
+        GenerateClassDiagramDocumentation;
+
+        WriteLn;
+        WriteLn('Generation des graphes d''appels...');
+        GenerateCallGraphDocumentation;
+
+        WriteLn;
+        WriteLn('Generation des graphes de dependances...');
+        GenerateDepGraphDocumentation;
+      End;
+    End;
     Halt(EXIT_OK);
   End;
 
