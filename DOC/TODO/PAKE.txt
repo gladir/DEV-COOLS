@@ -290,10 +290,18 @@ Turbo Pascal / Free Pascal (-Mtp)
          GetKbdDisabledCount/GetKbdActiveCount/GetKbdMaxShortcuts/
          GetKbdDefaultKey)
 
-  TODO 11 - MODE FENETRE IMMERSIVE [A FAIRE]
+  TODO 11 - MODE FENETRE IMMERSIVE [IMPLEMENTE]
          Constantes de modes de fenetre :
            WINDOW_NORMAL = 0, WINDOW_FRAMELESS = 1,
            WINDOW_TRANSPARENT = 2, WINDOW_FULLSCREEN = 3
+         WMD_MAX_STYLES = 4, WMD_MAX_TITLEBAR_LEN = 4096
+         WmdInitialized/WmdStateCount/WmdModeCount/WmdCssGenCount/
+         WmdHtmlGenCount/WmdJsGenCount/WmdNormalCount/WmdFramelessCount/
+         WmdTransparentCount/WmdFullscreenCount vars
+         Procedure InitWindowModeState
+           initialiser les variables de gestion du mode fenetre
+         Function WindowModeName(Mode: Integer): String
+           retourner le nom du mode de fenetre
          Function GetWindowMode(Const Opts: TOptions): Integer
            determiner le mode de fenetre depuis les options
          Function GenerateWindowStyleCss(Mode: Integer): String
@@ -307,6 +315,10 @@ Turbo Pascal / Free Pascal (-Mtp)
          Function GenerateDragRegionJs: String
            generer le JavaScript pour la zone draggable
            utiliser -webkit-app-region: drag
+         10 accesseurs (IsWmdInitialized/IsWmdEmpty/GetWmdStateCount/
+         GetWmdModeCount/GetWmdCssGenCount/GetWmdHtmlGenCount/
+         GetWmdJsGenCount/GetWmdNormalCount/GetWmdFramelessCount/
+         GetWmdMaxStyles)
 
   TODO 12 - INJECTION CSS PERSONNALISE [A FAIRE]
          Function LoadCssFile(Const Path: String): String

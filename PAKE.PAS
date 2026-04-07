@@ -333,10 +333,18 @@
             GetKbdDisabledCount/GetKbdActiveCount/GetKbdMaxShortcuts/
             GetKbdDefaultKey)
 
-  TODO 11 - MODE FENETRE IMMERSIVE [A FAIRE]
+  TODO 11 - MODE FENETRE IMMERSIVE [IMPLEMENTE]
             Constantes de modes de fenetre :
               WINDOW_NORMAL = 0, WINDOW_FRAMELESS = 1,
               WINDOW_TRANSPARENT = 2, WINDOW_FULLSCREEN = 3
+            WMD_MAX_STYLES = 4, WMD_MAX_TITLEBAR_LEN = 4096
+            WmdInitialized/WmdStateCount/WmdModeCount/WmdCssGenCount/
+            WmdHtmlGenCount/WmdJsGenCount/WmdNormalCount/WmdFramelessCount/
+            WmdTransparentCount/WmdFullscreenCount vars
+            Procedure InitWindowModeState
+              initialiser les variables de gestion du mode fenetre
+            Function WindowModeName(Mode: Integer): String
+              retourner le nom du mode de fenetre
             Function GetWindowMode(Const Opts: TOptions): Integer
               determiner le mode de fenetre depuis les options
             Function GenerateWindowStyleCss(Mode: Integer): String
@@ -350,6 +358,10 @@
             Function GenerateDragRegionJs: String
               generer le JavaScript pour la zone draggable
               utiliser -webkit-app-region: drag
+            10 accesseurs (IsWmdInitialized/IsWmdEmpty/GetWmdStateCount/
+            GetWmdModeCount/GetWmdCssGenCount/GetWmdHtmlGenCount/
+            GetWmdJsGenCount/GetWmdNormalCount/GetWmdFramelessCount/
+            GetWmdMaxStyles)
 
   TODO 12 - INJECTION CSS PERSONNALISE [A FAIRE]
             Function LoadCssFile(Const Path: String): String
@@ -2580,7 +2592,7 @@ Begin
   { Navigation vers l'URL }
   Rs := Rs + '            // Load target URL' + #13#10;
   Rs := Rs + '            let url = "' + EscapeJson(Opts.Url) + '";' + #13#10;
-  Rs := Rs + '            window.eval(&format!("window.location.href = ''''{}'''''", url)).ok();' + #13#10;
+  Rs := Rs + '            window.eval(&format!("window.location.href = ''''{}''''", url)).ok();' + #13#10;
 
   { Injection CSS si specifie }
   If Opts.InjectCss <> '' Then
@@ -3180,7 +3192,345 @@ Begin
 End;
 
 { ============================================================
-  TODO 11-25 : A IMPLEMENTER
+  TODO 11 - MODE FENETRE IMMERSIVE
+  ============================================================ }
+
+Const
+  { Limites }
+  WMD_MAX_STYLES      = 4;
+  WMD_MAX_TITLEBAR_LEN = 4096;
+
+Var
+  { Variables d'etat pour le mode fenetre }
+  WmdInitialized     : Boolean;
+  WmdStateCount      : Integer;
+  WmdModeCount       : Integer;
+  WmdCssGenCount     : Integer;
+  WmdHtmlGenCount    : Integer;
+  WmdJsGenCount      : Integer;
+  WmdNormalCount     : Integer;
+  WmdFramelessCount  : Integer;
+  WmdTransparentCount: Integer;
+  WmdFullscreenCount : Integer;
+
+{ Initialiser l'etat du module Mode Fenetre }
+Procedure InitWindowModeState;
+Begin
+  WmdInitialized := True;
+  WmdStateCount := WmdStateCount + 1;
+  WmdModeCount := 0;
+  WmdCssGenCount := 0;
+  WmdHtmlGenCount := 0;
+  WmdJsGenCount := 0;
+  WmdNormalCount := 0;
+  WmdFramelessCount := 0;
+  WmdTransparentCount := 0;
+  WmdFullscreenCount := 0;
+End;
+
+{ Retourner le nom du mode de fenetre }
+Function WindowModeName(Mode: Integer): String;
+Begin
+  Case Mode Of
+    WINDOW_NORMAL:      WindowModeName := 'normal';
+    WINDOW_FRAMELESS:   WindowModeName := 'frameless';
+    WINDOW_TRANSPARENT: WindowModeName := 'transparent';
+    WINDOW_FULLSCREEN:  WindowModeName := 'fullscreen';
+  Else
+    WindowModeName := 'unknown';
+  End;
+End;
+
+{ Determiner le mode de fenetre depuis les options }
+Function GetWindowMode(Const Opts: TOptions): Integer;
+Begin
+  Inc(WmdModeCount);
+  
+  { Priorite : fullscreen > transparent > hide-title-bar > normal }
+  If Opts.Fullscreen Then
+  Begin
+    Inc(WmdFullscreenCount);
+    GetWindowMode := WINDOW_FULLSCREEN;
+  End
+  Else If Opts.Transparent Then
+  Begin
+    Inc(WmdTransparentCount);
+    GetWindowMode := WINDOW_TRANSPARENT;
+  End
+  Else If Opts.HideTitleBar Then
+  Begin
+    Inc(WmdFramelessCount);
+    GetWindowMode := WINDOW_FRAMELESS;
+  End
+  Else
+  Begin
+    Inc(WmdNormalCount);
+    GetWindowMode := WINDOW_NORMAL;
+  End;
+End;
+
+{ Generer le CSS pour le style de fenetre }
+Function GenerateWindowStyleCss(Mode: Integer): String;
+Var
+  Css: String;
+Begin
+  Inc(WmdCssGenCount);
+  Css := '';
+  
+  Case Mode Of
+    WINDOW_FRAMELESS:
+    Begin
+      { CSS pour fenetre sans bordure avec barre de titre personnalisee }
+      Css := Css + '/* Barre de titre personnalisee */' + Chr(10);
+      Css := Css + '.pake-titlebar {' + Chr(10);
+      Css := Css + '  position: fixed;' + Chr(10);
+      Css := Css + '  top: 0;' + Chr(10);
+      Css := Css + '  left: 0;' + Chr(10);
+      Css := Css + '  right: 0;' + Chr(10);
+      Css := Css + '  height: 32px;' + Chr(10);
+      Css := Css + '  background: linear-gradient(to bottom, #f5f5f5, #e0e0e0);' + Chr(10);
+      Css := Css + '  border-bottom: 1px solid #c0c0c0;' + Chr(10);
+      Css := Css + '  display: flex;' + Chr(10);
+      Css := Css + '  align-items: center;' + Chr(10);
+      Css := Css + '  justify-content: space-between;' + Chr(10);
+      Css := Css + '  -webkit-app-region: drag;' + Chr(10);
+      Css := Css + '  z-index: 9999;' + Chr(10);
+      Css := Css + '  user-select: none;' + Chr(10);
+      Css := Css + '}' + Chr(10);
+      Css := Css + Chr(10);
+      Css := Css + '/* Titre de l''application */' + Chr(10);
+      Css := Css + '.pake-titlebar-title {' + Chr(10);
+      Css := Css + '  flex: 1;' + Chr(10);
+      Css := Css + '  text-align: center;' + Chr(10);
+      Css := Css + '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;' + Chr(10);
+      Css := Css + '  font-size: 13px;' + Chr(10);
+      Css := Css + '  font-weight: 500;' + Chr(10);
+      Css := Css + '  color: #333;' + Chr(10);
+      Css := Css + '}' + Chr(10);
+      Css := Css + Chr(10);
+      Css := Css + '/* Boutons de controle */' + Chr(10);
+      Css := Css + '.pake-titlebar-buttons {' + Chr(10);
+      Css := Css + '  display: flex;' + Chr(10);
+      Css := Css + '  gap: 8px;' + Chr(10);
+      Css := Css + '  padding: 0 12px;' + Chr(10);
+      Css := Css + '  -webkit-app-region: no-drag;' + Chr(10);
+      Css := Css + '}' + Chr(10);
+      Css := Css + Chr(10);
+      Css := Css + '.pake-titlebar-btn {' + Chr(10);
+      Css := Css + '  width: 12px;' + Chr(10);
+      Css := Css + '  height: 12px;' + Chr(10);
+      Css := Css + '  border-radius: 50%;' + Chr(10);
+      Css := Css + '  border: none;' + Chr(10);
+      Css := Css + '  cursor: pointer;' + Chr(10);
+      Css := Css + '  transition: opacity 0.2s;' + Chr(10);
+      Css := Css + '}' + Chr(10);
+      Css := Css + Chr(10);
+      Css := Css + '.pake-titlebar-btn:hover {' + Chr(10);
+      Css := Css + '  opacity: 0.8;' + Chr(10);
+      Css := Css + '}' + Chr(10);
+      Css := Css + Chr(10);
+      Css := Css + '.pake-btn-close { background: #ff5f57; }' + Chr(10);
+      Css := Css + '.pake-btn-minimize { background: #febc2e; }' + Chr(10);
+      Css := Css + '.pake-btn-maximize { background: #28c840; }' + Chr(10);
+      Css := Css + Chr(10);
+      Css := Css + '/* Ajuster le contenu pour la barre de titre */' + Chr(10);
+      Css := Css + 'body {' + Chr(10);
+      Css := Css + '  margin-top: 32px !important;' + Chr(10);
+      Css := Css + '}' + Chr(10);
+    End;
+    
+    WINDOW_TRANSPARENT:
+    Begin
+      { CSS pour fenetre transparente }
+      Css := Css + '/* Fenetre transparente */' + Chr(10);
+      Css := Css + 'html, body {' + Chr(10);
+      Css := Css + '  background: transparent !important;' + Chr(10);
+      Css := Css + '}' + Chr(10);
+      Css := Css + Chr(10);
+      Css := Css + '.pake-drag-region {' + Chr(10);
+      Css := Css + '  position: fixed;' + Chr(10);
+      Css := Css + '  top: 0;' + Chr(10);
+      Css := Css + '  left: 0;' + Chr(10);
+      Css := Css + '  right: 0;' + Chr(10);
+      Css := Css + '  height: 24px;' + Chr(10);
+      Css := Css + '  -webkit-app-region: drag;' + Chr(10);
+      Css := Css + '  z-index: 9999;' + Chr(10);
+      Css := Css + '}' + Chr(10);
+    End;
+    
+    WINDOW_FULLSCREEN:
+    Begin
+      { CSS pour mode plein ecran }
+      Css := Css + '/* Mode plein ecran */' + Chr(10);
+      Css := Css + 'html, body {' + Chr(10);
+      Css := Css + '  margin: 0 !important;' + Chr(10);
+      Css := Css + '  padding: 0 !important;' + Chr(10);
+      Css := Css + '  overflow: hidden !important;' + Chr(10);
+      Css := Css + '  width: 100vw !important;' + Chr(10);
+      Css := Css + '  height: 100vh !important;' + Chr(10);
+      Css := Css + '}' + Chr(10);
+    End;
+    
+    { WINDOW_NORMAL - pas de CSS special }
+  End;
+  
+  GenerateWindowStyleCss := Css;
+End;
+
+{ Generer le HTML pour la barre de titre personnalisee }
+Function GenerateTitleBarHtml(Const AppName: String; Mode: Integer): String;
+Var
+  Html: String;
+Begin
+  Inc(WmdHtmlGenCount);
+  Html := '';
+  
+  If Mode = WINDOW_FRAMELESS Then
+  Begin
+    Html := Html + '<div class="pake-titlebar">' + Chr(10);
+    Html := Html + '  <div class="pake-titlebar-buttons">' + Chr(10);
+    Html := Html + '    <button class="pake-titlebar-btn pake-btn-close" ';
+    Html := Html + 'onclick="window.__TAURI__.window.appWindow.close()" ';
+    Html := Html + 'title="Fermer"></button>' + Chr(10);
+    Html := Html + '    <button class="pake-titlebar-btn pake-btn-minimize" ';
+    Html := Html + 'onclick="window.__TAURI__.window.appWindow.minimize()" ';
+    Html := Html + 'title="Minimiser"></button>' + Chr(10);
+    Html := Html + '    <button class="pake-titlebar-btn pake-btn-maximize" ';
+    Html := Html + 'onclick="window.__TAURI__.window.appWindow.toggleMaximize()" ';
+    Html := Html + 'title="Maximiser"></button>' + Chr(10);
+    Html := Html + '  </div>' + Chr(10);
+    Html := Html + '  <div class="pake-titlebar-title">' + EscapeJson(AppName) + '</div>' + Chr(10);
+    Html := Html + '  <div class="pake-titlebar-buttons" style="visibility: hidden;">' + Chr(10);
+    Html := Html + '    <button class="pake-titlebar-btn"></button>' + Chr(10);
+    Html := Html + '    <button class="pake-titlebar-btn"></button>' + Chr(10);
+    Html := Html + '    <button class="pake-titlebar-btn"></button>' + Chr(10);
+    Html := Html + '  </div>' + Chr(10);
+    Html := Html + '</div>' + Chr(10);
+  End
+  Else If Mode = WINDOW_TRANSPARENT Then
+  Begin
+    { Zone draggable invisible pour fenetre transparente }
+    Html := Html + '<div class="pake-drag-region"></div>' + Chr(10);
+  End;
+  
+  GenerateTitleBarHtml := Html;
+End;
+
+{ Generer le JavaScript pour la zone draggable }
+Function GenerateDragRegionJs: String;
+Var
+  Js: String;
+Begin
+  Inc(WmdJsGenCount);
+  Js := '';
+  
+  { JavaScript pour gerer la zone de drag }
+  Js := Js + '// Pake - Gestion de la zone draggable' + Chr(10);
+  Js := Js + '(function() {' + Chr(10);
+  Js := Js + '  ''use strict'';' + Chr(10);
+  Js := Js + Chr(10);
+  Js := Js + '  // Ajouter les styles pour la zone draggable' + Chr(10);
+  Js := Js + '  function initDragRegion() {' + Chr(10);
+  Js := Js + '    // Les elements avec -webkit-app-region: drag sont automatiquement' + Chr(10);
+  Js := Js + '    // geres par Tauri pour permettre le deplacement de la fenetre' + Chr(10);
+  Js := Js + Chr(10);
+  Js := Js + '    // Empecher le drag sur les elements interactifs' + Chr(10);
+  Js := Js + '    const noDragElements = document.querySelectorAll(' + Chr(10);
+  Js := Js + '      ''a, button, input, textarea, select, [contenteditable], .pake-titlebar-btn''' + Chr(10);
+  Js := Js + '    );' + Chr(10);
+  Js := Js + Chr(10);
+  Js := Js + '    noDragElements.forEach(function(el) {' + Chr(10);
+  Js := Js + '      el.style.webkitAppRegion = ''no-drag'';' + Chr(10);
+  Js := Js + '    });' + Chr(10);
+  Js := Js + '  }' + Chr(10);
+  Js := Js + Chr(10);
+  Js := Js + '  // Observer les mutations du DOM pour les nouveaux elements' + Chr(10);
+  Js := Js + '  function observeDom() {' + Chr(10);
+  Js := Js + '    const observer = new MutationObserver(function(mutations) {' + Chr(10);
+  Js := Js + '      mutations.forEach(function(mutation) {' + Chr(10);
+  Js := Js + '        if (mutation.addedNodes.length > 0) {' + Chr(10);
+  Js := Js + '          initDragRegion();' + Chr(10);
+  Js := Js + '        }' + Chr(10);
+  Js := Js + '      });' + Chr(10);
+  Js := Js + '    });' + Chr(10);
+  Js := Js + Chr(10);
+  Js := Js + '    observer.observe(document.body, {' + Chr(10);
+  Js := Js + '      childList: true,' + Chr(10);
+  Js := Js + '      subtree: true' + Chr(10);
+  Js := Js + '    });' + Chr(10);
+  Js := Js + '  }' + Chr(10);
+  Js := Js + Chr(10);
+  Js := Js + '  // Initialiser au chargement du DOM' + Chr(10);
+  Js := Js + '  if (document.readyState === ''loading'') {' + Chr(10);
+  Js := Js + '    document.addEventListener(''DOMContentLoaded'', function() {' + Chr(10);
+  Js := Js + '      initDragRegion();' + Chr(10);
+  Js := Js + '      observeDom();' + Chr(10);
+  Js := Js + '    });' + Chr(10);
+  Js := Js + '  } else {' + Chr(10);
+  Js := Js + '    initDragRegion();' + Chr(10);
+  Js := Js + '    observeDom();' + Chr(10);
+  Js := Js + '  }' + Chr(10);
+  Js := Js + '})();' + Chr(10);
+  
+  GenerateDragRegionJs := Js;
+End;
+
+{ ============================================================
+  Accesseurs pour TODO 11 - MODE FENETRE IMMERSIVE
+  ============================================================ }
+
+Function IsWmdInitialized: Boolean;
+Begin
+  IsWmdInitialized := WmdInitialized;
+End;
+
+Function IsWmdEmpty: Boolean;
+Begin
+  IsWmdEmpty := (WmdModeCount = 0);
+End;
+
+Function GetWmdStateCount: Integer;
+Begin
+  GetWmdStateCount := WmdStateCount;
+End;
+
+Function GetWmdModeCount: Integer;
+Begin
+  GetWmdModeCount := WmdModeCount;
+End;
+
+Function GetWmdCssGenCount: Integer;
+Begin
+  GetWmdCssGenCount := WmdCssGenCount;
+End;
+
+Function GetWmdHtmlGenCount: Integer;
+Begin
+  GetWmdHtmlGenCount := WmdHtmlGenCount;
+End;
+
+Function GetWmdJsGenCount: Integer;
+Begin
+  GetWmdJsGenCount := WmdJsGenCount;
+End;
+
+Function GetWmdNormalCount: Integer;
+Begin
+  GetWmdNormalCount := WmdNormalCount;
+End;
+
+Function GetWmdFramelessCount: Integer;
+Begin
+  GetWmdFramelessCount := WmdFramelessCount;
+End;
+
+Function GetWmdMaxStyles: Integer;
+Begin
+  GetWmdMaxStyles := WMD_MAX_STYLES;
+End;
+
+{ ============================================================
+  TODO 12-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -3288,6 +3638,7 @@ Procedure Run(Var O: TOptions);
 Var
   AppId, PkgName: String;
   TauriCfg: TTauriConfig;
+  WinMode: Integer;
 Begin
   If O.Verbose Then
   Begin
@@ -3310,6 +3661,9 @@ Begin
   { Initialiser le module raccourcis clavier }
   InitShortcutState;
 
+  { Initialiser le module mode fenetre }
+  InitWindowModeState;
+
   { Generer le nom de l'application si non specifie }
   O.AppName := GenerateAppName(O);
 
@@ -3326,22 +3680,25 @@ Begin
   { Enregistrer les raccourcis par defaut }
   RegisterDefaultShortcuts(O.DisableWebShortcuts);
 
+  { Determiner le mode de fenetre }
+  WinMode := GetWindowMode(O);
+
   WriteLn('Application : ', O.AppName);
   WriteLn('Identifiant : ', AppId);
   WriteLn('Package     : ', PkgName);
   WriteLn('URL         : ', O.Url);
   WriteLn('Fenetre     : ', O.Width, 'x', O.Height);
+  WriteLn('Mode fenetre: ', WindowModeName(WinMode));
   WriteLn('Plateforme  : ', PlatformName(GetPlatform));
   WriteLn('Raccourcis  : ', GetKbdActiveCount, ' actifs');
   WriteLn;
 
-  { TODO: Implementer les TODOs 11-25 }
-  WriteLn('*** NOTE: TODOs 01-10 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 11-25 restent a implementer ***');
+  { TODO: Implementer les TODOs 12-25 }
+  WriteLn('*** NOTE: TODOs 01-11 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 12-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 11: Mode fenetre immersive');
   WriteLn('  - TODO 12: Injection CSS personnalise');
   WriteLn('  - TODO 13: Injection JavaScript personnalise');
   WriteLn('  - TODO 14: Suppression des pubs (AdBlock)');
