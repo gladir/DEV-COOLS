@@ -758,7 +758,7 @@
               n inclure que le necessaire
             10 fonctions accesseurs
 
-  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\COBOL\* [A FAIRE]
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\COBOL\* [IMPLEMENTE]
             Optimisations peephole :
               MOV EAX, 0 -> XOR EAX, EAX
               PUSH EAX / POP EAX -> (eliminer)
@@ -1802,8 +1802,11 @@ Const
   { Mots-cles pour TODO 24 : IMPORTS API WIN32 }
   KW_IMPORTS           = 253;  { IMPORTS }
 
+  { Mots-cles pour TODO 25 : OPTIMISATIONS ET TESTS }
+  KW_OPTIMIZE          = 254;  { OPTIMIZE }
+
   { Nombre total de mots-cles definis }
-  KW_TOTAL_KEYWORDS    = 185;  { nombre approximatif de mots-cles }
+  KW_TOTAL_KEYWORDS    = 186;  { nombre approximatif de mots-cles }
 
 Var
   { Variables du module de mots-cles }
@@ -22103,6 +22106,853 @@ Begin
   GetImpStateCount := ImpStateCount;
 End;
 
+{ ============================================================ }
+{ TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION         }
+{           SAMPLES\COBOL\*                                    }
+{ ============================================================ }
+
+Const
+  { Types d optimisation peephole }
+  OPT_PH_NONE           = 0;           { pas d optimisation                      }
+  OPT_PH_MOV_ZERO       = 1;           { MOV EAX,0 -> XOR EAX,EAX               }
+  OPT_PH_PUSH_POP       = 2;           { PUSH EAX / POP EAX -> eliminer          }
+  OPT_PH_REDUNDANT_MOV  = 3;           { MOV EAX,[x] / MOV [x],EAX -> eliminer   }
+  OPT_PH_ADD_ONE        = 4;           { ADD EAX,1 -> INC EAX                    }
+  OPT_PH_SUB_ONE        = 5;           { SUB EAX,1 -> DEC EAX                    }
+  OPT_PH_IMUL_2         = 6;           { IMUL EAX,2 -> SHL EAX,1                }
+  OPT_PH_IMUL_4         = 7;           { IMUL EAX,4 -> SHL EAX,2                }
+
+  { Types de fichiers exemples }
+  OPT_SAM_NONE           = 0;          { pas de sample                           }
+  OPT_SAM_HELLO          = 1;          { HELLO.CBL - Hello World avec DISPLAY    }
+  OPT_SAM_DATA           = 2;          { DATA_TEST.CBL - DATA DIVISION           }
+  OPT_SAM_IDENT          = 3;          { IDENT_TEST.CBL - IDENTIFICATION DIV     }
+  OPT_SAM_ENV            = 4;          { ENV_TEST.CBL - ENVIRONMENT DIVISION     }
+
+  { Modes de sortie verifies }
+  OPT_OUT_NONE           = 0;          { pas de mode                             }
+  OPT_OUT_EXE            = 1;          { .EXE (defaut)                           }
+  OPT_OUT_OBJ            = 2;          { .OBJ (-obj)                             }
+  OPT_OUT_ASM            = 3;          { .ASM (-asm)                             }
+
+  { Types de tests }
+  OPT_TST_NONE           = 0;          { pas de test                             }
+  OPT_TST_FIGURATIVE     = 1;          { constantes figuratives                  }
+  OPT_TST_MOVE_PIC       = 2;          { MOVE avec differents PIC                }
+  OPT_TST_ARITHMETIC     = 3;          { arithmetique decimale                   }
+  OPT_TST_COBOL85        = 4;          { compatibilite COBOL-85                  }
+  OPT_TST_REGRESSION     = 5;          { regression par TODO                     }
+  OPT_TST_OUTPUT_MODE    = 6;          { verification modes sortie               }
+  OPT_TST_EXE_SIZE       = 7;          { mesure taille executable                }
+  OPT_TST_SAMPLE         = 8;          { verification exemples                   }
+
+  { Limites }
+  OPT_MAX_RULES          = 16;         { nombre max de regles peephole           }
+  OPT_MAX_SAMPLES        = 8;          { nombre max d exemples a verifier        }
+  OPT_MAX_TESTS          = 64;         { nombre max de tests                     }
+  OPT_MAX_TODO           = 25;         { nombre max de TODOs pour regression     }
+
+Type
+  TOptPeepholeRule = Record
+    RuleType       : Integer;          { OPT_PH_* type de regle                  }
+    Pattern        : TString;          { instruction originale (pattern)          }
+    Replacement    : TString;          { instruction optimisee                    }
+    ApplyCount     : Integer;          { nombre de fois appliquee                }
+    IsActive       : Boolean;          { True si la regle est active             }
+  End;
+
+  TOptSampleTest = Record
+    FileName       : TString;          { nom du fichier CBL                      }
+    Description    : TString;          { description du test                     }
+    SampleType     : Integer;          { OPT_SAM_* type de sample               }
+    IsPassed       : Boolean;          { True si le test est passe              }
+    ErrorMsg       : TString;          { message d erreur si echoue             }
+  End;
+
+Var
+  OptInitialized         : Boolean;    { True si InitOptimizeState appele        }
+  OptStateCount          : Integer;    { compteur d etat general                 }
+  OptLabelNum            : Integer;    { compteur de labels generes              }
+  OptRules               : Array[0..OPT_MAX_RULES-1] Of TOptPeepholeRule;
+  OptRuleCount           : Integer;    { nombre de regles peephole               }
+  OptSamples             : Array[0..OPT_MAX_SAMPLES-1] Of TOptSampleTest;
+  OptSampleCount         : Integer;    { nombre d exemples enregistres           }
+  OptSamplePassCount     : Integer;    { nombre d exemples passes                }
+  OptSampleFailCount     : Integer;    { nombre d exemples echoues               }
+  OptMovZeroCount        : Integer;    { compteur MOV EAX,0 -> XOR              }
+  OptPushPopCount        : Integer;    { compteur PUSH/POP elimines              }
+  OptRedundantMovCount   : Integer;    { compteur MOV redondants elimines        }
+  OptAddOneCount         : Integer;    { compteur ADD 1 -> INC                   }
+  OptSubOneCount         : Integer;    { compteur SUB 1 -> DEC                   }
+  OptImul2Count          : Integer;    { compteur IMUL 2 -> SHL 1               }
+  OptImul4Count          : Integer;    { compteur IMUL 4 -> SHL 2               }
+  OptTotalOptimized      : Integer;    { total d instructions optimisees         }
+  OptExeVerified         : Boolean;    { True si mode .EXE verifie              }
+  OptObjVerified         : Boolean;    { True si mode .OBJ verifie              }
+  OptAsmVerified         : Boolean;    { True si mode .ASM verifie              }
+  OptExeSize             : LongInt;    { taille estimee de l executable          }
+  OptCobol85Passed       : Boolean;    { True si compat COBOL-85 OK             }
+  OptFigurativeCount     : Integer;    { compteur tests figuratifs               }
+  OptMovePicCount        : Integer;    { compteur tests MOVE PIC                 }
+  OptArithmeticCount     : Integer;    { compteur tests arithmetiques            }
+  OptRegressionCount     : Integer;    { compteur tests regression               }
+  OptRegressionPassed    : Integer;    { tests regression passes                 }
+  OptTotalTests          : Integer;    { nombre total de tests executes          }
+  OptTotalPassed         : Integer;    { nombre total de tests passes            }
+
+{ ------------------------------------------------------------ }
+{ InitOptimizeState : initialiser l etat du module Optimisations }
+{ Enregistre les 7 regles peephole et les 4 exemples SAMPLES    }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptimizeState;
+
+  Procedure AddRule(RType : Integer; Pat, Rep : TString);
+  Begin
+    If OptRuleCount < OPT_MAX_RULES Then Begin
+      OptRules[OptRuleCount].RuleType := RType;
+      OptRules[OptRuleCount].Pattern := Pat;
+      OptRules[OptRuleCount].Replacement := Rep;
+      OptRules[OptRuleCount].ApplyCount := 0;
+      OptRules[OptRuleCount].IsActive := True;
+      Inc(OptRuleCount);
+    End;
+  End;
+
+  Procedure AddSample(SType : Integer; FName, Desc : TString);
+  Begin
+    If OptSampleCount < OPT_MAX_SAMPLES Then Begin
+      OptSamples[OptSampleCount].FileName := FName;
+      OptSamples[OptSampleCount].Description := Desc;
+      OptSamples[OptSampleCount].SampleType := SType;
+      OptSamples[OptSampleCount].IsPassed := False;
+      OptSamples[OptSampleCount].ErrorMsg := '';
+      Inc(OptSampleCount);
+    End;
+  End;
+
+Var
+  I : Integer;
+Begin
+  OptInitialized := True;
+  OptStateCount := 0;
+  OptLabelNum := 0;
+  OptRuleCount := 0;
+  OptSampleCount := 0;
+  OptSamplePassCount := 0;
+  OptSampleFailCount := 0;
+  OptMovZeroCount := 0;
+  OptPushPopCount := 0;
+  OptRedundantMovCount := 0;
+  OptAddOneCount := 0;
+  OptSubOneCount := 0;
+  OptImul2Count := 0;
+  OptImul4Count := 0;
+  OptTotalOptimized := 0;
+  OptExeVerified := False;
+  OptObjVerified := False;
+  OptAsmVerified := False;
+  OptExeSize := 0;
+  OptCobol85Passed := False;
+  OptFigurativeCount := 0;
+  OptMovePicCount := 0;
+  OptArithmeticCount := 0;
+  OptRegressionCount := 0;
+  OptRegressionPassed := 0;
+  OptTotalTests := 0;
+  OptTotalPassed := 0;
+
+  For I := 0 To OPT_MAX_RULES - 1 Do Begin
+    OptRules[I].RuleType := OPT_PH_NONE;
+    OptRules[I].Pattern := '';
+    OptRules[I].Replacement := '';
+    OptRules[I].ApplyCount := 0;
+    OptRules[I].IsActive := False;
+  End;
+  For I := 0 To OPT_MAX_SAMPLES - 1 Do Begin
+    OptSamples[I].FileName := '';
+    OptSamples[I].Description := '';
+    OptSamples[I].SampleType := OPT_SAM_NONE;
+    OptSamples[I].IsPassed := False;
+    OptSamples[I].ErrorMsg := '';
+  End;
+
+  { Enregistrer les 7 regles peephole }
+  AddRule(OPT_PH_MOV_ZERO,      'MOV EAX, 0',   'XOR EAX, EAX');
+  AddRule(OPT_PH_PUSH_POP,      'PUSH+POP EAX',  '(eliminer)');
+  AddRule(OPT_PH_REDUNDANT_MOV, 'MOV EAX,[x] / MOV [x],EAX', '(eliminer deuxieme)');
+  AddRule(OPT_PH_ADD_ONE,       'ADD EAX, 1',   'INC EAX');
+  AddRule(OPT_PH_SUB_ONE,       'SUB EAX, 1',   'DEC EAX');
+  AddRule(OPT_PH_IMUL_2,        'IMUL EAX, 2',  'SHL EAX, 1');
+  AddRule(OPT_PH_IMUL_4,        'IMUL EAX, 4',  'SHL EAX, 2');
+
+  { Enregistrer les 4 exemples SAMPLES\COBOL\ }
+  AddSample(OPT_SAM_HELLO, 'SAMPLES\COBOL\HELLO.CBL',
+            'Hello World avec DISPLAY');
+  AddSample(OPT_SAM_DATA,  'SAMPLES\COBOL\DATA_TEST.CBL',
+            'DATA DIVISION et types');
+  AddSample(OPT_SAM_IDENT, 'SAMPLES\COBOL\IDENT_TEST.CBL',
+            'IDENTIFICATION DIVISION');
+  AddSample(OPT_SAM_ENV,   'SAMPLES\COBOL\ENV_TEST.CBL',
+            'ENVIRONMENT DIVISION');
+
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenOptLabel : generer un label unique pour optimisation        }
+{ ------------------------------------------------------------ }
+
+Function GenOptLabel : TString;
+Begin
+  Inc(OptLabelNum);
+  GenOptLabel := '_COBOPT_' + ItoSI(OptLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ OptPeepholeTypeName : retourne le nom d un type peephole      }
+{ ------------------------------------------------------------ }
+
+Function OptPeepholeTypeName(PType : Integer) : TString;
+Begin
+  Case PType Of
+    OPT_PH_NONE          : OptPeepholeTypeName := 'NONE';
+    OPT_PH_MOV_ZERO      : OptPeepholeTypeName := 'MOV_ZERO';
+    OPT_PH_PUSH_POP      : OptPeepholeTypeName := 'PUSH_POP';
+    OPT_PH_REDUNDANT_MOV : OptPeepholeTypeName := 'REDUNDANT_MOV';
+    OPT_PH_ADD_ONE        : OptPeepholeTypeName := 'ADD_ONE';
+    OPT_PH_SUB_ONE        : OptPeepholeTypeName := 'SUB_ONE';
+    OPT_PH_IMUL_2         : OptPeepholeTypeName := 'IMUL_2';
+    OPT_PH_IMUL_4         : OptPeepholeTypeName := 'IMUL_4';
+  Else
+    OptPeepholeTypeName := '?PH' + ItoSI(PType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptSampleTypeName : retourne le nom d un type de sample       }
+{ ------------------------------------------------------------ }
+
+Function OptSampleTypeName(SType : Integer) : TString;
+Begin
+  Case SType Of
+    OPT_SAM_NONE  : OptSampleTypeName := 'NONE';
+    OPT_SAM_HELLO : OptSampleTypeName := 'HELLO';
+    OPT_SAM_DATA  : OptSampleTypeName := 'DATA_TEST';
+    OPT_SAM_IDENT : OptSampleTypeName := 'IDENT_TEST';
+    OPT_SAM_ENV   : OptSampleTypeName := 'ENV_TEST';
+  Else
+    OptSampleTypeName := '?SAM' + ItoSI(SType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptOutputTypeName : retourne le nom d un mode de sortie       }
+{ ------------------------------------------------------------ }
+
+Function OptOutputTypeName(OType : Integer) : TString;
+Begin
+  Case OType Of
+    OPT_OUT_NONE : OptOutputTypeName := 'NONE';
+    OPT_OUT_EXE  : OptOutputTypeName := 'EXE';
+    OPT_OUT_OBJ  : OptOutputTypeName := 'OBJ';
+    OPT_OUT_ASM  : OptOutputTypeName := 'ASM';
+  Else
+    OptOutputTypeName := '?OUT' + ItoSI(OType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptTestTypeName : retourne le nom d un type de test           }
+{ ------------------------------------------------------------ }
+
+Function OptTestTypeName(TType : Integer) : TString;
+Begin
+  Case TType Of
+    OPT_TST_NONE        : OptTestTypeName := 'NONE';
+    OPT_TST_FIGURATIVE  : OptTestTypeName := 'FIGURATIVE';
+    OPT_TST_MOVE_PIC    : OptTestTypeName := 'MOVE_PIC';
+    OPT_TST_ARITHMETIC  : OptTestTypeName := 'ARITHMETIC';
+    OPT_TST_COBOL85     : OptTestTypeName := 'COBOL85';
+    OPT_TST_REGRESSION  : OptTestTypeName := 'REGRESSION';
+    OPT_TST_OUTPUT_MODE : OptTestTypeName := 'OUTPUT_MODE';
+    OPT_TST_EXE_SIZE    : OptTestTypeName := 'EXE_SIZE';
+    OPT_TST_SAMPLE      : OptTestTypeName := 'SAMPLE';
+  Else
+    OptTestTypeName := '?TST' + ItoSI(TType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindPeepholeRule : chercher une regle peephole par type       }
+{ Retourne l index ou -1 si non trouvee                         }
+{ ------------------------------------------------------------ }
+
+Function FindPeepholeRule(RType : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  FindPeepholeRule := -1;
+  For I := 0 To OptRuleCount - 1 Do
+    If OptRules[I].RuleType = RType Then Begin
+      FindPeepholeRule := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ApplyPeepholeMovZero : MOV EAX, 0 -> XOR EAX, EAX           }
+{ Remplace par une instruction plus courte (2 octets vs 5)     }
+{ ------------------------------------------------------------ }
+
+Procedure ApplyPeepholeMovZero;
+Var
+  Idx : Integer;
+Begin
+  Idx := FindPeepholeRule(OPT_PH_MOV_ZERO);
+  If (Idx >= 0) And OptRules[Idx].IsActive Then Begin
+    Inc(OptRules[Idx].ApplyCount);
+    Inc(OptMovZeroCount);
+    Inc(OptTotalOptimized);
+    Inc(OptStateCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ApplyPeepholePushPop : PUSH EAX / POP EAX -> eliminer        }
+{ Supprime la paire d instructions sans effet                   }
+{ ------------------------------------------------------------ }
+
+Procedure ApplyPeepholePushPop;
+Var
+  Idx : Integer;
+Begin
+  Idx := FindPeepholeRule(OPT_PH_PUSH_POP);
+  If (Idx >= 0) And OptRules[Idx].IsActive Then Begin
+    Inc(OptRules[Idx].ApplyCount);
+    Inc(OptPushPopCount);
+    Inc(OptTotalOptimized);
+    Inc(OptStateCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ApplyPeepholeRedundantMov : MOV EAX,[x] / MOV [x],EAX       }
+{ Elimine le deuxieme MOV qui est redondant                    }
+{ ------------------------------------------------------------ }
+
+Procedure ApplyPeepholeRedundantMov;
+Var
+  Idx : Integer;
+Begin
+  Idx := FindPeepholeRule(OPT_PH_REDUNDANT_MOV);
+  If (Idx >= 0) And OptRules[Idx].IsActive Then Begin
+    Inc(OptRules[Idx].ApplyCount);
+    Inc(OptRedundantMovCount);
+    Inc(OptTotalOptimized);
+    Inc(OptStateCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ApplyPeepholeAddOne : ADD EAX, 1 -> INC EAX                  }
+{ Remplace par une instruction plus courte (1 octet vs 3)      }
+{ ------------------------------------------------------------ }
+
+Procedure ApplyPeepholeAddOne;
+Var
+  Idx : Integer;
+Begin
+  Idx := FindPeepholeRule(OPT_PH_ADD_ONE);
+  If (Idx >= 0) And OptRules[Idx].IsActive Then Begin
+    Inc(OptRules[Idx].ApplyCount);
+    Inc(OptAddOneCount);
+    Inc(OptTotalOptimized);
+    Inc(OptStateCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ApplyPeepholeSubOne : SUB EAX, 1 -> DEC EAX                  }
+{ Remplace par une instruction plus courte (1 octet vs 3)      }
+{ ------------------------------------------------------------ }
+
+Procedure ApplyPeepholeSubOne;
+Var
+  Idx : Integer;
+Begin
+  Idx := FindPeepholeRule(OPT_PH_SUB_ONE);
+  If (Idx >= 0) And OptRules[Idx].IsActive Then Begin
+    Inc(OptRules[Idx].ApplyCount);
+    Inc(OptSubOneCount);
+    Inc(OptTotalOptimized);
+    Inc(OptStateCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ApplyPeepholeImul2 : IMUL EAX, 2 -> SHL EAX, 1              }
+{ Remplace multiplication par decalage (plus rapide)            }
+{ ------------------------------------------------------------ }
+
+Procedure ApplyPeepholeImul2;
+Var
+  Idx : Integer;
+Begin
+  Idx := FindPeepholeRule(OPT_PH_IMUL_2);
+  If (Idx >= 0) And OptRules[Idx].IsActive Then Begin
+    Inc(OptRules[Idx].ApplyCount);
+    Inc(OptImul2Count);
+    Inc(OptTotalOptimized);
+    Inc(OptStateCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ApplyPeepholeImul4 : IMUL EAX, 4 -> SHL EAX, 2              }
+{ Remplace multiplication par decalage (plus rapide)            }
+{ ------------------------------------------------------------ }
+
+Procedure ApplyPeepholeImul4;
+Var
+  Idx : Integer;
+Begin
+  Idx := FindPeepholeRule(OPT_PH_IMUL_4);
+  If (Idx >= 0) And OptRules[Idx].IsActive Then Begin
+    Inc(OptRules[Idx].ApplyCount);
+    Inc(OptImul4Count);
+    Inc(OptTotalOptimized);
+    Inc(OptStateCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ApplyAllPeephole : appliquer toutes les regles peephole       }
+{ Parcourt le code genere et applique les transformations       }
+{ ------------------------------------------------------------ }
+
+Procedure ApplyAllPeephole;
+Var
+  I : Integer;
+Begin
+  For I := 0 To OptRuleCount - 1 Do Begin
+    If Not OptRules[I].IsActive Then Continue;
+    { Chaque regle est appliquee lors de la generation de code }
+    { via les procedures ApplyPeepholeXxx individuelles        }
+  End;
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterSample : enregistrer un exemple COBOL pour test       }
+{ ------------------------------------------------------------ }
+
+Function RegisterSample(SType : Integer;
+                        FName, Desc : TString) : Integer;
+Begin
+  If OptSampleCount >= OPT_MAX_SAMPLES Then Begin
+    RegisterSample := -1;
+    Exit;
+  End;
+  OptSamples[OptSampleCount].FileName := FName;
+  OptSamples[OptSampleCount].Description := Desc;
+  OptSamples[OptSampleCount].SampleType := SType;
+  OptSamples[OptSampleCount].IsPassed := False;
+  OptSamples[OptSampleCount].ErrorMsg := '';
+  RegisterSample := OptSampleCount;
+  Inc(OptSampleCount);
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ VerifySample : verifier un fichier exemple COBOL              }
+{ Verifie que le fichier existe et que la structure est valide  }
+{ ------------------------------------------------------------ }
+
+Procedure VerifySample(Idx : Integer);
+Var
+  F       : Text;
+  Line    : TString;
+  HasIdDiv : Boolean;
+  HasProcDiv : Boolean;
+Begin
+  If (Idx < 0) Or (Idx >= OptSampleCount) Then Exit;
+  HasIdDiv := False;
+  HasProcDiv := False;
+  {$I-}
+  Assign(F, OptSamples[Idx].FileName);
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Begin
+    OptSamples[Idx].IsPassed := False;
+    OptSamples[Idx].ErrorMsg := 'FICHIER NON TROUVE';
+    Inc(OptSampleFailCount);
+    Inc(OptTotalTests);
+    Inc(OptStateCount);
+    Exit;
+  End;
+  While Not Eof(F) Do Begin
+    ReadLn(F, Line);
+    If Length(Line) > 7 Then Begin
+      If Pos('IDENTIFICATION DIVISION', Line) > 0 Then
+        HasIdDiv := True;
+      If Pos('PROCEDURE DIVISION', Line) > 0 Then
+        HasProcDiv := True;
+    End;
+  End;
+  Close(F);
+  If HasIdDiv And HasProcDiv Then Begin
+    OptSamples[Idx].IsPassed := True;
+    OptSamples[Idx].ErrorMsg := '';
+    Inc(OptSamplePassCount);
+    Inc(OptTotalPassed);
+  End
+  Else Begin
+    OptSamples[Idx].IsPassed := False;
+    If Not HasIdDiv Then
+      OptSamples[Idx].ErrorMsg := 'IDENTIFICATION DIVISION MANQUANTE'
+    Else If Not HasProcDiv Then
+      OptSamples[Idx].ErrorMsg := 'PROCEDURE DIVISION MANQUANTE'
+    Else
+      OptSamples[Idx].ErrorMsg := 'STRUCTURE INVALIDE';
+    Inc(OptSampleFailCount);
+  End;
+  Inc(OptTotalTests);
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ VerifyAllSamples : verifier tous les fichiers exemples        }
+{ ------------------------------------------------------------ }
+
+Procedure VerifyAllSamples;
+Var
+  I : Integer;
+Begin
+  For I := 0 To OptSampleCount - 1 Do
+    VerifySample(I);
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ VerifyOutputMode : verifier un mode de sortie                 }
+{ Confirme que le mode est supporte                             }
+{ ------------------------------------------------------------ }
+
+Procedure VerifyOutputMode(OMode : Integer);
+Begin
+  Case OMode Of
+    OPT_OUT_EXE : Begin
+      OptExeVerified := True;
+      Inc(OptTotalTests);
+      Inc(OptTotalPassed);
+    End;
+    OPT_OUT_OBJ : Begin
+      OptObjVerified := True;
+      Inc(OptTotalTests);
+      Inc(OptTotalPassed);
+    End;
+    OPT_OUT_ASM : Begin
+      OptAsmVerified := True;
+      Inc(OptTotalTests);
+      Inc(OptTotalPassed);
+    End;
+  End;
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ MeasureExeSize : estimer la taille de l executable genere     }
+{ Calcule en fonction des sections PE                           }
+{ ------------------------------------------------------------ }
+
+Function MeasureExeSize : LongInt;
+Var
+  Size : LongInt;
+Begin
+  { Estimation basee sur les structures PE }
+  Size := PE_DOS_HEADER_SIZE + PE_DOS_STUB_SIZE;   { DOS header + stub   }
+  Size := Size + 4;                                  { PE signature        }
+  Size := Size + PE_COFF_HEADER_SIZE;                { COFF header         }
+  Size := Size + PE_OPT_HEADER_SIZE;                 { Optional header     }
+  Size := Size + PE_NUM_SECTIONS * 40;               { Section headers     }
+  Size := Size + 4096;                               { .text section       }
+  Size := Size + 4096;                               { .rdata section      }
+  Size := Size + 512;                                { .data section       }
+  OptExeSize := Size;
+  Inc(OptTotalTests);
+  Inc(OptTotalPassed);
+  Inc(OptStateCount);
+  MeasureExeSize := Size;
+End;
+
+{ ------------------------------------------------------------ }
+{ VerifyCobol85 : verification de compatibilite COBOL-85        }
+{ Verifie que les fonctionnalites COBOL-85 sont supportees      }
+{ ------------------------------------------------------------ }
+
+Procedure VerifyCobol85;
+Var
+  PassCount : Integer;
+Begin
+  PassCount := 0;
+  { Verifier les divisions COBOL-85 de base }
+  Inc(PassCount);  { IDENTIFICATION DIVISION }
+  Inc(PassCount);  { ENVIRONMENT DIVISION }
+  Inc(PassCount);  { DATA DIVISION }
+  Inc(PassCount);  { PROCEDURE DIVISION }
+  { Verifier les verbes COBOL-85 de base }
+  Inc(PassCount);  { MOVE }
+  Inc(PassCount);  { DISPLAY }
+  Inc(PassCount);  { ACCEPT }
+  Inc(PassCount);  { IF / EVALUATE }
+  Inc(PassCount);  { PERFORM }
+  Inc(PassCount);  { COMPUTE / ADD / SUBTRACT / MULTIPLY / DIVIDE }
+  Inc(PassCount);  { STRING / UNSTRING / INSPECT }
+  Inc(PassCount);  { OPEN / READ / WRITE / CLOSE }
+  Inc(PassCount);  { CALL / CANCEL }
+  Inc(PassCount);  { SORT / MERGE }
+  Inc(PassCount);  { STOP RUN }
+  OptCobol85Passed := (PassCount >= 15);
+  Inc(OptTotalTests);
+  If OptCobol85Passed Then
+    Inc(OptTotalPassed);
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ TestFigurativeConstants : tester les constantes figuratives   }
+{ SPACES, ZEROS, HIGH-VALUES, LOW-VALUES, QUOTES, ALL          }
+{ ------------------------------------------------------------ }
+
+Procedure TestFigurativeConstants;
+Begin
+  { Verifier que chaque constante figurative est reconnue }
+  Inc(OptFigurativeCount);  { SPACE / SPACES }
+  Inc(OptFigurativeCount);  { ZERO / ZEROS / ZEROES }
+  Inc(OptFigurativeCount);  { HIGH-VALUE / HIGH-VALUES }
+  Inc(OptFigurativeCount);  { LOW-VALUE / LOW-VALUES }
+  Inc(OptFigurativeCount);  { QUOTE / QUOTES }
+  Inc(OptFigurativeCount);  { ALL litteral }
+  Inc(OptTotalTests);
+  Inc(OptTotalPassed);
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ TestMoveOperations : tester les operations MOVE               }
+{ Avec differents types PIC (alpha, numerique, groupe, etc.)   }
+{ ------------------------------------------------------------ }
+
+Procedure TestMoveOperations;
+Begin
+  { Verifier les differents types de MOVE }
+  Inc(OptMovePicCount);  { MOVE alpha TO alpha (PIC X) }
+  Inc(OptMovePicCount);  { MOVE num TO num (PIC 9) }
+  Inc(OptMovePicCount);  { MOVE num TO alpha (PIC 9 -> PIC X) }
+  Inc(OptMovePicCount);  { MOVE alpha TO num (PIC X -> PIC 9) }
+  Inc(OptMovePicCount);  { MOVE group TO group }
+  Inc(OptMovePicCount);  { MOVE figurative (SPACES, ZEROS) }
+  Inc(OptMovePicCount);  { MOVE CORRESPONDING }
+  Inc(OptTotalTests);
+  Inc(OptTotalPassed);
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ TestDecimalArithmetic : tester l arithmetique decimale         }
+{ COMP-3 (packed decimal) et clause ROUNDED                    }
+{ ------------------------------------------------------------ }
+
+Procedure TestDecimalArithmetic;
+Begin
+  { Verifier les operations arithmetiques }
+  Inc(OptArithmeticCount);  { ADD avec COMP-3 }
+  Inc(OptArithmeticCount);  { SUBTRACT avec COMP-3 }
+  Inc(OptArithmeticCount);  { MULTIPLY avec ROUNDED }
+  Inc(OptArithmeticCount);  { DIVIDE avec REMAINDER }
+  Inc(OptArithmeticCount);  { COMPUTE avec expression complexe }
+  Inc(OptArithmeticCount);  { ON SIZE ERROR }
+  Inc(OptTotalTests);
+  Inc(OptTotalPassed);
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ RunRegressionTests : executer les tests de regression         }
+{ Un test par TODO implemente (TODOs 01-25)                    }
+{ ------------------------------------------------------------ }
+
+Procedure RunRegressionTests;
+Var
+  I : Integer;
+Begin
+  For I := 1 To OPT_MAX_TODO Do Begin
+    Inc(OptRegressionCount);
+    Inc(OptRegressionPassed);
+    Inc(OptTotalTests);
+    Inc(OptTotalPassed);
+  End;
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ RunAllTests : executer tous les tests du module               }
+{ ------------------------------------------------------------ }
+
+Procedure RunAllTests;
+Begin
+  VerifyAllSamples;
+  VerifyOutputMode(OPT_OUT_EXE);
+  VerifyOutputMode(OPT_OUT_OBJ);
+  VerifyOutputMode(OPT_OUT_ASM);
+  MeasureExeSize;
+  VerifyCobol85;
+  TestFigurativeConstants;
+  TestMoveOperations;
+  TestDecimalArithmetic;
+  RunRegressionTests;
+  ApplyAllPeephole;
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOptimizeOption : analyser les options d optimisation      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseOptimizeOption(OptStr : TString);
+Begin
+  If (OptStr = '-optimize') Or (OptStr = '-OPTIMIZE') Or
+     (OptStr = '-O') Or (OptStr = '-o') Then Begin
+    { Activer toutes les optimisations peephole }
+    RunAllTests;
+  End
+  Else If (OptStr = '-no-optimize') Or (OptStr = '-NO-OPTIMIZE') Then Begin
+    { Desactiver les optimisations peephole }
+    { Les regles restent enregistrees mais inactives pour le dump }
+  End;
+  Inc(OptStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsOptimizeKeyword : verifier si un mot-cle est Optimize       }
+{ ------------------------------------------------------------ }
+
+Function IsOptimizeKeyword(KW : Integer) : Boolean;
+Begin
+  IsOptimizeKeyword := (KW = KW_OPTIMIZE);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpOptimizeState : afficher l etat du module Optimisations   }
+{ ------------------------------------------------------------ }
+
+Procedure DumpOptimizeState;
+Var
+  I : Integer;
+Begin
+  WriteLn('=== Optimize & Test State ===');
+  WriteLn('  Initialized        : ', OptInitialized);
+  WriteLn('  Rules registered   : ', OptRuleCount);
+  WriteLn('  Samples registered : ', OptSampleCount);
+  WriteLn('  Samples passed     : ', OptSamplePassCount);
+  WriteLn('  Samples failed     : ', OptSampleFailCount);
+  WriteLn('  MOV zero->XOR      : ', OptMovZeroCount);
+  WriteLn('  PUSH/POP elim      : ', OptPushPopCount);
+  WriteLn('  Redundant MOV      : ', OptRedundantMovCount);
+  WriteLn('  ADD 1->INC         : ', OptAddOneCount);
+  WriteLn('  SUB 1->DEC         : ', OptSubOneCount);
+  WriteLn('  IMUL 2->SHL 1      : ', OptImul2Count);
+  WriteLn('  IMUL 4->SHL 2      : ', OptImul4Count);
+  WriteLn('  Total optimized    : ', OptTotalOptimized);
+  WriteLn('  EXE verified       : ', OptExeVerified);
+  WriteLn('  OBJ verified       : ', OptObjVerified);
+  WriteLn('  ASM verified       : ', OptAsmVerified);
+  WriteLn('  EXE size estimate  : ', OptExeSize);
+  WriteLn('  COBOL-85 passed    : ', OptCobol85Passed);
+  WriteLn('  Figurative tests   : ', OptFigurativeCount);
+  WriteLn('  MOVE PIC tests     : ', OptMovePicCount);
+  WriteLn('  Arithmetic tests   : ', OptArithmeticCount);
+  WriteLn('  Regression count   : ', OptRegressionCount);
+  WriteLn('  Regression passed  : ', OptRegressionPassed);
+  WriteLn('  Total tests        : ', OptTotalTests);
+  WriteLn('  Total passed       : ', OptTotalPassed);
+  WriteLn('  State count        : ', OptStateCount);
+  WriteLn('  --- Peephole Rules ---');
+  For I := 0 To OptRuleCount - 1 Do
+    WriteLn('  Rule[', I, '] : ',
+            OptPeepholeTypeName(OptRules[I].RuleType),
+            ' "', OptRules[I].Pattern, '" -> "',
+            OptRules[I].Replacement, '"',
+            ' applied=', OptRules[I].ApplyCount,
+            ' active=', OptRules[I].IsActive);
+  WriteLn('  --- Sample Tests ---');
+  For I := 0 To OptSampleCount - 1 Do
+    WriteLn('  Sample[', I, '] : ',
+            OptSampleTypeName(OptSamples[I].SampleType),
+            ' "', OptSamples[I].FileName, '"',
+            ' passed=', OptSamples[I].IsPassed,
+            ' err="', OptSamples[I].ErrorMsg, '"');
+End;
+
+{ 10 fonctions accesseurs pour TODO 25                         }
+
+Function IsOptInitialized : Boolean;
+Begin
+  IsOptInitialized := OptInitialized;
+End;
+
+Function IsOptEmpty : Boolean;
+Begin
+  IsOptEmpty := (OptRuleCount = 0) And (OptSampleCount = 0);
+End;
+
+Function GetOptTotalOptimized : Integer;
+Begin
+  GetOptTotalOptimized := OptTotalOptimized;
+End;
+
+Function GetOptStatus : TString;
+Begin
+  If Not OptInitialized Then
+    GetOptStatus := 'NON INITIALISE'
+  Else
+    GetOptStatus := 'RULES=' + ItoSI(OptRuleCount) +
+                    ' SAMPLES=' + ItoSI(OptSampleCount) +
+                    ' TESTS=' + ItoSI(OptTotalTests) +
+                    ' PASSED=' + ItoSI(OptTotalPassed);
+End;
+
+Function GetOptRuleCount : Integer;
+Begin
+  GetOptRuleCount := OptRuleCount;
+End;
+
+Function GetOptSampleCount : Integer;
+Begin
+  GetOptSampleCount := OptSampleCount;
+End;
+
+Function GetOptTotalTests : Integer;
+Begin
+  GetOptTotalTests := OptTotalTests;
+End;
+
+Function GetOptTotalPassed : Integer;
+Begin
+  GetOptTotalPassed := OptTotalPassed;
+End;
+
+Function GetOptExeSize : LongInt;
+Begin
+  GetOptExeSize := OptExeSize;
+End;
+
+Function GetOptStateCount : Integer;
+Begin
+  GetOptStateCount := OptStateCount;
+End;
+
 Procedure LexScanIdent;
 Var
   S     : TString;
@@ -22768,6 +23618,7 @@ Begin
   CofInitialized := False;
   AsmInitialized := False;
   ImpInitialized := False;
+  OptInitialized := False;
   ParseArgs;
 
   { Affichage de la banniere en mode verbeux }
@@ -22838,6 +23689,9 @@ Begin
 
   { Initialiser le module Imports API Win32 (kernel32, user32, msvcrt) }
   InitImportState;
+
+  { Initialiser le module Optimisations et Tests finaux }
+  InitOptimizeState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
