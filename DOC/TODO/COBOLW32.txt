@@ -478,7 +478,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
               WITH NO ADVANCING : pas de retour a la ligne
             10 fonctions accesseurs
 
-  TODO 16 - PARSEUR : SECTIONS ET PARAGRAPHES (PROCEDURE DIVISION) [A FAIRE]
+  TODO 16 - PARSEUR : SECTIONS ET PARAGRAPHES (PROCEDURE DIVISION) [IMPLEMENTE]
             Structure de la PROCEDURE DIVISION :
               PROCEDURE DIVISION [USING param-1 param-2 ...].
               Sections :

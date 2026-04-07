@@ -486,7 +486,7 @@
               WITH NO ADVANCING : pas de retour a la ligne
             10 fonctions accesseurs
 
-  TODO 16 - PARSEUR : SECTIONS ET PARAGRAPHES (PROCEDURE DIVISION) [A FAIRE]
+  TODO 16 - PARSEUR : SECTIONS ET PARAGRAPHES (PROCEDURE DIVISION) [IMPLEMENTE]
             Structure de la PROCEDURE DIVISION :
               PROCEDURE DIVISION [USING param-1 param-2 ...].
               Sections :
@@ -1768,8 +1768,12 @@ Const
   KW_END_ACCEPT        = 236;  { END-ACCEPT }
   KW_DAY_OF_WEEK       = 237;  { DAY-OF-WEEK }
 
+  { Mots-cles pour TODO 16 : SECTIONS/PARAGRAPHES }
+  KW_DECLARATIVES      = 238;  { DECLARATIVES }
+  KW_USE               = 239;  { USE }
+
   { Nombre total de mots-cles definis }
-  KW_TOTAL_KEYWORDS    = 168;  { nombre approximatif de mots-cles }
+  KW_TOTAL_KEYWORDS    = 170;  { nombre approximatif de mots-cles }
 
 Var
   { Variables du module de mots-cles }
@@ -2016,6 +2020,8 @@ Begin
   Else If S = 'NO'                Then LookupKeyword := KW_NO
   Else If S = 'END-DISPLAY'       Then LookupKeyword := KW_END_DISPLAY
   Else If S = 'END-ACCEPT'        Then LookupKeyword := KW_END_ACCEPT
+  Else If S = 'DECLARATIVES'      Then LookupKeyword := KW_DECLARATIVES
+  Else If S = 'USE'               Then LookupKeyword := KW_USE
   Else LookupKeyword := KW_NONE;
 End;
 
@@ -2233,6 +2239,8 @@ Begin
     KW_NO                : KeywordName := 'NO';
     KW_END_DISPLAY       : KeywordName := 'END-DISPLAY';
     KW_END_ACCEPT        : KeywordName := 'END-ACCEPT';
+    KW_DECLARATIVES      : KeywordName := 'DECLARATIVES';
+    KW_USE               : KeywordName := 'USE';
   Else
     KeywordName := '?KW' + ItoSI(KW);
   End;
@@ -12902,7 +12910,7 @@ Begin
   WriteLn('; DISPLAY numeric ', Ident);
   WriteLn('  lea esi, [', AsmIdent(Ident), ']');
   WriteLn('  mov ecx, ', Size);
-  WriteLn('  call ', _COBRT_NUM_TO_STR');
+  WriteLn('  call _COBRT_NUM_TO_STR');
   WriteLn('  ; EAX = adresse chaine, ECX = longueur');
   WriteLn('  mov esi, eax');
   GenWriteConsole;
@@ -12964,7 +12972,7 @@ Begin
   WriteLn('  div ecx                ; EDX = year mod 100');
   WriteLn('  ; Convertir en YYMMDD ASCII dans le champ');
   WriteLn('  lea edi, [', AsmIdent(Ident), ']');
-  WriteLn('  call ', _COBRT_FORMAT_DATE');
+  WriteLn('  call _COBRT_FORMAT_DATE');
   WriteLn('  add esp, 16            ; liberer SYSTEMTIME');
   Inc(AdsAcceptDateCount);
   Inc(AdsTotalGenerated, 12);
@@ -12983,7 +12991,7 @@ Begin
   WriteLn('  call _GetLocalTime@4');
   WriteLn('  ; Calculer le jour julien (1-366)');
   WriteLn('  lea edi, [', AsmIdent(Ident), ']');
-  WriteLn('  call ', _COBRT_FORMAT_DAY');
+  WriteLn('  call _COBRT_FORMAT_DAY');
   WriteLn('  add esp, 16');
   Inc(AdsAcceptDayCount);
   Inc(AdsTotalGenerated, 8);
@@ -13030,7 +13038,7 @@ Begin
   WriteLn('  call _GetLocalTime@4');
   WriteLn('  ; Extraire heure, minute, seconde, milliseconde/10');
   WriteLn('  lea edi, [', AsmIdent(Ident), ']');
-  WriteLn('  call ', _COBRT_FORMAT_TIME');
+  WriteLn('  call _COBRT_FORMAT_TIME');
   WriteLn('  add esp, 16');
   Inc(AdsAcceptTimeCount);
   Inc(AdsTotalGenerated, 8);
@@ -13385,6 +13393,767 @@ End;
 Function GetAdsStateCount : Integer;
 Begin
   GetAdsStateCount := AdsStateCount;
+End;
+
+{ ============================================================ }
+{ TODO 16 - PARSEUR : SECTIONS ET PARAGRAPHES                  }
+{           (PROCEDURE DIVISION)                                }
+{ ============================================================ }
+
+Const
+  { Types d entrees dans la table des paragraphes/sections }
+  PDV_ENTRY_NONE       = 0;   { pas de type                                }
+  PDV_ENTRY_PARAGRAPH  = 1;   { paragraphe                                 }
+  PDV_ENTRY_SECTION    = 2;   { section                                    }
+
+  { Etats de resolution }
+  PDV_RESOLVED         = 0;   { reference resolue                          }
+  PDV_UNRESOLVED       = 1;   { reference non encore resolue               }
+  PDV_FORWARD          = 2;   { reference forward declaree                 }
+
+  { Limites }
+  PDV_MAX_PARAGRAPHS   = 256; { nombre max de paragraphes                  }
+  PDV_MAX_SECTIONS     = 64;  { nombre max de sections                     }
+  PDV_MAX_USING_PARAMS = 16;  { nombre max de params USING                 }
+  PDV_MAX_DECLARATIVES = 8;   { nombre max de sections DECLARATIVES        }
+  PDV_MAX_REFERENCES   = 512; { nombre max de references a resoudre        }
+
+Type
+  TParagraphEntry = Record
+    Name         : TString;   { nom du paragraphe ou section               }
+    AsmLabel     : TString;   { label ASM genere (_COBP_NOM)               }
+    EntryType    : Integer;   { PDV_ENTRY_PARAGRAPH ou PDV_ENTRY_SECTION   }
+    SectionIdx   : Integer;   { index de la section parente (-1 si aucune) }
+    InstrCount   : Integer;   { nombre d instructions dans ce bloc         }
+    IsInline     : Boolean;   { True si le paragraphe est inline           }
+    IsDeclared   : Boolean;   { True si declare dans le source             }
+    IsReferenced : Boolean;   { True si reference par PERFORM/GOTO         }
+    LineNumber   : Integer;   { numero de ligne de la declaration          }
+  End;
+
+  TPdvReference = Record
+    Name         : TString;   { nom reference (paragraphe ou section)      }
+    FromPara     : Integer;   { index du paragraphe appellant              }
+    RefLine      : Integer;   { numero de ligne de la reference            }
+    Status       : Integer;   { PDV_RESOLVED/PDV_UNRESOLVED/PDV_FORWARD   }
+  End;
+
+Var
+  PdvInitialized       : Boolean;   { True si InitProcDivState appele    }
+  PdvStateCount        : Integer;   { compteur d etat general            }
+  PdvLabelNum          : Integer;   { compteur de labels internes        }
+  PdvParagraphs        : Array[0..PDV_MAX_PARAGRAPHS-1] Of TParagraphEntry;
+  PdvParagraphCount    : Integer;   { nombre de paragraphes enregistres  }
+  PdvSections          : Array[0..PDV_MAX_SECTIONS-1] Of TParagraphEntry;
+  PdvSectionCount      : Integer;   { nombre de sections enregistrees    }
+  PdvReferences        : Array[0..PDV_MAX_REFERENCES-1] Of TPdvReference;
+  PdvReferenceCount    : Integer;   { nombre de references enregistrees  }
+  PdvCurrentSection    : Integer;   { index de la section courante       }
+  PdvCurrentParagraph  : Integer;   { index du paragraphe courant        }
+  PdvProcDivSeen       : Boolean;   { True si PROCEDURE DIVISION vue     }
+  PdvUsingCount        : Integer;   { nombre de params USING             }
+  PdvDeclarativesSeen  : Boolean;   { True si DECLARATIVES vue           }
+  PdvDeclarativeCount  : Integer;   { nombre de sections DECLARATIVES    }
+  PdvPerformRefCount   : Integer;   { nombre de refs par PERFORM         }
+  PdvGotoRefCount      : Integer;   { nombre de refs par GO TO           }
+  PdvThruRefCount      : Integer;   { nombre de refs THRU                }
+  PdvInlineCount       : Integer;   { nombre de paragraphes inline       }
+  PdvExternalCount     : Integer;   { nombre de paragraphes externes     }
+  PdvUnresolvedCount   : Integer;   { nombre de refs non resolues        }
+  PdvTotalGenerated    : Integer;   { total d instructions generees      }
+
+{ ------------------------------------------------------------ }
+{ InitProcDivState : initialiser l etat du module               }
+{ PROCEDURE DIVISION / Sections / Paragraphes                   }
+{ ------------------------------------------------------------ }
+
+Procedure InitProcDivState;
+Var I : Integer;
+Begin
+  PdvInitialized       := True;
+  PdvStateCount        := 0;
+  PdvLabelNum          := 0;
+  PdvParagraphCount    := 0;
+  PdvSectionCount      := 0;
+  PdvReferenceCount    := 0;
+  PdvCurrentSection    := -1;
+  PdvCurrentParagraph  := -1;
+  PdvProcDivSeen       := False;
+  PdvUsingCount        := 0;
+  PdvDeclarativesSeen  := False;
+  PdvDeclarativeCount  := 0;
+  PdvPerformRefCount   := 0;
+  PdvGotoRefCount      := 0;
+  PdvThruRefCount      := 0;
+  PdvInlineCount       := 0;
+  PdvExternalCount     := 0;
+  PdvUnresolvedCount   := 0;
+  PdvTotalGenerated    := 0;
+  For I := 0 To PDV_MAX_PARAGRAPHS - 1 Do Begin
+    PdvParagraphs[I].Name         := '';
+    PdvParagraphs[I].AsmLabel     := '';
+    PdvParagraphs[I].EntryType    := PDV_ENTRY_NONE;
+    PdvParagraphs[I].SectionIdx   := -1;
+    PdvParagraphs[I].InstrCount   := 0;
+    PdvParagraphs[I].IsInline     := False;
+    PdvParagraphs[I].IsDeclared   := False;
+    PdvParagraphs[I].IsReferenced := False;
+    PdvParagraphs[I].LineNumber   := 0;
+  End;
+  For I := 0 To PDV_MAX_SECTIONS - 1 Do Begin
+    PdvSections[I].Name         := '';
+    PdvSections[I].AsmLabel     := '';
+    PdvSections[I].EntryType    := PDV_ENTRY_NONE;
+    PdvSections[I].SectionIdx   := -1;
+    PdvSections[I].InstrCount   := 0;
+    PdvSections[I].IsInline     := False;
+    PdvSections[I].IsDeclared   := False;
+    PdvSections[I].IsReferenced := False;
+    PdvSections[I].LineNumber   := 0;
+  End;
+  For I := 0 To PDV_MAX_REFERENCES - 1 Do Begin
+    PdvReferences[I].Name     := '';
+    PdvReferences[I].FromPara := -1;
+    PdvReferences[I].RefLine  := 0;
+    PdvReferences[I].Status   := PDV_RESOLVED;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPdvLabel : genere un label unique pour PROC DIVISION       }
+{ ------------------------------------------------------------ }
+
+Function GenPdvLabel : TString;
+Begin
+  Inc(PdvLabelNum);
+  GenPdvLabel := '_COBPDV_L' + ItoSI(PdvLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ PdvEntryTypeName : nom du type d entree                       }
+{ ------------------------------------------------------------ }
+
+Function PdvEntryTypeName(ET : Integer) : TString;
+Begin
+  Case ET Of
+    PDV_ENTRY_NONE      : PdvEntryTypeName := 'NONE';
+    PDV_ENTRY_PARAGRAPH : PdvEntryTypeName := 'PARAGRAPH';
+    PDV_ENTRY_SECTION   : PdvEntryTypeName := 'SECTION';
+  Else
+    PdvEntryTypeName := 'UNKNOWN(' + ItoSI(ET) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PdvResolutionName : nom de l etat de resolution               }
+{ ------------------------------------------------------------ }
+
+Function PdvResolutionName(RS : Integer) : TString;
+Begin
+  Case RS Of
+    PDV_RESOLVED   : PdvResolutionName := 'RESOLVED';
+    PDV_UNRESOLVED : PdvResolutionName := 'UNRESOLVED';
+    PDV_FORWARD    : PdvResolutionName := 'FORWARD';
+  Else
+    PdvResolutionName := 'UNKNOWN(' + ItoSI(RS) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ MakeParagraphAsmLabel : construit le label ASM pour un        }
+{ paragraphe ou une section                                     }
+{ ------------------------------------------------------------ }
+
+Function MakeParagraphAsmLabel(Const PName : TString) : TString;
+Begin
+  MakeParagraphAsmLabel := '_COBP_' + AsmIdent(PName);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddParagraph : ajouter un paragraphe a la table               }
+{ Retourne l index ou -1 si table pleine                        }
+{ ------------------------------------------------------------ }
+
+Function AddParagraph(Const PName : TString; LineNo : Integer) : Integer;
+Begin
+  If PdvParagraphCount >= PDV_MAX_PARAGRAPHS Then Begin
+    WarnMsg('Table des paragraphes pleine, max=' + ItoSI(PDV_MAX_PARAGRAPHS));
+    AddParagraph := -1;
+    Exit;
+  End;
+  PdvParagraphs[PdvParagraphCount].Name       := PName;
+  PdvParagraphs[PdvParagraphCount].AsmLabel   := MakeParagraphAsmLabel(PName);
+  PdvParagraphs[PdvParagraphCount].EntryType  := PDV_ENTRY_PARAGRAPH;
+  PdvParagraphs[PdvParagraphCount].SectionIdx := PdvCurrentSection;
+  PdvParagraphs[PdvParagraphCount].InstrCount := 0;
+  PdvParagraphs[PdvParagraphCount].IsInline   := False;
+  PdvParagraphs[PdvParagraphCount].IsDeclared := True;
+  PdvParagraphs[PdvParagraphCount].IsReferenced := False;
+  PdvParagraphs[PdvParagraphCount].LineNumber := LineNo;
+  AddParagraph := PdvParagraphCount;
+  Inc(PdvParagraphCount);
+  Inc(PdvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddSection : ajouter une section a la table                   }
+{ Retourne l index ou -1 si table pleine                        }
+{ ------------------------------------------------------------ }
+
+Function AddSection(Const SName : TString; LineNo : Integer) : Integer;
+Begin
+  If PdvSectionCount >= PDV_MAX_SECTIONS Then Begin
+    WarnMsg('Table des sections pleine, max=' + ItoSI(PDV_MAX_SECTIONS));
+    AddSection := -1;
+    Exit;
+  End;
+  PdvSections[PdvSectionCount].Name       := SName;
+  PdvSections[PdvSectionCount].AsmLabel   := MakeParagraphAsmLabel(SName);
+  PdvSections[PdvSectionCount].EntryType  := PDV_ENTRY_SECTION;
+  PdvSections[PdvSectionCount].SectionIdx := -1;
+  PdvSections[PdvSectionCount].InstrCount := 0;
+  PdvSections[PdvSectionCount].IsInline   := False;
+  PdvSections[PdvSectionCount].IsDeclared := True;
+  PdvSections[PdvSectionCount].IsReferenced := False;
+  PdvSections[PdvSectionCount].LineNumber := LineNo;
+  AddSection := PdvSectionCount;
+  Inc(PdvSectionCount);
+  Inc(PdvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ FindParagraph : chercher un paragraphe par nom                }
+{ Retourne l index ou -1 si non trouve                          }
+{ ------------------------------------------------------------ }
+
+Function FindParagraph(Const PName : TString) : Integer;
+Var I : Integer;
+Begin
+  FindParagraph := -1;
+  For I := 0 To PdvParagraphCount - 1 Do
+    If PdvParagraphs[I].Name = PName Then Begin
+      FindParagraph := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindSection : chercher une section par nom                    }
+{ Retourne l index ou -1 si non trouve                          }
+{ ------------------------------------------------------------ }
+
+Function FindSection(Const SName : TString) : Integer;
+Var I : Integer;
+Begin
+  FindSection := -1;
+  For I := 0 To PdvSectionCount - 1 Do
+    If PdvSections[I].Name = SName Then Begin
+      FindSection := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddReference : ajouter une reference a resoudre               }
+{ ------------------------------------------------------------ }
+
+Procedure AddReference(Const RefName : TString; FromIdx, LineNo : Integer);
+Begin
+  If PdvReferenceCount >= PDV_MAX_REFERENCES Then Begin
+    WarnMsg('Table des references pleine');
+    Exit;
+  End;
+  PdvReferences[PdvReferenceCount].Name     := RefName;
+  PdvReferences[PdvReferenceCount].FromPara := FromIdx;
+  PdvReferences[PdvReferenceCount].RefLine  := LineNo;
+  PdvReferences[PdvReferenceCount].Status   := PDV_UNRESOLVED;
+  Inc(PdvReferenceCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ResolveAllReferences : resoudre toutes les references         }
+{ ------------------------------------------------------------ }
+
+Procedure ResolveAllReferences;
+Var I, Idx : Integer;
+Begin
+  PdvUnresolvedCount := 0;
+  For I := 0 To PdvReferenceCount - 1 Do Begin
+    If PdvReferences[I].Status = PDV_UNRESOLVED Then Begin
+      Idx := FindParagraph(PdvReferences[I].Name);
+      If Idx >= 0 Then Begin
+        PdvReferences[I].Status := PDV_RESOLVED;
+        PdvParagraphs[Idx].IsReferenced := True;
+      End Else Begin
+        Idx := FindSection(PdvReferences[I].Name);
+        If Idx >= 0 Then Begin
+          PdvReferences[I].Status := PDV_RESOLVED;
+          PdvSections[Idx].IsReferenced := True;
+        End Else Begin
+          Inc(PdvUnresolvedCount);
+          WarnMsg('Reference non resolue : ' + PdvReferences[I].Name +
+                  ' a la ligne ' + ItoSI(PdvReferences[I].RefLine));
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenParagraphLabel : genere le label ASM d un paragraphe       }
+{ ------------------------------------------------------------ }
+
+Procedure GenParagraphLabel(Idx : Integer);
+Begin
+  If (Idx < 0) Or (Idx >= PdvParagraphCount) Then Exit;
+  WriteLn('; --- Paragraph: ', PdvParagraphs[Idx].Name);
+  WriteLn(PdvParagraphs[Idx].AsmLabel, ':');
+  Inc(PdvTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSectionLabel : genere le label ASM d une section           }
+{ ------------------------------------------------------------ }
+
+Procedure GenSectionLabel(Idx : Integer);
+Begin
+  If (Idx < 0) Or (Idx >= PdvSectionCount) Then Exit;
+  WriteLn('; --- Section: ', PdvSections[Idx].Name);
+  WriteLn(PdvSections[Idx].AsmLabel, ':');
+  Inc(PdvTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenParagraphCallPrologue : genere le prologue CALL/RET        }
+{ pour un appel de paragraphe en 80386                          }
+{ ------------------------------------------------------------ }
+
+Procedure GenParagraphCallPrologue(Idx : Integer);
+Begin
+  If (Idx < 0) Or (Idx >= PdvParagraphCount) Then Exit;
+  WriteLn('  CALL ', PdvParagraphs[Idx].AsmLabel);
+  Inc(PdvTotalGenerated);
+  Inc(PdvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenParagraphRetEpilogue : genere le RET en fin de paragraphe  }
+{ ------------------------------------------------------------ }
+
+Procedure GenParagraphRetEpilogue;
+Begin
+  WriteLn('  RET');
+  Inc(PdvTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSectionEntry : genere l entree dans une section            }
+{ avec appel successif de chaque paragraphe de la section       }
+{ ------------------------------------------------------------ }
+
+Procedure GenSectionEntry(SectIdx : Integer);
+Var I : Integer;
+Begin
+  If (SectIdx < 0) Or (SectIdx >= PdvSectionCount) Then Exit;
+  WriteLn('; Enter section ', PdvSections[SectIdx].Name);
+  { Generer les CALL pour chaque paragraphe de cette section }
+  For I := 0 To PdvParagraphCount - 1 Do Begin
+    If PdvParagraphs[I].SectionIdx = SectIdx Then Begin
+      WriteLn('  CALL ', PdvParagraphs[I].AsmLabel);
+      Inc(PdvTotalGenerated);
+    End;
+  End;
+  WriteLn('  RET');
+  Inc(PdvTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenThruSequence : genere la sequence d appels pour            }
+{ PERFORM para-1 THRU para-2                                    }
+{ ------------------------------------------------------------ }
+
+Procedure GenThruSequence(FromIdx, ToIdx : Integer);
+Var I : Integer;
+Begin
+  If (FromIdx < 0) Or (ToIdx < 0) Then Exit;
+  If (FromIdx >= PdvParagraphCount) Or (ToIdx >= PdvParagraphCount) Then Exit;
+  WriteLn('; PERFORM ', PdvParagraphs[FromIdx].Name,
+          ' THRU ', PdvParagraphs[ToIdx].Name);
+  For I := FromIdx To ToIdx Do Begin
+    WriteLn('  CALL ', PdvParagraphs[I].AsmLabel);
+    Inc(PdvTotalGenerated);
+  End;
+  Inc(PdvThruRefCount);
+  Inc(PdvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenProcDivHeader : genere l en-tete de la PROCEDURE DIVISION  }
+{ ------------------------------------------------------------ }
+
+Procedure GenProcDivHeader;
+Begin
+  WriteLn('; ---- PROCEDURE DIVISION ----');
+  WriteLn('_COBP_PROC_ENTRY:');
+  Inc(PdvTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDeclarativesEntry : genere l entree DECLARATIVES           }
+{ ------------------------------------------------------------ }
+
+Procedure GenDeclarativesEntry;
+Begin
+  WriteLn('; ---- DECLARATIVES ----');
+  WriteLn('_COBP_DECLARATIVES:');
+  Inc(PdvTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDeclarativesEnd : genere la fin de DECLARATIVES            }
+{ ------------------------------------------------------------ }
+
+Procedure GenDeclarativesEnd;
+Begin
+  WriteLn('; ---- END DECLARATIVES ----');
+  WriteLn('  RET');
+  Inc(PdvTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseProcDivHeader : parser l en-tete PROCEDURE DIVISION      }
+{   PROCEDURE DIVISION [USING param-1 param-2 ...].            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseProcDivHeader;
+Begin
+  { On s attend a PROCEDURE DIVISION deja consomme }
+  PdvProcDivSeen := True;
+  PdvUsingCount := 0;
+  Inc(PdvStateCount);
+
+  { Verifier USING }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_USING) Then Begin
+    LexNextToken;
+    { Lire les parametres USING }
+    While (CurTokType = TOK_IDENT) And
+          (PdvUsingCount < PDV_MAX_USING_PARAMS) Do Begin
+      Inc(PdvUsingCount);
+      LexNextToken;
+    End;
+  End;
+
+  { Consommer le point terminal }
+  If (CurTokType = TOK_DOT) Then
+    LexNextToken;
+
+  GenProcDivHeader;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSectionHeader : parser un en-tete de section             }
+{   nom-section SECTION.                                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSectionHeader;
+Var
+  SName : TString;
+  SIdx  : Integer;
+Begin
+  { Le nom de la section est dans CurTokStr, deja lu comme IDENT }
+  SName := CurTokStr;
+  LexNextToken; { consommer le nom }
+
+  { On attend le mot-cle SECTION }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SECTION) Then
+    LexNextToken
+  Else Begin
+    WarnMsg('SECTION attendu apres ' + SName);
+  End;
+
+  { Consommer le point }
+  If (CurTokType = TOK_DOT) Then
+    LexNextToken;
+
+  { Ajouter la section a la table }
+  SIdx := AddSection(SName, CurTokLine);
+  If SIdx >= 0 Then Begin
+    PdvCurrentSection := SIdx;
+    PdvCurrentParagraph := -1;
+    GenSectionLabel(SIdx);
+  End;
+
+  Inc(PdvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseParagraphHeader : parser un en-tete de paragraphe        }
+{   nom-paragraphe.                                             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseParagraphHeader;
+Var
+  PName : TString;
+  PIdx  : Integer;
+Begin
+  { Le nom du paragraphe est dans CurTokStr }
+  PName := CurTokStr;
+  LexNextToken; { consommer le nom }
+
+  { Consommer le point }
+  If (CurTokType = TOK_DOT) Then
+    LexNextToken;
+
+  { Ajouter le paragraphe }
+  PIdx := AddParagraph(PName, CurTokLine);
+  If PIdx >= 0 Then Begin
+    PdvCurrentParagraph := PIdx;
+    GenParagraphLabel(PIdx);
+
+    { Par defaut externe (sera marque inline si petit) }
+    Inc(PdvExternalCount);
+  End;
+
+  Inc(PdvStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDeclaratives : parser la section DECLARATIVES            }
+{   DECLARATIVES.                                               }
+{     section-name SECTION.                                     }
+{       USE AFTER STANDARD ERROR PROCEDURE ON nom-fichier.      }
+{   END DECLARATIVES.                                           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDeclaratives;
+Begin
+  { DECLARATIVES deja consomme }
+  PdvDeclarativesSeen := True;
+  Inc(PdvStateCount);
+
+  { Consommer le point }
+  If (CurTokType = TOK_DOT) Then
+    LexNextToken;
+
+  GenDeclarativesEntry;
+
+  { Lire les sections DECLARATIVES jusqu a END DECLARATIVES }
+  While Not LexEOF Do Begin
+    { Verifier END DECLARATIVES }
+    If (CurTokType = TOK_IDENT) And (CurTokStr = 'END') Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DECLARATIVES) Then Begin
+        LexNextToken;
+        { Consommer le point }
+        If (CurTokType = TOK_DOT) Then
+          LexNextToken;
+        Break;
+      End;
+    End;
+
+    { Parser une section de declaratives }
+    If (CurTokType = TOK_IDENT) Then Begin
+      ParseSectionHeader;
+      Inc(PdvDeclarativeCount);
+
+      { Verifier USE AFTER STANDARD ERROR }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_USE) Then Begin
+        LexNextToken;
+        { Consommer AFTER }
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AFTER) Then
+          LexNextToken;
+        { Consommer STANDARD }
+        If (CurTokType = TOK_IDENT) And (CurTokStr = 'STANDARD') Then
+          LexNextToken;
+        { Consommer ERROR }
+        If (CurTokType = TOK_IDENT) And (CurTokStr = 'ERROR') Then
+          LexNextToken;
+        { Consommer PROCEDURE }
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PROCEDURE) Then
+          LexNextToken;
+        { Consommer ON }
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then
+          LexNextToken;
+        { Consommer le nom de fichier }
+        If (CurTokType = TOK_IDENT) Then
+          LexNextToken;
+        { Consommer le point }
+        If (CurTokType = TOK_DOT) Then
+          LexNextToken;
+      End;
+    End Else
+      LexNextToken; { avancer si token inattendu }
+  End;
+
+  GenDeclarativesEnd;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseProcedureDivision : parser la PROCEDURE DIVISION         }
+{ complete avec ses sections et paragraphes                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseProcedureDivision;
+Begin
+  { On s attend a PROCEDURE DIVISION }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PROCEDURE) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DIVISION) Then Begin
+      LexNextToken;
+      ParseProcDivHeader;
+    End;
+  End;
+
+  { Verifier si DECLARATIVES present }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DECLARATIVES) Then Begin
+    LexNextToken;
+    ParseDeclaratives;
+  End;
+
+  { Lire les sections et paragraphes }
+  While Not LexEOF Do Begin
+    If (CurTokType = TOK_IDENT) Then Begin
+      ParseParagraphHeader;
+    End Else If (CurTokType = TOK_KEYWORD) Then Begin
+      { Fin de la procedure division }
+      Break;
+    End Else
+      LexNextToken;
+  End;
+
+  { Resoudre toutes les references }
+  ResolveAllReferences;
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkParagraphInline : marquer un paragraphe comme inline      }
+{ si son nombre d instructions est faible                       }
+{ ------------------------------------------------------------ }
+
+Procedure MarkParagraphInline(Idx : Integer; Threshold : Integer);
+Begin
+  If (Idx < 0) Or (Idx >= PdvParagraphCount) Then Exit;
+  If PdvParagraphs[Idx].InstrCount <= Threshold Then Begin
+    PdvParagraphs[Idx].IsInline := True;
+    Inc(PdvInlineCount);
+    If PdvExternalCount > 0 Then
+      Dec(PdvExternalCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsProcDivKeyword : verifie si un mot-cle est lie a la         }
+{ PROCEDURE DIVISION / sections / paragraphes                   }
+{ ------------------------------------------------------------ }
+
+Function IsProcDivKeyword(KW : Integer) : Boolean;
+Begin
+  IsProcDivKeyword := (KW = KW_PROCEDURE) Or (KW = KW_DIVISION) Or
+                      (KW = KW_SECTION) Or (KW = KW_USING) Or
+                      (KW = KW_DECLARATIVES) Or (KW = KW_USE) Or
+                      (KW = KW_THRU) Or (KW = KW_THROUGH);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpProcDivState : afficher l etat du module PROC DIVISION    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpProcDivState;
+Var I : Integer;
+Begin
+  WriteLn('=== PROCEDURE DIVISION State ===');
+  WriteLn('  Initialise          : ', PdvInitialized);
+  WriteLn('  PROCEDURE DIVISION  : ', PdvProcDivSeen);
+  WriteLn('  USING params        : ', PdvUsingCount);
+  WriteLn('  Sections            : ', PdvSectionCount);
+  WriteLn('  Paragraphes         : ', PdvParagraphCount);
+  WriteLn('  DECLARATIVES        : ', PdvDeclarativesSeen);
+  WriteLn('  Decl sections       : ', PdvDeclarativeCount);
+  WriteLn('  PERFORM refs        : ', PdvPerformRefCount);
+  WriteLn('  GOTO refs           : ', PdvGotoRefCount);
+  WriteLn('  THRU refs           : ', PdvThruRefCount);
+  WriteLn('  Inline paragraphs   : ', PdvInlineCount);
+  WriteLn('  External paragraphs : ', PdvExternalCount);
+  WriteLn('  References          : ', PdvReferenceCount);
+  WriteLn('  Unresolved refs     : ', PdvUnresolvedCount);
+  WriteLn('  Total generated     : ', PdvTotalGenerated);
+  WriteLn('  State count         : ', PdvStateCount);
+  If PdvSectionCount > 0 Then Begin
+    WriteLn('  --- Sections ---');
+    For I := 0 To PdvSectionCount - 1 Do
+      WriteLn('    [', I, '] ', PdvSections[I].Name,
+              ' -> ', PdvSections[I].AsmLabel,
+              ' (line ', PdvSections[I].LineNumber, ')',
+              ' ref=', PdvSections[I].IsReferenced);
+  End;
+  If PdvParagraphCount > 0 Then Begin
+    WriteLn('  --- Paragraphes ---');
+    For I := 0 To PdvParagraphCount - 1 Do
+      WriteLn('    [', I, '] ', PdvParagraphs[I].Name,
+              ' -> ', PdvParagraphs[I].AsmLabel,
+              ' sect=', PdvParagraphs[I].SectionIdx,
+              ' (line ', PdvParagraphs[I].LineNumber, ')',
+              ' inline=', PdvParagraphs[I].IsInline,
+              ' ref=', PdvParagraphs[I].IsReferenced);
+  End;
+End;
+
+{ 10 fonctions accesseurs pour TODO 16                         }
+
+Function IsPdvInitialized : Boolean;
+Begin
+  IsPdvInitialized := PdvInitialized;
+End;
+
+Function IsPdvEmpty : Boolean;
+Begin
+  IsPdvEmpty := (PdvTotalGenerated = 0);
+End;
+
+Function GetPdvTotalGenerated : Integer;
+Begin
+  GetPdvTotalGenerated := PdvTotalGenerated;
+End;
+
+Function GetPdvStatus : TString;
+Begin
+  If Not PdvInitialized Then
+    GetPdvStatus := 'NON INITIALISE'
+  Else
+    GetPdvStatus := 'SECT=' + ItoSI(PdvSectionCount) +
+                    ' PARA=' + ItoSI(PdvParagraphCount) +
+                    ' REF=' + ItoSI(PdvReferenceCount) +
+                    ' UNRESOLVED=' + ItoSI(PdvUnresolvedCount);
+End;
+
+Function GetPdvParagraphCount : Integer;
+Begin
+  GetPdvParagraphCount := PdvParagraphCount;
+End;
+
+Function GetPdvSectionCount : Integer;
+Begin
+  GetPdvSectionCount := PdvSectionCount;
+End;
+
+Function GetPdvUsingCount : Integer;
+Begin
+  GetPdvUsingCount := PdvUsingCount;
+End;
+
+Function GetPdvUnresolvedCount : Integer;
+Begin
+  GetPdvUnresolvedCount := PdvUnresolvedCount;
+End;
+
+Function GetPdvReferenceCount : Integer;
+Begin
+  GetPdvReferenceCount := PdvReferenceCount;
+End;
+
+Function GetPdvStateCount : Integer;
+Begin
+  GetPdvStateCount := PdvStateCount;
 End;
 
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
@@ -14048,6 +14817,7 @@ Begin
   StrInitialized := False;
   FioInitialized := False;
   AdsInitialized := False;
+  PdvInitialized := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -14093,6 +14863,9 @@ Begin
 
   { Initialiser le module ACCEPT/DISPLAY/STOP }
   InitAcceptDisplayState;
+
+  { Initialiser le module PROCEDURE DIVISION / Sections / Paragraphes }
+  InitProcDivState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
