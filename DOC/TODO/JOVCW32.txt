@@ -73,7 +73,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Gestion des lignes et numeros de ligne pour diagnostics
             10 fonctions accesseurs
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES JOVIAL 73 [A FAIRE]
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES JOVIAL 73 [IMPLEMENTE]
             Tous les mots reserves Jovial 73 :
               Structure : MODULE, COMPOOL, END, BEGIN
               Declarations : ITEM, TABLE, DEFINE, OVERLAY

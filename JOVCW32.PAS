@@ -81,7 +81,7 @@
             Gestion des lignes et numeros de ligne pour diagnostics
             10 fonctions accesseurs
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES JOVIAL 73 [A FAIRE]
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES JOVIAL 73 [IMPLEMENTE]
             Tous les mots reserves Jovial 73 :
               Structure : MODULE, COMPOOL, END, BEGIN
               Declarations : ITEM, TABLE, DEFINE, OVERLAY
@@ -1308,6 +1308,13 @@ Begin
     Inc(LexColNo);
 End;
 
+{ Forward declaration pour LookupKeyword (utilise par LexScanIdent) }
+{ KW_NONE defini ici, le reste des KW_* dans la section TODO 03    }
+Const
+  KW_NONE = 0;
+
+Function LookupKeyword(Const S : TString) : Integer; Forward;
+
 { ------------------------------------------------------------ }
 { LexScanIdent : identificateur Jovial (lettres, chiffres, _)  }
 { Jovial est insensible a la casse                              }
@@ -1315,7 +1322,8 @@ End;
 
 Procedure LexScanIdent;
 Var
-  S : TString;
+  S  : TString;
+  KW : Integer;
 Begin
   S := '';
 
@@ -1331,8 +1339,19 @@ Begin
   { Jovial est insensible a la casse }
   CurTokStr  := UpCaseStr(S);
   CurTokReal := 0.0;
-  CurTokType := TOK_IDENT;
-  CurTokNum  := 0;
+
+  { Tester si c est un mot-cle Jovial }
+  KW := LookupKeyword(CurTokStr);
+  If KW <> KW_NONE Then
+  Begin
+    CurTokType := TOK_KEYWORD;
+    CurTokNum  := KW;
+  End
+  Else
+  Begin
+    CurTokType := TOK_IDENT;
+    CurTokNum  := 0;
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -1819,6 +1838,333 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 03 - RECONNAISSANCE DES MOTS-CLES JOVIAL 73            }
+{                                               [IMPLEMENTE]  }
+{ ============================================================ }
+
+Const
+  { Constantes KW_* pour les mots-cles Jovial 73 }
+  { KW_NONE = 0 deja defini avant LexScanIdent   }
+
+  { Structure }
+  KW_MODULE     = 1;
+  KW_COMPOOL    = 2;
+  KW_END        = 3;
+  KW_BEGIN      = 4;
+
+  { Declarations }
+  KW_ITEM       = 10;
+  KW_TABLE      = 11;
+  KW_DEFINE     = 12;
+  KW_OVERLAY    = 13;
+
+  { Qualificateurs de type }
+  KW_I          = 20;    { entier                                  }
+  KW_S          = 21;    { status                                  }
+  KW_B          = 22;    { bits                                    }
+  KW_F          = 23;    { flottant                                }
+
+  { Controle }
+  KW_IF         = 30;
+  KW_THEN       = 31;
+  KW_ELSE       = 32;
+  KW_FOR        = 33;
+  KW_TO         = 34;
+  KW_BY         = 35;
+  KW_STEP       = 36;
+  KW_DO         = 37;
+  KW_WHILE      = 38;
+  KW_UNTIL      = 39;
+  KW_GOTO       = 40;
+  KW_GO         = 41;
+
+  { Sous-programmes }
+  KW_PROCEDURE  = 50;
+  KW_PROC       = 51;
+  KW_FUNCTION   = 52;
+  KW_CALL       = 53;
+  KW_RETURN     = 54;
+  KW_STOP       = 55;
+
+  { Logiques }
+  KW_AND        = 60;
+  KW_OR         = 61;
+  KW_NOT        = 62;
+  KW_XOR        = 63;
+  KW_EQV        = 64;
+
+  { E/S }
+  KW_INPUT      = 70;
+  KW_OUTPUT     = 71;
+
+  { Divers }
+  KW_OF         = 80;
+  KW_IS         = 81;
+  KW_AT         = 82;
+  KW_IN         = 83;
+  KW_ON         = 84;
+  KW_ABORT      = 85;
+  KW_SIGNAL     = 86;
+  KW_CASE       = 87;
+  KW_FALLTHRU   = 88;
+  KW_DEFAULT    = 89;
+
+  { Fonctions integrees (builtins) }
+  KW_ABS        = 100;
+  KW_SGN        = 101;
+  KW_SHIFTL     = 102;
+  KW_SHIFTR     = 103;
+  KW_BIT        = 104;
+  KW_BITSIZE    = 105;
+  KW_BYTESIZE   = 106;
+  KW_WORDSIZE   = 107;
+  KW_UBOUND     = 108;
+  KW_LBOUND     = 109;
+  KW_NWSDEN     = 110;
+  KW_FIRST      = 111;
+  KW_LAST       = 112;
+  KW_NEXT       = 113;
+
+  KW_TOTAL_KEYWORDS = 60;  { nombre approximatif de mots-cles Jovial }
+
+Var
+  { Variables du module de mots-cles }
+  KwCount       : Integer;     { compteur de lookups effectues         }
+  KwInitialized : Boolean;     { module initialise ?                   }
+
+{ ------------------------------------------------------------ }
+{ InitKeywordState : initialiser le module de mots-cles        }
+{ ------------------------------------------------------------ }
+
+Procedure InitKeywordState;
+Begin
+  KwCount       := 0;
+  KwInitialized := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ LookupKeyword : retourner KW_xxx ou KW_NONE si non reconnu   }
+{ Jovial est insensible a la casse (deja uppercase via LexScan) }
+{ ------------------------------------------------------------ }
+
+Function LookupKeyword(Const S : TString) : Integer;
+Begin
+  Inc(KwCount);
+  { Structure }
+  If      S = 'MODULE'      Then LookupKeyword := KW_MODULE
+  Else If S = 'COMPOOL'     Then LookupKeyword := KW_COMPOOL
+  Else If S = 'END'         Then LookupKeyword := KW_END
+  Else If S = 'BEGIN'       Then LookupKeyword := KW_BEGIN
+  { Declarations }
+  Else If S = 'ITEM'        Then LookupKeyword := KW_ITEM
+  Else If S = 'TABLE'       Then LookupKeyword := KW_TABLE
+  Else If S = 'DEFINE'      Then LookupKeyword := KW_DEFINE
+  Else If S = 'OVERLAY'     Then LookupKeyword := KW_OVERLAY
+  { Qualificateurs de type }
+  Else If S = 'I'           Then LookupKeyword := KW_I
+  Else If S = 'S'           Then LookupKeyword := KW_S
+  Else If S = 'B'           Then LookupKeyword := KW_B
+  Else If S = 'F'           Then LookupKeyword := KW_F
+  { Controle }
+  Else If S = 'IF'          Then LookupKeyword := KW_IF
+  Else If S = 'THEN'        Then LookupKeyword := KW_THEN
+  Else If S = 'ELSE'        Then LookupKeyword := KW_ELSE
+  Else If S = 'FOR'         Then LookupKeyword := KW_FOR
+  Else If S = 'TO'          Then LookupKeyword := KW_TO
+  Else If S = 'BY'          Then LookupKeyword := KW_BY
+  Else If S = 'STEP'        Then LookupKeyword := KW_STEP
+  Else If S = 'DO'          Then LookupKeyword := KW_DO
+  Else If S = 'WHILE'       Then LookupKeyword := KW_WHILE
+  Else If S = 'UNTIL'       Then LookupKeyword := KW_UNTIL
+  Else If S = 'GOTO'        Then LookupKeyword := KW_GOTO
+  Else If S = 'GO'          Then LookupKeyword := KW_GO
+  { Sous-programmes }
+  Else If S = 'PROCEDURE'   Then LookupKeyword := KW_PROCEDURE
+  Else If S = 'PROC'        Then LookupKeyword := KW_PROC
+  Else If S = 'FUNCTION'    Then LookupKeyword := KW_FUNCTION
+  Else If S = 'CALL'        Then LookupKeyword := KW_CALL
+  Else If S = 'RETURN'      Then LookupKeyword := KW_RETURN
+  Else If S = 'STOP'        Then LookupKeyword := KW_STOP
+  { Logiques }
+  Else If S = 'AND'         Then LookupKeyword := KW_AND
+  Else If S = 'OR'          Then LookupKeyword := KW_OR
+  Else If S = 'NOT'         Then LookupKeyword := KW_NOT
+  Else If S = 'XOR'         Then LookupKeyword := KW_XOR
+  Else If S = 'EQV'         Then LookupKeyword := KW_EQV
+  { E/S }
+  Else If S = 'INPUT'       Then LookupKeyword := KW_INPUT
+  Else If S = 'OUTPUT'      Then LookupKeyword := KW_OUTPUT
+  { Divers }
+  Else If S = 'OF'          Then LookupKeyword := KW_OF
+  Else If S = 'IS'          Then LookupKeyword := KW_IS
+  Else If S = 'AT'          Then LookupKeyword := KW_AT
+  Else If S = 'IN'          Then LookupKeyword := KW_IN
+  Else If S = 'ON'          Then LookupKeyword := KW_ON
+  Else If S = 'ABORT'       Then LookupKeyword := KW_ABORT
+  Else If S = 'SIGNAL'      Then LookupKeyword := KW_SIGNAL
+  Else If S = 'CASE'        Then LookupKeyword := KW_CASE
+  Else If S = 'FALLTHRU'    Then LookupKeyword := KW_FALLTHRU
+  Else If S = 'DEFAULT'     Then LookupKeyword := KW_DEFAULT
+  { Fonctions integrees (builtins) }
+  Else If S = 'ABS'         Then LookupKeyword := KW_ABS
+  Else If S = 'SGN'         Then LookupKeyword := KW_SGN
+  Else If S = 'SHIFTL'      Then LookupKeyword := KW_SHIFTL
+  Else If S = 'SHIFTR'      Then LookupKeyword := KW_SHIFTR
+  Else If S = 'BIT'         Then LookupKeyword := KW_BIT
+  Else If S = 'BITSIZE'     Then LookupKeyword := KW_BITSIZE
+  Else If S = 'BYTESIZE'    Then LookupKeyword := KW_BYTESIZE
+  Else If S = 'WORDSIZE'    Then LookupKeyword := KW_WORDSIZE
+  Else If S = 'UBOUND'      Then LookupKeyword := KW_UBOUND
+  Else If S = 'LBOUND'      Then LookupKeyword := KW_LBOUND
+  Else If S = 'NWSDEN'      Then LookupKeyword := KW_NWSDEN
+  Else If S = 'FIRST'       Then LookupKeyword := KW_FIRST
+  Else If S = 'LAST'        Then LookupKeyword := KW_LAST
+  Else If S = 'NEXT'        Then LookupKeyword := KW_NEXT
+  Else LookupKeyword := KW_NONE;
+End;
+
+{ ------------------------------------------------------------ }
+{ KeywordName : retourne le nom d un mot-cle a partir de       }
+{               sa constante KW_*                               }
+{ ------------------------------------------------------------ }
+
+Function KeywordName(KW : Integer) : TString;
+Begin
+  Case KW Of
+    { Structure }
+    KW_MODULE     : KeywordName := 'MODULE';
+    KW_COMPOOL    : KeywordName := 'COMPOOL';
+    KW_END        : KeywordName := 'END';
+    KW_BEGIN      : KeywordName := 'BEGIN';
+    { Declarations }
+    KW_ITEM       : KeywordName := 'ITEM';
+    KW_TABLE      : KeywordName := 'TABLE';
+    KW_DEFINE     : KeywordName := 'DEFINE';
+    KW_OVERLAY    : KeywordName := 'OVERLAY';
+    { Qualificateurs de type }
+    KW_I          : KeywordName := 'I';
+    KW_S          : KeywordName := 'S';
+    KW_B          : KeywordName := 'B';
+    KW_F          : KeywordName := 'F';
+    { Controle }
+    KW_IF         : KeywordName := 'IF';
+    KW_THEN       : KeywordName := 'THEN';
+    KW_ELSE       : KeywordName := 'ELSE';
+    KW_FOR        : KeywordName := 'FOR';
+    KW_TO         : KeywordName := 'TO';
+    KW_BY         : KeywordName := 'BY';
+    KW_STEP       : KeywordName := 'STEP';
+    KW_DO         : KeywordName := 'DO';
+    KW_WHILE      : KeywordName := 'WHILE';
+    KW_UNTIL      : KeywordName := 'UNTIL';
+    KW_GOTO       : KeywordName := 'GOTO';
+    KW_GO         : KeywordName := 'GO';
+    { Sous-programmes }
+    KW_PROCEDURE  : KeywordName := 'PROCEDURE';
+    KW_PROC       : KeywordName := 'PROC';
+    KW_FUNCTION   : KeywordName := 'FUNCTION';
+    KW_CALL       : KeywordName := 'CALL';
+    KW_RETURN     : KeywordName := 'RETURN';
+    KW_STOP       : KeywordName := 'STOP';
+    { Logiques }
+    KW_AND        : KeywordName := 'AND';
+    KW_OR         : KeywordName := 'OR';
+    KW_NOT        : KeywordName := 'NOT';
+    KW_XOR        : KeywordName := 'XOR';
+    KW_EQV        : KeywordName := 'EQV';
+    { E/S }
+    KW_INPUT      : KeywordName := 'INPUT';
+    KW_OUTPUT     : KeywordName := 'OUTPUT';
+    { Divers }
+    KW_OF         : KeywordName := 'OF';
+    KW_IS         : KeywordName := 'IS';
+    KW_AT         : KeywordName := 'AT';
+    KW_IN         : KeywordName := 'IN';
+    KW_ON         : KeywordName := 'ON';
+    KW_ABORT      : KeywordName := 'ABORT';
+    KW_SIGNAL     : KeywordName := 'SIGNAL';
+    KW_CASE       : KeywordName := 'CASE';
+    KW_FALLTHRU   : KeywordName := 'FALLTHRU';
+    KW_DEFAULT    : KeywordName := 'DEFAULT';
+    { Fonctions integrees (builtins) }
+    KW_ABS        : KeywordName := 'ABS';
+    KW_SGN        : KeywordName := 'SGN';
+    KW_SHIFTL     : KeywordName := 'SHIFTL';
+    KW_SHIFTR     : KeywordName := 'SHIFTR';
+    KW_BIT        : KeywordName := 'BIT';
+    KW_BITSIZE    : KeywordName := 'BITSIZE';
+    KW_BYTESIZE   : KeywordName := 'BYTESIZE';
+    KW_WORDSIZE   : KeywordName := 'WORDSIZE';
+    KW_UBOUND     : KeywordName := 'UBOUND';
+    KW_LBOUND     : KeywordName := 'LBOUND';
+    KW_NWSDEN     : KeywordName := 'NWSDEN';
+    KW_FIRST      : KeywordName := 'FIRST';
+    KW_LAST       : KeywordName := 'LAST';
+    KW_NEXT       : KeywordName := 'NEXT';
+  Else
+    KeywordName := '?KW(' + ItoSI(KW) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 03)                             }
+{ ------------------------------------------------------------ }
+
+Function IsKwInitialized : Boolean;
+Begin
+  IsKwInitialized := KwInitialized;
+End;
+
+Function IsKwEmpty : Boolean;
+Begin
+  IsKwEmpty := (KwCount = 0);
+End;
+
+Function GetKwCount : Integer;
+Begin
+  GetKwCount := KwCount;
+End;
+
+Function GetKwStatus : TString;
+Begin
+  If Not KwInitialized Then
+    GetKwStatus := 'Not initialized'
+  Else
+    GetKwStatus := 'Initialized (' + ItoS(KwCount) + ' lookups)';
+End;
+
+Function GetKwTotalKeywords : Integer;
+Begin
+  GetKwTotalKeywords := KW_TOTAL_KEYWORDS;
+End;
+
+Function GetKwStructureCount : Integer;
+Begin
+  GetKwStructureCount := 4;
+End;
+
+Function GetKwDeclarationCount : Integer;
+Begin
+  GetKwDeclarationCount := 4;
+End;
+
+Function GetKwControlCount : Integer;
+Begin
+  GetKwControlCount := 12;
+End;
+
+Function GetKwSubprogramCount : Integer;
+Begin
+  GetKwSubprogramCount := 6;
+End;
+
+Function GetKwBuiltinCount : Integer;
+Begin
+  GetKwBuiltinCount := 14;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -1831,11 +2177,15 @@ Begin
   OutFOpen   := False;
   BcActive   := False;
   LexOpened  := False;
+  KwInitialized := False;
 
   ParseArgs;
 
   { Affichage de la banniere en mode verbeux }
   ShowBanner;
+
+  { Initialiser le module de mots-cles }
+  InitKeywordState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
