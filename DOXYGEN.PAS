@@ -19585,6 +19585,8 @@ End;
 
 Procedure JPEG_WriteBitToBuffer(Bit: Integer);
 { Ecrit un seul bit dans le buffer }
+Var
+  Written: Integer;
 Begin
   JPEG_BitBuffer.Buffer := (JPEG_BitBuffer.Buffer Shl 1) Or (Bit And 1);
   Inc(JPEG_BitBuffer.BitCount);
@@ -19593,25 +19595,32 @@ Begin
   { Si on a 8 bits, ecrire l'octet }
   If JPEG_BitBuffer.BitCount >= 8 Then
   Begin
-    If JPEG_BitBuffer.ByteCount < JPEG_BIT_BUFFER_SIZE Then
+    { Vider le buffer vers le fichier s'il est presque plein }
+    If JPEG_BitBuffer.ByteCount >= JPEG_BIT_BUFFER_SIZE - 2 Then
     Begin
-      JPEG_BitBuffer.ByteBuffer[JPEG_BitBuffer.ByteCount] :=
-        JPEG_BitBuffer.Buffer And $FF;
+      If JPEG_FileOpen Then
+      Begin
+        BlockWrite(JPEG_OutputFile, JPEG_BitBuffer.ByteBuffer[0],
+                   JPEG_BitBuffer.ByteCount, Written);
+        Inc(JPEG_EncoderState.BytesWritten, Written);
+      End;
+      JPEG_BitBuffer.ByteCount := 0;
+    End;
+
+    JPEG_BitBuffer.ByteBuffer[JPEG_BitBuffer.ByteCount] :=
+      JPEG_BitBuffer.Buffer And $FF;
+    Inc(JPEG_BitBuffer.ByteCount);
+    Inc(JPEG_BitBuffer.TotalBytes);
+
+    { Byte stuffing: si $FF, ajouter $00 }
+    If (JPEG_BitBuffer.Buffer And $FF) = $FF Then
+    Begin
+      JPEG_BitBuffer.ByteBuffer[JPEG_BitBuffer.ByteCount] := $00;
       Inc(JPEG_BitBuffer.ByteCount);
       Inc(JPEG_BitBuffer.TotalBytes);
-
-      { Byte stuffing: si $FF, ajouter $00 }
-      If (JPEG_BitBuffer.Buffer And $FF) = $FF Then
-      Begin
-        If JPEG_BitBuffer.ByteCount < JPEG_BIT_BUFFER_SIZE Then
-        Begin
-          JPEG_BitBuffer.ByteBuffer[JPEG_BitBuffer.ByteCount] := $00;
-          Inc(JPEG_BitBuffer.ByteCount);
-          Inc(JPEG_BitBuffer.TotalBytes);
-          Inc(JPEG_HuffStats.StuffBytesAdded);
-        End;
-      End;
+      Inc(JPEG_HuffStats.StuffBytesAdded);
     End;
+
     JPEG_BitBuffer.Buffer := 0;
     JPEG_BitBuffer.BitCount := 0;
   End;
@@ -20813,7 +20822,8 @@ End;
 Function JPEG_EndEncode: Boolean;
 { Termine l'encodage d'une image JPEG }
 Var
-  I: Integer;
+  Written: Integer;
+  PadByte: Byte;
 Begin
   If Not JPEG_FileOpen Then
   Begin
@@ -20830,16 +20840,32 @@ Begin
       JPEG_BitBuffer.Buffer := (JPEG_BitBuffer.Buffer Shl 1) Or 1;
       Inc(JPEG_BitBuffer.BitCount);
     End;
-    { Ajouter l'octet au buffer }
-    JPEG_BitBuffer.ByteBuffer[JPEG_BitBuffer.ByteCount] := JPEG_BitBuffer.Buffer And $FF;
-    Inc(JPEG_BitBuffer.ByteCount);
+    { Ecrire le dernier octet avec byte stuffing }
+    PadByte := JPEG_BitBuffer.Buffer And $FF;
+    If JPEG_BitBuffer.ByteCount < JPEG_BIT_BUFFER_SIZE Then
+    Begin
+      JPEG_BitBuffer.ByteBuffer[JPEG_BitBuffer.ByteCount] := PadByte;
+      Inc(JPEG_BitBuffer.ByteCount);
+    End;
+    If PadByte = $FF Then
+    Begin
+      If JPEG_BitBuffer.ByteCount < JPEG_BIT_BUFFER_SIZE Then
+      Begin
+        JPEG_BitBuffer.ByteBuffer[JPEG_BitBuffer.ByteCount] := $00;
+        Inc(JPEG_BitBuffer.ByteCount);
+      End;
+    End;
     JPEG_BitBuffer.BitCount := 0;
     JPEG_BitBuffer.Buffer := 0;
   End;
 
-  { Ecrire le buffer de bits avec byte stuffing }
-  For I := 0 To JPEG_BitBuffer.ByteCount - 1 Do
-    JPEG_WriteDataByteStuffed(JPEG_BitBuffer.ByteBuffer[I]);
+  { Ecrire le buffer restant directement (byte stuffing deja fait) }
+  If JPEG_BitBuffer.ByteCount > 0 Then
+  Begin
+    BlockWrite(JPEG_OutputFile, JPEG_BitBuffer.ByteBuffer[0],
+               JPEG_BitBuffer.ByteCount, Written);
+    Inc(JPEG_EncoderState.BytesWritten, Written);
+  End;
   JPEG_BitBuffer.ByteCount := 0;
 
   { Ecrire le marqueur de fin }
