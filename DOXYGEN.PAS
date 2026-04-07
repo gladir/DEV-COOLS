@@ -2414,6 +2414,7 @@ Type
     SvgOutput    : Boolean;    { --svg ou -D DOT_IMAGE_FORMAT=svg }
     PngOutput    : Boolean;    { --png ou -D DOT_IMAGE_FORMAT=png }
     VdxOutput    : Boolean;    { --visio ou -D DOT_IMAGE_FORMAT=vdx }
+    JpegOutput   : Boolean;    { --jpeg ou -jpg ou -D DOT_IMAGE_FORMAT=jpeg }
   End;
 
   TSourceLanguage = (LANG_UNKNOWN, LANG_C, LANG_CPP, LANG_JAVA,
@@ -8376,9 +8377,12 @@ Begin
   WriteLn('                    (equivalent a -D DOT_IMAGE_FORMAT=svg)');
   WriteLn('  --png             Generer la sortie au format PNG');
   WriteLn('                    (equivalent a -D DOT_IMAGE_FORMAT=png)');
+  WriteLn('  --jpeg, -jpg      Generer la sortie au format JPEG');
+  WriteLn('                    (equivalent a -D DOT_IMAGE_FORMAT=jpeg)');
   WriteLn('  -D NOM=VALEUR     Definir une option de configuration');
   WriteLn('                    Ex: -D DOT_IMAGE_FORMAT=svg');
   WriteLn('                    Ex: -D DOT_IMAGE_FORMAT=png');
+  WriteLn('                    Ex: -D DOT_IMAGE_FORMAT=jpeg');
   WriteLn;
   WriteLn('Exemples:');
   WriteLn('  doxygen                     Utiliser le Doxyfile du repertoire courant');
@@ -8389,8 +8393,11 @@ Begin
   WriteLn('  doxygen -INPUT program.pas  Analyser program.pas directement');
   WriteLn('  doxygen --svg -INPUT test.c Generer la doc en SVG pour test.c');
   WriteLn('  doxygen --png -INPUT test.c Generer la doc en PNG pour test.c');
+  WriteLn('  doxygen --jpeg -INPUT test.c Generer la doc en JPEG pour test.c');
+  WriteLn('  doxygen -jpg -INPUT test.c  Generer la doc en JPEG pour test.c');
   WriteLn('  doxygen -D DOT_IMAGE_FORMAT=svg  Utiliser le format SVG');
   WriteLn('  doxygen -D DOT_IMAGE_FORMAT=png  Utiliser le format PNG');
+  WriteLn('  doxygen -D DOT_IMAGE_FORMAT=jpeg Utiliser le format JPEG');
   WriteLn;
   WriteLn('Langages supportes pour -INPUT:');
   WriteLn('  C (.c, .h), C++ (.cpp, .hpp), Pascal (.pas, .pp)');
@@ -8538,6 +8545,11 @@ Begin
       { Extension DEV-COOLS : format de sortie PNG }
       O.PngOutput := True;
     End
+    Else If (Arg = '--jpeg') Or (UpperArg = '-JPG') Then
+    Begin
+      { Extension DEV-COOLS : format de sortie JPEG }
+      O.JpegOutput := True;
+    End
     Else If (UpperArg = '-D') Then
     Begin
       { Option de definition : -D NOM=VALEUR }
@@ -8545,13 +8557,16 @@ Begin
       Begin
         Inc(I);
         Arg := ParamStr(I);
-        { Verifier si c'est DOT_IMAGE_FORMAT=svg ou DOT_IMAGE_FORMAT=png }
+        { Verifier si c'est DOT_IMAGE_FORMAT=svg, png ou jpeg }
         If Pos('DOT_IMAGE_FORMAT=', UpStr(Arg)) = 1 Then
         Begin
           If UpStr(Copy(Arg, 18, Length(Arg))) = 'SVG' Then
             O.SvgOutput := True
           Else If UpStr(Copy(Arg, 18, Length(Arg))) = 'PNG' Then
-            O.PngOutput := True;
+            O.PngOutput := True
+          Else If (UpStr(Copy(Arg, 18, Length(Arg))) = 'JPEG') Or
+                  (UpStr(Copy(Arg, 18, Length(Arg))) = 'JPG') Then
+            O.JpegOutput := True;
         End;
         { On pourrait ajouter d'autres definitions ici }
       End
@@ -21304,6 +21319,14 @@ Begin
       SetConfigOption('DOT_IMAGE_FORMAT', 'png', 0, False);
       If Not Opts.Quiet Then
         WriteLn('Format de sortie PNG active');
+    End
+    { Appliquer l'option JPEG si specifiee pour le mode InputFile }
+    Else If Opts.JpegOutput Then
+    Begin
+      SetConfigOption('HAVE_DOT', 'YES', 0, False);
+      SetConfigOption('DOT_IMAGE_FORMAT', 'jpeg', 0, False);
+      If Not Opts.Quiet Then
+        WriteLn('Format de sortie JPEG active');
     End;
     ProcessInputFile(Opts.InputFile);
     Halt(EXIT_OK);
@@ -21399,6 +21422,14 @@ Begin
     SetConfigOption('DOT_IMAGE_FORMAT', 'png', 0, False);
     If Not Opts.Quiet Then
       WriteLn('Format de sortie PNG active');
+  End
+  { Appliquer l'option JPEG si specifiee en ligne de commande }
+  Else If Opts.JpegOutput Then
+  Begin
+    SetConfigOption('HAVE_DOT', 'YES', 0, False);
+    SetConfigOption('DOT_IMAGE_FORMAT', 'jpeg', 0, False);
+    If Not Opts.Quiet Then
+      WriteLn('Format de sortie JPEG active');
   End;
   
   { Mode expansion de configuration (TODO 06) }
