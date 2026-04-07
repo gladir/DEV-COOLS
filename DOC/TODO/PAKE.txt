@@ -132,7 +132,7 @@ Turbo Pascal / Free Pascal (-Mtp)
            verifier Rust, Tauri, et les dependances systeme
            afficher des instructions si manquant
 
-  TODO 05 - CONFIGURATION DE LA FENETRE [A FAIRE]
+  TODO 05 - CONFIGURATION DE LA FENETRE [IMPLEMENTE]
          Constantes de tailles par defaut :
            DEFAULT_WIDTH = 1200, DEFAULT_HEIGHT = 780,
            MIN_WIDTH = 320, MIN_HEIGHT = 240,

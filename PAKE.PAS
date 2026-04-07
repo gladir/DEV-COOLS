@@ -175,7 +175,7 @@
               verifier Rust, Tauri, et les dependances systeme
               afficher des instructions si manquant
 
-  TODO 05 - CONFIGURATION DE LA FENETRE [A FAIRE]
+  TODO 05 - CONFIGURATION DE LA FENETRE [IMPLEMENTE]
             Constantes de tailles par defaut :
               DEFAULT_WIDTH = 1200, DEFAULT_HEIGHT = 780,
               MIN_WIDTH = 320, MIN_HEIGHT = 240,
@@ -1432,7 +1432,123 @@ Begin
 End;
 
 { ============================================================
-  TODO 05-25 : A IMPLEMENTER
+  TODO 05 : CONFIGURATION DE LA FENETRE [IMPLEMENTE]
+  ============================================================ }
+
+{ Valider que les dimensions de fenetre sont dans les limites }
+Function ValidateWindowSize(W, H: Integer): Boolean;
+Begin
+  ValidateWindowSize := (W >= MIN_WIDTH) And (W <= MAX_WIDTH) And
+                        (H >= MIN_HEIGHT) And (H <= MAX_HEIGHT);
+End;
+
+{ Initialiser la configuration de fenetre depuis les options }
+Procedure InitWindowConfig(Var Cfg: TWindowConfig; Const Opts: TOptions);
+Begin
+  { Dimensions }
+  If Opts.Width > 0 Then
+    Cfg.Width := Opts.Width
+  Else
+    Cfg.Width := DEFAULT_WIDTH;
+  
+  If Opts.Height > 0 Then
+    Cfg.Height := Opts.Height
+  Else
+    Cfg.Height := DEFAULT_HEIGHT;
+  
+  { Valider et ajuster les dimensions }
+  If Cfg.Width < MIN_WIDTH Then Cfg.Width := MIN_WIDTH;
+  If Cfg.Width > MAX_WIDTH Then Cfg.Width := MAX_WIDTH;
+  If Cfg.Height < MIN_HEIGHT Then Cfg.Height := MIN_HEIGHT;
+  If Cfg.Height > MAX_HEIGHT Then Cfg.Height := MAX_HEIGHT;
+  
+  { Dimensions minimales }
+  Cfg.MinWidth := MIN_WIDTH;
+  Cfg.MinHeight := MIN_HEIGHT;
+  
+  { Options de fenetre }
+  Cfg.Resizable := True;  { Fenetre redimensionnable par defaut }
+  Cfg.Fullscreen := Opts.Fullscreen;
+  Cfg.Transparent := Opts.Transparent;
+  Cfg.Decorations := Not Opts.HideTitleBar;  { Barre de titre visible par defaut }
+  Cfg.AlwaysOnTop := Opts.AlwaysOnTop;
+  Cfg.Center := True;  { Centrer la fenetre par defaut }
+  
+  { Titre de la fenetre }
+  If Opts.AppName <> '' Then
+    Cfg.Title := Opts.AppName
+  Else
+    Cfg.Title := 'Pake Application';
+End;
+
+{ Generer la configuration JSON pour la section windows de tauri.conf.json }
+Function WindowConfigToJson(Const Cfg: TWindowConfig): String;
+Var
+  Json: String;
+  
+  Function BoolToJson(B: Boolean): String;
+  Begin
+    If B Then
+      BoolToJson := 'true'
+    Else
+      BoolToJson := 'false';
+  End;
+  
+Begin
+  Json := '{' + #13#10;
+  Json := Json + '        "title": "' + EscapeJson(Cfg.Title) + '",' + #13#10;
+  Json := Json + '        "width": ' + IntToStr(Cfg.Width) + ',' + #13#10;
+  Json := Json + '        "height": ' + IntToStr(Cfg.Height) + ',' + #13#10;
+  Json := Json + '        "minWidth": ' + IntToStr(Cfg.MinWidth) + ',' + #13#10;
+  Json := Json + '        "minHeight": ' + IntToStr(Cfg.MinHeight) + ',' + #13#10;
+  Json := Json + '        "resizable": ' + BoolToJson(Cfg.Resizable) + ',' + #13#10;
+  Json := Json + '        "fullscreen": ' + BoolToJson(Cfg.Fullscreen) + ',' + #13#10;
+  Json := Json + '        "transparent": ' + BoolToJson(Cfg.Transparent) + ',' + #13#10;
+  Json := Json + '        "decorations": ' + BoolToJson(Cfg.Decorations) + ',' + #13#10;
+  Json := Json + '        "alwaysOnTop": ' + BoolToJson(Cfg.AlwaysOnTop) + ',' + #13#10;
+  Json := Json + '        "center": ' + BoolToJson(Cfg.Center) + #13#10;
+  Json := Json + '      }';
+  WindowConfigToJson := Json;
+End;
+
+{ Fonctions accesseurs pour TWindowConfig }
+Function IsWinValidSize(W, H: Integer): Boolean;
+Begin
+  IsWinValidSize := ValidateWindowSize(W, H);
+End;
+
+Function GetWinDefaultWidth: Integer;
+Begin
+  GetWinDefaultWidth := DEFAULT_WIDTH;
+End;
+
+Function GetWinDefaultHeight: Integer;
+Begin
+  GetWinDefaultHeight := DEFAULT_HEIGHT;
+End;
+
+Function GetWinMinWidth: Integer;
+Begin
+  GetWinMinWidth := MIN_WIDTH;
+End;
+
+Function GetWinMinHeight: Integer;
+Begin
+  GetWinMinHeight := MIN_HEIGHT;
+End;
+
+Function GetWinMaxWidth: Integer;
+Begin
+  GetWinMaxWidth := MAX_WIDTH;
+End;
+
+Function GetWinMaxHeight: Integer;
+Begin
+  GetWinMaxHeight := MAX_HEIGHT;
+End;
+
+{ ============================================================
+  TODO 06-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -1569,13 +1685,12 @@ Begin
   WriteLn('Plateforme  : ', PlatformName(GetPlatform));
   WriteLn;
 
-  { TODO: Implementer les TODOs 05-25 }
-  WriteLn('*** NOTE: TODOs 01-04 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 05-25 restent a implementer ***');
+  { TODO: Implementer les TODOs 06-25 }
+  WriteLn('*** NOTE: TODOs 01-05 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 06-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 05: Configuration de la fenetre');
   WriteLn('  - TODO 06: Gestion des icones');
   WriteLn('  - TODO 07: Generation du nom d''application');
   WriteLn('  - TODO 08: Configuration Tauri');
