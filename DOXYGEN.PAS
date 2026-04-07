@@ -3674,6 +3674,64 @@ Begin
   TrimLine := Copy(S, L, R - L + 1);
 End;
 
+Function ExtractPascalParams(Const Line: String): String;
+{ Extrait les parametres d'une declaration de fonction/procedure Pascal }
+Var
+  PStart, PEnd: Integer;
+Begin
+  ExtractPascalParams := '';
+  PStart := Pos('(', Line);
+  If PStart = 0 Then Exit;
+  PEnd := Pos(')', Line);
+  If (PEnd = 0) Or (PEnd <= PStart) Then Exit;
+  ExtractPascalParams := Copy(Line, PStart + 1, PEnd - PStart - 1);
+End;
+
+Function ExtractPascalReturnType(Const Line: String): String;
+{ Extrait le type de retour d'une fonction Pascal (apres le :) }
+Var
+  PColon, PEnd, I: Integer;
+  S: String;
+Begin
+  ExtractPascalReturnType := '';
+  { Trouver le : apres la parenthese fermante }
+  PEnd := Pos(')', Line);
+  If PEnd = 0 Then PEnd := 1;
+  PColon := 0;
+  For I := PEnd To Length(Line) Do
+  Begin
+    If Line[I] = ':' Then
+    Begin
+      PColon := I;
+      Break;
+    End;
+  End;
+  If PColon = 0 Then Exit;
+  { Extraire le type jusqu'au ; ou la fin }
+  S := '';
+  For I := PColon + 1 To Length(Line) Do
+  Begin
+    If Line[I] = ';' Then Break;
+    S := S + Line[I];
+  End;
+  ExtractPascalReturnType := TrimLine(S);
+End;
+
+Function ExtractPascalSignature(Const Line: String; IsProcedure: Boolean): String;
+{ Extrait la signature complete d'une procedure/fonction Pascal }
+Var
+  PEnd, I: Integer;
+  S: String;
+Begin
+  S := '';
+  { Trouver la fin de la declaration (;) }
+  PEnd := Pos(';', Line);
+  If PEnd = 0 Then PEnd := Length(Line);
+  For I := 1 To PEnd - 1 Do
+    S := S + Line[I];
+  ExtractPascalSignature := TrimLine(S);
+End;
+
 Procedure ExtractEntitiesC(Const FileName: String);
 { Extraction des entites pour C/C++ }
 Var
@@ -4023,6 +4081,10 @@ Begin
             FileName, LineNum, VIS_PUBLIC)
         Else
           AddEntity(ENT_FUNCTION, Name, Name, FileName, LineNum, VIS_PUBLIC);
+        { Remplir les informations supplementaires }
+        Entities[EntityCount].Signature := ExtractPascalSignature(TrimmedLine, True);
+        Entities[EntityCount].Parameters := ExtractPascalParams(TrimmedLine);
+        Entities[EntityCount].ReturnType := ''; { Procedure n'a pas de type retour }
       End;
       Continue;
     End;
@@ -4038,6 +4100,10 @@ Begin
             FileName, LineNum, VIS_PUBLIC)
         Else
           AddEntity(ENT_FUNCTION, Name, Name, FileName, LineNum, VIS_PUBLIC);
+        { Remplir les informations supplementaires }
+        Entities[EntityCount].Signature := ExtractPascalSignature(TrimmedLine, False);
+        Entities[EntityCount].Parameters := ExtractPascalParams(TrimmedLine);
+        Entities[EntityCount].ReturnType := ExtractPascalReturnType(TrimmedLine);
       End;
       Continue;
     End;
@@ -8894,32 +8960,55 @@ Begin
   If Entity.Signature <> '' Then
   Begin
     WriteLn(OutFile, '<div class="signature">');
-    WriteLn(OutFile, EscapeHtml(Entity.Signature));
+    WriteLn(OutFile, '<h3>Signature</h3>');
+    WriteLn(OutFile, '<pre><code>', EscapeHtml(Entity.Signature), '</code></pre>');
     WriteLn(OutFile, '</div>');
   End;
   
   { Brief description }
   If Entity.BriefDesc <> '' Then
+  Begin
+    WriteLn(OutFile, '<div class="brief">');
+    WriteLn(OutFile, '<h3>Resume</h3>');
     WriteLn(OutFile, '<p><strong>', EscapeHtml(Entity.BriefDesc), '</strong></p>');
+    WriteLn(OutFile, '</div>');
+  End;
   
   { Detailed description }
   If Entity.DetailedDesc <> '' Then
+  Begin
+    WriteLn(OutFile, '<div class="detailed">');
+    WriteLn(OutFile, '<h3>Description detaillee</h3>');
     WriteLn(OutFile, '<p>', EscapeHtml(Entity.DetailedDesc), '</p>');
-  
-  { Return type }
-  If Entity.ReturnType <> '' Then
-    WriteLn(OutFile, '<p>Type de retour: <code>', EscapeHtml(Entity.ReturnType), '</code></p>');
+    WriteLn(OutFile, '</div>');
+  End;
   
   { Parameters }
   If Entity.Parameters <> '' Then
-    WriteLn(OutFile, '<p>Parametres: <code>', EscapeHtml(Entity.Parameters), '</code></p>');
+  Begin
+    WriteLn(OutFile, '<div class="parameters">');
+    WriteLn(OutFile, '<h3>Parametres</h3>');
+    WriteLn(OutFile, '<p><code>', EscapeHtml(Entity.Parameters), '</code></p>');
+    WriteLn(OutFile, '</div>');
+  End;
+  
+  { Return type }
+  If Entity.ReturnType <> '' Then
+  Begin
+    WriteLn(OutFile, '<div class="returntype">');
+    WriteLn(OutFile, '<h3>Type de retour</h3>');
+    WriteLn(OutFile, '<p><code>', EscapeHtml(Entity.ReturnType), '</code></p>');
+    WriteLn(OutFile, '</div>');
+  End;
   
   { File location }
-  WriteLn(OutFile, '<p class="location">');
-  WriteLn(OutFile, 'Defini dans <code>', EscapeHtml(Entity.FileName), '</code>');
+  WriteLn(OutFile, '<div class="location">');
+  WriteLn(OutFile, '<h3>Emplacement</h3>');
+  WriteLn(OutFile, '<p>Defini dans <code>', EscapeHtml(Entity.FileName), '</code>');
   If Entity.Line > 0 Then
     Write(OutFile, ' a la ligne ', Entity.Line);
   WriteLn(OutFile, '</p>');
+  WriteLn(OutFile, '</div>');
   
   WriteLn(OutFile, '</div>');
   
