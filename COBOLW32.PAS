@@ -347,7 +347,7 @@
             Labels internes (_COBL_IF_xxx, _COBL_EVAL_xxx)
             10 fonctions accesseurs
 
-  TODO 11 - PARSEUR : PERFORM ET BOUCLES [A FAIRE]
+  TODO 11 - PARSEUR : PERFORM ET BOUCLES [IMPLEMENTE]
             PERFORM simple :
               PERFORM nom-paragraphe
               PERFORM nom-paragraphe THRU nom-paragraphe-fin
@@ -1742,6 +1742,11 @@ Const
   KW_KEY               = 217;
   KW_DUPLICATES        = 218;
 
+  { Mots-cles supplementaires pour PERFORM et boucles }
+  KW_TEST              = 220;
+  KW_DEPENDING         = 221;
+  KW_PARAGRAPH         = 222;
+
   { Nombre total de mots-cles definis }
   KW_TOTAL_KEYWORDS    = 155;  { nombre approximatif de mots-cles }
 
@@ -1972,6 +1977,9 @@ Begin
   Else If S = 'ALTERNATE'         Then LookupKeyword := KW_ALTERNATE
   Else If S = 'KEY'               Then LookupKeyword := KW_KEY
   Else If S = 'DUPLICATES'        Then LookupKeyword := KW_DUPLICATES
+  Else If S = 'TEST'              Then LookupKeyword := KW_TEST
+  Else If S = 'DEPENDING'         Then LookupKeyword := KW_DEPENDING
+  Else If S = 'PARAGRAPH'         Then LookupKeyword := KW_PARAGRAPH
   Else LookupKeyword := KW_NONE;
 End;
 
@@ -2171,6 +2179,9 @@ Begin
     KW_ALTERNATE         : KeywordName := 'ALTERNATE';
     KW_KEY               : KeywordName := 'KEY';
     KW_DUPLICATES        : KeywordName := 'DUPLICATES';
+    KW_TEST              : KeywordName := 'TEST';
+    KW_DEPENDING         : KeywordName := 'DEPENDING';
+    KW_PARAGRAPH         : KeywordName := 'PARAGRAPH';
   Else
     KeywordName := '?KW' + ItoSI(KW);
   End;
@@ -8467,6 +8478,1035 @@ Begin
 End;
 
 
+{ ============================================================ }
+{ TODO 11 - PARSEUR : PERFORM ET BOUCLES                       }
+{           Generation de boucles 80386 (CMP/JMP/LOOP)         }
+{ ============================================================ }
+
+Const
+  { Types de PERFORM }
+  PFM_NONE       = 0;    { pas de PERFORM actif                      }
+  PFM_SIMPLE     = 1;    { PERFORM paragraphe                        }
+  PFM_THRU       = 2;    { PERFORM para THRU para-fin                }
+  PFM_INLINE     = 3;    { PERFORM ... END-PERFORM                   }
+  PFM_TIMES      = 4;    { PERFORM n TIMES                           }
+  PFM_UNTIL      = 5;    { PERFORM UNTIL condition                   }
+  PFM_VARYING    = 6;    { PERFORM VARYING id FROM BY UNTIL          }
+
+  { Types de test pour PERFORM UNTIL/VARYING }
+  TST_BEFORE     = 0;    { WITH TEST BEFORE (defaut)                 }
+  TST_AFTER      = 1;    { WITH TEST AFTER                           }
+
+  { Types de GO TO }
+  GTO_SIMPLE     = 0;    { GO TO paragraphe                          }
+  GTO_DEPENDING  = 1;    { GO TO p1 p2 ... DEPENDING ON id           }
+
+  { Types de sortie }
+  EXT_PARAGRAPH  = 0;    { EXIT PARAGRAPH                            }
+  EXT_SECTION    = 1;    { EXIT SECTION                              }
+  EXT_PROGRAM    = 2;    { GOBACK / STOP RUN                         }
+
+  { Limites }
+  PFM_MAX_DEPTH       = 32;   { profondeur max d imbrication PERFORM }
+  PFM_MAX_VARYING     = 8;    { max de clauses AFTER dans VARYING    }
+  PFM_MAX_GOTO_TARGETS = 16;  { max de cibles GO TO ... DEPENDING    }
+
+Var
+  PfmInitialized     : Boolean;   { True si InitPerformState appele       }
+  PfmStateCount      : Integer;   { compteur d etat general               }
+  PfmLabelNum        : Integer;   { compteur de labels internes generes   }
+  PfmSimpleCount     : Integer;   { nombre de PERFORM simples             }
+  PfmThruCount       : Integer;   { nombre de PERFORM THRU                }
+  PfmInlineCount     : Integer;   { nombre de PERFORM inline              }
+  PfmTimesCount      : Integer;   { nombre de PERFORM TIMES               }
+  PfmUntilCount      : Integer;   { nombre de PERFORM UNTIL               }
+  PfmVaryingCount    : Integer;   { nombre de PERFORM VARYING             }
+  PfmAfterCount      : Integer;   { nombre de clauses AFTER               }
+  PfmGotoCount       : Integer;   { nombre de GO TO                       }
+  PfmGotoDependCount : Integer;   { nombre de GO TO ... DEPENDING         }
+  PfmExitParaCount   : Integer;   { nombre de EXIT PARAGRAPH              }
+  PfmExitSectCount   : Integer;   { nombre de EXIT SECTION                }
+  PfmGobackCount     : Integer;   { nombre de GOBACK                      }
+  PfmDepth           : Integer;   { profondeur d imbrication courante     }
+  PfmMaxDepth        : Integer;   { profondeur max atteinte               }
+  PfmTestBeforeCount : Integer;   { nombre de WITH TEST BEFORE            }
+  PfmTestAfterCount  : Integer;   { nombre de WITH TEST AFTER             }
+  PfmTotalGenerated  : Integer;   { total d instructions generees         }
+
+{ ------------------------------------------------------------ }
+{ InitPerformState : initialiser l etat du module PERFORM      }
+{ ------------------------------------------------------------ }
+
+Procedure InitPerformState;
+Begin
+  PfmInitialized     := True;
+  PfmStateCount      := 0;
+  PfmLabelNum        := 0;
+  PfmSimpleCount     := 0;
+  PfmThruCount       := 0;
+  PfmInlineCount     := 0;
+  PfmTimesCount      := 0;
+  PfmUntilCount      := 0;
+  PfmVaryingCount    := 0;
+  PfmAfterCount      := 0;
+  PfmGotoCount       := 0;
+  PfmGotoDependCount := 0;
+  PfmExitParaCount   := 0;
+  PfmExitSectCount   := 0;
+  PfmGobackCount     := 0;
+  PfmDepth           := 0;
+  PfmMaxDepth        := 0;
+  PfmTestBeforeCount := 0;
+  PfmTestAfterCount  := 0;
+  PfmTotalGenerated  := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPfmLabel : generer un label interne unique pour PERFORM    }
+{ Retourne un label de la forme _COBL_PFM_nnn                  }
+{ ------------------------------------------------------------ }
+
+Function GenPfmLabel : TString;
+Begin
+  Inc(PfmLabelNum);
+  GenPfmLabel := PFX_LBL + 'PFM_' + ItoSI(PfmLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ PfmTypeName : nom textuel d un type de PERFORM               }
+{ ------------------------------------------------------------ }
+
+Function PfmTypeName(T : Integer) : TString;
+Begin
+  Case T Of
+    PFM_NONE    : PfmTypeName := 'NONE';
+    PFM_SIMPLE  : PfmTypeName := 'SIMPLE';
+    PFM_THRU    : PfmTypeName := 'THRU';
+    PFM_INLINE  : PfmTypeName := 'INLINE';
+    PFM_TIMES   : PfmTypeName := 'TIMES';
+    PFM_UNTIL   : PfmTypeName := 'UNTIL';
+    PFM_VARYING : PfmTypeName := 'VARYING';
+  Else
+    PfmTypeName := '???';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GotoTypeName : nom textuel d un type de GO TO                }
+{ ------------------------------------------------------------ }
+
+Function GotoTypeName(T : Integer) : TString;
+Begin
+  Case T Of
+    GTO_SIMPLE    : GotoTypeName := 'SIMPLE';
+    GTO_DEPENDING : GotoTypeName := 'DEPENDING';
+  Else
+    GotoTypeName := '???';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExitTypeName : nom textuel d un type de EXIT                 }
+{ ------------------------------------------------------------ }
+
+Function ExitTypeName(T : Integer) : TString;
+Begin
+  Case T Of
+    EXT_PARAGRAPH : ExitTypeName := 'PARAGRAPH';
+    EXT_SECTION   : ExitTypeName := 'SECTION';
+    EXT_PROGRAM   : ExitTypeName := 'PROGRAM';
+  Else
+    ExitTypeName := '???';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EnterPerform / LeavePerform : gestion de profondeur           }
+{ ------------------------------------------------------------ }
+
+Procedure EnterPerform;
+Begin
+  Inc(PfmDepth);
+  If PfmDepth > PfmMaxDepth Then
+    PfmMaxDepth := PfmDepth;
+End;
+
+Procedure LeavePerform;
+Begin
+  If PfmDepth > 0 Then
+    Dec(PfmDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPerformCall : generer un CALL vers un paragraphe COBOL     }
+{   ParaName = nom du paragraphe (identifiant COBOL)            }
+{   Genere : CALL _COB_paragraphe                               }
+{ ------------------------------------------------------------ }
+
+Procedure GenPerformCall(ParaName : TString);
+Begin
+  WriteLn(';   CALL ' + PFX_PARA + AsmIdent(ParaName));
+  Inc(PfmTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPerformThruCall : generer un appel PERFORM THRU            }
+{   ParaFrom = paragraphe de debut                              }
+{   ParaTo   = paragraphe de fin                                }
+{   Genere une boucle CALL de ParaFrom a ParaTo                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenPerformThruCall(ParaFrom, ParaTo : TString);
+Begin
+  WriteLn(';   ; PERFORM ' + ParaFrom + ' THRU ' + ParaTo);
+  WriteLn(';   CALL ' + PFX_PARA + AsmIdent(ParaFrom));
+  WriteLn(';   ; ... travers les paragraphes jusqu a ' + ParaTo);
+  WriteLn(';   CALL ' + PFX_PARA + AsmIdent(ParaTo));
+  Inc(PfmTotalGenerated, 2);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPerformTimesLoop : generer une boucle PERFORM n TIMES      }
+{   N = nombre de repetitions                                   }
+{   LblLoop, LblEnd = labels de debut et fin                    }
+{   Genere :                                                    }
+{     MOV ECX, n                                                }
+{     label_loop: PUSH ECX                                      }
+{     ... corps ...                                             }
+{     POP ECX / DEC ECX / JNZ label_loop                        }
+{ ------------------------------------------------------------ }
+
+Procedure GenPerformTimesInit(N : Integer; LblLoop : TString);
+Begin
+  WriteLn(';   MOV ECX, ' + ItoSI(N));
+  WriteLn('; ' + LblLoop + ':');
+  WriteLn(';   PUSH ECX');
+  Inc(PfmTotalGenerated, 3);
+End;
+
+Procedure GenPerformTimesEnd(LblLoop : TString);
+Begin
+  WriteLn(';   POP ECX');
+  WriteLn(';   DEC ECX');
+  WriteLn(';   JNZ ' + LblLoop);
+  Inc(PfmTotalGenerated, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPerformUntilBefore : generer le test BEFORE pour UNTIL     }
+{   LblLoop = label de debut de boucle                          }
+{   LblEnd  = label de fin de boucle                            }
+{   Genere :                                                    }
+{     label_loop:                                               }
+{     ; evaluer la condition                                    }
+{     CMP EAX, 0 / JNE label_end (si condition vraie -> sortir) }
+{ ------------------------------------------------------------ }
+
+Procedure GenPerformUntilBefore(LblLoop, LblEnd : TString);
+Begin
+  WriteLn('; ' + LblLoop + ':');
+  WriteLn(';   ; evaluer la condition UNTIL');
+  WriteLn(';   CMP EAX, 0');
+  WriteLn(';   JNE ' + LblEnd);
+  Inc(PfmTotalGenerated, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPerformUntilAfter : generer le test AFTER pour UNTIL       }
+{   LblLoop = label de debut de boucle                          }
+{   LblEnd  = label de fin de boucle                            }
+{   Genere :                                                    }
+{     label_loop:                                               }
+{     ... corps ...                                             }
+{     ; evaluer la condition                                    }
+{     CMP EAX, 0 / JE label_loop (si condition fausse -> boucler)}
+{ ------------------------------------------------------------ }
+
+Procedure GenPerformUntilAfter(LblLoop, LblEnd : TString);
+Begin
+  WriteLn(';   ; evaluer la condition UNTIL (TEST AFTER)');
+  WriteLn(';   CMP EAX, 0');
+  WriteLn(';   JE ' + LblLoop);
+  WriteLn('; ' + LblEnd + ':');
+  Inc(PfmTotalGenerated, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPerformVaryingInit : generer l initialisation VARYING      }
+{   VarName = nom de la variable VARYING                        }
+{   FromVal = valeur initiale (FROM)                            }
+{   Genere : MOV [var], from_value                              }
+{ ------------------------------------------------------------ }
+
+Procedure GenPerformVaryingInit(VarName : TString; FromVal : Integer);
+Begin
+  WriteLn(';   MOV DWORD [' + PFX_VAR + AsmIdent(VarName) + '], ' + ItoSI(FromVal));
+  Inc(PfmTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPerformVaryingStep : generer l increment VARYING           }
+{   VarName = nom de la variable VARYING                        }
+{   ByVal   = valeur d increment (BY)                           }
+{   Genere : ADD [var], by_value                                }
+{ ------------------------------------------------------------ }
+
+Procedure GenPerformVaryingStep(VarName : TString; ByVal : Integer);
+Begin
+  WriteLn(';   ADD DWORD [' + PFX_VAR + AsmIdent(VarName) + '], ' + ItoSI(ByVal));
+  Inc(PfmTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPerformLoopBack : generer le JMP de retour en debut        }
+{   LblLoop = label de debut de boucle                          }
+{ ------------------------------------------------------------ }
+
+Procedure GenPerformLoopBack(LblLoop : TString);
+Begin
+  WriteLn(';   JMP ' + LblLoop);
+  Inc(PfmTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPerformLabelEmit : emettre un label                        }
+{   Lbl = nom du label                                          }
+{ ------------------------------------------------------------ }
+
+Procedure GenPerformLabelEmit(Lbl : TString);
+Begin
+  WriteLn('; ' + Lbl + ':');
+  Inc(PfmTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenGotoSimple : generer un GO TO inconditionnel               }
+{   ParaName = nom du paragraphe cible                          }
+{   Genere : JMP _COB_paragraphe                                }
+{ ------------------------------------------------------------ }
+
+Procedure GenGotoSimple(ParaName : TString);
+Begin
+  WriteLn(';   JMP ' + PFX_PARA + AsmIdent(ParaName));
+  Inc(PfmTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenGotoDepending : generer un GO TO ... DEPENDING ON          }
+{   Targets = tableau de noms de paragraphes (string)           }
+{   Count   = nombre de cibles                                  }
+{   VarName = nom de la variable DEPENDING ON                   }
+{   Genere une table de sauts indexee                            }
+{ ------------------------------------------------------------ }
+
+Procedure GenGotoDepending(VarName : TString; Count : Integer);
+Var
+  I : Integer;
+  LblTable : TString;
+  LblEnd   : TString;
+Begin
+  LblTable := GenPfmLabel;
+  LblEnd   := GenPfmLabel;
+  WriteLn(';   ; GO TO ... DEPENDING ON ' + VarName);
+  WriteLn(';   MOV EAX, [' + PFX_VAR + AsmIdent(VarName) + ']');
+  WriteLn(';   DEC EAX');
+  WriteLn(';   CMP EAX, ' + ItoSI(Count));
+  WriteLn(';   JAE ' + LblEnd);
+  WriteLn(';   JMP DWORD [' + LblTable + ' + EAX*4]');
+  WriteLn('; ' + LblTable + ':');
+  For I := 1 To Count Do
+    WriteLn(';   DD ' + PFX_PARA + 'TARGET_' + ItoSI(I));
+  WriteLn('; ' + LblEnd + ':');
+  Inc(PfmTotalGenerated, 6 + Count);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenExitParagraph : generer un EXIT PARAGRAPH (RET local)      }
+{ ------------------------------------------------------------ }
+
+Procedure GenExitParagraph;
+Begin
+  WriteLn(';   RET   ; EXIT PARAGRAPH');
+  Inc(PfmTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenExitSection : generer un EXIT SECTION (RET de section)     }
+{ ------------------------------------------------------------ }
+
+Procedure GenExitSection;
+Begin
+  WriteLn(';   RET   ; EXIT SECTION');
+  Inc(PfmTotalGenerated);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenGoback : generer un GOBACK (retour au systeme)             }
+{   Genere un appel a ExitProcess (ou equivalent)               }
+{ ------------------------------------------------------------ }
+
+Procedure GenGoback;
+Begin
+  WriteLn(';   PUSH 0');
+  WriteLn(';   CALL _ExitProcess@4   ; GOBACK');
+  Inc(PfmTotalGenerated, 2);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePerformSimple : parser PERFORM paragraphe [THRU para-fin]}
+{   PERFORM nom-paragraphe                                      }
+{   PERFORM nom-paragraphe THRU nom-paragraphe-fin              }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePerformSimple;
+Var
+  ParaName  : TString;
+  ParaEnd   : TString;
+  HasThru   : Boolean;
+Begin
+  ParaName := CurTokStr;
+  LexNextToken;
+  HasThru := False;
+  ParaEnd := '';
+
+  { Verifier THRU ou THROUGH }
+  If (CurTokType = TOK_KEYWORD) And
+     ((CurTokNum = KW_THRU) Or (CurTokNum = KW_THROUGH)) Then
+  Begin
+    HasThru := True;
+    LexNextToken;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      ParaEnd := CurTokStr;
+      LexNextToken;
+    End
+    Else
+      WarnMsg('Nom de paragraphe attendu apres THRU');
+  End;
+
+  If HasThru Then
+  Begin
+    Inc(PfmThruCount);
+    Inc(PfmStateCount);
+    GenPerformThruCall(ParaName, ParaEnd);
+  End
+  Else
+  Begin
+    Inc(PfmSimpleCount);
+    Inc(PfmStateCount);
+    GenPerformCall(ParaName);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePerformTimes : parser PERFORM n TIMES                    }
+{   PERFORM paragraphe n TIMES                                  }
+{   PERFORM n TIMES instructions... END-PERFORM                 }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePerformTimes(IsInline : Boolean; N : Integer);
+Var
+  LblLoop : TString;
+Begin
+  Inc(PfmTimesCount);
+  Inc(PfmStateCount);
+
+  LblLoop := GenPfmLabel;
+  GenPerformTimesInit(N, LblLoop);
+
+  If IsInline Then
+  Begin
+    EnterPerform;
+    { Parser les instructions du bloc inline }
+    { On avance jusqu a END-PERFORM }
+    While (CurTokType <> TOK_EOF) And
+          Not ((CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_PERFORM)) Do
+      LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_PERFORM) Then
+      LexNextToken;
+    LeavePerform;
+  End;
+
+  GenPerformTimesEnd(LblLoop);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseWithTestClause : parser WITH TEST BEFORE/AFTER           }
+{ Retourne TST_BEFORE (0) ou TST_AFTER (1)                     }
+{ ------------------------------------------------------------ }
+
+Function ParseWithTestClause : Integer;
+Begin
+  ParseWithTestClause := TST_BEFORE;  { defaut }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WITH) Then
+  Begin
+    LexNextToken;  { consommer WITH }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TEST) Then
+    Begin
+      LexNextToken;  { consommer TEST }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BEFORE) Then
+      Begin
+        LexNextToken;
+        ParseWithTestClause := TST_BEFORE;
+        Inc(PfmTestBeforeCount);
+      End
+      Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AFTER) Then
+      Begin
+        LexNextToken;
+        ParseWithTestClause := TST_AFTER;
+        Inc(PfmTestAfterCount);
+      End
+      Else
+        WarnMsg('BEFORE ou AFTER attendu apres WITH TEST');
+    End
+    Else
+      WarnMsg('TEST attendu apres WITH');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePerformUntil : parser PERFORM UNTIL condition             }
+{   PERFORM paragraphe UNTIL condition                           }
+{   PERFORM [WITH TEST BEFORE|AFTER] UNTIL condition             }
+{     instructions... END-PERFORM                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePerformUntil(IsInline : Boolean);
+Var
+  TestMode : Integer;
+  LblLoop  : TString;
+  LblEnd   : TString;
+Begin
+  Inc(PfmUntilCount);
+  Inc(PfmStateCount);
+
+  TestMode := ParseWithTestClause;
+
+  { Consommer UNTIL }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_UNTIL) Then
+    LexNextToken;
+
+  LblLoop := GenPfmLabel;
+  LblEnd  := GenPfmLabel;
+
+  If TestMode = TST_BEFORE Then
+  Begin
+    GenPerformUntilBefore(LblLoop, LblEnd);
+    { Ici on parserait la condition - pour l instant on avance }
+  End
+  Else
+    GenPerformLabelEmit(LblLoop);
+
+  If IsInline Then
+  Begin
+    EnterPerform;
+    { Parser les instructions du bloc inline }
+    While (CurTokType <> TOK_EOF) And
+          Not ((CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_PERFORM)) Do
+      LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_PERFORM) Then
+      LexNextToken;
+    LeavePerform;
+  End;
+
+  If TestMode = TST_AFTER Then
+    GenPerformUntilAfter(LblLoop, LblEnd)
+  Else
+  Begin
+    GenPerformLoopBack(LblLoop);
+    GenPerformLabelEmit(LblEnd);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePerformVarying : parser PERFORM VARYING                  }
+{   PERFORM paragraphe                                          }
+{     VARYING id-1 FROM val-1 BY val-2 UNTIL condition          }
+{     [AFTER id-2 FROM val-3 BY val-4 UNTIL condition-2]        }
+{   PERFORM VARYING id-1 FROM val-1 BY val-2 UNTIL condition    }
+{     instructions... END-PERFORM                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePerformVarying(IsInline : Boolean);
+Var
+  VarName  : TString;
+  FromVal  : Integer;
+  ByVal    : Integer;
+  LblLoop  : TString;
+  LblEnd   : TString;
+  TestMode : Integer;
+Begin
+  Inc(PfmVaryingCount);
+  Inc(PfmStateCount);
+
+  TestMode := ParseWithTestClause;
+
+  { Consommer VARYING }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_VARYING) Then
+    LexNextToken;
+
+  { Lire le nom de la variable }
+  VarName := '';
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    LexNextToken;
+  End
+  Else
+    WarnMsg('Identifiant attendu apres VARYING');
+
+  { FROM }
+  FromVal := 1;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FROM) Then
+  Begin
+    LexNextToken;
+    If CurTokType = TOK_INTEGER Then
+    Begin
+      FromVal := CurTokNum;
+      LexNextToken;
+    End
+    Else If CurTokType = TOK_IDENT Then
+      LexNextToken   { variable source }
+    Else
+      WarnMsg('Valeur attendue apres FROM');
+  End;
+
+  { BY }
+  ByVal := 1;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then
+  Begin
+    LexNextToken;
+    If CurTokType = TOK_INTEGER Then
+    Begin
+      ByVal := CurTokNum;
+      LexNextToken;
+    End
+    Else If CurTokType = TOK_IDENT Then
+      LexNextToken   { variable step }
+    Else
+      WarnMsg('Valeur attendue apres BY');
+  End;
+
+  { UNTIL }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_UNTIL) Then
+    LexNextToken;
+
+  { Generer le code d initialisation }
+  GenPerformVaryingInit(VarName, FromVal);
+
+  LblLoop := GenPfmLabel;
+  LblEnd  := GenPfmLabel;
+
+  If TestMode = TST_BEFORE Then
+    GenPerformUntilBefore(LblLoop, LblEnd)
+  Else
+    GenPerformLabelEmit(LblLoop);
+
+  { Verifier AFTER (boucle imbriquee) }
+  While (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AFTER) Do
+  Begin
+    Inc(PfmAfterCount);
+    LexNextToken;
+    { Parser la clause AFTER id FROM val BY val UNTIL cond }
+    If CurTokType = TOK_IDENT Then
+      LexNextToken;  { variable AFTER }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FROM) Then
+    Begin
+      LexNextToken;
+      If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_IDENT) Then
+        LexNextToken;
+    End;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then
+    Begin
+      LexNextToken;
+      If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_IDENT) Then
+        LexNextToken;
+    End;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_UNTIL) Then
+      LexNextToken;
+  End;
+
+  If IsInline Then
+  Begin
+    EnterPerform;
+    { Parser les instructions du bloc inline }
+    While (CurTokType <> TOK_EOF) And
+          Not ((CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_PERFORM)) Do
+      LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_PERFORM) Then
+      LexNextToken;
+    LeavePerform;
+  End;
+
+  { Generer l increment et le retour }
+  GenPerformVaryingStep(VarName, ByVal);
+  If TestMode = TST_AFTER Then
+    GenPerformUntilAfter(LblLoop, LblEnd)
+  Else
+  Begin
+    GenPerformLoopBack(LblLoop);
+    GenPerformLabelEmit(LblEnd);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePerformInline : parser PERFORM instructions END-PERFORM  }
+{   PERFORM instructions... END-PERFORM (boucle infinie ou      }
+{   simple bloc selon contexte)                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePerformInline;
+Begin
+  Inc(PfmInlineCount);
+  Inc(PfmStateCount);
+  EnterPerform;
+  { Parser les instructions du bloc inline }
+  While (CurTokType <> TOK_EOF) And
+        Not ((CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_PERFORM)) Do
+    LexNextToken;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_PERFORM) Then
+    LexNextToken;
+  LeavePerform;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePerformStatement : parser une instruction PERFORM         }
+{   Determine le type de PERFORM et delegue au bon parseur      }
+{   PERFORM est deja le token courant                            }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePerformStatement;
+Var
+  NextIsInteger : Boolean;
+  NextIsIdent   : Boolean;
+  N             : Integer;
+Begin
+  LexNextToken;  { consommer PERFORM }
+
+  { Verifier si c est un PERFORM inline (pas de nom de paragraphe) }
+  { PERFORM UNTIL ... END-PERFORM }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_UNTIL) Then
+  Begin
+    ParsePerformUntil(True);
+    Exit;
+  End;
+
+  { PERFORM WITH TEST ... UNTIL ... END-PERFORM }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WITH) Then
+  Begin
+    { Regarder si UNTIL ou VARYING suit }
+    ParsePerformUntil(True);
+    Exit;
+  End;
+
+  { PERFORM VARYING ... END-PERFORM }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_VARYING) Then
+  Begin
+    ParsePerformVarying(True);
+    Exit;
+  End;
+
+  { PERFORM n TIMES ... END-PERFORM (n est un entier) }
+  If CurTokType = TOK_INTEGER Then
+  Begin
+    N := CurTokNum;
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TIMES) Then
+    Begin
+      LexNextToken;
+      ParsePerformTimes(True, N);
+      Exit;
+    End;
+  End;
+
+  { PERFORM nom-paragraphe [THRU ...] [n TIMES] [UNTIL ...] [VARYING ...] }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    NextIsIdent := True;
+    NextIsInteger := False;
+  End
+  Else
+  Begin
+    NextIsIdent := False;
+    NextIsInteger := (CurTokType = TOK_INTEGER);
+  End;
+
+  If NextIsIdent Then
+  Begin
+    { Sauver le nom du paragraphe }
+    { Regarder ce qui suit pour determiner le type }
+    ParsePerformSimple;
+
+    { Apres le nom (et possible THRU), verifier si TIMES/UNTIL/VARYING }
+    If CurTokType = TOK_INTEGER Then
+    Begin
+      N := CurTokNum;
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TIMES) Then
+      Begin
+        LexNextToken;
+        { Ajuster : c est un PERFORM para n TIMES (non inline) }
+        Dec(PfmSimpleCount);
+        ParsePerformTimes(False, N);
+      End;
+    End
+    Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_UNTIL) Then
+    Begin
+      Dec(PfmSimpleCount);
+      ParsePerformUntil(False);
+    End
+    Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_VARYING) Then
+    Begin
+      Dec(PfmSimpleCount);
+      ParsePerformVarying(False);
+    End
+    Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WITH) Then
+    Begin
+      Dec(PfmSimpleCount);
+      ParsePerformUntil(False);
+    End;
+    Exit;
+  End;
+
+  { PERFORM inline sans aucun qualificateur }
+  ParsePerformInline;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseGotoStatement : parser une instruction GO TO              }
+{   GO TO nom-paragraphe (branchement inconditionnel)            }
+{   GO TO nom-1 nom-2 ... DEPENDING ON id (branchement calcule) }
+{   GO est deja le token courant                                 }
+{ ------------------------------------------------------------ }
+
+Procedure ParseGotoStatement;
+Var
+  TargetCount : Integer;
+  VarName     : TString;
+Begin
+  LexNextToken;  { consommer GO }
+  { Consommer TO si present }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+    LexNextToken;
+
+  { Collecter les cibles (identifiants) }
+  TargetCount := 0;
+  While (CurTokType = TOK_IDENT) Do
+  Begin
+    If TargetCount = 0 Then
+      VarName := CurTokStr;
+    Inc(TargetCount);
+    LexNextToken;
+  End;
+
+  { Verifier DEPENDING ON }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DEPENDING) Then
+  Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then
+      LexNextToken;
+    { Lire la variable }
+    If CurTokType = TOK_IDENT Then
+    Begin
+      VarName := CurTokStr;
+      LexNextToken;
+    End;
+    Inc(PfmGotoDependCount);
+    Inc(PfmStateCount);
+    GenGotoDepending(VarName, TargetCount);
+  End
+  Else
+  Begin
+    { GO TO simple }
+    Inc(PfmGotoCount);
+    Inc(PfmStateCount);
+    If TargetCount > 0 Then
+      GenGotoSimple(VarName)
+    Else
+      WarnMsg('Nom de paragraphe attendu apres GO TO');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExitStatement : parser EXIT PARAGRAPH / EXIT SECTION     }
+{   EXIT est deja le token courant                               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseExitCobStatement;
+Begin
+  LexNextToken;  { consommer EXIT }
+
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PARAGRAPH) Then
+  Begin
+    LexNextToken;
+    Inc(PfmExitParaCount);
+    Inc(PfmStateCount);
+    GenExitParagraph;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SECTION) Then
+  Begin
+    LexNextToken;
+    Inc(PfmExitSectCount);
+    Inc(PfmStateCount);
+    GenExitSection;
+  End
+  Else
+  Begin
+    { EXIT seul = EXIT PARAGRAPH implicite }
+    Inc(PfmExitParaCount);
+    Inc(PfmStateCount);
+    GenExitParagraph;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseGobackStatement : parser GOBACK                          }
+{   Retour au programme appelant (equivalent a STOP RUN)        }
+{   GOBACK est deja le token courant                             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseGobackStatement;
+Begin
+  LexNextToken;  { consommer GOBACK }
+  Inc(PfmGobackCount);
+  Inc(PfmStateCount);
+  GenGoback;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePerformLoopStatement : dispatcher pour PERFORM/GOTO/     }
+{                              EXIT/GOBACK                       }
+{   Appele depuis le parseur principal quand un mot-cle de       }
+{   boucle est rencontre                                         }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePerformLoopStatement;
+Begin
+  If (CurTokType = TOK_KEYWORD) Then
+  Begin
+    Case CurTokNum Of
+      KW_PERFORM : ParsePerformStatement;
+      KW_GO      : ParseGotoStatement;
+      KW_EXIT    : ParseExitCobStatement;
+      KW_GOBACK  : ParseGobackStatement;
+    Else
+      WarnMsg('Mot-cle de boucle inattendu : ' + CurTokStr);
+      LexNextToken;
+    End;
+  End
+  Else
+  Begin
+    WarnMsg('Mot-cle de boucle attendu');
+    LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsPerformKeyword : tester si le mot-cle courant est un        }
+{   mot-cle de boucle (PERFORM, GO, EXIT, GOBACK)               }
+{ ------------------------------------------------------------ }
+
+Function IsPerformKeyword : Boolean;
+Begin
+  IsPerformKeyword := False;
+  If CurTokType = TOK_KEYWORD Then
+  Begin
+    Case CurTokNum Of
+      KW_PERFORM,
+      KW_GO,
+      KW_EXIT,
+      KW_GOBACK : IsPerformKeyword := True;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpPerformState : afficher un resume de l etat PERFORM       }
+{ ------------------------------------------------------------ }
+
+Procedure DumpPerformState;
+Begin
+  WriteLn('--- Etat PERFORM/Boucles ---');
+  WriteLn('  Initialise          : ', PfmInitialized);
+  WriteLn('  PERFORM simples     : ', PfmSimpleCount);
+  WriteLn('  PERFORM THRU        : ', PfmThruCount);
+  WriteLn('  PERFORM inline      : ', PfmInlineCount);
+  WriteLn('  PERFORM TIMES       : ', PfmTimesCount);
+  WriteLn('  PERFORM UNTIL       : ', PfmUntilCount);
+  WriteLn('  PERFORM VARYING     : ', PfmVaryingCount);
+  WriteLn('  Clauses AFTER       : ', PfmAfterCount);
+  WriteLn('  GO TO simples       : ', PfmGotoCount);
+  WriteLn('  GO TO DEPENDING     : ', PfmGotoDependCount);
+  WriteLn('  EXIT PARAGRAPH      : ', PfmExitParaCount);
+  WriteLn('  EXIT SECTION        : ', PfmExitSectCount);
+  WriteLn('  GOBACK              : ', PfmGobackCount);
+  WriteLn('  WITH TEST BEFORE    : ', PfmTestBeforeCount);
+  WriteLn('  WITH TEST AFTER     : ', PfmTestAfterCount);
+  WriteLn('  Profondeur max      : ', PfmMaxDepth);
+  WriteLn('  Total genere        : ', PfmTotalGenerated);
+End;
+
+{ 10 fonctions accesseurs pour TODO 11                         }
+
+Function IsPfmInitialized : Boolean;
+Begin
+  IsPfmInitialized := PfmInitialized;
+End;
+
+Function IsPfmEmpty : Boolean;
+Begin
+  IsPfmEmpty := (PfmTotalGenerated = 0);
+End;
+
+Function GetPfmTotalGenerated : Integer;
+Begin
+  GetPfmTotalGenerated := PfmTotalGenerated;
+End;
+
+Function GetPfmStatus : TString;
+Begin
+  If Not PfmInitialized Then
+    GetPfmStatus := 'NON INITIALISE'
+  Else
+    GetPfmStatus := 'SIMPLE=' + ItoSI(PfmSimpleCount) +
+                    ' THRU=' + ItoSI(PfmThruCount) +
+                    ' TIMES=' + ItoSI(PfmTimesCount) +
+                    ' UNTIL=' + ItoSI(PfmUntilCount) +
+                    ' VARYING=' + ItoSI(PfmVaryingCount) +
+                    ' GOTO=' + ItoSI(PfmGotoCount);
+End;
+
+Function GetPfmSimpleCount : Integer;
+Begin
+  GetPfmSimpleCount := PfmSimpleCount;
+End;
+
+Function GetPfmTimesCount : Integer;
+Begin
+  GetPfmTimesCount := PfmTimesCount;
+End;
+
+Function GetPfmUntilCount : Integer;
+Begin
+  GetPfmUntilCount := PfmUntilCount;
+End;
+
+Function GetPfmVaryingCount : Integer;
+Begin
+  GetPfmVaryingCount := PfmVaryingCount;
+End;
+
+Function GetPfmMaxDepth : Integer;
+Begin
+  GetPfmMaxDepth := PfmMaxDepth;
+End;
+
+Function GetPfmStateCount : Integer;
+Begin
+  GetPfmStateCount := PfmStateCount;
+End;
+
+
 { ------------------------------------------------------------ }
 { LexScanIdent : identificateur COBOL (lettres, chiffres, -)   }
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
@@ -9157,6 +10197,9 @@ Begin
 
   { Initialiser les structures de controle (IF/EVALUATE) }
   InitControlState;
+
+  { Initialiser le module PERFORM et boucles }
+  InitPerformState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;

@@ -339,7 +339,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
             Labels internes (_COBL_IF_xxx, _COBL_EVAL_xxx)
             10 fonctions accesseurs
 
-  TODO 11 - PARSEUR : PERFORM ET BOUCLES [A FAIRE]
+  TODO 11 - PARSEUR : PERFORM ET BOUCLES [IMPLEMENTE]
             PERFORM simple :
               PERFORM nom-paragraphe
               PERFORM nom-paragraphe THRU nom-paragraphe-fin
