@@ -778,7 +778,7 @@
             Commentaires preserves dans le listing
             Indentation et formatage lisible
 
-  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, USER32, MSVCRT) [A FAIRE]
+  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, USER32, MSVCRT) [IMPLEMENTE]
             Imports kernel32.dll :
               ExitProcess, GetStdHandle, WriteFile, ReadFile,
               GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc,

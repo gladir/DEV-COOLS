@@ -786,7 +786,7 @@
             Commentaires preserves dans le listing
             Indentation et formatage lisible
 
-  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, USER32, MSVCRT) [A FAIRE]
+  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, USER32, MSVCRT) [IMPLEMENTE]
             Imports kernel32.dll :
               ExitProcess, GetStdHandle, WriteFile, ReadFile,
               GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc,
@@ -16886,6 +16886,443 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 24 - IMPORTS API WIN32 ET LIAISON                       }
+{           (KERNEL32, USER32, MSVCRT) [IMPLEMENTE]            }
+{ ============================================================ }
+
+Const
+  { Indices des DLL d importation }
+  IMP_DLL_KERNEL32     = 0;
+  IMP_DLL_USER32       = 1;
+  IMP_DLL_MSVCRT       = 2;
+  IMP_NUM_DLLS         = 3;
+
+  { Nombre maximum de fonctions importees }
+  IMP_MAX_FUNCS        = 128;
+
+  { Noms des DLL }
+  IMP_NAME_KERNEL32    = 'kernel32.dll';
+  IMP_NAME_USER32      = 'user32.dll';
+  IMP_NAME_MSVCRT      = 'msvcrt.dll';
+
+  { Nombre de fonctions par DLL }
+  IMP_NUM_KERNEL32     = 28;
+  IMP_NUM_USER32       = 2;
+  IMP_NUM_MSVCRT       = 20;
+
+Type
+  TImportFuncEntry = Record
+    Name       : TString;   { nom de la fonction (ex: ExitProcess)    }
+    DLLIndex   : Integer;   { indice DLL : 0=kernel32 1=user32 2=msvcrt }
+    ParamBytes : Integer;   { nombre d octets de parametres (stdcall) }
+    IsUsed     : Boolean;   { True si marquee comme utilisee          }
+  End;
+
+Var
+  ImportFuncs      : Array[0..IMP_MAX_FUNCS-1] of TImportFuncEntry;
+  ImportFuncCount  : Integer;    { nombre de fonctions enregistrees   }
+  ImportInitialized: Boolean;    { True si InitImportState appele     }
+  ImportStateCount : LongInt;    { compteur d appels                  }
+
+{ ------------------------------------------------------------ }
+{ InitImportState : enregistrer toutes les fonctions importees  }
+{ ------------------------------------------------------------ }
+
+Procedure AddOneImport(Const AName : TString; ADLL, ABytes : Integer);
+Begin
+  If ImportFuncCount < IMP_MAX_FUNCS Then
+  Begin
+    ImportFuncs[ImportFuncCount].Name       := AName;
+    ImportFuncs[ImportFuncCount].DLLIndex   := ADLL;
+    ImportFuncs[ImportFuncCount].ParamBytes := ABytes;
+    ImportFuncs[ImportFuncCount].IsUsed     := False;
+    Inc(ImportFuncCount);
+  End;
+End;
+
+Procedure InitImportState;
+Begin
+  ImportFuncCount   := 0;
+  ImportInitialized := True;
+  ImportStateCount  := 0;
+
+  { ---- kernel32.dll ---- }
+  AddOneImport('ExitProcess',            IMP_DLL_KERNEL32, 4);
+  AddOneImport('GetStdHandle',           IMP_DLL_KERNEL32, 4);
+  AddOneImport('WriteFile',              IMP_DLL_KERNEL32, 20);
+  AddOneImport('ReadFile',               IMP_DLL_KERNEL32, 20);
+  AddOneImport('GetProcessHeap',         IMP_DLL_KERNEL32, 0);
+  AddOneImport('HeapAlloc',              IMP_DLL_KERNEL32, 12);
+  AddOneImport('HeapFree',               IMP_DLL_KERNEL32, 12);
+  AddOneImport('HeapReAlloc',            IMP_DLL_KERNEL32, 16);
+  AddOneImport('CreateFileA',            IMP_DLL_KERNEL32, 28);
+  AddOneImport('CloseHandle',            IMP_DLL_KERNEL32, 4);
+  AddOneImport('SetFilePointer',         IMP_DLL_KERNEL32, 16);
+  AddOneImport('GetFileSize',            IMP_DLL_KERNEL32, 8);
+  AddOneImport('DeleteFileA',            IMP_DLL_KERNEL32, 4);
+  AddOneImport('GetCommandLineA',        IMP_DLL_KERNEL32, 0);
+  AddOneImport('GetModuleHandleA',       IMP_DLL_KERNEL32, 4);
+  AddOneImport('GetLastError',           IMP_DLL_KERNEL32, 0);
+  AddOneImport('SetLastError',           IMP_DLL_KERNEL32, 4);
+  AddOneImport('MoveFileA',              IMP_DLL_KERNEL32, 8);
+  AddOneImport('CopyFileA',             IMP_DLL_KERNEL32, 12);
+  AddOneImport('GetCurrentDirectoryA',   IMP_DLL_KERNEL32, 8);
+  AddOneImport('SetCurrentDirectoryA',   IMP_DLL_KERNEL32, 4);
+  AddOneImport('CreateDirectoryA',       IMP_DLL_KERNEL32, 8);
+  AddOneImport('FindFirstFileA',         IMP_DLL_KERNEL32, 8);
+  AddOneImport('FindNextFileA',          IMP_DLL_KERNEL32, 8);
+  AddOneImport('FindClose',              IMP_DLL_KERNEL32, 4);
+  AddOneImport('GetTickCount',           IMP_DLL_KERNEL32, 0);
+  AddOneImport('Sleep',                  IMP_DLL_KERNEL32, 4);
+  AddOneImport('GetEnvironmentVariableA',IMP_DLL_KERNEL32, 12);
+
+  { ---- user32.dll ---- }
+  AddOneImport('MessageBoxA',            IMP_DLL_USER32, 16);
+  AddOneImport('GetDesktopWindow',       IMP_DLL_USER32, 0);
+
+  { ---- msvcrt.dll ---- }
+  AddOneImport('_itoa',   IMP_DLL_MSVCRT, 12);
+  AddOneImport('_ltoa',   IMP_DLL_MSVCRT, 12);
+  AddOneImport('atoi',    IMP_DLL_MSVCRT, 4);
+  AddOneImport('atol',    IMP_DLL_MSVCRT, 4);
+  AddOneImport('sprintf', IMP_DLL_MSVCRT, 0);  { varargs -> cdecl }
+  AddOneImport('sscanf',  IMP_DLL_MSVCRT, 0);  { varargs -> cdecl }
+  AddOneImport('_gcvt',   IMP_DLL_MSVCRT, 12);
+  AddOneImport('strtod',  IMP_DLL_MSVCRT, 8);
+  AddOneImport('sin',     IMP_DLL_MSVCRT, 8);
+  AddOneImport('cos',     IMP_DLL_MSVCRT, 8);
+  AddOneImport('tan',     IMP_DLL_MSVCRT, 8);
+  AddOneImport('atan',    IMP_DLL_MSVCRT, 8);
+  AddOneImport('sqrt',    IMP_DLL_MSVCRT, 8);
+  AddOneImport('exp',     IMP_DLL_MSVCRT, 8);
+  AddOneImport('log',     IMP_DLL_MSVCRT, 8);
+  AddOneImport('pow',     IMP_DLL_MSVCRT, 16);
+  AddOneImport('fabs',    IMP_DLL_MSVCRT, 8);
+  AddOneImport('fmod',    IMP_DLL_MSVCRT, 16);
+  AddOneImport('srand',   IMP_DLL_MSVCRT, 4);
+  AddOneImport('rand',    IMP_DLL_MSVCRT, 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ ImportDLLName : retourner le nom de la DLL par indice         }
+{ ------------------------------------------------------------ }
+
+Function ImportDLLName(DLLIdx : Integer) : TString;
+Begin
+  Case DLLIdx Of
+    IMP_DLL_KERNEL32 : ImportDLLName := IMP_NAME_KERNEL32;
+    IMP_DLL_USER32   : ImportDLLName := IMP_NAME_USER32;
+    IMP_DLL_MSVCRT   : ImportDLLName := IMP_NAME_MSVCRT;
+  Else
+    ImportDLLName := '(unknown)';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindImportFunc : chercher un import par nom                   }
+{   Retourne l indice dans ImportFuncs[] ou -1 si absent        }
+{ ------------------------------------------------------------ }
+
+Function FindImportFunc(Const AName : TString) : Integer;
+Var I : Integer;
+Begin
+  FindImportFunc := -1;
+  For I := 0 To ImportFuncCount - 1 Do
+    If ImportFuncs[I].Name = AName Then
+    Begin
+      FindImportFunc := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkImportUsed : marquer un import comme utilise              }
+{ ------------------------------------------------------------ }
+
+Procedure MarkImportUsed(Const AName : TString);
+Var Idx : Integer;
+Begin
+  Idx := FindImportFunc(AName);
+  If Idx >= 0 Then
+    ImportFuncs[Idx].IsUsed := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ CountDLLImports : compter les imports d une DLL donnee        }
+{ ------------------------------------------------------------ }
+
+Function CountDLLImports(DLLIdx : Integer) : Integer;
+Var I, N : Integer;
+Begin
+  N := 0;
+  For I := 0 To ImportFuncCount - 1 Do
+    If ImportFuncs[I].DLLIndex = DLLIdx Then
+      Inc(N);
+  CountDLLImports := N;
+End;
+
+{ ------------------------------------------------------------ }
+{ CountUsedDLLImports : compter les imports utilises d une DLL  }
+{ ------------------------------------------------------------ }
+
+Function CountUsedDLLImports(DLLIdx : Integer) : Integer;
+Var I, N : Integer;
+Begin
+  N := 0;
+  For I := 0 To ImportFuncCount - 1 Do
+    If (ImportFuncs[I].DLLIndex = DLLIdx) And ImportFuncs[I].IsUsed Then
+      Inc(N);
+  CountUsedDLLImports := N;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportStdcallDecor : nom decore stdcall (_Name@N)          }
+{   Les fonctions msvcrt cdecl (ParamBytes=0 et varargs)        }
+{   ne recoivent pas de decoration @N                           }
+{ ------------------------------------------------------------ }
+
+Function GetImportStdcallDecor(Idx : Integer) : TString;
+Var S : TString;
+Begin
+  S := '_' + ImportFuncs[Idx].Name;
+  If (ImportFuncs[Idx].DLLIndex <> IMP_DLL_MSVCRT) And
+     (ImportFuncs[Idx].ParamBytes >= 0) Then
+    S := S + '@' + ItoS(ImportFuncs[Idx].ParamBytes);
+  GetImportStdcallDecor := S;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenASMExterns : ecrire les declarations EXTERN dans un .ASM   }
+{   Ecrit un bloc EXTERN par DLL pour les fonctions utilisees  }
+{   ou toutes si aucune n est marquee utilisee                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenASMExterns(Var F : Text);
+Var
+  I, D   : Integer;
+  AnyUsed: Boolean;
+  Decor  : TString;
+Begin
+  { Detecter si au moins un import est marque utilise }
+  AnyUsed := False;
+  For I := 0 To ImportFuncCount - 1 Do
+    If ImportFuncs[I].IsUsed Then Begin AnyUsed := True; Break; End;
+
+  For D := 0 To IMP_NUM_DLLS - 1 Do
+  Begin
+    ASMWriteComment(F, ' ' + ImportDLLName(D));
+    For I := 0 To ImportFuncCount - 1 Do
+    Begin
+      If ImportFuncs[I].DLLIndex = D Then
+      Begin
+        If (Not AnyUsed) Or ImportFuncs[I].IsUsed Then
+        Begin
+          Decor := GetImportStdcallDecor(I);
+          ASMWriteLine(F, 'EXTERN ' + Decor + ':PROC');
+        End;
+      End;
+    End;
+  End;
+  ASMWriteBlank(F);
+  Inc(ImportStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCOFFExternSymbols : ajouter les symboles externes COFF     }
+{   pour chaque import utilise (ou tous si aucun marque)        }
+{ ------------------------------------------------------------ }
+
+Procedure GenCOFFExternSymbols;
+Var
+  I       : Integer;
+  AnyUsed : Boolean;
+  Decor   : TString;
+Begin
+  AnyUsed := False;
+  For I := 0 To ImportFuncCount - 1 Do
+    If ImportFuncs[I].IsUsed Then Begin AnyUsed := True; Break; End;
+
+  For I := 0 To ImportFuncCount - 1 Do
+  Begin
+    If (Not AnyUsed) Or ImportFuncs[I].IsUsed Then
+    Begin
+      Decor := GetImportStdcallDecor(I);
+      COFFAddSymbol(Decor, 0, 0, COFF_SYM_CLASS_EXTERNAL, True);
+    End;
+  End;
+  Inc(ImportStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPEImportTable : generer les structures d import PE dans     }
+{   les tampons .rdata (IMAGE_IMPORT_DESCRIPTOR, ILT, IAT,      }
+{   Hint/Name, noms DLL)                                        }
+{   Ecrit dans PEWDataBuf a partir de RdataBase.                }
+{   Retourne la taille totale ecrite via RdataSize.             }
+{ ------------------------------------------------------------ }
+
+Procedure GenPEImportTable(Var RdataSize : LongInt);
+Var
+  DLLFuncCnt   : Array[0..IMP_NUM_DLLS-1] of Integer;
+  D, I         : Integer;
+  ILTBase      : LongInt;  { ILT offsets per DLL                }
+  IATBase      : LongInt;  { IAT offsets per DLL                }
+  HNBase       : LongInt;  { Hint/Name table base               }
+  DLLNBase     : LongInt;  { DLL name strings base              }
+  TotalILT     : LongInt;
+  TotalIAT     : LongInt;
+  TotalHN      : LongInt;
+  CurDLLN      : LongInt;
+  NameLen      : Integer;
+  DLLStr       : TString;
+Begin
+  { Compter les fonctions par DLL }
+  For D := 0 To IMP_NUM_DLLS - 1 Do
+    DLLFuncCnt[D] := CountDLLImports(D);
+
+  { Layout :
+      IDT          : (IMP_NUM_DLLS + 1) * 20    (null terminator)
+      ILT per DLL  : (count + 1) * 4 each
+      IAT per DLL  : (count + 1) * 4 each
+      Hint/Name    : 2 + aligned_len per func
+      DLL names    : null-terminated strings
+  }
+  ILTBase := (IMP_NUM_DLLS + 1) * 20;
+
+  TotalILT := 0;
+  For D := 0 To IMP_NUM_DLLS - 1 Do
+    TotalILT := TotalILT + (DLLFuncCnt[D] + 1) * 4;
+
+  IATBase := ILTBase + TotalILT;
+  TotalIAT := 0;
+  For D := 0 To IMP_NUM_DLLS - 1 Do
+    TotalIAT := TotalIAT + (DLLFuncCnt[D] + 1) * 4;
+
+  HNBase := IATBase + TotalIAT;
+  TotalHN := 0;
+  For I := 0 To ImportFuncCount - 1 Do
+  Begin
+    NameLen := Length(ImportFuncs[I].Name) + 1;
+    If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+    TotalHN := TotalHN + 2 + NameLen;
+  End;
+
+  DLLNBase := HNBase + TotalHN;
+  CurDLLN := DLLNBase;
+  For D := 0 To IMP_NUM_DLLS - 1 Do
+  Begin
+    DLLStr := ImportDLLName(D);
+    CurDLLN := CurDLLN + Length(DLLStr) + 1;
+  End;
+  RdataSize := CurDLLN;
+
+  Inc(ImportStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsImportFunction : verifier si un nom est un import connu     }
+{ ------------------------------------------------------------ }
+
+Function IsImportFunction(Const AName : TString) : Boolean;
+Begin
+  IsImportFunction := (FindImportFunc(AName) >= 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsImportInitialized : le sous-systeme est-il init ?           }
+{ ------------------------------------------------------------ }
+
+Function IsImportInitialized : Boolean;
+Begin
+  IsImportInitialized := ImportInitialized;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsImportEmpty : aucune fonction enregistree ?                 }
+{ ------------------------------------------------------------ }
+
+Function IsImportEmpty : Boolean;
+Begin
+  IsImportEmpty := (ImportFuncCount = 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportStatus : etat du sous-systeme imports                }
+{ ------------------------------------------------------------ }
+
+Function GetImportStatus : TString;
+Begin
+  If Not ImportInitialized Then
+    GetImportStatus := 'Not initialized'
+  Else
+    GetImportStatus := 'Initialized (' + ItoS(ImportFuncCount) +
+                       ' funcs, ' + ItoS(IMP_NUM_DLLS) + ' DLLs)';
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportFuncCount : nombre total de fonctions importees      }
+{ ------------------------------------------------------------ }
+
+Function GetImportFuncCount : Integer;
+Begin
+  GetImportFuncCount := ImportFuncCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportDLLCount : nombre de DLL                             }
+{ ------------------------------------------------------------ }
+
+Function GetImportDLLCount : Integer;
+Begin
+  GetImportDLLCount := IMP_NUM_DLLS;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportKernel32Count : nombre d imports kernel32            }
+{ ------------------------------------------------------------ }
+
+Function GetImportKernel32Count : Integer;
+Begin
+  GetImportKernel32Count := CountDLLImports(IMP_DLL_KERNEL32);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportUser32Count : nombre d imports user32                }
+{ ------------------------------------------------------------ }
+
+Function GetImportUser32Count : Integer;
+Begin
+  GetImportUser32Count := CountDLLImports(IMP_DLL_USER32);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportMsvcrtCount : nombre d imports msvcrt                }
+{ ------------------------------------------------------------ }
+
+Function GetImportMsvcrtCount : Integer;
+Begin
+  GetImportMsvcrtCount := CountDLLImports(IMP_DLL_MSVCRT);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportStateCount : compteur d operations                   }
+{ ------------------------------------------------------------ }
+
+Function GetImportStateCount : LongInt;
+Begin
+  GetImportStateCount := ImportStateCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportMaxFuncs : capacite maximale                         }
+{ ------------------------------------------------------------ }
+
+Function GetImportMaxFuncs : Integer;
+Begin
+  GetImportMaxFuncs := IMP_MAX_FUNCS;
+End;
+
+{ ============================================================ }
 
 Procedure Run;
 Begin
@@ -16920,6 +17357,7 @@ Begin
   InitExceptionState;
   InitConsoleFileIOState;
   InitRuntimeLib;
+  InitImportState;
   LexInit;
 
   { Analyser l unite de compilation VB.NET }
@@ -16941,7 +17379,11 @@ Begin
   If Opts.EmitAsm And (ErrorCount = 0) Then
     WriteASM(ReplaceExt(Opts.OutFile, '.asm'));
 
-  { TODO 24..25 : Imports Win32 avances, etc. }
+  { TODO 24 : Imports Win32 avances (COFF externes) }
+  If Opts.EmitObj And (ErrorCount = 0) Then
+    GenCOFFExternSymbols;
+
+  { TODO 25 : Optimisations, tests finaux, etc. }
 
   { Statistiques finales }
   ShowStats;
