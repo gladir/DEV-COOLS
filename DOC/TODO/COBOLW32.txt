@@ -664,7 +664,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
             Alignement des sections sur FileAlignment/SectionAlignment
             10 fonctions accesseurs
 
-  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [A FAIRE]
+  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [IMPLEMENTE]
             Format COFF 32 bits compatible LINK.EXE :
               COFF File Header (20 octets)
                 Machine : $014C (i386)

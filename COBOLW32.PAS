@@ -672,7 +672,7 @@
             Alignement des sections sur FileAlignment/SectionAlignment
             10 fonctions accesseurs
 
-  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [A FAIRE]
+  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [IMPLEMENTE]
             Format COFF 32 bits compatible LINK.EXE :
               COFF File Header (20 octets)
                 Machine : $014C (i386)
@@ -1793,8 +1793,11 @@ Const
   { Mots-cles pour TODO 21 : PE WRITER }
   KW_GUI               = 250;  { GUI }
 
+  { Mots-cles pour TODO 22 : COFF .OBJ WRITER }
+  KW_OBJ               = 251;  { OBJ }
+
   { Nombre total de mots-cles definis }
-  KW_TOTAL_KEYWORDS    = 182;  { nombre approximatif de mots-cles }
+  KW_TOTAL_KEYWORDS    = 183;  { nombre approximatif de mots-cles }
 
 Var
   { Variables du module de mots-cles }
@@ -2053,6 +2056,7 @@ Begin
   Else If S = 'END-SORT'          Then LookupKeyword := KW_END_SORT
   Else If S = 'FUNCTION'          Then LookupKeyword := KW_FUNCTION
   Else If S = 'STDCALL'           Then LookupKeyword := KW_STDCALL
+  Else If S = 'OBJ'              Then LookupKeyword := KW_OBJ
   Else LookupKeyword := KW_NONE;
 End;
 
@@ -2282,6 +2286,7 @@ Begin
     KW_END_SORT          : KeywordName := 'END-SORT';
     KW_FUNCTION          : KeywordName := 'FUNCTION';
     KW_STDCALL           : KeywordName := 'STDCALL';
+    KW_OBJ               : KeywordName := 'OBJ';
   Else
     KeywordName := '?KW' + ItoSI(KW);
   End;
@@ -19844,6 +19849,890 @@ Begin
   GetPeStateCount := PeStateCount;
 End;
 
+{ ============================================================ }
+{ TODO 22 - ECRIVAIN COFF .OBJ                                 }
+{           (PARAMETRE -obj)                                    }
+{ ============================================================ }
+
+Const
+  { Machine type }
+  COF_MACHINE_I386     = $014C;       { Intel 386                               }
+
+  { Section indices }
+  COF_SECT_NONE        = 0;           { pas de section                          }
+  COF_SECT_TEXT        = 1;           { section .text (code)                    }
+  COF_SECT_DATA        = 2;           { section .data (donnees initialisees)    }
+  COF_SECT_BSS         = 3;           { section .bss  (donnees non init)        }
+
+  { Caracteristiques de sections }
+  COF_SCN_CODE         = $00000020;   { section contient du code                }
+  COF_SCN_IDATA        = $00000040;   { section contient des donnees init       }
+  COF_SCN_UDATA        = $00000080;   { section contient des donnees non init   }
+  COF_SCN_EXEC         = $20000000;   { section executable                      }
+  COF_SCN_READ         = $40000000;   { section lisible                         }
+  COF_SCN_ALIGN4       = $00300000;   { alignement 4 octets                     }
+
+  { Types de relocation i386 }
+  COF_REL_I386_DIR32   = $0006;       { adresse absolue 32 bits                 }
+  COF_REL_I386_REL32   = $0014;       { adresse relative 32 bits                }
+
+  { Storage class (symboles) }
+  COF_SYM_EXTERNAL     = 2;           { symbole externe (public/import)         }
+  COF_SYM_STATIC       = 3;           { symbole statique (section)              }
+  COF_SYM_LABEL        = 6;           { label dans le code                      }
+
+  { Tailles de structures }
+  COF_FILE_HEADER_SIZE = 20;          { taille COFF File Header                 }
+  COF_SECTION_HDR_SIZE = 40;          { taille Section Header                   }
+  COF_RELOC_SIZE       = 10;          { taille IMAGE_RELOCATION                 }
+  COF_SYMBOL_SIZE      = 18;          { taille IMAGE_SYMBOL                     }
+  COF_NUM_SECTIONS     = 3;           { .text, .data, .bss                      }
+
+  { Limites }
+  COF_MAX_SECTIONS     = 8;           { nombre max de sections                  }
+  COF_MAX_SYMBOLS      = 256;         { nombre max de symboles                  }
+  COF_MAX_RELOCATIONS  = 512;         { nombre max de relocations               }
+  COF_MAX_CODE_SIZE    = 65536;       { taille max du code                      }
+  COF_MAX_DATA_SIZE    = 65536;       { taille max des donnees                  }
+  COF_MAX_BSS_SIZE     = 65536;       { taille max des donnees non init         }
+  COF_MAX_STRINGS      = 4096;        { taille max de la table des chaines      }
+  COF_SYM_NAME_LEN     = 8;           { longueur max nom court symbole          }
+
+Type
+  TCofSectionEntry = Record
+    Name           : TString;         { nom de section (.text, .data, .bss)     }
+    RawSize        : LongInt;         { taille des donnees brutes               }
+    RawOffset      : LongInt;         { offset dans le fichier                  }
+    RelocOffset    : LongInt;         { offset de la table de relocations       }
+    RelocCount     : Integer;         { nombre de relocations                   }
+    Characteristics : LongInt;        { flags (CODE/DATA/BSS/READ/EXEC)         }
+  End;
+
+  TCofRelocationEntry = Record
+    VirtualAddr    : LongInt;         { offset dans la section                  }
+    SymbolIndex    : LongInt;         { index dans la table des symboles        }
+    RelocType      : Integer;         { COF_REL_I386_DIR32 ou REL32            }
+    SectionIdx     : Integer;         { section contenant la relocation         }
+  End;
+
+  TCofSymbolEntry = Record
+    Name           : TString;         { nom du symbole                          }
+    Value          : LongInt;         { valeur (offset dans la section)         }
+    SectionNumber  : Integer;         { numero de section (1-based) ou 0        }
+    SymbolType     : Integer;         { type (0 pour la plupart)                }
+    StorageClass   : Integer;         { COF_SYM_EXTERNAL/STATIC/LABEL          }
+    IsExternal     : Boolean;         { True si symbole importe (non defini)    }
+  End;
+
+Var
+  CofInitialized         : Boolean;   { True si InitCoffWriterState appele      }
+  CofStateCount          : Integer;   { compteur d etat general                 }
+  CofLabelNum            : Integer;   { compteur de labels internes             }
+  CofSections            : Array[0..COF_MAX_SECTIONS-1] Of TCofSectionEntry;
+  CofSectionCount        : Integer;   { nombre de sections definies             }
+  CofRelocations         : Array[0..COF_MAX_RELOCATIONS-1] Of TCofRelocationEntry;
+  CofRelocationCount     : Integer;   { nombre de relocations enregistrees      }
+  CofSymbols             : Array[0..COF_MAX_SYMBOLS-1] Of TCofSymbolEntry;
+  CofSymbolCount         : Integer;   { nombre de symboles enregistres          }
+  CofCodeBuffer          : Array[0..COF_MAX_CODE_SIZE-1] Of Byte;
+  CofCodeSize            : LongInt;   { taille courante du code                 }
+  CofDataBuffer          : Array[0..COF_MAX_DATA_SIZE-1] Of Byte;
+  CofDataSize            : LongInt;   { taille courante des donnees             }
+  CofBssSize             : LongInt;   { taille courante des donnees non init    }
+  CofStringTable         : Array[0..COF_MAX_STRINGS-1] Of Char;
+  CofStringTableSize     : LongInt;   { taille courante de la table chaines     }
+  CofDir32Count          : Integer;   { nombre de relocs DIR32                  }
+  CofRel32Count          : Integer;   { nombre de relocs REL32                  }
+  CofExternalCount       : Integer;   { nombre de symboles externes             }
+  CofStaticCount         : Integer;   { nombre de symboles statiques            }
+  CofLabelCount          : Integer;   { nombre de symboles labels               }
+  CofFileHeaderCount     : Integer;   { nombre de File Headers generes          }
+  CofSectHeaderCount     : Integer;   { nombre de Section Headers generes       }
+  CofRelocWrittenCount   : Integer;   { nombre de relocations ecrites           }
+  CofSymbolWrittenCount  : Integer;   { nombre de symboles ecrits               }
+  CofStringWrittenCount  : Integer;   { nombre de chaines ecrites               }
+  CofFileWrittenCount    : Integer;   { nombre de fichiers .OBJ ecrits          }
+  CofTotalGenerated      : Integer;   { total d octets generes                  }
+
+{ ------------------------------------------------------------ }
+{ InitCoffWriterState : initialiser l etat du module COFF .OBJ }
+{ Doit etre appele avant toute utilisation du module            }
+{ ------------------------------------------------------------ }
+
+Procedure InitCoffWriterState;
+Var
+  I : LongInt;
+Begin
+  CofInitialized := True;
+  CofStateCount  := 0;
+  CofLabelNum    := 0;
+  CofSectionCount := 0;
+  CofRelocationCount := 0;
+  CofSymbolCount := 0;
+  CofCodeSize    := 0;
+  CofDataSize    := 0;
+  CofBssSize     := 0;
+  CofStringTableSize := 4; { les 4 premiers octets = taille de la table }
+  CofDir32Count  := 0;
+  CofRel32Count  := 0;
+  CofExternalCount := 0;
+  CofStaticCount := 0;
+  CofLabelCount  := 0;
+  CofFileHeaderCount := 0;
+  CofSectHeaderCount := 0;
+  CofRelocWrittenCount := 0;
+  CofSymbolWrittenCount := 0;
+  CofStringWrittenCount := 0;
+  CofFileWrittenCount := 0;
+  CofTotalGenerated := 0;
+  For I := 0 To COF_MAX_SECTIONS - 1 Do Begin
+    CofSections[I].Name := '';
+    CofSections[I].RawSize := 0;
+    CofSections[I].RawOffset := 0;
+    CofSections[I].RelocOffset := 0;
+    CofSections[I].RelocCount := 0;
+    CofSections[I].Characteristics := 0;
+  End;
+  For I := 0 To COF_MAX_SYMBOLS - 1 Do Begin
+    CofSymbols[I].Name := '';
+    CofSymbols[I].Value := 0;
+    CofSymbols[I].SectionNumber := 0;
+    CofSymbols[I].SymbolType := 0;
+    CofSymbols[I].StorageClass := 0;
+    CofSymbols[I].IsExternal := False;
+  End;
+  For I := 0 To COF_MAX_CODE_SIZE - 1 Do
+    CofCodeBuffer[I] := 0;
+  For I := 0 To COF_MAX_DATA_SIZE - 1 Do
+    CofDataBuffer[I] := 0;
+  For I := 0 To COF_MAX_STRINGS - 1 Do
+    CofStringTable[I] := Chr(0);
+  Inc(CofStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCofLabel : generer un label unique pour le module COFF     }
+{ ------------------------------------------------------------ }
+
+Function GenCofLabel : TString;
+Begin
+  Inc(CofLabelNum);
+  GenCofLabel := '_COF_L' + ItoS(CofLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ CofSectionName : retourne le nom d un type de section         }
+{ ------------------------------------------------------------ }
+
+Function CofSectionName(SectType : Integer) : TString;
+Begin
+  Case SectType Of
+    COF_SECT_NONE : CofSectionName := 'NONE';
+    COF_SECT_TEXT : CofSectionName := '.text';
+    COF_SECT_DATA : CofSectionName := '.data';
+    COF_SECT_BSS  : CofSectionName := '.bss';
+  Else
+    CofSectionName := '?SECT' + ItoSI(SectType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CofRelocTypeName : retourne le nom d un type de relocation    }
+{ ------------------------------------------------------------ }
+
+Function CofRelocTypeName(RelType : Integer) : TString;
+Begin
+  Case RelType Of
+    COF_REL_I386_DIR32 : CofRelocTypeName := 'DIR32';
+    COF_REL_I386_REL32 : CofRelocTypeName := 'REL32';
+  Else
+    CofRelocTypeName := '?REL' + ItoSI(RelType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CofStorageClassName : retourne le nom d une classe de stockage}
+{ ------------------------------------------------------------ }
+
+Function CofStorageClassName(SC : Integer) : TString;
+Begin
+  Case SC Of
+    COF_SYM_EXTERNAL : CofStorageClassName := 'EXTERNAL';
+    COF_SYM_STATIC   : CofStorageClassName := 'STATIC';
+    COF_SYM_LABEL    : CofStorageClassName := 'LABEL';
+  Else
+    CofStorageClassName := '?SC' + ItoSI(SC);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CofMachineName : retourne le nom du type machine              }
+{ ------------------------------------------------------------ }
+
+Function CofMachineName(Machine : Integer) : TString;
+Begin
+  If Machine = COF_MACHINE_I386 Then
+    CofMachineName := 'I386'
+  Else
+    CofMachineName := '?MACH' + ItoSI(Machine);
+End;
+
+{ ------------------------------------------------------------ }
+{ Routines d ecriture binaire pour le fichier COFF              }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCofByte(Var Buf : Array Of Byte; Var Pos : LongInt;
+                       MaxSize : LongInt; B : Byte);
+Begin
+  If Pos < MaxSize Then Begin
+    Buf[Pos] := B;
+    Inc(Pos);
+    Inc(CofTotalGenerated);
+  End;
+End;
+
+Procedure WriteCofWord(Var Buf : Array Of Byte; Var Pos : LongInt;
+                       MaxSize : LongInt; W : Integer);
+Begin
+  WriteCofByte(Buf, Pos, MaxSize, W And $FF);
+  WriteCofByte(Buf, Pos, MaxSize, (W Shr 8) And $FF);
+End;
+
+Procedure WriteCofDWord(Var Buf : Array Of Byte; Var Pos : LongInt;
+                        MaxSize : LongInt; DW : LongInt);
+Begin
+  WriteCofByte(Buf, Pos, MaxSize, DW And $FF);
+  WriteCofByte(Buf, Pos, MaxSize, (DW Shr 8) And $FF);
+  WriteCofByte(Buf, Pos, MaxSize, (DW Shr 16) And $FF);
+  WriteCofByte(Buf, Pos, MaxSize, (DW Shr 24) And $FF);
+End;
+
+Procedure WriteCofString(Var Buf : Array Of Byte; Var Pos : LongInt;
+                         MaxSize : LongInt; S : TString);
+Var
+  I : Integer;
+Begin
+  For I := 1 To Length(S) Do
+    WriteCofByte(Buf, Pos, MaxSize, Ord(S[I]));
+  WriteCofByte(Buf, Pos, MaxSize, 0);
+End;
+
+Procedure WriteCofBlock(Var Buf : Array Of Byte; Var Pos : LongInt;
+                        MaxSize : LongInt;
+                        Var Src : Array Of Byte; Count : LongInt);
+Var
+  I : LongInt;
+Begin
+  For I := 0 To Count - 1 Do
+    WriteCofByte(Buf, Pos, MaxSize, Src[I]);
+End;
+
+{ ------------------------------------------------------------ }
+{ FindCofSection : chercher une section par nom                 }
+{ Retourne l index (0-based) ou -1 si non trouvee              }
+{ ------------------------------------------------------------ }
+
+Function FindCofSection(Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  FindCofSection := -1;
+  For I := 0 To CofSectionCount - 1 Do
+    If CofSections[I].Name = Name Then Begin
+      FindCofSection := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddCofSection : ajouter une section COFF                      }
+{ Retourne l index (0-based) ou -1 si plein                     }
+{ ------------------------------------------------------------ }
+
+Function AddCofSection(Name : TString; Chars : LongInt) : Integer;
+Begin
+  If CofSectionCount >= COF_MAX_SECTIONS Then Begin
+    AddCofSection := -1;
+    Exit;
+  End;
+  CofSections[CofSectionCount].Name := Name;
+  CofSections[CofSectionCount].RawSize := 0;
+  CofSections[CofSectionCount].RawOffset := 0;
+  CofSections[CofSectionCount].RelocOffset := 0;
+  CofSections[CofSectionCount].RelocCount := 0;
+  CofSections[CofSectionCount].Characteristics := Chars;
+  AddCofSection := CofSectionCount;
+  Inc(CofSectionCount);
+  Inc(CofStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddCofSymbol : ajouter un symbole COFF                        }
+{ Retourne l index (0-based) ou -1 si plein                     }
+{ ------------------------------------------------------------ }
+
+Function AddCofSymbol(Name : TString; Value : LongInt;
+                      SectNum : Integer; SC : Integer;
+                      IsExt : Boolean) : Integer;
+Begin
+  If CofSymbolCount >= COF_MAX_SYMBOLS Then Begin
+    AddCofSymbol := -1;
+    Exit;
+  End;
+  CofSymbols[CofSymbolCount].Name := Name;
+  CofSymbols[CofSymbolCount].Value := Value;
+  CofSymbols[CofSymbolCount].SectionNumber := SectNum;
+  CofSymbols[CofSymbolCount].SymbolType := 0;
+  CofSymbols[CofSymbolCount].StorageClass := SC;
+  CofSymbols[CofSymbolCount].IsExternal := IsExt;
+  If IsExt Then Inc(CofExternalCount)
+  Else If SC = COF_SYM_STATIC Then Inc(CofStaticCount)
+  Else If SC = COF_SYM_LABEL Then Inc(CofLabelCount);
+  AddCofSymbol := CofSymbolCount;
+  Inc(CofSymbolCount);
+  Inc(CofStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ FindCofSymbol : chercher un symbole par nom                   }
+{ Retourne l index (0-based) ou -1 si non trouve                }
+{ ------------------------------------------------------------ }
+
+Function FindCofSymbol(Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  FindCofSymbol := -1;
+  For I := 0 To CofSymbolCount - 1 Do
+    If CofSymbols[I].Name = Name Then Begin
+      FindCofSymbol := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddCofRelocation : ajouter une relocation COFF                }
+{ Retourne l index (0-based) ou -1 si plein                     }
+{ ------------------------------------------------------------ }
+
+Function AddCofRelocation(VAddr : LongInt; SymIdx : LongInt;
+                          RelType : Integer;
+                          SectIdx : Integer) : Integer;
+Begin
+  If CofRelocationCount >= COF_MAX_RELOCATIONS Then Begin
+    AddCofRelocation := -1;
+    Exit;
+  End;
+  CofRelocations[CofRelocationCount].VirtualAddr := VAddr;
+  CofRelocations[CofRelocationCount].SymbolIndex := SymIdx;
+  CofRelocations[CofRelocationCount].RelocType := RelType;
+  CofRelocations[CofRelocationCount].SectionIdx := SectIdx;
+  If RelType = COF_REL_I386_DIR32 Then Inc(CofDir32Count)
+  Else If RelType = COF_REL_I386_REL32 Then Inc(CofRel32Count);
+  AddCofRelocation := CofRelocationCount;
+  Inc(CofRelocationCount);
+  Inc(CofStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddCofStringEntry : ajouter un nom long a la table chaines    }
+{ Retourne l offset dans la table (pour le symbole)             }
+{ ------------------------------------------------------------ }
+
+Function AddCofStringEntry(Name : TString) : LongInt;
+Var
+  I      : Integer;
+  Offset : LongInt;
+Begin
+  Offset := CofStringTableSize;
+  For I := 1 To Length(Name) Do Begin
+    If CofStringTableSize < COF_MAX_STRINGS Then Begin
+      CofStringTable[CofStringTableSize] := Name[I];
+      Inc(CofStringTableSize);
+    End;
+  End;
+  If CofStringTableSize < COF_MAX_STRINGS Then Begin
+    CofStringTable[CofStringTableSize] := Chr(0);
+    Inc(CofStringTableSize);
+  End;
+  Inc(CofStringWrittenCount);
+  AddCofStringEntry := Offset;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCoffFileHeader : generer le COFF File Header (20 octets)   }
+{ Machine, NumberOfSections, TimeDateStamp, PointerToSymbolTable}
+{ NumberOfSymbols, SizeOfOptionalHeader=0, Characteristics      }
+{ ------------------------------------------------------------ }
+
+Procedure GenCoffFileHeader(Var Buf : Array Of Byte; Var Pos : LongInt;
+                            MaxSize : LongInt;
+                            NumSect : Integer;
+                            SymTabOffset : LongInt;
+                            NumSymbols : LongInt);
+Begin
+  { Machine : i386 }
+  WriteCofWord(Buf, Pos, MaxSize, COF_MACHINE_I386);
+  { NumberOfSections }
+  WriteCofWord(Buf, Pos, MaxSize, NumSect);
+  { TimeDateStamp : 0 }
+  WriteCofDWord(Buf, Pos, MaxSize, 0);
+  { PointerToSymbolTable }
+  WriteCofDWord(Buf, Pos, MaxSize, SymTabOffset);
+  { NumberOfSymbols }
+  WriteCofDWord(Buf, Pos, MaxSize, NumSymbols);
+  { SizeOfOptionalHeader : 0 pour .OBJ }
+  WriteCofWord(Buf, Pos, MaxSize, 0);
+  { Characteristics : 0 pour .OBJ }
+  WriteCofWord(Buf, Pos, MaxSize, 0);
+  Inc(CofFileHeaderCount);
+  Inc(CofStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCoffSectionHeader : generer un Section Header (40 octets)  }
+{ Name[8], VirtualSize, VirtualAddress, SizeOfRawData,          }
+{ PointerToRawData, PointerToRelocations, PointerToLinenumbers, }
+{ NumberOfRelocations, NumberOfLinenumbers, Characteristics      }
+{ ------------------------------------------------------------ }
+
+Procedure GenCoffSectionHeader(Var Buf : Array Of Byte; Var Pos : LongInt;
+                               MaxSize : LongInt;
+                               Name : TString;
+                               RawSize : LongInt;
+                               RawOffset : LongInt;
+                               RelocOffset : LongInt;
+                               RelocCount : Integer;
+                               Chars : LongInt);
+Var
+  I : Integer;
+Begin
+  { Name : 8 octets, padding avec des zeros }
+  For I := 1 To 8 Do Begin
+    If I <= Length(Name) Then
+      WriteCofByte(Buf, Pos, MaxSize, Ord(Name[I]))
+    Else
+      WriteCofByte(Buf, Pos, MaxSize, 0);
+  End;
+  { VirtualSize : 0 pour .OBJ }
+  WriteCofDWord(Buf, Pos, MaxSize, 0);
+  { VirtualAddress : 0 pour .OBJ }
+  WriteCofDWord(Buf, Pos, MaxSize, 0);
+  { SizeOfRawData }
+  WriteCofDWord(Buf, Pos, MaxSize, RawSize);
+  { PointerToRawData }
+  WriteCofDWord(Buf, Pos, MaxSize, RawOffset);
+  { PointerToRelocations }
+  WriteCofDWord(Buf, Pos, MaxSize, RelocOffset);
+  { PointerToLinenumbers : 0 }
+  WriteCofDWord(Buf, Pos, MaxSize, 0);
+  { NumberOfRelocations }
+  WriteCofWord(Buf, Pos, MaxSize, RelocCount);
+  { NumberOfLinenumbers : 0 }
+  WriteCofWord(Buf, Pos, MaxSize, 0);
+  { Characteristics }
+  WriteCofDWord(Buf, Pos, MaxSize, Chars);
+  Inc(CofSectHeaderCount);
+  Inc(CofStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCoffRelocation : generer une relocation (10 octets)        }
+{ VirtualAddress, SymbolTableIndex, Type                        }
+{ ------------------------------------------------------------ }
+
+Procedure GenCoffRelocation(Var Buf : Array Of Byte; Var Pos : LongInt;
+                            MaxSize : LongInt;
+                            VAddr : LongInt;
+                            SymIdx : LongInt;
+                            RelType : Integer);
+Begin
+  { VirtualAddress }
+  WriteCofDWord(Buf, Pos, MaxSize, VAddr);
+  { SymbolTableIndex }
+  WriteCofDWord(Buf, Pos, MaxSize, SymIdx);
+  { Type }
+  WriteCofWord(Buf, Pos, MaxSize, RelType);
+  Inc(CofRelocWrittenCount);
+  Inc(CofStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCoffSymbol : generer un symbole (18 octets)                }
+{ Name[8] ou StringTableOffset, Value, SectionNumber,           }
+{ Type, StorageClass, NumberOfAuxSymbols                        }
+{ ------------------------------------------------------------ }
+
+Procedure GenCoffSymbol(Var Buf : Array Of Byte; Var Pos : LongInt;
+                        MaxSize : LongInt;
+                        Idx : Integer);
+Var
+  I        : Integer;
+  StrOfs   : LongInt;
+  NameLen  : Integer;
+Begin
+  NameLen := Length(CofSymbols[Idx].Name);
+  If NameLen <= COF_SYM_NAME_LEN Then Begin
+    { Nom court : ecrire directement dans les 8 octets }
+    For I := 1 To 8 Do Begin
+      If I <= NameLen Then
+        WriteCofByte(Buf, Pos, MaxSize, Ord(CofSymbols[Idx].Name[I]))
+      Else
+        WriteCofByte(Buf, Pos, MaxSize, 0);
+    End;
+  End Else Begin
+    { Nom long : ecrire 4 octets a zero + offset dans table chaines }
+    StrOfs := AddCofStringEntry(CofSymbols[Idx].Name);
+    WriteCofDWord(Buf, Pos, MaxSize, 0);
+    WriteCofDWord(Buf, Pos, MaxSize, StrOfs);
+  End;
+  { Value }
+  WriteCofDWord(Buf, Pos, MaxSize, CofSymbols[Idx].Value);
+  { SectionNumber (1-based) }
+  WriteCofWord(Buf, Pos, MaxSize, CofSymbols[Idx].SectionNumber);
+  { Type : 0 }
+  WriteCofWord(Buf, Pos, MaxSize, CofSymbols[Idx].SymbolType);
+  { StorageClass }
+  WriteCofByte(Buf, Pos, MaxSize, CofSymbols[Idx].StorageClass);
+  { NumberOfAuxSymbols : 0 }
+  WriteCofByte(Buf, Pos, MaxSize, 0);
+  Inc(CofSymbolWrittenCount);
+  Inc(CofStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCoffStringTable : generer la table des chaines              }
+{ Les 4 premiers octets = taille totale de la table             }
+{ ------------------------------------------------------------ }
+
+Procedure GenCoffStringTable(Var Buf : Array Of Byte; Var Pos : LongInt;
+                             MaxSize : LongInt);
+Var
+  I : LongInt;
+Begin
+  { Les 4 premiers octets sont la taille totale }
+  WriteCofDWord(Buf, Pos, MaxSize, CofStringTableSize);
+  { Ecrire le reste des chaines (a partir de l offset 4) }
+  For I := 4 To CofStringTableSize - 1 Do
+    WriteCofByte(Buf, Pos, MaxSize, Ord(CofStringTable[I]));
+  Inc(CofStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCoffTextSection : ecrire le contenu de la section .text    }
+{ ------------------------------------------------------------ }
+
+Procedure GenCoffTextSection(Var Buf : Array Of Byte; Var Pos : LongInt;
+                             MaxSize : LongInt);
+Begin
+  WriteCofBlock(Buf, Pos, MaxSize, CofCodeBuffer, CofCodeSize);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCoffDataSection : ecrire le contenu de la section .data    }
+{ ------------------------------------------------------------ }
+
+Procedure GenCoffDataSection(Var Buf : Array Of Byte; Var Pos : LongInt;
+                             MaxSize : LongInt);
+Begin
+  WriteCofBlock(Buf, Pos, MaxSize, CofDataBuffer, CofDataSize);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCoffRelocations : ecrire toutes les relocations d une sect }
+{ ------------------------------------------------------------ }
+
+Procedure GenCoffRelocations(Var Buf : Array Of Byte; Var Pos : LongInt;
+                             MaxSize : LongInt;
+                             SectIdx : Integer);
+Var
+  I : Integer;
+Begin
+  For I := 0 To CofRelocationCount - 1 Do Begin
+    If CofRelocations[I].SectionIdx = SectIdx Then
+      GenCoffRelocation(Buf, Pos, MaxSize,
+                        CofRelocations[I].VirtualAddr,
+                        CofRelocations[I].SymbolIndex,
+                        CofRelocations[I].RelocType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CountSectionRelocs : compter les relocations d une section    }
+{ ------------------------------------------------------------ }
+
+Function CountSectionRelocs(SectIdx : Integer) : Integer;
+Var
+  I, Count : Integer;
+Begin
+  Count := 0;
+  For I := 0 To CofRelocationCount - 1 Do
+    If CofRelocations[I].SectionIdx = SectIdx Then
+      Inc(Count);
+  CountSectionRelocs := Count;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCoffFile : assembler et ecrire le fichier COFF .OBJ        }
+{ Assemble toutes les parties : Header + Sections + Relocs +    }
+{ Symboles + Table des chaines                                  }
+{ Ecrit le resultat dans un fichier binaire                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenCoffFile(FileName : TString);
+Var
+  FileBuf       : Array[0..COF_MAX_CODE_SIZE + COF_MAX_DATA_SIZE - 1] Of Byte;
+  FilePos       : LongInt;
+  FileMax       : LongInt;
+  F             : File;
+  I             : Integer;
+  TextRawOfs    : LongInt;
+  DataRawOfs    : LongInt;
+  TextRelocOfs  : LongInt;
+  DataRelocOfs  : LongInt;
+  SymTabOfs     : LongInt;
+  TextRelocs    : Integer;
+  DataRelocs    : Integer;
+  TotalSize     : LongInt;
+Begin
+  FileMax := COF_MAX_CODE_SIZE + COF_MAX_DATA_SIZE;
+  FilePos := 0;
+  For I := 0 To FileMax - 1 Do
+    FileBuf[I] := 0;
+
+  { Compter les relocations par section }
+  TextRelocs := CountSectionRelocs(0);
+  DataRelocs := CountSectionRelocs(1);
+
+  { Calculer les offsets dans le fichier }
+  { COFF File Header (20) + 3 Section Headers (3 * 40 = 120) = 140 }
+  TextRawOfs := COF_FILE_HEADER_SIZE +
+                (COF_NUM_SECTIONS * COF_SECTION_HDR_SIZE);
+
+  DataRawOfs := TextRawOfs + CofCodeSize;
+
+  { Relocations apres les donnees brutes }
+  TextRelocOfs := DataRawOfs + CofDataSize;
+  DataRelocOfs := TextRelocOfs + (LongInt(TextRelocs) * COF_RELOC_SIZE);
+
+  { Table des symboles apres les relocations }
+  SymTabOfs := DataRelocOfs + (LongInt(DataRelocs) * COF_RELOC_SIZE);
+
+  { Mettre a jour les sections }
+  If CofSectionCount >= 1 Then Begin
+    CofSections[0].RawSize := CofCodeSize;
+    CofSections[0].RawOffset := TextRawOfs;
+    CofSections[0].RelocOffset := TextRelocOfs;
+    CofSections[0].RelocCount := TextRelocs;
+  End;
+  If CofSectionCount >= 2 Then Begin
+    CofSections[1].RawSize := CofDataSize;
+    CofSections[1].RawOffset := DataRawOfs;
+    CofSections[1].RelocOffset := DataRelocOfs;
+    CofSections[1].RelocCount := DataRelocs;
+  End;
+  If CofSectionCount >= 3 Then Begin
+    CofSections[2].RawSize := 0;
+    CofSections[2].RawOffset := 0;
+    CofSections[2].RelocOffset := 0;
+    CofSections[2].RelocCount := 0;
+  End;
+
+  { === Generer le COFF File Header === }
+  GenCoffFileHeader(FileBuf, FilePos, FileMax,
+                    COF_NUM_SECTIONS, SymTabOfs, CofSymbolCount);
+
+  { === Generer les Section Headers === }
+  If CofSectionCount >= 1 Then
+    GenCoffSectionHeader(FileBuf, FilePos, FileMax, '.text',
+      CofCodeSize, TextRawOfs, TextRelocOfs, TextRelocs,
+      COF_SCN_CODE Or COF_SCN_EXEC Or COF_SCN_READ Or COF_SCN_ALIGN4);
+
+  If CofSectionCount >= 2 Then
+    GenCoffSectionHeader(FileBuf, FilePos, FileMax, '.data',
+      CofDataSize, DataRawOfs, DataRelocOfs, DataRelocs,
+      COF_SCN_IDATA Or COF_SCN_READ Or COF_SCN_ALIGN4);
+
+  If CofSectionCount >= 3 Then
+    GenCoffSectionHeader(FileBuf, FilePos, FileMax, '.bss',
+      CofBssSize, 0, 0, 0,
+      COF_SCN_UDATA Or COF_SCN_READ Or COF_SCN_ALIGN4);
+
+  { === Generer la section .text (code) === }
+  FilePos := TextRawOfs;
+  GenCoffTextSection(FileBuf, FilePos, FileMax);
+
+  { === Generer la section .data (donnees) === }
+  FilePos := DataRawOfs;
+  GenCoffDataSection(FileBuf, FilePos, FileMax);
+
+  { === Generer les relocations .text === }
+  FilePos := TextRelocOfs;
+  GenCoffRelocations(FileBuf, FilePos, FileMax, 0);
+
+  { === Generer les relocations .data === }
+  FilePos := DataRelocOfs;
+  GenCoffRelocations(FileBuf, FilePos, FileMax, 1);
+
+  { === Generer la table des symboles === }
+  FilePos := SymTabOfs;
+  For I := 0 To CofSymbolCount - 1 Do
+    GenCoffSymbol(FileBuf, FilePos, FileMax, I);
+
+  { === Generer la table des chaines === }
+  GenCoffStringTable(FileBuf, FilePos, FileMax);
+
+  TotalSize := FilePos;
+
+  { === Ecrire le fichier === }
+  {$I-}
+  Assign(F, FileName);
+  Rewrite(F, 1);
+  {$I+}
+  If IOResult <> 0 Then Begin
+    WriteLn('*** ERREUR: Impossible de creer ', FileName);
+    Exit;
+  End;
+
+  BlockWrite(F, FileBuf, TotalSize);
+  Close(F);
+
+  Inc(CofFileWrittenCount);
+  Inc(CofStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCoffOutputOption : analyser l option de sortie COFF .OBJ }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCoffOutputOption(OptStr : TString);
+Begin
+  If (OptStr = '-obj') Or (OptStr = '-OBJ') Then Begin
+    { Preparer les sections standard }
+    AddCofSection('.text',
+      COF_SCN_CODE Or COF_SCN_EXEC Or COF_SCN_READ Or COF_SCN_ALIGN4);
+    AddCofSection('.data',
+      COF_SCN_IDATA Or COF_SCN_READ Or COF_SCN_ALIGN4);
+    AddCofSection('.bss',
+      COF_SCN_UDATA Or COF_SCN_READ Or COF_SCN_ALIGN4);
+    { Ajouter les symboles de section (STATIC) }
+    AddCofSymbol('.text', 0, 1, COF_SYM_STATIC, False);
+    AddCofSymbol('.data', 0, 2, COF_SYM_STATIC, False);
+    AddCofSymbol('.bss',  0, 3, COF_SYM_STATIC, False);
+  End;
+  Inc(CofStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsCoffWriterKeyword : verifier si un mot-cle est COFF Writer }
+{ ------------------------------------------------------------ }
+
+Function IsCoffWriterKeyword(KW : Integer) : Boolean;
+Begin
+  IsCoffWriterKeyword := (KW = KW_OBJ);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpCoffWriterState : afficher l etat du module COFF Writer   }
+{ ------------------------------------------------------------ }
+
+Procedure DumpCoffWriterState;
+Var
+  I : Integer;
+Begin
+  WriteLn('=== COFF .OBJ Writer State ===');
+  WriteLn('  Initialized       : ', CofInitialized);
+  WriteLn('  Code size         : ', CofCodeSize, ' bytes');
+  WriteLn('  Data size         : ', CofDataSize, ' bytes');
+  WriteLn('  BSS size          : ', CofBssSize, ' bytes');
+  WriteLn('  Sections          : ', CofSectionCount);
+  WriteLn('  Symbols           : ', CofSymbolCount);
+  WriteLn('  Relocations       : ', CofRelocationCount);
+  WriteLn('  DIR32 relocs      : ', CofDir32Count);
+  WriteLn('  REL32 relocs      : ', CofRel32Count);
+  WriteLn('  External syms     : ', CofExternalCount);
+  WriteLn('  Static syms       : ', CofStaticCount);
+  WriteLn('  Label syms        : ', CofLabelCount);
+  WriteLn('  File headers      : ', CofFileHeaderCount);
+  WriteLn('  Section headers   : ', CofSectHeaderCount);
+  WriteLn('  Relocs written    : ', CofRelocWrittenCount);
+  WriteLn('  Symbols written   : ', CofSymbolWrittenCount);
+  WriteLn('  Strings written   : ', CofStringWrittenCount);
+  WriteLn('  String table size : ', CofStringTableSize, ' bytes');
+  WriteLn('  Files written     : ', CofFileWrittenCount);
+  WriteLn('  Total generated   : ', CofTotalGenerated, ' bytes');
+  WriteLn('  State count       : ', CofStateCount);
+  For I := 0 To CofSectionCount - 1 Do
+    WriteLn('  Section[', I, '] : ', CofSections[I].Name,
+            ' raw=', CofSections[I].RawSize,
+            ' relocs=', CofSections[I].RelocCount);
+  For I := 0 To CofSymbolCount - 1 Do
+    WriteLn('  Symbol[', I, '] : ', CofSymbols[I].Name,
+            ' val=', CofSymbols[I].Value,
+            ' sect=', CofSymbols[I].SectionNumber,
+            ' class=', CofStorageClassName(CofSymbols[I].StorageClass),
+            ' ext=', CofSymbols[I].IsExternal);
+End;
+
+{ 10 fonctions accesseurs pour TODO 22                         }
+
+Function IsCofInitialized : Boolean;
+Begin
+  IsCofInitialized := CofInitialized;
+End;
+
+Function IsCofEmpty : Boolean;
+Begin
+  IsCofEmpty := (CofTotalGenerated = 0);
+End;
+
+Function GetCofTotalGenerated : Integer;
+Begin
+  GetCofTotalGenerated := CofTotalGenerated;
+End;
+
+Function GetCofStatus : TString;
+Begin
+  If Not CofInitialized Then
+    GetCofStatus := 'NON INITIALISE'
+  Else
+    GetCofStatus := 'CODE=' + ItoSI(CofCodeSize) +
+                    ' DATA=' + ItoSI(CofDataSize) +
+                    ' BSS=' + ItoSI(CofBssSize) +
+                    ' SYMS=' + ItoSI(CofSymbolCount) +
+                    ' RELOCS=' + ItoSI(CofRelocationCount);
+End;
+
+Function GetCofCodeSize : LongInt;
+Begin
+  GetCofCodeSize := CofCodeSize;
+End;
+
+Function GetCofDataSize : LongInt;
+Begin
+  GetCofDataSize := CofDataSize;
+End;
+
+Function GetCofSymbolCount : Integer;
+Begin
+  GetCofSymbolCount := CofSymbolCount;
+End;
+
+Function GetCofRelocationCount : Integer;
+Begin
+  GetCofRelocationCount := CofRelocationCount;
+End;
+
+Function GetCofFileWrittenCount : Integer;
+Begin
+  GetCofFileWrittenCount := CofFileWrittenCount;
+End;
+
+Function GetCofStateCount : Integer;
+Begin
+  GetCofStateCount := CofStateCount;
+End;
+
 Procedure LexScanIdent;
 Var
   S     : TString;
@@ -20506,6 +21395,7 @@ Begin
   SrtInitialized := False;
   RtlInitialized := False;
   PeInitialized  := False;
+  CofInitialized := False;
   ParseArgs;
 
   { Affichage de la banniere en mode verbeux }
@@ -20567,6 +21457,9 @@ Begin
 
   { Initialiser le module ecrivain binaire PE (generation .EXE Win32) }
   InitPeWriterState;
+
+  { Initialiser le module ecrivain COFF .OBJ (generation .OBJ Win32) }
+  InitCoffWriterState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
