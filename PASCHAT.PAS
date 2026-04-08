@@ -164,7 +164,7 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 11 - BIBLIOTHEQUE DE TEMPLATES DE CODE [A FAIRE]
+  TODO 11 - BIBLIOTHEQUE DE TEMPLATES DE CODE [IMPLEMENTE]
             TTemplate : Name, Description, Code, Parameters
             Templates[0..MAX_TEMPLATES-1], TemplateCount
             LoadBuiltinTemplates : charger les templates predefinies
@@ -542,6 +542,27 @@ Const
   UNT_MAX_IMPL_PROC = 128; { Nombre max de procedures implementation }
   UNT_MAX_USES      = 16;  { Nombre max d'unites dans Uses }
 
+  { Types de templates pour TODO 11 }
+  TPL_NONE       = 0;   { Aucun template }
+  TPL_PROGRAM    = 1;   { Template de programme }
+  TPL_UNIT       = 2;   { Template d'unite }
+  TPL_PROCEDURE  = 3;   { Template de procedure }
+  TPL_FUNCTION   = 4;   { Template de fonction }
+  TPL_LOOP       = 5;   { Template de boucle }
+  TPL_CONDITION  = 6;   { Template de condition }
+  TPL_INPUT      = 7;   { Template de saisie }
+  TPL_OUTPUT     = 8;   { Template d'affichage }
+  TPL_FILE       = 9;   { Template de fichier }
+  TPL_ARRAY      = 10;  { Template de tableau }
+  TPL_RECORD     = 11;  { Template d'enregistrement }
+  TPL_MENU       = 12;  { Template de menu }
+  TPL_MAX        = 13;  { Nombre maximum de types de templates }
+
+  { Limites pour TODO 11 }
+  TPL_MAX_PARAMS = 8;    { Nombre max de parametres par template }
+  TPL_MAX_LINES  = 50;   { Nombre max de lignes par template }
+  TPL_MAX_BUILTIN = 20;  { Nombre max de templates predefinies }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -894,8 +915,24 @@ Var
   UntLabelNum     : Integer;
 
   { TODO 11 - Templates }
-  Templates     : Array[1..MAX_TEMPLATES] of TTemplate;
-  TemplateCount : Integer;
+  Templates       : Array[1..MAX_TEMPLATES] of TTemplate;
+  TemplateCount   : Integer;
+  TplInitialized  : Boolean;
+  TplStateCount   : Integer;
+  TplProgramCount : Integer;
+  TplUnitCount    : Integer;
+  TplProcCount    : Integer;
+  TplFuncCount    : Integer;
+  TplLoopCount    : Integer;
+  TplCondCount    : Integer;
+  TplIOCount      : Integer;
+  TplFileCount    : Integer;
+  TplArrayCount   : Integer;
+  TplRecordCount  : Integer;
+  TplApplyCount   : Integer;
+  TplFindCount    : Integer;
+  TplErrorCount   : Integer;
+  TplLabelNum     : Integer;
 
   { TODO 17 - Reponse courante }
   CurrentResponse : TResponse;
@@ -4537,6 +4574,657 @@ Begin
 End;
 
 { ============================================================
+  TODO 11 - BIBLIOTHEQUE DE TEMPLATES DE CODE
+  ============================================================ }
+
+{ Initialiser l'etat du gestionnaire de templates }
+Procedure InitTplState;
+Var
+  I: Integer;
+Begin
+  If TplInitialized Then Exit;
+  TplInitialized  := True;
+  TplStateCount   := 0;
+  TplProgramCount := 0;
+  TplUnitCount    := 0;
+  TplProcCount    := 0;
+  TplFuncCount    := 0;
+  TplLoopCount    := 0;
+  TplCondCount    := 0;
+  TplIOCount      := 0;
+  TplFileCount    := 0;
+  TplArrayCount   := 0;
+  TplRecordCount  := 0;
+  TplApplyCount   := 0;
+  TplFindCount    := 0;
+  TplErrorCount   := 0;
+  TplLabelNum     := 0;
+  TemplateCount   := 0;
+  For I := 1 to MAX_TEMPLATES do Begin
+    Templates[I].Name := '';
+    Templates[I].Description := '';
+    Templates[I].ParamCount := 0;
+    Templates[I].LineCount := 0;
+  End;
+End;
+
+{ Generer un label unique pour les templates }
+Function GenTplLabel: String;
+Var
+  S: String;
+Begin
+  Inc(TplLabelNum);
+  Str(TplLabelNum, S);
+  GenTplLabel := 'TPL' + S;
+End;
+
+{ Obtenir le nom du type de template }
+Function TplTypeName(Kind: Integer): String;
+Begin
+  Case Kind of
+    TPL_NONE:      TplTypeName := 'NONE';
+    TPL_PROGRAM:   TplTypeName := 'PROGRAM';
+    TPL_UNIT:      TplTypeName := 'UNIT';
+    TPL_PROCEDURE: TplTypeName := 'PROCEDURE';
+    TPL_FUNCTION:  TplTypeName := 'FUNCTION';
+    TPL_LOOP:      TplTypeName := 'LOOP';
+    TPL_CONDITION: TplTypeName := 'CONDITION';
+    TPL_INPUT:     TplTypeName := 'INPUT';
+    TPL_OUTPUT:    TplTypeName := 'OUTPUT';
+    TPL_FILE:      TplTypeName := 'FILE';
+    TPL_ARRAY:     TplTypeName := 'ARRAY';
+    TPL_RECORD:    TplTypeName := 'RECORD';
+    TPL_MENU:      TplTypeName := 'MENU';
+  Else
+    TplTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ Ajouter une ligne de code a un template }
+Procedure AddTemplateCodeLine(Var T: TTemplate; S: String);
+Var
+  P: Pointer;
+Begin
+  If T.LineCount >= MAX_CODE_LINES Then Exit;
+  Inc(T.LineCount);
+  GetMem(P, SizeOf(TCodeLine));
+  T.CodeLines[T.LineCount] := P;
+  T.CodeLines[T.LineCount]^ := S;
+End;
+
+{ Creer un template de programme simple }
+Procedure CreateProgramTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 1;
+  T.ParamNames[1] := 'ProgramName';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'Program {ProgramName};');
+  AddTemplateCodeLine(T, '');
+  AddTemplateCodeLine(T, 'Begin');
+  AddTemplateCodeLine(T, '  { Code principal ici }');
+  AddTemplateCodeLine(T, 'End.');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplProgramCount);
+End;
+
+{ Creer un template de procedure simple }
+Procedure CreateProcedureTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 1;
+  T.ParamNames[1] := 'ProcName';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'Procedure {ProcName};');
+  AddTemplateCodeLine(T, 'Begin');
+  AddTemplateCodeLine(T, '  { Corps de la procedure }');
+  AddTemplateCodeLine(T, 'End;');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplProcCount);
+End;
+
+{ Creer un template de fonction simple }
+Procedure CreateFunctionTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 2;
+  T.ParamNames[1] := 'FuncName';
+  T.ParamNames[2] := 'ReturnType';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'Function {FuncName}: {ReturnType};');
+  AddTemplateCodeLine(T, 'Begin');
+  AddTemplateCodeLine(T, '  { Corps de la fonction }');
+  AddTemplateCodeLine(T, '  {FuncName} := { valeur de retour };');
+  AddTemplateCodeLine(T, 'End;');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplFuncCount);
+End;
+
+{ Creer un template de boucle FOR }
+Procedure CreateForLoopTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 3;
+  T.ParamNames[1] := 'VarName';
+  T.ParamNames[2] := 'StartVal';
+  T.ParamNames[3] := 'EndVal';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'For {VarName} := {StartVal} to {EndVal} do Begin');
+  AddTemplateCodeLine(T, '  { Corps de la boucle }');
+  AddTemplateCodeLine(T, 'End;');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplLoopCount);
+End;
+
+{ Creer un template de boucle WHILE }
+Procedure CreateWhileLoopTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 1;
+  T.ParamNames[1] := 'Condition';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'While {Condition} do Begin');
+  AddTemplateCodeLine(T, '  { Corps de la boucle }');
+  AddTemplateCodeLine(T, 'End;');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplLoopCount);
+End;
+
+{ Creer un template IF-THEN-ELSE }
+Procedure CreateIfThenElseTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 1;
+  T.ParamNames[1] := 'Condition';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'If {Condition} Then Begin');
+  AddTemplateCodeLine(T, '  { Partie THEN }');
+  AddTemplateCodeLine(T, 'End');
+  AddTemplateCodeLine(T, 'Else Begin');
+  AddTemplateCodeLine(T, '  { Partie ELSE }');
+  AddTemplateCodeLine(T, 'End;');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplCondCount);
+End;
+
+{ Creer un template de saisie utilisateur }
+Procedure CreateInputTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 2;
+  T.ParamNames[1] := 'Prompt';
+  T.ParamNames[2] := 'VarName';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'Write({Prompt});');
+  AddTemplateCodeLine(T, 'ReadLn({VarName});');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplIOCount);
+End;
+
+{ Creer un template de menu }
+Procedure CreateMenuTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 1;
+  T.ParamNames[1] := 'MenuTitle';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'Var');
+  AddTemplateCodeLine(T, '  Choix: Char;');
+  AddTemplateCodeLine(T, 'Begin');
+  AddTemplateCodeLine(T, '  Repeat');
+  AddTemplateCodeLine(T, '    ClrScr;');
+  AddTemplateCodeLine(T, '    WriteLn(''{MenuTitle}'');');
+  AddTemplateCodeLine(T, '    WriteLn(''===================='');');
+  AddTemplateCodeLine(T, '    WriteLn(''1. Option 1'');');
+  AddTemplateCodeLine(T, '    WriteLn(''2. Option 2'');');
+  AddTemplateCodeLine(T, '    WriteLn(''3. Option 3'');');
+  AddTemplateCodeLine(T, '    WriteLn(''Q. Quitter'');');
+  AddTemplateCodeLine(T, '    WriteLn;');
+  AddTemplateCodeLine(T, '    Write(''Votre choix: '');');
+  AddTemplateCodeLine(T, '    ReadLn(Choix);');
+  AddTemplateCodeLine(T, '    Case UpCase(Choix) of');
+  AddTemplateCodeLine(T, '      ''1'': { Action 1 };');
+  AddTemplateCodeLine(T, '      ''2'': { Action 2 };');
+  AddTemplateCodeLine(T, '      ''3'': { Action 3 };');
+  AddTemplateCodeLine(T, '    End;');
+  AddTemplateCodeLine(T, '  Until UpCase(Choix) = ''Q'';');
+  AddTemplateCodeLine(T, 'End.');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplIOCount);
+End;
+
+{ Creer un template de lecture de fichier }
+Procedure CreateFileReadTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 1;
+  T.ParamNames[1] := 'FileName';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'Var');
+  AddTemplateCodeLine(T, '  F: Text;');
+  AddTemplateCodeLine(T, '  Line: String;');
+  AddTemplateCodeLine(T, 'Begin');
+  AddTemplateCodeLine(T, '  Assign(F, {FileName});');
+  AddTemplateCodeLine(T, '  {$I-}');
+  AddTemplateCodeLine(T, '  Reset(F);');
+  AddTemplateCodeLine(T, '  {$I+}');
+  AddTemplateCodeLine(T, '  If IOResult <> 0 Then Begin');
+  AddTemplateCodeLine(T, '    WriteLn(''Erreur: fichier non trouve'');');
+  AddTemplateCodeLine(T, '    Exit;');
+  AddTemplateCodeLine(T, '  End;');
+  AddTemplateCodeLine(T, '  While Not Eof(F) do Begin');
+  AddTemplateCodeLine(T, '    ReadLn(F, Line);');
+  AddTemplateCodeLine(T, '    WriteLn(Line);');
+  AddTemplateCodeLine(T, '  End;');
+  AddTemplateCodeLine(T, '  Close(F);');
+  AddTemplateCodeLine(T, 'End;');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplFileCount);
+End;
+
+{ Creer un template d'ecriture de fichier }
+Procedure CreateFileWriteTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 1;
+  T.ParamNames[1] := 'FileName';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'Var');
+  AddTemplateCodeLine(T, '  F: Text;');
+  AddTemplateCodeLine(T, 'Begin');
+  AddTemplateCodeLine(T, '  Assign(F, {FileName});');
+  AddTemplateCodeLine(T, '  Rewrite(F);');
+  AddTemplateCodeLine(T, '  WriteLn(F, ''Contenu a ecrire'');');
+  AddTemplateCodeLine(T, '  Close(F);');
+  AddTemplateCodeLine(T, 'End;');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplFileCount);
+End;
+
+{ Creer un template de tableau }
+Procedure CreateArrayTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 3;
+  T.ParamNames[1] := 'ArrayName';
+  T.ParamNames[2] := 'Size';
+  T.ParamNames[3] := 'Type';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'Var');
+  AddTemplateCodeLine(T, '  {ArrayName}: Array[1..{Size}] of {Type};');
+  AddTemplateCodeLine(T, '  I: Integer;');
+  AddTemplateCodeLine(T, 'Begin');
+  AddTemplateCodeLine(T, '  { Initialiser le tableau }');
+  AddTemplateCodeLine(T, '  For I := 1 to {Size} do');
+  AddTemplateCodeLine(T, '    {ArrayName}[I] := { valeur initiale };');
+  AddTemplateCodeLine(T, 'End;');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplArrayCount);
+End;
+
+{ Creer un template d'enregistrement }
+Procedure CreateRecordTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 1;
+  T.ParamNames[1] := 'RecordName';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'Type');
+  AddTemplateCodeLine(T, '  {RecordName} = Record');
+  AddTemplateCodeLine(T, '    Champ1: String;');
+  AddTemplateCodeLine(T, '    Champ2: Integer;');
+  AddTemplateCodeLine(T, '    Champ3: Boolean;');
+  AddTemplateCodeLine(T, '  End;');
+  AddTemplateCodeLine(T, '');
+  AddTemplateCodeLine(T, 'Var');
+  AddTemplateCodeLine(T, '  MonEnreg: {RecordName};');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplRecordCount);
+End;
+
+{ Creer un template de programme avec Crt }
+Procedure CreateCrtProgramTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 1;
+  T.ParamNames[1] := 'ProgramName';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'Program {ProgramName};');
+  AddTemplateCodeLine(T, '');
+  AddTemplateCodeLine(T, 'Uses Crt;');
+  AddTemplateCodeLine(T, '');
+  AddTemplateCodeLine(T, 'Begin');
+  AddTemplateCodeLine(T, '  ClrScr;');
+  AddTemplateCodeLine(T, '  TextColor(Yellow);');
+  AddTemplateCodeLine(T, '  WriteLn(''Bienvenue!'');');
+  AddTemplateCodeLine(T, '  TextColor(White);');
+  AddTemplateCodeLine(T, '  WriteLn;');
+  AddTemplateCodeLine(T, '  { Code principal ici }');
+  AddTemplateCodeLine(T, '  WriteLn;');
+  AddTemplateCodeLine(T, '  Write(''Appuyez sur une touche...'');');
+  AddTemplateCodeLine(T, '  ReadKey;');
+  AddTemplateCodeLine(T, 'End.');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplProgramCount);
+End;
+
+{ Creer un template d'unite }
+Procedure CreateUnitTemplate(Name, Desc: String);
+Var
+  T: TTemplate;
+Begin
+  If TemplateCount >= MAX_TEMPLATES Then Exit;
+  T.Name := Name;
+  T.Description := Desc;
+  T.ParamCount := 1;
+  T.ParamNames[1] := 'UnitName';
+  T.LineCount := 0;
+  AddTemplateCodeLine(T, 'Unit {UnitName};');
+  AddTemplateCodeLine(T, '');
+  AddTemplateCodeLine(T, 'Interface');
+  AddTemplateCodeLine(T, '');
+  AddTemplateCodeLine(T, '{ Declarations publiques }');
+  AddTemplateCodeLine(T, '');
+  AddTemplateCodeLine(T, 'Implementation');
+  AddTemplateCodeLine(T, '');
+  AddTemplateCodeLine(T, '{ Implementation des fonctions }');
+  AddTemplateCodeLine(T, '');
+  AddTemplateCodeLine(T, 'End.');
+  Inc(TemplateCount);
+  Templates[TemplateCount] := T;
+  Inc(TplUnitCount);
+End;
+
+{ Charger les templates predefinies }
+Procedure LoadBuiltinTemplates;
+Begin
+  If Not TplInitialized Then InitTplState;
+  
+  { Templates de programmes }
+  CreateProgramTemplate('program_simple', 'Programme Pascal simple');
+  CreateCrtProgramTemplate('program_crt', 'Programme avec unite Crt');
+  
+  { Templates d''unites }
+  CreateUnitTemplate('unit_simple', 'Unite Pascal simple');
+  
+  { Templates de procedures/fonctions }
+  CreateProcedureTemplate('procedure_simple', 'Procedure simple');
+  CreateFunctionTemplate('function_simple', 'Fonction simple');
+  
+  { Templates de boucles }
+  CreateForLoopTemplate('for_loop', 'Boucle FOR..TO..DO');
+  CreateWhileLoopTemplate('while_loop', 'Boucle WHILE..DO');
+  
+  { Templates de conditions }
+  CreateIfThenElseTemplate('if_then_else', 'Structure IF..THEN..ELSE');
+  
+  { Templates d''entrees/sorties }
+  CreateInputTemplate('input_simple', 'Saisie utilisateur simple');
+  CreateMenuTemplate('menu_simple', 'Menu interactif simple');
+  
+  { Templates de fichiers }
+  CreateFileReadTemplate('file_read', 'Lecture de fichier texte');
+  CreateFileWriteTemplate('file_write', 'Ecriture de fichier texte');
+  
+  { Templates de structures de donnees }
+  CreateArrayTemplate('array_simple', 'Declaration de tableau');
+  CreateRecordTemplate('record_simple', 'Declaration d''enregistrement');
+  
+  Inc(TplStateCount);
+End;
+
+{ Chercher un template par nom }
+Function FindTemplate(Name: String): Integer;
+Var
+  I: Integer;
+  UName: String;
+Begin
+  Inc(TplFindCount);
+  UName := UpCaseStr(Name);
+  For I := 1 to TemplateCount do Begin
+    If UpCaseStr(Templates[I].Name) = UName Then Begin
+      FindTemplate := I;
+      Exit;
+    End;
+  End;
+  FindTemplate := 0;
+End;
+
+{ Remplacer les parametres dans une ligne de template }
+Function ReplaceTemplateParams(Line: String; Params: Array of String;
+                               ParamNames: Array of String; 
+                               ParamCount: Integer): String;
+Var
+  I: Integer;
+  R, ParamTag: String;
+Begin
+  R := Line;
+  For I := 0 to ParamCount - 1 do Begin
+    ParamTag := '{' + ParamNames[I] + '}';
+    While Pos(ParamTag, R) > 0 do Begin
+      Delete(R, Pos(ParamTag, R), Length(ParamTag));
+      Insert(Params[I], R, Pos(ParamTag, R) + 1);
+    End;
+  End;
+  ReplaceTemplateParams := R;
+End;
+
+{ Appliquer un template avec des parametres }
+Procedure ApplyTemplate(Index: Integer; Params: Array of String);
+Var
+  I: Integer;
+  Line: String;
+  T: TTemplate;
+  ParamArr: Array[1..MAX_PARAMS] of String;
+Begin
+  If (Index < 1) or (Index > TemplateCount) Then Begin
+    Inc(TplErrorCount);
+    Exit;
+  End;
+  
+  Inc(TplApplyCount);
+  T := Templates[Index];
+  
+  { Copier les parametres dans un tableau local }
+  For I := 1 to T.ParamCount do
+    If I <= High(Params) + 1 Then
+      ParamArr[I] := Params[I - 1]
+    Else
+      ParamArr[I] := '';
+  
+  { Generer le code avec les parametres remplaces }
+  InitGeneratedCode;
+  For I := 1 to T.LineCount do Begin
+    If T.CodeLines[I] <> Nil Then Begin
+      Line := T.CodeLines[I]^;
+      { Remplacer les parametres }
+      Line := ReplaceTemplateParams(Line, Params, T.ParamNames, T.ParamCount);
+      AddCodeLine(Line);
+    End;
+  End;
+End;
+
+{ Lister les templates disponibles }
+Procedure ListTemplates;
+Var
+  I, J: Integer;
+Begin
+  WriteLn('=== Templates disponibles ===');
+  WriteLn;
+  For I := 1 to TemplateCount do Begin
+    WriteLn(I:2, '. ', Templates[I].Name);
+    WriteLn('    Description: ', Templates[I].Description);
+    If Templates[I].ParamCount > 0 Then Begin
+      Write('    Parametres: ');
+      For J := 1 to Templates[I].ParamCount do Begin
+        Write(Templates[I].ParamNames[J]);
+        If J < Templates[I].ParamCount Then Write(', ');
+      End;
+      WriteLn;
+    End;
+    WriteLn;
+  End;
+  WriteLn('Total: ', TemplateCount, ' templates');
+End;
+
+{ Obtenir le code d'un template }
+Procedure GetTemplateCode(Index: Integer);
+Var
+  I: Integer;
+  T: TTemplate;
+Begin
+  If (Index < 1) or (Index > TemplateCount) Then Exit;
+  
+  T := Templates[Index];
+  WriteLn('=== Template: ', T.Name, ' ===');
+  WriteLn('Description: ', T.Description);
+  WriteLn;
+  For I := 1 to T.LineCount do
+    If T.CodeLines[I] <> Nil Then
+      WriteLn(T.CodeLines[I]^);
+End;
+
+{ Afficher l'etat du gestionnaire de templates }
+Procedure DumpTplState;
+Begin
+  WriteLn('=== Etat du gestionnaire de templates (TODO 11) ===');
+  WriteLn('  TplInitialized  : ', TplInitialized);
+  WriteLn('  TplStateCount   : ', TplStateCount);
+  WriteLn('  TplProgramCount : ', TplProgramCount);
+  WriteLn('  TplUnitCount    : ', TplUnitCount);
+  WriteLn('  TplProcCount    : ', TplProcCount);
+  WriteLn('  TplFuncCount    : ', TplFuncCount);
+  WriteLn('  TplLoopCount    : ', TplLoopCount);
+  WriteLn('  TplCondCount    : ', TplCondCount);
+  WriteLn('  TplIOCount      : ', TplIOCount);
+  WriteLn('  TplFileCount    : ', TplFileCount);
+  WriteLn('  TplArrayCount   : ', TplArrayCount);
+  WriteLn('  TplRecordCount  : ', TplRecordCount);
+  WriteLn('  TplApplyCount   : ', TplApplyCount);
+  WriteLn('  TplFindCount    : ', TplFindCount);
+  WriteLn('  TplErrorCount   : ', TplErrorCount);
+  WriteLn('  TplLabelNum     : ', TplLabelNum);
+  WriteLn('  TemplateCount   : ', TemplateCount);
+End;
+
+{ --- TODO 11 : 10 accesseurs standards --- }
+
+Function IsTplInitialized: Boolean;
+Begin
+  IsTplInitialized := TplInitialized;
+End;
+
+Function IsTplEmpty: Boolean;
+Begin
+  IsTplEmpty := (TemplateCount = 0) And (TplStateCount = 0);
+End;
+
+Function GetTplStateCount: Integer;
+Begin
+  GetTplStateCount := TplStateCount;
+End;
+
+Function GetTplTemplateCount: Integer;
+Begin
+  GetTplTemplateCount := TemplateCount;
+End;
+
+Function GetTplProgramCount: Integer;
+Begin
+  GetTplProgramCount := TplProgramCount;
+End;
+
+Function GetTplProcCount: Integer;
+Begin
+  GetTplProcCount := TplProcCount;
+End;
+
+Function GetTplFuncCount: Integer;
+Begin
+  GetTplFuncCount := TplFuncCount;
+End;
+
+Function GetTplApplyCount: Integer;
+Begin
+  GetTplApplyCount := TplApplyCount;
+End;
+
+Function GetTplErrorCount: Integer;
+Begin
+  GetTplErrorCount := TplErrorCount;
+End;
+
+Function GetTplLabelNum: Integer;
+Begin
+  GetTplLabelNum := TplLabelNum;
+End;
+
+{ ============================================================
   TODO 12 - GENERATION DE PROGRAMMES "BONJOUR"
   ============================================================ }
 
@@ -5283,6 +5971,11 @@ Begin
   UntInitialized := False;
   InitUntState;
 
+  { Initialiser l'etat du gestionnaire de templates (TODO 11) }
+  TplInitialized := False;
+  InitTplState;
+  LoadBuiltinTemplates;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -5295,6 +5988,7 @@ Begin
     DumpCtlState;
     DumpPrcState;
     DumpUntState;
+    DumpTplState;
   End;
 
   Run;
@@ -5311,7 +6005,7 @@ Begin
   { 08 [IMPLEMENTE] - Structures de controle }
   { 09 [IMPLEMENTE] - Procedures et fonctions }
   { 10 [IMPLEMENTE] - Unites (UNIT) }
-  { 11 [A FAIRE] - Templates de code }
+  { 11 [IMPLEMENTE] - Templates de code }
   { 12 [IMPLEMENTE] - Programmes Bonjour }
   { 13 [IMPLEMENTE] - Programmes mathematiques }
   { 14 [IMPLEMENTE] - Programmes date/heure }

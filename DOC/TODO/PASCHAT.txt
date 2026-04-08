@@ -156,13 +156,15 @@
             DumpUntState : afficher l'etat
             10 accesseurs : IsUntInitialized, IsUntEmpty, GetUnt*Count
 
-  TODO 11 - BIBLIOTHEQUE DE TEMPLATES DE CODE [A FAIRE]
+  TODO 11 - BIBLIOTHEQUE DE TEMPLATES DE CODE [IMPLEMENTE]
             TTemplate : Name, Description, Code, Parameters
             Templates[0..MAX_TEMPLATES-1], TemplateCount
             LoadBuiltinTemplates : charger les templates predefinies
             FindTemplate(Name) : chercher un template par nom
             ApplyTemplate(Template, Params) : appliquer un template avec parametres
             ListTemplates : lister les templates disponibles
+            InitTplState, GenTplLabel, TplTypeName, DumpTplState
+            10 accesseurs : IsTplInitialized, IsTplEmpty, GetTpl*Count
 
   TODO 12 - GENERATION DE PROGRAMMES "BONJOUR" [A FAIRE]
             GenHelloWorld : generer un programme "Bonjour le monde"
