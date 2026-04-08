@@ -47,7 +47,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
               ReplaceExt, AsmIdent
             10 fonctions accesseurs
 
-  TODO 02 - TOKENISEUR PYTHON (LEXER) [A FAIRE]
+  TODO 02 - TOKENISEUR PYTHON (LEXER) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source
