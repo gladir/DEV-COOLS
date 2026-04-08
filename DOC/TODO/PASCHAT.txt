@@ -166,12 +166,26 @@
             InitTplState, GenTplLabel, TplTypeName, DumpTplState
             10 accesseurs : IsTplInitialized, IsTplEmpty, GetTpl*Count
 
-  TODO 12 - GENERATION DE PROGRAMMES "BONJOUR" [A FAIRE]
+  TODO 12 - GENERATION DE PROGRAMMES "BONJOUR" [IMPLEMENTE]
+            HLO_NONE=0..HLO_MAX=13 : constantes types de programmes
+            HLO_MAX_LANGS=10, HLO_MAX_LINES=20 : limites
+            HloInitialized + 15 variables d'etat
+            InitHloState : initialiser l'etat
+            GenHloLabel : generer un label unique
+            HloTypeName : nom du type de programme Bonjour
             GenHelloWorld : generer un programme "Bonjour le monde"
             GenHelloName(Name) : generer un programme avec nom personnalise
             GenHelloInteractive : generer un programme avec saisie du nom
             GenHelloMultilingual : generer un programme multilingue
             GenHelloGraphic : generer un programme avec affichage graphique
+            GenHelloBordered : generer un programme avec bordure
+            GenHelloCentered : generer un programme centre
+            GenHelloTimed : generer un programme avec heure
+            GenHelloColored : generer un programme colore
+            GenHelloAnimated : generer un programme anime
+            GenHelloRandom : generer un programme aleatoire
+            DumpHloState : afficher l'etat
+            10 accesseurs : IsHloInitialized, IsHloEmpty, GetHlo*Count
 
   TODO 13 - GENERATION DE PROGRAMMES MATHEMATIQUES [A FAIRE]
             GenPrimeNumbers(N) : generer un programme affichant N premiers

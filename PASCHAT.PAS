@@ -174,12 +174,26 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 12 - GENERATION DE PROGRAMMES "BONJOUR" [A FAIRE]
+  TODO 12 - GENERATION DE PROGRAMMES "BONJOUR" [IMPLEMENTE]
+            HLO_NONE=0..HLO_MAX=13 : constantes types de programmes
+            HLO_MAX_LANGS=10, HLO_MAX_LINES=20 : limites
+            HloInitialized + 15 variables d'etat
+            InitHloState : initialiser l'etat
+            GenHloLabel : generer un label unique
+            HloTypeName : nom du type de programme Bonjour
             GenHelloWorld : generer un programme "Bonjour le monde"
             GenHelloName(Name) : generer un programme avec nom personnalise
             GenHelloInteractive : generer un programme avec saisie du nom
             GenHelloMultilingual : generer un programme multilingue
             GenHelloGraphic : generer un programme avec affichage graphique
+            GenHelloBordered : generer un programme avec bordure
+            GenHelloCentered : generer un programme centre
+            GenHelloTimed : generer un programme avec heure
+            GenHelloColored : generer un programme colore
+            GenHelloAnimated : generer un programme anime
+            GenHelloRandom : generer un programme aleatoire
+            DumpHloState : afficher l'etat
+            10 accesseurs : IsHloInitialized, IsHloEmpty, GetHlo*Count
   ============================================================ }
 
 { ============================================================
@@ -563,6 +577,26 @@ Const
   TPL_MAX_LINES  = 50;   { Nombre max de lignes par template }
   TPL_MAX_BUILTIN = 20;  { Nombre max de templates predefinies }
 
+  { Types de programmes Bonjour pour TODO 12 }
+  HLO_NONE        = 0;   { Aucun type }
+  HLO_WORLD       = 1;   { Bonjour le monde }
+  HLO_NAME        = 2;   { Bonjour avec nom }
+  HLO_INTERACTIVE = 3;   { Bonjour interactif }
+  HLO_MULTILANG   = 4;   { Bonjour multilingue }
+  HLO_GRAPHIC     = 5;   { Bonjour graphique }
+  HLO_ANIMATED    = 6;   { Bonjour anime }
+  HLO_COLORED     = 7;   { Bonjour colore }
+  HLO_SOUND       = 8;   { Bonjour avec son }
+  HLO_CENTERED    = 9;   { Bonjour centre }
+  HLO_BORDERED    = 10;  { Bonjour avec bordure }
+  HLO_TIMED       = 11;  { Bonjour avec heure }
+  HLO_RANDOM      = 12;  { Bonjour aleatoire }
+  HLO_MAX         = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 12 }
+  HLO_MAX_LANGS   = 10;  { Nombre max de langues }
+  HLO_MAX_LINES   = 20;  { Nombre max de lignes pour bordures }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -933,6 +967,24 @@ Var
   TplFindCount    : Integer;
   TplErrorCount   : Integer;
   TplLabelNum     : Integer;
+
+  { TODO 12 - Programmes Bonjour }
+  HloInitialized  : Boolean;
+  HloStateCount   : Integer;
+  HloWorldCount   : Integer;
+  HloNameCount    : Integer;
+  HloInteractCount: Integer;
+  HloMultiLangCount: Integer;
+  HloGraphicCount : Integer;
+  HloAnimatedCount: Integer;
+  HloColoredCount : Integer;
+  HloSoundCount   : Integer;
+  HloCenteredCount: Integer;
+  HloBorderedCount: Integer;
+  HloTimedCount   : Integer;
+  HloRandomCount  : Integer;
+  HloErrorCount   : Integer;
+  HloLabelNum     : Integer;
 
   { TODO 17 - Reponse courante }
   CurrentResponse : TResponse;
@@ -5228,8 +5280,64 @@ End;
   TODO 12 - GENERATION DE PROGRAMMES "BONJOUR"
   ============================================================ }
 
+{ Initialiser l'etat du generateur de programmes Bonjour }
+Procedure InitHloState;
+Begin
+  HloInitialized  := True;
+  HloStateCount   := 0;
+  HloWorldCount   := 0;
+  HloNameCount    := 0;
+  HloInteractCount:= 0;
+  HloMultiLangCount:= 0;
+  HloGraphicCount := 0;
+  HloAnimatedCount:= 0;
+  HloColoredCount := 0;
+  HloSoundCount   := 0;
+  HloCenteredCount:= 0;
+  HloBorderedCount:= 0;
+  HloTimedCount   := 0;
+  HloRandomCount  := 0;
+  HloErrorCount   := 0;
+  HloLabelNum     := 0;
+End;
+
+{ Generer un label unique pour TODO 12 }
+Function GenHloLabel: String;
+Var
+  S: String;
+Begin
+  Inc(HloLabelNum);
+  Str(HloLabelNum, S);
+  GenHloLabel := '_HLO_' + S;
+End;
+
+{ Retourner le nom du type Bonjour }
+Function HloTypeName(T: Integer): String;
+Begin
+  Case T of
+    HLO_NONE:        HloTypeName := 'NONE';
+    HLO_WORLD:       HloTypeName := 'WORLD';
+    HLO_NAME:        HloTypeName := 'NAME';
+    HLO_INTERACTIVE: HloTypeName := 'INTERACTIVE';
+    HLO_MULTILANG:   HloTypeName := 'MULTILANG';
+    HLO_GRAPHIC:     HloTypeName := 'GRAPHIC';
+    HLO_ANIMATED:    HloTypeName := 'ANIMATED';
+    HLO_COLORED:     HloTypeName := 'COLORED';
+    HLO_SOUND:       HloTypeName := 'SOUND';
+    HLO_CENTERED:    HloTypeName := 'CENTERED';
+    HLO_BORDERED:    HloTypeName := 'BORDERED';
+    HLO_TIMED:       HloTypeName := 'TIMED';
+    HLO_RANDOM:      HloTypeName := 'RANDOM';
+  Else
+    HloTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ Generer un programme Bonjour le monde }
 Procedure GenHelloWorld;
 Begin
+  Inc(HloStateCount);
+  Inc(HloWorldCount);
   InitGeneratedCode;
   GenProgramHeader('Bonjour');
   GenBeginEnd;
@@ -5237,8 +5345,11 @@ Begin
   GenEnd;
 End;
 
+{ Generer un programme Bonjour avec nom personnalise }
 Procedure GenHelloName(Name: String);
 Begin
+  Inc(HloStateCount);
+  Inc(HloNameCount);
   InitGeneratedCode;
   GenProgramHeader('BonjourNom');
   GenBeginEnd;
@@ -5246,8 +5357,11 @@ Begin
   GenEnd;
 End;
 
+{ Generer un programme Bonjour interactif }
 Procedure GenHelloInteractive;
 Begin
+  Inc(HloStateCount);
+  Inc(HloInteractCount);
   InitGeneratedCode;
   GenProgramHeader('BonjourInteractif');
   AddCodeLine('Var');
@@ -5258,6 +5372,350 @@ Begin
   AddCodeLine('  ReadLn(Nom);');
   AddCodeLine('  WriteLn(''Bonjour '', Nom, ''!'');');
   GenEnd;
+End;
+
+{ Generer un programme Bonjour multilingue }
+Procedure GenHelloMultilingual;
+Begin
+  Inc(HloStateCount);
+  Inc(HloMultiLangCount);
+  InitGeneratedCode;
+  GenProgramHeader('BonjourMultilingue');
+  AddCodeLine('Const');
+  AddCodeLine('  LANG_FR = 1;');
+  AddCodeLine('  LANG_EN = 2;');
+  AddCodeLine('  LANG_ES = 3;');
+  AddCodeLine('  LANG_DE = 4;');
+  AddCodeLine('  LANG_IT = 5;');
+  AddCodeLine('');
+  AddCodeLine('Var');
+  AddCodeLine('  Choix: Integer;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  WriteLn(''Choisissez une langue / Choose a language:'');');
+  AddCodeLine('  WriteLn(''  1. Francais'');');
+  AddCodeLine('  WriteLn(''  2. English'');');
+  AddCodeLine('  WriteLn(''  3. Espanol'');');
+  AddCodeLine('  WriteLn(''  4. Deutsch'');');
+  AddCodeLine('  WriteLn(''  5. Italiano'');');
+  AddCodeLine('  Write(''Votre choix: '');');
+  AddCodeLine('  ReadLn(Choix);');
+  AddCodeLine('  WriteLn;');
+  AddCodeLine('  Case Choix of');
+  AddCodeLine('    LANG_FR: WriteLn(''Bonjour le monde!'');');
+  AddCodeLine('    LANG_EN: WriteLn(''Hello world!'');');
+  AddCodeLine('    LANG_ES: WriteLn(''Hola mundo!'');');
+  AddCodeLine('    LANG_DE: WriteLn(''Hallo Welt!'');');
+  AddCodeLine('    LANG_IT: WriteLn(''Ciao mondo!'');');
+  AddCodeLine('  Else');
+  AddCodeLine('    WriteLn(''Langue non reconnue / Unknown language'');');
+  AddCodeLine('  End;');
+  GenEnd;
+End;
+
+{ Generer un programme Bonjour avec affichage graphique }
+Procedure GenHelloGraphic;
+Begin
+  Inc(HloStateCount);
+  Inc(HloGraphicCount);
+  InitGeneratedCode;
+  GenProgramHeader('BonjourGraphique');
+  AddCodeLine('Uses');
+  AddCodeLine('  Graph;');
+  AddCodeLine('');
+  AddCodeLine('Var');
+  AddCodeLine('  Gd, Gm: Integer;');
+  AddCodeLine('  CenterX, CenterY: Integer;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  { Initialiser le mode graphique }');
+  AddCodeLine('  Gd := Detect;');
+  AddCodeLine('  InitGraph(Gd, Gm, '''');');
+  AddCodeLine('  If GraphResult <> grOk Then Begin');
+  AddCodeLine('    WriteLn(''Erreur graphique'');');
+  AddCodeLine('    Halt(1);');
+  AddCodeLine('  End;');
+  AddCodeLine('');
+  AddCodeLine('  { Calculer le centre de l''''ecran }');
+  AddCodeLine('  CenterX := GetMaxX div 2;');
+  AddCodeLine('  CenterY := GetMaxY div 2;');
+  AddCodeLine('');
+  AddCodeLine('  { Afficher le message au centre }');
+  AddCodeLine('  SetTextStyle(DefaultFont, HorizDir, 2);');
+  AddCodeLine('  SetColor(Yellow);');
+  AddCodeLine('  OutTextXY(CenterX - 100, CenterY, ''Bonjour le monde!'');');
+  AddCodeLine('');
+  AddCodeLine('  { Dessiner un cadre decoratif }');
+  AddCodeLine('  SetColor(Cyan);');
+  AddCodeLine('  Rectangle(CenterX - 150, CenterY - 30, CenterX + 150, CenterY + 30);');
+  AddCodeLine('');
+  AddCodeLine('  { Attendre une touche }');
+  AddCodeLine('  ReadLn;');
+  AddCodeLine('  CloseGraph;');
+  GenEnd;
+End;
+
+{ Generer un programme Bonjour avec bordure decorative }
+Procedure GenHelloBordered;
+Begin
+  Inc(HloStateCount);
+  Inc(HloBorderedCount);
+  InitGeneratedCode;
+  GenProgramHeader('BonjourBordure');
+  AddCodeLine('Const');
+  AddCodeLine('  Largeur = 40;');
+  AddCodeLine('');
+  AddCodeLine('Var');
+  AddCodeLine('  I: Integer;');
+  AddCodeLine('  Message: String;');
+  AddCodeLine('  Padding: Integer;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  Message := ''Bonjour le monde!'';');
+  AddCodeLine('  Padding := (Largeur - Length(Message) - 4) div 2;');
+  AddCodeLine('');
+  AddCodeLine('  { Ligne superieure }');
+  AddCodeLine('  Write(''+'');');
+  AddCodeLine('  For I := 1 to Largeur - 2 do Write(''-'');');
+  AddCodeLine('  WriteLn(''+'');');
+  AddCodeLine('');
+  AddCodeLine('  { Ligne vide }');
+  AddCodeLine('  Write(''|'');');
+  AddCodeLine('  For I := 1 to Largeur - 2 do Write('' '');');
+  AddCodeLine('  WriteLn(''|'');');
+  AddCodeLine('');
+  AddCodeLine('  { Ligne avec le message }');
+  AddCodeLine('  Write(''| '');');
+  AddCodeLine('  For I := 1 to Padding do Write('' '');');
+  AddCodeLine('  Write(Message);');
+  AddCodeLine('  For I := 1 to Largeur - Padding - Length(Message) - 4 do Write('' '');');
+  AddCodeLine('  WriteLn('' |'');');
+  AddCodeLine('');
+  AddCodeLine('  { Ligne vide }');
+  AddCodeLine('  Write(''|'');');
+  AddCodeLine('  For I := 1 to Largeur - 2 do Write('' '');');
+  AddCodeLine('  WriteLn(''|'');');
+  AddCodeLine('');
+  AddCodeLine('  { Ligne inferieure }');
+  AddCodeLine('  Write(''+'');');
+  AddCodeLine('  For I := 1 to Largeur - 2 do Write(''-'');');
+  AddCodeLine('  WriteLn(''+'');');
+  GenEnd;
+End;
+
+{ Generer un programme Bonjour centre a l'ecran }
+Procedure GenHelloCentered;
+Begin
+  Inc(HloStateCount);
+  Inc(HloCenteredCount);
+  InitGeneratedCode;
+  GenProgramHeader('BonjourCentre');
+  AddCodeLine('Uses');
+  AddCodeLine('  Crt;');
+  AddCodeLine('');
+  AddCodeLine('Const');
+  AddCodeLine('  Message = ''Bonjour le monde!'';');
+  AddCodeLine('');
+  AddCodeLine('Var');
+  AddCodeLine('  X, Y: Integer;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  ClrScr;');
+  AddCodeLine('  X := (80 - Length(Message)) div 2;');
+  AddCodeLine('  Y := 12;');
+  AddCodeLine('  GotoXY(X, Y);');
+  AddCodeLine('  WriteLn(Message);');
+  AddCodeLine('  ReadLn;');
+  GenEnd;
+End;
+
+{ Generer un programme Bonjour avec date et heure }
+Procedure GenHelloTimed;
+Begin
+  Inc(HloStateCount);
+  Inc(HloTimedCount);
+  InitGeneratedCode;
+  GenProgramHeader('BonjourHeure');
+  AddCodeLine('Uses');
+  AddCodeLine('  Dos;');
+  AddCodeLine('');
+  AddCodeLine('Var');
+  AddCodeLine('  Heure, Minute, Seconde, Sec100: Word;');
+  AddCodeLine('  Salutation: String;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  GetTime(Heure, Minute, Seconde, Sec100);');
+  AddCodeLine('');
+  AddCodeLine('  If Heure < 12 Then');
+  AddCodeLine('    Salutation := ''Bonjour''');
+  AddCodeLine('  Else If Heure < 18 Then');
+  AddCodeLine('    Salutation := ''Bon apres-midi''');
+  AddCodeLine('  Else');
+  AddCodeLine('    Salutation := ''Bonsoir'';');
+  AddCodeLine('');
+  AddCodeLine('  WriteLn(Salutation, '' le monde!'');');
+  AddCodeLine('  WriteLn(''Il est '', Heure, '':'', Minute, '':'', Seconde);');
+  GenEnd;
+End;
+
+{ Generer un programme Bonjour avec couleurs }
+Procedure GenHelloColored;
+Begin
+  Inc(HloStateCount);
+  Inc(HloColoredCount);
+  InitGeneratedCode;
+  GenProgramHeader('BonjourCouleur');
+  AddCodeLine('Uses');
+  AddCodeLine('  Crt;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  ClrScr;');
+  AddCodeLine('  TextColor(Red);');
+  AddCodeLine('  Write(''B'');');
+  AddCodeLine('  TextColor(Yellow);');
+  AddCodeLine('  Write(''o'');');
+  AddCodeLine('  TextColor(Green);');
+  AddCodeLine('  Write(''n'');');
+  AddCodeLine('  TextColor(Cyan);');
+  AddCodeLine('  Write(''j'');');
+  AddCodeLine('  TextColor(Blue);');
+  AddCodeLine('  Write(''o'');');
+  AddCodeLine('  TextColor(Magenta);');
+  AddCodeLine('  Write(''u'');');
+  AddCodeLine('  TextColor(White);');
+  AddCodeLine('  Write(''r'');');
+  AddCodeLine('  TextColor(LightGray);');
+  AddCodeLine('  WriteLn('' le monde!'');');
+  AddCodeLine('  TextColor(LightGray);');
+  AddCodeLine('  ReadLn;');
+  GenEnd;
+End;
+
+{ Generer un programme Bonjour anime }
+Procedure GenHelloAnimated;
+Begin
+  Inc(HloStateCount);
+  Inc(HloAnimatedCount);
+  InitGeneratedCode;
+  GenProgramHeader('BonjourAnime');
+  AddCodeLine('Uses');
+  AddCodeLine('  Crt;');
+  AddCodeLine('');
+  AddCodeLine('Const');
+  AddCodeLine('  Message = ''Bonjour le monde!'';');
+  AddCodeLine('');
+  AddCodeLine('Var');
+  AddCodeLine('  I: Integer;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  ClrScr;');
+  AddCodeLine('  For I := 1 to Length(Message) do Begin');
+  AddCodeLine('    Write(Message[I]);');
+  AddCodeLine('    Delay(100);');
+  AddCodeLine('  End;');
+  AddCodeLine('  WriteLn;');
+  AddCodeLine('  ReadLn;');
+  GenEnd;
+End;
+
+{ Generer un programme Bonjour aleatoire }
+Procedure GenHelloRandom;
+Begin
+  Inc(HloStateCount);
+  Inc(HloRandomCount);
+  InitGeneratedCode;
+  GenProgramHeader('BonjourAleatoire');
+  AddCodeLine('Const');
+  AddCodeLine('  NbMessages = 5;');
+  AddCodeLine('');
+  AddCodeLine('Var');
+  AddCodeLine('  Messages: Array[1..NbMessages] of String;');
+  AddCodeLine('  Choix: Integer;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  Randomize;');
+  AddCodeLine('  Messages[1] := ''Bonjour le monde!'';');
+  AddCodeLine('  Messages[2] := ''Salut a tous!'';');
+  AddCodeLine('  Messages[3] := ''Coucou!'';');
+  AddCodeLine('  Messages[4] := ''Hello tout le monde!'';');
+  AddCodeLine('  Messages[5] := ''Bien le bonjour!'';');
+  AddCodeLine('  Choix := Random(NbMessages) + 1;');
+  AddCodeLine('  WriteLn(Messages[Choix]);');
+  GenEnd;
+End;
+
+{ Afficher l'etat du generateur de programmes Bonjour }
+Procedure DumpHloState;
+Begin
+  WriteLn('=== Etat du generateur Bonjour (TODO 12) ===');
+  WriteLn('  HloInitialized    : ', HloInitialized);
+  WriteLn('  HloStateCount     : ', HloStateCount);
+  WriteLn('  HloWorldCount     : ', HloWorldCount);
+  WriteLn('  HloNameCount      : ', HloNameCount);
+  WriteLn('  HloInteractCount  : ', HloInteractCount);
+  WriteLn('  HloMultiLangCount : ', HloMultiLangCount);
+  WriteLn('  HloGraphicCount   : ', HloGraphicCount);
+  WriteLn('  HloAnimatedCount  : ', HloAnimatedCount);
+  WriteLn('  HloColoredCount   : ', HloColoredCount);
+  WriteLn('  HloSoundCount     : ', HloSoundCount);
+  WriteLn('  HloCenteredCount  : ', HloCenteredCount);
+  WriteLn('  HloBorderedCount  : ', HloBorderedCount);
+  WriteLn('  HloTimedCount     : ', HloTimedCount);
+  WriteLn('  HloRandomCount    : ', HloRandomCount);
+  WriteLn('  HloErrorCount     : ', HloErrorCount);
+  WriteLn('  HloLabelNum       : ', HloLabelNum);
+End;
+
+{ --- TODO 12 : 10 accesseurs standards --- }
+
+Function IsHloInitialized: Boolean;
+Begin
+  IsHloInitialized := HloInitialized;
+End;
+
+Function IsHloEmpty: Boolean;
+Begin
+  IsHloEmpty := (HloStateCount = 0);
+End;
+
+Function GetHloStateCount: Integer;
+Begin
+  GetHloStateCount := HloStateCount;
+End;
+
+Function GetHloWorldCount: Integer;
+Begin
+  GetHloWorldCount := HloWorldCount;
+End;
+
+Function GetHloNameCount: Integer;
+Begin
+  GetHloNameCount := HloNameCount;
+End;
+
+Function GetHloInteractCount: Integer;
+Begin
+  GetHloInteractCount := HloInteractCount;
+End;
+
+Function GetHloMultiLangCount: Integer;
+Begin
+  GetHloMultiLangCount := HloMultiLangCount;
+End;
+
+Function GetHloGraphicCount: Integer;
+Begin
+  GetHloGraphicCount := HloGraphicCount;
+End;
+
+Function GetHloErrorCount: Integer;
+Begin
+  GetHloErrorCount := HloErrorCount;
+End;
+
+Function GetHloLabelNum: Integer;
+Begin
+  GetHloLabelNum := HloLabelNum;
 End;
 
 { ============================================================
@@ -5976,6 +6434,10 @@ Begin
   InitTplState;
   LoadBuiltinTemplates;
 
+  { Initialiser l'etat du generateur Bonjour (TODO 12) }
+  HloInitialized := False;
+  InitHloState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -5989,6 +6451,7 @@ Begin
     DumpPrcState;
     DumpUntState;
     DumpTplState;
+    DumpHloState;
   End;
 
   Run;
