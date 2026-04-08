@@ -298,7 +298,7 @@
             BEGIN ... END pour regroupement d instructions
             10 fonctions accesseurs
 
-  TODO 12 - PARSEUR : AFFECTATIONS ET INSTRUCTIONS SIMPLES [A FAIRE]
+  TODO 12 - PARSEUR : AFFECTATIONS ET INSTRUCTIONS SIMPLES [IMPLEMENTE]
             Affectation simple :
               variable = expression ;
               Generer : evaluer expression -> EAX, MOV [var], EAX
@@ -2852,6 +2852,15 @@ Function ParseExpression : Integer; Forward;
 { Forward declaration pour ParseStatement (defini dans TODO 11, }
 {   implementation apres DumpExprState)                          }
 Procedure ParseStatement; Forward;
+
+{ Forward declaration pour ParseAssignStatement (defini dans TODO 12) }
+Procedure ParseAssignStatement; Forward;
+
+{ Forward declarations pour ParseCallStatement, ParseStopStatement, }
+{   ParseAssignGoto (definis dans TODO 12)                           }
+Procedure ParseCallStatement; Forward;
+Procedure ParseStopStatement; Forward;
+Procedure ParseAssignGoto; Forward;
 
 { ------------------------------------------------------------ }
 { ParseModuleBody : parser les declarations du corps du module  }
@@ -6037,8 +6046,6 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure ParseStatement;
-Var
-  SaveIdent : TString;
 Begin
   Inc(CtlStateCount);
 
@@ -6060,16 +6067,22 @@ Begin
         ParseDoUntil;
 
       KW_GOTO:
-        ParseGotoStatement;
+        ParseAssignGoto;
 
       KW_GO:
-        ParseGotoStatement;
+        ParseAssignGoto;
 
       KW_BEGIN:
         ParseBeginEnd;
 
+      KW_CALL:
+        ParseCallStatement;
+
+      KW_STOP:
+        ParseStopStatement;
+
     Else
-      { Autre instruction : consommer jusqu au point-virgule }
+      { Autre instruction mot-cle : consommer jusqu au ; }
       While (CurTokType <> TOK_SEMICOL) And
             (CurTokType <> TOK_EOF) Do
         LexNextToken;
@@ -6079,31 +6092,8 @@ Begin
   End
   Else If CurTokType = TOK_IDENT Then
   Begin
-    { Possible label nomme (nom : instruction) ou affectation }
-    { Sauvegarder le nom et avancer pour voir si un : suit }
-    Inc(CtlStateCount);
-    SaveIdent := CurTokStr;
-    LexNextToken;
-    If CurTokType = TOK_COLON Then
-    Begin
-      { C est un label nomme }
-      Inc(CtlLabelCount);
-      If Opts.Verbose Then
-        WriteLn('  LABEL: ', SaveIdent);
-      LexNextToken;
-      { Parser l instruction qui suit le label }
-      If (CurTokType <> TOK_EOF) And (CurTokType <> TOK_SEMICOL) Then
-        ParseStatement;
-    End
-    Else
-    Begin
-      { Pas un label : consommer le reste de l instruction }
-      While (CurTokType <> TOK_SEMICOL) And
-            (CurTokType <> TOK_EOF) Do
-        LexNextToken;
-      If CurTokType = TOK_SEMICOL Then
-        LexNextToken;
-    End;
+    { Deleguer au parseur d affectations TODO 12 }
+    ParseAssignStatement;
   End
   Else
   Begin
@@ -6191,6 +6181,515 @@ End;
 
 
 { ============================================================ }
+{ TODO 12 - PARSEUR : AFFECTATIONS ET INSTRUCTIONS SIMPLES      }
+{ ============================================================ }
+
+Const
+  { Types d instructions simples }
+  ASG_NONE        = 0;   { aucune                                   }
+  ASG_ASSIGN      = 1;   { affectation simple : var = expr ;        }
+  ASG_TABLE       = 2;   { affectation TABLE : T(i) = expr ;        }
+  ASG_STATUS      = 3;   { affectation STATUS : COLOR = val ;       }
+  ASG_CALL        = 4;   { appel : CALL proc [(args)] ;             }
+  ASG_STOP        = 5;   { arret : STOP ;                           }
+  ASG_GOTO_STMT   = 6;   { branchement : GOTO label ;               }
+  ASG_LABEL_STMT  = 7;   { label nomme : lab : instruction          }
+
+  { Limites }
+  ASG_MAX_ASSIGNS = 4096; { nombre max d instructions simples       }
+
+Var
+  { Variables du parseur d affectations }
+  AsgInitialized    : Boolean;     { module initialise ?             }
+  AsgStateCount     : Integer;     { compteur d operations           }
+  AsgAssignCount    : Integer;     { affectations simples            }
+  AsgTableAssignCnt : Integer;     { affectations TABLE              }
+  AsgStatusAssignCnt: Integer;     { affectations STATUS             }
+  AsgCallCount      : Integer;     { instructions CALL               }
+  AsgStopCount      : Integer;     { instructions STOP               }
+  AsgGotoCount      : Integer;     { instructions GOTO               }
+  AsgLabelCount     : Integer;     { labels nommes                   }
+  AsgLabelNum       : Integer;     { generateur de labels uniques    }
+  AsgErrorCount     : Integer;     { nombre d erreurs                }
+
+{ ------------------------------------------------------------ }
+{ InitAssignState : initialiser les variables d affectations     }
+{ ------------------------------------------------------------ }
+
+Procedure InitAssignState;
+Begin
+  AsgInitialized    := True;
+  AsgStateCount     := 0;
+  AsgAssignCount    := 0;
+  AsgTableAssignCnt := 0;
+  AsgStatusAssignCnt:= 0;
+  AsgCallCount      := 0;
+  AsgStopCount      := 0;
+  AsgGotoCount      := 0;
+  AsgLabelCount     := 0;
+  AsgLabelNum       := 0;
+  AsgErrorCount     := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsgLabel : generer un label unique pour les affectations    }
+{ ------------------------------------------------------------ }
+
+Function GenAsgLabel : TString;
+Begin
+  Inc(AsgLabelNum);
+  GenAsgLabel := PFX_LBL + 'ASG_' + ItoSI(AsgLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ AssignTypeName : retourner le nom du type d instruction        }
+{ ------------------------------------------------------------ }
+
+Function AssignTypeName(AType : Integer) : TString;
+Begin
+  Case AType Of
+    ASG_NONE       : AssignTypeName := 'NONE';
+    ASG_ASSIGN     : AssignTypeName := 'ASSIGN';
+    ASG_TABLE      : AssignTypeName := 'TABLE_ASSIGN';
+    ASG_STATUS     : AssignTypeName := 'STATUS_ASSIGN';
+    ASG_CALL       : AssignTypeName := 'CALL';
+    ASG_STOP       : AssignTypeName := 'STOP';
+    ASG_GOTO_STMT  : AssignTypeName := 'GOTO';
+    ASG_LABEL_STMT : AssignTypeName := 'LABEL';
+  Else
+    AssignTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignment : parser une affectation simple                }
+{   variable = expression ;                                      }
+{   CurTok est deja sur le token apres l identifiant            }
+{   VarName contient le nom de la variable                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignment(VarName : TString);
+Var
+  Dummy : Integer;
+Begin
+  Inc(AsgStateCount);
+  Inc(AsgAssignCount);
+
+  If Opts.Verbose Then
+    WriteLn('  ASSIGN: ', VarName, ' = ...');
+
+  { Le token courant est = (TOK_EQ), avancer }
+  LexNextToken;
+
+  { Parser l expression a droite }
+  Dummy := ParseExpression;
+
+  { Verifier et consommer le point-virgule }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('; attendu apres affectation de ' + VarName);
+    Inc(AsgErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTableAssign : parser une affectation a un element TABLE   }
+{   T(index) = expression ;                                      }
+{   CurTok est sur ( apres le nom de TABLE                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTableAssign(TblName : TString);
+Var
+  Dummy : Integer;
+Begin
+  Inc(AsgStateCount);
+  Inc(AsgTableAssignCnt);
+
+  If Opts.Verbose Then
+    WriteLn('  TABLE_ASSIGN: ', TblName, '(...) = ...');
+
+  { Consommer ( }
+  LexNextToken;
+
+  { Parser l expression d index }
+  Dummy := ParseExpression;
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres index de TABLE ' + TblName);
+    Inc(AsgErrorCount);
+  End;
+
+  { Consommer = }
+  If CurTokType = TOK_EQ Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('= attendu apres ' + TblName + '(index)');
+    Inc(AsgErrorCount);
+  End;
+
+  { Parser l expression de valeur }
+  Dummy := ParseExpression;
+
+  { Consommer ; }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('; attendu apres affectation TABLE ' + TblName);
+    Inc(AsgErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCallStatement : parser une instruction CALL               }
+{   CALL nom_procedure ;                                         }
+{   CALL nom_procedure (expr1, expr2, ...) ;                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCallStatement;
+Var
+  ProcName : TString;
+  ArgCount : Integer;
+  Dummy    : Integer;
+Begin
+  Inc(AsgStateCount);
+  Inc(AsgCallCount);
+
+  { Consommer CALL }
+  LexNextToken;
+
+  { Lire le nom de la procedure }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    ProcName := CurTokStr;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_KEYWORD Then
+  Begin
+    { Un mot-cle peut servir de nom de procedure }
+    ProcName := CurTokStr;
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Nom de procedure attendu apres CALL');
+    Inc(AsgErrorCount);
+    ProcName := '?';
+  End;
+
+  If Opts.Verbose Then
+    WriteLn('  CALL: ', ProcName);
+
+  { Verifier s il y a des arguments entre parentheses }
+  ArgCount := 0;
+  If CurTokType = TOK_LPAREN Then
+  Begin
+    LexNextToken;
+
+    { Parser les arguments separes par des virgules }
+    While (CurTokType <> TOK_RPAREN) And
+          (CurTokType <> TOK_EOF) Do
+    Begin
+      Dummy := ParseExpression;
+      Inc(ArgCount);
+      If CurTokType = TOK_COMMA Then
+        LexNextToken
+      Else If CurTokType <> TOK_RPAREN Then
+      Begin
+        WarnMsg(', ou ) attendu dans les arguments de CALL ' + ProcName);
+        Inc(AsgErrorCount);
+        Break;
+      End;
+    End;
+
+    { Consommer ) }
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken
+    Else
+    Begin
+      WarnMsg(') attendu apres arguments de CALL ' + ProcName);
+      Inc(AsgErrorCount);
+    End;
+
+    If Opts.Verbose Then
+      WriteLn('    Arguments : ', ArgCount);
+  End;
+
+  { Consommer ; }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('; attendu apres CALL ' + ProcName);
+    Inc(AsgErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStopStatement : parser une instruction STOP               }
+{   STOP ;                                                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStopStatement;
+Begin
+  Inc(AsgStateCount);
+  Inc(AsgStopCount);
+
+  If Opts.Verbose Then
+    WriteLn('  STOP');
+
+  { Consommer STOP }
+  LexNextToken;
+
+  { Consommer ; }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('; attendu apres STOP');
+    Inc(AsgErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignGoto : parser GOTO / GO TO label ;                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignGoto;
+Var
+  LabelName : TString;
+Begin
+  Inc(AsgStateCount);
+  Inc(AsgGotoCount);
+
+  { Consommer GOTO ou GO TO }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_GO) Then
+  Begin
+    LexNextToken;
+    { Verifier TO apres GO }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+      LexNextToken
+    Else
+    Begin
+      WarnMsg('TO attendu apres GO');
+      Inc(AsgErrorCount);
+    End;
+  End
+  Else
+    LexNextToken; { Consommer GOTO }
+
+  { Lire le nom du label }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    LabelName := CurTokStr;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_KEYWORD Then
+  Begin
+    LabelName := CurTokStr;
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Nom de label attendu apres GOTO');
+    Inc(AsgErrorCount);
+    LabelName := '?';
+  End;
+
+  If Opts.Verbose Then
+    WriteLn('  GOTO: ', LabelName);
+
+  { Consommer ; }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('; attendu apres GOTO ' + LabelName);
+    Inc(AsgErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignLabel : parser un label nomme dans le code          }
+{   label : instruction                                          }
+{   SaveIdent est le nom du label, CurTok est sur :              }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignLabel(LabelName : TString);
+Begin
+  Inc(AsgStateCount);
+  Inc(AsgLabelCount);
+
+  If Opts.Verbose Then
+    WriteLn('  LABEL: ', LabelName);
+
+  { Consommer : }
+  LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignStatement : dispatcher principal pour les           }
+{   affectations et instructions simples                         }
+{   Appele depuis ParseStatement quand CurTok est IDENT         }
+{   ou pour les mots-cles CALL/STOP/GOTO                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignStatement;
+Var
+  SaveIdent : TString;
+Begin
+  Inc(AsgStateCount);
+
+  If CurTokType = TOK_EOF Then Exit;
+
+  { Instruction CALL }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CALL) Then
+  Begin
+    ParseCallStatement;
+    Exit;
+  End;
+
+  { Instruction STOP }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_STOP) Then
+  Begin
+    ParseStopStatement;
+    Exit;
+  End;
+
+  { Instruction GOTO / GO TO }
+  If (CurTokType = TOK_KEYWORD) And
+     ((CurTokNum = KW_GOTO) Or (CurTokNum = KW_GO)) Then
+  Begin
+    ParseAssignGoto;
+    Exit;
+  End;
+
+  { Identificateur : affectation ou label }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    SaveIdent := CurTokStr;
+    LexNextToken;
+
+    { Label nomme : ident : instruction }
+    If CurTokType = TOK_COLON Then
+    Begin
+      ParseAssignLabel(SaveIdent);
+      Exit;
+    End;
+
+    { Affectation TABLE : ident(index) = expr ; }
+    If CurTokType = TOK_LPAREN Then
+    Begin
+      ParseTableAssign(SaveIdent);
+      Exit;
+    End;
+
+    { Affectation simple : ident = expr ; }
+    If CurTokType = TOK_EQ Then
+    Begin
+      ParseAssignment(SaveIdent);
+      Exit;
+    End;
+
+    { Autre : consommer jusqu au point-virgule }
+    While (CurTokType <> TOK_SEMICOL) And
+          (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+  End
+  Else
+  Begin
+    { Token inattendu : avancer }
+    LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpAssignState : afficher l etat du parseur d affectations    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpAssignState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat du parseur AFFECTATIONS (TODO 12) ===');
+  WriteLn('  Initialise         : ', AsgInitialized);
+  WriteLn('  Operations         : ', AsgStateCount);
+  WriteLn('  Affectations       : ', AsgAssignCount);
+  WriteLn('  Affect. TABLE      : ', AsgTableAssignCnt);
+  WriteLn('  Affect. STATUS     : ', AsgStatusAssignCnt);
+  WriteLn('  CALL               : ', AsgCallCount);
+  WriteLn('  STOP               : ', AsgStopCount);
+  WriteLn('  GOTO               : ', AsgGotoCount);
+  WriteLn('  Labels nommes      : ', AsgLabelCount);
+  WriteLn('  Labels generes     : ', AsgLabelNum);
+  WriteLn('  Erreurs            : ', AsgErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Accesseurs du parseur d affectations (10 fonctions)            }
+{ ------------------------------------------------------------ }
+
+Function IsAsgInitialized : Boolean;
+Begin
+  IsAsgInitialized := AsgInitialized;
+End;
+
+Function GetAsgAssignCount : Integer;
+Begin
+  GetAsgAssignCount := AsgAssignCount;
+End;
+
+Function GetAsgTableAssignCnt : Integer;
+Begin
+  GetAsgTableAssignCnt := AsgTableAssignCnt;
+End;
+
+Function GetAsgStatusAssignCnt : Integer;
+Begin
+  GetAsgStatusAssignCnt := AsgStatusAssignCnt;
+End;
+
+Function GetAsgCallCount : Integer;
+Begin
+  GetAsgCallCount := AsgCallCount;
+End;
+
+Function GetAsgStopCount : Integer;
+Begin
+  GetAsgStopCount := AsgStopCount;
+End;
+
+Function GetAsgStateCount : Integer;
+Begin
+  GetAsgStateCount := AsgStateCount;
+End;
+
+Function GetAsgErrorCount : Integer;
+Begin
+  GetAsgErrorCount := AsgErrorCount;
+End;
+
+Function GetAsgLabelCount : Integer;
+Begin
+  GetAsgLabelCount := AsgLabelCount;
+End;
+
+Function IsAsgEmpty : Boolean;
+Begin
+  IsAsgEmpty := (AsgAssignCount = 0) And (AsgCallCount = 0) And
+                (AsgStopCount = 0) And (AsgTableAssignCnt = 0);
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -6212,6 +6711,7 @@ Begin
   PrcInitialized := False;
   ExpInitialized := False;
   CtlInitialized := False;
+  AsgInitialized := False;
 
   ParseArgs;
 
@@ -6245,6 +6745,9 @@ Begin
   { Initialiser le parseur de structures de controle }
   InitCtrlState;
 
+  { Initialiser le parseur d affectations }
+  InitAssignState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -6269,6 +6772,7 @@ Begin
     DumpProcState;
     DumpExprState;
     DumpCtrlState;
+    DumpAssignState;
   End;
 
   { Nettoyage }

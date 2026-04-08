@@ -290,7 +290,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             BEGIN ... END pour regroupement d instructions
             10 fonctions accesseurs
 
-  TODO 12 - PARSEUR : AFFECTATIONS ET INSTRUCTIONS SIMPLES [A FAIRE]
+  TODO 12 - PARSEUR : AFFECTATIONS ET INSTRUCTIONS SIMPLES [IMPLEMENTE]
             Affectation simple :
               variable = expression ;
               Generer : evaluer expression -> EAX, MOV [var], EAX
