@@ -195,13 +195,21 @@
             GenCalculator : generer une calculatrice simple
             GenPrimeCheck : generer un verificateur de nombre premier
 
-  TODO 14 - GENERATION DE PROGRAMMES DATE/HEURE [A FAIRE]
+  TODO 14 - GENERATION DE PROGRAMMES DATE/HEURE [IMPLEMENTE]
+            DTM_NONE=0..DTM_MAX=13 : constantes types de programmes
+            DTM_MAX_MONTHS=12, DTM_MAX_DAYS=31 : limites
+            DtmInitialized + 15 variables d'etat
+            InitDtmState : initialiser l'etat
+            GenDtmLabel : generer un label unique
+            DtmTypeName : nom du type de programme date/heure
             GenCurrentDateTime : generer un programme affichant date et heure
             GenDateFormat : generer un programme formatant une date
             GenTimeCalc : generer un programme de calcul de durees
-            GenCalendar(Month, Year) : generer un calendrier mensuel
+            GenCalendar : generer un calendrier mensuel
             GenStopwatch : generer un chronometre simple
             GenCountdown : generer un compte a rebours
+            DumpDtmState : afficher l'etat
+            10 accesseurs : IsDtmInitialized, IsDtmEmpty, GetDtm*Count
 
   TODO 15 - GENERATION D'UNITES PERSONNALISEES [A FAIRE]
             GenTimeUnit : generer une unite pour le temps

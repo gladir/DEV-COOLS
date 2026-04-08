@@ -207,13 +207,21 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 14 - GENERATION DE PROGRAMMES DATE/HEURE [A FAIRE]
+  TODO 14 - GENERATION DE PROGRAMMES DATE/HEURE [IMPLEMENTE]
+            DTM_NONE=0..DTM_MAX=13 : constantes types de programmes
+            DTM_MAX_MONTHS=12, DTM_MAX_DAYS=31 : limites
+            DtmInitialized + 15 variables d'etat
+            InitDtmState : initialiser l'etat
+            GenDtmLabel : generer un label unique
+            DtmTypeName : nom du type de programme date/heure
             GenCurrentDateTime : generer un programme affichant date et heure
             GenDateFormat : generer un programme formatant une date
             GenTimeCalc : generer un programme de calcul de durees
-            GenCalendar(Month, Year) : generer un calendrier mensuel
+            GenCalendar : generer un calendrier mensuel
             GenStopwatch : generer un chronometre simple
             GenCountdown : generer un compte a rebours
+            DumpDtmState : afficher l'etat
+            10 accesseurs : IsDtmInitialized, IsDtmEmpty, GetDtm*Count
   ============================================================ }
 
 { ============================================================
@@ -616,6 +624,26 @@ Const
   { Limites pour TODO 13 }
   MTH_MAX_TERMS   = 100; { Nombre max de termes }
   MTH_MAX_VALUE   = 1000; { Valeur max pour calculs }
+
+  { Types de programmes date/heure pour TODO 14 }
+  DTM_NONE        = 0;   { Aucun type }
+  DTM_DATETIME    = 1;   { Date et heure }
+  DTM_DATEFORMAT  = 2;   { Formatage de date }
+  DTM_TIMECALC    = 3;   { Calcul de durees }
+  DTM_CALENDAR    = 4;   { Calendrier }
+  DTM_STOPWATCH   = 5;   { Chronometre }
+  DTM_COUNTDOWN   = 6;   { Compte a rebours }
+  DTM_DAYOFWEEK   = 7;   { Jour de la semaine }
+  DTM_DATEDIFF    = 8;   { Difference de dates }
+  DTM_ADDDAYS     = 9;   { Ajouter des jours }
+  DTM_LEAPYEAR    = 10;  { Annee bissextile }
+  DTM_AGECHECK    = 11;  { Calcul d'age }
+  DTM_TIMEZONE    = 12;  { Fuseaux horaires }
+  DTM_MAX         = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 14 }
+  DTM_MAX_MONTHS  = 12;  { Nombre max de mois }
+  DTM_MAX_DAYS    = 31;  { Nombre max de jours }
 
 { ============================================================
   TYPES
@@ -1023,6 +1051,24 @@ Var
   MthArmstrongCount: Integer;
   MthErrorCount   : Integer;
   MthLabelNum     : Integer;
+
+  { TODO 14 - Programmes date/heure }
+  DtmInitialized  : Boolean;
+  DtmStateCount   : Integer;
+  DtmDateTimeCount: Integer;
+  DtmDateFmtCount : Integer;
+  DtmTimeCalcCount: Integer;
+  DtmCalendarCount: Integer;
+  DtmStopwatchCount: Integer;
+  DtmCountdownCount: Integer;
+  DtmDayOfWeekCount: Integer;
+  DtmDateDiffCount: Integer;
+  DtmAddDaysCount : Integer;
+  DtmLeapYearCount: Integer;
+  DtmAgeCheckCount: Integer;
+  DtmTimezoneCount: Integer;
+  DtmErrorCount   : Integer;
+  DtmLabelNum     : Integer;
 
   { TODO 17 - Reponse courante }
   CurrentResponse : TResponse;
@@ -6057,8 +6103,64 @@ End;
   TODO 14 - GENERATION DE PROGRAMMES DATE/HEURE
   ============================================================ }
 
+{ Initialiser l'etat du generateur de programmes date/heure }
+Procedure InitDtmState;
+Begin
+  DtmInitialized  := True;
+  DtmStateCount   := 0;
+  DtmDateTimeCount := 0;
+  DtmDateFmtCount := 0;
+  DtmTimeCalcCount := 0;
+  DtmCalendarCount := 0;
+  DtmStopwatchCount := 0;
+  DtmCountdownCount := 0;
+  DtmDayOfWeekCount := 0;
+  DtmDateDiffCount := 0;
+  DtmAddDaysCount := 0;
+  DtmLeapYearCount := 0;
+  DtmAgeCheckCount := 0;
+  DtmTimezoneCount := 0;
+  DtmErrorCount   := 0;
+  DtmLabelNum     := 0;
+End;
+
+{ Generer un label unique pour les programmes date/heure }
+Function GenDtmLabel: String;
+Var
+  S: String;
+Begin
+  Inc(DtmLabelNum);
+  Str(DtmLabelNum, S);
+  GenDtmLabel := '_DTM_' + S;
+End;
+
+{ Retourner le nom du type de programme date/heure }
+Function DtmTypeName(T: Integer): String;
+Begin
+  Case T of
+    DTM_NONE:       DtmTypeName := 'AUCUN';
+    DTM_DATETIME:   DtmTypeName := 'DATE ET HEURE';
+    DTM_DATEFORMAT: DtmTypeName := 'FORMATAGE DATE';
+    DTM_TIMECALC:   DtmTypeName := 'CALCUL DUREES';
+    DTM_CALENDAR:   DtmTypeName := 'CALENDRIER';
+    DTM_STOPWATCH:  DtmTypeName := 'CHRONOMETRE';
+    DTM_COUNTDOWN:  DtmTypeName := 'COMPTE A REBOURS';
+    DTM_DAYOFWEEK:  DtmTypeName := 'JOUR SEMAINE';
+    DTM_DATEDIFF:   DtmTypeName := 'DIFFERENCE DATES';
+    DTM_ADDDAYS:    DtmTypeName := 'AJOUTER JOURS';
+    DTM_LEAPYEAR:   DtmTypeName := 'ANNEE BISSEXTILE';
+    DTM_AGECHECK:   DtmTypeName := 'CALCUL AGE';
+    DTM_TIMEZONE:   DtmTypeName := 'FUSEAUX HORAIRES';
+  Else
+    DtmTypeName := 'INCONNU';
+  End;
+End;
+
+{ Generer un programme affichant date et heure }
 Procedure GenCurrentDateTime;
 Begin
+  Inc(DtmStateCount);
+  Inc(DtmDateTimeCount);
   InitGeneratedCode;
   GenProgramHeader('DateHeure');
   AddCodeLine('Uses');
@@ -6076,8 +6178,80 @@ Begin
   GenEnd;
 End;
 
+{ Generer un programme formatant une date }
+Procedure GenDateFormat;
+Begin
+  Inc(DtmStateCount);
+  Inc(DtmDateFmtCount);
+  InitGeneratedCode;
+  GenProgramHeader('FormatDate');
+  AddCodeLine('Uses');
+  AddCodeLine('  Dos;');
+  AddCodeLine('');
+  AddCodeLine('Var');
+  AddCodeLine('  Annee, Mois, Jour, JourSem: Word;');
+  AddCodeLine('  NomMois: String;');
+  AddCodeLine('  NomJour: String;');
+  AddCodeLine('');
+  AddCodeLine('Const');
+  AddCodeLine('  Mois: Array[1..12] of String[10] = (');
+  AddCodeLine('    ''Janvier'', ''Fevrier'', ''Mars'', ''Avril'',');
+  AddCodeLine('    ''Mai'', ''Juin'', ''Juillet'', ''Aout'',');
+  AddCodeLine('    ''Septembre'', ''Octobre'', ''Novembre'', ''Decembre'');');
+  AddCodeLine('  Jours: Array[0..6] of String[10] = (');
+  AddCodeLine('    ''Dimanche'', ''Lundi'', ''Mardi'', ''Mercredi'',');
+  AddCodeLine('    ''Jeudi'', ''Vendredi'', ''Samedi'');');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  GetDate(Annee, Mois, Jour, JourSem);');
+  AddCodeLine('  NomMois := Mois[Mois];');
+  AddCodeLine('  NomJour := Jours[JourSem];');
+  AddCodeLine('  WriteLn(''Aujourd''''hui nous sommes le '');');
+  AddCodeLine('  WriteLn(NomJour, '' '', Jour, '' '', NomMois, '' '', Annee);');
+  GenEnd;
+End;
+
+{ Generer un programme de calcul de durees }
+Procedure GenTimeCalc;
+Begin
+  Inc(DtmStateCount);
+  Inc(DtmTimeCalcCount);
+  InitGeneratedCode;
+  GenProgramHeader('CalculDurees');
+  AddCodeLine('Var');
+  AddCodeLine('  H1, M1, S1: Integer;');
+  AddCodeLine('  H2, M2, S2: Integer;');
+  AddCodeLine('  TotalSec1, TotalSec2, Diff: LongInt;');
+  AddCodeLine('  HD, MD, SD: Integer;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  WriteLn(''Calcul de duree entre deux heures'');');
+  AddCodeLine('  WriteLn;');
+  AddCodeLine('  WriteLn(''Heure de debut:'');');
+  AddCodeLine('  Write(''  Heures: ''); ReadLn(H1);');
+  AddCodeLine('  Write(''  Minutes: ''); ReadLn(M1);');
+  AddCodeLine('  Write(''  Secondes: ''); ReadLn(S1);');
+  AddCodeLine('  WriteLn(''Heure de fin:'');');
+  AddCodeLine('  Write(''  Heures: ''); ReadLn(H2);');
+  AddCodeLine('  Write(''  Minutes: ''); ReadLn(M2);');
+  AddCodeLine('  Write(''  Secondes: ''); ReadLn(S2);');
+  AddCodeLine('  TotalSec1 := LongInt(H1) * 3600 + M1 * 60 + S1;');
+  AddCodeLine('  TotalSec2 := LongInt(H2) * 3600 + M2 * 60 + S2;');
+  AddCodeLine('  Diff := TotalSec2 - TotalSec1;');
+  AddCodeLine('  If Diff < 0 Then Diff := Diff + 86400;');
+  AddCodeLine('  HD := Diff div 3600;');
+  AddCodeLine('  MD := (Diff mod 3600) div 60;');
+  AddCodeLine('  SD := Diff mod 60;');
+  AddCodeLine('  WriteLn;');
+  AddCodeLine('  WriteLn(''Duree: '', HD, ''h '', MD, ''m '', SD, ''s'');');
+  GenEnd;
+End;
+
+{ Generer un calendrier mensuel }
 Procedure GenCalendar;
 Begin
+  Inc(DtmStateCount);
+  Inc(DtmCalendarCount);
   InitGeneratedCode;
   GenProgramHeader('Calendrier');
   AddCodeLine('Uses');
@@ -6113,6 +6287,155 @@ Begin
   AddCodeLine('  End;');
   AddCodeLine('  WriteLn;');
   GenEnd;
+End;
+
+{ Generer un chronometre simple }
+Procedure GenStopwatch;
+Begin
+  Inc(DtmStateCount);
+  Inc(DtmStopwatchCount);
+  InitGeneratedCode;
+  GenProgramHeader('Chronometre');
+  AddCodeLine('Uses');
+  AddCodeLine('  Crt, Dos;');
+  AddCodeLine('');
+  AddCodeLine('Var');
+  AddCodeLine('  H1, M1, S1, Sec1: Word;');
+  AddCodeLine('  H2, M2, S2, Sec2: Word;');
+  AddCodeLine('  Start, Stop: LongInt;');
+  AddCodeLine('  Elapsed: LongInt;');
+  AddCodeLine('  ElapsedMin, ElapsedSec, ElapsedMs: Integer;');
+  AddCodeLine('  Key: Char;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  WriteLn(''Chronometre simple'');');
+  AddCodeLine('  WriteLn(''Appuyez sur une touche pour demarrer...'');');
+  AddCodeLine('  Key := ReadKey;');
+  AddCodeLine('  GetTime(H1, M1, S1, Sec1);');
+  AddCodeLine('  Start := LongInt(H1)*360000 + LongInt(M1)*6000 + LongInt(S1)*100 + Sec1;');
+  AddCodeLine('  WriteLn(''Chronometre demarre! Appuyez sur une touche pour arreter...'');');
+  AddCodeLine('  Key := ReadKey;');
+  AddCodeLine('  GetTime(H2, M2, S2, Sec2);');
+  AddCodeLine('  Stop := LongInt(H2)*360000 + LongInt(M2)*6000 + LongInt(S2)*100 + Sec2;');
+  AddCodeLine('  Elapsed := Stop - Start;');
+  AddCodeLine('  If Elapsed < 0 Then Elapsed := Elapsed + 8640000;');
+  AddCodeLine('  ElapsedMin := Elapsed div 6000;');
+  AddCodeLine('  ElapsedSec := (Elapsed mod 6000) div 100;');
+  AddCodeLine('  ElapsedMs := (Elapsed mod 100) * 10;');
+  AddCodeLine('  WriteLn;');
+  AddCodeLine('  WriteLn(''Temps ecoule: '', ElapsedMin, ''m '', ElapsedSec, ''s '', ElapsedMs, ''ms'');');
+  GenEnd;
+End;
+
+{ Generer un compte a rebours }
+Procedure GenCountdown;
+Begin
+  Inc(DtmStateCount);
+  Inc(DtmCountdownCount);
+  InitGeneratedCode;
+  GenProgramHeader('CompteARebours');
+  AddCodeLine('Uses');
+  AddCodeLine('  Crt, Dos;');
+  AddCodeLine('');
+  AddCodeLine('Var');
+  AddCodeLine('  Secondes: Integer;');
+  AddCodeLine('  I: Integer;');
+  AddCodeLine('  H, M, S, S100: Word;');
+  AddCodeLine('  LastSec: Word;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  ClrScr;');
+  AddCodeLine('  WriteLn(''Compte a rebours'');');
+  AddCodeLine('  Write(''Entrez le nombre de secondes: '');');
+  AddCodeLine('  ReadLn(Secondes);');
+  AddCodeLine('  WriteLn;');
+  AddCodeLine('  For I := Secondes downto 0 do Begin');
+  AddCodeLine('    GotoXY(1, 4);');
+  AddCodeLine('    WriteLn(''Temps restant: '', I, '' secondes   '');');
+  AddCodeLine('    GetTime(H, M, S, S100);');
+  AddCodeLine('    LastSec := S;');
+  AddCodeLine('    Repeat');
+  AddCodeLine('      GetTime(H, M, S, S100);');
+  AddCodeLine('    Until S <> LastSec;');
+  AddCodeLine('  End;');
+  AddCodeLine('  WriteLn;');
+  AddCodeLine('  WriteLn(''TEMPS ECOULE!'');');
+  AddCodeLine('  Write(#7);');
+  GenEnd;
+End;
+
+{ Afficher l'etat du generateur de programmes date/heure }
+Procedure DumpDtmState;
+Begin
+  WriteLn('=== Etat du generateur date/heure (TODO 14) ===');
+  WriteLn('  DtmInitialized    : ', DtmInitialized);
+  WriteLn('  DtmStateCount     : ', DtmStateCount);
+  WriteLn('  DtmDateTimeCount  : ', DtmDateTimeCount);
+  WriteLn('  DtmDateFmtCount   : ', DtmDateFmtCount);
+  WriteLn('  DtmTimeCalcCount  : ', DtmTimeCalcCount);
+  WriteLn('  DtmCalendarCount  : ', DtmCalendarCount);
+  WriteLn('  DtmStopwatchCount : ', DtmStopwatchCount);
+  WriteLn('  DtmCountdownCount : ', DtmCountdownCount);
+  WriteLn('  DtmDayOfWeekCount : ', DtmDayOfWeekCount);
+  WriteLn('  DtmDateDiffCount  : ', DtmDateDiffCount);
+  WriteLn('  DtmAddDaysCount   : ', DtmAddDaysCount);
+  WriteLn('  DtmLeapYearCount  : ', DtmLeapYearCount);
+  WriteLn('  DtmAgeCheckCount  : ', DtmAgeCheckCount);
+  WriteLn('  DtmTimezoneCount  : ', DtmTimezoneCount);
+  WriteLn('  DtmErrorCount     : ', DtmErrorCount);
+  WriteLn('  DtmLabelNum       : ', DtmLabelNum);
+End;
+
+{ --- TODO 14 : 10 accesseurs standards --- }
+
+Function IsDtmInitialized: Boolean;
+Begin
+  IsDtmInitialized := DtmInitialized;
+End;
+
+Function IsDtmEmpty: Boolean;
+Begin
+  IsDtmEmpty := (DtmStateCount = 0);
+End;
+
+Function GetDtmStateCount: Integer;
+Begin
+  GetDtmStateCount := DtmStateCount;
+End;
+
+Function GetDtmDateTimeCount: Integer;
+Begin
+  GetDtmDateTimeCount := DtmDateTimeCount;
+End;
+
+Function GetDtmCalendarCount: Integer;
+Begin
+  GetDtmCalendarCount := DtmCalendarCount;
+End;
+
+Function GetDtmStopwatchCount: Integer;
+Begin
+  GetDtmStopwatchCount := DtmStopwatchCount;
+End;
+
+Function GetDtmCountdownCount: Integer;
+Begin
+  GetDtmCountdownCount := DtmCountdownCount;
+End;
+
+Function GetDtmTimeCalcCount: Integer;
+Begin
+  GetDtmTimeCalcCount := DtmTimeCalcCount;
+End;
+
+Function GetDtmErrorCount: Integer;
+Begin
+  GetDtmErrorCount := DtmErrorCount;
+End;
+
+Function GetDtmLabelNum: Integer;
+Begin
+  GetDtmLabelNum := DtmLabelNum;
 End;
 
 { ============================================================
@@ -6669,6 +6992,14 @@ Begin
   HloInitialized := False;
   InitHloState;
 
+  { Initialiser l'etat du generateur mathematique (TODO 13) }
+  MthInitialized := False;
+  InitMthState;
+
+  { Initialiser l'etat du generateur date/heure (TODO 14) }
+  DtmInitialized := False;
+  InitDtmState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -6683,6 +7014,8 @@ Begin
     DumpUntState;
     DumpTplState;
     DumpHloState;
+    DumpMthState;
+    DumpDtmState;
   End;
 
   Run;
