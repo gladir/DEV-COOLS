@@ -37,7 +37,7 @@
             InitHisState, GenHisLabel, HisTypeName, DumpHisState
             10 accesseurs (IsHisInitialized, IsHisEmpty, GetHis*Count, ...)
 
-  TODO 04 - ANALYSEUR DE REQUETES UTILISATEUR [A FAIRE]
+  TODO 04 - ANALYSEUR DE REQUETES UTILISATEUR [IMPLEMENTE]
             TIntentKind : IK_UNKNOWN, IK_HELLO, IK_PROGRAM, IK_UNIT,
               IK_PROCEDURE, IK_FUNCTION, IK_EXPLAIN, IK_HELP, IK_QUIT
             TIntent : Kind, Subject, Keywords, Params
@@ -45,6 +45,8 @@
             DetectIntent(Input) : determiner l'intention de l'utilisateur
             ExtractKeywords(Input) : extraire les mots-cles de la requete
             KeywordMatch(Input, Keywords) : verifier la presence de mots-cles
+            InitIntState, GenIntLabel, IntTypeName, DumpIntState
+            10 accesseurs (IsIntInitialized, IsIntEmpty, GetInt*Count, ...)
 
   TODO 05 - GENERATEUR DE CODE PASCAL - STRUCTURES DE BASE [A FAIRE]
             GenProgramHeader(Name) : generer l'entete PROGRAM

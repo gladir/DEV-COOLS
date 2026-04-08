@@ -54,7 +54,7 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 04 - ANALYSEUR DE REQUETES UTILISATEUR [A FAIRE]
+  TODO 04 - ANALYSEUR DE REQUETES UTILISATEUR [IMPLEMENTE]
             TIntentKind : IK_UNKNOWN, IK_HELLO, IK_PROGRAM, IK_UNIT,
               IK_PROCEDURE, IK_FUNCTION, IK_EXPLAIN, IK_HELP, IK_QUIT
             TIntent : Kind, Subject, Keywords, Params
@@ -62,6 +62,8 @@ Program PASCHAT;
             DetectIntent(Input) : determiner l'intention de l'utilisateur
             ExtractKeywords(Input) : extraire les mots-cles de la requete
             KeywordMatch(Input, Keywords) : verifier la presence de mots-cles
+            InitIntState, GenIntLabel, IntTypeName, DumpIntState
+            10 accesseurs (IsIntInitialized, IsIntEmpty, GetInt*Count, ...)
   ============================================================ }
 
 { ============================================================
@@ -347,6 +349,26 @@ Const
   HIS_MAX_RECENT = 10;  { Nombre max d'entrees recentes }
   HIS_FILE_EXT   = '.his'; { Extension fichier historique }
 
+  { TODO 04 - Types d'intentions utilisateur (INT_*) }
+  INT_NONE       = 0;   { Aucune intention }
+  INT_UNKNOWN    = 1;   { Intention non reconnue }
+  INT_HELLO      = 2;   { Salutation }
+  INT_PROGRAM    = 3;   { Demande de programme }
+  INT_UNIT       = 4;   { Demande d'unite }
+  INT_PROCEDURE  = 5;   { Demande de procedure }
+  INT_FUNCTION   = 6;   { Demande de fonction }
+  INT_EXPLAIN    = 7;   { Demande d'explication }
+  INT_HELP       = 8;   { Demande d'aide }
+  INT_SAVE       = 9;   { Commande de sauvegarde }
+  INT_LIST       = 10;  { Demande de liste }
+  INT_CLEAR      = 11;  { Commande d'effacement }
+  INT_QUIT       = 12;  { Commande de sortie }
+  INT_MAX        = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 04 }
+  INT_MAX_KEYWORDS = 64;  { Nombre max de mots-cles par requete }
+  INT_MIN_KEYWORD  = 2;   { Longueur minimale d'un mot-cle }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -576,8 +598,24 @@ Var
   HisSaveCount   : Integer;
   HisLoadCount   : Integer;
 
-  { TODO 04 - Intention courante }
-  CurrentIntent : TIntent;
+  { TODO 04 - Intention courante et etat }
+  CurrentIntent  : TIntent;
+  IntInitialized : Boolean;
+  IntStateCount  : Integer;
+  IntParseCount  : Integer;
+  IntUnknownCount: Integer;
+  IntHelloCount  : Integer;
+  IntProgramCount: Integer;
+  IntUnitCount   : Integer;
+  IntProcCount   : Integer;
+  IntFuncCount   : Integer;
+  IntExplainCount: Integer;
+  IntHelpCount   : Integer;
+  IntQuitCount   : Integer;
+  IntKeywordCount: Integer;
+  IntMatchCount  : Integer;
+  IntErrorCount  : Integer;
+  IntLabelNum    : Integer;
 
   { TODO 11 - Templates }
   Templates     : Array[1..MAX_TEMPLATES] of TTemplate;
@@ -1569,10 +1607,166 @@ Begin
   CurrentIntent.Subject := Input;
   ExtractKeywords(Input);
 
+  { Incrementer les compteurs selon le type d'intention }
+  Inc(IntParseCount);
+  Case CurrentIntent.Kind of
+    IK_UNKNOWN   : Inc(IntUnknownCount);
+    IK_HELLO     : Inc(IntHelloCount);
+    IK_PROGRAM   : Inc(IntProgramCount);
+    IK_UNIT      : Inc(IntUnitCount);
+    IK_PROCEDURE : Inc(IntProcCount);
+    IK_FUNCTION  : Inc(IntFuncCount);
+    IK_EXPLAIN   : Inc(IntExplainCount);
+    IK_HELP      : Inc(IntHelpCount);
+    IK_QUIT      : Inc(IntQuitCount);
+  End;
+  IntKeywordCount := IntKeywordCount + CurrentIntent.KeyCount;
+
   If Options.DebugMode Then Begin
     WriteLn('[DEBUG] Intent: ', Ord(CurrentIntent.Kind));
     WriteLn('[DEBUG] Keywords: ', CurrentIntent.KeyCount);
   End;
+End;
+
+{ --- TODO 04 : InitIntState, GenIntLabel, IntTypeName --- }
+
+Procedure InitIntState;
+Begin
+  IntInitialized := True;
+  IntStateCount  := 0;
+  IntParseCount  := 0;
+  IntUnknownCount := 0;
+  IntHelloCount  := 0;
+  IntProgramCount := 0;
+  IntUnitCount   := 0;
+  IntProcCount   := 0;
+  IntFuncCount   := 0;
+  IntExplainCount := 0;
+  IntHelpCount   := 0;
+  IntQuitCount   := 0;
+  IntKeywordCount := 0;
+  IntMatchCount  := 0;
+  IntErrorCount  := 0;
+  IntLabelNum    := 0;
+  Inc(IntStateCount);
+End;
+
+Function GenIntLabel: String;
+Var
+  S: String;
+Begin
+  Inc(IntLabelNum);
+  Str(IntLabelNum, S);
+  GenIntLabel := '_INT_L_' + S;
+End;
+
+Function IntTypeName(TypeCode: Integer): String;
+Begin
+  Case TypeCode of
+    INT_NONE     : IntTypeName := 'NONE';
+    INT_UNKNOWN  : IntTypeName := 'UNKNOWN';
+    INT_HELLO    : IntTypeName := 'HELLO';
+    INT_PROGRAM  : IntTypeName := 'PROGRAM';
+    INT_UNIT     : IntTypeName := 'UNIT';
+    INT_PROCEDURE: IntTypeName := 'PROCEDURE';
+    INT_FUNCTION : IntTypeName := 'FUNCTION';
+    INT_EXPLAIN  : IntTypeName := 'EXPLAIN';
+    INT_HELP     : IntTypeName := 'HELP';
+    INT_SAVE     : IntTypeName := 'SAVE';
+    INT_LIST     : IntTypeName := 'LIST';
+    INT_CLEAR    : IntTypeName := 'CLEAR';
+    INT_QUIT     : IntTypeName := 'QUIT';
+    Else IntTypeName := '???';
+  End;
+End;
+
+Function KeywordMatch(Input: String; Keywords: Array of String): Boolean;
+Var
+  UI: String;
+  I: Integer;
+Begin
+  UI := UpCaseStr(Input);
+  KeywordMatch := False;
+  For I := 0 to High(Keywords) do Begin
+    If Pos(UpCaseStr(Keywords[I]), UI) > 0 Then Begin
+      KeywordMatch := True;
+      Inc(IntMatchCount);
+      Exit;
+    End;
+  End;
+End;
+
+Procedure DumpIntState;
+Begin
+  WriteLn('=== TODO 04 - Analyseur de Requetes Utilisateur ===');
+  WriteLn('  IntInitialized : ', IntInitialized);
+  WriteLn('  IntStateCount  : ', IntStateCount);
+  WriteLn('  IntParseCount  : ', IntParseCount);
+  WriteLn('  IntUnknownCount: ', IntUnknownCount);
+  WriteLn('  IntHelloCount  : ', IntHelloCount);
+  WriteLn('  IntProgramCount: ', IntProgramCount);
+  WriteLn('  IntUnitCount   : ', IntUnitCount);
+  WriteLn('  IntProcCount   : ', IntProcCount);
+  WriteLn('  IntFuncCount   : ', IntFuncCount);
+  WriteLn('  IntExplainCount: ', IntExplainCount);
+  WriteLn('  IntHelpCount   : ', IntHelpCount);
+  WriteLn('  IntQuitCount   : ', IntQuitCount);
+  WriteLn('  IntKeywordCount: ', IntKeywordCount);
+  WriteLn('  IntMatchCount  : ', IntMatchCount);
+  WriteLn('  IntErrorCount  : ', IntErrorCount);
+  WriteLn('  IntLabelNum    : ', IntLabelNum);
+End;
+
+{ --- TODO 04 : 10 accesseurs standards --- }
+
+Function IsIntInitialized: Boolean;
+Begin
+  IsIntInitialized := IntInitialized;
+End;
+
+Function IsIntEmpty: Boolean;
+Begin
+  IsIntEmpty := (IntParseCount = 0);
+End;
+
+Function GetIntStateCount: Integer;
+Begin
+  GetIntStateCount := IntStateCount;
+End;
+
+Function GetIntParseCount: Integer;
+Begin
+  GetIntParseCount := IntParseCount;
+End;
+
+Function GetIntUnknownCount: Integer;
+Begin
+  GetIntUnknownCount := IntUnknownCount;
+End;
+
+Function GetIntProgramCount: Integer;
+Begin
+  GetIntProgramCount := IntProgramCount;
+End;
+
+Function GetIntKeywordCount: Integer;
+Begin
+  GetIntKeywordCount := IntKeywordCount;
+End;
+
+Function GetIntMatchCount: Integer;
+Begin
+  GetIntMatchCount := IntMatchCount;
+End;
+
+Function GetIntErrorCount: Integer;
+Begin
+  GetIntErrorCount := IntErrorCount;
+End;
+
+Function GetIntLabelNum: Integer;
+Begin
+  GetIntLabelNum := IntLabelNum;
 End;
 
 { ============================================================
@@ -2367,11 +2561,16 @@ Begin
   HisInitialized := False;
   InitHisState;
 
+  { Initialiser l'etat de l'analyseur de requetes (TODO 04) }
+  IntInitialized := False;
+  InitIntState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
     DumpLearnState;
     DumpHisState;
+    DumpIntState;
   End;
 
   Run;
