@@ -197,7 +197,7 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 13 - GENERATION DE PROGRAMMES MATHEMATIQUES [A FAIRE]
+  TODO 13 - GENERATION DE PROGRAMMES MATHEMATIQUES [IMPLEMENTE]
             GenPrimeNumbers(N) : generer un programme affichant N premiers
             GenFibonacci(N) : generer un programme de suite de Fibonacci
             GenFactorial : generer un programme de calcul de factorielle
@@ -597,6 +597,26 @@ Const
   HLO_MAX_LANGS   = 10;  { Nombre max de langues }
   HLO_MAX_LINES   = 20;  { Nombre max de lignes pour bordures }
 
+  { Types de programmes mathematiques pour TODO 13 }
+  MTH_NONE        = 0;   { Aucun type }
+  MTH_PRIMES      = 1;   { Nombres premiers }
+  MTH_FIBONACCI   = 2;   { Suite de Fibonacci }
+  MTH_FACTORIAL   = 3;   { Factorielle }
+  MTH_GCD         = 4;   { PGCD }
+  MTH_LCM         = 5;   { PPCM }
+  MTH_CALCULATOR  = 6;   { Calculatrice }
+  MTH_PRIMECHECK  = 7;   { Verification nombre premier }
+  MTH_POWER       = 8;   { Puissance }
+  MTH_SQRT        = 9;   { Racine carree }
+  MTH_TRIANGLE    = 10;  { Triangle de Pascal }
+  MTH_PERFECT     = 11;  { Nombres parfaits }
+  MTH_ARMSTRONG   = 12;  { Nombres d'Armstrong }
+  MTH_MAX         = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 13 }
+  MTH_MAX_TERMS   = 100; { Nombre max de termes }
+  MTH_MAX_VALUE   = 1000; { Valeur max pour calculs }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -985,6 +1005,24 @@ Var
   HloRandomCount  : Integer;
   HloErrorCount   : Integer;
   HloLabelNum     : Integer;
+
+  { TODO 13 - Programmes mathematiques }
+  MthInitialized  : Boolean;
+  MthStateCount   : Integer;
+  MthPrimesCount  : Integer;
+  MthFiboCount    : Integer;
+  MthFactCount    : Integer;
+  MthGCDCount     : Integer;
+  MthLCMCount     : Integer;
+  MthCalcCount    : Integer;
+  MthPrimeChkCount: Integer;
+  MthPowerCount   : Integer;
+  MthSqrtCount    : Integer;
+  MthTriangleCount: Integer;
+  MthPerfectCount : Integer;
+  MthArmstrongCount: Integer;
+  MthErrorCount   : Integer;
+  MthLabelNum     : Integer;
 
   { TODO 17 - Reponse courante }
   CurrentResponse : TResponse;
@@ -5722,10 +5760,66 @@ End;
   TODO 13 - GENERATION DE PROGRAMMES MATHEMATIQUES
   ============================================================ }
 
+{ Initialiser l'etat du generateur de programmes mathematiques }
+Procedure InitMthState;
+Begin
+  MthInitialized  := True;
+  MthStateCount   := 0;
+  MthPrimesCount  := 0;
+  MthFiboCount    := 0;
+  MthFactCount    := 0;
+  MthGCDCount     := 0;
+  MthLCMCount     := 0;
+  MthCalcCount    := 0;
+  MthPrimeChkCount := 0;
+  MthPowerCount   := 0;
+  MthSqrtCount    := 0;
+  MthTriangleCount := 0;
+  MthPerfectCount := 0;
+  MthArmstrongCount := 0;
+  MthErrorCount   := 0;
+  MthLabelNum     := 0;
+End;
+
+{ Generer un label unique pour les programmes mathematiques }
+Function GenMthLabel: String;
+Var
+  S: String;
+Begin
+  Inc(MthLabelNum);
+  Str(MthLabelNum, S);
+  GenMthLabel := '_MTH_' + S;
+End;
+
+{ Retourner le nom du type de programme mathematique }
+Function MthTypeName(T: Integer): String;
+Begin
+  Case T of
+    MTH_NONE:       MthTypeName := 'AUCUN';
+    MTH_PRIMES:     MthTypeName := 'NOMBRES PREMIERS';
+    MTH_FIBONACCI:  MthTypeName := 'FIBONACCI';
+    MTH_FACTORIAL:  MthTypeName := 'FACTORIELLE';
+    MTH_GCD:        MthTypeName := 'PGCD';
+    MTH_LCM:        MthTypeName := 'PPCM';
+    MTH_CALCULATOR: MthTypeName := 'CALCULATRICE';
+    MTH_PRIMECHECK: MthTypeName := 'VERIFICATION PREMIER';
+    MTH_POWER:      MthTypeName := 'PUISSANCE';
+    MTH_SQRT:       MthTypeName := 'RACINE CARREE';
+    MTH_TRIANGLE:   MthTypeName := 'TRIANGLE PASCAL';
+    MTH_PERFECT:    MthTypeName := 'NOMBRES PARFAITS';
+    MTH_ARMSTRONG:  MthTypeName := 'NOMBRES ARMSTRONG';
+  Else
+    MthTypeName := 'INCONNU';
+  End;
+End;
+
+{ Generer un programme affichant N nombres premiers }
 Procedure GenPrimeNumbers(N: Integer);
 Var
   NS: String;
 Begin
+  Inc(MthStateCount);
+  Inc(MthPrimesCount);
   Str(N, NS);
   InitGeneratedCode;
   GenProgramHeader('NombresPremiers');
@@ -5752,10 +5846,13 @@ Begin
   GenEnd;
 End;
 
+{ Generer un programme de suite de Fibonacci }
 Procedure GenFibonacci(N: Integer);
 Var
   NS: String;
 Begin
+  Inc(MthStateCount);
+  Inc(MthFiboCount);
   Str(N, NS);
   InitGeneratedCode;
   GenProgramHeader('Fibonacci');
@@ -5777,8 +5874,11 @@ Begin
   GenEnd;
 End;
 
+{ Generer un programme de calcul de factorielle }
 Procedure GenFactorial;
 Begin
+  Inc(MthStateCount);
+  Inc(MthFactCount);
   InitGeneratedCode;
   GenProgramHeader('Factorielle');
   AddCodeLine('Var');
@@ -5795,8 +5895,36 @@ Begin
   GenEnd;
 End;
 
+{ Generer un programme de calcul de PGCD }
+Procedure GenGCD;
+Begin
+  Inc(MthStateCount);
+  Inc(MthGCDCount);
+  InitGeneratedCode;
+  GenProgramHeader('PGCD');
+  AddCodeLine('Var');
+  AddCodeLine('  A, B, Reste: Integer;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  WriteLn(''Calcul du PGCD (Plus Grand Commun Diviseur)'');');
+  AddCodeLine('  Write(''Entrez le premier nombre: '');');
+  AddCodeLine('  ReadLn(A);');
+  AddCodeLine('  Write(''Entrez le deuxieme nombre: '');');
+  AddCodeLine('  ReadLn(B);');
+  AddCodeLine('  While B <> 0 do Begin');
+  AddCodeLine('    Reste := A mod B;');
+  AddCodeLine('    A := B;');
+  AddCodeLine('    B := Reste;');
+  AddCodeLine('  End;');
+  AddCodeLine('  WriteLn(''Le PGCD est: '', A);');
+  GenEnd;
+End;
+
+{ Generer une calculatrice simple }
 Procedure GenCalculator;
 Begin
+  Inc(MthStateCount);
+  Inc(MthCalcCount);
   InitGeneratedCode;
   GenProgramHeader('Calculatrice');
   AddCodeLine('Var');
@@ -5820,6 +5948,109 @@ Begin
   AddCodeLine('  End;');
   AddCodeLine('  WriteLn(''Resultat: '', Resultat:0:2);');
   GenEnd;
+End;
+
+{ Generer un verificateur de nombre premier }
+Procedure GenPrimeCheck;
+Begin
+  Inc(MthStateCount);
+  Inc(MthPrimeChkCount);
+  InitGeneratedCode;
+  GenProgramHeader('VerifPremier');
+  AddCodeLine('Var');
+  AddCodeLine('  N, I: Integer;');
+  AddCodeLine('  EstPremier: Boolean;');
+  AddCodeLine('');
+  GenBeginEnd;
+  AddCodeLine('  WriteLn(''Verificateur de nombre premier'');');
+  AddCodeLine('  Write(''Entrez un nombre: '');');
+  AddCodeLine('  ReadLn(N);');
+  AddCodeLine('  EstPremier := True;');
+  AddCodeLine('  If N < 2 Then');
+  AddCodeLine('    EstPremier := False');
+  AddCodeLine('  Else');
+  AddCodeLine('    For I := 2 to N - 1 do');
+  AddCodeLine('      If N mod I = 0 Then');
+  AddCodeLine('        EstPremier := False;');
+  AddCodeLine('  If EstPremier Then');
+  AddCodeLine('    WriteLn(N, '' est un nombre premier.'')');
+  AddCodeLine('  Else');
+  AddCodeLine('    WriteLn(N, '' n''''est pas un nombre premier.'');');
+  GenEnd;
+End;
+
+{ Afficher l'etat du generateur de programmes mathematiques }
+Procedure DumpMthState;
+Begin
+  WriteLn('=== Etat du generateur mathematique (TODO 13) ===');
+  WriteLn('  MthInitialized    : ', MthInitialized);
+  WriteLn('  MthStateCount     : ', MthStateCount);
+  WriteLn('  MthPrimesCount    : ', MthPrimesCount);
+  WriteLn('  MthFiboCount      : ', MthFiboCount);
+  WriteLn('  MthFactCount      : ', MthFactCount);
+  WriteLn('  MthGCDCount       : ', MthGCDCount);
+  WriteLn('  MthLCMCount       : ', MthLCMCount);
+  WriteLn('  MthCalcCount      : ', MthCalcCount);
+  WriteLn('  MthPrimeChkCount  : ', MthPrimeChkCount);
+  WriteLn('  MthPowerCount     : ', MthPowerCount);
+  WriteLn('  MthSqrtCount      : ', MthSqrtCount);
+  WriteLn('  MthTriangleCount  : ', MthTriangleCount);
+  WriteLn('  MthPerfectCount   : ', MthPerfectCount);
+  WriteLn('  MthArmstrongCount : ', MthArmstrongCount);
+  WriteLn('  MthErrorCount     : ', MthErrorCount);
+  WriteLn('  MthLabelNum       : ', MthLabelNum);
+End;
+
+{ --- TODO 13 : 10 accesseurs standards --- }
+
+Function IsMthInitialized: Boolean;
+Begin
+  IsMthInitialized := MthInitialized;
+End;
+
+Function IsMthEmpty: Boolean;
+Begin
+  IsMthEmpty := (MthStateCount = 0);
+End;
+
+Function GetMthStateCount: Integer;
+Begin
+  GetMthStateCount := MthStateCount;
+End;
+
+Function GetMthPrimesCount: Integer;
+Begin
+  GetMthPrimesCount := MthPrimesCount;
+End;
+
+Function GetMthFiboCount: Integer;
+Begin
+  GetMthFiboCount := MthFiboCount;
+End;
+
+Function GetMthFactCount: Integer;
+Begin
+  GetMthFactCount := MthFactCount;
+End;
+
+Function GetMthGCDCount: Integer;
+Begin
+  GetMthGCDCount := MthGCDCount;
+End;
+
+Function GetMthCalcCount: Integer;
+Begin
+  GetMthCalcCount := MthCalcCount;
+End;
+
+Function GetMthErrorCount: Integer;
+Begin
+  GetMthErrorCount := MthErrorCount;
+End;
+
+Function GetMthLabelNum: Integer;
+Begin
+  GetMthLabelNum := MthLabelNum;
 End;
 
 { ============================================================
