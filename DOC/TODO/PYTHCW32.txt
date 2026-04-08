@@ -175,7 +175,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             LabelGen : generateur de labels uniques _PYL_N
             10 fonctions accesseurs
 
-  TODO 07 - OPERATEURS ET PRECEDENCE [A FAIRE]
+  TODO 07 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques : + - * // % ** (// = division entiere,
               ** = puissance, / traite comme //)
             Comparaison : == != < <= > >= (chaines et entiers)
