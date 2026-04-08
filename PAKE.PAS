@@ -427,7 +427,7 @@
             Procedure EnableAdBlock(Var InjectionScript: String)
               ajouter le script AdBlock au script d injection
 
-  TODO 15 - GESTION DES PERMISSIONS [A FAIRE]
+  TODO 15 - GESTION DES PERMISSIONS [IMPLEMENTE]
             Type TPermissions : record
               Camera     : Boolean
               Microphone : Boolean
@@ -4677,7 +4677,311 @@ Begin
 End;
 
 { ============================================================
-  TODO 15-25 : A IMPLEMENTER
+  TODO 15 - GESTION DES PERMISSIONS
+  ============================================================ }
+
+Const
+  { Constantes de type de permission }
+  PERM_NONE         = 0;
+  PERM_CAMERA       = 1;
+  PERM_MICROPHONE   = 2;
+  PERM_GEOLOCATION  = 3;
+  PERM_NOTIFICATIONS = 4;
+  PERM_CLIPBOARD    = 5;
+  PERM_FULLSCREEN   = 6;
+
+  { Constantes de limites }
+  PERM_MAX_TYPES    = 6;
+
+Type
+  { Type TPermissions : record des permissions de l'application }
+  TPermissions = Record
+    Camera        : Boolean;  { Acces camera }
+    Microphone    : Boolean;  { Acces microphone }
+    Geolocation   : Boolean;  { Acces geolocalisation }
+    Notifications : Boolean;  { Acces notifications }
+    Clipboard     : Boolean;  { Acces presse-papiers }
+    FullScreen    : Boolean;  { Acces plein ecran }
+  End;
+
+Var
+  { Variables d'etat pour le module Permissions }
+  PermInitialized    : Boolean;
+  PermStateCount     : Integer;
+  PermJsonGenCount   : Integer;
+  PermCspGenCount    : Integer;
+  PermInitCount      : Integer;
+  PermApplyCount     : Integer;
+  PermEnabledCount   : Integer;
+  PermDisabledCount  : Integer;
+
+Procedure InitPermissionsState;
+Begin
+  PermInitialized := True;
+  PermStateCount := 0;
+  PermJsonGenCount := 0;
+  PermCspGenCount := 0;
+  PermInitCount := 0;
+  PermApplyCount := 0;
+  PermEnabledCount := 0;
+  PermDisabledCount := 0;
+  Inc(PermStateCount);
+End;
+
+Procedure InitDefaultPermissions(Var P: TPermissions);
+Begin
+  Inc(PermStateCount);
+  Inc(PermInitCount);
+  
+  { Initialiser toutes les permissions a False par defaut }
+  P.Camera := False;
+  P.Microphone := False;
+  P.Geolocation := False;
+  P.Notifications := False;
+  P.Clipboard := False;
+  P.FullScreen := False;
+  
+  { Compter les permissions desactivees }
+  PermDisabledCount := PermDisabledCount + 6;
+End;
+
+Function PermissionTypeName(PermType: Integer): String;
+Begin
+  Case PermType Of
+    PERM_CAMERA:       PermissionTypeName := 'camera';
+    PERM_MICROPHONE:   PermissionTypeName := 'microphone';
+    PERM_GEOLOCATION:  PermissionTypeName := 'geolocation';
+    PERM_NOTIFICATIONS: PermissionTypeName := 'notifications';
+    PERM_CLIPBOARD:    PermissionTypeName := 'clipboard';
+    PERM_FULLSCREEN:   PermissionTypeName := 'fullscreen';
+  Else
+    PermissionTypeName := 'unknown';
+  End;
+End;
+
+Function PermissionsToJson(Const P: TPermissions): String;
+Var
+  Json: String;
+  HasPerm: Boolean;
+Begin
+  Inc(PermStateCount);
+  Inc(PermJsonGenCount);
+  
+  Json := '{' + Chr(10);
+  Json := Json + '  "permissions": {' + Chr(10);
+  
+  HasPerm := False;
+  
+  { Camera }
+  If P.Camera Then
+  Begin
+    If HasPerm Then Json := Json + ',' + Chr(10);
+    Json := Json + '    "camera": true';
+    HasPerm := True;
+  End;
+  
+  { Microphone }
+  If P.Microphone Then
+  Begin
+    If HasPerm Then Json := Json + ',' + Chr(10);
+    Json := Json + '    "microphone": true';
+    HasPerm := True;
+  End;
+  
+  { Geolocation }
+  If P.Geolocation Then
+  Begin
+    If HasPerm Then Json := Json + ',' + Chr(10);
+    Json := Json + '    "geolocation": true';
+    HasPerm := True;
+  End;
+  
+  { Notifications }
+  If P.Notifications Then
+  Begin
+    If HasPerm Then Json := Json + ',' + Chr(10);
+    Json := Json + '    "notifications": true';
+    HasPerm := True;
+  End;
+  
+  { Clipboard }
+  If P.Clipboard Then
+  Begin
+    If HasPerm Then Json := Json + ',' + Chr(10);
+    Json := Json + '    "clipboard": true';
+    HasPerm := True;
+  End;
+  
+  { FullScreen }
+  If P.FullScreen Then
+  Begin
+    If HasPerm Then Json := Json + ',' + Chr(10);
+    Json := Json + '    "fullscreen": true';
+    HasPerm := True;
+  End;
+  
+  If HasPerm Then Json := Json + Chr(10);
+  Json := Json + '  }' + Chr(10);
+  Json := Json + '}';
+  
+  PermissionsToJson := Json;
+End;
+
+Function PermissionsToCsp(Const P: TPermissions): String;
+Var
+  Csp: String;
+Begin
+  Inc(PermStateCount);
+  Inc(PermCspGenCount);
+  
+  { Commencer avec la CSP de base }
+  Csp := 'default-src ''self''; ';
+  Csp := Csp + 'script-src ''self'' ''unsafe-inline'' ''unsafe-eval''; ';
+  Csp := Csp + 'style-src ''self'' ''unsafe-inline''; ';
+  Csp := Csp + 'img-src ''self'' data: https:; ';
+  Csp := Csp + 'font-src ''self'' data:; ';
+  Csp := Csp + 'connect-src ''self'' https: wss:; ';
+  
+  { Ajout des permissions media si necessaire }
+  If P.Camera Or P.Microphone Then
+    Csp := Csp + 'media-src ''self'' blob:; ';
+  
+  { Permissions de geolocalisation n affectent pas directement CSP }
+  { mais on peut ajouter des politiques specifiques }
+  
+  { Frame ancestors pour securite }
+  Csp := Csp + 'frame-ancestors ''self''';
+  
+  PermissionsToCsp := Csp;
+End;
+
+Procedure ApplyPermissions(Const P: TPermissions; Var Cfg: TTauriConfig);
+Var
+  NewCsp: String;
+  EnabledCount: Integer;
+Begin
+  Inc(PermStateCount);
+  Inc(PermApplyCount);
+  
+  { Generer la nouvelle CSP basee sur les permissions }
+  NewCsp := PermissionsToCsp(P);
+  
+  { Appliquer la CSP a la configuration Tauri }
+  Cfg.Tauri.Security.Csp := NewCsp;
+  
+  { Compter les permissions activees }
+  EnabledCount := 0;
+  If P.Camera Then Inc(EnabledCount);
+  If P.Microphone Then Inc(EnabledCount);
+  If P.Geolocation Then Inc(EnabledCount);
+  If P.Notifications Then Inc(EnabledCount);
+  If P.Clipboard Then Inc(EnabledCount);
+  If P.FullScreen Then Inc(EnabledCount);
+  
+  PermEnabledCount := PermEnabledCount + EnabledCount;
+End;
+
+Function CountEnabledPermissions(Const P: TPermissions): Integer;
+Var
+  Count: Integer;
+Begin
+  Count := 0;
+  If P.Camera Then Inc(Count);
+  If P.Microphone Then Inc(Count);
+  If P.Geolocation Then Inc(Count);
+  If P.Notifications Then Inc(Count);
+  If P.Clipboard Then Inc(Count);
+  If P.FullScreen Then Inc(Count);
+  CountEnabledPermissions := Count;
+End;
+
+Procedure SetPermission(Var P: TPermissions; PermType: Integer; Value: Boolean);
+Begin
+  Inc(PermStateCount);
+  Case PermType Of
+    PERM_CAMERA:       P.Camera := Value;
+    PERM_MICROPHONE:   P.Microphone := Value;
+    PERM_GEOLOCATION:  P.Geolocation := Value;
+    PERM_NOTIFICATIONS: P.Notifications := Value;
+    PERM_CLIPBOARD:    P.Clipboard := Value;
+    PERM_FULLSCREEN:   P.FullScreen := Value;
+  End;
+  
+  If Value Then
+    Inc(PermEnabledCount)
+  Else
+    Inc(PermDisabledCount);
+End;
+
+Function GetPermission(Const P: TPermissions; PermType: Integer): Boolean;
+Begin
+  Inc(PermStateCount);
+  Case PermType Of
+    PERM_CAMERA:       GetPermission := P.Camera;
+    PERM_MICROPHONE:   GetPermission := P.Microphone;
+    PERM_GEOLOCATION:  GetPermission := P.Geolocation;
+    PERM_NOTIFICATIONS: GetPermission := P.Notifications;
+    PERM_CLIPBOARD:    GetPermission := P.Clipboard;
+    PERM_FULLSCREEN:   GetPermission := P.FullScreen;
+  Else
+    GetPermission := False;
+  End;
+End;
+
+{ Accesseurs pour TODO 15 - GESTION DES PERMISSIONS }
+
+Function IsPermInitialized: Boolean;
+Begin
+  IsPermInitialized := PermInitialized;
+End;
+
+Function IsPermEmpty: Boolean;
+Begin
+  IsPermEmpty := (PermJsonGenCount = 0) And (PermCspGenCount = 0);
+End;
+
+Function GetPermStateCount: Integer;
+Begin
+  GetPermStateCount := PermStateCount;
+End;
+
+Function GetPermJsonGenCount: Integer;
+Begin
+  GetPermJsonGenCount := PermJsonGenCount;
+End;
+
+Function GetPermCspGenCount: Integer;
+Begin
+  GetPermCspGenCount := PermCspGenCount;
+End;
+
+Function GetPermInitCount: Integer;
+Begin
+  GetPermInitCount := PermInitCount;
+End;
+
+Function GetPermApplyCount: Integer;
+Begin
+  GetPermApplyCount := PermApplyCount;
+End;
+
+Function GetPermEnabledCount: Integer;
+Begin
+  GetPermEnabledCount := PermEnabledCount;
+End;
+
+Function GetPermDisabledCount: Integer;
+Begin
+  GetPermDisabledCount := PermDisabledCount;
+End;
+
+Function GetPermMaxTypes: Integer;
+Begin
+  GetPermMaxTypes := PERM_MAX_TYPES;
+End;
+
+{ ============================================================
+  TODO 16-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -4820,6 +5124,9 @@ Begin
   { Initialiser le module AdBlock }
   InitAdBlockState;
 
+  { Initialiser le module Permissions }
+  InitPermissionsState;
+
   { Generer le nom de l'application si non specifie }
   O.AppName := GenerateAppName(O);
 
@@ -4848,15 +5155,15 @@ Begin
   WriteLn('Plateforme  : ', PlatformName(GetPlatform));
   WriteLn('Raccourcis  : ', GetKbdActiveCount, ' actifs');
   WriteLn('AdBlock     : ', GetAdSelectorCount, ' selecteurs, ', GetAdDomainCount, ' domaines');
+  WriteLn('Permissions : ', GetPermMaxTypes, ' types supportes');
   WriteLn;
 
-  { TODO: Implementer les TODOs 15-25 }
-  WriteLn('*** NOTE: TODOs 01-14 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 15-25 restent a implementer ***');
+  { TODO: Implementer les TODOs 16-25 }
+  WriteLn('*** NOTE: TODOs 01-15 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 16-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 15: Gestion des permissions');
   WriteLn('  - TODO 16: Configuration du build');
   WriteLn('  - TODO 17: Generation macOS (.app, .dmg)');
   WriteLn('  - TODO 18: Generation Windows (.exe, .msi)');

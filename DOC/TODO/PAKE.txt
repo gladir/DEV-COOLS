@@ -391,7 +391,12 @@ Turbo Pascal / Free Pascal (-Mtp)
            GetAdSelectorCount/GetAdBlockEnableCount/GetAdElementsBlocked/
            GetAdMaxSelectors)
 
-  TODO 15 - GESTION DES PERMISSIONS [A FAIRE]
+  TODO 15 - GESTION DES PERMISSIONS [IMPLEMENTE]
+         Constantes de type de permission :
+           PERM_NONE=0, PERM_CAMERA=1, PERM_MICROPHONE=2,
+           PERM_GEOLOCATION=3, PERM_NOTIFICATIONS=4,
+           PERM_CLIPBOARD=5, PERM_FULLSCREEN=6
+           PERM_MAX_TYPES=6
          Type TPermissions : record
            Camera     : Boolean
            Microphone : Boolean
@@ -400,15 +405,35 @@ Turbo Pascal / Free Pascal (-Mtp)
            Clipboard  : Boolean
            FullScreen : Boolean
          End
+         Variables d'etat :
+           PermInitialized/PermStateCount/PermJsonGenCount/
+           PermCspGenCount/PermInitCount/PermApplyCount/
+           PermEnabledCount/PermDisabledCount
+         Procedure InitPermissionsState
+           initialiser les variables d'etat du module
+         Procedure InitDefaultPermissions(Var P: TPermissions)
+           initialiser les permissions par defaut (toutes False)
+         Function PermissionTypeName(PermType: Integer): String
+           retourner le nom du type de permission
          Function PermissionsToJson(Const P: TPermissions): String
            generer la configuration JSON des permissions
          Function PermissionsToCsp(Const P: TPermissions): String
            generer la Content Security Policy appropriee
-         Procedure InitDefaultPermissions(Var P: TPermissions)
-           initialiser les permissions par defaut (toutes False)
          Procedure ApplyPermissions(Const P: TPermissions;
            Var Cfg: TTauriConfig)
            appliquer les permissions a la configuration Tauri
+         Function CountEnabledPermissions(Const P: TPermissions): Integer
+           compter les permissions activees
+         Procedure SetPermission(Var P: TPermissions; PermType: Integer;
+           Value: Boolean)
+           activer/desactiver une permission specifique
+         Function GetPermission(Const P: TPermissions; PermType: Integer):
+           Boolean
+           retourner l'etat d'une permission specifique
+         10 Accesseurs (IsPermInitialized/IsPermEmpty/GetPermStateCount/
+           GetPermJsonGenCount/GetPermCspGenCount/GetPermInitCount/
+           GetPermApplyCount/GetPermEnabledCount/GetPermDisabledCount/
+           GetPermMaxTypes)
 
   TODO 16 - CONFIGURATION DU BUILD [A FAIRE]
          Constantes de modes de build :
