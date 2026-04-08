@@ -801,6 +801,30 @@ Begin
   ItoSI := S;
 End;
 
+Function HexNibble(V : Integer) : Char;
+Begin
+  V := V And $0F;
+  If V < 10 Then
+    HexNibble := Chr(Ord('0') + V)
+  Else
+    HexNibble := Chr(Ord('A') + V - 10);
+End;
+
+Function HexByte(V : Integer) : TString;
+Begin
+  HexByte := HexNibble(V Shr 4) + HexNibble(V);
+End;
+
+Function HexWord(V : Integer) : TString;
+Begin
+  HexWord := HexByte(V Shr 8) + HexByte(V);
+End;
+
+Function HexLong(V : LongInt) : TString;
+Begin
+  HexLong := HexWord(V Shr 16) + HexWord(V);
+End;
+
 Function UpCaseStr(Const S : TString) : TString;
 Var
   I   : Integer;
@@ -12026,6 +12050,669 @@ End;
 
 
 { ============================================================ }
+{ TODO 22 - ECRIVAIN COFF .OBJ (GENERATION FICHIER OBJET)       }
+{   Generer un fichier objet COFF 32 bits compatible LINK.EXE   }
+{   et MASM : COFF File Header (20 octets), sections .text,     }
+{   .data, .bss, tables des relocations, des symboles et des    }
+{   chaines pour noms > 8 caracteres                            }
+{ ============================================================ }
+
+Const
+  { Types d operations COFF }
+  COFF_NONE          = 0;   { aucune operation COFF                  }
+  COFF_FILE_HEADER   = 1;   { COFF File Header (20 octets)           }
+  COFF_TEXT_SECTION   = 2;   { section .text (code machine)           }
+  COFF_DATA_SECTION   = 3;   { section .data (donnees initialisees)   }
+  COFF_BSS_SECTION    = 4;   { section .bss (donnees non init.)       }
+  COFF_RELOC_TABLE    = 5;   { table des relocations                  }
+  COFF_SYMBOL_TABLE   = 6;   { table des symboles                     }
+  COFF_STRING_TABLE   = 7;   { table des chaines longues              }
+  COFF_SECTION_HDR    = 8;   { section headers (3 x 40 octets)        }
+
+  { Constantes d image COFF }
+  COFF_MACHINE_I386     = $014C;  { machine i386                      }
+  COFF_NUM_SECTIONS     = 3;      { .text, .data, .bss                }
+  COFF_HEADER_SIZE      = 20;     { taille du COFF File Header        }
+  COFF_SECTION_HDR_SIZE = 40;     { taille d un Section Header        }
+  COFF_SYMBOL_SIZE      = 18;     { taille d un symbole (IMAGE_SYMBOL)}
+  COFF_RELOC_SIZE       = 10;     { taille d une relocation           }
+  COFF_MAX_OPS          = 4096;   { nombre max d operations COFF      }
+  COFF_MAX_SYMBOLS      = 1024;   { nombre max de symboles            }
+  COFF_MAX_RELOCS       = 2048;   { nombre max de relocations         }
+  COFF_MAX_SHORT_NAME   = 8;      { taille max nom court dans symbole }
+
+  { Types de relocations COFF i386 }
+  IMAGE_REL_I386_DIR32  = $0006;  { adresse absolue 32 bits           }
+  IMAGE_REL_I386_REL32  = $0014;  { adresse relative 32 bits          }
+
+  { Classes de stockage COFF }
+  IMAGE_SYM_CLASS_EXTERNAL = 2;   { symbole externe (EXTERNAL)        }
+  IMAGE_SYM_CLASS_STATIC   = 3;   { symbole statique (STATIC)         }
+  IMAGE_SYM_CLASS_LABEL    = 6;   { label (LABEL)                     }
+
+  { Numeros de section speciaux }
+  IMAGE_SYM_UNDEFINED    = 0;     { symbole non defini (import)       }
+  COFF_SECTION_TEXT      = 1;     { numero de section .text            }
+  COFF_SECTION_DATA      = 2;     { numero de section .data            }
+  COFF_SECTION_BSS       = 3;     { numero de section .bss             }
+
+  { Flags de section COFF }
+  COFF_SCN_CNT_CODE       = $00000020; { contient du code executable   }
+  COFF_SCN_CNT_INIT_DATA  = $00000040; { donnees initialisees          }
+  COFF_SCN_CNT_UNINIT_DATA= $00000080; { donnees non initialisees      }
+  COFF_SCN_MEM_EXECUTE    = $20000000; { section executable            }
+  COFF_SCN_MEM_READ       = $40000000; { section lisible               }
+  COFF_SCN_MEM_WRITE      = $80000000; { section inscriptible          }
+
+Var
+  { Variables du generateur COFF }
+  CoffInitialized     : Boolean;     { module initialise ?             }
+  CoffStateCount      : Integer;     { compteur total d operations     }
+  CoffFileHdrCount    : Integer;     { File Headers generes            }
+  CoffSectHdrCount    : Integer;     { Section Headers generes         }
+  CoffTextSectCount   : Integer;     { sections .text generees         }
+  CoffDataSectCount   : Integer;     { sections .data generees         }
+  CoffBssSectCount    : Integer;     { sections .bss generees          }
+  CoffRelocCount      : Integer;     { relocations generees            }
+  CoffSymbolCount     : Integer;     { symboles generes                }
+  CoffStringCount     : Integer;     { entrees chaines generees        }
+  CoffLabelNum        : Integer;     { generateur de labels uniques    }
+  CoffErrorCount      : Integer;     { nombre d erreurs                }
+
+{ ------------------------------------------------------------ }
+{ InitCoffState : initialiser les variables du generateur COFF   }
+{ ------------------------------------------------------------ }
+
+Procedure InitCoffState;
+Begin
+  CoffInitialized     := True;
+  CoffStateCount      := 0;
+  CoffFileHdrCount    := 0;
+  CoffSectHdrCount    := 0;
+  CoffTextSectCount   := 0;
+  CoffDataSectCount   := 0;
+  CoffBssSectCount    := 0;
+  CoffRelocCount      := 0;
+  CoffSymbolCount     := 0;
+  CoffStringCount     := 0;
+  CoffLabelNum        := 0;
+  CoffErrorCount      := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCoffLabel : generer un label unique pour le generateur COFF  }
+{ ------------------------------------------------------------ }
+
+Function GenCoffLabel : TString;
+Begin
+  Inc(CoffLabelNum);
+  GenCoffLabel := PFX_LBL + 'COFF_' + ItoSI(CoffLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ CoffTypeName : nom textuel d un type d operation COFF          }
+{ ------------------------------------------------------------ }
+
+Function CoffTypeName(CoffType : Integer) : TString;
+Begin
+  Case CoffType Of
+    COFF_NONE          : CoffTypeName := 'NONE';
+    COFF_FILE_HEADER   : CoffTypeName := 'FILE_HEADER';
+    COFF_TEXT_SECTION   : CoffTypeName := 'TEXT_SECTION';
+    COFF_DATA_SECTION   : CoffTypeName := 'DATA_SECTION';
+    COFF_BSS_SECTION    : CoffTypeName := 'BSS_SECTION';
+    COFF_RELOC_TABLE    : CoffTypeName := 'RELOC_TABLE';
+    COFF_SYMBOL_TABLE   : CoffTypeName := 'SYMBOL_TABLE';
+    COFF_STRING_TABLE   : CoffTypeName := 'STRING_TABLE';
+    COFF_SECTION_HDR    : CoffTypeName := 'SECTION_HDR';
+  Else
+    CoffTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CoffRelocTypeName : nom textuel d un type de relocation        }
+{ ------------------------------------------------------------ }
+
+Function CoffRelocTypeName(RelType : Integer) : TString;
+Begin
+  Case RelType Of
+    IMAGE_REL_I386_DIR32 : CoffRelocTypeName := 'DIR32';
+    IMAGE_REL_I386_REL32 : CoffRelocTypeName := 'REL32';
+  Else
+    CoffRelocTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CoffStorageClassName : nom textuel d une classe de stockage    }
+{ ------------------------------------------------------------ }
+
+Function CoffStorageClassName(StorClass : Integer) : TString;
+Begin
+  Case StorClass Of
+    IMAGE_SYM_CLASS_EXTERNAL : CoffStorageClassName := 'EXTERNAL';
+    IMAGE_SYM_CLASS_STATIC   : CoffStorageClassName := 'STATIC';
+    IMAGE_SYM_CLASS_LABEL    : CoffStorageClassName := 'LABEL';
+  Else
+    CoffStorageClassName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffFileHeader : generer le COFF File Header (20 octets)  }
+{   Machine=$014C, NumberOfSections=3, TimeDateStamp=0,          }
+{   PointerToSymbolTable=a calculer, NumberOfSymbols=a calculer  }
+{   Characteristics=$0000 (fichier objet, pas d exe)            }
+{ ------------------------------------------------------------ }
+
+Function WriteCoffFileHeader(NumSymbols : Integer; SymTblOffset : Integer) : TString;
+Var
+  Buf : TString;
+Begin
+  If CoffFileHdrCount >= COFF_MAX_OPS Then
+  Begin
+    Inc(CoffErrorCount);
+    WriteCoffFileHeader := '; ERROR: max COFF FILE_HEADER exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- COFF File Header (20 octets) ---' + Chr(13) + Chr(10) +
+         '  DW $' + HexWord(COFF_MACHINE_I386) + Chr(13) + Chr(10) +
+         '  DW $' + HexWord(COFF_NUM_SECTIONS) + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $' + HexLong(SymTblOffset) + Chr(13) + Chr(10) +
+         '  DD $' + HexLong(NumSymbols) + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10);
+
+  Inc(CoffFileHdrCount);
+  Inc(CoffStateCount);
+  WriteCoffFileHeader := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffSectionHeaders : generer les 3 Section Headers        }
+{   .text (code), .data (donnees init.), .bss (donnees non init)}
+{   Chaque header fait 40 octets                                }
+{ ------------------------------------------------------------ }
+
+Function WriteCoffSectionHeaders(TextSize, DataSize, BssSize : Integer;
+                                  TextRelocCount, DataRelocCount : Integer) : TString;
+Var
+  Buf : TString;
+  TextDataOffset : Integer;
+  DataDataOffset : Integer;
+  TextRelocOffset : Integer;
+  DataRelocOffset : Integer;
+Begin
+  If CoffSectHdrCount >= COFF_MAX_OPS Then
+  Begin
+    Inc(CoffErrorCount);
+    WriteCoffSectionHeaders := '; ERROR: max COFF SECTION_HDR exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  { Calculer les offsets }
+  TextDataOffset := COFF_HEADER_SIZE + (COFF_NUM_SECTIONS * COFF_SECTION_HDR_SIZE);
+  DataDataOffset := TextDataOffset + TextSize;
+  TextRelocOffset := DataDataOffset + DataSize;
+  DataRelocOffset := TextRelocOffset + (TextRelocCount * COFF_RELOC_SIZE);
+
+  { Flags de section (valeurs hexadecimales directes) }
+  { .text : CODE + EXECUTE + READ = $60000020 }
+  { .data : INIT_DATA + READ + WRITE = $C0000040 }
+  { .bss  : UNINIT_DATA + READ + WRITE = $C0000080 }
+
+  { Section .text }
+  Buf := '; --- COFF Section Headers (3 x 40 octets) ---' + Chr(13) + Chr(10) +
+         '; .text section header' + Chr(13) + Chr(10) +
+         '  DB ".text", 0, 0, 0' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $' + HexLong(TextSize) + Chr(13) + Chr(10) +
+         '  DD $' + HexLong(TextDataOffset) + Chr(13) + Chr(10) +
+         '  DD $' + HexLong(TextRelocOffset) + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DW $' + HexWord(TextRelocCount) + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DD $60000020' + Chr(13) + Chr(10);
+
+  { Section .data }
+  Buf := Buf +
+         '; .data section header' + Chr(13) + Chr(10) +
+         '  DB ".data", 0, 0, 0' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $' + HexLong(DataSize) + Chr(13) + Chr(10) +
+         '  DD $' + HexLong(DataDataOffset) + Chr(13) + Chr(10) +
+         '  DD $' + HexLong(DataRelocOffset) + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DW $' + HexWord(DataRelocCount) + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DD $C0000040' + Chr(13) + Chr(10);
+
+  { Section .bss }
+  Buf := Buf +
+         '; .bss section header' + Chr(13) + Chr(10) +
+         '  DB ".bss", 0, 0, 0, 0' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $' + HexLong(BssSize) + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DD $C0000080' + Chr(13) + Chr(10);
+
+  Inc(CoffSectHdrCount);
+  Inc(CoffStateCount);
+  WriteCoffSectionHeaders := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffTextSection : generer le contenu de la section .text   }
+{   Code machine 80386 : point d entree, routines runtime,       }
+{   procedures compilees du module Jovial                        }
+{ ------------------------------------------------------------ }
+
+Function WriteCoffTextSection : TString;
+Var
+  Buf : TString;
+  Lbl : TString;
+Begin
+  If CoffTextSectCount >= COFF_MAX_OPS Then
+  Begin
+    Inc(CoffErrorCount);
+    WriteCoffTextSection := '; ERROR: max COFF TEXT_SECTION exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Lbl := GenCoffLabel;
+
+  Buf := '; --- COFF Section .text (code machine 80386) ---' + Chr(13) + Chr(10) +
+         PFX_LBL + 'COFF_TEXT_START:' + Chr(13) + Chr(10) +
+         '  ; point d entree _start' + Chr(13) + Chr(10) +
+         '  PUBLIC _start' + Chr(13) + Chr(10) +
+         '_start:' + Chr(13) + Chr(10) +
+         '  PUSH EBP' + Chr(13) + Chr(10) +
+         '  MOV EBP, ESP' + Chr(13) + Chr(10) +
+         '  CALL ' + PFX_RT + 'INIT_IO' + Chr(13) + Chr(10) +
+         '  CALL ' + PFX_PROC + 'MAIN' + Chr(13) + Chr(10) +
+         '  PUSH 0' + Chr(13) + Chr(10) +
+         '  CALL _ExitProcess@4' + Chr(13) + Chr(10) +
+         Lbl + ':' + Chr(13) + Chr(10) +
+         '  ; (routines runtime et procedures seront inserees ici)' + Chr(13) + Chr(10) +
+         PFX_LBL + 'COFF_TEXT_END:' + Chr(13) + Chr(10);
+
+  Inc(CoffTextSectCount);
+  Inc(CoffStateCount);
+  WriteCoffTextSection := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffDataSection : generer le contenu de la section .data   }
+{   Variables ITEM initialisees, tables TABLE, constantes chaines}
+{ ------------------------------------------------------------ }
+
+Function WriteCoffDataSection : TString;
+Var
+  Buf : TString;
+Begin
+  If CoffDataSectCount >= COFF_MAX_OPS Then
+  Begin
+    Inc(CoffErrorCount);
+    WriteCoffDataSection := '; ERROR: max COFF DATA_SECTION exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- COFF Section .data (donnees initialisees) ---' + Chr(13) + Chr(10) +
+         PFX_LBL + 'COFF_DATA_START:' + Chr(13) + Chr(10) +
+         '  ; variables ITEM globales initialisees' + Chr(13) + Chr(10) +
+         '  ; (declarations ITEM emises ici)' + Chr(13) + Chr(10);
+  Buf := Buf +
+         '  ; tables TABLE' + Chr(13) + Chr(10) +
+         '  ; (elements TABLE emis ici)' + Chr(13) + Chr(10) +
+         '  ; constantes chaines ' + PFX_CONST + Chr(13) + Chr(10) +
+         '  ; (chaines litterales emises ici)' + Chr(13) + Chr(10) +
+         PFX_LBL + 'COFF_DATA_END:' + Chr(13) + Chr(10);
+
+  Inc(CoffDataSectCount);
+  Inc(CoffStateCount);
+  WriteCoffDataSection := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffBssSection : generer le contenu de la section .bss     }
+{   Variables ITEM non initialisees, buffers runtime             }
+{ ------------------------------------------------------------ }
+
+Function WriteCoffBssSection : TString;
+Var
+  Buf : TString;
+Begin
+  If CoffBssSectCount >= COFF_MAX_OPS Then
+  Begin
+    Inc(CoffErrorCount);
+    WriteCoffBssSection := '; ERROR: max COFF BSS_SECTION exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- COFF Section .bss (donnees non init.) ---' + Chr(13) + Chr(10) +
+         PFX_LBL + 'COFF_BSS_START:' + Chr(13) + Chr(10) +
+         '  ; variables ITEM non initialisees' + Chr(13) + Chr(10) +
+         '  ; (reservations RESB/RESD emises ici)' + Chr(13) + Chr(10);
+  Buf := Buf +
+         '  ; buffers runtime (IO, conversion)' + Chr(13) + Chr(10) +
+         '  ; (buffers _JVRT_ emis ici)' + Chr(13) + Chr(10) +
+         PFX_LBL + 'COFF_BSS_END:' + Chr(13) + Chr(10);
+
+  Inc(CoffBssSectCount);
+  Inc(CoffStateCount);
+  WriteCoffBssSection := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffRelocation : generer une entree de relocation COFF    }
+{   IMAGE_RELOCATION (10 octets) : VirtualAddress, SymbolIndex,  }
+{   Type ($0006=DIR32, $0014=REL32)                             }
+{ ------------------------------------------------------------ }
+
+Function WriteCoffRelocation(VAddr : Integer; SymIdx : Integer;
+                              RelType : Integer) : TString;
+Var
+  Buf : TString;
+Begin
+  If CoffRelocCount >= COFF_MAX_RELOCS Then
+  Begin
+    Inc(CoffErrorCount);
+    WriteCoffRelocation := '; ERROR: max COFF RELOC exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- COFF Relocation (' + CoffRelocTypeName(RelType) + ') ---' +
+         Chr(13) + Chr(10) +
+         '  DD $' + HexLong(VAddr) + Chr(13) + Chr(10) +
+         '  DD $' + HexLong(SymIdx) + Chr(13) + Chr(10) +
+         '  DW $' + HexWord(RelType) + Chr(13) + Chr(10);
+
+  Inc(CoffRelocCount);
+  Inc(CoffStateCount);
+  WriteCoffRelocation := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffSymbol : generer une entree de symbole COFF           }
+{   IMAGE_SYMBOL (18 octets) : Name[8] ou StringTableOffset,    }
+{   Value, SectionNumber, Type, StorageClass, NumberOfAuxSymbols }
+{ ------------------------------------------------------------ }
+
+Function WriteCoffSymbol(SymName : TString; Value : Integer;
+                          SectNum : Integer; StorClass : Integer) : TString;
+Var
+  Buf : TString;
+  NameBuf : TString;
+  I : Integer;
+Begin
+  If CoffSymbolCount >= COFF_MAX_SYMBOLS Then
+  Begin
+    Inc(CoffErrorCount);
+    WriteCoffSymbol := '; ERROR: max COFF SYMBOL exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- COFF Symbol: ' + SymName + ' (' +
+         CoffStorageClassName(StorClass) + ') ---' + Chr(13) + Chr(10);
+
+  If Length(SymName) <= COFF_MAX_SHORT_NAME Then
+  Begin
+    { Nom court : 8 octets paddes de zeros }
+    NameBuf := '  DB ';
+    For I := 1 To Length(SymName) Do
+    Begin
+      If I > 1 Then NameBuf := NameBuf + ', ';
+      NameBuf := NameBuf + '$' + HexByte(Ord(SymName[I]));
+    End;
+    For I := Length(SymName) + 1 To COFF_MAX_SHORT_NAME Do
+    Begin
+      NameBuf := NameBuf + ', $00';
+    End;
+    Buf := Buf + NameBuf + Chr(13) + Chr(10);
+  End
+  Else
+  Begin
+    { Nom long : 4 octets zeros + offset dans la table des chaines }
+    Buf := Buf +
+           '  DD $00000000' + Chr(13) + Chr(10) +
+           '  DD $' + HexLong(CoffStringCount + 4) + Chr(13) + Chr(10);
+    Inc(CoffStringCount);
+  End;
+
+  { Value (4 octets) }
+  Buf := Buf + '  DD $' + HexLong(Value) + Chr(13) + Chr(10);
+  { SectionNumber (2 octets) }
+  Buf := Buf + '  DW $' + HexWord(SectNum) + Chr(13) + Chr(10);
+  { Type (2 octets) : $0000 = not a function }
+  Buf := Buf + '  DW $0000' + Chr(13) + Chr(10);
+  { StorageClass (1 octet) }
+  Buf := Buf + '  DB $' + HexByte(StorClass) + Chr(13) + Chr(10);
+  { NumberOfAuxSymbols (1 octet) }
+  Buf := Buf + '  DB $00' + Chr(13) + Chr(10);
+
+  Inc(CoffSymbolCount);
+  Inc(CoffStateCount);
+  WriteCoffSymbol := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffStringTable : generer la table des chaines            }
+{   Prefixee par la taille totale (4 octets), suivie des noms   }
+{   de symboles > 8 caracteres termines par un octet nul        }
+{ ------------------------------------------------------------ }
+
+Function WriteCoffStringTable(StringData : TString) : TString;
+Var
+  Buf : TString;
+  TotalSize : Integer;
+Begin
+  TotalSize := 4 + Length(StringData);
+
+  Buf := '; --- COFF String Table ---' + Chr(13) + Chr(10) +
+         '  DD $' + HexLong(TotalSize) + Chr(13) + Chr(10);
+
+  If Length(StringData) > 0 Then
+    Buf := Buf +
+           '  DB "' + StringData + '", 0' + Chr(13) + Chr(10);
+
+  Inc(CoffStateCount);
+  WriteCoffStringTable := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffExternSymbol : generer un symbole externe (import)    }
+{   Pour les imports Win32 : ExitProcess, GetStdHandle, etc.    }
+{   SectionNumber = 0 (IMAGE_SYM_UNDEFINED)                     }
+{   StorageClass = EXTERNAL (2)                                  }
+{ ------------------------------------------------------------ }
+
+Function WriteCoffExternSymbol(SymName : TString) : TString;
+Begin
+  WriteCoffExternSymbol :=
+    WriteCoffSymbol(SymName, 0, IMAGE_SYM_UNDEFINED, IMAGE_SYM_CLASS_EXTERNAL);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffDefinedSymbol : generer un symbole defini (procedure) }
+{   Pour les procedures et variables Jovial compilees            }
+{   StorageClass = EXTERNAL (2) pour symboles publics            }
+{ ------------------------------------------------------------ }
+
+Function WriteCoffDefinedSymbol(SymName : TString; Value : Integer;
+                                 SectNum : Integer) : TString;
+Begin
+  WriteCoffDefinedSymbol :=
+    WriteCoffSymbol(SymName, Value, SectNum, IMAGE_SYM_CLASS_EXTERNAL);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffStaticSymbol : generer un symbole statique (local)    }
+{   Pour les sections et labels locaux                          }
+{   StorageClass = STATIC (3)                                    }
+{ ------------------------------------------------------------ }
+
+Function WriteCoffStaticSymbol(SymName : TString; Value : Integer;
+                                SectNum : Integer) : TString;
+Begin
+  WriteCoffStaticSymbol :=
+    WriteCoffSymbol(SymName, Value, SectNum, IMAGE_SYM_CLASS_STATIC);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffLabelSymbol : generer un symbole label                }
+{   Pour les labels internes du code genere                     }
+{   StorageClass = LABEL (6)                                     }
+{ ------------------------------------------------------------ }
+
+Function WriteCoffLabelSymbol(SymName : TString; Value : Integer;
+                               SectNum : Integer) : TString;
+Begin
+  WriteCoffLabelSymbol :=
+    WriteCoffSymbol(SymName, Value, SectNum, IMAGE_SYM_CLASS_LABEL);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateCoffObj : orchestrateur genere un fichier COFF .OBJ    }
+{   complet : File Header, Section Headers, .text, .data, .bss, }
+{   relocations, table des symboles, table des chaines           }
+{ ------------------------------------------------------------ }
+
+Function GenerateCoffObj : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := '; === Fichier objet COFF 32 bits (.OBJ) ===' + Chr(13) + Chr(10);
+
+  { File Header avec valeurs par defaut }
+  Buf := Buf + WriteCoffFileHeader(0, 0);
+
+  { Section Headers }
+  Buf := Buf + WriteCoffSectionHeaders(0, 0, 0, 0, 0);
+
+  { Contenu des sections }
+  Buf := Buf + WriteCoffTextSection;
+  Buf := Buf + WriteCoffDataSection;
+  Buf := Buf + WriteCoffBssSection;
+
+  { Symboles externes (imports Win32) }
+  Buf := Buf + '; --- COFF Symboles externes (imports Win32) ---' +
+         Chr(13) + Chr(10);
+  Buf := Buf + WriteCoffExternSymbol('_ExitProcess@4');
+  Buf := Buf + WriteCoffExternSymbol('_GetStdHandle@4');
+  Buf := Buf + WriteCoffExternSymbol('_WriteFile@20');
+  Buf := Buf + WriteCoffExternSymbol('_ReadFile@20');
+
+  { Symboles definis (sections) }
+  Buf := Buf + '; --- COFF Symboles sections ---' + Chr(13) + Chr(10);
+  Buf := Buf + WriteCoffStaticSymbol('.text', 0, COFF_SECTION_TEXT);
+  Buf := Buf + WriteCoffStaticSymbol('.data', 0, COFF_SECTION_DATA);
+  Buf := Buf + WriteCoffStaticSymbol('.bss', 0, COFF_SECTION_BSS);
+
+  { Symbole point d entree }
+  Buf := Buf + WriteCoffDefinedSymbol('_start', 0, COFF_SECTION_TEXT);
+
+  { Table des chaines (vide pour l instant) }
+  Buf := Buf + WriteCoffStringTable('');
+
+  GenerateCoffObj := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsCoffGenRequired : determiner si la generation COFF est requise}
+{ ------------------------------------------------------------ }
+
+Function IsCoffGenRequired : Boolean;
+Begin
+  IsCoffGenRequired := (CoffStateCount > 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpCoffState : afficher l etat du generateur COFF             }
+{ ------------------------------------------------------------ }
+
+Procedure DumpCoffState;
+Begin
+  WriteLn('=== Etat du generateur COFF (TODO 22) ===');
+  WriteLn('  Initialise       : ', CoffInitialized);
+  WriteLn('  Operations       : ', CoffStateCount);
+  WriteLn('  File Headers     : ', CoffFileHdrCount);
+  WriteLn('  Section Headers  : ', CoffSectHdrCount);
+  WriteLn('  .text sections   : ', CoffTextSectCount);
+  WriteLn('  .data sections   : ', CoffDataSectCount);
+  WriteLn('  .bss sections    : ', CoffBssSectCount);
+  WriteLn('  Relocations      : ', CoffRelocCount);
+  WriteLn('  Symboles         : ', CoffSymbolCount);
+  WriteLn('  Chaines          : ', CoffStringCount);
+  WriteLn('  Labels uniques   : ', CoffLabelNum);
+  WriteLn('  Erreurs          : ', CoffErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs pour le generateur COFF                }
+{ ------------------------------------------------------------ }
+
+Function IsCoffInitialized : Boolean;
+Begin
+  IsCoffInitialized := CoffInitialized;
+End;
+
+Function IsCoffEmpty : Boolean;
+Begin
+  IsCoffEmpty := (CoffStateCount = 0);
+End;
+
+Function GetCoffStateCount : Integer;
+Begin
+  GetCoffStateCount := CoffStateCount;
+End;
+
+Function GetCoffFileHdrCount : Integer;
+Begin
+  GetCoffFileHdrCount := CoffFileHdrCount;
+End;
+
+Function GetCoffSectHdrCount : Integer;
+Begin
+  GetCoffSectHdrCount := CoffSectHdrCount;
+End;
+
+Function GetCoffTextSectCount : Integer;
+Begin
+  GetCoffTextSectCount := CoffTextSectCount;
+End;
+
+Function GetCoffRelocCount : Integer;
+Begin
+  GetCoffRelocCount := CoffRelocCount;
+End;
+
+Function GetCoffSymbolCount : Integer;
+Begin
+  GetCoffSymbolCount := CoffSymbolCount;
+End;
+
+Function GetCoffLabelNum : Integer;
+Begin
+  GetCoffLabelNum := CoffLabelNum;
+End;
+
+Function GetCoffErrorCount : Integer;
+Begin
+  GetCoffErrorCount := CoffErrorCount;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -12057,6 +12744,7 @@ Begin
   CtgInitialized := False;
   RtlInitialized := False;
   PeInitialized := False;
+  CoffInitialized := False;
 
   ParseArgs;
 
@@ -12120,6 +12808,9 @@ Begin
   { Initialiser le generateur PE (ecrivain binaire) }
   InitPeState;
 
+  { Initialiser le generateur COFF (ecrivain .OBJ) }
+  InitCoffState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -12154,6 +12845,7 @@ Begin
     DumpCtrlGenState;
     DumpRuntimeState;
     DumpPeState;
+    DumpCoffState;
   End;
 
   { Nettoyage }
