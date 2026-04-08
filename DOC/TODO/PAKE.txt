@@ -591,7 +591,7 @@ Turbo Pascal / Free Pascal (-Mtp)
          Function GenerateMultiTabCss: String
            generer le CSS pour les onglets
 
-  TODO 21 - CONFIGURATION DU USER-AGENT [A FAIRE]
+  TODO 21 - CONFIGURATION DU USER-AGENT [IMPLEMENTE]
          Constantes de User-Agents :
            UA_CHROME = 'Mozilla/5.0 ... Chrome/...'
            UA_FIREFOX = 'Mozilla/5.0 ... Firefox/...'

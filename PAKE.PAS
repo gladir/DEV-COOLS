@@ -620,7 +620,7 @@
             Function GenerateMultiTabCss: String
               generer le CSS pour les onglets
 
-  TODO 21 - CONFIGURATION DU USER-AGENT [A FAIRE]
+  TODO 21 - CONFIGURATION DU USER-AGENT [IMPLEMENTE]
             Constantes de User-Agents :
               UA_CHROME = 'Mozilla/5.0 ... Chrome/...'
               UA_FIREFOX = 'Mozilla/5.0 ... Firefox/...'
@@ -7212,7 +7212,350 @@ Begin
 End;
 
 { ============================================================
-  TODO 21-25 : A IMPLEMENTER
+  TODO 21 - CONFIGURATION DU USER-AGENT [IMPLEMENTE]
+  ============================================================ }
+
+Const
+  { Constantes User-Agent }
+  UA_MAX_LENGTH     = 512;
+  
+  { Types de User-Agent }
+  UA_TYPE_NONE      = 0;
+  UA_TYPE_DEFAULT   = 1;
+  UA_TYPE_CHROME    = 2;
+  UA_TYPE_FIREFOX   = 3;
+  UA_TYPE_SAFARI    = 4;
+  UA_TYPE_EDGE      = 5;
+  UA_TYPE_CUSTOM    = 6;
+  
+  { User-Agents predefinies }
+  UA_CHROME  = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  UA_FIREFOX = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0';
+  UA_SAFARI  = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15';
+  UA_EDGE    = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0';
+  UA_DEFAULT = 'Mozilla/5.0 (compatible; Pake/1.0; +https://github.com/pake-go/pake)';
+
+Var
+  { Variables d'etat pour le module User-Agent }
+  UaInitialized      : Boolean;
+  UaStateCount       : Integer;
+  UaCurrentType      : Integer;
+  UaCurrentString    : String;
+  UaValidateCount    : Integer;
+  UaConfigGenCount   : Integer;
+  UaApplyCount       : Integer;
+  UaErrorCount       : Integer;
+  UaLabelNum         : Integer;
+
+Procedure InitUserAgentState;
+Begin
+  UaInitialized := True;
+  UaStateCount := 0;
+  UaCurrentType := UA_TYPE_DEFAULT;
+  UaCurrentString := UA_DEFAULT;
+  UaValidateCount := 0;
+  UaConfigGenCount := 0;
+  UaApplyCount := 0;
+  UaErrorCount := 0;
+  UaLabelNum := 0;
+  Inc(UaStateCount);
+End;
+
+Function GenUaLabel: String;
+Begin
+  Inc(UaLabelNum);
+  GenUaLabel := '_UA_' + IntToStr(UaLabelNum);
+End;
+
+Function UaTypeName(UaType: Integer): String;
+Begin
+  Inc(UaStateCount);
+  Case UaType Of
+    UA_TYPE_NONE    : UaTypeName := 'NONE';
+    UA_TYPE_DEFAULT : UaTypeName := 'DEFAULT';
+    UA_TYPE_CHROME  : UaTypeName := 'CHROME';
+    UA_TYPE_FIREFOX : UaTypeName := 'FIREFOX';
+    UA_TYPE_SAFARI  : UaTypeName := 'SAFARI';
+    UA_TYPE_EDGE    : UaTypeName := 'EDGE';
+    UA_TYPE_CUSTOM  : UaTypeName := 'CUSTOM';
+  Else
+    UaTypeName := 'UNKNOWN';
+  End;
+End;
+
+Function GetDefaultUserAgent: String;
+Begin
+  Inc(UaStateCount);
+  GetDefaultUserAgent := UA_DEFAULT;
+End;
+
+Function GetChromeUserAgent: String;
+Begin
+  Inc(UaStateCount);
+  GetChromeUserAgent := UA_CHROME;
+End;
+
+Function GetFirefoxUserAgent: String;
+Begin
+  Inc(UaStateCount);
+  GetFirefoxUserAgent := UA_FIREFOX;
+End;
+
+Function GetSafariUserAgent: String;
+Begin
+  Inc(UaStateCount);
+  GetSafariUserAgent := UA_SAFARI;
+End;
+
+Function GetEdgeUserAgent: String;
+Begin
+  Inc(UaStateCount);
+  GetEdgeUserAgent := UA_EDGE;
+End;
+
+Function ValidateUserAgent(Const Ua: String): Boolean;
+Var
+  Valid: Boolean;
+Begin
+  Inc(UaStateCount);
+  Inc(UaValidateCount);
+  Valid := True;
+  
+  { Verifier que le User-Agent n'est pas vide }
+  If Length(Ua) = 0 Then
+  Begin
+    Valid := False;
+    Inc(UaErrorCount);
+  End;
+  
+  { Verifier la longueur maximale }
+  If Length(Ua) > UA_MAX_LENGTH Then
+  Begin
+    Valid := False;
+    Inc(UaErrorCount);
+  End;
+  
+  { Verifier que le User-Agent contient Mozilla ou compatible }
+  If Valid Then
+  Begin
+    If (Pos('Mozilla', Ua) = 0) And (Pos('compatible', Ua) = 0) Then
+    Begin
+      { Pas forcement une erreur, mais peut etre un UA personnalise }
+      Valid := True;
+    End;
+  End;
+  
+  ValidateUserAgent := Valid;
+End;
+
+Function DetectUserAgentType(Const Ua: String): Integer;
+Begin
+  Inc(UaStateCount);
+  If Ua = UA_DEFAULT Then
+    DetectUserAgentType := UA_TYPE_DEFAULT
+  Else If Pos('Chrome', Ua) > 0 Then
+  Begin
+    If Pos('Edg', Ua) > 0 Then
+      DetectUserAgentType := UA_TYPE_EDGE
+    Else
+      DetectUserAgentType := UA_TYPE_CHROME;
+  End
+  Else If Pos('Firefox', Ua) > 0 Then
+    DetectUserAgentType := UA_TYPE_FIREFOX
+  Else If Pos('Safari', Ua) > 0 Then
+    DetectUserAgentType := UA_TYPE_SAFARI
+  Else If Length(Ua) > 0 Then
+    DetectUserAgentType := UA_TYPE_CUSTOM
+  Else
+    DetectUserAgentType := UA_TYPE_NONE;
+End;
+
+Procedure SetUserAgent(Const Ua: String);
+Begin
+  Inc(UaStateCount);
+  If ValidateUserAgent(Ua) Then
+  Begin
+    UaCurrentString := Ua;
+    UaCurrentType := DetectUserAgentType(Ua);
+  End
+  Else
+  Begin
+    Inc(UaErrorCount);
+    UaCurrentString := UA_DEFAULT;
+    UaCurrentType := UA_TYPE_DEFAULT;
+  End;
+End;
+
+Procedure SetUserAgentByType(UaType: Integer);
+Begin
+  Inc(UaStateCount);
+  UaCurrentType := UaType;
+  Case UaType Of
+    UA_TYPE_DEFAULT : UaCurrentString := UA_DEFAULT;
+    UA_TYPE_CHROME  : UaCurrentString := UA_CHROME;
+    UA_TYPE_FIREFOX : UaCurrentString := UA_FIREFOX;
+    UA_TYPE_SAFARI  : UaCurrentString := UA_SAFARI;
+    UA_TYPE_EDGE    : UaCurrentString := UA_EDGE;
+  Else
+    UaCurrentString := UA_DEFAULT;
+    UaCurrentType := UA_TYPE_DEFAULT;
+  End;
+End;
+
+Function GenerateUserAgentConfig(Const Ua: String): String;
+Var
+  S: String;
+Begin
+  Inc(UaStateCount);
+  Inc(UaConfigGenCount);
+  S := '';
+  S := S + '// User-Agent Configuration' + Chr(10);
+  S := S + 'const USER_AGENT: &str = "' + Ua + '";' + Chr(10);
+  S := S + Chr(10);
+  GenerateUserAgentConfig := S;
+End;
+
+Function GenerateUserAgentRustCode(Const Ua: String): String;
+Var
+  S: String;
+Begin
+  Inc(UaStateCount);
+  Inc(UaConfigGenCount);
+  S := '';
+  S := S + '    // Set custom User-Agent' + Chr(10);
+  S := S + '    .with_user_agent("' + Ua + '")' + Chr(10);
+  GenerateUserAgentRustCode := S;
+End;
+
+Procedure ApplyUserAgent(Const Ua: String; Var MainRs: String);
+Var
+  InsertPos: Integer;
+  UaCode: String;
+Begin
+  Inc(UaStateCount);
+  Inc(UaApplyCount);
+  
+  { Verifier si le User-Agent est valide }
+  If Not ValidateUserAgent(Ua) Then
+  Begin
+    Inc(UaErrorCount);
+    Exit;
+  End;
+  
+  { Generer le code Rust pour le User-Agent }
+  UaCode := GenerateUserAgentRustCode(Ua);
+  
+  { Chercher la position pour inserer le User-Agent }
+  { On cherche apres WindowBuilder::new }
+  InsertPos := Pos('WindowBuilder::new', MainRs);
+  If InsertPos > 0 Then
+  Begin
+    { Trouver la fin de la ligne }
+    While (InsertPos <= Length(MainRs)) And (MainRs[InsertPos] <> Chr(10)) Do
+      Inc(InsertPos);
+    
+    { Inserer le code apres la ligne }
+    If InsertPos <= Length(MainRs) Then
+    Begin
+      MainRs := Copy(MainRs, 1, InsertPos) + UaCode + Copy(MainRs, InsertPos + 1, Length(MainRs) - InsertPos);
+    End;
+  End
+  Else
+  Begin
+    { Pas de WindowBuilder trouve, ajouter en commentaire }
+    MainRs := MainRs + Chr(10) + '// User-Agent: ' + Ua + Chr(10);
+  End;
+  
+  { Mettre a jour l'etat courant }
+  UaCurrentString := Ua;
+  UaCurrentType := DetectUserAgentType(Ua);
+End;
+
+Function GetUserAgentForPreset(Const PresetName: String): String;
+Begin
+  Inc(UaStateCount);
+  If (PresetName = 'chrome') Or (PresetName = 'CHROME') Then
+    GetUserAgentForPreset := UA_CHROME
+  Else If (PresetName = 'firefox') Or (PresetName = 'FIREFOX') Then
+    GetUserAgentForPreset := UA_FIREFOX
+  Else If (PresetName = 'safari') Or (PresetName = 'SAFARI') Then
+    GetUserAgentForPreset := UA_SAFARI
+  Else If (PresetName = 'edge') Or (PresetName = 'EDGE') Then
+    GetUserAgentForPreset := UA_EDGE
+  Else
+    GetUserAgentForPreset := UA_DEFAULT;
+End;
+
+Procedure DumpUserAgentState;
+Begin
+  Inc(UaStateCount);
+  WriteLn('=== User-Agent State ===');
+  WriteLn('  Initialized    : ', UaInitialized);
+  WriteLn('  State Count    : ', UaStateCount);
+  WriteLn('  Current Type   : ', UaTypeName(UaCurrentType));
+  WriteLn('  Current UA     : ', UaCurrentString);
+  WriteLn('  Validate Count : ', UaValidateCount);
+  WriteLn('  Config Gen     : ', UaConfigGenCount);
+  WriteLn('  Apply Count    : ', UaApplyCount);
+  WriteLn('  Error Count    : ', UaErrorCount);
+  WriteLn('  Label Num      : ', UaLabelNum);
+  WriteLn;
+End;
+
+{ Accesseurs pour le module User-Agent }
+
+Function IsUaInitialized: Boolean;
+Begin
+  IsUaInitialized := UaInitialized;
+End;
+
+Function IsUaEmpty: Boolean;
+Begin
+  IsUaEmpty := UaCurrentType = UA_TYPE_NONE;
+End;
+
+Function GetUaStateCount: Integer;
+Begin
+  GetUaStateCount := UaStateCount;
+End;
+
+Function GetUaCurrentType: Integer;
+Begin
+  GetUaCurrentType := UaCurrentType;
+End;
+
+Function GetUaCurrentString: String;
+Begin
+  GetUaCurrentString := UaCurrentString;
+End;
+
+Function GetUaValidateCount: Integer;
+Begin
+  GetUaValidateCount := UaValidateCount;
+End;
+
+Function GetUaConfigGenCount: Integer;
+Begin
+  GetUaConfigGenCount := UaConfigGenCount;
+End;
+
+Function GetUaApplyCount: Integer;
+Begin
+  GetUaApplyCount := UaApplyCount;
+End;
+
+Function GetUaErrorCount: Integer;
+Begin
+  GetUaErrorCount := UaErrorCount;
+End;
+
+Function GetUaMaxLength: Integer;
+Begin
+  GetUaMaxLength := UA_MAX_LENGTH;
+End;
+
+{ ============================================================
+  TODO 22-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -7455,14 +7798,27 @@ Begin
     DumpLinuxState;
   End;
 
-  { TODO: Implementer les TODOs 20-25 }
-  WriteLn('*** NOTE: TODOs 01-19 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 20-25 restent a implementer ***');
+  { Initialiser le module Multi-URL }
+  InitMultiUrlState;
+  
+  { Initialiser le module User-Agent }
+  InitUserAgentState;
+  
+  { Afficher l'etat du User-Agent si verbose }
+  If O.Verbose Then
+  Begin
+    WriteLn('=== Configuration User-Agent ===');
+    WriteLn('  Type actuel   : ', UaTypeName(UaCurrentType));
+    WriteLn('  User-Agent    : ', UaCurrentString);
+    WriteLn;
+  End;
+
+  { TODO: Implementer les TODOs 22-25 }
+  WriteLn('*** NOTE: TODOs 01-21 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 22-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 20: Multi-URL');
-  WriteLn('  - TODO 21: Configuration du User-Agent');
   WriteLn('  - TODO 22: Gestion du proxy');
   WriteLn('  - TODO 23: Mode developpeur');
   WriteLn('  - TODO 24: Presets d''applications populaires');
