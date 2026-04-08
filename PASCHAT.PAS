@@ -92,7 +92,7 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 07 - GENERATEUR DE CODE PASCAL - EXPRESSIONS [A FAIRE]
+  TODO 07 - GENERATEUR DE CODE PASCAL - EXPRESSIONS [IMPLEMENTE]
             GenExpression(Expr) : generer une expression
             GenAssignment(Var, Expr) : generer une affectation
             GenArithExpr(Op, Left, Right) : generer une expression arithmetique
@@ -410,6 +410,46 @@ Const
   TYP_MAX_FIELDS = 32;  { Nombre max de champs dans un record }
   TYP_MAX_BOUNDS = 8;   { Nombre max de dimensions dans un array }
 
+  { TODO 07 - Types d'expressions (EXP_*) }
+  EXP_NONE        = 0;   { Aucune expression }
+  EXP_LITERAL     = 1;   { Litterale (nombre, chaine) }
+  EXP_IDENTIFIER  = 2;   { Identificateur (variable) }
+  EXP_ARITHMETIC  = 3;   { Expression arithmetique }
+  EXP_COMPARE     = 4;   { Expression de comparaison }
+  EXP_LOGICAL     = 5;   { Expression logique }
+  EXP_UNARY       = 6;   { Expression unaire (NOT, -) }
+  EXP_FUNCALL     = 7;   { Appel de fonction }
+  EXP_PARENTHESIS = 8;   { Expression entre parentheses }
+  EXP_ARRAY_ACCESS= 9;   { Acces tableau (A[i]) }
+  EXP_FIELD_ACCESS= 10;  { Acces champ (R.Field) }
+  EXP_STRING_CAT  = 11;  { Concatenation de chaines }
+  EXP_ASSIGNMENT  = 12;  { Affectation }
+  EXP_MAX         = 13;  { Nombre maximum de types d'expressions }
+
+  { Operateurs pour TODO 07 }
+  OP_NONE  = 0;   { Aucun operateur }
+  OP_ADD   = 1;   { + }
+  OP_SUB   = 2;   { - }
+  OP_MUL   = 3;   { * }
+  OP_DIV   = 4;   { / }
+  OP_IDIV  = 5;   { DIV }
+  OP_MOD   = 6;   { MOD }
+  OP_EQ    = 7;   { = }
+  OP_NE    = 8;   { <> }
+  OP_LT    = 9;   { < }
+  OP_LE    = 10;  { <= }
+  OP_GT    = 11;  { > }
+  OP_GE    = 12;  { >= }
+  OP_AND   = 13;  { AND }
+  OP_OR    = 14;  { OR }
+  OP_NOT   = 15;  { NOT }
+  OP_XOR   = 16;  { XOR }
+  OP_MAX   = 17;  { Nombre maximum d'operateurs }
+
+  { Limites pour TODO 07 }
+  EXP_MAX_ARGS   = 16;  { Nombre max d'arguments dans un appel }
+  EXP_MAX_PARTS  = 32;  { Nombre max de parties dans une concatenation }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -692,6 +732,23 @@ Var
   TypRealCount    : Integer;
   TypErrorCount   : Integer;
   TypLabelNum     : Integer;
+
+  { TODO 07 - Variables d'etat du generateur d'expressions }
+  ExpInitialized  : Boolean;
+  ExpStateCount   : Integer;
+  ExpLiteralCount : Integer;
+  ExpIdentCount   : Integer;
+  ExpArithCount   : Integer;
+  ExpCompareCount : Integer;
+  ExpLogicalCount : Integer;
+  ExpUnaryCount   : Integer;
+  ExpFunCallCount : Integer;
+  ExpArrayAccCount: Integer;
+  ExpFieldAccCount: Integer;
+  ExpStringCatCount: Integer;
+  ExpAssignCount  : Integer;
+  ExpErrorCount   : Integer;
+  ExpLabelNum     : Integer;
 
   { TODO 11 - Templates }
   Templates     : Array[1..MAX_TEMPLATES] of TTemplate;
@@ -2407,6 +2464,399 @@ Begin
 End;
 
 { ============================================================
+  TODO 07 - GENERATEUR DE CODE PASCAL - EXPRESSIONS
+  ============================================================ }
+
+{ --- Initialisation de l'etat du generateur d'expressions --- }
+
+Procedure InitExpState;
+Begin
+  ExpInitialized := True;
+  ExpStateCount := 0;
+  ExpLiteralCount := 0;
+  ExpIdentCount := 0;
+  ExpArithCount := 0;
+  ExpCompareCount := 0;
+  ExpLogicalCount := 0;
+  ExpUnaryCount := 0;
+  ExpFunCallCount := 0;
+  ExpArrayAccCount := 0;
+  ExpFieldAccCount := 0;
+  ExpStringCatCount := 0;
+  ExpAssignCount := 0;
+  ExpErrorCount := 0;
+  ExpLabelNum := 0;
+  Inc(ExpStateCount);
+End;
+
+{ --- Generateur d'etiquettes pour expressions --- }
+
+Function GenExpLabel: String;
+Var
+  S: String;
+Begin
+  Inc(ExpLabelNum);
+  Str(ExpLabelNum, S);
+  GenExpLabel := 'EXP' + S;
+End;
+
+{ --- Nom du type d'expression --- }
+
+Function ExpTypeName(ExpType: Integer): String;
+Begin
+  Case ExpType of
+    EXP_NONE:        ExpTypeName := 'NONE';
+    EXP_LITERAL:     ExpTypeName := 'LITERAL';
+    EXP_IDENTIFIER:  ExpTypeName := 'IDENTIFIER';
+    EXP_ARITHMETIC:  ExpTypeName := 'ARITHMETIC';
+    EXP_COMPARE:     ExpTypeName := 'COMPARE';
+    EXP_LOGICAL:     ExpTypeName := 'LOGICAL';
+    EXP_UNARY:       ExpTypeName := 'UNARY';
+    EXP_FUNCALL:     ExpTypeName := 'FUNCALL';
+    EXP_PARENTHESIS: ExpTypeName := 'PARENTHESIS';
+    EXP_ARRAY_ACCESS:ExpTypeName := 'ARRAY_ACCESS';
+    EXP_FIELD_ACCESS:ExpTypeName := 'FIELD_ACCESS';
+    EXP_STRING_CAT:  ExpTypeName := 'STRING_CAT';
+    EXP_ASSIGNMENT:  ExpTypeName := 'ASSIGNMENT';
+  Else
+    ExpTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ --- Nom de l'operateur --- }
+
+Function OpName(Op: Integer): String;
+Begin
+  Case Op of
+    OP_NONE:  OpName := '';
+    OP_ADD:   OpName := '+';
+    OP_SUB:   OpName := '-';
+    OP_MUL:   OpName := '*';
+    OP_DIV:   OpName := '/';
+    OP_IDIV:  OpName := ' Div ';
+    OP_MOD:   OpName := ' Mod ';
+    OP_EQ:    OpName := ' = ';
+    OP_NE:    OpName := ' <> ';
+    OP_LT:    OpName := ' < ';
+    OP_LE:    OpName := ' <= ';
+    OP_GT:    OpName := ' > ';
+    OP_GE:    OpName := ' >= ';
+    OP_AND:   OpName := ' And ';
+    OP_OR:    OpName := ' Or ';
+    OP_NOT:   OpName := 'Not ';
+    OP_XOR:   OpName := ' Xor ';
+  Else
+    OpName := '?';
+  End;
+End;
+
+{ --- Generation d'une expression litterale --- }
+
+Function GenLiteral(Value: String): String;
+Begin
+  Inc(ExpLiteralCount);
+  GenLiteral := Value;
+End;
+
+{ --- Generation d'un identificateur --- }
+
+Function GenIdentifier(Name: String): String;
+Begin
+  Inc(ExpIdentCount);
+  GenIdentifier := Name;
+End;
+
+{ --- Generation d'une expression arithmetique --- }
+
+Function GenArithExpr(Op: Integer; Left, Right: String): String;
+Begin
+  Inc(ExpArithCount);
+  GenArithExpr := Left + OpName(Op) + Right;
+End;
+
+{ --- Generation d'une expression de comparaison --- }
+
+Function GenCompareExpr(Op: Integer; Left, Right: String): String;
+Begin
+  Inc(ExpCompareCount);
+  GenCompareExpr := Left + OpName(Op) + Right;
+End;
+
+{ --- Generation d'une expression logique --- }
+
+Function GenLogicalExpr(Op: Integer; Left, Right: String): String;
+Begin
+  Inc(ExpLogicalCount);
+  If Op = OP_NOT Then
+    GenLogicalExpr := OpName(Op) + Left
+  Else
+    GenLogicalExpr := Left + OpName(Op) + Right;
+End;
+
+{ --- Generation d'une expression unaire --- }
+
+Function GenUnaryExpr(Op: Integer; Operand: String): String;
+Begin
+  Inc(ExpUnaryCount);
+  Case Op of
+    OP_NOT: GenUnaryExpr := 'Not ' + Operand;
+    OP_SUB: GenUnaryExpr := '-' + Operand;
+  Else
+    GenUnaryExpr := Operand;
+  End;
+End;
+
+{ --- Generation d'un appel de fonction --- }
+
+Function GenFunctionCall(Name: String; Args: String): String;
+Begin
+  Inc(ExpFunCallCount);
+  If Args = '' Then
+    GenFunctionCall := Name
+  Else
+    GenFunctionCall := Name + '(' + Args + ')';
+End;
+
+{ --- Generation d'une liste d'arguments --- }
+
+Function GenArgList(Arg1, Arg2, Arg3, Arg4: String): String;
+Var
+  R: String;
+Begin
+  R := Arg1;
+  If Arg2 <> '' Then R := R + ', ' + Arg2;
+  If Arg3 <> '' Then R := R + ', ' + Arg3;
+  If Arg4 <> '' Then R := R + ', ' + Arg4;
+  GenArgList := R;
+End;
+
+{ --- Generation d'un acces tableau --- }
+
+Function GenArrayAccess(ArrayName, Index: String): String;
+Begin
+  Inc(ExpArrayAccCount);
+  GenArrayAccess := ArrayName + '[' + Index + ']';
+End;
+
+{ --- Generation d'un acces multi-dimensionnel --- }
+
+Function GenArrayAccess2D(ArrayName, Index1, Index2: String): String;
+Begin
+  Inc(ExpArrayAccCount);
+  GenArrayAccess2D := ArrayName + '[' + Index1 + ', ' + Index2 + ']';
+End;
+
+{ --- Generation d'un acces champ --- }
+
+Function GenFieldAccess(RecordName, FieldName: String): String;
+Begin
+  Inc(ExpFieldAccCount);
+  GenFieldAccess := RecordName + '.' + FieldName;
+End;
+
+{ --- Generation d'une concatenation de chaines --- }
+
+Function GenStringExpr(Part1, Part2, Part3, Part4: String): String;
+Var
+  R: String;
+Begin
+  Inc(ExpStringCatCount);
+  R := Part1;
+  If Part2 <> '' Then R := R + ' + ' + Part2;
+  If Part3 <> '' Then R := R + ' + ' + Part3;
+  If Part4 <> '' Then R := R + ' + ' + Part4;
+  GenStringExpr := R;
+End;
+
+{ --- Generation d'une expression entre parentheses --- }
+
+Function GenParenExpr(Expr: String): String;
+Begin
+  GenParenExpr := '(' + Expr + ')';
+End;
+
+{ --- Generation d'une affectation simple --- }
+
+Function GenAssignment(VarName, Expr: String): String;
+Begin
+  Inc(ExpAssignCount);
+  GenAssignment := VarName + ' := ' + Expr;
+End;
+
+{ --- Generation d'une affectation avec operateur --- }
+
+Function GenAssignOp(VarName: String; Op: Integer; Expr: String): String;
+Begin
+  Inc(ExpAssignCount);
+  GenAssignOp := VarName + ' := ' + VarName + OpName(Op) + Expr;
+End;
+
+{ --- Generation d'une expression complete (wrapper general) --- }
+
+Function GenExpression(Expr: String): String;
+Begin
+  GenExpression := Expr;
+End;
+
+{ --- Generation d'un Inc --- }
+
+Function GenIncExpr(VarName: String): String;
+Begin
+  Inc(ExpAssignCount);
+  GenIncExpr := 'Inc(' + VarName + ')';
+End;
+
+{ --- Generation d'un Inc avec valeur --- }
+
+Function GenIncByExpr(VarName, Value: String): String;
+Begin
+  Inc(ExpAssignCount);
+  GenIncByExpr := 'Inc(' + VarName + ', ' + Value + ')';
+End;
+
+{ --- Generation d'un Dec --- }
+
+Function GenDecExpr(VarName: String): String;
+Begin
+  Inc(ExpAssignCount);
+  GenDecExpr := 'Dec(' + VarName + ')';
+End;
+
+{ --- Generation d'un Dec avec valeur --- }
+
+Function GenDecByExpr(VarName, Value: String): String;
+Begin
+  Inc(ExpAssignCount);
+  GenDecByExpr := 'Dec(' + VarName + ', ' + Value + ')';
+End;
+
+{ --- Conversion operateur texte vers constante --- }
+
+Function ParseOperator(OpStr: String): Integer;
+Var
+  U: String;
+Begin
+  U := UpCaseStr(Trim(OpStr));
+  If U = '+' Then ParseOperator := OP_ADD
+  Else If U = '-' Then ParseOperator := OP_SUB
+  Else If U = '*' Then ParseOperator := OP_MUL
+  Else If U = '/' Then ParseOperator := OP_DIV
+  Else If U = 'DIV' Then ParseOperator := OP_IDIV
+  Else If U = 'MOD' Then ParseOperator := OP_MOD
+  Else If U = '=' Then ParseOperator := OP_EQ
+  Else If U = '<>' Then ParseOperator := OP_NE
+  Else If U = '<' Then ParseOperator := OP_LT
+  Else If U = '<=' Then ParseOperator := OP_LE
+  Else If U = '>' Then ParseOperator := OP_GT
+  Else If U = '>=' Then ParseOperator := OP_GE
+  Else If U = 'AND' Then ParseOperator := OP_AND
+  Else If U = 'OR' Then ParseOperator := OP_OR
+  Else If U = 'NOT' Then ParseOperator := OP_NOT
+  Else If U = 'XOR' Then ParseOperator := OP_XOR
+  Else Begin
+    Inc(ExpErrorCount);
+    ParseOperator := OP_NONE;
+  End;
+End;
+
+{ --- Verification si un operateur est arithmetique --- }
+
+Function IsArithOp(Op: Integer): Boolean;
+Begin
+  IsArithOp := (Op >= OP_ADD) And (Op <= OP_MOD);
+End;
+
+{ --- Verification si un operateur est de comparaison --- }
+
+Function IsCompareOp(Op: Integer): Boolean;
+Begin
+  IsCompareOp := (Op >= OP_EQ) And (Op <= OP_GE);
+End;
+
+{ --- Verification si un operateur est logique --- }
+
+Function IsLogicalOp(Op: Integer): Boolean;
+Begin
+  IsLogicalOp := (Op >= OP_AND) And (Op <= OP_XOR);
+End;
+
+{ --- Affichage de l'etat du generateur d'expressions --- }
+
+Procedure DumpExpState;
+Begin
+  WriteLn('=== TODO 07 : Expression Generator State ===');
+  WriteLn('  ExpInitialized   : ', ExpInitialized);
+  WriteLn('  ExpStateCount    : ', ExpStateCount);
+  WriteLn('  ExpLiteralCount  : ', ExpLiteralCount);
+  WriteLn('  ExpIdentCount    : ', ExpIdentCount);
+  WriteLn('  ExpArithCount    : ', ExpArithCount);
+  WriteLn('  ExpCompareCount  : ', ExpCompareCount);
+  WriteLn('  ExpLogicalCount  : ', ExpLogicalCount);
+  WriteLn('  ExpUnaryCount    : ', ExpUnaryCount);
+  WriteLn('  ExpFunCallCount  : ', ExpFunCallCount);
+  WriteLn('  ExpArrayAccCount : ', ExpArrayAccCount);
+  WriteLn('  ExpFieldAccCount : ', ExpFieldAccCount);
+  WriteLn('  ExpStringCatCount: ', ExpStringCatCount);
+  WriteLn('  ExpAssignCount   : ', ExpAssignCount);
+  WriteLn('  ExpErrorCount    : ', ExpErrorCount);
+  WriteLn('  ExpLabelNum      : ', ExpLabelNum);
+End;
+
+{ --- TODO 07 : 10 accesseurs standards --- }
+
+Function IsExpInitialized: Boolean;
+Begin
+  IsExpInitialized := ExpInitialized;
+End;
+
+Function IsExpEmpty: Boolean;
+Begin
+  IsExpEmpty := (ExpLiteralCount = 0) And (ExpIdentCount = 0) And
+                (ExpArithCount = 0) And (ExpCompareCount = 0) And
+                (ExpLogicalCount = 0);
+End;
+
+Function GetExpStateCount: Integer;
+Begin
+  GetExpStateCount := ExpStateCount;
+End;
+
+Function GetExpLiteralCount: Integer;
+Begin
+  GetExpLiteralCount := ExpLiteralCount;
+End;
+
+Function GetExpArithCount: Integer;
+Begin
+  GetExpArithCount := ExpArithCount;
+End;
+
+Function GetExpCompareCount: Integer;
+Begin
+  GetExpCompareCount := ExpCompareCount;
+End;
+
+Function GetExpLogicalCount: Integer;
+Begin
+  GetExpLogicalCount := ExpLogicalCount;
+End;
+
+Function GetExpFunCallCount: Integer;
+Begin
+  GetExpFunCallCount := ExpFunCallCount;
+End;
+
+Function GetExpErrorCount: Integer;
+Begin
+  GetExpErrorCount := ExpErrorCount;
+End;
+
+Function GetExpLabelNum: Integer;
+Begin
+  GetExpLabelNum := ExpLabelNum;
+End;
+
+{ ============================================================
   TODO 12 - GENERATION DE PROGRAMMES "BONJOUR"
   ============================================================ }
 
@@ -3137,6 +3587,10 @@ Begin
   TypInitialized := False;
   InitTypState;
 
+  { Initialiser l'etat du generateur d'expressions (TODO 07) }
+  ExpInitialized := False;
+  InitExpState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -3145,6 +3599,7 @@ Begin
     DumpIntState;
     DumpGenState;
     DumpTypState;
+    DumpExpState;
   End;
 
   Run;
@@ -3157,7 +3612,7 @@ Begin
   { 04 [IMPLEMENTE] - Analyseur de requetes }
   { 05 [IMPLEMENTE] - Generateur structures de base }
   { 06 [IMPLEMENTE] - Types et variables }
-  { 07 [A FAIRE] - Expressions }
+  { 07 [IMPLEMENTE] - Expressions }
   { 08 [A FAIRE] - Structures de controle }
   { 09 [A FAIRE] - Procedures et fonctions }
   { 10 [A FAIRE] - Unites (UNIT) }

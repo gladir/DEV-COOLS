@@ -71,7 +71,7 @@
             InitTypState, GenTypLabel, TypKindName, DumpTypState
             10 accesseurs (IsTypInitialized, IsTypEmpty, GetTyp*Count, ...)
 
-  TODO 07 - GENERATEUR DE CODE PASCAL - EXPRESSIONS [A FAIRE]
+  TODO 07 - GENERATEUR DE CODE PASCAL - EXPRESSIONS [IMPLEMENTE]
             GenExpression(Expr) : generer une expression
             GenAssignment(Var, Expr) : generer une affectation
             GenArithExpr(Op, Left, Right) : generer une expression arithmetique
