@@ -11505,14 +11505,15 @@ Begin
 
   Buf := '; --- PE DOS Header (MZ) ---' + Chr(13) + Chr(10) +
          '  DW $5A4D' + Chr(13) + Chr(10) +
-         '  ; e_cblp .. e_lfanew (60 octets restants)' + Chr(13) + Chr(10) +
+         '  ; e_cblp .. e_lfanew' + Chr(13) + Chr(10) +
          '  DW $0090' + Chr(13) + Chr(10) +
          '  DW $0003' + Chr(13) + Chr(10) +
          '  DW $0000' + Chr(13) + Chr(10) +
          '  DW $0004' + Chr(13) + Chr(10) +
          '  DW $0000' + Chr(13) + Chr(10) +
          '  DW $FFFF' + Chr(13) + Chr(10) +
-         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10);
+  Buf := Buf +
          '  DW $00B8' + Chr(13) + Chr(10) +
          '  DW $0000' + Chr(13) + Chr(10) +
          '  DW $0000' + Chr(13) + Chr(10) +
@@ -11521,11 +11522,12 @@ Begin
          '  DW $0000' + Chr(13) + Chr(10) +
          '  TIMES 4 DW $0000' + Chr(13) + Chr(10) +
          '  TIMES 10 DW $0000' + Chr(13) + Chr(10) +
-         '  DD $00000080' + Chr(13) + Chr(10) +
+         '  DD $00000080' + Chr(13) + Chr(10);
+  Buf := Buf +
          '; --- DOS Stub ---' + Chr(13) + Chr(10) +
-         '  DB $0E, $1F, $BA, $0E, $00, $B4, $09, $CD' + Chr(13) + Chr(10) +
-         '  DB $21, $B8, $01, $4C, $CD, $21' + Chr(13) + Chr(10) +
-         '  DB "This program cannot be run in DOS mode."' + Chr(13) + Chr(10) +
+         '  DB $0E,$1F,$BA,$0E,$00,$B4,$09,$CD' + Chr(13) + Chr(10) +
+         '  DB $21,$B8,$01,$4C,$CD,$21' + Chr(13) + Chr(10) +
+         '  DB "This program cannot run in DOS mode."' + Chr(13) + Chr(10) +
          '  DB $0D, $0A, $24' + Chr(13) + Chr(10) +
          '  ALIGN 16, DB 0' + Chr(13) + Chr(10);
 
@@ -11605,7 +11607,7 @@ Begin
     Exit;
   End;
 
-  Buf := '; --- Optional Header PE32 (224 octets) ---' + Chr(13) + Chr(10) +
+  Buf := '; --- Optional Header PE32 ---' + Chr(13) + Chr(10) +
          '  ; Standard fields' + Chr(13) + Chr(10) +
          '  DW $010B' + Chr(13) + Chr(10) +
          '  DB $0E' + Chr(13) + Chr(10) +
@@ -11614,7 +11616,8 @@ Begin
          '  DD $00001000' + Chr(13) + Chr(10) +
          '  DD $00000000' + Chr(13) + Chr(10) +
          '  DD $00001000' + Chr(13) + Chr(10) +
-         '  DD $00001000' + Chr(13) + Chr(10) +
+         '  DD $00001000' + Chr(13) + Chr(10);
+  Buf := Buf +
          '  ; NT-specific fields' + Chr(13) + Chr(10) +
          '  DD $00400000' + Chr(13) + Chr(10) +
          '  DD $00001000' + Chr(13) + Chr(10) +
@@ -11624,7 +11627,8 @@ Begin
          '  DW $0000' + Chr(13) + Chr(10) +
          '  DW $0000' + Chr(13) + Chr(10) +
          '  DW $0006' + Chr(13) + Chr(10) +
-         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10);
+  Buf := Buf +
          '  DD $00000000' + Chr(13) + Chr(10) +
          '  DD $00005000' + Chr(13) + Chr(10) +
          '  DD $00000200' + Chr(13) + Chr(10) +
@@ -11770,15 +11774,16 @@ Begin
     Exit;
   End;
 
-  Buf := '; --- Section .rdata (imports et constantes) ---' + Chr(13) + Chr(10) +
+  Buf := '; --- Section .rdata (imports) ---' + Chr(13) + Chr(10) +
          PFX_LBL + 'PE_RDATA_START:' + Chr(13) + Chr(10) +
-         '  ; IMAGE_IMPORT_DESCRIPTOR pour kernel32.dll' + Chr(13) + Chr(10) +
+         '  ; IMAGE_IMPORT_DESCRIPTOR kernel32' + Chr(13) + Chr(10) +
          '  DD ' + PFX_LBL + 'PE_K32_ILT' + Chr(13) + Chr(10) +
          '  DD $00000000' + Chr(13) + Chr(10) +
          '  DD $00000000' + Chr(13) + Chr(10) +
          '  DD ' + PFX_LBL + 'PE_K32_NAME' + Chr(13) + Chr(10) +
-         '  DD ' + PFX_LBL + 'PE_K32_IAT' + Chr(13) + Chr(10) +
-         '  ; descripteur nul (fin de la table)' + Chr(13) + Chr(10) +
+         '  DD ' + PFX_LBL + 'PE_K32_IAT' + Chr(13) + Chr(10);
+  Buf := Buf +
+         '  ; descripteur nul (fin)' + Chr(13) + Chr(10) +
          '  TIMES 5 DD $00000000' + Chr(13) + Chr(10) +
          '  ; Hint/Name Table' + Chr(13) + Chr(10) +
          PFX_LBL + 'PE_HN_EXITPROCESS:' + Chr(13) + Chr(10) +
@@ -11868,7 +11873,8 @@ Begin
          PFX_LBL + 'PE_K32_IAT:' + Chr(13) + Chr(10) +
          '__imp__ExitProcess@4:' + Chr(13) + Chr(10) +
          '  DD ' + PFX_LBL + 'PE_HN_EXITPROCESS' + Chr(13) + Chr(10) +
-         '__imp__GetStdHandle@4:' + Chr(13) + Chr(10) +
+         '__imp__GetStdHandle@4:' + Chr(13) + Chr(10);
+  Buf := Buf +
          '  DD ' + PFX_LBL + 'PE_HN_GETSTDHANDLE' + Chr(13) + Chr(10) +
          '__imp__WriteFile@20:' + Chr(13) + Chr(10) +
          '  DD ' + PFX_LBL + 'PE_HN_WRITEFILE' + Chr(13) + Chr(10) +
