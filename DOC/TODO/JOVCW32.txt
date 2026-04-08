@@ -365,7 +365,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
               Exemple : B 8 -> AND EAX, $FF apres operations
             10 fonctions accesseurs
 
-  TODO 15 - PARSEUR : FONCTIONS INTEGREES JOVIAL (BUILTINS) [A FAIRE]
+  TODO 15 - PARSEUR : FONCTIONS INTEGREES JOVIAL (BUILTINS) [IMPLEMENTE]
             Fonctions mathematiques :
               ABS(x) : valeur absolue
                 Generer : MOV EAX, [x] / CDQ / XOR EAX, EDX / SUB EAX, EDX

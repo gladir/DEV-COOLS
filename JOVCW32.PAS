@@ -373,7 +373,7 @@
               Exemple : B 8 -> AND EAX, $FF apres operations
             10 fonctions accesseurs
 
-  TODO 15 - PARSEUR : FONCTIONS INTEGREES JOVIAL (BUILTINS) [A FAIRE]
+  TODO 15 - PARSEUR : FONCTIONS INTEGREES JOVIAL (BUILTINS) [IMPLEMENTE]
             Fonctions mathematiques :
               ABS(x) : valeur absolue
                 Generer : MOV EAX, [x] / CDQ / XOR EAX, EDX / SUB EAX, EDX
@@ -2866,6 +2866,9 @@ Procedure ParseAssignGoto; Forward;
 Function FindStatusItem(Const Name : TString) : Integer; Forward;
 Procedure ParseStatusAssign(Const StatusName : TString); Forward;
 
+{ Forward declaration pour TODO 15 - BUILTINS }
+Procedure ParseBuiltinCall; Forward;
+
 { ------------------------------------------------------------ }
 { ParseModuleBody : parser les declarations du corps du module  }
 {   ITEM, TABLE, DEFINE, PROCEDURE/FUNCTION, etc.               }
@@ -5090,37 +5093,14 @@ Begin
     Case CurTokNum Of
       KW_ABS, KW_SGN, KW_SHIFTL, KW_SHIFTR, KW_BIT,
       KW_BITSIZE, KW_BYTESIZE, KW_WORDSIZE,
-      KW_UBOUND, KW_LBOUND, KW_FIRST, KW_LAST, KW_NEXT:
+      KW_UBOUND, KW_LBOUND, KW_NWSDEN,
+      KW_FIRST, KW_LAST, KW_NEXT:
       Begin
-        { Appel de fonction integree }
+        { Appel de fonction integree - deleguer a TODO 15 }
         NodeType := EXP_CALL;
         Inc(ExpNodeCount);
         Inc(ExpCallCount);
-        LexNextToken;
-        { Parser les arguments entre parentheses }
-        If CurTokType = TOK_LPAREN Then
-        Begin
-          LexNextToken;
-          ArgCount := 0;
-          If CurTokType <> TOK_RPAREN Then
-          Begin
-            ParseExpression;
-            Inc(ArgCount);
-            While CurTokType = TOK_COMMA Do
-            Begin
-              LexNextToken;
-              ParseExpression;
-              Inc(ArgCount);
-            End;
-          End;
-          If CurTokType = TOK_RPAREN Then
-            LexNextToken
-          Else
-          Begin
-            WarnMsg('Parenthese fermante attendue apres arguments');
-            Inc(ExpErrorCount);
-          End;
-        End;
+        ParseBuiltinCall;
       End;
 
       KW_NOT:
@@ -7698,6 +7678,736 @@ End;
 
 
 { ============================================================ }
+{ TODO 15 - PARSEUR : FONCTIONS INTEGREES JOVIAL (BUILTINS)      }
+{                                               [IMPLEMENTE]  }
+{ ============================================================ }
+
+Const
+  { Types de fonctions integrees (builtins) }
+  BLT_NONE          = 0;   { aucun                                    }
+  BLT_ABS           = 1;   { ABS(x) : valeur absolue                  }
+  BLT_SGN           = 2;   { SGN(x) : signe (-1, 0, +1)              }
+  BLT_SHIFTL        = 3;   { SHIFTL(x, n) : decalage gauche           }
+  BLT_SHIFTR        = 4;   { SHIFTR(x, n) : decalage droite           }
+  BLT_BIT           = 5;   { BIT(val, pos, len) : extraction bits     }
+  BLT_BITSIZE       = 6;   { BITSIZE(item) : taille en bits           }
+  BLT_BYTESIZE      = 7;   { BYTESIZE(item) : taille en octets        }
+  BLT_WORDSIZE      = 8;   { WORDSIZE(item) : taille en mots 32 bits  }
+  BLT_UBOUND        = 9;   { UBOUND(table) : borne superieure         }
+  BLT_LBOUND        = 10;  { LBOUND(table) : borne inferieure         }
+  BLT_NWSDEN        = 11;  { NWSDEN(table) : nombre d elements        }
+  BLT_FIRST         = 12;  { FIRST(status) : premiere valeur enum     }
+  BLT_LAST          = 13;  { LAST(status) : derniere valeur enum      }
+
+  { Limites }
+  BLT_MAX_CALLS = 4096;   { nombre max d appels builtins              }
+
+Var
+  { Variables du parseur de fonctions integrees }
+  BltInitialized    : Boolean;     { module initialise ?             }
+  BltStateCount     : Integer;     { compteur d operations           }
+  BltAbsCount       : Integer;     { appels ABS()                    }
+  BltSgnCount       : Integer;     { appels SGN()                    }
+  BltShiftLCount    : Integer;     { appels SHIFTL() (delegue TODO14)}
+  BltShiftRCount    : Integer;     { appels SHIFTR() (delegue TODO14)}
+  BltBitCount       : Integer;     { appels BIT() (delegue TODO 14)  }
+  BltBitSizeCount   : Integer;     { appels BITSIZE() (delegue TODO14)}
+  BltByteSizeCount  : Integer;     { appels BYTESIZE()               }
+  BltWordSizeCount  : Integer;     { appels WORDSIZE()               }
+  BltUBoundCount    : Integer;     { appels UBOUND()                 }
+  BltLBoundCount    : Integer;     { appels LBOUND()                 }
+  BltNwsdenCount    : Integer;     { appels NWSDEN()                 }
+  BltFirstCount     : Integer;     { appels FIRST() (delegue TODO13) }
+  BltLastCount      : Integer;     { appels LAST() (delegue TODO 13) }
+  BltLabelNum       : Integer;     { generateur de labels uniques    }
+  BltErrorCount     : Integer;     { nombre d erreurs                }
+
+{ ------------------------------------------------------------ }
+{ InitBuiltinState : initialiser les variables des builtins      }
+{ ------------------------------------------------------------ }
+
+Procedure InitBuiltinState;
+Begin
+  BltInitialized    := True;
+  BltStateCount     := 0;
+  BltAbsCount       := 0;
+  BltSgnCount       := 0;
+  BltShiftLCount    := 0;
+  BltShiftRCount    := 0;
+  BltBitCount       := 0;
+  BltBitSizeCount   := 0;
+  BltByteSizeCount  := 0;
+  BltWordSizeCount  := 0;
+  BltUBoundCount    := 0;
+  BltLBoundCount    := 0;
+  BltNwsdenCount    := 0;
+  BltFirstCount     := 0;
+  BltLastCount      := 0;
+  BltLabelNum       := 0;
+  BltErrorCount     := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenBltLabel : generer un label unique pour les builtins         }
+{ ------------------------------------------------------------ }
+
+Function GenBltLabel : TString;
+Begin
+  Inc(BltLabelNum);
+  GenBltLabel := PFX_LBL + 'BLT_' + ItoSI(BltLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ BuiltinTypeName : retourner le nom du type de builtin           }
+{ ------------------------------------------------------------ }
+
+Function BuiltinTypeName(BType : Integer) : TString;
+Begin
+  Case BType Of
+    BLT_NONE       : BuiltinTypeName := 'NONE';
+    BLT_ABS        : BuiltinTypeName := 'ABS';
+    BLT_SGN        : BuiltinTypeName := 'SGN';
+    BLT_SHIFTL     : BuiltinTypeName := 'SHIFTL';
+    BLT_SHIFTR     : BuiltinTypeName := 'SHIFTR';
+    BLT_BIT        : BuiltinTypeName := 'BIT';
+    BLT_BITSIZE    : BuiltinTypeName := 'BITSIZE';
+    BLT_BYTESIZE   : BuiltinTypeName := 'BYTESIZE';
+    BLT_WORDSIZE   : BuiltinTypeName := 'WORDSIZE';
+    BLT_UBOUND     : BuiltinTypeName := 'UBOUND';
+    BLT_LBOUND     : BuiltinTypeName := 'LBOUND';
+    BLT_NWSDEN     : BuiltinTypeName := 'NWSDEN';
+    BLT_FIRST      : BuiltinTypeName := 'FIRST';
+    BLT_LAST       : BuiltinTypeName := 'LAST';
+  Else
+    BuiltinTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalAbs : evaluer ABS(x)                                        }
+{   Retourne la valeur absolue de l expression                    }
+{   Generer : CMP EAX, 0 / JGE @pos / NEG EAX / @pos:           }
+{   CurTok est sur ( apres ABS                                    }
+{ ------------------------------------------------------------ }
+
+Procedure EvalAbs;
+Var
+  Lbl : TString;
+Begin
+  Inc(BltStateCount);
+  Inc(BltAbsCount);
+
+  Lbl := GenBltLabel;
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('( attendu apres ABS');
+    Inc(BltErrorCount);
+  End;
+
+  { Parser l expression argument }
+  If CurTokType <> TOK_RPAREN Then
+    ParseExpression;
+
+  If Opts.Verbose Then
+    WriteLn('  ABS: valeur absolue -> CMP/JGE/NEG [', Lbl, ']');
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres ABS(expression)');
+    Inc(BltErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalSgn : evaluer SGN(x)                                        }
+{   Retourne le signe de l expression (-1, 0, +1)                 }
+{   Generer : CMP EAX, 0 / JE @zero / JG @pos / MOV EAX, -1     }
+{             / JMP @end / @pos: MOV EAX, 1 / @end:              }
+{   CurTok est sur ( apres SGN                                    }
+{ ------------------------------------------------------------ }
+
+Procedure EvalSgn;
+Var
+  LblZero, LblPos, LblEnd : TString;
+Begin
+  Inc(BltStateCount);
+  Inc(BltSgnCount);
+
+  LblZero := GenBltLabel;
+  LblPos  := GenBltLabel;
+  LblEnd  := GenBltLabel;
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('( attendu apres SGN');
+    Inc(BltErrorCount);
+  End;
+
+  { Parser l expression argument }
+  If CurTokType <> TOK_RPAREN Then
+    ParseExpression;
+
+  If Opts.Verbose Then
+    WriteLn('  SGN: signe -> CMP/JE/JG [', LblZero, '/', LblPos, '/', LblEnd, ']');
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres SGN(expression)');
+    Inc(BltErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalByteSize : evaluer BYTESIZE(item)                           }
+{   Retourne la taille en octets de l ITEM (resolu a la compil)   }
+{   CurTok est sur ( apres BYTESIZE                               }
+{ ------------------------------------------------------------ }
+
+Function EvalByteSize : LongInt;
+Var
+  Idx : Integer;
+Begin
+  Inc(BltStateCount);
+  Inc(BltByteSizeCount);
+  EvalByteSize := 0;
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('( attendu apres BYTESIZE');
+    Inc(BltErrorCount);
+  End;
+
+  { Lire le nom de l ITEM }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    Idx := SymFind(CurTokStr);
+    If (Idx >= 0) And (SymTab[Idx].SymKind = SK_ITEM) Then
+    Begin
+      EvalByteSize := SymTab[Idx].ByteSize;
+      If Opts.Verbose Then
+        WriteLn('  BYTESIZE(', CurTokStr, ') = ', SymTab[Idx].ByteSize);
+    End
+    Else
+    Begin
+      WarnMsg('BYTESIZE : ' + CurTokStr + ' n est pas un ITEM');
+      Inc(BltErrorCount);
+    End;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_KEYWORD Then
+  Begin
+    { Un mot-cle peut etre utilise comme nom de variable }
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Nom d ITEM attendu dans BYTESIZE()');
+    Inc(BltErrorCount);
+  End;
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres BYTESIZE(nom)');
+    Inc(BltErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalWordSize : evaluer WORDSIZE(item)                           }
+{   Retourne la taille en mots 32 bits de l ITEM                  }
+{   (ByteSize + 3) div 4, resolu a la compilation                 }
+{   CurTok est sur ( apres WORDSIZE                               }
+{ ------------------------------------------------------------ }
+
+Function EvalWordSize : LongInt;
+Var
+  Idx : Integer;
+Begin
+  Inc(BltStateCount);
+  Inc(BltWordSizeCount);
+  EvalWordSize := 0;
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('( attendu apres WORDSIZE');
+    Inc(BltErrorCount);
+  End;
+
+  { Lire le nom de l ITEM }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    Idx := SymFind(CurTokStr);
+    If (Idx >= 0) And (SymTab[Idx].SymKind = SK_ITEM) Then
+    Begin
+      EvalWordSize := (SymTab[Idx].ByteSize + 3) Div 4;
+      If Opts.Verbose Then
+        WriteLn('  WORDSIZE(', CurTokStr, ') = ',
+                (SymTab[Idx].ByteSize + 3) Div 4);
+    End
+    Else
+    Begin
+      WarnMsg('WORDSIZE : ' + CurTokStr + ' n est pas un ITEM');
+      Inc(BltErrorCount);
+    End;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_KEYWORD Then
+  Begin
+    { Un mot-cle peut etre utilise comme nom de variable }
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Nom d ITEM attendu dans WORDSIZE()');
+    Inc(BltErrorCount);
+  End;
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres WORDSIZE(nom)');
+    Inc(BltErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalUBound : evaluer UBOUND(table)                              }
+{   Retourne la borne superieure du tableau (taille - 1)           }
+{   Resolu a la compilation                                       }
+{   CurTok est sur ( apres UBOUND                                 }
+{ ------------------------------------------------------------ }
+
+Function EvalUBound : LongInt;
+Var
+  Idx : Integer;
+Begin
+  Inc(BltStateCount);
+  Inc(BltUBoundCount);
+  EvalUBound := 0;
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('( attendu apres UBOUND');
+    Inc(BltErrorCount);
+  End;
+
+  { Lire le nom de la TABLE }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    Idx := SymFind(CurTokStr);
+    If (Idx >= 0) And (SymTab[Idx].SymKind = SK_TABLE) Then
+    Begin
+      If SymTab[Idx].TableSize > 0 Then
+        EvalUBound := SymTab[Idx].TableSize - 1
+      Else
+        EvalUBound := 0;
+      If Opts.Verbose Then
+        WriteLn('  UBOUND(', CurTokStr, ') = ', EvalUBound);
+    End
+    Else
+    Begin
+      WarnMsg('UBOUND : ' + CurTokStr + ' n est pas une TABLE');
+      Inc(BltErrorCount);
+    End;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_KEYWORD Then
+  Begin
+    { Un mot-cle peut etre utilise comme nom de variable }
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Nom de TABLE attendu dans UBOUND()');
+    Inc(BltErrorCount);
+  End;
+
+  { Consommer la dimension optionnelle , dim }
+  If CurTokType = TOK_COMMA Then
+  Begin
+    LexNextToken;
+    { Parser et ignorer l expression de dimension (toujours 1D) }
+    If CurTokType <> TOK_RPAREN Then
+      ParseExpression;
+  End;
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres UBOUND(table)');
+    Inc(BltErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalLBound : evaluer LBOUND(table)                              }
+{   Retourne la borne inferieure du tableau (toujours 0 en Jovial)}
+{   Resolu a la compilation                                       }
+{   CurTok est sur ( apres LBOUND                                 }
+{ ------------------------------------------------------------ }
+
+Function EvalLBound : LongInt;
+Var
+  Idx : Integer;
+Begin
+  Inc(BltStateCount);
+  Inc(BltLBoundCount);
+  EvalLBound := 0;
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('( attendu apres LBOUND');
+    Inc(BltErrorCount);
+  End;
+
+  { Lire le nom de la TABLE }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    Idx := SymFind(CurTokStr);
+    If (Idx >= 0) And (SymTab[Idx].SymKind = SK_TABLE) Then
+    Begin
+      EvalLBound := 0;
+      If Opts.Verbose Then
+        WriteLn('  LBOUND(', CurTokStr, ') = 0');
+    End
+    Else
+    Begin
+      WarnMsg('LBOUND : ' + CurTokStr + ' n est pas une TABLE');
+      Inc(BltErrorCount);
+    End;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_KEYWORD Then
+  Begin
+    { Un mot-cle peut etre utilise comme nom de variable }
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Nom de TABLE attendu dans LBOUND()');
+    Inc(BltErrorCount);
+  End;
+
+  { Consommer la dimension optionnelle , dim }
+  If CurTokType = TOK_COMMA Then
+  Begin
+    LexNextToken;
+    { Parser et ignorer l expression de dimension (toujours 1D) }
+    If CurTokType <> TOK_RPAREN Then
+      ParseExpression;
+  End;
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres LBOUND(table)');
+    Inc(BltErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalNwsden : evaluer NWSDEN(table)                              }
+{   Retourne le nombre d elements dans la table                    }
+{   Resolu a la compilation                                       }
+{   CurTok est sur ( apres NWSDEN                                 }
+{ ------------------------------------------------------------ }
+
+Function EvalNwsden : LongInt;
+Var
+  Idx : Integer;
+Begin
+  Inc(BltStateCount);
+  Inc(BltNwsdenCount);
+  EvalNwsden := 0;
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('( attendu apres NWSDEN');
+    Inc(BltErrorCount);
+  End;
+
+  { Lire le nom de la TABLE }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    Idx := SymFind(CurTokStr);
+    If (Idx >= 0) And (SymTab[Idx].SymKind = SK_TABLE) Then
+    Begin
+      EvalNwsden := SymTab[Idx].TableSize;
+      If Opts.Verbose Then
+        WriteLn('  NWSDEN(', CurTokStr, ') = ', SymTab[Idx].TableSize);
+    End
+    Else
+    Begin
+      WarnMsg('NWSDEN : ' + CurTokStr + ' n est pas une TABLE');
+      Inc(BltErrorCount);
+    End;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_KEYWORD Then
+  Begin
+    { Un mot-cle peut etre utilise comme nom de variable }
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Nom de TABLE attendu dans NWSDEN()');
+    Inc(BltErrorCount);
+  End;
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres NWSDEN(table)');
+    Inc(BltErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsBuiltinFunction : verifier si un mot-cle est un builtin       }
+{   Retourne True si le mot-cle est une fonction integree         }
+{ ------------------------------------------------------------ }
+
+Function IsBuiltinFunction(KwCode : Integer) : Boolean;
+Begin
+  Inc(BltStateCount);
+  IsBuiltinFunction := (KwCode = KW_ABS) Or (KwCode = KW_SGN) Or
+    (KwCode = KW_SHIFTL) Or (KwCode = KW_SHIFTR) Or
+    (KwCode = KW_BIT) Or (KwCode = KW_BITSIZE) Or
+    (KwCode = KW_BYTESIZE) Or (KwCode = KW_WORDSIZE) Or
+    (KwCode = KW_UBOUND) Or (KwCode = KW_LBOUND) Or
+    (KwCode = KW_NWSDEN) Or (KwCode = KW_FIRST) Or
+    (KwCode = KW_LAST) Or (KwCode = KW_NEXT);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBuiltinCall : dispatcher pour les appels de builtins        }
+{   Identifie le builtin et delegue au parseur specialise          }
+{   CurTok est sur le mot-cle du builtin                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseBuiltinCall;
+Var
+  KwCode : Integer;
+Begin
+  Inc(BltStateCount);
+  KwCode := CurTokNum;
+  LexNextToken;
+
+  Case KwCode Of
+    KW_ABS:
+    Begin
+      EvalAbs;
+    End;
+
+    KW_SGN:
+    Begin
+      EvalSgn;
+    End;
+
+    KW_SHIFTL:
+    Begin
+      { Deleguer a TODO 14 }
+      Inc(BltShiftLCount);
+      ParseShiftLeft;
+    End;
+
+    KW_SHIFTR:
+    Begin
+      { Deleguer a TODO 14 }
+      Inc(BltShiftRCount);
+      ParseShiftRight;
+    End;
+
+    KW_BIT:
+    Begin
+      { Deleguer a TODO 14 }
+      Inc(BltBitCount);
+      ParseBitExtract;
+    End;
+
+    KW_BITSIZE:
+    Begin
+      { Deleguer a TODO 14 }
+      Inc(BltBitSizeCount);
+      EvalBitSize;
+    End;
+
+    KW_BYTESIZE:
+    Begin
+      EvalByteSize;
+    End;
+
+    KW_WORDSIZE:
+    Begin
+      EvalWordSize;
+    End;
+
+    KW_UBOUND:
+    Begin
+      EvalUBound;
+    End;
+
+    KW_LBOUND:
+    Begin
+      EvalLBound;
+    End;
+
+    KW_NWSDEN:
+    Begin
+      EvalNwsden;
+    End;
+
+    KW_FIRST:
+    Begin
+      { Deleguer a TODO 13 }
+      Inc(BltFirstCount);
+      EvalStatusFirst;
+    End;
+
+    KW_LAST:
+    Begin
+      { Deleguer a TODO 13 }
+      Inc(BltLastCount);
+      EvalStatusLast;
+    End;
+
+  Else
+    Begin
+      WarnMsg('Fonction integree inconnue');
+      Inc(BltErrorCount);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpBuiltinState : afficher l etat du parseur builtins           }
+{ ------------------------------------------------------------ }
+
+Procedure DumpBuiltinState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat du parseur BUILTINS (TODO 15) ===');
+  WriteLn('  Initialise         : ', BltInitialized);
+  WriteLn('  Operations         : ', BltStateCount);
+  WriteLn('  ABS()              : ', BltAbsCount);
+  WriteLn('  SGN()              : ', BltSgnCount);
+  WriteLn('  SHIFTL()           : ', BltShiftLCount);
+  WriteLn('  SHIFTR()           : ', BltShiftRCount);
+  WriteLn('  BIT()              : ', BltBitCount);
+  WriteLn('  BITSIZE()          : ', BltBitSizeCount);
+  WriteLn('  BYTESIZE()         : ', BltByteSizeCount);
+  WriteLn('  WORDSIZE()         : ', BltWordSizeCount);
+  WriteLn('  UBOUND()           : ', BltUBoundCount);
+  WriteLn('  LBOUND()           : ', BltLBoundCount);
+  WriteLn('  NWSDEN()           : ', BltNwsdenCount);
+  WriteLn('  FIRST()            : ', BltFirstCount);
+  WriteLn('  LAST()             : ', BltLastCount);
+  WriteLn('  Labels generes     : ', BltLabelNum);
+  WriteLn('  Erreurs            : ', BltErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Accesseurs du parseur BUILTINS (10 fonctions)                    }
+{ ------------------------------------------------------------ }
+
+Function IsBltInitialized : Boolean;
+Begin
+  IsBltInitialized := BltInitialized;
+End;
+
+Function GetBltAbsCount : Integer;
+Begin
+  GetBltAbsCount := BltAbsCount;
+End;
+
+Function GetBltSgnCount : Integer;
+Begin
+  GetBltSgnCount := BltSgnCount;
+End;
+
+Function GetBltSizeCount : Integer;
+Begin
+  GetBltSizeCount := BltBitSizeCount + BltByteSizeCount + BltWordSizeCount;
+End;
+
+Function GetBltBoundCount : Integer;
+Begin
+  GetBltBoundCount := BltUBoundCount + BltLBoundCount + BltNwsdenCount;
+End;
+
+Function GetBltShiftCount : Integer;
+Begin
+  GetBltShiftCount := BltShiftLCount + BltShiftRCount;
+End;
+
+Function GetBltDelegateCount : Integer;
+Begin
+  GetBltDelegateCount := BltFirstCount + BltLastCount + BltBitCount +
+                         BltBitSizeCount + BltShiftLCount + BltShiftRCount;
+End;
+
+Function GetBltStateCount : Integer;
+Begin
+  GetBltStateCount := BltStateCount;
+End;
+
+Function GetBltErrorCount : Integer;
+Begin
+  GetBltErrorCount := BltErrorCount;
+End;
+
+Function IsBltEmpty : Boolean;
+Begin
+  IsBltEmpty := (BltAbsCount = 0) And (BltSgnCount = 0) And
+                (BltByteSizeCount = 0) And (BltWordSizeCount = 0) And
+                (BltUBoundCount = 0) And (BltLBoundCount = 0) And
+                (BltNwsdenCount = 0) And (BltShiftLCount = 0) And
+                (BltShiftRCount = 0) And (BltBitCount = 0) And
+                (BltBitSizeCount = 0) And (BltFirstCount = 0) And
+                (BltLastCount = 0);
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -7722,6 +8432,7 @@ Begin
   AsgInitialized := False;
   StsInitialized := False;
   BitInitialized := False;
+  BltInitialized := False;
 
   ParseArgs;
 
@@ -7764,6 +8475,9 @@ Begin
   { Initialiser le parseur d operations sur les bits }
   InitBitState;
 
+  { Initialiser le parseur de fonctions integrees (builtins) }
+  InitBuiltinState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -7791,6 +8505,7 @@ Begin
     DumpAssignState;
     DumpStatusState;
     DumpBitState;
+    DumpBuiltinState;
   End;
 
   { Nettoyage }
