@@ -499,9 +499,28 @@ Turbo Pascal / Free Pascal (-Mtp)
            Const Identity: String)
            signer l'application avec codesign (optionnel)
 
-  TODO 18 - GENERATION WINDOWS [A FAIRE]
+  TODO 18 - GENERATION WINDOWS [IMPLEMENTE]
          Constantes Windows :
-           WIN_EXE_EXT = '.exe', WIN_MSI_EXT = '.msi'
+           WIN_EXE_EXT = '.exe', WIN_MSI_EXT = '.msi',
+           WIN_ICO_EXT = '.ico', WIN_RC_EXT = '.rc',
+           WIN_MANIFEST_EXT = '.manifest',
+           WIN_MAX_VERSION_LEN = 20
+         Types Windows :
+           WIN_EXT_NONE = 0, WIN_EXT_EXE = 1, WIN_EXT_MSI = 2,
+           WIN_EXT_ICO = 3, WIN_EXT_RC = 4, WIN_EXT_MANIFEST = 5
+         Type TVersionInfo (FileVersion, ProductVersion, CompanyName,
+           FileDescription, InternalName, OriginalFilename, ProductName,
+           LegalCopyright)
+         Type TWindowsManifest (ExecutionLevel, DpiAware, VisualStyles,
+           LongPathAware, Version)
+         Variables d'etat :
+           WinInitialized/WinStateCount/WinManifestGenCount/WinRcGenCount/
+           WinWixGenCount/WinNsisGenCount/WinInstallerCount/WinCopyCount/
+           WinErrorCount
+         Procedure InitWindowsState
+           initialiser les variables d'etat du module Windows
+         Function WinExtName(ExtType: Integer): String
+           retourner le nom de l'extension Windows
          Function GenerateWindowsManifest(Const Opts: TOptions): String
            generer le fichier manifest Windows :
            requestedExecutionLevel, dpiAware, visualStyles
@@ -516,6 +535,12 @@ Turbo Pascal / Free Pascal (-Mtp)
            generer le fichier WiX (.wxs) pour MSI
          Function GenerateNsisScript(Const Opts: TOptions): String
            generer le script NSIS (.nsi) pour l'installateur
+         Function IsWindowsInstallerValid(Const InstallerPath: String): Boolean
+         Procedure DumpWindowsState
+         10 accesseurs (IsWinInitialized/IsWinEmpty/GetWinStateCount/
+           GetWinManifestGenCount/GetWinRcGenCount/GetWinWixGenCount/
+           GetWinNsisGenCount/GetWinInstallerCount/GetWinCopyCount/
+           GetWinErrorCount)
 
   TODO 19 - GENERATION LINUX [A FAIRE]
          Constantes Linux :

@@ -528,9 +528,28 @@
               GetMacSignCount/GetMacCopyCount/GetMacErrorCount/
               GetMacMaxBundleSize)
 
-  TODO 18 - GENERATION WINDOWS [A FAIRE]
+  TODO 18 - GENERATION WINDOWS [IMPLEMENTE]
             Constantes Windows :
-              WIN_EXE_EXT = '.exe', WIN_MSI_EXT = '.msi'
+              WIN_EXE_EXT = '.exe', WIN_MSI_EXT = '.msi',
+              WIN_ICO_EXT = '.ico', WIN_RC_EXT = '.rc',
+              WIN_MANIFEST_EXT = '.manifest',
+              WIN_MAX_VERSION_LEN = 20
+            Types Windows :
+              WIN_EXT_NONE = 0, WIN_EXT_EXE = 1, WIN_EXT_MSI = 2,
+              WIN_EXT_ICO = 3, WIN_EXT_RC = 4, WIN_EXT_MANIFEST = 5
+            Type TVersionInfo (FileVersion, ProductVersion, CompanyName,
+              FileDescription, InternalName, OriginalFilename, ProductName,
+              LegalCopyright)
+            Type TWindowsManifest (ExecutionLevel, DpiAware, VisualStyles,
+              LongPathAware, Version)
+            Variables d etat :
+              WinInitialized/WinStateCount/WinManifestGenCount/WinRcGenCount/
+              WinWixGenCount/WinNsisGenCount/WinInstallerCount/WinCopyCount/
+              WinErrorCount
+            Procedure InitWindowsState
+              initialiser les variables d etat du module Windows
+            Function WinExtName(ExtType: Integer): String
+              retourner le nom de l extension Windows
             Function GenerateWindowsManifest(Const Opts: TOptions): String
               generer le fichier manifest Windows :
               requestedExecutionLevel, dpiAware, visualStyles
@@ -545,6 +564,12 @@
               generer le fichier WiX (.wxs) pour MSI
             Function GenerateNsisScript(Const Opts: TOptions): String
               generer le script NSIS (.nsi) pour l installateur
+            Function IsWindowsInstallerValid(Const InstallerPath: String): Boolean
+            Procedure DumpWindowsState
+            10 accesseurs (IsWinInitialized/IsWinEmpty/GetWinStateCount/
+              GetWinManifestGenCount/GetWinRcGenCount/GetWinWixGenCount/
+              GetWinNsisGenCount/GetWinInstallerCount/GetWinCopyCount/
+              GetWinErrorCount)
 
   TODO 19 - GENERATION LINUX [A FAIRE]
             Constantes Linux :
@@ -5729,7 +5754,670 @@ Begin
 End;
 
 { ============================================================
-  TODO 18-25 : A IMPLEMENTER
+  TODO 18 - GENERATION WINDOWS [IMPLEMENTE]
+  ============================================================ }
+
+Const
+  { Constantes Windows additionnelles (WIN_EXE_EXT et WIN_MSI_EXT deja definis) }
+  WIN_ICO_EXT      = '.ico';
+  WIN_RC_EXT       = '.rc';
+  WIN_MANIFEST_EXT = '.manifest';
+  WIN_MAX_VERSION_LEN = 20;
+  
+  { Types d'extensions Windows }
+  WIN_EXT_NONE     = 0;
+  WIN_EXT_EXE      = 1;
+  WIN_EXT_MSI      = 2;
+  WIN_EXT_ICO      = 3;
+  WIN_EXT_RC       = 4;
+  WIN_EXT_MANIFEST = 5;
+
+Type
+  { Configuration VERSIONINFO }
+  TVersionInfo = Record
+    FileVersion       : String;    { ex: '1.0.0.0' }
+    ProductVersion    : String;    { ex: '1.0.0.0' }
+    CompanyName       : String;    { Nom de la compagnie }
+    FileDescription   : String;    { Description du fichier }
+    InternalName      : String;    { Nom interne }
+    OriginalFilename  : String;    { Nom de fichier original }
+    ProductName       : String;    { Nom du produit }
+    LegalCopyright    : String;    { Copyright }
+  End;
+
+  { Configuration du manifest Windows }
+  TWindowsManifest = Record
+    ExecutionLevel   : String;    { asInvoker, highestAvailable, requireAdministrator }
+    DpiAware         : Boolean;   { Support DPI haute resolution }
+    VisualStyles     : Boolean;   { Styles visuels Windows }
+    LongPathAware    : Boolean;   { Chemins longs (> 260 chars) }
+    Version          : String;    { Version du manifest }
+  End;
+
+Var
+  { Variables d'etat pour le module Windows }
+  WinInitialized     : Boolean;
+  WinStateCount      : Integer;
+  WinManifestGenCount: Integer;
+  WinRcGenCount      : Integer;
+  WinWixGenCount     : Integer;
+  WinNsisGenCount    : Integer;
+  WinInstallerCount  : Integer;
+  WinCopyCount       : Integer;
+  WinErrorCount      : Integer;
+
+Procedure InitWindowsState;
+Begin
+  WinInitialized := True;
+  WinStateCount := 0;
+  WinManifestGenCount := 0;
+  WinRcGenCount := 0;
+  WinWixGenCount := 0;
+  WinNsisGenCount := 0;
+  WinInstallerCount := 0;
+  WinCopyCount := 0;
+  WinErrorCount := 0;
+  Inc(WinStateCount);
+End;
+
+Function WinExtName(ExtType: Integer): String;
+Begin
+  Inc(WinStateCount);
+  Case ExtType Of
+    WIN_EXT_EXE:      WinExtName := WIN_EXE_EXT;
+    WIN_EXT_MSI:      WinExtName := WIN_MSI_EXT;
+    WIN_EXT_ICO:      WinExtName := WIN_ICO_EXT;
+    WIN_EXT_RC:       WinExtName := WIN_RC_EXT;
+    WIN_EXT_MANIFEST: WinExtName := WIN_MANIFEST_EXT;
+  Else
+    WinExtName := '';
+  End;
+End;
+
+Procedure InitVersionInfo(Var Info: TVersionInfo; Const Opts: TOptions);
+Var
+  AppName: String;
+Begin
+  Inc(WinStateCount);
+  
+  { Determiner le nom de l'application }
+  If Opts.AppName <> '' Then
+    AppName := Opts.AppName
+  Else
+    AppName := ExtractDomain(Opts.Url);
+  
+  { Initialiser les champs }
+  Info.FileVersion := PAKE_VERSION + '.0';
+  Info.ProductVersion := PAKE_VERSION + '.0';
+  Info.CompanyName := 'Pake';
+  Info.FileDescription := AppName + ' Desktop Application';
+  Info.InternalName := SanitizeAppName(AppName);
+  Info.OriginalFilename := SanitizeAppName(AppName) + WIN_EXE_EXT;
+  Info.ProductName := AppName;
+  Info.LegalCopyright := 'Copyright 2024 ' + AppName;
+End;
+
+Procedure InitWindowsManifest(Var Manifest: TWindowsManifest);
+Begin
+  Inc(WinStateCount);
+  
+  { Initialiser avec les valeurs par defaut }
+  Manifest.ExecutionLevel := 'asInvoker';
+  Manifest.DpiAware := True;
+  Manifest.VisualStyles := True;
+  Manifest.LongPathAware := True;
+  Manifest.Version := '1.0.0.0';
+End;
+
+Function GenerateWindowsManifest(Const Opts: TOptions): String;
+Var
+  Manifest: TWindowsManifest;
+  AppName, S: String;
+Begin
+  Inc(WinStateCount);
+  Inc(WinManifestGenCount);
+  
+  { Initialiser le manifest }
+  InitWindowsManifest(Manifest);
+  
+  { Determiner le nom de l'application }
+  If Opts.AppName <> '' Then
+    AppName := Opts.AppName
+  Else
+    AppName := ExtractDomain(Opts.Url);
+  
+  { Generer le contenu du fichier manifest }
+  S := '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' + #10;
+  S := S + '<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">' + #10;
+  
+  { Identite de l'application }
+  S := S + '  <assemblyIdentity' + #10;
+  S := S + '    type="win32"' + #10;
+  S := S + '    name="' + EscapeJson(SanitizeAppName(AppName)) + '"' + #10;
+  S := S + '    version="' + Manifest.Version + '"' + #10;
+  S := S + '    processorArchitecture="*"/>' + #10;
+  
+  { Description }
+  S := S + '  <description>' + EscapeJson(AppName) + ' Desktop Application</description>' + #10;
+  
+  { Compatibilite Windows }
+  S := S + '  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">' + #10;
+  S := S + '    <application>' + #10;
+  S := S + '      <!-- Windows 10/11 -->' + #10;
+  S := S + '      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>' + #10;
+  S := S + '      <!-- Windows 8.1 -->' + #10;
+  S := S + '      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>' + #10;
+  S := S + '      <!-- Windows 8 -->' + #10;
+  S := S + '      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>' + #10;
+  S := S + '      <!-- Windows 7 -->' + #10;
+  S := S + '      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>' + #10;
+  S := S + '    </application>' + #10;
+  S := S + '  </compatibility>' + #10;
+  
+  { Niveau d'execution demande }
+  S := S + '  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">' + #10;
+  S := S + '    <security>' + #10;
+  S := S + '      <requestedPrivileges>' + #10;
+  S := S + '        <requestedExecutionLevel level="' + Manifest.ExecutionLevel;
+  S := S + '" uiAccess="false"/>' + #10;
+  S := S + '      </requestedPrivileges>' + #10;
+  S := S + '    </security>' + #10;
+  S := S + '  </trustInfo>' + #10;
+  
+  { Awareness DPI }
+  If Manifest.DpiAware Then
+  Begin
+    S := S + '  <application xmlns="urn:schemas-microsoft-com:asm.v3">' + #10;
+    S := S + '    <windowsSettings>' + #10;
+    S := S + '      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">';
+    S := S + 'true/pm</dpiAware>' + #10;
+    S := S + '      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">';
+    S := S + 'PerMonitorV2, PerMonitor</dpiAwareness>' + #10;
+    If Manifest.LongPathAware Then
+    Begin
+      S := S + '      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">';
+      S := S + 'true</longPathAware>' + #10;
+    End;
+    S := S + '    </windowsSettings>' + #10;
+    S := S + '  </application>' + #10;
+  End;
+  
+  { Styles visuels (Common Controls 6.0) }
+  If Manifest.VisualStyles Then
+  Begin
+    S := S + '  <dependency>' + #10;
+    S := S + '    <dependentAssembly>' + #10;
+    S := S + '      <assemblyIdentity' + #10;
+    S := S + '        type="win32"' + #10;
+    S := S + '        name="Microsoft.Windows.Common-Controls"' + #10;
+    S := S + '        version="6.0.0.0"' + #10;
+    S := S + '        processorArchitecture="*"' + #10;
+    S := S + '        publicKeyToken="6595b64144ccf1df"' + #10;
+    S := S + '        language="*"/>' + #10;
+    S := S + '    </dependentAssembly>' + #10;
+    S := S + '  </dependency>' + #10;
+  End;
+  
+  S := S + '</assembly>' + #10;
+  
+  GenerateWindowsManifest := S;
+End;
+
+Function GenerateWindowsRc(Const Opts: TOptions): String;
+Var
+  Info: TVersionInfo;
+  S: String;
+Begin
+  Inc(WinStateCount);
+  Inc(WinRcGenCount);
+  
+  { Initialiser les informations de version }
+  InitVersionInfo(Info, Opts);
+  
+  { Generer le contenu du fichier .rc }
+  S := '// Resource file generated by PAKE' + #10;
+  S := S + '// ' + PAKE_VERSION + #10;
+  S := S + #10;
+  
+  { Icone de l'application }
+  S := S + '// Application Icon' + #10;
+  S := S + 'IDI_ICON1 ICON "icon.ico"' + #10;
+  S := S + #10;
+  
+  { Informations de version }
+  S := S + '// Version Information' + #10;
+  S := S + '1 VERSIONINFO' + #10;
+  S := S + ' FILEVERSION 1,0,0,0' + #10;
+  S := S + ' PRODUCTVERSION 1,0,0,0' + #10;
+  S := S + ' FILEFLAGSMASK 0x3fL' + #10;
+  S := S + ' FILEFLAGS 0x0L' + #10;
+  S := S + ' FILEOS 0x40004L' + #10;
+  S := S + ' FILETYPE 0x1L' + #10;
+  S := S + ' FILESUBTYPE 0x0L' + #10;
+  S := S + 'BEGIN' + #10;
+  S := S + '  BLOCK "StringFileInfo"' + #10;
+  S := S + '  BEGIN' + #10;
+  S := S + '    BLOCK "040904b0"' + #10;
+  S := S + '    BEGIN' + #10;
+  S := S + '      VALUE "CompanyName", "' + Info.CompanyName + '"' + #10;
+  S := S + '      VALUE "FileDescription", "' + Info.FileDescription + '"' + #10;
+  S := S + '      VALUE "FileVersion", "' + Info.FileVersion + '"' + #10;
+  S := S + '      VALUE "InternalName", "' + Info.InternalName + '"' + #10;
+  S := S + '      VALUE "LegalCopyright", "' + Info.LegalCopyright + '"' + #10;
+  S := S + '      VALUE "OriginalFilename", "' + Info.OriginalFilename + '"' + #10;
+  S := S + '      VALUE "ProductName", "' + Info.ProductName + '"' + #10;
+  S := S + '      VALUE "ProductVersion", "' + Info.ProductVersion + '"' + #10;
+  S := S + '    END' + #10;
+  S := S + '  END' + #10;
+  S := S + '  BLOCK "VarFileInfo"' + #10;
+  S := S + '  BEGIN' + #10;
+  S := S + '    VALUE "Translation", 0x409, 1200' + #10;
+  S := S + '  END' + #10;
+  S := S + 'END' + #10;
+  S := S + #10;
+  
+  { Manifest }
+  S := S + '// Application Manifest' + #10;
+  S := S + '1 RT_MANIFEST "app.manifest"' + #10;
+  
+  GenerateWindowsRc := S;
+End;
+
+Function GenerateWixWxs(Const Opts: TOptions): String;
+Var
+  AppName, SafeName, S: String;
+Begin
+  Inc(WinStateCount);
+  Inc(WinWixGenCount);
+  
+  { Determiner le nom de l'application }
+  If Opts.AppName <> '' Then
+    AppName := Opts.AppName
+  Else
+    AppName := ExtractDomain(Opts.Url);
+  
+  SafeName := SanitizeAppName(AppName);
+  
+  { Generer le contenu du fichier WiX (.wxs) }
+  S := '<?xml version="1.0" encoding="UTF-8"?>' + #10;
+  S := S + '<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">' + #10;
+  S := S + '  <Product Id="*"' + #10;
+  S := S + '           Name="' + EscapeJson(AppName) + '"' + #10;
+  S := S + '           Language="1033"' + #10;
+  S := S + '           Version="' + PAKE_VERSION + '.0"' + #10;
+  S := S + '           Manufacturer="Pake"' + #10;
+  S := S + '           UpgradeCode="PUT-GUID-HERE">' + #10;
+  S := S + #10;
+  S := S + '    <Package InstallerVersion="500"' + #10;
+  S := S + '             Compressed="yes"' + #10;
+  S := S + '             InstallScope="perMachine"' + #10;
+  S := S + '             Description="' + EscapeJson(AppName) + ' Desktop Application"' + #10;
+  S := S + '             Comments="Generated by PAKE"/>' + #10;
+  S := S + #10;
+  S := S + '    <MajorUpgrade DowngradeErrorMessage=';
+  S := S + '"A newer version is already installed."/>' + #10;
+  S := S + '    <MediaTemplate EmbedCab="yes"/>' + #10;
+  S := S + #10;
+  S := S + '    <Feature Id="ProductFeature" Title="' + EscapeJson(AppName);
+  S := S + '" Level="1">' + #10;
+  S := S + '      <ComponentGroupRef Id="ProductComponents"/>' + #10;
+  S := S + '      <ComponentRef Id="ApplicationShortcut"/>' + #10;
+  S := S + '    </Feature>' + #10;
+  S := S + #10;
+  S := S + '    <Directory Id="TARGETDIR" Name="SourceDir">' + #10;
+  S := S + '      <Directory Id="ProgramFilesFolder">' + #10;
+  S := S + '        <Directory Id="INSTALLFOLDER" Name="' + SafeName + '"/>' + #10;
+  S := S + '      </Directory>' + #10;
+  S := S + '      <Directory Id="ProgramMenuFolder">' + #10;
+  S := S + '        <Directory Id="ApplicationProgramsFolder" Name="' + EscapeJson(AppName);
+  S := S + '"/>' + #10;
+  S := S + '      </Directory>' + #10;
+  S := S + '      <Directory Id="DesktopFolder" Name="Desktop"/>' + #10;
+  S := S + '    </Directory>' + #10;
+  S := S + #10;
+  S := S + '    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">' + #10;
+  S := S + '      <Component Id="MainExecutable" Guid="PUT-GUID-HERE">' + #10;
+  S := S + '        <File Id="' + SafeName + 'EXE"' + #10;
+  S := S + '              Name="' + SafeName + '.exe"' + #10;
+  S := S + '              Source="$(var.SourceDir)\' + SafeName + '.exe"' + #10;
+  S := S + '              KeyPath="yes"/>' + #10;
+  S := S + '      </Component>' + #10;
+  S := S + '    </ComponentGroup>' + #10;
+  S := S + #10;
+  S := S + '    <DirectoryRef Id="ApplicationProgramsFolder">' + #10;
+  S := S + '      <Component Id="ApplicationShortcut" Guid="PUT-GUID-HERE">' + #10;
+  S := S + '        <Shortcut Id="ApplicationStartMenuShortcut"' + #10;
+  S := S + '                  Name="' + EscapeJson(AppName) + '"' + #10;
+  S := S + '                  Description="' + EscapeJson(AppName) + '"' + #10;
+  S := S + '                  Target="[INSTALLFOLDER]' + SafeName + '.exe"' + #10;
+  S := S + '                  WorkingDirectory="INSTALLFOLDER"/>' + #10;
+  S := S + '        <RemoveFolder Id="CleanUpShortCut"' + #10;
+  S := S + '                      Directory="ApplicationProgramsFolder"' + #10;
+  S := S + '                      On="uninstall"/>' + #10;
+  S := S + '        <RegistryValue Root="HKCU"' + #10;
+  S := S + '                       Key="Software\Pake\' + SafeName + '"' + #10;
+  S := S + '                       Name="installed"' + #10;
+  S := S + '                       Type="integer"' + #10;
+  S := S + '                       Value="1"' + #10;
+  S := S + '                       KeyPath="yes"/>' + #10;
+  S := S + '      </Component>' + #10;
+  S := S + '    </DirectoryRef>' + #10;
+  S := S + #10;
+  S := S + '    <Icon Id="icon.ico" SourceFile="$(var.SourceDir)\icon.ico"/>' + #10;
+  S := S + '    <Property Id="ARPPRODUCTICON" Value="icon.ico"/>' + #10;
+  S := S + '  </Product>' + #10;
+  S := S + '</Wix>' + #10;
+  
+  GenerateWixWxs := S;
+End;
+
+Function GenerateNsisScript(Const Opts: TOptions): String;
+Var
+  AppName, SafeName, S: String;
+Begin
+  Inc(WinStateCount);
+  Inc(WinNsisGenCount);
+  
+  { Determiner le nom de l'application }
+  If Opts.AppName <> '' Then
+    AppName := Opts.AppName
+  Else
+    AppName := ExtractDomain(Opts.Url);
+  
+  SafeName := SanitizeAppName(AppName);
+  
+  { Generer le contenu du script NSIS (.nsi) }
+  S := '; NSIS Installer Script generated by PAKE' + #10;
+  S := S + '; ' + PAKE_VERSION + #10;
+  S := S + #10;
+  S := S + '!include "MUI2.nsh"' + #10;
+  S := S + #10;
+  S := S + '; Application Info' + #10;
+  S := S + '!define APPNAME "' + AppName + '"' + #10;
+  S := S + '!define COMPANYNAME "Pake"' + #10;
+  S := S + '!define DESCRIPTION "' + AppName + ' Desktop Application"' + #10;
+  S := S + '!define VERSIONMAJOR 1' + #10;
+  S := S + '!define VERSIONMINOR 0' + #10;
+  S := S + '!define VERSIONBUILD 0' + #10;
+  S := S + '!define INSTALLSIZE 10000' + #10;
+  S := S + #10;
+  S := S + '; Installer Settings' + #10;
+  S := S + 'Name "${APPNAME}"' + #10;
+  S := S + 'OutFile "' + SafeName + '-Setup.exe"' + #10;
+  S := S + 'InstallDir "$PROGRAMFILES\${APPNAME}"' + #10;
+  S := S + 'InstallDirRegKey HKLM "Software\${APPNAME}" "InstallLocation"' + #10;
+  S := S + 'RequestExecutionLevel admin' + #10;
+  S := S + #10;
+  S := S + '; Modern UI Settings' + #10;
+  S := S + '!define MUI_ABORTWARNING' + #10;
+  S := S + '!define MUI_ICON "icon.ico"' + #10;
+  S := S + '!define MUI_UNICON "icon.ico"' + #10;
+  S := S + #10;
+  S := S + '; Pages' + #10;
+  S := S + '!insertmacro MUI_PAGE_WELCOME' + #10;
+  S := S + '!insertmacro MUI_PAGE_LICENSE "LICENSE.txt"' + #10;
+  S := S + '!insertmacro MUI_PAGE_DIRECTORY' + #10;
+  S := S + '!insertmacro MUI_PAGE_INSTFILES' + #10;
+  S := S + '!insertmacro MUI_PAGE_FINISH' + #10;
+  S := S + #10;
+  S := S + '!insertmacro MUI_UNPAGE_CONFIRM' + #10;
+  S := S + '!insertmacro MUI_UNPAGE_INSTFILES' + #10;
+  S := S + #10;
+  S := S + '; Languages' + #10;
+  S := S + '!insertmacro MUI_LANGUAGE "English"' + #10;
+  S := S + '!insertmacro MUI_LANGUAGE "French"' + #10;
+  S := S + #10;
+  S := S + '; Installation Section' + #10;
+  S := S + 'Section "Install"' + #10;
+  S := S + '  SetOutPath $INSTDIR' + #10;
+  S := S + #10;
+  S := S + '  ; Files to install' + #10;
+  S := S + '  File "' + SafeName + '.exe"' + #10;
+  S := S + '  File "icon.ico"' + #10;
+  S := S + #10;
+  S := S + '  ; Create uninstaller' + #10;
+  S := S + '  WriteUninstaller "$INSTDIR\uninstall.exe"' + #10;
+  S := S + #10;
+  S := S + '  ; Start Menu shortcut' + #10;
+  S := S + '  CreateDirectory "$SMPROGRAMS\${APPNAME}"' + #10;
+  S := S + '  CreateShortCut "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk" ';
+  S := S + '"$INSTDIR\' + SafeName + '.exe" "" "$INSTDIR\icon.ico"' + #10;
+  S := S + '  CreateShortCut "$SMPROGRAMS\${APPNAME}\Uninstall.lnk" ';
+  S := S + '"$INSTDIR\uninstall.exe"' + #10;
+  S := S + #10;
+  S := S + '  ; Desktop shortcut' + #10;
+  S := S + '  CreateShortCut "$DESKTOP\${APPNAME}.lnk" ';
+  S := S + '"$INSTDIR\' + SafeName + '.exe" "" "$INSTDIR\icon.ico"' + #10;
+  S := S + #10;
+  S := S + '  ; Registry entries' + #10;
+  S := S + '  WriteRegStr HKLM "Software\${APPNAME}" "InstallLocation" "$INSTDIR"' + #10;
+  S := S + '  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\';
+  S := S + '${APPNAME}" "DisplayName" "${APPNAME}"' + #10;
+  S := S + '  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\';
+  S := S + '${APPNAME}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""' + #10;
+  S := S + '  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\';
+  S := S + '${APPNAME}" "DisplayIcon" "$\"$INSTDIR\icon.ico$\""' + #10;
+  S := S + '  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\';
+  S := S + '${APPNAME}" "Publisher" "${COMPANYNAME}"' + #10;
+  S := S + '  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\';
+  S := S + '${APPNAME}" "EstimatedSize" ${INSTALLSIZE}' + #10;
+  S := S + 'SectionEnd' + #10;
+  S := S + #10;
+  S := S + '; Uninstallation Section' + #10;
+  S := S + 'Section "Uninstall"' + #10;
+  S := S + '  ; Remove files' + #10;
+  S := S + '  Delete "$INSTDIR\' + SafeName + '.exe"' + #10;
+  S := S + '  Delete "$INSTDIR\icon.ico"' + #10;
+  S := S + '  Delete "$INSTDIR\uninstall.exe"' + #10;
+  S := S + '  RMDir "$INSTDIR"' + #10;
+  S := S + #10;
+  S := S + '  ; Remove shortcuts' + #10;
+  S := S + '  Delete "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"' + #10;
+  S := S + '  Delete "$SMPROGRAMS\${APPNAME}\Uninstall.lnk"' + #10;
+  S := S + '  RMDir "$SMPROGRAMS\${APPNAME}"' + #10;
+  S := S + '  Delete "$DESKTOP\${APPNAME}.lnk"' + #10;
+  S := S + #10;
+  S := S + '  ; Remove registry entries' + #10;
+  S := S + '  DeleteRegKey HKLM "Software\${APPNAME}"' + #10;
+  S := S + '  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\';
+  S := S + '${APPNAME}"' + #10;
+  S := S + 'SectionEnd' + #10;
+  
+  GenerateNsisScript := S;
+End;
+
+Procedure CreateWindowsInstaller(Const WorkDir: String; Const Opts: TOptions);
+Var
+  ManifestContent, RcContent, WxsContent, NsiContent: String;
+  AppName, SafeName: String;
+  F: Text;
+  ManifestPath, RcPath, WxsPath, NsiPath: String;
+Begin
+  Inc(WinStateCount);
+  Inc(WinInstallerCount);
+  
+  { Determiner le nom de l'application }
+  If Opts.AppName <> '' Then
+    AppName := Opts.AppName
+  Else
+    AppName := ExtractDomain(Opts.Url);
+  
+  SafeName := SanitizeAppName(AppName);
+  
+  If Opts.Verbose Then
+    WriteLn('Generating Windows installer files...');
+  
+  { Generer le manifest Windows }
+  ManifestContent := GenerateWindowsManifest(Opts);
+  ManifestPath := ConcatPath(WorkDir, SafeName + WIN_MANIFEST_EXT);
+  
+  {$I-}
+  Assign(F, ManifestPath);
+  Rewrite(F);
+  If IOResult = 0 Then
+  Begin
+    Write(F, ManifestContent);
+    Close(F);
+    Inc(WinCopyCount);
+    If Opts.Verbose Then
+      WriteLn('Created: ', ManifestPath);
+  End
+  Else
+    Inc(WinErrorCount);
+  {$I+}
+  
+  { Generer le fichier .rc }
+  RcContent := GenerateWindowsRc(Opts);
+  RcPath := ConcatPath(WorkDir, SafeName + WIN_RC_EXT);
+  
+  {$I-}
+  Assign(F, RcPath);
+  Rewrite(F);
+  If IOResult = 0 Then
+  Begin
+    Write(F, RcContent);
+    Close(F);
+    Inc(WinCopyCount);
+    If Opts.Verbose Then
+      WriteLn('Created: ', RcPath);
+  End
+  Else
+    Inc(WinErrorCount);
+  {$I+}
+  
+  { Generer le fichier WiX (.wxs) }
+  WxsContent := GenerateWixWxs(Opts);
+  WxsPath := ConcatPath(WorkDir, SafeName + '.wxs');
+  
+  {$I-}
+  Assign(F, WxsPath);
+  Rewrite(F);
+  If IOResult = 0 Then
+  Begin
+    Write(F, WxsContent);
+    Close(F);
+    Inc(WinCopyCount);
+    If Opts.Verbose Then
+      WriteLn('Created: ', WxsPath);
+  End
+  Else
+    Inc(WinErrorCount);
+  {$I+}
+  
+  { Generer le script NSIS (.nsi) }
+  NsiContent := GenerateNsisScript(Opts);
+  NsiPath := ConcatPath(WorkDir, SafeName + '.nsi');
+  
+  {$I-}
+  Assign(F, NsiPath);
+  Rewrite(F);
+  If IOResult = 0 Then
+  Begin
+    Write(F, NsiContent);
+    Close(F);
+    Inc(WinCopyCount);
+    If Opts.Verbose Then
+      WriteLn('Created: ', NsiPath);
+  End
+  Else
+    Inc(WinErrorCount);
+  {$I+}
+  
+  If Opts.Verbose Then
+  Begin
+    WriteLn;
+    WriteLn('Windows installer files generated:');
+    WriteLn('  - ', SafeName, WIN_MANIFEST_EXT, ' (application manifest)');
+    WriteLn('  - ', SafeName, WIN_RC_EXT, ' (resource script)');
+    WriteLn('  - ', SafeName, '.wxs (WiX source for MSI)');
+    WriteLn('  - ', SafeName, '.nsi (NSIS script)');
+    WriteLn;
+    WriteLn('To build MSI installer: candle.exe ', SafeName, '.wxs && light.exe ',
+            SafeName, '.wixobj');
+    WriteLn('To build NSIS installer: makensis.exe ', SafeName, '.nsi');
+  End;
+End;
+
+Function IsWindowsInstallerValid(Const InstallerPath: String): Boolean;
+Begin
+  Inc(WinStateCount);
+  
+  { Verifier que le fichier existe }
+  IsWindowsInstallerValid := FileExists(InstallerPath);
+End;
+
+Procedure DumpWindowsState;
+Begin
+  Inc(WinStateCount);
+  
+  WriteLn('=== Etat du module Windows ===');
+  WriteLn('Initialise      : ', WinInitialized);
+  WriteLn('Etat count      : ', WinStateCount);
+  WriteLn('Manifests gen.  : ', WinManifestGenCount);
+  WriteLn('RC generes      : ', WinRcGenCount);
+  WriteLn('WiX generes     : ', WinWixGenCount);
+  WriteLn('NSIS generes    : ', WinNsisGenCount);
+  WriteLn('Installers      : ', WinInstallerCount);
+  WriteLn('Copies          : ', WinCopyCount);
+  WriteLn('Erreurs         : ', WinErrorCount);
+  WriteLn;
+End;
+
+{ Accesseurs pour TODO 18 - GENERATION WINDOWS }
+
+Function IsWinInitialized: Boolean;
+Begin
+  IsWinInitialized := WinInitialized;
+End;
+
+Function IsWinEmpty: Boolean;
+Begin
+  IsWinEmpty := (WinManifestGenCount = 0) And (WinRcGenCount = 0) And 
+                (WinWixGenCount = 0) And (WinNsisGenCount = 0);
+End;
+
+Function GetWinStateCount: Integer;
+Begin
+  GetWinStateCount := WinStateCount;
+End;
+
+Function GetWinManifestGenCount: Integer;
+Begin
+  GetWinManifestGenCount := WinManifestGenCount;
+End;
+
+Function GetWinRcGenCount: Integer;
+Begin
+  GetWinRcGenCount := WinRcGenCount;
+End;
+
+Function GetWinWixGenCount: Integer;
+Begin
+  GetWinWixGenCount := WinWixGenCount;
+End;
+
+Function GetWinNsisGenCount: Integer;
+Begin
+  GetWinNsisGenCount := WinNsisGenCount;
+End;
+
+Function GetWinInstallerCount: Integer;
+Begin
+  GetWinInstallerCount := WinInstallerCount;
+End;
+
+Function GetWinCopyCount: Integer;
+Begin
+  GetWinCopyCount := WinCopyCount;
+End;
+
+Function GetWinErrorCount: Integer;
+Begin
+  GetWinErrorCount := WinErrorCount;
+End;
+
+{ ============================================================
+  TODO 19-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -5940,13 +6628,28 @@ Begin
     DumpMacOSState;
   End;
 
-  { TODO: Implementer les TODOs 18-25 }
-  WriteLn('*** NOTE: TODOs 01-17 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 18-25 restent a implementer ***');
+  { Initialiser le module Windows }
+  InitWindowsState;
+  
+  { Si on cible Windows, generer les fichiers d'installation }
+  If BuildCfg.Target = PLATFORM_WINDOWS Then
+  Begin
+    WriteLn('=== Generation Windows ===');
+    WriteLn;
+    
+    { Creer les fichiers de l'installateur Windows }
+    CreateWindowsInstaller('.', O);
+    
+    { Afficher l'etat }
+    DumpWindowsState;
+  End;
+
+  { TODO: Implementer les TODOs 19-25 }
+  WriteLn('*** NOTE: TODOs 01-18 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 19-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 18: Generation Windows (.exe, .msi)');
   WriteLn('  - TODO 19: Generation Linux (.deb, .AppImage)');
   WriteLn('  - TODO 20: Multi-URL');
   WriteLn('  - TODO 21: Configuration du User-Agent');
