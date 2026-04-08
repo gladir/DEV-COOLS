@@ -153,7 +153,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             type(obj) : retourner le descripteur de type -> EAX=idx
             10 fonctions accesseurs
 
-  TODO 06 - LITTERAUX ET CONSTANTES [A FAIRE]
+  TODO 06 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..2147483647 (32 bits signe)
             Entiers hexadecimaux : 0xFF, octaux : 0o77, binaires : 0b1010
             Separateur de chiffres : 1_000_000 (ignore le souligne)
