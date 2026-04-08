@@ -206,7 +206,7 @@
             Verification : pas de reference circulaire
             10 fonctions accesseurs
 
-  TODO 09 - PARSEUR : PROCEDURE ET FUNCTION [A FAIRE]
+  TODO 09 - PARSEUR : PROCEDURE ET FUNCTION [IMPLEMENTE]
             PROCEDURE name ;
               declarations locales
               instructions
@@ -2830,6 +2830,9 @@ Procedure ParseTableDecl; Forward;
 { Forward declaration pour ParseDefineDecl (defini dans TODO 08) }
 Procedure ParseDefineDecl; Forward;
 
+{ Forward declaration pour ParseProcDecl (defini dans TODO 09) }
+Procedure ParseProcDecl; Forward;
+
 { ------------------------------------------------------------ }
 { ParseModuleBody : parser les declarations du corps du module  }
 {   ITEM, TABLE, DEFINE, PROCEDURE/FUNCTION, etc.               }
@@ -2874,133 +2877,16 @@ Begin
 
         KW_PROCEDURE, KW_PROC:
         Begin
-          { Declaration PROCEDURE - comptabiliser }
+          { Declaration PROCEDURE - parser via TODO 09 }
           Inc(ModProcCount);
-          If Opts.Verbose Then
-          Begin
-            LexNextToken;
-            If CurTokType = TOK_IDENT Then
-              WriteLn('  PROCEDURE ', CurTokStr);
-          End;
-          { Avancer jusqu au END correspondant }
-          SkipToSemicolon;
-          { Parser le corps de la procedure : consommer jusqu a END }
-          While (CurTokType <> TOK_EOF) Do
-          Begin
-            If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
-            Begin
-              LexNextToken;
-              { Verifier si c est END MODULE (fin du module) }
-              If (CurTokType = TOK_KEYWORD) And
-                 (CurTokNum = KW_MODULE) Then
-              Begin
-                { C est la fin du module, pas d une procedure }
-                { On est sur MODULE, avancer pour lire le nom }
-                LexNextToken;
-                If CurTokType = TOK_IDENT Then
-                Begin
-                  If UpCaseStr(CurTokStr) <> UpCaseStr(ModName) Then
-                    WarnMsg('END MODULE ' + CurTokStr +
-                            ' ne correspond pas a MODULE ' + ModName);
-                  LexNextToken;
-                End;
-                If CurTokType = TOK_SEMICOL Then
-                  LexNextToken;
-                ModState := MOD_ENDED;
-                SymSetScope(SCOPE_GLOBAL, False);
-                If Opts.Verbose Then
-                  WriteLn('END MODULE ', ModName);
-                Inc(ModStateCount);
-                Break;
-              End
-              Else If (CurTokType = TOK_KEYWORD) And
-                      (CurTokNum = KW_COMPOOL) Then
-              Begin
-                { C est la fin du COMPOOL }
-                LexNextToken;
-                If CurTokType = TOK_SEMICOL Then
-                  LexNextToken;
-                ModState := MOD_ENDED;
-                SymSetScope(SCOPE_COMPOOL, False);
-                If Opts.Verbose Then
-                  WriteLn('END COMPOOL ', ModName);
-                Inc(ModStateCount);
-                Break;
-              End
-              Else
-              Begin
-                { C est END de la procedure }
-                If CurTokType = TOK_SEMICOL Then
-                  LexNextToken;
-                Break;
-              End;
-            End
-            Else
-              LexNextToken;
-          End;
+          ParseProcDecl;
         End;
 
         KW_FUNCTION:
         Begin
-          { Declaration FUNCTION - comptabiliser }
+          { Declaration FUNCTION - parser via TODO 09 }
           Inc(ModProcCount);
-          If Opts.Verbose Then
-          Begin
-            LexNextToken;
-            If CurTokType = TOK_IDENT Then
-              WriteLn('  FUNCTION ', CurTokStr);
-          End;
-          { Avancer au dela de la declaration }
-          SkipToSemicolon;
-          { Parser le corps de la fonction }
-          While (CurTokType <> TOK_EOF) Do
-          Begin
-            If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
-            Begin
-              LexNextToken;
-              If (CurTokType = TOK_KEYWORD) And
-                 (CurTokNum = KW_MODULE) Then
-              Begin
-                LexNextToken;
-                If CurTokType = TOK_IDENT Then
-                Begin
-                  If UpCaseStr(CurTokStr) <> UpCaseStr(ModName) Then
-                    WarnMsg('END MODULE ' + CurTokStr +
-                            ' ne correspond pas a MODULE ' + ModName);
-                  LexNextToken;
-                End;
-                If CurTokType = TOK_SEMICOL Then
-                  LexNextToken;
-                ModState := MOD_ENDED;
-                SymSetScope(SCOPE_GLOBAL, False);
-                If Opts.Verbose Then
-                  WriteLn('END MODULE ', ModName);
-                Inc(ModStateCount);
-                Break;
-              End
-              Else If (CurTokType = TOK_KEYWORD) And
-                      (CurTokNum = KW_COMPOOL) Then
-              Begin
-                LexNextToken;
-                If CurTokType = TOK_SEMICOL Then
-                  LexNextToken;
-                ModState := MOD_ENDED;
-                SymSetScope(SCOPE_COMPOOL, False);
-                If Opts.Verbose Then
-                  WriteLn('END COMPOOL ', ModName);
-                Inc(ModStateCount);
-                Break;
-              End
-              Else
-              Begin
-                If CurTokType = TOK_SEMICOL Then
-                  LexNextToken;
-                Break;
-              End;
-            End
-            Else
-              LexNextToken;
-          End;
+          ParseProcDecl;
         End;
 
         KW_OVERLAY:
@@ -4322,6 +4208,661 @@ End;
 
 
 { ============================================================ }
+{ TODO 09 - PARSEUR : PROCEDURE ET FUNCTION                      }
+{ ============================================================ }
+
+Const
+  { Types de sous-programmes }
+  PRC_NONE      = 0;   { aucun type                              }
+  PRC_PROCEDURE = 1;   { procedure (PROCEDURE / PROC)            }
+  PRC_FUNCTION  = 2;   { fonction (FUNCTION)                     }
+
+  { Etats du parseur de procedure }
+  PRC_ST_NONE   = 0;   { pas encore commence                     }
+  PRC_ST_HEADER = 1;   { en-tete parsee                          }
+  PRC_ST_BODY   = 2;   { dans le corps                           }
+  PRC_ST_ENDED  = 3;   { termine (END rencontre)                 }
+
+  { Limites pour les procedures }
+  PRC_MAX_PROCS  = 512;   { nombre max de procedures              }
+  PRC_MAX_PARAMS = 64;    { nombre max de parametres par procedure }
+
+Type
+  { Parametre formel d une procedure/fonction }
+  TProcParam = Record
+    Name     : String[64];   { nom du parametre                     }
+    ParamType: Integer;      { JT_INTEGER, JT_STATUS, JT_BITS...   }
+    BitSize  : Integer;      { taille en bits                       }
+  End;
+
+  { Entree dans la table des procedures }
+  TProcEntry = Record
+    Name       : TString;        { nom Jovial de la procedure       }
+    AsmName    : TString;        { label ASM (_JP_nom)              }
+    ProcType   : Integer;        { PRC_PROCEDURE ou PRC_FUNCTION    }
+    ReturnType : Integer;        { JT_* pour FUNCTION, JT_NONE sinon}
+    ReturnSize : Integer;        { taille retour en bits            }
+    ParamCount : Integer;        { nombre de parametres formels     }
+    Params     : Array[1..PRC_MAX_PARAMS] Of TProcParam;
+    LocalSize  : Integer;        { taille des variables locales     }
+    IsEntry    : Boolean;        { True si procedure d entree module}
+    HasReturn  : Boolean;        { True si contient RETURN          }
+    BodyTokens : Integer;        { nombre de tokens dans le corps   }
+  End;
+
+Var
+  { Variables du parseur PROCEDURE/FUNCTION }
+  PrcInitialized   : Boolean;     { module initialise ?              }
+  PrcStateCount    : Integer;     { compteur d operations            }
+  PrcCount         : Integer;     { nombre de procedures declarees   }
+  PrcProcCount     : Integer;     { nombre de PROCEDURE              }
+  PrcFuncCount     : Integer;     { nombre de FUNCTION               }
+  PrcParamTotal    : Integer;     { nombre total de parametres       }
+  PrcEntryCount    : Integer;     { nombre de procedures d entree    }
+  PrcReturnCount   : Integer;     { nombre de RETURN trouves         }
+  PrcLabelNum      : Integer;     { generateur de labels uniques     }
+  PrcErrorCount    : Integer;     { nombre d erreurs                 }
+  PrcTable         : Array[1..PRC_MAX_PROCS] Of TProcEntry;
+
+{ ------------------------------------------------------------ }
+{ InitProcState : initialiser les variables du parseur PROC      }
+{ ------------------------------------------------------------ }
+
+Procedure InitProcState;
+Begin
+  PrcInitialized   := True;
+  PrcStateCount    := 0;
+  PrcCount         := 0;
+  PrcProcCount     := 0;
+  PrcFuncCount     := 0;
+  PrcParamTotal    := 0;
+  PrcEntryCount    := 0;
+  PrcReturnCount   := 0;
+  PrcLabelNum      := 0;
+  PrcErrorCount    := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPrcLabel : generer un label unique pour les procedures       }
+{ ------------------------------------------------------------ }
+
+Function GenPrcLabel : TString;
+Begin
+  Inc(PrcLabelNum);
+  GenPrcLabel := PFX_PROC + 'PRC' + ItoSI(PrcLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ ProcTypeName : retourner le nom du type de sous-programme      }
+{ ------------------------------------------------------------ }
+
+Function ProcTypeName(PType : Integer) : TString;
+Begin
+  Case PType Of
+    PRC_NONE      : ProcTypeName := 'NONE';
+    PRC_PROCEDURE : ProcTypeName := 'PROCEDURE';
+    PRC_FUNCTION  : ProcTypeName := 'FUNCTION';
+  Else
+    ProcTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ProcStateName : retourner le nom d un etat du parseur          }
+{ ------------------------------------------------------------ }
+
+Function ProcStateName(St : Integer) : TString;
+Begin
+  Case St Of
+    PRC_ST_NONE   : ProcStateName := 'NONE';
+    PRC_ST_HEADER : ProcStateName := 'HEADER';
+    PRC_ST_BODY   : ProcStateName := 'BODY';
+    PRC_ST_ENDED  : ProcStateName := 'ENDED';
+  Else
+    ProcStateName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindProc : rechercher une procedure par son nom                }
+{   Retourne l indice (1..PrcCount) ou 0 si non trouve          }
+{ ------------------------------------------------------------ }
+
+Function FindProc(Const AName : TString) : Integer;
+Var
+  I     : Integer;
+  UName : TString;
+Begin
+  Inc(PrcStateCount);
+  UName := UpCaseStr(AName);
+  FindProc := 0;
+  For I := 1 To PrcCount Do
+  Begin
+    If UpCaseStr(PrcTable[I].Name) = UName Then
+    Begin
+      FindProc := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddProc : ajouter une procedure a la table                    }
+{   Retourne l indice de la procedure ajoutee ou 0 si plein     }
+{ ------------------------------------------------------------ }
+
+Function AddProc(Const AName : TString; AType : Integer;
+                 ARetType : Integer; ARetSize : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  Inc(PrcStateCount);
+
+  { Verifier la limite }
+  If PrcCount >= PRC_MAX_PROCS Then
+  Begin
+    WarnMsg('Trop de procedures declarees (max ' +
+            ItoS(PRC_MAX_PROCS) + ')');
+    Inc(PrcErrorCount);
+    AddProc := 0;
+    Exit;
+  End;
+
+  { Ajouter la nouvelle procedure }
+  Inc(PrcCount);
+  PrcTable[PrcCount].Name       := AName;
+  PrcTable[PrcCount].AsmName    := PFX_PROC + AsmIdent(AName);
+  PrcTable[PrcCount].ProcType   := AType;
+  PrcTable[PrcCount].ReturnType := ARetType;
+  PrcTable[PrcCount].ReturnSize := ARetSize;
+  PrcTable[PrcCount].ParamCount := 0;
+  PrcTable[PrcCount].LocalSize  := 0;
+  PrcTable[PrcCount].IsEntry    := False;
+  PrcTable[PrcCount].HasReturn  := False;
+  PrcTable[PrcCount].BodyTokens := 0;
+  For I := 1 To PRC_MAX_PARAMS Do
+  Begin
+    PrcTable[PrcCount].Params[I].Name      := '';
+    PrcTable[PrcCount].Params[I].ParamType := JT_NONE;
+    PrcTable[PrcCount].Params[I].BitSize   := 0;
+  End;
+
+  AddProc := PrcCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddProcParam : ajouter un parametre a une procedure            }
+{   ProcIdx : indice de la procedure dans PrcTable               }
+{   Retourne True si le parametre a ete ajoute                   }
+{ ------------------------------------------------------------ }
+
+Function AddProcParam(ProcIdx : Integer; Const AName : TString;
+                      AType : Integer; ABits : Integer) : Boolean;
+Begin
+  Inc(PrcStateCount);
+  AddProcParam := False;
+
+  If (ProcIdx < 1) Or (ProcIdx > PrcCount) Then Exit;
+  If PrcTable[ProcIdx].ParamCount >= PRC_MAX_PARAMS Then
+  Begin
+    WarnMsg('Trop de parametres pour ' + PrcTable[ProcIdx].Name +
+            ' (max ' + ItoS(PRC_MAX_PARAMS) + ')');
+    Inc(PrcErrorCount);
+    Exit;
+  End;
+
+  Inc(PrcTable[ProcIdx].ParamCount);
+  PrcTable[ProcIdx].Params[PrcTable[ProcIdx].ParamCount].Name := AName;
+  PrcTable[ProcIdx].Params[PrcTable[ProcIdx].ParamCount].ParamType := AType;
+  PrcTable[ProcIdx].Params[PrcTable[ProcIdx].ParamCount].BitSize := ABits;
+  Inc(PrcParamTotal);
+  AddProcParam := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseProcParams : parser les parametres formels                }
+{   Syntaxe : ( param1 type1, param2 type2, ... )               }
+{   Exemples : (X I 16, Y I 16)                                 }
+{              (FLAG S 8)                                        }
+{   Le curseur est sur la parenthese ouvrante                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseProcParams(ProcIdx : Integer);
+Var
+  ParName : TString;
+  ParType : Integer;
+  ParBits : Integer;
+Begin
+  Inc(PrcStateCount);
+
+  { Consommer la parenthese ouvrante }
+  LexNextToken;
+
+  While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_RPAREN) Do
+  Begin
+    { Nom du parametre }
+    If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+    Begin
+      ParName := CurTokStr;
+      LexNextToken;
+    End
+    Else
+    Begin
+      WarnMsg('Parametre : nom attendu, trouve ' + CurTokStr);
+      Inc(PrcErrorCount);
+      { Avancer jusqu a la virgule ou la parenthese fermante }
+      While (CurTokType <> TOK_EOF) And
+            (CurTokType <> TOK_COMMA) And
+            (CurTokType <> TOK_RPAREN) Do
+        LexNextToken;
+      If CurTokType = TOK_COMMA Then
+        LexNextToken;
+      Continue;
+    End;
+
+    { Type du parametre : I, S, B ou F }
+    ParType := JT_NONE;
+    ParBits := 32;
+    If CurTokType = TOK_KEYWORD Then
+    Begin
+      Case CurTokNum Of
+        KW_I: ParType := JT_INTEGER;
+        KW_S: ParType := JT_STATUS;
+        KW_B: ParType := JT_BITS;
+        KW_F: ParType := JT_FLOATING;
+      Else
+        WarnMsg('Parametre ' + ParName +
+                ' : type I/S/B/F attendu');
+        Inc(PrcErrorCount);
+      End;
+      LexNextToken;
+    End;
+
+    { Taille optionnelle en bits }
+    If CurTokType = TOK_INTEGER Then
+    Begin
+      ParBits := CurTokNum;
+      LexNextToken;
+    End;
+
+    { Ajouter le parametre }
+    AddProcParam(ProcIdx, ParName, ParType, ParBits);
+
+    { Virgule separatrice }
+    If CurTokType = TOK_COMMA Then
+      LexNextToken;
+  End;
+
+  { Consommer la parenthese fermante }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseProcDecl : parser une declaration PROCEDURE ou FUNCTION   }
+{   Syntaxe :                                                    }
+{     PROCEDURE name ;                                           }
+{       ... corps ...                                            }
+{     END ;                                                      }
+{                                                                }
+{     PROCEDURE name (param1 I 16, param2 I 16) ;               }
+{       ... corps ...                                            }
+{     END ;                                                      }
+{                                                                }
+{     FUNCTION name type ;                                       }
+{       ... corps avec RETURN ...                                }
+{     END ;                                                      }
+{                                                                }
+{     PROC name ;  (forme abregee de PROCEDURE)                  }
+{       ... corps ...                                            }
+{     END ;                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseProcDecl;
+Var
+  ProcName  : TString;
+  ProcKind  : Integer;
+  RetType   : Integer;
+  RetSize   : Integer;
+  ProcIdx   : Integer;
+  BodyToks  : Integer;
+  NestDepth : Integer;
+  IsFunc    : Boolean;
+Begin
+  Inc(PrcStateCount);
+
+  { Determiner le type : PROCEDURE/PROC ou FUNCTION }
+  IsFunc := (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FUNCTION);
+  If IsFunc Then
+    ProcKind := PRC_FUNCTION
+  Else
+    ProcKind := PRC_PROCEDURE;
+
+  { Consommer le mot-cle PROCEDURE/PROC/FUNCTION }
+  LexNextToken;
+
+  { Le nom du sous-programme }
+  ProcName := '';
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+  Begin
+    ProcName := CurTokStr;
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg(ProcTypeName(ProcKind) + ' : nom attendu, trouve ' +
+            CurTokStr);
+    Inc(PrcErrorCount);
+    SkipToSemicolon;
+    Exit;
+  End;
+
+  { Type de retour pour les FUNCTION }
+  RetType := JT_NONE;
+  RetSize := 0;
+  If IsFunc Then
+  Begin
+    If CurTokType = TOK_KEYWORD Then
+    Begin
+      Case CurTokNum Of
+        KW_I:
+        Begin
+          RetType := JT_INTEGER;
+          RetSize := 32;
+          LexNextToken;
+          If CurTokType = TOK_INTEGER Then
+          Begin
+            RetSize := CurTokNum;
+            LexNextToken;
+          End;
+        End;
+        KW_S:
+        Begin
+          RetType := JT_STATUS;
+          RetSize := 32;
+          LexNextToken;
+          If CurTokType = TOK_INTEGER Then
+          Begin
+            RetSize := CurTokNum;
+            LexNextToken;
+          End;
+        End;
+        KW_B:
+        Begin
+          RetType := JT_BITS;
+          RetSize := 32;
+          LexNextToken;
+          If CurTokType = TOK_INTEGER Then
+          Begin
+            RetSize := CurTokNum;
+            LexNextToken;
+          End;
+        End;
+        KW_F:
+        Begin
+          RetType := JT_FLOATING;
+          RetSize := 32;
+          LexNextToken;
+        End;
+      Else
+        { Pas de type explicite : defaut entier 32 bits }
+        RetType := JT_INTEGER;
+        RetSize := 32;
+      End;
+    End
+    Else
+    Begin
+      { Pas de type : defaut entier 32 bits }
+      RetType := JT_INTEGER;
+      RetSize := 32;
+    End;
+    Inc(PrcFuncCount);
+  End
+  Else
+    Inc(PrcProcCount);
+
+  { Ajouter la procedure a la table }
+  ProcIdx := AddProc(ProcName, ProcKind, RetType, RetSize);
+
+  { Parser les parametres si presents }
+  If CurTokType = TOK_LPAREN Then
+    ParseProcParams(ProcIdx);
+
+  { Verifier si c est la procedure d entree du module }
+  If UpCaseStr(ProcName) = UpCaseStr(ModName) Then
+  Begin
+    If ProcIdx > 0 Then
+    Begin
+      PrcTable[ProcIdx].IsEntry := True;
+      Inc(PrcEntryCount);
+    End;
+  End;
+
+  { Ajouter le symbole a la table des symboles }
+  If IsFunc Then
+    SymAdd(ProcName, SK_FUNCTION, RetType, SCOPE_GLOBAL)
+  Else
+    SymAdd(ProcName, SK_PROCEDURE, JT_NONE, SCOPE_GLOBAL);
+
+  If Opts.Verbose Then
+  Begin
+    Write('  ', ProcTypeName(ProcKind), ' ', ProcName);
+    If (ProcIdx > 0) And (PrcTable[ProcIdx].ParamCount > 0) Then
+      Write(' (', PrcTable[ProcIdx].ParamCount, ' params)');
+    If IsFunc Then
+      Write(' -> ', ItemTypeName(RetType), ' ', RetSize);
+    If (ProcIdx > 0) And PrcTable[ProcIdx].IsEntry Then
+      Write(' [ENTREE]');
+    WriteLn;
+  End;
+
+  { Consommer le point-virgule apres l en-tete }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken;
+
+  { Optionnel : consommer BEGIN si present }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BEGIN) Then
+    LexNextToken;
+
+  { Parser le corps du sous-programme : consommer jusqu a END }
+  BodyToks := 0;
+  NestDepth := 0;
+  While (CurTokType <> TOK_EOF) Do
+  Begin
+    Inc(BodyToks);
+
+    { Compter les RETURN }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_RETURN) Then
+    Begin
+      Inc(PrcReturnCount);
+      If ProcIdx > 0 Then
+        PrcTable[ProcIdx].HasReturn := True;
+    End;
+
+    { Gerer l imbrication (IF..END, FOR..END, WHILE..END, etc.) }
+    If (CurTokType = TOK_KEYWORD) Then
+    Begin
+      If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
+         (CurTokNum = KW_WHILE) Or (CurTokNum = KW_CASE) Then
+        Inc(NestDepth);
+    End;
+
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
+    Begin
+      If NestDepth > 0 Then
+      Begin
+        { C est un END d une structure imbriquee }
+        Dec(NestDepth);
+        LexNextToken;
+        If CurTokType = TOK_SEMICOL Then
+          LexNextToken;
+      End
+      Else
+      Begin
+        { C est le END du sous-programme }
+        LexNextToken;
+
+        { Verifier si c est END MODULE (fin du module) }
+        If (CurTokType = TOK_KEYWORD) And
+           (CurTokNum = KW_MODULE) Then
+        Begin
+          { C est la fin du module, pas du sous-programme }
+          LexNextToken;
+          If CurTokType = TOK_IDENT Then
+          Begin
+            If UpCaseStr(CurTokStr) <> UpCaseStr(ModName) Then
+              WarnMsg('END MODULE ' + CurTokStr +
+                      ' ne correspond pas a MODULE ' + ModName);
+            LexNextToken;
+          End;
+          If CurTokType = TOK_SEMICOL Then
+            LexNextToken;
+          ModState := MOD_ENDED;
+          SymSetScope(SCOPE_GLOBAL, False);
+          If Opts.Verbose Then
+            WriteLn('END MODULE ', ModName);
+          Inc(ModStateCount);
+          Break;
+        End
+        Else If (CurTokType = TOK_KEYWORD) And
+                (CurTokNum = KW_COMPOOL) Then
+        Begin
+          { C est la fin du COMPOOL }
+          LexNextToken;
+          If CurTokType = TOK_SEMICOL Then
+            LexNextToken;
+          ModState := MOD_ENDED;
+          SymSetScope(SCOPE_COMPOOL, False);
+          If Opts.Verbose Then
+            WriteLn('END COMPOOL ', ModName);
+          Inc(ModStateCount);
+          Break;
+        End
+        Else
+        Begin
+          { C est END du sous-programme }
+          If CurTokType = TOK_SEMICOL Then
+            LexNextToken;
+          Break;
+        End;
+      End;
+    End
+    Else
+      LexNextToken;
+  End;
+
+  { Sauvegarder le nombre de tokens du corps }
+  If ProcIdx > 0 Then
+    PrcTable[ProcIdx].BodyTokens := BodyToks;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpProcState : afficher l etat du parseur PROCEDURE/FUNCTION  }
+{ ------------------------------------------------------------ }
+
+Procedure DumpProcState;
+Var
+  I, J : Integer;
+Begin
+  WriteLn('--- Etat du parseur PROCEDURE/FUNCTION ---');
+  WriteLn('  Sous-programmes declares : ', PrcCount);
+  WriteLn('    Procedures   : ', PrcProcCount);
+  WriteLn('    Fonctions    : ', PrcFuncCount);
+  WriteLn('  Parametres totaux       : ', PrcParamTotal);
+  WriteLn('  Procedures d entree     : ', PrcEntryCount);
+  WriteLn('  Instructions RETURN     : ', PrcReturnCount);
+  WriteLn('  Erreurs procedure       : ', PrcErrorCount);
+  WriteLn('  Operations              : ', PrcStateCount);
+  If PrcCount > 0 Then
+  Begin
+    WriteLn('  Table des sous-programmes :');
+    For I := 1 To PrcCount Do
+    Begin
+      Write('    ', ProcTypeName(PrcTable[I].ProcType), ' ',
+            PrcTable[I].Name);
+      If PrcTable[I].ProcType = PRC_FUNCTION Then
+        Write(' -> ', ItemTypeName(PrcTable[I].ReturnType),
+              ' ', PrcTable[I].ReturnSize);
+      If PrcTable[I].ParamCount > 0 Then
+      Begin
+        Write(' (');
+        For J := 1 To PrcTable[I].ParamCount Do
+        Begin
+          If J > 1 Then Write(', ');
+          Write(PrcTable[I].Params[J].Name, ' ',
+                ItemTypeName(PrcTable[I].Params[J].ParamType),
+                ' ', PrcTable[I].Params[J].BitSize);
+        End;
+        Write(')');
+      End;
+      If PrcTable[I].IsEntry Then
+        Write(' [ENTREE]');
+      If PrcTable[I].HasReturn Then
+        Write(' [RETURN]');
+      Write(' {', PrcTable[I].BodyTokens, ' tokens}');
+      Write(' ASM=', PrcTable[I].AsmName);
+      WriteLn;
+    End;
+  End;
+  WriteLn('--- Fin etat PROCEDURE/FUNCTION ---');
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 09)                             }
+{ ------------------------------------------------------------ }
+
+Function IsPrcInitialized : Boolean;
+Begin
+  IsPrcInitialized := PrcInitialized;
+End;
+
+Function GetPrcCount : Integer;
+Begin
+  GetPrcCount := PrcCount;
+End;
+
+Function GetPrcProcCount : Integer;
+Begin
+  GetPrcProcCount := PrcProcCount;
+End;
+
+Function GetPrcFuncCount : Integer;
+Begin
+  GetPrcFuncCount := PrcFuncCount;
+End;
+
+Function GetPrcParamTotal : Integer;
+Begin
+  GetPrcParamTotal := PrcParamTotal;
+End;
+
+Function GetPrcStateCount : Integer;
+Begin
+  GetPrcStateCount := PrcStateCount;
+End;
+
+Function GetPrcErrorCount : Integer;
+Begin
+  GetPrcErrorCount := PrcErrorCount;
+End;
+
+Function GetPrcLabelNum : Integer;
+Begin
+  GetPrcLabelNum := PrcLabelNum;
+End;
+
+Function GetPrcMaxProcs : Integer;
+Begin
+  GetPrcMaxProcs := PRC_MAX_PROCS;
+End;
+
+Function IsPrcEmpty : Boolean;
+Begin
+  IsPrcEmpty := (PrcCount = 0);
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -4340,6 +4881,7 @@ Begin
   ItmInitialized := False;
   TblInitialized := False;
   DefInitialized := False;
+  PrcInitialized := False;
 
   ParseArgs;
 
@@ -4364,6 +4906,9 @@ Begin
   { Initialiser le parseur DEFINE }
   InitDefineState;
 
+  { Initialiser le parseur PROCEDURE/FUNCTION }
+  InitProcState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -4385,6 +4930,7 @@ Begin
     DumpItemState;
     DumpTableState;
     DumpDefineState;
+    DumpProcState;
   End;
 
   { Nettoyage }

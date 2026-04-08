@@ -198,7 +198,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Verification : pas de reference circulaire
             10 fonctions accesseurs
 
-  TODO 09 - PARSEUR : PROCEDURE ET FUNCTION [A FAIRE]
+  TODO 09 - PARSEUR : PROCEDURE ET FUNCTION [IMPLEMENTE]
             PROCEDURE name ;
               declarations locales
               instructions
