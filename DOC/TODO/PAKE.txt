@@ -568,7 +568,7 @@ Turbo Pascal / Free Pascal (-Mtp)
          Function GenerateAppImageDesktop(Const Opts: TOptions): String
            generer le .desktop pour AppImage
 
-  TODO 20 - MULTI-URL [A FAIRE]
+  TODO 20 - MULTI-URL [IMPLEMENTE]
          Type TUrlEntry : record
            Url      : String
            Title    : String
