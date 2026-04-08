@@ -264,7 +264,7 @@
             Acces aux elements de TABLE dans les expressions : T(I)
             10 fonctions accesseurs
 
-  TODO 11 - PARSEUR : STRUCTURES DE CONTROLE [A FAIRE]
+  TODO 11 - PARSEUR : STRUCTURES DE CONTROLE [IMPLEMENTE]
             IF condition THEN
               instructions...
             [ELSE
@@ -1169,6 +1169,7 @@ Const
   TOK_COMMA    = 22;   { ,                                       }
   TOK_SEMICOL  = 23;   { ; (terminateur d instruction Jovial)    }
   TOK_DOT      = 24;   { .                                       }
+  TOK_COLON    = 25;   { : (separateur de label)                 }
   TOK_EQ       = 30;   { =                                       }
   TOK_NE       = 31;   { /= (pas egal)                           }
   TOK_LT       = 32;   { <                                       }
@@ -1491,6 +1492,7 @@ Begin
     TOK_COMMA   : Write('COMMA');
     TOK_SEMICOL : Write('SEMICOL');
     TOK_DOT     : Write('DOT');
+    TOK_COLON   : Write('COLON');
     TOK_EQ      : Write('EQ');
     TOK_NE      : Write('NE');
     TOK_LT      : Write('LT');
@@ -1752,6 +1754,17 @@ Begin
     Begin
       CurTokType := TOK_DOLLAR;
       CurTokStr  := '$';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Deux-points (separateur de label) }
+    Else If Ch = ':' Then
+    Begin
+      CurTokType := TOK_COLON;
+      CurTokStr  := ':';
       CurTokNum  := 0;
       CurTokReal := 0.0;
       Inc(LexColNo);
@@ -2835,6 +2848,9 @@ Procedure ParseProcDecl; Forward;
 
 { Forward declaration pour ParseExpression (defini dans TODO 10) }
 Function ParseExpression : Integer; Forward;
+
+{ Forward declaration pour ParseStatement (defini dans TODO 11) }
+Procedure ParseStatement; Forward;
 
 { ------------------------------------------------------------ }
 { ParseModuleBody : parser les declarations du corps du module  }
@@ -5458,6 +5474,719 @@ End;
 
 
 { ============================================================ }
+{ TODO 11 - PARSEUR : STRUCTURES DE CONTROLE                   }
+{ ============================================================ }
+
+Const
+  { Types de structures de controle }
+  CTL_NONE      = 0;   { aucune structure                         }
+  CTL_IF        = 1;   { IF..THEN..ELSE..END                      }
+  CTL_FOR       = 2;   { FOR..TO..DO..END                         }
+  CTL_WHILE     = 3;   { WHILE..DO..END                           }
+  CTL_DO_UNTIL  = 4;   { DO..UNTIL                                }
+  CTL_GOTO      = 5;   { GOTO / GO TO                             }
+  CTL_LABEL     = 6;   { label nomme (nom : instruction)          }
+  CTL_BEGIN     = 7;   { BEGIN..END (regroupement)                }
+
+  { Limites }
+  CTL_MAX_DEPTH = 64;  { profondeur max d imbrication             }
+
+Var
+  { Variables du parseur de structures de controle }
+  CtlInitialized : Boolean;     { module initialise ?              }
+  CtlStateCount  : Integer;     { compteur d operations            }
+  CtlIfCount     : Integer;     { nombre de IF parses              }
+  CtlForCount    : Integer;     { nombre de FOR parses             }
+  CtlWhileCount  : Integer;     { nombre de WHILE parses           }
+  CtlDoUntilCount: Integer;     { nombre de DO..UNTIL parses       }
+  CtlGotoCount   : Integer;     { nombre de GOTO parses            }
+  CtlLabelCount  : Integer;     { nombre de labels nommes          }
+  CtlBeginCount  : Integer;     { nombre de BEGIN..END parses      }
+  CtlLabelNum    : Integer;     { generateur de labels uniques     }
+  CtlErrorCount  : Integer;     { nombre d erreurs                 }
+  CtlDepth       : Integer;     { profondeur courante imbrication  }
+  CtlMaxDepth    : Integer;     { profondeur max atteinte          }
+
+{ ------------------------------------------------------------ }
+{ InitCtrlState : initialiser les variables de controle          }
+{ ------------------------------------------------------------ }
+
+Procedure InitCtrlState;
+Begin
+  CtlInitialized := True;
+  CtlStateCount  := 0;
+  CtlIfCount     := 0;
+  CtlForCount    := 0;
+  CtlWhileCount  := 0;
+  CtlDoUntilCount:= 0;
+  CtlGotoCount   := 0;
+  CtlLabelCount  := 0;
+  CtlBeginCount  := 0;
+  CtlLabelNum    := 0;
+  CtlErrorCount  := 0;
+  CtlDepth       := 0;
+  CtlMaxDepth    := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCtlLabel : generer un label unique pour le controle de flux }
+{ ------------------------------------------------------------ }
+
+Function GenCtlLabel : Integer;
+Begin
+  Inc(CtlLabelNum);
+  GenCtlLabel := CtlLabelNum;
+End;
+
+{ ------------------------------------------------------------ }
+{ CtrlTypeName : retourner le nom textuel du type de structure   }
+{ ------------------------------------------------------------ }
+
+Function CtrlTypeName(CtlType : Integer) : TString;
+Begin
+  Case CtlType Of
+    CTL_NONE     : CtrlTypeName := 'NONE';
+    CTL_IF       : CtrlTypeName := 'IF';
+    CTL_FOR      : CtrlTypeName := 'FOR';
+    CTL_WHILE    : CtrlTypeName := 'WHILE';
+    CTL_DO_UNTIL : CtrlTypeName := 'DO_UNTIL';
+    CTL_GOTO     : CtrlTypeName := 'GOTO';
+    CTL_LABEL    : CtrlTypeName := 'LABEL';
+    CTL_BEGIN    : CtrlTypeName := 'BEGIN';
+  Else
+    CtrlTypeName := 'UNKNOWN(' + ItoS(CtlType) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIfStatement : parser une structure IF..THEN..ELSE..END    }
+{   IF condition THEN                                            }
+{     instructions...                                            }
+{   [ELSE                                                        }
+{     instructions...]                                           }
+{   END ;                                                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIfStatement;
+Var
+  LblNum    : Integer;
+  NestDepth : Integer;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlIfCount);
+  Inc(CtlDepth);
+  If CtlDepth > CtlMaxDepth Then
+    CtlMaxDepth := CtlDepth;
+
+  LblNum := GenCtlLabel;
+
+  If Opts.Verbose Then
+    WriteLn('  IF #', LblNum, ' (profondeur ', CtlDepth, ')');
+
+  { Consommer le mot-cle IF (deja verifie par l appelant) }
+  LexNextToken;
+
+  { Parser la condition (expression) }
+  ParseExpression;
+
+  { Attendre THEN }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_THEN) Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('THEN attendu apres condition IF');
+    Inc(CtlErrorCount);
+  End;
+
+  { Parser les instructions du bloc THEN }
+  NestDepth := 0;
+  While (CurTokType <> TOK_EOF) Do
+  Begin
+    { Verifier ELSE au meme niveau }
+    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+       (CurTokNum = KW_ELSE) Then
+    Begin
+      { Bloc ELSE }
+      LexNextToken;
+      If Opts.Verbose Then
+        WriteLn('  ELSE #', LblNum);
+      Continue;
+    End;
+
+    { Verifier END au meme niveau }
+    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+       (CurTokNum = KW_END) Then
+    Begin
+      { Fin du IF }
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then
+        LexNextToken;
+      If Opts.Verbose Then
+        WriteLn('  END IF #', LblNum);
+      Break;
+    End;
+
+    { Gerer l imbrication de structures }
+    If CurTokType = TOK_KEYWORD Then
+    Begin
+      If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
+         (CurTokNum = KW_WHILE) Or (CurTokNum = KW_CASE) Or
+         (CurTokNum = KW_BEGIN) Then
+        Inc(NestDepth);
+      If CurTokNum = KW_END Then
+      Begin
+        If NestDepth > 0 Then
+        Begin
+          Dec(NestDepth);
+          LexNextToken;
+          If CurTokType = TOK_SEMICOL Then
+            LexNextToken;
+          Continue;
+        End;
+      End;
+    End;
+
+    LexNextToken;
+  End;
+
+  Dec(CtlDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForStatement : parser une boucle FOR..TO..DO..END         }
+{   FOR var = debut [BY pas] TO fin DO                           }
+{     instructions...                                            }
+{   END ;                                                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForStatement;
+Var
+  LblNum    : Integer;
+  HasBy     : Boolean;
+  NestDepth : Integer;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlForCount);
+  Inc(CtlDepth);
+  If CtlDepth > CtlMaxDepth Then
+    CtlMaxDepth := CtlDepth;
+
+  LblNum := GenCtlLabel;
+  HasBy  := False;
+
+  If Opts.Verbose Then
+    WriteLn('  FOR #', LblNum, ' (profondeur ', CtlDepth, ')');
+
+  { Consommer le mot-cle FOR }
+  LexNextToken;
+
+  { Variable de boucle }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('Variable attendue apres FOR');
+    Inc(CtlErrorCount);
+  End;
+
+  { Signe egal : = }
+  If CurTokType = TOK_EQ Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('= attendu apres variable FOR');
+    Inc(CtlErrorCount);
+  End;
+
+  { Expression de debut }
+  ParseExpression;
+
+  { Optionnel : BY pas }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then
+  Begin
+    HasBy := True;
+    LexNextToken;
+    ParseExpression;
+  End;
+
+  { TO expression de fin }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('TO attendu dans boucle FOR');
+    Inc(CtlErrorCount);
+  End;
+
+  ParseExpression;
+
+  { DO }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DO) Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('DO attendu dans boucle FOR');
+    Inc(CtlErrorCount);
+  End;
+
+  If Opts.Verbose And HasBy Then
+    WriteLn('    FOR avec pas explicite (BY)');
+
+  { Parser le corps de la boucle jusqu a END }
+  NestDepth := 0;
+  While (CurTokType <> TOK_EOF) Do
+  Begin
+    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+       (CurTokNum = KW_END) Then
+    Begin
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then
+        LexNextToken;
+      If Opts.Verbose Then
+        WriteLn('  END FOR #', LblNum);
+      Break;
+    End;
+
+    { Gerer l imbrication }
+    If CurTokType = TOK_KEYWORD Then
+    Begin
+      If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
+         (CurTokNum = KW_WHILE) Or (CurTokNum = KW_CASE) Or
+         (CurTokNum = KW_BEGIN) Then
+        Inc(NestDepth);
+      If CurTokNum = KW_END Then
+      Begin
+        If NestDepth > 0 Then
+        Begin
+          Dec(NestDepth);
+          LexNextToken;
+          If CurTokType = TOK_SEMICOL Then
+            LexNextToken;
+          Continue;
+        End;
+      End;
+    End;
+
+    LexNextToken;
+  End;
+
+  Dec(CtlDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseWhileStatement : parser une boucle WHILE..DO..END         }
+{   WHILE condition DO                                           }
+{     instructions...                                            }
+{   END ;                                                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseWhileStatement;
+Var
+  LblNum    : Integer;
+  NestDepth : Integer;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlWhileCount);
+  Inc(CtlDepth);
+  If CtlDepth > CtlMaxDepth Then
+    CtlMaxDepth := CtlDepth;
+
+  LblNum := GenCtlLabel;
+
+  If Opts.Verbose Then
+    WriteLn('  WHILE #', LblNum, ' (profondeur ', CtlDepth, ')');
+
+  { Consommer le mot-cle WHILE }
+  LexNextToken;
+
+  { Parser la condition }
+  ParseExpression;
+
+  { Attendre DO }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DO) Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('DO attendu apres condition WHILE');
+    Inc(CtlErrorCount);
+  End;
+
+  { Parser le corps de la boucle jusqu a END }
+  NestDepth := 0;
+  While (CurTokType <> TOK_EOF) Do
+  Begin
+    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+       (CurTokNum = KW_END) Then
+    Begin
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then
+        LexNextToken;
+      If Opts.Verbose Then
+        WriteLn('  END WHILE #', LblNum);
+      Break;
+    End;
+
+    { Gerer l imbrication }
+    If CurTokType = TOK_KEYWORD Then
+    Begin
+      If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
+         (CurTokNum = KW_WHILE) Or (CurTokNum = KW_CASE) Or
+         (CurTokNum = KW_BEGIN) Then
+        Inc(NestDepth);
+      If CurTokNum = KW_END Then
+      Begin
+        If NestDepth > 0 Then
+        Begin
+          Dec(NestDepth);
+          LexNextToken;
+          If CurTokType = TOK_SEMICOL Then
+            LexNextToken;
+          Continue;
+        End;
+      End;
+    End;
+
+    LexNextToken;
+  End;
+
+  Dec(CtlDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDoUntil : parser une boucle DO..UNTIL                     }
+{   DO                                                           }
+{     instructions...                                            }
+{   UNTIL condition ;                                            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDoUntil;
+Var
+  LblNum    : Integer;
+  NestDepth : Integer;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlDoUntilCount);
+  Inc(CtlDepth);
+  If CtlDepth > CtlMaxDepth Then
+    CtlMaxDepth := CtlDepth;
+
+  LblNum := GenCtlLabel;
+
+  If Opts.Verbose Then
+    WriteLn('  DO #', LblNum, ' (profondeur ', CtlDepth, ')');
+
+  { Consommer le mot-cle DO }
+  LexNextToken;
+
+  { Parser le corps jusqu a UNTIL }
+  NestDepth := 0;
+  While (CurTokType <> TOK_EOF) Do
+  Begin
+    { Verifier UNTIL au meme niveau }
+    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+       (CurTokNum = KW_UNTIL) Then
+    Begin
+      LexNextToken;
+      { Parser la condition }
+      ParseExpression;
+      { Consommer le point-virgule }
+      If CurTokType = TOK_SEMICOL Then
+        LexNextToken;
+      If Opts.Verbose Then
+        WriteLn('  UNTIL #', LblNum);
+      Break;
+    End;
+
+    { Gerer l imbrication }
+    If CurTokType = TOK_KEYWORD Then
+    Begin
+      If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
+         (CurTokNum = KW_WHILE) Or (CurTokNum = KW_CASE) Or
+         (CurTokNum = KW_BEGIN) Then
+        Inc(NestDepth);
+      If CurTokNum = KW_END Then
+      Begin
+        If NestDepth > 0 Then
+        Begin
+          Dec(NestDepth);
+          LexNextToken;
+          If CurTokType = TOK_SEMICOL Then
+            LexNextToken;
+          Continue;
+        End;
+      End;
+    End;
+
+    LexNextToken;
+  End;
+
+  Dec(CtlDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseGotoStatement : parser GOTO label ou GO TO label          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseGotoStatement;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlGotoCount);
+
+  { Consommer GOTO ou GO }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_GO) Then
+  Begin
+    LexNextToken;
+    { Verifier si TO suit (GO TO) }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+      LexNextToken;
+  End
+  Else
+    { GOTO }
+    LexNextToken;
+
+  { Le label cible }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('  GOTO ', CurTokStr);
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Label attendu apres GOTO');
+    Inc(CtlErrorCount);
+  End;
+
+  { Consommer le point-virgule }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBeginEnd : parser un bloc BEGIN..END                      }
+{   BEGIN                                                        }
+{     instructions...                                            }
+{   END ;                                                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseBeginEnd;
+Var
+  LblNum    : Integer;
+  NestDepth : Integer;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlBeginCount);
+  Inc(CtlDepth);
+  If CtlDepth > CtlMaxDepth Then
+    CtlMaxDepth := CtlDepth;
+
+  LblNum := GenCtlLabel;
+
+  If Opts.Verbose Then
+    WriteLn('  BEGIN #', LblNum);
+
+  { Consommer BEGIN }
+  LexNextToken;
+
+  { Parser les instructions jusqu a END }
+  NestDepth := 0;
+  While (CurTokType <> TOK_EOF) Do
+  Begin
+    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+       (CurTokNum = KW_END) Then
+    Begin
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then
+        LexNextToken;
+      If Opts.Verbose Then
+        WriteLn('  END BEGIN #', LblNum);
+      Break;
+    End;
+
+    { Gerer l imbrication }
+    If CurTokType = TOK_KEYWORD Then
+    Begin
+      If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
+         (CurTokNum = KW_WHILE) Or (CurTokNum = KW_CASE) Or
+         (CurTokNum = KW_BEGIN) Then
+        Inc(NestDepth);
+      If CurTokNum = KW_END Then
+      Begin
+        If NestDepth > 0 Then
+        Begin
+          Dec(NestDepth);
+          LexNextToken;
+          If CurTokType = TOK_SEMICOL Then
+            LexNextToken;
+          Continue;
+        End;
+      End;
+    End;
+
+    LexNextToken;
+  End;
+
+  Dec(CtlDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStatement : dispatcher principal pour les instructions    }
+{   Distribue vers IF, FOR, WHILE, DO, GOTO, BEGIN, ou          }
+{   consomme les tokens jusqu au point-virgule                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStatement;
+Begin
+  Inc(CtlStateCount);
+
+  If CurTokType = TOK_EOF Then Exit;
+
+  If CurTokType = TOK_KEYWORD Then
+  Begin
+    Case CurTokNum Of
+      KW_IF:
+        ParseIfStatement;
+
+      KW_FOR:
+        ParseForStatement;
+
+      KW_WHILE:
+        ParseWhileStatement;
+
+      KW_DO:
+        ParseDoUntil;
+
+      KW_GOTO:
+        ParseGotoStatement;
+
+      KW_GO:
+        ParseGotoStatement;
+
+      KW_BEGIN:
+        ParseBeginEnd;
+
+    Else
+      { Autre instruction : consommer jusqu au point-virgule }
+      While (CurTokType <> TOK_SEMICOL) And
+            (CurTokType <> TOK_EOF) Do
+        LexNextToken;
+      If CurTokType = TOK_SEMICOL Then
+        LexNextToken;
+    End;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    { Possible label nomme (nom : instruction) ou affectation }
+    { Sauvegarder le nom et avancer pour voir si un : suit }
+    Inc(CtlStateCount);
+    LexNextToken;
+    If CurTokType = TOK_COLON Then
+    Begin
+      { C est un label nomme }
+      Inc(CtlLabelCount);
+      If Opts.Verbose Then
+        WriteLn('  LABEL: ', CurTokStr);
+      LexNextToken;
+      { Parser l instruction qui suit le label }
+      If (CurTokType <> TOK_EOF) And (CurTokType <> TOK_SEMICOL) Then
+        ParseStatement;
+    End
+    Else
+    Begin
+      { Pas un label : consommer le reste de l instruction }
+      While (CurTokType <> TOK_SEMICOL) And
+            (CurTokType <> TOK_EOF) Do
+        LexNextToken;
+      If CurTokType = TOK_SEMICOL Then
+        LexNextToken;
+    End;
+  End
+  Else
+  Begin
+    { Token inattendu : avancer }
+    LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpCtrlState : afficher l etat du parseur de controle         }
+{ ------------------------------------------------------------ }
+
+Procedure DumpCtrlState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat du parseur CONTROLE (TODO 11) ===');
+  WriteLn('  Initialise         : ', CtlInitialized);
+  WriteLn('  Operations         : ', CtlStateCount);
+  WriteLn('  IF parses          : ', CtlIfCount);
+  WriteLn('  FOR parses         : ', CtlForCount);
+  WriteLn('  WHILE parses       : ', CtlWhileCount);
+  WriteLn('  DO..UNTIL parses   : ', CtlDoUntilCount);
+  WriteLn('  GOTO parses        : ', CtlGotoCount);
+  WriteLn('  Labels nommes      : ', CtlLabelCount);
+  WriteLn('  BEGIN..END parses  : ', CtlBeginCount);
+  WriteLn('  Labels generes     : ', CtlLabelNum);
+  WriteLn('  Profondeur max     : ', CtlMaxDepth);
+  WriteLn('  Erreurs            : ', CtlErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Accesseurs du parseur de structures de controle (10 fonctions) }
+{ ------------------------------------------------------------ }
+
+Function IsCtlInitialized : Boolean;
+Begin
+  IsCtlInitialized := CtlInitialized;
+End;
+
+Function GetCtlIfCount : Integer;
+Begin
+  GetCtlIfCount := CtlIfCount;
+End;
+
+Function GetCtlForCount : Integer;
+Begin
+  GetCtlForCount := CtlForCount;
+End;
+
+Function GetCtlWhileCount : Integer;
+Begin
+  GetCtlWhileCount := CtlWhileCount;
+End;
+
+Function GetCtlDoUntilCount : Integer;
+Begin
+  GetCtlDoUntilCount := CtlDoUntilCount;
+End;
+
+Function GetCtlGotoCount : Integer;
+Begin
+  GetCtlGotoCount := CtlGotoCount;
+End;
+
+Function GetCtlStateCount : Integer;
+Begin
+  GetCtlStateCount := CtlStateCount;
+End;
+
+Function GetCtlErrorCount : Integer;
+Begin
+  GetCtlErrorCount := CtlErrorCount;
+End;
+
+Function GetCtlMaxDepth : Integer;
+Begin
+  GetCtlMaxDepth := CtlMaxDepth;
+End;
+
+Function IsCtlEmpty : Boolean;
+Begin
+  IsCtlEmpty := (CtlIfCount = 0) And (CtlForCount = 0) And
+                (CtlWhileCount = 0) And (CtlDoUntilCount = 0);
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -5478,6 +6207,7 @@ Begin
   DefInitialized := False;
   PrcInitialized := False;
   ExpInitialized := False;
+  CtlInitialized := False;
 
   ParseArgs;
 
@@ -5508,6 +6238,9 @@ Begin
   { Initialiser le parseur d expressions }
   InitExprState;
 
+  { Initialiser le parseur de structures de controle }
+  InitCtrlState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -5531,6 +6264,7 @@ Begin
     DumpDefineState;
     DumpProcState;
     DumpExprState;
+    DumpCtrlState;
   End;
 
   { Nettoyage }

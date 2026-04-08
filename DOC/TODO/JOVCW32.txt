@@ -256,7 +256,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Acces aux elements de TABLE dans les expressions : T(I)
             10 fonctions accesseurs
 
-  TODO 11 - PARSEUR : STRUCTURES DE CONTROLE [A FAIRE]
+  TODO 11 - PARSEUR : STRUCTURES DE CONTROLE [IMPLEMENTE]
             IF condition THEN
               instructions...
             [ELSE
