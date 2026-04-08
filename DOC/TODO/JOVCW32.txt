@@ -510,7 +510,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Compteur de labels interne pour unicite
             10 fonctions accesseurs
 
-  TODO 20 - BIBLIOTHEQUE RUNTIME JOVIAL (E/S, CONVERSIONS VIA WIN32) [A FAIRE]
+  TODO 20 - BIBLIOTHEQUE RUNTIME JOVIAL (E/S, CONVERSIONS VIA WIN32) [IMPLEMENTE]
             Routines de conversion :
               _JVRT_ITOA : entier 32 bits -> chaine decimale ASCII
                 Utilisation de DIV par 10 en boucle

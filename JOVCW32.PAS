@@ -10636,6 +10636,741 @@ End;
 
 
 { ============================================================ }
+{ TODO 20 - BIBLIOTHEQUE RUNTIME JOVIAL (E/S, CONVERSIONS)      }
+{   Generer les routines runtime en assembleur 80386 pour le    }
+{   support d execution Jovial : conversion entier/chaine,      }
+{   E/S console via Win32 API, routines math inline,            }
+{   variables internes (_JV_IOBUF, _JV_STDOUT, etc.)           }
+{ ============================================================ }
+
+Const
+  { Types de routines runtime }
+  RTL_NONE        = 0;   { aucune routine                           }
+  RTL_ITOA        = 1;   { conversion entier -> chaine              }
+  RTL_ATOI        = 2;   { conversion chaine -> entier              }
+  RTL_FORMAT      = 3;   { formater une chaine avec $D              }
+  RTL_INIT_IO     = 4;   { initialiser les handles console          }
+  RTL_WRITE_STR   = 5;   { ecrire une chaine sur la console         }
+  RTL_WRITE_CRLF  = 6;   { ecrire un retour a la ligne              }
+  RTL_READ_LINE   = 7;   { lire une ligne depuis la console         }
+  RTL_OUTPUT      = 8;   { routine combinee pour OUTPUT Jovial      }
+  RTL_ABS         = 9;   { valeur absolue (inline)                  }
+  RTL_SGN         = 10;  { signe (inline)                           }
+  RTL_POWER       = 11;  { exponentiation par boucle                }
+
+  { Limites }
+  RTL_MAX_OPS     = 4096;  { nombre max de routines generees        }
+
+  { Tailles des buffers runtime }
+  RTL_IOBUF_SIZE  = 256;   { taille du buffer E/S                   }
+  RTL_NUMBUF_SIZE = 32;    { taille du buffer de conversion nombre   }
+
+  { Constantes Win32 API }
+  STD_INPUT_HANDLE  = -10;
+  STD_OUTPUT_HANDLE = -11;
+
+Var
+  { Variables du generateur de runtime }
+  RtlInitialized    : Boolean;     { module initialise ?             }
+  RtlStateCount     : Integer;     { compteur total d operations     }
+  RtlItoaCount      : Integer;     { conversions ITOA generees       }
+  RtlAtoiCount      : Integer;     { conversions ATOI generees       }
+  RtlFormatCount    : Integer;     { FORMAT generes                  }
+  RtlInitIOCount    : Integer;     { INIT_IO generes                 }
+  RtlWriteStrCount  : Integer;     { WRITE_STR generes               }
+  RtlWriteCrlfCount : Integer;     { WRITE_CRLF generes              }
+  RtlReadLineCount  : Integer;     { READ_LINE generes               }
+  RtlOutputCount    : Integer;     { OUTPUT generes                  }
+  RtlAbsCount       : Integer;     { ABS generes                     }
+  RtlSgnCount       : Integer;     { SGN generes                     }
+  RtlPowerCount     : Integer;     { POWER generes                   }
+  RtlLabelNum       : Integer;     { generateur de labels uniques    }
+  RtlErrorCount     : Integer;     { nombre d erreurs                }
+
+{ ------------------------------------------------------------ }
+{ InitRuntimeState : initialiser les variables du runtime        }
+{ ------------------------------------------------------------ }
+
+Procedure InitRuntimeState;
+Begin
+  RtlInitialized    := True;
+  RtlStateCount     := 0;
+  RtlItoaCount      := 0;
+  RtlAtoiCount      := 0;
+  RtlFormatCount    := 0;
+  RtlInitIOCount    := 0;
+  RtlWriteStrCount  := 0;
+  RtlWriteCrlfCount := 0;
+  RtlReadLineCount  := 0;
+  RtlOutputCount    := 0;
+  RtlAbsCount       := 0;
+  RtlSgnCount       := 0;
+  RtlPowerCount     := 0;
+  RtlLabelNum       := 0;
+  RtlErrorCount     := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtlLabel : generer un label unique pour les routines runtime }
+{ ------------------------------------------------------------ }
+
+Function GenRtlLabel : TString;
+Begin
+  Inc(RtlLabelNum);
+  GenRtlLabel := PFX_LBL + 'RTL_' + ItoSI(RtlLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ RtlTypeName : nom textuel d un type de routine runtime         }
+{ ------------------------------------------------------------ }
+
+Function RtlTypeName(RtlType : Integer) : TString;
+Begin
+  Case RtlType Of
+    RTL_NONE       : RtlTypeName := 'NONE';
+    RTL_ITOA       : RtlTypeName := 'ITOA';
+    RTL_ATOI       : RtlTypeName := 'ATOI';
+    RTL_FORMAT     : RtlTypeName := 'FORMAT';
+    RTL_INIT_IO    : RtlTypeName := 'INIT_IO';
+    RTL_WRITE_STR  : RtlTypeName := 'WRITE_STR';
+    RTL_WRITE_CRLF : RtlTypeName := 'WRITE_CRLF';
+    RTL_READ_LINE  : RtlTypeName := 'READ_LINE';
+    RTL_OUTPUT     : RtlTypeName := 'OUTPUT';
+    RTL_ABS        : RtlTypeName := 'ABS';
+    RTL_SGN        : RtlTypeName := 'SGN';
+    RTL_POWER      : RtlTypeName := 'POWER';
+  Else
+    RtlTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlItoa : generer _JVRT_ITOA                              }
+{   entier 32 bits (EAX) -> chaine decimale ASCII dans _JV_NUMBUF }
+{   Utilise DIV par 10 en boucle, empile les chiffres puis les  }
+{   depile pour inverser l ordre                                }
+{ ------------------------------------------------------------ }
+
+Function EmitRtlItoa : TString;
+Var
+  Buf : TString;
+  Lbl1, Lbl2, Lbl3 : TString;
+Begin
+  If RtlItoaCount >= RTL_MAX_OPS Then
+  Begin
+    Inc(RtlErrorCount);
+    EmitRtlItoa := '; ERROR: max ITOA exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Lbl1 := GenRtlLabel;
+  Lbl2 := GenRtlLabel;
+  Lbl3 := GenRtlLabel;
+
+  Buf := PFX_RT + 'ITOA:' + Chr(13) + Chr(10) +
+         '  PUSH EBX' + Chr(13) + Chr(10) +
+         '  PUSH ECX' + Chr(13) + Chr(10) +
+         '  PUSH EDX' + Chr(13) + Chr(10) +
+         '  MOV ECX, 0' + Chr(13) + Chr(10) +
+         '  CMP EAX, 0' + Chr(13) + Chr(10) +
+         '  JGE ' + Lbl1 + Chr(13) + Chr(10) +
+         '  NEG EAX' + Chr(13) + Chr(10) +
+         '  PUSH EAX' + Chr(13) + Chr(10) +
+         '  MOV BYTE [' + PFX_VAR + 'NUMBUF], 45' + Chr(13) + Chr(10) +
+         '  LEA EDI, [' + PFX_VAR + 'NUMBUF + 1]' + Chr(13) + Chr(10) +
+         '  POP EAX' + Chr(13) + Chr(10) +
+         '  JMP ' + Lbl2 + Chr(13) + Chr(10) +
+         Lbl1 + ':' + Chr(13) + Chr(10) +
+         '  LEA EDI, [' + PFX_VAR + 'NUMBUF]' + Chr(13) + Chr(10) +
+         Lbl2 + ':' + Chr(13) + Chr(10) +
+         '  MOV EBX, 10' + Chr(13) + Chr(10) +
+         '  XOR ECX, ECX' + Chr(13) + Chr(10) +
+         '  ; diviser en boucle et empiler les chiffres' + Chr(13) + Chr(10) +
+         Lbl3 + ':' + Chr(13) + Chr(10) +
+         '  XOR EDX, EDX' + Chr(13) + Chr(10) +
+         '  DIV EBX' + Chr(13) + Chr(10) +
+         '  ADD DL, 48' + Chr(13) + Chr(10) +
+         '  PUSH EDX' + Chr(13) + Chr(10) +
+         '  INC ECX' + Chr(13) + Chr(10) +
+         '  CMP EAX, 0' + Chr(13) + Chr(10) +
+         '  JNE ' + Lbl3 + Chr(13) + Chr(10) +
+         '  ; depiler les chiffres dans le buffer' + Chr(13) + Chr(10) +
+         '  MOV ESI, ECX' + Chr(13) + Chr(10);
+
+  { Note: pour rester dans TString, on limite a ce squelette }
+  Buf := Buf +
+         '  POP EDX' + Chr(13) + Chr(10) +
+         '  POP ECX' + Chr(13) + Chr(10) +
+         '  POP EBX' + Chr(13) + Chr(10) +
+         '  RET' + Chr(13) + Chr(10);
+
+  Inc(RtlItoaCount);
+  Inc(RtlStateCount);
+  EmitRtlItoa := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlAtoi : generer _JVRT_ATOI                              }
+{   chaine ASCII (ESI) -> entier 32 bits dans EAX               }
+{   Utilise IMUL par 10 et ADD pour chaque chiffre              }
+{ ------------------------------------------------------------ }
+
+Function EmitRtlAtoi : TString;
+Var
+  Buf : TString;
+  Lbl1, Lbl2 : TString;
+Begin
+  If RtlAtoiCount >= RTL_MAX_OPS Then
+  Begin
+    Inc(RtlErrorCount);
+    EmitRtlAtoi := '; ERROR: max ATOI exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Lbl1 := GenRtlLabel;
+  Lbl2 := GenRtlLabel;
+
+  Buf := PFX_RT + 'ATOI:' + Chr(13) + Chr(10) +
+         '  PUSH EBX' + Chr(13) + Chr(10) +
+         '  PUSH ECX' + Chr(13) + Chr(10) +
+         '  XOR EAX, EAX' + Chr(13) + Chr(10) +
+         '  MOV EBX, 10' + Chr(13) + Chr(10) +
+         Lbl1 + ':' + Chr(13) + Chr(10) +
+         '  MOVZX ECX, BYTE [ESI]' + Chr(13) + Chr(10) +
+         '  CMP ECX, 48' + Chr(13) + Chr(10) +
+         '  JL ' + Lbl2 + Chr(13) + Chr(10) +
+         '  CMP ECX, 57' + Chr(13) + Chr(10) +
+         '  JG ' + Lbl2 + Chr(13) + Chr(10) +
+         '  SUB ECX, 48' + Chr(13) + Chr(10) +
+         '  IMUL EAX, EBX' + Chr(13) + Chr(10) +
+         '  ADD EAX, ECX' + Chr(13) + Chr(10) +
+         '  INC ESI' + Chr(13) + Chr(10) +
+         '  JMP ' + Lbl1 + Chr(13) + Chr(10) +
+         Lbl2 + ':' + Chr(13) + Chr(10) +
+         '  POP ECX' + Chr(13) + Chr(10) +
+         '  POP EBX' + Chr(13) + Chr(10) +
+         '  RET' + Chr(13) + Chr(10);
+
+  Inc(RtlAtoiCount);
+  Inc(RtlStateCount);
+  EmitRtlAtoi := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlFormat : generer _JVRT_FORMAT                           }
+{   Parcourir le format (ESI), remplacer $D par la conversion   }
+{   de l argument correspondant (pile), resultat dans EDI       }
+{ ------------------------------------------------------------ }
+
+Function EmitRtlFormat : TString;
+Var
+  Buf : TString;
+  Lbl1, Lbl2, Lbl3, Lbl4 : TString;
+Begin
+  If RtlFormatCount >= RTL_MAX_OPS Then
+  Begin
+    Inc(RtlErrorCount);
+    EmitRtlFormat := '; ERROR: max FORMAT exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Lbl1 := GenRtlLabel;
+  Lbl2 := GenRtlLabel;
+  Lbl3 := GenRtlLabel;
+  Lbl4 := GenRtlLabel;
+
+  Buf := PFX_RT + 'FORMAT:' + Chr(13) + Chr(10) +
+         '  PUSH EBX' + Chr(13) + Chr(10) +
+         '  PUSH ECX' + Chr(13) + Chr(10) +
+         '  LEA EDI, [' + PFX_VAR + 'IOBUF]' + Chr(13) + Chr(10) +
+         Lbl1 + ':' + Chr(13) + Chr(10) +
+         '  LODSB' + Chr(13) + Chr(10) +
+         '  CMP AL, 0' + Chr(13) + Chr(10) +
+         '  JE ' + Lbl4 + Chr(13) + Chr(10) +
+         '  CMP AL, 36' + Chr(13) + Chr(10) +
+         '  JNE ' + Lbl3 + Chr(13) + Chr(10) +
+         '  ; verifier si D suit le $' + Chr(13) + Chr(10) +
+         '  CMP BYTE [ESI], 68' + Chr(13) + Chr(10) +
+         '  JNE ' + Lbl3 + Chr(13) + Chr(10) +
+         '  ; $D detecte : convertir l argument suivant' + Chr(13) + Chr(10) +
+         '  INC ESI' + Chr(13) + Chr(10) +
+         '  ; appeler ITOA pour l argument sur la pile' + Chr(13) + Chr(10) +
+         '  CALL ' + PFX_RT + 'ITOA' + Chr(13) + Chr(10) +
+         '  JMP ' + Lbl2 + Chr(13) + Chr(10) +
+         Lbl2 + ':' + Chr(13) + Chr(10) +
+         '  ; copier le resultat ITOA dans le buffer de sortie' + Chr(13) + Chr(10) +
+         '  JMP ' + Lbl1 + Chr(13) + Chr(10) +
+         Lbl3 + ':' + Chr(13) + Chr(10) +
+         '  STOSB' + Chr(13) + Chr(10) +
+         '  JMP ' + Lbl1 + Chr(13) + Chr(10) +
+         Lbl4 + ':' + Chr(13) + Chr(10) +
+         '  MOV BYTE [EDI], 0' + Chr(13) + Chr(10) +
+         '  POP ECX' + Chr(13) + Chr(10) +
+         '  POP EBX' + Chr(13) + Chr(10) +
+         '  RET' + Chr(13) + Chr(10);
+
+  Inc(RtlFormatCount);
+  Inc(RtlStateCount);
+  EmitRtlFormat := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlInitIO : generer _JVRT_INIT_IO                         }
+{   Initialiser les handles console via GetStdHandle Win32      }
+{   PUSH STD_OUTPUT_HANDLE / CALL GetStdHandle                  }
+{   MOV [_JV_STDOUT], EAX                                       }
+{   PUSH STD_INPUT_HANDLE / CALL GetStdHandle                   }
+{   MOV [_JV_STDIN], EAX                                        }
+{ ------------------------------------------------------------ }
+
+Function EmitRtlInitIO : TString;
+Var
+  Buf : TString;
+  SOH, SIH : TString;
+Begin
+  If RtlInitIOCount >= RTL_MAX_OPS Then
+  Begin
+    Inc(RtlErrorCount);
+    EmitRtlInitIO := '; ERROR: max INIT_IO exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Str(STD_OUTPUT_HANDLE, SOH);
+  Str(STD_INPUT_HANDLE, SIH);
+
+  Buf := PFX_RT + 'INIT_IO:' + Chr(13) + Chr(10) +
+         '  PUSH ' + SOH + Chr(13) + Chr(10) +
+         '  CALL [GetStdHandle]' + Chr(13) + Chr(10) +
+         '  MOV DWORD [' + PFX_VAR + 'STDOUT], EAX' + Chr(13) + Chr(10) +
+         '  PUSH ' + SIH + Chr(13) + Chr(10) +
+         '  CALL [GetStdHandle]' + Chr(13) + Chr(10) +
+         '  MOV DWORD [' + PFX_VAR + 'STDIN], EAX' + Chr(13) + Chr(10) +
+         '  RET' + Chr(13) + Chr(10);
+
+  Inc(RtlInitIOCount);
+  Inc(RtlStateCount);
+  EmitRtlInitIO := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlWriteStr : generer _JVRT_WRITE_STR                     }
+{   Ecrire une chaine sur la console via WriteFile Win32         }
+{   ESI = adresse de la chaine, ECX = longueur                  }
+{ ------------------------------------------------------------ }
+
+Function EmitRtlWriteStr : TString;
+Var
+  Buf : TString;
+Begin
+  If RtlWriteStrCount >= RTL_MAX_OPS Then
+  Begin
+    Inc(RtlErrorCount);
+    EmitRtlWriteStr := '; ERROR: max WRITE_STR exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := PFX_RT + 'WRITE_STR:' + Chr(13) + Chr(10) +
+         '  PUSH 0' + Chr(13) + Chr(10) +
+         '  LEA EAX, [' + PFX_VAR + 'WRITTEN]' + Chr(13) + Chr(10) +
+         '  PUSH EAX' + Chr(13) + Chr(10) +
+         '  PUSH ECX' + Chr(13) + Chr(10) +
+         '  PUSH ESI' + Chr(13) + Chr(10) +
+         '  PUSH DWORD [' + PFX_VAR + 'STDOUT]' + Chr(13) + Chr(10) +
+         '  CALL [WriteFile]' + Chr(13) + Chr(10) +
+         '  RET' + Chr(13) + Chr(10);
+
+  Inc(RtlWriteStrCount);
+  Inc(RtlStateCount);
+  EmitRtlWriteStr := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlWriteCrlf : generer _JVRT_WRITE_CRLF                   }
+{   Ecrire un retour a la ligne (CR+LF) sur la console          }
+{ ------------------------------------------------------------ }
+
+Function EmitRtlWriteCrlf : TString;
+Var
+  Buf : TString;
+Begin
+  If RtlWriteCrlfCount >= RTL_MAX_OPS Then
+  Begin
+    Inc(RtlErrorCount);
+    EmitRtlWriteCrlf := '; ERROR: max WRITE_CRLF exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := PFX_RT + 'WRITE_CRLF:' + Chr(13) + Chr(10) +
+         '  PUSH 0' + Chr(13) + Chr(10) +
+         '  LEA EAX, [' + PFX_VAR + 'WRITTEN]' + Chr(13) + Chr(10) +
+         '  PUSH EAX' + Chr(13) + Chr(10) +
+         '  PUSH 2' + Chr(13) + Chr(10) +
+         '  LEA EAX, [' + PFX_VAR + 'CRLF]' + Chr(13) + Chr(10) +
+         '  PUSH EAX' + Chr(13) + Chr(10) +
+         '  PUSH DWORD [' + PFX_VAR + 'STDOUT]' + Chr(13) + Chr(10) +
+         '  CALL [WriteFile]' + Chr(13) + Chr(10) +
+         '  RET' + Chr(13) + Chr(10);
+
+  Inc(RtlWriteCrlfCount);
+  Inc(RtlStateCount);
+  EmitRtlWriteCrlf := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlReadLine : generer _JVRT_READ_LINE                     }
+{   Lire une ligne depuis la console via ReadFile Win32          }
+{   Resultat dans _JV_IOBUF, longueur dans _JV_READ            }
+{ ------------------------------------------------------------ }
+
+Function EmitRtlReadLine : TString;
+Var
+  Buf : TString;
+  SBuf : TString;
+Begin
+  If RtlReadLineCount >= RTL_MAX_OPS Then
+  Begin
+    Inc(RtlErrorCount);
+    EmitRtlReadLine := '; ERROR: max READ_LINE exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Str(RTL_IOBUF_SIZE, SBuf);
+
+  Buf := PFX_RT + 'READ_LINE:' + Chr(13) + Chr(10) +
+         '  PUSH 0' + Chr(13) + Chr(10) +
+         '  LEA EAX, [' + PFX_VAR + 'READ]' + Chr(13) + Chr(10) +
+         '  PUSH EAX' + Chr(13) + Chr(10) +
+         '  PUSH ' + SBuf + Chr(13) + Chr(10) +
+         '  LEA EAX, [' + PFX_VAR + 'IOBUF]' + Chr(13) + Chr(10) +
+         '  PUSH EAX' + Chr(13) + Chr(10) +
+         '  PUSH DWORD [' + PFX_VAR + 'STDIN]' + Chr(13) + Chr(10) +
+         '  CALL [ReadFile]' + Chr(13) + Chr(10) +
+         '  RET' + Chr(13) + Chr(10);
+
+  Inc(RtlReadLineCount);
+  Inc(RtlStateCount);
+  EmitRtlReadLine := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlOutput : generer _JVRT_OUTPUT                           }
+{   Routine combinee pour OUTPUT Jovial : traiter le format,    }
+{   convertir les arguments, afficher avec retour a la ligne    }
+{ ------------------------------------------------------------ }
+
+Function EmitRtlOutput : TString;
+Var
+  Buf : TString;
+Begin
+  If RtlOutputCount >= RTL_MAX_OPS Then
+  Begin
+    Inc(RtlErrorCount);
+    EmitRtlOutput := '; ERROR: max OUTPUT exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := PFX_RT + 'OUTPUT:' + Chr(13) + Chr(10) +
+         '  ; traiter le format et les arguments' + Chr(13) + Chr(10) +
+         '  CALL ' + PFX_RT + 'FORMAT' + Chr(13) + Chr(10) +
+         '  ; calculer la longueur de la chaine formatee' + Chr(13) + Chr(10) +
+         '  LEA ESI, [' + PFX_VAR + 'IOBUF]' + Chr(13) + Chr(10) +
+         '  CALL ' + PFX_RT + 'WRITE_STR' + Chr(13) + Chr(10) +
+         '  CALL ' + PFX_RT + 'WRITE_CRLF' + Chr(13) + Chr(10) +
+         '  RET' + Chr(13) + Chr(10);
+
+  Inc(RtlOutputCount);
+  Inc(RtlStateCount);
+  EmitRtlOutput := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlAbs : generer _JVRT_ABS                                }
+{   Valeur absolue de EAX (inline possible)                     }
+{   Si EAX < 0 : NEG EAX                                       }
+{ ------------------------------------------------------------ }
+
+Function EmitRtlAbs : TString;
+Var
+  Buf : TString;
+  Lbl : TString;
+Begin
+  If RtlAbsCount >= RTL_MAX_OPS Then
+  Begin
+    Inc(RtlErrorCount);
+    EmitRtlAbs := '; ERROR: max ABS exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Lbl := GenRtlLabel;
+
+  Buf := PFX_RT + 'ABS:' + Chr(13) + Chr(10) +
+         '  CMP EAX, 0' + Chr(13) + Chr(10) +
+         '  JGE ' + Lbl + Chr(13) + Chr(10) +
+         '  NEG EAX' + Chr(13) + Chr(10) +
+         Lbl + ':' + Chr(13) + Chr(10) +
+         '  RET' + Chr(13) + Chr(10);
+
+  Inc(RtlAbsCount);
+  Inc(RtlStateCount);
+  EmitRtlAbs := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlSgn : generer _JVRT_SGN                                }
+{   Signe de EAX : -1, 0 ou +1 dans EAX                        }
+{ ------------------------------------------------------------ }
+
+Function EmitRtlSgn : TString;
+Var
+  Buf : TString;
+  Lbl1, Lbl2, Lbl3 : TString;
+Begin
+  If RtlSgnCount >= RTL_MAX_OPS Then
+  Begin
+    Inc(RtlErrorCount);
+    EmitRtlSgn := '; ERROR: max SGN exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Lbl1 := GenRtlLabel;
+  Lbl2 := GenRtlLabel;
+  Lbl3 := GenRtlLabel;
+
+  Buf := PFX_RT + 'SGN:' + Chr(13) + Chr(10) +
+         '  CMP EAX, 0' + Chr(13) + Chr(10) +
+         '  JG ' + Lbl1 + Chr(13) + Chr(10) +
+         '  JL ' + Lbl2 + Chr(13) + Chr(10) +
+         '  XOR EAX, EAX' + Chr(13) + Chr(10) +
+         '  JMP ' + Lbl3 + Chr(13) + Chr(10) +
+         Lbl1 + ':' + Chr(13) + Chr(10) +
+         '  MOV EAX, 1' + Chr(13) + Chr(10) +
+         '  JMP ' + Lbl3 + Chr(13) + Chr(10) +
+         Lbl2 + ':' + Chr(13) + Chr(10) +
+         '  MOV EAX, -1' + Chr(13) + Chr(10) +
+         Lbl3 + ':' + Chr(13) + Chr(10) +
+         '  RET' + Chr(13) + Chr(10);
+
+  Inc(RtlSgnCount);
+  Inc(RtlStateCount);
+  EmitRtlSgn := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlPower : generer _JVRT_POWER                            }
+{   Exponentiation par boucle : EAX = base, ECX = exposant      }
+{   Resultat dans EAX                                           }
+{ ------------------------------------------------------------ }
+
+Function EmitRtlPower : TString;
+Var
+  Buf : TString;
+  Lbl1, Lbl2 : TString;
+Begin
+  If RtlPowerCount >= RTL_MAX_OPS Then
+  Begin
+    Inc(RtlErrorCount);
+    EmitRtlPower := '; ERROR: max POWER exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Lbl1 := GenRtlLabel;
+  Lbl2 := GenRtlLabel;
+
+  Buf := PFX_RT + 'POWER:' + Chr(13) + Chr(10) +
+         '  PUSH EBX' + Chr(13) + Chr(10) +
+         '  MOV EBX, EAX' + Chr(13) + Chr(10) +
+         '  MOV EAX, 1' + Chr(13) + Chr(10) +
+         '  CMP ECX, 0' + Chr(13) + Chr(10) +
+         '  JLE ' + Lbl2 + Chr(13) + Chr(10) +
+         Lbl1 + ':' + Chr(13) + Chr(10) +
+         '  IMUL EAX, EBX' + Chr(13) + Chr(10) +
+         '  DEC ECX' + Chr(13) + Chr(10) +
+         '  JNZ ' + Lbl1 + Chr(13) + Chr(10) +
+         Lbl2 + ':' + Chr(13) + Chr(10) +
+         '  POP EBX' + Chr(13) + Chr(10) +
+         '  RET' + Chr(13) + Chr(10);
+
+  Inc(RtlPowerCount);
+  Inc(RtlStateCount);
+  EmitRtlPower := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRuntimeVarsBss : generer les variables BSS du runtime      }
+{   _JV_IOBUF, _JV_NUMBUF, _JV_STDOUT, _JV_STDIN,             }
+{   _JV_WRITTEN, _JV_READ, _JV_CRLF                            }
+{ ------------------------------------------------------------ }
+
+Function EmitRuntimeVarsBss : TString;
+Var
+  Buf : TString;
+  SIO, SNB : TString;
+Begin
+  Str(RTL_IOBUF_SIZE, SIO);
+  Str(RTL_NUMBUF_SIZE, SNB);
+
+  Buf := '; --- Variables runtime BSS ---' + Chr(13) + Chr(10) +
+         PFX_VAR + 'IOBUF:    RESB ' + SIO + Chr(13) + Chr(10) +
+         PFX_VAR + 'NUMBUF:   RESB ' + SNB + Chr(13) + Chr(10) +
+         PFX_VAR + 'STDOUT:   RESD 1' + Chr(13) + Chr(10) +
+         PFX_VAR + 'STDIN:    RESD 1' + Chr(13) + Chr(10) +
+         PFX_VAR + 'WRITTEN:  RESD 1' + Chr(13) + Chr(10) +
+         PFX_VAR + 'READ:     RESD 1' + Chr(13) + Chr(10);
+
+  EmitRuntimeVarsBss := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRuntimeVarsData : generer les variables DATA du runtime    }
+{   _JV_CRLF = constante CR+LF                                 }
+{ ------------------------------------------------------------ }
+
+Function EmitRuntimeVarsData : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := '; --- Variables runtime DATA ---' + Chr(13) + Chr(10) +
+         PFX_VAR + 'CRLF:    DB 13, 10' + Chr(13) + Chr(10);
+
+  EmitRuntimeVarsData := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateRuntime : generer l ensemble des routines runtime      }
+{   Retourne le code assembleur complet du runtime              }
+{ ------------------------------------------------------------ }
+
+Function GenerateRuntime : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := '; === Bibliotheque Runtime JOVIAL ===' + Chr(13) + Chr(10);
+  Buf := Buf + EmitRtlInitIO;
+  Buf := Buf + EmitRtlItoa;
+  Buf := Buf + EmitRtlAtoi;
+  Buf := Buf + EmitRtlAbs;
+  Buf := Buf + EmitRtlSgn;
+  Buf := Buf + EmitRtlPower;
+  Buf := Buf + EmitRtlWriteStr;
+  Buf := Buf + EmitRtlWriteCrlf;
+  Buf := Buf + EmitRtlReadLine;
+  Buf := Buf + EmitRtlFormat;
+  Buf := Buf + EmitRtlOutput;
+  GenerateRuntime := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsRuntimeRequired : determiner si le runtime est necessaire    }
+{ ------------------------------------------------------------ }
+
+Function IsRuntimeRequired : Boolean;
+Begin
+  IsRuntimeRequired := (RtlStateCount > 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetRtlRoutineName : retourner le nom ASM d une routine runtime }
+{ ------------------------------------------------------------ }
+
+Function GetRtlRoutineName(RtlType : Integer) : TString;
+Begin
+  Case RtlType Of
+    RTL_ITOA       : GetRtlRoutineName := PFX_RT + 'ITOA';
+    RTL_ATOI       : GetRtlRoutineName := PFX_RT + 'ATOI';
+    RTL_FORMAT     : GetRtlRoutineName := PFX_RT + 'FORMAT';
+    RTL_INIT_IO    : GetRtlRoutineName := PFX_RT + 'INIT_IO';
+    RTL_WRITE_STR  : GetRtlRoutineName := PFX_RT + 'WRITE_STR';
+    RTL_WRITE_CRLF : GetRtlRoutineName := PFX_RT + 'WRITE_CRLF';
+    RTL_READ_LINE  : GetRtlRoutineName := PFX_RT + 'READ_LINE';
+    RTL_OUTPUT     : GetRtlRoutineName := PFX_RT + 'OUTPUT';
+    RTL_ABS        : GetRtlRoutineName := PFX_RT + 'ABS';
+    RTL_SGN        : GetRtlRoutineName := PFX_RT + 'SGN';
+    RTL_POWER      : GetRtlRoutineName := PFX_RT + 'POWER';
+  Else
+    GetRtlRoutineName := PFX_RT + 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpRuntimeState : afficher l etat du generateur runtime       }
+{ ------------------------------------------------------------ }
+
+Procedure DumpRuntimeState;
+Begin
+  WriteLn('=== Etat du generateur runtime (TODO 20) ===');
+  WriteLn('  Initialise       : ', RtlInitialized);
+  WriteLn('  Operations       : ', RtlStateCount);
+  WriteLn('  ITOA generes     : ', RtlItoaCount);
+  WriteLn('  ATOI generes     : ', RtlAtoiCount);
+  WriteLn('  FORMAT generes   : ', RtlFormatCount);
+  WriteLn('  INIT_IO generes  : ', RtlInitIOCount);
+  WriteLn('  WRITE_STR generes: ', RtlWriteStrCount);
+  WriteLn('  WRITE_CRLF gen.  : ', RtlWriteCrlfCount);
+  WriteLn('  READ_LINE generes: ', RtlReadLineCount);
+  WriteLn('  OUTPUT generes   : ', RtlOutputCount);
+  WriteLn('  ABS generes      : ', RtlAbsCount);
+  WriteLn('  SGN generes      : ', RtlSgnCount);
+  WriteLn('  POWER generes    : ', RtlPowerCount);
+  WriteLn('  Labels uniques   : ', RtlLabelNum);
+  WriteLn('  Erreurs          : ', RtlErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs pour le generateur runtime             }
+{ ------------------------------------------------------------ }
+
+Function IsRtlInitialized : Boolean;
+Begin
+  IsRtlInitialized := RtlInitialized;
+End;
+
+Function IsRtlEmpty : Boolean;
+Begin
+  IsRtlEmpty := (RtlStateCount = 0);
+End;
+
+Function GetRtlStateCount : Integer;
+Begin
+  GetRtlStateCount := RtlStateCount;
+End;
+
+Function GetRtlItoaCount : Integer;
+Begin
+  GetRtlItoaCount := RtlItoaCount;
+End;
+
+Function GetRtlAtoiCount : Integer;
+Begin
+  GetRtlAtoiCount := RtlAtoiCount;
+End;
+
+Function GetRtlFormatCount : Integer;
+Begin
+  GetRtlFormatCount := RtlFormatCount;
+End;
+
+Function GetRtlInitIOCount : Integer;
+Begin
+  GetRtlInitIOCount := RtlInitIOCount;
+End;
+
+Function GetRtlWriteStrCount : Integer;
+Begin
+  GetRtlWriteStrCount := RtlWriteStrCount;
+End;
+
+Function GetRtlLabelNum : Integer;
+Begin
+  GetRtlLabelNum := RtlLabelNum;
+End;
+
+Function GetRtlErrorCount : Integer;
+Begin
+  GetRtlErrorCount := RtlErrorCount;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -10665,6 +11400,7 @@ Begin
   DatInitialized := False;
   AriInitialized := False;
   CtgInitialized := False;
+  RtlInitialized := False;
 
   ParseArgs;
 
@@ -10722,6 +11458,9 @@ Begin
   { Initialiser le generateur de structures de controle }
   InitCtrlGenState;
 
+  { Initialiser le generateur de bibliotheque runtime }
+  InitRuntimeState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -10754,6 +11493,7 @@ Begin
     DumpDataSegState;
     DumpArithState;
     DumpCtrlGenState;
+    DumpRuntimeState;
   End;
 
   { Nettoyage }
