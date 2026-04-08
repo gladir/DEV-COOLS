@@ -427,7 +427,7 @@
             Gestion du buffer de ligne et conversion CR/LF
             10 fonctions accesseurs
 
-  TODO 17 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [A FAIRE]
+  TODO 17 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [IMPLEMENTE]
             Section .data (variables initialisees) :
               ITEM I 8  -> _JV_nom DB 0
               ITEM I 16 -> _JV_nom DW 0
@@ -8874,6 +8874,566 @@ End;
 
 
 { ============================================================ }
+{ TODO 17 - GENERATION DE CODE : SEGMENT DE DONNEES 80386      }
+{   Generer les sections .data et .data? (BSS) pour le code    }
+{   assembleur 80386 a partir de la table des symboles.        }
+{   Chaque ITEM/TABLE/constante produit une directive MASM.    }
+{ ============================================================ }
+
+Const
+  { Types d entrees dans le segment de donnees }
+  DAT_NONE         = 0;   { pas d entree                             }
+  DAT_ITEM_BYTE    = 1;   { ITEM I 8 -> DB                           }
+  DAT_ITEM_WORD    = 2;   { ITEM I 16 -> DW                          }
+  DAT_ITEM_DWORD   = 3;   { ITEM I 32 -> DD                          }
+  DAT_ITEM_STATUS  = 4;   { ITEM S n -> DD (entier pour status)      }
+  DAT_ITEM_BITS    = 5;   { ITEM B n -> DB/DW/DD selon taille        }
+  DAT_ITEM_FLOAT   = 6;   { ITEM F -> DD 0.0 (IEEE 754 32 bits)     }
+  DAT_TABLE        = 7;   { TABLE(n) -> DW/DD n DUP(0)              }
+  DAT_STRING       = 8;   { constante chaine DB 'texte', 0           }
+  DAT_FORMAT       = 9;   { constante de format DB 'fmt', 0          }
+  DAT_BSS_BUFFER   = 10;  { buffer BSS DB n DUP(?)                   }
+  DAT_BSS_DWORD    = 11;  { variable BSS DD ?                        }
+
+  { Limites }
+  DAT_MAX_ENTRIES  = 4096;  { nombre max d entrees generees          }
+  DAT_IOBUF_SIZE   = 256;  { taille du buffer E/S en octets          }
+  DAT_NUMBUF_SIZE  = 32;   { taille du buffer numerique en octets    }
+  DAT_ALIGN        = 4;    { alignement sur DWORD (4 octets)         }
+
+Var
+  { Variables du generateur de segment de donnees }
+  DatInitialized   : Boolean;     { module initialise ?              }
+  DatStateCount    : Integer;     { compteur d operations            }
+  DatItemCount     : Integer;     { ITEM generes dans .data          }
+  DatTableCount    : Integer;     { TABLE generes dans .data         }
+  DatStringCount   : Integer;     { constantes chaines generees      }
+  DatFormatCount   : Integer;     { constantes de format generees    }
+  DatBssCount      : Integer;     { entrees BSS generees             }
+  DatRuntimeCount  : Integer;     { variables runtime generees       }
+  DatTotalBytes    : LongInt;     { total d octets dans .data        }
+  DatBssBytes      : LongInt;     { total d octets dans .data?       }
+  DatLabelNum      : Integer;     { generateur de labels uniques     }
+  DatErrorCount    : Integer;     { nombre d erreurs                 }
+
+{ ------------------------------------------------------------ }
+{ InitDataSegState : initialiser les variables du generateur    }
+{ ------------------------------------------------------------ }
+
+Procedure InitDataSegState;
+Begin
+  DatInitialized   := True;
+  DatStateCount    := 0;
+  DatItemCount     := 0;
+  DatTableCount    := 0;
+  DatStringCount   := 0;
+  DatFormatCount   := 0;
+  DatBssCount      := 0;
+  DatRuntimeCount  := 0;
+  DatTotalBytes    := 0;
+  DatBssBytes      := 0;
+  DatLabelNum      := 0;
+  DatErrorCount    := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDatLabel : generer un label unique pour le segment donnees  }
+{ ------------------------------------------------------------ }
+
+Function GenDatLabel : TString;
+Begin
+  Inc(DatLabelNum);
+  GenDatLabel := PFX_LBL + 'DAT_' + ItoSI(DatLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ DatTypeName : nom textuel d un type d entree donnees           }
+{ ------------------------------------------------------------ }
+
+Function DatTypeName(DatType : Integer) : TString;
+Begin
+  Case DatType Of
+    DAT_NONE:        DatTypeName := 'NONE';
+    DAT_ITEM_BYTE:   DatTypeName := 'ITEM_BYTE';
+    DAT_ITEM_WORD:   DatTypeName := 'ITEM_WORD';
+    DAT_ITEM_DWORD:  DatTypeName := 'ITEM_DWORD';
+    DAT_ITEM_STATUS: DatTypeName := 'ITEM_STATUS';
+    DAT_ITEM_BITS:   DatTypeName := 'ITEM_BITS';
+    DAT_ITEM_FLOAT:  DatTypeName := 'ITEM_FLOAT';
+    DAT_TABLE:       DatTypeName := 'TABLE';
+    DAT_STRING:      DatTypeName := 'STRING';
+    DAT_FORMAT:      DatTypeName := 'FORMAT';
+    DAT_BSS_BUFFER:  DatTypeName := 'BSS_BUFFER';
+    DAT_BSS_DWORD:   DatTypeName := 'BSS_DWORD';
+  Else
+    DatTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AlignToN : aligner une valeur sur N octets                    }
+{ ------------------------------------------------------------ }
+
+Function AlignToN(V, N : LongInt) : LongInt;
+Begin
+  If (V Mod N) <> 0 Then
+    AlignToN := V + N - (V Mod N)
+  Else
+    AlignToN := V;
+End;
+
+{ ------------------------------------------------------------ }
+{ DatDirective : renvoyer la directive MASM selon la taille     }
+{   1 -> DB, 2 -> DW, 4 -> DD                                 }
+{ ------------------------------------------------------------ }
+
+Function DatDirective(ByteSz : Integer) : TString;
+Begin
+  Case ByteSz Of
+    1 : DatDirective := 'DB';
+    2 : DatDirective := 'DW';
+    4 : DatDirective := 'DD';
+  Else
+    DatDirective := 'DD';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitItemData : generer une entree .data pour un ITEM          }
+{   Parcourt la table des symboles et emet pour chaque ITEM :  }
+{     ITEM I 8  -> _JV_nom DB 0                                }
+{     ITEM I 16 -> _JV_nom DW 0                                }
+{     ITEM I 32 -> _JV_nom DD 0                                }
+{     ITEM S n  -> _JV_nom DD 0                                }
+{     ITEM B n  -> _JV_nom DB/DW/DD 0 (selon taille)           }
+{     ITEM F    -> _JV_nom DD 0.0                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitItemData(Var OutBuf : TString);
+Var
+  I, ByteSz : Integer;
+  Dir, Line : TString;
+Begin
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If SymTab[I].SymKind <> SK_ITEM Then Continue;
+    If DatItemCount >= DAT_MAX_ENTRIES Then
+    Begin
+      Inc(DatErrorCount);
+      Exit;
+    End;
+
+    ByteSz := SymTab[I].ByteSize;
+    If ByteSz <= 0 Then ByteSz := 4;
+    If ByteSz = 3 Then ByteSz := 4;
+    Dir := DatDirective(ByteSz);
+
+    Case SymTab[I].ItemType Of
+      JT_INTEGER:
+      Begin
+        Line := '  ' + SymTab[I].AsmName + ' ' + Dir + ' 0';
+        OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+        DatTotalBytes := DatTotalBytes + ByteSz;
+        Inc(DatItemCount);
+        Inc(DatStateCount);
+      End;
+      JT_STATUS:
+      Begin
+        { Status stocke comme DWORD }
+        Line := '  ' + SymTab[I].AsmName + ' DD 0';
+        OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+        DatTotalBytes := DatTotalBytes + 4;
+        Inc(DatItemCount);
+        Inc(DatStateCount);
+      End;
+      JT_BITS:
+      Begin
+        Line := '  ' + SymTab[I].AsmName + ' ' + Dir + ' 0';
+        OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+        DatTotalBytes := DatTotalBytes + ByteSz;
+        Inc(DatItemCount);
+        Inc(DatStateCount);
+      End;
+      JT_FLOATING:
+      Begin
+        { IEEE 754 32 bits }
+        Line := '  ' + SymTab[I].AsmName + ' DD 0.0';
+        OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+        DatTotalBytes := DatTotalBytes + 4;
+        Inc(DatItemCount);
+        Inc(DatStateCount);
+      End;
+    Else
+      Begin
+        { Type inconnu, traiter comme DWORD }
+        Line := '  ' + SymTab[I].AsmName + ' DD 0';
+        OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+        DatTotalBytes := DatTotalBytes + 4;
+        Inc(DatItemCount);
+        Inc(DatStateCount);
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTableData : generer des entrees .data pour les TABLEs     }
+{   TABLE(n) I 16 -> _JT_nom DW n DUP(0)                      }
+{   TABLE(n) I 32 -> _JT_nom DD n DUP(0)                      }
+{   TABLE(n) S n  -> _JT_nom DD n DUP(0)                      }
+{   TABLE(n) B n  -> _JT_nom DB/DW/DD n DUP(0)                }
+{   TABLE(n) F    -> _JT_nom DD n DUP(0)                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTableData(Var OutBuf : TString);
+Var
+  I, ByteSz, TblSz : Integer;
+  Dir, Line : TString;
+Begin
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If SymTab[I].SymKind <> SK_TABLE Then Continue;
+    If DatTableCount >= DAT_MAX_ENTRIES Then
+    Begin
+      Inc(DatErrorCount);
+      Exit;
+    End;
+
+    TblSz := SymTab[I].TableSize;
+    If TblSz <= 0 Then TblSz := 1;
+
+    ByteSz := SymTab[I].ByteSize;
+    If ByteSz <= 0 Then ByteSz := 4;
+    If ByteSz = 3 Then ByteSz := 4;
+
+    Case SymTab[I].ItemType Of
+      JT_FLOATING:
+      Begin
+        Dir := 'DD';
+        ByteSz := 4;
+      End;
+      JT_STATUS:
+      Begin
+        Dir := 'DD';
+        ByteSz := 4;
+      End;
+    Else
+      Dir := DatDirective(ByteSz);
+    End;
+
+    Line := '  ' + SymTab[I].AsmName + ' ' + Dir + ' ' +
+            ItoSI(TblSz) + ' DUP(0)';
+    OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+    DatTotalBytes := DatTotalBytes + (LongInt(ByteSz) * LongInt(TblSz));
+    Inc(DatTableCount);
+    Inc(DatStateCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStringConst : generer des constantes chaines              }
+{   _JK_nnn DB 'texte', 13, 10, 0                              }
+{   Parcourt la table des symboles pour les constantes          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStringConst(Var OutBuf : TString);
+Var
+  I : Integer;
+  Line : TString;
+Begin
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If SymTab[I].SymKind <> SK_CONSTANT Then Continue;
+    If DatStringCount >= DAT_MAX_ENTRIES Then
+    Begin
+      Inc(DatErrorCount);
+      Exit;
+    End;
+
+    { Generer une constante chaine avec CR/LF/NUL }
+    Line := '  ' + SymTab[I].AsmName + ' DB ''...'', 13, 10, 0';
+    OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+    DatTotalBytes := DatTotalBytes + 8;
+    Inc(DatStringCount);
+    Inc(DatStateCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFormatConst : generer des constantes de format OUTPUT     }
+{   _JK_FMT_nnn DB 'format...', 0                              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFormatConst(Var OutBuf : TString; FmtIdx : Integer;
+                          Const FmtStr : TString);
+Var
+  Line : TString;
+Begin
+  If DatFormatCount >= DAT_MAX_ENTRIES Then
+  Begin
+    Inc(DatErrorCount);
+    Exit;
+  End;
+
+  Line := '  ' + PFX_CONST + 'FMT_' + ItoSI(FmtIdx) +
+          ' DB ''' + FmtStr + ''', 0';
+  OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+  DatTotalBytes := DatTotalBytes + LongInt(Length(FmtStr)) + 1;
+  Inc(DatFormatCount);
+  Inc(DatStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBssSection : generer la section .data? (BSS)              }
+{   Buffers E/S temporaires et variables non initialisees       }
+{     _JV_IOBUF  DB 256 DUP(?)                                }
+{     _JV_NUMBUF DB 32 DUP(?)                                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBssSection(Var OutBuf : TString);
+Var
+  Line : TString;
+Begin
+  OutBuf := OutBuf + '.data?' + Chr(13) + Chr(10);
+
+  { Buffer E/S general }
+  Line := '  ' + PFX_VAR + 'IOBUF DB ' +
+          ItoSI(DAT_IOBUF_SIZE) + ' DUP(?)';
+  OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+  DatBssBytes := DatBssBytes + DAT_IOBUF_SIZE;
+  Inc(DatBssCount);
+  Inc(DatStateCount);
+
+  { Buffer numerique pour conversions }
+  Line := '  ' + PFX_VAR + 'NUMBUF DB ' +
+          ItoSI(DAT_NUMBUF_SIZE) + ' DUP(?)';
+  OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+  DatBssBytes := DatBssBytes + DAT_NUMBUF_SIZE;
+  Inc(DatBssCount);
+  Inc(DatStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRuntimeVars : generer les variables runtime dans .data?   }
+{   _JV_STDOUT  DD ?  (handle console sortie)                 }
+{   _JV_STDIN   DD ?  (handle console entree)                  }
+{   _JV_WRITTEN DD ?  (octets ecrits par WriteFile)            }
+{   _JV_READ    DD ?  (octets lus par ReadFile)                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRuntimeVars(Var OutBuf : TString);
+Var
+  Line : TString;
+Begin
+  { Handle de sortie console }
+  Line := '  ' + PFX_VAR + 'STDOUT DD ?';
+  OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+  DatBssBytes := DatBssBytes + 4;
+  Inc(DatRuntimeCount);
+  Inc(DatBssCount);
+  Inc(DatStateCount);
+
+  { Handle d entree console }
+  Line := '  ' + PFX_VAR + 'STDIN DD ?';
+  OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+  DatBssBytes := DatBssBytes + 4;
+  Inc(DatRuntimeCount);
+  Inc(DatBssCount);
+  Inc(DatStateCount);
+
+  { Octets ecrits par WriteFile }
+  Line := '  ' + PFX_VAR + 'WRITTEN DD ?';
+  OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+  DatBssBytes := DatBssBytes + 4;
+  Inc(DatRuntimeCount);
+  Inc(DatBssCount);
+  Inc(DatStateCount);
+
+  { Octets lus par ReadFile }
+  Line := '  ' + PFX_VAR + 'READ DD ?';
+  OutBuf := OutBuf + Line + Chr(13) + Chr(10);
+  DatBssBytes := DatBssBytes + 4;
+  Inc(DatRuntimeCount);
+  Inc(DatBssCount);
+  Inc(DatStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateDataSegment : orchestrer la generation complete du    }
+{   segment de donnees (.data + .data?)                         }
+{   Retourne le buffer contenant les directives assembleur      }
+{ ------------------------------------------------------------ }
+
+Function GenerateDataSegment : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := '';
+  Inc(DatStateCount);
+
+  { Section .data : variables initialisees }
+  Buf := Buf + '; ---- Section .data (variables initialisees) ----' +
+         Chr(13) + Chr(10);
+  Buf := Buf + '.data' + Chr(13) + Chr(10);
+
+  { Alignement initial }
+  Buf := Buf + '  ALIGN ' + ItoSI(DAT_ALIGN) + Chr(13) + Chr(10);
+
+  { Emettre les ITEMs }
+  EmitItemData(Buf);
+
+  { Alignement entre ITEMs et TABLEs }
+  Buf := Buf + '  ALIGN ' + ItoSI(DAT_ALIGN) + Chr(13) + Chr(10);
+
+  { Emettre les TABLEs }
+  EmitTableData(Buf);
+
+  { Alignement avant les constantes chaines }
+  Buf := Buf + '  ALIGN ' + ItoSI(DAT_ALIGN) + Chr(13) + Chr(10);
+
+  { Emettre les constantes chaines }
+  EmitStringConst(Buf);
+
+  { Section .data? : variables non initialisees (BSS) }
+  Buf := Buf + Chr(13) + Chr(10);
+  Buf := Buf + '; ---- Section .data? (BSS, non initialisees) ----' +
+         Chr(13) + Chr(10);
+
+  { Emettre les buffers BSS }
+  EmitBssSection(Buf);
+
+  { Emettre les variables runtime }
+  EmitRuntimeVars(Buf);
+
+  { Aligner la taille totale }
+  DatTotalBytes := AlignToN(DatTotalBytes, DAT_ALIGN);
+  DatBssBytes   := AlignToN(DatBssBytes, DAT_ALIGN);
+
+  GenerateDataSegment := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsDataGenRequired : verifier si la generation est necessaire  }
+{ ------------------------------------------------------------ }
+
+Function IsDataGenRequired : Boolean;
+Begin
+  IsDataGenRequired := (SymCount > 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetItemDataType : type de donnee DAT_* pour un symbole ITEM   }
+{ ------------------------------------------------------------ }
+
+Function GetItemDataType(Idx : Integer) : Integer;
+Begin
+  If (Idx < 0) Or (Idx >= SymCount) Then
+  Begin
+    GetItemDataType := DAT_NONE;
+    Exit;
+  End;
+  If SymTab[Idx].SymKind <> SK_ITEM Then
+  Begin
+    GetItemDataType := DAT_NONE;
+    Exit;
+  End;
+  Case SymTab[Idx].ItemType Of
+    JT_INTEGER:
+    Begin
+      Case SymTab[Idx].ByteSize Of
+        1 : GetItemDataType := DAT_ITEM_BYTE;
+        2 : GetItemDataType := DAT_ITEM_WORD;
+        4 : GetItemDataType := DAT_ITEM_DWORD;
+      Else
+        GetItemDataType := DAT_ITEM_DWORD;
+      End;
+    End;
+    JT_STATUS:   GetItemDataType := DAT_ITEM_STATUS;
+    JT_BITS:     GetItemDataType := DAT_ITEM_BITS;
+    JT_FLOATING: GetItemDataType := DAT_ITEM_FLOAT;
+  Else
+    GetItemDataType := DAT_NONE;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpDataSegState : afficher l etat du generateur data segment  }
+{ ------------------------------------------------------------ }
+
+Procedure DumpDataSegState;
+Begin
+  WriteLn('=== Etat du generateur data segment (TODO 17) ===');
+  WriteLn('  Initialise       : ', DatInitialized);
+  WriteLn('  Operations       : ', DatStateCount);
+  WriteLn('  ITEMs generes    : ', DatItemCount);
+  WriteLn('  TABLEs generes   : ', DatTableCount);
+  WriteLn('  Chaines generees : ', DatStringCount);
+  WriteLn('  Formats generes  : ', DatFormatCount);
+  WriteLn('  Entrees BSS      : ', DatBssCount);
+  WriteLn('  Variables runtime: ', DatRuntimeCount);
+  WriteLn('  Octets .data     : ', DatTotalBytes);
+  WriteLn('  Octets .data?    : ', DatBssBytes);
+  WriteLn('  Labels generes   : ', DatLabelNum);
+  WriteLn('  Erreurs          : ', DatErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs pour le generateur data segment       }
+{ ------------------------------------------------------------ }
+
+Function IsDatInitialized : Boolean;
+Begin
+  IsDatInitialized := DatInitialized;
+End;
+
+Function IsDatEmpty : Boolean;
+Begin
+  IsDatEmpty := (DatItemCount = 0) And (DatTableCount = 0) And
+                (DatStringCount = 0) And (DatBssCount = 0);
+End;
+
+Function GetDatStateCount : Integer;
+Begin
+  GetDatStateCount := DatStateCount;
+End;
+
+Function GetDatItemCount : Integer;
+Begin
+  GetDatItemCount := DatItemCount;
+End;
+
+Function GetDatTableCount : Integer;
+Begin
+  GetDatTableCount := DatTableCount;
+End;
+
+Function GetDatStringCount : Integer;
+Begin
+  GetDatStringCount := DatStringCount;
+End;
+
+Function GetDatFormatCount : Integer;
+Begin
+  GetDatFormatCount := DatFormatCount;
+End;
+
+Function GetDatTotalBytes : LongInt;
+Begin
+  GetDatTotalBytes := DatTotalBytes;
+End;
+
+Function GetDatBssBytes : LongInt;
+Begin
+  GetDatBssBytes := DatBssBytes;
+End;
+
+Function GetDatErrorCount : Integer;
+Begin
+  GetDatErrorCount := DatErrorCount;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -8900,6 +9460,7 @@ Begin
   BitInitialized := False;
   BltInitialized := False;
   IOInitialized := False;
+  DatInitialized := False;
 
   ParseArgs;
 
@@ -8948,6 +9509,9 @@ Begin
   { Initialiser le parseur E/S (INPUT/OUTPUT) }
   InitIOState;
 
+  { Initialiser le generateur de segment de donnees }
+  InitDataSegState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -8977,6 +9541,7 @@ Begin
     DumpBitState;
     DumpBuiltinState;
     DumpIOState;
+    DumpDataSegState;
   End;
 
   { Nettoyage }

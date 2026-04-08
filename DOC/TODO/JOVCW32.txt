@@ -419,7 +419,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Gestion du buffer de ligne et conversion CR/LF
             10 fonctions accesseurs
 
-  TODO 17 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [A FAIRE]
+  TODO 17 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [IMPLEMENTE]
             Section .data (variables initialisees) :
               ITEM I 8  -> _JV_nom DB 0
               ITEM I 16 -> _JV_nom DW 0
