@@ -145,7 +145,7 @@
             Gestion des declarations globales avant les procedures
             10 fonctions accesseurs
 
-  TODO 06 - PARSEUR : DECLARATIONS ITEM (TYPES DE DONNEES) [A FAIRE]
+  TODO 06 - PARSEUR : DECLARATIONS ITEM (TYPES DE DONNEES) [IMPLEMENTE]
             ITEM name I n ;  (entier signe sur n bits : 8, 16, 32)
               n=8  -> DB en memoire, operations via MOVSX/MOVZX
               n=16 -> DW en memoire, operations via MOVSX/MOVZX
@@ -2821,6 +2821,9 @@ Begin
     LexNextToken;
 End;
 
+{ Forward declaration pour ParseItemDecl (defini dans TODO 06) }
+Procedure ParseItemDecl; Forward;
+
 { ------------------------------------------------------------ }
 { ParseModuleBody : parser les declarations du corps du module  }
 {   ITEM, TABLE, DEFINE, PROCEDURE/FUNCTION, etc.               }
@@ -2844,15 +2847,9 @@ Begin
 
         KW_ITEM:
         Begin
-          { Declaration ITEM - comptabiliser }
+          { Declaration ITEM - parser via TODO 06 }
           Inc(ModDeclCount);
-          If Opts.Verbose Then
-          Begin
-            LexNextToken;
-            If CurTokType = TOK_IDENT Then
-              WriteLn('  ITEM ', CurTokStr);
-          End;
-          SkipToSemicolon;
+          ParseItemDecl;
         End;
 
         KW_TABLE:
@@ -3137,6 +3134,479 @@ End;
 
 
 { ============================================================ }
+{ TODO 06 - PARSEUR : DECLARATIONS ITEM (TYPES DE DONNEES)     }
+{                                               [IMPLEMENTE]  }
+{ ============================================================ }
+
+Const
+  { Tailles de stockage assembleur }
+  ITM_STORE_BYTE  = 1;   { DB - 8 bits                              }
+  ITM_STORE_WORD  = 2;   { DW - 16 bits                             }
+  ITM_STORE_DWORD = 4;   { DD - 32 bits                             }
+
+  { Limites }
+  ITM_MAX_STATUS  = 32;  { nombre max de valeurs STATUS par ITEM    }
+  ITM_MAX_ITEMS   = 512; { nombre max d ITEM parses                 }
+
+Var
+  { Variables du parseur ITEM }
+  ItmInitialized  : Boolean;     { module initialise ?                }
+  ItmStateCount   : Integer;     { compteur d operations              }
+  ItmItemCount    : Integer;     { nombre d ITEM declares             }
+  ItmIntegerCount : Integer;     { nombre d ITEM I (entiers)          }
+  ItmStatusCount  : Integer;     { nombre d ITEM S (status)           }
+  ItmBitsCount    : Integer;     { nombre d ITEM B (bits)             }
+  ItmFloatCount   : Integer;     { nombre d ITEM F (flottants)        }
+  ItmStatusValCount : Integer;   { nombre total de valeurs STATUS     }
+  ItmLabelNum     : Integer;     { generateur de labels uniques       }
+  ItmErrorCount   : Integer;     { nombre d erreurs dans ITEM         }
+
+{ ------------------------------------------------------------ }
+{ InitItemState : initialiser les variables du parseur ITEM     }
+{ ------------------------------------------------------------ }
+
+Procedure InitItemState;
+Begin
+  ItmInitialized   := True;
+  ItmStateCount    := 0;
+  ItmItemCount     := 0;
+  ItmIntegerCount  := 0;
+  ItmStatusCount   := 0;
+  ItmBitsCount     := 0;
+  ItmFloatCount    := 0;
+  ItmStatusValCount := 0;
+  ItmLabelNum      := 0;
+  ItmErrorCount    := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenItmLabel : generer un label unique pour le parseur ITEM    }
+{ ------------------------------------------------------------ }
+
+Function GenItmLabel : TString;
+Begin
+  Inc(ItmLabelNum);
+  GenItmLabel := PFX_VAR + 'ITM' + ItoSI(ItmLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ ComputeByteSize : convertir une taille en bits en octets      }
+{   avec alignement au conteneur minimal (1, 2 ou 4 octets)    }
+{ ------------------------------------------------------------ }
+
+Function ComputeByteSize(BitSz : Integer) : Integer;
+Begin
+  If BitSz <= 8 Then
+    ComputeByteSize := ITM_STORE_BYTE
+  Else If BitSz <= 16 Then
+    ComputeByteSize := ITM_STORE_WORD
+  Else
+    ComputeByteSize := ITM_STORE_DWORD;
+End;
+
+{ ------------------------------------------------------------ }
+{ ItemStorageName : nom de la directive ASM pour la taille       }
+{   DB (1 octet), DW (2 octets), DD (4 octets)                 }
+{ ------------------------------------------------------------ }
+
+Function ItemStorageName(ByteSz : Integer) : TString;
+Begin
+  Case ByteSz Of
+    ITM_STORE_BYTE  : ItemStorageName := 'DB';
+    ITM_STORE_WORD  : ItemStorageName := 'DW';
+    ITM_STORE_DWORD : ItemStorageName := 'DD';
+  Else
+    ItemStorageName := 'DD';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseItemInteger : parser ITEM name I n ;                     }
+{   Entier signe sur n bits (8, 16, 32)                        }
+{   Le lexeur est positionne apres le nom, sur I                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseItemInteger(Const ItemName : TString);
+Var
+  BitSz, ByteSz, Idx : Integer;
+Begin
+  { On est sur KW_I, avancer pour lire la taille }
+  LexNextToken;
+
+  If CurTokType <> TOK_INTEGER Then
+  Begin
+    WarnMsg('Taille en bits attendue apres I dans ITEM ' + ItemName);
+    Inc(ItmErrorCount);
+    Exit;
+  End;
+
+  BitSz := CurTokNum;
+  If (BitSz <> 8) And (BitSz <> 16) And (BitSz <> 32) Then
+  Begin
+    WarnMsg('Taille invalide ' + ItoSI(BitSz) +
+            ' pour ITEM ' + ItemName + ' (8, 16 ou 32 attendu)');
+    Inc(ItmErrorCount);
+  End;
+
+  ByteSz := ComputeByteSize(BitSz);
+
+  { Ajouter dans la table des symboles }
+  Idx := SymAdd(ItemName, SK_ITEM, JT_INTEGER, SymCurScope);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].BitSize  := BitSz;
+    SymTab[Idx].ByteSize := ByteSz;
+    SymTab[Idx].IsExported := ModIsCompool;
+  End;
+
+  Inc(ItmIntegerCount);
+  Inc(ItmItemCount);
+  Inc(ItmStateCount);
+
+  If Opts.Verbose Then
+    WriteLn('  ITEM ', ItemName, ' I ', BitSz,
+            ' (', ItemStorageName(ByteSz), ')');
+
+  { Avancer apres la taille }
+  LexNextToken;
+
+  { Consommer le point-virgule }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseItemStatus : parser ITEM name S n (val1, val2, ...) ;    }
+{   Status/enumeration sur n bits (8 ou 16)                     }
+{   Chaque valeur generee comme constante STATUS_VAL            }
+{   Le lexeur est positionne apres le nom, sur S                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseItemStatus(Const ItemName : TString);
+Var
+  BitSz, ByteSz, Idx, ValIdx, SIdx : Integer;
+  ValName : TString;
+Begin
+  { On est sur KW_S, avancer pour lire la taille }
+  LexNextToken;
+
+  If CurTokType <> TOK_INTEGER Then
+  Begin
+    WarnMsg('Taille en bits attendue apres S dans ITEM ' + ItemName);
+    Inc(ItmErrorCount);
+    Exit;
+  End;
+
+  BitSz := CurTokNum;
+  If (BitSz <> 8) And (BitSz <> 16) Then
+  Begin
+    WarnMsg('Taille invalide ' + ItoSI(BitSz) +
+            ' pour STATUS ' + ItemName + ' (8 ou 16 attendu)');
+    Inc(ItmErrorCount);
+  End;
+
+  ByteSz := ComputeByteSize(BitSz);
+
+  { Ajouter le symbole ITEM STATUS dans la table }
+  Idx := SymAdd(ItemName, SK_ITEM, JT_STATUS, SymCurScope);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].BitSize  := BitSz;
+    SymTab[Idx].ByteSize := ByteSz;
+    SymTab[Idx].IsExported := ModIsCompool;
+  End;
+
+  { Avancer apres la taille }
+  LexNextToken;
+
+  { Parser la liste de valeurs : (val1, val2, ...) }
+  ValIdx := 0;
+  If CurTokType = TOK_LPAREN Then
+  Begin
+    LexNextToken;
+    While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
+    Begin
+      If CurTokType = TOK_IDENT Then
+      Begin
+        ValName := CurTokStr;
+
+        { Stocker la valeur dans le symbole parent }
+        If (Idx >= 0) And (ValIdx < MAX_STATUS_VALS) Then
+        Begin
+          SymTab[Idx].StatusValues[ValIdx] := ValName;
+          SymTab[Idx].StatusCount := ValIdx + 1;
+        End;
+
+        { Ajouter comme constante STATUS_VAL dans la table }
+        SIdx := SymAdd(ItemName + '_' + ValName,
+                        SK_STATUS_VAL, JT_INTEGER, SymCurScope);
+        If SIdx >= 0 Then
+        Begin
+          SymTab[SIdx].Value    := ValIdx;
+          SymTab[SIdx].BitSize  := BitSz;
+          SymTab[SIdx].ByteSize := ByteSz;
+          SymTab[SIdx].IsExported := ModIsCompool;
+        End;
+
+        Inc(ValIdx);
+        Inc(ItmStatusValCount);
+      End;
+
+      LexNextToken;
+
+      { Virgule entre les valeurs }
+      If CurTokType = TOK_COMMA Then
+        LexNextToken;
+    End;
+
+    { Consommer la parenthese fermante }
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken;
+  End;
+
+  Inc(ItmStatusCount);
+  Inc(ItmItemCount);
+  Inc(ItmStateCount);
+
+  If Opts.Verbose Then
+    WriteLn('  ITEM ', ItemName, ' S ', BitSz,
+            ' (', ValIdx, ' valeurs, ', ItemStorageName(ByteSz), ')');
+
+  { Consommer le point-virgule }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseItemBits : parser ITEM name B n ;                        }
+{   Champ de bits sur n bits (1 a 32)                           }
+{   Stocke sur le plus petit conteneur : DB/DW/DD              }
+{   Le lexeur est positionne apres le nom, sur B                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseItemBits(Const ItemName : TString);
+Var
+  BitSz, ByteSz, Idx : Integer;
+Begin
+  { On est sur KW_B, avancer pour lire la taille }
+  LexNextToken;
+
+  If CurTokType <> TOK_INTEGER Then
+  Begin
+    WarnMsg('Taille en bits attendue apres B dans ITEM ' + ItemName);
+    Inc(ItmErrorCount);
+    Exit;
+  End;
+
+  BitSz := CurTokNum;
+  If (BitSz < 1) Or (BitSz > 32) Then
+  Begin
+    WarnMsg('Taille invalide ' + ItoSI(BitSz) +
+            ' pour BITS ' + ItemName + ' (1 a 32 attendu)');
+    Inc(ItmErrorCount);
+  End;
+
+  ByteSz := ComputeByteSize(BitSz);
+
+  { Ajouter dans la table des symboles }
+  Idx := SymAdd(ItemName, SK_ITEM, JT_BITS, SymCurScope);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].BitSize  := BitSz;
+    SymTab[Idx].ByteSize := ByteSz;
+    SymTab[Idx].IsExported := ModIsCompool;
+  End;
+
+  Inc(ItmBitsCount);
+  Inc(ItmItemCount);
+  Inc(ItmStateCount);
+
+  If Opts.Verbose Then
+    WriteLn('  ITEM ', ItemName, ' B ', BitSz,
+            ' (', ItemStorageName(ByteSz), ')');
+
+  { Avancer apres la taille }
+  LexNextToken;
+
+  { Consommer le point-virgule }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseItemFloat : parser ITEM name F ;                         }
+{   Reel simple precision IEEE 754 (32 bits, DD en memoire)     }
+{   Le lexeur est positionne apres le nom, sur F                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseItemFloat(Const ItemName : TString);
+Var
+  Idx : Integer;
+Begin
+  { On est sur KW_F, pas de taille a lire }
+
+  { Ajouter dans la table des symboles }
+  Idx := SymAdd(ItemName, SK_ITEM, JT_FLOATING, SymCurScope);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].BitSize  := 32;
+    SymTab[Idx].ByteSize := ITM_STORE_DWORD;
+    SymTab[Idx].IsExported := ModIsCompool;
+  End;
+
+  Inc(ItmFloatCount);
+  Inc(ItmItemCount);
+  Inc(ItmStateCount);
+
+  If Opts.Verbose Then
+    WriteLn('  ITEM ', ItemName, ' F (DD)');
+
+  { Avancer apres F }
+  LexNextToken;
+
+  { Consommer le point-virgule }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseItemDecl : dispatcher principal pour ITEM                }
+{   Le lexeur est positionne sur le mot-cle ITEM                }
+{   Determine le type (I, S, B, F) et appelle le parseur        }
+{   correspondant                                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseItemDecl;
+Var
+  ItemName : TString;
+Begin
+  { Avancer apres ITEM }
+  LexNextToken;
+
+  { Le nom de la variable : peut etre un identificateur OU un mot-cle }
+  { utilise comme nom (ex: ITEM B I 16 - B est KW_B mais sert de nom) }
+  If (CurTokType <> TOK_IDENT) And (CurTokType <> TOK_KEYWORD) Then
+  Begin
+    WarnMsg('Nom d identificateur attendu apres ITEM');
+    Inc(ItmErrorCount);
+    { Recuperer en sautant jusqu au point-virgule }
+    While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+    Exit;
+  End;
+
+  ItemName := CurTokStr;
+
+  { Avancer pour lire le qualificateur de type }
+  LexNextToken;
+
+  If CurTokType = TOK_KEYWORD Then
+  Begin
+    Case CurTokNum Of
+      KW_I : ParseItemInteger(ItemName);
+      KW_S : ParseItemStatus(ItemName);
+      KW_B : ParseItemBits(ItemName);
+      KW_F : ParseItemFloat(ItemName);
+    Else
+      WarnMsg('Qualificateur de type invalide pour ITEM ' + ItemName +
+              ' (I, S, B ou F attendu)');
+      Inc(ItmErrorCount);
+      { Recuperer en sautant jusqu au point-virgule }
+      While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+        LexNextToken;
+      If CurTokType = TOK_SEMICOL Then
+        LexNextToken;
+    End;
+  End
+  Else
+  Begin
+    WarnMsg('Qualificateur de type attendu apres ITEM ' + ItemName +
+            ' (I, S, B ou F)');
+    Inc(ItmErrorCount);
+    { Recuperer en sautant jusqu au point-virgule }
+    While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpItemState : afficher l etat du parseur ITEM               }
+{ ------------------------------------------------------------ }
+
+Procedure DumpItemState;
+Begin
+  WriteLn('--- Etat du parseur ITEM ---');
+  WriteLn('  ITEM declares  : ', ItmItemCount);
+  WriteLn('    Entiers (I)  : ', ItmIntegerCount);
+  WriteLn('    Status  (S)  : ', ItmStatusCount);
+  WriteLn('    Bits    (B)  : ', ItmBitsCount);
+  WriteLn('    Flottants(F) : ', ItmFloatCount);
+  WriteLn('  Valeurs STATUS : ', ItmStatusValCount);
+  WriteLn('  Erreurs ITEM   : ', ItmErrorCount);
+  WriteLn('  Operations     : ', ItmStateCount);
+  WriteLn('--- Fin etat ITEM ---');
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 06)                             }
+{ ------------------------------------------------------------ }
+
+Function IsItmInitialized : Boolean;
+Begin
+  IsItmInitialized := ItmInitialized;
+End;
+
+Function GetItmItemCount : Integer;
+Begin
+  GetItmItemCount := ItmItemCount;
+End;
+
+Function GetItmIntegerCount : Integer;
+Begin
+  GetItmIntegerCount := ItmIntegerCount;
+End;
+
+Function GetItmStatusCount : Integer;
+Begin
+  GetItmStatusCount := ItmStatusCount;
+End;
+
+Function GetItmBitsCount : Integer;
+Begin
+  GetItmBitsCount := ItmBitsCount;
+End;
+
+Function GetItmFloatCount : Integer;
+Begin
+  GetItmFloatCount := ItmFloatCount;
+End;
+
+Function GetItmStatusValCount : Integer;
+Begin
+  GetItmStatusValCount := ItmStatusValCount;
+End;
+
+Function GetItmStateCount : Integer;
+Begin
+  GetItmStateCount := ItmStateCount;
+End;
+
+Function GetItmErrorCount : Integer;
+Begin
+  GetItmErrorCount := ItmErrorCount;
+End;
+
+Function GetItmMaxItems : Integer;
+Begin
+  GetItmMaxItems := ITM_MAX_ITEMS;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -3152,6 +3622,7 @@ Begin
   KwInitialized := False;
   SymInitialized := False;
   ModInitialized := False;
+  ItmInitialized := False;
 
   ParseArgs;
 
@@ -3166,6 +3637,9 @@ Begin
 
   { Initialiser le parseur MODULE/COMPOOL }
   InitModuleState;
+
+  { Initialiser le parseur ITEM }
+  InitItemState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -3185,6 +3659,7 @@ Begin
   Begin
     WriteLn('Tokens analyses  : ', GetLexTokCount);
     DumpModuleState;
+    DumpItemState;
   End;
 
   { Nettoyage }

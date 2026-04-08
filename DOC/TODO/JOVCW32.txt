@@ -137,7 +137,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Gestion des declarations globales avant les procedures
             10 fonctions accesseurs
 
-  TODO 06 - PARSEUR : DECLARATIONS ITEM (TYPES DE DONNEES) [A FAIRE]
+  TODO 06 - PARSEUR : DECLARATIONS ITEM (TYPES DE DONNEES) [IMPLEMENTE]
             ITEM name I n ;  (entier signe sur n bits : 8, 16, 32)
               n=8  -> DB en memoire, operations via MOVSX/MOVZX
               n=16 -> DW en memoire, operations via MOVSX/MOVZX
