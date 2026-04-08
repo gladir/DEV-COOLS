@@ -262,7 +262,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             Conditions composees : and/or avec court-circuit
             10 fonctions accesseurs
 
-  TODO 11 - PARSEUR : BOUCLES while / for / break / continue [A FAIRE]
+  TODO 11 - PARSEUR : BOUCLES while / for / break / continue [IMPLEMENTE]
             ParseWhileStmt : while cond: bloc [else: bloc]
               Labels : _PYL_WTEST_N, _PYL_WEND_N, _PYL_WELSE_N
               Emission : _PYL_WTEST_N: evaluer cond, JZ _PYL_WEND_N,

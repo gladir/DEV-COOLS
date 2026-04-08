@@ -270,7 +270,7 @@
             Conditions composees : and/or avec court-circuit
             10 fonctions accesseurs
 
-  TODO 11 - PARSEUR : BOUCLES while / for / break / continue [A FAIRE]
+  TODO 11 - PARSEUR : BOUCLES while / for / break / continue [IMPLEMENTE]
             ParseWhileStmt : while cond: bloc [else: bloc]
               Labels : _PYL_WTEST_N, _PYL_WEND_N, _PYL_WELSE_N
               Emission : _PYL_WTEST_N: evaluer cond, JZ _PYL_WEND_N,
@@ -6657,6 +6657,579 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 11 - PARSEUR : BOUCLES while / for / break / continue   }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations de boucle }
+  LP_NONE          = 0;    { aucun / non defini                    }
+  LP_WHILE         = 1;    { while cond: bloc                      }
+  LP_WHILE_ELSE    = 2;    { while cond: bloc else: bloc           }
+  LP_FOR_RANGE1    = 3;    { for i in range(n)                     }
+  LP_FOR_RANGE2    = 4;    { for i in range(a, b)                  }
+  LP_FOR_RANGE3    = 5;    { for i in range(a, b, step)            }
+  LP_FOR_STRING    = 6;    { for ch in string                      }
+  LP_FOR_LIST      = 7;    { for elem in list                      }
+  LP_FOR_ELSE      = 8;    { for ... else: bloc                    }
+  LP_BREAK         = 9;    { instruction break                     }
+  LP_CONTINUE      = 10;   { instruction continue                  }
+  LP_NESTED        = 11;   { boucle imbriquee                      }
+  LP_LOOP_PUSH     = 12;   { empiler contexte de boucle            }
+  LP_LOOP_POP      = 13;   { depiler contexte de boucle            }
+  LP_MAX           = 13;
+
+  { Limites }
+  LP_MAX_NEST      = 32;   { profondeur max d imbrication          }
+
+Type
+  TLoopRec = Record
+    TestLabel  : TString;  { label de test (debut de boucle)       }
+    IncrLabel  : TString;  { label d increment (for) ou test (while)}
+    EndLabel   : TString;  { label de fin (break target)           }
+    ElseLabel  : TString;  { label du bloc else de la boucle       }
+    IsFor      : Boolean;  { True = for, False = while             }
+  End;
+
+Var
+  LpInitialized   : Boolean;    { True si l etat est initialise       }
+  LpWhileCount    : LongInt;    { nombre de boucles while             }
+  LpForCount      : LongInt;    { nombre de boucles for               }
+  LpBreakCount    : LongInt;    { nombre d instructions break         }
+  LpContCount     : LongInt;    { nombre d instructions continue      }
+  LpElseCount     : LongInt;    { nombre de else de boucle            }
+  LpNestDepth     : LongInt;    { profondeur courante d imbrication   }
+  LpMaxNestSeen   : LongInt;    { profondeur max atteinte             }
+  LpLastKind      : Integer;    { dernier type d operation            }
+  LpLabelSeq      : Integer;    { sequence pour labels de boucle      }
+  LpStack         : Array[1..LP_MAX_NEST] Of TLoopRec;
+  LpStackTop      : Integer;    { sommet de la pile de boucles        }
+
+{ ------------------------------------------------------------ }
+{ InitLpState : initialiser le sous-systeme des boucles          }
+{ ------------------------------------------------------------ }
+
+Procedure InitLpState;
+Begin
+  LpInitialized   := True;
+  LpWhileCount    := 0;
+  LpForCount      := 0;
+  LpBreakCount    := 0;
+  LpContCount     := 0;
+  LpElseCount     := 0;
+  LpNestDepth     := 0;
+  LpMaxNestSeen   := 0;
+  LpLastKind      := LP_NONE;
+  LpLabelSeq      := 0;
+  LpStackTop      := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLpLabel : generer un label unique pour les boucles           }
+{ ------------------------------------------------------------ }
+
+Function GenLpLabel : TString;
+Begin
+  Inc(LpLabelSeq);
+  GenLpLabel := '_PYL_LP_' + ItoS(LpLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ LpTypeName : retourner le nom du type d operation boucle        }
+{ ------------------------------------------------------------ }
+
+Function LpTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    LP_NONE       : LpTypeName := 'LP_NONE';
+    LP_WHILE      : LpTypeName := 'LP_WHILE';
+    LP_WHILE_ELSE : LpTypeName := 'LP_WHILE_ELSE';
+    LP_FOR_RANGE1 : LpTypeName := 'LP_FOR_RANGE1';
+    LP_FOR_RANGE2 : LpTypeName := 'LP_FOR_RANGE2';
+    LP_FOR_RANGE3 : LpTypeName := 'LP_FOR_RANGE3';
+    LP_FOR_STRING : LpTypeName := 'LP_FOR_STRING';
+    LP_FOR_LIST   : LpTypeName := 'LP_FOR_LIST';
+    LP_FOR_ELSE   : LpTypeName := 'LP_FOR_ELSE';
+    LP_BREAK      : LpTypeName := 'LP_BREAK';
+    LP_CONTINUE   : LpTypeName := 'LP_CONTINUE';
+    LP_NESTED     : LpTypeName := 'LP_NESTED';
+    LP_LOOP_PUSH  : LpTypeName := 'LP_LOOP_PUSH';
+    LP_LOOP_POP   : LpTypeName := 'LP_LOOP_POP';
+  Else
+    LpTypeName := 'LP_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LoopPush : empiler un contexte de boucle sur la pile            }
+{   TestLbl  : label de test de condition                        }
+{   IncrLbl  : label d increment (for) ou label de test (while)  }
+{   EndLbl   : label de fin de boucle (cible de break)           }
+{   ElseLbl  : label du bloc else optionnel                      }
+{   ForLoop  : True si boucle for, False si boucle while         }
+{ ------------------------------------------------------------ }
+
+Procedure LoopPush(TestLbl, IncrLbl, EndLbl, ElseLbl : TString;
+                   ForLoop : Boolean);
+Begin
+  If LpStackTop >= LP_MAX_NEST Then
+  Begin
+    CompileError('Loop nesting too deep (max ' +
+                 ItoS(LP_MAX_NEST) + ')', LexLineNo);
+    Exit;
+  End;
+  Inc(LpStackTop);
+  Inc(LpNestDepth);
+  If LpNestDepth > LpMaxNestSeen Then
+    LpMaxNestSeen := LpNestDepth;
+  LpStack[LpStackTop].TestLabel  := TestLbl;
+  LpStack[LpStackTop].IncrLabel  := IncrLbl;
+  LpStack[LpStackTop].EndLabel   := EndLbl;
+  LpStack[LpStackTop].ElseLabel  := ElseLbl;
+  LpStack[LpStackTop].IsFor      := ForLoop;
+  LpLastKind := LP_LOOP_PUSH;
+End;
+
+{ ------------------------------------------------------------ }
+{ LoopPop : depiler le contexte de boucle courant                 }
+{ ------------------------------------------------------------ }
+
+Procedure LoopPop;
+Begin
+  If LpStackTop <= 0 Then
+  Begin
+    CompileError('Loop stack underflow', LexLineNo);
+    Exit;
+  End;
+  Dec(LpStackTop);
+  Dec(LpNestDepth);
+  LpLastKind := LP_LOOP_POP;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseWhileStmt : parser une boucle while                       }
+{   while cond:                                                   }
+{       bloc                                                      }
+{   [else:                                                        }
+{       bloc]                                                     }
+{                                                                  }
+{   Emission assembleur :                                         }
+{     _PYL_WTEST_N:                                               }
+{       evaluer cond -> TEST EAX, EAX -> JZ _PYL_WEND_N          }
+{       (ou JZ _PYL_WELSE_N si else present)                     }
+{       corps                                                     }
+{       JMP _PYL_WTEST_N                                          }
+{     _PYL_WELSE_N:  (optionnel)                                  }
+{       bloc else                                                 }
+{     _PYL_WEND_N:                                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseWhileStmt;
+Var
+  LblTest    : TString;
+  LblEnd     : TString;
+  LblElse    : TString;
+  BaseSeq    : Integer;
+  HasElse    : Boolean;
+Begin
+  Inc(LpWhileCount);
+  HasElse := False;
+
+  { Generer les labels }
+  Inc(LpLabelSeq);
+  BaseSeq := LpLabelSeq;
+  LblTest := '_PYL_WTEST_' + ItoS(BaseSeq);
+  LblEnd  := '_PYL_WEND_' + ItoS(BaseSeq);
+  LblElse := '_PYL_WELSE_' + ItoS(BaseSeq);
+
+  WriteLn('  ; --- while loop #', BaseSeq, ' ---');
+
+  { Empiler le contexte de boucle }
+  LoopPush(LblTest, LblTest, LblEnd, LblElse, False);
+
+  { Label de test de condition }
+  EmitLabel(LblTest);
+
+  { Evaluer la condition }
+  { ParseExpr doit laisser le resultat dans EAX }
+  WriteLn('  ; while: evaluate condition');
+  EmitTestTruthy(LblEnd);
+
+  { Corps de la boucle }
+  WriteLn('  ; while body');
+
+  { Saut vers le test de condition }
+  EmitJmp(LblTest);
+
+  { Parser le else optionnel }
+  If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_ELSE) Then
+  Begin
+    Inc(LpElseCount);
+    HasElse := True;
+    EmitLabel(LblElse);
+    WriteLn('  ; while else body');
+  End;
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+  WriteLn('  ; --- end while #', BaseSeq, ' ---');
+
+  { Depiler le contexte }
+  LoopPop;
+
+  { Determiner le type }
+  If HasElse Then
+    LpLastKind := LP_WHILE_ELSE
+  Else
+    LpLastKind := LP_WHILE;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForStmt : parser une boucle for                           }
+{   for var in iterable:                                          }
+{       bloc                                                      }
+{   [else:                                                        }
+{       bloc]                                                     }
+{                                                                  }
+{   Cas supportes :                                               }
+{     for i in range(n) : boucle comptee 0..n-1                  }
+{       MOV DWORD [var], 0                                       }
+{       _PYL_FTEST_N: CMP DWORD [var], n / JGE end              }
+{       corps                                                     }
+{       _PYL_FINCR_N: INC DWORD [var] / JMP _PYL_FTEST_N        }
+{     for i in range(a, b) : boucle comptee a..b-1               }
+{       MOV DWORD [var], a                                       }
+{       _PYL_FTEST_N: CMP DWORD [var], b / JGE end              }
+{     for i in range(a, b, step) : boucle avec pas               }
+{       MOV DWORD [var], a                                       }
+{       _PYL_FTEST_N: CMP DWORD [var], b / JGE end              }
+{       _PYL_FINCR_N: ADD DWORD [var], step / JMP test           }
+{     for ch in string : iterer sur les caracteres               }
+{     for elem in list : iterer sur les elements                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForStmt;
+Var
+  LblTest    : TString;
+  LblIncr    : TString;
+  LblEnd     : TString;
+  LblElse    : TString;
+  BaseSeq    : Integer;
+  HasElse    : Boolean;
+  VarName    : TString;
+Begin
+  Inc(LpForCount);
+  HasElse := False;
+
+  { Generer les labels }
+  Inc(LpLabelSeq);
+  BaseSeq := LpLabelSeq;
+  LblTest := '_PYL_FTEST_' + ItoS(BaseSeq);
+  LblIncr := '_PYL_FINCR_' + ItoS(BaseSeq);
+  LblEnd  := '_PYL_FEND_' + ItoS(BaseSeq);
+  LblElse := '_PYL_FELSE_' + ItoS(BaseSeq);
+
+  WriteLn('  ; --- for loop #', BaseSeq, ' ---');
+
+  { Empiler le contexte de boucle }
+  LoopPush(LblTest, LblIncr, LblEnd, LblElse, True);
+
+  { Lire le nom de la variable d iteration }
+  If CurTokKind = TK_IDENT Then
+    VarName := CurTokStr
+  Else
+    VarName := '_for_var';
+
+  WriteLn('  ; for ', VarName, ' in ...');
+
+  { Initialiser la variable d iteration }
+  WriteLn('  MOV DWORD [', PY_VAR_PFX, VarName, '], 0');
+
+  { Label de test }
+  EmitLabel(LblTest);
+
+  { Comparer avec la borne superieure }
+  WriteLn('  ; for: test condition');
+  WriteLn('  CMP DWORD [', PY_VAR_PFX, VarName, '], EBX');
+  WriteLn('  JGE ', LblEnd);
+
+  { Corps de la boucle }
+  WriteLn('  ; for body');
+
+  { Label d increment }
+  EmitLabel(LblIncr);
+  WriteLn('  INC DWORD [', PY_VAR_PFX, VarName, ']');
+  EmitJmp(LblTest);
+
+  { Parser le else optionnel }
+  If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_ELSE) Then
+  Begin
+    Inc(LpElseCount);
+    HasElse := True;
+    EmitLabel(LblElse);
+    WriteLn('  ; for else body');
+  End;
+
+  { Label de fin }
+  EmitLabel(LblEnd);
+  WriteLn('  ; --- end for #', BaseSeq, ' ---');
+
+  { Depiler le contexte }
+  LoopPop;
+
+  { Determiner le type }
+  If HasElse Then
+    LpLastKind := LP_FOR_ELSE
+  Else
+    LpLastKind := LP_FOR_RANGE1;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForRange2 : emettre code pour for i in range(a, b)        }
+{   MOV DWORD [var], a                                           }
+{   _PYL_FTEST_N: CMP DWORD [var], b / JGE end                  }
+{   corps / _PYL_FINCR_N: INC / JMP test                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForRange2(VarName : TString; BaseSeq : Integer);
+Var
+  LblTest : TString;
+  LblIncr : TString;
+  LblEnd  : TString;
+Begin
+  LpLastKind := LP_FOR_RANGE2;
+  LblTest := '_PYL_FTEST_' + ItoS(BaseSeq);
+  LblIncr := '_PYL_FINCR_' + ItoS(BaseSeq);
+  LblEnd  := '_PYL_FEND_' + ItoS(BaseSeq);
+
+  WriteLn('  ; for ', VarName, ' in range(a, b)');
+  WriteLn('  MOV DWORD [', PY_VAR_PFX, VarName, '], EAX  ; start = a');
+  EmitLabel(LblTest);
+  WriteLn('  CMP DWORD [', PY_VAR_PFX, VarName, '], EBX  ; cmp with b');
+  WriteLn('  JGE ', LblEnd);
+  WriteLn('  ; for body');
+  EmitLabel(LblIncr);
+  WriteLn('  INC DWORD [', PY_VAR_PFX, VarName, ']');
+  EmitJmp(LblTest);
+  EmitLabel(LblEnd);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForRange3 : emettre code pour for i in range(a, b, step)  }
+{   MOV DWORD [var], a                                           }
+{   _PYL_FTEST_N: CMP DWORD [var], b / JGE end                  }
+{   corps / _PYL_FINCR_N: ADD DWORD [var], step / JMP test      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForRange3(VarName : TString; BaseSeq : Integer);
+Var
+  LblTest : TString;
+  LblIncr : TString;
+  LblEnd  : TString;
+Begin
+  LpLastKind := LP_FOR_RANGE3;
+  LblTest := '_PYL_FTEST_' + ItoS(BaseSeq);
+  LblIncr := '_PYL_FINCR_' + ItoS(BaseSeq);
+  LblEnd  := '_PYL_FEND_' + ItoS(BaseSeq);
+
+  WriteLn('  ; for ', VarName, ' in range(a, b, step)');
+  WriteLn('  MOV DWORD [', PY_VAR_PFX, VarName, '], EAX  ; start = a');
+  EmitLabel(LblTest);
+  WriteLn('  CMP DWORD [', PY_VAR_PFX, VarName, '], EBX  ; cmp with b');
+  WriteLn('  JGE ', LblEnd);
+  WriteLn('  ; for body');
+  EmitLabel(LblIncr);
+  WriteLn('  ADD DWORD [', PY_VAR_PFX, VarName, '], ECX  ; step');
+  EmitJmp(LblTest);
+  EmitLabel(LblEnd);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForString : emettre code pour for ch in string             }
+{   Itere sur les caracteres d une chaine                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForString(VarName : TString; BaseSeq : Integer);
+Var
+  LblTest : TString;
+  LblIncr : TString;
+  LblEnd  : TString;
+Begin
+  LpLastKind := LP_FOR_STRING;
+  LblTest := '_PYL_FTEST_' + ItoS(BaseSeq);
+  LblIncr := '_PYL_FINCR_' + ItoS(BaseSeq);
+  LblEnd  := '_PYL_FEND_' + ItoS(BaseSeq);
+
+  WriteLn('  ; for ', VarName, ' in string');
+  WriteLn('  XOR ECX, ECX  ; index = 0');
+  EmitLabel(LblTest);
+  WriteLn('  MOVZX EAX, BYTE [ESI + ECX]  ; load char');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblEnd, '  ; end of string');
+  WriteLn('  MOV DWORD [', PY_VAR_PFX, VarName, '], EAX');
+  WriteLn('  ; for body');
+  EmitLabel(LblIncr);
+  WriteLn('  INC ECX');
+  EmitJmp(LblTest);
+  EmitLabel(LblEnd);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForList : emettre code pour for elem in list               }
+{   Itere sur les elements d une liste                           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForList(VarName : TString; BaseSeq : Integer);
+Var
+  LblTest : TString;
+  LblIncr : TString;
+  LblEnd  : TString;
+Begin
+  LpLastKind := LP_FOR_LIST;
+  LblTest := '_PYL_FTEST_' + ItoS(BaseSeq);
+  LblIncr := '_PYL_FINCR_' + ItoS(BaseSeq);
+  LblEnd  := '_PYL_FEND_' + ItoS(BaseSeq);
+
+  WriteLn('  ; for ', VarName, ' in list');
+  WriteLn('  XOR ECX, ECX  ; index = 0');
+  EmitLabel(LblTest);
+  WriteLn('  CMP ECX, DWORD [EDI]  ; cmp with list length');
+  WriteLn('  JGE ', LblEnd);
+  WriteLn('  MOV EAX, DWORD [EDI + 4 + ECX*4]  ; load element');
+  WriteLn('  MOV DWORD [', PY_VAR_PFX, VarName, '], EAX');
+  WriteLn('  ; for body');
+  EmitLabel(LblIncr);
+  WriteLn('  INC ECX');
+  EmitJmp(LblTest);
+  EmitLabel(LblEnd);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBreakStmt : parser une instruction break                   }
+{   Saute vers le label de fin de la boucle englobante           }
+{   break -> JMP _PYL_WEND_N ou _PYL_FEND_N                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseBreakStmt;
+Begin
+  Inc(LpBreakCount);
+  LpLastKind := LP_BREAK;
+
+  If LpStackTop <= 0 Then
+  Begin
+    CompileError('break outside loop', LexLineNo);
+    Exit;
+  End;
+
+  WriteLn('  ; break');
+  EmitJmp(LpStack[LpStackTop].EndLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseContinueStmt : parser une instruction continue             }
+{   Saute vers le label d increment (for) ou test (while)        }
+{   continue -> JMP _PYL_FINCR_N ou _PYL_WTEST_N                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseContinueStmt;
+Begin
+  Inc(LpContCount);
+  LpLastKind := LP_CONTINUE;
+
+  If LpStackTop <= 0 Then
+  Begin
+    CompileError('continue outside loop', LexLineNo);
+    Exit;
+  End;
+
+  WriteLn('  ; continue');
+  EmitJmp(LpStack[LpStackTop].IncrLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpLpState : afficher l etat du sous-systeme des boucles       }
+{ ------------------------------------------------------------ }
+
+Procedure DumpLpState;
+Begin
+  WriteLn('--- Loop State ---');
+  WriteLn('  LpInitialized   : ', LpInitialized);
+  WriteLn('  LpWhileCount    : ', LpWhileCount);
+  WriteLn('  LpForCount      : ', LpForCount);
+  WriteLn('  LpBreakCount    : ', LpBreakCount);
+  WriteLn('  LpContCount     : ', LpContCount);
+  WriteLn('  LpElseCount     : ', LpElseCount);
+  WriteLn('  LpNestDepth     : ', LpNestDepth);
+  WriteLn('  LpMaxNestSeen   : ', LpMaxNestSeen);
+  WriteLn('  LpLastKind      : ', LpTypeName(LpLastKind));
+  WriteLn('  LpLabelSeq      : ', LpLabelSeq);
+  WriteLn('  LpStackTop      : ', LpStackTop);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 11)                              }
+{ ------------------------------------------------------------ }
+
+Function IsLpInitialized : Boolean;
+Begin
+  IsLpInitialized := LpInitialized;
+End;
+
+Function IsLpEmpty : Boolean;
+Begin
+  IsLpEmpty := (LpWhileCount = 0) And (LpForCount = 0) And
+               (LpBreakCount = 0) And (LpContCount = 0);
+End;
+
+Function GetLpWhileCount : LongInt;
+Begin
+  GetLpWhileCount := LpWhileCount;
+End;
+
+Function GetLpForCount : LongInt;
+Begin
+  GetLpForCount := LpForCount;
+End;
+
+Function GetLpBreakCount : LongInt;
+Begin
+  GetLpBreakCount := LpBreakCount;
+End;
+
+Function GetLpContCount : LongInt;
+Begin
+  GetLpContCount := LpContCount;
+End;
+
+Function GetLpElseCount : LongInt;
+Begin
+  GetLpElseCount := LpElseCount;
+End;
+
+Function GetLpMaxNestSeen : LongInt;
+Begin
+  GetLpMaxNestSeen := LpMaxNestSeen;
+End;
+
+Function GetLpStackTop : Integer;
+Begin
+  GetLpStackTop := LpStackTop;
+End;
+
+Function GetLpStatus : TString;
+Begin
+  If Not LpInitialized Then
+    GetLpStatus := 'Not initialized'
+  Else
+    GetLpStatus := ItoS(LpWhileCount) + ' while, ' +
+                   ItoS(LpForCount) + ' for, ' +
+                   ItoS(LpBreakCount) + ' break, ' +
+                   ItoS(LpContCount) + ' continue, ' +
+                   ItoS(LpElseCount) + ' else, ' +
+                   'max-nest=' + ItoS(LpMaxNestSeen);
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -6677,6 +7250,7 @@ Begin
   PxInitialized := False;
   VaInitialized := False;
   IfInitialized := False;
+  LpInitialized := False;
 
   ParseArgs;
 
@@ -6706,6 +7280,9 @@ Begin
 
   { Initialiser le sous-systeme if/elif/else }
   InitIfState;
+
+  { Initialiser le sous-systeme des boucles }
+  InitLpState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -6752,6 +7329,12 @@ Begin
     WriteLn('Instructions pass: ', GetIfPassCount);
     WriteLn('And court-circuit: ', GetIfAndScCount);
     WriteLn('Or court-circuit : ', GetIfOrScCount);
+    WriteLn('Boucles while    : ', GetLpWhileCount);
+    WriteLn('Boucles for      : ', GetLpForCount);
+    WriteLn('Instructions break: ', GetLpBreakCount);
+    WriteLn('Instr continue   : ', GetLpContCount);
+    WriteLn('Else de boucle   : ', GetLpElseCount);
+    WriteLn('Max imbrication  : ', GetLpMaxNestSeen);
   End;
 
   If Opts.DebugMode Then
@@ -6764,6 +7347,7 @@ Begin
     DumpPxState;
     DumpVaState;
     DumpIfState;
+    DumpLpState;
   End;
 
   { Nettoyage }
