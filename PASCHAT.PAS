@@ -67,7 +67,7 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 05 - GENERATEUR DE CODE PASCAL - STRUCTURES DE BASE [A FAIRE]
+  TODO 05 - GENERATEUR DE CODE PASCAL - STRUCTURES DE BASE [IMPLEMENTE]
             GenProgramHeader(Name) : generer l'entete PROGRAM
             GenUnitHeader(Name) : generer l'entete UNIT
             GenUsesClause(Units) : generer la clause USES
@@ -75,6 +75,8 @@ Program PASCHAT;
             GenVarSection(Vars) : generer la section VAR
             GenTypeSection(Types) : generer la section TYPE
             GenBeginEnd : generer le bloc BEGIN...END principal
+            InitGenState, GenGenLabel, GenTypeName, DumpGenState
+            10 accesseurs (IsGenInitialized, IsGenEmpty, GetGen*Count, ...)
   ============================================================ }
 
 { ============================================================
@@ -369,6 +371,25 @@ Const
   INT_MAX_KEYWORDS = 64;  { Nombre max de mots-cles par requete }
   INT_MIN_KEYWORD  = 2;   { Longueur minimale d'un mot-cle }
 
+  { TODO 05 - Types de generation de code (GEN_*) }
+  GEN_NONE       = 0;   { Aucune generation }
+  GEN_PROGRAM    = 1;   { Entete PROGRAM }
+  GEN_UNIT       = 2;   { Entete UNIT }
+  GEN_USES       = 3;   { Clause USES }
+  GEN_CONST      = 4;   { Section CONST }
+  GEN_TYPE       = 5;   { Section TYPE }
+  GEN_VAR        = 6;   { Section VAR }
+  GEN_BEGIN      = 7;   { Bloc BEGIN }
+  GEN_END        = 8;   { Bloc END }
+  GEN_INTERFACE  = 9;   { Section INTERFACE }
+  GEN_IMPLEMENT  = 10;  { Section IMPLEMENTATION }
+  GEN_COMMENT    = 11;  { Commentaire }
+  GEN_MAX        = 12;  { Nombre maximum de types }
+
+  { Limites pour TODO 05 }
+  GEN_MAX_LINES  = 4096; { Nombre max de lignes generees }
+  GEN_MAX_INDENT = 20;   { Niveau d'indentation maximum }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -616,6 +637,24 @@ Var
   IntMatchCount  : Integer;
   IntErrorCount  : Integer;
   IntLabelNum    : Integer;
+
+  { TODO 05 - Etat du generateur de code }
+  GenInitialized  : Boolean;
+  GenStateCount   : Integer;
+  GenProgramCount : Integer;
+  GenUnitCount    : Integer;
+  GenUsesCount    : Integer;
+  GenConstCount   : Integer;
+  GenTypeCount    : Integer;
+  GenVarCount     : Integer;
+  GenBeginCount   : Integer;
+  GenEndCount     : Integer;
+  GenInterfaceCount : Integer;
+  GenImplementCount : Integer;
+  GenCommentCount : Integer;
+  GenLineCount    : Integer;
+  GenErrorCount   : Integer;
+  GenLabelNum     : Integer;
 
   { TODO 11 - Templates }
   Templates     : Array[1..MAX_TEMPLATES] of TTemplate;
@@ -1773,6 +1812,60 @@ End;
   TODO 05 - GENERATEUR DE CODE PASCAL - STRUCTURES DE BASE
   ============================================================ }
 
+{ --- TODO 05 : Fonctions d'initialisation et gestion d'etat --- }
+
+Procedure InitGenState;
+Begin
+  GenInitialized := True;
+  GenStateCount := 0;
+  GenProgramCount := 0;
+  GenUnitCount := 0;
+  GenUsesCount := 0;
+  GenConstCount := 0;
+  GenTypeCount := 0;
+  GenVarCount := 0;
+  GenBeginCount := 0;
+  GenEndCount := 0;
+  GenInterfaceCount := 0;
+  GenImplementCount := 0;
+  GenCommentCount := 0;
+  GenLineCount := 0;
+  GenErrorCount := 0;
+  GenLabelNum := 0;
+  Inc(GenStateCount);
+End;
+
+Function GenGenLabel: String;
+Var
+  S: String;
+Begin
+  Inc(GenLabelNum);
+  Str(GenLabelNum, S);
+  GenGenLabel := '_GEN_L_' + S;
+End;
+
+Function GenTypeName(TypeCode: Integer): String;
+Begin
+  Case TypeCode of
+    GEN_NONE      : GenTypeName := 'NONE';
+    GEN_PROGRAM   : GenTypeName := 'PROGRAM';
+    GEN_UNIT      : GenTypeName := 'UNIT';
+    GEN_USES      : GenTypeName := 'USES';
+    GEN_CONST     : GenTypeName := 'CONST';
+    GEN_TYPE      : GenTypeName := 'TYPE';
+    GEN_VAR       : GenTypeName := 'VAR';
+    GEN_BEGIN     : GenTypeName := 'BEGIN';
+    GEN_END       : GenTypeName := 'END';
+    GEN_INTERFACE : GenTypeName := 'INTERFACE';
+    GEN_IMPLEMENT : GenTypeName := 'IMPLEMENTATION';
+    GEN_COMMENT   : GenTypeName := 'COMMENT';
+  Else
+    GenTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 05 : Fonctions de generation de code --- }
+
 Procedure InitGeneratedCode;
 Begin
   GeneratedCount := 0;
@@ -1783,6 +1876,7 @@ Begin
   If GeneratedCount < MAX_CODE_LINES Then Begin
     Inc(GeneratedCount);
     GeneratedCode[GeneratedCount] := Line;
+    Inc(GenLineCount);
   End;
 End;
 
@@ -1790,6 +1884,7 @@ Procedure GenProgramHeader(Name: String);
 Begin
   AddCodeLine('Program ' + Name + ';');
   AddCodeLine('');
+  Inc(GenProgramCount);
 End;
 
 Procedure GenUnitHeader(Name: String);
@@ -1798,6 +1893,8 @@ Begin
   AddCodeLine('');
   AddCodeLine('Interface');
   AddCodeLine('');
+  Inc(GenUnitCount);
+  Inc(GenInterfaceCount);
 End;
 
 Procedure GenUsesClause(Units: String);
@@ -1806,15 +1903,7 @@ Begin
     AddCodeLine('Uses');
     AddCodeLine('  ' + Units + ';');
     AddCodeLine('');
-  End;
-End;
-
-Procedure GenVarSection(VarList: String);
-Begin
-  If VarList <> '' Then Begin
-    AddCodeLine('Var');
-    AddCodeLine('  ' + VarList);
-    AddCodeLine('');
+    Inc(GenUsesCount);
   End;
 End;
 
@@ -1824,22 +1913,135 @@ Begin
     AddCodeLine('Const');
     AddCodeLine('  ' + ConstList);
     AddCodeLine('');
+    Inc(GenConstCount);
+  End;
+End;
+
+Procedure GenTypeSection(TypeList: String);
+Begin
+  If TypeList <> '' Then Begin
+    AddCodeLine('Type');
+    AddCodeLine('  ' + TypeList);
+    AddCodeLine('');
+    Inc(GenTypeCount);
+  End;
+End;
+
+Procedure GenVarSection(VarList: String);
+Begin
+  If VarList <> '' Then Begin
+    AddCodeLine('Var');
+    AddCodeLine('  ' + VarList);
+    AddCodeLine('');
+    Inc(GenVarCount);
   End;
 End;
 
 Procedure GenBeginEnd;
 Begin
   AddCodeLine('Begin');
+  Inc(GenBeginCount);
 End;
 
 Procedure GenEnd;
 Begin
   AddCodeLine('End.');
+  Inc(GenEndCount);
 End;
 
 Procedure GenEndNoPoint;
 Begin
   AddCodeLine('End;');
+  Inc(GenEndCount);
+End;
+
+Procedure GenComment(Comment: String);
+Begin
+  AddCodeLine('{ ' + Comment + ' }');
+  Inc(GenCommentCount);
+End;
+
+Procedure GenImplementation;
+Begin
+  AddCodeLine('');
+  AddCodeLine('Implementation');
+  AddCodeLine('');
+  Inc(GenImplementCount);
+End;
+
+{ --- TODO 05 : Procedure DumpGenState --- }
+
+Procedure DumpGenState;
+Begin
+  WriteLn('=== TODO 05 - Generateur de Code Pascal ===');
+  WriteLn('  GenInitialized    : ', GenInitialized);
+  WriteLn('  GenStateCount     : ', GenStateCount);
+  WriteLn('  GenProgramCount   : ', GenProgramCount);
+  WriteLn('  GenUnitCount      : ', GenUnitCount);
+  WriteLn('  GenUsesCount      : ', GenUsesCount);
+  WriteLn('  GenConstCount     : ', GenConstCount);
+  WriteLn('  GenTypeCount      : ', GenTypeCount);
+  WriteLn('  GenVarCount       : ', GenVarCount);
+  WriteLn('  GenBeginCount     : ', GenBeginCount);
+  WriteLn('  GenEndCount       : ', GenEndCount);
+  WriteLn('  GenInterfaceCount : ', GenInterfaceCount);
+  WriteLn('  GenImplementCount : ', GenImplementCount);
+  WriteLn('  GenCommentCount   : ', GenCommentCount);
+  WriteLn('  GenLineCount      : ', GenLineCount);
+  WriteLn('  GenErrorCount     : ', GenErrorCount);
+  WriteLn('  GenLabelNum       : ', GenLabelNum);
+End;
+
+{ --- TODO 05 : 10 accesseurs standards --- }
+
+Function IsGenInitialized: Boolean;
+Begin
+  IsGenInitialized := GenInitialized;
+End;
+
+Function IsGenEmpty: Boolean;
+Begin
+  IsGenEmpty := (GenLineCount = 0);
+End;
+
+Function GetGenStateCount: Integer;
+Begin
+  GetGenStateCount := GenStateCount;
+End;
+
+Function GetGenProgramCount: Integer;
+Begin
+  GetGenProgramCount := GenProgramCount;
+End;
+
+Function GetGenUnitCount: Integer;
+Begin
+  GetGenUnitCount := GenUnitCount;
+End;
+
+Function GetGenLineCount: Integer;
+Begin
+  GetGenLineCount := GenLineCount;
+End;
+
+Function GetGenConstCount: Integer;
+Begin
+  GetGenConstCount := GenConstCount;
+End;
+
+Function GetGenVarCount: Integer;
+Begin
+  GetGenVarCount := GenVarCount;
+End;
+
+Function GetGenErrorCount: Integer;
+Begin
+  GetGenErrorCount := GenErrorCount;
+End;
+
+Function GetGenLabelNum: Integer;
+Begin
+  GetGenLabelNum := GenLabelNum;
 End;
 
 { ============================================================
@@ -2565,12 +2767,17 @@ Begin
   IntInitialized := False;
   InitIntState;
 
+  { Initialiser l'etat du generateur de code (TODO 05) }
+  GenInitialized := False;
+  InitGenState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
     DumpLearnState;
     DumpHisState;
     DumpIntState;
+    DumpGenState;
   End;
 
   Run;
@@ -2581,7 +2788,7 @@ Begin
   { 02 [IMPLEMENTE] - Chargement fichiers apprentissage }
   { 03 [IMPLEMENTE] - Historique de conversation }
   { 04 [IMPLEMENTE] - Analyseur de requetes }
-  { 05 [A FAIRE] - Generateur structures de base }
+  { 05 [IMPLEMENTE] - Generateur structures de base }
   { 06 [A FAIRE] - Types et variables }
   { 07 [A FAIRE] - Expressions }
   { 08 [A FAIRE] - Structures de controle }

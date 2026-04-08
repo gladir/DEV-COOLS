@@ -48,7 +48,7 @@
             InitIntState, GenIntLabel, IntTypeName, DumpIntState
             10 accesseurs (IsIntInitialized, IsIntEmpty, GetInt*Count, ...)
 
-  TODO 05 - GENERATEUR DE CODE PASCAL - STRUCTURES DE BASE [A FAIRE]
+  TODO 05 - GENERATEUR DE CODE PASCAL - STRUCTURES DE BASE [IMPLEMENTE]
             GenProgramHeader(Name) : generer l'entete PROGRAM
             GenUnitHeader(Name) : generer l'entete UNIT
             GenUsesClause(Units) : generer la clause USES
@@ -56,6 +56,8 @@
             GenVarSection(Vars) : generer la section VAR
             GenTypeSection(Types) : generer la section TYPE
             GenBeginEnd : generer le bloc BEGIN...END principal
+            InitGenState, GenGenLabel, GenTypeName, DumpGenState
+            10 accesseurs (IsGenInitialized, IsGenEmpty, GetGen*Count, ...)
 
   TODO 06 - GENERATEUR DE CODE PASCAL - TYPES ET VARIABLES [A FAIRE]
             TTypeInfo : Name, Kind (TK_INTEGER, TK_STRING, TK_REAL,
