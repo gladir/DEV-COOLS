@@ -392,7 +392,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
               a la compilation (pas de code genere, valeur constante)
             10 fonctions accesseurs
 
-  TODO 16 - PARSEUR : INPUT/OUTPUT (E/S CONSOLE) [A FAIRE]
+  TODO 16 - PARSEUR : INPUT/OUTPUT (E/S CONSOLE) [IMPLEMENTE]
             OUTPUT :
               OUTPUT ('texte simple') ;
                 Generer : afficher la chaine sur la console

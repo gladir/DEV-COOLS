@@ -400,7 +400,7 @@
               a la compilation (pas de code genere, valeur constante)
             10 fonctions accesseurs
 
-  TODO 16 - PARSEUR : INPUT/OUTPUT (E/S CONSOLE) [A FAIRE]
+  TODO 16 - PARSEUR : INPUT/OUTPUT (E/S CONSOLE) [IMPLEMENTE]
             OUTPUT :
               OUTPUT ('texte simple') ;
                 Generer : afficher la chaine sur la console
@@ -2868,6 +2868,9 @@ Procedure ParseStatusAssign(Const StatusName : TString); Forward;
 
 { Forward declaration pour TODO 15 - BUILTINS }
 Procedure ParseBuiltinCall; Forward;
+
+{ Forward declaration pour TODO 16 - INPUT/OUTPUT }
+Procedure ParseIOStatement; Forward;
 
 { ------------------------------------------------------------ }
 { ParseModuleBody : parser les declarations du corps du module  }
@@ -6065,6 +6068,9 @@ Begin
       KW_STOP:
         ParseStopStatement;
 
+      KW_INPUT, KW_OUTPUT:
+        ParseIOStatement;
+
     Else
       { Autre instruction mot-cle : consommer jusqu au ; }
       While (CurTokType <> TOK_SEMICOL) And
@@ -8408,6 +8414,466 @@ End;
 
 
 { ============================================================ }
+{ TODO 16 - PARSEUR : INPUT/OUTPUT (E/S CONSOLE)               }
+{   Parser les instructions INPUT et OUTPUT du Jovial 73.      }
+{   OUTPUT : afficher du texte ou des expressions formatees.   }
+{   INPUT  : lire des valeurs depuis la console.               }
+{ ============================================================ }
+
+Const
+  { Types d operations E/S }
+  IO_NONE           = 0;   { pas d operation E/S                      }
+  IO_OUTPUT_SIMPLE  = 1;   { OUTPUT ('texte')                         }
+  IO_OUTPUT_FORMAT  = 2;   { OUTPUT ('format $D', expr, ...)          }
+  IO_INPUT_SINGLE   = 3;   { INPUT (var)                              }
+  IO_INPUT_MULTI    = 4;   { INPUT (var1, var2, ...)                  }
+  IO_OUTPUT_EXPR    = 5;   { OUTPUT (expression) sans format          }
+  IO_INPUT_PROMPT   = 6;   { INPUT avec prompt (extension)            }
+
+  { Limites }
+  IO_MAX_OPS      = 4096;  { nombre max d operations E/S              }
+  IO_MAX_ARGS     = 32;    { nombre max d arguments par instruction   }
+  IO_MAX_FORMAT   = 16;    { nombre max de $D dans un format          }
+
+Var
+  { Variables du parseur E/S }
+  IOInitialized     : Boolean;     { module initialise ?              }
+  IOStateCount      : Integer;     { compteur d operations            }
+  IOOutputCount     : Integer;     { instructions OUTPUT parsees      }
+  IOInputCount      : Integer;     { instructions INPUT parsees       }
+  IOSimpleCount     : Integer;     { OUTPUT simples (texte seul)      }
+  IOFormatCount     : Integer;     { OUTPUT avec format $D            }
+  IOExprCount       : Integer;     { OUTPUT avec expressions          }
+  IOSingleInCount   : Integer;     { INPUT simple (une variable)      }
+  IOMultiInCount    : Integer;     { INPUT multiple (plusieurs vars)  }
+  IOFormatSpecCount : Integer;     { total de $D rencontres           }
+  IOArgCount        : Integer;     { total d arguments parses         }
+  IOLabelNum        : Integer;     { generateur de labels uniques     }
+  IOErrorCount      : Integer;     { nombre d erreurs                 }
+
+{ ------------------------------------------------------------ }
+{ InitIOState : initialiser les variables du parseur E/S        }
+{ ------------------------------------------------------------ }
+
+Procedure InitIOState;
+Begin
+  IOInitialized     := True;
+  IOStateCount      := 0;
+  IOOutputCount     := 0;
+  IOInputCount      := 0;
+  IOSimpleCount     := 0;
+  IOFormatCount     := 0;
+  IOExprCount       := 0;
+  IOSingleInCount   := 0;
+  IOMultiInCount    := 0;
+  IOFormatSpecCount := 0;
+  IOArgCount        := 0;
+  IOLabelNum        := 0;
+  IOErrorCount      := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenIOLabel : generer un label unique pour les E/S              }
+{ ------------------------------------------------------------ }
+
+Function GenIOLabel : TString;
+Begin
+  Inc(IOLabelNum);
+  GenIOLabel := PFX_LBL + 'IO_' + ItoSI(IOLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ IOTypeName : nom textuel d un type d operation E/S             }
+{ ------------------------------------------------------------ }
+
+Function IOTypeName(IOType : Integer) : TString;
+Begin
+  Case IOType Of
+    IO_NONE:          IOTypeName := 'NONE';
+    IO_OUTPUT_SIMPLE: IOTypeName := 'OUTPUT_SIMPLE';
+    IO_OUTPUT_FORMAT: IOTypeName := 'OUTPUT_FORMAT';
+    IO_INPUT_SINGLE:  IOTypeName := 'INPUT_SINGLE';
+    IO_INPUT_MULTI:   IOTypeName := 'INPUT_MULTI';
+    IO_OUTPUT_EXPR:   IOTypeName := 'OUTPUT_EXPR';
+    IO_INPUT_PROMPT:  IOTypeName := 'INPUT_PROMPT';
+  Else
+    IOTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CountFormatSpecs : compter le nombre de $D dans une chaine     }
+{   Retourne le nombre de specifiers de format trouves          }
+{ ------------------------------------------------------------ }
+
+Function CountFormatSpecs(Const Fmt : TString) : Integer;
+Var
+  I, Count : Integer;
+Begin
+  Count := 0;
+  I := 1;
+  While I < Length(Fmt) Do
+  Begin
+    If (Fmt[I] = '$') And (I < Length(Fmt)) Then
+    Begin
+      If UpCase(Fmt[I + 1]) = 'D' Then
+      Begin
+        Inc(Count);
+        Inc(I);  { sauter le D }
+      End;
+    End;
+    Inc(I);
+  End;
+  CountFormatSpecs := Count;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOutputStmt : parser une instruction OUTPUT                }
+{   OUTPUT ('texte') ;                                          }
+{   OUTPUT ('format $D', expr1, expr2, ...) ;                   }
+{   OUTPUT (expression) ;                                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseOutputStmt;
+Var
+  FmtStr   : TString;
+  NumSpecs : Integer;
+  ArgsParsed : Integer;
+  Lbl      : TString;
+Begin
+  Inc(IOStateCount);
+  Inc(IOOutputCount);
+
+  { Consommer OUTPUT }
+  LexNextToken;
+
+  { Attendre ( }
+  If CurTokType <> TOK_LPAREN Then
+  Begin
+    WarnMsg('OUTPUT : ( attendue');
+    Inc(IOErrorCount);
+    { Essayer de consommer jusqu au ; }
+    While (CurTokType <> TOK_SEMICOL) And
+          (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+    Exit;
+  End;
+  LexNextToken;  { consommer ( }
+
+  { Generer un label pour cette instruction OUTPUT }
+  Lbl := GenIOLabel;
+
+  { Verifier le premier argument }
+  If CurTokType = TOK_STRING Then
+  Begin
+    { C est une chaine : texte simple ou format }
+    FmtStr := CurTokStr;
+    NumSpecs := CountFormatSpecs(FmtStr);
+    LexNextToken;  { consommer la chaine }
+
+    If (CurTokType = TOK_RPAREN) Then
+    Begin
+      { OUTPUT ('texte simple') }
+      Inc(IOSimpleCount);
+      LexNextToken;  { consommer ) }
+    End
+    Else If (CurTokType = TOK_COMMA) Then
+    Begin
+      { OUTPUT ('format $D', expr, ...) }
+      Inc(IOFormatCount);
+      Inc(IOFormatSpecCount, NumSpecs);
+      ArgsParsed := 0;
+
+      While (CurTokType = TOK_COMMA) And
+            (CurTokType <> TOK_EOF) Do
+      Begin
+        LexNextToken;  { consommer , }
+        { Parser l expression argument }
+        ParseExpression;
+        Inc(ArgsParsed);
+        Inc(IOArgCount);
+      End;
+
+      { Verifier que le nombre d arguments correspond }
+      If ArgsParsed <> NumSpecs Then
+      Begin
+        WarnMsg('OUTPUT : nombre d arguments ne correspond pas aux $D');
+        Inc(IOErrorCount);
+      End;
+
+      { Attendre ) }
+      If CurTokType = TOK_RPAREN Then
+        LexNextToken  { consommer ) }
+      Else
+      Begin
+        WarnMsg('OUTPUT : ) attendue apres les arguments');
+        Inc(IOErrorCount);
+      End;
+    End
+    Else
+    Begin
+      WarnMsg('OUTPUT : ) ou , attendue apres la chaine');
+      Inc(IOErrorCount);
+      { Consommer jusqu a ) ou ; }
+      While (CurTokType <> TOK_RPAREN) And
+            (CurTokType <> TOK_SEMICOL) And
+            (CurTokType <> TOK_EOF) Do
+        LexNextToken;
+      If CurTokType = TOK_RPAREN Then
+        LexNextToken;
+    End;
+  End
+  Else
+  Begin
+    { OUTPUT (expression) : sans chaine de format }
+    Inc(IOExprCount);
+    ParseExpression;
+    Inc(IOArgCount);
+
+    { Autres expressions separees par , }
+    While (CurTokType = TOK_COMMA) And
+          (CurTokType <> TOK_EOF) Do
+    Begin
+      LexNextToken;  { consommer , }
+      ParseExpression;
+      Inc(IOArgCount);
+      Inc(IOExprCount);
+    End;
+
+    { Attendre ) }
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken  { consommer ) }
+    Else
+    Begin
+      WarnMsg('OUTPUT : ) attendue');
+      Inc(IOErrorCount);
+    End;
+  End;
+
+  { Attendre ; }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken  { consommer ; }
+  Else
+  Begin
+    WarnMsg('OUTPUT : ; attendu en fin d instruction');
+    Inc(IOErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInputStmt : parser une instruction INPUT                  }
+{   INPUT (var1) ;                                              }
+{   INPUT (var1, var2, ...) ;                                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInputStmt;
+Var
+  VarCount : Integer;
+  Lbl      : TString;
+Begin
+  Inc(IOStateCount);
+  Inc(IOInputCount);
+
+  { Consommer INPUT }
+  LexNextToken;
+
+  { Attendre ( }
+  If CurTokType <> TOK_LPAREN Then
+  Begin
+    WarnMsg('INPUT : ( attendue');
+    Inc(IOErrorCount);
+    While (CurTokType <> TOK_SEMICOL) And
+          (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+    Exit;
+  End;
+  LexNextToken;  { consommer ( }
+
+  Lbl := GenIOLabel;
+  VarCount := 0;
+
+  { Lire la premiere variable }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    Inc(VarCount);
+    Inc(IOArgCount);
+    LexNextToken;  { consommer l identifiant }
+  End
+  Else If CurTokType = TOK_KEYWORD Then
+  Begin
+    { Certaines variables peuvent etre des mots-cles utilises comme noms }
+    Inc(VarCount);
+    Inc(IOArgCount);
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('INPUT : identifiant de variable attendu');
+    Inc(IOErrorCount);
+    { Essayer de recuperer }
+    While (CurTokType <> TOK_RPAREN) And
+          (CurTokType <> TOK_SEMICOL) And
+          (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken;
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+    Exit;
+  End;
+
+  { Variables supplementaires separees par , }
+  While (CurTokType = TOK_COMMA) And
+        (CurTokType <> TOK_EOF) Do
+  Begin
+    LexNextToken;  { consommer , }
+    If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+    Begin
+      Inc(VarCount);
+      Inc(IOArgCount);
+      LexNextToken;
+    End
+    Else
+    Begin
+      WarnMsg('INPUT : identifiant attendu apres ,');
+      Inc(IOErrorCount);
+    End;
+  End;
+
+  { Classifier le type d INPUT }
+  If VarCount = 1 Then
+    Inc(IOSingleInCount)
+  Else If VarCount > 1 Then
+    Inc(IOMultiInCount);
+
+  { Attendre ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken  { consommer ) }
+  Else
+  Begin
+    WarnMsg('INPUT : ) attendue');
+    Inc(IOErrorCount);
+  End;
+
+  { Attendre ; }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken  { consommer ; }
+  Else
+  Begin
+    WarnMsg('INPUT : ; attendu en fin d instruction');
+    Inc(IOErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIOStatement : dispatcher pour les instructions E/S        }
+{   Appele depuis ParseStatement quand le token est INPUT ou    }
+{   OUTPUT.                                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIOStatement;
+Begin
+  If Not IOInitialized Then
+  Begin
+    WarnMsg('Module E/S non initialise');
+    Inc(IOErrorCount);
+    Exit;
+  End;
+
+  If CurTokNum = KW_OUTPUT Then
+    ParseOutputStmt
+  Else If CurTokNum = KW_INPUT Then
+    ParseInputStmt
+  Else
+  Begin
+    WarnMsg('Instruction E/S inconnue');
+    Inc(IOErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpIOState : afficher l etat du parseur E/S                   }
+{ ------------------------------------------------------------ }
+
+Procedure DumpIOState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat du parseur E/S (TODO 16) ===');
+  WriteLn('  Initialise         : ', IOInitialized);
+  WriteLn('  Operations         : ', IOStateCount);
+  WriteLn('  OUTPUT parses      : ', IOOutputCount);
+  WriteLn('  INPUT parses       : ', IOInputCount);
+  WriteLn('  OUTPUT simples     : ', IOSimpleCount);
+  WriteLn('  OUTPUT formates    : ', IOFormatCount);
+  WriteLn('  OUTPUT expressions : ', IOExprCount);
+  WriteLn('  INPUT simples      : ', IOSingleInCount);
+  WriteLn('  INPUT multiples    : ', IOMultiInCount);
+  WriteLn('  Specifiers $D      : ', IOFormatSpecCount);
+  WriteLn('  Arguments totaux   : ', IOArgCount);
+  WriteLn('  Labels generes     : ', IOLabelNum);
+  WriteLn('  Erreurs            : ', IOErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Accesseurs du parseur E/S (10 fonctions)                       }
+{ ------------------------------------------------------------ }
+
+Function IsIOInitialized : Boolean;
+Begin
+  IsIOInitialized := IOInitialized;
+End;
+
+Function GetIOOutputCount : Integer;
+Begin
+  GetIOOutputCount := IOOutputCount;
+End;
+
+Function GetIOInputCount : Integer;
+Begin
+  GetIOInputCount := IOInputCount;
+End;
+
+Function GetIOSimpleCount : Integer;
+Begin
+  GetIOSimpleCount := IOSimpleCount;
+End;
+
+Function GetIOFormatCount : Integer;
+Begin
+  GetIOFormatCount := IOFormatCount;
+End;
+
+Function GetIOExprCount : Integer;
+Begin
+  GetIOExprCount := IOExprCount;
+End;
+
+Function GetIOArgCount : Integer;
+Begin
+  GetIOArgCount := IOArgCount;
+End;
+
+Function GetIOStateCount : Integer;
+Begin
+  GetIOStateCount := IOStateCount;
+End;
+
+Function GetIOErrorCount : Integer;
+Begin
+  GetIOErrorCount := IOErrorCount;
+End;
+
+Function IsIOEmpty : Boolean;
+Begin
+  IsIOEmpty := (IOOutputCount = 0) And (IOInputCount = 0);
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -8433,6 +8899,7 @@ Begin
   StsInitialized := False;
   BitInitialized := False;
   BltInitialized := False;
+  IOInitialized := False;
 
   ParseArgs;
 
@@ -8478,6 +8945,9 @@ Begin
   { Initialiser le parseur de fonctions integrees (builtins) }
   InitBuiltinState;
 
+  { Initialiser le parseur E/S (INPUT/OUTPUT) }
+  InitIOState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -8506,6 +8976,7 @@ Begin
     DumpStatusState;
     DumpBitState;
     DumpBuiltinState;
+    DumpIOState;
   End;
 
   { Nettoyage }
