@@ -6,13 +6,15 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS [A FAIRE]
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (Verbose, DebugMode, LearnFiles)
             ParseArgs : analyser argv ([-v] [-d] [-h] [fichiers.txt...])
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
             Charger la liste des fichiers .txt d'apprentissage en ligne de commande
             Programme principal : validation des arguments et appel Run
             Version, Date, aide en ligne (option -h)
+            InitOptState, GenOptLabel, OptTypeName, DumpOptState
+            10 accesseurs (IsOptInitialized, IsOptEmpty, GetOpt*Count, ...)
 
   TODO 02 - CHARGEMENT DES FICHIERS D'APPRENTISSAGE [A FAIRE]
             TLearnFile : FileName, Content, LineCount

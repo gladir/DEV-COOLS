@@ -17,13 +17,15 @@ Program PASCHAT;
 {$I-}
 
 { ============================================================
-  TODO 01 - INFRASTRUCTURE ET OPTIONS [A FAIRE]
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (Verbose, DebugMode, LearnFiles)
             ParseArgs : analyser argv ([-v] [-d] [-h] [fichiers.txt...])
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
             Charger la liste des fichiers .txt d'apprentissage en ligne de commande
             Programme principal : validation des arguments et appel Run
             Version, Date, aide en ligne (option -h)
+            InitOptState, GenOptLabel, OptTypeName
+            DumpOptState, 10 accesseurs (IsOptInitialized, IsOptEmpty, ...)
   ============================================================ }
 
 { ============================================================
@@ -271,7 +273,7 @@ Program PASCHAT;
   ============================================================ }
 Const
   PASCHAT_VERSION = '1.0';
-  PASCHAT_DATE    = '2026-03-31';
+  PASCHAT_DATE    = '2026-04-08';
 
   { Limites des tableaux internes }
   MAX_LEARN      = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -296,6 +298,20 @@ Const
 
   { Taille d'indentation par defaut }
   DEFAULT_INDENT = 2;
+
+  { TODO 01 - Types d'options (OPT_*) }
+  OPT_NONE       = 0;   { Aucune option }
+  OPT_VERBOSE    = 1;   { Mode verbeux }
+  OPT_DEBUG      = 2;   { Mode debogage }
+  OPT_HELP       = 3;   { Afficher l'aide }
+  OPT_VERSION    = 4;   { Afficher la version }
+  OPT_LEARN      = 5;   { Fichier d'apprentissage }
+  OPT_OUTPUT     = 6;   { Fichier de sortie }
+  OPT_QUIET      = 7;   { Mode silencieux }
+  OPT_MAX        = 8;   { Nombre maximum d'options }
+
+  { Limites pour TODO 01 }
+  OPT_MAX_FILES  = 64;  { Nombre max de fichiers en entree }
 
 { ============================================================
   TYPES
@@ -479,8 +495,19 @@ Type
   VARIABLES GLOBALES
   ============================================================ }
 Var
-  { TODO 01 - Options }
+  { TODO 01 - Options et etat }
   Options : TOptions;
+  OptInitialized : Boolean;
+  OptStateCount  : Integer;
+  OptVerboseCount: Integer;
+  OptDebugCount  : Integer;
+  OptHelpCount   : Integer;
+  OptVersionCount: Integer;
+  OptLearnCount  : Integer;
+  OptOutputCount : Integer;
+  OptQuietCount  : Integer;
+  OptErrorCount  : Integer;
+  OptLabelNum    : Integer;
 
   { TODO 02 - Fichiers d'apprentissage }
   LearnFiles : Array[1..MAX_LEARN] of TLearnFile;
@@ -695,6 +722,120 @@ Begin
       WarnMsg('Option inconnue: ' + Arg);
     Inc(I);
   End;
+End;
+
+{ --- TODO 01 : Fonctions d'initialisation et utilitaires --- }
+
+Procedure InitOptState;
+Begin
+  OptInitialized := True;
+  OptStateCount := 0;
+  OptVerboseCount := 0;
+  OptDebugCount := 0;
+  OptHelpCount := 0;
+  OptVersionCount := 0;
+  OptLearnCount := 0;
+  OptOutputCount := 0;
+  OptQuietCount := 0;
+  OptErrorCount := 0;
+  OptLabelNum := 0;
+End;
+
+Function GenOptLabel: TString;
+Var
+  S: String;
+Begin
+  Inc(OptLabelNum);
+  Str(OptLabelNum, S);
+  GenOptLabel := '_OPT_L_' + S;
+End;
+
+Function OptTypeName(OptType: Integer): TString;
+Begin
+  Case OptType of
+    OPT_NONE:    OptTypeName := 'NONE';
+    OPT_VERBOSE: OptTypeName := 'VERBOSE';
+    OPT_DEBUG:   OptTypeName := 'DEBUG';
+    OPT_HELP:    OptTypeName := 'HELP';
+    OPT_VERSION: OptTypeName := 'VERSION';
+    OPT_LEARN:   OptTypeName := 'LEARN';
+    OPT_OUTPUT:  OptTypeName := 'OUTPUT';
+    OPT_QUIET:   OptTypeName := 'QUIET';
+  Else
+    OptTypeName := 'UNKNOWN';
+  End;
+End;
+
+Procedure DumpOptState;
+Begin
+  WriteLn('=== TODO 01 - Infrastructure et Options ===');
+  WriteLn('  OptInitialized : ', OptInitialized);
+  WriteLn('  OptStateCount  : ', OptStateCount);
+  WriteLn('  OptVerboseCount: ', OptVerboseCount);
+  WriteLn('  OptDebugCount  : ', OptDebugCount);
+  WriteLn('  OptHelpCount   : ', OptHelpCount);
+  WriteLn('  OptVersionCount: ', OptVersionCount);
+  WriteLn('  OptLearnCount  : ', OptLearnCount);
+  WriteLn('  OptOutputCount : ', OptOutputCount);
+  WriteLn('  OptQuietCount  : ', OptQuietCount);
+  WriteLn('  OptErrorCount  : ', OptErrorCount);
+  WriteLn('  OptLabelNum    : ', OptLabelNum);
+  WriteLn('  Options.Verbose   : ', Options.Verbose);
+  WriteLn('  Options.DebugMode : ', Options.DebugMode);
+  WriteLn('  Options.ShowHelp  : ', Options.ShowHelp);
+  WriteLn('  Options.LearnFileCount: ', Options.LearnFileCount);
+End;
+
+{ --- TODO 01 : 10 accesseurs standards --- }
+
+Function IsOptInitialized: Boolean;
+Begin
+  IsOptInitialized := OptInitialized;
+End;
+
+Function IsOptEmpty: Boolean;
+Begin
+  IsOptEmpty := (OptStateCount = 0);
+End;
+
+Function GetOptStateCount: Integer;
+Begin
+  GetOptStateCount := OptStateCount;
+End;
+
+Function GetOptVerboseCount: Integer;
+Begin
+  GetOptVerboseCount := OptVerboseCount;
+End;
+
+Function GetOptDebugCount: Integer;
+Begin
+  GetOptDebugCount := OptDebugCount;
+End;
+
+Function GetOptHelpCount: Integer;
+Begin
+  GetOptHelpCount := OptHelpCount;
+End;
+
+Function GetOptLearnCount: Integer;
+Begin
+  GetOptLearnCount := OptLearnCount;
+End;
+
+Function GetOptOutputCount: Integer;
+Begin
+  GetOptOutputCount := OptOutputCount;
+End;
+
+Function GetOptErrorCount: Integer;
+Begin
+  GetOptErrorCount := OptErrorCount;
+End;
+
+Function GetOptLabelNum: Integer;
+Begin
+  GetOptLabelNum := OptLabelNum;
 End;
 
 { ============================================================
@@ -1711,7 +1852,18 @@ End;
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
+  { Initialiser l'etat des options (TODO 01) }
+  OptInitialized := False;
+  InitOptState;
+
   ParseArgs;
+
+  { Mettre a jour les compteurs d'options }
+  If Options.Verbose Then Inc(OptVerboseCount);
+  If Options.DebugMode Then Inc(OptDebugCount);
+  If Options.ShowHelp Then Inc(OptHelpCount);
+  OptLearnCount := Options.LearnFileCount;
+  Inc(OptStateCount);
 
   If Options.ShowHelp Then Begin
     ShowUsage;
@@ -1720,6 +1872,10 @@ Begin
 
   If Options.Verbose Then
     ShowVersion;
+
+  { Afficher l'etat des options en mode debug }
+  If Options.DebugMode Then
+    DumpOptState;
 
   Run;
 
