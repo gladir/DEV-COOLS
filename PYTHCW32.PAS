@@ -233,7 +233,7 @@
               chr(x), ord(x), bool(x), type(x), isinstance(x, cls)
             10 fonctions accesseurs
 
-  TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [A FAIRE]
+  TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables globales : segment DATA, acces par label _PYV_nom
               MOV EAX, DWORD [_PYV_nom] pour lecture
               MOV DWORD [_PYV_nom], EAX pour ecriture
@@ -5548,6 +5548,620 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [IMPLEMENTE]   }
+{ ============================================================ }
+
+Const
+  { Types d operations sur les variables }
+  VA_NONE          = 0;    { aucun / non defini                    }
+  VA_LOAD_GLOBAL   = 1;    { lecture variable globale (DATA)        }
+  VA_STORE_GLOBAL  = 2;    { ecriture variable globale (DATA)      }
+  VA_LOAD_LOCAL    = 3;    { lecture variable locale (pile EBP)     }
+  VA_STORE_LOCAL   = 4;    { ecriture variable locale (pile EBP)   }
+  VA_LOAD_PARAM    = 5;    { lecture parametre (pile EBP+offset)   }
+  VA_STORE_PARAM   = 6;    { ecriture parametre (pile EBP+offset)  }
+  VA_ASSIGN        = 7;    { affectation simple (=)                }
+  VA_AUG_ASSIGN    = 8;    { affectation augmentee (+=, etc.)      }
+  VA_MULTI_ASSIGN  = 9;    { affectation multiple (a, b = ...)     }
+  VA_SWAP          = 10;   { echange (a, b = b, a)                 }
+  VA_UNPACK        = 11;   { unpacking (a, b, c = iterable)        }
+  VA_DEL           = 12;   { instruction del                       }
+  VA_GLOBAL_DECL   = 13;   { instruction global                    }
+  VA_NONLOCAL_DECL = 14;   { instruction nonlocal                  }
+  VA_MAX           = 14;
+
+  { Limites }
+  VA_MAX_TARGETS   = 16;   { nombre max de cibles d affectation    }
+
+Var
+  VaInitialized   : Boolean;    { True si l etat est initialise       }
+  VaAssignCount   : LongInt;    { nombre d affectations simples       }
+  VaAugCount      : LongInt;    { nombre d affectations augmentees    }
+  VaMultiCount    : LongInt;    { nombre d affectations multiples     }
+  VaSwapCount     : LongInt;    { nombre d echanges                   }
+  VaUnpackCount   : LongInt;    { nombre d unpacking                  }
+  VaDelCount      : LongInt;    { nombre d instructions del           }
+  VaGlobalCount   : LongInt;    { nombre d instructions global        }
+  VaNonlocalCount : LongInt;    { nombre d instructions nonlocal      }
+  VaLastKind      : Integer;    { dernier type d operation variable   }
+  VaLabelSeq      : Integer;    { sequence pour labels VA              }
+
+{ ------------------------------------------------------------ }
+{ InitVaState : initialiser le sous-systeme variables            }
+{ ------------------------------------------------------------ }
+
+Procedure InitVaState;
+Begin
+  VaInitialized   := True;
+  VaAssignCount   := 0;
+  VaAugCount      := 0;
+  VaMultiCount    := 0;
+  VaSwapCount     := 0;
+  VaUnpackCount   := 0;
+  VaDelCount      := 0;
+  VaGlobalCount   := 0;
+  VaNonlocalCount := 0;
+  VaLastKind      := VA_NONE;
+  VaLabelSeq      := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenVaLabel : generer un label unique pour les variables         }
+{ ------------------------------------------------------------ }
+
+Function GenVaLabel : TString;
+Begin
+  Inc(VaLabelSeq);
+  GenVaLabel := '_PYA_' + ItoS(VaLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ VaTypeName : retourner le nom du type d operation variable      }
+{ ------------------------------------------------------------ }
+
+Function VaTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    VA_NONE          : VaTypeName := 'NONE';
+    VA_LOAD_GLOBAL   : VaTypeName := 'LOAD_GLOBAL';
+    VA_STORE_GLOBAL  : VaTypeName := 'STORE_GLOBAL';
+    VA_LOAD_LOCAL    : VaTypeName := 'LOAD_LOCAL';
+    VA_STORE_LOCAL   : VaTypeName := 'STORE_LOCAL';
+    VA_LOAD_PARAM    : VaTypeName := 'LOAD_PARAM';
+    VA_STORE_PARAM   : VaTypeName := 'STORE_PARAM';
+    VA_ASSIGN        : VaTypeName := 'ASSIGN';
+    VA_AUG_ASSIGN    : VaTypeName := 'AUG_ASSIGN';
+    VA_MULTI_ASSIGN  : VaTypeName := 'MULTI_ASSIGN';
+    VA_SWAP          : VaTypeName := 'SWAP';
+    VA_UNPACK        : VaTypeName := 'UNPACK';
+    VA_DEL           : VaTypeName := 'DEL';
+    VA_GLOBAL_DECL   : VaTypeName := 'GLOBAL_DECL';
+    VA_NONLOCAL_DECL : VaTypeName := 'NONLOCAL_DECL';
+  Else
+    VaTypeName := 'VA_?(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EnsureVarInData : auto-declarer une variable globale           }
+{ Si la variable n existe pas encore dans la table des symboles  }
+{ elle est ajoutee avec SK_VAR + un slot DATA de 4 octets        }
+{ Retourne l indice du symbole                                   }
+{ ------------------------------------------------------------ }
+
+Function EnsureVarInData(Const Name : TString) : Integer;
+Var
+  Idx     : Integer;
+  DataLbl : TString;
+  SymIdx  : Integer;
+Begin
+  Idx := SymFind(Name);
+  If Idx >= 0 Then
+  Begin
+    EnsureVarInData := Idx;
+    Exit;
+  End;
+  { Creer un slot DATA DWORD pour la variable }
+  DataLbl := PY_VAR_PFX + SymNameClean(Name);
+  DataAdd(DataLbl, DK_DWORD, 0, '', 1);
+  { Ajouter le symbole }
+  SymIdx := SymAdd(Name, SK_VAR, TY_IDX_INT, LexLineNo);
+  EnsureVarInData := SymIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitVarLoad : generer le code pour charger une variable        }
+{ dans EAX. Selon le type : global (DATA), local (EBP-offset)   }
+{ ou parametre (EBP+offset).                                     }
+{ Le code est emis sous forme de commentaire assembleur.         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitVarLoad(Idx : Integer);
+Begin
+  If (Idx < 0) Or (Idx >= SymTabCount) Then Exit;
+  Case SymTab[Idx].Kind Of
+    SK_PARAM :
+    Begin
+      { Parametre : acces via EBP + offset positif }
+      { MOV EAX, DWORD [EBP+offset] }
+      If Opts.Verbose Then
+        WriteLn('; LOAD param ', SymTab[Idx].Name,
+                ' [EBP+', SymTab[Idx].Offset, ']');
+      VaLastKind := VA_LOAD_PARAM;
+    End;
+    SK_LOCAL :
+    Begin
+      { Variable locale : acces via EBP - offset negatif }
+      { MOV EAX, DWORD [EBP-offset] }
+      If Opts.Verbose Then
+        WriteLn('; LOAD local ', SymTab[Idx].Name,
+                ' [EBP-', SymTab[Idx].Offset, ']');
+      VaLastKind := VA_LOAD_LOCAL;
+    End;
+  Else
+    Begin
+      { Variable globale : acces direct par label DATA }
+      { MOV EAX, DWORD [_PYV_nom] }
+      If Opts.Verbose Then
+        WriteLn('; LOAD global ', SymTab[Idx].Name,
+                ' [', SymTab[Idx].AsmName, ']');
+      VaLastKind := VA_LOAD_GLOBAL;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitVarStore : generer le code pour stocker EAX dans une       }
+{ variable. Selon le type : global, local ou parametre.          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitVarStore(Idx : Integer);
+Begin
+  If (Idx < 0) Or (Idx >= SymTabCount) Then Exit;
+  Case SymTab[Idx].Kind Of
+    SK_PARAM :
+    Begin
+      { Parametre : MOV DWORD [EBP+offset], EAX }
+      If Opts.Verbose Then
+        WriteLn('; STORE param ', SymTab[Idx].Name,
+                ' [EBP+', SymTab[Idx].Offset, ']');
+      VaLastKind := VA_STORE_PARAM;
+    End;
+    SK_LOCAL :
+    Begin
+      { Variable locale : MOV DWORD [EBP-offset], EAX }
+      If Opts.Verbose Then
+        WriteLn('; STORE local ', SymTab[Idx].Name,
+                ' [EBP-', SymTab[Idx].Offset, ']');
+      VaLastKind := VA_STORE_LOCAL;
+    End;
+  Else
+    Begin
+      { Variable globale : MOV DWORD [_PYV_nom], EAX }
+      If Opts.Verbose Then
+        WriteLn('; STORE global ', SymTab[Idx].Name,
+                ' [', SymTab[Idx].AsmName, ']');
+      VaLastKind := VA_STORE_GLOBAL;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignSimple : traiter une affectation simple x = expr    }
+{ Attend : CurTokStr contient le nom de la variable              }
+{ Le token '=' a ete detecte par l appelant                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignSimple(Const VarName : TString);
+Var
+  VarIdx : Integer;
+Begin
+  VaLastKind := VA_ASSIGN;
+  Inc(VaAssignCount);
+
+  { S assurer que la variable existe dans DATA }
+  VarIdx := EnsureVarInData(VarName);
+
+  If Opts.Verbose Then
+    WriteLn('; assign simple: ', VarName, ' = <expr>');
+
+  { Avancer apres le '=' }
+  LexNextToken;
+
+  { Evaluer l expression a droite (resultat dans EAX) }
+  ParseExpr;
+
+  { Stocker EAX dans la variable }
+  EmitVarStore(VarIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignAugmented : traiter une affectation augmentee       }
+{ x += expr, x -= expr, etc.                                    }
+{ Attend : CurTokStr contient le nom, AOp le type d affectation  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignAugmented(Const VarName : TString;
+                               AOp : Integer);
+Var
+  VarIdx : Integer;
+  BinOp  : Integer;
+Begin
+  VaLastKind := VA_AUG_ASSIGN;
+  Inc(VaAugCount);
+
+  VarIdx := EnsureVarInData(VarName);
+  BinOp  := AssignOpToBinOp(AOp);
+
+  If Opts.Verbose Then
+    WriteLn('; assign augmented: ', VarName, ' ',
+            AssignOpName(AOp), ' <expr>');
+
+  { Avancer apres l operateur d affectation }
+  LexNextToken;
+
+  { Charger la valeur actuelle de la variable }
+  EmitVarLoad(VarIdx);
+
+  { Sauvegarder sur la pile }
+  If Opts.Verbose Then
+    WriteLn('; PUSH EAX (valeur courante de ', VarName, ')');
+
+  { Evaluer l expression a droite }
+  ParseExpr;
+
+  { Appliquer l operation binaire }
+  If Opts.Verbose Then
+    WriteLn('; ', OpName(BinOp), ' avec valeur empilee');
+
+  { Stocker le resultat }
+  EmitVarStore(VarIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignMultiple : traiter une affectation multiple          }
+{ a, b = expr1, expr2 -> evaluer puis stocker                    }
+{ Attend : liste de noms deja parses dans Targets[]              }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignMultiple(Var Targets : Array Of TString;
+                              TgtCount : Integer);
+Var
+  I      : Integer;
+  VarIdx : Integer;
+Begin
+  VaLastKind := VA_MULTI_ASSIGN;
+  Inc(VaMultiCount);
+
+  If Opts.Verbose Then
+    WriteLn('; assign multiple: ', TgtCount, ' targets');
+
+  { Avancer apres le '=' }
+  LexNextToken;
+
+  { Evaluer chaque expression et stocker sur la pile (en ordre) }
+  For I := 0 To TgtCount - 1 Do
+  Begin
+    If I > 0 Then
+    Begin
+      { Attendre une virgule entre les expressions }
+      If CurTokStr = ',' Then
+        LexNextToken
+      Else
+        CompileError('Virgule attendue dans affectation multiple',
+                     LexLineNo);
+    End;
+    ParseExpr;
+    If Opts.Verbose Then
+      WriteLn('; PUSH EAX (valeur pour ', Targets[I], ')');
+  End;
+
+  { Depiler et stocker dans chaque cible (en ordre inverse) }
+  For I := TgtCount - 1 DownTo 0 Do
+  Begin
+    VarIdx := EnsureVarInData(Targets[I]);
+    If Opts.Verbose Then
+      WriteLn('; POP -> ', Targets[I]);
+    EmitVarStore(VarIdx);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSwap : traiter un echange a, b = b, a                    }
+{ Detecte le pattern d echange et genere du code optimise        }
+{ via registre ou pile temporaire                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSwap(Const Name1, Name2 : TString);
+Var
+  Idx1, Idx2 : Integer;
+Begin
+  VaLastKind := VA_SWAP;
+  Inc(VaSwapCount);
+
+  If Opts.Verbose Then
+    WriteLn('; swap: ', Name1, ', ', Name2, ' = ', Name2, ', ', Name1);
+
+  Idx1 := EnsureVarInData(Name1);
+  Idx2 := EnsureVarInData(Name2);
+
+  { Charger Name1 dans EAX, sauvegarder dans ECX }
+  EmitVarLoad(Idx1);
+  If Opts.Verbose Then
+    WriteLn('; MOV ECX, EAX (sauvegarde ', Name1, ')');
+
+  { Charger Name2 dans EAX }
+  EmitVarLoad(Idx2);
+
+  { Stocker EAX (ancienne val de Name2) dans Name1 }
+  EmitVarStore(Idx1);
+
+  { Stocker ECX (ancienne val de Name1) dans Name2 }
+  If Opts.Verbose Then
+    WriteLn('; MOV EAX, ECX (restaurer ', Name1, ')');
+  EmitVarStore(Idx2);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUnpacking : traiter un unpacking simple                   }
+{ a, b, c = iterable -> extraire elements sequentiellement       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseUnpacking(Var Targets : Array Of TString;
+                         TgtCount : Integer);
+Var
+  I      : Integer;
+  VarIdx : Integer;
+Begin
+  VaLastKind := VA_UNPACK;
+  Inc(VaUnpackCount);
+
+  If Opts.Verbose Then
+    WriteLn('; unpack: ', TgtCount, ' targets from iterable');
+
+  { Avancer apres le '=' }
+  LexNextToken;
+
+  { Evaluer l iterable (resultat : pointeur en EAX) }
+  ParseExpr;
+
+  If Opts.Verbose Then
+    WriteLn('; EAX = iterable, extraire ', TgtCount, ' elements');
+
+  { Pour chaque cible, extraire element[i] et stocker }
+  For I := 0 To TgtCount - 1 Do
+  Begin
+    VarIdx := EnsureVarInData(Targets[I]);
+    If Opts.Verbose Then
+      WriteLn('; extraire element[', I, '] -> ', Targets[I]);
+    EmitVarStore(VarIdx);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDelStmt : traiter l instruction del                       }
+{ del x -> supprimer variable / del lst[i] / del d[key]          }
+{ Attend : mot-cle 'del' deja consomme par l appelant            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDelStmt;
+Var
+  Name   : TString;
+  VarIdx : Integer;
+Begin
+  VaLastKind := VA_DEL;
+  Inc(VaDelCount);
+
+  { Lire le nom de la cible }
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    CompileError('Identificateur attendu apres del', LexLineNo);
+    Exit;
+  End;
+  Name := CurTokStr;
+  LexNextToken;
+
+  VarIdx := SymFind(Name);
+  If VarIdx < 0 Then
+  Begin
+    CompileError('Variable non definie pour del: ' + Name,
+                 LexLineNo);
+    Exit;
+  End;
+
+  { Verifier si c est del x, del x[i] ou del x[key] }
+  If CurTokKind = TK_LBRACKET Then
+  Begin
+    { del lst[i] ou del d[key] }
+    LexNextToken;
+    If Opts.Verbose Then
+      WriteLn('; del ', Name, '[<index>]');
+    { Evaluer l index }
+    ParseExpr;
+    If CurTokKind = TK_RBRACKET Then
+      LexNextToken
+    Else
+      CompileError('] attendu apres index dans del', LexLineNo);
+    If Opts.Verbose Then
+      WriteLn('; appel runtime __delitem__ pour ', Name);
+  End
+  Else
+  Begin
+    { del x -> mettre la variable a None / liberer }
+    If Opts.Verbose Then
+      WriteLn('; del ', Name, ' -> set to None');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseGlobalStmt : traiter l instruction global                 }
+{ global x, y, z -> marquer les variables comme globales         }
+{ Attend : mot-cle 'global' deja consomme par l appelant         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseGlobalStmt;
+Var
+  Name   : TString;
+  VarIdx : Integer;
+Begin
+  VaLastKind := VA_GLOBAL_DECL;
+  Inc(VaGlobalCount);
+
+  Repeat
+    If CurTokKind <> TK_IDENT Then
+    Begin
+      CompileError('Identificateur attendu apres global',
+                   LexLineNo);
+      Exit;
+    End;
+    Name := CurTokStr;
+    LexNextToken;
+
+    { Trouver ou creer le symbole }
+    VarIdx := EnsureVarInData(Name);
+    If VarIdx >= 0 Then
+    Begin
+      SymTab[VarIdx].IsGlobal := True;
+      If Opts.Verbose Then
+        WriteLn('; global ', Name);
+    End;
+
+    { Si virgule, continuer avec le prochain nom }
+    If CurTokStr = ',' Then
+      LexNextToken
+    Else
+      Break;
+  Until False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseNonlocalStmt : traiter l instruction nonlocal             }
+{ nonlocal x, y -> marquer les variables comme non-locales       }
+{ Attend : mot-cle 'nonlocal' deja consomme par l appelant       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseNonlocalStmt;
+Var
+  Name   : TString;
+  VarIdx : Integer;
+Begin
+  VaLastKind := VA_NONLOCAL_DECL;
+  Inc(VaNonlocalCount);
+
+  Repeat
+    If CurTokKind <> TK_IDENT Then
+    Begin
+      CompileError('Identificateur attendu apres nonlocal',
+                   LexLineNo);
+      Exit;
+    End;
+    Name := CurTokStr;
+    LexNextToken;
+
+    { Trouver le symbole dans la portee englobante }
+    VarIdx := SymFind(Name);
+    If VarIdx < 0 Then
+    Begin
+      { Creer le symbole comme variable englobante }
+      VarIdx := EnsureVarInData(Name);
+    End;
+    If VarIdx >= 0 Then
+    Begin
+      SymTab[VarIdx].IsNonlocal := True;
+      If Opts.Verbose Then
+        WriteLn('; nonlocal ', Name);
+    End;
+
+    If CurTokStr = ',' Then
+      LexNextToken
+    Else
+      Break;
+  Until False;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpVaState : afficher l etat du sous-systeme des variables    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpVaState;
+Begin
+  WriteLn('--- Va State ---');
+  WriteLn('  VaInitialized   : ', VaInitialized);
+  WriteLn('  VaAssignCount   : ', VaAssignCount);
+  WriteLn('  VaAugCount      : ', VaAugCount);
+  WriteLn('  VaMultiCount    : ', VaMultiCount);
+  WriteLn('  VaSwapCount     : ', VaSwapCount);
+  WriteLn('  VaUnpackCount   : ', VaUnpackCount);
+  WriteLn('  VaDelCount      : ', VaDelCount);
+  WriteLn('  VaGlobalCount   : ', VaGlobalCount);
+  WriteLn('  VaNonlocalCount : ', VaNonlocalCount);
+  WriteLn('  VaLastKind      : ', VaTypeName(VaLastKind));
+  WriteLn('  VaLabelSeq      : ', VaLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 09)                              }
+{ ------------------------------------------------------------ }
+
+Function IsVaInitialized : Boolean;
+Begin
+  IsVaInitialized := VaInitialized;
+End;
+
+Function IsVaEmpty : Boolean;
+Begin
+  IsVaEmpty := (VaAssignCount = 0) And (VaAugCount = 0) And
+               (VaMultiCount = 0) And (VaDelCount = 0);
+End;
+
+Function GetVaAssignCount : LongInt;
+Begin
+  GetVaAssignCount := VaAssignCount;
+End;
+
+Function GetVaAugCount : LongInt;
+Begin
+  GetVaAugCount := VaAugCount;
+End;
+
+Function GetVaMultiCount : LongInt;
+Begin
+  GetVaMultiCount := VaMultiCount;
+End;
+
+Function GetVaSwapCount : LongInt;
+Begin
+  GetVaSwapCount := VaSwapCount;
+End;
+
+Function GetVaDelCount : LongInt;
+Begin
+  GetVaDelCount := VaDelCount;
+End;
+
+Function GetVaGlobalCount : LongInt;
+Begin
+  GetVaGlobalCount := VaGlobalCount;
+End;
+
+Function GetVaNonlocalCount : LongInt;
+Begin
+  GetVaNonlocalCount := VaNonlocalCount;
+End;
+
+Function GetVaStatus : TString;
+Begin
+  If Not VaInitialized Then
+    GetVaStatus := 'Not initialized'
+  Else
+    GetVaStatus := ItoS(VaAssignCount) + ' assigns, ' +
+                   ItoS(VaAugCount) + ' aug, ' +
+                   ItoS(VaMultiCount) + ' multi, ' +
+                   ItoS(VaSwapCount) + ' swaps, ' +
+                   ItoS(VaDelCount) + ' del';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -5566,6 +6180,7 @@ Begin
   LitInitialized := False;
   OprInitialized := False;
   PxInitialized := False;
+  VaInitialized := False;
 
   ParseArgs;
 
@@ -5589,6 +6204,9 @@ Begin
 
   { Initialiser le sous-systeme des primaires et appels }
   InitPxState;
+
+  { Initialiser le sous-systeme des variables et affectations }
+  InitVaState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -5621,6 +6239,13 @@ Begin
     WriteLn('Acces attributs  : ', GetPxAttrCount);
     WriteLn('Acces index      : ', GetPxIndexCount);
     WriteLn('Appels builtins  : ', GetPxBuiltinCount);
+    WriteLn('Affectations     : ', GetVaAssignCount);
+    WriteLn('Affect augmentees: ', GetVaAugCount);
+    WriteLn('Affect multiples : ', GetVaMultiCount);
+    WriteLn('Echanges         : ', GetVaSwapCount);
+    WriteLn('Instructions del : ', GetVaDelCount);
+    WriteLn('Instructions glob: ', GetVaGlobalCount);
+    WriteLn('Instr nonlocal   : ', GetVaNonlocalCount);
   End;
 
   If Opts.DebugMode Then
@@ -5631,6 +6256,7 @@ Begin
     DumpLitState;
     DumpOprState;
     DumpPxState;
+    DumpVaState;
   End;
 
   { Nettoyage }

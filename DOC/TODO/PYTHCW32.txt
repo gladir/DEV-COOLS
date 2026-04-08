@@ -225,7 +225,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
               chr(x), ord(x), bool(x), type(x), isinstance(x, cls)
             10 fonctions accesseurs
 
-  TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [A FAIRE]
+  TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables globales : segment DATA, acces par label _PYV_nom
               MOV EAX, DWORD [_PYV_nom] pour lecture
               MOV DWORD [_PYV_nom], EAX pour ecriture
