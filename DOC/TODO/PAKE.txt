@@ -607,7 +607,7 @@ Turbo Pascal / Free Pascal (-Mtp)
            Var MainRs: String)
            modifier le code Rust pour definir le User-Agent
 
-  TODO 22 - GESTION DU PROXY [A FAIRE]
+  TODO 22 - GESTION DU PROXY [IMPLEMENTE]
          Type TProxyConfig : record
            Enabled  : Boolean
            Url      : String (ex: 'http://proxy:8080')

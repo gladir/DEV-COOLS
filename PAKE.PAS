@@ -636,7 +636,7 @@
               Var MainRs: String)
               modifier le code Rust pour definir le User-Agent
 
-  TODO 22 - GESTION DU PROXY [A FAIRE]
+  TODO 22 - GESTION DU PROXY [IMPLEMENTE]
             Type TProxyConfig : record
               Enabled  : Boolean
               Url      : String (ex: 'http://proxy:8080')
@@ -7555,7 +7555,564 @@ Begin
 End;
 
 { ============================================================
-  TODO 22-25 : A IMPLEMENTER
+  TODO 22 - GESTION DU PROXY [IMPLEMENTE]
+  ============================================================ }
+
+Const
+  { Types de proxy }
+  PX_TYPE_NONE   = 0;
+  PX_TYPE_HTTP   = 1;
+  PX_TYPE_HTTPS  = 2;
+  PX_TYPE_SOCKS4 = 3;
+  PX_TYPE_SOCKS5 = 4;
+  PX_TYPE_AUTO   = 5;
+  
+  { Extensions et constantes }
+  PX_MAX_URL_LEN    = 512;
+  PX_MAX_USER_LEN   = 64;
+  PX_MAX_PASS_LEN   = 128;
+  PX_MAX_BYPASS_LEN = 1024;
+  PX_DEFAULT_PORT   = 8080;
+  
+  { Noms des types }
+  PX_EXT_NONE   = 0;
+  PX_EXT_CONFIG = 1;
+  PX_EXT_RUST   = 2;
+  PX_EXT_JSON   = 3;
+
+Var
+  { Variables d'etat pour le module Proxy }
+  PxInitialized  : Boolean;
+  PxStateCount   : Integer;
+  PxConfigCount  : Integer;
+  PxParseCount   : Integer;
+  PxValidateCount: Integer;
+  PxGenConfigCnt : Integer;
+  PxApplyCount   : Integer;
+  PxErrorCount   : Integer;
+  PxLabelNum     : Integer;
+  PxCurrentType  : Integer;
+  PxCurrentHost  : String;
+  PxCurrentPort  : Integer;
+  PxCurrentConfig: TProxyConfig;
+
+{ Convertir une string en Integer avec valeur par defaut }
+Function PxStrToInt(Const S: String; Def: Integer): Integer;
+Var
+  V, Code: Integer;
+Begin
+  Val(S, V, Code);
+  If Code = 0 Then
+    PxStrToInt := V
+  Else
+    PxStrToInt := Def;
+End;
+
+{ Convertir en minuscules }
+Function PxLowerCase(Const S: String): String;
+Var
+  I: Integer;
+  R: String;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    If (S[I] >= 'A') And (S[I] <= 'Z') Then
+      R := R + Chr(Ord(S[I]) + 32)
+    Else
+      R := R + S[I];
+  End;
+  PxLowerCase := R;
+End;
+
+{ Convertir un entier en string }
+Function PxIntToStr(N: Integer): String;
+Var
+  S: String;
+Begin
+  Str(N, S);
+  PxIntToStr := S;
+End;
+
+{ Initialiser l'etat du module Proxy }
+Procedure InitProxyState;
+Begin
+  PxInitialized   := True;
+  PxStateCount    := 0;
+  PxConfigCount   := 0;
+  PxParseCount    := 0;
+  PxValidateCount := 0;
+  PxGenConfigCnt  := 0;
+  PxApplyCount    := 0;
+  PxErrorCount    := 0;
+  PxLabelNum      := 0;
+  
+  { Initialiser les variables globales }
+  PxCurrentType   := PX_TYPE_NONE;
+  PxCurrentHost   := '';
+  PxCurrentPort   := 0;
+  
+  { Initialiser la configuration par defaut }
+  PxCurrentConfig.Enabled  := False;
+  PxCurrentConfig.Url      := '';
+  PxCurrentConfig.Username := '';
+  PxCurrentConfig.Password := '';
+  PxCurrentConfig.Bypass   := '';
+  
+  Inc(PxStateCount);
+End;
+
+{ Generer un label unique pour le module Proxy }
+Function GenPxLabel: String;
+Begin
+  Inc(PxLabelNum);
+  GenPxLabel := '_PX_' + PxIntToStr(PxLabelNum);
+End;
+
+{ Obtenir le nom du type de proxy }
+Function PxTypeName(T: Integer): String;
+Begin
+  Case T Of
+    PX_TYPE_NONE   : PxTypeName := 'NONE';
+    PX_TYPE_HTTP   : PxTypeName := 'HTTP';
+    PX_TYPE_HTTPS  : PxTypeName := 'HTTPS';
+    PX_TYPE_SOCKS4 : PxTypeName := 'SOCKS4';
+    PX_TYPE_SOCKS5 : PxTypeName := 'SOCKS5';
+    PX_TYPE_AUTO   : PxTypeName := 'AUTO';
+  Else
+    PxTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ Obtenir le nom de l'extension }
+Function PxExtName(E: Integer): String;
+Begin
+  Case E Of
+    PX_EXT_NONE   : PxExtName := '';
+    PX_EXT_CONFIG : PxExtName := '.conf';
+    PX_EXT_RUST   : PxExtName := '.rs';
+    PX_EXT_JSON   : PxExtName := '.json';
+  Else
+    PxExtName := '';
+  End;
+End;
+
+{ Initialiser une configuration de proxy vide }
+Procedure InitProxyCfg(Var Cfg: TProxyConfig);
+Begin
+  Cfg.Enabled  := False;
+  Cfg.Url      := '';
+  Cfg.Username := '';
+  Cfg.Password := '';
+  Cfg.Bypass   := '';
+  Inc(PxConfigCount);
+End;
+
+{ Parser une URL de proxy (format: http://user:pass@host:port) }
+Function ParseProxyUrl(Const Url: String): TProxyConfig;
+Var
+  Cfg: TProxyConfig;
+  S, Remaining, UserPass: String;
+  P, P2: Integer;
+  LowS: String;
+Begin
+  Inc(PxParseCount);
+  
+  { Initialiser la configuration }
+  InitProxyCfg(Cfg);
+  PxCurrentType := PX_TYPE_NONE;
+  PxCurrentHost := '';
+  PxCurrentPort := 0;
+  
+  If Length(Url) = 0 Then
+  Begin
+    ParseProxyUrl := Cfg;
+    Exit;
+  End;
+  
+  Cfg.Url := Url;
+  Cfg.Enabled := True;
+  S := Url;
+  LowS := PxLowerCase(S);
+  
+  { Determiner le type de proxy selon le schema }
+  If Pos('http://', LowS) = 1 Then
+  Begin
+    PxCurrentType := PX_TYPE_HTTP;
+    S := Copy(S, 8, Length(S) - 7);
+  End
+  Else If Pos('https://', LowS) = 1 Then
+  Begin
+    PxCurrentType := PX_TYPE_HTTPS;
+    S := Copy(S, 9, Length(S) - 8);
+  End
+  Else If Pos('socks4://', LowS) = 1 Then
+  Begin
+    PxCurrentType := PX_TYPE_SOCKS4;
+    S := Copy(S, 10, Length(S) - 9);
+  End
+  Else If Pos('socks5://', LowS) = 1 Then
+  Begin
+    PxCurrentType := PX_TYPE_SOCKS5;
+    S := Copy(S, 10, Length(S) - 9);
+  End
+  Else
+  Begin
+    { Par defaut, considerer HTTP }
+    PxCurrentType := PX_TYPE_HTTP;
+  End;
+  
+  { Chercher les credentials (user:pass@) }
+  P := Pos('@', S);
+  If P > 0 Then
+  Begin
+    UserPass := Copy(S, 1, P - 1);
+    Remaining := Copy(S, P + 1, Length(S) - P);
+    
+    { Separer user et password }
+    P2 := Pos(':', UserPass);
+    If P2 > 0 Then
+    Begin
+      Cfg.Username := Copy(UserPass, 1, P2 - 1);
+      Cfg.Password := Copy(UserPass, P2 + 1, Length(UserPass) - P2);
+    End
+    Else
+      Cfg.Username := UserPass;
+  End
+  Else
+    Remaining := S;
+  
+  { Parser host:port }
+  P := Pos(':', Remaining);
+  If P > 0 Then
+  Begin
+    PxCurrentHost := Copy(Remaining, 1, P - 1);
+    { Extraire le port (ignorer le chemin s'il existe) }
+    P2 := Pos('/', Copy(Remaining, P + 1, Length(Remaining) - P));
+    If P2 > 0 Then
+      PxCurrentPort := PxStrToInt(Copy(Remaining, P + 1, P2 - 1), PX_DEFAULT_PORT)
+    Else
+      PxCurrentPort := PxStrToInt(Copy(Remaining, P + 1, Length(Remaining) - P), PX_DEFAULT_PORT);
+  End
+  Else
+  Begin
+    { Pas de port, utiliser le port par defaut }
+    P := Pos('/', Remaining);
+    If P > 0 Then
+      PxCurrentHost := Copy(Remaining, 1, P - 1)
+    Else
+      PxCurrentHost := Remaining;
+    PxCurrentPort := PX_DEFAULT_PORT;
+  End;
+  
+  ParseProxyUrl := Cfg;
+End;
+
+{ Valider une configuration de proxy }
+Function ValidateProxyConfig(Const Cfg: TProxyConfig): Boolean;
+Var
+  Valid: Boolean;
+Begin
+  Inc(PxValidateCount);
+  Valid := True;
+  
+  { Si le proxy n'est pas active, c'est valide }
+  If Not Cfg.Enabled Then
+  Begin
+    ValidateProxyConfig := True;
+    Exit;
+  End;
+  
+  { Verifier que le type est valide }
+  If (PxCurrentType < PX_TYPE_HTTP) Or (PxCurrentType > PX_TYPE_AUTO) Then
+  Begin
+    Valid := False;
+    Inc(PxErrorCount);
+  End;
+  
+  { Verifier que l'hote est specifie }
+  If Length(PxCurrentHost) = 0 Then
+  Begin
+    Valid := False;
+    Inc(PxErrorCount);
+  End;
+  
+  { Verifier que le port est valide }
+  If (PxCurrentPort <= 0) Or (PxCurrentPort > 65535) Then
+  Begin
+    Valid := False;
+    Inc(PxErrorCount);
+  End;
+  
+  { Verifier les longueurs maximales }
+  If Length(Cfg.Url) > PX_MAX_URL_LEN Then
+  Begin
+    Valid := False;
+    Inc(PxErrorCount);
+  End;
+  
+  If Length(Cfg.Username) > PX_MAX_USER_LEN Then
+  Begin
+    Valid := False;
+    Inc(PxErrorCount);
+  End;
+  
+  If Length(Cfg.Password) > PX_MAX_PASS_LEN Then
+  Begin
+    Valid := False;
+    Inc(PxErrorCount);
+  End;
+  
+  If Length(Cfg.Bypass) > PX_MAX_BYPASS_LEN Then
+  Begin
+    Valid := False;
+    Inc(PxErrorCount);
+  End;
+  
+  ValidateProxyConfig := Valid;
+End;
+
+{ Ajouter un domaine a la liste de bypass }
+Procedure AddBypassDomain(Var Cfg: TProxyConfig; Const Domain: String);
+Begin
+  If Length(Cfg.Bypass) > 0 Then
+    Cfg.Bypass := Cfg.Bypass + ',' + Domain
+  Else
+    Cfg.Bypass := Domain;
+End;
+
+{ Generer la configuration proxy au format JSON pour Tauri }
+Function GenerateProxyConfig(Const Cfg: TProxyConfig): String;
+Var
+  S: String;
+Begin
+  Inc(PxGenConfigCnt);
+  
+  If Not Cfg.Enabled Then
+  Begin
+    GenerateProxyConfig := '{}';
+    Exit;
+  End;
+  
+  S := '{' + #10;
+  S := S + '  "proxy": {' + #10;
+  S := S + '    "enabled": true,' + #10;
+  S := S + '    "type": "' + PxLowerCase(PxTypeName(PxCurrentType)) + '",' + #10;
+  S := S + '    "host": "' + PxCurrentHost + '",' + #10;
+  S := S + '    "port": ' + PxIntToStr(PxCurrentPort);
+  
+  If Length(Cfg.Username) > 0 Then
+  Begin
+    S := S + ',' + #10;
+    S := S + '    "username": "' + Cfg.Username + '"';
+  End;
+  
+  If Length(Cfg.Password) > 0 Then
+  Begin
+    S := S + ',' + #10;
+    S := S + '    "password": "' + Cfg.Password + '"';
+  End;
+  
+  If Length(Cfg.Bypass) > 0 Then
+  Begin
+    S := S + ',' + #10;
+    S := S + '    "bypass": "' + Cfg.Bypass + '"';
+  End;
+  
+  S := S + #10 + '  }' + #10;
+  S := S + '}';
+  
+  GenerateProxyConfig := S;
+End;
+
+{ Generer le code Rust pour configurer le proxy }
+Function GenerateProxyRustCode(Const Cfg: TProxyConfig): String;
+Var
+  S: String;
+Begin
+  If Not Cfg.Enabled Then
+  Begin
+    GenerateProxyRustCode := '';
+    Exit;
+  End;
+  
+  S := '// Configuration du proxy' + #10;
+  S := S + 'let proxy_config = tauri::webview::ProxyConfig {' + #10;
+  
+  Case PxCurrentType Of
+    PX_TYPE_HTTP:
+      S := S + '    proxy_type: tauri::webview::ProxyType::Http,' + #10;
+    PX_TYPE_HTTPS:
+      S := S + '    proxy_type: tauri::webview::ProxyType::Https,' + #10;
+    PX_TYPE_SOCKS4:
+      S := S + '    proxy_type: tauri::webview::ProxyType::Socks4,' + #10;
+    PX_TYPE_SOCKS5:
+      S := S + '    proxy_type: tauri::webview::ProxyType::Socks5,' + #10;
+  Else
+    S := S + '    proxy_type: tauri::webview::ProxyType::Http,' + #10;
+  End;
+  
+  S := S + '    host: "' + PxCurrentHost + '".to_string(),' + #10;
+  S := S + '    port: ' + PxIntToStr(PxCurrentPort) + ',' + #10;
+  
+  If Length(Cfg.Username) > 0 Then
+    S := S + '    username: Some("' + Cfg.Username + '".to_string()),' + #10
+  Else
+    S := S + '    username: None,' + #10;
+  
+  If Length(Cfg.Password) > 0 Then
+    S := S + '    password: Some("' + Cfg.Password + '".to_string()),' + #10
+  Else
+    S := S + '    password: None,' + #10;
+  
+  If Length(Cfg.Bypass) > 0 Then
+    S := S + '    bypass_list: vec!["' + Cfg.Bypass + '"],' + #10
+  Else
+    S := S + '    bypass_list: Vec::new(),' + #10;
+  
+  S := S + '};' + #10;
+  S := S + #10;
+  S := S + '// Appliquer la configuration du proxy au WebView' + #10;
+  S := S + 'webview_builder = webview_builder.with_proxy_config(proxy_config);' + #10;
+  
+  GenerateProxyRustCode := S;
+End;
+
+{ Appliquer la configuration du proxy au code Rust }
+Procedure ApplyProxyConfig(Const Cfg: TProxyConfig; Var MainRs: String);
+Var
+  RustCode, InsertPos: String;
+  P: Integer;
+Begin
+  Inc(PxApplyCount);
+  
+  If Not Cfg.Enabled Then Exit;
+  
+  RustCode := GenerateProxyRustCode(Cfg);
+  
+  { Chercher un point d'insertion dans le code Rust }
+  InsertPos := '// Proxy configuration';
+  P := Pos(InsertPos, MainRs);
+  If P > 0 Then
+  Begin
+    { Inserer apres le commentaire }
+    MainRs := Copy(MainRs, 1, P + Length(InsertPos) - 1) + #10 + 
+              RustCode + Copy(MainRs, P + Length(InsertPos), Length(MainRs));
+  End
+  Else
+  Begin
+    { Ajouter a la fin si le point d'insertion n'existe pas }
+    MainRs := MainRs + #10 + '// Proxy configuration' + #10 + RustCode;
+  End;
+End;
+
+{ Obtenir la configuration proxy actuelle }
+Function GetCurrentProxyConfig: TProxyConfig;
+Begin
+  GetCurrentProxyConfig := PxCurrentConfig;
+End;
+
+{ Definir la configuration proxy courante }
+Procedure SetProxyConfig(Const Cfg: TProxyConfig);
+Begin
+  PxCurrentConfig := Cfg;
+End;
+
+{ Obtenir l'URL du proxy actuel }
+Function GetProxyUrl: String;
+Begin
+  If PxCurrentConfig.Enabled Then
+    GetProxyUrl := PxCurrentConfig.Url
+  Else
+    GetProxyUrl := '';
+End;
+
+{ Verifier si le proxy est active }
+Function IsProxyEnabled: Boolean;
+Begin
+  IsProxyEnabled := PxCurrentConfig.Enabled;
+End;
+
+{ Afficher l'etat du module Proxy }
+Procedure DumpProxyState;
+Begin
+  WriteLn('=== Proxy State ===');
+  WriteLn('  Initialized    : ', PxInitialized);
+  WriteLn('  State Count    : ', PxStateCount);
+  WriteLn('  Config Count   : ', PxConfigCount);
+  WriteLn('  Parse Count    : ', PxParseCount);
+  WriteLn('  Validate Count : ', PxValidateCount);
+  WriteLn('  GenConfig Count: ', PxGenConfigCnt);
+  WriteLn('  Apply Count    : ', PxApplyCount);
+  WriteLn('  Error Count    : ', PxErrorCount);
+  WriteLn('  Label Num      : ', PxLabelNum);
+  WriteLn('  Current Proxy  : ', PxCurrentConfig.Enabled);
+  If PxCurrentConfig.Enabled Then
+  Begin
+    WriteLn('    Type         : ', PxTypeName(PxCurrentType));
+    WriteLn('    Host         : ', PxCurrentHost);
+    WriteLn('    Port         : ', PxCurrentPort);
+    WriteLn('    Username     : ', PxCurrentConfig.Username);
+    WriteLn('    Has Password : ', Length(PxCurrentConfig.Password) > 0);
+    WriteLn('    Bypass       : ', PxCurrentConfig.Bypass);
+  End;
+  WriteLn;
+End;
+
+{ Accesseurs pour le module Proxy }
+
+Function IsPxInitialized: Boolean;
+Begin
+  IsPxInitialized := PxInitialized;
+End;
+
+Function IsPxEnabled: Boolean;
+Begin
+  IsPxEnabled := PxCurrentConfig.Enabled;
+End;
+
+Function GetPxStateCount: Integer;
+Begin
+  GetPxStateCount := PxStateCount;
+End;
+
+Function GetPxConfigCount: Integer;
+Begin
+  GetPxConfigCount := PxConfigCount;
+End;
+
+Function GetPxParseCount: Integer;
+Begin
+  GetPxParseCount := PxParseCount;
+End;
+
+Function GetPxValidateCount: Integer;
+Begin
+  GetPxValidateCount := PxValidateCount;
+End;
+
+Function GetPxGenConfigCount: Integer;
+Begin
+  GetPxGenConfigCount := PxGenConfigCnt;
+End;
+
+Function GetPxApplyCount: Integer;
+Begin
+  GetPxApplyCount := PxApplyCount;
+End;
+
+Function GetPxErrorCount: Integer;
+Begin
+  GetPxErrorCount := PxErrorCount;
+End;
+
+Function GetPxLabelNum: Integer;
+Begin
+  GetPxLabelNum := PxLabelNum;
+End;
+
+{ ============================================================
+  TODO 23-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -7813,13 +8370,26 @@ Begin
     WriteLn;
   End;
 
-  { TODO: Implementer les TODOs 22-25 }
-  WriteLn('*** NOTE: TODOs 01-21 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 22-25 restent a implementer ***');
+  { Initialiser le module Proxy }
+  InitProxyState;
+  
+  { Si un proxy est specifie, le configurer }
+  If Length(O.ProxyUrl) > 0 Then
+  Begin
+    SetProxyConfig(ParseProxyUrl(O.ProxyUrl));
+    If O.Verbose Then
+    Begin
+      WriteLn('=== Configuration Proxy ===');
+      DumpProxyState;
+    End;
+  End;
+
+  { TODO: Implementer les TODOs 23-25 }
+  WriteLn('*** NOTE: TODOs 01-22 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 23-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 22: Gestion du proxy');
   WriteLn('  - TODO 23: Mode developpeur');
   WriteLn('  - TODO 24: Presets d''applications populaires');
   WriteLn('  - TODO 25: Verification et rapport final');
