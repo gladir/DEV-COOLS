@@ -546,7 +546,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
               _JV_WRITTEN, _JV_READ
             10 fonctions accesseurs
 
-  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [A FAIRE]
+  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [IMPLEMENTE]
             Structure PE32 complete :
               DOS Header (64 octets) avec DOS stub
               Signature PE "PE\0\0"

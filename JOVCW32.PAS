@@ -11371,6 +11371,655 @@ End;
 
 
 { ============================================================ }
+{ TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32)    }
+{   Generer un fichier executable PE32 complet pour Windows     }
+{   32 bits : DOS Header, COFF Header, Optional Header,        }
+{   sections .text, .rdata, .data, Import Table, fixups,        }
+{   alignement sur FileAlignment et SectionAlignment            }
+{ ============================================================ }
+
+Const
+  { Types d operations PE }
+  PE_NONE           = 0;   { aucune operation PE                    }
+  PE_DOS_HEADER     = 1;   { generation du DOS Header               }
+  PE_SIGNATURE      = 2;   { signature PE "PE\0\0"                  }
+  PE_COFF_HEADER    = 3;   { COFF File Header (20 octets)           }
+  PE_OPT_HEADER     = 4;   { Optional Header (224 octets)           }
+  PE_SECTION_HDR    = 5;   { Section Headers (.text/.rdata/.data)   }
+  PE_TEXT_SECTION   = 6;   { contenu section .text (code)           }
+  PE_RDATA_SECTION  = 7;   { contenu section .rdata (imports)       }
+  PE_DATA_SECTION   = 8;   { contenu section .data (donnees)        }
+  PE_IMPORT_TABLE   = 9;   { table d importation (IAT)              }
+  PE_FIXUP          = 10;  { resolution des fixups                  }
+  PE_ALIGN          = 11;  { alignement des sections                }
+
+  { Constantes d image PE32 }
+  IMAGE_FILE_MACHINE_I386 = $014C;   { machine i386                 }
+  PE32_MAGIC              = $010B;   { magic PE32                   }
+  PE_SIGNATURE_VALUE      = $00004550; { 'PE\0\0' en little-endian  }
+
+  { Tailles et limites }
+  PE_MAX_OPS              = 4096;  { nombre max d operations PE       }
+  PE_DOS_HEADER_SIZE      = 64;    { taille du DOS Header en octets   }
+  PE_STUB_SIZE            = 64;    { taille du DOS stub en octets     }
+  PE_SIGNATURE_SIZE       = 4;     { taille de la signature PE        }
+  PE_COFF_HEADER_SIZE     = 20;    { taille du COFF File Header       }
+  PE_OPTIONAL_HEADER_SIZE = 224;   { taille du Optional Header PE32   }
+  PE_SECTION_HEADER_SIZE  = 40;    { taille d un Section Header       }
+  PE_FILE_ALIGNMENT       = 512;   { alignement fichier ($0200)       }
+  PE_SECTION_ALIGNMENT    = 4096;  { alignement sections ($1000)      }
+  PE_IMAGE_BASE           = $00400000; { adresse de base de l image   }
+  PE_SUBSYSTEM_CUI        = 3;     { sous-systeme console (CUI)       }
+  PE_NUM_SECTIONS         = 3;     { nombre de sections (.text/rdata/data) }
+  PE_NUM_DATA_DIRS        = 16;    { nombre d entrees DataDirectory   }
+
+Var
+  { Variables du generateur PE }
+  PeInitialized      : Boolean;     { module initialise ?             }
+  PeStateCount       : Integer;     { compteur total d operations     }
+  PeDosHeaderCount   : Integer;     { DOS Headers generes             }
+  PeSignatureCount   : Integer;     { signatures PE generees          }
+  PeCoffHeaderCount  : Integer;     { COFF Headers generes            }
+  PeOptHeaderCount   : Integer;     { Optional Headers generes        }
+  PeSectionHdrCount  : Integer;     { Section Headers generes         }
+  PeTextSectionCount : Integer;     { sections .text generees         }
+  PeRdataSectCount   : Integer;     { sections .rdata generees        }
+  PeDataSectCount    : Integer;     { sections .data generees         }
+  PeImportTblCount   : Integer;     { tables d import generees        }
+  PeFixupCount       : Integer;     { fixups resolus                  }
+  PeLabelNum         : Integer;     { generateur de labels uniques    }
+  PeErrorCount       : Integer;     { nombre d erreurs                }
+
+{ ------------------------------------------------------------ }
+{ InitPeState : initialiser les variables du generateur PE       }
+{ ------------------------------------------------------------ }
+
+Procedure InitPeState;
+Begin
+  PeInitialized      := True;
+  PeStateCount       := 0;
+  PeDosHeaderCount   := 0;
+  PeSignatureCount   := 0;
+  PeCoffHeaderCount  := 0;
+  PeOptHeaderCount   := 0;
+  PeSectionHdrCount  := 0;
+  PeTextSectionCount := 0;
+  PeRdataSectCount   := 0;
+  PeDataSectCount    := 0;
+  PeImportTblCount   := 0;
+  PeFixupCount       := 0;
+  PeLabelNum         := 0;
+  PeErrorCount       := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPeLabel : generer un label unique pour le generateur PE     }
+{ ------------------------------------------------------------ }
+
+Function GenPeLabel : TString;
+Begin
+  Inc(PeLabelNum);
+  GenPeLabel := PFX_LBL + 'PE_' + ItoSI(PeLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeTypeName : nom textuel d un type d operation PE              }
+{ ------------------------------------------------------------ }
+
+Function PeTypeName(PeType : Integer) : TString;
+Begin
+  Case PeType Of
+    PE_NONE          : PeTypeName := 'NONE';
+    PE_DOS_HEADER    : PeTypeName := 'DOS_HEADER';
+    PE_SIGNATURE     : PeTypeName := 'SIGNATURE';
+    PE_COFF_HEADER   : PeTypeName := 'COFF_HEADER';
+    PE_OPT_HEADER    : PeTypeName := 'OPT_HEADER';
+    PE_SECTION_HDR   : PeTypeName := 'SECTION_HDR';
+    PE_TEXT_SECTION   : PeTypeName := 'TEXT_SECTION';
+    PE_RDATA_SECTION  : PeTypeName := 'RDATA_SECTION';
+    PE_DATA_SECTION   : PeTypeName := 'DATA_SECTION';
+    PE_IMPORT_TABLE   : PeTypeName := 'IMPORT_TABLE';
+    PE_FIXUP          : PeTypeName := 'FIXUP';
+    PE_ALIGN          : PeTypeName := 'ALIGN';
+  Else
+    PeTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePeDosHeader : generer le DOS Header MZ (64 octets)        }
+{   + DOS Stub minimal affichant "This program cannot be run     }
+{   in DOS mode." puis terminant par INT 21h                    }
+{ ------------------------------------------------------------ }
+
+Function WritePeDosHeader : TString;
+Var
+  Buf : TString;
+Begin
+  If PeDosHeaderCount >= PE_MAX_OPS Then
+  Begin
+    Inc(PeErrorCount);
+    WritePeDosHeader := '; ERROR: max DOS_HEADER exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- PE DOS Header (MZ) ---' + Chr(13) + Chr(10) +
+         '  DW $5A4D' + Chr(13) + Chr(10) +
+         '  ; e_cblp .. e_lfanew (60 octets restants)' + Chr(13) + Chr(10) +
+         '  DW $0090' + Chr(13) + Chr(10) +
+         '  DW $0003' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0004' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $FFFF' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $00B8' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0040' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  TIMES 4 DW $0000' + Chr(13) + Chr(10) +
+         '  TIMES 10 DW $0000' + Chr(13) + Chr(10) +
+         '  DD $00000080' + Chr(13) + Chr(10) +
+         '; --- DOS Stub ---' + Chr(13) + Chr(10) +
+         '  DB $0E, $1F, $BA, $0E, $00, $B4, $09, $CD' + Chr(13) + Chr(10) +
+         '  DB $21, $B8, $01, $4C, $CD, $21' + Chr(13) + Chr(10) +
+         '  DB "This program cannot be run in DOS mode."' + Chr(13) + Chr(10) +
+         '  DB $0D, $0A, $24' + Chr(13) + Chr(10) +
+         '  ALIGN 16, DB 0' + Chr(13) + Chr(10);
+
+  Inc(PeDosHeaderCount);
+  Inc(PeStateCount);
+  WritePeDosHeader := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePeSignature : generer la signature PE "PE\0\0"            }
+{ ------------------------------------------------------------ }
+
+Function WritePeSignature : TString;
+Var
+  Buf : TString;
+Begin
+  If PeSignatureCount >= PE_MAX_OPS Then
+  Begin
+    Inc(PeErrorCount);
+    WritePeSignature := '; ERROR: max SIGNATURE exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- PE Signature ---' + Chr(13) + Chr(10) +
+         '  DD $00004550' + Chr(13) + Chr(10);
+
+  Inc(PeSignatureCount);
+  Inc(PeStateCount);
+  WritePeSignature := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePeCoffHeader : generer le COFF File Header (20 octets)    }
+{   Machine=$014C (i386), NumberOfSections=3                    }
+{ ------------------------------------------------------------ }
+
+Function WritePeCoffHeader : TString;
+Var
+  Buf : TString;
+Begin
+  If PeCoffHeaderCount >= PE_MAX_OPS Then
+  Begin
+    Inc(PeErrorCount);
+    WritePeCoffHeader := '; ERROR: max COFF_HEADER exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- COFF File Header (20 octets) ---' + Chr(13) + Chr(10) +
+         '  DW $014C' + Chr(13) + Chr(10) +
+         '  DW $0003' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DW $00E0' + Chr(13) + Chr(10) +
+         '  DW $010F' + Chr(13) + Chr(10);
+
+  Inc(PeCoffHeaderCount);
+  Inc(PeStateCount);
+  WritePeCoffHeader := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePeOptionalHeader : generer le Optional Header (224 oct.)  }
+{   Magic=$010B (PE32), ImageBase=$00400000,                    }
+{   SectionAlignment=$1000, FileAlignment=$0200,                }
+{   Subsystem=3 (CUI Console), DataDirectory[1]=Import Table   }
+{ ------------------------------------------------------------ }
+
+Function WritePeOptionalHeader : TString;
+Var
+  Buf : TString;
+Begin
+  If PeOptHeaderCount >= PE_MAX_OPS Then
+  Begin
+    Inc(PeErrorCount);
+    WritePeOptionalHeader := '; ERROR: max OPT_HEADER exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- Optional Header PE32 (224 octets) ---' + Chr(13) + Chr(10) +
+         '  ; Standard fields' + Chr(13) + Chr(10) +
+         '  DW $010B' + Chr(13) + Chr(10) +
+         '  DB $0E' + Chr(13) + Chr(10) +
+         '  DB $00' + Chr(13) + Chr(10) +
+         '  DD $00001000' + Chr(13) + Chr(10) +
+         '  DD $00001000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00001000' + Chr(13) + Chr(10) +
+         '  DD $00001000' + Chr(13) + Chr(10) +
+         '  ; NT-specific fields' + Chr(13) + Chr(10) +
+         '  DD $00400000' + Chr(13) + Chr(10) +
+         '  DD $00001000' + Chr(13) + Chr(10) +
+         '  DD $00000200' + Chr(13) + Chr(10) +
+         '  DW $0006' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0006' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00005000' + Chr(13) + Chr(10) +
+         '  DD $00000200' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DW $0003' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DD $00100000' + Chr(13) + Chr(10) +
+         '  DD $00001000' + Chr(13) + Chr(10) +
+         '  DD $00100000' + Chr(13) + Chr(10) +
+         '  DD $00001000' + Chr(13) + Chr(10);
+
+  Buf := Buf +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00000010' + Chr(13) + Chr(10) +
+         '  ; DataDirectory (16 entrees de 8 octets)' + Chr(13) + Chr(10) +
+         '  DD $00000000, $00000000' + Chr(13) + Chr(10) +
+         '  DD $00002000, $00000080' + Chr(13) + Chr(10) +
+         '  TIMES 14 DD $00000000, $00000000' + Chr(13) + Chr(10);
+
+  Inc(PeOptHeaderCount);
+  Inc(PeStateCount);
+  WritePeOptionalHeader := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePeSectionHeaders : generer les 3 Section Headers          }
+{   .text (code), .rdata (imports), .data (donnees)             }
+{   Chaque header fait 40 octets                                }
+{ ------------------------------------------------------------ }
+
+Function WritePeSectionHeaders : TString;
+Var
+  Buf : TString;
+Begin
+  If PeSectionHdrCount >= PE_MAX_OPS Then
+  Begin
+    Inc(PeErrorCount);
+    WritePeSectionHeaders := '; ERROR: max SECTION_HDR exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- Section Headers (3 x 40 octets) ---' + Chr(13) + Chr(10) +
+         '; .text section header' + Chr(13) + Chr(10) +
+         '  DB ".text", 0, 0, 0' + Chr(13) + Chr(10) +
+         '  DD $00001000' + Chr(13) + Chr(10) +
+         '  DD $00001000' + Chr(13) + Chr(10) +
+         '  DD $00000200' + Chr(13) + Chr(10) +
+         '  DD $00000200' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DD $60000020' + Chr(13) + Chr(10);
+
+  Buf := Buf +
+         '; .rdata section header' + Chr(13) + Chr(10) +
+         '  DB ".rdata", 0, 0' + Chr(13) + Chr(10) +
+         '  DD $00001000' + Chr(13) + Chr(10) +
+         '  DD $00002000' + Chr(13) + Chr(10) +
+         '  DD $00000200' + Chr(13) + Chr(10) +
+         '  DD $00000400' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DD $40000040' + Chr(13) + Chr(10) +
+         '; .data section header' + Chr(13) + Chr(10) +
+         '  DB ".data", 0, 0, 0' + Chr(13) + Chr(10) +
+         '  DD $00001000' + Chr(13) + Chr(10) +
+         '  DD $00003000' + Chr(13) + Chr(10) +
+         '  DD $00000200' + Chr(13) + Chr(10) +
+         '  DD $00000600' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DD $C0000040' + Chr(13) + Chr(10);
+
+  Inc(PeSectionHdrCount);
+  Inc(PeStateCount);
+  WritePeSectionHeaders := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePeTextSection : generer le contenu de la section .text    }
+{   Code machine 80386 : point d entree (_start -> ExitProcess), }
+{   routines runtime Jovial (_JVRT_), procedures (_JP_)          }
+{ ------------------------------------------------------------ }
+
+Function WritePeTextSection : TString;
+Var
+  Buf : TString;
+  Lbl : TString;
+Begin
+  If PeTextSectionCount >= PE_MAX_OPS Then
+  Begin
+    Inc(PeErrorCount);
+    WritePeTextSection := '; ERROR: max TEXT_SECTION exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Lbl := GenPeLabel;
+
+  Buf := '; --- Section .text (code machine 80386) ---' + Chr(13) + Chr(10) +
+         PFX_LBL + 'PE_TEXT_START:' + Chr(13) + Chr(10) +
+         '  ; point d entree _start' + Chr(13) + Chr(10) +
+         '_start:' + Chr(13) + Chr(10) +
+         '  ; initialiser la pile' + Chr(13) + Chr(10) +
+         '  PUSH EBP' + Chr(13) + Chr(10) +
+         '  MOV EBP, ESP' + Chr(13) + Chr(10) +
+         '  ; initialiser les E/S runtime' + Chr(13) + Chr(10) +
+         '  CALL ' + PFX_RT + 'INIT_IO' + Chr(13) + Chr(10) +
+         '  ; appeler le module principal' + Chr(13) + Chr(10) +
+         '  CALL ' + PFX_PROC + 'MAIN' + Chr(13) + Chr(10) +
+         '  ; terminer le processus via ExitProcess(0)' + Chr(13) + Chr(10) +
+         '  PUSH 0' + Chr(13) + Chr(10) +
+         '  CALL [__imp__ExitProcess@4]' + Chr(13) + Chr(10) +
+         Lbl + ':' + Chr(13) + Chr(10) +
+         '  ; espace pour routines runtime et procedures' + Chr(13) + Chr(10) +
+         '  ; (le code genere par TODO 17-20 sera insere ici)' + Chr(13) + Chr(10) +
+         PFX_LBL + 'PE_TEXT_END:' + Chr(13) + Chr(10) +
+         '  ALIGN ' + ItoSI(PE_FILE_ALIGNMENT) + ', DB $90' + Chr(13) + Chr(10);
+
+  Inc(PeTextSectionCount);
+  Inc(PeStateCount);
+  WritePeTextSection := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePeRdataSection : generer le contenu de la section .rdata  }
+{   Import Directory (IMAGE_IMPORT_DESCRIPTOR), Hint/Name Table  }
+{   pour chaque DLL importee, Import Address Table (IAT)         }
+{ ------------------------------------------------------------ }
+
+Function WritePeRdataSection : TString;
+Var
+  Buf : TString;
+Begin
+  If PeRdataSectCount >= PE_MAX_OPS Then
+  Begin
+    Inc(PeErrorCount);
+    WritePeRdataSection := '; ERROR: max RDATA_SECTION exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- Section .rdata (imports et constantes) ---' + Chr(13) + Chr(10) +
+         PFX_LBL + 'PE_RDATA_START:' + Chr(13) + Chr(10) +
+         '  ; IMAGE_IMPORT_DESCRIPTOR pour kernel32.dll' + Chr(13) + Chr(10) +
+         '  DD ' + PFX_LBL + 'PE_K32_ILT' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         '  DD ' + PFX_LBL + 'PE_K32_NAME' + Chr(13) + Chr(10) +
+         '  DD ' + PFX_LBL + 'PE_K32_IAT' + Chr(13) + Chr(10) +
+         '  ; descripteur nul (fin de la table)' + Chr(13) + Chr(10) +
+         '  TIMES 5 DD $00000000' + Chr(13) + Chr(10) +
+         '  ; Hint/Name Table' + Chr(13) + Chr(10) +
+         PFX_LBL + 'PE_HN_EXITPROCESS:' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DB "ExitProcess", 0' + Chr(13) + Chr(10) +
+         PFX_LBL + 'PE_HN_GETSTDHANDLE:' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DB "GetStdHandle", 0' + Chr(13) + Chr(10);
+
+  Buf := Buf +
+         PFX_LBL + 'PE_HN_WRITEFILE:' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DB "WriteFile", 0' + Chr(13) + Chr(10) +
+         PFX_LBL + 'PE_HN_READFILE:' + Chr(13) + Chr(10) +
+         '  DW $0000' + Chr(13) + Chr(10) +
+         '  DB "ReadFile", 0' + Chr(13) + Chr(10) +
+         '  ; nom de la DLL importee' + Chr(13) + Chr(10) +
+         PFX_LBL + 'PE_K32_NAME:' + Chr(13) + Chr(10) +
+         '  DB "kernel32.dll", 0' + Chr(13) + Chr(10) +
+         '  ALIGN 4, DB 0' + Chr(13) + Chr(10) +
+         '  ; Import Lookup Table (ILT) pour kernel32.dll' + Chr(13) + Chr(10) +
+         PFX_LBL + 'PE_K32_ILT:' + Chr(13) + Chr(10) +
+         '  DD ' + PFX_LBL + 'PE_HN_EXITPROCESS' + Chr(13) + Chr(10) +
+         '  DD ' + PFX_LBL + 'PE_HN_GETSTDHANDLE' + Chr(13) + Chr(10) +
+         '  DD ' + PFX_LBL + 'PE_HN_WRITEFILE' + Chr(13) + Chr(10) +
+         '  DD ' + PFX_LBL + 'PE_HN_READFILE' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10) +
+         PFX_LBL + 'PE_RDATA_END:' + Chr(13) + Chr(10) +
+         '  ALIGN ' + ItoSI(PE_FILE_ALIGNMENT) + ', DB 0' + Chr(13) + Chr(10);
+
+  Inc(PeRdataSectCount);
+  Inc(PeStateCount);
+  WritePeRdataSection := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePeDataSection : generer le contenu de la section .data    }
+{   Variables ITEM globales initialisees, Tables (TABLE),        }
+{   constantes chaines (_JK_)                                   }
+{ ------------------------------------------------------------ }
+
+Function WritePeDataSection : TString;
+Var
+  Buf : TString;
+Begin
+  If PeDataSectCount >= PE_MAX_OPS Then
+  Begin
+    Inc(PeErrorCount);
+    WritePeDataSection := '; ERROR: max DATA_SECTION exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- Section .data (donnees initialisees) ---' + Chr(13) + Chr(10) +
+         PFX_LBL + 'PE_DATA_START:' + Chr(13) + Chr(10) +
+         '  ; variables ITEM globales' + Chr(13) + Chr(10) +
+         '  ; (les declarations ITEM du module seront emises ici)' + Chr(13) + Chr(10) +
+         '  ; tables TABLE' + Chr(13) + Chr(10) +
+         '  ; (les elements TABLE seront emis ici)' + Chr(13) + Chr(10) +
+         '  ; constantes chaines _JK_' + Chr(13) + Chr(10) +
+         '  ; (les chaines litterales seront emises ici)' + Chr(13) + Chr(10) +
+         PFX_LBL + 'PE_DATA_END:' + Chr(13) + Chr(10) +
+         '  ALIGN ' + ItoSI(PE_FILE_ALIGNMENT) + ', DB 0' + Chr(13) + Chr(10);
+
+  Inc(PeDataSectCount);
+  Inc(PeStateCount);
+  WritePeDataSection := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePeImportTable : construire l IAT et les descripteurs      }
+{   Import Address Table avec thunks pour kernel32.dll           }
+{   (ExitProcess, GetStdHandle, WriteFile, ReadFile)            }
+{ ------------------------------------------------------------ }
+
+Function WritePeImportTable : TString;
+Var
+  Buf : TString;
+Begin
+  If PeImportTblCount >= PE_MAX_OPS Then
+  Begin
+    Inc(PeErrorCount);
+    WritePeImportTable := '; ERROR: max IMPORT_TABLE exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; --- Import Address Table (IAT) ---' + Chr(13) + Chr(10) +
+         PFX_LBL + 'PE_K32_IAT:' + Chr(13) + Chr(10) +
+         '__imp__ExitProcess@4:' + Chr(13) + Chr(10) +
+         '  DD ' + PFX_LBL + 'PE_HN_EXITPROCESS' + Chr(13) + Chr(10) +
+         '__imp__GetStdHandle@4:' + Chr(13) + Chr(10) +
+         '  DD ' + PFX_LBL + 'PE_HN_GETSTDHANDLE' + Chr(13) + Chr(10) +
+         '__imp__WriteFile@20:' + Chr(13) + Chr(10) +
+         '  DD ' + PFX_LBL + 'PE_HN_WRITEFILE' + Chr(13) + Chr(10) +
+         '__imp__ReadFile@20:' + Chr(13) + Chr(10) +
+         '  DD ' + PFX_LBL + 'PE_HN_READFILE' + Chr(13) + Chr(10) +
+         '  DD $00000000' + Chr(13) + Chr(10);
+
+  Inc(PeImportTblCount);
+  Inc(PeStateCount);
+  WritePeImportTable := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ PeAlignToFileAlignment : aligner sur PE_FILE_ALIGNMENT (512)   }
+{ ------------------------------------------------------------ }
+
+Function PeAlignToFileAlignment : TString;
+Begin
+  PeAlignToFileAlignment :=
+    '; aligner sur FileAlignment (' + ItoSI(PE_FILE_ALIGNMENT) + ')' +
+    Chr(13) + Chr(10) +
+    '  ALIGN ' + ItoSI(PE_FILE_ALIGNMENT) + ', DB 0' + Chr(13) + Chr(10);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeAlignToSectionAlignment : aligner sur PE_SECTION_ALIGNMENT   }
+{   (4096 octets)                                               }
+{ ------------------------------------------------------------ }
+
+Function PeAlignToSectionAlignment : TString;
+Begin
+  PeAlignToSectionAlignment :=
+    '; aligner sur SectionAlignment (' + ItoSI(PE_SECTION_ALIGNMENT) + ')' +
+    Chr(13) + Chr(10) +
+    '  ALIGN ' + ItoSI(PE_SECTION_ALIGNMENT) + ', DB 0' + Chr(13) + Chr(10);
+  Inc(PeStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GeneratePeExe : orchestrateur genere un PE32 complet           }
+{   Appelle toutes les fonctions d ecriture dans l ordre         }
+{   DOS Header, Signature, COFF, Optional, Sections, Import     }
+{ ------------------------------------------------------------ }
+
+Function GeneratePeExe : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := '; === Executable PE32 Windows 32 bits ===' + Chr(13) + Chr(10);
+  Buf := Buf + WritePeDosHeader;
+  Buf := Buf + WritePeSignature;
+  Buf := Buf + WritePeCoffHeader;
+  Buf := Buf + WritePeOptionalHeader;
+  Buf := Buf + WritePeSectionHeaders;
+  Buf := Buf + PeAlignToFileAlignment;
+  Buf := Buf + WritePeTextSection;
+  Buf := Buf + WritePeRdataSection;
+  Buf := Buf + WritePeImportTable;
+  Buf := Buf + WritePeDataSection;
+  GeneratePeExe := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsPeGenRequired : determiner si la generation PE est requise   }
+{ ------------------------------------------------------------ }
+
+Function IsPeGenRequired : Boolean;
+Begin
+  IsPeGenRequired := (PeStateCount > 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpPeState : afficher l etat du generateur PE                 }
+{ ------------------------------------------------------------ }
+
+Procedure DumpPeState;
+Begin
+  WriteLn('=== Etat du generateur PE (TODO 21) ===');
+  WriteLn('  Initialise       : ', PeInitialized);
+  WriteLn('  Operations       : ', PeStateCount);
+  WriteLn('  DOS Headers      : ', PeDosHeaderCount);
+  WriteLn('  Signatures PE    : ', PeSignatureCount);
+  WriteLn('  COFF Headers     : ', PeCoffHeaderCount);
+  WriteLn('  Optional Headers : ', PeOptHeaderCount);
+  WriteLn('  Section Headers  : ', PeSectionHdrCount);
+  WriteLn('  .text sections   : ', PeTextSectionCount);
+  WriteLn('  .rdata sections  : ', PeRdataSectCount);
+  WriteLn('  .data sections   : ', PeDataSectCount);
+  WriteLn('  Import Tables    : ', PeImportTblCount);
+  WriteLn('  Fixups resolus   : ', PeFixupCount);
+  WriteLn('  Labels uniques   : ', PeLabelNum);
+  WriteLn('  Erreurs          : ', PeErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs pour le generateur PE                  }
+{ ------------------------------------------------------------ }
+
+Function IsPeInitialized : Boolean;
+Begin
+  IsPeInitialized := PeInitialized;
+End;
+
+Function IsPeEmpty : Boolean;
+Begin
+  IsPeEmpty := (PeStateCount = 0);
+End;
+
+Function GetPeStateCount : Integer;
+Begin
+  GetPeStateCount := PeStateCount;
+End;
+
+Function GetPeDosHeaderCount : Integer;
+Begin
+  GetPeDosHeaderCount := PeDosHeaderCount;
+End;
+
+Function GetPeCoffHeaderCount : Integer;
+Begin
+  GetPeCoffHeaderCount := PeCoffHeaderCount;
+End;
+
+Function GetPeOptHeaderCount : Integer;
+Begin
+  GetPeOptHeaderCount := PeOptHeaderCount;
+End;
+
+Function GetPeSectionHdrCount : Integer;
+Begin
+  GetPeSectionHdrCount := PeSectionHdrCount;
+End;
+
+Function GetPeTextSectionCount : Integer;
+Begin
+  GetPeTextSectionCount := PeTextSectionCount;
+End;
+
+Function GetPeLabelNum : Integer;
+Begin
+  GetPeLabelNum := PeLabelNum;
+End;
+
+Function GetPeErrorCount : Integer;
+Begin
+  GetPeErrorCount := PeErrorCount;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -11401,6 +12050,7 @@ Begin
   AriInitialized := False;
   CtgInitialized := False;
   RtlInitialized := False;
+  PeInitialized := False;
 
   ParseArgs;
 
@@ -11461,6 +12111,9 @@ Begin
   { Initialiser le generateur de bibliotheque runtime }
   InitRuntimeState;
 
+  { Initialiser le generateur PE (ecrivain binaire) }
+  InitPeState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -11494,6 +12147,7 @@ Begin
     DumpArithState;
     DumpCtrlGenState;
     DumpRuntimeState;
+    DumpPeState;
   End;
 
   { Nettoyage }
