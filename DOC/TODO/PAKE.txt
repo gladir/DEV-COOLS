@@ -664,7 +664,7 @@ Turbo Pascal / Free Pascal (-Mtp)
          Function IsPresetName(Const Name: String): Boolean
            verifier si le nom correspond a un preset
 
-  TODO 25 - VERIFICATION ET RAPPORT FINAL [A FAIRE]
+  TODO 25 - VERIFICATION ET RAPPORT FINAL [IMPLEMENTE]
          Function GetFileSize(Const FName: String): LongInt
            ouvrir le fichier, chercher la fin, retourner la taille
          Function FormatFileSize(Size: LongInt): String
