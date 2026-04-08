@@ -79,7 +79,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             ParserAdvance : lire token suivant avec PrintToken si -d
             10 fonctions accesseurs
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES PYTHON [A FAIRE]
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES PYTHON [IMPLEMENTE]
             Tous les mots reserves Python 3 :
               Constantes : False, None, True
               Logiques : and, or, not

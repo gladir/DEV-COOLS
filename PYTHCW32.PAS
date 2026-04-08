@@ -87,7 +87,7 @@
             ParserAdvance : lire token suivant avec PrintToken si -d
             10 fonctions accesseurs
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES PYTHON [A FAIRE]
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES PYTHON [IMPLEMENTE]
             Tous les mots reserves Python 3 :
               Constantes : False, None, True
               Logiques : and, or, not
@@ -2426,13 +2426,522 @@ Begin
                     ' (' + ItoS(LexTokCount) + ' tokens)';
 End;
 
+{ ============================================================ }
+{ TODO 03 - RECONNAISSANCE DES MOTS-CLES PYTHON   [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  { Mots-cles Python 3 : constantes }
+  KW_FALSE     = 1;    { False                                   }
+  KW_PY_NONE   = 2;    { None                                    }
+  KW_TRUE      = 3;    { True                                    }
+
+  { Mots-cles Python 3 : logiques }
+  KW_AND       = 10;   { and                                     }
+  KW_OR        = 11;   { or                                      }
+  KW_NOT       = 12;   { not                                     }
+
+  { Mots-cles Python 3 : controle }
+  KW_IF        = 20;   { if                                      }
+  KW_ELIF      = 21;   { elif                                    }
+  KW_ELSE      = 22;   { else                                    }
+  KW_WHILE     = 23;   { while                                   }
+  KW_FOR       = 24;   { for                                     }
+  KW_BREAK     = 25;   { break                                   }
+  KW_CONTINUE  = 26;   { continue                                }
+  KW_PASS      = 27;   { pass                                    }
+  KW_RETURN    = 28;   { return                                  }
+  KW_YIELD     = 29;   { yield                                   }
+
+  { Mots-cles Python 3 : definitions }
+  KW_DEF       = 30;   { def                                     }
+  KW_CLASS     = 31;   { class                                   }
+  KW_LAMBDA    = 32;   { lambda                                  }
+
+  { Mots-cles Python 3 : exceptions }
+  KW_TRY       = 40;   { try                                     }
+  KW_EXCEPT    = 41;   { except                                  }
+  KW_FINALLY   = 42;   { finally                                 }
+  KW_RAISE     = 43;   { raise                                   }
+  KW_ASSERT    = 44;   { assert                                  }
+
+  { Mots-cles Python 3 : importation }
+  KW_IMPORT    = 50;   { import                                  }
+  KW_FROM      = 51;   { from                                    }
+  KW_AS        = 52;   { as                                      }
+
+  { Mots-cles Python 3 : portee }
+  KW_GLOBAL    = 60;   { global                                  }
+  KW_NONLOCAL  = 61;   { nonlocal                                }
+
+  { Mots-cles Python 3 : operations }
+  KW_IN        = 70;   { in                                      }
+  KW_IS        = 71;   { is                                      }
+  KW_DEL       = 72;   { del                                     }
+  KW_WITH      = 73;   { with                                    }
+
+  { Mots-cles Python 3 : asynchrone (reserve, non supporte) }
+  KW_ASYNC     = 80;   { async                                   }
+  KW_AWAIT     = 81;   { await                                   }
+
+  KW_TOTAL_KEYWORDS = 35;  { nombre total de mots-cles Python 3  }
+
+  { Builtins Python reconnus comme identificateurs speciaux }
+  BI_PRINT       = 1;
+  BI_INPUT       = 2;
+  BI_LEN         = 3;
+  BI_STR         = 4;
+  BI_INT         = 5;
+  BI_FLOAT       = 6;
+  BI_BOOL        = 7;
+  BI_LIST        = 8;
+  BI_DICT        = 9;
+  BI_TUPLE       = 10;
+  BI_RANGE       = 11;
+  BI_ABS         = 12;
+  BI_ORD         = 13;
+  BI_CHR         = 14;
+  BI_HEX         = 15;
+  BI_OCT         = 16;
+  BI_BIN         = 17;
+  BI_TYPE        = 18;
+  BI_ISINSTANCE  = 19;
+  BI_MIN         = 20;
+  BI_MAX         = 21;
+  BI_POW         = 22;
+  BI_ROUND       = 23;
+  BI_SORTED      = 24;
+  BI_REVERSED    = 25;
+  BI_ENUMERATE   = 26;
+  BI_ZIP         = 27;
+  BI_MAP         = 28;
+  BI_FILTER      = 29;
+  BI_SUM         = 30;
+  BI_ANY         = 31;
+  BI_ALL         = 32;
+  BI_HASATTR     = 33;
+  BI_GETATTR     = 34;
+  BI_SETATTR     = 35;
+  BI_ID          = 36;
+  BI_HASH        = 37;
+  BI_REPR        = 38;
+  BI_OPEN        = 39;
+
+  BI_TOTAL_BUILTINS = 39; { nombre total de builtins reconnus    }
+
+Var
+  KwInitialized : Boolean;       { True si etat initialise               }
+  KwLookupCount : LongInt;       { nombre d appels a LookupKeyword       }
+  KwHitCount    : LongInt;       { nombre de mots-cles reconnus          }
+  BiLookupCount : LongInt;       { nombre d appels a LookupBuiltin       }
+  BiHitCount    : LongInt;       { nombre de builtins reconnus           }
+  KwLabelSeq    : Integer;       { sequence pour labels uniques          }
+  KwLastKW      : Integer;       { dernier mot-cle reconnu (KW_*)        }
+  KwLastBI      : Integer;       { dernier builtin reconnu (BI_*)        }
+  KwTotalIdents : LongInt;       { total d identificateurs testes        }
+
 { ------------------------------------------------------------ }
-{ LookupKeyword : stub pour TODO 03 (retourne toujours KW_NONE)}
+{ InitKwState : initialiser les compteurs de mots-cles         }
+{ ------------------------------------------------------------ }
+
+Procedure InitKwState;
+Begin
+  KwInitialized := True;
+  KwLookupCount := 0;
+  KwHitCount    := 0;
+  BiLookupCount := 0;
+  BiHitCount    := 0;
+  KwLabelSeq    := 0;
+  KwLastKW      := 0;
+  KwLastBI      := 0;
+  KwTotalIdents := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenKwLabel : generer un label unique _KW_N                    }
+{ ------------------------------------------------------------ }
+
+Function GenKwLabel : TString;
+Begin
+  Inc(KwLabelSeq);
+  GenKwLabel := '_KW_' + ItoS(KwLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ KwTypeName : retourner le nom du type de mot-cle KW_*        }
+{ ------------------------------------------------------------ }
+
+Function KwTypeName(KW : Integer) : TString;
+Begin
+  Case KW Of
+    KW_FALSE     : KwTypeName := 'KW_FALSE';
+    KW_PY_NONE   : KwTypeName := 'KW_PY_NONE';
+    KW_TRUE      : KwTypeName := 'KW_TRUE';
+    KW_AND       : KwTypeName := 'KW_AND';
+    KW_OR        : KwTypeName := 'KW_OR';
+    KW_NOT       : KwTypeName := 'KW_NOT';
+    KW_IF        : KwTypeName := 'KW_IF';
+    KW_ELIF      : KwTypeName := 'KW_ELIF';
+    KW_ELSE      : KwTypeName := 'KW_ELSE';
+    KW_WHILE     : KwTypeName := 'KW_WHILE';
+    KW_FOR       : KwTypeName := 'KW_FOR';
+    KW_BREAK     : KwTypeName := 'KW_BREAK';
+    KW_CONTINUE  : KwTypeName := 'KW_CONTINUE';
+    KW_PASS      : KwTypeName := 'KW_PASS';
+    KW_RETURN    : KwTypeName := 'KW_RETURN';
+    KW_YIELD     : KwTypeName := 'KW_YIELD';
+    KW_DEF       : KwTypeName := 'KW_DEF';
+    KW_CLASS     : KwTypeName := 'KW_CLASS';
+    KW_LAMBDA    : KwTypeName := 'KW_LAMBDA';
+    KW_TRY       : KwTypeName := 'KW_TRY';
+    KW_EXCEPT    : KwTypeName := 'KW_EXCEPT';
+    KW_FINALLY   : KwTypeName := 'KW_FINALLY';
+    KW_RAISE     : KwTypeName := 'KW_RAISE';
+    KW_ASSERT    : KwTypeName := 'KW_ASSERT';
+    KW_IMPORT    : KwTypeName := 'KW_IMPORT';
+    KW_FROM      : KwTypeName := 'KW_FROM';
+    KW_AS        : KwTypeName := 'KW_AS';
+    KW_GLOBAL    : KwTypeName := 'KW_GLOBAL';
+    KW_NONLOCAL  : KwTypeName := 'KW_NONLOCAL';
+    KW_IN        : KwTypeName := 'KW_IN';
+    KW_IS        : KwTypeName := 'KW_IS';
+    KW_DEL       : KwTypeName := 'KW_DEL';
+    KW_WITH      : KwTypeName := 'KW_WITH';
+    KW_ASYNC     : KwTypeName := 'KW_ASYNC';
+    KW_AWAIT     : KwTypeName := 'KW_AWAIT';
+  Else
+    KwTypeName := 'KW_UNKNOWN(' + ItoS(KW) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LookupKeyword : retourner KW_xxx ou KW_NONE si non reconnu   }
+{ Python est sensible a la casse                                }
 { ------------------------------------------------------------ }
 
 Function LookupKeyword(Const S : TString) : Integer;
+Var
+  R : Integer;
 Begin
-  LookupKeyword := KW_NONE;
+  Inc(KwLookupCount);
+  Inc(KwTotalIdents);
+  R := 0;
+
+  { Constantes }
+  If      S = 'False'    Then R := KW_FALSE
+  Else If S = 'None'     Then R := KW_PY_NONE
+  Else If S = 'True'     Then R := KW_TRUE
+
+  { Logiques }
+  Else If S = 'and'      Then R := KW_AND
+  Else If S = 'or'       Then R := KW_OR
+  Else If S = 'not'      Then R := KW_NOT
+
+  { Controle }
+  Else If S = 'if'       Then R := KW_IF
+  Else If S = 'elif'     Then R := KW_ELIF
+  Else If S = 'else'     Then R := KW_ELSE
+  Else If S = 'while'    Then R := KW_WHILE
+  Else If S = 'for'      Then R := KW_FOR
+  Else If S = 'break'    Then R := KW_BREAK
+  Else If S = 'continue' Then R := KW_CONTINUE
+  Else If S = 'pass'     Then R := KW_PASS
+  Else If S = 'return'   Then R := KW_RETURN
+  Else If S = 'yield'    Then R := KW_YIELD
+
+  { Definitions }
+  Else If S = 'def'      Then R := KW_DEF
+  Else If S = 'class'    Then R := KW_CLASS
+  Else If S = 'lambda'   Then R := KW_LAMBDA
+
+  { Exceptions }
+  Else If S = 'try'      Then R := KW_TRY
+  Else If S = 'except'   Then R := KW_EXCEPT
+  Else If S = 'finally'  Then R := KW_FINALLY
+  Else If S = 'raise'    Then R := KW_RAISE
+  Else If S = 'assert'   Then R := KW_ASSERT
+
+  { Importation }
+  Else If S = 'import'   Then R := KW_IMPORT
+  Else If S = 'from'     Then R := KW_FROM
+  Else If S = 'as'       Then R := KW_AS
+
+  { Portee }
+  Else If S = 'global'   Then R := KW_GLOBAL
+  Else If S = 'nonlocal' Then R := KW_NONLOCAL
+
+  { Operations }
+  Else If S = 'in'       Then R := KW_IN
+  Else If S = 'is'       Then R := KW_IS
+  Else If S = 'del'      Then R := KW_DEL
+  Else If S = 'with'     Then R := KW_WITH
+
+  { Asynchrone (reserve, non supporte) }
+  Else If S = 'async'    Then R := KW_ASYNC
+  Else If S = 'await'    Then R := KW_AWAIT;
+
+  If R <> 0 Then
+  Begin
+    Inc(KwHitCount);
+    KwLastKW := R;
+  End;
+
+  LookupKeyword := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetKeywordName : retourner le mot-cle Python pour un KW_*    }
+{ ------------------------------------------------------------ }
+
+Function GetKeywordName(KW : Integer) : TString;
+Begin
+  Case KW Of
+    KW_FALSE     : GetKeywordName := 'False';
+    KW_PY_NONE   : GetKeywordName := 'None';
+    KW_TRUE      : GetKeywordName := 'True';
+    KW_AND       : GetKeywordName := 'and';
+    KW_OR        : GetKeywordName := 'or';
+    KW_NOT       : GetKeywordName := 'not';
+    KW_IF        : GetKeywordName := 'if';
+    KW_ELIF      : GetKeywordName := 'elif';
+    KW_ELSE      : GetKeywordName := 'else';
+    KW_WHILE     : GetKeywordName := 'while';
+    KW_FOR       : GetKeywordName := 'for';
+    KW_BREAK     : GetKeywordName := 'break';
+    KW_CONTINUE  : GetKeywordName := 'continue';
+    KW_PASS      : GetKeywordName := 'pass';
+    KW_RETURN    : GetKeywordName := 'return';
+    KW_YIELD     : GetKeywordName := 'yield';
+    KW_DEF       : GetKeywordName := 'def';
+    KW_CLASS     : GetKeywordName := 'class';
+    KW_LAMBDA    : GetKeywordName := 'lambda';
+    KW_TRY       : GetKeywordName := 'try';
+    KW_EXCEPT    : GetKeywordName := 'except';
+    KW_FINALLY   : GetKeywordName := 'finally';
+    KW_RAISE     : GetKeywordName := 'raise';
+    KW_ASSERT    : GetKeywordName := 'assert';
+    KW_IMPORT    : GetKeywordName := 'import';
+    KW_FROM      : GetKeywordName := 'from';
+    KW_AS        : GetKeywordName := 'as';
+    KW_GLOBAL    : GetKeywordName := 'global';
+    KW_NONLOCAL  : GetKeywordName := 'nonlocal';
+    KW_IN        : GetKeywordName := 'in';
+    KW_IS        : GetKeywordName := 'is';
+    KW_DEL       : GetKeywordName := 'del';
+    KW_WITH      : GetKeywordName := 'with';
+    KW_ASYNC     : GetKeywordName := 'async';
+    KW_AWAIT     : GetKeywordName := 'await';
+  Else
+    GetKeywordName := '?';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LookupBuiltin : retourner BI_xxx ou 0 si non reconnu          }
+{ Python est sensible a la casse                                }
+{ ------------------------------------------------------------ }
+
+Function LookupBuiltin(Const S : TString) : Integer;
+Var
+  R : Integer;
+Begin
+  Inc(BiLookupCount);
+  R := 0;
+
+  If      S = 'print'      Then R := BI_PRINT
+  Else If S = 'input'      Then R := BI_INPUT
+  Else If S = 'len'        Then R := BI_LEN
+  Else If S = 'str'        Then R := BI_STR
+  Else If S = 'int'        Then R := BI_INT
+  Else If S = 'float'      Then R := BI_FLOAT
+  Else If S = 'bool'       Then R := BI_BOOL
+  Else If S = 'list'       Then R := BI_LIST
+  Else If S = 'dict'       Then R := BI_DICT
+  Else If S = 'tuple'      Then R := BI_TUPLE
+  Else If S = 'range'      Then R := BI_RANGE
+  Else If S = 'abs'        Then R := BI_ABS
+  Else If S = 'ord'        Then R := BI_ORD
+  Else If S = 'chr'        Then R := BI_CHR
+  Else If S = 'hex'        Then R := BI_HEX
+  Else If S = 'oct'        Then R := BI_OCT
+  Else If S = 'bin'        Then R := BI_BIN
+  Else If S = 'type'       Then R := BI_TYPE
+  Else If S = 'isinstance' Then R := BI_ISINSTANCE
+  Else If S = 'min'        Then R := BI_MIN
+  Else If S = 'max'        Then R := BI_MAX
+  Else If S = 'pow'        Then R := BI_POW
+  Else If S = 'round'      Then R := BI_ROUND
+  Else If S = 'sorted'     Then R := BI_SORTED
+  Else If S = 'reversed'   Then R := BI_REVERSED
+  Else If S = 'enumerate'  Then R := BI_ENUMERATE
+  Else If S = 'zip'        Then R := BI_ZIP
+  Else If S = 'map'        Then R := BI_MAP
+  Else If S = 'filter'     Then R := BI_FILTER
+  Else If S = 'sum'        Then R := BI_SUM
+  Else If S = 'any'        Then R := BI_ANY
+  Else If S = 'all'        Then R := BI_ALL
+  Else If S = 'hasattr'    Then R := BI_HASATTR
+  Else If S = 'getattr'    Then R := BI_GETATTR
+  Else If S = 'setattr'    Then R := BI_SETATTR
+  Else If S = 'id'         Then R := BI_ID
+  Else If S = 'hash'       Then R := BI_HASH
+  Else If S = 'repr'       Then R := BI_REPR
+  Else If S = 'open'       Then R := BI_OPEN;
+
+  If R <> 0 Then
+  Begin
+    Inc(BiHitCount);
+    KwLastBI := R;
+  End;
+
+  LookupBuiltin := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetBuiltinName : retourner le nom Python pour un BI_*        }
+{ ------------------------------------------------------------ }
+
+Function GetBuiltinName(BI : Integer) : TString;
+Begin
+  Case BI Of
+    BI_PRINT       : GetBuiltinName := 'print';
+    BI_INPUT       : GetBuiltinName := 'input';
+    BI_LEN         : GetBuiltinName := 'len';
+    BI_STR         : GetBuiltinName := 'str';
+    BI_INT         : GetBuiltinName := 'int';
+    BI_FLOAT       : GetBuiltinName := 'float';
+    BI_BOOL        : GetBuiltinName := 'bool';
+    BI_LIST        : GetBuiltinName := 'list';
+    BI_DICT        : GetBuiltinName := 'dict';
+    BI_TUPLE       : GetBuiltinName := 'tuple';
+    BI_RANGE       : GetBuiltinName := 'range';
+    BI_ABS         : GetBuiltinName := 'abs';
+    BI_ORD         : GetBuiltinName := 'ord';
+    BI_CHR         : GetBuiltinName := 'chr';
+    BI_HEX         : GetBuiltinName := 'hex';
+    BI_OCT         : GetBuiltinName := 'oct';
+    BI_BIN         : GetBuiltinName := 'bin';
+    BI_TYPE        : GetBuiltinName := 'type';
+    BI_ISINSTANCE  : GetBuiltinName := 'isinstance';
+    BI_MIN         : GetBuiltinName := 'min';
+    BI_MAX         : GetBuiltinName := 'max';
+    BI_POW         : GetBuiltinName := 'pow';
+    BI_ROUND       : GetBuiltinName := 'round';
+    BI_SORTED      : GetBuiltinName := 'sorted';
+    BI_REVERSED    : GetBuiltinName := 'reversed';
+    BI_ENUMERATE   : GetBuiltinName := 'enumerate';
+    BI_ZIP         : GetBuiltinName := 'zip';
+    BI_MAP         : GetBuiltinName := 'map';
+    BI_FILTER      : GetBuiltinName := 'filter';
+    BI_SUM         : GetBuiltinName := 'sum';
+    BI_ANY         : GetBuiltinName := 'any';
+    BI_ALL         : GetBuiltinName := 'all';
+    BI_HASATTR     : GetBuiltinName := 'hasattr';
+    BI_GETATTR     : GetBuiltinName := 'getattr';
+    BI_SETATTR     : GetBuiltinName := 'setattr';
+    BI_ID          : GetBuiltinName := 'id';
+    BI_HASH        : GetBuiltinName := 'hash';
+    BI_REPR        : GetBuiltinName := 'repr';
+    BI_OPEN        : GetBuiltinName := 'open';
+  Else
+    GetBuiltinName := '?';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsKeyword : teste si un KW_* est valide (non zero)           }
+{ ------------------------------------------------------------ }
+
+Function IsKeyword(KW : Integer) : Boolean;
+Begin
+  IsKeyword := (KW > 0) And (KW <= KW_AWAIT);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsBuiltin : teste si un BI_* est valide (non zero)           }
+{ ------------------------------------------------------------ }
+
+Function IsBuiltin(BI : Integer) : Boolean;
+Begin
+  IsBuiltin := (BI > 0) And (BI <= BI_TOTAL_BUILTINS);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpKwState : afficher l etat de la reconnaissance           }
+{ ------------------------------------------------------------ }
+
+Procedure DumpKwState;
+Begin
+  WriteLn('--- KW State ---');
+  WriteLn('  KwInitialized : ', KwInitialized);
+  WriteLn('  KwLookupCount : ', KwLookupCount);
+  WriteLn('  KwHitCount    : ', KwHitCount);
+  WriteLn('  BiLookupCount : ', BiLookupCount);
+  WriteLn('  BiHitCount    : ', BiHitCount);
+  WriteLn('  KwTotalIdents : ', KwTotalIdents);
+  WriteLn('  KwLastKW      : ', KwTypeName(KwLastKW));
+  WriteLn('  KwLastBI      : ', GetBuiltinName(KwLastBI));
+  WriteLn('  Keywords      : ', KW_TOTAL_KEYWORDS);
+  WriteLn('  Builtins      : ', BI_TOTAL_BUILTINS);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 03)                             }
+{ ------------------------------------------------------------ }
+
+Function IsKwInitialized : Boolean;
+Begin
+  IsKwInitialized := KwInitialized;
+End;
+
+Function IsKwEmpty : Boolean;
+Begin
+  IsKwEmpty := (KwHitCount = 0) And (BiHitCount = 0);
+End;
+
+Function GetKwLookupCount : LongInt;
+Begin
+  GetKwLookupCount := KwLookupCount;
+End;
+
+Function GetKwHitCount : LongInt;
+Begin
+  GetKwHitCount := KwHitCount;
+End;
+
+Function GetBiLookupCount : LongInt;
+Begin
+  GetBiLookupCount := BiLookupCount;
+End;
+
+Function GetBiHitCount : LongInt;
+Begin
+  GetBiHitCount := BiHitCount;
+End;
+
+Function GetKwTotalIdents : LongInt;
+Begin
+  GetKwTotalIdents := KwTotalIdents;
+End;
+
+Function GetKwLastKW : Integer;
+Begin
+  GetKwLastKW := KwLastKW;
+End;
+
+Function GetKwLastBI : Integer;
+Begin
+  GetKwLastBI := KwLastBI;
+End;
+
+Function GetKwStatus : TString;
+Begin
+  If Not KwInitialized Then
+    GetKwStatus := 'Not initialized'
+  Else
+    GetKwStatus := ItoS(KwHitCount) + ' keywords, ' +
+                   ItoS(BiHitCount) + ' builtins (' +
+                   ItoS(KwTotalIdents) + ' idents tested)';
 End;
 
 { ============================================================ }
@@ -2448,11 +2957,15 @@ Begin
   OutFOpen   := False;
   BcActive   := False;
   LexOpened  := False;
+  KwInitialized := False;
 
   ParseArgs;
 
   { Affichage de la banniere en mode verbeux }
   ShowBanner;
+
+  { Initialiser la reconnaissance des mots-cles }
+  InitKwState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -2471,7 +2984,12 @@ Begin
   If Opts.Verbose Then
   Begin
     WriteLn('Tokens analyses  : ', GetLexTokCount);
+    WriteLn('Mots-cles trouves: ', GetKwHitCount);
+    WriteLn('Builtins trouves : ', GetBiHitCount);
   End;
+
+  If Opts.DebugMode Then
+    DumpKwState;
 
   { Nettoyage }
   Cleanup;
