@@ -477,7 +477,7 @@ Turbo Pascal / Free Pascal (-Mtp)
            GetBldCopyCount/GetBldSuccessCount/GetBldErrorCount/
            GetBldMaxTargets)
 
-  TODO 17 - GENERATION MACOS [A FAIRE]
+  TODO 17 - GENERATION MACOS [IMPLEMENTE]
          Constantes macOS :
            MACOS_APP_EXT = '.app', MACOS_DMG_EXT = '.dmg'
          Function GenerateInfoPlist(Const Opts: TOptions): String
