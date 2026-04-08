@@ -4589,7 +4589,6 @@ Var
   RetSize   : Integer;
   ProcIdx   : Integer;
   BodyToks  : Integer;
-  NestDepth : Integer;
   IsFunc    : Boolean;
 Begin
   Inc(PrcStateCount);
@@ -4727,91 +4726,77 @@ Begin
   If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BEGIN) Then
     LexNextToken;
 
-  { Parser le corps du sous-programme : consommer jusqu a END }
+  { Parser le corps du sous-programme via le dispatcher ParseStatement }
   BodyToks := 0;
-  NestDepth := 0;
   While (CurTokType <> TOK_EOF) Do
   Begin
-    Inc(BodyToks);
-
     { Compter les RETURN }
     If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_RETURN) Then
     Begin
       Inc(PrcReturnCount);
       If ProcIdx > 0 Then
         PrcTable[ProcIdx].HasReturn := True;
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then
+        LexNextToken;
+      Inc(BodyToks);
+      Continue;
     End;
 
-    { Gerer l imbrication (IF..END, FOR..END, WHILE..END, etc.) }
-    If (CurTokType = TOK_KEYWORD) Then
-    Begin
-      If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
-         (CurTokNum = KW_WHILE) Or (CurTokNum = KW_CASE) Then
-        Inc(NestDepth);
-    End;
-
+    { Detecter END du sous-programme }
     If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
     Begin
-      If NestDepth > 0 Then
+      { C est le END du sous-programme }
+      LexNextToken;
+
+      { Verifier si c est END MODULE (fin du module) }
+      If (CurTokType = TOK_KEYWORD) And
+         (CurTokNum = KW_MODULE) Then
       Begin
-        { C est un END d une structure imbriquee }
-        Dec(NestDepth);
+        { C est la fin du module, pas du sous-programme }
+        LexNextToken;
+        If CurTokType = TOK_IDENT Then
+        Begin
+          If UpCaseStr(CurTokStr) <> UpCaseStr(ModName) Then
+            WarnMsg('END MODULE ' + CurTokStr +
+                    ' ne correspond pas a MODULE ' + ModName);
+          LexNextToken;
+        End;
+        If CurTokType = TOK_SEMICOL Then
+          LexNextToken;
+        ModState := MOD_ENDED;
+        SymSetScope(SCOPE_GLOBAL, False);
+        If Opts.Verbose Then
+          WriteLn('END MODULE ', ModName);
+        Inc(ModStateCount);
+        Break;
+      End
+      Else If (CurTokType = TOK_KEYWORD) And
+              (CurTokNum = KW_COMPOOL) Then
+      Begin
+        { C est la fin du COMPOOL }
         LexNextToken;
         If CurTokType = TOK_SEMICOL Then
           LexNextToken;
+        ModState := MOD_ENDED;
+        SymSetScope(SCOPE_COMPOOL, False);
+        If Opts.Verbose Then
+          WriteLn('END COMPOOL ', ModName);
+        Inc(ModStateCount);
+        Break;
       End
       Else
       Begin
-        { C est le END du sous-programme }
-        LexNextToken;
-
-        { Verifier si c est END MODULE (fin du module) }
-        If (CurTokType = TOK_KEYWORD) And
-           (CurTokNum = KW_MODULE) Then
-        Begin
-          { C est la fin du module, pas du sous-programme }
+        { C est END du sous-programme }
+        If CurTokType = TOK_SEMICOL Then
           LexNextToken;
-          If CurTokType = TOK_IDENT Then
-          Begin
-            If UpCaseStr(CurTokStr) <> UpCaseStr(ModName) Then
-              WarnMsg('END MODULE ' + CurTokStr +
-                      ' ne correspond pas a MODULE ' + ModName);
-            LexNextToken;
-          End;
-          If CurTokType = TOK_SEMICOL Then
-            LexNextToken;
-          ModState := MOD_ENDED;
-          SymSetScope(SCOPE_GLOBAL, False);
-          If Opts.Verbose Then
-            WriteLn('END MODULE ', ModName);
-          Inc(ModStateCount);
-          Break;
-        End
-        Else If (CurTokType = TOK_KEYWORD) And
-                (CurTokNum = KW_COMPOOL) Then
-        Begin
-          { C est la fin du COMPOOL }
-          LexNextToken;
-          If CurTokType = TOK_SEMICOL Then
-            LexNextToken;
-          ModState := MOD_ENDED;
-          SymSetScope(SCOPE_COMPOOL, False);
-          If Opts.Verbose Then
-            WriteLn('END COMPOOL ', ModName);
-          Inc(ModStateCount);
-          Break;
-        End
-        Else
-        Begin
-          { C est END du sous-programme }
-          If CurTokType = TOK_SEMICOL Then
-            LexNextToken;
-          Break;
-        End;
+        Break;
       End;
-    End
-    Else
-      LexNextToken;
+    End;
+
+    { Dispatcher vers ParseStatement pour les instructions du corps }
+    ParseStatement;
+    Inc(BodyToks);
   End;
 
   { Sauvegarder le nombre de tokens du corps }
