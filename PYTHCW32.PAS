@@ -6770,7 +6770,7 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure LoopPush(TestLbl, IncrLbl, EndLbl, ElseLbl : TString;
-                   ForLoop : Boolean);
+                   IsForLoop : Boolean);
 Begin
   If LpStackTop >= LP_MAX_NEST Then
   Begin
@@ -6786,7 +6786,7 @@ Begin
   LpStack[LpStackTop].IncrLabel  := IncrLbl;
   LpStack[LpStackTop].EndLabel   := EndLbl;
   LpStack[LpStackTop].ElseLabel  := ElseLbl;
-  LpStack[LpStackTop].IsFor      := ForLoop;
+  LpStack[LpStackTop].IsFor      := IsForLoop;
   LpLastKind := LP_LOOP_PUSH;
 End;
 
