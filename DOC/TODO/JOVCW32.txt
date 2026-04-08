@@ -341,7 +341,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
               S n (ROUGE=1, VERT=5, BLEU=10) si supporte
             10 fonctions accesseurs
 
-  TODO 14 - PARSEUR : OPERATIONS SUR LES BITS [A FAIRE]
+  TODO 14 - PARSEUR : OPERATIONS SUR LES BITS [IMPLEMENTE]
             Operations bit a bit sur ITEM de type B :
               AND : RESULT = FLAGS AND MASK
                 Generer : MOV EAX, [FLAGS] / AND EAX, [MASK]

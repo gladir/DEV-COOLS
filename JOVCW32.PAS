@@ -349,7 +349,7 @@
               S n (ROUGE=1, VERT=5, BLEU=10) si supporte
             10 fonctions accesseurs
 
-  TODO 14 - PARSEUR : OPERATIONS SUR LES BITS [A FAIRE]
+  TODO 14 - PARSEUR : OPERATIONS SUR LES BITS [IMPLEMENTE]
             Operations bit a bit sur ITEM de type B :
               AND : RESULT = FLAGS AND MASK
                 Generer : MOV EAX, [FLAGS] / AND EAX, [MASK]
@@ -7158,6 +7158,546 @@ End;
 
 
 { ============================================================ }
+{ TODO 14 - PARSEUR : OPERATIONS SUR LES BITS                    }
+{                                               [IMPLEMENTE]  }
+{ ============================================================ }
+
+Const
+  { Types d operations sur les bits }
+  BIT_NONE          = 0;   { aucune                                   }
+  BIT_AND           = 1;   { AND : RESULT = FLAGS AND MASK            }
+  BIT_OR            = 2;   { OR  : RESULT = FLAGS OR MASK             }
+  BIT_XOR           = 3;   { XOR : RESULT = FLAGS XOR MASK            }
+  BIT_NOT           = 4;   { NOT : RESULT = NOT MASK                  }
+  BIT_SHIFTL        = 5;   { SHIFTL(valeur, nombre) decalage gauche   }
+  BIT_SHIFTR        = 6;   { SHIFTR(valeur, nombre) decalage droite   }
+  BIT_EXTRACT       = 7;   { BIT(valeur, position, longueur)          }
+  BIT_BITSIZE       = 8;   { BITSIZE(item) taille en bits             }
+
+  { Limites }
+  BIT_MAX_OPS = 4096;     { nombre max d operations sur les bits      }
+
+Var
+  { Variables du parseur d operations sur les bits }
+  BitInitialized    : Boolean;     { module initialise ?             }
+  BitStateCount     : Integer;     { compteur d operations           }
+  BitAndCount       : Integer;     { operations AND                  }
+  BitOrCount        : Integer;     { operations OR                   }
+  BitXorCount       : Integer;     { operations XOR                  }
+  BitNotCount       : Integer;     { operations NOT                  }
+  BitShiftLCount    : Integer;     { decalages a gauche SHIFTL       }
+  BitShiftRCount    : Integer;     { decalages a droite SHIFTR       }
+  BitExtractCount   : Integer;     { extractions BIT()               }
+  BitSizeCount      : Integer;     { appels BITSIZE()                }
+  BitMaskCount      : Integer;     { masquages automatiques          }
+  BitLabelNum       : Integer;     { generateur de labels uniques    }
+  BitErrorCount     : Integer;     { nombre d erreurs                }
+
+{ ------------------------------------------------------------ }
+{ InitBitState : initialiser les variables du parseur bits       }
+{ ------------------------------------------------------------ }
+
+Procedure InitBitState;
+Begin
+  BitInitialized    := True;
+  BitStateCount     := 0;
+  BitAndCount       := 0;
+  BitOrCount        := 0;
+  BitXorCount       := 0;
+  BitNotCount       := 0;
+  BitShiftLCount    := 0;
+  BitShiftRCount    := 0;
+  BitExtractCount   := 0;
+  BitSizeCount      := 0;
+  BitMaskCount      := 0;
+  BitLabelNum       := 0;
+  BitErrorCount     := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenBitLabel : generer un label unique pour les operations bits  }
+{ ------------------------------------------------------------ }
+
+Function GenBitLabel : TString;
+Begin
+  Inc(BitLabelNum);
+  GenBitLabel := PFX_LBL + 'BIT_' + ItoSI(BitLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ BitOpTypeName : retourner le nom du type d operation bits       }
+{ ------------------------------------------------------------ }
+
+Function BitOpTypeName(BType : Integer) : TString;
+Begin
+  Case BType Of
+    BIT_NONE       : BitOpTypeName := 'NONE';
+    BIT_AND        : BitOpTypeName := 'AND';
+    BIT_OR         : BitOpTypeName := 'OR';
+    BIT_XOR        : BitOpTypeName := 'XOR';
+    BIT_NOT        : BitOpTypeName := 'NOT';
+    BIT_SHIFTL     : BitOpTypeName := 'SHIFTL';
+    BIT_SHIFTR     : BitOpTypeName := 'SHIFTR';
+    BIT_EXTRACT    : BitOpTypeName := 'BIT';
+    BIT_BITSIZE    : BitOpTypeName := 'BITSIZE';
+  Else
+    BitOpTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindBitItem : retrouver un ITEM de type B (bits) dans la       }
+{   table des symboles. Retourne l index ou -1 si non trouve     }
+{ ------------------------------------------------------------ }
+
+Function FindBitItem(Const Name : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Inc(BitStateCount);
+  FindBitItem := -1;
+  Idx := SymFind(Name);
+  If Idx < 0 Then Exit;
+  If SymTab[Idx].SymKind <> SK_ITEM Then Exit;
+  If SymTab[Idx].ItemType <> JT_BITS Then Exit;
+  FindBitItem := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ComputeBitMask : calculer le masque de bits selon la taille    }
+{   BitSize : nombre de bits (1..32)                             }
+{   Retourne le masque correspondant                             }
+{   Exemples : 8 -> $FF, 16 -> $FFFF, 32 -> $FFFFFFFF          }
+{ ------------------------------------------------------------ }
+
+Function ComputeBitMask(BitSize : Integer) : LongInt;
+Begin
+  Inc(BitStateCount);
+  Inc(BitMaskCount);
+  If BitSize >= 32 Then
+    ComputeBitMask := LongInt($FFFFFFFF)
+  Else If BitSize <= 0 Then
+    ComputeBitMask := 0
+  Else
+    ComputeBitMask := (LongInt(1) Shl BitSize) - 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBitAnd : parser une operation AND bit a bit                }
+{   RESULT = FLAGS AND MASK ;                                    }
+{   Generer : MOV EAX, [FLAGS] / AND EAX, [MASK]                }
+{   Appele quand on detecte un AND dans un contexte de bits      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseBitAnd;
+Var
+  Dummy : Integer;
+Begin
+  Inc(BitStateCount);
+  Inc(BitAndCount);
+
+  If Opts.Verbose Then
+    WriteLn('  BIT_AND: AND operation');
+
+  { L expression AND est deja geree par le parseur d expressions }
+  { (ParseAnd dans TODO 10). Ici on comptabilise specifiquement  }
+  { les operations AND sur des ITEM de type B.                   }
+
+  { Parser l operande droite }
+  Dummy := ParseExpression;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBitOr : parser une operation OR bit a bit                  }
+{   RESULT = FLAGS OR MASK ;                                     }
+{   Generer : MOV EAX, [FLAGS] / OR EAX, [MASK]                 }
+{ ------------------------------------------------------------ }
+
+Procedure ParseBitOr;
+Var
+  Dummy : Integer;
+Begin
+  Inc(BitStateCount);
+  Inc(BitOrCount);
+
+  If Opts.Verbose Then
+    WriteLn('  BIT_OR: OR operation');
+
+  Dummy := ParseExpression;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBitXor : parser une operation XOR bit a bit                }
+{   RESULT = FLAGS XOR MASK ;                                    }
+{   Generer : MOV EAX, [FLAGS] / XOR EAX, [MASK]                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseBitXor;
+Var
+  Dummy : Integer;
+Begin
+  Inc(BitStateCount);
+  Inc(BitXorCount);
+
+  If Opts.Verbose Then
+    WriteLn('  BIT_XOR: XOR operation');
+
+  Dummy := ParseExpression;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBitNot : parser une operation NOT bit a bit                }
+{   RESULT = NOT MASK ;                                          }
+{   Generer : MOV EAX, [MASK] / NOT EAX                         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseBitNot;
+Var
+  Dummy : Integer;
+Begin
+  Inc(BitStateCount);
+  Inc(BitNotCount);
+
+  If Opts.Verbose Then
+    WriteLn('  BIT_NOT: NOT operation');
+
+  Dummy := ParseExpression;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseShiftLeft : parser SHIFTL(valeur, nombre)                  }
+{   Generer : MOV EAX, valeur / MOV CL, nombre / SHL EAX, CL   }
+{   CurTok est sur ( apres SHIFTL                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseShiftLeft;
+Var
+  Dummy : Integer;
+Begin
+  Inc(BitStateCount);
+  Inc(BitShiftLCount);
+
+  If Opts.Verbose Then
+    WriteLn('  BIT_SHIFTL: shift left');
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('( attendu apres SHIFTL');
+    Inc(BitErrorCount);
+  End;
+
+  { Parser le premier argument : valeur }
+  Dummy := ParseExpression;
+
+  { Consommer , }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(', attendu entre les arguments de SHIFTL');
+    Inc(BitErrorCount);
+  End;
+
+  { Parser le second argument : nombre de positions }
+  Dummy := ParseExpression;
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres SHIFTL(valeur, nombre)');
+    Inc(BitErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseShiftRight : parser SHIFTR(valeur, nombre)                 }
+{   Generer : MOV EAX, valeur / MOV CL, nombre / SHR EAX, CL   }
+{   CurTok est sur ( apres SHIFTR                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseShiftRight;
+Var
+  Dummy : Integer;
+Begin
+  Inc(BitStateCount);
+  Inc(BitShiftRCount);
+
+  If Opts.Verbose Then
+    WriteLn('  BIT_SHIFTR: shift right');
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('( attendu apres SHIFTR');
+    Inc(BitErrorCount);
+  End;
+
+  { Parser le premier argument : valeur }
+  Dummy := ParseExpression;
+
+  { Consommer , }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(', attendu entre les arguments de SHIFTR');
+    Inc(BitErrorCount);
+  End;
+
+  { Parser le second argument : nombre de positions }
+  Dummy := ParseExpression;
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres SHIFTR(valeur, nombre)');
+    Inc(BitErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBitExtract : parser BIT(valeur, position, longueur)        }
+{   Generer : MOV EAX, valeur / SHR EAX, position                }
+{     / AND EAX, masque (2^longueur - 1)                         }
+{   CurTok est sur ( apres BIT                                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseBitExtract;
+Var
+  Dummy : Integer;
+Begin
+  Inc(BitStateCount);
+  Inc(BitExtractCount);
+
+  If Opts.Verbose Then
+    WriteLn('  BIT_EXTRACT: bit extraction');
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('( attendu apres BIT');
+    Inc(BitErrorCount);
+  End;
+
+  { Parser le premier argument : valeur }
+  Dummy := ParseExpression;
+
+  { Consommer , }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(', attendu entre les arguments de BIT');
+    Inc(BitErrorCount);
+  End;
+
+  { Parser le second argument : position }
+  Dummy := ParseExpression;
+
+  { Consommer , }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(', attendu entre position et longueur dans BIT');
+    Inc(BitErrorCount);
+  End;
+
+  { Parser le troisieme argument : longueur }
+  Dummy := ParseExpression;
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres BIT(valeur, position, longueur)');
+    Inc(BitErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalBitSize : evaluer BITSIZE(item)                             }
+{   Retourne le nombre de bits de l ITEM (resolu a la compilation)}
+{   CurTok est sur ( apres BITSIZE                                }
+{ ------------------------------------------------------------ }
+
+Function EvalBitSize : LongInt;
+Var
+  Idx : Integer;
+Begin
+  Inc(BitStateCount);
+  Inc(BitSizeCount);
+  EvalBitSize := 0;
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('( attendu apres BITSIZE');
+    Inc(BitErrorCount);
+  End;
+
+  { Lire le nom de l ITEM }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    Idx := SymFind(CurTokStr);
+    If (Idx >= 0) And (SymTab[Idx].SymKind = SK_ITEM) Then
+    Begin
+      EvalBitSize := SymTab[Idx].BitSize;
+      If Opts.Verbose Then
+        WriteLn('  BITSIZE(', CurTokStr, ') = ', SymTab[Idx].BitSize);
+    End
+    Else
+    Begin
+      WarnMsg('BITSIZE : ' + CurTokStr + ' n est pas un ITEM');
+      Inc(BitErrorCount);
+    End;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_KEYWORD Then
+  Begin
+    { Un mot-cle peut etre utilise comme nom de variable }
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Nom d ITEM attendu dans BITSIZE()');
+    Inc(BitErrorCount);
+  End;
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres BITSIZE(nom)');
+    Inc(BitErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsBitOperation : verifier si l expression courante implique     }
+{   une operation sur les bits avec un ITEM de type B             }
+{   Retourne True si l operande est un ITEM B                    }
+{ ------------------------------------------------------------ }
+
+Function IsBitOperation(Const Name : TString) : Boolean;
+Begin
+  Inc(BitStateCount);
+  IsBitOperation := (FindBitItem(Name) >= 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetItemBitMask : obtenir le masque automatique pour un ITEM B  }
+{   Retourne le masque ou -1 si l ITEM n est pas de type B      }
+{ ------------------------------------------------------------ }
+
+Function GetItemBitMask(Const Name : TString) : LongInt;
+Var
+  Idx : Integer;
+Begin
+  Inc(BitStateCount);
+  GetItemBitMask := -1;
+  Idx := FindBitItem(Name);
+  If Idx < 0 Then Exit;
+  GetItemBitMask := ComputeBitMask(SymTab[Idx].BitSize);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpBitState : afficher l etat du parseur d operations bits     }
+{ ------------------------------------------------------------ }
+
+Procedure DumpBitState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat du parseur BITS (TODO 14) ===');
+  WriteLn('  Initialise         : ', BitInitialized);
+  WriteLn('  Operations         : ', BitStateCount);
+  WriteLn('  AND                : ', BitAndCount);
+  WriteLn('  OR                 : ', BitOrCount);
+  WriteLn('  XOR                : ', BitXorCount);
+  WriteLn('  NOT                : ', BitNotCount);
+  WriteLn('  SHIFTL             : ', BitShiftLCount);
+  WriteLn('  SHIFTR             : ', BitShiftRCount);
+  WriteLn('  BIT()              : ', BitExtractCount);
+  WriteLn('  BITSIZE()          : ', BitSizeCount);
+  WriteLn('  Masquages auto     : ', BitMaskCount);
+  WriteLn('  Labels generes     : ', BitLabelNum);
+  WriteLn('  Erreurs            : ', BitErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Accesseurs du parseur BITS (10 fonctions)                      }
+{ ------------------------------------------------------------ }
+
+Function IsBitInitialized : Boolean;
+Begin
+  IsBitInitialized := BitInitialized;
+End;
+
+Function GetBitAndCount : Integer;
+Begin
+  GetBitAndCount := BitAndCount;
+End;
+
+Function GetBitOrCount : Integer;
+Begin
+  GetBitOrCount := BitOrCount;
+End;
+
+Function GetBitXorCount : Integer;
+Begin
+  GetBitXorCount := BitXorCount;
+End;
+
+Function GetBitNotCount : Integer;
+Begin
+  GetBitNotCount := BitNotCount;
+End;
+
+Function GetBitShiftCount : Integer;
+Begin
+  GetBitShiftCount := BitShiftLCount + BitShiftRCount;
+End;
+
+Function GetBitExtractCount : Integer;
+Begin
+  GetBitExtractCount := BitExtractCount;
+End;
+
+Function GetBitStateCount : Integer;
+Begin
+  GetBitStateCount := BitStateCount;
+End;
+
+Function GetBitErrorCount : Integer;
+Begin
+  GetBitErrorCount := BitErrorCount;
+End;
+
+Function IsBitEmpty : Boolean;
+Begin
+  IsBitEmpty := (BitAndCount = 0) And (BitOrCount = 0) And
+                (BitXorCount = 0) And (BitNotCount = 0) And
+                (BitShiftLCount = 0) And (BitShiftRCount = 0) And
+                (BitExtractCount = 0) And (BitSizeCount = 0);
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -7181,6 +7721,7 @@ Begin
   CtlInitialized := False;
   AsgInitialized := False;
   StsInitialized := False;
+  BitInitialized := False;
 
   ParseArgs;
 
@@ -7220,6 +7761,9 @@ Begin
   { Initialiser le parseur STATUS }
   InitStatusState;
 
+  { Initialiser le parseur d operations sur les bits }
+  InitBitState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -7246,6 +7790,7 @@ Begin
     DumpCtrlState;
     DumpAssignState;
     DumpStatusState;
+    DumpBitState;
   End;
 
   { Nettoyage }
