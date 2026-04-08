@@ -212,7 +212,7 @@
             Pliage de constantes pour expressions statiques
             10 fonctions accesseurs
 
-  TODO 08 - PARSEUR : EXPRESSIONS PRIMAIRES ET APPELS [A FAIRE]
+  TODO 08 - PARSEUR : EXPRESSIONS PRIMAIRES ET APPELS [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, ident,
               appel de fonction, None, True, False
             Acces attribut : expr.attr -> offset dans instance de classe
@@ -4742,6 +4742,812 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 08 - PARSEUR : EXPRESSIONS PRIMAIRES ET APPELS          }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d expressions primaires PX_* }
+  PX_NONE      = 0;    { aucun                                   }
+  PX_INT_LIT   = 1;    { litteral entier                         }
+  PX_STR_LIT   = 2;    { litteral chaine                         }
+  PX_IDENT     = 3;    { identificateur                          }
+  PX_FUNC_CALL = 4;    { appel de fonction                       }
+  PX_METH_CALL = 5;    { appel de methode                        }
+  PX_ATTR      = 6;    { acces attribut                          }
+  PX_INDEX     = 7;    { acces index                             }
+  PX_SLICE     = 8;    { acces slice                             }
+  PX_LIST_LIT  = 9;    { liste literale                          }
+  PX_TUPLE_LIT = 10;   { tuple literal                           }
+  PX_DICT_LIT  = 11;   { dict literal                            }
+  PX_BUILTIN   = 12;   { appel builtin inline                    }
+  PX_PAREN     = 13;   { expression parenthesee                  }
+  PX_MAX       = 13;
+
+  { Limites }
+  PX_MAX_ARGS  = 16;   { nombre max d arguments par appel        }
+  PX_MAX_ELEMS = 64;   { nombre max d elements dans une liste    }
+
+Var
+  PxInitialized  : Boolean;    { True si l etat est initialise       }
+  PxCallCount    : LongInt;    { nombre total d appels de fonctions  }
+  PxMethCount    : LongInt;    { nombre d appels de methodes         }
+  PxAttrCount    : LongInt;    { nombre d acces attribut             }
+  PxIndexCount   : LongInt;    { nombre d acces index                }
+  PxSliceCount   : LongInt;    { nombre d acces slice                }
+  PxListCount    : LongInt;    { nombre de listes literales          }
+  PxDictCount    : LongInt;    { nombre de dicts literaux            }
+  PxBuiltinCount : LongInt;    { nombre d appels builtins inline     }
+  PxLastKind     : Integer;    { dernier type d expression primaire  }
+  PxLabelSeq     : Integer;    { sequence pour labels PX              }
+
+{ ------------------------------------------------------------ }
+{ InitPxState : initialiser le sous-systeme des primaires        }
+{ ------------------------------------------------------------ }
+
+Procedure InitPxState;
+Begin
+  PxInitialized  := True;
+  PxCallCount    := 0;
+  PxMethCount    := 0;
+  PxAttrCount    := 0;
+  PxIndexCount   := 0;
+  PxSliceCount   := 0;
+  PxListCount    := 0;
+  PxDictCount    := 0;
+  PxBuiltinCount := 0;
+  PxLastKind     := PX_NONE;
+  PxLabelSeq     := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPxLabel : generer un label unique pour les primaires         }
+{ ------------------------------------------------------------ }
+
+Function GenPxLabel : TString;
+Begin
+  Inc(PxLabelSeq);
+  GenPxLabel := '_PYX_' + ItoS(PxLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ PxTypeName : retourner le nom du type de primaire              }
+{ ------------------------------------------------------------ }
+
+Function PxTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    PX_NONE      : PxTypeName := 'NONE';
+    PX_INT_LIT   : PxTypeName := 'INT_LIT';
+    PX_STR_LIT   : PxTypeName := 'STR_LIT';
+    PX_IDENT     : PxTypeName := 'IDENT';
+    PX_FUNC_CALL : PxTypeName := 'FUNC_CALL';
+    PX_METH_CALL : PxTypeName := 'METH_CALL';
+    PX_ATTR      : PxTypeName := 'ATTR';
+    PX_INDEX     : PxTypeName := 'INDEX';
+    PX_SLICE     : PxTypeName := 'SLICE';
+    PX_LIST_LIT  : PxTypeName := 'LIST_LIT';
+    PX_TUPLE_LIT : PxTypeName := 'TUPLE_LIT';
+    PX_DICT_LIT  : PxTypeName := 'DICT_LIT';
+    PX_BUILTIN   : PxTypeName := 'BUILTIN';
+    PX_PAREN     : PxTypeName := 'PAREN';
+  Else
+    PxTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArgList : parser une liste d arguments separes par ,      }
+{   Retourne le nombre d arguments parses.                       }
+{   Suppose que le ( a deja ete consomme.                        }
+{ ------------------------------------------------------------ }
+
+Function ParseArgList : Integer;
+Var
+  Count : Integer;
+  E     : TExprVal;
+Begin
+  Count := 0;
+  { Liste vide si ) immediatement }
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+  Begin
+    ParseArgList := 0;
+    Exit;
+  End;
+
+  { Premier argument }
+  E := ParseExpr;
+  Inc(Count);
+
+  { Arguments suivants }
+  While (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Do
+  Begin
+    LexNextToken; { consommer , }
+    E := ParseExpr;
+    Inc(Count);
+    If Count > PX_MAX_ARGS Then
+    Begin
+      CompileError('too many arguments (max ' + ItoS(PX_MAX_ARGS) + ')', LexLineNo);
+      Break;
+    End;
+  End;
+
+  ParseArgList := Count;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFuncCallExpr : parser un appel func(args)                 }
+{   FuncName : nom de la fonction, SymI : indice symbole         }
+{   Retourne TExprVal avec resultat dans EAX                    }
+{ ------------------------------------------------------------ }
+
+Function ParseFuncCallExpr(FuncName : TString; SymI : Integer) : TExprVal;
+Var
+  R     : TExprVal;
+  NArgs : Integer;
+Begin
+  Inc(PxCallCount);
+  PxLastKind := PX_FUNC_CALL;
+
+  LexNextToken; { consommer ( }
+  NArgs := ParseArgList;
+
+  { Attendre ) }
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+    LexNextToken
+  Else
+    CompileError('expected ) after function arguments', LexLineNo);
+
+  { Le resultat est dans EAX apres le CALL }
+  R := ExprMakeEAX(TY_IDX_INT); { type par defaut, sera affine plus tard }
+
+  ParseFuncCallExpr := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMethodCallExpr : parser un appel obj.method(args)         }
+{   ObjExpr : expression de l objet, MethodName : nom methode   }
+{ ------------------------------------------------------------ }
+
+Function ParseMethodCallExpr(ObjExpr : TExprVal;
+                             MethodName : TString) : TExprVal;
+Var
+  R     : TExprVal;
+  NArgs : Integer;
+Begin
+  Inc(PxMethCount);
+  PxLastKind := PX_METH_CALL;
+
+  LexNextToken; { consommer ( }
+  NArgs := ParseArgList;
+
+  { Attendre ) }
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+    LexNextToken
+  Else
+    CompileError('expected ) after method arguments', LexLineNo);
+
+  { Le resultat est dans EAX apres le CALL }
+  R := ExprMakeEAX(TY_IDX_INT);
+
+  ParseMethodCallExpr := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAttrAccess : parser un acces attribut expr.attr           }
+{   ObjExpr : expression de l objet                             }
+{ ------------------------------------------------------------ }
+
+Function ParseAttrAccess(ObjExpr : TExprVal) : TExprVal;
+Var
+  AttrName : TString;
+  R        : TExprVal;
+Begin
+  Inc(PxAttrCount);
+  PxLastKind := PX_ATTR;
+
+  { Le . a deja ete consomme, on attend un identifiant }
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    CompileError('expected attribute name after .', LexLineNo);
+    ParseAttrAccess := ExprMakeNone;
+    Exit;
+  End;
+
+  AttrName := CurTokStr;
+  LexNextToken;
+
+  { Si suivi de (, c est un appel de methode }
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+  Begin
+    ParseAttrAccess := ParseMethodCallExpr(ObjExpr, AttrName);
+    Exit;
+  End;
+
+  { Sinon, acces attribut simple : resultat dans EAX }
+  R := ExprMakeEAX(TY_IDX_INT);
+  ParseAttrAccess := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIndexAccess : parser un acces index expr[i] ou slice      }
+{   ObjExpr : expression de l objet                             }
+{ ------------------------------------------------------------ }
+
+Function ParseIndexAccess(ObjExpr : TExprVal) : TExprVal;
+Var
+  R     : TExprVal;
+  IsSlice : Boolean;
+  E     : TExprVal;
+Begin
+  IsSlice := False;
+
+  { [ a deja ete consomme par l appelant }
+  { Verifier si c est un slice : [a:b] }
+  If (CurTokKind = TK_COLON) Then
+  Begin
+    { [:b] - slice depuis le debut }
+    IsSlice := True;
+    LexNextToken;
+    If Not ((CurTokKind = TK_RBRACKET)) Then
+      E := ParseExpr;
+  End
+  Else
+  Begin
+    E := ParseExpr;
+    If (CurTokKind = TK_COLON) Then
+    Begin
+      { [a:b] - slice }
+      IsSlice := True;
+      LexNextToken;
+      If Not ((CurTokKind = TK_RBRACKET)) Then
+        E := ParseExpr;
+    End;
+  End;
+
+  { Attendre ] }
+  If CurTokKind = TK_RBRACKET Then
+    LexNextToken
+  Else
+    CompileError('expected ]', LexLineNo);
+
+  If IsSlice Then
+  Begin
+    Inc(PxSliceCount);
+    PxLastKind := PX_SLICE;
+  End
+  Else
+  Begin
+    Inc(PxIndexCount);
+    PxLastKind := PX_INDEX;
+  End;
+
+  R := ExprMakeEAX(TY_IDX_INT);
+  If IsSlice Then
+    R.TypeIdx := ObjExpr.TypeIdx; { slice retourne meme type }
+
+  ParseIndexAccess := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBuiltinCall : parser un appel inline de builtin           }
+{   BiId : identifiant BI_*, BName : nom du builtin             }
+{ ------------------------------------------------------------ }
+
+Function ParseBuiltinCall(BiId : Integer; BName : TString) : TExprVal;
+Var
+  R     : TExprVal;
+  NArgs : Integer;
+Begin
+  Inc(PxBuiltinCount);
+  PxLastKind := PX_BUILTIN;
+
+  { ( doit suivre }
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+    LexNextToken
+  Else
+  Begin
+    CompileError('expected ( after builtin ' + BName, LexLineNo);
+    ParseBuiltinCall := ExprMakeNone;
+    Exit;
+  End;
+
+  NArgs := ParseArgList;
+
+  { Attendre ) }
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+    LexNextToken
+  Else
+    CompileError('expected ) after builtin arguments', LexLineNo);
+
+  { Resultat dans EAX, type depend du builtin }
+  R := ExprMakeEAX(TY_IDX_INT);
+  Case BiId Of
+    BI_LEN   : R.TypeIdx := TY_IDX_INT;
+    BI_ABS   : R.TypeIdx := TY_IDX_INT;
+    BI_INT   : R.TypeIdx := TY_IDX_INT;
+    BI_STR   : R.TypeIdx := TY_IDX_STR;
+    BI_CHR   : R.TypeIdx := TY_IDX_STR;
+    BI_ORD   : R.TypeIdx := TY_IDX_INT;
+    BI_BOOL  : R.TypeIdx := TY_IDX_BOOL;
+    BI_TYPE  : R.TypeIdx := TY_IDX_STR;
+    BI_ISINSTANCE : R.TypeIdx := TY_IDX_BOOL;
+  Else
+    R.TypeIdx := TY_IDX_INT;
+  End;
+
+  ParseBuiltinCall := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseListLiteral : parser [e0, e1, ...]                        }
+{ ------------------------------------------------------------ }
+
+Function ParseListLiteral : TExprVal;
+Var
+  R     : TExprVal;
+  Count : Integer;
+  E     : TExprVal;
+Begin
+  Inc(PxListCount);
+  PxLastKind := PX_LIST_LIT;
+
+  Count := 0;
+  { [ a deja ete consomme }
+
+  { Liste vide ? }
+  If CurTokKind = TK_RBRACKET Then
+  Begin
+    LexNextToken;
+    R := ExprMakeEAX(TY_IDX_LIST);
+    ParseListLiteral := R;
+    Exit;
+  End;
+
+  { Premier element }
+  E := ParseExpr;
+  Inc(Count);
+
+  { Elements suivants }
+  While (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Do
+  Begin
+    LexNextToken;
+    { Virgule trainante avant ] }
+    If CurTokKind = TK_RBRACKET Then
+      Break;
+    E := ParseExpr;
+    Inc(Count);
+    If Count > PX_MAX_ELEMS Then
+    Begin
+      CompileError('too many list elements (max ' + ItoS(PX_MAX_ELEMS) + ')', LexLineNo);
+      Break;
+    End;
+  End;
+
+  { Attendre ] }
+  If CurTokKind = TK_RBRACKET Then
+    LexNextToken
+  Else
+    CompileError('expected ]', LexLineNo);
+
+  R := ExprMakeEAX(TY_IDX_LIST);
+  ParseListLiteral := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTupleLiteral : parser (e0, e1, ...)                       }
+{   Assume que le ( initial a ete consomme et au moins           }
+{   une virgule ou un element suivi d une virgule                }
+{ ------------------------------------------------------------ }
+
+Function ParseTupleLiteral(FirstElem : TExprVal) : TExprVal;
+Var
+  R     : TExprVal;
+  Count : Integer;
+  E     : TExprVal;
+Begin
+  PxLastKind := PX_TUPLE_LIT;
+
+  Count := 1; { Le premier element a deja ete parse }
+
+  { Elements suivants apres la , deja consommee }
+  { Virgule trainante avant ) }
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+  Begin
+    LexNextToken;
+    R := ExprMakeEAX(TY_IDX_TUPLE);
+    ParseTupleLiteral := R;
+    Exit;
+  End;
+
+  E := ParseExpr;
+  Inc(Count);
+
+  While (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Do
+  Begin
+    LexNextToken;
+    If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+      Break;
+    E := ParseExpr;
+    Inc(Count);
+    If Count > PX_MAX_ELEMS Then
+    Begin
+      CompileError('too many tuple elements (max ' + ItoS(PX_MAX_ELEMS) + ')', LexLineNo);
+      Break;
+    End;
+  End;
+
+  { Attendre ) }
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+    LexNextToken
+  Else
+    CompileError('expected )', LexLineNo);
+
+  R := ExprMakeEAX(TY_IDX_TUPLE);
+  ParseTupleLiteral := R;
+End;
+
+{ ------------------------------------------------------------ }
+(* ParseDictLiteral : parser dict literal                       *)
+{ ------------------------------------------------------------ }
+
+Function ParseDictLiteral : TExprVal;
+Var
+  R     : TExprVal;
+  Count : Integer;
+  K, V  : TExprVal;
+Begin
+  Inc(PxDictCount);
+  PxLastKind := PX_DICT_LIT;
+
+  Count := 0;
+  (* accolade ouvrante a deja ete consommee *)
+
+  { Dict vide ? }
+  If CurTokKind = TK_RBRACE Then
+  Begin
+    LexNextToken;
+    R := ExprMakeEAX(TY_IDX_DICT);
+    ParseDictLiteral := R;
+    Exit;
+  End;
+
+  { Premiere paire cle:valeur }
+  K := ParseExpr;
+  If CurTokKind = TK_COLON Then
+    LexNextToken
+  Else
+    CompileError('expected : in dict literal', LexLineNo);
+  V := ParseExpr;
+  Inc(Count);
+
+  { Paires suivantes }
+  While (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Do
+  Begin
+    LexNextToken;
+    (* Virgule trainante avant accolade fermante *)
+    If CurTokKind = TK_RBRACE Then
+      Break;
+    K := ParseExpr;
+    If CurTokKind = TK_COLON Then
+      LexNextToken
+    Else
+      CompileError('expected : in dict literal', LexLineNo);
+    V := ParseExpr;
+    Inc(Count);
+    If Count > PX_MAX_ELEMS Then
+    Begin
+      CompileError('too many dict pairs (max ' + ItoS(PX_MAX_ELEMS) + ')', LexLineNo);
+      Break;
+    End;
+  End;
+
+  (* Attendre accolade fermante *)
+  If CurTokKind = TK_RBRACE Then
+    LexNextToken
+  Else
+    CompileError('expected }', LexLineNo);
+
+  R := ExprMakeEAX(TY_IDX_DICT);
+  ParseDictLiteral := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePostfix : parser les suffixes postfixes (., [, ()         }
+{   Boucle pour chainer : obj.attr[i].method(args)               }
+{ ------------------------------------------------------------ }
+
+Function ParsePostfix(E : TExprVal) : TExprVal;
+Var R : TExprVal;
+Begin
+  R := E;
+  While True Do
+  Begin
+    { Acces attribut : expr.attr }
+    If CurTokKind = TK_DOT Then
+    Begin
+      LexNextToken; { consommer . }
+      R := ParseAttrAccess(R);
+    End
+    { Acces index/slice : expr[...] }
+    Else If CurTokKind = TK_LBRACKET Then
+    Begin
+      LexNextToken; { consommer [ }
+      R := ParseIndexAccess(R);
+    End
+    { Appel de fonction : expr(...) }
+    Else If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+    Begin
+      R := ParseFuncCallExpr('', R.SymIdx);
+    End
+    Else
+      Break;
+  End;
+  ParsePostfix := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrimaryFull : parser une expression primaire complete      }
+{   avec les suffixes postfixes                                  }
+{ ------------------------------------------------------------ }
+
+Function ParsePrimaryFull : TExprVal;
+Var
+  E        : TExprVal;
+  FuncName : TString;
+  SymI     : Integer;
+  BiId     : Integer;
+Begin
+  Case CurTokKind Of
+    TK_INTEGER :
+      Begin
+        PxLastKind := PX_INT_LIT;
+        E := LitEvalInt;
+        LexNextToken;
+      End;
+    TK_STRING :
+      Begin
+        PxLastKind := PX_STR_LIT;
+        E := LitEvalStr;
+        LexNextToken;
+      End;
+    TK_IDENT :
+      Begin
+        If CurTokStr = 'None' Then
+        Begin
+          E := ExprMakeNone;
+          LexNextToken;
+        End
+        Else If CurTokStr = 'True' Then
+        Begin
+          E := ExprMakeBool(True);
+          LexNextToken;
+        End
+        Else If CurTokStr = 'False' Then
+        Begin
+          E := ExprMakeBool(False);
+          LexNextToken;
+        End
+        Else
+        Begin
+          FuncName := CurTokStr;
+          SymI := SymFind(CurTokStr);
+
+          { Verifier si c est un builtin inline }
+          BiId := LookupBuiltin(FuncName);
+          If (BiId <> 0) Then
+          Begin
+            LexNextToken;
+            E := ParseBuiltinCall(BiId, FuncName);
+          End
+          { Verifier si c est un appel de fonction }
+          Else
+          Begin
+            LexNextToken;
+            If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+            Begin
+              E := ParseFuncCallExpr(FuncName, SymI);
+            End
+            Else
+            Begin
+              { Variable simple }
+              PxLastKind := PX_IDENT;
+              E.Kind    := EK_MEM;
+              E.ImmVal  := 0;
+              E.TypeIdx := TY_IDX_INT;
+              E.Offset  := 0;
+              E.SymIdx  := SymI;
+            End;
+          End;
+        End;
+      End;
+    TK_KEYWORD :
+      Begin
+        If CurTokStr = 'None' Then
+        Begin
+          E := ExprMakeNone;
+          LexNextToken;
+        End
+        Else If CurTokStr = 'True' Then
+        Begin
+          E := ExprMakeBool(True);
+          LexNextToken;
+        End
+        Else If CurTokStr = 'False' Then
+        Begin
+          E := ExprMakeBool(False);
+          LexNextToken;
+        End
+        Else If CurTokStr = 'not' Then
+        Begin
+          LexNextToken;
+          E := ParseExprPrec(PREC_NOT);
+          E := ExprEmitUnaryOp(UOP_NOT, E);
+        End
+        Else
+        Begin
+          E.Kind    := EK_NONE;
+          E.ImmVal  := 0;
+          E.TypeIdx := TY_IDX_NONE;
+          E.Offset  := 0;
+          E.SymIdx  := -1;
+          CompileError('unexpected keyword: ' + CurTokStr, LexLineNo);
+          LexNextToken;
+        End;
+      End;
+    TK_PUNCT :
+      Begin
+        If CurTokStr = '(' Then
+        Begin
+          PxLastKind := PX_PAREN;
+          LexNextToken;
+          { Tuple vide () }
+          If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+          Begin
+            LexNextToken;
+            E := ExprMakeEAX(TY_IDX_TUPLE);
+          End
+          Else
+          Begin
+            E := ParseExprPrec(PREC_MAX + 1);
+            { Verifier si c est un tuple (virgule) }
+            If (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Then
+            Begin
+              LexNextToken;
+              E := ParseTupleLiteral(E);
+            End
+            Else
+            Begin
+              { Parentheses simples }
+              If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+                LexNextToken
+              Else
+                CompileError('expected )', LexLineNo);
+            End;
+          End;
+        End
+        Else
+        Begin
+          E.Kind    := EK_NONE;
+          E.ImmVal  := 0;
+          E.TypeIdx := TY_IDX_NONE;
+          E.Offset  := 0;
+          E.SymIdx  := -1;
+          CompileError('unexpected token: ' + CurTokStr, LexLineNo);
+          LexNextToken;
+        End;
+      End;
+    TK_LBRACKET :
+      Begin
+        LexNextToken; { consommer [ }
+        E := ParseListLiteral;
+      End;
+    TK_LBRACE :
+      Begin
+        LexNextToken; { consommer { }
+        E := ParseDictLiteral;
+      End;
+  Else
+    Begin
+      E.Kind    := EK_NONE;
+      E.ImmVal  := 0;
+      E.TypeIdx := TY_IDX_NONE;
+      E.Offset  := 0;
+      E.SymIdx  := -1;
+      CompileError('unexpected token in expression', LexLineNo);
+      LexNextToken;
+    End;
+  End;
+
+  { Appliquer les suffixes postfixes }
+  E := ParsePostfix(E);
+
+  ParsePrimaryFull := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpPxState : afficher l etat du sous-systeme des primaires    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpPxState;
+Begin
+  WriteLn('--- Px State ---');
+  WriteLn('  PxInitialized  : ', PxInitialized);
+  WriteLn('  PxCallCount    : ', PxCallCount);
+  WriteLn('  PxMethCount    : ', PxMethCount);
+  WriteLn('  PxAttrCount    : ', PxAttrCount);
+  WriteLn('  PxIndexCount   : ', PxIndexCount);
+  WriteLn('  PxSliceCount   : ', PxSliceCount);
+  WriteLn('  PxListCount    : ', PxListCount);
+  WriteLn('  PxDictCount    : ', PxDictCount);
+  WriteLn('  PxBuiltinCount : ', PxBuiltinCount);
+  WriteLn('  PxLastKind     : ', PxTypeName(PxLastKind));
+  WriteLn('  PxLabelSeq     : ', PxLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 08)                              }
+{ ------------------------------------------------------------ }
+
+Function IsPxInitialized : Boolean;
+Begin
+  IsPxInitialized := PxInitialized;
+End;
+
+Function IsPxEmpty : Boolean;
+Begin
+  IsPxEmpty := (PxCallCount = 0) And (PxMethCount = 0) And
+               (PxAttrCount = 0) And (PxIndexCount = 0);
+End;
+
+Function GetPxCallCount : LongInt;
+Begin
+  GetPxCallCount := PxCallCount;
+End;
+
+Function GetPxMethCount : LongInt;
+Begin
+  GetPxMethCount := PxMethCount;
+End;
+
+Function GetPxAttrCount : LongInt;
+Begin
+  GetPxAttrCount := PxAttrCount;
+End;
+
+Function GetPxIndexCount : LongInt;
+Begin
+  GetPxIndexCount := PxIndexCount;
+End;
+
+Function GetPxSliceCount : LongInt;
+Begin
+  GetPxSliceCount := PxSliceCount;
+End;
+
+Function GetPxBuiltinCount : LongInt;
+Begin
+  GetPxBuiltinCount := PxBuiltinCount;
+End;
+
+Function GetPxLastKind : Integer;
+Begin
+  GetPxLastKind := PxLastKind;
+End;
+
+Function GetPxStatus : TString;
+Begin
+  If Not PxInitialized Then
+    GetPxStatus := 'Not initialized'
+  Else
+    GetPxStatus := ItoS(PxCallCount) + ' calls, ' +
+                   ItoS(PxMethCount) + ' methods, ' +
+                   ItoS(PxAttrCount) + ' attrs, ' +
+                   ItoS(PxIndexCount) + ' index, ' +
+                   ItoS(PxBuiltinCount) + ' builtins';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -4759,6 +5565,7 @@ Begin
   TypInitialized := False;
   LitInitialized := False;
   OprInitialized := False;
+  PxInitialized := False;
 
   ParseArgs;
 
@@ -4779,6 +5586,9 @@ Begin
 
   { Initialiser le sous-systeme des operateurs }
   InitOprState;
+
+  { Initialiser le sous-systeme des primaires et appels }
+  InitPxState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -4806,6 +5616,11 @@ Begin
     WriteLn('Ops binaires     : ', GetOprBinOpCount);
     WriteLn('Ops unaires      : ', GetOprUnaryCount);
     WriteLn('Pliages constantes: ', GetOprFoldCount);
+    WriteLn('Appels fonctions : ', GetPxCallCount);
+    WriteLn('Appels methodes  : ', GetPxMethCount);
+    WriteLn('Acces attributs  : ', GetPxAttrCount);
+    WriteLn('Acces index      : ', GetPxIndexCount);
+    WriteLn('Appels builtins  : ', GetPxBuiltinCount);
   End;
 
   If Opts.DebugMode Then
@@ -4815,6 +5630,7 @@ Begin
     DumpTypState;
     DumpLitState;
     DumpOprState;
+    DumpPxState;
   End;
 
   { Nettoyage }

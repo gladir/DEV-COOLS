@@ -204,7 +204,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             Pliage de constantes pour expressions statiques
             10 fonctions accesseurs
 
-  TODO 08 - PARSEUR : EXPRESSIONS PRIMAIRES ET APPELS [A FAIRE]
+  TODO 08 - PARSEUR : EXPRESSIONS PRIMAIRES ET APPELS [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, ident,
               appel de fonction, None, True, False
             Acces attribut : expr.attr -> offset dans instance de classe
