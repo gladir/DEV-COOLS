@@ -5931,7 +5931,7 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ ParseCaseBlock : parser un bloc CASE..END avec NestDepth       }
+{ ParseCaseBlock : parser un bloc CASE..END via ParseStatement    }
 {   CASE expression OF                                           }
 {     val1 : instructions;                                       }
 {     val2 : instructions;                                       }
@@ -5940,47 +5940,47 @@ End;
 
 Procedure ParseCaseBlock;
 Var
-  NestDepth : Integer;
+  LblNum    : TString;
 Begin
   Inc(CtlStateCount);
+  Inc(CtlDepth);
+  If CtlDepth > CtlMaxDepth Then
+    CtlMaxDepth := CtlDepth;
+
+  LblNum := GenCtlLabel;
+
+  If Opts.Verbose Then
+    WriteLn('  CASE #', LblNum, ' (profondeur ', CtlDepth, ')');
 
   { Consommer CASE }
   LexNextToken;
 
-  { Consommer le corps du CASE jusqu a END via NestDepth }
-  NestDepth := 0;
+  { Parser l expression du CASE }
+  ParseExpression;
+
+  { Consommer OF si present }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_OF) Then
+    LexNextToken;
+
+  { Parser le corps du CASE via ParseStatement jusqu a END }
   While (CurTokType <> TOK_EOF) Do
   Begin
-    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+    If (CurTokType = TOK_KEYWORD) And
        (CurTokNum = KW_END) Then
     Begin
       LexNextToken;
       If CurTokType = TOK_SEMICOL Then
         LexNextToken;
+      If Opts.Verbose Then
+        WriteLn('  END CASE #', LblNum);
       Break;
     End;
 
-    If CurTokType = TOK_KEYWORD Then
-    Begin
-      If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
-         (CurTokNum = KW_WHILE) Or (CurTokNum = KW_CASE) Or
-         (CurTokNum = KW_BEGIN) Then
-        Inc(NestDepth);
-      If CurTokNum = KW_END Then
-      Begin
-        If NestDepth > 0 Then
-        Begin
-          Dec(NestDepth);
-          LexNextToken;
-          If CurTokType = TOK_SEMICOL Then
-            LexNextToken;
-          Continue;
-        End;
-      End;
-    End;
-
-    LexNextToken;
+    { Dispatcher vers ParseStatement pour les instructions du corps }
+    ParseStatement;
   End;
+
+  Dec(CtlDepth);
 End;
 
 { ------------------------------------------------------------ }
@@ -7969,11 +7969,12 @@ End;
 
 Function EvalUBound : LongInt;
 Var
-  Idx : Integer;
+  Idx    : Integer;
+  Result : LongInt;
 Begin
   Inc(BltStateCount);
   Inc(BltUBoundCount);
-  EvalUBound := 0;
+  Result := 0;
 
   { Consommer ( }
   If CurTokType = TOK_LPAREN Then
@@ -7991,11 +7992,11 @@ Begin
     If (Idx >= 0) And (SymTab[Idx].SymKind = SK_TABLE) Then
     Begin
       If SymTab[Idx].TableSize > 0 Then
-        EvalUBound := SymTab[Idx].TableSize - 1
+        Result := SymTab[Idx].TableSize - 1
       Else
-        EvalUBound := 0;
+        Result := 0;
       If Opts.Verbose Then
-        WriteLn('  UBOUND(', CurTokStr, ') = ', EvalUBound);
+        WriteLn('  UBOUND(', CurTokStr, ') = ', Result);
     End
     Else
     Begin
@@ -8032,6 +8033,8 @@ Begin
     WarnMsg(') attendu apres UBOUND(table)');
     Inc(BltErrorCount);
   End;
+
+  EvalUBound := Result;
 End;
 
 { ------------------------------------------------------------ }
