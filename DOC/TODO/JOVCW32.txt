@@ -445,7 +445,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Alignement des donnees sur 4 octets (DWORD)
             10 fonctions accesseurs
 
-  TODO 18 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [A FAIRE]
+  TODO 18 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
             Arithmetique entiere 32 bits :
               Addition : MOV EAX, [a] / ADD EAX, [b]
               Soustraction : MOV EAX, [a] / SUB EAX, [b]

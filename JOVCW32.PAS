@@ -9434,6 +9434,747 @@ End;
 
 
 { ============================================================ }
+{ TODO 18 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 }
+{   Generer le code assembleur 80386 pour les operations        }
+{   arithmetiques entieres (8/16/32 bits), flottantes (FPU),    }
+{   les expressions complexes (pile) et les comparaisons.       }
+{ ============================================================ }
+
+Const
+  { Types d operations arithmetiques }
+  ARI_NONE        = 0;   { aucune operation                         }
+  ARI_ADD         = 1;   { addition entiere                         }
+  ARI_SUB         = 2;   { soustraction entiere                     }
+  ARI_MUL         = 3;   { multiplication entiere                   }
+  ARI_DIV         = 4;   { division entiere                         }
+  ARI_POW         = 5;   { puissance (boucle de multiplication)     }
+  ARI_NEG         = 6;   { negation (NEG EAX)                       }
+  ARI_FADD        = 7;   { addition flottante                       }
+  ARI_FSUB        = 8;   { soustraction flottante                   }
+  ARI_FMUL        = 9;   { multiplication flottante                 }
+  ARI_FDIV        = 10;  { division flottante                       }
+  ARI_CMP         = 11;  { comparaison entiere                      }
+  ARI_LOAD        = 12;  { chargement dans EAX/FPU                  }
+  ARI_STORE       = 13;  { stockage depuis EAX/FPU                  }
+
+  { Limites }
+  ARI_MAX_OPS     = 4096;  { nombre max d operations generees       }
+
+Var
+  { Variables du generateur d operations arithmetiques }
+  AriInitialized  : Boolean;     { module initialise ?               }
+  AriStateCount   : Integer;     { compteur d operations             }
+  AriAddCount     : Integer;     { additions entieres generees       }
+  AriSubCount     : Integer;     { soustractions entieres generees   }
+  AriMulCount     : Integer;     { multiplications entieres generees }
+  AriDivCount     : Integer;     { divisions entieres generees       }
+  AriPowCount     : Integer;     { puissances generees               }
+  AriNegCount     : Integer;     { negations generees                }
+  AriFaddCount    : Integer;     { additions flottantes generees     }
+  AriFsubCount    : Integer;     { soustractions flottantes generees }
+  AriFmulCount    : Integer;     { multiplications flottantes gen.   }
+  AriFdivCount    : Integer;     { divisions flottantes generees     }
+  AriCmpCount     : Integer;     { comparaisons generees             }
+  AriLoadCount    : Integer;     { chargements generes               }
+  AriStoreCount   : Integer;     { stockages generes                 }
+  AriLabelNum     : Integer;     { generateur de labels uniques      }
+  AriErrorCount   : Integer;     { nombre d erreurs                  }
+
+{ ------------------------------------------------------------ }
+{ InitArithState : initialiser les variables du generateur      }
+{ ------------------------------------------------------------ }
+
+Procedure InitArithState;
+Begin
+  AriInitialized  := True;
+  AriStateCount   := 0;
+  AriAddCount     := 0;
+  AriSubCount     := 0;
+  AriMulCount     := 0;
+  AriDivCount     := 0;
+  AriPowCount     := 0;
+  AriNegCount     := 0;
+  AriFaddCount    := 0;
+  AriFsubCount    := 0;
+  AriFmulCount    := 0;
+  AriFdivCount    := 0;
+  AriCmpCount     := 0;
+  AriLoadCount    := 0;
+  AriStoreCount   := 0;
+  AriLabelNum     := 0;
+  AriErrorCount   := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAriLabel : generer un label unique pour l arithmetique      }
+{ ------------------------------------------------------------ }
+
+Function GenAriLabel : TString;
+Begin
+  Inc(AriLabelNum);
+  GenAriLabel := PFX_LBL + 'ARI_' + ItoSI(AriLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ AriTypeName : nom textuel d un type d operation arithmetique   }
+{ ------------------------------------------------------------ }
+
+Function AriTypeName(AriType : Integer) : TString;
+Begin
+  Case AriType Of
+    ARI_NONE:   AriTypeName := 'NONE';
+    ARI_ADD:    AriTypeName := 'ADD';
+    ARI_SUB:    AriTypeName := 'SUB';
+    ARI_MUL:    AriTypeName := 'MUL';
+    ARI_DIV:    AriTypeName := 'DIV';
+    ARI_POW:    AriTypeName := 'POW';
+    ARI_NEG:    AriTypeName := 'NEG';
+    ARI_FADD:   AriTypeName := 'FADD';
+    ARI_FSUB:   AriTypeName := 'FSUB';
+    ARI_FMUL:   AriTypeName := 'FMUL';
+    ARI_FDIV:   AriTypeName := 'FDIV';
+    ARI_CMP:    AriTypeName := 'CMP';
+    ARI_LOAD:   AriTypeName := 'LOAD';
+    ARI_STORE:  AriTypeName := 'STORE';
+  Else
+    AriTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitLoadItem : generer le code de chargement d un ITEM        }
+{   8 bits  : MOVSX EAX, BYTE [_JV_nom]                        }
+{   16 bits : MOVSX EAX, WORD [_JV_nom]                        }
+{   32 bits : MOV EAX, DWORD [_JV_nom]                         }
+{   FLOAT   : FLD DWORD [_JV_nom]                               }
+{ ------------------------------------------------------------ }
+
+Function EmitLoadItem(Const AsmName : TString;
+                      ByteSz : Integer;
+                      IsFloat : Boolean) : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := '';
+  If AriLoadCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitLoadItem := '; ERROR: max loads exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  If IsFloat Then
+  Begin
+    Buf := '  FLD DWORD [' + AsmName + ']';
+  End
+  Else
+  Begin
+    Case ByteSz Of
+      1 : Buf := '  MOVSX EAX, BYTE [' + AsmName + ']';
+      2 : Buf := '  MOVSX EAX, WORD [' + AsmName + ']';
+      4 : Buf := '  MOV EAX, DWORD [' + AsmName + ']';
+    Else
+      Buf := '  MOV EAX, DWORD [' + AsmName + ']';
+    End;
+  End;
+
+  Inc(AriLoadCount);
+  Inc(AriStateCount);
+  EmitLoadItem := Buf + Chr(13) + Chr(10);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStoreItem : generer le code de stockage vers un ITEM      }
+{   8 bits  : MOV BYTE [_JV_nom], AL                            }
+{   16 bits : MOV WORD [_JV_nom], AX                            }
+{   32 bits : MOV DWORD [_JV_nom], EAX                          }
+{   FLOAT   : FSTP DWORD [_JV_nom]                              }
+{ ------------------------------------------------------------ }
+
+Function EmitStoreItem(Const AsmName : TString;
+                       ByteSz : Integer;
+                       IsFloat : Boolean) : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := '';
+  If AriStoreCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitStoreItem := '; ERROR: max stores exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  If IsFloat Then
+  Begin
+    Buf := '  FSTP DWORD [' + AsmName + ']';
+  End
+  Else
+  Begin
+    Case ByteSz Of
+      1 : Buf := '  MOV BYTE [' + AsmName + '], AL';
+      2 : Buf := '  MOV WORD [' + AsmName + '], AX';
+      4 : Buf := '  MOV DWORD [' + AsmName + '], EAX';
+    Else
+      Buf := '  MOV DWORD [' + AsmName + '], EAX';
+    End;
+  End;
+
+  Inc(AriStoreCount);
+  Inc(AriStateCount);
+  EmitStoreItem := Buf + Chr(13) + Chr(10);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIntAdd : generer une addition entiere 32 bits              }
+{   MOV EAX, [a]                                                }
+{   ADD EAX, [b]                                                 }
+{ ------------------------------------------------------------ }
+
+Function EmitIntAdd(Const AsmA, AsmB : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If AriAddCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitIntAdd := '; ERROR: max adds exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '  MOV EAX, DWORD [' + AsmA + ']' + Chr(13) + Chr(10) +
+         '  ADD EAX, DWORD [' + AsmB + ']' + Chr(13) + Chr(10);
+  Inc(AriAddCount);
+  Inc(AriStateCount);
+  EmitIntAdd := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIntSub : generer une soustraction entiere 32 bits          }
+{   MOV EAX, [a]                                                }
+{   SUB EAX, [b]                                                 }
+{ ------------------------------------------------------------ }
+
+Function EmitIntSub(Const AsmA, AsmB : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If AriSubCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitIntSub := '; ERROR: max subs exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '  MOV EAX, DWORD [' + AsmA + ']' + Chr(13) + Chr(10) +
+         '  SUB EAX, DWORD [' + AsmB + ']' + Chr(13) + Chr(10);
+  Inc(AriSubCount);
+  Inc(AriStateCount);
+  EmitIntSub := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIntMul : generer une multiplication entiere 32 bits        }
+{   MOV EAX, [a]                                                }
+{   IMUL EAX, DWORD [b]                                        }
+{ ------------------------------------------------------------ }
+
+Function EmitIntMul(Const AsmA, AsmB : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If AriMulCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitIntMul := '; ERROR: max muls exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '  MOV EAX, DWORD [' + AsmA + ']' + Chr(13) + Chr(10) +
+         '  IMUL EAX, DWORD [' + AsmB + ']' + Chr(13) + Chr(10);
+  Inc(AriMulCount);
+  Inc(AriStateCount);
+  EmitIntMul := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIntDiv : generer une division entiere 32 bits              }
+{   MOV EAX, [a]                                                }
+{   CDQ                                                          }
+{   IDIV DWORD [b]                                               }
+{   Resultat dans EAX, reste dans EDX                            }
+{ ------------------------------------------------------------ }
+
+Function EmitIntDiv(Const AsmA, AsmB : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If AriDivCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitIntDiv := '; ERROR: max divs exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '  MOV EAX, DWORD [' + AsmA + ']' + Chr(13) + Chr(10) +
+         '  CDQ' + Chr(13) + Chr(10) +
+         '  IDIV DWORD [' + AsmB + ']' + Chr(13) + Chr(10);
+  Inc(AriDivCount);
+  Inc(AriStateCount);
+  EmitIntDiv := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIntPow : generer une puissance entiere par boucle          }
+{   MOV ECX, [exposant]                                          }
+{   MOV EBX, [base]                                              }
+{   MOV EAX, 1                                                   }
+{   boucle: TEST ECX, ECX / JZ fin                              }
+{           IMUL EAX, EBX / DEC ECX / JMP boucle                }
+{   fin:                                                         }
+{ ------------------------------------------------------------ }
+
+Function EmitIntPow(Const AsmBase, AsmExp : TString) : TString;
+Var
+  Buf, LblLoop, LblDone : TString;
+Begin
+  If AriPowCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitIntPow := '; ERROR: max pows exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  LblLoop := GenAriLabel;
+  LblDone := GenAriLabel;
+
+  Buf := '  MOV ECX, DWORD [' + AsmExp + ']' + Chr(13) + Chr(10) +
+         '  MOV EBX, DWORD [' + AsmBase + ']' + Chr(13) + Chr(10) +
+         '  MOV EAX, 1' + Chr(13) + Chr(10) +
+         LblLoop + ':' + Chr(13) + Chr(10) +
+         '  TEST ECX, ECX' + Chr(13) + Chr(10) +
+         '  JZ ' + LblDone + Chr(13) + Chr(10) +
+         '  IMUL EAX, EBX' + Chr(13) + Chr(10) +
+         '  DEC ECX' + Chr(13) + Chr(10) +
+         '  JMP ' + LblLoop + Chr(13) + Chr(10) +
+         LblDone + ':' + Chr(13) + Chr(10);
+  Inc(AriPowCount);
+  Inc(AriStateCount);
+  EmitIntPow := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIntNeg : generer une negation entiere                      }
+{   MOV EAX, [a]                                                }
+{   NEG EAX                                                      }
+{ ------------------------------------------------------------ }
+
+Function EmitIntNeg(Const AsmA : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If AriNegCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitIntNeg := '; ERROR: max negs exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '  MOV EAX, DWORD [' + AsmA + ']' + Chr(13) + Chr(10) +
+         '  NEG EAX' + Chr(13) + Chr(10);
+  Inc(AriNegCount);
+  Inc(AriStateCount);
+  EmitIntNeg := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFloatAdd : generer une addition flottante (FPU)            }
+{   FLD DWORD [a]                                                }
+{   FADD DWORD [b]                                               }
+{   FSTP DWORD [r]                                               }
+{ ------------------------------------------------------------ }
+
+Function EmitFloatAdd(Const AsmA, AsmB, AsmR : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If AriFaddCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitFloatAdd := '; ERROR: max fadds exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '  FLD DWORD [' + AsmA + ']' + Chr(13) + Chr(10) +
+         '  FADD DWORD [' + AsmB + ']' + Chr(13) + Chr(10) +
+         '  FSTP DWORD [' + AsmR + ']' + Chr(13) + Chr(10);
+  Inc(AriFaddCount);
+  Inc(AriStateCount);
+  EmitFloatAdd := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFloatSub : generer une soustraction flottante (FPU)        }
+{   FLD DWORD [a]                                                }
+{   FSUB DWORD [b]                                               }
+{   FSTP DWORD [r]                                               }
+{ ------------------------------------------------------------ }
+
+Function EmitFloatSub(Const AsmA, AsmB, AsmR : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If AriFsubCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitFloatSub := '; ERROR: max fsubs exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '  FLD DWORD [' + AsmA + ']' + Chr(13) + Chr(10) +
+         '  FSUB DWORD [' + AsmB + ']' + Chr(13) + Chr(10) +
+         '  FSTP DWORD [' + AsmR + ']' + Chr(13) + Chr(10);
+  Inc(AriFsubCount);
+  Inc(AriStateCount);
+  EmitFloatSub := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFloatMul : generer une multiplication flottante (FPU)      }
+{   FLD DWORD [a]                                                }
+{   FMUL DWORD [b]                                               }
+{   FSTP DWORD [r]                                               }
+{ ------------------------------------------------------------ }
+
+Function EmitFloatMul(Const AsmA, AsmB, AsmR : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If AriFmulCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitFloatMul := '; ERROR: max fmuls exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '  FLD DWORD [' + AsmA + ']' + Chr(13) + Chr(10) +
+         '  FMUL DWORD [' + AsmB + ']' + Chr(13) + Chr(10) +
+         '  FSTP DWORD [' + AsmR + ']' + Chr(13) + Chr(10);
+  Inc(AriFmulCount);
+  Inc(AriStateCount);
+  EmitFloatMul := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFloatDiv : generer une division flottante (FPU)            }
+{   FLD DWORD [a]                                                }
+{   FDIV DWORD [b]                                               }
+{   FSTP DWORD [r]                                               }
+{ ------------------------------------------------------------ }
+
+Function EmitFloatDiv(Const AsmA, AsmB, AsmR : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If AriFdivCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitFloatDiv := '; ERROR: max fdivs exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '  FLD DWORD [' + AsmA + ']' + Chr(13) + Chr(10) +
+         '  FDIV DWORD [' + AsmB + ']' + Chr(13) + Chr(10) +
+         '  FSTP DWORD [' + AsmR + ']' + Chr(13) + Chr(10);
+  Inc(AriFdivCount);
+  Inc(AriStateCount);
+  EmitFloatDiv := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPushEAX : sauvegarder EAX sur la pile pour les            }
+{   expressions complexes                                        }
+{ ------------------------------------------------------------ }
+
+Function EmitPushEAX : TString;
+Begin
+  EmitPushEAX := '  PUSH EAX' + Chr(13) + Chr(10);
+  Inc(AriStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPopEBX : recuperer l operande gauche depuis la pile        }
+{ ------------------------------------------------------------ }
+
+Function EmitPopEBX : TString;
+Begin
+  EmitPopEBX := '  POP EBX' + Chr(13) + Chr(10);
+  Inc(AriStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBinOpRegs : generer une operation binaire registre-registre}
+{   Operande gauche dans EBX, operande droit dans EAX           }
+{   Resultat dans EAX                                            }
+{ ------------------------------------------------------------ }
+
+Function EmitBinOpRegs(Op : Integer) : TString;
+Var
+  Buf, LblLoop, LblDone : TString;
+Begin
+  Buf := '';
+  Case Op Of
+    ARI_ADD:
+    Begin
+      Buf := '  ADD EAX, EBX' + Chr(13) + Chr(10);
+      Inc(AriAddCount);
+    End;
+    ARI_SUB:
+    Begin
+      { EBX = gauche, EAX = droit -> EBX - EAX }
+      Buf := '  SUB EBX, EAX' + Chr(13) + Chr(10) +
+             '  MOV EAX, EBX' + Chr(13) + Chr(10);
+      Inc(AriSubCount);
+    End;
+    ARI_MUL:
+    Begin
+      Buf := '  IMUL EAX, EBX' + Chr(13) + Chr(10);
+      Inc(AriMulCount);
+    End;
+    ARI_DIV:
+    Begin
+      { EBX = gauche, EAX = droit -> EBX / EAX }
+      Buf := '  MOV ECX, EAX' + Chr(13) + Chr(10) +
+             '  MOV EAX, EBX' + Chr(13) + Chr(10) +
+             '  CDQ' + Chr(13) + Chr(10) +
+             '  IDIV ECX' + Chr(13) + Chr(10);
+      Inc(AriDivCount);
+    End;
+    ARI_POW:
+    Begin
+      { EBX = base, EAX = exposant }
+      LblLoop := GenAriLabel;
+      LblDone := GenAriLabel;
+      Buf := '  MOV ECX, EAX' + Chr(13) + Chr(10) +
+             '  MOV EAX, 1' + Chr(13) + Chr(10) +
+             LblLoop + ':' + Chr(13) + Chr(10) +
+             '  TEST ECX, ECX' + Chr(13) + Chr(10) +
+             '  JZ ' + LblDone + Chr(13) + Chr(10) +
+             '  IMUL EAX, EBX' + Chr(13) + Chr(10) +
+             '  DEC ECX' + Chr(13) + Chr(10) +
+             '  JMP ' + LblLoop + Chr(13) + Chr(10) +
+             LblDone + ':' + Chr(13) + Chr(10);
+      Inc(AriPowCount);
+    End;
+  Else
+    Buf := '; ERROR: unknown binop ' + ItoSI(Op) + Chr(13) + Chr(10);
+    Inc(AriErrorCount);
+  End;
+
+  Inc(AriStateCount);
+  EmitBinOpRegs := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCompare : generer une comparaison entiere                  }
+{   CMP EAX, EBX                                                }
+{   Jcc label_vrai                                               }
+{   cc = E (=), NE (<>), L (<), LE (<=), G (>), GE (>=)        }
+{ ------------------------------------------------------------ }
+
+Function EmitCompare(Const AsmA, AsmB : TString;
+                     Op : Integer) : TString;
+Var
+  Buf, Jcc : TString;
+Begin
+  If AriCmpCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitCompare := '; ERROR: max cmps exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Case Op Of
+    OP_EQ  : Jcc := 'JE';
+    OP_NE  : Jcc := 'JNE';
+    OP_LT  : Jcc := 'JL';
+    OP_LE  : Jcc := 'JLE';
+    OP_GT  : Jcc := 'JG';
+    OP_GE  : Jcc := 'JGE';
+  Else
+    Jcc := 'JE';
+  End;
+
+  Buf := '  MOV EAX, DWORD [' + AsmA + ']' + Chr(13) + Chr(10) +
+         '  CMP EAX, DWORD [' + AsmB + ']' + Chr(13) + Chr(10) +
+         '  ' + Jcc + ' ';
+  Inc(AriCmpCount);
+  Inc(AriStateCount);
+  EmitCompare := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCompareRegs : generer une comparaison registre-registre    }
+{   EBX = operande gauche, EAX = operande droit                 }
+{   CMP EBX, EAX                                                }
+{   Jcc label                                                    }
+{ ------------------------------------------------------------ }
+
+Function EmitCompareRegs(Op : Integer) : TString;
+Var
+  Buf, Jcc : TString;
+Begin
+  If AriCmpCount >= ARI_MAX_OPS Then
+  Begin
+    Inc(AriErrorCount);
+    EmitCompareRegs := '; ERROR: max cmps exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Case Op Of
+    OP_EQ  : Jcc := 'JE';
+    OP_NE  : Jcc := 'JNE';
+    OP_LT  : Jcc := 'JL';
+    OP_LE  : Jcc := 'JLE';
+    OP_GT  : Jcc := 'JG';
+    OP_GE  : Jcc := 'JGE';
+  Else
+    Jcc := 'JE';
+  End;
+
+  Buf := '  CMP EBX, EAX' + Chr(13) + Chr(10) +
+         '  ' + Jcc + ' ';
+  Inc(AriCmpCount);
+  Inc(AriStateCount);
+  EmitCompareRegs := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitLoadImmediate : charger une valeur immediate dans EAX      }
+{   MOV EAX, valeur                                              }
+{ ------------------------------------------------------------ }
+
+Function EmitLoadImmediate(Value : LongInt) : TString;
+Var
+  Buf, VS : TString;
+Begin
+  Str(Value, VS);
+  Buf := '  MOV EAX, ' + VS + Chr(13) + Chr(10);
+  Inc(AriLoadCount);
+  Inc(AriStateCount);
+  EmitLoadImmediate := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetArithOpFromExpOp : convertir un operateur d expression      }
+{   (OP_ADD, OP_SUB, ...) en type d operation arithmetique       }
+{   (ARI_ADD, ARI_SUB, ...)                                     }
+{ ------------------------------------------------------------ }
+
+Function GetArithOpFromExpOp(ExpOp : Integer) : Integer;
+Begin
+  Case ExpOp Of
+    OP_ADD : GetArithOpFromExpOp := ARI_ADD;
+    OP_SUB : GetArithOpFromExpOp := ARI_SUB;
+    OP_MUL : GetArithOpFromExpOp := ARI_MUL;
+    OP_DIV : GetArithOpFromExpOp := ARI_DIV;
+    OP_POWER : GetArithOpFromExpOp := ARI_POW;
+  Else
+    GetArithOpFromExpOp := ARI_NONE;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsFloatArithOp : determiner si une operation est flottante     }
+{ ------------------------------------------------------------ }
+
+Function IsFloatArithOp(AriType : Integer) : Boolean;
+Begin
+  IsFloatArithOp := (AriType >= ARI_FADD) And (AriType <= ARI_FDIV);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpArithState : afficher l etat du generateur arithmetique    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpArithState;
+Begin
+  WriteLn('=== Etat du generateur arithmetique (TODO 18) ===');
+  WriteLn('  Initialise       : ', AriInitialized);
+  WriteLn('  Operations       : ', AriStateCount);
+  WriteLn('  Additions (int)  : ', AriAddCount);
+  WriteLn('  Soustractions    : ', AriSubCount);
+  WriteLn('  Multiplications  : ', AriMulCount);
+  WriteLn('  Divisions        : ', AriDivCount);
+  WriteLn('  Puissances       : ', AriPowCount);
+  WriteLn('  Negations        : ', AriNegCount);
+  WriteLn('  FADD (float)     : ', AriFaddCount);
+  WriteLn('  FSUB (float)     : ', AriFsubCount);
+  WriteLn('  FMUL (float)     : ', AriFmulCount);
+  WriteLn('  FDIV (float)     : ', AriFdivCount);
+  WriteLn('  Comparaisons     : ', AriCmpCount);
+  WriteLn('  Chargements      : ', AriLoadCount);
+  WriteLn('  Stockages        : ', AriStoreCount);
+  WriteLn('  Labels generes   : ', AriLabelNum);
+  WriteLn('  Erreurs          : ', AriErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs pour le generateur arithmetique        }
+{ ------------------------------------------------------------ }
+
+Function IsAriInitialized : Boolean;
+Begin
+  IsAriInitialized := AriInitialized;
+End;
+
+Function IsAriEmpty : Boolean;
+Begin
+  IsAriEmpty := (AriStateCount = 0);
+End;
+
+Function GetAriStateCount : Integer;
+Begin
+  GetAriStateCount := AriStateCount;
+End;
+
+Function GetAriAddCount : Integer;
+Begin
+  GetAriAddCount := AriAddCount;
+End;
+
+Function GetAriMulCount : Integer;
+Begin
+  GetAriMulCount := AriMulCount;
+End;
+
+Function GetAriDivCount : Integer;
+Begin
+  GetAriDivCount := AriDivCount;
+End;
+
+Function GetAriFaddCount : Integer;
+Begin
+  GetAriFaddCount := AriFaddCount;
+End;
+
+Function GetAriCmpCount : Integer;
+Begin
+  GetAriCmpCount := AriCmpCount;
+End;
+
+Function GetAriLabelNum : Integer;
+Begin
+  GetAriLabelNum := AriLabelNum;
+End;
+
+Function GetAriErrorCount : Integer;
+Begin
+  GetAriErrorCount := AriErrorCount;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -9461,6 +10202,7 @@ Begin
   BltInitialized := False;
   IOInitialized := False;
   DatInitialized := False;
+  AriInitialized := False;
 
   ParseArgs;
 
@@ -9512,6 +10254,9 @@ Begin
   { Initialiser le generateur de segment de donnees }
   InitDataSegState;
 
+  { Initialiser le generateur d operations arithmetiques }
+  InitArithState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -9542,6 +10287,7 @@ Begin
     DumpBuiltinState;
     DumpIOState;
     DumpDataSegState;
+    DumpArithState;
   End;
 
   { Nettoyage }
