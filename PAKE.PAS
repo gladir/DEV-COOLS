@@ -654,7 +654,7 @@
               Var MainRs: String)
               modifier le code Rust pour configurer le proxy
 
-  TODO 23 - MODE DEVELOPPEUR [A FAIRE]
+  TODO 23 - MODE DEVELOPPEUR [IMPLEMENTE]
             Constantes de debug :
               DEBUG_DEVTOOLS = 1, DEBUG_CONSOLE = 2, DEBUG_NETWORK = 4
             Function GenerateDevToolsConfig(Enabled: Boolean): String
@@ -8112,7 +8112,413 @@ Begin
 End;
 
 { ============================================================
-  TODO 23-25 : A IMPLEMENTER
+  TODO 23 - MODE DEVELOPPEUR [IMPLEMENTE]
+  ============================================================ }
+
+Const
+  { Flags de debug }
+  DEBUG_NONE     = 0;
+  DEBUG_DEVTOOLS = 1;
+  DEBUG_CONSOLE  = 2;
+  DEBUG_NETWORK  = 4;
+  
+  { Extensions et constantes }
+  DV_MAX_PORT     = 65535;
+  DV_MIN_PORT     = 1024;
+  DV_DEFAULT_PORT = 9222;
+  DV_MAX_LOGSIZE  = 65536;
+  
+  { Types d'extension }
+  DV_EXT_NONE   = 0;
+  DV_EXT_CONFIG = 1;
+  DV_EXT_JS     = 2;
+  DV_EXT_RUST   = 3;
+
+Var
+  { Variables d'etat pour le module Developer }
+  DvInitialized   : Boolean;
+  DvStateCount    : Integer;
+  DvFlags         : Integer;
+  DvRemotePort    : Integer;
+  DvDevToolsEnabled : Boolean;
+  DvConsoleEnabled  : Boolean;
+  DvNetworkEnabled  : Boolean;
+  DvGenConfigCount  : Integer;
+  DvGenJsCount      : Integer;
+  DvRemoteCount     : Integer;
+  DvShortcutCount   : Integer;
+  DvErrorCount      : Integer;
+  DvLabelNum        : Integer;
+
+{ Initialiser l'etat du module Developer }
+Procedure InitDevState;
+Begin
+  DvInitialized := True;
+  DvStateCount := 0;
+  DvFlags := DEBUG_NONE;
+  DvRemotePort := DV_DEFAULT_PORT;
+  DvDevToolsEnabled := False;
+  DvConsoleEnabled := False;
+  DvNetworkEnabled := False;
+  DvGenConfigCount := 0;
+  DvGenJsCount := 0;
+  DvRemoteCount := 0;
+  DvShortcutCount := 0;
+  DvErrorCount := 0;
+  DvLabelNum := 0;
+End;
+
+{ Generer un label unique pour le module Developer }
+Function GenDvLabel: String;
+Var
+  S: String;
+Begin
+  Inc(DvLabelNum);
+  Str(DvLabelNum, S);
+  GenDvLabel := 'DV' + S;
+End;
+
+{ Retourner le nom d'un flag de debug }
+Function DvFlagName(Flag: Integer): String;
+Begin
+  Case Flag Of
+    DEBUG_NONE:     DvFlagName := 'none';
+    DEBUG_DEVTOOLS: DvFlagName := 'devtools';
+    DEBUG_CONSOLE:  DvFlagName := 'console';
+    DEBUG_NETWORK:  DvFlagName := 'network';
+  Else
+    DvFlagName := 'unknown';
+  End;
+End;
+
+{ Retourner le nom d'une extension }
+Function DvExtName(Ext: Integer): String;
+Begin
+  Case Ext Of
+    DV_EXT_NONE:   DvExtName := 'none';
+    DV_EXT_CONFIG: DvExtName := 'config';
+    DV_EXT_JS:     DvExtName := 'js';
+    DV_EXT_RUST:   DvExtName := 'rust';
+  Else
+    DvExtName := 'unknown';
+  End;
+End;
+
+{ Activer/desactiver les DevTools }
+Procedure SetDevToolsEnabled(Enabled: Boolean);
+Begin
+  Inc(DvStateCount);
+  DvDevToolsEnabled := Enabled;
+  If Enabled Then
+    DvFlags := DvFlags Or DEBUG_DEVTOOLS
+  Else
+    DvFlags := DvFlags And (Not DEBUG_DEVTOOLS);
+End;
+
+{ Activer/desactiver le logging console }
+Procedure SetConsoleLoggingEnabled(Enabled: Boolean);
+Begin
+  Inc(DvStateCount);
+  DvConsoleEnabled := Enabled;
+  If Enabled Then
+    DvFlags := DvFlags Or DEBUG_CONSOLE
+  Else
+    DvFlags := DvFlags And (Not DEBUG_CONSOLE);
+End;
+
+{ Activer/desactiver le monitoring reseau }
+Procedure SetNetworkMonitorEnabled(Enabled: Boolean);
+Begin
+  Inc(DvStateCount);
+  DvNetworkEnabled := Enabled;
+  If Enabled Then
+    DvFlags := DvFlags Or DEBUG_NETWORK
+  Else
+    DvFlags := DvFlags And (Not DEBUG_NETWORK);
+End;
+
+{ Generer la configuration pour activer les DevTools }
+Function GenerateDevToolsConfig(Enabled: Boolean): String;
+Var
+  Result: String;
+Begin
+  Inc(DvStateCount);
+  Inc(DvGenConfigCount);
+  
+  Result := '';
+  If Enabled Then
+  Begin
+    Result := Result + '// DevTools Configuration' + Chr(10);
+    Result := Result + 'let webview = webview_builder' + Chr(10);
+    Result := Result + '    .with_devtools(true)' + Chr(10);
+    Result := Result + '    .build()?;' + Chr(10);
+    Result := Result + Chr(10);
+    Result := Result + '// Enable DevTools on startup' + Chr(10);
+    Result := Result + 'webview.open_devtools();' + Chr(10);
+    SetDevToolsEnabled(True);
+  End
+  Else
+  Begin
+    Result := Result + '// DevTools disabled' + Chr(10);
+    Result := Result + 'let webview = webview_builder' + Chr(10);
+    Result := Result + '    .with_devtools(false)' + Chr(10);
+    Result := Result + '    .build()?;' + Chr(10);
+    SetDevToolsEnabled(False);
+  End;
+  
+  GenerateDevToolsConfig := Result;
+End;
+
+{ Generer le JavaScript pour capturer console.log/error }
+Function GenerateConsoleLoggingJs: String;
+Var
+  Result: String;
+Begin
+  Inc(DvStateCount);
+  Inc(DvGenJsCount);
+  SetConsoleLoggingEnabled(True);
+  
+  Result := '';
+  Result := Result + '// Console Logging Interceptor' + Chr(10);
+  Result := Result + '(function() {' + Chr(10);
+  Result := Result + '  const originalConsole = {' + Chr(10);
+  Result := Result + '    log: console.log.bind(console),' + Chr(10);
+  Result := Result + '    warn: console.warn.bind(console),' + Chr(10);
+  Result := Result + '    error: console.error.bind(console),' + Chr(10);
+  Result := Result + '    info: console.info.bind(console),' + Chr(10);
+  Result := Result + '    debug: console.debug.bind(console)' + Chr(10);
+  Result := Result + '  };' + Chr(10);
+  Result := Result + Chr(10);
+  Result := Result + '  function formatArgs(args) {' + Chr(10);
+  Result := Result + '    return Array.from(args).map(arg => {' + Chr(10);
+  Result := Result + '      if (typeof arg === "object") {' + Chr(10);
+  Result := Result + '        try {' + Chr(10);
+  Result := Result + '          return JSON.stringify(arg, null, 2);' + Chr(10);
+  Result := Result + '        } catch (e) {' + Chr(10);
+  Result := Result + '          return String(arg);' + Chr(10);
+  Result := Result + '        }' + Chr(10);
+  Result := Result + '      }' + Chr(10);
+  Result := Result + '      return String(arg);' + Chr(10);
+  Result := Result + '    }).join(" ");' + Chr(10);
+  Result := Result + '  }' + Chr(10);
+  Result := Result + Chr(10);
+  Result := Result + '  function sendToNative(level, args) {' + Chr(10);
+  Result := Result + '    const message = formatArgs(args);' + Chr(10);
+  Result := Result + '    const timestamp = new Date().toISOString();' + Chr(10);
+  Result := Result + '    window.__TAURI__.invoke("console_log", {' + Chr(10);
+  Result := Result + '      level: level,' + Chr(10);
+  Result := Result + '      message: message,' + Chr(10);
+  Result := Result + '      timestamp: timestamp' + Chr(10);
+  Result := Result + '    }).catch(() => {});' + Chr(10);
+  Result := Result + '  }' + Chr(10);
+  Result := Result + Chr(10);
+  Result := Result + '  console.log = function(...args) {' + Chr(10);
+  Result := Result + '    originalConsole.log(...args);' + Chr(10);
+  Result := Result + '    sendToNative("LOG", args);' + Chr(10);
+  Result := Result + '  };' + Chr(10);
+  Result := Result + Chr(10);
+  Result := Result + '  console.warn = function(...args) {' + Chr(10);
+  Result := Result + '    originalConsole.warn(...args);' + Chr(10);
+  Result := Result + '    sendToNative("WARN", args);' + Chr(10);
+  Result := Result + '  };' + Chr(10);
+  Result := Result + Chr(10);
+  Result := Result + '  console.error = function(...args) {' + Chr(10);
+  Result := Result + '    originalConsole.error(...args);' + Chr(10);
+  Result := Result + '    sendToNative("ERROR", args);' + Chr(10);
+  Result := Result + '  };' + Chr(10);
+  Result := Result + Chr(10);
+  Result := Result + '  console.info = function(...args) {' + Chr(10);
+  Result := Result + '    originalConsole.info(...args);' + Chr(10);
+  Result := Result + '    sendToNative("INFO", args);' + Chr(10);
+  Result := Result + '  };' + Chr(10);
+  Result := Result + Chr(10);
+  Result := Result + '  console.debug = function(...args) {' + Chr(10);
+  Result := Result + '    originalConsole.debug(...args);' + Chr(10);
+  Result := Result + '    sendToNative("DEBUG", args);' + Chr(10);
+  Result := Result + '  };' + Chr(10);
+  Result := Result + Chr(10);
+  Result := Result + '  // Capture uncaught errors' + Chr(10);
+  Result := Result + '  window.onerror = function(msg, url, line, col, error) {' + Chr(10);
+  Result := Result + '    sendToNative("ERROR", ["Uncaught: " + msg + ' + Chr(10);
+  Result := Result + '      " at " + url + ":" + line + ":" + col]);' + Chr(10);
+  Result := Result + '    return false;' + Chr(10);
+  Result := Result + '  };' + Chr(10);
+  Result := Result + Chr(10);
+  Result := Result + '  // Capture unhandled promise rejections' + Chr(10);
+  Result := Result + '  window.onunhandledrejection = function(event) {' + Chr(10);
+  Result := Result + '    sendToNative("ERROR", ["Unhandled rejection: " + ' + Chr(10);
+  Result := Result + '      (event.reason || "unknown")]);' + Chr(10);
+  Result := Result + '  };' + Chr(10);
+  Result := Result + '})();' + Chr(10);
+  
+  GenerateConsoleLoggingJs := Result;
+End;
+
+{ Configurer le debugging distant sur un port specifique }
+Procedure EnableRemoteDebugging(Port: Integer; Var MainRs: String);
+Begin
+  Inc(DvStateCount);
+  Inc(DvRemoteCount);
+  
+  { Valider le port }
+  If Port < DV_MIN_PORT Then
+    Port := DV_MIN_PORT;
+  If Port > DV_MAX_PORT Then
+    Port := DV_MAX_PORT;
+    
+  DvRemotePort := Port;
+  
+  { Ajouter la configuration au code Rust }
+  MainRs := MainRs + Chr(10);
+  MainRs := MainRs + '// Remote Debugging Configuration' + Chr(10);
+  MainRs := MainRs + 'use std::env;' + Chr(10);
+  MainRs := MainRs + Chr(10);
+  MainRs := MainRs + '// Enable remote debugging' + Chr(10);
+  MainRs := MainRs + 'env::set_var("WEBKIT_INSPECTOR_SERVER", "127.0.0.1:';
+  MainRs := MainRs + IntToStr(Port) + '");' + Chr(10);
+  MainRs := MainRs + Chr(10);
+  MainRs := MainRs + '// For Chromium-based webviews' + Chr(10);
+  MainRs := MainRs + 'env::set_var("CHROME_REMOTE_DEBUGGING_PORT", "';
+  MainRs := MainRs + IntToStr(Port) + '");' + Chr(10);
+  MainRs := MainRs + Chr(10);
+  MainRs := MainRs + 'println!("Remote debugging enabled on port ' + IntToStr(Port) + '");' + Chr(10);
+  MainRs := MainRs + 'println!("Connect with: chrome://inspect or webkit://inspector");' + Chr(10);
+End;
+
+{ Generer le code Rust pour le handler de console }
+Function GenerateConsoleHandlerRust: String;
+Var
+  Result: String;
+Begin
+  Inc(DvStateCount);
+  
+  Result := '';
+  Result := Result + '// Console Log Handler' + Chr(10);
+  Result := Result + '#[tauri::command]' + Chr(10);
+  Result := Result + 'fn console_log(level: String, message: String, timestamp: String) {' + Chr(10);
+  Result := Result + '    let prefix = match level.as_str() {' + Chr(10);
+  Result := Result + '        "ERROR" => "\x1b[31m[ERROR]\x1b[0m",' + Chr(10);
+  Result := Result + '        "WARN"  => "\x1b[33m[WARN]\x1b[0m",' + Chr(10);
+  Result := Result + '        "INFO"  => "\x1b[34m[INFO]\x1b[0m",' + Chr(10);
+  Result := Result + '        "DEBUG" => "\x1b[90m[DEBUG]\x1b[0m",' + Chr(10);
+  Result := Result + '        _       => "[LOG]",' + Chr(10);
+  Result := Result + '    };' + Chr(10);
+  Result := Result + '    println!("{} {} {}", timestamp, prefix, message);' + Chr(10);
+  Result := Result + '}' + Chr(10);
+  
+  GenerateConsoleHandlerRust := Result;
+End;
+
+{ Ajouter le raccourci DevTools }
+Procedure InjectDevToolsShortcut;
+Begin
+  Inc(DvStateCount);
+  Inc(DvShortcutCount);
+  
+  { Ajouter le raccourci Cmd+Shift+I / Ctrl+Shift+I }
+  If KbdShortcutCount < KBD_MAX_SHORTCUTS Then
+  Begin
+    If AddShortcut(KBD_KEY_DEVTOOLS, KBD_ACTION_DEVTOOLS, True) Then
+    Begin
+      { Raccourci ajoute avec succes }
+    End
+    Else
+    Begin
+      Inc(DvErrorCount);
+    End;
+  End
+  Else
+  Begin
+    Inc(DvErrorCount);
+  End;
+End;
+
+{ Verifier si le mode debug est actif }
+Function IsDebugEnabled: Boolean;
+Begin
+  IsDebugEnabled := DvFlags <> DEBUG_NONE;
+End;
+
+{ Verifier si un flag specifique est actif }
+Function IsDebugFlagEnabled(Flag: Integer): Boolean;
+Begin
+  IsDebugFlagEnabled := (DvFlags And Flag) <> 0;
+End;
+
+{ Afficher l'etat du module Developer }
+Procedure DumpDevState;
+Begin
+  WriteLn('=== Developer Module State ===');
+  WriteLn('Initialized      : ', DvInitialized);
+  WriteLn('State Count      : ', DvStateCount);
+  WriteLn('Flags            : ', DvFlags);
+  WriteLn('  DevTools       : ', DvDevToolsEnabled);
+  WriteLn('  Console        : ', DvConsoleEnabled);
+  WriteLn('  Network        : ', DvNetworkEnabled);
+  WriteLn('Remote Port      : ', DvRemotePort);
+  WriteLn('Config Gen Count : ', DvGenConfigCount);
+  WriteLn('JS Gen Count     : ', DvGenJsCount);
+  WriteLn('Remote Count     : ', DvRemoteCount);
+  WriteLn('Shortcut Count   : ', DvShortcutCount);
+  WriteLn('Error Count      : ', DvErrorCount);
+  WriteLn('Label Num        : ', DvLabelNum);
+  WriteLn;
+End;
+
+{ Accesseurs pour le module Developer }
+
+Function IsDvInitialized: Boolean;
+Begin
+  IsDvInitialized := DvInitialized;
+End;
+
+Function IsDvEmpty: Boolean;
+Begin
+  IsDvEmpty := DvFlags = DEBUG_NONE;
+End;
+
+Function GetDvStateCount: Integer;
+Begin
+  GetDvStateCount := DvStateCount;
+End;
+
+Function GetDvFlags: Integer;
+Begin
+  GetDvFlags := DvFlags;
+End;
+
+Function GetDvRemotePort: Integer;
+Begin
+  GetDvRemotePort := DvRemotePort;
+End;
+
+Function GetDvGenConfigCount: Integer;
+Begin
+  GetDvGenConfigCount := DvGenConfigCount;
+End;
+
+Function GetDvGenJsCount: Integer;
+Begin
+  GetDvGenJsCount := DvGenJsCount;
+End;
+
+Function GetDvRemoteCount: Integer;
+Begin
+  GetDvRemoteCount := DvRemoteCount;
+End;
+
+Function GetDvErrorCount: Integer;
+Begin
+  GetDvErrorCount := DvErrorCount;
+End;
+
+Function GetDvLabelNum: Integer;
+Begin
+  GetDvLabelNum := DvLabelNum;
+End;
+
+{ ============================================================
+  TODO 24-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -8384,13 +8790,27 @@ Begin
     End;
   End;
 
-  { TODO: Implementer les TODOs 23-25 }
-  WriteLn('*** NOTE: TODOs 01-22 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 23-25 restent a implementer ***');
+  { Initialiser le module Developer (TODO 23) }
+  InitDevState;
+  
+  { Si le mode debug est active, configurer les DevTools }
+  If O.DebugMode Then
+  Begin
+    SetDevToolsEnabled(True);
+    InjectDevToolsShortcut;
+    If O.Verbose Then
+    Begin
+      WriteLn('=== Configuration Developer ===');
+      DumpDevState;
+    End;
+  End;
+
+  { TODO: Implementer les TODOs 24-25 }
+  WriteLn('*** NOTE: TODOs 01-23 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 24-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 23: Mode developpeur');
   WriteLn('  - TODO 24: Presets d''applications populaires');
   WriteLn('  - TODO 25: Verification et rapport final');
 End;

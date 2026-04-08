@@ -625,7 +625,7 @@ Turbo Pascal / Free Pascal (-Mtp)
            Var MainRs: String)
            modifier le code Rust pour configurer le proxy
 
-  TODO 23 - MODE DEVELOPPEUR [A FAIRE]
+  TODO 23 - MODE DEVELOPPEUR [IMPLEMENTE]
          Constantes de debug :
            DEBUG_DEVTOOLS = 1, DEBUG_CONSOLE = 2, DEBUG_NETWORK = 4
          Function GenerateDevToolsConfig(Enabled: Boolean): String
