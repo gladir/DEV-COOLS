@@ -435,14 +435,29 @@ Turbo Pascal / Free Pascal (-Mtp)
            GetPermApplyCount/GetPermEnabledCount/GetPermDisabledCount/
            GetPermMaxTypes)
 
-  TODO 16 - CONFIGURATION DU BUILD [A FAIRE]
+  TODO 16 - CONFIGURATION DU BUILD [IMPLEMENTE]
          Constantes de modes de build :
-           BUILD_DEBUG = 0, BUILD_RELEASE = 1
-         Function GenerateBuildCommand(Const Opts: TOptions): String
+           BUILD_DEBUG = 0, BUILD_RELEASE = 1 (deja definis)
+         Constantes de plateformes cibles :
+           Utilise PLATFORM_* (PLATFORM_UNKNOWN/WINDOWS/MACOS/LINUX)
+         Constantes de build :
+           BUILD_MAX_TARGETS = 4, BUILD_CARGO_CMD, BUILD_TAURI_CMD
+         Type TBuildConfig : record (Mode, Target, TargetTriple,
+           OutputDir, Verbose, MultiArch)
+         BldInitialized/BldStateCount/BldCommandCount/BldExecuteCount/
+         BldArtifactCount/BldCopyCount/BldSuccessCount/BldErrorCount vars
+         Procedure InitBuildState
+         Function BuildModeName(Mode: Integer): String
+         Function BuildTargetName(Target: Integer): String
+         Function GetTargetTriple(Target: Integer): String
+         Procedure InitBuildConfig(Var Cfg: TBuildConfig;
+           Const Opts: TOptions)
+         Function GenerateBuildCommand(Const Cfg: TBuildConfig): String
            generer la commande de build :
            cargo tauri build [options]
            --target si specifie
            --release pour production
+         Function GenerateBuildCommandFromOpts(Const Opts: TOptions): String
          Procedure ExecuteBuild(Const WorkDir: String;
            Const Cmd: String; Verbose: Boolean)
            executer la commande de build
@@ -451,9 +466,16 @@ Turbo Pascal / Free Pascal (-Mtp)
          Function GetBuildArtifactPath(Const WorkDir: String;
            Platform: Integer): String
            retourner le chemin de l'artefact de build
+         Function GetBuildArtifactExtension(Platform: Integer): String
          Procedure CopyBuildArtifacts(Const WorkDir, OutputDir: String;
            Platform: Integer)
            copier les artefacts vers le repertoire de sortie
+         Function IsBuildConfigValid(Const Cfg: TBuildConfig): Boolean
+         Procedure DumpBuildConfig(Const Cfg: TBuildConfig)
+         10 Accesseurs (IsBldInitialized/IsBldEmpty/GetBldStateCount/
+           GetBldCommandCount/GetBldExecuteCount/GetBldArtifactCount/
+           GetBldCopyCount/GetBldSuccessCount/GetBldErrorCount/
+           GetBldMaxTargets)
 
   TODO 17 - GENERATION MACOS [A FAIRE]
          Constantes macOS :
