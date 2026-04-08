@@ -325,7 +325,7 @@
               Generer : _JL_label:
             10 fonctions accesseurs
 
-  TODO 13 - PARSEUR : TYPES STATUS (ENUMERATIONS) [A FAIRE]
+  TODO 13 - PARSEUR : TYPES STATUS (ENUMERATIONS) [IMPLEMENTE]
             Declaration :
               ITEM COLOR S 8 (ROUGE, VERT, BLEU) ;
               Generer les constantes :
@@ -2861,6 +2861,10 @@ Procedure ParseAssignStatement; Forward;
 Procedure ParseCallStatement; Forward;
 Procedure ParseStopStatement; Forward;
 Procedure ParseAssignGoto; Forward;
+
+{ Forward declarations pour TODO 13 - STATUS }
+Function FindStatusItem(Const Name : TString) : Integer; Forward;
+Procedure ParseStatusAssign(Const StatusName : TString); Forward;
 
 { ------------------------------------------------------------ }
 { ParseModuleBody : parser les declarations du corps du module  }
@@ -6594,6 +6598,12 @@ Begin
     { Affectation simple : ident = expr ; }
     If CurTokType = TOK_EQ Then
     Begin
+      { Verifier si c est un ITEM STATUS pour dispatch TODO 13 }
+      If FindStatusItem(SaveIdent) >= 0 Then
+      Begin
+        ParseStatusAssign(SaveIdent);
+        Exit;
+      End;
       ParseAssignment(SaveIdent);
       Exit;
     End;
@@ -6690,6 +6700,464 @@ End;
 
 
 { ============================================================ }
+{ TODO 13 - PARSEUR : TYPES STATUS (ENUMERATIONS)               }
+{                                               [IMPLEMENTE]  }
+{ ============================================================ }
+
+Const
+  { Types d operations STATUS }
+  STS_NONE          = 0;   { aucune                                   }
+  STS_ASSIGN        = 1;   { affectation STATUS : COLOR = val ;       }
+  STS_COMPARE       = 2;   { comparaison STATUS : IF COLOR = val      }
+  STS_FIRST         = 3;   { builtin FIRST(var_status)                }
+  STS_LAST          = 4;   { builtin LAST(var_status)                 }
+  STS_CONVERT       = 5;   { conversion STATUS <-> entier             }
+  STS_CUSTOM_VAL    = 6;   { valeurs personnalisees (ROUGE=1, etc.)   }
+  STS_VALIDATE      = 7;   { validation de valeur STATUS              }
+
+  { Limites }
+  STS_MAX_OPS = 4096;     { nombre max d operations STATUS            }
+
+Var
+  { Variables du parseur STATUS }
+  StsInitialized    : Boolean;     { module initialise ?             }
+  StsStateCount     : Integer;     { compteur d operations           }
+  StsAssignCount    : Integer;     { affectations STATUS             }
+  StsCompareCount   : Integer;     { comparaisons STATUS             }
+  StsFirstCount     : Integer;     { appels FIRST()                  }
+  StsLastCount      : Integer;     { appels LAST()                   }
+  StsConvertCount   : Integer;     { conversions STATUS <-> entier   }
+  StsValidateCount  : Integer;     { validations de valeur           }
+  StsLabelNum       : Integer;     { generateur de labels uniques    }
+  StsErrorCount     : Integer;     { nombre d erreurs                }
+
+{ ------------------------------------------------------------ }
+{ InitStatusState : initialiser les variables STATUS             }
+{ ------------------------------------------------------------ }
+
+Procedure InitStatusState;
+Begin
+  StsInitialized    := True;
+  StsStateCount     := 0;
+  StsAssignCount    := 0;
+  StsCompareCount   := 0;
+  StsFirstCount     := 0;
+  StsLastCount      := 0;
+  StsConvertCount   := 0;
+  StsValidateCount  := 0;
+  StsLabelNum       := 0;
+  StsErrorCount     := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStsLabel : generer un label unique pour les STATUS           }
+{ ------------------------------------------------------------ }
+
+Function GenStsLabel : TString;
+Begin
+  Inc(StsLabelNum);
+  GenStsLabel := PFX_LBL + 'STS_' + ItoSI(StsLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ StatusTypeName : retourner le nom du type d operation STATUS    }
+{ ------------------------------------------------------------ }
+
+Function StatusTypeName(SType : Integer) : TString;
+Begin
+  Case SType Of
+    STS_NONE       : StatusTypeName := 'NONE';
+    STS_ASSIGN     : StatusTypeName := 'ASSIGN';
+    STS_COMPARE    : StatusTypeName := 'COMPARE';
+    STS_FIRST      : StatusTypeName := 'FIRST';
+    STS_LAST       : StatusTypeName := 'LAST';
+    STS_CONVERT    : StatusTypeName := 'CONVERT';
+    STS_CUSTOM_VAL : StatusTypeName := 'CUSTOM_VAL';
+    STS_VALIDATE   : StatusTypeName := 'VALIDATE';
+  Else
+    StatusTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindStatusItem : retrouver un ITEM STATUS dans la table des    }
+{   symboles. Retourne l index ou -1 si non trouve               }
+{ ------------------------------------------------------------ }
+
+Function FindStatusItem(Const Name : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Inc(StsStateCount);
+  FindStatusItem := -1;
+  Idx := SymFind(Name);
+  If Idx < 0 Then Exit;
+  If SymTab[Idx].SymKind <> SK_ITEM Then Exit;
+  If SymTab[Idx].ItemType <> JT_STATUS Then Exit;
+  FindStatusItem := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsStatusValue : verifier si un identifiant est une valeur      }
+{   STATUS (SK_STATUS_VAL) dans la table des symboles            }
+{   Retourne l index ou -1 si non trouve                         }
+{ ------------------------------------------------------------ }
+
+Function IsStatusValue(Const Name : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Inc(StsStateCount);
+  IsStatusValue := -1;
+  Idx := SymFind(Name);
+  If Idx < 0 Then Exit;
+  If SymTab[Idx].SymKind <> SK_STATUS_VAL Then Exit;
+  IsStatusValue := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetStatusFirstValue : retourner la premiere valeur d un STATUS }
+{   (valeur 0, ou la plus petite valeur personnalisee)           }
+{   SymIdx est l index de l ITEM STATUS dans la table            }
+{ ------------------------------------------------------------ }
+
+Function GetStatusFirstValue(SymIdx : Integer) : LongInt;
+Begin
+  Inc(StsStateCount);
+  Inc(StsFirstCount);
+  If (SymIdx >= 0) And (SymIdx < SymCount) And
+     (SymTab[SymIdx].StatusCount > 0) Then
+    GetStatusFirstValue := 0
+  Else
+    GetStatusFirstValue := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetStatusLastValue : retourner la derniere valeur d un STATUS  }
+{   (StatusCount - 1, ou la plus grande valeur personnalisee)    }
+{   SymIdx est l index de l ITEM STATUS dans la table            }
+{ ------------------------------------------------------------ }
+
+Function GetStatusLastValue(SymIdx : Integer) : LongInt;
+Begin
+  Inc(StsStateCount);
+  Inc(StsLastCount);
+  If (SymIdx >= 0) And (SymIdx < SymCount) And
+     (SymTab[SymIdx].StatusCount > 0) Then
+    GetStatusLastValue := SymTab[SymIdx].StatusCount - 1
+  Else
+    GetStatusLastValue := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ ValidateStatusAssign : verifier qu une valeur est valide       }
+{   pour un ITEM STATUS donne                                    }
+{   StatusIdx : index de l ITEM STATUS dans la table             }
+{   ValueName : nom de la valeur tentee (ex: COLOR_ROUGE)        }
+{   Retourne True si la valeur est valide                        }
+{ ------------------------------------------------------------ }
+
+Function ValidateStatusAssign(StatusIdx : Integer;
+                               Const ValueName : TString) : Boolean;
+Var
+  I : Integer;
+  StatusName : TString;
+  ValPart : TString;
+  PrefixLen : Integer;
+Begin
+  Inc(StsStateCount);
+  Inc(StsValidateCount);
+  ValidateStatusAssign := False;
+
+  If (StatusIdx < 0) Or (StatusIdx >= SymCount) Then Exit;
+  If SymTab[StatusIdx].StatusCount = 0 Then
+  Begin
+    { Pas de valeurs definies, accepter tout entier }
+    ValidateStatusAssign := True;
+    Exit;
+  End;
+
+  { Verifier si ValueName correspond a STATUSNAME_VALEUR }
+  StatusName := SymTab[StatusIdx].Name;
+  PrefixLen := Length(StatusName) + 1; { +1 pour le _ }
+
+  { Parcourir les valeurs STATUS definies }
+  For I := 0 To SymTab[StatusIdx].StatusCount - 1 Do
+  Begin
+    ValPart := StatusName + '_' + SymTab[StatusIdx].StatusValues[I];
+    If UpCaseStr(ValueName) = UpCaseStr(ValPart) Then
+    Begin
+      ValidateStatusAssign := True;
+      Exit;
+    End;
+  End;
+
+  { Verifier aussi si c est directement un SK_STATUS_VAL }
+  If IsStatusValue(ValueName) >= 0 Then
+    ValidateStatusAssign := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStatusAssign : parser une affectation STATUS avec          }
+{   verification de type                                          }
+{   StatusName : nom de la variable STATUS (ex: COLOR)           }
+{   CurTok est sur = apres le nom                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStatusAssign(Const StatusName : TString);
+Var
+  StatusIdx : Integer;
+  ValIdx    : Integer;
+  Dummy     : Integer;
+Begin
+  Inc(StsStateCount);
+  Inc(StsAssignCount);
+  Inc(AsgStatusAssignCnt);
+
+  StatusIdx := FindStatusItem(StatusName);
+
+  { Consommer = }
+  LexNextToken;
+
+  If Opts.Verbose Then
+    WriteLn('  STATUS_ASSIGN: ', StatusName, ' = ...');
+
+  { Verifier si la valeur est un identifiant STATUS }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    ValIdx := IsStatusValue(CurTokStr);
+    If ValIdx >= 0 Then
+    Begin
+      { Valeur STATUS reconnue }
+      If (StatusIdx >= 0) And
+         Not ValidateStatusAssign(StatusIdx, CurTokStr) Then
+      Begin
+        WarnMsg('Valeur STATUS ' + CurTokStr +
+                ' non valide pour ' + StatusName);
+        Inc(StsErrorCount);
+      End;
+      LexNextToken;
+    End
+    Else
+    Begin
+      { Identifiant non-STATUS : peut etre une conversion }
+      Inc(StsConvertCount);
+      Dummy := ParseExpression;
+    End;
+  End
+  Else
+  Begin
+    { Expression quelconque : conversion implicite }
+    Inc(StsConvertCount);
+    Dummy := ParseExpression;
+  End;
+
+  { Consommer ; }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('; attendu apres affectation STATUS ' + StatusName);
+    Inc(StsErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStatusCompare : parser une comparaison STATUS             }
+{   (utilise dans les expressions, comptage seulement)           }
+{   StatusName : nom de la variable STATUS                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStatusCompare(Const StatusName : TString);
+Begin
+  Inc(StsStateCount);
+  Inc(StsCompareCount);
+
+  If Opts.Verbose Then
+    WriteLn('  STATUS_COMPARE: ', StatusName);
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalStatusFirst : evaluer FIRST(var_status)                    }
+{   Retourne la premiere valeur de l enumeration (0)             }
+{   Le CurTok est sur ( apres FIRST                              }
+{ ------------------------------------------------------------ }
+
+Function EvalStatusFirst : LongInt;
+Var
+  StatusIdx : Integer;
+Begin
+  Inc(StsStateCount);
+  Inc(StsFirstCount);
+  EvalStatusFirst := 0;
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken;
+
+  { Lire le nom de la variable STATUS }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    StatusIdx := FindStatusItem(CurTokStr);
+    If StatusIdx >= 0 Then
+      EvalStatusFirst := GetStatusFirstValue(StatusIdx)
+    Else
+    Begin
+      WarnMsg('FIRST : ' + CurTokStr + ' n est pas un ITEM STATUS');
+      Inc(StsErrorCount);
+    End;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_KEYWORD Then
+  Begin
+    { Un mot-cle peut etre un nom de variable }
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Nom de variable STATUS attendu dans FIRST()');
+    Inc(StsErrorCount);
+  End;
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres FIRST(nom)');
+    Inc(StsErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalStatusLast : evaluer LAST(var_status)                      }
+{   Retourne la derniere valeur de l enumeration                 }
+{   Le CurTok est sur ( apres LAST                               }
+{ ------------------------------------------------------------ }
+
+Function EvalStatusLast : LongInt;
+Var
+  StatusIdx : Integer;
+Begin
+  Inc(StsStateCount);
+  Inc(StsLastCount);
+  EvalStatusLast := 0;
+
+  { Consommer ( }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken;
+
+  { Lire le nom de la variable STATUS }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    StatusIdx := FindStatusItem(CurTokStr);
+    If StatusIdx >= 0 Then
+      EvalStatusLast := GetStatusLastValue(StatusIdx)
+    Else
+    Begin
+      WarnMsg('LAST : ' + CurTokStr + ' n est pas un ITEM STATUS');
+      Inc(StsErrorCount);
+    End;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_KEYWORD Then
+  Begin
+    { Un mot-cle peut etre un nom de variable }
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Nom de variable STATUS attendu dans LAST()');
+    Inc(StsErrorCount);
+  End;
+
+  { Consommer ) }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(') attendu apres LAST(nom)');
+    Inc(StsErrorCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpStatusState : afficher l etat du parseur STATUS             }
+{ ------------------------------------------------------------ }
+
+Procedure DumpStatusState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat du parseur STATUS (TODO 13) ===');
+  WriteLn('  Initialise         : ', StsInitialized);
+  WriteLn('  Operations         : ', StsStateCount);
+  WriteLn('  Affectations       : ', StsAssignCount);
+  WriteLn('  Comparaisons       : ', StsCompareCount);
+  WriteLn('  FIRST()            : ', StsFirstCount);
+  WriteLn('  LAST()             : ', StsLastCount);
+  WriteLn('  Conversions        : ', StsConvertCount);
+  WriteLn('  Validations        : ', StsValidateCount);
+  WriteLn('  Labels generes     : ', StsLabelNum);
+  WriteLn('  Erreurs            : ', StsErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Accesseurs du parseur STATUS (10 fonctions)                    }
+{ ------------------------------------------------------------ }
+
+Function IsStsInitialized : Boolean;
+Begin
+  IsStsInitialized := StsInitialized;
+End;
+
+Function GetStsAssignCount : Integer;
+Begin
+  GetStsAssignCount := StsAssignCount;
+End;
+
+Function GetStsCompareCount : Integer;
+Begin
+  GetStsCompareCount := StsCompareCount;
+End;
+
+Function GetStsFirstCount : Integer;
+Begin
+  GetStsFirstCount := StsFirstCount;
+End;
+
+Function GetStsLastCount : Integer;
+Begin
+  GetStsLastCount := StsLastCount;
+End;
+
+Function GetStsConvertCount : Integer;
+Begin
+  GetStsConvertCount := StsConvertCount;
+End;
+
+Function GetStsStateCount : Integer;
+Begin
+  GetStsStateCount := StsStateCount;
+End;
+
+Function GetStsErrorCount : Integer;
+Begin
+  GetStsErrorCount := StsErrorCount;
+End;
+
+Function GetStsValidateCount : Integer;
+Begin
+  GetStsValidateCount := StsValidateCount;
+End;
+
+Function IsStsEmpty : Boolean;
+Begin
+  IsStsEmpty := (StsAssignCount = 0) And (StsCompareCount = 0) And
+                (StsFirstCount = 0) And (StsLastCount = 0);
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -6712,6 +7180,7 @@ Begin
   ExpInitialized := False;
   CtlInitialized := False;
   AsgInitialized := False;
+  StsInitialized := False;
 
   ParseArgs;
 
@@ -6748,6 +7217,9 @@ Begin
   { Initialiser le parseur d affectations }
   InitAssignState;
 
+  { Initialiser le parseur STATUS }
+  InitStatusState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -6773,6 +7245,7 @@ Begin
     DumpExprState;
     DumpCtrlState;
     DumpAssignState;
+    DumpStatusState;
   End;
 
   { Nettoyage }

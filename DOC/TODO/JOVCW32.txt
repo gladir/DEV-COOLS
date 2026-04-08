@@ -317,7 +317,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
               Generer : _JL_label:
             10 fonctions accesseurs
 
-  TODO 13 - PARSEUR : TYPES STATUS (ENUMERATIONS) [A FAIRE]
+  TODO 13 - PARSEUR : TYPES STATUS (ENUMERATIONS) [IMPLEMENTE]
             Declaration :
               ITEM COLOR S 8 (ROUGE, VERT, BLEU) ;
               Generer les constantes :
