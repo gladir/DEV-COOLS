@@ -186,7 +186,7 @@
               Utilisation de SIB byte quand scale = 1, 2, 4, 8
             10 fonctions accesseurs
 
-  TODO 08 - PARSEUR : DEFINE (CONSTANTES NOMMEES) [A FAIRE]
+  TODO 08 - PARSEUR : DEFINE (CONSTANTES NOMMEES) [IMPLEMENTE]
             DEFINE name = value ;
               DEFINE MAX = 100 ;
               DEFINE HALF = 50 ;
@@ -2827,6 +2827,9 @@ Procedure ParseItemDecl; Forward;
 { Forward declaration pour ParseTableDecl (defini dans TODO 07) }
 Procedure ParseTableDecl; Forward;
 
+{ Forward declaration pour ParseDefineDecl (defini dans TODO 08) }
+Procedure ParseDefineDecl; Forward;
+
 { ------------------------------------------------------------ }
 { ParseModuleBody : parser les declarations du corps du module  }
 {   ITEM, TABLE, DEFINE, PROCEDURE/FUNCTION, etc.               }
@@ -2864,15 +2867,9 @@ Begin
 
         KW_DEFINE:
         Begin
-          { Declaration DEFINE - comptabiliser }
+          { Declaration DEFINE - parser via TODO 08 }
           Inc(ModDeclCount);
-          If Opts.Verbose Then
-          Begin
-            LexNextToken;
-            If CurTokType = TOK_IDENT Then
-              WriteLn('  DEFINE ', CurTokStr);
-          End;
-          SkipToSemicolon;
+          ParseDefineDecl;
         End;
 
         KW_PROCEDURE, KW_PROC:
@@ -3968,6 +3965,363 @@ End;
 
 
 { ============================================================ }
+{ TODO 08 - PARSEUR : DEFINE (CONSTANTES NOMMEES)               }
+{ ============================================================ }
+
+Const
+  { Types de constantes DEFINE }
+  DEF_NONE    = 0;   { aucun type                            }
+  DEF_INTEGER = 1;   { constante entiere                     }
+  DEF_REAL    = 2;   { constante reelle                      }
+  DEF_STRING  = 3;   { constante chaine                      }
+
+  { Limites pour les DEFINE }
+  DEF_MAX_DEFINES = 256;   { nombre max de DEFINE                  }
+
+Type
+  TDefineEntry = Record
+    Name     : TString;   { nom de la constante                    }
+    DefType  : Integer;   { type : DEF_INTEGER, DEF_REAL, DEF_STRING }
+    IntValue : LongInt;   { valeur si entiere                      }
+    RealValue: Real;      { valeur si reelle                       }
+    StrValue : TString;   { valeur si chaine                       }
+  End;
+
+Var
+  { Variables du parseur DEFINE }
+  DefInitialized   : Boolean;     { module initialise ?                }
+  DefStateCount    : Integer;     { compteur d operations              }
+  DefCount         : Integer;     { nombre de DEFINE declares          }
+  DefIntegerCount  : Integer;     { nombre de DEFINE entieres          }
+  DefRealCount     : Integer;     { nombre de DEFINE reelles           }
+  DefStringCount   : Integer;     { nombre de DEFINE chaines           }
+  DefLabelNum      : Integer;     { generateur de labels uniques       }
+  DefErrorCount    : Integer;     { nombre d erreurs dans DEFINE       }
+  DefTable         : Array[1..DEF_MAX_DEFINES] Of TDefineEntry;
+
+{ ------------------------------------------------------------ }
+{ InitDefineState : initialiser les variables du parseur DEFINE  }
+{ ------------------------------------------------------------ }
+
+Procedure InitDefineState;
+Begin
+  DefInitialized   := True;
+  DefStateCount    := 0;
+  DefCount         := 0;
+  DefIntegerCount  := 0;
+  DefRealCount     := 0;
+  DefStringCount   := 0;
+  DefLabelNum      := 0;
+  DefErrorCount    := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDefLabel : generer un label unique pour le parseur DEFINE   }
+{ ------------------------------------------------------------ }
+
+Function GenDefLabel : TString;
+Begin
+  Inc(DefLabelNum);
+  GenDefLabel := PFX_CONST + 'DEF' + ItoSI(DefLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ DefineTypeName : retourner le nom du type d un DEFINE          }
+{ ------------------------------------------------------------ }
+
+Function DefineTypeName(DType : Integer) : TString;
+Begin
+  Case DType Of
+    DEF_NONE    : DefineTypeName := 'NONE';
+    DEF_INTEGER : DefineTypeName := 'INTEGER';
+    DEF_REAL    : DefineTypeName := 'REAL';
+    DEF_STRING  : DefineTypeName := 'STRING';
+  Else
+    DefineTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindDefine : rechercher un DEFINE par son nom                  }
+{   Retourne l indice (1..DefCount) ou 0 si non trouve          }
+{ ------------------------------------------------------------ }
+
+Function FindDefine(Const AName : TString) : Integer;
+Var
+  I     : Integer;
+  UName : TString;
+Begin
+  Inc(DefStateCount);
+  UName := UpCaseStr(AName);
+  FindDefine := 0;
+  For I := 1 To DefCount Do
+  Begin
+    If UpCaseStr(DefTable[I].Name) = UName Then
+    Begin
+      FindDefine := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddDefine : ajouter un DEFINE a la table                      }
+{   Retourne l indice du DEFINE ajoute ou 0 si table pleine     }
+{ ------------------------------------------------------------ }
+
+Function AddDefine(Const AName : TString; AType : Integer;
+                   AInt : LongInt; AReal : Real;
+                   Const AStr : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Inc(DefStateCount);
+
+  { Verifier si le DEFINE existe deja (redefinition) }
+  Idx := FindDefine(AName);
+  If Idx > 0 Then
+  Begin
+    { Redefinition : mettre a jour la valeur existante }
+    DefTable[Idx].DefType  := AType;
+    DefTable[Idx].IntValue := AInt;
+    DefTable[Idx].RealValue := AReal;
+    DefTable[Idx].StrValue := AStr;
+    If Opts.Verbose Then
+      WriteLn('  DEFINE ', AName, ' redefini = ',
+        DefineTypeName(AType));
+    AddDefine := Idx;
+    Exit;
+  End;
+
+  { Verifier la limite }
+  If DefCount >= DEF_MAX_DEFINES Then
+  Begin
+    WarnMsg('Trop de DEFINE declares (max ' +
+            ItoS(DEF_MAX_DEFINES) + ')');
+    Inc(DefErrorCount);
+    AddDefine := 0;
+    Exit;
+  End;
+
+  { Ajouter le nouveau DEFINE }
+  Inc(DefCount);
+  DefTable[DefCount].Name      := AName;
+  DefTable[DefCount].DefType   := AType;
+  DefTable[DefCount].IntValue  := AInt;
+  DefTable[DefCount].RealValue := AReal;
+  DefTable[DefCount].StrValue  := AStr;
+
+  AddDefine := DefCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDefineDecl : parser une declaration DEFINE                }
+{   Syntaxe : DEFINE name = value ;                              }
+{   Exemples :                                                   }
+{     DEFINE MAX = 100 ;                                         }
+{     DEFINE PI = 3.14159 ;                                      }
+{     DEFINE MSG = 'BONJOUR' ;                                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDefineDecl;
+Var
+  DefName  : TString;
+  DType    : Integer;
+  IntVal   : LongInt;
+  RealVal  : Real;
+  StrVal   : TString;
+  IsNeg    : Boolean;
+Begin
+  Inc(DefStateCount);
+
+  { Consommer le mot-cle DEFINE }
+  LexNextToken;
+
+  { Le nom du DEFINE : peut etre un identifiant ou un mot-cle }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+  Begin
+    DefName := CurTokStr;
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('DEFINE : nom attendu, trouve ' + CurTokStr);
+    Inc(DefErrorCount);
+    SkipToSemicolon;
+    Exit;
+  End;
+
+  { Attendre le signe egal }
+  If (CurTokType = TOK_EQ) Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg('DEFINE ' + DefName + ' : signe = attendu');
+    Inc(DefErrorCount);
+    SkipToSemicolon;
+    Exit;
+  End;
+
+  { Parser la valeur }
+  DType   := DEF_NONE;
+  IntVal  := 0;
+  RealVal := 0.0;
+  StrVal  := '';
+  IsNeg   := False;
+
+  { Verifier le signe negatif }
+  If (CurTokType = TOK_MINUS) Then
+  Begin
+    IsNeg := True;
+    LexNextToken;
+  End;
+
+  If CurTokType = TOK_INTEGER Then
+  Begin
+    DType  := DEF_INTEGER;
+    IntVal := CurTokNum;
+    If IsNeg Then
+      IntVal := -IntVal;
+    Inc(DefIntegerCount);
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_REAL Then
+  Begin
+    DType   := DEF_REAL;
+    RealVal := CurTokReal;
+    If IsNeg Then
+      RealVal := -RealVal;
+    Inc(DefRealCount);
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_STRING Then
+  Begin
+    DType  := DEF_STRING;
+    StrVal := CurTokStr;
+    Inc(DefStringCount);
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('DEFINE ' + DefName + ' : valeur attendue');
+    Inc(DefErrorCount);
+    SkipToSemicolon;
+    Exit;
+  End;
+
+  { Ajouter le DEFINE a la table }
+  AddDefine(DefName, DType, IntVal, RealVal, StrVal);
+
+  If Opts.Verbose Then
+  Begin
+    Write('  DEFINE ', DefName, ' = ');
+    Case DType Of
+      DEF_INTEGER : WriteLn(IntVal, ' (', DefineTypeName(DType), ')');
+      DEF_REAL    : WriteLn(RealVal:0:6, ' (', DefineTypeName(DType), ')');
+      DEF_STRING  : WriteLn('''', StrVal, ''' (',
+                            DefineTypeName(DType), ')');
+    Else
+      WriteLn('? (', DefineTypeName(DType), ')');
+    End;
+  End;
+
+  { Consommer le point-virgule si present }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpDefineState : afficher l etat du parseur DEFINE            }
+{ ------------------------------------------------------------ }
+
+Procedure DumpDefineState;
+Var
+  I : Integer;
+Begin
+  WriteLn('--- Etat du parseur DEFINE ---');
+  WriteLn('  DEFINE declares : ', DefCount);
+  WriteLn('    Entieres     : ', DefIntegerCount);
+  WriteLn('    Reelles      : ', DefRealCount);
+  WriteLn('    Chaines      : ', DefStringCount);
+  WriteLn('  Erreurs DEFINE : ', DefErrorCount);
+  WriteLn('  Operations     : ', DefStateCount);
+  If DefCount > 0 Then
+  Begin
+    WriteLn('  Table des DEFINE :');
+    For I := 1 To DefCount Do
+    Begin
+      Write('    ', DefTable[I].Name, ' = ');
+      Case DefTable[I].DefType Of
+        DEF_INTEGER : WriteLn(DefTable[I].IntValue,
+                              ' (INTEGER)');
+        DEF_REAL    : WriteLn(DefTable[I].RealValue:0:6,
+                              ' (REAL)');
+        DEF_STRING  : WriteLn('''', DefTable[I].StrValue,
+                              ''' (STRING)');
+      Else
+        WriteLn('? (UNKNOWN)');
+      End;
+    End;
+  End;
+  WriteLn('--- Fin etat DEFINE ---');
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 08)                             }
+{ ------------------------------------------------------------ }
+
+Function IsDefInitialized : Boolean;
+Begin
+  IsDefInitialized := DefInitialized;
+End;
+
+Function GetDefCount : Integer;
+Begin
+  GetDefCount := DefCount;
+End;
+
+Function GetDefIntegerCount : Integer;
+Begin
+  GetDefIntegerCount := DefIntegerCount;
+End;
+
+Function GetDefRealCount : Integer;
+Begin
+  GetDefRealCount := DefRealCount;
+End;
+
+Function GetDefStringCount : Integer;
+Begin
+  GetDefStringCount := DefStringCount;
+End;
+
+Function GetDefStateCount : Integer;
+Begin
+  GetDefStateCount := DefStateCount;
+End;
+
+Function GetDefErrorCount : Integer;
+Begin
+  GetDefErrorCount := DefErrorCount;
+End;
+
+Function GetDefLabelNum : Integer;
+Begin
+  GetDefLabelNum := DefLabelNum;
+End;
+
+Function GetDefMaxDefines : Integer;
+Begin
+  GetDefMaxDefines := DEF_MAX_DEFINES;
+End;
+
+Function IsDefEmpty : Boolean;
+Begin
+  IsDefEmpty := (DefCount = 0);
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -3985,6 +4339,7 @@ Begin
   ModInitialized := False;
   ItmInitialized := False;
   TblInitialized := False;
+  DefInitialized := False;
 
   ParseArgs;
 
@@ -4006,6 +4361,9 @@ Begin
   { Initialiser le parseur TABLE }
   InitTableState;
 
+  { Initialiser le parseur DEFINE }
+  InitDefineState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -4026,6 +4384,7 @@ Begin
     DumpModuleState;
     DumpItemState;
     DumpTableState;
+    DumpDefineState;
   End;
 
   { Nettoyage }

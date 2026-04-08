@@ -178,7 +178,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
               Utilisation de SIB byte quand scale = 1, 2, 4, 8
             10 fonctions accesseurs
 
-  TODO 08 - PARSEUR : DEFINE (CONSTANTES NOMMEES) [A FAIRE]
+  TODO 08 - PARSEUR : DEFINE (CONSTANTES NOMMEES) [IMPLEMENTE]
             DEFINE name = value ;
               DEFINE MAX = 100 ;
               DEFINE HALF = 50 ;
