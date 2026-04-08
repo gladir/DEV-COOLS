@@ -6395,7 +6395,7 @@ Begin
   While ElifIdx < IF_MAX_ELIF Do
   Begin
     { Verifier si le token courant est 'elif' }
-    If (CurTokKind = TK_IDENT) And (LookupKeyword(CurTokStr) = KW_ELIF) Then
+    If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_ELIF) Then
     Begin
       Inc(IfElifCount);
       Inc(ElifIdx);
@@ -6425,7 +6425,7 @@ Begin
   End;
 
   { Parser le else optionnel }
-  If (CurTokKind = TK_IDENT) And (LookupKeyword(CurTokStr) = KW_ELSE) Then
+  If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_ELSE) Then
   Begin
     Inc(IfElseCount);
     HasElse := True;
