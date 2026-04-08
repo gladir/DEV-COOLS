@@ -80,7 +80,7 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 06 - GENERATEUR DE CODE PASCAL - TYPES ET VARIABLES [A FAIRE]
+  TODO 06 - GENERATEUR DE CODE PASCAL - TYPES ET VARIABLES [IMPLEMENTE]
             TTypeInfo : Name, Kind (TK_INTEGER, TK_STRING, TK_REAL,
               TK_BOOLEAN, TK_CHAR, TK_ARRAY, TK_RECORD, TK_POINTER)
             TVarInfo : Name, TypeName, InitValue
@@ -390,6 +390,26 @@ Const
   GEN_MAX_LINES  = 4096; { Nombre max de lignes generees }
   GEN_MAX_INDENT = 20;   { Niveau d'indentation maximum }
 
+  { TODO 06 - Types de donnees Pascal (TYP_*) }
+  TYP_NONE      = 0;   { Aucun type }
+  TYP_INTEGER   = 1;   { Type Integer }
+  TYP_STRING    = 2;   { Type String }
+  TYP_REAL      = 3;   { Type Real }
+  TYP_BOOLEAN   = 4;   { Type Boolean }
+  TYP_CHAR      = 5;   { Type Char }
+  TYP_BYTE      = 6;   { Type Byte }
+  TYP_WORD      = 7;   { Type Word }
+  TYP_LONGINT   = 8;   { Type LongInt }
+  TYP_ARRAY     = 9;   { Type Array }
+  TYP_RECORD    = 10;  { Type Record }
+  TYP_POINTER   = 11;  { Type Pointer }
+  TYP_FILE      = 12;  { Type File }
+  TYP_MAX       = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 06 }
+  TYP_MAX_FIELDS = 32;  { Nombre max de champs dans un record }
+  TYP_MAX_BOUNDS = 8;   { Nombre max de dimensions dans un array }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -655,6 +675,23 @@ Var
   GenLineCount    : Integer;
   GenErrorCount   : Integer;
   GenLabelNum     : Integer;
+
+  { TODO 06 - Etat du generateur de types et variables }
+  TypInitialized  : Boolean;
+  TypStateCount   : Integer;
+  TypVarDeclCount : Integer;
+  TypConstDeclCount: Integer;
+  TypTypeDeclCount: Integer;
+  TypArrayCount   : Integer;
+  TypRecordCount  : Integer;
+  TypPointerCount : Integer;
+  TypFieldCount   : Integer;
+  TypIntegerCount : Integer;
+  TypStringCount  : Integer;
+  TypBooleanCount : Integer;
+  TypRealCount    : Integer;
+  TypErrorCount   : Integer;
+  TypLabelNum     : Integer;
 
   { TODO 11 - Templates }
   Templates     : Array[1..MAX_TEMPLATES] of TTemplate;
@@ -2045,6 +2082,331 @@ Begin
 End;
 
 { ============================================================
+  TODO 06 - GENERATEUR DE CODE PASCAL - TYPES ET VARIABLES
+  ============================================================ }
+
+{ --- TODO 06 : Fonctions d'initialisation et gestion d'etat --- }
+
+Procedure InitTypState;
+Begin
+  TypInitialized := True;
+  TypStateCount := 0;
+  TypVarDeclCount := 0;
+  TypConstDeclCount := 0;
+  TypTypeDeclCount := 0;
+  TypArrayCount := 0;
+  TypRecordCount := 0;
+  TypPointerCount := 0;
+  TypFieldCount := 0;
+  TypIntegerCount := 0;
+  TypStringCount := 0;
+  TypBooleanCount := 0;
+  TypRealCount := 0;
+  TypErrorCount := 0;
+  TypLabelNum := 0;
+  Inc(TypStateCount);
+End;
+
+Function GenTypLabel: String;
+Var
+  S: String;
+Begin
+  Inc(TypLabelNum);
+  Str(TypLabelNum, S);
+  GenTypLabel := '_TYP_L_' + S;
+End;
+
+Function TypKindName(Kind: Integer): String;
+Begin
+  Case Kind of
+    TYP_NONE     : TypKindName := 'NONE';
+    TYP_INTEGER  : TypKindName := 'Integer';
+    TYP_STRING   : TypKindName := 'String';
+    TYP_REAL     : TypKindName := 'Real';
+    TYP_BOOLEAN  : TypKindName := 'Boolean';
+    TYP_CHAR     : TypKindName := 'Char';
+    TYP_BYTE     : TypKindName := 'Byte';
+    TYP_WORD     : TypKindName := 'Word';
+    TYP_LONGINT  : TypKindName := 'LongInt';
+    TYP_ARRAY    : TypKindName := 'Array';
+    TYP_RECORD   : TypKindName := 'Record';
+    TYP_POINTER  : TypKindName := 'Pointer';
+    TYP_FILE     : TypKindName := 'File';
+  Else
+    TypKindName := 'Unknown';
+  End;
+End;
+
+Function TypeKindToTyp(Kind: TTypeKind): Integer;
+Begin
+  Case Kind of
+    TK_INTEGER : TypeKindToTyp := TYP_INTEGER;
+    TK_STRING  : TypeKindToTyp := TYP_STRING;
+    TK_REAL    : TypeKindToTyp := TYP_REAL;
+    TK_BOOLEAN : TypeKindToTyp := TYP_BOOLEAN;
+    TK_CHAR    : TypeKindToTyp := TYP_CHAR;
+    TK_BYTE    : TypeKindToTyp := TYP_BYTE;
+    TK_WORD    : TypeKindToTyp := TYP_WORD;
+    TK_LONGINT : TypeKindToTyp := TYP_LONGINT;
+    TK_ARRAY   : TypeKindToTyp := TYP_ARRAY;
+    TK_RECORD  : TypeKindToTyp := TYP_RECORD;
+    TK_POINTER : TypeKindToTyp := TYP_POINTER;
+    TK_FILE    : TypeKindToTyp := TYP_FILE;
+  Else
+    TypeKindToTyp := TYP_NONE;
+  End;
+End;
+
+{ --- TODO 06 : Fonctions de generation de declarations --- }
+
+Function GenVarDecl(VarName, TypeName: String): String;
+Begin
+  GenVarDecl := '  ' + VarName + ': ' + TypeName + ';';
+  Inc(TypVarDeclCount);
+End;
+
+Function GenVarDeclInit(VarName, TypeName, InitVal: String): String;
+Begin
+  If InitVal <> '' Then
+    GenVarDeclInit := '  ' + VarName + ': ' + TypeName + ' = ' + InitVal + ';'
+  Else
+    GenVarDeclInit := '  ' + VarName + ': ' + TypeName + ';';
+  Inc(TypVarDeclCount);
+End;
+
+Function GenConstDecl(ConstName, Value: String): String;
+Begin
+  GenConstDecl := '  ' + ConstName + ' = ' + Value + ';';
+  Inc(TypConstDeclCount);
+End;
+
+Function GenConstDeclTyped(ConstName, TypeName, Value: String): String;
+Begin
+  GenConstDeclTyped := '  ' + ConstName + ': ' + TypeName + ' = ' + Value + ';';
+  Inc(TypConstDeclCount);
+End;
+
+Function GenTypeDecl(TypeName, Definition: String): String;
+Begin
+  GenTypeDecl := '  ' + TypeName + ' = ' + Definition + ';';
+  Inc(TypTypeDeclCount);
+End;
+
+Function GenArrayType(TypeName: String; Low, High: Integer; BaseType: String): String;
+Var
+  LowStr, HighStr: String;
+Begin
+  Str(Low, LowStr);
+  Str(High, HighStr);
+  GenArrayType := '  ' + TypeName + ' = Array[' + LowStr + '..' + HighStr + '] of ' + BaseType + ';';
+  Inc(TypArrayCount);
+  Inc(TypTypeDeclCount);
+End;
+
+Function GenArrayTypeStr(TypeName, Bounds, BaseType: String): String;
+Begin
+  GenArrayTypeStr := '  ' + TypeName + ' = Array[' + Bounds + '] of ' + BaseType + ';';
+  Inc(TypArrayCount);
+  Inc(TypTypeDeclCount);
+End;
+
+Procedure GenRecordTypeBegin(TypeName: String);
+Begin
+  AddCodeLine('  ' + TypeName + ' = Record');
+  Inc(TypRecordCount);
+  Inc(TypTypeDeclCount);
+End;
+
+Procedure GenRecordField(FieldName, FieldType: String);
+Begin
+  AddCodeLine('    ' + FieldName + ': ' + FieldType + ';');
+  Inc(TypFieldCount);
+End;
+
+Procedure GenRecordTypeEnd;
+Begin
+  AddCodeLine('  End;');
+End;
+
+Function GenPointerType(TypeName, BaseType: String): String;
+Begin
+  GenPointerType := '  ' + TypeName + ' = ^' + BaseType + ';';
+  Inc(TypPointerCount);
+  Inc(TypTypeDeclCount);
+End;
+
+{ --- TODO 06 : Fonctions de generation avancees --- }
+
+Procedure GenVarSectionMulti(Vars: Array of TVarInfo; VarCount: Integer);
+Var
+  I: Integer;
+Begin
+  If VarCount > 0 Then Begin
+    AddCodeLine('Var');
+    For I := 0 to VarCount - 1 do Begin
+      If Vars[I].InitValue <> '' Then
+        AddCodeLine('  ' + Vars[I].Name + ': ' + Vars[I].TypeName + ' = ' + Vars[I].InitValue + ';')
+      Else
+        AddCodeLine('  ' + Vars[I].Name + ': ' + Vars[I].TypeName + ';');
+      Inc(TypVarDeclCount);
+    End;
+    AddCodeLine('');
+  End;
+End;
+
+Procedure GenConstSectionMulti(Vars: Array of TVarInfo; VarCount: Integer);
+Var
+  I: Integer;
+Begin
+  If VarCount > 0 Then Begin
+    AddCodeLine('Const');
+    For I := 0 to VarCount - 1 do Begin
+      If Vars[I].TypeName <> '' Then
+        AddCodeLine('  ' + Vars[I].Name + ': ' + Vars[I].TypeName + ' = ' + Vars[I].InitValue + ';')
+      Else
+        AddCodeLine('  ' + Vars[I].Name + ' = ' + Vars[I].InitValue + ';');
+      Inc(TypConstDeclCount);
+    End;
+    AddCodeLine('');
+  End;
+End;
+
+{ --- TODO 06 : Fonctions utilitaires de types --- }
+
+Function GetTypNameForKind(Kind: TTypeKind): String;
+Begin
+  Case Kind of
+    TK_INTEGER : GetTypNameForKind := 'Integer';
+    TK_WORD    : GetTypNameForKind := 'Word';
+    TK_LONGINT : GetTypNameForKind := 'LongInt';
+    TK_REAL    : GetTypNameForKind := 'Real';
+    TK_STRING  : GetTypNameForKind := 'String';
+    TK_CHAR    : GetTypNameForKind := 'Char';
+    TK_BOOLEAN : GetTypNameForKind := 'Boolean';
+    TK_BYTE    : GetTypNameForKind := 'Byte';
+    TK_ARRAY   : GetTypNameForKind := 'Array';
+    TK_RECORD  : GetTypNameForKind := 'Record';
+    TK_POINTER : GetTypNameForKind := 'Pointer';
+    TK_FILE    : GetTypNameForKind := 'File';
+    TK_TEXT    : GetTypNameForKind := 'Text';
+    TK_ENUM    : GetTypNameForKind := 'Enum';
+    TK_SET     : GetTypNameForKind := 'Set';
+    TK_CUSTOM  : GetTypNameForKind := 'Custom';
+  Else
+    GetTypNameForKind := 'Unknown';
+  End;
+End;
+
+Function ParseTypeKind(TypeName: String): TTypeKind;
+Var
+  UpTypeName: String;
+Begin
+  UpTypeName := UpCaseStr(TypeName);
+  If UpTypeName = 'INTEGER' Then
+    ParseTypeKind := TK_INTEGER
+  Else If UpTypeName = 'WORD' Then
+    ParseTypeKind := TK_WORD
+  Else If UpTypeName = 'LONGINT' Then
+    ParseTypeKind := TK_LONGINT
+  Else If UpTypeName = 'REAL' Then
+    ParseTypeKind := TK_REAL
+  Else If UpTypeName = 'STRING' Then
+    ParseTypeKind := TK_STRING
+  Else If UpTypeName = 'CHAR' Then
+    ParseTypeKind := TK_CHAR
+  Else If UpTypeName = 'BOOLEAN' Then
+    ParseTypeKind := TK_BOOLEAN
+  Else If UpTypeName = 'BYTE' Then
+    ParseTypeKind := TK_BYTE
+  Else If UpTypeName = 'TEXT' Then
+    ParseTypeKind := TK_TEXT
+  Else If UpTypeName = 'FILE' Then
+    ParseTypeKind := TK_FILE
+  Else If Pos('ARRAY', UpTypeName) = 1 Then
+    ParseTypeKind := TK_ARRAY
+  Else If Pos('RECORD', UpTypeName) = 1 Then
+    ParseTypeKind := TK_RECORD
+  Else If Pos('^', TypeName) = 1 Then
+    ParseTypeKind := TK_POINTER
+  Else
+    ParseTypeKind := TK_CUSTOM;
+End;
+
+{ --- TODO 06 : Procedure DumpTypState --- }
+
+Procedure DumpTypState;
+Begin
+  WriteLn('=== TODO 06 - Types et Variables Pascal ===');
+  WriteLn('  TypInitialized   : ', TypInitialized);
+  WriteLn('  TypStateCount    : ', TypStateCount);
+  WriteLn('  TypVarDeclCount  : ', TypVarDeclCount);
+  WriteLn('  TypConstDeclCount: ', TypConstDeclCount);
+  WriteLn('  TypTypeDeclCount : ', TypTypeDeclCount);
+  WriteLn('  TypArrayCount    : ', TypArrayCount);
+  WriteLn('  TypRecordCount   : ', TypRecordCount);
+  WriteLn('  TypPointerCount  : ', TypPointerCount);
+  WriteLn('  TypFieldCount    : ', TypFieldCount);
+  WriteLn('  TypIntegerCount  : ', TypIntegerCount);
+  WriteLn('  TypStringCount   : ', TypStringCount);
+  WriteLn('  TypBooleanCount  : ', TypBooleanCount);
+  WriteLn('  TypRealCount     : ', TypRealCount);
+  WriteLn('  TypErrorCount    : ', TypErrorCount);
+  WriteLn('  TypLabelNum      : ', TypLabelNum);
+End;
+
+{ --- TODO 06 : 10 accesseurs standards --- }
+
+Function IsTypInitialized: Boolean;
+Begin
+  IsTypInitialized := TypInitialized;
+End;
+
+Function IsTypEmpty: Boolean;
+Begin
+  IsTypEmpty := (TypVarDeclCount = 0) And (TypConstDeclCount = 0) And (TypTypeDeclCount = 0);
+End;
+
+Function GetTypStateCount: Integer;
+Begin
+  GetTypStateCount := TypStateCount;
+End;
+
+Function GetTypVarDeclCount: Integer;
+Begin
+  GetTypVarDeclCount := TypVarDeclCount;
+End;
+
+Function GetTypConstDeclCount: Integer;
+Begin
+  GetTypConstDeclCount := TypConstDeclCount;
+End;
+
+Function GetTypTypeDeclCount: Integer;
+Begin
+  GetTypTypeDeclCount := TypTypeDeclCount;
+End;
+
+Function GetTypArrayCount: Integer;
+Begin
+  GetTypArrayCount := TypArrayCount;
+End;
+
+Function GetTypRecordCount: Integer;
+Begin
+  GetTypRecordCount := TypRecordCount;
+End;
+
+Function GetTypErrorCount: Integer;
+Begin
+  GetTypErrorCount := TypErrorCount;
+End;
+
+Function GetTypLabelNum: Integer;
+Begin
+  GetTypLabelNum := TypLabelNum;
+End;
+
+{ ============================================================
   TODO 12 - GENERATION DE PROGRAMMES "BONJOUR"
   ============================================================ }
 
@@ -2771,6 +3133,10 @@ Begin
   GenInitialized := False;
   InitGenState;
 
+  { Initialiser l'etat du generateur de types (TODO 06) }
+  TypInitialized := False;
+  InitTypState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -2778,6 +3144,7 @@ Begin
     DumpHisState;
     DumpIntState;
     DumpGenState;
+    DumpTypState;
   End;
 
   Run;
@@ -2789,7 +3156,7 @@ Begin
   { 03 [IMPLEMENTE] - Historique de conversation }
   { 04 [IMPLEMENTE] - Analyseur de requetes }
   { 05 [IMPLEMENTE] - Generateur structures de base }
-  { 06 [A FAIRE] - Types et variables }
+  { 06 [IMPLEMENTE] - Types et variables }
   { 07 [A FAIRE] - Expressions }
   { 08 [A FAIRE] - Structures de controle }
   { 09 [A FAIRE] - Procedures et fonctions }

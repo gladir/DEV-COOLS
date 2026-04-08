@@ -59,7 +59,7 @@
             InitGenState, GenGenLabel, GenTypeName, DumpGenState
             10 accesseurs (IsGenInitialized, IsGenEmpty, GetGen*Count, ...)
 
-  TODO 06 - GENERATEUR DE CODE PASCAL - TYPES ET VARIABLES [A FAIRE]
+  TODO 06 - GENERATEUR DE CODE PASCAL - TYPES ET VARIABLES [IMPLEMENTE]
             TTypeInfo : Name, Kind (TK_INTEGER, TK_STRING, TK_REAL,
               TK_BOOLEAN, TK_CHAR, TK_ARRAY, TK_RECORD, TK_POINTER)
             TVarInfo : Name, TypeName, InitValue
@@ -68,6 +68,8 @@
             GenTypeDecl(Type) : generer une declaration de type
             GenArrayType(Name, Bounds, BaseType) : generer un type tableau
             GenRecordType(Name, Fields) : generer un type enregistrement
+            InitTypState, GenTypLabel, TypKindName, DumpTypState
+            10 accesseurs (IsTypInitialized, IsTypEmpty, GetTyp*Count, ...)
 
   TODO 07 - GENERATEUR DE CODE PASCAL - EXPRESSIONS [A FAIRE]
             GenExpression(Expr) : generer une expression
