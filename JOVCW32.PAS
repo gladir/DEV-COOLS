@@ -12713,6 +12713,759 @@ End;
 
 
 { ============================================================ }
+{ TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm)    }
+{   Generer un fichier .ASM lisible et assemblable au format     }
+{   MASM : .386 / .MODEL FLAT, STDCALL / OPTION CASEMAP:NONE    }
+{   Sections INCLUDELIB, EXTERN, .DATA, .DATA?, .CODE            }
+{   avec indentation, formatage et commentaires preserves        }
+{ ============================================================ }
+
+Const
+  { Types d operations ASM }
+  ASM_NONE          = 0;   { aucune operation ASM                   }
+  ASM_HEADER        = 1;   { en-tete .386 / .MODEL FLAT             }
+  ASM_INCLUDELIB    = 2;   { directive INCLUDELIB                   }
+  ASM_EXTERN        = 3;   { declaration EXTERN                     }
+  ASM_DATA_SECTION  = 4;   { section .DATA (donnees initialisees)   }
+  ASM_BSS_SECTION   = 5;   { section .DATA? (donnees non init.)     }
+  ASM_CODE_SECTION  = 6;   { section .CODE (code executable)        }
+  ASM_PROC_DEF      = 7;   { definition de procedure                }
+  ASM_COMMENT       = 8;   { commentaire assembleur                 }
+  ASM_LABEL         = 9;   { label assembleur                       }
+  ASM_INSTRUCTION   = 10;  { instruction assembleur                 }
+  ASM_END_DIRECTIVE = 11;  { directive END _start                   }
+
+  { Constantes de limites ASM }
+  ASM_MAX_OPS       = 4096;  { nombre max d operations ASM          }
+  ASM_MAX_EXTERNS   = 128;   { nombre max de declarations EXTERN    }
+  ASM_MAX_LIBS      = 16;    { nombre max d INCLUDELIB              }
+  ASM_INDENT        = '  ';  { indentation standard (2 espaces)     }
+  ASM_INDENT2       = '    ';{ double indentation (4 espaces)       }
+
+Var
+  { Variables du generateur ASM }
+  AsmGenInitialized  : Boolean;     { module initialise ?             }
+  AsmGenStateCount   : Integer;     { compteur total d operations     }
+  AsmGenHeaderCount  : Integer;     { en-tetes generes                }
+  AsmGenLibCount     : Integer;     { INCLUDELIB generes              }
+  AsmGenExternCount  : Integer;     { EXTERN generes                  }
+  AsmGenDataCount    : Integer;     { entrees .DATA generees          }
+  AsmGenBssCount     : Integer;     { entrees .DATA? generees         }
+  AsmGenCodeCount    : Integer;     { instructions .CODE generees     }
+  AsmGenProcCount    : Integer;     { procedures generees             }
+  AsmGenCommentCount : Integer;     { commentaires generes            }
+  AsmGenLabelNum     : Integer;     { generateur de labels uniques    }
+  AsmGenErrorCount   : Integer;     { nombre d erreurs                }
+
+{ ------------------------------------------------------------ }
+{ InitAsmGenState : initialiser les variables du generateur ASM  }
+{ ------------------------------------------------------------ }
+
+Procedure InitAsmGenState;
+Begin
+  AsmGenInitialized  := True;
+  AsmGenStateCount   := 0;
+  AsmGenHeaderCount  := 0;
+  AsmGenLibCount     := 0;
+  AsmGenExternCount  := 0;
+  AsmGenDataCount    := 0;
+  AsmGenBssCount     := 0;
+  AsmGenCodeCount    := 0;
+  AsmGenProcCount    := 0;
+  AsmGenCommentCount := 0;
+  AsmGenLabelNum     := 0;
+  AsmGenErrorCount   := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsmGenLabel : generer un label unique pour le listing ASM    }
+{ ------------------------------------------------------------ }
+
+Function GenAsmGenLabel : TString;
+Begin
+  Inc(AsmGenLabelNum);
+  GenAsmGenLabel := PFX_LBL + 'ASM_' + ItoSI(AsmGenLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmGenTypeName : nom textuel d un type d operation ASM         }
+{ ------------------------------------------------------------ }
+
+Function AsmGenTypeName(AsmType : Integer) : TString;
+Begin
+  Case AsmType Of
+    ASM_NONE          : AsmGenTypeName := 'NONE';
+    ASM_HEADER        : AsmGenTypeName := 'HEADER';
+    ASM_INCLUDELIB    : AsmGenTypeName := 'INCLUDELIB';
+    ASM_EXTERN        : AsmGenTypeName := 'EXTERN';
+    ASM_DATA_SECTION  : AsmGenTypeName := 'DATA_SECTION';
+    ASM_BSS_SECTION   : AsmGenTypeName := 'BSS_SECTION';
+    ASM_CODE_SECTION  : AsmGenTypeName := 'CODE_SECTION';
+    ASM_PROC_DEF      : AsmGenTypeName := 'PROC_DEF';
+    ASM_COMMENT       : AsmGenTypeName := 'COMMENT';
+    ASM_LABEL         : AsmGenTypeName := 'LABEL';
+    ASM_INSTRUCTION   : AsmGenTypeName := 'INSTRUCTION';
+    ASM_END_DIRECTIVE : AsmGenTypeName := 'END_DIRECTIVE';
+  Else
+    AsmGenTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmHeader : generer l en-tete du fichier ASM               }
+{   .386                                                         }
+{   .MODEL FLAT, STDCALL                                         }
+{   OPTION CASEMAP:NONE                                          }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmHeader : TString;
+Var
+  Buf : TString;
+Begin
+  If AsmGenHeaderCount >= ASM_MAX_OPS Then
+  Begin
+    Inc(AsmGenErrorCount);
+    EmitAsmHeader := '; ERROR: max ASM HEADER exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '; ============================================' + Chr(13) + Chr(10) +
+         '; Fichier ASM genere par JOVCW32 v' + JOVCW32_VERSION + Chr(13) + Chr(10) +
+         '; Source : ' + Opts.SrcFile + Chr(13) + Chr(10) +
+         '; Format : MASM .386 / FLAT / Win32 Console' + Chr(13) + Chr(10) +
+         '; ============================================' + Chr(13) + Chr(10) +
+         Chr(13) + Chr(10) +
+         '.386' + Chr(13) + Chr(10) +
+         '.MODEL FLAT, STDCALL' + Chr(13) + Chr(10) +
+         'OPTION CASEMAP:NONE' + Chr(13) + Chr(10) +
+         Chr(13) + Chr(10);
+
+  Inc(AsmGenHeaderCount);
+  Inc(AsmGenStateCount);
+  EmitAsmHeader := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmIncludeLib : generer une directive INCLUDELIB            }
+{   INCLUDELIB nomlib.lib                                        }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmIncludeLib(LibName : TString) : TString;
+Begin
+  If AsmGenLibCount >= ASM_MAX_LIBS Then
+  Begin
+    Inc(AsmGenErrorCount);
+    EmitAsmIncludeLib := '; ERROR: max ASM INCLUDELIB exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  EmitAsmIncludeLib := 'INCLUDELIB ' + LibName + Chr(13) + Chr(10);
+  Inc(AsmGenLibCount);
+  Inc(AsmGenStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmIncludeLibs : generer toutes les directives INCLUDELIB  }
+{   kernel32.lib et msvcrt.lib (si necessaire)                   }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmIncludeLibs : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := '; --- Bibliotheques importees ---' + Chr(13) + Chr(10);
+  Buf := Buf + EmitAsmIncludeLib('kernel32.lib');
+  Buf := Buf + Chr(13) + Chr(10);
+
+  EmitAsmIncludeLibs := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmExtern : generer une declaration EXTERN                 }
+{   EXTERN nomfonction:PROC                                      }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmExtern(FuncName : TString) : TString;
+Begin
+  If AsmGenExternCount >= ASM_MAX_EXTERNS Then
+  Begin
+    Inc(AsmGenErrorCount);
+    EmitAsmExtern := '; ERROR: max ASM EXTERN exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  EmitAsmExtern := 'EXTERN ' + FuncName + ':PROC' + Chr(13) + Chr(10);
+  Inc(AsmGenExternCount);
+  Inc(AsmGenStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmExterns : generer toutes les declarations EXTERN        }
+{   pour les imports Win32 utilises (kernel32)                   }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmExterns : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := '; --- Declarations externes (imports Win32) ---' + Chr(13) + Chr(10);
+  Buf := Buf + EmitAsmExtern('_ExitProcess@4');
+  Buf := Buf + EmitAsmExtern('_GetStdHandle@4');
+  Buf := Buf + EmitAsmExtern('_WriteFile@20');
+  Buf := Buf + EmitAsmExtern('_ReadFile@20');
+  Buf := Buf + Chr(13) + Chr(10);
+
+  EmitAsmExterns := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmComment : generer un commentaire assembleur             }
+{   ; texte du commentaire                                       }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmComment(Comment : TString) : TString;
+Begin
+  EmitAsmComment := '; ' + Comment + Chr(13) + Chr(10);
+  Inc(AsmGenCommentCount);
+  Inc(AsmGenStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmDataItem : generer une entree .DATA pour un ITEM        }
+{   _JV_nomvar DD 0    ; ITEM nomvar S 32 ;                     }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmDataItem(AsmName : TString; BitSize : Integer;
+                          InitVal : TString; Comment : TString) : TString;
+Var
+  Buf : TString;
+  Dir : TString;
+Begin
+  If AsmGenDataCount >= ASM_MAX_OPS Then
+  Begin
+    Inc(AsmGenErrorCount);
+    EmitAsmDataItem := '; ERROR: max ASM DATA items exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Case BitSize Of
+    8  : Dir := 'DB';
+    16 : Dir := 'DW';
+  Else
+    Dir := 'DD';
+  End;
+
+  Buf := ASM_INDENT + AsmName + ' ' + Dir + ' ' + InitVal;
+  If Comment <> '' Then
+    Buf := Buf + '    ; ' + Comment;
+  Buf := Buf + Chr(13) + Chr(10);
+
+  Inc(AsmGenDataCount);
+  Inc(AsmGenStateCount);
+  EmitAsmDataItem := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmDataTable : generer une entree .DATA pour une TABLE     }
+{   _JT_nomtab DD 10 DUP(0)    ; TABLE nomtab n 32 ;           }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmDataTable(AsmName : TString; NumElems : Integer;
+                           BitSize : Integer; Comment : TString) : TString;
+Var
+  Buf : TString;
+  Dir : TString;
+Begin
+  If AsmGenDataCount >= ASM_MAX_OPS Then
+  Begin
+    Inc(AsmGenErrorCount);
+    EmitAsmDataTable := '; ERROR: max ASM DATA tables exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Case BitSize Of
+    8  : Dir := 'DB';
+    16 : Dir := 'DW';
+  Else
+    Dir := 'DD';
+  End;
+
+  Buf := ASM_INDENT + AsmName + ' ' + Dir + ' ' + ItoSI(NumElems) + ' DUP(0)';
+  If Comment <> '' Then
+    Buf := Buf + '    ; ' + Comment;
+  Buf := Buf + Chr(13) + Chr(10);
+
+  Inc(AsmGenDataCount);
+  Inc(AsmGenStateCount);
+  EmitAsmDataTable := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmDataString : generer une constante chaine dans .DATA    }
+{   _JK_nom DB 'texte', 0                                       }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmDataString(AsmName : TString; Value : TString;
+                            Comment : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If AsmGenDataCount >= ASM_MAX_OPS Then
+  Begin
+    Inc(AsmGenErrorCount);
+    EmitAsmDataString := '; ERROR: max ASM DATA strings exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := ASM_INDENT + AsmName + ' DB ''' + Value + ''', 0';
+  If Comment <> '' Then
+    Buf := Buf + '    ; ' + Comment;
+  Buf := Buf + Chr(13) + Chr(10);
+
+  Inc(AsmGenDataCount);
+  Inc(AsmGenStateCount);
+  EmitAsmDataString := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmDataSection : generer l ouverture de la section .DATA   }
+{   .DATA                                                        }
+{   Variables, tables et constantes chaines                      }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmDataSection : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := '; --- Section de donnees initialisees ---' + Chr(13) + Chr(10) +
+         '.DATA' + Chr(13) + Chr(10);
+
+  { Generer les variables ITEM avec valeurs par defaut }
+  Buf := Buf + EmitAsmComment('Variables ITEM');
+
+  { Generer les constantes chaines du programme }
+  Buf := Buf + EmitAsmComment('Constantes chaines');
+
+  { Donnees runtime }
+  Buf := Buf + ASM_INDENT + '_JVRT_crlf DB 13, 10, 0' + Chr(13) + Chr(10);
+  Inc(AsmGenDataCount);
+  Inc(AsmGenStateCount);
+  Buf := Buf + ASM_INDENT + '_JVRT_fmt_d DB ''%d'', 0' + Chr(13) + Chr(10);
+  Inc(AsmGenDataCount);
+  Inc(AsmGenStateCount);
+
+  Buf := Buf + Chr(13) + Chr(10);
+  EmitAsmDataSection := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmBssItem : generer une entree .DATA? pour une variable   }
+{   _JV_nomvar DD ?                                              }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmBssItem(AsmName : TString; BitSize : Integer;
+                         Comment : TString) : TString;
+Var
+  Buf : TString;
+  Dir : TString;
+Begin
+  If AsmGenBssCount >= ASM_MAX_OPS Then
+  Begin
+    Inc(AsmGenErrorCount);
+    EmitAsmBssItem := '; ERROR: max ASM BSS items exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Case BitSize Of
+    8  : Dir := 'DB';
+    16 : Dir := 'DW';
+  Else
+    Dir := 'DD';
+  End;
+
+  Buf := ASM_INDENT + AsmName + ' ' + Dir + ' ?';
+  If Comment <> '' Then
+    Buf := Buf + '    ; ' + Comment;
+  Buf := Buf + Chr(13) + Chr(10);
+
+  Inc(AsmGenBssCount);
+  Inc(AsmGenStateCount);
+  EmitAsmBssItem := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmBssSection : generer la section .DATA? (non initialisee)}
+{   .DATA?                                                       }
+{   Buffers E/S et variables non initialisees                    }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmBssSection : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := '; --- Section de donnees non initialisees ---' + Chr(13) + Chr(10) +
+         '.DATA?' + Chr(13) + Chr(10);
+
+  { Buffers runtime }
+  Buf := Buf + EmitAsmComment('Buffers runtime E/S');
+  Buf := Buf + ASM_INDENT + '_JVRT_iobuf DB 256 DUP(?)' + Chr(13) + Chr(10);
+  Inc(AsmGenBssCount);
+  Inc(AsmGenStateCount);
+  Buf := Buf + ASM_INDENT + '_JVRT_numbuf DB 32 DUP(?)' + Chr(13) + Chr(10);
+  Inc(AsmGenBssCount);
+  Inc(AsmGenStateCount);
+  Buf := Buf + ASM_INDENT + '_JVRT_hStdOut DD ?' + Chr(13) + Chr(10);
+  Inc(AsmGenBssCount);
+  Inc(AsmGenStateCount);
+  Buf := Buf + ASM_INDENT + '_JVRT_hStdIn DD ?' + Chr(13) + Chr(10);
+  Inc(AsmGenBssCount);
+  Inc(AsmGenStateCount);
+  Buf := Buf + ASM_INDENT + '_JVRT_bytesWritten DD ?' + Chr(13) + Chr(10);
+  Inc(AsmGenBssCount);
+  Inc(AsmGenStateCount);
+  Buf := Buf + ASM_INDENT + '_JVRT_bytesRead DD ?' + Chr(13) + Chr(10);
+  Inc(AsmGenBssCount);
+  Inc(AsmGenStateCount);
+
+  Buf := Buf + Chr(13) + Chr(10);
+  EmitAsmBssSection := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmCodeStart : generer l ouverture de la section .CODE     }
+{   .CODE                                                        }
+{   _start:                                                      }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmCodeStart : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := '; --- Section de code ---' + Chr(13) + Chr(10) +
+         '.CODE' + Chr(13) + Chr(10) +
+         Chr(13) + Chr(10);
+
+  Inc(AsmGenCodeCount);
+  Inc(AsmGenStateCount);
+  EmitAsmCodeStart := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmProcStart : generer le debut d une procedure            }
+{   _JP_nomproc PROC                                             }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmProcStart(ProcName : TString; Comment : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If AsmGenProcCount >= ASM_MAX_OPS Then
+  Begin
+    Inc(AsmGenErrorCount);
+    EmitAsmProcStart := '; ERROR: max ASM PROC exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '';
+  If Comment <> '' Then
+    Buf := Buf + '; ' + Comment + Chr(13) + Chr(10);
+  Buf := Buf + ProcName + ' PROC' + Chr(13) + Chr(10);
+
+  Inc(AsmGenProcCount);
+  Inc(AsmGenStateCount);
+  EmitAsmProcStart := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmProcEnd : generer la fin d une procedure                }
+{   _JP_nomproc ENDP                                             }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmProcEnd(ProcName : TString) : TString;
+Begin
+  EmitAsmProcEnd := ProcName + ' ENDP' + Chr(13) + Chr(10) + Chr(13) + Chr(10);
+  Inc(AsmGenStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmInstruction : generer une instruction assembleur         }
+{   avec indentation et commentaire optionnel                    }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmInstruction(Instr : TString; Comment : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If AsmGenCodeCount >= ASM_MAX_OPS Then
+  Begin
+    Inc(AsmGenErrorCount);
+    EmitAsmInstruction := '; ERROR: max ASM instructions exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := ASM_INDENT + Instr;
+  If Comment <> '' Then
+    Buf := Buf + '    ; ' + Comment;
+  Buf := Buf + Chr(13) + Chr(10);
+
+  Inc(AsmGenCodeCount);
+  Inc(AsmGenStateCount);
+  EmitAsmInstruction := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmLabel : generer un label dans la section .CODE          }
+{   nomlabel:                                                    }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmLabel(LblName : TString; Comment : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := LblName + ':';
+  If Comment <> '' Then
+    Buf := Buf + '    ; ' + Comment;
+  Buf := Buf + Chr(13) + Chr(10);
+
+  Inc(AsmGenCodeCount);
+  Inc(AsmGenStateCount);
+  EmitAsmLabel := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmEntryPoint : generer le point d entree _start           }
+{   avec InitIO (GetStdHandle), appel du module principal,       }
+{   ExitProcess(0)                                               }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmEntryPoint : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := EmitAsmComment('Point d entree principal') +
+         EmitAsmLabel('_start', 'debut du programme') +
+         Chr(13) + Chr(10) +
+         EmitAsmComment('Initialiser les handles E/S') +
+         EmitAsmInstruction('push -11', 'STD_OUTPUT_HANDLE') +
+         EmitAsmInstruction('call _GetStdHandle@4', '') +
+         EmitAsmInstruction('mov [_JVRT_hStdOut], eax', '') +
+         EmitAsmInstruction('push -10', 'STD_INPUT_HANDLE') +
+         EmitAsmInstruction('call _GetStdHandle@4', '') +
+         EmitAsmInstruction('mov [_JVRT_hStdIn], eax', '') +
+         Chr(13) + Chr(10) +
+         EmitAsmComment('Corps du module principal') +
+         EmitAsmComment('(code genere par le compilateur)') +
+         Chr(13) + Chr(10) +
+         EmitAsmComment('Terminer le programme') +
+         EmitAsmInstruction('push 0', 'code de sortie 0') +
+         EmitAsmInstruction('call _ExitProcess@4', 'terminer');
+
+  EmitAsmEntryPoint := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmRuntimeProcs : generer les routines runtime (_JVRT_)    }
+{   _JVRT_WriteStr, _JVRT_WriteCrlf, _JVRT_ReadLine,           }
+{   _JVRT_Itoa, _JVRT_Atoi                                      }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmRuntimeProcs : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := EmitAsmComment('=== Routines Runtime ===') + Chr(13) + Chr(10);
+
+  { _JVRT_WriteStr : ecrire une chaine sur stdout }
+  Buf := Buf + EmitAsmProcStart('_JVRT_WriteStr', 'Ecrire chaine sur stdout (EDX=ptr, ECX=len)');
+  Buf := Buf + EmitAsmInstruction('push 0', 'lpOverlapped = NULL');
+  Buf := Buf + EmitAsmInstruction('push offset _JVRT_bytesWritten', 'lpNumberOfBytesWritten');
+  Buf := Buf + EmitAsmInstruction('push ecx', 'nNumberOfBytesToWrite');
+  Buf := Buf + EmitAsmInstruction('push edx', 'lpBuffer');
+  Buf := Buf + EmitAsmInstruction('push [_JVRT_hStdOut]', 'hFile');
+  Buf := Buf + EmitAsmInstruction('call _WriteFile@20', '');
+  Buf := Buf + EmitAsmInstruction('ret', '');
+  Buf := Buf + EmitAsmProcEnd('_JVRT_WriteStr');
+
+  { _JVRT_WriteCrlf : ecrire un retour de ligne }
+  Buf := Buf + EmitAsmProcStart('_JVRT_WriteCrlf', 'Ecrire CR+LF sur stdout');
+  Buf := Buf + EmitAsmInstruction('push 0', 'lpOverlapped = NULL');
+  Buf := Buf + EmitAsmInstruction('push offset _JVRT_bytesWritten', 'lpNumberOfBytesWritten');
+  Buf := Buf + EmitAsmInstruction('push 2', 'nNumberOfBytesToWrite (CR+LF)');
+  Buf := Buf + EmitAsmInstruction('push offset _JVRT_crlf', 'lpBuffer');
+  Buf := Buf + EmitAsmInstruction('push [_JVRT_hStdOut]', 'hFile');
+  Buf := Buf + EmitAsmInstruction('call _WriteFile@20', '');
+  Buf := Buf + EmitAsmInstruction('ret', '');
+  Buf := Buf + EmitAsmProcEnd('_JVRT_WriteCrlf');
+
+  { _JVRT_ReadLine : lire une ligne depuis stdin }
+  Buf := Buf + EmitAsmProcStart('_JVRT_ReadLine', 'Lire une ligne depuis stdin (EDX=buf, ECX=max)');
+  Buf := Buf + EmitAsmInstruction('push 0', 'lpOverlapped = NULL');
+  Buf := Buf + EmitAsmInstruction('push offset _JVRT_bytesRead', 'lpNumberOfBytesRead');
+  Buf := Buf + EmitAsmInstruction('push ecx', 'nNumberOfBytesToRead');
+  Buf := Buf + EmitAsmInstruction('push edx', 'lpBuffer');
+  Buf := Buf + EmitAsmInstruction('push [_JVRT_hStdIn]', 'hFile');
+  Buf := Buf + EmitAsmInstruction('call _ReadFile@20', '');
+  Buf := Buf + EmitAsmInstruction('ret', '');
+  Buf := Buf + EmitAsmProcEnd('_JVRT_ReadLine');
+
+  { _JVRT_Itoa : convertir entier -> chaine (EAX=valeur, EDI=buf) }
+  Buf := Buf + EmitAsmProcStart('_JVRT_Itoa', 'Convertir entier en chaine (EAX=val, EDI=buf)');
+  Buf := Buf + EmitAsmInstruction('push ebx', 'sauvegarder registres');
+  Buf := Buf + EmitAsmInstruction('push ecx', '');
+  Buf := Buf + EmitAsmInstruction('push edx', '');
+  Buf := Buf + EmitAsmInstruction('mov ecx, 0', 'compteur de chiffres');
+  Buf := Buf + EmitAsmInstruction('cmp eax, 0', 'verifier si negatif');
+  Buf := Buf + EmitAsmInstruction('jge _JVRT_Itoa_pos', '');
+  Buf := Buf + EmitAsmInstruction('mov byte ptr [edi], ''-''', 'ecrire le signe -');
+  Buf := Buf + EmitAsmInstruction('inc edi', '');
+  Buf := Buf + EmitAsmInstruction('neg eax', 'rendre positif');
+  Buf := Buf + EmitAsmLabel('_JVRT_Itoa_pos', '');
+  Buf := Buf + EmitAsmInstruction('mov ebx, 10', 'diviseur = 10');
+  Buf := Buf + EmitAsmLabel('_JVRT_Itoa_div', 'boucle de division');
+  Buf := Buf + EmitAsmInstruction('xor edx, edx', '');
+  Buf := Buf + EmitAsmInstruction('div ebx', 'EDX = reste, EAX = quotient');
+  Buf := Buf + EmitAsmInstruction('add dl, ''0''', 'convertir en ASCII');
+  Buf := Buf + EmitAsmInstruction('push edx', 'empiler le chiffre');
+  Buf := Buf + EmitAsmInstruction('inc ecx', '');
+  Buf := Buf + EmitAsmInstruction('cmp eax, 0', '');
+  Buf := Buf + EmitAsmInstruction('jne _JVRT_Itoa_div', '');
+  Buf := Buf + EmitAsmLabel('_JVRT_Itoa_pop', 'depiler en ordre inverse');
+  Buf := Buf + EmitAsmInstruction('pop edx', '');
+  Buf := Buf + EmitAsmInstruction('mov [edi], dl', '');
+  Buf := Buf + EmitAsmInstruction('inc edi', '');
+  Buf := Buf + EmitAsmInstruction('dec ecx', '');
+  Buf := Buf + EmitAsmInstruction('jnz _JVRT_Itoa_pop', '');
+  Buf := Buf + EmitAsmInstruction('mov byte ptr [edi], 0', 'terminateur nul');
+  Buf := Buf + EmitAsmInstruction('pop edx', 'restaurer registres');
+  Buf := Buf + EmitAsmInstruction('pop ecx', '');
+  Buf := Buf + EmitAsmInstruction('pop ebx', '');
+  Buf := Buf + EmitAsmInstruction('ret', '');
+  Buf := Buf + EmitAsmProcEnd('_JVRT_Itoa');
+
+  EmitAsmRuntimeProcs := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmEndDirective : generer la directive END _start          }
+{   END _start                                                   }
+{ ------------------------------------------------------------ }
+
+Function EmitAsmEndDirective : TString;
+Begin
+  EmitAsmEndDirective := Chr(13) + Chr(10) +
+    'END _start' + Chr(13) + Chr(10);
+  Inc(AsmGenStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateAsmListing : orchestrateur genere un fichier .ASM      }
+{   complet : en-tete, INCLUDELIB, EXTERN, .DATA, .DATA?,       }
+{   .CODE avec routines runtime, point d entree et END           }
+{ ------------------------------------------------------------ }
+
+Function GenerateAsmListing : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := EmitAsmHeader;
+  Buf := Buf + EmitAsmIncludeLibs;
+  Buf := Buf + EmitAsmExterns;
+  Buf := Buf + EmitAsmDataSection;
+  Buf := Buf + EmitAsmBssSection;
+  Buf := Buf + EmitAsmCodeStart;
+  Buf := Buf + EmitAsmRuntimeProcs;
+  Buf := Buf + EmitAsmEntryPoint;
+  Buf := Buf + EmitAsmEndDirective;
+
+  GenerateAsmListing := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsAsmGenRequired : determiner si la generation ASM est requise }
+{ ------------------------------------------------------------ }
+
+Function IsAsmGenRequired : Boolean;
+Begin
+  IsAsmGenRequired := Opts.EmitAsm;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpAsmGenState : afficher l etat du generateur ASM            }
+{ ------------------------------------------------------------ }
+
+Procedure DumpAsmGenState;
+Begin
+  WriteLn('=== Etat du generateur ASM (TODO 23) ===');
+  WriteLn('  Initialise       : ', AsmGenInitialized);
+  WriteLn('  Operations       : ', AsmGenStateCount);
+  WriteLn('  En-tetes         : ', AsmGenHeaderCount);
+  WriteLn('  INCLUDELIB       : ', AsmGenLibCount);
+  WriteLn('  EXTERN           : ', AsmGenExternCount);
+  WriteLn('  Entrees .DATA    : ', AsmGenDataCount);
+  WriteLn('  Entrees .DATA?   : ', AsmGenBssCount);
+  WriteLn('  Instructions     : ', AsmGenCodeCount);
+  WriteLn('  Procedures       : ', AsmGenProcCount);
+  WriteLn('  Commentaires     : ', AsmGenCommentCount);
+  WriteLn('  Labels uniques   : ', AsmGenLabelNum);
+  WriteLn('  Erreurs          : ', AsmGenErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs pour le generateur ASM                 }
+{ ------------------------------------------------------------ }
+
+Function IsAsmGenInitialized : Boolean;
+Begin
+  IsAsmGenInitialized := AsmGenInitialized;
+End;
+
+Function IsAsmGenEmpty : Boolean;
+Begin
+  IsAsmGenEmpty := (AsmGenStateCount = 0);
+End;
+
+Function GetAsmGenStateCount : Integer;
+Begin
+  GetAsmGenStateCount := AsmGenStateCount;
+End;
+
+Function GetAsmGenHeaderCount : Integer;
+Begin
+  GetAsmGenHeaderCount := AsmGenHeaderCount;
+End;
+
+Function GetAsmGenExternCount : Integer;
+Begin
+  GetAsmGenExternCount := AsmGenExternCount;
+End;
+
+Function GetAsmGenDataCount : Integer;
+Begin
+  GetAsmGenDataCount := AsmGenDataCount;
+End;
+
+Function GetAsmGenBssCount : Integer;
+Begin
+  GetAsmGenBssCount := AsmGenBssCount;
+End;
+
+Function GetAsmGenCodeCount : Integer;
+Begin
+  GetAsmGenCodeCount := AsmGenCodeCount;
+End;
+
+Function GetAsmGenLabelNum : Integer;
+Begin
+  GetAsmGenLabelNum := AsmGenLabelNum;
+End;
+
+Function GetAsmGenErrorCount : Integer;
+Begin
+  GetAsmGenErrorCount := AsmGenErrorCount;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -12745,6 +13498,7 @@ Begin
   RtlInitialized := False;
   PeInitialized := False;
   CoffInitialized := False;
+  AsmGenInitialized := False;
 
   ParseArgs;
 
@@ -12811,6 +13565,9 @@ Begin
   { Initialiser le generateur COFF (ecrivain .OBJ) }
   InitCoffState;
 
+  { Initialiser le generateur de listing ASM }
+  InitAsmGenState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -12846,6 +13603,7 @@ Begin
     DumpRuntimeState;
     DumpPeState;
     DumpCoffState;
+    DumpAsmGenState;
   End;
 
   { Nettoyage }
