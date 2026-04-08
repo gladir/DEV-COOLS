@@ -26,7 +26,7 @@
             InitLearnState, GenLrnLabel, LrnTypeName, DumpLearnState
             10 accesseurs (IsLrnInitialized, IsLrnEmpty, GetLrn*Count, ...)
 
-  TODO 03 - HISTORIQUE DE CONVERSATION [A FAIRE]
+  TODO 03 - HISTORIQUE DE CONVERSATION [IMPLEMENTE]
             THistoryEntry : UserInput, BotResponse, Timestamp
             History[0..MAX_HISTORY-1], HistoryCount
             AddToHistory(User, Bot) : ajouter une entree a l'historique
@@ -34,6 +34,8 @@
             ClearHistory : vider l'historique de conversation
             SaveHistory(FileName) : sauvegarder l'historique dans un fichier
             LoadHistory(FileName) : charger l'historique depuis un fichier
+            InitHisState, GenHisLabel, HisTypeName, DumpHisState
+            10 accesseurs (IsHisInitialized, IsHisEmpty, GetHis*Count, ...)
 
   TODO 04 - ANALYSEUR DE REQUETES UTILISATEUR [A FAIRE]
             TIntentKind : IK_UNKNOWN, IK_HELLO, IK_PROGRAM, IK_UNIT,

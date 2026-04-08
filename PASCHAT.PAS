@@ -41,7 +41,7 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 03 - HISTORIQUE DE CONVERSATION [A FAIRE]
+  TODO 03 - HISTORIQUE DE CONVERSATION [IMPLEMENTE]
             THistoryEntry : UserInput, BotResponse, Timestamp
             History[0..MAX_HISTORY-1], HistoryCount
             AddToHistory(User, Bot) : ajouter une entree a l'historique
@@ -49,6 +49,8 @@ Program PASCHAT;
             ClearHistory : vider l'historique de conversation
             SaveHistory(FileName) : sauvegarder l'historique dans un fichier
             LoadHistory(FileName) : charger l'historique depuis un fichier
+            InitHisState, GenHisLabel, HisTypeName, DumpHisState
+            10 accesseurs (IsHisInitialized, IsHisEmpty, GetHis*Count, ...)
   ============================================================ }
 
 { ============================================================
@@ -330,6 +332,21 @@ Const
   LRN_MAX_WORDS  = 256; { Nombre max de mots indexes par fichier }
   LRN_MIN_WORD   = 3;   { Longueur minimale pour indexation }
 
+  { TODO 03 - Types d'entrees d'historique (HIS_*) }
+  HIS_NONE       = 0;   { Aucune entree }
+  HIS_USER       = 1;   { Entree utilisateur }
+  HIS_BOT        = 2;   { Reponse bot }
+  HIS_CODE       = 3;   { Code genere }
+  HIS_ERROR      = 4;   { Message d'erreur }
+  HIS_COMMAND    = 5;   { Commande speciale }
+  HIS_CONTEXT    = 6;   { Information contextuelle }
+  HIS_SYSTEM     = 7;   { Message systeme }
+  HIS_MAX        = 8;   { Nombre maximum de types }
+
+  { Limites pour TODO 03 }
+  HIS_MAX_RECENT = 10;  { Nombre max d'entrees recentes }
+  HIS_FILE_EXT   = '.his'; { Extension fichier historique }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -543,9 +560,21 @@ Var
   LrnTotalLines  : Integer;
   LrnSearchCount : Integer;
 
-  { TODO 03 - Historique }
+  { TODO 03 - Historique et etat }
   History      : Array[1..MAX_HISTORY] of THistoryEntry;
   HistoryCount : Integer;
+  HisInitialized : Boolean;
+  HisStateCount  : Integer;
+  HisAddCount    : Integer;
+  HisUserCount   : Integer;
+  HisBotCount    : Integer;
+  HisCodeCount   : Integer;
+  HisErrorCount  : Integer;
+  HisCommandCount: Integer;
+  HisClearCount  : Integer;
+  HisLabelNum    : Integer;
+  HisSaveCount   : Integer;
+  HisLoadCount   : Integer;
 
   { TODO 04 - Intention courante }
   CurrentIntent : TIntent;
@@ -1145,9 +1174,53 @@ End;
   TODO 03 - HISTORIQUE DE CONVERSATION
   ============================================================ }
 
+{ --- TODO 03 : Fonctions d'initialisation et utilitaires --- }
+
+Procedure InitHisState;
+Begin
+  HisInitialized := True;
+  HisStateCount := 0;
+  HisAddCount := 0;
+  HisUserCount := 0;
+  HisBotCount := 0;
+  HisCodeCount := 0;
+  HisErrorCount := 0;
+  HisCommandCount := 0;
+  HisClearCount := 0;
+  HisLabelNum := 0;
+  HisSaveCount := 0;
+  HisLoadCount := 0;
+End;
+
+Function GenHisLabel: TString;
+Var
+  S: String;
+Begin
+  Inc(HisLabelNum);
+  Str(HisLabelNum, S);
+  GenHisLabel := '_HIS_L_' + S;
+End;
+
+Function HisTypeName(HisType: Integer): TString;
+Begin
+  Case HisType of
+    HIS_NONE:    HisTypeName := 'NONE';
+    HIS_USER:    HisTypeName := 'USER';
+    HIS_BOT:     HisTypeName := 'BOT';
+    HIS_CODE:    HisTypeName := 'CODE';
+    HIS_ERROR:   HisTypeName := 'ERROR';
+    HIS_COMMAND: HisTypeName := 'COMMAND';
+    HIS_CONTEXT: HisTypeName := 'CONTEXT';
+    HIS_SYSTEM:  HisTypeName := 'SYSTEM';
+  Else
+    HisTypeName := 'UNKNOWN';
+  End;
+End;
+
 Procedure InitHistory;
 Begin
   HistoryCount := 0;
+  Inc(HisStateCount);
 End;
 
 Procedure AddToHistory(UserIn, BotOut: String; WithCode: Boolean);
@@ -1164,6 +1237,11 @@ Begin
   History[HistoryCount].HasCode := WithCode;
   { Timestamp simplifie - pourrait utiliser GetTime de Dos unit }
   History[HistoryCount].Timestamp := HistoryCount;
+
+  Inc(HisAddCount);
+  Inc(HisUserCount);
+  Inc(HisBotCount);
+  If WithCode Then Inc(HisCodeCount);
 End;
 
 Function GetLastUserInput: String;
@@ -1172,6 +1250,30 @@ Begin
     GetLastUserInput := History[HistoryCount].UserInput
   Else
     GetLastUserInput := '';
+End;
+
+Procedure GetRecentHistory(N: Integer);
+Var
+  I, StartIdx: Integer;
+Begin
+  If HistoryCount = 0 Then Begin
+    WriteLn('L''historique est vide.');
+    Exit;
+  End;
+
+  If N <= 0 Then N := HIS_MAX_RECENT;
+  If N > HistoryCount Then N := HistoryCount;
+
+  StartIdx := HistoryCount - N + 1;
+  If StartIdx < 1 Then StartIdx := 1;
+
+  WriteLn('=== ', N, ' dernieres entrees ===');
+  For I := StartIdx to HistoryCount do Begin
+    WriteLn('[', I, '] Vous: ', History[I].UserInput);
+    WriteLn('    Bot: ', Copy(History[I].BotResponse, 1, 60));
+    If Length(History[I].BotResponse) > 60 Then
+      WriteLn('    ...');
+  End;
 End;
 
 Procedure ShowHistory;
@@ -1195,7 +1297,184 @@ End;
 Procedure ClearHistory;
 Begin
   HistoryCount := 0;
+  Inc(HisClearCount);
   WriteLn('Historique efface.');
+End;
+
+Function SaveHistory(FileName: String): Boolean;
+Var
+  F: Text;
+  I: Integer;
+Begin
+  SaveHistory := False;
+  {$I-}
+  Assign(F, FileName);
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then Begin
+    WriteLn('Erreur: Impossible de creer le fichier ', FileName);
+    Inc(HisErrorCount);
+    Exit;
+  End;
+
+  WriteLn(F, '# PASCHAT History File');
+  WriteLn(F, '# Version: ', PASCHAT_VERSION);
+  WriteLn(F, '# Entries: ', HistoryCount);
+  WriteLn(F, '---');
+
+  For I := 1 to HistoryCount do Begin
+    WriteLn(F, '[ENTRY ', I, ']');
+    WriteLn(F, 'USER=', History[I].UserInput);
+    WriteLn(F, 'BOT=', History[I].BotResponse);
+    If History[I].HasCode Then
+      WriteLn(F, 'CODE=TRUE')
+    Else
+      WriteLn(F, 'CODE=FALSE');
+    WriteLn(F, 'TIME=', History[I].Timestamp);
+    WriteLn(F, '---');
+  End;
+
+  Close(F);
+  Inc(HisSaveCount);
+  SaveHistory := True;
+  WriteLn('Historique sauvegarde dans ', FileName);
+End;
+
+Function LoadHistory(FileName: String): Boolean;
+Var
+  F: Text;
+  Line, Key, Value: String;
+  I, P: Integer;
+  InEntry: Boolean;
+Begin
+  LoadHistory := False;
+  {$I-}
+  Assign(F, FileName);
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Begin
+    WriteLn('Erreur: Fichier introuvable ', FileName);
+    Inc(HisErrorCount);
+    Exit;
+  End;
+
+  HistoryCount := 0;
+  InEntry := False;
+
+  While Not Eof(F) do Begin
+    ReadLn(F, Line);
+    If Line = '' Then Continue;
+    If Line[1] = '#' Then Continue;
+    If Line = '---' Then Begin
+      InEntry := False;
+      Continue;
+    End;
+
+    If Pos('[ENTRY ', Line) = 1 Then Begin
+      InEntry := True;
+      If HistoryCount < MAX_HISTORY Then Begin
+        Inc(HistoryCount);
+        History[HistoryCount].UserInput := '';
+        History[HistoryCount].BotResponse := '';
+        History[HistoryCount].HasCode := False;
+        History[HistoryCount].Timestamp := HistoryCount;
+      End;
+      Continue;
+    End;
+
+    If InEntry and (HistoryCount > 0) Then Begin
+      P := Pos('=', Line);
+      If P > 0 Then Begin
+        Key := Copy(Line, 1, P - 1);
+        Value := Copy(Line, P + 1, Length(Line) - P);
+        If Key = 'USER' Then
+          History[HistoryCount].UserInput := Value
+        Else If Key = 'BOT' Then
+          History[HistoryCount].BotResponse := Value
+        Else If Key = 'CODE' Then
+          History[HistoryCount].HasCode := (Value = 'TRUE')
+        Else If Key = 'TIME' Then Begin
+          Val(Value, History[HistoryCount].Timestamp, I);
+          If I <> 0 Then History[HistoryCount].Timestamp := HistoryCount;
+        End;
+      End;
+    End;
+  End;
+
+  Close(F);
+  Inc(HisLoadCount);
+  LoadHistory := True;
+  WriteLn('Historique charge depuis ', FileName, ' (', HistoryCount, ' entrees)');
+End;
+
+Procedure DumpHisState;
+Begin
+  WriteLn('=== TODO 03 - Historique de Conversation ===');
+  WriteLn('  HisInitialized : ', HisInitialized);
+  WriteLn('  HisStateCount  : ', HisStateCount);
+  WriteLn('  HisAddCount    : ', HisAddCount);
+  WriteLn('  HisUserCount   : ', HisUserCount);
+  WriteLn('  HisBotCount    : ', HisBotCount);
+  WriteLn('  HisCodeCount   : ', HisCodeCount);
+  WriteLn('  HisErrorCount  : ', HisErrorCount);
+  WriteLn('  HisCommandCount: ', HisCommandCount);
+  WriteLn('  HisClearCount  : ', HisClearCount);
+  WriteLn('  HisLabelNum    : ', HisLabelNum);
+  WriteLn('  HisSaveCount   : ', HisSaveCount);
+  WriteLn('  HisLoadCount   : ', HisLoadCount);
+  WriteLn('  HistoryCount   : ', HistoryCount);
+End;
+
+{ --- TODO 03 : 10 accesseurs standards --- }
+
+Function IsHisInitialized: Boolean;
+Begin
+  IsHisInitialized := HisInitialized;
+End;
+
+Function IsHisEmpty: Boolean;
+Begin
+  IsHisEmpty := (HistoryCount = 0);
+End;
+
+Function GetHisStateCount: Integer;
+Begin
+  GetHisStateCount := HisStateCount;
+End;
+
+Function GetHisAddCount: Integer;
+Begin
+  GetHisAddCount := HisAddCount;
+End;
+
+Function GetHisUserCount: Integer;
+Begin
+  GetHisUserCount := HisUserCount;
+End;
+
+Function GetHisBotCount: Integer;
+Begin
+  GetHisBotCount := HisBotCount;
+End;
+
+Function GetHisCodeCount: Integer;
+Begin
+  GetHisCodeCount := HisCodeCount;
+End;
+
+Function GetHisClearCount: Integer;
+Begin
+  GetHisClearCount := HisClearCount;
+End;
+
+Function GetHisErrorCount: Integer;
+Begin
+  GetHisErrorCount := HisErrorCount;
+End;
+
+Function GetHisLabelNum: Integer;
+Begin
+  GetHisLabelNum := HisLabelNum;
 End;
 
 { ============================================================
@@ -2084,10 +2363,15 @@ Begin
   LrnInitialized := False;
   InitLearnState;
 
+  { Initialiser l'etat de l'historique (TODO 03) }
+  HisInitialized := False;
+  InitHisState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
     DumpLearnState;
+    DumpHisState;
   End;
 
   Run;
