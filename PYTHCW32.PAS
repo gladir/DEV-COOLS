@@ -3843,7 +3843,6 @@ End;
 
 Function LitEvalInt : TExprVal;
 Begin
-  Inc(LitEvalCount);
   LitEvalInt := ExprMakeImm(CurTokInt, TY_IDX_INT);
 End;
 
@@ -3858,7 +3857,6 @@ Var
   Lbl : TString;
   E   : TExprVal;
 Begin
-  Inc(LitEvalCount);
   Lbl := DataAddStr(CurTokStr);
   { L immediat est l adresse du label (resolue a l edition de liens) }
   E.Kind    := EK_MEM;
@@ -3879,7 +3877,6 @@ Function LitEval : TExprVal;
 Var E : TExprVal;
 Begin
   Inc(LitEvalCount);
-  Dec(LitEvalCount); { annuler le double comptage avec LitEvalInt/Str }
   Case CurTokKind Of
     TK_INTEGER : E := LitEvalInt;
     TK_STRING : E := LitEvalStr;
