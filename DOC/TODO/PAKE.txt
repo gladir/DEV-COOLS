@@ -542,7 +542,7 @@ Turbo Pascal / Free Pascal (-Mtp)
            GetWinNsisGenCount/GetWinInstallerCount/GetWinCopyCount/
            GetWinErrorCount)
 
-  TODO 19 - GENERATION LINUX [A FAIRE]
+  TODO 19 - GENERATION LINUX [IMPLEMENTE]
          Constantes Linux :
            LINUX_DEB_EXT = '.deb', LINUX_RPM_EXT = '.rpm',
            LINUX_APPIMAGE_EXT = '.AppImage'
