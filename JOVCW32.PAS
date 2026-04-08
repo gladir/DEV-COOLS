@@ -5576,7 +5576,6 @@ End;
 Procedure ParseIfStatement;
 Var
   LblNum    : TString;
-  NestDepth : Integer;
 Begin
   Inc(CtlStateCount);
   Inc(CtlIfCount);
@@ -5604,12 +5603,11 @@ Begin
     Inc(CtlErrorCount);
   End;
 
-  { Parser les instructions du bloc THEN }
-  NestDepth := 0;
+  { Parser les instructions du bloc THEN/ELSE via ParseStatement }
   While (CurTokType <> TOK_EOF) Do
   Begin
     { Verifier ELSE au meme niveau }
-    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+    If (CurTokType = TOK_KEYWORD) And
        (CurTokNum = KW_ELSE) Then
     Begin
       { Bloc ELSE }
@@ -5620,7 +5618,7 @@ Begin
     End;
 
     { Verifier END au meme niveau }
-    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+    If (CurTokType = TOK_KEYWORD) And
        (CurTokNum = KW_END) Then
     Begin
       { Fin du IF }
@@ -5632,27 +5630,8 @@ Begin
       Break;
     End;
 
-    { Gerer l imbrication de structures }
-    If CurTokType = TOK_KEYWORD Then
-    Begin
-      If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
-         (CurTokNum = KW_WHILE) Or (CurTokNum = KW_CASE) Or
-         (CurTokNum = KW_BEGIN) Then
-        Inc(NestDepth);
-      If CurTokNum = KW_END Then
-      Begin
-        If NestDepth > 0 Then
-        Begin
-          Dec(NestDepth);
-          LexNextToken;
-          If CurTokType = TOK_SEMICOL Then
-            LexNextToken;
-          Continue;
-        End;
-      End;
-    End;
-
-    LexNextToken;
+    { Dispatcher vers ParseStatement pour les instructions du corps }
+    ParseStatement;
   End;
 
   Dec(CtlDepth);
@@ -5669,7 +5648,6 @@ Procedure ParseForStatement;
 Var
   LblNum    : TString;
   HasBy     : Boolean;
-  NestDepth : Integer;
 Begin
   Inc(CtlStateCount);
   Inc(CtlForCount);
@@ -5738,11 +5716,10 @@ Begin
   If Opts.Verbose And HasBy Then
     WriteLn('    FOR avec pas explicite (BY)');
 
-  { Parser le corps de la boucle jusqu a END }
-  NestDepth := 0;
+  { Parser le corps de la boucle via ParseStatement jusqu a END }
   While (CurTokType <> TOK_EOF) Do
   Begin
-    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+    If (CurTokType = TOK_KEYWORD) And
        (CurTokNum = KW_END) Then
     Begin
       LexNextToken;
@@ -5753,27 +5730,8 @@ Begin
       Break;
     End;
 
-    { Gerer l imbrication }
-    If CurTokType = TOK_KEYWORD Then
-    Begin
-      If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
-         (CurTokNum = KW_WHILE) Or (CurTokNum = KW_CASE) Or
-         (CurTokNum = KW_BEGIN) Then
-        Inc(NestDepth);
-      If CurTokNum = KW_END Then
-      Begin
-        If NestDepth > 0 Then
-        Begin
-          Dec(NestDepth);
-          LexNextToken;
-          If CurTokType = TOK_SEMICOL Then
-            LexNextToken;
-          Continue;
-        End;
-      End;
-    End;
-
-    LexNextToken;
+    { Dispatcher vers ParseStatement pour les instructions du corps }
+    ParseStatement;
   End;
 
   Dec(CtlDepth);
@@ -5789,7 +5747,6 @@ End;
 Procedure ParseWhileStatement;
 Var
   LblNum    : TString;
-  NestDepth : Integer;
 Begin
   Inc(CtlStateCount);
   Inc(CtlWhileCount);
@@ -5817,11 +5774,10 @@ Begin
     Inc(CtlErrorCount);
   End;
 
-  { Parser le corps de la boucle jusqu a END }
-  NestDepth := 0;
+  { Parser le corps de la boucle via ParseStatement jusqu a END }
   While (CurTokType <> TOK_EOF) Do
   Begin
-    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+    If (CurTokType = TOK_KEYWORD) And
        (CurTokNum = KW_END) Then
     Begin
       LexNextToken;
@@ -5832,27 +5788,8 @@ Begin
       Break;
     End;
 
-    { Gerer l imbrication }
-    If CurTokType = TOK_KEYWORD Then
-    Begin
-      If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
-         (CurTokNum = KW_WHILE) Or (CurTokNum = KW_CASE) Or
-         (CurTokNum = KW_BEGIN) Then
-        Inc(NestDepth);
-      If CurTokNum = KW_END Then
-      Begin
-        If NestDepth > 0 Then
-        Begin
-          Dec(NestDepth);
-          LexNextToken;
-          If CurTokType = TOK_SEMICOL Then
-            LexNextToken;
-          Continue;
-        End;
-      End;
-    End;
-
-    LexNextToken;
+    { Dispatcher vers ParseStatement pour les instructions du corps }
+    ParseStatement;
   End;
 
   Dec(CtlDepth);
@@ -5868,7 +5805,6 @@ End;
 Procedure ParseDoUntil;
 Var
   LblNum    : TString;
-  NestDepth : Integer;
 Begin
   Inc(CtlStateCount);
   Inc(CtlDoUntilCount);
@@ -5884,12 +5820,11 @@ Begin
   { Consommer le mot-cle DO }
   LexNextToken;
 
-  { Parser le corps jusqu a UNTIL }
-  NestDepth := 0;
+  { Parser le corps via ParseStatement jusqu a UNTIL }
   While (CurTokType <> TOK_EOF) Do
   Begin
     { Verifier UNTIL au meme niveau }
-    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+    If (CurTokType = TOK_KEYWORD) And
        (CurTokNum = KW_UNTIL) Then
     Begin
       LexNextToken;
@@ -5903,27 +5838,8 @@ Begin
       Break;
     End;
 
-    { Gerer l imbrication }
-    If CurTokType = TOK_KEYWORD Then
-    Begin
-      If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
-         (CurTokNum = KW_WHILE) Or (CurTokNum = KW_CASE) Or
-         (CurTokNum = KW_BEGIN) Then
-        Inc(NestDepth);
-      If CurTokNum = KW_END Then
-      Begin
-        If NestDepth > 0 Then
-        Begin
-          Dec(NestDepth);
-          LexNextToken;
-          If CurTokType = TOK_SEMICOL Then
-            LexNextToken;
-          Continue;
-        End;
-      End;
-    End;
-
-    LexNextToken;
+    { Dispatcher vers ParseStatement pour les instructions du corps }
+    ParseStatement;
   End;
 
   Dec(CtlDepth);
@@ -5978,7 +5894,6 @@ End;
 Procedure ParseBeginEnd;
 Var
   LblNum    : TString;
-  NestDepth : Integer;
 Begin
   Inc(CtlStateCount);
   Inc(CtlBeginCount);
@@ -5994,11 +5909,10 @@ Begin
   { Consommer BEGIN }
   LexNextToken;
 
-  { Parser les instructions jusqu a END }
-  NestDepth := 0;
+  { Parser les instructions via ParseStatement jusqu a END }
   While (CurTokType <> TOK_EOF) Do
   Begin
-    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+    If (CurTokType = TOK_KEYWORD) And
        (CurTokNum = KW_END) Then
     Begin
       LexNextToken;
@@ -6009,7 +5923,43 @@ Begin
       Break;
     End;
 
-    { Gerer l imbrication }
+    { Dispatcher vers ParseStatement pour les instructions du corps }
+    ParseStatement;
+  End;
+
+  Dec(CtlDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCaseBlock : parser un bloc CASE..END avec NestDepth       }
+{   CASE expression OF                                           }
+{     val1 : instructions;                                       }
+{     val2 : instructions;                                       }
+{   END ;                                                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCaseBlock;
+Var
+  NestDepth : Integer;
+Begin
+  Inc(CtlStateCount);
+
+  { Consommer CASE }
+  LexNextToken;
+
+  { Consommer le corps du CASE jusqu a END via NestDepth }
+  NestDepth := 0;
+  While (CurTokType <> TOK_EOF) Do
+  Begin
+    If (NestDepth = 0) And (CurTokType = TOK_KEYWORD) And
+       (CurTokNum = KW_END) Then
+    Begin
+      LexNextToken;
+      If CurTokType = TOK_SEMICOL Then
+        LexNextToken;
+      Break;
+    End;
+
     If CurTokType = TOK_KEYWORD Then
     Begin
       If (CurTokNum = KW_IF) Or (CurTokNum = KW_FOR) Or
@@ -6031,8 +5981,6 @@ Begin
 
     LexNextToken;
   End;
-
-  Dec(CtlDepth);
 End;
 
 { ------------------------------------------------------------ }
@@ -6070,6 +6018,9 @@ Begin
 
       KW_BEGIN:
         ParseBeginEnd;
+
+      KW_CASE:
+        ParseCaseBlock;
 
       KW_CALL:
         ParseCallStatement;
