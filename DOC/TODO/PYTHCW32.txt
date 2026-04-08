@@ -247,7 +247,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             EnsureVarInData : auto-declarer variable globale dans DATA
             10 fonctions accesseurs
 
-  TODO 10 - PARSEUR : IF / ELIF / ELSE [A FAIRE]
+  TODO 10 - PARSEUR : IF / ELIF / ELSE [IMPLEMENTE]
             ParseIfStmt : if cond: bloc {elif cond: bloc} [else: bloc]
               Gestion de l indentation pour delimiter les blocs
               Emission : evaluer cond -> TEST EAX, EAX / JZ label
