@@ -120,7 +120,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Resolution des references avant (forward references)
             10 fonctions accesseurs
 
-  TODO 05 - PARSEUR : STRUCTURE MODULE ET COMPOOL [A FAIRE]
+  TODO 05 - PARSEUR : STRUCTURE MODULE ET COMPOOL [IMPLEMENTE]
             MODULE name ;
               declarations globales (ITEM, TABLE, DEFINE, PROCEDURE)
               ...

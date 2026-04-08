@@ -128,7 +128,7 @@
             Resolution des references avant (forward references)
             10 fonctions accesseurs
 
-  TODO 05 - PARSEUR : STRUCTURE MODULE ET COMPOOL [A FAIRE]
+  TODO 05 - PARSEUR : STRUCTURE MODULE ET COMPOOL [IMPLEMENTE]
             MODULE name ;
               declarations globales (ITEM, TABLE, DEFINE, PROCEDURE)
               ...
@@ -2568,6 +2568,575 @@ End;
 
 
 { ============================================================ }
+{ TODO 05 - PARSEUR : STRUCTURE MODULE ET COMPOOL               }
+{                                               [IMPLEMENTE]  }
+{ ============================================================ }
+
+Const
+  { Etats du parseur MODULE (MOD_*) }
+  MOD_NONE      = 0;   { pas de module en cours                     }
+  MOD_MODULE    = 1;   { dans un MODULE                             }
+  MOD_COMPOOL   = 2;   { dans un COMPOOL                            }
+  MOD_BODY      = 3;   { dans le corps du module (declarations)     }
+  MOD_ENDED     = 4;   { END MODULE/COMPOOL rencontre               }
+
+  { Limites }
+  MOD_MAX_DECL  = 256; { nombre max de declarations globales        }
+
+Var
+  { Variables du parseur MODULE }
+  ModName        : String[64];   { nom du MODULE ou COMPOOL          }
+  ModEntryPoint  : String[64];   { nom du point d entree             }
+  ModIsCompool   : Boolean;      { True si COMPOOL, False si MODULE  }
+  ModState       : Integer;      { MOD_NONE, MOD_MODULE, etc.        }
+  ModInitialized : Boolean;      { module initialise ?                }
+  ModStateCount  : Integer;      { compteur d operations             }
+  ModDeclCount   : Integer;      { nombre de declarations globales   }
+  ModProcCount   : Integer;      { nombre de procedures trouvees     }
+  ModLabelNum    : Integer;      { generateur de labels uniques       }
+  ModParseCount  : Integer;      { nombre de tokens parses           }
+
+{ ------------------------------------------------------------ }
+{ InitModuleState : initialiser les variables du parseur MODULE }
+{ ------------------------------------------------------------ }
+
+Procedure InitModuleState;
+Begin
+  ModName        := '';
+  ModEntryPoint  := '';
+  ModIsCompool   := False;
+  ModState       := MOD_NONE;
+  ModInitialized := True;
+  ModStateCount  := 0;
+  ModDeclCount   := 0;
+  ModProcCount   := 0;
+  ModLabelNum    := 0;
+  ModParseCount  := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenModLabel : generer un label unique pour le parseur MODULE  }
+{ ------------------------------------------------------------ }
+
+Function GenModLabel : TString;
+Begin
+  Inc(ModLabelNum);
+  GenModLabel := PFX_MOD + ItoSI(ModLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ ModStateName : nom textuel d un etat du parseur MODULE        }
+{ ------------------------------------------------------------ }
+
+Function ModStateName(S : Integer) : TString;
+Begin
+  Case S Of
+    MOD_NONE    : ModStateName := '(none)';
+    MOD_MODULE  : ModStateName := 'MODULE';
+    MOD_COMPOOL : ModStateName := 'COMPOOL';
+    MOD_BODY    : ModStateName := 'BODY';
+    MOD_ENDED   : ModStateName := 'ENDED';
+  Else
+    ModStateName := '?MOD(' + ItoSI(S) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExpect : verifier que le token courant est du type       }
+{   attendu, sinon generer une erreur                           }
+{ ------------------------------------------------------------ }
+
+Function ParseExpect(TokType : Integer) : Boolean;
+Begin
+  If CurTokType = TokType Then
+    ParseExpect := True
+  Else
+  Begin
+    FatalError('Token inattendu : ' + GetCurTokStr);
+    ParseExpect := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExpectKeyword : verifier que le token courant est un     }
+{   mot-cle specifique                                          }
+{ ------------------------------------------------------------ }
+
+Function ParseExpectKeyword(KW : Integer) : Boolean;
+Begin
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW) Then
+    ParseExpectKeyword := True
+  Else
+  Begin
+    FatalError('Mot-cle attendu : ' + KeywordName(KW) +
+               ', trouve : ' + GetCurTokStr);
+    ParseExpectKeyword := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseModuleHeader : parser MODULE name ;                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseModuleHeader;
+Begin
+  Inc(ModStateCount);
+  Inc(ModParseCount);
+
+  { On est deja sur le token MODULE, avancer }
+  LexNextToken;
+
+  { Lire le nom du module }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    ModName       := CurTokStr;
+    ModEntryPoint := CurTokStr;
+    ModIsCompool  := False;
+    ModState      := MOD_MODULE;
+
+    { Ajouter le module dans la table des symboles }
+    SymSetScope(SCOPE_GLOBAL, True);
+
+    If Opts.Verbose Then
+      WriteLn('MODULE ', ModName);
+
+    LexNextToken;
+
+    { Consommer le point-virgule }
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+  End
+  Else
+    FatalError('Nom de module attendu apres MODULE');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCompoolHeader : parser COMPOOL name ;                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCompoolHeader;
+Begin
+  Inc(ModStateCount);
+  Inc(ModParseCount);
+
+  { On est deja sur le token COMPOOL, avancer }
+  LexNextToken;
+
+  { Lire le nom du compool }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    ModName       := CurTokStr;
+    ModEntryPoint := '';
+    ModIsCompool  := True;
+    ModState      := MOD_COMPOOL;
+
+    { Portee COMPOOL }
+    SymSetScope(SCOPE_COMPOOL, True);
+
+    If Opts.Verbose Then
+      WriteLn('COMPOOL ', ModName);
+
+    LexNextToken;
+
+    { Consommer le point-virgule }
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+  End
+  Else
+    FatalError('Nom de compool attendu apres COMPOOL');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseEndModule : parser END MODULE name ; ou END COMPOOL ;    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseEndModule;
+Var
+  EndName : String[64];
+Begin
+  Inc(ModStateCount);
+  Inc(ModParseCount);
+
+  { On est deja sur END, avancer }
+  LexNextToken;
+
+  { Verifier MODULE ou COMPOOL apres END }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_MODULE) Then
+  Begin
+    LexNextToken;
+
+    { Lire le nom apres END MODULE }
+    If CurTokType = TOK_IDENT Then
+    Begin
+      EndName := CurTokStr;
+      If UpCaseStr(EndName) <> UpCaseStr(ModName) Then
+        WarnMsg('END MODULE ' + EndName +
+                ' ne correspond pas a MODULE ' + ModName);
+      LexNextToken;
+    End;
+
+    { Consommer le point-virgule }
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+
+    ModState := MOD_ENDED;
+    SymSetScope(SCOPE_GLOBAL, False);
+
+    If Opts.Verbose Then
+      WriteLn('END MODULE ', ModName);
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_COMPOOL) Then
+  Begin
+    LexNextToken;
+
+    { Consommer le point-virgule }
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+
+    ModState := MOD_ENDED;
+    SymSetScope(SCOPE_COMPOOL, False);
+
+    If Opts.Verbose Then
+      WriteLn('END COMPOOL ', ModName);
+  End
+  Else
+  Begin
+    { END sans MODULE/COMPOOL = fin de procedure ou bloc }
+    { Consommer le point-virgule si present }
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SkipToSemicolon : avancer jusqu au prochain point-virgule     }
+{   ou fin de fichier                                           }
+{ ------------------------------------------------------------ }
+
+Procedure SkipToSemicolon;
+Begin
+  While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+    LexNextToken;
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseModuleBody : parser les declarations du corps du module  }
+{   ITEM, TABLE, DEFINE, PROCEDURE/FUNCTION, etc.               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseModuleBody;
+Begin
+  ModState := MOD_BODY;
+
+  While (CurTokType <> TOK_EOF) And (ModState <> MOD_ENDED) Do
+  Begin
+    Inc(ModParseCount);
+
+    If CurTokType = TOK_KEYWORD Then
+    Begin
+      Case CurTokNum Of
+        KW_END:
+        Begin
+          ParseEndModule;
+        End;
+
+        KW_ITEM:
+        Begin
+          { Declaration ITEM - comptabiliser }
+          Inc(ModDeclCount);
+          If Opts.Verbose Then
+          Begin
+            LexNextToken;
+            If CurTokType = TOK_IDENT Then
+              WriteLn('  ITEM ', CurTokStr);
+          End;
+          SkipToSemicolon;
+        End;
+
+        KW_TABLE:
+        Begin
+          { Declaration TABLE - comptabiliser }
+          Inc(ModDeclCount);
+          If Opts.Verbose Then
+          Begin
+            LexNextToken;
+            If CurTokType = TOK_IDENT Then
+              WriteLn('  TABLE ', CurTokStr);
+          End;
+          SkipToSemicolon;
+        End;
+
+        KW_DEFINE:
+        Begin
+          { Declaration DEFINE - comptabiliser }
+          Inc(ModDeclCount);
+          If Opts.Verbose Then
+          Begin
+            LexNextToken;
+            If CurTokType = TOK_IDENT Then
+              WriteLn('  DEFINE ', CurTokStr);
+          End;
+          SkipToSemicolon;
+        End;
+
+        KW_PROCEDURE, KW_PROC:
+        Begin
+          { Declaration PROCEDURE - comptabiliser }
+          Inc(ModProcCount);
+          If Opts.Verbose Then
+          Begin
+            LexNextToken;
+            If CurTokType = TOK_IDENT Then
+              WriteLn('  PROCEDURE ', CurTokStr);
+          End;
+          { Avancer jusqu au END correspondant }
+          SkipToSemicolon;
+          { Parser le corps de la procedure : consommer jusqu a END }
+          While (CurTokType <> TOK_EOF) Do
+          Begin
+            If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
+            Begin
+              LexNextToken;
+              { Verifier si c est END MODULE (fin du module) }
+              If (CurTokType = TOK_KEYWORD) And
+                 (CurTokNum = KW_MODULE) Then
+              Begin
+                { C est la fin du module, pas d une procedure }
+                { On est sur MODULE, avancer pour lire le nom }
+                LexNextToken;
+                If CurTokType = TOK_IDENT Then
+                Begin
+                  If UpCaseStr(CurTokStr) <> UpCaseStr(ModName) Then
+                    WarnMsg('END MODULE ' + CurTokStr +
+                            ' ne correspond pas a MODULE ' + ModName);
+                  LexNextToken;
+                End;
+                If CurTokType = TOK_SEMICOL Then
+                  LexNextToken;
+                ModState := MOD_ENDED;
+                SymSetScope(SCOPE_GLOBAL, False);
+                If Opts.Verbose Then
+                  WriteLn('END MODULE ', ModName);
+                Inc(ModStateCount);
+                Break;
+              End
+              Else If (CurTokType = TOK_KEYWORD) And
+                      (CurTokNum = KW_COMPOOL) Then
+              Begin
+                { C est la fin du COMPOOL }
+                LexNextToken;
+                If CurTokType = TOK_SEMICOL Then
+                  LexNextToken;
+                ModState := MOD_ENDED;
+                SymSetScope(SCOPE_COMPOOL, False);
+                If Opts.Verbose Then
+                  WriteLn('END COMPOOL ', ModName);
+                Inc(ModStateCount);
+                Break;
+              End
+              Else
+              Begin
+                { C est END de la procedure }
+                If CurTokType = TOK_SEMICOL Then
+                  LexNextToken;
+                Break;
+              End;
+            End
+            Else
+              LexNextToken;
+          End;
+        End;
+
+        KW_FUNCTION:
+        Begin
+          { Declaration FUNCTION - comptabiliser }
+          Inc(ModProcCount);
+          If Opts.Verbose Then
+          Begin
+            LexNextToken;
+            If CurTokType = TOK_IDENT Then
+              WriteLn('  FUNCTION ', CurTokStr);
+          End;
+          { Avancer au dela de la declaration }
+          SkipToSemicolon;
+          { Parser le corps de la fonction }
+          While (CurTokType <> TOK_EOF) Do
+          Begin
+            If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
+            Begin
+              LexNextToken;
+              If (CurTokType = TOK_KEYWORD) And
+                 (CurTokNum = KW_MODULE) Then
+              Begin
+                LexNextToken;
+                If CurTokType = TOK_IDENT Then
+                Begin
+                  If UpCaseStr(CurTokStr) <> UpCaseStr(ModName) Then
+                    WarnMsg('END MODULE ' + CurTokStr +
+                            ' ne correspond pas a MODULE ' + ModName);
+                  LexNextToken;
+                End;
+                If CurTokType = TOK_SEMICOL Then
+                  LexNextToken;
+                ModState := MOD_ENDED;
+                SymSetScope(SCOPE_GLOBAL, False);
+                If Opts.Verbose Then
+                  WriteLn('END MODULE ', ModName);
+                Inc(ModStateCount);
+                Break;
+              End
+              Else If (CurTokType = TOK_KEYWORD) And
+                      (CurTokNum = KW_COMPOOL) Then
+              Begin
+                LexNextToken;
+                If CurTokType = TOK_SEMICOL Then
+                  LexNextToken;
+                ModState := MOD_ENDED;
+                SymSetScope(SCOPE_COMPOOL, False);
+                If Opts.Verbose Then
+                  WriteLn('END COMPOOL ', ModName);
+                Inc(ModStateCount);
+                Break;
+              End
+              Else
+              Begin
+                If CurTokType = TOK_SEMICOL Then
+                  LexNextToken;
+                Break;
+              End;
+            End
+            Else
+              LexNextToken;
+          End;
+        End;
+
+        KW_OVERLAY:
+        Begin
+          { Declaration OVERLAY - comptabiliser }
+          Inc(ModDeclCount);
+          SkipToSemicolon;
+        End;
+
+      Else
+        { Autre mot-cle dans le corps : ignorer la ligne }
+        LexNextToken;
+      End; { Case }
+    End
+    Else
+      { Token non-keyword dans le corps : avancer }
+      LexNextToken;
+  End; { While }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseModule : parseur principal de la structure MODULE/COMPOOL}
+{ ------------------------------------------------------------ }
+
+Procedure ParseModule;
+Begin
+  If CurTokType = TOK_EOF Then Exit;
+
+  { Le premier token doit etre MODULE ou COMPOOL }
+  If CurTokType = TOK_KEYWORD Then
+  Begin
+    If CurTokNum = KW_MODULE Then
+    Begin
+      ParseModuleHeader;
+      ParseModuleBody;
+    End
+    Else If CurTokNum = KW_COMPOOL Then
+    Begin
+      ParseCompoolHeader;
+      ParseModuleBody;
+    End
+    Else
+      FatalError('MODULE ou COMPOOL attendu au debut du fichier');
+  End
+  Else
+    FatalError('MODULE ou COMPOOL attendu au debut du fichier');
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpModuleState : afficher l etat du parseur MODULE           }
+{ ------------------------------------------------------------ }
+
+Procedure DumpModuleState;
+Begin
+  WriteLn('--- Etat du parseur MODULE ---');
+  If ModIsCompool Then
+    WriteLn('  Type         : COMPOOL')
+  Else
+    WriteLn('  Type         : MODULE');
+  WriteLn('  Nom          : ', ModName);
+  If ModEntryPoint <> '' Then
+    WriteLn('  Point entree : ', ModEntryPoint);
+  WriteLn('  Etat         : ', ModStateName(ModState));
+  WriteLn('  Declarations : ', ModDeclCount);
+  WriteLn('  Procedures   : ', ModProcCount);
+  WriteLn('  Operations   : ', ModStateCount);
+  WriteLn('  Tokens parses: ', ModParseCount);
+  WriteLn('--- Fin etat MODULE ---');
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 05)                             }
+{ ------------------------------------------------------------ }
+
+Function IsModInitialized : Boolean;
+Begin
+  IsModInitialized := ModInitialized;
+End;
+
+Function IsModActive : Boolean;
+Begin
+  IsModActive := (ModState = MOD_MODULE) Or (ModState = MOD_COMPOOL)
+                 Or (ModState = MOD_BODY);
+End;
+
+Function GetModName : TString;
+Begin
+  GetModName := ModName;
+End;
+
+Function GetModEntryPoint : TString;
+Begin
+  GetModEntryPoint := ModEntryPoint;
+End;
+
+Function IsModCompool : Boolean;
+Begin
+  IsModCompool := ModIsCompool;
+End;
+
+Function GetModState : Integer;
+Begin
+  GetModState := ModState;
+End;
+
+Function GetModDeclCount : Integer;
+Begin
+  GetModDeclCount := ModDeclCount;
+End;
+
+Function GetModProcCount : Integer;
+Begin
+  GetModProcCount := ModProcCount;
+End;
+
+Function GetModStateCount : Integer;
+Begin
+  GetModStateCount := ModStateCount;
+End;
+
+Function GetModParseCount : Integer;
+Begin
+  GetModParseCount := ModParseCount;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -2582,6 +3151,7 @@ Begin
   LexOpened  := False;
   KwInitialized := False;
   SymInitialized := False;
+  ModInitialized := False;
 
   ParseArgs;
 
@@ -2594,15 +3164,17 @@ Begin
   { Initialiser la table des symboles }
   SymInit;
 
+  { Initialiser le parseur MODULE/COMPOOL }
+  InitModuleState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
   { Lire le premier token }
   LexNextToken;
 
-  { Boucle principale : lire tous les tokens }
-  While CurTokType <> TOK_EOF Do
-    LexNextToken;
+  { Parser la structure MODULE/COMPOOL }
+  ParseModule;
 
   { Fermer le fichier source }
   LexClose;
@@ -2610,7 +3182,10 @@ Begin
   { Statistiques finales }
   ShowStats;
   If Opts.Verbose Then
+  Begin
     WriteLn('Tokens analyses  : ', GetLexTokCount);
+    DumpModuleState;
+  End;
 
   { Nettoyage }
   Cleanup;
