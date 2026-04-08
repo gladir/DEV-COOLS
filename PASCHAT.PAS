@@ -113,14 +113,30 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 09 - GENERATEUR DE CODE PASCAL - PROCEDURES ET FONCTIONS [A FAIRE]
-            TProcInfo : Name, Params, LocalVars, Body, IsFunction, ReturnType
-            TParamInfo : Name, TypeName, IsVar, IsConst
-            GenProcedure(Proc) : generer une procedure
-            GenFunction(Func) : generer une fonction
-            GenParamList(Params) : generer la liste des parametres
-            GenLocalVars(Vars) : generer les variables locales
-            GenProcCall(Name, Args) : generer un appel de procedure
+  TODO 09 - GENERATEUR DE CODE PASCAL - PROCEDURES ET FONCTIONS [IMPLEMENTE]
+            PRC_NONE=0..PRC_MAX=13 : constantes types de procedures
+            PRC_MAX_PARAMS=16, PRC_MAX_LOCALS=32, PRC_MAX_BODY=100 : limites
+            PrcInitialized + 16 variables d'etat
+            InitPrcState : initialiser l'etat
+            GenPrcLabel : generer un label unique
+            PrcTypeName : nom du type de procedure
+            GenParamDecl(Name, Type, IsVar, IsConst) : declaration parametre
+            GenParamListStr : liste des parametres en chaine
+            GenLocalVar(Name, Type) : variable locale
+            GenProcedureHeader(Name, Params) : entete procedure
+            GenFunctionHeader(Name, Params, RetType) : entete fonction
+            GenSimpleProcedure, GenSimpleFunction : procedures/fonctions simples
+            GenProcedureWithParams, GenFunctionWithParams : avec parametres
+            GenProcedureWithLocals, GenFunctionWithLocals : avec vars locales
+            GenProcCall, GenFuncCall : appels de procedure/fonction
+            GenForwardProcedure, GenForwardFunction : declarations forward
+            GenExternalProcedure, GenExternalFunction : externes
+            GenNearProcedure, GenFarProcedure : near/far
+            GenInlineProcedure, GenAssemblerProcedure : inline/asm
+            GenRecursiveFactorial, GenRecursiveFibonacci : exemples recursifs
+            GenBubbleSortProcedure, GenLinearSearchFunction : exemples utiles
+            DumpPrcState : afficher l'etat
+            10 accesseurs : IsPrcInitialized, IsPrcEmpty, GetPrc*Count
   ============================================================ }
 
 { ============================================================
@@ -470,6 +486,27 @@ Const
   CTL_MAX_CASES  = 32;  { Nombre max de cas dans un CASE }
   CTL_MAX_VARS   = 16;  { Nombre max de variables dans un WITH }
 
+  { Types de procedures/fonctions pour TODO 09 }
+  PRC_NONE       = 0;   { Aucune procedure }
+  PRC_PROCEDURE  = 1;   { Procedure simple }
+  PRC_FUNCTION   = 2;   { Fonction }
+  PRC_FORWARD    = 3;   { Declaration forward }
+  PRC_EXTERNAL   = 4;   { Procedure externe }
+  PRC_INLINE     = 5;   { Procedure inline }
+  PRC_INTERRUPT  = 6;   { Procedure d'interruption }
+  PRC_NEAR       = 7;   { Procedure near }
+  PRC_FAR        = 8;   { Procedure far }
+  PRC_ASSEMBLER  = 9;   { Procedure assembleur }
+  PRC_VIRTUAL    = 10;  { Methode virtuelle }
+  PRC_OVERRIDE   = 11;  { Methode override }
+  PRC_ABSTRACT   = 12;  { Methode abstraite }
+  PRC_MAX        = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 09 }
+  PRC_MAX_PARAMS = 16;  { Nombre max de parametres }
+  PRC_MAX_LOCALS = 32;  { Nombre max de variables locales }
+  PRC_MAX_BODY   = 100; { Nombre max de lignes dans le corps }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -785,6 +822,24 @@ Var
   CtlExitCount    : Integer;
   CtlErrorCount   : Integer;
   CtlLabelNum     : Integer;
+
+  { TODO 09 - Procedures et fonctions }
+  PrcInitialized  : Boolean;
+  PrcStateCount   : Integer;
+  PrcProcCount    : Integer;
+  PrcFuncCount    : Integer;
+  PrcForwardCount : Integer;
+  PrcExternalCount: Integer;
+  PrcInlineCount  : Integer;
+  PrcNearCount    : Integer;
+  PrcFarCount     : Integer;
+  PrcAsmCount     : Integer;
+  PrcVirtualCount : Integer;
+  PrcCallCount    : Integer;
+  PrcParamCount   : Integer;
+  PrcLocalCount   : Integer;
+  PrcErrorCount   : Integer;
+  PrcLabelNum     : Integer;
 
   { TODO 11 - Templates }
   Templates     : Array[1..MAX_TEMPLATES] of TTemplate;
@@ -3306,6 +3361,508 @@ Begin
 End;
 
 { ============================================================
+  TODO 09 - GENERATEUR DE CODE PASCAL - PROCEDURES ET FONCTIONS
+            TProcInfo : Name, Params, LocalVars, Body, IsFunction, ReturnType
+            TParamInfo : Name, TypeName, IsVar, IsConst
+            GenProcedure(Proc) : generer une procedure
+            GenFunction(Func) : generer une fonction
+            GenParamList(Params) : generer la liste des parametres
+            GenLocalVars(Vars) : generer les variables locales
+            GenProcCall(Name, Args) : generer un appel de procedure
+  ============================================================ }
+
+Procedure InitPrcState;
+Begin
+  PrcInitialized := True;
+  PrcStateCount := 0;
+  PrcProcCount := 0;
+  PrcFuncCount := 0;
+  PrcForwardCount := 0;
+  PrcExternalCount := 0;
+  PrcInlineCount := 0;
+  PrcNearCount := 0;
+  PrcFarCount := 0;
+  PrcAsmCount := 0;
+  PrcVirtualCount := 0;
+  PrcCallCount := 0;
+  PrcParamCount := 0;
+  PrcLocalCount := 0;
+  PrcErrorCount := 0;
+  PrcLabelNum := 0;
+End;
+
+Function GenPrcLabel: String;
+Var
+  S: String;
+Begin
+  Inc(PrcLabelNum);
+  Str(PrcLabelNum, S);
+  GenPrcLabel := 'PRC' + S;
+End;
+
+Function PrcTypeName(PrcType: Integer): String;
+Begin
+  Case PrcType of
+    PRC_NONE:      PrcTypeName := 'NONE';
+    PRC_PROCEDURE: PrcTypeName := 'PROCEDURE';
+    PRC_FUNCTION:  PrcTypeName := 'FUNCTION';
+    PRC_FORWARD:   PrcTypeName := 'FORWARD';
+    PRC_EXTERNAL:  PrcTypeName := 'EXTERNAL';
+    PRC_INLINE:    PrcTypeName := 'INLINE';
+    PRC_INTERRUPT: PrcTypeName := 'INTERRUPT';
+    PRC_NEAR:      PrcTypeName := 'NEAR';
+    PRC_FAR:       PrcTypeName := 'FAR';
+    PRC_ASSEMBLER: PrcTypeName := 'ASSEMBLER';
+    PRC_VIRTUAL:   PrcTypeName := 'VIRTUAL';
+    PRC_OVERRIDE:  PrcTypeName := 'OVERRIDE';
+    PRC_ABSTRACT:  PrcTypeName := 'ABSTRACT';
+  Else
+    PrcTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ Generer une declaration de parametre }
+Function GenParamDecl(ParamName, TypeName: String; IsVar, IsConst: Boolean): String;
+Var
+  R: String;
+Begin
+  R := '';
+  If IsVar Then
+    R := 'Var '
+  Else If IsConst Then
+    R := 'Const ';
+  R := R + ParamName + ': ' + TypeName;
+  Inc(PrcParamCount);
+  GenParamDecl := R;
+End;
+
+{ Generer la liste des parametres (chaine) }
+Function GenParamListStr(Names, Types: Array of String; 
+                         VarFlags, ConstFlags: Array of Boolean;
+                         Count: Integer): String;
+Var
+  R: String;
+  I: Integer;
+Begin
+  R := '';
+  For I := 0 to Count - 1 do Begin
+    If I > 0 Then
+      R := R + '; ';
+    R := R + GenParamDecl(Names[I], Types[I], VarFlags[I], ConstFlags[I]);
+  End;
+  GenParamListStr := R;
+End;
+
+{ Generer une declaration de variable locale }
+Procedure GenLocalVar(VarName, TypeName: String);
+Begin
+  AddCodeLine('  ' + VarName + ': ' + TypeName + ';');
+  Inc(PrcLocalCount);
+End;
+
+{ Generer l'entete d'une procedure }
+Procedure GenProcedureHeader(ProcName, ParamList: String);
+Begin
+  If ParamList = '' Then
+    AddCodeLine('Procedure ' + ProcName + ';')
+  Else
+    AddCodeLine('Procedure ' + ProcName + '(' + ParamList + ');');
+  Inc(PrcProcCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer l'entete d'une fonction }
+Procedure GenFunctionHeader(FuncName, ParamList, ReturnType: String);
+Begin
+  If ParamList = '' Then
+    AddCodeLine('Function ' + FuncName + ': ' + ReturnType + ';')
+  Else
+    AddCodeLine('Function ' + FuncName + '(' + ParamList + '): ' + ReturnType + ';');
+  Inc(PrcFuncCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer la section VAR locale d'une procedure/fonction }
+Procedure GenLocalVarSection;
+Begin
+  AddCodeLine('Var');
+End;
+
+{ Generer le debut du corps d'une procedure/fonction }
+Procedure GenProcBegin;
+Begin
+  AddCodeLine('Begin');
+End;
+
+{ Generer la fin d'une procedure/fonction }
+Procedure GenProcEnd;
+Begin
+  AddCodeLine('End;');
+  AddCodeLine('');
+End;
+
+{ Generer une procedure complete simple (sans parametres, sans vars locales) }
+Procedure GenSimpleProcedure(ProcName, BodyLine: String);
+Begin
+  GenProcedureHeader(ProcName, '');
+  GenProcBegin;
+  AddCodeLine('  ' + BodyLine);
+  GenProcEnd;
+End;
+
+{ Generer une fonction complete simple }
+Procedure GenSimpleFunction(FuncName, ReturnType, BodyLine, ResultExpr: String);
+Begin
+  GenFunctionHeader(FuncName, '', ReturnType);
+  GenProcBegin;
+  If BodyLine <> '' Then
+    AddCodeLine('  ' + BodyLine);
+  AddCodeLine('  ' + FuncName + ' := ' + ResultExpr + ';');
+  GenProcEnd;
+End;
+
+{ Generer une procedure avec parametres }
+Procedure GenProcedureWithParams(ProcName, ParamList, BodyLine: String);
+Begin
+  GenProcedureHeader(ProcName, ParamList);
+  GenProcBegin;
+  AddCodeLine('  ' + BodyLine);
+  GenProcEnd;
+End;
+
+{ Generer une fonction avec parametres }
+Procedure GenFunctionWithParams(FuncName, ParamList, ReturnType, BodyLine, ResultExpr: String);
+Begin
+  GenFunctionHeader(FuncName, ParamList, ReturnType);
+  GenProcBegin;
+  If BodyLine <> '' Then
+    AddCodeLine('  ' + BodyLine);
+  AddCodeLine('  ' + FuncName + ' := ' + ResultExpr + ';');
+  GenProcEnd;
+End;
+
+{ Generer une procedure avec variables locales }
+Procedure GenProcedureWithLocals(ProcName, ParamList: String; 
+                                  LocalNames, LocalTypes: Array of String;
+                                  LocalCount: Integer;
+                                  BodyLine: String);
+Var
+  I: Integer;
+Begin
+  GenProcedureHeader(ProcName, ParamList);
+  If LocalCount > 0 Then Begin
+    GenLocalVarSection;
+    For I := 0 to LocalCount - 1 do
+      GenLocalVar(LocalNames[I], LocalTypes[I]);
+  End;
+  GenProcBegin;
+  AddCodeLine('  ' + BodyLine);
+  GenProcEnd;
+End;
+
+{ Generer une fonction avec variables locales }
+Procedure GenFunctionWithLocals(FuncName, ParamList, ReturnType: String;
+                                 LocalNames, LocalTypes: Array of String;
+                                 LocalCount: Integer;
+                                 BodyLine, ResultExpr: String);
+Var
+  I: Integer;
+Begin
+  GenFunctionHeader(FuncName, ParamList, ReturnType);
+  If LocalCount > 0 Then Begin
+    GenLocalVarSection;
+    For I := 0 to LocalCount - 1 do
+      GenLocalVar(LocalNames[I], LocalTypes[I]);
+  End;
+  GenProcBegin;
+  If BodyLine <> '' Then
+    AddCodeLine('  ' + BodyLine);
+  AddCodeLine('  ' + FuncName + ' := ' + ResultExpr + ';');
+  GenProcEnd;
+End;
+
+{ Generer un appel de procedure }
+Function GenProcCall(ProcName: String; Args: Array of String; ArgCount: Integer): String;
+Var
+  R: String;
+  I: Integer;
+Begin
+  R := ProcName;
+  If ArgCount > 0 Then Begin
+    R := R + '(';
+    For I := 0 to ArgCount - 1 do Begin
+      If I > 0 Then
+        R := R + ', ';
+      R := R + Args[I];
+    End;
+    R := R + ')';
+  End;
+  Inc(PrcCallCount);
+  GenProcCall := R;
+End;
+
+{ Generer un appel de fonction (retourne l'expression) }
+Function GenFuncCall(FuncName: String; Args: Array of String; ArgCount: Integer): String;
+Begin
+  { Identique a GenProcCall pour la syntaxe }
+  GenFuncCall := GenProcCall(FuncName, Args, ArgCount);
+End;
+
+{ Generer une declaration forward de procedure }
+Procedure GenForwardProcedure(ProcName, ParamList: String);
+Begin
+  If ParamList = '' Then
+    AddCodeLine('Procedure ' + ProcName + '; Forward;')
+  Else
+    AddCodeLine('Procedure ' + ProcName + '(' + ParamList + '); Forward;');
+  Inc(PrcForwardCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer une declaration forward de fonction }
+Procedure GenForwardFunction(FuncName, ParamList, ReturnType: String);
+Begin
+  If ParamList = '' Then
+    AddCodeLine('Function ' + FuncName + ': ' + ReturnType + '; Forward;')
+  Else
+    AddCodeLine('Function ' + FuncName + '(' + ParamList + '): ' + ReturnType + '; Forward;');
+  Inc(PrcForwardCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer une procedure externe }
+Procedure GenExternalProcedure(ProcName, ParamList, LibName, ExtName: String);
+Begin
+  If ParamList = '' Then
+    AddCodeLine('Procedure ' + ProcName + '; External ''' + LibName + ''' Name ''' + ExtName + ''';')
+  Else
+    AddCodeLine('Procedure ' + ProcName + '(' + ParamList + '); External ''' + LibName + ''' Name ''' + ExtName + ''';');
+  Inc(PrcExternalCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer une fonction externe }
+Procedure GenExternalFunction(FuncName, ParamList, ReturnType, LibName, ExtName: String);
+Begin
+  If ParamList = '' Then
+    AddCodeLine('Function ' + FuncName + ': ' + ReturnType + '; External ''' + LibName + ''' Name ''' + ExtName + ''';')
+  Else
+    AddCodeLine('Function ' + FuncName + '(' + ParamList + '): ' + ReturnType + '; External ''' + LibName + ''' Name ''' + ExtName + ''';');
+  Inc(PrcExternalCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer une procedure near }
+Procedure GenNearProcedure(ProcName, ParamList, BodyLine: String);
+Begin
+  If ParamList = '' Then
+    AddCodeLine('Procedure ' + ProcName + '; Near;')
+  Else
+    AddCodeLine('Procedure ' + ProcName + '(' + ParamList + '); Near;');
+  GenProcBegin;
+  AddCodeLine('  ' + BodyLine);
+  GenProcEnd;
+  Inc(PrcNearCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer une procedure far }
+Procedure GenFarProcedure(ProcName, ParamList, BodyLine: String);
+Begin
+  If ParamList = '' Then
+    AddCodeLine('Procedure ' + ProcName + '; Far;')
+  Else
+    AddCodeLine('Procedure ' + ProcName + '(' + ParamList + '); Far;');
+  GenProcBegin;
+  AddCodeLine('  ' + BodyLine);
+  GenProcEnd;
+  Inc(PrcFarCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer une procedure inline (avec directive) }
+Procedure GenInlineProcedure(ProcName, ParamList, BodyLine: String);
+Begin
+  If ParamList = '' Then
+    AddCodeLine('Procedure ' + ProcName + '; Inline;')
+  Else
+    AddCodeLine('Procedure ' + ProcName + '(' + ParamList + '); Inline;');
+  GenProcBegin;
+  AddCodeLine('  ' + BodyLine);
+  GenProcEnd;
+  Inc(PrcInlineCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer une procedure assembleur }
+Procedure GenAssemblerProcedure(ProcName, ParamList, AsmCode: String);
+Begin
+  If ParamList = '' Then
+    AddCodeLine('Procedure ' + ProcName + '; Assembler;')
+  Else
+    AddCodeLine('Procedure ' + ProcName + '(' + ParamList + '); Assembler;');
+  AddCodeLine('Asm');
+  AddCodeLine('  ' + AsmCode);
+  AddCodeLine('End;');
+  AddCodeLine('');
+  Inc(PrcAsmCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer une instruction d'appel de procedure }
+Procedure GenProcCallStatement(ProcName: String; Args: Array of String; ArgCount: Integer);
+Var
+  S: String;
+Begin
+  S := GenProcCall(ProcName, Args, ArgCount);
+  AddCodeLine('  ' + S + ';');
+End;
+
+{ Generer une procedure recursive (exemple: factorielle) }
+Procedure GenRecursiveFactorial;
+Begin
+  AddCodeLine('Function Factorial(N: Integer): LongInt;');
+  AddCodeLine('Begin');
+  AddCodeLine('  If N <= 1 Then');
+  AddCodeLine('    Factorial := 1');
+  AddCodeLine('  Else');
+  AddCodeLine('    Factorial := N * Factorial(N - 1);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  Inc(PrcFuncCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer une procedure recursive (exemple: Fibonacci) }
+Procedure GenRecursiveFibonacci;
+Begin
+  AddCodeLine('Function Fibonacci(N: Integer): LongInt;');
+  AddCodeLine('Begin');
+  AddCodeLine('  If N <= 1 Then');
+  AddCodeLine('    Fibonacci := N');
+  AddCodeLine('  Else');
+  AddCodeLine('    Fibonacci := Fibonacci(N - 1) + Fibonacci(N - 2);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  Inc(PrcFuncCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer une procedure de tri (exemple: BubbleSort) }
+Procedure GenBubbleSortProcedure;
+Begin
+  AddCodeLine('Procedure BubbleSort(Var Arr: Array of Integer; N: Integer);');
+  AddCodeLine('Var');
+  AddCodeLine('  I, J, Temp: Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  For I := 0 to N - 2 do');
+  AddCodeLine('    For J := 0 to N - 2 - I do');
+  AddCodeLine('      If Arr[J] > Arr[J + 1] Then Begin');
+  AddCodeLine('        Temp := Arr[J];');
+  AddCodeLine('        Arr[J] := Arr[J + 1];');
+  AddCodeLine('        Arr[J + 1] := Temp;');
+  AddCodeLine('      End;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  Inc(PrcProcCount);
+  Inc(PrcStateCount);
+End;
+
+{ Generer une fonction de recherche (exemple: recherche lineaire) }
+Procedure GenLinearSearchFunction;
+Begin
+  AddCodeLine('Function LinearSearch(Arr: Array of Integer; N, Key: Integer): Integer;');
+  AddCodeLine('Var');
+  AddCodeLine('  I: Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  LinearSearch := -1;');
+  AddCodeLine('  For I := 0 to N - 1 do');
+  AddCodeLine('    If Arr[I] = Key Then Begin');
+  AddCodeLine('      LinearSearch := I;');
+  AddCodeLine('      Exit;');
+  AddCodeLine('    End;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  Inc(PrcFuncCount);
+  Inc(PrcStateCount);
+End;
+
+{ Afficher l'etat du generateur de procedures/fonctions }
+Procedure DumpPrcState;
+Begin
+  WriteLn('=== Etat du generateur de procedures/fonctions (TODO 09) ===');
+  WriteLn('  PrcInitialized  : ', PrcInitialized);
+  WriteLn('  PrcStateCount   : ', PrcStateCount);
+  WriteLn('  PrcProcCount    : ', PrcProcCount);
+  WriteLn('  PrcFuncCount    : ', PrcFuncCount);
+  WriteLn('  PrcForwardCount : ', PrcForwardCount);
+  WriteLn('  PrcExternalCount: ', PrcExternalCount);
+  WriteLn('  PrcInlineCount  : ', PrcInlineCount);
+  WriteLn('  PrcNearCount    : ', PrcNearCount);
+  WriteLn('  PrcFarCount     : ', PrcFarCount);
+  WriteLn('  PrcAsmCount     : ', PrcAsmCount);
+  WriteLn('  PrcVirtualCount : ', PrcVirtualCount);
+  WriteLn('  PrcCallCount    : ', PrcCallCount);
+  WriteLn('  PrcParamCount   : ', PrcParamCount);
+  WriteLn('  PrcLocalCount   : ', PrcLocalCount);
+  WriteLn('  PrcErrorCount   : ', PrcErrorCount);
+  WriteLn('  PrcLabelNum     : ', PrcLabelNum);
+End;
+
+{ --- TODO 09 : 10 accesseurs standards --- }
+
+Function IsPrcInitialized: Boolean;
+Begin
+  IsPrcInitialized := PrcInitialized;
+End;
+
+Function IsPrcEmpty: Boolean;
+Begin
+  IsPrcEmpty := (PrcProcCount = 0) And (PrcFuncCount = 0) And
+                (PrcForwardCount = 0) And (PrcExternalCount = 0);
+End;
+
+Function GetPrcStateCount: Integer;
+Begin
+  GetPrcStateCount := PrcStateCount;
+End;
+
+Function GetPrcProcCount: Integer;
+Begin
+  GetPrcProcCount := PrcProcCount;
+End;
+
+Function GetPrcFuncCount: Integer;
+Begin
+  GetPrcFuncCount := PrcFuncCount;
+End;
+
+Function GetPrcForwardCount: Integer;
+Begin
+  GetPrcForwardCount := PrcForwardCount;
+End;
+
+Function GetPrcCallCount: Integer;
+Begin
+  GetPrcCallCount := PrcCallCount;
+End;
+
+Function GetPrcParamCount: Integer;
+Begin
+  GetPrcParamCount := PrcParamCount;
+End;
+
+Function GetPrcErrorCount: Integer;
+Begin
+  GetPrcErrorCount := PrcErrorCount;
+End;
+
+Function GetPrcLabelNum: Integer;
+Begin
+  GetPrcLabelNum := PrcLabelNum;
+End;
+
+{ ============================================================
   TODO 12 - GENERATION DE PROGRAMMES "BONJOUR"
   ============================================================ }
 
@@ -4044,6 +4601,10 @@ Begin
   CtlInitialized := False;
   InitCtlState;
 
+  { Initialiser l'etat du generateur de procedures/fonctions (TODO 09) }
+  PrcInitialized := False;
+  InitPrcState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -4054,6 +4615,7 @@ Begin
     DumpTypState;
     DumpExpState;
     DumpCtlState;
+    DumpPrcState;
   End;
 
   Run;
@@ -4068,7 +4630,7 @@ Begin
   { 06 [IMPLEMENTE] - Types et variables }
   { 07 [IMPLEMENTE] - Expressions }
   { 08 [IMPLEMENTE] - Structures de controle }
-  { 09 [A FAIRE] - Procedures et fonctions }
+  { 09 [IMPLEMENTE] - Procedures et fonctions }
   { 10 [A FAIRE] - Unites (UNIT) }
   { 11 [A FAIRE] - Templates de code }
   { 12 [IMPLEMENTE] - Programmes Bonjour }

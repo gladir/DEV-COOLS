@@ -109,14 +109,30 @@
             DumpCtlState : afficher l'etat
             10 accesseurs : IsCtlInitialized, IsCtlEmpty, GetCtl*Count
 
-  TODO 09 - GENERATEUR DE CODE PASCAL - PROCEDURES ET FONCTIONS [A FAIRE]
-            TProcInfo : Name, Params, LocalVars, Body, IsFunction, ReturnType
-            TParamInfo : Name, TypeName, IsVar, IsConst
-            GenProcedure(Proc) : generer une procedure
-            GenFunction(Func) : generer une fonction
-            GenParamList(Params) : generer la liste des parametres
-            GenLocalVars(Vars) : generer les variables locales
-            GenProcCall(Name, Args) : generer un appel de procedure
+  TODO 09 - GENERATEUR DE CODE PASCAL - PROCEDURES ET FONCTIONS [IMPLEMENTE]
+            PRC_NONE=0..PRC_MAX=13 : constantes types de procedures
+            PRC_MAX_PARAMS=16, PRC_MAX_LOCALS=32, PRC_MAX_BODY=100 : limites
+            PrcInitialized + 16 variables d'etat
+            InitPrcState : initialiser l'etat
+            GenPrcLabel : generer un label unique
+            PrcTypeName : nom du type de procedure
+            GenParamDecl(Name, Type, IsVar, IsConst) : declaration parametre
+            GenParamListStr : liste des parametres en chaine
+            GenLocalVar(Name, Type) : variable locale
+            GenProcedureHeader(Name, Params) : entete procedure
+            GenFunctionHeader(Name, Params, RetType) : entete fonction
+            GenSimpleProcedure, GenSimpleFunction : procedures/fonctions simples
+            GenProcedureWithParams, GenFunctionWithParams : avec parametres
+            GenProcedureWithLocals, GenFunctionWithLocals : avec vars locales
+            GenProcCall, GenFuncCall : appels de procedure/fonction
+            GenForwardProcedure, GenForwardFunction : declarations forward
+            GenExternalProcedure, GenExternalFunction : externes
+            GenNearProcedure, GenFarProcedure : near/far
+            GenInlineProcedure, GenAssemblerProcedure : inline/asm
+            GenRecursiveFactorial, GenRecursiveFibonacci : exemples recursifs
+            GenBubbleSortProcedure, GenLinearSearchFunction : exemples utiles
+            DumpPrcState : afficher l'etat
+            10 accesseurs : IsPrcInitialized, IsPrcEmpty, GetPrc*Count
 
   TODO 10 - GENERATEUR DE CODE PASCAL - UNITES (UNIT) [A FAIRE]
             TUnitInfo : Name, InterfaceSection, ImplementSection, InitSection
