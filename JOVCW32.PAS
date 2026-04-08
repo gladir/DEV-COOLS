@@ -2849,7 +2849,8 @@ Procedure ParseProcDecl; Forward;
 { Forward declaration pour ParseExpression (defini dans TODO 10) }
 Function ParseExpression : Integer; Forward;
 
-{ Forward declaration pour ParseStatement (defini dans TODO 11) }
+{ Forward declaration pour ParseStatement (defini dans TODO 11, }
+{   implementation apres DumpExprState)                          }
 Procedure ParseStatement; Forward;
 
 { ------------------------------------------------------------ }
@@ -6036,6 +6037,8 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure ParseStatement;
+Var
+  SaveIdent : TString;
 Begin
   Inc(CtlStateCount);
 
@@ -6079,13 +6082,14 @@ Begin
     { Possible label nomme (nom : instruction) ou affectation }
     { Sauvegarder le nom et avancer pour voir si un : suit }
     Inc(CtlStateCount);
+    SaveIdent := CurTokStr;
     LexNextToken;
     If CurTokType = TOK_COLON Then
     Begin
       { C est un label nomme }
       Inc(CtlLabelCount);
       If Opts.Verbose Then
-        WriteLn('  LABEL: ', CurTokStr);
+        WriteLn('  LABEL: ', SaveIdent);
       LexNextToken;
       { Parser l instruction qui suit le label }
       If (CurTokType <> TOK_EOF) And (CurTokType <> TOK_SEMICOL) Then
