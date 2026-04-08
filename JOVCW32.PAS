@@ -233,7 +233,7 @@
             Instruction STOP : PUSH 0 / CALL ExitProcess
             10 fonctions accesseurs
 
-  TODO 10 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES [A FAIRE]
+  TODO 10 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES [IMPLEMENTE]
             Expressions arithmetiques :
               Addition (+), Soustraction (-)
               Multiplication {*}, Division {/}
@@ -2833,6 +2833,9 @@ Procedure ParseDefineDecl; Forward;
 { Forward declaration pour ParseProcDecl (defini dans TODO 09) }
 Procedure ParseProcDecl; Forward;
 
+{ Forward declaration pour ParseExpression (defini dans TODO 10) }
+Function ParseExpression : Integer; Forward;
+
 { ------------------------------------------------------------ }
 { ParseModuleBody : parser les declarations du corps du module  }
 {   ITEM, TABLE, DEFINE, PROCEDURE/FUNCTION, etc.               }
@@ -4863,6 +4866,598 @@ End;
 
 
 { ============================================================ }
+{ TODO 10 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES      }
+{ ============================================================ }
+
+Const
+  { Types de noeuds d expression }
+  EXP_NONE      = 0;   { aucun noeud                             }
+  EXP_INTEGER   = 1;   { litteral entier                         }
+  EXP_REAL      = 2;   { litteral reel                           }
+  EXP_STRING    = 3;   { litteral chaine                         }
+  EXP_IDENT     = 4;   { identificateur (variable)               }
+  EXP_BINOP     = 5;   { operation binaire                       }
+  EXP_UNARYOP   = 6;   { operation unaire                        }
+  EXP_CALL      = 7;   { appel de fonction                       }
+  EXP_TABLE     = 8;   { acces element de TABLE : T(I)           }
+
+  { Codes d operateurs }
+  OP_NONE       = 0;   { aucun operateur                         }
+  OP_ADD        = 1;   { +                                       }
+  OP_SUB        = 2;   { -                                       }
+  OP_MUL        = 3;   { *                                       }
+  OP_DIV        = 4;   { /                                       }
+  OP_POWER      = 5;   { **                                      }
+  OP_NEG        = 6;   { - (moins unaire)                        }
+  OP_AND        = 10;  { AND                                     }
+  OP_OR         = 11;  { OR                                      }
+  OP_NOT        = 12;  { NOT                                     }
+  OP_XOR        = 13;  { XOR                                     }
+  OP_EQV        = 14;  { EQV                                     }
+  OP_EQ         = 20;  { =                                       }
+  OP_NE         = 21;  { /=                                      }
+  OP_LT         = 22;  { <                                       }
+  OP_GT         = 23;  { >                                       }
+  OP_LE         = 24;  { <=                                      }
+  OP_GE         = 25;  { >=                                      }
+
+  { Limites pour les expressions }
+  EXP_MAX_DEPTH = 64;  { profondeur max de recursion             }
+
+Var
+  { Variables du parseur d expressions }
+  ExpInitialized   : Boolean;     { module initialise ?              }
+  ExpStateCount    : Integer;     { compteur d operations            }
+  ExpParseCount    : Integer;     { nombre d expressions parsees     }
+  ExpNodeCount     : Integer;     { nombre de noeuds crees           }
+  ExpBinOpCount    : Integer;     { nombre d operations binaires     }
+  ExpUnaryCount    : Integer;     { nombre d operations unaires      }
+  ExpCallCount     : Integer;     { nombre d appels de fonction      }
+  ExpTableAccess   : Integer;     { nombre d acces TABLE(index)      }
+  ExpLabelNum      : Integer;     { generateur de labels uniques     }
+  ExpErrorCount    : Integer;     { nombre d erreurs                 }
+  ExpDepth         : Integer;     { profondeur courante de recursion }
+  ExpMaxDepth      : Integer;     { profondeur max atteinte          }
+
+{ ------------------------------------------------------------ }
+{ InitExprState : initialiser les variables du parseur EXPR      }
+{ ------------------------------------------------------------ }
+
+Procedure InitExprState;
+Begin
+  ExpInitialized := True;
+  ExpStateCount  := 0;
+  ExpParseCount  := 0;
+  ExpNodeCount   := 0;
+  ExpBinOpCount  := 0;
+  ExpUnaryCount  := 0;
+  ExpCallCount   := 0;
+  ExpTableAccess := 0;
+  ExpLabelNum    := 0;
+  ExpErrorCount  := 0;
+  ExpDepth       := 0;
+  ExpMaxDepth    := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenExpLabel : generer un label unique pour les expressions      }
+{ ------------------------------------------------------------ }
+
+Function GenExpLabel : String;
+Begin
+  Inc(ExpLabelNum);
+  GenExpLabel := PFX_LBL + 'EXP_' + ItoS(ExpLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprNodeTypeName : nom d un type de noeud d expression         }
+{ ------------------------------------------------------------ }
+
+Function ExprNodeTypeName(NodeType : Integer) : String;
+Begin
+  Case NodeType Of
+    EXP_NONE    : ExprNodeTypeName := 'NONE';
+    EXP_INTEGER : ExprNodeTypeName := 'INTEGER';
+    EXP_REAL    : ExprNodeTypeName := 'REAL';
+    EXP_STRING  : ExprNodeTypeName := 'STRING';
+    EXP_IDENT   : ExprNodeTypeName := 'IDENT';
+    EXP_BINOP   : ExprNodeTypeName := 'BINOP';
+    EXP_UNARYOP : ExprNodeTypeName := 'UNARYOP';
+    EXP_CALL    : ExprNodeTypeName := 'CALL';
+    EXP_TABLE   : ExprNodeTypeName := 'TABLE';
+  Else
+    ExprNodeTypeName := 'UNKNOWN(' + ItoS(NodeType) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprOpName : nom d un operateur d expression                   }
+{ ------------------------------------------------------------ }
+
+Function ExprOpName(OpCode : Integer) : String;
+Begin
+  Case OpCode Of
+    OP_NONE  : ExprOpName := 'NONE';
+    OP_ADD   : ExprOpName := '+';
+    OP_SUB   : ExprOpName := '-';
+    OP_MUL   : ExprOpName := '*';
+    OP_DIV   : ExprOpName := '/';
+    OP_POWER : ExprOpName := '**';
+    OP_NEG   : ExprOpName := 'NEG';
+    OP_AND   : ExprOpName := 'AND';
+    OP_OR    : ExprOpName := 'OR';
+    OP_NOT   : ExprOpName := 'NOT';
+    OP_XOR   : ExprOpName := 'XOR';
+    OP_EQV   : ExprOpName := 'EQV';
+    OP_EQ    : ExprOpName := '=';
+    OP_NE    : ExprOpName := '/=';
+    OP_LT    : ExprOpName := '<';
+    OP_GT    : ExprOpName := '>';
+    OP_LE    : ExprOpName := '<=';
+    OP_GE    : ExprOpName := '>=';
+  Else
+    ExprOpName := 'OP?(' + ItoS(OpCode) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrimary : parser un operande primaire                     }
+{   litteral entier, reel, chaine, identifiant, appel fonction,  }
+{   acces TABLE(index), sous-expression entre parentheses        }
+{   Retourne le type de noeud                                    }
+{ ------------------------------------------------------------ }
+
+Function ParsePrimary : Integer;
+Var
+  SaveName : TString;
+  NodeType : Integer;
+  ArgCount : Integer;
+Begin
+  Inc(ExpStateCount);
+  Inc(ExpDepth);
+  If ExpDepth > ExpMaxDepth Then
+    ExpMaxDepth := ExpDepth;
+
+  NodeType := EXP_NONE;
+
+  If CurTokType = TOK_INTEGER Then
+  Begin
+    { Litteral entier }
+    NodeType := EXP_INTEGER;
+    Inc(ExpNodeCount);
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_REAL Then
+  Begin
+    { Litteral reel }
+    NodeType := EXP_REAL;
+    Inc(ExpNodeCount);
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_STRING Then
+  Begin
+    { Litteral chaine }
+    NodeType := EXP_STRING;
+    Inc(ExpNodeCount);
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_LPAREN Then
+  Begin
+    { Sous-expression entre parentheses }
+    LexNextToken;
+    NodeType := ParseExpression;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken
+    Else
+    Begin
+      WarnMsg('Parenthese fermante attendue dans expression');
+      Inc(ExpErrorCount);
+    End;
+  End
+  Else If (CurTokType = TOK_KEYWORD) Then
+  Begin
+    { Fonction integree ou mot-cle builtin }
+    Case CurTokNum Of
+      KW_ABS, KW_SGN, KW_SHIFTL, KW_SHIFTR, KW_BIT,
+      KW_BITSIZE, KW_BYTESIZE, KW_WORDSIZE,
+      KW_UBOUND, KW_LBOUND, KW_FIRST, KW_LAST, KW_NEXT:
+      Begin
+        { Appel de fonction integree }
+        NodeType := EXP_CALL;
+        Inc(ExpNodeCount);
+        Inc(ExpCallCount);
+        LexNextToken;
+        { Parser les arguments entre parentheses }
+        If CurTokType = TOK_LPAREN Then
+        Begin
+          LexNextToken;
+          ArgCount := 0;
+          If CurTokType <> TOK_RPAREN Then
+          Begin
+            ParseExpression;
+            Inc(ArgCount);
+            While CurTokType = TOK_COMMA Do
+            Begin
+              LexNextToken;
+              ParseExpression;
+              Inc(ArgCount);
+            End;
+          End;
+          If CurTokType = TOK_RPAREN Then
+            LexNextToken
+          Else
+          Begin
+            WarnMsg('Parenthese fermante attendue apres arguments');
+            Inc(ExpErrorCount);
+          End;
+        End;
+      End;
+
+      KW_NOT:
+      Begin
+        { NOT unaire - traite dans ParseNot }
+        NodeType := EXP_UNARYOP;
+        Inc(ExpNodeCount);
+        Inc(ExpUnaryCount);
+        LexNextToken;
+        NodeType := ParsePrimary;
+        NodeType := EXP_UNARYOP;
+      End;
+
+    Else
+      { Autre mot-cle utilise comme identifiant }
+      NodeType := EXP_IDENT;
+      Inc(ExpNodeCount);
+      LexNextToken;
+    End;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    { Identifiant : variable ou acces TABLE(index) }
+    SaveName := CurTokStr;
+    Inc(ExpNodeCount);
+    LexNextToken;
+
+    If CurTokType = TOK_LPAREN Then
+    Begin
+      { Acces TABLE(index) ou appel de fonction utilisateur }
+      NodeType := EXP_TABLE;
+      Inc(ExpTableAccess);
+      LexNextToken;
+      If CurTokType <> TOK_RPAREN Then
+      Begin
+        ParseExpression;
+        While CurTokType = TOK_COMMA Do
+        Begin
+          LexNextToken;
+          ParseExpression;
+        End;
+      End;
+      If CurTokType = TOK_RPAREN Then
+        LexNextToken
+      Else
+      Begin
+        WarnMsg('Parenthese fermante attendue apres index');
+        Inc(ExpErrorCount);
+      End;
+    End
+    Else
+    Begin
+      { Simple variable }
+      NodeType := EXP_IDENT;
+    End;
+  End
+  Else
+  Begin
+    { Operande primaire inattendu }
+    If (CurTokType <> TOK_EOF) And (CurTokType <> TOK_SEMICOL) And
+       (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_COMMA) Then
+    Begin
+      WarnMsg('Operande attendu dans expression, trouve token type '
+              + ItoS(CurTokType));
+      Inc(ExpErrorCount);
+      LexNextToken;
+    End;
+  End;
+
+  Dec(ExpDepth);
+  ParsePrimary := NodeType;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUnaryMinus : parser le moins unaire                       }
+{   Priorite 8 : - expression                                   }
+{ ------------------------------------------------------------ }
+
+Function ParseUnaryMinus : Integer;
+Var
+  NodeType : Integer;
+Begin
+  Inc(ExpStateCount);
+  If CurTokType = TOK_MINUS Then
+  Begin
+    { Moins unaire }
+    LexNextToken;
+    Inc(ExpNodeCount);
+    Inc(ExpUnaryCount);
+    NodeType := ParseUnaryMinus;
+    ParseUnaryMinus := EXP_UNARYOP;
+  End
+  Else
+    ParseUnaryMinus := ParsePrimary;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePower : parser l operateur puissance                      }
+{   Priorite 7 : base ** exposant (associativite a droite)       }
+{ ------------------------------------------------------------ }
+
+Function ParsePower : Integer;
+Var
+  LeftType  : Integer;
+  RightType : Integer;
+Begin
+  Inc(ExpStateCount);
+  LeftType := ParseUnaryMinus;
+
+  If CurTokType = TOK_POWER Then
+  Begin
+    LexNextToken;
+    Inc(ExpNodeCount);
+    Inc(ExpBinOpCount);
+    RightType := ParsePower;
+    ParsePower := EXP_BINOP;
+  End
+  Else
+    ParsePower := LeftType;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMulDiv : parser les operateurs multiplicatifs             }
+{   Priorite 6 : *, /                                           }
+{ ------------------------------------------------------------ }
+
+Function ParseMulDiv : Integer;
+Var
+  LeftType : Integer;
+Begin
+  Inc(ExpStateCount);
+  LeftType := ParsePower;
+
+  While (CurTokType = TOK_STAR) Or (CurTokType = TOK_SLASH) Do
+  Begin
+    LexNextToken;
+    Inc(ExpNodeCount);
+    Inc(ExpBinOpCount);
+    ParsePower;
+    LeftType := EXP_BINOP;
+  End;
+
+  ParseMulDiv := LeftType;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAddSub : parser les operateurs additifs                   }
+{   Priorite 5 : +, -                                           }
+{ ------------------------------------------------------------ }
+
+Function ParseAddSub : Integer;
+Var
+  LeftType : Integer;
+Begin
+  Inc(ExpStateCount);
+  LeftType := ParseMulDiv;
+
+  While (CurTokType = TOK_PLUS) Or (CurTokType = TOK_MINUS) Do
+  Begin
+    LexNextToken;
+    Inc(ExpNodeCount);
+    Inc(ExpBinOpCount);
+    ParseMulDiv;
+    LeftType := EXP_BINOP;
+  End;
+
+  ParseAddSub := LeftType;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseRelational : parser les operateurs relationnels           }
+{   Priorite 4 : =, /=, <, <=, >, >=                            }
+{ ------------------------------------------------------------ }
+
+Function ParseRelational : Integer;
+Var
+  LeftType : Integer;
+Begin
+  Inc(ExpStateCount);
+  LeftType := ParseAddSub;
+
+  If (CurTokType = TOK_EQ) Or (CurTokType = TOK_NE) Or
+     (CurTokType = TOK_LT) Or (CurTokType = TOK_GT) Or
+     (CurTokType = TOK_LE) Or (CurTokType = TOK_GE) Then
+  Begin
+    LexNextToken;
+    Inc(ExpNodeCount);
+    Inc(ExpBinOpCount);
+    ParseAddSub;
+    LeftType := EXP_BINOP;
+  End;
+
+  ParseRelational := LeftType;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseNot : parser l operateur NOT unaire                       }
+{   Priorite 3 : NOT expression                                 }
+{ ------------------------------------------------------------ }
+
+Function ParseNot : Integer;
+Var
+  InnerType : Integer;
+Begin
+  Inc(ExpStateCount);
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NOT) Then
+  Begin
+    LexNextToken;
+    Inc(ExpNodeCount);
+    Inc(ExpUnaryCount);
+    InnerType := ParseNot;
+    ParseNot := EXP_UNARYOP;
+  End
+  Else
+    ParseNot := ParseRelational;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAnd : parser l operateur AND                              }
+{   Priorite 2 : expr AND expr                                  }
+{ ------------------------------------------------------------ }
+
+Function ParseAnd : Integer;
+Var
+  LeftType : Integer;
+Begin
+  Inc(ExpStateCount);
+  LeftType := ParseNot;
+
+  While (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AND) Do
+  Begin
+    LexNextToken;
+    Inc(ExpNodeCount);
+    Inc(ExpBinOpCount);
+    ParseNot;
+    LeftType := EXP_BINOP;
+  End;
+
+  ParseAnd := LeftType;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOrXorEqv : parser les operateurs OR, XOR, EQV            }
+{   Priorite 1 : expr OR expr, expr XOR expr, expr EQV expr     }
+{ ------------------------------------------------------------ }
+
+Function ParseOrXorEqv : Integer;
+Var
+  LeftType : Integer;
+Begin
+  Inc(ExpStateCount);
+  LeftType := ParseAnd;
+
+  While (CurTokType = TOK_KEYWORD) And
+        ((CurTokNum = KW_OR) Or (CurTokNum = KW_XOR) Or
+         (CurTokNum = KW_EQV)) Do
+  Begin
+    LexNextToken;
+    Inc(ExpNodeCount);
+    Inc(ExpBinOpCount);
+    ParseAnd;
+    LeftType := EXP_BINOP;
+  End;
+
+  ParseOrXorEqv := LeftType;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExpression : point d entree principal pour les expressions }
+{   Retourne le type de noeud racine de l expression             }
+{ ------------------------------------------------------------ }
+
+Function ParseExpression : Integer;
+Begin
+  Inc(ExpStateCount);
+  Inc(ExpParseCount);
+
+  If ExpDepth >= EXP_MAX_DEPTH Then
+  Begin
+    WarnMsg('Profondeur max d expression atteinte');
+    Inc(ExpErrorCount);
+    ParseExpression := EXP_NONE;
+    Exit;
+  End;
+
+  Inc(ExpDepth);
+  ParseExpression := ParseOrXorEqv;
+  Dec(ExpDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpExprState : afficher l etat du parseur d expressions       }
+{ ------------------------------------------------------------ }
+
+Procedure DumpExprState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat du parseur EXPRESSIONS (TODO 10) ===');
+  WriteLn('  Initialise         : ', ExpInitialized);
+  WriteLn('  Operations         : ', ExpStateCount);
+  WriteLn('  Expressions parsees: ', ExpParseCount);
+  WriteLn('  Noeuds crees       : ', ExpNodeCount);
+  WriteLn('  Operations binaires: ', ExpBinOpCount);
+  WriteLn('  Operations unaires : ', ExpUnaryCount);
+  WriteLn('  Appels fonction    : ', ExpCallCount);
+  WriteLn('  Acces TABLE(index) : ', ExpTableAccess);
+  WriteLn('  Labels generes     : ', ExpLabelNum);
+  WriteLn('  Profondeur max     : ', ExpMaxDepth);
+  WriteLn('  Erreurs            : ', ExpErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Accesseurs du parseur d expressions (10 fonctions)             }
+{ ------------------------------------------------------------ }
+
+Function IsExpInitialized : Boolean;
+Begin
+  IsExpInitialized := ExpInitialized;
+End;
+
+Function GetExpParseCount : Integer;
+Begin
+  GetExpParseCount := ExpParseCount;
+End;
+
+Function GetExpNodeCount : Integer;
+Begin
+  GetExpNodeCount := ExpNodeCount;
+End;
+
+Function GetExpBinOpCount : Integer;
+Begin
+  GetExpBinOpCount := ExpBinOpCount;
+End;
+
+Function GetExpUnaryCount : Integer;
+Begin
+  GetExpUnaryCount := ExpUnaryCount;
+End;
+
+Function GetExpCallCount : Integer;
+Begin
+  GetExpCallCount := ExpCallCount;
+End;
+
+Function GetExpStateCount : Integer;
+Begin
+  GetExpStateCount := ExpStateCount;
+End;
+
+Function GetExpErrorCount : Integer;
+Begin
+  GetExpErrorCount := ExpErrorCount;
+End;
+
+Function GetExpMaxDepth : Integer;
+Begin
+  GetExpMaxDepth := ExpMaxDepth;
+End;
+
+Function IsExpEmpty : Boolean;
+Begin
+  IsExpEmpty := (ExpParseCount = 0);
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -4882,6 +5477,7 @@ Begin
   TblInitialized := False;
   DefInitialized := False;
   PrcInitialized := False;
+  ExpInitialized := False;
 
   ParseArgs;
 
@@ -4909,6 +5505,9 @@ Begin
   { Initialiser le parseur PROCEDURE/FUNCTION }
   InitProcState;
 
+  { Initialiser le parseur d expressions }
+  InitExprState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -4931,6 +5530,7 @@ Begin
     DumpTableState;
     DumpDefineState;
     DumpProcState;
+    DumpExprState;
   End;
 
   { Nettoyage }

@@ -225,7 +225,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Instruction STOP : PUSH 0 / CALL ExitProcess
             10 fonctions accesseurs
 
-  TODO 10 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES [A FAIRE]
+  TODO 10 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES [IMPLEMENTE]
             Expressions arithmetiques :
               Addition (+), Soustraction (-)
               Multiplication (*), Division (/)
