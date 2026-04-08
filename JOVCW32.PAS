@@ -1169,7 +1169,7 @@ Const
   TOK_COMMA    = 22;   { ,                                       }
   TOK_SEMICOL  = 23;   { ; (terminateur d instruction Jovial)    }
   TOK_DOT      = 24;   { .                                       }
-  TOK_COLON    = 25;   { : (separateur de label)                 }
+  TOK_COLON    = 25;   { : (deux-points : labels, declarations)  }
   TOK_EQ       = 30;   { =                                       }
   TOK_NE       = 31;   { /= (pas egal)                           }
   TOK_LT       = 32;   { <                                       }
@@ -5533,10 +5533,10 @@ End;
 { GenCtlLabel : generer un label unique pour le controle de flux }
 { ------------------------------------------------------------ }
 
-Function GenCtlLabel : Integer;
+Function GenCtlLabel : TString;
 Begin
   Inc(CtlLabelNum);
-  GenCtlLabel := CtlLabelNum;
+  GenCtlLabel := PFX_LBL + 'CTL_' + ItoSI(CtlLabelNum);
 End;
 
 { ------------------------------------------------------------ }
@@ -5570,7 +5570,7 @@ End;
 
 Procedure ParseIfStatement;
 Var
-  LblNum    : Integer;
+  LblNum    : TString;
   NestDepth : Integer;
 Begin
   Inc(CtlStateCount);
@@ -5662,7 +5662,7 @@ End;
 
 Procedure ParseForStatement;
 Var
-  LblNum    : Integer;
+  LblNum    : TString;
   HasBy     : Boolean;
   NestDepth : Integer;
 Begin
@@ -5783,7 +5783,7 @@ End;
 
 Procedure ParseWhileStatement;
 Var
-  LblNum    : Integer;
+  LblNum    : TString;
   NestDepth : Integer;
 Begin
   Inc(CtlStateCount);
@@ -5862,7 +5862,7 @@ End;
 
 Procedure ParseDoUntil;
 Var
-  LblNum    : Integer;
+  LblNum    : TString;
   NestDepth : Integer;
 Begin
   Inc(CtlStateCount);
@@ -5972,7 +5972,7 @@ End;
 
 Procedure ParseBeginEnd;
 Var
-  LblNum    : Integer;
+  LblNum    : TString;
   NestDepth : Integer;
 Begin
   Inc(CtlStateCount);
