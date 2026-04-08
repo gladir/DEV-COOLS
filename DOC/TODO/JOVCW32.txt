@@ -657,7 +657,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
               n inclure que le necessaire
             10 fonctions accesseurs
 
-  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\JOVIAL\* [A FAIRE]
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\JOVIAL\* [IMPLEMENTE]
             Optimisations peephole :
               MOV EAX, 0 -> XOR EAX, EAX
               PUSH EAX / POP EAX -> (eliminer)

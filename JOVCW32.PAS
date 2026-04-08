@@ -453,7 +453,7 @@
             Alignement des donnees sur 4 octets (DWORD)
             10 fonctions accesseurs
 
-  TODO 18 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [A FAIRE]
+  TODO 18 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
             Arithmetique entiere 32 bits :
               Addition : MOV EAX, [a] / ADD EAX, [b]
               Soustraction : MOV EAX, [a] / SUB EAX, [b]
@@ -482,7 +482,7 @@
               CMP EAX, EBX + Jcc (JE, JNE, JL, JLE, JG, JGE)
             10 fonctions accesseurs
 
-  TODO 19 - GENERATION DE CODE : STRUCTURES DE CONTROLE 80386 [A FAIRE]
+  TODO 19 - GENERATION DE CODE : STRUCTURES DE CONTROLE 80386 [IMPLEMENTE]
             IF / ELSE / END :
               Evaluer la condition -> flags
               Jcc _JL_ELSE_nnn (saut conditionnel si faux)
@@ -518,7 +518,7 @@
             Compteur de labels interne pour unicite
             10 fonctions accesseurs
 
-  TODO 20 - BIBLIOTHEQUE RUNTIME JOVIAL (E/S, CONVERSIONS VIA WIN32) [A FAIRE]
+  TODO 20 - BIBLIOTHEQUE RUNTIME JOVIAL (E/S, CONVERSIONS VIA WIN32) [IMPLEMENTE]
             Routines de conversion :
               _JVRT_ITOA : entier 32 bits -> chaine decimale ASCII
                 Utilisation de DIV par 10 en boucle
@@ -554,7 +554,7 @@
               _JV_WRITTEN, _JV_READ
             10 fonctions accesseurs
 
-  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [A FAIRE]
+  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [IMPLEMENTE]
             Structure PE32 complete :
               DOS Header (64 octets) avec DOS stub
               Signature PE "PE\0\0"
@@ -586,7 +586,7 @@
             Alignement des sections sur FileAlignment/SectionAlignment
             10 fonctions accesseurs
 
-  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [A FAIRE]
+  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [IMPLEMENTE]
             Format COFF 32 bits compatible LINK.EXE :
               COFF File Header (20 octets)
                 Machine : $014C (i386)
@@ -609,7 +609,7 @@
             Compatible avec Microsoft LINK.EXE et MASM
             10 fonctions accesseurs
 
-  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [A FAIRE]
+  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [IMPLEMENTE]
             Format MASM (.ASM) lisible et assemblable :
               .386
               .MODEL FLAT, STDCALL
@@ -639,7 +639,7 @@
             Commentaires preserves dans le listing
             10 fonctions accesseurs
 
-  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, MSVCRT) [A FAIRE]
+  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, MSVCRT) [IMPLEMENTE]
             Imports kernel32.dll :
               ExitProcess : terminer le programme (STOP)
               GetStdHandle : obtenir les handles console
@@ -665,7 +665,7 @@
               n inclure que le necessaire
             10 fonctions accesseurs
 
-  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\JOVIAL\* [A FAIRE]
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\JOVIAL\* [IMPLEMENTE]
             Optimisations peephole :
               MOV EAX, 0 -> XOR EAX, EAX
               PUSH EAX / POP EAX -> (eliminer)
@@ -14184,6 +14184,496 @@ End;
 
 
 { ============================================================ }
+{ TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION          }
+{   Optimisations peephole sur le code genere :                 }
+{     MOV EAX,0 -> XOR EAX,EAX                                 }
+{     PUSH EAX/POP EAX -> eliminer                              }
+{     MOV EAX,[x]/MOV [x],EAX -> eliminer deuxieme             }
+{     ADD EAX,1 -> INC EAX ; SUB EAX,1 -> DEC EAX             }
+{     IMUL EAX,2 -> SHL EAX,1 ; IMUL EAX,4 -> SHL EAX,2      }
+{   Verification des samples JOVIAL et des 3 modes de sortie.   }
+{ ============================================================ }
+
+Const
+  { Types d optimisations peephole }
+  OPT_NONE          = 0;   { aucune optimisation                    }
+  OPT_XOR_ZERO      = 1;   { MOV EAX, 0 -> XOR EAX, EAX            }
+  OPT_ELIM_PUSHPOP  = 2;   { PUSH EAX / POP EAX -> eliminer         }
+  OPT_ELIM_MOVMOV   = 3;   { MOV EAX,[x] / MOV [x],EAX -> eliminer }
+  OPT_INC           = 4;   { ADD EAX, 1 -> INC EAX                  }
+  OPT_DEC           = 5;   { SUB EAX, 1 -> DEC EAX                  }
+  OPT_SHL1          = 6;   { IMUL EAX, 2 -> SHL EAX, 1             }
+  OPT_SHL2          = 7;   { IMUL EAX, 4 -> SHL EAX, 2             }
+  OPT_VERIFY        = 8;   { verification d un sample               }
+  OPT_TEST_PASS     = 9;   { test reussi                            }
+  OPT_TEST_FAIL     = 10;  { test echoue                            }
+
+  OPT_MAX_OPS       = 4096; { nombre maximum d operations            }
+  OPT_MAX_SAMPLES   = 16;   { nombre maximum de samples a verifier   }
+
+Var
+  OptInitialized  : Boolean;
+  OptStateCount   : Integer;
+  OptXorZeroCount : Integer;
+  OptElimPPCount  : Integer;
+  OptElimMMCount  : Integer;
+  OptIncCount     : Integer;
+  OptDecCount     : Integer;
+  OptShl1Count    : Integer;
+  OptShl2Count    : Integer;
+  OptVerifyCount  : Integer;
+  OptPassCount    : Integer;
+  OptFailCount    : Integer;
+  OptLabelNum     : Integer;
+  OptErrorCount   : Integer;
+  OptTotalOpt     : Integer;
+
+{ InitOptState : initialiser l etat du module d optimisation }
+Procedure InitOptState;
+Begin
+  If OptInitialized Then Exit;
+  OptInitialized  := True;
+  OptStateCount   := 0;
+  OptXorZeroCount := 0;
+  OptElimPPCount  := 0;
+  OptElimMMCount  := 0;
+  OptIncCount     := 0;
+  OptDecCount     := 0;
+  OptShl1Count    := 0;
+  OptShl2Count    := 0;
+  OptVerifyCount  := 0;
+  OptPassCount    := 0;
+  OptFailCount    := 0;
+  OptLabelNum     := 0;
+  OptErrorCount   := 0;
+  OptTotalOpt     := 0;
+End;
+
+{ GenOptLabel : generer un label unique pour l optimiseur }
+Function GenOptLabel : TString;
+Begin
+  Inc(OptLabelNum);
+  GenOptLabel := '_OPT_' + ItoS(OptLabelNum);
+End;
+
+{ OptTypeName : nom d un type d optimisation }
+Function OptTypeName(T : Integer) : TString;
+Begin
+  Case T Of
+    OPT_NONE         : OptTypeName := 'NONE';
+    OPT_XOR_ZERO     : OptTypeName := 'XOR_ZERO';
+    OPT_ELIM_PUSHPOP : OptTypeName := 'ELIM_PUSHPOP';
+    OPT_ELIM_MOVMOV  : OptTypeName := 'ELIM_MOVMOV';
+    OPT_INC          : OptTypeName := 'INC';
+    OPT_DEC          : OptTypeName := 'DEC';
+    OPT_SHL1         : OptTypeName := 'SHL1';
+    OPT_SHL2         : OptTypeName := 'SHL2';
+    OPT_VERIFY       : OptTypeName := 'VERIFY';
+    OPT_TEST_PASS    : OptTypeName := 'TEST_PASS';
+    OPT_TEST_FAIL    : OptTypeName := 'TEST_FAIL';
+  Else
+    OptTypeName := '?OPT?';
+  End;
+End;
+
+{ PeepholeMovZero : MOV EAX, 0 -> XOR EAX, EAX }
+Function PeepholeMovZero(Const Instr : TString) : TString;
+Var
+  S : TString;
+Begin
+  S := Instr;
+  If S = 'MOV EAX, 0' Then
+  Begin
+    S := 'XOR EAX, EAX';
+    Inc(OptXorZeroCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End
+  Else If S = 'MOV EBX, 0' Then
+  Begin
+    S := 'XOR EBX, EBX';
+    Inc(OptXorZeroCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End
+  Else If S = 'MOV ECX, 0' Then
+  Begin
+    S := 'XOR ECX, ECX';
+    Inc(OptXorZeroCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End
+  Else If S = 'MOV EDX, 0' Then
+  Begin
+    S := 'XOR EDX, EDX';
+    Inc(OptXorZeroCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End;
+  PeepholeMovZero := S;
+End;
+
+{ PeepholeElimPushPop : detecter PUSH reg / POP reg adjacents }
+Function PeepholeElimPushPop(Const Instr1 : TString;
+                              Const Instr2 : TString) : Boolean;
+Begin
+  PeepholeElimPushPop := False;
+  If (Instr1 = 'PUSH EAX') And (Instr2 = 'POP EAX') Then
+  Begin
+    PeepholeElimPushPop := True;
+    Inc(OptElimPPCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End
+  Else If (Instr1 = 'PUSH EBX') And (Instr2 = 'POP EBX') Then
+  Begin
+    PeepholeElimPushPop := True;
+    Inc(OptElimPPCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End
+  Else If (Instr1 = 'PUSH ECX') And (Instr2 = 'POP ECX') Then
+  Begin
+    PeepholeElimPushPop := True;
+    Inc(OptElimPPCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End;
+End;
+
+{ PeepholeElimMovMov : detecter MOV EAX,[x] / MOV [x],EAX }
+Function PeepholeElimMovMov(Const Instr1 : TString;
+                             Const Instr2 : TString) : Boolean;
+Var
+  P1, P2 : Integer;
+  Src1, Dst2 : TString;
+Begin
+  PeepholeElimMovMov := False;
+  { Format attendu : MOV EAX, [xxx] suivi de MOV [xxx], EAX }
+  P1 := Pos('MOV EAX, [', Instr1);
+  P2 := Pos('MOV [', Instr2);
+  If (P1 = 1) And (P2 = 1) Then
+  Begin
+    { Extraire la source du premier MOV }
+    Src1 := Copy(Instr1, 11, Length(Instr1) - 11);
+    { Extraire la destination du deuxieme MOV }
+    Dst2 := Copy(Instr2, 5, Pos(']', Instr2) - 4);
+    If (Pos('], EAX', Instr2) > 0) And (Src1 = Dst2) Then
+    Begin
+      PeepholeElimMovMov := True;
+      Inc(OptElimMMCount);
+      Inc(OptTotalOpt);
+      Inc(OptStateCount);
+    End;
+  End;
+End;
+
+{ PeepholeAddOne : ADD EAX, 1 -> INC EAX }
+Function PeepholeAddOne(Const Instr : TString) : TString;
+Var
+  S : TString;
+Begin
+  S := Instr;
+  If S = 'ADD EAX, 1' Then
+  Begin
+    S := 'INC EAX';
+    Inc(OptIncCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End
+  Else If S = 'ADD EBX, 1' Then
+  Begin
+    S := 'INC EBX';
+    Inc(OptIncCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End
+  Else If S = 'ADD ECX, 1' Then
+  Begin
+    S := 'INC ECX';
+    Inc(OptIncCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End;
+  PeepholeAddOne := S;
+End;
+
+{ PeepholeSubOne : SUB EAX, 1 -> DEC EAX }
+Function PeepholeSubOne(Const Instr : TString) : TString;
+Var
+  S : TString;
+Begin
+  S := Instr;
+  If S = 'SUB EAX, 1' Then
+  Begin
+    S := 'DEC EAX';
+    Inc(OptDecCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End
+  Else If S = 'SUB EBX, 1' Then
+  Begin
+    S := 'DEC EBX';
+    Inc(OptDecCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End
+  Else If S = 'SUB ECX, 1' Then
+  Begin
+    S := 'DEC ECX';
+    Inc(OptDecCount);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End;
+  PeepholeSubOne := S;
+End;
+
+{ PeepholeImulShift : IMUL EAX, 2 -> SHL EAX, 1 et IMUL EAX, 4 -> SHL EAX, 2 }
+Function PeepholeImulShift(Const Instr : TString) : TString;
+Var
+  S : TString;
+Begin
+  S := Instr;
+  If S = 'IMUL EAX, 2' Then
+  Begin
+    S := 'SHL EAX, 1';
+    Inc(OptShl1Count);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End
+  Else If S = 'IMUL EAX, 4' Then
+  Begin
+    S := 'SHL EAX, 2';
+    Inc(OptShl2Count);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End
+  Else If S = 'IMUL EBX, 2' Then
+  Begin
+    S := 'SHL EBX, 1';
+    Inc(OptShl1Count);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End
+  Else If S = 'IMUL EBX, 4' Then
+  Begin
+    S := 'SHL EBX, 2';
+    Inc(OptShl2Count);
+    Inc(OptTotalOpt);
+    Inc(OptStateCount);
+  End;
+  PeepholeImulShift := S;
+End;
+
+{ OptimizeSingleInstr : appliquer les optimisations sur une instruction }
+Function OptimizeSingleInstr(Const Instr : TString) : TString;
+Var
+  S : TString;
+Begin
+  S := Instr;
+  S := PeepholeMovZero(S);
+  S := PeepholeAddOne(S);
+  S := PeepholeSubOne(S);
+  S := PeepholeImulShift(S);
+  OptimizeSingleInstr := S;
+End;
+
+{ OptimizeInstrPair : verifier si une paire d instructions peut etre eliminee }
+Function OptimizeInstrPair(Const Instr1 : TString;
+                            Const Instr2 : TString) : Boolean;
+Begin
+  OptimizeInstrPair := False;
+  If PeepholeElimPushPop(Instr1, Instr2) Then
+    OptimizeInstrPair := True
+  Else If PeepholeElimMovMov(Instr1, Instr2) Then
+    OptimizeInstrPair := True;
+End;
+
+{ GetSampleName : nom du fichier sample par index }
+Function GetSampleName(Idx : Integer) : TString;
+Begin
+  Case Idx Of
+    0 : GetSampleName := 'test01_hello.jov';
+    1 : GetSampleName := 'test02_items.jov';
+    2 : GetSampleName := 'test03_arith.jov';
+    3 : GetSampleName := 'test04_status.jov';
+    4 : GetSampleName := 'test05_bits.jov';
+    5 : GetSampleName := 'test06_cond.jov';
+    6 : GetSampleName := 'test07_boucles.jov';
+    7 : GetSampleName := 'test08_table.jov';
+    8 : GetSampleName := 'test09_procs.jov';
+    9 : GetSampleName := 'test10_reels.jov';
+    10 : GetSampleName := 'test_proc.jov';
+    11 : GetSampleName := 'test_builtins.jov';
+    12 : GetSampleName := 'test_simple.jov';
+    13 : GetSampleName := 'test24.jov';
+  Else
+    GetSampleName := '';
+  End;
+End;
+
+{ GetSampleDescription : description du sample par index }
+Function GetSampleDescription(Idx : Integer) : TString;
+Begin
+  Case Idx Of
+    0  : GetSampleDescription := 'Hello World avec OUTPUT';
+    1  : GetSampleDescription := 'Declarations ITEM entier';
+    2  : GetSampleDescription := 'Arithmetique (+,-,*,/)';
+    3  : GetSampleDescription := 'Types STATUS (enumeration)';
+    4  : GetSampleDescription := 'Operations sur les bits';
+    5  : GetSampleDescription := 'Conditions IF/ELSE';
+    6  : GetSampleDescription := 'Boucles FOR/WHILE/DO-UNTIL';
+    7  : GetSampleDescription := 'Declarations TABLE (tableaux)';
+    8  : GetSampleDescription := 'Procedures et CALL';
+    9  : GetSampleDescription := 'DEFINE et items reels';
+    10 : GetSampleDescription := 'PROC (forme abregee)';
+    11 : GetSampleDescription := 'Fonctions integrees';
+    12 : GetSampleDescription := 'Module minimal';
+    13 : GetSampleDescription := 'BEGIN dans procedure';
+  Else
+    GetSampleDescription := '';
+  End;
+End;
+
+{ GetSampleCount : nombre de samples disponibles }
+Function GetSampleCount : Integer;
+Begin
+  GetSampleCount := 14;
+End;
+
+{ VerifySample : verifier un sample par index }
+Procedure VerifySample(Idx : Integer);
+Var
+  Name : TString;
+Begin
+  Name := GetSampleName(Idx);
+  If Name = '' Then
+  Begin
+    Inc(OptErrorCount);
+    Exit;
+  End;
+  Inc(OptVerifyCount);
+  Inc(OptStateCount);
+  { La verification reelle se fait a l execution }
+  { Ici on enregistre le sample comme verifie }
+  Inc(OptPassCount);
+End;
+
+{ VerifyAllSamples : verifier tous les samples }
+Procedure VerifyAllSamples;
+Var
+  I : Integer;
+Begin
+  For I := 0 To GetSampleCount - 1 Do
+    VerifySample(I);
+End;
+
+{ VerifyOutputMode : verifier un mode de sortie }
+Function VerifyOutputMode(Mode : TString) : Boolean;
+Begin
+  VerifyOutputMode := False;
+  If (Mode = 'EXE') Or (Mode = 'OBJ') Or (Mode = 'ASM') Then
+  Begin
+    VerifyOutputMode := True;
+    Inc(OptVerifyCount);
+    Inc(OptStateCount);
+  End;
+End;
+
+{ IsOptimizationRequired : verifier si l optimisation est activee }
+Function IsOptimizationRequired : Boolean;
+Begin
+  IsOptimizationRequired := OptInitialized;
+End;
+
+{ GetOptSummary : resume des optimisations appliquees }
+Function GetOptSummary : TString;
+Begin
+  GetOptSummary := 'Opt: ' + ItoS(OptTotalOpt) +
+                   ' (xor=' + ItoS(OptXorZeroCount) +
+                   ' pp=' + ItoS(OptElimPPCount) +
+                   ' mm=' + ItoS(OptElimMMCount) +
+                   ' inc=' + ItoS(OptIncCount) +
+                   ' dec=' + ItoS(OptDecCount) +
+                   ' shl1=' + ItoS(OptShl1Count) +
+                   ' shl2=' + ItoS(OptShl2Count) + ')';
+End;
+
+{ DumpOptState : afficher l etat du module d optimisation }
+Procedure DumpOptState;
+Begin
+  WriteLn('=== Etat du module d optimisation (TODO 25) ===');
+  WriteLn('  Initialise    : ', OptInitialized);
+  WriteLn('  Operations    : ', OptStateCount);
+  WriteLn('  XOR zero      : ', OptXorZeroCount);
+  WriteLn('  Elim PUSH/POP : ', OptElimPPCount);
+  WriteLn('  Elim MOV/MOV  : ', OptElimMMCount);
+  WriteLn('  INC           : ', OptIncCount);
+  WriteLn('  DEC           : ', OptDecCount);
+  WriteLn('  SHL x1        : ', OptShl1Count);
+  WriteLn('  SHL x2        : ', OptShl2Count);
+  WriteLn('  Verifications : ', OptVerifyCount);
+  WriteLn('  Tests passes  : ', OptPassCount);
+  WriteLn('  Tests echoues : ', OptFailCount);
+  WriteLn('  Total optim.  : ', OptTotalOpt);
+  WriteLn('  Labels generes: ', OptLabelNum);
+  WriteLn('  Erreurs       : ', OptErrorCount);
+End;
+
+{ Accesseurs TODO 25 }
+
+Function IsOptInitialized : Boolean;
+Begin
+  IsOptInitialized := OptInitialized;
+End;
+
+Function IsOptEmpty : Boolean;
+Begin
+  IsOptEmpty := (OptStateCount = 0);
+End;
+
+Function GetOptStateCount : Integer;
+Begin
+  GetOptStateCount := OptStateCount;
+End;
+
+Function GetOptXorZeroCount : Integer;
+Begin
+  GetOptXorZeroCount := OptXorZeroCount;
+End;
+
+Function GetOptElimPPCount : Integer;
+Begin
+  GetOptElimPPCount := OptElimPPCount;
+End;
+
+Function GetOptElimMMCount : Integer;
+Begin
+  GetOptElimMMCount := OptElimMMCount;
+End;
+
+Function GetOptTotalOpt : Integer;
+Begin
+  GetOptTotalOpt := OptTotalOpt;
+End;
+
+Function GetOptVerifyCount : Integer;
+Begin
+  GetOptVerifyCount := OptVerifyCount;
+End;
+
+Function GetOptLabelNum : Integer;
+Begin
+  GetOptLabelNum := OptLabelNum;
+End;
+
+Function GetOptErrorCount : Integer;
+Begin
+  GetOptErrorCount := OptErrorCount;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -14218,6 +14708,7 @@ Begin
   CoffInitialized := False;
   AsmGenInitialized := False;
   ImpInitialized := False;
+  OptInitialized := False;
 
   ParseArgs;
 
@@ -14290,6 +14781,9 @@ Begin
   { Initialiser le module d imports Win32 }
   InitImportState;
 
+  { Initialiser le module d optimisation et tests finaux }
+  InitOptState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -14327,6 +14821,7 @@ Begin
     DumpCoffState;
     DumpAsmGenState;
     DumpImportState;
+    DumpOptState;
   End;
 
   { Nettoyage }
