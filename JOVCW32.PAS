@@ -13466,6 +13466,724 @@ End;
 
 
 { ============================================================ }
+{ TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, MSVCRT)     }
+{   Gerer les imports des fonctions Win32 depuis kernel32.dll   }
+{   et optionnellement msvcrt.dll. Generer la table d imports   }
+{   PE (IMAGE_IMPORT_DESCRIPTOR, IAT, Hint/Name), les EXTERN   }
+{   pour le mode .ASM, les symboles externes pour le mode .OBJ  }
+{   et marquer les imports reellement utilises.                  }
+{ ============================================================ }
+
+Const
+  { Types d operations d import }
+  IMP_NONE           = 0;   { aucune operation d import              }
+  IMP_KERNEL32       = 1;   { import depuis kernel32.dll             }
+  IMP_MSVCRT         = 2;   { import depuis msvcrt.dll               }
+  IMP_IAT_ENTRY      = 3;   { entree IAT (Import Address Table)      }
+  IMP_HINT_NAME      = 4;   { entree Hint/Name Table                 }
+  IMP_DESCRIPTOR     = 5;   { IMAGE_IMPORT_DESCRIPTOR                }
+  IMP_EXTERN_ASM     = 6;   { declaration EXTERN pour mode .ASM      }
+  IMP_EXTERN_OBJ     = 7;   { symbole externe pour mode .OBJ         }
+  IMP_DLL_REF        = 8;   { reference a une DLL                    }
+  IMP_THUNK          = 9;   { entree thunk dans la IAT               }
+  IMP_MARK_USED      = 10;  { marquer un import comme utilise        }
+
+  { Constantes de limites }
+  IMP_MAX_FUNCS      = 64;    { nombre max de fonctions importees    }
+  IMP_MAX_DLLS       = 8;     { nombre max de DLLs                   }
+  IMP_MAX_NAME_LEN   = 64;    { longueur max d un nom de fonction    }
+
+  { Identifiants des fonctions kernel32 }
+  IMP_FN_EXIT_PROCESS       = 0;   { ExitProcess                    }
+  IMP_FN_GET_STD_HANDLE     = 1;   { GetStdHandle                   }
+  IMP_FN_WRITE_FILE         = 2;   { WriteFile                      }
+  IMP_FN_READ_FILE          = 3;   { ReadFile                       }
+  IMP_FN_GET_PROCESS_HEAP   = 4;   { GetProcessHeap                 }
+  IMP_FN_HEAP_ALLOC         = 5;   { HeapAlloc                      }
+  IMP_FN_HEAP_FREE          = 6;   { HeapFree                       }
+  IMP_FN_GET_CMD_LINE       = 7;   { GetCommandLineA                }
+  IMP_FN_GET_MODULE_HANDLE  = 8;   { GetModuleHandleA               }
+  IMP_FN_GET_LAST_ERROR     = 9;   { GetLastError                   }
+  IMP_FN_LOAD_LIBRARY       = 10;  { LoadLibraryA                   }
+  IMP_FN_GET_PROC_ADDRESS   = 11;  { GetProcAddress                 }
+  IMP_FN_FREE_LIBRARY       = 12;  { FreeLibrary                    }
+  IMP_FN_KERNEL32_COUNT     = 13;  { nombre de fonctions kernel32   }
+
+  { Identifiants des fonctions msvcrt }
+  IMP_FN_SPRINTF             = 0;  { sprintf                        }
+  IMP_FN_SSCANF              = 1;  { sscanf                         }
+  IMP_FN_MEMCPY              = 2;  { memcpy                         }
+  IMP_FN_MEMSET              = 3;  { memset                         }
+  IMP_FN_MEMCMP              = 4;  { memcmp                         }
+  IMP_FN_MSVCRT_COUNT        = 5;  { nombre de fonctions msvcrt     }
+
+  { Identifiants de DLLs }
+  IMP_DLL_KERNEL32   = 0;   { kernel32.dll                           }
+  IMP_DLL_MSVCRT     = 1;   { msvcrt.dll                             }
+  IMP_DLL_COUNT      = 2;   { nombre de DLLs gerees                  }
+
+Var
+  { Variables du module d imports }
+  ImpInitialized     : Boolean;     { module initialise ?             }
+  ImpStateCount      : Integer;     { compteur total d operations     }
+  ImpKernel32Count   : Integer;     { imports kernel32 enregistres    }
+  ImpMsvcrtCount     : Integer;     { imports msvcrt enregistres      }
+  ImpUsedCount       : Integer;     { imports marques comme utilises  }
+  ImpIATCount        : Integer;     { entrees IAT generees            }
+  ImpDescCount       : Integer;     { descripteurs generes            }
+  ImpExternAsmCount  : Integer;     { EXTERN ASM generes              }
+  ImpExternObjCount  : Integer;     { symboles OBJ generes            }
+  ImpThunkCount      : Integer;     { thunks generes                  }
+  ImpLabelNum        : Integer;     { generateur de labels uniques    }
+  ImpErrorCount      : Integer;     { nombre d erreurs                }
+
+  { Tables d etat des imports }
+  ImpKernel32Used    : Array[0..IMP_FN_KERNEL32_COUNT-1] Of Boolean;
+  ImpMsvcrtUsed      : Array[0..IMP_FN_MSVCRT_COUNT-1] Of Boolean;
+
+{ ------------------------------------------------------------ }
+{ InitImportState : initialiser le module d imports              }
+{ ------------------------------------------------------------ }
+
+Procedure InitImportState;
+Var
+  I : Integer;
+Begin
+  ImpInitialized    := True;
+  ImpStateCount     := 0;
+  ImpKernel32Count  := 0;
+  ImpMsvcrtCount    := 0;
+  ImpUsedCount      := 0;
+  ImpIATCount       := 0;
+  ImpDescCount      := 0;
+  ImpExternAsmCount := 0;
+  ImpExternObjCount := 0;
+  ImpThunkCount     := 0;
+  ImpLabelNum       := 0;
+  ImpErrorCount     := 0;
+  For I := 0 To IMP_FN_KERNEL32_COUNT - 1 Do
+    ImpKernel32Used[I] := False;
+  For I := 0 To IMP_FN_MSVCRT_COUNT - 1 Do
+    ImpMsvcrtUsed[I] := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenImpLabel : generer un label unique pour les imports         }
+{ ------------------------------------------------------------ }
+
+Function GenImpLabel : TString;
+Var
+  S : TString;
+Begin
+  Inc(ImpLabelNum);
+  Str(ImpLabelNum, S);
+  GenImpLabel := '_IMP_L' + S;
+End;
+
+{ ------------------------------------------------------------ }
+{ ImpTypeName : nom d un type d operation d import               }
+{ ------------------------------------------------------------ }
+
+Function ImpTypeName(T : Integer) : TString;
+Begin
+  Case T Of
+    IMP_NONE       : ImpTypeName := 'NONE';
+    IMP_KERNEL32   : ImpTypeName := 'KERNEL32';
+    IMP_MSVCRT     : ImpTypeName := 'MSVCRT';
+    IMP_IAT_ENTRY  : ImpTypeName := 'IAT_ENTRY';
+    IMP_HINT_NAME  : ImpTypeName := 'HINT_NAME';
+    IMP_DESCRIPTOR : ImpTypeName := 'DESCRIPTOR';
+    IMP_EXTERN_ASM : ImpTypeName := 'EXTERN_ASM';
+    IMP_EXTERN_OBJ : ImpTypeName := 'EXTERN_OBJ';
+    IMP_DLL_REF    : ImpTypeName := 'DLL_REF';
+    IMP_THUNK      : ImpTypeName := 'THUNK';
+    IMP_MARK_USED  : ImpTypeName := 'MARK_USED';
+  Else
+    ImpTypeName := '???';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetKernel32FuncName : nom d une fonction kernel32              }
+{ ------------------------------------------------------------ }
+
+Function GetKernel32FuncName(Id : Integer) : TString;
+Begin
+  Case Id Of
+    IMP_FN_EXIT_PROCESS      : GetKernel32FuncName := 'ExitProcess';
+    IMP_FN_GET_STD_HANDLE    : GetKernel32FuncName := 'GetStdHandle';
+    IMP_FN_WRITE_FILE        : GetKernel32FuncName := 'WriteFile';
+    IMP_FN_READ_FILE         : GetKernel32FuncName := 'ReadFile';
+    IMP_FN_GET_PROCESS_HEAP  : GetKernel32FuncName := 'GetProcessHeap';
+    IMP_FN_HEAP_ALLOC        : GetKernel32FuncName := 'HeapAlloc';
+    IMP_FN_HEAP_FREE         : GetKernel32FuncName := 'HeapFree';
+    IMP_FN_GET_CMD_LINE      : GetKernel32FuncName := 'GetCommandLineA';
+    IMP_FN_GET_MODULE_HANDLE : GetKernel32FuncName := 'GetModuleHandleA';
+    IMP_FN_GET_LAST_ERROR    : GetKernel32FuncName := 'GetLastError';
+    IMP_FN_LOAD_LIBRARY      : GetKernel32FuncName := 'LoadLibraryA';
+    IMP_FN_GET_PROC_ADDRESS  : GetKernel32FuncName := 'GetProcAddress';
+    IMP_FN_FREE_LIBRARY      : GetKernel32FuncName := 'FreeLibrary';
+  Else
+    GetKernel32FuncName := '???';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetKernel32DecoratedName : nom decore STDCALL @n               }
+{ ------------------------------------------------------------ }
+
+Function GetKernel32DecoratedName(Id : Integer) : TString;
+Begin
+  Case Id Of
+    IMP_FN_EXIT_PROCESS      : GetKernel32DecoratedName := '_ExitProcess@4';
+    IMP_FN_GET_STD_HANDLE    : GetKernel32DecoratedName := '_GetStdHandle@4';
+    IMP_FN_WRITE_FILE        : GetKernel32DecoratedName := '_WriteFile@20';
+    IMP_FN_READ_FILE         : GetKernel32DecoratedName := '_ReadFile@20';
+    IMP_FN_GET_PROCESS_HEAP  : GetKernel32DecoratedName := '_GetProcessHeap@0';
+    IMP_FN_HEAP_ALLOC        : GetKernel32DecoratedName := '_HeapAlloc@12';
+    IMP_FN_HEAP_FREE         : GetKernel32DecoratedName := '_HeapFree@12';
+    IMP_FN_GET_CMD_LINE      : GetKernel32DecoratedName := '_GetCommandLineA@0';
+    IMP_FN_GET_MODULE_HANDLE : GetKernel32DecoratedName := '_GetModuleHandleA@4';
+    IMP_FN_GET_LAST_ERROR    : GetKernel32DecoratedName := '_GetLastError@0';
+    IMP_FN_LOAD_LIBRARY      : GetKernel32DecoratedName := '_LoadLibraryA@4';
+    IMP_FN_GET_PROC_ADDRESS  : GetKernel32DecoratedName := '_GetProcAddress@8';
+    IMP_FN_FREE_LIBRARY      : GetKernel32DecoratedName := '_FreeLibrary@4';
+  Else
+    GetKernel32DecoratedName := '???';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetKernel32ParamSize : taille des parametres en octets         }
+{ ------------------------------------------------------------ }
+
+Function GetKernel32ParamSize(Id : Integer) : Integer;
+Begin
+  Case Id Of
+    IMP_FN_EXIT_PROCESS      : GetKernel32ParamSize := 4;
+    IMP_FN_GET_STD_HANDLE    : GetKernel32ParamSize := 4;
+    IMP_FN_WRITE_FILE        : GetKernel32ParamSize := 20;
+    IMP_FN_READ_FILE         : GetKernel32ParamSize := 20;
+    IMP_FN_GET_PROCESS_HEAP  : GetKernel32ParamSize := 0;
+    IMP_FN_HEAP_ALLOC        : GetKernel32ParamSize := 12;
+    IMP_FN_HEAP_FREE         : GetKernel32ParamSize := 12;
+    IMP_FN_GET_CMD_LINE      : GetKernel32ParamSize := 0;
+    IMP_FN_GET_MODULE_HANDLE : GetKernel32ParamSize := 4;
+    IMP_FN_GET_LAST_ERROR    : GetKernel32ParamSize := 0;
+    IMP_FN_LOAD_LIBRARY      : GetKernel32ParamSize := 4;
+    IMP_FN_GET_PROC_ADDRESS  : GetKernel32ParamSize := 8;
+    IMP_FN_FREE_LIBRARY      : GetKernel32ParamSize := 4;
+  Else
+    GetKernel32ParamSize := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetMsvcrtFuncName : nom d une fonction msvcrt                  }
+{ ------------------------------------------------------------ }
+
+Function GetMsvcrtFuncName(Id : Integer) : TString;
+Begin
+  Case Id Of
+    IMP_FN_SPRINTF : GetMsvcrtFuncName := 'sprintf';
+    IMP_FN_SSCANF  : GetMsvcrtFuncName := 'sscanf';
+    IMP_FN_MEMCPY  : GetMsvcrtFuncName := 'memcpy';
+    IMP_FN_MEMSET  : GetMsvcrtFuncName := 'memset';
+    IMP_FN_MEMCMP  : GetMsvcrtFuncName := 'memcmp';
+  Else
+    GetMsvcrtFuncName := '???';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetMsvcrtDecoratedName : nom decore CDECL _name                }
+{ ------------------------------------------------------------ }
+
+Function GetMsvcrtDecoratedName(Id : Integer) : TString;
+Begin
+  Case Id Of
+    IMP_FN_SPRINTF : GetMsvcrtDecoratedName := '_sprintf';
+    IMP_FN_SSCANF  : GetMsvcrtDecoratedName := '_sscanf';
+    IMP_FN_MEMCPY  : GetMsvcrtDecoratedName := '_memcpy';
+    IMP_FN_MEMSET  : GetMsvcrtDecoratedName := '_memset';
+    IMP_FN_MEMCMP  : GetMsvcrtDecoratedName := '_memcmp';
+  Else
+    GetMsvcrtDecoratedName := '???';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetDllName : nom d une DLL par son identifiant                 }
+{ ------------------------------------------------------------ }
+
+Function GetDllName(DllId : Integer) : TString;
+Begin
+  Case DllId Of
+    IMP_DLL_KERNEL32 : GetDllName := 'kernel32.dll';
+    IMP_DLL_MSVCRT   : GetDllName := 'msvcrt.dll';
+  Else
+    GetDllName := '???';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetDllLibName : nom de la lib pour INCLUDELIB                  }
+{ ------------------------------------------------------------ }
+
+Function GetDllLibName(DllId : Integer) : TString;
+Begin
+  Case DllId Of
+    IMP_DLL_KERNEL32 : GetDllLibName := 'kernel32.lib';
+    IMP_DLL_MSVCRT   : GetDllLibName := 'msvcrt.lib';
+  Else
+    GetDllLibName := '???';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkKernel32Used : marquer une fonction kernel32 comme utilisee }
+{ ------------------------------------------------------------ }
+
+Procedure MarkKernel32Used(FnId : Integer);
+Begin
+  If (FnId >= 0) And (FnId < IMP_FN_KERNEL32_COUNT) Then
+  Begin
+    If Not ImpKernel32Used[FnId] Then
+    Begin
+      ImpKernel32Used[FnId] := True;
+      Inc(ImpUsedCount);
+      Inc(ImpKernel32Count);
+      Inc(ImpStateCount);
+    End;
+  End
+  Else
+  Begin
+    Inc(ImpErrorCount);
+    WriteLn('*** ERREUR: identifiant kernel32 invalide: ', FnId);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkMsvcrtUsed : marquer une fonction msvcrt comme utilisee    }
+{ ------------------------------------------------------------ }
+
+Procedure MarkMsvcrtUsed(FnId : Integer);
+Begin
+  If (FnId >= 0) And (FnId < IMP_FN_MSVCRT_COUNT) Then
+  Begin
+    If Not ImpMsvcrtUsed[FnId] Then
+    Begin
+      ImpMsvcrtUsed[FnId] := True;
+      Inc(ImpUsedCount);
+      Inc(ImpMsvcrtCount);
+      Inc(ImpStateCount);
+    End;
+  End
+  Else
+  Begin
+    Inc(ImpErrorCount);
+    WriteLn('*** ERREUR: identifiant msvcrt invalide: ', FnId);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsKernel32Used : tester si une fonction kernel32 est utilisee  }
+{ ------------------------------------------------------------ }
+
+Function IsKernel32Used(FnId : Integer) : Boolean;
+Begin
+  If (FnId >= 0) And (FnId < IMP_FN_KERNEL32_COUNT) Then
+    IsKernel32Used := ImpKernel32Used[FnId]
+  Else
+    IsKernel32Used := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsMsvcrtUsed : tester si une fonction msvcrt est utilisee      }
+{ ------------------------------------------------------------ }
+
+Function IsMsvcrtUsed(FnId : Integer) : Boolean;
+Begin
+  If (FnId >= 0) And (FnId < IMP_FN_MSVCRT_COUNT) Then
+    IsMsvcrtUsed := ImpMsvcrtUsed[FnId]
+  Else
+    IsMsvcrtUsed := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsDllUsed : tester si au moins une fonction d une DLL est      }
+{   utilisee                                                     }
+{ ------------------------------------------------------------ }
+
+Function IsDllUsed(DllId : Integer) : Boolean;
+Var
+  I     : Integer;
+  Found : Boolean;
+Begin
+  Found := False;
+  Case DllId Of
+    IMP_DLL_KERNEL32 :
+      For I := 0 To IMP_FN_KERNEL32_COUNT - 1 Do
+        If ImpKernel32Used[I] Then Found := True;
+    IMP_DLL_MSVCRT :
+      For I := 0 To IMP_FN_MSVCRT_COUNT - 1 Do
+        If ImpMsvcrtUsed[I] Then Found := True;
+  End;
+  IsDllUsed := Found;
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkStandardImports : marquer les imports standard toujours    }
+{   necessaires (ExitProcess, GetStdHandle, WriteFile, ReadFile) }
+{ ------------------------------------------------------------ }
+
+Procedure MarkStandardImports;
+Begin
+  MarkKernel32Used(IMP_FN_EXIT_PROCESS);
+  MarkKernel32Used(IMP_FN_GET_STD_HANDLE);
+  MarkKernel32Used(IMP_FN_WRITE_FILE);
+  MarkKernel32Used(IMP_FN_READ_FILE);
+End;
+
+{ ------------------------------------------------------------ }
+{ CountUsedKernel32 : compter les fonctions kernel32 utilisees   }
+{ ------------------------------------------------------------ }
+
+Function CountUsedKernel32 : Integer;
+Var
+  I, N : Integer;
+Begin
+  N := 0;
+  For I := 0 To IMP_FN_KERNEL32_COUNT - 1 Do
+    If ImpKernel32Used[I] Then Inc(N);
+  CountUsedKernel32 := N;
+End;
+
+{ ------------------------------------------------------------ }
+{ CountUsedMsvcrt : compter les fonctions msvcrt utilisees       }
+{ ------------------------------------------------------------ }
+
+Function CountUsedMsvcrt : Integer;
+Var
+  I, N : Integer;
+Begin
+  N := 0;
+  For I := 0 To IMP_FN_MSVCRT_COUNT - 1 Do
+    If ImpMsvcrtUsed[I] Then Inc(N);
+  CountUsedMsvcrt := N;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateImportExternsAsm : generer les declarations EXTERN     }
+{   pour le mode .ASM (MASM)                                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenerateImportExternsAsm;
+Var
+  I : Integer;
+Begin
+  WriteLn('; --- Imports kernel32.dll ---');
+  For I := 0 To IMP_FN_KERNEL32_COUNT - 1 Do
+  Begin
+    If ImpKernel32Used[I] Then
+    Begin
+      WriteLn('EXTERN ', GetKernel32DecoratedName(I), ':PROC');
+      Inc(ImpExternAsmCount);
+      Inc(ImpStateCount);
+    End;
+  End;
+  If IsDllUsed(IMP_DLL_MSVCRT) Then
+  Begin
+    WriteLn('; --- Imports msvcrt.dll ---');
+    For I := 0 To IMP_FN_MSVCRT_COUNT - 1 Do
+    Begin
+      If ImpMsvcrtUsed[I] Then
+      Begin
+        WriteLn('EXTERN ', GetMsvcrtDecoratedName(I), ':PROC');
+        Inc(ImpExternAsmCount);
+        Inc(ImpStateCount);
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateImportExternsObj : generer les symboles externes        }
+{   pour le mode .OBJ (COFF)                                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenerateImportExternsObj;
+Var
+  I : Integer;
+Begin
+  For I := 0 To IMP_FN_KERNEL32_COUNT - 1 Do
+  Begin
+    If ImpKernel32Used[I] Then
+    Begin
+      WriteLn('; COFF EXTERN ', GetKernel32DecoratedName(I));
+      Inc(ImpExternObjCount);
+      Inc(ImpStateCount);
+    End;
+  End;
+  If IsDllUsed(IMP_DLL_MSVCRT) Then
+  Begin
+    For I := 0 To IMP_FN_MSVCRT_COUNT - 1 Do
+    Begin
+      If ImpMsvcrtUsed[I] Then
+      Begin
+        WriteLn('; COFF EXTERN ', GetMsvcrtDecoratedName(I));
+        Inc(ImpExternObjCount);
+        Inc(ImpStateCount);
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateImportDescriptors : generer les IMAGE_IMPORT_DESCRIPTOR }
+{   pour chaque DLL utilisee dans le PE                          }
+{ ------------------------------------------------------------ }
+
+Procedure GenerateImportDescriptors;
+Var
+  D : Integer;
+Begin
+  For D := 0 To IMP_DLL_COUNT - 1 Do
+  Begin
+    If IsDllUsed(D) Then
+    Begin
+      WriteLn('; IMAGE_IMPORT_DESCRIPTOR pour ', GetDllName(D));
+      WriteLn(';   OriginalFirstThunk -> Hint/Name Table');
+      WriteLn(';   TimeDateStamp      = 0');
+      WriteLn(';   ForwarderChain     = 0');
+      WriteLn(';   Name               -> "', GetDllName(D), '"');
+      WriteLn(';   FirstThunk         -> IAT');
+      Inc(ImpDescCount);
+      Inc(ImpStateCount);
+    End;
+  End;
+  { Descripteur de terminaison (20 octets de zeros) }
+  WriteLn('; IMAGE_IMPORT_DESCRIPTOR terminaison (zeros)');
+  Inc(ImpDescCount);
+  Inc(ImpStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateImportIAT : generer la Import Address Table (IAT)      }
+{   avec les thunks pour chaque fonction importee                }
+{ ------------------------------------------------------------ }
+
+Procedure GenerateImportIAT;
+Var
+  I : Integer;
+Begin
+  WriteLn('; --- IAT kernel32.dll ---');
+  For I := 0 To IMP_FN_KERNEL32_COUNT - 1 Do
+  Begin
+    If ImpKernel32Used[I] Then
+    Begin
+      WriteLn('; IAT thunk -> Hint/Name "',
+              GetKernel32FuncName(I), '"');
+      Inc(ImpIATCount);
+      Inc(ImpThunkCount);
+      Inc(ImpStateCount);
+    End;
+  End;
+  WriteLn('; IAT terminaison kernel32 (DD 0)');
+  Inc(ImpIATCount);
+  Inc(ImpStateCount);
+
+  If IsDllUsed(IMP_DLL_MSVCRT) Then
+  Begin
+    WriteLn('; --- IAT msvcrt.dll ---');
+    For I := 0 To IMP_FN_MSVCRT_COUNT - 1 Do
+    Begin
+      If ImpMsvcrtUsed[I] Then
+      Begin
+        WriteLn('; IAT thunk -> Hint/Name "',
+                GetMsvcrtFuncName(I), '"');
+        Inc(ImpIATCount);
+        Inc(ImpThunkCount);
+        Inc(ImpStateCount);
+      End;
+    End;
+    WriteLn('; IAT terminaison msvcrt (DD 0)');
+    Inc(ImpIATCount);
+    Inc(ImpStateCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateImportHintNameTable : generer la Hint/Name Table       }
+{   avec les noms de fonctions et leurs hints (indices)          }
+{ ------------------------------------------------------------ }
+
+Procedure GenerateImportHintNameTable;
+Var
+  I, Hint : Integer;
+Begin
+  Hint := 0;
+  WriteLn('; --- Hint/Name Table kernel32.dll ---');
+  For I := 0 To IMP_FN_KERNEL32_COUNT - 1 Do
+  Begin
+    If ImpKernel32Used[I] Then
+    Begin
+      WriteLn('; Hint=', Hint, ' Name="',
+              GetKernel32FuncName(I), '"');
+      Inc(Hint);
+      Inc(ImpStateCount);
+    End;
+  End;
+
+  If IsDllUsed(IMP_DLL_MSVCRT) Then
+  Begin
+    Hint := 0;
+    WriteLn('; --- Hint/Name Table msvcrt.dll ---');
+    For I := 0 To IMP_FN_MSVCRT_COUNT - 1 Do
+    Begin
+      If ImpMsvcrtUsed[I] Then
+      Begin
+        WriteLn('; Hint=', Hint, ' Name="',
+                GetMsvcrtFuncName(I), '"');
+        Inc(Hint);
+        Inc(ImpStateCount);
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateImportLibsAsm : generer les INCLUDELIB pour .ASM       }
+{ ------------------------------------------------------------ }
+
+Procedure GenerateImportLibsAsm;
+Var
+  D : Integer;
+Begin
+  For D := 0 To IMP_DLL_COUNT - 1 Do
+  Begin
+    If IsDllUsed(D) Then
+    Begin
+      WriteLn('INCLUDELIB ', GetDllLibName(D));
+      Inc(ImpStateCount);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsImportRequired : tester si des imports sont necessaires       }
+{ ------------------------------------------------------------ }
+
+Function IsImportRequired : Boolean;
+Begin
+  IsImportRequired := (ImpUsedCount > 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportSummary : obtenir un resume des imports utilises       }
+{ ------------------------------------------------------------ }
+
+Procedure GetImportSummary;
+Var
+  I : Integer;
+Begin
+  WriteLn('=== Resume des imports Win32 ===');
+  WriteLn('  kernel32.dll (', CountUsedKernel32, ' fonctions) :');
+  For I := 0 To IMP_FN_KERNEL32_COUNT - 1 Do
+  Begin
+    If ImpKernel32Used[I] Then
+      WriteLn('    ', GetKernel32FuncName(I),
+              ' (', GetKernel32DecoratedName(I), ')');
+  End;
+  If IsDllUsed(IMP_DLL_MSVCRT) Then
+  Begin
+    WriteLn('  msvcrt.dll (', CountUsedMsvcrt, ' fonctions) :');
+    For I := 0 To IMP_FN_MSVCRT_COUNT - 1 Do
+    Begin
+      If ImpMsvcrtUsed[I] Then
+        WriteLn('    ', GetMsvcrtFuncName(I),
+                ' (', GetMsvcrtDecoratedName(I), ')');
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpImportState : afficher l etat du module d imports          }
+{ ------------------------------------------------------------ }
+
+Procedure DumpImportState;
+Begin
+  WriteLn('=== Etat du module d imports Win32 (TODO 24) ===');
+  WriteLn('  Initialise       : ', ImpInitialized);
+  WriteLn('  Operations       : ', ImpStateCount);
+  WriteLn('  Kernel32 imports : ', ImpKernel32Count);
+  WriteLn('  Msvcrt imports   : ', ImpMsvcrtCount);
+  WriteLn('  Imports utilises : ', ImpUsedCount);
+  WriteLn('  Entrees IAT      : ', ImpIATCount);
+  WriteLn('  Descripteurs     : ', ImpDescCount);
+  WriteLn('  EXTERN ASM       : ', ImpExternAsmCount);
+  WriteLn('  EXTERN OBJ       : ', ImpExternObjCount);
+  WriteLn('  Thunks           : ', ImpThunkCount);
+  WriteLn('  Labels uniques   : ', ImpLabelNum);
+  WriteLn('  Erreurs          : ', ImpErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs pour le module d imports               }
+{ ------------------------------------------------------------ }
+
+Function IsImpInitialized : Boolean;
+Begin
+  IsImpInitialized := ImpInitialized;
+End;
+
+Function IsImpEmpty : Boolean;
+Begin
+  IsImpEmpty := (ImpStateCount = 0);
+End;
+
+Function GetImpStateCount : Integer;
+Begin
+  GetImpStateCount := ImpStateCount;
+End;
+
+Function GetImpKernel32Count : Integer;
+Begin
+  GetImpKernel32Count := ImpKernel32Count;
+End;
+
+Function GetImpMsvcrtCount : Integer;
+Begin
+  GetImpMsvcrtCount := ImpMsvcrtCount;
+End;
+
+Function GetImpUsedCount : Integer;
+Begin
+  GetImpUsedCount := ImpUsedCount;
+End;
+
+Function GetImpIATCount : Integer;
+Begin
+  GetImpIATCount := ImpIATCount;
+End;
+
+Function GetImpDescCount : Integer;
+Begin
+  GetImpDescCount := ImpDescCount;
+End;
+
+Function GetImpLabelNum : Integer;
+Begin
+  GetImpLabelNum := ImpLabelNum;
+End;
+
+Function GetImpErrorCount : Integer;
+Begin
+  GetImpErrorCount := ImpErrorCount;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -13499,6 +14217,7 @@ Begin
   PeInitialized := False;
   CoffInitialized := False;
   AsmGenInitialized := False;
+  ImpInitialized := False;
 
   ParseArgs;
 
@@ -13568,6 +14287,9 @@ Begin
   { Initialiser le generateur de listing ASM }
   InitAsmGenState;
 
+  { Initialiser le module d imports Win32 }
+  InitImportState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -13604,6 +14326,7 @@ Begin
     DumpPeState;
     DumpCoffState;
     DumpAsmGenState;
+    DumpImportState;
   End;
 
   { Nettoyage }

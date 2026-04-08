@@ -631,7 +631,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Commentaires preserves dans le listing
             10 fonctions accesseurs
 
-  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, MSVCRT) [A FAIRE]
+  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, MSVCRT) [IMPLEMENTE]
             Imports kernel32.dll :
               ExitProcess : terminer le programme (STOP)
               GetStdHandle : obtenir les handles console
