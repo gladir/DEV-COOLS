@@ -103,7 +103,7 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 08 - GENERATEUR DE CODE PASCAL - STRUCTURES DE CONTROLE [A FAIRE]
+  TODO 08 - GENERATEUR DE CODE PASCAL - STRUCTURES DE CONTROLE [IMPLEMENTE]
             GenIfThenElse(Cond, ThenPart, ElsePart) : generer IF..THEN..ELSE
             GenForLoop(Var, Start, End, Body) : generer FOR..TO..DO
             GenWhileLoop(Cond, Body) : generer WHILE..DO
@@ -450,6 +450,26 @@ Const
   EXP_MAX_ARGS   = 16;  { Nombre max d'arguments dans un appel }
   EXP_MAX_PARTS  = 32;  { Nombre max de parties dans une concatenation }
 
+  { Types de structures de controle pour TODO 08 }
+  CTL_NONE       = 0;   { Aucune structure }
+  CTL_IF_THEN    = 1;   { IF..THEN }
+  CTL_IF_ELSE    = 2;   { IF..THEN..ELSE }
+  CTL_FOR_TO     = 3;   { FOR..TO..DO }
+  CTL_FOR_DOWNTO = 4;   { FOR..DOWNTO..DO }
+  CTL_WHILE      = 5;   { WHILE..DO }
+  CTL_REPEAT     = 6;   { REPEAT..UNTIL }
+  CTL_CASE       = 7;   { CASE..OF }
+  CTL_WITH       = 8;   { WITH..DO }
+  CTL_BREAK      = 9;   { Break (non-standard) }
+  CTL_CONTINUE   = 10;  { Continue (non-standard) }
+  CTL_EXIT       = 11;  { Exit }
+  CTL_HALT       = 12;  { Halt }
+  CTL_MAX        = 13;  { Nombre maximum de types de structures }
+
+  { Limites pour TODO 08 }
+  CTL_MAX_CASES  = 32;  { Nombre max de cas dans un CASE }
+  CTL_MAX_VARS   = 16;  { Nombre max de variables dans un WITH }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -749,6 +769,22 @@ Var
   ExpAssignCount  : Integer;
   ExpErrorCount   : Integer;
   ExpLabelNum     : Integer;
+
+  { TODO 08 - Variables d'etat du generateur de structures de controle }
+  CtlInitialized  : Boolean;
+  CtlStateCount   : Integer;
+  CtlIfThenCount  : Integer;
+  CtlIfElseCount  : Integer;
+  CtlForToCount   : Integer;
+  CtlForDownCount : Integer;
+  CtlWhileCount   : Integer;
+  CtlRepeatCount  : Integer;
+  CtlCaseCount    : Integer;
+  CtlWithCount    : Integer;
+  CtlBreakCount   : Integer;
+  CtlExitCount    : Integer;
+  CtlErrorCount   : Integer;
+  CtlLabelNum     : Integer;
 
   { TODO 11 - Templates }
   Templates     : Array[1..MAX_TEMPLATES] of TTemplate;
@@ -2857,6 +2893,419 @@ Begin
 End;
 
 { ============================================================
+  TODO 08 - GENERATEUR DE CODE PASCAL - STRUCTURES DE CONTROLE
+  ============================================================ }
+
+{ --- Initialisation de l'etat du generateur de structures --- }
+
+Procedure InitCtlState;
+Begin
+  CtlInitialized  := True;
+  CtlStateCount   := 0;
+  CtlIfThenCount  := 0;
+  CtlIfElseCount  := 0;
+  CtlForToCount   := 0;
+  CtlForDownCount := 0;
+  CtlWhileCount   := 0;
+  CtlRepeatCount  := 0;
+  CtlCaseCount    := 0;
+  CtlWithCount    := 0;
+  CtlBreakCount   := 0;
+  CtlExitCount    := 0;
+  CtlErrorCount   := 0;
+  CtlLabelNum     := 0;
+End;
+
+{ --- Generation d'un label unique pour les structures --- }
+
+Function GenCtlLabel: String;
+Begin
+  Inc(CtlLabelNum);
+  GenCtlLabel := 'CTL' + IntToStr(CtlLabelNum);
+End;
+
+{ --- Nom du type de structure de controle --- }
+
+Function CtlTypeName(CtlType: Integer): String;
+Begin
+  Case CtlType of
+    CTL_NONE:       CtlTypeName := 'NONE';
+    CTL_IF_THEN:    CtlTypeName := 'IF_THEN';
+    CTL_IF_ELSE:    CtlTypeName := 'IF_THEN_ELSE';
+    CTL_FOR_TO:     CtlTypeName := 'FOR_TO';
+    CTL_FOR_DOWNTO: CtlTypeName := 'FOR_DOWNTO';
+    CTL_WHILE:      CtlTypeName := 'WHILE';
+    CTL_REPEAT:     CtlTypeName := 'REPEAT_UNTIL';
+    CTL_CASE:       CtlTypeName := 'CASE';
+    CTL_WITH:       CtlTypeName := 'WITH';
+    CTL_BREAK:      CtlTypeName := 'BREAK';
+    CTL_CONTINUE:   CtlTypeName := 'CONTINUE';
+    CTL_EXIT:       CtlTypeName := 'EXIT';
+    CTL_HALT:       CtlTypeName := 'HALT';
+  Else
+    CtlTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ --- Generation IF..THEN --- }
+
+Function GenIfThen(Cond, ThenPart: String): String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlIfThenCount);
+  GenIfThen := 'If ' + Cond + ' Then' + #13#10 +
+               '  ' + ThenPart + ';';
+End;
+
+{ --- Generation IF..THEN avec bloc BEGIN..END --- }
+
+Function GenIfThenBlock(Cond: String; ThenLines: Array of String): String;
+Var
+  I: Integer;
+  R: String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlIfThenCount);
+  R := 'If ' + Cond + ' Then Begin' + #13#10;
+  For I := Low(ThenLines) to High(ThenLines) do
+    R := R + '  ' + ThenLines[I] + #13#10;
+  R := R + 'End;';
+  GenIfThenBlock := R;
+End;
+
+{ --- Generation IF..THEN..ELSE --- }
+
+Function GenIfThenElse(Cond, ThenPart, ElsePart: String): String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlIfElseCount);
+  GenIfThenElse := 'If ' + Cond + ' Then' + #13#10 +
+                   '  ' + ThenPart + #13#10 +
+                   'Else' + #13#10 +
+                   '  ' + ElsePart + ';';
+End;
+
+{ --- Generation IF..THEN..ELSE avec blocs BEGIN..END --- }
+
+Function GenIfThenElseBlock(Cond: String; ThenLines, ElseLines: Array of String): String;
+Var
+  I: Integer;
+  R: String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlIfElseCount);
+  R := 'If ' + Cond + ' Then Begin' + #13#10;
+  For I := Low(ThenLines) to High(ThenLines) do
+    R := R + '  ' + ThenLines[I] + #13#10;
+  R := R + 'End' + #13#10 + 'Else Begin' + #13#10;
+  For I := Low(ElseLines) to High(ElseLines) do
+    R := R + '  ' + ElseLines[I] + #13#10;
+  R := R + 'End;';
+  GenIfThenElseBlock := R;
+End;
+
+{ --- Generation FOR..TO..DO --- }
+
+Function GenForLoop(VarName, StartVal, EndVal, Body: String): String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlForToCount);
+  GenForLoop := 'For ' + VarName + ' := ' + StartVal + ' To ' + EndVal + ' Do' + #13#10 +
+                '  ' + Body + ';';
+End;
+
+{ --- Generation FOR..TO..DO avec bloc BEGIN..END --- }
+
+Function GenForLoopBlock(VarName, StartVal, EndVal: String; BodyLines: Array of String): String;
+Var
+  I: Integer;
+  R: String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlForToCount);
+  R := 'For ' + VarName + ' := ' + StartVal + ' To ' + EndVal + ' Do Begin' + #13#10;
+  For I := Low(BodyLines) to High(BodyLines) do
+    R := R + '  ' + BodyLines[I] + #13#10;
+  R := R + 'End;';
+  GenForLoopBlock := R;
+End;
+
+{ --- Generation FOR..DOWNTO..DO --- }
+
+Function GenForDownTo(VarName, StartVal, EndVal, Body: String): String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlForDownCount);
+  GenForDownTo := 'For ' + VarName + ' := ' + StartVal + ' DownTo ' + EndVal + ' Do' + #13#10 +
+                  '  ' + Body + ';';
+End;
+
+{ --- Generation FOR..DOWNTO..DO avec bloc BEGIN..END --- }
+
+Function GenForDownToBlock(VarName, StartVal, EndVal: String; BodyLines: Array of String): String;
+Var
+  I: Integer;
+  R: String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlForDownCount);
+  R := 'For ' + VarName + ' := ' + StartVal + ' DownTo ' + EndVal + ' Do Begin' + #13#10;
+  For I := Low(BodyLines) to High(BodyLines) do
+    R := R + '  ' + BodyLines[I] + #13#10;
+  R := R + 'End;';
+  GenForDownToBlock := R;
+End;
+
+{ --- Generation WHILE..DO --- }
+
+Function GenWhileLoop(Cond, Body: String): String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlWhileCount);
+  GenWhileLoop := 'While ' + Cond + ' Do' + #13#10 +
+                  '  ' + Body + ';';
+End;
+
+{ --- Generation WHILE..DO avec bloc BEGIN..END --- }
+
+Function GenWhileLoopBlock(Cond: String; BodyLines: Array of String): String;
+Var
+  I: Integer;
+  R: String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlWhileCount);
+  R := 'While ' + Cond + ' Do Begin' + #13#10;
+  For I := Low(BodyLines) to High(BodyLines) do
+    R := R + '  ' + BodyLines[I] + #13#10;
+  R := R + 'End;';
+  GenWhileLoopBlock := R;
+End;
+
+{ --- Generation REPEAT..UNTIL --- }
+
+Function GenRepeatUntil(Body, Cond: String): String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlRepeatCount);
+  GenRepeatUntil := 'Repeat' + #13#10 +
+                    '  ' + Body + ';' + #13#10 +
+                    'Until ' + Cond + ';';
+End;
+
+{ --- Generation REPEAT..UNTIL avec plusieurs lignes --- }
+
+Function GenRepeatUntilBlock(BodyLines: Array of String; Cond: String): String;
+Var
+  I: Integer;
+  R: String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlRepeatCount);
+  R := 'Repeat' + #13#10;
+  For I := Low(BodyLines) to High(BodyLines) do
+    R := R + '  ' + BodyLines[I] + #13#10;
+  R := R + 'Until ' + Cond + ';';
+  GenRepeatUntilBlock := R;
+End;
+
+{ --- Generation CASE..OF simple --- }
+
+Function GenCaseOf(Expr: String; CaseLabels, CaseActions: Array of String): String;
+Var
+  I: Integer;
+  R: String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlCaseCount);
+  R := 'Case ' + Expr + ' Of' + #13#10;
+  For I := Low(CaseLabels) to High(CaseLabels) do
+    If I <= High(CaseActions) Then
+      R := R + '  ' + CaseLabels[I] + ': ' + CaseActions[I] + ';' + #13#10;
+  R := R + 'End;';
+  GenCaseOf := R;
+End;
+
+{ --- Generation CASE..OF avec ELSE --- }
+
+Function GenCaseOfElse(Expr: String; CaseLabels, CaseActions: Array of String; ElseAction: String): String;
+Var
+  I: Integer;
+  R: String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlCaseCount);
+  R := 'Case ' + Expr + ' Of' + #13#10;
+  For I := Low(CaseLabels) to High(CaseLabels) do
+    If I <= High(CaseActions) Then
+      R := R + '  ' + CaseLabels[I] + ': ' + CaseActions[I] + ';' + #13#10;
+  R := R + 'Else' + #13#10 + '  ' + ElseAction + ';' + #13#10 + 'End;';
+  GenCaseOfElse := R;
+End;
+
+{ --- Generation WITH..DO --- }
+
+Function GenWithDo(VarName, Body: String): String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlWithCount);
+  GenWithDo := 'With ' + VarName + ' Do' + #13#10 +
+               '  ' + Body + ';';
+End;
+
+{ --- Generation WITH..DO avec bloc BEGIN..END --- }
+
+Function GenWithDoBlock(VarName: String; BodyLines: Array of String): String;
+Var
+  I: Integer;
+  R: String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlWithCount);
+  R := 'With ' + VarName + ' Do Begin' + #13#10;
+  For I := Low(BodyLines) to High(BodyLines) do
+    R := R + '  ' + BodyLines[I] + #13#10;
+  R := R + 'End;';
+  GenWithDoBlock := R;
+End;
+
+{ --- Generation WITH multiples variables --- }
+
+Function GenWithDoMulti(VarNames: Array of String; Body: String): String;
+Var
+  I: Integer;
+  R: String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlWithCount);
+  R := 'With ';
+  For I := Low(VarNames) to High(VarNames) do Begin
+    If I > Low(VarNames) Then R := R + ', ';
+    R := R + VarNames[I];
+  End;
+  R := R + ' Do' + #13#10 + '  ' + Body + ';';
+  GenWithDoMulti := R;
+End;
+
+{ --- Generation Break --- }
+
+Function GenBreak: String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlBreakCount);
+  GenBreak := 'Break;';
+End;
+
+{ --- Generation Exit --- }
+
+Function GenExit: String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlExitCount);
+  GenExit := 'Exit;';
+End;
+
+{ --- Generation Exit avec valeur --- }
+
+Function GenExitValue(Value: String): String;
+Begin
+  Inc(CtlStateCount);
+  Inc(CtlExitCount);
+  GenExitValue := 'Exit(' + Value + ');';
+End;
+
+{ --- Generation Halt --- }
+
+Function GenHalt: String;
+Begin
+  Inc(CtlStateCount);
+  GenHalt := 'Halt;';
+End;
+
+{ --- Generation Halt avec code --- }
+
+Function GenHaltCode(Code: String): String;
+Begin
+  Inc(CtlStateCount);
+  GenHaltCode := 'Halt(' + Code + ');';
+End;
+
+{ --- Affichage de l'etat du generateur de structures --- }
+
+Procedure DumpCtlState;
+Begin
+  WriteLn('=== TODO 08 : Control Structures Generator State ===');
+  WriteLn('  CtlInitialized  : ', CtlInitialized);
+  WriteLn('  CtlStateCount   : ', CtlStateCount);
+  WriteLn('  CtlIfThenCount  : ', CtlIfThenCount);
+  WriteLn('  CtlIfElseCount  : ', CtlIfElseCount);
+  WriteLn('  CtlForToCount   : ', CtlForToCount);
+  WriteLn('  CtlForDownCount : ', CtlForDownCount);
+  WriteLn('  CtlWhileCount   : ', CtlWhileCount);
+  WriteLn('  CtlRepeatCount  : ', CtlRepeatCount);
+  WriteLn('  CtlCaseCount    : ', CtlCaseCount);
+  WriteLn('  CtlWithCount    : ', CtlWithCount);
+  WriteLn('  CtlBreakCount   : ', CtlBreakCount);
+  WriteLn('  CtlExitCount    : ', CtlExitCount);
+  WriteLn('  CtlErrorCount   : ', CtlErrorCount);
+  WriteLn('  CtlLabelNum     : ', CtlLabelNum);
+End;
+
+{ --- TODO 08 : 10 accesseurs standards --- }
+
+Function IsCtlInitialized: Boolean;
+Begin
+  IsCtlInitialized := CtlInitialized;
+End;
+
+Function IsCtlEmpty: Boolean;
+Begin
+  IsCtlEmpty := (CtlIfThenCount = 0) And (CtlIfElseCount = 0) And
+                (CtlForToCount = 0) And (CtlWhileCount = 0) And
+                (CtlRepeatCount = 0) And (CtlCaseCount = 0);
+End;
+
+Function GetCtlStateCount: Integer;
+Begin
+  GetCtlStateCount := CtlStateCount;
+End;
+
+Function GetCtlIfThenCount: Integer;
+Begin
+  GetCtlIfThenCount := CtlIfThenCount;
+End;
+
+Function GetCtlIfElseCount: Integer;
+Begin
+  GetCtlIfElseCount := CtlIfElseCount;
+End;
+
+Function GetCtlForToCount: Integer;
+Begin
+  GetCtlForToCount := CtlForToCount;
+End;
+
+Function GetCtlWhileCount: Integer;
+Begin
+  GetCtlWhileCount := CtlWhileCount;
+End;
+
+Function GetCtlRepeatCount: Integer;
+Begin
+  GetCtlRepeatCount := CtlRepeatCount;
+End;
+
+Function GetCtlErrorCount: Integer;
+Begin
+  GetCtlErrorCount := CtlErrorCount;
+End;
+
+Function GetCtlLabelNum: Integer;
+Begin
+  GetCtlLabelNum := CtlLabelNum;
+End;
+
+{ ============================================================
   TODO 12 - GENERATION DE PROGRAMMES "BONJOUR"
   ============================================================ }
 
@@ -3591,6 +4040,10 @@ Begin
   ExpInitialized := False;
   InitExpState;
 
+  { Initialiser l'etat du generateur de structures de controle (TODO 08) }
+  CtlInitialized := False;
+  InitCtlState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -3600,6 +4053,7 @@ Begin
     DumpGenState;
     DumpTypState;
     DumpExpState;
+    DumpCtlState;
   End;
 
   Run;
@@ -3613,7 +4067,7 @@ Begin
   { 05 [IMPLEMENTE] - Generateur structures de base }
   { 06 [IMPLEMENTE] - Types et variables }
   { 07 [IMPLEMENTE] - Expressions }
-  { 08 [A FAIRE] - Structures de controle }
+  { 08 [IMPLEMENTE] - Structures de controle }
   { 09 [A FAIRE] - Procedures et fonctions }
   { 10 [A FAIRE] - Unites (UNIT) }
   { 11 [A FAIRE] - Templates de code }

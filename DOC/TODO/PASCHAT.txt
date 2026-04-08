@@ -80,13 +80,34 @@
             GenFunctionCall(Name, Args) : generer un appel de fonction
             GenStringExpr(Parts) : generer une concatenation de chaines
 
-  TODO 08 - GENERATEUR DE CODE PASCAL - STRUCTURES DE CONTROLE [A FAIRE]
+  TODO 08 - GENERATEUR DE CODE PASCAL - STRUCTURES DE CONTROLE [IMPLEMENTE]
+            CTL_NONE=0..CTL_MAX=13 : constantes types de structures
+            CTL_MAX_CASES=32, CTL_MAX_VARS=16 : limites
+            CtlInitialized + 14 variables d'etat
+            InitCtlState : initialiser l'etat
+            GenCtlLabel : generer un label unique
+            CtlTypeName : nom du type de structure
+            GenIfThen(Cond, ThenPart) : generer IF..THEN simple
+            GenIfThenBlock(Cond, ThenLines) : IF..THEN avec BEGIN..END
             GenIfThenElse(Cond, ThenPart, ElsePart) : generer IF..THEN..ELSE
+            GenIfThenElseBlock(Cond, ThenLines, ElseLines) : avec BEGIN..END
             GenForLoop(Var, Start, End, Body) : generer FOR..TO..DO
+            GenForLoopBlock(Var, Start, End, BodyLines) : avec BEGIN..END
+            GenForDownTo(Var, Start, End, Body) : FOR..DOWNTO..DO
+            GenForDownToBlock(Var, Start, End, BodyLines) : avec BEGIN..END
             GenWhileLoop(Cond, Body) : generer WHILE..DO
+            GenWhileLoopBlock(Cond, BodyLines) : avec BEGIN..END
             GenRepeatUntil(Body, Cond) : generer REPEAT..UNTIL
-            GenCaseOf(Expr, Cases) : generer CASE..OF
-            GenWithDo(Vars, Body) : generer WITH..DO
+            GenRepeatUntilBlock(BodyLines, Cond) : avec plusieurs lignes
+            GenCaseOf(Expr, Labels, Actions) : generer CASE..OF
+            GenCaseOfElse(Expr, Labels, Actions, ElseAction) : avec ELSE
+            GenWithDo(VarName, Body) : generer WITH..DO
+            GenWithDoBlock(VarName, BodyLines) : avec BEGIN..END
+            GenWithDoMulti(VarNames, Body) : WITH multiples variables
+            GenBreak, GenExit, GenExitValue : controle de flux
+            GenHalt, GenHaltCode : arret du programme
+            DumpCtlState : afficher l'etat
+            10 accesseurs : IsCtlInitialized, IsCtlEmpty, GetCtl*Count
 
   TODO 09 - GENERATEUR DE CODE PASCAL - PROCEDURES ET FONCTIONS [A FAIRE]
             TProcInfo : Name, Params, LocalVars, Body, IsFunction, ReturnType
