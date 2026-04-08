@@ -337,7 +337,10 @@ Turbo Pascal / Free Pascal (-Mtp)
            Var InjectionScript: String)
            preparer le script d'injection CSS si specifie
 
-  TODO 13 - INJECTION JAVASCRIPT PERSONNALISE [A FAIRE]
+  TODO 13 - INJECTION JAVASCRIPT PERSONNALISE [IMPLEMENTE]
+         JsInitialized/JsStateCount/JsLoadCount/JsMinifyCount/
+         JsValidateCount/JsWrapCount/JsUserScriptCount/JsErrorCount vars
+         Procedure InitJsInjectionState
          Function LoadJsFile(Const Path: String): String
            charger le contenu d'un fichier JavaScript
          Function MinifyJs(Const Js: String): String
@@ -353,6 +356,10 @@ Turbo Pascal / Free Pascal (-Mtp)
          Procedure PrepareJsInjection(Const Opts: TOptions;
            Var InjectionScript: String)
            preparer le script d'injection JS si specifie
+         10 accesseurs (IsJsInitialized/IsJsEmpty/GetJsStateCount/
+         GetJsLoadCount/GetJsMinifyCount/GetJsValidateCount/
+         GetJsWrapCount/GetJsUserScriptCount/GetJsErrorCount/
+         GetJsMaxFileSize)
 
   TODO 14 - SUPPRESSION DES PUBS (ADBLOCK) [A FAIRE]
          Constantes de selecteurs publicitaires courants :

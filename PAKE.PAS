@@ -387,7 +387,10 @@
             GetCssInjectCount/GetCssErrorCount/GetCssMaxFileSize/
             GetCssDefaultScope)
 
-  TODO 13 - INJECTION JAVASCRIPT PERSONNALISE [A FAIRE]
+  TODO 13 - INJECTION JAVASCRIPT PERSONNALISE [IMPLEMENTE]
+            JsInitialized/JsStateCount/JsLoadCount/JsMinifyCount/
+            JsValidateCount/JsWrapCount/JsUserScriptCount/JsErrorCount vars
+            Procedure InitJsInjectionState
             Function LoadJsFile(Const Path: String): String
               charger le contenu d un fichier JavaScript
             Function MinifyJs(Const Js: String): String
@@ -403,6 +406,10 @@
             Procedure PrepareJsInjection(Const Opts: TOptions;
               Var InjectionScript: String)
               preparer le script d injection JS si specifie
+            10 accesseurs (IsJsInitialized/IsJsEmpty/GetJsStateCount/
+            GetJsLoadCount/GetJsMinifyCount/GetJsValidateCount/
+            GetJsWrapCount/GetJsUserScriptCount/GetJsErrorCount/
+            GetJsMaxFileSize)
 
   TODO 14 - SUPPRESSION DES PUBS (ADBLOCK) [A FAIRE]
             Constantes de selecteurs publicitaires courants :
@@ -3886,7 +3893,457 @@ Begin
 End;
 
 { ============================================================
-  TODO 13-25 : A IMPLEMENTER
+  TODO 13 - INJECTION JAVASCRIPT PERSONNALISE
+  ============================================================ }
+
+Const
+  { Constantes pour l'injection JavaScript }
+  JS_MAX_FILE_SIZE = 131072;       { Taille max d'un fichier JS (128 Ko) }
+  JS_DEFAULT_SCOPE = 'window';     { Scope par defaut }
+
+Var
+  { Variables d'etat pour l'injection JavaScript }
+  JsInitialized: Boolean;
+  JsStateCount: Integer;
+  JsLoadCount: Integer;
+  JsMinifyCount: Integer;
+  JsValidateCount: Integer;
+  JsWrapCount: Integer;
+  JsUserScriptCount: Integer;
+  JsErrorCount: Integer;
+
+Procedure InitJsInjectionState;
+Begin
+  JsInitialized := True;
+  JsStateCount := 1;
+  JsLoadCount := 0;
+  JsMinifyCount := 0;
+  JsValidateCount := 0;
+  JsWrapCount := 0;
+  JsUserScriptCount := 0;
+  JsErrorCount := 0;
+End;
+
+Function LoadJsFile(Const Path: String): String;
+Var
+  F: Text;
+  Line, Content: String;
+Begin
+  Content := '';
+  If Path = '' Then
+  Begin
+    Inc(JsErrorCount);
+    LoadJsFile := '';
+    Exit;
+  End;
+
+  {$I-}
+  Assign(F, Path);
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    Inc(JsErrorCount);
+    LoadJsFile := '';
+    Exit;
+  End;
+
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    If Content <> '' Then
+      Content := Content + #10;
+    Content := Content + Line;
+  End;
+  Close(F);
+
+  Inc(JsLoadCount);
+  LoadJsFile := Content;
+End;
+
+Function MinifyJs(Const Js: String): String;
+Var
+  I, Len: Integer;
+  C, NextC, PrevC: Char;
+  InLineComment, InBlockComment, InString: Boolean;
+  Quote: Char;
+  Result: String;
+Begin
+  Result := '';
+  Len := Length(Js);
+  InLineComment := False;
+  InBlockComment := False;
+  InString := False;
+  Quote := #0;
+  PrevC := #0;
+
+  I := 1;
+  While I <= Len Do
+  Begin
+    C := Js[I];
+    If I < Len Then
+      NextC := Js[I + 1]
+    Else
+      NextC := #0;
+
+    { Fin de commentaire de ligne }
+    If InLineComment Then
+    Begin
+      If (C = #10) Or (C = #13) Then
+        InLineComment := False;
+      Inc(I);
+      Continue;
+    End;
+
+    { Detection commentaire de ligne // }
+    If (Not InString) And (Not InBlockComment) And (C = '/') And (NextC = '/') Then
+    Begin
+      InLineComment := True;
+      Inc(I, 2);
+      Continue;
+    End;
+
+    { Detection commentaire bloc /* ... */ }
+    If (Not InString) And (Not InBlockComment) And (C = '/') And (NextC = '*') Then
+    Begin
+      InBlockComment := True;
+      Inc(I, 2);
+      Continue;
+    End;
+
+    If InBlockComment And (C = '*') And (NextC = '/') Then
+    Begin
+      InBlockComment := False;
+      Inc(I, 2);
+      Continue;
+    End;
+
+    If InBlockComment Then
+    Begin
+      Inc(I);
+      Continue;
+    End;
+
+    { Gestion des strings (apostrophes, guillemets, backticks) }
+    If (C = '"') Or (C = '''') Or (C = '`') Then
+    Begin
+      If Not InString Then
+      Begin
+        InString := True;
+        Quote := C;
+      End
+      Else If (C = Quote) And (PrevC <> '\') Then
+        InString := False;
+      Result := Result + C;
+      PrevC := C;
+      Inc(I);
+      Continue;
+    End;
+
+    If InString Then
+    Begin
+      Result := Result + C;
+      PrevC := C;
+      Inc(I);
+      Continue;
+    End;
+
+    { Retirer les espaces et retours a la ligne inutiles }
+    If (C = ' ') Or (C = #9) Or (C = #10) Or (C = #13) Then
+    Begin
+      { Garder un seul espace si necessaire pour separer des tokens }
+      If (Result <> '') Then
+      Begin
+        { Verifier si on a besoin d'un espace entre deux identificateurs }
+        If ((Result[Length(Result)] >= 'a') And (Result[Length(Result)] <= 'z')) Or
+           ((Result[Length(Result)] >= 'A') And (Result[Length(Result)] <= 'Z')) Or
+           ((Result[Length(Result)] >= '0') And (Result[Length(Result)] <= '9')) Or
+           (Result[Length(Result)] = '_') Or (Result[Length(Result)] = '$') Then
+        Begin
+          { Sauter les espaces blancs suivants }
+          While (I < Len) And ((Js[I + 1] = ' ') Or (Js[I + 1] = #9) Or
+                (Js[I + 1] = #10) Or (Js[I + 1] = #13)) Do
+            Inc(I);
+          If I < Len Then
+          Begin
+            NextC := Js[I + 1];
+            If ((NextC >= 'a') And (NextC <= 'z')) Or
+               ((NextC >= 'A') And (NextC <= 'Z')) Or
+               ((NextC >= '0') And (NextC <= '9')) Or
+               (NextC = '_') Or (NextC = '$') Then
+              Result := Result + ' ';
+          End;
+        End;
+      End;
+      Inc(I);
+      Continue;
+    End;
+
+    Result := Result + C;
+    PrevC := C;
+    Inc(I);
+  End;
+
+  Inc(JsMinifyCount);
+  MinifyJs := Result;
+End;
+
+Function ValidateJs(Const Js: String): Boolean;
+Var
+  I, Len: Integer;
+  BraceCount, ParenCount, BracketCount: Integer;
+  InString, InLineComment, InBlockComment: Boolean;
+  Quote, C, NextC, PrevC: Char;
+Begin
+  BraceCount := 0;
+  ParenCount := 0;
+  BracketCount := 0;
+  InString := False;
+  InLineComment := False;
+  InBlockComment := False;
+  Quote := #0;
+  PrevC := #0;
+  Len := Length(Js);
+
+  I := 1;
+  While I <= Len Do
+  Begin
+    C := Js[I];
+    If I < Len Then
+      NextC := Js[I + 1]
+    Else
+      NextC := #0;
+
+    { Gestion des commentaires de ligne }
+    If InLineComment Then
+    Begin
+      If (C = #10) Or (C = #13) Then
+        InLineComment := False;
+      Inc(I);
+      Continue;
+    End;
+
+    If (Not InString) And (Not InBlockComment) And (C = '/') And (NextC = '/') Then
+    Begin
+      InLineComment := True;
+      Inc(I, 2);
+      Continue;
+    End;
+
+    { Gestion des commentaires de bloc }
+    If (Not InString) And (Not InBlockComment) And (C = '/') And (NextC = '*') Then
+    Begin
+      InBlockComment := True;
+      Inc(I, 2);
+      Continue;
+    End;
+
+    If InBlockComment Then
+    Begin
+      If (C = '*') And (NextC = '/') Then
+      Begin
+        InBlockComment := False;
+        Inc(I, 2);
+        Continue;
+      End;
+      Inc(I);
+      Continue;
+    End;
+
+    { Gestion des strings }
+    If (C = '"') Or (C = '''') Or (C = '`') Then
+    Begin
+      If Not InString Then
+      Begin
+        InString := True;
+        Quote := C;
+      End
+      Else If (C = Quote) And (PrevC <> '\') Then
+        InString := False;
+      PrevC := C;
+      Inc(I);
+      Continue;
+    End;
+
+    If InString Then
+    Begin
+      PrevC := C;
+      Inc(I);
+      Continue;
+    End;
+
+    { Compter les accolades, parentheses et crochets }
+    Case C Of
+      '{': Inc(BraceCount);
+      '}': Dec(BraceCount);
+      '(': Inc(ParenCount);
+      ')': Dec(ParenCount);
+      '[': Inc(BracketCount);
+      ']': Dec(BracketCount);
+    End;
+
+    { Verifier les desequilibres immediats }
+    If (BraceCount < 0) Or (ParenCount < 0) Or (BracketCount < 0) Then
+    Begin
+      Inc(JsErrorCount);
+      ValidateJs := False;
+      Exit;
+    End;
+
+    PrevC := C;
+    Inc(I);
+  End;
+
+  Inc(JsValidateCount);
+
+  { Verifier l'equilibre final }
+  If (BraceCount = 0) And (ParenCount = 0) And (BracketCount = 0) And
+     (Not InString) And (Not InBlockComment) Then
+    ValidateJs := True
+  Else
+  Begin
+    Inc(JsErrorCount);
+    ValidateJs := False;
+  End;
+End;
+
+Function WrapJsInIIFE(Const Js: String): String;
+Begin
+  Inc(JsWrapCount);
+  WrapJsInIIFE := '(function() {' + #10 + Js + #10 + '})();';
+End;
+
+Function GenerateUserScript(Const Opts: TOptions): String;
+Var
+  CssScript, JsContent, Result: String;
+Begin
+  Result := '';
+
+  { Generer l'injection CSS si specifiee }
+  If Opts.InjectCss <> '' Then
+  Begin
+    PrepareCssInjection(Opts, CssScript);
+    If CssScript <> '' Then
+      Result := CssScript + #10 + #10;
+  End;
+
+  { Ajouter le JavaScript personnalise si specifie }
+  If Opts.InjectJs <> '' Then
+  Begin
+    JsContent := LoadJsFile(Opts.InjectJs);
+    If JsContent <> '' Then
+    Begin
+      { Valider le JS }
+      If Not ValidateJs(JsContent) Then
+        WriteLn('Avertissement: Le JavaScript peut contenir des erreurs de syntaxe');
+
+      { Envelopper dans une IIFE avec DOMContentLoaded }
+      Result := Result + '(function() {' + #10;
+      Result := Result + '  ''use strict'';' + #10;
+      Result := Result + '  function initUserScript() {' + #10;
+      Result := Result + '    ' + JsContent + #10;
+      Result := Result + '  }' + #10;
+      Result := Result + '  if (document.readyState === ''loading'') {' + #10;
+      Result := Result + '    document.addEventListener(''DOMContentLoaded'', initUserScript);' + #10;
+      Result := Result + '  } else {' + #10;
+      Result := Result + '    initUserScript();' + #10;
+      Result := Result + '  }' + #10;
+      Result := Result + '})();';
+    End;
+  End;
+
+  Inc(JsUserScriptCount);
+  GenerateUserScript := Result;
+End;
+
+Procedure PrepareJsInjection(Const Opts: TOptions; Var InjectionScript: String);
+Var
+  JsContent, WrappedJs: String;
+Begin
+  InjectionScript := '';
+
+  { Verifier si un fichier JS est specifie }
+  If Opts.InjectJs = '' Then
+    Exit;
+
+  { Charger le fichier JavaScript }
+  JsContent := LoadJsFile(Opts.InjectJs);
+  If JsContent = '' Then
+  Begin
+    WriteLn('Erreur: Impossible de charger le fichier JavaScript: ', Opts.InjectJs);
+    Exit;
+  End;
+
+  { Valider le JavaScript }
+  If Not ValidateJs(JsContent) Then
+  Begin
+    WriteLn('Avertissement: Le JavaScript peut contenir des erreurs de syntaxe');
+  End;
+
+  { Minifier le JavaScript (optionnel pour production) }
+  { JsContent := MinifyJs(JsContent); }
+
+  { Envelopper dans une IIFE }
+  WrappedJs := WrapJsInIIFE(JsContent);
+
+  { Retourner le script d'injection }
+  InjectionScript := WrappedJs;
+End;
+
+{ Accesseurs pour TODO 13 - INJECTION JAVASCRIPT PERSONNALISE }
+
+Function IsJsInitialized: Boolean;
+Begin
+  IsJsInitialized := JsInitialized;
+End;
+
+Function IsJsEmpty: Boolean;
+Begin
+  IsJsEmpty := (JsLoadCount = 0) And (JsUserScriptCount = 0);
+End;
+
+Function GetJsStateCount: Integer;
+Begin
+  GetJsStateCount := JsStateCount;
+End;
+
+Function GetJsLoadCount: Integer;
+Begin
+  GetJsLoadCount := JsLoadCount;
+End;
+
+Function GetJsMinifyCount: Integer;
+Begin
+  GetJsMinifyCount := JsMinifyCount;
+End;
+
+Function GetJsValidateCount: Integer;
+Begin
+  GetJsValidateCount := JsValidateCount;
+End;
+
+Function GetJsWrapCount: Integer;
+Begin
+  GetJsWrapCount := JsWrapCount;
+End;
+
+Function GetJsUserScriptCount: Integer;
+Begin
+  GetJsUserScriptCount := JsUserScriptCount;
+End;
+
+Function GetJsErrorCount: Integer;
+Begin
+  GetJsErrorCount := JsErrorCount;
+End;
+
+Function GetJsMaxFileSize: Integer;
+Begin
+  GetJsMaxFileSize := JS_MAX_FILE_SIZE;
+End;
+
+{ ============================================================
+  TODO 14-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -4023,6 +4480,9 @@ Begin
   { Initialiser le module injection CSS }
   InitCssInjectionState;
 
+  { Initialiser le module injection JavaScript }
+  InitJsInjectionState;
+
   { Generer le nom de l'application si non specifie }
   O.AppName := GenerateAppName(O);
 
@@ -4052,13 +4512,12 @@ Begin
   WriteLn('Raccourcis  : ', GetKbdActiveCount, ' actifs');
   WriteLn;
 
-  { TODO: Implementer les TODOs 13-25 }
-  WriteLn('*** NOTE: TODOs 01-12 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 13-25 restent a implementer ***');
+  { TODO: Implementer les TODOs 14-25 }
+  WriteLn('*** NOTE: TODOs 01-13 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 14-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 13: Injection JavaScript personnalise');
   WriteLn('  - TODO 14: Suppression des pubs (AdBlock)');
   WriteLn('  - TODO 15: Gestion des permissions');
   WriteLn('  - TODO 16: Configuration du build');
