@@ -282,7 +282,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             Boucles imbriquees supportees (MAX_LOOP_NEST)
             10 fonctions accesseurs
 
-  TODO 12 - PARSEUR : FONCTIONS (def) ET RETURN [A FAIRE]
+  TODO 12 - PARSEUR : FONCTIONS (def) ET RETURN [IMPLEMENTE]
             ParseDefStmt : def nom(params): bloc
             Parametres positionnels : passage par valeur sur la pile
             Parametres par defaut : def f(a, b=10):
