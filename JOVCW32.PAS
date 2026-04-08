@@ -166,7 +166,7 @@
             Valeur par defaut : 0 pour tous les types
             10 fonctions accesseurs
 
-  TODO 07 - PARSEUR : DECLARATIONS TABLE (TABLEAUX) [A FAIRE]
+  TODO 07 - PARSEUR : DECLARATIONS TABLE (TABLEAUX) [IMPLEMENTE]
             TABLE name(size) type qualifier ;
               TABLE T(5) I 16 ;  -> 5 entiers de 16 bits
               TABLE FLAGS(8) B 32 ;  -> 8 mots de 32 bits
@@ -2824,6 +2824,9 @@ End;
 { Forward declaration pour ParseItemDecl (defini dans TODO 06) }
 Procedure ParseItemDecl; Forward;
 
+{ Forward declaration pour ParseTableDecl (defini dans TODO 07) }
+Procedure ParseTableDecl; Forward;
+
 { ------------------------------------------------------------ }
 { ParseModuleBody : parser les declarations du corps du module  }
 {   ITEM, TABLE, DEFINE, PROCEDURE/FUNCTION, etc.               }
@@ -2854,15 +2857,9 @@ Begin
 
         KW_TABLE:
         Begin
-          { Declaration TABLE - comptabiliser }
+          { Declaration TABLE - parser via TODO 07 }
           Inc(ModDeclCount);
-          If Opts.Verbose Then
-          Begin
-            LexNextToken;
-            If CurTokType = TOK_IDENT Then
-              WriteLn('  TABLE ', CurTokStr);
-          End;
-          SkipToSemicolon;
+          ParseTableDecl;
         End;
 
         KW_DEFINE:
@@ -3607,6 +3604,370 @@ End;
 
 
 { ============================================================ }
+{ TODO 07 - PARSEUR : DECLARATIONS TABLE (TABLEAUX)             }
+{                                               [IMPLEMENTE]  }
+{ ============================================================ }
+
+Const
+  { Limites pour les tableaux }
+  TBL_MAX_TABLES   = 256;  { nombre max de TABLE parses               }
+  TBL_MAX_ELEMENTS = 1024; { nombre max d elements par TABLE           }
+
+Var
+  { Variables du parseur TABLE }
+  TblInitialized   : Boolean;     { module initialise ?                }
+  TblStateCount    : Integer;     { compteur d operations              }
+  TblTableCount    : Integer;     { nombre de TABLE declares           }
+  TblIntegerCount  : Integer;     { nombre de TABLE de type I          }
+  TblStatusCount   : Integer;     { nombre de TABLE de type S          }
+  TblBitsCount     : Integer;     { nombre de TABLE de type B          }
+  TblFloatCount    : Integer;     { nombre de TABLE de type F          }
+  TblTotalElements : Integer;     { nombre total d elements declares   }
+  TblLabelNum      : Integer;     { generateur de labels uniques       }
+  TblErrorCount    : Integer;     { nombre d erreurs dans TABLE        }
+
+{ ------------------------------------------------------------ }
+{ InitTableState : initialiser les variables du parseur TABLE   }
+{ ------------------------------------------------------------ }
+
+Procedure InitTableState;
+Begin
+  TblInitialized   := True;
+  TblStateCount    := 0;
+  TblTableCount    := 0;
+  TblIntegerCount  := 0;
+  TblStatusCount   := 0;
+  TblBitsCount     := 0;
+  TblFloatCount    := 0;
+  TblTotalElements := 0;
+  TblLabelNum      := 0;
+  TblErrorCount    := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenTblLabel : generer un label unique pour le parseur TABLE    }
+{ ------------------------------------------------------------ }
+
+Function GenTblLabel : TString;
+Begin
+  Inc(TblLabelNum);
+  GenTblLabel := PFX_TAB + 'TBL' + ItoSI(TblLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ TableTypeName : retourner le nom du type d un tableau          }
+{ ------------------------------------------------------------ }
+
+Function TableTypeName(KwType : Integer) : TString;
+Begin
+  Case KwType Of
+    KW_I : TableTypeName := 'INTEGER';
+    KW_S : TableTypeName := 'STATUS';
+    KW_B : TableTypeName := 'BITS';
+    KW_F : TableTypeName := 'FLOATING';
+  Else
+    TableTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTableDecl : parser une declaration TABLE                  }
+{   Syntaxe : TABLE name(size) type qualifier ;                  }
+{   Exemples :                                                   }
+{     TABLE T(5) I 16 ;                                          }
+{     TABLE FLAGS(8) B 32 ;                                      }
+{     TABLE COULEURS(4) S 8 (ROUGE, VERT, BLEU, JAUNE) ;        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTableDecl;
+Var
+  TblName     : TString;
+  TblSize     : Integer;
+  TblBitSize  : Integer;
+  TblByteSize : Integer;
+  TblType     : Integer;
+  TblLabel    : TString;
+  StatusCount : Integer;
+Begin
+  Inc(TblStateCount);
+
+  { Avancer apres TABLE }
+  LexNextToken;
+
+  { Le nom du tableau : peut etre un identificateur OU un mot-cle }
+  If (CurTokType <> TOK_IDENT) And (CurTokType <> TOK_KEYWORD) Then
+  Begin
+    WarnMsg('Nom d identificateur attendu apres TABLE');
+    Inc(TblErrorCount);
+    While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+    Exit;
+  End;
+
+  TblName := CurTokStr;
+  LexNextToken;
+
+  { Parenthese ouvrante pour la taille }
+  If CurTokType <> TOK_LPAREN Then
+  Begin
+    WarnMsg('( attendu apres TABLE ' + TblName);
+    Inc(TblErrorCount);
+    While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+    Exit;
+  End;
+
+  LexNextToken;
+
+  { Lire la taille (entier) }
+  If CurTokType <> TOK_INTEGER Then
+  Begin
+    WarnMsg('Taille entiere attendue dans TABLE ' + TblName + '(...)');
+    Inc(TblErrorCount);
+    While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+    Exit;
+  End;
+
+  TblSize := CurTokNum;
+  If (TblSize < 1) Or (TblSize > TBL_MAX_ELEMENTS) Then
+  Begin
+    WarnMsg('Taille du tableau ' + TblName + ' hors limites (1..' +
+            ItoS(TBL_MAX_ELEMENTS) + ')');
+    Inc(TblErrorCount);
+  End;
+
+  LexNextToken;
+
+  { Parenthese fermante }
+  If CurTokType <> TOK_RPAREN Then
+  Begin
+    WarnMsg(') attendue apres la taille dans TABLE ' + TblName);
+    Inc(TblErrorCount);
+    While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+    Exit;
+  End;
+
+  LexNextToken;
+
+  { Lire le qualificateur de type : I, S, B ou F }
+  If CurTokType <> TOK_KEYWORD Then
+  Begin
+    WarnMsg('Qualificateur de type attendu apres TABLE ' + TblName +
+            '(' + ItoS(TblSize) + ') : I, S, B ou F');
+    Inc(TblErrorCount);
+    While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+    Exit;
+  End;
+
+  TblType := CurTokNum;
+  TblBitSize := 0;
+  TblByteSize := 0;
+  StatusCount := 0;
+
+  Case TblType Of
+    KW_I:
+    Begin
+      { TABLE name(size) I bitsize ; }
+      LexNextToken;
+      If CurTokType = TOK_INTEGER Then
+      Begin
+        TblBitSize := CurTokNum;
+        TblByteSize := ComputeByteSize(TblBitSize);
+        LexNextToken;
+      End
+      Else
+      Begin
+        WarnMsg('Taille en bits attendue apres I dans TABLE ' + TblName);
+        Inc(TblErrorCount);
+      End;
+      Inc(TblIntegerCount);
+    End;
+
+    KW_S:
+    Begin
+      { TABLE name(size) S bitsize (val1, val2, ...) ; }
+      LexNextToken;
+      If CurTokType = TOK_INTEGER Then
+      Begin
+        TblBitSize := CurTokNum;
+        TblByteSize := ComputeByteSize(TblBitSize);
+        LexNextToken;
+      End
+      Else
+      Begin
+        WarnMsg('Taille en bits attendue apres S dans TABLE ' + TblName);
+        Inc(TblErrorCount);
+      End;
+      { Lire les valeurs STATUS optionnelles entre parentheses }
+      If CurTokType = TOK_LPAREN Then
+      Begin
+        LexNextToken;
+        While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) And
+              (CurTokType <> TOK_SEMICOL) Do
+        Begin
+          If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+            Inc(StatusCount);
+          LexNextToken;
+          If CurTokType = TOK_COMMA Then
+            LexNextToken;
+        End;
+        If CurTokType = TOK_RPAREN Then
+          LexNextToken;
+      End;
+      Inc(TblStatusCount);
+    End;
+
+    KW_B:
+    Begin
+      { TABLE name(size) B bitsize ; }
+      LexNextToken;
+      If CurTokType = TOK_INTEGER Then
+      Begin
+        TblBitSize := CurTokNum;
+        TblByteSize := ComputeByteSize(TblBitSize);
+        LexNextToken;
+      End
+      Else
+      Begin
+        WarnMsg('Taille en bits attendue apres B dans TABLE ' + TblName);
+        Inc(TblErrorCount);
+      End;
+      Inc(TblBitsCount);
+    End;
+
+    KW_F:
+    Begin
+      { TABLE name(size) F ; }
+      TblBitSize := 32;
+      TblByteSize := ITM_STORE_DWORD;
+      LexNextToken;
+      Inc(TblFloatCount);
+    End;
+
+  Else
+    WarnMsg('Qualificateur de type invalide pour TABLE ' + TblName +
+            ' (I, S, B ou F attendu)');
+    Inc(TblErrorCount);
+    While (CurTokType <> TOK_SEMICOL) And (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+    If CurTokType = TOK_SEMICOL Then
+      LexNextToken;
+    Exit;
+  End;
+
+  { Generer un label pour le tableau }
+  TblLabel := GenTblLabel;
+
+  { Enregistrer dans la table des symboles }
+  SymAdd(TblName, SK_TABLE, TblType, SymCurScope);
+  If SymCount > 0 Then
+  Begin
+    SymTab[SymCount - 1].BitSize   := TblBitSize;
+    SymTab[SymCount - 1].ByteSize  := TblByteSize;
+    SymTab[SymCount - 1].TableSize := TblSize;
+  End;
+
+  { Comptabiliser }
+  Inc(TblTableCount);
+  TblTotalElements := TblTotalElements + TblSize;
+
+  If Opts.Verbose Then
+    WriteLn('  TABLE ', TblName, '(', TblSize, ') ',
+            TableTypeName(TblType), ' ', TblBitSize, ' bits  [',
+            TblLabel, ']  total=', TblSize * TblByteSize, ' octets');
+
+  { Consommer le point-virgule terminal }
+  If CurTokType = TOK_SEMICOL Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpTableState : afficher l etat du parseur TABLE              }
+{ ------------------------------------------------------------ }
+
+Procedure DumpTableState;
+Begin
+  WriteLn('--- Etat du parseur TABLE ---');
+  WriteLn('  TABLE declares : ', TblTableCount);
+  WriteLn('    Entiers (I)  : ', TblIntegerCount);
+  WriteLn('    Status  (S)  : ', TblStatusCount);
+  WriteLn('    Bits    (B)  : ', TblBitsCount);
+  WriteLn('    Flottants(F) : ', TblFloatCount);
+  WriteLn('  Total elements : ', TblTotalElements);
+  WriteLn('  Erreurs TABLE  : ', TblErrorCount);
+  WriteLn('  Operations     : ', TblStateCount);
+  WriteLn('--- Fin etat TABLE ---');
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 07)                             }
+{ ------------------------------------------------------------ }
+
+Function IsTblInitialized : Boolean;
+Begin
+  IsTblInitialized := TblInitialized;
+End;
+
+Function GetTblTableCount : Integer;
+Begin
+  GetTblTableCount := TblTableCount;
+End;
+
+Function GetTblIntegerCount : Integer;
+Begin
+  GetTblIntegerCount := TblIntegerCount;
+End;
+
+Function GetTblStatusCount : Integer;
+Begin
+  GetTblStatusCount := TblStatusCount;
+End;
+
+Function GetTblBitsCount : Integer;
+Begin
+  GetTblBitsCount := TblBitsCount;
+End;
+
+Function GetTblFloatCount : Integer;
+Begin
+  GetTblFloatCount := TblFloatCount;
+End;
+
+Function GetTblTotalElements : Integer;
+Begin
+  GetTblTotalElements := TblTotalElements;
+End;
+
+Function GetTblStateCount : Integer;
+Begin
+  GetTblStateCount := TblStateCount;
+End;
+
+Function GetTblErrorCount : Integer;
+Begin
+  GetTblErrorCount := TblErrorCount;
+End;
+
+Function GetTblMaxTables : Integer;
+Begin
+  GetTblMaxTables := TBL_MAX_TABLES;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -3623,6 +3984,7 @@ Begin
   SymInitialized := False;
   ModInitialized := False;
   ItmInitialized := False;
+  TblInitialized := False;
 
   ParseArgs;
 
@@ -3640,6 +4002,9 @@ Begin
 
   { Initialiser le parseur ITEM }
   InitItemState;
+
+  { Initialiser le parseur TABLE }
+  InitTableState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -3660,6 +4025,7 @@ Begin
     WriteLn('Tokens analyses  : ', GetLexTokCount);
     DumpModuleState;
     DumpItemState;
+    DumpTableState;
   End;
 
   { Nettoyage }

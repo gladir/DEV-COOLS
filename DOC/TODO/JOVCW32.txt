@@ -158,7 +158,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Valeur par defaut : 0 pour tous les types
             10 fonctions accesseurs
 
-  TODO 07 - PARSEUR : DECLARATIONS TABLE (TABLEAUX) [A FAIRE]
+  TODO 07 - PARSEUR : DECLARATIONS TABLE (TABLEAUX) [IMPLEMENTE]
             TABLE name(size) type qualifier ;
               TABLE T(5) I 16 ;  -> 5 entiers de 16 bits
               TABLE FLAGS(8) B 32 ;  -> 8 mots de 32 bits
