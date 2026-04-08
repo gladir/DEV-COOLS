@@ -1,0 +1,691 @@
+JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
+  80386 pour Windows 32 bits
+  Free Pascal (-Mtp)
+  Cible : MASM .386 / .MODEL FLAT, PE Win32
+
+  Par defaut produit un fichier .EXE (PE Windows 32 bits).
+  Avec le parametre -obj, produit uniquement un fichier .OBJ (COFF).
+  Avec le parametre -asm, produit egalement un fichier .ASM lisible.
+  Supporte toutes les exemples SAMPLES\JOVIAL\*
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
+              EmitExe, EmitObj, EmitAsm)
+            ParseArgs : analyser argv (source.jov [-o sortie] [-v]
+              [-d] [-w] [-obj] [-asm] [-h])
+            Par defaut : produire un .EXE Windows 32 bits (PE)
+            -obj : produire uniquement un .OBJ (format COFF 32 bits)
+            -asm : produire egalement un listing assembleur .ASM lisible
+            -o nom : specifier le nom du fichier de sortie
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Detecter l extension .jov du fichier source
+            Version, Date, aide en ligne (option -h)
+            Constantes PE/COFF : PE_DOS_MAGIC ($5A4D), PE_PE_SIG,
+              PE_MACHINE_I386, PE_OPT_SIZE, PE_MAGIC_32,
+              PE_IMG_BASE ($00400000), PE_SEC_ALIGN (4096),
+              PE_FILE_ALIGN (512), PE_SUBSYS_CUI (console)
+            Constantes binaires : MAX_BIN_CODE (65536),
+              MAX_BIN_DATA (65536), MAX_BIN_LBL (4096),
+              MAX_BIN_FIX (8192)
+            Limites internes (32 bits) : MAX_SYM=4096, MAX_PROC=512,
+              MAX_LOCAL=256, MAX_PARAM=64, MAX_DEPTH=32,
+              MAX_LABEL=4096, MAX_STR=255, MAX_TABLE=256,
+              MAX_CONST=1024, MAX_STATUS=64, MAX_DEFINE=256
+            Prefixes de nommage ASM : _JV_ (variable globale),
+              _JP_ (procedure/fonction), _JK_ (constante chaine),
+              _JVRT_ (routine runtime), _JL_ (label interne),
+              _JT_ (table/tableau), _JM_ (module),
+              _JS_ (valeur status)
+            Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
+            10 fonctions accesseurs
+
+  TODO 02 - TOKENISEUR JOVIAL 73 (LEXER) [IMPLEMENTE]
+            Procedure LexInit : ouvrir le fichier source, initialiser
+              l etat du lexeur (ligne, colonne, caractere courant)
+            Procedure LexClose : fermer le fichier source
+            Procedure LexNextChar / LexPeekChar
+            Format libre : pas de colonnes fixes
+              (contrairement a COBOL ou Fortran)
+            Commentaires Jovial :
+              % commentaire jusqu a la fin de la ligne
+              (* commentaire sur un bloc *) (si supporte)
+            Procedure LexNextToken : reconnaitre les tokens Jovial :
+              - Identificateurs : lettres, chiffres, souligne (_)
+                Jovial est insensible a la casse
+              - Litteraux entiers : 123, 0
+              - Litteraux reels : 1.5, 3.14
+              - Litteraux chaines : 'texte' (guillemets simples)
+              - Operateurs : + - * / ** = /= < <= > >=
+              - Separateurs : ( ) , ; .
+              - Mots logiques : AND, OR, NOT, XOR, EQV
+            Types de tokens (TOK_IDENT, TOK_INTEGER, TOK_REAL,
+              TOK_STRING,
+              TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_POWER,
+              TOK_LPAREN, TOK_RPAREN, TOK_COMMA, TOK_SEMICOL,
+              TOK_EQ, TOK_NE, TOK_LT, TOK_GT, TOK_LE, TOK_GE,
+              TOK_DOLLAR, TOK_EOF)
+            Stocker dans CurTokType / CurTokStr / CurTokNum
+            Reconnaitre le point-virgule (;) comme terminateur
+            Gestion des lignes et numeros de ligne pour diagnostics
+            10 fonctions accesseurs
+
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES JOVIAL 73 [IMPLEMENTE]
+            Tous les mots reserves Jovial 73 :
+              Structure : MODULE, COMPOOL, END, BEGIN
+              Declarations : ITEM, TABLE, DEFINE, OVERLAY
+              Qualificateurs de type : I (entier), S (status),
+                B (bits), F (flottant)
+              Controle : IF, THEN, ELSE, FOR, TO, BY, STEP,
+                DO, WHILE, UNTIL, GOTO, GO
+              Sous-programmes : PROCEDURE, PROC, FUNCTION,
+                CALL, RETURN, STOP
+              Logiques : AND, OR, NOT, XOR, EQV
+              E/S : INPUT, OUTPUT
+              Divers : OF, IS, AT, IN, ON, ABORT, SIGNAL,
+                CASE, FALLTHRU, DEFAULT
+            Fonctions integrees (builtins) reconnues comme
+              mots-cles ou identificateurs speciaux :
+              ABS, SGN, SHIFTL, SHIFTR, BIT, BITSIZE,
+              BYTESIZE, WORDSIZE, UBOUND, LBOUND, NWSDEN,
+              FIRST, LAST, NEXT
+            Fonction LookupKeyword : retourner KW_xxx ou TOK_IDENT
+            10 fonctions accesseurs
+
+  TODO 04 - TABLE DES SYMBOLES JOVIAL 73 (32 BITS) [IMPLEMENTE]
+            Enregistrement TSymbol :
+              Name      : nom Jovial (X, SCORE, COLOR)
+              AsmName   : label ASM correspondant (_JV_X, _JV_SCORE)
+              SymKind   : type de symbole (SK_ITEM, SK_TABLE,
+                SK_PROCEDURE, SK_FUNCTION, SK_CONSTANT,
+                SK_STATUS_VAL, SK_LABEL, SK_DEFINE, SK_PARAM)
+              ItemType  : type de donnee (JT_INTEGER, JT_STATUS,
+                JT_BITS, JT_FLOATING, JT_NONE)
+              BitSize   : taille en bits (8, 16, 32 pour I; 1-16 pour B)
+              ByteSize  : taille en octets apres alignement 32 bits
+              Scope     : portee (SCOPE_GLOBAL, SCOPE_LOCAL,
+                SCOPE_PARAM, SCOPE_MODULE, SCOPE_COMPOOL)
+              Offset    : offset dans le segment de donnees
+              Value     : valeur initiale ou valeur de constante
+              ProcIdx   : index dans la table des procedures
+              StatusValues : liste des valeurs d enumeration
+              IsExported : True si exporte via COMPOOL
+            Procedures sur la table :
+              SymInit, SymAdd, SymFind, SymFindLocal,
+              SymCount, SymDump, SymSetScope
+            Gestion de la portee : MODULE, PROCEDURE, COMPOOL
+            Resolution des references avant (forward references)
+            10 fonctions accesseurs
+
+  TODO 05 - PARSEUR : STRUCTURE MODULE ET COMPOOL [IMPLEMENTE]
+            MODULE name ;
+              declarations globales (ITEM, TABLE, DEFINE, PROCEDURE)
+              ...
+            END MODULE name ;
+            Le nom de la procedure d entree est identique au nom
+              du MODULE (convention Jovial 73) :
+              MODULE HELLO; ... PROCEDURE HELLO; ... END;
+            COMPOOL name ;
+              declarations exportees (partagees entre modules)
+            END COMPOOL ;
+            Verification de coherence :
+              le END MODULE doit correspondre au MODULE ouvert
+            Stocker le nom du module et du point d entree
+            Gestion des declarations globales avant les procedures
+            10 fonctions accesseurs
+
+  TODO 06 - PARSEUR : DECLARATIONS ITEM (TYPES DE DONNEES) [IMPLEMENTE]
+            ITEM name I n ;  (entier signe sur n bits : 8, 16, 32)
+              n=8  -> DB en memoire, operations via MOVSX/MOVZX
+              n=16 -> DW en memoire, operations via MOVSX/MOVZX
+              n=32 -> DD en memoire, operations directes EAX
+            ITEM name S n (val1, val2, ...) ;  (status/enumeration)
+              n=8 ou 16 pour le nombre de bits
+              Chaque valeur generee comme constante : name_val1=0,
+                name_val2=1, name_val3=2, ...
+              Stockee comme entier non signe
+            ITEM name B n ;  (champ de bits sur n bits : 1 a 32)
+              Operations bit a bit (AND, OR, XOR, NOT)
+              Stocke sur le plus petit conteneur : DB/DW/DD
+            ITEM name F ;  (reel simple precision, IEEE 754 32 bits)
+              Stocke comme DD en memoire
+              Arithmetique flottante via FPU x87 (FLD, FADD, etc.)
+              ou emulation logicielle si necessaire
+            Calcul de la taille et de l alignement en memoire
+            Valeur par defaut : 0 pour tous les types
+            10 fonctions accesseurs
+
+  TODO 07 - PARSEUR : DECLARATIONS TABLE (TABLEAUX) [IMPLEMENTE]
+            TABLE name(size) type qualifier ;
+              TABLE T(5) I 16 ;  -> 5 entiers de 16 bits
+              TABLE FLAGS(8) B 32 ;  -> 8 mots de 32 bits
+              TABLE SCORES(10) I 32 ;  -> 10 entiers de 32 bits
+            Indexation a base zero : T(0) a T(size-1)
+            Acces a un element : T(index)
+              Calcul d offset : base + index * taille_element
+              Verification de bornes optionnelle (mode debug)
+            Allocation memoire dans le segment .data :
+              Taille totale = nombre_elements * taille_element
+            Tables de STATUS :
+              TABLE COULEURS(4) S 8 (ROUGE, VERT, BLEU, JAUNE) ;
+            Support des expressions comme indice :
+              T(I), T(I+1), T(X*2)
+            Generation 80386 :
+              LEA EAX, [base + index*scale] pour acces
+              Utilisation de SIB byte quand scale = 1, 2, 4, 8
+            10 fonctions accesseurs
+
+  TODO 08 - PARSEUR : DEFINE (CONSTANTES NOMMEES) [IMPLEMENTE]
+            DEFINE name = value ;
+              DEFINE MAX = 100 ;
+              DEFINE HALF = 50 ;
+              DEFINE PI = 3.14159 ;
+              DEFINE MSG = 'BONJOUR' ;
+            Types de constantes :
+              Entiere : valeur numerique entiere
+              Reelle : valeur numerique avec point decimal
+              Chaine : valeur entre guillemets simples
+            Expansion des DEFINE pendant la compilation :
+              Remplacement textuel du nom par la valeur
+              Evaluation immediate pour les constantes numeriques
+            DEFINE dans un MODULE : portee globale au module
+            DEFINE dans un COMPOOL : exporte vers d autres modules
+            Gestion des DEFINE multiples et redefinitions
+            Table des DEFINE : nom -> valeur (texte ou numerique)
+            Verification : pas de reference circulaire
+            10 fonctions accesseurs
+
+  TODO 09 - PARSEUR : PROCEDURE ET FUNCTION [IMPLEMENTE]
+            PROCEDURE name ;
+              declarations locales
+              instructions
+            END ;
+            PROC name ;  (forme abregee equivalente)
+              instructions
+            END ;
+            PROCEDURE name (param1 type1, param2 type2, ...) ;
+              avec parametres formels
+            FUNCTION name type ;
+              instructions avec RETURN expression
+            END ;
+            Procedure d entree du module : meme nom que le MODULE
+            Convention d appel 80386 :
+              Parametres empiles de droite a gauche (cdecl)
+              Valeur de retour dans EAX (entier/status/bits)
+              ou dans ST(0) pour les flottants
+              L appelant nettoie la pile apres CALL
+            Allocation du cadre de pile (stack frame) :
+              PUSH EBP / MOV EBP, ESP / SUB ESP, locales
+              Variables locales accessibles via [EBP-offset]
+              Parametres accessibles via [EBP+8], [EBP+12], ...
+            Instruction RETURN : MOV EAX, valeur / LEAVE / RET
+            Instruction STOP : PUSH 0 / CALL ExitProcess
+            10 fonctions accesseurs
+
+  TODO 10 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES [IMPLEMENTE]
+            Expressions arithmetiques :
+              Addition (+), Soustraction (-)
+              Multiplication (*), Division (/)
+              Puissance (**) : exposant entier positif
+              Moins unaire : -expression
+            Expressions logiques :
+              AND (et bit a bit ou logique selon contexte)
+              OR  (ou bit a bit ou logique)
+              NOT (negation bit a bit ou logique)
+              XOR (ou exclusif)
+              EQV (equivalence logique : NOT XOR)
+            Expressions relationnelles :
+              = (egal), /= (different)
+              < (inferieur), <= (inferieur ou egal)
+              > (superieur), >= (superieur ou egal)
+            Priorite des operateurs (du plus faible au plus fort) :
+              1. OR, XOR, EQV
+              2. AND
+              3. NOT (unaire)
+              4. =, /=, <, <=, >, >=
+              5. +, - (additifs)
+              6. *, / (multiplicatifs)
+              7. ** (puissance)
+              8. - (moins unaire)
+              9. ( ) (parentheses)
+            Evaluation sur la pile 80386 : PUSH/POP pour operandes
+            Appels de fonctions dans les expressions : ABS(X), etc.
+            Acces aux elements de TABLE dans les expressions : T(I)
+            10 fonctions accesseurs
+
+  TODO 11 - PARSEUR : STRUCTURES DE CONTROLE [IMPLEMENTE]
+            IF condition THEN
+              instructions...
+            [ELSE
+              instructions...]
+            END ;
+              Generation : CMP + Jcc vers ELSE/END, JMP vers END
+              Labels : _JL_IF_xxx, _JL_ELSE_xxx, _JL_ENDIF_xxx
+            FOR var = debut TO fin DO
+              instructions...
+            END ;
+              Avec pas par defaut de 1
+            FOR var = debut BY pas TO fin DO
+              instructions...
+            END ;
+              Avec pas explicite (positif ou negatif)
+              Generation : initialiser, tester, corps, incrementer, JMP
+              Labels : _JL_FOR_xxx, _JL_FOREND_xxx
+            WHILE condition DO
+              instructions...
+            END ;
+              Generation : tester, corps, JMP au test
+              Labels : _JL_WHILE_xxx, _JL_WHEND_xxx
+            DO
+              instructions...
+            UNTIL condition ;
+              Generation : corps, tester, Jcc au debut
+              Labels : _JL_DO_xxx, _JL_DOUNTIL_xxx
+            GOTO label / GO TO label :
+              Branchement inconditionnel vers un label nomme
+            Labels nommes : nom : instruction
+            BEGIN ... END pour regroupement d instructions
+            10 fonctions accesseurs
+
+  TODO 12 - PARSEUR : AFFECTATIONS ET INSTRUCTIONS SIMPLES [IMPLEMENTE]
+            Affectation simple :
+              variable = expression ;
+              Generer : evaluer expression -> EAX, MOV [var], EAX
+            Affectation a un element de TABLE :
+              T(index) = expression ;
+              Generer : evaluer index, calculer offset, stocker
+            Affectation de STATUS :
+              COLOR = COLOR_ROUGE ;
+              Generer : MOV DWORD [_JV_COLOR], valeur_constante
+            Instruction CALL :
+              CALL nom_procedure ;
+              Generer : CALL _JP_nom
+              CALL avec arguments :
+              CALL nom_procedure (expr1, expr2, ...) ;
+              Generer : PUSH arguments, CALL _JP_nom, ADD ESP, n
+            Instruction STOP :
+              STOP ;
+              Generer : PUSH 0 / CALL _ExitProcess@4
+            Instruction GOTO / GO TO :
+              GOTO label ;
+              Generer : JMP _JL_label
+            Gestion des labels nommes dans le code :
+              label : instruction
+              Generer : _JL_label:
+            10 fonctions accesseurs
+
+  TODO 13 - PARSEUR : TYPES STATUS (ENUMERATIONS) [IMPLEMENTE]
+            Declaration :
+              ITEM COLOR S 8 (ROUGE, VERT, BLEU) ;
+              Generer les constantes :
+                COLOR_ROUGE = 0
+                COLOR_VERT  = 1
+                COLOR_BLEU  = 2
+              Variable COLOR stockee comme entier (DB ou DW)
+            Affectation :
+              COLOR = COLOR_ROUGE ;
+              Verification de type : seules les valeurs definies
+                dans l enumeration sont acceptees
+            Comparaison :
+              IF COLOR = COLOR_VERT THEN ...
+            Fonctions integrees sur les STATUS :
+              FIRST(COLOR) : retourne la premiere valeur (0)
+              LAST(COLOR)  : retourne la derniere valeur (2)
+              Utilisation des valeurs comme indices de table
+            Conversion STATUS <-> entier si necessaire
+            Affichage dans OUTPUT : afficher la valeur numerique
+            Enumeration avec valeurs personnalisees (extension) :
+              S n (ROUGE=1, VERT=5, BLEU=10) si supporte
+            10 fonctions accesseurs
+
+  TODO 14 - PARSEUR : OPERATIONS SUR LES BITS [IMPLEMENTE]
+            Operations bit a bit sur ITEM de type B :
+              AND : RESULT = FLAGS AND MASK
+                Generer : MOV EAX, [FLAGS] / AND EAX, [MASK]
+              OR  : RESULT = FLAGS OR MASK
+                Generer : MOV EAX, [FLAGS] / OR EAX, [MASK]
+              XOR : RESULT = FLAGS XOR MASK
+                Generer : MOV EAX, [FLAGS] / XOR EAX, [MASK]
+              NOT : RESULT = NOT MASK
+                Generer : MOV EAX, [MASK] / NOT EAX
+            Fonctions integrees pour les bits :
+              SHIFTL(valeur, nombre) : decalage a gauche
+                Generer : MOV EAX, valeur / MOV CL, nombre / SHL EAX, CL
+              SHIFTR(valeur, nombre) : decalage a droite
+                Generer : MOV EAX, valeur / MOV CL, nombre / SHR EAX, CL
+              BIT(valeur, position, longueur) : extraction de bits
+                Generer : MOV EAX, valeur / SHR EAX, position
+                  / AND EAX, masque (2^longueur - 1)
+              BITSIZE(item) : retourne le nombre de bits de l item
+                Valeur connue a la compilation, pas de code genere
+            Masquage automatique selon la taille du champ de bits
+              Exemple : B 8 -> AND EAX, $FF apres operations
+            10 fonctions accesseurs
+
+  TODO 15 - PARSEUR : FONCTIONS INTEGREES JOVIAL (BUILTINS) [IMPLEMENTE]
+            Fonctions mathematiques :
+              ABS(x) : valeur absolue
+                Generer : MOV EAX, [x] / CDQ / XOR EAX, EDX / SUB EAX, EDX
+                ou : CMP EAX, 0 / JGE @pos / NEG EAX / @pos:
+              SGN(x) : signe (-1, 0, +1)
+                Generer : CMP EAX, 0 / JE @zero / JG @pos
+                  MOV EAX, -1 / JMP @end / @pos: MOV EAX, 1 / ...
+            Fonctions de decalage (voir TODO 14) :
+              SHIFTL(x, n), SHIFTR(x, n)
+            Fonction d extraction de bits (voir TODO 14) :
+              BIT(valeur, position, longueur)
+            Fonctions de taille :
+              BITSIZE(item) : nombre de bits (resolu a la compilation)
+              BYTESIZE(item) : taille en octets (resolu a la compilation)
+              WORDSIZE(item) : taille en mots 32 bits (resolu a la compilation)
+            Fonctions sur les tableaux :
+              UBOUND(table, dimension) : borne superieure (taille - 1)
+              LBOUND(table, dimension) : borne inferieure (toujours 0)
+              NWSDEN(table) : nombre d elements dans la table
+            Fonctions sur les STATUS (voir TODO 13) :
+              FIRST(status_item) : premiere valeur de l enumeration
+              LAST(status_item)  : derniere valeur de l enumeration
+            Toutes les fonctions de taille et de bornes sont resolues
+              a la compilation (pas de code genere, valeur constante)
+            10 fonctions accesseurs
+
+  TODO 16 - PARSEUR : INPUT/OUTPUT (E/S CONSOLE) [IMPLEMENTE]
+            OUTPUT :
+              OUTPUT ('texte simple') ;
+                Generer : afficher la chaine sur la console
+              OUTPUT ('format $D', expression) ;
+                Generer : evaluer expression, convertir en chaine,
+                  inserer dans le format, afficher
+              OUTPUT ('X=$D Y=$D', expr1, expr2) ;
+                Generer : traiter chaque $D avec l expression
+                  correspondante
+              Format $D : conversion entiere decimale
+              Retour a la ligne automatique apres chaque OUTPUT
+            INPUT :
+              INPUT (var1) ;
+                Generer : lire une ligne depuis la console,
+                  convertir en entier, stocker dans var1
+              INPUT (var1, var2, ...) ;
+                Generer : lire plusieurs valeurs separees par
+                  des espaces ou retours a la ligne
+            Win32 API pour les E/S console :
+              GetStdHandle(STD_OUTPUT_HANDLE) pour ecriture
+              GetStdHandle(STD_INPUT_HANDLE) pour lecture
+              WriteFile pour l affichage
+              ReadFile pour la saisie
+            Gestion du buffer de ligne et conversion CR/LF
+            10 fonctions accesseurs
+
+  TODO 17 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [IMPLEMENTE]
+            Section .data (variables initialisees) :
+              ITEM I 8  -> _JV_nom DB 0
+              ITEM I 16 -> _JV_nom DW 0
+              ITEM I 32 -> _JV_nom DD 0
+              ITEM S n  -> _JV_nom DD 0 (entier pour status)
+              ITEM B n  -> _JV_nom DB/DW/DD 0 (selon taille)
+              ITEM F    -> _JV_nom DD 0.0 (IEEE 754 32 bits)
+              TABLE(n) I 16 -> _JT_nom DW n DUP(0)
+              TABLE(n) I 32 -> _JT_nom DD n DUP(0)
+            Constantes chaines :
+              _JK_nnn DB 'texte', 13, 10, 0 (avec CR/LF/NUL)
+            Constantes de format pour OUTPUT :
+              _JK_FMT_nnn DB 'format...', 0
+            Section .data? (variables non initialisees / BSS) :
+              Buffers d E/S temporaires
+              _JV_IOBUF DB 256 DUP(?)
+              _JV_NUMBUF DB 32 DUP(?)
+            Variables runtime :
+              _JV_STDOUT DD ?  (handle console sortie)
+              _JV_STDIN  DD ?  (handle console entree)
+              _JV_WRITTEN DD ? (octets ecrits par WriteFile)
+              _JV_READ   DD ?  (octets lus par ReadFile)
+            Alignement des donnees sur 4 octets (DWORD)
+            10 fonctions accesseurs
+
+  TODO 18 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
+            Arithmetique entiere 32 bits :
+              Addition : MOV EAX, [a] / ADD EAX, [b]
+              Soustraction : MOV EAX, [a] / SUB EAX, [b]
+              Multiplication : MOV EAX, [a] / IMUL EAX, [b]
+              Division : MOV EAX, [a] / CDQ / IDIV DWORD [b]
+                Resultat dans EAX, reste dans EDX
+              Puissance (**) : boucle de multiplication
+            Arithmetique sur items 8 et 16 bits :
+              Charger avec MOVSX (signe) ou MOVZX (non signe)
+              Operer en 32 bits (EAX)
+              Stocker avec taille correcte (MOV BYTE/WORD)
+            Arithmetique flottante (ITEM F) :
+              FLD DWORD [a]   : charger dans FPU
+              FADD DWORD [b]  : addition
+              FSUB DWORD [b]  : soustraction
+              FMUL DWORD [b]  : multiplication
+              FDIV DWORD [b]  : division
+              FSTP DWORD [r]  : stocker le resultat
+            Evaluation d expressions complexes :
+              Utilisation de la pile 80386 pour les intermediaires
+              PUSH EAX pour sauvegarder operande gauche
+              Evaluer operande droit -> EAX
+              POP EBX pour recuperer operande gauche
+              Operer EBX op EAX -> resultat dans EAX
+            Comparaisons :
+              CMP EAX, EBX + Jcc (JE, JNE, JL, JLE, JG, JGE)
+            10 fonctions accesseurs
+
+  TODO 19 - GENERATION DE CODE : STRUCTURES DE CONTROLE 80386 [IMPLEMENTE]
+            IF / ELSE / END :
+              Evaluer la condition -> flags
+              Jcc _JL_ELSE_nnn (saut conditionnel si faux)
+              ... bloc THEN ...
+              JMP _JL_ENDIF_nnn
+              _JL_ELSE_nnn:
+              ... bloc ELSE ...
+              _JL_ENDIF_nnn:
+            FOR var = debut TO fin DO ... END :
+              MOV DWORD [var], debut
+              _JL_FOR_nnn:
+              MOV EAX, [var] / CMP EAX, fin
+              JG _JL_FOREND_nnn
+              ... corps de la boucle ...
+              INC DWORD [var] (ou ADD si pas > 1)
+              JMP _JL_FOR_nnn
+              _JL_FOREND_nnn:
+            FOR avec BY (pas explicite) :
+              Meme structure, ADD DWORD [var], pas au lieu de INC
+              Si pas negatif : CMP/JL au lieu de JG
+            WHILE condition DO ... END :
+              _JL_WHILE_nnn:
+              Evaluer condition -> flags
+              Jcc _JL_WHEND_nnn (saut si faux)
+              ... corps ...
+              JMP _JL_WHILE_nnn
+              _JL_WHEND_nnn:
+            DO ... UNTIL condition :
+              _JL_DO_nnn:
+              ... corps ...
+              Evaluer condition -> flags
+              Jcc _JL_DO_nnn (saut si faux, continuer boucle)
+            Compteur de labels interne pour unicite
+            10 fonctions accesseurs
+
+  TODO 20 - BIBLIOTHEQUE RUNTIME JOVIAL (E/S, CONVERSIONS VIA WIN32) [IMPLEMENTE]
+            Routines de conversion :
+              _JVRT_ITOA : entier 32 bits -> chaine decimale ASCII
+                Utilisation de DIV par 10 en boucle
+              _JVRT_ATOI : chaine ASCII -> entier 32 bits
+                Utilisation de IMUL par 10 et ADD
+              _JVRT_FORMAT : formater une chaine avec $D
+                Parcourir le format, remplacer $D par la
+                conversion de l argument correspondant
+            Routines d E/S console :
+              _JVRT_INIT_IO : initialiser les handles console
+                PUSH STD_OUTPUT_HANDLE / CALL GetStdHandle
+                MOV [_JV_STDOUT], EAX
+                PUSH STD_INPUT_HANDLE / CALL GetStdHandle
+                MOV [_JV_STDIN], EAX
+              _JVRT_WRITE_STR : ecrire une chaine sur la console
+                PUSH 0 / LEA EAX, [_JV_WRITTEN] / PUSH EAX
+                PUSH longueur / PUSH adresse / PUSH [_JV_STDOUT]
+                CALL WriteFile
+              _JVRT_WRITE_CRLF : ecrire un retour a la ligne
+              _JVRT_READ_LINE : lire une ligne depuis la console
+                PUSH 0 / LEA EAX, [_JV_READ] / PUSH EAX
+                PUSH 256 / LEA EAX, [_JV_IOBUF] / PUSH EAX
+                PUSH [_JV_STDIN] / CALL ReadFile
+              _JVRT_OUTPUT : routine combinee pour OUTPUT Jovial
+                Traiter le format, convertir les arguments,
+                afficher le resultat avec retour a la ligne
+            Routines mathematiques inline :
+              _JVRT_ABS : valeur absolue (inline possible)
+              _JVRT_SGN : signe (inline possible)
+              _JVRT_POWER : exponentiation par boucle
+            Variables runtime en .data? :
+              _JV_IOBUF, _JV_NUMBUF, _JV_STDOUT, _JV_STDIN,
+              _JV_WRITTEN, _JV_READ
+            10 fonctions accesseurs
+
+  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [IMPLEMENTE]
+            Structure PE32 complete :
+              DOS Header (64 octets) avec DOS stub
+              Signature PE "PE\0\0"
+              COFF File Header (20 octets)
+                Machine : $014C (i386)
+                NumberOfSections : 3 (.text, .rdata, .data)
+              Optional Header (224 octets)
+                Magic : $010B (PE32)
+                ImageBase : $00400000
+                SectionAlignment : $1000 (4096)
+                FileAlignment : $0200 (512)
+                Subsystem : 3 (CUI Console)
+                DataDirectory[1] : Import Table RVA/Size
+              Section Headers : .text, .rdata, .data
+            Section .text :
+              Code machine 80386 genere
+              Point d entree (_start -> ExitProcess)
+              Routines runtime Jovial (_JVRT_)
+              Procedures et fonctions Jovial (_JP_)
+            Section .rdata :
+              Import Directory (IMAGE_IMPORT_DESCRIPTOR)
+              Hint/Name Table pour chaque DLL importee
+              Import Address Table (IAT) avec thunks
+            Section .data :
+              Variables ITEM globales initialisees
+              Tables (TABLE) avec leurs elements
+              Constantes chaines (_JK_)
+            Resolution des fixups (adresses relatives/absolues)
+            Alignement des sections sur FileAlignment/SectionAlignment
+            10 fonctions accesseurs
+
+  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [IMPLEMENTE]
+            Format COFF 32 bits compatible LINK.EXE :
+              COFF File Header (20 octets)
+                Machine : $014C (i386)
+                NumberOfSections : 3
+              Section .text : code machine 80386
+              Section .data : donnees initialisees
+              Section .bss  : donnees non initialisees
+              Table des relocations :
+                IMAGE_RELOCATION pour chaque reference
+                Type $0006 : IMAGE_REL_I386_DIR32 (adresse absolue)
+                Type $0014 : IMAGE_REL_I386_REL32 (adresse relative)
+              Table des symboles :
+                IMAGE_SYMBOL pour chaque symbole
+                StorageClass : EXTERNAL (2), STATIC (3), LABEL (6)
+                Symboles externes pour imports Win32
+                Symboles definis pour procedures/variables Jovial
+              Table des chaines :
+                Noms de symboles > 8 caracteres
+            Ecriture binaire : octet par octet dans le fichier
+            Compatible avec Microsoft LINK.EXE et MASM
+            10 fonctions accesseurs
+
+  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [IMPLEMENTE]
+            Format MASM (.ASM) lisible et assemblable :
+              .386
+              .MODEL FLAT, STDCALL
+              OPTION CASEMAP:NONE
+            Section INCLUDELIB :
+              INCLUDELIB kernel32.lib
+              INCLUDELIB msvcrt.lib (si necessaire)
+            Section EXTERN :
+              EXTERN _ExitProcess@4:PROC
+              EXTERN _GetStdHandle@4:PROC
+              EXTERN _WriteFile@20:PROC
+              EXTERN _ReadFile@20:PROC
+              (autres imports Win32 utilises)
+            Section .DATA :
+              Variables ITEM avec DB/DW/DD
+              Tables avec DW/DD n DUP(0)
+              Constantes chaines avec DB 'texte', 0
+            Section .DATA? :
+              Variables non initialisees (BSS)
+              Buffers d E/S
+            Section .CODE :
+              Point d entree _start
+              Routines runtime (_JVRT_)
+              Procedures Jovial avec labels (_JP_)
+              Commentaires avec le code Jovial source
+            Indentation et formatage lisible
+            Commentaires preserves dans le listing
+            10 fonctions accesseurs
+
+  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, MSVCRT) [IMPLEMENTE]
+            Imports kernel32.dll :
+              ExitProcess : terminer le programme (STOP)
+              GetStdHandle : obtenir les handles console
+              WriteFile : ecrire sur la console (OUTPUT)
+              ReadFile : lire depuis la console (INPUT)
+              GetProcessHeap, HeapAlloc, HeapFree :
+                allocation dynamique (si necessaire pour tables)
+              GetCommandLineA : arguments de la ligne de commande
+              GetModuleHandleA : handle du module courant
+              GetLastError : code d erreur Win32
+              LoadLibraryA, GetProcAddress, FreeLibrary :
+                chargement dynamique de DLL (si extension future)
+            Imports msvcrt.dll (optionnel) :
+              sprintf, sscanf : formatage numerique avance
+              memcpy, memset, memcmp : operations memoire
+            Generer la table d importation PE :
+              IMAGE_IMPORT_DESCRIPTOR par DLL
+              Hint/Name Table avec noms de fonctions
+              Import Address Table (IAT) avec thunks
+            Generer les EXTERN pour le mode .ASM
+            Generer les symboles externes pour le mode .OBJ
+            Marquer les imports reellement utilises pour
+              n inclure que le necessaire
+            10 fonctions accesseurs
+
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\JOVIAL\* [IMPLEMENTE]
+            Optimisations peephole :
+              MOV EAX, 0 -> XOR EAX, EAX
+              PUSH EAX / POP EAX -> (eliminer)
+              MOV EAX, [x] / MOV [x], EAX -> (eliminer deuxieme)
+              ADD EAX, 1 -> INC EAX
+              SUB EAX, 1 -> DEC EAX
+              IMUL EAX, 2 -> SHL EAX, 1
+              IMUL EAX, 4 -> SHL EAX, 2
+            Verification : compiler et executer les exemples
+              SAMPLES\JOVIAL\test01_hello.jov   - Hello World avec OUTPUT
+              SAMPLES\JOVIAL\test02_items.jov   - Declarations ITEM entier
+              SAMPLES\JOVIAL\test03_arith.jov   - Arithmetique (+,-,*,/)
+              SAMPLES\JOVIAL\test04_status.jov  - Types STATUS (enumeration)
+              SAMPLES\JOVIAL\test05_bits.jov    - Operations sur les bits
+              SAMPLES\JOVIAL\test06_cond.jov    - Conditions IF/ELSE
+              SAMPLES\JOVIAL\test07_boucles.jov - Boucles FOR/WHILE/DO-UNTIL
+              SAMPLES\JOVIAL\test08_table.jov   - Declarations TABLE (tableaux)
+              SAMPLES\JOVIAL\test09_procs.jov   - Procedures et CALL
+              SAMPLES\JOVIAL\test10_reels.jov   - DEFINE et items reels
+              SAMPLES\JOVIAL\test_proc.jov      - PROC (forme abregee)
+              SAMPLES\JOVIAL\test_builtins.jov  - Fonctions integrees
+              SAMPLES\JOVIAL\test_simple.jov    - Module minimal
+              SAMPLES\JOVIAL\test24.jov         - BEGIN dans procedure
+            Tests de regression pour chaque TODO
+            Verification des 3 modes de sortie :
+              .EXE (defaut), .OBJ (-obj), .ASM (-asm)
+            Mesure de la taille des executables generes
+            Verification de la compatibilite Jovial 73
+            10 fonctions accesseurs
+
+  ============================================================
