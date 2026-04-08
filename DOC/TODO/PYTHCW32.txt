@@ -101,7 +101,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
               all, hasattr, getattr, setattr, id, hash, repr, open
             10 fonctions accesseurs
 
-  TODO 04 - TABLE DES SYMBOLES PYTHON (32 BITS) [A FAIRE]
+  TODO 04 - TABLE DES SYMBOLES PYTHON (32 BITS) [IMPLEMENTE]
             Enregistrement TSymRec :
               Name      : nom Python (x, my_func, MyClass)
               AsmName   : label ASM correspondant (_PYV_x, _PYF_my_func)

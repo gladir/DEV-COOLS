@@ -109,7 +109,7 @@
               all, hasattr, getattr, setattr, id, hash, repr, open
             10 fonctions accesseurs
 
-  TODO 04 - TABLE DES SYMBOLES PYTHON (32 BITS) [A FAIRE]
+  TODO 04 - TABLE DES SYMBOLES PYTHON (32 BITS) [IMPLEMENTE]
             Enregistrement TSymRec :
               Name      : nom Python (x, my_func, MyClass)
               AsmName   : label ASM correspondant (_PYV_x, _PYF_my_func)
@@ -2945,6 +2945,386 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 04 - TABLE DES SYMBOLES PYTHON (32 BITS) [IMPLEMENTE]   }
+{ ============================================================ }
+
+Const
+  { Types de symboles SK_* }
+  SK_NONE    = 0;    { aucun / non defini                       }
+  SK_VAR     = 1;    { variable Python                          }
+  SK_PARAM   = 2;    { parametre de fonction                    }
+  SK_FUNC    = 3;    { fonction (def)                           }
+  SK_CLASS   = 4;    { classe (class)                           }
+  SK_MODULE  = 5;    { module importe                           }
+  SK_BUILTIN = 6;    { builtin Python (print, len, ...)         }
+  SK_GLOBAL  = 7;    { variable globale (instruction global)    }
+  SK_LOCAL   = 8;    { variable locale explicite                }
+  SK_MAX     = 8;    { valeur maximale SK_*                     }
+
+Type
+  TSymRec = Record
+    Name       : TString;       { nom Python (x, my_func, MyClass)   }
+    AsmName    : TString;       { label ASM (_PYV_x, _PYF_my_func)   }
+    Kind       : Integer;       { SK_VAR..SK_LOCAL                    }
+    TypeIdx    : Integer;       { indice dans la table des types      }
+    Offset     : LongInt;       { offset segment data ou pile         }
+    ScopeLevel : Integer;       { niveau de portee imbrique           }
+    IsGlobal   : Boolean;       { True si 'global x'                  }
+    IsNonlocal : Boolean;       { True si 'nonlocal x'                }
+    IsImported : Boolean;       { True si importe (import/from)       }
+    DeclLine   : Integer;       { numero de ligne de declaration      }
+  End;
+
+Var
+  SymTab          : Array[0..MAX_SYM-1] Of TSymRec;
+  SymTabCount     : Integer;       { nombre de symboles dans la table    }
+  CurScope        : Integer;       { niveau de portee courant            }
+  ScopeStack      : Array[0..MAX_SCOPE-1] Of Integer;
+  ScopeTop        : Integer;       { sommet de la pile de portee         }
+  SymInitialized  : Boolean;       { True si l etat est initialise       }
+  SymLabelSeq     : Integer;       { sequence pour labels uniques        }
+  SymAddCount     : LongInt;       { nombre total de SymAdd              }
+  SymFindCount    : LongInt;       { nombre total de SymFind             }
+  SymFindHit      : LongInt;       { nombre de SymFind avec resultat     }
+  SymScopeEnter   : LongInt;       { nombre de SymEnterScope             }
+  SymScopeLeave   : LongInt;       { nombre de SymLeaveScope             }
+  SymLastName     : TString;       { dernier nom ajoute/cherche          }
+
+{ ------------------------------------------------------------ }
+{ SymInit : initialiser la table des symboles                   }
+{ ------------------------------------------------------------ }
+
+Procedure SymInit;
+Var I : Integer;
+Begin
+  SymInitialized := True;
+  SymTabCount    := 0;
+  CurScope       := 0;
+  ScopeTop       := 0;
+  SymLabelSeq    := 0;
+  SymAddCount    := 0;
+  SymFindCount   := 0;
+  SymFindHit     := 0;
+  SymScopeEnter  := 0;
+  SymScopeLeave  := 0;
+  SymLastName    := '';
+  For I := 0 To MAX_SCOPE - 1 Do
+    ScopeStack[I] := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSymLabel : generer un label unique _SYM_N                  }
+{ ------------------------------------------------------------ }
+
+Function GenSymLabel : TString;
+Begin
+  Inc(SymLabelSeq);
+  GenSymLabel := '_SYM_' + ItoS(SymLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ SymKindName : retourner le nom du type de symbole SK_*        }
+{ ------------------------------------------------------------ }
+
+Function SymKindName(K : Integer) : TString;
+Begin
+  Case K Of
+    SK_NONE    : SymKindName := 'SK_NONE';
+    SK_VAR     : SymKindName := 'SK_VAR';
+    SK_PARAM   : SymKindName := 'SK_PARAM';
+    SK_FUNC    : SymKindName := 'SK_FUNC';
+    SK_CLASS   : SymKindName := 'SK_CLASS';
+    SK_MODULE  : SymKindName := 'SK_MODULE';
+    SK_BUILTIN : SymKindName := 'SK_BUILTIN';
+    SK_GLOBAL  : SymKindName := 'SK_GLOBAL';
+    SK_LOCAL   : SymKindName := 'SK_LOCAL';
+  Else
+    SymKindName := 'SK_?(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymNameClean : nettoyer un nom Python pour usage ASM          }
+{ Remplacer les caracteres non valides pour un label ASM        }
+{ ------------------------------------------------------------ }
+
+Function SymNameClean(Const S : TString) : TString;
+Var
+  R    : TString;
+  I    : Integer;
+  Ch   : Char;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    Ch := S[I];
+    If ((Ch >= 'A') And (Ch <= 'Z')) Or
+       ((Ch >= 'a') And (Ch <= 'z')) Or
+       ((Ch >= '0') And (Ch <= '9')) Or
+       (Ch = '_') Then
+      R := R + Ch
+    Else
+      R := R + '_';
+  End;
+  SymNameClean := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymMangle : generer le label ASM pour un symbole              }
+{ Prefixe selon le type (SK_VAR -> _PYV_, SK_FUNC -> _PYF_...) }
+{ ------------------------------------------------------------ }
+
+Function SymMangle(Const Name : TString; Kind : Integer) : TString;
+Var
+  Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Kind Of
+    SK_FUNC    : SymMangle := PY_FN_PFX + Clean;
+    SK_CLASS   : SymMangle := PY_CLS_PFX + Clean;
+    SK_MODULE  : SymMangle := PY_VAR_PFX + 'mod_' + Clean;
+    SK_BUILTIN : SymMangle := PY_RT_PFX + Clean;
+  Else
+    SymMangle := PY_VAR_PFX + Clean;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymAdd : ajouter un symbole a la table                        }
+{ Retourne l indice du symbole ajoute, ou -1 si table pleine   }
+{ ------------------------------------------------------------ }
+
+Function SymAdd(Const Name : TString; Kind : Integer;
+                TypeIdx : Integer; DeclLine : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If SymTabCount >= MAX_SYM Then
+  Begin
+    CompileError('Symbol table full (max ' + ItoS(MAX_SYM) + ')',
+                 DeclLine);
+    SymAdd := -1;
+    Exit;
+  End;
+  Idx := SymTabCount;
+  SymTab[Idx].Name       := Name;
+  SymTab[Idx].AsmName    := SymMangle(Name, Kind);
+  SymTab[Idx].Kind       := Kind;
+  SymTab[Idx].TypeIdx    := TypeIdx;
+  SymTab[Idx].Offset     := 0;
+  SymTab[Idx].ScopeLevel := CurScope;
+  SymTab[Idx].IsGlobal   := False;
+  SymTab[Idx].IsNonlocal := False;
+  SymTab[Idx].IsImported := False;
+  SymTab[Idx].DeclLine   := DeclLine;
+  Inc(SymTabCount);
+  Inc(SymAddCount);
+  SymLastName := Name;
+  SymAdd := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFind : rechercher un symbole par nom (derniere occurrence) }
+{ Resolution : local -> englobant -> global -> builtins         }
+{ Retourne l indice ou -1 si non trouve                         }
+{ ------------------------------------------------------------ }
+
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I      : Integer;
+  Result : Integer;
+Begin
+  Inc(SymFindCount);
+  SymLastName := Name;
+  Result := -1;
+  { Parcourir du dernier au premier (portee la plus recente) }
+  For I := SymTabCount - 1 DownTo 0 Do
+  Begin
+    If SymTab[I].Name = Name Then
+    Begin
+      Result := I;
+      Inc(SymFindHit);
+      Break;
+    End;
+  End;
+  SymFind := Result;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFindInScope : rechercher un symbole dans une portee donnee }
+{ Retourne l indice ou -1 si non trouve                         }
+{ ------------------------------------------------------------ }
+
+Function SymFindInScope(Const Name : TString;
+                        Scope : Integer) : Integer;
+Var
+  I      : Integer;
+  Result : Integer;
+Begin
+  Result := -1;
+  For I := SymTabCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Name) And
+       (SymTab[I].ScopeLevel = Scope) Then
+    Begin
+      Result := I;
+      Break;
+    End;
+  End;
+  SymFindInScope := Result;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymEnterScope : entrer dans une nouvelle portee               }
+{ ------------------------------------------------------------ }
+
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('Scope nesting overflow (max ' +
+                 ItoS(MAX_SCOPE) + ')', LexLineNo);
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymTabCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  Inc(SymScopeEnter);
+End;
+
+{ ------------------------------------------------------------ }
+{ SymLeaveScope : quitter la portee courante                    }
+{ Les symboles de la portee restent dans la table (pour debug)  }
+{ mais ne seront plus trouves par SymFind si le scope est filtre}
+{ ------------------------------------------------------------ }
+
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then
+  Begin
+    CompileError('Scope underflow', LexLineNo);
+    Exit;
+  End;
+  Dec(ScopeTop);
+  Dec(CurScope);
+  Inc(SymScopeLeave);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetSymCount : retourner le nombre de symboles dans la table   }
+{ ------------------------------------------------------------ }
+
+Function GetSymCount : Integer;
+Begin
+  GetSymCount := SymTabCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymDump : afficher tous les symboles de la table              }
+{ ------------------------------------------------------------ }
+
+Procedure SymDump;
+Var I : Integer;
+Begin
+  WriteLn('--- Symbol Table (', SymTabCount, ' entries) ---');
+  For I := 0 To SymTabCount - 1 Do
+  Begin
+    WriteLn('  [', I, '] ', SymTab[I].Name,
+            ' -> ', SymTab[I].AsmName,
+            '  kind=', SymKindName(SymTab[I].Kind),
+            '  type=', SymTab[I].TypeIdx,
+            '  scope=', SymTab[I].ScopeLevel,
+            '  line=', SymTab[I].DeclLine);
+    If SymTab[I].IsGlobal Then
+      WriteLn('       global=True');
+    If SymTab[I].IsNonlocal Then
+      WriteLn('       nonlocal=True');
+    If SymTab[I].IsImported Then
+      WriteLn('       imported=True');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpSymState : afficher l etat de la table des symboles       }
+{ ------------------------------------------------------------ }
+
+Procedure DumpSymState;
+Begin
+  WriteLn('--- Sym State ---');
+  WriteLn('  SymInitialized : ', SymInitialized);
+  WriteLn('  SymTabCount    : ', SymTabCount);
+  WriteLn('  CurScope       : ', CurScope);
+  WriteLn('  ScopeTop       : ', ScopeTop);
+  WriteLn('  SymLabelSeq    : ', SymLabelSeq);
+  WriteLn('  SymAddCount    : ', SymAddCount);
+  WriteLn('  SymFindCount   : ', SymFindCount);
+  WriteLn('  SymFindHit     : ', SymFindHit);
+  WriteLn('  SymScopeEnter  : ', SymScopeEnter);
+  WriteLn('  SymScopeLeave  : ', SymScopeLeave);
+  WriteLn('  SymLastName    : ', SymLastName);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 04)                             }
+{ ------------------------------------------------------------ }
+
+Function IsSymInitialized : Boolean;
+Begin
+  IsSymInitialized := SymInitialized;
+End;
+
+Function IsSymEmpty : Boolean;
+Begin
+  IsSymEmpty := (SymTabCount = 0);
+End;
+
+Function GetSymTabCount : Integer;
+Begin
+  GetSymTabCount := SymTabCount;
+End;
+
+Function GetSymAddCount : LongInt;
+Begin
+  GetSymAddCount := SymAddCount;
+End;
+
+Function GetSymFindCount : LongInt;
+Begin
+  GetSymFindCount := SymFindCount;
+End;
+
+Function GetSymFindHit : LongInt;
+Begin
+  GetSymFindHit := SymFindHit;
+End;
+
+Function GetSymCurScope : Integer;
+Begin
+  GetSymCurScope := CurScope;
+End;
+
+Function GetSymScopeTop : Integer;
+Begin
+  GetSymScopeTop := ScopeTop;
+End;
+
+Function GetSymLastName : TString;
+Begin
+  GetSymLastName := SymLastName;
+End;
+
+Function GetSymStatus : TString;
+Begin
+  If Not SymInitialized Then
+    GetSymStatus := 'Not initialized'
+  Else
+    GetSymStatus := ItoS(SymTabCount) + ' symbols, scope=' +
+                    ItoS(CurScope) + ' (' +
+                    ItoS(SymAddCount) + ' adds, ' +
+                    ItoS(SymFindCount) + ' finds)';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -2958,6 +3338,7 @@ Begin
   BcActive   := False;
   LexOpened  := False;
   KwInitialized := False;
+  SymInitialized := False;
 
   ParseArgs;
 
@@ -2966,6 +3347,9 @@ Begin
 
   { Initialiser la reconnaissance des mots-cles }
   InitKwState;
+
+  { Initialiser la table des symboles }
+  SymInit;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -2986,10 +3370,14 @@ Begin
     WriteLn('Tokens analyses  : ', GetLexTokCount);
     WriteLn('Mots-cles trouves: ', GetKwHitCount);
     WriteLn('Builtins trouves : ', GetBiHitCount);
+    WriteLn('Symboles definis : ', GetSymTabCount);
   End;
 
   If Opts.DebugMode Then
+  Begin
     DumpKwState;
+    DumpSymState;
+  End;
 
   { Nettoyage }
   Cleanup;
