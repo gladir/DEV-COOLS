@@ -361,9 +361,17 @@ Turbo Pascal / Free Pascal (-Mtp)
          GetJsWrapCount/GetJsUserScriptCount/GetJsErrorCount/
          GetJsMaxFileSize)
 
-  TODO 14 - SUPPRESSION DES PUBS (ADBLOCK) [A FAIRE]
+  TODO 14 - SUPPRESSION DES PUBS (ADBLOCK) [IMPLEMENTE]
          Constantes de selecteurs publicitaires courants :
-           AD_SELECTORS = 'ins.adsbygoogle, .ad-container, ...'
+           AD_SELECTOR_01..AD_SELECTOR_20 (20 selecteurs CSS)
+           AD_DOMAIN_01..AD_DOMAIN_10 (10 domaines publicitaires)
+           AD_MAX_SELECTORS = 64, AD_MAX_DOMAINS = 32
+         Variables d'etat :
+           AdInitialized/AdStateCount/AdCssGenCount/AdJsGenCount/
+           AdDomainCount/AdSelectorCount/AdBlockEnableCount/
+           AdElementsBlocked
+         Procedure InitAdBlockState
+           initialiser les variables d'etat AdBlock
          Function GenerateAdBlockCss: String
            generer le CSS pour masquer les elements publicitaires
            display: none !important pour chaque selecteur
@@ -376,6 +384,12 @@ Turbo Pascal / Free Pascal (-Mtp)
            liste des domaines publicitaires a bloquer
          Procedure EnableAdBlock(Var InjectionScript: String)
            ajouter le script AdBlock au script d'injection
+         Function GetAdBlockSelectorsAsCss: String
+           retourne tous les selecteurs combines pour CSS
+         10 Accesseurs (IsAdInitialized/IsAdBlockEmpty/GetAdStateCount/
+           GetAdCssGenCount/GetAdJsGenCount/GetAdDomainCount/
+           GetAdSelectorCount/GetAdBlockEnableCount/GetAdElementsBlocked/
+           GetAdMaxSelectors)
 
   TODO 15 - GESTION DES PERMISSIONS [A FAIRE]
          Type TPermissions : record
