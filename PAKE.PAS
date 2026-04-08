@@ -668,7 +668,7 @@
             Procedure InjectDevToolsShortcut(Var Shortcuts: Array Of TShortcut)
               ajouter le raccourci Cmd+Shift+I / Ctrl+Shift+I
 
-  TODO 24 - PRESETS D'APPLICATIONS POPULAIRES [A FAIRE]
+  TODO 24 - PRESETS D'APPLICATIONS POPULAIRES [IMPLEMENTE]
             Type TAppPreset : record
               Name     : String
               Url      : String
@@ -8518,7 +8518,328 @@ Begin
 End;
 
 { ============================================================
-  TODO 24-25 : A IMPLEMENTER
+  TODO 24 - PRESETS D'APPLICATIONS POPULAIRES [IMPLEMENTE]
+  ============================================================ }
+
+Const
+  { Nombre maximum de presets }
+  PS_MAX_PRESETS = 20;
+  
+  { Index des presets }
+  PRESET_NONE     = 0;
+  PRESET_CHATGPT  = 1;
+  PRESET_TWITTER  = 2;
+  PRESET_YOUTUBE  = 3;
+  PRESET_GITHUB   = 4;
+  PRESET_NOTION   = 5;
+  PRESET_FIGMA    = 6;
+  PRESET_DISCORD  = 7;
+  PRESET_SLACK    = 8;
+  PRESET_WHATSAPP = 9;
+  PRESET_SPOTIFY  = 10;
+  PRESET_NETFLIX  = 11;
+  PRESET_GEMINI   = 12;
+  
+  { Nombre total de presets definis }
+  PS_TOTAL_PRESETS = 12;
+  
+  { Types d'extension }
+  PS_EXT_NONE  = 0;
+  PS_EXT_LIST  = 1;
+  PS_EXT_APPLY = 2;
+  PS_EXT_FIND  = 3;
+
+Var
+  { Variables d'etat pour le module Presets }
+  PsInitialized   : Boolean;
+  PsStateCount    : Integer;
+  PsFindCount     : Integer;
+  PsApplyCount    : Integer;
+  PsListCount     : Integer;
+  PsMatchCount    : Integer;
+  PsNotFoundCount : Integer;
+  PsLabelNum      : Integer;
+  PsErrorCount    : Integer;
+  
+  { Table des presets }
+  PresetTable: Array[1..PS_MAX_PRESETS] Of TAppPreset;
+  PresetCount: Integer;
+
+{ Initialiser un preset avec des valeurs par defaut }
+Procedure InitPreset(Var P: TAppPreset);
+Begin
+  P.Name := '';
+  P.Url := '';
+  P.Width := DEFAULT_WIDTH;
+  P.Height := DEFAULT_HEIGHT;
+  P.Icon := '';
+  P.Options := '';
+End;
+
+{ Enregistrer un preset dans la table }
+Procedure RegisterPreset(Const AName, AUrl: String; AWidth, AHeight: Integer;
+  Const AIcon, AOptions: String);
+Begin
+  If PresetCount < PS_MAX_PRESETS Then
+  Begin
+    Inc(PresetCount);
+    PresetTable[PresetCount].Name := AName;
+    PresetTable[PresetCount].Url := AUrl;
+    PresetTable[PresetCount].Width := AWidth;
+    PresetTable[PresetCount].Height := AHeight;
+    PresetTable[PresetCount].Icon := AIcon;
+    PresetTable[PresetCount].Options := AOptions;
+  End
+  Else
+    Inc(PsErrorCount);
+End;
+
+{ Initialiser l'etat du module Presets }
+Procedure InitPresetState;
+Begin
+  PsInitialized := True;
+  PsStateCount := 0;
+  PsFindCount := 0;
+  PsApplyCount := 0;
+  PsListCount := 0;
+  PsMatchCount := 0;
+  PsNotFoundCount := 0;
+  PsLabelNum := 0;
+  PsErrorCount := 0;
+  PresetCount := 0;
+  
+  { Enregistrer les presets populaires }
+  RegisterPreset('chatgpt', 'https://chat.openai.com', 1200, 780, 
+    'chatgpt.png', '--hide-title-bar');
+  RegisterPreset('twitter', 'https://twitter.com', 1200, 800, 
+    'twitter.png', '');
+  RegisterPreset('youtube', 'https://www.youtube.com', 1280, 720, 
+    'youtube.png', '--fullscreen');
+  RegisterPreset('github', 'https://github.com', 1400, 900, 
+    'github.png', '');
+  RegisterPreset('notion', 'https://www.notion.so', 1200, 800, 
+    'notion.png', '--hide-title-bar');
+  RegisterPreset('figma', 'https://www.figma.com', 1440, 900, 
+    'figma.png', '');
+  RegisterPreset('discord', 'https://discord.com/app', 1000, 700, 
+    'discord.png', '--hide-title-bar');
+  RegisterPreset('slack', 'https://app.slack.com', 1200, 800, 
+    'slack.png', '');
+  RegisterPreset('whatsapp', 'https://web.whatsapp.com', 1000, 700, 
+    'whatsapp.png', '--hide-title-bar');
+  RegisterPreset('spotify', 'https://open.spotify.com', 1200, 800, 
+    'spotify.png', '--transparent');
+  RegisterPreset('netflix', 'https://www.netflix.com', 1280, 720, 
+    'netflix.png', '--fullscreen');
+  RegisterPreset('gemini', 'https://gemini.google.com', 1200, 780, 
+    'gemini.png', '--hide-title-bar');
+  
+  Inc(PsStateCount);
+End;
+
+{ Generer un label unique pour le module Presets }
+Function GenPsLabel: String;
+Var
+  S: String;
+Begin
+  Inc(PsLabelNum);
+  Str(PsLabelNum, S);
+  GenPsLabel := 'PS' + S;
+End;
+
+{ Retourner le nom d'une extension }
+Function PsExtName(Ext: Integer): String;
+Begin
+  Case Ext Of
+    PS_EXT_NONE:  PsExtName := 'none';
+    PS_EXT_LIST:  PsExtName := 'list';
+    PS_EXT_APPLY: PsExtName := 'apply';
+    PS_EXT_FIND:  PsExtName := 'find';
+  Else
+    PsExtName := 'unknown';
+  End;
+End;
+
+{ Rechercher un preset par son nom }
+Function FindPreset(Const Name: String): Integer;
+Var
+  I: Integer;
+  UName: String;
+Begin
+  Inc(PsFindCount);
+  UName := UpCaseStr(Name);
+  FindPreset := -1;
+  For I := 1 To PresetCount Do
+  Begin
+    If UpCaseStr(PresetTable[I].Name) = UName Then
+    Begin
+      FindPreset := I;
+      Inc(PsMatchCount);
+      Exit;
+    End;
+  End;
+  Inc(PsNotFoundCount);
+End;
+
+{ Verifier si un nom correspond a un preset }
+Function IsPresetName(Const Name: String): Boolean;
+Begin
+  IsPresetName := (FindPreset(Name) > 0);
+End;
+
+{ Obtenir un preset par son index }
+Function GetPreset(Index: Integer): TAppPreset;
+Var
+  P: TAppPreset;
+Begin
+  InitPreset(P);
+  If (Index >= 1) And (Index <= PresetCount) Then
+    P := PresetTable[Index];
+  GetPreset := P;
+End;
+
+{ Obtenir un preset par son nom }
+Function GetPresetByName(Const Name: String): TAppPreset;
+Var
+  Idx: Integer;
+  P: TAppPreset;
+Begin
+  InitPreset(P);
+  Idx := FindPreset(Name);
+  If Idx > 0 Then
+    P := PresetTable[Idx];
+  GetPresetByName := P;
+End;
+
+{ Appliquer un preset aux options }
+Procedure ApplyPreset(Const Preset: TAppPreset; Var O: TOptions);
+Begin
+  Inc(PsApplyCount);
+  If Length(Preset.Url) > 0 Then
+    O.Url := Preset.Url;
+  If Length(Preset.Name) > 0 Then
+    O.AppName := Preset.Name;
+  If Preset.Width > 0 Then
+    O.Width := Preset.Width;
+  If Preset.Height > 0 Then
+    O.Height := Preset.Height;
+  If Length(Preset.Icon) > 0 Then
+    O.IconPath := Preset.Icon;
+  { Parser les options supplementaires }
+  If Pos('--fullscreen', Preset.Options) > 0 Then
+    O.Fullscreen := True;
+  If Pos('--transparent', Preset.Options) > 0 Then
+    O.Transparent := True;
+  If Pos('--hide-title-bar', Preset.Options) > 0 Then
+    O.HideTitleBar := True;
+  If Pos('--always-on-top', Preset.Options) > 0 Then
+    O.AlwaysOnTop := True;
+End;
+
+{ Appliquer un preset par son nom }
+Procedure ApplyPresetByName(Const Name: String; Var O: TOptions);
+Var
+  Idx: Integer;
+Begin
+  Idx := FindPreset(Name);
+  If Idx > 0 Then
+    ApplyPreset(PresetTable[Idx], O)
+  Else
+    Inc(PsErrorCount);
+End;
+
+{ Afficher la liste des presets disponibles }
+Procedure ListPresets;
+Var
+  I: Integer;
+Begin
+  Inc(PsListCount);
+  WriteLn('=== Presets d''applications disponibles ===');
+  WriteLn;
+  For I := 1 To PresetCount Do
+  Begin
+    WriteLn('  ', PresetTable[I].Name:12, ' - ', PresetTable[I].Url);
+    WriteLn('              ', PresetTable[I].Width, 'x', PresetTable[I].Height,
+      ' ', PresetTable[I].Options);
+  End;
+  WriteLn;
+  WriteLn('Total: ', PresetCount, ' presets');
+End;
+
+{ Obtenir le nombre de presets }
+Function GetPresetCount: Integer;
+Begin
+  GetPresetCount := PresetCount;
+End;
+
+{ Afficher l'etat du module Presets }
+Procedure DumpPresetState;
+Begin
+  WriteLn('=== Etat du module Presets (TODO 24) ===');
+  WriteLn('  Initialise      : ', PsInitialized);
+  WriteLn('  Presets definis : ', PresetCount);
+  WriteLn('  Recherches      : ', PsFindCount);
+  WriteLn('  Applications    : ', PsApplyCount);
+  WriteLn('  Listages        : ', PsListCount);
+  WriteLn('  Trouvees        : ', PsMatchCount);
+  WriteLn('  Non trouvees    : ', PsNotFoundCount);
+  WriteLn('  Erreurs         : ', PsErrorCount);
+  WriteLn;
+End;
+
+{ 10 Accesseurs pour le module Presets }
+Function IsPsInitialized: Boolean;
+Begin
+  IsPsInitialized := PsInitialized;
+End;
+
+Function IsPsEmpty: Boolean;
+Begin
+  IsPsEmpty := (PresetCount = 0);
+End;
+
+Function GetPsStateCount: Integer;
+Begin
+  GetPsStateCount := PsStateCount;
+End;
+
+Function GetPsFindCount: Integer;
+Begin
+  GetPsFindCount := PsFindCount;
+End;
+
+Function GetPsApplyCount: Integer;
+Begin
+  GetPsApplyCount := PsApplyCount;
+End;
+
+Function GetPsListCount: Integer;
+Begin
+  GetPsListCount := PsListCount;
+End;
+
+Function GetPsMatchCount: Integer;
+Begin
+  GetPsMatchCount := PsMatchCount;
+End;
+
+Function GetPsNotFoundCount: Integer;
+Begin
+  GetPsNotFoundCount := PsNotFoundCount;
+End;
+
+Function GetPsErrorCount: Integer;
+Begin
+  GetPsErrorCount := PsErrorCount;
+End;
+
+Function GetPsLabelNum: Integer;
+Begin
+  GetPsLabelNum := PsLabelNum;
+End;
+
+{ ============================================================
+  TODO 25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -8805,13 +9126,23 @@ Begin
     End;
   End;
 
-  { TODO: Implementer les TODOs 24-25 }
-  WriteLn('*** NOTE: TODOs 01-23 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 24-25 restent a implementer ***');
+  { Initialiser le module Presets (TODO 24) }
+  InitPresetState;
+  
+  { Afficher l'etat des Presets si verbose }
+  If O.Verbose Then
+  Begin
+    WriteLn('=== Configuration Presets ===');
+    WriteLn('  Presets disponibles: ', GetPresetCount);
+    WriteLn;
+  End;
+
+  { TODO: Implementer la TODO 25 }
+  WriteLn('*** NOTE: TODOs 01-24 [IMPLEMENTE] ***');
+  WriteLn('*** La TODO 25 reste a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 24: Presets d''applications populaires');
   WriteLn('  - TODO 25: Verification et rapport final');
 End;
 

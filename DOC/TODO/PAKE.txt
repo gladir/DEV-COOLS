@@ -639,7 +639,7 @@ Turbo Pascal / Free Pascal (-Mtp)
          Procedure InjectDevToolsShortcut(Var Shortcuts: Array Of TShortcut)
            ajouter le raccourci Cmd+Shift+I / Ctrl+Shift+I
 
-  TODO 24 - PRESETS D'APPLICATIONS POPULAIRES [A FAIRE]
+  TODO 24 - PRESETS D'APPLICATIONS POPULAIRES [IMPLEMENTE]
          Type TAppPreset : record
            Name     : String
            Url      : String
