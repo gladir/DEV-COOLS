@@ -125,7 +125,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             Instruction nonlocal : marquer une variable de portee englobante
             10 fonctions accesseurs
 
-  TODO 05 - SYSTEME DE TYPES DYNAMIQUE [A FAIRE]
+  TODO 05 - SYSTEME DE TYPES DYNAMIQUE [IMPLEMENTE]
             TTypeKind : TYK_INT (32 bits signe), TYK_BOOL (32 bits),
               TYK_STR (ptr chaine), TYK_NONE (nul),
               TYK_LIST (ptr tableau dynamique),

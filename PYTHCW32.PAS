@@ -133,7 +133,7 @@
             Instruction nonlocal : marquer une variable de portee englobante
             10 fonctions accesseurs
 
-  TODO 05 - SYSTEME DE TYPES DYNAMIQUE [A FAIRE]
+  TODO 05 - SYSTEME DE TYPES DYNAMIQUE [IMPLEMENTE]
             TTypeKind : TYK_INT (32 bits signe), TYK_BOOL (32 bits),
               TYK_STR (ptr chaine), TYK_NONE (nul),
               TYK_LIST (ptr tableau dynamique),
@@ -747,6 +747,7 @@ Const
   MAX_CLS_METH   = 32;
   MAX_IMPORT     = 32;
   MAX_COMP_BUF   = 64;
+  MAX_TYPE       = 64;
 
   { Prefixes de nommage ASM }
   PY_VAR_PFX  = '_PYV_';    { variable globale/locale              }
@@ -3325,6 +3326,296 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 05 - SYSTEME DE TYPES DYNAMIQUE [IMPLEMENTE]            }
+{ ============================================================ }
+
+Const
+  { TTypeKind : types primitifs Python }
+  TYK_INT    = 0;    { entier 32 bits signe                     }
+  TYK_BOOL   = 1;    { booleen 32 bits (0 ou 1)                 }
+  TYK_STR    = 2;    { ptr vers chaine                          }
+  TYK_NONE   = 3;    { nul (None)                               }
+  TYK_LIST   = 4;    { ptr vers tableau dynamique               }
+  TYK_DICT   = 5;    { ptr vers table de hachage                }
+  TYK_TUPLE  = 6;    { ptr vers tableau fixe                    }
+  TYK_FUNC   = 7;    { ptr vers code de fonction                }
+  TYK_OBJECT = 8;    { ptr vers instance de classe              }
+  TYK_CLASS  = 9;    { descripteur de classe                    }
+  TYK_MODULE = 10;   { module importe                           }
+  TYK_MAX    = 10;   { valeur maximale TYK_*                    }
+
+  { Indices des types primitifs dans TypeTab }
+  TY_IDX_INT    = 0;
+  TY_IDX_STR    = 1;
+  TY_IDX_BOOL   = 2;
+  TY_IDX_NONE   = 3;
+  TY_IDX_LIST   = 4;
+  TY_IDX_DICT   = 5;
+  TY_IDX_FUNC   = 6;
+  TY_IDX_CLASS  = 7;
+  TY_IDX_TUPLE  = 8;
+  TY_IDX_MODULE = 9;
+  TY_PRIM_COUNT = 10;  { nombre de types primitifs              }
+
+Type
+  TTypeRec = Record
+    Name  : TString;       { nom du type ('int', 'str', ...)      }
+    Kind  : Integer;       { TYK_INT..TYK_CLASS                   }
+    Size  : Integer;       { taille en octets (32 bits)           }
+  End;
+
+Var
+  TypeTab         : Array[0..MAX_TYPE-1] Of TTypeRec;
+  TypeCount       : Integer;       { nombre de types enregistres        }
+  TypInitialized  : Boolean;       { True si l etat est initialise      }
+  TypLabelSeq     : Integer;       { sequence pour labels uniques       }
+  TypAddCount     : LongInt;       { nombre total de TypeAdd            }
+  TypFindCount    : LongInt;       { nombre total de TypeFindByName     }
+  TypFindHit      : LongInt;       { nombre de TypeFindByName OK        }
+  TypLastName     : TString;       { dernier nom cherche/ajoute         }
+
+{ ------------------------------------------------------------ }
+{ TypeInit : initialiser la table des types et enregistrer      }
+{ les 10 types primitifs Python                                 }
+{ ------------------------------------------------------------ }
+
+Procedure TypeInit;
+
+  Procedure AddPrim(Const N : TString; K, S : Integer);
+  Begin
+    If TypeCount < MAX_TYPE Then
+    Begin
+      TypeTab[TypeCount].Name := N;
+      TypeTab[TypeCount].Kind := K;
+      TypeTab[TypeCount].Size := S;
+      Inc(TypeCount);
+    End;
+  End;
+
+Begin
+  TypInitialized := True;
+  TypeCount      := 0;
+  TypLabelSeq    := 0;
+  TypAddCount    := 0;
+  TypFindCount   := 0;
+  TypFindHit     := 0;
+  TypLastName    := '';
+  { Enregistrer les 10 types primitifs (ordre = TY_IDX_*) }
+  AddPrim('int',    TYK_INT,    4);   { TY_IDX_INT    = 0 }
+  AddPrim('str',    TYK_STR,    4);   { TY_IDX_STR    = 1 }
+  AddPrim('bool',   TYK_BOOL,   4);   { TY_IDX_BOOL   = 2 }
+  AddPrim('None',   TYK_NONE,   0);   { TY_IDX_NONE   = 3 }
+  AddPrim('list',   TYK_LIST,   4);   { TY_IDX_LIST   = 4 }
+  AddPrim('dict',   TYK_DICT,   4);   { TY_IDX_DICT   = 5 }
+  AddPrim('func',   TYK_FUNC,   4);   { TY_IDX_FUNC   = 6 }
+  AddPrim('class',  TYK_CLASS,  4);   { TY_IDX_CLASS  = 7 }
+  AddPrim('tuple',  TYK_TUPLE,  4);   { TY_IDX_TUPLE  = 8 }
+  AddPrim('module', TYK_MODULE, 4);   { TY_IDX_MODULE = 9 }
+End;
+
+{ ------------------------------------------------------------ }
+{ GenTypLabel : generer un label unique _TYP_N                  }
+{ ------------------------------------------------------------ }
+
+Function GenTypLabel : TString;
+Begin
+  Inc(TypLabelSeq);
+  GenTypLabel := '_TYP_' + ItoS(TypLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeKindStr : nom textuel d un TTypeKind                      }
+{ ------------------------------------------------------------ }
+
+Function TypeKindStr(K : Integer) : TString;
+Begin
+  Case K Of
+    TYK_INT    : TypeKindStr := 'TYK_INT';
+    TYK_BOOL   : TypeKindStr := 'TYK_BOOL';
+    TYK_STR    : TypeKindStr := 'TYK_STR';
+    TYK_NONE   : TypeKindStr := 'TYK_NONE';
+    TYK_LIST   : TypeKindStr := 'TYK_LIST';
+    TYK_DICT   : TypeKindStr := 'TYK_DICT';
+    TYK_TUPLE  : TypeKindStr := 'TYK_TUPLE';
+    TYK_FUNC   : TypeKindStr := 'TYK_FUNC';
+    TYK_OBJECT : TypeKindStr := 'TYK_OBJECT';
+    TYK_CLASS  : TypeKindStr := 'TYK_CLASS';
+    TYK_MODULE : TypeKindStr := 'TYK_MODULE';
+  Else
+    TypeKindStr := 'TYK_?(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypTypeName : nom textuel pour un indice dans TypeTab         }
+{ ------------------------------------------------------------ }
+
+Function TypTypeName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) Then
+    TypTypeName := TypeTab[Idx].Name
+  Else
+    TypTypeName := '?type(' + ItoS(Idx) + ')';
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeKindOf : retourner le TTypeKind pour un indice            }
+{ ------------------------------------------------------------ }
+
+Function TypeKindOf(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) Then
+    TypeKindOf := TypeTab[Idx].Kind
+  Else
+    TypeKindOf := TYK_NONE;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeSizeOf : retourner la taille en octets pour un indice     }
+{ ------------------------------------------------------------ }
+
+Function TypeSizeOf(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) Then
+    TypeSizeOf := TypeTab[Idx].Size
+  Else
+    TypeSizeOf := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeFindByName : rechercher un type par nom -> index          }
+{ Retourne l indice ou -1 si non trouve                         }
+{ ------------------------------------------------------------ }
+
+Function TypeFindByName(Const Name : TString) : Integer;
+Var
+  I      : Integer;
+  Result : Integer;
+Begin
+  Inc(TypFindCount);
+  TypLastName := Name;
+  Result := -1;
+  For I := 0 To TypeCount - 1 Do
+  Begin
+    If TypeTab[I].Name = Name Then
+    Begin
+      Result := I;
+      Inc(TypFindHit);
+      Break;
+    End;
+  End;
+  TypeFindByName := Result;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeAdd : ajouter un nouveau type dans la table               }
+{ Retourne l indice ou -1 si table pleine                       }
+{ ------------------------------------------------------------ }
+
+Function TypeAdd(Const Name : TString; Kind, Size : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    CompileError('Type table full (max ' + ItoS(MAX_TYPE) + ')',
+                 LexLineNo);
+    TypeAdd := -1;
+    Exit;
+  End;
+  Idx := TypeCount;
+  TypeTab[Idx].Name := Name;
+  TypeTab[Idx].Kind := Kind;
+  TypeTab[Idx].Size := Size;
+  Inc(TypeCount);
+  Inc(TypAddCount);
+  TypLastName := Name;
+  TypeAdd := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpTypState : afficher l etat du systeme de types            }
+{ ------------------------------------------------------------ }
+
+Procedure DumpTypState;
+Var I : Integer;
+Begin
+  WriteLn('--- Typ State ---');
+  WriteLn('  TypInitialized : ', TypInitialized);
+  WriteLn('  TypeCount      : ', TypeCount);
+  WriteLn('  TypLabelSeq    : ', TypLabelSeq);
+  WriteLn('  TypAddCount    : ', TypAddCount);
+  WriteLn('  TypFindCount   : ', TypFindCount);
+  WriteLn('  TypFindHit     : ', TypFindHit);
+  WriteLn('  TypLastName    : ', TypLastName);
+  WriteLn('--- Type Table (', TypeCount, ' entries) ---');
+  For I := 0 To TypeCount - 1 Do
+    WriteLn('  [', I, '] ', TypeTab[I].Name,
+            '  kind=', TypeKindStr(TypeTab[I].Kind),
+            '  size=', TypeTab[I].Size);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 05)                             }
+{ ------------------------------------------------------------ }
+
+Function IsTypInitialized : Boolean;
+Begin
+  IsTypInitialized := TypInitialized;
+End;
+
+Function IsTypEmpty : Boolean;
+Begin
+  IsTypEmpty := (TypeCount = 0);
+End;
+
+Function GetTypeCount : Integer;
+Begin
+  GetTypeCount := TypeCount;
+End;
+
+Function GetTypAddCount : LongInt;
+Begin
+  GetTypAddCount := TypAddCount;
+End;
+
+Function GetTypFindCount : LongInt;
+Begin
+  GetTypFindCount := TypFindCount;
+End;
+
+Function GetTypFindHit : LongInt;
+Begin
+  GetTypFindHit := TypFindHit;
+End;
+
+Function GetTypLabelSeq : Integer;
+Begin
+  GetTypLabelSeq := TypLabelSeq;
+End;
+
+Function GetTypLastName : TString;
+Begin
+  GetTypLastName := TypLastName;
+End;
+
+Function GetTypPrimCount : Integer;
+Begin
+  GetTypPrimCount := TY_PRIM_COUNT;
+End;
+
+Function GetTypStatus : TString;
+Begin
+  If Not TypInitialized Then
+    GetTypStatus := 'Not initialized'
+  Else
+    GetTypStatus := ItoS(TypeCount) + ' types (' +
+                    ItoS(TY_PRIM_COUNT) + ' primitifs, ' +
+                    ItoS(TypAddCount) + ' adds, ' +
+                    ItoS(TypFindCount) + ' finds)';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -3339,6 +3630,7 @@ Begin
   LexOpened  := False;
   KwInitialized := False;
   SymInitialized := False;
+  TypInitialized := False;
 
   ParseArgs;
 
@@ -3350,6 +3642,9 @@ Begin
 
   { Initialiser la table des symboles }
   SymInit;
+
+  { Initialiser le systeme de types }
+  TypeInit;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -3371,12 +3666,14 @@ Begin
     WriteLn('Mots-cles trouves: ', GetKwHitCount);
     WriteLn('Builtins trouves : ', GetBiHitCount);
     WriteLn('Symboles definis : ', GetSymTabCount);
+    WriteLn('Types enregistres: ', GetTypeCount);
   End;
 
   If Opts.DebugMode Then
   Begin
     DumpKwState;
     DumpSymState;
+    DumpTypState;
   End;
 
   { Nettoyage }
