@@ -16,13 +16,15 @@
             InitOptState, GenOptLabel, OptTypeName, DumpOptState
             10 accesseurs (IsOptInitialized, IsOptEmpty, GetOpt*Count, ...)
 
-  TODO 02 - CHARGEMENT DES FICHIERS D'APPRENTISSAGE [A FAIRE]
+  TODO 02 - CHARGEMENT DES FICHIERS D'APPRENTISSAGE [IMPLEMENTE]
             TLearnFile : FileName, Content, LineCount
             LoadLearnFile(FileName) : charger un fichier .txt en memoire
             LearnFiles[0..MAX_LEARN-1], LearnCount
             Supporter les fichiers DOC/*.txt comme base de connaissances
             IndexLearnContent : indexer le contenu pour recherche rapide
             FindInLearnFiles(Query) : rechercher dans les fichiers charges
+            InitLearnState, GenLrnLabel, LrnTypeName, DumpLearnState
+            10 accesseurs (IsLrnInitialized, IsLrnEmpty, GetLrn*Count, ...)
 
   TODO 03 - HISTORIQUE DE CONVERSATION [A FAIRE]
             THistoryEntry : UserInput, BotResponse, Timestamp

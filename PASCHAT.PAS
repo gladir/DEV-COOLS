@@ -29,13 +29,15 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 02 - CHARGEMENT DES FICHIERS D'APPRENTISSAGE [A FAIRE]
+  TODO 02 - CHARGEMENT DES FICHIERS D'APPRENTISSAGE [IMPLEMENTE]
             TLearnFile : FileName, Content, LineCount
             LoadLearnFile(FileName) : charger un fichier .txt en memoire
             LearnFiles[0..MAX_LEARN-1], LearnCount
             Supporter les fichiers DOC/*.txt comme base de connaissances
             IndexLearnContent : indexer le contenu pour recherche rapide
             FindInLearnFiles(Query) : rechercher dans les fichiers charges
+            InitLearnState, GenLrnLabel, LrnTypeName, DumpLearnState
+            10 accesseurs (IsLrnInitialized, IsLrnEmpty, GetLrn*Count, ...)
   ============================================================ }
 
 { ============================================================
@@ -313,6 +315,21 @@ Const
   { Limites pour TODO 01 }
   OPT_MAX_FILES  = 64;  { Nombre max de fichiers en entree }
 
+  { TODO 02 - Types de fichiers d'apprentissage (LRN_*) }
+  LRN_NONE       = 0;   { Aucun fichier }
+  LRN_TEXT       = 1;   { Fichier texte simple }
+  LRN_DOC        = 2;   { Documentation }
+  LRN_CODE       = 3;   { Code source Pascal }
+  LRN_SYNTAX     = 4;   { Reference syntaxique }
+  LRN_EXAMPLE    = 5;   { Exemples de code }
+  LRN_KEYWORD    = 6;   { Mots-cles et commandes }
+  LRN_INDEX      = 7;   { Index de contenu }
+  LRN_MAX        = 8;   { Nombre maximum de types }
+
+  { Limites pour TODO 02 }
+  LRN_MAX_WORDS  = 256; { Nombre max de mots indexes par fichier }
+  LRN_MIN_WORD   = 3;   { Longueur minimale pour indexation }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -509,9 +526,22 @@ Var
   OptErrorCount  : Integer;
   OptLabelNum    : Integer;
 
-  { TODO 02 - Fichiers d'apprentissage }
+  { TODO 02 - Fichiers d'apprentissage et etat }
   LearnFiles : Array[1..MAX_LEARN] of TLearnFile;
   LearnCount : Integer;
+  LrnInitialized : Boolean;
+  LrnStateCount  : Integer;
+  LrnLoadCount   : Integer;
+  LrnTextCount   : Integer;
+  LrnDocCount    : Integer;
+  LrnCodeCount   : Integer;
+  LrnSyntaxCount : Integer;
+  LrnExampleCount: Integer;
+  LrnIndexCount  : Integer;
+  LrnErrorCount  : Integer;
+  LrnLabelNum    : Integer;
+  LrnTotalLines  : Integer;
+  LrnSearchCount : Integer;
 
   { TODO 03 - Historique }
   History      : Array[1..MAX_HISTORY] of THistoryEntry;
@@ -935,6 +965,180 @@ Begin
       For J := 1 to LearnFiles[I].LineCount do
         If LearnFiles[I].Lines[J] <> nil Then
           Dispose(LearnFiles[I].Lines[J]);
+End;
+
+{ --- TODO 02 : Fonctions d'initialisation et utilitaires --- }
+
+Procedure InitLearnState;
+Begin
+  LrnInitialized := True;
+  LrnStateCount := 0;
+  LrnLoadCount := 0;
+  LrnTextCount := 0;
+  LrnDocCount := 0;
+  LrnCodeCount := 0;
+  LrnSyntaxCount := 0;
+  LrnExampleCount := 0;
+  LrnIndexCount := 0;
+  LrnErrorCount := 0;
+  LrnLabelNum := 0;
+  LrnTotalLines := 0;
+  LrnSearchCount := 0;
+End;
+
+Function GenLrnLabel: TString;
+Var
+  S: String;
+Begin
+  Inc(LrnLabelNum);
+  Str(LrnLabelNum, S);
+  GenLrnLabel := '_LRN_L_' + S;
+End;
+
+Function LrnTypeName(LrnType: Integer): TString;
+Begin
+  Case LrnType of
+    LRN_NONE:    LrnTypeName := 'NONE';
+    LRN_TEXT:    LrnTypeName := 'TEXT';
+    LRN_DOC:     LrnTypeName := 'DOC';
+    LRN_CODE:    LrnTypeName := 'CODE';
+    LRN_SYNTAX:  LrnTypeName := 'SYNTAX';
+    LRN_EXAMPLE: LrnTypeName := 'EXAMPLE';
+    LRN_KEYWORD: LrnTypeName := 'KEYWORD';
+    LRN_INDEX:   LrnTypeName := 'INDEX';
+  Else
+    LrnTypeName := 'UNKNOWN';
+  End;
+End;
+
+Function DetectLearnFileType(FileName: String): Integer;
+Var
+  UF: String;
+Begin
+  UF := UpCaseStr(FileName);
+  If Pos('SYNTAX', UF) > 0 Then
+    DetectLearnFileType := LRN_SYNTAX
+  Else If Pos('EXAMPLE', UF) > 0 Then
+    DetectLearnFileType := LRN_EXAMPLE
+  Else If Pos('DOC', UF) > 0 Then
+    DetectLearnFileType := LRN_DOC
+  Else If (Pos('.PAS', UF) > 0) Or (Pos('CODE', UF) > 0) Then
+    DetectLearnFileType := LRN_CODE
+  Else If Pos('INDEX', UF) > 0 Then
+    DetectLearnFileType := LRN_INDEX
+  Else If Pos('KEYWORD', UF) > 0 Then
+    DetectLearnFileType := LRN_KEYWORD
+  Else
+    DetectLearnFileType := LRN_TEXT;
+End;
+
+Procedure IndexLearnContent;
+Var
+  I: Integer;
+  FType: Integer;
+Begin
+  { Indexe le contenu des fichiers charges }
+  For I := 1 to LearnCount do Begin
+    If LearnFiles[I].Loaded Then Begin
+      FType := DetectLearnFileType(LearnFiles[I].FileName);
+      Case FType of
+        LRN_TEXT:    Inc(LrnTextCount);
+        LRN_DOC:     Inc(LrnDocCount);
+        LRN_CODE:    Inc(LrnCodeCount);
+        LRN_SYNTAX:  Inc(LrnSyntaxCount);
+        LRN_EXAMPLE: Inc(LrnExampleCount);
+        LRN_INDEX:   Inc(LrnIndexCount);
+      End;
+      LrnTotalLines := LrnTotalLines + LearnFiles[I].LineCount;
+      Inc(LrnLoadCount);
+    End;
+  End;
+  Inc(LrnStateCount);
+End;
+
+Function FindAllInLearnFiles(Query: String): Integer;
+Var
+  I, J, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 to LearnCount do
+    If LearnFiles[I].Loaded Then
+      For J := 1 to LearnFiles[I].LineCount do
+        If ContainsWord(LearnFiles[I].Lines[J]^, Query) Then
+          Inc(Count);
+  Inc(LrnSearchCount);
+  FindAllInLearnFiles := Count;
+End;
+
+Procedure DumpLearnState;
+Begin
+  WriteLn('=== TODO 02 - Chargement Fichiers Apprentissage ===');
+  WriteLn('  LrnInitialized : ', LrnInitialized);
+  WriteLn('  LrnStateCount  : ', LrnStateCount);
+  WriteLn('  LrnLoadCount   : ', LrnLoadCount);
+  WriteLn('  LrnTextCount   : ', LrnTextCount);
+  WriteLn('  LrnDocCount    : ', LrnDocCount);
+  WriteLn('  LrnCodeCount   : ', LrnCodeCount);
+  WriteLn('  LrnSyntaxCount : ', LrnSyntaxCount);
+  WriteLn('  LrnExampleCount: ', LrnExampleCount);
+  WriteLn('  LrnIndexCount  : ', LrnIndexCount);
+  WriteLn('  LrnErrorCount  : ', LrnErrorCount);
+  WriteLn('  LrnLabelNum    : ', LrnLabelNum);
+  WriteLn('  LrnTotalLines  : ', LrnTotalLines);
+  WriteLn('  LrnSearchCount : ', LrnSearchCount);
+  WriteLn('  LearnCount     : ', LearnCount);
+End;
+
+{ --- TODO 02 : 10 accesseurs standards --- }
+
+Function IsLrnInitialized: Boolean;
+Begin
+  IsLrnInitialized := LrnInitialized;
+End;
+
+Function IsLrnEmpty: Boolean;
+Begin
+  IsLrnEmpty := (LearnCount = 0);
+End;
+
+Function GetLrnStateCount: Integer;
+Begin
+  GetLrnStateCount := LrnStateCount;
+End;
+
+Function GetLrnLoadCount: Integer;
+Begin
+  GetLrnLoadCount := LrnLoadCount;
+End;
+
+Function GetLrnTextCount: Integer;
+Begin
+  GetLrnTextCount := LrnTextCount;
+End;
+
+Function GetLrnDocCount: Integer;
+Begin
+  GetLrnDocCount := LrnDocCount;
+End;
+
+Function GetLrnCodeCount: Integer;
+Begin
+  GetLrnCodeCount := LrnCodeCount;
+End;
+
+Function GetLrnTotalLines: Integer;
+Begin
+  GetLrnTotalLines := LrnTotalLines;
+End;
+
+Function GetLrnErrorCount: Integer;
+Begin
+  GetLrnErrorCount := LrnErrorCount;
+End;
+
+Function GetLrnLabelNum: Integer;
+Begin
+  GetLrnLabelNum := LrnLabelNum;
 End;
 
 { ============================================================
@@ -1835,6 +2039,9 @@ Begin
   { Charger les fichiers d'apprentissage }
   LoadAllLearnFiles;
 
+  { Indexer le contenu charge (TODO 02) }
+  IndexLearnContent;
+
   { Initialiser l'interface }
   InitChat;
 
@@ -1873,9 +2080,15 @@ Begin
   If Options.Verbose Then
     ShowVersion;
 
+  { Initialiser l'etat des fichiers d'apprentissage (TODO 02) }
+  LrnInitialized := False;
+  InitLearnState;
+
   { Afficher l'etat des options en mode debug }
-  If Options.DebugMode Then
+  If Options.DebugMode Then Begin
     DumpOptState;
+    DumpLearnState;
+  End;
 
   Run;
 
