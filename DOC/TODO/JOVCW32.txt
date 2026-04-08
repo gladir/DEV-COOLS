@@ -474,7 +474,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
               CMP EAX, EBX + Jcc (JE, JNE, JL, JLE, JG, JGE)
             10 fonctions accesseurs
 
-  TODO 19 - GENERATION DE CODE : STRUCTURES DE CONTROLE 80386 [A FAIRE]
+  TODO 19 - GENERATION DE CODE : STRUCTURES DE CONTROLE 80386 [IMPLEMENTE]
             IF / ELSE / END :
               Evaluer la condition -> flags
               Jcc _JL_ELSE_nnn (saut conditionnel si faux)

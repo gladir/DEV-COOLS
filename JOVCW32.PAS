@@ -10175,6 +10175,467 @@ End;
 
 
 { ============================================================ }
+{ TODO 19 - GENERATION DE CODE : STRUCTURES DE CONTROLE 80386   }
+{   Generer le code assembleur 80386 pour les structures de     }
+{   controle : IF/ELSE/END, FOR/TO/DO/END, FOR/BY/TO,          }
+{   WHILE/DO/END, DO/UNTIL. Labels uniques pour chaque          }
+{   structure, sauts conditionnels et inconditionnels.           }
+{ ============================================================ }
+
+Const
+  { Types de structures de controle generees }
+  CTG_NONE        = 0;   { aucune structure                         }
+  CTG_IF          = 1;   { IF / ELSE / END                          }
+  CTG_FOR         = 2;   { FOR var = debut TO fin DO ... END         }
+  CTG_FOR_BY      = 3;   { FOR var = debut BY pas TO fin DO ... END  }
+  CTG_WHILE       = 4;   { WHILE condition DO ... END                }
+  CTG_DO_UNTIL    = 5;   { DO ... UNTIL condition                    }
+  CTG_GOTO        = 6;   { JMP label                                 }
+  CTG_LABEL       = 7;   { label:                                    }
+
+  { Limites }
+  CTG_MAX_OPS     = 4096;  { nombre max de structures generees      }
+
+Var
+  { Variables du generateur de structures de controle }
+  CtgInitialized  : Boolean;     { module initialise ?               }
+  CtgStateCount   : Integer;     { compteur total d operations       }
+  CtgIfCount      : Integer;     { IF generes                        }
+  CtgForCount     : Integer;     { FOR generes                       }
+  CtgForByCount   : Integer;     { FOR BY generes                    }
+  CtgWhileCount   : Integer;     { WHILE generes                     }
+  CtgDoUntilCount : Integer;     { DO UNTIL generes                  }
+  CtgGotoCount    : Integer;     { GOTO generes                      }
+  CtgLabelGenCount: Integer;     { labels de code generes            }
+  CtgLabelNum     : Integer;     { generateur de labels uniques      }
+  CtgErrorCount   : Integer;     { nombre d erreurs                  }
+
+{ ------------------------------------------------------------ }
+{ InitCtrlGenState : initialiser les variables du generateur     }
+{ ------------------------------------------------------------ }
+
+Procedure InitCtrlGenState;
+Begin
+  CtgInitialized  := True;
+  CtgStateCount   := 0;
+  CtgIfCount      := 0;
+  CtgForCount     := 0;
+  CtgForByCount   := 0;
+  CtgWhileCount   := 0;
+  CtgDoUntilCount := 0;
+  CtgGotoCount    := 0;
+  CtgLabelGenCount:= 0;
+  CtgLabelNum     := 0;
+  CtgErrorCount   := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCtgLabel : generer un label unique pour le controle de flux  }
+{ ------------------------------------------------------------ }
+
+Function GenCtgLabel : TString;
+Begin
+  Inc(CtgLabelNum);
+  GenCtgLabel := PFX_LBL + 'CTG_' + ItoSI(CtgLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ CtgTypeName : nom textuel d un type de structure generee       }
+{ ------------------------------------------------------------ }
+
+Function CtgTypeName(CtgType : Integer) : TString;
+Begin
+  Case CtgType Of
+    CTG_NONE     : CtgTypeName := 'NONE';
+    CTG_IF       : CtgTypeName := 'IF';
+    CTG_FOR      : CtgTypeName := 'FOR';
+    CTG_FOR_BY   : CtgTypeName := 'FOR_BY';
+    CTG_WHILE    : CtgTypeName := 'WHILE';
+    CTG_DO_UNTIL : CtgTypeName := 'DO_UNTIL';
+    CTG_GOTO     : CtgTypeName := 'GOTO';
+    CTG_LABEL    : CtgTypeName := 'LABEL';
+  Else
+    CtgTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIfElse : generer le code 80386 pour IF / ELSE / END        }
+{   Evaluer la condition -> flags deja positionnes              }
+{   Jcc _JL_ELSE_nnn (saut conditionnel si faux)               }
+{   ... bloc THEN ...                                            }
+{   JMP _JL_ENDIF_nnn                                            }
+{   _JL_ELSE_nnn:                                                }
+{   ... bloc ELSE ...                                            }
+{   _JL_ENDIF_nnn:                                               }
+{                                                                }
+{ CondJcc = code de saut inverse (JNE, JE, JGE, JLE, ...)      }
+{ ThenCode = code du bloc THEN                                  }
+{ ElseCode = code du bloc ELSE (vide si pas de ELSE)            }
+{ ------------------------------------------------------------ }
+
+Function EmitIfElse(Const CondJcc : TString;
+                    Const ThenCode : TString;
+                    Const ElseCode : TString) : TString;
+Var
+  Buf, LblElse, LblEndIf : TString;
+Begin
+  If CtgIfCount >= CTG_MAX_OPS Then
+  Begin
+    Inc(CtgErrorCount);
+    EmitIfElse := '; ERROR: max IF structures exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  LblElse  := GenCtgLabel;
+  LblEndIf := GenCtgLabel;
+
+  If ElseCode = '' Then
+  Begin
+    { IF sans ELSE }
+    Buf := '  ' + CondJcc + ' ' + LblEndIf + Chr(13) + Chr(10) +
+           ThenCode +
+           LblEndIf + ':' + Chr(13) + Chr(10);
+  End
+  Else
+  Begin
+    { IF avec ELSE }
+    Buf := '  ' + CondJcc + ' ' + LblElse + Chr(13) + Chr(10) +
+           ThenCode +
+           '  JMP ' + LblEndIf + Chr(13) + Chr(10) +
+           LblElse + ':' + Chr(13) + Chr(10) +
+           ElseCode +
+           LblEndIf + ':' + Chr(13) + Chr(10);
+  End;
+
+  Inc(CtgIfCount);
+  Inc(CtgStateCount);
+  EmitIfElse := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitForLoop : generer le code 80386 pour FOR (pas = 1)         }
+{   MOV DWORD [var], debut                                       }
+{   _JL_FOR_nnn:                                                 }
+{   MOV EAX, DWORD [var]                                         }
+{   CMP EAX, fin                                                 }
+{   JG _JL_FOREND_nnn                                            }
+{   ... corps de la boucle ...                                   }
+{   INC DWORD [var]                                              }
+{   JMP _JL_FOR_nnn                                              }
+{   _JL_FOREND_nnn:                                              }
+{ ------------------------------------------------------------ }
+
+Function EmitForLoop(Const AsmVar : TString;
+                     StartVal, EndVal : LongInt;
+                     Const BodyCode : TString) : TString;
+Var
+  Buf, LblFor, LblForEnd : TString;
+  SV, EV : TString;
+Begin
+  If CtgForCount >= CTG_MAX_OPS Then
+  Begin
+    Inc(CtgErrorCount);
+    EmitForLoop := '; ERROR: max FOR structures exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Str(StartVal, SV);
+  Str(EndVal, EV);
+  LblFor    := GenCtgLabel;
+  LblForEnd := GenCtgLabel;
+
+  Buf := '  MOV DWORD [' + AsmVar + '], ' + SV + Chr(13) + Chr(10) +
+         LblFor + ':' + Chr(13) + Chr(10) +
+         '  MOV EAX, DWORD [' + AsmVar + ']' + Chr(13) + Chr(10) +
+         '  CMP EAX, ' + EV + Chr(13) + Chr(10) +
+         '  JG ' + LblForEnd + Chr(13) + Chr(10) +
+         BodyCode +
+         '  INC DWORD [' + AsmVar + ']' + Chr(13) + Chr(10) +
+         '  JMP ' + LblFor + Chr(13) + Chr(10) +
+         LblForEnd + ':' + Chr(13) + Chr(10);
+
+  Inc(CtgForCount);
+  Inc(CtgStateCount);
+  EmitForLoop := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitForByLoop : generer le code 80386 pour FOR avec BY (pas)   }
+{   MOV DWORD [var], debut                                       }
+{   _JL_FOR_nnn:                                                 }
+{   MOV EAX, DWORD [var]                                         }
+{   CMP EAX, fin                                                 }
+{   Si pas > 0 : JG _JL_FOREND_nnn                              }
+{   Si pas < 0 : JL _JL_FOREND_nnn                              }
+{   ... corps de la boucle ...                                   }
+{   ADD DWORD [var], pas                                         }
+{   JMP _JL_FOR_nnn                                              }
+{   _JL_FOREND_nnn:                                              }
+{ ------------------------------------------------------------ }
+
+Function EmitForByLoop(Const AsmVar : TString;
+                       StartVal, EndVal, StepVal : LongInt;
+                       Const BodyCode : TString) : TString;
+Var
+  Buf, LblFor, LblForEnd : TString;
+  SV, EV, TV : TString;
+  Jmp : TString;
+Begin
+  If CtgForByCount >= CTG_MAX_OPS Then
+  Begin
+    Inc(CtgErrorCount);
+    EmitForByLoop := '; ERROR: max FOR BY structures exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Str(StartVal, SV);
+  Str(EndVal, EV);
+  Str(StepVal, TV);
+  LblFor    := GenCtgLabel;
+  LblForEnd := GenCtgLabel;
+
+  { Choisir la condition de sortie selon le signe du pas }
+  If StepVal < 0 Then
+    Jmp := 'JL'
+  Else
+    Jmp := 'JG';
+
+  Buf := '  MOV DWORD [' + AsmVar + '], ' + SV + Chr(13) + Chr(10) +
+         LblFor + ':' + Chr(13) + Chr(10) +
+         '  MOV EAX, DWORD [' + AsmVar + ']' + Chr(13) + Chr(10) +
+         '  CMP EAX, ' + EV + Chr(13) + Chr(10) +
+         '  ' + Jmp + ' ' + LblForEnd + Chr(13) + Chr(10) +
+         BodyCode +
+         '  ADD DWORD [' + AsmVar + '], ' + TV + Chr(13) + Chr(10) +
+         '  JMP ' + LblFor + Chr(13) + Chr(10) +
+         LblForEnd + ':' + Chr(13) + Chr(10);
+
+  Inc(CtgForByCount);
+  Inc(CtgStateCount);
+  EmitForByLoop := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitWhileLoop : generer le code 80386 pour WHILE               }
+{   _JL_WHILE_nnn:                                               }
+{   Evaluer condition -> flags                                   }
+{   Jcc _JL_WHEND_nnn (saut si faux)                            }
+{   ... corps ...                                                }
+{   JMP _JL_WHILE_nnn                                            }
+{   _JL_WHEND_nnn:                                               }
+{                                                                }
+{ CondCode = code d evaluation de la condition                  }
+{ CondJcc = saut conditionnel inverse (JE, JNE, ...)            }
+{ BodyCode = code du corps de la boucle                         }
+{ ------------------------------------------------------------ }
+
+Function EmitWhileLoop(Const CondCode : TString;
+                       Const CondJcc : TString;
+                       Const BodyCode : TString) : TString;
+Var
+  Buf, LblWhile, LblWhEnd : TString;
+Begin
+  If CtgWhileCount >= CTG_MAX_OPS Then
+  Begin
+    Inc(CtgErrorCount);
+    EmitWhileLoop := '; ERROR: max WHILE structures exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  LblWhile := GenCtgLabel;
+  LblWhEnd := GenCtgLabel;
+
+  Buf := LblWhile + ':' + Chr(13) + Chr(10) +
+         CondCode +
+         '  ' + CondJcc + ' ' + LblWhEnd + Chr(13) + Chr(10) +
+         BodyCode +
+         '  JMP ' + LblWhile + Chr(13) + Chr(10) +
+         LblWhEnd + ':' + Chr(13) + Chr(10);
+
+  Inc(CtgWhileCount);
+  Inc(CtgStateCount);
+  EmitWhileLoop := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDoUntil : generer le code 80386 pour DO ... UNTIL          }
+{   _JL_DO_nnn:                                                  }
+{   ... corps ...                                                }
+{   Evaluer condition -> flags                                   }
+{   Jcc _JL_DO_nnn (saut si faux, continuer boucle)             }
+{                                                                }
+{ BodyCode = code du corps de la boucle                         }
+{ CondCode = code d evaluation de la condition                  }
+{ CondJcc = saut conditionnel inverse (reboucle si faux)        }
+{ ------------------------------------------------------------ }
+
+Function EmitDoUntil(Const BodyCode : TString;
+                     Const CondCode : TString;
+                     Const CondJcc : TString) : TString;
+Var
+  Buf, LblDo : TString;
+Begin
+  If CtgDoUntilCount >= CTG_MAX_OPS Then
+  Begin
+    Inc(CtgErrorCount);
+    EmitDoUntil := '; ERROR: max DO UNTIL structures exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  LblDo := GenCtgLabel;
+
+  Buf := LblDo + ':' + Chr(13) + Chr(10) +
+         BodyCode +
+         CondCode +
+         '  ' + CondJcc + ' ' + LblDo + Chr(13) + Chr(10);
+
+  Inc(CtgDoUntilCount);
+  Inc(CtgStateCount);
+  EmitDoUntil := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitGotoLabel : generer un saut inconditionnel JMP label        }
+{ ------------------------------------------------------------ }
+
+Function EmitGotoLabel(Const LblName : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  If CtgGotoCount >= CTG_MAX_OPS Then
+  Begin
+    Inc(CtgErrorCount);
+    EmitGotoLabel := '; ERROR: max GOTOs exceeded' + Chr(13) + Chr(10);
+    Exit;
+  End;
+
+  Buf := '  JMP ' + LblName + Chr(13) + Chr(10);
+  Inc(CtgGotoCount);
+  Inc(CtgStateCount);
+  EmitGotoLabel := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCodeLabel : generer un label dans le code                  }
+{ ------------------------------------------------------------ }
+
+Function EmitCodeLabel(Const LblName : TString) : TString;
+Var
+  Buf : TString;
+Begin
+  Buf := LblName + ':' + Chr(13) + Chr(10);
+  Inc(CtgLabelGenCount);
+  Inc(CtgStateCount);
+  EmitCodeLabel := Buf;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetCondJccInverse : retourner le saut conditionnel inverse      }
+{   pour une comparaison donnee (pour sauter quand la condition  }
+{   est FAUSSE)                                                  }
+{ ------------------------------------------------------------ }
+
+Function GetCondJccInverse(Op : Integer) : TString;
+Begin
+  Case Op Of
+    OP_EQ  : GetCondJccInverse := 'JNE';
+    OP_NE  : GetCondJccInverse := 'JE';
+    OP_LT  : GetCondJccInverse := 'JGE';
+    OP_LE  : GetCondJccInverse := 'JG';
+    OP_GT  : GetCondJccInverse := 'JLE';
+    OP_GE  : GetCondJccInverse := 'JL';
+  Else
+    GetCondJccInverse := 'JNE';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsCtrlGenRequired : determiner si la generation de structures  }
+{   de controle est necessaire                                   }
+{ ------------------------------------------------------------ }
+
+Function IsCtrlGenRequired : Boolean;
+Begin
+  IsCtrlGenRequired := (CtgStateCount > 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpCtrlGenState : afficher l etat du generateur de controle    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpCtrlGenState;
+Begin
+  WriteLn('=== Etat du generateur de controle (TODO 19) ===');
+  WriteLn('  Initialise       : ', CtgInitialized);
+  WriteLn('  Operations       : ', CtgStateCount);
+  WriteLn('  IF generes       : ', CtgIfCount);
+  WriteLn('  FOR generes      : ', CtgForCount);
+  WriteLn('  FOR BY generes   : ', CtgForByCount);
+  WriteLn('  WHILE generes    : ', CtgWhileCount);
+  WriteLn('  DO UNTIL generes : ', CtgDoUntilCount);
+  WriteLn('  GOTO generes     : ', CtgGotoCount);
+  WriteLn('  Labels generes   : ', CtgLabelGenCount);
+  WriteLn('  Labels uniques   : ', CtgLabelNum);
+  WriteLn('  Erreurs          : ', CtgErrorCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs pour le generateur de controle          }
+{ ------------------------------------------------------------ }
+
+Function IsCtgInitialized : Boolean;
+Begin
+  IsCtgInitialized := CtgInitialized;
+End;
+
+Function IsCtgEmpty : Boolean;
+Begin
+  IsCtgEmpty := (CtgStateCount = 0);
+End;
+
+Function GetCtgStateCount : Integer;
+Begin
+  GetCtgStateCount := CtgStateCount;
+End;
+
+Function GetCtgIfCount : Integer;
+Begin
+  GetCtgIfCount := CtgIfCount;
+End;
+
+Function GetCtgForCount : Integer;
+Begin
+  GetCtgForCount := CtgForCount;
+End;
+
+Function GetCtgForByCount : Integer;
+Begin
+  GetCtgForByCount := CtgForByCount;
+End;
+
+Function GetCtgWhileCount : Integer;
+Begin
+  GetCtgWhileCount := CtgWhileCount;
+End;
+
+Function GetCtgDoUntilCount : Integer;
+Begin
+  GetCtgDoUntilCount := CtgDoUntilCount;
+End;
+
+Function GetCtgLabelNum : Integer;
+Begin
+  GetCtgLabelNum := CtgLabelNum;
+End;
+
+Function GetCtgErrorCount : Integer;
+Begin
+  GetCtgErrorCount := CtgErrorCount;
+End;
+
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -10203,6 +10664,7 @@ Begin
   IOInitialized := False;
   DatInitialized := False;
   AriInitialized := False;
+  CtgInitialized := False;
 
   ParseArgs;
 
@@ -10257,6 +10719,9 @@ Begin
   { Initialiser le generateur d operations arithmetiques }
   InitArithState;
 
+  { Initialiser le generateur de structures de controle }
+  InitCtrlGenState;
+
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
 
@@ -10288,6 +10753,7 @@ Begin
     DumpIOState;
     DumpDataSegState;
     DumpArithState;
+    DumpCtrlGenState;
   End;
 
   { Nettoyage }
