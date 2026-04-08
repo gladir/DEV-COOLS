@@ -134,13 +134,27 @@
             DumpPrcState : afficher l'etat
             10 accesseurs : IsPrcInitialized, IsPrcEmpty, GetPrc*Count
 
-  TODO 10 - GENERATEUR DE CODE PASCAL - UNITES (UNIT) [A FAIRE]
-            TUnitInfo : Name, InterfaceSection, ImplementSection, InitSection
-            GenUnitInterface(Unit) : generer la section INTERFACE
-            GenUnitImplementation(Unit) : generer la section IMPLEMENTATION
-            GenUnitInitialization(Unit) : generer la section INITIALIZATION
-            GenUnitFinalization(Unit) : generer la section FINALIZATION
-            GenCompleteUnit(Unit) : generer une unite complete
+  TODO 10 - GENERATEUR DE CODE PASCAL - UNITES (UNIT) [IMPLEMENTE]
+            UNT_NONE=0..UNT_MAX=13 : constantes types d'unites
+            UNT_MAX_INTF_PROC=64, UNT_MAX_IMPL_PROC=128, UNT_MAX_USES=16 : limites
+            UntInitialized + 15 variables d'etat
+            InitUntState : initialiser l'etat
+            GenUntLabel : generer un label unique
+            UntTypeName : nom du type d'unite
+            GenUnitHeader(Name) : generer l'entete UNIT
+            GenUnitInterfaceBegin : debut section Interface
+            GenUnitInterfaceUses, GenUnitInterfaceConst, GenUnitInterfaceType
+            GenUnitInterfaceVar, GenUnitInterfaceProc, GenUnitInterfaceFunc
+            GenUnitImplementationBegin, GenUnitImplementationUses
+            GenUnitImplProcSimple, GenUnitImplProcWithParams
+            GenUnitImplFuncSimple, GenUnitImplFuncWithParams
+            GenUnitInitialization, GenUnitInitLine
+            GenUnitFinalization, GenUnitFinalLine
+            GenUnitEnd : fin de l'unite
+            GenSimpleUnit, GenUnitWithUses, GenCompleteUnit
+            GenCrtStyleUnit, GenStringUtilUnit, GenMathUtilUnit
+            DumpUntState : afficher l'etat
+            10 accesseurs : IsUntInitialized, IsUntEmpty, GetUnt*Count
 
   TODO 11 - BIBLIOTHEQUE DE TEMPLATES DE CODE [A FAIRE]
             TTemplate : Name, Description, Code, Parameters

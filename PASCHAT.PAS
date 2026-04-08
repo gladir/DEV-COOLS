@@ -140,13 +140,27 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 10 - GENERATEUR DE CODE PASCAL - UNITES (UNIT) [A FAIRE]
-            TUnitInfo : Name, InterfaceSection, ImplementSection, InitSection
-            GenUnitInterface(Unit) : generer la section INTERFACE
-            GenUnitImplementation(Unit) : generer la section IMPLEMENTATION
-            GenUnitInitialization(Unit) : generer la section INITIALIZATION
-            GenUnitFinalization(Unit) : generer la section FINALIZATION
-            GenCompleteUnit(Unit) : generer une unite complete
+  TODO 10 - GENERATEUR DE CODE PASCAL - UNITES (UNIT) [IMPLEMENTE]
+            UNT_NONE=0..UNT_MAX=13 : constantes types d'unites
+            UNT_MAX_INTF_PROC=64, UNT_MAX_IMPL_PROC=128, UNT_MAX_USES=16 : limites
+            UntInitialized + 15 variables d'etat
+            InitUntState : initialiser l'etat
+            GenUntLabel : generer un label unique
+            UntTypeName : nom du type d'unite
+            GenUnitHeader(Name) : generer l'entete UNIT
+            GenUnitInterfaceBegin : debut section Interface
+            GenUnitInterfaceUses, GenUnitInterfaceConst, GenUnitInterfaceType
+            GenUnitInterfaceVar, GenUnitInterfaceProc, GenUnitInterfaceFunc
+            GenUnitImplementationBegin, GenUnitImplementationUses
+            GenUnitImplProcSimple, GenUnitImplProcWithParams
+            GenUnitImplFuncSimple, GenUnitImplFuncWithParams
+            GenUnitInitialization, GenUnitInitLine
+            GenUnitFinalization, GenUnitFinalLine
+            GenUnitEnd : fin de l'unite
+            GenSimpleUnit, GenUnitWithUses, GenCompleteUnit
+            GenCrtStyleUnit, GenStringUtilUnit, GenMathUtilUnit
+            DumpUntState : afficher l'etat
+            10 accesseurs : IsUntInitialized, IsUntEmpty, GetUnt*Count
   ============================================================ }
 
 { ============================================================
@@ -507,6 +521,27 @@ Const
   PRC_MAX_LOCALS = 32;  { Nombre max de variables locales }
   PRC_MAX_BODY   = 100; { Nombre max de lignes dans le corps }
 
+  { Types d'unites pour TODO 10 }
+  UNT_NONE       = 0;   { Aucune unite }
+  UNT_SIMPLE     = 1;   { Unite simple }
+  UNT_WITH_USES  = 2;   { Unite avec clause Uses }
+  UNT_WITH_INIT  = 3;   { Unite avec Initialization }
+  UNT_WITH_FINAL = 4;   { Unite avec Finalization }
+  UNT_COMPLETE   = 5;   { Unite complete }
+  UNT_LIBRARY    = 6;   { Unite de type library }
+  UNT_SYSTEM     = 7;   { Unite systeme }
+  UNT_CRT        = 8;   { Unite CRT }
+  UNT_DOS        = 9;   { Unite DOS }
+  UNT_GRAPH      = 10;  { Unite Graph }
+  UNT_STRINGS    = 11;  { Unite Strings }
+  UNT_PRINTER    = 12;  { Unite Printer }
+  UNT_MAX        = 13;  { Nombre maximum de types d'unites }
+
+  { Limites pour TODO 10 }
+  UNT_MAX_INTF_PROC = 64;  { Nombre max de declarations interface }
+  UNT_MAX_IMPL_PROC = 128; { Nombre max de procedures implementation }
+  UNT_MAX_USES      = 16;  { Nombre max d'unites dans Uses }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -840,6 +875,23 @@ Var
   PrcLocalCount   : Integer;
   PrcErrorCount   : Integer;
   PrcLabelNum     : Integer;
+
+  { TODO 10 - Unites (UNIT) }
+  UntInitialized  : Boolean;
+  UntStateCount   : Integer;
+  UntSimpleCount  : Integer;
+  UntWithUsesCount: Integer;
+  UntWithInitCount: Integer;
+  UntWithFinalCount: Integer;
+  UntCompleteCount: Integer;
+  UntIntfProcCount: Integer;
+  UntImplProcCount: Integer;
+  UntUsesCount    : Integer;
+  UntConstCount   : Integer;
+  UntTypeCount    : Integer;
+  UntVarCount     : Integer;
+  UntErrorCount   : Integer;
+  UntLabelNum     : Integer;
 
   { TODO 11 - Templates }
   Templates     : Array[1..MAX_TEMPLATES] of TTemplate;
@@ -3863,6 +3915,628 @@ Begin
 End;
 
 { ============================================================
+  TODO 10 - GENERATEUR DE CODE PASCAL - UNITES (UNIT)
+            TUnitInfo : Name, InterfaceSection, ImplementSection, InitSection
+            GenUnitInterface(Unit) : generer la section INTERFACE
+            GenUnitImplementation(Unit) : generer la section IMPLEMENTATION
+            GenUnitInitialization(Unit) : generer la section INITIALIZATION
+            GenUnitFinalization(Unit) : generer la section FINALIZATION
+            GenCompleteUnit(Unit) : generer une unite complete
+  ============================================================ }
+
+Procedure InitUntState;
+Begin
+  UntInitialized := True;
+  UntStateCount := 0;
+  UntSimpleCount := 0;
+  UntWithUsesCount := 0;
+  UntWithInitCount := 0;
+  UntWithFinalCount := 0;
+  UntCompleteCount := 0;
+  UntIntfProcCount := 0;
+  UntImplProcCount := 0;
+  UntUsesCount := 0;
+  UntConstCount := 0;
+  UntTypeCount := 0;
+  UntVarCount := 0;
+  UntErrorCount := 0;
+  UntLabelNum := 0;
+End;
+
+Function GenUntLabel: String;
+Var
+  S: String;
+Begin
+  Inc(UntLabelNum);
+  Str(UntLabelNum, S);
+  GenUntLabel := 'UNT' + S;
+End;
+
+Function UntTypeName(UntType: Integer): String;
+Begin
+  Case UntType of
+    UNT_NONE:       UntTypeName := 'NONE';
+    UNT_SIMPLE:     UntTypeName := 'SIMPLE';
+    UNT_WITH_USES:  UntTypeName := 'WITH_USES';
+    UNT_WITH_INIT:  UntTypeName := 'WITH_INIT';
+    UNT_WITH_FINAL: UntTypeName := 'WITH_FINAL';
+    UNT_COMPLETE:   UntTypeName := 'COMPLETE';
+    UNT_LIBRARY:    UntTypeName := 'LIBRARY';
+    UNT_SYSTEM:     UntTypeName := 'SYSTEM';
+    UNT_CRT:        UntTypeName := 'CRT';
+    UNT_DOS:        UntTypeName := 'DOS';
+    UNT_GRAPH:      UntTypeName := 'GRAPH';
+    UNT_STRINGS:    UntTypeName := 'STRINGS';
+    UNT_PRINTER:    UntTypeName := 'PRINTER';
+  Else
+    UntTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ Note: GenUnitHeader est defini dans TODO 05 }
+{ Generer le debut de la section Interface (apres GenUnitHeader) }
+Procedure GenUnitInterfaceBegin;
+Begin
+  AddCodeLine('Interface');
+  AddCodeLine('');
+  Inc(UntStateCount);
+End;
+
+{ Generer une clause Uses dans Interface }
+Procedure GenUnitInterfaceUses(Units: String);
+Begin
+  AddCodeLine('Uses');
+  AddCodeLine('  ' + Units + ';');
+  AddCodeLine('');
+  Inc(UntUsesCount);
+  Inc(UntStateCount);
+End;
+
+{ Generer une declaration de constante dans Interface }
+Procedure GenUnitInterfaceConst(Name, Value: String);
+Begin
+  AddCodeLine('Const');
+  AddCodeLine('  ' + Name + ' = ' + Value + ';');
+  AddCodeLine('');
+  Inc(UntConstCount);
+  Inc(UntIntfProcCount);
+End;
+
+{ Generer une declaration de type dans Interface }
+Procedure GenUnitInterfaceType(Name, TypeDef: String);
+Begin
+  AddCodeLine('Type');
+  AddCodeLine('  ' + Name + ' = ' + TypeDef + ';');
+  AddCodeLine('');
+  Inc(UntTypeCount);
+  Inc(UntIntfProcCount);
+End;
+
+{ Generer une declaration de variable dans Interface }
+Procedure GenUnitInterfaceVar(Name, TypeName: String);
+Begin
+  AddCodeLine('Var');
+  AddCodeLine('  ' + Name + ': ' + TypeName + ';');
+  AddCodeLine('');
+  Inc(UntVarCount);
+  Inc(UntIntfProcCount);
+End;
+
+{ Generer une declaration de procedure dans Interface }
+Procedure GenUnitInterfaceProc(Name, Params: String);
+Begin
+  If Params = '' Then
+    AddCodeLine('Procedure ' + Name + ';')
+  Else
+    AddCodeLine('Procedure ' + Name + '(' + Params + ');');
+  Inc(UntIntfProcCount);
+End;
+
+{ Generer une declaration de fonction dans Interface }
+Procedure GenUnitInterfaceFunc(Name, Params, RetType: String);
+Begin
+  If Params = '' Then
+    AddCodeLine('Function ' + Name + ': ' + RetType + ';')
+  Else
+    AddCodeLine('Function ' + Name + '(' + Params + '): ' + RetType + ';');
+  Inc(UntIntfProcCount);
+End;
+
+{ Generer le debut de la section Implementation }
+Procedure GenUnitImplementationBegin;
+Begin
+  AddCodeLine('');
+  AddCodeLine('Implementation');
+  AddCodeLine('');
+  Inc(UntStateCount);
+End;
+
+{ Generer une clause Uses dans Implementation }
+Procedure GenUnitImplementationUses(Units: String);
+Begin
+  AddCodeLine('Uses');
+  AddCodeLine('  ' + Units + ';');
+  AddCodeLine('');
+  Inc(UntUsesCount);
+  Inc(UntStateCount);
+End;
+
+{ Generer une procedure simple dans Implementation }
+Procedure GenUnitImplProcSimple(Name, Body: String);
+Begin
+  AddCodeLine('Procedure ' + Name + ';');
+  AddCodeLine('Begin');
+  AddCodeLine('  ' + Body);
+  AddCodeLine('End;');
+  AddCodeLine('');
+  Inc(UntImplProcCount);
+End;
+
+{ Generer une procedure avec parametres dans Implementation }
+Procedure GenUnitImplProcWithParams(Name, Params, Body: String);
+Begin
+  AddCodeLine('Procedure ' + Name + '(' + Params + ');');
+  AddCodeLine('Begin');
+  AddCodeLine('  ' + Body);
+  AddCodeLine('End;');
+  AddCodeLine('');
+  Inc(UntImplProcCount);
+End;
+
+{ Generer une fonction simple dans Implementation }
+Procedure GenUnitImplFuncSimple(Name, RetType, Body: String);
+Begin
+  AddCodeLine('Function ' + Name + ': ' + RetType + ';');
+  AddCodeLine('Begin');
+  AddCodeLine('  ' + Body);
+  AddCodeLine('End;');
+  AddCodeLine('');
+  Inc(UntImplProcCount);
+End;
+
+{ Generer une fonction avec parametres dans Implementation }
+Procedure GenUnitImplFuncWithParams(Name, Params, RetType, Body: String);
+Begin
+  AddCodeLine('Function ' + Name + '(' + Params + '): ' + RetType + ';');
+  AddCodeLine('Begin');
+  AddCodeLine('  ' + Body);
+  AddCodeLine('End;');
+  AddCodeLine('');
+  Inc(UntImplProcCount);
+End;
+
+{ Generer la section Initialization }
+Procedure GenUnitInitialization;
+Begin
+  AddCodeLine('Initialization');
+  Inc(UntWithInitCount);
+  Inc(UntStateCount);
+End;
+
+{ Generer une ligne dans Initialization }
+Procedure GenUnitInitLine(Line: String);
+Begin
+  AddCodeLine('  ' + Line);
+End;
+
+{ Generer la section Finalization }
+Procedure GenUnitFinalization;
+Begin
+  AddCodeLine('');
+  AddCodeLine('Finalization');
+  Inc(UntWithFinalCount);
+  Inc(UntStateCount);
+End;
+
+{ Generer une ligne dans Finalization }
+Procedure GenUnitFinalLine(Line: String);
+Begin
+  AddCodeLine('  ' + Line);
+End;
+
+{ Generer la fin de l'unite }
+Procedure GenUnitEnd;
+Begin
+  AddCodeLine('');
+  AddCodeLine('End.');
+  Inc(UntStateCount);
+End;
+
+{ Generer une unite simple complete }
+Procedure GenSimpleUnit(UnitName: String);
+Begin
+  InitGeneratedCode;
+  GenUnitHeader(UnitName);
+  { GenUnitHeader genere deja Interface }
+  AddCodeLine('{ Interface publique }');
+  AddCodeLine('');
+  GenUnitImplementationBegin;
+  AddCodeLine('{ Implementation privee }');
+  GenUnitEnd;
+  Inc(UntSimpleCount);
+End;
+
+{ Generer une unite avec clause Uses }
+Procedure GenUnitWithUses(UnitName, IntfUses, ImplUses: String);
+Begin
+  InitGeneratedCode;
+  GenUnitHeader(UnitName);
+  { GenUnitHeader genere deja Interface }
+  If IntfUses <> '' Then
+    GenUnitInterfaceUses(IntfUses);
+  AddCodeLine('{ Interface publique }');
+  AddCodeLine('');
+  GenUnitImplementationBegin;
+  If ImplUses <> '' Then
+    GenUnitImplementationUses(ImplUses);
+  AddCodeLine('{ Implementation privee }');
+  GenUnitEnd;
+  Inc(UntWithUsesCount);
+End;
+
+{ Generer une unite complete avec Init et Final }
+Procedure GenCompleteUnit(UnitName: String);
+Begin
+  InitGeneratedCode;
+  GenUnitHeader(UnitName);
+  { GenUnitHeader genere deja Interface }
+  AddCodeLine('{ Constantes exportees }');
+  AddCodeLine('');
+  AddCodeLine('{ Types exportes }');
+  AddCodeLine('');
+  AddCodeLine('{ Variables exportees }');
+  AddCodeLine('');
+  AddCodeLine('{ Procedures et fonctions exportees }');
+  AddCodeLine('');
+  GenUnitImplementationBegin;
+  AddCodeLine('{ Variables privees }');
+  AddCodeLine('');
+  AddCodeLine('{ Procedures et fonctions privees }');
+  AddCodeLine('');
+  AddCodeLine('{ Implementation des procedures/fonctions }');
+  AddCodeLine('');
+  GenUnitInitialization;
+  AddCodeLine('  { Code d''initialisation }');
+  GenUnitFinalization;
+  AddCodeLine('  { Code de finalisation }');
+  GenUnitEnd;
+  Inc(UntCompleteCount);
+End;
+
+{ Generer une unite de type CRT }
+Procedure GenCrtStyleUnit(UnitName: String);
+Begin
+  InitGeneratedCode;
+  GenUnitHeader(UnitName);
+  { GenUnitHeader genere deja Interface }
+  AddCodeLine('Const');
+  AddCodeLine('  Black         = 0;');
+  AddCodeLine('  Blue          = 1;');
+  AddCodeLine('  Green         = 2;');
+  AddCodeLine('  Cyan          = 3;');
+  AddCodeLine('  Red           = 4;');
+  AddCodeLine('  Magenta       = 5;');
+  AddCodeLine('  Brown         = 6;');
+  AddCodeLine('  LightGray     = 7;');
+  AddCodeLine('  DarkGray      = 8;');
+  AddCodeLine('  LightBlue     = 9;');
+  AddCodeLine('  LightGreen    = 10;');
+  AddCodeLine('  LightCyan     = 11;');
+  AddCodeLine('  LightRed      = 12;');
+  AddCodeLine('  LightMagenta  = 13;');
+  AddCodeLine('  Yellow        = 14;');
+  AddCodeLine('  White         = 15;');
+  AddCodeLine('');
+  AddCodeLine('Var');
+  AddCodeLine('  TextAttr: Byte;');
+  AddCodeLine('');
+  AddCodeLine('Procedure ClrScr;');
+  AddCodeLine('Procedure GotoXY(X, Y: Integer);');
+  AddCodeLine('Procedure TextColor(Color: Byte);');
+  AddCodeLine('Procedure TextBackground(Color: Byte);');
+  AddCodeLine('Function WhereX: Integer;');
+  AddCodeLine('Function WhereY: Integer;');
+  AddCodeLine('Function KeyPressed: Boolean;');
+  AddCodeLine('Function ReadKey: Char;');
+  AddCodeLine('');
+  GenUnitImplementationBegin;
+  AddCodeLine('Procedure ClrScr;');
+  AddCodeLine('Begin');
+  AddCodeLine('  { Effacer l''ecran }');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Procedure GotoXY(X, Y: Integer);');
+  AddCodeLine('Begin');
+  AddCodeLine('  { Positionner le curseur }');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Procedure TextColor(Color: Byte);');
+  AddCodeLine('Begin');
+  AddCodeLine('  TextAttr := (TextAttr And $F0) Or Color;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Procedure TextBackground(Color: Byte);');
+  AddCodeLine('Begin');
+  AddCodeLine('  TextAttr := (TextAttr And $0F) Or (Color Shl 4);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function WhereX: Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  WhereX := 1; { A implementer }');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function WhereY: Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  WhereY := 1; { A implementer }');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function KeyPressed: Boolean;');
+  AddCodeLine('Begin');
+  AddCodeLine('  KeyPressed := False; { A implementer }');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function ReadKey: Char;');
+  AddCodeLine('Begin');
+  AddCodeLine('  ReadKey := #0; { A implementer }');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  GenUnitInitialization;
+  AddCodeLine('  TextAttr := LightGray;');
+  GenUnitEnd;
+  Inc(UntStateCount);
+End;
+
+{ Generer une unite de type utilitaire pour chaines }
+Procedure GenStringUtilUnit(UnitName: String);
+Begin
+  InitGeneratedCode;
+  GenUnitHeader(UnitName);
+  { GenUnitHeader genere deja Interface }
+  AddCodeLine('Function StrToUpper(S: String): String;');
+  AddCodeLine('Function StrToLower(S: String): String;');
+  AddCodeLine('Function TrimLeft(S: String): String;');
+  AddCodeLine('Function TrimRight(S: String): String;');
+  AddCodeLine('Function TrimStr(S: String): String;');
+  AddCodeLine('Function StrReverse(S: String): String;');
+  AddCodeLine('Function StrRepeat(S: String; N: Integer): String;');
+  AddCodeLine('Function StrPadLeft(S: String; Len: Integer; C: Char): String;');
+  AddCodeLine('Function StrPadRight(S: String; Len: Integer; C: Char): String;');
+  AddCodeLine('');
+  GenUnitImplementationBegin;
+  AddCodeLine('Function StrToUpper(S: String): String;');
+  AddCodeLine('Var I: Integer; R: String;');
+  AddCodeLine('Begin');
+  AddCodeLine('  R := '''';');
+  AddCodeLine('  For I := 1 to Length(S) do R := R + UpCase(S[I]);');
+  AddCodeLine('  StrToUpper := R;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function StrToLower(S: String): String;');
+  AddCodeLine('Var I: Integer; R: String; C: Char;');
+  AddCodeLine('Begin');
+  AddCodeLine('  R := '''';');
+  AddCodeLine('  For I := 1 to Length(S) do Begin');
+  AddCodeLine('    C := S[I];');
+  AddCodeLine('    If (C >= ''A'') and (C <= ''Z'') Then C := Chr(Ord(C) + 32);');
+  AddCodeLine('    R := R + C;');
+  AddCodeLine('  End;');
+  AddCodeLine('  StrToLower := R;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function TrimLeft(S: String): String;');
+  AddCodeLine('Var I: Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  I := 1;');
+  AddCodeLine('  While (I <= Length(S)) and (S[I] = '' '') do Inc(I);');
+  AddCodeLine('  TrimLeft := Copy(S, I, Length(S) - I + 1);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function TrimRight(S: String): String;');
+  AddCodeLine('Var I: Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  I := Length(S);');
+  AddCodeLine('  While (I > 0) and (S[I] = '' '') do Dec(I);');
+  AddCodeLine('  TrimRight := Copy(S, 1, I);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function TrimStr(S: String): String;');
+  AddCodeLine('Begin');
+  AddCodeLine('  TrimStr := TrimLeft(TrimRight(S));');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function StrReverse(S: String): String;');
+  AddCodeLine('Var I: Integer; R: String;');
+  AddCodeLine('Begin');
+  AddCodeLine('  R := '''';');
+  AddCodeLine('  For I := Length(S) downto 1 do R := R + S[I];');
+  AddCodeLine('  StrReverse := R;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function StrRepeat(S: String; N: Integer): String;');
+  AddCodeLine('Var I: Integer; R: String;');
+  AddCodeLine('Begin');
+  AddCodeLine('  R := '''';');
+  AddCodeLine('  For I := 1 to N do R := R + S;');
+  AddCodeLine('  StrRepeat := R;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function StrPadLeft(S: String; Len: Integer; C: Char): String;');
+  AddCodeLine('Begin');
+  AddCodeLine('  While Length(S) < Len do S := C + S;');
+  AddCodeLine('  StrPadLeft := S;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function StrPadRight(S: String; Len: Integer; C: Char): String;');
+  AddCodeLine('Begin');
+  AddCodeLine('  While Length(S) < Len do S := S + C;');
+  AddCodeLine('  StrPadRight := S;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  GenUnitEnd;
+  Inc(UntStateCount);
+End;
+
+{ Generer une unite de type mathematique }
+Procedure GenMathUtilUnit(UnitName: String);
+Begin
+  InitGeneratedCode;
+  GenUnitHeader(UnitName);
+  { GenUnitHeader genere deja Interface }
+  AddCodeLine('Const');
+  AddCodeLine('  PI = 3.14159265358979323846;');
+  AddCodeLine('  E  = 2.71828182845904523536;');
+  AddCodeLine('');
+  AddCodeLine('Function Max(A, B: Integer): Integer;');
+  AddCodeLine('Function Min(A, B: Integer): Integer;');
+  AddCodeLine('Function Abs2(X: Integer): Integer;');
+  AddCodeLine('Function Sign(X: Integer): Integer;');
+  AddCodeLine('Function GCD(A, B: Integer): Integer;');
+  AddCodeLine('Function LCM(A, B: Integer): Integer;');
+  AddCodeLine('Function Power(Base: Real; Exp: Integer): Real;');
+  AddCodeLine('Function Factorial(N: Integer): LongInt;');
+  AddCodeLine('Function IsPrime(N: Integer): Boolean;');
+  AddCodeLine('');
+  GenUnitImplementationBegin;
+  AddCodeLine('Function Max(A, B: Integer): Integer;');
+  AddCodeLine('Begin If A > B Then Max := A Else Max := B; End;');
+  AddCodeLine('');
+  AddCodeLine('Function Min(A, B: Integer): Integer;');
+  AddCodeLine('Begin If A < B Then Min := A Else Min := B; End;');
+  AddCodeLine('');
+  AddCodeLine('Function Abs2(X: Integer): Integer;');
+  AddCodeLine('Begin If X < 0 Then Abs2 := -X Else Abs2 := X; End;');
+  AddCodeLine('');
+  AddCodeLine('Function Sign(X: Integer): Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  If X > 0 Then Sign := 1');
+  AddCodeLine('  Else If X < 0 Then Sign := -1');
+  AddCodeLine('  Else Sign := 0;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function GCD(A, B: Integer): Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  While B <> 0 do Begin');
+  AddCodeLine('    A := A mod B;');
+  AddCodeLine('    If A = 0 Then Begin GCD := B; Exit; End;');
+  AddCodeLine('    B := B mod A;');
+  AddCodeLine('  End;');
+  AddCodeLine('  GCD := A;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function LCM(A, B: Integer): Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  LCM := (A * B) div GCD(A, B);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function Power(Base: Real; Exp: Integer): Real;');
+  AddCodeLine('Var I: Integer; R: Real;');
+  AddCodeLine('Begin');
+  AddCodeLine('  R := 1;');
+  AddCodeLine('  For I := 1 to Exp do R := R * Base;');
+  AddCodeLine('  Power := R;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function Factorial(N: Integer): LongInt;');
+  AddCodeLine('Var I: Integer; R: LongInt;');
+  AddCodeLine('Begin');
+  AddCodeLine('  R := 1;');
+  AddCodeLine('  For I := 2 to N do R := R * I;');
+  AddCodeLine('  Factorial := R;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function IsPrime(N: Integer): Boolean;');
+  AddCodeLine('Var I: Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  If N < 2 Then Begin IsPrime := False; Exit; End;');
+  AddCodeLine('  If N = 2 Then Begin IsPrime := True; Exit; End;');
+  AddCodeLine('  If N mod 2 = 0 Then Begin IsPrime := False; Exit; End;');
+  AddCodeLine('  I := 3;');
+  AddCodeLine('  While I * I <= N do Begin');
+  AddCodeLine('    If N mod I = 0 Then Begin IsPrime := False; Exit; End;');
+  AddCodeLine('    Inc(I, 2);');
+  AddCodeLine('  End;');
+  AddCodeLine('  IsPrime := True;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  GenUnitEnd;
+  Inc(UntStateCount);
+End;
+
+{ Afficher l'etat du generateur d'unites }
+Procedure DumpUntState;
+Begin
+  WriteLn('=== Etat du generateur d''unites (TODO 10) ===');
+  WriteLn('  UntInitialized   : ', UntInitialized);
+  WriteLn('  UntStateCount    : ', UntStateCount);
+  WriteLn('  UntSimpleCount   : ', UntSimpleCount);
+  WriteLn('  UntWithUsesCount : ', UntWithUsesCount);
+  WriteLn('  UntWithInitCount : ', UntWithInitCount);
+  WriteLn('  UntWithFinalCount: ', UntWithFinalCount);
+  WriteLn('  UntCompleteCount : ', UntCompleteCount);
+  WriteLn('  UntIntfProcCount : ', UntIntfProcCount);
+  WriteLn('  UntImplProcCount : ', UntImplProcCount);
+  WriteLn('  UntUsesCount     : ', UntUsesCount);
+  WriteLn('  UntConstCount    : ', UntConstCount);
+  WriteLn('  UntTypeCount     : ', UntTypeCount);
+  WriteLn('  UntVarCount      : ', UntVarCount);
+  WriteLn('  UntErrorCount    : ', UntErrorCount);
+  WriteLn('  UntLabelNum      : ', UntLabelNum);
+End;
+
+{ --- TODO 10 : 10 accesseurs standards --- }
+
+Function IsUntInitialized: Boolean;
+Begin
+  IsUntInitialized := UntInitialized;
+End;
+
+Function IsUntEmpty: Boolean;
+Begin
+  IsUntEmpty := (UntSimpleCount = 0) And (UntWithUsesCount = 0) And
+                (UntCompleteCount = 0) And (UntStateCount = 0);
+End;
+
+Function GetUntStateCount: Integer;
+Begin
+  GetUntStateCount := UntStateCount;
+End;
+
+Function GetUntSimpleCount: Integer;
+Begin
+  GetUntSimpleCount := UntSimpleCount;
+End;
+
+Function GetUntWithUsesCount: Integer;
+Begin
+  GetUntWithUsesCount := UntWithUsesCount;
+End;
+
+Function GetUntCompleteCount: Integer;
+Begin
+  GetUntCompleteCount := UntCompleteCount;
+End;
+
+Function GetUntIntfProcCount: Integer;
+Begin
+  GetUntIntfProcCount := UntIntfProcCount;
+End;
+
+Function GetUntImplProcCount: Integer;
+Begin
+  GetUntImplProcCount := UntImplProcCount;
+End;
+
+Function GetUntErrorCount: Integer;
+Begin
+  GetUntErrorCount := UntErrorCount;
+End;
+
+Function GetUntLabelNum: Integer;
+Begin
+  GetUntLabelNum := UntLabelNum;
+End;
+
+{ ============================================================
   TODO 12 - GENERATION DE PROGRAMMES "BONJOUR"
   ============================================================ }
 
@@ -4605,6 +5279,10 @@ Begin
   PrcInitialized := False;
   InitPrcState;
 
+  { Initialiser l'etat du generateur d'unites (TODO 10) }
+  UntInitialized := False;
+  InitUntState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -4616,6 +5294,7 @@ Begin
     DumpExpState;
     DumpCtlState;
     DumpPrcState;
+    DumpUntState;
   End;
 
   Run;
@@ -4631,7 +5310,7 @@ Begin
   { 07 [IMPLEMENTE] - Expressions }
   { 08 [IMPLEMENTE] - Structures de controle }
   { 09 [IMPLEMENTE] - Procedures et fonctions }
-  { 10 [A FAIRE] - Unites (UNIT) }
+  { 10 [IMPLEMENTE] - Unites (UNIT) }
   { 11 [A FAIRE] - Templates de code }
   { 12 [IMPLEMENTE] - Programmes Bonjour }
   { 13 [IMPLEMENTE] - Programmes mathematiques }
