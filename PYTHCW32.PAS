@@ -422,7 +422,7 @@
             Comparaison : CALL _PYRT_STRCMP -> drapeaux ZF/CF
             10 fonctions accesseurs
 
-  TODO 18 - PARSEUR : CLASSES ET OBJETS [A FAIRE]
+  TODO 18 - PARSEUR : CLASSES ET OBJETS [IMPLEMENTE]
             ParseClassStmt : class Nom: bloc
               ou class Nom(Parent): bloc
             Attributs d instance : stockes dans un bloc sur le heap
@@ -10854,6 +10854,535 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 18 - PARSEUR : CLASSES ET OBJETS                        }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations sur les classes }
+  CL_NONE          = 0;    { aucun / non defini                    }
+  CL_CLASSDEF      = 1;    { definition class Nom: bloc            }
+  CL_CLASSINH      = 2;    { class Nom(Parent): bloc               }
+  CL_INITDEF       = 3;    { def __init__(self, ...):              }
+  CL_METHODDEF     = 4;    { def methode(self, ...):               }
+  CL_OBJNEW        = 5;    { allocation Nom(args)                  }
+  CL_ATTRLOAD      = 6;    { self.attr -> load                     }
+  CL_ATTRSTORE     = 7;    { self.attr = val -> store              }
+  CL_METHCALL      = 8;    { obj.method(args)                      }
+  CL_INITCALL      = 9;    { appel a __init__                      }
+  CL_INHERIT       = 10;   { heritage simple                       }
+  CL_ISINSTANCE    = 11;   { isinstance(obj, cls)                  }
+  CL_SUPER         = 12;   { super().method(args)                  }
+  CL_SELFREF       = 13;   { reference a self                      }
+  CL_MAX           = 13;
+
+  { Limites }
+  CL_MAX_CLASS     = 32;   { nombre max de classes                 }
+  CL_MAX_ATTRS     = 32;   { nombre max d attributs par classe     }
+  CL_MAX_METHODS   = 32;   { nombre max de methodes par classe     }
+
+Var
+  ClInitialized   : Boolean;    { True si l etat est initialise       }
+  ClClassDefCount : LongInt;    { nombre de definitions de classes     }
+  ClInhCount      : LongInt;    { nombre d heritages                  }
+  ClInitDefCount  : LongInt;    { nombre de constructeurs __init__    }
+  ClMethodDefCount: LongInt;    { nombre de definitions de methodes   }
+  ClObjNewCount   : LongInt;    { nombre d allocations d objets       }
+  ClAttrLoadCount : LongInt;    { nombre de chargements d attributs   }
+  ClAttrStoreCount: LongInt;    { nombre de stockages d attributs     }
+  ClMethCallCount : LongInt;    { nombre d appels de methodes         }
+  ClInitCallCount : LongInt;    { nombre d appels a __init__          }
+  ClInheritCount  : LongInt;    { nombre d heritages effectues        }
+  ClIsInstCount   : LongInt;    { nombre d appels isinstance          }
+  ClSuperCount    : LongInt;    { nombre d appels super()             }
+  ClSelfRefCount  : LongInt;    { nombre de references a self         }
+  ClLastKind      : Integer;    { dernier type d operation classe     }
+  ClLabelSeq      : Integer;    { sequence pour labels classe         }
+
+{ ------------------------------------------------------------ }
+{ InitClState : initialiser le sous-systeme des classes            }
+{ ------------------------------------------------------------ }
+
+Procedure InitClState;
+Begin
+  ClInitialized   := True;
+  ClClassDefCount := 0;
+  ClInhCount      := 0;
+  ClInitDefCount  := 0;
+  ClMethodDefCount:= 0;
+  ClObjNewCount   := 0;
+  ClAttrLoadCount := 0;
+  ClAttrStoreCount:= 0;
+  ClMethCallCount := 0;
+  ClInitCallCount := 0;
+  ClInheritCount  := 0;
+  ClIsInstCount   := 0;
+  ClSuperCount    := 0;
+  ClSelfRefCount  := 0;
+  ClLastKind      := CL_NONE;
+  ClLabelSeq      := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenClLabel : generer un label unique pour les classes             }
+{ ------------------------------------------------------------ }
+
+Function GenClLabel : TString;
+Begin
+  Inc(ClLabelSeq);
+  GenClLabel := '_PYC_' + ItoS(ClLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ ClTypeName : nom humain d un type d operation classe             }
+{ ------------------------------------------------------------ }
+
+Function ClTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    CL_NONE       : ClTypeName := 'NONE';
+    CL_CLASSDEF   : ClTypeName := 'CLASSDEF';
+    CL_CLASSINH   : ClTypeName := 'CLASSINH';
+    CL_INITDEF    : ClTypeName := 'INITDEF';
+    CL_METHODDEF  : ClTypeName := 'METHODDEF';
+    CL_OBJNEW     : ClTypeName := 'OBJNEW';
+    CL_ATTRLOAD   : ClTypeName := 'ATTRLOAD';
+    CL_ATTRSTORE  : ClTypeName := 'ATTRSTORE';
+    CL_METHCALL   : ClTypeName := 'METHCALL';
+    CL_INITCALL   : ClTypeName := 'INITCALL';
+    CL_INHERIT    : ClTypeName := 'INHERIT';
+    CL_ISINSTANCE : ClTypeName := 'ISINSTANCE';
+    CL_SUPER      : ClTypeName := 'SUPER';
+    CL_SELFREF    : ClTypeName := 'SELFREF';
+  Else
+    ClTypeName := '?(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitObjNew : emettre le code d allocation d un objet              }
+{   ECX = taille du bloc objet (typecode + attributs)              }
+{   Appel a _PYRT_OBJNEW -> EAX = ptr vers nouvel objet           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitObjNew(Const ClassName : TString; AttrCount : Integer);
+Begin
+  Inc(ClObjNewCount);
+  ClLastKind := CL_OBJNEW;
+  WriteLn('  ; Allocation objet ', ClassName, ' (', AttrCount, ' attrs)');
+  WriteLn('  MOV ECX, ', (1 + AttrCount) * 4, ' ; taille = (1+', AttrCount, ')*4');
+  WriteLn('  PUSH ECX');
+  WriteLn('  CALL _PYRT_OBJNEW');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers nouvel objet');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitObjAttrLoad : emettre le code pour charger un attribut        }
+{   self.attr -> MOV EBX, [EBP+8] / MOV EAX, [EBX+4+offset*4]    }
+{   AttrIdx = index de l attribut (0, 1, 2, ...)                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitObjAttrLoad(AttrIdx : Integer);
+Begin
+  Inc(ClAttrLoadCount);
+  ClLastKind := CL_ATTRLOAD;
+  WriteLn('  ; self.attr[', AttrIdx, '] -> load');
+  WriteLn('  MOV EBX, [EBP+8]  ; EBX = ptr self');
+  WriteLn('  MOV EAX, [EBX+', 4 + AttrIdx * 4, '] ; EAX = attr[', AttrIdx, ']');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitObjAttrStore : emettre le code pour stocker un attribut       }
+{   self.attr = val -> MOV EBX, [EBP+8] / MOV [EBX+4+offset*4], EAX }
+{   AttrIdx = index de l attribut                                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitObjAttrStore(AttrIdx : Integer);
+Begin
+  Inc(ClAttrStoreCount);
+  ClLastKind := CL_ATTRSTORE;
+  WriteLn('  ; self.attr[', AttrIdx, '] = EAX -> store');
+  WriteLn('  MOV EBX, [EBP+8]  ; EBX = ptr self');
+  WriteLn('  MOV [EBX+', 4 + AttrIdx * 4, '], EAX ; attr[', AttrIdx, '] = EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitMethodCall : emettre le code pour appeler une methode         }
+{   obj.method(args) -> PUSH self + PUSH args + CALL label         }
+{   ClassName, MethodName : identifient le label                   }
+{   NArgs = nombre d arguments (sans compter self)                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitMethodCall(Const ClassName, MethodName : TString;
+                         NArgs : Integer);
+Begin
+  Inc(ClMethCallCount);
+  ClLastKind := CL_METHCALL;
+  WriteLn('  ; obj.', MethodName, '(', NArgs, ' args)');
+  WriteLn('  ; self deja PUSH avant les args');
+  WriteLn('  CALL _PYM_', ClassName, '_', MethodName);
+  WriteLn('  ADD ESP, ', (1 + NArgs) * 4,
+          '       ; depiler self + ', NArgs, ' args');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitInitCall : emettre le code pour appeler __init__              }
+{   apres allocation, appeler le constructeur                      }
+{   EAX = ptr vers le nouvel objet                                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitInitCall(Const ClassName : TString; NArgs : Integer);
+Begin
+  Inc(ClInitCallCount);
+  ClLastKind := CL_INITCALL;
+  WriteLn('  ; appel __init__ pour ', ClassName);
+  WriteLn('  PUSH EAX          ; PUSH self (nouvel objet)');
+  WriteLn('  CALL _PYM_', ClassName, '___init__');
+  WriteLn('  ADD ESP, ', (1 + NArgs) * 4,
+          '       ; depiler self + ', NArgs, ' args');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitMethodPrologue : emettre le prologue d une methode            }
+{   identique au prologue de fonction, avec self en [EBP+8]        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitMethodPrologue(Const ClassName, MethodName : TString;
+                              LocalSize : Integer);
+Begin
+  WriteLn('_PYM_', ClassName, '_', MethodName, ':');
+  WriteLn('  PUSH EBP');
+  WriteLn('  MOV EBP, ESP');
+  If LocalSize > 0 Then
+    WriteLn('  SUB ESP, ', LocalSize, ' ; locals');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitMethodEpilogue : emettre l epilogue d une methode             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitMethodEpilogue;
+Begin
+  WriteLn('  MOV ESP, EBP');
+  WriteLn('  POP EBP');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitInheritance : emettre le code pour l heritage simple          }
+{   Copier le typecode du parent, puis les attributs herites       }
+{   EnfantPtr dans EAX, ParentTypeCode dans ECX                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitInheritance(Const ParentName, ChildName : TString;
+                           ParentAttrCount : Integer);
+Begin
+  Inc(ClInheritCount);
+  ClLastKind := CL_INHERIT;
+  WriteLn('  ; heritage : ', ChildName, ' herite de ', ParentName);
+  WriteLn('  ; copier ', ParentAttrCount, ' attributs du parent');
+  WriteLn('  ; EAX = ptr enfant, ESI = ptr parent');
+  WriteLn('  MOV ECX, ', ParentAttrCount,
+          '     ; nombre d attributs a copier');
+  WriteLn('  LEA ESI, [ESI+4]  ; debut attrs parent');
+  WriteLn('  LEA EDI, [EAX+4]  ; debut attrs enfant');
+  WriteLn('  REP MOVSD          ; copier les attributs');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIsInstance : emettre le code pour isinstance(obj, cls)        }
+{   Compare le typecode de l objet avec celui de la classe         }
+{   EAX = ptr objet -> [EAX] = typecode                           }
+{   ECX = typecode attendu                                         }
+{   Resultat : EAX = 1 (True) ou 0 (False)                        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitIsInstance(TypeCode : Integer);
+Var
+  LblTrue, LblEnd : TString;
+Begin
+  Inc(ClIsInstCount);
+  ClLastKind := CL_ISINSTANCE;
+  LblTrue := GenClLabel;
+  LblEnd  := GenClLabel;
+  WriteLn('  ; isinstance(obj, cls) -> typecode=', TypeCode);
+  WriteLn('  MOV EBX, [EAX]    ; EBX = typecode de l objet');
+  WriteLn('  CMP EBX, ', TypeCode);
+  WriteLn('  JE ', LblTrue);
+  WriteLn('  XOR EAX, EAX      ; EAX = 0 (False)');
+  WriteLn('  JMP ', LblEnd);
+  WriteLn(LblTrue, ':');
+  WriteLn('  MOV EAX, 1        ; EAX = 1 (True)');
+  WriteLn(LblEnd, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitSuperCall : emettre le code pour super().method(args)         }
+{   Appelle la methode du parent avec self courant                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitSuperCall(Const ParentName, MethodName : TString;
+                         NArgs : Integer);
+Begin
+  Inc(ClSuperCount);
+  ClLastKind := CL_SUPER;
+  WriteLn('  ; super().', MethodName, '(', NArgs, ' args)');
+  WriteLn('  ; self deja PUSH avant les args');
+  WriteLn('  CALL _PYM_', ParentName, '_', MethodName);
+  WriteLn('  ADD ESP, ', (1 + NArgs) * 4,
+          '       ; depiler self + ', NArgs, ' args');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitSelfRef : emettre le code pour reference a self               }
+{   MOV EAX, [EBP+8] -> EAX = ptr self                            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitSelfRef;
+Begin
+  Inc(ClSelfRefCount);
+  ClLastKind := CL_SELFREF;
+  WriteLn('  ; self reference');
+  WriteLn('  MOV EAX, [EBP+8]  ; EAX = ptr self');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseClassStmt : analyser une declaration de classe               }
+{   class ClassName: bloc                                          }
+{   class ClassName(ParentName): bloc                              }
+{ ------------------------------------------------------------ }
+
+Procedure ParseClassStmt;
+Var
+  ClassName   : TString;
+  ParentName  : TString;
+  HasParent   : Boolean;
+  SkipLabel   : TString;
+  MethodName  : TString;
+  MethodCount : Integer;
+Begin
+  { Le token 'class' a deja ete consomme }
+  HasParent := False;
+  ParentName := '';
+  MethodCount := 0;
+
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    Inc(ErrorCount);
+    WriteLn(StdErr, 'Erreur ligne ', CurTokLine,
+            ' : nom de classe attendu apres "class"');
+    Exit;
+  End;
+  ClassName := CurTokStr;
+  LexNextToken;  (* consommer le nom de classe *)
+
+  { Verifier s il y a heritage : class Nom(Parent) }
+  If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+  Begin
+    LexNextToken;  (* consommer '(' *)
+    If CurTokKind = TK_IDENT Then
+    Begin
+      ParentName := CurTokStr;
+      HasParent := True;
+      LexNextToken;  (* consommer le nom du parent *)
+    End;
+    If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+      LexNextToken;  (* consommer ')' *)
+    Inc(ClInhCount);
+  End;
+
+  { Consommer le ':' }
+  If (CurTokKind = TK_OP) And (CurTokStr = ':') Then
+    LexNextToken;  (* consommer ':' *)
+
+  { Emettre un JMP pour sauter le corps de la classe }
+  SkipLabel := GenClLabel;
+  WriteLn('  JMP ', SkipLabel, ' ; sauter le corps de la classe ',
+          ClassName);
+
+  { Emettre le commentaire de la classe }
+  WriteLn('; --- class ', ClassName, ' ---');
+
+  If HasParent Then
+  Begin
+    WriteLn('; heritage de ', ParentName);
+    Inc(ClClassDefCount);
+    ClLastKind := CL_CLASSINH;
+  End
+  Else
+  Begin
+    Inc(ClClassDefCount);
+    ClLastKind := CL_CLASSDEF;
+  End;
+
+  { Parser les methodes du corps de la classe }
+  { En Python, le corps est indente ; ici on parse jusqu a }
+  { desindentation ou fin de fichier }
+  While (CurTokKind <> TK_EOF) And
+        (CurTokKind <> TK_DEDENT) Do
+  Begin
+    If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'def') Then
+    Begin
+      LexNextToken;  (* consommer 'def' *)
+      If CurTokKind = TK_IDENT Then
+      Begin
+        MethodName := CurTokStr;
+        LexNextToken;  (* consommer le nom de la methode *)
+
+        If MethodName = '__init__' Then
+        Begin
+          { Constructeur }
+          Inc(ClInitDefCount);
+          WriteLn('_PYM_', ClassName, '___init__:');
+          WriteLn('  PUSH EBP');
+          WriteLn('  MOV EBP, ESP');
+          { Consommer la liste de parametres }
+          If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+          Begin
+            While Not ((CurTokKind = TK_OP) And (CurTokStr = ')'))
+                  And (CurTokKind <> TK_EOF) Do
+              LexNextToken;
+            If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+              LexNextToken;  (* consommer ')' *)
+          End;
+          If (CurTokKind = TK_OP) And (CurTokStr = ':') Then
+            LexNextToken;  (* consommer ':' *)
+          { Le corps du constructeur sera parse par les futurs passes }
+          WriteLn('  ; corps de __init__ (stub)');
+          WriteLn('  MOV ESP, EBP');
+          WriteLn('  POP EBP');
+          WriteLn('  RET');
+        End
+        Else
+        Begin
+          { Methode normale }
+          Inc(ClMethodDefCount);
+          Inc(MethodCount);
+          EmitMethodPrologue(ClassName, MethodName, 0);
+          { Consommer la liste de parametres }
+          If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+          Begin
+            While Not ((CurTokKind = TK_OP) And (CurTokStr = ')'))
+                  And (CurTokKind <> TK_EOF) Do
+              LexNextToken;
+            If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+              LexNextToken;  (* consommer ')' *)
+          End;
+          If (CurTokKind = TK_OP) And (CurTokStr = ':') Then
+            LexNextToken;  (* consommer ':' *)
+          { Le corps de la methode sera parse par les futurs passes }
+          WriteLn('  ; corps de ', MethodName, ' (stub)');
+          EmitMethodEpilogue;
+        End;
+      End;
+    End
+    Else If CurTokKind = TK_NEWLINE Then
+      LexNextToken  (* consommer le saut de ligne *)
+    Else If CurTokKind = TK_INDENT Then
+      LexNextToken  (* consommer l indentation *)
+    Else
+      LexNextToken;  (* consommer tout autre token *)
+  End;
+
+  { Consommer le DEDENT si present }
+  If CurTokKind = TK_DEDENT Then
+    LexNextToken;
+
+  { Emettre le label de fin }
+  WriteLn(SkipLabel, ':');
+  WriteLn('; --- fin class ', ClassName, ' (', MethodCount,
+          ' methodes) ---');
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpClState : afficher l etat du sous-systeme des classes         }
+{ ------------------------------------------------------------ }
+
+Procedure DumpClState;
+Begin
+  WriteLn('--- Class State ---');
+  WriteLn('  ClInitialized    : ', ClInitialized);
+  WriteLn('  ClClassDefCount  : ', ClClassDefCount);
+  WriteLn('  ClInhCount       : ', ClInhCount);
+  WriteLn('  ClInitDefCount   : ', ClInitDefCount);
+  WriteLn('  ClMethodDefCount : ', ClMethodDefCount);
+  WriteLn('  ClObjNewCount    : ', ClObjNewCount);
+  WriteLn('  ClAttrLoadCount  : ', ClAttrLoadCount);
+  WriteLn('  ClAttrStoreCount : ', ClAttrStoreCount);
+  WriteLn('  ClMethCallCount  : ', ClMethCallCount);
+  WriteLn('  ClInitCallCount  : ', ClInitCallCount);
+  WriteLn('  ClInheritCount   : ', ClInheritCount);
+  WriteLn('  ClIsInstCount    : ', ClIsInstCount);
+  WriteLn('  ClSuperCount     : ', ClSuperCount);
+  WriteLn('  ClSelfRefCount   : ', ClSelfRefCount);
+  WriteLn('  ClLastKind       : ', ClTypeName(ClLastKind));
+  WriteLn('  ClLabelSeq       : ', ClLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 18)                              }
+{ ------------------------------------------------------------ }
+
+Function IsClInitialized : Boolean;
+Begin
+  IsClInitialized := ClInitialized;
+End;
+
+Function IsClEmpty : Boolean;
+Begin
+  IsClEmpty := (ClClassDefCount = 0) And (ClMethodDefCount = 0) And
+               (ClObjNewCount = 0) And (ClMethCallCount = 0);
+End;
+
+Function GetClClassDefCount : LongInt;
+Begin
+  GetClClassDefCount := ClClassDefCount;
+End;
+
+Function GetClMethodDefCount : LongInt;
+Begin
+  GetClMethodDefCount := ClMethodDefCount;
+End;
+
+Function GetClObjNewCount : LongInt;
+Begin
+  GetClObjNewCount := ClObjNewCount;
+End;
+
+Function GetClAttrLoadCount : LongInt;
+Begin
+  GetClAttrLoadCount := ClAttrLoadCount;
+End;
+
+Function GetClMethCallCount : LongInt;
+Begin
+  GetClMethCallCount := ClMethCallCount;
+End;
+
+Function GetClInitCallCount : LongInt;
+Begin
+  GetClInitCallCount := ClInitCallCount;
+End;
+
+Function GetClIsInstCount : LongInt;
+Begin
+  GetClIsInstCount := ClIsInstCount;
+End;
+
+Function GetClStatus : TString;
+Begin
+  If Not ClInitialized Then
+    GetClStatus := 'Not initialized'
+  Else
+    GetClStatus := ItoS(ClClassDefCount) + ' classes, ' +
+                   ItoS(ClMethodDefCount) + ' methods, ' +
+                   ItoS(ClObjNewCount) + ' new, ' +
+                   ItoS(ClMethCallCount) + ' calls, ' +
+                   ItoS(ClAttrLoadCount) + ' attr load, ' +
+                   ItoS(ClIsInstCount) + ' isinstance';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -10881,6 +11410,7 @@ Begin
   DcInitialized := False;
   TpInitialized := False;
   SrInitialized := False;
+  ClInitialized := False;
 
   ParseArgs;
 
@@ -10931,6 +11461,9 @@ Begin
 
   { Initialiser le sous-systeme des chaines avancees }
   InitSrState;
+
+  { Initialiser le sous-systeme des classes et objets }
+  InitClState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -11025,6 +11558,13 @@ Begin
     WriteLn('Str upper        : ', GetSrUpperCount);
     WriteLn('Str replace      : ', GetSrReplaceCount);
     WriteLn('Str contains     : ', GetSrContainsCount);
+    WriteLn('Classes definies : ', GetClClassDefCount);
+    WriteLn('Methodes definies: ', GetClMethodDefCount);
+    WriteLn('Obj allocations  : ', GetClObjNewCount);
+    WriteLn('Attr chargements : ', GetClAttrLoadCount);
+    WriteLn('Appels methodes  : ', GetClMethCallCount);
+    WriteLn('Appels __init__  : ', GetClInitCallCount);
+    WriteLn('isinstance       : ', GetClIsInstCount);
   End;
 
   If Opts.DebugMode Then
@@ -11044,6 +11584,7 @@ Begin
     DumpDcState;
     DumpTpState;
     DumpSrState;
+    DumpClState;
   End;
 
   { Nettoyage }

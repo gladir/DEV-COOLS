@@ -414,7 +414,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             Comparaison : CALL _PYRT_STRCMP -> drapeaux ZF/CF
             10 fonctions accesseurs
 
-  TODO 18 - PARSEUR : CLASSES ET OBJETS [A FAIRE]
+  TODO 18 - PARSEUR : CLASSES ET OBJETS [IMPLEMENTE]
             ParseClassStmt : class Nom: bloc
               ou class Nom(Parent): bloc
             Attributs d instance : stockes dans un bloc sur le heap
