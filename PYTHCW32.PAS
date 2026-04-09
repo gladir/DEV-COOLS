@@ -310,7 +310,7 @@
             Appel : PUSH args + CALL _PYF_nom + ADD ESP, n*4
             10 fonctions accesseurs
 
-  TODO 13 - PARSEUR : ENTREES/SORTIES (print / input) [A FAIRE]
+  TODO 13 - PARSEUR : ENTREES/SORTIES (print / input) [IMPLEMENTE]
             print(*args, sep=' ', end='\n') :
               Evaluer chaque argument, convertir en chaine si necessaire
               Appeler _PYRT_WRITESTR pour chaque argument
@@ -7851,6 +7851,655 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 13 - PARSEUR : ENTREES/SORTIES (print / input)          }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations d entrees/sorties }
+  IO_NONE          = 0;    { aucun / non defini                    }
+  IO_PRINT_INT     = 1;    { print(n) avec entier                  }
+  IO_PRINT_STR     = 2;    { print(s) avec chaine                  }
+  IO_PRINT_BOOL    = 3;    { print(True/False)                     }
+  IO_PRINT_NONE    = 4;    { print(None)                           }
+  IO_PRINT_MULTI   = 5;    { print(a, b, c) multi-arguments        }
+  IO_PRINT_SEP     = 6;    { print avec sep= personnalise          }
+  IO_PRINT_END     = 7;    { print avec end= personnalise          }
+  IO_INPUT         = 8;    { input() sans prompt                   }
+  IO_INPUT_PROMPT  = 9;    { input('prompt')                       }
+  IO_INT_INPUT     = 10;   { int(input()) conversion entiere       }
+  IO_HEX_CONV      = 11;   { hex(n) -> chaine hexadecimale         }
+  IO_OCT_CONV      = 12;   { oct(n) -> chaine octale               }
+  IO_BIN_CONV      = 13;   { bin(n) -> chaine binaire              }
+  IO_MAX           = 13;
+
+  { Limites }
+  IO_MAX_ARGS      = 16;   { nombre max d arguments pour print     }
+  IO_BUF_SIZE      = 256;  { taille max du buffer de lecture        }
+
+  { Constantes Win32 pour les handles standard }
+  IO_STD_INPUT     = -10;  { STD_INPUT_HANDLE                      }
+  IO_STD_OUTPUT    = -11;  { STD_OUTPUT_HANDLE                     }
+
+Var
+  IoInitialized   : Boolean;    { True si l etat est initialise       }
+  IoPrintIntCount : LongInt;    { nombre de print(int)                }
+  IoPrintStrCount : LongInt;    { nombre de print(str)                }
+  IoPrintBoolCount: LongInt;    { nombre de print(bool)               }
+  IoPrintNoneCount: LongInt;    { nombre de print(None)               }
+  IoPrintMultiCount: LongInt;   { nombre de print multi-args          }
+  IoInputCount    : LongInt;    { nombre de input()                   }
+  IoInputPromptCount: LongInt;  { nombre de input(prompt)             }
+  IoIntInputCount : LongInt;    { nombre de int(input())              }
+  IoHexConvCount  : LongInt;    { nombre de hex(n)                    }
+  IoOctConvCount  : LongInt;    { nombre de oct(n)                    }
+  IoBinConvCount  : LongInt;    { nombre de bin(n)                    }
+  IoLastKind      : Integer;    { dernier type d operation E/S        }
+  IoLabelSeq      : Integer;    { sequence pour labels E/S            }
+  IoSepStr        : TString;    { separateur courant (defaut ' ')     }
+  IoEndStr        : TString;    { terminateur courant (defaut CRLF)   }
+
+{ ------------------------------------------------------------ }
+{ InitIoState : initialiser le sous-systeme des entrees/sorties  }
+{ ------------------------------------------------------------ }
+
+Procedure InitIoState;
+Begin
+  IoInitialized    := True;
+  IoPrintIntCount  := 0;
+  IoPrintStrCount  := 0;
+  IoPrintBoolCount := 0;
+  IoPrintNoneCount := 0;
+  IoPrintMultiCount:= 0;
+  IoInputCount     := 0;
+  IoInputPromptCount := 0;
+  IoIntInputCount  := 0;
+  IoHexConvCount   := 0;
+  IoOctConvCount   := 0;
+  IoBinConvCount   := 0;
+  IoLastKind       := IO_NONE;
+  IoLabelSeq       := 0;
+  IoSepStr         := ' ';
+  IoEndStr         := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ GenIoLabel : generer un label unique pour les E/S               }
+{ ------------------------------------------------------------ }
+
+Function GenIoLabel : TString;
+Begin
+  Inc(IoLabelSeq);
+  GenIoLabel := '_PYL_IO_' + ItoS(IoLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ IoTypeName : retourner le nom du type d operation E/S            }
+{ ------------------------------------------------------------ }
+
+Function IoTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    IO_NONE          : IoTypeName := 'IO_NONE';
+    IO_PRINT_INT     : IoTypeName := 'IO_PRINT_INT';
+    IO_PRINT_STR     : IoTypeName := 'IO_PRINT_STR';
+    IO_PRINT_BOOL    : IoTypeName := 'IO_PRINT_BOOL';
+    IO_PRINT_NONE    : IoTypeName := 'IO_PRINT_NONE';
+    IO_PRINT_MULTI   : IoTypeName := 'IO_PRINT_MULTI';
+    IO_PRINT_SEP     : IoTypeName := 'IO_PRINT_SEP';
+    IO_PRINT_END     : IoTypeName := 'IO_PRINT_END';
+    IO_INPUT         : IoTypeName := 'IO_INPUT';
+    IO_INPUT_PROMPT  : IoTypeName := 'IO_INPUT_PROMPT';
+    IO_INT_INPUT     : IoTypeName := 'IO_INT_INPUT';
+    IO_HEX_CONV      : IoTypeName := 'IO_HEX_CONV';
+    IO_OCT_CONV      : IoTypeName := 'IO_OCT_CONV';
+    IO_BIN_CONV      : IoTypeName := 'IO_BIN_CONV';
+  Else
+    IoTypeName := 'IO_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitGetStdHandle : emettre l appel a GetStdHandle Win32          }
+{   PUSH nStdHandle / CALL GetStdHandle -> EAX=handle             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitGetStdHandle(HandleType : LongInt);
+Begin
+  WriteLn('  ; GetStdHandle(', HandleType, ')');
+  WriteLn('  PUSH ', HandleType);
+  WriteLn('  CALL _GetStdHandle@4');
+  WriteLn('  ; EAX = handle');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitWriteFile : emettre l appel a WriteFile Win32                }
+{   Ecrit la chaine pointee par ESI de longueur ECX                }
+{   sur le handle dans EBX                                        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitWriteFile;
+Begin
+  WriteLn('  ; WriteFile(hFile=EBX, lpBuffer=ESI, nBytes=ECX)');
+  WriteLn('  PUSH 0          ; lpOverlapped = NULL');
+  WriteLn('  PUSH ESP         ; lpNumberOfBytesWritten (temporaire)');
+  WriteLn('  PUSH ECX         ; nNumberOfBytesToWrite');
+  WriteLn('  PUSH ESI         ; lpBuffer');
+  WriteLn('  PUSH EBX         ; hFile');
+  WriteLn('  CALL _WriteFile@20');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitReadFile : emettre l appel a ReadFile Win32                  }
+{   Lit dans le buffer pointe par ESI, max ECX octets              }
+{   depuis le handle dans EBX                                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitReadFile;
+Begin
+  WriteLn('  ; ReadFile(hFile=EBX, lpBuffer=ESI, nBytes=ECX)');
+  WriteLn('  PUSH 0          ; lpOverlapped = NULL');
+  WriteLn('  PUSH ESP         ; lpNumberOfBytesRead (temporaire)');
+  WriteLn('  PUSH ECX         ; nNumberOfBytesToRead');
+  WriteLn('  PUSH ESI         ; lpBuffer');
+  WriteLn('  PUSH EBX         ; hFile');
+  WriteLn('  CALL _ReadFile@20');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintStr : emettre le code pour afficher une chaine          }
+{   La chaine est pointee par EAX (ptr) via _PYRT_WRITESTR        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintStr;
+Begin
+  IoLastKind := IO_PRINT_STR;
+  Inc(IoPrintStrCount);
+  WriteLn('  ; print(str) -> _PYRT_WRITESTR');
+  WriteLn('  PUSH EAX         ; ptr vers la chaine');
+  WriteLn('  CALL _PYRT_WRITESTR');
+  WriteLn('  ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintInt : emettre le code pour afficher un entier           }
+{   L entier est dans EAX -> _PYRT_ITOA + _PYRT_WRITESTR          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintInt;
+Begin
+  IoLastKind := IO_PRINT_INT;
+  Inc(IoPrintIntCount);
+  WriteLn('  ; print(int) -> _PYRT_ITOA + _PYRT_WRITESTR');
+  WriteLn('  PUSH EAX         ; valeur entiere');
+  WriteLn('  CALL _PYRT_ITOA');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers chaine');
+  WriteLn('  PUSH EAX');
+  WriteLn('  CALL _PYRT_WRITESTR');
+  WriteLn('  ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintBool : emettre le code pour afficher True ou False      }
+{   EAX = 0 -> 'False', EAX <> 0 -> 'True'                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintBool;
+Var
+  LblFalse, LblEnd : TString;
+Begin
+  IoLastKind := IO_PRINT_BOOL;
+  Inc(IoPrintBoolCount);
+  LblFalse := GenIoLabel;
+  LblEnd   := GenIoLabel;
+  WriteLn('  ; print(bool)');
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JZ ', LblFalse);
+  WriteLn('  PUSH OFFSET _PYD_TRUE');
+  WriteLn('  CALL _PYRT_WRITESTR');
+  WriteLn('  ADD ESP, 4');
+  WriteLn('  JMP ', LblEnd);
+  WriteLn(LblFalse, ':');
+  WriteLn('  PUSH OFFSET _PYD_FALSE');
+  WriteLn('  CALL _PYRT_WRITESTR');
+  WriteLn('  ADD ESP, 4');
+  WriteLn(LblEnd, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintNone : emettre le code pour afficher 'None'             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintNone;
+Begin
+  IoLastKind := IO_PRINT_NONE;
+  Inc(IoPrintNoneCount);
+  WriteLn('  ; print(None)');
+  WriteLn('  PUSH OFFSET _PYD_NONE');
+  WriteLn('  CALL _PYRT_WRITESTR');
+  WriteLn('  ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintSep : emettre le code pour afficher le separateur       }
+{   Par defaut un espace, personnalisable via sep=                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintSep;
+Begin
+  If IoSepStr = ' ' Then
+  Begin
+    WriteLn('  ; separateur (espace)');
+    WriteLn('  PUSH OFFSET _PYD_SPACE');
+    WriteLn('  CALL _PYRT_WRITESTR');
+    WriteLn('  ADD ESP, 4');
+  End
+  Else
+  Begin
+    WriteLn('  ; separateur personnalise');
+    WriteLn('  PUSH OFFSET _PYD_SEP');
+    WriteLn('  CALL _PYRT_WRITESTR');
+    WriteLn('  ADD ESP, 4');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintNewline : emettre le code pour afficher CR+LF           }
+{   Ou le terminateur end= personnalise                           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintNewline;
+Begin
+  If IoEndStr = '' Then
+  Begin
+    WriteLn('  ; terminateur (CR+LF)');
+    WriteLn('  PUSH OFFSET _PYD_CRLF');
+    WriteLn('  CALL _PYRT_WRITESTR');
+    WriteLn('  ADD ESP, 4');
+  End
+  Else
+  Begin
+    WriteLn('  ; terminateur personnalise end=');
+    WriteLn('  PUSH OFFSET _PYD_END');
+    WriteLn('  CALL _PYRT_WRITESTR');
+    WriteLn('  ADD ESP, 4');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrintStmt : analyser et emettre un appel a print            }
+{   print()                   -> CRLF seul                         }
+{   print(expr)               -> evaluer + afficher + CRLF         }
+{   print(e1, e2, ...)        -> sep entre chaque + CRLF           }
+{   print(e1, sep=',')        -> sep personnalise                  }
+{   print(e1, end='')         -> end personnalise                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePrintStmt;
+Var
+  ArgCount : Integer;
+  HasSep   : Boolean;
+  HasEnd   : Boolean;
+Begin
+  { Reinitialiser les options de print }
+  IoSepStr := ' ';
+  IoEndStr := '';
+  HasSep   := False;
+  HasEnd   := False;
+  ArgCount := 0;
+
+  { On attend que le token courant soit 'print' deja consomme }
+  { Verifier s il y a une parenthese ouvrante }
+  If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+  Begin
+    LexNextToken;  { consommer '(' }
+
+    { Boucle sur les arguments }
+    While Not ((CurTokKind = TK_OP) And (CurTokStr = ')')) And
+          Not (CurTokKind = TK_EOF) Do
+    Begin
+      { Verifier si c est un argument nomme sep= ou end= }
+      If (CurTokKind = TK_IDENT) And (CurTokStr = 'sep') Then
+      Begin
+        LexNextToken;  { consommer 'sep' }
+        If (CurTokKind = TK_OP) And (CurTokStr = '=') Then
+        Begin
+          LexNextToken;  { consommer '=' }
+          If CurTokKind = TK_STRING Then
+          Begin
+            IoSepStr := CurTokStr;
+            HasSep   := True;
+            LexNextToken;  { consommer la chaine }
+          End;
+        End;
+      End
+      Else If (CurTokKind = TK_IDENT) And (CurTokStr = 'end') Then
+      Begin
+        LexNextToken;  { consommer 'end' }
+        If (CurTokKind = TK_OP) And (CurTokStr = '=') Then
+        Begin
+          LexNextToken;  { consommer '=' }
+          If CurTokKind = TK_STRING Then
+          Begin
+            IoEndStr := CurTokStr;
+            HasEnd   := True;
+            LexNextToken;  { consommer la chaine }
+          End;
+        End;
+      End
+      Else
+      Begin
+        { C est un argument normal }
+        Inc(ArgCount);
+
+        { Inserer le separateur avant le 2e argument et suivants }
+        If ArgCount > 1 Then
+          EmitPrintSep;
+
+        { Determiner le type d argument }
+        If CurTokKind = TK_INTEGER Then
+        Begin
+          WriteLn('  MOV EAX, ', CurTokInt);
+          EmitPrintInt;
+          LexNextToken;
+        End
+        Else If CurTokKind = TK_STRING Then
+        Begin
+          WriteLn('  MOV EAX, OFFSET ', GenIoLabel);
+          EmitPrintStr;
+          LexNextToken;
+        End
+        Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'True') Then
+        Begin
+          WriteLn('  MOV EAX, 1');
+          EmitPrintBool;
+          LexNextToken;
+        End
+        Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'False') Then
+        Begin
+          WriteLn('  XOR EAX, EAX');
+          EmitPrintBool;
+          LexNextToken;
+        End
+        Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'None') Then
+        Begin
+          EmitPrintNone;
+          LexNextToken;
+        End
+        Else If CurTokKind = TK_IDENT Then
+        Begin
+          { Variable : charger et afficher comme entier par defaut }
+          WriteLn('  MOV EAX, [', SymMangle(CurTokStr, SK_VAR), ']');
+          EmitPrintInt;
+          LexNextToken;
+        End
+        Else
+        Begin
+          { Expression generique : supposer que EAX contient le resultat }
+          EmitPrintInt;
+          LexNextToken;
+        End;
+      End;
+
+      { Consommer la virgule entre arguments }
+      If (CurTokKind = TK_OP) And (CurTokStr = ',') Then
+        LexNextToken;
+    End;
+
+    { Consommer ')' }
+    If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+      LexNextToken;
+  End;
+
+  { Emettre le terminateur }
+  EmitPrintNewline;
+
+  { Mettre a jour les compteurs }
+  If ArgCount > 1 Then
+    Inc(IoPrintMultiCount);
+  If HasSep Then
+    IoLastKind := IO_PRINT_SEP;
+  If HasEnd Then
+    IoLastKind := IO_PRINT_END;
+  If ArgCount <= 1 Then
+  Begin
+    If IoLastKind = IO_NONE Then
+      IoLastKind := IO_PRINT_STR;
+  End
+  Else
+    IoLastKind := IO_PRINT_MULTI;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitInputPrompt : emettre le code pour afficher le prompt        }
+{   Si un prompt est fourni, l afficher via _PYRT_WRITESTR         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitInputPrompt(Prompt : TString);
+Begin
+  If Prompt <> '' Then
+  Begin
+    WriteLn('  ; afficher le prompt input');
+    WriteLn('  PUSH OFFSET ', Prompt);
+    WriteLn('  CALL _PYRT_WRITESTR');
+    WriteLn('  ADD ESP, 4');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitInputReadline : emettre le code pour lire une ligne stdin    }
+{   Appelle _PYRT_READLINE -> EAX = ptr vers la chaine lue        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitInputReadline;
+Begin
+  WriteLn('  ; input() -> _PYRT_READLINE');
+  WriteLn('  CALL _PYRT_READLINE');
+  WriteLn('  ; EAX = ptr vers la chaine lue');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInputExpr : analyser et emettre un appel a input()          }
+{   input()          -> lire une ligne depuis STDIN                }
+{   input('prompt')  -> afficher prompt puis lire                  }
+{   Resultat dans EAX = pointeur vers la chaine lue               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInputExpr;
+Var
+  PromptLabel : TString;
+Begin
+  { On attend que 'input' soit deja consomme }
+  PromptLabel := '';
+
+  If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+  Begin
+    LexNextToken;  { consommer '(' }
+
+    { Verifier s il y a un prompt }
+    If CurTokKind = TK_STRING Then
+    Begin
+      IoLastKind := IO_INPUT_PROMPT;
+      Inc(IoInputPromptCount);
+      PromptLabel := GenIoLabel;
+      WriteLn('  ; input avec prompt');
+      EmitInputPrompt(PromptLabel);
+      LexNextToken;  { consommer la chaine }
+    End
+    Else
+    Begin
+      IoLastKind := IO_INPUT;
+      Inc(IoInputCount);
+    End;
+
+    { Consommer ')' }
+    If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+      LexNextToken;
+  End
+  Else
+  Begin
+    IoLastKind := IO_INPUT;
+    Inc(IoInputCount);
+  End;
+
+  { Lire la ligne }
+  EmitInputReadline;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIntInput : analyser int(input()) et emettre le code         }
+{   Lit une ligne via _PYRT_READLINE puis convertit via _PYRT_ATOI }
+{   Resultat dans EAX = valeur entiere                            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIntInput;
+Begin
+  IoLastKind := IO_INT_INPUT;
+  Inc(IoIntInputCount);
+  WriteLn('  ; int(input()) -> _PYRT_READLINE + _PYRT_ATOI');
+  { D abord lire la ligne }
+  EmitInputReadline;
+  { Puis convertir en entier }
+  WriteLn('  PUSH EAX         ; ptr vers la chaine');
+  WriteLn('  CALL _PYRT_ATOI');
+  WriteLn('  ADD ESP, 4       ; EAX = valeur entiere');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitHexConv : emettre le code pour hex(n)                        }
+{   EAX = valeur entiere -> CALL _PYRT_TOHEX -> EAX = ptr         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitHexConv;
+Begin
+  IoLastKind := IO_HEX_CONV;
+  Inc(IoHexConvCount);
+  WriteLn('  ; hex(n) -> _PYRT_TOHEX');
+  WriteLn('  PUSH EAX         ; valeur entiere');
+  WriteLn('  CALL _PYRT_TOHEX');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr "0x..."');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitOctConv : emettre le code pour oct(n)                        }
+{   EAX = valeur entiere -> CALL _PYRT_TOOCT -> EAX = ptr         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitOctConv;
+Begin
+  IoLastKind := IO_OCT_CONV;
+  Inc(IoOctConvCount);
+  WriteLn('  ; oct(n) -> _PYRT_TOOCT');
+  WriteLn('  PUSH EAX         ; valeur entiere');
+  WriteLn('  CALL _PYRT_TOOCT');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr "0o..."');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBinConv : emettre le code pour bin(n)                        }
+{   EAX = valeur entiere -> CALL _PYRT_TOBIN -> EAX = ptr         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBinConv;
+Begin
+  IoLastKind := IO_BIN_CONV;
+  Inc(IoBinConvCount);
+  WriteLn('  ; bin(n) -> _PYRT_TOBIN');
+  WriteLn('  PUSH EAX         ; valeur entiere');
+  WriteLn('  CALL _PYRT_TOBIN');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr "0b..."');
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpIoState : afficher l etat du sous-systeme des E/S            }
+{ ------------------------------------------------------------ }
+
+Procedure DumpIoState;
+Begin
+  WriteLn('--- IO State ---');
+  WriteLn('  IoInitialized    : ', IoInitialized);
+  WriteLn('  IoPrintIntCount  : ', IoPrintIntCount);
+  WriteLn('  IoPrintStrCount  : ', IoPrintStrCount);
+  WriteLn('  IoPrintBoolCount : ', IoPrintBoolCount);
+  WriteLn('  IoPrintNoneCount : ', IoPrintNoneCount);
+  WriteLn('  IoPrintMultiCount: ', IoPrintMultiCount);
+  WriteLn('  IoInputCount     : ', IoInputCount);
+  WriteLn('  IoInputPromptCount: ', IoInputPromptCount);
+  WriteLn('  IoIntInputCount  : ', IoIntInputCount);
+  WriteLn('  IoHexConvCount   : ', IoHexConvCount);
+  WriteLn('  IoOctConvCount   : ', IoOctConvCount);
+  WriteLn('  IoBinConvCount   : ', IoBinConvCount);
+  WriteLn('  IoLastKind       : ', IoTypeName(IoLastKind));
+  WriteLn('  IoLabelSeq       : ', IoLabelSeq);
+  WriteLn('  IoSepStr         : "', IoSepStr, '"');
+  WriteLn('  IoEndStr         : "', IoEndStr, '"');
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 13)                              }
+{ ------------------------------------------------------------ }
+
+Function IsIoInitialized : Boolean;
+Begin
+  IsIoInitialized := IoInitialized;
+End;
+
+Function IsIoEmpty : Boolean;
+Begin
+  IsIoEmpty := (IoPrintIntCount = 0) And (IoPrintStrCount = 0) And
+               (IoInputCount = 0) And (IoInputPromptCount = 0);
+End;
+
+Function GetIoPrintIntCount : LongInt;
+Begin
+  GetIoPrintIntCount := IoPrintIntCount;
+End;
+
+Function GetIoPrintStrCount : LongInt;
+Begin
+  GetIoPrintStrCount := IoPrintStrCount;
+End;
+
+Function GetIoPrintBoolCount : LongInt;
+Begin
+  GetIoPrintBoolCount := IoPrintBoolCount;
+End;
+
+Function GetIoPrintMultiCount : LongInt;
+Begin
+  GetIoPrintMultiCount := IoPrintMultiCount;
+End;
+
+Function GetIoInputCount : LongInt;
+Begin
+  GetIoInputCount := IoInputCount;
+End;
+
+Function GetIoInputPromptCount : LongInt;
+Begin
+  GetIoInputPromptCount := IoInputPromptCount;
+End;
+
+Function GetIoIntInputCount : LongInt;
+Begin
+  GetIoIntInputCount := IoIntInputCount;
+End;
+
+Function GetIoStatus : TString;
+Begin
+  If Not IoInitialized Then
+    GetIoStatus := 'Not initialized'
+  Else
+    GetIoStatus := ItoS(IoPrintIntCount) + ' print_int, ' +
+                   ItoS(IoPrintStrCount) + ' print_str, ' +
+                   ItoS(IoPrintBoolCount) + ' print_bool, ' +
+                   ItoS(IoPrintMultiCount) + ' print_multi, ' +
+                   ItoS(IoInputCount) + ' input, ' +
+                   ItoS(IoInputPromptCount) + ' input_prompt, ' +
+                   ItoS(IoIntInputCount) + ' int_input';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -7873,6 +8522,7 @@ Begin
   IfInitialized := False;
   LpInitialized := False;
   FnInitialized := False;
+  IoInitialized := False;
 
   ParseArgs;
 
@@ -7908,6 +8558,9 @@ Begin
 
   { Initialiser le sous-systeme des fonctions }
   InitFnState;
+
+  { Initialiser le sous-systeme des entrees/sorties }
+  InitIoState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -7967,6 +8620,13 @@ Begin
     WriteLn('Parametres decl  : ', GetFnParamCount);
     WriteLn('Params par defaut: ', GetFnDefParamCount);
     WriteLn('Appels recursifs : ', GetFnRecursCount);
+    WriteLn('Print int        : ', GetIoPrintIntCount);
+    WriteLn('Print str        : ', GetIoPrintStrCount);
+    WriteLn('Print bool       : ', GetIoPrintBoolCount);
+    WriteLn('Print multi-args : ', GetIoPrintMultiCount);
+    WriteLn('Input            : ', GetIoInputCount);
+    WriteLn('Input avec prompt: ', GetIoInputPromptCount);
+    WriteLn('Int(input())     : ', GetIoIntInputCount);
   End;
 
   If Opts.DebugMode Then
@@ -7981,6 +8641,7 @@ Begin
     DumpIfState;
     DumpLpState;
     DumpFnState;
+    DumpIoState;
   End;
 
   { Nettoyage }

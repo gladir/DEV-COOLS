@@ -302,7 +302,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             Appel : PUSH args + CALL _PYF_nom + ADD ESP, n*4
             10 fonctions accesseurs
 
-  TODO 13 - PARSEUR : ENTREES/SORTIES (print / input) [A FAIRE]
+  TODO 13 - PARSEUR : ENTREES/SORTIES (print / input) [IMPLEMENTE]
             print(*args, sep=' ', end='\n') :
               Evaluer chaque argument, convertir en chaine si necessaire
               Appeler _PYRT_WRITESTR pour chaque argument
