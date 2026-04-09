@@ -528,7 +528,7 @@
             Alignement des donnees sur 4 octets (DWORD)
             10 fonctions accesseurs
 
-  TODO 22 - BIBLIOTHEQUE RUNTIME PYTHON (E/S, CONVERSIONS VIA WIN32) [A FAIRE]
+  TODO 22 - BIBLIOTHEQUE RUNTIME PYTHON (E/S, CONVERSIONS VIA WIN32) [IMPLEMENTE]
             Routines de conversion :
               _PYRT_ITOA : entier 32 bits -> chaine decimale ASCII
                 Utilisation de DIV par 10 en boucle
@@ -13182,6 +13182,843 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 22 - BIBLIOTHEQUE RUNTIME PYTHON (E/S, CONVERSIONS)     }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types de routines runtime }
+  RT_NONE          = 0;    { aucun / non defini                    }
+  RT_ITOA          = 1;    { conversion entier -> chaine            }
+  RT_ATOI          = 2;    { conversion chaine -> entier            }
+  RT_BOOLTOSTR     = 3;    { conversion booleen -> chaine           }
+  RT_NONETOSTR     = 4;    { conversion None -> chaine              }
+  RT_INITIO        = 5;    { initialisation E/S console             }
+  RT_WRITESTR      = 6;    { ecriture chaine console                }
+  RT_WRITECRLF     = 7;    { ecriture retour a la ligne             }
+  RT_READLINE      = 8;    { lecture ligne console                  }
+  RT_STRLEN        = 9;    { longueur chaine                        }
+  RT_STRCONCAT     = 10;   { concatenation chaines                  }
+  RT_HEAPALLOC     = 11;   { allocation heap dynamique              }
+  RT_PANIC         = 12;   { affichage erreur + arret               }
+  RT_MATH          = 13;   { routines mathematiques (pow, abs)      }
+  RT_MAX           = 13;
+
+  { Limites }
+  RT_MAX_ROUTINES  = 64;   { nombre max de routines runtime         }
+  RT_BUF_SIZE      = 256;  { taille tampon E/S par defaut           }
+  RT_NUM_BUF       = 32;   { taille tampon conversion nombres       }
+
+Var
+  RtInitialized    : Boolean;    { True si l etat est initialise       }
+  RtItoaCount      : LongInt;    { nombre d emissions de _PYRT_ITOA    }
+  RtAtoiCount      : LongInt;    { nombre d emissions de _PYRT_ATOI    }
+  RtBoolStrCount   : LongInt;    { nombre de _PYRT_BOOLTOSTR           }
+  RtNoneStrCount   : LongInt;    { nombre de _PYRT_NONETOSTR           }
+  RtInitIoCount    : LongInt;    { nombre de _PYRT_INITIO              }
+  RtWriteStrCount  : LongInt;    { nombre de _PYRT_WRITESTR            }
+  RtWriteCrlfCount : LongInt;    { nombre de _PYRT_WRITECRLF           }
+  RtReadLineCount  : LongInt;    { nombre de _PYRT_READLINE            }
+  RtStrFuncCount   : LongInt;    { nombre de routines chaines emises   }
+  RtCollFuncCount  : LongInt;    { nombre de routines collections      }
+  RtMathFuncCount  : LongInt;    { nombre de routines mathematiques    }
+  RtPanicCount     : LongInt;    { nombre de _PYRT_PANIC               }
+  RtHeapAllocCount : LongInt;    { nombre de _PYRT_HEAPALLOC           }
+  RtLastKind       : Integer;    { dernier type de routine emise       }
+  RtLabelSeq       : Integer;    { sequence pour labels runtime        }
+
+{ ------------------------------------------------------------ }
+{ InitRtState : initialiser le sous-systeme runtime                 }
+{ ------------------------------------------------------------ }
+
+Procedure InitRtState;
+Begin
+  RtInitialized    := True;
+  RtItoaCount      := 0;
+  RtAtoiCount      := 0;
+  RtBoolStrCount   := 0;
+  RtNoneStrCount   := 0;
+  RtInitIoCount    := 0;
+  RtWriteStrCount  := 0;
+  RtWriteCrlfCount := 0;
+  RtReadLineCount  := 0;
+  RtStrFuncCount   := 0;
+  RtCollFuncCount  := 0;
+  RtMathFuncCount  := 0;
+  RtPanicCount     := 0;
+  RtHeapAllocCount := 0;
+  RtLastKind       := RT_NONE;
+  RtLabelSeq       := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtLabel : generer un label unique pour le runtime              }
+{ ------------------------------------------------------------ }
+
+Function GenRtLabel : TString;
+Begin
+  Inc(RtLabelSeq);
+  GenRtLabel := '_PYRT_L' + ItoS(RtLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ RtTypeName : retourner le nom du type de routine runtime          }
+{ ------------------------------------------------------------ }
+
+Function RtTypeName(Kind : Integer) : TString;
+Begin
+  Case Kind Of
+    RT_NONE        : RtTypeName := 'RT_NONE';
+    RT_ITOA        : RtTypeName := 'RT_ITOA';
+    RT_ATOI        : RtTypeName := 'RT_ATOI';
+    RT_BOOLTOSTR   : RtTypeName := 'RT_BOOLTOSTR';
+    RT_NONETOSTR   : RtTypeName := 'RT_NONETOSTR';
+    RT_INITIO      : RtTypeName := 'RT_INITIO';
+    RT_WRITESTR    : RtTypeName := 'RT_WRITESTR';
+    RT_WRITECRLF   : RtTypeName := 'RT_WRITECRLF';
+    RT_READLINE    : RtTypeName := 'RT_READLINE';
+    RT_STRLEN      : RtTypeName := 'RT_STRLEN';
+    RT_STRCONCAT   : RtTypeName := 'RT_STRCONCAT';
+    RT_HEAPALLOC   : RtTypeName := 'RT_HEAPALLOC';
+    RT_PANIC       : RtTypeName := 'RT_PANIC';
+    RT_MATH        : RtTypeName := 'RT_MATH';
+  Else
+    RtTypeName := 'RT_UNKNOWN(' + ItoS(Kind) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtItoa : emettre la routine _PYRT_ITOA                       }
+{   Convertit EAX (entier 32 bits) en chaine decimale ASCII         }
+{   Resultat dans _PY_NUMBUF, EAX = ptr vers la chaine              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtItoa;
+Var Lbl1, Lbl2, Lbl3 : TString;
+Begin
+  Inc(RtItoaCount);
+  RtLastKind := RT_ITOA;
+  Lbl1 := GenRtLabel;
+  Lbl2 := GenRtLabel;
+  Lbl3 := GenRtLabel;
+  WriteLn('_PYRT_ITOA:');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH EDX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  LEA EDI, [_PY_NUMBUF+31]');
+  WriteLn('  MOV BYTE [EDI], 0');
+  WriteLn('  MOV EBX, 10');
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JNS ' + Lbl1);
+  WriteLn('  NEG EAX');
+  WriteLn(Lbl1 + ':');
+  WriteLn('  XOR ECX, ECX');
+  WriteLn(Lbl2 + ':');
+  WriteLn('  XOR EDX, EDX');
+  WriteLn('  DIV EBX');
+  WriteLn('  ADD DL, 48');
+  WriteLn('  DEC EDI');
+  WriteLn('  MOV [EDI], DL');
+  WriteLn('  INC ECX');
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JNZ ' + Lbl2);
+  WriteLn('  TEST ESI, ESI');
+  WriteLn('  JNS ' + Lbl3);
+  WriteLn('  DEC EDI');
+  WriteLn('  MOV BYTE [EDI], 45');
+  WriteLn(Lbl3 + ':');
+  WriteLn('  MOV EAX, EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP EDX');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtAtoi : emettre la routine _PYRT_ATOI                       }
+{   Convertit chaine ASCII (EAX=ptr) en entier 32 bits              }
+{   Resultat dans EAX                                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtAtoi;
+Var Lbl1, Lbl2, Lbl3 : TString;
+Begin
+  Inc(RtAtoiCount);
+  RtLastKind := RT_ATOI;
+  Lbl1 := GenRtLabel;
+  Lbl2 := GenRtLabel;
+  Lbl3 := GenRtLabel;
+  WriteLn('_PYRT_ATOI:');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  XOR EAX, EAX');
+  WriteLn('  XOR ECX, ECX');
+  WriteLn('  MOV BL, [ESI]');
+  WriteLn('  CMP BL, 45');
+  WriteLn('  JNE ' + Lbl1);
+  WriteLn('  INC ECX');
+  WriteLn('  INC ESI');
+  WriteLn(Lbl1 + ':');
+  WriteLn('  MOV BL, [ESI]');
+  WriteLn('  TEST BL, BL');
+  WriteLn('  JZ ' + Lbl2);
+  WriteLn('  SUB BL, 48');
+  WriteLn('  IMUL EAX, 10');
+  WriteLn('  MOVZX EBX, BL');
+  WriteLn('  ADD EAX, EBX');
+  WriteLn('  INC ESI');
+  WriteLn('  JMP ' + Lbl1);
+  WriteLn(Lbl2 + ':');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JZ ' + Lbl3);
+  WriteLn('  NEG EAX');
+  WriteLn(Lbl3 + ':');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtBoolToStr : emettre la routine _PYRT_BOOLTOSTR              }
+{   EAX=0 -> 'False', EAX<>0 -> 'True'. EAX = ptr chaine           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtBoolToStr;
+Var Lbl1, Lbl2 : TString;
+Begin
+  Inc(RtBoolStrCount);
+  RtLastKind := RT_BOOLTOSTR;
+  Lbl1 := GenRtLabel;
+  Lbl2 := GenRtLabel;
+  WriteLn('_PYRT_BOOLTOSTR:');
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JZ ' + Lbl1);
+  WriteLn('  LEA EAX, [_PYK_TRUE]');
+  WriteLn('  JMP ' + Lbl2);
+  WriteLn(Lbl1 + ':');
+  WriteLn('  LEA EAX, [_PYK_FALSE]');
+  WriteLn(Lbl2 + ':');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtNoneToStr : emettre la routine _PYRT_NONETOSTR              }
+{   Retourne EAX = ptr vers 'None'                                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtNoneToStr;
+Begin
+  Inc(RtNoneStrCount);
+  RtLastKind := RT_NONETOSTR;
+  WriteLn('_PYRT_NONETOSTR:');
+  WriteLn('  LEA EAX, [_PYK_NONE]');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtInitIo : emettre la routine _PYRT_INITIO                    }
+{   Initialise _PY_STDOUT et _PY_STDIN via GetStdHandle              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtInitIo;
+Begin
+  Inc(RtInitIoCount);
+  RtLastKind := RT_INITIO;
+  WriteLn('_PYRT_INITIO:');
+  WriteLn('  PUSH -11');
+  WriteLn('  CALL _GetStdHandle@4');
+  WriteLn('  MOV [_PY_STDOUT], EAX');
+  WriteLn('  PUSH -10');
+  WriteLn('  CALL _GetStdHandle@4');
+  WriteLn('  MOV [_PY_STDIN], EAX');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtWriteStr : emettre la routine _PYRT_WRITESTR                 }
+{   EAX=ptr chaine, ECX=longueur. Ecrit sur _PY_STDOUT              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtWriteStr;
+Begin
+  Inc(RtWriteStrCount);
+  RtLastKind := RT_WRITESTR;
+  WriteLn('_PYRT_WRITESTR:');
+  WriteLn('  PUSH 0');
+  WriteLn('  LEA EDX, [_PY_WRITTEN]');
+  WriteLn('  PUSH EDX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH EAX');
+  WriteLn('  PUSH DWORD [_PY_STDOUT]');
+  WriteLn('  CALL _WriteFile@20');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtWriteCrlf : emettre la routine _PYRT_WRITECRLF               }
+{   Ecrit un retour a la ligne (CR+LF) sur la console               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtWriteCrlf;
+Begin
+  Inc(RtWriteCrlfCount);
+  RtLastKind := RT_WRITECRLF;
+  WriteLn('_PYRT_WRITECRLF:');
+  WriteLn('  LEA EAX, [_PYK_CRLF]');
+  WriteLn('  MOV ECX, 2');
+  WriteLn('  PUSH 0');
+  WriteLn('  LEA EDX, [_PY_WRITTEN]');
+  WriteLn('  PUSH EDX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH EAX');
+  WriteLn('  PUSH DWORD [_PY_STDOUT]');
+  WriteLn('  CALL _WriteFile@20');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtReadLine : emettre la routine _PYRT_READLINE                 }
+{   Lit une ligne depuis _PY_STDIN dans _PY_IOBUF                   }
+{   Retourne EAX = ptr vers la chaine (CR/LF supprime)              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtReadLine;
+Var Lbl1, Lbl2 : TString;
+Begin
+  Inc(RtReadLineCount);
+  RtLastKind := RT_READLINE;
+  Lbl1 := GenRtLabel;
+  Lbl2 := GenRtLabel;
+  WriteLn('_PYRT_READLINE:');
+  WriteLn('  PUSH 0');
+  WriteLn('  LEA EAX, [_PY_READ]');
+  WriteLn('  PUSH EAX');
+  WriteLn('  PUSH ' + ItoS(RT_BUF_SIZE));
+  WriteLn('  LEA EAX, [_PY_IOBUF]');
+  WriteLn('  PUSH EAX');
+  WriteLn('  PUSH DWORD [_PY_STDIN]');
+  WriteLn('  CALL _ReadFile@20');
+  WriteLn('  MOV ECX, [_PY_READ]');
+  WriteLn(Lbl1 + ':');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JZ ' + Lbl2);
+  WriteLn('  DEC ECX');
+  WriteLn('  CMP BYTE [_PY_IOBUF+ECX], 13');
+  WriteLn('  JE ' + Lbl1);
+  WriteLn('  CMP BYTE [_PY_IOBUF+ECX], 10');
+  WriteLn('  JE ' + Lbl1);
+  WriteLn('  INC ECX');
+  WriteLn(Lbl2 + ':');
+  WriteLn('  MOV BYTE [_PY_IOBUF+ECX], 0');
+  WriteLn('  LEA EAX, [_PY_IOBUF]');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrLen : emettre la routine _PYRT_STRLEN                     }
+{   EAX=ptr chaine NUL-terminated. Retourne EAX=longueur            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrLen;
+Var Lbl1, Lbl2 : TString;
+Begin
+  Inc(RtStrFuncCount);
+  RtLastKind := RT_STRLEN;
+  Lbl1 := GenRtLabel;
+  Lbl2 := GenRtLabel;
+  WriteLn('_PYRT_STRLEN:');
+  WriteLn('  PUSH ECX');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  XOR EAX, EAX');
+  WriteLn(Lbl1 + ':');
+  WriteLn('  CMP BYTE [ECX], 0');
+  WriteLn('  JE ' + Lbl2);
+  WriteLn('  INC EAX');
+  WriteLn('  INC ECX');
+  WriteLn('  JMP ' + Lbl1);
+  WriteLn(Lbl2 + ':');
+  WriteLn('  POP ECX');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrConcat : emettre la routine _PYRT_STRCONCAT               }
+{   EAX=ptr chaine1, EBX=ptr chaine2                                }
+{   Alloue sur le heap, retourne EAX=ptr resultat                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrConcat;
+Var Lbl1, Lbl2, Lbl3 : TString;
+Begin
+  Inc(RtStrFuncCount);
+  RtLastKind := RT_STRCONCAT;
+  Lbl1 := GenRtLabel;
+  Lbl2 := GenRtLabel;
+  Lbl3 := GenRtLabel;
+  WriteLn('_PYRT_STRCONCAT:');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  MOV EDI, EBX');
+  { Calculer longueur totale et allouer }
+  WriteLn('  CALL _PYRT_STRLEN');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  MOV EAX, EDI');
+  WriteLn('  CALL _PYRT_STRLEN');
+  WriteLn('  POP ECX');
+  WriteLn('  ADD ECX, EAX');
+  WriteLn('  INC ECX');
+  WriteLn('  CALL _PYRT_HEAPALLOC');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  PUSH EAX');
+  { Copier chaine 1 }
+  WriteLn(Lbl1 + ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ' + Lbl2);
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ' + Lbl1);
+  { Copier chaine 2 }
+  WriteLn(Lbl2 + ':');
+  WriteLn('  POP ESI');
+  WriteLn('  PUSH ESI');
+  WriteLn('  MOV ESI, [ESP+16]');
+  WriteLn(Lbl3 + ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ' + GenRtLabel);
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ' + Lbl3);
+  WriteLn(GenRtLabel + ':');
+  WriteLn('  POP EAX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrCmp : emettre la routine _PYRT_STRCMP                     }
+{   EAX=ptr chaine1, EBX=ptr chaine2                                }
+{   Retourne EAX: 0=egal, <0 si s1<s2, >0 si s1>s2                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrCmp;
+Var Lbl1, Lbl2, Lbl3 : TString;
+Begin
+  Inc(RtStrFuncCount);
+  Lbl1 := GenRtLabel;
+  Lbl2 := GenRtLabel;
+  Lbl3 := GenRtLabel;
+  WriteLn('_PYRT_STRCMP:');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  MOV EDI, EBX');
+  WriteLn(Lbl1 + ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  MOV AH, [EDI]');
+  WriteLn('  CMP AL, AH');
+  WriteLn('  JNE ' + Lbl2);
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ' + Lbl3);
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ' + Lbl1);
+  WriteLn(Lbl2 + ':');
+  WriteLn('  MOVZX EAX, AL');
+  WriteLn('  MOVZX ECX, AH');
+  WriteLn('  SUB EAX, ECX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  RET');
+  WriteLn(Lbl3 + ':');
+  WriteLn('  XOR EAX, EAX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrUpper : emettre _PYRT_STRUPPER (in-place upper)           }
+{   EAX=ptr chaine. Convertit en majuscules sur place                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrUpper;
+Var Lbl1, Lbl2, Lbl3 : TString;
+Begin
+  Inc(RtStrFuncCount);
+  Lbl1 := GenRtLabel;
+  Lbl2 := GenRtLabel;
+  Lbl3 := GenRtLabel;
+  WriteLn('_PYRT_STRUPPER:');
+  WriteLn('  PUSH ESI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn(Lbl1 + ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ' + Lbl3);
+  WriteLn('  CMP AL, 97');
+  WriteLn('  JB ' + Lbl2);
+  WriteLn('  CMP AL, 122');
+  WriteLn('  JA ' + Lbl2);
+  WriteLn('  SUB AL, 32');
+  WriteLn('  MOV [ESI], AL');
+  WriteLn(Lbl2 + ':');
+  WriteLn('  INC ESI');
+  WriteLn('  JMP ' + Lbl1);
+  WriteLn(Lbl3 + ':');
+  WriteLn('  POP ESI');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrLower : emettre _PYRT_STRLOWER (in-place lower)           }
+{   EAX=ptr chaine. Convertit en minuscules sur place                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrLower;
+Var Lbl1, Lbl2, Lbl3 : TString;
+Begin
+  Inc(RtStrFuncCount);
+  Lbl1 := GenRtLabel;
+  Lbl2 := GenRtLabel;
+  Lbl3 := GenRtLabel;
+  WriteLn('_PYRT_STRLOWER:');
+  WriteLn('  PUSH ESI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn(Lbl1 + ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ' + Lbl3);
+  WriteLn('  CMP AL, 65');
+  WriteLn('  JB ' + Lbl2);
+  WriteLn('  CMP AL, 90');
+  WriteLn('  JA ' + Lbl2);
+  WriteLn('  ADD AL, 32');
+  WriteLn('  MOV [ESI], AL');
+  WriteLn(Lbl2 + ':');
+  WriteLn('  INC ESI');
+  WriteLn('  JMP ' + Lbl1);
+  WriteLn(Lbl3 + ':');
+  WriteLn('  POP ESI');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrContains : emettre _PYRT_STRCONTAINS                      }
+{   EAX=ptr chaine, EBX=ptr sous-chaine                             }
+{   Retourne EAX: 1 si contient, 0 sinon                            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrContains;
+Var Lbl1, Lbl2, Lbl3, Lbl4 : TString;
+Begin
+  Inc(RtStrFuncCount);
+  Lbl1 := GenRtLabel;
+  Lbl2 := GenRtLabel;
+  Lbl3 := GenRtLabel;
+  Lbl4 := GenRtLabel;
+  WriteLn('_PYRT_STRCONTAINS:');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  PUSH ECX');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn(Lbl1 + ':');
+  WriteLn('  CMP BYTE [ESI], 0');
+  WriteLn('  JE ' + Lbl4);
+  WriteLn('  MOV EDI, EBX');
+  WriteLn('  MOV ECX, ESI');
+  WriteLn(Lbl2 + ':');
+  WriteLn('  CMP BYTE [EDI], 0');
+  WriteLn('  JE ' + Lbl3);
+  WriteLn('  MOV AL, [ECX]');
+  WriteLn('  CMP AL, [EDI]');
+  WriteLn('  JNE ' + GenRtLabel);
+  WriteLn('  INC ECX');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ' + Lbl2);
+  WriteLn(GenRtLabel + ':');
+  WriteLn('  INC ESI');
+  WriteLn('  JMP ' + Lbl1);
+  WriteLn(Lbl3 + ':');
+  WriteLn('  MOV EAX, 1');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  RET');
+  WriteLn(Lbl4 + ':');
+  WriteLn('  XOR EAX, EAX');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtHeapAlloc : emettre _PYRT_HEAPALLOC                         }
+{   ECX=taille en octets. Retourne EAX=ptr alloue sur le heap       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtHeapAlloc;
+Begin
+  Inc(RtHeapAllocCount);
+  RtLastKind := RT_HEAPALLOC;
+  WriteLn('_PYRT_HEAPALLOC:');
+  WriteLn('  MOV EAX, [_PY_HEAPTOP]');
+  WriteLn('  LEA EDX, [_PY_HEAP+EAX]');
+  WriteLn('  ADD EAX, ECX');
+  WriteLn('  ADD EAX, 3');
+  WriteLn('  AND EAX, 0FFFFFFFCH');
+  WriteLn('  MOV [_PY_HEAPTOP], EAX');
+  WriteLn('  MOV EAX, EDX');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtObjNew : emettre _PYRT_OBJNEW                               }
+{   ECX=taille objet. Alloue sur le heap, retourne EAX=ptr          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtObjNew;
+Begin
+  Inc(RtCollFuncCount);
+  WriteLn('_PYRT_OBJNEW:');
+  WriteLn('  CALL _PYRT_HEAPALLOC');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtListAppend : emettre _PYRT_LISTAPPEND (stub)                }
+{   EAX=ptr liste, EBX=valeur a ajouter                             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtListAppend;
+Begin
+  Inc(RtCollFuncCount);
+  WriteLn('_PYRT_LISTAPPEND:');
+  WriteLn('  ; stub: liste[len] = val, len++');
+  WriteLn('  MOV ECX, [EAX]');
+  WriteLn('  MOV [EAX+4+ECX*4], EBX');
+  WriteLn('  INC DWORD [EAX]');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtListPop : emettre _PYRT_LISTPOP (stub)                      }
+{   EAX=ptr liste. Retourne EAX=dernier element                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtListPop;
+Begin
+  Inc(RtCollFuncCount);
+  WriteLn('_PYRT_LISTPOP:');
+  WriteLn('  ; stub: len--, return liste[len]');
+  WriteLn('  DEC DWORD [EAX]');
+  WriteLn('  MOV ECX, [EAX]');
+  WriteLn('  MOV EAX, [EAX+4+ECX*4]');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtPow : emettre _PYRT_POW                                     }
+{   EAX=base, ECX=exposant. Retourne EAX=resultat                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtPow;
+Var Lbl1, Lbl2 : TString;
+Begin
+  Inc(RtMathFuncCount);
+  RtLastKind := RT_MATH;
+  Lbl1 := GenRtLabel;
+  Lbl2 := GenRtLabel;
+  WriteLn('_PYRT_POW:');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  MOV EBX, EAX');
+  WriteLn('  MOV EAX, 1');
+  WriteLn(Lbl1 + ':');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JZ ' + Lbl2);
+  WriteLn('  IMUL EAX, EBX');
+  WriteLn('  DEC ECX');
+  WriteLn('  JMP ' + Lbl1);
+  WriteLn(Lbl2 + ':');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtAbs : emettre _PYRT_ABS                                     }
+{   EAX=valeur. Retourne EAX=|valeur|                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtAbs;
+Begin
+  Inc(RtMathFuncCount);
+  RtLastKind := RT_MATH;
+  WriteLn('_PYRT_ABS:');
+  WriteLn('  CDQ');
+  WriteLn('  XOR EAX, EDX');
+  WriteLn('  SUB EAX, EDX');
+  WriteLn('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtPanic : emettre _PYRT_PANIC                                  }
+{   EAX=ptr message erreur. Affiche et ExitProcess(1)               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtPanic;
+Begin
+  Inc(RtPanicCount);
+  RtLastKind := RT_PANIC;
+  WriteLn('_PYRT_PANIC:');
+  WriteLn('  PUSH EAX');
+  WriteLn('  CALL _PYRT_STRLEN');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  POP EAX');
+  WriteLn('  CALL _PYRT_WRITESTR');
+  WriteLn('  CALL _PYRT_WRITECRLF');
+  WriteLn('  PUSH 1');
+  WriteLn('  CALL _ExitProcess@4');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRuntimeLib : emettre toute la bibliotheque runtime             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRuntimeLib;
+Begin
+  WriteLn('; === Python Runtime Library ===');
+  EmitRtItoa;
+  EmitRtAtoi;
+  EmitRtBoolToStr;
+  EmitRtNoneToStr;
+  EmitRtInitIo;
+  EmitRtWriteStr;
+  EmitRtWriteCrlf;
+  EmitRtReadLine;
+  EmitRtStrLen;
+  EmitRtStrConcat;
+  EmitRtStrCmp;
+  EmitRtStrUpper;
+  EmitRtStrLower;
+  EmitRtStrContains;
+  EmitRtHeapAlloc;
+  EmitRtObjNew;
+  EmitRtListAppend;
+  EmitRtListPop;
+  EmitRtPow;
+  EmitRtAbs;
+  EmitRtPanic;
+  WriteLn('; === End Runtime Library ===');
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpRtState : afficher l etat du sous-systeme runtime              }
+{ ------------------------------------------------------------ }
+
+Procedure DumpRtState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat du sous-systeme Runtime Library (TODO 22) ===');
+  WriteLn('  RtInitialized    : ', RtInitialized);
+  WriteLn('  RtItoaCount      : ', RtItoaCount);
+  WriteLn('  RtAtoiCount      : ', RtAtoiCount);
+  WriteLn('  RtBoolStrCount   : ', RtBoolStrCount);
+  WriteLn('  RtNoneStrCount   : ', RtNoneStrCount);
+  WriteLn('  RtInitIoCount    : ', RtInitIoCount);
+  WriteLn('  RtWriteStrCount  : ', RtWriteStrCount);
+  WriteLn('  RtWriteCrlfCount : ', RtWriteCrlfCount);
+  WriteLn('  RtReadLineCount  : ', RtReadLineCount);
+  WriteLn('  RtStrFuncCount   : ', RtStrFuncCount);
+  WriteLn('  RtCollFuncCount  : ', RtCollFuncCount);
+  WriteLn('  RtMathFuncCount  : ', RtMathFuncCount);
+  WriteLn('  RtPanicCount     : ', RtPanicCount);
+  WriteLn('  RtHeapAllocCount : ', RtHeapAllocCount);
+  WriteLn('  RtLastKind       : ', RtTypeName(RtLastKind));
+  WriteLn('  RtLabelSeq       : ', RtLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 22)                              }
+{ ------------------------------------------------------------ }
+
+Function IsRtInitialized : Boolean;
+Begin
+  IsRtInitialized := RtInitialized;
+End;
+
+Function IsRtEmpty : Boolean;
+Begin
+  IsRtEmpty := (RtItoaCount = 0) And (RtWriteStrCount = 0) And
+               (RtStrFuncCount = 0) And (RtCollFuncCount = 0);
+End;
+
+Function GetRtItoaCount : LongInt;
+Begin
+  GetRtItoaCount := RtItoaCount;
+End;
+
+Function GetRtAtoiCount : LongInt;
+Begin
+  GetRtAtoiCount := RtAtoiCount;
+End;
+
+Function GetRtWriteStrCount : LongInt;
+Begin
+  GetRtWriteStrCount := RtWriteStrCount;
+End;
+
+Function GetRtReadLineCount : LongInt;
+Begin
+  GetRtReadLineCount := RtReadLineCount;
+End;
+
+Function GetRtStrFuncCount : LongInt;
+Begin
+  GetRtStrFuncCount := RtStrFuncCount;
+End;
+
+Function GetRtCollFuncCount : LongInt;
+Begin
+  GetRtCollFuncCount := RtCollFuncCount;
+End;
+
+Function GetRtMathFuncCount : LongInt;
+Begin
+  GetRtMathFuncCount := RtMathFuncCount;
+End;
+
+Function GetRtStatus : TString;
+Begin
+  If Not RtInitialized Then
+    GetRtStatus := 'Not initialized'
+  Else
+    GetRtStatus := ItoS(RtItoaCount) + ' itoa, ' +
+                   ItoS(RtAtoiCount) + ' atoi, ' +
+                   ItoS(RtWriteStrCount) + ' write-str, ' +
+                   ItoS(RtReadLineCount) + ' read-line, ' +
+                   ItoS(RtStrFuncCount) + ' str-funcs, ' +
+                   ItoS(RtCollFuncCount) + ' coll-funcs, ' +
+                   ItoS(RtMathFuncCount) + ' math-funcs';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -13213,6 +14050,7 @@ Begin
   ExInitialized := False;
   CpInitialized := False;
   DtInitialized := False;
+  RtInitialized := False;
 
   ParseArgs;
 
@@ -13275,6 +14113,9 @@ Begin
 
   { Initialiser le sous-systeme du segment de donnees }
   InitDtState;
+
+  { Initialiser le sous-systeme de la bibliotheque runtime }
+  InitRtState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -13397,6 +14238,13 @@ Begin
     WriteLn('Data BSS bufs    : ', GetDtBssBufCount);
     WriteLn('Data BSS vars    : ', GetDtBssVarCount);
     WriteLn('Data collections : ', GetDtCollectionCount);
+    WriteLn('RT itoa          : ', GetRtItoaCount);
+    WriteLn('RT atoi          : ', GetRtAtoiCount);
+    WriteLn('RT write str     : ', GetRtWriteStrCount);
+    WriteLn('RT read line     : ', GetRtReadLineCount);
+    WriteLn('RT str funcs     : ', GetRtStrFuncCount);
+    WriteLn('RT coll funcs    : ', GetRtCollFuncCount);
+    WriteLn('RT math funcs    : ', GetRtMathFuncCount);
   End;
 
   If Opts.DebugMode Then
@@ -13420,6 +14268,7 @@ Begin
     DumpExState;
     DumpCpState;
     DumpDtState;
+    DumpRtState;
   End;
 
   { Nettoyage }
