@@ -387,12 +387,20 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 24 - EXPORT ET HISTORIQUE DE SESSION [A FAIRE]
+  TODO 24 - EXPORT ET HISTORIQUE DE SESSION [IMPLEMENTE]
+            Constantes: SES_NONE=0..SES_MAX=13 (14 types)
+            Limites: SES_MAX_EXPORTS=100/SES_MAX_IMPORTS=50/SES_MAX_PATH=255
+            Variables: SesInitialized + 20 variables d'etat
+            InitSesState : initialiser l'etat session
+            GenSesLabel : generer une etiquette unique
+            SesTypeName(Type) : nom du type de session
             ExportSession(FileName) : exporter la session complete
             ExportCode(FileName) : exporter uniquement le code genere
             ImportSession(FileName) : importer une session precedente
             ShowSessionStats : afficher les statistiques de session
             ClearSession : reinitialiser la session
+            DumpSesState : afficher l'etat
+            10 accesseurs : IsSesInitialized, GetSes*Count
   ============================================================ }
 
 { ============================================================
@@ -911,6 +919,30 @@ Const
   IMD_MAX_EDIT_SIZE  = 255;  { Taille max d'edition }
   IMD_MAX_LEARN      = 50;   { Nombre max d'apprentissages }
   IMD_MAX_REVIEW     = 20;   { Nombre max de revues }
+
+  { Constantes pour TODO 24 - Export et historique de session }
+  SES_NONE       = 0;   { Aucun type }
+  SES_FULL       = 1;   { Export complet }
+  SES_CODE       = 2;   { Export code uniquement }
+  SES_HISTORY    = 3;   { Export historique }
+  SES_STATS      = 4;   { Export statistiques }
+  SES_CONFIG     = 5;   { Export configuration }
+  SES_LEARN      = 6;   { Export apprentissage }
+  SES_IMPORT     = 7;   { Import session }
+  SES_CLEAR      = 8;   { Effacement session }
+  SES_BACKUP     = 9;   { Sauvegarde session }
+  SES_RESTORE    = 10;  { Restauration session }
+  SES_SUMMARY    = 11;  { Resume session }
+  SES_DETAIL     = 12;  { Detail session }
+  SES_MAX        = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 24 }
+  SES_MAX_EXPORTS    = 100;  { Nombre max d'exports }
+  SES_MAX_IMPORTS    = 50;   { Nombre max d'imports }
+  SES_MAX_PATH       = 255;  { Taille max du chemin }
+  SES_MAX_LINE       = 255;  { Taille max d'une ligne }
+  SES_FILE_EXT       = '.ses';  { Extension fichier session }
+  SES_CODE_EXT       = '.pas';  { Extension fichier code }
 
 { ============================================================
   TYPES
@@ -1518,6 +1550,30 @@ Var
   ImdLastCodeCount  : Integer;
   ImdReviewLine     : Integer;
   ImdLearnBuffer    : TString;
+
+  { TODO 24 - Export et historique de session }
+  SesInitialized    : Boolean;
+  SesStateCount     : Integer;
+  SesFullCount      : Integer;
+  SesCodeCount      : Integer;
+  SesHistoryCount   : Integer;
+  SesStatsCount     : Integer;
+  SesConfigCount    : Integer;
+  SesLearnCnt       : Integer;
+  SesImportCount    : Integer;
+  SesClearCount     : Integer;
+  SesBackupCount    : Integer;
+  SesRestoreCount   : Integer;
+  SesSummaryCount   : Integer;
+  SesDetailCount    : Integer;
+  SesTotalCount     : Integer;
+  SesLabelNum       : Integer;
+  SesExportCount    : Integer;
+  SesLastExport     : TString;
+  SesLastImport     : TString;
+  SesStartTime      : LongInt;
+  SesCmdCount       : Integer;
+  SesCodeLines      : Integer;
 
   { TODO 25 - Controle de la boucle }
   Running     : Boolean;
@@ -10478,6 +10534,321 @@ Begin
 End;
 
 { ============================================================
+  TODO 24 - EXPORT ET HISTORIQUE DE SESSION
+  ============================================================ }
+
+Procedure InitSesState;
+Begin
+  SesInitialized := True;
+  SesStateCount := 0;
+  SesFullCount := 0;
+  SesCodeCount := 0;
+  SesHistoryCount := 0;
+  SesStatsCount := 0;
+  SesConfigCount := 0;
+  SesLearnCnt := 0;
+  SesImportCount := 0;
+  SesClearCount := 0;
+  SesBackupCount := 0;
+  SesRestoreCount := 0;
+  SesSummaryCount := 0;
+  SesDetailCount := 0;
+  SesTotalCount := 0;
+  SesLabelNum := 0;
+  SesExportCount := 0;
+  SesLastExport := '';
+  SesLastImport := '';
+  SesStartTime := 0;
+  SesCmdCount := 0;
+  SesCodeLines := 0;
+End;
+
+Function GenSesLabel: String;
+Begin
+  Inc(SesLabelNum);
+  GenSesLabel := 'SES_' + IntToStr(SesLabelNum);
+End;
+
+Function SesTypeName(T: Integer): String;
+Begin
+  Case T of
+    SES_NONE:     SesTypeName := 'NONE';
+    SES_FULL:     SesTypeName := 'FULL';
+    SES_CODE:     SesTypeName := 'CODE';
+    SES_HISTORY:  SesTypeName := 'HISTORY';
+    SES_STATS:    SesTypeName := 'STATS';
+    SES_CONFIG:   SesTypeName := 'CONFIG';
+    SES_LEARN:    SesTypeName := 'LEARN';
+    SES_IMPORT:   SesTypeName := 'IMPORT';
+    SES_CLEAR:    SesTypeName := 'CLEAR';
+    SES_BACKUP:   SesTypeName := 'BACKUP';
+    SES_RESTORE:  SesTypeName := 'RESTORE';
+    SES_SUMMARY:  SesTypeName := 'SUMMARY';
+    SES_DETAIL:   SesTypeName := 'DETAIL';
+  Else
+    SesTypeName := 'UNKNOWN';
+  End;
+End;
+
+Function ExportSession(FileName: String): Boolean;
+Var
+  F: Text;
+  I: Integer;
+Begin
+  ExportSession := False;
+  If FileName = '' Then
+    FileName := 'session' + SES_FILE_EXT;
+  
+  {$I-}
+  Assign(F, FileName);
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  WriteLn(F, '{ PASCHAT Session Export }');
+  WriteLn(F, '{ Version: ', PASCHAT_VERSION, ' }');
+  WriteLn(F, '{ Date: ', PASCHAT_DATE, ' }');
+  WriteLn(F);
+  WriteLn(F, '{ === Statistiques de session === }');
+  WriteLn(F, 'CommandCount=', SesCmdCount);
+  WriteLn(F, 'CodeLinesGenerated=', SesCodeLines);
+  WriteLn(F, 'HistoryCount=', HistoryCount);
+  WriteLn(F);
+  WriteLn(F, '{ === Historique === }');
+  For I := 1 to HistoryCount do Begin
+    WriteLn(F, 'USER: ', History[I].UserInput);
+    WriteLn(F, 'BOT: ', History[I].BotResponse);
+    WriteLn(F);
+  End;
+  WriteLn(F, '{ === Code genere === }');
+  For I := 1 to GeneratedCount do Begin
+    WriteLn(F, GeneratedCode[I]);
+  End;
+  WriteLn(F);
+  WriteLn(F, '{ === Fin de session === }');
+  Close(F);
+  
+  Inc(SesExportCount);
+  Inc(SesFullCount);
+  Inc(SesTotalCount);
+  SesLastExport := FileName;
+  ExportSession := True;
+End;
+
+Function ExportCode(FileName: String): Boolean;
+Var
+  F: Text;
+  I: Integer;
+Begin
+  ExportCode := False;
+  If FileName = '' Then
+    FileName := 'code' + SES_CODE_EXT;
+  
+  {$I-}
+  Assign(F, FileName);
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  WriteLn(F, '{ Code genere par PASCHAT ', PASCHAT_VERSION, ' }');
+  WriteLn(F);
+  For I := 1 to GeneratedCount do Begin
+    WriteLn(F, GeneratedCode[I]);
+  End;
+  Close(F);
+  
+  Inc(SesCodeCount);
+  Inc(SesTotalCount);
+  SesLastExport := FileName;
+  ExportCode := True;
+End;
+
+Function ImportSession(FileName: String): Boolean;
+Var
+  F: Text;
+  Line: String;
+  InHistory: Boolean;
+  InCode: Boolean;
+  UserLine, BotLine: String;
+Begin
+  ImportSession := False;
+  If FileName = '' Then Exit;
+  
+  {$I-}
+  Assign(F, FileName);
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  InHistory := False;
+  InCode := False;
+  UserLine := '';
+  BotLine := '';
+  
+  While Not Eof(F) do Begin
+    ReadLn(F, Line);
+    Line := Trim(Line);
+    
+    If Pos('=== Historique ===', Line) > 0 Then Begin
+      InHistory := True;
+      InCode := False;
+    End
+    Else If Pos('=== Code genere ===', Line) > 0 Then Begin
+      InHistory := False;
+      InCode := True;
+    End
+    Else If Pos('=== Fin de session ===', Line) > 0 Then Begin
+      InHistory := False;
+      InCode := False;
+    End
+    Else If InHistory Then Begin
+      If Copy(Line, 1, 5) = 'USER:' Then
+        UserLine := Trim(Copy(Line, 6, Length(Line)))
+      Else If Copy(Line, 1, 4) = 'BOT:' Then Begin
+        BotLine := Trim(Copy(Line, 5, Length(Line)));
+        If (UserLine <> '') or (BotLine <> '') Then
+          AddToHistory(UserLine, BotLine, False);
+        UserLine := '';
+        BotLine := '';
+      End;
+    End
+    Else If InCode Then Begin
+      If (Line <> '') and (Line[1] <> '{') Then Begin
+        If GeneratedCount < MAX_CODE_LINES Then Begin
+          Inc(GeneratedCount);
+          GeneratedCode[GeneratedCount] := Line;
+        End;
+      End;
+    End;
+  End;
+  Close(F);
+  
+  Inc(SesImportCount);
+  Inc(SesTotalCount);
+  SesLastImport := FileName;
+  ImportSession := True;
+End;
+
+Procedure ShowSessionStats;
+Begin
+  WriteLn;
+  WriteLn('=== Statistiques de Session PASCHAT ===');
+  WriteLn;
+  WriteLn('  Version          : ', PASCHAT_VERSION);
+  WriteLn('  Commandes        : ', SesCmdCount);
+  WriteLn('  Lignes de code   : ', SesCodeLines);
+  WriteLn('  Historique       : ', HistoryCount, ' entrees');
+  WriteLn('  Code genere      : ', GeneratedCount, ' lignes');
+  WriteLn('  Exports          : ', SesExportCount);
+  WriteLn('  Imports          : ', SesImportCount);
+  WriteLn('  Dernier export   : ', SesLastExport);
+  WriteLn('  Dernier import   : ', SesLastImport);
+  WriteLn;
+  WriteLn('  Mode actuel      : ', GetCurrentModeStr);
+  WriteLn('  Suggestions      : ', SugTotalCount, ' proposees');
+  WriteLn('  Erreurs validees : ', ValTotalCount);
+  WriteLn;
+  WriteLn('=========================================');
+  
+  Inc(SesStatsCount);
+  Inc(SesTotalCount);
+End;
+
+Procedure ClearSession;
+Begin
+  ClearHistory;
+  GeneratedCount := 0;
+  SesCmdCount := 0;
+  SesCodeLines := 0;
+  SesLastExport := '';
+  SesLastImport := '';
+  
+  Inc(SesClearCount);
+  Inc(SesTotalCount);
+  
+  WriteLn('Session reinitialisee.');
+End;
+
+Procedure DumpSesState;
+Begin
+  WriteLn('=== TODO 24 - Etat Export/Historique Session ===');
+  WriteLn('  SesInitialized    = ', SesInitialized);
+  WriteLn('  SesStateCount     = ', SesStateCount);
+  WriteLn('  SesFullCount      = ', SesFullCount);
+  WriteLn('  SesCodeCount      = ', SesCodeCount);
+  WriteLn('  SesHistoryCount   = ', SesHistoryCount);
+  WriteLn('  SesStatsCount     = ', SesStatsCount);
+  WriteLn('  SesConfigCount    = ', SesConfigCount);
+  WriteLn('  SesLearnCnt       = ', SesLearnCnt);
+  WriteLn('  SesImportCount    = ', SesImportCount);
+  WriteLn('  SesClearCount     = ', SesClearCount);
+  WriteLn('  SesBackupCount    = ', SesBackupCount);
+  WriteLn('  SesRestoreCount   = ', SesRestoreCount);
+  WriteLn('  SesSummaryCount   = ', SesSummaryCount);
+  WriteLn('  SesDetailCount    = ', SesDetailCount);
+  WriteLn('  SesTotalCount     = ', SesTotalCount);
+  WriteLn('  SesLabelNum       = ', SesLabelNum);
+  WriteLn('  SesExportCount    = ', SesExportCount);
+  WriteLn('  SesLastExport     = ', SesLastExport);
+  WriteLn('  SesLastImport     = ', SesLastImport);
+  WriteLn('  SesCmdCount       = ', SesCmdCount);
+  WriteLn('  SesCodeLines      = ', SesCodeLines);
+  WriteLn('=================================================');
+End;
+
+{ Accesseurs pour TODO 24 }
+
+Function IsSesInitialized: Boolean;
+Begin
+  IsSesInitialized := SesInitialized;
+End;
+
+Function GetSesStateCount: Integer;
+Begin
+  GetSesStateCount := SesStateCount;
+End;
+
+Function GetSesFullCount: Integer;
+Begin
+  GetSesFullCount := SesFullCount;
+End;
+
+Function GetSesCodeCount: Integer;
+Begin
+  GetSesCodeCount := SesCodeCount;
+End;
+
+Function GetSesHistoryCount: Integer;
+Begin
+  GetSesHistoryCount := SesHistoryCount;
+End;
+
+Function GetSesImportCount: Integer;
+Begin
+  GetSesImportCount := SesImportCount;
+End;
+
+Function GetSesClearCount: Integer;
+Begin
+  GetSesClearCount := SesClearCount;
+End;
+
+Function GetSesTotalCount: Integer;
+Begin
+  GetSesTotalCount := SesTotalCount;
+End;
+
+Function GetSesExportCount: Integer;
+Begin
+  GetSesExportCount := SesExportCount;
+End;
+
+Function GetSesLabelNum: Integer;
+Begin
+  GetSesLabelNum := SesLabelNum;
+End;
+
+{ ============================================================
   TODO 25 - PROGRAMME PRINCIPAL ET BOUCLE DE CLAVARDAGE
   ============================================================ }
 
@@ -10699,6 +11070,10 @@ Begin
   ImdInitialized := False;
   InitImdState;
 
+  { Initialiser l'etat export/historique session (TODO 24) }
+  SesInitialized := False;
+  InitSesState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -10724,6 +11099,7 @@ Begin
     DumpValState;
     DumpSugState;
     DumpImdState;
+    DumpSesState;
   End;
 
   Run;
@@ -10753,6 +11129,6 @@ Begin
   { 21 [IMPLEMENTE] - Validation syntaxique }
   { 22 [IMPLEMENTE] - Suggestions }
   { 23 [IMPLEMENTE] - Mode interactif ameliore }
-  { 24 [A FAIRE] - Export session }
+  { 24 [IMPLEMENTE] - Export session }
   { 25 [IMPLEMENTE] - Programme principal }
 End.

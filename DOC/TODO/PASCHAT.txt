@@ -372,14 +372,22 @@
             DumpImdState : afficher l'etat
             10 accesseurs : IsImdInitialized, IsImdNormalMode, GetImd*Count
 
-  TODO 24 - EXPORT ET HISTORIQUE DE SESSION [A FAIRE]
+  TODO 24 - EXPORT ET HISTORIQUE DE SESSION [IMPLEMENTE]
+            Constantes: SES_NONE=0..SES_MAX=13 (14 types)
+            Limites: SES_MAX_EXPORTS=100/SES_MAX_IMPORTS=50/SES_MAX_PATH=255
+            Variables: SesInitialized + 20 variables d'etat
+            InitSesState : initialiser l'etat session
+            GenSesLabel : generer une etiquette unique
+            SesTypeName(Type) : nom du type de session
             ExportSession(FileName) : exporter la session complete
             ExportCode(FileName) : exporter uniquement le code genere
             ImportSession(FileName) : importer une session precedente
             ShowSessionStats : afficher les statistiques de session
             ClearSession : reinitialiser la session
+            DumpSesState : afficher l'etat
+            10 accesseurs : IsSesInitialized, GetSes*Count
 
-  TODO 25 - PROGRAMME PRINCIPAL ET BOUCLE DE CLAVARDAGE [A FAIRE]
+  TODO 25 - PROGRAMME PRINCIPAL ET BOUCLE DE CLAVARDAGE [IMPLEMENTE]
             Run : lancer le chatbot
             MainLoop : boucle principale de clavardage
             ProcessCommand(Input) : traiter une commande utilisateur
