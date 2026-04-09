@@ -313,12 +313,27 @@
             DumpSavState : afficher l'etat
             10 accesseurs : IsSavInitialized, IsSavEmpty, GetSav*Count
 
-  TODO 21 - VALIDATION SYNTAXIQUE DU CODE GENERE [A FAIRE]
+  TODO 21 - VALIDATION SYNTAXIQUE DU CODE GENERE [IMPLEMENTE]
+            VAL_NONE=0..VAL_MAX=13 : constantes types de validation
+            VAL_MAX_ERRORS=50, VAL_MAX_KEYWORDS=80 : limites
+            ValInitialized + 15 variables d'etat
+            InitValState : initialiser l'etat
+            GenValLabel : generer un label unique
+            ValTypeName : nom du type de validation
             ValidateSyntax(Code) : verifier la syntaxe du code genere
             CheckBalancedBlocks(Code) : verifier l'equilibrage BEGIN/END
             CheckSemicolons(Code) : verifier les points-virgules
             CheckIdentifiers(Code) : verifier les identificateurs
-            ReportSyntaxErrors(Errors) : rapporter les erreurs trouvees
+            CheckParentheses(Code) : verifier les parentheses
+            CheckBrackets(Code) : verifier les crochets
+            CheckStringLiterals(Code) : verifier les chaines
+            CheckComments(Code) : verifier les commentaires
+            CheckKeywords(Code) : verifier les mots-cles Pascal
+            AddValidationError : ajouter une erreur
+            ClearValidationErrors : effacer les erreurs
+            ReportSyntaxErrors : rapporter les erreurs trouvees
+            DumpValState : afficher l'etat
+            10 accesseurs : IsValInitialized, IsValEmpty, GetVal*Count
 
   TODO 22 - SUGGESTIONS ET AUTO-COMPLETION [A FAIRE]
             TSuggestion : Text, Description, Priority

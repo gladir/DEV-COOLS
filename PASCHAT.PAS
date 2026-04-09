@@ -339,12 +339,24 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 21 - VALIDATION SYNTAXIQUE DU CODE GENERE [A FAIRE]
+  TODO 21 - VALIDATION SYNTAXIQUE DU CODE GENERE [IMPLEMENTE]
+            VAL_NONE=0..VAL_MAX=13 : constantes types de validation
+            VAL_MAX_ERRORS=50, VAL_MAX_KEYWORDS=80 : limites
+            ValInitialized + 15 variables d'etat
+            InitValState : initialiser l'etat
+            GenValLabel : generer un label unique
+            ValTypeName : nom du type de validation
             ValidateSyntax(Code) : verifier la syntaxe du code genere
             CheckBalancedBlocks(Code) : verifier l'equilibrage BEGIN/END
             CheckSemicolons(Code) : verifier les points-virgules
             CheckIdentifiers(Code) : verifier les identificateurs
+            CheckKeywords(Code) : verifier les mots-cles Pascal
+            CheckStringLiterals(Code) : verifier les chaines de caracteres
+            CheckComments(Code) : verifier les commentaires
+            CheckParentheses(Code) : verifier les parentheses
             ReportSyntaxErrors(Errors) : rapporter les erreurs trouvees
+            DumpValState : afficher l'etat
+            10 accesseurs : IsValInitialized, IsValEmpty, GetVal*Count
   ============================================================ }
 
 { ============================================================
@@ -825,6 +837,27 @@ Const
   SAV_MAX_FILES   = 100; { Nombre max de fichiers sauvegardes }
   SAV_MAX_PATH    = 255; { Longueur max du chemin }
   SAV_DEFAULT_EXT = '.PAS'; { Extension par defaut }
+
+  { Types de validation syntaxique pour TODO 21 }
+  VAL_NONE        = 0;   { Aucune validation }
+  VAL_BLOCK       = 1;   { Validation blocs BEGIN/END }
+  VAL_SEMICOLON   = 2;   { Validation points-virgules }
+  VAL_IDENTIFIER  = 3;   { Validation identificateurs }
+  VAL_KEYWORD     = 4;   { Validation mots-cles }
+  VAL_STRING      = 5;   { Validation chaines }
+  VAL_COMMENT     = 6;   { Validation commentaires }
+  VAL_PARENTHESIS = 7;   { Validation parentheses }
+  VAL_BRACKET     = 8;   { Validation crochets }
+  VAL_PROGRAM     = 9;   { Validation structure programme }
+  VAL_UNIT        = 10;  { Validation structure unite }
+  VAL_PROCEDURE   = 11;  { Validation procedures }
+  VAL_FUNCTION    = 12;  { Validation fonctions }
+  VAL_MAX         = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 21 }
+  VAL_MAX_ERRORS   = 50;   { Nombre max d'erreurs }
+  VAL_MAX_KEYWORDS = 80;   { Nombre max de mots-cles }
+  VAL_MAX_LINE     = 255;  { Longueur max de ligne }
 
 { ============================================================
   TYPES
@@ -1366,6 +1399,27 @@ Var
   { TODO 20 - Code genere courant }
   GeneratedCode : Array[1..MAX_CODE_LINES] of TCodeLine;
   GeneratedCount: Integer;
+
+  { TODO 21 - Validation syntaxique }
+  ValInitialized    : Boolean;
+  ValStateCount     : Integer;
+  ValBlockCount     : Integer;
+  ValSemicolonCount : Integer;
+  ValIdentifierCount: Integer;
+  ValKeywordCount   : Integer;
+  ValStringCount    : Integer;
+  ValCommentCount   : Integer;
+  ValParenCount     : Integer;
+  ValBracketCount   : Integer;
+  ValProgramCount   : Integer;
+  ValUnitCount      : Integer;
+  ValProcCount      : Integer;
+  ValFuncCount      : Integer;
+  ValTotalCount     : Integer;
+  ValLabelNum       : Integer;
+  ValErrorCount     : Integer;
+  ValErrors         : Array[1..VAL_MAX_ERRORS] of String[VAL_MAX_LINE];
+  ValLastResult     : Boolean;
 
   { TODO 23 - Mode courant }
   CurrentMode : TInteractiveMode;
@@ -9119,6 +9173,474 @@ Begin
 End;
 
 { ============================================================
+  TODO 21 - VALIDATION SYNTAXIQUE DU CODE GENERE
+  ============================================================ }
+
+Procedure InitValState;
+Begin
+  ValInitialized := True;
+  ValStateCount := 0;
+  ValBlockCount := 0;
+  ValSemicolonCount := 0;
+  ValIdentifierCount := 0;
+  ValKeywordCount := 0;
+  ValStringCount := 0;
+  ValCommentCount := 0;
+  ValParenCount := 0;
+  ValBracketCount := 0;
+  ValProgramCount := 0;
+  ValUnitCount := 0;
+  ValProcCount := 0;
+  ValFuncCount := 0;
+  ValTotalCount := 0;
+  ValLabelNum := 0;
+  ValErrorCount := 0;
+  ValLastResult := True;
+  Inc(ValStateCount);
+End;
+
+Function GenValLabel: String;
+Begin
+  Inc(ValLabelNum);
+  GenValLabel := 'VAL_' + IntToStr(ValLabelNum);
+End;
+
+Function ValTypeName(ValType: Integer): String;
+Begin
+  Case ValType of
+    VAL_NONE:        ValTypeName := 'NONE';
+    VAL_BLOCK:       ValTypeName := 'BLOCK';
+    VAL_SEMICOLON:   ValTypeName := 'SEMICOLON';
+    VAL_IDENTIFIER:  ValTypeName := 'IDENTIFIER';
+    VAL_KEYWORD:     ValTypeName := 'KEYWORD';
+    VAL_STRING:      ValTypeName := 'STRING';
+    VAL_COMMENT:     ValTypeName := 'COMMENT';
+    VAL_PARENTHESIS: ValTypeName := 'PARENTHESIS';
+    VAL_BRACKET:     ValTypeName := 'BRACKET';
+    VAL_PROGRAM:     ValTypeName := 'PROGRAM';
+    VAL_UNIT:        ValTypeName := 'UNIT';
+    VAL_PROCEDURE:   ValTypeName := 'PROCEDURE';
+    VAL_FUNCTION:    ValTypeName := 'FUNCTION';
+  Else
+    ValTypeName := 'UNKNOWN';
+  End;
+End;
+
+Procedure AddValidationError(ErrorMsg: String);
+Begin
+  If ValErrorCount < VAL_MAX_ERRORS Then Begin
+    Inc(ValErrorCount);
+    ValErrors[ValErrorCount] := ErrorMsg;
+  End;
+End;
+
+Procedure ClearValidationErrors;
+Var
+  I: Integer;
+Begin
+  For I := 1 to VAL_MAX_ERRORS do
+    ValErrors[I] := '';
+  ValErrorCount := 0;
+End;
+
+Function CheckBalancedBlocks(Code: String): Boolean;
+Var
+  BeginCount, EndCount: Integer;
+  I, P: Integer;
+  S: String;
+Begin
+  BeginCount := 0;
+  EndCount := 0;
+  S := UpCaseStr(Code);
+
+  { Compter les BEGIN }
+  I := 1;
+  While I <= Length(S) - 4 do Begin
+    If Copy(S, I, 5) = 'BEGIN' Then Begin
+      { Verifier que c'est un mot complet }
+      If ((I = 1) or not (S[I-1] in ['A'..'Z', '0'..'9', '_'])) and
+         ((I + 5 > Length(S)) or not (S[I+5] in ['A'..'Z', '0'..'9', '_'])) Then
+        Inc(BeginCount);
+    End;
+    Inc(I);
+  End;
+
+  { Compter les END }
+  I := 1;
+  While I <= Length(S) - 2 do Begin
+    If Copy(S, I, 3) = 'END' Then Begin
+      { Verifier que c'est un mot complet }
+      If ((I = 1) or not (S[I-1] in ['A'..'Z', '0'..'9', '_'])) and
+         ((I + 3 > Length(S)) or not (S[I+3] in ['A'..'Z', '0'..'9', '_'])) Then
+        Inc(EndCount);
+    End;
+    Inc(I);
+  End;
+
+  If BeginCount <> EndCount Then Begin
+    AddValidationError('Desequilibre BEGIN/END: ' + IntToStr(BeginCount) +
+                       ' BEGIN, ' + IntToStr(EndCount) + ' END');
+    CheckBalancedBlocks := False;
+    Inc(ValBlockCount);
+  End Else
+    CheckBalancedBlocks := True;
+
+  Inc(ValTotalCount);
+End;
+
+Function CheckParentheses(Code: String): Boolean;
+Var
+  Count, I: Integer;
+Begin
+  Count := 0;
+  For I := 1 to Length(Code) do Begin
+    If Code[I] = '(' Then
+      Inc(Count)
+    Else If Code[I] = ')' Then
+      Dec(Count);
+
+    If Count < 0 Then Begin
+      AddValidationError('Parenthese fermante sans ouvrante a la position ' + IntToStr(I));
+      CheckParentheses := False;
+      Inc(ValParenCount);
+      Inc(ValTotalCount);
+      Exit;
+    End;
+  End;
+
+  If Count <> 0 Then Begin
+    AddValidationError('Parentheses non equilibrees: ' + IntToStr(Abs(Count)) +
+                       ' parenthese(s) ' + Copy('ouvrante(s) manquante(s)', 1, 24 * Ord(Count < 0)) +
+                       Copy('fermante(s) manquante(s)', 1, 24 * Ord(Count > 0)));
+    CheckParentheses := False;
+    Inc(ValParenCount);
+  End Else
+    CheckParentheses := True;
+
+  Inc(ValTotalCount);
+End;
+
+Function CheckBrackets(Code: String): Boolean;
+Var
+  Count, I: Integer;
+Begin
+  Count := 0;
+  For I := 1 to Length(Code) do Begin
+    If Code[I] = '[' Then
+      Inc(Count)
+    Else If Code[I] = ']' Then
+      Dec(Count);
+
+    If Count < 0 Then Begin
+      AddValidationError('Crochet fermant sans ouvrant a la position ' + IntToStr(I));
+      CheckBrackets := False;
+      Inc(ValBracketCount);
+      Inc(ValTotalCount);
+      Exit;
+    End;
+  End;
+
+  If Count <> 0 Then Begin
+    AddValidationError('Crochets non equilibres');
+    CheckBrackets := False;
+    Inc(ValBracketCount);
+  End Else
+    CheckBrackets := True;
+
+  Inc(ValTotalCount);
+End;
+
+Function CheckStringLiterals(Code: String): Boolean;
+Var
+  InString: Boolean;
+  I: Integer;
+Begin
+  InString := False;
+  For I := 1 to Length(Code) do Begin
+    If Code[I] = '''' Then Begin
+      { Verifier si c'est un apostrophe double }
+      If (I < Length(Code)) and (Code[I+1] = '''') Then
+        { Ignorer l'apostrophe double }
+      Else
+        InString := not InString;
+    End;
+  End;
+
+  If InString Then Begin
+    AddValidationError('Chaine de caracteres non terminee');
+    CheckStringLiterals := False;
+    Inc(ValStringCount);
+  End Else
+    CheckStringLiterals := True;
+
+  Inc(ValTotalCount);
+End;
+
+Function CheckComments(Code: String): Boolean;
+Var
+  I, P1, P2: Integer;
+  InBrace, InParen: Boolean;
+Begin
+  InBrace := False;
+  InParen := False;
+
+  I := 1;
+  While I <= Length(Code) do Begin
+    If not InBrace and not InParen Then Begin
+      If Code[I] = '{' Then
+        InBrace := True
+      Else If (I < Length(Code)) and (Code[I] = '(') and (Code[I+1] = '*') Then Begin
+        InParen := True;
+        Inc(I);
+      End;
+    End Else If InBrace Then Begin
+      If Code[I] = '}' Then
+        InBrace := False;
+    End Else If InParen Then Begin
+      If (I < Length(Code)) and (Code[I] = '*') and (Code[I+1] = ')') Then Begin
+        InParen := False;
+        Inc(I);
+      End;
+    End;
+    Inc(I);
+  End;
+
+  If InBrace Then Begin
+    AddValidationError('Commentaire { non ferme');
+    CheckComments := False;
+    Inc(ValCommentCount);
+  End Else If InParen Then Begin
+    AddValidationError('Commentaire (* non ferme');
+    CheckComments := False;
+    Inc(ValCommentCount);
+  End Else
+    CheckComments := True;
+
+  Inc(ValTotalCount);
+End;
+
+Function CheckSemicolons(Code: String): Boolean;
+Var
+  I: Integer;
+  S: String;
+  HasEnd, HasBegin: Boolean;
+Begin
+  S := UpCaseStr(Code);
+
+  { Verifier que END est suivi de ; ou . }
+  HasEnd := Pos('END', S) > 0;
+  If HasEnd Then Begin
+    I := 1;
+    While I <= Length(S) - 2 do Begin
+      If Copy(S, I, 3) = 'END' Then Begin
+        If ((I = 1) or not (S[I-1] in ['A'..'Z', '0'..'9', '_'])) and
+           ((I + 3 > Length(S)) or not (S[I+3] in ['A'..'Z', '0'..'9', '_'])) Then Begin
+          { Trouver le prochain caractere non-espace }
+          Inc(I, 3);
+          While (I <= Length(S)) and (S[I] in [' ', #9, #10, #13]) do
+            Inc(I);
+          If I <= Length(S) Then Begin
+            If not (S[I] in [';', '.', 'E']) Then Begin { E pour ELSE }
+              AddValidationError('END doit etre suivi de ; ou .');
+              CheckSemicolons := False;
+              Inc(ValSemicolonCount);
+              Inc(ValTotalCount);
+              Exit;
+            End;
+          End;
+        End;
+      End;
+      Inc(I);
+    End;
+  End;
+
+  CheckSemicolons := True;
+  Inc(ValTotalCount);
+End;
+
+Function CheckIdentifiers(Code: String): Boolean;
+Var
+  I, Start: Integer;
+  S, Ident: String;
+Begin
+  S := Code;
+  CheckIdentifiers := True;
+
+  { Verifier les identificateurs basiques }
+  I := 1;
+  While I <= Length(S) do Begin
+    If S[I] in ['A'..'Z', 'a'..'z', '_'] Then Begin
+      Start := I;
+      While (I <= Length(S)) and (S[I] in ['A'..'Z', 'a'..'z', '0'..'9', '_']) do
+        Inc(I);
+      Ident := Copy(S, Start, I - Start);
+      Inc(ValIdentifierCount);
+      { Verifier la longueur de l'identificateur }
+      If Length(Ident) > 63 Then Begin
+        AddValidationError('Identificateur trop long: ' + Copy(Ident, 1, 20) + '...');
+        CheckIdentifiers := False;
+      End;
+    End Else
+      Inc(I);
+  End;
+
+  Inc(ValTotalCount);
+End;
+
+Function CheckKeywords(Code: String): Boolean;
+Var
+  S: String;
+  HasProgram, HasUnit, HasBegin: Boolean;
+Begin
+  S := UpCaseStr(Code);
+  CheckKeywords := True;
+
+  { Verifier PROGRAM ou UNIT au debut }
+  HasProgram := Pos('PROGRAM ', S) > 0;
+  HasUnit := Pos('UNIT ', S) > 0;
+  HasBegin := Pos('BEGIN', S) > 0;
+
+  If HasProgram Then Begin
+    If not HasBegin Then Begin
+      AddValidationError('PROGRAM sans BEGIN');
+      CheckKeywords := False;
+    End;
+    Inc(ValProgramCount);
+  End;
+
+  If HasUnit Then Begin
+    If Pos('INTERFACE', S) = 0 Then Begin
+      AddValidationError('UNIT sans INTERFACE');
+      CheckKeywords := False;
+    End;
+    If Pos('IMPLEMENTATION', S) = 0 Then Begin
+      AddValidationError('UNIT sans IMPLEMENTATION');
+      CheckKeywords := False;
+    End;
+    Inc(ValUnitCount);
+  End;
+
+  { Verifier les procedures et fonctions }
+  If Pos('PROCEDURE ', S) > 0 Then
+    Inc(ValProcCount);
+  If Pos('FUNCTION ', S) > 0 Then
+    Inc(ValFuncCount);
+
+  Inc(ValKeywordCount);
+  Inc(ValTotalCount);
+End;
+
+Function ValidateSyntax(Code: String): Boolean;
+Var
+  Result: Boolean;
+Begin
+  ClearValidationErrors;
+  Result := True;
+
+  { Effectuer toutes les validations }
+  If not CheckBalancedBlocks(Code) Then Result := False;
+  If not CheckParentheses(Code) Then Result := False;
+  If not CheckBrackets(Code) Then Result := False;
+  If not CheckStringLiterals(Code) Then Result := False;
+  If not CheckComments(Code) Then Result := False;
+  If not CheckSemicolons(Code) Then Result := False;
+  If not CheckIdentifiers(Code) Then Result := False;
+  If not CheckKeywords(Code) Then Result := False;
+
+  ValLastResult := Result;
+  ValidateSyntax := Result;
+End;
+
+Procedure ReportSyntaxErrors;
+Var
+  I: Integer;
+Begin
+  If ValErrorCount = 0 Then Begin
+    WriteLn('Aucune erreur de syntaxe detectee.');
+  End Else Begin
+    WriteLn('Erreurs de syntaxe detectees (', ValErrorCount, '):');
+    For I := 1 to ValErrorCount do
+      WriteLn('  ', I, '. ', ValErrors[I]);
+  End;
+End;
+
+Procedure DumpValState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat TODO 21 - Validation syntaxique ===');
+  WriteLn('  Initialise:        ', ValInitialized);
+  WriteLn('  Validations:       ', ValStateCount);
+  WriteLn('  Blocs verifies:    ', ValBlockCount);
+  WriteLn('  Points-virgules:   ', ValSemicolonCount);
+  WriteLn('  Identificateurs:   ', ValIdentifierCount);
+  WriteLn('  Mots-cles:         ', ValKeywordCount);
+  WriteLn('  Chaines:           ', ValStringCount);
+  WriteLn('  Commentaires:      ', ValCommentCount);
+  WriteLn('  Parentheses:       ', ValParenCount);
+  WriteLn('  Crochets:          ', ValBracketCount);
+  WriteLn('  Programmes:        ', ValProgramCount);
+  WriteLn('  Unites:            ', ValUnitCount);
+  WriteLn('  Procedures:        ', ValProcCount);
+  WriteLn('  Fonctions:         ', ValFuncCount);
+  WriteLn('  Total validations: ', ValTotalCount);
+  WriteLn('  Erreurs actuelles: ', ValErrorCount);
+  WriteLn('  Dernier resultat:  ', ValLastResult);
+  WriteLn('  Label courant:     ', ValLabelNum);
+End;
+
+{ Accesseurs pour TODO 21 }
+
+Function IsValInitialized: Boolean;
+Begin
+  IsValInitialized := ValInitialized;
+End;
+
+Function IsValEmpty: Boolean;
+Begin
+  IsValEmpty := ValTotalCount = 0;
+End;
+
+Function GetValStateCount: Integer;
+Begin
+  GetValStateCount := ValStateCount;
+End;
+
+Function GetValBlockCount: Integer;
+Begin
+  GetValBlockCount := ValBlockCount;
+End;
+
+Function GetValSemicolonCount: Integer;
+Begin
+  GetValSemicolonCount := ValSemicolonCount;
+End;
+
+Function GetValIdentifierCount: Integer;
+Begin
+  GetValIdentifierCount := ValIdentifierCount;
+End;
+
+Function GetValKeywordCount: Integer;
+Begin
+  GetValKeywordCount := ValKeywordCount;
+End;
+
+Function GetValErrorCount: Integer;
+Begin
+  GetValErrorCount := ValErrorCount;
+End;
+
+Function GetValTotalCount: Integer;
+Begin
+  GetValTotalCount := ValTotalCount;
+End;
+
+Function GetValLabelNum: Integer;
+Begin
+  GetValLabelNum := ValLabelNum;
+End;
+
+{ ============================================================
   TODO 25 - PROGRAMME PRINCIPAL ET BOUCLE DE CLAVARDAGE
   ============================================================ }
 
@@ -9328,6 +9850,10 @@ Begin
   SavInitialized := False;
   InitSavState;
 
+  { Initialiser l'etat de la validation syntaxique (TODO 21) }
+  ValInitialized := False;
+  InitValState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -9350,6 +9876,7 @@ Begin
     DumpFmtState;
     DumpHlpState;
     DumpSavState;
+    DumpValState;
   End;
 
   Run;
@@ -9376,7 +9903,7 @@ Begin
   { 18 [IMPLEMENTE] - Formatage code }
   { 19 [IMPLEMENTE] - Aide en ligne }
   { 20 [IMPLEMENTE] - Sauvegarde programmes }
-  { 21 [A FAIRE] - Validation syntaxique }
+  { 21 [IMPLEMENTE] - Validation syntaxique }
   { 22 [A FAIRE] - Suggestions }
   { 23 [A FAIRE] - Mode interactif ameliore }
   { 24 [A FAIRE] - Export session }
