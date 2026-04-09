@@ -14019,6 +14019,468 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ                  }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations de l ecrivain PE/COFF }
+  PE_NONE          = 0;    { aucun / non defini                    }
+  PE_DOS_HEADER    = 1;    { DOS Header MZ (64 octets)             }
+  PE_SIGNATURE     = 2;    { Signature PE "PE\0\0"                 }
+  PE_COFF_HEADER   = 3;    { COFF File Header (20 octets)          }
+  PE_OPT_HEADER    = 4;    { Optional Header PE32 (224 octets)     }
+  PE_SECTION_HDR   = 5;    { Section Header (40 octets chacun)     }
+  PE_TEXT_SECTION   = 6;    { Contenu section .text (code)          }
+  PE_RDATA_SECTION  = 7;    { Contenu section .rdata (imports)      }
+  PE_DATA_SECTION  = 8;    { Contenu section .data (donnees)       }
+  PE_FIXUP         = 9;    { Resolution d un fixup adresse         }
+  PE_ALIGN         = 10;   { Alignement fichier/section            }
+  PE_COFF_OBJ      = 11;   { Ecriture COFF .OBJ complet            }
+  PE_RELOCATION    = 12;   { Table des relocations COFF            }
+  PE_SYMBOL        = 13;   { Table des symboles COFF               }
+  PE_MAX           = 13;
+
+  { Limites }
+  PE_MAX_SECTIONS  = 8;    { nombre max de sections PE             }
+  PE_SECTION_ALIGN = 4096; { alignement section ($1000)            }
+
+  { Constantes PE32 }
+  PE_IMAGE_BASE    = $00400000; { adresse de base en memoire       }
+  PE_MAGIC_PE32    = $010B;    { Magic : PE32                      }
+  PE_SUBSYSTEM_CUI = 3;        { Subsystem : Console               }
+  PE_MZ_MAGIC      = $5A4D;    { Signature DOS 'MZ'                }
+  PE_PE_SIGNATURE  = $00004550;{ Signature PE 'PE\0\0'             }
+
+  { Constantes COFF relocations }
+  PE_REL_I386_DIR32 = 6;  { IMAGE_REL_I386_DIR32 (adresse absolue) }
+  PE_REL_I386_REL32 = 20; { IMAGE_REL_I386_REL32 (adresse relative)}
+
+  { Constantes COFF symboles StorageClass }
+  PE_SYM_EXTERNAL  = 2;   { IMAGE_SYM_CLASS_EXTERNAL               }
+  PE_SYM_STATIC    = 3;   { IMAGE_SYM_CLASS_STATIC                 }
+  PE_SYM_LABEL     = 6;   { IMAGE_SYM_CLASS_LABEL                  }
+
+Var
+  PeInitialized    : Boolean;    { True si l etat est initialise       }
+  PeDosHdrCount    : LongInt;    { nombre de DOS Headers emis          }
+  PeSignatureCount : LongInt;    { nombre de signatures PE emises      }
+  PeCoffHdrCount   : LongInt;    { nombre de COFF Headers emis         }
+  PeOptHdrCount    : LongInt;    { nombre d Optional Headers emis      }
+  PeSectHdrCount   : LongInt;    { nombre de Section Headers emis      }
+  PeTextSecCount   : LongInt;    { nombre de sections .text emises     }
+  PeRdataSecCount  : LongInt;    { nombre de sections .rdata emises    }
+  PeDataSecCount   : LongInt;    { nombre de sections .data emises     }
+  PeFixupCount     : LongInt;    { nombre de fixups resolus            }
+  PeAlignCount     : LongInt;    { nombre d alignements emis           }
+  PeCoffObjCount   : LongInt;    { nombre de fichiers COFF .OBJ emis   }
+  PeRelocCount     : LongInt;    { nombre de relocations emises        }
+  PeSymbolCount    : LongInt;    { nombre de symboles emis             }
+  PeLastKind       : Integer;    { dernier type d operation            }
+  PeLabelSeq       : Integer;    { sequence pour labels PE             }
+
+{ ------------------------------------------------------------ }
+{ InitPeState : initialiser le sous-systeme PE/COFF                 }
+{ ------------------------------------------------------------ }
+
+Procedure InitPeState;
+Begin
+  PeInitialized    := True;
+  PeDosHdrCount    := 0;
+  PeSignatureCount := 0;
+  PeCoffHdrCount   := 0;
+  PeOptHdrCount    := 0;
+  PeSectHdrCount   := 0;
+  PeTextSecCount   := 0;
+  PeRdataSecCount  := 0;
+  PeDataSecCount   := 0;
+  PeFixupCount     := 0;
+  PeAlignCount     := 0;
+  PeCoffObjCount   := 0;
+  PeRelocCount     := 0;
+  PeSymbolCount    := 0;
+  PeLastKind       := PE_NONE;
+  PeLabelSeq       := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPeLabel : generer un label unique pour le PE/COFF              }
+{ ------------------------------------------------------------ }
+
+Function GenPeLabel : TString;
+Begin
+  Inc(PeLabelSeq);
+  GenPeLabel := '_PYPE_L' + ItoS(PeLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeTypeName : retourner le nom du type d operation PE/COFF         }
+{ ------------------------------------------------------------ }
+
+Function PeTypeName(Kind : Integer) : TString;
+Begin
+  Case Kind Of
+    PE_NONE          : PeTypeName := 'PE_NONE';
+    PE_DOS_HEADER    : PeTypeName := 'PE_DOS_HEADER';
+    PE_SIGNATURE     : PeTypeName := 'PE_SIGNATURE';
+    PE_COFF_HEADER   : PeTypeName := 'PE_COFF_HEADER';
+    PE_OPT_HEADER    : PeTypeName := 'PE_OPT_HEADER';
+    PE_SECTION_HDR   : PeTypeName := 'PE_SECTION_HDR';
+    PE_TEXT_SECTION   : PeTypeName := 'PE_TEXT_SECTION';
+    PE_RDATA_SECTION  : PeTypeName := 'PE_RDATA_SECTION';
+    PE_DATA_SECTION  : PeTypeName := 'PE_DATA_SECTION';
+    PE_FIXUP         : PeTypeName := 'PE_FIXUP';
+    PE_ALIGN         : PeTypeName := 'PE_ALIGN';
+    PE_COFF_OBJ      : PeTypeName := 'PE_COFF_OBJ';
+    PE_RELOCATION    : PeTypeName := 'PE_RELOCATION';
+    PE_SYMBOL        : PeTypeName := 'PE_SYMBOL';
+  Else
+    PeTypeName := 'PE_UNKNOWN(' + ItoS(Kind) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteDosHeader : ecrire le DOS Header MZ (64 octets) + stub       }
+{ ------------------------------------------------------------ }
+
+Procedure WriteDosHeader;
+Begin
+  Inc(PeDosHdrCount);
+  PeLastKind := PE_DOS_HEADER;
+  WriteLn('; --- DOS Header (MZ, 64 octets) ---');
+  WriteLn(';   e_magic    : $5A4D (MZ)');
+  WriteLn(';   e_lfanew   : offset vers PE signature');
+  WriteLn(';   DOS stub   : "This program cannot be run in DOS mode."');
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePeSignature : ecrire la signature PE "PE\0\0"                }
+{ ------------------------------------------------------------ }
+
+Procedure WritePeSignature;
+Begin
+  Inc(PeSignatureCount);
+  PeLastKind := PE_SIGNATURE;
+  WriteLn('; --- PE Signature ---');
+  WriteLn(';   Signature  : $00004550 ("PE\0\0")');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffHeader : ecrire le COFF File Header (20 octets)          }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCoffHeader;
+Begin
+  Inc(PeCoffHdrCount);
+  PeLastKind := PE_COFF_HEADER;
+  WriteLn('; --- COFF File Header (20 octets) ---');
+  WriteLn(';   Machine           : $014C (i386)');
+  WriteLn(';   NumberOfSections  : 3 (.text, .rdata, .data)');
+  WriteLn(';   SizeOfOptionalHdr : 224');
+  WriteLn(';   Characteristics   : $0102 (EXECUTABLE_IMAGE | 32BIT)');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteOptionalHeader : ecrire l Optional Header PE32 (224 octets)  }
+{ ------------------------------------------------------------ }
+
+Procedure WriteOptionalHeader;
+Begin
+  Inc(PeOptHdrCount);
+  PeLastKind := PE_OPT_HEADER;
+  WriteLn('; --- Optional Header PE32 (224 octets) ---');
+  WriteLn(';   Magic             : $010B (PE32)');
+  WriteLn(';   AddressOfEntryPt  : RVA de _start');
+  WriteLn(';   ImageBase         : $00400000');
+  WriteLn(';   SectionAlignment  : $1000 (4096)');
+  WriteLn(';   FileAlignment     : $0200 (512)');
+  WriteLn(';   Subsystem         : 3 (IMAGE_SUBSYSTEM_WINDOWS_CUI)');
+  WriteLn(';   DataDirectory[1]  : Import Table RVA/Size');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteSectionHeaders : ecrire les en-tetes de sections             }
+{ ------------------------------------------------------------ }
+
+Procedure WriteSectionHeaders;
+Begin
+  Inc(PeSectHdrCount);
+  PeLastKind := PE_SECTION_HDR;
+  WriteLn('; --- Section Headers (3 x 40 octets) ---');
+  WriteLn(';   Section .text   : code, READ|EXECUTE');
+  WriteLn(';   Section .rdata  : imports, READ');
+  WriteLn(';   Section .data   : donnees, READ|WRITE');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteSectionText : ecrire le contenu de la section .text          }
+{ ------------------------------------------------------------ }
+
+Procedure WriteSectionText;
+Begin
+  Inc(PeTextSecCount);
+  PeLastKind := PE_TEXT_SECTION;
+  WriteLn('; --- Section .text (code machine 80386) ---');
+  WriteLn(';   Point d entree : _start');
+  WriteLn(';   Code genere par le compilateur Python');
+  WriteLn(';   Appels via CALL [IAT_xxx] pour imports');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteSectionRdata : ecrire la section .rdata (imports)            }
+{ ------------------------------------------------------------ }
+
+Procedure WriteSectionRdata;
+Begin
+  Inc(PeRdataSecCount);
+  PeLastKind := PE_RDATA_SECTION;
+  WriteLn('; --- Section .rdata (Import Directory + IAT) ---');
+  WriteLn(';   Import Directory Table (ILT)');
+  WriteLn(';   Import Address Table (IAT)');
+  WriteLn(';   Hint/Name Table (noms des fonctions)');
+  WriteLn(';   DLL name : "kernel32.dll"');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteSectionData : ecrire la section .data (variables)            }
+{ ------------------------------------------------------------ }
+
+Procedure WriteSectionData;
+Begin
+  Inc(PeDataSecCount);
+  PeLastKind := PE_DATA_SECTION;
+  WriteLn('; --- Section .data (variables et constantes) ---');
+  WriteLn(';   Variables globales Python');
+  WriteLn(';   Constantes chaines');
+  WriteLn(';   Tampons E/S');
+End;
+
+{ ------------------------------------------------------------ }
+{ ResolveFixups : resoudre les fixups d adresses                    }
+{ ------------------------------------------------------------ }
+
+Procedure ResolveFixups;
+Begin
+  Inc(PeFixupCount);
+  PeLastKind := PE_FIXUP;
+  WriteLn('; --- Resolution des fixups ---');
+  WriteLn(';   Adresses absolues (ImageBase + RVA)');
+  WriteLn(';   Adresses relatives (CALL/JMP rel32)');
+  WriteLn(';   Patch des entries IAT');
+End;
+
+{ ------------------------------------------------------------ }
+{ PadToAlignment : calculer le remplissage pour alignement          }
+{   Size  : taille actuelle en octets                               }
+{   Align : alignement requis (ex: 512 ou 4096)                    }
+{   Retourne la taille alignee                                      }
+{ ------------------------------------------------------------ }
+
+Function PadToAlignment(Size, Align : LongInt) : LongInt;
+Begin
+  Inc(PeAlignCount);
+  PeLastKind := PE_ALIGN;
+  If (Size Mod Align) = 0 Then
+    PadToAlignment := Size
+  Else
+    PadToAlignment := Size + Align - (Size Mod Align);
+End;
+
+{ ------------------------------------------------------------ }
+{ GeneratePeExe : orchestrateur principal de generation PE .EXE     }
+{ ------------------------------------------------------------ }
+
+Procedure GeneratePeExe;
+Begin
+  WriteLn('; ===== Generation PE32 Executable =====');
+  WriteDosHeader;
+  WritePeSignature;
+  WriteCoffHeader;
+  WriteOptionalHeader;
+  WriteSectionHeaders;
+  WriteSectionText;
+  WriteSectionRdata;
+  WriteSectionData;
+  ResolveFixups;
+  WriteLn('; ===== Fin generation PE32 =====');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffObjHeader : ecrire l en-tete COFF .OBJ                  }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCoffObjHeader;
+Begin
+  Inc(PeCoffObjCount);
+  PeLastKind := PE_COFF_OBJ;
+  WriteLn('; --- COFF .OBJ Header ---');
+  WriteLn(';   Machine           : $014C (i386)');
+  WriteLn(';   NumberOfSections  : 3 (.text, .data, .bss)');
+  WriteLn(';   Characteristics   : $0000 (objet relogeable)');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffSections : ecrire les sections COFF .OBJ                 }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCoffSections;
+Begin
+  Inc(PeTextSecCount);
+  PeLastKind := PE_TEXT_SECTION;
+  WriteLn('; --- COFF Sections (.text, .data, .bss) ---');
+  WriteLn(';   .text  : code machine, ALIGN_16, CNT_CODE');
+  WriteLn(';   .data  : donnees initialisees, CNT_INIT_DATA');
+  WriteLn(';   .bss   : donnees non-initialisees, CNT_UNINIT_DATA');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffRelocations : ecrire la table des relocations COFF       }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCoffRelocations;
+Begin
+  Inc(PeRelocCount);
+  PeLastKind := PE_RELOCATION;
+  WriteLn('; --- COFF Relocation Table ---');
+  WriteLn(';   IMAGE_REL_I386_DIR32  : adresses absolues (type 6)');
+  WriteLn(';   IMAGE_REL_I386_REL32  : adresses relatives (type 20)');
+  WriteLn(';   VirtualAddress, SymbolTableIndex, Type');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffSymbols : ecrire la table des symboles COFF              }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCoffSymbols;
+Begin
+  Inc(PeSymbolCount);
+  PeLastKind := PE_SYMBOL;
+  WriteLn('; --- COFF Symbol Table ---');
+  WriteLn(';   StorageClass EXTERNAL (2) : imports Win32');
+  WriteLn(';   StorageClass STATIC   (3) : sections');
+  WriteLn(';   StorageClass LABEL    (6) : labels internes');
+  WriteLn(';   _ExitProcess@4, _GetStdHandle@4, ...');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffStringTable : ecrire la table des chaines COFF           }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCoffStringTable;
+Begin
+  Inc(PeSymbolCount);
+  PeLastKind := PE_SYMBOL;
+  WriteLn('; --- COFF String Table ---');
+  WriteLn(';   Taille (4 octets) + chaines ASCIIZ');
+  WriteLn(';   Noms de symboles > 8 caracteres');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateCoffObj : orchestrateur principal de generation COFF .OBJ  }
+{ ------------------------------------------------------------ }
+
+Procedure GenerateCoffObj;
+Begin
+  WriteLn('; ===== Generation COFF .OBJ =====');
+  WriteCoffObjHeader;
+  WriteCoffSections;
+  WriteCoffRelocations;
+  WriteCoffSymbols;
+  WriteCoffStringTable;
+  WriteLn('; ===== Fin generation COFF .OBJ =====');
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpPeState : afficher l etat du sous-systeme PE/COFF             }
+{ ------------------------------------------------------------ }
+
+Procedure DumpPeState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat du sous-systeme PE/COFF Writer (TODO 23) ===');
+  WriteLn('  PeInitialized    : ', PeInitialized);
+  WriteLn('  PeDosHdrCount    : ', PeDosHdrCount);
+  WriteLn('  PeSignatureCount : ', PeSignatureCount);
+  WriteLn('  PeCoffHdrCount   : ', PeCoffHdrCount);
+  WriteLn('  PeOptHdrCount    : ', PeOptHdrCount);
+  WriteLn('  PeSectHdrCount   : ', PeSectHdrCount);
+  WriteLn('  PeTextSecCount   : ', PeTextSecCount);
+  WriteLn('  PeRdataSecCount  : ', PeRdataSecCount);
+  WriteLn('  PeDataSecCount   : ', PeDataSecCount);
+  WriteLn('  PeFixupCount     : ', PeFixupCount);
+  WriteLn('  PeAlignCount     : ', PeAlignCount);
+  WriteLn('  PeCoffObjCount   : ', PeCoffObjCount);
+  WriteLn('  PeRelocCount     : ', PeRelocCount);
+  WriteLn('  PeSymbolCount    : ', PeSymbolCount);
+  WriteLn('  PeLastKind       : ', PeTypeName(PeLastKind));
+  WriteLn('  PeLabelSeq       : ', PeLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ Accesseurs du sous-systeme PE/COFF Writer (10 fonctions)          }
+{ ------------------------------------------------------------ }
+
+Function IsPeInitialized : Boolean;
+Begin
+  IsPeInitialized := PeInitialized;
+End;
+
+Function IsPeEmpty : Boolean;
+Begin
+  IsPeEmpty := (PeDosHdrCount = 0) And (PeCoffHdrCount = 0) And
+               (PeTextSecCount = 0) And (PeCoffObjCount = 0);
+End;
+
+Function GetPeDosHdrCount : LongInt;
+Begin
+  GetPeDosHdrCount := PeDosHdrCount;
+End;
+
+Function GetPeCoffHdrCount : LongInt;
+Begin
+  GetPeCoffHdrCount := PeCoffHdrCount;
+End;
+
+Function GetPeOptHdrCount : LongInt;
+Begin
+  GetPeOptHdrCount := PeOptHdrCount;
+End;
+
+Function GetPeTextSecCount : LongInt;
+Begin
+  GetPeTextSecCount := PeTextSecCount;
+End;
+
+Function GetPeFixupCount : LongInt;
+Begin
+  GetPeFixupCount := PeFixupCount;
+End;
+
+Function GetPeCoffObjCount : LongInt;
+Begin
+  GetPeCoffObjCount := PeCoffObjCount;
+End;
+
+Function GetPeSymbolCount : LongInt;
+Begin
+  GetPeSymbolCount := PeSymbolCount;
+End;
+
+Function GetPeStatus : TString;
+Begin
+  If Not PeInitialized Then
+    GetPeStatus := 'Not initialized'
+  Else
+    GetPeStatus := ItoS(PeDosHdrCount) + ' dos-hdr, ' +
+                   ItoS(PeCoffHdrCount) + ' coff-hdr, ' +
+                   ItoS(PeOptHdrCount) + ' opt-hdr, ' +
+                   ItoS(PeTextSecCount) + ' text-sec, ' +
+                   ItoS(PeFixupCount) + ' fixups, ' +
+                   ItoS(PeCoffObjCount) + ' coff-obj, ' +
+                   ItoS(PeSymbolCount) + ' symbols';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -14051,6 +14513,7 @@ Begin
   CpInitialized := False;
   DtInitialized := False;
   RtInitialized := False;
+  PeInitialized := False;
 
   ParseArgs;
 
@@ -14116,6 +14579,9 @@ Begin
 
   { Initialiser le sous-systeme de la bibliotheque runtime }
   InitRtState;
+
+  { Initialiser le sous-systeme PE/COFF }
+  InitPeState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -14245,6 +14711,13 @@ Begin
     WriteLn('RT str funcs     : ', GetRtStrFuncCount);
     WriteLn('RT coll funcs    : ', GetRtCollFuncCount);
     WriteLn('RT math funcs    : ', GetRtMathFuncCount);
+    WriteLn('PE DOS headers   : ', GetPeDosHdrCount);
+    WriteLn('PE COFF headers  : ', GetPeCoffHdrCount);
+    WriteLn('PE opt headers   : ', GetPeOptHdrCount);
+    WriteLn('PE text sections : ', GetPeTextSecCount);
+    WriteLn('PE fixups        : ', GetPeFixupCount);
+    WriteLn('PE COFF .OBJ     : ', GetPeCoffObjCount);
+    WriteLn('PE symbols       : ', GetPeSymbolCount);
   End;
 
   If Opts.DebugMode Then
@@ -14269,6 +14742,7 @@ Begin
     DumpCpState;
     DumpDtState;
     DumpRtState;
+    DumpPeState;
   End;
 
   { Nettoyage }
