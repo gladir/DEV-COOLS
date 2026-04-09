@@ -595,7 +595,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             Mode -obj : appeler GenerateCoffObj au lieu de GeneratePeExe
             10 fonctions accesseurs
 
-  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [A FAIRE]
+  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [IMPLEMENTE]
             Imports kernel32.dll :
               ExitProcess : terminer le programme
               GetStdHandle : obtenir les handles console

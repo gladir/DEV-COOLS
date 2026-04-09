@@ -603,7 +603,7 @@
             Mode -obj : appeler GenerateCoffObj au lieu de GeneratePeExe
             10 fonctions accesseurs
 
-  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [A FAIRE]
+  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [IMPLEMENTE]
             Imports kernel32.dll :
               ExitProcess : terminer le programme
               GetStdHandle : obtenir les handles console
@@ -14481,6 +14481,566 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 24 : Imports API Win32 et generateur listing ASM        }
+{ ============================================================ }
+
+Const
+  { Types d operations import/listing }
+  IM_NONE          = 0;    { Pas d operation import                 }
+  IM_IMPORT_DESC   = 1;    { IMAGE_IMPORT_DESCRIPTOR par DLL        }
+  IM_HINT_NAME     = 2;    { Hint/Name Table avec nom de fonction   }
+  IM_IAT_THUNK     = 3;    { Import Address Table thunk             }
+  IM_IMPORT_DIR    = 4;    { Import directory complet                }
+  IM_KERNEL32      = 5;    { Import kernel32.dll                    }
+  IM_MSVCRT        = 6;    { Import msvcrt.dll (optionnel)          }
+  IM_EXTERN_DECL   = 7;    { Declaration EXTERN pour .OBJ           }
+  IM_IMPORT_SYM    = 8;    { Symbole d importation                  }
+  IM_ASM_HEADER    = 9;    { En-tete listing MASM                   }
+  IM_ASM_EXTERN    = 10;   { Declarations EXTERN MASM               }
+  IM_ASM_DATA      = 11;   { Section .DATA MASM                     }
+  IM_ASM_CODE      = 12;   { Section .CODE MASM                     }
+  IM_ASM_LISTING   = 13;   { Listing ASM complet genere             }
+  IM_MAX           = 13;
+
+  { Limites }
+  IM_MAX_IMPORTS   = 64;   { nombre max de fonctions importees      }
+  IM_MAX_DLL       = 4;    { nombre max de DLL importees            }
+  IM_MAX_HINT      = 256;  { taille max hint/name table             }
+
+  { Noms des DLL }
+  IM_DLL_KERNEL32  = 'kernel32.dll';
+  IM_DLL_MSVCRT    = 'msvcrt.dll';
+
+Var
+  ImInitialized    : Boolean;    { True si l etat est initialise       }
+  ImDescCount      : LongInt;    { nombre de descripteurs d import emis}
+  ImHintCount      : LongInt;    { nombre d entrees hint/name emises   }
+  ImIatCount       : LongInt;    { nombre de thunks IAT emis           }
+  ImDirCount       : LongInt;    { nombre de directories emis          }
+  ImKernel32Count  : LongInt;    { nombre d imports kernel32 emis      }
+  ImMsvcrtCount    : LongInt;    { nombre d imports msvcrt emis        }
+  ImExternCount    : LongInt;    { nombre de declarations EXTERN       }
+  ImSymCount       : LongInt;    { nombre de symboles d import         }
+  ImAsmHdrCount    : LongInt;    { nombre d en-tetes ASM emis          }
+  ImAsmExtCount    : LongInt;    { nombre d EXTERN ASM emis            }
+  ImAsmDataCount   : LongInt;    { nombre de sections DATA ASM         }
+  ImAsmCodeCount   : LongInt;    { nombre de sections CODE ASM         }
+  ImAsmListCount   : LongInt;    { nombre de listings ASM generes      }
+  ImLastKind       : Integer;    { dernier type d operation            }
+  ImLabelSeq       : Integer;    { sequence pour labels import         }
+
+{ ------------------------------------------------------------ }
+{ InitImState : initialiser le sous-systeme imports/listing          }
+{ ------------------------------------------------------------ }
+
+Procedure InitImState;
+Begin
+  ImInitialized    := True;
+  ImDescCount      := 0;
+  ImHintCount      := 0;
+  ImIatCount       := 0;
+  ImDirCount       := 0;
+  ImKernel32Count  := 0;
+  ImMsvcrtCount    := 0;
+  ImExternCount    := 0;
+  ImSymCount       := 0;
+  ImAsmHdrCount    := 0;
+  ImAsmExtCount    := 0;
+  ImAsmDataCount   := 0;
+  ImAsmCodeCount   := 0;
+  ImAsmListCount   := 0;
+  ImLastKind       := IM_NONE;
+  ImLabelSeq       := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenImLabel : generer un label unique pour imports/listing           }
+{ ------------------------------------------------------------ }
+
+Function GenImLabel : TString;
+Begin
+  Inc(ImLabelSeq);
+  GenImLabel := '_IM_L' + ItoS(ImLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ ImTypeName : nom du type d operation import/listing                }
+{ ------------------------------------------------------------ }
+
+Function ImTypeName(Kind : Integer) : TString;
+Begin
+  Case Kind Of
+    IM_NONE         : ImTypeName := 'NONE';
+    IM_IMPORT_DESC  : ImTypeName := 'IMPORT_DESC';
+    IM_HINT_NAME    : ImTypeName := 'HINT_NAME';
+    IM_IAT_THUNK    : ImTypeName := 'IAT_THUNK';
+    IM_IMPORT_DIR   : ImTypeName := 'IMPORT_DIR';
+    IM_KERNEL32     : ImTypeName := 'KERNEL32';
+    IM_MSVCRT       : ImTypeName := 'MSVCRT';
+    IM_EXTERN_DECL  : ImTypeName := 'EXTERN_DECL';
+    IM_IMPORT_SYM   : ImTypeName := 'IMPORT_SYM';
+    IM_ASM_HEADER   : ImTypeName := 'ASM_HEADER';
+    IM_ASM_EXTERN   : ImTypeName := 'ASM_EXTERN';
+    IM_ASM_DATA     : ImTypeName := 'ASM_DATA';
+    IM_ASM_CODE     : ImTypeName := 'ASM_CODE';
+    IM_ASM_LISTING  : ImTypeName := 'ASM_LISTING';
+  Else
+    ImTypeName := 'UNKNOWN(' + ItoS(Kind) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitImportDescriptor : emettre un IMAGE_IMPORT_DESCRIPTOR         }
+{ pour une DLL donnee                                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitImportDescriptor(DllName : TString);
+Begin
+  WriteLn('; IMAGE_IMPORT_DESCRIPTOR for ' + DllName);
+  WriteLn('  dd offset _ILT_' + DllName);
+  WriteLn('  dd 0             ; TimeDateStamp');
+  WriteLn('  dd 0             ; ForwarderChain');
+  WriteLn('  dd offset _NAME_' + DllName);
+  WriteLn('  dd offset _IAT_' + DllName);
+  Inc(ImDescCount);
+  ImLastKind := IM_IMPORT_DESC;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitHintNameEntry : emettre une entree Hint/Name Table            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitHintNameEntry(Hint : Integer; FuncName : TString);
+Begin
+  WriteLn('  dw ' + ItoS(Hint) + '         ; Hint');
+  WriteLn('  db ''' + FuncName + ''', 0   ; Name');
+  If (Length(FuncName) Mod 2) = 0 Then
+    WriteLn('  db 0             ; Pad to word boundary');
+  Inc(ImHintCount);
+  ImLastKind := IM_HINT_NAME;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIATThunk : emettre un thunk IAT pour une fonction             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitIATThunk(FuncLabel : TString);
+Begin
+  WriteLn('  dd offset ' + FuncLabel);
+  Inc(ImIatCount);
+  ImLastKind := IM_IAT_THUNK;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitImportDirectory : emettre le repertoire d import complet      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitImportDirectory;
+Begin
+  WriteLn('; ---- Import Directory Table ----');
+  EmitImportDescriptor(IM_DLL_KERNEL32);
+  If ImMsvcrtCount > 0 Then
+    EmitImportDescriptor(IM_DLL_MSVCRT);
+  { Terminateur null }
+  WriteLn('; NULL terminator');
+  WriteLn('  dd 0, 0, 0, 0, 0');
+  Inc(ImDirCount);
+  ImLastKind := IM_IMPORT_DIR;
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkKernel32Import : marquer une fonction kernel32 comme utilisee }
+{ ------------------------------------------------------------ }
+
+Procedure MarkKernel32Import(FuncName : TString);
+Begin
+  WriteLn('; [import] ' + IM_DLL_KERNEL32 + ' : ' + FuncName);
+  Inc(ImKernel32Count);
+  ImLastKind := IM_KERNEL32;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitKernel32Imports : emettre tous les imports kernel32.dll       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitKernel32Imports;
+Begin
+  WriteLn('; ---- kernel32.dll Imports ----');
+  WriteLn('_NAME_' + IM_DLL_KERNEL32 + ':');
+  WriteLn('  db ''kernel32.dll'', 0');
+  WriteLn('');
+  WriteLn('_ILT_' + IM_DLL_KERNEL32 + ':');
+  EmitHintNameEntry(0, 'ExitProcess');
+  EmitHintNameEntry(1, 'GetStdHandle');
+  EmitHintNameEntry(2, 'WriteFile');
+  EmitHintNameEntry(3, 'ReadFile');
+  EmitHintNameEntry(4, 'GetProcessHeap');
+  EmitHintNameEntry(5, 'HeapAlloc');
+  EmitHintNameEntry(6, 'HeapFree');
+  EmitHintNameEntry(7, 'GetCommandLineA');
+  EmitHintNameEntry(8, 'GetLastError');
+  WriteLn('  dd 0             ; ILT terminator');
+  WriteLn('');
+  WriteLn('_IAT_' + IM_DLL_KERNEL32 + ':');
+  EmitIATThunk('_HN_ExitProcess');
+  EmitIATThunk('_HN_GetStdHandle');
+  EmitIATThunk('_HN_WriteFile');
+  EmitIATThunk('_HN_ReadFile');
+  EmitIATThunk('_HN_GetProcessHeap');
+  EmitIATThunk('_HN_HeapAlloc');
+  EmitIATThunk('_HN_HeapFree');
+  EmitIATThunk('_HN_GetCommandLineA');
+  EmitIATThunk('_HN_GetLastError');
+  WriteLn('  dd 0             ; IAT terminator');
+  Inc(ImKernel32Count);
+  ImLastKind := IM_KERNEL32;
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkMsvcrtImport : marquer une fonction msvcrt comme utilisee    }
+{ ------------------------------------------------------------ }
+
+Procedure MarkMsvcrtImport(FuncName : TString);
+Begin
+  WriteLn('; [import] ' + IM_DLL_MSVCRT + ' : ' + FuncName);
+  Inc(ImMsvcrtCount);
+  ImLastKind := IM_MSVCRT;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitMsvcrtImports : emettre tous les imports msvcrt.dll          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitMsvcrtImports;
+Begin
+  WriteLn('; ---- msvcrt.dll Imports ----');
+  WriteLn('_NAME_' + IM_DLL_MSVCRT + ':');
+  WriteLn('  db ''msvcrt.dll'', 0');
+  WriteLn('');
+  WriteLn('_ILT_' + IM_DLL_MSVCRT + ':');
+  EmitHintNameEntry(0, 'sprintf');
+  EmitHintNameEntry(1, 'sscanf');
+  EmitHintNameEntry(2, 'memcpy');
+  EmitHintNameEntry(3, 'memset');
+  EmitHintNameEntry(4, 'memcmp');
+  WriteLn('  dd 0             ; ILT terminator');
+  WriteLn('');
+  WriteLn('_IAT_' + IM_DLL_MSVCRT + ':');
+  EmitIATThunk('_HN_sprintf');
+  EmitIATThunk('_HN_sscanf');
+  EmitIATThunk('_HN_memcpy');
+  EmitIATThunk('_HN_memset');
+  EmitIATThunk('_HN_memcmp');
+  WriteLn('  dd 0             ; IAT terminator');
+  Inc(ImMsvcrtCount);
+  ImLastKind := IM_MSVCRT;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitExternDecl : emettre une declaration EXTERN pour .OBJ        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitExternDecl(FuncName, Decorated : TString);
+Begin
+  WriteLn('EXTERN ' + Decorated + ' : PROC  ; ' + FuncName);
+  Inc(ImExternCount);
+  ImLastKind := IM_EXTERN_DECL;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitImportSymbols : emettre les symboles d import .OBJ           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitImportSymbols;
+Begin
+  WriteLn('; ---- Import symbols for .OBJ mode ----');
+  EmitExternDecl('ExitProcess',     '_ExitProcess@4');
+  EmitExternDecl('GetStdHandle',    '_GetStdHandle@4');
+  EmitExternDecl('WriteFile',       '_WriteFile@20');
+  EmitExternDecl('ReadFile',        '_ReadFile@20');
+  EmitExternDecl('GetProcessHeap',  '_GetProcessHeap@0');
+  EmitExternDecl('HeapAlloc',       '_HeapAlloc@12');
+  EmitExternDecl('HeapFree',        '_HeapFree@12');
+  EmitExternDecl('GetCommandLineA', '_GetCommandLineA@0');
+  EmitExternDecl('GetLastError',    '_GetLastError@0');
+  Inc(ImSymCount);
+  ImLastKind := IM_IMPORT_SYM;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmHeader : emettre l en-tete du listing MASM                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitAsmHeader;
+Begin
+  WriteLn('; ============================================');
+  WriteLn('; PYTHCW32 - Python to Win32 ASM Listing');
+  WriteLn('; Generated by PYTHCW32 compiler');
+  WriteLn('; ============================================');
+  WriteLn('');
+  WriteLn('.386');
+  WriteLn('.MODEL FLAT, STDCALL');
+  WriteLn('OPTION CASEMAP:NONE');
+  WriteLn('');
+  WriteLn('INCLUDELIB kernel32.lib');
+  WriteLn('INCLUDELIB msvcrt.lib');
+  WriteLn('');
+  Inc(ImAsmHdrCount);
+  ImLastKind := IM_ASM_HEADER;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmExterns : emettre les declarations EXTERN MASM            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitAsmExterns;
+Begin
+  WriteLn('; ---- External API declarations ----');
+  WriteLn('EXTERN _ExitProcess@4:PROC');
+  WriteLn('EXTERN _GetStdHandle@4:PROC');
+  WriteLn('EXTERN _WriteFile@20:PROC');
+  WriteLn('EXTERN _ReadFile@20:PROC');
+  WriteLn('EXTERN _GetProcessHeap@0:PROC');
+  WriteLn('EXTERN _HeapAlloc@12:PROC');
+  WriteLn('EXTERN _HeapFree@12:PROC');
+  WriteLn('EXTERN _GetCommandLineA@0:PROC');
+  WriteLn('EXTERN _GetLastError@0:PROC');
+  WriteLn('');
+  WriteLn('; ---- msvcrt.dll (optional) ----');
+  WriteLn('EXTERN _sprintf:PROC');
+  WriteLn('EXTERN _sscanf:PROC');
+  WriteLn('EXTERN _memcpy:PROC');
+  WriteLn('EXTERN _memset:PROC');
+  WriteLn('EXTERN _memcmp:PROC');
+  WriteLn('');
+  Inc(ImAsmExtCount);
+  ImLastKind := IM_ASM_EXTERN;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmDataSection : emettre la section .DATA du listing MASM    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitAsmDataSection;
+Begin
+  WriteLn('; ---- Initialized data ----');
+  WriteLn('.DATA');
+  WriteLn('');
+  WriteLn('  ; String constants and format strings');
+  WriteLn('  _true_str   db ''True'', 0');
+  WriteLn('  _false_str  db ''False'', 0');
+  WriteLn('  _none_str   db ''None'', 0');
+  WriteLn('  _newline    db 13, 10, 0');
+  WriteLn('  _space      db '' '', 0');
+  WriteLn('  _fmt_int    db ''%d'', 0');
+  WriteLn('  _fmt_str    db ''%s'', 0');
+  WriteLn('');
+  WriteLn('; ---- Uninitialized data ----');
+  WriteLn('.DATA?');
+  WriteLn('');
+  WriteLn('  _stdin_h    dd ?');
+  WriteLn('  _stdout_h   dd ?');
+  WriteLn('  _heap_h     dd ?');
+  WriteLn('  _bytes_w    dd ?');
+  WriteLn('  _bytes_r    dd ?');
+  WriteLn('  _input_buf  db 256 DUP(?)');
+  WriteLn('  _itoa_buf   db 32 DUP(?)');
+  WriteLn('');
+  Inc(ImAsmDataCount);
+  ImLastKind := IM_ASM_DATA;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmBssSection : emettre la section BSS du listing MASM       }
+{ (inclus dans EmitAsmDataSection via .DATA?)                      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitAsmBssSection;
+Begin
+  WriteLn('; ---- Additional BSS variables ----');
+  WriteLn('  _heap_base  dd ?');
+  WriteLn('  _heap_ptr   dd ?');
+  WriteLn('  _temp_buf   db 256 DUP(?)');
+  WriteLn('');
+  Inc(ImAsmDataCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmCodeSection : emettre la section .CODE du listing MASM    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitAsmCodeSection;
+Begin
+  WriteLn('; ---- Code section ----');
+  WriteLn('.CODE');
+  WriteLn('');
+  WriteLn('; ---- Runtime routines (_PYRT_) ----');
+  WriteLn('_PYRT_init_io PROC');
+  WriteLn('  push -11            ; STD_OUTPUT_HANDLE');
+  WriteLn('  call _GetStdHandle@4');
+  WriteLn('  mov [_stdout_h], eax');
+  WriteLn('  push -10            ; STD_INPUT_HANDLE');
+  WriteLn('  call _GetStdHandle@4');
+  WriteLn('  mov [_stdin_h], eax');
+  WriteLn('  call _GetProcessHeap@0');
+  WriteLn('  mov [_heap_h], eax');
+  WriteLn('  ret');
+  WriteLn('_PYRT_init_io ENDP');
+  WriteLn('');
+  WriteLn('_PYRT_write_str PROC');
+  WriteLn('  ; EAX = ptr to string, ECX = length');
+  WriteLn('  push 0              ; lpOverlapped');
+  WriteLn('  push offset _bytes_w ; lpNumberOfBytesWritten');
+  WriteLn('  push ecx            ; nNumberOfBytesToWrite');
+  WriteLn('  push eax            ; lpBuffer');
+  WriteLn('  push [_stdout_h]    ; hFile');
+  WriteLn('  call _WriteFile@20');
+  WriteLn('  ret');
+  WriteLn('_PYRT_write_str ENDP');
+  WriteLn('');
+  WriteLn('_PYRT_write_crlf PROC');
+  WriteLn('  push 0');
+  WriteLn('  push offset _bytes_w');
+  WriteLn('  push 2');
+  WriteLn('  push offset _newline');
+  WriteLn('  push [_stdout_h]');
+  WriteLn('  call _WriteFile@20');
+  WriteLn('  ret');
+  WriteLn('_PYRT_write_crlf ENDP');
+  WriteLn('');
+  WriteLn('; ---- Entry point ----');
+  WriteLn('_start:');
+  WriteLn('  call _PYRT_init_io');
+  WriteLn('');
+  WriteLn('  ; --- Python user code here ---');
+  WriteLn('  ; (generated by PYTHCW32 compiler)');
+  WriteLn('');
+  WriteLn('  ; --- Exit process ---');
+  WriteLn('  push 0');
+  WriteLn('  call _ExitProcess@4');
+  WriteLn('');
+  WriteLn('END _start');
+  WriteLn('');
+  Inc(ImAsmCodeCount);
+  ImLastKind := IM_ASM_CODE;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAsmFooter : emettre le pied de page du listing MASM          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitAsmFooter;
+Begin
+  WriteLn('; ============================================');
+  WriteLn('; End of PYTHCW32 ASM listing');
+  WriteLn('; ============================================');
+  Inc(ImAsmCodeCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateAsmListing : generer le listing ASM complet              }
+{ ------------------------------------------------------------ }
+
+Procedure GenerateAsmListing;
+Begin
+  EmitAsmHeader;
+  EmitAsmExterns;
+  EmitAsmDataSection;
+  EmitAsmBssSection;
+  EmitAsmCodeSection;
+  EmitAsmFooter;
+  Inc(ImAsmListCount);
+  ImLastKind := IM_ASM_LISTING;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpImState : afficher l etat du sous-systeme imports/listing    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpImState;
+Begin
+  WriteLn('=== Etat du sous-systeme Imports/Listing ASM (TODO 24) ===');
+  WriteLn('  ImInitialized    : ', ImInitialized);
+  WriteLn('  ImDescCount      : ', ImDescCount);
+  WriteLn('  ImHintCount      : ', ImHintCount);
+  WriteLn('  ImIatCount       : ', ImIatCount);
+  WriteLn('  ImDirCount       : ', ImDirCount);
+  WriteLn('  ImKernel32Count  : ', ImKernel32Count);
+  WriteLn('  ImMsvcrtCount    : ', ImMsvcrtCount);
+  WriteLn('  ImExternCount    : ', ImExternCount);
+  WriteLn('  ImSymCount       : ', ImSymCount);
+  WriteLn('  ImAsmHdrCount    : ', ImAsmHdrCount);
+  WriteLn('  ImAsmExtCount    : ', ImAsmExtCount);
+  WriteLn('  ImAsmDataCount   : ', ImAsmDataCount);
+  WriteLn('  ImAsmCodeCount   : ', ImAsmCodeCount);
+  WriteLn('  ImAsmListCount   : ', ImAsmListCount);
+  WriteLn('  ImLastKind       : ', ImTypeName(ImLastKind));
+  WriteLn('  ImLabelSeq       : ', ImLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ Accesseurs du sous-systeme Imports/Listing ASM (10 fonctions)    }
+{ ------------------------------------------------------------ }
+
+Function IsImInitialized : Boolean;
+Begin
+  IsImInitialized := ImInitialized;
+End;
+
+Function IsImEmpty : Boolean;
+Begin
+  IsImEmpty := (ImDescCount = 0) And (ImKernel32Count = 0) And
+               (ImAsmListCount = 0) And (ImExternCount = 0);
+End;
+
+Function GetImDescCount : LongInt;
+Begin
+  GetImDescCount := ImDescCount;
+End;
+
+Function GetImHintCount : LongInt;
+Begin
+  GetImHintCount := ImHintCount;
+End;
+
+Function GetImKernel32Count : LongInt;
+Begin
+  GetImKernel32Count := ImKernel32Count;
+End;
+
+Function GetImMsvcrtCount : LongInt;
+Begin
+  GetImMsvcrtCount := ImMsvcrtCount;
+End;
+
+Function GetImExternCount : LongInt;
+Begin
+  GetImExternCount := ImExternCount;
+End;
+
+Function GetImAsmHdrCount : LongInt;
+Begin
+  GetImAsmHdrCount := ImAsmHdrCount;
+End;
+
+Function GetImAsmListCount : LongInt;
+Begin
+  GetImAsmListCount := ImAsmListCount;
+End;
+
+Function GetImStatus : TString;
+Begin
+  If Not ImInitialized Then
+    GetImStatus := 'Not initialized'
+  Else
+    GetImStatus := ItoS(ImDescCount) + ' descriptors, ' +
+                   ItoS(ImKernel32Count) + ' kernel32, ' +
+                   ItoS(ImMsvcrtCount) + ' msvcrt, ' +
+                   ItoS(ImExternCount) + ' externs, ' +
+                   ItoS(ImAsmListCount) + ' asm-listings';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -14514,6 +15074,7 @@ Begin
   DtInitialized := False;
   RtInitialized := False;
   PeInitialized := False;
+  ImInitialized := False;
 
   ParseArgs;
 
@@ -14582,6 +15143,9 @@ Begin
 
   { Initialiser le sous-systeme PE/COFF }
   InitPeState;
+
+  { Initialiser le sous-systeme imports Win32 et listing ASM }
+  InitImState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -14718,6 +15282,13 @@ Begin
     WriteLn('PE fixups        : ', GetPeFixupCount);
     WriteLn('PE COFF .OBJ     : ', GetPeCoffObjCount);
     WriteLn('PE symbols       : ', GetPeSymbolCount);
+    WriteLn('Import descript  : ', GetImDescCount);
+    WriteLn('Import hint/name : ', GetImHintCount);
+    WriteLn('Import kernel32  : ', GetImKernel32Count);
+    WriteLn('Import msvcrt    : ', GetImMsvcrtCount);
+    WriteLn('Import externs   : ', GetImExternCount);
+    WriteLn('ASM headers      : ', GetImAsmHdrCount);
+    WriteLn('ASM listings     : ', GetImAsmListCount);
   End;
 
   If Opts.DebugMode Then
@@ -14743,6 +15314,7 @@ Begin
     DumpDtState;
     DumpRtState;
     DumpPeState;
+    DumpImState;
   End;
 
   { Nettoyage }
