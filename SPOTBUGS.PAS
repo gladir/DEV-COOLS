@@ -1,0 +1,955 @@
+{ @author: Sylvain Maltais (support@gladir.com)
+  @created: 2026
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @description: Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
+}
+
+{ ---------------------------------------------------------------------------- }
+{  ARCHITECTURE GENERALE                                                       }
+{ ---------------------------------------------------------------------------- }
+{  1. Lecteur   : ReadClassFile, ParseConstantPool, ParseFields, ParseMethods  }
+{  2. Analyseur : AnalyzeBytecode, BuildCFG, RunDetectors                      }
+{  3. Detecteurs: NullDeref, ResourceLeak, BadPractice, Performance, Security  }
+{  4. Rapport   : EmitTextReport, EmitXmlReport, EmitHtmlReport                }
+{  5. Main      : ParseArgs, ScanClassFiles, PrintSummary                      }
+{ ---------------------------------------------------------------------------- }
+
+{ ---------------------------------------------------------------------------- }
+{  TODO 01 [A FAIRE] - Infrastructure, options et constantes globales          }
+{  TODO 02 [A FAIRE] - Lecture et validation de l'en-tete .class              }
+{  TODO 03 [A FAIRE] - Decodage du Constant Pool                              }
+{  TODO 04 [A FAIRE] - Lecture des flags, this_class, super_class, interfaces }
+{  TODO 05 [A FAIRE] - Lecture des champs (fields) de la classe               }
+{  TODO 06 [A FAIRE] - Lecture des methodes et de l'attribut Code             }
+{  TODO 07 [A FAIRE] - Decodage du bytecode Java (opcodes JVM)                }
+{  TODO 08 [A FAIRE] - Construction du graphe de flux de controle (CFG)       }
+{  TODO 09 [A FAIRE] - Detecteur : dereferencement de pointeur null           }
+{  TODO 10 [A FAIRE] - Detecteur : fuite de ressources (resource leaks)       }
+{  TODO 11 [A FAIRE] - Detecteur : boucles infinies et blocs inaccessibles    }
+{  TODO 12 [A FAIRE] - Detecteur : mauvaises pratiques (bad practices)        }
+{  TODO 13 [A FAIRE] - Detecteur : comparaisons incorrectes d'objets          }
+{  TODO 14 [A FAIRE] - Detecteur : problemes de performance                   }
+{  TODO 15 [A FAIRE] - Detecteur : vulnerabilites de securite                 }
+{  TODO 16 [A FAIRE] - Detecteur : problemes de multi-threading               }
+{  TODO 17 [A FAIRE] - Detecteur : exceptions masquees et flux d'erreur       }
+{  TODO 18 [A FAIRE] - Detecteur : erreurs logiques et retours incorrects     }
+{  TODO 19 [A FAIRE] - Detecteur : problemes d'internationalisation           }
+{  TODO 20 [A FAIRE] - Calcul des scores et niveaux de severite               }
+{  TODO 21 [A FAIRE] - Generation du rapport texte                            }
+{  TODO 22 [A FAIRE] - Generation du rapport XML (format SpotBugs)            }
+{  TODO 23 [A FAIRE] - Generation du rapport HTML                             }
+{  TODO 24 [A FAIRE] - Filtrage, exclusions et configuration des regles       }
+{  TODO 25 [A FAIRE] - Programme principal, balayage recursif et exemples     }
+{ ---------------------------------------------------------------------------- }
+
+Program SPOTBUGS;
+
+{$A-}
+{$I-}
+
+{ ============================================================================ }
+{ TODO 01 [A FAIRE] - Infrastructure, options et constantes globales           }
+{ ============================================================================ }
+{                                                                              }
+{  - Constantes de dimensionnement :                                           }
+{      MAX_CP_ENTRIES = 65535  (taille maximale du Constant Pool)              }
+{      MAX_FIELDS     = 4096   (nombre maximum de champs par classe)           }
+{      MAX_METHODS    = 4096   (nombre maximum de methodes par classe)         }
+{      MAX_INTERFACES = 256    (nombre maximum d'interfaces implementees)      }
+{      MAX_BUGS       = 8192   (nombre maximum de bugs detectes)               }
+{      MAX_CFG_NODES  = 65535  (noeuds maximum dans le graphe de controle)     }
+{      MAX_STACK_DEPTH = 512   (profondeur maximale de la pile d'analyse)      }
+{      MAX_CLASSES    = 4096   (nombre maximum de classes analysees)           }
+{      BUFSIZE        = 65536  (taille du tampon de lecture)                   }
+{                                                                              }
+{  - Niveaux de severite des bugs :                                            }
+{      SEV_HIGH   = 1  (bugs critiques, erreurs presque certaines)             }
+{      SEV_MEDIUM = 2  (bugs probables, pratiques suspectes)                   }
+{      SEV_LOW    = 3  (bugs possibles, avertissements mineurs)                }
+{      SEV_INFO   = 4  (informations, suggestions d'amelioration)              }
+{                                                                              }
+{  - Categories de bugs (codes courts) :                                       }
+{      CAT_CORRECTNESS = 1  (erreurs de logique, bugs fonctionnels)            }
+{      CAT_BAD_PRACTICE = 2 (violations de bonnes pratiques Java)              }
+{      CAT_PERFORMANCE  = 3 (problemes de performance)                         }
+{      CAT_SECURITY     = 4 (vulnerabilites de securite)                       }
+{      CAT_MT_CORRECTNESS = 5 (erreurs de multi-threading)                     }
+{      CAT_INTERNATIONALIZATION = 6 (problemes d'internationalisation)         }
+{      CAT_DODGY        = 7 (code suspect ou mal ecrit)                        }
+{      CAT_MALICIOUS    = 8 (code potentiellement malveillant)                 }
+{                                                                              }
+{  - Types de tokens du Constant Pool JVM :                                    }
+{      CP_UTF8             =  1                                                }
+{      CP_INTEGER          =  3                                                }
+{      CP_FLOAT            =  4                                                }
+{      CP_LONG             =  5                                                }
+{      CP_DOUBLE           =  6                                                }
+{      CP_CLASS            =  7                                                }
+{      CP_STRING           =  8                                                }
+{      CP_FIELDREF         =  9                                                }
+{      CP_METHODREF        = 10                                                }
+{      CP_INTERFACEMETHODREF = 11                                              }
+{      CP_NAMEANDTYPE      = 12                                                }
+{      CP_METHODHANDLE     = 15                                                }
+{      CP_METHODTYPE       = 16                                                }
+{      CP_INVOKEDYNAMIC    = 18                                                }
+{                                                                              }
+{  - Constantes de flags d'acces :                                             }
+{      ACC_PUBLIC       = $0001                                                }
+{      ACC_PRIVATE      = $0002                                                }
+{      ACC_PROTECTED    = $0004                                                }
+{      ACC_STATIC       = $0008                                                }
+{      ACC_FINAL        = $0010                                                }
+{      ACC_SYNCHRONIZED = $0020                                                }
+{      ACC_VOLATILE     = $0040                                                }
+{      ACC_TRANSIENT    = $0080                                                }
+{      ACC_NATIVE       = $0100                                                }
+{      ACC_INTERFACE    = $0200                                                }
+{      ACC_ABSTRACT     = $0400                                                }
+{      ACC_STRICT       = $0800                                                }
+{      ACC_SYNTHETIC    = $1000                                                }
+{      ACC_ANNOTATION   = $2000                                                }
+{      ACC_ENUM         = $4000                                                }
+{                                                                              }
+{  - Structure TOptions :                                                       }
+{      ClassPath  : array[0..63] of String  (chemins de recherche .class)      }
+{      ClassCount : Integer                 (nombre de chemins)                }
+{      OutFile    : String                  (fichier de sortie du rapport)      }
+{      OutFormat  : Integer                 (TEXT=0 / XML=1 / HTML=2)          }
+{      MinSeverity : Integer                (severite minimale a rapporter)     }
+{      Verbose    : Boolean                 (mode bavard)                       }
+{      Recursive  : Boolean                 (analyser recursivement)            }
+{      ShowCount  : Boolean                 (afficher les statistiques)         }
+{      ExcludeFile : String                 (fichier de regles d'exclusion)     }
+{      IncludeFile : String                 (fichier de regles d'inclusion)     }
+{      MaxBugs    : Integer                 (nombre maximum de bugs a reporter) }
+{                                                                              }
+{  - Structure TBugReport :                                                     }
+{      BugType    : String  (identifiant de la regle ex. NP_NULL_ON_SOME_PATH) }
+{      Category   : Integer (CAT_*)                                             }
+{      Severity   : Integer (SEV_*)                                             }
+{      ClassName  : String  (nom de la classe Java concernee)                  }
+{      MethodName : String  (nom de la methode concernee)                       }
+{      FieldName  : String  (nom du champ concerne, si applicable)             }
+{      LineNumber : Integer (numero de ligne source, si disponible)            }
+{      Message    : String  (description lisible du bug)                       }
+{                                                                              }
+{  - Variables globales :                                                       }
+{      Opts       : TOptions         (options de la ligne de commande)          }
+{      Bugs       : array[TBugReport] (table des bugs detectes)                 }
+{      BugCount   : Integer           (nombre de bugs detectes)                 }
+{      ClassesScanned : Integer       (nombre de classes analysees)             }
+{      TotalMethods   : Integer       (nombre total de methodes analysees)      }
+{      ErrorCount     : Integer       (nombre d'erreurs d'analyse)              }
+{                                                                              }
+{  - Utilitaires :                                                              }
+{      ReadU1, ReadU2, ReadU4  : lecture big-endian depuis fichier              }
+{      HexByte, HexWord, HexDWord : conversion hexadecimale                    }
+{      IntToStr_, StrToInt_, UpCaseStr : utilitaires chaines                   }
+{      FileExists_, ChangeExt : utilitaires fichiers                            }
+{      FatalError(msg), Error(msg), Warning(msg) : gestion d'erreurs           }
+{      AddBug(type, cat, sev, class, method, field, line, msg) : enregistrer   }
+
+{ ============================================================================ }
+{ TODO 02 [A FAIRE] - Lecture et validation de l'en-tete .class                }
+{ ============================================================================ }
+{                                                                              }
+{  - Constante CLASS_MAGIC = $CAFEBABE (signature des fichiers .class Java)    }
+{                                                                              }
+{  - Structure TClassHeader :                                                   }
+{      Magic        : LongWord  (doit etre $CAFEBABE)                           }
+{      MinorVersion : Word      (version mineure JVM)                           }
+{      MajorVersion : Word      (version majeure JVM, ex. 52 = Java 8)         }
+{      CPCount      : Word      (nombre d'entrees dans le Constant Pool + 1)   }
+{      AccessFlags  : Word      (flags d'acces de la classe)                   }
+{      ThisClass    : Word      (index CP pointant vers le nom de la classe)    }
+{      SuperClass   : Word      (index CP pointant vers la super-classe)        }
+{      InterfaceCount : Word    (nombre d'interfaces implementees)              }
+{                                                                              }
+{  - Procedure OpenClassFile(FileName: String)                                  }
+{      Ouvrir le fichier .class en mode binaire                                 }
+{      Initialiser le buffer de lecture et la position courante                 }
+{      Lire et valider le magic number ($CAFEBABE)                              }
+{      Erreur fatale si signature invalide                                       }
+{                                                                              }
+{  - Function ReadClassHeader: TClassHeader                                     }
+{      Lire MajorVersion et MinorVersion en big-endian                          }
+{      Verifier la version (49 = Java 5, 50 = Java 6, ..., 65 = Java 21)       }
+{      Avertissement si version inconnue ou trop recente                        }
+{      Retourner la structure complete                                           }
+{                                                                              }
+{  - Function GetJavaVersion(Major: Word): String                               }
+{      Traduire le numero de version majeure JVM en version Java lisible        }
+{      Ex.: 52 -> "Java 8", 55 -> "Java 11", 61 -> "Java 17"                  }
+{                                                                              }
+{  - Procedure CloseClassFile                                                   }
+{      Fermer le fichier et liberer le buffer                                   }
+
+{ ============================================================================ }
+{ TODO 03 [A FAIRE] - Decodage du Constant Pool                                }
+{ ============================================================================ }
+{                                                                              }
+{  - Structure TCPEntry :                                                        }
+{      Tag      : Byte                   (type de l'entree, CP_*)               }
+{      StrVal   : String                 (valeur Utf8 si Tag=CP_UTF8)           }
+{      IntVal   : LongInt                (valeur entiere si Tag=CP_INTEGER)     }
+{      FloatVal : Double                 (valeur flottante si Tag=CP_FLOAT)     }
+{      Ref1     : Word                   (premier index de reference)           }
+{      Ref2     : Word                   (second index de reference)            }
+{      IsDouble : Boolean                (True si occupe 2 slots: LONG/DOUBLE)  }
+{                                                                              }
+{  - Procedure ParseConstantPool(Count: Word)                                   }
+{      Lire les (Count-1) entrees du Constant Pool en big-endian                }
+{      Entree 0 non utilisee (index base 1)                                     }
+{      Dispatcher selon le tag :                                                 }
+{        CP_UTF8 : lire longueur U2 + octets -> StrVal                          }
+{        CP_INTEGER, CP_FLOAT : lire 4 octets -> IntVal/FloatVal                }
+{        CP_LONG, CP_DOUBLE : lire 8 octets, occuper 2 slots                    }
+{        CP_CLASS, CP_STRING, CP_METHODTYPE : lire 1 index U2 -> Ref1           }
+{        CP_FIELDREF, CP_METHODREF, CP_INTERFACEMETHODREF,                      }
+{          CP_NAMEANDTYPE, CP_INVOKEDYNAMIC : lire 2 index U2 -> Ref1, Ref2     }
+{        CP_METHODHANDLE : lire 1 octet + 1 index U2                            }
+{      Validation : tag inconnu -> erreur + sauter                              }
+{                                                                              }
+{  - Function CPGetUtf8(Idx: Word): String                                      }
+{      Retourner la valeur Utf8 de l'entree d'index Idx                         }
+{      Erreur si Idx hors bornes ou tag != CP_UTF8                              }
+{                                                                              }
+{  - Function CPGetClassName(Idx: Word): String                                 }
+{      Resoudre CP_CLASS -> CPGetUtf8(Ref1)                                     }
+{                                                                              }
+{  - Function CPGetNameAndType(Idx: Word; Var Name, Desc: String)               }
+{      Resoudre CP_NAMEANDTYPE -> Name=CPGetUtf8(Ref1), Desc=CPGetUtf8(Ref2)   }
+{                                                                              }
+{  - Function CPGetMemberRef(Idx: Word; Var Class, Name, Desc: String)          }
+{      Resoudre CP_FIELDREF/METHODREF/INTERFACEMETHODREF                        }
+{      -> Class=CPGetClassName(Ref1), puis CPGetNameAndType(Ref2)               }
+
+{ ============================================================================ }
+{ TODO 04 [A FAIRE] - Lecture des flags, this_class, super_class, interfaces   }
+{ ============================================================================ }
+{                                                                              }
+{  - Structure TClassInfo :                                                      }
+{      AccessFlags    : Word                   (flags d'acces de la classe)     }
+{      ThisClass      : String                 (nom interne, ex. java/lang/X)   }
+{      SuperClass     : String                 (nom interne de la super-classe) }
+{      Interfaces     : array[0..255] of String (interfaces implementees)       }
+{      InterfaceCount : Integer                 (nombre d'interfaces)           }
+{      IsInterface    : Boolean                 (True si ACC_INTERFACE set)     }
+{      IsAbstract     : Boolean                 (True si ACC_ABSTRACT set)      }
+{      IsEnum         : Boolean                 (True si ACC_ENUM set)          }
+{      IsAnnotation   : Boolean                 (True si ACC_ANNOTATION set)    }
+{      SourceFile     : String                  (nom du fichier source .java)   }
+{      IsSynthetic    : Boolean                 (True si ACC_SYNTHETIC set)     }
+{                                                                              }
+{  - Procedure ReadClassInfo                                                    }
+{      Lire AccessFlags (U2), ThisClass (U2), SuperClass (U2) en big-endian     }
+{      Resoudre les noms via le Constant Pool                                   }
+{      Lire InterfaceCount (U2) puis chaque interface (U2 -> nom CP)            }
+{      Decoder les bits ACC_* pour remplir IsInterface, IsAbstract, etc.        }
+{      Convertir les noms internes (slashes) en noms Java (points)              }
+{                                                                              }
+{  - Function GetSimpleClassName(InternalName: String): String                  }
+{      Extraire le nom simple depuis le nom interne                             }
+{      Ex.: "java/lang/RuntimeException" -> "RuntimeException"                  }
+{                                                                              }
+{  - Function GetPackageName(InternalName: String): String                      }
+{      Extraire le nom du paquetage depuis le nom interne                       }
+{      Ex.: "com/example/Foo" -> "com.example"                                  }
+{                                                                              }
+{  - Procedure ReadAttributesClass                                              }
+{      Parcourir les attributs de la classe (SourceFile, Deprecated,            }
+{      InnerClasses, EnclosingMethod, Signature, RuntimeAnnotations)            }
+{      Decoder l'attribut SourceFile pour renseigner ClassInfo.SourceFile       }
+
+{ ============================================================================ }
+{ TODO 05 [A FAIRE] - Lecture des champs (fields) de la classe                 }
+{ ============================================================================ }
+{                                                                              }
+{  - Structure TFieldInfo :                                                      }
+{      AccessFlags  : Word    (flags d'acces du champ)                          }
+{      Name         : String  (nom du champ)                                    }
+{      Descriptor   : String  (descripteur de type JVM, ex. I, Ljava/lang/X;)  }
+{      IsSynthetic  : Boolean (ACC_SYNTHETIC set)                               }
+{      IsStatic     : Boolean (ACC_STATIC set)                                  }
+{      IsFinal      : Boolean (ACC_FINAL set)                                   }
+{      IsVolatile   : Boolean (ACC_VOLATILE set)                                }
+{      IsTransient  : Boolean (ACC_TRANSIENT set)                               }
+{      IsEnum       : Boolean (ACC_ENUM set)                                    }
+{      ConstValue   : String  (valeur constante si attribut ConstantValue)      }
+{      HasConstValue: Boolean (attribut ConstantValue present)                  }
+{      LineNumber   : Integer (ligne source si disponible)                      }
+{                                                                              }
+{  - Procedure ReadFields(Count: Word)                                          }
+{      Pour chaque champ, lire AccessFlags, Name (U2->CP), Descriptor (U2->CP) }
+{      Decoder les flags ACC_*                                                  }
+{      Lire les attributs du champ :                                            }
+{        ConstantValue : lire index U2 -> valeur dans le CP                     }
+{        Deprecated : marquer le champ comme obsolete                           }
+{        Signature : signature generique du champ                               }
+{        Synthetic : champ genere par le compilateur                            }
+{      Stocker dans la table globale Fields[]                                   }
+{                                                                              }
+{  - Function DecodeTypeDescriptor(Desc: String): String                        }
+{      Traduire un descripteur JVM en type Java lisible                         }
+{      V -> void, I -> int, J -> long, D -> double, F -> float                  }
+{      B -> byte, C -> char, S -> short, Z -> boolean                           }
+{      L<nom>; -> nom Java, [X -> X[], [[X -> X[][]                             }
+
+{ ============================================================================ }
+{ TODO 06 [A FAIRE] - Lecture des methodes et de l'attribut Code               }
+{ ============================================================================ }
+{                                                                              }
+{  - Structure TExceptionEntry :                                                 }
+{      StartPC   : Word  (debut de la zone protegee)                            }
+{      EndPC     : Word  (fin de la zone protegee)                              }
+{      HandlerPC : Word  (debut du gestionnaire d'exception)                    }
+{      CatchType : Word  (index CP vers la classe catchee, 0 = finally)         }
+{                                                                              }
+{  - Structure TMethodInfo :                                                     }
+{      AccessFlags   : Word                    (flags d'acces)                  }
+{      Name          : String                  (nom de la methode)              }
+{      Descriptor    : String                  (descripteur de methode)         }
+{      MaxStack      : Word                    (profondeur max de pile)         }
+{      MaxLocals     : Word                    (nb variables locales max)       }
+{      CodeLen       : LongWord                (taille du bytecode en octets)   }
+{      Code          : Pointer                 (tampon du bytecode)             }
+{      ExcCount      : Word                    (nb entrees exception_table)     }
+{      ExcTable      : array[TExceptionEntry]  (table des exceptions)           }
+{      LineCount     : Word                    (nb entrees LineNumberTable)     }
+{      LineTable     : array of (StartPC, Line) (correspondance PC->ligne)      }
+{      LocalCount    : Word                    (nb entrees LocalVariableTable)  }
+{      LocalTable    : array of (Start,Length,Name,Desc,Index)                  }
+{      IsNative      : Boolean                 (methode native)                 }
+{      IsAbstract    : Boolean                 (methode abstraite)              }
+{      IsBridge      : Boolean                 (methode pont generique)         }
+{      IsSynthetic   : Boolean                 (methode generee)                }
+{      IsVarArgs     : Boolean                 (methode variadique)             }
+{                                                                              }
+{  - Procedure ReadMethods(Count: Word)                                         }
+{      Pour chaque methode, lire AccessFlags, Name (U2->CP), Desc (U2->CP)     }
+{      Lire les attributs de la methode :                                       }
+{        Code : lire MaxStack, MaxLocals, CodeLen, bytecode, exception_table,   }
+{               puis sous-attributs LineNumberTable et LocalVariableTable       }
+{        Exceptions : lire la liste des exceptions declarees (throws)           }
+{        Deprecated, Synthetic, Signature, Bridge, VarArgs                      }
+{      Stocker dans la table globale Methods[]                                  }
+{                                                                              }
+{  - Function GetLineNumber(Method: TMethodInfo; PC: Word): Integer             }
+{      Rechercher dans LineTable l'entree la plus proche pour le PC donne       }
+{      Retourner -1 si LineNumberTable absente                                  }
+{                                                                              }
+{  - Function ParseMethodDescriptor(Desc: String;                               }
+{      Var ParamTypes: TStringArray; Var RetType: String)                       }
+{      Analyser le descripteur de methode JVM                                   }
+{      Ex.: (ILjava/lang/String;)V -> params=[int,String], ret=void             }
+
+{ ============================================================================ }
+{ TODO 07 [A FAIRE] - Decodage du bytecode Java (opcodes JVM)                  }
+{ ============================================================================ }
+{                                                                              }
+{  - Constantes d'opcodes JVM (selection) :                                     }
+{      OP_NOP=0, OP_ACONST_NULL=1, OP_ICONST_M1=2, OP_ICONST_0=3              }
+{      OP_ILOAD=21, OP_LLOAD=22, OP_FLOAD=23, OP_DLOAD=24, OP_ALOAD=25        }
+{      OP_ISTORE=54, OP_LSTORE=55, OP_FSTORE=56, OP_DSTORE=57, OP_ASTORE=58   }
+{      OP_IADD=96, OP_LADD=97, OP_FADD=98, OP_DADD=99                         }
+{      OP_IRETURN=172, OP_LRETURN=173, OP_FRETURN=174                          }
+{      OP_DRETURN=175, OP_ARETURN=176, OP_RETURN=177                           }
+{      OP_GETFIELD=180, OP_PUTFIELD=181, OP_GETSTATIC=178, OP_PUTSTATIC=179   }
+{      OP_INVOKEVIRTUAL=182, OP_INVOKESPECIAL=183, OP_INVOKESTATIC=184         }
+{      OP_INVOKEINTERFACE=185, OP_INVOKEDYNAMIC=186                            }
+{      OP_NEW=187, OP_NEWARRAY=188, OP_ANEWARRAY=189                           }
+{      OP_ATHROW=191, OP_CHECKCAST=192, OP_INSTANCEOF=193                      }
+{      OP_IFNULL=198, OP_IFNONNULL=199                                         }
+{      OP_IFEQ=153, OP_IFNE=154, OP_IFLT=155, OP_IFGE=156, OP_IFGT=157        }
+{      OP_IFLE=158, OP_IF_ICMPEQ=159 .. OP_IF_ACMPNE=166                      }
+{      OP_GOTO=167, OP_GOTO_W=200, OP_JSR=168, OP_RET=169                     }
+{      OP_TABLESWITCH=170, OP_LOOKUPSWITCH=171                                 }
+{      OP_WIDE=196, OP_MULTIANEWARRAY=197                                      }
+{                                                                              }
+{  - Structure TInstruction :                                                    }
+{      PC       : LongWord  (position dans le bytecode)                         }
+{      Opcode   : Byte      (code operation)                                    }
+{      Mnemonic : String    (mnemonique lisible)                                 }
+{      Op1      : LongInt   (premier operande)                                  }
+{      Op2      : LongInt   (second operande)                                   }
+{      Op3      : LongInt   (troisieme operande, pour invokeinterface)          }
+{      Size     : Integer   (taille totale de l'instruction en octets)          }
+{      CpRef    : String    (reference CP resolue, ex. nom de methode)          }
+{      LineNum  : Integer   (numero de ligne source)                            }
+{                                                                              }
+{  - Procedure DecodeInstructions(Method: TMethodInfo)                          }
+{      Parcourir le bytecode de la methode instruction par instruction          }
+{      Pour chaque opcode, determiner le nombre et la taille des operandes      }
+{      Gerer les cas speciaux : wide, tableswitch, lookupswitch, padding        }
+{      Resoudre les references CP via CPGetMemberRef / CPGetClassName            }
+{      Stocker la suite d'instructions decodees dans Method.Instructions[]      }
+{                                                                              }
+{  - Function GetInstrMnemonic(Op: Byte): String                                }
+{      Retourner le mnemonique textuel de l'opcode donne                        }
+{                                                                              }
+{  - Function GetInstrSize(Op: Byte; PC: LongWord; Code: Pointer): Integer      }
+{      Calculer la taille de l'instruction a la position PC                     }
+{      Tenir compte des alignements tableswitch/lookupswitch et du prefix wide  }
+
+{ ============================================================================ }
+{ TODO 08 [A FAIRE] - Construction du graphe de flux de controle (CFG)         }
+{ ============================================================================ }
+{                                                                              }
+{  - Structure TCFGNode :                                                        }
+{      ID         : Integer          (identifiant unique du noeud)              }
+{      StartPC    : LongWord         (premier PC du bloc de base)               }
+{      EndPC      : LongWord         (dernier PC du bloc de base)               }
+{      InstStart  : Integer          (index premiere instruction)                }
+{      InstEnd    : Integer          (index derniere instruction)                }
+{      Succs      : array[0..3] of Integer  (indices des noeuds successeurs)    }
+{      SuccCount  : Integer          (nombre de successeurs)                    }
+{      Preds      : array[0..15] of Integer (indices des noeuds predecesseurs)  }
+{      PredCount  : Integer          (nombre de predecesseurs)                  }
+{      IsEntry    : Boolean          (noeud d'entree de la methode)             }
+{      IsExit     : Boolean          (noeud de sortie - instruction return)     }
+{      IsException: Boolean          (noeud gestionnaire d'exception)           }
+{      Visited    : Boolean          (pour les parcours DFS/BFS)                }
+{      DomBy      : Integer          (dominateur immediat dans l'arbre dom.)    }
+{                                                                              }
+{  - Procedure BuildCFG(Method: TMethodInfo)                                    }
+{      Identifier les entetes de blocs de base :                                }
+{        - instruction en PC=0 (entree de methode)                              }
+{        - cibles de tous les branchements (goto, ifeq, jsr, etc.)              }
+{        - instructions suivant un branchement inconditionnel                   }
+{        - debut de chaque gestionnaire d'exception (exception_table)           }
+{      Creer un TCFGNode par bloc de base                                        }
+{      Lier les noeuds selon les successeurs determines par les branchements     }
+{      Calculer les predecesseurs (liste inverse des successeurs)                }
+{                                                                              }
+{  - Procedure ComputeDominators(Var Nodes: array of TCFGNode)                  }
+{      Calculer l'arbre des dominateurs (algorithme iteratif de Lengauer-Tarjan}
+{      simplifie) pour detecter les boucles et code mort                        }
+{                                                                              }
+{  - Procedure FindUnreachableBlocks(Var Nodes: array of TCFGNode)              }
+{      Parcourir en DFS depuis le noeud d'entree                                }
+{      Identifier les blocs non atteints (Visited=False apres le parcours)      }
+{      Ces blocs correspondent a du code mort (potentiellement suspect)         }
+{                                                                              }
+{  - Procedure FindBackEdges(Var Nodes: array of TCFGNode)                      }
+{      Identifier les aretes arriere dans le CFG (donnent les boucles)          }
+{      Une arete arriere va d'un noeud vers un de ses ancetres dans l'arbre DFS }
+
+{ ============================================================================ }
+{ TODO 09 [A FAIRE] - Detecteur : dereferencement de pointeur null             }
+{ ============================================================================ }
+{                                                                              }
+{  - Codes de bugs detectes :                                                    }
+{      NP_NULL_ON_SOME_PATH         : null deref sur chemin conditionnel        }
+{      NP_NULL_ON_SOME_PATH_EXCEPTION : null deref possible via exception       }
+{      NP_ALWAYS_NULL               : dereference toujours null                 }
+{      NP_NULL_DEREF_ALL_TARGETS     : tous les chemins menent a un null deref  }
+{      NP_STORE_INTO_NONNULL_FIELD   : stockage null dans champ non-null        }
+{      NP_GUARANTEED_DEREF           : deref garanti null                       }
+{                                                                              }
+{  - Analyse de valeurs abstraites pour la pile JVM :                           }
+{      VAL_UNKNOWN = 0   (valeur inconnue)                                      }
+{      VAL_NULL    = 1   (reference nulle certaine)                             }
+{      VAL_NONNULL = 2   (reference non-null certaine)                          }
+{      VAL_MAYBE   = 3   (null possible selon le chemin)                        }
+{                                                                              }
+{  - Procedure DetectNullDereferences(Method: TMethodInfo)                      }
+{      Simuler l'execution symbolique de la pile JVM :                          }
+{        - aconst_null => empiler VAL_NULL                                      }
+{        - new, newarray, this => empiler VAL_NONNULL                           }
+{        - invokevirtual/invokespecial/invokeinterface sur ref :                }
+{          si ref = VAL_NULL -> bug NP_ALWAYS_NULL                              }
+{          si ref = VAL_MAYBE -> bug NP_NULL_ON_SOME_PATH                       }
+{        - getfield/putfield sur ref null : meme detection                      }
+{        - arraylength, athrow sur ref null : meme detection                    }
+{        - Propagation inter-blocs avec merge des etats (VAL_NULL ^ VAL_NONNULL }
+{          = VAL_MAYBE) via le CFG construit au TODO 08                         }
+{      Appeler AddBug pour chaque occurrence detectee                           }
+{                                                                              }
+{  - Function IsNullCheckOpcode(Op: Byte): Boolean                              }
+{      Retourner True si l'opcode est ifnull, ifnonnull, if_acmpeq, if_acmpne  }
+{      (ces opcodes testent explicitement la nullite)                           }
+
+{ ============================================================================ }
+{ TODO 10 [A FAIRE] - Detecteur : fuite de ressources (resource leaks)         }
+{ ============================================================================ }
+{                                                                              }
+{  - Codes de bugs detectes :                                                    }
+{      OBJ_UNSATISFIED_OBLIGATION    : ressource potentiellement non fermee     }
+{      OBJ_UNSATISFIED_OBLIGATION_EXCEPTION : ressource non fermee sur exception}
+{      OS_OPEN_STREAM                : flux non ferme                           }
+{      OS_OPEN_STREAM_EXCEPTION_PATH : flux non ferme sur chemin d'exception    }
+{                                                                              }
+{  - Classes Java considerees comme ressources (fermeables) :                   }
+{      java/io/InputStream, java/io/OutputStream, java/io/Reader,              }
+{      java/io/Writer, java/sql/Connection, java/sql/Statement,                }
+{      java/sql/ResultSet, java/net/Socket, java/net/ServerSocket              }
+{                                                                              }
+{  - Procedure DetectResourceLeaks(Method: TMethodInfo)                         }
+{      Identifier les invocations new + constructeur des classes ressources     }
+{      Verifier que chaque ressource ouverte est fermee (appel .close())        }
+{      sur tous les chemins d'execution (y compris les chemins d'exception)     }
+{      Detecter les blocs try/finally absents pour les ressources               }
+{      Detecter la creation de ressource dans un bloc try sans finally          }
+{      Tenir compte des instructions athrow et des gestionnaires d'exception    }
+{      depuis l'exception_table de la methode                                   }
+{                                                                              }
+{  - Function IsCloseableClass(ClassName: String): Boolean                      }
+{      Retourner True si le nom de classe correspond a un type ferme-able       }
+{      Verifier aussi la hierarchie (sous-classes de Closeable/AutoCloseable)   }
+{                                                                              }
+{  - Function FindCloseCall(Method: TMethodInfo; VarIdx: Integer;               }
+{      StartPC, EndPC: LongWord): Boolean                                       }
+{      Rechercher un appel .close() sur la variable locale d'index VarIdx       }
+{      entre StartPC et EndPC dans le bytecode                                  }
+
+{ ============================================================================ }
+{ TODO 11 [A FAIRE] - Detecteur : boucles infinies et blocs inaccessibles      }
+{ ============================================================================ }
+{                                                                              }
+{  - Codes de bugs detectes :                                                    }
+{      IL_INFINITE_LOOP          : boucle infinie sans condition d'arret        }
+{      IL_INFINITE_RECURSIVE_LOOP : appel recursif infini sans condition        }
+{      DLS_DEAD_LOCAL_STORE       : ecriture dans une variable non relue apres  }
+{      UC_USELESS_VOID_METHOD     : methode qui ne fait rien d'utile            }
+{      USELESS_CODE               : code inaccessible (unreachable code)        }
+{                                                                              }
+{  - Procedure DetectInfiniteLoops(Method: TMethodInfo)                         }
+{      Pour chaque arete arriere identifiee au TODO 08 :                        }
+{        Analyser les blocs composant la boucle                                 }
+{        Si la boucle ne contient aucune instruction de branchement vers        }
+{        l'exterieur (goto, return, athrow, break) => bug IL_INFINITE_LOOP      }
+{        Si la boucle ne lit aucune variable modifiee par une entree externe    }
+{        => probablement une boucle infinie                                     }
+{                                                                              }
+{  - Procedure DetectInfiniteRecursion(Method: TMethodInfo)                     }
+{      Rechercher les appels recursifs a la methode elle-meme                   }
+{      Si tous les chemins menent a un appel recursif sans condition d'arret    }
+{      => bug IL_INFINITE_RECURSIVE_LOOP                                        }
+{                                                                              }
+{  - Procedure DetectDeadCode(Method: TMethodInfo)                              }
+{      Apres la construction du CFG, identifier les blocs non-atteints          }
+{      Signaler chaque bloc mort avec le numero de ligne de la premiere          }
+{      instruction du bloc (via LineNumberTable)                                 }
+{                                                                              }
+{  - Procedure DetectDeadLocalStores(Method: TMethodInfo)                       }
+{      Construire l'information de vivacite (liveness) des variables locales    }
+{      Detecter les stores (istore, astore, etc.) dont la valeur n'est jamais   }
+{      relue => bug DLS_DEAD_LOCAL_STORE                                        }
+
+{ ============================================================================ }
+{ TODO 12 [A FAIRE] - Detecteur : mauvaises pratiques (bad practices)          }
+{ ============================================================================ }
+{                                                                              }
+{  - Codes de bugs detectes :                                                    }
+{      BC_UNCONFIRMED_CAST    : cast sans verification instanceof prealable     }
+{      CN_IMPLEMENTS_CLONE_BUT_NOT_CLONEABLE : clone() sans Cloneable          }
+{      DE_MIGHT_IGNORE        : exception capturee et ignoree (catch vide)      }
+{      EQ_DOESNT_OVERRIDE_EQUALS : sous-classe avec champs mais sans equals()  }
+{      FI_PUBLIC_SHOULD_BE_PROTECTED : finalize() public au lieu de protected  }
+{      HE_HASHCODE_USE_OBJECT_EQUALS : hashCode() sans equals() ou inversement }
+{      RR_NOT_CHECKED          : valeur de retour de read() non verifiee        }
+{      SR_NOT_CHECKED          : valeur de retour de skip() non verifiee        }
+{                                                                              }
+{  - Procedure DetectBadPractices(Method: TMethodInfo)                          }
+{      Analyser les invocations de methodes et les instructions checkcast       }
+{      Verifier qu'un instanceof precede tout checkcast                         }
+{      Detecter les blocs catch avec corps vide (DE_MIGHT_IGNORE)              }
+{      Detecter les appels a read()/skip() dont le resultat est pop             }
+{                                                                              }
+{  - Procedure DetectBadClassPractices(ClassInfo: TClassInfo)                   }
+{      Analyser la structure de la classe :                                     }
+{        Verifier la coherence equals/hashCode (un seul sans l'autre)           }
+{        Verifier que clone() est dans une classe qui implemente Cloneable      }
+{        Verifier que finalize() n'est pas public                               }
+{        Detecter les sous-classes ajoutant des champs sans redefinir equals()  }
+
+{ ============================================================================ }
+{ TODO 13 [A FAIRE] - Detecteur : comparaisons incorrectes d'objets            }
+{ ============================================================================ }
+{                                                                              }
+{  - Codes de bugs detectes :                                                    }
+{      EC_UNRELATED_TYPES         : comparaison == entre types sans relation    }
+{      ES_COMPARING_STRINGS_WITH_EQ : comparaison String avec == au lieu equals}
+{      RC_REF_COMPARISON_BAD_PRACTICE : comparaison == avec wrapper (Integer)  }
+{      GC_UNRELATED_TYPES         : appel get/contains avec type incompatible  }
+{                                                                              }
+{  - Procedure DetectBadComparisons(Method: TMethodInfo)                        }
+{      Detecter les instructions if_acmpeq et if_acmpne comparant des strings   }
+{      Detecter les comparaisons == appliquees a des types wrapper Java         }
+{        (java/lang/Integer, java/lang/Long, java/lang/Double, etc.)           }
+{      Analyser les types sur la pile au moment de la comparaison               }
+{      Detecter les appels Collection.get(key) avec cle de mauvais type         }
+{                                                                              }
+{  - Function IsStringType(Desc: String): Boolean                               }
+{      Retourner True si le descripteur correspond a java/lang/String           }
+{                                                                              }
+{  - Function IsWrapperType(ClassName: String): Boolean                         }
+{      Retourner True si le nom designe un type wrapper Java                    }
+{      (Integer, Long, Short, Byte, Character, Float, Double, Boolean)          }
+
+{ ============================================================================ }
+{ TODO 14 [A FAIRE] - Detecteur : problemes de performance                     }
+{ ============================================================================ }
+{                                                                              }
+{  - Codes de bugs detectes :                                                    }
+{      SBSC_USE_STRINGBUFFER_CONCATENATION : concat String dans boucle         }
+{      DMI_BLOCKING_METHODS_ON_URL : appel methode bloquante sur URL           }
+{      ITA_INEFFICIENT_TO_ARRAY    : toArray avec type incorrecte               }
+{      URF_UNREAD_FIELD             : champ jamais lu                           }
+{      WMI_WRONG_MAP_ITERATOR       : iteration inefficace sur Map              }
+{      UPM_UNCALLED_PRIVATE_METHOD  : methode privee jamais appelee             }
+{                                                                              }
+{  - Procedure DetectPerformanceIssues(Method: TMethodInfo)                     }
+{      Detecter les concatenations de String dans les boucles :                 }
+{        Chercher les appels String.concat ou StringBuilder.append              }
+{        dont la boucle parente (back-edge) n'utilise pas de StringBuilder      }
+{      Detecter l'utilisation de entrySet() vs keySet() sur les Map             }
+{      Detecter les appels URL.equals() et URL.hashCode() (DNS lookup)          }
+{      Detecter toArray(new T[0]) au lieu de toArray(new T[size])               }
+{                                                                              }
+{  - Procedure DetectUnusedPrivateMembers(ClassInfo, Methods, Fields)           }
+{      Calculer l'ensemble des methodes et champs prives                        }
+{      Verifier qu'ils sont references dans au moins une methode de la classe   }
+{      Signaler ceux qui ne sont jamais utilises                                 }
+
+{ ============================================================================ }
+{ TODO 15 [A FAIRE] - Detecteur : vulnerabilites de securite                   }
+{ ============================================================================ }
+{                                                                              }
+{  - Codes de bugs detectes :                                                    }
+{      SQL_INJECTION             : construction SQL avec concatenation directe  }
+{      XSS_JSP_PRINT             : ecriture dans response sans encodage         }
+{      PT_ABSOLUTE_PATH_TRAVERSAL : chemin absolu construit depuis entree user  }
+{      HRS_REQUEST_PARAMETER_TO_HTTP_HEADER : injection d'en-tete HTTP          }
+{      WEAK_HASH_ALGORITHM       : utilisation de MD5, SHA-1 (casses)           }
+{      HARD_CODE_PASSWORD        : mot de passe en dur dans le code             }
+{      PREDICTABLE_RANDOM        : utilisation de java.util.Random              }
+{      CIPHER_INTEGRITY          : chiffrement sans MAC                         }
+{                                                                              }
+{  - Procedure DetectSecurityIssues(Method: TMethodInfo)                        }
+{      Detecter les appels Statement.execute/executeQuery avec concatenation    }
+{      Detecter les appels MessageDigest.getInstance("MD5") ou ("SHA-1")        }
+{      Detecter les constantes de chaine ressemblant a des mots de passe        }
+{        (nom du champ contient "password", "pwd", "passwd", "secret")         }
+{      Detecter new Random() au lieu de SecureRandom                            }
+{      Detecter Cipher.getInstance("AES") sans mode d'integrité GCM            }
+{      Detecter Runtime.exec() avec argument provenant du reseau               }
+{                                                                              }
+{  - Function IsSecuritySensitiveName(Name: String): Boolean                    }
+{      Retourner True si le nom suggere un secret (password, token, key, etc.) }
+
+{ ============================================================================ }
+{ TODO 16 [A FAIRE] - Detecteur : problemes de multi-threading                 }
+{ ============================================================================ }
+{                                                                              }
+{  - Codes de bugs detectes :                                                    }
+{      DC_DOUBLECHECK         : double-check locking incorrect                  }
+{      ESync_EMPTY_SYNC       : bloc synchronized vide                          }
+{      IS_FIELD_NOT_GUARDED    : acces a un champ non protege dans methode sync }
+{      IS2_INCONSISTENT_SYNC   : acces inconsistant (parfois sync, parfois non) }
+{      JLM_JSR166_LOCK_MONITORENTER : utilisation monitorenter/exit direct      }
+{      NN_NAKED_NOTIFY         : notify() sans condition de garde               }
+{      NO_NOTIFY_NOT_NOTIFYALL : notify() quand notifyAll() serait preferable   }
+{      UG_SYNC_SET_UNSYNC_GET  : setter synchronized mais getter non            }
+{      UW_UNCOND_WAIT          : wait() sans boucle de garde                    }
+{      WA_AWAIT_NOT_IN_LOOP    : await() sans boucle de garde                   }
+{                                                                              }
+{  - Procedure DetectConcurrencyIssues(ClassInfo, Methods)                      }
+{      Identifier les champs volatiles et synchronized                          }
+{      Detecter les acces a des champs non-volatiles dans des methodes          }
+{        marquees synchronized sans protection adequate                          }
+{      Detecter les doubles tests de null (double-checked locking)              }
+{      Detecter les blocs synchronized() vides (corps vide)                     }
+{      Detecter les appels wait() hors d'une boucle while                       }
+{      Detecter les notify() sans mise a jour d'un etat partage                 }
+
+{ ============================================================================ }
+{ TODO 17 [A FAIRE] - Detecteur : exceptions masquees et flux d'erreur         }
+{ ============================================================================ }
+{                                                                              }
+{  - Codes de bugs detectes :                                                    }
+{      THROWN_EXCEPTION_IGNORED  : exception capturee et ignoree silencieusement}
+{      REC_CATCH_EXCEPTION        : capture de java.lang.Exception trop large  }
+{      RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE : null check apres usage  }
+{      FINALLY_NULLIFIES_EXCEPTION : return dans finally masque l'exception     }
+{      OVERRIDDEN_EQUALS_NO_SUPER_CALL : equals() ne fait pas super.equals()   }
+{                                                                              }
+{  - Procedure DetectExceptionHandlingIssues(Method: TMethodInfo)               }
+{      Analyser les blocs catch (debut/fin/handler depuis exception_table)      }
+{      Detecter les catch(Exception) / catch(Throwable) trop larges             }
+{      Detecter les blocs catch dont le corps ne contient que pop + return      }
+{        ou pop seul (exception ignoree silencieusement)                        }
+{      Detecter les instructions return dans les blocs finally                  }
+{        (masque toute exception levee dans le bloc try)                        }
+{      Detecter les verifications null apres un dereferencement de la variable  }
+{        (l'exception aurait deja ete lancee avant le test)                     }
+
+{ ============================================================================ }
+{ TODO 18 [A FAIRE] - Detecteur : erreurs logiques et retours incorrects       }
+{ ============================================================================ }
+{                                                                              }
+{  - Codes de bugs detectes :                                                    }
+{      RV_RETURN_VALUE_IGNORED     : valeur de retour ignoree (critique)        }
+{      IM_MULTIPLYING_RESULT_OF_IREM : multiplication du resultat de modulo     }
+{      INT_BAD_COMPARISON_WITH_NONNEG_VALUE : comparaison < 0 sur valeur >=0   }
+{      IC_INIT_CIRCULARITY         : initialisation de constante circulaire      }
+{      MF_CLASS_MASKS_FIELD        : variable locale masque un champ de classe  }
+{      SA_FIELD_SELF_ASSIGNMENT    : champ assigne a lui-meme                   }
+{      SA_LOCAL_SELF_ASSIGNMENT    : variable locale assignee a elle-meme       }
+{                                                                              }
+{  - Procedure DetectLogicErrors(Method: TMethodInfo)                           }
+{      Detecter les self-assignments :                                           }
+{        iload x suivi de istore x sans instruction intermediaire               }
+{        getfield f suivi de putfield f sur le meme objet                       }
+{      Detecter les comparaisons toujours vraies ou toujours fausses :          }
+{        valeurs de registres de type int compares avec < 0 quand toujours >=0  }
+{      Detecter les multiplications integer pouvant deborder (avant cast long)  }
+{      Detecter les variables locales qui masquent des champs d'instance         }
+
+{ ============================================================================ }
+{ TODO 19 [A FAIRE] - Detecteur : problemes d'internationalisation             }
+{ ============================================================================ }
+{                                                                              }
+{  - Codes de bugs detectes :                                                    }
+{      DM_DEFAULT_ENCODING        : appel String.getBytes() sans charset        }
+{      DM_STRING_CTOR             : constructeur new String(String) inutile     }
+{      DM_CONVERT_CASE            : toUpperCase()/toLowerCase() sans Locale     }
+{      DM_BOXED_PRIMITIVE_FOR_COMPARE : boxing inutile avant comparaison        }
+{      DM_FP_NUMBER_CTOR          : new Double(x) au lieu de Double.valueOf(x)  }
+{      DM_NUMBER_CTOR             : new Integer(n) au lieu de Integer.valueOf(n)}
+{                                                                              }
+{  - Procedure DetectI18NIssues(Method: TMethodInfo)                            }
+{      Detecter les appels String.getBytes() sans argument (charset manquant)   }
+{      Detecter les appels String.toUpperCase()/toLowerCase() sans Locale       }
+{      Detecter les appels new String(bytes) sans charset                       }
+{      Detecter les constructeurs de types numeriques wrapper au lieu de        }
+{        valueOf() pour eviter la creation inutile d'objets                     }
+{      Detecter les appels new Integer(n) / new Double(d) etc.                  }
+{      Detecter les String.format() sans specification de Locale                }
+
+{ ============================================================================ }
+{ TODO 20 [A FAIRE] - Calcul des scores et niveaux de severite                 }
+{ ============================================================================ }
+{                                                                              }
+{  - Formule de score SpotBugs :                                                 }
+{      BugRankScore : entier de 1 a 20 (1 = critique, 20 = informatif)         }
+{      Priorite     : HIGH (1-4), MEDIUM (5-9), LOW (10-14), INFO (15-20)      }
+{                                                                              }
+{  - Procedure ComputeBugRank(Var Bug: TBugReport)                              }
+{      Calculer le rang du bug selon son type et sa categorie                   }
+{      Tenir compte du contexte (methode publique vs privee)                    }
+{      Ajuster la priorite selon la confiance de l'analyse                      }
+{                                                                              }
+{  - Procedure SortBugsByPriority(Var Bugs: array; Count: Integer)              }
+{      Trier le tableau de bugs par severite decroissante                       }
+{      A priorite egale, trier par categorie puis par classe                    }
+{                                                                              }
+{  - Procedure ComputeClassScore(ClassName: String; Var Score: Integer)         }
+{      Calculer le score global d'une classe (somme ponderee des rangs)         }
+{      Normaliser sur une echelle de 0 a 100                                    }
+{                                                                              }
+{  - Procedure PrintBugStats                                                    }
+{      Afficher le nombre de bugs par categorie et par severite                 }
+{      Afficher le bilan general (classes, methodes, bugs, erreurs)             }
+{      Afficher les classes les plus problematiques                             }
+
+{ ============================================================================ }
+{ TODO 21 [A FAIRE] - Generation du rapport texte                              }
+{ ============================================================================ }
+{                                                                              }
+{  - Procedure EmitTextReport(OutFile: String)                                  }
+{      Ouvrir le fichier de sortie texte (ou stdout si OutFile='')              }
+{      Ecrire l'en-tete avec version de SpotBugs et date d'analyse              }
+{      Pour chaque bug trie par priorite :                                       }
+{        Afficher la ligne : [PRIORITE] CODE_BUG  Classe.methode(Fichier:Ligne) }
+{        Afficher la description lisible du bug                                  }
+{      Ecrire le pied de page avec les statistiques globales                     }
+{      Fermer le fichier                                                         }
+{                                                                              }
+{  - Procedure FormatBugLine(Bug: TBugReport): String                           }
+{      Produire la ligne de rapport au format court :                            }
+{      "[H] NP_NULL_ON_SOME_PATH: com.example.Foo.bar(Foo.java:42)"            }
+{                                                                              }
+{  - Procedure PrintBugDescription(BugType: String)                             }
+{      Afficher la description longue associee au code de bug                    }
+{      Utiliser un tableau statique de descriptions pre-enregistrees            }
+
+{ ============================================================================ }
+{ TODO 22 [A FAIRE] - Generation du rapport XML (format SpotBugs)              }
+{ ============================================================================ }
+{                                                                              }
+{  - Format XML cible (compatible spotbugs-gui et jenkins-spotbugs-plugin) :    }
+{      <?xml version="1.0" encoding="UTF-8"?>                                   }
+{      <BugCollection version="4.0.0" sequence="0"                             }
+{                     timestamp="..." analysisTimestamp="...">                  }
+{        <Project projectName="...">                                            }
+{          <SrcDir>src</SrcDir>                                                 }
+{          <ClassDir>classes</ClassDir>                                         }
+{        </Project>                                                             }
+{        <BugInstance type="NP_NULL_ON_SOME_PATH" priority="2" rank="9"        }
+{                     abbrev="NP" category="CORRECTNESS">                       }
+{          <ShortMessage>...</ShortMessage>                                     }
+{          <LongMessage>...</LongMessage>                                       }
+{          <Class classname="com.example.Foo" primary="true"/>                  }
+{          <Method classname="com.example.Foo" name="bar"                      }
+{                  signature="(I)V" isStatic="false" primary="true"/>           }
+{          <SourceLine classname="com.example.Foo" start="42" end="42"         }
+{                      sourcefile="Foo.java"/>                                  }
+{        </BugInstance>                                                         }
+{        <FindBugsSummary .../>                                                 }
+{        <ClassStats .../>                                                      }
+{      </BugCollection>                                                         }
+{                                                                              }
+{  - Procedure EmitXmlReport(OutFile: String)                                   }
+{      Ouvrir le fichier XML                                                    }
+{      Ecrire le prologue XML et la balise BugCollection                        }
+{      Ecrire la section Project avec les chemins source et classes             }
+{      Pour chaque bug, ecrire un element BugInstance avec tous ses attributs   }
+{      Ecrire FindBugsSummary (nb bugs par priorite et categorie)               }
+{      Ecrire un element ClassStats par classe analysee                         }
+{      Fermer les balises et le fichier                                          }
+{                                                                              }
+{  - Function XmlEscape(S: String): String                                      }
+{      Echapper les caracteres speciaux XML (&, <, >, ", ')                     }
+
+{ ============================================================================ }
+{ TODO 23 [A FAIRE] - Generation du rapport HTML                               }
+{ ============================================================================ }
+{                                                                              }
+{  - Procedure EmitHtmlReport(OutFile: String)                                  }
+{      Generer un rapport HTML autonome avec styles CSS integres                 }
+{      Structure HTML :                                                           }
+{        <html><head><title>SpotBugs Report</title><style>...</style></head>    }
+{        <body>                                                                  }
+{          <h1>SpotBugs - Rapport d'analyse</h1>                               }
+{          <div class="summary">Statistiques generales</div>                    }
+{          <table> Pour chaque categorie de bugs :                               }
+{            <tr class="HIGH/MEDIUM/LOW"> colonnes : rang, type, classe,        }
+{            methode, ligne, description </tr>                                   }
+{          </table>                                                              }
+{        </body></html>                                                          }
+{      Colorer les lignes selon la priorite (rouge, orange, jaune, vert)        }
+{      Inclure un lien vers la documentation SpotBugs par bug type              }
+{      Afficher la liste des classes analysees avec leur score                   }
+{      Generer des ancres HTML pour chaque section de bugs                       }
+
+{ ============================================================================ }
+{ TODO 24 [A FAIRE] - Filtrage, exclusions et configuration des regles         }
+{ ============================================================================ }
+{                                                                              }
+{  - Format du fichier d'exclusion (XML, compatible SpotBugs) :                 }
+{      <FindBugsFilter>                                                          }
+{        <Match>                                                                 }
+{          <Class name="com.example.Foo"/>                                       }
+{          <Bug code="NP,BC"/>                                                   }
+{        </Match>                                                                }
+{        <Match>                                                                 }
+{          <Bug pattern="NP_NULL_ON_SOME_PATH"/>                                 }
+{          <Class pattern=".*Test"/>                                              }
+{        </Match>                                                                }
+{      </FindBugsFilter>                                                         }
+{                                                                              }
+{  - Structure TFilterRule :                                                      }
+{      ClassPattern  : String   (expression reguliere sur le nom de classe)     }
+{      MethodPattern : String   (expression reguliere sur le nom de methode)    }
+{      BugPattern    : String   (expression reguliere sur le code de bug)       }
+{      Category      : Integer  (categorie a filtrer, 0 = toutes)               }
+{      MinSeverity   : Integer  (severite minimale a filtrer)                   }
+{      IsExclude     : Boolean  (True = exclusion, False = inclusion)           }
+{                                                                              }
+{  - Procedure LoadFilterFile(FileName: String; IsExclude: Boolean)             }
+{      Analyser le fichier XML de filtre (mini-parseur XML)                     }
+{      Extraire les regles Match avec Class, Bug, Method                        }
+{      Compiler les motifs en regles de filtrage                                 }
+{                                                                              }
+{  - Function IsBugFiltered(Bug: TBugReport): Boolean                           }
+{      Verifier si le bug correspond a une regle d'exclusion                    }
+{      Verifier qu'il correspond a une regle d'inclusion (si fournie)           }
+{      Utiliser une correspondance simple (prefixe, suffixe, joker *)           }
+{                                                                              }
+{  - Function MatchPattern(Pattern, Value: String): Boolean                     }
+{      Correspondance avec jokers (* = toute sequence, ? = un caractere)        }
+
+{ ============================================================================ }
+{ TODO 25 [A FAIRE] - Programme principal, balayage recursif et exemples       }
+{ ============================================================================ }
+{                                                                              }
+{  - Procedure ParseArgs                                                        }
+{      Analyser ParamStr(1..ParamCount) :                                       }
+{        fichier.class ou repertoire (cibles d'analyse)                         }
+{        -o <fichier>  : fichier de rapport de sortie                           }
+{        -xml          : format de sortie XML (defaut: texte)                   }
+{        -html         : format de sortie HTML                                  }
+{        -textui       : format de sortie texte (explicite)                     }
+{        -effort:min / -effort:default / -effort:max : niveau d'analyse         }
+{        -low / -medium / -high : severite minimale a rapporter                 }
+{        -exclude <fichier> : fichier de regles d'exclusion                     }
+{        -include <fichier> : fichier de regles d'inclusion                     }
+{        -recursive    : analyser recursivement les sous-repertoires            }
+{        -maxRank <n>  : rang maximum a rapporter (1..20)                       }
+{        -version      : afficher la version et quitter                         }
+{        -help         : afficher l'aide et quitter                              }
+{      Validation : au moins une cible obligatoire                              }
+{                                                                              }
+{  - Procedure ScanDirectory(DirName: String; Recursive: Boolean)               }
+{      Lister tous les fichiers .class dans DirName                             }
+{      Pour chaque fichier .class trouve, appeler AnalyzeClass                  }
+{      Si Recursive, descendre dans les sous-repertoires                        }
+{      Supporter aussi les fichiers .jar (ZIP) en les decompressant en memoire  }
+{                                                                              }
+{  - Procedure AnalyzeClass(FileName: String)                                   }
+{      Orchestrer l'analyse complete d'un fichier .class :                      }
+{        1. OpenClassFile, ReadClassHeader (TODO 02)                             }
+{        2. ParseConstantPool (TODO 03)                                          }
+{        3. ReadClassInfo (TODO 04)                                              }
+{        4. ReadFields (TODO 05)                                                 }
+{        5. ReadMethods (TODO 06)                                                }
+{        6. Pour chaque methode :                                                }
+{             a. DecodeInstructions (TODO 07)                                    }
+{             b. BuildCFG (TODO 08)                                              }
+{             c. Lancer tous les detecteurs (TODOs 09 a 19)                      }
+{        7. Lancer DetectBadClassPractices (TODO 12)                             }
+{        8. Lancer DetectConcurrencyIssues (TODO 16)                             }
+{        9. CloseClassFile                                                       }
+{                                                                              }
+{  - Procedure PrintHelp                                                        }
+{      Afficher l'aide complete en ligne de commande :                          }
+{        usage: SPOTBUGS [options] <classes|jars|directories>                   }
+{        Options et descriptions detaillees                                     }
+{        Exemples d'utilisation                                                  }
+{                                                                              }
+{  - Fichiers exemples a creer dans SAMPLES\SPOTBUGS\ :                         }
+{      Foo.java / Foo.class   : classe avec dereferencement null simple         }
+{      Bar.java / Bar.class   : classe avec fuite de ressource (InputStream)    }
+{      Baz.java / Baz.class   : classe avec comparaison String par ==           }
+{      Loop.java / Loop.class : classe avec boucle potentiellement infinie      }
+{      Sql.java  / Sql.class  : classe avec injection SQL par concatenation     }
+{      Hash.java / Hash.class : classe avec equals() sans hashCode()            }
+{      Sync.java / Sync.class : classe avec bloc synchronized vide              }
+{      Cast.java / Cast.class : classe avec cast sans instanceof                 }
+
+Begin
+ WriteLn('SPOTBUGS : Cette commande permet d''analyser le bytecode des fichiers .class');
+ WriteLn('           pour detecter des bugs potentiels dans le code Java.');
+ WriteLn;
+ WriteLn('Syntaxe : SPOTBUGS [options] <fichiers.class|repertoire|fichier.jar>');
+ WriteLn;
+ WriteLn('  -o <fichier>    Fichier de rapport de sortie');
+ WriteLn('  -xml            Format de sortie XML (compatible Jenkins)');
+ WriteLn('  -html           Format de sortie HTML');
+ WriteLn('  -low            Reporter tous les bugs (faible severite et plus)');
+ WriteLn('  -medium         Reporter les bugs de severite moyenne et plus');
+ WriteLn('  -high           Reporter uniquement les bugs critiques');
+ WriteLn('  -exclude <f>    Fichier XML de regles d''exclusion');
+ WriteLn('  -include <f>    Fichier XML de regles d''inclusion');
+ WriteLn('  -recursive      Analyser recursivement les sous-repertoires');
+ WriteLn('  -version        Afficher la version');
+ WriteLn('  -help           Afficher cette aide');
+ WriteLn;
+ WriteLn('Exemples :');
+ WriteLn('  SPOTBUGS MyApp.class');
+ WriteLn('  SPOTBUGS -xml -o rapport.xml classes/');
+ WriteLn('  SPOTBUGS -high -recursive src/');
+End.

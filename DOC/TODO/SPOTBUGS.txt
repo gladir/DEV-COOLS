@@ -1,0 +1,390 @@
+SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
+  Free Pascal (-Mtp)
+  Analyse le bytecode des fichiers .class Java pour detecter des bugs potentiels.
+
+  Supporte les fichiers .class individuels, les repertoires et les fichiers .jar.
+  Produit des rapports en format texte, XML (compatible Jenkins/SpotBugs) et HTML.
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES GLOBALES [A FAIRE]
+            Constantes de dimensionnement :
+              MAX_CP_ENTRIES=65535, MAX_FIELDS=4096, MAX_METHODS=4096,
+              MAX_INTERFACES=256, MAX_BUGS=8192, MAX_CFG_NODES=65535,
+              MAX_STACK_DEPTH=512, MAX_CLASSES=4096, BUFSIZE=65536
+            Niveaux de severite : SEV_HIGH=1, SEV_MEDIUM=2, SEV_LOW=3, SEV_INFO=4
+            Categories de bugs : CAT_CORRECTNESS=1, CAT_BAD_PRACTICE=2,
+              CAT_PERFORMANCE=3, CAT_SECURITY=4, CAT_MT_CORRECTNESS=5,
+              CAT_INTERNATIONALIZATION=6, CAT_DODGY=7, CAT_MALICIOUS=8
+            Types Constant Pool : CP_UTF8=1, CP_INTEGER=3, CP_FLOAT=4,
+              CP_LONG=5, CP_DOUBLE=6, CP_CLASS=7, CP_STRING=8,
+              CP_FIELDREF=9, CP_METHODREF=10, CP_INTERFACEMETHODREF=11,
+              CP_NAMEANDTYPE=12, CP_METHODHANDLE=15, CP_METHODTYPE=16,
+              CP_INVOKEDYNAMIC=18
+            Flags d'acces : ACC_PUBLIC=$0001 .. ACC_ENUM=$4000
+            Structure TOptions (ClassPath, OutFile, OutFormat, MinSeverity,
+              Verbose, Recursive, ShowCount, ExcludeFile, IncludeFile, MaxBugs)
+            Structure TBugReport (BugType, Category, Severity, ClassName,
+              MethodName, FieldName, LineNumber, Message)
+            Variables globales (Opts, Bugs, BugCount, ClassesScanned,
+              TotalMethods, ErrorCount)
+            Utilitaires : ReadU1/ReadU2/ReadU4 (big-endian), HexByte/HexWord,
+              IntToStr_, StrToInt_, UpCaseStr, FileExists_, ChangeExt,
+              FatalError, Error, Warning, AddBug
+
+  TODO 02 - LECTURE ET VALIDATION DE L'EN-TETE .class [A FAIRE]
+            Constante CLASS_MAGIC = $CAFEBABE
+            Structure TClassHeader (Magic, MinorVersion, MajorVersion,
+              CPCount, AccessFlags, ThisClass, SuperClass, InterfaceCount)
+            OpenClassFile(FileName) : ouvrir .class, valider magic $CAFEBABE
+            ReadClassHeader : lire version, valider (49=Java5..65=Java21),
+              avertissement si version inconnue ou trop recente
+            GetJavaVersion(Major) : 52->"Java 8", 55->"Java 11", 61->"Java 17"
+            CloseClassFile : fermer le fichier et liberer le tampon
+
+  TODO 03 - DECODAGE DU CONSTANT POOL [A FAIRE]
+            Structure TCPEntry (Tag, StrVal, IntVal, FloatVal,
+              Ref1, Ref2, IsDouble)
+            ParseConstantPool(Count) : lire les Count-1 entrees big-endian
+              CP_UTF8 : lire longueur U2 + octets -> StrVal
+              CP_INTEGER/FLOAT : 4 octets -> IntVal/FloatVal
+              CP_LONG/DOUBLE : 8 octets, occuper 2 slots (IsDouble=True)
+              CP_CLASS/STRING/METHODTYPE : 1 index U2 -> Ref1
+              CP_FIELDREF/METHODREF/INTERFACEMETHODREF/NAMEANDTYPE/
+              INVOKEDYNAMIC : 2 index U2 -> Ref1, Ref2
+              CP_METHODHANDLE : 1 octet + 1 index U2
+            CPGetUtf8(Idx) : retourner valeur Utf8, erreur si invalide
+            CPGetClassName(Idx) : resoudre CP_CLASS -> CPGetUtf8(Ref1)
+            CPGetNameAndType(Idx, Name, Desc) : resoudre CP_NAMEANDTYPE
+            CPGetMemberRef(Idx, Class, Name, Desc) : resoudre FIELDREF/METHODREF
+
+  TODO 04 - LECTURE DES FLAGS, THIS_CLASS, SUPER_CLASS, INTERFACES [A FAIRE]
+            Structure TClassInfo (AccessFlags, ThisClass, SuperClass,
+              Interfaces[0..255], InterfaceCount, IsInterface, IsAbstract,
+              IsEnum, IsAnnotation, SourceFile, IsSynthetic)
+            ReadClassInfo : lire AccessFlags/ThisClass/SuperClass (U2 big-endian),
+              resoudre noms via CP, lire InterfaceCount puis chaque interface,
+              decoder les bits ACC_*
+            GetSimpleClassName(InternalName) : extraire le nom simple
+              "java/lang/RuntimeException" -> "RuntimeException"
+            GetPackageName(InternalName) : extraire le paquetage
+              "com/example/Foo" -> "com.example"
+            ReadAttributesClass : parcourir attributs classe (SourceFile,
+              Deprecated, InnerClasses, EnclosingMethod, Signature, Annotations)
+
+  TODO 05 - LECTURE DES CHAMPS (FIELDS) DE LA CLASSE [A FAIRE]
+            Structure TFieldInfo (AccessFlags, Name, Descriptor, IsSynthetic,
+              IsStatic, IsFinal, IsVolatile, IsTransient, IsEnum,
+              ConstValue, HasConstValue, LineNumber)
+            ReadFields(Count) : pour chaque champ lire AccessFlags, Name (U2->CP),
+              Descriptor (U2->CP), decoder ACC_*, lire attributs :
+              ConstantValue (index U2 -> valeur CP), Deprecated, Signature,
+              Synthetic, stocker dans Fields[]
+            DecodeTypeDescriptor(Desc) : traduire descripteur JVM en type Java
+              V->void, I->int, J->long, D->double, F->float, B->byte,
+              C->char, S->short, Z->boolean, L<nom>;->nom, [X->X[]
+
+  TODO 06 - LECTURE DES METHODES ET DE L'ATTRIBUT CODE [A FAIRE]
+            Structure TExceptionEntry (StartPC, EndPC, HandlerPC, CatchType)
+            Structure TMethodInfo (AccessFlags, Name, Descriptor, MaxStack,
+              MaxLocals, CodeLen, Code, ExcCount, ExcTable, LineCount,
+              LineTable, LocalCount, LocalTable, IsNative, IsAbstract,
+              IsBridge, IsSynthetic, IsVarArgs)
+            ReadMethods(Count) : lire AccessFlags, Name, Desc pour chaque
+              methode, puis attributs Code (MaxStack, MaxLocals, CodeLen,
+              bytecode, exception_table, LineNumberTable, LocalVariableTable),
+              Exceptions, Deprecated, Synthetic, Signature, Bridge, VarArgs
+            GetLineNumber(Method, PC) : rechercher l'entree LineTable la plus
+              proche pour le PC donne, retourner -1 si absent
+            ParseMethodDescriptor(Desc, ParamTypes, RetType) : analyser le
+              descripteur ex. (ILjava/lang/String;)V -> [int,String], void
+
+  TODO 07 - DECODAGE DU BYTECODE JAVA (OPCODES JVM) [A FAIRE]
+            Constantes d'opcodes JVM principaux :
+              OP_NOP=0, OP_ACONST_NULL=1, OP_ICONST_M1..OP_ICONST_5=2..8,
+              OP_ILOAD=21..OP_ALOAD=25, OP_ISTORE=54..OP_ASTORE=58,
+              OP_IADD=96..OP_DADD=99, OP_IRETURN=172..OP_RETURN=177,
+              OP_GETSTATIC=178..OP_PUTSTATIC=179, OP_GETFIELD=180..OP_PUTFIELD=181,
+              OP_INVOKEVIRTUAL=182..OP_INVOKEDYNAMIC=186,
+              OP_NEW=187, OP_NEWARRAY=188, OP_ANEWARRAY=189,
+              OP_ATHROW=191, OP_CHECKCAST=192, OP_INSTANCEOF=193,
+              OP_IFEQ=153..OP_IF_ACMPNE=166, OP_GOTO=167, OP_GOTO_W=200,
+              OP_TABLESWITCH=170, OP_LOOKUPSWITCH=171, OP_WIDE=196
+            Structure TInstruction (PC, Opcode, Mnemonic, Op1, Op2, Op3,
+              Size, CpRef, LineNum)
+            DecodeInstructions(Method) : parcourir bytecode instruction par
+              instruction, gerer wide/tableswitch/lookupswitch/padding,
+              resoudre les references CP
+            GetInstrMnemonic(Op) : retourner mnemonique textuel de l'opcode
+            GetInstrSize(Op, PC, Code) : calculer taille de l'instruction,
+              tenir compte alignements tableswitch/lookupswitch et wide
+
+  TODO 08 - CONSTRUCTION DU GRAPHE DE FLUX DE CONTROLE (CFG) [A FAIRE]
+            Structure TCFGNode (ID, StartPC, EndPC, InstStart, InstEnd,
+              Succs[0..3], SuccCount, Preds[0..15], PredCount, IsEntry,
+              IsExit, IsException, Visited, DomBy)
+            BuildCFG(Method) : identifier entetes de blocs de base (PC=0,
+              cibles de branchements, suite apres branchement inconditionnel,
+              debuts de gestionnaires d'exception), creer un noeud par bloc,
+              lier successeurs et calculer predecesseurs
+            ComputeDominators(Nodes) : calculer l'arbre des dominateurs
+              (algorithme iteratif simplifie de Lengauer-Tarjan) pour
+              detecter boucles et code mort
+            FindUnreachableBlocks(Nodes) : DFS depuis noeud d'entree,
+              identifier blocs non atteints (Visited=False) = code mort
+            FindBackEdges(Nodes) : identifier aretes arriere dans CFG
+              (noeud vers un de ses ancetres DFS) = boucles
+
+  TODO 09 - DETECTEUR : DEREFERENCEMENT DE POINTEUR NULL [A FAIRE]
+            Codes detectes : NP_NULL_ON_SOME_PATH, NP_ALWAYS_NULL,
+              NP_NULL_ON_SOME_PATH_EXCEPTION, NP_NULL_DEREF_ALL_TARGETS,
+              NP_STORE_INTO_NONNULL_FIELD, NP_GUARANTEED_DEREF
+            Valeurs abstraites : VAL_UNKNOWN=0, VAL_NULL=1, VAL_NONNULL=2,
+              VAL_MAYBE=3
+            DetectNullDereferences(Method) : execution symbolique de la pile JVM
+              aconst_null => empiler VAL_NULL
+              new/newarray/this => empiler VAL_NONNULL
+              invokevirtual/invokespecial/invokeinterface sur VAL_NULL
+                => bug NP_ALWAYS_NULL
+              invokevirtual/... sur VAL_MAYBE => bug NP_NULL_ON_SOME_PATH
+              getfield/putfield/arraylength/athrow sur null : meme detection
+              Propagation inter-blocs via CFG (merge: NULL^NONNULL=MAYBE)
+            IsNullCheckOpcode(Op) : True si ifnull/ifnonnull/if_acmpeq/if_acmpne
+
+  TODO 10 - DETECTEUR : FUITE DE RESSOURCES (RESOURCE LEAKS) [A FAIRE]
+            Codes detectes : OBJ_UNSATISFIED_OBLIGATION,
+              OBJ_UNSATISFIED_OBLIGATION_EXCEPTION, OS_OPEN_STREAM,
+              OS_OPEN_STREAM_EXCEPTION_PATH
+            Classes ressources : java/io/InputStream, java/io/OutputStream,
+              java/io/Reader, java/io/Writer, java/sql/Connection,
+              java/sql/Statement, java/sql/ResultSet,
+              java/net/Socket, java/net/ServerSocket
+            DetectResourceLeaks(Method) : identifier new + constructeur des
+              classes ressources, verifier que .close() est appele sur tous
+              les chemins (y compris chemins d'exception), detecter absence
+              de try/finally pour les ressources
+            IsCloseableClass(ClassName) : True si type Closeable/AutoCloseable
+            FindCloseCall(Method, VarIdx, StartPC, EndPC) : chercher appel
+              .close() sur la variable locale VarIdx entre StartPC et EndPC
+
+  TODO 11 - DETECTEUR : BOUCLES INFINIES ET BLOCS INACCESSIBLES [A FAIRE]
+            Codes detectes : IL_INFINITE_LOOP, IL_INFINITE_RECURSIVE_LOOP,
+              DLS_DEAD_LOCAL_STORE, UC_USELESS_VOID_METHOD, USELESS_CODE
+            DetectInfiniteLoops(Method) : pour chaque arete arriere du CFG,
+              analyser les blocs composant la boucle, detecter l'absence de
+              branchement vers l'exterieur (goto/return/athrow)
+            DetectInfiniteRecursion(Method) : detecter appels recursifs dont
+              tous les chemins menent a un appel recursif sans condition d'arret
+            DetectDeadCode(Method) : signaler les blocs non-atteints apres
+              construction du CFG, avec le numero de ligne de la 1ere instruction
+            DetectDeadLocalStores(Method) : construire l'information de vivacite
+              des variables locales, detecter les stores dont la valeur n'est
+              jamais relue
+
+  TODO 12 - DETECTEUR : MAUVAISES PRATIQUES (BAD PRACTICES) [A FAIRE]
+            Codes detectes : BC_UNCONFIRMED_CAST, DE_MIGHT_IGNORE,
+              CN_IMPLEMENTS_CLONE_BUT_NOT_CLONEABLE,
+              EQ_DOESNT_OVERRIDE_EQUALS, FI_PUBLIC_SHOULD_BE_PROTECTED,
+              HE_HASHCODE_USE_OBJECT_EQUALS, RR_NOT_CHECKED, SR_NOT_CHECKED
+            DetectBadPractices(Method) : analyser invocations et checkcast,
+              verifier qu'un instanceof precede tout checkcast,
+              detecter blocs catch avec corps vide (DE_MIGHT_IGNORE),
+              detecter read()/skip() dont le resultat est pop
+            DetectBadClassPractices(ClassInfo) : verifier coherence
+              equals/hashCode, verifier Cloneable pour clone(),
+              verifier que finalize() n'est pas public,
+              detecter sous-classes ajoutant des champs sans equals()
+
+  TODO 13 - DETECTEUR : COMPARAISONS INCORRECTES D'OBJETS [A FAIRE]
+            Codes detectes : EC_UNRELATED_TYPES,
+              ES_COMPARING_STRINGS_WITH_EQ,
+              RC_REF_COMPARISON_BAD_PRACTICE, GC_UNRELATED_TYPES
+            DetectBadComparisons(Method) : detecter if_acmpeq/if_acmpne
+              comparant des String, detecter comparaisons == sur types wrapper
+              (Integer, Long, Double, etc.), analyser les types sur la pile
+              au moment de la comparaison, detecter Collection.get(cle de
+              mauvais type)
+            IsStringType(Desc) : True si descripteur = java/lang/String
+            IsWrapperType(ClassName) : True si type wrapper Java
+              (Integer, Long, Short, Byte, Character, Float, Double, Boolean)
+
+  TODO 14 - DETECTEUR : PROBLEMES DE PERFORMANCE [A FAIRE]
+            Codes detectes : SBSC_USE_STRINGBUFFER_CONCATENATION,
+              DMI_BLOCKING_METHODS_ON_URL, ITA_INEFFICIENT_TO_ARRAY,
+              URF_UNREAD_FIELD, WMI_WRONG_MAP_ITERATOR,
+              UPM_UNCALLED_PRIVATE_METHOD
+            DetectPerformanceIssues(Method) : detecter concat String dans
+              boucle sans StringBuilder, detecter entrySet() vs keySet() sur
+              Map, detecter URL.equals()/URL.hashCode() (DNS lookup),
+              detecter toArray(new T[0]) au lieu de toArray(new T[size])
+            DetectUnusedPrivateMembers(ClassInfo, Methods, Fields) : calculer
+              l'ensemble des membres prives, verifier qu'ils sont references
+              dans au moins une methode, signaler ceux jamais utilises
+
+  TODO 15 - DETECTEUR : VULNERABILITES DE SECURITE [A FAIRE]
+            Codes detectes : SQL_INJECTION, XSS_JSP_PRINT,
+              PT_ABSOLUTE_PATH_TRAVERSAL,
+              HRS_REQUEST_PARAMETER_TO_HTTP_HEADER,
+              WEAK_HASH_ALGORITHM, HARD_CODE_PASSWORD,
+              PREDICTABLE_RANDOM, CIPHER_INTEGRITY
+            DetectSecurityIssues(Method) : detecter Statement.execute avec
+              concatenation (SQL injection), detecter
+              MessageDigest.getInstance("MD5") / ("SHA-1"), detecter
+              constantes de chaine ressemblant a des mots de passe,
+              detecter new Random() au lieu de SecureRandom, detecter
+              Cipher.getInstance("AES") sans mode GCM, detecter
+              Runtime.exec() avec argument externe
+            IsSecuritySensitiveName(Name) : True si le nom suggere un secret
+              (password, token, key, pwd, passwd, secret, credential)
+
+  TODO 16 - DETECTEUR : PROBLEMES DE MULTI-THREADING [A FAIRE]
+            Codes detectes : DC_DOUBLECHECK, ESync_EMPTY_SYNC,
+              IS_FIELD_NOT_GUARDED, IS2_INCONSISTENT_SYNC,
+              JLM_JSR166_LOCK_MONITORENTER, NN_NAKED_NOTIFY,
+              NO_NOTIFY_NOT_NOTIFYALL, UG_SYNC_SET_UNSYNC_GET,
+              UW_UNCOND_WAIT, WA_AWAIT_NOT_IN_LOOP
+            DetectConcurrencyIssues(ClassInfo, Methods) : identifier champs
+              volatiles et synchronized, detecter acces a champs non-volatiles
+              dans methodes sync sans protection adequate, detecter double
+              test de null (double-checked locking), detecter blocs
+              synchronized{} vides, detecter wait() hors d'une boucle while,
+              detecter notify() sans mise a jour d'un etat partage
+
+  TODO 17 - DETECTEUR : EXCEPTIONS MASQUEES ET FLUX D'ERREUR [A FAIRE]
+            Codes detectes : THROWN_EXCEPTION_IGNORED, REC_CATCH_EXCEPTION,
+              RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE,
+              FINALLY_NULLIFIES_EXCEPTION,
+              OVERRIDDEN_EQUALS_NO_SUPER_CALL
+            DetectExceptionHandlingIssues(Method) : analyser blocs catch,
+              detecter catch(Exception)/catch(Throwable) trop larges,
+              detecter corps catch = pop+return ou pop seul (ignoree),
+              detecter instructions return dans blocs finally,
+              detecter verifications null apres dereferencement
+
+  TODO 18 - DETECTEUR : ERREURS LOGIQUES ET RETOURS INCORRECTS [A FAIRE]
+            Codes detectes : RV_RETURN_VALUE_IGNORED,
+              IM_MULTIPLYING_RESULT_OF_IREM,
+              INT_BAD_COMPARISON_WITH_NONNEG_VALUE, IC_INIT_CIRCULARITY,
+              MF_CLASS_MASKS_FIELD, SA_FIELD_SELF_ASSIGNMENT,
+              SA_LOCAL_SELF_ASSIGNMENT
+            DetectLogicErrors(Method) : detecter self-assignments (iload x
+              suivi de istore x, getfield f suivi de putfield f),
+              detecter comparaisons toujours vraies/fausses (int < 0 quand
+              toujours >=0), detecter multiplications pouvant deborder avant
+              cast long, detecter variables locales masquant des champs
+
+  TODO 19 - DETECTEUR : PROBLEMES D'INTERNATIONALISATION [A FAIRE]
+            Codes detectes : DM_DEFAULT_ENCODING, DM_STRING_CTOR,
+              DM_CONVERT_CASE, DM_BOXED_PRIMITIVE_FOR_COMPARE,
+              DM_FP_NUMBER_CTOR, DM_NUMBER_CTOR
+            DetectI18NIssues(Method) : detecter String.getBytes() sans
+              argument, detecter toUpperCase()/toLowerCase() sans Locale,
+              detecter new String(bytes) sans charset,
+              detecter constructeurs wrapper au lieu de valueOf() (new
+              Integer(n), new Double(d), etc.),
+              detecter String.format() sans Locale
+
+  TODO 20 - CALCUL DES SCORES ET NIVEAUX DE SEVERITE [A FAIRE]
+            BugRankScore : entier de 1 a 20 (1=critique, 20=informatif)
+            Priorite : HIGH (1-4), MEDIUM (5-9), LOW (10-14), INFO (15-20)
+            ComputeBugRank(Bug) : calculer rang selon type/categorie,
+              tenir compte du contexte (methode publique vs privee),
+              ajuster la priorite selon la confiance de l'analyse
+            SortBugsByPriority(Bugs, Count) : trier par severite decroissante,
+              a priorite egale trier par categorie puis par classe
+            ComputeClassScore(ClassName, Score) : calculer score global d'une
+              classe (somme ponderee des rangs, normalise 0-100)
+            PrintBugStats : afficher nb bugs par categorie et severite, bilan
+              general (classes, methodes, bugs, erreurs), classes les plus
+              problematiques
+
+  TODO 21 - GENERATION DU RAPPORT TEXTE [A FAIRE]
+            EmitTextReport(OutFile) : ouvrir fichier ou stdout si OutFile='',
+              ecrire en-tete (version SpotBugs, date), pour chaque bug trie
+              par priorite afficher ligne formatee et description, ecrire
+              pied de page avec statistiques
+            FormatBugLine(Bug) : produire ligne courte format :
+              "[H] NP_NULL_ON_SOME_PATH: com.example.Foo.bar(Foo.java:42)"
+            PrintBugDescription(BugType) : afficher description longue depuis
+              tableau statique de descriptions pre-enregistrees
+
+  TODO 22 - GENERATION DU RAPPORT XML (FORMAT SPOTBUGS) [A FAIRE]
+            Format XML compatible spotbugs-gui et jenkins-spotbugs-plugin :
+              <?xml version="1.0" encoding="UTF-8"?>
+              <BugCollection version="4.0.0" sequence="0" timestamp="..."
+                             analysisTimestamp="...">
+                <Project projectName="...">
+                  <SrcDir>src</SrcDir><ClassDir>classes</ClassDir>
+                </Project>
+                <BugInstance type="..." priority="2" rank="9"
+                             abbrev="NP" category="CORRECTNESS">
+                  <ShortMessage>...</ShortMessage>
+                  <LongMessage>...</LongMessage>
+                  <Class classname="com.example.Foo" primary="true"/>
+                  <Method classname="..." name="..." signature="..."
+                          isStatic="false" primary="true"/>
+                  <SourceLine classname="..." start="42" end="42"
+                              sourcefile="Foo.java"/>
+                </BugInstance>
+                <FindBugsSummary .../>
+                <ClassStats .../>
+              </BugCollection>
+            EmitXmlReport(OutFile) : ouvrir XML, ecrire prologue, Project,
+              BugInstance par bug, FindBugsSummary, ClassStats, fermer
+            XmlEscape(S) : echapper &, <, >, ", ' en entites XML
+
+  TODO 23 - GENERATION DU RAPPORT HTML [A FAIRE]
+            EmitHtmlReport(OutFile) : generer rapport HTML autonome avec CSS
+              integre, structure HTML (h1, div summary, table de bugs),
+              coloration des lignes par priorite (rouge/orange/jaune/vert),
+              lien vers documentation SpotBugs par type de bug, liste des
+              classes analysees avec score, ancres HTML par section
+
+  TODO 24 - FILTRAGE, EXCLUSIONS ET CONFIGURATION DES REGLES [A FAIRE]
+            Format fichier d'exclusion XML (compatible SpotBugs) :
+              <FindBugsFilter>
+                <Match>
+                  <Class name="com.example.Foo"/>
+                  <Bug code="NP,BC"/>
+                </Match>
+                <Match>
+                  <Bug pattern="NP_NULL_ON_SOME_PATH"/>
+                  <Class pattern=".*Test"/>
+                </Match>
+              </FindBugsFilter>
+            Structure TFilterRule (ClassPattern, MethodPattern, BugPattern,
+              Category, MinSeverity, IsExclude)
+            LoadFilterFile(FileName, IsExclude) : analyser XML de filtre
+              (mini-parseur), extraire regles Match avec Class/Bug/Method,
+              compiler les motifs en regles de filtrage
+            IsBugFiltered(Bug) : verifier regles d'exclusion et d'inclusion
+            MatchPattern(Pattern, Value) : correspondance avec jokers
+              (* = toute sequence, ? = un caractere)
+
+  TODO 25 - PROGRAMME PRINCIPAL, BALAYAGE RECURSIF ET EXEMPLES [A FAIRE]
+            ParseArgs : analyser ParamStr(1..ParamCount) :
+              fichier.class ou repertoire (cibles d'analyse)
+              -o <fichier>, -xml, -html, -textui,
+              -effort:min/default/max, -low/-medium/-high,
+              -exclude <f>, -include <f>, -recursive,
+              -maxRank <n> (1..20), -version, -help
+            ScanDirectory(DirName, Recursive) : lister .class dans DirName,
+              analyser chaque fichier, descendre si Recursive,
+              supporter aussi les .jar (ZIP) en decompressant en memoire
+            AnalyzeClass(FileName) : orchestrer analyse complete :
+              OpenClassFile, ParseConstantPool, ReadClassInfo, ReadFields,
+              ReadMethods, puis pour chaque methode DecodeInstructions +
+              BuildCFG + tous les detecteurs (TODOs 09 a 19), puis
+              DetectBadClassPractices + DetectConcurrencyIssues,
+              CloseClassFile
+            PrintHelp : afficher aide complete (usage, options, exemples)
+            Fichiers exemples SAMPLES\SPOTBUGS\ :
+              Foo.java/Foo.class   : dereferencement null simple
+              Bar.java/Bar.class   : fuite de ressource (InputStream)
+              Baz.java/Baz.class   : comparaison String par == au lieu equals
+              Loop.java/Loop.class : boucle potentiellement infinie
+              Sql.java/Sql.class   : injection SQL par concatenation
+              Hash.java/Hash.class : equals() sans hashCode()
+              Sync.java/Sync.class : bloc synchronized vide
+              Cast.java/Cast.class : cast sans instanceof
