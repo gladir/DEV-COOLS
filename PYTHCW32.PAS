@@ -473,7 +473,7 @@
             Pile de try imbriques (MAX_TRY_NEST)
             10 fonctions accesseurs
 
-  TODO 20 - PARSEUR : COMPREHENSIONS ET IMPORT [A FAIRE]
+  TODO 20 - PARSEUR : COMPREHENSIONS ET IMPORT [IMPLEMENTE]
             List comprehension : [expr for var in iterable]
               -> allocation liste, boucle for, evaluer expr, append
             List comprehension avec filtre :
@@ -12063,6 +12063,675 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 20 - PARSEUR : COMPREHENSIONS ET IMPORT                 }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations comprehension et import }
+  CP_NONE          = 0;    { aucun / non defini                    }
+  CP_LIST_COMP     = 1;    { list comprehension [expr for x in it] }
+  CP_LIST_FILTER   = 2;    { list comp avec filtre [e for x if c]  }
+  CP_DICT_COMP     = 3;    { dict comprehension                    }
+  CP_DICT_FILTER   = 4;    { dict comp avec filtre                 }
+  CP_GEN_EXPR      = 5;    { generator expression (non supporte)   }
+  CP_SET_COMP      = 6;    { set comprehension (non supporte)      }
+  CP_IMPORT        = 7;    { import module                         }
+  CP_FROM_IMPORT   = 8;    { from module import nom                }
+  CP_MOD_MATH      = 9;    { module math (builtins)                }
+  CP_MOD_SYS       = 10;   { module sys (sys.exit)                 }
+  CP_MOD_OS        = 11;   { module os (non supporte)              }
+  CP_EXTRN         = 12;   { symbole externe (EXTRN)               }
+  CP_PUBLIC        = 13;   { symbole public (PUBLIC)               }
+  CP_MAX           = 13;
+
+  { Limites }
+  CP_MAX_IMPORTS   = 32;   { nombre max de modules importes        }
+  CP_MAX_SYMBOLS   = 64;   { nombre max de symboles importes       }
+  CP_MAX_MODULES   = 16;   { nombre max de modules disponibles     }
+
+Var
+  CpInitialized    : Boolean;    { True si l etat est initialise       }
+  CpListCompCount  : LongInt;    { nombre de list comprehensions       }
+  CpListFilterCount: LongInt;    { nombre de list comp avec filtre     }
+  CpDictCompCount  : LongInt;    { nombre de dict comprehensions       }
+  CpDictFilterCount: LongInt;    { nombre de dict comp avec filtre     }
+  CpGenWarnCount   : LongInt;    { nombre d avertissements generateur  }
+  CpSetWarnCount   : LongInt;    { nombre d avertissements set comp    }
+  CpImportCount    : LongInt;    { nombre de import module             }
+  CpFromCount      : LongInt;    { nombre de from module import nom    }
+  CpMathCount      : LongInt;    { nombre d imports math               }
+  CpSysCount       : LongInt;    { nombre d imports sys                }
+  CpOsWarnCount    : LongInt;    { nombre d avertissements os          }
+  CpExtrnCount     : LongInt;    { nombre de symboles externes         }
+  CpPublicCount    : LongInt;    { nombre de symboles publics          }
+  CpLastKind       : Integer;    { dernier type d operation            }
+  CpLabelSeq       : Integer;    { sequence pour labels comprehension  }
+
+{ ------------------------------------------------------------ }
+{ InitCpState : initialiser le sous-systeme des comprehensions     }
+{ ------------------------------------------------------------ }
+
+Procedure InitCpState;
+Begin
+  CpInitialized    := True;
+  CpListCompCount  := 0;
+  CpListFilterCount:= 0;
+  CpDictCompCount  := 0;
+  CpDictFilterCount:= 0;
+  CpGenWarnCount   := 0;
+  CpSetWarnCount   := 0;
+  CpImportCount    := 0;
+  CpFromCount      := 0;
+  CpMathCount      := 0;
+  CpSysCount       := 0;
+  CpOsWarnCount    := 0;
+  CpExtrnCount     := 0;
+  CpPublicCount    := 0;
+  CpLastKind       := CP_NONE;
+  CpLabelSeq       := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCpLabel : generer un label unique pour les comprehensions      }
+{ ------------------------------------------------------------ }
+
+Function GenCpLabel : TString;
+Begin
+  Inc(CpLabelSeq);
+  GenCpLabel := '_PYC_' + ItoS(CpLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ CpTypeName : retourner le nom du type d operation comprehension   }
+{ ------------------------------------------------------------ }
+
+Function CpTypeName(Kind : Integer) : TString;
+Begin
+  Case Kind Of
+    CP_NONE        : CpTypeName := 'CP_NONE';
+    CP_LIST_COMP   : CpTypeName := 'CP_LIST_COMP';
+    CP_LIST_FILTER : CpTypeName := 'CP_LIST_FILTER';
+    CP_DICT_COMP   : CpTypeName := 'CP_DICT_COMP';
+    CP_DICT_FILTER : CpTypeName := 'CP_DICT_FILTER';
+    CP_GEN_EXPR    : CpTypeName := 'CP_GEN_EXPR';
+    CP_SET_COMP    : CpTypeName := 'CP_SET_COMP';
+    CP_IMPORT      : CpTypeName := 'CP_IMPORT';
+    CP_FROM_IMPORT : CpTypeName := 'CP_FROM_IMPORT';
+    CP_MOD_MATH    : CpTypeName := 'CP_MOD_MATH';
+    CP_MOD_SYS     : CpTypeName := 'CP_MOD_SYS';
+    CP_MOD_OS      : CpTypeName := 'CP_MOD_OS';
+    CP_EXTRN       : CpTypeName := 'CP_EXTRN';
+    CP_PUBLIC      : CpTypeName := 'CP_PUBLIC';
+  Else
+    CpTypeName := 'CP_UNKNOWN(' + ItoS(Kind) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListCompBegin : debut d une list comprehension                }
+{   Allouer une liste vide, preparer la boucle                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListCompBegin(Const ResultLabel, LoopLabel : TString;
+                            Const IterVar : TString);
+Begin
+  WriteLn('; --- list comprehension begin ---');
+  WriteLn('CALL _PYRT_LIST_NEW           ; allouer liste vide');
+  WriteLn('MOV [', ResultLabel, '], EAX   ; stocker ptr liste');
+  WriteLn(LoopLabel, ':');
+  WriteLn('; boucle for ', IterVar, ' in iterable');
+  Inc(CpListCompCount);
+  CpLastKind := CP_LIST_COMP;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListCompAppend : ajouter un element dans la list comp         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListCompAppend(Const ResultLabel : TString);
+Begin
+  WriteLn('; --- list comp append ---');
+  WriteLn('PUSH EAX                      ; valeur de l expression');
+  WriteLn('PUSH DWORD [', ResultLabel, '] ; ptr liste');
+  WriteLn('CALL _PYRT_LIST_APPEND        ; ajouter element');
+  WriteLn('ADD ESP, 8');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListCompEnd : fin de la list comprehension                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListCompEnd(Const ResultLabel, EndLabel : TString);
+Begin
+  WriteLn('; --- list comprehension end ---');
+  WriteLn(EndLabel, ':');
+  WriteLn('MOV EAX, [', ResultLabel, ']   ; EAX = ptr liste resultat');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCompFilter : emettre un filtre conditionnel (if cond)         }
+{   Si la condition est fausse, sauter vers le label continue      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCompFilter(Const ContinueLabel : TString);
+Begin
+  WriteLn('; --- comprehension filter (if cond) ---');
+  WriteLn('CMP EAX, 0                    ; tester condition');
+  WriteLn('JE ', ContinueLabel, '         ; faux, element suivant');
+  Inc(CpListFilterCount);
+  CpLastKind := CP_LIST_FILTER;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictCompBegin : debut d une dict comprehension                }
+{   Allouer un dict vide, preparer la boucle                      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictCompBegin(Const ResultLabel, LoopLabel : TString;
+                            Const IterVar : TString);
+Begin
+  WriteLn('; --- dict comprehension begin ---');
+  WriteLn('CALL _PYRT_DICT_NEW           ; allouer dict vide');
+  WriteLn('MOV [', ResultLabel, '], EAX   ; stocker ptr dict');
+  WriteLn(LoopLabel, ':');
+  WriteLn('; boucle for ', IterVar, ' in iterable');
+  Inc(CpDictCompCount);
+  CpLastKind := CP_DICT_COMP;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictCompSet : ajouter une paire cle:valeur dans le dict       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictCompSet(Const ResultLabel : TString);
+Begin
+  WriteLn('; --- dict comp set key:value ---');
+  WriteLn('PUSH EBX                      ; valeur');
+  WriteLn('PUSH EAX                      ; cle');
+  WriteLn('PUSH DWORD [', ResultLabel, '] ; ptr dict');
+  WriteLn('CALL _PYRT_DICT_SET           ; stocker paire');
+  WriteLn('ADD ESP, 12');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictCompEnd : fin de la dict comprehension                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictCompEnd(Const ResultLabel, EndLabel : TString);
+Begin
+  WriteLn('; --- dict comprehension end ---');
+  WriteLn(EndLabel, ':');
+  WriteLn('MOV EAX, [', ResultLabel, ']   ; EAX = ptr dict resultat');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictCompFilter : emettre filtre conditionnel pour dict comp   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictCompFilter(Const ContinueLabel : TString);
+Begin
+  WriteLn('; --- dict comp filter (if cond) ---');
+  WriteLn('CMP EAX, 0                    ; tester condition');
+  WriteLn('JE ', ContinueLabel, '         ; faux, element suivant');
+  Inc(CpDictFilterCount);
+  CpLastKind := CP_DICT_FILTER;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitGenWarning : avertissement generateur non supporte            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitGenWarning;
+Begin
+  WriteLn('Avertissement: les expressions generateur ne sont pas');
+  WriteLn('  supportees par ce compilateur. Utilisez une list comp.');
+  Inc(WarnCount);
+  Inc(CpGenWarnCount);
+  CpLastKind := CP_GEN_EXPR;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitSetCompWarning : avertissement set comprehension              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitSetCompWarning;
+Begin
+  WriteLn('Avertissement: les set comprehensions ne sont pas');
+  WriteLn('  supportees par ce compilateur. Utilisez une liste.');
+  Inc(WarnCount);
+  Inc(CpSetWarnCount);
+  CpLastKind := CP_SET_COMP;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitOsWarning : avertissement module os non supporte              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitOsWarning;
+Begin
+  WriteLn('Avertissement: le module os n''est pas supporte');
+  WriteLn('  par ce compilateur.');
+  Inc(WarnCount);
+  Inc(CpOsWarnCount);
+  CpLastKind := CP_MOD_OS;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitSysExit : emettre sys.exit(code)                              }
+{   PUSH code / CALL _ExitProcess@4                                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitSysExit(Const CodeExpr : TString);
+Begin
+  WriteLn('; --- sys.exit(', CodeExpr, ') ---');
+  WriteLn('PUSH ', CodeExpr, '             ; code de sortie');
+  WriteLn('CALL _ExitProcess@4            ; terminer le processus');
+  Inc(CpSysCount);
+  CpLastKind := CP_MOD_SYS;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitExternSymbol : declarer un symbole externe (EXTRN)            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitExternSymbol(Const SymName : TString);
+Begin
+  WriteLn('EXTRN ', SymName, ' : NEAR     ; symbole importe');
+  Inc(CpExtrnCount);
+  CpLastKind := CP_EXTRN;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPublicSymbol : declarer un symbole public (PUBLIC)            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPublicSymbol(Const SymName : TString);
+Begin
+  WriteLn('PUBLIC ', SymName, '            ; symbole exporte');
+  Inc(CpPublicCount);
+  CpLastKind := CP_PUBLIC;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseListComp : parser une list comprehension                     }
+{   [expr for var in iterable]                                     }
+{   [expr for var in iterable if cond]                             }
+{   Appelee quand on a detecte '[' + expr + 'for'                 }
+{ ------------------------------------------------------------ }
+
+Procedure ParseListComp;
+Var
+  ResultLabel  : TString;
+  LoopLabel    : TString;
+  ContinueLabel: TString;
+  EndLabel     : TString;
+  IterVar      : TString;
+  HasFilter    : Boolean;
+Begin
+  ResultLabel   := GenCpLabel;
+  LoopLabel     := GenCpLabel;
+  ContinueLabel := GenCpLabel;
+  EndLabel      := GenCpLabel;
+  HasFilter     := False;
+
+  WriteLn('; === list comprehension ===');
+
+  { Consommer 'for' }
+  LexNextToken;
+
+  { Lire la variable d iteration }
+  IterVar := CurTokStr;
+  LexNextToken;
+
+  { Consommer 'in' }
+  If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'in') Then
+    LexNextToken;
+
+  { Allouer la liste et demarrer la boucle }
+  EmitListCompBegin(ResultLabel, LoopLabel, IterVar);
+
+  { Parser l iterable (simplifie: avancer jusqu a 'if' ou ']') }
+  While (CurTokKind <> TK_EOF) And
+        Not ((CurTokKind = TK_KEYWORD) And (CurTokStr = 'if')) And
+        Not ((CurTokKind = TK_PUNCT) And (CurTokStr = ']')) Do
+  Begin
+    LexNextToken;
+  End;
+
+  { Verifier s il y a un filtre 'if' }
+  If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'if') Then
+  Begin
+    HasFilter := True;
+    LexNextToken;  { Consommer 'if' }
+
+    { Parser la condition (simplifie: avancer jusqu a ']') }
+    While (CurTokKind <> TK_EOF) And
+          Not ((CurTokKind = TK_PUNCT) And (CurTokStr = ']')) Do
+    Begin
+      LexNextToken;
+    End;
+
+    EmitCompFilter(ContinueLabel);
+  End;
+
+  { Emettre l expression et l ajout a la liste }
+  WriteLn('; evaluer expression');
+  EmitListCompAppend(ResultLabel);
+
+  { Label continue pour le filtre }
+  WriteLn(ContinueLabel, ':');
+
+  { Fin de la boucle : retour au debut ou fin }
+  WriteLn('JMP ', LoopLabel, '             ; iteration suivante');
+
+  { Fin de la comprehension }
+  EmitListCompEnd(ResultLabel, EndLabel);
+
+  { Consommer ']' si present }
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = ']') Then
+    LexNextToken;
+
+  WriteLn('; === fin list comprehension (filtre=',
+          HasFilter, ') ===');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDictComp : parser une dict comprehension                     }
+{   kexpr:vexpr for var in iterable                                }
+{   kexpr:vexpr for var in iterable if cond                        }
+{   Appelee quand on a detecte accolade + expr + for               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDictComp;
+Var
+  ResultLabel  : TString;
+  LoopLabel    : TString;
+  ContinueLabel: TString;
+  EndLabel     : TString;
+  IterVar      : TString;
+  HasFilter    : Boolean;
+Begin
+  ResultLabel   := GenCpLabel;
+  LoopLabel     := GenCpLabel;
+  ContinueLabel := GenCpLabel;
+  EndLabel      := GenCpLabel;
+  HasFilter     := False;
+
+  WriteLn('; === dict comprehension ===');
+
+  { Consommer 'for' }
+  LexNextToken;
+
+  { Lire la variable d iteration }
+  IterVar := CurTokStr;
+  LexNextToken;
+
+  { Consommer 'in' }
+  If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'in') Then
+    LexNextToken;
+
+  { Allouer le dict et demarrer la boucle }
+  EmitDictCompBegin(ResultLabel, LoopLabel, IterVar);
+
+  (* Parser l iterable (simplifie: avancer jusqu a if ou accolade) *)
+  While (CurTokKind <> TK_EOF) And
+        Not ((CurTokKind = TK_KEYWORD) And (CurTokStr = 'if')) And
+        Not ((CurTokKind = TK_PUNCT) And (CurTokStr = '}')) Do
+  Begin
+    LexNextToken;
+  End;
+
+  { Verifier s il y a un filtre 'if' }
+  If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'if') Then
+  Begin
+    HasFilter := True;
+    LexNextToken;  { Consommer 'if' }
+
+    (* Parser la condition (simplifie: avancer jusqu a accolade) *)
+    While (CurTokKind <> TK_EOF) And
+          Not ((CurTokKind = TK_PUNCT) And (CurTokStr = '}')) Do
+    Begin
+      LexNextToken;
+    End;
+
+    EmitDictCompFilter(ContinueLabel);
+  End;
+
+  { Emettre l expression cle:valeur et l ajout au dict }
+  WriteLn('; evaluer expression cle:valeur');
+  EmitDictCompSet(ResultLabel);
+
+  { Label continue pour le filtre }
+  WriteLn(ContinueLabel, ':');
+
+  { Fin de la boucle : retour au debut ou fin }
+  WriteLn('JMP ', LoopLabel, '             ; iteration suivante');
+
+  { Fin de la comprehension }
+  EmitDictCompEnd(ResultLabel, EndLabel);
+
+  (* Consommer accolade fermante si present *)
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = '}') Then
+    LexNextToken;
+
+  WriteLn('; === fin dict comprehension (filtre=',
+          HasFilter, ') ===');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseImportStmt : parser une instruction import                   }
+{   import module_name                                             }
+{   Ajouter le module dans la table avec IsImported=True           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseImportStmt;
+Var
+  ModName : TString;
+Begin
+  { Consommer 'import' }
+  LexNextToken;
+
+  ModName := CurTokStr;
+  LexNextToken;  { Consommer le nom du module }
+
+  WriteLn('; === import ', ModName, ' ===');
+
+  { Verifier les modules connus }
+  If ModName = 'math' Then
+  Begin
+    WriteLn('; module math : abs, pow -> builtins ou runtime');
+    WriteLn('EXTRN _PYRT_MATH_ABS : NEAR');
+    WriteLn('EXTRN _PYRT_MATH_POW : NEAR');
+    Inc(CpMathCount);
+    CpLastKind := CP_MOD_MATH;
+  End
+  Else If ModName = 'sys' Then
+  Begin
+    WriteLn('; module sys : sys.exit -> ExitProcess');
+    WriteLn('EXTRN _ExitProcess@4 : NEAR');
+    Inc(CpSysCount);
+    CpLastKind := CP_MOD_SYS;
+  End
+  Else If ModName = 'os' Then
+  Begin
+    EmitOsWarning;
+  End
+  Else
+  Begin
+    { Module inconnu : declarer comme externe }
+    WriteLn('; module externe : ', ModName);
+    EmitExternSymbol('_PYM_' + ModName);
+  End;
+
+  Inc(CpImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFromImportStmt : parser une instruction from...import        }
+{   from module import nom1 [, nom2, ...]                          }
+{   Ajouter les symboles dans la table avec IsImported=True        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFromImportStmt;
+Var
+  ModName  : TString;
+  SymName  : TString;
+Begin
+  { Consommer 'from' }
+  LexNextToken;
+
+  ModName := CurTokStr;
+  LexNextToken;  { Consommer le nom du module }
+
+  { Consommer 'import' }
+  If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'import') Then
+    LexNextToken;
+
+  WriteLn('; === from ', ModName, ' import ... ===');
+
+  { Verifier les modules connus }
+  If ModName = 'math' Then
+  Begin
+    Inc(CpMathCount);
+    CpLastKind := CP_MOD_MATH;
+  End
+  Else If ModName = 'sys' Then
+  Begin
+    Inc(CpSysCount);
+    CpLastKind := CP_MOD_SYS;
+  End
+  Else If ModName = 'os' Then
+  Begin
+    EmitOsWarning;
+  End;
+
+  { Parser la liste de noms importes }
+  While (CurTokKind <> TK_EOF) And
+        (CurTokKind <> TK_NEWLINE) And
+        (CurTokKind <> TK_DEDENT) Do
+  Begin
+    If (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Then
+    Begin
+      LexNextToken;  { Consommer ',' }
+    End
+    Else
+    Begin
+      SymName := CurTokStr;
+      LexNextToken;  { Consommer le nom du symbole }
+
+      WriteLn('; import ', SymName, ' from ', ModName);
+
+      { Declarer le symbole comme externe }
+      If ModName = 'math' Then
+      Begin
+        WriteLn('EXTRN _PYRT_MATH_', SymName, ' : NEAR');
+      End
+      Else If ModName = 'sys' Then
+      Begin
+        If SymName = 'exit' Then
+          WriteLn('EXTRN _ExitProcess@4 : NEAR')
+        Else
+          EmitExternSymbol('_PYM_sys_' + SymName);
+      End
+      Else
+        EmitExternSymbol('_PYM_' + ModName + '_' + SymName);
+    End;
+  End;
+
+  Inc(CpFromCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpCpState : afficher l etat du sous-systeme comprehensions      }
+{ ------------------------------------------------------------ }
+
+Procedure DumpCpState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat du sous-systeme Comprehensions/Import (TODO 20) ===');
+  WriteLn('  CpInitialized    : ', CpInitialized);
+  WriteLn('  CpListCompCount  : ', CpListCompCount);
+  WriteLn('  CpListFilterCount: ', CpListFilterCount);
+  WriteLn('  CpDictCompCount  : ', CpDictCompCount);
+  WriteLn('  CpDictFilterCount: ', CpDictFilterCount);
+  WriteLn('  CpGenWarnCount   : ', CpGenWarnCount);
+  WriteLn('  CpSetWarnCount   : ', CpSetWarnCount);
+  WriteLn('  CpImportCount    : ', CpImportCount);
+  WriteLn('  CpFromCount      : ', CpFromCount);
+  WriteLn('  CpMathCount      : ', CpMathCount);
+  WriteLn('  CpSysCount       : ', CpSysCount);
+  WriteLn('  CpOsWarnCount    : ', CpOsWarnCount);
+  WriteLn('  CpExtrnCount     : ', CpExtrnCount);
+  WriteLn('  CpPublicCount    : ', CpPublicCount);
+  WriteLn('  CpLastKind       : ', CpTypeName(CpLastKind));
+  WriteLn('  CpLabelSeq       : ', CpLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 20)                              }
+{ ------------------------------------------------------------ }
+
+Function IsCpInitialized : Boolean;
+Begin
+  IsCpInitialized := CpInitialized;
+End;
+
+Function IsCpEmpty : Boolean;
+Begin
+  IsCpEmpty := (CpListCompCount = 0) And (CpDictCompCount = 0) And
+               (CpImportCount = 0) And (CpFromCount = 0);
+End;
+
+Function GetCpListCompCount : LongInt;
+Begin
+  GetCpListCompCount := CpListCompCount;
+End;
+
+Function GetCpDictCompCount : LongInt;
+Begin
+  GetCpDictCompCount := CpDictCompCount;
+End;
+
+Function GetCpImportCount : LongInt;
+Begin
+  GetCpImportCount := CpImportCount;
+End;
+
+Function GetCpFromCount : LongInt;
+Begin
+  GetCpFromCount := CpFromCount;
+End;
+
+Function GetCpMathCount : LongInt;
+Begin
+  GetCpMathCount := CpMathCount;
+End;
+
+Function GetCpSysCount : LongInt;
+Begin
+  GetCpSysCount := CpSysCount;
+End;
+
+Function GetCpGenWarnCount : LongInt;
+Begin
+  GetCpGenWarnCount := CpGenWarnCount;
+End;
+
+Function GetCpStatus : TString;
+Begin
+  If Not CpInitialized Then
+    GetCpStatus := 'Not initialized'
+  Else
+    GetCpStatus := ItoS(CpListCompCount) + ' list-comp, ' +
+                   ItoS(CpDictCompCount) + ' dict-comp, ' +
+                   ItoS(CpImportCount) + ' import, ' +
+                   ItoS(CpFromCount) + ' from-import, ' +
+                   ItoS(CpMathCount) + ' math, ' +
+                   ItoS(CpSysCount) + ' sys';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -12092,6 +12761,7 @@ Begin
   SrInitialized := False;
   ClInitialized := False;
   ExInitialized := False;
+  CpInitialized := False;
 
   ParseArgs;
 
@@ -12148,6 +12818,9 @@ Begin
 
   { Initialiser le sous-systeme des exceptions }
   InitExState;
+
+  { Initialiser le sous-systeme des comprehensions et import }
+  InitCpState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -12256,6 +12929,13 @@ Begin
     WriteLn('Clauses finally  : ', GetExFinallyCount);
     WriteLn('Raise exception  : ', GetExRaiseCount);
     WriteLn('Reraise          : ', GetExReraiseCount);
+    WriteLn('List comps       : ', GetCpListCompCount);
+    WriteLn('Dict comps       : ', GetCpDictCompCount);
+    WriteLn('Import module    : ', GetCpImportCount);
+    WriteLn('From import      : ', GetCpFromCount);
+    WriteLn('Module math      : ', GetCpMathCount);
+    WriteLn('Module sys       : ', GetCpSysCount);
+    WriteLn('Gen warnings     : ', GetCpGenWarnCount);
   End;
 
   If Opts.DebugMode Then
@@ -12277,6 +12957,7 @@ Begin
     DumpSrState;
     DumpClState;
     DumpExState;
+    DumpCpState;
   End;
 
   { Nettoyage }

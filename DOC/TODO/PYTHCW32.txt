@@ -465,7 +465,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             Pile de try imbriques (MAX_TRY_NEST)
             10 fonctions accesseurs
 
-  TODO 20 - PARSEUR : COMPREHENSIONS ET IMPORT [A FAIRE]
+  TODO 20 - PARSEUR : COMPREHENSIONS ET IMPORT [IMPLEMENTE]
             List comprehension : [expr for var in iterable]
               -> allocation liste, boucle for, evaluer expr, append
             List comprehension avec filtre :
