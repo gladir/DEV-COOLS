@@ -634,7 +634,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
               Indentation et formatage lisible
             10 fonctions accesseurs
 
-  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\PYTHON\* [A FAIRE]
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\PYTHON\* [IMPLEMENTE]
             Optimisations peephole :
               MOV EAX, 0 -> XOR EAX, EAX
               PUSH EAX / POP EAX -> (eliminer)

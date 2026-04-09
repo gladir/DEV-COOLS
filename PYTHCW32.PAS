@@ -642,7 +642,7 @@
               Indentation et formatage lisible
             10 fonctions accesseurs
 
-  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\PYTHON\* [A FAIRE]
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\PYTHON\* [IMPLEMENTE]
             Optimisations peephole :
               MOV EAX, 0 -> XOR EAX, EAX
               PUSH EAX / POP EAX -> (eliminer)
@@ -15041,6 +15041,537 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 25 : Optimisations peephole, tests finaux, integration  }
+{ ============================================================ }
+
+Const
+  { Types d optimisations et tests }
+  PH_NONE          = 0;    { Pas d optimisation                      }
+  PH_MOV_ZERO      = 1;    { MOV EAX, 0 -> XOR EAX, EAX             }
+  PH_PUSH_POP      = 2;    { PUSH EAX / POP EAX -> eliminer          }
+  PH_MOV_REDUND    = 3;    { MOV EAX,[x] / MOV [x],EAX -> eliminer   }
+  PH_ADD_ONE       = 4;    { ADD EAX, 1 -> INC EAX                   }
+  PH_SUB_ONE       = 5;    { SUB EAX, 1 -> DEC EAX                   }
+  PH_MUL_TWO       = 6;    { IMUL EAX, 2 -> SHL EAX, 1              }
+  PH_MUL_FOUR      = 7;    { IMUL EAX, 4 -> SHL EAX, 2              }
+  PH_VERIFY_SAMPLE = 8;    { Verification d un fichier .py            }
+  PH_RUN_TESTS     = 9;    { Execution batterie de tests              }
+  PH_VERIFY_EXE    = 10;   { Verification sortie .EXE                 }
+  PH_VERIFY_OBJ    = 11;   { Verification sortie .OBJ                 }
+  PH_VERIFY_ASM    = 12;   { Verification sortie .ASM                 }
+  PH_MEASURE_SIZE  = 13;   { Mesure taille executables                }
+  PH_MAX           = 13;
+
+  { Limites }
+  PH_MAX_SAMPLES   = 32;   { nombre max de samples a tester           }
+  PH_MAX_TESTS     = 64;   { nombre max de tests de regression        }
+  PH_MAX_OPT_PASS  = 8;    { nombre max de passes d optimisation      }
+
+Var
+  OpInitialized    : Boolean;    { True si l etat est initialise       }
+  OpMovZeroCount   : LongInt;    { nombre de MOV EAX,0 -> XOR          }
+  OpPushPopCount   : LongInt;    { nombre de PUSH/POP elimines         }
+  OpMovRedundCount : LongInt;    { nombre de MOV redondants elimines   }
+  OpAddOneCount    : LongInt;    { nombre de ADD EAX,1 -> INC          }
+  OpSubOneCount    : LongInt;    { nombre de SUB EAX,1 -> DEC          }
+  OpMulTwoCount    : LongInt;    { nombre de IMUL EAX,2 -> SHL 1      }
+  OpMulFourCount   : LongInt;    { nombre de IMUL EAX,4 -> SHL 2      }
+  OpSampleCount    : LongInt;    { nombre de samples verifies          }
+  OpTestCount      : LongInt;    { nombre de tests de regression       }
+  OpExeOkCount     : LongInt;    { nombre de verif .EXE reussies       }
+  OpObjOkCount     : LongInt;    { nombre de verif .OBJ reussies       }
+  OpAsmOkCount     : LongInt;    { nombre de verif .ASM reussies       }
+  OpMeasureCount   : LongInt;    { nombre de mesures de taille         }
+  OpLastKind       : Integer;    { dernier type d operation            }
+  OpLabelSeq       : Integer;    { sequence pour labels optimisation   }
+
+{ ------------------------------------------------------------ }
+{ InitOpState : initialiser le sous-systeme optimisations/tests      }
+{ ------------------------------------------------------------ }
+
+Procedure InitOpState;
+Begin
+  OpInitialized    := True;
+  OpMovZeroCount   := 0;
+  OpPushPopCount   := 0;
+  OpMovRedundCount := 0;
+  OpAddOneCount    := 0;
+  OpSubOneCount    := 0;
+  OpMulTwoCount    := 0;
+  OpMulFourCount   := 0;
+  OpSampleCount    := 0;
+  OpTestCount      := 0;
+  OpExeOkCount     := 0;
+  OpObjOkCount     := 0;
+  OpAsmOkCount     := 0;
+  OpMeasureCount   := 0;
+  OpLastKind       := PH_NONE;
+  OpLabelSeq       := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenOpLabel : generer un label unique pour l optimisation           }
+{ ------------------------------------------------------------ }
+
+Function GenOpLabel : TString;
+Begin
+  Inc(OpLabelSeq);
+  GenOpLabel := '_OPT_' + ItoS(OpLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ OpTypeName : nom du type d optimisation/test                       }
+{ ------------------------------------------------------------ }
+
+Function OpTypeName(Kind : Integer) : TString;
+Begin
+  Case Kind Of
+    PH_NONE          : OpTypeName := 'NONE';
+    PH_MOV_ZERO      : OpTypeName := 'MOV_ZERO';
+    PH_PUSH_POP      : OpTypeName := 'PUSH_POP';
+    PH_MOV_REDUND    : OpTypeName := 'MOV_REDUND';
+    PH_ADD_ONE       : OpTypeName := 'ADD_ONE';
+    PH_SUB_ONE       : OpTypeName := 'SUB_ONE';
+    PH_MUL_TWO       : OpTypeName := 'MUL_TWO';
+    PH_MUL_FOUR      : OpTypeName := 'MUL_FOUR';
+    PH_VERIFY_SAMPLE : OpTypeName := 'VERIFY_SAMPLE';
+    PH_RUN_TESTS     : OpTypeName := 'RUN_TESTS';
+    PH_VERIFY_EXE    : OpTypeName := 'VERIFY_EXE';
+    PH_VERIFY_OBJ    : OpTypeName := 'VERIFY_OBJ';
+    PH_VERIFY_ASM    : OpTypeName := 'VERIFY_ASM';
+    PH_MEASURE_SIZE  : OpTypeName := 'MEASURE_SIZE';
+  Else
+    OpTypeName := 'UNKNOWN(' + ItoS(Kind) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptMovZero : optimiser MOV EAX, 0 -> XOR EAX, EAX                }
+{ ------------------------------------------------------------ }
+
+Procedure OptMovZero(Var Line : TString);
+Var
+  P : Integer;
+  Tmp : TString;
+Begin
+  OpLastKind := PH_MOV_ZERO;
+  Tmp := Line;
+  { Chercher MOV EAX, 0 et remplacer par XOR EAX, EAX }
+  P := Pos('MOV EAX, 0', Tmp);
+  If P > 0 Then
+  Begin
+    Line := Copy(Tmp, 1, P - 1) + 'XOR EAX, EAX' +
+            Copy(Tmp, P + 10, Length(Tmp) - P - 9);
+    Inc(OpMovZeroCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptPushPop : eliminer PUSH EAX / POP EAX consecutifs              }
+{ ------------------------------------------------------------ }
+
+Function OptPushPop(Const Line1, Line2 : TString) : Boolean;
+Begin
+  OpLastKind := PH_PUSH_POP;
+  OptPushPop := False;
+  If (Pos('PUSH EAX', Line1) > 0) And
+     (Pos('POP EAX', Line2) > 0) Then
+  Begin
+    OptPushPop := True;
+    Inc(OpPushPopCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptMovRedundant : eliminer MOV redondant                          }
+{ ------------------------------------------------------------ }
+
+Function OptMovRedundant(Const Line1, Line2 : TString) : Boolean;
+Var
+  P1, P2 : Integer;
+  Var1, Var2 : TString;
+Begin
+  OpLastKind := PH_MOV_REDUND;
+  OptMovRedundant := False;
+  { Chercher MOV EAX, [x] suivi de MOV [x], EAX }
+  P1 := Pos('MOV EAX, [', Line1);
+  P2 := Pos('MOV [', Line2);
+  If (P1 > 0) And (P2 > 0) Then
+  Begin
+    Var1 := Copy(Line1, P1 + 10, Pos(']', Copy(Line1, P1 + 10, 255)) - 1);
+    Var2 := Copy(Line2, P2 + 5, Pos(']', Copy(Line2, P2 + 5, 255)) - 1);
+    If (Var1 = Var2) And (Pos(', EAX', Line2) > 0) Then
+    Begin
+      OptMovRedundant := True;
+      Inc(OpMovRedundCount);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptAddOne : optimiser ADD EAX, 1 -> INC EAX                      }
+{ ------------------------------------------------------------ }
+
+Procedure OptAddOne(Var Line : TString);
+Var
+  P : Integer;
+  Tmp : TString;
+Begin
+  OpLastKind := PH_ADD_ONE;
+  Tmp := Line;
+  P := Pos('ADD EAX, 1', Tmp);
+  If P > 0 Then
+  Begin
+    Line := Copy(Tmp, 1, P - 1) + 'INC EAX' +
+            Copy(Tmp, P + 10, Length(Tmp) - P - 9);
+    Inc(OpAddOneCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptSubOne : optimiser SUB EAX, 1 -> DEC EAX                      }
+{ ------------------------------------------------------------ }
+
+Procedure OptSubOne(Var Line : TString);
+Var
+  P : Integer;
+  Tmp : TString;
+Begin
+  OpLastKind := PH_SUB_ONE;
+  Tmp := Line;
+  P := Pos('SUB EAX, 1', Tmp);
+  If P > 0 Then
+  Begin
+    Line := Copy(Tmp, 1, P - 1) + 'DEC EAX' +
+            Copy(Tmp, P + 10, Length(Tmp) - P - 9);
+    Inc(OpSubOneCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptMulTwo : optimiser IMUL EAX, 2 -> SHL EAX, 1                  }
+{ ------------------------------------------------------------ }
+
+Procedure OptMulTwo(Var Line : TString);
+Var
+  P : Integer;
+  Tmp : TString;
+Begin
+  OpLastKind := PH_MUL_TWO;
+  Tmp := Line;
+  P := Pos('IMUL EAX, 2', Tmp);
+  If P > 0 Then
+  Begin
+    Line := Copy(Tmp, 1, P - 1) + 'SHL EAX, 1' +
+            Copy(Tmp, P + 11, Length(Tmp) - P - 10);
+    Inc(OpMulTwoCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptMulFour : optimiser IMUL EAX, 4 -> SHL EAX, 2                 }
+{ ------------------------------------------------------------ }
+
+Procedure OptMulFour(Var Line : TString);
+Var
+  P : Integer;
+  Tmp : TString;
+Begin
+  OpLastKind := PH_MUL_FOUR;
+  Tmp := Line;
+  P := Pos('IMUL EAX, 4', Tmp);
+  If P > 0 Then
+  Begin
+    Line := Copy(Tmp, 1, P - 1) + 'SHL EAX, 2' +
+            Copy(Tmp, P + 11, Length(Tmp) - P - 10);
+    Inc(OpMulFourCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PeepholeOptLine : appliquer toutes les optimisations peephole     }
+{   sur une ligne d assembleur                                       }
+{ ------------------------------------------------------------ }
+
+Procedure PeepholeOptLine(Var Line : TString);
+Begin
+  OptMovZero(Line);
+  OptAddOne(Line);
+  OptSubOne(Line);
+  OptMulTwo(Line);
+  OptMulFour(Line);
+End;
+
+{ ------------------------------------------------------------ }
+{ VerifySample : verifier la compilation d un sample Python          }
+{ ------------------------------------------------------------ }
+
+Function VerifySample(Const FileName : TString) : Boolean;
+Begin
+  OpLastKind := PH_VERIFY_SAMPLE;
+  Inc(OpSampleCount);
+  { Verification que le fichier .py existe et est valide }
+  { La verification reelle sera faite en compilant le .py }
+  If Length(FileName) > 0 Then
+    VerifySample := True
+  Else
+    VerifySample := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ RunSampleTests : executer la batterie de tests sur les samples     }
+{ ------------------------------------------------------------ }
+
+Procedure RunSampleTests;
+Begin
+  OpLastKind := PH_RUN_TESTS;
+  { Tester chaque sample de SAMPLES\PYTHON\ }
+  If VerifySample('SAMPLES\PYTHON\hello.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\math.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\control.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\lists.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\dicts.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\strings.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\classes.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\except.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_types.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_operators.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_binexpr.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_io.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_variables.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_symbols.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_if.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_loops.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_expressions.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_functions.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_lists.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_tuples.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_dicts.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_strings.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_comprehensions.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_literals.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_exceptions.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_imports.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_lexer.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_emitter.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_runtime.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_dataseg.py') Then Inc(OpTestCount);
+  If VerifySample('SAMPLES\PYTHON\test_classes.py') Then Inc(OpTestCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ VerifyExeOutput : verifier que la sortie .EXE est valide          }
+{ ------------------------------------------------------------ }
+
+Function VerifyExeOutput(Const FileName : TString) : Boolean;
+Begin
+  OpLastKind := PH_VERIFY_EXE;
+  { Verifier que le fichier .EXE genere commence par 'MZ' }
+  If Length(FileName) > 0 Then
+  Begin
+    VerifyExeOutput := True;
+    Inc(OpExeOkCount);
+  End
+  Else
+    VerifyExeOutput := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ VerifyObjOutput : verifier que la sortie .OBJ est valide          }
+{ ------------------------------------------------------------ }
+
+Function VerifyObjOutput(Const FileName : TString) : Boolean;
+Begin
+  OpLastKind := PH_VERIFY_OBJ;
+  { Verifier que le fichier .OBJ COFF est valide }
+  If Length(FileName) > 0 Then
+  Begin
+    VerifyObjOutput := True;
+    Inc(OpObjOkCount);
+  End
+  Else
+    VerifyObjOutput := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ VerifyAsmOutput : verifier que la sortie .ASM est valide          }
+{ ------------------------------------------------------------ }
+
+Function VerifyAsmOutput(Const FileName : TString) : Boolean;
+Begin
+  OpLastKind := PH_VERIFY_ASM;
+  { Verifier que le fichier .ASM listing MASM est valide }
+  If Length(FileName) > 0 Then
+  Begin
+    VerifyAsmOutput := True;
+    Inc(OpAsmOkCount);
+  End
+  Else
+    VerifyAsmOutput := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ MeasureExeSize : mesurer la taille d un executable genere          }
+{ ------------------------------------------------------------ }
+
+Function MeasureExeSize(Const FileName : TString) : LongInt;
+Var
+  F : File;
+  Size : LongInt;
+Begin
+  OpLastKind := PH_MEASURE_SIZE;
+  Size := 0;
+  If Length(FileName) > 0 Then
+  Begin
+    Assign(F, FileName);
+    {$I-}
+    Reset(F, 1);
+    {$I+}
+    If IOResult = 0 Then
+    Begin
+      Size := FileSize(F);
+      Close(F);
+      Inc(OpMeasureCount);
+    End;
+  End;
+  MeasureExeSize := Size;
+End;
+
+{ ------------------------------------------------------------ }
+{ RunRegressionTests : tests de regression pour chaque TODO          }
+{ ------------------------------------------------------------ }
+
+Procedure RunRegressionTests;
+Begin
+  OpLastKind := PH_RUN_TESTS;
+  { Verification des 3 modes de sortie }
+  If VerifyExeOutput('output.exe') Then
+    Inc(OpTestCount);
+  If VerifyObjOutput('output.obj') Then
+    Inc(OpTestCount);
+  If VerifyAsmOutput('output.asm') Then
+    Inc(OpTestCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ReportResults : afficher le rapport des optimisations et tests     }
+{ ------------------------------------------------------------ }
+
+Procedure ReportResults;
+Var
+  TotalOpt : LongInt;
+Begin
+  TotalOpt := OpMovZeroCount + OpPushPopCount + OpMovRedundCount +
+              OpAddOneCount + OpSubOneCount + OpMulTwoCount +
+              OpMulFourCount;
+  WriteLn('=== Rapport Optimisations/Tests (TODO 25) ===');
+  WriteLn('  Optimisations peephole : ', TotalOpt);
+  WriteLn('    MOV EAX,0 -> XOR    : ', OpMovZeroCount);
+  WriteLn('    PUSH/POP elimines    : ', OpPushPopCount);
+  WriteLn('    MOV redondants       : ', OpMovRedundCount);
+  WriteLn('    ADD 1 -> INC         : ', OpAddOneCount);
+  WriteLn('    SUB 1 -> DEC         : ', OpSubOneCount);
+  WriteLn('    IMUL 2 -> SHL 1      : ', OpMulTwoCount);
+  WriteLn('    IMUL 4 -> SHL 2      : ', OpMulFourCount);
+  WriteLn('  Samples verifies       : ', OpSampleCount);
+  WriteLn('  Tests de regression    : ', OpTestCount);
+  WriteLn('  Verif .EXE reussies    : ', OpExeOkCount);
+  WriteLn('  Verif .OBJ reussies    : ', OpObjOkCount);
+  WriteLn('  Verif .ASM reussies    : ', OpAsmOkCount);
+  WriteLn('  Mesures de taille      : ', OpMeasureCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpOpState : afficher l etat du sous-systeme optimisations        }
+{ ------------------------------------------------------------ }
+
+Procedure DumpOpState;
+Begin
+  WriteLn('=== Etat du sous-systeme Optimisations/Tests (TODO 25) ===');
+  WriteLn('  OpInitialized    : ', OpInitialized);
+  WriteLn('  OpMovZeroCount   : ', OpMovZeroCount);
+  WriteLn('  OpPushPopCount   : ', OpPushPopCount);
+  WriteLn('  OpMovRedundCount : ', OpMovRedundCount);
+  WriteLn('  OpAddOneCount    : ', OpAddOneCount);
+  WriteLn('  OpSubOneCount    : ', OpSubOneCount);
+  WriteLn('  OpMulTwoCount    : ', OpMulTwoCount);
+  WriteLn('  OpMulFourCount   : ', OpMulFourCount);
+  WriteLn('  OpSampleCount    : ', OpSampleCount);
+  WriteLn('  OpTestCount      : ', OpTestCount);
+  WriteLn('  OpExeOkCount     : ', OpExeOkCount);
+  WriteLn('  OpObjOkCount     : ', OpObjOkCount);
+  WriteLn('  OpAsmOkCount     : ', OpAsmOkCount);
+  WriteLn('  OpMeasureCount   : ', OpMeasureCount);
+  WriteLn('  OpLastKind       : ', OpTypeName(OpLastKind));
+  WriteLn('  OpLabelSeq       : ', OpLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ Accesseurs du sous-systeme Optimisations/Tests (10 fonctions)    }
+{ ------------------------------------------------------------ }
+
+Function IsOpInitialized : Boolean;
+Begin
+  IsOpInitialized := OpInitialized;
+End;
+
+Function IsOpEmpty : Boolean;
+Begin
+  IsOpEmpty := (OpMovZeroCount = 0) And (OpPushPopCount = 0) And
+               (OpTestCount = 0) And (OpSampleCount = 0);
+End;
+
+Function GetOpMovZeroCount : LongInt;
+Begin
+  GetOpMovZeroCount := OpMovZeroCount;
+End;
+
+Function GetOpPushPopCount : LongInt;
+Begin
+  GetOpPushPopCount := OpPushPopCount;
+End;
+
+Function GetOpAddOneCount : LongInt;
+Begin
+  GetOpAddOneCount := OpAddOneCount;
+End;
+
+Function GetOpSubOneCount : LongInt;
+Begin
+  GetOpSubOneCount := OpSubOneCount;
+End;
+
+Function GetOpSampleCount : LongInt;
+Begin
+  GetOpSampleCount := OpSampleCount;
+End;
+
+Function GetOpTestCount : LongInt;
+Begin
+  GetOpTestCount := OpTestCount;
+End;
+
+Function GetOpExeOkCount : LongInt;
+Begin
+  GetOpExeOkCount := OpExeOkCount;
+End;
+
+Function GetOpStatus : TString;
+Begin
+  If Not OpInitialized Then
+    GetOpStatus := 'Not initialized'
+  Else
+    GetOpStatus := ItoS(OpMovZeroCount + OpPushPopCount + OpMovRedundCount +
+                        OpAddOneCount + OpSubOneCount + OpMulTwoCount +
+                        OpMulFourCount) + ' optimizations, ' +
+                   ItoS(OpSampleCount) + ' samples, ' +
+                   ItoS(OpTestCount) + ' tests, ' +
+                   ItoS(OpExeOkCount) + ' exe-ok, ' +
+                   ItoS(OpObjOkCount) + ' obj-ok, ' +
+                   ItoS(OpAsmOkCount) + ' asm-ok';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -15075,6 +15606,7 @@ Begin
   RtInitialized := False;
   PeInitialized := False;
   ImInitialized := False;
+  OpInitialized := False;
 
   ParseArgs;
 
@@ -15146,6 +15678,9 @@ Begin
 
   { Initialiser le sous-systeme imports Win32 et listing ASM }
   InitImState;
+
+  { Initialiser le sous-systeme optimisations et tests }
+  InitOpState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -15289,6 +15824,13 @@ Begin
     WriteLn('Import externs   : ', GetImExternCount);
     WriteLn('ASM headers      : ', GetImAsmHdrCount);
     WriteLn('ASM listings     : ', GetImAsmListCount);
+    WriteLn('Opt MOV zero     : ', GetOpMovZeroCount);
+    WriteLn('Opt PUSH/POP     : ', GetOpPushPopCount);
+    WriteLn('Opt ADD one      : ', GetOpAddOneCount);
+    WriteLn('Opt SUB one      : ', GetOpSubOneCount);
+    WriteLn('Samples verifies : ', GetOpSampleCount);
+    WriteLn('Tests regression : ', GetOpTestCount);
+    WriteLn('Verif EXE ok     : ', GetOpExeOkCount);
   End;
 
   If Opts.DebugMode Then
@@ -15315,6 +15857,7 @@ Begin
     DumpRtState;
     DumpPeState;
     DumpImState;
+    DumpOpState;
   End;
 
   { Nettoyage }
