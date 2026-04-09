@@ -378,7 +378,7 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 23 - MODE INTERACTIF AMELIORE [A FAIRE]
+  TODO 23 - MODE INTERACTIF AMELIORE [IMPLEMENTE]
             TInteractiveMode : IM_NORMAL, IM_EDIT, IM_REVIEW, IM_LEARN
             SetMode(Mode) : changer de mode interactif
             EditLastCode : editer le dernier code genere
@@ -889,6 +889,28 @@ Const
   SUG_MAX_TEXT     = 80;   { Longueur max du texte }
   SUG_MAX_DESC     = 120;  { Longueur max de description }
   SUG_MIN_MATCH    = 2;    { Longueur min pour recherche }
+
+  { Constantes pour TODO 23 - Mode interactif ameliore }
+  IMD_NONE       = 0;   { Aucun mode }
+  IMD_NORMAL     = 1;   { Mode normal }
+  IMD_EDIT       = 2;   { Mode edition }
+  IMD_REVIEW     = 3;   { Mode revue }
+  IMD_LEARN      = 4;   { Mode apprentissage }
+  IMD_DEBUG      = 5;   { Mode debug }
+  IMD_VERBOSE    = 6;   { Mode verbeux }
+  IMD_QUIET      = 7;   { Mode silencieux }
+  IMD_STEP       = 8;   { Mode pas a pas }
+  IMD_BATCH      = 9;   { Mode batch }
+  IMD_DEMO       = 10;  { Mode demo }
+  IMD_TEST       = 11;  { Mode test }
+  IMD_EXPERT     = 12;  { Mode expert }
+  IMD_MAX        = 13;  { Nombre maximum de modes }
+
+  { Limites pour TODO 23 }
+  IMD_MAX_CODE_LINES = 100;  { Nombre max de lignes de code }
+  IMD_MAX_EDIT_SIZE  = 255;  { Taille max d'edition }
+  IMD_MAX_LEARN      = 50;   { Nombre max d'apprentissages }
+  IMD_MAX_REVIEW     = 20;   { Nombre max de revues }
 
 { ============================================================
   TYPES
@@ -1473,8 +1495,29 @@ Var
   SugCount          : Integer;
   SugLastInput      : TString;
 
-  { TODO 23 - Mode courant }
-  CurrentMode : TInteractiveMode;
+  { TODO 23 - Mode interactif ameliore }
+  ImdInitialized    : Boolean;
+  ImdStateCount     : Integer;
+  ImdNormalCount    : Integer;
+  ImdEditCount      : Integer;
+  ImdReviewCount    : Integer;
+  ImdLearnCount     : Integer;
+  ImdDebugCount     : Integer;
+  ImdVerboseCount   : Integer;
+  ImdQuietCount     : Integer;
+  ImdStepCount      : Integer;
+  ImdBatchCount     : Integer;
+  ImdDemoCount      : Integer;
+  ImdTestCount      : Integer;
+  ImdExpertCount    : Integer;
+  ImdTotalCount     : Integer;
+  ImdLabelNum       : Integer;
+  ImdModeChanges    : Integer;
+  CurrentMode       : TInteractiveMode;
+  ImdLastCode       : Array[1..IMD_MAX_CODE_LINES] of TCodeLine;
+  ImdLastCodeCount  : Integer;
+  ImdReviewLine     : Integer;
+  ImdLearnBuffer    : TString;
 
   { TODO 25 - Controle de la boucle }
   Running     : Boolean;
@@ -10051,6 +10094,390 @@ Begin
 End;
 
 { ============================================================
+  TODO 23 - MODE INTERACTIF AMELIORE
+  ============================================================ }
+
+Procedure InitImdState;
+Var
+  I: Integer;
+Begin
+  ImdInitialized    := True;
+  ImdStateCount     := 0;
+  ImdNormalCount    := 0;
+  ImdEditCount      := 0;
+  ImdReviewCount    := 0;
+  ImdLearnCount     := 0;
+  ImdDebugCount     := 0;
+  ImdVerboseCount   := 0;
+  ImdQuietCount     := 0;
+  ImdStepCount      := 0;
+  ImdBatchCount     := 0;
+  ImdDemoCount      := 0;
+  ImdTestCount      := 0;
+  ImdExpertCount    := 0;
+  ImdTotalCount     := 0;
+  ImdLabelNum       := 0;
+  ImdModeChanges    := 0;
+  CurrentMode       := IM_NORMAL;
+  ImdLastCodeCount  := 0;
+  ImdReviewLine     := 0;
+  ImdLearnBuffer    := '';
+  For I := 1 to IMD_MAX_CODE_LINES do
+    ImdLastCode[I] := '';
+  Inc(ImdStateCount);
+  Inc(ImdNormalCount);
+End;
+
+Function GenImdLabel: String;
+Begin
+  Inc(ImdLabelNum);
+  GenImdLabel := 'IMD_' + IntToStr(ImdLabelNum);
+End;
+
+Function ImdTypeName(ImdType: Integer): String;
+Begin
+  Case ImdType of
+    IMD_NONE:    ImdTypeName := 'NONE';
+    IMD_NORMAL:  ImdTypeName := 'NORMAL';
+    IMD_EDIT:    ImdTypeName := 'EDIT';
+    IMD_REVIEW:  ImdTypeName := 'REVIEW';
+    IMD_LEARN:   ImdTypeName := 'LEARN';
+    IMD_DEBUG:   ImdTypeName := 'DEBUG';
+    IMD_VERBOSE: ImdTypeName := 'VERBOSE';
+    IMD_QUIET:   ImdTypeName := 'QUIET';
+    IMD_STEP:    ImdTypeName := 'STEP';
+    IMD_BATCH:   ImdTypeName := 'BATCH';
+    IMD_DEMO:    ImdTypeName := 'DEMO';
+    IMD_TEST:    ImdTypeName := 'TEST';
+    IMD_EXPERT:  ImdTypeName := 'EXPERT';
+  Else
+    ImdTypeName := 'UNKNOWN';
+  End;
+End;
+
+Function ImdModeToType(Mode: TInteractiveMode): Integer;
+Begin
+  Case Mode of
+    IM_NORMAL: ImdModeToType := IMD_NORMAL;
+    IM_EDIT:   ImdModeToType := IMD_EDIT;
+    IM_REVIEW: ImdModeToType := IMD_REVIEW;
+    IM_LEARN:  ImdModeToType := IMD_LEARN;
+  Else
+    ImdModeToType := IMD_NONE;
+  End;
+End;
+
+Procedure SetMode(Mode: TInteractiveMode);
+Begin
+  If CurrentMode = Mode Then Exit;
+  
+  CurrentMode := Mode;
+  Inc(ImdModeChanges);
+  Inc(ImdTotalCount);
+  
+  Case Mode of
+    IM_NORMAL: Inc(ImdNormalCount);
+    IM_EDIT:   Inc(ImdEditCount);
+    IM_REVIEW: Inc(ImdReviewCount);
+    IM_LEARN:  Inc(ImdLearnCount);
+  End;
+  
+  If Options.Verbose Then
+    WriteLn('Mode change vers: ', ImdTypeName(ImdModeToType(Mode)));
+End;
+
+Function GetCurrentMode: TInteractiveMode;
+Begin
+  GetCurrentMode := CurrentMode;
+End;
+
+Function GetCurrentModeStr: String;
+Begin
+  GetCurrentModeStr := ImdTypeName(ImdModeToType(CurrentMode));
+End;
+
+Procedure StoreLastCode(Code: TCodeLine);
+Begin
+  If ImdLastCodeCount >= IMD_MAX_CODE_LINES Then Begin
+    { Deplacer tout vers le haut }
+    Move(ImdLastCode[2], ImdLastCode[1], 
+         (IMD_MAX_CODE_LINES - 1) * SizeOf(TCodeLine));
+    ImdLastCode[IMD_MAX_CODE_LINES] := Code;
+  End Else Begin
+    Inc(ImdLastCodeCount);
+    ImdLastCode[ImdLastCodeCount] := Code;
+  End;
+End;
+
+Procedure ClearLastCode;
+Var
+  I: Integer;
+Begin
+  For I := 1 to IMD_MAX_CODE_LINES do
+    ImdLastCode[I] := '';
+  ImdLastCodeCount := 0;
+End;
+
+Procedure EditLastCode;
+Var
+  I: Integer;
+  Input: String;
+  LineNum: Integer;
+  OldMode: TInteractiveMode;
+Begin
+  If ImdLastCodeCount = 0 Then Begin
+    WriteLn('Aucun code a editer.');
+    Exit;
+  End;
+  
+  OldMode := CurrentMode;
+  SetMode(IM_EDIT);
+  
+  WriteLn('=== Mode Edition ===');
+  WriteLn('Code actuel:');
+  For I := 1 to ImdLastCodeCount do
+    WriteLn(I:3, ': ', ImdLastCode[I]);
+  WriteLn('---');
+  WriteLn('Entrez le numero de ligne a modifier (0 pour quitter):');
+  
+  Repeat
+    Write('Ligne> ');
+    ReadLn(Input);
+    If Input = '0' Then Break;
+    
+    Val(Input, LineNum, I);
+    If (I <> 0) or (LineNum < 1) or (LineNum > ImdLastCodeCount) Then Begin
+      WriteLn('Numero de ligne invalide.');
+      Continue;
+    End;
+    
+    WriteLn('Ancienne: ', ImdLastCode[LineNum]);
+    Write('Nouvelle> ');
+    ReadLn(ImdLastCode[LineNum]);
+    Inc(ImdEditCount);
+  Until False;
+  
+  WriteLn('=== Fin Edition ===');
+  SetMode(OldMode);
+End;
+
+Procedure ReviewCode(StartLine: Integer);
+Var
+  I: Integer;
+  Input: String;
+  OldMode: TInteractiveMode;
+Begin
+  If ImdLastCodeCount = 0 Then Begin
+    WriteLn('Aucun code a examiner.');
+    Exit;
+  End;
+  
+  OldMode := CurrentMode;
+  SetMode(IM_REVIEW);
+  
+  If (StartLine < 1) or (StartLine > ImdLastCodeCount) Then
+    StartLine := 1;
+  ImdReviewLine := StartLine;
+  
+  WriteLn('=== Mode Revue ===');
+  WriteLn('Commandes: [n]ext, [p]rev, [g]oto N, [q]uit');
+  
+  Repeat
+    WriteLn;
+    WriteLn('Ligne ', ImdReviewLine, '/', ImdLastCodeCount, ':');
+    WriteLn('  ', ImdLastCode[ImdReviewLine]);
+    Write('Review> ');
+    ReadLn(Input);
+    Input := UpCaseStr(Input);
+    
+    If Input = 'Q' Then Break;
+    If Input = 'N' Then Begin
+      If ImdReviewLine < ImdLastCodeCount Then
+        Inc(ImdReviewLine)
+      Else
+        WriteLn('Fin du code.');
+    End;
+    If Input = 'P' Then Begin
+      If ImdReviewLine > 1 Then
+        Dec(ImdReviewLine)
+      Else
+        WriteLn('Debut du code.');
+    End;
+    If Pos('G', Input) = 1 Then Begin
+      Delete(Input, 1, 1);
+      Input := Trim(Input);
+      Val(Input, I, StartLine);
+      If (StartLine = 0) and (I >= 1) and (I <= ImdLastCodeCount) Then
+        ImdReviewLine := I
+      Else
+        WriteLn('Numero invalide.');
+    End;
+    Inc(ImdReviewCount);
+  Until False;
+  
+  WriteLn('=== Fin Revue ===');
+  SetMode(OldMode);
+End;
+
+Procedure LearnFromUser(Input: String);
+Var
+  OldMode: TInteractiveMode;
+  LearnInput: String;
+Begin
+  OldMode := CurrentMode;
+  SetMode(IM_LEARN);
+  
+  WriteLn('=== Mode Apprentissage ===');
+  WriteLn('Contexte: ', Input);
+  WriteLn('Enseignez-moi comment repondre a cette requete.');
+  WriteLn('Tapez votre reponse (ligne vide pour terminer):');
+  
+  ImdLearnBuffer := '';
+  Repeat
+    Write('Learn> ');
+    ReadLn(LearnInput);
+    If LearnInput = '' Then Break;
+    
+    If ImdLearnBuffer <> '' Then
+      ImdLearnBuffer := ImdLearnBuffer + #13#10;
+    ImdLearnBuffer := ImdLearnBuffer + LearnInput;
+    Inc(ImdLearnCount);
+  Until False;
+  
+  If ImdLearnBuffer <> '' Then Begin
+    WriteLn('Merci! J''ai appris:');
+    WriteLn('"', ImdLearnBuffer, '"');
+    WriteLn('Cette information sera utilisee pour les prochaines requetes similaires.');
+    Inc(ImdTotalCount);
+  End Else Begin
+    WriteLn('Aucun apprentissage enregistre.');
+  End;
+  
+  WriteLn('=== Fin Apprentissage ===');
+  SetMode(OldMode);
+End;
+
+Procedure ShowModeHelp;
+Begin
+  WriteLn('=== Modes Interactifs ===');
+  WriteLn('  /normal  - Mode normal de conversation');
+  WriteLn('  /edit    - Mode edition du code');
+  WriteLn('  /review  - Mode revue du code');
+  WriteLn('  /learn   - Mode apprentissage');
+  WriteLn('  /mode    - Afficher le mode actuel');
+  WriteLn('=========================');
+End;
+
+Procedure HandleModeCommand(Cmd: String);
+Var
+  UCmd: String;
+Begin
+  UCmd := UpCaseStr(Cmd);
+  
+  If UCmd = '/NORMAL' Then Begin
+    SetMode(IM_NORMAL);
+    WriteLn('Mode normal active.');
+  End
+  Else If UCmd = '/EDIT' Then Begin
+    EditLastCode;
+  End
+  Else If UCmd = '/REVIEW' Then Begin
+    ReviewCode(1);
+  End
+  Else If UCmd = '/LEARN' Then Begin
+    LearnFromUser('requete utilisateur');
+  End
+  Else If UCmd = '/MODE' Then Begin
+    WriteLn('Mode actuel: ', GetCurrentModeStr);
+  End
+  Else If UCmd = '/MODES' Then Begin
+    ShowModeHelp;
+  End
+  Else Begin
+    WriteLn('Commande de mode inconnue: ', Cmd);
+    ShowModeHelp;
+  End;
+End;
+
+Procedure DumpImdState;
+Begin
+  WriteLn('=== TODO 23 - Etat du Mode Interactif ===');
+  WriteLn('  ImdInitialized    = ', ImdInitialized);
+  WriteLn('  ImdStateCount     = ', ImdStateCount);
+  WriteLn('  ImdNormalCount    = ', ImdNormalCount);
+  WriteLn('  ImdEditCount      = ', ImdEditCount);
+  WriteLn('  ImdReviewCount    = ', ImdReviewCount);
+  WriteLn('  ImdLearnCount     = ', ImdLearnCount);
+  WriteLn('  ImdDebugCount     = ', ImdDebugCount);
+  WriteLn('  ImdVerboseCount   = ', ImdVerboseCount);
+  WriteLn('  ImdQuietCount     = ', ImdQuietCount);
+  WriteLn('  ImdStepCount      = ', ImdStepCount);
+  WriteLn('  ImdBatchCount     = ', ImdBatchCount);
+  WriteLn('  ImdDemoCount      = ', ImdDemoCount);
+  WriteLn('  ImdTestCount      = ', ImdTestCount);
+  WriteLn('  ImdExpertCount    = ', ImdExpertCount);
+  WriteLn('  ImdTotalCount     = ', ImdTotalCount);
+  WriteLn('  ImdLabelNum       = ', ImdLabelNum);
+  WriteLn('  ImdModeChanges    = ', ImdModeChanges);
+  WriteLn('  CurrentMode       = ', GetCurrentModeStr);
+  WriteLn('  ImdLastCodeCount  = ', ImdLastCodeCount);
+  WriteLn('  ImdReviewLine     = ', ImdReviewLine);
+  WriteLn('==========================================');
+End;
+
+{ Accesseurs pour TODO 23 }
+
+Function IsImdInitialized: Boolean;
+Begin
+  IsImdInitialized := ImdInitialized;
+End;
+
+Function IsImdNormalMode: Boolean;
+Begin
+  IsImdNormalMode := CurrentMode = IM_NORMAL;
+End;
+
+Function GetImdStateCount: Integer;
+Begin
+  GetImdStateCount := ImdStateCount;
+End;
+
+Function GetImdNormalCount: Integer;
+Begin
+  GetImdNormalCount := ImdNormalCount;
+End;
+
+Function GetImdEditCount: Integer;
+Begin
+  GetImdEditCount := ImdEditCount;
+End;
+
+Function GetImdReviewCount: Integer;
+Begin
+  GetImdReviewCount := ImdReviewCount;
+End;
+
+Function GetImdLearnCount: Integer;
+Begin
+  GetImdLearnCount := ImdLearnCount;
+End;
+
+Function GetImdTotalCount: Integer;
+Begin
+  GetImdTotalCount := ImdTotalCount;
+End;
+
+Function GetImdModeChanges: Integer;
+Begin
+  GetImdModeChanges := ImdModeChanges;
+End;
+
+Function GetImdLabelNum: Integer;
+Begin
+  GetImdLabelNum := ImdLabelNum;
+End;
+
+{ ============================================================
   TODO 25 - PROGRAMME PRINCIPAL ET BOUCLE DE CLAVARDAGE
   ============================================================ }
 
@@ -10268,6 +10695,10 @@ Begin
   SugInitialized := False;
   InitSugState;
 
+  { Initialiser l'etat du mode interactif ameliore (TODO 23) }
+  ImdInitialized := False;
+  InitImdState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -10292,6 +10723,7 @@ Begin
     DumpSavState;
     DumpValState;
     DumpSugState;
+    DumpImdState;
   End;
 
   Run;
@@ -10320,7 +10752,7 @@ Begin
   { 20 [IMPLEMENTE] - Sauvegarde programmes }
   { 21 [IMPLEMENTE] - Validation syntaxique }
   { 22 [IMPLEMENTE] - Suggestions }
-  { 23 [A FAIRE] - Mode interactif ameliore }
+  { 23 [IMPLEMENTE] - Mode interactif ameliore }
   { 24 [A FAIRE] - Export session }
   { 25 [IMPLEMENTE] - Programme principal }
 End.

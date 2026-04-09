@@ -351,12 +351,26 @@
             DumpSugState : afficher l'etat
             10 accesseurs : IsSugInitialized, IsSugEmpty, GetSug*Count
 
-  TODO 23 - MODE INTERACTIF AMELIORE [A FAIRE]
-            TInteractiveMode : IM_NORMAL, IM_EDIT, IM_REVIEW, IM_LEARN
+  TODO 23 - MODE INTERACTIF AMELIORE [IMPLEMENTE]
+            IMD_NONE=0..IMD_MAX=13 : 14 types de modes
+            IMD_MAX_CODE_LINES=100/IMD_MAX_EDIT_SIZE=255/IMD_MAX_LEARN=50 : limites
+            ImdInitialized + 17 variables d'etat
+            InitImdState : initialiser le mode interactif
+            GenImdLabel : generer une etiquette unique
+            ImdTypeName(Type) : nom du type de mode
+            ImdModeToType(Mode) : convertir mode vers type
             SetMode(Mode) : changer de mode interactif
+            GetCurrentMode : obtenir le mode courant
+            GetCurrentModeStr : obtenir le nom du mode
+            StoreLastCode(Code) : stocker une ligne de code
+            ClearLastCode : effacer le code stocke
             EditLastCode : editer le dernier code genere
-            ReviewCode(Code) : passer en revue le code ligne par ligne
+            ReviewCode(StartLine) : passer en revue le code ligne par ligne
             LearnFromUser(Input) : apprendre de l'utilisateur
+            ShowModeHelp : afficher l'aide des modes
+            HandleModeCommand(Cmd) : gerer les commandes de mode
+            DumpImdState : afficher l'etat
+            10 accesseurs : IsImdInitialized, IsImdNormalMode, GetImd*Count
 
   TODO 24 - EXPORT ET HISTORIQUE DE SESSION [A FAIRE]
             ExportSession(FileName) : exporter la session complete
