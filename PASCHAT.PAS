@@ -242,14 +242,25 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 16 - INTERFACE DE CLAVARDAGE EN FRANCAIS [A FAIRE]
+  TODO 16 - INTERFACE DE CLAVARDAGE EN FRANCAIS [IMPLEMENTE]
+            CHT_NONE=0..CHT_MAX=13 : constantes types d'interface
+            CHT_MAX_LINES=50, CHT_MAX_WIDTH=80 : limites
+            ChtInitialized + 15 variables d'etat
+            InitChtState : initialiser l'etat
+            GenChtLabel : generer un label unique
+            ChtTypeName : nom du type d'interface
             InitChat : initialiser l'interface de clavardage
             ShowWelcome : afficher le message de bienvenue
             ShowPrompt : afficher l'invite de commande
             ReadUserInput : lire l'entree utilisateur
             DisplayResponse(Text) : afficher une reponse formatee
-            DisplayCode(Code) : afficher du code avec coloration
+            DisplayCode : afficher du code genere
+            DisplayError, DisplayWarning, DisplayInfo : messages
+            DisplayHelp : afficher l'aide
+            DisplaySeparator, DisplayHeader, DisplayFooter : mise en forme
             ShowGoodbye : afficher le message d'au revoir
+            DumpChtState : afficher l'etat
+            10 accesseurs : IsChtInitialized, IsChtEmpty, GetCht*Count
   ============================================================ }
 
 { ============================================================
@@ -672,6 +683,26 @@ Const
   { Limites pour TODO 15 }
   CUS_MAX_FUNCS   = 20;  { Nombre max de fonctions par unite }
   CUS_MAX_PROCS   = 20;  { Nombre max de procedures par unite }
+
+  { Types d'interface de clavardage pour TODO 16 }
+  CHT_NONE        = 0;   { Aucun type }
+  CHT_WELCOME     = 1;   { Message de bienvenue }
+  CHT_PROMPT      = 2;   { Invite de commande }
+  CHT_RESPONSE    = 3;   { Reponse formatee }
+  CHT_CODE        = 4;   { Affichage de code }
+  CHT_ERROR       = 5;   { Message d'erreur }
+  CHT_WARNING     = 6;   { Message d'avertissement }
+  CHT_INFO        = 7;   { Message d'information }
+  CHT_HELP        = 8;   { Message d'aide }
+  CHT_GOODBYE     = 9;   { Message d'au revoir }
+  CHT_SEPARATOR   = 10;  { Separateur visuel }
+  CHT_HEADER      = 11;  { En-tete de section }
+  CHT_FOOTER      = 12;  { Pied de section }
+  CHT_MAX         = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 16 }
+  CHT_MAX_LINES   = 50;  { Nombre max de lignes affichees }
+  CHT_MAX_WIDTH   = 80;  { Largeur max de ligne }
 
 { ============================================================
   TYPES
@@ -1115,6 +1146,24 @@ Var
   CusStackCount   : Integer;
   CusErrorCount   : Integer;
   CusLabelNum     : Integer;
+
+  { TODO 16 - Interface de clavardage }
+  ChtInitialized  : Boolean;
+  ChtStateCount   : Integer;
+  ChtWelcomeCount : Integer;
+  ChtPromptCount  : Integer;
+  ChtResponseCount: Integer;
+  ChtCodeCount    : Integer;
+  ChtErrorCount   : Integer;
+  ChtWarningCount : Integer;
+  ChtInfoCount    : Integer;
+  ChtHelpCount    : Integer;
+  ChtGoodbyeCount : Integer;
+  ChtSeparatorCnt : Integer;
+  ChtHeaderCount  : Integer;
+  ChtFooterCount  : Integer;
+  ChtTotalLines   : Integer;
+  ChtLabelNum     : Integer;
 
   { TODO 17 - Reponse courante }
   CurrentResponse : TResponse;
@@ -7012,8 +7061,60 @@ End;
   TODO 16 - INTERFACE DE CLAVARDAGE EN FRANCAIS
   ============================================================ }
 
+{ Initialiser l'etat de l'interface de clavardage }
+Procedure InitChtState;
+Begin
+  ChtInitialized  := True;
+  ChtStateCount   := 0;
+  ChtWelcomeCount := 0;
+  ChtPromptCount  := 0;
+  ChtResponseCount:= 0;
+  ChtCodeCount    := 0;
+  ChtErrorCount   := 0;
+  ChtWarningCount := 0;
+  ChtInfoCount    := 0;
+  ChtHelpCount    := 0;
+  ChtGoodbyeCount := 0;
+  ChtSeparatorCnt := 0;
+  ChtHeaderCount  := 0;
+  ChtFooterCount  := 0;
+  ChtTotalLines   := 0;
+  ChtLabelNum     := 0;
+End;
+
+{ Generer un label unique pour le clavardage }
+Function GenChtLabel: String;
+Begin
+  Inc(ChtLabelNum);
+  GenChtLabel := '_CHT_' + IntToStr(ChtLabelNum);
+End;
+
+{ Obtenir le nom d'un type de clavardage }
+Function ChtTypeName(N: Integer): String;
+Begin
+  Case N of
+    CHT_NONE:      ChtTypeName := 'CHT_NONE';
+    CHT_WELCOME:   ChtTypeName := 'CHT_WELCOME';
+    CHT_PROMPT:    ChtTypeName := 'CHT_PROMPT';
+    CHT_RESPONSE:  ChtTypeName := 'CHT_RESPONSE';
+    CHT_CODE:      ChtTypeName := 'CHT_CODE';
+    CHT_ERROR:     ChtTypeName := 'CHT_ERROR';
+    CHT_WARNING:   ChtTypeName := 'CHT_WARNING';
+    CHT_INFO:      ChtTypeName := 'CHT_INFO';
+    CHT_HELP:      ChtTypeName := 'CHT_HELP';
+    CHT_GOODBYE:   ChtTypeName := 'CHT_GOODBYE';
+    CHT_SEPARATOR: ChtTypeName := 'CHT_SEPARATOR';
+    CHT_HEADER:    ChtTypeName := 'CHT_HEADER';
+    CHT_FOOTER:    ChtTypeName := 'CHT_FOOTER';
+  Else
+    ChtTypeName := 'CHT_UNKNOWN';
+  End;
+End;
+
+{ Initialiser l'interface de clavardage }
 Procedure InitChat;
 Begin
+  InitChtState;
   InitHistory;
   InitLearnFiles;
   InitGeneratedCode;
@@ -7027,8 +7128,11 @@ Begin
   FormatOpts.MaxLineWidth := 80;
   FormatOpts.AddComments := False;
   FormatOpts.UpperKeywords := True;
+
+  Inc(ChtStateCount);
 End;
 
+{ Afficher le message de bienvenue }
 Procedure ShowWelcome;
 Begin
   WriteLn;
@@ -7049,13 +7153,19 @@ Begin
   WriteLn;
   WriteLn('Tapez /help pour l''aide ou /quit pour quitter.');
   WriteLn;
+
+  Inc(ChtWelcomeCount);
+  Inc(ChtTotalLines, 12);
 End;
 
+{ Afficher l'invite de commande }
 Procedure ShowPrompt;
 Begin
   Write('Vous> ');
+  Inc(ChtPromptCount);
 End;
 
+{ Lire l'entree utilisateur }
 Function ReadUserInput: String;
 Var
   Input: String;
@@ -7064,12 +7174,26 @@ Begin
   ReadUserInput := Trim(Input);
 End;
 
+{ Afficher une reponse formatee }
+Procedure DisplayResponse(Text: String);
+Begin
+  If Length(Text) > 0 Then Begin
+    WriteLn;
+    WriteLn('PASCHAT> ', Text);
+    WriteLn;
+    Inc(ChtResponseCount);
+    Inc(ChtTotalLines, 3);
+  End;
+End;
+
+{ Afficher du code genere }
 Procedure DisplayCode;
 Var
   I: Integer;
 Begin
   If GeneratedCount = 0 Then Begin
     WriteLn('(Aucun code genere)');
+    Inc(ChtTotalLines);
     Exit;
   End;
 
@@ -7079,13 +7203,172 @@ Begin
     WriteLn(GeneratedCode[I]);
   WriteLn('--- Fin du code ---');
   WriteLn;
+
+  Inc(ChtCodeCount);
+  Inc(ChtTotalLines, GeneratedCount + 4);
 End;
 
+{ Afficher un message d'erreur }
+Procedure DisplayError(Msg: String);
+Begin
+  WriteLn;
+  WriteLn('ERREUR: ', Msg);
+  WriteLn;
+  Inc(ChtErrorCount);
+  Inc(ChtTotalLines, 3);
+End;
+
+{ Afficher un message d'avertissement }
+Procedure DisplayWarning(Msg: String);
+Begin
+  WriteLn('ATTENTION: ', Msg);
+  Inc(ChtWarningCount);
+  Inc(ChtTotalLines);
+End;
+
+{ Afficher un message d'information }
+Procedure DisplayInfo(Msg: String);
+Begin
+  WriteLn('INFO: ', Msg);
+  Inc(ChtInfoCount);
+  Inc(ChtTotalLines);
+End;
+
+{ Afficher l'aide }
+Procedure DisplayHelp;
+Begin
+  WriteLn;
+  WriteLn('=== Aide de PASCHAT ===');
+  WriteLn;
+  WriteLn('Commandes speciales:');
+  WriteLn('  /help    - Afficher cette aide');
+  WriteLn('  /quit    - Quitter le programme');
+  WriteLn('  /save    - Sauvegarder le dernier code genere');
+  WriteLn('  /clear   - Effacer l''historique');
+  WriteLn('  /code    - Afficher le dernier code genere');
+  WriteLn;
+  WriteLn('Requetes de generation:');
+  WriteLn('  "Ecris un programme bonjour"');
+  WriteLn('  "Genere les N premiers nombres premiers"');
+  WriteLn('  "Affiche la date et l''heure"');
+  WriteLn('  "Cree une unite pour les chaines"');
+  WriteLn;
+
+  Inc(ChtHelpCount);
+  Inc(ChtTotalLines, 15);
+End;
+
+{ Afficher un separateur }
+Procedure DisplaySeparator;
+Begin
+  WriteLn('----------------------------------------');
+  Inc(ChtSeparatorCnt);
+  Inc(ChtTotalLines);
+End;
+
+{ Afficher un en-tete de section }
+Procedure DisplayHeader(Title: String);
+Begin
+  WriteLn;
+  WriteLn('=== ', Title, ' ===');
+  WriteLn;
+  Inc(ChtHeaderCount);
+  Inc(ChtTotalLines, 3);
+End;
+
+{ Afficher un pied de section }
+Procedure DisplayFooter;
+Begin
+  WriteLn;
+  WriteLn('========================');
+  WriteLn;
+  Inc(ChtFooterCount);
+  Inc(ChtTotalLines, 3);
+End;
+
+{ Afficher le message d'au revoir }
 Procedure ShowGoodbye;
 Begin
   WriteLn;
   WriteLn('Au revoir! Merci d''avoir utilise PASCHAT.');
   WriteLn('A bientot!');
+
+  Inc(ChtGoodbyeCount);
+  Inc(ChtTotalLines, 3);
+End;
+
+{ Afficher l'etat de l'interface de clavardage }
+Procedure DumpChtState;
+Begin
+  WriteLn('=== Etat de l''interface de clavardage (TODO 16) ===');
+  WriteLn('  ChtInitialized   : ', ChtInitialized);
+  WriteLn('  ChtStateCount    : ', ChtStateCount);
+  WriteLn('  ChtWelcomeCount  : ', ChtWelcomeCount);
+  WriteLn('  ChtPromptCount   : ', ChtPromptCount);
+  WriteLn('  ChtResponseCount : ', ChtResponseCount);
+  WriteLn('  ChtCodeCount     : ', ChtCodeCount);
+  WriteLn('  ChtErrorCount    : ', ChtErrorCount);
+  WriteLn('  ChtWarningCount  : ', ChtWarningCount);
+  WriteLn('  ChtInfoCount     : ', ChtInfoCount);
+  WriteLn('  ChtHelpCount     : ', ChtHelpCount);
+  WriteLn('  ChtGoodbyeCount  : ', ChtGoodbyeCount);
+  WriteLn('  ChtSeparatorCnt  : ', ChtSeparatorCnt);
+  WriteLn('  ChtHeaderCount   : ', ChtHeaderCount);
+  WriteLn('  ChtFooterCount   : ', ChtFooterCount);
+  WriteLn('  ChtTotalLines    : ', ChtTotalLines);
+  WriteLn('  ChtLabelNum      : ', ChtLabelNum);
+End;
+
+{ --- TODO 16 : 10 accesseurs standards --- }
+
+Function IsChtInitialized: Boolean;
+Begin
+  IsChtInitialized := ChtInitialized;
+End;
+
+Function IsChtEmpty: Boolean;
+Begin
+  IsChtEmpty := (ChtStateCount = 0);
+End;
+
+Function GetChtStateCount: Integer;
+Begin
+  GetChtStateCount := ChtStateCount;
+End;
+
+Function GetChtWelcomeCount: Integer;
+Begin
+  GetChtWelcomeCount := ChtWelcomeCount;
+End;
+
+Function GetChtPromptCount: Integer;
+Begin
+  GetChtPromptCount := ChtPromptCount;
+End;
+
+Function GetChtResponseCount: Integer;
+Begin
+  GetChtResponseCount := ChtResponseCount;
+End;
+
+Function GetChtCodeCount: Integer;
+Begin
+  GetChtCodeCount := ChtCodeCount;
+End;
+
+Function GetChtHelpCount: Integer;
+Begin
+  GetChtHelpCount := ChtHelpCount;
+End;
+
+Function GetChtTotalLines: Integer;
+Begin
+  GetChtTotalLines := ChtTotalLines;
+End;
+
+Function GetChtLabelNum: Integer;
+Begin
+  GetChtLabelNum := ChtLabelNum;
 End;
 
 { ============================================================

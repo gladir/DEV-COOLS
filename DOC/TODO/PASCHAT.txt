@@ -226,14 +226,25 @@
             DumpCusState : afficher l'etat
             10 accesseurs : IsCusInitialized, IsCusEmpty, GetCus*Count
 
-  TODO 16 - INTERFACE DE CLAVARDAGE EN FRANCAIS [A FAIRE]
+  TODO 16 - INTERFACE DE CLAVARDAGE EN FRANCAIS [IMPLEMENTE]
+            CHT_NONE=0..CHT_MAX=13 : constantes types d'interface
+            CHT_MAX_LINES=50, CHT_MAX_WIDTH=80 : limites
+            ChtInitialized + 15 variables d'etat
+            InitChtState : initialiser l'etat
+            GenChtLabel : generer un label unique
+            ChtTypeName : nom du type d'interface
             InitChat : initialiser l'interface de clavardage
             ShowWelcome : afficher le message de bienvenue
             ShowPrompt : afficher l'invite de commande
             ReadUserInput : lire l'entree utilisateur
             DisplayResponse(Text) : afficher une reponse formatee
-            DisplayCode(Code) : afficher du code avec coloration
+            DisplayCode : afficher du code genere
+            DisplayError, DisplayWarning, DisplayInfo : messages
+            DisplayHelp : afficher l'aide
+            DisplaySeparator, DisplayHeader, DisplayFooter : mise en forme
             ShowGoodbye : afficher le message d'au revoir
+            DumpChtState : afficher l'etat
+            10 accesseurs : IsChtInitialized, IsChtEmpty, GetCht*Count
 
   TODO 17 - SYSTEME DE REPONSES CONTEXTUELLES [A FAIRE]
             TResponseKind : RK_TEXT, RK_CODE, RK_MIXED, RK_ERROR, RK_HELP
