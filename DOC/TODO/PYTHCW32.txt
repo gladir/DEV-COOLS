@@ -392,7 +392,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             Layout identique aux listes : [count DD][elem0 DD]...
             10 fonctions accesseurs
 
-  TODO 17 - PARSEUR : CHAINES (str) OPERATIONS AVANCEES [A FAIRE]
+  TODO 17 - PARSEUR : CHAINES (str) OPERATIONS AVANCEES [IMPLEMENTE]
             Concatenation : s1 + s2 ->
               CALL _PYRT_STRCONCAT -> EAX=ptr
             Repetition : s * n -> CALL _PYRT_STRMUL -> EAX=ptr

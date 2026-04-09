@@ -400,7 +400,7 @@
             Layout identique aux listes : [count DD][elem0 DD]...
             10 fonctions accesseurs
 
-  TODO 17 - PARSEUR : CHAINES (str) OPERATIONS AVANCEES [A FAIRE]
+  TODO 17 - PARSEUR : CHAINES (str) OPERATIONS AVANCEES [IMPLEMENTE]
             Concatenation : s1 + s2 ->
               CALL _PYRT_STRCONCAT -> EAX=ptr
             Repetition : s * n -> CALL _PYRT_STRMUL -> EAX=ptr
@@ -10187,6 +10187,673 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 17 - PARSEUR : CHAINES (str) OPERATIONS AVANCEES        }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations sur les chaines }
+  SR_NONE          = 0;    { aucun / non defini                    }
+  SR_CONCAT        = 1;    { concatenation s1 + s2                 }
+  SR_MUL           = 2;    { repetition s * n                      }
+  SR_INDEX         = 3;    { acces par index s[i]                  }
+  SR_SLICE         = 4;    { slice s[a:b]                          }
+  SR_LEN           = 5;    { len(s)                                }
+  SR_FIND          = 6;    { s.find(sub)                           }
+  SR_UPPER         = 7;    { s.upper()                             }
+  SR_LOWER         = 8;    { s.lower()                             }
+  SR_STRIP         = 9;    { s.strip()                             }
+  SR_REPLACE       = 10;   { s.replace(old, new)                   }
+  SR_STARTEND      = 11;   { s.startswith / s.endswith             }
+  SR_COUNT         = 12;   { s.count(sub)                          }
+  SR_CONTAINS      = 13;   { sub in s                              }
+  SR_MAX           = 13;
+
+  { Limites }
+  SR_MAX_LEN       = 1024; { longueur maximale d une chaine geree }
+  SR_BUF_SIZE      = 256;  { taille de buffer temporaire           }
+
+Var
+  SrInitialized   : Boolean;    { True si l etat est initialise       }
+  SrConcatCount   : LongInt;    { nombre de concatenations            }
+  SrMulCount      : LongInt;    { nombre de repetitions               }
+  SrIndexCount    : LongInt;    { nombre d acces par index            }
+  SrSliceCount    : LongInt;    { nombre de slices                    }
+  SrLenCount      : LongInt;    { nombre d appels a len(s)            }
+  SrFindCount     : LongInt;    { nombre d appels a s.find            }
+  SrUpperCount    : LongInt;    { nombre d appels a s.upper           }
+  SrLowerCount    : LongInt;    { nombre d appels a s.lower           }
+  SrStripCount    : LongInt;    { nombre d appels a s.strip           }
+  SrReplaceCount  : LongInt;    { nombre d appels a s.replace         }
+  SrStartEndCount : LongInt;    { nombre d appels startswith/endswith }
+  SrCountSubCount : LongInt;    { nombre d appels a s.count           }
+  SrContainsCount : LongInt;    { nombre d operateurs in              }
+  SrLastKind      : Integer;    { dernier type d operation str        }
+  SrLabelSeq      : Integer;    { sequence pour labels str            }
+
+{ ------------------------------------------------------------ }
+{ InitSrState : initialiser le sous-systeme des chaines            }
+{ ------------------------------------------------------------ }
+
+Procedure InitSrState;
+Begin
+  SrInitialized   := True;
+  SrConcatCount   := 0;
+  SrMulCount      := 0;
+  SrIndexCount    := 0;
+  SrSliceCount    := 0;
+  SrLenCount      := 0;
+  SrFindCount     := 0;
+  SrUpperCount    := 0;
+  SrLowerCount    := 0;
+  SrStripCount    := 0;
+  SrReplaceCount  := 0;
+  SrStartEndCount := 0;
+  SrCountSubCount := 0;
+  SrContainsCount := 0;
+  SrLastKind      := SR_NONE;
+  SrLabelSeq      := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSrLabel : generer un label unique pour les chaines             }
+{ ------------------------------------------------------------ }
+
+Function GenSrLabel : TString;
+Begin
+  Inc(SrLabelSeq);
+  GenSrLabel := '_PYL_SR_' + ItoS(SrLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ SrTypeName : retourner le nom du type d operation str             }
+{ ------------------------------------------------------------ }
+
+Function SrTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    SR_NONE          : SrTypeName := 'SR_NONE';
+    SR_CONCAT        : SrTypeName := 'SR_CONCAT';
+    SR_MUL           : SrTypeName := 'SR_MUL';
+    SR_INDEX         : SrTypeName := 'SR_INDEX';
+    SR_SLICE         : SrTypeName := 'SR_SLICE';
+    SR_LEN           : SrTypeName := 'SR_LEN';
+    SR_FIND          : SrTypeName := 'SR_FIND';
+    SR_UPPER         : SrTypeName := 'SR_UPPER';
+    SR_LOWER         : SrTypeName := 'SR_LOWER';
+    SR_STRIP         : SrTypeName := 'SR_STRIP';
+    SR_REPLACE       : SrTypeName := 'SR_REPLACE';
+    SR_STARTEND      : SrTypeName := 'SR_STARTEND';
+    SR_COUNT         : SrTypeName := 'SR_COUNT';
+    SR_CONTAINS      : SrTypeName := 'SR_CONTAINS';
+  Else
+    SrTypeName := 'SR_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrConcat : emettre le code pour s1 + s2                      }
+{   CALL _PYRT_STRCONCAT(ESI=s1, EDI=s2) -> EAX=ptr               }
+{   Cree une nouvelle chaine contenant s1 suivie de s2             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrConcat;
+Begin
+  SrLastKind := SR_CONCAT;
+  Inc(SrConcatCount);
+  WriteLn('  ; s1 + s2 -> _PYRT_STRCONCAT');
+  WriteLn('  ; ESI = ptr s1, EDI = ptr s2');
+  WriteLn('  PUSH EDI         ; ptr vers s2');
+  WriteLn('  PUSH ESI         ; ptr vers s1');
+  WriteLn('  CALL _PYRT_STRCONCAT');
+  WriteLn('  ADD ESP, 8       ; EAX = ptr vers nouvelle chaine');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrMul : emettre le code pour s * n                           }
+{   CALL _PYRT_STRMUL(ESI=s, EAX=n) -> EAX=ptr                   }
+{   Cree une nouvelle chaine avec s repetee n fois                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrMul;
+Begin
+  SrLastKind := SR_MUL;
+  Inc(SrMulCount);
+  WriteLn('  ; s * n -> _PYRT_STRMUL');
+  WriteLn('  ; ESI = ptr chaine, EAX = n');
+  WriteLn('  PUSH EAX         ; facteur de repetition');
+  WriteLn('  PUSH ESI         ; ptr vers la chaine');
+  WriteLn('  CALL _PYRT_STRMUL');
+  WriteLn('  ADD ESP, 8       ; EAX = ptr vers nouvelle chaine');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrIndex : emettre le code pour s[i]                          }
+{   s[i] -> MOVZX EAX, BYTE [ESI+i]                               }
+{   ESI = ptr vers la chaine, EAX = index                         }
+{   Resultat dans EAX = code ASCII du caractere                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrIndex;
+Begin
+  SrLastKind := SR_INDEX;
+  Inc(SrIndexCount);
+  WriteLn('  ; s[i] -> acces par index');
+  WriteLn('  ; ESI = ptr chaine, EAX = index');
+  WriteLn('  MOVZX EAX, BYTE [ESI+EAX] ; EAX = char a l index');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrSlice : emettre le code pour s[a:b]                        }
+{   CALL _PYRT_STRSLICE(ESI=s, EAX=start, EDX=end) -> EAX=ptr    }
+{   Cree une nouvelle sous-chaine de a a b                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrSlice;
+Begin
+  SrLastKind := SR_SLICE;
+  Inc(SrSliceCount);
+  WriteLn('  ; s[a:b] -> _PYRT_STRSLICE');
+  WriteLn('  ; ESI = ptr chaine, EAX = start, EDX = end');
+  WriteLn('  PUSH EDX         ; index fin');
+  WriteLn('  PUSH EAX         ; index debut');
+  WriteLn('  PUSH ESI         ; ptr vers la chaine');
+  WriteLn('  CALL _PYRT_STRSLICE');
+  WriteLn('  ADD ESP, 12      ; EAX = ptr vers sous-chaine');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrLen : emettre le code pour len(s)                          }
+{   CALL _PYRT_STRLEN(ESI=str) -> EAX                             }
+{   ESI = ptr vers la chaine                                       }
+{   Resultat dans EAX = longueur de la chaine                      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrLen;
+Begin
+  SrLastKind := SR_LEN;
+  Inc(SrLenCount);
+  WriteLn('  ; len(s) -> _PYRT_STRLEN');
+  WriteLn('  ; ESI = ptr chaine');
+  WriteLn('  PUSH ESI         ; ptr vers la chaine');
+  WriteLn('  CALL _PYRT_STRLEN');
+  WriteLn('  ADD ESP, 4       ; EAX = longueur');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrFind : emettre le code pour s.find(sub)                    }
+{   CALL _PYRT_STRFIND(ESI=s, EDI=sub) -> EAX=index ou -1        }
+{   Retourne l index de la premiere occurrence, ou -1 si absent    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrFind;
+Begin
+  SrLastKind := SR_FIND;
+  Inc(SrFindCount);
+  WriteLn('  ; s.find(sub) -> _PYRT_STRFIND');
+  WriteLn('  ; ESI = ptr chaine, EDI = ptr sous-chaine');
+  WriteLn('  PUSH EDI         ; ptr vers sous-chaine');
+  WriteLn('  PUSH ESI         ; ptr vers chaine');
+  WriteLn('  CALL _PYRT_STRFIND');
+  WriteLn('  ADD ESP, 8       ; EAX = index ou -1');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrUpper : emettre le code pour s.upper()                     }
+{   CALL _PYRT_STRUPPER(ESI=s) -> EAX=ptr                         }
+{   Cree une nouvelle chaine en majuscules                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrUpper;
+Begin
+  SrLastKind := SR_UPPER;
+  Inc(SrUpperCount);
+  WriteLn('  ; s.upper() -> _PYRT_STRUPPER');
+  WriteLn('  ; ESI = ptr chaine');
+  WriteLn('  PUSH ESI         ; ptr vers la chaine');
+  WriteLn('  CALL _PYRT_STRUPPER');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers nouvelle chaine');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrLower : emettre le code pour s.lower()                     }
+{   CALL _PYRT_STRLOWER(ESI=s) -> EAX=ptr                         }
+{   Cree une nouvelle chaine en minuscules                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrLower;
+Begin
+  SrLastKind := SR_LOWER;
+  Inc(SrLowerCount);
+  WriteLn('  ; s.lower() -> _PYRT_STRLOWER');
+  WriteLn('  ; ESI = ptr chaine');
+  WriteLn('  PUSH ESI         ; ptr vers la chaine');
+  WriteLn('  CALL _PYRT_STRLOWER');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers nouvelle chaine');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrStrip : emettre le code pour s.strip()                     }
+{   CALL _PYRT_STRSTRIP(ESI=s) -> EAX=ptr                         }
+{   Cree une nouvelle chaine sans espaces en debut et fin          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrStrip;
+Begin
+  SrLastKind := SR_STRIP;
+  Inc(SrStripCount);
+  WriteLn('  ; s.strip() -> _PYRT_STRSTRIP');
+  WriteLn('  ; ESI = ptr chaine');
+  WriteLn('  PUSH ESI         ; ptr vers la chaine');
+  WriteLn('  CALL _PYRT_STRSTRIP');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers nouvelle chaine');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrReplace : emettre le code pour s.replace(old, new)         }
+{   CALL _PYRT_STRREPLACE(ESI=s, EDI=old, EBX=new) -> EAX=ptr    }
+{   Cree une nouvelle chaine avec old remplace par new             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrReplace;
+Begin
+  SrLastKind := SR_REPLACE;
+  Inc(SrReplaceCount);
+  WriteLn('  ; s.replace(old, new) -> _PYRT_STRREPLACE');
+  WriteLn('  ; ESI = ptr chaine, EDI = ptr old, EBX = ptr new');
+  WriteLn('  PUSH EBX         ; ptr vers new');
+  WriteLn('  PUSH EDI         ; ptr vers old');
+  WriteLn('  PUSH ESI         ; ptr vers chaine');
+  WriteLn('  CALL _PYRT_STRREPLACE');
+  WriteLn('  ADD ESP, 12      ; EAX = ptr vers nouvelle chaine');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrStartsWith : emettre le code pour s.startswith(prefix)     }
+{   PUSH EDI (prefix), PUSH ESI (s), CALL _PYRT_STRSTARTSWITH     }
+{   -> EAX=0|1                                                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrStartsWith;
+Begin
+  SrLastKind := SR_STARTEND;
+  Inc(SrStartEndCount);
+  WriteLn('  ; s.startswith(prefix) -> EAX=0|1');
+  WriteLn('  ; ESI = ptr chaine, EDI = ptr prefix');
+  WriteLn('  PUSH EDI         ; ptr vers prefix');
+  WriteLn('  PUSH ESI         ; ptr vers chaine');
+  WriteLn('  CALL _PYRT_STRSTARTSWITH');
+  WriteLn('  ADD ESP, 8       ; EAX = 0 ou 1');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrEndsWith : emettre le code pour s.endswith(suffix)         }
+{   PUSH EDI (suffix), PUSH ESI (s), CALL _PYRT_STRENDSWITH       }
+{   -> EAX=0|1                                                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrEndsWith;
+Begin
+  SrLastKind := SR_STARTEND;
+  Inc(SrStartEndCount);
+  WriteLn('  ; s.endswith(suffix) -> EAX=0|1');
+  WriteLn('  ; ESI = ptr chaine, EDI = ptr suffix');
+  WriteLn('  PUSH EDI         ; ptr vers suffix');
+  WriteLn('  PUSH ESI         ; ptr vers chaine');
+  WriteLn('  CALL _PYRT_STRENDSWITH');
+  WriteLn('  ADD ESP, 8       ; EAX = 0 ou 1');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrCount : emettre le code pour s.count(sub)                  }
+{   CALL _PYRT_STRCOUNT(ESI=s, EDI=sub) -> EAX                    }
+{   Retourne le nombre d occurrences de sub dans s                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrCount;
+Begin
+  SrLastKind := SR_COUNT;
+  Inc(SrCountSubCount);
+  WriteLn('  ; s.count(sub) -> _PYRT_STRCOUNT');
+  WriteLn('  ; ESI = ptr chaine, EDI = ptr sous-chaine');
+  WriteLn('  PUSH EDI         ; ptr vers sous-chaine');
+  WriteLn('  PUSH ESI         ; ptr vers chaine');
+  WriteLn('  CALL _PYRT_STRCOUNT');
+  WriteLn('  ADD ESP, 8       ; EAX = nombre d occurrences');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrContains : emettre le code pour sub in s                   }
+{   CALL _PYRT_STRCONTAINS(ESI=s, EDI=sub) -> EAX=0|1            }
+{   Retourne 1 si sub est present dans s, 0 sinon                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrContains;
+Begin
+  SrLastKind := SR_CONTAINS;
+  Inc(SrContainsCount);
+  WriteLn('  ; sub in s -> _PYRT_STRCONTAINS');
+  WriteLn('  ; ESI = ptr chaine, EDI = ptr sous-chaine');
+  WriteLn('  PUSH EDI         ; ptr vers sous-chaine');
+  WriteLn('  PUSH ESI         ; ptr vers chaine');
+  WriteLn('  CALL _PYRT_STRCONTAINS');
+  WriteLn('  ADD ESP, 8       ; EAX = 0 ou 1');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrCompare : emettre le code pour comparer deux chaines       }
+{   CALL _PYRT_STRCMP(ESI=s1, EDI=s2) -> drapeaux ZF/CF           }
+{   Utilise ensuite JE/JNE/JB/JA pour les branches                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrCompare;
+Begin
+  WriteLn('  ; s1 == s2 / s1 < s2 -> _PYRT_STRCMP');
+  WriteLn('  ; ESI = ptr s1, EDI = ptr s2');
+  WriteLn('  PUSH EDI         ; ptr vers s2');
+  WriteLn('  PUSH ESI         ; ptr vers s1');
+  WriteLn('  CALL _PYRT_STRCMP');
+  WriteLn('  ADD ESP, 8       ; drapeaux ZF/CF positionnes');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrChr : emettre le code pour chr(n)                          }
+{   entier -> caractere -> EAX=ptr chaine 1 octet                 }
+{   EAX = code ASCII du caractere                                  }
+{   Cree une chaine de 1 octet + terminateur nul                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrChr;
+Begin
+  WriteLn('  ; chr(n) -> chaine 1 octet');
+  WriteLn('  ; EAX = code ASCII');
+  WriteLn('  PUSH 2            ; taille : 1 octet + nul');
+  WriteLn('  CALL _PYRT_ALLOC');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers buffer');
+  WriteLn('  POP ECX           ; recuperer le code ASCII');
+  WriteLn('  MOV BYTE [EAX], CL  ; stocker le caractere');
+  WriteLn('  MOV BYTE [EAX+1], 0 ; terminateur nul');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrOrd : emettre le code pour ord(c)                          }
+{   caractere -> entier -> MOVZX EAX, BYTE [ptr]                  }
+{   ESI = ptr vers la chaine (premier caractere)                   }
+{   Resultat dans EAX = code ASCII du premier caractere            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrOrd;
+Begin
+  WriteLn('  ; ord(c) -> entier');
+  WriteLn('  ; ESI = ptr chaine');
+  WriteLn('  MOVZX EAX, BYTE [ESI] ; EAX = code ASCII du 1er caractere');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStrExpr : analyser une expression de methode de chaine       }
+{   s.method(args) -> appeler la methode appropriee                }
+{   La chaine est dans ESI, le nom de methode est identifie        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStrExpr;
+Var
+  MethodName : TString;
+Begin
+  { La chaine est supposee chargee dans ESI }
+  { Le token courant est le nom de la methode apres le '.' }
+
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    Inc(ErrorCount);
+    WriteLn(StdErr, 'Erreur ligne ', CurTokLine,
+            ' : nom de methode attendu apres "."');
+    Exit;
+  End;
+
+  MethodName := CurTokStr;
+  LexNextToken;  (* consommer le nom de methode *)
+
+  If MethodName = 'find' Then
+  Begin
+    { s.find(sub) }
+    If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+      LexNextToken;  (* consommer '(' *)
+    { Charger l argument sub dans EDI }
+    If CurTokKind = TK_STRING Then
+    Begin
+      WriteLn('  MOV EDI, OFFSET ', GenSrLabel, ' ; sub (str literal)');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      WriteLn('  MOV EDI, DWORD PTR [', SymMangle(CurTokStr, SK_VAR),
+              '] ; sub (var)');
+      LexNextToken;
+    End;
+    If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+      LexNextToken;  (* consommer ')' *)
+    EmitStrFind;
+  End
+  Else If MethodName = 'upper' Then
+  Begin
+    { s.upper() }
+    If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+      LexNextToken;
+    If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+      LexNextToken;
+    EmitStrUpper;
+  End
+  Else If MethodName = 'lower' Then
+  Begin
+    { s.lower() }
+    If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+      LexNextToken;
+    If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+      LexNextToken;
+    EmitStrLower;
+  End
+  Else If MethodName = 'strip' Then
+  Begin
+    { s.strip() }
+    If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+      LexNextToken;
+    If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+      LexNextToken;
+    EmitStrStrip;
+  End
+  Else If MethodName = 'replace' Then
+  Begin
+    { s.replace(old, new) }
+    If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+      LexNextToken;  (* consommer '(' *)
+    { Charger old dans EDI }
+    If CurTokKind = TK_STRING Then
+    Begin
+      WriteLn('  MOV EDI, OFFSET ', GenSrLabel, ' ; old (str literal)');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      WriteLn('  MOV EDI, DWORD PTR [', SymMangle(CurTokStr, SK_VAR),
+              '] ; old (var)');
+      LexNextToken;
+    End;
+    { Consommer la virgule }
+    If (CurTokKind = TK_OP) And (CurTokStr = ',') Then
+      LexNextToken;
+    { Charger new dans EBX }
+    If CurTokKind = TK_STRING Then
+    Begin
+      WriteLn('  MOV EBX, OFFSET ', GenSrLabel, ' ; new (str literal)');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      WriteLn('  MOV EBX, DWORD PTR [', SymMangle(CurTokStr, SK_VAR),
+              '] ; new (var)');
+      LexNextToken;
+    End;
+    If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+      LexNextToken;  (* consommer ')' *)
+    EmitStrReplace;
+  End
+  Else If MethodName = 'startswith' Then
+  Begin
+    { s.startswith(prefix) }
+    If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+      LexNextToken;
+    If CurTokKind = TK_STRING Then
+    Begin
+      WriteLn('  MOV EDI, OFFSET ', GenSrLabel, ' ; prefix (str literal)');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      WriteLn('  MOV EDI, DWORD PTR [', SymMangle(CurTokStr, SK_VAR),
+              '] ; prefix (var)');
+      LexNextToken;
+    End;
+    If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+      LexNextToken;
+    EmitStrStartsWith;
+  End
+  Else If MethodName = 'endswith' Then
+  Begin
+    { s.endswith(suffix) }
+    If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+      LexNextToken;
+    If CurTokKind = TK_STRING Then
+    Begin
+      WriteLn('  MOV EDI, OFFSET ', GenSrLabel, ' ; suffix (str literal)');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      WriteLn('  MOV EDI, DWORD PTR [', SymMangle(CurTokStr, SK_VAR),
+              '] ; suffix (var)');
+      LexNextToken;
+    End;
+    If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+      LexNextToken;
+    EmitStrEndsWith;
+  End
+  Else If MethodName = 'count' Then
+  Begin
+    { s.count(sub) }
+    If (CurTokKind = TK_OP) And (CurTokStr = '(') Then
+      LexNextToken;
+    If CurTokKind = TK_STRING Then
+    Begin
+      WriteLn('  MOV EDI, OFFSET ', GenSrLabel, ' ; sub (str literal)');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      WriteLn('  MOV EDI, DWORD PTR [', SymMangle(CurTokStr, SK_VAR),
+              '] ; sub (var)');
+      LexNextToken;
+    End;
+    If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+      LexNextToken;
+    EmitStrCount;
+  End
+  Else
+  Begin
+    Inc(ErrorCount);
+    WriteLn(StdErr, 'Erreur ligne ', CurTokLine,
+            ' : methode de chaine inconnue : ', MethodName);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpSrState : afficher l etat du sous-systeme des chaines        }
+{ ------------------------------------------------------------ }
+
+Procedure DumpSrState;
+Begin
+  WriteLn('--- String State ---');
+  WriteLn('  SrInitialized   : ', SrInitialized);
+  WriteLn('  SrConcatCount   : ', SrConcatCount);
+  WriteLn('  SrMulCount      : ', SrMulCount);
+  WriteLn('  SrIndexCount    : ', SrIndexCount);
+  WriteLn('  SrSliceCount    : ', SrSliceCount);
+  WriteLn('  SrLenCount      : ', SrLenCount);
+  WriteLn('  SrFindCount     : ', SrFindCount);
+  WriteLn('  SrUpperCount    : ', SrUpperCount);
+  WriteLn('  SrLowerCount    : ', SrLowerCount);
+  WriteLn('  SrStripCount    : ', SrStripCount);
+  WriteLn('  SrReplaceCount  : ', SrReplaceCount);
+  WriteLn('  SrStartEndCount : ', SrStartEndCount);
+  WriteLn('  SrCountSubCount : ', SrCountSubCount);
+  WriteLn('  SrContainsCount : ', SrContainsCount);
+  WriteLn('  SrLastKind      : ', SrTypeName(SrLastKind));
+  WriteLn('  SrLabelSeq      : ', SrLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 17)                              }
+{ ------------------------------------------------------------ }
+
+Function IsSrInitialized : Boolean;
+Begin
+  IsSrInitialized := SrInitialized;
+End;
+
+Function IsSrEmpty : Boolean;
+Begin
+  IsSrEmpty := (SrConcatCount = 0) And (SrMulCount = 0) And
+               (SrIndexCount = 0) And (SrSliceCount = 0);
+End;
+
+Function GetSrConcatCount : LongInt;
+Begin
+  GetSrConcatCount := SrConcatCount;
+End;
+
+Function GetSrIndexCount : LongInt;
+Begin
+  GetSrIndexCount := SrIndexCount;
+End;
+
+Function GetSrLenCount : LongInt;
+Begin
+  GetSrLenCount := SrLenCount;
+End;
+
+Function GetSrFindCount : LongInt;
+Begin
+  GetSrFindCount := SrFindCount;
+End;
+
+Function GetSrUpperCount : LongInt;
+Begin
+  GetSrUpperCount := SrUpperCount;
+End;
+
+Function GetSrReplaceCount : LongInt;
+Begin
+  GetSrReplaceCount := SrReplaceCount;
+End;
+
+Function GetSrContainsCount : LongInt;
+Begin
+  GetSrContainsCount := SrContainsCount;
+End;
+
+Function GetSrStatus : TString;
+Begin
+  If Not SrInitialized Then
+    GetSrStatus := 'Not initialized'
+  Else
+    GetSrStatus := ItoS(SrConcatCount) + ' concat, ' +
+                   ItoS(SrMulCount) + ' mul, ' +
+                   ItoS(SrIndexCount) + ' index, ' +
+                   ItoS(SrSliceCount) + ' slice, ' +
+                   ItoS(SrFindCount) + ' find, ' +
+                   ItoS(SrContainsCount) + ' contains';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -10213,6 +10880,7 @@ Begin
   LsInitialized := False;
   DcInitialized := False;
   TpInitialized := False;
+  SrInitialized := False;
 
   ParseArgs;
 
@@ -10260,6 +10928,9 @@ Begin
 
   { Initialiser le sous-systeme des tuples }
   InitTpState;
+
+  { Initialiser le sous-systeme des chaines avancees }
+  InitSrState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -10347,6 +11018,13 @@ Begin
     WriteLn('Tuple unpack     : ', GetTpUnpackCount);
     WriteLn('Tuple concat     : ', GetTpConcatCount);
     WriteLn('Tuple contains   : ', GetTpContainsCount);
+    WriteLn('Str concat       : ', GetSrConcatCount);
+    WriteLn('Str index        : ', GetSrIndexCount);
+    WriteLn('Str len          : ', GetSrLenCount);
+    WriteLn('Str find         : ', GetSrFindCount);
+    WriteLn('Str upper        : ', GetSrUpperCount);
+    WriteLn('Str replace      : ', GetSrReplaceCount);
+    WriteLn('Str contains     : ', GetSrContainsCount);
   End;
 
   If Opts.DebugMode Then
@@ -10365,6 +11043,7 @@ Begin
     DumpLsState;
     DumpDcState;
     DumpTpState;
+    DumpSrState;
   End;
 
   { Nettoyage }
