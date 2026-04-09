@@ -262,13 +262,24 @@
             DumpRspState : afficher l'etat
             10 accesseurs : IsRspInitialized, IsRspEmpty, GetRsp*Count
 
-  TODO 18 - FORMATAGE ET INDENTATION DU CODE GENERE [A FAIRE]
-            TFormatOptions : IndentSize, MaxLineWidth, BraceStyle
-            FormatCode(Code) : formater le code genere
+  TODO 18 - FORMATAGE ET INDENTATION DU CODE GENERE [IMPLEMENTE]
+            FMT_NONE=0..FMT_MAX=13 : constantes types de formatage
+            FMT_MAX_INDENT=8, FMT_MAX_WIDTH=80, FMT_TAB_SIZE=2 : limites
+            FmtInitialized + 15 variables d'etat
+            InitFmtState : initialiser l'etat
+            GenFmtLabel : generer un label unique
+            FmtTypeName : nom du type de formatage
+            MakeIndent(Level) : creer une chaine d'indentation
+            IsPascalKeyword(S) : verifier si mot-cle Pascal
             IndentCode(Code, Level) : indenter le code
             WrapLongLines(Code, MaxWidth) : couper les lignes trop longues
-            AddComments(Code) : ajouter des commentaires explicatifs
-            PrettyPrint(Code) : affichage elegant du code
+            AddCodeComments(Code, Comment) : ajouter des commentaires
+            FormatKeywords(Code, ToUpper) : formater les mots-cles
+            FormatCode(Code) : formater le code genere
+            PrettyPrint(Code) : affichage elegant avec indentation auto
+            SetFormatOptions : configurer les options de formatage
+            DumpFmtState : afficher l'etat
+            10 accesseurs : IsFmtInitialized, IsFmtEmpty, GetFmt*Count
 
   TODO 19 - AIDE EN LIGNE ET EXEMPLES [A FAIRE]
             ShowHelp : afficher l'aide generale

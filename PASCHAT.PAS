@@ -282,13 +282,24 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 18 - FORMATAGE ET INDENTATION DU CODE GENERE [A FAIRE]
-            TFormatOptions : IndentSize, MaxLineWidth, BraceStyle
-            FormatCode(Code) : formater le code genere
+  TODO 18 - FORMATAGE ET INDENTATION DU CODE GENERE [IMPLEMENTE]
+            FMT_NONE=0..FMT_MAX=13 : constantes types de formatage
+            FMT_MAX_INDENT=8, FMT_MAX_WIDTH=80, FMT_TAB_SIZE=2 : limites
+            FmtInitialized + 15 variables d'etat
+            InitFmtState : initialiser l'etat
+            GenFmtLabel : generer un label unique
+            FmtTypeName : nom du type de formatage
+            MakeIndent(Level) : creer une chaine d'indentation
+            IsPascalKeyword(S) : verifier si mot-cle Pascal
             IndentCode(Code, Level) : indenter le code
             WrapLongLines(Code, MaxWidth) : couper les lignes trop longues
-            AddComments(Code) : ajouter des commentaires explicatifs
-            PrettyPrint(Code) : affichage elegant du code
+            AddCodeComments(Code, Comment) : ajouter des commentaires
+            FormatKeywords(Code, ToUpper) : formater les mots-cles
+            FormatCode(Code) : formater le code genere
+            PrettyPrint(Code) : affichage elegant avec indentation auto
+            SetFormatOptions : configurer les options de formatage
+            DumpFmtState : afficher l'etat
+            10 accesseurs : IsFmtInitialized, IsFmtEmpty, GetFmt*Count
   ============================================================ }
 
 { ============================================================
@@ -732,6 +743,28 @@ Const
   RSP_MAX_SUGGESTIONS = 10;  { Nombre max de suggestions }
   RSP_MAX_RELATED     = 10;  { Nombre max de sujets connexes }
   RSP_MAX_TOPICS      = 50;  { Nombre max de sujets d'aide }
+
+  { Types de formatage pour TODO 18 }
+  FMT_NONE        = 0;   { Aucun formatage }
+  FMT_INDENT      = 1;   { Indentation }
+  FMT_WRAP        = 2;   { Retour a la ligne }
+  FMT_COMMENT     = 3;   { Ajout de commentaires }
+  FMT_UPPER       = 4;   { Mots-cles majuscules }
+  FMT_LOWER       = 5;   { Mots-cles minuscules }
+  FMT_ALIGN       = 6;   { Alignement }
+  FMT_SPACE       = 7;   { Espacement }
+  FMT_BLANK       = 8;   { Lignes vides }
+  FMT_PRETTY      = 9;   { Affichage elegant }
+  FMT_COMPACT     = 10;  { Format compact }
+  FMT_VERBOSE     = 11;  { Format verbeux }
+  FMT_DEFAULT     = 12;  { Format par defaut }
+  FMT_MAX         = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 18 }
+  FMT_MAX_INDENT  = 8;   { Indentation max (espaces) }
+  FMT_MAX_WIDTH   = 80;  { Largeur max de ligne }
+  FMT_TAB_SIZE    = 2;   { Taille de tabulation }
+  FMT_MAX_LINES   = 500; { Nombre max de lignes }
 
 { ============================================================
   TYPES
@@ -1214,7 +1247,23 @@ Var
   CurrentResponse : TResponse;
 
   { TODO 18 - Options de formatage }
-  FormatOpts : TFormatOptions;
+  FmtInitialized  : Boolean;
+  FmtStateCount   : Integer;
+  FmtIndentCount  : Integer;
+  FmtWrapCount    : Integer;
+  FmtCommentCount : Integer;
+  FmtUpperCount   : Integer;
+  FmtLowerCount   : Integer;
+  FmtAlignCount   : Integer;
+  FmtSpaceCount   : Integer;
+  FmtBlankCount   : Integer;
+  FmtPrettyCount  : Integer;
+  FmtCompactCount : Integer;
+  FmtVerboseCount : Integer;
+  FmtDefaultCount : Integer;
+  FmtTotalCount   : Integer;
+  FmtLabelNum     : Integer;
+  FormatOpts      : TFormatOptions;
 
   { TODO 20 - Code genere courant }
   GeneratedCode : Array[1..MAX_CODE_LINES] of TCodeLine;
@@ -7729,6 +7778,380 @@ Begin
   GetRspLabelNum := RspLabelNum;
 End;
 
+{ ============================================================
+  TODO 18 - FORMATAGE ET INDENTATION DU CODE GENERE
+  ============================================================ }
+
+Procedure InitFmtState;
+Begin
+  FmtInitialized  := True;
+  FmtStateCount   := 0;
+  FmtIndentCount  := 0;
+  FmtWrapCount    := 0;
+  FmtCommentCount := 0;
+  FmtUpperCount   := 0;
+  FmtLowerCount   := 0;
+  FmtAlignCount   := 0;
+  FmtSpaceCount   := 0;
+  FmtBlankCount   := 0;
+  FmtPrettyCount  := 0;
+  FmtCompactCount := 0;
+  FmtVerboseCount := 0;
+  FmtDefaultCount := 0;
+  FmtTotalCount   := 0;
+  FmtLabelNum     := 0;
+
+  { Options de formatage par defaut }
+  FormatOpts.IndentSize    := FMT_TAB_SIZE;
+  FormatOpts.MaxLineWidth  := FMT_MAX_WIDTH;
+  FormatOpts.AddComments   := False;
+  FormatOpts.UpperKeywords := True;
+
+  Inc(FmtStateCount);
+End;
+
+Function GenFmtLabel: String;
+Begin
+  Inc(FmtLabelNum);
+  GenFmtLabel := '_FMT_' + IntToStr(FmtLabelNum);
+End;
+
+Function FmtTypeName(FmtType: Integer): String;
+Begin
+  Case FmtType of
+    FMT_NONE:    FmtTypeName := 'NONE';
+    FMT_INDENT:  FmtTypeName := 'INDENT';
+    FMT_WRAP:    FmtTypeName := 'WRAP';
+    FMT_COMMENT: FmtTypeName := 'COMMENT';
+    FMT_UPPER:   FmtTypeName := 'UPPER';
+    FMT_LOWER:   FmtTypeName := 'LOWER';
+    FMT_ALIGN:   FmtTypeName := 'ALIGN';
+    FMT_SPACE:   FmtTypeName := 'SPACE';
+    FMT_BLANK:   FmtTypeName := 'BLANK';
+    FMT_PRETTY:  FmtTypeName := 'PRETTY';
+    FMT_COMPACT: FmtTypeName := 'COMPACT';
+    FMT_VERBOSE: FmtTypeName := 'VERBOSE';
+    FMT_DEFAULT: FmtTypeName := 'DEFAULT';
+  Else
+    FmtTypeName := 'UNKNOWN';
+  End;
+End;
+
+Function IsPascalKeyword(S: String): Boolean;
+Var
+  U: String;
+Begin
+  U := UpCaseStr(S);
+  IsPascalKeyword := (U = 'PROGRAM') or (U = 'UNIT') or (U = 'USES') or
+    (U = 'CONST') or (U = 'TYPE') or (U = 'VAR') or (U = 'BEGIN') or
+    (U = 'END') or (U = 'IF') or (U = 'THEN') or (U = 'ELSE') or
+    (U = 'FOR') or (U = 'TO') or (U = 'DOWNTO') or (U = 'DO') or
+    (U = 'WHILE') or (U = 'REPEAT') or (U = 'UNTIL') or (U = 'CASE') or
+    (U = 'OF') or (U = 'WITH') or (U = 'PROCEDURE') or (U = 'FUNCTION') or
+    (U = 'AND') or (U = 'OR') or (U = 'NOT') or (U = 'DIV') or (U = 'MOD') or
+    (U = 'ARRAY') or (U = 'RECORD') or (U = 'STRING') or (U = 'INTEGER') or
+    (U = 'REAL') or (U = 'BOOLEAN') or (U = 'CHAR') or (U = 'BYTE') or
+    (U = 'WORD') or (U = 'LONGINT') or (U = 'NIL') or (U = 'TRUE') or
+    (U = 'FALSE') or (U = 'INTERFACE') or (U = 'IMPLEMENTATION') or
+    (U = 'INITIALIZATION') or (U = 'FINALIZATION') or (U = 'EXIT') or
+    (U = 'HALT') or (U = 'BREAK') or (U = 'CONTINUE');
+End;
+
+Function IndentCode(Code: String; Level: Integer): String;
+Var
+  Indent: String;
+Begin
+  If Level < 0 Then Level := 0;
+  If Level > FMT_MAX_INDENT Then Level := FMT_MAX_INDENT;
+  Indent := MakeIndent(Level);
+  IndentCode := Indent + Code;
+  Inc(FmtIndentCount);
+  Inc(FmtTotalCount);
+End;
+
+Function WrapLongLines(Code: String; MaxWidth: Integer): String;
+Var
+  Result: String;
+  Line: String;
+  I, LastSpace: Integer;
+Begin
+  If MaxWidth <= 0 Then MaxWidth := FMT_MAX_WIDTH;
+  If Length(Code) <= MaxWidth Then Begin
+    WrapLongLines := Code;
+    Exit;
+  End;
+
+  Result := '';
+  Line := Code;
+
+  While Length(Line) > MaxWidth do Begin
+    { Trouver le dernier espace avant la limite }
+    LastSpace := MaxWidth;
+    For I := MaxWidth downto 1 do Begin
+      If Line[I] = ' ' Then Begin
+        LastSpace := I;
+        Break;
+      End;
+    End;
+
+    { Couper la ligne }
+    If Result <> '' Then
+      Result := Result + #13#10;
+    Result := Result + Copy(Line, 1, LastSpace - 1);
+    Line := Copy(Line, LastSpace + 1, Length(Line));
+  End;
+
+  If Line <> '' Then Begin
+    If Result <> '' Then
+      Result := Result + #13#10;
+    Result := Result + Line;
+  End;
+
+  WrapLongLines := Result;
+  Inc(FmtWrapCount);
+  Inc(FmtTotalCount);
+End;
+
+Function AddCodeComments(Code: String; Comment: String): String;
+Begin
+  If Comment = '' Then
+    AddCodeComments := Code
+  Else
+    AddCodeComments := Code + ' { ' + Comment + ' }';
+  Inc(FmtCommentCount);
+  Inc(FmtTotalCount);
+End;
+
+Function FormatKeywords(Code: String; ToUpper: Boolean): String;
+Var
+  Result: String;
+  Word: String;
+  I: Integer;
+  InWord: Boolean;
+  C: Char;
+Begin
+  Result := '';
+  Word := '';
+  InWord := False;
+
+  For I := 1 to Length(Code) do Begin
+    C := Code[I];
+    If ((C >= 'A') and (C <= 'Z')) or
+       ((C >= 'a') and (C <= 'z')) or
+       ((C >= '0') and (C <= '9')) or (C = '_') Then Begin
+      Word := Word + C;
+      InWord := True;
+    End
+    Else Begin
+      If InWord Then Begin
+        If IsPascalKeyword(Word) Then Begin
+          If ToUpper Then
+            Word := UpCaseStr(Word)
+          Else
+            Word := LowerCaseStr(Word);
+        End;
+        Result := Result + Word;
+        Word := '';
+        InWord := False;
+      End;
+      Result := Result + C;
+    End;
+  End;
+
+  { Traiter le dernier mot }
+  If Word <> '' Then Begin
+    If IsPascalKeyword(Word) Then Begin
+      If ToUpper Then
+        Word := UpCaseStr(Word)
+      Else
+        Word := LowerCaseStr(Word);
+    End;
+    Result := Result + Word;
+  End;
+
+  FormatKeywords := Result;
+  If ToUpper Then
+    Inc(FmtUpperCount)
+  Else
+    Inc(FmtLowerCount);
+  Inc(FmtTotalCount);
+End;
+
+Function FormatCode(Code: String): String;
+Var
+  Result: String;
+Begin
+  Result := Code;
+
+  { Appliquer le formatage des mots-cles }
+  If FormatOpts.UpperKeywords Then
+    Result := FormatKeywords(Result, True);
+
+  { Couper les lignes trop longues }
+  If Length(Result) > FormatOpts.MaxLineWidth Then
+    Result := WrapLongLines(Result, FormatOpts.MaxLineWidth);
+
+  FormatCode := Result;
+  Inc(FmtDefaultCount);
+  Inc(FmtTotalCount);
+End;
+
+Function PrettyPrint(Code: String): String;
+Var
+  Result: String;
+  I, IndentLevel: Integer;
+  Line: String;
+  Lines: Array[1..FMT_MAX_LINES] of String;
+  LineCount: Integer;
+  P: Integer;
+  U: String;
+Begin
+  { Decouper en lignes }
+  LineCount := 0;
+  Line := '';
+  For I := 1 to Length(Code) do Begin
+    If (Code[I] = #13) or (Code[I] = #10) Then Begin
+      If Line <> '' Then Begin
+        Inc(LineCount);
+        If LineCount <= FMT_MAX_LINES Then
+          Lines[LineCount] := Trim(Line);
+        Line := '';
+      End;
+    End
+    Else
+      Line := Line + Code[I];
+  End;
+  If Line <> '' Then Begin
+    Inc(LineCount);
+    If LineCount <= FMT_MAX_LINES Then
+      Lines[LineCount] := Trim(Line);
+  End;
+
+  { Formater chaque ligne avec indentation appropriee }
+  Result := '';
+  IndentLevel := 0;
+
+  For I := 1 to LineCount do Begin
+    Line := Lines[I];
+    U := UpCaseStr(Line);
+
+    { Ajuster l'indentation avant les mots-cles de fermeture }
+    If (Pos('END', U) = 1) or (Pos('UNTIL', U) = 1) or
+       (Pos('ELSE', U) = 1) or (Pos('FINALIZATION', U) = 1) Then Begin
+      If IndentLevel > 0 Then Dec(IndentLevel);
+    End;
+
+    { Formater la ligne }
+    If FormatOpts.UpperKeywords Then
+      Line := FormatKeywords(Line, True);
+
+    If IndentLevel > 0 Then
+      Line := IndentCode(Line, IndentLevel)
+    Else
+      Line := Line;
+
+    If Result <> '' Then
+      Result := Result + #13#10;
+    Result := Result + Line;
+
+    { Ajuster l'indentation apres les mots-cles d'ouverture }
+    If (Pos('BEGIN', U) > 0) or (Pos('REPEAT', U) > 0) or
+       (Pos('THEN', U) > 0) or (Pos('DO', U) > 0) or
+       (Pos('ELSE', U) > 0) or (Pos('RECORD', U) > 0) or
+       (Pos('CASE', U) > 0) or (Pos('OF', U) > 0) or
+       (Pos('INTERFACE', U) > 0) or (Pos('IMPLEMENTATION', U) > 0) or
+       (Pos('INITIALIZATION', U) > 0) Then Begin
+      Inc(IndentLevel);
+      If IndentLevel > FMT_MAX_INDENT Then IndentLevel := FMT_MAX_INDENT;
+    End;
+  End;
+
+  PrettyPrint := Result;
+  Inc(FmtPrettyCount);
+  Inc(FmtTotalCount);
+End;
+
+Procedure SetFormatOptions(IndentSz: Integer; MaxWidth: Integer;
+                           AddCmts: Boolean; UpperKw: Boolean);
+Begin
+  If IndentSz > 0 Then FormatOpts.IndentSize := IndentSz;
+  If MaxWidth > 0 Then FormatOpts.MaxLineWidth := MaxWidth;
+  FormatOpts.AddComments := AddCmts;
+  FormatOpts.UpperKeywords := UpperKw;
+End;
+
+Procedure DumpFmtState;
+Begin
+  WriteLn('=== FMT State (TODO 18) ===');
+  WriteLn('Initialized: ', FmtInitialized);
+  WriteLn('StateCount:  ', FmtStateCount);
+  WriteLn('IndentCount: ', FmtIndentCount);
+  WriteLn('WrapCount:   ', FmtWrapCount);
+  WriteLn('CommentCount:', FmtCommentCount);
+  WriteLn('UpperCount:  ', FmtUpperCount);
+  WriteLn('LowerCount:  ', FmtLowerCount);
+  WriteLn('PrettyCount: ', FmtPrettyCount);
+  WriteLn('TotalCount:  ', FmtTotalCount);
+  WriteLn('LabelNum:    ', FmtLabelNum);
+  WriteLn('IndentSize:  ', FormatOpts.IndentSize);
+  WriteLn('MaxWidth:    ', FormatOpts.MaxLineWidth);
+  WriteLn('AddComments: ', FormatOpts.AddComments);
+  WriteLn('UpperKeys:   ', FormatOpts.UpperKeywords);
+  WriteLn;
+End;
+
+{ Accesseurs TODO 18 }
+
+Function IsFmtInitialized: Boolean;
+Begin
+  IsFmtInitialized := FmtInitialized;
+End;
+
+Function IsFmtEmpty: Boolean;
+Begin
+  IsFmtEmpty := FmtTotalCount = 0;
+End;
+
+Function GetFmtStateCount: Integer;
+Begin
+  GetFmtStateCount := FmtStateCount;
+End;
+
+Function GetFmtIndentCount: Integer;
+Begin
+  GetFmtIndentCount := FmtIndentCount;
+End;
+
+Function GetFmtWrapCount: Integer;
+Begin
+  GetFmtWrapCount := FmtWrapCount;
+End;
+
+Function GetFmtCommentCount: Integer;
+Begin
+  GetFmtCommentCount := FmtCommentCount;
+End;
+
+Function GetFmtPrettyCount: Integer;
+Begin
+  GetFmtPrettyCount := FmtPrettyCount;
+End;
+
+Function GetFmtTotalCount: Integer;
+Begin
+  GetFmtTotalCount := FmtTotalCount;
+End;
+
+Function GetFmtLabelNum: Integer;
+Begin
+  GetFmtLabelNum := FmtLabelNum;
+End;
+
+Function GetFmtUpperCount: Integer;
+Begin
+  GetFmtUpperCount := FmtUpperCount;
+End;
+
 Procedure ProcessProgramRequest;
 Var
   UI: String;
@@ -8088,6 +8511,10 @@ Begin
   RspInitialized := False;
   InitRspState;
 
+  { Initialiser l'etat du formatage de code (TODO 18) }
+  FmtInitialized := False;
+  InitFmtState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -8107,6 +8534,7 @@ Begin
     DumpCusState;
     DumpChtState;
     DumpRspState;
+    DumpFmtState;
   End;
 
   Run;
@@ -8130,7 +8558,7 @@ Begin
   { 15 [IMPLEMENTE] - Unites personnalisees }
   { 16 [IMPLEMENTE] - Interface clavardage }
   { 17 [IMPLEMENTE] - Reponses contextuelles }
-  { 18 [A FAIRE] - Formatage code }
+  { 18 [IMPLEMENTE] - Formatage code }
   { 19 [IMPLEMENTE] - Aide en ligne }
   { 20 [IMPLEMENTE] - Sauvegarde programmes }
   { 21 [A FAIRE] - Validation syntaxique }
