@@ -326,7 +326,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
               ReadFile pour la saisie
             10 fonctions accesseurs
 
-  TODO 14 - PARSEUR : LISTES (list) [A FAIRE]
+  TODO 14 - PARSEUR : LISTES (list) [IMPLEMENTE]
             Liste vide : [] -> allocation d un bloc vide sur le heap
             Liste literale : [e0, e1, e2] -> allocation + stockage DD
               par element (chaque element est un DWORD 32 bits)

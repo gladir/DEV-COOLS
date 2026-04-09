@@ -334,7 +334,7 @@
               ReadFile pour la saisie
             10 fonctions accesseurs
 
-  TODO 14 - PARSEUR : LISTES (list) [A FAIRE]
+  TODO 14 - PARSEUR : LISTES (list) [IMPLEMENTE]
             Liste vide : [] -> allocation d un bloc vide sur le heap
             Liste literale : [e0, e1, e2] -> allocation + stockage DD
               par element (chaque element est un DWORD 32 bits)
@@ -8500,6 +8500,545 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 14 - PARSEUR : LISTES (list)                            }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations sur les listes }
+  LS_NONE          = 0;    { aucun / non defini                    }
+  LS_EMPTY         = 1;    { liste vide []                         }
+  LS_LITERAL       = 2;    { liste literale [e0, e1, ...]          }
+  LS_INDEX         = 3;    { acces par index lst[i]                }
+  LS_NEG_INDEX     = 4;    { acces par index negatif lst[-i]       }
+  LS_ASSIGN        = 5;    { affectation par index lst[i] = val    }
+  LS_SLICE         = 6;    { slice lst[a:b]                        }
+  LS_LEN           = 7;    { len(lst) -> compteur en tete          }
+  LS_APPEND        = 8;    { lst.append(val)                       }
+  LS_POP           = 9;    { lst.pop() -> dernier element          }
+  LS_CONCAT        = 10;   { lst1 + lst2 -> concatenation          }
+  LS_MUL           = 11;   { lst * n -> repetition                 }
+  LS_CONTAINS      = 12;   { val in lst -> booleen                 }
+  LS_ITER          = 13;   { iteration for elem in lst             }
+  LS_MAX           = 13;
+
+  { Limites }
+  LS_MAX_ELEMS     = 64;   { nombre max d elements dans une liste  }
+  LS_INIT_CAP      = 8;    { capacite initiale d allocation        }
+
+Var
+  LsInitialized   : Boolean;    { True si l etat est initialise       }
+  LsEmptyCount    : LongInt;    { nombre de listes vides creees       }
+  LsLiteralCount  : LongInt;    { nombre de listes literales          }
+  LsIndexCount    : LongInt;    { nombre d acces par index            }
+  LsNegIndexCount : LongInt;    { nombre d acces par index negatif    }
+  LsAssignCount   : LongInt;    { nombre d affectations par index     }
+  LsSliceCount    : LongInt;    { nombre de slices                    }
+  LsLenCount      : LongInt;    { nombre d appels a len(lst)          }
+  LsAppendCount   : LongInt;    { nombre d appels a append            }
+  LsPopCount      : LongInt;    { nombre d appels a pop               }
+  LsConcatCount   : LongInt;    { nombre de concatenations            }
+  LsMulCount      : LongInt;    { nombre de repetitions               }
+  LsContainsCount : LongInt;    { nombre d operateurs in              }
+  LsIterCount     : LongInt;    { nombre d iterations for             }
+  LsLastKind      : Integer;    { dernier type d operation liste      }
+  LsLabelSeq      : Integer;    { sequence pour labels liste          }
+
+{ ------------------------------------------------------------ }
+{ InitLsState : initialiser le sous-systeme des listes            }
+{ ------------------------------------------------------------ }
+
+Procedure InitLsState;
+Begin
+  LsInitialized   := True;
+  LsEmptyCount    := 0;
+  LsLiteralCount  := 0;
+  LsIndexCount    := 0;
+  LsNegIndexCount := 0;
+  LsAssignCount   := 0;
+  LsSliceCount    := 0;
+  LsLenCount      := 0;
+  LsAppendCount   := 0;
+  LsPopCount      := 0;
+  LsConcatCount   := 0;
+  LsMulCount      := 0;
+  LsContainsCount := 0;
+  LsIterCount     := 0;
+  LsLastKind      := LS_NONE;
+  LsLabelSeq      := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLsLabel : generer un label unique pour les listes             }
+{ ------------------------------------------------------------ }
+
+Function GenLsLabel : TString;
+Begin
+  Inc(LsLabelSeq);
+  GenLsLabel := '_PYL_LS_' + ItoS(LsLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ LsTypeName : retourner le nom du type d operation liste          }
+{ ------------------------------------------------------------ }
+
+Function LsTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    LS_NONE          : LsTypeName := 'LS_NONE';
+    LS_EMPTY         : LsTypeName := 'LS_EMPTY';
+    LS_LITERAL       : LsTypeName := 'LS_LITERAL';
+    LS_INDEX         : LsTypeName := 'LS_INDEX';
+    LS_NEG_INDEX     : LsTypeName := 'LS_NEG_INDEX';
+    LS_ASSIGN        : LsTypeName := 'LS_ASSIGN';
+    LS_SLICE         : LsTypeName := 'LS_SLICE';
+    LS_LEN           : LsTypeName := 'LS_LEN';
+    LS_APPEND        : LsTypeName := 'LS_APPEND';
+    LS_POP           : LsTypeName := 'LS_POP';
+    LS_CONCAT        : LsTypeName := 'LS_CONCAT';
+    LS_MUL           : LsTypeName := 'LS_MUL';
+    LS_CONTAINS      : LsTypeName := 'LS_CONTAINS';
+    LS_ITER          : LsTypeName := 'LS_ITER';
+  Else
+    LsTypeName := 'LS_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListEmpty : emettre le code pour creer une liste vide        }
+{   [] -> allocation d un bloc sur le heap avec count=0            }
+{   Layout : [count DD=0]                                         }
+{   Resultat dans EAX = ptr vers la liste                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListEmpty;
+Begin
+  LsLastKind := LS_EMPTY;
+  Inc(LsEmptyCount);
+  WriteLn('  ; [] -> liste vide');
+  WriteLn('  PUSH ', (LS_INIT_CAP + 1) * 4, ' ; taille : count + capacite');
+  WriteLn('  CALL _PYRT_ALLOC');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers le bloc');
+  WriteLn('  MOV DWORD PTR [EAX], 0  ; count = 0');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListLiteral : emettre le code pour creer une liste literale  }
+{   [e0, e1, ..., eN] -> allocation + stockage des elements        }
+{   ElemCount = nombre d elements                                 }
+{   Les valeurs sont deja empilees sur la pile (dernier en haut)  }
+{   Layout : [count DD][elem0 DD][elem1 DD]...                   }
+{   Resultat dans EAX = ptr vers la liste                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListLiteral(ElemCount : Integer);
+Var
+  I : Integer;
+Begin
+  LsLastKind := LS_LITERAL;
+  Inc(LsLiteralCount);
+  WriteLn('  ; [', ElemCount, ' elements] -> liste literale');
+  WriteLn('  PUSH ', (ElemCount + 1) * 4, ' ; taille : count + elements');
+  WriteLn('  CALL _PYRT_ALLOC');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers le bloc');
+  WriteLn('  MOV DWORD PTR [EAX], ', ElemCount, ' ; count = ', ElemCount);
+  { Les elements sont sur la pile, les depiler dans l ordre }
+  For I := ElemCount DownTo 1 Do
+  Begin
+    WriteLn('  POP ECX');
+    WriteLn('  MOV DWORD PTR [EAX+', I * 4, '], ECX ; elem[', I - 1, ']');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListIndex : emettre le code pour l acces par index           }
+{   lst[i] -> MOV EAX, [EBX+4+i*4]                               }
+{   EBX = ptr vers la liste, EAX = index                         }
+{   Resultat dans EAX = valeur de l element                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListIndex;
+Begin
+  LsLastKind := LS_INDEX;
+  Inc(LsIndexCount);
+  WriteLn('  ; lst[i] -> acces par index');
+  WriteLn('  ; EBX = ptr liste, EAX = index');
+  WriteLn('  SHL EAX, 2       ; index * 4');
+  WriteLn('  ADD EAX, 4       ; sauter le champ count');
+  WriteLn('  ADD EAX, EBX     ; adresse absolue');
+  WriteLn('  MOV EAX, [EAX]   ; charger l element');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListNegIndex : emettre le code pour l acces par index negatif }
+{   lst[-i] -> index = count + index (negatif)                    }
+{   EBX = ptr vers la liste, EAX = index negatif                 }
+{   Resultat dans EAX = valeur de l element                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListNegIndex;
+Begin
+  LsLastKind := LS_NEG_INDEX;
+  Inc(LsNegIndexCount);
+  WriteLn('  ; lst[-i] -> acces par index negatif');
+  WriteLn('  ; EBX = ptr liste, EAX = index negatif');
+  WriteLn('  MOV ECX, [EBX]   ; ECX = count');
+  WriteLn('  ADD EAX, ECX     ; index = count + index_negatif');
+  WriteLn('  SHL EAX, 2       ; index * 4');
+  WriteLn('  ADD EAX, 4       ; sauter le champ count');
+  WriteLn('  ADD EAX, EBX     ; adresse absolue');
+  WriteLn('  MOV EAX, [EAX]   ; charger l element');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListAssign : emettre le code pour l affectation par index    }
+{   lst[i] = val -> MOV [EBX+4+i*4], EAX                         }
+{   EBX = ptr vers la liste, ECX = index, EAX = valeur           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListAssign;
+Begin
+  LsLastKind := LS_ASSIGN;
+  Inc(LsAssignCount);
+  WriteLn('  ; lst[i] = val -> affectation par index');
+  WriteLn('  ; EBX = ptr liste, ECX = index, EAX = valeur');
+  WriteLn('  SHL ECX, 2       ; index * 4');
+  WriteLn('  ADD ECX, 4       ; sauter le champ count');
+  WriteLn('  ADD ECX, EBX     ; adresse absolue');
+  WriteLn('  MOV [ECX], EAX   ; stocker la valeur');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListSlice : emettre le code pour le slicing                  }
+{   lst[a:b] -> CALL _PYRT_LISTSLICE(ESI=lst, EAX=a, EDX=b)     }
+{   Resultat dans EAX = ptr vers la nouvelle sous-liste           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListSlice;
+Begin
+  LsLastKind := LS_SLICE;
+  Inc(LsSliceCount);
+  WriteLn('  ; lst[a:b] -> _PYRT_LISTSLICE');
+  WriteLn('  ; ESI = ptr liste, EAX = debut, EDX = fin');
+  WriteLn('  PUSH EDX         ; fin du slice');
+  WriteLn('  PUSH EAX         ; debut du slice');
+  WriteLn('  PUSH ESI         ; ptr vers la liste source');
+  WriteLn('  CALL _PYRT_LISTSLICE');
+  WriteLn('  ADD ESP, 12      ; EAX = ptr vers la sous-liste');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListLen : emettre le code pour len(lst)                      }
+{   Le compteur est en tete de la liste : MOV EAX, [EBX]         }
+{   EBX = ptr vers la liste                                      }
+{   Resultat dans EAX = nombre d elements                        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListLen;
+Begin
+  LsLastKind := LS_LEN;
+  Inc(LsLenCount);
+  WriteLn('  ; len(lst) -> compteur en tete de liste');
+  WriteLn('  ; EBX = ptr liste');
+  WriteLn('  MOV EAX, [EBX]   ; EAX = count');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListAppend : emettre le code pour lst.append(val)            }
+{   CALL _PYRT_LISTAPPEND(ESI=lst, EAX=val)                      }
+{   Ajoute l element en fin de liste, incremente count            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListAppend;
+Begin
+  LsLastKind := LS_APPEND;
+  Inc(LsAppendCount);
+  WriteLn('  ; lst.append(val) -> _PYRT_LISTAPPEND');
+  WriteLn('  ; ESI = ptr liste, EAX = valeur a ajouter');
+  WriteLn('  PUSH EAX         ; valeur');
+  WriteLn('  PUSH ESI         ; ptr vers la liste');
+  WriteLn('  CALL _PYRT_LISTAPPEND');
+  WriteLn('  ADD ESP, 8');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListPop : emettre le code pour lst.pop()                     }
+{   CALL _PYRT_LISTPOP(ESI=lst) -> EAX = dernier element         }
+{   Retire le dernier element, decremente count                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListPop;
+Begin
+  LsLastKind := LS_POP;
+  Inc(LsPopCount);
+  WriteLn('  ; lst.pop() -> _PYRT_LISTPOP');
+  WriteLn('  ; ESI = ptr liste');
+  WriteLn('  PUSH ESI         ; ptr vers la liste');
+  WriteLn('  CALL _PYRT_LISTPOP');
+  WriteLn('  ADD ESP, 4       ; EAX = element retire');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListConcat : emettre le code pour lst1 + lst2                }
+{   CALL _PYRT_LISTCONCAT(ESI=lst1, EDI=lst2) -> EAX=ptr         }
+{   Cree une nouvelle liste contenant les elements des deux       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListConcat;
+Begin
+  LsLastKind := LS_CONCAT;
+  Inc(LsConcatCount);
+  WriteLn('  ; lst1 + lst2 -> _PYRT_LISTCONCAT');
+  WriteLn('  ; ESI = ptr lst1, EDI = ptr lst2');
+  WriteLn('  PUSH EDI         ; ptr vers lst2');
+  WriteLn('  PUSH ESI         ; ptr vers lst1');
+  WriteLn('  CALL _PYRT_LISTCONCAT');
+  WriteLn('  ADD ESP, 8       ; EAX = ptr vers nouvelle liste');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListMul : emettre le code pour lst * n                       }
+{   CALL _PYRT_LISTMUL(ESI=lst, EAX=n) -> EAX=ptr                }
+{   Cree une nouvelle liste avec les elements repetes n fois      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListMul;
+Begin
+  LsLastKind := LS_MUL;
+  Inc(LsMulCount);
+  WriteLn('  ; lst * n -> _PYRT_LISTMUL');
+  WriteLn('  ; ESI = ptr liste, EAX = facteur de repetition');
+  WriteLn('  PUSH EAX         ; facteur de repetition');
+  WriteLn('  PUSH ESI         ; ptr vers la liste');
+  WriteLn('  CALL _PYRT_LISTMUL');
+  WriteLn('  ADD ESP, 8       ; EAX = ptr vers nouvelle liste');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListContains : emettre le code pour val in lst               }
+{   CALL _PYRT_LISTCONTAINS(ESI=lst, EAX=val) -> EAX=0|1        }
+{   Retourne 1 si l element est present, 0 sinon                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListContains;
+Begin
+  LsLastKind := LS_CONTAINS;
+  Inc(LsContainsCount);
+  WriteLn('  ; val in lst -> _PYRT_LISTCONTAINS');
+  WriteLn('  ; ESI = ptr liste, EAX = valeur recherchee');
+  WriteLn('  PUSH EAX         ; valeur recherchee');
+  WriteLn('  PUSH ESI         ; ptr vers la liste');
+  WriteLn('  CALL _PYRT_LISTCONTAINS');
+  WriteLn('  ADD ESP, 8       ; EAX = 0 ou 1');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitListIter : emettre le code pour iterer sur une liste         }
+{   for elem in lst : parcours sequentiel des elements            }
+{   EBX = ptr liste, ECX = index courant (0..count-1)             }
+{   A chaque iteration : MOV EAX, [EBX+4+ECX*4]                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitListIter;
+Var
+  LblTest, LblBody, LblIncr, LblEnd : TString;
+Begin
+  LsLastKind := LS_ITER;
+  Inc(LsIterCount);
+  LblTest := GenLsLabel;
+  LblBody := GenLsLabel;
+  LblIncr := GenLsLabel;
+  LblEnd  := GenLsLabel;
+  WriteLn('  ; for elem in lst -> iteration');
+  WriteLn('  ; EBX = ptr liste');
+  WriteLn('  XOR ECX, ECX     ; ECX = index = 0');
+  WriteLn(LblTest, ':');
+  WriteLn('  CMP ECX, [EBX]   ; comparer index avec count');
+  WriteLn('  JGE ', LblEnd, '  ; si index >= count, fin');
+  WriteLn(LblBody, ':');
+  WriteLn('  MOV EAX, ECX');
+  WriteLn('  SHL EAX, 2       ; index * 4');
+  WriteLn('  MOV EAX, [EBX+EAX+4] ; charger elem[index]');
+  WriteLn('  ; --- corps de la boucle ici ---');
+  WriteLn(LblIncr, ':');
+  WriteLn('  INC ECX           ; index++');
+  WriteLn('  JMP ', LblTest);
+  WriteLn(LblEnd, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseListExpr : analyser une expression de liste                 }
+{   [expr1, expr2, ...] -> EmitListLiteral                        }
+{   [] -> EmitListEmpty                                           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseListExpr;
+Var
+  ElemCount : Integer;
+Begin
+  ElemCount := 0;
+
+  { On attend que '[' soit deja consomme }
+  { Verifier s il s agit d une liste vide }
+  If (CurTokKind = TK_OP) And (CurTokStr = ']') Then
+  Begin
+    { Liste vide }
+    EmitListEmpty;
+    LexNextToken;  { consommer ']' }
+    Exit;
+  End;
+
+  { Boucle sur les elements }
+  While Not ((CurTokKind = TK_OP) And (CurTokStr = ']')) And
+        Not (CurTokKind = TK_EOF) Do
+  Begin
+    Inc(ElemCount);
+
+    { Evaluer l element }
+    If CurTokKind = TK_INTEGER Then
+    Begin
+      WriteLn('  PUSH ', CurTokInt, ' ; elem[', ElemCount - 1, ']');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_STRING Then
+    Begin
+      WriteLn('  PUSH OFFSET ', GenLsLabel, ' ; elem[', ElemCount - 1, '] (str)');
+      LexNextToken;
+    End
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'True') Then
+    Begin
+      WriteLn('  PUSH 1           ; elem[', ElemCount - 1, '] (True)');
+      LexNextToken;
+    End
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'False') Then
+    Begin
+      WriteLn('  PUSH 0           ; elem[', ElemCount - 1, '] (False)');
+      LexNextToken;
+    End
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'None') Then
+    Begin
+      WriteLn('  PUSH 0           ; elem[', ElemCount - 1, '] (None)');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      WriteLn('  PUSH DWORD PTR [', SymMangle(CurTokStr, SK_VAR),
+              ']  ; elem[', ElemCount - 1, '] (var)');
+      LexNextToken;
+    End
+    Else
+    Begin
+      { Expression generique }
+      WriteLn('  PUSH EAX         ; elem[', ElemCount - 1, ']');
+      LexNextToken;
+    End;
+
+    { Consommer la virgule entre elements }
+    If (CurTokKind = TK_OP) And (CurTokStr = ',') Then
+      LexNextToken;
+  End;
+
+  { Consommer ']' }
+  If (CurTokKind = TK_OP) And (CurTokStr = ']') Then
+    LexNextToken;
+
+  { Emettre le code pour creer la liste }
+  If ElemCount = 0 Then
+    EmitListEmpty
+  Else
+    EmitListLiteral(ElemCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpLsState : afficher l etat du sous-systeme des listes         }
+{ ------------------------------------------------------------ }
+
+Procedure DumpLsState;
+Begin
+  WriteLn('--- List State ---');
+  WriteLn('  LsInitialized   : ', LsInitialized);
+  WriteLn('  LsEmptyCount    : ', LsEmptyCount);
+  WriteLn('  LsLiteralCount  : ', LsLiteralCount);
+  WriteLn('  LsIndexCount    : ', LsIndexCount);
+  WriteLn('  LsNegIndexCount : ', LsNegIndexCount);
+  WriteLn('  LsAssignCount   : ', LsAssignCount);
+  WriteLn('  LsSliceCount    : ', LsSliceCount);
+  WriteLn('  LsLenCount      : ', LsLenCount);
+  WriteLn('  LsAppendCount   : ', LsAppendCount);
+  WriteLn('  LsPopCount      : ', LsPopCount);
+  WriteLn('  LsConcatCount   : ', LsConcatCount);
+  WriteLn('  LsMulCount      : ', LsMulCount);
+  WriteLn('  LsContainsCount : ', LsContainsCount);
+  WriteLn('  LsIterCount     : ', LsIterCount);
+  WriteLn('  LsLastKind      : ', LsTypeName(LsLastKind));
+  WriteLn('  LsLabelSeq      : ', LsLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 14)                              }
+{ ------------------------------------------------------------ }
+
+Function IsLsInitialized : Boolean;
+Begin
+  IsLsInitialized := LsInitialized;
+End;
+
+Function IsLsEmpty : Boolean;
+Begin
+  IsLsEmpty := (LsEmptyCount = 0) And (LsLiteralCount = 0) And
+               (LsIndexCount = 0) And (LsAppendCount = 0);
+End;
+
+Function GetLsEmptyCount : LongInt;
+Begin
+  GetLsEmptyCount := LsEmptyCount;
+End;
+
+Function GetLsLiteralCount : LongInt;
+Begin
+  GetLsLiteralCount := LsLiteralCount;
+End;
+
+Function GetLsIndexCount : LongInt;
+Begin
+  GetLsIndexCount := LsIndexCount;
+End;
+
+Function GetLsAppendCount : LongInt;
+Begin
+  GetLsAppendCount := LsAppendCount;
+End;
+
+Function GetLsPopCount : LongInt;
+Begin
+  GetLsPopCount := LsPopCount;
+End;
+
+Function GetLsConcatCount : LongInt;
+Begin
+  GetLsConcatCount := LsConcatCount;
+End;
+
+Function GetLsContainsCount : LongInt;
+Begin
+  GetLsContainsCount := LsContainsCount;
+End;
+
+Function GetLsStatus : TString;
+Begin
+  If Not LsInitialized Then
+    GetLsStatus := 'Not initialized'
+  Else
+    GetLsStatus := ItoS(LsEmptyCount) + ' empty, ' +
+                   ItoS(LsLiteralCount) + ' literal, ' +
+                   ItoS(LsIndexCount) + ' index, ' +
+                   ItoS(LsAppendCount) + ' append, ' +
+                   ItoS(LsPopCount) + ' pop, ' +
+                   ItoS(LsConcatCount) + ' concat, ' +
+                   ItoS(LsContainsCount) + ' contains';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -8523,6 +9062,7 @@ Begin
   LpInitialized := False;
   FnInitialized := False;
   IoInitialized := False;
+  LsInitialized := False;
 
   ParseArgs;
 
@@ -8561,6 +9101,9 @@ Begin
 
   { Initialiser le sous-systeme des entrees/sorties }
   InitIoState;
+
+  { Initialiser le sous-systeme des listes }
+  InitLsState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -8627,6 +9170,13 @@ Begin
     WriteLn('Input            : ', GetIoInputCount);
     WriteLn('Input avec prompt: ', GetIoInputPromptCount);
     WriteLn('Int(input())     : ', GetIoIntInputCount);
+    WriteLn('Listes vides     : ', GetLsEmptyCount);
+    WriteLn('Listes literales : ', GetLsLiteralCount);
+    WriteLn('Acces index lst  : ', GetLsIndexCount);
+    WriteLn('Appels append    : ', GetLsAppendCount);
+    WriteLn('Appels pop       : ', GetLsPopCount);
+    WriteLn('Concatenations   : ', GetLsConcatCount);
+    WriteLn('Operateurs in    : ', GetLsContainsCount);
   End;
 
   If Opts.DebugMode Then
@@ -8642,6 +9192,7 @@ Begin
     DumpLpState;
     DumpFnState;
     DumpIoState;
+    DumpLsState;
   End;
 
   { Nettoyage }
