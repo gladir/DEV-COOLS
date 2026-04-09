@@ -570,7 +570,7 @@
             Heap allocation : _PYRT_HEAPALLOC(ECX=taille) -> EAX=ptr
             10 fonctions accesseurs
 
-  TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ [A FAIRE]
+  TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ [IMPLEMENTE]
             Ecrivain PE (.EXE) - structure PE32 complete :
               DOS Header (64 octets) avec DOS stub
               Signature PE "PE\0\0"
