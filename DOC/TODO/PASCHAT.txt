@@ -281,12 +281,20 @@
             DumpFmtState : afficher l'etat
             10 accesseurs : IsFmtInitialized, IsFmtEmpty, GetFmt*Count
 
-  TODO 19 - AIDE EN LIGNE ET EXEMPLES [A FAIRE]
+  TODO 19 - AIDE EN LIGNE ET EXEMPLES [IMPLEMENTE]
+            HLP_NONE=0..HLP_MAX=13 : constantes types d'aide
+            HLP_MAX_KEYWORDS=100, HLP_MAX_EXAMPLES=20, HLP_MAX_TOPICS=30 : limites
+            HlpInitialized + 15 variables d'etat
+            InitHlpState : initialiser l'etat
+            GenHlpLabel : generer un label unique
+            HlpTypeName : nom du type d'aide
             ShowHelp : afficher l'aide generale
             ShowExamples : afficher des exemples de requetes
             ShowSyntax(Topic) : afficher la syntaxe Pascal d'un element
             ShowKeywords : lister les mots-cles reconnus
             ShowCapabilities : lister les capacites du chatbot
+            DumpHlpState : afficher l'etat
+            10 accesseurs : IsHlpInitialized, IsHlpEmpty, GetHlp*Count
 
   TODO 20 - SAUVEGARDE DES PROGRAMMES GENERES [A FAIRE]
             SaveProgram(Code, FileName) : sauvegarder dans un fichier .pas

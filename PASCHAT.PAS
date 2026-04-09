@@ -303,12 +303,20 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 19 - AIDE EN LIGNE ET EXEMPLES [A FAIRE]
+  TODO 19 - AIDE EN LIGNE ET EXEMPLES [IMPLEMENTE]
+            HLP_NONE=0..HLP_MAX=13 : constantes types d'aide
+            HLP_MAX_KEYWORDS=100, HLP_MAX_EXAMPLES=20, HLP_MAX_TOPICS=30 : limites
+            HlpInitialized + 15 variables d'etat
+            InitHlpState : initialiser l'etat
+            GenHlpLabel : generer un label unique
+            HlpTypeName : nom du type d'aide
             ShowHelp : afficher l'aide generale
             ShowExamples : afficher des exemples de requetes
             ShowSyntax(Topic) : afficher la syntaxe Pascal d'un element
             ShowKeywords : lister les mots-cles reconnus
             ShowCapabilities : lister les capacites du chatbot
+            DumpHlpState : afficher l'etat
+            10 accesseurs : IsHlpInitialized, IsHlpEmpty, GetHlp*Count
   ============================================================ }
 
 { ============================================================
@@ -765,6 +773,27 @@ Const
   FMT_MAX_WIDTH   = 80;  { Largeur max de ligne }
   FMT_TAB_SIZE    = 2;   { Taille de tabulation }
   FMT_MAX_LINES   = 500; { Nombre max de lignes }
+
+  { Types d'aide pour TODO 19 }
+  HLP_NONE        = 0;   { Aucune aide }
+  HLP_GENERAL     = 1;   { Aide generale }
+  HLP_EXAMPLES    = 2;   { Exemples de requetes }
+  HLP_SYNTAX      = 3;   { Syntaxe Pascal }
+  HLP_KEYWORDS    = 4;   { Mots-cles reconnus }
+  HLP_CAPABILITIES = 5;  { Capacites du chatbot }
+  HLP_COMMANDS    = 6;   { Commandes disponibles }
+  HLP_TYPES       = 7;   { Types Pascal }
+  HLP_CONTROL     = 8;   { Structures de controle }
+  HLP_PROCS       = 9;   { Procedures/fonctions }
+  HLP_UNITS       = 10;  { Unites Pascal }
+  HLP_IO          = 11;  { Entrees/sorties }
+  HLP_FILES       = 12;  { Fichiers }
+  HLP_MAX         = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 19 }
+  HLP_MAX_KEYWORDS = 100;  { Nombre max de mots-cles }
+  HLP_MAX_EXAMPLES = 20;   { Nombre max d'exemples }
+  HLP_MAX_TOPICS   = 30;   { Nombre max de sujets }
 
 { ============================================================
   TYPES
@@ -1264,6 +1293,24 @@ Var
   FmtTotalCount   : Integer;
   FmtLabelNum     : Integer;
   FormatOpts      : TFormatOptions;
+
+  { TODO 19 - Aide en ligne et exemples }
+  HlpInitialized   : Boolean;
+  HlpStateCount    : Integer;
+  HlpGeneralCount  : Integer;
+  HlpExamplesCount : Integer;
+  HlpSyntaxCount   : Integer;
+  HlpKeywordsCount : Integer;
+  HlpCapabCount    : Integer;
+  HlpCommandsCount : Integer;
+  HlpTypesCount    : Integer;
+  HlpControlCount  : Integer;
+  HlpProcsCount    : Integer;
+  HlpUnitsCount    : Integer;
+  HlpIOCount       : Integer;
+  HlpFilesCount    : Integer;
+  HlpTotalCount    : Integer;
+  HlpLabelNum      : Integer;
 
   { TODO 20 - Code genere courant }
   GeneratedCode : Array[1..MAX_CODE_LINES] of TCodeLine;
@@ -8239,26 +8286,478 @@ End;
   TODO 19 - AIDE EN LIGNE ET EXEMPLES
   ============================================================ }
 
-Procedure ShowHelpCommand;
+Procedure InitHlpState;
+Begin
+  HlpInitialized := True;
+  HlpStateCount := 0;
+  HlpGeneralCount := 0;
+  HlpExamplesCount := 0;
+  HlpSyntaxCount := 0;
+  HlpKeywordsCount := 0;
+  HlpCapabCount := 0;
+  HlpCommandsCount := 0;
+  HlpTypesCount := 0;
+  HlpControlCount := 0;
+  HlpProcsCount := 0;
+  HlpUnitsCount := 0;
+  HlpIOCount := 0;
+  HlpFilesCount := 0;
+  HlpTotalCount := 0;
+  HlpLabelNum := 0;
+  Inc(HlpStateCount);
+End;
+
+Function GenHlpLabel: String;
+Begin
+  Inc(HlpLabelNum);
+  GenHlpLabel := '_HLP_' + IntToStr(HlpLabelNum);
+End;
+
+Function HlpTypeName(T: Integer): String;
+Begin
+  Case T of
+    HLP_NONE:        HlpTypeName := 'NONE';
+    HLP_GENERAL:     HlpTypeName := 'GENERAL';
+    HLP_EXAMPLES:    HlpTypeName := 'EXAMPLES';
+    HLP_SYNTAX:      HlpTypeName := 'SYNTAX';
+    HLP_KEYWORDS:    HlpTypeName := 'KEYWORDS';
+    HLP_CAPABILITIES: HlpTypeName := 'CAPABILITIES';
+    HLP_COMMANDS:    HlpTypeName := 'COMMANDS';
+    HLP_TYPES:       HlpTypeName := 'TYPES';
+    HLP_CONTROL:     HlpTypeName := 'CONTROL';
+    HLP_PROCS:       HlpTypeName := 'PROCS';
+    HLP_UNITS:       HlpTypeName := 'UNITS';
+    HLP_IO:          HlpTypeName := 'IO';
+    HLP_FILES:       HlpTypeName := 'FILES';
+  Else
+    HlpTypeName := 'UNKNOWN';
+  End;
+End;
+
+Procedure ShowHelp;
 Begin
   WriteLn;
-  WriteLn('=== Aide PASCHAT ===');
+  WriteLn('============================================================');
+  WriteLn('  PASCHAT - Agent conversationnel generateur de code Pascal');
+  WriteLn('============================================================');
   WriteLn;
-  WriteLn('Commandes disponibles:');
-  WriteLn('  /help, /aide   - Afficher cette aide');
-  WriteLn('  /quit, /exit   - Quitter le programme');
-  WriteLn('  /save [nom]    - Sauvegarder le dernier code');
-  WriteLn('  /history       - Afficher l''historique');
-  WriteLn('  /clear         - Effacer l''historique');
+  WriteLn('PASCHAT est un chatbot en francais qui peut generer du code');
+  WriteLn('Turbo Pascal / Free Pascal a partir de vos demandes.');
   WriteLn;
-  WriteLn('Exemples de requetes:');
-  WriteLn('  "Ecris-moi un programme bonjour en Pascal"');
-  WriteLn('  "Genere les 10 premiers nombres premiers"');
-  WriteLn('  "Affiche la date et l''heure"');
-  WriteLn('  "Ecris une unite sur le temps"');
-  WriteLn('  "Fais-moi une calculatrice"');
-  WriteLn('  "Programme de suite de Fibonacci"');
+  WriteLn('COMMANDES DISPONIBLES:');
+  WriteLn('  /help, /aide        - Afficher cette aide generale');
+  WriteLn('  /examples           - Afficher des exemples de requetes');
+  WriteLn('  /syntax [element]   - Afficher la syntaxe d''un element Pascal');
+  WriteLn('  /keywords           - Lister les mots-cles reconnus');
+  WriteLn('  /capabilities       - Lister les capacites du chatbot');
+  WriteLn('  /quit, /exit        - Quitter le programme');
+  WriteLn('  /save [fichier.pas] - Sauvegarder le dernier code genere');
+  WriteLn('  /history            - Afficher l''historique de conversation');
+  WriteLn('  /clear              - Effacer l''historique');
   WriteLn;
+  WriteLn('UTILISATION:');
+  WriteLn('  Tapez simplement votre demande en francais, par exemple:');
+  WriteLn('    "Ecris-moi un programme bonjour"');
+  WriteLn('    "Genere une unite pour les chaines"');
+  WriteLn;
+  Inc(HlpGeneralCount);
+  Inc(HlpTotalCount);
+End;
+
+Procedure ShowExamples;
+Begin
+  WriteLn;
+  WriteLn('=== EXEMPLES DE REQUETES ===');
+  WriteLn;
+  WriteLn('PROGRAMMES DE BASE:');
+  WriteLn('  - "Ecris-moi un programme bonjour en Pascal"');
+  WriteLn('  - "Fais un programme interactif qui demande le nom"');
+  WriteLn('  - "Genere un programme qui affiche la date"');
+  WriteLn;
+  WriteLn('PROGRAMMES MATHEMATIQUES:');
+  WriteLn('  - "Affiche les 10 premiers nombres premiers"');
+  WriteLn('  - "Programme de suite de Fibonacci"');
+  WriteLn('  - "Calcule la factorielle d''un nombre"');
+  WriteLn('  - "Fais-moi une calculatrice simple"');
+  WriteLn('  - "Programme pour calculer le PGCD"');
+  WriteLn;
+  WriteLn('PROGRAMMES DATE/HEURE:');
+  WriteLn('  - "Affiche la date et l''heure"');
+  WriteLn('  - "Genere un calendrier mensuel"');
+  WriteLn('  - "Chronometre simple"');
+  WriteLn;
+  WriteLn('UNITES PASCAL:');
+  WriteLn('  - "Ecris une unite pour le temps"');
+  WriteLn('  - "Genere une unite de manipulation de chaines"');
+  WriteLn('  - "Unite mathematique etendue"');
+  WriteLn;
+  WriteLn('STRUCTURES ET TYPES:');
+  WriteLn('  - "Explique-moi les tableaux en Pascal"');
+  WriteLn('  - "Comment faire un record?"');
+  WriteLn('  - "Montre-moi une boucle FOR"');
+  WriteLn;
+  Inc(HlpExamplesCount);
+  Inc(HlpTotalCount);
+End;
+
+Procedure ShowSyntax(Topic: String);
+Var
+  T: String;
+Begin
+  T := UpCaseStr(Trim(Topic));
+  WriteLn;
+  
+  If (Pos('IF', T) > 0) or (Pos('THEN', T) > 0) or (Pos('ELSE', T) > 0) Then Begin
+    WriteLn('=== SYNTAXE IF..THEN..ELSE ===');
+    WriteLn;
+    WriteLn('IF condition THEN');
+    WriteLn('  instruction;');
+    WriteLn;
+    WriteLn('IF condition THEN');
+    WriteLn('  instruction1');
+    WriteLn('ELSE');
+    WriteLn('  instruction2;');
+    WriteLn;
+    WriteLn('IF condition THEN BEGIN');
+    WriteLn('  instruction1;');
+    WriteLn('  instruction2;');
+    WriteLn('END');
+    WriteLn('ELSE BEGIN');
+    WriteLn('  instruction3;');
+    WriteLn('  instruction4;');
+    WriteLn('END;');
+  End
+  Else If (Pos('FOR', T) > 0) or (Pos('BOUCLE', T) > 0) Then Begin
+    WriteLn('=== SYNTAXE FOR..TO..DO ===');
+    WriteLn;
+    WriteLn('FOR variable := debut TO fin DO');
+    WriteLn('  instruction;');
+    WriteLn;
+    WriteLn('FOR variable := debut DOWNTO fin DO');
+    WriteLn('  instruction;');
+    WriteLn;
+    WriteLn('FOR I := 1 TO 10 DO BEGIN');
+    WriteLn('  WriteLn(I);');
+    WriteLn('END;');
+  End
+  Else If (Pos('WHILE', T) > 0) Then Begin
+    WriteLn('=== SYNTAXE WHILE..DO ===');
+    WriteLn;
+    WriteLn('WHILE condition DO');
+    WriteLn('  instruction;');
+    WriteLn;
+    WriteLn('WHILE condition DO BEGIN');
+    WriteLn('  instruction1;');
+    WriteLn('  instruction2;');
+    WriteLn('END;');
+  End
+  Else If (Pos('REPEAT', T) > 0) or (Pos('UNTIL', T) > 0) Then Begin
+    WriteLn('=== SYNTAXE REPEAT..UNTIL ===');
+    WriteLn;
+    WriteLn('REPEAT');
+    WriteLn('  instruction1;');
+    WriteLn('  instruction2;');
+    WriteLn('UNTIL condition;');
+  End
+  Else If (Pos('CASE', T) > 0) Then Begin
+    WriteLn('=== SYNTAXE CASE..OF ===');
+    WriteLn;
+    WriteLn('CASE expression OF');
+    WriteLn('  valeur1: instruction1;');
+    WriteLn('  valeur2: instruction2;');
+    WriteLn('  valeur3, valeur4: instruction3;');
+    WriteLn('ELSE');
+    WriteLn('  instructionDefaut;');
+    WriteLn('END;');
+  End
+  Else If (Pos('PROCEDURE', T) > 0) or (Pos('PROC', T) > 0) Then Begin
+    WriteLn('=== SYNTAXE PROCEDURE ===');
+    WriteLn;
+    WriteLn('PROCEDURE NomProcedure;');
+    WriteLn('BEGIN');
+    WriteLn('  { instructions }');
+    WriteLn('END;');
+    WriteLn;
+    WriteLn('PROCEDURE NomProcedure(param1: Type1; VAR param2: Type2);');
+    WriteLn('VAR');
+    WriteLn('  localVar: Type;');
+    WriteLn('BEGIN');
+    WriteLn('  { instructions }');
+    WriteLn('END;');
+  End
+  Else If (Pos('FUNCTION', T) > 0) or (Pos('FUNC', T) > 0) or (Pos('FONCTION', T) > 0) Then Begin
+    WriteLn('=== SYNTAXE FUNCTION ===');
+    WriteLn;
+    WriteLn('FUNCTION NomFonction: TypeRetour;');
+    WriteLn('BEGIN');
+    WriteLn('  NomFonction := valeur;');
+    WriteLn('END;');
+    WriteLn;
+    WriteLn('FUNCTION NomFonction(param: Type): TypeRetour;');
+    WriteLn('VAR');
+    WriteLn('  localVar: Type;');
+    WriteLn('BEGIN');
+    WriteLn('  { calculs }');
+    WriteLn('  NomFonction := resultat;');
+    WriteLn('END;');
+  End
+  Else If (Pos('ARRAY', T) > 0) or (Pos('TABLEAU', T) > 0) Then Begin
+    WriteLn('=== SYNTAXE ARRAY (TABLEAU) ===');
+    WriteLn;
+    WriteLn('VAR');
+    WriteLn('  Tab: Array[1..100] of Integer;');
+    WriteLn('  Mat: Array[1..10, 1..10] of Real;');
+    WriteLn;
+    WriteLn('TYPE');
+    WriteLn('  TTableau = Array[0..99] of String;');
+    WriteLn;
+    WriteLn('Acces: Tab[5] := 10;');
+    WriteLn('       Mat[2,3] := 3.14;');
+  End
+  Else If (Pos('RECORD', T) > 0) or (Pos('ENREGISTREMENT', T) > 0) Then Begin
+    WriteLn('=== SYNTAXE RECORD (ENREGISTREMENT) ===');
+    WriteLn;
+    WriteLn('TYPE');
+    WriteLn('  TPersonne = Record');
+    WriteLn('    Nom: String[50];');
+    WriteLn('    Age: Integer;');
+    WriteLn('    Actif: Boolean;');
+    WriteLn('  End;');
+    WriteLn;
+    WriteLn('VAR');
+    WriteLn('  P: TPersonne;');
+    WriteLn;
+    WriteLn('Acces: P.Nom := ''Dupont'';');
+    WriteLn('       P.Age := 25;');
+  End
+  Else If (Pos('UNIT', T) > 0) or (Pos('UNITE', T) > 0) Then Begin
+    WriteLn('=== SYNTAXE UNIT (UNITE) ===');
+    WriteLn;
+    WriteLn('UNIT MonUnite;');
+    WriteLn;
+    WriteLn('INTERFACE');
+    WriteLn('  PROCEDURE MaProcPublique;');
+    WriteLn('  FUNCTION MaFoncPublique: Integer;');
+    WriteLn;
+    WriteLn('IMPLEMENTATION');
+    WriteLn;
+    WriteLn('PROCEDURE MaProcPublique;');
+    WriteLn('BEGIN');
+    WriteLn('  { code }');
+    WriteLn('END;');
+    WriteLn;
+    WriteLn('FUNCTION MaFoncPublique: Integer;');
+    WriteLn('BEGIN');
+    WriteLn('  MaFoncPublique := 42;');
+    WriteLn('END;');
+    WriteLn;
+    WriteLn('END.');
+  End
+  Else If (Pos('PROGRAM', T) > 0) or (Pos('PROGRAMME', T) > 0) Then Begin
+    WriteLn('=== SYNTAXE PROGRAM ===');
+    WriteLn;
+    WriteLn('PROGRAM NomDuProgramme;');
+    WriteLn;
+    WriteLn('USES');
+    WriteLn('  Crt, Dos;');
+    WriteLn;
+    WriteLn('CONST');
+    WriteLn('  MAX = 100;');
+    WriteLn;
+    WriteLn('TYPE');
+    WriteLn('  TMonType = Integer;');
+    WriteLn;
+    WriteLn('VAR');
+    WriteLn('  MaVariable: TMonType;');
+    WriteLn;
+    WriteLn('BEGIN');
+    WriteLn('  { instructions du programme }');
+    WriteLn('END.');
+  End
+  Else Begin
+    WriteLn('=== SYNTAXE PASCAL - AIDE ===');
+    WriteLn;
+    WriteLn('Sujets disponibles:');
+    WriteLn('  /syntax if       - Structure IF..THEN..ELSE');
+    WriteLn('  /syntax for      - Boucle FOR');
+    WriteLn('  /syntax while    - Boucle WHILE');
+    WriteLn('  /syntax repeat   - Boucle REPEAT..UNTIL');
+    WriteLn('  /syntax case     - Structure CASE..OF');
+    WriteLn('  /syntax procedure - Declaration de procedure');
+    WriteLn('  /syntax function  - Declaration de fonction');
+    WriteLn('  /syntax array     - Tableaux');
+    WriteLn('  /syntax record    - Enregistrements');
+    WriteLn('  /syntax unit      - Unites');
+    WriteLn('  /syntax program   - Structure de programme');
+  End;
+  
+  WriteLn;
+  Inc(HlpSyntaxCount);
+  Inc(HlpTotalCount);
+End;
+
+Procedure ShowKeywords;
+Begin
+  WriteLn;
+  WriteLn('=== MOTS-CLES PASCAL RECONNUS ===');
+  WriteLn;
+  WriteLn('STRUCTURE DU PROGRAMME:');
+  WriteLn('  PROGRAM, UNIT, INTERFACE, IMPLEMENTATION');
+  WriteLn('  USES, CONST, TYPE, VAR, LABEL');
+  WriteLn('  BEGIN, END');
+  WriteLn;
+  WriteLn('PROCEDURES ET FONCTIONS:');
+  WriteLn('  PROCEDURE, FUNCTION, FORWARD, EXTERNAL');
+  WriteLn('  NEAR, FAR, INLINE, ASSEMBLER');
+  WriteLn;
+  WriteLn('TYPES DE DONNEES:');
+  WriteLn('  INTEGER, LONGINT, WORD, BYTE, SHORTINT');
+  WriteLn('  REAL, SINGLE, DOUBLE, EXTENDED');
+  WriteLn('  CHAR, STRING, BOOLEAN');
+  WriteLn('  ARRAY, RECORD, SET, FILE, POINTER');
+  WriteLn;
+  WriteLn('STRUCTURES DE CONTROLE:');
+  WriteLn('  IF, THEN, ELSE');
+  WriteLn('  FOR, TO, DOWNTO, DO');
+  WriteLn('  WHILE, REPEAT, UNTIL');
+  WriteLn('  CASE, OF');
+  WriteLn('  WITH');
+  WriteLn;
+  WriteLn('CONTROLE DE FLUX:');
+  WriteLn('  BREAK, EXIT, CONTINUE, HALT');
+  WriteLn('  GOTO');
+  WriteLn;
+  WriteLn('OPERATEURS LOGIQUES:');
+  WriteLn('  AND, OR, NOT, XOR');
+  WriteLn('  IN, DIV, MOD, SHL, SHR');
+  WriteLn;
+  WriteLn('AUTRES:');
+  WriteLn('  NIL, TRUE, FALSE');
+  WriteLn('  INITIALIZATION, FINALIZATION');
+  WriteLn;
+  Inc(HlpKeywordsCount);
+  Inc(HlpTotalCount);
+End;
+
+Procedure ShowCapabilities;
+Begin
+  WriteLn;
+  WriteLn('=== CAPACITES DE PASCHAT ===');
+  WriteLn;
+  WriteLn('GENERATION DE CODE PASCAL:');
+  WriteLn('  - Programmes complets avec PROGRAM..BEGIN..END');
+  WriteLn('  - Unites (UNIT) avec Interface/Implementation');
+  WriteLn('  - Procedures et fonctions avec parametres');
+  WriteLn('  - Declarations de types, constantes, variables');
+  WriteLn;
+  WriteLn('PROGRAMMES PREDEFINIS:');
+  WriteLn('  - Programme "Bonjour le monde" (plusieurs variantes)');
+  WriteLn('  - Nombres premiers, Fibonacci, factorielle');
+  WriteLn('  - Calculatrice simple');
+  WriteLn('  - Date et heure, calendrier');
+  WriteLn('  - PGCD (plus grand commun diviseur)');
+  WriteLn;
+  WriteLn('UNITES PREDEFINES:');
+  WriteLn('  - Unite de gestion du temps');
+  WriteLn('  - Unite de manipulation de chaines');
+  WriteLn('  - Unite mathematique etendue');
+  WriteLn('  - Unite pour les fichiers');
+  WriteLn('  - Unite pour la console');
+  WriteLn;
+  WriteLn('FONCTIONNALITES:');
+  WriteLn('  - Interface en francais');
+  WriteLn('  - Historique de conversation');
+  WriteLn('  - Sauvegarde du code genere');
+  WriteLn('  - Aide contextuelle');
+  WriteLn('  - Formatage automatique du code');
+  WriteLn('  - Templates de code reutilisables');
+  WriteLn;
+  WriteLn('COMPATIBILITE:');
+  WriteLn('  - Turbo Pascal 7.0');
+  WriteLn('  - Free Pascal (mode -Mtp)');
+  WriteLn;
+  Inc(HlpCapabCount);
+  Inc(HlpTotalCount);
+End;
+
+Procedure ShowHelpCommand;
+Begin
+  ShowHelp;
+  Inc(HlpCommandsCount);
+End;
+
+Procedure DumpHlpState;
+Begin
+  WriteLn('=== HLP State (TODO 19) ===');
+  WriteLn('Initialized:   ', HlpInitialized);
+  WriteLn('StateCount:    ', HlpStateCount);
+  WriteLn('GeneralCount:  ', HlpGeneralCount);
+  WriteLn('ExamplesCount: ', HlpExamplesCount);
+  WriteLn('SyntaxCount:   ', HlpSyntaxCount);
+  WriteLn('KeywordsCount: ', HlpKeywordsCount);
+  WriteLn('CapabCount:    ', HlpCapabCount);
+  WriteLn('CommandsCount: ', HlpCommandsCount);
+  WriteLn('TypesCount:    ', HlpTypesCount);
+  WriteLn('ControlCount:  ', HlpControlCount);
+  WriteLn('ProcsCount:    ', HlpProcsCount);
+  WriteLn('UnitsCount:    ', HlpUnitsCount);
+  WriteLn('IOCount:       ', HlpIOCount);
+  WriteLn('FilesCount:    ', HlpFilesCount);
+  WriteLn('TotalCount:    ', HlpTotalCount);
+  WriteLn('LabelNum:      ', HlpLabelNum);
+  WriteLn;
+End;
+
+{ Accesseurs TODO 19 }
+
+Function IsHlpInitialized: Boolean;
+Begin
+  IsHlpInitialized := HlpInitialized;
+End;
+
+Function IsHlpEmpty: Boolean;
+Begin
+  IsHlpEmpty := HlpTotalCount = 0;
+End;
+
+Function GetHlpStateCount: Integer;
+Begin
+  GetHlpStateCount := HlpStateCount;
+End;
+
+Function GetHlpGeneralCount: Integer;
+Begin
+  GetHlpGeneralCount := HlpGeneralCount;
+End;
+
+Function GetHlpExamplesCount: Integer;
+Begin
+  GetHlpExamplesCount := HlpExamplesCount;
+End;
+
+Function GetHlpSyntaxCount: Integer;
+Begin
+  GetHlpSyntaxCount := HlpSyntaxCount;
+End;
+
+Function GetHlpKeywordsCount: Integer;
+Begin
+  GetHlpKeywordsCount := HlpKeywordsCount;
+End;
+
+Function GetHlpCapabCount: Integer;
+Begin
+  GetHlpCapabCount := HlpCapabCount;
+End;
+
+Function GetHlpTotalCount: Integer;
+Begin
+  GetHlpTotalCount := HlpTotalCount;
+End;
+
+Function GetHlpLabelNum: Integer;
+Begin
+  GetHlpLabelNum := HlpLabelNum;
 End;
 
 { ============================================================
@@ -8515,6 +9014,10 @@ Begin
   FmtInitialized := False;
   InitFmtState;
 
+  { Initialiser l'etat de l'aide en ligne (TODO 19) }
+  HlpInitialized := False;
+  InitHlpState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -8535,6 +9038,7 @@ Begin
     DumpChtState;
     DumpRspState;
     DumpFmtState;
+    DumpHlpState;
   End;
 
   Run;
