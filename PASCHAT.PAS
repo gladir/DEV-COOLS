@@ -225,12 +225,20 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 15 - GENERATION D'UNITES PERSONNALISEES [A FAIRE]
+  TODO 15 - GENERATION D'UNITES PERSONNALISEES [IMPLEMENTE]
+            CUS_NONE=0..CUS_MAX=13 : constantes types d'unites
+            CUS_MAX_FUNCS=20, CUS_MAX_PROCS=20 : limites
+            CusInitialized + 15 variables d'etat
+            InitCusState : initialiser l'etat
+            GenCusLabel : generer un label unique
+            CusTypeName : nom du type d'unite
             GenTimeUnit : generer une unite pour le temps
             GenStringUnit : generer une unite pour les chaines
             GenMathUnit : generer une unite mathematique etendue
             GenFileUnit : generer une unite pour les fichiers
             GenConsoleUnit : generer une unite pour la console
+            DumpCusState : afficher l'etat
+            10 accesseurs : IsCusInitialized, IsCusEmpty, GetCus*Count
   ============================================================ }
 
 { ============================================================
@@ -644,6 +652,26 @@ Const
   { Limites pour TODO 14 }
   DTM_MAX_MONTHS  = 12;  { Nombre max de mois }
   DTM_MAX_DAYS    = 31;  { Nombre max de jours }
+
+  { Types d'unites personnalisees pour TODO 15 }
+  CUS_NONE        = 0;   { Aucun type }
+  CUS_TIME        = 1;   { Unite temps }
+  CUS_STRING      = 2;   { Unite chaines }
+  CUS_MATH        = 3;   { Unite mathematique }
+  CUS_FILE        = 4;   { Unite fichiers }
+  CUS_CONSOLE     = 5;   { Unite console }
+  CUS_GRAPHICS    = 6;   { Unite graphique }
+  CUS_SYSTEM      = 7;   { Unite systeme }
+  CUS_MEMORY      = 8;   { Unite memoire }
+  CUS_ARRAYS      = 9;   { Unite tableaux }
+  CUS_RECORDS     = 10;  { Unite enregistrements }
+  CUS_LINKED      = 11;  { Unite listes chainees }
+  CUS_STACK       = 12;  { Unite piles }
+  CUS_MAX         = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 15 }
+  CUS_MAX_FUNCS   = 20;  { Nombre max de fonctions par unite }
+  CUS_MAX_PROCS   = 20;  { Nombre max de procedures par unite }
 
 { ============================================================
   TYPES
@@ -1069,6 +1097,24 @@ Var
   DtmTimezoneCount: Integer;
   DtmErrorCount   : Integer;
   DtmLabelNum     : Integer;
+
+  { TODO 15 - Unites personnalisees }
+  CusInitialized  : Boolean;
+  CusStateCount   : Integer;
+  CusTimeCount    : Integer;
+  CusStringCount  : Integer;
+  CusMathCount    : Integer;
+  CusFileCount    : Integer;
+  CusConsoleCount : Integer;
+  CusGraphicsCount: Integer;
+  CusSystemCount  : Integer;
+  CusMemoryCount  : Integer;
+  CusArraysCount  : Integer;
+  CusRecordsCount : Integer;
+  CusLinkedCount  : Integer;
+  CusStackCount   : Integer;
+  CusErrorCount   : Integer;
+  CusLabelNum     : Integer;
 
   { TODO 17 - Reponse courante }
   CurrentResponse : TResponse;
@@ -6442,8 +6488,64 @@ End;
   TODO 15 - GENERATION D'UNITES PERSONNALISEES
   ============================================================ }
 
+{ Initialiser l'etat du generateur d'unites personnalisees }
+Procedure InitCusState;
+Begin
+  CusInitialized  := True;
+  CusStateCount   := 0;
+  CusTimeCount    := 0;
+  CusStringCount  := 0;
+  CusMathCount    := 0;
+  CusFileCount    := 0;
+  CusConsoleCount := 0;
+  CusGraphicsCount := 0;
+  CusSystemCount  := 0;
+  CusMemoryCount  := 0;
+  CusArraysCount  := 0;
+  CusRecordsCount := 0;
+  CusLinkedCount  := 0;
+  CusStackCount   := 0;
+  CusErrorCount   := 0;
+  CusLabelNum     := 0;
+End;
+
+{ Generer un label unique pour les unites personnalisees }
+Function GenCusLabel: String;
+Var
+  S: String;
+Begin
+  Inc(CusLabelNum);
+  Str(CusLabelNum, S);
+  GenCusLabel := '_CUS_' + S;
+End;
+
+{ Retourner le nom du type d'unite personnalisee }
+Function CusTypeName(T: Integer): String;
+Begin
+  Case T of
+    CUS_NONE:     CusTypeName := 'AUCUN';
+    CUS_TIME:     CusTypeName := 'TEMPS';
+    CUS_STRING:   CusTypeName := 'CHAINES';
+    CUS_MATH:     CusTypeName := 'MATHEMATIQUES';
+    CUS_FILE:     CusTypeName := 'FICHIERS';
+    CUS_CONSOLE:  CusTypeName := 'CONSOLE';
+    CUS_GRAPHICS: CusTypeName := 'GRAPHIQUES';
+    CUS_SYSTEM:   CusTypeName := 'SYSTEME';
+    CUS_MEMORY:   CusTypeName := 'MEMOIRE';
+    CUS_ARRAYS:   CusTypeName := 'TABLEAUX';
+    CUS_RECORDS:  CusTypeName := 'ENREGISTREMENTS';
+    CUS_LINKED:   CusTypeName := 'LISTES CHAINEES';
+    CUS_STACK:    CusTypeName := 'PILES';
+  Else
+    CusTypeName := 'INCONNU';
+  End;
+End;
+
+{ Generer une unite pour le temps }
 Procedure GenTimeUnit;
 Begin
+  Inc(CusStateCount);
+  Inc(CusTimeCount);
   InitGeneratedCode;
   GenUnitHeader('TempsUtils');
   AddCodeLine('Uses');
@@ -6497,8 +6599,11 @@ Begin
   AddCodeLine('End.');
 End;
 
+{ Generer une unite pour les chaines }
 Procedure GenStringUnit;
 Begin
+  Inc(CusStateCount);
+  Inc(CusStringCount);
   InitGeneratedCode;
   GenUnitHeader('ChainesUtils');
   AddCodeLine('Function Reverse(S: String): String;');
@@ -6551,6 +6656,356 @@ Begin
   AddCodeLine('End;');
   AddCodeLine('');
   AddCodeLine('End.');
+End;
+
+{ Generer une unite mathematique etendue }
+Procedure GenMathUnit;
+Begin
+  Inc(CusStateCount);
+  Inc(CusMathCount);
+  InitGeneratedCode;
+  GenUnitHeader('MathUtils');
+  AddCodeLine('Function Abs(X: Integer): Integer;');
+  AddCodeLine('Function Sign(X: Integer): Integer;');
+  AddCodeLine('Function Max(A, B: Integer): Integer;');
+  AddCodeLine('Function Min(A, B: Integer): Integer;');
+  AddCodeLine('Function Power(Base, Exp: Integer): LongInt;');
+  AddCodeLine('Function Factorial(N: Integer): LongInt;');
+  AddCodeLine('Function GCD(A, B: Integer): Integer;');
+  AddCodeLine('Function LCM(A, B: Integer): Integer;');
+  AddCodeLine('Function IsPrime(N: Integer): Boolean;');
+  AddCodeLine('Function Fibonacci(N: Integer): LongInt;');
+  AddCodeLine('');
+  AddCodeLine('Implementation');
+  AddCodeLine('');
+  AddCodeLine('Function Abs(X: Integer): Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  If X < 0 Then Abs := -X Else Abs := X;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function Sign(X: Integer): Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  If X > 0 Then Sign := 1');
+  AddCodeLine('  Else If X < 0 Then Sign := -1');
+  AddCodeLine('  Else Sign := 0;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function Max(A, B: Integer): Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  If A > B Then Max := A Else Max := B;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function Min(A, B: Integer): Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  If A < B Then Min := A Else Min := B;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function Power(Base, Exp: Integer): LongInt;');
+  AddCodeLine('Var I: Integer; R: LongInt;');
+  AddCodeLine('Begin');
+  AddCodeLine('  R := 1;');
+  AddCodeLine('  For I := 1 to Exp do R := R * Base;');
+  AddCodeLine('  Power := R;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function Factorial(N: Integer): LongInt;');
+  AddCodeLine('Var I: Integer; R: LongInt;');
+  AddCodeLine('Begin');
+  AddCodeLine('  R := 1;');
+  AddCodeLine('  For I := 2 to N do R := R * I;');
+  AddCodeLine('  Factorial := R;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function GCD(A, B: Integer): Integer;');
+  AddCodeLine('Var T: Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  While B <> 0 do Begin');
+  AddCodeLine('    T := B;');
+  AddCodeLine('    B := A mod B;');
+  AddCodeLine('    A := T;');
+  AddCodeLine('  End;');
+  AddCodeLine('  GCD := A;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function LCM(A, B: Integer): Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  LCM := (A * B) div GCD(A, B);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function IsPrime(N: Integer): Boolean;');
+  AddCodeLine('Var I: Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  If N < 2 Then Begin IsPrime := False; Exit; End;');
+  AddCodeLine('  If N = 2 Then Begin IsPrime := True; Exit; End;');
+  AddCodeLine('  If N mod 2 = 0 Then Begin IsPrime := False; Exit; End;');
+  AddCodeLine('  I := 3;');
+  AddCodeLine('  While I * I <= N do Begin');
+  AddCodeLine('    If N mod I = 0 Then Begin IsPrime := False; Exit; End;');
+  AddCodeLine('    I := I + 2;');
+  AddCodeLine('  End;');
+  AddCodeLine('  IsPrime := True;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function Fibonacci(N: Integer): LongInt;');
+  AddCodeLine('Var I: Integer; A, B, T: LongInt;');
+  AddCodeLine('Begin');
+  AddCodeLine('  If N <= 1 Then Begin Fibonacci := N; Exit; End;');
+  AddCodeLine('  A := 0; B := 1;');
+  AddCodeLine('  For I := 2 to N do Begin');
+  AddCodeLine('    T := A + B;');
+  AddCodeLine('    A := B;');
+  AddCodeLine('    B := T;');
+  AddCodeLine('  End;');
+  AddCodeLine('  Fibonacci := B;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('End.');
+End;
+
+{ Generer une unite pour les fichiers }
+Procedure GenFileUnit;
+Begin
+  Inc(CusStateCount);
+  Inc(CusFileCount);
+  InitGeneratedCode;
+  GenUnitHeader('FichierUtils');
+  AddCodeLine('Function FileExists(FileName: String): Boolean;');
+  AddCodeLine('Function FileSize(FileName: String): LongInt;');
+  AddCodeLine('Procedure CopyFile(Source, Dest: String);');
+  AddCodeLine('Function ReadFirstLine(FileName: String): String;');
+  AddCodeLine('Function CountLines(FileName: String): Integer;');
+  AddCodeLine('');
+  AddCodeLine('Implementation');
+  AddCodeLine('');
+  AddCodeLine('Function FileExists(FileName: String): Boolean;');
+  AddCodeLine('Var F: File;');
+  AddCodeLine('Begin');
+  AddCodeLine('  {$I-}');
+  AddCodeLine('  Assign(F, FileName);');
+  AddCodeLine('  Reset(F);');
+  AddCodeLine('  If IOResult = 0 Then Begin');
+  AddCodeLine('    Close(F);');
+  AddCodeLine('    FileExists := True;');
+  AddCodeLine('  End');
+  AddCodeLine('  Else');
+  AddCodeLine('    FileExists := False;');
+  AddCodeLine('  {$I+}');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function FileSize(FileName: String): LongInt;');
+  AddCodeLine('Var F: File of Byte;');
+  AddCodeLine('Begin');
+  AddCodeLine('  {$I-}');
+  AddCodeLine('  Assign(F, FileName);');
+  AddCodeLine('  Reset(F);');
+  AddCodeLine('  If IOResult = 0 Then Begin');
+  AddCodeLine('    FileSize := System.FileSize(F);');
+  AddCodeLine('    Close(F);');
+  AddCodeLine('  End');
+  AddCodeLine('  Else');
+  AddCodeLine('    FileSize := -1;');
+  AddCodeLine('  {$I+}');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Procedure CopyFile(Source, Dest: String);');
+  AddCodeLine('Var FSrc, FDst: File of Byte;');
+  AddCodeLine('    Buffer: Array[1..1024] of Byte;');
+  AddCodeLine('    BytesRead: Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  Assign(FSrc, Source);');
+  AddCodeLine('  Reset(FSrc);');
+  AddCodeLine('  Assign(FDst, Dest);');
+  AddCodeLine('  Rewrite(FDst);');
+  AddCodeLine('  Repeat');
+  AddCodeLine('    BlockRead(FSrc, Buffer, SizeOf(Buffer), BytesRead);');
+  AddCodeLine('    If BytesRead > 0 Then');
+  AddCodeLine('      BlockWrite(FDst, Buffer, BytesRead);');
+  AddCodeLine('  Until BytesRead = 0;');
+  AddCodeLine('  Close(FSrc);');
+  AddCodeLine('  Close(FDst);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function ReadFirstLine(FileName: String): String;');
+  AddCodeLine('Var F: Text; S: String;');
+  AddCodeLine('Begin');
+  AddCodeLine('  Assign(F, FileName);');
+  AddCodeLine('  Reset(F);');
+  AddCodeLine('  If Not Eof(F) Then ReadLn(F, S)');
+  AddCodeLine('  Else S := '''';');
+  AddCodeLine('  Close(F);');
+  AddCodeLine('  ReadFirstLine := S;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function CountLines(FileName: String): Integer;');
+  AddCodeLine('Var F: Text; N: Integer; S: String;');
+  AddCodeLine('Begin');
+  AddCodeLine('  N := 0;');
+  AddCodeLine('  Assign(F, FileName);');
+  AddCodeLine('  Reset(F);');
+  AddCodeLine('  While Not Eof(F) do Begin');
+  AddCodeLine('    ReadLn(F, S);');
+  AddCodeLine('    Inc(N);');
+  AddCodeLine('  End;');
+  AddCodeLine('  Close(F);');
+  AddCodeLine('  CountLines := N;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('End.');
+End;
+
+{ Generer une unite pour la console }
+Procedure GenConsoleUnit;
+Begin
+  Inc(CusStateCount);
+  Inc(CusConsoleCount);
+  InitGeneratedCode;
+  GenUnitHeader('ConsoleUtils');
+  AddCodeLine('Uses');
+  AddCodeLine('  Crt;');
+  AddCodeLine('');
+  AddCodeLine('Procedure ClearScreen;');
+  AddCodeLine('Procedure GotoXY(X, Y: Integer);');
+  AddCodeLine('Procedure SetTextColor(Color: Byte);');
+  AddCodeLine('Procedure SetBackColor(Color: Byte);');
+  AddCodeLine('Procedure PrintCentered(S: String; Y: Integer);');
+  AddCodeLine('Procedure PrintBox(X1, Y1, X2, Y2: Integer);');
+  AddCodeLine('Function WaitKey: Char;');
+  AddCodeLine('Procedure Beep;');
+  AddCodeLine('');
+  AddCodeLine('Implementation');
+  AddCodeLine('');
+  AddCodeLine('Procedure ClearScreen;');
+  AddCodeLine('Begin');
+  AddCodeLine('  ClrScr;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Procedure GotoXY(X, Y: Integer);');
+  AddCodeLine('Begin');
+  AddCodeLine('  Crt.GotoXY(X, Y);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Procedure SetTextColor(Color: Byte);');
+  AddCodeLine('Begin');
+  AddCodeLine('  TextColor(Color);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Procedure SetBackColor(Color: Byte);');
+  AddCodeLine('Begin');
+  AddCodeLine('  TextBackground(Color);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Procedure PrintCentered(S: String; Y: Integer);');
+  AddCodeLine('Var X: Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  X := (80 - Length(S)) div 2 + 1;');
+  AddCodeLine('  Crt.GotoXY(X, Y);');
+  AddCodeLine('  Write(S);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Procedure PrintBox(X1, Y1, X2, Y2: Integer);');
+  AddCodeLine('Var I: Integer;');
+  AddCodeLine('Begin');
+  AddCodeLine('  Crt.GotoXY(X1, Y1);');
+  AddCodeLine('  Write(#218);');
+  AddCodeLine('  For I := X1 + 1 to X2 - 1 do Write(#196);');
+  AddCodeLine('  Write(#191);');
+  AddCodeLine('  For I := Y1 + 1 to Y2 - 1 do Begin');
+  AddCodeLine('    Crt.GotoXY(X1, I); Write(#179);');
+  AddCodeLine('    Crt.GotoXY(X2, I); Write(#179);');
+  AddCodeLine('  End;');
+  AddCodeLine('  Crt.GotoXY(X1, Y2);');
+  AddCodeLine('  Write(#192);');
+  AddCodeLine('  For I := X1 + 1 to X2 - 1 do Write(#196);');
+  AddCodeLine('  Write(#217);');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Function WaitKey: Char;');
+  AddCodeLine('Begin');
+  AddCodeLine('  WaitKey := ReadKey;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('Procedure Beep;');
+  AddCodeLine('Begin');
+  AddCodeLine('  Sound(1000);');
+  AddCodeLine('  Delay(100);');
+  AddCodeLine('  NoSound;');
+  AddCodeLine('End;');
+  AddCodeLine('');
+  AddCodeLine('End.');
+End;
+
+{ Afficher l'etat du generateur d'unites personnalisees }
+Procedure DumpCusState;
+Begin
+  WriteLn('=== Etat du generateur d''unites personnalisees (TODO 15) ===');
+  WriteLn('  CusInitialized    : ', CusInitialized);
+  WriteLn('  CusStateCount     : ', CusStateCount);
+  WriteLn('  CusTimeCount      : ', CusTimeCount);
+  WriteLn('  CusStringCount    : ', CusStringCount);
+  WriteLn('  CusMathCount      : ', CusMathCount);
+  WriteLn('  CusFileCount      : ', CusFileCount);
+  WriteLn('  CusConsoleCount   : ', CusConsoleCount);
+  WriteLn('  CusGraphicsCount  : ', CusGraphicsCount);
+  WriteLn('  CusSystemCount    : ', CusSystemCount);
+  WriteLn('  CusMemoryCount    : ', CusMemoryCount);
+  WriteLn('  CusArraysCount    : ', CusArraysCount);
+  WriteLn('  CusRecordsCount   : ', CusRecordsCount);
+  WriteLn('  CusLinkedCount    : ', CusLinkedCount);
+  WriteLn('  CusStackCount     : ', CusStackCount);
+  WriteLn('  CusErrorCount     : ', CusErrorCount);
+  WriteLn('  CusLabelNum       : ', CusLabelNum);
+End;
+
+{ --- TODO 15 : 10 accesseurs standards --- }
+
+Function IsCusInitialized: Boolean;
+Begin
+  IsCusInitialized := CusInitialized;
+End;
+
+Function IsCusEmpty: Boolean;
+Begin
+  IsCusEmpty := (CusStateCount = 0);
+End;
+
+Function GetCusStateCount: Integer;
+Begin
+  GetCusStateCount := CusStateCount;
+End;
+
+Function GetCusTimeCount: Integer;
+Begin
+  GetCusTimeCount := CusTimeCount;
+End;
+
+Function GetCusStringCount: Integer;
+Begin
+  GetCusStringCount := CusStringCount;
+End;
+
+Function GetCusMathCount: Integer;
+Begin
+  GetCusMathCount := CusMathCount;
+End;
+
+Function GetCusFileCount: Integer;
+Begin
+  GetCusFileCount := CusFileCount;
+End;
+
+Function GetCusConsoleCount: Integer;
+Begin
+  GetCusConsoleCount := CusConsoleCount;
+End;
+
+Function GetCusErrorCount: Integer;
+Begin
+  GetCusErrorCount := CusErrorCount;
+End;
+
+Function GetCusLabelNum: Integer;
+Begin
+  GetCusLabelNum := CusLabelNum;
 End;
 
 { ============================================================
@@ -7000,6 +7455,10 @@ Begin
   DtmInitialized := False;
   InitDtmState;
 
+  { Initialiser l'etat du generateur d'unites personnalisees (TODO 15) }
+  CusInitialized := False;
+  InitCusState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -7016,6 +7475,7 @@ Begin
     DumpHloState;
     DumpMthState;
     DumpDtmState;
+    DumpCusState;
   End;
 
   Run;

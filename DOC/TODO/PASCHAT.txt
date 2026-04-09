@@ -211,12 +211,20 @@
             DumpDtmState : afficher l'etat
             10 accesseurs : IsDtmInitialized, IsDtmEmpty, GetDtm*Count
 
-  TODO 15 - GENERATION D'UNITES PERSONNALISEES [A FAIRE]
+  TODO 15 - GENERATION D'UNITES PERSONNALISEES [IMPLEMENTE]
+            CUS_NONE=0..CUS_MAX=13 : constantes types d'unites
+            CUS_MAX_FUNCS=20, CUS_MAX_PROCS=20 : limites
+            CusInitialized + 15 variables d'etat
+            InitCusState : initialiser l'etat
+            GenCusLabel : generer un label unique
+            CusTypeName : nom du type d'unite
             GenTimeUnit : generer une unite pour le temps
             GenStringUnit : generer une unite pour les chaines
             GenMathUnit : generer une unite mathematique etendue
             GenFileUnit : generer une unite pour les fichiers
             GenConsoleUnit : generer une unite pour la console
+            DumpCusState : afficher l'etat
+            10 accesseurs : IsCusInitialized, IsCusEmpty, GetCus*Count
 
   TODO 16 - INTERFACE DE CLAVARDAGE EN FRANCAIS [A FAIRE]
             InitChat : initialiser l'interface de clavardage
