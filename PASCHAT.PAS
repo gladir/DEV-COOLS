@@ -264,13 +264,21 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 17 - SYSTEME DE REPONSES CONTEXTUELLES [A FAIRE]
+  TODO 17 - SYSTEME DE REPONSES CONTEXTUELLES [IMPLEMENTE]
+            RSP_NONE=0..RSP_MAX=13 : constantes types de reponses
+            RSP_MAX_SUGGESTIONS=10, RSP_MAX_RELATED=10 : limites
+            RspInitialized + 15 variables d'etat
+            InitRspState : initialiser l'etat
+            GenRspLabel : generer un label unique
+            RspTypeName : nom du type de reponse
             TResponseKind : RK_TEXT, RK_CODE, RK_MIXED, RK_ERROR, RK_HELP
             TResponse : Kind, Text, Code, Suggestions
             GenerateResponse(Intent, Context) : generer une reponse
             GetContextualHelp(Topic) : obtenir de l'aide contextuelle
             SuggestRelated(Topic) : suggerer des sujets connexes
             FormatResponse(Response) : formater la reponse pour affichage
+            DumpRspState : afficher l'etat
+            10 accesseurs : IsRspInitialized, IsRspEmpty, GetRsp*Count
   ============================================================ }
 
 { ============================================================
@@ -703,6 +711,27 @@ Const
   { Limites pour TODO 16 }
   CHT_MAX_LINES   = 50;  { Nombre max de lignes affichees }
   CHT_MAX_WIDTH   = 80;  { Largeur max de ligne }
+
+  { Types de reponses contextuelles pour TODO 17 }
+  RSP_NONE        = 0;   { Aucun type }
+  RSP_TEXT        = 1;   { Texte simple }
+  RSP_CODE        = 2;   { Code uniquement }
+  RSP_MIXED       = 3;   { Texte et code }
+  RSP_ERROR       = 4;   { Message d'erreur }
+  RSP_HELP        = 5;   { Aide }
+  RSP_EXPLAIN     = 6;   { Explication }
+  RSP_SUGGEST     = 7;   { Suggestion }
+  RSP_CONTEXT     = 8;   { Aide contextuelle }
+  RSP_RELATED     = 9;   { Sujets connexes }
+  RSP_FORMATTED   = 10;  { Reponse formatee }
+  RSP_GREETING    = 11;  { Salutation }
+  RSP_FAREWELL    = 12;  { Adieu }
+  RSP_MAX         = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 17 }
+  RSP_MAX_SUGGESTIONS = 10;  { Nombre max de suggestions }
+  RSP_MAX_RELATED     = 10;  { Nombre max de sujets connexes }
+  RSP_MAX_TOPICS      = 50;  { Nombre max de sujets d'aide }
 
 { ============================================================
   TYPES
@@ -1165,7 +1194,23 @@ Var
   ChtTotalLines   : Integer;
   ChtLabelNum     : Integer;
 
-  { TODO 17 - Reponse courante }
+  { TODO 17 - Systeme de reponses contextuelles }
+  RspInitialized  : Boolean;
+  RspStateCount   : Integer;
+  RspTextCount    : Integer;
+  RspCodeCount    : Integer;
+  RspMixedCount   : Integer;
+  RspErrorCount   : Integer;
+  RspHelpCount    : Integer;
+  RspExplainCount : Integer;
+  RspSuggestCount : Integer;
+  RspContextCount : Integer;
+  RspRelatedCount : Integer;
+  RspFormattedCnt : Integer;
+  RspGreetingCount: Integer;
+  RspFarewellCount: Integer;
+  RspTotalCount   : Integer;
+  RspLabelNum     : Integer;
   CurrentResponse : TResponse;
 
   { TODO 18 - Options de formatage }
@@ -7375,20 +7420,313 @@ End;
   TODO 17 - SYSTEME DE REPONSES CONTEXTUELLES
   ============================================================ }
 
+{ Initialiser l'etat du systeme de reponses }
+Procedure InitRspState;
+Begin
+  RspInitialized  := True;
+  RspStateCount   := 0;
+  RspTextCount    := 0;
+  RspCodeCount    := 0;
+  RspMixedCount   := 0;
+  RspErrorCount   := 0;
+  RspHelpCount    := 0;
+  RspExplainCount := 0;
+  RspSuggestCount := 0;
+  RspContextCount := 0;
+  RspRelatedCount := 0;
+  RspFormattedCnt := 0;
+  RspGreetingCount:= 0;
+  RspFarewellCount:= 0;
+  RspTotalCount   := 0;
+  RspLabelNum     := 0;
+  Inc(RspStateCount);
+End;
+
+{ Generer un label unique pour les reponses }
+Function GenRspLabel: String;
+Begin
+  Inc(RspLabelNum);
+  GenRspLabel := '_RSP_' + IntToStr(RspLabelNum);
+End;
+
+{ Retourner le nom du type de reponse }
+Function RspTypeName(RspType: Integer): String;
+Begin
+  Case RspType of
+    RSP_NONE:      RspTypeName := 'NONE';
+    RSP_TEXT:      RspTypeName := 'TEXT';
+    RSP_CODE:      RspTypeName := 'CODE';
+    RSP_MIXED:     RspTypeName := 'MIXED';
+    RSP_ERROR:     RspTypeName := 'ERROR';
+    RSP_HELP:      RspTypeName := 'HELP';
+    RSP_EXPLAIN:   RspTypeName := 'EXPLAIN';
+    RSP_SUGGEST:   RspTypeName := 'SUGGEST';
+    RSP_CONTEXT:   RspTypeName := 'CONTEXT';
+    RSP_RELATED:   RspTypeName := 'RELATED';
+    RSP_FORMATTED: RspTypeName := 'FORMATTED';
+    RSP_GREETING:  RspTypeName := 'GREETING';
+    RSP_FAREWELL:  RspTypeName := 'FAREWELL';
+  Else
+    RspTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ Generer une reponse textuelle basee sur l'intention }
 Function GenerateTextResponse(Intent: TIntentKind): String;
 Begin
   Case Intent of
-    IK_HELLO:
+    IK_HELLO: Begin
       GenerateTextResponse := 'Bonjour! Comment puis-je vous aider avec le Turbo Pascal aujourd''hui?';
-    IK_HELP:
+      Inc(RspGreetingCount);
+    End;
+    IK_HELP: Begin
       GenerateTextResponse := 'Je peux generer du code Pascal. Demandez-moi un programme!';
-    IK_QUIT:
+      Inc(RspHelpCount);
+    End;
+    IK_QUIT: Begin
       GenerateTextResponse := 'Au revoir et a bientot!';
-    IK_UNKNOWN:
+      Inc(RspFarewellCount);
+    End;
+    IK_UNKNOWN: Begin
       GenerateTextResponse := 'Je n''ai pas compris. Pouvez-vous reformuler votre demande?';
+      Inc(RspErrorCount);
+    End;
   Else
     GenerateTextResponse := 'Je vais generer le code demande...';
+    Inc(RspTextCount);
   End;
+  Inc(RspTotalCount);
+End;
+
+{ Obtenir de l'aide contextuelle sur un sujet }
+Function GetContextualHelp(Topic: String): String;
+Var
+  UT: String;
+Begin
+  UT := UpCaseStr(Topic);
+  Inc(RspContextCount);
+  Inc(RspTotalCount);
+
+  If (Pos('PROGRAM', UT) > 0) or (Pos('PROGRAMME', UT) > 0) Then
+    GetContextualHelp := 'Un programme Pascal commence par PROGRAM nom; et se termine par END. ' +
+                         'Utilisez BEGIN pour le bloc principal.'
+  Else If (Pos('UNIT', UT) > 0) or (Pos('UNITE', UT) > 0) Then
+    GetContextualHelp := 'Une unite Pascal contient INTERFACE (declarations publiques) et ' +
+                         'IMPLEMENTATION (code). Terminez par END.'
+  Else If (Pos('PROCEDURE', UT) > 0) Then
+    GetContextualHelp := 'Une procedure est un sous-programme sans valeur de retour. ' +
+                         'Syntaxe: Procedure NomProc(params);'
+  Else If (Pos('FUNCTION', UT) > 0) or (Pos('FONCTION', UT) > 0) Then
+    GetContextualHelp := 'Une fonction retourne une valeur. ' +
+                         'Syntaxe: Function NomFunc(params): Type;'
+  Else If (Pos('IF', UT) > 0) or (Pos('THEN', UT) > 0) Then
+    GetContextualHelp := 'Structure conditionnelle: IF condition THEN action; ' +
+                         'ou IF condition THEN action1 ELSE action2;'
+  Else If (Pos('FOR', UT) > 0) or (Pos('BOUCLE', UT) > 0) Then
+    GetContextualHelp := 'Boucle FOR: FOR i := debut TO fin DO action; ' +
+                         'Utilisez DOWNTO pour decrémenter.'
+  Else If (Pos('WHILE', UT) > 0) Then
+    GetContextualHelp := 'Boucle WHILE: WHILE condition DO action; ' +
+                         'Repete tant que la condition est vraie.'
+  Else If (Pos('REPEAT', UT) > 0) Then
+    GetContextualHelp := 'Boucle REPEAT: REPEAT actions UNTIL condition; ' +
+                         'Execute au moins une fois.'
+  Else If (Pos('ARRAY', UT) > 0) or (Pos('TABLEAU', UT) > 0) Then
+    GetContextualHelp := 'Declaration de tableau: VAR tab: Array[1..10] of Integer; ' +
+                         'Acces: tab[i]'
+  Else If (Pos('RECORD', UT) > 0) or (Pos('ENREGISTREMENT', UT) > 0) Then
+    GetContextualHelp := 'Un enregistrement regroupe des champs: TYPE TRec = Record ' +
+                         'champ1: Type1; champ2: Type2; End;'
+  Else If (Pos('STRING', UT) > 0) or (Pos('CHAINE', UT) > 0) Then
+    GetContextualHelp := 'Les chaines: VAR s: String; ou String[50] pour limiter. ' +
+                         'Fonctions: Length, Copy, Pos, Concat.'
+  Else If (Pos('FILE', UT) > 0) or (Pos('FICHIER', UT) > 0) Then
+    GetContextualHelp := 'Fichiers texte: VAR f: Text; Assign(f, nom); Reset ou Rewrite; ' +
+                         'ReadLn/WriteLn; Close(f).'
+  Else If (Pos('POINTER', UT) > 0) or (Pos('POINTEUR', UT) > 0) Then
+    GetContextualHelp := 'Pointeurs: TYPE PInt = ^Integer; VAR p: PInt; ' +
+                         'New(p) alloue, Dispose(p) libere, p^ accede.'
+  Else
+    GetContextualHelp := 'Tapez /help pour voir les commandes disponibles, ' +
+                         'ou posez une question specifique sur Pascal.';
+End;
+
+{ Suggerer des sujets connexes }
+Function SuggestRelated(Topic: String): String;
+Var
+  UT: String;
+Begin
+  UT := UpCaseStr(Topic);
+  Inc(RspRelatedCount);
+  Inc(RspTotalCount);
+
+  If (Pos('PROGRAM', UT) > 0) or (Pos('PROGRAMME', UT) > 0) Then
+    SuggestRelated := 'Sujets connexes: USES, CONST, VAR, TYPE, procedures, fonctions'
+  Else If (Pos('UNIT', UT) > 0) or (Pos('UNITE', UT) > 0) Then
+    SuggestRelated := 'Sujets connexes: INTERFACE, IMPLEMENTATION, USES, initialization'
+  Else If (Pos('PROCEDURE', UT) > 0) or (Pos('FUNCTION', UT) > 0) Then
+    SuggestRelated := 'Sujets connexes: parametres, VAR, CONST, variables locales, recursivite'
+  Else If (Pos('IF', UT) > 0) or (Pos('BOUCLE', UT) > 0) or 
+          (Pos('FOR', UT) > 0) or (Pos('WHILE', UT) > 0) Then
+    SuggestRelated := 'Sujets connexes: IF, FOR, WHILE, REPEAT, CASE, Break, Continue'
+  Else If (Pos('ARRAY', UT) > 0) or (Pos('TABLEAU', UT) > 0) Then
+    SuggestRelated := 'Sujets connexes: tableaux multidimensionnels, tableaux dynamiques, String'
+  Else If (Pos('RECORD', UT) > 0) or (Pos('ENREGISTREMENT', UT) > 0) Then
+    SuggestRelated := 'Sujets connexes: WITH, variant records, objets, classes'
+  Else If (Pos('STRING', UT) > 0) or (Pos('CHAINE', UT) > 0) Then
+    SuggestRelated := 'Sujets connexes: Length, Copy, Pos, Delete, Insert, Concat, Str, Val'
+  Else If (Pos('FILE', UT) > 0) or (Pos('FICHIER', UT) > 0) Then
+    SuggestRelated := 'Sujets connexes: Text, File of, Reset, Rewrite, Append, IOResult'
+  Else
+    SuggestRelated := 'Sujets populaires: programmes, unites, procedures, fonctions, ' +
+                      'structures de controle, tableaux, fichiers';
+End;
+
+{ Formater une reponse pour affichage }
+Procedure FormatResponse(Var Resp: TResponse);
+Begin
+  Inc(RspFormattedCnt);
+  Inc(RspTotalCount);
+
+  { Ajouter un prefixe selon le type }
+  Case Resp.Kind of
+    RK_TEXT:
+      Resp.Text := 'PASCHAT> ' + Resp.Text;
+    RK_CODE:
+      Resp.Text := 'Code genere:';
+    RK_MIXED:
+      Resp.Text := 'PASCHAT> ' + Resp.Text;
+    RK_ERROR:
+      Resp.Text := 'ERREUR: ' + Resp.Text;
+    RK_HELP:
+      Resp.Text := 'AIDE: ' + Resp.Text;
+  End;
+End;
+
+{ Generer une reponse complete basee sur l'intention et le contexte }
+Procedure GenerateResponse(Intent: TIntentKind; Context: String);
+Begin
+  CurrentResponse.Kind := RK_TEXT;
+  CurrentResponse.CodeCount := 0;
+  CurrentResponse.SuggestCnt := 0;
+
+  Case Intent of
+    IK_HELLO: Begin
+      CurrentResponse.Kind := RK_TEXT;
+      CurrentResponse.Text := GenerateTextResponse(IK_HELLO);
+      Inc(RspGreetingCount);
+    End;
+
+    IK_HELP: Begin
+      CurrentResponse.Kind := RK_HELP;
+      CurrentResponse.Text := GetContextualHelp(Context);
+      { Ajouter des suggestions }
+      CurrentResponse.Suggestions[1] := SuggestRelated(Context);
+      CurrentResponse.SuggestCnt := 1;
+      Inc(RspHelpCount);
+    End;
+
+    IK_EXPLAIN: Begin
+      CurrentResponse.Kind := RK_TEXT;
+      CurrentResponse.Text := GetContextualHelp(Context);
+      CurrentResponse.Suggestions[1] := SuggestRelated(Context);
+      CurrentResponse.SuggestCnt := 1;
+      Inc(RspExplainCount);
+    End;
+
+    IK_PROGRAM, IK_UNIT, IK_PROCEDURE, IK_FUNCTION: Begin
+      CurrentResponse.Kind := RK_MIXED;
+      CurrentResponse.Text := GenerateTextResponse(Intent);
+      Inc(RspMixedCount);
+    End;
+
+    IK_QUIT: Begin
+      CurrentResponse.Kind := RK_TEXT;
+      CurrentResponse.Text := GenerateTextResponse(IK_QUIT);
+      Inc(RspFarewellCount);
+    End;
+
+  Else
+    CurrentResponse.Kind := RK_ERROR;
+    CurrentResponse.Text := GenerateTextResponse(IK_UNKNOWN);
+    Inc(RspErrorCount);
+  End;
+
+  Inc(RspTotalCount);
+End;
+
+{ Afficher l'etat du systeme de reponses }
+Procedure DumpRspState;
+Begin
+  WriteLn('=== Etat du systeme de reponses (TODO 17) ===');
+  WriteLn('  RspInitialized  : ', RspInitialized);
+  WriteLn('  RspStateCount   : ', RspStateCount);
+  WriteLn('  RspTextCount    : ', RspTextCount);
+  WriteLn('  RspCodeCount    : ', RspCodeCount);
+  WriteLn('  RspMixedCount   : ', RspMixedCount);
+  WriteLn('  RspErrorCount   : ', RspErrorCount);
+  WriteLn('  RspHelpCount    : ', RspHelpCount);
+  WriteLn('  RspExplainCount : ', RspExplainCount);
+  WriteLn('  RspSuggestCount : ', RspSuggestCount);
+  WriteLn('  RspContextCount : ', RspContextCount);
+  WriteLn('  RspRelatedCount : ', RspRelatedCount);
+  WriteLn('  RspFormattedCnt : ', RspFormattedCnt);
+  WriteLn('  RspGreetingCount: ', RspGreetingCount);
+  WriteLn('  RspFarewellCount: ', RspFarewellCount);
+  WriteLn('  RspTotalCount   : ', RspTotalCount);
+  WriteLn('  RspLabelNum     : ', RspLabelNum);
+End;
+
+{ --- TODO 17 : 10 accesseurs standards --- }
+
+Function IsRspInitialized: Boolean;
+Begin
+  IsRspInitialized := RspInitialized;
+End;
+
+Function IsRspEmpty: Boolean;
+Begin
+  IsRspEmpty := (RspStateCount = 0);
+End;
+
+Function GetRspStateCount: Integer;
+Begin
+  GetRspStateCount := RspStateCount;
+End;
+
+Function GetRspTextCount: Integer;
+Begin
+  GetRspTextCount := RspTextCount;
+End;
+
+Function GetRspCodeCount: Integer;
+Begin
+  GetRspCodeCount := RspCodeCount;
+End;
+
+Function GetRspMixedCount: Integer;
+Begin
+  GetRspMixedCount := RspMixedCount;
+End;
+
+Function GetRspHelpCount: Integer;
+Begin
+  GetRspHelpCount := RspHelpCount;
+End;
+
+Function GetRspErrorCount: Integer;
+Begin
+  GetRspErrorCount := RspErrorCount;
+End;
+
+Function GetRspTotalCount: Integer;
+Begin
+  GetRspTotalCount := RspTotalCount;
+End;
+
+Function GetRspLabelNum: Integer;
+Begin
+  GetRspLabelNum := RspLabelNum;
 End;
 
 Procedure ProcessProgramRequest;
@@ -7742,6 +8080,14 @@ Begin
   CusInitialized := False;
   InitCusState;
 
+  { Initialiser l'etat de l'interface de clavardage (TODO 16) }
+  ChtInitialized := False;
+  InitChtState;
+
+  { Initialiser l'etat du systeme de reponses contextuelles (TODO 17) }
+  RspInitialized := False;
+  InitRspState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -7759,6 +8105,8 @@ Begin
     DumpMthState;
     DumpDtmState;
     DumpCusState;
+    DumpChtState;
+    DumpRspState;
   End;
 
   Run;

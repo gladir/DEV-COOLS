@@ -246,13 +246,21 @@
             DumpChtState : afficher l'etat
             10 accesseurs : IsChtInitialized, IsChtEmpty, GetCht*Count
 
-  TODO 17 - SYSTEME DE REPONSES CONTEXTUELLES [A FAIRE]
+  TODO 17 - SYSTEME DE REPONSES CONTEXTUELLES [IMPLEMENTE]
+            RSP_NONE=0..RSP_MAX=13 : constantes types de reponses
+            RSP_MAX_SUGGESTIONS=10, RSP_MAX_RELATED=10 : limites
+            RspInitialized + 15 variables d'etat
+            InitRspState : initialiser l'etat
+            GenRspLabel : generer un label unique
+            RspTypeName : nom du type de reponse
             TResponseKind : RK_TEXT, RK_CODE, RK_MIXED, RK_ERROR, RK_HELP
             TResponse : Kind, Text, Code, Suggestions
             GenerateResponse(Intent, Context) : generer une reponse
             GetContextualHelp(Topic) : obtenir de l'aide contextuelle
             SuggestRelated(Topic) : suggerer des sujets connexes
             FormatResponse(Response) : formater la reponse pour affichage
+            DumpRspState : afficher l'etat
+            10 accesseurs : IsRspInitialized, IsRspEmpty, GetRsp*Count
 
   TODO 18 - FORMATAGE ET INDENTATION DU CODE GENERE [A FAIRE]
             TFormatOptions : IndentSize, MaxLineWidth, BraceStyle
