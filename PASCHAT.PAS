@@ -360,12 +360,21 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 22 - SUGGESTIONS ET AUTO-COMPLETION [A FAIRE]
-            TSuggestion : Text, Description, Priority
+  TODO 22 - SUGGESTIONS ET AUTO-COMPLETION [IMPLEMENTE]
+            SUG_NONE=0..SUG_MAX=13 : constantes types de suggestion
+            SUG_MAX_ITEMS=20, SUG_MAX_TEXT=80 : limites
+            SugInitialized + 15 variables d'etat
+            InitSugState : initialiser l'etat
+            GenSugLabel : generer un label unique
+            SugTypeName : nom du type de suggestion
+            AddSuggestion(Text, Desc, Priority) : ajouter une suggestion
+            ClearSuggestions : effacer les suggestions
             GetSuggestions(PartialInput) : obtenir des suggestions
             AutoComplete(Input) : completer automatiquement l'entree
-            ShowSuggestions(Suggestions) : afficher les suggestions
+            ShowSuggestions : afficher les suggestions
             ApplySuggestion(Index) : appliquer une suggestion
+            DumpSugState : afficher l'etat
+            10 accesseurs : IsSugInitialized, IsSugEmpty, GetSug*Count
   ============================================================ }
 
 { ============================================================
@@ -858,6 +867,28 @@ Const
   VAL_MAX_ERRORS   = 50;   { Nombre max d'erreurs }
   VAL_MAX_KEYWORDS = 80;   { Nombre max de mots-cles }
   VAL_MAX_LINE     = 255;  { Longueur max de ligne }
+
+  { Constantes pour TODO 22 - Suggestions }
+  SUG_NONE       = 0;   { Aucune suggestion }
+  SUG_KEYWORD    = 1;   { Suggestion de mot-cle }
+  SUG_COMMAND    = 2;   { Suggestion de commande }
+  SUG_TEMPLATE   = 3;   { Suggestion de template }
+  SUG_STRUCTURE  = 4;   { Suggestion de structure }
+  SUG_TYPE       = 5;   { Suggestion de type }
+  SUG_PROCEDURE  = 6;   { Suggestion de procedure }
+  SUG_FUNCTION   = 7;   { Suggestion de fonction }
+  SUG_VARIABLE   = 8;   { Suggestion de variable }
+  SUG_CONSTANT   = 9;   { Suggestion de constante }
+  SUG_OPERATOR   = 10;  { Suggestion d'operateur }
+  SUG_COMMENT    = 11;  { Suggestion de commentaire }
+  SUG_TOPIC      = 12;  { Suggestion de sujet }
+  SUG_MAX        = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 22 }
+  SUG_MAX_ITEMS    = 20;   { Nombre max de suggestions }
+  SUG_MAX_TEXT     = 80;   { Longueur max du texte }
+  SUG_MAX_DESC     = 120;  { Longueur max de description }
+  SUG_MIN_MATCH    = 2;    { Longueur min pour recherche }
 
 { ============================================================
   TYPES
@@ -1420,6 +1451,27 @@ Var
   ValErrorCount     : Integer;
   ValErrors         : Array[1..VAL_MAX_ERRORS] of String[VAL_MAX_LINE];
   ValLastResult     : Boolean;
+
+  { TODO 22 - Suggestions et auto-completion }
+  SugInitialized    : Boolean;
+  SugStateCount     : Integer;
+  SugKeywordCount   : Integer;
+  SugCommandCount   : Integer;
+  SugTemplateCount  : Integer;
+  SugStructureCount : Integer;
+  SugTypeCount      : Integer;
+  SugProcCount      : Integer;
+  SugFuncCount      : Integer;
+  SugVarCount       : Integer;
+  SugConstCount     : Integer;
+  SugOperatorCount  : Integer;
+  SugTopicCount     : Integer;
+  SugTotalCount     : Integer;
+  SugLabelNum       : Integer;
+  SugApplyCount     : Integer;
+  Suggestions       : Array[1..SUG_MAX_ITEMS] of TSuggestion;
+  SugCount          : Integer;
+  SugLastInput      : TString;
 
   { TODO 23 - Mode courant }
   CurrentMode : TInteractiveMode;
@@ -9641,6 +9693,364 @@ Begin
 End;
 
 { ============================================================
+  TODO 22 - SUGGESTIONS ET AUTO-COMPLETION
+  ============================================================ }
+
+Procedure InitSugState;
+Var
+  I: Integer;
+Begin
+  SugInitialized    := True;
+  SugStateCount     := 0;
+  SugKeywordCount   := 0;
+  SugCommandCount   := 0;
+  SugTemplateCount  := 0;
+  SugStructureCount := 0;
+  SugTypeCount      := 0;
+  SugProcCount      := 0;
+  SugFuncCount      := 0;
+  SugVarCount       := 0;
+  SugConstCount     := 0;
+  SugOperatorCount  := 0;
+  SugTopicCount     := 0;
+  SugTotalCount     := 0;
+  SugLabelNum       := 0;
+  SugApplyCount     := 0;
+  SugCount          := 0;
+  SugLastInput      := '';
+  For I := 1 to SUG_MAX_ITEMS do Begin
+    Suggestions[I].Text := '';
+    Suggestions[I].Description := '';
+    Suggestions[I].Priority := 0;
+  End;
+  Inc(SugStateCount);
+End;
+
+Function GenSugLabel: String;
+Begin
+  Inc(SugLabelNum);
+  GenSugLabel := 'SUG_' + IntToStr(SugLabelNum);
+End;
+
+Function SugTypeName(SugType: Integer): String;
+Begin
+  Case SugType of
+    SUG_NONE:      SugTypeName := 'NONE';
+    SUG_KEYWORD:   SugTypeName := 'KEYWORD';
+    SUG_COMMAND:   SugTypeName := 'COMMAND';
+    SUG_TEMPLATE:  SugTypeName := 'TEMPLATE';
+    SUG_STRUCTURE: SugTypeName := 'STRUCTURE';
+    SUG_TYPE:      SugTypeName := 'TYPE';
+    SUG_PROCEDURE: SugTypeName := 'PROCEDURE';
+    SUG_FUNCTION:  SugTypeName := 'FUNCTION';
+    SUG_VARIABLE:  SugTypeName := 'VARIABLE';
+    SUG_CONSTANT:  SugTypeName := 'CONSTANT';
+    SUG_OPERATOR:  SugTypeName := 'OPERATOR';
+    SUG_COMMENT:   SugTypeName := 'COMMENT';
+    SUG_TOPIC:     SugTypeName := 'TOPIC';
+  Else
+    SugTypeName := 'UNKNOWN';
+  End;
+End;
+
+Procedure AddSuggestion(Text, Desc: String; Priority: Integer);
+Begin
+  If SugCount >= SUG_MAX_ITEMS Then Exit;
+  Inc(SugCount);
+  Suggestions[SugCount].Text := Text;
+  Suggestions[SugCount].Description := Desc;
+  Suggestions[SugCount].Priority := Priority;
+  Inc(SugTotalCount);
+End;
+
+Procedure ClearSuggestions;
+Var
+  I: Integer;
+Begin
+  For I := 1 to SUG_MAX_ITEMS do Begin
+    Suggestions[I].Text := '';
+    Suggestions[I].Description := '';
+    Suggestions[I].Priority := 0;
+  End;
+  SugCount := 0;
+End;
+
+Procedure GetSuggestions(PartialInput: String);
+Var
+  UInput: String;
+Begin
+  ClearSuggestions;
+  SugLastInput := PartialInput;
+  If Length(PartialInput) < SUG_MIN_MATCH Then Exit;
+
+  UInput := UpCaseStr(PartialInput);
+
+  { Suggestions de commandes }
+  If (Pos('/', PartialInput) = 1) Then Begin
+    If Pos('/H', UInput) = 1 Then Begin
+      AddSuggestion('/help', 'Afficher l''aide', 10);
+      Inc(SugCommandCount);
+    End;
+    If Pos('/Q', UInput) = 1 Then Begin
+      AddSuggestion('/quit', 'Quitter le programme', 10);
+      Inc(SugCommandCount);
+    End;
+    If Pos('/S', UInput) = 1 Then Begin
+      AddSuggestion('/save', 'Sauvegarder le code genere', 10);
+      Inc(SugCommandCount);
+    End;
+    If Pos('/L', UInput) = 1 Then Begin
+      AddSuggestion('/list', 'Lister les fichiers sauvegardes', 9);
+      Inc(SugCommandCount);
+    End;
+    If Pos('/C', UInput) = 1 Then Begin
+      AddSuggestion('/clear', 'Effacer l''historique', 8);
+      Inc(SugCommandCount);
+    End;
+    Exit;
+  End;
+
+  { Suggestions de mots-cles Pascal }
+  If Pos('PRO', UInput) = 1 Then Begin
+    AddSuggestion('program', 'Declarer un programme', 10);
+    AddSuggestion('procedure', 'Declarer une procedure', 9);
+    Inc(SugKeywordCount);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('FUN', UInput) = 1 Then Begin
+    AddSuggestion('function', 'Declarer une fonction', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('UNI', UInput) = 1 Then Begin
+    AddSuggestion('unit', 'Declarer une unite', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('BEG', UInput) = 1 Then Begin
+    AddSuggestion('begin', 'Debut de bloc', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('END', UInput) = 1 Then Begin
+    AddSuggestion('end', 'Fin de bloc', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('VAR', UInput) = 1 Then Begin
+    AddSuggestion('var', 'Section de variables', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('CON', UInput) = 1 Then Begin
+    AddSuggestion('const', 'Section de constantes', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('TYP', UInput) = 1 Then Begin
+    AddSuggestion('type', 'Section de types', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('USE', UInput) = 1 Then Begin
+    AddSuggestion('uses', 'Clause d''utilisation', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('IF', UInput) = 1 Then Begin
+    AddSuggestion('if', 'Structure conditionnelle', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('THE', UInput) = 1 Then Begin
+    AddSuggestion('then', 'Clause then', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('ELS', UInput) = 1 Then Begin
+    AddSuggestion('else', 'Clause else', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('FOR', UInput) = 1 Then Begin
+    AddSuggestion('for', 'Boucle for', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('WHI', UInput) = 1 Then Begin
+    AddSuggestion('while', 'Boucle while', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('REP', UInput) = 1 Then Begin
+    AddSuggestion('repeat', 'Boucle repeat', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('CAS', UInput) = 1 Then Begin
+    AddSuggestion('case', 'Structure case', 10);
+    Inc(SugKeywordCount);
+  End;
+  If Pos('ARR', UInput) = 1 Then Begin
+    AddSuggestion('array', 'Type tableau', 10);
+    Inc(SugTypeCount);
+  End;
+  If Pos('REC', UInput) = 1 Then Begin
+    AddSuggestion('record', 'Type enregistrement', 10);
+    Inc(SugTypeCount);
+  End;
+  If Pos('STR', UInput) = 1 Then Begin
+    AddSuggestion('string', 'Type chaine', 10);
+    Inc(SugTypeCount);
+  End;
+  If Pos('INT', UInput) = 1 Then Begin
+    AddSuggestion('integer', 'Type entier', 10);
+    Inc(SugTypeCount);
+  End;
+  If Pos('BOO', UInput) = 1 Then Begin
+    AddSuggestion('boolean', 'Type booleen', 10);
+    Inc(SugTypeCount);
+  End;
+  If Pos('REA', UInput) = 1 Then Begin
+    AddSuggestion('real', 'Type reel', 10);
+    Inc(SugTypeCount);
+  End;
+  If Pos('CHA', UInput) = 1 Then Begin
+    AddSuggestion('char', 'Type caractere', 10);
+    Inc(SugTypeCount);
+  End;
+
+  { Suggestions de templates }
+  If Pos('BON', UInput) = 1 Then Begin
+    AddSuggestion('bonjour', 'Programme Hello World', 10);
+    Inc(SugTemplateCount);
+  End;
+  If Pos('HEL', UInput) = 1 Then Begin
+    AddSuggestion('hello', 'Programme Hello World', 10);
+    Inc(SugTemplateCount);
+  End;
+  If Pos('CAL', UInput) = 1 Then Begin
+    AddSuggestion('calculatrice', 'Programme calculatrice', 9);
+    Inc(SugTemplateCount);
+  End;
+  If Pos('DAT', UInput) = 1 Then Begin
+    AddSuggestion('date', 'Programme date/heure', 9);
+    Inc(SugTemplateCount);
+  End;
+  If Pos('HEU', UInput) = 1 Then Begin
+    AddSuggestion('heure', 'Programme affichage heure', 9);
+    Inc(SugTemplateCount);
+  End;
+  If Pos('FAC', UInput) = 1 Then Begin
+    AddSuggestion('factorielle', 'Programme factorielle', 8);
+    Inc(SugTemplateCount);
+  End;
+  If Pos('FIB', UInput) = 1 Then Begin
+    AddSuggestion('fibonacci', 'Programme Fibonacci', 8);
+    Inc(SugTemplateCount);
+  End;
+End;
+
+Function AutoComplete(Input: String): String;
+Begin
+  GetSuggestions(Input);
+  If SugCount > 0 Then
+    AutoComplete := Suggestions[1].Text
+  Else
+    AutoComplete := Input;
+End;
+
+Procedure ShowSuggestions;
+Var
+  I: Integer;
+Begin
+  If SugCount = 0 Then Begin
+    WriteLn('Aucune suggestion disponible.');
+    Exit;
+  End;
+
+  WriteLn('=== Suggestions ===');
+  For I := 1 to SugCount do Begin
+    WriteLn(I:2, '. ', Suggestions[I].Text);
+    If Suggestions[I].Description <> '' Then
+      WriteLn('    ', Suggestions[I].Description);
+  End;
+  WriteLn('==================');
+End;
+
+Function ApplySuggestion(Index: Integer): String;
+Begin
+  If (Index < 1) or (Index > SugCount) Then Begin
+    ApplySuggestion := '';
+    Exit;
+  End;
+  Inc(SugApplyCount);
+  ApplySuggestion := Suggestions[Index].Text;
+End;
+
+Procedure DumpSugState;
+Begin
+  WriteLn('=== TODO 22 - Etat des Suggestions ===');
+  WriteLn('  SugInitialized    = ', SugInitialized);
+  WriteLn('  SugStateCount     = ', SugStateCount);
+  WriteLn('  SugKeywordCount   = ', SugKeywordCount);
+  WriteLn('  SugCommandCount   = ', SugCommandCount);
+  WriteLn('  SugTemplateCount  = ', SugTemplateCount);
+  WriteLn('  SugStructureCount = ', SugStructureCount);
+  WriteLn('  SugTypeCount      = ', SugTypeCount);
+  WriteLn('  SugProcCount      = ', SugProcCount);
+  WriteLn('  SugFuncCount      = ', SugFuncCount);
+  WriteLn('  SugVarCount       = ', SugVarCount);
+  WriteLn('  SugConstCount     = ', SugConstCount);
+  WriteLn('  SugOperatorCount  = ', SugOperatorCount);
+  WriteLn('  SugTopicCount     = ', SugTopicCount);
+  WriteLn('  SugTotalCount     = ', SugTotalCount);
+  WriteLn('  SugLabelNum       = ', SugLabelNum);
+  WriteLn('  SugApplyCount     = ', SugApplyCount);
+  WriteLn('  SugCount          = ', SugCount);
+  WriteLn('  SugLastInput      = "', SugLastInput, '"');
+  WriteLn('=======================================');
+End;
+
+{ Accesseurs pour TODO 22 }
+
+Function IsSugInitialized: Boolean;
+Begin
+  IsSugInitialized := SugInitialized;
+End;
+
+Function IsSugEmpty: Boolean;
+Begin
+  IsSugEmpty := SugCount = 0;
+End;
+
+Function GetSugStateCount: Integer;
+Begin
+  GetSugStateCount := SugStateCount;
+End;
+
+Function GetSugKeywordCount: Integer;
+Begin
+  GetSugKeywordCount := SugKeywordCount;
+End;
+
+Function GetSugCommandCount: Integer;
+Begin
+  GetSugCommandCount := SugCommandCount;
+End;
+
+Function GetSugTemplateCount: Integer;
+Begin
+  GetSugTemplateCount := SugTemplateCount;
+End;
+
+Function GetSugTypeCount: Integer;
+Begin
+  GetSugTypeCount := SugTypeCount;
+End;
+
+Function GetSugTotalCount: Integer;
+Begin
+  GetSugTotalCount := SugTotalCount;
+End;
+
+Function GetSugApplyCount: Integer;
+Begin
+  GetSugApplyCount := SugApplyCount;
+End;
+
+Function GetSugLabelNum: Integer;
+Begin
+  GetSugLabelNum := SugLabelNum;
+End;
+
+{ ============================================================
   TODO 25 - PROGRAMME PRINCIPAL ET BOUCLE DE CLAVARDAGE
   ============================================================ }
 
@@ -9854,6 +10264,10 @@ Begin
   ValInitialized := False;
   InitValState;
 
+  { Initialiser l'etat des suggestions (TODO 22) }
+  SugInitialized := False;
+  InitSugState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -9877,6 +10291,7 @@ Begin
     DumpHlpState;
     DumpSavState;
     DumpValState;
+    DumpSugState;
   End;
 
   Run;
@@ -9904,7 +10319,7 @@ Begin
   { 19 [IMPLEMENTE] - Aide en ligne }
   { 20 [IMPLEMENTE] - Sauvegarde programmes }
   { 21 [IMPLEMENTE] - Validation syntaxique }
-  { 22 [A FAIRE] - Suggestions }
+  { 22 [IMPLEMENTE] - Suggestions }
   { 23 [A FAIRE] - Mode interactif ameliore }
   { 24 [A FAIRE] - Export session }
   { 25 [IMPLEMENTE] - Programme principal }

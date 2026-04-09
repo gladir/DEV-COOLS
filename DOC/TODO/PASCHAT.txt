@@ -335,12 +335,21 @@
             DumpValState : afficher l'etat
             10 accesseurs : IsValInitialized, IsValEmpty, GetVal*Count
 
-  TODO 22 - SUGGESTIONS ET AUTO-COMPLETION [A FAIRE]
-            TSuggestion : Text, Description, Priority
+  TODO 22 - SUGGESTIONS ET AUTO-COMPLETION [IMPLEMENTE]
+            SUG_NONE=0..SUG_MAX=13 : constantes types de suggestion
+            SUG_MAX_ITEMS=20, SUG_MAX_TEXT=80 : limites
+            SugInitialized + 15 variables d'etat
+            InitSugState : initialiser l'etat
+            GenSugLabel : generer un label unique
+            SugTypeName : nom du type de suggestion
+            AddSuggestion(Text, Desc, Priority) : ajouter une suggestion
+            ClearSuggestions : effacer les suggestions
             GetSuggestions(PartialInput) : obtenir des suggestions
             AutoComplete(Input) : completer automatiquement l'entree
-            ShowSuggestions(Suggestions) : afficher les suggestions
+            ShowSuggestions : afficher les suggestions
             ApplySuggestion(Index) : appliquer une suggestion
+            DumpSugState : afficher l'etat
+            10 accesseurs : IsSugInitialized, IsSugEmpty, GetSug*Count
 
   TODO 23 - MODE INTERACTIF AMELIORE [A FAIRE]
             TInteractiveMode : IM_NORMAL, IM_EDIT, IM_REVIEW, IM_LEARN
