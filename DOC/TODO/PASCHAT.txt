@@ -296,12 +296,22 @@
             DumpHlpState : afficher l'etat
             10 accesseurs : IsHlpInitialized, IsHlpEmpty, GetHlp*Count
 
-  TODO 20 - SAUVEGARDE DES PROGRAMMES GENERES [A FAIRE]
-            SaveProgram(Code, FileName) : sauvegarder dans un fichier .pas
+  TODO 20 - SAUVEGARDE DES PROGRAMMES GENERES [IMPLEMENTE]
+            SAV_NONE=0..SAV_MAX=13 : constantes types de sauvegarde
+            SAV_MAX_FILES=100, SAV_MAX_PATH=255 : limites
+            SavInitialized + 15 variables d'etat
+            InitSavState : initialiser l'etat
+            GenSavLabel : generer un label unique
+            SavTypeName : nom du type de sauvegarde
+            SaveProgram(FileName) : sauvegarder dans un fichier .pas
             AutoSuggestFileName(Code) : suggerer un nom de fichier
             CheckFileExists(FileName) : verifier si le fichier existe
             ConfirmOverwrite : demander confirmation pour ecrasement
+            AddToSavedFiles : ajouter a la liste des fichiers
             ListSavedPrograms : lister les programmes sauvegardes
+            HandleSaveCommand : gerer la commande /save
+            DumpSavState : afficher l'etat
+            10 accesseurs : IsSavInitialized, IsSavEmpty, GetSav*Count
 
   TODO 21 - VALIDATION SYNTAXIQUE DU CODE GENERE [A FAIRE]
             ValidateSyntax(Code) : verifier la syntaxe du code genere

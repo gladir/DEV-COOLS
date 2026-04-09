@@ -320,12 +320,22 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 20 - SAUVEGARDE DES PROGRAMMES GENERES [A FAIRE]
-            SaveProgram(Code, FileName) : sauvegarder dans un fichier .pas
+  TODO 20 - SAUVEGARDE DES PROGRAMMES GENERES [IMPLEMENTE]
+            SAV_NONE=0..SAV_MAX=13 : constantes types de sauvegarde
+            SAV_MAX_FILES=100, SAV_MAX_PATH=255 : limites
+            SavInitialized + 15 variables d'etat
+            InitSavState : initialiser l'etat
+            GenSavLabel : generer un label unique
+            SavTypeName : nom du type de sauvegarde
+            SaveProgram(FileName) : sauvegarder dans un fichier .pas
             AutoSuggestFileName(Code) : suggerer un nom de fichier
             CheckFileExists(FileName) : verifier si le fichier existe
             ConfirmOverwrite : demander confirmation pour ecrasement
+            AddToSavedFiles : ajouter a la liste des fichiers
             ListSavedPrograms : lister les programmes sauvegardes
+            HandleSaveCommand : gerer la commande /save
+            DumpSavState : afficher l'etat
+            10 accesseurs : IsSavInitialized, IsSavEmpty, GetSav*Count
   ============================================================ }
 
 { ============================================================
@@ -794,6 +804,27 @@ Const
   HLP_MAX_KEYWORDS = 100;  { Nombre max de mots-cles }
   HLP_MAX_EXAMPLES = 20;   { Nombre max d'exemples }
   HLP_MAX_TOPICS   = 30;   { Nombre max de sujets }
+
+  { Types de sauvegarde pour TODO 20 }
+  SAV_NONE        = 0;   { Aucune sauvegarde }
+  SAV_PROGRAM     = 1;   { Sauvegarde programme }
+  SAV_UNIT        = 2;   { Sauvegarde unite }
+  SAV_INCLUDE     = 3;   { Sauvegarde include }
+  SAV_BACKUP      = 4;   { Sauvegarde backup }
+  SAV_AUTO        = 5;   { Sauvegarde automatique }
+  SAV_MANUAL      = 6;   { Sauvegarde manuelle }
+  SAV_TEMP        = 7;   { Sauvegarde temporaire }
+  SAV_EXPORT      = 8;   { Export }
+  SAV_SESSION     = 9;   { Sauvegarde session }
+  SAV_HISTORY     = 10;  { Sauvegarde historique }
+  SAV_CONFIG      = 11;  { Sauvegarde config }
+  SAV_TEMPLATE    = 12;  { Sauvegarde template }
+  SAV_MAX         = 13;  { Nombre maximum de types }
+
+  { Limites pour TODO 20 }
+  SAV_MAX_FILES   = 100; { Nombre max de fichiers sauvegardes }
+  SAV_MAX_PATH    = 255; { Longueur max du chemin }
+  SAV_DEFAULT_EXT = '.PAS'; { Extension par defaut }
 
 { ============================================================
   TYPES
@@ -1311,6 +1342,26 @@ Var
   HlpFilesCount    : Integer;
   HlpTotalCount    : Integer;
   HlpLabelNum      : Integer;
+
+  { TODO 20 - Sauvegarde des programmes }
+  SavInitialized   : Boolean;
+  SavStateCount    : Integer;
+  SavProgramCount  : Integer;
+  SavUnitCount     : Integer;
+  SavBackupCount   : Integer;
+  SavAutoCount     : Integer;
+  SavManualCount   : Integer;
+  SavTempCount     : Integer;
+  SavExportCount   : Integer;
+  SavSessionCount  : Integer;
+  SavHistoryCount  : Integer;
+  SavConfigCount   : Integer;
+  SavTemplateCount : Integer;
+  SavTotalCount    : Integer;
+  SavLabelNum      : Integer;
+  SavLastFileName  : String[SAV_MAX_PATH];
+  SavedFiles       : Array[1..SAV_MAX_FILES] of String[SAV_MAX_PATH];
+  SavedFilesCount  : Integer;
 
   { TODO 20 - Code genere courant }
   GeneratedCode : Array[1..MAX_CODE_LINES] of TCodeLine;
@@ -8764,18 +8815,185 @@ End;
   TODO 20 - SAUVEGARDE DES PROGRAMMES GENERES
   ============================================================ }
 
+Procedure InitSavState;
+Begin
+  SavInitialized := True;
+  SavStateCount := 0;
+  SavProgramCount := 0;
+  SavUnitCount := 0;
+  SavBackupCount := 0;
+  SavAutoCount := 0;
+  SavManualCount := 0;
+  SavTempCount := 0;
+  SavExportCount := 0;
+  SavSessionCount := 0;
+  SavHistoryCount := 0;
+  SavConfigCount := 0;
+  SavTemplateCount := 0;
+  SavTotalCount := 0;
+  SavLabelNum := 0;
+  SavLastFileName := '';
+  SavedFilesCount := 0;
+  Inc(SavStateCount);
+End;
+
+Function GenSavLabel: String;
+Begin
+  Inc(SavLabelNum);
+  GenSavLabel := 'SAV_' + IntToStr(SavLabelNum);
+End;
+
+Function SavTypeName(SavType: Integer): String;
+Begin
+  Case SavType of
+    SAV_NONE:     SavTypeName := 'NONE';
+    SAV_PROGRAM:  SavTypeName := 'PROGRAM';
+    SAV_UNIT:     SavTypeName := 'UNIT';
+    SAV_INCLUDE:  SavTypeName := 'INCLUDE';
+    SAV_BACKUP:   SavTypeName := 'BACKUP';
+    SAV_AUTO:     SavTypeName := 'AUTO';
+    SAV_MANUAL:   SavTypeName := 'MANUAL';
+    SAV_TEMP:     SavTypeName := 'TEMP';
+    SAV_EXPORT:   SavTypeName := 'EXPORT';
+    SAV_SESSION:  SavTypeName := 'SESSION';
+    SAV_HISTORY:  SavTypeName := 'HISTORY';
+    SAV_CONFIG:   SavTypeName := 'CONFIG';
+    SAV_TEMPLATE: SavTypeName := 'TEMPLATE';
+  Else
+    SavTypeName := 'UNKNOWN';
+  End;
+End;
+
+Function AutoSuggestFileName(Code: String): String;
+Var
+  FileName: String;
+  P, I: Integer;
+  S: String;
+Begin
+  FileName := 'OUTPUT';
+
+  { Chercher PROGRAM ou UNIT dans le code }
+  S := UpCaseStr(Code);
+  P := Pos('PROGRAM ', S);
+  If P > 0 Then Begin
+    { Extraire le nom du programme }
+    S := Copy(Code, P + 8, 50);
+    FileName := '';
+    For I := 1 to Length(S) do Begin
+      If S[I] in ['A'..'Z', 'a'..'z', '0'..'9', '_'] Then
+        FileName := FileName + S[I]
+      Else
+        Break;
+    End;
+    If FileName = '' Then
+      FileName := 'OUTPUT';
+  End Else Begin
+    P := Pos('UNIT ', S);
+    If P > 0 Then Begin
+      { Extraire le nom de l'unite }
+      S := Copy(Code, P + 5, 50);
+      FileName := '';
+      For I := 1 to Length(S) do Begin
+        If S[I] in ['A'..'Z', 'a'..'z', '0'..'9', '_'] Then
+          FileName := FileName + S[I]
+        Else
+          Break;
+      End;
+      If FileName = '' Then
+        FileName := 'OUTPUT';
+    End;
+  End;
+
+  { Ajouter l'extension }
+  FileName := FileName + '.PAS';
+  AutoSuggestFileName := FileName;
+End;
+
+Function CheckFileExists(FileName: String): Boolean;
+Var
+  F: File;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult = 0 Then Begin
+    Close(F);
+    CheckFileExists := True;
+  End Else
+    CheckFileExists := False;
+End;
+
+Function ConfirmOverwrite(FileName: String): Boolean;
+Var
+  Answer: String;
+Begin
+  Write('Le fichier "', FileName, '" existe deja. Ecraser? (O/N) ');
+  ReadLn(Answer);
+  Answer := UpCaseStr(Trim(Answer));
+  ConfirmOverwrite := (Answer = 'O') or (Answer = 'OUI') or (Answer = 'Y') or (Answer = 'YES');
+End;
+
+Procedure AddToSavedFiles(FileName: String);
+Begin
+  If SavedFilesCount < SAV_MAX_FILES Then Begin
+    Inc(SavedFilesCount);
+    SavedFiles[SavedFilesCount] := FileName;
+    SavLastFileName := FileName;
+    Inc(SavTotalCount);
+  End;
+End;
+
+Procedure ListSavedPrograms;
+Var
+  I: Integer;
+Begin
+  WriteLn;
+  WriteLn('=== Programmes sauvegardes cette session ===');
+  If SavedFilesCount = 0 Then Begin
+    WriteLn('Aucun programme sauvegarde.');
+  End Else Begin
+    For I := 1 to SavedFilesCount do
+      WriteLn('  ', I, '. ', SavedFiles[I]);
+    WriteLn;
+    WriteLn('Total: ', SavedFilesCount, ' fichier(s)');
+  End;
+  WriteLn;
+End;
+
 Procedure SaveProgram(FileName: String);
 Var
   F: Text;
   I: Integer;
+  SuggestedName: String;
 Begin
   If GeneratedCount = 0 Then Begin
     WriteLn('Aucun code a sauvegarder.');
     Exit;
   End;
 
-  If FileName = '' Then
-    FileName := 'OUTPUT.PAS';
+  { Suggerer un nom si vide }
+  If FileName = '' Then Begin
+    If GeneratedCount > 0 Then
+      SuggestedName := AutoSuggestFileName(GeneratedCode[1])
+    Else
+      SuggestedName := 'OUTPUT.PAS';
+    FileName := SuggestedName;
+    WriteLn('Nom suggere: ', FileName);
+  End;
+
+  { Ajouter l'extension si absente }
+  If Pos('.', FileName) = 0 Then
+    FileName := FileName + '.PAS';
+
+  { Verifier si le fichier existe }
+  If CheckFileExists(FileName) Then Begin
+    If Not ConfirmOverwrite(FileName) Then Begin
+      WriteLn('Sauvegarde annulee.');
+      Exit;
+    End;
+    Inc(SavBackupCount);
+  End;
 
   Assign(F, FileName);
   {$I-}
@@ -8791,6 +9009,92 @@ Begin
 
   Close(F);
   WriteLn('Code sauvegarde dans: ', FileName);
+
+  { Ajouter a la liste des fichiers sauvegardes }
+  AddToSavedFiles(FileName);
+
+  { Mettre a jour les compteurs }
+  If Pos('PROGRAM', UpCaseStr(GeneratedCode[1])) > 0 Then
+    Inc(SavProgramCount)
+  Else If Pos('UNIT', UpCaseStr(GeneratedCode[1])) > 0 Then
+    Inc(SavUnitCount);
+  Inc(SavManualCount);
+End;
+
+Procedure DumpSavState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat TODO 20 (Sauvegarde) ===');
+  WriteLn('Initialized:    ', SavInitialized);
+  WriteLn('StateCount:     ', SavStateCount);
+  WriteLn('ProgramCount:   ', SavProgramCount);
+  WriteLn('UnitCount:      ', SavUnitCount);
+  WriteLn('BackupCount:    ', SavBackupCount);
+  WriteLn('AutoCount:      ', SavAutoCount);
+  WriteLn('ManualCount:    ', SavManualCount);
+  WriteLn('TempCount:      ', SavTempCount);
+  WriteLn('ExportCount:    ', SavExportCount);
+  WriteLn('SessionCount:   ', SavSessionCount);
+  WriteLn('HistoryCount:   ', SavHistoryCount);
+  WriteLn('ConfigCount:    ', SavConfigCount);
+  WriteLn('TemplateCount:  ', SavTemplateCount);
+  WriteLn('TotalCount:     ', SavTotalCount);
+  WriteLn('LabelNum:       ', SavLabelNum);
+  WriteLn('LastFileName:   ', SavLastFileName);
+  WriteLn('SavedFilesCount:', SavedFilesCount);
+  WriteLn;
+End;
+
+{ Accesseurs TODO 20 }
+
+Function IsSavInitialized: Boolean;
+Begin
+  IsSavInitialized := SavInitialized;
+End;
+
+Function IsSavEmpty: Boolean;
+Begin
+  IsSavEmpty := SavTotalCount = 0;
+End;
+
+Function GetSavStateCount: Integer;
+Begin
+  GetSavStateCount := SavStateCount;
+End;
+
+Function GetSavProgramCount: Integer;
+Begin
+  GetSavProgramCount := SavProgramCount;
+End;
+
+Function GetSavUnitCount: Integer;
+Begin
+  GetSavUnitCount := SavUnitCount;
+End;
+
+Function GetSavBackupCount: Integer;
+Begin
+  GetSavBackupCount := SavBackupCount;
+End;
+
+Function GetSavManualCount: Integer;
+Begin
+  GetSavManualCount := SavManualCount;
+End;
+
+Function GetSavTotalCount: Integer;
+Begin
+  GetSavTotalCount := SavTotalCount;
+End;
+
+Function GetSavLabelNum: Integer;
+Begin
+  GetSavLabelNum := SavLabelNum;
+End;
+
+Function GetSavedFilesCount: Integer;
+Begin
+  GetSavedFilesCount := SavedFilesCount;
 End;
 
 Procedure HandleSaveCommand(Input: String);
@@ -8803,11 +9107,13 @@ Begin
   If P > 0 Then
     FileName := Trim(Copy(Input, P + 1, Length(Input)))
   Else
-    FileName := 'OUTPUT.PAS';
+    FileName := '';
 
-  { Ajouter l'extension si absente }
-  If Pos('.', FileName) = 0 Then
-    FileName := FileName + '.PAS';
+  { Si /list est demande, lister les fichiers sauvegardes }
+  If UpCaseStr(FileName) = 'LIST' Then Begin
+    ListSavedPrograms;
+    Exit;
+  End;
 
   SaveProgram(FileName);
 End;
@@ -9018,6 +9324,10 @@ Begin
   HlpInitialized := False;
   InitHlpState;
 
+  { Initialiser l'etat de la sauvegarde (TODO 20) }
+  SavInitialized := False;
+  InitSavState;
+
   { Afficher l'etat des options en mode debug }
   If Options.DebugMode Then Begin
     DumpOptState;
@@ -9039,6 +9349,7 @@ Begin
     DumpRspState;
     DumpFmtState;
     DumpHlpState;
+    DumpSavState;
   End;
 
   Run;
