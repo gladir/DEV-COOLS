@@ -377,7 +377,7 @@
               [key DD][val DD]
             10 fonctions accesseurs
 
-  TODO 16 - PARSEUR : TUPLES ET UNPACKING [A FAIRE]
+  TODO 16 - PARSEUR : TUPLES ET UNPACKING [IMPLEMENTE]
             Tuple vide : () -> pointeur vers zone vide
             Tuple literal : (e0, e1, e2) -> allocation + stockage DD
               par element
@@ -9603,6 +9603,590 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 16 - PARSEUR : TUPLES ET UNPACKING                     }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations sur les tuples }
+  TP_NONE          = 0;    { aucun / non defini                    }
+  TP_EMPTY         = 1;    { tuple vide ()                         }
+  TP_LITERAL       = 2;    { tuple literal (e0, e1, ...)           }
+  TP_SINGLETON     = 3;    { tuple singleton (e0,)                 }
+  TP_INDEX         = 4;    { acces par index tup[i]                }
+  TP_NEGINDEX      = 5;    { index negatif tup[-i]                 }
+  TP_IMMUTABLE     = 6;    { erreur : affectation par index        }
+  TP_LEN           = 7;    { len(tup)                              }
+  TP_UNPACK        = 8;    { a, b, c = tup                         }
+  TP_FORUNPACK     = 9;    { for a, b in list_of_tuples            }
+  TP_CONCAT        = 10;   { tup1 + tup2 -> concatenation          }
+  TP_MUL           = 11;   { tup * n -> repetition                 }
+  TP_CONTAINS      = 12;   { val in tup -> booleen                 }
+  TP_ITER          = 13;   { iteration for x in tup                }
+  TP_MAX           = 13;
+
+  { Limites }
+  TP_MAX_ELEMS     = 64;   { nombre max d elements dans un tuple   }
+  TP_INIT_CAP      = 8;    { capacite initiale d allocation        }
+
+Var
+  TpInitialized   : Boolean;    { True si l etat est initialise       }
+  TpEmptyCount    : LongInt;    { nombre de tuples vides crees        }
+  TpLiteralCount  : LongInt;    { nombre de tuples literaux           }
+  TpSingletonCount: LongInt;    { nombre de tuples singleton          }
+  TpIndexCount    : LongInt;    { nombre d acces par index            }
+  TpNegIndexCount : LongInt;    { nombre d acces index negatif        }
+  TpImmutableCount: LongInt;    { nombre d erreurs immutabilite       }
+  TpLenCount      : LongInt;    { nombre d appels a len(tup)          }
+  TpUnpackCount   : LongInt;    { nombre d unpackings                 }
+  TpForUnpackCount: LongInt;    { nombre de for-unpackings            }
+  TpConcatCount   : LongInt;    { nombre de concatenations            }
+  TpMulCount      : LongInt;    { nombre de repetitions               }
+  TpContainsCount : LongInt;    { nombre d operateurs in              }
+  TpIterCount     : LongInt;    { nombre d iterations for x in tup    }
+  TpLastKind      : Integer;    { dernier type d operation tuple      }
+  TpLabelSeq      : Integer;    { sequence pour labels tuple          }
+
+{ ------------------------------------------------------------ }
+{ InitTpState : initialiser le sous-systeme des tuples             }
+{ ------------------------------------------------------------ }
+
+Procedure InitTpState;
+Begin
+  TpInitialized   := True;
+  TpEmptyCount    := 0;
+  TpLiteralCount  := 0;
+  TpSingletonCount:= 0;
+  TpIndexCount    := 0;
+  TpNegIndexCount := 0;
+  TpImmutableCount:= 0;
+  TpLenCount      := 0;
+  TpUnpackCount   := 0;
+  TpForUnpackCount:= 0;
+  TpConcatCount   := 0;
+  TpMulCount      := 0;
+  TpContainsCount := 0;
+  TpIterCount     := 0;
+  TpLastKind      := TP_NONE;
+  TpLabelSeq      := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenTpLabel : generer un label unique pour les tuples              }
+{ ------------------------------------------------------------ }
+
+Function GenTpLabel : TString;
+Begin
+  Inc(TpLabelSeq);
+  GenTpLabel := '_PYL_TP_' + ItoS(TpLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ TpTypeName : retourner le nom du type d operation tuple           }
+{ ------------------------------------------------------------ }
+
+Function TpTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    TP_NONE          : TpTypeName := 'TP_NONE';
+    TP_EMPTY         : TpTypeName := 'TP_EMPTY';
+    TP_LITERAL       : TpTypeName := 'TP_LITERAL';
+    TP_SINGLETON     : TpTypeName := 'TP_SINGLETON';
+    TP_INDEX         : TpTypeName := 'TP_INDEX';
+    TP_NEGINDEX      : TpTypeName := 'TP_NEGINDEX';
+    TP_IMMUTABLE     : TpTypeName := 'TP_IMMUTABLE';
+    TP_LEN           : TpTypeName := 'TP_LEN';
+    TP_UNPACK        : TpTypeName := 'TP_UNPACK';
+    TP_FORUNPACK     : TpTypeName := 'TP_FORUNPACK';
+    TP_CONCAT        : TpTypeName := 'TP_CONCAT';
+    TP_MUL           : TpTypeName := 'TP_MUL';
+    TP_CONTAINS      : TpTypeName := 'TP_CONTAINS';
+    TP_ITER          : TpTypeName := 'TP_ITER';
+  Else
+    TpTypeName := 'TP_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleEmpty : emettre le code pour creer un tuple vide        }
+{   () -> allocation d un bloc avec count=0                       }
+{   Layout : [count DD=0]                                         }
+{   Resultat dans EAX = ptr vers le tuple                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleEmpty;
+Begin
+  TpLastKind := TP_EMPTY;
+  Inc(TpEmptyCount);
+  WriteLn('  ; () -> tuple vide');
+  WriteLn('  PUSH 4            ; taille : count uniquement');
+  WriteLn('  CALL _PYRT_ALLOC');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers le bloc');
+  WriteLn('  MOV DWORD PTR [EAX], 0  ; count = 0');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleLiteral : emettre le code pour creer un tuple literal   }
+{   (e0, e1, ...) -> allocation + stockage DD par element         }
+{   ElemCount = nombre d elements                                  }
+{   Les elements sont deja empiles sur la pile                     }
+{   Layout : [count DD][elem0 DD][elem1 DD]...                    }
+{   Resultat dans EAX = ptr vers le tuple                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleLiteral(ElemCount : Integer);
+Var
+  I : Integer;
+Begin
+  TpLastKind := TP_LITERAL;
+  Inc(TpLiteralCount);
+  WriteLn('  ; (', ElemCount, ' elems) -> tuple literal');
+  WriteLn('  PUSH ', (ElemCount + 1) * 4, ' ; taille : count + elements');
+  WriteLn('  CALL _PYRT_ALLOC');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers le bloc');
+  WriteLn('  MOV DWORD PTR [EAX], ', ElemCount, ' ; count = ', ElemCount);
+  { Les elements sont sur la pile, les depiler dans l ordre }
+  For I := ElemCount DownTo 1 Do
+  Begin
+    WriteLn('  POP ECX');
+    WriteLn('  MOV DWORD PTR [EAX+', I * 4, '], ECX ; elem[', I - 1, ']');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleSingleton : emettre le code pour creer un tuple (e0,)   }
+{   Tuple singleton : (e0,) -> virgule finale distingue du         }
+{   parenthesage simple                                            }
+{   L element est deja en sommet de pile                           }
+{   Layout : [count DD=1][elem0 DD]                               }
+{   Resultat dans EAX = ptr vers le tuple                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleSingleton;
+Begin
+  TpLastKind := TP_SINGLETON;
+  Inc(TpSingletonCount);
+  WriteLn('  ; (e0,) -> tuple singleton');
+  WriteLn('  PUSH 8            ; taille : count + 1 element');
+  WriteLn('  CALL _PYRT_ALLOC');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers le bloc');
+  WriteLn('  MOV DWORD PTR [EAX], 1   ; count = 1');
+  WriteLn('  POP ECX');
+  WriteLn('  MOV DWORD PTR [EAX+4], ECX ; elem[0]');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleIndex : emettre le code pour l acces par index          }
+{   tup[i] -> calcul offset + MOV EAX, [EBX+4+i*4]              }
+{   EBX = ptr vers le tuple, EAX = index                          }
+{   Resultat dans EAX = element a l index                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleIndex;
+Begin
+  TpLastKind := TP_INDEX;
+  Inc(TpIndexCount);
+  WriteLn('  ; tup[i] -> acces par index');
+  WriteLn('  ; EBX = ptr tuple, EAX = index');
+  WriteLn('  SHL EAX, 2       ; index * 4');
+  WriteLn('  ADD EAX, 4       ; sauter le compteur');
+  WriteLn('  MOV EAX, [EBX+EAX] ; EAX = elem[index]');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleNegIndex : emettre le code pour l index negatif         }
+{   tup[-1] -> len + index, puis acces normal                     }
+{   EBX = ptr vers le tuple, EAX = index negatif                  }
+{   Resultat dans EAX = element a l index calcule                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleNegIndex;
+Begin
+  TpLastKind := TP_NEGINDEX;
+  Inc(TpNegIndexCount);
+  WriteLn('  ; tup[-i] -> acces par index negatif');
+  WriteLn('  ; EBX = ptr tuple, EAX = index negatif');
+  WriteLn('  MOV ECX, [EBX]   ; ECX = count');
+  WriteLn('  ADD EAX, ECX     ; EAX = count + index (index est negatif)');
+  WriteLn('  SHL EAX, 2       ; EAX = offset * 4');
+  WriteLn('  ADD EAX, 4       ; sauter le compteur');
+  WriteLn('  MOV EAX, [EBX+EAX] ; EAX = elem[computed_index]');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleImmutable : emettre une erreur de compilation           }
+{   tup[i] = val -> erreur : les tuples sont immuables            }
+{   Affiche un message d erreur et incremente ErrorCount           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleImmutable;
+Begin
+  TpLastKind := TP_IMMUTABLE;
+  Inc(TpImmutableCount);
+  Inc(ErrorCount);
+  WriteLn('  ; ERREUR : les tuples sont immuables');
+  WriteLn('  ; tup[i] = val -> interdit');
+  WriteLn(StdErr, 'Erreur ligne ', CurTokLine,
+          ' : affectation par index sur un tuple (immuable)');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleLen : emettre le code pour len(tup)                     }
+{   Le compteur est en tete du tuple : MOV EAX, [EBX]            }
+{   EBX = ptr vers le tuple                                       }
+{   Resultat dans EAX = nombre d elements                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleLen;
+Begin
+  TpLastKind := TP_LEN;
+  Inc(TpLenCount);
+  WriteLn('  ; len(tup) -> compteur en tete de tuple');
+  WriteLn('  ; EBX = ptr tuple');
+  WriteLn('  MOV EAX, [EBX]   ; EAX = count (nombre d elements)');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleUnpack : emettre le code pour a, b, c = tup             }
+{   Extraire chaque element du tuple vers des variables            }
+{   EBX = ptr tuple, VarCount = nombre de variables cibles         }
+{   Chaque variable recoit elem[i] via MOV + stockage              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleUnpack(VarCount : Integer);
+Var
+  I : Integer;
+Begin
+  TpLastKind := TP_UNPACK;
+  Inc(TpUnpackCount);
+  WriteLn('  ; a, b, c = tup -> unpacking ', VarCount, ' elements');
+  WriteLn('  ; EBX = ptr tuple');
+  WriteLn('  MOV ECX, [EBX]   ; ECX = count');
+  WriteLn('  CMP ECX, ', VarCount, ' ; verifier que count == nombre de cibles');
+  WriteLn('  JNE _PYRT_PANIC  ; ValueError si count != VarCount');
+  For I := 0 To VarCount - 1 Do
+  Begin
+    WriteLn('  MOV EAX, [EBX+', (I + 1) * 4, '] ; elem[', I, ']');
+    WriteLn('  PUSH EAX         ; sauver elem[', I, '] pour affectation');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleForUnpack : emettre le code pour for a, b in list       }
+{   Iteration sur une liste de tuples avec unpacking               }
+{   EBX = ptr vers la liste de tuples                              }
+{   A chaque iteration, les elements du tuple courant sont extraits}
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleForUnpack(VarCount : Integer);
+Var
+  LblTest, LblBody, LblIncr, LblEnd : TString;
+Begin
+  TpLastKind := TP_FORUNPACK;
+  Inc(TpForUnpackCount);
+  LblTest := GenTpLabel;
+  LblBody := GenTpLabel;
+  LblIncr := GenTpLabel;
+  LblEnd  := GenTpLabel;
+  WriteLn('  ; for a, b in list_of_tuples -> unpacking ', VarCount);
+  WriteLn('  ; EBX = ptr vers la liste');
+  WriteLn('  XOR ESI, ESI     ; ESI = index = 0');
+  WriteLn(LblTest, ':');
+  WriteLn('  CMP ESI, [EBX]   ; comparer index avec count');
+  WriteLn('  JGE ', LblEnd, '  ; si index >= count, fin');
+  WriteLn(LblBody, ':');
+  WriteLn('  MOV EAX, ESI');
+  WriteLn('  SHL EAX, 2       ; index * 4');
+  WriteLn('  MOV EDI, [EBX+EAX+4] ; EDI = ptr vers tuple[index]');
+  WriteLn('  ; --- extraire les ', VarCount, ' elements du tuple ---');
+  WriteLn('  ; --- corps de la boucle ici ---');
+  WriteLn(LblIncr, ':');
+  WriteLn('  INC ESI           ; index++');
+  WriteLn('  JMP ', LblTest);
+  WriteLn(LblEnd, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleConcat : emettre le code pour tup1 + tup2               }
+{   CALL _PYRT_TUPLECONCAT(ESI=tup1, EDI=tup2) -> EAX=ptr       }
+{   Cree un nouveau tuple contenant les elements des deux         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleConcat;
+Begin
+  TpLastKind := TP_CONCAT;
+  Inc(TpConcatCount);
+  WriteLn('  ; tup1 + tup2 -> _PYRT_TUPLECONCAT');
+  WriteLn('  ; ESI = ptr tup1, EDI = ptr tup2');
+  WriteLn('  PUSH EDI         ; ptr vers tup2');
+  WriteLn('  PUSH ESI         ; ptr vers tup1');
+  WriteLn('  CALL _PYRT_TUPLECONCAT');
+  WriteLn('  ADD ESP, 8       ; EAX = ptr vers nouveau tuple');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleMul : emettre le code pour tup * n                      }
+{   CALL _PYRT_TUPLEMUL(ESI=tup, EAX=n) -> EAX=ptr               }
+{   Cree un nouveau tuple avec les elements repetes n fois        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleMul;
+Begin
+  TpLastKind := TP_MUL;
+  Inc(TpMulCount);
+  WriteLn('  ; tup * n -> _PYRT_TUPLEMUL');
+  WriteLn('  ; ESI = ptr tuple, EAX = n');
+  WriteLn('  PUSH EAX         ; facteur de repetition');
+  WriteLn('  PUSH ESI         ; ptr vers le tuple');
+  WriteLn('  CALL _PYRT_TUPLEMUL');
+  WriteLn('  ADD ESP, 8       ; EAX = ptr vers nouveau tuple');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleContains : emettre le code pour val in tup              }
+{   CALL _PYRT_TUPLECONTAINS(ESI=tup, EAX=val) -> EAX=0|1       }
+{   Retourne 1 si la valeur est presente, 0 sinon                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleContains;
+Begin
+  TpLastKind := TP_CONTAINS;
+  Inc(TpContainsCount);
+  WriteLn('  ; val in tup -> _PYRT_TUPLECONTAINS');
+  WriteLn('  ; ESI = ptr tuple, EAX = valeur recherchee');
+  WriteLn('  PUSH EAX         ; valeur recherchee');
+  WriteLn('  PUSH ESI         ; ptr vers le tuple');
+  WriteLn('  CALL _PYRT_TUPLECONTAINS');
+  WriteLn('  ADD ESP, 8       ; EAX = 0 ou 1');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTupleIter : emettre le code pour iterer sur un tuple         }
+{   for x in tup : parcours sequentiel des elements               }
+{   EBX = ptr tuple, ECX = index courant (0..count-1)              }
+{   A chaque iteration : MOV EAX, [EBX+4+ECX*4] (element)        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTupleIter;
+Var
+  LblTest, LblBody, LblIncr, LblEnd : TString;
+Begin
+  TpLastKind := TP_ITER;
+  Inc(TpIterCount);
+  LblTest := GenTpLabel;
+  LblBody := GenTpLabel;
+  LblIncr := GenTpLabel;
+  LblEnd  := GenTpLabel;
+  WriteLn('  ; for x in tup -> iteration sur les elements');
+  WriteLn('  ; EBX = ptr tuple');
+  WriteLn('  XOR ECX, ECX     ; ECX = index = 0');
+  WriteLn(LblTest, ':');
+  WriteLn('  CMP ECX, [EBX]   ; comparer index avec count');
+  WriteLn('  JGE ', LblEnd, '  ; si index >= count, fin');
+  WriteLn(LblBody, ':');
+  WriteLn('  MOV EAX, ECX');
+  WriteLn('  SHL EAX, 2       ; index * 4');
+  WriteLn('  MOV EAX, [EBX+EAX+4] ; charger elem[index]');
+  WriteLn('  ; --- corps de la boucle ici ---');
+  WriteLn(LblIncr, ':');
+  WriteLn('  INC ECX           ; index++');
+  WriteLn('  JMP ', LblTest);
+  WriteLn(LblEnd, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTupleExpr : analyser une expression de tuple                }
+{   (e0, e1, ...) -> EmitTupleLiteral                             }
+{   (e0,) -> EmitTupleSingleton                                   }
+{   () -> EmitTupleEmpty                                           }
+{   La parenthese ouvrante a deja ete consommee                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTupleExpr;
+Var
+  ElemCount : Integer;
+  IsTuple   : Boolean;
+Begin
+  ElemCount := 0;
+  IsTuple   := False;
+
+  (* Verifier s il s agit d un tuple vide *)
+  If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+  Begin
+    { Tuple vide }
+    EmitTupleEmpty;
+    LexNextToken;  (* consommer ')' *)
+    Exit;
+  End;
+
+  { Boucle sur les elements }
+  While Not ((CurTokKind = TK_OP) And (CurTokStr = ')')) And
+        Not (CurTokKind = TK_EOF) Do
+  Begin
+    Inc(ElemCount);
+
+    { Evaluer l element }
+    If CurTokKind = TK_INTEGER Then
+    Begin
+      WriteLn('  PUSH ', CurTokInt, ' ; elem[', ElemCount - 1, ']');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_STRING Then
+    Begin
+      WriteLn('  PUSH OFFSET ', GenTpLabel, ' ; elem[', ElemCount - 1, '] (str)');
+      LexNextToken;
+    End
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'True') Then
+    Begin
+      WriteLn('  PUSH 1           ; elem[', ElemCount - 1, '] (True)');
+      LexNextToken;
+    End
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'False') Then
+    Begin
+      WriteLn('  PUSH 0           ; elem[', ElemCount - 1, '] (False)');
+      LexNextToken;
+    End
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'None') Then
+    Begin
+      WriteLn('  PUSH 0           ; elem[', ElemCount - 1, '] (None)');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      WriteLn('  PUSH DWORD PTR [', SymMangle(CurTokStr, SK_VAR),
+              ']  ; elem[', ElemCount - 1, '] (var)');
+      LexNextToken;
+    End
+    Else
+    Begin
+      { Expression generique }
+      WriteLn('  PUSH EAX         ; elem[', ElemCount - 1, ']');
+      LexNextToken;
+    End;
+
+    { Consommer la virgule entre elements }
+    If (CurTokKind = TK_OP) And (CurTokStr = ',') Then
+    Begin
+      IsTuple := True;
+      LexNextToken;
+      { Verifier la virgule finale (tuple singleton) }
+      If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+      Begin
+        { Virgule finale avant ')' -> c est un tuple }
+        { Ne pas continuer la boucle }
+      End;
+    End;
+  End;
+
+  { Consommer ')' }
+  If (CurTokKind = TK_OP) And (CurTokStr = ')') Then
+    LexNextToken;
+
+  { Emettre le code pour creer le tuple }
+  If (ElemCount = 1) And IsTuple Then
+    EmitTupleSingleton
+  Else If ElemCount = 0 Then
+    EmitTupleEmpty
+  Else If IsTuple Or (ElemCount > 1) Then
+    EmitTupleLiteral(ElemCount)
+  Else
+  Begin
+    { Un seul element sans virgule -> parenthesage simple }
+    { Le PUSH est deja fait, on le convertit en expression }
+    WriteLn('  POP EAX          ; parenthesage simple (pas un tuple)');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpTpState : afficher l etat du sous-systeme des tuples         }
+{ ------------------------------------------------------------ }
+
+Procedure DumpTpState;
+Begin
+  WriteLn('--- Tuple State ---');
+  WriteLn('  TpInitialized   : ', TpInitialized);
+  WriteLn('  TpEmptyCount    : ', TpEmptyCount);
+  WriteLn('  TpLiteralCount  : ', TpLiteralCount);
+  WriteLn('  TpSingletonCount: ', TpSingletonCount);
+  WriteLn('  TpIndexCount    : ', TpIndexCount);
+  WriteLn('  TpNegIndexCount : ', TpNegIndexCount);
+  WriteLn('  TpImmutableCount: ', TpImmutableCount);
+  WriteLn('  TpLenCount      : ', TpLenCount);
+  WriteLn('  TpUnpackCount   : ', TpUnpackCount);
+  WriteLn('  TpForUnpackCount: ', TpForUnpackCount);
+  WriteLn('  TpConcatCount   : ', TpConcatCount);
+  WriteLn('  TpMulCount      : ', TpMulCount);
+  WriteLn('  TpContainsCount : ', TpContainsCount);
+  WriteLn('  TpIterCount     : ', TpIterCount);
+  WriteLn('  TpLastKind      : ', TpTypeName(TpLastKind));
+  WriteLn('  TpLabelSeq      : ', TpLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 16)                              }
+{ ------------------------------------------------------------ }
+
+Function IsTpInitialized : Boolean;
+Begin
+  IsTpInitialized := TpInitialized;
+End;
+
+Function IsTpEmpty : Boolean;
+Begin
+  IsTpEmpty := (TpEmptyCount = 0) And (TpLiteralCount = 0) And
+               (TpSingletonCount = 0) And (TpIndexCount = 0);
+End;
+
+Function GetTpEmptyCount : LongInt;
+Begin
+  GetTpEmptyCount := TpEmptyCount;
+End;
+
+Function GetTpLiteralCount : LongInt;
+Begin
+  GetTpLiteralCount := TpLiteralCount;
+End;
+
+Function GetTpSingletonCount : LongInt;
+Begin
+  GetTpSingletonCount := TpSingletonCount;
+End;
+
+Function GetTpIndexCount : LongInt;
+Begin
+  GetTpIndexCount := TpIndexCount;
+End;
+
+Function GetTpUnpackCount : LongInt;
+Begin
+  GetTpUnpackCount := TpUnpackCount;
+End;
+
+Function GetTpConcatCount : LongInt;
+Begin
+  GetTpConcatCount := TpConcatCount;
+End;
+
+Function GetTpContainsCount : LongInt;
+Begin
+  GetTpContainsCount := TpContainsCount;
+End;
+
+Function GetTpStatus : TString;
+Begin
+  If Not TpInitialized Then
+    GetTpStatus := 'Not initialized'
+  Else
+    GetTpStatus := ItoS(TpEmptyCount) + ' empty, ' +
+                   ItoS(TpLiteralCount) + ' literal, ' +
+                   ItoS(TpSingletonCount) + ' singleton, ' +
+                   ItoS(TpIndexCount) + ' index, ' +
+                   ItoS(TpUnpackCount) + ' unpack, ' +
+                   ItoS(TpConcatCount) + ' concat, ' +
+                   ItoS(TpContainsCount) + ' contains';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -9628,6 +10212,7 @@ Begin
   IoInitialized := False;
   LsInitialized := False;
   DcInitialized := False;
+  TpInitialized := False;
 
   ParseArgs;
 
@@ -9672,6 +10257,9 @@ Begin
 
   { Initialiser le sous-systeme des dictionnaires }
   InitDcState;
+
+  { Initialiser le sous-systeme des tuples }
+  InitTpState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -9752,6 +10340,13 @@ Begin
     WriteLn('Dict contains    : ', GetDcContainsCount);
     WriteLn('Dict del         : ', GetDcDelCount);
     WriteLn('Dict keys        : ', GetDcKeysCount);
+    WriteLn('Tuples vides     : ', GetTpEmptyCount);
+    WriteLn('Tuples literaux  : ', GetTpLiteralCount);
+    WriteLn('Tuples singleton : ', GetTpSingletonCount);
+    WriteLn('Tuple index      : ', GetTpIndexCount);
+    WriteLn('Tuple unpack     : ', GetTpUnpackCount);
+    WriteLn('Tuple concat     : ', GetTpConcatCount);
+    WriteLn('Tuple contains   : ', GetTpContainsCount);
   End;
 
   If Opts.DebugMode Then
@@ -9769,6 +10364,7 @@ Begin
     DumpIoState;
     DumpLsState;
     DumpDcState;
+    DumpTpState;
   End;
 
   { Nettoyage }

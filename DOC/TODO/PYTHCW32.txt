@@ -369,7 +369,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
               [key DD][val DD]
             10 fonctions accesseurs
 
-  TODO 16 - PARSEUR : TUPLES ET UNPACKING [A FAIRE]
+  TODO 16 - PARSEUR : TUPLES ET UNPACKING [IMPLEMENTE]
             Tuple vide : () -> pointeur vers zone vide
             Tuple literal : (e0, e1, e2) -> allocation + stockage DD
               par element
