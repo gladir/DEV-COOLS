@@ -348,7 +348,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             Iteration for : acces sequentiel aux elements
             10 fonctions accesseurs
 
-  TODO 15 - PARSEUR : DICTIONNAIRES (dict) [A FAIRE]
+  TODO 15 - PARSEUR : DICTIONNAIRES (dict) [IMPLEMENTE]
             Dict vide : {} -> allocation d une table de hachage vide
             Dict literal : {k0:v0, k1:v1} -> allocation + insertion
               des paires cle/valeur

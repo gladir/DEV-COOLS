@@ -356,7 +356,7 @@
             Iteration for : acces sequentiel aux elements
             10 fonctions accesseurs
 
-  TODO 15 - PARSEUR : DICTIONNAIRES (dict) [A FAIRE]
+  TODO 15 - PARSEUR : DICTIONNAIRES (dict) [IMPLEMENTE]
             Dict vide : {} -> allocation d une table de hachage vide
             Dict literal : {k0:v0, k1:v1} -> allocation + insertion
               des paires cle/valeur
@@ -9039,6 +9039,570 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 15 - PARSEUR : DICTIONNAIRES (dict)                     }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations sur les dictionnaires }
+  DC_NONE          = 0;    { aucun / non defini                    }
+  DC_EMPTY         = 1;    { dict vide                             }
+  DC_LITERAL       = 2;    { dict literal k:v, ...                 }
+  DC_GET           = 3;    { acces par cle d[key]                  }
+  DC_SET           = 4;    { affectation par cle d[key] = val      }
+  DC_GETDEF        = 5;    { d.get(key, default)                   }
+  DC_CONTAINS      = 6;    { key in d -> booleen                   }
+  DC_LEN           = 7;    { len(d) -> nombre de paires            }
+  DC_KEYS          = 8;    { d.keys() -> liste des cles            }
+  DC_VALUES        = 9;    { d.values() -> liste des valeurs       }
+  DC_DEL           = 10;   { del d[key]                            }
+  DC_ITER          = 11;   { iteration for k in d                  }
+  DC_UPDATE        = 12;   { d.update(other)                       }
+  DC_ITEMS         = 13;   { d.items() -> liste de paires          }
+  DC_MAX           = 13;
+
+  { Limites }
+  DC_MAX_PAIRS     = 64;   { nombre max de paires dans un dict     }
+  DC_INIT_CAP      = 8;    { capacite initiale d allocation        }
+
+Var
+  DcInitialized   : Boolean;    { True si l etat est initialise       }
+  DcEmptyCount    : LongInt;    { nombre de dicts vides crees         }
+  DcLiteralCount  : LongInt;    { nombre de dicts literaux            }
+  DcGetCount      : LongInt;    { nombre d acces par cle              }
+  DcSetCount      : LongInt;    { nombre d affectations par cle       }
+  DcGetDefCount   : LongInt;    { nombre d appels a get(key, def)     }
+  DcContainsCount : LongInt;    { nombre d operateurs in              }
+  DcLenCount      : LongInt;    { nombre d appels a len(d)            }
+  DcKeysCount     : LongInt;    { nombre d appels a keys()            }
+  DcValuesCount   : LongInt;    { nombre d appels a values()          }
+  DcDelCount      : LongInt;    { nombre d appels a del d[key]        }
+  DcIterCount     : LongInt;    { nombre d iterations for k in d      }
+  DcUpdateCount   : LongInt;    { nombre d appels a update()          }
+  DcItemsCount    : LongInt;    { nombre d appels a items()           }
+  DcLastKind      : Integer;    { dernier type d operation dict       }
+  DcLabelSeq      : Integer;    { sequence pour labels dict           }
+
+{ ------------------------------------------------------------ }
+{ InitDcState : initialiser le sous-systeme des dictionnaires      }
+{ ------------------------------------------------------------ }
+
+Procedure InitDcState;
+Begin
+  DcInitialized   := True;
+  DcEmptyCount    := 0;
+  DcLiteralCount  := 0;
+  DcGetCount      := 0;
+  DcSetCount      := 0;
+  DcGetDefCount   := 0;
+  DcContainsCount := 0;
+  DcLenCount      := 0;
+  DcKeysCount     := 0;
+  DcValuesCount   := 0;
+  DcDelCount      := 0;
+  DcIterCount     := 0;
+  DcUpdateCount   := 0;
+  DcItemsCount    := 0;
+  DcLastKind      := DC_NONE;
+  DcLabelSeq      := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDcLabel : generer un label unique pour les dictionnaires       }
+{ ------------------------------------------------------------ }
+
+Function GenDcLabel : TString;
+Begin
+  Inc(DcLabelSeq);
+  GenDcLabel := '_PYL_DC_' + ItoS(DcLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ DcTypeName : retourner le nom du type d operation dictionnaire    }
+{ ------------------------------------------------------------ }
+
+Function DcTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    DC_NONE          : DcTypeName := 'DC_NONE';
+    DC_EMPTY         : DcTypeName := 'DC_EMPTY';
+    DC_LITERAL       : DcTypeName := 'DC_LITERAL';
+    DC_GET           : DcTypeName := 'DC_GET';
+    DC_SET           : DcTypeName := 'DC_SET';
+    DC_GETDEF        : DcTypeName := 'DC_GETDEF';
+    DC_CONTAINS      : DcTypeName := 'DC_CONTAINS';
+    DC_LEN           : DcTypeName := 'DC_LEN';
+    DC_KEYS          : DcTypeName := 'DC_KEYS';
+    DC_VALUES        : DcTypeName := 'DC_VALUES';
+    DC_DEL           : DcTypeName := 'DC_DEL';
+    DC_ITER          : DcTypeName := 'DC_ITER';
+    DC_UPDATE        : DcTypeName := 'DC_UPDATE';
+    DC_ITEMS         : DcTypeName := 'DC_ITEMS';
+  Else
+    DcTypeName := 'DC_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictEmpty : emettre le code pour creer un dict vide          }
+{   dict vide -> allocation d une table de hachage vide sur le heap}
+{   Layout : [count DD=0][paires...]                              }
+{   Chaque paire : [key DD][val DD] = 8 octets                   }
+{   Resultat dans EAX = ptr vers le dict                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictEmpty;
+Begin
+  DcLastKind := DC_EMPTY;
+  Inc(DcEmptyCount);
+  WriteLn('  ; {} -> dict vide');
+  WriteLn('  PUSH ', (DC_INIT_CAP * 2 + 1) * 4, ' ; taille : count + capacite paires');
+  WriteLn('  CALL _PYRT_ALLOC');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers le bloc');
+  WriteLn('  MOV DWORD PTR [EAX], 0  ; count = 0');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictLiteral : emettre le code pour creer un dict literal     }
+{   k0:v0, k1:v1, ... -> allocation + insertion des paires        }
+{   PairCount = nombre de paires cle/valeur                       }
+{   Les paires sont deja empilees : val, key, val, key, ...       }
+{   Layout : [count DD][key0 DD][val0 DD][key1 DD][val1 DD]...   }
+{   Resultat dans EAX = ptr vers le dict                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictLiteral(PairCount : Integer);
+Var
+  I : Integer;
+Begin
+  DcLastKind := DC_LITERAL;
+  Inc(DcLiteralCount);
+  WriteLn('  ; {', PairCount, ' paires} -> dict literal');
+  WriteLn('  PUSH ', (PairCount * 2 + 1) * 4, ' ; taille : count + paires');
+  WriteLn('  CALL _PYRT_ALLOC');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers le bloc');
+  WriteLn('  MOV DWORD PTR [EAX], ', PairCount, ' ; count = ', PairCount);
+  { Les paires sont sur la pile, les depiler dans l ordre }
+  For I := PairCount DownTo 1 Do
+  Begin
+    WriteLn('  POP ECX');
+    WriteLn('  MOV DWORD PTR [EAX+', (I - 1) * 8 + 8, '], ECX ; val[', I - 1, ']');
+    WriteLn('  POP ECX');
+    WriteLn('  MOV DWORD PTR [EAX+', (I - 1) * 8 + 4, '], ECX ; key[', I - 1, ']');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictGet : emettre le code pour l acces par cle               }
+{   d[key] -> CALL _PYRT_DICTGET(ESI=dict, EAX=key) -> EAX=val  }
+{   KeyError si cle absente -> _PYRT_PANIC                        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictGet;
+Begin
+  DcLastKind := DC_GET;
+  Inc(DcGetCount);
+  WriteLn('  ; d[key] -> _PYRT_DICTGET');
+  WriteLn('  ; ESI = ptr dict, EAX = cle');
+  WriteLn('  PUSH EAX         ; cle');
+  WriteLn('  PUSH ESI         ; ptr vers le dict');
+  WriteLn('  CALL _PYRT_DICTGET');
+  WriteLn('  ADD ESP, 8       ; EAX = valeur (ou panic si absent)');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictSet : emettre le code pour l affectation par cle         }
+{   d[key] = val -> CALL _PYRT_DICTSET(ESI=dict, EAX=key, EBX=val)}
+{   Insere ou met a jour la paire cle/valeur                      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictSet;
+Begin
+  DcLastKind := DC_SET;
+  Inc(DcSetCount);
+  WriteLn('  ; d[key] = val -> _PYRT_DICTSET');
+  WriteLn('  ; ESI = ptr dict, EAX = cle, EBX = valeur');
+  WriteLn('  PUSH EBX         ; valeur');
+  WriteLn('  PUSH EAX         ; cle');
+  WriteLn('  PUSH ESI         ; ptr vers le dict');
+  WriteLn('  CALL _PYRT_DICTSET');
+  WriteLn('  ADD ESP, 12');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictGetDef : emettre le code pour d.get(key, default)        }
+{   CALL _PYRT_DICTGETDEF(ESI=dict, EAX=key, EBX=default)        }
+{   Retourne la valeur ou le default si cle absente               }
+{   Resultat dans EAX                                             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictGetDef;
+Begin
+  DcLastKind := DC_GETDEF;
+  Inc(DcGetDefCount);
+  WriteLn('  ; d.get(key, default) -> _PYRT_DICTGETDEF');
+  WriteLn('  ; ESI = ptr dict, EAX = cle, EBX = valeur par defaut');
+  WriteLn('  PUSH EBX         ; valeur par defaut');
+  WriteLn('  PUSH EAX         ; cle');
+  WriteLn('  PUSH ESI         ; ptr vers le dict');
+  WriteLn('  CALL _PYRT_DICTGETDEF');
+  WriteLn('  ADD ESP, 12      ; EAX = valeur ou default');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictContains : emettre le code pour key in d                 }
+{   CALL _PYRT_DICTCONTAINS(ESI=dict, EAX=key) -> EAX=0|1       }
+{   Retourne 1 si la cle est presente, 0 sinon                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictContains;
+Begin
+  DcLastKind := DC_CONTAINS;
+  Inc(DcContainsCount);
+  WriteLn('  ; key in d -> _PYRT_DICTCONTAINS');
+  WriteLn('  ; ESI = ptr dict, EAX = cle recherchee');
+  WriteLn('  PUSH EAX         ; cle recherchee');
+  WriteLn('  PUSH ESI         ; ptr vers le dict');
+  WriteLn('  CALL _PYRT_DICTCONTAINS');
+  WriteLn('  ADD ESP, 8       ; EAX = 0 ou 1');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictLen : emettre le code pour len(d)                        }
+{   Le compteur est en tete du dict : MOV EAX, [EBX]             }
+{   EBX = ptr vers le dict                                       }
+{   Resultat dans EAX = nombre de paires                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictLen;
+Begin
+  DcLastKind := DC_LEN;
+  Inc(DcLenCount);
+  WriteLn('  ; len(d) -> compteur en tete de dict');
+  WriteLn('  ; EBX = ptr dict');
+  WriteLn('  MOV EAX, [EBX]   ; EAX = count (nombre de paires)');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictKeys : emettre le code pour d.keys()                     }
+{   CALL _PYRT_DICTKEYS(ESI=dict) -> EAX=ptr vers liste des cles }
+{   Retourne une nouvelle liste contenant toutes les cles         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictKeys;
+Begin
+  DcLastKind := DC_KEYS;
+  Inc(DcKeysCount);
+  WriteLn('  ; d.keys() -> _PYRT_DICTKEYS');
+  WriteLn('  ; ESI = ptr dict');
+  WriteLn('  PUSH ESI         ; ptr vers le dict');
+  WriteLn('  CALL _PYRT_DICTKEYS');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers liste des cles');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictValues : emettre le code pour d.values()                 }
+{   CALL _PYRT_DICTVALUES(ESI=dict) -> EAX=ptr vers liste vals   }
+{   Retourne une nouvelle liste contenant toutes les valeurs      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictValues;
+Begin
+  DcLastKind := DC_VALUES;
+  Inc(DcValuesCount);
+  WriteLn('  ; d.values() -> _PYRT_DICTVALUES');
+  WriteLn('  ; ESI = ptr dict');
+  WriteLn('  PUSH ESI         ; ptr vers le dict');
+  WriteLn('  CALL _PYRT_DICTVALUES');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers liste des valeurs');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictDel : emettre le code pour del d[key]                    }
+{   CALL _PYRT_DICTDEL(ESI=dict, EAX=key)                        }
+{   Supprime la paire cle/valeur du dictionnaire                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictDel;
+Begin
+  DcLastKind := DC_DEL;
+  Inc(DcDelCount);
+  WriteLn('  ; del d[key] -> _PYRT_DICTDEL');
+  WriteLn('  ; ESI = ptr dict, EAX = cle a supprimer');
+  WriteLn('  PUSH EAX         ; cle');
+  WriteLn('  PUSH ESI         ; ptr vers le dict');
+  WriteLn('  CALL _PYRT_DICTDEL');
+  WriteLn('  ADD ESP, 8');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictIter : emettre le code pour iterer sur les cles d un dict}
+{   for k in d : parcours sequentiel des cles                     }
+{   EBX = ptr dict, ECX = index courant (0..count-1)              }
+{   A chaque iteration : MOV EAX, [EBX+4+ECX*8] (cle de paire)  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictIter;
+Var
+  LblTest, LblBody, LblIncr, LblEnd : TString;
+Begin
+  DcLastKind := DC_ITER;
+  Inc(DcIterCount);
+  LblTest := GenDcLabel;
+  LblBody := GenDcLabel;
+  LblIncr := GenDcLabel;
+  LblEnd  := GenDcLabel;
+  WriteLn('  ; for k in d -> iteration sur les cles');
+  WriteLn('  ; EBX = ptr dict');
+  WriteLn('  XOR ECX, ECX     ; ECX = index = 0');
+  WriteLn(LblTest, ':');
+  WriteLn('  CMP ECX, [EBX]   ; comparer index avec count');
+  WriteLn('  JGE ', LblEnd, '  ; si index >= count, fin');
+  WriteLn(LblBody, ':');
+  WriteLn('  MOV EAX, ECX');
+  WriteLn('  SHL EAX, 3       ; index * 8 (paires de 8 octets)');
+  WriteLn('  MOV EAX, [EBX+EAX+4] ; charger key[index]');
+  WriteLn('  ; --- corps de la boucle ici ---');
+  WriteLn(LblIncr, ':');
+  WriteLn('  INC ECX           ; index++');
+  WriteLn('  JMP ', LblTest);
+  WriteLn(LblEnd, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictUpdate : emettre le code pour d.update(other)            }
+{   CALL _PYRT_DICTUPDATE(ESI=dict, EDI=other)                   }
+{   Fusionne les paires de other dans dict                        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictUpdate;
+Begin
+  DcLastKind := DC_UPDATE;
+  Inc(DcUpdateCount);
+  WriteLn('  ; d.update(other) -> _PYRT_DICTUPDATE');
+  WriteLn('  ; ESI = ptr dict dest, EDI = ptr dict source');
+  WriteLn('  PUSH EDI         ; ptr vers dict source');
+  WriteLn('  PUSH ESI         ; ptr vers dict destination');
+  WriteLn('  CALL _PYRT_DICTUPDATE');
+  WriteLn('  ADD ESP, 8');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDictItems : emettre le code pour d.items()                   }
+{   CALL _PYRT_DICTITEMS(ESI=dict) -> EAX=ptr vers liste paires  }
+{   Retourne une liste de tuples (key, val)                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDictItems;
+Begin
+  DcLastKind := DC_ITEMS;
+  Inc(DcItemsCount);
+  WriteLn('  ; d.items() -> _PYRT_DICTITEMS');
+  WriteLn('  ; ESI = ptr dict');
+  WriteLn('  PUSH ESI         ; ptr vers le dict');
+  WriteLn('  CALL _PYRT_DICTITEMS');
+  WriteLn('  ADD ESP, 4       ; EAX = ptr vers liste de paires');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDictExpr : analyser une expression de dictionnaire          }
+{   k0:v0, k1:v1, ... -> EmitDictLiteral                         }
+{   dict vide -> EmitDictEmpty                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDictExpr;
+Var
+  PairCount : Integer;
+Begin
+  PairCount := 0;
+
+  (* On attend que l accolade ouvrante soit deja consommee *)
+  (* Verifier s il s agit d un dict vide *)
+  If (CurTokKind = TK_OP) And (CurTokStr = '}') Then
+  Begin
+    { Dict vide }
+    EmitDictEmpty;
+    LexNextToken;  (* consommer '}' *)
+    Exit;
+  End;
+
+  { Boucle sur les paires cle:valeur }
+  While Not ((CurTokKind = TK_OP) And (CurTokStr = '}')) And
+        Not (CurTokKind = TK_EOF) Do
+  Begin
+    Inc(PairCount);
+
+    { Evaluer la cle }
+    If CurTokKind = TK_INTEGER Then
+    Begin
+      WriteLn('  PUSH ', CurTokInt, ' ; key[', PairCount - 1, ']');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_STRING Then
+    Begin
+      WriteLn('  PUSH OFFSET ', GenDcLabel, ' ; key[', PairCount - 1, '] (str)');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      WriteLn('  PUSH DWORD PTR [', SymMangle(CurTokStr, SK_VAR),
+              ']  ; key[', PairCount - 1, '] (var)');
+      LexNextToken;
+    End
+    Else
+    Begin
+      WriteLn('  PUSH EAX         ; key[', PairCount - 1, ']');
+      LexNextToken;
+    End;
+
+    { Consommer ':' }
+    If (CurTokKind = TK_OP) And (CurTokStr = ':') Then
+      LexNextToken;
+
+    { Evaluer la valeur }
+    If CurTokKind = TK_INTEGER Then
+    Begin
+      WriteLn('  PUSH ', CurTokInt, ' ; val[', PairCount - 1, ']');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_STRING Then
+    Begin
+      WriteLn('  PUSH OFFSET ', GenDcLabel, ' ; val[', PairCount - 1, '] (str)');
+      LexNextToken;
+    End
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'True') Then
+    Begin
+      WriteLn('  PUSH 1           ; val[', PairCount - 1, '] (True)');
+      LexNextToken;
+    End
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'False') Then
+    Begin
+      WriteLn('  PUSH 0           ; val[', PairCount - 1, '] (False)');
+      LexNextToken;
+    End
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'None') Then
+    Begin
+      WriteLn('  PUSH 0           ; val[', PairCount - 1, '] (None)');
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      WriteLn('  PUSH DWORD PTR [', SymMangle(CurTokStr, SK_VAR),
+              ']  ; val[', PairCount - 1, '] (var)');
+      LexNextToken;
+    End
+    Else
+    Begin
+      WriteLn('  PUSH EAX         ; val[', PairCount - 1, ']');
+      LexNextToken;
+    End;
+
+    { Consommer la virgule entre paires }
+    If (CurTokKind = TK_OP) And (CurTokStr = ',') Then
+      LexNextToken;
+  End;
+
+  (* Consommer '}' *)
+  If (CurTokKind = TK_OP) And (CurTokStr = '}') Then
+    LexNextToken;
+
+  { Emettre le code pour creer le dict }
+  If PairCount = 0 Then
+    EmitDictEmpty
+  Else
+    EmitDictLiteral(PairCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpDcState : afficher l etat du sous-systeme des dictionnaires  }
+{ ------------------------------------------------------------ }
+
+Procedure DumpDcState;
+Begin
+  WriteLn('--- Dict State ---');
+  WriteLn('  DcInitialized   : ', DcInitialized);
+  WriteLn('  DcEmptyCount    : ', DcEmptyCount);
+  WriteLn('  DcLiteralCount  : ', DcLiteralCount);
+  WriteLn('  DcGetCount      : ', DcGetCount);
+  WriteLn('  DcSetCount      : ', DcSetCount);
+  WriteLn('  DcGetDefCount   : ', DcGetDefCount);
+  WriteLn('  DcContainsCount : ', DcContainsCount);
+  WriteLn('  DcLenCount      : ', DcLenCount);
+  WriteLn('  DcKeysCount     : ', DcKeysCount);
+  WriteLn('  DcValuesCount   : ', DcValuesCount);
+  WriteLn('  DcDelCount      : ', DcDelCount);
+  WriteLn('  DcIterCount     : ', DcIterCount);
+  WriteLn('  DcUpdateCount   : ', DcUpdateCount);
+  WriteLn('  DcItemsCount    : ', DcItemsCount);
+  WriteLn('  DcLastKind      : ', DcTypeName(DcLastKind));
+  WriteLn('  DcLabelSeq      : ', DcLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 15)                              }
+{ ------------------------------------------------------------ }
+
+Function IsDcInitialized : Boolean;
+Begin
+  IsDcInitialized := DcInitialized;
+End;
+
+Function IsDcEmpty : Boolean;
+Begin
+  IsDcEmpty := (DcEmptyCount = 0) And (DcLiteralCount = 0) And
+               (DcGetCount = 0) And (DcSetCount = 0);
+End;
+
+Function GetDcEmptyCount : LongInt;
+Begin
+  GetDcEmptyCount := DcEmptyCount;
+End;
+
+Function GetDcLiteralCount : LongInt;
+Begin
+  GetDcLiteralCount := DcLiteralCount;
+End;
+
+Function GetDcGetCount : LongInt;
+Begin
+  GetDcGetCount := DcGetCount;
+End;
+
+Function GetDcSetCount : LongInt;
+Begin
+  GetDcSetCount := DcSetCount;
+End;
+
+Function GetDcContainsCount : LongInt;
+Begin
+  GetDcContainsCount := DcContainsCount;
+End;
+
+Function GetDcDelCount : LongInt;
+Begin
+  GetDcDelCount := DcDelCount;
+End;
+
+Function GetDcKeysCount : LongInt;
+Begin
+  GetDcKeysCount := DcKeysCount;
+End;
+
+Function GetDcStatus : TString;
+Begin
+  If Not DcInitialized Then
+    GetDcStatus := 'Not initialized'
+  Else
+    GetDcStatus := ItoS(DcEmptyCount) + ' empty, ' +
+                   ItoS(DcLiteralCount) + ' literal, ' +
+                   ItoS(DcGetCount) + ' get, ' +
+                   ItoS(DcSetCount) + ' set, ' +
+                   ItoS(DcContainsCount) + ' contains, ' +
+                   ItoS(DcDelCount) + ' del, ' +
+                   ItoS(DcKeysCount) + ' keys';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -9063,6 +9627,7 @@ Begin
   FnInitialized := False;
   IoInitialized := False;
   LsInitialized := False;
+  DcInitialized := False;
 
   ParseArgs;
 
@@ -9104,6 +9669,9 @@ Begin
 
   { Initialiser le sous-systeme des listes }
   InitLsState;
+
+  { Initialiser le sous-systeme des dictionnaires }
+  InitDcState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -9177,6 +9745,13 @@ Begin
     WriteLn('Appels pop       : ', GetLsPopCount);
     WriteLn('Concatenations   : ', GetLsConcatCount);
     WriteLn('Operateurs in    : ', GetLsContainsCount);
+    WriteLn('Dicts vides      : ', GetDcEmptyCount);
+    WriteLn('Dicts literaux   : ', GetDcLiteralCount);
+    WriteLn('Dict get         : ', GetDcGetCount);
+    WriteLn('Dict set         : ', GetDcSetCount);
+    WriteLn('Dict contains    : ', GetDcContainsCount);
+    WriteLn('Dict del         : ', GetDcDelCount);
+    WriteLn('Dict keys        : ', GetDcKeysCount);
   End;
 
   If Opts.DebugMode Then
@@ -9193,6 +9768,7 @@ Begin
     DumpFnState;
     DumpIoState;
     DumpLsState;
+    DumpDcState;
   End;
 
   { Nettoyage }
