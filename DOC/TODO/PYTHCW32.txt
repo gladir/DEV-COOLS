@@ -489,7 +489,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
             Tables d importation/exportation : symboles EXTRN/PUBLIC
             10 fonctions accesseurs
 
-  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [A FAIRE]
+  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [IMPLEMENTE]
             Section .data (variables initialisees) :
               Variable int : _PYV_nom DD 0
               Variable str : _PYV_nom DD _PYK_N (pointeur chaine)

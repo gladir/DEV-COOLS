@@ -497,7 +497,7 @@
             Tables d importation/exportation : symboles EXTRN/PUBLIC
             10 fonctions accesseurs
 
-  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [A FAIRE]
+  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [IMPLEMENTE]
             Section .data (variables initialisees) :
               Variable int : _PYV_nom DD 0
               Variable str : _PYV_nom DD _PYK_N (pointeur chaine)
@@ -12732,6 +12732,456 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386     }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations du segment de donnees }
+  DT_NONE          = 0;    { aucun / non defini                    }
+  DT_INT_VAR       = 1;    { variable entiere DD 0                 }
+  DT_STR_VAR       = 2;    { variable chaine DD ptr                }
+  DT_BOOL_VAR      = 3;    { variable booleenne DD 0               }
+  DT_NONE_VAR      = 4;    { variable None DD 0                    }
+  DT_STR_CONST     = 5;    { constante chaine DB 'txt', 0          }
+  DT_FMT_CONST     = 6;    { constante format DB 'fmt', 0          }
+  DT_SPECIAL       = 7;    { constantes speciales True/False/None   }
+  DT_BSS_BUF       = 8;    { tampon BSS DB n DUP(?)                }
+  DT_BSS_VAR       = 9;    { variable BSS DD ?                     }
+  DT_HEAP          = 10;   { zone heap dynamique                   }
+  DT_COLLECTION    = 11;   { bloc donnees liste/tuple/dict         }
+  DT_ALIGN         = 12;   { directive d alignement                }
+  DT_SECTION       = 13;   { directive de section .data / .data?   }
+  DT_MAX           = 13;
+
+  { Limites }
+  DT_MAX_VARS      = 256;  { nombre max de variables dans DATA     }
+  DT_MAX_CONSTS    = 128;  { nombre max de constantes chaines      }
+  DT_HEAP_SIZE     = 65536;{ taille du heap dynamique en octets    }
+
+Var
+  DtInitialized    : Boolean;    { True si l etat est initialise       }
+  DtIntVarCount    : LongInt;    { nombre de variables entieres        }
+  DtStrVarCount    : LongInt;    { nombre de variables chaines         }
+  DtBoolVarCount   : LongInt;    { nombre de variables booleennes      }
+  DtNoneVarCount   : LongInt;    { nombre de variables None            }
+  DtStrConstCount  : LongInt;    { nombre de constantes chaines        }
+  DtFmtConstCount  : LongInt;    { nombre de constantes format         }
+  DtSpecialCount   : LongInt;    { nombre de constantes speciales      }
+  DtBssBufCount    : LongInt;    { nombre de tampons BSS               }
+  DtBssVarCount    : LongInt;    { nombre de variables BSS             }
+  DtHeapEmitted    : Boolean;    { True si le heap a ete emis          }
+  DtCollectionCount: LongInt;    { nombre de blocs collection          }
+  DtAlignCount     : LongInt;    { nombre de directives alignement     }
+  DtSectionCount   : LongInt;    { nombre de directives section        }
+  DtLastKind       : Integer;    { dernier type d operation            }
+  DtLabelSeq       : Integer;    { sequence pour labels donnees        }
+
+{ ------------------------------------------------------------ }
+{ InitDtState : initialiser le sous-systeme du segment donnees     }
+{ ------------------------------------------------------------ }
+
+Procedure InitDtState;
+Begin
+  DtInitialized    := True;
+  DtIntVarCount    := 0;
+  DtStrVarCount    := 0;
+  DtBoolVarCount   := 0;
+  DtNoneVarCount   := 0;
+  DtStrConstCount  := 0;
+  DtFmtConstCount  := 0;
+  DtSpecialCount   := 0;
+  DtBssBufCount    := 0;
+  DtBssVarCount    := 0;
+  DtHeapEmitted    := False;
+  DtCollectionCount:= 0;
+  DtAlignCount     := 0;
+  DtSectionCount   := 0;
+  DtLastKind       := DT_NONE;
+  DtLabelSeq       := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDtLabel : generer un label unique pour le segment donnees      }
+{ ------------------------------------------------------------ }
+
+Function GenDtLabel : TString;
+Begin
+  Inc(DtLabelSeq);
+  GenDtLabel := '_PYD_' + ItoS(DtLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ DtTypeName : retourner le nom du type d operation donnees         }
+{ ------------------------------------------------------------ }
+
+Function DtTypeName(Kind : Integer) : TString;
+Begin
+  Case Kind Of
+    DT_NONE        : DtTypeName := 'DT_NONE';
+    DT_INT_VAR     : DtTypeName := 'DT_INT_VAR';
+    DT_STR_VAR     : DtTypeName := 'DT_STR_VAR';
+    DT_BOOL_VAR    : DtTypeName := 'DT_BOOL_VAR';
+    DT_NONE_VAR    : DtTypeName := 'DT_NONE_VAR';
+    DT_STR_CONST   : DtTypeName := 'DT_STR_CONST';
+    DT_FMT_CONST   : DtTypeName := 'DT_FMT_CONST';
+    DT_SPECIAL     : DtTypeName := 'DT_SPECIAL';
+    DT_BSS_BUF     : DtTypeName := 'DT_BSS_BUF';
+    DT_BSS_VAR     : DtTypeName := 'DT_BSS_VAR';
+    DT_HEAP        : DtTypeName := 'DT_HEAP';
+    DT_COLLECTION  : DtTypeName := 'DT_COLLECTION';
+    DT_ALIGN       : DtTypeName := 'DT_ALIGN';
+    DT_SECTION     : DtTypeName := 'DT_SECTION';
+  Else
+    DtTypeName := 'DT_UNKNOWN(' + ItoS(Kind) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataSection : emettre le debut de la section .data            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataSection;
+Begin
+  WriteLn('; ========================================');
+  WriteLn('; Section .data (variables initialisees)');
+  WriteLn('; ========================================');
+  WriteLn('.data');
+  WriteLn;
+  Inc(DtSectionCount);
+  DtLastKind := DT_SECTION;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitVarInt : emettre une variable entiere dans .data              }
+{   _PYV_nom DD 0                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitVarInt(Const VarName : TString);
+Begin
+  WriteLn('_PYV_', VarName, ' DD 0             ; int variable');
+  Inc(DtIntVarCount);
+  DtLastKind := DT_INT_VAR;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitVarStr : emettre une variable chaine dans .data               }
+{   _PYV_nom DD _PYK_N (pointeur vers constante chaine)           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitVarStr(Const VarName, ConstLabel : TString);
+Begin
+  WriteLn('_PYV_', VarName, ' DD ', ConstLabel,
+          '     ; str variable -> ', ConstLabel);
+  Inc(DtStrVarCount);
+  DtLastKind := DT_STR_VAR;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitVarBool : emettre une variable booleenne dans .data           }
+{   _PYV_nom DD 0                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitVarBool(Const VarName : TString; InitVal : LongInt);
+Begin
+  WriteLn('_PYV_', VarName, ' DD ', InitVal,
+          '             ; bool variable');
+  Inc(DtBoolVarCount);
+  DtLastKind := DT_BOOL_VAR;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitVarNone : emettre une variable None dans .data                }
+{   _PYV_nom DD 0                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitVarNone(Const VarName : TString);
+Begin
+  WriteLn('_PYV_', VarName, ' DD 0             ; None variable');
+  Inc(DtNoneVarCount);
+  DtLastKind := DT_NONE_VAR;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrConst : emettre une constante chaine NUL-terminated        }
+{   _PYK_N DB 'texte', 0                                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStrConst(Const LabelName, Value : TString);
+Var
+  I : Integer;
+Begin
+  Write(LabelName, ' DB ');
+  For I := 1 To Length(Value) Do
+  Begin
+    If I > 1 Then
+      Write(', ');
+    Write(Ord(Value[I]));
+  End;
+  WriteLn(', 0              ; "', Value, '"');
+  Inc(DtStrConstCount);
+  DtLastKind := DT_STR_CONST;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFmtConst : emettre une constante de format pour print         }
+{   _PYK_FMT_N DB 'format...', 0                                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFmtConst(Const LabelName, FmtStr : TString);
+Var
+  I : Integer;
+Begin
+  Write(LabelName, ' DB ');
+  For I := 1 To Length(FmtStr) Do
+  Begin
+    If I > 1 Then
+      Write(', ');
+    Write(Ord(FmtStr[I]));
+  End;
+  WriteLn(', 0              ; format "', FmtStr, '"');
+  Inc(DtFmtConstCount);
+  DtLastKind := DT_FMT_CONST;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitSpecialConsts : emettre les constantes speciales Python       }
+{   _PYK_TRUE, _PYK_FALSE, _PYK_NONE, _PYK_CRLF, _PYK_SPACE     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitSpecialConsts;
+Begin
+  WriteLn('; --- Constantes speciales Python ---');
+  WriteLn('_PYK_TRUE  DB ''True'', 0');
+  WriteLn('_PYK_FALSE DB ''False'', 0');
+  WriteLn('_PYK_NONE  DB ''None'', 0');
+  WriteLn('_PYK_CRLF  DB 13, 10, 0');
+  WriteLn('_PYK_SPACE DB '' '', 0');
+  WriteLn;
+  DtSpecialCount := 5;
+  DtLastKind := DT_SPECIAL;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBssSection : emettre le debut de la section .data? (BSS)      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBssSection;
+Begin
+  WriteLn;
+  WriteLn('; ========================================');
+  WriteLn('; Section .data? (BSS - non initialisees)');
+  WriteLn('; ========================================');
+  WriteLn('.data?');
+  WriteLn;
+  Inc(DtSectionCount);
+  DtLastKind := DT_SECTION;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBssBuffer : emettre un tampon BSS de N octets                 }
+{   _PY_NOM DB N DUP(?)                                           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBssBuffer(Const BufName : TString; Size : LongInt);
+Begin
+  WriteLn(BufName, ' DB ', Size, ' DUP(?)     ; buffer ', Size,
+          ' octets');
+  Inc(DtBssBufCount);
+  DtLastKind := DT_BSS_BUF;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBssVar : emettre une variable BSS (DD ?)                      }
+{   _PY_NOM DD ?                                                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBssVar(Const VarName : TString);
+Begin
+  WriteLn(VarName, ' DD ?                     ; runtime variable');
+  Inc(DtBssVarCount);
+  DtLastKind := DT_BSS_VAR;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitHeap : emettre la zone heap dynamique                         }
+{   _PY_HEAP DB 65536 DUP(0)                                      }
+{   _PY_HEAPTOP DD 0                                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitHeap;
+Begin
+  WriteLn('; --- Heap dynamique ---');
+  WriteLn('_PY_HEAP DB ', DT_HEAP_SIZE,
+          ' DUP(0)   ; heap dynamique');
+  WriteLn('_PY_HEAPTOP DD 0',
+          '               ; sommet du heap');
+  WriteLn;
+  DtHeapEmitted := True;
+  DtLastKind := DT_HEAP;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCollectionData : emettre un bloc de donnees pour collection    }
+{   Pour listes, tuples, dicts : blocs de DD                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCollectionData(Const CollLabel : TString;
+                              ElemCount : LongInt);
+Var
+  I : LongInt;
+Begin
+  WriteLn('; --- collection data block ---');
+  Write(CollLabel, ' DD ');
+  For I := 1 To ElemCount Do
+  Begin
+    If I > 1 Then
+      Write(', ');
+    Write('0');
+  End;
+  WriteLn('    ; ', ElemCount, ' elements');
+  Inc(DtCollectionCount);
+  DtLastKind := DT_COLLECTION;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAlignment : emettre une directive d alignement 4 octets       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitAlignment;
+Begin
+  WriteLn('ALIGN 4                         ; alignement DWORD');
+  Inc(DtAlignCount);
+  DtLastKind := DT_ALIGN;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataSegment : emettre le segment de donnees complet           }
+{   Genere les sections .data et .data? avec toutes les            }
+{   constantes speciales, tampons et heap                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataSegment;
+Begin
+  { Section .data : variables initialisees }
+  EmitDataSection;
+
+  { Constantes speciales Python }
+  EmitSpecialConsts;
+
+  { Alignement }
+  EmitAlignment;
+
+  { Section .data? : BSS }
+  EmitBssSection;
+
+  { Tampons d entree/sortie }
+  EmitBssBuffer('_PY_IOBUF', 256);
+  EmitBssBuffer('_PY_NUMBUF', 32);
+
+  { Variables runtime }
+  EmitBssVar('_PY_STDOUT');
+  EmitBssVar('_PY_STDIN');
+  EmitBssVar('_PY_WRITTEN');
+  EmitBssVar('_PY_READ');
+
+  { Alignement }
+  EmitAlignment;
+
+  { Heap dynamique }
+  EmitHeap;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpDtState : afficher l etat du sous-systeme segment donnees     }
+{ ------------------------------------------------------------ }
+
+Procedure DumpDtState;
+Begin
+  WriteLn;
+  WriteLn('=== Etat du sous-systeme Segment Donnees (TODO 21) ===');
+  WriteLn('  DtInitialized    : ', DtInitialized);
+  WriteLn('  DtIntVarCount    : ', DtIntVarCount);
+  WriteLn('  DtStrVarCount    : ', DtStrVarCount);
+  WriteLn('  DtBoolVarCount   : ', DtBoolVarCount);
+  WriteLn('  DtNoneVarCount   : ', DtNoneVarCount);
+  WriteLn('  DtStrConstCount  : ', DtStrConstCount);
+  WriteLn('  DtFmtConstCount  : ', DtFmtConstCount);
+  WriteLn('  DtSpecialCount   : ', DtSpecialCount);
+  WriteLn('  DtBssBufCount    : ', DtBssBufCount);
+  WriteLn('  DtBssVarCount    : ', DtBssVarCount);
+  WriteLn('  DtHeapEmitted    : ', DtHeapEmitted);
+  WriteLn('  DtCollectionCount: ', DtCollectionCount);
+  WriteLn('  DtAlignCount     : ', DtAlignCount);
+  WriteLn('  DtSectionCount   : ', DtSectionCount);
+  WriteLn('  DtLastKind       : ', DtTypeName(DtLastKind));
+  WriteLn('  DtLabelSeq       : ', DtLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 21)                              }
+{ ------------------------------------------------------------ }
+
+Function IsDtInitialized : Boolean;
+Begin
+  IsDtInitialized := DtInitialized;
+End;
+
+Function IsDtEmpty : Boolean;
+Begin
+  IsDtEmpty := (DtIntVarCount = 0) And (DtStrVarCount = 0) And
+               (DtStrConstCount = 0) And (DtBssBufCount = 0);
+End;
+
+Function GetDtIntVarCount : LongInt;
+Begin
+  GetDtIntVarCount := DtIntVarCount;
+End;
+
+Function GetDtStrVarCount : LongInt;
+Begin
+  GetDtStrVarCount := DtStrVarCount;
+End;
+
+Function GetDtStrConstCount : LongInt;
+Begin
+  GetDtStrConstCount := DtStrConstCount;
+End;
+
+Function GetDtFmtConstCount : LongInt;
+Begin
+  GetDtFmtConstCount := DtFmtConstCount;
+End;
+
+Function GetDtBssBufCount : LongInt;
+Begin
+  GetDtBssBufCount := DtBssBufCount;
+End;
+
+Function GetDtBssVarCount : LongInt;
+Begin
+  GetDtBssVarCount := DtBssVarCount;
+End;
+
+Function GetDtCollectionCount : LongInt;
+Begin
+  GetDtCollectionCount := DtCollectionCount;
+End;
+
+Function GetDtStatus : TString;
+Begin
+  If Not DtInitialized Then
+    GetDtStatus := 'Not initialized'
+  Else
+    GetDtStatus := ItoS(DtIntVarCount) + ' int-vars, ' +
+                   ItoS(DtStrVarCount) + ' str-vars, ' +
+                   ItoS(DtStrConstCount) + ' str-consts, ' +
+                   ItoS(DtFmtConstCount) + ' fmt-consts, ' +
+                   ItoS(DtBssBufCount) + ' bss-bufs, ' +
+                   ItoS(DtBssVarCount) + ' bss-vars';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -12762,6 +13212,7 @@ Begin
   ClInitialized := False;
   ExInitialized := False;
   CpInitialized := False;
+  DtInitialized := False;
 
   ParseArgs;
 
@@ -12821,6 +13272,9 @@ Begin
 
   { Initialiser le sous-systeme des comprehensions et import }
   InitCpState;
+
+  { Initialiser le sous-systeme du segment de donnees }
+  InitDtState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -12936,6 +13390,13 @@ Begin
     WriteLn('Module math      : ', GetCpMathCount);
     WriteLn('Module sys       : ', GetCpSysCount);
     WriteLn('Gen warnings     : ', GetCpGenWarnCount);
+    WriteLn('Data int vars    : ', GetDtIntVarCount);
+    WriteLn('Data str vars    : ', GetDtStrVarCount);
+    WriteLn('Data str consts  : ', GetDtStrConstCount);
+    WriteLn('Data fmt consts  : ', GetDtFmtConstCount);
+    WriteLn('Data BSS bufs    : ', GetDtBssBufCount);
+    WriteLn('Data BSS vars    : ', GetDtBssVarCount);
+    WriteLn('Data collections : ', GetDtCollectionCount);
   End;
 
   If Opts.DebugMode Then
@@ -12958,6 +13419,7 @@ Begin
     DumpClState;
     DumpExState;
     DumpCpState;
+    DumpDtState;
   End;
 
   { Nettoyage }
