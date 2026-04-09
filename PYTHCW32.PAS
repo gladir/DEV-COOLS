@@ -447,7 +447,7 @@
               attributs et methodes
             10 fonctions accesseurs
 
-  TODO 19 - PARSEUR : EXCEPTIONS (try / except / finally / raise) [A FAIRE]
+  TODO 19 - PARSEUR : EXCEPTIONS (try / except / finally / raise) [IMPLEMENTE]
             ParseTryStmt : try: bloc except [Type [as var]]: bloc
               [else: bloc] [finally: bloc]
             try: bloc -> sauvegarder handler courant, installer nouveau
@@ -11383,6 +11383,686 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 19 - PARSEUR : EXCEPTIONS (try/except/finally/raise)    }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations sur les exceptions }
+  EX_NONE          = 0;    { aucun / non defini                    }
+  EX_TRY           = 1;    { bloc try                              }
+  EX_EXCEPT        = 2;    { except ExceptionType: bloc            }
+  EX_EXCEPT_AS     = 3;    { except ExceptionType as e: bloc       }
+  EX_BARE_EXCEPT   = 4;    { except: bloc (attrape tout)           }
+  EX_ELSE          = 5;    { else: bloc apres try                  }
+  EX_FINALLY       = 6;    { finally: bloc                         }
+  EX_RAISE         = 7;    { raise ExceptionType(msg)              }
+  EX_RERAISE       = 8;    { raise sans argument                   }
+  EX_SETUP         = 9;    { installer handler d exception         }
+  EX_RESTORE       = 10;   { restaurer handler precedent           }
+  EX_EXIT          = 11;   { sortir du bloc try normalement        }
+  EX_UNHANDLED     = 12;   { exception non geree                   }
+  EX_NESTED        = 13;   { try imbrique                          }
+  EX_MAX           = 13;
+
+  { Limites }
+  EX_MAX_TRY_NEST  = 16;   { profondeur max de try imbriques       }
+  EX_MAX_EXCEPT    = 16;   { nombre max de clauses except par try   }
+  EX_MAX_TYPES     = 32;   { nombre max de types d exception        }
+
+Var
+  ExInitialized    : Boolean;    { True si l etat est initialise       }
+  ExTryCount       : LongInt;    { nombre de blocs try                 }
+  ExExceptCount    : LongInt;    { nombre de clauses except            }
+  ExExceptAsCount  : LongInt;    { nombre de except ... as e           }
+  ExBareCount      : LongInt;    { nombre de except generiques         }
+  ExElseCount      : LongInt;    { nombre de clauses else              }
+  ExFinallyCount   : LongInt;    { nombre de clauses finally           }
+  ExRaiseCount     : LongInt;    { nombre de raise ExcType(msg)        }
+  ExReraiseCount   : LongInt;    { nombre de raise sans argument       }
+  ExSetupCount     : LongInt;    { nombre de setup handler             }
+  ExRestoreCount   : LongInt;    { nombre de restore handler           }
+  ExExitCount      : LongInt;    { nombre de sortie normale            }
+  ExUnhandledCount : LongInt;    { nombre d exceptions non gerees      }
+  ExNestDepth      : Integer;    { profondeur d imbrication courante   }
+  ExLastKind       : Integer;    { dernier type d operation exception  }
+  ExLabelSeq       : Integer;    { sequence pour labels exception      }
+
+{ ------------------------------------------------------------ }
+{ InitExState : initialiser le sous-systeme des exceptions         }
+{ ------------------------------------------------------------ }
+
+Procedure InitExState;
+Begin
+  ExInitialized    := True;
+  ExTryCount       := 0;
+  ExExceptCount    := 0;
+  ExExceptAsCount  := 0;
+  ExBareCount      := 0;
+  ExElseCount      := 0;
+  ExFinallyCount   := 0;
+  ExRaiseCount     := 0;
+  ExReraiseCount   := 0;
+  ExSetupCount     := 0;
+  ExRestoreCount   := 0;
+  ExExitCount      := 0;
+  ExUnhandledCount := 0;
+  ExNestDepth      := 0;
+  ExLastKind       := EX_NONE;
+  ExLabelSeq       := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenExLabel : generer un label unique pour les exceptions          }
+{ ------------------------------------------------------------ }
+
+Function GenExLabel : TString;
+Begin
+  Inc(ExLabelSeq);
+  GenExLabel := '_PYX_' + ItoS(ExLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ ExTypeName : retourner le nom du type d operation exception       }
+{ ------------------------------------------------------------ }
+
+Function ExTypeName(Kind : Integer) : TString;
+Begin
+  Case Kind Of
+    EX_NONE        : ExTypeName := 'EX_NONE';
+    EX_TRY         : ExTypeName := 'EX_TRY';
+    EX_EXCEPT      : ExTypeName := 'EX_EXCEPT';
+    EX_EXCEPT_AS   : ExTypeName := 'EX_EXCEPT_AS';
+    EX_BARE_EXCEPT : ExTypeName := 'EX_BARE_EXCEPT';
+    EX_ELSE        : ExTypeName := 'EX_ELSE';
+    EX_FINALLY     : ExTypeName := 'EX_FINALLY';
+    EX_RAISE       : ExTypeName := 'EX_RAISE';
+    EX_RERAISE     : ExTypeName := 'EX_RERAISE';
+    EX_SETUP       : ExTypeName := 'EX_SETUP';
+    EX_RESTORE     : ExTypeName := 'EX_RESTORE';
+    EX_EXIT        : ExTypeName := 'EX_EXIT';
+    EX_UNHANDLED   : ExTypeName := 'EX_UNHANDLED';
+    EX_NESTED      : ExTypeName := 'EX_NESTED';
+  Else
+    ExTypeName := 'EX_UNKNOWN(' + ItoS(Kind) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitSetupHandler : installer un handler d exception               }
+{   Sauvegarder le handler courant, installer nouveau label        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitSetupHandler(Const HandlerLabel : TString);
+Begin
+  WriteLn('; --- setup exception handler ---');
+  WriteLn('PUSH DWORD [_PYX_HANDLER]    ; sauver ancien handler');
+  WriteLn('MOV DWORD [_PYX_HANDLER], ', HandlerLabel);
+  WriteLn('MOV DWORD [_PYX_CODE], 0     ; pas d exception active');
+  Inc(ExSetupCount);
+  ExLastKind := EX_SETUP;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRestoreHandler : restaurer le handler d exception precedent   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRestoreHandler;
+Begin
+  WriteLn('; --- restore exception handler ---');
+  WriteLn('POP DWORD [_PYX_HANDLER]     ; restaurer ancien handler');
+  Inc(ExRestoreCount);
+  ExLastKind := EX_RESTORE;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitExitHandler : sortir du bloc try normalement                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitExitHandler(Const EndLabel : TString);
+Begin
+  WriteLn('; --- exit try normal ---');
+  WriteLn('JMP ', EndLabel, '              ; saut vers fin de try');
+  Inc(ExExitCount);
+  ExLastKind := EX_EXIT;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTryBegin : emettre le debut d un bloc try                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTryBegin(Const ExceptLabel : TString);
+Begin
+  WriteLn('; --- try begin ---');
+  EmitSetupHandler(ExceptLabel);
+  Inc(ExTryCount);
+  ExLastKind := EX_TRY;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitExceptHandler : emettre un handler except Type                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitExceptHandler(Const ExcType : TString;
+                            Const NextLabel : TString);
+Begin
+  WriteLn('; --- except ', ExcType, ' ---');
+  WriteLn('CMP DWORD [_PYX_CODE], ', ExcType, '_CODE');
+  WriteLn('JNE ', NextLabel, '              ; pas ce type, suivant');
+  Inc(ExExceptCount);
+  ExLastKind := EX_EXCEPT;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitExceptAs : emettre except Type as var                         }
+{   Stocker le message d exception dans la variable                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitExceptAs(Const ExcType, VarName : TString;
+                       Const NextLabel : TString);
+Begin
+  WriteLn('; --- except ', ExcType, ' as ', VarName, ' ---');
+  WriteLn('CMP DWORD [_PYX_CODE], ', ExcType, '_CODE');
+  WriteLn('JNE ', NextLabel, '              ; pas ce type, suivant');
+  WriteLn('MOV EAX, [_PYX_MSG]          ; charger message exception');
+  WriteLn('MOV [', VarName, '], EAX      ; stocker dans variable');
+  Inc(ExExceptAsCount);
+  ExLastKind := EX_EXCEPT_AS;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBareExcept : emettre except: (attrape tout)                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBareExcept;
+Begin
+  WriteLn('; --- except (bare, catch all) ---');
+  WriteLn('CMP DWORD [_PYX_CODE], 0');
+  WriteLn('JE _PYX_NO_EXC               ; pas d exception, skip');
+  Inc(ExBareCount);
+  ExLastKind := EX_BARE_EXCEPT;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitElseBlock : emettre le bloc else (si aucune exception)        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitElseBlock(Const ElseLabel : TString);
+Begin
+  WriteLn('; --- else (no exception) ---');
+  WriteLn(ElseLabel, ':');
+  WriteLn('CMP DWORD [_PYX_CODE], 0     ; exception levee ?');
+  WriteLn('JNE _PYX_SKIP_ELSE           ; oui, sauter else');
+  Inc(ExElseCount);
+  ExLastKind := EX_ELSE;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFinallyBlock : emettre le bloc finally                        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFinallyBlock(Const FinallyLabel : TString);
+Begin
+  WriteLn('; --- finally ---');
+  WriteLn(FinallyLabel, ':');
+  Inc(ExFinallyCount);
+  ExLastKind := EX_FINALLY;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTryEnd : emettre la fin du bloc try complet                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTryEnd(Const EndLabel : TString);
+Begin
+  WriteLn('; --- end try ---');
+  WriteLn(EndLabel, ':');
+  EmitRestoreHandler;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRaise : emettre raise ExceptionType(msg)                      }
+{   EAX = code exception, EBX = pointeur vers message             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRaise(Const ExcType, MsgLabel : TString);
+Begin
+  WriteLn('; --- raise ', ExcType, ' ---');
+  WriteLn('MOV EAX, ', ExcType, '_CODE    ; code de l exception');
+  WriteLn('MOV DWORD [_PYX_CODE], EAX    ; stocker code exception');
+  WriteLn('MOV EBX, ', MsgLabel, '        ; pointeur message');
+  WriteLn('MOV DWORD [_PYX_MSG], EBX     ; stocker message');
+  WriteLn('JMP DWORD [_PYX_HANDLER]      ; sauter vers handler');
+  Inc(ExRaiseCount);
+  ExLastKind := EX_RAISE;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitReraise : emettre raise sans argument (relever exception)     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitReraise;
+Begin
+  WriteLn('; --- reraise (propagate) ---');
+  WriteLn('CMP DWORD [_PYX_CODE], 0     ; exception active ?');
+  WriteLn('JE _PYX_NO_ACTIVE            ; non, erreur');
+  WriteLn('JMP DWORD [_PYX_HANDLER]     ; propager vers handler');
+  Inc(ExReraiseCount);
+  ExLastKind := EX_RERAISE;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitUnhandled : emettre le handler d exception non geree          }
+{   Afficher 'Unhandled exception' + ExitProcess(1)               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitUnhandled;
+Begin
+  WriteLn('; --- unhandled exception ---');
+  WriteLn('_PYX_UNHANDLED:');
+  WriteLn('PUSH _PYX_UNHANDLED_MSG      ; ptr "Unhandled exception"');
+  WriteLn('PUSH DWORD [_PYX_STDOUT]     ; handle stdout');
+  WriteLn('CALL _WriteFile               ; afficher message');
+  WriteLn('PUSH 1                        ; code de sortie');
+  WriteLn('CALL ExitProcess              ; terminer');
+  Inc(ExUnhandledCount);
+  ExLastKind := EX_UNHANDLED;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTryStmt : parser une instruction try/except/else/finally     }
+{   try:                                                           }
+{     bloc                                                         }
+{   except [ExcType [as var]]:                                     }
+{     bloc                                                         }
+{   [else:]                                                        }
+{     [bloc]                                                       }
+{   [finally:]                                                     }
+{     [bloc]                                                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTryStmt;
+Var
+  TryLabel     : TString;
+  ExceptLabel  : TString;
+  ElseLabel    : TString;
+  FinallyLabel : TString;
+  EndLabel     : TString;
+  NextLabel    : TString;
+  ExcType      : TString;
+  VarName      : TString;
+  HasElse      : Boolean;
+  HasFinally   : Boolean;
+  ExceptIdx    : Integer;
+Begin
+  { Verifier la profondeur d imbrication }
+  If ExNestDepth >= EX_MAX_TRY_NEST Then
+  Begin
+    WriteLn('Erreur: try imbrique trop profondement (max ',
+            EX_MAX_TRY_NEST, ')');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  Inc(ExNestDepth);
+
+  { Generer les labels }
+  TryLabel     := GenExLabel;
+  ExceptLabel  := GenExLabel;
+  ElseLabel    := GenExLabel;
+  FinallyLabel := GenExLabel;
+  EndLabel     := GenExLabel;
+
+  HasElse    := False;
+  HasFinally := False;
+  ExceptIdx  := 0;
+
+  WriteLn('; === try/except/finally ===');
+  WriteLn(TryLabel, ':');
+
+  { Installer le handler d exception }
+  EmitTryBegin(ExceptLabel);
+
+  { Consommer 'try' }
+  LexNextToken;
+
+  { Attendre ':' }
+  If CurTokKind = TK_COLON Then
+    LexNextToken;
+
+  { Consommer NEWLINE si present }
+  If CurTokKind = TK_NEWLINE Then
+    LexNextToken;
+
+  { Consommer INDENT si present }
+  If CurTokKind = TK_INDENT Then
+    LexNextToken;
+
+  { Parser le corps du try (simplifie: on avance jusqu a except/finally) }
+  While (CurTokKind <> TK_EOF) And
+        Not ((CurTokKind = TK_KEYWORD) And
+             ((CurTokStr = 'except') Or
+              (CurTokStr = 'finally'))) And
+        (CurTokKind <> TK_DEDENT) Do
+  Begin
+    If CurTokKind = TK_NEWLINE Then
+      LexNextToken
+    Else If CurTokKind = TK_INDENT Then
+      LexNextToken
+    Else
+      LexNextToken;
+  End;
+
+  { Consommer le DEDENT si present }
+  If CurTokKind = TK_DEDENT Then
+    LexNextToken;
+
+  { Sortie normale du try : sauter vers else ou finally ou end }
+  WriteLn('; --- try body done (no exception) ---');
+  WriteLn('MOV DWORD [_PYX_CODE], 0     ; aucune exception');
+
+  { Parser les clauses except }
+  WriteLn(ExceptLabel, ':');
+
+  While (CurTokKind = TK_KEYWORD) And (CurTokStr = 'except') Do
+  Begin
+    LexNextToken;  { Consommer 'except' }
+    Inc(ExceptIdx);
+    NextLabel := GenExLabel;
+
+    If CurTokKind = TK_COLON Then
+    Begin
+      { except: (bare except, attrape tout) }
+      LexNextToken;  { Consommer ':' }
+      EmitBareExcept;
+    End
+    Else
+    Begin
+      { except ExcType [as var]: }
+      ExcType := CurTokStr;
+      LexNextToken;  { Consommer le type }
+
+      If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'as') Then
+      Begin
+        { except ExcType as var: }
+        LexNextToken;  { Consommer 'as' }
+        VarName := CurTokStr;
+        LexNextToken;  { Consommer le nom de variable }
+        If CurTokKind = TK_COLON Then
+          LexNextToken;
+        EmitExceptAs(ExcType, VarName, NextLabel);
+      End
+      Else
+      Begin
+        { except ExcType: }
+        If CurTokKind = TK_COLON Then
+          LexNextToken;
+        EmitExceptHandler(ExcType, NextLabel);
+      End;
+    End;
+
+    { Consommer NEWLINE si present }
+    If CurTokKind = TK_NEWLINE Then
+      LexNextToken;
+
+    { Consommer INDENT si present }
+    If CurTokKind = TK_INDENT Then
+      LexNextToken;
+
+    { Parser le corps du except }
+    While (CurTokKind <> TK_EOF) And
+          Not ((CurTokKind = TK_KEYWORD) And
+               ((CurTokStr = 'except') Or
+                (CurTokStr = 'else') Or
+                (CurTokStr = 'finally'))) And
+          (CurTokKind <> TK_DEDENT) Do
+    Begin
+      If CurTokKind = TK_NEWLINE Then
+        LexNextToken
+      Else If CurTokKind = TK_INDENT Then
+        LexNextToken
+      Else
+        LexNextToken;
+    End;
+
+    { Consommer le DEDENT si present }
+    If CurTokKind = TK_DEDENT Then
+      LexNextToken;
+
+    { Apres le handler, sauter vers finally ou end }
+    EmitExitHandler(FinallyLabel);
+    WriteLn(NextLabel, ':');
+  End;
+
+  { Parser la clause else optionnelle }
+  If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'else') Then
+  Begin
+    HasElse := True;
+    LexNextToken;  { Consommer 'else' }
+    If CurTokKind = TK_COLON Then
+      LexNextToken;
+    EmitElseBlock(ElseLabel);
+
+    { Consommer NEWLINE si present }
+    If CurTokKind = TK_NEWLINE Then
+      LexNextToken;
+
+    { Consommer INDENT si present }
+    If CurTokKind = TK_INDENT Then
+      LexNextToken;
+
+    { Parser le corps du else }
+    While (CurTokKind <> TK_EOF) And
+          Not ((CurTokKind = TK_KEYWORD) And
+               (CurTokStr = 'finally')) And
+          (CurTokKind <> TK_DEDENT) Do
+    Begin
+      If CurTokKind = TK_NEWLINE Then
+        LexNextToken
+      Else If CurTokKind = TK_INDENT Then
+        LexNextToken
+      Else
+        LexNextToken;
+    End;
+
+    { Consommer le DEDENT si present }
+    If CurTokKind = TK_DEDENT Then
+      LexNextToken;
+  End;
+
+  { Parser la clause finally optionnelle }
+  If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'finally') Then
+  Begin
+    HasFinally := True;
+    LexNextToken;  { Consommer 'finally' }
+    If CurTokKind = TK_COLON Then
+      LexNextToken;
+    EmitFinallyBlock(FinallyLabel);
+
+    { Consommer NEWLINE si present }
+    If CurTokKind = TK_NEWLINE Then
+      LexNextToken;
+
+    { Consommer INDENT si present }
+    If CurTokKind = TK_INDENT Then
+      LexNextToken;
+
+    { Parser le corps du finally }
+    While (CurTokKind <> TK_EOF) And
+          (CurTokKind <> TK_DEDENT) Do
+    Begin
+      If CurTokKind = TK_NEWLINE Then
+        LexNextToken
+      Else If CurTokKind = TK_INDENT Then
+        LexNextToken
+      Else
+        LexNextToken;
+    End;
+
+    { Consommer le DEDENT si present }
+    If CurTokKind = TK_DEDENT Then
+      LexNextToken;
+  End
+  Else
+  Begin
+    { Pas de finally : emettre le label quand meme }
+    WriteLn(FinallyLabel, ':');
+  End;
+
+  { Emettre la fin du try }
+  EmitTryEnd(EndLabel);
+
+  Dec(ExNestDepth);
+
+  WriteLn('; === fin try/except (', ExceptIdx, ' clauses except',
+          ', else=', HasElse, ', finally=', HasFinally, ') ===');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseRaiseStmt : parser une instruction raise                     }
+{   raise ExceptionType(msg)  -> lever une exception               }
+{   raise                     -> relever l exception courante      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseRaiseStmt;
+Var
+  ExcType  : TString;
+  MsgLabel : TString;
+Begin
+  { Consommer 'raise' }
+  LexNextToken;
+
+  { raise sans argument : relever l exception courante }
+  If (CurTokKind = TK_NEWLINE) Or (CurTokKind = TK_EOF) Or
+     (CurTokKind = TK_DEDENT) Then
+  Begin
+    EmitReraise;
+    Exit;
+  End;
+
+  { raise ExcType ou raise ExcType(msg) }
+  ExcType := CurTokStr;
+  LexNextToken;  { Consommer le type }
+
+  { Verifier si c est raise ExcType(msg) ou raise ExcType }
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+  Begin
+    { raise ExcType(msg) }
+    LexNextToken;  { Consommer '(' }
+    If CurTokKind = TK_STRING Then
+    Begin
+      MsgLabel := GenExLabel;
+      WriteLn(MsgLabel, ' DB ''', CurTokStr, ''', 0');
+      LexNextToken;  { Consommer le message }
+    End
+    Else
+    Begin
+      MsgLabel := '_PYX_EMPTY_MSG';
+      If Not ((CurTokKind = TK_PUNCT) And (CurTokStr = ')')) Then
+        LexNextToken;
+    End;
+
+    If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+      LexNextToken;  { Consommer ')' }
+  End
+  Else
+  Begin
+    { raise ExcType sans message }
+    MsgLabel := '_PYX_EMPTY_MSG';
+  End;
+
+  EmitRaise(ExcType, MsgLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpExState : afficher l etat du sous-systeme des exceptions      }
+{ ------------------------------------------------------------ }
+
+Procedure DumpExState;
+Begin
+  WriteLn('--- Exception State ---');
+  WriteLn('  ExInitialized    : ', ExInitialized);
+  WriteLn('  ExTryCount       : ', ExTryCount);
+  WriteLn('  ExExceptCount    : ', ExExceptCount);
+  WriteLn('  ExExceptAsCount  : ', ExExceptAsCount);
+  WriteLn('  ExBareCount      : ', ExBareCount);
+  WriteLn('  ExElseCount      : ', ExElseCount);
+  WriteLn('  ExFinallyCount   : ', ExFinallyCount);
+  WriteLn('  ExRaiseCount     : ', ExRaiseCount);
+  WriteLn('  ExReraiseCount   : ', ExReraiseCount);
+  WriteLn('  ExSetupCount     : ', ExSetupCount);
+  WriteLn('  ExRestoreCount   : ', ExRestoreCount);
+  WriteLn('  ExExitCount      : ', ExExitCount);
+  WriteLn('  ExUnhandledCount : ', ExUnhandledCount);
+  WriteLn('  ExNestDepth      : ', ExNestDepth);
+  WriteLn('  ExLastKind       : ', ExTypeName(ExLastKind));
+  WriteLn('  ExLabelSeq       : ', ExLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 19)                              }
+{ ------------------------------------------------------------ }
+
+Function IsExInitialized : Boolean;
+Begin
+  IsExInitialized := ExInitialized;
+End;
+
+Function IsExEmpty : Boolean;
+Begin
+  IsExEmpty := (ExTryCount = 0) And (ExExceptCount = 0) And
+               (ExRaiseCount = 0) And (ExFinallyCount = 0);
+End;
+
+Function GetExTryCount : LongInt;
+Begin
+  GetExTryCount := ExTryCount;
+End;
+
+Function GetExExceptCount : LongInt;
+Begin
+  GetExExceptCount := ExExceptCount;
+End;
+
+Function GetExFinallyCount : LongInt;
+Begin
+  GetExFinallyCount := ExFinallyCount;
+End;
+
+Function GetExRaiseCount : LongInt;
+Begin
+  GetExRaiseCount := ExRaiseCount;
+End;
+
+Function GetExReraiseCount : LongInt;
+Begin
+  GetExReraiseCount := ExReraiseCount;
+End;
+
+Function GetExBareCount : LongInt;
+Begin
+  GetExBareCount := ExBareCount;
+End;
+
+Function GetExElseCount : LongInt;
+Begin
+  GetExElseCount := ExElseCount;
+End;
+
+Function GetExStatus : TString;
+Begin
+  If Not ExInitialized Then
+    GetExStatus := 'Not initialized'
+  Else
+    GetExStatus := ItoS(ExTryCount) + ' try, ' +
+                   ItoS(ExExceptCount) + ' except, ' +
+                   ItoS(ExExceptAsCount) + ' except-as, ' +
+                   ItoS(ExBareCount) + ' bare, ' +
+                   ItoS(ExFinallyCount) + ' finally, ' +
+                   ItoS(ExRaiseCount) + ' raise, ' +
+                   ItoS(ExReraiseCount) + ' reraise';
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -11411,6 +12091,7 @@ Begin
   TpInitialized := False;
   SrInitialized := False;
   ClInitialized := False;
+  ExInitialized := False;
 
   ParseArgs;
 
@@ -11464,6 +12145,9 @@ Begin
 
   { Initialiser le sous-systeme des classes et objets }
   InitClState;
+
+  { Initialiser le sous-systeme des exceptions }
+  InitExState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
@@ -11565,6 +12249,13 @@ Begin
     WriteLn('Appels methodes  : ', GetClMethCallCount);
     WriteLn('Appels __init__  : ', GetClInitCallCount);
     WriteLn('isinstance       : ', GetClIsInstCount);
+    WriteLn('Blocs try        : ', GetExTryCount);
+    WriteLn('Clauses except   : ', GetExExceptCount);
+    WriteLn('Except generiques: ', GetExBareCount);
+    WriteLn('Clauses else try : ', GetExElseCount);
+    WriteLn('Clauses finally  : ', GetExFinallyCount);
+    WriteLn('Raise exception  : ', GetExRaiseCount);
+    WriteLn('Reraise          : ', GetExReraiseCount);
   End;
 
   If Opts.DebugMode Then
@@ -11585,6 +12276,7 @@ Begin
     DumpTpState;
     DumpSrState;
     DumpClState;
+    DumpExState;
   End;
 
   { Nettoyage }

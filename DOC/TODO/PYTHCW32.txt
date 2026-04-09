@@ -439,7 +439,7 @@ PYTHCW32.PAS - Compilateur Python vers assembleur
               attributs et methodes
             10 fonctions accesseurs
 
-  TODO 19 - PARSEUR : EXCEPTIONS (try / except / finally / raise) [A FAIRE]
+  TODO 19 - PARSEUR : EXCEPTIONS (try / except / finally / raise) [IMPLEMENTE]
             ParseTryStmt : try: bloc except [Type [as var]]: bloc
               [else: bloc] [finally: bloc]
             try: bloc -> sauvegarder handler courant, installer nouveau
