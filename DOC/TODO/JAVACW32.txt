@@ -46,7 +46,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
               ReplaceExt, AsmIdent
             10 fonctions accesseurs
 
-  TODO 02 - TOKENISEUR JAVA (LEXER) [A FAIRE]
+  TODO 02 - TOKENISEUR JAVA (LEXER) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source
