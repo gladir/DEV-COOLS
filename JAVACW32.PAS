@@ -320,7 +320,7 @@
             Appel : PUSH args + CALL _JF_ClassName_method + ADD ESP, n*4
             10 fonctions accesseurs
 
-  TODO 13 - PARSEUR : ENTREES/SORTIES (System.out / Scanner) [A FAIRE]
+  TODO 13 - PARSEUR : ENTREES/SORTIES (System.out / Scanner) [IMPLEMENTE]
             System.out.println(expr) :
               Evaluer l argument, convertir en chaine si necessaire
               Appeler _JRT_WRITESTR pour afficher
@@ -8078,7 +8078,514 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-12)                              }
+{ TODO 13 - PARSEUR : ENTREES/SORTIES (System.out / Scanner)   }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations d entree/sortie }
+  IO_NONE          = 0;    { aucun / non defini                    }
+  IO_PRINTLN_STR   = 1;    { System.out.println(String)            }
+  IO_PRINTLN_INT   = 2;    { System.out.println(int)               }
+  IO_PRINTLN_BOOL  = 3;    { System.out.println(boolean)           }
+  IO_PRINTLN_CHAR  = 4;    { System.out.println(char)              }
+  IO_PRINTLN_EMPTY = 5;    { System.out.println() sans argument    }
+  IO_PRINT_STR     = 6;    { System.out.print(String)              }
+  IO_PRINT_INT     = 7;    { System.out.print(int)                 }
+  IO_PRINT_BOOL    = 8;    { System.out.print(boolean)             }
+  IO_PRINT_CHAR    = 9;    { System.out.print(char)                }
+  IO_PRINT_CONCAT  = 10;   { concatenation dans print/println      }
+  IO_SCANF_DECL    = 11;   { Scanner sc = new Scanner(System.in)   }
+  IO_SCANF_NEXTLN  = 12;   { sc.nextLine()                         }
+  IO_SCANF_NEXTINT = 13;   { sc.nextInt()                          }
+  IO_MAX           = 13;
+
+  { Limites }
+  IO_MAX_CONCAT    = 16;   { nombre max de parties concatenees     }
+  IO_MAX_SCANNERS  = 4;    { nombre max de variables Scanner       }
+
+Type
+  TIoScannerRec = Record
+    Name       : TString;  { nom de la variable Scanner            }
+    DeclLine   : Integer;  { ligne de declaration                  }
+  End;
+
+Var
+  IoInitialized     : Boolean;    { True si l etat est initialise       }
+  IoPrintlnCount    : LongInt;    { nombre de println emis              }
+  IoPrintCount      : LongInt;    { nombre de print emis                }
+  IoConcatCount     : LongInt;    { nombre de concatenations            }
+  IoScanDeclCount   : LongInt;    { nombre de Scanner declares          }
+  IoNextLineCount   : LongInt;    { nombre de nextLine()                }
+  IoNextIntCount    : LongInt;    { nombre de nextInt()                 }
+  IoLastKind        : Integer;    { dernier type d operation IO         }
+  IoLabelSeq        : Integer;    { sequence pour labels IO             }
+  IoCurArgType      : Integer;    { type de l argument courant          }
+  IoCurIsPrintln    : Boolean;    { True si println, False si print     }
+  IoCurScannerName  : TString;    { nom du Scanner courant              }
+  IoScanners        : Array[1..IO_MAX_SCANNERS] Of TIoScannerRec;
+  IoScannerCount    : Integer;    { nombre de Scanners enregistres      }
+
+{ ------------------------------------------------------------ }
+{ InitIoState : initialiser le sous-systeme entrees/sorties      }
+{ ------------------------------------------------------------ }
+
+Procedure InitIoState;
+Var I : Integer;
+Begin
+  IoInitialized     := True;
+  IoPrintlnCount    := 0;
+  IoPrintCount      := 0;
+  IoConcatCount     := 0;
+  IoScanDeclCount   := 0;
+  IoNextLineCount   := 0;
+  IoNextIntCount    := 0;
+  IoLastKind        := IO_NONE;
+  IoLabelSeq        := 0;
+  IoCurArgType      := TY_IDX_VOID;
+  IoCurIsPrintln    := True;
+  IoCurScannerName  := '';
+  IoScannerCount    := 0;
+  For I := 1 To IO_MAX_SCANNERS Do
+  Begin
+    IoScanners[I].Name     := '';
+    IoScanners[I].DeclLine := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenIoLabel : generer un label unique pour les E/S              }
+{ ------------------------------------------------------------ }
+
+Function GenIoLabel : TString;
+Begin
+  Inc(IoLabelSeq);
+  GenIoLabel := JV_LBL_PFX + 'IO_' + ItoS(IoLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ IoTypeName : retourner le nom du type d operation IO           }
+{ ------------------------------------------------------------ }
+
+Function IoTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    IO_NONE          : IoTypeName := 'IO_NONE';
+    IO_PRINTLN_STR   : IoTypeName := 'IO_PRINTLN_STR';
+    IO_PRINTLN_INT   : IoTypeName := 'IO_PRINTLN_INT';
+    IO_PRINTLN_BOOL  : IoTypeName := 'IO_PRINTLN_BOOL';
+    IO_PRINTLN_CHAR  : IoTypeName := 'IO_PRINTLN_CHAR';
+    IO_PRINTLN_EMPTY : IoTypeName := 'IO_PRINTLN_EMPTY';
+    IO_PRINT_STR     : IoTypeName := 'IO_PRINT_STR';
+    IO_PRINT_INT     : IoTypeName := 'IO_PRINT_INT';
+    IO_PRINT_BOOL    : IoTypeName := 'IO_PRINT_BOOL';
+    IO_PRINT_CHAR    : IoTypeName := 'IO_PRINT_CHAR';
+    IO_PRINT_CONCAT  : IoTypeName := 'IO_PRINT_CONCAT';
+    IO_SCANF_DECL    : IoTypeName := 'IO_SCANF_DECL';
+    IO_SCANF_NEXTLN  : IoTypeName := 'IO_SCANF_NEXTLN';
+    IO_SCANF_NEXTINT : IoTypeName := 'IO_SCANF_NEXTINT';
+  Else
+    IoTypeName := 'IO_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintlnStr : emettre le code pour                          }
+{   System.out.println(String)                                   }
+{   PUSH EAX / CALL _JRT_WRITESTR / CALL _JRT_WRITECRLF         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintlnStr;
+Begin
+  Inc(IoPrintlnCount);
+  IoLastKind   := IO_PRINTLN_STR;
+  IoCurArgType := TY_IDX_STRING;
+  { Code generation : PUSH EAX (pointeur chaine) }
+  { CALL _JRT_WRITESTR                           }
+  { ADD ESP, 4                                    }
+  { CALL _JRT_WRITECRLF                          }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintlnInt : emettre le code pour                          }
+{   System.out.println(int)                                      }
+{   PUSH EAX / CALL _JRT_ITOA / PUSH EAX / CALL _JRT_WRITESTR  }
+{   CALL _JRT_WRITECRLF                                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintlnInt;
+Begin
+  Inc(IoPrintlnCount);
+  IoLastKind   := IO_PRINTLN_INT;
+  IoCurArgType := TY_IDX_INT;
+  { Code generation : PUSH EAX (valeur entiere)   }
+  { CALL _JRT_ITOA                                }
+  { ADD ESP, 4                                    }
+  { PUSH EAX (ptr chaine resultat)                }
+  { CALL _JRT_WRITESTR                            }
+  { ADD ESP, 4                                    }
+  { CALL _JRT_WRITECRLF                           }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintlnBool : emettre le code pour                         }
+{   System.out.println(boolean)                                  }
+{   TEST EAX,EAX / JZ .false / PUSH "true" / JMP .end           }
+{   .false: PUSH "false" / .end: CALL _JRT_WRITESTR + CRLF      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintlnBool;
+Begin
+  Inc(IoPrintlnCount);
+  IoLastKind   := IO_PRINTLN_BOOL;
+  IoCurArgType := TY_IDX_BOOLEAN;
+  { Code generation : TEST EAX, EAX               }
+  { JZ lbl_false                                  }
+  { PUSH OFFSET _JK_true                          }
+  { JMP lbl_end                                   }
+  { lbl_false: PUSH OFFSET _JK_false              }
+  { lbl_end:   CALL _JRT_WRITESTR                 }
+  { ADD ESP, 4                                    }
+  { CALL _JRT_WRITECRLF                           }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintlnChar : emettre le code pour                         }
+{   System.out.println(char)                                     }
+{   PUSH EAX / CALL _JRT_WRITECHAR / CALL _JRT_WRITECRLF        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintlnChar;
+Begin
+  Inc(IoPrintlnCount);
+  IoLastKind   := IO_PRINTLN_CHAR;
+  IoCurArgType := TY_IDX_CHAR;
+  { Code generation : PUSH EAX (valeur char)       }
+  { CALL _JRT_WRITECHAR                            }
+  { ADD ESP, 4                                     }
+  { CALL _JRT_WRITECRLF                            }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintStr : emettre le code pour                            }
+{   System.out.print(String) sans retour a la ligne              }
+{   PUSH EAX / CALL _JRT_WRITESTR                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintStr;
+Begin
+  Inc(IoPrintCount);
+  IoLastKind   := IO_PRINT_STR;
+  IoCurArgType := TY_IDX_STRING;
+  { Code generation : PUSH EAX (pointeur chaine) }
+  { CALL _JRT_WRITESTR                           }
+  { ADD ESP, 4                                   }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintInt : emettre le code pour                            }
+{   System.out.print(int) sans retour a la ligne                 }
+{   PUSH EAX / CALL _JRT_ITOA / PUSH EAX / CALL _JRT_WRITESTR  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintInt;
+Begin
+  Inc(IoPrintCount);
+  IoLastKind   := IO_PRINT_INT;
+  IoCurArgType := TY_IDX_INT;
+  { Code generation : PUSH EAX (valeur entiere)   }
+  { CALL _JRT_ITOA                                }
+  { ADD ESP, 4                                    }
+  { PUSH EAX (ptr chaine resultat)                }
+  { CALL _JRT_WRITESTR                            }
+  { ADD ESP, 4                                    }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintBool : emettre le code pour                           }
+{   System.out.print(boolean) sans retour a la ligne             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintBool;
+Begin
+  Inc(IoPrintCount);
+  IoLastKind   := IO_PRINT_BOOL;
+  IoCurArgType := TY_IDX_BOOLEAN;
+  { Code generation : TEST EAX, EAX               }
+  { JZ lbl_false                                  }
+  { PUSH OFFSET _JK_true                          }
+  { JMP lbl_end                                   }
+  { lbl_false: PUSH OFFSET _JK_false              }
+  { lbl_end:   CALL _JRT_WRITESTR                 }
+  { ADD ESP, 4                                    }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintChar : emettre le code pour                           }
+{   System.out.print(char) sans retour a la ligne                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintChar;
+Begin
+  Inc(IoPrintCount);
+  IoLastKind   := IO_PRINT_CHAR;
+  IoCurArgType := TY_IDX_CHAR;
+  { Code generation : PUSH EAX (valeur char)       }
+  { CALL _JRT_WRITECHAR                            }
+  { ADD ESP, 4                                     }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPrintConcat : emettre le code pour afficher une            }
+{   concatenation : "texte " + n + " suite"                      }
+{   Chaque partie est convertie et affichee sequentiellement     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPrintConcat(ArgTypeIdx : Integer);
+Begin
+  Inc(IoConcatCount);
+  IoLastKind := IO_PRINT_CONCAT;
+  { Selon le type de la partie a concatener : }
+  Case ArgTypeIdx Of
+    TY_IDX_STRING  : EmitPrintStr;
+    TY_IDX_INT     : EmitPrintInt;
+    TY_IDX_BOOLEAN : EmitPrintBool;
+    TY_IDX_CHAR    : EmitPrintChar;
+  Else
+    { Type inconnu : convertir comme entier }
+    EmitPrintInt;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrintlnStmt : parser System.out.println(expr)             }
+{   L argument a deja ete evalue et son type est dans ArgType     }
+{   Emet le code d affichage selon le type + CRLF                }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePrintlnStmt(ArgTypeIdx : Integer);
+Begin
+  IoCurIsPrintln := True;
+  Case ArgTypeIdx Of
+    TY_IDX_STRING  : EmitPrintlnStr;
+    TY_IDX_INT     : EmitPrintlnInt;
+    TY_IDX_BOOLEAN : EmitPrintlnBool;
+    TY_IDX_CHAR    : EmitPrintlnChar;
+    TY_IDX_VOID    :
+    Begin
+      { println() sans argument = juste CRLF }
+      Inc(IoPrintlnCount);
+      IoLastKind := IO_PRINTLN_EMPTY;
+      { Code generation : CALL _JRT_WRITECRLF }
+    End;
+  Else
+    { Type inconnu : traiter comme int }
+    EmitPrintlnInt;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrintStmt : parser System.out.print(expr)                 }
+{   L argument a deja ete evalue et son type est dans ArgType     }
+{   Emet le code d affichage selon le type sans CRLF             }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePrintStmt(ArgTypeIdx : Integer);
+Begin
+  IoCurIsPrintln := False;
+  Case ArgTypeIdx Of
+    TY_IDX_STRING  : EmitPrintStr;
+    TY_IDX_INT     : EmitPrintInt;
+    TY_IDX_BOOLEAN : EmitPrintBool;
+    TY_IDX_CHAR    : EmitPrintChar;
+  Else
+    { Type inconnu : traiter comme int }
+    EmitPrintInt;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseScannerDecl : enregistrer une declaration de Scanner       }
+{   Scanner sc = new Scanner(System.in)                          }
+{   Le nom de la variable est fourni en parametre                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseScannerDecl(VarName : TString);
+Begin
+  Inc(IoScanDeclCount);
+  IoLastKind := IO_SCANF_DECL;
+  IoCurScannerName := VarName;
+
+  If IoScannerCount < IO_MAX_SCANNERS Then
+  Begin
+    Inc(IoScannerCount);
+    IoScanners[IoScannerCount].Name     := VarName;
+    IoScanners[IoScannerCount].DeclLine := LexLineNo;
+  End
+  Else
+    WarnMsg('maximum number of Scanner variables reached');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitScanNextLine : emettre le code pour sc.nextLine()          }
+{   CALL _JRT_READLINE                                           }
+{   -> EAX = pointeur vers la chaine lue                        }
+{ ------------------------------------------------------------ }
+
+Function EmitScanNextLine : TExprVal;
+Begin
+  Inc(IoNextLineCount);
+  IoLastKind := IO_SCANF_NEXTLN;
+  { Code generation : CALL _JRT_READLINE           }
+  { EAX = ptr vers buffer de lecture               }
+  EmitScanNextLine := ExprMakeEAX(TY_IDX_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitScanNextInt : emettre le code pour sc.nextInt()            }
+{   CALL _JRT_READLINE + CALL _JRT_ATOI                         }
+{   -> EAX = valeur entiere lue                                 }
+{ ------------------------------------------------------------ }
+
+Function EmitScanNextInt : TExprVal;
+Begin
+  Inc(IoNextIntCount);
+  IoLastKind := IO_SCANF_NEXTINT;
+  { Code generation : CALL _JRT_READLINE           }
+  { PUSH EAX                                      }
+  { CALL _JRT_ATOI                                }
+  { ADD ESP, 4                                    }
+  { EAX = valeur entiere                          }
+  EmitScanNextInt := ExprMakeEAX(TY_IDX_INT);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsScannerVar : verifier si un nom est un Scanner enregistre    }
+{ ------------------------------------------------------------ }
+
+Function IsScannerVar(Name : TString) : Boolean;
+Var I : Integer;
+Begin
+  IsScannerVar := False;
+  For I := 1 To IoScannerCount Do
+    If IoScanners[I].Name = Name Then
+    Begin
+      IsScannerVar := True;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetIoPrintTotal : nombre total d appels print + println        }
+{ ------------------------------------------------------------ }
+
+Function GetIoPrintTotal : LongInt;
+Begin
+  GetIoPrintTotal := IoPrintlnCount + IoPrintCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetIoScanTotal : nombre total d operations Scanner             }
+{ ------------------------------------------------------------ }
+
+Function GetIoScanTotal : LongInt;
+Begin
+  GetIoScanTotal := IoScanDeclCount + IoNextLineCount + IoNextIntCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpIoState : afficher l etat du sous-systeme IO               }
+{ ------------------------------------------------------------ }
+
+Procedure DumpIoState;
+Var I : Integer;
+Begin
+  WriteLn('--- IO State ---');
+  WriteLn('  IoInitialized    : ', IoInitialized);
+  WriteLn('  IoPrintlnCount   : ', IoPrintlnCount);
+  WriteLn('  IoPrintCount     : ', IoPrintCount);
+  WriteLn('  IoConcatCount    : ', IoConcatCount);
+  WriteLn('  IoScanDeclCount  : ', IoScanDeclCount);
+  WriteLn('  IoNextLineCount  : ', IoNextLineCount);
+  WriteLn('  IoNextIntCount   : ', IoNextIntCount);
+  WriteLn('  IoLastKind       : ', IoTypeName(IoLastKind));
+  WriteLn('  IoLabelSeq       : ', IoLabelSeq);
+  WriteLn('  IoCurArgType     : ', IoCurArgType);
+  WriteLn('  IoCurIsPrintln   : ', IoCurIsPrintln);
+  WriteLn('  IoCurScannerName : ', IoCurScannerName);
+  WriteLn('  IoScannerCount   : ', IoScannerCount);
+  If IoScannerCount > 0 Then
+    For I := 1 To IoScannerCount Do
+      WriteLn('    Scanner[', I, '] : ', IoScanners[I].Name,
+              ' (line ', IoScanners[I].DeclLine, ')');
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 13)                              }
+{ ------------------------------------------------------------ }
+
+Function IsIoInitialized : Boolean;
+Begin
+  IsIoInitialized := IoInitialized;
+End;
+
+Function IsIoEmpty : Boolean;
+Begin
+  IsIoEmpty := (IoPrintlnCount = 0) And (IoPrintCount = 0) And
+               (IoScanDeclCount = 0) And (IoNextLineCount = 0) And
+               (IoNextIntCount = 0);
+End;
+
+Function GetIoPrintlnCount : LongInt;
+Begin
+  GetIoPrintlnCount := IoPrintlnCount;
+End;
+
+Function GetIoPrintCount : LongInt;
+Begin
+  GetIoPrintCount := IoPrintCount;
+End;
+
+Function GetIoConcatCount : LongInt;
+Begin
+  GetIoConcatCount := IoConcatCount;
+End;
+
+Function GetIoScanDeclCount : LongInt;
+Begin
+  GetIoScanDeclCount := IoScanDeclCount;
+End;
+
+Function GetIoNextLineCount : LongInt;
+Begin
+  GetIoNextLineCount := IoNextLineCount;
+End;
+
+Function GetIoNextIntCount : LongInt;
+Begin
+  GetIoNextIntCount := IoNextIntCount;
+End;
+
+Function GetIoScannerCount : Integer;
+Begin
+  GetIoScannerCount := IoScannerCount;
+End;
+
+Function GetIoStatus : TString;
+Begin
+  If Not IoInitialized Then
+    GetIoStatus := 'Not initialized'
+  Else
+    GetIoStatus := ItoS(IoPrintlnCount) + ' println, ' +
+                   ItoS(IoPrintCount) + ' print, ' +
+                   ItoS(IoConcatCount) + ' concat, ' +
+                   ItoS(IoScanDeclCount) + ' scanner-decl, ' +
+                   ItoS(IoNextLineCount) + ' nextLine, ' +
+                   ItoS(IoNextIntCount) + ' nextInt';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-13)                              }
 { ============================================================ }
 
 Begin
@@ -8102,16 +8609,18 @@ Begin
   InitVaState;
   InitIfState;
   InitLpState;
-  InitMtState;  LexInit;
+  InitMtState;
+  InitIoState;
+  LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-11) }
+  { Boucle de tokenisation (TODO 02-12) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 13..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 14..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;

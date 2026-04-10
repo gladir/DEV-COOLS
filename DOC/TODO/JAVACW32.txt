@@ -312,7 +312,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
             Appel : PUSH args + CALL _JF_ClassName_method + ADD ESP, n*4
             10 fonctions accesseurs
 
-  TODO 13 - PARSEUR : ENTREES/SORTIES (System.out / Scanner) [A FAIRE]
+  TODO 13 - PARSEUR : ENTREES/SORTIES (System.out / Scanner) [IMPLEMENTE]
             System.out.println(expr) :
               Evaluer l argument, convertir en chaine si necessaire
               Appeler _JRT_WRITESTR pour afficher
