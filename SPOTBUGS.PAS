@@ -20,7 +20,7 @@
 {  TODO 02 [IMPLEMENTE] - Lecture et validation de l'en-tete .class           }
 {  TODO 03 [IMPLEMENTE] - Decodage du Constant Pool                           }
 {  TODO 04 [IMPLEMENTE] - Lecture des flags, this_class, super_class, interfaces }
-{  TODO 05 [A FAIRE] - Lecture des champs (fields) de la classe               }
+{  TODO 05 [IMPLEMENTE] - Lecture des champs (fields) de la classe            }
 {  TODO 06 [A FAIRE] - Lecture des methodes et de l'attribut Code             }
 {  TODO 07 [A FAIRE] - Decodage du bytecode Java (opcodes JVM)                }
 {  TODO 08 [A FAIRE] - Construction du graphe de flux de controle (CFG)       }
@@ -328,6 +328,30 @@ Type
     SourceFile     : String;                      { Nom du fichier source .java   }
   End;
 
+  { --- TODO 05 : Structure TFieldInfo : informations d'un champ --- }
+  TFieldInfo = Record
+    AccessFlags   : Word;           { Flags d'acces du champ               }
+    Name          : String;         { Nom du champ                         }
+    Descriptor    : String;         { Descripteur de type JVM              }
+    JavaType      : String;         { Type Java lisible                    }
+    IsSynthetic   : Boolean;        { ACC_SYNTHETIC set                    }
+    IsStatic      : Boolean;        { ACC_STATIC set                       }
+    IsFinal       : Boolean;        { ACC_FINAL set                        }
+    IsVolatile    : Boolean;        { ACC_VOLATILE set                     }
+    IsTransient   : Boolean;        { ACC_TRANSIENT set                    }
+    IsEnum        : Boolean;        { ACC_ENUM set                         }
+    IsPublic      : Boolean;        { ACC_PUBLIC set                       }
+    IsPrivate     : Boolean;        { ACC_PRIVATE set                      }
+    IsProtected   : Boolean;        { ACC_PROTECTED set                    }
+    ConstValue    : String;         { Valeur constante si ConstantValue    }
+    HasConstValue : Boolean;        { Attribut ConstantValue present       }
+    IsDeprecated  : Boolean;        { Attribut Deprecated present          }
+    Signature     : String;         { Signature generique                  }
+  End;
+
+  { --- TODO 05 : Tableau des champs --- }
+  TFieldArray = Array[0..MAX_FIELDS-1] of TFieldInfo;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -347,6 +371,8 @@ Var
   CP             : ^TCPArray;     { TODO 03 : Constant Pool (pointeur)  }
   CPCount        : Word;          { TODO 03 : Nombre d'entrees CP       }
   ClassInfo      : TClassInfo;    { TODO 04 : Informations de la classe }
+  Fields         : TFieldArray;   { TODO 05 : Table des champs          }
+  FieldCount     : Word;          { TODO 05 : Nombre de champs          }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -1306,38 +1332,333 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 05 [A FAIRE] - Lecture des champs (fields) de la classe                 }
+{ TODO 05 [IMPLEMENTE] - Lecture des champs (fields) de la classe              }
 { ============================================================================ }
-{                                                                              }
-{  - Structure TFieldInfo :                                                      }
-{      AccessFlags  : Word    (flags d'acces du champ)                          }
-{      Name         : String  (nom du champ)                                    }
-{      Descriptor   : String  (descripteur de type JVM, ex. I, Ljava/lang/X;)  }
-{      IsSynthetic  : Boolean (ACC_SYNTHETIC set)                               }
-{      IsStatic     : Boolean (ACC_STATIC set)                                  }
-{      IsFinal      : Boolean (ACC_FINAL set)                                   }
-{      IsVolatile   : Boolean (ACC_VOLATILE set)                                }
-{      IsTransient  : Boolean (ACC_TRANSIENT set)                               }
-{      IsEnum       : Boolean (ACC_ENUM set)                                    }
-{      ConstValue   : String  (valeur constante si attribut ConstantValue)      }
-{      HasConstValue: Boolean (attribut ConstantValue present)                  }
-{      LineNumber   : Integer (ligne source si disponible)                      }
-{                                                                              }
-{  - Procedure ReadFields(Count: Word)                                          }
-{      Pour chaque champ, lire AccessFlags, Name (U2->CP), Descriptor (U2->CP) }
-{      Decoder les flags ACC_*                                                  }
-{      Lire les attributs du champ :                                            }
-{        ConstantValue : lire index U2 -> valeur dans le CP                     }
-{        Deprecated : marquer le champ comme obsolete                           }
-{        Signature : signature generique du champ                               }
-{        Synthetic : champ genere par le compilateur                            }
-{      Stocker dans la table globale Fields[]                                   }
-{                                                                              }
-{  - Function DecodeTypeDescriptor(Desc: String): String                        }
-{      Traduire un descripteur JVM en type Java lisible                         }
-{      V -> void, I -> int, J -> long, D -> double, F -> float                  }
-{      B -> byte, C -> char, S -> short, Z -> boolean                           }
-{      L<nom>; -> nom Java, [X -> X[], [[X -> X[][]                             }
+
+{ --- TODO 05 : Initialisation de la table des champs --- }
+Procedure InitFields;
+Var
+  I: Integer;
+Begin
+  FieldCount := 0;
+  For I := 0 to MAX_FIELDS - 1 Do Begin
+    Fields[I].AccessFlags   := 0;
+    Fields[I].Name          := '';
+    Fields[I].Descriptor    := '';
+    Fields[I].JavaType      := '';
+    Fields[I].IsSynthetic   := False;
+    Fields[I].IsStatic      := False;
+    Fields[I].IsFinal       := False;
+    Fields[I].IsVolatile    := False;
+    Fields[I].IsTransient   := False;
+    Fields[I].IsEnum        := False;
+    Fields[I].IsPublic      := False;
+    Fields[I].IsPrivate     := False;
+    Fields[I].IsProtected   := False;
+    Fields[I].ConstValue    := '';
+    Fields[I].HasConstValue := False;
+    Fields[I].IsDeprecated  := False;
+    Fields[I].Signature     := '';
+  End;
+End;
+
+{ --- TODO 05 : Decoder un descripteur de type JVM en type Java lisible --- }
+{ V->void, I->int, J->long, D->double, F->float, B->byte, C->char, S->short  }
+{ Z->boolean, L<nom>;-><nom>, [X->X[]                                         }
+Function DecodeTypeDescriptor(Desc: String): String;
+Var
+  Result_: String;
+  P, ArrayDim: Integer;
+  ClassEnd: Integer;
+Begin
+  Result_ := '';
+  ArrayDim := 0;
+  P := 1;
+  
+  { Compter les dimensions de tableau }
+  While (P <= Length(Desc)) And (Desc[P] = '[') Do Begin
+    Inc(ArrayDim);
+    Inc(P);
+  End;
+  
+  If P <= Length(Desc) Then Begin
+    Case Desc[P] of
+      'V': Result_ := 'void';
+      'I': Result_ := 'int';
+      'J': Result_ := 'long';
+      'D': Result_ := 'double';
+      'F': Result_ := 'float';
+      'B': Result_ := 'byte';
+      'C': Result_ := 'char';
+      'S': Result_ := 'short';
+      'Z': Result_ := 'boolean';
+      'L': Begin
+        { Classe : Ljava/lang/String; -> String }
+        ClassEnd := Pos(';', Desc);
+        If ClassEnd > P Then Begin
+          Result_ := Copy(Desc, P + 1, ClassEnd - P - 1);
+          { Convertir / en . }
+          While Pos('/', Result_) > 0 Do
+            Result_[Pos('/', Result_)] := '.';
+          { Extraire le nom simple (apres le dernier .) }
+          While Pos('.', Result_) > 0 Do
+            Delete(Result_, 1, Pos('.', Result_));
+        End Else
+          Result_ := 'Object';
+      End;
+    Else
+      Result_ := 'unknown';
+    End;
+  End Else
+    Result_ := 'unknown';
+  
+  { Ajouter les dimensions de tableau }
+  While ArrayDim > 0 Do Begin
+    Result_ := Result_ + '[]';
+    Dec(ArrayDim);
+  End;
+  
+  DecodeTypeDescriptor := Result_;
+End;
+
+{ --- TODO 05 : Decoder un descripteur complet (avec nom de classe complet) --- }
+Function DecodeTypeDescriptorFull(Desc: String): String;
+Var
+  Result_: String;
+  P, ArrayDim: Integer;
+  ClassEnd: Integer;
+Begin
+  Result_ := '';
+  ArrayDim := 0;
+  P := 1;
+  
+  { Compter les dimensions de tableau }
+  While (P <= Length(Desc)) And (Desc[P] = '[') Do Begin
+    Inc(ArrayDim);
+    Inc(P);
+  End;
+  
+  If P <= Length(Desc) Then Begin
+    Case Desc[P] of
+      'V': Result_ := 'void';
+      'I': Result_ := 'int';
+      'J': Result_ := 'long';
+      'D': Result_ := 'double';
+      'F': Result_ := 'float';
+      'B': Result_ := 'byte';
+      'C': Result_ := 'char';
+      'S': Result_ := 'short';
+      'Z': Result_ := 'boolean';
+      'L': Begin
+        { Classe : Ljava/lang/String; -> java.lang.String }
+        ClassEnd := Pos(';', Desc);
+        If ClassEnd > P Then Begin
+          Result_ := Copy(Desc, P + 1, ClassEnd - P - 1);
+          { Convertir / en . }
+          While Pos('/', Result_) > 0 Do
+            Result_[Pos('/', Result_)] := '.';
+        End Else
+          Result_ := 'java.lang.Object';
+      End;
+    Else
+      Result_ := 'unknown';
+    End;
+  End Else
+    Result_ := 'unknown';
+  
+  { Ajouter les dimensions de tableau }
+  While ArrayDim > 0 Do Begin
+    Result_ := Result_ + '[]';
+    Dec(ArrayDim);
+  End;
+  
+  DecodeTypeDescriptorFull := Result_;
+End;
+
+{ --- TODO 05 : Obtenir la valeur constante depuis le Constant Pool --- }
+Function GetConstantValue(CpIndex: Word): String;
+Var
+  Result_: String;
+Begin
+  Result_ := '';
+  If (CpIndex > 0) And (CpIndex < CPCount) And (CP <> Nil) Then Begin
+    Case CP^[CpIndex].Tag of
+      CP_INTEGER: Str(CP^[CpIndex].IntVal, Result_);
+      CP_LONG:    Str(CP^[CpIndex].IntVal, Result_);
+      CP_FLOAT:   Str(CP^[CpIndex].FloatVal:0:6, Result_);
+      CP_DOUBLE:  Str(CP^[CpIndex].FloatVal:0:12, Result_);
+      CP_STRING:  Begin
+        If CP^[CpIndex].Ref1 < CPCount Then
+          Result_ := '"' + CP^[CP^[CpIndex].Ref1].StrVal + '"';
+      End;
+    Else
+      Result_ := '?';
+    End;
+  End;
+  GetConstantValue := Result_;
+End;
+
+{ --- TODO 05 : Lire les attributs d'un champ --- }
+Procedure ReadFieldAttributes(Var Field: TFieldInfo);
+Var
+  AttrCount, I: Word;
+  AttrNameIdx: Word;
+  AttrLen: LongWord;
+  AttrName: String;
+  ConstIdx, SigIdx: Word;
+Begin
+  AttrCount := ReadU2;
+  
+  For I := 1 to AttrCount Do Begin
+    AttrNameIdx := ReadU2;
+    AttrLen := ReadU4;
+    
+    { Resoudre le nom de l'attribut }
+    AttrName := CPGetUtf8(AttrNameIdx);
+    
+    If AttrName = 'ConstantValue' Then Begin
+      { Attribut ConstantValue : index U2 vers la valeur }
+      ConstIdx := ReadU2;
+      Field.ConstValue := GetConstantValue(ConstIdx);
+      Field.HasConstValue := True;
+    End
+    Else If AttrName = 'Deprecated' Then Begin
+      { Attribut Deprecated : aucune donnee }
+      Field.IsDeprecated := True;
+    End
+    Else If AttrName = 'Signature' Then Begin
+      { Attribut Signature : index U2 vers signature generique }
+      SigIdx := ReadU2;
+      Field.Signature := CPGetUtf8(SigIdx);
+    End
+    Else If AttrName = 'Synthetic' Then Begin
+      { Attribut Synthetic : aucune donnee }
+      Field.IsSynthetic := True;
+    End
+    Else Begin
+      { Attribut inconnu : sauter les donnees }
+      SkipAttribute(AttrLen);
+    End;
+  End;
+End;
+
+{ --- TODO 05 : Lire tous les champs de la classe --- }
+Procedure ReadFields;
+Var
+  Count, I: Word;
+  AccessFlags: Word;
+  NameIdx, DescIdx: Word;
+Begin
+  Count := ReadU2;
+  FieldCount := Count;
+  
+  If Count > MAX_FIELDS Then Begin
+    Warning('Trop de champs (' + IntToStr_(Count) + '), limite = ' + IntToStr_(MAX_FIELDS));
+    Count := MAX_FIELDS;
+  End;
+  
+  For I := 0 to Count - 1 Do Begin
+    { Lire les informations de base du champ }
+    AccessFlags := ReadU2;
+    NameIdx := ReadU2;
+    DescIdx := ReadU2;
+    
+    { Stocker dans la structure }
+    Fields[I].AccessFlags := AccessFlags;
+    Fields[I].Name := CPGetUtf8(NameIdx);
+    Fields[I].Descriptor := CPGetUtf8(DescIdx);
+    Fields[I].JavaType := DecodeTypeDescriptor(Fields[I].Descriptor);
+    
+    { Decoder les flags d'acces }
+    Fields[I].IsPublic    := (AccessFlags And ACC_PUBLIC) <> 0;
+    Fields[I].IsPrivate   := (AccessFlags And ACC_PRIVATE) <> 0;
+    Fields[I].IsProtected := (AccessFlags And ACC_PROTECTED) <> 0;
+    Fields[I].IsStatic    := (AccessFlags And ACC_STATIC) <> 0;
+    Fields[I].IsFinal     := (AccessFlags And ACC_FINAL) <> 0;
+    Fields[I].IsVolatile  := (AccessFlags And ACC_VOLATILE) <> 0;
+    Fields[I].IsTransient := (AccessFlags And ACC_TRANSIENT) <> 0;
+    Fields[I].IsSynthetic := (AccessFlags And ACC_SYNTHETIC) <> 0;
+    Fields[I].IsEnum      := (AccessFlags And ACC_ENUM) <> 0;
+    
+    { Initialiser les attributs }
+    Fields[I].ConstValue    := '';
+    Fields[I].HasConstValue := False;
+    Fields[I].IsDeprecated  := False;
+    Fields[I].Signature     := '';
+    
+    { Lire les attributs du champ }
+    ReadFieldAttributes(Fields[I]);
+  End;
+End;
+
+{ --- TODO 05 : Obtenir le modificateur d'acces d'un champ --- }
+Function GetFieldAccessStr(Var Field: TFieldInfo): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If Field.IsPublic Then S := S + 'public '
+  Else If Field.IsPrivate Then S := S + 'private '
+  Else If Field.IsProtected Then S := S + 'protected ';
+  
+  If Field.IsStatic Then S := S + 'static ';
+  If Field.IsFinal Then S := S + 'final ';
+  If Field.IsVolatile Then S := S + 'volatile ';
+  If Field.IsTransient Then S := S + 'transient ';
+  
+  GetFieldAccessStr := S;
+End;
+
+{ --- TODO 05 : Afficher un champ en notation Java --- }
+Function FieldToJavaString(Var Field: TFieldInfo): String;
+Var
+  S: String;
+Begin
+  S := GetFieldAccessStr(Field) + Field.JavaType + ' ' + Field.Name;
+  If Field.HasConstValue Then
+    S := S + ' = ' + Field.ConstValue;
+  FieldToJavaString := S;
+End;
+
+{ --- TODO 05 : Afficher les informations de debug des champs --- }
+Procedure DumpFields;
+Var
+  I: Integer;
+  FlagStr: String;
+Begin
+  WriteLn('=== Fields (', FieldCount, ') ===');
+  
+  For I := 0 to FieldCount - 1 Do Begin
+    WriteLn('Field #', I, ':');
+    WriteLn('  Name:       ', Fields[I].Name);
+    WriteLn('  Descriptor: ', Fields[I].Descriptor);
+    WriteLn('  Type:       ', Fields[I].JavaType);
+    
+    { Construire la chaine des flags }
+    FlagStr := '';
+    If Fields[I].IsPublic Then FlagStr := FlagStr + 'public ';
+    If Fields[I].IsPrivate Then FlagStr := FlagStr + 'private ';
+    If Fields[I].IsProtected Then FlagStr := FlagStr + 'protected ';
+    If Fields[I].IsStatic Then FlagStr := FlagStr + 'static ';
+    If Fields[I].IsFinal Then FlagStr := FlagStr + 'final ';
+    If Fields[I].IsVolatile Then FlagStr := FlagStr + 'volatile ';
+    If Fields[I].IsTransient Then FlagStr := FlagStr + 'transient ';
+    If Fields[I].IsSynthetic Then FlagStr := FlagStr + 'synthetic ';
+    If Fields[I].IsEnum Then FlagStr := FlagStr + 'enum ';
+    
+    WriteLn('  Flags:      ', FlagStr, '($', HexWord(Fields[I].AccessFlags), ')');
+    
+    If Fields[I].HasConstValue Then
+      WriteLn('  ConstValue: ', Fields[I].ConstValue);
+    If Fields[I].IsDeprecated Then
+      WriteLn('  Deprecated: true');
+    If Fields[I].Signature <> '' Then
+      WriteLn('  Signature:  ', Fields[I].Signature);
+    
+    WriteLn('  Java:       ', FieldToJavaString(Fields[I]));
+    WriteLn;
+  End;
+End;
 
 { ============================================================================ }
 { TODO 06 [A FAIRE] - Lecture des methodes et de l'attribut Code               }

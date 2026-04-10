@@ -84,17 +84,25 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               Deprecated, InnerClasses, EnclosingMethod, Signature, Annotations)
             DumpClassInfo : afficher les infos de classe (debug)
 
-  TODO 05 - LECTURE DES CHAMPS (FIELDS) DE LA CLASSE [A FAIRE]
-            Structure TFieldInfo (AccessFlags, Name, Descriptor, IsSynthetic,
-              IsStatic, IsFinal, IsVolatile, IsTransient, IsEnum,
-              ConstValue, HasConstValue, LineNumber)
-            ReadFields(Count) : pour chaque champ lire AccessFlags, Name (U2->CP),
-              Descriptor (U2->CP), decoder ACC_*, lire attributs :
-              ConstantValue (index U2 -> valeur CP), Deprecated, Signature,
-              Synthetic, stocker dans Fields[]
+  TODO 05 - LECTURE DES CHAMPS (FIELDS) DE LA CLASSE [IMPLEMENTE]
+            Structure TFieldInfo (AccessFlags, Name, Descriptor, JavaType,
+              IsSynthetic, IsStatic, IsFinal, IsVolatile, IsTransient, IsEnum,
+              IsPublic, IsPrivate, IsProtected, ConstValue, HasConstValue,
+              IsDeprecated, Signature)
+            TFieldArray : tableau des champs
+            Variables globales : Fields, FieldCount
+            InitFields : initialiser la table des champs
             DecodeTypeDescriptor(Desc) : traduire descripteur JVM en type Java
               V->void, I->int, J->long, D->double, F->float, B->byte,
               C->char, S->short, Z->boolean, L<nom>;->nom, [X->X[]
+            DecodeTypeDescriptorFull(Desc) : avec nom de classe complet
+            GetConstantValue(CpIndex) : obtenir valeur constante depuis CP
+            ReadFieldAttributes(Field) : lire attributs d'un champ
+              (ConstantValue, Deprecated, Signature, Synthetic)
+            ReadFields : lire tous les champs de la classe
+            GetFieldAccessStr(Field) : obtenir modificateurs d'acces
+            FieldToJavaString(Field) : notation Java du champ
+            DumpFields : afficher les champs (debug)
 
   TODO 06 - LECTURE DES METHODES ET DE L'ATTRIBUT CODE [A FAIRE]
             Structure TExceptionEntry (StartPC, EndPC, HandlerPC, CatchType)
