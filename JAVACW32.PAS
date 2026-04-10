@@ -158,7 +158,7 @@
             Tableaux : int[], char[], boolean[], String[]
             10 fonctions accesseurs
 
-  TODO 06 - LITTERAUX ET CONSTANTES [A FAIRE]
+  TODO 06 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..2147483647 (32 bits signe)
             Entiers hexadecimaux : 0xFF, binaires : 0b1010
             Separateur de chiffres : 1_000_000 (ignore le souligne)
@@ -3463,7 +3463,408 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-05)                              }
+{ TODO 06 - LITTERAUX ET CONSTANTES            [IMPLEMENTE]    }
+{ ============================================================ }
+
+Const
+  { TExprKind : type d une valeur intermediaire }
+  EK_NONE  = 0;    { pas de valeur                             }
+  EK_IMM   = 1;    { valeur immediate (constante connue)       }
+  EK_EAX   = 2;    { valeur dans le registre EAX               }
+  EK_MEM   = 3;    { valeur en memoire (variable/DATA)         }
+  EK_MAX   = 3;
+
+  { TDataKind : type d un element du segment DATA }
+  DK_DWORD     = 0;  { dd (32 bits)                            }
+  DK_BYTE      = 1;  { db (8 bits)                             }
+  DK_STR       = 2;  { chaine terminee par 0                   }
+  DK_ARRAY_BLK = 3;  { bloc de donnees (tableau)               }
+  DK_MAX       = 3;
+
+Type
+  TExprVal = Record
+    Kind    : Integer;   { EK_NONE..EK_MEM                       }
+    ImmVal  : LongInt;   { valeur immediate (si EK_IMM)           }
+    TypeIdx : Integer;   { indice dans TypeTab                    }
+    Offset  : Integer;   { offset memoire (si EK_MEM)             }
+    SymIdx  : Integer;   { indice dans SymTab (si EK_MEM)         }
+  End;
+
+  TDataRec = Record
+    LblName   : TString;  { label ASM (_JK_n, etc.)              }
+    Kind      : Integer;  { DK_DWORD..DK_ARRAY_BLK               }
+    IntVal    : LongInt;  { valeur entiere (si DK_DWORD)          }
+    StrVal    : TString;  { contenu chaine (si DK_STR)            }
+    ElemCount : Integer;  { nombre d elements (si DK_ARRAY_BLK)   }
+  End;
+
+Var
+  DataTab        : Array[0..MAX_DATA-1] Of TDataRec;
+  DataCount      : Integer;      { nombre d elements dans DataTab      }
+  LitInitialized : Boolean;      { True si l etat est initialise       }
+  LitLabelSeq    : Integer;      { sequence pour labels uniques        }
+  LitAddCount    : LongInt;      { nombre total de DataAdd*            }
+  LitStrCount    : LongInt;      { nombre de chaines ajoutees          }
+  LitDwCount     : LongInt;      { nombre de DWORDs ajoutes            }
+  LitEvalCount   : LongInt;      { nombre d evaluations de litteraux   }
+  LitLastLabel   : TString;      { dernier label genere                }
+  LblSeq         : Integer;      { sequence pour LabelGen (_JL_)       }
+
+{ ------------------------------------------------------------ }
+{ LitInit : initialiser le sous-systeme des litteraux et DATA   }
+{ ------------------------------------------------------------ }
+
+Procedure LitInit;
+Begin
+  LitInitialized := True;
+  DataCount      := 0;
+  LitLabelSeq    := 0;
+  LitAddCount    := 0;
+  LitStrCount    := 0;
+  LitDwCount     := 0;
+  LitEvalCount   := 0;
+  LitLastLabel   := '';
+  LblSeq         := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLitLabel : generer un label unique pour une donnee DATA     }
+{ ------------------------------------------------------------ }
+
+Function GenLitLabel : TString;
+Begin
+  Inc(LitLabelSeq);
+  GenLitLabel := JV_STR_PFX + ItoS(LitLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ LabelGen : generateur de labels de saut uniques _JL_N         }
+{ ------------------------------------------------------------ }
+
+Function LabelGen : TString;
+Begin
+  Inc(LblSeq);
+  LabelGen := JV_LBL_PFX + ItoS(LblSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprKindStr : nom textuel d un EK_                             }
+{ ------------------------------------------------------------ }
+
+Function ExprKindStr(K : Integer) : TString;
+Begin
+  Case K Of
+    EK_NONE : ExprKindStr := 'EK_NONE';
+    EK_IMM  : ExprKindStr := 'EK_IMM';
+    EK_EAX  : ExprKindStr := 'EK_EAX';
+    EK_MEM  : ExprKindStr := 'EK_MEM';
+  Else
+    ExprKindStr := 'EK_?(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataKindStr : nom textuel d un DK_                             }
+{ ------------------------------------------------------------ }
+
+Function DataKindStr(K : Integer) : TString;
+Begin
+  Case K Of
+    DK_DWORD     : DataKindStr := 'DK_DWORD';
+    DK_BYTE      : DataKindStr := 'DK_BYTE';
+    DK_STR       : DataKindStr := 'DK_STR';
+    DK_ARRAY_BLK : DataKindStr := 'DK_ARRAY_BLK';
+  Else
+    DataKindStr := 'DK_?(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAdd : ajouter un element brut dans le segment DATA         }
+{ Retourne l indice ou -1 si table pleine                        }
+{ ------------------------------------------------------------ }
+
+Function DataAdd(Const Lbl : TString; Kind : Integer;
+                 IVal : LongInt; Const SVal : TString;
+                 Elems : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('DATA table full (max ' + ItoS(MAX_DATA) + ')',
+                 LexLineNo);
+    DataAdd := -1;
+    Exit;
+  End;
+  Idx := DataCount;
+  DataTab[Idx].LblName   := Lbl;
+  DataTab[Idx].Kind      := Kind;
+  DataTab[Idx].IntVal    := IVal;
+  DataTab[Idx].StrVal    := SVal;
+  DataTab[Idx].ElemCount := Elems;
+  Inc(DataCount);
+  Inc(LitAddCount);
+  LitLastLabel := Lbl;
+  DataAdd := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddStr : ajouter une chaine litterale dans DATA            }
+{ Retourne le label ASM attribue                                 }
+{ ------------------------------------------------------------ }
+
+Function DataAddStr(Const S : TString) : TString;
+Var Lbl : TString;
+Begin
+  Lbl := GenLitLabel;
+  DataAdd(Lbl, DK_STR, 0, S, Length(S));
+  Inc(LitStrCount);
+  DataAddStr := Lbl;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddDWord : ajouter un DWORD dans DATA                      }
+{ Retourne le label ASM attribue                                 }
+{ ------------------------------------------------------------ }
+
+Function DataAddDWord(V : LongInt) : TString;
+Var Lbl : TString;
+Begin
+  Lbl := GenLitLabel;
+  DataAdd(Lbl, DK_DWORD, V, '', 1);
+  Inc(LitDwCount);
+  DataAddDWord := Lbl;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprMakeImm : creer une expression immediate (constante)       }
+{ ------------------------------------------------------------ }
+
+Function ExprMakeImm(V : LongInt; TIdx : Integer) : TExprVal;
+Var E : TExprVal;
+Begin
+  E.Kind    := EK_IMM;
+  E.ImmVal  := V;
+  E.TypeIdx := TIdx;
+  E.Offset  := 0;
+  E.SymIdx  := -1;
+  ExprMakeImm := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprMakeNull : creer une expression null -> IMM 0, type NULL   }
+{ ------------------------------------------------------------ }
+
+Function ExprMakeNull : TExprVal;
+Begin
+  ExprMakeNull := ExprMakeImm(0, TY_IDX_NULL);
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprMakeBool : creer une expression true(1) ou false(0)        }
+{ ------------------------------------------------------------ }
+
+Function ExprMakeBool(B : Boolean) : TExprVal;
+Begin
+  If B Then
+    ExprMakeBool := ExprMakeImm(1, TY_IDX_BOOLEAN)
+  Else
+    ExprMakeBool := ExprMakeImm(0, TY_IDX_BOOLEAN);
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprMakeEAX : creer une expression dont la valeur est en EAX   }
+{ ------------------------------------------------------------ }
+
+Function ExprMakeEAX(TIdx : Integer) : TExprVal;
+Var E : TExprVal;
+Begin
+  E.Kind    := EK_EAX;
+  E.ImmVal  := 0;
+  E.TypeIdx := TIdx;
+  E.Offset  := 0;
+  E.SymIdx  := -1;
+  ExprMakeEAX := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ LitEvalInt : evaluer un token entier comme expression          }
+{ Retourne un TExprVal de type EK_IMM / TY_IDX_INT              }
+{ ------------------------------------------------------------ }
+
+Function LitEvalInt : TExprVal;
+Begin
+  LitEvalInt := ExprMakeImm(CurTokInt, TY_IDX_INT);
+End;
+
+{ ------------------------------------------------------------ }
+{ LitEvalStr : evaluer un token chaine comme expression          }
+{ Ajoute la chaine dans DATA et retourne un TExprVal pointant    }
+{ vers le label DATA, de type EK_MEM / TY_IDX_STRING             }
+{ ------------------------------------------------------------ }
+
+Function LitEvalStr : TExprVal;
+Var
+  Lbl : TString;
+  E   : TExprVal;
+Begin
+  Lbl := DataAddStr(CurTokStr);
+  { L immediat est l adresse du label (resolue a l edition de liens) }
+  E.Kind    := EK_MEM;
+  E.ImmVal  := 0;
+  E.TypeIdx := TY_IDX_STRING;
+  E.Offset  := DataCount - 1;   { indice dans DataTab }
+  E.SymIdx  := -1;
+  LitEvalStr := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ LitEvalChar : evaluer un token caractere comme expression      }
+{ Retourne un TExprVal de type EK_IMM / TY_IDX_CHAR             }
+{ ------------------------------------------------------------ }
+
+Function LitEvalChar : TExprVal;
+Begin
+  LitEvalChar := ExprMakeImm(CurTokInt, TY_IDX_CHAR);
+End;
+
+{ ------------------------------------------------------------ }
+{ LitEval : evaluer le token courant comme litteral              }
+{ Gere : entier, flottant (tronque), chaine, caractere,          }
+{        null, true, false                                       }
+{ Retourne un TExprVal                                           }
+{ ------------------------------------------------------------ }
+
+Function LitEval : TExprVal;
+Var E : TExprVal;
+Begin
+  Inc(LitEvalCount);
+  Case CurTokKind Of
+    TK_INTEGER : E := LitEvalInt;
+    TK_FLOAT   : E := LitEvalInt;   { flottant tronque en entier }
+    TK_STRING  : E := LitEvalStr;
+    TK_CHAR    : E := LitEvalChar;
+    TK_IDENT   :
+      Begin
+        If CurTokStr = 'null' Then
+          E := ExprMakeNull
+        Else If CurTokStr = 'true' Then
+          E := ExprMakeBool(True)
+        Else If CurTokStr = 'false' Then
+          E := ExprMakeBool(False)
+        Else
+        Begin
+          E.Kind    := EK_NONE;
+          E.ImmVal  := 0;
+          E.TypeIdx := TY_IDX_VOID;
+          E.Offset  := 0;
+          E.SymIdx  := -1;
+        End;
+      End;
+  Else
+    Begin
+      E.Kind    := EK_NONE;
+      E.ImmVal  := 0;
+      E.TypeIdx := TY_IDX_VOID;
+      E.Offset  := 0;
+      E.SymIdx  := -1;
+    End;
+  End;
+  LitEval := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpLitState : afficher l etat du sous-systeme des litteraux   }
+{ ------------------------------------------------------------ }
+
+Procedure DumpLitState;
+Var I : Integer;
+Begin
+  WriteLn('--- Lit State ---');
+  WriteLn('  LitInitialized : ', LitInitialized);
+  WriteLn('  DataCount      : ', DataCount);
+  WriteLn('  LitLabelSeq    : ', LitLabelSeq);
+  WriteLn('  LitAddCount    : ', LitAddCount);
+  WriteLn('  LitStrCount    : ', LitStrCount);
+  WriteLn('  LitDwCount     : ', LitDwCount);
+  WriteLn('  LitEvalCount   : ', LitEvalCount);
+  WriteLn('  LitLastLabel   : ', LitLastLabel);
+  WriteLn('  LblSeq         : ', LblSeq);
+  WriteLn('--- Data Table (', DataCount, ' entries) ---');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    WriteLn('  [', I, '] ', DataTab[I].LblName,
+            '  kind=', DataKindStr(DataTab[I].Kind));
+    If DataTab[I].Kind = DK_DWORD Then
+      WriteLn('       intval=', DataTab[I].IntVal)
+    Else If DataTab[I].Kind = DK_STR Then
+      WriteLn('       str="', DataTab[I].StrVal, '"  len=',
+              DataTab[I].ElemCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 06)                              }
+{ ------------------------------------------------------------ }
+
+Function IsLitInitialized : Boolean;
+Begin
+  IsLitInitialized := LitInitialized;
+End;
+
+Function IsLitEmpty : Boolean;
+Begin
+  IsLitEmpty := (DataCount = 0);
+End;
+
+Function GetDataCount : Integer;
+Begin
+  GetDataCount := DataCount;
+End;
+
+Function GetLitAddCount : LongInt;
+Begin
+  GetLitAddCount := LitAddCount;
+End;
+
+Function GetLitStrCount : LongInt;
+Begin
+  GetLitStrCount := LitStrCount;
+End;
+
+Function GetLitDwCount : LongInt;
+Begin
+  GetLitDwCount := LitDwCount;
+End;
+
+Function GetLitEvalCount : LongInt;
+Begin
+  GetLitEvalCount := LitEvalCount;
+End;
+
+Function GetLitLastLabel : TString;
+Begin
+  GetLitLastLabel := LitLastLabel;
+End;
+
+Function GetLblSeq : Integer;
+Begin
+  GetLblSeq := LblSeq;
+End;
+
+Function GetLitStatus : TString;
+Begin
+  If Not LitInitialized Then
+    GetLitStatus := 'Not initialized'
+  Else
+    GetLitStatus := ItoS(DataCount) + ' data items (' +
+                    ItoS(LitStrCount) + ' strs, ' +
+                    ItoS(LitDwCount) + ' dwords, ' +
+                    ItoS(LitEvalCount) + ' evals)';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-06)                              }
 { ============================================================ }
 
 Begin
@@ -3481,16 +3882,17 @@ Begin
   InitKwState;
   SymInit;
   TypeInit;
+  LitInit;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-05) }
+  { Boucle de tokenisation (TODO 02-06) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 06..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 07..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
