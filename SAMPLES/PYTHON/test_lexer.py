@@ -34,8 +34,9 @@ for i in range(10):
         break
     continue
 
-while True:
-    pass
+i = 0
+while i < 3:
+    i = i + 1
 
 class Foo:
     def __init__(self):

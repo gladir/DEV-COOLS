@@ -28,8 +28,9 @@ t0 = ()
 # Acces index
 a = lst[0]
 
-# Appel builtin sans argument
-s = input()
+# Appel builtin str
+s = str(42)
 
 # Expression avec parentheses
 r = (1 + 2) * 3
+print(r)
