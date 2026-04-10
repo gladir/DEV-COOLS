@@ -17,7 +17,7 @@
 
 { ---------------------------------------------------------------------------- }
 {  TODO 01 [IMPLEMENTE] - Infrastructure, options et constantes globales      }
-{  TODO 02 [A FAIRE] - Lecture et validation de l'en-tete .class              }
+{  TODO 02 [IMPLEMENTE] - Lecture et validation de l'en-tete .class           }
 {  TODO 03 [A FAIRE] - Decodage du Constant Pool                              }
 {  TODO 04 [A FAIRE] - Lecture des flags, this_class, super_class, interfaces }
 {  TODO 05 [A FAIRE] - Lecture des champs (fields) de la classe               }
@@ -242,6 +242,13 @@ Const
   { ------------------------------------------------------------------ }
   SPOTBUGS_VERSION = '1.0.0';
 
+  { ------------------------------------------------------------------ }
+  { TODO 02 : Constante magique des fichiers .class                     }
+  { ------------------------------------------------------------------ }
+  { $CAFEBABE = 3405691582 en non-signe = -889275714 en signe (LongInt) }
+  CLASS_MAGIC_HI = $CAFE;     { Partie haute de la signature            }
+  CLASS_MAGIC_LO = $BABE;     { Partie basse de la signature            }
+
 { ============================================================================ }
 { Types et structures                                                          }
 { ============================================================================ }
@@ -278,6 +285,18 @@ Type
   { --- Tableau de bugs --- }
   TBugArray = Array[1..MAX_BUGS] of TBugReport;
 
+  { --- TODO 02 : Structure TClassHeader : en-tete du fichier .class --- }
+  TClassHeader = Record
+    Magic        : LongInt;    { Doit etre $CAFEBABE                      }
+    MinorVersion : Word;       { Version mineure JVM                      }
+    MajorVersion : Word;       { Version majeure JVM (ex. 52 = Java 8)    }
+    CPCount      : Word;       { Nombre d'entrees dans le Constant Pool+1 }
+    AccessFlags  : Word;       { Flags d'acces de la classe               }
+    ThisClass    : Word;       { Index CP vers le nom de la classe        }
+    SuperClass   : Word;       { Index CP vers la super-classe            }
+    InterfaceCount : Word;     { Nombre d'interfaces implementees         }
+  End;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -293,6 +312,7 @@ Var
   CurrentFile    : String;        { Fichier .class en cours d'analyse   }
   ClassFile      : File;          { Handle du fichier .class ouvert     }
   ClassFileOpen  : Boolean;       { True si ClassFile est ouvert        }
+  ClassHeader    : TClassHeader;  { TODO 02 : En-tete du .class courant }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -570,42 +590,150 @@ Begin
   WarningCount   := 0;
   CurrentFile    := '';
   ClassFileOpen  := False;
+
+  { Initialiser l'en-tete de classe (TODO 02) }
+  ClassHeader.Magic        := 0;
+  ClassHeader.MinorVersion := 0;
+  ClassHeader.MajorVersion := 0;
+  ClassHeader.CPCount      := 0;
+  ClassHeader.AccessFlags  := 0;
+  ClassHeader.ThisClass    := 0;
+  ClassHeader.SuperClass   := 0;
+  ClassHeader.InterfaceCount := 0;
 End;
 
 { ============================================================================ }
-{ TODO 02 [A FAIRE] - Lecture et validation de l'en-tete .class                }
+{ TODO 02 [IMPLEMENTE] - Lecture et validation de l'en-tete .class             }
 { ============================================================================ }
-{                                                                              }
-{  - Constante CLASS_MAGIC = $CAFEBABE (signature des fichiers .class Java)    }
-{                                                                              }
-{  - Structure TClassHeader :                                                   }
-{      Magic        : LongWord  (doit etre $CAFEBABE)                           }
-{      MinorVersion : Word      (version mineure JVM)                           }
-{      MajorVersion : Word      (version majeure JVM, ex. 52 = Java 8)         }
-{      CPCount      : Word      (nombre d'entrees dans le Constant Pool + 1)   }
-{      AccessFlags  : Word      (flags d'acces de la classe)                   }
-{      ThisClass    : Word      (index CP pointant vers le nom de la classe)    }
-{      SuperClass   : Word      (index CP pointant vers la super-classe)        }
-{      InterfaceCount : Word    (nombre d'interfaces implementees)              }
-{                                                                              }
-{  - Procedure OpenClassFile(FileName: String)                                  }
-{      Ouvrir le fichier .class en mode binaire                                 }
-{      Initialiser le buffer de lecture et la position courante                 }
-{      Lire et valider le magic number ($CAFEBABE)                              }
-{      Erreur fatale si signature invalide                                       }
-{                                                                              }
-{  - Function ReadClassHeader: TClassHeader                                     }
-{      Lire MajorVersion et MinorVersion en big-endian                          }
-{      Verifier la version (49 = Java 5, 50 = Java 6, ..., 65 = Java 21)       }
-{      Avertissement si version inconnue ou trop recente                        }
-{      Retourner la structure complete                                           }
-{                                                                              }
-{  - Function GetJavaVersion(Major: Word): String                               }
-{      Traduire le numero de version majeure JVM en version Java lisible        }
-{      Ex.: 52 -> "Java 8", 55 -> "Java 11", 61 -> "Java 17"                  }
-{                                                                              }
-{  - Procedure CloseClassFile                                                   }
-{      Fermer le fichier et liberer le buffer                                   }
+
+{ --- GetJavaVersion : traduit la version majeure JVM en version Java lisible --- }
+Function GetJavaVersion(Major: Word): String;
+Begin
+  Case Major of
+    45: GetJavaVersion := 'Java 1.1';
+    46: GetJavaVersion := 'Java 1.2';
+    47: GetJavaVersion := 'Java 1.3';
+    48: GetJavaVersion := 'Java 1.4';
+    49: GetJavaVersion := 'Java 5';
+    50: GetJavaVersion := 'Java 6';
+    51: GetJavaVersion := 'Java 7';
+    52: GetJavaVersion := 'Java 8';
+    53: GetJavaVersion := 'Java 9';
+    54: GetJavaVersion := 'Java 10';
+    55: GetJavaVersion := 'Java 11';
+    56: GetJavaVersion := 'Java 12';
+    57: GetJavaVersion := 'Java 13';
+    58: GetJavaVersion := 'Java 14';
+    59: GetJavaVersion := 'Java 15';
+    60: GetJavaVersion := 'Java 16';
+    61: GetJavaVersion := 'Java 17';
+    62: GetJavaVersion := 'Java 18';
+    63: GetJavaVersion := 'Java 19';
+    64: GetJavaVersion := 'Java 20';
+    65: GetJavaVersion := 'Java 21';
+    66: GetJavaVersion := 'Java 22';
+    67: GetJavaVersion := 'Java 23';
+  Else
+    If Major > 67 Then
+      GetJavaVersion := 'Java ' + IntToStr_(Major - 44) + ' (future)'
+    Else
+      GetJavaVersion := 'Inconnu (' + IntToStr_(Major) + ')';
+  End;
+End;
+
+{ --- OpenClassFile : ouvrir un fichier .class et valider la signature --- }
+Procedure OpenClassFile(FileName: String);
+Var
+  Magic: LongInt;
+Begin
+  { Fermer le fichier precedent si encore ouvert }
+  If ClassFileOpen Then Begin
+    Close(ClassFile);
+    ClassFileOpen := False;
+  End;
+
+  { Verifier si le fichier existe }
+  If Not FileExists_(FileName) Then
+    FatalError('Fichier introuvable: ' + FileName);
+
+  { Ouvrir le fichier en mode binaire }
+  CurrentFile := FileName;
+  {$I-}
+  Assign(ClassFile, FileName);
+  Reset(ClassFile, 1);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier: ' + FileName);
+
+  ClassFileOpen := True;
+
+  { Lire et valider le magic number ($CAFEBABE) }
+  Magic := ReadU4;
+  { Comparer via HexDWord pour eviter les problemes de signe }
+  If HexDWord(Magic) <> 'CAFEBABE' Then Begin
+    Close(ClassFile);
+    ClassFileOpen := False;
+    FatalError('Signature invalide: ' + HexDWord(Magic) +
+               ' (attendu CAFEBABE) dans ' + FileName);
+  End;
+
+  Info('Fichier .class ouvert: ' + FileName);
+End;
+
+{ --- ReadClassHeader : lire l'en-tete du fichier .class --- }
+Function ReadClassHeader: TClassHeader;
+Var
+  H: TClassHeader;
+Begin
+  { Le magic a deja ete lu par OpenClassFile, stocker la valeur lue }
+  { On utilise la representation signee negative de $CAFEBABE }
+  H.Magic := -889275714;  { = $CAFEBABE interprete comme LongInt signe }
+
+  { Lire les versions (big-endian) }
+  H.MinorVersion := ReadU2;
+  H.MajorVersion := ReadU2;
+
+  { Verifier la version }
+  If (H.MajorVersion < 45) or (H.MajorVersion > 67) Then
+    Warning('Version JVM inconnue ou trop recente: ' +
+            IntToStr_(H.MajorVersion) + '.' + IntToStr_(H.MinorVersion));
+
+  Info('Version: ' + GetJavaVersion(H.MajorVersion) +
+       ' (' + IntToStr_(H.MajorVersion) + '.' +
+       IntToStr_(H.MinorVersion) + ')');
+
+  { Lire le nombre d'entrees du Constant Pool }
+  H.CPCount := ReadU2;
+  If H.CPCount < 1 Then
+    Warning('Constant Pool vide ou invalide');
+  Info('Constant Pool: ' + IntToStr_(H.CPCount - 1) + ' entrees');
+
+  { Les autres champs seront lus apres le Constant Pool (TODO 03/04) }
+  H.AccessFlags    := 0;
+  H.ThisClass      := 0;
+  H.SuperClass     := 0;
+  H.InterfaceCount := 0;
+
+  { Stocker dans la variable globale }
+  ClassHeader := H;
+
+  ReadClassHeader := H;
+End;
+
+{ --- CloseClassFile : fermer le fichier .class courant --- }
+Procedure CloseClassFile;
+Begin
+  If ClassFileOpen Then Begin
+    {$I-}
+    Close(ClassFile);
+    {$I+}
+    If IOResult <> 0 Then
+      Warning('Erreur lors de la fermeture du fichier: ' + CurrentFile);
+    ClassFileOpen := False;
+    Info('Fichier ferme: ' + CurrentFile);
+    CurrentFile := '';
+  End;
+End;
 
 { ============================================================================ }
 { TODO 03 [A FAIRE] - Decodage du Constant Pool                                }

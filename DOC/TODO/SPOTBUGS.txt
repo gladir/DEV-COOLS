@@ -33,14 +33,14 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               IntToStr_, StrToInt_, UpCaseStr, FileExists_, ChangeExt,
               FatalError, Error, Warning, AddBug
 
-  TODO 02 - LECTURE ET VALIDATION DE L'EN-TETE .class [A FAIRE]
+  TODO 02 - LECTURE ET VALIDATION DE L'EN-TETE .class [IMPLEMENTE]
             Constante CLASS_MAGIC = $CAFEBABE
             Structure TClassHeader (Magic, MinorVersion, MajorVersion,
               CPCount, AccessFlags, ThisClass, SuperClass, InterfaceCount)
             OpenClassFile(FileName) : ouvrir .class, valider magic $CAFEBABE
-            ReadClassHeader : lire version, valider (49=Java5..65=Java21),
+            ReadClassHeader : lire version, valider (49=Java5..67=Java23),
               avertissement si version inconnue ou trop recente
-            GetJavaVersion(Major) : 52->"Java 8", 55->"Java 11", 61->"Java 17"
+            GetJavaVersion(Major) : 45->"Java 1.1"..67->"Java 23"
             CloseClassFile : fermer le fichier et liberer le tampon
 
   TODO 03 - DECODAGE DU CONSTANT POOL [A FAIRE]
