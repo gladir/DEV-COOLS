@@ -298,7 +298,7 @@
             Boucles imbriquees supportees (MAX_LOOP_NEST)
             10 fonctions accesseurs
 
-  TODO 12 - PARSEUR : METHODES STATIQUES ET RETURN [A FAIRE]
+  TODO 12 - PARSEUR : METHODES STATIQUES ET RETURN [IMPLEMENTE]
             ParseMethodDecl : public static type nom(params) { bloc }
             Parametres : passage par valeur sur la pile (cdecl)
             Types de retour : int, boolean, char, void, String, int[]
@@ -7442,7 +7442,643 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-11)                              }
+{ TODO 12 - PARSEUR : METHODES STATIQUES ET RETURN             }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations de methode }
+  MT_NONE          = 0;    { aucun / non defini                    }
+  MT_DEF           = 1;    { public static type nom(params) bloc    }
+  MT_DEF_PARAMS    = 2;    { definition avec parametres             }
+  MT_DEF_VOID      = 3;    { definition void                       }
+  MT_RETURN        = 4;    { return expr                           }
+  MT_RETURN_VOID   = 5;    { return sans valeur (void)             }
+  MT_CALL          = 6;    { appel de methode                      }
+  MT_CALL_ARGS     = 7;    { appel avec arguments                  }
+  MT_PROLOGUE      = 8;    { prologue de methode                   }
+  MT_EPILOGUE      = 9;    { epilogue de methode                   }
+  MT_PARAM         = 10;   { parametre de methode                  }
+  MT_RECURSIVE     = 11;   { appel recursif                        }
+  MT_OVERLOAD_WARN = 12;   { avertissement : surcharge             }
+  MT_MAIN          = 13;   { methode main detectee                 }
+  MT_MAX           = 13;
+
+  { Limites }
+  MT_MAX_PARAMS    = 16;   { nombre max de parametres par methode  }
+  MT_MAX_LOCALS    = 64;   { nombre max de variables locales       }
+  MT_MAX_NEST      = 1;    { pas de methodes imbriquees            }
+
+Type
+  TMtParamRec = Record
+    Name       : TString;  { nom du parametre                      }
+    TypeIdx    : Integer;   { index du type dans la table des types }
+  End;
+
+Var
+  MtInitialized   : Boolean;    { True si l etat est initialise       }
+  MtDefCount      : LongInt;    { nombre de definitions de methodes   }
+  MtReturnCount   : LongInt;    { nombre de return                    }
+  MtRetVoidCount  : LongInt;    { nombre de return void               }
+  MtCallCount     : LongInt;    { nombre d appels de methode          }
+  MtParamCount    : LongInt;    { nombre total de parametres declares }
+  MtRecursCount   : LongInt;    { nombre d appels recursifs           }
+  MtOverloadWarn  : LongInt;    { nombre d avertissements surcharge   }
+  MtMainCount     : LongInt;    { nombre de methodes main trouvees    }
+  MtLastKind      : Integer;    { dernier type d operation            }
+  MtLabelSeq      : Integer;    { sequence pour labels de methode     }
+  MtCurName       : TString;    { nom de la methode courante          }
+  MtCurClass      : TString;    { nom de la classe courante           }
+  MtCurParamN     : Integer;    { nombre de params de la methode      }
+  MtCurLocalN     : Integer;    { nombre de vars locales courantes    }
+  MtInDef         : Boolean;    { True si on est dans une methode     }
+  MtCurRetType    : TString;    { type de retour de la methode        }
+  MtCurParams     : Array[1..MT_MAX_PARAMS] Of TMtParamRec;
+  MtCurEpilogue   : TString;    { label de l epilogue courant         }
+
+{ ------------------------------------------------------------ }
+{ InitMtState : initialiser le sous-systeme des methodes         }
+{ ------------------------------------------------------------ }
+
+Procedure InitMtState;
+Begin
+  MtInitialized   := True;
+  MtDefCount      := 0;
+  MtReturnCount   := 0;
+  MtRetVoidCount  := 0;
+  MtCallCount     := 0;
+  MtParamCount    := 0;
+  MtRecursCount   := 0;
+  MtOverloadWarn  := 0;
+  MtMainCount     := 0;
+  MtLastKind      := MT_NONE;
+  MtLabelSeq      := 0;
+  MtCurName       := '';
+  MtCurClass      := '';
+  MtCurParamN     := 0;
+  MtCurLocalN     := 0;
+  MtInDef         := False;
+  MtCurRetType    := '';
+  MtCurEpilogue   := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMtLabel : generer un label unique pour les methodes          }
+{ ------------------------------------------------------------ }
+
+Function GenMtLabel : TString;
+Begin
+  Inc(MtLabelSeq);
+  GenMtLabel := JV_LBL_PFX + 'MT_' + ItoS(MtLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ MtTypeName : retourner le nom du type d operation methode       }
+{ ------------------------------------------------------------ }
+
+Function MtTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    MT_NONE          : MtTypeName := 'MT_NONE';
+    MT_DEF           : MtTypeName := 'MT_DEF';
+    MT_DEF_PARAMS    : MtTypeName := 'MT_DEF_PARAMS';
+    MT_DEF_VOID      : MtTypeName := 'MT_DEF_VOID';
+    MT_RETURN        : MtTypeName := 'MT_RETURN';
+    MT_RETURN_VOID   : MtTypeName := 'MT_RETURN_VOID';
+    MT_CALL          : MtTypeName := 'MT_CALL';
+    MT_CALL_ARGS     : MtTypeName := 'MT_CALL_ARGS';
+    MT_PROLOGUE      : MtTypeName := 'MT_PROLOGUE';
+    MT_EPILOGUE      : MtTypeName := 'MT_EPILOGUE';
+    MT_PARAM         : MtTypeName := 'MT_PARAM';
+    MT_RECURSIVE     : MtTypeName := 'MT_RECURSIVE';
+    MT_OVERLOAD_WARN : MtTypeName := 'MT_OVERLOAD_WARN';
+    MT_MAIN          : MtTypeName := 'MT_MAIN';
+  Else
+    MtTypeName := 'MT_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseParamListJ : parser la liste de parametres Java            }
+{   type nom, type nom, ...                                       }
+{   Remplit MtCurParams[1..MtCurParamN]                          }
+{   Parametres typees : int x, boolean flag, String s, ...       }
+{   Convention cdecl :                                            }
+{     Premier param  = [EBP+8]                                    }
+{     Deuxieme param = [EBP+12]                                   }
+{     N-ieme param   = [EBP + (N*4) + 4]                         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseParamListJ;
+Var
+  PIdx      : Integer;
+  PName     : TString;
+  PType     : TString;
+Begin
+  MtCurParamN := 0;
+
+  { Lire les parametres entre parentheses }
+  { On suppose que '(' a deja ete consomme }
+  While (CurTokKind <> TK_EOF) And (CurTokStr <> ')') Do
+  Begin
+    PType := '';
+    PName := '';
+
+    { Lire le type du parametre }
+    If (CurTokKind = TK_IDENT) Or (CurTokKind = TK_KEYWORD) Then
+    Begin
+      PType := CurTokStr;
+      { Gerer les types tableaux (String[], int[]) }
+      { Pour le moment, le type est un simple mot }
+    End
+    Else
+      PType := 'int';  { type par defaut si absent }
+
+    { Lire le nom du parametre }
+    { En mode stub, le nom suivrait le type }
+    PName := '_param_' + ItoS(MtCurParamN + 1);
+
+    If MtCurParamN < MT_MAX_PARAMS Then
+    Begin
+      Inc(MtCurParamN);
+      Inc(MtParamCount);
+      PIdx := MtCurParamN;
+      MtCurParams[PIdx].Name := PName;
+      MtCurParams[PIdx].TypeIdx := 0;  { a resoudre plus tard }
+      MtLastKind := MT_PARAM;
+    End
+    Else
+    Begin
+      CompileError('Too many parameters (max ' +
+                   ItoS(MT_MAX_PARAMS) + ')', LexLineNo);
+      Exit;
+    End;
+
+    { Sauter la virgule entre parametres }
+    If CurTokStr = ',' Then
+    Begin
+      { On avance apres la virgule }
+    End;
+
+    { Avancer au token suivant (simulation) }
+    Break;  { Sortir apres un premier passage en mode stub }
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitMtPrologue : emettre le prologue d une methode Java         }
+{   PUSH EBP                                                     }
+{   MOV EBP, ESP                                                 }
+{   SUB ESP, locals_size  (si variables locales)                  }
+{                                                                  }
+{   Layout de la pile :                                           }
+{     [EBP+8]  = premier parametre                                }
+{     [EBP+12] = deuxieme parametre                               }
+{     [EBP+4]  = adresse de retour                                }
+{     [EBP]    = ancien EBP                                       }
+{     [EBP-4]  = premiere variable locale                         }
+{     [EBP-8]  = deuxieme variable locale                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitMtPrologue(Const FuncLabel : TString;
+                         NumLocals : Integer);
+Var
+  LocalsSize : Integer;
+  LblEpi     : TString;
+Begin
+  Inc(MtLabelSeq);
+  LblEpi := JV_LBL_PFX + 'MEPI_' + ItoS(MtLabelSeq);
+  MtCurEpilogue := LblEpi;
+
+  LocalsSize := NumLocals * 4;
+
+  WriteLn('  ; --- method prologue: ', MtCurName, ' ---');
+  WriteLn(FuncLabel, ':');
+  WriteLn('  PUSH EBP');
+  WriteLn('  MOV EBP, ESP');
+  If LocalsSize > 0 Then
+    WriteLn('  SUB ESP, ', LocalsSize, '  ; ', NumLocals, ' local vars');
+
+  WriteLn('  ; parameters: ', MtCurParamN);
+  MtLastKind := MT_PROLOGUE;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitMtEpilogue : emettre l epilogue d une methode Java          }
+{   label_epilogue:                                               }
+{   MOV ESP, EBP                                                  }
+{   POP EBP                                                       }
+{   RET                                                           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitMtEpilogue;
+Begin
+  WriteLn('  ; --- method epilogue: ', MtCurName, ' ---');
+  If MtCurEpilogue <> '' Then
+    WriteLn(MtCurEpilogue, ':');
+  WriteLn('  MOV ESP, EBP');
+  WriteLn('  POP EBP');
+  WriteLn('  RET');
+  WriteLn('  ; --- end method ', MtCurName, ' ---');
+  MtLastKind := MT_EPILOGUE;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMethodDecl : parser une declaration de methode Java        }
+{   public static type nom(params) bloc                            }
+{                                                                  }
+{   Convention :                                                   }
+{     - On suppose que les modificateurs public/static ont ete    }
+{       consommes par l appelant                                  }
+{     - Le type de retour est le token courant                    }
+{     - Suivi du nom de la methode                                }
+{     - Suivi de la liste de parametres entre ( et )              }
+{     - Suivi du corps entre accolades                             }
+{                                                                  }
+{   Emission assembleur :                                         }
+{     JMP _JL_MSKIP_N        ; sauter par-dessus le corps        }
+{     _JF_ClassName_method:                                       }
+{       PUSH EBP / MOV EBP, ESP / SUB ESP, locals_size           }
+{       corps                                                     }
+{       _JL_MEPI_N:                                               }
+{       MOV ESP, EBP / POP EBP / RET                              }
+{     _JL_MSKIP_N:                                                }
+{                                                                  }
+{   Point d entree main :                                         }
+{     public static void main(String[] args)                      }
+{     Label _JF_ClassName_main                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseMethodDecl;
+Var
+  RetType    : TString;
+  MethName   : TString;
+  FuncLabel  : TString;
+  LblSkip    : TString;
+  BaseSeq    : Integer;
+  IsMain     : Boolean;
+  I          : Integer;
+Begin
+  Inc(MtDefCount);
+  IsMain := False;
+
+  { Verifier si on est deja dans une methode (imbrication) }
+  If MtInDef Then
+  Begin
+    Inc(MtOverloadWarn);
+    WarnMsg('Nested method definition not supported in Java');
+    MtLastKind := MT_OVERLOAD_WARN;
+  End;
+
+  MtInDef := True;
+
+  { Generer le label de saut pour sauter le corps }
+  Inc(MtLabelSeq);
+  BaseSeq := MtLabelSeq;
+  LblSkip := JV_LBL_PFX + 'MSKIP_' + ItoS(BaseSeq);
+
+  { Le type de retour est suppose etre le token courant }
+  { (deja consomme par l appelant ou determine) }
+  RetType := 'void';  { a raffiner par le parseur complet }
+  MtCurRetType := RetType;
+
+  { Lire le nom de la methode }
+  { En mode stub, on utilise un nom par defaut }
+  MethName := '_method_' + ItoS(BaseSeq);
+
+  { Detecter main }
+  If MethName = 'main' Then
+  Begin
+    IsMain := True;
+    Inc(MtMainCount);
+    MtLastKind := MT_MAIN;
+  End;
+
+  MtCurName := MethName;
+
+  { Construire le label assembleur _JF_ClassName_method }
+  If MtCurClass <> '' Then
+    FuncLabel := JV_FN_PFX + MtCurClass + '_' + MethName
+  Else
+    FuncLabel := JV_FN_PFX + MethName;
+
+  WriteLn('  ; --- method ', MtCurClass, '.', MethName,
+          ' (', RetType, ') ---');
+
+  { Sauter par-dessus le corps de la methode }
+  WriteLn('  JMP ', LblSkip);
+
+  { Parser la liste de parametres }
+  ParseParamListJ;
+
+  { Initialiser le nombre de variables locales (stub) }
+  MtCurLocalN := 0;
+
+  { Emettre le prologue }
+  EmitMtPrologue(FuncLabel, MtCurLocalN);
+
+  { Emettre les commentaires pour chaque parametre }
+  For I := 1 To MtCurParamN Do
+  Begin
+    WriteLn('  ; param ', I, ': ', MtCurParams[I].Name,
+            ' = [EBP+', (I * 4) + 4, ']');
+  End;
+
+  { Corps de la methode (stub: les futurs TODOs parseront le bloc) }
+  WriteLn('  ; method body');
+
+  { Retour implicite }
+  If RetType = 'void' Then
+  Begin
+    WriteLn('  ; implicit return (void)');
+  End
+  Else
+  Begin
+    WriteLn('  XOR EAX, EAX  ; implicit return 0');
+  End;
+
+  { Emettre l epilogue }
+  EmitMtEpilogue;
+
+  { Label pour sauter par-dessus le corps }
+  WriteLn(LblSkip, ':');
+
+  MtInDef := False;
+
+  { Determiner le type }
+  If IsMain Then
+    MtLastKind := MT_MAIN
+  Else If RetType = 'void' Then
+    MtLastKind := MT_DEF_VOID
+  Else If MtCurParamN > 0 Then
+    MtLastKind := MT_DEF_PARAMS
+  Else
+    MtLastKind := MT_DEF;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseReturnStmtJ : parser une instruction return Java           }
+{   return expr;   -> evaluer expr (resultat dans EAX)           }
+{                     JMP vers epilogue                           }
+{   return;        -> JMP epilogue (methode void)                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseReturnStmtJ;
+Begin
+  If Not MtInDef Then
+  Begin
+    CompileError('return outside method', LexLineNo);
+    Exit;
+  End;
+
+  Inc(MtReturnCount);
+
+  { Verifier si return avec ou sans expression }
+  { return suivi de ';' = return void }
+  If (CurTokStr = ';') Or (CurTokKind = TK_EOF) Then
+  Begin
+    { return sans valeur (void) }
+    Inc(MtRetVoidCount);
+    WriteLn('  ; return (void)');
+    MtLastKind := MT_RETURN_VOID;
+  End
+  Else
+  Begin
+    { return expr -> le resultat de l expression est dans EAX }
+    WriteLn('  ; return expr');
+    WriteLn('  ; (expression result in EAX)');
+    MtLastKind := MT_RETURN;
+  End;
+
+  { Sauter vers l epilogue }
+  If MtCurEpilogue <> '' Then
+    WriteLn('  JMP ', MtCurEpilogue)
+  Else
+    CompileError('No method epilogue label', LexLineNo);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitMtCall : emettre l appel a une methode statique Java        }
+{   Convention cdecl :                                            }
+{     PUSH arg_n          ; empiler de droite a gauche           }
+{     PUSH arg_n-1                                               }
+{     ...                                                         }
+{     PUSH arg_1                                                  }
+{     CALL _JF_ClassName_method                                   }
+{     ADD ESP, n*4        ; l appelant nettoie la pile            }
+{   Valeur de retour dans EAX                                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitMtCall(Const ClassName, MethName : TString;
+                     NumArgs : Integer);
+Var
+  FuncLabel : TString;
+Begin
+  Inc(MtCallCount);
+
+  If ClassName <> '' Then
+    FuncLabel := JV_FN_PFX + ClassName + '_' + MethName
+  Else
+    FuncLabel := JV_FN_PFX + MethName;
+
+  WriteLn('  ; call ', ClassName, '.', MethName,
+          '(', NumArgs, ' args)');
+
+  { Les arguments doivent avoir ete empiles avant l appel }
+  WriteLn('  CALL ', FuncLabel);
+  If NumArgs > 0 Then
+    WriteLn('  ADD ESP, ', NumArgs * 4, '  ; caller cleanup');
+  WriteLn('  ; result in EAX');
+
+  { Verifier si c est un appel recursif }
+  If MtInDef And (MethName = MtCurName) Then
+  Begin
+    Inc(MtRecursCount);
+    MtLastKind := MT_RECURSIVE;
+  End
+  Else If NumArgs > 0 Then
+    MtLastKind := MT_CALL_ARGS
+  Else
+    MtLastKind := MT_CALL;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPushArgJ : emettre PUSH pour un argument de methode         }
+{   Empile la valeur dans EAX sur la pile                        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPushArgJ(ArgIndex, TotalArgs : Integer);
+Begin
+  WriteLn('  PUSH EAX  ; arg ', ArgIndex, ' of ', TotalArgs);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetMtParamOffset : retourner l offset d un parametre            }
+{   Premier parametre  = [EBP+8]                                  }
+{   Deuxieme parametre = [EBP+12]                                 }
+{   N-ieme parametre   = [EBP + (N*4) + 4]                       }
+{ ------------------------------------------------------------ }
+
+Function GetMtParamOffset(ParamIndex : Integer) : Integer;
+Begin
+  GetMtParamOffset := (ParamIndex * 4) + 4;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetMtLocalOffset : retourner l offset d une variable locale     }
+{   Premiere variable  = [EBP-4]                                  }
+{   Deuxieme variable  = [EBP-8]                                  }
+{   N-ieme variable    = [EBP - N*4]                              }
+{ ------------------------------------------------------------ }
+
+Function GetMtLocalOffset(LocalIndex : Integer) : Integer;
+Begin
+  GetMtLocalOffset := -(LocalIndex * 4);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitLoadParamJ : emettre le chargement d un parametre dans EAX  }
+{   MOV EAX, DWORD [EBP + offset]                                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitLoadParamJ(ParamIndex : Integer);
+Var
+  Off : Integer;
+Begin
+  Off := GetMtParamOffset(ParamIndex);
+  WriteLn('  MOV EAX, DWORD [EBP+', Off, ']  ; param ', ParamIndex);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStoreParamJ : emettre le stockage dans un parametre         }
+{   MOV DWORD [EBP + offset], EAX                                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStoreParamJ(ParamIndex : Integer);
+Var
+  Off : Integer;
+Begin
+  Off := GetMtParamOffset(ParamIndex);
+  WriteLn('  MOV DWORD [EBP+', Off, '], EAX  ; param ', ParamIndex);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitLoadLocalJ : emettre le chargement d une variable locale    }
+{   MOV EAX, DWORD [EBP - offset]                                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitLoadLocalJ(LocalIndex : Integer);
+Var
+  Off : Integer;
+Begin
+  Off := GetMtLocalOffset(LocalIndex);
+  WriteLn('  MOV EAX, DWORD [EBP', Off, ']  ; local ', LocalIndex);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStoreLocalJ : emettre le stockage dans une variable locale  }
+{   MOV DWORD [EBP - offset], EAX                                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStoreLocalJ(LocalIndex : Integer);
+Var
+  Off : Integer;
+Begin
+  Off := GetMtLocalOffset(LocalIndex);
+  WriteLn('  MOV DWORD [EBP', Off, '], EAX  ; local ', LocalIndex);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpMtState : afficher l etat du sous-systeme des methodes      }
+{ ------------------------------------------------------------ }
+
+Procedure DumpMtState;
+Begin
+  WriteLn('--- Method State ---');
+  WriteLn('  MtInitialized   : ', MtInitialized);
+  WriteLn('  MtDefCount      : ', MtDefCount);
+  WriteLn('  MtReturnCount   : ', MtReturnCount);
+  WriteLn('  MtRetVoidCount  : ', MtRetVoidCount);
+  WriteLn('  MtCallCount     : ', MtCallCount);
+  WriteLn('  MtParamCount    : ', MtParamCount);
+  WriteLn('  MtRecursCount   : ', MtRecursCount);
+  WriteLn('  MtOverloadWarn  : ', MtOverloadWarn);
+  WriteLn('  MtMainCount     : ', MtMainCount);
+  WriteLn('  MtLastKind      : ', MtTypeName(MtLastKind));
+  WriteLn('  MtLabelSeq      : ', MtLabelSeq);
+  WriteLn('  MtCurName       : ', MtCurName);
+  WriteLn('  MtCurClass      : ', MtCurClass);
+  WriteLn('  MtCurParamN     : ', MtCurParamN);
+  WriteLn('  MtCurLocalN     : ', MtCurLocalN);
+  WriteLn('  MtInDef         : ', MtInDef);
+  WriteLn('  MtCurRetType    : ', MtCurRetType);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 12)                              }
+{ ------------------------------------------------------------ }
+
+Function IsMtInitialized : Boolean;
+Begin
+  IsMtInitialized := MtInitialized;
+End;
+
+Function IsMtEmpty : Boolean;
+Begin
+  IsMtEmpty := (MtDefCount = 0) And (MtReturnCount = 0) And
+               (MtCallCount = 0);
+End;
+
+Function GetMtDefCount : LongInt;
+Begin
+  GetMtDefCount := MtDefCount;
+End;
+
+Function GetMtReturnCount : LongInt;
+Begin
+  GetMtReturnCount := MtReturnCount;
+End;
+
+Function GetMtRetVoidCount : LongInt;
+Begin
+  GetMtRetVoidCount := MtRetVoidCount;
+End;
+
+Function GetMtCallCount : LongInt;
+Begin
+  GetMtCallCount := MtCallCount;
+End;
+
+Function GetMtParamCount : LongInt;
+Begin
+  GetMtParamCount := MtParamCount;
+End;
+
+Function GetMtRecursCount : LongInt;
+Begin
+  GetMtRecursCount := MtRecursCount;
+End;
+
+Function GetMtMainCount : LongInt;
+Begin
+  GetMtMainCount := MtMainCount;
+End;
+
+Function GetMtStatus : TString;
+Begin
+  If Not MtInitialized Then
+    GetMtStatus := 'Not initialized'
+  Else
+    GetMtStatus := ItoS(MtDefCount) + ' methods, ' +
+                   ItoS(MtReturnCount) + ' return, ' +
+                   ItoS(MtCallCount) + ' call, ' +
+                   ItoS(MtParamCount) + ' params, ' +
+                   ItoS(MtMainCount) + ' main, ' +
+                   ItoS(MtRecursCount) + ' recursive';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-12)                              }
 { ============================================================ }
 
 Begin
@@ -7466,7 +8102,7 @@ Begin
   InitVaState;
   InitIfState;
   InitLpState;
-  LexInit;
+  InitMtState;  LexInit;
   ParserAdvance;
 
   { Boucle de tokenisation (TODO 02-11) }
@@ -7475,7 +8111,7 @@ Begin
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 12..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 13..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;

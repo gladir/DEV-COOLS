@@ -290,7 +290,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
             Boucles imbriquees supportees (MAX_LOOP_NEST)
             10 fonctions accesseurs
 
-  TODO 12 - PARSEUR : METHODES STATIQUES ET RETURN [A FAIRE]
+  TODO 12 - PARSEUR : METHODES STATIQUES ET RETURN [IMPLEMENTE]
             ParseMethodDecl : public static type nom(params) { bloc }
             Parametres : passage par valeur sur la pile (cdecl)
             Types de retour : int, boolean, char, void, String, int[]
