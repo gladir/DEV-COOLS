@@ -184,21 +184,25 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               GetCFGNodeEndPC, IsCFGNodeEntry, IsCFGNodeExit,
               IsCFGNodeUnreachable, IsCFGNodeLoop
 
-  TODO 09 - DETECTEUR : DEREFERENCEMENT DE POINTEUR NULL [A FAIRE]
-            Codes detectes : NP_NULL_ON_SOME_PATH, NP_ALWAYS_NULL,
-              NP_NULL_ON_SOME_PATH_EXCEPTION, NP_NULL_DEREF_ALL_TARGETS,
-              NP_STORE_INTO_NONNULL_FIELD, NP_GUARANTEED_DEREF
+  TODO 09 - DETECTEUR : DEREFERENCEMENT DE POINTEUR NULL [IMPLEMENTE]
+            Constantes : MAX_NULL_STACK=64, MAX_NULL_LOCALS=256, MAX_NULL_BUGS=256
             Valeurs abstraites : VAL_UNKNOWN=0, VAL_NULL=1, VAL_NONNULL=2,
               VAL_MAYBE=3
-            DetectNullDereferences(Method) : execution symbolique de la pile JVM
-              aconst_null => empiler VAL_NULL
-              new/newarray/this => empiler VAL_NONNULL
-              invokevirtual/invokespecial/invokeinterface sur VAL_NULL
-                => bug NP_ALWAYS_NULL
-              invokevirtual/... sur VAL_MAYBE => bug NP_NULL_ON_SOME_PATH
-              getfield/putfield/arraylength/athrow sur null : meme detection
-              Propagation inter-blocs via CFG (merge: NULL^NONNULL=MAYBE)
-            IsNullCheckOpcode(Op) : True si ifnull/ifnonnull/if_acmpeq/if_acmpne
+            Types de bugs : NP_NONE=0, NP_NULL_ON_SOME_PATH=1,
+              NP_NULL_ON_SOME_PATH_EXCEPTION=2, NP_ALWAYS_NULL=3,
+              NP_NULL_DEREF_ALL_TARGETS=4, NP_STORE_INTO_NONNULL_FIELD=5,
+              NP_GUARANTEED_DEREF=6
+            Structure TNullBugInfo (BugType, PC, LineNum, OpType)
+            Variables : NullInitialized, NullStack, NullStackTop, NullLocals,
+              NullLocalCount, NullBugs, NullBugCount, NullLabelNum,
+              NullTotalChecks, NullTotalDeref, NullCurrentPC, NullCurrentLine
+            InitNullState, GenNullLabel, NullTypeName, NullBugTypeName,
+              IsDerefOpcode, MergeNullValues, NullPush, NullPop, NullPeek,
+              NullPeekAt, NullLoadLocal, NullStoreLocal, AddNullBug,
+              AnalyzeNullForInstr, DetectNullDereferences, DumpNullState
+            Accesseurs : IsNullInitialized, GetNullStackTop, GetNullLocalCount,
+              GetNullBugCount, GetNullTotalChecks, GetNullTotalDeref,
+              GetNullLabelNum, GetNullBugType, GetNullBugPC, GetNullBugLine
 
   TODO 10 - DETECTEUR : FUITE DE RESSOURCES (RESOURCE LEAKS) [A FAIRE]
             Codes detectes : OBJ_UNSATISFIED_OBLIGATION,

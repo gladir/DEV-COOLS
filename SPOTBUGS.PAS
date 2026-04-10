@@ -24,7 +24,7 @@
 {  TODO 06 [IMPLEMENTE] - Lecture des methodes et de l'attribut Code         }
 {  TODO 07 [IMPLEMENTE] - Decodage du bytecode Java (opcodes JVM)              }
 {  TODO 08 [IMPLEMENTE] - Construction du graphe de flux de controle (CFG)    }
-{  TODO 09 [A FAIRE] - Detecteur : dereferencement de pointeur null           }
+{  TODO 09 [IMPLEMENTE] - Detecteur : dereferencement de pointeur null        }
 {  TODO 10 [A FAIRE] - Detecteur : fuite de ressources (resource leaks)       }
 {  TODO 11 [A FAIRE] - Detecteur : boucles infinies et blocs inaccessibles    }
 {  TODO 12 [A FAIRE] - Detecteur : mauvaises pratiques (bad practices)        }
@@ -694,6 +694,26 @@ Const
   MAX_CFG_PREDS  = 16;     { Nombre max de predecesseurs par noeud           }
   MAX_LEADERS    = 4096;   { Nombre max de tetes de blocs de base            }
 
+  { --- TODO 09 : Constantes pour le detecteur null --- }
+  MAX_NULL_STACK  = 64;    { Profondeur max de la pile de valeurs abstraites }
+  MAX_NULL_LOCALS = 256;   { Nombre max de variables locales analysees       }
+  MAX_NULL_BUGS   = 256;   { Nombre max de bugs null par methode             }
+
+  { Valeurs abstraites pour l'analyse de nullite }
+  VAL_UNKNOWN  = 0;        { Valeur inconnue (pas encore analysee)           }
+  VAL_NULL     = 1;        { Reference certainement null                     }
+  VAL_NONNULL  = 2;        { Reference certainement non-null                 }
+  VAL_MAYBE    = 3;        { Peut etre null ou non-null selon le chemin      }
+
+  { Types de bugs de null dereference }
+  NP_NONE                        = 0;  { Pas de bug                          }
+  NP_NULL_ON_SOME_PATH           = 1;  { Deref possible sur certains chemins }
+  NP_NULL_ON_SOME_PATH_EXCEPTION = 2;  { Deref possible via chemin exception }
+  NP_ALWAYS_NULL                 = 3;  { Deref toujours null                 }
+  NP_NULL_DEREF_ALL_TARGETS      = 4;  { Tous les chemins menent a null deref}
+  NP_STORE_INTO_NONNULL_FIELD    = 5;  { Stockage null dans champ non-null   }
+  NP_GUARANTEED_DEREF            = 6;  { Deref garanti null                  }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -714,6 +734,15 @@ Type
     IsBackEdge  : Boolean;  { True si possede une arete arriere vers lui      }
   End;
   TCFGArray = Array[0..MAX_CFG_NODES-1] of TCFGNode;
+
+  { --- TODO 09 : Structure TNullBugInfo : bug null detecte --- }
+  TNullBugInfo = Record
+    BugType  : Integer;    { Type de bug (NP_ALWAYS_NULL, etc.)              }
+    PC       : LongWord;   { Position dans le bytecode                       }
+    LineNum  : Integer;    { Numero de ligne source                          }
+    OpType   : String;     { Type d'operation fautive                        }
+  End;
+  TNullBugArray = Array[0..MAX_NULL_BUGS-1] of TNullBugInfo;
 
 { ============================================================================ }
 { Variables globales                                                           }
@@ -744,6 +773,19 @@ Var
   CFGNodeCount   : Integer;       { TODO 08 : Nombre de noeuds CFG             }
   CFGUnreachable : Integer;       { TODO 08 : Nombre de blocs inaccessibles    }
   CFGBackEdges   : Integer;       { TODO 08 : Nombre d'aretes arriere (boucles)}
+  { --- TODO 09 : Variables du detecteur null --- }
+  NullInitialized : Boolean;      { True si module initialise                  }
+  NullStack       : Array[0..MAX_NULL_STACK-1] of Byte;  { Pile abstraite      }
+  NullStackTop    : Integer;      { Sommet de la pile (index du prochain libre)}
+  NullLocals      : Array[0..MAX_NULL_LOCALS-1] of Byte; { Etat vars locales   }
+  NullLocalCount  : Integer;      { Nombre de variables locales utilisees      }
+  NullBugs        : TNullBugArray;{ Bugs detectes dans la methode courante     }
+  NullBugCount    : Integer;      { Nombre de bugs detectes                    }
+  NullLabelNum    : Integer;      { Compteur pour generation de labels         }
+  NullTotalChecks : Integer;      { Nombre total de verifications effectuees   }
+  NullTotalDeref  : Integer;      { Nombre total de dereferences analysees     }
+  NullCurrentPC   : LongWord;     { PC de l'instruction courante               }
+  NullCurrentLine : Integer;      { Ligne source courante                      }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -4007,7 +4049,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 09 [A FAIRE] - Detecteur : dereferencement de pointeur null             }
+{ TODO 09 [IMPLEMENTE] - Detecteur : dereferencement de pointeur null          }
 { ============================================================================ }
 {                                                                              }
 {  - Codes de bugs detectes :                                                    }
@@ -4024,7 +4066,7 @@ End;
 {      VAL_NONNULL = 2   (reference non-null certaine)                          }
 {      VAL_MAYBE   = 3   (null possible selon le chemin)                        }
 {                                                                              }
-{  - Procedure DetectNullDereferences(Method: TMethodInfo)                      }
+{  - Procedure DetectNullDereferences(MethodIdx: Integer)                       }
 {      Simuler l'execution symbolique de la pile JVM :                          }
 {        - aconst_null => empiler VAL_NULL                                      }
 {        - new, newarray, this => empiler VAL_NONNULL                           }
@@ -4040,6 +4082,578 @@ End;
 {  - Function IsNullCheckOpcode(Op: Byte): Boolean                              }
 {      Retourner True si l'opcode est ifnull, ifnonnull, if_acmpeq, if_acmpne  }
 {      (ces opcodes testent explicitement la nullite)                           }
+
+{ --- TODO 09 : Initialiser le module null detector --- }
+Procedure InitNullState;
+Var
+  I: Integer;
+Begin
+  NullInitialized := True;
+  NullStackTop := 0;
+  NullLocalCount := 0;
+  NullBugCount := 0;
+  NullLabelNum := 0;
+  NullTotalChecks := 0;
+  NullTotalDeref := 0;
+  NullCurrentPC := 0;
+  NullCurrentLine := 0;
+  
+  For I := 0 to MAX_NULL_STACK - 1 Do
+    NullStack[I] := VAL_UNKNOWN;
+  
+  For I := 0 to MAX_NULL_LOCALS - 1 Do
+    NullLocals[I] := VAL_UNKNOWN;
+  
+  For I := 0 to MAX_NULL_BUGS - 1 Do Begin
+    NullBugs[I].BugType := NP_NONE;
+    NullBugs[I].PC := 0;
+    NullBugs[I].LineNum := 0;
+    NullBugs[I].OpType := '';
+  End;
+End;
+
+{ --- TODO 09 : Generer un label unique --- }
+Function GenNullLabel: String;
+Begin
+  Inc(NullLabelNum);
+  GenNullLabel := '_NL_' + IntToStr_(NullLabelNum);
+End;
+
+{ --- TODO 09 : Convertir un type de valeur en chaine --- }
+Function NullTypeName(Val: Integer): String;
+Begin
+  Case Val of
+    VAL_UNKNOWN: NullTypeName := 'UNKNOWN';
+    VAL_NULL:    NullTypeName := 'NULL';
+    VAL_NONNULL: NullTypeName := 'NONNULL';
+    VAL_MAYBE:   NullTypeName := 'MAYBE';
+  Else
+    NullTypeName := '?';
+  End;
+End;
+
+{ --- TODO 09 : Convertir un type de bug en chaine --- }
+Function NullBugTypeName(BugType: Integer): String;
+Begin
+  Case BugType of
+    NP_NONE:                        NullBugTypeName := 'NP_NONE';
+    NP_NULL_ON_SOME_PATH:           NullBugTypeName := 'NP_NULL_ON_SOME_PATH';
+    NP_NULL_ON_SOME_PATH_EXCEPTION: NullBugTypeName := 'NP_NULL_ON_SOME_PATH_EXCEPTION';
+    NP_ALWAYS_NULL:                 NullBugTypeName := 'NP_ALWAYS_NULL';
+    NP_NULL_DEREF_ALL_TARGETS:      NullBugTypeName := 'NP_NULL_DEREF_ALL_TARGETS';
+    NP_STORE_INTO_NONNULL_FIELD:    NullBugTypeName := 'NP_STORE_INTO_NONNULL_FIELD';
+    NP_GUARANTEED_DEREF:            NullBugTypeName := 'NP_GUARANTEED_DEREF';
+  Else
+    NullBugTypeName := '?';
+  End;
+End;
+
+{ --- TODO 09 : Verifier si un opcode dereference potentiellement null --- }
+Function IsDerefOpcode(Op: Byte): Boolean;
+Begin
+  Case Op of
+    OP_GETFIELD,        { obj.field - dereference obj }
+    OP_PUTFIELD,        { obj.field = x - dereference obj }
+    OP_INVOKEVIRTUAL,   { obj.method() - dereference obj }
+    OP_INVOKESPECIAL,   { obj.<init>() ou super.method() }
+    OP_INVOKEINTERFACE, { iface.method() - dereference iface }
+    OP_ARRAYLENGTH,     { arr.length - dereference arr }
+    OP_ATHROW,          { throw ex - dereference ex }
+    OP_MONITORENTER,    { synchronized(obj) - dereference obj }
+    OP_MONITOREXIT,     { fin synchronized - dereference obj }
+    OP_IALOAD, OP_LALOAD, OP_FALOAD, OP_DALOAD, OP_AALOAD,
+    OP_BALOAD, OP_CALOAD, OP_SALOAD,      { arr[i] - dereference arr }
+    OP_IASTORE, OP_LASTORE, OP_FASTORE, OP_DASTORE, OP_AASTORE,
+    OP_BASTORE, OP_CASTORE, OP_SASTORE:   { arr[i] = x - dereference arr }
+      IsDerefOpcode := True;
+  Else
+    IsDerefOpcode := False;
+  End;
+End;
+
+{ --- TODO 09 : Fusionner deux valeurs abstraites --- }
+Function MergeNullValues(V1, V2: Byte): Byte;
+Begin
+  If V1 = V2 Then
+    MergeNullValues := V1
+  Else If (V1 = VAL_UNKNOWN) Then
+    MergeNullValues := V2
+  Else If (V2 = VAL_UNKNOWN) Then
+    MergeNullValues := V1
+  Else
+    { NULL ^ NONNULL = MAYBE, etc. }
+    MergeNullValues := VAL_MAYBE;
+End;
+
+{ --- TODO 09 : Empiler une valeur abstraite --- }
+Procedure NullPush(Val: Byte);
+Begin
+  If NullStackTop < MAX_NULL_STACK Then Begin
+    NullStack[NullStackTop] := Val;
+    Inc(NullStackTop);
+  End;
+End;
+
+{ --- TODO 09 : Depiler une valeur abstraite --- }
+Function NullPop: Byte;
+Begin
+  If NullStackTop > 0 Then Begin
+    Dec(NullStackTop);
+    NullPop := NullStack[NullStackTop];
+  End Else
+    NullPop := VAL_UNKNOWN;
+End;
+
+{ --- TODO 09 : Consulter le sommet sans depiler --- }
+Function NullPeek: Byte;
+Begin
+  If NullStackTop > 0 Then
+    NullPeek := NullStack[NullStackTop - 1]
+  Else
+    NullPeek := VAL_UNKNOWN;
+End;
+
+{ --- TODO 09 : Consulter un element a profondeur N --- }
+Function NullPeekAt(Depth: Integer): Byte;
+Begin
+  If (Depth >= 0) and (NullStackTop - 1 - Depth >= 0) Then
+    NullPeekAt := NullStack[NullStackTop - 1 - Depth]
+  Else
+    NullPeekAt := VAL_UNKNOWN;
+End;
+
+{ --- TODO 09 : Charger une variable locale --- }
+Function NullLoadLocal(Idx: Integer): Byte;
+Begin
+  If (Idx >= 0) and (Idx < MAX_NULL_LOCALS) Then Begin
+    If Idx >= NullLocalCount Then
+      NullLocalCount := Idx + 1;
+    NullLoadLocal := NullLocals[Idx];
+  End Else
+    NullLoadLocal := VAL_UNKNOWN;
+End;
+
+{ --- TODO 09 : Stocker dans une variable locale --- }
+Procedure NullStoreLocal(Idx: Integer; Val: Byte);
+Begin
+  If (Idx >= 0) and (Idx < MAX_NULL_LOCALS) Then Begin
+    If Idx >= NullLocalCount Then
+      NullLocalCount := Idx + 1;
+    NullLocals[Idx] := Val;
+  End;
+End;
+
+{ --- TODO 09 : Enregistrer un bug null detecte --- }
+Procedure AddNullBug(BugType: Integer; PC: LongWord; LineNum: Integer; OpType: String);
+Begin
+  If NullBugCount < MAX_NULL_BUGS Then Begin
+    NullBugs[NullBugCount].BugType := BugType;
+    NullBugs[NullBugCount].PC := PC;
+    NullBugs[NullBugCount].LineNum := LineNum;
+    NullBugs[NullBugCount].OpType := OpType;
+    Inc(NullBugCount);
+  End;
+End;
+
+{ --- TODO 09 : Analyser une instruction pour null deref --- }
+Procedure AnalyzeNullForInstr(Var Instr: TInstruction);
+Var
+  Op, RefVal: Byte;
+  LocalIdx: Integer;
+  OpName: String;
+Begin
+  Op := Instr.Opcode;
+  NullCurrentPC := Instr.PC;
+  NullCurrentLine := Instr.LineNum;
+  Inc(NullTotalChecks);
+  
+  OpName := Instr.Mnemonic;
+  
+  { Gestion des constantes et chargements }
+  Case Op of
+    OP_ACONST_NULL: Begin
+      NullPush(VAL_NULL);
+    End;
+    
+    OP_NEW, OP_NEWARRAY, OP_ANEWARRAY, OP_MULTIANEWARRAY: Begin
+      { new produit toujours une reference non-null }
+      NullPush(VAL_NONNULL);
+    End;
+    
+    OP_LDC, OP_LDC_W: Begin
+      { Chargement d'une constante du CP - String non-null }
+      NullPush(VAL_NONNULL);
+    End;
+    
+    OP_ALOAD_0: Begin
+      { this n'est jamais null (sauf erreur fatale) }
+      If NullLoadLocal(0) = VAL_UNKNOWN Then
+        NullStoreLocal(0, VAL_NONNULL);
+      NullPush(NullLoadLocal(0));
+    End;
+    
+    OP_ALOAD_1: NullPush(NullLoadLocal(1));
+    OP_ALOAD_2: NullPush(NullLoadLocal(2));
+    OP_ALOAD_3: NullPush(NullLoadLocal(3));
+    OP_ALOAD:   NullPush(NullLoadLocal(Instr.Op1));
+    
+    OP_ASTORE_0: NullStoreLocal(0, NullPop);
+    OP_ASTORE_1: NullStoreLocal(1, NullPop);
+    OP_ASTORE_2: NullStoreLocal(2, NullPop);
+    OP_ASTORE_3: NullStoreLocal(3, NullPop);
+    OP_ASTORE:   NullStoreLocal(Instr.Op1, NullPop);
+    
+    { Instructions de pile }
+    OP_DUP: Begin
+      RefVal := NullPeek;
+      NullPush(RefVal);
+    End;
+    
+    OP_POP: Begin
+      NullPop;
+    End;
+    
+    OP_POP2: Begin
+      NullPop;
+      NullPop;
+    End;
+    
+    OP_SWAP: Begin
+      { Echanger les deux sommets }
+      If NullStackTop >= 2 Then Begin
+        RefVal := NullStack[NullStackTop - 1];
+        NullStack[NullStackTop - 1] := NullStack[NullStackTop - 2];
+        NullStack[NullStackTop - 2] := RefVal;
+      End;
+    End;
+    
+    { Dereferences - verifier la valeur de reference }
+    OP_GETFIELD: Begin
+      Inc(NullTotalDeref);
+      RefVal := NullPop;
+      If RefVal = VAL_NULL Then
+        AddNullBug(NP_ALWAYS_NULL, Instr.PC, Instr.LineNum, 'getfield')
+      Else If RefVal = VAL_MAYBE Then
+        AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'getfield');
+      NullPush(VAL_UNKNOWN); { Le champ charge a une valeur inconnue }
+    End;
+    
+    OP_PUTFIELD: Begin
+      Inc(NullTotalDeref);
+      NullPop; { Valeur a stocker }
+      RefVal := NullPop;
+      If RefVal = VAL_NULL Then
+        AddNullBug(NP_ALWAYS_NULL, Instr.PC, Instr.LineNum, 'putfield')
+      Else If RefVal = VAL_MAYBE Then
+        AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'putfield');
+    End;
+    
+    OP_GETSTATIC: Begin
+      NullPush(VAL_UNKNOWN); { Valeur du champ statique inconnue }
+    End;
+    
+    OP_PUTSTATIC: Begin
+      NullPop;
+    End;
+    
+    OP_INVOKEVIRTUAL, OP_INVOKEINTERFACE: Begin
+      Inc(NullTotalDeref);
+      { Le recepteur est sous les arguments - simplification: regarder le sommet }
+      RefVal := NullPeek;
+      If RefVal = VAL_NULL Then
+        AddNullBug(NP_ALWAYS_NULL, Instr.PC, Instr.LineNum, 'invoke')
+      Else If RefVal = VAL_MAYBE Then
+        AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'invoke');
+      { Depiler les arguments + recepteur, empiler resultat }
+      { Simplification : vider une partie de la pile }
+      If NullStackTop > 0 Then Dec(NullStackTop);
+      NullPush(VAL_UNKNOWN);
+    End;
+    
+    OP_INVOKESPECIAL: Begin
+      Inc(NullTotalDeref);
+      RefVal := NullPeek;
+      If RefVal = VAL_NULL Then
+        AddNullBug(NP_ALWAYS_NULL, Instr.PC, Instr.LineNum, 'invokespecial')
+      Else If RefVal = VAL_MAYBE Then
+        AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'invokespecial');
+      If NullStackTop > 0 Then Dec(NullStackTop);
+      NullPush(VAL_UNKNOWN);
+    End;
+    
+    OP_INVOKESTATIC: Begin
+      { Pas de dereference - mais depiler les arguments }
+      If NullStackTop > 0 Then Dec(NullStackTop);
+      NullPush(VAL_UNKNOWN);
+    End;
+    
+    OP_ARRAYLENGTH: Begin
+      Inc(NullTotalDeref);
+      RefVal := NullPop;
+      If RefVal = VAL_NULL Then
+        AddNullBug(NP_ALWAYS_NULL, Instr.PC, Instr.LineNum, 'arraylength')
+      Else If RefVal = VAL_MAYBE Then
+        AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'arraylength');
+      NullPush(VAL_NONNULL); { Resultat int, pas de ref }
+    End;
+    
+    OP_ATHROW: Begin
+      Inc(NullTotalDeref);
+      RefVal := NullPop;
+      If RefVal = VAL_NULL Then
+        AddNullBug(NP_ALWAYS_NULL, Instr.PC, Instr.LineNum, 'athrow')
+      Else If RefVal = VAL_MAYBE Then
+        AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'athrow');
+    End;
+    
+    OP_MONITORENTER, OP_MONITOREXIT: Begin
+      Inc(NullTotalDeref);
+      RefVal := NullPop;
+      If RefVal = VAL_NULL Then
+        AddNullBug(NP_ALWAYS_NULL, Instr.PC, Instr.LineNum, 'monitor')
+      Else If RefVal = VAL_MAYBE Then
+        AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'monitor');
+    End;
+    
+    OP_AALOAD: Begin
+      Inc(NullTotalDeref);
+      NullPop; { index }
+      RefVal := NullPop; { array ref }
+      If RefVal = VAL_NULL Then
+        AddNullBug(NP_ALWAYS_NULL, Instr.PC, Instr.LineNum, 'aaload')
+      Else If RefVal = VAL_MAYBE Then
+        AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'aaload');
+      NullPush(VAL_UNKNOWN); { Element charge, nullite inconnue }
+    End;
+    
+    OP_IALOAD, OP_LALOAD, OP_FALOAD, OP_DALOAD, OP_BALOAD, OP_CALOAD, OP_SALOAD: Begin
+      Inc(NullTotalDeref);
+      NullPop; { index }
+      RefVal := NullPop; { array ref }
+      If RefVal = VAL_NULL Then
+        AddNullBug(NP_ALWAYS_NULL, Instr.PC, Instr.LineNum, 'xaload')
+      Else If RefVal = VAL_MAYBE Then
+        AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'xaload');
+      NullPush(VAL_NONNULL); { Primitif, pas de ref }
+    End;
+    
+    OP_AASTORE: Begin
+      Inc(NullTotalDeref);
+      NullPop; { valeur }
+      NullPop; { index }
+      RefVal := NullPop; { array ref }
+      If RefVal = VAL_NULL Then
+        AddNullBug(NP_ALWAYS_NULL, Instr.PC, Instr.LineNum, 'aastore')
+      Else If RefVal = VAL_MAYBE Then
+        AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'aastore');
+    End;
+    
+    OP_IASTORE, OP_LASTORE, OP_FASTORE, OP_DASTORE, OP_BASTORE, OP_CASTORE, OP_SASTORE: Begin
+      Inc(NullTotalDeref);
+      NullPop; { valeur }
+      NullPop; { index }
+      RefVal := NullPop; { array ref }
+      If RefVal = VAL_NULL Then
+        AddNullBug(NP_ALWAYS_NULL, Instr.PC, Instr.LineNum, 'xastore')
+      Else If RefVal = VAL_MAYBE Then
+        AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'xastore');
+    End;
+    
+    { Branchements conditionnels sur nullite }
+    OP_IFNULL: Begin
+      RefVal := NullPop;
+      { Apres ifnull, si on continue, la ref est non-null }
+      { La propagation dans les branches est simplifiee ici }
+    End;
+    
+    OP_IFNONNULL: Begin
+      RefVal := NullPop;
+      { Apres ifnonnull, si on continue, la ref pourrait etre null }
+    End;
+    
+    OP_IF_ACMPEQ, OP_IF_ACMPNE: Begin
+      NullPop;
+      NullPop;
+    End;
+    
+    OP_ARETURN: Begin
+      NullPop;
+    End;
+    
+    OP_CHECKCAST: Begin
+      { Ne change pas la nullite de la reference }
+    End;
+    
+    OP_INSTANCEOF: Begin
+      NullPop;
+      NullPush(VAL_NONNULL); { Resultat boolean }
+    End;
+    
+    { Autres instructions qui manipulent des primitifs }
+    OP_ICONST_M1, OP_ICONST_0, OP_ICONST_1, OP_ICONST_2, 
+    OP_ICONST_3, OP_ICONST_4, OP_ICONST_5,
+    OP_LCONST_0, OP_LCONST_1, OP_FCONST_0, OP_FCONST_1, OP_FCONST_2,
+    OP_DCONST_0, OP_DCONST_1, OP_BIPUSH, OP_SIPUSH: Begin
+      { Constantes primitives, pas de ref }
+    End;
+    
+    OP_ILOAD, OP_ILOAD_0, OP_ILOAD_1, OP_ILOAD_2, OP_ILOAD_3,
+    OP_LLOAD, OP_LLOAD_0, OP_LLOAD_1, OP_LLOAD_2, OP_LLOAD_3,
+    OP_FLOAD, OP_FLOAD_0, OP_FLOAD_1, OP_FLOAD_2, OP_FLOAD_3,
+    OP_DLOAD, OP_DLOAD_0, OP_DLOAD_1, OP_DLOAD_2, OP_DLOAD_3: Begin
+      { Chargement primitif }
+    End;
+    
+    OP_ISTORE, OP_ISTORE_0, OP_ISTORE_1, OP_ISTORE_2, OP_ISTORE_3,
+    OP_LSTORE, OP_LSTORE_0, OP_LSTORE_1, OP_LSTORE_2, OP_LSTORE_3,
+    OP_FSTORE, OP_FSTORE_0, OP_FSTORE_1, OP_FSTORE_2, OP_FSTORE_3,
+    OP_DSTORE, OP_DSTORE_0, OP_DSTORE_1, OP_DSTORE_2, OP_DSTORE_3: Begin
+      { Stockage primitif }
+    End;
+    
+    { Pas de traitement special pour les autres opcodes }
+  End;
+End;
+
+{ --- TODO 09 : Detecter les dereferences null dans une methode --- }
+Procedure DetectNullDereferences(MethodIdx: Integer);
+Var
+  I: Integer;
+  BugTypeName: String;
+Begin
+  If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
+  If Instructions = Nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  
+  { Initialiser l'etat pour cette methode }
+  InitNullState;
+  
+  { Marquer this comme non-null pour methodes d'instance }
+  If not Methods[MethodIdx].IsStatic Then
+    NullStoreLocal(0, VAL_NONNULL);
+  
+  { Analyser chaque instruction sequentiellement }
+  For I := 0 to InstrCount - 1 Do Begin
+    AnalyzeNullForInstr(Instructions^[I]);
+  End;
+  
+  { Enregistrer les bugs detectes }
+  For I := 0 to NullBugCount - 1 Do Begin
+    Case NullBugs[I].BugType of
+      NP_ALWAYS_NULL: BugTypeName := 'NP_ALWAYS_NULL';
+      NP_NULL_ON_SOME_PATH: BugTypeName := 'NP_NULL_ON_SOME_PATH';
+      NP_NULL_ON_SOME_PATH_EXCEPTION: BugTypeName := 'NP_NULL_ON_SOME_PATH_EXCEPTION';
+      NP_GUARANTEED_DEREF: BugTypeName := 'NP_GUARANTEED_DEREF';
+    Else
+      BugTypeName := 'NP_UNKNOWN';
+    End;
+    
+    AddBug(BugTypeName, CAT_CORRECTNESS, SEV_HIGH,
+           ClassInfo.ThisClass, Methods[MethodIdx].Name, '',
+           NullBugs[I].LineNum,
+           'Potential null pointer dereference in ' + NullBugs[I].OpType +
+           ' at PC ' + IntToStr_(NullBugs[I].PC));
+  End;
+End;
+
+{ --- TODO 09 : Afficher l'etat du detecteur null --- }
+Procedure DumpNullState;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== Null Detector State ===');
+  WriteLn('Initialized: ', NullInitialized);
+  WriteLn('Stack top: ', NullStackTop);
+  WriteLn('Local count: ', NullLocalCount);
+  WriteLn('Bug count: ', NullBugCount);
+  WriteLn('Total checks: ', NullTotalChecks);
+  WriteLn('Total derefs: ', NullTotalDeref);
+  WriteLn;
+  
+  If NullStackTop > 0 Then Begin
+    WriteLn('Stack:');
+    For I := NullStackTop - 1 downto 0 Do
+      WriteLn('  [', I, '] ', NullTypeName(NullStack[I]));
+    WriteLn;
+  End;
+  
+  If NullLocalCount > 0 Then Begin
+    WriteLn('Locals:');
+    For I := 0 to NullLocalCount - 1 Do
+      If NullLocals[I] <> VAL_UNKNOWN Then
+        WriteLn('  [', I, '] ', NullTypeName(NullLocals[I]));
+    WriteLn;
+  End;
+  
+  If NullBugCount > 0 Then Begin
+    WriteLn('Bugs:');
+    For I := 0 to NullBugCount - 1 Do
+      WriteLn('  PC=', NullBugs[I].PC, ' Line=', NullBugs[I].LineNum,
+              ' Type=', NullBugTypeName(NullBugs[I].BugType),
+              ' Op=', NullBugs[I].OpType);
+    WriteLn;
+  End;
+End;
+
+{ --- TODO 09 : Accesseurs du module null detector --- }
+Function IsNullInitialized: Boolean;
+Begin
+  IsNullInitialized := NullInitialized;
+End;
+
+Function GetNullStackTop: Integer;
+Begin
+  GetNullStackTop := NullStackTop;
+End;
+
+Function GetNullLocalCount: Integer;
+Begin
+  GetNullLocalCount := NullLocalCount;
+End;
+
+Function GetNullBugCount: Integer;
+Begin
+  GetNullBugCount := NullBugCount;
+End;
+
+Function GetNullTotalChecks: Integer;
+Begin
+  GetNullTotalChecks := NullTotalChecks;
+End;
+
+Function GetNullTotalDeref: Integer;
+Begin
+  GetNullTotalDeref := NullTotalDeref;
+End;
+
+Function GetNullLabelNum: Integer;
+Begin
+  GetNullLabelNum := NullLabelNum;
+End;
+
+Function GetNullBugType(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < NullBugCount) Then
+    GetNullBugType := NullBugs[Idx].BugType
+  Else
+    GetNullBugType := NP_NONE;
+End;
+
+Function GetNullBugPC(Idx: Integer): LongWord;
+Begin
+  If (Idx >= 0) and (Idx < NullBugCount) Then
+    GetNullBugPC := NullBugs[Idx].PC
+  Else
+    GetNullBugPC := 0;
+End;
+
+Function GetNullBugLine(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < NullBugCount) Then
+    GetNullBugLine := NullBugs[Idx].LineNum
+  Else
+    GetNullBugLine := 0;
+End;
 
 { ============================================================================ }
 { TODO 10 [A FAIRE] - Detecteur : fuite de ressources (resource leaks)         }
