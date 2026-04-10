@@ -366,7 +366,7 @@
             Passage de tableau en parametre : par reference (pointeur)
             10 fonctions accesseurs
 
-  TODO 15 - PARSEUR : CHAINES (String) OPERATIONS [A FAIRE]
+  TODO 15 - PARSEUR : CHAINES (String) OPERATIONS [IMPLEMENTE]
             Concatenation : s1 + s2 ->
               CALL _JRT_STRCONCAT -> EAX=ptr
             Concatenation mixte : "texte" + n ->
@@ -9138,7 +9138,696 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-14)                              }
+{ TODO 15 - PARSEUR : CHAINES (String) OPERATIONS              }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations sur les chaines }
+  ST_NONE          = 0;    { aucun / non defini                    }
+  ST_CONCAT        = 1;    { s1 + s2 concatenation                 }
+  ST_CONCAT_MIXED  = 2;    { "texte" + n concatenation mixte       }
+  ST_LENGTH        = 3;    { s.length()                            }
+  ST_CHARAT        = 4;    { s.charAt(i)                           }
+  ST_EQUALS        = 5;    { s.equals(t)                           }
+  ST_COMPARETO     = 6;    { s.compareTo(t)                        }
+  ST_SUBSTRING     = 7;    { s.substring(begin, end)               }
+  ST_INDEXOF       = 8;    { s.indexOf(sub)                        }
+  ST_TOUPPER       = 9;    { s.toUpperCase()                       }
+  ST_TOLOWER       = 10;   { s.toLowerCase()                       }
+  ST_TRIM          = 11;   { s.trim()                              }
+  ST_CONTAINS      = 12;   { s.contains(sub)                       }
+  ST_STARTSWITH    = 13;   { s.startsWith(prefix)                  }
+  ST_ENDSWITH      = 14;   { s.endsWith(suffix)                    }
+  ST_REPLACE       = 15;   { s.replace(old, new)                   }
+  ST_VALUEOF       = 16;   { String.valueOf(n)                     }
+  ST_REF_EQ        = 17;   { == compare les references             }
+  ST_MAX           = 17;
+
+  { Limites }
+  ST_MAX_CONCAT_PARTS = 16;  { nombre max de parties dans une concat }
+
+Var
+  StInitialized     : Boolean;    { True si l etat est initialise       }
+  StConcatCount     : LongInt;    { nombre de concatenations            }
+  StMixedConcatCount: LongInt;    { nombre de concat mixtes             }
+  StLengthCount     : LongInt;    { nombre d appels .length()           }
+  StCharAtCount     : LongInt;    { nombre d appels .charAt()           }
+  StEqualsCount     : LongInt;    { nombre d appels .equals()           }
+  StCompareToCount  : LongInt;    { nombre d appels .compareTo()        }
+  StSubstringCount  : LongInt;    { nombre d appels .substring()        }
+  StIndexOfCount    : LongInt;    { nombre d appels .indexOf()          }
+  StToUpperCount    : LongInt;    { nombre d appels .toUpperCase()      }
+  StToLowerCount    : LongInt;    { nombre d appels .toLowerCase()      }
+  StTrimCount       : LongInt;    { nombre d appels .trim()             }
+  StContainsCount   : LongInt;    { nombre d appels .contains()         }
+  StStartsWithCount : LongInt;    { nombre d appels .startsWith()       }
+  StEndsWithCount   : LongInt;    { nombre d appels .endsWith()         }
+  StReplaceCount    : LongInt;    { nombre d appels .replace()          }
+  StValueOfCount    : LongInt;    { nombre d appels String.valueOf()    }
+  StRefEqCount      : LongInt;    { nombre de comparaisons ==           }
+  StLastKind        : Integer;    { dernier type d operation            }
+  StLabelSeq        : Integer;    { sequence pour labels ST             }
+
+{ ------------------------------------------------------------ }
+{ InitStState : initialiser le sous-systeme chaines               }
+{ ------------------------------------------------------------ }
+
+Procedure InitStState;
+Begin
+  StInitialized     := True;
+  StConcatCount     := 0;
+  StMixedConcatCount:= 0;
+  StLengthCount     := 0;
+  StCharAtCount     := 0;
+  StEqualsCount     := 0;
+  StCompareToCount  := 0;
+  StSubstringCount  := 0;
+  StIndexOfCount    := 0;
+  StToUpperCount    := 0;
+  StToLowerCount    := 0;
+  StTrimCount       := 0;
+  StContainsCount   := 0;
+  StStartsWithCount := 0;
+  StEndsWithCount   := 0;
+  StReplaceCount    := 0;
+  StValueOfCount    := 0;
+  StRefEqCount      := 0;
+  StLastKind        := ST_NONE;
+  StLabelSeq        := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStLabel : generer un label unique pour les chaines           }
+{ ------------------------------------------------------------ }
+
+Function GenStLabel : TString;
+Begin
+  Inc(StLabelSeq);
+  GenStLabel := JV_LBL_PFX + 'ST_' + ItoS(StLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ StTypeName : retourner le nom du type d operation chaine        }
+{ ------------------------------------------------------------ }
+
+Function StTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    ST_NONE         : StTypeName := 'ST_NONE';
+    ST_CONCAT       : StTypeName := 'ST_CONCAT';
+    ST_CONCAT_MIXED : StTypeName := 'ST_CONCAT_MIXED';
+    ST_LENGTH       : StTypeName := 'ST_LENGTH';
+    ST_CHARAT       : StTypeName := 'ST_CHARAT';
+    ST_EQUALS       : StTypeName := 'ST_EQUALS';
+    ST_COMPARETO    : StTypeName := 'ST_COMPARETO';
+    ST_SUBSTRING    : StTypeName := 'ST_SUBSTRING';
+    ST_INDEXOF      : StTypeName := 'ST_INDEXOF';
+    ST_TOUPPER      : StTypeName := 'ST_TOUPPER';
+    ST_TOLOWER      : StTypeName := 'ST_TOLOWER';
+    ST_TRIM         : StTypeName := 'ST_TRIM';
+    ST_CONTAINS     : StTypeName := 'ST_CONTAINS';
+    ST_STARTSWITH   : StTypeName := 'ST_STARTSWITH';
+    ST_ENDSWITH     : StTypeName := 'ST_ENDSWITH';
+    ST_REPLACE      : StTypeName := 'ST_REPLACE';
+    ST_VALUEOF      : StTypeName := 'ST_VALUEOF';
+    ST_REF_EQ       : StTypeName := 'ST_REF_EQ';
+  Else
+    StTypeName := 'ST_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrConcat : emettre le code pour s1 + s2                    }
+{   ESI = ptr chaine gauche, EDI = ptr chaine droite             }
+{   PUSH EDI / PUSH ESI / CALL _JRT_STRCONCAT                   }
+{   ADD ESP, 8 -> EAX = ptr nouvelle chaine                      }
+{ ------------------------------------------------------------ }
+
+Function EmitStrConcat(LeftTIdx, RightTIdx : Integer) : TExprVal;
+Begin
+  Inc(StConcatCount);
+  StLastKind := ST_CONCAT;
+  { Code generation :                                }
+  { PUSH EDI             (chaine droite)             }
+  { PUSH ESI             (chaine gauche)             }
+  { CALL _JRT_STRCONCAT                              }
+  { ADD ESP, 8                                       }
+  { -> EAX = ptr vers la nouvelle chaine concatenee  }
+  EmitStrConcat := ExprMakeEAX(TY_IDX_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrConcatMixed : emettre le code pour "texte" + n           }
+{   Convertir n en chaine via _JRT_ITOA puis concatener          }
+{   PUSH EAX / CALL _JRT_ITOA / ADD ESP,4 -> EAX=ptr str       }
+{   Puis CALL _JRT_STRCONCAT                                    }
+{ ------------------------------------------------------------ }
+
+Function EmitStrConcatMixed(StrTIdx, ValTIdx : Integer) : TExprVal;
+Begin
+  Inc(StMixedConcatCount);
+  StLastKind := ST_CONCAT_MIXED;
+  { Code generation :                                }
+  { Si ValTIdx = TY_IDX_INT :                        }
+  {   PUSH EAX            (valeur entiere)           }
+  {   CALL _JRT_ITOA                                 }
+  {   ADD ESP, 4          -> EAX = ptr chaine        }
+  { Si ValTIdx = TY_IDX_BOOLEAN :                    }
+  {   PUSH EAX            (0 ou 1)                   }
+  {   CALL _JRT_BTOA                                 }
+  {   ADD ESP, 4          -> EAX = ptr chaine        }
+  { Si ValTIdx = TY_IDX_CHAR :                       }
+  {   PUSH EAX            (caractere)                }
+  {   CALL _JRT_CTOA                                 }
+  {   ADD ESP, 4          -> EAX = ptr chaine        }
+  { Puis concatener avec _JRT_STRCONCAT              }
+  EmitStrConcatMixed := ExprMakeEAX(TY_IDX_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrLength : emettre le code pour s.length()                 }
+{   ESI = ptr chaine                                             }
+{   PUSH ESI / CALL _JRT_STRLEN / ADD ESP,4 -> EAX              }
+{ ------------------------------------------------------------ }
+
+Function EmitStrLength : TExprVal;
+Begin
+  Inc(StLengthCount);
+  StLastKind := ST_LENGTH;
+  { Code generation :                                }
+  { PUSH ESI             (ptr chaine)                }
+  { CALL _JRT_STRLEN                                 }
+  { ADD ESP, 4                                       }
+  { -> EAX = longueur de la chaine                   }
+  EmitStrLength := ExprMakeEAX(TY_IDX_INT);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrCharAt : emettre le code pour s.charAt(i)                }
+{   ESI = ptr chaine, EAX = index                                }
+{   MOVZX EAX, BYTE [ESI+EAX] -> EAX = caractere               }
+{ ------------------------------------------------------------ }
+
+Function EmitStrCharAt : TExprVal;
+Begin
+  Inc(StCharAtCount);
+  StLastKind := ST_CHARAT;
+  { Code generation :                                }
+  { ESI = ptr chaine (deja charge)                   }
+  { EAX = index (deja evalue)                        }
+  { MOVZX EAX, BYTE [ESI+EAX]                       }
+  { -> EAX = caractere a la position i               }
+  EmitStrCharAt := ExprMakeEAX(TY_IDX_CHAR);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrEquals : emettre le code pour s.equals(t)                }
+{   ESI = ptr s, EDI = ptr t                                     }
+{   PUSH EDI / PUSH ESI / CALL _JRT_STRCMP / ADD ESP,8           }
+{   TEST EAX, EAX / SETE AL / MOVZX EAX, AL -> EAX=0|1         }
+{ ------------------------------------------------------------ }
+
+Function EmitStrEquals : TExprVal;
+Begin
+  Inc(StEqualsCount);
+  StLastKind := ST_EQUALS;
+  { Code generation :                                }
+  { PUSH EDI             (chaine t)                  }
+  { PUSH ESI             (chaine s)                  }
+  { CALL _JRT_STRCMP                                 }
+  { ADD ESP, 8                                       }
+  { TEST EAX, EAX        (resultat == 0 ?)          }
+  { SETE AL                                          }
+  { MOVZX EAX, AL        -> EAX = 0 ou 1            }
+  EmitStrEquals := ExprMakeEAX(TY_IDX_BOOLEAN);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrCompareTo : emettre le code pour s.compareTo(t)          }
+{   ESI = ptr s, EDI = ptr t                                     }
+{   PUSH EDI / PUSH ESI / CALL _JRT_STRCMP / ADD ESP,8           }
+{   -> EAX = -1 | 0 | 1                                         }
+{ ------------------------------------------------------------ }
+
+Function EmitStrCompareTo : TExprVal;
+Begin
+  Inc(StCompareToCount);
+  StLastKind := ST_COMPARETO;
+  { Code generation :                                }
+  { PUSH EDI             (chaine t)                  }
+  { PUSH ESI             (chaine s)                  }
+  { CALL _JRT_STRCMP                                 }
+  { ADD ESP, 8                                       }
+  { -> EAX = -1, 0, ou 1                            }
+  EmitStrCompareTo := ExprMakeEAX(TY_IDX_INT);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrSubstring : emettre le code pour s.substring(begin,end)  }
+{   ESI = ptr s, EAX = begin, EDX = end                          }
+{   PUSH EDX / PUSH EAX / PUSH ESI                              }
+{   CALL _JRT_STRSLICE / ADD ESP,12 -> EAX=ptr                  }
+{ ------------------------------------------------------------ }
+
+Function EmitStrSubstring : TExprVal;
+Begin
+  Inc(StSubstringCount);
+  StLastKind := ST_SUBSTRING;
+  { Code generation :                                }
+  { PUSH EDX             (end)                       }
+  { PUSH EAX             (begin)                     }
+  { PUSH ESI             (ptr chaine)                }
+  { CALL _JRT_STRSLICE                               }
+  { ADD ESP, 12                                      }
+  { -> EAX = ptr vers la sous-chaine                 }
+  EmitStrSubstring := ExprMakeEAX(TY_IDX_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrIndexOf : emettre le code pour s.indexOf(sub)            }
+{   ESI = ptr s, EDI = ptr sub                                   }
+{   PUSH EDI / PUSH ESI / CALL _JRT_STRFIND / ADD ESP,8         }
+{   -> EAX = index ou -1                                         }
+{ ------------------------------------------------------------ }
+
+Function EmitStrIndexOf : TExprVal;
+Begin
+  Inc(StIndexOfCount);
+  StLastKind := ST_INDEXOF;
+  { Code generation :                                }
+  { PUSH EDI             (sous-chaine)               }
+  { PUSH ESI             (chaine s)                  }
+  { CALL _JRT_STRFIND                                }
+  { ADD ESP, 8                                       }
+  { -> EAX = index de la premiere occurrence ou -1   }
+  EmitStrIndexOf := ExprMakeEAX(TY_IDX_INT);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrToUpper : emettre le code pour s.toUpperCase()           }
+{   ESI = ptr s                                                  }
+{   PUSH ESI / CALL _JRT_STRUPPER / ADD ESP,4 -> EAX=ptr        }
+{ ------------------------------------------------------------ }
+
+Function EmitStrToUpper : TExprVal;
+Begin
+  Inc(StToUpperCount);
+  StLastKind := ST_TOUPPER;
+  { Code generation :                                }
+  { PUSH ESI             (ptr chaine)                }
+  { CALL _JRT_STRUPPER                               }
+  { ADD ESP, 4                                       }
+  { -> EAX = ptr vers la chaine en majuscules        }
+  EmitStrToUpper := ExprMakeEAX(TY_IDX_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrToLower : emettre le code pour s.toLowerCase()           }
+{   ESI = ptr s                                                  }
+{   PUSH ESI / CALL _JRT_STRLOWER / ADD ESP,4 -> EAX=ptr        }
+{ ------------------------------------------------------------ }
+
+Function EmitStrToLower : TExprVal;
+Begin
+  Inc(StToLowerCount);
+  StLastKind := ST_TOLOWER;
+  { Code generation :                                }
+  { PUSH ESI             (ptr chaine)                }
+  { CALL _JRT_STRLOWER                               }
+  { ADD ESP, 4                                       }
+  { -> EAX = ptr vers la chaine en minuscules        }
+  EmitStrToLower := ExprMakeEAX(TY_IDX_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrTrim : emettre le code pour s.trim()                     }
+{   ESI = ptr s                                                  }
+{   PUSH ESI / CALL _JRT_STRTRIM / ADD ESP,4 -> EAX=ptr         }
+{ ------------------------------------------------------------ }
+
+Function EmitStrTrim : TExprVal;
+Begin
+  Inc(StTrimCount);
+  StLastKind := ST_TRIM;
+  { Code generation :                                }
+  { PUSH ESI             (ptr chaine)                }
+  { CALL _JRT_STRTRIM                                }
+  { ADD ESP, 4                                       }
+  { -> EAX = ptr vers la chaine sans espaces         }
+  EmitStrTrim := ExprMakeEAX(TY_IDX_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrContains : emettre le code pour s.contains(sub)          }
+{   ESI = ptr s, EDI = ptr sub                                   }
+{   PUSH EDI / PUSH ESI / CALL _JRT_STRCONTAINS / ADD ESP,8     }
+{   -> EAX = 0 ou 1                                             }
+{ ------------------------------------------------------------ }
+
+Function EmitStrContains : TExprVal;
+Begin
+  Inc(StContainsCount);
+  StLastKind := ST_CONTAINS;
+  { Code generation :                                }
+  { PUSH EDI             (sous-chaine)               }
+  { PUSH ESI             (chaine s)                  }
+  { CALL _JRT_STRCONTAINS                            }
+  { ADD ESP, 8                                       }
+  { -> EAX = 1 si contient, 0 sinon                 }
+  EmitStrContains := ExprMakeEAX(TY_IDX_BOOLEAN);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrStartsWith : emettre le code pour s.startsWith(prefix)   }
+{   ESI = ptr s, EDI = ptr prefix                                }
+{   PUSH EDI / PUSH ESI / CALL _JRT_STRSTARTSWITH / ADD ESP,8   }
+{   -> EAX = 0 ou 1                                             }
+{ ------------------------------------------------------------ }
+
+Function EmitStrStartsWith : TExprVal;
+Begin
+  Inc(StStartsWithCount);
+  StLastKind := ST_STARTSWITH;
+  { Code generation :                                }
+  { PUSH EDI             (prefix)                    }
+  { PUSH ESI             (chaine s)                  }
+  { CALL _JRT_STRSTARTSWITH                          }
+  { ADD ESP, 8                                       }
+  { -> EAX = 1 si commence par prefix, 0 sinon      }
+  EmitStrStartsWith := ExprMakeEAX(TY_IDX_BOOLEAN);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrEndsWith : emettre le code pour s.endsWith(suffix)       }
+{   ESI = ptr s, EDI = ptr suffix                                }
+{   PUSH EDI / PUSH ESI / CALL _JRT_STRENDSWITH / ADD ESP,8     }
+{   -> EAX = 0 ou 1                                             }
+{ ------------------------------------------------------------ }
+
+Function EmitStrEndsWith : TExprVal;
+Begin
+  Inc(StEndsWithCount);
+  StLastKind := ST_ENDSWITH;
+  { Code generation :                                }
+  { PUSH EDI             (suffix)                    }
+  { PUSH ESI             (chaine s)                  }
+  { CALL _JRT_STRENDSWITH                            }
+  { ADD ESP, 8                                       }
+  { -> EAX = 1 si termine par suffix, 0 sinon        }
+  EmitStrEndsWith := ExprMakeEAX(TY_IDX_BOOLEAN);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrReplace : emettre le code pour s.replace(old, new)       }
+{   ESI = ptr s, EDI = ptr old, EDX = ptr new                   }
+{   PUSH EDX / PUSH EDI / PUSH ESI                              }
+{   CALL _JRT_STRREPLACE / ADD ESP,12 -> EAX=ptr                }
+{ ------------------------------------------------------------ }
+
+Function EmitStrReplace : TExprVal;
+Begin
+  Inc(StReplaceCount);
+  StLastKind := ST_REPLACE;
+  { Code generation :                                }
+  { PUSH EDX             (nouvelle chaine)           }
+  { PUSH EDI             (ancienne sous-chaine)      }
+  { PUSH ESI             (chaine s)                  }
+  { CALL _JRT_STRREPLACE                             }
+  { ADD ESP, 12                                      }
+  { -> EAX = ptr vers la chaine modifiee             }
+  EmitStrReplace := ExprMakeEAX(TY_IDX_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrValueOf : emettre le code pour String.valueOf(n)          }
+{   EAX = valeur entiere                                         }
+{   PUSH EAX / CALL _JRT_ITOA / ADD ESP,4 -> EAX=ptr            }
+{ ------------------------------------------------------------ }
+
+Function EmitStrValueOf(ValTIdx : Integer) : TExprVal;
+Begin
+  Inc(StValueOfCount);
+  StLastKind := ST_VALUEOF;
+  { Code generation :                                }
+  { PUSH EAX             (valeur a convertir)        }
+  { Si ValTIdx = TY_IDX_INT :                        }
+  {   CALL _JRT_ITOA                                 }
+  { Si ValTIdx = TY_IDX_BOOLEAN :                    }
+  {   CALL _JRT_BTOA                                 }
+  { Si ValTIdx = TY_IDX_CHAR :                       }
+  {   CALL _JRT_CTOA                                 }
+  { ADD ESP, 4                                       }
+  { -> EAX = ptr vers la chaine resultante           }
+  EmitStrValueOf := ExprMakeEAX(TY_IDX_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStrRefEqual : emettre le code pour s == t (reference)       }
+{   CMP ESI, EDI -> EAX=0|1 (compare les pointeurs)             }
+{ ------------------------------------------------------------ }
+
+Function EmitStrRefEqual : TExprVal;
+Begin
+  Inc(StRefEqCount);
+  StLastKind := ST_REF_EQ;
+  { Code generation :                                }
+  { CMP ESI, EDI         (comparer les pointeurs)    }
+  { SETE AL                                          }
+  { MOVZX EAX, AL        -> EAX = 0 ou 1            }
+  EmitStrRefEqual := ExprMakeEAX(TY_IDX_BOOLEAN);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStrMethodCall : parser un appel de methode String          }
+{   Reconnait : length, charAt, equals, compareTo, substring,   }
+{   indexOf, toUpperCase, toLowerCase, trim, contains,           }
+{   startsWith, endsWith, replace                                }
+{   Retourne un TExprVal selon le type de retour                 }
+{ ------------------------------------------------------------ }
+
+Function ParseStrMethodCall(MethodName : TString) : TExprVal;
+Begin
+  If MethodName = 'length' Then
+    ParseStrMethodCall := EmitStrLength
+  Else If MethodName = 'charAt' Then
+    ParseStrMethodCall := EmitStrCharAt
+  Else If MethodName = 'equals' Then
+    ParseStrMethodCall := EmitStrEquals
+  Else If MethodName = 'compareTo' Then
+    ParseStrMethodCall := EmitStrCompareTo
+  Else If MethodName = 'substring' Then
+    ParseStrMethodCall := EmitStrSubstring
+  Else If MethodName = 'indexOf' Then
+    ParseStrMethodCall := EmitStrIndexOf
+  Else If MethodName = 'toUpperCase' Then
+    ParseStrMethodCall := EmitStrToUpper
+  Else If MethodName = 'toLowerCase' Then
+    ParseStrMethodCall := EmitStrToLower
+  Else If MethodName = 'trim' Then
+    ParseStrMethodCall := EmitStrTrim
+  Else If MethodName = 'contains' Then
+    ParseStrMethodCall := EmitStrContains
+  Else If MethodName = 'startsWith' Then
+    ParseStrMethodCall := EmitStrStartsWith
+  Else If MethodName = 'endsWith' Then
+    ParseStrMethodCall := EmitStrEndsWith
+  Else If MethodName = 'replace' Then
+    ParseStrMethodCall := EmitStrReplace
+  Else
+    ParseStrMethodCall := ExprMakeEAX(TY_IDX_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStrStaticCall : parser un appel statique String.xxx()      }
+{   Reconnait : String.valueOf(n)                                }
+{   Retourne un TExprVal (String)                                }
+{ ------------------------------------------------------------ }
+
+Function ParseStrStaticCall(MethodName : TString;
+                            ValTIdx : Integer) : TExprVal;
+Begin
+  If MethodName = 'valueOf' Then
+    ParseStrStaticCall := EmitStrValueOf(ValTIdx)
+  Else
+    ParseStrStaticCall := ExprMakeEAX(TY_IDX_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsStrMethod : verifie si un nom est une methode String connue   }
+{   Retourne True si c est une methode reconnue                  }
+{ ------------------------------------------------------------ }
+
+Function IsStrMethod(Name : TString) : Boolean;
+Begin
+  IsStrMethod := (Name = 'length') Or (Name = 'charAt') Or
+                 (Name = 'equals') Or (Name = 'compareTo') Or
+                 (Name = 'substring') Or (Name = 'indexOf') Or
+                 (Name = 'toUpperCase') Or (Name = 'toLowerCase') Or
+                 (Name = 'trim') Or (Name = 'contains') Or
+                 (Name = 'startsWith') Or (Name = 'endsWith') Or
+                 (Name = 'replace');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsStrStaticMethod : verifie si un nom est un appel statique     }
+{   String.xxx() reconnu                                         }
+{ ------------------------------------------------------------ }
+
+Function IsStrStaticMethod(Name : TString) : Boolean;
+Begin
+  IsStrStaticMethod := (Name = 'valueOf');
+End;
+
+{ ------------------------------------------------------------ }
+{ GetStrMethodReturnType : retourner le type de retour d une      }
+{   methode String                                               }
+{ ------------------------------------------------------------ }
+
+Function GetStrMethodReturnType(Name : TString) : Integer;
+Begin
+  If (Name = 'length') Or (Name = 'compareTo') Or
+     (Name = 'indexOf') Then
+    GetStrMethodReturnType := TY_IDX_INT
+  Else If Name = 'charAt' Then
+    GetStrMethodReturnType := TY_IDX_CHAR
+  Else If (Name = 'equals') Or (Name = 'contains') Or
+          (Name = 'startsWith') Or (Name = 'endsWith') Then
+    GetStrMethodReturnType := TY_IDX_BOOLEAN
+  Else
+    GetStrMethodReturnType := TY_IDX_STRING;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetStConcatTotal : retourner le total des concatenations        }
+{ ------------------------------------------------------------ }
+
+Function GetStConcatTotal : LongInt;
+Begin
+  GetStConcatTotal := StConcatCount + StMixedConcatCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetStMethodTotal : retourner le total des appels de methode     }
+{ ------------------------------------------------------------ }
+
+Function GetStMethodTotal : LongInt;
+Begin
+  GetStMethodTotal := StLengthCount + StCharAtCount +
+                      StEqualsCount + StCompareToCount +
+                      StSubstringCount + StIndexOfCount +
+                      StToUpperCount + StToLowerCount +
+                      StTrimCount + StContainsCount +
+                      StStartsWithCount + StEndsWithCount +
+                      StReplaceCount + StValueOfCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpStState : afficher l etat du sous-systeme chaines           }
+{ ------------------------------------------------------------ }
+
+Procedure DumpStState;
+Begin
+  WriteLn('--- String State ---');
+  WriteLn('  StInitialized      : ', StInitialized);
+  WriteLn('  StConcatCount      : ', StConcatCount);
+  WriteLn('  StMixedConcatCount : ', StMixedConcatCount);
+  WriteLn('  StLengthCount      : ', StLengthCount);
+  WriteLn('  StCharAtCount      : ', StCharAtCount);
+  WriteLn('  StEqualsCount      : ', StEqualsCount);
+  WriteLn('  StCompareToCount   : ', StCompareToCount);
+  WriteLn('  StSubstringCount   : ', StSubstringCount);
+  WriteLn('  StIndexOfCount     : ', StIndexOfCount);
+  WriteLn('  StToUpperCount     : ', StToUpperCount);
+  WriteLn('  StToLowerCount     : ', StToLowerCount);
+  WriteLn('  StTrimCount        : ', StTrimCount);
+  WriteLn('  StContainsCount    : ', StContainsCount);
+  WriteLn('  StStartsWithCount  : ', StStartsWithCount);
+  WriteLn('  StEndsWithCount    : ', StEndsWithCount);
+  WriteLn('  StReplaceCount     : ', StReplaceCount);
+  WriteLn('  StValueOfCount     : ', StValueOfCount);
+  WriteLn('  StRefEqCount       : ', StRefEqCount);
+  WriteLn('  StLastKind         : ', StTypeName(StLastKind));
+  WriteLn('  StLabelSeq         : ', StLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 15)                              }
+{ ------------------------------------------------------------ }
+
+Function IsStInitialized : Boolean;
+Begin
+  IsStInitialized := StInitialized;
+End;
+
+Function IsStEmpty : Boolean;
+Begin
+  IsStEmpty := (StConcatCount = 0) And (StMixedConcatCount = 0) And
+               (StLengthCount = 0) And (StCharAtCount = 0) And
+               (StEqualsCount = 0) And (StCompareToCount = 0) And
+               (StSubstringCount = 0) And (StIndexOfCount = 0) And
+               (StToUpperCount = 0) And (StToLowerCount = 0) And
+               (StTrimCount = 0) And (StContainsCount = 0) And
+               (StStartsWithCount = 0) And (StEndsWithCount = 0) And
+               (StReplaceCount = 0) And (StValueOfCount = 0) And
+               (StRefEqCount = 0);
+End;
+
+Function GetStConcatCount : LongInt;
+Begin
+  GetStConcatCount := StConcatCount;
+End;
+
+Function GetStMixedConcatCount : LongInt;
+Begin
+  GetStMixedConcatCount := StMixedConcatCount;
+End;
+
+Function GetStLengthCount : LongInt;
+Begin
+  GetStLengthCount := StLengthCount;
+End;
+
+Function GetStEqualsCount : LongInt;
+Begin
+  GetStEqualsCount := StEqualsCount;
+End;
+
+Function GetStSubstringCount : LongInt;
+Begin
+  GetStSubstringCount := StSubstringCount;
+End;
+
+Function GetStIndexOfCount : LongInt;
+Begin
+  GetStIndexOfCount := StIndexOfCount;
+End;
+
+Function GetStValueOfCount : LongInt;
+Begin
+  GetStValueOfCount := StValueOfCount;
+End;
+
+Function GetStStatus : TString;
+Begin
+  If Not StInitialized Then
+    GetStStatus := 'Not initialized'
+  Else
+    GetStStatus := ItoS(StConcatCount) + ' concat, ' +
+                   ItoS(StMixedConcatCount) + ' mixed, ' +
+                   ItoS(StLengthCount) + ' length, ' +
+                   ItoS(StCharAtCount) + ' charAt, ' +
+                   ItoS(StEqualsCount) + ' equals, ' +
+                   ItoS(StCompareToCount) + ' compareTo, ' +
+                   ItoS(StSubstringCount) + ' substring, ' +
+                   ItoS(StIndexOfCount) + ' indexOf, ' +
+                   ItoS(StReplaceCount) + ' replace, ' +
+                   ItoS(StValueOfCount) + ' valueOf, ' +
+                   ItoS(StRefEqCount) + ' ref-eq';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-15)                              }
 { ============================================================ }
 
 Begin
@@ -9165,16 +9854,17 @@ Begin
   InitMtState;
   InitIoState;
   InitArState;
+  InitStState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-14) }
+  { Boucle de tokenisation (TODO 02-15) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 15..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 16..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
