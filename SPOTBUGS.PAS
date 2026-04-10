@@ -23,7 +23,7 @@
 {  TODO 05 [IMPLEMENTE] - Lecture des champs (fields) de la classe            }
 {  TODO 06 [IMPLEMENTE] - Lecture des methodes et de l'attribut Code         }
 {  TODO 07 [IMPLEMENTE] - Decodage du bytecode Java (opcodes JVM)              }
-{  TODO 08 [A FAIRE] - Construction du graphe de flux de controle (CFG)       }
+{  TODO 08 [IMPLEMENTE] - Construction du graphe de flux de controle (CFG)    }
 {  TODO 09 [A FAIRE] - Detecteur : dereferencement de pointeur null           }
 {  TODO 10 [A FAIRE] - Detecteur : fuite de ressources (resource leaks)       }
 {  TODO 11 [A FAIRE] - Detecteur : boucles infinies et blocs inaccessibles    }
@@ -688,6 +688,33 @@ Type
   End;
   TInstrArray = Array[0..MAX_INSTRUCTIONS-1] of TInstruction;
 
+  { --- TODO 08 : Constantes pour le CFG --- }
+Const
+  MAX_CFG_SUCCS  = 4;      { Nombre max de successeurs par noeud             }
+  MAX_CFG_PREDS  = 16;     { Nombre max de predecesseurs par noeud           }
+  MAX_LEADERS    = 4096;   { Nombre max de tetes de blocs de base            }
+
+Type
+  { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
+  TCFGNode = Record
+    ID          : Integer;  { Identifiant unique du noeud (0..N-1)            }
+    StartPC     : LongWord; { Premier PC du bloc de base                      }
+    EndPC       : LongWord; { Dernier PC du bloc de base                      }
+    InstStart   : Integer;  { Index premiere instruction dans Instructions[]  }
+    InstEnd     : Integer;  { Index derniere instruction dans Instructions[]  }
+    Succs       : Array[0..MAX_CFG_SUCCS-1] of Integer; { Successeurs          }
+    SuccCount   : Integer;  { Nombre de successeurs                           }
+    Preds       : Array[0..MAX_CFG_PREDS-1] of Integer; { Predecesseurs        }
+    PredCount   : Integer;  { Nombre de predecesseurs                         }
+    IsEntry     : Boolean;  { True si noeud d'entree (PC=0)                   }
+    IsExit      : Boolean;  { True si noeud de sortie (return/athrow)         }
+    IsException : Boolean;  { True si debut de gestionnaire d'exception       }
+    Visited     : Boolean;  { Pour parcours DFS/BFS                           }
+    DomBy       : Integer;  { Dominateur immediat (-1 si aucun/entree)        }
+    IsBackEdge  : Boolean;  { True si possede une arete arriere vers lui      }
+  End;
+  TCFGArray = Array[0..MAX_CFG_NODES-1] of TCFGNode;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -713,6 +740,10 @@ Var
   MethodCount    : Word;          { TODO 06 : Nombre de methodes        }
   Instructions   : ^TInstrArray;  { TODO 07 : Instructions decodees (pointeur) }
   InstrCount     : Word;          { TODO 07 : Nombre d'instructions decodees   }
+  CFGNodes       : ^TCFGArray;    { TODO 08 : Noeuds du CFG (pointeur)         }
+  CFGNodeCount   : Integer;       { TODO 08 : Nombre de noeuds CFG             }
+  CFGUnreachable : Integer;       { TODO 08 : Nombre de blocs inaccessibles    }
+  CFGBackEdges   : Integer;       { TODO 08 : Nombre d'aretes arriere (boucles)}
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -3180,47 +3211,800 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 08 [A FAIRE] - Construction du graphe de flux de controle (CFG)         }
+{ TODO 08 [IMPLEMENTE] - Construction du graphe de flux de controle (CFG)      }
 { ============================================================================ }
-{                                                                              }
-{  - Structure TCFGNode :                                                        }
-{      ID         : Integer          (identifiant unique du noeud)              }
-{      StartPC    : LongWord         (premier PC du bloc de base)               }
-{      EndPC      : LongWord         (dernier PC du bloc de base)               }
-{      InstStart  : Integer          (index premiere instruction)                }
-{      InstEnd    : Integer          (index derniere instruction)                }
-{      Succs      : array[0..3] of Integer  (indices des noeuds successeurs)    }
-{      SuccCount  : Integer          (nombre de successeurs)                    }
-{      Preds      : array[0..15] of Integer (indices des noeuds predecesseurs)  }
-{      PredCount  : Integer          (nombre de predecesseurs)                  }
-{      IsEntry    : Boolean          (noeud d'entree de la methode)             }
-{      IsExit     : Boolean          (noeud de sortie - instruction return)     }
-{      IsException: Boolean          (noeud gestionnaire d'exception)           }
-{      Visited    : Boolean          (pour les parcours DFS/BFS)                }
-{      DomBy      : Integer          (dominateur immediat dans l'arbre dom.)    }
-{                                                                              }
-{  - Procedure BuildCFG(Method: TMethodInfo)                                    }
-{      Identifier les entetes de blocs de base :                                }
-{        - instruction en PC=0 (entree de methode)                              }
-{        - cibles de tous les branchements (goto, ifeq, jsr, etc.)              }
-{        - instructions suivant un branchement inconditionnel                   }
-{        - debut de chaque gestionnaire d'exception (exception_table)           }
-{      Creer un TCFGNode par bloc de base                                        }
-{      Lier les noeuds selon les successeurs determines par les branchements     }
-{      Calculer les predecesseurs (liste inverse des successeurs)                }
-{                                                                              }
-{  - Procedure ComputeDominators(Var Nodes: array of TCFGNode)                  }
-{      Calculer l'arbre des dominateurs (algorithme iteratif de Lengauer-Tarjan}
-{      simplifie) pour detecter les boucles et code mort                        }
-{                                                                              }
-{  - Procedure FindUnreachableBlocks(Var Nodes: array of TCFGNode)              }
-{      Parcourir en DFS depuis le noeud d'entree                                }
-{      Identifier les blocs non atteints (Visited=False apres le parcours)      }
-{      Ces blocs correspondent a du code mort (potentiellement suspect)         }
-{                                                                              }
-{  - Procedure FindBackEdges(Var Nodes: array of TCFGNode)                      }
-{      Identifier les aretes arriere dans le CFG (donnent les boucles)          }
-{      Une arete arriere va d'un noeud vers un de ses ancetres dans l'arbre DFS }
+
+{ --- TODO 08 : Initialiser un noeud CFG --- }
+Procedure InitCFGNode(Var N: TCFGNode);
+Var
+  J: Integer;
+Begin
+  N.ID := -1;
+  N.StartPC := 0;
+  N.EndPC := 0;
+  N.InstStart := -1;
+  N.InstEnd := -1;
+  For J := 0 to MAX_CFG_SUCCS - 1 Do N.Succs[J] := -1;
+  N.SuccCount := 0;
+  For J := 0 to MAX_CFG_PREDS - 1 Do N.Preds[J] := -1;
+  N.PredCount := 0;
+  N.IsEntry := False;
+  N.IsExit := False;
+  N.IsException := False;
+  N.Visited := False;
+  N.DomBy := -1;
+  N.IsBackEdge := False;
+End;
+
+{ --- TODO 08 : Allouer le tableau CFG --- }
+Procedure AllocCFG;
+Begin
+  If CFGNodes = Nil Then Begin
+    GetMem(CFGNodes, SizeOf(TCFGArray));
+    CFGNodeCount := 0;
+    CFGUnreachable := 0;
+    CFGBackEdges := 0;
+  End;
+End;
+
+{ --- TODO 08 : Liberer le tableau CFG --- }
+Procedure FreeCFG;
+Begin
+  If CFGNodes <> Nil Then Begin
+    FreeMem(CFGNodes, SizeOf(TCFGArray));
+    CFGNodes := Nil;
+    CFGNodeCount := 0;
+    CFGUnreachable := 0;
+    CFGBackEdges := 0;
+  End;
+End;
+
+{ --- TODO 08 : Ajouter un successeur a un noeud CFG --- }
+Procedure AddCFGSuccessor(Var N: TCFGNode; SuccIdx: Integer);
+Begin
+  If (N.SuccCount < MAX_CFG_SUCCS) and (SuccIdx >= 0) Then Begin
+    N.Succs[N.SuccCount] := SuccIdx;
+    Inc(N.SuccCount);
+  End;
+End;
+
+{ --- TODO 08 : Ajouter un predecesseur a un noeud CFG --- }
+Procedure AddCFGPredecessor(Var N: TCFGNode; PredIdx: Integer);
+Begin
+  If (N.PredCount < MAX_CFG_PREDS) and (PredIdx >= 0) Then Begin
+    N.Preds[N.PredCount] := PredIdx;
+    Inc(N.PredCount);
+  End;
+End;
+
+{ --- TODO 08 : Verifier si un PC est cible d'un branchement conditionnel --- }
+Function IsBranchTarget(PC: LongWord): Boolean;
+Var
+  I: Integer;
+  Op: Byte;
+  Target: LongInt;
+Begin
+  IsBranchTarget := False;
+  If Instructions = Nil Then Exit;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    Op := Instructions^[I].Opcode;
+    { Branchements conditionnels et inconditionnels }
+    If (Op >= OP_IFEQ) and (Op <= OP_IF_ACMPNE) Then Begin
+      Target := LongInt(Instructions^[I].PC) + Instructions^[I].Op1;
+      If LongWord(Target) = PC Then Begin
+        IsBranchTarget := True;
+        Exit;
+      End;
+    End
+    Else If (Op = OP_GOTO) or (Op = OP_GOTO_W) Then Begin
+      Target := LongInt(Instructions^[I].PC) + Instructions^[I].Op1;
+      If LongWord(Target) = PC Then Begin
+        IsBranchTarget := True;
+        Exit;
+      End;
+    End
+    Else If (Op = OP_IFNULL) or (Op = OP_IFNONNULL) Then Begin
+      Target := LongInt(Instructions^[I].PC) + Instructions^[I].Op1;
+      If LongWord(Target) = PC Then Begin
+        IsBranchTarget := True;
+        Exit;
+      End;
+    End
+    Else If (Op = OP_JSR) or (Op = OP_JSR_W) Then Begin
+      Target := LongInt(Instructions^[I].PC) + Instructions^[I].Op1;
+      If LongWord(Target) = PC Then Begin
+        IsBranchTarget := True;
+        Exit;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 08 : Verifier si un PC est debut de gestionnaire d'exception --- }
+Function IsExceptionHandler(Var M: TMethodInfo; PC: LongWord): Boolean;
+Var
+  E: Integer;
+Begin
+  IsExceptionHandler := False;
+  For E := 0 to M.ExcCount - 1 Do Begin
+    If M.ExcTable[E].HandlerPC = PC Then Begin
+      IsExceptionHandler := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 08 : Verifier si une instruction termine un bloc (terminateur) --- }
+Function IsBlockTerminator_(Op: Byte): Boolean;
+Begin
+  IsBlockTerminator_ := (Op >= OP_IFEQ) and (Op <= OP_IF_ACMPNE)   { cond branches }
+                     or (Op = OP_GOTO) or (Op = OP_GOTO_W)        { uncond jumps }
+                     or (Op = OP_JSR) or (Op = OP_JSR_W)          { subroutines }
+                     or (Op = OP_RET)                              { return from sub }
+                     or (Op >= OP_IRETURN) and (Op <= OP_RETURN)  { returns }
+                     or (Op = OP_ATHROW)                           { throw }
+                     or (Op = OP_TABLESWITCH)                      { switch }
+                     or (Op = OP_LOOKUPSWITCH)                     { switch }
+                     or (Op = OP_IFNULL) or (Op = OP_IFNONNULL);   { null checks }
+End;
+
+{ --- TODO 08 : Verifier si un opcode est un saut inconditionnel --- }
+Function IsUnconditionalJump(Op: Byte): Boolean;
+Begin
+  IsUnconditionalJump := (Op = OP_GOTO) or (Op = OP_GOTO_W)
+                      or (Op >= OP_IRETURN) and (Op <= OP_RETURN)
+                      or (Op = OP_ATHROW)
+                      or (Op = OP_RET);
+End;
+
+{ --- TODO 08 : Verifier si un PC est un leader de bloc de base --- }
+Function IsBlockLeader(Var M: TMethodInfo; PC: LongWord): Boolean;
+Begin
+  { PC=0 est toujours le point d'entree }
+  If PC = 0 Then Begin
+    IsBlockLeader := True;
+    Exit;
+  End;
+  
+  { Cible de branchement }
+  If IsBranchTarget(PC) Then Begin
+    IsBlockLeader := True;
+    Exit;
+  End;
+  
+  { Debut de gestionnaire d'exception }
+  If IsExceptionHandler(M, PC) Then Begin
+    IsBlockLeader := True;
+    Exit;
+  End;
+  
+  IsBlockLeader := False;
+End;
+
+{ --- TODO 08 : Trouver l'index du noeud CFG contenant un PC --- }
+Function FindCFGNodeByPC(PC: LongWord): Integer;
+Var
+  I: Integer;
+Begin
+  FindCFGNodeByPC := -1;
+  If CFGNodes = Nil Then Exit;
+  
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    If (PC >= CFGNodes^[I].StartPC) and (PC <= CFGNodes^[I].EndPC) Then Begin
+      FindCFGNodeByPC := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 08 : Trouver l'index du noeud CFG commencant a un PC --- }
+Function FindCFGNodeByStartPC(PC: LongWord): Integer;
+Var
+  I: Integer;
+Begin
+  FindCFGNodeByStartPC := -1;
+  If CFGNodes = Nil Then Exit;
+  
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    If CFGNodes^[I].StartPC = PC Then Begin
+      FindCFGNodeByStartPC := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 08 : Construire le CFG d'une methode --- }
+Procedure BuildCFG(Var M: TMethodInfo);
+Var
+  I, J, K, NodeIdx: Integer;
+  Leaders: Array[0..MAX_LEADERS-1] of LongWord;
+  LeaderCount: Integer;
+  PC, NextPC: LongWord;
+  Op: Byte;
+  Target: LongInt;
+  SuccIdx: Integer;
+  Found: Boolean;
+  E: Integer;
+  
+  Procedure AddLeader(P: LongWord);
+  Var
+    L: Integer;
+    Exists: Boolean;
+  Begin
+    { Verifier si deja present }
+    Exists := False;
+    For L := 0 to LeaderCount - 1 Do Begin
+      If Leaders[L] = P Then Begin
+        Exists := True;
+        Break;
+      End;
+    End;
+    If not Exists and (LeaderCount < MAX_LEADERS) Then Begin
+      Leaders[LeaderCount] := P;
+      Inc(LeaderCount);
+    End;
+  End;
+  
+  Procedure SortLeaders;
+  Var
+    A, B: Integer;
+    Tmp: LongWord;
+  Begin
+    For A := 0 to LeaderCount - 2 Do Begin
+      For B := A + 1 to LeaderCount - 1 Do Begin
+        If Leaders[B] < Leaders[A] Then Begin
+          Tmp := Leaders[A];
+          Leaders[A] := Leaders[B];
+          Leaders[B] := Tmp;
+        End;
+      End;
+    End;
+  End;
+  
+Begin
+  { Initialiser }
+  AllocCFG;
+  CFGNodeCount := 0;
+  CFGUnreachable := 0;
+  CFGBackEdges := 0;
+  LeaderCount := 0;
+  
+  If (Instructions = Nil) or (InstrCount = 0) Then Exit;
+  
+  { ===== PHASE 1 : Identifier tous les leaders de blocs de base ===== }
+  
+  { PC=0 est toujours un leader (point d'entree) }
+  AddLeader(0);
+  
+  { Parcourir les instructions pour trouver les leaders }
+  For I := 0 to InstrCount - 1 Do Begin
+    PC := Instructions^[I].PC;
+    Op := Instructions^[I].Opcode;
+    
+    { Si c'est un branchement, la cible est un leader }
+    If (Op >= OP_IFEQ) and (Op <= OP_IF_ACMPNE) Then Begin
+      Target := LongInt(PC) + Instructions^[I].Op1;
+      If Target >= 0 Then AddLeader(LongWord(Target));
+      { L'instruction suivante est aussi un leader (fall-through) }
+      NextPC := PC + LongWord(Instructions^[I].Size);
+      AddLeader(NextPC);
+    End
+    Else If (Op = OP_GOTO) or (Op = OP_GOTO_W) Then Begin
+      Target := LongInt(PC) + Instructions^[I].Op1;
+      If Target >= 0 Then AddLeader(LongWord(Target));
+      { L'instruction suivante est un leader (meme si inaccessible) }
+      NextPC := PC + LongWord(Instructions^[I].Size);
+      If (I + 1 < InstrCount) Then AddLeader(NextPC);
+    End
+    Else If (Op = OP_IFNULL) or (Op = OP_IFNONNULL) Then Begin
+      Target := LongInt(PC) + Instructions^[I].Op1;
+      If Target >= 0 Then AddLeader(LongWord(Target));
+      NextPC := PC + LongWord(Instructions^[I].Size);
+      AddLeader(NextPC);
+    End
+    Else If (Op = OP_JSR) or (Op = OP_JSR_W) Then Begin
+      Target := LongInt(PC) + Instructions^[I].Op1;
+      If Target >= 0 Then AddLeader(LongWord(Target));
+      NextPC := PC + LongWord(Instructions^[I].Size);
+      AddLeader(NextPC);
+    End
+    Else If (Op = OP_TABLESWITCH) or (Op = OP_LOOKUPSWITCH) Then Begin
+      { La cible par defaut et l'instruction suivante }
+      Target := LongInt(PC) + Instructions^[I].Op1;
+      If Target >= 0 Then AddLeader(LongWord(Target));
+      NextPC := PC + LongWord(Instructions^[I].Size);
+      If (I + 1 < InstrCount) Then AddLeader(NextPC);
+    End
+    Else If (Op >= OP_IRETURN) and (Op <= OP_RETURN) Then Begin
+      { Instruction suivante (si existe) est un leader }
+      NextPC := PC + LongWord(Instructions^[I].Size);
+      If (I + 1 < InstrCount) Then AddLeader(NextPC);
+    End
+    Else If (Op = OP_ATHROW) Then Begin
+      { Instruction suivante (si existe) est un leader }
+      NextPC := PC + LongWord(Instructions^[I].Size);
+      If (I + 1 < InstrCount) Then AddLeader(NextPC);
+    End;
+  End;
+  
+  { Ajouter les debuts de gestionnaires d'exception }
+  For E := 0 to M.ExcCount - 1 Do Begin
+    AddLeader(M.ExcTable[E].HandlerPC);
+  End;
+  
+  { Trier les leaders par PC croissant }
+  SortLeaders;
+  
+  { ===== PHASE 2 : Creer les noeuds CFG ===== }
+  
+  For I := 0 to LeaderCount - 1 Do Begin
+    If CFGNodeCount >= MAX_CFG_NODES Then Break;
+    
+    InitCFGNode(CFGNodes^[CFGNodeCount]);
+    CFGNodes^[CFGNodeCount].ID := CFGNodeCount;
+    CFGNodes^[CFGNodeCount].StartPC := Leaders[I];
+    
+    { Trouver le EndPC (debut du prochain bloc - 1, ou fin du code) }
+    If I < LeaderCount - 1 Then Begin
+      { Trouver la derniere instruction avant le prochain leader }
+      For J := InstrCount - 1 downto 0 Do Begin
+        If (Instructions^[J].PC >= Leaders[I]) and 
+           (Instructions^[J].PC < Leaders[I+1]) Then Begin
+          CFGNodes^[CFGNodeCount].EndPC := Instructions^[J].PC;
+          Break;
+        End;
+      End;
+    End
+    Else Begin
+      { Dernier bloc : va jusqu'a la fin du code }
+      CFGNodes^[CFGNodeCount].EndPC := Instructions^[InstrCount-1].PC;
+    End;
+    
+    { Trouver InstStart et InstEnd }
+    CFGNodes^[CFGNodeCount].InstStart := -1;
+    CFGNodes^[CFGNodeCount].InstEnd := -1;
+    For J := 0 to InstrCount - 1 Do Begin
+      If (Instructions^[J].PC >= CFGNodes^[CFGNodeCount].StartPC) and
+         (Instructions^[J].PC <= CFGNodes^[CFGNodeCount].EndPC) Then Begin
+        If CFGNodes^[CFGNodeCount].InstStart < 0 Then
+          CFGNodes^[CFGNodeCount].InstStart := J;
+        CFGNodes^[CFGNodeCount].InstEnd := J;
+      End;
+    End;
+    
+    { Marquer si c'est l'entree (PC=0) }
+    CFGNodes^[CFGNodeCount].IsEntry := (Leaders[I] = 0);
+    
+    { Marquer si c'est un gestionnaire d'exception }
+    CFGNodes^[CFGNodeCount].IsException := IsExceptionHandler(M, Leaders[I]);
+    
+    Inc(CFGNodeCount);
+  End;
+  
+  { ===== PHASE 3 : Lier les successeurs ===== }
+  
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    If CFGNodes^[I].InstEnd < 0 Then Continue;
+    
+    { Obtenir la derniere instruction du bloc }
+    J := CFGNodes^[I].InstEnd;
+    Op := Instructions^[J].Opcode;
+    PC := Instructions^[J].PC;
+    
+    { Marquer si c'est un bloc de sortie }
+    CFGNodes^[I].IsExit := (Op >= OP_IRETURN) and (Op <= OP_RETURN);
+    
+    { Determiner les successeurs selon le type d'instruction }
+    If (Op >= OP_IFEQ) and (Op <= OP_IF_ACMPNE) Then Begin
+      { Branchement conditionnel : 2 successeurs }
+      { Successeur 1 : cible du branchement }
+      Target := LongInt(PC) + Instructions^[J].Op1;
+      SuccIdx := FindCFGNodeByStartPC(LongWord(Target));
+      If SuccIdx >= 0 Then AddCFGSuccessor(CFGNodes^[I], SuccIdx);
+      { Successeur 2 : fall-through }
+      NextPC := PC + LongWord(Instructions^[J].Size);
+      SuccIdx := FindCFGNodeByStartPC(NextPC);
+      If SuccIdx >= 0 Then AddCFGSuccessor(CFGNodes^[I], SuccIdx);
+    End
+    Else If (Op = OP_IFNULL) or (Op = OP_IFNONNULL) Then Begin
+      { Branchement conditionnel null : 2 successeurs }
+      Target := LongInt(PC) + Instructions^[J].Op1;
+      SuccIdx := FindCFGNodeByStartPC(LongWord(Target));
+      If SuccIdx >= 0 Then AddCFGSuccessor(CFGNodes^[I], SuccIdx);
+      NextPC := PC + LongWord(Instructions^[J].Size);
+      SuccIdx := FindCFGNodeByStartPC(NextPC);
+      If SuccIdx >= 0 Then AddCFGSuccessor(CFGNodes^[I], SuccIdx);
+    End
+    Else If (Op = OP_GOTO) or (Op = OP_GOTO_W) Then Begin
+      { Saut inconditionnel : 1 successeur }
+      Target := LongInt(PC) + Instructions^[J].Op1;
+      SuccIdx := FindCFGNodeByStartPC(LongWord(Target));
+      If SuccIdx >= 0 Then AddCFGSuccessor(CFGNodes^[I], SuccIdx);
+    End
+    Else If (Op = OP_JSR) or (Op = OP_JSR_W) Then Begin
+      { Appel de sous-routine : 2 successeurs (routine et retour) }
+      Target := LongInt(PC) + Instructions^[J].Op1;
+      SuccIdx := FindCFGNodeByStartPC(LongWord(Target));
+      If SuccIdx >= 0 Then AddCFGSuccessor(CFGNodes^[I], SuccIdx);
+      NextPC := PC + LongWord(Instructions^[J].Size);
+      SuccIdx := FindCFGNodeByStartPC(NextPC);
+      If SuccIdx >= 0 Then AddCFGSuccessor(CFGNodes^[I], SuccIdx);
+    End
+    Else If (Op = OP_TABLESWITCH) or (Op = OP_LOOKUPSWITCH) Then Begin
+      { Switch : la cible par defaut (Op1) }
+      Target := LongInt(PC) + Instructions^[J].Op1;
+      SuccIdx := FindCFGNodeByStartPC(LongWord(Target));
+      If SuccIdx >= 0 Then AddCFGSuccessor(CFGNodes^[I], SuccIdx);
+      { Note: les autres cibles du switch necessiteraient un parsing plus fin }
+    End
+    Else If (Op >= OP_IRETURN) and (Op <= OP_RETURN) Then Begin
+      { Return : pas de successeur (noeud de sortie) }
+    End
+    Else If (Op = OP_ATHROW) Then Begin
+      { Throw : pas de successeur direct (sauf gestionnaires d'exception) }
+    End
+    Else If (Op = OP_RET) Then Begin
+      { Retour de sous-routine : complexe, ignorer pour simplifier }
+    End
+    Else Begin
+      { Instruction normale : fall-through vers le bloc suivant }
+      If I < CFGNodeCount - 1 Then Begin
+        NextPC := CFGNodes^[I].EndPC + 1;
+        { Trouver le bloc suivant }
+        For K := 0 to CFGNodeCount - 1 Do Begin
+          If (CFGNodes^[K].StartPC > CFGNodes^[I].EndPC) Then Begin
+            { Verifier que c'est bien la suite immediate }
+            Found := False;
+            For NodeIdx := 0 to InstrCount - 1 Do Begin
+              If Instructions^[NodeIdx].PC = CFGNodes^[K].StartPC Then Begin
+                If NodeIdx > 0 Then Begin
+                  If (Instructions^[NodeIdx-1].PC >= CFGNodes^[I].StartPC) and
+                     (Instructions^[NodeIdx-1].PC <= CFGNodes^[I].EndPC) Then Begin
+                    AddCFGSuccessor(CFGNodes^[I], K);
+                    Found := True;
+                  End;
+                End;
+                Break;
+              End;
+            End;
+            If Found Then Break;
+          End;
+        End;
+      End;
+    End;
+  End;
+  
+  { ===== PHASE 4 : Calculer les predecesseurs ===== }
+  
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    For J := 0 to CFGNodes^[I].SuccCount - 1 Do Begin
+      SuccIdx := CFGNodes^[I].Succs[J];
+      If (SuccIdx >= 0) and (SuccIdx < CFGNodeCount) Then Begin
+        AddCFGPredecessor(CFGNodes^[SuccIdx], I);
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 08 : Parcours DFS du CFG pour marquer les noeuds visites --- }
+Procedure CFGVisitDFS(NodeIdx: Integer);
+Var
+  I, SuccIdx: Integer;
+Begin
+  If CFGNodes = Nil Then Exit;
+  If (NodeIdx < 0) or (NodeIdx >= CFGNodeCount) Then Exit;
+  If CFGNodes^[NodeIdx].Visited Then Exit;
+  
+  CFGNodes^[NodeIdx].Visited := True;
+  
+  { Visiter tous les successeurs }
+  For I := 0 to CFGNodes^[NodeIdx].SuccCount - 1 Do Begin
+    SuccIdx := CFGNodes^[NodeIdx].Succs[I];
+    If (SuccIdx >= 0) and (SuccIdx < CFGNodeCount) Then Begin
+      CFGVisitDFS(SuccIdx);
+    End;
+  End;
+End;
+
+{ --- TODO 08 : Trouver les blocs inaccessibles --- }
+Procedure FindUnreachableBlocks;
+Var
+  I, EntryNode: Integer;
+Begin
+  CFGUnreachable := 0;
+  If CFGNodes = Nil Then Exit;
+  If CFGNodeCount = 0 Then Exit;
+  
+  { Reinitialiser les flags Visited }
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    CFGNodes^[I].Visited := False;
+  End;
+  
+  { Trouver le noeud d'entree (IsEntry=True ou premier noeud) }
+  EntryNode := -1;
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    If CFGNodes^[I].IsEntry Then Begin
+      EntryNode := I;
+      Break;
+    End;
+  End;
+  If EntryNode < 0 Then EntryNode := 0;
+  
+  { Parcours DFS depuis le noeud d'entree }
+  CFGVisitDFS(EntryNode);
+  
+  { Aussi visiter les gestionnaires d'exception (accessibles par exception) }
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    If CFGNodes^[I].IsException and not CFGNodes^[I].Visited Then Begin
+      CFGVisitDFS(I);
+    End;
+  End;
+  
+  { Compter les blocs non visites (code mort) }
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    If not CFGNodes^[I].Visited Then Begin
+      Inc(CFGUnreachable);
+    End;
+  End;
+End;
+
+{ --- TODO 08 : Trouver les aretes arriere (boucles) --- }
+Procedure FindBackEdges;
+Var
+  I, J, SuccIdx: Integer;
+  DFSOrder: Array[0..MAX_CFG_NODES-1] of Integer;
+  DFSCounter: Integer;
+  
+  Procedure DFSNumbering(NodeIdx: Integer);
+  Var
+    K, S: Integer;
+  Begin
+    If (NodeIdx < 0) or (NodeIdx >= CFGNodeCount) Then Exit;
+    If DFSOrder[NodeIdx] >= 0 Then Exit;
+    
+    DFSOrder[NodeIdx] := DFSCounter;
+    Inc(DFSCounter);
+    
+    For K := 0 to CFGNodes^[NodeIdx].SuccCount - 1 Do Begin
+      S := CFGNodes^[NodeIdx].Succs[K];
+      If (S >= 0) and (S < CFGNodeCount) Then Begin
+        DFSNumbering(S);
+      End;
+    End;
+  End;
+  
+Begin
+  CFGBackEdges := 0;
+  If CFGNodes = Nil Then Exit;
+  If CFGNodeCount = 0 Then Exit;
+  
+  { Initialiser le numerotage DFS }
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    DFSOrder[I] := -1;
+    CFGNodes^[I].IsBackEdge := False;
+  End;
+  
+  { Numeroter les noeuds en ordre DFS }
+  DFSCounter := 0;
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    If CFGNodes^[I].IsEntry Then Begin
+      DFSNumbering(I);
+      Break;
+    End;
+  End;
+  
+  { Une arete arriere va d'un noeud vers un noeud visite plus tot }
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    For J := 0 to CFGNodes^[I].SuccCount - 1 Do Begin
+      SuccIdx := CFGNodes^[I].Succs[J];
+      If (SuccIdx >= 0) and (SuccIdx < CFGNodeCount) Then Begin
+        { Si le successeur a un numero DFS inferieur ou egal, c'est une arete arriere }
+        If (DFSOrder[I] >= 0) and (DFSOrder[SuccIdx] >= 0) Then Begin
+          If DFSOrder[SuccIdx] <= DFSOrder[I] Then Begin
+            CFGNodes^[SuccIdx].IsBackEdge := True;
+            Inc(CFGBackEdges);
+          End;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 08 : Calculer les dominateurs (algorithme iteratif simplifie) --- }
+Procedure ComputeDominators;
+Var
+  I, J, P: Integer;
+  Changed: Boolean;
+  NewDom: Integer;
+  
+  Function Intersect(B1, B2: Integer): Integer;
+  Var
+    Finger1, Finger2: Integer;
+  Begin
+    Finger1 := B1;
+    Finger2 := B2;
+    While Finger1 <> Finger2 Do Begin
+      While Finger1 > Finger2 Do Begin
+        If CFGNodes^[Finger1].DomBy >= 0 Then
+          Finger1 := CFGNodes^[Finger1].DomBy
+        Else
+          Break;
+      End;
+      While Finger2 > Finger1 Do Begin
+        If CFGNodes^[Finger2].DomBy >= 0 Then
+          Finger2 := CFGNodes^[Finger2].DomBy
+        Else
+          Break;
+      End;
+    End;
+    Intersect := Finger1;
+  End;
+  
+Begin
+  If CFGNodes = Nil Then Exit;
+  If CFGNodeCount = 0 Then Exit;
+  
+  { Initialiser : le noeud d'entree se domine lui-meme, les autres ont DomBy=-1 }
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    If CFGNodes^[I].IsEntry Then
+      CFGNodes^[I].DomBy := I
+    Else
+      CFGNodes^[I].DomBy := -1;
+  End;
+  
+  { Iterer jusqu'a convergence }
+  Changed := True;
+  While Changed Do Begin
+    Changed := False;
+    
+    For I := 0 to CFGNodeCount - 1 Do Begin
+      If CFGNodes^[I].IsEntry Then Continue;
+      If CFGNodes^[I].PredCount = 0 Then Continue;
+      
+      { Trouver le premier predecesseur avec un dominateur calcule }
+      NewDom := -1;
+      For J := 0 to CFGNodes^[I].PredCount - 1 Do Begin
+        P := CFGNodes^[I].Preds[J];
+        If (P >= 0) and (P < CFGNodeCount) and (CFGNodes^[P].DomBy >= 0) Then Begin
+          NewDom := P;
+          Break;
+        End;
+      End;
+      
+      If NewDom < 0 Then Continue;
+      
+      { Intersection avec les autres predecesseurs }
+      For J := 0 to CFGNodes^[I].PredCount - 1 Do Begin
+        P := CFGNodes^[I].Preds[J];
+        If (P <> NewDom) and (P >= 0) and (P < CFGNodeCount) Then Begin
+          If CFGNodes^[P].DomBy >= 0 Then Begin
+            NewDom := Intersect(P, NewDom);
+          End;
+        End;
+      End;
+      
+      If CFGNodes^[I].DomBy <> NewDom Then Begin
+        CFGNodes^[I].DomBy := NewDom;
+        Changed := True;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 08 : Afficher le CFG pour debug --- }
+Procedure DumpCFG;
+Var
+  I, J: Integer;
+Begin
+  If CFGNodes = Nil Then Begin
+    WriteLn('CFG: (non alloue)');
+    Exit;
+  End;
+  
+  WriteLn('=== CFG : ', CFGNodeCount, ' noeuds ===');
+  WriteLn('Blocs inaccessibles: ', CFGUnreachable);
+  WriteLn('Aretes arriere (boucles): ', CFGBackEdges);
+  WriteLn;
+  
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    Write('  [', I, '] PC ', CFGNodes^[I].StartPC, '-', CFGNodes^[I].EndPC);
+    Write(' Inst[', CFGNodes^[I].InstStart, '-', CFGNodes^[I].InstEnd, ']');
+    
+    If CFGNodes^[I].IsEntry Then Write(' ENTRY');
+    If CFGNodes^[I].IsExit Then Write(' EXIT');
+    If CFGNodes^[I].IsException Then Write(' HANDLER');
+    If CFGNodes^[I].IsBackEdge Then Write(' LOOP');
+    If not CFGNodes^[I].Visited Then Write(' DEAD');
+    
+    Write(' Succs=[');
+    For J := 0 to CFGNodes^[I].SuccCount - 1 Do Begin
+      If J > 0 Then Write(',');
+      Write(CFGNodes^[I].Succs[J]);
+    End;
+    Write('] Preds=[');
+    For J := 0 to CFGNodes^[I].PredCount - 1 Do Begin
+      If J > 0 Then Write(',');
+      Write(CFGNodes^[I].Preds[J]);
+    End;
+    Write(']');
+    
+    If CFGNodes^[I].DomBy >= 0 Then
+      Write(' Dom=', CFGNodes^[I].DomBy);
+    
+    WriteLn;
+  End;
+  WriteLn;
+End;
+
+{ --- TODO 08 : Accesseurs du module CFG --- }
+Function GetCFGNodeCount: Integer;
+Begin
+  GetCFGNodeCount := CFGNodeCount;
+End;
+
+Function GetCFGUnreachableCount: Integer;
+Begin
+  GetCFGUnreachableCount := CFGUnreachable;
+End;
+
+Function GetCFGBackEdgeCount: Integer;
+Begin
+  GetCFGBackEdgeCount := CFGBackEdges;
+End;
+
+Function IsCFGAllocated: Boolean;
+Begin
+  IsCFGAllocated := (CFGNodes <> Nil);
+End;
+
+Function GetCFGNodeStartPC(Idx: Integer): LongWord;
+Begin
+  If (CFGNodes <> Nil) and (Idx >= 0) and (Idx < CFGNodeCount) Then
+    GetCFGNodeStartPC := CFGNodes^[Idx].StartPC
+  Else
+    GetCFGNodeStartPC := 0;
+End;
+
+Function GetCFGNodeEndPC(Idx: Integer): LongWord;
+Begin
+  If (CFGNodes <> Nil) and (Idx >= 0) and (Idx < CFGNodeCount) Then
+    GetCFGNodeEndPC := CFGNodes^[Idx].EndPC
+  Else
+    GetCFGNodeEndPC := 0;
+End;
+
+Function IsCFGNodeEntry(Idx: Integer): Boolean;
+Begin
+  If (CFGNodes <> Nil) and (Idx >= 0) and (Idx < CFGNodeCount) Then
+    IsCFGNodeEntry := CFGNodes^[Idx].IsEntry
+  Else
+    IsCFGNodeEntry := False;
+End;
+
+Function IsCFGNodeExit(Idx: Integer): Boolean;
+Begin
+  If (CFGNodes <> Nil) and (Idx >= 0) and (Idx < CFGNodeCount) Then
+    IsCFGNodeExit := CFGNodes^[Idx].IsExit
+  Else
+    IsCFGNodeExit := False;
+End;
+
+Function IsCFGNodeUnreachable(Idx: Integer): Boolean;
+Begin
+  If (CFGNodes <> Nil) and (Idx >= 0) and (Idx < CFGNodeCount) Then
+    IsCFGNodeUnreachable := not CFGNodes^[Idx].Visited
+  Else
+    IsCFGNodeUnreachable := True;
+End;
+
+Function IsCFGNodeLoop(Idx: Integer): Boolean;
+Begin
+  If (CFGNodes <> Nil) and (Idx >= 0) and (Idx < CFGNodeCount) Then
+    IsCFGNodeLoop := CFGNodes^[Idx].IsBackEdge
+  Else
+    IsCFGNodeLoop := False;
+End;
 
 { ============================================================================ }
 { TODO 09 [A FAIRE] - Detecteur : dereferencement de pointeur null             }

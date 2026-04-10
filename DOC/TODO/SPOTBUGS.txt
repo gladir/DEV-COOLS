@@ -155,21 +155,34 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
             CanDereferenceNull : detection dereferences null potentiels
             GetArrayTypeName : nom du type primitif pour newarray
 
-  TODO 08 - CONSTRUCTION DU GRAPHE DE FLUX DE CONTROLE (CFG) [A FAIRE]
+  TODO 08 - CONSTRUCTION DU GRAPHE DE FLUX DE CONTROLE (CFG) [IMPLEMENTE]
             Structure TCFGNode (ID, StartPC, EndPC, InstStart, InstEnd,
               Succs[0..3], SuccCount, Preds[0..15], PredCount, IsEntry,
-              IsExit, IsException, Visited, DomBy)
-            BuildCFG(Method) : identifier entetes de blocs de base (PC=0,
-              cibles de branchements, suite apres branchement inconditionnel,
-              debuts de gestionnaires d'exception), creer un noeud par bloc,
-              lier successeurs et calculer predecesseurs
-            ComputeDominators(Nodes) : calculer l'arbre des dominateurs
-              (algorithme iteratif simplifie de Lengauer-Tarjan) pour
-              detecter boucles et code mort
-            FindUnreachableBlocks(Nodes) : DFS depuis noeud d'entree,
-              identifier blocs non atteints (Visited=False) = code mort
-            FindBackEdges(Nodes) : identifier aretes arriere dans CFG
-              (noeud vers un de ses ancetres DFS) = boucles
+              IsExit, IsException, Visited, DomBy, IsBackEdge)
+            Constantes MAX_CFG_NODES=4096, MAX_CFG_SUCCS=4, MAX_CFG_PREDS=16,
+              MAX_LEADERS=4096, variables CFGNodes, CFGNodeCount, CFGUnreachable,
+              CFGBackEdges
+            InitCFGNode : initialiser un noeud CFG
+            AllocCFG / FreeCFG : allocation et liberation memoire
+            AddCFGSuccessor / AddCFGPredecessor : lier noeuds CFG
+            IsBranchTarget(PC) : verifier si PC est cible d'un branchement
+            IsExceptionHandler(M, PC) : verifier si PC est gestionnaire exception
+            IsBlockTerminator_(Op) : verifier si opcode termine un bloc
+            IsUnconditionalJump(Op) : verifier si opcode est saut inconditionnel
+            IsBlockLeader(M, PC) : verifier si PC est debut de bloc de base
+            FindCFGNodeByPC(PC) : trouver noeud contenant un PC
+            FindCFGNodeByStartPC(PC) : trouver noeud commencant a un PC
+            BuildCFG(Method) : identifier leaders, creer noeuds, lier successeurs,
+              calculer predecesseurs (4 phases completes)
+            CFGVisitDFS(NodeIdx) : parcours DFS depuis un noeud
+            FindUnreachableBlocks : identifier code mort via DFS
+            FindBackEdges : identifier aretes arriere (boucles) via numerotation DFS
+            ComputeDominators : calculer dominateurs (algorithme iteratif)
+            DumpCFG : afficher le CFG pour debug
+            10 accesseurs : GetCFGNodeCount, GetCFGUnreachableCount,
+              GetCFGBackEdgeCount, IsCFGAllocated, GetCFGNodeStartPC,
+              GetCFGNodeEndPC, IsCFGNodeEntry, IsCFGNodeExit,
+              IsCFGNodeUnreachable, IsCFGNodeLoop
 
   TODO 09 - DETECTEUR : DEREFERENCEMENT DE POINTEUR NULL [A FAIRE]
             Codes detectes : NP_NULL_ON_SOME_PATH, NP_ALWAYS_NULL,
