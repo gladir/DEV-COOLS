@@ -204,21 +204,32 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               GetNullBugCount, GetNullTotalChecks, GetNullTotalDeref,
               GetNullLabelNum, GetNullBugType, GetNullBugPC, GetNullBugLine
 
-  TODO 10 - DETECTEUR : FUITE DE RESSOURCES (RESOURCE LEAKS) [A FAIRE]
-            Codes detectes : OBJ_UNSATISFIED_OBLIGATION,
-              OBJ_UNSATISFIED_OBLIGATION_EXCEPTION, OS_OPEN_STREAM,
-              OS_OPEN_STREAM_EXCEPTION_PATH
+  TODO 10 - DETECTEUR : FUITE DE RESSOURCES (RESOURCE LEAKS) [IMPLEMENTE]
+            Constantes : MAX_RES_TRACKED=64, MAX_RES_BUGS=64, MAX_RES_CLASSES=16
+            Types de bugs : RL_NONE=0, RL_UNSATISFIED_OBLIGATION=1,
+              RL_UNSATISFIED_OBLIG_EXCEPT=2, RL_OPEN_STREAM=3,
+              RL_OPEN_STREAM_EXCEPTION=4
+            Etats de ressource : RS_UNKNOWN=0, RS_OPEN=1, RS_CLOSED=2, RS_MAYBE=3
+            Structure TResourceInfo (VarIdx, ClassName, OpenPC, ClosePC, State,
+              LineNum, InTryBlock, HasFinally)
+            Structure TResLeakBug (BugType, PC, LineNum, ClassName, VarIdx)
+            Variables : ResLeakInitialized, Resources, ResourceCount,
+              ResLeakBugs, ResLeakBugCount, ResLabelNum, ResTotalOpens,
+              ResTotalCloses, ResTotalLeaks, ResCurrentPC, ResCurrentLine
             Classes ressources : java/io/InputStream, java/io/OutputStream,
               java/io/Reader, java/io/Writer, java/sql/Connection,
               java/sql/Statement, java/sql/ResultSet,
               java/net/Socket, java/net/ServerSocket
-            DetectResourceLeaks(Method) : identifier new + constructeur des
-              classes ressources, verifier que .close() est appele sur tous
-              les chemins (y compris chemins d'exception), detecter absence
-              de try/finally pour les ressources
-            IsCloseableClass(ClassName) : True si type Closeable/AutoCloseable
-            FindCloseCall(Method, VarIdx, StartPC, EndPC) : chercher appel
-              .close() sur la variable locale VarIdx entre StartPC et EndPC
+            InitResLeakState, GenResLabel, ResLeakBugTypeName, ResStateName,
+              IsCloseableClass, IsCloseMethod, ExtractClassFromMethodRef,
+              ExtractMethodNameFromRef, ExtractMethodDescFromRef,
+              TrackResourceOpen, TrackResourceClose, AddResLeakBug,
+              FindCloseCall, IsInExceptionHandler, HasFinallyHandler,
+              AnalyzeInstrForResourceLeak, DetectResourceLeaks, DumpResLeakState
+            Accesseurs : IsResLeakInitialized, GetResourceCount,
+              GetResLeakBugCount, GetResTotalOpens, GetResTotalCloses,
+              GetResTotalLeaks, GetResLabelNum, GetResLeakBugType,
+              GetResLeakBugPC, GetResLeakBugLine
 
   TODO 11 - DETECTEUR : BOUCLES INFINIES ET BLOCS INACCESSIBLES [A FAIRE]
             Codes detectes : IL_INFINITE_LOOP, IL_INFINITE_RECURSIVE_LOOP,

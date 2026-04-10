@@ -25,7 +25,7 @@
 {  TODO 07 [IMPLEMENTE] - Decodage du bytecode Java (opcodes JVM)              }
 {  TODO 08 [IMPLEMENTE] - Construction du graphe de flux de controle (CFG)    }
 {  TODO 09 [IMPLEMENTE] - Detecteur : dereferencement de pointeur null        }
-{  TODO 10 [A FAIRE] - Detecteur : fuite de ressources (resource leaks)       }
+{  TODO 10 [IMPLEMENTE] - Detecteur : fuite de ressources (resource leaks)    }
 {  TODO 11 [A FAIRE] - Detecteur : boucles infinies et blocs inaccessibles    }
 {  TODO 12 [A FAIRE] - Detecteur : mauvaises pratiques (bad practices)        }
 {  TODO 13 [A FAIRE] - Detecteur : comparaisons incorrectes d'objets          }
@@ -714,6 +714,24 @@ Const
   NP_STORE_INTO_NONNULL_FIELD    = 5;  { Stockage null dans champ non-null   }
   NP_GUARANTEED_DEREF            = 6;  { Deref garanti null                  }
 
+  { --- TODO 10 : Constantes pour le detecteur de fuites de ressources --- }
+  MAX_RES_TRACKED    = 64;   { Nombre max de ressources trackees par methode }
+  MAX_RES_BUGS       = 64;   { Nombre max de bugs resource leak par methode  }
+  MAX_RES_CLASSES    = 16;   { Nombre de classes ressources connues          }
+
+  { Types de bugs de fuite de ressource }
+  RL_NONE                       = 0;  { Pas de bug                            }
+  RL_UNSATISFIED_OBLIGATION     = 1;  { Ressource potentiellement non fermee  }
+  RL_UNSATISFIED_OBLIG_EXCEPT   = 2;  { Ressource non fermee sur exception    }
+  RL_OPEN_STREAM                = 3;  { Flux non ferme                        }
+  RL_OPEN_STREAM_EXCEPTION      = 4;  { Flux non ferme sur chemin exception   }
+
+  { Etat d'une ressource trackee }
+  RS_UNKNOWN = 0;  { Etat inconnu                                           }
+  RS_OPEN    = 1;  { Ressource ouverte (apres new/constructeur)              }
+  RS_CLOSED  = 2;  { Ressource fermee (apres appel close())                  }
+  RS_MAYBE   = 3;  { Peut etre ouverte ou fermee selon le chemin             }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -743,6 +761,29 @@ Type
     OpType   : String;     { Type d'operation fautive                        }
   End;
   TNullBugArray = Array[0..MAX_NULL_BUGS-1] of TNullBugInfo;
+
+  { --- TODO 10 : Structure TResourceInfo : ressource trackee --- }
+  TResourceInfo = Record
+    VarIdx     : Integer;    { Index de la variable locale contenant la ressource }
+    ClassName  : String;     { Nom complet de la classe ressource                  }
+    OpenPC     : LongWord;   { PC ou la ressource a ete ouverte                    }
+    ClosePC    : LongWord;   { PC ou la ressource a ete fermee (0 si non fermee)   }
+    State      : Byte;       { Etat courant (RS_OPEN, RS_CLOSED, RS_MAYBE)         }
+    LineNum    : Integer;    { Numero de ligne source de l'ouverture               }
+    InTryBlock : Boolean;    { True si ouvert dans un bloc try                     }
+    HasFinally : Boolean;    { True si try possede un bloc finally                 }
+  End;
+  TResourceArray = Array[0..MAX_RES_TRACKED-1] of TResourceInfo;
+
+  { --- TODO 10 : Structure TResLeakBug : bug resource leak detecte --- }
+  TResLeakBug = Record
+    BugType    : Integer;    { Type de bug (RL_OPEN_STREAM, etc.)                  }
+    PC         : LongWord;   { Position dans le bytecode                           }
+    LineNum    : Integer;    { Numero de ligne source                              }
+    ClassName  : String;     { Classe de la ressource                              }
+    VarIdx     : Integer;    { Index de la variable locale                         }
+  End;
+  TResLeakBugArray = Array[0..MAX_RES_BUGS-1] of TResLeakBug;
 
 { ============================================================================ }
 { Variables globales                                                           }
@@ -786,6 +827,18 @@ Var
   NullTotalDeref  : Integer;      { Nombre total de dereferences analysees     }
   NullCurrentPC   : LongWord;     { PC de l'instruction courante               }
   NullCurrentLine : Integer;      { Ligne source courante                      }
+  { --- TODO 10 : Variables du detecteur de fuites de ressources --- }
+  ResLeakInitialized : Boolean;   { True si module initialise                  }
+  Resources       : TResourceArray; { Table des ressources trackees            }
+  ResourceCount   : Integer;      { Nombre de ressources trackees              }
+  ResLeakBugs     : TResLeakBugArray; { Bugs detectes dans la methode courante }
+  ResLeakBugCount : Integer;      { Nombre de bugs detectes                    }
+  ResLabelNum     : Integer;      { Compteur pour generation de labels         }
+  ResTotalOpens   : Integer;      { Nombre total de ressources ouvertes        }
+  ResTotalCloses  : Integer;      { Nombre total de fermetures detectees       }
+  ResTotalLeaks   : Integer;      { Nombre total de fuites detectees           }
+  ResCurrentPC    : LongWord;     { PC de l'instruction courante               }
+  ResCurrentLine  : Integer;      { Ligne source courante                      }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -4656,7 +4709,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 10 [A FAIRE] - Detecteur : fuite de ressources (resource leaks)         }
+{ TODO 10 [IMPLEMENTE] - Detecteur : fuite de ressources (resource leaks)      }
 { ============================================================================ }
 {                                                                              }
 {  - Codes de bugs detectes :                                                    }
@@ -4687,6 +4740,555 @@ End;
 {      StartPC, EndPC: LongWord): Boolean                                       }
 {      Rechercher un appel .close() sur la variable locale d'index VarIdx       }
 {      entre StartPC et EndPC dans le bytecode                                  }
+
+{ --- TODO 10 : Initialiser le module resource leak detector --- }
+Procedure InitResLeakState;
+Var
+  I: Integer;
+Begin
+  ResLeakInitialized := True;
+  ResourceCount := 0;
+  ResLeakBugCount := 0;
+  ResLabelNum := 0;
+  ResTotalOpens := 0;
+  ResTotalCloses := 0;
+  ResTotalLeaks := 0;
+  ResCurrentPC := 0;
+  ResCurrentLine := 0;
+  
+  For I := 0 to MAX_RES_TRACKED - 1 Do Begin
+    Resources[I].VarIdx := -1;
+    Resources[I].ClassName := '';
+    Resources[I].OpenPC := 0;
+    Resources[I].ClosePC := 0;
+    Resources[I].State := RS_UNKNOWN;
+    Resources[I].LineNum := 0;
+    Resources[I].InTryBlock := False;
+    Resources[I].HasFinally := False;
+  End;
+  
+  For I := 0 to MAX_RES_BUGS - 1 Do Begin
+    ResLeakBugs[I].BugType := RL_NONE;
+    ResLeakBugs[I].PC := 0;
+    ResLeakBugs[I].LineNum := 0;
+    ResLeakBugs[I].ClassName := '';
+    ResLeakBugs[I].VarIdx := -1;
+  End;
+End;
+
+{ --- TODO 10 : Generer un label unique --- }
+Function GenResLabel: String;
+Begin
+  Inc(ResLabelNum);
+  GenResLabel := '_RL_' + IntToStr_(ResLabelNum);
+End;
+
+{ --- TODO 10 : Convertir un type de bug en chaine --- }
+Function ResLeakBugTypeName(BugType: Integer): String;
+Begin
+  Case BugType of
+    RL_NONE:                     ResLeakBugTypeName := 'RL_NONE';
+    RL_UNSATISFIED_OBLIGATION:   ResLeakBugTypeName := 'OBJ_UNSATISFIED_OBLIGATION';
+    RL_UNSATISFIED_OBLIG_EXCEPT: ResLeakBugTypeName := 'OBJ_UNSATISFIED_OBLIGATION_EXCEPTION';
+    RL_OPEN_STREAM:              ResLeakBugTypeName := 'OS_OPEN_STREAM';
+    RL_OPEN_STREAM_EXCEPTION:    ResLeakBugTypeName := 'OS_OPEN_STREAM_EXCEPTION_PATH';
+  Else
+    ResLeakBugTypeName := 'RL_UNKNOWN';
+  End;
+End;
+
+{ --- TODO 10 : Convertir un etat de ressource en chaine --- }
+Function ResStateName(State: Byte): String;
+Begin
+  Case State of
+    RS_UNKNOWN: ResStateName := 'UNKNOWN';
+    RS_OPEN:    ResStateName := 'OPEN';
+    RS_CLOSED:  ResStateName := 'CLOSED';
+    RS_MAYBE:   ResStateName := 'MAYBE';
+  Else
+    ResStateName := '?';
+  End;
+End;
+
+{ --- TODO 10 : Verifier si une classe est une ressource Closeable --- }
+Function IsCloseableClass(ClassName: String): Boolean;
+Begin
+  IsCloseableClass := False;
+  
+  { Classes du package java/io }
+  If (ClassName = 'java/io/InputStream') or
+     (ClassName = 'java/io/FileInputStream') or
+     (ClassName = 'java/io/BufferedInputStream') or
+     (ClassName = 'java/io/DataInputStream') or
+     (ClassName = 'java/io/ObjectInputStream') or
+     (ClassName = 'java/io/ByteArrayInputStream') Then
+    IsCloseableClass := True
+  Else If (ClassName = 'java/io/OutputStream') or
+          (ClassName = 'java/io/FileOutputStream') or
+          (ClassName = 'java/io/BufferedOutputStream') or
+          (ClassName = 'java/io/DataOutputStream') or
+          (ClassName = 'java/io/ObjectOutputStream') or
+          (ClassName = 'java/io/ByteArrayOutputStream') or
+          (ClassName = 'java/io/PrintStream') Then
+    IsCloseableClass := True
+  Else If (ClassName = 'java/io/Reader') or
+          (ClassName = 'java/io/FileReader') or
+          (ClassName = 'java/io/BufferedReader') or
+          (ClassName = 'java/io/InputStreamReader') or
+          (ClassName = 'java/io/StringReader') Then
+    IsCloseableClass := True
+  Else If (ClassName = 'java/io/Writer') or
+          (ClassName = 'java/io/FileWriter') or
+          (ClassName = 'java/io/BufferedWriter') or
+          (ClassName = 'java/io/OutputStreamWriter') or
+          (ClassName = 'java/io/PrintWriter') or
+          (ClassName = 'java/io/StringWriter') Then
+    IsCloseableClass := True
+  { Classes du package java/sql }
+  Else If (ClassName = 'java/sql/Connection') or
+          (ClassName = 'java/sql/Statement') or
+          (ClassName = 'java/sql/PreparedStatement') or
+          (ClassName = 'java/sql/CallableStatement') or
+          (ClassName = 'java/sql/ResultSet') Then
+    IsCloseableClass := True
+  { Classes du package java/net }
+  Else If (ClassName = 'java/net/Socket') or
+          (ClassName = 'java/net/ServerSocket') or
+          (ClassName = 'java/net/DatagramSocket') or
+          (ClassName = 'java/net/URLConnection') Then
+    IsCloseableClass := True
+  { Interfaces Closeable et AutoCloseable }
+  Else If (ClassName = 'java/io/Closeable') or
+          (ClassName = 'java/lang/AutoCloseable') Then
+    IsCloseableClass := True;
+End;
+
+{ --- TODO 10 : Verifier si une methode est close() --- }
+Function IsCloseMethod(MethodName, Descriptor: String): Boolean;
+Begin
+  IsCloseMethod := (MethodName = 'close') and (Descriptor = '()V');
+End;
+
+{ --- TODO 10 : Extraire le nom de classe d'un descripteur de methode CP --- }
+Function ExtractClassFromMethodRef(CpIdx: Word): String;
+Var
+  ClassIdx, NatIdx: Word;
+Begin
+  ExtractClassFromMethodRef := '';
+  If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
+    If (CP^[CpIdx].Tag = CP_METHODREF) or 
+       (CP^[CpIdx].Tag = CP_INTERFACEMETHODREF) Then Begin
+      ClassIdx := CP^[CpIdx].Ref1;
+      NatIdx := CP^[CpIdx].Ref2;
+      If (ClassIdx > 0) and (ClassIdx < CPCount) Then Begin
+        If CP^[ClassIdx].Tag = CP_CLASS Then Begin
+          ExtractClassFromMethodRef := CPGetUtf8(CP^[ClassIdx].Ref1);
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 10 : Extraire le nom de methode d'un NameAndType CP --- }
+Function ExtractMethodNameFromRef(CpIdx: Word): String;
+Var
+  NatIdx, NameIdx: Word;
+Begin
+  ExtractMethodNameFromRef := '';
+  If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
+    If (CP^[CpIdx].Tag = CP_METHODREF) or 
+       (CP^[CpIdx].Tag = CP_INTERFACEMETHODREF) Then Begin
+      NatIdx := CP^[CpIdx].Ref2;
+      If (NatIdx > 0) and (NatIdx < CPCount) Then Begin
+        If CP^[NatIdx].Tag = CP_NAMEANDTYPE Then Begin
+          NameIdx := CP^[NatIdx].Ref1;
+          ExtractMethodNameFromRef := CPGetUtf8(NameIdx);
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 10 : Extraire le descripteur d'un NameAndType CP --- }
+Function ExtractMethodDescFromRef(CpIdx: Word): String;
+Var
+  NatIdx, DescIdx: Word;
+Begin
+  ExtractMethodDescFromRef := '';
+  If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
+    If (CP^[CpIdx].Tag = CP_METHODREF) or 
+       (CP^[CpIdx].Tag = CP_INTERFACEMETHODREF) Then Begin
+      NatIdx := CP^[CpIdx].Ref2;
+      If (NatIdx > 0) and (NatIdx < CPCount) Then Begin
+        If CP^[NatIdx].Tag = CP_NAMEANDTYPE Then Begin
+          DescIdx := CP^[NatIdx].Ref2;
+          ExtractMethodDescFromRef := CPGetUtf8(DescIdx);
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 10 : Tracker l'ouverture d'une ressource --- }
+Procedure TrackResourceOpen(VarIdx: Integer; ClassName: String; PC: LongWord; LineNum: Integer);
+Begin
+  If ResourceCount < MAX_RES_TRACKED Then Begin
+    Resources[ResourceCount].VarIdx := VarIdx;
+    Resources[ResourceCount].ClassName := ClassName;
+    Resources[ResourceCount].OpenPC := PC;
+    Resources[ResourceCount].ClosePC := 0;
+    Resources[ResourceCount].State := RS_OPEN;
+    Resources[ResourceCount].LineNum := LineNum;
+    Resources[ResourceCount].InTryBlock := False;
+    Resources[ResourceCount].HasFinally := False;
+    Inc(ResourceCount);
+    Inc(ResTotalOpens);
+  End;
+End;
+
+{ --- TODO 10 : Tracker la fermeture d'une ressource --- }
+Function TrackResourceClose(VarIdx: Integer; PC: LongWord): Boolean;
+Var
+  I: Integer;
+Begin
+  TrackResourceClose := False;
+  { Chercher la ressource par index de variable locale }
+  For I := 0 to ResourceCount - 1 Do Begin
+    If (Resources[I].VarIdx = VarIdx) and (Resources[I].State = RS_OPEN) Then Begin
+      Resources[I].ClosePC := PC;
+      Resources[I].State := RS_CLOSED;
+      Inc(ResTotalCloses);
+      TrackResourceClose := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 10 : Enregistrer un bug de fuite de ressource --- }
+Procedure AddResLeakBug(BugType: Integer; PC: LongWord; LineNum: Integer; 
+                        ClassName: String; VarIdx: Integer);
+Begin
+  If ResLeakBugCount < MAX_RES_BUGS Then Begin
+    ResLeakBugs[ResLeakBugCount].BugType := BugType;
+    ResLeakBugs[ResLeakBugCount].PC := PC;
+    ResLeakBugs[ResLeakBugCount].LineNum := LineNum;
+    ResLeakBugs[ResLeakBugCount].ClassName := ClassName;
+    ResLeakBugs[ResLeakBugCount].VarIdx := VarIdx;
+    Inc(ResLeakBugCount);
+    Inc(ResTotalLeaks);
+  End;
+End;
+
+{ --- TODO 10 : Chercher un appel close() dans le bytecode --- }
+Function FindCloseCall(MethIdx: Integer; VarIdx: Integer; 
+                       StartPC, EndPC: LongWord): Boolean;
+Var
+  I: Integer;
+  Op: Byte;
+  CpIdx: Word;
+  MName, MDesc: String;
+  LoadedVar: Integer;
+Begin
+  FindCloseCall := False;
+  LoadedVar := -1;
+  
+  If Instructions = Nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    If (Instructions^[I].PC >= StartPC) and (Instructions^[I].PC <= EndPC) Then Begin
+      Op := Instructions^[I].Opcode;
+      
+      { Tracker les aload pour savoir quelle variable est chargee }
+      If (Op >= OP_ALOAD_0) and (Op <= OP_ALOAD_3) Then
+        LoadedVar := Op - OP_ALOAD_0
+      Else If Op = OP_ALOAD Then
+        LoadedVar := Instructions^[I].Op1
+      Else If (Op = OP_INVOKEVIRTUAL) or (Op = OP_INVOKEINTERFACE) Then Begin
+        { Verifier si c'est un appel a close() }
+        CpIdx := Word(Instructions^[I].Op1);
+        MName := ExtractMethodNameFromRef(CpIdx);
+        MDesc := ExtractMethodDescFromRef(CpIdx);
+        
+        If IsCloseMethod(MName, MDesc) and (LoadedVar = VarIdx) Then Begin
+          FindCloseCall := True;
+          Exit;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 10 : Verifier si un PC est dans une table d'exception (finally) --- }
+Function IsInExceptionHandler(MethIdx: Integer; PC: LongWord): Boolean;
+Var
+  I: Integer;
+Begin
+  IsInExceptionHandler := False;
+  
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  
+  For I := 0 to Methods[MethIdx].ExcCount - 1 Do Begin
+    If (PC >= Methods[MethIdx].ExcTable[I].StartPC) and 
+       (PC < Methods[MethIdx].ExcTable[I].EndPC) Then Begin
+      IsInExceptionHandler := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 10 : Verifier si une ressource a un finally handler --- }
+Function HasFinallyHandler(MethIdx: Integer; OpenPC: LongWord): Boolean;
+Var
+  I: Integer;
+Begin
+  HasFinallyHandler := False;
+  
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  
+  For I := 0 to Methods[MethIdx].ExcCount - 1 Do Begin
+    { Un finally handler a catch_type = 0 }
+    If (Methods[MethIdx].ExcTable[I].CatchType = 0) and
+       (OpenPC >= Methods[MethIdx].ExcTable[I].StartPC) and
+       (OpenPC < Methods[MethIdx].ExcTable[I].EndPC) Then Begin
+      HasFinallyHandler := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 10 : Analyser une instruction pour les fuites de ressources --- }
+Procedure AnalyzeInstrForResourceLeak(MethIdx, InstrIdx: Integer);
+Var
+  Op: Byte;
+  CpIdx: Word;
+  ClassName, MName, MDesc: String;
+  StoreIdx: Integer;
+  PrevOp: Byte;
+  PC: LongWord;
+  LineNum: Integer;
+Begin
+  If Instructions = Nil Then Exit;
+  If (InstrIdx < 0) or (InstrIdx >= InstrCount) Then Exit;
+  
+  Op := Instructions^[InstrIdx].Opcode;
+  PC := Instructions^[InstrIdx].PC;
+  LineNum := Instructions^[InstrIdx].LineNum;
+  
+  ResCurrentPC := PC;
+  ResCurrentLine := LineNum;
+  
+  { Detecter new <classe ressource> }
+  If Op = OP_NEW Then Begin
+    CpIdx := Word(Instructions^[InstrIdx].Op1);
+    If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
+      If CP^[CpIdx].Tag = CP_CLASS Then Begin
+        ClassName := CPGetUtf8(CP^[CpIdx].Ref1);
+        If IsCloseableClass(ClassName) Then Begin
+          { Chercher l'instruction astore suivante pour obtenir l'index de variable }
+          If (InstrIdx + 1 < InstrCount) Then Begin
+            { Peut etre un DUP + INVOKESPECIAL + ASTORE }
+            { Pour simplifier, on suppose que la variable sera stockee plus loin }
+          End;
+        End;
+      End;
+    End;
+  End
+  
+  { Detecter invokespecial (constructeur) sur classe ressource }
+  Else If Op = OP_INVOKESPECIAL Then Begin
+    CpIdx := Word(Instructions^[InstrIdx].Op1);
+    MName := ExtractMethodNameFromRef(CpIdx);
+    MDesc := ExtractMethodDescFromRef(CpIdx);
+    ClassName := ExtractClassFromMethodRef(CpIdx);
+    
+    If (MName = '<init>') and IsCloseableClass(ClassName) Then Begin
+      { Chercher l'astore suivant }
+      If (InstrIdx + 1 < InstrCount) Then Begin
+        PrevOp := Instructions^[InstrIdx + 1].Opcode;
+        If (PrevOp >= OP_ASTORE_0) and (PrevOp <= OP_ASTORE_3) Then Begin
+          StoreIdx := PrevOp - OP_ASTORE_0;
+          TrackResourceOpen(StoreIdx, ClassName, PC, LineNum);
+        End
+        Else If PrevOp = OP_ASTORE Then Begin
+          StoreIdx := Instructions^[InstrIdx + 1].Op1;
+          TrackResourceOpen(StoreIdx, ClassName, PC, LineNum);
+        End;
+      End;
+    End;
+  End
+  
+  { Detecter invokevirtual/invokeinterface close() }
+  Else If (Op = OP_INVOKEVIRTUAL) or (Op = OP_INVOKEINTERFACE) Then Begin
+    CpIdx := Word(Instructions^[InstrIdx].Op1);
+    MName := ExtractMethodNameFromRef(CpIdx);
+    MDesc := ExtractMethodDescFromRef(CpIdx);
+    
+    If IsCloseMethod(MName, MDesc) Then Begin
+      { Chercher l'aload precedent pour identifier la variable }
+      If InstrIdx > 0 Then Begin
+        PrevOp := Instructions^[InstrIdx - 1].Opcode;
+        If (PrevOp >= OP_ALOAD_0) and (PrevOp <= OP_ALOAD_3) Then Begin
+          StoreIdx := PrevOp - OP_ALOAD_0;
+          TrackResourceClose(StoreIdx, PC);
+        End
+        Else If PrevOp = OP_ALOAD Then Begin
+          StoreIdx := Instructions^[InstrIdx - 1].Op1;
+          TrackResourceClose(StoreIdx, PC);
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 10 : Detecter les fuites de ressources dans une methode --- }
+Procedure DetectResourceLeaks(MethIdx: Integer);
+Var
+  I, J: Integer;
+  HasClose: Boolean;
+  BugType: Integer;
+Begin
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  If Methods[MethIdx].CodeLen = 0 Then Exit;
+  If Instructions = Nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  
+  { Reinitialiser le tracking des ressources pour cette methode }
+  ResourceCount := 0;
+  ResLeakBugCount := 0;
+  
+  { Passe 1 : Analyser toutes les instructions }
+  For I := 0 to InstrCount - 1 Do Begin
+    AnalyzeInstrForResourceLeak(MethIdx, I);
+  End;
+  
+  { Passe 2 : Verifier que toutes les ressources ouvertes sont fermees }
+  For I := 0 to ResourceCount - 1 Do Begin
+    If Resources[I].State = RS_OPEN Then Begin
+      { Chercher si close() est appele quelque part apres l'ouverture }
+      HasClose := FindCloseCall(MethIdx, Resources[I].VarIdx, 
+                                Resources[I].OpenPC, Methods[MethIdx].CodeLen);
+      
+      If Not HasClose Then Begin
+        { Verifier si c'est dans un bloc try avec finally }
+        If HasFinallyHandler(MethIdx, Resources[I].OpenPC) Then
+          BugType := RL_UNSATISFIED_OBLIG_EXCEPT
+        Else
+          BugType := RL_OPEN_STREAM;
+        
+        AddResLeakBug(BugType, Resources[I].OpenPC, Resources[I].LineNum,
+                      Resources[I].ClassName, Resources[I].VarIdx);
+        
+        { Ajouter aussi au rapport global }
+        AddBug(ResLeakBugTypeName(BugType), CAT_CORRECTNESS, SEV_MEDIUM,
+               InternalToJavaName(ClassInfo.ThisClass), 
+               Methods[MethIdx].Name, '',
+               Resources[I].LineNum,
+               'Resource ' + Resources[I].ClassName + ' may not be closed');
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 10 : Afficher l'etat du detecteur de ressources --- }
+Procedure DumpResLeakState;
+Var
+  I: Integer;
+Begin
+  WriteLn;
+  WriteLn('=== Resource Leak Detector State ===');
+  WriteLn('Initialized    : ', ResLeakInitialized);
+  WriteLn('Resources tracked: ', ResourceCount);
+  WriteLn('Bugs detected  : ', ResLeakBugCount);
+  WriteLn('Total opens    : ', ResTotalOpens);
+  WriteLn('Total closes   : ', ResTotalCloses);
+  WriteLn('Total leaks    : ', ResTotalLeaks);
+  WriteLn('Current PC     : ', ResCurrentPC);
+  WriteLn('Current Line   : ', ResCurrentLine);
+  WriteLn;
+  
+  If ResourceCount > 0 Then Begin
+    WriteLn('--- Tracked Resources ---');
+    For I := 0 to ResourceCount - 1 Do Begin
+      WriteLn('  [', I, '] VarIdx=', Resources[I].VarIdx,
+              ' Class=', Resources[I].ClassName,
+              ' State=', ResStateName(Resources[I].State),
+              ' OpenPC=', Resources[I].OpenPC,
+              ' ClosePC=', Resources[I].ClosePC);
+    End;
+    WriteLn;
+  End;
+  
+  If ResLeakBugCount > 0 Then Begin
+    WriteLn('--- Resource Leak Bugs ---');
+    For I := 0 to ResLeakBugCount - 1 Do Begin
+      WriteLn('  [', I, '] ', ResLeakBugTypeName(ResLeakBugs[I].BugType),
+              ' PC=', ResLeakBugs[I].PC,
+              ' Line=', ResLeakBugs[I].LineNum,
+              ' Class=', ResLeakBugs[I].ClassName);
+    End;
+  End;
+End;
+
+{ --- TODO 10 : Accesseurs du module resource leak detector --- }
+Function IsResLeakInitialized: Boolean;
+Begin
+  IsResLeakInitialized := ResLeakInitialized;
+End;
+
+Function GetResourceCount: Integer;
+Begin
+  GetResourceCount := ResourceCount;
+End;
+
+Function GetResLeakBugCount: Integer;
+Begin
+  GetResLeakBugCount := ResLeakBugCount;
+End;
+
+Function GetResTotalOpens: Integer;
+Begin
+  GetResTotalOpens := ResTotalOpens;
+End;
+
+Function GetResTotalCloses: Integer;
+Begin
+  GetResTotalCloses := ResTotalCloses;
+End;
+
+Function GetResTotalLeaks: Integer;
+Begin
+  GetResTotalLeaks := ResTotalLeaks;
+End;
+
+Function GetResLabelNum: Integer;
+Begin
+  GetResLabelNum := ResLabelNum;
+End;
+
+Function GetResLeakBugType(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < ResLeakBugCount) Then
+    GetResLeakBugType := ResLeakBugs[Idx].BugType
+  Else
+    GetResLeakBugType := RL_NONE;
+End;
+
+Function GetResLeakBugPC(Idx: Integer): LongWord;
+Begin
+  If (Idx >= 0) and (Idx < ResLeakBugCount) Then
+    GetResLeakBugPC := ResLeakBugs[Idx].PC
+  Else
+    GetResLeakBugPC := 0;
+End;
+
+Function GetResLeakBugLine(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < ResLeakBugCount) Then
+    GetResLeakBugLine := ResLeakBugs[Idx].LineNum
+  Else
+    GetResLeakBugLine := 0;
+End;
 
 { ============================================================================ }
 { TODO 11 [A FAIRE] - Detecteur : boucles infinies et blocs inaccessibles      }
