@@ -28,7 +28,7 @@
 {  TODO 10 [IMPLEMENTE] - Detecteur : fuite de ressources (resource leaks)    }
 {  TODO 11 [IMPLEMENTE] - Detecteur : boucles infinies et blocs inaccessibles }
 {  TODO 12 [IMPLEMENTE] - Detecteur : mauvaises pratiques (bad practices)     }
-{  TODO 13 [A FAIRE] - Detecteur : comparaisons incorrectes d'objets          }
+{  TODO 13 [IMPLEMENTE] - Detecteur : comparaisons incorrectes d'objets       }
 {  TODO 14 [A FAIRE] - Detecteur : problemes de performance                   }
 {  TODO 15 [A FAIRE] - Detecteur : vulnerabilites de securite                 }
 {  TODO 16 [A FAIRE] - Detecteur : problemes de multi-threading               }
@@ -762,6 +762,33 @@ Const
   RR_NOT_CHECKED                        = 8;  { read() retour non verifie     }
   SR_NOT_CHECKED                        = 9;  { skip() retour non verifie     }
 
+  { --- TODO 13 : Constantes pour le detecteur de comparaisons incorrectes --- }
+  MAX_BC_BUGS         = 64;   { Nombre max de bugs comparaison par methode     }
+  MAX_BC_STACK_TYPES  = 64;   { Nombre max de types trackes sur la pile        }
+
+  { Types de bugs de comparaisons incorrectes }
+  BC_NONE                               = 0;  { Pas de bug                    }
+  EC_UNRELATED_TYPES                    = 1;  { == entre types sans relation  }
+  ES_COMPARING_STRINGS_WITH_EQ          = 2;  { String compare avec ==        }
+  RC_REF_COMPARISON_BAD_PRACTICE        = 3;  { == avec wrapper (Integer etc) }
+  GC_UNRELATED_TYPES                    = 4;  { get/contains avec mauvais type}
+  EC_ARRAY_AND_NONARRAY                 = 5;  { Array compare avec non-array  }
+  EC_BAD_ARRAY_COMPARE                  = 6;  { Tableaux compares avec ==     }
+  RC_REF_COMPARISON_BAD_PRACTICE_BOOLEAN = 7; { Boolean compare avec ==       }
+
+  { Types de pile pour l'analyse de types }
+  ST_UNKNOWN     = 0;  { Type inconnu                                         }
+  ST_NULL        = 1;  { Valeur null                                          }
+  ST_INT         = 2;  { Valeur entiere (int, short, byte, char)              }
+  ST_LONG        = 3;  { Valeur long                                          }
+  ST_FLOAT       = 4;  { Valeur float                                         }
+  ST_DOUBLE      = 5;  { Valeur double                                        }
+  ST_REF         = 6;  { Reference objet quelconque                           }
+  ST_STRING      = 7;  { Reference java/lang/String                           }
+  ST_WRAPPER     = 8;  { Reference type wrapper (Integer, Long, etc.)         }
+  ST_ARRAY       = 9;  { Reference tableau                                    }
+  ST_COLLECTION  = 10; { Reference Collection (List, Set, Map)                }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -854,6 +881,27 @@ Type
   End;
   TCheckcastArray = Array[0..MAX_BP_CASTS-1] of TCheckcastInfo;
 
+  { --- TODO 13 : Structure TBadCompBug : bug comparaison incorrecte detecte --- }
+  TBadCompBug = Record
+    BugType     : Integer;    { Type de bug (EC_UNRELATED_TYPES, etc.)     }
+    PC          : LongWord;   { Position dans le bytecode                  }
+    LineNum     : Integer;    { Numero de ligne source                     }
+    ClassName   : String;     { Nom de classe concernee                    }
+    MethodName  : String;     { Nom de methode concernee                   }
+    Type1       : String;     { Premier type compare                       }
+    Type2       : String;     { Deuxieme type compare                      }
+  End;
+  TBadCompBugArray = Array[0..MAX_BC_BUGS-1] of TBadCompBug;
+
+  { --- TODO 13 : Structure TStackTypeInfo : info type sur la pile --- }
+  TStackTypeInfo = Record
+    StackType   : Integer;    { Type (ST_UNKNOWN, ST_STRING, etc.)         }
+    TypeName    : String;     { Nom du type complet (java/lang/String)     }
+    SourcePC    : LongWord;   { PC ou ce type a ete pousse sur la pile     }
+    IsNew       : Boolean;    { True si resultat d'un new                  }
+  End;
+  TStackTypeArray = Array[0..MAX_BC_STACK_TYPES-1] of TStackTypeInfo;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -940,6 +988,20 @@ Var
   BPHasFinalize    : Boolean;     { True si la classe a une methode finalize() }
   BPFinalizePublic : Boolean;     { True si finalize() est public              }
   BPImplementsCloneable : Boolean; { True si la classe implemente Cloneable    }
+  { --- TODO 13 : Variables du detecteur de comparaisons incorrectes --- }
+  BCInitialized    : Boolean;     { True si module initialise                  }
+  BCBugs           : TBadCompBugArray; { Bugs detectes dans la methode         }
+  BCBugCount       : Integer;     { Nombre de bugs detectes                    }
+  BCStackTypes     : TStackTypeArray; { Types trackes sur la pile               }
+  BCStackTypeTop   : Integer;     { Sommet de la pile de types                 }
+  BCLabelNum       : Integer;     { Compteur pour generation de labels         }
+  BCTotalCompares  : Integer;     { Nombre total de comparaisons analysees     }
+  BCTotalBadString : Integer;     { Nombre total de comparaisons String ==     }
+  BCTotalBadWrapper : Integer;    { Nombre total de comparaisons wrapper ==    }
+  BCTotalUnrelated : Integer;     { Nombre total de types non-relies           }
+  BCTotalBadCollection : Integer; { Nombre total de get/contains mauvais type  }
+  BCCurrentPC      : LongWord;    { PC de l'instruction courante               }
+  BCCurrentLine    : Integer;     { Ligne source courante                      }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -6465,28 +6527,676 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 13 [A FAIRE] - Detecteur : comparaisons incorrectes d'objets            }
+{ TODO 13 [IMPLEMENTE] - Detecteur : comparaisons incorrectes d'objets          }
 { ============================================================================ }
-{                                                                              }
-{  - Codes de bugs detectes :                                                    }
-{      EC_UNRELATED_TYPES         : comparaison == entre types sans relation    }
-{      ES_COMPARING_STRINGS_WITH_EQ : comparaison String avec == au lieu equals}
-{      RC_REF_COMPARISON_BAD_PRACTICE : comparaison == avec wrapper (Integer)  }
-{      GC_UNRELATED_TYPES         : appel get/contains avec type incompatible  }
-{                                                                              }
-{  - Procedure DetectBadComparisons(Method: TMethodInfo)                        }
-{      Detecter les instructions if_acmpeq et if_acmpne comparant des strings   }
-{      Detecter les comparaisons == appliquees a des types wrapper Java         }
-{        (java/lang/Integer, java/lang/Long, java/lang/Double, etc.)           }
-{      Analyser les types sur la pile au moment de la comparaison               }
-{      Detecter les appels Collection.get(key) avec cle de mauvais type         }
-{                                                                              }
-{  - Function IsStringType(Desc: String): Boolean                               }
-{      Retourner True si le descripteur correspond a java/lang/String           }
-{                                                                              }
-{  - Function IsWrapperType(ClassName: String): Boolean                         }
-{      Retourner True si le nom designe un type wrapper Java                    }
-{      (Integer, Long, Short, Byte, Character, Float, Double, Boolean)          }
+
+{ --- TODO 13 : Initialiser l'etat du module comparaisons incorrectes --- }
+Procedure InitBadCompState;
+Var
+  I: Integer;
+Begin
+  BCInitialized := True;
+  BCBugCount := 0;
+  BCStackTypeTop := 0;
+  BCLabelNum := 0;
+  BCTotalCompares := 0;
+  BCTotalBadString := 0;
+  BCTotalBadWrapper := 0;
+  BCTotalUnrelated := 0;
+  BCTotalBadCollection := 0;
+  BCCurrentPC := 0;
+  BCCurrentLine := 0;
+  
+  For I := 0 to MAX_BC_BUGS - 1 Do Begin
+    BCBugs[I].BugType := BC_NONE;
+    BCBugs[I].PC := 0;
+    BCBugs[I].LineNum := 0;
+    BCBugs[I].ClassName := '';
+    BCBugs[I].MethodName := '';
+    BCBugs[I].Type1 := '';
+    BCBugs[I].Type2 := '';
+  End;
+  
+  For I := 0 to MAX_BC_STACK_TYPES - 1 Do Begin
+    BCStackTypes[I].StackType := ST_UNKNOWN;
+    BCStackTypes[I].TypeName := '';
+    BCStackTypes[I].SourcePC := 0;
+    BCStackTypes[I].IsNew := False;
+  End;
+End;
+
+{ --- TODO 13 : Generer un label unique pour le module --- }
+Function GenBCLabel: String;
+Begin
+  Inc(BCLabelNum);
+  GenBCLabel := '_BC_' + IntToStr_(BCLabelNum);
+End;
+
+{ --- TODO 13 : Convertir un type de bug en chaine --- }
+Function BCBugTypeName(BugType: Integer): String;
+Begin
+  Case BugType of
+    BC_NONE:                           BCBugTypeName := 'BC_NONE';
+    EC_UNRELATED_TYPES:                BCBugTypeName := 'EC_UNRELATED_TYPES';
+    ES_COMPARING_STRINGS_WITH_EQ:      BCBugTypeName := 'ES_COMPARING_STRINGS_WITH_EQ';
+    RC_REF_COMPARISON_BAD_PRACTICE:    BCBugTypeName := 'RC_REF_COMPARISON_BAD_PRACTICE';
+    GC_UNRELATED_TYPES:                BCBugTypeName := 'GC_UNRELATED_TYPES';
+    EC_ARRAY_AND_NONARRAY:             BCBugTypeName := 'EC_ARRAY_AND_NONARRAY';
+    EC_BAD_ARRAY_COMPARE:              BCBugTypeName := 'EC_BAD_ARRAY_COMPARE';
+    RC_REF_COMPARISON_BAD_PRACTICE_BOOLEAN: BCBugTypeName := 'RC_REF_COMPARISON_BAD_PRACTICE_BOOLEAN';
+  Else
+    BCBugTypeName := 'UNKNOWN_BC_BUG';
+  End;
+End;
+
+{ --- TODO 13 : Convertir un type de pile en chaine --- }
+Function BCStackTypeName(StackType: Integer): String;
+Begin
+  Case StackType of
+    ST_UNKNOWN:    BCStackTypeName := 'UNKNOWN';
+    ST_NULL:       BCStackTypeName := 'NULL';
+    ST_INT:        BCStackTypeName := 'INT';
+    ST_LONG:       BCStackTypeName := 'LONG';
+    ST_FLOAT:      BCStackTypeName := 'FLOAT';
+    ST_DOUBLE:     BCStackTypeName := 'DOUBLE';
+    ST_REF:        BCStackTypeName := 'REF';
+    ST_STRING:     BCStackTypeName := 'STRING';
+    ST_WRAPPER:    BCStackTypeName := 'WRAPPER';
+    ST_ARRAY:      BCStackTypeName := 'ARRAY';
+    ST_COLLECTION: BCStackTypeName := 'COLLECTION';
+  Else
+    BCStackTypeName := 'INVALID';
+  End;
+End;
+
+{ --- TODO 13 : Verifier si le descripteur est un type String --- }
+Function IsStringType(Desc: String): Boolean;
+Var
+  D: String;
+Begin
+  D := Desc;
+  { Enlever le L et le ; si present }
+  If (Length(D) > 0) and (D[1] = 'L') Then
+    Delete(D, 1, 1);
+  If (Length(D) > 0) and (D[Length(D)] = ';') Then
+    Delete(D, Length(D), 1);
+  
+  { Comparer avec les formes possibles de String }
+  IsStringType := (D = 'java/lang/String') or
+                  (D = 'Ljava/lang/String;') or
+                  (D = 'Ljava/lang/String') or
+                  (Desc = 'Ljava/lang/String;');
+End;
+
+{ --- TODO 13 : Verifier si le nom de classe est un type wrapper Java --- }
+Function IsWrapperType(ClassName: String): Boolean;
+Var
+  C: String;
+Begin
+  C := ClassName;
+  { Enlever le L et le ; si present }
+  If (Length(C) > 0) and (C[1] = 'L') Then
+    Delete(C, 1, 1);
+  If (Length(C) > 0) and (C[Length(C)] = ';') Then
+    Delete(C, Length(C), 1);
+  
+  IsWrapperType := (C = 'java/lang/Integer') or
+                   (C = 'java/lang/Long') or
+                   (C = 'java/lang/Short') or
+                   (C = 'java/lang/Byte') or
+                   (C = 'java/lang/Character') or
+                   (C = 'java/lang/Float') or
+                   (C = 'java/lang/Double') or
+                   (C = 'java/lang/Boolean');
+End;
+
+{ --- TODO 13 : Verifier si le nom de classe est un type Collection --- }
+Function IsCollectionType(ClassName: String): Boolean;
+Var
+  C: String;
+Begin
+  C := ClassName;
+  { Enlever le L et le ; si present }
+  If (Length(C) > 0) and (C[1] = 'L') Then
+    Delete(C, 1, 1);
+  If (Length(C) > 0) and (C[Length(C)] = ';') Then
+    Delete(C, Length(C), 1);
+  
+  IsCollectionType := (Pos('java/util/List', C) > 0) or
+                      (Pos('java/util/Set', C) > 0) or
+                      (Pos('java/util/Map', C) > 0) or
+                      (Pos('java/util/Collection', C) > 0) or
+                      (Pos('java/util/ArrayList', C) > 0) or
+                      (Pos('java/util/HashMap', C) > 0) or
+                      (Pos('java/util/HashSet', C) > 0) or
+                      (Pos('java/util/LinkedList', C) > 0) or
+                      (Pos('java/util/TreeMap', C) > 0) or
+                      (Pos('java/util/TreeSet', C) > 0);
+End;
+
+{ --- TODO 13 : Verifier si le nom est une methode de recherche Collection --- }
+Function IsCollectionGetMethod(MethodName: String): Boolean;
+Begin
+  IsCollectionGetMethod := (MethodName = 'get') or
+                           (MethodName = 'contains') or
+                           (MethodName = 'containsKey') or
+                           (MethodName = 'containsValue') or
+                           (MethodName = 'indexOf') or
+                           (MethodName = 'lastIndexOf') or
+                           (MethodName = 'remove');
+End;
+
+{ --- TODO 13 : Determiner le type de pile d'un descripteur --- }
+Function DescriptorToStackType(Desc: String): Integer;
+Begin
+  If Length(Desc) = 0 Then Begin
+    DescriptorToStackType := ST_UNKNOWN;
+    Exit;
+  End;
+  
+  Case Desc[1] of
+    'B', 'C', 'I', 'S', 'Z': DescriptorToStackType := ST_INT;
+    'J': DescriptorToStackType := ST_LONG;
+    'F': DescriptorToStackType := ST_FLOAT;
+    'D': DescriptorToStackType := ST_DOUBLE;
+    '[': DescriptorToStackType := ST_ARRAY;
+    'L': Begin
+      If IsStringType(Desc) Then
+        DescriptorToStackType := ST_STRING
+      Else If IsWrapperType(Desc) Then
+        DescriptorToStackType := ST_WRAPPER
+      Else If IsCollectionType(Desc) Then
+        DescriptorToStackType := ST_COLLECTION
+      Else
+        DescriptorToStackType := ST_REF;
+    End;
+  Else
+    DescriptorToStackType := ST_UNKNOWN;
+  End;
+End;
+
+{ --- TODO 13 : Pousser un type sur la pile de types --- }
+Procedure BCPushType(StackType: Integer; TypeName: String; PC: LongWord; IsNew: Boolean);
+Begin
+  If BCStackTypeTop < MAX_BC_STACK_TYPES Then Begin
+    BCStackTypes[BCStackTypeTop].StackType := StackType;
+    BCStackTypes[BCStackTypeTop].TypeName := TypeName;
+    BCStackTypes[BCStackTypeTop].SourcePC := PC;
+    BCStackTypes[BCStackTypeTop].IsNew := IsNew;
+    Inc(BCStackTypeTop);
+  End;
+End;
+
+{ --- TODO 13 : Depiler un type de la pile de types --- }
+Function BCPopType: TStackTypeInfo;
+Var
+  Empty: TStackTypeInfo;
+Begin
+  If BCStackTypeTop > 0 Then Begin
+    Dec(BCStackTypeTop);
+    BCPopType := BCStackTypes[BCStackTypeTop];
+  End Else Begin
+    Empty.StackType := ST_UNKNOWN;
+    Empty.TypeName := '';
+    Empty.SourcePC := 0;
+    Empty.IsNew := False;
+    BCPopType := Empty;
+  End;
+End;
+
+{ --- TODO 13 : Vider la pile de types --- }
+Procedure BCClearStack;
+Begin
+  BCStackTypeTop := 0;
+End;
+
+{ --- TODO 13 : Ajouter un bug de comparaison incorrecte --- }
+Procedure AddBadCompBug(BugType: Integer; PC: LongWord; LineNum: Integer;
+                         AClassName, AMethodName, Type1, Type2: String);
+Begin
+  If BCBugCount < MAX_BC_BUGS Then Begin
+    BCBugs[BCBugCount].BugType := BugType;
+    BCBugs[BCBugCount].PC := PC;
+    BCBugs[BCBugCount].LineNum := LineNum;
+    BCBugs[BCBugCount].ClassName := AClassName;
+    BCBugs[BCBugCount].MethodName := AMethodName;
+    BCBugs[BCBugCount].Type1 := Type1;
+    BCBugs[BCBugCount].Type2 := Type2;
+    Inc(BCBugCount);
+  End;
+End;
+
+{ --- TODO 13 : Verifier si deux types sont relies (compatibles) --- }
+Function AreTypesRelated(Type1, Type2: String): Boolean;
+Var
+  T1, T2: String;
+Begin
+  { Nettoyer les types }
+  T1 := Type1;
+  T2 := Type2;
+  If (Length(T1) > 0) and (T1[1] = 'L') Then Delete(T1, 1, 1);
+  If (Length(T1) > 0) and (T1[Length(T1)] = ';') Then Delete(T1, Length(T1), 1);
+  If (Length(T2) > 0) and (T2[1] = 'L') Then Delete(T2, 1, 1);
+  If (Length(T2) > 0) and (T2[Length(T2)] = ';') Then Delete(T2, Length(T2), 1);
+  
+  { Meme type = relies }
+  If T1 = T2 Then Begin
+    AreTypesRelated := True;
+    Exit;
+  End;
+  
+  { Object est relie a tout }
+  If (T1 = 'java/lang/Object') or (T2 = 'java/lang/Object') Then Begin
+    AreTypesRelated := True;
+    Exit;
+  End;
+  
+  { Si l'un est vide ou inconnu }
+  If (T1 = '') or (T2 = '') Then Begin
+    AreTypesRelated := True;  { On ne sait pas, donc on presume relie }
+    Exit;
+  End;
+  
+  { Cas simples de types non-relies (heuristique) }
+  { String vs autres types specifiques }
+  If (T1 = 'java/lang/String') and IsWrapperType(T2) Then Begin
+    AreTypesRelated := False;
+    Exit;
+  End;
+  If (T2 = 'java/lang/String') and IsWrapperType(T1) Then Begin
+    AreTypesRelated := False;
+    Exit;
+  End;
+  
+  { Par defaut, on presume relies (analyse simplifiee) }
+  AreTypesRelated := True;
+End;
+
+{ --- TODO 13 : Detecter les comparaisons incorrectes dans une methode --- }
+Procedure DetectBadComparisons(MethIdx: Integer);
+Var
+  I: Integer;
+  Inst: TInstruction;
+  LineNum: Integer;
+  CpIdx: Integer;
+  ClassName, MethodName, Descriptor: String;
+  Type1Info, Type2Info: TStackTypeInfo;
+  ReturnType: String;
+  Pos1: Integer;
+Begin
+  If not BCInitialized Then
+    InitBadCompState;
+    
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  If Instructions = Nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  
+  { Reinitialiser la pile de types pour cette methode }
+  BCClearStack;
+  
+  { Parcourir les instructions }
+  For I := 0 to InstrCount - 1 Do Begin
+    Inst := Instructions^[I];
+    BCCurrentPC := Inst.PC;
+    LineNum := GetLineNumber(Methods[MethIdx], Inst.PC);
+    BCCurrentLine := LineNum;
+    
+    Case Inst.Opcode of
+      { Instructions qui poussent null }
+      OP_ACONST_NULL: Begin
+        BCPushType(ST_NULL, '', Inst.PC, False);
+      End;
+      
+      { Instructions new }
+      OP_NEW: Begin
+        CpIdx := Inst.Op1;
+        If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
+          ClassName := CPGetClassName(CpIdx);
+          If IsStringType(ClassName) Then
+            BCPushType(ST_STRING, ClassName, Inst.PC, True)
+          Else If IsWrapperType(ClassName) Then
+            BCPushType(ST_WRAPPER, ClassName, Inst.PC, True)
+          Else If IsCollectionType(ClassName) Then
+            BCPushType(ST_COLLECTION, ClassName, Inst.PC, True)
+          Else
+            BCPushType(ST_REF, ClassName, Inst.PC, True);
+        End;
+      End;
+      
+      { Instructions de chargement de constante String }
+      OP_LDC, OP_LDC_W: Begin
+        CpIdx := Inst.Op1;
+        If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
+          { Verifier si c'est une constante String }
+          If CP^[CpIdx].Tag = CP_STRING Then
+            BCPushType(ST_STRING, 'java/lang/String', Inst.PC, False)
+          Else
+            BCPushType(ST_UNKNOWN, '', Inst.PC, False);
+        End;
+      End;
+      
+      { Instructions de chargement de variables locales (references) }
+      OP_ALOAD, OP_ALOAD_0, OP_ALOAD_1, OP_ALOAD_2, OP_ALOAD_3: Begin
+        { Sans analyse de flux de donnees, on ne connait pas le type }
+        BCPushType(ST_REF, '', Inst.PC, False);
+      End;
+      
+      { Instructions d'appel de methode }
+      OP_INVOKEVIRTUAL, OP_INVOKEINTERFACE, OP_INVOKESPECIAL, OP_INVOKESTATIC: Begin
+        CpIdx := Inst.Op1;
+        If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
+          ClassName := '';
+          MethodName := '';
+          Descriptor := '';
+          CPGetMemberRef(CpIdx, ClassName, MethodName, Descriptor);
+          
+          { Analyser le type de retour du descripteur }
+          Pos1 := Pos(')', Descriptor);
+          If Pos1 > 0 Then Begin
+            ReturnType := Copy(Descriptor, Pos1 + 1, Length(Descriptor) - Pos1);
+            If ReturnType <> 'V' Then Begin
+              { La methode retourne quelque chose }
+              If IsStringType(ReturnType) Then
+                BCPushType(ST_STRING, 'java/lang/String', Inst.PC, False)
+              Else If IsWrapperType(ReturnType) Then
+                BCPushType(ST_WRAPPER, ReturnType, Inst.PC, False)
+              Else If IsCollectionType(ReturnType) Then
+                BCPushType(ST_COLLECTION, ReturnType, Inst.PC, False)
+              Else If (ReturnType[1] = '[') Then
+                BCPushType(ST_ARRAY, ReturnType, Inst.PC, False)
+              Else If (ReturnType[1] = 'L') Then
+                BCPushType(ST_REF, ReturnType, Inst.PC, False);
+            End;
+          End;
+          
+          { Detecter les appels get/contains avec mauvais type }
+          If IsCollectionType(ClassName) and IsCollectionGetMethod(MethodName) Then Begin
+            { Verifier si l'argument est du bon type }
+            { Pour une analyse precise, il faudrait traquer les generiques }
+            { Ici, on fait une heuristique simple }
+            Inc(BCTotalCompares);
+          End;
+        End;
+      End;
+      
+      { Instructions getfield et getstatic }
+      OP_GETFIELD, OP_GETSTATIC: Begin
+        CpIdx := Inst.Op1;
+        If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
+          ClassName := '';
+          MethodName := '';  { En fait c'est le nom du champ }
+          Descriptor := '';
+          CPGetMemberRef(CpIdx, ClassName, MethodName, Descriptor);
+          
+          If IsStringType(Descriptor) Then
+            BCPushType(ST_STRING, Descriptor, Inst.PC, False)
+          Else If IsWrapperType(Descriptor) Then
+            BCPushType(ST_WRAPPER, Descriptor, Inst.PC, False)
+          Else If IsCollectionType(Descriptor) Then
+            BCPushType(ST_COLLECTION, Descriptor, Inst.PC, False)
+          Else If (Length(Descriptor) > 0) and (Descriptor[1] = '[') Then
+            BCPushType(ST_ARRAY, Descriptor, Inst.PC, False)
+          Else If (Length(Descriptor) > 0) and (Descriptor[1] = 'L') Then
+            BCPushType(ST_REF, Descriptor, Inst.PC, False);
+        End;
+      End;
+      
+      { Instructions de chargement de tableau (aaload pousse une reference) }
+      OP_AALOAD: Begin
+        { Pop index, pop arrayref, push element }
+        BCPopType;  { index }
+        BCPopType;  { arrayref }
+        BCPushType(ST_REF, '', Inst.PC, False);  { element }
+      End;
+      
+      { Instructions de comparaison de references if_acmpeq / if_acmpne }
+      OP_IF_ACMPEQ, OP_IF_ACMPNE: Begin
+        Inc(BCTotalCompares);
+        
+        { Depiler les deux types compares }
+        Type2Info := BCPopType;
+        Type1Info := BCPopType;
+        
+        { Verifier si on compare des Strings avec == }
+        If (Type1Info.StackType = ST_STRING) or (Type2Info.StackType = ST_STRING) Then Begin
+          { Comparaison de String avec == }
+          AddBadCompBug(ES_COMPARING_STRINGS_WITH_EQ, Inst.PC, LineNum,
+                        ClassInfo.ThisClass, Methods[MethIdx].Name,
+                        Type1Info.TypeName, Type2Info.TypeName);
+          Inc(BCTotalBadString);
+        End
+        
+        { Verifier si on compare des wrappers avec == }
+        Else If (Type1Info.StackType = ST_WRAPPER) or (Type2Info.StackType = ST_WRAPPER) Then Begin
+          { Comparaison de wrapper avec == }
+          { Si les deux sont des wrappers du meme type mais pas new, c'est un bug }
+          AddBadCompBug(RC_REF_COMPARISON_BAD_PRACTICE, Inst.PC, LineNum,
+                        ClassInfo.ThisClass, Methods[MethIdx].Name,
+                        Type1Info.TypeName, Type2Info.TypeName);
+          Inc(BCTotalBadWrapper);
+        End
+        
+        { Verifier si on compare array avec non-array }
+        Else If ((Type1Info.StackType = ST_ARRAY) and (Type2Info.StackType <> ST_ARRAY) and
+                 (Type2Info.StackType <> ST_NULL) and (Type2Info.StackType <> ST_UNKNOWN)) or
+                ((Type2Info.StackType = ST_ARRAY) and (Type1Info.StackType <> ST_ARRAY) and
+                 (Type1Info.StackType <> ST_NULL) and (Type1Info.StackType <> ST_UNKNOWN)) Then Begin
+          AddBadCompBug(EC_ARRAY_AND_NONARRAY, Inst.PC, LineNum,
+                        ClassInfo.ThisClass, Methods[MethIdx].Name,
+                        Type1Info.TypeName, Type2Info.TypeName);
+          Inc(BCTotalUnrelated);
+        End
+        
+        { Verifier si on compare deux arrays avec == }
+        Else If (Type1Info.StackType = ST_ARRAY) and (Type2Info.StackType = ST_ARRAY) Then Begin
+          AddBadCompBug(EC_BAD_ARRAY_COMPARE, Inst.PC, LineNum,
+                        ClassInfo.ThisClass, Methods[MethIdx].Name,
+                        Type1Info.TypeName, Type2Info.TypeName);
+          Inc(BCTotalUnrelated);
+        End
+        
+        { Verifier si les types sont non-relies }
+        Else If (Type1Info.StackType = ST_REF) and (Type2Info.StackType = ST_REF) Then Begin
+          If not AreTypesRelated(Type1Info.TypeName, Type2Info.TypeName) Then Begin
+            AddBadCompBug(EC_UNRELATED_TYPES, Inst.PC, LineNum,
+                          ClassInfo.ThisClass, Methods[MethIdx].Name,
+                          Type1Info.TypeName, Type2Info.TypeName);
+            Inc(BCTotalUnrelated);
+          End;
+        End;
+      End;
+      
+      { Pop simple - depile un element }
+      OP_POP: Begin
+        BCPopType;
+      End;
+      
+      { Pop2 - depile deux elements (ou un long/double) }
+      OP_POP2: Begin
+        BCPopType;
+        BCPopType;
+      End;
+      
+      { Dup - duplique le sommet }
+      OP_DUP: Begin
+        If BCStackTypeTop > 0 Then Begin
+          Type1Info := BCStackTypes[BCStackTypeTop - 1];
+          BCPushType(Type1Info.StackType, Type1Info.TypeName, Type1Info.SourcePC, Type1Info.IsNew);
+        End;
+      End;
+      
+      { Swap - echange les deux sommets }
+      OP_SWAP: Begin
+        If BCStackTypeTop >= 2 Then Begin
+          Type1Info := BCStackTypes[BCStackTypeTop - 1];
+          Type2Info := BCStackTypes[BCStackTypeTop - 2];
+          BCStackTypes[BCStackTypeTop - 1] := Type2Info;
+          BCStackTypes[BCStackTypeTop - 2] := Type1Info;
+        End;
+      End;
+      
+      { Instructions de stockage (astore) - depilent }
+      OP_ASTORE, OP_ASTORE_0, OP_ASTORE_1, OP_ASTORE_2, OP_ASTORE_3: Begin
+        BCPopType;
+      End;
+      
+      { Instructions de stockage tableau (aastore) }
+      OP_AASTORE: Begin
+        BCPopType;  { value }
+        BCPopType;  { index }
+        BCPopType;  { arrayref }
+      End;
+      
+      { Instructions de saut conditionnel - peuvent bifurquer }
+      OP_IFEQ, OP_IFNE, OP_IFLT, OP_IFGE, OP_IFGT, OP_IFLE,
+      OP_IF_ICMPEQ, OP_IF_ICMPNE, OP_IF_ICMPLT, OP_IF_ICMPGE,
+      OP_IF_ICMPGT, OP_IF_ICMPLE: Begin
+        { Ces instructions comparent des entiers, pas des references }
+        { On ne detecte pas de bugs ici, mais on nettoie la pile }
+        If (Inst.Opcode >= OP_IF_ICMPEQ) and (Inst.Opcode <= OP_IF_ICMPLE) Then Begin
+          BCPopType;
+          BCPopType;
+        End Else Begin
+          BCPopType;
+        End;
+      End;
+      
+      { Instructions ifnull/ifnonnull }
+      OP_IFNULL, OP_IFNONNULL: Begin
+        BCPopType;
+      End;
+      
+      { Return - on peut vider la pile }
+      OP_RETURN, OP_ARETURN, OP_IRETURN, OP_LRETURN, OP_FRETURN, OP_DRETURN: Begin
+        BCClearStack;
+      End;
+      
+      { Athrow - on peut vider la pile }
+      OP_ATHROW: Begin
+        BCClearStack;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 13 : Analyser une methode pour les comparaisons incorrectes --- }
+Procedure AnalyzeMethodForBadComparisons(MethIdx: Integer);
+Begin
+  If not BCInitialized Then
+    InitBadCompState;
+    
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  
+  { Decoder les instructions si pas deja fait }
+  If (Instructions = Nil) or (InstrCount = 0) Then Begin
+    If Methods[MethIdx].CodeLen > 0 Then Begin
+      AllocInstructions;
+      DecodeInstructions(Methods[MethIdx]);
+    End;
+  End;
+  
+  { Detecter les comparaisons incorrectes }
+  DetectBadComparisons(MethIdx);
+End;
+
+{ --- TODO 13 : Dump de l'etat du module comparaisons incorrectes --- }
+Procedure DumpBadCompState;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== Bad Comparisons State ===');
+  WriteLn('Initialized: ', BCInitialized);
+  WriteLn('Bug Count: ', BCBugCount);
+  WriteLn('Stack Type Top: ', BCStackTypeTop);
+  WriteLn('Label Num: ', BCLabelNum);
+  WriteLn('Total Compares: ', BCTotalCompares);
+  WriteLn('Total Bad String: ', BCTotalBadString);
+  WriteLn('Total Bad Wrapper: ', BCTotalBadWrapper);
+  WriteLn('Total Unrelated: ', BCTotalUnrelated);
+  WriteLn('Total Bad Collection: ', BCTotalBadCollection);
+  
+  If BCBugCount > 0 Then Begin
+    WriteLn('--- Bugs ---');
+    For I := 0 to BCBugCount - 1 Do Begin
+      WriteLn('  [', I, '] Type=', BCBugTypeName(BCBugs[I].BugType),
+              ' PC=', BCBugs[I].PC, ' Line=', BCBugs[I].LineNum,
+              ' Class=', BCBugs[I].ClassName,
+              ' Method=', BCBugs[I].MethodName,
+              ' Type1=', BCBugs[I].Type1,
+              ' Type2=', BCBugs[I].Type2);
+    End;
+  End;
+End;
+
+{ --- TODO 13 : Accesseurs du module comparaisons incorrectes --- }
+Function IsBCInitialized: Boolean;
+Begin
+  IsBCInitialized := BCInitialized;
+End;
+
+Function GetBCBugCount: Integer;
+Begin
+  GetBCBugCount := BCBugCount;
+End;
+
+Function GetBCStackTypeTop: Integer;
+Begin
+  GetBCStackTypeTop := BCStackTypeTop;
+End;
+
+Function GetBCTotalCompares: Integer;
+Begin
+  GetBCTotalCompares := BCTotalCompares;
+End;
+
+Function GetBCTotalBadString: Integer;
+Begin
+  GetBCTotalBadString := BCTotalBadString;
+End;
+
+Function GetBCTotalBadWrapper: Integer;
+Begin
+  GetBCTotalBadWrapper := BCTotalBadWrapper;
+End;
+
+Function GetBCTotalUnrelated: Integer;
+Begin
+  GetBCTotalUnrelated := BCTotalUnrelated;
+End;
+
+Function GetBCTotalBadCollection: Integer;
+Begin
+  GetBCTotalBadCollection := BCTotalBadCollection;
+End;
+
+Function GetBCLabelNum: Integer;
+Begin
+  GetBCLabelNum := BCLabelNum;
+End;
+
+Function GetBCBugType(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < BCBugCount) Then
+    GetBCBugType := BCBugs[Idx].BugType
+  Else
+    GetBCBugType := BC_NONE;
+End;
+
+Function GetBCBugPC(Idx: Integer): LongWord;
+Begin
+  If (Idx >= 0) and (Idx < BCBugCount) Then
+    GetBCBugPC := BCBugs[Idx].PC
+  Else
+    GetBCBugPC := 0;
+End;
+
+Function GetBCBugLine(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < BCBugCount) Then
+    GetBCBugLine := BCBugs[Idx].LineNum
+  Else
+    GetBCBugLine := 0;
+End;
 
 { ============================================================================ }
 { TODO 14 [A FAIRE] - Detecteur : problemes de performance                     }

@@ -277,18 +277,45 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               GetBPTotalRetNotChecked, GetBPLabelNum, GetBPBugType,
               GetBPBugPC, GetBPBugLine
 
-  TODO 13 - DETECTEUR : COMPARAISONS INCORRECTES D'OBJETS [A FAIRE]
+  TODO 13 - DETECTEUR : COMPARAISONS INCORRECTES D'OBJETS [IMPLEMENTE]
             Codes detectes : EC_UNRELATED_TYPES,
               ES_COMPARING_STRINGS_WITH_EQ,
-              RC_REF_COMPARISON_BAD_PRACTICE, GC_UNRELATED_TYPES
-            DetectBadComparisons(Method) : detecter if_acmpeq/if_acmpne
-              comparant des String, detecter comparaisons == sur types wrapper
-              (Integer, Long, Double, etc.), analyser les types sur la pile
-              au moment de la comparaison, detecter Collection.get(cle de
-              mauvais type)
+              RC_REF_COMPARISON_BAD_PRACTICE, GC_UNRELATED_TYPES,
+              EC_ARRAY_AND_NONARRAY, EC_BAD_ARRAY_COMPARE,
+              RC_REF_COMPARISON_BAD_PRACTICE_BOOLEAN
+            Constantes : MAX_BC_BUGS=64, MAX_BC_STACK_TYPES=64
+            Types pile : ST_UNKNOWN..ST_COLLECTION (11 types)
+            Types : TBadCompBug (BugType, PC, LineNum, ClassName, MethodName,
+              Type1, Type2), TStackTypeInfo (StackType, TypeName, SourcePC, IsNew)
+            Variables : BCInitialized, BCBugs, BCBugCount, BCStackTypes,
+              BCStackTypeTop, BCLabelNum, BCTotalCompares, BCTotalBadString,
+              BCTotalBadWrapper, BCTotalUnrelated, BCTotalBadCollection,
+              BCCurrentPC, BCCurrentLine
+            InitBadCompState : initialiser toutes les variables du module
+            GenBCLabel : generer un label unique _BC_N
+            BCBugTypeName(BugType) : convertir type de bug en chaine
+            BCStackTypeName(StackType) : convertir type de pile en chaine
             IsStringType(Desc) : True si descripteur = java/lang/String
             IsWrapperType(ClassName) : True si type wrapper Java
               (Integer, Long, Short, Byte, Character, Float, Double, Boolean)
+            IsCollectionType(ClassName) : True si type Collection
+              (List, Set, Map, ArrayList, HashMap, etc.)
+            IsCollectionGetMethod(MethodName) : True si methode get/contains
+            DescriptorToStackType(Desc) : convertir descripteur en type pile
+            BCPushType(StackType, TypeName, PC, IsNew) : pousser type sur pile
+            BCPopType : depiler et retourner type
+            BCClearStack : vider la pile de types
+            AddBadCompBug(BugType, PC, Line, Class, Method, Type1, Type2)
+            AreTypesRelated(Type1, Type2) : True si types compatibles
+            DetectBadComparisons(MethIdx) : detecter if_acmpeq/if_acmpne
+              comparant des String, detecter comparaisons == sur types wrapper,
+              analyser les types sur la pile, detecter array vs non-array
+            AnalyzeMethodForBadComparisons(MethIdx) : analyser une methode
+            DumpBadCompState : afficher l'etat du module
+            Accesseurs (10) : IsBCInitialized, GetBCBugCount, GetBCStackTypeTop,
+              GetBCTotalCompares, GetBCTotalBadString, GetBCTotalBadWrapper,
+              GetBCTotalUnrelated, GetBCTotalBadCollection, GetBCLabelNum,
+              GetBCBugType, GetBCBugPC, GetBCBugLine
 
   TODO 14 - DETECTEUR : PROBLEMES DE PERFORMANCE [A FAIRE]
             Codes detectes : SBSC_USE_STRINGBUFFER_CONCATENATION,
