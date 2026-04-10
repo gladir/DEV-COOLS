@@ -104,20 +104,29 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
             FieldToJavaString(Field) : notation Java du champ
             DumpFields : afficher les champs (debug)
 
-  TODO 06 - LECTURE DES METHODES ET DE L'ATTRIBUT CODE [A FAIRE]
-            Structure TExceptionEntry (StartPC, EndPC, HandlerPC, CatchType)
-            Structure TMethodInfo (AccessFlags, Name, Descriptor, MaxStack,
-              MaxLocals, CodeLen, Code, ExcCount, ExcTable, LineCount,
-              LineTable, LocalCount, LocalTable, IsNative, IsAbstract,
-              IsBridge, IsSynthetic, IsVarArgs)
-            ReadMethods(Count) : lire AccessFlags, Name, Desc pour chaque
-              methode, puis attributs Code (MaxStack, MaxLocals, CodeLen,
-              bytecode, exception_table, LineNumberTable, LocalVariableTable),
-              Exceptions, Deprecated, Synthetic, Signature, Bridge, VarArgs
-            GetLineNumber(Method, PC) : rechercher l'entree LineTable la plus
-              proche pour le PC donne, retourner -1 si absent
-            ParseMethodDescriptor(Desc, ParamTypes, RetType) : analyser le
-              descripteur ex. (ILjava/lang/String;)V -> [int,String], void
+  TODO 06 - LECTURE DES METHODES ET DE L'ATTRIBUT CODE [IMPLEMENTE]
+            Structure TExceptionEntry (StartPC, EndPC, HandlerPC, CatchType,
+              CatchName)
+            Structure TLineEntry (StartPC, LineNum)
+            Structure TLocalVarEntry (StartPC, Length, Name, Descriptor, Index)
+            Structure TMethodInfo (AccessFlags, Name, Descriptor, JavaSignature,
+              MaxStack, MaxLocals, CodeLen, Code, ExcCount, ExcTable, LineCount,
+              LineTable, LocalCount, LocalTable, ThrowsCount, Throws, IsPublic,
+              IsPrivate, IsProtected, IsStatic, IsFinal, IsSynchronized,
+              IsNative, IsAbstract, IsStrict, IsBridge, IsSynthetic, IsVarArgs,
+              IsDeprecated, Signature)
+            InitMethod(M) : initialiser une structure TMethodInfo
+            ParseMethodDescriptor(Desc, ParamCount, Params, RetType) : analyser
+              le descripteur ex. (ILjava/lang/String;)V -> [int,String], void
+            BuildJavaSignature(Name, Desc) : construire signature Java lisible
+            ReadMethodAttributes(M) : lire Code, Exceptions, Deprecated, etc.
+            ReadCodeSubAttributes(M) : lire LineNumberTable, LocalVariableTable
+            ReadMethods : lire toutes les methodes de la classe
+            GetLineNumber(M, PC) : rechercher numero de ligne pour un PC
+            GetMethodAccessStr(M) : obtenir les modificateurs d'acces
+            MethodToJavaString(M) : notation Java complete de la methode
+            DumpMethods : afficher les informations de debug des methodes
+            FreeMethods : liberer la memoire allouee pour le bytecode
 
   TODO 07 - DECODAGE DU BYTECODE JAVA (OPCODES JVM) [A FAIRE]
             Constantes d'opcodes JVM principaux :

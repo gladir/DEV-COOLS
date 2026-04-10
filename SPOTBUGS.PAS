@@ -21,7 +21,7 @@
 {  TODO 03 [IMPLEMENTE] - Decodage du Constant Pool                           }
 {  TODO 04 [IMPLEMENTE] - Lecture des flags, this_class, super_class, interfaces }
 {  TODO 05 [IMPLEMENTE] - Lecture des champs (fields) de la classe            }
-{  TODO 06 [A FAIRE] - Lecture des methodes et de l'attribut Code             }
+{  TODO 06 [IMPLEMENTE] - Lecture des methodes et de l'attribut Code         }
 {  TODO 07 [A FAIRE] - Decodage du bytecode Java (opcodes JVM)                }
 {  TODO 08 [A FAIRE] - Construction du graphe de flux de controle (CFG)       }
 {  TODO 09 [A FAIRE] - Detecteur : dereferencement de pointeur null           }
@@ -352,6 +352,80 @@ Type
   { --- TODO 05 : Tableau des champs --- }
   TFieldArray = Array[0..MAX_FIELDS-1] of TFieldInfo;
 
+  { --- TODO 06 : Constantes pour les methodes --- }
+Const
+  MAX_EXCEPTIONS  = 256;   { Nombre max d'entrees exception_table par methode }
+  MAX_LINES       = 4096;  { Nombre max d'entrees LineNumberTable             }
+  MAX_LOCALVARS   = 256;   { Nombre max d'entrees LocalVariableTable          }
+  MAX_THROWS      = 16;    { Nombre max d'exceptions declarees (throws)       }
+  MAX_PARAMS      = 32;    { Nombre max de parametres d'une methode           }
+  MAX_CODE_SIZE   = 65535; { Taille max du bytecode d'une methode             }
+
+Type
+  { --- TODO 06 : Structure TExceptionEntry : entree de exception_table --- }
+  TExceptionEntry = Record
+    StartPC   : Word;    { Debut de la zone protegee                       }
+    EndPC     : Word;    { Fin de la zone protegee                         }
+    HandlerPC : Word;    { Debut du gestionnaire d'exception               }
+    CatchType : Word;    { Index CP vers la classe catchee, 0 = finally    }
+    CatchName : String;  { Nom de la classe catchee (resolu)               }
+  End;
+  TExcArray = Array[0..MAX_EXCEPTIONS-1] of TExceptionEntry;
+
+  { --- TODO 06 : Structure TLineEntry : entree de LineNumberTable --- }
+  TLineEntry = Record
+    StartPC : Word;      { Offset du premier bytecode pour cette ligne     }
+    LineNum : Word;      { Numero de ligne dans le fichier source          }
+  End;
+  TLineArray = Array[0..MAX_LINES-1] of TLineEntry;
+
+  { --- TODO 06 : Structure TLocalVarEntry : entree de LocalVariableTable --- }
+  TLocalVarEntry = Record
+    StartPC    : Word;   { Debut de la portee de la variable               }
+    Length     : Word;   { Longueur de la portee en octets bytecode        }
+    Name       : String; { Nom de la variable                              }
+    Descriptor : String; { Descripteur de type JVM                         }
+    Index      : Word;   { Index de slot dans le tableau des variables     }
+  End;
+  TLocalVarArray = Array[0..MAX_LOCALVARS-1] of TLocalVarEntry;
+
+  { --- TODO 06 : Structure TMethodInfo : informations d'une methode --- }
+  TMethodInfo = Record
+    AccessFlags   : Word;             { Flags d'acces de la methode         }
+    Name          : String;           { Nom de la methode                   }
+    Descriptor    : String;           { Descripteur JVM de la methode       }
+    JavaSignature : String;           { Signature Java lisible              }
+    MaxStack      : Word;             { Profondeur max de pile              }
+    MaxLocals     : Word;             { Nb variables locales max            }
+    CodeLen       : LongWord;         { Taille du bytecode en octets        }
+    Code          : Pointer;          { Pointeur vers le bytecode           }
+    ExcCount      : Word;             { Nb entrees exception_table          }
+    ExcTable      : TExcArray;        { Table des exceptions                }
+    LineCount     : Word;             { Nb entrees LineNumberTable          }
+    LineTable     : TLineArray;       { Table des lignes                    }
+    LocalCount    : Word;             { Nb entrees LocalVariableTable       }
+    LocalTable    : TLocalVarArray;   { Table des variables locales         }
+    ThrowsCount   : Word;             { Nb exceptions declarees (throws)    }
+    Throws        : Array[0..MAX_THROWS-1] of String; { Exceptions throws   }
+    IsPublic      : Boolean;          { ACC_PUBLIC set                      }
+    IsPrivate     : Boolean;          { ACC_PRIVATE set                     }
+    IsProtected   : Boolean;          { ACC_PROTECTED set                   }
+    IsStatic      : Boolean;          { ACC_STATIC set                      }
+    IsFinal       : Boolean;          { ACC_FINAL set                       }
+    IsSynchronized: Boolean;          { ACC_SYNCHRONIZED set                }
+    IsNative      : Boolean;          { ACC_NATIVE set                      }
+    IsAbstract    : Boolean;          { ACC_ABSTRACT set                    }
+    IsStrict      : Boolean;          { ACC_STRICT set (strictfp)           }
+    IsBridge      : Boolean;          { ACC_BRIDGE set                      }
+    IsSynthetic   : Boolean;          { ACC_SYNTHETIC set                   }
+    IsVarArgs     : Boolean;          { ACC_VARARGS set                     }
+    IsDeprecated  : Boolean;          { Attribut Deprecated present         }
+    Signature     : String;           { Signature generique                 }
+  End;
+
+  { --- TODO 06 : Tableau des methodes --- }
+  TMethodArray = Array[0..MAX_METHODS-1] of TMethodInfo;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -373,6 +447,8 @@ Var
   ClassInfo      : TClassInfo;    { TODO 04 : Informations de la classe }
   Fields         : TFieldArray;   { TODO 05 : Table des champs          }
   FieldCount     : Word;          { TODO 05 : Nombre de champs          }
+  Methods        : TMethodArray;  { TODO 06 : Table des methodes        }
+  MethodCount    : Word;          { TODO 06 : Nombre de methodes        }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -1661,52 +1737,481 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 06 [A FAIRE] - Lecture des methodes et de l'attribut Code               }
+{ TODO 06 [IMPLEMENTE] - Lecture des methodes et de l'attribut Code            }
 { ============================================================================ }
-{                                                                              }
-{  - Structure TExceptionEntry :                                                 }
-{      StartPC   : Word  (debut de la zone protegee)                            }
-{      EndPC     : Word  (fin de la zone protegee)                              }
-{      HandlerPC : Word  (debut du gestionnaire d'exception)                    }
-{      CatchType : Word  (index CP vers la classe catchee, 0 = finally)         }
-{                                                                              }
-{  - Structure TMethodInfo :                                                     }
-{      AccessFlags   : Word                    (flags d'acces)                  }
-{      Name          : String                  (nom de la methode)              }
-{      Descriptor    : String                  (descripteur de methode)         }
-{      MaxStack      : Word                    (profondeur max de pile)         }
-{      MaxLocals     : Word                    (nb variables locales max)       }
-{      CodeLen       : LongWord                (taille du bytecode en octets)   }
-{      Code          : Pointer                 (tampon du bytecode)             }
-{      ExcCount      : Word                    (nb entrees exception_table)     }
-{      ExcTable      : array[TExceptionEntry]  (table des exceptions)           }
-{      LineCount     : Word                    (nb entrees LineNumberTable)     }
-{      LineTable     : array of (StartPC, Line) (correspondance PC->ligne)      }
-{      LocalCount    : Word                    (nb entrees LocalVariableTable)  }
-{      LocalTable    : array of (Start,Length,Name,Desc,Index)                  }
-{      IsNative      : Boolean                 (methode native)                 }
-{      IsAbstract    : Boolean                 (methode abstraite)              }
-{      IsBridge      : Boolean                 (methode pont generique)         }
-{      IsSynthetic   : Boolean                 (methode generee)                }
-{      IsVarArgs     : Boolean                 (methode variadique)             }
-{                                                                              }
-{  - Procedure ReadMethods(Count: Word)                                         }
-{      Pour chaque methode, lire AccessFlags, Name (U2->CP), Desc (U2->CP)     }
-{      Lire les attributs de la methode :                                       }
-{        Code : lire MaxStack, MaxLocals, CodeLen, bytecode, exception_table,   }
-{               puis sous-attributs LineNumberTable et LocalVariableTable       }
-{        Exceptions : lire la liste des exceptions declarees (throws)           }
-{        Deprecated, Synthetic, Signature, Bridge, VarArgs                      }
-{      Stocker dans la table globale Methods[]                                  }
-{                                                                              }
-{  - Function GetLineNumber(Method: TMethodInfo; PC: Word): Integer             }
-{      Rechercher dans LineTable l'entree la plus proche pour le PC donne       }
-{      Retourner -1 si LineNumberTable absente                                  }
-{                                                                              }
-{  - Function ParseMethodDescriptor(Desc: String;                               }
-{      Var ParamTypes: TStringArray; Var RetType: String)                       }
-{      Analyser le descripteur de methode JVM                                   }
-{      Ex.: (ILjava/lang/String;)V -> params=[int,String], ret=void             }
+
+{ Declaration forward pour ReadCodeSubAttributes }
+Procedure ReadCodeSubAttributes(Var M: TMethodInfo); Forward;
+
+{ --- TODO 06 : Initialiser une methode --- }
+Procedure InitMethod(Var M: TMethodInfo);
+Var
+  I: Integer;
+Begin
+  M.AccessFlags := 0;
+  M.Name := '';
+  M.Descriptor := '';
+  M.JavaSignature := '';
+  M.MaxStack := 0;
+  M.MaxLocals := 0;
+  M.CodeLen := 0;
+  M.Code := Nil;
+  M.ExcCount := 0;
+  M.LineCount := 0;
+  M.LocalCount := 0;
+  M.ThrowsCount := 0;
+  For I := 0 to MAX_THROWS - 1 Do
+    M.Throws[I] := '';
+  M.IsPublic := False;
+  M.IsPrivate := False;
+  M.IsProtected := False;
+  M.IsStatic := False;
+  M.IsFinal := False;
+  M.IsSynchronized := False;
+  M.IsNative := False;
+  M.IsAbstract := False;
+  M.IsStrict := False;
+  M.IsBridge := False;
+  M.IsSynthetic := False;
+  M.IsVarArgs := False;
+  M.IsDeprecated := False;
+  M.Signature := '';
+End;
+
+{ --- TODO 06 : Parser le descripteur de methode et extraire les types --- }
+{ Ex: (ILjava/lang/String;)V -> params=[int,String], retType=void          }
+Procedure ParseMethodDescriptor(Desc: String; Var ParamCount: Integer;
+                                Var Params: Array of String; Var RetType: String);
+Var
+  P, Len, ArrayDim: Integer;
+  InParams: Boolean;
+  TypeStr, ClassName: String;
+  EndPos: Integer;
+Begin
+  ParamCount := 0;
+  RetType := '';
+  P := 1;
+  Len := Length(Desc);
+  InParams := False;
+  
+  While P <= Len Do Begin
+    If Desc[P] = '(' Then Begin
+      InParams := True;
+      Inc(P);
+    End
+    Else If Desc[P] = ')' Then Begin
+      InParams := False;
+      Inc(P);
+    End
+    Else Begin
+      { Lire un type }
+      ArrayDim := 0;
+      While (P <= Len) And (Desc[P] = '[') Do Begin
+        Inc(ArrayDim);
+        Inc(P);
+      End;
+      
+      If P > Len Then Break;
+      
+      TypeStr := '';
+      Case Desc[P] of
+        'V': Begin TypeStr := 'void'; Inc(P); End;
+        'I': Begin TypeStr := 'int'; Inc(P); End;
+        'J': Begin TypeStr := 'long'; Inc(P); End;
+        'D': Begin TypeStr := 'double'; Inc(P); End;
+        'F': Begin TypeStr := 'float'; Inc(P); End;
+        'B': Begin TypeStr := 'byte'; Inc(P); End;
+        'C': Begin TypeStr := 'char'; Inc(P); End;
+        'S': Begin TypeStr := 'short'; Inc(P); End;
+        'Z': Begin TypeStr := 'boolean'; Inc(P); End;
+        'L': Begin
+          { Lire le nom de classe jusqu'a ; }
+          Inc(P);
+          EndPos := P;
+          While (EndPos <= Len) And (Desc[EndPos] <> ';') Do
+            Inc(EndPos);
+          ClassName := Copy(Desc, P, EndPos - P);
+          { Convertir / en . et extraire nom simple }
+          While Pos('/', ClassName) > 0 Do
+            Delete(ClassName, 1, Pos('/', ClassName));
+          TypeStr := ClassName;
+          P := EndPos + 1;
+        End;
+      Else
+        Inc(P); { Caractere inconnu, on saute }
+      End;
+      
+      { Ajouter les dimensions de tableau }
+      While ArrayDim > 0 Do Begin
+        TypeStr := TypeStr + '[]';
+        Dec(ArrayDim);
+      End;
+      
+      If TypeStr <> '' Then Begin
+        If InParams Then Begin
+          If ParamCount < MAX_PARAMS Then Begin
+            Params[ParamCount] := TypeStr;
+            Inc(ParamCount);
+          End;
+        End
+        Else
+          RetType := TypeStr;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 06 : Construire la signature Java lisible d'une methode --- }
+Function BuildJavaSignature(Name: String; Desc: String): String;
+Var
+  ParamCount, I: Integer;
+  Params: Array[0..MAX_PARAMS-1] of String;
+  RetType, S: String;
+Begin
+  ParseMethodDescriptor(Desc, ParamCount, Params, RetType);
+  S := RetType + ' ' + Name + '(';
+  For I := 0 to ParamCount - 1 Do Begin
+    If I > 0 Then S := S + ', ';
+    S := S + Params[I];
+  End;
+  S := S + ')';
+  BuildJavaSignature := S;
+End;
+
+{ --- TODO 06 : Lire les attributs d'une methode --- }
+Procedure ReadMethodAttributes(Var M: TMethodInfo);
+Var
+  AttrCount, I: Word;
+  AttrNameIdx: Word;
+  AttrLen: LongWord;
+  AttrName: String;
+  ExcCount, ExcIdx, SigIdx: Word;
+Begin
+  AttrCount := ReadU2;
+  
+  For I := 1 to AttrCount Do Begin
+    AttrNameIdx := ReadU2;
+    AttrLen := ReadU4;
+    AttrName := CPGetUtf8(AttrNameIdx);
+    
+    If AttrName = 'Code' Then Begin
+      { Lire MaxStack, MaxLocals, CodeLen, code, exc_table, sub_attrs }
+      M.MaxStack := ReadU2;
+      M.MaxLocals := ReadU2;
+      M.CodeLen := ReadU4;
+      
+      If M.CodeLen > 0 Then Begin
+        If M.CodeLen > MAX_CODE_SIZE Then Begin
+          Warning('Code trop grand');
+          { Sauter le code }
+          SkipAttribute(M.CodeLen);
+          M.CodeLen := 0;
+          M.Code := Nil;
+        End Else Begin
+          GetMem(M.Code, M.CodeLen);
+          BlockRead(ClassFile, M.Code^, M.CodeLen);
+        End;
+      End;
+      
+      { Lire la table des exceptions }
+      ExcCount := ReadU2;
+      M.ExcCount := ExcCount;
+      If ExcCount > MAX_EXCEPTIONS Then ExcCount := MAX_EXCEPTIONS;
+      For ExcIdx := 0 to ExcCount - 1 Do Begin
+        M.ExcTable[ExcIdx].StartPC := ReadU2;
+        M.ExcTable[ExcIdx].EndPC := ReadU2;
+        M.ExcTable[ExcIdx].HandlerPC := ReadU2;
+        M.ExcTable[ExcIdx].CatchType := ReadU2;
+        If M.ExcTable[ExcIdx].CatchType = 0 Then
+          M.ExcTable[ExcIdx].CatchName := 'finally'
+        Else
+          M.ExcTable[ExcIdx].CatchName := CPGetClassName(M.ExcTable[ExcIdx].CatchType);
+      End;
+      { Sauter exceptions excedentaires }
+      If M.ExcCount > MAX_EXCEPTIONS Then Begin
+        For ExcIdx := MAX_EXCEPTIONS to M.ExcCount - 1 Do Begin
+          ReadU2; ReadU2; ReadU2; ReadU2;
+        End;
+        M.ExcCount := MAX_EXCEPTIONS;
+      End;
+      
+      { Lire les sous-attributs du Code (LineNumberTable, LocalVariableTable) }
+      ReadCodeSubAttributes(M);
+    End
+    Else If AttrName = 'Exceptions' Then Begin
+      { Liste des exceptions throws }
+      ExcCount := ReadU2;
+      M.ThrowsCount := ExcCount;
+      If ExcCount > MAX_THROWS Then ExcCount := MAX_THROWS;
+      For ExcIdx := 0 to ExcCount - 1 Do Begin
+        SigIdx := ReadU2;
+        M.Throws[ExcIdx] := CPGetClassName(SigIdx);
+      End;
+      { Sauter les exceptions excedentaires }
+      If M.ThrowsCount > MAX_THROWS Then Begin
+        For ExcIdx := MAX_THROWS to M.ThrowsCount - 1 Do
+          ReadU2;
+        M.ThrowsCount := MAX_THROWS;
+      End;
+    End
+    Else If AttrName = 'Deprecated' Then
+      M.IsDeprecated := True
+    Else If AttrName = 'Synthetic' Then
+      M.IsSynthetic := True
+    Else If AttrName = 'Signature' Then Begin
+      SigIdx := ReadU2;
+      M.Signature := CPGetUtf8(SigIdx);
+    End
+    Else
+      SkipAttribute(AttrLen);
+  End;
+End;
+
+{ --- TODO 06 : Lire les sous-attributs de Code (LineNumberTable, etc.) --- }
+Procedure ReadCodeSubAttributes(Var M: TMethodInfo);
+Var
+  SubAttrCount, I: Word;
+  SubAttrNameIdx: Word;
+  SubAttrLen: LongWord;
+  SubAttrName: String;
+  TableLen, J: Word;
+  NameIdx, DescIdx: Word;
+Begin
+  SubAttrCount := ReadU2;
+  
+  For I := 1 to SubAttrCount Do Begin
+    SubAttrNameIdx := ReadU2;
+    SubAttrLen := ReadU4;
+    SubAttrName := CPGetUtf8(SubAttrNameIdx);
+    
+    If SubAttrName = 'LineNumberTable' Then Begin
+      TableLen := ReadU2;
+      M.LineCount := TableLen;
+      If TableLen > MAX_LINES Then TableLen := MAX_LINES;
+      For J := 0 to TableLen - 1 Do Begin
+        M.LineTable[J].StartPC := ReadU2;
+        M.LineTable[J].LineNum := ReadU2;
+      End;
+      { Sauter les entrees excedentaires }
+      If M.LineCount > MAX_LINES Then Begin
+        For J := MAX_LINES to M.LineCount - 1 Do Begin
+          ReadU2; ReadU2;
+        End;
+        M.LineCount := MAX_LINES;
+      End;
+    End
+    Else If SubAttrName = 'LocalVariableTable' Then Begin
+      TableLen := ReadU2;
+      M.LocalCount := TableLen;
+      If TableLen > MAX_LOCALVARS Then TableLen := MAX_LOCALVARS;
+      For J := 0 to TableLen - 1 Do Begin
+        M.LocalTable[J].StartPC := ReadU2;
+        M.LocalTable[J].Length := ReadU2;
+        NameIdx := ReadU2;
+        DescIdx := ReadU2;
+        M.LocalTable[J].Name := CPGetUtf8(NameIdx);
+        M.LocalTable[J].Descriptor := CPGetUtf8(DescIdx);
+        M.LocalTable[J].Index := ReadU2;
+      End;
+      { Sauter les entrees excedentaires }
+      If M.LocalCount > MAX_LOCALVARS Then Begin
+        For J := MAX_LOCALVARS to M.LocalCount - 1 Do Begin
+          ReadU2; ReadU2; ReadU2; ReadU2; ReadU2;
+        End;
+        M.LocalCount := MAX_LOCALVARS;
+      End;
+    End
+    Else
+      SkipAttribute(SubAttrLen);
+  End;
+End;
+
+{ --- TODO 06 : Lire toutes les methodes de la classe --- }
+Procedure ReadMethods;
+Var
+  Count, I: Word;
+  AccessFlags: Word;
+  NameIdx, DescIdx: Word;
+Begin
+  Count := ReadU2;
+  MethodCount := Count;
+  
+  If Count > MAX_METHODS Then Begin
+    Warning('Trop de methodes (' + IntToStr_(Count) + '), limite = ' + IntToStr_(MAX_METHODS));
+    Count := MAX_METHODS;
+  End;
+  
+  For I := 0 to Count - 1 Do Begin
+    { Initialiser la methode }
+    InitMethod(Methods[I]);
+    
+    { Lire les informations de base }
+    AccessFlags := ReadU2;
+    NameIdx := ReadU2;
+    DescIdx := ReadU2;
+    
+    Methods[I].AccessFlags := AccessFlags;
+    Methods[I].Name := CPGetUtf8(NameIdx);
+    Methods[I].Descriptor := CPGetUtf8(DescIdx);
+    Methods[I].JavaSignature := BuildJavaSignature(Methods[I].Name, Methods[I].Descriptor);
+    
+    { Decoder les flags d'acces }
+    Methods[I].IsPublic       := (AccessFlags And ACC_PUBLIC) <> 0;
+    Methods[I].IsPrivate      := (AccessFlags And ACC_PRIVATE) <> 0;
+    Methods[I].IsProtected    := (AccessFlags And ACC_PROTECTED) <> 0;
+    Methods[I].IsStatic       := (AccessFlags And ACC_STATIC) <> 0;
+    Methods[I].IsFinal        := (AccessFlags And ACC_FINAL) <> 0;
+    Methods[I].IsSynchronized := (AccessFlags And ACC_SYNCHRONIZED) <> 0;
+    Methods[I].IsNative       := (AccessFlags And ACC_NATIVE) <> 0;
+    Methods[I].IsAbstract     := (AccessFlags And ACC_ABSTRACT) <> 0;
+    Methods[I].IsStrict       := (AccessFlags And ACC_STRICT) <> 0;
+    Methods[I].IsBridge       := (AccessFlags And $0040) <> 0; { ACC_BRIDGE }
+    Methods[I].IsVarArgs      := (AccessFlags And $0080) <> 0; { ACC_VARARGS }
+    Methods[I].IsSynthetic    := (AccessFlags And ACC_SYNTHETIC) <> 0;
+    
+    { Lire les attributs de la methode }
+    ReadMethodAttributes(Methods[I]);
+  End;
+End;
+
+{ --- TODO 06 : Obtenir le numero de ligne pour un PC donne --- }
+Function GetLineNumber(Var M: TMethodInfo; PC: Word): Integer;
+Var
+  I: Integer;
+  BestLine, BestPC: Integer;
+Begin
+  If M.LineCount = 0 Then Begin
+    GetLineNumber := -1;
+    Exit;
+  End;
+  
+  BestLine := -1;
+  BestPC := -1;
+  
+  { Trouver l'entree avec le plus grand StartPC <= PC }
+  For I := 0 to M.LineCount - 1 Do Begin
+    If (M.LineTable[I].StartPC <= PC) And
+       (Integer(M.LineTable[I].StartPC) > BestPC) Then Begin
+      BestPC := M.LineTable[I].StartPC;
+      BestLine := M.LineTable[I].LineNum;
+    End;
+  End;
+  
+  GetLineNumber := BestLine;
+End;
+
+{ --- TODO 06 : Obtenir la chaine des modificateurs d'une methode --- }
+Function GetMethodAccessStr(Var M: TMethodInfo): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If M.IsPublic Then S := S + 'public '
+  Else If M.IsPrivate Then S := S + 'private '
+  Else If M.IsProtected Then S := S + 'protected ';
+  
+  If M.IsStatic Then S := S + 'static ';
+  If M.IsFinal Then S := S + 'final ';
+  If M.IsSynchronized Then S := S + 'synchronized ';
+  If M.IsNative Then S := S + 'native ';
+  If M.IsAbstract Then S := S + 'abstract ';
+  If M.IsStrict Then S := S + 'strictfp ';
+  
+  GetMethodAccessStr := S;
+End;
+
+{ --- TODO 06 : Afficher une methode en notation Java --- }
+Function MethodToJavaString(Var M: TMethodInfo): String;
+Var
+  S: String;
+  I: Integer;
+Begin
+  S := GetMethodAccessStr(M) + M.JavaSignature;
+  
+  { Ajouter les exceptions throws }
+  If M.ThrowsCount > 0 Then Begin
+    S := S + ' throws ';
+    For I := 0 to M.ThrowsCount - 1 Do Begin
+      If I > 0 Then S := S + ', ';
+      S := S + M.Throws[I];
+    End;
+  End;
+  
+  MethodToJavaString := S;
+End;
+
+{ --- TODO 06 : Afficher les informations de debug des methodes --- }
+Procedure DumpMethods;
+Var
+  I, J: Integer;
+  FlagStr: String;
+Begin
+  WriteLn('=== Methods (', MethodCount, ') ===');
+  
+  For I := 0 to MethodCount - 1 Do Begin
+    WriteLn('Method #', I, ':');
+    WriteLn('  Name:       ', Methods[I].Name);
+    WriteLn('  Descriptor: ', Methods[I].Descriptor);
+    WriteLn('  Signature:  ', Methods[I].JavaSignature);
+    
+    { Construire la chaine des flags }
+    FlagStr := '';
+    If Methods[I].IsPublic Then FlagStr := FlagStr + 'public ';
+    If Methods[I].IsPrivate Then FlagStr := FlagStr + 'private ';
+    If Methods[I].IsProtected Then FlagStr := FlagStr + 'protected ';
+    If Methods[I].IsStatic Then FlagStr := FlagStr + 'static ';
+    If Methods[I].IsFinal Then FlagStr := FlagStr + 'final ';
+    If Methods[I].IsSynchronized Then FlagStr := FlagStr + 'synchronized ';
+    If Methods[I].IsNative Then FlagStr := FlagStr + 'native ';
+    If Methods[I].IsAbstract Then FlagStr := FlagStr + 'abstract ';
+    If Methods[I].IsStrict Then FlagStr := FlagStr + 'strictfp ';
+    If Methods[I].IsBridge Then FlagStr := FlagStr + 'bridge ';
+    If Methods[I].IsVarArgs Then FlagStr := FlagStr + 'varargs ';
+    If Methods[I].IsSynthetic Then FlagStr := FlagStr + 'synthetic ';
+    
+    WriteLn('  Flags:      ', FlagStr, '($', HexWord(Methods[I].AccessFlags), ')');
+    
+    If Not Methods[I].IsNative And Not Methods[I].IsAbstract Then Begin
+      WriteLn('  MaxStack:   ', Methods[I].MaxStack);
+      WriteLn('  MaxLocals:  ', Methods[I].MaxLocals);
+      WriteLn('  CodeLen:    ', Methods[I].CodeLen, ' bytes');
+      WriteLn('  ExcTable:   ', Methods[I].ExcCount, ' entries');
+      WriteLn('  LineTable:  ', Methods[I].LineCount, ' entries');
+      WriteLn('  LocalVars:  ', Methods[I].LocalCount, ' entries');
+    End;
+    
+    If Methods[I].ThrowsCount > 0 Then Begin
+      Write('  Throws:     ');
+      For J := 0 to Methods[I].ThrowsCount - 1 Do Begin
+        If J > 0 Then Write(', ');
+        Write(Methods[I].Throws[J]);
+      End;
+      WriteLn;
+    End;
+    
+    If Methods[I].IsDeprecated Then
+      WriteLn('  Deprecated: true');
+    If Methods[I].Signature <> '' Then
+      WriteLn('  GenSig:     ', Methods[I].Signature);
+    
+    WriteLn('  Java:       ', MethodToJavaString(Methods[I]));
+    WriteLn;
+  End;
+End;
+
+{ --- TODO 06 : Liberer la memoire allouee pour le bytecode --- }
+Procedure FreeMethods;
+Var
+  I: Integer;
+Begin
+  For I := 0 to MethodCount - 1 Do Begin
+    If Methods[I].Code <> Nil Then Begin
+      FreeMem(Methods[I].Code, Methods[I].CodeLen);
+      Methods[I].Code := Nil;
+    End;
+  End;
+  MethodCount := 0;
+End;
 
 { ============================================================================ }
 { TODO 07 [A FAIRE] - Decodage du bytecode Java (opcodes JVM)                  }
