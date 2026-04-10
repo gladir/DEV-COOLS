@@ -7128,7 +7128,7 @@ Begin
   EmitLoopLabel(LblTest);
 
   WriteLn('  ; do-while: evaluate condition');
-  { Evaluer la condition -> si truthy, sauter a start }
+  { Evaluer la condition -> JNZ _JL_DSTART si non-zero (truthy) }
   EmitTestFalsy(LblStart);
 
   { Label de fin }
