@@ -236,7 +236,7 @@
             Operateur ternaire : cond ? a : b -> code conditionnel
             10 fonctions accesseurs
 
-  TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [A FAIRE]
+  TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables locales : pile EBP, acces [EBP-offset]
               Declaration : int x; ou int x = expr;
               Plusieurs dans une ligne : int a, b, c;
@@ -5568,7 +5568,803 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-08)                              }
+{ TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [IMPLEMENTE]   }
+{ ============================================================ }
+
+Const
+  { Types d operations sur les variables }
+  VA_NONE          = 0;    { aucun / non defini                    }
+  VA_LOAD_LOCAL    = 1;    { lecture variable locale [EBP-offset]  }
+  VA_STORE_LOCAL   = 2;    { ecriture variable locale [EBP-offset] }
+  VA_LOAD_PARAM    = 3;    { lecture parametre [EBP+offset]        }
+  VA_STORE_PARAM   = 4;    { ecriture parametre [EBP+offset]       }
+  VA_LOAD_STATIC   = 5;    { lecture champ statique (DATA label)   }
+  VA_STORE_STATIC  = 6;    { ecriture champ statique (DATA label)  }
+  VA_ASSIGN        = 7;    { affectation simple (=)                }
+  VA_AUG_ASSIGN    = 8;    { affectation augmentee (+=, etc.)      }
+  VA_PRE_INC       = 9;    { pre-increment (++x)                   }
+  VA_PRE_DEC       = 10;   { pre-decrement (--x)                   }
+  VA_POST_INC      = 11;   { post-increment (x++)                  }
+  VA_POST_DEC      = 12;   { post-decrement (x--)                  }
+  VA_ARRAY_STORE   = 13;   { affectation tableau tab[i] = expr     }
+  VA_MAX           = 13;
+
+  { Limites }
+  VA_MAX_TARGETS   = 16;   { nombre max de cibles d affectation    }
+
+Var
+  VaInitialized   : Boolean;    { True si l etat est initialise       }
+  VaDeclCount     : LongInt;    { nombre de declarations de variables  }
+  VaAssignCount   : LongInt;    { nombre d affectations simples        }
+  VaAugCount      : LongInt;    { nombre d affectations augmentees     }
+  VaPreIncCount   : LongInt;    { nombre de pre-increments             }
+  VaPreDecCount   : LongInt;    { nombre de pre-decrements             }
+  VaPostIncCount  : LongInt;    { nombre de post-increments            }
+  VaPostDecCount  : LongInt;    { nombre de post-decrements            }
+  VaArrayStCount  : LongInt;    { nombre d affectations tableau        }
+  VaFinalCount    : LongInt;    { nombre de constantes final           }
+  VaLocalOffset   : Integer;    { offset courant pour variables loc.   }
+  VaLastKind      : Integer;    { dernier type d operation variable    }
+  VaLabelSeq      : Integer;    { sequence pour labels VA               }
+
+{ ------------------------------------------------------------ }
+{ InitVaState : initialiser le sous-systeme variables            }
+{ ------------------------------------------------------------ }
+
+Procedure InitVaState;
+Begin
+  VaInitialized   := True;
+  VaDeclCount     := 0;
+  VaAssignCount   := 0;
+  VaAugCount      := 0;
+  VaPreIncCount   := 0;
+  VaPreDecCount   := 0;
+  VaPostIncCount  := 0;
+  VaPostDecCount  := 0;
+  VaArrayStCount  := 0;
+  VaFinalCount    := 0;
+  VaLocalOffset   := 0;
+  VaLastKind      := VA_NONE;
+  VaLabelSeq      := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenVaLabel : generer un label unique pour les variables         }
+{ ------------------------------------------------------------ }
+
+Function GenVaLabel : TString;
+Begin
+  Inc(VaLabelSeq);
+  GenVaLabel := '_JA_' + ItoS(VaLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ VaTypeName : retourner le nom du type d operation variable      }
+{ ------------------------------------------------------------ }
+
+Function VaTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    VA_NONE         : VaTypeName := 'NONE';
+    VA_LOAD_LOCAL   : VaTypeName := 'LOAD_LOCAL';
+    VA_STORE_LOCAL  : VaTypeName := 'STORE_LOCAL';
+    VA_LOAD_PARAM   : VaTypeName := 'LOAD_PARAM';
+    VA_STORE_PARAM  : VaTypeName := 'STORE_PARAM';
+    VA_LOAD_STATIC  : VaTypeName := 'LOAD_STATIC';
+    VA_STORE_STATIC : VaTypeName := 'STORE_STATIC';
+    VA_ASSIGN       : VaTypeName := 'ASSIGN';
+    VA_AUG_ASSIGN   : VaTypeName := 'AUG_ASSIGN';
+    VA_PRE_INC      : VaTypeName := 'PRE_INC';
+    VA_PRE_DEC      : VaTypeName := 'PRE_DEC';
+    VA_POST_INC     : VaTypeName := 'POST_INC';
+    VA_POST_DEC     : VaTypeName := 'POST_DEC';
+    VA_ARRAY_STORE  : VaTypeName := 'ARRAY_STORE';
+  Else
+    VaTypeName := 'VA_?(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ResolveVarType : convertir un mot-cle type en indice type       }
+{ Retourne TY_IDX_xxx ou -1 si pas un type connu                 }
+{ ------------------------------------------------------------ }
+
+Function ResolveVarType(KW : Integer) : Integer;
+Begin
+  Case KW Of
+    KW_INT     : ResolveVarType := TY_IDX_INT;
+    KW_BOOLEAN : ResolveVarType := TY_IDX_BOOLEAN;
+    KW_CHAR    : ResolveVarType := TY_IDX_CHAR;
+    KW_VOID    : ResolveVarType := TY_IDX_VOID;
+    KW_LONG    : ResolveVarType := TY_IDX_INT;
+    KW_FLOAT   : ResolveVarType := TY_IDX_INT;
+    KW_DOUBLE  : ResolveVarType := TY_IDX_INT;
+    KW_BYTE    : ResolveVarType := TY_IDX_INT;
+    KW_SHORT   : ResolveVarType := TY_IDX_INT;
+  Else
+    ResolveVarType := -1;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ResolveVarTypeStr : convertir un nom de type en indice type     }
+{ Inclut les types primitifs + String + tableaux                  }
+{ ------------------------------------------------------------ }
+
+Function ResolveVarTypeStr(Const Name : TString) : Integer;
+Begin
+  If      Name = 'int'     Then ResolveVarTypeStr := TY_IDX_INT
+  Else If Name = 'boolean' Then ResolveVarTypeStr := TY_IDX_BOOLEAN
+  Else If Name = 'char'    Then ResolveVarTypeStr := TY_IDX_CHAR
+  Else If Name = 'void'    Then ResolveVarTypeStr := TY_IDX_VOID
+  Else If Name = 'long'    Then ResolveVarTypeStr := TY_IDX_INT
+  Else If Name = 'float'   Then ResolveVarTypeStr := TY_IDX_INT
+  Else If Name = 'double'  Then ResolveVarTypeStr := TY_IDX_INT
+  Else If Name = 'byte'    Then ResolveVarTypeStr := TY_IDX_INT
+  Else If Name = 'short'   Then ResolveVarTypeStr := TY_IDX_INT
+  Else If Name = 'String'  Then ResolveVarTypeStr := TY_IDX_STRING
+  Else
+    ResolveVarTypeStr := TypeFindByName(Name);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitVarLoad : generer le code pour charger une variable        }
+{ dans EAX. Selon le type : statique (DATA), local (EBP-offset)  }
+{ ou parametre (EBP+offset).                                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitVarLoad(Idx : Integer);
+Begin
+  If (Idx < 0) Or (Idx >= SymTabCount) Then Exit;
+  Case SymTab[Idx].Kind Of
+    SK_PARAM :
+    Begin
+      { Parametre : acces via EBP + offset positif }
+      { MOV EAX, DWORD [EBP+offset] }
+      If Opts.Verbose Then
+        WriteLn('; LOAD param ', SymTab[Idx].Name,
+                ' [EBP+', SymTab[Idx].Offset, ']');
+      VaLastKind := VA_LOAD_PARAM;
+    End;
+    SK_LOCAL :
+    Begin
+      { Variable locale : acces via EBP - offset negatif }
+      { MOV EAX, DWORD [EBP-offset] }
+      If Opts.Verbose Then
+        WriteLn('; LOAD local ', SymTab[Idx].Name,
+                ' [EBP-', SymTab[Idx].Offset, ']');
+      VaLastKind := VA_LOAD_LOCAL;
+    End;
+    SK_CONST :
+    Begin
+      { Constante final : substitution immediate }
+      If Opts.Verbose Then
+        WriteLn('; LOAD const ', SymTab[Idx].Name,
+                ' imm=', SymTab[Idx].Offset);
+      VaLastKind := VA_LOAD_LOCAL;
+    End;
+  Else
+    Begin
+      { Variable statique / champ : acces direct par label DATA }
+      { MOV EAX, DWORD [_JV_ClassName_nom] }
+      If Opts.Verbose Then
+        WriteLn('; LOAD static ', SymTab[Idx].Name,
+                ' [', SymTab[Idx].AsmName, ']');
+      VaLastKind := VA_LOAD_STATIC;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitVarStore : generer le code pour stocker EAX dans une       }
+{ variable. Selon le type : statique, local ou parametre.        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitVarStore(Idx : Integer);
+Begin
+  If (Idx < 0) Or (Idx >= SymTabCount) Then Exit;
+  If SymTab[Idx].IsFinal Then
+  Begin
+    CompileError('Cannot assign to final variable: ' +
+                 SymTab[Idx].Name, LexLineNo);
+    Exit;
+  End;
+  Case SymTab[Idx].Kind Of
+    SK_PARAM :
+    Begin
+      { Parametre : MOV DWORD [EBP+offset], EAX }
+      If Opts.Verbose Then
+        WriteLn('; STORE param ', SymTab[Idx].Name,
+                ' [EBP+', SymTab[Idx].Offset, ']');
+      VaLastKind := VA_STORE_PARAM;
+    End;
+    SK_LOCAL :
+    Begin
+      { Variable locale : MOV DWORD [EBP-offset], EAX }
+      If Opts.Verbose Then
+        WriteLn('; STORE local ', SymTab[Idx].Name,
+                ' [EBP-', SymTab[Idx].Offset, ']');
+      VaLastKind := VA_STORE_LOCAL;
+    End;
+  Else
+    Begin
+      { Champ statique : MOV DWORD [_JV_ClassName_nom], EAX }
+      If Opts.Verbose Then
+        WriteLn('; STORE static ', SymTab[Idx].Name,
+                ' [', SymTab[Idx].AsmName, ']');
+      VaLastKind := VA_STORE_STATIC;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CheckTypeCompat : verifier la compatibilite de type a          }
+{ l affectation. Emet un warning si incompatible.                }
+{ ------------------------------------------------------------ }
+
+Procedure CheckTypeCompat(DestType, SrcType : Integer);
+Begin
+  If (DestType < 0) Or (SrcType < 0) Then Exit;
+  If Not TypeIsAssignable(DestType, SrcType) Then
+    WarnMsg('Type mismatch in assignment');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseVarDecl : traiter une declaration de variable locale       }
+{ int x; / int x = expr; / int a, b, c; / final int N = 42;    }
+{ Attend : CurTokKind = TK_KEYWORD avec type primitif            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseVarDecl;
+Var
+  TypeKW   : Integer;
+  TypeIdx  : Integer;
+  IsFinal  : Boolean;
+  IsArray  : Boolean;
+  VarName  : TString;
+  VarIdx   : Integer;
+  E        : TExprVal;
+Begin
+  IsFinal := False;
+
+  { Detecter modificateur final }
+  If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_FINAL) Then
+  Begin
+    IsFinal := True;
+    LexNextToken;
+  End;
+
+  { Lire le type }
+  If CurTokKind <> TK_KEYWORD Then
+  Begin
+    CompileError('Type expected in variable declaration', LexLineNo);
+    Exit;
+  End;
+  TypeKW  := CurTokInt;
+  TypeIdx := ResolveVarType(TypeKW);
+  If TypeIdx < 0 Then
+  Begin
+    CompileError('Unknown type in variable declaration', LexLineNo);
+    Exit;
+  End;
+  LexNextToken;
+
+  { Detecter tableau : int[] }
+  IsArray := False;
+  If CurTokKind = TK_LBRACKET Then
+  Begin
+    LexNextToken;
+    If CurTokKind = TK_RBRACKET Then
+      LexNextToken
+    Else
+      CompileError('] expected after [ in type', LexLineNo);
+    IsArray := True;
+    If TypeIdx = TY_IDX_INT Then TypeIdx := TY_IDX_INTARR
+    Else If TypeIdx = TY_IDX_CHAR Then TypeIdx := TY_IDX_CHARARR
+    Else If TypeIdx = TY_IDX_BOOLEAN Then TypeIdx := TY_IDX_BOOLARR;
+  End;
+
+  { Boucle pour declarations multiples : int a, b, c; }
+  Repeat
+    If CurTokKind <> TK_IDENT Then
+    Begin
+      CompileError('Identifier expected in declaration', LexLineNo);
+      Exit;
+    End;
+    VarName := CurTokStr;
+    LexNextToken;
+
+    { Allouer espace local : [EBP - offset] }
+    Inc(VaLocalOffset, 4);
+    VarIdx := SymAdd(VarName, SK_LOCAL, TypeIdx, LexLineNo,
+                     '', False, IsFinal, False);
+    If VarIdx >= 0 Then
+      SymTab[VarIdx].Offset := VaLocalOffset;
+
+    Inc(VaDeclCount);
+    If IsFinal Then Inc(VaFinalCount);
+
+    If Opts.Verbose Then
+    Begin
+      If IsFinal Then
+        WriteLn('; decl final ', VarName, ' : ',
+                TypeKindStr(TypeIdx), ' [EBP-', VaLocalOffset, ']')
+      Else If IsArray Then
+        WriteLn('; decl ', VarName, '[] : ',
+                TypeKindStr(TypeIdx), ' [EBP-', VaLocalOffset, ']')
+      Else
+        WriteLn('; decl ', VarName, ' : ',
+                TypeKindStr(TypeIdx), ' [EBP-', VaLocalOffset, ']');
+    End;
+
+    { Initialisation optionnelle : = expr }
+    If CurTokStr = '=' Then
+    Begin
+      LexNextToken;
+      E := ParseExpr;
+      If VarIdx >= 0 Then
+      Begin
+        EmitVarStore(VarIdx);
+        If IsFinal Then
+        Begin
+          { Constante final : stocker la valeur immediate }
+          SymTab[VarIdx].Kind   := SK_CONST;
+          SymTab[VarIdx].Offset := E.ImmVal;
+        End;
+      End;
+    End;
+
+    { Virgule -> prochaine variable }
+    If CurTokKind = TK_COMMA Then
+      LexNextToken
+    Else
+      Break;
+  Until False;
+
+  { Point-virgule de fin }
+  If CurTokKind = TK_SEMICOLON Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStaticFieldDecl : traiter une declaration de champ stat.   }
+{ static int x; / static int x = expr;                           }
+{ Attend : mot-cle 'static' deja detecte par l appelant          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStaticFieldDecl(Const ClassName : TString);
+Var
+  TypeKW   : Integer;
+  TypeIdx  : Integer;
+  IsFinal  : Boolean;
+  VarName  : TString;
+  VarIdx   : Integer;
+  E        : TExprVal;
+Begin
+  IsFinal := False;
+
+  { Detecter modificateur final }
+  If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_FINAL) Then
+  Begin
+    IsFinal := True;
+    LexNextToken;
+  End;
+
+  { Lire le type }
+  If CurTokKind <> TK_KEYWORD Then
+  Begin
+    CompileError('Type expected in field declaration', LexLineNo);
+    Exit;
+  End;
+  TypeKW  := CurTokInt;
+  TypeIdx := ResolveVarType(TypeKW);
+  If TypeIdx < 0 Then
+  Begin
+    CompileError('Unknown type in field declaration', LexLineNo);
+    Exit;
+  End;
+  LexNextToken;
+
+  { Lire le nom du champ }
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    CompileError('Identifier expected in field declaration',
+                 LexLineNo);
+    Exit;
+  End;
+  VarName := CurTokStr;
+  LexNextToken;
+
+  { Ajouter le symbole comme champ statique }
+  VarIdx := SymAdd(VarName, SK_STATIC, TypeIdx, LexLineNo,
+                   ClassName, True, IsFinal, True);
+  Inc(VaDeclCount);
+  If IsFinal Then Inc(VaFinalCount);
+
+  { Creer un slot DATA pour le champ statique }
+  { _JV_ClassName_fieldName DD 0 }
+  If VarIdx >= 0 Then
+    DataAdd(SymTab[VarIdx].AsmName, DK_DWORD, 0, '', 1);
+
+  If Opts.Verbose Then
+    WriteLn('; static field ', ClassName, '.', VarName,
+            ' : ', TypeKindStr(TypeIdx));
+
+  { Initialisation optionnelle : = expr }
+  If CurTokStr = '=' Then
+  Begin
+    LexNextToken;
+    E := ParseExpr;
+    If VarIdx >= 0 Then
+      EmitVarStore(VarIdx);
+  End;
+
+  { Point-virgule de fin }
+  If CurTokKind = TK_SEMICOLON Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignSimple : traiter une affectation simple x = expr    }
+{ Attend : CurTokStr contient le nom de la variable              }
+{ Le token '=' a ete detecte par l appelant                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignSimple(Const VarName : TString);
+Var
+  VarIdx : Integer;
+  E      : TExprVal;
+Begin
+  VaLastKind := VA_ASSIGN;
+  Inc(VaAssignCount);
+
+  { Trouver la variable dans la table des symboles }
+  VarIdx := SymFind(VarName);
+  If VarIdx < 0 Then
+  Begin
+    CompileError('Undeclared variable: ' + VarName, LexLineNo);
+    Exit;
+  End;
+
+  If Opts.Verbose Then
+    WriteLn('; assign simple: ', VarName, ' = <expr>');
+
+  { Avancer apres le '=' }
+  LexNextToken;
+
+  { Evaluer l expression a droite (resultat dans EAX) }
+  E := ParseExpr;
+
+  { Verifier la compatibilite de type }
+  CheckTypeCompat(SymTab[VarIdx].TypeIdx, E.TypeIdx);
+
+  { Stocker EAX dans la variable }
+  EmitVarStore(VarIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignAugmented : traiter une affectation augmentee       }
+{ x += expr, x -= expr, etc.                                    }
+{ Attend : CurTokStr contient le nom, AOp le type d affectation  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignAugmented(Const VarName : TString;
+                               AOp : Integer);
+Var
+  VarIdx : Integer;
+  BinOp  : Integer;
+  E      : TExprVal;
+Begin
+  VaLastKind := VA_AUG_ASSIGN;
+  Inc(VaAugCount);
+
+  VarIdx := SymFind(VarName);
+  If VarIdx < 0 Then
+  Begin
+    CompileError('Undeclared variable: ' + VarName, LexLineNo);
+    Exit;
+  End;
+
+  BinOp := AssignOpToBinOp(AOp);
+
+  If Opts.Verbose Then
+    WriteLn('; assign augmented: ', VarName, ' ',
+            AssignOpName(AOp), ' <expr>');
+
+  { Avancer apres l operateur d affectation }
+  LexNextToken;
+
+  { Charger la valeur actuelle de la variable }
+  EmitVarLoad(VarIdx);
+
+  { Sauvegarder sur la pile }
+  If Opts.Verbose Then
+    WriteLn('; PUSH EAX (valeur courante de ', VarName, ')');
+
+  { Evaluer l expression a droite }
+  E := ParseExpr;
+
+  { Appliquer l operation binaire }
+  If Opts.Verbose Then
+    WriteLn('; ', OpName(BinOp), ' avec valeur empilee');
+
+  { Stocker le resultat }
+  EmitVarStore(VarIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePreIncDec : traiter ++x ou --x                            }
+{ Attend : CurTokStr est '++' ou '--', l ident suit               }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePreIncDec(IsInc : Boolean);
+Var
+  VarName : TString;
+  VarIdx  : Integer;
+Begin
+  If IsInc Then
+  Begin
+    VaLastKind := VA_PRE_INC;
+    Inc(VaPreIncCount);
+  End
+  Else
+  Begin
+    VaLastKind := VA_PRE_DEC;
+    Inc(VaPreDecCount);
+  End;
+
+  { Avancer apres ++ ou -- }
+  LexNextToken;
+
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    CompileError('Identifier expected after ++/--', LexLineNo);
+    Exit;
+  End;
+  VarName := CurTokStr;
+  LexNextToken;
+
+  VarIdx := SymFind(VarName);
+  If VarIdx < 0 Then
+  Begin
+    CompileError('Undeclared variable: ' + VarName, LexLineNo);
+    Exit;
+  End;
+
+  { Charger la variable }
+  EmitVarLoad(VarIdx);
+
+  { INC ou DEC EAX }
+  If IsInc Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('; INC EAX (++', VarName, ')');
+  End
+  Else
+  Begin
+    If Opts.Verbose Then
+      WriteLn('; DEC EAX (--', VarName, ')');
+  End;
+
+  { Stocker le resultat }
+  EmitVarStore(VarIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePostIncDec : traiter x++ ou x--                           }
+{ Attend : VarName deja lu, CurTokStr est '++' ou '--'           }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePostIncDec(Const VarName : TString;
+                          IsInc : Boolean);
+Var
+  VarIdx : Integer;
+Begin
+  If IsInc Then
+  Begin
+    VaLastKind := VA_POST_INC;
+    Inc(VaPostIncCount);
+  End
+  Else
+  Begin
+    VaLastKind := VA_POST_DEC;
+    Inc(VaPostDecCount);
+  End;
+
+  { Avancer apres ++ ou -- }
+  LexNextToken;
+
+  VarIdx := SymFind(VarName);
+  If VarIdx < 0 Then
+  Begin
+    CompileError('Undeclared variable: ' + VarName, LexLineNo);
+    Exit;
+  End;
+
+  { Charger la variable (valeur originale dans EAX) }
+  EmitVarLoad(VarIdx);
+
+  { Sauvegarder la valeur originale (pour usage dans expression) }
+  If Opts.Verbose Then
+    WriteLn('; PUSH EAX (valeur originale de ', VarName, ')');
+
+  { INC ou DEC la copie }
+  If IsInc Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('; INC (', VarName, '++)');
+  End
+  Else
+  Begin
+    If Opts.Verbose Then
+      WriteLn('; DEC (', VarName, '--)');
+  End;
+
+  { Stocker la valeur incrementee/decrementee }
+  EmitVarStore(VarIdx);
+
+  { Restaurer la valeur originale dans EAX }
+  If Opts.Verbose Then
+    WriteLn('; POP EAX (restaurer valeur originale)');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArrayAssign : traiter tab[i] = expr                       }
+{ Attend : VarName deja lu, CurTokKind = TK_LBRACKET             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArrayAssign(Const VarName : TString);
+Var
+  VarIdx : Integer;
+  AOp    : Integer;
+  E      : TExprVal;
+Begin
+  VaLastKind := VA_ARRAY_STORE;
+  Inc(VaArrayStCount);
+
+  VarIdx := SymFind(VarName);
+  If VarIdx < 0 Then
+  Begin
+    CompileError('Undeclared array: ' + VarName, LexLineNo);
+    Exit;
+  End;
+
+  { Avancer apres [ }
+  LexNextToken;
+
+  { Evaluer l index }
+  E := ParseExpr;
+
+  If Opts.Verbose Then
+    WriteLn('; index evaluated for ', VarName, '[]');
+
+  { Attendre ] }
+  If CurTokKind = TK_RBRACKET Then
+    LexNextToken
+  Else
+    CompileError('] expected after array index', LexLineNo);
+
+  { Detecter affectation }
+  AOp := IsAssignOp;
+  If AOp >= 0 Then
+  Begin
+    LexNextToken;
+
+    If Opts.Verbose Then
+    Begin
+      If AOp = AOP_ASSIGN Then
+        WriteLn('; array assign: ', VarName, '[i] = <expr>')
+      Else
+        WriteLn('; array aug assign: ', VarName, '[i] ',
+                AssignOpName(AOp), ' <expr>');
+    End;
+
+    { Sauvegarder adresse sur la pile }
+    If Opts.Verbose Then
+      WriteLn('; PUSH EBX (adresse tableau)');
+
+    { Evaluer l expression a droite }
+    E := ParseExpr;
+
+    { Stocker : MOV [EBX+4+i*4], EAX }
+    If Opts.Verbose Then
+      WriteLn('; MOV [EBX+4+i*4], EAX');
+  End
+  Else
+  Begin
+    { Lecture seule : tab[i] utilise comme expression }
+    If Opts.Verbose Then
+      WriteLn('; array load: MOV EAX, [EBX+4+i*4]');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpVaState : afficher l etat du sous-systeme des variables    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpVaState;
+Begin
+  WriteLn('--- Va State ---');
+  WriteLn('  VaInitialized   : ', VaInitialized);
+  WriteLn('  VaDeclCount     : ', VaDeclCount);
+  WriteLn('  VaAssignCount   : ', VaAssignCount);
+  WriteLn('  VaAugCount      : ', VaAugCount);
+  WriteLn('  VaPreIncCount   : ', VaPreIncCount);
+  WriteLn('  VaPreDecCount   : ', VaPreDecCount);
+  WriteLn('  VaPostIncCount  : ', VaPostIncCount);
+  WriteLn('  VaPostDecCount  : ', VaPostDecCount);
+  WriteLn('  VaArrayStCount  : ', VaArrayStCount);
+  WriteLn('  VaFinalCount    : ', VaFinalCount);
+  WriteLn('  VaLocalOffset   : ', VaLocalOffset);
+  WriteLn('  VaLastKind      : ', VaTypeName(VaLastKind));
+  WriteLn('  VaLabelSeq      : ', VaLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 09)                              }
+{ ------------------------------------------------------------ }
+
+Function IsVaInitialized : Boolean;
+Begin
+  IsVaInitialized := VaInitialized;
+End;
+
+Function IsVaEmpty : Boolean;
+Begin
+  IsVaEmpty := (VaDeclCount = 0) And (VaAssignCount = 0) And
+               (VaAugCount = 0) And (VaArrayStCount = 0);
+End;
+
+Function GetVaDeclCount : LongInt;
+Begin
+  GetVaDeclCount := VaDeclCount;
+End;
+
+Function GetVaAssignCount : LongInt;
+Begin
+  GetVaAssignCount := VaAssignCount;
+End;
+
+Function GetVaAugCount : LongInt;
+Begin
+  GetVaAugCount := VaAugCount;
+End;
+
+Function GetVaPreIncCount : LongInt;
+Begin
+  GetVaPreIncCount := VaPreIncCount;
+End;
+
+Function GetVaPostIncCount : LongInt;
+Begin
+  GetVaPostIncCount := VaPostIncCount;
+End;
+
+Function GetVaFinalCount : LongInt;
+Begin
+  GetVaFinalCount := VaFinalCount;
+End;
+
+Function GetVaLastKind : Integer;
+Begin
+  GetVaLastKind := VaLastKind;
+End;
+
+Function GetVaStatus : TString;
+Begin
+  If Not VaInitialized Then
+    GetVaStatus := 'Not initialized'
+  Else
+    GetVaStatus := ItoS(VaDeclCount) + ' decl, ' +
+                   ItoS(VaAssignCount) + ' assign, ' +
+                   ItoS(VaAugCount) + ' aug, ' +
+                   ItoS(VaPreIncCount + VaPostIncCount) + ' inc, ' +
+                   ItoS(VaPreDecCount + VaPostDecCount) + ' dec, ' +
+                   ItoS(VaArrayStCount) + ' arr';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-09)                              }
 { ============================================================ }
 
 Begin
@@ -5589,16 +6385,17 @@ Begin
   LitInit;
   InitOprState;
   InitPxState;
+  InitVaState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-08) }
+  { Boucle de tokenisation (TODO 02-09) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 09..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 10..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;

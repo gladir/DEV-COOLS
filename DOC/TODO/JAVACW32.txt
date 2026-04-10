@@ -228,7 +228,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
             Operateur ternaire : cond ? a : b -> code conditionnel
             10 fonctions accesseurs
 
-  TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [A FAIRE]
+  TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables locales : pile EBP, acces [EBP-offset]
               Declaration : int x; ou int x = expr;
               Plusieurs dans une ligne : int a, b, c;
