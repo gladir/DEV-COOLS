@@ -1707,7 +1707,7 @@ Procedure ShowUsage;
 Begin
   ShowVersion;
   WriteLn;
-  WriteLn('Usage: PASCHAT [options] [fichiers.txt...]');
+  WriteLn('Syntaxe: PASCHAT [options] [fichiers.txt...]');
   WriteLn;
   WriteLn('Options:');
   WriteLn('  -h, --help     Afficher cette aide');
@@ -10963,7 +10963,7 @@ End;
 BEGIN
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
    (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
-  ShowHelp;
+  ShowUsage;
   Halt(0);
  End;
   { Initialiser l'etat des options (TODO 01) }
