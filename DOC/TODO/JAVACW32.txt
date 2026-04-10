@@ -251,7 +251,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
               a l affectation
             10 fonctions accesseurs
 
-  TODO 10 - PARSEUR : IF / ELSE ET OPERATEUR TERNAIRE [A FAIRE]
+  TODO 10 - PARSEUR : IF / ELSE ET OPERATEUR TERNAIRE [IMPLEMENTE]
             ParseIfStmt : if (cond) { bloc } [else if (cond) { bloc }]
               [else { bloc }]
               Accolades obligatoires pour les blocs

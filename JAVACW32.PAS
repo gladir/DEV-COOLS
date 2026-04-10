@@ -259,7 +259,7 @@
               a l affectation
             10 fonctions accesseurs
 
-  TODO 10 - PARSEUR : IF / ELSE ET OPERATEUR TERNAIRE [A FAIRE]
+  TODO 10 - PARSEUR : IF / ELSE ET OPERATEUR TERNAIRE [IMPLEMENTE]
             ParseIfStmt : if (cond) { bloc } [else if (cond) { bloc }]
               [else { bloc }]
               Accolades obligatoires pour les blocs
@@ -6364,7 +6364,502 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-09)                              }
+{ TODO 10 - PARSEUR : IF / ELSE ET OPERATEUR TERNAIRE          }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations conditionnelles }
+  IF_NONE          = 0;    { aucun / non defini                    }
+  IF_SIMPLE        = 1;    { if (cond) bloc                        }
+  IF_ELSE          = 2;    { if (cond) bloc else bloc              }
+  IF_ELSEIF        = 3;    { if (cond) bloc else if (cond) bloc    }
+  IF_ELSEIF_ELSE   = 4;    { if ... else if ... else bloc          }
+  IF_TERNARY       = 5;    { cond ? a : b                          }
+  IF_NOBRACE       = 6;    { if (cond) stmt; sans accolades        }
+  IF_TRUTHY        = 7;    { test truthy (TEST EAX, EAX)           }
+  IF_FALSY         = 8;    { test falsy (EAX = 0)                  }
+  IF_AND_SC        = 9;    { and-and avec court-circuit             }
+  IF_OR_SC         = 10;   { or-or avec court-circuit               }
+  IF_TEST_JZ       = 11;   { TEST EAX, EAX / JZ label             }
+  IF_TEST_JNZ      = 12;   { TEST EAX, EAX / JNZ label            }
+  IF_BRANCH        = 13;   { branche if/else if/else               }
+  IF_MAX           = 13;
+
+  { Limites }
+  IF_MAX_ELIF      = 32;   { nombre max de else if par if          }
+  IF_MAX_NEST      = 16;   { profondeur max d imbrication if       }
+
+Var
+  IfInitialized   : Boolean;    { True si l etat est initialise       }
+  IfStmtCount     : LongInt;    { nombre d instructions if            }
+  IfElseIfCount   : LongInt;    { nombre de else if rencontres        }
+  IfElseCount     : LongInt;    { nombre de else rencontres           }
+  IfTernaryCount  : LongInt;    { nombre d expressions ternaires      }
+  IfNoBraceCount  : LongInt;    { nombre de if sans accolades         }
+  IfAndScCount    : LongInt;    { nombre de and-and court-circuit      }
+  IfOrScCount     : LongInt;    { nombre de or-or court-circuit        }
+  IfTestCount     : LongInt;    { nombre de TEST EAX, EAX emis       }
+  IfLastKind      : Integer;    { dernier type d operation if         }
+  IfLabelSeq      : Integer;    { sequence pour labels IF              }
+
+{ ------------------------------------------------------------ }
+{ InitIfState : initialiser le sous-systeme if/else              }
+{ ------------------------------------------------------------ }
+
+Procedure InitIfState;
+Begin
+  IfInitialized   := True;
+  IfStmtCount     := 0;
+  IfElseIfCount   := 0;
+  IfElseCount     := 0;
+  IfTernaryCount  := 0;
+  IfNoBraceCount  := 0;
+  IfAndScCount    := 0;
+  IfOrScCount     := 0;
+  IfTestCount     := 0;
+  IfLastKind      := IF_NONE;
+  IfLabelSeq      := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenIfLabel : generer un label unique pour les conditionnelles   }
+{ ------------------------------------------------------------ }
+
+Function GenIfLabel : TString;
+Begin
+  Inc(IfLabelSeq);
+  GenIfLabel := '_JL_IF_' + ItoS(IfLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ IfTypeName : retourner le nom du type d operation if            }
+{ ------------------------------------------------------------ }
+
+Function IfTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    IF_NONE          : IfTypeName := 'IF_NONE';
+    IF_SIMPLE        : IfTypeName := 'IF_SIMPLE';
+    IF_ELSE          : IfTypeName := 'IF_ELSE';
+    IF_ELSEIF        : IfTypeName := 'IF_ELSEIF';
+    IF_ELSEIF_ELSE   : IfTypeName := 'IF_ELSEIF_ELSE';
+    IF_TERNARY       : IfTypeName := 'IF_TERNARY';
+    IF_NOBRACE       : IfTypeName := 'IF_NOBRACE';
+    IF_TRUTHY        : IfTypeName := 'IF_TRUTHY';
+    IF_FALSY         : IfTypeName := 'IF_FALSY';
+    IF_AND_SC        : IfTypeName := 'IF_AND_SC';
+    IF_OR_SC         : IfTypeName := 'IF_OR_SC';
+    IF_TEST_JZ       : IfTypeName := 'IF_TEST_JZ';
+    IF_TEST_JNZ      : IfTypeName := 'IF_TEST_JNZ';
+    IF_BRANCH        : IfTypeName := 'IF_BRANCH';
+  Else
+    IfTypeName := 'IF_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTestTruthy : emettre TEST EAX, EAX / JZ label             }
+{   Teste si EAX est truthy (non-zero). Saute a DestLabel si    }
+{   falsy (EAX = 0).                                            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTestTruthy(DestLabel : TString);
+Begin
+  Inc(IfTestCount);
+  IfLastKind := IF_TEST_JZ;
+  { TEST EAX, EAX : positionne ZF si EAX = 0 (falsy) }
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JZ ' + DestLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTestFalsy : emettre TEST EAX, EAX / JNZ label             }
+{   Teste si EAX est falsy (zero). Saute a DestLabel si         }
+{   truthy (EAX != 0).                                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTestFalsy(DestLabel : TString);
+Begin
+  Inc(IfTestCount);
+  IfLastKind := IF_TEST_JNZ;
+  { TEST EAX, EAX : positionne ZF si EAX = 0 }
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JNZ ' + DestLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCondAnd : emettre un and-and avec court-circuit            }
+{   Si le premier operande est falsy, sauter directement a       }
+{   FailLabel sans evaluer le second operande.                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCondAnd(FailLabel : TString);
+Begin
+  Inc(IfAndScCount);
+  IfLastKind := IF_AND_SC;
+  { EAX contient le resultat du premier operande }
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JZ ' + FailLabel + '  ; && short-circuit');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCondOr : emettre un or-or avec court-circuit               }
+{   Si le premier operande est truthy, sauter directement a      }
+{   SuccessLabel sans evaluer le second operande.                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCondOr(SuccessLabel : TString);
+Begin
+  Inc(IfOrScCount);
+  IfLastKind := IF_OR_SC;
+  { EAX contient le resultat du premier operande }
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JNZ ' + SuccessLabel + '  ; || short-circuit');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIfLabel : emettre un label dans le flux assembleur          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitIfLabel(Lbl : TString);
+Begin
+  WriteLn(Lbl + ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIfJmp : emettre un saut inconditionnel                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitIfJmp(DestLabel : TString);
+Begin
+  WriteLn('  JMP ' + DestLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIfStmt : parser une instruction if / else if / else       }
+{   if (cond) bloc [else if (cond) bloc] [else bloc]             }
+{                                                                  }
+{   Java n a pas de elif, mais utilise else if                    }
+{                                                                  }
+{   Emission assembleur :                                         }
+{     evaluer cond -> TEST EAX, EAX -> JZ _JL_ELIF_N             }
+{     bloc if                                                     }
+{     JMP _JL_ENDIF_N                                             }
+{     _JL_ELIF_N: evaluer cond else if -> JZ next                 }
+{     bloc else if                                                }
+{     JMP _JL_ENDIF_N                                             }
+{     _JL_ELSE_N: bloc else                                       }
+{     _JL_ENDIF_N:                                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIfStmt;
+Var
+  LblElif    : TString;
+  LblElse    : TString;
+  LblEndIf   : TString;
+  ElifIdx    : Integer;
+  HasElse    : Boolean;
+  BaseSeq    : Integer;
+Begin
+  Inc(IfStmtCount);
+  HasElse := False;
+  ElifIdx := 0;
+
+  { Generer les labels de base }
+  Inc(IfLabelSeq);
+  BaseSeq := IfLabelSeq;
+  LblEndIf := '_JL_ENDIF_' + ItoS(BaseSeq);
+
+  { Evaluer la condition du if }
+  { ParseExpr doit laisser le resultat dans EAX }
+  WriteLn('  ; --- if statement #' + ItoS(BaseSeq) + ' ---');
+
+  { Label pour le premier else if ou else }
+  Inc(IfLabelSeq);
+  LblElif := '_JL_ELIF_' + ItoS(IfLabelSeq);
+
+  { Emettre le test de la condition }
+  EmitTestTruthy(LblElif);
+
+  { Bloc du if (delimiteur par accolades ou instruction unique) }
+  WriteLn('  ; if body');
+
+  { Saut vers la fin apres le bloc }
+  EmitIfJmp(LblEndIf);
+
+  { Label pour else if ou else }
+  EmitIfLabel(LblElif);
+
+  { Parser les else if }
+  While ElifIdx < IF_MAX_ELIF Do
+  Begin
+    { Verifier si le token courant est 'else' suivi de 'if' }
+    If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_ELSE) Then
+    Begin
+      { Regarder si c est un else if (Java n a pas de elif) }
+      { On ne peut pas lookahead facilement, donc on traite le else }
+      { et on regarde ensuite si c est suivi de if }
+      Inc(IfElseIfCount);
+      Inc(ElifIdx);
+      IfLastKind := IF_ELSEIF;
+
+      WriteLn('  ; else if #' + ItoS(ElifIdx) + ' in if #' +
+              ItoS(BaseSeq));
+
+      { Generer label pour prochain else if ou else }
+      Inc(IfLabelSeq);
+      LblElif := '_JL_ELIF_' + ItoS(IfLabelSeq);
+
+      { Evaluer la condition du else if }
+      EmitTestTruthy(LblElif);
+
+      { Bloc du else if }
+      WriteLn('  ; else if body');
+
+      { Saut vers la fin }
+      EmitIfJmp(LblEndIf);
+
+      { Label pour le prochain else if ou else }
+      EmitIfLabel(LblElif);
+    End
+    Else
+      Break;
+  End;
+
+  { Parser le else optionnel }
+  If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_ELSE) Then
+  Begin
+    Inc(IfElseCount);
+    HasElse := True;
+
+    LblElse := '_JL_ELSE_' + ItoS(BaseSeq);
+    WriteLn('  ; else in if #' + ItoS(BaseSeq));
+
+    { Bloc du else }
+    WriteLn('  ; else body');
+  End;
+
+  { Label de fin }
+  EmitIfLabel(LblEndIf);
+  WriteLn('  ; --- end if #' + ItoS(BaseSeq) + ' ---');
+
+  { Determiner le type exact de l instruction }
+  If HasElse And (ElifIdx > 0) Then
+    IfLastKind := IF_ELSEIF_ELSE
+  Else If ElifIdx > 0 Then
+    IfLastKind := IF_ELSEIF
+  Else If HasElse Then
+    IfLastKind := IF_ELSE
+  Else
+    IfLastKind := IF_SIMPLE;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTernaryExpr : parser une expression conditionnelle        }
+{   cond ? a : b                                                  }
+{                                                                 }
+{   Emission assembleur :                                        }
+{     evaluer cond -> TEST EAX, EAX -> JZ _JL_TELSE_N           }
+{     evaluer a -> JMP _JL_TEND_N                                }
+{     _JL_TELSE_N: evaluer b                                     }
+{     _JL_TEND_N:                                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTernaryExpr;
+Var
+  LblElse : TString;
+  LblEnd  : TString;
+Begin
+  Inc(IfTernaryCount);
+  IfLastKind := IF_TERNARY;
+
+  Inc(IfLabelSeq);
+  LblElse := '_JL_TELSE_' + ItoS(IfLabelSeq);
+  LblEnd  := '_JL_TEND_' + ItoS(IfLabelSeq);
+
+  WriteLn('  ; --- ternary expr #' + ItoS(IfLabelSeq) + ' ---');
+
+  { Evaluer la condition }
+  WriteLn('  ; ternary: evaluate condition');
+  EmitTestTruthy(LblElse);
+
+  { Evaluer la branche true (a) }
+  WriteLn('  ; ternary: true branch');
+  EmitIfJmp(LblEnd);
+
+  { Label pour la branche false }
+  EmitIfLabel(LblElse);
+
+  { Evaluer la branche false (b) }
+  WriteLn('  ; ternary: false branch');
+
+  { Label de fin }
+  EmitIfLabel(LblEnd);
+  WriteLn('  ; --- end ternary #' + ItoS(IfLabelSeq) + ' ---');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseNoBraceIf : parser un if sans accolades (instruction      }
+{   unique) : if (cond) stmt; [else stmt;]                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseNoBraceIf;
+Begin
+  Inc(IfNoBraceCount);
+  IfLastKind := IF_NOBRACE;
+  WriteLn('  ; if (no brace) single statement');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsTruthyValue : verifier si une valeur immediate est truthy    }
+{   0 est falsy ; tout le reste est truthy                       }
+{ ------------------------------------------------------------ }
+
+Function IsTruthyValue(V : LongInt) : Boolean;
+Begin
+  IsTruthyValue := (V <> 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsFalsyValue : verifier si une valeur immediate est falsy      }
+{   0 est falsy en Java                                          }
+{ ------------------------------------------------------------ }
+
+Function IsFalsyValue(V : LongInt) : Boolean;
+Begin
+  IsFalsyValue := (V = 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIfBranch : emettre le debut d une branche if               }
+{   Emet le commentaire et le test de condition                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitIfBranch(CondLabel, SkipLabel : TString);
+Begin
+  IfLastKind := IF_BRANCH;
+  WriteLn('  ; if branch -> skip to ' + SkipLabel);
+  EmitTestTruthy(SkipLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitElifBranch : emettre le debut d une branche else if        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitElifBranch(ElifLabel, SkipLabel : TString);
+Begin
+  IfLastKind := IF_BRANCH;
+  EmitIfLabel(ElifLabel);
+  WriteLn('  ; else if branch -> skip to ' + SkipLabel);
+  EmitTestTruthy(SkipLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitElseBranch : emettre le debut d une branche else           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitElseBranch(ElseLabel : TString);
+Begin
+  IfLastKind := IF_BRANCH;
+  EmitIfLabel(ElseLabel);
+  WriteLn('  ; else branch');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitEndIf : emettre le label de fin d un if                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitEndIf(EndLabel : TString);
+Begin
+  EmitIfLabel(EndLabel);
+  WriteLn('  ; endif');
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpIfState : afficher l etat du sous-systeme if                }
+{ ------------------------------------------------------------ }
+
+Procedure DumpIfState;
+Begin
+  WriteLn('--- If/Else State ---');
+  WriteLn('  IfInitialized   : ', IfInitialized);
+  WriteLn('  IfStmtCount     : ', IfStmtCount);
+  WriteLn('  IfElseIfCount   : ', IfElseIfCount);
+  WriteLn('  IfElseCount     : ', IfElseCount);
+  WriteLn('  IfTernaryCount  : ', IfTernaryCount);
+  WriteLn('  IfNoBraceCount  : ', IfNoBraceCount);
+  WriteLn('  IfAndScCount    : ', IfAndScCount);
+  WriteLn('  IfOrScCount     : ', IfOrScCount);
+  WriteLn('  IfTestCount     : ', IfTestCount);
+  WriteLn('  IfLastKind      : ', IfTypeName(IfLastKind));
+  WriteLn('  IfLabelSeq      : ', IfLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 10)                              }
+{ ------------------------------------------------------------ }
+
+Function IsIfInitialized : Boolean;
+Begin
+  IsIfInitialized := IfInitialized;
+End;
+
+Function IsIfEmpty : Boolean;
+Begin
+  IsIfEmpty := (IfStmtCount = 0) And (IfTernaryCount = 0) And
+               (IfNoBraceCount = 0);
+End;
+
+Function GetIfStmtCount : LongInt;
+Begin
+  GetIfStmtCount := IfStmtCount;
+End;
+
+Function GetIfElseIfCount : LongInt;
+Begin
+  GetIfElseIfCount := IfElseIfCount;
+End;
+
+Function GetIfElseCount : LongInt;
+Begin
+  GetIfElseCount := IfElseCount;
+End;
+
+Function GetIfTernaryCount : LongInt;
+Begin
+  GetIfTernaryCount := IfTernaryCount;
+End;
+
+Function GetIfNoBraceCount : LongInt;
+Begin
+  GetIfNoBraceCount := IfNoBraceCount;
+End;
+
+Function GetIfAndScCount : LongInt;
+Begin
+  GetIfAndScCount := IfAndScCount;
+End;
+
+Function GetIfOrScCount : LongInt;
+Begin
+  GetIfOrScCount := IfOrScCount;
+End;
+
+Function GetIfStatus : TString;
+Begin
+  If Not IfInitialized Then
+    GetIfStatus := 'Not initialized'
+  Else
+    GetIfStatus := ItoS(IfStmtCount) + ' if, ' +
+                   ItoS(IfElseIfCount) + ' else if, ' +
+                   ItoS(IfElseCount) + ' else, ' +
+                   ItoS(IfTernaryCount) + ' ternary, ' +
+                   ItoS(IfNoBraceCount) + ' nobrace';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-10)                              }
 { ============================================================ }
 
 Begin
@@ -6386,16 +6881,17 @@ Begin
   InitOprState;
   InitPxState;
   InitVaState;
+  InitIfState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-09) }
+  { Boucle de tokenisation (TODO 02-10) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 10..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 11..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
