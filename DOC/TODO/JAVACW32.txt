@@ -100,7 +100,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
               String (pointeur chaine)
             10 fonctions accesseurs
 
-  TODO 04 - TABLE DES SYMBOLES JAVA (32 BITS) [A FAIRE]
+  TODO 04 - TABLE DES SYMBOLES JAVA (32 BITS) [IMPLEMENTE]
             Enregistrement TSymRec :
               Name      : nom Java (x, myMethod, MyClass)
               AsmName   : label ASM correspondant (_JV_x, _JF_MyClass_myMethod)
