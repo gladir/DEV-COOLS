@@ -381,7 +381,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
             String.valueOf(n) : conversion entier -> chaine
             10 fonctions accesseurs
 
-  TODO 16 - PARSEUR : CLASSES, OBJETS ET CONSTRUCTEURS [A FAIRE]
+  TODO 16 - PARSEUR : CLASSES, OBJETS ET CONSTRUCTEURS [IMPLEMENTE]
             ParseClassDecl : public class Nom { corps }
               ou class Nom extends Parent { corps }
             Champs d instance : stockes dans un bloc sur le heap

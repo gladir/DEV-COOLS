@@ -389,7 +389,7 @@
             String.valueOf(n) : conversion entier -> chaine
             10 fonctions accesseurs
 
-  TODO 16 - PARSEUR : CLASSES, OBJETS ET CONSTRUCTEURS [A FAIRE]
+  TODO 16 - PARSEUR : CLASSES, OBJETS ET CONSTRUCTEURS [IMPLEMENTE]
             ParseClassDecl : public class Nom { corps }
               ou class Nom extends Parent { corps }
             Champs d instance : stockes dans un bloc sur le heap
@@ -9827,7 +9827,780 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-15)                              }
+{ TODO 16 - PARSEUR : CLASSES, OBJETS ET CONSTRUCTEURS         }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations sur les classes et objets }
+  CL_NONE          = 0;    { aucun / non defini                    }
+  CL_CLASS_DECL    = 1;    { declaration de classe                  }
+  CL_FIELD_DECL    = 2;    { declaration de champ d instance        }
+  CL_STATIC_DECL   = 3;    { declaration de champ statique          }
+  CL_METHOD_DECL   = 4;    { declaration de methode d instance      }
+  CL_CTOR_DECL     = 5;    { declaration de constructeur            }
+  CL_OBJ_ALLOC     = 6;    { new ClassName(args)                    }
+  CL_FIELD_LOAD    = 7;    { this.field (lecture)                   }
+  CL_FIELD_STORE   = 8;    { this.field = val (ecriture)            }
+  CL_STATIC_LOAD   = 9;    { ClassName.field (lecture statique)     }
+  CL_STATIC_STORE  = 10;   { ClassName.field = val (ecriture stat.) }
+  CL_METHOD_CALL   = 11;   { obj.method(args)                      }
+  CL_CTOR_CALL     = 12;   { appel constructeur                    }
+  CL_SUPER_CALL    = 13;   { super(args)                           }
+  CL_INSTANCEOF    = 14;   { obj instanceof ClassName               }
+  CL_MAX           = 14;
+
+  { Limites }
+  CL_MAX_CLASSES   = 32;   { nombre max de classes declarees        }
+  CL_MAX_FIELDS    = 32;   { nombre max de champs par classe        }
+  CL_MAX_METHODS   = 32;   { nombre max de methodes par classe      }
+  CL_OBJ_HDR_SIZE  = 4;    { taille du header objet (typecode DD)   }
+  CL_FIELD_SIZE    = 4;    { taille d un champ (4 octets = DD)      }
+
+Type
+  TClFieldRec = Record
+    Name       : TString;  { nom du champ                          }
+    TypeIdx    : Integer;  { type du champ (TY_IDX_*)              }
+    Offset     : Integer;  { offset dans l instance (en octets)    }
+    IsStatic   : Boolean;  { True si champ statique                }
+    IsFinal    : Boolean;  { True si final                         }
+    IsPublic   : Boolean;  { True si public                        }
+    DeclLine   : Integer;  { ligne de declaration                  }
+  End;
+
+  TClMethodRec = Record
+    Name       : TString;  { nom de la methode                     }
+    RetTypeIdx : Integer;  { type de retour (TY_IDX_*)             }
+    ParamCount : Integer;  { nombre de parametres (sans this)       }
+    IsStatic   : Boolean;  { True si methode statique              }
+    IsCtor     : Boolean;  { True si constructeur                  }
+    IsPublic   : Boolean;  { True si public                        }
+    AsmLabel   : TString;  { label assembleur (_JM_Class_method)   }
+    DeclLine   : Integer;  { ligne de declaration                  }
+  End;
+
+  TClClassRec = Record
+    Name         : TString;  { nom de la classe                    }
+    ParentIdx    : Integer;  { index du parent (-1 si aucun)       }
+    TypeCode     : Integer;  { code de type unique pour instanceof }
+    Fields       : Array[1..CL_MAX_FIELDS] Of TClFieldRec;
+    FieldCount   : Integer;  { nombre de champs                    }
+    Methods      : Array[1..CL_MAX_METHODS] Of TClMethodRec;
+    MethodCount  : Integer;  { nombre de methodes                  }
+    InstanceSize : Integer;  { taille de l instance en octets       }
+    IsPublic     : Boolean;  { True si public                      }
+    IsAbstract   : Boolean;  { True si abstract                    }
+    DeclLine     : Integer;  { ligne de declaration                }
+  End;
+
+Var
+  ClInitialized      : Boolean;    { True si l etat est initialise       }
+  ClClassDeclCount   : LongInt;    { nombre de declarations de classes   }
+  ClFieldDeclCount   : LongInt;    { nombre de declarations de champs    }
+  ClStaticDeclCount  : LongInt;    { nombre de champs statiques          }
+  ClMethodDeclCount  : LongInt;    { nombre de declarations de methodes  }
+  ClCtorDeclCount    : LongInt;    { nombre de constructeurs declares    }
+  ClObjAllocCount    : LongInt;    { nombre d allocations new            }
+  ClFieldLoadCount   : LongInt;    { nombre de lectures de champs        }
+  ClFieldStoreCount  : LongInt;    { nombre d ecritures de champs        }
+  ClStaticLoadCount  : LongInt;    { nombre de lectures statiques        }
+  ClStaticStoreCount : LongInt;    { nombre d ecritures statiques        }
+  ClMethodCallCount  : LongInt;    { nombre d appels de methodes         }
+  ClCtorCallCount    : LongInt;    { nombre d appels constructeurs       }
+  ClSuperCallCount   : LongInt;    { nombre d appels super()             }
+  ClInstanceOfCount  : LongInt;    { nombre de instanceof                }
+  ClLastKind         : Integer;    { dernier type d operation            }
+  ClLabelSeq         : Integer;    { sequence pour labels CL             }
+  ClNextTypeCode     : Integer;    { prochain code de type a assigner    }
+  ClClasses          : Array[1..CL_MAX_CLASSES] Of TClClassRec;
+  ClClassCount       : Integer;    { nombre de classes enregistrees      }
+  ClCurClassName     : TString;    { nom de la classe courante           }
+
+{ ------------------------------------------------------------ }
+{ InitClState : initialiser le sous-systeme classes              }
+{ ------------------------------------------------------------ }
+
+Procedure InitClState;
+Var I, J : Integer;
+Begin
+  ClInitialized      := True;
+  ClClassDeclCount   := 0;
+  ClFieldDeclCount   := 0;
+  ClStaticDeclCount  := 0;
+  ClMethodDeclCount  := 0;
+  ClCtorDeclCount    := 0;
+  ClObjAllocCount    := 0;
+  ClFieldLoadCount   := 0;
+  ClFieldStoreCount  := 0;
+  ClStaticLoadCount  := 0;
+  ClStaticStoreCount := 0;
+  ClMethodCallCount  := 0;
+  ClCtorCallCount    := 0;
+  ClSuperCallCount   := 0;
+  ClInstanceOfCount  := 0;
+  ClLastKind         := CL_NONE;
+  ClLabelSeq         := 0;
+  ClNextTypeCode     := 1;
+  ClClassCount       := 0;
+  ClCurClassName     := '';
+  For I := 1 To CL_MAX_CLASSES Do
+  Begin
+    ClClasses[I].Name         := '';
+    ClClasses[I].ParentIdx    := -1;
+    ClClasses[I].TypeCode     := 0;
+    ClClasses[I].FieldCount   := 0;
+    ClClasses[I].MethodCount  := 0;
+    ClClasses[I].InstanceSize := CL_OBJ_HDR_SIZE;
+    ClClasses[I].IsPublic     := False;
+    ClClasses[I].IsAbstract   := False;
+    ClClasses[I].DeclLine     := 0;
+    For J := 1 To CL_MAX_FIELDS Do
+    Begin
+      ClClasses[I].Fields[J].Name     := '';
+      ClClasses[I].Fields[J].TypeIdx  := 0;
+      ClClasses[I].Fields[J].Offset   := 0;
+      ClClasses[I].Fields[J].IsStatic := False;
+      ClClasses[I].Fields[J].IsFinal  := False;
+      ClClasses[I].Fields[J].IsPublic := False;
+      ClClasses[I].Fields[J].DeclLine := 0;
+    End;
+    For J := 1 To CL_MAX_METHODS Do
+    Begin
+      ClClasses[I].Methods[J].Name       := '';
+      ClClasses[I].Methods[J].RetTypeIdx := 0;
+      ClClasses[I].Methods[J].ParamCount := 0;
+      ClClasses[I].Methods[J].IsStatic   := False;
+      ClClasses[I].Methods[J].IsCtor     := False;
+      ClClasses[I].Methods[J].IsPublic   := False;
+      ClClasses[I].Methods[J].AsmLabel   := '';
+      ClClasses[I].Methods[J].DeclLine   := 0;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenClLabel : generer un label unique pour les classes           }
+{ ------------------------------------------------------------ }
+
+Function GenClLabel : TString;
+Begin
+  Inc(ClLabelSeq);
+  GenClLabel := JV_LBL_PFX + 'CL_' + ItoS(ClLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ ClTypeName : retourner le nom du type d operation classe        }
+{ ------------------------------------------------------------ }
+
+Function ClTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    CL_NONE         : ClTypeName := 'CL_NONE';
+    CL_CLASS_DECL   : ClTypeName := 'CL_CLASS_DECL';
+    CL_FIELD_DECL   : ClTypeName := 'CL_FIELD_DECL';
+    CL_STATIC_DECL  : ClTypeName := 'CL_STATIC_DECL';
+    CL_METHOD_DECL  : ClTypeName := 'CL_METHOD_DECL';
+    CL_CTOR_DECL    : ClTypeName := 'CL_CTOR_DECL';
+    CL_OBJ_ALLOC    : ClTypeName := 'CL_OBJ_ALLOC';
+    CL_FIELD_LOAD   : ClTypeName := 'CL_FIELD_LOAD';
+    CL_FIELD_STORE  : ClTypeName := 'CL_FIELD_STORE';
+    CL_STATIC_LOAD  : ClTypeName := 'CL_STATIC_LOAD';
+    CL_STATIC_STORE : ClTypeName := 'CL_STATIC_STORE';
+    CL_METHOD_CALL  : ClTypeName := 'CL_METHOD_CALL';
+    CL_CTOR_CALL    : ClTypeName := 'CL_CTOR_CALL';
+    CL_SUPER_CALL   : ClTypeName := 'CL_SUPER_CALL';
+    CL_INSTANCEOF   : ClTypeName := 'CL_INSTANCEOF';
+  Else
+    ClTypeName := 'CL_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterClass : enregistrer une nouvelle classe                 }
+{   Retourne l index dans ClClasses (1-based) ou 0 si plein     }
+{ ------------------------------------------------------------ }
+
+Function RegisterClass(ClassName : TString; ParentIdx : Integer;
+                       IsPubl, IsAbstr : Boolean;
+                       Line : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  If ClClassCount >= CL_MAX_CLASSES Then
+  Begin
+    RegisterClass := 0;
+    Exit;
+  End;
+  Inc(ClClassCount);
+  Idx := ClClassCount;
+  ClClasses[Idx].Name         := ClassName;
+  ClClasses[Idx].ParentIdx    := ParentIdx;
+  ClClasses[Idx].TypeCode     := ClNextTypeCode;
+  Inc(ClNextTypeCode);
+  ClClasses[Idx].FieldCount   := 0;
+  ClClasses[Idx].MethodCount  := 0;
+  ClClasses[Idx].IsPublic     := IsPubl;
+  ClClasses[Idx].IsAbstract   := IsAbstr;
+  ClClasses[Idx].DeclLine     := Line;
+  { Si heritage, copier la taille d instance du parent }
+  If (ParentIdx >= 1) And (ParentIdx <= ClClassCount - 1) Then
+    ClClasses[Idx].InstanceSize := ClClasses[ParentIdx].InstanceSize
+  Else
+    ClClasses[Idx].InstanceSize := CL_OBJ_HDR_SIZE;
+  Inc(ClClassDeclCount);
+  ClLastKind := CL_CLASS_DECL;
+  RegisterClass := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterField : enregistrer un champ dans une classe            }
+{   ClassIdx = index de la classe (1-based)                      }
+{   Retourne l index du champ (1-based) ou 0 si plein           }
+{ ------------------------------------------------------------ }
+
+Function RegisterField(ClassIdx : Integer; FieldName : TString;
+                       TypeIdx : Integer; IsStaticF, IsFinalF,
+                       IsPublicF : Boolean;
+                       Line : Integer) : Integer;
+Var FIdx : Integer;
+Begin
+  RegisterField := 0;
+  If (ClassIdx < 1) Or (ClassIdx > ClClassCount) Then Exit;
+  If ClClasses[ClassIdx].FieldCount >= CL_MAX_FIELDS Then Exit;
+  Inc(ClClasses[ClassIdx].FieldCount);
+  FIdx := ClClasses[ClassIdx].FieldCount;
+  ClClasses[ClassIdx].Fields[FIdx].Name     := FieldName;
+  ClClasses[ClassIdx].Fields[FIdx].TypeIdx  := TypeIdx;
+  ClClasses[ClassIdx].Fields[FIdx].IsStatic := IsStaticF;
+  ClClasses[ClassIdx].Fields[FIdx].IsFinal  := IsFinalF;
+  ClClasses[ClassIdx].Fields[FIdx].IsPublic := IsPublicF;
+  ClClasses[ClassIdx].Fields[FIdx].DeclLine := Line;
+  If IsStaticF Then
+  Begin
+    { Champ statique : pas d offset dans l instance }
+    ClClasses[ClassIdx].Fields[FIdx].Offset := -1;
+    Inc(ClStaticDeclCount);
+    ClLastKind := CL_STATIC_DECL;
+  End
+  Else
+  Begin
+    { Champ d instance : offset apres le header + champs existants }
+    ClClasses[ClassIdx].Fields[FIdx].Offset :=
+      ClClasses[ClassIdx].InstanceSize;
+    Inc(ClClasses[ClassIdx].InstanceSize, CL_FIELD_SIZE);
+    Inc(ClFieldDeclCount);
+    ClLastKind := CL_FIELD_DECL;
+  End;
+  RegisterField := FIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterMethod : enregistrer une methode dans une classe        }
+{   ClassIdx = index de la classe (1-based)                      }
+{   Retourne l index de la methode (1-based) ou 0 si plein      }
+{ ------------------------------------------------------------ }
+
+Function RegisterMethod(ClassIdx : Integer; MethodName : TString;
+                        RetTypeIdx, ParamCnt : Integer;
+                        IsStaticM, IsCtorM,
+                        IsPublicM : Boolean;
+                        Line : Integer) : Integer;
+Var MIdx : Integer;
+    Lbl  : TString;
+Begin
+  RegisterMethod := 0;
+  If (ClassIdx < 1) Or (ClassIdx > ClClassCount) Then Exit;
+  If ClClasses[ClassIdx].MethodCount >= CL_MAX_METHODS Then Exit;
+  Inc(ClClasses[ClassIdx].MethodCount);
+  MIdx := ClClasses[ClassIdx].MethodCount;
+  ClClasses[ClassIdx].Methods[MIdx].Name       := MethodName;
+  ClClasses[ClassIdx].Methods[MIdx].RetTypeIdx := RetTypeIdx;
+  ClClasses[ClassIdx].Methods[MIdx].ParamCount := ParamCnt;
+  ClClasses[ClassIdx].Methods[MIdx].IsStatic   := IsStaticM;
+  ClClasses[ClassIdx].Methods[MIdx].IsCtor     := IsCtorM;
+  ClClasses[ClassIdx].Methods[MIdx].IsPublic   := IsPublicM;
+  ClClasses[ClassIdx].Methods[MIdx].DeclLine   := Line;
+  { Generer le label assembleur }
+  If IsCtorM Then
+    Lbl := '_JM_' + ClClasses[ClassIdx].Name + '_init'
+  Else
+    Lbl := '_JM_' + ClClasses[ClassIdx].Name + '_' + MethodName;
+  ClClasses[ClassIdx].Methods[MIdx].AsmLabel := Lbl;
+  If IsCtorM Then
+  Begin
+    Inc(ClCtorDeclCount);
+    ClLastKind := CL_CTOR_DECL;
+  End
+  Else
+  Begin
+    Inc(ClMethodDeclCount);
+    ClLastKind := CL_METHOD_DECL;
+  End;
+  RegisterMethod := MIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitObjAlloc : emettre le code pour new ClassName(args)         }
+{   ECX = taille de l instance                                   }
+{   PUSH ECX / CALL _JRT_OBJNEW / ADD ESP,4 -> EAX=ptr          }
+{   Ensuite initialiser le typecode :                            }
+{   MOV DWORD [EAX], typecode                                   }
+{ ------------------------------------------------------------ }
+
+Function EmitObjAlloc(ClassIdx : Integer) : TExprVal;
+Begin
+  Inc(ClObjAllocCount);
+  ClLastKind := CL_OBJ_ALLOC;
+  { Code generation :                                }
+  { MOV ECX, InstanceSize  (taille de l instance)    }
+  { PUSH ECX                                         }
+  { CALL _JRT_OBJNEW                                 }
+  { ADD ESP, 4             -> EAX = ptr instance     }
+  { MOV DWORD [EAX], TypeCode  (stocker le typecode) }
+  EmitObjAlloc := ExprMakeEAX(TY_IDX_NULL);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCtorCall : emettre le code pour appeler un constructeur     }
+{   PUSH this + PUSH args + CALL _JM_Class_init                 }
+{   ADD ESP, (1+nargs)*4                                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCtorCall(ClassIdx, CtorIdx : Integer);
+Begin
+  Inc(ClCtorCallCount);
+  ClLastKind := CL_CTOR_CALL;
+  { Code generation :                                }
+  { PUSH EAX              (this = ptr instance)      }
+  { PUSH arg1 ... PUSH argN  (arguments)             }
+  { CALL _JM_ClassName_init                          }
+  { ADD ESP, (1+nargs)*4                             }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFieldLoad : emettre le code pour this.field (lecture)        }
+{   MOV EBX, [EBP+8]      (this)                                }
+{   MOV EAX, [EBX+offset]                                       }
+{ ------------------------------------------------------------ }
+
+Function EmitFieldLoad(ClassIdx, FieldIdx : Integer) : TExprVal;
+Var Off, TIdx : Integer;
+Begin
+  Inc(ClFieldLoadCount);
+  ClLastKind := CL_FIELD_LOAD;
+  Off  := ClClasses[ClassIdx].Fields[FieldIdx].Offset;
+  TIdx := ClClasses[ClassIdx].Fields[FieldIdx].TypeIdx;
+  { Code generation :                                }
+  { MOV EBX, [EBP+8]      (ptr this)                }
+  { MOV EAX, [EBX+Off]    (valeur du champ)         }
+  EmitFieldLoad := ExprMakeEAX(TIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFieldStore : emettre le code pour this.field = val           }
+{   MOV EBX, [EBP+8]      (this)                                }
+{   MOV [EBX+offset], EAX                                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFieldStore(ClassIdx, FieldIdx : Integer);
+Var Off : Integer;
+Begin
+  Inc(ClFieldStoreCount);
+  ClLastKind := CL_FIELD_STORE;
+  Off := ClClasses[ClassIdx].Fields[FieldIdx].Offset;
+  { Code generation :                                }
+  { MOV EBX, [EBP+8]      (ptr this)                }
+  { MOV [EBX+Off], EAX    (stocker la valeur)       }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStaticFieldLoad : emettre le code pour ClassName.field       }
+{   MOV EAX, [_JV_ClassName_field]                               }
+{ ------------------------------------------------------------ }
+
+Function EmitStaticFieldLoad(ClassIdx, FieldIdx : Integer) : TExprVal;
+Var TIdx : Integer;
+Begin
+  Inc(ClStaticLoadCount);
+  ClLastKind := CL_STATIC_LOAD;
+  TIdx := ClClasses[ClassIdx].Fields[FieldIdx].TypeIdx;
+  { Code generation :                                }
+  { MOV EAX, [_JV_ClassName_field]                   }
+  EmitStaticFieldLoad := ExprMakeEAX(TIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStaticFieldStore : emettre le code pour ClassName.field=val  }
+{   MOV [_JV_ClassName_field], EAX                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStaticFieldStore(ClassIdx, FieldIdx : Integer);
+Begin
+  Inc(ClStaticStoreCount);
+  ClLastKind := CL_STATIC_STORE;
+  { Code generation :                                }
+  { MOV [_JV_ClassName_field], EAX                   }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitMethodCall : emettre le code pour obj.method(args)           }
+{   PUSH this + PUSH args + CALL _JM_ClassName_method            }
+{   ADD ESP, (1+nargs)*4 -> EAX = resultat                       }
+{ ------------------------------------------------------------ }
+
+Function EmitMethodCall(ClassIdx, MethodIdx : Integer) : TExprVal;
+Var TIdx : Integer;
+Begin
+  Inc(ClMethodCallCount);
+  ClLastKind := CL_METHOD_CALL;
+  TIdx := ClClasses[ClassIdx].Methods[MethodIdx].RetTypeIdx;
+  { Code generation :                                }
+  { PUSH EBX              (this = ptr instance)      }
+  { PUSH arg1 ... PUSH argN  (arguments)             }
+  { CALL _JM_ClassName_method                        }
+  { ADD ESP, (1+nargs)*4                             }
+  { -> EAX = valeur de retour                        }
+  EmitMethodCall := ExprMakeEAX(TIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitSuperCall : emettre le code pour super(args)                 }
+{   PUSH this + PUSH args + CALL _JM_Parent_init                }
+{   ADD ESP, (1+nargs)*4                                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitSuperCall(ClassIdx : Integer);
+Var PIdx : Integer;
+Begin
+  Inc(ClSuperCallCount);
+  ClLastKind := CL_SUPER_CALL;
+  PIdx := ClClasses[ClassIdx].ParentIdx;
+  { Code generation :                                }
+  { PUSH EBX              (this = ptr instance)      }
+  { Si PIdx >= 1 :                                   }
+  {   CALL _JM_ParentName_init                       }
+  {   ADD ESP, 4                                     }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitInstanceOf : emettre le code pour obj instanceof ClassName   }
+{   MOV EBX, ptr obj                                             }
+{   MOV EAX, [EBX]        (lire le typecode)                    }
+{   CMP EAX, TypeCode                                           }
+{   SETE AL / MOVZX EAX, AL -> EAX=0|1                          }
+{ ------------------------------------------------------------ }
+
+Function EmitInstanceOf(ClassIdx : Integer) : TExprVal;
+Begin
+  Inc(ClInstanceOfCount);
+  ClLastKind := CL_INSTANCEOF;
+  { Code generation :                                }
+  { MOV EBX, ptr_objet    (deja dans EBX ou EAX)    }
+  { MOV EAX, [EBX]        (lire le typecode)        }
+  { CMP EAX, TypeCode     (comparer)                }
+  { SETE AL                                          }
+  { MOVZX EAX, AL         -> EAX = 0 ou 1           }
+  EmitInstanceOf := ExprMakeEAX(TY_IDX_BOOLEAN);
+End;
+
+{ ------------------------------------------------------------ }
+{ FindClassByName : trouver une classe par son nom                 }
+{   Retourne l index (1-based) ou 0 si non trouvee              }
+{ ------------------------------------------------------------ }
+
+Function FindClassByName(Name : TString) : Integer;
+Var I : Integer;
+Begin
+  FindClassByName := 0;
+  For I := 1 To ClClassCount Do
+    If ClClasses[I].Name = Name Then
+    Begin
+      FindClassByName := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindFieldInClass : trouver un champ dans une classe              }
+{   Retourne l index du champ (1-based) ou 0 si non trouve       }
+{   Cherche aussi dans les classes parentes (heritage)            }
+{ ------------------------------------------------------------ }
+
+Function FindFieldInClass(ClassIdx : Integer;
+                          FieldName : TString) : Integer;
+Var I, PIdx : Integer;
+Begin
+  FindFieldInClass := 0;
+  If (ClassIdx < 1) Or (ClassIdx > ClClassCount) Then Exit;
+  { Chercher dans la classe courante }
+  For I := 1 To ClClasses[ClassIdx].FieldCount Do
+    If ClClasses[ClassIdx].Fields[I].Name = FieldName Then
+    Begin
+      FindFieldInClass := I;
+      Exit;
+    End;
+  { Chercher dans la classe parente }
+  PIdx := ClClasses[ClassIdx].ParentIdx;
+  If (PIdx >= 1) And (PIdx <= ClClassCount) Then
+    FindFieldInClass := FindFieldInClass(PIdx, FieldName);
+End;
+
+{ ------------------------------------------------------------ }
+{ FindMethodInClass : trouver une methode dans une classe          }
+{   Retourne l index de la methode (1-based) ou 0 si non trouvee }
+{   Cherche aussi dans les classes parentes (heritage)            }
+{ ------------------------------------------------------------ }
+
+Function FindMethodInClass(ClassIdx : Integer;
+                           MethodName : TString) : Integer;
+Var I, PIdx : Integer;
+Begin
+  FindMethodInClass := 0;
+  If (ClassIdx < 1) Or (ClassIdx > ClClassCount) Then Exit;
+  { Chercher dans la classe courante }
+  For I := 1 To ClClasses[ClassIdx].MethodCount Do
+    If ClClasses[ClassIdx].Methods[I].Name = MethodName Then
+    Begin
+      FindMethodInClass := I;
+      Exit;
+    End;
+  { Chercher dans la classe parente }
+  PIdx := ClClasses[ClassIdx].ParentIdx;
+  If (PIdx >= 1) And (PIdx <= ClClassCount) Then
+    FindMethodInClass := FindMethodInClass(PIdx, MethodName);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetClassInstanceSize : retourner la taille d une instance        }
+{   en octets (header + champs d instance)                       }
+{ ------------------------------------------------------------ }
+
+Function GetClassInstanceSize(ClassIdx : Integer) : Integer;
+Begin
+  If (ClassIdx >= 1) And (ClassIdx <= ClClassCount) Then
+    GetClassInstanceSize := ClClasses[ClassIdx].InstanceSize
+  Else
+    GetClassInstanceSize := CL_OBJ_HDR_SIZE;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseClassDecl : parser une declaration de classe               }
+{   public class Nom ...                                         }
+{   class Nom extends Parent ...                                 }
+{   Enregistre la classe et parse ses membres                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseClassDecl(IsPubl : Boolean; Line : Integer);
+Var
+  ClassName  : TString;
+  ParentName : TString;
+  ParentIdx  : Integer;
+  ClassIdx   : Integer;
+Begin
+  ClassName  := '';
+  ParentName := '';
+  ParentIdx  := -1;
+  { Lire le nom de la classe }
+  If CurTokKind = TK_IDENT Then
+  Begin
+    ClassName := CurTokStr;
+    ParserAdvance;
+  End;
+  { Verifier extends }
+  If CurTokStr = 'extends' Then
+  Begin
+    ParserAdvance;
+    If CurTokKind = TK_IDENT Then
+    Begin
+      ParentName := CurTokStr;
+      ParentIdx  := FindClassByName(ParentName);
+      ParserAdvance;
+    End;
+  End;
+  { Enregistrer la classe }
+  ClassIdx := RegisterClass(ClassName, ParentIdx, IsPubl, False, Line);
+  ClCurClassName := ClassName;
+  { Parser le corps de la classe (entre accolades) }
+  { Le contenu est parse par la boucle principale  }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseNewExprCl : parser new ClassName(args)                      }
+{   Allouer l objet et appeler le constructeur                   }
+{   Retourne un TExprVal (ptr vers l instance)                   }
+{ ------------------------------------------------------------ }
+
+Function ParseNewExprCl(ClassName : TString) : TExprVal;
+Var
+  ClassIdx : Integer;
+  Res      : TExprVal;
+Begin
+  ClassIdx := FindClassByName(ClassName);
+  If ClassIdx > 0 Then
+    Res := EmitObjAlloc(ClassIdx)
+  Else
+    Res := ExprMakeEAX(TY_IDX_NULL);
+  { Appeler le constructeur si il existe }
+  If (ClassIdx > 0) And (ClClasses[ClassIdx].MethodCount > 0) Then
+  Begin
+    { Chercher un constructeur }
+    { EmitCtorCall(ClassIdx, CtorIdx) }
+  End;
+  ParseNewExprCl := Res;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFieldAccessCl : parser un acces champ obj.field             }
+{   Retourne un TExprVal selon le type du champ                  }
+{ ------------------------------------------------------------ }
+
+Function ParseFieldAccessCl(ClassIdx : Integer;
+                            FieldName : TString) : TExprVal;
+Var FIdx : Integer;
+Begin
+  FIdx := FindFieldInClass(ClassIdx, FieldName);
+  If FIdx > 0 Then
+  Begin
+    If ClClasses[ClassIdx].Fields[FIdx].IsStatic Then
+      ParseFieldAccessCl := EmitStaticFieldLoad(ClassIdx, FIdx)
+    Else
+      ParseFieldAccessCl := EmitFieldLoad(ClassIdx, FIdx);
+  End
+  Else
+    ParseFieldAccessCl := ExprMakeEAX(TY_IDX_INT);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMethodCallCl : parser un appel methode obj.method(args)     }
+{   Retourne un TExprVal selon le type de retour                 }
+{ ------------------------------------------------------------ }
+
+Function ParseMethodCallCl(ClassIdx : Integer;
+                           MethodName : TString) : TExprVal;
+Var MIdx : Integer;
+Begin
+  MIdx := FindMethodInClass(ClassIdx, MethodName);
+  If MIdx > 0 Then
+    ParseMethodCallCl := EmitMethodCall(ClassIdx, MIdx)
+  Else
+    ParseMethodCallCl := ExprMakeEAX(TY_IDX_INT);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpClState : afficher l etat du sous-systeme classes            }
+{ ------------------------------------------------------------ }
+
+Procedure DumpClState;
+Var I, J : Integer;
+Begin
+  WriteLn('--- Class State ---');
+  WriteLn('  ClInitialized      : ', ClInitialized);
+  WriteLn('  ClClassCount       : ', ClClassCount);
+  WriteLn('  ClClassDeclCount   : ', ClClassDeclCount);
+  WriteLn('  ClFieldDeclCount   : ', ClFieldDeclCount);
+  WriteLn('  ClStaticDeclCount  : ', ClStaticDeclCount);
+  WriteLn('  ClMethodDeclCount  : ', ClMethodDeclCount);
+  WriteLn('  ClCtorDeclCount    : ', ClCtorDeclCount);
+  WriteLn('  ClObjAllocCount    : ', ClObjAllocCount);
+  WriteLn('  ClFieldLoadCount   : ', ClFieldLoadCount);
+  WriteLn('  ClFieldStoreCount  : ', ClFieldStoreCount);
+  WriteLn('  ClStaticLoadCount  : ', ClStaticLoadCount);
+  WriteLn('  ClStaticStoreCount : ', ClStaticStoreCount);
+  WriteLn('  ClMethodCallCount  : ', ClMethodCallCount);
+  WriteLn('  ClCtorCallCount    : ', ClCtorCallCount);
+  WriteLn('  ClSuperCallCount   : ', ClSuperCallCount);
+  WriteLn('  ClInstanceOfCount  : ', ClInstanceOfCount);
+  WriteLn('  ClLastKind         : ', ClTypeName(ClLastKind));
+  WriteLn('  ClLabelSeq         : ', ClLabelSeq);
+  WriteLn('  ClNextTypeCode     : ', ClNextTypeCode);
+  WriteLn('  ClCurClassName     : ', ClCurClassName);
+  For I := 1 To ClClassCount Do
+  Begin
+    WriteLn('  Class[', I, '] : ', ClClasses[I].Name,
+            ' (TypeCode=', ClClasses[I].TypeCode,
+            ', ParentIdx=', ClClasses[I].ParentIdx,
+            ', Size=', ClClasses[I].InstanceSize,
+            ', Fields=', ClClasses[I].FieldCount,
+            ', Methods=', ClClasses[I].MethodCount, ')');
+    For J := 1 To ClClasses[I].FieldCount Do
+      WriteLn('    Field[', J, '] : ', ClClasses[I].Fields[J].Name,
+              ' (TypeIdx=', ClClasses[I].Fields[J].TypeIdx,
+              ', Offset=', ClClasses[I].Fields[J].Offset,
+              ', Static=', ClClasses[I].Fields[J].IsStatic, ')');
+    For J := 1 To ClClasses[I].MethodCount Do
+      WriteLn('    Method[', J, '] : ', ClClasses[I].Methods[J].Name,
+              ' (Ret=', ClClasses[I].Methods[J].RetTypeIdx,
+              ', Params=', ClClasses[I].Methods[J].ParamCount,
+              ', Ctor=', ClClasses[I].Methods[J].IsCtor,
+              ', AsmLabel=', ClClasses[I].Methods[J].AsmLabel, ')');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 16)                              }
+{ ------------------------------------------------------------ }
+
+Function IsClInitialized : Boolean;
+Begin
+  IsClInitialized := ClInitialized;
+End;
+
+Function IsClEmpty : Boolean;
+Begin
+  IsClEmpty := (ClClassCount = 0);
+End;
+
+Function GetClClassCount : Integer;
+Begin
+  GetClClassCount := ClClassCount;
+End;
+
+Function GetClClassDeclCount : LongInt;
+Begin
+  GetClClassDeclCount := ClClassDeclCount;
+End;
+
+Function GetClFieldDeclCount : LongInt;
+Begin
+  GetClFieldDeclCount := ClFieldDeclCount;
+End;
+
+Function GetClMethodDeclCount : LongInt;
+Begin
+  GetClMethodDeclCount := ClMethodDeclCount;
+End;
+
+Function GetClObjAllocCount : LongInt;
+Begin
+  GetClObjAllocCount := ClObjAllocCount;
+End;
+
+Function GetClMethodCallCount : LongInt;
+Begin
+  GetClMethodCallCount := ClMethodCallCount;
+End;
+
+Function GetClInstanceOfCount : LongInt;
+Begin
+  GetClInstanceOfCount := ClInstanceOfCount;
+End;
+
+Function GetClStatus : TString;
+Begin
+  If Not ClInitialized Then
+    GetClStatus := 'Not initialized'
+  Else
+    GetClStatus := ItoS(ClClassCount) + ' classes, ' +
+                   ItoS(ClFieldDeclCount) + ' fields, ' +
+                   ItoS(ClStaticDeclCount) + ' statics, ' +
+                   ItoS(ClMethodDeclCount) + ' methods, ' +
+                   ItoS(ClCtorDeclCount) + ' ctors, ' +
+                   ItoS(ClObjAllocCount) + ' allocs, ' +
+                   ItoS(ClMethodCallCount) + ' calls, ' +
+                   ItoS(ClInstanceOfCount) + ' instanceof';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-16)                              }
 { ============================================================ }
 
 Begin
@@ -9855,16 +10628,17 @@ Begin
   InitIoState;
   InitArState;
   InitStState;
+  InitClState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-15) }
+  { Boucle de tokenisation (TODO 02-16) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 16..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 17..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
