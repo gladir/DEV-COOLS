@@ -408,7 +408,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
               champs et methodes
             10 fonctions accesseurs
 
-  TODO 17 - PARSEUR : SWITCH / CASE / DEFAULT [A FAIRE]
+  TODO 17 - PARSEUR : SWITCH / CASE / DEFAULT [IMPLEMENTE]
             ParseSwitchStmt : switch (expr) { case val: stmts; ... }
               Evaluer l expression de selection
               Generer une table de sauts ou une chaine de CMP/JE

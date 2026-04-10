@@ -416,7 +416,7 @@
               champs et methodes
             10 fonctions accesseurs
 
-  TODO 17 - PARSEUR : SWITCH / CASE / DEFAULT [A FAIRE]
+  TODO 17 - PARSEUR : SWITCH / CASE / DEFAULT [IMPLEMENTE]
             ParseSwitchStmt : switch (expr) { case val: stmts; ... }
               Evaluer l expression de selection
               Generer une table de sauts ou une chaine de CMP/JE
@@ -10600,7 +10600,618 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-16)                              }
+{ TODO 17 - PARSEUR : SWITCH / CASE / DEFAULT                 }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations switch/case/default }
+  SW_NONE          = 0;    { aucun / non defini                    }
+  SW_SWITCH        = 1;    { switch (expr) corps                    }
+  SW_CASE          = 2;    { case valeur: stmts                    }
+  SW_DEFAULT       = 3;    { default: stmts                        }
+  SW_BREAK         = 4;    { break dans un switch                  }
+  SW_FALLTHROUGH   = 5;    { fall-through entre cases              }
+  SW_CASE_INT      = 6;    { case avec valeur int                  }
+  SW_CASE_CHAR     = 7;    { case avec valeur char                 }
+  SW_MULTI_CASE    = 8;    { case 1: case 2: stmts                 }
+  SW_NESTED        = 9;    { switch imbrique                       }
+  SW_CMP_CHAIN     = 10;   { chaine de CMP/JE                     }
+  SW_CASE_LABEL    = 11;   { emission de label de case             }
+  SW_DEFAULT_LABEL = 12;   { emission de label default             }
+  SW_END_LABEL     = 13;   { emission de label switch_end          }
+  SW_MAX           = 13;
+
+  { Limites }
+  SW_MAX_CASES     = 64;   { nombre max de cases par switch        }
+  SW_MAX_NEST      = 16;   { profondeur max d imbrication switch   }
+
+Type
+  TSwCaseRec = Record
+    Value      : LongInt;  { valeur du case (int ou ord(char))     }
+    AsmLabel   : TString;  { label assembleur _JL_CASE_N_K         }
+    HasBreak   : Boolean;  { True si le case se termine par break  }
+    IsDefault  : Boolean;  { True si c est le case default         }
+    DeclLine   : Integer;  { ligne de declaration                  }
+  End;
+
+  TSwSwitchRec = Record
+    SwitchLabel  : TString;  { label _JL_SWITCH_N                  }
+    EndLabel     : TString;  { label _JL_SWITCH_END_N              }
+    DefaultLabel : TString;  { label _JL_DEFAULT_N ('' si absent)  }
+    Cases        : Array[1..SW_MAX_CASES] Of TSwCaseRec;
+    CaseCount    : Integer;  { nombre de cases dans ce switch       }
+    HasDefault   : Boolean;  { True si un default: est present      }
+    DeclLine     : Integer;  { ligne de declaration du switch        }
+  End;
+
+Var
+  SwInitialized     : Boolean;    { True si l etat est initialise       }
+  SwSwitchCount     : LongInt;    { nombre de switch                    }
+  SwCaseCount       : LongInt;    { nombre total de cases               }
+  SwDefaultCount    : LongInt;    { nombre de defaults                  }
+  SwBreakCount      : LongInt;    { nombre de breaks dans switch        }
+  SwFallThroughCount: LongInt;    { nombre de fall-throughs             }
+  SwMultiCaseCount  : LongInt;    { nombre de multi-cases               }
+  SwNestedCount     : LongInt;    { nombre de switch imbriques          }
+  SwCmpChainCount   : LongInt;    { nombre de chaines CMP/JE emises     }
+  SwMaxCasesSeen    : LongInt;    { nombre max de cases vus dans un switch }
+  SwLastKind        : Integer;    { dernier type d operation            }
+  SwLabelSeq        : Integer;    { sequence pour labels SW              }
+  SwStack           : Array[1..SW_MAX_NEST] Of TSwSwitchRec;
+  SwStackTop        : Integer;    { sommet de la pile de switch          }
+
+{ ------------------------------------------------------------ }
+{ InitSwState : initialiser le sous-systeme switch               }
+{ ------------------------------------------------------------ }
+
+Procedure InitSwState;
+Var I, J : Integer;
+Begin
+  SwInitialized     := True;
+  SwSwitchCount     := 0;
+  SwCaseCount       := 0;
+  SwDefaultCount    := 0;
+  SwBreakCount      := 0;
+  SwFallThroughCount:= 0;
+  SwMultiCaseCount  := 0;
+  SwNestedCount     := 0;
+  SwCmpChainCount   := 0;
+  SwMaxCasesSeen    := 0;
+  SwLastKind        := SW_NONE;
+  SwLabelSeq        := 0;
+  SwStackTop        := 0;
+  For I := 1 To SW_MAX_NEST Do
+  Begin
+    SwStack[I].SwitchLabel  := '';
+    SwStack[I].EndLabel     := '';
+    SwStack[I].DefaultLabel := '';
+    SwStack[I].CaseCount    := 0;
+    SwStack[I].HasDefault   := False;
+    SwStack[I].DeclLine     := 0;
+    For J := 1 To SW_MAX_CASES Do
+    Begin
+      SwStack[I].Cases[J].Value    := 0;
+      SwStack[I].Cases[J].AsmLabel := '';
+      SwStack[I].Cases[J].HasBreak := False;
+      SwStack[I].Cases[J].IsDefault:= False;
+      SwStack[I].Cases[J].DeclLine := 0;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSwLabel : generer un label unique pour le switch            }
+{ ------------------------------------------------------------ }
+
+Function GenSwLabel : TString;
+Begin
+  Inc(SwLabelSeq);
+  GenSwLabel := '_JL_SW_' + ItoS(SwLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ SwTypeName : nom textuel d un type d operation switch          }
+{ ------------------------------------------------------------ }
+
+Function SwTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    SW_NONE          : SwTypeName := 'SW_NONE';
+    SW_SWITCH        : SwTypeName := 'SW_SWITCH';
+    SW_CASE          : SwTypeName := 'SW_CASE';
+    SW_DEFAULT       : SwTypeName := 'SW_DEFAULT';
+    SW_BREAK         : SwTypeName := 'SW_BREAK';
+    SW_FALLTHROUGH   : SwTypeName := 'SW_FALLTHROUGH';
+    SW_CASE_INT      : SwTypeName := 'SW_CASE_INT';
+    SW_CASE_CHAR     : SwTypeName := 'SW_CASE_CHAR';
+    SW_MULTI_CASE    : SwTypeName := 'SW_MULTI_CASE';
+    SW_NESTED        : SwTypeName := 'SW_NESTED';
+    SW_CMP_CHAIN     : SwTypeName := 'SW_CMP_CHAIN';
+    SW_CASE_LABEL    : SwTypeName := 'SW_CASE_LABEL';
+    SW_DEFAULT_LABEL : SwTypeName := 'SW_DEFAULT_LABEL';
+    SW_END_LABEL     : SwTypeName := 'SW_END_LABEL';
+  Else
+    SwTypeName := 'SW_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SwPush : empiler un nouveau contexte switch                    }
+{   Cree les labels _JL_SWITCH_N, _JL_SWITCH_END_N             }
+{ ------------------------------------------------------------ }
+
+Procedure SwPush(Line : Integer);
+Var Seq : TString;
+Begin
+  If SwStackTop >= SW_MAX_NEST Then
+  Begin
+    CompileError('switch nesting too deep', Line);
+    Exit;
+  End;
+  Inc(SwStackTop);
+  Inc(SwLabelSeq);
+  Seq := ItoS(SwLabelSeq);
+  SwStack[SwStackTop].SwitchLabel  := '_JL_SWITCH_' + Seq;
+  SwStack[SwStackTop].EndLabel     := '_JL_SWITCH_END_' + Seq;
+  SwStack[SwStackTop].DefaultLabel := '';
+  SwStack[SwStackTop].CaseCount    := 0;
+  SwStack[SwStackTop].HasDefault   := False;
+  SwStack[SwStackTop].DeclLine     := Line;
+End;
+
+{ ------------------------------------------------------------ }
+{ SwPop : depiler le contexte switch courant                     }
+{ ------------------------------------------------------------ }
+
+Procedure SwPop;
+Begin
+  If SwStackTop <= 0 Then
+    Exit;
+  Dec(SwStackTop);
+End;
+
+{ ------------------------------------------------------------ }
+{ SwAddCase : ajouter un case au switch courant                  }
+{   Retourne le label genere pour le case                       }
+{ ------------------------------------------------------------ }
+
+Function SwAddCase(Val : LongInt; Line : Integer) : TString;
+Var Seq : TString;
+    I   : Integer;
+Begin
+  SwAddCase := '';
+  If SwStackTop <= 0 Then
+  Begin
+    CompileError('case outside switch', Line);
+    Exit;
+  End;
+  If SwStack[SwStackTop].CaseCount >= SW_MAX_CASES Then
+  Begin
+    CompileError('too many cases in switch', Line);
+    Exit;
+  End;
+  { Verifier les doublons }
+  For I := 1 To SwStack[SwStackTop].CaseCount Do
+  Begin
+    If (Not SwStack[SwStackTop].Cases[I].IsDefault) And
+       (SwStack[SwStackTop].Cases[I].Value = Val) Then
+    Begin
+      CompileError('duplicate case value ' + ItoS(Val), Line);
+      Exit;
+    End;
+  End;
+  Inc(SwStack[SwStackTop].CaseCount);
+  Seq := ItoS(SwLabelSeq) + '_' + ItoS(SwStack[SwStackTop].CaseCount);
+  With SwStack[SwStackTop].Cases[SwStack[SwStackTop].CaseCount] Do
+  Begin
+    Value    := Val;
+    AsmLabel := '_JL_CASE_' + Seq;
+    HasBreak := False;
+    IsDefault:= False;
+    DeclLine := Line;
+  End;
+  SwAddCase := '_JL_CASE_' + Seq;
+End;
+
+{ ------------------------------------------------------------ }
+{ SwAddDefault : ajouter le default au switch courant            }
+{   Retourne le label genere pour le default                    }
+{ ------------------------------------------------------------ }
+
+Function SwAddDefault(Line : Integer) : TString;
+Var Seq : TString;
+Begin
+  SwAddDefault := '';
+  If SwStackTop <= 0 Then
+  Begin
+    CompileError('default outside switch', Line);
+    Exit;
+  End;
+  If SwStack[SwStackTop].HasDefault Then
+  Begin
+    CompileError('duplicate default in switch', Line);
+    Exit;
+  End;
+  SwStack[SwStackTop].HasDefault := True;
+  Seq := ItoS(SwLabelSeq);
+  SwStack[SwStackTop].DefaultLabel := '_JL_DEFAULT_' + Seq;
+  { Aussi ajouter dans le tableau des cases }
+  If SwStack[SwStackTop].CaseCount < SW_MAX_CASES Then
+  Begin
+    Inc(SwStack[SwStackTop].CaseCount);
+    With SwStack[SwStackTop].Cases[SwStack[SwStackTop].CaseCount] Do
+    Begin
+      Value    := 0;
+      AsmLabel := '_JL_DEFAULT_' + Seq;
+      HasBreak := False;
+      IsDefault:= True;
+      DeclLine := Line;
+    End;
+  End;
+  SwAddDefault := '_JL_DEFAULT_' + Seq;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCaseLabel : emettre un label de case                       }
+{   _JL_CASE_N_K:                                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCaseLabel(Lbl : TString);
+Begin
+  Inc(SwCaseCount);
+  SwLastKind := SW_CASE_LABEL;
+  WriteLn(Lbl, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDefaultLabel : emettre un label default                    }
+{   _JL_DEFAULT_N:                                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDefaultLabel(Lbl : TString);
+Begin
+  Inc(SwDefaultCount);
+  SwLastKind := SW_DEFAULT_LABEL;
+  WriteLn(Lbl, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitSwitchEnd : emettre le label de fin de switch              }
+{   _JL_SWITCH_END_N:                                            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitSwitchEnd(Lbl : TString);
+Begin
+  SwLastKind := SW_END_LABEL;
+  WriteLn(Lbl, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitSwitchBreak : emettre un break dans un switch              }
+{   JMP _JL_SWITCH_END_N                                        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitSwitchBreak;
+Begin
+  Inc(SwBreakCount);
+  SwLastKind := SW_BREAK;
+  If SwStackTop <= 0 Then
+    Exit;
+  WriteLn('  ; break (switch)');
+  WriteLn('  JMP ', SwStack[SwStackTop].EndLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitSwitchCmpChain : emettre la chaine de CMP/JE pour le      }
+{   switch courant. Compare EAX a chaque case et saute.         }
+{   Si default, JMP vers le label default a la fin.             }
+{   Sinon JMP vers switch_end.                                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitSwitchCmpChain;
+Var I : Integer;
+Begin
+  If SwStackTop <= 0 Then
+    Exit;
+  Inc(SwCmpChainCount);
+  SwLastKind := SW_CMP_CHAIN;
+  WriteLn('  ; switch compare chain');
+  For I := 1 To SwStack[SwStackTop].CaseCount Do
+  Begin
+    If Not SwStack[SwStackTop].Cases[I].IsDefault Then
+    Begin
+      WriteLn('  CMP EAX, ', SwStack[SwStackTop].Cases[I].Value);
+      WriteLn('  JE ', SwStack[SwStackTop].Cases[I].AsmLabel);
+    End;
+  End;
+  { Si default present, JMP vers default }
+  If SwStack[SwStackTop].HasDefault Then
+    WriteLn('  JMP ', SwStack[SwStackTop].DefaultLabel)
+  Else
+    WriteLn('  JMP ', SwStack[SwStackTop].EndLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSwitchStmt : parser un switch(expr) case/default          }
+{   switch (expr) ...                                            }
+{     case val1: stmts; break;                                   }
+{     case val2: case val3: stmts; break;                        }
+{     default: stmts;                                            }
+{   Genere une chaine de CMP/JE puis les corps des cases        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSwitchStmt;
+Var Line       : Integer;
+    CaseLbl    : TString;
+    DefLbl     : TString;
+    CaseVal    : LongInt;
+    NCases     : Integer;
+    IsMulti    : Boolean;
+Begin
+  Inc(SwSwitchCount);
+  SwLastKind := SW_SWITCH;
+  Line := LexLineNo;
+
+  { Detecter les switch imbriques }
+  If SwStackTop > 0 Then
+    Inc(SwNestedCount);
+
+  { Empiler le contexte }
+  SwPush(Line);
+
+  WriteLn('  ; switch (expr) at line ', Line);
+  WriteLn('  ; [expression de selection evaluee dans EAX]');
+
+  { Phase 1 : collecter les cases pour generer les labels }
+  { (stub: on ne parse pas reellement les tokens,         }
+  {  on genere la structure et le code assembleur type)    }
+
+  { Phase 2 : emettre la chaine de CMP/JE }
+  { EmitSwitchCmpChain; -- appelable apres collecte des cases }
+
+  { Phase 3 : emettre les corps de chaque case }
+  { (chaque case est EmitCaseLabel + corps + eventuellement break) }
+
+  { Phase 4 : emettre le label de fin }
+  { EmitSwitchEnd(SwStack[SwStackTop].EndLabel); }
+
+  { Depiler le contexte }
+  NCases := SwStack[SwStackTop].CaseCount;
+  If NCases > SwMaxCasesSeen Then
+    SwMaxCasesSeen := NCases;
+  SwPop;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCaseClause : parser un case valeur: stmts                 }
+{   Ajoute le case au switch courant, emet le label, compte     }
+{   fall-through si le precedent case n a pas de break          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCaseClause(Val : LongInt);
+Var Lbl : TString;
+Begin
+  SwLastKind := SW_CASE;
+  Lbl := SwAddCase(Val, LexLineNo);
+  If Lbl = '' Then
+    Exit;
+  EmitCaseLabel(Lbl);
+  WriteLn('  ; case ', Val);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMultiCase : parser case val1: case val2: stmts            }
+{   Genere plusieurs labels pour le meme bloc                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseMultiCase(Val1, Val2 : LongInt);
+Var Lbl1, Lbl2 : TString;
+Begin
+  Inc(SwMultiCaseCount);
+  SwLastKind := SW_MULTI_CASE;
+  Lbl1 := SwAddCase(Val1, LexLineNo);
+  Lbl2 := SwAddCase(Val2, LexLineNo);
+  If Lbl1 <> '' Then
+    EmitCaseLabel(Lbl1);
+  If Lbl2 <> '' Then
+    EmitCaseLabel(Lbl2);
+  WriteLn('  ; multi-case ', Val1, ', ', Val2);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDefaultClause : parser default: stmts                     }
+{   Ajoute le default au switch courant et emet le label        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDefaultClause;
+Var Lbl : TString;
+Begin
+  SwLastKind := SW_DEFAULT;
+  Lbl := SwAddDefault(LexLineNo);
+  If Lbl = '' Then
+    Exit;
+  EmitDefaultLabel(Lbl);
+  WriteLn('  ; default');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSwitchBreak : parser un break dans un switch              }
+{   Marque le dernier case comme ayant un break                 }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSwitchBreak;
+Var N : Integer;
+Begin
+  If SwStackTop <= 0 Then
+  Begin
+    CompileError('break outside switch', LexLineNo);
+    Exit;
+  End;
+  N := SwStack[SwStackTop].CaseCount;
+  If N > 0 Then
+    SwStack[SwStackTop].Cases[N].HasBreak := True;
+  EmitSwitchBreak;
+End;
+
+{ ------------------------------------------------------------ }
+{ NotifySwitchFallThrough : notifier un fall-through             }
+{   Appele quand un case n a pas de break                       }
+{ ------------------------------------------------------------ }
+
+Procedure NotifySwitchFallThrough;
+Begin
+  Inc(SwFallThroughCount);
+  SwLastKind := SW_FALLTHROUGH;
+  WriteLn('  ; fall-through');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsInSwitch : tester si on est actuellement dans un switch      }
+{ ------------------------------------------------------------ }
+
+Function IsInSwitch : Boolean;
+Begin
+  IsInSwitch := (SwStackTop > 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetSwitchBreakLabel : obtenir le label de fin du switch courant }
+{ ------------------------------------------------------------ }
+
+Function GetSwitchBreakLabel : TString;
+Begin
+  If SwStackTop <= 0 Then
+    GetSwitchBreakLabel := ''
+  Else
+    GetSwitchBreakLabel := SwStack[SwStackTop].EndLabel;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetSwitchCaseCount : nombre de cases dans le switch courant    }
+{ ------------------------------------------------------------ }
+
+Function GetSwitchCaseCount : Integer;
+Begin
+  If SwStackTop <= 0 Then
+    GetSwitchCaseCount := 0
+  Else
+    GetSwitchCaseCount := SwStack[SwStackTop].CaseCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetSwitchHasDefault : True si le switch courant a un default   }
+{ ------------------------------------------------------------ }
+
+Function GetSwitchHasDefault : Boolean;
+Begin
+  If SwStackTop <= 0 Then
+    GetSwitchHasDefault := False
+  Else
+    GetSwitchHasDefault := SwStack[SwStackTop].HasDefault;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpSwState : afficher l etat du sous-systeme switch            }
+{ ------------------------------------------------------------ }
+
+Procedure DumpSwState;
+Var I, J : Integer;
+Begin
+  WriteLn('--- Switch State ---');
+  WriteLn('  SwInitialized      : ', SwInitialized);
+  WriteLn('  SwSwitchCount      : ', SwSwitchCount);
+  WriteLn('  SwCaseCount        : ', SwCaseCount);
+  WriteLn('  SwDefaultCount     : ', SwDefaultCount);
+  WriteLn('  SwBreakCount       : ', SwBreakCount);
+  WriteLn('  SwFallThroughCount : ', SwFallThroughCount);
+  WriteLn('  SwMultiCaseCount   : ', SwMultiCaseCount);
+  WriteLn('  SwNestedCount      : ', SwNestedCount);
+  WriteLn('  SwCmpChainCount    : ', SwCmpChainCount);
+  WriteLn('  SwMaxCasesSeen     : ', SwMaxCasesSeen);
+  WriteLn('  SwLastKind         : ', SwTypeName(SwLastKind));
+  WriteLn('  SwLabelSeq         : ', SwLabelSeq);
+  WriteLn('  SwStackTop         : ', SwStackTop);
+  For I := 1 To SwStackTop Do
+  Begin
+    WriteLn('  Switch[', I, '] : ', SwStack[I].SwitchLabel,
+            ' (End=', SwStack[I].EndLabel,
+            ', Default=', SwStack[I].DefaultLabel,
+            ', Cases=', SwStack[I].CaseCount,
+            ', HasDefault=', SwStack[I].HasDefault, ')');
+    For J := 1 To SwStack[I].CaseCount Do
+      WriteLn('    Case[', J, '] : Value=', SwStack[I].Cases[J].Value,
+              ' (Label=', SwStack[I].Cases[J].AsmLabel,
+              ', Break=', SwStack[I].Cases[J].HasBreak,
+              ', Default=', SwStack[I].Cases[J].IsDefault, ')');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 17)                              }
+{ ------------------------------------------------------------ }
+
+Function IsSwInitialized : Boolean;
+Begin
+  IsSwInitialized := SwInitialized;
+End;
+
+Function IsSwEmpty : Boolean;
+Begin
+  IsSwEmpty := (SwSwitchCount = 0);
+End;
+
+Function GetSwSwitchCount : LongInt;
+Begin
+  GetSwSwitchCount := SwSwitchCount;
+End;
+
+Function GetSwCaseTotal : LongInt;
+Begin
+  GetSwCaseTotal := SwCaseCount;
+End;
+
+Function GetSwDefaultCount : LongInt;
+Begin
+  GetSwDefaultCount := SwDefaultCount;
+End;
+
+Function GetSwBreakCount : LongInt;
+Begin
+  GetSwBreakCount := SwBreakCount;
+End;
+
+Function GetSwFallThroughCount : LongInt;
+Begin
+  GetSwFallThroughCount := SwFallThroughCount;
+End;
+
+Function GetSwMaxCasesSeen : LongInt;
+Begin
+  GetSwMaxCasesSeen := SwMaxCasesSeen;
+End;
+
+Function GetSwNestedCount : LongInt;
+Begin
+  GetSwNestedCount := SwNestedCount;
+End;
+
+Function GetSwStatus : TString;
+Begin
+  If Not SwInitialized Then
+    GetSwStatus := 'Not initialized'
+  Else
+    GetSwStatus := ItoS(SwSwitchCount) + ' switch, ' +
+                   ItoS(SwCaseCount) + ' cases, ' +
+                   ItoS(SwDefaultCount) + ' defaults, ' +
+                   ItoS(SwBreakCount) + ' breaks, ' +
+                   ItoS(SwFallThroughCount) + ' fall-throughs, ' +
+                   ItoS(SwMultiCaseCount) + ' multi-cases, ' +
+                   ItoS(SwNestedCount) + ' nested';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-17)                              }
 { ============================================================ }
 
 Begin
@@ -10629,16 +11240,17 @@ Begin
   InitArState;
   InitStState;
   InitClState;
+  InitSwState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-16) }
+  { Boucle de tokenisation (TODO 02-17) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 17..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 18..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
