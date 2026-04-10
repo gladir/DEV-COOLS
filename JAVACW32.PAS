@@ -20,7 +20,7 @@
 
   Voir DOC/TODO/JAVACW32.txt pour la feuille de route complete.
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [A FAIRE]
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm)
             ParseArgs : analyser argv (source.java [-o sortie] [-v]
@@ -685,7 +685,529 @@ Program JAVACW32;
 {$ENDIF}
 {$I-}
 
+{ ============================================================ }
+{ TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES    [IMPLEMENTE] }
+{           PE/COFF                                              }
+{ ============================================================ }
+
+Const
+  JAVACW32_VERSION = '0.1';
+  JAVACW32_DATE    = '2026';
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Constantes PE/COFF }
+  PE_DOS_MAGIC    = $5A4D;    { 'MZ' }
+  PE_PE_SIG       = $00004550; { 'PE\0\0' }
+  PE_MACHINE_I386 = $014C;
+  PE_OPT_SIZE     = $E0;      { 224 octets }
+  PE_MAGIC_32     = $010B;
+  PE_IMG_BASE     = $00400000;
+  PE_SEC_ALIGN    = 4096;
+  PE_FILE_ALIGN   = 512;
+  PE_SUBSYS_CUI   = 3;  { Console }
+
+  { Tailles des tampons binaires }
+  MAX_BIN_CODE = 65536;
+  MAX_BIN_DATA = 65536;
+  MAX_BIN_LBL  = 4096;
+  MAX_BIN_FIX  = 8192;
+
+  { Limites internes (32 bits) }
+  MAX_SYM        = 4096;
+  MAX_LABEL      = 4096;
+  MAX_SCOPE      = 64;
+  MAX_DATA       = 512;
+  MAX_PARAM      = 64;
+  MAX_LOCAL      = 128;
+  MAX_LOOP_NEST  = 32;
+  MAX_TRY_NEST   = 16;
+  MAX_ERRORS     = 30;
+  MAX_STR        = 255;
+  MAX_CLASS      = 64;
+  MAX_METHOD     = 256;
+  MAX_FIELD      = 256;
+  MAX_IMPORT     = 32;
+  MAX_TYPE       = 64;
+
+  { Prefixes de nommage ASM }
+  JV_VAR_PFX  = '_JV_';     { variable globale / champ statique      }
+  JV_FN_PFX   = '_JF_';     { methode statique                       }
+  JV_STR_PFX  = '_JK_';     { constante chaine litterale             }
+  JV_RT_PFX   = '_JRT_';    { routine runtime                        }
+  JV_LBL_PFX  = '_JL_';     { label de saut interne                  }
+  JV_CLS_PFX  = '_JC_';     { classe / vtable                        }
+  JV_MTH_PFX  = '_JM_';     { methode d instance                     }
+
+Type
+  TString = String;
+
+  TOptions = Record
+    SrcFile    : TString;   { fichier source Java (.java)            }
+    OutFile    : TString;   { fichier sortie (.exe, .obj)            }
+    Verbose    : Boolean;   { -v : banniere et statistiques          }
+    DebugMode  : Boolean;   { -d : affichage de chaque token         }
+    Warnings   : Boolean;   { -w : afficher les avertissements       }
+    EmitExe    : Boolean;   { par defaut : produire un .EXE (PE)     }
+    EmitObj    : Boolean;   { -obj : produire seulement un .OBJ      }
+    EmitAsm    : Boolean;   { -asm : produire aussi un .ASM          }
+  End;
+
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+  { Fichier de sortie interne (pour future emission) }
+  OutF       : Text;
+  OutFOpen   : Boolean;
+
+  { Drapeau pour la generation binaire PE (mini-assembleur) }
+  BcActive   : Boolean;
+
+{ ------------------------------------------------------------ }
+{ Fonctions utilitaires                                        }
+{ ------------------------------------------------------------ }
+
+Function ItoS(V : LongInt) : TString;
+Var S : TString;
 Begin
-  WriteLn('JAVACW32 - Compilateur Java vers assembleur 80386 pour Windows 32 bits');
-  WriteLn('Tous les TODOs sont [A FAIRE]');
+  Str(V, S);
+  ItoS := S;
+End;
+
+Function HexNibble(V : Integer) : Char;
+Begin
+  V := V And $0F;
+  If V < 10 Then
+    HexNibble := Chr(Ord('0') + V)
+  Else
+    HexNibble := Chr(Ord('A') + V - 10);
+End;
+
+Function HexByte(V : Integer) : TString;
+Begin
+  HexByte := HexNibble(V Shr 4) + HexNibble(V);
+End;
+
+Function HexWord(V : Integer) : TString;
+Begin
+  HexWord := HexByte(V Shr 8) + HexByte(V);
+End;
+
+Function HexLong(V : LongInt) : TString;
+Begin
+  HexLong := HexWord(V Shr 16) + HexWord(V);
+End;
+
+Function UpCaseStr(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'a') And (Tmp[I] <= 'z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) - 32);
+  UpCaseStr := Tmp;
+End;
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'A') And (Tmp[I] <= 'Z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) + 32);
+  StrLowerCase := Tmp;
+End;
+
+{ Transforme un nom Java en identifiant valide pour l assembleur }
+Function AsmIdent(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := '';
+  For I := 1 To Length(S) Do
+  Begin
+    If ((S[I] >= 'A') And (S[I] <= 'Z')) Or
+       ((S[I] >= 'a') And (S[I] <= 'z')) Or
+       ((S[I] >= '0') And (S[I] <= '9')) Or
+       (S[I] = '_') Then
+      Tmp := Tmp + S[I]
+    Else
+      Tmp := Tmp + '_';
+  End;
+  AsmIdent := Tmp;
+End;
+
+{ Extrait le nom de base d un chemin (sans repertoire ni extension) }
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+{ Retourne l extension d un chemin (avec le point, en minuscules) }
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot,
+                     Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ Retourne le repertoire d un chemin (avec le separateur final) }
+Function ExtractDir(Const Path : TString) : TString;
+Var
+  I, LastSep : Integer;
+Begin
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+  If LastSep > 0 Then
+    ExtractDir := Copy(Path, 1, LastSep)
+  Else
+    ExtractDir := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ FatalError / CompileError / WarnMsg                          }
+{ ------------------------------------------------------------ }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('JAVACW32: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString; Line : Integer);
+Begin
+  Write('JAVACW32:');
+  If Line > 0 Then
+    Write(Opts.SrcFile, ':', Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('JAVACW32: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ InitOptions                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile    := '';
+  Opts.OutFile    := '';
+  Opts.Verbose    := False;
+  Opts.DebugMode  := False;
+  Opts.Warnings   := False;
+  Opts.EmitExe    := True;
+  Opts.EmitObj    := False;
+  Opts.EmitAsm    := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowHelp                                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ShowHelp;
+Begin
+  WriteLn('JAVACW32 v', JAVACW32_VERSION, ' (', JAVACW32_DATE,
+          ') - Compilateur Java vers 80386 (Windows PE 32 bits)');
+  WriteLn('JAVACW32 - Cette commande permet de lancer le compilateur Java ',
+          'pour l''assembleur du microprocesseur 80386 (en executable ',
+          'Windows 32 bits).');
+  WriteLn;
+  WriteLn('Syntaxe : JAVACW32 [options] <source.java> [options]');
+  WriteLn;
+  WriteLn('Sortie :');
+  WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
+  WriteLn('  -obj           Produire seulement un fichier .OBJ (COFF)');
+  WriteLn('  -asm           Produire egalement un fichier .ASM lisible');
+  WriteLn('  -o <fichier>   Specifier le nom du fichier de sortie');
+  WriteLn;
+  WriteLn('General :');
+  WriteLn('  -v             Mode verbeux (banniere + statistiques)');
+  WriteLn('  -d             Debug tokens (affiche chaque token)');
+  WriteLn('  -w             Afficher les avertissements');
+  WriteLn('  -h, --help, /? Afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  JAVACW32 Hello.java');
+  WriteLn('  JAVACW32 Hello.java -o Hello.exe -v');
+  WriteLn('  JAVACW32 test01_hello.java -asm');
+  WriteLn('  JAVACW32 test02_vars.java -obj -w');
+  Halt(EXIT_OK);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArgs                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArgs;
+Var
+  I    : Integer;
+  Arg  : TString;
+  Ext  : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowHelp;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-asm' Then
+      Opts.EmitAsm := True
+    Else If Arg = '-obj' Then
+    Begin
+      Opts.EmitObj := True;
+      Opts.EmitExe := False;
+    End
+    Else If Arg = '-o' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('-o necessite un nom de fichier');
+      Opts.OutFile := ParamStr(I);
+    End
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+      FatalError('Option inconnue: ' + Arg)
+    Else
+    Begin
+      { Argument positionnel : fichier source }
+      If Opts.SrcFile = '' Then
+        Opts.SrcFile := Arg
+      Else
+        FatalError('Argument inattendu: ' + Arg);
+    End;
+
+    Inc(I);
+  End;
+
+  { Validation : fichier source requis }
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('JAVACW32: fichier source manquant');
+    ShowHelp;
+  End;
+
+  { Verifier l extension .java }
+  Ext := ExtractExt(Opts.SrcFile);
+  If Ext <> '.java' Then
+    WarnMsg('extension attendue .java, trouvee: ' + Ext);
+
+  { Fichier de sortie par defaut }
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.EmitObj Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowBanner / ShowStats                                        }
+{ ------------------------------------------------------------ }
+
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('JAVACW32 v', JAVACW32_VERSION, ' (', JAVACW32_DATE,
+          ') - Compilateur Java -> 80386 PE Win32');
+  WriteLn('Source   : ', Opts.SrcFile);
+  WriteLn('Sortie   : ', Opts.OutFile);
+  If Opts.EmitAsm Then
+    WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
+  If Opts.EmitObj Then
+    WriteLn('Mode     : OBJ (COFF 32 bits)')
+  Else
+    WriteLn('Mode     : EXE (PE Win32)');
+  WriteLn;
+End;
+
+Procedure ShowStats;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn;
+  WriteLn('--- Statistiques ---');
+  WriteLn('Lignes analysees : ', TotalLines);
+  WriteLn('Erreurs          : ', ErrorCount);
+  WriteLn('Avertissements   : ', WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Cleanup                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure Cleanup;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 01)                             }
+{ ------------------------------------------------------------ }
+
+Function GetCompilerVersion : TString;
+Begin
+  GetCompilerVersion := JAVACW32_VERSION;
+End;
+
+Function GetCompilerDate : TString;
+Begin
+  GetCompilerDate := JAVACW32_DATE;
+End;
+
+Function IsEmitExe : Boolean;
+Begin
+  IsEmitExe := Opts.EmitExe;
+End;
+
+Function IsEmitObj : Boolean;
+Begin
+  IsEmitObj := Opts.EmitObj;
+End;
+
+Function IsEmitAsm : Boolean;
+Begin
+  IsEmitAsm := Opts.EmitAsm;
+End;
+
+Function IsVerbose : Boolean;
+Begin
+  IsVerbose := Opts.Verbose;
+End;
+
+Function IsDebugMode : Boolean;
+Begin
+  IsDebugMode := Opts.DebugMode;
+End;
+
+Function IsWarnings : Boolean;
+Begin
+  IsWarnings := Opts.Warnings;
+End;
+
+Function GetSrcFile : TString;
+Begin
+  GetSrcFile := Opts.SrcFile;
+End;
+
+Function GetOutFile : TString;
+Begin
+  GetOutFile := Opts.OutFile;
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01 seulement)                       }
+{ ============================================================ }
+
+Begin
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  OutFOpen   := False;
+  BcActive   := False;
+
+  ParseArgs;
+  ShowBanner;
+
+  WriteLn('JAVACW32: compilation de ', Opts.SrcFile, ' ...');
+  WriteLn('JAVACW32: TODO 02..25 [A FAIRE] - pas encore implemente');
+
+  ShowStats;
+  Cleanup;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
 End.
