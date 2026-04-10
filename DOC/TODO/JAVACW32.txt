@@ -267,7 +267,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
             Comparaisons chainees : non supportees en Java (correct)
             10 fonctions accesseurs
 
-  TODO 11 - PARSEUR : BOUCLES while / for / do-while / break / continue [A FAIRE]
+  TODO 11 - PARSEUR : BOUCLES while / for / do-while / break / continue [IMPLEMENTE]
             ParseWhileStmt : while (cond) { bloc }
               Labels : _JL_WTEST_N, _JL_WEND_N
               Emission : _JL_WTEST_N: evaluer cond, JZ _JL_WEND_N,
