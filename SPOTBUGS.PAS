@@ -26,7 +26,7 @@
 {  TODO 08 [IMPLEMENTE] - Construction du graphe de flux de controle (CFG)    }
 {  TODO 09 [IMPLEMENTE] - Detecteur : dereferencement de pointeur null        }
 {  TODO 10 [IMPLEMENTE] - Detecteur : fuite de ressources (resource leaks)    }
-{  TODO 11 [A FAIRE] - Detecteur : boucles infinies et blocs inaccessibles    }
+{  TODO 11 [IMPLEMENTE] - Detecteur : boucles infinies et blocs inaccessibles }
 {  TODO 12 [A FAIRE] - Detecteur : mauvaises pratiques (bad practices)        }
 {  TODO 13 [A FAIRE] - Detecteur : comparaisons incorrectes d'objets          }
 {  TODO 14 [A FAIRE] - Detecteur : problemes de performance                   }
@@ -732,6 +732,20 @@ Const
   RS_CLOSED  = 2;  { Ressource fermee (apres appel close())                  }
   RS_MAYBE   = 3;  { Peut etre ouverte ou fermee selon le chemin             }
 
+  { --- TODO 11 : Constantes pour le detecteur de boucles infinies --- }
+  MAX_LOOP_BUGS      = 64;   { Nombre max de bugs loop detectes par methode   }
+  MAX_DEAD_STORES    = 128;  { Nombre max de dead stores detectes             }
+  MAX_LOOP_BLOCKS    = 64;   { Nombre max de blocs dans une boucle            }
+
+  { Types de bugs de boucles infinies et code mort }
+  LP_NONE                       = 0;  { Pas de bug                            }
+  IL_INFINITE_LOOP              = 1;  { Boucle infinie sans condition arret   }
+  IL_INFINITE_RECURSIVE_LOOP    = 2;  { Appel recursif infini                 }
+  DLS_DEAD_LOCAL_STORE          = 3;  { Ecriture jamais relue                 }
+  UC_USELESS_VOID_METHOD        = 4;  { Methode vide inutile                  }
+  USELESS_CODE                  = 5;  { Code inaccessible                     }
+  IL_CONTAINER_MODIFIED         = 6;  { Boucle avec modification container    }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -784,6 +798,26 @@ Type
     VarIdx     : Integer;    { Index de la variable locale                         }
   End;
   TResLeakBugArray = Array[0..MAX_RES_BUGS-1] of TResLeakBug;
+
+  { --- TODO 11 : Structure TLoopBugInfo : bug boucle/code mort detecte --- }
+  TLoopBugInfo = Record
+    BugType     : Integer;    { Type de bug (IL_INFINITE_LOOP, etc.)          }
+    PC          : LongWord;   { Position dans le bytecode                     }
+    LineNum     : Integer;    { Numero de ligne source                        }
+    BlockID     : Integer;    { ID du bloc CFG concerne                       }
+    VarIdx      : Integer;    { Index variable locale (pour DLS)              }
+    MethodName  : String;     { Nom de la methode (pour recursion)            }
+  End;
+  TLoopBugArray = Array[0..MAX_LOOP_BUGS-1] of TLoopBugInfo;
+
+  { --- TODO 11 : Structure TDeadStoreInfo : dead local store detecte --- }
+  TDeadStoreInfo = Record
+    VarIdx      : Integer;    { Index de la variable locale                   }
+    StorePC     : LongWord;   { PC de l'instruction store                     }
+    LineNum     : Integer;    { Numero de ligne source                        }
+    IsRead      : Boolean;    { True si la variable est relue apres           }
+  End;
+  TDeadStoreArray = Array[0..MAX_DEAD_STORES-1] of TDeadStoreInfo;
 
 { ============================================================================ }
 { Variables globales                                                           }
@@ -839,6 +873,19 @@ Var
   ResTotalLeaks   : Integer;      { Nombre total de fuites detectees           }
   ResCurrentPC    : LongWord;     { PC de l'instruction courante               }
   ResCurrentLine  : Integer;      { Ligne source courante                      }
+  { --- TODO 11 : Variables du detecteur de boucles infinies et code mort --- }
+  LoopInitialized  : Boolean;     { True si module initialise                  }
+  LoopBugs         : TLoopBugArray; { Bugs detectes dans la methode courante   }
+  LoopBugCount     : Integer;     { Nombre de bugs detectes                    }
+  DeadStores       : TDeadStoreArray; { Table des dead stores detectes         }
+  DeadStoreCount   : Integer;     { Nombre de dead stores detectes             }
+  LoopLabelNum     : Integer;     { Compteur pour generation de labels         }
+  LoopTotalInfinite : Integer;    { Nombre total de boucles infinies detectees }
+  LoopTotalRecursive : Integer;   { Nombre total de recursions infinies        }
+  LoopTotalDead    : Integer;     { Nombre total de code mort detecte          }
+  LoopTotalDeadStores : Integer;  { Nombre total de dead stores detectes       }
+  LoopCurrentPC    : LongWord;    { PC de l'instruction courante               }
+  LoopCurrentLine  : Integer;     { Ligne source courante                      }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -5291,38 +5338,535 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 11 [A FAIRE] - Detecteur : boucles infinies et blocs inaccessibles      }
+{ TODO 11 [IMPLEMENTE] - Detecteur : boucles infinies et blocs inaccessibles   }
 { ============================================================================ }
-{                                                                              }
-{  - Codes de bugs detectes :                                                    }
-{      IL_INFINITE_LOOP          : boucle infinie sans condition d'arret        }
-{      IL_INFINITE_RECURSIVE_LOOP : appel recursif infini sans condition        }
-{      DLS_DEAD_LOCAL_STORE       : ecriture dans une variable non relue apres  }
-{      UC_USELESS_VOID_METHOD     : methode qui ne fait rien d'utile            }
-{      USELESS_CODE               : code inaccessible (unreachable code)        }
-{                                                                              }
-{  - Procedure DetectInfiniteLoops(Method: TMethodInfo)                         }
-{      Pour chaque arete arriere identifiee au TODO 08 :                        }
-{        Analyser les blocs composant la boucle                                 }
-{        Si la boucle ne contient aucune instruction de branchement vers        }
-{        l'exterieur (goto, return, athrow, break) => bug IL_INFINITE_LOOP      }
-{        Si la boucle ne lit aucune variable modifiee par une entree externe    }
-{        => probablement une boucle infinie                                     }
-{                                                                              }
-{  - Procedure DetectInfiniteRecursion(Method: TMethodInfo)                     }
-{      Rechercher les appels recursifs a la methode elle-meme                   }
-{      Si tous les chemins menent a un appel recursif sans condition d'arret    }
-{      => bug IL_INFINITE_RECURSIVE_LOOP                                        }
-{                                                                              }
-{  - Procedure DetectDeadCode(Method: TMethodInfo)                              }
-{      Apres la construction du CFG, identifier les blocs non-atteints          }
-{      Signaler chaque bloc mort avec le numero de ligne de la premiere          }
-{      instruction du bloc (via LineNumberTable)                                 }
-{                                                                              }
-{  - Procedure DetectDeadLocalStores(Method: TMethodInfo)                       }
-{      Construire l'information de vivacite (liveness) des variables locales    }
-{      Detecter les stores (istore, astore, etc.) dont la valeur n'est jamais   }
-{      relue => bug DLS_DEAD_LOCAL_STORE                                        }
+
+{ --- TODO 11 : Initialisation du detecteur de boucles infinies --- }
+Procedure InitLoopState;
+Var
+  I: Integer;
+Begin
+  LoopInitialized := True;
+  LoopBugCount := 0;
+  DeadStoreCount := 0;
+  LoopLabelNum := 0;
+  LoopTotalInfinite := 0;
+  LoopTotalRecursive := 0;
+  LoopTotalDead := 0;
+  LoopTotalDeadStores := 0;
+  LoopCurrentPC := 0;
+  LoopCurrentLine := 0;
+  
+  { Reinitialiser la table des bugs }
+  For I := 0 to MAX_LOOP_BUGS - 1 Do Begin
+    LoopBugs[I].BugType := LP_NONE;
+    LoopBugs[I].PC := 0;
+    LoopBugs[I].LineNum := 0;
+    LoopBugs[I].BlockID := -1;
+    LoopBugs[I].VarIdx := -1;
+    LoopBugs[I].MethodName := '';
+  End;
+  
+  { Reinitialiser la table des dead stores }
+  For I := 0 to MAX_DEAD_STORES - 1 Do Begin
+    DeadStores[I].VarIdx := -1;
+    DeadStores[I].StorePC := 0;
+    DeadStores[I].LineNum := 0;
+    DeadStores[I].IsRead := False;
+  End;
+End;
+
+{ --- TODO 11 : Generation d'un label unique pour le module loop --- }
+Function GenLoopLabel: String;
+Begin
+  Inc(LoopLabelNum);
+  GenLoopLabel := '_LOOP_' + IntToStr_(LoopLabelNum);
+End;
+
+{ --- TODO 11 : Nom du type de bug loop en chaine --- }
+Function LoopBugTypeName(BugType: Integer): String;
+Begin
+  Case BugType of
+    LP_NONE                   : LoopBugTypeName := 'NONE';
+    IL_INFINITE_LOOP          : LoopBugTypeName := 'IL_INFINITE_LOOP';
+    IL_INFINITE_RECURSIVE_LOOP: LoopBugTypeName := 'IL_INFINITE_RECURSIVE_LOOP';
+    DLS_DEAD_LOCAL_STORE      : LoopBugTypeName := 'DLS_DEAD_LOCAL_STORE';
+    UC_USELESS_VOID_METHOD    : LoopBugTypeName := 'UC_USELESS_VOID_METHOD';
+    USELESS_CODE              : LoopBugTypeName := 'USELESS_CODE';
+    IL_CONTAINER_MODIFIED     : LoopBugTypeName := 'IL_CONTAINER_MODIFIED';
+  Else
+    LoopBugTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 11 : Ajouter un bug de boucle/code mort --- }
+Procedure AddLoopBug(BugType: Integer; PC: LongWord; LineNum, BlockID, VarIdx: Integer;
+                     MethodName: String);
+Begin
+  If LoopBugCount < MAX_LOOP_BUGS Then Begin
+    LoopBugs[LoopBugCount].BugType := BugType;
+    LoopBugs[LoopBugCount].PC := PC;
+    LoopBugs[LoopBugCount].LineNum := LineNum;
+    LoopBugs[LoopBugCount].BlockID := BlockID;
+    LoopBugs[LoopBugCount].VarIdx := VarIdx;
+    LoopBugs[LoopBugCount].MethodName := MethodName;
+    Inc(LoopBugCount);
+    
+    { Incrementer le compteur approprie }
+    Case BugType of
+      IL_INFINITE_LOOP, IL_CONTAINER_MODIFIED:
+        Inc(LoopTotalInfinite);
+      IL_INFINITE_RECURSIVE_LOOP:
+        Inc(LoopTotalRecursive);
+      USELESS_CODE, UC_USELESS_VOID_METHOD:
+        Inc(LoopTotalDead);
+      DLS_DEAD_LOCAL_STORE:
+        Inc(LoopTotalDeadStores);
+    End;
+  End;
+End;
+
+{ --- TODO 11 : Ajouter un dead store --- }
+Procedure AddDeadStore(VarIdx: Integer; StorePC: LongWord; LineNum: Integer);
+Begin
+  If DeadStoreCount < MAX_DEAD_STORES Then Begin
+    DeadStores[DeadStoreCount].VarIdx := VarIdx;
+    DeadStores[DeadStoreCount].StorePC := StorePC;
+    DeadStores[DeadStoreCount].LineNum := LineNum;
+    DeadStores[DeadStoreCount].IsRead := False;
+    Inc(DeadStoreCount);
+  End;
+End;
+
+{ --- TODO 11 : Marquer une variable comme lue --- }
+Procedure MarkVariableRead(VarIdx: Integer);
+Var
+  I: Integer;
+Begin
+  For I := 0 to DeadStoreCount - 1 Do Begin
+    If DeadStores[I].VarIdx = VarIdx Then Begin
+      DeadStores[I].IsRead := True;
+    End;
+  End;
+End;
+
+{ --- TODO 11 : Verifier si une instruction est un store --- }
+Function IsStoreOpcode(Opcode: Byte): Boolean;
+Begin
+  IsStoreOpcode := (Opcode = OP_ISTORE) or (Opcode = OP_LSTORE) or
+                   (Opcode = OP_FSTORE) or (Opcode = OP_DSTORE) or
+                   (Opcode = OP_ASTORE) or
+                   ((Opcode >= OP_ISTORE_0) and (Opcode <= OP_ASTORE_3));
+End;
+
+{ --- TODO 11 : Verifier si une instruction est un load --- }
+Function IsLoadOpcode(Opcode: Byte): Boolean;
+Begin
+  IsLoadOpcode := (Opcode = OP_ILOAD) or (Opcode = OP_LLOAD) or
+                  (Opcode = OP_FLOAD) or (Opcode = OP_DLOAD) or
+                  (Opcode = OP_ALOAD) or
+                  ((Opcode >= OP_ILOAD_0) and (Opcode <= OP_ALOAD_3));
+End;
+
+{ --- TODO 11 : Extraire l'index de variable d'un store --- }
+Function GetStoreVarIdx(Opcode: Byte; Op1: Integer): Integer;
+Begin
+  Case Opcode of
+    OP_ISTORE, OP_LSTORE, OP_FSTORE, OP_DSTORE, OP_ASTORE:
+      GetStoreVarIdx := Op1;
+    OP_ISTORE_0, OP_LSTORE_0, OP_FSTORE_0, OP_DSTORE_0, OP_ASTORE_0:
+      GetStoreVarIdx := 0;
+    OP_ISTORE_1, OP_LSTORE_1, OP_FSTORE_1, OP_DSTORE_1, OP_ASTORE_1:
+      GetStoreVarIdx := 1;
+    OP_ISTORE_2, OP_LSTORE_2, OP_FSTORE_2, OP_DSTORE_2, OP_ASTORE_2:
+      GetStoreVarIdx := 2;
+    OP_ISTORE_3, OP_LSTORE_3, OP_FSTORE_3, OP_DSTORE_3, OP_ASTORE_3:
+      GetStoreVarIdx := 3;
+  Else
+    GetStoreVarIdx := -1;
+  End;
+End;
+
+{ --- TODO 11 : Extraire l'index de variable d'un load --- }
+Function GetLoadVarIdx(Opcode: Byte; Op1: Integer): Integer;
+Begin
+  Case Opcode of
+    OP_ILOAD, OP_LLOAD, OP_FLOAD, OP_DLOAD, OP_ALOAD:
+      GetLoadVarIdx := Op1;
+    OP_ILOAD_0, OP_LLOAD_0, OP_FLOAD_0, OP_DLOAD_0, OP_ALOAD_0:
+      GetLoadVarIdx := 0;
+    OP_ILOAD_1, OP_LLOAD_1, OP_FLOAD_1, OP_DLOAD_1, OP_ALOAD_1:
+      GetLoadVarIdx := 1;
+    OP_ILOAD_2, OP_LLOAD_2, OP_FLOAD_2, OP_DLOAD_2, OP_ALOAD_2:
+      GetLoadVarIdx := 2;
+    OP_ILOAD_3, OP_LLOAD_3, OP_FLOAD_3, OP_DLOAD_3, OP_ALOAD_3:
+      GetLoadVarIdx := 3;
+  Else
+    GetLoadVarIdx := -1;
+  End;
+End;
+
+{ --- TODO 11 : Verifier si un bloc fait partie d'une boucle --- }
+Function IsBlockInLoop(BlockID: Integer): Boolean;
+Begin
+  If (BlockID >= 0) and (BlockID < CFGNodeCount) and (CFGNodes <> Nil) Then
+    IsBlockInLoop := CFGNodes^[BlockID].IsBackEdge
+  Else
+    IsBlockInLoop := False;
+End;
+
+{ --- TODO 11 : Verifier si un bloc a une sortie vers l'exterieur --- }
+Function HasExitFromBlock(BlockID: Integer): Boolean;
+Var
+  InstIdx: Integer;
+  Opcode: Byte;
+Begin
+  HasExitFromBlock := False;
+  If (BlockID < 0) or (BlockID >= CFGNodeCount) or (CFGNodes = Nil) Then Exit;
+  If Instructions = Nil Then Exit;
+  
+  { Parcourir les instructions du bloc }
+  For InstIdx := CFGNodes^[BlockID].InstStart to CFGNodes^[BlockID].InstEnd Do Begin
+    If (InstIdx >= 0) and (InstIdx < InstrCount) Then Begin
+      Opcode := Instructions^[InstIdx].Opcode;
+      { return ou throw = sortie }
+      If (Opcode = OP_IRETURN) or (Opcode = OP_LRETURN) or
+         (Opcode = OP_FRETURN) or (Opcode = OP_DRETURN) or
+         (Opcode = OP_ARETURN) or (Opcode = OP_RETURN) or
+         (Opcode = OP_ATHROW) Then Begin
+        HasExitFromBlock := True;
+        Exit;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 11 : Detecter les boucles infinies dans une methode --- }
+Procedure DetectInfiniteLoops(MethIdx: Integer);
+Var
+  BlockID, SuccID: Integer;
+  HasExit: Boolean;
+  J: Integer;
+  StartPC: LongWord;
+  LineNum: Integer;
+Begin
+  If (CFGNodes = Nil) or (CFGNodeCount <= 0) Then Exit;
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  
+  { Parcourir tous les blocs avec arete arriere (tetes de boucle) }
+  For BlockID := 0 to CFGNodeCount - 1 Do Begin
+    If CFGNodes^[BlockID].IsBackEdge Then Begin
+      { Ce bloc est une tete de boucle - verifier s'il y a une sortie }
+      HasExit := False;
+      
+      { Verifier les successeurs du bloc }
+      For J := 0 to CFGNodes^[BlockID].SuccCount - 1 Do Begin
+        SuccID := CFGNodes^[BlockID].Succs[J];
+        { Si un successeur sort de la boucle ou a un return/throw }
+        If HasExitFromBlock(SuccID) Then Begin
+          HasExit := True;
+        End;
+      End;
+      
+      { Verifier le bloc lui-meme }
+      If HasExitFromBlock(BlockID) Then Begin
+        HasExit := True;
+      End;
+      
+      { Si pas de sortie detectee, signaler une boucle potentiellement infinie }
+      If not HasExit and (CFGNodes^[BlockID].SuccCount > 0) Then Begin
+        StartPC := CFGNodes^[BlockID].StartPC;
+        LineNum := GetLineNumber(Methods[MethIdx], Word(StartPC));
+        AddLoopBug(IL_INFINITE_LOOP, StartPC, LineNum, BlockID, -1,
+                   Methods[MethIdx].Name);
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 11 : Detecter les appels recursifs infinis --- }
+Procedure DetectInfiniteRecursion(MethIdx: Integer);
+Var
+  InstIdx: Integer;
+  Opcode: Byte;
+  CpIdx: Word;
+  CalledMethod, CalledClass: String;
+  MethodName, ClassName: String;
+  HasCondition: Boolean;
+  PC: LongWord;
+  LineNum: Integer;
+Begin
+  If (Instructions = Nil) or (InstrCount <= 0) Then Exit;
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  
+  MethodName := Methods[MethIdx].Name;
+  ClassName := ClassInfo.ThisClass;
+  HasCondition := False;
+  
+  { Parcourir les instructions pour trouver les appels recursifs }
+  For InstIdx := 0 to InstrCount - 1 Do Begin
+    Opcode := Instructions^[InstIdx].Opcode;
+    
+    { Detecter les conditions (if*) }
+    If IsBranchOpcode(Opcode) Then Begin
+      HasCondition := True;
+    End;
+    
+    { Detecter les appels de methode }
+    If (Opcode = OP_INVOKEVIRTUAL) or (Opcode = OP_INVOKESPECIAL) or
+       (Opcode = OP_INVOKESTATIC) or (Opcode = OP_INVOKEINTERFACE) Then Begin
+      CpIdx := Word(Instructions^[InstIdx].Op1);
+      CalledMethod := ExtractMethodNameFromRef(CpIdx);
+      CalledClass := ExtractClassFromMethodRef(CpIdx);
+      
+      { Appel recursif ? }
+      If (CalledMethod = MethodName) and (CalledClass = ClassName) Then Begin
+        { Si pas de condition avant cet appel, c'est suspect }
+        If not HasCondition Then Begin
+          PC := Instructions^[InstIdx].PC;
+          LineNum := GetLineNumber(Methods[MethIdx], Word(PC));
+          AddLoopBug(IL_INFINITE_RECURSIVE_LOOP, PC, LineNum, -1, -1, MethodName);
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 11 : Detecter le code mort (unreachable) --- }
+Procedure DetectDeadCode(MethIdx: Integer);
+Var
+  BlockID: Integer;
+  StartPC: LongWord;
+  LineNum: Integer;
+Begin
+  If (CFGNodes = Nil) or (CFGNodeCount <= 0) Then Exit;
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  
+  { Parcourir tous les blocs pour trouver ceux non visites }
+  For BlockID := 0 to CFGNodeCount - 1 Do Begin
+    { Un bloc non visite et non-entree est du code mort }
+    If not CFGNodes^[BlockID].Visited and not CFGNodes^[BlockID].IsEntry and
+       not CFGNodes^[BlockID].IsException Then Begin
+      StartPC := CFGNodes^[BlockID].StartPC;
+      LineNum := GetLineNumber(Methods[MethIdx], Word(StartPC));
+      
+      { Ne pas signaler si c'est un bloc vide }
+      If CFGNodes^[BlockID].InstStart <= CFGNodes^[BlockID].InstEnd Then Begin
+        AddLoopBug(USELESS_CODE, StartPC, LineNum, BlockID, -1,
+                   Methods[MethIdx].Name);
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 11 : Detecter les dead local stores --- }
+Procedure DetectDeadLocalStores(MethIdx: Integer);
+Var
+  InstIdx: Integer;
+  Opcode: Byte;
+  VarIdx: Integer;
+  I: Integer;
+Begin
+  If (Instructions = Nil) or (InstrCount <= 0) Then Exit;
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  
+  { Reinitialiser les dead stores }
+  DeadStoreCount := 0;
+  
+  { Premiere passe : collecter tous les stores }
+  For InstIdx := 0 to InstrCount - 1 Do Begin
+    Opcode := Instructions^[InstIdx].Opcode;
+    If IsStoreOpcode(Opcode) Then Begin
+      VarIdx := GetStoreVarIdx(Opcode, Instructions^[InstIdx].Op1);
+      If VarIdx >= 0 Then Begin
+        AddDeadStore(VarIdx, Instructions^[InstIdx].PC,
+                     GetLineNumber(Methods[MethIdx], Word(Instructions^[InstIdx].PC)));
+      End;
+    End;
+  End;
+  
+  { Deuxieme passe : marquer les variables lues }
+  For InstIdx := 0 to InstrCount - 1 Do Begin
+    Opcode := Instructions^[InstIdx].Opcode;
+    If IsLoadOpcode(Opcode) Then Begin
+      VarIdx := GetLoadVarIdx(Opcode, Instructions^[InstIdx].Op1);
+      If VarIdx >= 0 Then Begin
+        MarkVariableRead(VarIdx);
+      End;
+    End;
+  End;
+  
+  { Troisieme passe : signaler les stores non lus }
+  For I := 0 to DeadStoreCount - 1 Do Begin
+    If not DeadStores[I].IsRead Then Begin
+      { Ne pas signaler les parametres (variables 0..N selon signature) }
+      If DeadStores[I].VarIdx > 0 Then Begin
+        AddLoopBug(DLS_DEAD_LOCAL_STORE, DeadStores[I].StorePC,
+                   DeadStores[I].LineNum, -1, DeadStores[I].VarIdx,
+                   Methods[MethIdx].Name);
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 11 : Detecter les methodes void inutiles --- }
+Procedure DetectUselessVoidMethods(MethIdx: Integer);
+Var
+  HasUsefulCode: Boolean;
+  InstIdx: Integer;
+  Opcode: Byte;
+Begin
+  If (Instructions = Nil) or (InstrCount <= 0) Then Exit;
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  
+  { Verifier si methode void }
+  If Pos(')V', Methods[MethIdx].Descriptor) = 0 Then Exit;
+  
+  { Verifier si la methode ne contient que aload_0 + return }
+  HasUsefulCode := False;
+  For InstIdx := 0 to InstrCount - 1 Do Begin
+    Opcode := Instructions^[InstIdx].Opcode;
+    
+    { Ignorer aload_0 (this) et return }
+    If (Opcode <> OP_ALOAD_0) and (Opcode <> OP_RETURN) and
+       (Opcode <> OP_NOP) Then Begin
+      HasUsefulCode := True;
+    End;
+  End;
+  
+  { Si methode vide (juste return), signaler }
+  If not HasUsefulCode and (InstrCount <= 2) Then Begin
+    AddLoopBug(UC_USELESS_VOID_METHOD, 0, 
+               GetLineNumber(Methods[MethIdx], 0), -1, -1, Methods[MethIdx].Name);
+  End;
+End;
+
+{ --- TODO 11 : Analyser une methode pour tous les bugs loop/dead --- }
+Procedure AnalyzeMethodForLoopBugs(MethIdx: Integer);
+Begin
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  
+  { Reinitialiser l'etat pour cette methode }
+  InitLoopState;
+  
+  { Decoder les instructions si pas deja fait }
+  If (Instructions = Nil) or (InstrCount = 0) Then Begin
+    AllocInstructions;
+    DecodeInstructions(Methods[MethIdx]);
+  End;
+  
+  { Lancer tous les detecteurs }
+  DetectInfiniteLoops(MethIdx);
+  DetectInfiniteRecursion(MethIdx);
+  DetectDeadCode(MethIdx);
+  DetectDeadLocalStores(MethIdx);
+  DetectUselessVoidMethods(MethIdx);
+End;
+
+{ --- TODO 11 : Afficher l'etat du detecteur loop --- }
+Procedure DumpLoopState;
+Var
+  I: Integer;
+Begin
+  WriteLn;
+  WriteLn('=== Loop/Dead Code Detector State ===');
+  WriteLn('Initialized      : ', LoopInitialized);
+  WriteLn('Bugs detected    : ', LoopBugCount);
+  WriteLn('Dead stores      : ', DeadStoreCount);
+  WriteLn('Total infinite   : ', LoopTotalInfinite);
+  WriteLn('Total recursive  : ', LoopTotalRecursive);
+  WriteLn('Total dead code  : ', LoopTotalDead);
+  WriteLn('Total dead stores: ', LoopTotalDeadStores);
+  WriteLn('Current PC       : ', LoopCurrentPC);
+  WriteLn('Current Line     : ', LoopCurrentLine);
+  WriteLn;
+  
+  If LoopBugCount > 0 Then Begin
+    WriteLn('--- Loop/Dead Code Bugs ---');
+    For I := 0 to LoopBugCount - 1 Do Begin
+      WriteLn('  [', I, '] ', LoopBugTypeName(LoopBugs[I].BugType),
+              ' PC=', LoopBugs[I].PC,
+              ' Line=', LoopBugs[I].LineNum,
+              ' Method=', LoopBugs[I].MethodName);
+    End;
+    WriteLn;
+  End;
+  
+  If DeadStoreCount > 0 Then Begin
+    WriteLn('--- Dead Stores ---');
+    For I := 0 to DeadStoreCount - 1 Do Begin
+      WriteLn('  [', I, '] VarIdx=', DeadStores[I].VarIdx,
+              ' PC=', DeadStores[I].StorePC,
+              ' Line=', DeadStores[I].LineNum,
+              ' Read=', DeadStores[I].IsRead);
+    End;
+  End;
+End;
+
+{ --- TODO 11 : Accesseurs du module loop detector --- }
+Function IsLoopInitialized: Boolean;
+Begin
+  IsLoopInitialized := LoopInitialized;
+End;
+
+Function GetLoopBugCount: Integer;
+Begin
+  GetLoopBugCount := LoopBugCount;
+End;
+
+Function GetDeadStoreCount: Integer;
+Begin
+  GetDeadStoreCount := DeadStoreCount;
+End;
+
+Function GetLoopTotalInfinite: Integer;
+Begin
+  GetLoopTotalInfinite := LoopTotalInfinite;
+End;
+
+Function GetLoopTotalRecursive: Integer;
+Begin
+  GetLoopTotalRecursive := LoopTotalRecursive;
+End;
+
+Function GetLoopTotalDead: Integer;
+Begin
+  GetLoopTotalDead := LoopTotalDead;
+End;
+
+Function GetLoopTotalDeadStores: Integer;
+Begin
+  GetLoopTotalDeadStores := LoopTotalDeadStores;
+End;
+
+Function GetLoopLabelNum: Integer;
+Begin
+  GetLoopLabelNum := LoopLabelNum;
+End;
+
+Function GetLoopBugType(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < LoopBugCount) Then
+    GetLoopBugType := LoopBugs[Idx].BugType
+  Else
+    GetLoopBugType := LP_NONE;
+End;
+
+Function GetLoopBugPC(Idx: Integer): LongWord;
+Begin
+  If (Idx >= 0) and (Idx < LoopBugCount) Then
+    GetLoopBugPC := LoopBugs[Idx].PC
+  Else
+    GetLoopBugPC := 0;
+End;
+
+Function GetLoopBugLine(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < LoopBugCount) Then
+    GetLoopBugLine := LoopBugs[Idx].LineNum
+  Else
+    GetLoopBugLine := 0;
+End;
 
 { ============================================================================ }
 { TODO 12 [A FAIRE] - Detecteur : mauvaises pratiques (bad practices)          }

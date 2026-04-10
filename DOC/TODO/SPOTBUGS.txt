@@ -231,19 +231,25 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               GetResTotalLeaks, GetResLabelNum, GetResLeakBugType,
               GetResLeakBugPC, GetResLeakBugLine
 
-  TODO 11 - DETECTEUR : BOUCLES INFINIES ET BLOCS INACCESSIBLES [A FAIRE]
-            Codes detectes : IL_INFINITE_LOOP, IL_INFINITE_RECURSIVE_LOOP,
-              DLS_DEAD_LOCAL_STORE, UC_USELESS_VOID_METHOD, USELESS_CODE
-            DetectInfiniteLoops(Method) : pour chaque arete arriere du CFG,
-              analyser les blocs composant la boucle, detecter l'absence de
-              branchement vers l'exterieur (goto/return/athrow)
-            DetectInfiniteRecursion(Method) : detecter appels recursifs dont
-              tous les chemins menent a un appel recursif sans condition d'arret
-            DetectDeadCode(Method) : signaler les blocs non-atteints apres
-              construction du CFG, avec le numero de ligne de la 1ere instruction
-            DetectDeadLocalStores(Method) : construire l'information de vivacite
-              des variables locales, detecter les stores dont la valeur n'est
-              jamais relue
+  TODO 11 - DETECTEUR : BOUCLES INFINIES ET BLOCS INACCESSIBLES [IMPLEMENTE]
+            Constantes : MAX_LOOP_BUGS=64, MAX_DEAD_STORES=128, MAX_LOOP_BLOCKS=64
+            Types de bugs : LP_NONE=0, IL_INFINITE_LOOP=1,
+              IL_INFINITE_RECURSIVE_LOOP=2, DLS_DEAD_LOCAL_STORE=3,
+              UC_USELESS_VOID_METHOD=4, USELESS_CODE=5, IL_CONTAINER_MODIFIED=6
+            Structure TLoopBugInfo (BugType, PC, LineNum, BlockID, VarIdx, MethodName)
+            Structure TDeadStoreInfo (VarIdx, StorePC, LineNum, IsRead)
+            Variables : LoopInitialized, LoopBugs, LoopBugCount, DeadStores,
+              DeadStoreCount, LoopLabelNum, LoopTotalInfinite, LoopTotalRecursive,
+              LoopTotalDead, LoopTotalDeadStores, LoopCurrentPC, LoopCurrentLine
+            InitLoopState, GenLoopLabel, LoopBugTypeName, AddLoopBug, AddDeadStore,
+              MarkVariableRead, IsStoreOpcode, IsLoadOpcode, GetStoreVarIdx,
+              GetLoadVarIdx, IsBlockInLoop, HasExitFromBlock, DetectInfiniteLoops,
+              DetectInfiniteRecursion, DetectDeadCode, DetectDeadLocalStores,
+              DetectUselessVoidMethods, AnalyzeMethodForLoopBugs, DumpLoopState
+            Accesseurs : IsLoopInitialized, GetLoopBugCount, GetDeadStoreCount,
+              GetLoopTotalInfinite, GetLoopTotalRecursive, GetLoopTotalDead,
+              GetLoopTotalDeadStores, GetLoopLabelNum, GetLoopBugType,
+              GetLoopBugPC, GetLoopBugLine
 
   TODO 12 - DETECTEUR : MAUVAISES PRATIQUES (BAD PRACTICES) [A FAIRE]
             Codes detectes : BC_UNCONFIRMED_CAST, DE_MIGHT_IGNORE,
