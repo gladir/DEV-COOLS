@@ -16,7 +16,7 @@
   Par defaut produit un fichier .EXE (PE Windows 32 bits).
   Avec le parametre -obj, produit uniquement un fichier .OBJ (COFF).
   Avec le parametre -asm, produit egalement un fichier .ASM lisible.
-  Supporte toutes les exemples SAMPLES\JAVA\*
+  Supporte tous les exemples SAMPLES\JAVA\*
 
   Voir DOC/TODO/JAVACW32.txt pour la feuille de route complete.
 
