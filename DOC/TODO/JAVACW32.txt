@@ -453,7 +453,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
             ArrayIndexOutOfBoundsException : detection optionnelle
             10 fonctions accesseurs
 
-  TODO 19 - PARSEUR : IMPORT ET PACKAGE [A FAIRE]
+  TODO 19 - PARSEUR : IMPORT ET PACKAGE [IMPLEMENTE]
             package nom.sous_nom; : declaration du package
               Enregistrer le nom du package comme prefixe optionnel
               Package ignore pour la generation de code (flat namespace)

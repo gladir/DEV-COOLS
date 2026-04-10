@@ -461,7 +461,7 @@
             ArrayIndexOutOfBoundsException : detection optionnelle
             10 fonctions accesseurs
 
-  TODO 19 - PARSEUR : IMPORT ET PACKAGE [A FAIRE]
+  TODO 19 - PARSEUR : IMPORT ET PACKAGE [IMPLEMENTE]
             package nom.sous_nom; : declaration du package
               Enregistrer le nom du package comme prefixe optionnel
               Package ignore pour la generation de code (flat namespace)
@@ -11996,7 +11996,574 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-18)                              }
+{ TODO 19 - PARSEUR : IMPORT ET PACKAGE                        }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations import/package }
+  IM_NONE            = 0;    { aucun / non defini                    }
+  IM_PACKAGE_DECL    = 1;    { package nom.sous_nom;                 }
+  IM_IMPORT_SINGLE   = 2;    { import java.util.Scanner;             }
+  IM_IMPORT_WILDCARD = 3;    { import java.util.*;                   }
+  IM_IMPORT_LANG     = 4;    { import java.lang.*; (implicite)       }
+  IM_IMPORT_UTIL     = 5;    { import java.util.*;                   }
+  IM_IMPORT_SCANNER  = 6;    { import java.util.Scanner;             }
+  IM_IMPORT_UNKNOWN  = 7;    { import non supporte                   }
+  IM_CLASS_PUBLIC    = 8;    { classe publique declaree              }
+  IM_CLASS_FILE_CHK  = 9;    { verif nom classe = nom fichier        }
+  IM_CLASS_RESOLVE   = 10;   { resolution ClassName.method           }
+  IM_STATIC_PREFIX   = 11;   { prefixe methode statique              }
+  IM_WARN_IMPORT     = 12;   { avertissement import inconnu          }
+  IM_SCANNER_ACTIVE  = 13;   { Scanner active par import             }
+  IM_MAX             = 13;
+
+  { Limites }
+  IM_MAX_IMPORTS     = 32;   { nombre max d imports                  }
+
+Type
+  TImImportRec = Record
+    PackagePath : TString;   { chemin du package (ex: java.util)     }
+    ClassName   : TString;   { nom de classe (ex: Scanner) ou *      }
+    FullPath    : TString;   { chemin complet (ex: java.util.Scanner)}
+    IsWildcard  : Boolean;   { True si import X.Y.*;                 }
+    IsKnown     : Boolean;   { True si import reconnu/supporte       }
+    DeclLine    : Integer;   { ligne de declaration                  }
+  End;
+
+Var
+  ImInitialized     : Boolean;    { True si l etat est initialise       }
+  ImPackageName     : TString;    { nom du package declare              }
+  ImPackageDeclared : Boolean;    { True si package declare             }
+  ImPackageLine     : Integer;    { ligne de la declaration package     }
+  ImImportCount     : LongInt;    { nombre total d imports              }
+  ImImportTab       : Array[1..IM_MAX_IMPORTS] Of TImImportRec;
+  ImScannerActive   : Boolean;    { True si Scanner est active          }
+  ImPublicClassName : TString;    { nom de la classe publique           }
+  ImPublicClassDeclared : Boolean;{ True si classe publique declaree    }
+  ImPublicClassLine : Integer;    { ligne de la classe publique         }
+  ImSourceFileName  : TString;    { nom du fichier source sans extension}
+  ImWarnCount       : LongInt;    { nombre d avertissements import      }
+  ImResolveCount    : LongInt;    { nombre de resolutions de classe     }
+  ImLastKind        : Integer;    { dernier type d operation            }
+  ImLabelSeq        : Integer;    { sequence pour labels IM             }
+
+{ ------------------------------------------------------------ }
+{ InitImState : initialiser le sous-systeme import/package       }
+{ ------------------------------------------------------------ }
+
+Procedure InitImState;
+Var I : Integer;
+Begin
+  ImInitialized     := True;
+  ImPackageName     := '';
+  ImPackageDeclared := False;
+  ImPackageLine     := 0;
+  ImImportCount     := 0;
+  ImScannerActive   := False;
+  ImPublicClassName := '';
+  ImPublicClassDeclared := False;
+  ImPublicClassLine := 0;
+  ImSourceFileName  := '';
+  ImWarnCount       := 0;
+  ImResolveCount    := 0;
+  ImLastKind        := IM_NONE;
+  ImLabelSeq        := 0;
+  For I := 1 To IM_MAX_IMPORTS Do
+  Begin
+    ImImportTab[I].PackagePath := '';
+    ImImportTab[I].ClassName   := '';
+    ImImportTab[I].FullPath    := '';
+    ImImportTab[I].IsWildcard  := False;
+    ImImportTab[I].IsKnown     := False;
+    ImImportTab[I].DeclLine    := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenImLabel : generer un label unique pour import/package        }
+{ ------------------------------------------------------------ }
+
+Function GenImLabel : TString;
+Begin
+  Inc(ImLabelSeq);
+  GenImLabel := '_JL_IM_' + ItoS(ImLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ ImTypeName : nom textuel d un type d operation import           }
+{ ------------------------------------------------------------ }
+
+Function ImTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    IM_NONE            : ImTypeName := 'IM_NONE';
+    IM_PACKAGE_DECL    : ImTypeName := 'IM_PACKAGE_DECL';
+    IM_IMPORT_SINGLE   : ImTypeName := 'IM_IMPORT_SINGLE';
+    IM_IMPORT_WILDCARD : ImTypeName := 'IM_IMPORT_WILDCARD';
+    IM_IMPORT_LANG     : ImTypeName := 'IM_IMPORT_LANG';
+    IM_IMPORT_UTIL     : ImTypeName := 'IM_IMPORT_UTIL';
+    IM_IMPORT_SCANNER  : ImTypeName := 'IM_IMPORT_SCANNER';
+    IM_IMPORT_UNKNOWN  : ImTypeName := 'IM_IMPORT_UNKNOWN';
+    IM_CLASS_PUBLIC    : ImTypeName := 'IM_CLASS_PUBLIC';
+    IM_CLASS_FILE_CHK  : ImTypeName := 'IM_CLASS_FILE_CHK';
+    IM_CLASS_RESOLVE   : ImTypeName := 'IM_CLASS_RESOLVE';
+    IM_STATIC_PREFIX   : ImTypeName := 'IM_STATIC_PREFIX';
+    IM_WARN_IMPORT     : ImTypeName := 'IM_WARN_IMPORT';
+    IM_SCANNER_ACTIVE  : ImTypeName := 'IM_SCANNER_ACTIVE';
+  Else
+    ImTypeName := 'IM_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsKnownImport : tester si un chemin d import est reconnu       }
+{   Reconnait java.lang.*, java.util.*, java.util.Scanner      }
+{ ------------------------------------------------------------ }
+
+Function IsKnownImport(const FullPath : TString) : Boolean;
+Begin
+  If FullPath = 'java.lang.*' Then
+    IsKnownImport := True
+  Else If FullPath = 'java.util.*' Then
+    IsKnownImport := True
+  Else If FullPath = 'java.util.Scanner' Then
+    IsKnownImport := True
+  Else If FullPath = 'java.util.ArrayList' Then
+    IsKnownImport := True
+  Else If FullPath = 'java.util.Arrays' Then
+    IsKnownImport := True
+  Else If FullPath = 'java.io.*' Then
+    IsKnownImport := True
+  Else
+    IsKnownImport := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ActivatesScanner : tester si un import active Scanner          }
+{   java.util.* ou java.util.Scanner activent Scanner           }
+{ ------------------------------------------------------------ }
+
+Function ActivatesScanner(const FullPath : TString) : Boolean;
+Begin
+  If FullPath = 'java.util.*' Then
+    ActivatesScanner := True
+  Else If FullPath = 'java.util.Scanner' Then
+    ActivatesScanner := True
+  Else
+    ActivatesScanner := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExtractPackagePath : extraire le chemin du package              }
+{   "java.util.Scanner" -> "java.util"                          }
+{   "java.lang.*" -> "java.lang"                                }
+{ ------------------------------------------------------------ }
+
+Function ExtractPackagePath(const FullPath : TString) : TString;
+Var I : Integer;
+    LastDot : Integer;
+Begin
+  LastDot := 0;
+  For I := 1 To Length(FullPath) Do
+    If FullPath[I] = '.' Then
+      LastDot := I;
+  If LastDot > 0 Then
+    ExtractPackagePath := Copy(FullPath, 1, LastDot - 1)
+  Else
+    ExtractPackagePath := FullPath;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExtractClassName : extraire le nom de classe d un import       }
+{   "java.util.Scanner" -> "Scanner"                            }
+{   "java.lang.*" -> "*"                                        }
+{ ------------------------------------------------------------ }
+
+Function ExtractClassName(const FullPath : TString) : TString;
+Var I : Integer;
+    LastDot : Integer;
+Begin
+  LastDot := 0;
+  For I := 1 To Length(FullPath) Do
+    If FullPath[I] = '.' Then
+      LastDot := I;
+  If LastDot > 0 Then
+    ExtractClassName := Copy(FullPath, LastDot + 1,
+                             Length(FullPath) - LastDot)
+  Else
+    ExtractClassName := FullPath;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePackageDecl : parser une declaration package               }
+{   package nom.sous_nom;                                       }
+{   Enregistre le nom du package (ignore pour code gen)         }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePackageDecl(const PkgName : TString; Line : Integer);
+Begin
+  ImLastKind := IM_PACKAGE_DECL;
+  If ImPackageDeclared Then
+  Begin
+    WarnMsg('duplicate package declaration (ignored)');
+    Exit;
+  End;
+  ImPackageName     := PkgName;
+  ImPackageDeclared := True;
+  ImPackageLine     := Line;
+  WriteLn('  ; package ', PkgName, ' (ignored for code gen)');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseImportDecl : parser une declaration import                 }
+{   import java.util.Scanner;                                   }
+{   import java.util.*;                                         }
+{   import java.lang.*;                                         }
+{   Enregistre l import dans la table et active les features    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseImportDecl(const FullPath : TString; Line : Integer);
+Var PkgPath   : TString;
+    ClsName   : TString;
+    IsWild    : Boolean;
+    Known     : Boolean;
+Begin
+  { Extraire les composants }
+  PkgPath := ExtractPackagePath(FullPath);
+  ClsName := ExtractClassName(FullPath);
+  IsWild  := (ClsName = '*');
+  Known   := IsKnownImport(FullPath);
+
+  { Determiner le type d import }
+  If FullPath = 'java.lang.*' Then
+  Begin
+    ImLastKind := IM_IMPORT_LANG;
+    WriteLn('  ; import java.lang.* (implicit, ignored)');
+  End
+  Else If (FullPath = 'java.util.*') Then
+  Begin
+    ImLastKind := IM_IMPORT_UTIL;
+    WriteLn('  ; import java.util.* (Scanner activated)');
+  End
+  Else If (FullPath = 'java.util.Scanner') Then
+  Begin
+    ImLastKind := IM_IMPORT_SCANNER;
+    WriteLn('  ; import java.util.Scanner');
+  End
+  Else If IsWild Then
+  Begin
+    ImLastKind := IM_IMPORT_WILDCARD;
+    WriteLn('  ; import ', FullPath, ' (wildcard)');
+  End
+  Else If Known Then
+  Begin
+    ImLastKind := IM_IMPORT_SINGLE;
+    WriteLn('  ; import ', FullPath);
+  End
+  Else
+  Begin
+    ImLastKind := IM_IMPORT_UNKNOWN;
+    Inc(ImWarnCount);
+    WarnMsg('unsupported import: ' + FullPath);
+    WriteLn('  ; import ', FullPath, ' (unsupported, warning)');
+  End;
+
+  { Ajouter a la table }
+  If ImImportCount < IM_MAX_IMPORTS Then
+  Begin
+    Inc(ImImportCount);
+    ImImportTab[ImImportCount].PackagePath := PkgPath;
+    ImImportTab[ImImportCount].ClassName   := ClsName;
+    ImImportTab[ImImportCount].FullPath    := FullPath;
+    ImImportTab[ImImportCount].IsWildcard  := IsWild;
+    ImImportTab[ImImportCount].IsKnown     := Known;
+    ImImportTab[ImImportCount].DeclLine    := Line;
+  End
+  Else
+    WarnMsg('import table full, ignoring: ' + FullPath);
+
+  { Activer Scanner si applicable }
+  If ActivatesScanner(FullPath) Then
+  Begin
+    ImScannerActive := True;
+    ImLastKind := IM_SCANNER_ACTIVE;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterPublicClass : enregistrer la classe publique           }
+{   Une seule classe publique par fichier                       }
+{ ------------------------------------------------------------ }
+
+Procedure RegisterPublicClass(const ClsName : TString;
+                              Line : Integer);
+Begin
+  ImLastKind := IM_CLASS_PUBLIC;
+  If ImPublicClassDeclared Then
+  Begin
+    CompileError('only one public class per file (already: ' +
+                 ImPublicClassName + ')', Line);
+    Exit;
+  End;
+  ImPublicClassName     := ClsName;
+  ImPublicClassDeclared := True;
+  ImPublicClassLine     := Line;
+  WriteLn('  ; public class ', ClsName);
+End;
+
+{ ------------------------------------------------------------ }
+{ CheckClassFileName : verifier que le nom de la classe publique }
+{   correspond au nom du fichier source                         }
+{ ------------------------------------------------------------ }
+
+Procedure CheckClassFileName(const ClsName, FileName : TString;
+                             Line : Integer);
+Var BaseName : TString;
+    I, DotPos : Integer;
+Begin
+  ImLastKind := IM_CLASS_FILE_CHK;
+  { Extraire le nom de base du fichier (sans extension) }
+  DotPos := 0;
+  For I := Length(FileName) DownTo 1 Do
+    If FileName[I] = '.' Then
+    Begin
+      DotPos := I;
+      Break;
+    End;
+  If DotPos > 0 Then
+    BaseName := Copy(FileName, 1, DotPos - 1)
+  Else
+    BaseName := FileName;
+  { Comparer }
+  If ClsName <> BaseName Then
+    WarnMsg('public class ' + ClsName +
+                   ' should be in file ' + ClsName + '.java');
+End;
+
+{ ------------------------------------------------------------ }
+{ SetImSourceFile : definir le nom du fichier source             }
+{   Extrait le nom de base (sans extension et sans chemin)      }
+{ ------------------------------------------------------------ }
+
+Procedure SetImSourceFile(const FileName : TString);
+Var I, DotPos, SlashPos : Integer;
+    BaseName : TString;
+Begin
+  { Trouver le dernier separateur de chemin }
+  SlashPos := 0;
+  For I := Length(FileName) DownTo 1 Do
+    If (FileName[I] = '/') Or (FileName[I] = '\') Then
+    Begin
+      SlashPos := I;
+      Break;
+    End;
+  If SlashPos > 0 Then
+    BaseName := Copy(FileName, SlashPos + 1,
+                     Length(FileName) - SlashPos)
+  Else
+    BaseName := FileName;
+  { Enlever l extension }
+  DotPos := 0;
+  For I := Length(BaseName) DownTo 1 Do
+    If BaseName[I] = '.' Then
+    Begin
+      DotPos := I;
+      Break;
+    End;
+  If DotPos > 0 Then
+    ImSourceFileName := Copy(BaseName, 1, DotPos - 1)
+  Else
+    ImSourceFileName := BaseName;
+End;
+
+{ ------------------------------------------------------------ }
+{ ResolveClassPrefix : resoudre le prefixe d une classe          }
+{   ClassName.methodName -> retourne le prefixe de la classe    }
+{   Pour les methodes statiques de la classe courante           }
+{ ------------------------------------------------------------ }
+
+Function ResolveClassPrefix(const ClsName : TString) : TString;
+Begin
+  Inc(ImResolveCount);
+  ImLastKind := IM_CLASS_RESOLVE;
+  { Pour la classe courante, pas de prefixe }
+  If ImPublicClassDeclared And (ClsName = ImPublicClassName) Then
+  Begin
+    ImLastKind := IM_STATIC_PREFIX;
+    ResolveClassPrefix := '';
+  End
+  Else
+    ResolveClassPrefix := ClsName + '_';
+End;
+
+{ ------------------------------------------------------------ }
+{ IsImportedClass : tester si une classe est importee            }
+{   Verifie dans la table d imports                             }
+{ ------------------------------------------------------------ }
+
+Function IsImportedClass(const ClsName : TString) : Boolean;
+Var I : Integer;
+Begin
+  IsImportedClass := False;
+  { Verifier les imports explicites }
+  For I := 1 To ImImportCount Do
+  Begin
+    If ImImportTab[I].ClassName = ClsName Then
+    Begin
+      IsImportedClass := True;
+      Exit;
+    End;
+    { Pour les imports wildcard, toujours considerer comme importe }
+    If ImImportTab[I].IsWildcard And ImImportTab[I].IsKnown Then
+    Begin
+      IsImportedClass := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImPackageName : retourner le nom du package declare         }
+{ ------------------------------------------------------------ }
+
+Function GetImPackageName : TString;
+Begin
+  If ImPackageDeclared Then
+    GetImPackageName := ImPackageName
+  Else
+    GetImPackageName := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImImportPath : obtenir le chemin complet d un import        }
+{   par son index (1..ImImportCount)                            }
+{ ------------------------------------------------------------ }
+
+Function GetImImportPath(Idx : Integer) : TString;
+Begin
+  If (Idx >= 1) And (Idx <= ImImportCount) Then
+    GetImImportPath := ImImportTab[Idx].FullPath
+  Else
+    GetImImportPath := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ IsScannerImported : tester si Scanner est active par import    }
+{ ------------------------------------------------------------ }
+
+Function IsScannerImported : Boolean;
+Begin
+  IsScannerImported := ImScannerActive;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetPublicClassName : retourner le nom de la classe publique    }
+{ ------------------------------------------------------------ }
+
+Function GetPublicClassName : TString;
+Begin
+  If ImPublicClassDeclared Then
+    GetPublicClassName := ImPublicClassName
+  Else
+    GetPublicClassName := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpImState : afficher l etat du sous-systeme import/package   }
+{ ------------------------------------------------------------ }
+
+Procedure DumpImState;
+Var I : Integer;
+Begin
+  WriteLn('--- Import/Package State ---');
+  WriteLn('  ImInitialized      : ', ImInitialized);
+  WriteLn('  ImPackageDeclared  : ', ImPackageDeclared);
+  WriteLn('  ImPackageName      : ', ImPackageName);
+  WriteLn('  ImPackageLine      : ', ImPackageLine);
+  WriteLn('  ImImportCount      : ', ImImportCount);
+  WriteLn('  ImScannerActive    : ', ImScannerActive);
+  WriteLn('  ImPublicClassDecl  : ', ImPublicClassDeclared);
+  WriteLn('  ImPublicClassName  : ', ImPublicClassName);
+  WriteLn('  ImPublicClassLine  : ', ImPublicClassLine);
+  WriteLn('  ImSourceFileName   : ', ImSourceFileName);
+  WriteLn('  ImWarnCount        : ', ImWarnCount);
+  WriteLn('  ImResolveCount     : ', ImResolveCount);
+  WriteLn('  ImLastKind         : ', ImTypeName(ImLastKind));
+  WriteLn('  ImLabelSeq         : ', ImLabelSeq);
+  For I := 1 To ImImportCount Do
+    WriteLn('  Import[', I, '] : ', ImImportTab[I].FullPath,
+            ' (Pkg=', ImImportTab[I].PackagePath,
+            ', Cls=', ImImportTab[I].ClassName,
+            ', Wild=', ImImportTab[I].IsWildcard,
+            ', Known=', ImImportTab[I].IsKnown,
+            ', Line=', ImImportTab[I].DeclLine, ')');
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 19)                              }
+{ ------------------------------------------------------------ }
+
+Function IsImInitialized : Boolean;
+Begin
+  IsImInitialized := ImInitialized;
+End;
+
+Function IsImEmpty : Boolean;
+Begin
+  IsImEmpty := (ImImportCount = 0) And (Not ImPackageDeclared);
+End;
+
+Function GetImImportCount : LongInt;
+Begin
+  GetImImportCount := ImImportCount;
+End;
+
+Function GetImWarnCount : LongInt;
+Begin
+  GetImWarnCount := ImWarnCount;
+End;
+
+Function GetImResolveCount : LongInt;
+Begin
+  GetImResolveCount := ImResolveCount;
+End;
+
+Function IsImPackageDeclared : Boolean;
+Begin
+  IsImPackageDeclared := ImPackageDeclared;
+End;
+
+Function IsImPublicClassDeclared : Boolean;
+Begin
+  IsImPublicClassDeclared := ImPublicClassDeclared;
+End;
+
+Function IsImScannerActive : Boolean;
+Begin
+  IsImScannerActive := ImScannerActive;
+End;
+
+Function GetImLastKind : Integer;
+Begin
+  GetImLastKind := ImLastKind;
+End;
+
+Function GetImStatus : TString;
+Begin
+  If Not ImInitialized Then
+    GetImStatus := 'Not initialized'
+  Else
+    GetImStatus := ItoS(ImImportCount) + ' imports, ' +
+                   ItoS(ImWarnCount) + ' warnings, ' +
+                   ItoS(ImResolveCount) + ' resolves, ' +
+                   'pkg=' + ImPackageName + ', ' +
+                   'scanner=' + ItoS(Ord(ImScannerActive)) + ', ' +
+                   'class=' + ImPublicClassName;
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-19)                              }
 { ============================================================ }
 
 Begin
@@ -12027,16 +12594,17 @@ Begin
   InitClState;
   InitSwState;
   InitExState;
+  InitImState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-18) }
+  { Boucle de tokenisation (TODO 02-19) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 19..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 20..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
