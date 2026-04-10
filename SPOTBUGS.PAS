@@ -22,7 +22,7 @@
 {  TODO 04 [IMPLEMENTE] - Lecture des flags, this_class, super_class, interfaces }
 {  TODO 05 [IMPLEMENTE] - Lecture des champs (fields) de la classe            }
 {  TODO 06 [IMPLEMENTE] - Lecture des methodes et de l'attribut Code         }
-{  TODO 07 [A FAIRE] - Decodage du bytecode Java (opcodes JVM)                }
+{  TODO 07 [IMPLEMENTE] - Decodage du bytecode Java (opcodes JVM)              }
 {  TODO 08 [A FAIRE] - Construction du graphe de flux de controle (CFG)       }
 {  TODO 09 [A FAIRE] - Detecteur : dereferencement de pointeur null           }
 {  TODO 10 [A FAIRE] - Detecteur : fuite de ressources (resource leaks)       }
@@ -249,6 +249,254 @@ Const
   CLASS_MAGIC_HI = $CAFE;     { Partie haute de la signature            }
   CLASS_MAGIC_LO = $BABE;     { Partie basse de la signature            }
 
+  { ------------------------------------------------------------------ }
+  { TODO 07 : Opcodes JVM (bytecode Java)                               }
+  { ------------------------------------------------------------------ }
+  MAX_INSTRUCTIONS = 65535;   { Nombre maximum d'instructions par methode }
+
+  { Opcodes de constantes }
+  OP_NOP           = 0;   { Ne fait rien                                  }
+  OP_ACONST_NULL   = 1;   { Push null                                     }
+  OP_ICONST_M1     = 2;   { Push int -1                                   }
+  OP_ICONST_0      = 3;   { Push int 0                                    }
+  OP_ICONST_1      = 4;   { Push int 1                                    }
+  OP_ICONST_2      = 5;   { Push int 2                                    }
+  OP_ICONST_3      = 6;   { Push int 3                                    }
+  OP_ICONST_4      = 7;   { Push int 4                                    }
+  OP_ICONST_5      = 8;   { Push int 5                                    }
+  OP_LCONST_0      = 9;   { Push long 0                                   }
+  OP_LCONST_1      = 10;  { Push long 1                                   }
+  OP_FCONST_0      = 11;  { Push float 0.0                                }
+  OP_FCONST_1      = 12;  { Push float 1.0                                }
+  OP_FCONST_2      = 13;  { Push float 2.0                                }
+  OP_DCONST_0      = 14;  { Push double 0.0                               }
+  OP_DCONST_1      = 15;  { Push double 1.0                               }
+  OP_BIPUSH        = 16;  { Push byte signe                               }
+  OP_SIPUSH        = 17;  { Push short signe                              }
+  OP_LDC           = 18;  { Push item du CP (8-bit index)                 }
+  OP_LDC_W         = 19;  { Push item du CP (16-bit index)                }
+  OP_LDC2_W        = 20;  { Push long/double du CP (16-bit index)         }
+
+  { Opcodes de chargement de variables locales }
+  OP_ILOAD         = 21;  { Load int from local var                       }
+  OP_LLOAD         = 22;  { Load long from local var                      }
+  OP_FLOAD         = 23;  { Load float from local var                     }
+  OP_DLOAD         = 24;  { Load double from local var                    }
+  OP_ALOAD         = 25;  { Load ref from local var                       }
+  OP_ILOAD_0       = 26;  { Load int from local var 0                     }
+  OP_ILOAD_1       = 27;  { Load int from local var 1                     }
+  OP_ILOAD_2       = 28;  { Load int from local var 2                     }
+  OP_ILOAD_3       = 29;  { Load int from local var 3                     }
+  OP_LLOAD_0       = 30;  { Load long from local var 0                    }
+  OP_LLOAD_1       = 31;  { Load long from local var 1                    }
+  OP_LLOAD_2       = 32;  { Load long from local var 2                    }
+  OP_LLOAD_3       = 33;  { Load long from local var 3                    }
+  OP_FLOAD_0       = 34;  { Load float from local var 0                   }
+  OP_FLOAD_1       = 35;  { Load float from local var 1                   }
+  OP_FLOAD_2       = 36;  { Load float from local var 2                   }
+  OP_FLOAD_3       = 37;  { Load float from local var 3                   }
+  OP_DLOAD_0       = 38;  { Load double from local var 0                  }
+  OP_DLOAD_1       = 39;  { Load double from local var 1                  }
+  OP_DLOAD_2       = 40;  { Load double from local var 2                  }
+  OP_DLOAD_3       = 41;  { Load double from local var 3                  }
+  OP_ALOAD_0       = 42;  { Load ref from local var 0 (this)              }
+  OP_ALOAD_1       = 43;  { Load ref from local var 1                     }
+  OP_ALOAD_2       = 44;  { Load ref from local var 2                     }
+  OP_ALOAD_3       = 45;  { Load ref from local var 3                     }
+
+  { Opcodes de chargement depuis tableau }
+  OP_IALOAD        = 46;  { Load int from array                           }
+  OP_LALOAD        = 47;  { Load long from array                          }
+  OP_FALOAD        = 48;  { Load float from array                         }
+  OP_DALOAD        = 49;  { Load double from array                        }
+  OP_AALOAD        = 50;  { Load ref from array                           }
+  OP_BALOAD        = 51;  { Load byte/boolean from array                  }
+  OP_CALOAD        = 52;  { Load char from array                          }
+  OP_SALOAD        = 53;  { Load short from array                         }
+
+  { Opcodes de stockage dans variables locales }
+  OP_ISTORE        = 54;  { Store int to local var                        }
+  OP_LSTORE        = 55;  { Store long to local var                       }
+  OP_FSTORE        = 56;  { Store float to local var                      }
+  OP_DSTORE        = 57;  { Store double to local var                     }
+  OP_ASTORE        = 58;  { Store ref to local var                        }
+  OP_ISTORE_0      = 59;  { Store int to local var 0                      }
+  OP_ISTORE_1      = 60;  { Store int to local var 1                      }
+  OP_ISTORE_2      = 61;  { Store int to local var 2                      }
+  OP_ISTORE_3      = 62;  { Store int to local var 3                      }
+  OP_LSTORE_0      = 63;  { Store long to local var 0                     }
+  OP_LSTORE_1      = 64;  { Store long to local var 1                     }
+  OP_LSTORE_2      = 65;  { Store long to local var 2                     }
+  OP_LSTORE_3      = 66;  { Store long to local var 3                     }
+  OP_FSTORE_0      = 67;  { Store float to local var 0                    }
+  OP_FSTORE_1      = 68;  { Store float to local var 1                    }
+  OP_FSTORE_2      = 69;  { Store float to local var 2                    }
+  OP_FSTORE_3      = 70;  { Store float to local var 3                    }
+  OP_DSTORE_0      = 71;  { Store double to local var 0                   }
+  OP_DSTORE_1      = 72;  { Store double to local var 1                   }
+  OP_DSTORE_2      = 73;  { Store double to local var 2                   }
+  OP_DSTORE_3      = 74;  { Store double to local var 3                   }
+  OP_ASTORE_0      = 75;  { Store ref to local var 0                      }
+  OP_ASTORE_1      = 76;  { Store ref to local var 1                      }
+  OP_ASTORE_2      = 77;  { Store ref to local var 2                      }
+  OP_ASTORE_3      = 78;  { Store ref to local var 3                      }
+
+  { Opcodes de stockage dans tableau }
+  OP_IASTORE       = 79;  { Store int to array                            }
+  OP_LASTORE       = 80;  { Store long to array                           }
+  OP_FASTORE       = 81;  { Store float to array                          }
+  OP_DASTORE       = 82;  { Store double to array                         }
+  OP_AASTORE       = 83;  { Store ref to array                            }
+  OP_BASTORE       = 84;  { Store byte/boolean to array                   }
+  OP_CASTORE       = 85;  { Store char to array                           }
+  OP_SASTORE       = 86;  { Store short to array                          }
+
+  { Opcodes de manipulation de pile }
+  OP_POP           = 87;  { Pop 1 word from stack                         }
+  OP_POP2          = 88;  { Pop 2 words from stack                        }
+  OP_DUP           = 89;  { Duplicate top of stack                        }
+  OP_DUP_X1        = 90;  { Duplicate top, insert 1 deep                  }
+  OP_DUP_X2        = 91;  { Duplicate top, insert 2 deep                  }
+  OP_DUP2          = 92;  { Duplicate top 2 words                         }
+  OP_DUP2_X1       = 93;  { Duplicate top 2, insert 1 deep                }
+  OP_DUP2_X2       = 94;  { Duplicate top 2, insert 2 deep                }
+  OP_SWAP          = 95;  { Swap top 2 words                              }
+
+  { Opcodes arithmetiques }
+  OP_IADD          = 96;  { int add                                       }
+  OP_LADD          = 97;  { long add                                      }
+  OP_FADD          = 98;  { float add                                     }
+  OP_DADD          = 99;  { double add                                    }
+  OP_ISUB          = 100; { int subtract                                  }
+  OP_LSUB          = 101; { long subtract                                 }
+  OP_FSUB          = 102; { float subtract                                }
+  OP_DSUB          = 103; { double subtract                               }
+  OP_IMUL          = 104; { int multiply                                  }
+  OP_LMUL          = 105; { long multiply                                 }
+  OP_FMUL          = 106; { float multiply                                }
+  OP_DMUL          = 107; { double multiply                               }
+  OP_IDIV          = 108; { int divide                                    }
+  OP_LDIV          = 109; { long divide                                   }
+  OP_FDIV          = 110; { float divide                                  }
+  OP_DDIV          = 111; { double divide                                 }
+  OP_IREM          = 112; { int remainder                                 }
+  OP_LREM          = 113; { long remainder                                }
+  OP_FREM          = 114; { float remainder                               }
+  OP_DREM          = 115; { double remainder                              }
+  OP_INEG          = 116; { int negate                                    }
+  OP_LNEG          = 117; { long negate                                   }
+  OP_FNEG          = 118; { float negate                                  }
+  OP_DNEG          = 119; { double negate                                 }
+  OP_ISHL          = 120; { int shift left                                }
+  OP_LSHL          = 121; { long shift left                               }
+  OP_ISHR          = 122; { int arithmetic shift right                    }
+  OP_LSHR          = 123; { long arithmetic shift right                   }
+  OP_IUSHR         = 124; { int logical shift right                       }
+  OP_LUSHR         = 125; { long logical shift right                      }
+  OP_IAND          = 126; { int and                                       }
+  OP_LAND          = 127; { long and                                      }
+  OP_IOR           = 128; { int or                                        }
+  OP_LOR           = 129; { long or                                       }
+  OP_IXOR          = 130; { int xor                                       }
+  OP_LXOR          = 131; { long xor                                      }
+  OP_IINC          = 132; { increment local int var by constant           }
+
+  { Opcodes de conversion }
+  OP_I2L           = 133; { int to long                                   }
+  OP_I2F           = 134; { int to float                                  }
+  OP_I2D           = 135; { int to double                                 }
+  OP_L2I           = 136; { long to int                                   }
+  OP_L2F           = 137; { long to float                                 }
+  OP_L2D           = 138; { long to double                                }
+  OP_F2I           = 139; { float to int                                  }
+  OP_F2L           = 140; { float to long                                 }
+  OP_F2D           = 141; { float to double                               }
+  OP_D2I           = 142; { double to int                                 }
+  OP_D2L           = 143; { double to long                                }
+  OP_D2F           = 144; { double to float                               }
+  OP_I2B           = 145; { int to byte                                   }
+  OP_I2C           = 146; { int to char                                   }
+  OP_I2S           = 147; { int to short                                  }
+
+  { Opcodes de comparaison }
+  OP_LCMP          = 148; { long compare                                  }
+  OP_FCMPL         = 149; { float compare (NaN -> -1)                     }
+  OP_FCMPG         = 150; { float compare (NaN -> 1)                      }
+  OP_DCMPL         = 151; { double compare (NaN -> -1)                    }
+  OP_DCMPG         = 152; { double compare (NaN -> 1)                     }
+
+  { Opcodes de branchement conditionnel }
+  OP_IFEQ          = 153; { if value == 0                                 }
+  OP_IFNE          = 154; { if value != 0                                 }
+  OP_IFLT          = 155; { if value < 0                                  }
+  OP_IFGE          = 156; { if value >= 0                                 }
+  OP_IFGT          = 157; { if value > 0                                  }
+  OP_IFLE          = 158; { if value <= 0                                 }
+  OP_IF_ICMPEQ     = 159; { if int1 == int2                               }
+  OP_IF_ICMPNE     = 160; { if int1 != int2                               }
+  OP_IF_ICMPLT     = 161; { if int1 < int2                                }
+  OP_IF_ICMPGE     = 162; { if int1 >= int2                               }
+  OP_IF_ICMPGT     = 163; { if int1 > int2                                }
+  OP_IF_ICMPLE     = 164; { if int1 <= int2                               }
+  OP_IF_ACMPEQ     = 165; { if ref1 == ref2                               }
+  OP_IF_ACMPNE     = 166; { if ref1 != ref2                               }
+
+  { Opcodes de branchement inconditionnel }
+  OP_GOTO          = 167; { branch always (16-bit offset)                 }
+  OP_JSR           = 168; { jump subroutine (16-bit offset)               }
+  OP_RET           = 169; { return from subroutine                        }
+  OP_TABLESWITCH   = 170; { switch (table, contiguous)                    }
+  OP_LOOKUPSWITCH  = 171; { switch (lookup, sparse)                       }
+
+  { Opcodes de retour }
+  OP_IRETURN       = 172; { return int                                    }
+  OP_LRETURN       = 173; { return long                                   }
+  OP_FRETURN       = 174; { return float                                  }
+  OP_DRETURN       = 175; { return double                                 }
+  OP_ARETURN       = 176; { return ref                                    }
+  OP_RETURN        = 177; { return void                                   }
+
+  { Opcodes d'acces aux champs }
+  OP_GETSTATIC     = 178; { get static field                              }
+  OP_PUTSTATIC     = 179; { put static field                              }
+  OP_GETFIELD      = 180; { get instance field                            }
+  OP_PUTFIELD      = 181; { put instance field                            }
+
+  { Opcodes d'invocation de methode }
+  OP_INVOKEVIRTUAL   = 182; { invoke virtual method                       }
+  OP_INVOKESPECIAL   = 183; { invoke constructor/super/private            }
+  OP_INVOKESTATIC    = 184; { invoke static method                        }
+  OP_INVOKEINTERFACE = 185; { invoke interface method                     }
+  OP_INVOKEDYNAMIC   = 186; { invoke dynamic method                       }
+
+  { Opcodes de creation d'objets/tableaux }
+  OP_NEW             = 187; { create new object                           }
+  OP_NEWARRAY        = 188; { create new primitive array                  }
+  OP_ANEWARRAY       = 189; { create new reference array                  }
+  OP_ARRAYLENGTH     = 190; { get array length                            }
+
+  { Opcodes d'exception et types }
+  OP_ATHROW          = 191; { throw exception                             }
+  OP_CHECKCAST       = 192; { check cast                                  }
+  OP_INSTANCEOF      = 193; { instanceof test                             }
+
+  { Opcodes de synchronisation }
+  OP_MONITORENTER    = 194; { enter monitor                               }
+  OP_MONITOREXIT     = 195; { exit monitor                                }
+
+  { Opcodes speciaux }
+  OP_WIDE            = 196; { prefix: extend index to 16 bits             }
+  OP_MULTIANEWARRAY  = 197; { create multidimensional array               }
+  OP_IFNULL          = 198; { if ref == null                              }
+  OP_IFNONNULL       = 199; { if ref != null                              }
+  OP_GOTO_W          = 200; { branch always (32-bit offset)               }
+  OP_JSR_W           = 201; { jump subroutine (32-bit offset)             }
+
+  { Opcodes reserves }
+  OP_BREAKPOINT      = 202; { breakpoint (debug)                          }
+  OP_IMPDEP1         = 254; { implementation dependent                    }
+  OP_IMPDEP2         = 255; { implementation dependent                    }
+
 { ============================================================================ }
 { Types et structures                                                          }
 { ============================================================================ }
@@ -426,6 +674,20 @@ Type
   { --- TODO 06 : Tableau des methodes --- }
   TMethodArray = Array[0..MAX_METHODS-1] of TMethodInfo;
 
+  { --- TODO 07 : Structure TInstruction : instruction bytecode decodee --- }
+  TInstruction = Record
+    PC       : LongWord;   { Position dans le bytecode                      }
+    Opcode   : Byte;       { Code operation (0..255)                        }
+    Mnemonic : String;     { Mnemonique lisible (iload, invokevirtual, etc) }
+    Op1      : LongInt;    { Premier operande (index, offset, constante)    }
+    Op2      : LongInt;    { Second operande (pour invokeinterface, iinc)   }
+    Op3      : LongInt;    { Troisieme operande (reserve)                   }
+    Size     : Integer;    { Taille totale de l'instruction en octets       }
+    CpRef    : String;     { Reference CP resolue (nom de methode/champ)    }
+    LineNum  : Integer;    { Numero de ligne source associe                 }
+  End;
+  TInstrArray = Array[0..MAX_INSTRUCTIONS-1] of TInstruction;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -449,6 +711,8 @@ Var
   FieldCount     : Word;          { TODO 05 : Nombre de champs          }
   Methods        : TMethodArray;  { TODO 06 : Table des methodes        }
   MethodCount    : Word;          { TODO 06 : Nombre de methodes        }
+  Instructions   : ^TInstrArray;  { TODO 07 : Instructions decodees (pointeur) }
+  InstrCount     : Word;          { TODO 07 : Nombre d'instructions decodees   }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -1105,6 +1369,18 @@ Begin
   ClassName := CPGetClassName(CP^[Idx].Ref1);
   NTIdx := CP^[Idx].Ref2;
   CPGetNameAndType(NTIdx, Name, Desc);
+End;
+
+{ --- CPGetMemberRefStr : retourner une chaine formatee pour un membre --- }
+Function CPGetMemberRefStr(Idx: Word): String;
+Var
+  ClassName, Name, Desc: String;
+Begin
+  CPGetMemberRef(Idx, ClassName, Name, Desc);
+  If ClassName <> '' Then
+    CPGetMemberRefStr := ClassName + '.' + Name + ':' + Desc
+  Else
+    CPGetMemberRefStr := '';
 End;
 
 { --- CPGetString : resoudre CP_STRING -> valeur chaine --- }
@@ -2214,52 +2490,694 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 07 [A FAIRE] - Decodage du bytecode Java (opcodes JVM)                  }
+{ TODO 07 [IMPLEMENTE] - Decodage du bytecode Java (opcodes JVM)               }
 { ============================================================================ }
-{                                                                              }
-{  - Constantes d'opcodes JVM (selection) :                                     }
-{      OP_NOP=0, OP_ACONST_NULL=1, OP_ICONST_M1=2, OP_ICONST_0=3              }
-{      OP_ILOAD=21, OP_LLOAD=22, OP_FLOAD=23, OP_DLOAD=24, OP_ALOAD=25        }
-{      OP_ISTORE=54, OP_LSTORE=55, OP_FSTORE=56, OP_DSTORE=57, OP_ASTORE=58   }
-{      OP_IADD=96, OP_LADD=97, OP_FADD=98, OP_DADD=99                         }
-{      OP_IRETURN=172, OP_LRETURN=173, OP_FRETURN=174                          }
-{      OP_DRETURN=175, OP_ARETURN=176, OP_RETURN=177                           }
-{      OP_GETFIELD=180, OP_PUTFIELD=181, OP_GETSTATIC=178, OP_PUTSTATIC=179   }
-{      OP_INVOKEVIRTUAL=182, OP_INVOKESPECIAL=183, OP_INVOKESTATIC=184         }
-{      OP_INVOKEINTERFACE=185, OP_INVOKEDYNAMIC=186                            }
-{      OP_NEW=187, OP_NEWARRAY=188, OP_ANEWARRAY=189                           }
-{      OP_ATHROW=191, OP_CHECKCAST=192, OP_INSTANCEOF=193                      }
-{      OP_IFNULL=198, OP_IFNONNULL=199                                         }
-{      OP_IFEQ=153, OP_IFNE=154, OP_IFLT=155, OP_IFGE=156, OP_IFGT=157        }
-{      OP_IFLE=158, OP_IF_ICMPEQ=159 .. OP_IF_ACMPNE=166                      }
-{      OP_GOTO=167, OP_GOTO_W=200, OP_JSR=168, OP_RET=169                     }
-{      OP_TABLESWITCH=170, OP_LOOKUPSWITCH=171                                 }
-{      OP_WIDE=196, OP_MULTIANEWARRAY=197                                      }
-{                                                                              }
-{  - Structure TInstruction :                                                    }
-{      PC       : LongWord  (position dans le bytecode)                         }
-{      Opcode   : Byte      (code operation)                                    }
-{      Mnemonic : String    (mnemonique lisible)                                 }
-{      Op1      : LongInt   (premier operande)                                  }
-{      Op2      : LongInt   (second operande)                                   }
-{      Op3      : LongInt   (troisieme operande, pour invokeinterface)          }
-{      Size     : Integer   (taille totale de l'instruction en octets)          }
-{      CpRef    : String    (reference CP resolue, ex. nom de methode)          }
-{      LineNum  : Integer   (numero de ligne source)                            }
-{                                                                              }
-{  - Procedure DecodeInstructions(Method: TMethodInfo)                          }
-{      Parcourir le bytecode de la methode instruction par instruction          }
-{      Pour chaque opcode, determiner le nombre et la taille des operandes      }
-{      Gerer les cas speciaux : wide, tableswitch, lookupswitch, padding        }
-{      Resoudre les references CP via CPGetMemberRef / CPGetClassName            }
-{      Stocker la suite d'instructions decodees dans Method.Instructions[]      }
-{                                                                              }
-{  - Function GetInstrMnemonic(Op: Byte): String                                }
-{      Retourner le mnemonique textuel de l'opcode donne                        }
-{                                                                              }
-{  - Function GetInstrSize(Op: Byte; PC: LongWord; Code: Pointer): Integer      }
-{      Calculer la taille de l'instruction a la position PC                     }
-{      Tenir compte des alignements tableswitch/lookupswitch et du prefix wide  }
+
+{ --- TODO 07 : Allouer la memoire pour les instructions --- }
+Procedure AllocInstructions;
+Begin
+  If Instructions = Nil Then Begin
+    GetMem(Instructions, SizeOf(TInstrArray));
+  End;
+  InstrCount := 0;
+End;
+
+{ --- TODO 07 : Liberer la memoire des instructions --- }
+Procedure FreeInstructions;
+Begin
+  If Instructions <> Nil Then Begin
+    FreeMem(Instructions, SizeOf(TInstrArray));
+    Instructions := Nil;
+  End;
+  InstrCount := 0;
+End;
+
+{ --- TODO 07 : Retourner le mnemonique textuel d'un opcode --- }
+Function GetInstrMnemonic(Op: Byte): String;
+Begin
+  Case Op Of
+    { Constantes }
+    OP_NOP:           GetInstrMnemonic := 'nop';
+    OP_ACONST_NULL:   GetInstrMnemonic := 'aconst_null';
+    OP_ICONST_M1:     GetInstrMnemonic := 'iconst_m1';
+    OP_ICONST_0:      GetInstrMnemonic := 'iconst_0';
+    OP_ICONST_1:      GetInstrMnemonic := 'iconst_1';
+    OP_ICONST_2:      GetInstrMnemonic := 'iconst_2';
+    OP_ICONST_3:      GetInstrMnemonic := 'iconst_3';
+    OP_ICONST_4:      GetInstrMnemonic := 'iconst_4';
+    OP_ICONST_5:      GetInstrMnemonic := 'iconst_5';
+    OP_LCONST_0:      GetInstrMnemonic := 'lconst_0';
+    OP_LCONST_1:      GetInstrMnemonic := 'lconst_1';
+    OP_FCONST_0:      GetInstrMnemonic := 'fconst_0';
+    OP_FCONST_1:      GetInstrMnemonic := 'fconst_1';
+    OP_FCONST_2:      GetInstrMnemonic := 'fconst_2';
+    OP_DCONST_0:      GetInstrMnemonic := 'dconst_0';
+    OP_DCONST_1:      GetInstrMnemonic := 'dconst_1';
+    OP_BIPUSH:        GetInstrMnemonic := 'bipush';
+    OP_SIPUSH:        GetInstrMnemonic := 'sipush';
+    OP_LDC:           GetInstrMnemonic := 'ldc';
+    OP_LDC_W:         GetInstrMnemonic := 'ldc_w';
+    OP_LDC2_W:        GetInstrMnemonic := 'ldc2_w';
+    
+    { Chargement variables locales }
+    OP_ILOAD:         GetInstrMnemonic := 'iload';
+    OP_LLOAD:         GetInstrMnemonic := 'lload';
+    OP_FLOAD:         GetInstrMnemonic := 'fload';
+    OP_DLOAD:         GetInstrMnemonic := 'dload';
+    OP_ALOAD:         GetInstrMnemonic := 'aload';
+    OP_ILOAD_0:       GetInstrMnemonic := 'iload_0';
+    OP_ILOAD_1:       GetInstrMnemonic := 'iload_1';
+    OP_ILOAD_2:       GetInstrMnemonic := 'iload_2';
+    OP_ILOAD_3:       GetInstrMnemonic := 'iload_3';
+    OP_LLOAD_0:       GetInstrMnemonic := 'lload_0';
+    OP_LLOAD_1:       GetInstrMnemonic := 'lload_1';
+    OP_LLOAD_2:       GetInstrMnemonic := 'lload_2';
+    OP_LLOAD_3:       GetInstrMnemonic := 'lload_3';
+    OP_FLOAD_0:       GetInstrMnemonic := 'fload_0';
+    OP_FLOAD_1:       GetInstrMnemonic := 'fload_1';
+    OP_FLOAD_2:       GetInstrMnemonic := 'fload_2';
+    OP_FLOAD_3:       GetInstrMnemonic := 'fload_3';
+    OP_DLOAD_0:       GetInstrMnemonic := 'dload_0';
+    OP_DLOAD_1:       GetInstrMnemonic := 'dload_1';
+    OP_DLOAD_2:       GetInstrMnemonic := 'dload_2';
+    OP_DLOAD_3:       GetInstrMnemonic := 'dload_3';
+    OP_ALOAD_0:       GetInstrMnemonic := 'aload_0';
+    OP_ALOAD_1:       GetInstrMnemonic := 'aload_1';
+    OP_ALOAD_2:       GetInstrMnemonic := 'aload_2';
+    OP_ALOAD_3:       GetInstrMnemonic := 'aload_3';
+    
+    { Chargement depuis tableau }
+    OP_IALOAD:        GetInstrMnemonic := 'iaload';
+    OP_LALOAD:        GetInstrMnemonic := 'laload';
+    OP_FALOAD:        GetInstrMnemonic := 'faload';
+    OP_DALOAD:        GetInstrMnemonic := 'daload';
+    OP_AALOAD:        GetInstrMnemonic := 'aaload';
+    OP_BALOAD:        GetInstrMnemonic := 'baload';
+    OP_CALOAD:        GetInstrMnemonic := 'caload';
+    OP_SALOAD:        GetInstrMnemonic := 'saload';
+    
+    { Stockage variables locales }
+    OP_ISTORE:        GetInstrMnemonic := 'istore';
+    OP_LSTORE:        GetInstrMnemonic := 'lstore';
+    OP_FSTORE:        GetInstrMnemonic := 'fstore';
+    OP_DSTORE:        GetInstrMnemonic := 'dstore';
+    OP_ASTORE:        GetInstrMnemonic := 'astore';
+    OP_ISTORE_0:      GetInstrMnemonic := 'istore_0';
+    OP_ISTORE_1:      GetInstrMnemonic := 'istore_1';
+    OP_ISTORE_2:      GetInstrMnemonic := 'istore_2';
+    OP_ISTORE_3:      GetInstrMnemonic := 'istore_3';
+    OP_LSTORE_0:      GetInstrMnemonic := 'lstore_0';
+    OP_LSTORE_1:      GetInstrMnemonic := 'lstore_1';
+    OP_LSTORE_2:      GetInstrMnemonic := 'lstore_2';
+    OP_LSTORE_3:      GetInstrMnemonic := 'lstore_3';
+    OP_FSTORE_0:      GetInstrMnemonic := 'fstore_0';
+    OP_FSTORE_1:      GetInstrMnemonic := 'fstore_1';
+    OP_FSTORE_2:      GetInstrMnemonic := 'fstore_2';
+    OP_FSTORE_3:      GetInstrMnemonic := 'fstore_3';
+    OP_DSTORE_0:      GetInstrMnemonic := 'dstore_0';
+    OP_DSTORE_1:      GetInstrMnemonic := 'dstore_1';
+    OP_DSTORE_2:      GetInstrMnemonic := 'dstore_2';
+    OP_DSTORE_3:      GetInstrMnemonic := 'dstore_3';
+    OP_ASTORE_0:      GetInstrMnemonic := 'astore_0';
+    OP_ASTORE_1:      GetInstrMnemonic := 'astore_1';
+    OP_ASTORE_2:      GetInstrMnemonic := 'astore_2';
+    OP_ASTORE_3:      GetInstrMnemonic := 'astore_3';
+    
+    { Stockage dans tableau }
+    OP_IASTORE:       GetInstrMnemonic := 'iastore';
+    OP_LASTORE:       GetInstrMnemonic := 'lastore';
+    OP_FASTORE:       GetInstrMnemonic := 'fastore';
+    OP_DASTORE:       GetInstrMnemonic := 'dastore';
+    OP_AASTORE:       GetInstrMnemonic := 'aastore';
+    OP_BASTORE:       GetInstrMnemonic := 'bastore';
+    OP_CASTORE:       GetInstrMnemonic := 'castore';
+    OP_SASTORE:       GetInstrMnemonic := 'sastore';
+    
+    { Manipulation de pile }
+    OP_POP:           GetInstrMnemonic := 'pop';
+    OP_POP2:          GetInstrMnemonic := 'pop2';
+    OP_DUP:           GetInstrMnemonic := 'dup';
+    OP_DUP_X1:        GetInstrMnemonic := 'dup_x1';
+    OP_DUP_X2:        GetInstrMnemonic := 'dup_x2';
+    OP_DUP2:          GetInstrMnemonic := 'dup2';
+    OP_DUP2_X1:       GetInstrMnemonic := 'dup2_x1';
+    OP_DUP2_X2:       GetInstrMnemonic := 'dup2_x2';
+    OP_SWAP:          GetInstrMnemonic := 'swap';
+    
+    { Arithmetique }
+    OP_IADD:          GetInstrMnemonic := 'iadd';
+    OP_LADD:          GetInstrMnemonic := 'ladd';
+    OP_FADD:          GetInstrMnemonic := 'fadd';
+    OP_DADD:          GetInstrMnemonic := 'dadd';
+    OP_ISUB:          GetInstrMnemonic := 'isub';
+    OP_LSUB:          GetInstrMnemonic := 'lsub';
+    OP_FSUB:          GetInstrMnemonic := 'fsub';
+    OP_DSUB:          GetInstrMnemonic := 'dsub';
+    OP_IMUL:          GetInstrMnemonic := 'imul';
+    OP_LMUL:          GetInstrMnemonic := 'lmul';
+    OP_FMUL:          GetInstrMnemonic := 'fmul';
+    OP_DMUL:          GetInstrMnemonic := 'dmul';
+    OP_IDIV:          GetInstrMnemonic := 'idiv';
+    OP_LDIV:          GetInstrMnemonic := 'ldiv';
+    OP_FDIV:          GetInstrMnemonic := 'fdiv';
+    OP_DDIV:          GetInstrMnemonic := 'ddiv';
+    OP_IREM:          GetInstrMnemonic := 'irem';
+    OP_LREM:          GetInstrMnemonic := 'lrem';
+    OP_FREM:          GetInstrMnemonic := 'frem';
+    OP_DREM:          GetInstrMnemonic := 'drem';
+    OP_INEG:          GetInstrMnemonic := 'ineg';
+    OP_LNEG:          GetInstrMnemonic := 'lneg';
+    OP_FNEG:          GetInstrMnemonic := 'fneg';
+    OP_DNEG:          GetInstrMnemonic := 'dneg';
+    OP_ISHL:          GetInstrMnemonic := 'ishl';
+    OP_LSHL:          GetInstrMnemonic := 'lshl';
+    OP_ISHR:          GetInstrMnemonic := 'ishr';
+    OP_LSHR:          GetInstrMnemonic := 'lshr';
+    OP_IUSHR:         GetInstrMnemonic := 'iushr';
+    OP_LUSHR:         GetInstrMnemonic := 'lushr';
+    OP_IAND:          GetInstrMnemonic := 'iand';
+    OP_LAND:          GetInstrMnemonic := 'land';
+    OP_IOR:           GetInstrMnemonic := 'ior';
+    OP_LOR:           GetInstrMnemonic := 'lor';
+    OP_IXOR:          GetInstrMnemonic := 'ixor';
+    OP_LXOR:          GetInstrMnemonic := 'lxor';
+    OP_IINC:          GetInstrMnemonic := 'iinc';
+    
+    { Conversion }
+    OP_I2L:           GetInstrMnemonic := 'i2l';
+    OP_I2F:           GetInstrMnemonic := 'i2f';
+    OP_I2D:           GetInstrMnemonic := 'i2d';
+    OP_L2I:           GetInstrMnemonic := 'l2i';
+    OP_L2F:           GetInstrMnemonic := 'l2f';
+    OP_L2D:           GetInstrMnemonic := 'l2d';
+    OP_F2I:           GetInstrMnemonic := 'f2i';
+    OP_F2L:           GetInstrMnemonic := 'f2l';
+    OP_F2D:           GetInstrMnemonic := 'f2d';
+    OP_D2I:           GetInstrMnemonic := 'd2i';
+    OP_D2L:           GetInstrMnemonic := 'd2l';
+    OP_D2F:           GetInstrMnemonic := 'd2f';
+    OP_I2B:           GetInstrMnemonic := 'i2b';
+    OP_I2C:           GetInstrMnemonic := 'i2c';
+    OP_I2S:           GetInstrMnemonic := 'i2s';
+    
+    { Comparaison }
+    OP_LCMP:          GetInstrMnemonic := 'lcmp';
+    OP_FCMPL:         GetInstrMnemonic := 'fcmpl';
+    OP_FCMPG:         GetInstrMnemonic := 'fcmpg';
+    OP_DCMPL:         GetInstrMnemonic := 'dcmpl';
+    OP_DCMPG:         GetInstrMnemonic := 'dcmpg';
+    
+    { Branchement conditionnel }
+    OP_IFEQ:          GetInstrMnemonic := 'ifeq';
+    OP_IFNE:          GetInstrMnemonic := 'ifne';
+    OP_IFLT:          GetInstrMnemonic := 'iflt';
+    OP_IFGE:          GetInstrMnemonic := 'ifge';
+    OP_IFGT:          GetInstrMnemonic := 'ifgt';
+    OP_IFLE:          GetInstrMnemonic := 'ifle';
+    OP_IF_ICMPEQ:     GetInstrMnemonic := 'if_icmpeq';
+    OP_IF_ICMPNE:     GetInstrMnemonic := 'if_icmpne';
+    OP_IF_ICMPLT:     GetInstrMnemonic := 'if_icmplt';
+    OP_IF_ICMPGE:     GetInstrMnemonic := 'if_icmpge';
+    OP_IF_ICMPGT:     GetInstrMnemonic := 'if_icmpgt';
+    OP_IF_ICMPLE:     GetInstrMnemonic := 'if_icmple';
+    OP_IF_ACMPEQ:     GetInstrMnemonic := 'if_acmpeq';
+    OP_IF_ACMPNE:     GetInstrMnemonic := 'if_acmpne';
+    
+    { Branchement inconditionnel }
+    OP_GOTO:          GetInstrMnemonic := 'goto';
+    OP_JSR:           GetInstrMnemonic := 'jsr';
+    OP_RET:           GetInstrMnemonic := 'ret';
+    OP_TABLESWITCH:   GetInstrMnemonic := 'tableswitch';
+    OP_LOOKUPSWITCH:  GetInstrMnemonic := 'lookupswitch';
+    
+    { Retour }
+    OP_IRETURN:       GetInstrMnemonic := 'ireturn';
+    OP_LRETURN:       GetInstrMnemonic := 'lreturn';
+    OP_FRETURN:       GetInstrMnemonic := 'freturn';
+    OP_DRETURN:       GetInstrMnemonic := 'dreturn';
+    OP_ARETURN:       GetInstrMnemonic := 'areturn';
+    OP_RETURN:        GetInstrMnemonic := 'return';
+    
+    { Acces aux champs }
+    OP_GETSTATIC:     GetInstrMnemonic := 'getstatic';
+    OP_PUTSTATIC:     GetInstrMnemonic := 'putstatic';
+    OP_GETFIELD:      GetInstrMnemonic := 'getfield';
+    OP_PUTFIELD:      GetInstrMnemonic := 'putfield';
+    
+    { Invocation de methode }
+    OP_INVOKEVIRTUAL:   GetInstrMnemonic := 'invokevirtual';
+    OP_INVOKESPECIAL:   GetInstrMnemonic := 'invokespecial';
+    OP_INVOKESTATIC:    GetInstrMnemonic := 'invokestatic';
+    OP_INVOKEINTERFACE: GetInstrMnemonic := 'invokeinterface';
+    OP_INVOKEDYNAMIC:   GetInstrMnemonic := 'invokedynamic';
+    
+    { Creation d'objets }
+    OP_NEW:             GetInstrMnemonic := 'new';
+    OP_NEWARRAY:        GetInstrMnemonic := 'newarray';
+    OP_ANEWARRAY:       GetInstrMnemonic := 'anewarray';
+    OP_ARRAYLENGTH:     GetInstrMnemonic := 'arraylength';
+    
+    { Exception et types }
+    OP_ATHROW:          GetInstrMnemonic := 'athrow';
+    OP_CHECKCAST:       GetInstrMnemonic := 'checkcast';
+    OP_INSTANCEOF:      GetInstrMnemonic := 'instanceof';
+    
+    { Synchronisation }
+    OP_MONITORENTER:    GetInstrMnemonic := 'monitorenter';
+    OP_MONITOREXIT:     GetInstrMnemonic := 'monitorexit';
+    
+    { Speciaux }
+    OP_WIDE:            GetInstrMnemonic := 'wide';
+    OP_MULTIANEWARRAY:  GetInstrMnemonic := 'multianewarray';
+    OP_IFNULL:          GetInstrMnemonic := 'ifnull';
+    OP_IFNONNULL:       GetInstrMnemonic := 'ifnonnull';
+    OP_GOTO_W:          GetInstrMnemonic := 'goto_w';
+    OP_JSR_W:           GetInstrMnemonic := 'jsr_w';
+    
+    { Reserves }
+    OP_BREAKPOINT:      GetInstrMnemonic := 'breakpoint';
+    OP_IMPDEP1:         GetInstrMnemonic := 'impdep1';
+    OP_IMPDEP2:         GetInstrMnemonic := 'impdep2';
+    
+  Else
+    GetInstrMnemonic := 'unknown_' + IntToStr_(Op);
+  End;
+End;
+
+{ --- TODO 07 : Lire un octet du bytecode a une position donnee --- }
+Function GetCodeByte(Code: Pointer; Offset: LongWord): Byte;
+Type
+  TBytePtr = ^Byte;
+Var
+  P: TBytePtr;
+Begin
+  P := TBytePtr(PtrUInt(Code) + PtrUInt(Offset));
+  GetCodeByte := P^;
+End;
+
+{ --- TODO 07 : Lire un short signe du bytecode (big-endian) --- }
+Function GetCodeShort(Code: Pointer; Offset: LongWord): SmallInt;
+Var
+  Hi, Lo: Byte;
+Begin
+  Hi := GetCodeByte(Code, Offset);
+  Lo := GetCodeByte(Code, Offset + 1);
+  GetCodeShort := SmallInt(Word(Hi) shl 8 or Word(Lo));
+End;
+
+{ --- TODO 07 : Lire un word non signe du bytecode (big-endian) --- }
+Function GetCodeWord(Code: Pointer; Offset: LongWord): Word;
+Var
+  Hi, Lo: Byte;
+Begin
+  Hi := GetCodeByte(Code, Offset);
+  Lo := GetCodeByte(Code, Offset + 1);
+  GetCodeWord := Word(Hi) shl 8 or Word(Lo);
+End;
+
+{ --- TODO 07 : Lire un int signe du bytecode (big-endian) --- }
+Function GetCodeInt(Code: Pointer; Offset: LongWord): LongInt;
+Var
+  B1, B2, B3, B4: Byte;
+Begin
+  B1 := GetCodeByte(Code, Offset);
+  B2 := GetCodeByte(Code, Offset + 1);
+  B3 := GetCodeByte(Code, Offset + 2);
+  B4 := GetCodeByte(Code, Offset + 3);
+  GetCodeInt := LongInt(LongInt(B1) shl 24 or LongInt(B2) shl 16 or 
+                        LongInt(B3) shl 8 or LongInt(B4));
+End;
+
+{ --- TODO 07 : Calculer la taille d'une instruction --- }
+Function GetInstrSize(Op: Byte; PC: LongWord; Code: Pointer): Integer;
+Var
+  Padding, LowVal, HighVal, NPairs: LongInt;
+  SubOp: Byte;
+Begin
+  Case Op Of
+    { Instructions sans operande (1 octet) }
+    OP_NOP, OP_ACONST_NULL, 
+    OP_ICONST_M1, OP_ICONST_0, OP_ICONST_1, OP_ICONST_2, OP_ICONST_3, OP_ICONST_4, OP_ICONST_5,
+    OP_LCONST_0, OP_LCONST_1,
+    OP_FCONST_0, OP_FCONST_1, OP_FCONST_2,
+    OP_DCONST_0, OP_DCONST_1,
+    OP_ILOAD_0, OP_ILOAD_1, OP_ILOAD_2, OP_ILOAD_3,
+    OP_LLOAD_0, OP_LLOAD_1, OP_LLOAD_2, OP_LLOAD_3,
+    OP_FLOAD_0, OP_FLOAD_1, OP_FLOAD_2, OP_FLOAD_3,
+    OP_DLOAD_0, OP_DLOAD_1, OP_DLOAD_2, OP_DLOAD_3,
+    OP_ALOAD_0, OP_ALOAD_1, OP_ALOAD_2, OP_ALOAD_3,
+    OP_IALOAD, OP_LALOAD, OP_FALOAD, OP_DALOAD, OP_AALOAD, OP_BALOAD, OP_CALOAD, OP_SALOAD,
+    OP_ISTORE_0, OP_ISTORE_1, OP_ISTORE_2, OP_ISTORE_3,
+    OP_LSTORE_0, OP_LSTORE_1, OP_LSTORE_2, OP_LSTORE_3,
+    OP_FSTORE_0, OP_FSTORE_1, OP_FSTORE_2, OP_FSTORE_3,
+    OP_DSTORE_0, OP_DSTORE_1, OP_DSTORE_2, OP_DSTORE_3,
+    OP_ASTORE_0, OP_ASTORE_1, OP_ASTORE_2, OP_ASTORE_3,
+    OP_IASTORE, OP_LASTORE, OP_FASTORE, OP_DASTORE, OP_AASTORE, OP_BASTORE, OP_CASTORE, OP_SASTORE,
+    OP_POP, OP_POP2, OP_DUP, OP_DUP_X1, OP_DUP_X2, OP_DUP2, OP_DUP2_X1, OP_DUP2_X2, OP_SWAP,
+    OP_IADD, OP_LADD, OP_FADD, OP_DADD, OP_ISUB, OP_LSUB, OP_FSUB, OP_DSUB,
+    OP_IMUL, OP_LMUL, OP_FMUL, OP_DMUL, OP_IDIV, OP_LDIV, OP_FDIV, OP_DDIV,
+    OP_IREM, OP_LREM, OP_FREM, OP_DREM, OP_INEG, OP_LNEG, OP_FNEG, OP_DNEG,
+    OP_ISHL, OP_LSHL, OP_ISHR, OP_LSHR, OP_IUSHR, OP_LUSHR,
+    OP_IAND, OP_LAND, OP_IOR, OP_LOR, OP_IXOR, OP_LXOR,
+    OP_I2L, OP_I2F, OP_I2D, OP_L2I, OP_L2F, OP_L2D, OP_F2I, OP_F2L, OP_F2D,
+    OP_D2I, OP_D2L, OP_D2F, OP_I2B, OP_I2C, OP_I2S,
+    OP_LCMP, OP_FCMPL, OP_FCMPG, OP_DCMPL, OP_DCMPG,
+    OP_IRETURN, OP_LRETURN, OP_FRETURN, OP_DRETURN, OP_ARETURN, OP_RETURN,
+    OP_ARRAYLENGTH, OP_ATHROW, OP_MONITORENTER, OP_MONITOREXIT:
+      GetInstrSize := 1;
+    
+    { Instructions avec 1 octet d'operande (2 octets total) }
+    OP_BIPUSH, OP_LDC, 
+    OP_ILOAD, OP_LLOAD, OP_FLOAD, OP_DLOAD, OP_ALOAD,
+    OP_ISTORE, OP_LSTORE, OP_FSTORE, OP_DSTORE, OP_ASTORE,
+    OP_RET, OP_NEWARRAY:
+      GetInstrSize := 2;
+    
+    { Instructions avec 2 octets d'operande (3 octets total) }
+    OP_SIPUSH, OP_LDC_W, OP_LDC2_W, OP_IINC,
+    OP_IFEQ, OP_IFNE, OP_IFLT, OP_IFGE, OP_IFGT, OP_IFLE,
+    OP_IF_ICMPEQ, OP_IF_ICMPNE, OP_IF_ICMPLT, OP_IF_ICMPGE, OP_IF_ICMPGT, OP_IF_ICMPLE,
+    OP_IF_ACMPEQ, OP_IF_ACMPNE,
+    OP_GOTO, OP_JSR,
+    OP_GETSTATIC, OP_PUTSTATIC, OP_GETFIELD, OP_PUTFIELD,
+    OP_INVOKEVIRTUAL, OP_INVOKESPECIAL, OP_INVOKESTATIC,
+    OP_NEW, OP_ANEWARRAY, OP_CHECKCAST, OP_INSTANCEOF,
+    OP_IFNULL, OP_IFNONNULL:
+      GetInstrSize := 3;
+    
+    { Instructions avec 3+ octets d'operande }
+    OP_MULTIANEWARRAY:
+      GetInstrSize := 4;
+    
+    OP_INVOKEINTERFACE, OP_INVOKEDYNAMIC:
+      GetInstrSize := 5;
+    
+    OP_GOTO_W, OP_JSR_W:
+      GetInstrSize := 5;
+    
+    { wide : depend du sous-opcode }
+    OP_WIDE: Begin
+      SubOp := GetCodeByte(Code, PC + 1);
+      If SubOp = OP_IINC Then
+        GetInstrSize := 6  { wide iinc index const }
+      Else
+        GetInstrSize := 4; { wide load/store index }
+    End;
+    
+    { tableswitch : taille variable avec padding }
+    OP_TABLESWITCH: Begin
+      { Padding pour aligner sur 4 octets }
+      Padding := 4 - ((PC + 1) mod 4);
+      If Padding = 4 Then Padding := 0;
+      { Lire default (4), low (4), high (4) }
+      LowVal := GetCodeInt(Code, PC + 1 + Padding + 4);
+      HighVal := GetCodeInt(Code, PC + 1 + Padding + 8);
+      { Taille = 1 + padding + 12 + (high - low + 1) * 4 }
+      GetInstrSize := 1 + Padding + 12 + (HighVal - LowVal + 1) * 4;
+    End;
+    
+    { lookupswitch : taille variable avec padding }
+    OP_LOOKUPSWITCH: Begin
+      { Padding pour aligner sur 4 octets }
+      Padding := 4 - ((PC + 1) mod 4);
+      If Padding = 4 Then Padding := 0;
+      { Lire default (4), npairs (4) }
+      NPairs := GetCodeInt(Code, PC + 1 + Padding + 4);
+      { Taille = 1 + padding + 8 + npairs * 8 }
+      GetInstrSize := 1 + Padding + 8 + NPairs * 8;
+    End;
+    
+  Else
+    { Opcode inconnu : on suppose 1 octet }
+    GetInstrSize := 1;
+  End;
+End;
+
+{ --- TODO 07 : Decoder les instructions d'une methode --- }
+Procedure DecodeInstructions(Var M: TMethodInfo);
+Var
+  PC: LongWord;
+  Op, SubOp: Byte;
+  Size: Integer;
+  Idx: Word;
+  Instr: TInstruction;
+  Padding, LowVal, HighVal, NPairs, DefOff: LongInt;
+Begin
+  If Instructions = Nil Then AllocInstructions;
+  InstrCount := 0;
+  
+  If (M.Code = Nil) or (M.CodeLen = 0) Then Exit;
+  
+  PC := 0;
+  While PC < M.CodeLen Do Begin
+    If InstrCount >= MAX_INSTRUCTIONS Then Begin
+      Warning('Trop d''instructions dans la methode ' + M.Name);
+      Exit;
+    End;
+    
+    Op := GetCodeByte(M.Code, PC);
+    Size := GetInstrSize(Op, PC, M.Code);
+    
+    { Initialiser l'instruction }
+    Instr.PC := PC;
+    Instr.Opcode := Op;
+    Instr.Mnemonic := GetInstrMnemonic(Op);
+    Instr.Op1 := 0;
+    Instr.Op2 := 0;
+    Instr.Op3 := 0;
+    Instr.Size := Size;
+    Instr.CpRef := '';
+    Instr.LineNum := GetLineNumber(M, PC);
+    
+    { Decoder les operandes selon l'opcode }
+    Case Op Of
+      { Operande byte signe }
+      OP_BIPUSH:
+        Instr.Op1 := ShortInt(GetCodeByte(M.Code, PC + 1));
+      
+      { Operande short signe }
+      OP_SIPUSH:
+        Instr.Op1 := GetCodeShort(M.Code, PC + 1);
+      
+      { Index CP 8-bit }
+      OP_LDC:
+        Instr.Op1 := GetCodeByte(M.Code, PC + 1);
+      
+      { Index CP 16-bit }
+      OP_LDC_W, OP_LDC2_W, OP_NEW, OP_ANEWARRAY, OP_CHECKCAST, OP_INSTANCEOF: Begin
+        Idx := GetCodeWord(M.Code, PC + 1);
+        Instr.Op1 := Idx;
+        Instr.CpRef := CPGetClassName(Idx);
+      End;
+      
+      { Index variable locale 8-bit }
+      OP_ILOAD, OP_LLOAD, OP_FLOAD, OP_DLOAD, OP_ALOAD,
+      OP_ISTORE, OP_LSTORE, OP_FSTORE, OP_DSTORE, OP_ASTORE,
+      OP_RET:
+        Instr.Op1 := GetCodeByte(M.Code, PC + 1);
+      
+      { iinc : index + const }
+      OP_IINC: Begin
+        Instr.Op1 := GetCodeByte(M.Code, PC + 1);      { index }
+        Instr.Op2 := ShortInt(GetCodeByte(M.Code, PC + 2)); { const }
+      End;
+      
+      { newarray : type primitif }
+      OP_NEWARRAY:
+        Instr.Op1 := GetCodeByte(M.Code, PC + 1);
+      
+      { Branchement conditionnel/inconditionnel 16-bit }
+      OP_IFEQ, OP_IFNE, OP_IFLT, OP_IFGE, OP_IFGT, OP_IFLE,
+      OP_IF_ICMPEQ, OP_IF_ICMPNE, OP_IF_ICMPLT, OP_IF_ICMPGE, OP_IF_ICMPGT, OP_IF_ICMPLE,
+      OP_IF_ACMPEQ, OP_IF_ACMPNE, OP_IFNULL, OP_IFNONNULL,
+      OP_GOTO, OP_JSR:
+        Instr.Op1 := LongInt(PC) + GetCodeShort(M.Code, PC + 1);
+      
+      { Branchement 32-bit }
+      OP_GOTO_W, OP_JSR_W:
+        Instr.Op1 := LongInt(PC) + GetCodeInt(M.Code, PC + 1);
+      
+      { Acces aux champs }
+      OP_GETSTATIC, OP_PUTSTATIC, OP_GETFIELD, OP_PUTFIELD: Begin
+        Idx := GetCodeWord(M.Code, PC + 1);
+        Instr.Op1 := Idx;
+        Instr.CpRef := CPGetMemberRefStr(Idx);
+      End;
+      
+      { Invocation de methode }
+      OP_INVOKEVIRTUAL, OP_INVOKESPECIAL, OP_INVOKESTATIC: Begin
+        Idx := GetCodeWord(M.Code, PC + 1);
+        Instr.Op1 := Idx;
+        Instr.CpRef := CPGetMemberRefStr(Idx);
+      End;
+      
+      OP_INVOKEINTERFACE: Begin
+        Idx := GetCodeWord(M.Code, PC + 1);
+        Instr.Op1 := Idx;
+        Instr.Op2 := GetCodeByte(M.Code, PC + 3);  { count }
+        Instr.CpRef := CPGetMemberRefStr(Idx);
+      End;
+      
+      OP_INVOKEDYNAMIC: Begin
+        Idx := GetCodeWord(M.Code, PC + 1);
+        Instr.Op1 := Idx;
+        { 2 octets de zeros apres }
+      End;
+      
+      { multianewarray }
+      OP_MULTIANEWARRAY: Begin
+        Idx := GetCodeWord(M.Code, PC + 1);
+        Instr.Op1 := Idx;
+        Instr.Op2 := GetCodeByte(M.Code, PC + 3);  { dimensions }
+        Instr.CpRef := CPGetClassName(Idx);
+      End;
+      
+      { wide }
+      OP_WIDE: Begin
+        SubOp := GetCodeByte(M.Code, PC + 1);
+        Instr.Mnemonic := 'wide ' + GetInstrMnemonic(SubOp);
+        Instr.Op1 := GetCodeWord(M.Code, PC + 2);  { index }
+        If SubOp = OP_IINC Then
+          Instr.Op2 := GetCodeShort(M.Code, PC + 4); { const }
+      End;
+      
+      { tableswitch }
+      OP_TABLESWITCH: Begin
+        Padding := 4 - ((PC + 1) mod 4);
+        If Padding = 4 Then Padding := 0;
+        DefOff := GetCodeInt(M.Code, PC + 1 + Padding);
+        LowVal := GetCodeInt(M.Code, PC + 1 + Padding + 4);
+        HighVal := GetCodeInt(M.Code, PC + 1 + Padding + 8);
+        Instr.Op1 := LowVal;
+        Instr.Op2 := HighVal;
+        Instr.Op3 := LongInt(PC) + DefOff;
+      End;
+      
+      { lookupswitch }
+      OP_LOOKUPSWITCH: Begin
+        Padding := 4 - ((PC + 1) mod 4);
+        If Padding = 4 Then Padding := 0;
+        DefOff := GetCodeInt(M.Code, PC + 1 + Padding);
+        NPairs := GetCodeInt(M.Code, PC + 1 + Padding + 4);
+        Instr.Op1 := NPairs;
+        Instr.Op2 := LongInt(PC) + DefOff;
+      End;
+    End;
+    
+    { Ajouter l'instruction au tableau }
+    Instructions^[InstrCount] := Instr;
+    Inc(InstrCount);
+    
+    { Avancer au prochain opcode }
+    PC := PC + LongWord(Size);
+  End;
+End;
+
+{ --- TODO 07 : Afficher les instructions decodees --- }
+Procedure DumpInstructions;
+Var
+  I: Integer;
+  Instr: TInstruction;
+Begin
+  WriteLn('=== Instructions decodees (', InstrCount, ') ===');
+  For I := 0 to InstrCount - 1 Do Begin
+    Instr := Instructions^[I];
+    Write(HexWord(Word(Instr.PC)), ': ', Instr.Mnemonic);
+    
+    Case Instr.Opcode Of
+      OP_BIPUSH, OP_SIPUSH,
+      OP_ILOAD, OP_LLOAD, OP_FLOAD, OP_DLOAD, OP_ALOAD,
+      OP_ISTORE, OP_LSTORE, OP_FSTORE, OP_DSTORE, OP_ASTORE,
+      OP_RET, OP_NEWARRAY, OP_LDC:
+        Write(' ', Instr.Op1);
+      
+      OP_IINC:
+        Write(' ', Instr.Op1, ' ', Instr.Op2);
+      
+      OP_IFEQ, OP_IFNE, OP_IFLT, OP_IFGE, OP_IFGT, OP_IFLE,
+      OP_IF_ICMPEQ, OP_IF_ICMPNE, OP_IF_ICMPLT, OP_IF_ICMPGE, OP_IF_ICMPGT, OP_IF_ICMPLE,
+      OP_IF_ACMPEQ, OP_IF_ACMPNE, OP_IFNULL, OP_IFNONNULL,
+      OP_GOTO, OP_JSR, OP_GOTO_W, OP_JSR_W:
+        Write(' -> ', HexWord(Word(Instr.Op1)));
+      
+      OP_LDC_W, OP_LDC2_W, OP_NEW, OP_ANEWARRAY, OP_CHECKCAST, OP_INSTANCEOF,
+      OP_GETSTATIC, OP_PUTSTATIC, OP_GETFIELD, OP_PUTFIELD,
+      OP_INVOKEVIRTUAL, OP_INVOKESPECIAL, OP_INVOKESTATIC:
+        Write(' #', Instr.Op1, ' // ', Instr.CpRef);
+      
+      OP_INVOKEINTERFACE:
+        Write(' #', Instr.Op1, ' ', Instr.Op2, ' // ', Instr.CpRef);
+      
+      OP_MULTIANEWARRAY:
+        Write(' #', Instr.Op1, ' ', Instr.Op2, ' // ', Instr.CpRef);
+      
+      OP_TABLESWITCH:
+        Write(' low=', Instr.Op1, ' high=', Instr.Op2, ' default=', HexWord(Word(Instr.Op3)));
+      
+      OP_LOOKUPSWITCH:
+        Write(' npairs=', Instr.Op1, ' default=', HexWord(Word(Instr.Op2)));
+    End;
+    
+    If Instr.LineNum > 0 Then
+      Write(' ; line ', Instr.LineNum);
+    
+    WriteLn;
+  End;
+  WriteLn;
+End;
+
+{ --- TODO 07 : Verifier si un opcode est un test de null --- }
+Function IsNullCheckOpcode(Op: Byte): Boolean;
+Begin
+  IsNullCheckOpcode := (Op = OP_IFNULL) or (Op = OP_IFNONNULL) or
+                       (Op = OP_IF_ACMPEQ) or (Op = OP_IF_ACMPNE);
+End;
+
+{ --- TODO 07 : Verifier si un opcode est un branchement --- }
+Function IsBranchOpcode(Op: Byte): Boolean;
+Begin
+  IsBranchOpcode := (Op >= OP_IFEQ) and (Op <= OP_JSR) or
+                    (Op = OP_TABLESWITCH) or (Op = OP_LOOKUPSWITCH) or
+                    (Op >= OP_IFNULL) and (Op <= OP_JSR_W);
+End;
+
+{ --- TODO 07 : Verifier si un opcode termine un bloc de base --- }
+Function IsBlockTerminator(Op: Byte): Boolean;
+Begin
+  IsBlockTerminator := (Op >= OP_IRETURN) and (Op <= OP_RETURN) or
+                       (Op = OP_ATHROW) or (Op = OP_GOTO) or (Op = OP_GOTO_W) or
+                       (Op = OP_TABLESWITCH) or (Op = OP_LOOKUPSWITCH) or
+                       (Op = OP_RET);
+End;
+
+{ --- TODO 07 : Verifier si un opcode peut dereference null --- }
+Function CanDereferenceNull(Op: Byte): Boolean;
+Begin
+  CanDereferenceNull := (Op = OP_GETFIELD) or (Op = OP_PUTFIELD) or
+                        (Op = OP_INVOKEVIRTUAL) or (Op = OP_INVOKESPECIAL) or
+                        (Op = OP_INVOKEINTERFACE) or
+                        (Op = OP_ARRAYLENGTH) or (Op = OP_ATHROW) or
+                        (Op = OP_MONITORENTER) or (Op = OP_MONITOREXIT) or
+                        (Op >= OP_IALOAD) and (Op <= OP_SALOAD) or
+                        (Op >= OP_IASTORE) and (Op <= OP_SASTORE);
+End;
+
+{ --- TODO 07 : Obtenir le nom du type primitif pour newarray --- }
+Function GetArrayTypeName(AType: Byte): String;
+Begin
+  Case AType Of
+    4:  GetArrayTypeName := 'boolean';
+    5:  GetArrayTypeName := 'char';
+    6:  GetArrayTypeName := 'float';
+    7:  GetArrayTypeName := 'double';
+    8:  GetArrayTypeName := 'byte';
+    9:  GetArrayTypeName := 'short';
+    10: GetArrayTypeName := 'int';
+    11: GetArrayTypeName := 'long';
+  Else
+    GetArrayTypeName := 'unknown[' + IntToStr_(AType) + ']';
+  End;
+End;
 
 { ============================================================================ }
 { TODO 08 [A FAIRE] - Construction du graphe de flux de controle (CFG)         }

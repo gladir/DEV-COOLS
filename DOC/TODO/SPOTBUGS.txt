@@ -128,7 +128,7 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
             DumpMethods : afficher les informations de debug des methodes
             FreeMethods : liberer la memoire allouee pour le bytecode
 
-  TODO 07 - DECODAGE DU BYTECODE JAVA (OPCODES JVM) [A FAIRE]
+  TODO 07 - DECODAGE DU BYTECODE JAVA (OPCODES JVM) [IMPLEMENTE]
             Constantes d'opcodes JVM principaux :
               OP_NOP=0, OP_ACONST_NULL=1, OP_ICONST_M1..OP_ICONST_5=2..8,
               OP_ILOAD=21..OP_ALOAD=25, OP_ISTORE=54..OP_ASTORE=58,
@@ -141,12 +141,19 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               OP_TABLESWITCH=170, OP_LOOKUPSWITCH=171, OP_WIDE=196
             Structure TInstruction (PC, Opcode, Mnemonic, Op1, Op2, Op3,
               Size, CpRef, LineNum)
+            TInstrArray, Instructions/InstrCount vars
+            AllocInstructions, FreeInstructions : gestion memoire
             DecodeInstructions(Method) : parcourir bytecode instruction par
               instruction, gerer wide/tableswitch/lookupswitch/padding,
               resoudre les references CP
             GetInstrMnemonic(Op) : retourner mnemonique textuel de l'opcode
             GetInstrSize(Op, PC, Code) : calculer taille de l'instruction,
               tenir compte alignements tableswitch/lookupswitch et wide
+            GetCodeByte, GetCodeShort, GetCodeWord, GetCodeInt : lecture bytecode
+            DumpInstructions : afficher les instructions decodees
+            IsNullCheckOpcode, IsBranchOpcode, IsBlockTerminator : predicats
+            CanDereferenceNull : detection dereferences null potentiels
+            GetArrayTypeName : nom du type primitif pour newarray
 
   TODO 08 - CONSTRUCTION DU GRAPHE DE FLUX DE CONTROLE (CFG) [A FAIRE]
             Structure TCFGNode (ID, StartPC, EndPC, InstStart, InstEnd,
