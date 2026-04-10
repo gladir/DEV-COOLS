@@ -2,7 +2,7 @@
   @created: 2026
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Agent conversationnel generateur de code Turbo Pascal
 }
 
@@ -1697,7 +1697,8 @@ End;
 
 Procedure ShowVersion;
 Begin
-  WriteLn('PASCHAT - Agent conversationnel generateur de code Turbo Pascal');
+  WriteLn('PASCHAT - Cette commande permet de lancer l''agent ',
+          'conversationnel generateur de code Turbo Pascal');
   WriteLn('Version ', PASCHAT_VERSION, ' (', PASCHAT_DATE, ')');
   WriteLn('(c) 2026 Gladir.com - Licence MIT');
 End;
@@ -4154,7 +4155,7 @@ Begin
 End;
 
 { Generer la liste des parametres (chaine) }
-Function GenParamListStr(Names, Types: Array of String; 
+Function GenParamListStr(Names, Types: Array of String;
                          VarFlags, ConstFlags: Array of Boolean;
                          Count: Integer): String;
 Var
@@ -4259,7 +4260,7 @@ Begin
 End;
 
 { Generer une procedure avec variables locales }
-Procedure GenProcedureWithLocals(ProcName, ParamList: String; 
+Procedure GenProcedureWithLocals(ProcName, ParamList: String;
                                   LocalNames, LocalTypes: Array of String;
                                   LocalCount: Integer;
                                   BodyLine: String);
@@ -5632,37 +5633,37 @@ End;
 Procedure LoadBuiltinTemplates;
 Begin
   If Not TplInitialized Then InitTplState;
-  
+
   { Templates de programmes }
   CreateProgramTemplate('program_simple', 'Programme Pascal simple');
   CreateCrtProgramTemplate('program_crt', 'Programme avec unite Crt');
-  
+
   { Templates d''unites }
   CreateUnitTemplate('unit_simple', 'Unite Pascal simple');
-  
+
   { Templates de procedures/fonctions }
   CreateProcedureTemplate('procedure_simple', 'Procedure simple');
   CreateFunctionTemplate('function_simple', 'Fonction simple');
-  
+
   { Templates de boucles }
   CreateForLoopTemplate('for_loop', 'Boucle FOR..TO..DO');
   CreateWhileLoopTemplate('while_loop', 'Boucle WHILE..DO');
-  
+
   { Templates de conditions }
   CreateIfThenElseTemplate('if_then_else', 'Structure IF..THEN..ELSE');
-  
+
   { Templates d''entrees/sorties }
   CreateInputTemplate('input_simple', 'Saisie utilisateur simple');
   CreateMenuTemplate('menu_simple', 'Menu interactif simple');
-  
+
   { Templates de fichiers }
   CreateFileReadTemplate('file_read', 'Lecture de fichier texte');
   CreateFileWriteTemplate('file_write', 'Ecriture de fichier texte');
-  
+
   { Templates de structures de donnees }
   CreateArrayTemplate('array_simple', 'Declaration de tableau');
   CreateRecordTemplate('record_simple', 'Declaration d''enregistrement');
-  
+
   Inc(TplStateCount);
 End;
 
@@ -5685,7 +5686,7 @@ End;
 
 { Remplacer les parametres dans une ligne de template }
 Function ReplaceTemplateParams(Line: String; Params: Array of String;
-                               ParamNames: Array of String; 
+                               ParamNames: Array of String;
                                ParamCount: Integer): String;
 Var
   I: Integer;
@@ -5714,17 +5715,17 @@ Begin
     Inc(TplErrorCount);
     Exit;
   End;
-  
+
   Inc(TplApplyCount);
   T := Templates[Index];
-  
+
   { Copier les parametres dans un tableau local }
   For I := 1 to T.ParamCount do
     If I <= High(Params) + 1 Then
       ParamArr[I] := Params[I - 1]
     Else
       ParamArr[I] := '';
-  
+
   { Generer le code avec les parametres remplaces }
   InitGeneratedCode;
   For I := 1 to T.LineCount do Begin
@@ -5767,7 +5768,7 @@ Var
   T: TTemplate;
 Begin
   If (Index < 1) or (Index > TemplateCount) Then Exit;
-  
+
   T := Templates[Index];
   WriteLn('=== Template: ', T.Name, ' ===');
   WriteLn('Description: ', T.Description);
@@ -7918,7 +7919,7 @@ Begin
     SuggestRelated := 'Sujets connexes: INTERFACE, IMPLEMENTATION, USES, initialization'
   Else If (Pos('PROCEDURE', UT) > 0) or (Pos('FUNCTION', UT) > 0) Then
     SuggestRelated := 'Sujets connexes: parametres, VAR, CONST, variables locales, recursivite'
-  Else If (Pos('IF', UT) > 0) or (Pos('BOUCLE', UT) > 0) or 
+  Else If (Pos('IF', UT) > 0) or (Pos('BOUCLE', UT) > 0) or
           (Pos('FOR', UT) > 0) or (Pos('WHILE', UT) > 0) Then
     SuggestRelated := 'Sujets connexes: IF, FOR, WHILE, REPEAT, CASE, Break, Continue'
   Else If (Pos('ARRAY', UT) > 0) or (Pos('TABLEAU', UT) > 0) Then
@@ -8662,7 +8663,7 @@ Var
 Begin
   T := UpCaseStr(Trim(Topic));
   WriteLn;
-  
+
   If (Pos('IF', T) > 0) or (Pos('THEN', T) > 0) or (Pos('ELSE', T) > 0) Then Begin
     WriteLn('=== SYNTAXE IF..THEN..ELSE ===');
     WriteLn;
@@ -8846,7 +8847,7 @@ Begin
     WriteLn('  /syntax unit      - Unites');
     WriteLn('  /syntax program   - Structure de programme');
   End;
-  
+
   WriteLn;
   Inc(HlpSyntaxCount);
   Inc(HlpTotalCount);
@@ -10226,18 +10227,18 @@ End;
 Procedure SetMode(Mode: TInteractiveMode);
 Begin
   If CurrentMode = Mode Then Exit;
-  
+
   CurrentMode := Mode;
   Inc(ImdModeChanges);
   Inc(ImdTotalCount);
-  
+
   Case Mode of
     IM_NORMAL: Inc(ImdNormalCount);
     IM_EDIT:   Inc(ImdEditCount);
     IM_REVIEW: Inc(ImdReviewCount);
     IM_LEARN:  Inc(ImdLearnCount);
   End;
-  
+
   If Options.Verbose Then
     WriteLn('Mode change vers: ', ImdTypeName(ImdModeToType(Mode)));
 End;
@@ -10256,7 +10257,7 @@ Procedure StoreLastCode(Code: TCodeLine);
 Begin
   If ImdLastCodeCount >= IMD_MAX_CODE_LINES Then Begin
     { Deplacer tout vers le haut }
-    Move(ImdLastCode[2], ImdLastCode[1], 
+    Move(ImdLastCode[2], ImdLastCode[1],
          (IMD_MAX_CODE_LINES - 1) * SizeOf(TCodeLine));
     ImdLastCode[IMD_MAX_CODE_LINES] := Code;
   End Else Begin
@@ -10285,34 +10286,34 @@ Begin
     WriteLn('Aucun code a editer.');
     Exit;
   End;
-  
+
   OldMode := CurrentMode;
   SetMode(IM_EDIT);
-  
+
   WriteLn('=== Mode Edition ===');
   WriteLn('Code actuel:');
   For I := 1 to ImdLastCodeCount do
     WriteLn(I:3, ': ', ImdLastCode[I]);
   WriteLn('---');
   WriteLn('Entrez le numero de ligne a modifier (0 pour quitter):');
-  
+
   Repeat
     Write('Ligne> ');
     ReadLn(Input);
     If Input = '0' Then Break;
-    
+
     Val(Input, LineNum, I);
     If (I <> 0) or (LineNum < 1) or (LineNum > ImdLastCodeCount) Then Begin
       WriteLn('Numero de ligne invalide.');
       Continue;
     End;
-    
+
     WriteLn('Ancienne: ', ImdLastCode[LineNum]);
     Write('Nouvelle> ');
     ReadLn(ImdLastCode[LineNum]);
     Inc(ImdEditCount);
   Until False;
-  
+
   WriteLn('=== Fin Edition ===');
   SetMode(OldMode);
 End;
@@ -10327,17 +10328,17 @@ Begin
     WriteLn('Aucun code a examiner.');
     Exit;
   End;
-  
+
   OldMode := CurrentMode;
   SetMode(IM_REVIEW);
-  
+
   If (StartLine < 1) or (StartLine > ImdLastCodeCount) Then
     StartLine := 1;
   ImdReviewLine := StartLine;
-  
+
   WriteLn('=== Mode Revue ===');
   WriteLn('Commandes: [n]ext, [p]rev, [g]oto N, [q]uit');
-  
+
   Repeat
     WriteLn;
     WriteLn('Ligne ', ImdReviewLine, '/', ImdLastCodeCount, ':');
@@ -10345,7 +10346,7 @@ Begin
     Write('Review> ');
     ReadLn(Input);
     Input := UpCaseStr(Input);
-    
+
     If Input = 'Q' Then Break;
     If Input = 'N' Then Begin
       If ImdReviewLine < ImdLastCodeCount Then
@@ -10370,7 +10371,7 @@ Begin
     End;
     Inc(ImdReviewCount);
   Until False;
-  
+
   WriteLn('=== Fin Revue ===');
   SetMode(OldMode);
 End;
@@ -10382,24 +10383,24 @@ Var
 Begin
   OldMode := CurrentMode;
   SetMode(IM_LEARN);
-  
+
   WriteLn('=== Mode Apprentissage ===');
   WriteLn('Contexte: ', Input);
   WriteLn('Enseignez-moi comment repondre a cette requete.');
   WriteLn('Tapez votre reponse (ligne vide pour terminer):');
-  
+
   ImdLearnBuffer := '';
   Repeat
     Write('Learn> ');
     ReadLn(LearnInput);
     If LearnInput = '' Then Break;
-    
+
     If ImdLearnBuffer <> '' Then
       ImdLearnBuffer := ImdLearnBuffer + #13#10;
     ImdLearnBuffer := ImdLearnBuffer + LearnInput;
     Inc(ImdLearnCount);
   Until False;
-  
+
   If ImdLearnBuffer <> '' Then Begin
     WriteLn('Merci! J''ai appris:');
     WriteLn('"', ImdLearnBuffer, '"');
@@ -10408,7 +10409,7 @@ Begin
   End Else Begin
     WriteLn('Aucun apprentissage enregistre.');
   End;
-  
+
   WriteLn('=== Fin Apprentissage ===');
   SetMode(OldMode);
 End;
@@ -10429,7 +10430,7 @@ Var
   UCmd: String;
 Begin
   UCmd := UpCaseStr(Cmd);
-  
+
   If UCmd = '/NORMAL' Then Begin
     SetMode(IM_NORMAL);
     WriteLn('Mode normal active.');
@@ -10598,13 +10599,13 @@ Begin
   ExportSession := False;
   If FileName = '' Then
     FileName := 'session' + SES_FILE_EXT;
-  
+
   {$I-}
   Assign(F, FileName);
   Rewrite(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   WriteLn(F, '{ PASCHAT Session Export }');
   WriteLn(F, '{ Version: ', PASCHAT_VERSION, ' }');
   WriteLn(F, '{ Date: ', PASCHAT_DATE, ' }');
@@ -10627,7 +10628,7 @@ Begin
   WriteLn(F);
   WriteLn(F, '{ === Fin de session === }');
   Close(F);
-  
+
   Inc(SesExportCount);
   Inc(SesFullCount);
   Inc(SesTotalCount);
@@ -10643,20 +10644,20 @@ Begin
   ExportCode := False;
   If FileName = '' Then
     FileName := 'code' + SES_CODE_EXT;
-  
+
   {$I-}
   Assign(F, FileName);
   Rewrite(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   WriteLn(F, '{ Code genere par PASCHAT ', PASCHAT_VERSION, ' }');
   WriteLn(F);
   For I := 1 to GeneratedCount do Begin
     WriteLn(F, GeneratedCode[I]);
   End;
   Close(F);
-  
+
   Inc(SesCodeCount);
   Inc(SesTotalCount);
   SesLastExport := FileName;
@@ -10673,22 +10674,22 @@ Var
 Begin
   ImportSession := False;
   If FileName = '' Then Exit;
-  
+
   {$I-}
   Assign(F, FileName);
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   InHistory := False;
   InCode := False;
   UserLine := '';
   BotLine := '';
-  
+
   While Not Eof(F) do Begin
     ReadLn(F, Line);
     Line := Trim(Line);
-    
+
     If Pos('=== Historique ===', Line) > 0 Then Begin
       InHistory := True;
       InCode := False;
@@ -10722,7 +10723,7 @@ Begin
     End;
   End;
   Close(F);
-  
+
   Inc(SesImportCount);
   Inc(SesTotalCount);
   SesLastImport := FileName;
@@ -10749,7 +10750,7 @@ Begin
   WriteLn('  Erreurs validees : ', ValTotalCount);
   WriteLn;
   WriteLn('=========================================');
-  
+
   Inc(SesStatsCount);
   Inc(SesTotalCount);
 End;
@@ -10762,10 +10763,10 @@ Begin
   SesCodeLines := 0;
   SesLastExport := '';
   SesLastImport := '';
-  
+
   Inc(SesClearCount);
   Inc(SesTotalCount);
-  
+
   WriteLn('Session reinitialisee.');
 End;
 
@@ -10959,7 +10960,12 @@ End;
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
-Begin
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowHelp;
+  Halt(0);
+ End;
   { Initialiser l'etat des options (TODO 01) }
   OptInitialized := False;
   InitOptState;
@@ -11101,9 +11107,7 @@ Begin
     DumpImdState;
     DumpSesState;
   End;
-
   Run;
-
   { Message de fin pour les TODOs }
   { TODOs 01-25 : Statut actuel }
   { 01 [IMPLEMENTE] - Infrastructure et options }
@@ -11131,4 +11135,4 @@ Begin
   { 23 [IMPLEMENTE] - Mode interactif ameliore }
   { 24 [IMPLEMENTE] - Export session }
   { 25 [IMPLEMENTE] - Programme principal }
-End.
+END.
