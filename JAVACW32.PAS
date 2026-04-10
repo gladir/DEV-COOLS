@@ -1,0 +1,691 @@
+{ @author: Sylvain Maltais (support@gladir.com)
+  @created: 2026
+  @version: 0.1
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Free Pascal 3.2)
+  @description: Compilateur Java vers assembleur 80386 pour Windows 32 bits
+  @license: MIT
+}
+
+(* ============================================================
+  JAVACW32.PAS - Compilateur Java vers assembleur
+  80386 pour Windows 32 bits
+  Free Pascal (-Mtp)
+  Cible : MASM .386 / .MODEL FLAT, PE Win32
+
+  Par defaut produit un fichier .EXE (PE Windows 32 bits).
+  Avec le parametre -obj, produit uniquement un fichier .OBJ (COFF).
+  Avec le parametre -asm, produit egalement un fichier .ASM lisible.
+  Supporte toutes les exemples SAMPLES\JAVA\*
+
+  Voir DOC/TODO/JAVACW32.txt pour la feuille de route complete.
+
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [A FAIRE]
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
+              EmitExe, EmitObj, EmitAsm)
+            ParseArgs : analyser argv (source.java [-o sortie] [-v]
+              [-d] [-w] [-obj] [-asm] [-h])
+            Par defaut : produire un .EXE Windows 32 bits (PE)
+            -obj : produire uniquement un .OBJ (format COFF 32 bits)
+            -asm : produire egalement un listing assembleur .ASM lisible
+            -o nom : specifier le nom du fichier de sortie
+            FatalError, CompileError, WarnMsg
+            EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Detecter l extension .java du fichier source
+            Version, Date, aide en ligne (option -h)
+            ShowBanner, ShowUsage, ShowStats
+            Constantes PE/COFF : PE_DOS_MAGIC ($5A4D), PE_PE_SIG,
+              PE_MACHINE_I386, PE_OPT_SIZE, PE_MAGIC_32,
+              PE_IMG_BASE ($00400000), PE_SEC_ALIGN (4096),
+              PE_FILE_ALIGN (512), PE_SUBSYS_CUI (console)
+            Constantes binaires : MAX_BIN_CODE (65536),
+              MAX_BIN_DATA (65536), MAX_BIN_LBL (4096),
+              MAX_BIN_FIX (8192)
+            Limites internes (32 bits) : MAX_SYM=4096, MAX_LABEL=4096,
+              MAX_SCOPE=64, MAX_DATA=512, MAX_PARAM=64,
+              MAX_LOCAL=128, MAX_LOOP_NEST=32, MAX_TRY_NEST=16,
+              MAX_ERRORS=30, MAX_STR=255, MAX_CLASS=64,
+              MAX_METHOD=256, MAX_FIELD=256, MAX_IMPORT=32
+            Prefixes de nommage ASM : _JV_ (variable globale/champ),
+              _JF_ (methode statique), _JK_ (constante chaine),
+              _JRT_ (routine runtime), _JL_ (label interne),
+              _JC_ (classe/vtable), _JM_ (methode d instance)
+            Utilitaires : ItoS, UpCaseStr, StrLowerCase, BaseName,
+              ReplaceExt, AsmIdent
+            10 fonctions accesseurs
+
+  TODO 02 - TOKENISEUR JAVA (LEXER) [A FAIRE]
+            Procedure LexInit : ouvrir le fichier source, initialiser
+              l etat du lexeur (ligne, colonne, caractere courant)
+            Procedure LexClose : fermer le fichier source
+            Procedure LexNextChar / LexPeekChar
+            Format libre avec accolades (pas d indentation significative)
+            Commentaires Java : // jusqu a fin de ligne,
+              /* ... */ bloc multi-lignes,
+              /** ... */ commentaires Javadoc (ignores)
+            Procedure LexNextToken : reconnaitre les tokens Java :
+              - Identificateurs : lettres, chiffres, souligne (_), dollar ($)
+                Java est sensible a la casse
+              - Litteraux entiers : 123, 0xFF, 0b1010, 1_000, suffixe L
+              - Litteraux flottants : 1.5, 3.14, suffixes f/d (reconnus,
+                tronques en entiers pour cette version)
+              - Litteraux chaines : "texte" avec echappement
+                Sequences d echappement : \n \t \r \\ \" \' \0 \xNN \uNNNN
+              - Litteraux caractere : 'A' (un seul caractere)
+              - Operateurs : + - * / % = == != < <= > >=
+                & | ^ ~ << >> >>> += -= *= /= %= &= |= ^= <<= >>= >>>=
+                ++ -- && || ! ? :
+              - Separateurs : ( ) [ ] { } , ; . @
+            Types de tokens (TK_EOF, TK_INTEGER, TK_FLOAT, TK_STRING,
+              TK_CHAR, TK_IDENT, TK_KEYWORD, TK_OP, TK_PUNCT,
+              TK_LBRACE, TK_RBRACE, TK_LBRACKET, TK_RBRACKET,
+              TK_LPAREN, TK_RPAREN, TK_SEMICOLON, TK_DOT, TK_COMMA,
+              TK_COLON, TK_QUESTION, TK_AT)
+            Stocker dans CurTokKind / CurTokStr / CurTokInt
+            LexScanIdent, LexScanNumber, LexScanString, LexScanChar
+            LexScanEscChar
+            Gestion des lignes et numeros de ligne pour diagnostics
+            ParserAdvance : lire token suivant avec PrintToken si -d
+            10 fonctions accesseurs
+
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES JAVA [A FAIRE]
+            Tous les mots reserves Java utilises dans ce sous-ensemble :
+              Types primitifs : int, boolean, char, void, long, float,
+                double, byte, short
+              Controle : if, else, while, for, do, switch, case,
+                default, break, continue, return
+              Classes : class, extends, implements, new, this, super,
+                instanceof
+              Modificateurs : public, private, protected, static,
+                final, abstract
+              Exceptions : try, catch, finally, throw, throws
+              Logiques : true, false, null
+              Importation : import, package
+            LookupKeyword : retourner KW_xxx ou TK_IDENT
+            Constantes KW_INT..KW_PACKAGE pour chaque mot-cle
+            Types primitifs reconnus : int (32 bits), boolean (32 bits),
+              char (32 bits elargi), void (pas de retour),
+              String (pointeur chaine)
+            10 fonctions accesseurs
+
+  TODO 04 - TABLE DES SYMBOLES JAVA (32 BITS) [A FAIRE]
+            Enregistrement TSymRec :
+              Name      : nom Java (x, myMethod, MyClass)
+              AsmName   : label ASM correspondant (_JV_x, _JF_MyClass_myMethod)
+              Kind      : type de symbole (SK_LOCAL, SK_PARAM, SK_FIELD,
+                SK_METHOD, SK_CLASS, SK_CONST, SK_STATIC)
+              TypeIdx   : indice dans la table des types
+              Offset    : offset dans le segment de donnees ou la pile
+              ScopeLevel: niveau de portee imbrique
+              IsStatic  : True si declare avec modificateur static
+              IsFinal   : True si declare avec modificateur final
+              IsPublic  : True si declare public
+              DeclLine  : numero de ligne de declaration
+              ClassName : nom de la classe proprietaire
+            Procedures sur la table :
+              SymInit, SymAdd, SymFind, SymFindInScope,
+              SymCount, SymDump, SymNameClean, SymMangle
+            Gestion de la portee : globale, classe, methode, bloc
+            CurScope : compteur de portee imbriquee (max MAX_SCOPE)
+            ScopeStack / ScopeTop : pile pour SymEnterScope / SymLeaveScope
+            Resolution des noms : local -> classe -> imports
+            Mangling des noms de methodes :
+              _JF_ClassName_methodName
+            10 fonctions accesseurs
+
+  TODO 05 - SYSTEME DE TYPES JAVA [A FAIRE]
+            TTypeKind : TYK_INT (32 bits signe), TYK_BOOLEAN (32 bits),
+              TYK_CHAR (32 bits elargi), TYK_VOID (pas de valeur),
+              TYK_STRING (ptr chaine), TYK_ARRAY (ptr tableau),
+              TYK_OBJECT (ptr instance de classe),
+              TYK_CLASS (descripteur de classe), TYK_NULL (reference nulle)
+            TTypeRec : Name, Kind, Size, IsArray, ElemType
+            TypeTab[MAX_TYPE], TypeCount
+            Indices de types primitifs :
+              TY_IDX_INT=0, TY_IDX_BOOLEAN=1, TY_IDX_CHAR=2,
+              TY_IDX_VOID=3, TY_IDX_STRING=4, TY_IDX_NULL=5,
+              TY_IDX_INTARR=6, TY_IDX_CHARARR=7, TY_IDX_STRARR=8,
+              TY_IDX_BOOLARR=9
+            TypeInit : enregistrer les types primitifs Java
+            TypeKindOf(idx) : retourner le TTypeKind pour un indice
+            TypeSizeOf(idx) : INT=4, BOOLEAN=4, CHAR=4, STRING=4(ptr),
+              ARRAY=4(ptr), OBJECT=4(ptr), VOID=0
+            TypeFindByName(name) : rechercher un type par nom -> index
+            TypeKindStr(kind) : nom textuel d un TTypeKind
+            Verification de types statique a la compilation :
+              compatibilite affectation, compatibilite operateurs
+            instanceof : verification dynamique -> EAX=0|1
+            Tableaux : int[], char[], boolean[], String[]
+            10 fonctions accesseurs
+
+  TODO 06 - LITTERAUX ET CONSTANTES [A FAIRE]
+            Entiers decimaux : 0..2147483647 (32 bits signe)
+            Entiers hexadecimaux : 0xFF, binaires : 0b1010
+            Separateur de chiffres : 1_000_000 (ignore le souligne)
+            Flottants : reconnus par le lexeur, tronques en entiers
+            Chaines : "abc" -> pointeur vers donnees DATA
+              Sequences d echappement : \n \t \r \\ \" \' \0 \xNN \uNNNN
+            Caracteres : 'A' -> valeur entiere du caractere
+            null : constante reference nulle -> EAX=0
+            true : constante booleenne -> EAX=1
+            false : constante booleenne -> EAX=0
+            Constantes final : int final N = 42; -> valeur immediate
+            TExprKind : EK_NONE, EK_IMM, EK_EAX, EK_MEM
+            TExprVal : Kind, ImmVal, TypeIdx, Offset, SymIdx
+            TDataKind : DK_DWORD, DK_BYTE, DK_STR, DK_ARRAY_BLK
+            TDataRec : LblName, Kind, IntVal, StrVal, ElemCount
+            DataAdd, DataAddStr, DataAddDWord : gestion du segment DATA
+            ExprMakeImm, ExprMakeNull, ExprMakeBool, ExprMakeEAX
+            LitEvalInt, LitEvalStr, LitEvalChar, LitEval
+            LabelGen : generateur de labels uniques _JL_N
+            10 fonctions accesseurs
+
+  TODO 07 - OPERATEURS ET PRECEDENCE [A FAIRE]
+            Arithmetiques : + - * / % (division entiere pour int)
+            Comparaison : == != < <= > >= (int, char, references)
+            Logiques : && || ! (court-circuit, evaluation booleenne)
+            Bit a bit : & | ^ ~ << >> >>> (AND, OR, XOR, NOT,
+              decalage gauche, droite signe, droite non-signe)
+            Unaire : + - ~ ! ++ -- (pre et post-increment/decrement)
+            Operateur ternaire : cond ? val_si_vrai : val_si_faux
+            Concatenation de chaines : + avec au moins un String
+            Affectation : = += -= *= /= %= &= |= ^= <<= >>= >>>=
+            Precedence (du plus fort au plus faible) :
+              1. ++ -- (postfixe), . [] ()
+              2. ++ -- (prefixe), + - ~ ! (unaires)
+              3. * / %
+              4. + - (binaires, concatenation String)
+              5. << >> >>>
+              6. < <= > >= instanceof
+              7. == !=
+              8. &
+              9. ^
+              10. |
+              11. &&
+              12. ||
+              13. ? : (ternaire)
+              14. = += -= *= /= %= &= |= ^= <<= >>= >>>=
+            BinOpPrec, BinOpIsRight, IsAssignOp
+            ParsePrimary, ParseUnary, ParseExprPrec, ParseExpr
+            ExprFlushToEAX, ExprEmitBinOp
+            Pliage de constantes pour expressions statiques
+            10 fonctions accesseurs
+
+  TODO 08 - PARSEUR : EXPRESSIONS PRIMAIRES ET APPELS [A FAIRE]
+            ParsePrimary : literal entier, literal chaine, literal char,
+              ident, appel de methode, null, true, false
+            Acces champ : expr.field -> offset dans instance de classe
+            Acces index tableau : expr[i] ->
+              calcul offset + MOV EAX, [EBX+4+i*4]
+              Verification des bornes optionnelle
+            Appel de methode statique : ClassName.method(args) ->
+              PUSH args droite a gauche + CALL _JF_ClassName_method
+              + ADD ESP, args_size
+            Appel de methode d instance : obj.method(args) ->
+              PUSH this + PUSH args + CALL _JM_ClassName_method
+              + ADD ESP, (1+args)*4
+            new ClassName(args) : allocation instance + appel constructeur
+            new int[n] : allocation tableau sur le heap
+            Parentheses : (expr) -> regroupement de priorite
+            Cast explicite : (int)expr, (char)expr ->
+              conversion ou troncature
+            System.out.println(expr) / System.out.print(expr) :
+              reconnaissance comme appel special d E/S
+            Scanner.nextLine() / Scanner.nextInt() :
+              reconnaissance comme appel special de saisie
+            Operateur ternaire : cond ? a : b -> code conditionnel
+            10 fonctions accesseurs
+
+  TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [A FAIRE]
+            Variables locales : pile EBP, acces [EBP-offset]
+              Declaration : int x; ou int x = expr;
+              Plusieurs dans une ligne : int a, b, c;
+            Parametres de methode : pile EBP, acces [EBP+offset]
+            Champs statiques de classe : segment DATA, acces par label
+              _JV_ClassName_fieldName
+              MOV EAX, DWORD [_JV_ClassName_x] pour lecture
+              MOV DWORD [_JV_ClassName_x], EAX pour ecriture
+            Constantes final : int final N = 42; -> substitution immediate
+            Affectation simple : x = expr ->
+              evaluer expr + MOV destination, EAX
+            Affectation augmentee : x += expr -> charger x,
+              evaluer expr, ADD EAX, resultat, stocker
+              Supportees : += -= *= /= %= &= |= ^= <<= >>= >>>=
+            Pre-increment/decrement : ++x / --x
+            Post-increment/decrement : x++ / x--
+            Affectation tableau : tab[i] = expr ->
+              calcul adresse + MOV [EBX+4+i*4], EAX
+            Typage statique : verification de compatibilite de type
+              a l affectation
+            10 fonctions accesseurs
+
+  TODO 10 - PARSEUR : IF / ELSE ET OPERATEUR TERNAIRE [A FAIRE]
+            ParseIfStmt : if (cond) { bloc } [else if (cond) { bloc }]
+              [else { bloc }]
+              Accolades obligatoires pour les blocs
+              Emission : evaluer cond -> TEST EAX, EAX / JZ label
+              Labels : _JL_ELIF_N, _JL_ELSE_N, _JL_ENDIF_N
+            if sans accolades : instruction unique permise
+              if (cond) stmt; else stmt;
+            Operateur ternaire (dans les expressions) :
+              val = cond ? a : b
+              Emission : evaluer cond, JZ vers else-branch,
+                evaluer a, JMP fin, label else, evaluer b, label fin
+            Conditions composees : && / || avec court-circuit
+            Comparaisons chainees : non supportees en Java (correct)
+            10 fonctions accesseurs
+
+  TODO 11 - PARSEUR : BOUCLES while / for / do-while / break / continue [A FAIRE]
+            ParseWhileStmt : while (cond) { bloc }
+              Labels : _JL_WTEST_N, _JL_WEND_N
+              Emission : _JL_WTEST_N: evaluer cond, JZ _JL_WEND_N,
+                corps, JMP _JL_WTEST_N, _JL_WEND_N:
+            ParseDoWhileStmt : do { bloc } while (cond);
+              Labels : _JL_DSTART_N, _JL_DTEST_N, _JL_DEND_N
+              Emission : _JL_DSTART_N: corps, _JL_DTEST_N: evaluer cond,
+                JNZ _JL_DSTART_N, _JL_DEND_N:
+            ParseForStmt : for (init; cond; incr) { bloc }
+              Labels : _JL_FTEST_N, _JL_FINCR_N, _JL_FEND_N
+              Emission : init, _JL_FTEST_N: evaluer cond,
+                JZ _JL_FEND_N, corps, _JL_FINCR_N: incr,
+                JMP _JL_FTEST_N, _JL_FEND_N:
+            Enhanced for (for-each) : for (int x : tab) { bloc }
+              Iterer sur les elements d un tableau
+              Labels : _JL_FETEST_N, _JL_FEEND_N
+            break : JMP vers _JL_WEND_N ou _JL_FEND_N ou _JL_DEND_N
+            continue : JMP vers _JL_WTEST_N ou _JL_FINCR_N ou _JL_DTEST_N
+            LoopPush / LoopPop : pile de labels pour break/continue
+            Boucles imbriquees supportees (MAX_LOOP_NEST)
+            10 fonctions accesseurs
+
+  TODO 12 - PARSEUR : METHODES STATIQUES ET RETURN [A FAIRE]
+            ParseMethodDecl : public static type nom(params) { bloc }
+            Parametres : passage par valeur sur la pile (cdecl)
+            Types de retour : int, boolean, char, void, String, int[]
+            Convention d appel 80386 :
+              Parametres empiles de droite a gauche (cdecl)
+              Valeur de retour dans EAX
+              L appelant nettoie la pile apres CALL
+            Prologue : PUSH EBP / MOV EBP, ESP / SUB ESP, locals_size
+              Variables locales accessibles via [EBP-offset]
+              Parametres accessibles via [EBP+8], [EBP+12], ...
+            Epilogue : MOV ESP, EBP / POP EBP / RET
+            return expr : MOV EAX, valeur + JMP vers epilogue
+            return sans valeur (void) : JMP epilogue
+            Recursion : supportee naturellement via la pile
+            Point d entree main :
+              public static void main(String[] args)
+              Label _JF_ClassName_main comme point d entree
+            Surcharge de methodes : non supportee (avertissement)
+            Appel : PUSH args + CALL _JF_ClassName_method + ADD ESP, n*4
+            10 fonctions accesseurs
+
+  TODO 13 - PARSEUR : ENTREES/SORTIES (System.out / Scanner) [A FAIRE]
+            System.out.println(expr) :
+              Evaluer l argument, convertir en chaine si necessaire
+              Appeler _JRT_WRITESTR pour afficher
+              Appeler _JRT_WRITECRLF pour le retour a la ligne
+            System.out.print(expr) :
+              Afficher sans retour a la ligne
+            System.out.println(n) avec int : CALL _JRT_ITOA + _JRT_WRITESTR
+            System.out.println(s) avec String : _JRT_WRITESTR directement
+            System.out.println(true/false) : ecrire "true" ou "false"
+            System.out.println(c) avec char : ecrire le caractere
+            Concatenation dans println : "texte " + n ->
+              convertir chaque partie, concatener, afficher
+            Scanner input :
+              Scanner sc = new Scanner(System.in) (reconnu)
+              sc.nextLine() : CALL _JRT_READLINE -> EAX=ptr
+              sc.nextInt() : CALL _JRT_READLINE + _JRT_ATOI -> EAX
+            Win32 API pour les E/S console :
+              GetStdHandle(STD_OUTPUT_HANDLE) pour ecriture
+              GetStdHandle(STD_INPUT_HANDLE) pour lecture
+              WriteFile pour l affichage
+              ReadFile pour la saisie
+            10 fonctions accesseurs
+
+  TODO 14 - PARSEUR : TABLEAUX (int[], char[], String[]) [A FAIRE]
+            Declaration et allocation : int[] tab = new int[n];
+              Allocation sur le heap : _JRT_HEAPALLOC((n+1)*4)
+              Layout memoire : [length DD][elem0 DD][elem1 DD]...
+            Initialisation par liste : int[] tab = {10, 20, 30};
+              Allocation + stockage des elements
+            Acces par index : tab[i] ->
+              verification des bornes optionnelle
+              calcul offset + MOV EAX, [EBX+4+i*4]
+            Affectation par index : tab[i] = val ->
+              MOV [EBX+4+i*4], EAX
+            tab.length : MOV EAX, [EBX] (compteur en tete de tableau)
+            Enhanced for : for (int x : tab) { ... }
+              Boucle sur les elements sequentiellement
+            ArrayIndexOutOfBoundsException :
+              verification optionnelle des bornes
+              CMP index, [EBX] / JAE _JRT_BOUNDS_ERR
+            Tableaux de char : char[] -> acces octet par octet
+            Tableaux de String : String[] -> tableau de pointeurs
+            Passage de tableau en parametre : par reference (pointeur)
+            10 fonctions accesseurs
+
+  TODO 15 - PARSEUR : CHAINES (String) OPERATIONS [A FAIRE]
+            Concatenation : s1 + s2 ->
+              CALL _JRT_STRCONCAT -> EAX=ptr
+            Concatenation mixte : "texte" + n ->
+              convertir n en chaine via _JRT_ITOA puis concatener
+            s.length() : CALL _JRT_STRLEN(ESI=str) -> EAX
+            s.charAt(i) : acces au caractere a la position i ->
+              MOVZX EAX, BYTE [ESI+i]
+            s.equals(t) : CALL _JRT_STRCMP -> EAX=0|1
+            s.compareTo(t) : CALL _JRT_STRCMP -> EAX=-1|0|1
+            s.substring(begin, end) : CALL _JRT_STRSLICE -> EAX=ptr
+            s.indexOf(sub) : CALL _JRT_STRFIND -> EAX=index ou -1
+            s.toUpperCase() / s.toLowerCase() :
+              CALL _JRT_STRUPPER / _JRT_STRLOWER -> EAX=ptr
+            s.trim() : CALL _JRT_STRTRIM -> EAX=ptr
+            s.contains(sub) : CALL _JRT_STRCONTAINS -> EAX=0|1
+            s.startsWith(prefix) / s.endsWith(suffix) -> EAX=0|1
+            s.replace(old, new) : CALL _JRT_STRREPLACE -> EAX=ptr
+            Comparaison : == compare les references,
+              equals() compare le contenu
+            String.valueOf(n) : conversion entier -> chaine
+            10 fonctions accesseurs
+
+  TODO 16 - PARSEUR : CLASSES, OBJETS ET CONSTRUCTEURS [A FAIRE]
+            ParseClassDecl : public class Nom { corps }
+              ou class Nom extends Parent { corps }
+            Champs d instance : stockes dans un bloc sur le heap
+              Layout objet : [typecode DD][field0 DD][field1 DD]...
+              Acces : this.field ->
+                MOV EBX, [EBP+8] / MOV EAX, [EBX+4+offset*4]
+            Champs statiques : dans le segment DATA
+              _JV_ClassName_field DD 0
+            Methodes d instance : def methode(this + params)
+              this est le premier parametre implicite (pointeur instance)
+              Label : _JM_ClassName_method
+            Constructeur : public ClassName(params) { ... }
+              Allocation : new ClassName(args) ->
+                CALL _JRT_OBJNEW(ECX=taille)
+                + CALL _JM_ClassName_init -> EAX=ptr instance
+            Heritage simple : class Enfant extends Parent
+              Copie des champs du parent + ajout des nouveaux
+            Appel super() : appeler le constructeur du parent
+            Appel de methode : obj.method(args) ->
+              PUSH this + PUSH args + CALL _JM_ClassName_method
+              + ADD ESP, (1+nargs)*4
+            instanceof : comparaison du typecode -> EAX=0|1
+            Table des classes : MAX_CLASS entrees avec
+              champs et methodes
+            10 fonctions accesseurs
+
+  TODO 17 - PARSEUR : SWITCH / CASE / DEFAULT [A FAIRE]
+            ParseSwitchStmt : switch (expr) { case val: stmts; ... }
+              Evaluer l expression de selection
+              Generer une table de sauts ou une chaine de CMP/JE
+            case valeur: stmts ->
+              _JL_CASE_N: comparer et executer
+              CMP EAX, valeur / JE _JL_CASE_N
+            default: stmts ->
+              _JL_DEFAULT_N: label pour le cas par defaut
+              Execute si aucun case ne correspond
+            break dans switch : JMP _JL_SWITCH_END_N
+              Sans break, fall-through vers le case suivant
+            Fall-through : comportement Java standard entre les case
+              si break est absent
+            Cases multiples : case 1: case 2: stmts ->
+              plusieurs labels pour le meme bloc
+            Expression int ou char seulement dans switch
+            Labels : _JL_SWITCH_N, _JL_CASE_N_K, _JL_DEFAULT_N,
+              _JL_SWITCH_END_N
+            10 fonctions accesseurs
+
+  TODO 18 - PARSEUR : EXCEPTIONS (try / catch / finally / throw) [A FAIRE]
+            ParseTryStmt : try { bloc } catch (Type var) { bloc }
+              [catch (Type2 var2) { bloc2 }] [finally { bloc }]
+            try { bloc } -> sauvegarder handler courant, installer nouveau
+            catch (ExceptionType e) { bloc } -> label _JL_CATCH_N,
+              CMP code exception, executer le bloc correspondant
+            Multiples catch : chaine de comparaisons de types
+            finally { bloc } -> toujours execute (_JL_FINALLY_N)
+            throw new ExceptionType(msg) : lever une exception
+              EAX = code exception, EBX = ptr message
+            Mecanisme d exceptions sans support OS :
+              _JX_HANDLER DD 0 dans DATA (ptr vers handler courant)
+              _JX_CODE DD 0 (code d exception actif)
+              _JX_MSG DD 0 (ptr message d exception)
+            TRY : sauvegarder ancien handler, installer nouveau label
+            CATCH : tester le code, router vers le bon handler
+            FINALLY : toujours execute, puis restaurer handler
+            throw sans handler : afficher message d erreur
+              + PUSH 1 / CALL ExitProcess
+            Pile de try imbriques (MAX_TRY_NEST)
+            NullPointerException : detection optionnelle des acces null
+            ArrayIndexOutOfBoundsException : detection optionnelle
+            10 fonctions accesseurs
+
+  TODO 19 - PARSEUR : IMPORT ET PACKAGE [A FAIRE]
+            package nom.sous_nom; : declaration du package
+              Enregistrer le nom du package comme prefixe optionnel
+              Package ignore pour la generation de code (flat namespace)
+            import java.util.Scanner; : seul import fonctionnel
+              Activer la reconnaissance de Scanner dans le parseur
+              Scanner sc = new Scanner(System.in);
+              sc.nextLine(), sc.nextInt()
+            import java.lang.*; : implicite, ignore silencieusement
+            import java.util.*; : reconnu, active Scanner
+            Imports non supportes : emettre un avertissement
+              pour les imports inconnus
+            Gestion des classes publiques :
+              Une seule classe publique par fichier .java
+              Le nom de la classe publique doit correspondre au fichier
+            Resolution de classe : ClassName.methodName
+              Prefixe de la classe courante pour les methodes statiques
+            Table d imports : MAX_IMPORT entrees
+            10 fonctions accesseurs
+
+  TODO 20 - PARSEUR : CONVERSIONS DE TYPES ET CASTS [A FAIRE]
+            Cast explicite entre types primitifs :
+              (int) charExpr -> MOVZX EAX (valeur entiere du char)
+              (char) intExpr -> AND EAX, 0FFh (tronquer a 8 bits)
+              (boolean) intExpr -> TEST EAX, EAX / SETNZ AL / MOVZX
+            Conversions implicites dans les expressions :
+              char vers int : promotion automatique dans les operations
+              int vers String : conversion implicite dans la concatenation +
+                via _JRT_ITOA
+              boolean vers String : "true" ou "false" dans println
+              char vers String : chaine d un caractere dans println
+            Integer.parseInt(s) : CALL _JRT_ATOI -> EAX
+              Conversion chaine vers entier
+            String.valueOf(n) : CALL _JRT_ITOA -> EAX=ptr
+              Conversion entier vers chaine
+            Verification de types a la compilation :
+              Erreur si types incompatibles dans une affectation
+              Erreur si condition non booleenne dans if/while
+              Avertissement pour les casts potentiellement perdants
+            10 fonctions accesseurs
+
+  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [A FAIRE]
+            Section .data (variables initialisees) :
+              Champ statique int : _JV_ClassName_field DD 0
+              Champ statique String : _JV_ClassName_field DD _JK_N (ptr)
+              Champ statique boolean : _JV_ClassName_field DD 0
+              Champ statique char : _JV_ClassName_field DD 0
+            Constantes chaines :
+              _JK_N DB 'texte', 0 (NUL-terminated)
+            Constantes de format :
+              _JK_FMT_N DB 'format...', 0
+            Constantes speciales :
+              _JK_TRUE DB 'true', 0
+              _JK_FALSE DB 'false', 0
+              _JK_NULL DB 'null', 0
+              _JK_CRLF DB 13, 10, 0
+              _JK_SPACE DB ' ', 0
+            Section .data? (BSS - variables non initialisees) :
+              _J_IOBUF DB 256 DUP(?)
+              _J_NUMBUF DB 32 DUP(?)
+            Variables runtime :
+              _J_STDOUT DD ?  (handle console sortie)
+              _J_STDIN  DD ?  (handle console entree)
+              _J_WRITTEN DD ? (octets ecrits par WriteFile)
+              _J_READ   DD ?  (octets lus par ReadFile)
+            Heap dynamique :
+              _J_HEAP DB 65536 DUP(0)
+              _J_HEAPTOP DD 0
+            Tableaux dans DATA : blocs de DD avec compteur en tete
+            Alignement des donnees sur 4 octets (DWORD)
+            10 fonctions accesseurs
+
+  TODO 22 - BIBLIOTHEQUE RUNTIME JAVA (E/S, CONVERSIONS VIA WIN32) [A FAIRE]
+            Routines de conversion :
+              _JRT_ITOA : entier 32 bits -> chaine decimale ASCII
+                Utilisation de DIV par 10 en boucle
+              _JRT_ATOI : chaine ASCII -> entier 32 bits
+                Utilisation de IMUL par 10 et ADD
+              _JRT_BOOLTOSTR : 0 -> "false", <>0 -> "true"
+              _JRT_CHARTOSTR : valeur char -> chaine 1 caractere
+              _JRT_NULLTOSTR : -> "null"
+            Routines d E/S console :
+              _JRT_INITIO : initialiser les handles console
+                PUSH STD_OUTPUT_HANDLE / CALL GetStdHandle
+                MOV [_J_STDOUT], EAX
+                PUSH STD_INPUT_HANDLE / CALL GetStdHandle
+                MOV [_J_STDIN], EAX
+              _JRT_WRITESTR : ecrire chaine sur la console
+                PUSH 0 / LEA EAX, [_J_WRITTEN] / PUSH EAX
+                PUSH longueur / PUSH adresse / PUSH [_J_STDOUT]
+                CALL WriteFile
+              _JRT_WRITECRLF : ecrire un retour a la ligne
+              _JRT_READLINE : lire une ligne depuis la console
+                ReadFile + suppression CR/LF -> EAX=ptr chaine
+            Routines chaines :
+              _JRT_STRLEN, _JRT_STRCONCAT, _JRT_STRCMP,
+              _JRT_STRSLICE, _JRT_STRFIND,
+              _JRT_STRUPPER, _JRT_STRLOWER, _JRT_STRTRIM,
+              _JRT_STRREPLACE, _JRT_STRCONTAINS,
+              _JRT_STRSTARTSWITH, _JRT_STRENDSWITH
+            Routines tableaux :
+              _JRT_ARRALLOC : allocation tableau sur le heap
+              _JRT_ARRGET : lecture element avec verification bornes
+              _JRT_ARRSET : ecriture element avec verification bornes
+              _JRT_ARRLEN : retourner la longueur du tableau
+              _JRT_ARRCOPY : copier un tableau
+            Routines objets :
+              _JRT_OBJNEW : allocation instance sur le heap
+              _JRT_HEAPALLOC : allocation generique sur le heap
+            _JRT_PANIC : affiche message erreur + ExitProcess(1)
+            _JRT_BOUNDS_ERR : ArrayIndexOutOfBoundsException + exit
+            _JRT_NULL_ERR : NullPointerException + exit
+            Heap allocation : _JRT_HEAPALLOC(ECX=taille) -> EAX=ptr
+            10 fonctions accesseurs
+
+  TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ [A FAIRE]
+            Ecrivain PE (.EXE) - structure PE32 complete :
+              DOS Header (64 octets) avec DOS stub
+              Signature PE "PE\0\0"
+              COFF File Header (20 octets)
+                Machine : $014C (i386), NumberOfSections : 3
+              Optional Header (224 octets)
+                Magic : $010B (PE32)
+                ImageBase : $00400000
+                SectionAlignment : $1000 (4096)
+                FileAlignment : $0200 (512)
+                Subsystem : 3 (CUI Console)
+                DataDirectory[1] : Import Table RVA/Size
+              Section Headers : .text, .rdata, .data
+              Section .text : code machine 80386 genere
+              Section .rdata : Import Directory, IAT, Hint/Name Table
+              Section .data : variables et constantes
+              Resolution des fixups (adresses relatives/absolues)
+              Alignement sur FileAlignment / SectionAlignment
+            Ecrivain COFF (.OBJ) - format compatible LINK.EXE :
+              COFF File Header (Machine $014C)
+              Sections .text, .data, .bss
+              Table des relocations :
+                IMAGE_REL_I386_DIR32 (adresse absolue)
+                IMAGE_REL_I386_REL32 (adresse relative)
+              Table des symboles :
+                StorageClass : EXTERNAL (2), STATIC (3), LABEL (6)
+                Symboles externes pour imports Win32
+                Symboles definis pour methodes/champs Java
+              Table des chaines (noms > 8 caracteres)
+            Mode -obj : appeler GenerateCoffObj au lieu de GeneratePeExe
+            10 fonctions accesseurs
+
+  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [A FAIRE]
+            Imports kernel32.dll :
+              ExitProcess : terminer le programme
+              GetStdHandle : obtenir les handles console
+              WriteFile : ecrire sur la console (System.out)
+              ReadFile : lire depuis la console (Scanner)
+              GetProcessHeap, HeapAlloc, HeapFree :
+                allocation dynamique (new, tableaux)
+              GetCommandLineA : arguments de la ligne de commande
+              GetLastError : code d erreur Win32
+            Imports msvcrt.dll (optionnel) :
+              sprintf, sscanf : formatage numerique avance
+              memcpy, memset, memcmp : operations memoire
+            Generer la table d importation PE :
+              IMAGE_IMPORT_DESCRIPTOR par DLL
+              Hint/Name Table avec noms de fonctions
+              Import Address Table (IAT) avec thunks
+            Generer les EXTERN et symboles pour le mode .OBJ
+            Marquer les imports reellement utilises pour
+              n inclure que le necessaire
+            Generateur de listing ASM (parametre -asm) :
+              Format MASM (.ASM) lisible et assemblable :
+              .386
+              .MODEL FLAT, STDCALL
+              OPTION CASEMAP:NONE
+              INCLUDELIB kernel32.lib
+              EXTERN _ExitProcess@4:PROC
+              EXTERN _GetStdHandle@4:PROC
+              EXTERN _WriteFile@20:PROC
+              EXTERN _ReadFile@20:PROC
+              (autres imports Win32 utilises)
+              Section .DATA, .DATA?, .CODE
+              Point d entree _start
+              Routines runtime (_JRT_)
+              Methodes Java avec labels (_JF_, _JM_)
+              Commentaires avec le code source Java
+              Indentation et formatage lisible
+            10 fonctions accesseurs
+
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\JAVA\* [A FAIRE]
+            Optimisations peephole :
+              MOV EAX, 0 -> XOR EAX, EAX
+              PUSH EAX / POP EAX -> (eliminer)
+              MOV EAX, [x] / MOV [x], EAX -> (eliminer deuxieme)
+              ADD EAX, 1 -> INC EAX
+              SUB EAX, 1 -> DEC EAX
+              IMUL EAX, 2 -> SHL EAX, 1
+              IMUL EAX, 4 -> SHL EAX, 2
+            Verification : compiler et executer les exemples
+              SAMPLES\JAVA\Hello.java          - hello world minimal
+              SAMPLES\JAVA\test01_hello.java   - System.out.println, chaines
+              SAMPLES\JAVA\test02_vars.java    - int, boolean, char, affectations
+              SAMPLES\JAVA\test03_arith.java   - + - * / % += -= *= /= %= ++ --
+              SAMPLES\JAVA\test04_cond.java    - if/else, == != < > <= >=, && || !
+              SAMPLES\JAVA\test05_while.java   - while, break, continue
+              SAMPLES\JAVA\test06_for.java     - for, boucles imbriquees, break
+              SAMPLES\JAVA\test07_fonct.java   - methodes statiques, return, recursion
+              SAMPLES\JAVA\test08_string.java  - concatenation, Scanner.nextLine
+              SAMPLES\JAVA\test09_array.java   - int[], new, index, for-each, length
+              SAMPLES\JAVA\test10_recurs.java  - fact, fib, recursion directe
+            Tests de regression pour chaque TODO
+            Verification des 3 modes de sortie :
+              .EXE (defaut), .OBJ (-obj), .ASM (-asm)
+            Mesure de la taille des executables generes
+            10 fonctions accesseurs
+
+  ============================================================ *)
+
+Program JAVACW32;
+
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+Begin
+  WriteLn('JAVACW32 - Compilateur Java vers assembleur 80386 pour Windows 32 bits');
+  WriteLn('Tous les TODOs sont [A FAIRE]');
+End.
