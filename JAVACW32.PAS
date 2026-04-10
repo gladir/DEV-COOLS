@@ -344,7 +344,7 @@
               ReadFile pour la saisie
             10 fonctions accesseurs
 
-  TODO 14 - PARSEUR : TABLEAUX (int[], char[], String[]) [A FAIRE]
+  TODO 14 - PARSEUR : TABLEAUX (int[], char[], String[]) [IMPLEMENTE]
             Declaration et allocation : int[] tab = new int[n];
               Allocation sur le heap : _JRT_HEAPALLOC((n+1)*4)
               Layout memoire : [length DD][elem0 DD][elem1 DD]...
@@ -8585,7 +8585,560 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-13)                              }
+{ TODO 14 - PARSEUR : TABLEAUX (int[], char[], String[])       }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations sur les tableaux }
+  AR_NONE          = 0;    { aucun / non defini                    }
+  AR_DECL_NEW      = 1;    { int[] tab = new int[n]                }
+  AR_DECL_INIT     = 2;    { int[] tab = (10, 20, 30) init-liste   }
+  AR_LOAD          = 3;    { tab[i] (lecture)                      }
+  AR_STORE         = 4;    { tab[i] = val (affectation)            }
+  AR_LENGTH        = 5;    { tab.length                            }
+  AR_BOUNDS_CHK    = 6;    { verification des bornes               }
+  AR_FOREACH       = 7;    { enhanced for : for (int x : tab)      }
+  AR_PARAM_PASS    = 8;    { passage en parametre (par reference)  }
+  AR_CHAR_LOAD     = 9;    { char[] acces octet                    }
+  AR_CHAR_STORE    = 10;   { char[] affectation octet              }
+  AR_STR_LOAD      = 11;   { String[] acces pointeur               }
+  AR_STR_STORE     = 12;   { String[] affectation pointeur         }
+  AR_ALLOC         = 13;   { allocation heap brute                 }
+  AR_MAX           = 13;
+
+  { Limites }
+  AR_MAX_DIM       = 1;    { nombre max de dimensions (1D seul.)   }
+  AR_MAX_INIT_ELEM = 256;  { nombre max d elements init par liste  }
+  AR_ELEM_SIZE     = 4;    { taille d un element (4 octets = DD)   }
+
+Type
+  TArDeclRec = Record
+    VarName    : TString;  { nom de la variable tableau            }
+    ElemType   : Integer;  { type des elements (TY_IDX_*)          }
+    ArrayType  : Integer;  { type du tableau  (TY_IDX_*ARR)        }
+    Size       : LongInt;  { nombre d elements (0 si dynamique)    }
+    DeclLine   : Integer;  { ligne de declaration                  }
+    IsStatic   : Boolean;  { True si static                        }
+  End;
+
+Const
+  AR_MAX_ARRAYS = 64;      { nombre max de tableaux declares       }
+
+Var
+  ArInitialized     : Boolean;    { True si l etat est initialise       }
+  ArDeclCount       : LongInt;    { nombre de declarations de tableaux  }
+  ArNewCount        : LongInt;    { nombre d alloc via new              }
+  ArInitListCount   : LongInt;    { nombre d init par liste             }
+  ArLoadCount       : LongInt;    { nombre d acces en lecture           }
+  ArStoreCount      : LongInt;    { nombre d acces en ecriture          }
+  ArLengthCount     : LongInt;    { nombre d acces .length              }
+  ArBoundsChkCount  : LongInt;    { nombre de verif de bornes           }
+  ArForEachCount    : LongInt;    { nombre de enhanced-for sur tableau  }
+  ArLastKind        : Integer;    { dernier type d operation            }
+  ArLabelSeq        : Integer;    { sequence pour labels AR             }
+  ArCurElemType     : Integer;    { type d element courant              }
+  ArCurArrayType    : Integer;    { type de tableau courant             }
+  ArCurVarName      : TString;    { nom du tableau courant              }
+  ArArrays          : Array[1..AR_MAX_ARRAYS] Of TArDeclRec;
+  ArArrayCount      : Integer;    { nombre de tableaux enregistres      }
+
+{ ------------------------------------------------------------ }
+{ InitArState : initialiser le sous-systeme tableaux             }
+{ ------------------------------------------------------------ }
+
+Procedure InitArState;
+Var I : Integer;
+Begin
+  ArInitialized     := True;
+  ArDeclCount       := 0;
+  ArNewCount        := 0;
+  ArInitListCount   := 0;
+  ArLoadCount       := 0;
+  ArStoreCount      := 0;
+  ArLengthCount     := 0;
+  ArBoundsChkCount  := 0;
+  ArForEachCount    := 0;
+  ArLastKind        := AR_NONE;
+  ArLabelSeq        := 0;
+  ArCurElemType     := TY_IDX_INT;
+  ArCurArrayType    := TY_IDX_INTARR;
+  ArCurVarName      := '';
+  ArArrayCount      := 0;
+  For I := 1 To AR_MAX_ARRAYS Do
+  Begin
+    ArArrays[I].VarName   := '';
+    ArArrays[I].ElemType  := TY_IDX_INT;
+    ArArrays[I].ArrayType := TY_IDX_INTARR;
+    ArArrays[I].Size      := 0;
+    ArArrays[I].DeclLine  := 0;
+    ArArrays[I].IsStatic  := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenArLabel : generer un label unique pour les tableaux          }
+{ ------------------------------------------------------------ }
+
+Function GenArLabel : TString;
+Begin
+  Inc(ArLabelSeq);
+  GenArLabel := JV_LBL_PFX + 'AR_' + ItoS(ArLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ ArTypeName : retourner le nom du type d operation tableau       }
+{ ------------------------------------------------------------ }
+
+Function ArTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    AR_NONE       : ArTypeName := 'AR_NONE';
+    AR_DECL_NEW   : ArTypeName := 'AR_DECL_NEW';
+    AR_DECL_INIT  : ArTypeName := 'AR_DECL_INIT';
+    AR_LOAD       : ArTypeName := 'AR_LOAD';
+    AR_STORE      : ArTypeName := 'AR_STORE';
+    AR_LENGTH     : ArTypeName := 'AR_LENGTH';
+    AR_BOUNDS_CHK : ArTypeName := 'AR_BOUNDS_CHK';
+    AR_FOREACH    : ArTypeName := 'AR_FOREACH';
+    AR_PARAM_PASS : ArTypeName := 'AR_PARAM_PASS';
+    AR_CHAR_LOAD  : ArTypeName := 'AR_CHAR_LOAD';
+    AR_CHAR_STORE : ArTypeName := 'AR_CHAR_STORE';
+    AR_STR_LOAD   : ArTypeName := 'AR_STR_LOAD';
+    AR_STR_STORE  : ArTypeName := 'AR_STR_STORE';
+    AR_ALLOC      : ArTypeName := 'AR_ALLOC';
+  Else
+    ArTypeName := 'AR_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ElemTypeToArrayType : convertir un type d element en type       }
+{   de tableau (TY_IDX_INT -> TY_IDX_INTARR, etc.)              }
+{ ------------------------------------------------------------ }
+
+Function ElemTypeToArrayType(ElemTIdx : Integer) : Integer;
+Begin
+  Case ElemTIdx Of
+    TY_IDX_INT     : ElemTypeToArrayType := TY_IDX_INTARR;
+    TY_IDX_CHAR    : ElemTypeToArrayType := TY_IDX_CHARARR;
+    TY_IDX_STRING  : ElemTypeToArrayType := TY_IDX_STRARR;
+    TY_IDX_BOOLEAN : ElemTypeToArrayType := TY_IDX_BOOLARR;
+  Else
+    ElemTypeToArrayType := TY_IDX_INTARR;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ArrayTypeToElemType : convertir un type de tableau en type      }
+{   d element (TY_IDX_INTARR -> TY_IDX_INT, etc.)               }
+{ ------------------------------------------------------------ }
+
+Function ArrayTypeToElemType(ArrTIdx : Integer) : Integer;
+Begin
+  Case ArrTIdx Of
+    TY_IDX_INTARR  : ArrayTypeToElemType := TY_IDX_INT;
+    TY_IDX_CHARARR : ArrayTypeToElemType := TY_IDX_CHAR;
+    TY_IDX_STRARR  : ArrayTypeToElemType := TY_IDX_STRING;
+    TY_IDX_BOOLARR : ArrayTypeToElemType := TY_IDX_BOOLEAN;
+  Else
+    ArrayTypeToElemType := TY_IDX_INT;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsArrayType : verifier si un type est un type tableau           }
+{ ------------------------------------------------------------ }
+
+Function IsArrayType(TIdx : Integer) : Boolean;
+Begin
+  IsArrayType := (TIdx = TY_IDX_INTARR) Or (TIdx = TY_IDX_CHARARR) Or
+                 (TIdx = TY_IDX_STRARR) Or (TIdx = TY_IDX_BOOLARR);
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterArray : enregistrer une declaration de tableau          }
+{ ------------------------------------------------------------ }
+
+Procedure RegisterArray(VarName : TString; ElemTIdx : Integer;
+                        Size : LongInt; IsStatic : Boolean);
+Begin
+  If ArArrayCount < AR_MAX_ARRAYS Then
+  Begin
+    Inc(ArArrayCount);
+    ArArrays[ArArrayCount].VarName   := VarName;
+    ArArrays[ArArrayCount].ElemType  := ElemTIdx;
+    ArArrays[ArArrayCount].ArrayType := ElemTypeToArrayType(ElemTIdx);
+    ArArrays[ArArrayCount].Size      := Size;
+    ArArrays[ArArrayCount].DeclLine  := LexLineNo;
+    ArArrays[ArArrayCount].IsStatic  := IsStatic;
+  End
+  Else
+    WarnMsg('maximum number of array declarations reached');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitArrayAlloc : emettre le code pour allouer un tableau        }
+{   int[] tab = new int[n]                                       }
+{   Layout memoire : [length DD][elem0 DD][elem1 DD]...          }
+{   PUSH (n+1)*4 / CALL _JRT_HEAPALLOC / MOV [EAX], n           }
+{   -> EAX = pointeur vers le tableau (debut du bloc length)     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitArrayAlloc(ElemTIdx : Integer; SizeExpr : TExprVal);
+Begin
+  Inc(ArNewCount);
+  Inc(ArDeclCount);
+  ArLastKind     := AR_DECL_NEW;
+  ArCurElemType  := ElemTIdx;
+  ArCurArrayType := ElemTypeToArrayType(ElemTIdx);
+  { Code generation :                                }
+  { MOV ECX, EAX           (taille dans ECX)         }
+  { LEA EAX, [ECX+1]       (n+1 elements)           }
+  { SHL EAX, 2             (* 4 octets)             }
+  { PUSH EAX                                         }
+  { CALL _JRT_HEAPALLOC                              }
+  { ADD ESP, 4                                       }
+  { MOV [EAX], ECX         (stocker length en tete)  }
+  { -> EAX = ptr vers le bloc tableau                }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitArrayInitList : emettre le code pour init par liste         }
+{   int[] tab = (10, 20, 30) init-liste                          }
+{   Allouer (count+1)*4 + stocker chaque element                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitArrayInitList(ElemTIdx : Integer; ElemCount : Integer);
+Begin
+  Inc(ArInitListCount);
+  Inc(ArDeclCount);
+  ArLastKind     := AR_DECL_INIT;
+  ArCurElemType  := ElemTIdx;
+  ArCurArrayType := ElemTypeToArrayType(ElemTIdx);
+  { Code generation :                                }
+  { PUSH (ElemCount+1)*4                             }
+  { CALL _JRT_HEAPALLOC                              }
+  { ADD ESP, 4                                       }
+  { MOV DWORD PTR [EAX], ElemCount  (length)         }
+  { MOV DWORD PTR [EAX+4], val0                     }
+  { MOV DWORD PTR [EAX+8], val1                     }
+  { ... etc pour chaque element                      }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitArrayLoad : emettre le code pour lire tab[i]               }
+{   EBX = ptr tableau, EAX = index                               }
+{   MOV EAX, [EBX + 4 + EAX*4]                                  }
+{ ------------------------------------------------------------ }
+
+Function EmitArrayLoad(ArrTIdx : Integer) : TExprVal;
+Var ElemTIdx : Integer;
+Begin
+  Inc(ArLoadCount);
+  ElemTIdx := ArrayTypeToElemType(ArrTIdx);
+  ArLastKind     := AR_LOAD;
+  ArCurElemType  := ElemTIdx;
+  ArCurArrayType := ArrTIdx;
+  If ElemTIdx = TY_IDX_CHAR Then
+    ArLastKind := AR_CHAR_LOAD
+  Else If ElemTIdx = TY_IDX_STRING Then
+    ArLastKind := AR_STR_LOAD;
+  { Code generation :                                }
+  { Cas general (int[], boolean[], String[]) :       }
+  {   MOV EAX, [EBX + 4 + EAX*4]                    }
+  { Cas char[] :                                     }
+  {   MOVZX EAX, BYTE [EBX + 4 + EAX]               }
+  EmitArrayLoad := ExprMakeEAX(ElemTIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitArrayStore : emettre le code pour tab[i] = val             }
+{   EBX = ptr tableau, ECX = index, EAX = valeur                }
+{   MOV [EBX + 4 + ECX*4], EAX                                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitArrayStore(ArrTIdx : Integer);
+Var ElemTIdx : Integer;
+Begin
+  Inc(ArStoreCount);
+  ElemTIdx := ArrayTypeToElemType(ArrTIdx);
+  ArLastKind     := AR_STORE;
+  ArCurElemType  := ElemTIdx;
+  ArCurArrayType := ArrTIdx;
+  If ElemTIdx = TY_IDX_CHAR Then
+    ArLastKind := AR_CHAR_STORE
+  Else If ElemTIdx = TY_IDX_STRING Then
+    ArLastKind := AR_STR_STORE;
+  { Code generation :                                }
+  { Cas general (int[], boolean[], String[]) :       }
+  {   MOV [EBX + 4 + ECX*4], EAX                    }
+  { Cas char[] :                                     }
+  {   MOV BYTE [EBX + 4 + ECX], AL                   }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitArrayLength : emettre le code pour tab.length              }
+{   EBX = ptr tableau                                            }
+{   MOV EAX, [EBX]  (le compteur est en tete de tableau)        }
+{ ------------------------------------------------------------ }
+
+Function EmitArrayLength(ArrTIdx : Integer) : TExprVal;
+Begin
+  Inc(ArLengthCount);
+  ArLastKind     := AR_LENGTH;
+  ArCurArrayType := ArrTIdx;
+  { Code generation :                                }
+  { MOV EAX, [EBX]          (length en offset 0)    }
+  EmitArrayLength := ExprMakeEAX(TY_IDX_INT);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBoundsCheck : emettre le code de verification des bornes   }
+{   CMP EAX, [EBX]   (index vs length)                          }
+{   JAE _JRT_BOUNDS_ERR                                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBoundsCheck;
+Begin
+  Inc(ArBoundsChkCount);
+  ArLastKind := AR_BOUNDS_CHK;
+  { Code generation :                                }
+  { CMP EAX, [EBX]          (index >= length ?)     }
+  { JAE _JRT_BOUNDS_ERR                              }
+  { (saute vers routine d erreur si hors bornes)     }
+End;
+
+{ ------------------------------------------------------------ }
+{ ArParseArrayDecl : parser une declaration de tableau           }
+{   int[] tab = new int[n];   ou   int[] tab = (10, 20);        }
+{   VarName = nom, ElemTIdx = type des elements                  }
+{ ------------------------------------------------------------ }
+
+Procedure ArParseArrayDecl(VarName : TString; ElemTIdx : Integer;
+                           IsNew : Boolean; Size : LongInt;
+                           IsStatic : Boolean);
+Begin
+  ArCurVarName := VarName;
+  RegisterArray(VarName, ElemTIdx, Size, IsStatic);
+  If IsNew Then
+  Begin
+    { int[] tab = new int[n]; }
+    EmitArrayAlloc(ElemTIdx, ExprMakeImm(Size, TY_IDX_INT));
+  End
+  Else
+  Begin
+    { int[] tab = (10, 20, 30); init-liste }
+    EmitArrayInitList(ElemTIdx, Size);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ArParseArrayAccess : parser un acces a un element de tableau   }
+{   tab[i] en lecture -> retourne TExprVal                       }
+{ ------------------------------------------------------------ }
+
+Function ArParseArrayAccess(ArrTIdx : Integer) : TExprVal;
+Begin
+  { Code generation :                                }
+  { EBX = adresse du tableau (deja chargee)          }
+  { EAX = index (deja evalue)                        }
+  { Verification optionnelle des bornes              }
+  ArParseArrayAccess := EmitArrayLoad(ArrTIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ ArParseArrayAssign : parser une affectation a un element        }
+{   tab[i] = val                                                 }
+{ ------------------------------------------------------------ }
+
+Procedure ArParseArrayAssign(ArrTIdx : Integer);
+Begin
+  { Code generation :                                }
+  { EBX = adresse du tableau                         }
+  { ECX = index                                      }
+  { EAX = valeur a stocker                           }
+  EmitArrayStore(ArrTIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ ArParseArrayLength : parser tab.length                         }
+{   -> retourne TExprVal (int)                                   }
+{ ------------------------------------------------------------ }
+
+Function ArParseArrayLength(ArrTIdx : Integer) : TExprVal;
+Begin
+  { Code generation :                                }
+  { EBX = adresse du tableau (deja chargee)          }
+  { MOV EAX, [EBX]                                  }
+  ArParseArrayLength := EmitArrayLength(ArrTIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitArrayForEach : emettre le code pour enhanced for            }
+{   for (int x : tab) corps de boucle                            }
+{   Boucle de 0 a length-1 sur les elements                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitArrayForEach(ArrTIdx : Integer);
+Begin
+  Inc(ArForEachCount);
+  ArLastKind     := AR_FOREACH;
+  ArCurArrayType := ArrTIdx;
+  { Code generation :                                }
+  { MOV ECX, 0             (index = 0)               }
+  { lbl_test:                                        }
+  { CMP ECX, [EBX]         (index < length ?)        }
+  { JGE lbl_end                                      }
+  { MOV EAX, [EBX+4+ECX*4] (charger element)        }
+  { ... corps de la boucle ...                       }
+  { INC ECX                                          }
+  { JMP lbl_test                                     }
+  { lbl_end:                                         }
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitArrayParamPass : emettre le code pour passer un tableau     }
+{   en parametre (par reference = pousser le pointeur)           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitArrayParamPass;
+Begin
+  ArLastKind := AR_PARAM_PASS;
+  { Code generation :                                }
+  { PUSH EBX             (pointeur du tableau)       }
+  { Le tableau est passe par reference naturellement }
+End;
+
+{ ------------------------------------------------------------ }
+{ FindArrayByName : trouver un tableau par son nom                }
+{   Retourne l index (1..ArArrayCount) ou 0 si non trouve        }
+{ ------------------------------------------------------------ }
+
+Function FindArrayByName(Name : TString) : Integer;
+Var I : Integer;
+Begin
+  FindArrayByName := 0;
+  For I := 1 To ArArrayCount Do
+    If ArArrays[I].VarName = Name Then
+    Begin
+      FindArrayByName := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetArrayElemType : retourner le type d element d un tableau     }
+{   enregistre (par son index)                                   }
+{ ------------------------------------------------------------ }
+
+Function GetArrayElemType(ArrIdx : Integer) : Integer;
+Begin
+  If (ArrIdx >= 1) And (ArrIdx <= ArArrayCount) Then
+    GetArrayElemType := ArArrays[ArrIdx].ElemType
+  Else
+    GetArrayElemType := TY_IDX_INT;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpArState : afficher l etat du sous-systeme tableaux          }
+{ ------------------------------------------------------------ }
+
+Procedure DumpArState;
+Var I : Integer;
+Begin
+  WriteLn('--- Array State ---');
+  WriteLn('  ArInitialized    : ', ArInitialized);
+  WriteLn('  ArDeclCount      : ', ArDeclCount);
+  WriteLn('  ArNewCount       : ', ArNewCount);
+  WriteLn('  ArInitListCount  : ', ArInitListCount);
+  WriteLn('  ArLoadCount      : ', ArLoadCount);
+  WriteLn('  ArStoreCount     : ', ArStoreCount);
+  WriteLn('  ArLengthCount    : ', ArLengthCount);
+  WriteLn('  ArBoundsChkCount : ', ArBoundsChkCount);
+  WriteLn('  ArForEachCount   : ', ArForEachCount);
+  WriteLn('  ArLastKind       : ', ArTypeName(ArLastKind));
+  WriteLn('  ArLabelSeq       : ', ArLabelSeq);
+  WriteLn('  ArCurElemType    : ', ArCurElemType);
+  WriteLn('  ArCurArrayType   : ', ArCurArrayType);
+  WriteLn('  ArCurVarName     : ', ArCurVarName);
+  WriteLn('  ArArrayCount     : ', ArArrayCount);
+  If ArArrayCount > 0 Then
+    For I := 1 To ArArrayCount Do
+      WriteLn('    Array[', I, '] : ', ArArrays[I].VarName,
+              ' elemType=', ArArrays[I].ElemType,
+              ' size=', ArArrays[I].Size,
+              ' (line ', ArArrays[I].DeclLine, ')');
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 14)                              }
+{ ------------------------------------------------------------ }
+
+Function IsArInitialized : Boolean;
+Begin
+  IsArInitialized := ArInitialized;
+End;
+
+Function IsArEmpty : Boolean;
+Begin
+  IsArEmpty := (ArDeclCount = 0) And (ArLoadCount = 0) And
+               (ArStoreCount = 0) And (ArLengthCount = 0) And
+               (ArForEachCount = 0);
+End;
+
+Function GetArDeclCount : LongInt;
+Begin
+  GetArDeclCount := ArDeclCount;
+End;
+
+Function GetArNewCount : LongInt;
+Begin
+  GetArNewCount := ArNewCount;
+End;
+
+Function GetArInitListCount : LongInt;
+Begin
+  GetArInitListCount := ArInitListCount;
+End;
+
+Function GetArLoadCount : LongInt;
+Begin
+  GetArLoadCount := ArLoadCount;
+End;
+
+Function GetArStoreCount : LongInt;
+Begin
+  GetArStoreCount := ArStoreCount;
+End;
+
+Function GetArLengthCount : LongInt;
+Begin
+  GetArLengthCount := ArLengthCount;
+End;
+
+Function GetArArrayCount : Integer;
+Begin
+  GetArArrayCount := ArArrayCount;
+End;
+
+Function GetArStatus : TString;
+Begin
+  If Not ArInitialized Then
+    GetArStatus := 'Not initialized'
+  Else
+    GetArStatus := ItoS(ArDeclCount) + ' decl, ' +
+                   ItoS(ArNewCount) + ' new, ' +
+                   ItoS(ArInitListCount) + ' init-list, ' +
+                   ItoS(ArLoadCount) + ' load, ' +
+                   ItoS(ArStoreCount) + ' store, ' +
+                   ItoS(ArLengthCount) + ' length, ' +
+                   ItoS(ArBoundsChkCount) + ' bounds-chk, ' +
+                   ItoS(ArForEachCount) + ' for-each';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-14)                              }
 { ============================================================ }
 
 Begin
@@ -8611,16 +9164,17 @@ Begin
   InitLpState;
   InitMtState;
   InitIoState;
+  InitArState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-12) }
+  { Boucle de tokenisation (TODO 02-14) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 14..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 15..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
