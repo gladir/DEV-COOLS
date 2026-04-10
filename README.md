@@ -451,6 +451,9 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir des constantes Pascal en fichier de ressource RSJ.</td>
 		</tr>
 		<tr>
+			<td><b>PASCHAT.PAS</b></td>
+			<td>Cette commande permet de lancer l'agent conversationnel generateur de code Turbo Pascal.</td>
+		<tr>
 			<td><b>PC8086.PAS</b></td>
 			<td>Cette commande permet de lancer un compilateur Pascal générant du code pour l'assembleur du microprocesseur 8086 ou 8088.</td>
 		</tr>
