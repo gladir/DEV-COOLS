@@ -80,7 +80,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
             ParserAdvance : lire token suivant avec PrintToken si -d
             10 fonctions accesseurs
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES JAVA [A FAIRE]
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES JAVA [IMPLEMENTE]
             Tous les mots reserves Java utilises dans ce sous-ensemble :
               Types primitifs : int, boolean, char, void, long, float,
                 double, byte, short

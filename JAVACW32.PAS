@@ -88,7 +88,7 @@
             ParserAdvance : lire token suivant avec PrintToken si -d
             10 fonctions accesseurs
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES JAVA [A FAIRE]
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES JAVA [IMPLEMENTE]
             Tous les mots reserves Java utilises dans ce sous-ensemble :
               Types primitifs : int, boolean, char, void, long, float,
                 double, byte, short
@@ -2309,16 +2309,377 @@ Begin
 End;
 
 { ============================================================ }
-{ Stub LookupKeyword (sera complete dans TODO 03)              }
+{ TODO 03 - RECONNAISSANCE DES MOTS-CLES JAVA    [IMPLEMENTE] }
 { ============================================================ }
 
-Function LookupKeyword(Const S : TString) : Integer;
+Const
+  { Mots-cles Java : types primitifs }
+  KW_INT        = 1;    { int                                      }
+  KW_BOOLEAN    = 2;    { boolean                                  }
+  KW_CHAR       = 3;    { char                                     }
+  KW_VOID       = 4;    { void                                     }
+  KW_LONG       = 5;    { long                                     }
+  KW_FLOAT      = 6;    { float                                    }
+  KW_DOUBLE     = 7;    { double                                   }
+  KW_BYTE       = 8;    { byte                                     }
+  KW_SHORT      = 9;    { short                                    }
+
+  { Mots-cles Java : controle }
+  KW_IF         = 20;   { if                                       }
+  KW_ELSE       = 21;   { else                                     }
+  KW_WHILE      = 22;   { while                                    }
+  KW_FOR        = 23;   { for                                      }
+  KW_DO         = 24;   { do                                       }
+  KW_SWITCH     = 25;   { switch                                   }
+  KW_CASE       = 26;   { case                                     }
+  KW_DEFAULT    = 27;   { default                                  }
+  KW_BREAK      = 28;   { break                                    }
+  KW_CONTINUE   = 29;   { continue                                 }
+  KW_RETURN     = 30;   { return                                   }
+
+  { Mots-cles Java : classes }
+  KW_CLASS      = 40;   { class                                    }
+  KW_EXTENDS    = 41;   { extends                                  }
+  KW_IMPLEMENTS = 42;   { implements                               }
+  KW_NEW        = 43;   { new                                      }
+  KW_THIS       = 44;   { this                                     }
+  KW_SUPER      = 45;   { super                                    }
+  KW_INSTANCEOF = 46;   { instanceof                               }
+
+  { Mots-cles Java : modificateurs }
+  KW_PUBLIC     = 50;   { public                                   }
+  KW_PRIVATE    = 51;   { private                                  }
+  KW_PROTECTED  = 52;   { protected                                }
+  KW_STATIC     = 53;   { static                                   }
+  KW_FINAL      = 54;   { final                                    }
+  KW_ABSTRACT   = 55;   { abstract                                 }
+
+  { Mots-cles Java : exceptions }
+  KW_TRY        = 60;   { try                                      }
+  KW_CATCH      = 61;   { catch                                    }
+  KW_FINALLY    = 62;   { finally                                  }
+  KW_THROW      = 63;   { throw                                    }
+  KW_THROWS     = 64;   { throws                                   }
+
+  { Mots-cles Java : logiques }
+  KW_TRUE       = 70;   { true                                     }
+  KW_FALSE      = 71;   { false                                    }
+  KW_NULL       = 72;   { null                                     }
+
+  { Mots-cles Java : importation }
+  KW_IMPORT     = 80;   { import                                   }
+  KW_PACKAGE    = 81;   { package                                  }
+
+  KW_TOTAL_KEYWORDS = 38;  { nombre total de mots-cles Java        }
+
+Var
+  KwInitialized : Boolean;       { True si etat initialise               }
+  KwLookupCount : LongInt;       { nombre d appels a LookupKeyword       }
+  KwHitCount    : LongInt;       { nombre de mots-cles reconnus          }
+  KwLabelSeq    : Integer;       { sequence pour labels uniques          }
+  KwLastKW      : Integer;       { dernier mot-cle reconnu (KW_*)        }
+  KwTotalIdents : LongInt;       { total d identificateurs testes        }
+
+{ ------------------------------------------------------------ }
+{ InitKwState : initialiser les compteurs de mots-cles         }
+{ ------------------------------------------------------------ }
+
+Procedure InitKwState;
 Begin
-  LookupKeyword := KW_NONE;
+  KwInitialized := True;
+  KwLookupCount := 0;
+  KwHitCount    := 0;
+  KwLabelSeq    := 0;
+  KwLastKW      := 0;
+  KwTotalIdents := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenKwLabel : generer un label unique _KW_N                    }
+{ ------------------------------------------------------------ }
+
+Function GenKwLabel : TString;
+Begin
+  Inc(KwLabelSeq);
+  GenKwLabel := '_KW_' + ItoS(KwLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ KwTypeName : retourner le nom du type de mot-cle KW_*        }
+{ ------------------------------------------------------------ }
+
+Function KwTypeName(KW : Integer) : TString;
+Begin
+  Case KW Of
+    KW_INT        : KwTypeName := 'KW_INT';
+    KW_BOOLEAN    : KwTypeName := 'KW_BOOLEAN';
+    KW_CHAR       : KwTypeName := 'KW_CHAR';
+    KW_VOID       : KwTypeName := 'KW_VOID';
+    KW_LONG       : KwTypeName := 'KW_LONG';
+    KW_FLOAT      : KwTypeName := 'KW_FLOAT';
+    KW_DOUBLE     : KwTypeName := 'KW_DOUBLE';
+    KW_BYTE       : KwTypeName := 'KW_BYTE';
+    KW_SHORT      : KwTypeName := 'KW_SHORT';
+    KW_IF         : KwTypeName := 'KW_IF';
+    KW_ELSE       : KwTypeName := 'KW_ELSE';
+    KW_WHILE      : KwTypeName := 'KW_WHILE';
+    KW_FOR        : KwTypeName := 'KW_FOR';
+    KW_DO         : KwTypeName := 'KW_DO';
+    KW_SWITCH     : KwTypeName := 'KW_SWITCH';
+    KW_CASE       : KwTypeName := 'KW_CASE';
+    KW_DEFAULT    : KwTypeName := 'KW_DEFAULT';
+    KW_BREAK      : KwTypeName := 'KW_BREAK';
+    KW_CONTINUE   : KwTypeName := 'KW_CONTINUE';
+    KW_RETURN     : KwTypeName := 'KW_RETURN';
+    KW_CLASS      : KwTypeName := 'KW_CLASS';
+    KW_EXTENDS    : KwTypeName := 'KW_EXTENDS';
+    KW_IMPLEMENTS : KwTypeName := 'KW_IMPLEMENTS';
+    KW_NEW        : KwTypeName := 'KW_NEW';
+    KW_THIS       : KwTypeName := 'KW_THIS';
+    KW_SUPER      : KwTypeName := 'KW_SUPER';
+    KW_INSTANCEOF : KwTypeName := 'KW_INSTANCEOF';
+    KW_PUBLIC     : KwTypeName := 'KW_PUBLIC';
+    KW_PRIVATE    : KwTypeName := 'KW_PRIVATE';
+    KW_PROTECTED  : KwTypeName := 'KW_PROTECTED';
+    KW_STATIC     : KwTypeName := 'KW_STATIC';
+    KW_FINAL      : KwTypeName := 'KW_FINAL';
+    KW_ABSTRACT   : KwTypeName := 'KW_ABSTRACT';
+    KW_TRY        : KwTypeName := 'KW_TRY';
+    KW_CATCH      : KwTypeName := 'KW_CATCH';
+    KW_FINALLY    : KwTypeName := 'KW_FINALLY';
+    KW_THROW      : KwTypeName := 'KW_THROW';
+    KW_THROWS     : KwTypeName := 'KW_THROWS';
+    KW_TRUE       : KwTypeName := 'KW_TRUE';
+    KW_FALSE      : KwTypeName := 'KW_FALSE';
+    KW_NULL       : KwTypeName := 'KW_NULL';
+    KW_IMPORT     : KwTypeName := 'KW_IMPORT';
+    KW_PACKAGE    : KwTypeName := 'KW_PACKAGE';
+  Else
+    KwTypeName := 'KW_UNKNOWN(' + ItoS(KW) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LookupKeyword : retourner KW_xxx ou KW_NONE si non reconnu   }
+{ Java est sensible a la casse                                  }
+{ ------------------------------------------------------------ }
+
+Function LookupKeyword(Const S : TString) : Integer;
+Var
+  R : Integer;
+Begin
+  Inc(KwLookupCount);
+  Inc(KwTotalIdents);
+  R := 0;
+
+  { Types primitifs }
+  If      S = 'int'        Then R := KW_INT
+  Else If S = 'boolean'    Then R := KW_BOOLEAN
+  Else If S = 'char'       Then R := KW_CHAR
+  Else If S = 'void'       Then R := KW_VOID
+  Else If S = 'long'       Then R := KW_LONG
+  Else If S = 'float'      Then R := KW_FLOAT
+  Else If S = 'double'     Then R := KW_DOUBLE
+  Else If S = 'byte'       Then R := KW_BYTE
+  Else If S = 'short'      Then R := KW_SHORT
+
+  { Controle }
+  Else If S = 'if'         Then R := KW_IF
+  Else If S = 'else'       Then R := KW_ELSE
+  Else If S = 'while'      Then R := KW_WHILE
+  Else If S = 'for'        Then R := KW_FOR
+  Else If S = 'do'         Then R := KW_DO
+  Else If S = 'switch'     Then R := KW_SWITCH
+  Else If S = 'case'       Then R := KW_CASE
+  Else If S = 'default'    Then R := KW_DEFAULT
+  Else If S = 'break'      Then R := KW_BREAK
+  Else If S = 'continue'   Then R := KW_CONTINUE
+  Else If S = 'return'     Then R := KW_RETURN
+
+  { Classes }
+  Else If S = 'class'      Then R := KW_CLASS
+  Else If S = 'extends'    Then R := KW_EXTENDS
+  Else If S = 'implements' Then R := KW_IMPLEMENTS
+  Else If S = 'new'        Then R := KW_NEW
+  Else If S = 'this'       Then R := KW_THIS
+  Else If S = 'super'      Then R := KW_SUPER
+  Else If S = 'instanceof' Then R := KW_INSTANCEOF
+
+  { Modificateurs }
+  Else If S = 'public'     Then R := KW_PUBLIC
+  Else If S = 'private'    Then R := KW_PRIVATE
+  Else If S = 'protected'  Then R := KW_PROTECTED
+  Else If S = 'static'     Then R := KW_STATIC
+  Else If S = 'final'      Then R := KW_FINAL
+  Else If S = 'abstract'   Then R := KW_ABSTRACT
+
+  { Exceptions }
+  Else If S = 'try'        Then R := KW_TRY
+  Else If S = 'catch'      Then R := KW_CATCH
+  Else If S = 'finally'    Then R := KW_FINALLY
+  Else If S = 'throw'      Then R := KW_THROW
+  Else If S = 'throws'     Then R := KW_THROWS
+
+  { Logiques }
+  Else If S = 'true'       Then R := KW_TRUE
+  Else If S = 'false'      Then R := KW_FALSE
+  Else If S = 'null'       Then R := KW_NULL
+
+  { Importation }
+  Else If S = 'import'     Then R := KW_IMPORT
+  Else If S = 'package'    Then R := KW_PACKAGE;
+
+  If R <> 0 Then
+  Begin
+    Inc(KwHitCount);
+    KwLastKW := R;
+  End;
+
+  LookupKeyword := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetKeywordName : retourner le mot-cle Java pour un KW_*      }
+{ ------------------------------------------------------------ }
+
+Function GetKeywordName(KW : Integer) : TString;
+Begin
+  Case KW Of
+    KW_INT        : GetKeywordName := 'int';
+    KW_BOOLEAN    : GetKeywordName := 'boolean';
+    KW_CHAR       : GetKeywordName := 'char';
+    KW_VOID       : GetKeywordName := 'void';
+    KW_LONG       : GetKeywordName := 'long';
+    KW_FLOAT      : GetKeywordName := 'float';
+    KW_DOUBLE     : GetKeywordName := 'double';
+    KW_BYTE       : GetKeywordName := 'byte';
+    KW_SHORT      : GetKeywordName := 'short';
+    KW_IF         : GetKeywordName := 'if';
+    KW_ELSE       : GetKeywordName := 'else';
+    KW_WHILE      : GetKeywordName := 'while';
+    KW_FOR        : GetKeywordName := 'for';
+    KW_DO         : GetKeywordName := 'do';
+    KW_SWITCH     : GetKeywordName := 'switch';
+    KW_CASE       : GetKeywordName := 'case';
+    KW_DEFAULT    : GetKeywordName := 'default';
+    KW_BREAK      : GetKeywordName := 'break';
+    KW_CONTINUE   : GetKeywordName := 'continue';
+    KW_RETURN     : GetKeywordName := 'return';
+    KW_CLASS      : GetKeywordName := 'class';
+    KW_EXTENDS    : GetKeywordName := 'extends';
+    KW_IMPLEMENTS : GetKeywordName := 'implements';
+    KW_NEW        : GetKeywordName := 'new';
+    KW_THIS       : GetKeywordName := 'this';
+    KW_SUPER      : GetKeywordName := 'super';
+    KW_INSTANCEOF : GetKeywordName := 'instanceof';
+    KW_PUBLIC     : GetKeywordName := 'public';
+    KW_PRIVATE    : GetKeywordName := 'private';
+    KW_PROTECTED  : GetKeywordName := 'protected';
+    KW_STATIC     : GetKeywordName := 'static';
+    KW_FINAL      : GetKeywordName := 'final';
+    KW_ABSTRACT   : GetKeywordName := 'abstract';
+    KW_TRY        : GetKeywordName := 'try';
+    KW_CATCH      : GetKeywordName := 'catch';
+    KW_FINALLY    : GetKeywordName := 'finally';
+    KW_THROW      : GetKeywordName := 'throw';
+    KW_THROWS     : GetKeywordName := 'throws';
+    KW_TRUE       : GetKeywordName := 'true';
+    KW_FALSE      : GetKeywordName := 'false';
+    KW_NULL       : GetKeywordName := 'null';
+    KW_IMPORT     : GetKeywordName := 'import';
+    KW_PACKAGE    : GetKeywordName := 'package';
+  Else
+    GetKeywordName := '?';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsKeyword : teste si un KW_* est valide (non zero)           }
+{ ------------------------------------------------------------ }
+
+Function IsKeyword(KW : Integer) : Boolean;
+Begin
+  IsKeyword := (KW > 0) And (KW <= KW_PACKAGE);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpKwState : afficher l etat de la reconnaissance           }
+{ ------------------------------------------------------------ }
+
+Procedure DumpKwState;
+Begin
+  WriteLn('--- KW State ---');
+  WriteLn('  KwInitialized : ', KwInitialized);
+  WriteLn('  KwLookupCount : ', KwLookupCount);
+  WriteLn('  KwHitCount    : ', KwHitCount);
+  WriteLn('  KwTotalIdents : ', KwTotalIdents);
+  WriteLn('  KwLastKW      : ', KwTypeName(KwLastKW));
+  WriteLn('  Keywords      : ', KW_TOTAL_KEYWORDS);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 03)                             }
+{ ------------------------------------------------------------ }
+
+Function IsKwInitialized : Boolean;
+Begin
+  IsKwInitialized := KwInitialized;
+End;
+
+Function IsKwEmpty : Boolean;
+Begin
+  IsKwEmpty := (KwHitCount = 0);
+End;
+
+Function GetKwLookupCount : LongInt;
+Begin
+  GetKwLookupCount := KwLookupCount;
+End;
+
+Function GetKwHitCount : LongInt;
+Begin
+  GetKwHitCount := KwHitCount;
+End;
+
+Function GetKwTotalIdents : LongInt;
+Begin
+  GetKwTotalIdents := KwTotalIdents;
+End;
+
+Function GetKwLastKW : Integer;
+Begin
+  GetKwLastKW := KwLastKW;
+End;
+
+Function GetKwLabelSeq : Integer;
+Begin
+  GetKwLabelSeq := KwLabelSeq;
+End;
+
+Function GetKwTotalKeywords : Integer;
+Begin
+  GetKwTotalKeywords := KW_TOTAL_KEYWORDS;
+End;
+
+Function GetKwLastKWName : TString;
+Begin
+  If KwLastKW <> 0 Then
+    GetKwLastKWName := GetKeywordName(KwLastKW)
+  Else
+    GetKwLastKWName := '(none)';
+End;
+
+Function GetKwStatus : TString;
+Begin
+  If Not KwInitialized Then
+    GetKwStatus := 'Not initialized'
+  Else
+    GetKwStatus := ItoS(KwHitCount) + ' keywords (' +
+                   ItoS(KwTotalIdents) + ' idents tested)';
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-02)                              }
+{ Programme principal (TODO 01-03)                              }
 { ============================================================ }
 
 Begin
@@ -2333,16 +2694,17 @@ Begin
 
   WriteLn('JAVACW32: compilation de ', Opts.SrcFile, ' ...');
 
+  InitKwState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02 seulement) }
+  { Boucle de tokenisation (TODO 02-03) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 03..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 04..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
