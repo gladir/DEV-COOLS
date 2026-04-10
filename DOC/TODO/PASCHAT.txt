@@ -1,0 +1,397 @@
+============================================================
+  PASCHAT.PAS - Agent conversationnel generateur de code Pascal
+  Turbo Pascal / Free Pascal (-Mtp)
+  Interface de clavardage en francais
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+            TOptions (Verbose, DebugMode, LearnFiles)
+            ParseArgs : analyser argv ([-v] [-d] [-h] [fichiers.txt...])
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Charger la liste des fichiers .txt d'apprentissage en ligne de commande
+            Programme principal : validation des arguments et appel Run
+            Version, Date, aide en ligne (option -h)
+            InitOptState, GenOptLabel, OptTypeName, DumpOptState
+            10 accesseurs (IsOptInitialized, IsOptEmpty, GetOpt*Count, ...)
+
+  TODO 02 - CHARGEMENT DES FICHIERS D'APPRENTISSAGE [IMPLEMENTE]
+            TLearnFile : FileName, Content, LineCount
+            LoadLearnFile(FileName) : charger un fichier .txt en memoire
+            LearnFiles[0..MAX_LEARN-1], LearnCount
+            Supporter les fichiers DOC/*.txt comme base de connaissances
+            IndexLearnContent : indexer le contenu pour recherche rapide
+            FindInLearnFiles(Query) : rechercher dans les fichiers charges
+            InitLearnState, GenLrnLabel, LrnTypeName, DumpLearnState
+            10 accesseurs (IsLrnInitialized, IsLrnEmpty, GetLrn*Count, ...)
+
+  TODO 03 - HISTORIQUE DE CONVERSATION [IMPLEMENTE]
+            THistoryEntry : UserInput, BotResponse, Timestamp
+            History[0..MAX_HISTORY-1], HistoryCount
+            AddToHistory(User, Bot) : ajouter une entree a l'historique
+            GetRecentHistory(N) : obtenir les N dernieres entrees
+            ClearHistory : vider l'historique de conversation
+            SaveHistory(FileName) : sauvegarder l'historique dans un fichier
+            LoadHistory(FileName) : charger l'historique depuis un fichier
+            InitHisState, GenHisLabel, HisTypeName, DumpHisState
+            10 accesseurs (IsHisInitialized, IsHisEmpty, GetHis*Count, ...)
+
+  TODO 04 - ANALYSEUR DE REQUETES UTILISATEUR [IMPLEMENTE]
+            TIntentKind : IK_UNKNOWN, IK_HELLO, IK_PROGRAM, IK_UNIT,
+              IK_PROCEDURE, IK_FUNCTION, IK_EXPLAIN, IK_HELP, IK_QUIT
+            TIntent : Kind, Subject, Keywords, Params
+            ParseUserInput(Input) : analyser l'entree utilisateur
+            DetectIntent(Input) : determiner l'intention de l'utilisateur
+            ExtractKeywords(Input) : extraire les mots-cles de la requete
+            KeywordMatch(Input, Keywords) : verifier la presence de mots-cles
+            InitIntState, GenIntLabel, IntTypeName, DumpIntState
+            10 accesseurs (IsIntInitialized, IsIntEmpty, GetInt*Count, ...)
+
+  TODO 05 - GENERATEUR DE CODE PASCAL - STRUCTURES DE BASE [IMPLEMENTE]
+            GenProgramHeader(Name) : generer l'entete PROGRAM
+            GenUnitHeader(Name) : generer l'entete UNIT
+            GenUsesClause(Units) : generer la clause USES
+            GenConstSection(Consts) : generer la section CONST
+            GenVarSection(Vars) : generer la section VAR
+            GenTypeSection(Types) : generer la section TYPE
+            GenBeginEnd : generer le bloc BEGIN...END principal
+            InitGenState, GenGenLabel, GenTypeName, DumpGenState
+            10 accesseurs (IsGenInitialized, IsGenEmpty, GetGen*Count, ...)
+
+  TODO 06 - GENERATEUR DE CODE PASCAL - TYPES ET VARIABLES [IMPLEMENTE]
+            TTypeInfo : Name, Kind (TK_INTEGER, TK_STRING, TK_REAL,
+              TK_BOOLEAN, TK_CHAR, TK_ARRAY, TK_RECORD, TK_POINTER)
+            TVarInfo : Name, TypeName, InitValue
+            GenVarDecl(Var) : generer une declaration de variable
+            GenConstDecl(Name, Value) : generer une declaration de constante
+            GenTypeDecl(Type) : generer une declaration de type
+            GenArrayType(Name, Bounds, BaseType) : generer un type tableau
+            GenRecordType(Name, Fields) : generer un type enregistrement
+            InitTypState, GenTypLabel, TypKindName, DumpTypState
+            10 accesseurs (IsTypInitialized, IsTypEmpty, GetTyp*Count, ...)
+
+  TODO 07 - GENERATEUR DE CODE PASCAL - EXPRESSIONS [IMPLEMENTE]
+            GenExpression(Expr) : generer une expression
+            GenAssignment(Var, Expr) : generer une affectation
+            GenArithExpr(Op, Left, Right) : generer une expression arithmetique
+            GenCompareExpr(Op, Left, Right) : generer une comparaison
+            GenLogicalExpr(Op, Left, Right) : generer une expression logique
+            GenFunctionCall(Name, Args) : generer un appel de fonction
+            GenStringExpr(Parts) : generer une concatenation de chaines
+
+  TODO 08 - GENERATEUR DE CODE PASCAL - STRUCTURES DE CONTROLE [IMPLEMENTE]
+            CTL_NONE=0..CTL_MAX=13 : constantes types de structures
+            CTL_MAX_CASES=32, CTL_MAX_VARS=16 : limites
+            CtlInitialized + 14 variables d'etat
+            InitCtlState : initialiser l'etat
+            GenCtlLabel : generer un label unique
+            CtlTypeName : nom du type de structure
+            GenIfThen(Cond, ThenPart) : generer IF..THEN simple
+            GenIfThenBlock(Cond, ThenLines) : IF..THEN avec BEGIN..END
+            GenIfThenElse(Cond, ThenPart, ElsePart) : generer IF..THEN..ELSE
+            GenIfThenElseBlock(Cond, ThenLines, ElseLines) : avec BEGIN..END
+            GenForLoop(Var, Start, End, Body) : generer FOR..TO..DO
+            GenForLoopBlock(Var, Start, End, BodyLines) : avec BEGIN..END
+            GenForDownTo(Var, Start, End, Body) : FOR..DOWNTO..DO
+            GenForDownToBlock(Var, Start, End, BodyLines) : avec BEGIN..END
+            GenWhileLoop(Cond, Body) : generer WHILE..DO
+            GenWhileLoopBlock(Cond, BodyLines) : avec BEGIN..END
+            GenRepeatUntil(Body, Cond) : generer REPEAT..UNTIL
+            GenRepeatUntilBlock(BodyLines, Cond) : avec plusieurs lignes
+            GenCaseOf(Expr, Labels, Actions) : generer CASE..OF
+            GenCaseOfElse(Expr, Labels, Actions, ElseAction) : avec ELSE
+            GenWithDo(VarName, Body) : generer WITH..DO
+            GenWithDoBlock(VarName, BodyLines) : avec BEGIN..END
+            GenWithDoMulti(VarNames, Body) : WITH multiples variables
+            GenBreak, GenExit, GenExitValue : controle de flux
+            GenHalt, GenHaltCode : arret du programme
+            DumpCtlState : afficher l'etat
+            10 accesseurs : IsCtlInitialized, IsCtlEmpty, GetCtl*Count
+
+  TODO 09 - GENERATEUR DE CODE PASCAL - PROCEDURES ET FONCTIONS [IMPLEMENTE]
+            PRC_NONE=0..PRC_MAX=13 : constantes types de procedures
+            PRC_MAX_PARAMS=16, PRC_MAX_LOCALS=32, PRC_MAX_BODY=100 : limites
+            PrcInitialized + 16 variables d'etat
+            InitPrcState : initialiser l'etat
+            GenPrcLabel : generer un label unique
+            PrcTypeName : nom du type de procedure
+            GenParamDecl(Name, Type, IsVar, IsConst) : declaration parametre
+            GenParamListStr : liste des parametres en chaine
+            GenLocalVar(Name, Type) : variable locale
+            GenProcedureHeader(Name, Params) : entete procedure
+            GenFunctionHeader(Name, Params, RetType) : entete fonction
+            GenSimpleProcedure, GenSimpleFunction : procedures/fonctions simples
+            GenProcedureWithParams, GenFunctionWithParams : avec parametres
+            GenProcedureWithLocals, GenFunctionWithLocals : avec vars locales
+            GenProcCall, GenFuncCall : appels de procedure/fonction
+            GenForwardProcedure, GenForwardFunction : declarations forward
+            GenExternalProcedure, GenExternalFunction : externes
+            GenNearProcedure, GenFarProcedure : near/far
+            GenInlineProcedure, GenAssemblerProcedure : inline/asm
+            GenRecursiveFactorial, GenRecursiveFibonacci : exemples recursifs
+            GenBubbleSortProcedure, GenLinearSearchFunction : exemples utiles
+            DumpPrcState : afficher l'etat
+            10 accesseurs : IsPrcInitialized, IsPrcEmpty, GetPrc*Count
+
+  TODO 10 - GENERATEUR DE CODE PASCAL - UNITES (UNIT) [IMPLEMENTE]
+            UNT_NONE=0..UNT_MAX=13 : constantes types d'unites
+            UNT_MAX_INTF_PROC=64, UNT_MAX_IMPL_PROC=128, UNT_MAX_USES=16 : limites
+            UntInitialized + 15 variables d'etat
+            InitUntState : initialiser l'etat
+            GenUntLabel : generer un label unique
+            UntTypeName : nom du type d'unite
+            GenUnitHeader(Name) : generer l'entete UNIT
+            GenUnitInterfaceBegin : debut section Interface
+            GenUnitInterfaceUses, GenUnitInterfaceConst, GenUnitInterfaceType
+            GenUnitInterfaceVar, GenUnitInterfaceProc, GenUnitInterfaceFunc
+            GenUnitImplementationBegin, GenUnitImplementationUses
+            GenUnitImplProcSimple, GenUnitImplProcWithParams
+            GenUnitImplFuncSimple, GenUnitImplFuncWithParams
+            GenUnitInitialization, GenUnitInitLine
+            GenUnitFinalization, GenUnitFinalLine
+            GenUnitEnd : fin de l'unite
+            GenSimpleUnit, GenUnitWithUses, GenCompleteUnit
+            GenCrtStyleUnit, GenStringUtilUnit, GenMathUtilUnit
+            DumpUntState : afficher l'etat
+            10 accesseurs : IsUntInitialized, IsUntEmpty, GetUnt*Count
+
+  TODO 11 - BIBLIOTHEQUE DE TEMPLATES DE CODE [IMPLEMENTE]
+            TTemplate : Name, Description, Code, Parameters
+            Templates[0..MAX_TEMPLATES-1], TemplateCount
+            LoadBuiltinTemplates : charger les templates predefinies
+            FindTemplate(Name) : chercher un template par nom
+            ApplyTemplate(Template, Params) : appliquer un template avec parametres
+            ListTemplates : lister les templates disponibles
+            InitTplState, GenTplLabel, TplTypeName, DumpTplState
+            10 accesseurs : IsTplInitialized, IsTplEmpty, GetTpl*Count
+
+  TODO 12 - GENERATION DE PROGRAMMES "BONJOUR" [IMPLEMENTE]
+            HLO_NONE=0..HLO_MAX=13 : constantes types de programmes
+            HLO_MAX_LANGS=10, HLO_MAX_LINES=20 : limites
+            HloInitialized + 15 variables d'etat
+            InitHloState : initialiser l'etat
+            GenHloLabel : generer un label unique
+            HloTypeName : nom du type de programme Bonjour
+            GenHelloWorld : generer un programme "Bonjour le monde"
+            GenHelloName(Name) : generer un programme avec nom personnalise
+            GenHelloInteractive : generer un programme avec saisie du nom
+            GenHelloMultilingual : generer un programme multilingue
+            GenHelloGraphic : generer un programme avec affichage graphique
+            GenHelloBordered : generer un programme avec bordure
+            GenHelloCentered : generer un programme centre
+            GenHelloTimed : generer un programme avec heure
+            GenHelloColored : generer un programme colore
+            GenHelloAnimated : generer un programme anime
+            GenHelloRandom : generer un programme aleatoire
+            DumpHloState : afficher l'etat
+            10 accesseurs : IsHloInitialized, IsHloEmpty, GetHlo*Count
+
+  TODO 13 - GENERATION DE PROGRAMMES MATHEMATIQUES [IMPLEMENTE]
+            GenPrimeNumbers(N) : generer un programme affichant N premiers
+            GenFibonacci(N) : generer un programme de suite de Fibonacci
+            GenFactorial : generer un programme de calcul de factorielle
+            GenGCD : generer un programme de calcul de PGCD
+            GenCalculator : generer une calculatrice simple
+            GenPrimeCheck : generer un verificateur de nombre premier
+
+  TODO 14 - GENERATION DE PROGRAMMES DATE/HEURE [IMPLEMENTE]
+            DTM_NONE=0..DTM_MAX=13 : constantes types de programmes
+            DTM_MAX_MONTHS=12, DTM_MAX_DAYS=31 : limites
+            DtmInitialized + 15 variables d'etat
+            InitDtmState : initialiser l'etat
+            GenDtmLabel : generer un label unique
+            DtmTypeName : nom du type de programme date/heure
+            GenCurrentDateTime : generer un programme affichant date et heure
+            GenDateFormat : generer un programme formatant une date
+            GenTimeCalc : generer un programme de calcul de durees
+            GenCalendar : generer un calendrier mensuel
+            GenStopwatch : generer un chronometre simple
+            GenCountdown : generer un compte a rebours
+            DumpDtmState : afficher l'etat
+            10 accesseurs : IsDtmInitialized, IsDtmEmpty, GetDtm*Count
+
+  TODO 15 - GENERATION D'UNITES PERSONNALISEES [IMPLEMENTE]
+            CUS_NONE=0..CUS_MAX=13 : constantes types d'unites
+            CUS_MAX_FUNCS=20, CUS_MAX_PROCS=20 : limites
+            CusInitialized + 15 variables d'etat
+            InitCusState : initialiser l'etat
+            GenCusLabel : generer un label unique
+            CusTypeName : nom du type d'unite
+            GenTimeUnit : generer une unite pour le temps
+            GenStringUnit : generer une unite pour les chaines
+            GenMathUnit : generer une unite mathematique etendue
+            GenFileUnit : generer une unite pour les fichiers
+            GenConsoleUnit : generer une unite pour la console
+            DumpCusState : afficher l'etat
+            10 accesseurs : IsCusInitialized, IsCusEmpty, GetCus*Count
+
+  TODO 16 - INTERFACE DE CLAVARDAGE EN FRANCAIS [IMPLEMENTE]
+            CHT_NONE=0..CHT_MAX=13 : constantes types d'interface
+            CHT_MAX_LINES=50, CHT_MAX_WIDTH=80 : limites
+            ChtInitialized + 15 variables d'etat
+            InitChtState : initialiser l'etat
+            GenChtLabel : generer un label unique
+            ChtTypeName : nom du type d'interface
+            InitChat : initialiser l'interface de clavardage
+            ShowWelcome : afficher le message de bienvenue
+            ShowPrompt : afficher l'invite de commande
+            ReadUserInput : lire l'entree utilisateur
+            DisplayResponse(Text) : afficher une reponse formatee
+            DisplayCode : afficher du code genere
+            DisplayError, DisplayWarning, DisplayInfo : messages
+            DisplayHelp : afficher l'aide
+            DisplaySeparator, DisplayHeader, DisplayFooter : mise en forme
+            ShowGoodbye : afficher le message d'au revoir
+            DumpChtState : afficher l'etat
+            10 accesseurs : IsChtInitialized, IsChtEmpty, GetCht*Count
+
+  TODO 17 - SYSTEME DE REPONSES CONTEXTUELLES [IMPLEMENTE]
+            RSP_NONE=0..RSP_MAX=13 : constantes types de reponses
+            RSP_MAX_SUGGESTIONS=10, RSP_MAX_RELATED=10 : limites
+            RspInitialized + 15 variables d'etat
+            InitRspState : initialiser l'etat
+            GenRspLabel : generer un label unique
+            RspTypeName : nom du type de reponse
+            TResponseKind : RK_TEXT, RK_CODE, RK_MIXED, RK_ERROR, RK_HELP
+            TResponse : Kind, Text, Code, Suggestions
+            GenerateResponse(Intent, Context) : generer une reponse
+            GetContextualHelp(Topic) : obtenir de l'aide contextuelle
+            SuggestRelated(Topic) : suggerer des sujets connexes
+            FormatResponse(Response) : formater la reponse pour affichage
+            DumpRspState : afficher l'etat
+            10 accesseurs : IsRspInitialized, IsRspEmpty, GetRsp*Count
+
+  TODO 18 - FORMATAGE ET INDENTATION DU CODE GENERE [IMPLEMENTE]
+            FMT_NONE=0..FMT_MAX=13 : constantes types de formatage
+            FMT_MAX_INDENT=8, FMT_MAX_WIDTH=80, FMT_TAB_SIZE=2 : limites
+            FmtInitialized + 15 variables d'etat
+            InitFmtState : initialiser l'etat
+            GenFmtLabel : generer un label unique
+            FmtTypeName : nom du type de formatage
+            MakeIndent(Level) : creer une chaine d'indentation
+            IsPascalKeyword(S) : verifier si mot-cle Pascal
+            IndentCode(Code, Level) : indenter le code
+            WrapLongLines(Code, MaxWidth) : couper les lignes trop longues
+            AddCodeComments(Code, Comment) : ajouter des commentaires
+            FormatKeywords(Code, ToUpper) : formater les mots-cles
+            FormatCode(Code) : formater le code genere
+            PrettyPrint(Code) : affichage elegant avec indentation auto
+            SetFormatOptions : configurer les options de formatage
+            DumpFmtState : afficher l'etat
+            10 accesseurs : IsFmtInitialized, IsFmtEmpty, GetFmt*Count
+
+  TODO 19 - AIDE EN LIGNE ET EXEMPLES [IMPLEMENTE]
+            HLP_NONE=0..HLP_MAX=13 : constantes types d'aide
+            HLP_MAX_KEYWORDS=100, HLP_MAX_EXAMPLES=20, HLP_MAX_TOPICS=30 : limites
+            HlpInitialized + 15 variables d'etat
+            InitHlpState : initialiser l'etat
+            GenHlpLabel : generer un label unique
+            HlpTypeName : nom du type d'aide
+            ShowHelp : afficher l'aide generale
+            ShowExamples : afficher des exemples de requetes
+            ShowSyntax(Topic) : afficher la syntaxe Pascal d'un element
+            ShowKeywords : lister les mots-cles reconnus
+            ShowCapabilities : lister les capacites du chatbot
+            DumpHlpState : afficher l'etat
+            10 accesseurs : IsHlpInitialized, IsHlpEmpty, GetHlp*Count
+
+  TODO 20 - SAUVEGARDE DES PROGRAMMES GENERES [IMPLEMENTE]
+            SAV_NONE=0..SAV_MAX=13 : constantes types de sauvegarde
+            SAV_MAX_FILES=100, SAV_MAX_PATH=255 : limites
+            SavInitialized + 15 variables d'etat
+            InitSavState : initialiser l'etat
+            GenSavLabel : generer un label unique
+            SavTypeName : nom du type de sauvegarde
+            SaveProgram(FileName) : sauvegarder dans un fichier .pas
+            AutoSuggestFileName(Code) : suggerer un nom de fichier
+            CheckFileExists(FileName) : verifier si le fichier existe
+            ConfirmOverwrite : demander confirmation pour ecrasement
+            AddToSavedFiles : ajouter a la liste des fichiers
+            ListSavedPrograms : lister les programmes sauvegardes
+            HandleSaveCommand : gerer la commande /save
+            DumpSavState : afficher l'etat
+            10 accesseurs : IsSavInitialized, IsSavEmpty, GetSav*Count
+
+  TODO 21 - VALIDATION SYNTAXIQUE DU CODE GENERE [IMPLEMENTE]
+            VAL_NONE=0..VAL_MAX=13 : constantes types de validation
+            VAL_MAX_ERRORS=50, VAL_MAX_KEYWORDS=80 : limites
+            ValInitialized + 15 variables d'etat
+            InitValState : initialiser l'etat
+            GenValLabel : generer un label unique
+            ValTypeName : nom du type de validation
+            ValidateSyntax(Code) : verifier la syntaxe du code genere
+            CheckBalancedBlocks(Code) : verifier l'equilibrage BEGIN/END
+            CheckSemicolons(Code) : verifier les points-virgules
+            CheckIdentifiers(Code) : verifier les identificateurs
+            CheckParentheses(Code) : verifier les parentheses
+            CheckBrackets(Code) : verifier les crochets
+            CheckStringLiterals(Code) : verifier les chaines
+            CheckComments(Code) : verifier les commentaires
+            CheckKeywords(Code) : verifier les mots-cles Pascal
+            AddValidationError : ajouter une erreur
+            ClearValidationErrors : effacer les erreurs
+            ReportSyntaxErrors : rapporter les erreurs trouvees
+            DumpValState : afficher l'etat
+            10 accesseurs : IsValInitialized, IsValEmpty, GetVal*Count
+
+  TODO 22 - SUGGESTIONS ET AUTO-COMPLETION [IMPLEMENTE]
+            SUG_NONE=0..SUG_MAX=13 : constantes types de suggestion
+            SUG_MAX_ITEMS=20, SUG_MAX_TEXT=80 : limites
+            SugInitialized + 15 variables d'etat
+            InitSugState : initialiser l'etat
+            GenSugLabel : generer un label unique
+            SugTypeName : nom du type de suggestion
+            AddSuggestion(Text, Desc, Priority) : ajouter une suggestion
+            ClearSuggestions : effacer les suggestions
+            GetSuggestions(PartialInput) : obtenir des suggestions
+            AutoComplete(Input) : completer automatiquement l'entree
+            ShowSuggestions : afficher les suggestions
+            ApplySuggestion(Index) : appliquer une suggestion
+            DumpSugState : afficher l'etat
+            10 accesseurs : IsSugInitialized, IsSugEmpty, GetSug*Count
+
+  TODO 23 - MODE INTERACTIF AMELIORE [IMPLEMENTE]
+            IMD_NONE=0..IMD_MAX=13 : 14 types de modes
+            IMD_MAX_CODE_LINES=100/IMD_MAX_EDIT_SIZE=255/IMD_MAX_LEARN=50 : limites
+            ImdInitialized + 17 variables d'etat
+            InitImdState : initialiser le mode interactif
+            GenImdLabel : generer une etiquette unique
+            ImdTypeName(Type) : nom du type de mode
+            ImdModeToType(Mode) : convertir mode vers type
+            SetMode(Mode) : changer de mode interactif
+            GetCurrentMode : obtenir le mode courant
+            GetCurrentModeStr : obtenir le nom du mode
+            StoreLastCode(Code) : stocker une ligne de code
+            ClearLastCode : effacer le code stocke
+            EditLastCode : editer le dernier code genere
+            ReviewCode(StartLine) : passer en revue le code ligne par ligne
+            LearnFromUser(Input) : apprendre de l'utilisateur
+            ShowModeHelp : afficher l'aide des modes
+            HandleModeCommand(Cmd) : gerer les commandes de mode
+            DumpImdState : afficher l'etat
+            10 accesseurs : IsImdInitialized, IsImdNormalMode, GetImd*Count
+
+  TODO 24 - EXPORT ET HISTORIQUE DE SESSION [IMPLEMENTE]
+            Constantes: SES_NONE=0..SES_MAX=13 (14 types)
+            Limites: SES_MAX_EXPORTS=100/SES_MAX_IMPORTS=50/SES_MAX_PATH=255
+            Variables: SesInitialized + 20 variables d'etat
+            InitSesState : initialiser l'etat session
+            GenSesLabel : generer une etiquette unique
+            SesTypeName(Type) : nom du type de session
+            ExportSession(FileName) : exporter la session complete
+            ExportCode(FileName) : exporter uniquement le code genere
+            ImportSession(FileName) : importer une session precedente
+            ShowSessionStats : afficher les statistiques de session
+            ClearSession : reinitialiser la session
+            DumpSesState : afficher l'etat
+            10 accesseurs : IsSesInitialized, GetSes*Count
+
+  TODO 25 - PROGRAMME PRINCIPAL ET BOUCLE DE CLAVARDAGE [IMPLEMENTE]
+            Run : lancer le chatbot
+            MainLoop : boucle principale de clavardage
+            ProcessCommand(Input) : traiter une commande utilisateur
+            HandleSpecialCommands : gerer les commandes speciales (/help, /quit, /save)
+            Cleanup : nettoyage avant sortie
+            Programme principal : initialiser et demarrer le chatbot
+
