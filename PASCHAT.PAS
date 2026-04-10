@@ -404,7 +404,7 @@ Program PASCHAT;
   ============================================================ }
 
 { ============================================================
-  TODO 25 - PROGRAMME PRINCIPAL ET BOUCLE DE CLAVARDAGE [A FAIRE]
+  TODO 25 - PROGRAMME PRINCIPAL ET BOUCLE DE CLAVARDAGE [IMPLEMENTE]
             Run : lancer le chatbot
             MainLoop : boucle principale de clavardage
             ProcessCommand(Input) : traiter une commande utilisateur
