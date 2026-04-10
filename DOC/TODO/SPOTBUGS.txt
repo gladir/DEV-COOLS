@@ -66,10 +66,11 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
             CPTagName(Tag) : nom textuel du tag (Utf8, Class, Methodref...)
             DumpConstantPool : afficher le CP pour debug
 
-  TODO 04 - LECTURE DES FLAGS, THIS_CLASS, SUPER_CLASS, INTERFACES [A FAIRE]
+  TODO 04 - LECTURE DES FLAGS, THIS_CLASS, SUPER_CLASS, INTERFACES [IMPLEMENTE]
             Structure TClassInfo (AccessFlags, ThisClass, SuperClass,
               Interfaces[0..255], InterfaceCount, IsInterface, IsAbstract,
-              IsEnum, IsAnnotation, SourceFile, IsSynthetic)
+              IsEnum, IsAnnotation, IsFinal, IsPublic, IsSynthetic, SourceFile)
+            InitClassInfo : initialiser la structure ClassInfo
             ReadClassInfo : lire AccessFlags/ThisClass/SuperClass (U2 big-endian),
               resoudre noms via CP, lire InterfaceCount puis chaque interface,
               decoder les bits ACC_*
@@ -77,8 +78,11 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               "java/lang/RuntimeException" -> "RuntimeException"
             GetPackageName(InternalName) : extraire le paquetage
               "com/example/Foo" -> "com.example"
+            InternalToJavaName : convertir / en . dans les noms
+            SkipAttribute : sauter un attribut non gere
             ReadAttributesClass : parcourir attributs classe (SourceFile,
               Deprecated, InnerClasses, EnclosingMethod, Signature, Annotations)
+            DumpClassInfo : afficher les infos de classe (debug)
 
   TODO 05 - LECTURE DES CHAMPS (FIELDS) DE LA CLASSE [A FAIRE]
             Structure TFieldInfo (AccessFlags, Name, Descriptor, IsSynthetic,

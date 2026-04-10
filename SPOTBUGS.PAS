@@ -19,7 +19,7 @@
 {  TODO 01 [IMPLEMENTE] - Infrastructure, options et constantes globales      }
 {  TODO 02 [IMPLEMENTE] - Lecture et validation de l'en-tete .class           }
 {  TODO 03 [IMPLEMENTE] - Decodage du Constant Pool                           }
-{  TODO 04 [A FAIRE] - Lecture des flags, this_class, super_class, interfaces }
+{  TODO 04 [IMPLEMENTE] - Lecture des flags, this_class, super_class, interfaces }
 {  TODO 05 [A FAIRE] - Lecture des champs (fields) de la classe               }
 {  TODO 06 [A FAIRE] - Lecture des methodes et de l'attribut Code             }
 {  TODO 07 [A FAIRE] - Decodage du bytecode Java (opcodes JVM)                }
@@ -311,6 +311,23 @@ Type
   { --- TODO 03 : Tableau du Constant Pool --- }
   TCPArray = Array[0..MAX_CP_ENTRIES] of TCPEntry;
 
+  { --- TODO 04 : Structure TClassInfo : informations de la classe --- }
+  TClassInfo = Record
+    AccessFlags    : Word;                        { Flags d'acces de la classe    }
+    ThisClass      : String;                      { Nom interne (java/lang/X)     }
+    SuperClass     : String;                      { Nom de la super-classe        }
+    Interfaces     : Array[0..MAX_INTERFACES-1] of String; { Interfaces }
+    InterfaceCount : Integer;                     { Nombre d'interfaces           }
+    IsInterface    : Boolean;                     { True si ACC_INTERFACE set     }
+    IsAbstract     : Boolean;                     { True si ACC_ABSTRACT set      }
+    IsEnum         : Boolean;                     { True si ACC_ENUM set          }
+    IsAnnotation   : Boolean;                     { True si ACC_ANNOTATION set    }
+    IsFinal        : Boolean;                     { True si ACC_FINAL set         }
+    IsPublic       : Boolean;                     { True si ACC_PUBLIC set        }
+    IsSynthetic    : Boolean;                     { True si ACC_SYNTHETIC set     }
+    SourceFile     : String;                      { Nom du fichier source .java   }
+  End;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -329,6 +346,7 @@ Var
   ClassHeader    : TClassHeader;  { TODO 02 : En-tete du .class courant }
   CP             : ^TCPArray;     { TODO 03 : Constant Pool (pointeur)  }
   CPCount        : Word;          { TODO 03 : Nombre d'entrees CP       }
+  ClassInfo      : TClassInfo;    { TODO 04 : Informations de la classe }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -1076,41 +1094,216 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 04 [A FAIRE] - Lecture des flags, this_class, super_class, interfaces   }
+{ TODO 04 [IMPLEMENTE] - Lecture des flags, this_class, super_class, interfaces }
 { ============================================================================ }
-{                                                                              }
-{  - Structure TClassInfo :                                                      }
-{      AccessFlags    : Word                   (flags d'acces de la classe)     }
-{      ThisClass      : String                 (nom interne, ex. java/lang/X)   }
-{      SuperClass     : String                 (nom interne de la super-classe) }
-{      Interfaces     : array[0..255] of String (interfaces implementees)       }
-{      InterfaceCount : Integer                 (nombre d'interfaces)           }
-{      IsInterface    : Boolean                 (True si ACC_INTERFACE set)     }
-{      IsAbstract     : Boolean                 (True si ACC_ABSTRACT set)      }
-{      IsEnum         : Boolean                 (True si ACC_ENUM set)          }
-{      IsAnnotation   : Boolean                 (True si ACC_ANNOTATION set)    }
-{      SourceFile     : String                  (nom du fichier source .java)   }
-{      IsSynthetic    : Boolean                 (True si ACC_SYNTHETIC set)     }
-{                                                                              }
-{  - Procedure ReadClassInfo                                                    }
-{      Lire AccessFlags (U2), ThisClass (U2), SuperClass (U2) en big-endian     }
-{      Resoudre les noms via le Constant Pool                                   }
-{      Lire InterfaceCount (U2) puis chaque interface (U2 -> nom CP)            }
-{      Decoder les bits ACC_* pour remplir IsInterface, IsAbstract, etc.        }
-{      Convertir les noms internes (slashes) en noms Java (points)              }
-{                                                                              }
-{  - Function GetSimpleClassName(InternalName: String): String                  }
-{      Extraire le nom simple depuis le nom interne                             }
-{      Ex.: "java/lang/RuntimeException" -> "RuntimeException"                  }
-{                                                                              }
-{  - Function GetPackageName(InternalName: String): String                      }
-{      Extraire le nom du paquetage depuis le nom interne                       }
-{      Ex.: "com/example/Foo" -> "com.example"                                  }
-{                                                                              }
-{  - Procedure ReadAttributesClass                                              }
-{      Parcourir les attributs de la classe (SourceFile, Deprecated,            }
-{      InnerClasses, EnclosingMethod, Signature, RuntimeAnnotations)            }
-{      Decoder l'attribut SourceFile pour renseigner ClassInfo.SourceFile       }
+
+{ --- GetSimpleClassName : extraire le nom simple depuis le nom interne --- }
+{ Ex.: "java/lang/RuntimeException" -> "RuntimeException"                   }
+Function GetSimpleClassName(InternalName: String): String;
+Var
+  I: Integer;
+Begin
+  { Chercher le dernier / }
+  For I := Length(InternalName) DownTo 1 Do Begin
+    If InternalName[I] = '/' Then Begin
+      GetSimpleClassName := Copy(InternalName, I + 1, Length(InternalName) - I);
+      Exit;
+    End;
+  End;
+  { Pas de / : nom deja simple }
+  GetSimpleClassName := InternalName;
+End;
+
+{ --- GetPackageName : extraire le paquetage depuis le nom interne --- }
+{ Ex.: "com/example/Foo" -> "com.example"                                }
+Function GetPackageName(InternalName: String): String;
+Var
+  I: Integer;
+  Pkg: String;
+Begin
+  Pkg := '';
+  { Chercher le dernier / }
+  For I := Length(InternalName) DownTo 1 Do Begin
+    If InternalName[I] = '/' Then Begin
+      Pkg := Copy(InternalName, 1, I - 1);
+      Break;
+    End;
+  End;
+  { Convertir / en . }
+  For I := 1 to Length(Pkg) Do
+    If Pkg[I] = '/' Then Pkg[I] := '.';
+  GetPackageName := Pkg;
+End;
+
+{ --- InternalToJavaName : convertir nom interne en nom Java --- }
+{ Ex.: "java/lang/String" -> "java.lang.String"                   }
+Function InternalToJavaName(InternalName: String): String;
+Var
+  I: Integer;
+  S: String;
+Begin
+  S := InternalName;
+  For I := 1 to Length(S) Do
+    If S[I] = '/' Then S[I] := '.';
+  InternalToJavaName := S;
+End;
+
+{ --- InitClassInfo : initialiser la structure ClassInfo --- }
+Procedure InitClassInfo;
+Var
+  I: Integer;
+Begin
+  ClassInfo.AccessFlags := 0;
+  ClassInfo.ThisClass := '';
+  ClassInfo.SuperClass := '';
+  ClassInfo.InterfaceCount := 0;
+  For I := 0 to MAX_INTERFACES - 1 Do
+    ClassInfo.Interfaces[I] := '';
+  ClassInfo.IsInterface := False;
+  ClassInfo.IsAbstract := False;
+  ClassInfo.IsEnum := False;
+  ClassInfo.IsAnnotation := False;
+  ClassInfo.IsFinal := False;
+  ClassInfo.IsPublic := False;
+  ClassInfo.IsSynthetic := False;
+  ClassInfo.SourceFile := '';
+End;
+
+{ --- ReadClassInfo : lire les informations de la classe apres le CP --- }
+Procedure ReadClassInfo;
+Var
+  Flags, ThisIdx, SuperIdx, IfCount, IfIdx: Word;
+  I: Integer;
+Begin
+  InitClassInfo;
+  
+  { Lire AccessFlags (U2) }
+  Flags := ReadU2;
+  ClassInfo.AccessFlags := Flags;
+  
+  { Decoder les flags d'acces }
+  ClassInfo.IsPublic := (Flags and ACC_PUBLIC) <> 0;
+  ClassInfo.IsFinal := (Flags and ACC_FINAL) <> 0;
+  ClassInfo.IsInterface := (Flags and ACC_INTERFACE) <> 0;
+  ClassInfo.IsAbstract := (Flags and ACC_ABSTRACT) <> 0;
+  ClassInfo.IsSynthetic := (Flags and ACC_SYNTHETIC) <> 0;
+  ClassInfo.IsAnnotation := (Flags and ACC_ANNOTATION) <> 0;
+  ClassInfo.IsEnum := (Flags and ACC_ENUM) <> 0;
+  
+  { Lire this_class (U2) -> index CP_CLASS }
+  ThisIdx := ReadU2;
+  If ThisIdx > 0 Then
+    ClassInfo.ThisClass := CPGetClassName(ThisIdx)
+  Else
+    ClassInfo.ThisClass := '';
+    
+  { Lire super_class (U2) -> index CP_CLASS (0 pour java/lang/Object) }
+  SuperIdx := ReadU2;
+  If SuperIdx > 0 Then
+    ClassInfo.SuperClass := CPGetClassName(SuperIdx)
+  Else
+    ClassInfo.SuperClass := '';
+    
+  { Lire interfaces_count (U2) }
+  IfCount := ReadU2;
+  ClassInfo.InterfaceCount := IfCount;
+  
+  { Lire chaque interface (U2 -> index CP_CLASS) }
+  For I := 0 to IfCount - 1 Do Begin
+    If I < MAX_INTERFACES Then Begin
+      IfIdx := ReadU2;
+      If IfIdx > 0 Then
+        ClassInfo.Interfaces[I] := CPGetClassName(IfIdx)
+      Else
+        ClassInfo.Interfaces[I] := '';
+    End Else Begin
+      { Trop d'interfaces, lire mais ignorer }
+      IfIdx := ReadU2;
+    End;
+  End;
+  
+  If Opts.Verbose Then Begin
+    Info('Classe: ' + ClassInfo.ThisClass);
+    If ClassInfo.SuperClass <> '' Then
+      Info('Super: ' + ClassInfo.SuperClass);
+    If ClassInfo.InterfaceCount > 0 Then
+      Info('Interfaces: ' + IntToStr_(ClassInfo.InterfaceCount));
+  End;
+End;
+
+{ --- SkipAttribute : sauter un attribut de taille donnee --- }
+Procedure SkipAttribute(AttrLen: LongInt);
+Var
+  I: LongInt;
+  B: Byte;
+Begin
+  For I := 1 to AttrLen Do
+    B := ReadU1;
+End;
+
+{ --- ReadAttributesClass : lire les attributs de la classe --- }
+Procedure ReadAttributesClass(AttrCount: Word);
+Var
+  I: Word;
+  NameIdx: Word;
+  AttrLen: LongInt;
+  AttrName: String;
+  SrcIdx: Word;
+Begin
+  For I := 1 to AttrCount Do Begin
+    { Lire attribute_name_index (U2) et attribute_length (U4) }
+    NameIdx := ReadU2;
+    AttrLen := ReadU4;
+    
+    { Recuperer le nom de l'attribut }
+    AttrName := CPGetUtf8(NameIdx);
+    
+    If AttrName = 'SourceFile' Then Begin
+      { SourceFile: 2 octets = index UTF8 du nom de fichier }
+      SrcIdx := ReadU2;
+      ClassInfo.SourceFile := CPGetUtf8(SrcIdx);
+      If Opts.Verbose Then
+        Info('Source: ' + ClassInfo.SourceFile);
+    End
+    Else Begin
+      { Attribut non gere, sauter les donnees }
+      SkipAttribute(AttrLen);
+    End;
+  End;
+End;
+
+{ --- DumpClassInfo : afficher les informations de la classe (debug) --- }
+Procedure DumpClassInfo;
+Var
+  I: Integer;
+  FlagStr: String;
+Begin
+  WriteLn('=== Class Info ===');
+  
+  { Construire la chaine des flags }
+  FlagStr := '';
+  If ClassInfo.IsPublic Then FlagStr := FlagStr + 'public ';
+  If ClassInfo.IsFinal Then FlagStr := FlagStr + 'final ';
+  If ClassInfo.IsAbstract Then FlagStr := FlagStr + 'abstract ';
+  If ClassInfo.IsInterface Then FlagStr := FlagStr + 'interface ';
+  If ClassInfo.IsEnum Then FlagStr := FlagStr + 'enum ';
+  If ClassInfo.IsAnnotation Then FlagStr := FlagStr + '@interface ';
+  If ClassInfo.IsSynthetic Then FlagStr := FlagStr + 'synthetic ';
+  
+  WriteLn('Flags: ', FlagStr, '($', HexWord(ClassInfo.AccessFlags), ')');
+  WriteLn('This:  ', ClassInfo.ThisClass);
+  WriteLn('       ', InternalToJavaName(ClassInfo.ThisClass));
+  WriteLn('Super: ', ClassInfo.SuperClass);
+  
+  If ClassInfo.InterfaceCount > 0 Then Begin
+    WriteLn('Interfaces (', ClassInfo.InterfaceCount, '):');
+    For I := 0 to ClassInfo.InterfaceCount - 1 Do
+      WriteLn('  ', I + 1, '. ', ClassInfo.Interfaces[I]);
+  End;
+  
+  If ClassInfo.SourceFile <> '' Then
+    WriteLn('Source: ', ClassInfo.SourceFile);
+End;
 
 { ============================================================================ }
 { TODO 05 [A FAIRE] - Lecture des champs (fields) de la classe                 }
