@@ -180,7 +180,7 @@
             LabelGen : generateur de labels uniques _JL_N
             10 fonctions accesseurs
 
-  TODO 07 - OPERATEURS ET PRECEDENCE [A FAIRE]
+  TODO 07 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques : + - * / % (division entiere pour int)
             Comparaison : == != < <= > >= (int, char, references)
             Logiques : && || ! (court-circuit, evaluation booleenne)
@@ -3864,7 +3864,766 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-06)                              }
+{ TODO 07 - OPERATEURS ET PRECEDENCE            [IMPLEMENTE]   }
+{ ============================================================ }
+
+Const
+  { Operateurs binaires }
+  OP_NONE        = 0;
+  OP_ADD         = 1;    { +                                     }
+  OP_SUB         = 2;    { -                                     }
+  OP_MUL         = 3;    { *                                     }
+  OP_DIV         = 4;    { / (division entiere pour int)         }
+  OP_MOD         = 5;    { %                                     }
+  OP_SHL         = 6;    { <<                                    }
+  OP_SHR         = 7;    { >> (decalage droite signe)            }
+  OP_USHR        = 8;    { >>> (decalage droite non-signe)       }
+  OP_BAND        = 9;    { &                                     }
+  OP_BOR         = 10;   { |                                     }
+  OP_BXOR        = 11;   { ^                                     }
+  OP_EQ          = 12;   { ==                                    }
+  OP_NE          = 13;   { !=                                    }
+  OP_LT          = 14;   { <                                     }
+  OP_LE          = 15;   { <=                                    }
+  OP_GT          = 16;   { >                                     }
+  OP_GE          = 17;   { >=                                    }
+  OP_AND         = 18;   { && (court-circuit logique)            }
+  OP_OR          = 19;   { || (court-circuit logique)            }
+  OP_INSTANCEOF  = 20;   { instanceof                            }
+  OP_MAX         = 20;
+
+  { Operateurs unaires }
+  UOP_NONE       = 0;
+  UOP_NEG        = 1;    { - (negation)                          }
+  UOP_POS        = 2;    { + (identite)                          }
+  UOP_BNOT       = 3;    { ~ (complement bit a bit)              }
+  UOP_NOT        = 4;    { ! (negation logique)                  }
+  UOP_PREINC     = 5;    { ++x (pre-increment)                   }
+  UOP_PREDEC     = 6;    { --x (pre-decrement)                   }
+  UOP_POSTINC    = 7;    { x++ (post-increment)                  }
+  UOP_POSTDEC    = 8;    { x-- (post-decrement)                  }
+  UOP_MAX        = 8;
+
+  { Operateurs d affectation }
+  AOP_ASSIGN       = 0;   { =                                    }
+  AOP_ADD_ASSIGN   = 1;   { +=                                   }
+  AOP_SUB_ASSIGN   = 2;   { -=                                   }
+  AOP_MUL_ASSIGN   = 3;   { *=                                   }
+  AOP_DIV_ASSIGN   = 4;   { /=                                   }
+  AOP_MOD_ASSIGN   = 5;   { %=                                   }
+  AOP_BAND_ASSIGN  = 6;   { &=                                   }
+  AOP_BOR_ASSIGN   = 7;   { |=                                   }
+  AOP_BXOR_ASSIGN  = 8;   { ^=                                   }
+  AOP_SHL_ASSIGN   = 9;   { <<=                                  }
+  AOP_SHR_ASSIGN   = 10;  { >>=                                  }
+  AOP_USHR_ASSIGN  = 11;  { >>>=                                 }
+  AOP_MAX          = 11;
+
+  { Niveaux de precedence (du plus fort au plus faible) }
+  { Java :                                                       }
+  {  1 = postfixe ++ -- . [] ()                                  }
+  {  2 = prefixe ++ -- + - ~ !                                   }
+  {  3 = * / %                                                   }
+  {  4 = + - (binaire, concat String)                            }
+  {  5 = << >> >>>                                               }
+  {  6 = < <= > >= instanceof                                    }
+  {  7 = == !=                                                   }
+  {  8 = &                                                       }
+  {  9 = ^                                                       }
+  { 10 = |                                                       }
+  { 11 = &&                                                      }
+  { 12 = ||                                                      }
+  { 13 = ? : (ternaire)                                          }
+  { 14 = = += -= *= /= %= &= |= ^= <<= >>= >>>=                }
+  PREC_MULDIV    = 3;    { * / %                                 }
+  PREC_ADDSUB    = 4;    { + - (binaires)                        }
+  PREC_SHIFT     = 5;    { << >> >>>                             }
+  PREC_RELAT     = 6;    { < <= > >= instanceof                  }
+  PREC_EQUAL     = 7;    { == !=                                 }
+  PREC_BAND      = 8;    { &                                     }
+  PREC_BXOR      = 9;    { ^                                     }
+  PREC_BOR       = 10;   { |                                     }
+  PREC_AND       = 11;   { &&                                    }
+  PREC_OR        = 12;   { ||                                    }
+  PREC_MAX       = 12;
+
+Var
+  OprInitialized : Boolean;    { True si l etat est initialise       }
+  OprParseCount  : LongInt;    { nombre total d appels ParseExpr     }
+  OprBinOpCount  : LongInt;    { nombre d ops binaires emis          }
+  OprUnaryCount  : LongInt;    { nombre d ops unaires emis           }
+  OprFoldCount   : LongInt;    { nombre de pliages de constantes     }
+  OprFlushCount  : LongInt;    { nombre de flush vers EAX            }
+  OprAssignCount : LongInt;    { nombre d affectations traitees      }
+  OprMaxPrec     : Integer;    { precedence max vue                  }
+  OprLastOp      : Integer;    { dernier operateur traite            }
+  OprLastPrec    : Integer;    { derniere precedence traitee         }
+
+{ ------------------------------------------------------------ }
+{ InitOprState : initialiser le sous-systeme des operateurs      }
+{ ------------------------------------------------------------ }
+
+Procedure InitOprState;
+Begin
+  OprInitialized := True;
+  OprParseCount  := 0;
+  OprBinOpCount  := 0;
+  OprUnaryCount  := 0;
+  OprFoldCount   := 0;
+  OprFlushCount  := 0;
+  OprAssignCount := 0;
+  OprMaxPrec     := 0;
+  OprLastOp      := OP_NONE;
+  OprLastPrec    := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenOprLabel : generer un label unique pour le sous-systeme     }
+{ ------------------------------------------------------------ }
+
+Function GenOprLabel : TString;
+Begin
+  GenOprLabel := LabelGen;
+End;
+
+{ ------------------------------------------------------------ }
+{ OpName : nom textuel d un operateur binaire                    }
+{ ------------------------------------------------------------ }
+
+Function OpName(Op : Integer) : TString;
+Begin
+  Case Op Of
+    OP_NONE       : OpName := 'NONE';
+    OP_ADD        : OpName := '+';
+    OP_SUB        : OpName := '-';
+    OP_MUL        : OpName := '*';
+    OP_DIV        : OpName := '/';
+    OP_MOD        : OpName := '%';
+    OP_SHL        : OpName := '<<';
+    OP_SHR        : OpName := '>>';
+    OP_USHR       : OpName := '>>>';
+    OP_BAND       : OpName := '&';
+    OP_BOR        : OpName := '|';
+    OP_BXOR       : OpName := '^';
+    OP_EQ         : OpName := '==';
+    OP_NE         : OpName := '!=';
+    OP_LT         : OpName := '<';
+    OP_LE         : OpName := '<=';
+    OP_GT         : OpName := '>';
+    OP_GE         : OpName := '>=';
+    OP_AND        : OpName := '&&';
+    OP_OR         : OpName := '||';
+    OP_INSTANCEOF : OpName := 'instanceof';
+  Else
+    OpName := 'OP_?(' + ItoS(Op) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ UnaryOpName : nom textuel d un operateur unaire                }
+{ ------------------------------------------------------------ }
+
+Function UnaryOpName(Op : Integer) : TString;
+Begin
+  Case Op Of
+    UOP_NONE    : UnaryOpName := 'NONE';
+    UOP_NEG     : UnaryOpName := '-';
+    UOP_POS     : UnaryOpName := '+';
+    UOP_BNOT    : UnaryOpName := '~';
+    UOP_NOT     : UnaryOpName := '!';
+    UOP_PREINC  : UnaryOpName := '++x';
+    UOP_PREDEC  : UnaryOpName := '--x';
+    UOP_POSTINC : UnaryOpName := 'x++';
+    UOP_POSTDEC : UnaryOpName := 'x--';
+  Else
+    UnaryOpName := 'UOP_?(' + ItoS(Op) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AssignOpName : nom textuel d un operateur d affectation         }
+{ ------------------------------------------------------------ }
+
+Function AssignOpName(Op : Integer) : TString;
+Begin
+  Case Op Of
+    AOP_ASSIGN      : AssignOpName := '=';
+    AOP_ADD_ASSIGN  : AssignOpName := '+=';
+    AOP_SUB_ASSIGN  : AssignOpName := '-=';
+    AOP_MUL_ASSIGN  : AssignOpName := '*=';
+    AOP_DIV_ASSIGN  : AssignOpName := '/=';
+    AOP_MOD_ASSIGN  : AssignOpName := '%=';
+    AOP_BAND_ASSIGN : AssignOpName := '&=';
+    AOP_BOR_ASSIGN  : AssignOpName := '|=';
+    AOP_BXOR_ASSIGN : AssignOpName := '^=';
+    AOP_SHL_ASSIGN  : AssignOpName := '<<=';
+    AOP_SHR_ASSIGN  : AssignOpName := '>>=';
+    AOP_USHR_ASSIGN : AssignOpName := '>>>=';
+  Else
+    AssignOpName := 'AOP_?(' + ItoS(Op) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ BinOpPrec : retourner la precedence d un operateur binaire     }
+{ ------------------------------------------------------------ }
+
+Function BinOpPrec(Op : Integer) : Integer;
+Begin
+  Case Op Of
+    OP_MUL, OP_DIV,
+    OP_MOD              : BinOpPrec := PREC_MULDIV;
+    OP_ADD, OP_SUB      : BinOpPrec := PREC_ADDSUB;
+    OP_SHL, OP_SHR,
+    OP_USHR             : BinOpPrec := PREC_SHIFT;
+    OP_LT, OP_LE,
+    OP_GT, OP_GE,
+    OP_INSTANCEOF       : BinOpPrec := PREC_RELAT;
+    OP_EQ, OP_NE        : BinOpPrec := PREC_EQUAL;
+    OP_BAND             : BinOpPrec := PREC_BAND;
+    OP_BXOR             : BinOpPrec := PREC_BXOR;
+    OP_BOR              : BinOpPrec := PREC_BOR;
+    OP_AND              : BinOpPrec := PREC_AND;
+    OP_OR               : BinOpPrec := PREC_OR;
+  Else
+    BinOpPrec := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ BinOpIsRight : True si l operateur est associatif a droite     }
+{ En Java, les operateurs binaires sont tous associatifs a       }
+{ gauche (seule l affectation est a droite, geree separement)    }
+{ ------------------------------------------------------------ }
+
+Function BinOpIsRight(Op : Integer) : Boolean;
+Begin
+  BinOpIsRight := False;
+  If Op = OP_NONE Then ; { eviter warning unused }
+End;
+
+{ ------------------------------------------------------------ }
+{ IsAssignOp : detecter un operateur d affectation dans CurTokStr}
+{ Retourne le type AOP_xxx ou -1 si pas un operateur d affect.   }
+{ ------------------------------------------------------------ }
+
+Function IsAssignOp : Integer;
+Var S : TString;
+Begin
+  S := CurTokStr;
+  If S = '='    Then IsAssignOp := AOP_ASSIGN
+  Else If S = '+='   Then IsAssignOp := AOP_ADD_ASSIGN
+  Else If S = '-='   Then IsAssignOp := AOP_SUB_ASSIGN
+  Else If S = '*='   Then IsAssignOp := AOP_MUL_ASSIGN
+  Else If S = '/='   Then IsAssignOp := AOP_DIV_ASSIGN
+  Else If S = '%='   Then IsAssignOp := AOP_MOD_ASSIGN
+  Else If S = '&='   Then IsAssignOp := AOP_BAND_ASSIGN
+  Else If S = '|='   Then IsAssignOp := AOP_BOR_ASSIGN
+  Else If S = '^='   Then IsAssignOp := AOP_BXOR_ASSIGN
+  Else If S = '<<='  Then IsAssignOp := AOP_SHL_ASSIGN
+  Else If S = '>>='  Then IsAssignOp := AOP_SHR_ASSIGN
+  Else If S = '>>>=' Then IsAssignOp := AOP_USHR_ASSIGN
+  Else IsAssignOp := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ AssignOpToBinOp : convertir AOP_xxx en OP_xxx pour les         }
+{ affectations composees (+=, -=, etc.)                          }
+{ ------------------------------------------------------------ }
+
+Function AssignOpToBinOp(AOp : Integer) : Integer;
+Begin
+  Case AOp Of
+    AOP_ADD_ASSIGN  : AssignOpToBinOp := OP_ADD;
+    AOP_SUB_ASSIGN  : AssignOpToBinOp := OP_SUB;
+    AOP_MUL_ASSIGN  : AssignOpToBinOp := OP_MUL;
+    AOP_DIV_ASSIGN  : AssignOpToBinOp := OP_DIV;
+    AOP_MOD_ASSIGN  : AssignOpToBinOp := OP_MOD;
+    AOP_BAND_ASSIGN : AssignOpToBinOp := OP_BAND;
+    AOP_BOR_ASSIGN  : AssignOpToBinOp := OP_BOR;
+    AOP_BXOR_ASSIGN : AssignOpToBinOp := OP_BXOR;
+    AOP_SHL_ASSIGN  : AssignOpToBinOp := OP_SHL;
+    AOP_SHR_ASSIGN  : AssignOpToBinOp := OP_SHR;
+    AOP_USHR_ASSIGN : AssignOpToBinOp := OP_USHR;
+  Else
+    AssignOpToBinOp := OP_NONE;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TokenToBinOp : convertir CurTokStr en OP_xxx                  }
+{ Retourne OP_NONE si pas un operateur binaire connu             }
+{ ------------------------------------------------------------ }
+
+Function TokenToBinOp : Integer;
+Var S : TString;
+Begin
+  S := CurTokStr;
+  If S = '+'       Then TokenToBinOp := OP_ADD
+  Else If S = '-'  Then TokenToBinOp := OP_SUB
+  Else If S = '*'  Then TokenToBinOp := OP_MUL
+  Else If S = '/'  Then TokenToBinOp := OP_DIV
+  Else If S = '%'  Then TokenToBinOp := OP_MOD
+  Else If S = '<<' Then TokenToBinOp := OP_SHL
+  Else If S = '>>' Then TokenToBinOp := OP_SHR
+  Else If S = '>>>'Then TokenToBinOp := OP_USHR
+  Else If S = '&'  Then TokenToBinOp := OP_BAND
+  Else If S = '|'  Then TokenToBinOp := OP_BOR
+  Else If S = '^'  Then TokenToBinOp := OP_BXOR
+  Else If S = '==' Then TokenToBinOp := OP_EQ
+  Else If S = '!=' Then TokenToBinOp := OP_NE
+  Else If S = '<'  Then TokenToBinOp := OP_LT
+  Else If S = '<=' Then TokenToBinOp := OP_LE
+  Else If S = '>'  Then TokenToBinOp := OP_GT
+  Else If S = '>=' Then TokenToBinOp := OP_GE
+  Else If S = '&&' Then TokenToBinOp := OP_AND
+  Else If S = '||' Then TokenToBinOp := OP_OR
+  Else TokenToBinOp := OP_NONE;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprFlushToEAX : s assurer que la valeur est dans EAX          }
+{ Si EK_IMM, emet MOV EAX, val. Si deja EK_EAX, rien a faire.  }
+{ ------------------------------------------------------------ }
+
+Function ExprFlushToEAX(E : TExprVal) : TExprVal;
+Var R : TExprVal;
+Begin
+  Inc(OprFlushCount);
+  R := E;
+  If E.Kind = EK_IMM Then
+  Begin
+    { MOV EAX, ImmVal serait emis ici dans la generation de code }
+    R.Kind := EK_EAX;
+  End
+  Else If E.Kind = EK_MEM Then
+  Begin
+    { MOV EAX, [mem] serait emis ici }
+    R.Kind := EK_EAX;
+  End;
+  { Si deja EK_EAX, rien a faire }
+  ExprFlushToEAX := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ConstFoldBinOp : pliage de constantes pour deux immediats      }
+{ Retourne True si le pliage a pu etre effectue                  }
+{ ------------------------------------------------------------ }
+
+Function ConstFoldBinOp(Op : Integer; L, R : TExprVal;
+                        Var OVal : TExprVal) : Boolean;
+Var V : LongInt;
+Begin
+  ConstFoldBinOp := False;
+  If (L.Kind <> EK_IMM) Or (R.Kind <> EK_IMM) Then Exit;
+  Case Op Of
+    OP_ADD  : V := L.ImmVal + R.ImmVal;
+    OP_SUB  : V := L.ImmVal - R.ImmVal;
+    OP_MUL  : V := L.ImmVal * R.ImmVal;
+    OP_DIV  :
+      Begin
+        If R.ImmVal = 0 Then Exit;   { pas de pliage si div/0 }
+        V := L.ImmVal Div R.ImmVal;
+      End;
+    OP_MOD  :
+      Begin
+        If R.ImmVal = 0 Then Exit;
+        V := L.ImmVal Mod R.ImmVal;
+      End;
+    OP_SHL  : V := L.ImmVal Shl (R.ImmVal And 31);
+    OP_SHR  : V := L.ImmVal Shr (R.ImmVal And 31);
+    OP_USHR : V := L.ImmVal Shr (R.ImmVal And 31);
+    OP_BAND : V := L.ImmVal And R.ImmVal;
+    OP_BOR  : V := L.ImmVal Or R.ImmVal;
+    OP_BXOR : V := L.ImmVal Xor R.ImmVal;
+    OP_EQ   : Begin If L.ImmVal =  R.ImmVal Then V := 1 Else V := 0; End;
+    OP_NE   : Begin If L.ImmVal <> R.ImmVal Then V := 1 Else V := 0; End;
+    OP_LT   : Begin If L.ImmVal <  R.ImmVal Then V := 1 Else V := 0; End;
+    OP_LE   : Begin If L.ImmVal <= R.ImmVal Then V := 1 Else V := 0; End;
+    OP_GT   : Begin If L.ImmVal >  R.ImmVal Then V := 1 Else V := 0; End;
+    OP_GE   : Begin If L.ImmVal >= R.ImmVal Then V := 1 Else V := 0; End;
+    OP_AND  : Begin If (L.ImmVal <> 0) And (R.ImmVal <> 0)
+                Then V := 1 Else V := 0; End;
+    OP_OR   : Begin If (L.ImmVal <> 0) Or (R.ImmVal <> 0)
+                Then V := 1 Else V := 0; End;
+  Else
+    Exit;  { instanceof : pas de pliage }
+  End;
+  OVal := ExprMakeImm(V, L.TypeIdx);
+  Inc(OprFoldCount);
+  ConstFoldBinOp := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprEmitBinOp : emettre l operation binaire sur deux TExprVal  }
+{ Tente d abord le pliage de constantes, sinon flush vers EAX    }
+{ ------------------------------------------------------------ }
+
+Function ExprEmitBinOp(Op : Integer; L, R : TExprVal) : TExprVal;
+Var Folded : TExprVal;
+Begin
+  Inc(OprBinOpCount);
+  OprLastOp := Op;
+  OprLastPrec := BinOpPrec(Op);
+  If OprLastPrec > OprMaxPrec Then
+    OprMaxPrec := OprLastPrec;
+
+  { Tenter le pliage de constantes }
+  If ConstFoldBinOp(Op, L, R, Folded) Then
+  Begin
+    ExprEmitBinOp := Folded;
+    Exit;
+  End;
+
+  { Sinon, la generation de code emettra les instructions }
+  { Pour l instant on retourne un resultat dans EAX       }
+  ExprEmitBinOp := ExprMakeEAX(L.TypeIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprEmitUnaryOp : emettre l operation unaire sur TExprVal      }
+{ ------------------------------------------------------------ }
+
+Function ExprEmitUnaryOp(UOp : Integer; E : TExprVal) : TExprVal;
+Var V : LongInt;
+Begin
+  Inc(OprUnaryCount);
+
+  { Pliage de constantes pour unaire }
+  If E.Kind = EK_IMM Then
+  Begin
+    Case UOp Of
+      UOP_NEG  : Begin V := -E.ImmVal; Inc(OprFoldCount);
+                   ExprEmitUnaryOp := ExprMakeImm(V, E.TypeIdx); Exit; End;
+      UOP_POS  : Begin ExprEmitUnaryOp := E; Inc(OprFoldCount); Exit; End;
+      UOP_BNOT : Begin V := Not E.ImmVal; Inc(OprFoldCount);
+                   ExprEmitUnaryOp := ExprMakeImm(V, E.TypeIdx); Exit; End;
+      UOP_NOT  : Begin If E.ImmVal = 0 Then V := 1 Else V := 0;
+                   Inc(OprFoldCount);
+                   ExprEmitUnaryOp := ExprMakeImm(V, TY_IDX_BOOLEAN);
+                   Exit; End;
+    End;
+  End;
+
+  { Sinon, generation de code -> resultat dans EAX }
+  ExprEmitUnaryOp := ExprMakeEAX(E.TypeIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrimary : parser une expression primaire Java             }
+{ Gere : entier, flottant, chaine, char, null, true, false,     }
+{        identificateur, parentheses                             }
+{ ------------------------------------------------------------ }
+
+Function ParseExprPrec(MinPrec : Integer) : TExprVal; Forward;
+
+Function ParsePrimary : TExprVal;
+Var E : TExprVal;
+Begin
+  Case CurTokKind Of
+    TK_INTEGER :
+      Begin
+        E := LitEvalInt;
+        ParserAdvance;
+      End;
+    TK_FLOAT :
+      Begin
+        { Flottant tronque en entier }
+        E := LitEvalInt;
+        ParserAdvance;
+      End;
+    TK_STRING :
+      Begin
+        E := LitEvalStr;
+        ParserAdvance;
+      End;
+    TK_CHAR :
+      Begin
+        E := LitEvalChar;
+        ParserAdvance;
+      End;
+    TK_IDENT :
+      Begin
+        { Variable ou appel de methode (stub) }
+        E.Kind    := EK_MEM;
+        E.ImmVal  := 0;
+        E.TypeIdx := TY_IDX_INT;
+        E.Offset  := 0;
+        E.SymIdx  := SymFind(CurTokStr);
+        ParserAdvance;
+      End;
+    TK_KEYWORD :
+      Begin
+        If CurTokStr = 'null' Then
+        Begin
+          E := ExprMakeNull;
+          ParserAdvance;
+        End
+        Else If CurTokStr = 'true' Then
+        Begin
+          E := ExprMakeBool(True);
+          ParserAdvance;
+        End
+        Else If CurTokStr = 'false' Then
+        Begin
+          E := ExprMakeBool(False);
+          ParserAdvance;
+        End
+        Else If CurTokStr = 'new' Then
+        Begin
+          { new ClassName(args) ou new int[n] - stub }
+          E.Kind    := EK_EAX;
+          E.ImmVal  := 0;
+          E.TypeIdx := TY_IDX_INT;
+          E.Offset  := 0;
+          E.SymIdx  := -1;
+          ParserAdvance;
+          { Consommer le nom de type/classe }
+          If (CurTokKind = TK_IDENT) Or (CurTokKind = TK_KEYWORD) Then
+            ParserAdvance;
+        End
+        Else
+        Begin
+          E.Kind    := EK_NONE;
+          E.ImmVal  := 0;
+          E.TypeIdx := TY_IDX_VOID;
+          E.Offset  := 0;
+          E.SymIdx  := -1;
+          CompileError('unexpected keyword: ' + CurTokStr, LexLineNo);
+          ParserAdvance;
+        End;
+      End;
+    TK_PUNCT :
+      Begin
+        If CurTokStr = '(' Then
+        Begin
+          ParserAdvance;
+          E := ParseExprPrec(PREC_MAX + 1);
+          { Attendre la parenthese fermante }
+          If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+            ParserAdvance
+          Else
+            CompileError('expected )', LexLineNo);
+        End
+        Else
+        Begin
+          E.Kind    := EK_NONE;
+          E.ImmVal  := 0;
+          E.TypeIdx := TY_IDX_VOID;
+          E.Offset  := 0;
+          E.SymIdx  := -1;
+          CompileError('unexpected token: ' + CurTokStr, LexLineNo);
+          ParserAdvance;
+        End;
+      End;
+    TK_OP :
+      Begin
+        { Gerer les unaires prefixes + - ~ ! ++ -- }
+        If (CurTokStr = '-') Or (CurTokStr = '+') Or
+           (CurTokStr = '~') Or (CurTokStr = '!') Or
+           (CurTokStr = '++') Or (CurTokStr = '--') Then
+        Begin
+          { Sera gere par ParseUnary, on retourne NONE }
+          E.Kind    := EK_NONE;
+          E.ImmVal  := 0;
+          E.TypeIdx := TY_IDX_INT;
+          E.Offset  := 0;
+          E.SymIdx  := -1;
+        End
+        Else
+        Begin
+          E.Kind    := EK_NONE;
+          E.ImmVal  := 0;
+          E.TypeIdx := TY_IDX_VOID;
+          E.Offset  := 0;
+          E.SymIdx  := -1;
+          CompileError('unexpected operator: ' + CurTokStr, LexLineNo);
+          ParserAdvance;
+        End;
+      End;
+  Else
+    Begin
+      E.Kind    := EK_NONE;
+      E.ImmVal  := 0;
+      E.TypeIdx := TY_IDX_VOID;
+      E.Offset  := 0;
+      E.SymIdx  := -1;
+      If CurTokKind <> TK_EOF Then
+      Begin
+        CompileError('expected expression, got: ' + CurTokStr, LexLineNo);
+        ParserAdvance;
+      End;
+    End;
+  End;
+  ParsePrimary := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUnary : parser un operateur unaire (+ - ~ ! ++ --)       }
+{ ------------------------------------------------------------ }
+
+Function ParseUnary : TExprVal;
+Var UOp : Integer;
+    E   : TExprVal;
+Begin
+  UOp := UOP_NONE;
+  If CurTokKind = TK_OP Then
+  Begin
+    If CurTokStr = '-'  Then UOp := UOP_NEG
+    Else If CurTokStr = '+'  Then UOp := UOP_POS
+    Else If CurTokStr = '~'  Then UOp := UOP_BNOT
+    Else If CurTokStr = '!'  Then UOp := UOP_NOT
+    Else If CurTokStr = '++' Then UOp := UOP_PREINC
+    Else If CurTokStr = '--' Then UOp := UOP_PREDEC;
+  End;
+
+  If UOp <> UOP_NONE Then
+  Begin
+    ParserAdvance;
+    E := ParseUnary;   { recursif pour chaines de unaires }
+    ParseUnary := ExprEmitUnaryOp(UOp, E);
+  End
+  Else
+    ParseUnary := ParsePrimary;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExprPrec : parser une expression avec precedence Pratt    }
+{ MinPrec = precedence minimale pour continuer                   }
+{ ------------------------------------------------------------ }
+
+Function ParseExprPrec(MinPrec : Integer) : TExprVal;
+Var
+  L, R   : TExprVal;
+  Op     : Integer;
+  Prec   : Integer;
+  NextP  : Integer;
+Begin
+  L := ParseUnary;
+
+  While True Do
+  Begin
+    Op := OP_NONE;
+
+    { Detecter l operateur binaire courant }
+    If CurTokKind = TK_OP Then
+      Op := TokenToBinOp
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'instanceof') Then
+      Op := OP_INSTANCEOF;
+
+    If Op = OP_NONE Then Break;
+
+    Prec := BinOpPrec(Op);
+    If Prec = 0 Then Break;
+    If Prec > MinPrec Then Break;   { precedence plus faible = arreter }
+
+    { Consommer l operateur }
+    ParserAdvance;
+
+    { Associativite : tous les operateurs binaires Java sont a gauche }
+    If BinOpIsRight(Op) Then
+      NextP := Prec
+    Else
+      NextP := Prec - 1;
+
+    R := ParseExprPrec(NextP);
+    L := ExprEmitBinOp(Op, L, R);
+  End;
+
+  ParseExprPrec := L;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExpr : point d entree pour parser une expression Java     }
+{ ------------------------------------------------------------ }
+
+Function ParseExpr : TExprVal;
+Begin
+  Inc(OprParseCount);
+  ParseExpr := ParseExprPrec(PREC_MAX);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpOprState : afficher l etat du sous-systeme des operateurs  }
+{ ------------------------------------------------------------ }
+
+Procedure DumpOprState;
+Begin
+  WriteLn('--- Opr State ---');
+  WriteLn('  OprInitialized : ', OprInitialized);
+  WriteLn('  OprParseCount  : ', OprParseCount);
+  WriteLn('  OprBinOpCount  : ', OprBinOpCount);
+  WriteLn('  OprUnaryCount  : ', OprUnaryCount);
+  WriteLn('  OprFoldCount   : ', OprFoldCount);
+  WriteLn('  OprFlushCount  : ', OprFlushCount);
+  WriteLn('  OprAssignCount : ', OprAssignCount);
+  WriteLn('  OprMaxPrec     : ', OprMaxPrec);
+  WriteLn('  OprLastOp      : ', OpName(OprLastOp));
+  WriteLn('  OprLastPrec    : ', OprLastPrec);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 07)                              }
+{ ------------------------------------------------------------ }
+
+Function IsOprInitialized : Boolean;
+Begin
+  IsOprInitialized := OprInitialized;
+End;
+
+Function IsOprEmpty : Boolean;
+Begin
+  IsOprEmpty := (OprParseCount = 0);
+End;
+
+Function GetOprParseCount : LongInt;
+Begin
+  GetOprParseCount := OprParseCount;
+End;
+
+Function GetOprBinOpCount : LongInt;
+Begin
+  GetOprBinOpCount := OprBinOpCount;
+End;
+
+Function GetOprUnaryCount : LongInt;
+Begin
+  GetOprUnaryCount := OprUnaryCount;
+End;
+
+Function GetOprFoldCount : LongInt;
+Begin
+  GetOprFoldCount := OprFoldCount;
+End;
+
+Function GetOprFlushCount : LongInt;
+Begin
+  GetOprFlushCount := OprFlushCount;
+End;
+
+Function GetOprAssignCount : LongInt;
+Begin
+  GetOprAssignCount := OprAssignCount;
+End;
+
+Function GetOprLastOp : Integer;
+Begin
+  GetOprLastOp := OprLastOp;
+End;
+
+Function GetOprStatus : TString;
+Begin
+  If Not OprInitialized Then
+    GetOprStatus := 'Not initialized'
+  Else
+    GetOprStatus := ItoS(OprParseCount) + ' parses (' +
+                    ItoS(OprBinOpCount) + ' binops, ' +
+                    ItoS(OprUnaryCount) + ' unary, ' +
+                    ItoS(OprFoldCount) + ' folds)';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-07)                              }
 { ============================================================ }
 
 Begin
@@ -3883,16 +4642,17 @@ Begin
   SymInit;
   TypeInit;
   LitInit;
+  InitOprState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-06) }
+  { Boucle de tokenisation (TODO 02-07) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 07..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 08..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;

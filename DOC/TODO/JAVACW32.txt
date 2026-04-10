@@ -172,7 +172,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
             LabelGen : generateur de labels uniques _JL_N
             10 fonctions accesseurs
 
-  TODO 07 - OPERATEURS ET PRECEDENCE [A FAIRE]
+  TODO 07 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques : + - * / % (division entiere pour int)
             Comparaison : == != < <= > >= (int, char, references)
             Logiques : && || ! (court-circuit, evaluation booleenne)
