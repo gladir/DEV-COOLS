@@ -16,7 +16,7 @@
 { ---------------------------------------------------------------------------- }
 
 { ---------------------------------------------------------------------------- }
-{  TODO 01 [A FAIRE] - Infrastructure, options et constantes globales          }
+{  TODO 01 [IMPLEMENTE] - Infrastructure, options et constantes globales      }
 {  TODO 02 [A FAIRE] - Lecture et validation de l'en-tete .class              }
 {  TODO 03 [A FAIRE] - Decodage du Constant Pool                              }
 {  TODO 04 [A FAIRE] - Lecture des flags, this_class, super_class, interfaces }
@@ -48,8 +48,10 @@ Program SPOTBUGS;
 {$A-}
 {$I-}
 
+Uses DOS;
+
 { ============================================================================ }
-{ TODO 01 [A FAIRE] - Infrastructure, options et constantes globales           }
+{ TODO 01 [IMPLEMENTE] - Infrastructure, options et constantes globales        }
 { ============================================================================ }
 {                                                                              }
 {  - Constantes de dimensionnement :                                           }
@@ -150,6 +152,425 @@ Program SPOTBUGS;
 {      FileExists_, ChangeExt : utilitaires fichiers                            }
 {      FatalError(msg), Error(msg), Warning(msg) : gestion d'erreurs           }
 {      AddBug(type, cat, sev, class, method, field, line, msg) : enregistrer   }
+
+Const
+
+  { ------------------------------------------------------------------ }
+  { Constantes de dimensionnement                                       }
+  { ------------------------------------------------------------------ }
+  MAX_CP_ENTRIES  = 65535;  { Taille maximale du Constant Pool          }
+  MAX_FIELDS      = 4096;   { Nombre maximum de champs par classe       }
+  MAX_METHODS     = 4096;   { Nombre maximum de methodes par classe     }
+  MAX_INTERFACES  = 256;    { Nombre maximum d'interfaces implementees  }
+  MAX_BUGS        = 8192;   { Nombre maximum de bugs detectes           }
+  MAX_CFG_NODES   = 65535;  { Noeuds maximum dans le graphe de controle }
+  MAX_STACK_DEPTH = 512;    { Profondeur maximale de la pile d'analyse  }
+  MAX_CLASSES     = 4096;   { Nombre maximum de classes analysees       }
+  MAX_CLASSPATH   = 64;     { Nombre maximum de chemins de recherche    }
+  BUFSIZE         = 65536;  { Taille du tampon de lecture               }
+
+  { ------------------------------------------------------------------ }
+  { Niveaux de severite des bugs                                        }
+  { ------------------------------------------------------------------ }
+  SEV_HIGH   = 1;   { Bugs critiques, erreurs presque certaines         }
+  SEV_MEDIUM = 2;   { Bugs probables, pratiques suspectes               }
+  SEV_LOW    = 3;   { Bugs possibles, avertissements mineurs            }
+  SEV_INFO   = 4;   { Informations, suggestions d'amelioration          }
+
+  { ------------------------------------------------------------------ }
+  { Categories de bugs (codes courts)                                   }
+  { ------------------------------------------------------------------ }
+  CAT_CORRECTNESS         = 1;  { Erreurs de logique, bugs fonctionnels }
+  CAT_BAD_PRACTICE        = 2;  { Violations de bonnes pratiques Java   }
+  CAT_PERFORMANCE         = 3;  { Problemes de performance              }
+  CAT_SECURITY            = 4;  { Vulnerabilites de securite            }
+  CAT_MT_CORRECTNESS      = 5;  { Erreurs de multi-threading            }
+  CAT_INTERNATIONALIZATION = 6; { Problemes d'internationalisation      }
+  CAT_DODGY               = 7;  { Code suspect ou mal ecrit             }
+  CAT_MALICIOUS           = 8;  { Code potentiellement malveillant      }
+
+  { ------------------------------------------------------------------ }
+  { Formats de sortie du rapport                                        }
+  { ------------------------------------------------------------------ }
+  OUT_TEXT = 0;    { Format texte simple                                }
+  OUT_XML  = 1;    { Format XML (compatible SpotBugs/Jenkins)           }
+  OUT_HTML = 2;    { Format HTML autonome                               }
+
+  { ------------------------------------------------------------------ }
+  { Types de tokens du Constant Pool JVM                                }
+  { ------------------------------------------------------------------ }
+  CP_NONE                = 0;   { Entree non utilisee                   }
+  CP_UTF8                = 1;   { CONSTANT_Utf8                         }
+  CP_INTEGER             = 3;   { CONSTANT_Integer                      }
+  CP_FLOAT               = 4;   { CONSTANT_Float                        }
+  CP_LONG                = 5;   { CONSTANT_Long (occupe 2 slots)        }
+  CP_DOUBLE              = 6;   { CONSTANT_Double (occupe 2 slots)      }
+  CP_CLASS               = 7;   { CONSTANT_Class                        }
+  CP_STRING              = 8;   { CONSTANT_String                       }
+  CP_FIELDREF            = 9;   { CONSTANT_Fieldref                     }
+  CP_METHODREF           = 10;  { CONSTANT_Methodref                    }
+  CP_INTERFACEMETHODREF  = 11;  { CONSTANT_InterfaceMethodref           }
+  CP_NAMEANDTYPE         = 12;  { CONSTANT_NameAndType                  }
+  CP_METHODHANDLE        = 15;  { CONSTANT_MethodHandle                 }
+  CP_METHODTYPE          = 16;  { CONSTANT_MethodType                   }
+  CP_INVOKEDYNAMIC       = 18;  { CONSTANT_InvokeDynamic                }
+
+  { ------------------------------------------------------------------ }
+  { Constantes de flags d'acces JVM                                     }
+  { ------------------------------------------------------------------ }
+  ACC_PUBLIC       = $0001;  { public                                   }
+  ACC_PRIVATE      = $0002;  { private                                  }
+  ACC_PROTECTED    = $0004;  { protected                                }
+  ACC_STATIC       = $0008;  { static                                   }
+  ACC_FINAL        = $0010;  { final                                    }
+  ACC_SYNCHRONIZED = $0020;  { synchronized (methode)                   }
+  ACC_SUPER        = $0020;  { super (classe, meme bit que synchronized)}
+  ACC_VOLATILE     = $0040;  { volatile (champ)                         }
+  ACC_BRIDGE       = $0040;  { bridge (methode)                         }
+  ACC_TRANSIENT    = $0080;  { transient (champ)                        }
+  ACC_VARARGS      = $0080;  { varargs (methode)                        }
+  ACC_NATIVE       = $0100;  { native                                   }
+  ACC_INTERFACE    = $0200;  { interface                                }
+  ACC_ABSTRACT     = $0400;  { abstract                                 }
+  ACC_STRICT       = $0800;  { strictfp                                 }
+  ACC_SYNTHETIC    = $1000;  { synthetic                                }
+  ACC_ANNOTATION   = $2000;  { annotation                               }
+  ACC_ENUM         = $4000;  { enum                                     }
+
+  { ------------------------------------------------------------------ }
+  { Version de l'analyseur                                              }
+  { ------------------------------------------------------------------ }
+  SPOTBUGS_VERSION = '1.0.0';
+
+{ ============================================================================ }
+{ Types et structures                                                          }
+{ ============================================================================ }
+
+Type
+
+  { --- Structure TOptions : options de ligne de commande --- }
+  TOptions = Record
+    ClassPath   : Array[0..MAX_CLASSPATH-1] of String; { Chemins de recherche }
+    ClassCount  : Integer;   { Nombre de chemins dans ClassPath         }
+    OutFile     : String;    { Fichier de sortie du rapport             }
+    OutFormat   : Integer;   { Format: OUT_TEXT, OUT_XML, OUT_HTML      }
+    MinSeverity : Integer;   { Severite minimale a rapporter            }
+    Verbose     : Boolean;   { Mode bavard                              }
+    Recursive   : Boolean;   { Analyser recursivement                   }
+    ShowCount   : Boolean;   { Afficher les statistiques                }
+    ExcludeFile : String;    { Fichier de regles d'exclusion            }
+    IncludeFile : String;    { Fichier de regles d'inclusion            }
+    MaxBugs     : Integer;   { Nombre maximum de bugs a reporter        }
+  End;
+
+  { --- Structure TBugReport : description d'un bug detecte --- }
+  TBugReport = Record
+    BugType    : String;     { Identifiant de la regle (NP_NULL_ON_SOME_PATH) }
+    Category   : Integer;    { Categorie (CAT_*)                        }
+    Severity   : Integer;    { Severite (SEV_*)                         }
+    ClassName  : String;     { Nom de la classe Java concernee          }
+    MethodName : String;     { Nom de la methode concernee              }
+    FieldName  : String;     { Nom du champ concerne, si applicable     }
+    LineNumber : Integer;    { Numero de ligne source, si disponible    }
+    Message    : String;     { Description lisible du bug               }
+  End;
+
+  { --- Tableau de bugs --- }
+  TBugArray = Array[1..MAX_BUGS] of TBugReport;
+
+{ ============================================================================ }
+{ Variables globales                                                           }
+{ ============================================================================ }
+
+Var
+  Opts           : TOptions;      { Options de la ligne de commande     }
+  Bugs           : TBugArray;     { Table des bugs detectes             }
+  BugCount       : Integer;       { Nombre de bugs detectes             }
+  ClassesScanned : Integer;       { Nombre de classes analysees         }
+  TotalMethods   : Integer;       { Nombre total de methodes analysees  }
+  ErrorCount     : Integer;       { Nombre d'erreurs d'analyse          }
+  WarningCount   : Integer;       { Nombre d'avertissements             }
+  CurrentFile    : String;        { Fichier .class en cours d'analyse   }
+  ClassFile      : File;          { Handle du fichier .class ouvert     }
+  ClassFileOpen  : Boolean;       { True si ClassFile est ouvert        }
+
+{ ============================================================================ }
+{ Utilitaires chaines et conversions                                           }
+{ ============================================================================ }
+
+Function IntToStr_(N: LongInt): String;
+Var
+  S: String;
+Begin
+  Str(N, S);
+  IntToStr_ := S;
+End;
+
+Function StrToInt_(S: String): LongInt;
+Var
+  N: LongInt;
+  Code: Integer;
+Begin
+  Val(S, N, Code);
+  If Code <> 0 Then N := 0;
+  StrToInt_ := N;
+End;
+
+Function UpCaseStr(S: String): String;
+Var
+  I: Integer;
+Begin
+  For I := 1 to Length(S) do
+    If S[I] in ['a'..'z'] Then
+      S[I] := Chr(Ord(S[I]) - 32);
+  UpCaseStr := S;
+End;
+
+Function LoCaseStr(S: String): String;
+Var
+  I: Integer;
+Begin
+  For I := 1 to Length(S) do
+    If S[I] in ['A'..'Z'] Then
+      S[I] := Chr(Ord(S[I]) + 32);
+  LoCaseStr := S;
+End;
+
+Function TrimStr(S: String): String;
+Begin
+  While (Length(S) > 0) and (S[1] = ' ') do
+    Delete(S, 1, 1);
+  While (Length(S) > 0) and (S[Length(S)] = ' ') do
+    Delete(S, Length(S), 1);
+  TrimStr := S;
+End;
+
+{ ============================================================================ }
+{ Conversion hexadecimale                                                      }
+{ ============================================================================ }
+
+Function HexDigit(N: Byte): Char;
+Begin
+  If N < 10 Then
+    HexDigit := Chr(Ord('0') + N)
+  Else
+    HexDigit := Chr(Ord('A') + N - 10);
+End;
+
+Function HexByte(B: Byte): String;
+Begin
+  HexByte := HexDigit(B shr 4) + HexDigit(B and $0F);
+End;
+
+Function HexWord(W: Word): String;
+Begin
+  HexWord := HexByte(Hi(W)) + HexByte(Lo(W));
+End;
+
+Function HexDWord(D: LongInt): String;
+Begin
+  HexDWord := HexWord(D shr 16) + HexWord(D and $FFFF);
+End;
+
+{ ============================================================================ }
+{ Utilitaires fichiers                                                         }
+{ ============================================================================ }
+
+Function FileExists_(FileName: String): Boolean;
+Var
+  F: File;
+Begin
+  {$I-}
+  Assign(F, FileName);
+  Reset(F, 1);
+  If IOResult = 0 Then Begin
+    Close(F);
+    FileExists_ := True;
+  End Else
+    FileExists_ := False;
+  {$I+}
+End;
+
+Function ChangeExt(FileName, NewExt: String): String;
+Var
+  D: DirStr;
+  N: NameStr;
+  E: ExtStr;
+Begin
+  FSplit(FileName, D, N, E);
+  ChangeExt := D + N + NewExt;
+End;
+
+Function ExtractFileName(Path: String): String;
+Var
+  D: DirStr;
+  N: NameStr;
+  E: ExtStr;
+Begin
+  FSplit(Path, D, N, E);
+  ExtractFileName := N + E;
+End;
+
+Function ExtractFilePath(Path: String): String;
+Var
+  D: DirStr;
+  N: NameStr;
+  E: ExtStr;
+Begin
+  FSplit(Path, D, N, E);
+  ExtractFilePath := D;
+End;
+
+{ ============================================================================ }
+{ Lecture big-endian depuis fichier binaire                                    }
+{ ============================================================================ }
+
+Function ReadU1: Byte;
+Var
+  B: Byte;
+Begin
+  BlockRead(ClassFile, B, 1);
+  ReadU1 := B;
+End;
+
+Function ReadU2: Word;
+Var
+  B1, B2: Byte;
+Begin
+  BlockRead(ClassFile, B1, 1);
+  BlockRead(ClassFile, B2, 1);
+  ReadU2 := (Word(B1) shl 8) or Word(B2);
+End;
+
+Function ReadU4: LongInt;
+Var
+  B1, B2, B3, B4: Byte;
+Begin
+  BlockRead(ClassFile, B1, 1);
+  BlockRead(ClassFile, B2, 1);
+  BlockRead(ClassFile, B3, 1);
+  BlockRead(ClassFile, B4, 1);
+  ReadU4 := (LongInt(B1) shl 24) or (LongInt(B2) shl 16) or
+            (LongInt(B3) shl 8) or LongInt(B4);
+End;
+
+{ ============================================================================ }
+{ Gestion des erreurs, avertissements et messages                              }
+{ ============================================================================ }
+
+Procedure FatalError(Msg: String);
+Begin
+  WriteLn('ERREUR FATALE: ', Msg);
+  If ClassFileOpen Then Begin
+    Close(ClassFile);
+    ClassFileOpen := False;
+  End;
+  Halt(1);
+End;
+
+Procedure Error(Msg: String);
+Begin
+  WriteLn('ERREUR: ', Msg);
+  Inc(ErrorCount);
+End;
+
+Procedure Warning(Msg: String);
+Begin
+  If Opts.Verbose Then
+    WriteLn('AVERTISSEMENT: ', Msg);
+  Inc(WarningCount);
+End;
+
+Procedure Info(Msg: String);
+Begin
+  If Opts.Verbose Then
+    WriteLn('INFO: ', Msg);
+End;
+
+{ ============================================================================ }
+{ Gestion des bugs detectes                                                    }
+{ ============================================================================ }
+
+Procedure AddBug(BugType: String; Category, Severity: Integer;
+                 ClassName, MethodName, FieldName: String;
+                 LineNumber: Integer; Message: String);
+Begin
+  If BugCount >= MAX_BUGS Then Begin
+    Warning('Nombre maximum de bugs atteint (' + IntToStr_(MAX_BUGS) + ')');
+    Exit;
+  End;
+  If Severity > Opts.MinSeverity Then
+    Exit;  { Ignorer les bugs de severite trop basse }
+  Inc(BugCount);
+  Bugs[BugCount].BugType    := BugType;
+  Bugs[BugCount].Category   := Category;
+  Bugs[BugCount].Severity   := Severity;
+  Bugs[BugCount].ClassName  := ClassName;
+  Bugs[BugCount].MethodName := MethodName;
+  Bugs[BugCount].FieldName  := FieldName;
+  Bugs[BugCount].LineNumber := LineNumber;
+  Bugs[BugCount].Message    := Message;
+End;
+
+Function SeverityToStr(Sev: Integer): String;
+Begin
+  Case Sev of
+    SEV_HIGH:   SeverityToStr := 'HIGH';
+    SEV_MEDIUM: SeverityToStr := 'MEDIUM';
+    SEV_LOW:    SeverityToStr := 'LOW';
+    SEV_INFO:   SeverityToStr := 'INFO';
+  Else
+    SeverityToStr := 'UNKNOWN';
+  End;
+End;
+
+Function CategoryToStr(Cat: Integer): String;
+Begin
+  Case Cat of
+    CAT_CORRECTNESS:          CategoryToStr := 'CORRECTNESS';
+    CAT_BAD_PRACTICE:         CategoryToStr := 'BAD_PRACTICE';
+    CAT_PERFORMANCE:          CategoryToStr := 'PERFORMANCE';
+    CAT_SECURITY:             CategoryToStr := 'SECURITY';
+    CAT_MT_CORRECTNESS:       CategoryToStr := 'MT_CORRECTNESS';
+    CAT_INTERNATIONALIZATION: CategoryToStr := 'I18N';
+    CAT_DODGY:                CategoryToStr := 'DODGY_CODE';
+    CAT_MALICIOUS:            CategoryToStr := 'MALICIOUS_CODE';
+  Else
+    CategoryToStr := 'UNKNOWN';
+  End;
+End;
+
+{ ============================================================================ }
+{ Initialisation des variables globales                                        }
+{ ============================================================================ }
+
+Procedure InitGlobals;
+Var
+  I: Integer;
+Begin
+  { Initialiser les options par defaut }
+  Opts.ClassCount  := 0;
+  Opts.OutFile     := '';
+  Opts.OutFormat   := OUT_TEXT;
+  Opts.MinSeverity := SEV_LOW;
+  Opts.Verbose     := False;
+  Opts.Recursive   := False;
+  Opts.ShowCount   := True;
+  Opts.ExcludeFile := '';
+  Opts.IncludeFile := '';
+  Opts.MaxBugs     := MAX_BUGS;
+  For I := 0 to MAX_CLASSPATH - 1 do
+    Opts.ClassPath[I] := '';
+
+  { Initialiser les compteurs }
+  BugCount       := 0;
+  ClassesScanned := 0;
+  TotalMethods   := 0;
+  ErrorCount     := 0;
+  WarningCount   := 0;
+  CurrentFile    := '';
+  ClassFileOpen  := False;
+End;
 
 { ============================================================================ }
 { TODO 02 [A FAIRE] - Lecture et validation de l'en-tete .class                }
@@ -931,6 +1352,7 @@ Program SPOTBUGS;
 {      Cast.java / Cast.class : classe avec cast sans instanceof                 }
 
 Begin
+ InitGlobals;
  WriteLn('SPOTBUGS : Cette commande permet d''analyser le bytecode des fichiers .class');
  WriteLn('           pour detecter des bugs potentiels dans le code Java.');
  WriteLn;

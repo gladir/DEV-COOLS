@@ -8,7 +8,7 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES GLOBALES [A FAIRE]
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES GLOBALES [IMPLEMENTE]
             Constantes de dimensionnement :
               MAX_CP_ENTRIES=65535, MAX_FIELDS=4096, MAX_METHODS=4096,
               MAX_INTERFACES=256, MAX_BUGS=8192, MAX_CFG_NODES=65535,
