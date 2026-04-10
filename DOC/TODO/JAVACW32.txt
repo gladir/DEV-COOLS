@@ -473,7 +473,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
             Table d imports : MAX_IMPORT entrees
             10 fonctions accesseurs
 
-  TODO 20 - PARSEUR : CONVERSIONS DE TYPES ET CASTS [A FAIRE]
+  TODO 20 - PARSEUR : CONVERSIONS DE TYPES ET CASTS [IMPLEMENTE]
             Cast explicite entre types primitifs :
               (int) charExpr -> MOVZX EAX (valeur entiere du char)
               (char) intExpr -> AND EAX, 0FFh (tronquer a 8 bits)

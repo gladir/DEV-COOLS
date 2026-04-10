@@ -481,7 +481,7 @@
             Table d imports : MAX_IMPORT entrees
             10 fonctions accesseurs
 
-  TODO 20 - PARSEUR : CONVERSIONS DE TYPES ET CASTS [A FAIRE]
+  TODO 20 - PARSEUR : CONVERSIONS DE TYPES ET CASTS [IMPLEMENTE]
             Cast explicite entre types primitifs :
               (int) charExpr -> MOVZX EAX (valeur entiere du char)
               (char) intExpr -> AND EAX, 0FFh (tronquer a 8 bits)
@@ -12563,7 +12563,711 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-19)                              }
+{ TODO 20 - PARSEUR : CONVERSIONS DE TYPES ET CASTS            }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations conversion/cast }
+  CV_NONE              = 0;    { aucun / non defini                    }
+  CV_CAST_INT_CHAR     = 1;    { (char) intExpr                        }
+  CV_CAST_CHAR_INT     = 2;    { (int) charExpr                        }
+  CV_CAST_INT_BOOL     = 3;    { (boolean) intExpr                     }
+  CV_PROMO_CHAR_INT    = 4;    { char->int promotion automatique       }
+  CV_IMPL_INT_STR      = 5;    { int->String dans concatenation        }
+  CV_IMPL_BOOL_STR     = 6;    { boolean->String dans println          }
+  CV_IMPL_CHAR_STR     = 7;    { char->String dans println             }
+  CV_PARSE_INT         = 8;    { Integer.parseInt(s)                   }
+  CV_VALUE_OF          = 9;    { String.valueOf(n)                     }
+  CV_CHECK_ASSIGN      = 10;   { verif types affectation               }
+  CV_CHECK_BOOL_COND   = 11;   { verif condition booleenne             }
+  CV_WARN_LOSSY        = 12;   { avertissement cast perdant            }
+  CV_CAST_EXPLICIT     = 13;   { cast explicite quelconque             }
+  CV_MAX               = 13;
+
+  { Limites }
+  CV_MAX_CASTS         = 64;   { nombre max de casts enregistres       }
+
+Type
+  TCvCastRec = Record
+    SrcType  : Integer;        { type source (TYK_*)                   }
+    DstType  : Integer;        { type destination (TYK_*)              }
+    Kind     : Integer;        { type de conversion CV_*               }
+    Line     : Integer;        { ligne dans le source                  }
+    IsLossy  : Boolean;        { True si potentiellement perdant       }
+  End;
+
+Var
+  CvInitialized      : Boolean;    { True si l etat est initialise       }
+  CvCastCount        : LongInt;    { nombre total de casts enregistres   }
+  CvCastTab          : Array[1..CV_MAX_CASTS] Of TCvCastRec;
+  CvImplicitCount    : LongInt;    { conversions implicites              }
+  CvExplicitCount    : LongInt;    { casts explicites                    }
+  CvParseIntCount    : LongInt;    { appels Integer.parseInt             }
+  CvValueOfCount     : LongInt;    { appels String.valueOf               }
+  CvCheckCount       : LongInt;    { verifications de types              }
+  CvWarnCount        : LongInt;    { avertissements cast                 }
+  CvPromoCount       : LongInt;    { promotions automatiques             }
+  CvBoolCondCount    : LongInt;    { verifs condition booleenne          }
+  CvAssignCheckCount : LongInt;    { verifs affectation                  }
+  CvLastKind         : Integer;    { dernier type d operation            }
+  CvLabelSeq         : Integer;    { sequence pour labels CV             }
+
+{ ------------------------------------------------------------ }
+{ InitCvState : initialiser le sous-systeme conversions/casts    }
+{ ------------------------------------------------------------ }
+
+Procedure InitCvState;
+Var I : Integer;
+Begin
+  CvInitialized      := True;
+  CvCastCount        := 0;
+  CvImplicitCount    := 0;
+  CvExplicitCount    := 0;
+  CvParseIntCount    := 0;
+  CvValueOfCount     := 0;
+  CvCheckCount       := 0;
+  CvWarnCount        := 0;
+  CvPromoCount       := 0;
+  CvBoolCondCount    := 0;
+  CvAssignCheckCount := 0;
+  CvLastKind         := CV_NONE;
+  CvLabelSeq         := 0;
+  For I := 1 To CV_MAX_CASTS Do
+  Begin
+    CvCastTab[I].SrcType := 0;
+    CvCastTab[I].DstType := 0;
+    CvCastTab[I].Kind    := CV_NONE;
+    CvCastTab[I].Line    := 0;
+    CvCastTab[I].IsLossy := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCvLabel : generer un label unique pour conversions           }
+{ ------------------------------------------------------------ }
+
+Function GenCvLabel : TString;
+Begin
+  Inc(CvLabelSeq);
+  GenCvLabel := '_JL_CV_' + ItoS(CvLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ CvTypeName : nom textuel d un type d operation conversion      }
+{ ------------------------------------------------------------ }
+
+Function CvTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    CV_NONE              : CvTypeName := 'CV_NONE';
+    CV_CAST_INT_CHAR     : CvTypeName := 'CV_CAST_INT_CHAR';
+    CV_CAST_CHAR_INT     : CvTypeName := 'CV_CAST_CHAR_INT';
+    CV_CAST_INT_BOOL     : CvTypeName := 'CV_CAST_INT_BOOL';
+    CV_PROMO_CHAR_INT    : CvTypeName := 'CV_PROMO_CHAR_INT';
+    CV_IMPL_INT_STR      : CvTypeName := 'CV_IMPL_INT_STR';
+    CV_IMPL_BOOL_STR     : CvTypeName := 'CV_IMPL_BOOL_STR';
+    CV_IMPL_CHAR_STR     : CvTypeName := 'CV_IMPL_CHAR_STR';
+    CV_PARSE_INT         : CvTypeName := 'CV_PARSE_INT';
+    CV_VALUE_OF          : CvTypeName := 'CV_VALUE_OF';
+    CV_CHECK_ASSIGN      : CvTypeName := 'CV_CHECK_ASSIGN';
+    CV_CHECK_BOOL_COND   : CvTypeName := 'CV_CHECK_BOOL_COND';
+    CV_WARN_LOSSY        : CvTypeName := 'CV_WARN_LOSSY';
+    CV_CAST_EXPLICIT     : CvTypeName := 'CV_CAST_EXPLICIT';
+  Else
+    CvTypeName := 'CV_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddCvCast : enregistrer un cast dans la table                  }
+{ ------------------------------------------------------------ }
+
+Procedure AddCvCast(Src, Dst, Kind, Line : Integer;
+                    Lossy : Boolean);
+Begin
+  CvLastKind := Kind;
+  If CvCastCount < CV_MAX_CASTS Then
+  Begin
+    Inc(CvCastCount);
+    CvCastTab[CvCastCount].SrcType := Src;
+    CvCastTab[CvCastCount].DstType := Dst;
+    CvCastTab[CvCastCount].Kind    := Kind;
+    CvCastTab[CvCastCount].Line    := Line;
+    CvCastTab[CvCastCount].IsLossy := Lossy;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsValidCast : tester si un cast est valide entre deux types    }
+{   Retourne True si le cast est autorise                       }
+{ ------------------------------------------------------------ }
+
+Function IsValidCast(Src, Dst : Integer) : Boolean;
+Begin
+  IsValidCast := False;
+  { Meme type : toujours valide }
+  If Src = Dst Then
+  Begin
+    IsValidCast := True;
+    Exit;
+  End;
+  { int -> char : valide (troncature) }
+  If (Src = TYK_INT) And (Dst = TYK_CHAR) Then
+  Begin
+    IsValidCast := True;
+    Exit;
+  End;
+  { char -> int : valide (promotion) }
+  If (Src = TYK_CHAR) And (Dst = TYK_INT) Then
+  Begin
+    IsValidCast := True;
+    Exit;
+  End;
+  { int -> boolean : valide (0=false, else=true) }
+  If (Src = TYK_INT) And (Dst = TYK_BOOLEAN) Then
+  Begin
+    IsValidCast := True;
+    Exit;
+  End;
+  { boolean -> int : valide (true=1, false=0) }
+  If (Src = TYK_BOOLEAN) And (Dst = TYK_INT) Then
+  Begin
+    IsValidCast := True;
+    Exit;
+  End;
+  { char -> boolean : via int }
+  If (Src = TYK_CHAR) And (Dst = TYK_BOOLEAN) Then
+  Begin
+    IsValidCast := True;
+    Exit;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsLossyCast : tester si un cast est potentiellement perdant    }
+{ ------------------------------------------------------------ }
+
+Function IsLossyCast(Src, Dst : Integer) : Boolean;
+Begin
+  IsLossyCast := False;
+  { int -> char : perte possible (troncature a 8 bits) }
+  If (Src = TYK_INT) And (Dst = TYK_CHAR) Then
+    IsLossyCast := True
+  { int -> boolean : perte possible (perte de valeur) }
+  Else If (Src = TYK_INT) And (Dst = TYK_BOOLEAN) Then
+    IsLossyCast := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetCastReturnType : obtenir le type de retour d un cast        }
+{   Retourne le TYK_* du type destination                       }
+{ ------------------------------------------------------------ }
+
+Function GetCastReturnType(DstTypeName : TString) : Integer;
+Begin
+  If DstTypeName = 'int' Then
+    GetCastReturnType := TYK_INT
+  Else If DstTypeName = 'char' Then
+    GetCastReturnType := TYK_CHAR
+  Else If DstTypeName = 'boolean' Then
+    GetCastReturnType := TYK_BOOLEAN
+  Else If DstTypeName = 'String' Then
+    GetCastReturnType := TYK_STRING
+  Else
+    GetCastReturnType := TYK_INT;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCastCharToInt : (int) charExpr                             }
+{   MOVZX EAX, AL  (valeur entiere du char)                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCastCharToInt(Line : Integer);
+Begin
+  CvLastKind := CV_CAST_CHAR_INT;
+  Inc(CvExplicitCount);
+  AddCvCast(TYK_CHAR, TYK_INT, CV_CAST_CHAR_INT, Line, False);
+  WriteLn('  ; cast (int) charExpr');
+  WriteLn('  MOVZX EAX, AL');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCastIntToChar : (char) intExpr                             }
+{   AND EAX, 0FFh  (tronquer a 8 bits)                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCastIntToChar(Line : Integer);
+Begin
+  CvLastKind := CV_CAST_INT_CHAR;
+  Inc(CvExplicitCount);
+  AddCvCast(TYK_INT, TYK_CHAR, CV_CAST_INT_CHAR, Line, True);
+  WriteLn('  ; cast (char) intExpr');
+  WriteLn('  AND EAX, 0FFh');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCastIntToBool : (boolean) intExpr                          }
+{   TEST EAX, EAX / SETNZ AL / MOVZX EAX, AL                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCastIntToBool(Line : Integer);
+Begin
+  CvLastKind := CV_CAST_INT_BOOL;
+  Inc(CvExplicitCount);
+  AddCvCast(TYK_INT, TYK_BOOLEAN, CV_CAST_INT_BOOL, Line, True);
+  WriteLn('  ; cast (boolean) intExpr');
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  SETNZ AL');
+  WriteLn('  MOVZX EAX, AL');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPromoCharToInt : promotion automatique char -> int          }
+{   MOVZX EAX, AL                                              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPromoCharToInt(Line : Integer);
+Begin
+  CvLastKind := CV_PROMO_CHAR_INT;
+  Inc(CvImplicitCount);
+  Inc(CvPromoCount);
+  AddCvCast(TYK_CHAR, TYK_INT, CV_PROMO_CHAR_INT, Line, False);
+  WriteLn('  ; promo char -> int');
+  WriteLn('  MOVZX EAX, AL');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitImplIntToStr : conversion implicite int -> String           }
+{   via CALL _JRT_ITOA (resultat dans EAX = ptr chaine)        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitImplIntToStr(Line : Integer);
+Begin
+  CvLastKind := CV_IMPL_INT_STR;
+  Inc(CvImplicitCount);
+  AddCvCast(TYK_INT, TYK_STRING, CV_IMPL_INT_STR, Line, False);
+  WriteLn('  ; implicit int -> String via _JRT_ITOA');
+  WriteLn('  PUSH EAX');
+  WriteLn('  CALL _JRT_ITOA');
+  WriteLn('  ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitImplBoolToStr : conversion implicite boolean -> String     }
+{   CMP EAX, 0 -> selectionner "true" ou "false"               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitImplBoolToStr(Line : Integer);
+Var LblTrue, LblEnd : TString;
+Begin
+  CvLastKind := CV_IMPL_BOOL_STR;
+  Inc(CvImplicitCount);
+  AddCvCast(TYK_BOOLEAN, TYK_STRING, CV_IMPL_BOOL_STR,
+            Line, False);
+  LblTrue := GenCvLabel;
+  LblEnd  := GenCvLabel;
+  WriteLn('  ; implicit boolean -> String');
+  WriteLn('  CMP EAX, 0');
+  WriteLn('  JNE ', LblTrue);
+  WriteLn('  MOV EAX, OFFSET _JK_FALSE');
+  WriteLn('  JMP ', LblEnd);
+  WriteLn(LblTrue, ':');
+  WriteLn('  MOV EAX, OFFSET _JK_TRUE');
+  WriteLn(LblEnd, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitImplCharToStr : conversion implicite char -> String        }
+{   Stocker le caractere + null dans un tampon temporaire       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitImplCharToStr(Line : Integer);
+Begin
+  CvLastKind := CV_IMPL_CHAR_STR;
+  Inc(CvImplicitCount);
+  AddCvCast(TYK_CHAR, TYK_STRING, CV_IMPL_CHAR_STR,
+            Line, False);
+  WriteLn('  ; implicit char -> String (1-char buffer)');
+  WriteLn('  MOV BYTE PTR [_JX_CV_BUF], AL');
+  WriteLn('  MOV BYTE PTR [_JX_CV_BUF+1], 0');
+  WriteLn('  LEA EAX, [_JX_CV_BUF]');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitParseInt : Integer.parseInt(s)                              }
+{   CALL _JRT_ATOI -> EAX = valeur entiere                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitParseInt(Line : Integer);
+Begin
+  CvLastKind := CV_PARSE_INT;
+  Inc(CvParseIntCount);
+  AddCvCast(TYK_STRING, TYK_INT, CV_PARSE_INT, Line, False);
+  WriteLn('  ; Integer.parseInt(s) -> CALL _JRT_ATOI');
+  WriteLn('  PUSH EAX');
+  WriteLn('  CALL _JRT_ATOI');
+  WriteLn('  ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitValueOf : String.valueOf(n)                                 }
+{   CALL _JRT_ITOA -> EAX = ptr chaine                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitValueOf(Line : Integer);
+Begin
+  CvLastKind := CV_VALUE_OF;
+  Inc(CvValueOfCount);
+  AddCvCast(TYK_INT, TYK_STRING, CV_VALUE_OF, Line, False);
+  WriteLn('  ; String.valueOf(n) -> CALL _JRT_ITOA');
+  WriteLn('  PUSH EAX');
+  WriteLn('  CALL _JRT_ITOA');
+  WriteLn('  ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCastExplicit : emettre un cast explicite generique          }
+{   Determine le type de cast et emet le code correspondant     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCastExplicit(SrcType, DstType, Line : Integer);
+Begin
+  CvLastKind := CV_CAST_EXPLICIT;
+  If (SrcType = TYK_CHAR) And (DstType = TYK_INT) Then
+    EmitCastCharToInt(Line)
+  Else If (SrcType = TYK_INT) And (DstType = TYK_CHAR) Then
+    EmitCastIntToChar(Line)
+  Else If (SrcType = TYK_INT) And (DstType = TYK_BOOLEAN) Then
+    EmitCastIntToBool(Line)
+  Else If (SrcType = TYK_BOOLEAN) And (DstType = TYK_INT) Then
+  Begin
+    Inc(CvExplicitCount);
+    AddCvCast(TYK_BOOLEAN, TYK_INT, CV_CAST_EXPLICIT,
+              Line, False);
+    WriteLn('  ; cast (int) boolExpr (already 0 or 1)');
+  End
+  Else If SrcType = DstType Then
+  Begin
+    Inc(CvExplicitCount);
+    AddCvCast(SrcType, DstType, CV_CAST_EXPLICIT, Line, False);
+    WriteLn('  ; cast to same type (no-op)');
+  End
+  Else
+  Begin
+    Inc(CvExplicitCount);
+    Inc(CvWarnCount);
+    AddCvCast(SrcType, DstType, CV_CAST_EXPLICIT, Line, True);
+    WarnMsg('unsupported cast from type ' + ItoS(SrcType) +
+            ' to type ' + ItoS(DstType));
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCastExprCv : parser un cast explicite (type) expr         }
+{   Retourne le TYK_* du type destination                       }
+{ ------------------------------------------------------------ }
+
+Function ParseCastExprCv(const TypeName : TString;
+                         SrcType, Line : Integer) : Integer;
+Var DstType : Integer;
+    Lossy   : Boolean;
+Begin
+  DstType := GetCastReturnType(TypeName);
+  Lossy   := IsLossyCast(SrcType, DstType);
+
+  If Not IsValidCast(SrcType, DstType) Then
+  Begin
+    CompileError('invalid cast from ' + TypeKindStr(SrcType) +
+                 ' to ' + TypeName, Line);
+    ParseCastExprCv := DstType;
+    Exit;
+  End;
+
+  If Lossy Then
+  Begin
+    Inc(CvWarnCount);
+    CvLastKind := CV_WARN_LOSSY;
+    WarnMsg('potentially lossy cast from ' +
+            TypeKindStr(SrcType) + ' to ' + TypeName);
+  End;
+
+  EmitCastExplicit(SrcType, DstType, Line);
+  ParseCastExprCv := DstType;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseParseIntCall : parser Integer.parseInt(expr)               }
+{   Emet le code pour convertir String -> int                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseParseIntCall(Line : Integer);
+Begin
+  CvLastKind := CV_PARSE_INT;
+  WriteLn('  ; Integer.parseInt(...)');
+  EmitParseInt(Line);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseValueOfCall : parser String.valueOf(expr)                  }
+{   Emet le code pour convertir int -> String                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseValueOfCall(Line : Integer);
+Begin
+  CvLastKind := CV_VALUE_OF;
+  WriteLn('  ; String.valueOf(...)');
+  EmitValueOf(Line);
+End;
+
+{ ------------------------------------------------------------ }
+{ CheckAssignCompat : verifier la compatibilite de types pour    }
+{   une affectation                                             }
+{   Retourne True si compatible, False sinon                    }
+{ ------------------------------------------------------------ }
+
+Function CheckAssignCompat(LhsType, RhsType,
+                           Line : Integer) : Boolean;
+Begin
+  Inc(CvCheckCount);
+  Inc(CvAssignCheckCount);
+  CvLastKind := CV_CHECK_ASSIGN;
+  CheckAssignCompat := True;
+
+  { Meme type : toujours compatible }
+  If LhsType = RhsType Then
+    Exit;
+
+  { null assignable a String, Object, Array }
+  If RhsType = TYK_NULL Then
+  Begin
+    If (LhsType = TYK_STRING) Or (LhsType = TYK_OBJECT) Or
+       (LhsType = TYK_ARRAY) Then
+      Exit;
+  End;
+
+  { char -> int : promotion implicite autorisee }
+  If (RhsType = TYK_CHAR) And (LhsType = TYK_INT) Then
+    Exit;
+
+  { int -> char dans affectation : autorise avec avertissement }
+  If (RhsType = TYK_INT) And (LhsType = TYK_CHAR) Then
+  Begin
+    Inc(CvWarnCount);
+    WarnMsg('implicit narrowing from int to char');
+    Exit;
+  End;
+
+  { boolean -> int ou int -> boolean : incompatible en Java }
+  CheckAssignCompat := False;
+  CompileError('incompatible types: cannot assign ' +
+               TypeKindStr(RhsType) + ' to ' +
+               TypeKindStr(LhsType), Line);
+End;
+
+{ ------------------------------------------------------------ }
+{ CheckBoolCondition : verifier qu une expression est booleenne  }
+{   Utilise dans if, while, do-while, for                       }
+{   Retourne True si le type est boolean ou implicitement conv  }
+{ ------------------------------------------------------------ }
+
+Function CheckBoolCondition(ExprType, Line : Integer) : Boolean;
+Begin
+  Inc(CvCheckCount);
+  Inc(CvBoolCondCount);
+  CvLastKind := CV_CHECK_BOOL_COND;
+  CheckBoolCondition := True;
+
+  If ExprType = TYK_BOOLEAN Then
+    Exit;
+
+  { int et char sont acceptes comme condition (style C) }
+  { mais avec un avertissement }
+  If (ExprType = TYK_INT) Or (ExprType = TYK_CHAR) Then
+  Begin
+    Inc(CvWarnCount);
+    WarnMsg('non-boolean condition (type: ' +
+            TypeKindStr(ExprType) + ')');
+    Exit;
+  End;
+
+  { String, Object, etc. : erreur }
+  CheckBoolCondition := False;
+  CompileError('boolean expression expected, got ' +
+               TypeKindStr(ExprType), Line);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitImplicitConversion : emettre une conversion implicite      }
+{   selon les types source et destination                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitImplicitConversion(SrcType, DstType,
+                                 Line : Integer);
+Begin
+  If SrcType = DstType Then
+    Exit;
+
+  { char -> int : promotion }
+  If (SrcType = TYK_CHAR) And (DstType = TYK_INT) Then
+    EmitPromoCharToInt(Line)
+  { int -> String : dans concatenation }
+  Else If (SrcType = TYK_INT) And (DstType = TYK_STRING) Then
+    EmitImplIntToStr(Line)
+  { boolean -> String : dans println }
+  Else If (SrcType = TYK_BOOLEAN) And (DstType = TYK_STRING) Then
+    EmitImplBoolToStr(Line)
+  { char -> String : dans println }
+  Else If (SrcType = TYK_CHAR) And (DstType = TYK_STRING) Then
+    EmitImplCharToStr(Line)
+  Else
+  Begin
+    Inc(CvImplicitCount);
+    WriteLn('  ; implicit conversion ', TypeKindStr(SrcType),
+            ' -> ', TypeKindStr(DstType), ' (no-op)');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsParseIntCall : tester si un appel est Integer.parseInt        }
+{ ------------------------------------------------------------ }
+
+Function IsParseIntCall(const ClsName, MethName : TString)
+                        : Boolean;
+Begin
+  IsParseIntCall := (ClsName = 'Integer') And
+                    (MethName = 'parseInt');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsValueOfCall : tester si un appel est String.valueOf           }
+{ ------------------------------------------------------------ }
+
+Function IsValueOfCall(const ClsName, MethName : TString)
+                       : Boolean;
+Begin
+  IsValueOfCall := (ClsName = 'String') And
+                   (MethName = 'valueOf');
+End;
+
+{ ------------------------------------------------------------ }
+{ GetConversionKind : determiner le type de conversion entre     }
+{   deux types                                                  }
+{ ------------------------------------------------------------ }
+
+Function GetConversionKind(SrcType, DstType : Integer) : Integer;
+Begin
+  GetConversionKind := CV_NONE;
+  If SrcType = DstType Then
+    Exit;
+  If (SrcType = TYK_CHAR) And (DstType = TYK_INT) Then
+    GetConversionKind := CV_PROMO_CHAR_INT
+  Else If (SrcType = TYK_INT) And (DstType = TYK_CHAR) Then
+    GetConversionKind := CV_CAST_INT_CHAR
+  Else If (SrcType = TYK_INT) And (DstType = TYK_BOOLEAN) Then
+    GetConversionKind := CV_CAST_INT_BOOL
+  Else If (SrcType = TYK_INT) And (DstType = TYK_STRING) Then
+    GetConversionKind := CV_IMPL_INT_STR
+  Else If (SrcType = TYK_BOOLEAN) And (DstType = TYK_STRING) Then
+    GetConversionKind := CV_IMPL_BOOL_STR
+  Else If (SrcType = TYK_CHAR) And (DstType = TYK_STRING) Then
+    GetConversionKind := CV_IMPL_CHAR_STR;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpCvState : afficher l etat du sous-systeme conversions      }
+{ ------------------------------------------------------------ }
+
+Procedure DumpCvState;
+Var I : Integer;
+Begin
+  WriteLn('--- Conversion/Cast State ---');
+  WriteLn('  CvInitialized      : ', CvInitialized);
+  WriteLn('  CvCastCount        : ', CvCastCount);
+  WriteLn('  CvImplicitCount    : ', CvImplicitCount);
+  WriteLn('  CvExplicitCount    : ', CvExplicitCount);
+  WriteLn('  CvParseIntCount    : ', CvParseIntCount);
+  WriteLn('  CvValueOfCount     : ', CvValueOfCount);
+  WriteLn('  CvCheckCount       : ', CvCheckCount);
+  WriteLn('  CvWarnCount        : ', CvWarnCount);
+  WriteLn('  CvPromoCount       : ', CvPromoCount);
+  WriteLn('  CvBoolCondCount    : ', CvBoolCondCount);
+  WriteLn('  CvAssignCheckCount : ', CvAssignCheckCount);
+  WriteLn('  CvLastKind         : ', CvTypeName(CvLastKind));
+  WriteLn('  CvLabelSeq         : ', CvLabelSeq);
+  For I := 1 To CvCastCount Do
+    WriteLn('  Cast[', I, '] : ',
+            TypeKindStr(CvCastTab[I].SrcType), ' -> ',
+            TypeKindStr(CvCastTab[I].DstType),
+            ' (', CvTypeName(CvCastTab[I].Kind), ')',
+            ' line=', CvCastTab[I].Line,
+            ' lossy=', CvCastTab[I].IsLossy);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 20)                              }
+{ ------------------------------------------------------------ }
+
+Function IsCvInitialized : Boolean;
+Begin
+  IsCvInitialized := CvInitialized;
+End;
+
+Function IsCvEmpty : Boolean;
+Begin
+  IsCvEmpty := (CvCastCount = 0) And (CvImplicitCount = 0);
+End;
+
+Function GetCvCastCount : LongInt;
+Begin
+  GetCvCastCount := CvCastCount;
+End;
+
+Function GetCvImplicitCount : LongInt;
+Begin
+  GetCvImplicitCount := CvImplicitCount;
+End;
+
+Function GetCvExplicitCount : LongInt;
+Begin
+  GetCvExplicitCount := CvExplicitCount;
+End;
+
+Function GetCvParseIntCount : LongInt;
+Begin
+  GetCvParseIntCount := CvParseIntCount;
+End;
+
+Function GetCvValueOfCount : LongInt;
+Begin
+  GetCvValueOfCount := CvValueOfCount;
+End;
+
+Function GetCvWarnCount : LongInt;
+Begin
+  GetCvWarnCount := CvWarnCount;
+End;
+
+Function GetCvLastKind : Integer;
+Begin
+  GetCvLastKind := CvLastKind;
+End;
+
+Function GetCvStatus : TString;
+Begin
+  If Not CvInitialized Then
+    GetCvStatus := 'Not initialized'
+  Else
+    GetCvStatus := ItoS(CvCastCount) + ' casts, ' +
+                   ItoS(CvImplicitCount) + ' implicit, ' +
+                   ItoS(CvExplicitCount) + ' explicit, ' +
+                   ItoS(CvParseIntCount) + ' parseInt, ' +
+                   ItoS(CvValueOfCount) + ' valueOf, ' +
+                   ItoS(CvWarnCount) + ' warnings';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-20)                              }
 { ============================================================ }
 
 Begin
@@ -12595,16 +13299,17 @@ Begin
   InitSwState;
   InitExState;
   InitImState;
+  InitCvState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-19) }
+  { Boucle de tokenisation (TODO 02-20) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 20..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 21..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
