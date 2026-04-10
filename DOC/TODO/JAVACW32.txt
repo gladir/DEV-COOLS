@@ -429,7 +429,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
               _JL_SWITCH_END_N
             10 fonctions accesseurs
 
-  TODO 18 - PARSEUR : EXCEPTIONS (try / catch / finally / throw) [A FAIRE]
+  TODO 18 - PARSEUR : EXCEPTIONS (try / catch / finally / throw) [IMPLEMENTE]
             ParseTryStmt : try { bloc } catch (Type var) { bloc }
               [catch (Type2 var2) { bloc2 }] [finally { bloc }]
             try { bloc } -> sauvegarder handler courant, installer nouveau

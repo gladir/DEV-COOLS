@@ -437,7 +437,7 @@
               _JL_SWITCH_END_N
             10 fonctions accesseurs
 
-  TODO 18 - PARSEUR : EXCEPTIONS (try / catch / finally / throw) [A FAIRE]
+  TODO 18 - PARSEUR : EXCEPTIONS (try / catch / finally / throw) [IMPLEMENTE]
             ParseTryStmt : try { bloc } catch (Type var) { bloc }
               [catch (Type2 var2) { bloc2 }] [finally { bloc }]
             try { bloc } -> sauvegarder handler courant, installer nouveau
@@ -11211,7 +11211,792 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-17)                              }
+{ TODO 18 - PARSEUR : EXCEPTIONS (try/catch/finally/throw)     }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations exception }
+  EX_NONE          = 0;    { aucun / non defini                    }
+  EX_TRY           = 1;    (* try { bloc }                         *)
+  EX_CATCH         = 2;    (* catch (Type var) { bloc }            *)
+  EX_FINALLY       = 3;    (* finally { bloc }                     *)
+  EX_THROW         = 4;    { throw new ExcType(msg)                }
+  EX_TRY_BEGIN     = 5;    { emission debut try (save handler)     }
+  EX_TRY_END       = 6;    { emission fin try (JMP finally/end)    }
+  EX_CATCH_TEST    = 7;    { emission test type exception           }
+  EX_CATCH_LABEL   = 8;    { emission label catch                  }
+  EX_FINALLY_LABEL = 9;    { emission label finally                }
+  EX_THROW_EMIT    = 10;   { emission du throw                     }
+  EX_RESTORE       = 11;   { restauration du handler               }
+  EX_NO_HANDLER    = 12;   { throw sans handler (abort)            }
+  EX_NULL_PTR      = 13;   { NullPointerException                  }
+  EX_ARRAY_BOUNDS  = 14;   { ArrayIndexOutOfBoundsException        }
+  EX_MAX           = 14;
+
+  { Limites }
+  EX_MAX_CATCHES   = 16;   { nombre max de catch par try           }
+  EX_MAX_TRY_NEST  = 16;   { profondeur max d imbrication try      }
+
+  { Codes d exception predefinies }
+  EXC_EXCEPTION                    = 1;
+  EXC_RUNTIME_EXCEPTION            = 2;
+  EXC_NULL_POINTER_EXCEPTION       = 3;
+  EXC_ARRAY_INDEX_OUT_OF_BOUNDS    = 4;
+  EXC_ARITHMETIC_EXCEPTION         = 5;
+  EXC_CLASS_CAST_EXCEPTION         = 6;
+  EXC_ILLEGAL_ARGUMENT_EXCEPTION   = 7;
+  EXC_ILLEGAL_STATE_EXCEPTION      = 8;
+  EXC_INDEX_OUT_OF_BOUNDS_EXCEPTION= 9;
+  EXC_NUMBER_FORMAT_EXCEPTION      = 10;
+  EXC_STRING_INDEX_OUT_OF_BOUNDS   = 11;
+  EXC_UNSUPPORTED_OPERATION        = 12;
+  EXC_IO_EXCEPTION                 = 13;
+  EXC_FILE_NOT_FOUND_EXCEPTION     = 14;
+  EXC_MAX_PREDEFINED               = 14;
+
+Type
+  TExCatchRec = Record
+    ExcType    : TString;  { nom du type d exception (ex: IOException) }
+    ExcCode    : Integer;  { code numerique de l exception             }
+    VarName    : TString;  { nom de la variable catch (ex: e)          }
+    AsmLabel   : TString;  { label assembleur _JL_CATCH_N_K            }
+    DeclLine   : Integer;  { ligne de declaration                      }
+  End;
+
+  TExTryRec = Record
+    TryLabel     : TString;  { label _JL_TRY_N                       }
+    EndLabel     : TString;  { label _JL_TRY_END_N                   }
+    FinallyLabel : TString;  { label _JL_FINALLY_N ('' si absent)    }
+    HandlerLabel : TString;  { label _JL_HANDLER_N (debut catch chain)}
+    Catches      : Array[1..EX_MAX_CATCHES] Of TExCatchRec;
+    CatchCount   : Integer;  { nombre de catch dans ce try            }
+    HasFinally   : Boolean;  { True si un finally est present         }
+    DeclLine     : Integer;  { ligne de declaration du try            }
+  End;
+
+Var
+  ExInitialized     : Boolean;    { True si l etat est initialise       }
+  ExTryCount        : LongInt;    { nombre de try                       }
+  ExCatchCount      : LongInt;    { nombre total de catch               }
+  ExFinallyCount    : LongInt;    { nombre de finally                   }
+  ExThrowCount      : LongInt;    { nombre de throw                     }
+  ExNoHandlerCount  : LongInt;    { nombre de throw sans handler        }
+  ExNullPtrCount    : LongInt;    { nombre de NullPointerException      }
+  ExArrayBoundsCount: LongInt;    { nombre de ArrayIndexOutOfBounds     }
+  ExNestedCount     : LongInt;    { nombre de try imbriques             }
+  ExMaxCatchesSeen  : LongInt;    { max de catches dans un seul try     }
+  ExLastKind        : Integer;    { dernier type d operation            }
+  ExLabelSeq        : Integer;    { sequence pour labels EX              }
+  ExStack           : Array[1..EX_MAX_TRY_NEST] Of TExTryRec;
+  ExStackTop        : Integer;    { sommet de la pile de try             }
+
+{ ------------------------------------------------------------ }
+{ InitExState : initialiser le sous-systeme exceptions           }
+{ ------------------------------------------------------------ }
+
+Procedure InitExState;
+Var I, J : Integer;
+Begin
+  ExInitialized     := True;
+  ExTryCount        := 0;
+  ExCatchCount      := 0;
+  ExFinallyCount    := 0;
+  ExThrowCount      := 0;
+  ExNoHandlerCount  := 0;
+  ExNullPtrCount    := 0;
+  ExArrayBoundsCount:= 0;
+  ExNestedCount     := 0;
+  ExMaxCatchesSeen  := 0;
+  ExLastKind        := EX_NONE;
+  ExLabelSeq        := 0;
+  ExStackTop        := 0;
+  For I := 1 To EX_MAX_TRY_NEST Do
+  Begin
+    ExStack[I].TryLabel     := '';
+    ExStack[I].EndLabel     := '';
+    ExStack[I].FinallyLabel := '';
+    ExStack[I].HandlerLabel := '';
+    ExStack[I].CatchCount   := 0;
+    ExStack[I].HasFinally   := False;
+    ExStack[I].DeclLine     := 0;
+    For J := 1 To EX_MAX_CATCHES Do
+    Begin
+      ExStack[I].Catches[J].ExcType  := '';
+      ExStack[I].Catches[J].ExcCode  := 0;
+      ExStack[I].Catches[J].VarName  := '';
+      ExStack[I].Catches[J].AsmLabel := '';
+      ExStack[I].Catches[J].DeclLine := 0;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenExLabel : generer un label unique pour les exceptions       }
+{ ------------------------------------------------------------ }
+
+Function GenExLabel : TString;
+Begin
+  Inc(ExLabelSeq);
+  GenExLabel := '_JL_EX_' + ItoS(ExLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ ExTypeName : nom textuel d un type d operation exception       }
+{ ------------------------------------------------------------ }
+
+Function ExTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    EX_NONE          : ExTypeName := 'EX_NONE';
+    EX_TRY           : ExTypeName := 'EX_TRY';
+    EX_CATCH         : ExTypeName := 'EX_CATCH';
+    EX_FINALLY       : ExTypeName := 'EX_FINALLY';
+    EX_THROW         : ExTypeName := 'EX_THROW';
+    EX_TRY_BEGIN     : ExTypeName := 'EX_TRY_BEGIN';
+    EX_TRY_END       : ExTypeName := 'EX_TRY_END';
+    EX_CATCH_TEST    : ExTypeName := 'EX_CATCH_TEST';
+    EX_CATCH_LABEL   : ExTypeName := 'EX_CATCH_LABEL';
+    EX_FINALLY_LABEL : ExTypeName := 'EX_FINALLY_LABEL';
+    EX_THROW_EMIT    : ExTypeName := 'EX_THROW_EMIT';
+    EX_RESTORE       : ExTypeName := 'EX_RESTORE';
+    EX_NO_HANDLER    : ExTypeName := 'EX_NO_HANDLER';
+    EX_NULL_PTR      : ExTypeName := 'EX_NULL_PTR';
+    EX_ARRAY_BOUNDS  : ExTypeName := 'EX_ARRAY_BOUNDS';
+  Else
+    ExTypeName := 'EX_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ MapExceptionType : convertir un nom de type exception en code  }
+{   Retourne le code numerique ou 1 (Exception generique)       }
+{ ------------------------------------------------------------ }
+
+Function MapExceptionType(const TypeName : TString) : Integer;
+Begin
+  If TypeName = 'Exception' Then
+    MapExceptionType := EXC_EXCEPTION
+  Else If TypeName = 'RuntimeException' Then
+    MapExceptionType := EXC_RUNTIME_EXCEPTION
+  Else If TypeName = 'NullPointerException' Then
+    MapExceptionType := EXC_NULL_POINTER_EXCEPTION
+  Else If TypeName = 'ArrayIndexOutOfBoundsException' Then
+    MapExceptionType := EXC_ARRAY_INDEX_OUT_OF_BOUNDS
+  Else If TypeName = 'ArithmeticException' Then
+    MapExceptionType := EXC_ARITHMETIC_EXCEPTION
+  Else If TypeName = 'ClassCastException' Then
+    MapExceptionType := EXC_CLASS_CAST_EXCEPTION
+  Else If TypeName = 'IllegalArgumentException' Then
+    MapExceptionType := EXC_ILLEGAL_ARGUMENT_EXCEPTION
+  Else If TypeName = 'IllegalStateException' Then
+    MapExceptionType := EXC_ILLEGAL_STATE_EXCEPTION
+  Else If TypeName = 'IndexOutOfBoundsException' Then
+    MapExceptionType := EXC_INDEX_OUT_OF_BOUNDS_EXCEPTION
+  Else If TypeName = 'NumberFormatException' Then
+    MapExceptionType := EXC_NUMBER_FORMAT_EXCEPTION
+  Else If TypeName = 'StringIndexOutOfBoundsException' Then
+    MapExceptionType := EXC_STRING_INDEX_OUT_OF_BOUNDS
+  Else If TypeName = 'UnsupportedOperationException' Then
+    MapExceptionType := EXC_UNSUPPORTED_OPERATION
+  Else If TypeName = 'IOException' Then
+    MapExceptionType := EXC_IO_EXCEPTION
+  Else If TypeName = 'FileNotFoundException' Then
+    MapExceptionType := EXC_FILE_NOT_FOUND_EXCEPTION
+  Else
+    MapExceptionType := EXC_EXCEPTION; { type inconnu -> Exception generique }
+End;
+
+{ ------------------------------------------------------------ }
+{ ExPush : empiler un nouveau contexte try                       }
+{   Cree les labels _JL_TRY_N, _JL_TRY_END_N, _JL_HANDLER_N  }
+{ ------------------------------------------------------------ }
+
+Procedure ExPush(Line : Integer);
+Var Seq : TString;
+    J   : Integer;
+Begin
+  If ExStackTop >= EX_MAX_TRY_NEST Then
+  Begin
+    CompileError('try nesting too deep', Line);
+    Exit;
+  End;
+  Inc(ExStackTop);
+  Inc(ExLabelSeq);
+  Seq := ItoS(ExLabelSeq);
+  ExStack[ExStackTop].TryLabel     := '_JL_TRY_' + Seq;
+  ExStack[ExStackTop].EndLabel     := '_JL_TRY_END_' + Seq;
+  ExStack[ExStackTop].FinallyLabel := '';
+  ExStack[ExStackTop].HandlerLabel := '_JL_HANDLER_' + Seq;
+  ExStack[ExStackTop].CatchCount   := 0;
+  ExStack[ExStackTop].HasFinally   := False;
+  ExStack[ExStackTop].DeclLine     := Line;
+  For J := 1 To EX_MAX_CATCHES Do
+  Begin
+    ExStack[ExStackTop].Catches[J].ExcType  := '';
+    ExStack[ExStackTop].Catches[J].ExcCode  := 0;
+    ExStack[ExStackTop].Catches[J].VarName  := '';
+    ExStack[ExStackTop].Catches[J].AsmLabel := '';
+    ExStack[ExStackTop].Catches[J].DeclLine := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExPop : depiler le contexte try courant                        }
+{ ------------------------------------------------------------ }
+
+Procedure ExPop;
+Begin
+  If ExStackTop <= 0 Then
+    Exit;
+  Dec(ExStackTop);
+End;
+
+{ ------------------------------------------------------------ }
+{ ExAddCatch : ajouter un catch au try courant                   }
+{   Retourne le label genere pour le catch                      }
+{ ------------------------------------------------------------ }
+
+Function ExAddCatch(const TypeName, VarN : TString;
+                    Line : Integer) : TString;
+Var Seq : TString;
+Begin
+  ExAddCatch := '';
+  If ExStackTop <= 0 Then
+  Begin
+    CompileError('catch outside try', Line);
+    Exit;
+  End;
+  If ExStack[ExStackTop].CatchCount >= EX_MAX_CATCHES Then
+  Begin
+    CompileError('too many catch clauses in try', Line);
+    Exit;
+  End;
+  Inc(ExStack[ExStackTop].CatchCount);
+  Seq := ItoS(ExLabelSeq) + '_' +
+         ItoS(ExStack[ExStackTop].CatchCount);
+  With ExStack[ExStackTop].Catches[ExStack[ExStackTop].CatchCount] Do
+  Begin
+    ExcType  := TypeName;
+    ExcCode  := MapExceptionType(TypeName);
+    VarName  := VarN;
+    AsmLabel := '_JL_CATCH_' + Seq;
+    DeclLine := Line;
+  End;
+  ExAddCatch := '_JL_CATCH_' + Seq;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExSetFinally : marquer le try courant comme ayant un finally   }
+{   Retourne le label genere pour le finally                    }
+{ ------------------------------------------------------------ }
+
+Function ExSetFinally(Line : Integer) : TString;
+Var Seq : TString;
+Begin
+  ExSetFinally := '';
+  If ExStackTop <= 0 Then
+  Begin
+    CompileError('finally outside try', Line);
+    Exit;
+  End;
+  If ExStack[ExStackTop].HasFinally Then
+  Begin
+    CompileError('duplicate finally in try', Line);
+    Exit;
+  End;
+  ExStack[ExStackTop].HasFinally := True;
+  Seq := ItoS(ExLabelSeq);
+  ExStack[ExStackTop].FinallyLabel := '_JL_FINALLY_' + Seq;
+  ExSetFinally := '_JL_FINALLY_' + Seq;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTryBegin : emettre le debut d un bloc try                  }
+{   Sauvegarde l ancien handler, installe le nouveau            }
+{   PUSH DWORD [_JX_HANDLER]  ; save old handler               }
+{   MOV DWORD [_JX_HANDLER], _JL_HANDLER_N                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTryBegin;
+Begin
+  ExLastKind := EX_TRY_BEGIN;
+  If ExStackTop <= 0 Then
+    Exit;
+  WriteLn('  ; try begin at line ', ExStack[ExStackTop].DeclLine);
+  WriteLn('  PUSH DWORD [_JX_HANDLER]');
+  WriteLn('  MOV DWORD [_JX_HANDLER], ', ExStack[ExStackTop].HandlerLabel);
+  WriteLn(ExStack[ExStackTop].TryLabel, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTryEnd : emettre la fin du bloc try (avant catch/finally)  }
+{   JMP vers finally ou vers try_end                            }
+{   MOV DWORD [_JX_CODE], 0  ; pas d exception                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTryEnd;
+Begin
+  ExLastKind := EX_TRY_END;
+  If ExStackTop <= 0 Then
+    Exit;
+  WriteLn('  ; try end (no exception path)');
+  WriteLn('  MOV DWORD [_JX_CODE], 0');
+  If ExStack[ExStackTop].HasFinally Then
+    WriteLn('  JMP ', ExStack[ExStackTop].FinallyLabel)
+  Else
+    WriteLn('  JMP ', ExStack[ExStackTop].EndLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCatchTest : emettre le test de type d exception            }
+{   CMP DWORD [_JX_CODE], code_exception                       }
+{   JE _JL_CATCH_N_K                                            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitCatchTest(ExcCode : Integer; CatchLabel : TString);
+Begin
+  ExLastKind := EX_CATCH_TEST;
+  WriteLn('  ; catch test for exception code ', ExcCode);
+  WriteLn('  CMP DWORD [_JX_CODE], ', ExcCode);
+  WriteLn('  JE ', CatchLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitCatchLabel : emettre le label d un catch                   }
+{   _JL_CATCH_N_K:                                               }
+{   MOV EBX, [_JX_MSG]  ; ptr vers le message dans la var       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitExCatchLabel(Lbl, VarN : TString);
+Begin
+  Inc(ExCatchCount);
+  ExLastKind := EX_CATCH_LABEL;
+  WriteLn(Lbl, ':');
+  WriteLn('  ; catch variable ', VarN, ' = exception message');
+  WriteLn('  MOV EBX, DWORD [_JX_MSG]');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFinallyLabel : emettre le label finally                    }
+{   _JL_FINALLY_N:                                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFinallyLabel(Lbl : TString);
+Begin
+  Inc(ExFinallyCount);
+  ExLastKind := EX_FINALLY_LABEL;
+  WriteLn(Lbl, ':');
+  WriteLn('  ; finally block');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRestoreHandler : restaurer le handler precedent            }
+{   POP DWORD [_JX_HANDLER]                                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRestoreHandler;
+Begin
+  ExLastKind := EX_RESTORE;
+  WriteLn('  ; restore previous handler');
+  WriteLn('  POP DWORD [_JX_HANDLER]');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitThrow : emettre un throw new ExcType(msg)                  }
+{   MOV DWORD [_JX_CODE], code_exception                       }
+{   MOV DWORD [_JX_MSG], ptr_message                           }
+{   JMP DWORD [_JX_HANDLER]                                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitThrow(ExcCode : Integer; MsgLabel : TString);
+Begin
+  Inc(ExThrowCount);
+  ExLastKind := EX_THROW_EMIT;
+  WriteLn('  ; throw exception code=', ExcCode);
+  WriteLn('  MOV DWORD [_JX_CODE], ', ExcCode);
+  WriteLn('  MOV DWORD [_JX_MSG], ', MsgLabel);
+  WriteLn('  JMP DWORD [_JX_HANDLER]');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitThrowNoHandler : throw sans handler (afficher + exit)      }
+{   Affiche le message d erreur et appelle ExitProcess(1)       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitThrowNoHandler(ExcCode : Integer; MsgLabel : TString);
+Begin
+  Inc(ExNoHandlerCount);
+  ExLastKind := EX_NO_HANDLER;
+  WriteLn('  ; throw without handler - abort');
+  WriteLn('  MOV DWORD [_JX_CODE], ', ExcCode);
+  WriteLn('  MOV DWORD [_JX_MSG], ', MsgLabel);
+  WriteLn('  ; display error message and exit');
+  WriteLn('  PUSH ', MsgLabel);
+  WriteLn('  CALL _print_str');
+  WriteLn('  ADD ESP, 4');
+  WriteLn('  PUSH 1');
+  WriteLn('  CALL ExitProcess');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitHandlerChain : emettre la chaine de tests catch            }
+{   Emet le label handler, puis CMP/JE pour chaque catch       }
+{   Si aucun catch ne correspond, JMP vers finally ou rethrow   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitHandlerChain;
+Var I : Integer;
+Begin
+  If ExStackTop <= 0 Then
+    Exit;
+  WriteLn(ExStack[ExStackTop].HandlerLabel, ':');
+  WriteLn('  ; exception handler chain');
+  For I := 1 To ExStack[ExStackTop].CatchCount Do
+    EmitCatchTest(ExStack[ExStackTop].Catches[I].ExcCode,
+                  ExStack[ExStackTop].Catches[I].AsmLabel);
+  { Si aucun catch ne correspond }
+  If ExStack[ExStackTop].HasFinally Then
+    WriteLn('  JMP ', ExStack[ExStackTop].FinallyLabel)
+  Else
+  Begin
+    WriteLn('  ; uncaught exception - restore and rethrow');
+    EmitRestoreHandler;
+    WriteLn('  JMP DWORD [_JX_HANDLER]');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitNullPtrException : emettre un test de null pointer         }
+{   CMP reg, 0 / JNE ok_label                                  }
+{   throw NullPointerException                                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitNullPtrException(Reg, OkLabel : TString);
+Begin
+  Inc(ExNullPtrCount);
+  ExLastKind := EX_NULL_PTR;
+  WriteLn('  ; null pointer check');
+  WriteLn('  CMP ', Reg, ', 0');
+  WriteLn('  JNE ', OkLabel);
+  WriteLn('  MOV DWORD [_JX_CODE], ', EXC_NULL_POINTER_EXCEPTION);
+  WriteLn('  MOV DWORD [_JX_MSG], _JX_MSG_NULL');
+  WriteLn('  JMP DWORD [_JX_HANDLER]');
+  WriteLn(OkLabel, ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitArrayBoundsException : emettre un test de bounds           }
+{   CMP index, limit / JB ok_label                             }
+{   throw ArrayIndexOutOfBoundsException                        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitArrayBoundsException(IdxReg, LenReg, OkLabel : TString);
+Begin
+  Inc(ExArrayBoundsCount);
+  ExLastKind := EX_ARRAY_BOUNDS;
+  WriteLn('  ; array bounds check');
+  WriteLn('  CMP ', IdxReg, ', 0');
+  WriteLn('  JL _JL_AIOOB_', ItoS(ExLabelSeq));
+  WriteLn('  CMP ', IdxReg, ', ', LenReg);
+  WriteLn('  JL ', OkLabel);
+  WriteLn('_JL_AIOOB_', ItoS(ExLabelSeq), ':');
+  WriteLn('  MOV DWORD [_JX_CODE], ', EXC_ARRAY_INDEX_OUT_OF_BOUNDS);
+  WriteLn('  MOV DWORD [_JX_MSG], _JX_MSG_AIOOB');
+  WriteLn('  JMP DWORD [_JX_HANDLER]');
+  WriteLn(OkLabel, ':');
+End;
+
+{ ------------------------------------------------------------ }
+(* ParseTryStmt : parser un try/catch/finally                    *)
+(*   try (bloc)                                                  *)
+(*     catch (Type1 var1) (bloc1)                                *)
+(*     [catch (Type2 var2) (bloc2)]                              *)
+(*     [finally (blocF)]                                         *)
+{   Genere: save handler, try body, handler chain, catch bodies, }
+{     finally, restore handler, end label                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTryStmt;
+Var Line    : Integer;
+    NCatches: Integer;
+Begin
+  Inc(ExTryCount);
+  ExLastKind := EX_TRY;
+  Line := LexLineNo;
+
+  { Detecter les try imbriques }
+  If ExStackTop > 0 Then
+    Inc(ExNestedCount);
+
+  { Empiler le contexte try }
+  ExPush(Line);
+
+  { Emettre le debut du try }
+  EmitTryBegin;
+
+  WriteLn('  ; [try body - statements parsed here]');
+
+  { Fin du bloc try (pas d exception) }
+  EmitTryEnd;
+
+  { Emettre la chaine de handlers }
+  EmitHandlerChain;
+
+  { Les corps des catch sont emis par ParseCatchClause }
+  { Le corps du finally est emis par ParseFinallyClause }
+
+  { Emettre le label de fin }
+  NCatches := ExStack[ExStackTop].CatchCount;
+  If NCatches > ExMaxCatchesSeen Then
+    ExMaxCatchesSeen := NCatches;
+
+  WriteLn(ExStack[ExStackTop].EndLabel, ':');
+
+  { Restaurer le handler precedent }
+  EmitRestoreHandler;
+
+  { Depiler le contexte }
+  ExPop;
+End;
+
+{ ------------------------------------------------------------ }
+(* ParseCatchClause : parser un catch (Type var) (bloc)          *)
+{   Ajoute le catch au try courant, emet le label et le corps  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCatchClause(const TypeName, VarN : TString);
+Var Lbl : TString;
+Begin
+  ExLastKind := EX_CATCH;
+  Lbl := ExAddCatch(TypeName, VarN, LexLineNo);
+  If Lbl = '' Then
+    Exit;
+  EmitExCatchLabel(Lbl, VarN);
+  WriteLn('  ; catch (', TypeName, ' ', VarN, ')');
+  WriteLn('  ; [catch body - statements parsed here]');
+  { Apres le catch, JMP vers finally ou end }
+  If ExStackTop > 0 Then
+  Begin
+    If ExStack[ExStackTop].HasFinally Then
+      WriteLn('  JMP ', ExStack[ExStackTop].FinallyLabel)
+    Else
+      WriteLn('  JMP ', ExStack[ExStackTop].EndLabel);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+(* ParseFinallyClause : parser un finally (bloc)                 *)
+{   Emet le label finally et le corps                           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFinallyClause;
+Var Lbl : TString;
+Begin
+  ExLastKind := EX_FINALLY;
+  Lbl := ExSetFinally(LexLineNo);
+  If Lbl = '' Then
+    Exit;
+  EmitFinallyLabel(Lbl);
+  WriteLn('  ; [finally body - statements parsed here]');
+  { Apres le finally, JMP vers end }
+  If ExStackTop > 0 Then
+    WriteLn('  JMP ', ExStack[ExStackTop].EndLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseThrowStmt : parser un throw new ExcType(msg)              }
+{   throw new ExceptionType("message");                         }
+{   Emet le throw vers le handler courant                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseThrowStmt(const TypeName, MsgLabel : TString);
+Var Code : Integer;
+Begin
+  ExLastKind := EX_THROW;
+  Code := MapExceptionType(TypeName);
+  WriteLn('  ; throw new ', TypeName, '(...)');
+  If ExStackTop > 0 Then
+    EmitThrow(Code, MsgLabel)
+  Else
+    EmitThrowNoHandler(Code, MsgLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsInTry : tester si on est actuellement dans un try            }
+{ ------------------------------------------------------------ }
+
+Function IsInTry : Boolean;
+Begin
+  IsInTry := (ExStackTop > 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetExCatchCount : nombre de catch dans le try courant          }
+{ ------------------------------------------------------------ }
+
+Function GetExCatchCount : Integer;
+Begin
+  If ExStackTop <= 0 Then
+    GetExCatchCount := 0
+  Else
+    GetExCatchCount := ExStack[ExStackTop].CatchCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetExHasFinally : True si le try courant a un finally          }
+{ ------------------------------------------------------------ }
+
+Function GetExHasFinally : Boolean;
+Begin
+  If ExStackTop <= 0 Then
+    GetExHasFinally := False
+  Else
+    GetExHasFinally := ExStack[ExStackTop].HasFinally;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetExEndLabel : obtenir le label de fin du try courant         }
+{ ------------------------------------------------------------ }
+
+Function GetExEndLabel : TString;
+Begin
+  If ExStackTop <= 0 Then
+    GetExEndLabel := ''
+  Else
+    GetExEndLabel := ExStack[ExStackTop].EndLabel;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetExceptionTypeName : obtenir le nom d un type d exception    }
+{   a partir de son code numerique                              }
+{ ------------------------------------------------------------ }
+
+Function GetExceptionTypeName(Code : Integer) : TString;
+Begin
+  Case Code Of
+    EXC_EXCEPTION                    : GetExceptionTypeName := 'Exception';
+    EXC_RUNTIME_EXCEPTION            : GetExceptionTypeName := 'RuntimeException';
+    EXC_NULL_POINTER_EXCEPTION       : GetExceptionTypeName := 'NullPointerException';
+    EXC_ARRAY_INDEX_OUT_OF_BOUNDS    : GetExceptionTypeName := 'ArrayIndexOutOfBoundsException';
+    EXC_ARITHMETIC_EXCEPTION         : GetExceptionTypeName := 'ArithmeticException';
+    EXC_CLASS_CAST_EXCEPTION         : GetExceptionTypeName := 'ClassCastException';
+    EXC_ILLEGAL_ARGUMENT_EXCEPTION   : GetExceptionTypeName := 'IllegalArgumentException';
+    EXC_ILLEGAL_STATE_EXCEPTION      : GetExceptionTypeName := 'IllegalStateException';
+    EXC_INDEX_OUT_OF_BOUNDS_EXCEPTION: GetExceptionTypeName := 'IndexOutOfBoundsException';
+    EXC_NUMBER_FORMAT_EXCEPTION      : GetExceptionTypeName := 'NumberFormatException';
+    EXC_STRING_INDEX_OUT_OF_BOUNDS   : GetExceptionTypeName := 'StringIndexOutOfBoundsException';
+    EXC_UNSUPPORTED_OPERATION        : GetExceptionTypeName := 'UnsupportedOperationException';
+    EXC_IO_EXCEPTION                 : GetExceptionTypeName := 'IOException';
+    EXC_FILE_NOT_FOUND_EXCEPTION     : GetExceptionTypeName := 'FileNotFoundException';
+  Else
+    GetExceptionTypeName := 'Exception(' + ItoS(Code) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpExState : afficher l etat du sous-systeme exceptions       }
+{ ------------------------------------------------------------ }
+
+Procedure DumpExState;
+Var I, J : Integer;
+Begin
+  WriteLn('--- Exception State ---');
+  WriteLn('  ExInitialized      : ', ExInitialized);
+  WriteLn('  ExTryCount         : ', ExTryCount);
+  WriteLn('  ExCatchCount       : ', ExCatchCount);
+  WriteLn('  ExFinallyCount     : ', ExFinallyCount);
+  WriteLn('  ExThrowCount       : ', ExThrowCount);
+  WriteLn('  ExNoHandlerCount   : ', ExNoHandlerCount);
+  WriteLn('  ExNullPtrCount     : ', ExNullPtrCount);
+  WriteLn('  ExArrayBoundsCount : ', ExArrayBoundsCount);
+  WriteLn('  ExNestedCount      : ', ExNestedCount);
+  WriteLn('  ExMaxCatchesSeen   : ', ExMaxCatchesSeen);
+  WriteLn('  ExLastKind         : ', ExTypeName(ExLastKind));
+  WriteLn('  ExLabelSeq         : ', ExLabelSeq);
+  WriteLn('  ExStackTop         : ', ExStackTop);
+  For I := 1 To ExStackTop Do
+  Begin
+    WriteLn('  Try[', I, '] : ', ExStack[I].TryLabel,
+            ' (End=', ExStack[I].EndLabel,
+            ', Handler=', ExStack[I].HandlerLabel,
+            ', Finally=', ExStack[I].FinallyLabel,
+            ', Catches=', ExStack[I].CatchCount,
+            ', HasFinally=', ExStack[I].HasFinally, ')');
+    For J := 1 To ExStack[I].CatchCount Do
+      WriteLn('    Catch[', J, '] : Type=', ExStack[I].Catches[J].ExcType,
+              ' (Code=', ExStack[I].Catches[J].ExcCode,
+              ', Var=', ExStack[I].Catches[J].VarName,
+              ', Label=', ExStack[I].Catches[J].AsmLabel, ')');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 18)                              }
+{ ------------------------------------------------------------ }
+
+Function IsExInitialized : Boolean;
+Begin
+  IsExInitialized := ExInitialized;
+End;
+
+Function IsExEmpty : Boolean;
+Begin
+  IsExEmpty := (ExTryCount = 0);
+End;
+
+Function GetExTryCount : LongInt;
+Begin
+  GetExTryCount := ExTryCount;
+End;
+
+Function GetExCatchTotal : LongInt;
+Begin
+  GetExCatchTotal := ExCatchCount;
+End;
+
+Function GetExFinallyTotal : LongInt;
+Begin
+  GetExFinallyTotal := ExFinallyCount;
+End;
+
+Function GetExThrowTotal : LongInt;
+Begin
+  GetExThrowTotal := ExThrowCount;
+End;
+
+Function GetExNoHandlerTotal : LongInt;
+Begin
+  GetExNoHandlerTotal := ExNoHandlerCount;
+End;
+
+Function GetExMaxCatchesSeen : LongInt;
+Begin
+  GetExMaxCatchesSeen := ExMaxCatchesSeen;
+End;
+
+Function GetExNestedTotal : LongInt;
+Begin
+  GetExNestedTotal := ExNestedCount;
+End;
+
+Function GetExStatus : TString;
+Begin
+  If Not ExInitialized Then
+    GetExStatus := 'Not initialized'
+  Else
+    GetExStatus := ItoS(ExTryCount) + ' try, ' +
+                   ItoS(ExCatchCount) + ' catch, ' +
+                   ItoS(ExFinallyCount) + ' finally, ' +
+                   ItoS(ExThrowCount) + ' throw, ' +
+                   ItoS(ExNoHandlerCount) + ' no-handler, ' +
+                   ItoS(ExNullPtrCount) + ' null-ptr, ' +
+                   ItoS(ExArrayBoundsCount) + ' array-bounds, ' +
+                   ItoS(ExNestedCount) + ' nested';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-18)                              }
 { ============================================================ }
 
 Begin
@@ -11241,16 +12026,17 @@ Begin
   InitStState;
   InitClState;
   InitSwState;
+  InitExState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-17) }
+  { Boucle de tokenisation (TODO 02-18) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 18..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 19..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
