@@ -43,9 +43,12 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
             GetJavaVersion(Major) : 45->"Java 1.1"..67->"Java 23"
             CloseClassFile : fermer le fichier et liberer le tampon
 
-  TODO 03 - DECODAGE DU CONSTANT POOL [A FAIRE]
+  TODO 03 - DECODAGE DU CONSTANT POOL [IMPLEMENTE]
             Structure TCPEntry (Tag, StrVal, IntVal, FloatVal,
               Ref1, Ref2, IsDouble)
+            Tableau TCPArray et pointeur CP, variable CPCount
+            InitConstantPool : liberer le CP existant
+            AllocConstantPool(Count) : allouer le tableau CP
             ParseConstantPool(Count) : lire les Count-1 entrees big-endian
               CP_UTF8 : lire longueur U2 + octets -> StrVal
               CP_INTEGER/FLOAT : 4 octets -> IntVal/FloatVal
@@ -58,6 +61,10 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
             CPGetClassName(Idx) : resoudre CP_CLASS -> CPGetUtf8(Ref1)
             CPGetNameAndType(Idx, Name, Desc) : resoudre CP_NAMEANDTYPE
             CPGetMemberRef(Idx, Class, Name, Desc) : resoudre FIELDREF/METHODREF
+            CPGetString(Idx) : resoudre CP_STRING -> CPGetUtf8(Ref1)
+            CPGetInteger(Idx) : retourner valeur entiere
+            CPTagName(Tag) : nom textuel du tag (Utf8, Class, Methodref...)
+            DumpConstantPool : afficher le CP pour debug
 
   TODO 04 - LECTURE DES FLAGS, THIS_CLASS, SUPER_CLASS, INTERFACES [A FAIRE]
             Structure TClassInfo (AccessFlags, ThisClass, SuperClass,

@@ -18,7 +18,7 @@
 { ---------------------------------------------------------------------------- }
 {  TODO 01 [IMPLEMENTE] - Infrastructure, options et constantes globales      }
 {  TODO 02 [IMPLEMENTE] - Lecture et validation de l'en-tete .class           }
-{  TODO 03 [A FAIRE] - Decodage du Constant Pool                              }
+{  TODO 03 [IMPLEMENTE] - Decodage du Constant Pool                           }
 {  TODO 04 [A FAIRE] - Lecture des flags, this_class, super_class, interfaces }
 {  TODO 05 [A FAIRE] - Lecture des champs (fields) de la classe               }
 {  TODO 06 [A FAIRE] - Lecture des methodes et de l'attribut Code             }
@@ -297,6 +297,20 @@ Type
     InterfaceCount : Word;     { Nombre d'interfaces implementees         }
   End;
 
+  { --- TODO 03 : Structure TCPEntry : entree du Constant Pool --- }
+  TCPEntry = Record
+    Tag      : Byte;           { Type de l'entree (CP_UTF8, CP_CLASS...) }
+    StrVal   : String;         { Valeur Utf8 si Tag=CP_UTF8              }
+    IntVal   : LongInt;        { Valeur entiere si Tag=CP_INTEGER        }
+    FloatVal : Real;           { Valeur flottante si Tag=CP_FLOAT/DOUBLE }
+    Ref1     : Word;           { Premier index de reference              }
+    Ref2     : Word;           { Second index de reference               }
+    IsDouble : Boolean;        { True si occupe 2 slots (LONG/DOUBLE)    }
+  End;
+
+  { --- TODO 03 : Tableau du Constant Pool --- }
+  TCPArray = Array[0..MAX_CP_ENTRIES] of TCPEntry;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -313,6 +327,8 @@ Var
   ClassFile      : File;          { Handle du fichier .class ouvert     }
   ClassFileOpen  : Boolean;       { True si ClassFile est ouvert        }
   ClassHeader    : TClassHeader;  { TODO 02 : En-tete du .class courant }
+  CP             : ^TCPArray;     { TODO 03 : Constant Pool (pointeur)  }
+  CPCount        : Word;          { TODO 03 : Nombre d'entrees CP       }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -600,6 +616,10 @@ Begin
   ClassHeader.ThisClass    := 0;
   ClassHeader.SuperClass   := 0;
   ClassHeader.InterfaceCount := 0;
+
+  { Initialiser le Constant Pool (TODO 03) }
+  CP := Nil;
+  CPCount := 0;
 End;
 
 { ============================================================================ }
@@ -736,44 +756,324 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 03 [A FAIRE] - Decodage du Constant Pool                                }
+{ TODO 03 [IMPLEMENTE] - Decodage du Constant Pool                             }
 { ============================================================================ }
-{                                                                              }
-{  - Structure TCPEntry :                                                        }
-{      Tag      : Byte                   (type de l'entree, CP_*)               }
-{      StrVal   : String                 (valeur Utf8 si Tag=CP_UTF8)           }
-{      IntVal   : LongInt                (valeur entiere si Tag=CP_INTEGER)     }
-{      FloatVal : Double                 (valeur flottante si Tag=CP_FLOAT)     }
-{      Ref1     : Word                   (premier index de reference)           }
-{      Ref2     : Word                   (second index de reference)            }
-{      IsDouble : Boolean                (True si occupe 2 slots: LONG/DOUBLE)  }
-{                                                                              }
-{  - Procedure ParseConstantPool(Count: Word)                                   }
-{      Lire les (Count-1) entrees du Constant Pool en big-endian                }
-{      Entree 0 non utilisee (index base 1)                                     }
-{      Dispatcher selon le tag :                                                 }
-{        CP_UTF8 : lire longueur U2 + octets -> StrVal                          }
-{        CP_INTEGER, CP_FLOAT : lire 4 octets -> IntVal/FloatVal                }
-{        CP_LONG, CP_DOUBLE : lire 8 octets, occuper 2 slots                    }
-{        CP_CLASS, CP_STRING, CP_METHODTYPE : lire 1 index U2 -> Ref1           }
-{        CP_FIELDREF, CP_METHODREF, CP_INTERFACEMETHODREF,                      }
-{          CP_NAMEANDTYPE, CP_INVOKEDYNAMIC : lire 2 index U2 -> Ref1, Ref2     }
-{        CP_METHODHANDLE : lire 1 octet + 1 index U2                            }
-{      Validation : tag inconnu -> erreur + sauter                              }
-{                                                                              }
-{  - Function CPGetUtf8(Idx: Word): String                                      }
-{      Retourner la valeur Utf8 de l'entree d'index Idx                         }
-{      Erreur si Idx hors bornes ou tag != CP_UTF8                              }
-{                                                                              }
-{  - Function CPGetClassName(Idx: Word): String                                 }
-{      Resoudre CP_CLASS -> CPGetUtf8(Ref1)                                     }
-{                                                                              }
-{  - Function CPGetNameAndType(Idx: Word; Var Name, Desc: String)               }
-{      Resoudre CP_NAMEANDTYPE -> Name=CPGetUtf8(Ref1), Desc=CPGetUtf8(Ref2)   }
-{                                                                              }
-{  - Function CPGetMemberRef(Idx: Word; Var Class, Name, Desc: String)          }
-{      Resoudre CP_FIELDREF/METHODREF/INTERFACEMETHODREF                        }
-{      -> Class=CPGetClassName(Ref1), puis CPGetNameAndType(Ref2)               }
+
+{ --- InitConstantPool : initialiser le Constant Pool --- }
+Procedure InitConstantPool;
+Begin
+  If CP <> Nil Then Begin
+    FreeMem(CP, SizeOf(TCPArray));
+    CP := Nil;
+  End;
+  CPCount := 0;
+End;
+
+{ --- AllocConstantPool : allouer le Constant Pool --- }
+Procedure AllocConstantPool(Count: Word);
+Begin
+  InitConstantPool;
+  GetMem(CP, SizeOf(TCPArray));
+  If CP = Nil Then
+    FatalError('Memoire insuffisante pour Constant Pool');
+  CPCount := Count;
+End;
+
+{ --- ParseConstantPool : lire le Constant Pool depuis le fichier .class --- }
+Procedure ParseConstantPool(Count: Word);
+Var
+  I: Word;
+  Tag: Byte;
+  Len: Word;
+  J: Word;
+  B: Byte;
+  B1, B2, B3, B4: Byte;
+  HiInt, LoInt: LongInt;
+Begin
+  AllocConstantPool(Count);
+  
+  { Entree 0 non utilisee }
+  CP^[0].Tag := CP_NONE;
+  CP^[0].StrVal := '';
+  CP^[0].IntVal := 0;
+  CP^[0].FloatVal := 0;
+  CP^[0].Ref1 := 0;
+  CP^[0].Ref2 := 0;
+  CP^[0].IsDouble := False;
+  
+  I := 1;
+  While I < Count Do Begin
+    { Lire le tag }
+    Tag := ReadU1;
+    CP^[I].Tag := Tag;
+    CP^[I].StrVal := '';
+    CP^[I].IntVal := 0;
+    CP^[I].FloatVal := 0;
+    CP^[I].Ref1 := 0;
+    CP^[I].Ref2 := 0;
+    CP^[I].IsDouble := False;
+    
+    Case Tag of
+      CP_UTF8: Begin
+        { Lire longueur U2 puis octets }
+        Len := ReadU2;
+        CP^[I].StrVal := '';
+        For J := 1 to Len Do Begin
+          B := ReadU1;
+          If Length(CP^[I].StrVal) < 255 Then
+            CP^[I].StrVal := CP^[I].StrVal + Chr(B);
+        End;
+      End;
+      
+      CP_INTEGER: Begin
+        { Lire 4 octets big-endian }
+        CP^[I].IntVal := ReadU4;
+      End;
+      
+      CP_FLOAT: Begin
+        { Lire 4 octets (IEEE 754 single) }
+        B1 := ReadU1; B2 := ReadU1; B3 := ReadU1; B4 := ReadU1;
+        { Conversion simplifiee - stocke entier pour l'instant }
+        CP^[I].IntVal := (LongInt(B1) shl 24) or (LongInt(B2) shl 16) or
+                         (LongInt(B3) shl 8) or LongInt(B4);
+        CP^[I].FloatVal := 0; { TODO: conversion IEEE 754 }
+      End;
+      
+      CP_LONG: Begin
+        { Lire 8 octets, occupe 2 slots }
+        HiInt := ReadU4;
+        LoInt := ReadU4;
+        CP^[I].IntVal := LoInt; { Partie basse }
+        CP^[I].FloatVal := HiInt; { Partie haute dans FloatVal }
+        CP^[I].IsDouble := True;
+        { Slot suivant non utilise }
+        Inc(I);
+        If I < Count Then Begin
+          CP^[I].Tag := CP_NONE;
+          CP^[I].StrVal := '';
+          CP^[I].IntVal := 0;
+          CP^[I].FloatVal := 0;
+          CP^[I].Ref1 := 0;
+          CP^[I].Ref2 := 0;
+          CP^[I].IsDouble := False;
+        End;
+      End;
+      
+      CP_DOUBLE: Begin
+        { Lire 8 octets (IEEE 754 double), occupe 2 slots }
+        HiInt := ReadU4;
+        LoInt := ReadU4;
+        CP^[I].IntVal := LoInt;
+        CP^[I].FloatVal := HiInt;
+        CP^[I].IsDouble := True;
+        { Slot suivant non utilise }
+        Inc(I);
+        If I < Count Then Begin
+          CP^[I].Tag := CP_NONE;
+          CP^[I].StrVal := '';
+          CP^[I].IntVal := 0;
+          CP^[I].FloatVal := 0;
+          CP^[I].Ref1 := 0;
+          CP^[I].Ref2 := 0;
+          CP^[I].IsDouble := False;
+        End;
+      End;
+      
+      CP_CLASS, CP_STRING, CP_METHODTYPE: Begin
+        { Lire 1 index U2 }
+        CP^[I].Ref1 := ReadU2;
+      End;
+      
+      CP_FIELDREF, CP_METHODREF, CP_INTERFACEMETHODREF, CP_NAMEANDTYPE: Begin
+        { Lire 2 index U2 }
+        CP^[I].Ref1 := ReadU2;
+        CP^[I].Ref2 := ReadU2;
+      End;
+      
+      CP_METHODHANDLE: Begin
+        { Lire 1 octet (kind) + 1 index U2 }
+        CP^[I].IntVal := ReadU1; { reference_kind }
+        CP^[I].Ref1 := ReadU2;   { reference_index }
+      End;
+      
+      CP_INVOKEDYNAMIC: Begin
+        { Lire 2 index U2 (bootstrap_method_attr_index + name_and_type_index) }
+        CP^[I].Ref1 := ReadU2;
+        CP^[I].Ref2 := ReadU2;
+      End;
+      
+      Else Begin
+        Error('Tag Constant Pool inconnu: ' + IntToStr_(Tag) + ' a l''index ' + IntToStr_(I));
+      End;
+    End;
+    
+    Inc(I);
+  End;
+  
+  Info('Constant Pool lu: ' + IntToStr_(Count - 1) + ' entrees');
+End;
+
+{ --- CPGetUtf8 : retourner la valeur Utf8 d'une entree --- }
+Function CPGetUtf8(Idx: Word): String;
+Begin
+  If (Idx = 0) or (Idx >= CPCount) Then Begin
+    Error('Index Constant Pool hors bornes: ' + IntToStr_(Idx));
+    CPGetUtf8 := '';
+    Exit;
+  End;
+  If CP^[Idx].Tag <> CP_UTF8 Then Begin
+    Error('Entree CP #' + IntToStr_(Idx) + ' n''est pas UTF8 (tag=' + 
+          IntToStr_(CP^[Idx].Tag) + ')');
+    CPGetUtf8 := '';
+    Exit;
+  End;
+  CPGetUtf8 := CP^[Idx].StrVal;
+End;
+
+{ --- CPGetClassName : resoudre CP_CLASS -> nom de classe --- }
+Function CPGetClassName(Idx: Word): String;
+Begin
+  If (Idx = 0) or (Idx >= CPCount) Then Begin
+    Error('Index Constant Pool hors bornes: ' + IntToStr_(Idx));
+    CPGetClassName := '';
+    Exit;
+  End;
+  If CP^[Idx].Tag <> CP_CLASS Then Begin
+    Error('Entree CP #' + IntToStr_(Idx) + ' n''est pas CLASS (tag=' +
+          IntToStr_(CP^[Idx].Tag) + ')');
+    CPGetClassName := '';
+    Exit;
+  End;
+  CPGetClassName := CPGetUtf8(CP^[Idx].Ref1);
+End;
+
+{ --- CPGetNameAndType : resoudre CP_NAMEANDTYPE -> name, descriptor --- }
+Procedure CPGetNameAndType(Idx: Word; Var Name, Desc: String);
+Begin
+  Name := '';
+  Desc := '';
+  If (Idx = 0) or (Idx >= CPCount) Then Begin
+    Error('Index Constant Pool hors bornes: ' + IntToStr_(Idx));
+    Exit;
+  End;
+  If CP^[Idx].Tag <> CP_NAMEANDTYPE Then Begin
+    Error('Entree CP #' + IntToStr_(Idx) + ' n''est pas NAMEANDTYPE (tag=' +
+          IntToStr_(CP^[Idx].Tag) + ')');
+    Exit;
+  End;
+  Name := CPGetUtf8(CP^[Idx].Ref1);
+  Desc := CPGetUtf8(CP^[Idx].Ref2);
+End;
+
+{ --- CPGetMemberRef : resoudre FIELDREF/METHODREF/INTERFACEMETHODREF --- }
+Procedure CPGetMemberRef(Idx: Word; Var ClassName, Name, Desc: String);
+Var
+  NTIdx: Word;
+Begin
+  ClassName := '';
+  Name := '';
+  Desc := '';
+  If (Idx = 0) or (Idx >= CPCount) Then Begin
+    Error('Index Constant Pool hors bornes: ' + IntToStr_(Idx));
+    Exit;
+  End;
+  If Not (CP^[Idx].Tag in [CP_FIELDREF, CP_METHODREF, CP_INTERFACEMETHODREF]) Then Begin
+    Error('Entree CP #' + IntToStr_(Idx) + ' n''est pas une reference membre (tag=' +
+          IntToStr_(CP^[Idx].Tag) + ')');
+    Exit;
+  End;
+  ClassName := CPGetClassName(CP^[Idx].Ref1);
+  NTIdx := CP^[Idx].Ref2;
+  CPGetNameAndType(NTIdx, Name, Desc);
+End;
+
+{ --- CPGetString : resoudre CP_STRING -> valeur chaine --- }
+Function CPGetString(Idx: Word): String;
+Begin
+  If (Idx = 0) or (Idx >= CPCount) Then Begin
+    Error('Index Constant Pool hors bornes: ' + IntToStr_(Idx));
+    CPGetString := '';
+    Exit;
+  End;
+  If CP^[Idx].Tag <> CP_STRING Then Begin
+    Error('Entree CP #' + IntToStr_(Idx) + ' n''est pas STRING (tag=' +
+          IntToStr_(CP^[Idx].Tag) + ')');
+    CPGetString := '';
+    Exit;
+  End;
+  CPGetString := CPGetUtf8(CP^[Idx].Ref1);
+End;
+
+{ --- CPGetInteger : retourner la valeur entiere d'une entree --- }
+Function CPGetInteger(Idx: Word): LongInt;
+Begin
+  If (Idx = 0) or (Idx >= CPCount) Then Begin
+    Error('Index Constant Pool hors bornes: ' + IntToStr_(Idx));
+    CPGetInteger := 0;
+    Exit;
+  End;
+  If CP^[Idx].Tag <> CP_INTEGER Then Begin
+    Error('Entree CP #' + IntToStr_(Idx) + ' n''est pas INTEGER (tag=' +
+          IntToStr_(CP^[Idx].Tag) + ')');
+    CPGetInteger := 0;
+    Exit;
+  End;
+  CPGetInteger := CP^[Idx].IntVal;
+End;
+
+{ --- CPTagName : retourner le nom textuel d'un tag CP --- }
+Function CPTagName(Tag: Byte): String;
+Begin
+  Case Tag of
+    CP_NONE:              CPTagName := 'NONE';
+    CP_UTF8:              CPTagName := 'Utf8';
+    CP_INTEGER:           CPTagName := 'Integer';
+    CP_FLOAT:             CPTagName := 'Float';
+    CP_LONG:              CPTagName := 'Long';
+    CP_DOUBLE:            CPTagName := 'Double';
+    CP_CLASS:             CPTagName := 'Class';
+    CP_STRING:            CPTagName := 'String';
+    CP_FIELDREF:          CPTagName := 'Fieldref';
+    CP_METHODREF:         CPTagName := 'Methodref';
+    CP_INTERFACEMETHODREF:CPTagName := 'InterfaceMethodref';
+    CP_NAMEANDTYPE:       CPTagName := 'NameAndType';
+    CP_METHODHANDLE:      CPTagName := 'MethodHandle';
+    CP_METHODTYPE:        CPTagName := 'MethodType';
+    CP_INVOKEDYNAMIC:     CPTagName := 'InvokeDynamic';
+  Else
+    CPTagName := 'Unknown(' + IntToStr_(Tag) + ')';
+  End;
+End;
+
+{ --- DumpConstantPool : afficher le Constant Pool (debug) --- }
+Procedure DumpConstantPool;
+Var
+  I: Word;
+  S: String;
+Begin
+  WriteLn('=== Constant Pool (', CPCount - 1, ' entrees) ===');
+  For I := 1 to CPCount - 1 Do Begin
+    If CP^[I].Tag <> CP_NONE Then Begin
+      Write('#', I:4, ' ', CPTagName(CP^[I].Tag):20);
+      Case CP^[I].Tag of
+        CP_UTF8:    Write(' "', Copy(CP^[I].StrVal, 1, 40), '"');
+        CP_INTEGER: Write(' ', CP^[I].IntVal);
+        CP_FLOAT:   Write(' (float)');
+        CP_LONG:    Write(' (long)');
+        CP_DOUBLE:  Write(' (double)');
+        CP_CLASS, CP_STRING, CP_METHODTYPE:
+                    Write(' -> #', CP^[I].Ref1);
+        CP_FIELDREF, CP_METHODREF, CP_INTERFACEMETHODREF, CP_NAMEANDTYPE:
+                    Write(' -> #', CP^[I].Ref1, '.#', CP^[I].Ref2);
+        CP_METHODHANDLE:
+                    Write(' kind=', CP^[I].IntVal, ' -> #', CP^[I].Ref1);
+        CP_INVOKEDYNAMIC:
+                    Write(' -> #', CP^[I].Ref1, '.#', CP^[I].Ref2);
+      End;
+      WriteLn;
+    End;
+  End;
+End;
 
 { ============================================================================ }
 { TODO 04 [A FAIRE] - Lecture des flags, this_class, super_class, interfaces   }
