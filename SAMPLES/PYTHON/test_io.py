@@ -31,14 +31,14 @@ print("hex:", hex(n))
 print("oct:", oct(n))
 print("bin:", bin(n))
 
-# input sans prompt
-name = input()
+# input sans prompt (commente pour test non-interactif)
+# name = input()
 
 # input avec prompt chaine
-age = input("Quel age ? ")
+# age = input("Quel age ? ")
 
 # Conversion input -> int
-val = int(input("Entrez un nombre : "))
+# val = int(input("Entrez un nombre : "))
 
 # Chaine de caracteres avec len
 msg = "Python86"

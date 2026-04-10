@@ -2,14 +2,14 @@
 
 # Test 1 : import math (fonctions builtins)
 import math
-x = math.abs(-42)
+x = abs(-42)
 print(x)
 
-# Test 2 : from math import pow
-from math import abs, pow, min, max
-y = abs(-10)
+# Test 2 : from math import (fonctions math)
+from math import fabs, pow, floor, ceil
+y = int(fabs(-10))
 print(y)
-z = pow(2, 8)
+z = int(pow(2, 8))
 print(z)
 w = min(3, 7)
 print(w)
