@@ -317,18 +317,48 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               GetBCTotalUnrelated, GetBCTotalBadCollection, GetBCLabelNum,
               GetBCBugType, GetBCBugPC, GetBCBugLine
 
-  TODO 14 - DETECTEUR : PROBLEMES DE PERFORMANCE [A FAIRE]
+  TODO 14 - DETECTEUR : PROBLEMES DE PERFORMANCE [IMPLEMENTE]
             Codes detectes : SBSC_USE_STRINGBUFFER_CONCATENATION,
               DMI_BLOCKING_METHODS_ON_URL, ITA_INEFFICIENT_TO_ARRAY,
               URF_UNREAD_FIELD, WMI_WRONG_MAP_ITERATOR,
-              UPM_UNCALLED_PRIVATE_METHOD
-            DetectPerformanceIssues(Method) : detecter concat String dans
-              boucle sans StringBuilder, detecter entrySet() vs keySet() sur
-              Map, detecter URL.equals()/URL.hashCode() (DNS lookup),
-              detecter toArray(new T[0]) au lieu de toArray(new T[size])
-            DetectUnusedPrivateMembers(ClassInfo, Methods, Fields) : calculer
-              l'ensemble des membres prives, verifier qu'ils sont references
-              dans au moins une methode, signaler ceux jamais utilises
+              UPM_UNCALLED_PRIVATE_METHOD, UWF_UNWRITTEN_FIELD
+            Constantes : MAX_PF_BUGS=64, MAX_PF_MEMBERS=128, MAX_PF_CONCAT_LOOP=32
+            Types bugs : PF_NONE..UWF_UNWRITTEN_FIELD (8 types)
+            Types : TPerfBug (BugType, PC, LineNum, ClassName, MethodName,
+              MemberName, Details), TPrivateMember (MemberType, Name, Descriptor,
+              DeclLine, IsRead, IsWritten, IsCalled, FieldIdx, MethodIdx),
+              TConcatInLoop (PC, LineNum, LoopStart, LoopEnd)
+            Variables : PFInitialized, PFBugs, PFBugCount, PFPrivateMembers,
+              PFMemberCount, PFConcatLoops, PFConcatLoopCount, PFLabelNum,
+              PFTotalConcatLoop, PFTotalURLBlocking, PFTotalBadToArray,
+              PFTotalUnreadFields, PFTotalUnwrittenFields, PFTotalWrongMapIter,
+              PFTotalUncalledMethods, PFCurrentPC, PFCurrentLine
+            InitPerfState : initialiser toutes les variables du module
+            GenPFLabel : generer un label unique _PF_N
+            PFBugTypeName(BugType) : convertir type de bug en chaine
+            IsStringBuilderType(ClassName) : True si StringBuilder/StringBuffer
+            IsURLType(ClassName) : True si java/net/URL
+            IsMapType(ClassName) : True si type Map (HashMap, TreeMap, etc.)
+            IsURLBlockingMethod(MethodName) : True si equals/hashCode/getHost
+            IsMapKeySetMethod(MethodName) : True si keySet
+            AddPerfBug(BugType, PC, LineNum, ClassName, MethodName, MemberName, Details)
+            CollectPrivateMembers : collecter champs et methodes prives
+            MarkMemberUsed(Name, Descriptor, IsRead, IsWrite, IsCall)
+            IsInLoop(PC) : True si PC est dans une boucle (back-edge)
+            DetectStringConcatInLoop(MethIdx) : detecter String.concat en boucle
+            DetectURLBlockingCalls(MethIdx) : detecter URL.equals/hashCode
+            DetectInefficientToArray(MethIdx) : detecter toArray(new T[0])
+            DetectWrongMapIterator(MethIdx) : detecter keySet() + get()
+            ScanMemberReferences(MethIdx) : scanner les references aux membres
+            DetectUnusedPrivateMembers : detecter membres prives non utilises
+            DetectPerformanceIssues(MethIdx) : analyser une methode
+            AnalyzeMethodForPerformance(MethIdx) : wrapper d'analyse methode
+            AnalyzeClassForPerformance : analyser toute la classe
+            DumpPerfState : afficher l'etat du module
+            Accesseurs (12) : IsPFInitialized, GetPFBugCount, GetPFMemberCount,
+              GetPFLabelNum, GetPFTotalConcatLoop, GetPFTotalURLBlocking,
+              GetPFTotalBadToArray, GetPFTotalUnreadFields, GetPFTotalWrongMapIter,
+              GetPFTotalUncalledMethods, GetPFBugType, GetPFBugPC, GetPFBugLine
 
   TODO 15 - DETECTEUR : VULNERABILITES DE SECURITE [A FAIRE]
             Codes detectes : SQL_INJECTION, XSS_JSP_PRINT,

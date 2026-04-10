@@ -29,7 +29,7 @@
 {  TODO 11 [IMPLEMENTE] - Detecteur : boucles infinies et blocs inaccessibles }
 {  TODO 12 [IMPLEMENTE] - Detecteur : mauvaises pratiques (bad practices)     }
 {  TODO 13 [IMPLEMENTE] - Detecteur : comparaisons incorrectes d'objets       }
-{  TODO 14 [A FAIRE] - Detecteur : problemes de performance                   }
+{  TODO 14 [IMPLEMENTE] - Detecteur : problemes de performance                }
 {  TODO 15 [A FAIRE] - Detecteur : vulnerabilites de securite                 }
 {  TODO 16 [A FAIRE] - Detecteur : problemes de multi-threading               }
 {  TODO 17 [A FAIRE] - Detecteur : exceptions masquees et flux d'erreur       }
@@ -789,6 +789,21 @@ Const
   ST_ARRAY       = 9;  { Reference tableau                                    }
   ST_COLLECTION  = 10; { Reference Collection (List, Set, Map)                }
 
+  { --- TODO 14 : Constantes pour le detecteur de problemes de performance --- }
+  MAX_PF_BUGS        = 64;   { Nombre max de bugs performance par methode       }
+  MAX_PF_MEMBERS     = 128;  { Nombre max de membres prives trackes             }
+  MAX_PF_CONCAT_LOOP = 32;   { Nombre max de concat en boucle trackes           }
+
+  { Types de bugs de performance }
+  PF_NONE                           = 0;  { Pas de bug                        }
+  SBSC_USE_STRINGBUFFER_CONCATENATION = 1; { concat String dans boucle        }
+  DMI_BLOCKING_METHODS_ON_URL       = 2;  { appel bloquant sur URL            }
+  ITA_INEFFICIENT_TO_ARRAY          = 3;  { toArray(new T[0]) inefficace      }
+  URF_UNREAD_FIELD                  = 4;  { champ prive jamais lu             }
+  WMI_WRONG_MAP_ITERATOR            = 5;  { keySet() au lieu de entrySet()    }
+  UPM_UNCALLED_PRIVATE_METHOD       = 6;  { methode privee jamais appelee     }
+  UWF_UNWRITTEN_FIELD               = 7;  { champ prive jamais ecrit          }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -902,6 +917,41 @@ Type
   End;
   TStackTypeArray = Array[0..MAX_BC_STACK_TYPES-1] of TStackTypeInfo;
 
+  { --- TODO 14 : Structure TPerfBug : bug de performance detecte --- }
+  TPerfBug = Record
+    BugType     : Integer;    { Type de bug (SBSC_*, DMI_*, etc.)          }
+    PC          : LongWord;   { Position dans le bytecode                  }
+    LineNum     : Integer;    { Numero de ligne source                     }
+    ClassName   : String;     { Nom de classe concernee                    }
+    MethodName  : String;     { Nom de methode concernee                   }
+    MemberName  : String;     { Nom du champ/methode problematique         }
+    Details     : String;     { Details supplementaires                    }
+  End;
+  TPerfBugArray = Array[0..MAX_PF_BUGS-1] of TPerfBug;
+
+  { --- TODO 14 : Structure TPrivateMember : membre prive a tracker --- }
+  TPrivateMember = Record
+    MemberType  : Byte;       { 0=champ, 1=methode                         }
+    Name        : String;     { Nom du membre                              }
+    Descriptor  : String;     { Descripteur du membre                      }
+    DeclLine    : Integer;    { Ligne de declaration                       }
+    IsRead      : Boolean;    { True si le champ est lu                    }
+    IsWritten   : Boolean;    { True si le champ est ecrit                 }
+    IsCalled    : Boolean;    { True si la methode est appelee             }
+    FieldIdx    : Integer;    { Index dans Fields[] ou -1                  }
+    MethodIdx   : Integer;    { Index dans Methods[] ou -1                 }
+  End;
+  TPrivateMemberArray = Array[0..MAX_PF_MEMBERS-1] of TPrivateMember;
+
+  { --- TODO 14 : Structure TConcatInLoop : concat String dans une boucle --- }
+  TConcatInLoop = Record
+    PC          : LongWord;   { PC de la concatenation                     }
+    LineNum     : Integer;    { Ligne source                               }
+    LoopStart   : LongWord;   { PC de debut de la boucle                   }
+    LoopEnd     : LongWord;   { PC de fin de la boucle                     }
+  End;
+  TConcatInLoopArray = Array[0..MAX_PF_CONCAT_LOOP-1] of TConcatInLoop;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -1002,6 +1052,24 @@ Var
   BCTotalBadCollection : Integer; { Nombre total de get/contains mauvais type  }
   BCCurrentPC      : LongWord;    { PC de l'instruction courante               }
   BCCurrentLine    : Integer;     { Ligne source courante                      }
+  { --- TODO 14 : Variables du detecteur de problemes de performance --- }
+  PFInitialized    : Boolean;     { True si module initialise                  }
+  PFBugs           : TPerfBugArray; { Bugs detectes dans la methode            }
+  PFBugCount       : Integer;     { Nombre de bugs detectes                    }
+  PFPrivateMembers : TPrivateMemberArray; { Membres prives trackes             }
+  PFMemberCount    : Integer;     { Nombre de membres prives                   }
+  PFConcatLoops    : TConcatInLoopArray; { Concat String en boucle trackes     }
+  PFConcatLoopCount : Integer;    { Nombre de concat en boucle                 }
+  PFLabelNum       : Integer;     { Compteur pour generation de labels         }
+  PFTotalConcatLoop : Integer;    { Nombre total de concat en boucle           }
+  PFTotalURLBlocking : Integer;   { Nombre total d'appels bloquants URL        }
+  PFTotalBadToArray : Integer;    { Nombre total de toArray inefficaces        }
+  PFTotalUnreadFields : Integer;  { Nombre total de champs non lus             }
+  PFTotalUnwrittenFields : Integer; { Nombre total de champs non ecrits        }
+  PFTotalWrongMapIter : Integer;  { Nombre total d'iterations Map inefficaces  }
+  PFTotalUncalledMethods : Integer; { Nombre total de methodes privees non appelees }
+  PFCurrentPC      : LongWord;    { PC de l'instruction courante               }
+  PFCurrentLine    : Integer;     { Ligne source courante                      }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -7199,29 +7267,690 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 14 [A FAIRE] - Detecteur : problemes de performance                     }
+{ TODO 14 [IMPLEMENTE] - Detecteur : problemes de performance                  }
 { ============================================================================ }
-{                                                                              }
-{  - Codes de bugs detectes :                                                    }
-{      SBSC_USE_STRINGBUFFER_CONCATENATION : concat String dans boucle         }
-{      DMI_BLOCKING_METHODS_ON_URL : appel methode bloquante sur URL           }
-{      ITA_INEFFICIENT_TO_ARRAY    : toArray avec type incorrecte               }
-{      URF_UNREAD_FIELD             : champ jamais lu                           }
-{      WMI_WRONG_MAP_ITERATOR       : iteration inefficace sur Map              }
-{      UPM_UNCALLED_PRIVATE_METHOD  : methode privee jamais appelee             }
-{                                                                              }
-{  - Procedure DetectPerformanceIssues(Method: TMethodInfo)                     }
-{      Detecter les concatenations de String dans les boucles :                 }
-{        Chercher les appels String.concat ou StringBuilder.append              }
-{        dont la boucle parente (back-edge) n'utilise pas de StringBuilder      }
-{      Detecter l'utilisation de entrySet() vs keySet() sur les Map             }
-{      Detecter les appels URL.equals() et URL.hashCode() (DNS lookup)          }
-{      Detecter toArray(new T[0]) au lieu de toArray(new T[size])               }
-{                                                                              }
-{  - Procedure DetectUnusedPrivateMembers(ClassInfo, Methods, Fields)           }
-{      Calculer l'ensemble des methodes et champs prives                        }
-{      Verifier qu'ils sont references dans au moins une methode de la classe   }
-{      Signaler ceux qui ne sont jamais utilises                                 }
+
+{ --- TODO 14 : Initialisation du module performance --- }
+Procedure InitPerfState;
+Var
+  I: Integer;
+Begin
+  PFInitialized := True;
+  PFBugCount := 0;
+  PFMemberCount := 0;
+  PFConcatLoopCount := 0;
+  PFLabelNum := 0;
+  PFTotalConcatLoop := 0;
+  PFTotalURLBlocking := 0;
+  PFTotalBadToArray := 0;
+  PFTotalUnreadFields := 0;
+  PFTotalUnwrittenFields := 0;
+  PFTotalWrongMapIter := 0;
+  PFTotalUncalledMethods := 0;
+  PFCurrentPC := 0;
+  PFCurrentLine := 0;
+  
+  For I := 0 to MAX_PF_BUGS - 1 Do Begin
+    PFBugs[I].BugType := PF_NONE;
+    PFBugs[I].PC := 0;
+    PFBugs[I].LineNum := 0;
+    PFBugs[I].ClassName := '';
+    PFBugs[I].MethodName := '';
+    PFBugs[I].MemberName := '';
+    PFBugs[I].Details := '';
+  End;
+  
+  For I := 0 to MAX_PF_MEMBERS - 1 Do Begin
+    PFPrivateMembers[I].MemberType := 0;
+    PFPrivateMembers[I].Name := '';
+    PFPrivateMembers[I].Descriptor := '';
+    PFPrivateMembers[I].DeclLine := 0;
+    PFPrivateMembers[I].IsRead := False;
+    PFPrivateMembers[I].IsWritten := False;
+    PFPrivateMembers[I].IsCalled := False;
+    PFPrivateMembers[I].FieldIdx := -1;
+    PFPrivateMembers[I].MethodIdx := -1;
+  End;
+  
+  For I := 0 to MAX_PF_CONCAT_LOOP - 1 Do Begin
+    PFConcatLoops[I].PC := 0;
+    PFConcatLoops[I].LineNum := 0;
+    PFConcatLoops[I].LoopStart := 0;
+    PFConcatLoops[I].LoopEnd := 0;
+  End;
+End;
+
+{ --- TODO 14 : Generation d'un label unique pour le module --- }
+Function GenPFLabel: String;
+Begin
+  Inc(PFLabelNum);
+  GenPFLabel := '_PF_' + IntToStr_(PFLabelNum);
+End;
+
+{ --- TODO 14 : Conversion du type de bug en chaine --- }
+Function PFBugTypeName(BugType: Integer): String;
+Begin
+  Case BugType of
+    PF_NONE:                           PFBugTypeName := 'PF_NONE';
+    SBSC_USE_STRINGBUFFER_CONCATENATION: PFBugTypeName := 'SBSC_USE_STRINGBUFFER_CONCATENATION';
+    DMI_BLOCKING_METHODS_ON_URL:       PFBugTypeName := 'DMI_BLOCKING_METHODS_ON_URL';
+    ITA_INEFFICIENT_TO_ARRAY:          PFBugTypeName := 'ITA_INEFFICIENT_TO_ARRAY';
+    URF_UNREAD_FIELD:                  PFBugTypeName := 'URF_UNREAD_FIELD';
+    WMI_WRONG_MAP_ITERATOR:            PFBugTypeName := 'WMI_WRONG_MAP_ITERATOR';
+    UPM_UNCALLED_PRIVATE_METHOD:       PFBugTypeName := 'UPM_UNCALLED_PRIVATE_METHOD';
+    UWF_UNWRITTEN_FIELD:               PFBugTypeName := 'UWF_UNWRITTEN_FIELD';
+  Else
+    PFBugTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 14 : Detecter si un type est StringBuilder ou StringBuffer --- }
+Function IsStringBuilderType(ClassName: String): Boolean;
+Begin
+  IsStringBuilderType := (ClassName = 'java/lang/StringBuilder') or
+                         (ClassName = 'java/lang/StringBuffer') or
+                         (Pos('StringBuilder', ClassName) > 0) or
+                         (Pos('StringBuffer', ClassName) > 0);
+End;
+
+{ --- TODO 14 : Detecter si un type est java.net.URL --- }
+Function IsURLType(ClassName: String): Boolean;
+Begin
+  IsURLType := (ClassName = 'java/net/URL') or
+               (ClassName = 'Ljava/net/URL;') or
+               (Pos('java/net/URL', ClassName) > 0);
+End;
+
+{ --- TODO 14 : Detecter si un type est Map --- }
+Function IsMapType(ClassName: String): Boolean;
+Begin
+  IsMapType := (ClassName = 'java/util/Map') or
+               (ClassName = 'java/util/HashMap') or
+               (ClassName = 'java/util/TreeMap') or
+               (ClassName = 'java/util/LinkedHashMap') or
+               (ClassName = 'java/util/Hashtable') or
+               (ClassName = 'java/util/ConcurrentHashMap') or
+               (ClassName = 'java/util/WeakHashMap') or
+               (ClassName = 'java/util/IdentityHashMap') or
+               (Pos('Map', ClassName) > 0);
+End;
+
+{ --- TODO 14 : Detecter si une methode est une methode bloquante de URL --- }
+Function IsURLBlockingMethod(MethodName: String): Boolean;
+Begin
+  IsURLBlockingMethod := (MethodName = 'equals') or
+                         (MethodName = 'hashCode') or
+                         (MethodName = 'getHost') or
+                         (MethodName = 'openConnection') or
+                         (MethodName = 'openStream');
+End;
+
+{ --- TODO 14 : Detecter si une methode est keySet sur Map --- }
+Function IsMapKeySetMethod(MethodName: String): Boolean;
+Begin
+  IsMapKeySetMethod := (MethodName = 'keySet');
+End;
+
+{ --- TODO 14 : Ajouter un bug de performance --- }
+Procedure AddPerfBug(BugType: Integer; PC: LongWord; LineNum: Integer;
+                     ClassName, MethodName, MemberName, Details: String);
+Begin
+  If PFBugCount >= MAX_PF_BUGS Then Exit;
+  
+  PFBugs[PFBugCount].BugType := BugType;
+  PFBugs[PFBugCount].PC := PC;
+  PFBugs[PFBugCount].LineNum := LineNum;
+  PFBugs[PFBugCount].ClassName := ClassName;
+  PFBugs[PFBugCount].MethodName := MethodName;
+  PFBugs[PFBugCount].MemberName := MemberName;
+  PFBugs[PFBugCount].Details := Details;
+  Inc(PFBugCount);
+  
+  Case BugType of
+    SBSC_USE_STRINGBUFFER_CONCATENATION: Inc(PFTotalConcatLoop);
+    DMI_BLOCKING_METHODS_ON_URL:         Inc(PFTotalURLBlocking);
+    ITA_INEFFICIENT_TO_ARRAY:            Inc(PFTotalBadToArray);
+    URF_UNREAD_FIELD:                    Inc(PFTotalUnreadFields);
+    WMI_WRONG_MAP_ITERATOR:              Inc(PFTotalWrongMapIter);
+    UPM_UNCALLED_PRIVATE_METHOD:         Inc(PFTotalUncalledMethods);
+    UWF_UNWRITTEN_FIELD:                 Inc(PFTotalUnwrittenFields);
+  End;
+End;
+
+{ --- TODO 14 : Collecter les membres prives de la classe --- }
+Procedure CollectPrivateMembers;
+Var
+  I: Integer;
+  AccessFlags: Word;
+Begin
+  PFMemberCount := 0;
+  
+  { Collecter les champs prives }
+  For I := 0 to FieldCount - 1 Do Begin
+    If PFMemberCount >= MAX_PF_MEMBERS Then Break;
+    AccessFlags := Fields[I].AccessFlags;
+    If (AccessFlags and $0002) <> 0 Then Begin { ACC_PRIVATE }
+      PFPrivateMembers[PFMemberCount].MemberType := 0; { champ }
+      PFPrivateMembers[PFMemberCount].Name := Fields[I].Name;
+      PFPrivateMembers[PFMemberCount].Descriptor := Fields[I].Descriptor;
+      PFPrivateMembers[PFMemberCount].DeclLine := 0;
+      PFPrivateMembers[PFMemberCount].IsRead := False;
+      PFPrivateMembers[PFMemberCount].IsWritten := False;
+      PFPrivateMembers[PFMemberCount].IsCalled := False;
+      PFPrivateMembers[PFMemberCount].FieldIdx := I;
+      PFPrivateMembers[PFMemberCount].MethodIdx := -1;
+      Inc(PFMemberCount);
+    End;
+  End;
+  
+  { Collecter les methodes privees }
+  For I := 0 to MethodCount - 1 Do Begin
+    If PFMemberCount >= MAX_PF_MEMBERS Then Break;
+    AccessFlags := Methods[I].AccessFlags;
+    If (AccessFlags and $0002) <> 0 Then Begin { ACC_PRIVATE }
+      { Exclure <init> et <clinit> }
+      If (Methods[I].Name <> '<init>') and (Methods[I].Name <> '<clinit>') Then Begin
+        PFPrivateMembers[PFMemberCount].MemberType := 1; { methode }
+        PFPrivateMembers[PFMemberCount].Name := Methods[I].Name;
+        PFPrivateMembers[PFMemberCount].Descriptor := Methods[I].Descriptor;
+        PFPrivateMembers[PFMemberCount].DeclLine := 0;
+        PFPrivateMembers[PFMemberCount].IsRead := False;
+        PFPrivateMembers[PFMemberCount].IsWritten := False;
+        PFPrivateMembers[PFMemberCount].IsCalled := False;
+        PFPrivateMembers[PFMemberCount].FieldIdx := -1;
+        PFPrivateMembers[PFMemberCount].MethodIdx := I;
+        Inc(PFMemberCount);
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 14 : Marquer un membre prive comme utilise --- }
+Procedure MarkMemberUsed(Name, Descriptor: String; IsRead, IsWrite, IsCall: Boolean);
+Var
+  I: Integer;
+Begin
+  For I := 0 to PFMemberCount - 1 Do Begin
+    If (PFPrivateMembers[I].Name = Name) and 
+       (PFPrivateMembers[I].Descriptor = Descriptor) Then Begin
+      If IsRead Then PFPrivateMembers[I].IsRead := True;
+      If IsWrite Then PFPrivateMembers[I].IsWritten := True;
+      If IsCall Then PFPrivateMembers[I].IsCalled := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 14 : Verifier si un PC est dans une boucle (back-edge) --- }
+Function IsInLoop(PC: LongWord): Boolean;
+Var
+  I: Integer;
+Begin
+  IsInLoop := False;
+  If CFGNodes = nil Then Exit;
+  
+  For I := 0 to CFGNodeCount - 1 Do Begin
+    If CFGNodes^[I].IsBackEdge Then Begin
+      If (PC >= CFGNodes^[I].StartPC) and (PC <= CFGNodes^[I].EndPC) Then Begin
+        IsInLoop := True;
+        Exit;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 14 : Detecter les concatenations de String dans une boucle --- }
+Procedure DetectStringConcatInLoop(MethIdx: Integer);
+Var
+  I: Integer;
+  Op: Word;
+  CPIdx: Word;
+  ClassName, MethodName: String;
+  PC: LongWord;
+  LineNum: Integer;
+Begin
+  If Instructions = nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    Op := Instructions^[I].Opcode;
+    PC := Instructions^[I].PC;
+    LineNum := GetLineNumber(MethIdx, PC);
+    
+    { Chercher invokevirtual String.concat ou StringBuilder.append }
+    If (Op = OP_INVOKEVIRTUAL) or (Op = OP_INVOKEINTERFACE) Then Begin
+      CPIdx := Instructions^[I].CpRef;
+      If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
+        ClassName := CPGetClassName(CPIdx);
+        MethodName := CPGetMethodName(CPIdx);
+        
+        { String.concat dans une boucle }
+        If (ClassName = 'java/lang/String') and (MethodName = 'concat') Then Begin
+          If IsInLoop(PC) Then Begin
+            AddPerfBug(SBSC_USE_STRINGBUFFER_CONCATENATION, PC, LineNum,
+                      ClassInfo.ThisClass, Methods[MethIdx].Name,
+                      'String.concat', 'String concatenation in loop');
+          End;
+        End;
+        
+        { + operateur sur String (via StringBuilder) sans reutilisation }
+        If IsStringBuilderType(ClassName) and (MethodName = 'append') Then Begin
+          If IsInLoop(PC) Then Begin
+            { Verifier si on cree un nouveau StringBuilder a chaque iteration }
+            { Heuristique : si new StringBuilder est proche, c'est probablement dans la boucle }
+            If (I > 0) and (I < InstrCount) Then Begin
+              If (Instructions^[I-1].Opcode = OP_NEW) or
+                 ((I > 1) and (Instructions^[I-2].Opcode = OP_NEW)) Then Begin
+                AddPerfBug(SBSC_USE_STRINGBUFFER_CONCATENATION, PC, LineNum,
+                          ClassInfo.ThisClass, Methods[MethIdx].Name,
+                          'StringBuilder.append', 'StringBuilder created in loop');
+              End;
+            End;
+          End;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 14 : Detecter les appels bloquants sur URL --- }
+Procedure DetectURLBlockingCalls(MethIdx: Integer);
+Var
+  I: Integer;
+  Op: Word;
+  CPIdx: Word;
+  ClassName, MethodName: String;
+  PC: LongWord;
+  LineNum: Integer;
+Begin
+  If Instructions = nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    Op := Instructions^[I].Opcode;
+    PC := Instructions^[I].PC;
+    LineNum := GetLineNumber(MethIdx, PC);
+    
+    If (Op = OP_INVOKEVIRTUAL) or (Op = OP_INVOKEINTERFACE) Then Begin
+      CPIdx := Instructions^[I].CpRef;
+      If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
+        ClassName := CPGetClassName(CPIdx);
+        MethodName := CPGetMethodName(CPIdx);
+        
+        If IsURLType(ClassName) and IsURLBlockingMethod(MethodName) Then Begin
+          AddPerfBug(DMI_BLOCKING_METHODS_ON_URL, PC, LineNum,
+                    ClassInfo.ThisClass, Methods[MethIdx].Name,
+                    MethodName, 'URL.' + MethodName + ' may perform DNS lookup');
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 14 : Detecter toArray inefficace --- }
+Procedure DetectInefficientToArray(MethIdx: Integer);
+Var
+  I: Integer;
+  Op: Word;
+  CPIdx: Word;
+  ClassName, MethodName: String;
+  PC: LongWord;
+  LineNum: Integer;
+  PrevOp: Word;
+Begin
+  If Instructions = nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    Op := Instructions^[I].Opcode;
+    PC := Instructions^[I].PC;
+    LineNum := GetLineNumber(MethIdx, PC);
+    
+    If (Op = OP_INVOKEINTERFACE) or (Op = OP_INVOKEVIRTUAL) Then Begin
+      CPIdx := Instructions^[I].CpRef;
+      If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
+        ClassName := CPGetClassName(CPIdx);
+        MethodName := CPGetMethodName(CPIdx);
+        
+        { Collection.toArray(T[]) }
+        If (MethodName = 'toArray') and (Pos('Collection', ClassName) > 0) Then Begin
+          { Verifier si l'argument est new T[0] }
+          If I >= 2 Then Begin
+            PrevOp := Instructions^[I-1].Opcode;
+            If PrevOp = OP_ANEWARRAY Then Begin
+              { Verifier si la taille est 0 (iconst_0 avant anewarray) }
+              If Instructions^[I-2].Opcode = OP_ICONST_0 Then Begin
+                AddPerfBug(ITA_INEFFICIENT_TO_ARRAY, PC, LineNum,
+                          ClassInfo.ThisClass, Methods[MethIdx].Name,
+                          'toArray', 'Use toArray(new T[collection.size()]) instead');
+              End;
+            End;
+          End;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 14 : Detecter l'utilisation de keySet() au lieu de entrySet() --- }
+Procedure DetectWrongMapIterator(MethIdx: Integer);
+Var
+  I, J: Integer;
+  Op: Word;
+  CPIdx: Word;
+  ClassName, MethodName: String;
+  PC: LongWord;
+  LineNum: Integer;
+  HasKeySet: Boolean;
+  HasGet: Boolean;
+  KeySetPC: LongWord;
+  KeySetLine: Integer;
+Begin
+  If Instructions = nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  
+  HasKeySet := False;
+  HasGet := False;
+  KeySetPC := 0;
+  KeySetLine := 0;
+  
+  { Premiere passe : chercher keySet() }
+  For I := 0 to InstrCount - 1 Do Begin
+    Op := Instructions^[I].Opcode;
+    
+    If (Op = OP_INVOKEINTERFACE) or (Op = OP_INVOKEVIRTUAL) Then Begin
+      CPIdx := Instructions^[I].CpRef;
+      If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
+        ClassName := CPGetClassName(CPIdx);
+        MethodName := CPGetMethodName(CPIdx);
+        
+        If IsMapType(ClassName) and IsMapKeySetMethod(MethodName) Then Begin
+          HasKeySet := True;
+          KeySetPC := Instructions^[I].PC;
+          KeySetLine := GetLineNumber(MethIdx, KeySetPC);
+          
+          { Chercher un get() apres keySet() dans la meme methode }
+          For J := I + 1 to InstrCount - 1 Do Begin
+            If (Instructions^[J].Opcode = OP_INVOKEINTERFACE) or
+               (Instructions^[J].Opcode = OP_INVOKEVIRTUAL) Then Begin
+              CPIdx := Instructions^[J].CpRef;
+              If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
+                ClassName := CPGetClassName(CPIdx);
+                MethodName := CPGetMethodName(CPIdx);
+                If IsMapType(ClassName) and (MethodName = 'get') Then Begin
+                  HasGet := True;
+                  Break;
+                End;
+              End;
+            End;
+          End;
+          
+          If HasGet Then Begin
+            AddPerfBug(WMI_WRONG_MAP_ITERATOR, KeySetPC, KeySetLine,
+                      ClassInfo.ThisClass, Methods[MethIdx].Name,
+                      'keySet', 'Use entrySet() instead of keySet() + get()');
+          End;
+          
+          Break; { Une seule detection par methode }
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 14 : Scanner les references aux membres prives dans une methode --- }
+Procedure ScanMemberReferences(MethIdx: Integer);
+Var
+  I: Integer;
+  Op: Word;
+  CPIdx: Word;
+  FieldName, FieldDesc: String;
+  MethodName, MethodDesc: String;
+Begin
+  If Instructions = nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    Op := Instructions^[I].Opcode;
+    CPIdx := Instructions^[I].CpRef;
+    
+    If (CPIdx = 0) or (CPIdx >= CPCount) Then Continue;
+    
+    Case Op of
+      OP_GETFIELD, OP_GETSTATIC: Begin
+        FieldName := CPGetFieldName(CPIdx);
+        FieldDesc := CPGetFieldDesc(CPIdx);
+        MarkMemberUsed(FieldName, FieldDesc, True, False, False);
+      End;
+      OP_PUTFIELD, OP_PUTSTATIC: Begin
+        FieldName := CPGetFieldName(CPIdx);
+        FieldDesc := CPGetFieldDesc(CPIdx);
+        MarkMemberUsed(FieldName, FieldDesc, False, True, False);
+      End;
+      OP_INVOKEVIRTUAL, OP_INVOKESPECIAL, OP_INVOKESTATIC, OP_INVOKEINTERFACE: Begin
+        MethodName := CPGetMethodName(CPIdx);
+        MethodDesc := CPGetMethodDesc(CPIdx);
+        MarkMemberUsed(MethodName, MethodDesc, False, False, True);
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 14 : Detecter les membres prives non utilises --- }
+Procedure DetectUnusedPrivateMembers;
+Var
+  I, J: Integer;
+Begin
+  { Collecter tous les membres prives }
+  CollectPrivateMembers;
+  
+  { Scanner toutes les methodes pour les references }
+  For I := 0 to MethodCount - 1 Do Begin
+    If Methods[I].Code <> nil Then Begin
+      DecodeInstructions(I);
+      ScanMemberReferences(I);
+    End;
+  End;
+  
+  { Signaler les membres non utilises }
+  For I := 0 to PFMemberCount - 1 Do Begin
+    If PFPrivateMembers[I].MemberType = 0 Then Begin
+      { Champ prive }
+      If (not PFPrivateMembers[I].IsRead) and (not PFPrivateMembers[I].IsWritten) Then Begin
+        { Champ jamais utilise - signaler les deux }
+        AddPerfBug(URF_UNREAD_FIELD, 0, PFPrivateMembers[I].DeclLine,
+                  ClassInfo.ThisClass, '',
+                  PFPrivateMembers[I].Name, 'Private field never read');
+        AddPerfBug(UWF_UNWRITTEN_FIELD, 0, PFPrivateMembers[I].DeclLine,
+                  ClassInfo.ThisClass, '',
+                  PFPrivateMembers[I].Name, 'Private field never written');
+      End
+      Else If not PFPrivateMembers[I].IsRead Then Begin
+        AddPerfBug(URF_UNREAD_FIELD, 0, PFPrivateMembers[I].DeclLine,
+                  ClassInfo.ThisClass, '',
+                  PFPrivateMembers[I].Name, 'Private field never read');
+      End
+      Else If not PFPrivateMembers[I].IsWritten Then Begin
+        AddPerfBug(UWF_UNWRITTEN_FIELD, 0, PFPrivateMembers[I].DeclLine,
+                  ClassInfo.ThisClass, '',
+                  PFPrivateMembers[I].Name, 'Private field never written');
+      End;
+    End
+    Else Begin
+      { Methode privee }
+      If not PFPrivateMembers[I].IsCalled Then Begin
+        AddPerfBug(UPM_UNCALLED_PRIVATE_METHOD, 0, PFPrivateMembers[I].DeclLine,
+                  ClassInfo.ThisClass, PFPrivateMembers[I].Name,
+                  PFPrivateMembers[I].Name, 'Private method never called');
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 14 : Detecter tous les problemes de performance dans une methode --- }
+Procedure DetectPerformanceIssues(MethIdx: Integer);
+Begin
+  If not PFInitialized Then InitPerfState;
+  If MethIdx < 0 Then Exit;
+  If MethIdx >= MethodCount Then Exit;
+  If Methods[MethIdx].Code = nil Then Exit;
+  
+  { Decoder les instructions }
+  DecodeInstructions(MethIdx);
+  
+  { Detecter les concatenations de String dans les boucles }
+  DetectStringConcatInLoop(MethIdx);
+  
+  { Detecter les appels bloquants sur URL }
+  DetectURLBlockingCalls(MethIdx);
+  
+  { Detecter toArray inefficace }
+  DetectInefficientToArray(MethIdx);
+  
+  { Detecter l'utilisation de keySet() au lieu de entrySet() }
+  DetectWrongMapIterator(MethIdx);
+End;
+
+{ --- TODO 14 : Analyser une methode pour les problemes de performance --- }
+Procedure AnalyzeMethodForPerformance(MethIdx: Integer);
+Begin
+  If not PFInitialized Then InitPerfState;
+  DetectPerformanceIssues(MethIdx);
+End;
+
+{ --- TODO 14 : Analyser toute la classe pour les problemes de performance --- }
+Procedure AnalyzeClassForPerformance;
+Var
+  I: Integer;
+Begin
+  If not PFInitialized Then InitPerfState;
+  
+  { Analyser chaque methode }
+  For I := 0 to MethodCount - 1 Do Begin
+    AnalyzeMethodForPerformance(I);
+  End;
+  
+  { Detecter les membres prives non utilises (analyse au niveau classe) }
+  DetectUnusedPrivateMembers;
+End;
+
+{ --- TODO 14 : Dump de l'etat du module performance --- }
+Procedure DumpPerfState;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== Performance State ===');
+  WriteLn('Initialized: ', PFInitialized);
+  WriteLn('Bug Count: ', PFBugCount);
+  WriteLn('Member Count: ', PFMemberCount);
+  WriteLn('Concat Loop Count: ', PFConcatLoopCount);
+  WriteLn('Label Num: ', PFLabelNum);
+  WriteLn('Total Concat in Loop: ', PFTotalConcatLoop);
+  WriteLn('Total URL Blocking: ', PFTotalURLBlocking);
+  WriteLn('Total Bad toArray: ', PFTotalBadToArray);
+  WriteLn('Total Unread Fields: ', PFTotalUnreadFields);
+  WriteLn('Total Unwritten Fields: ', PFTotalUnwrittenFields);
+  WriteLn('Total Wrong Map Iter: ', PFTotalWrongMapIter);
+  WriteLn('Total Uncalled Methods: ', PFTotalUncalledMethods);
+  
+  If PFBugCount > 0 Then Begin
+    WriteLn('--- Performance Bugs ---');
+    For I := 0 to PFBugCount - 1 Do Begin
+      WriteLn('  [', I, '] Type=', PFBugTypeName(PFBugs[I].BugType),
+              ' PC=', PFBugs[I].PC, ' Line=', PFBugs[I].LineNum,
+              ' Class=', PFBugs[I].ClassName,
+              ' Method=', PFBugs[I].MethodName,
+              ' Member=', PFBugs[I].MemberName,
+              ' Details=', PFBugs[I].Details);
+    End;
+  End;
+  
+  If PFMemberCount > 0 Then Begin
+    WriteLn('--- Private Members ---');
+    For I := 0 to PFMemberCount - 1 Do Begin
+      WriteLn('  [', I, '] Type=', PFPrivateMembers[I].MemberType,
+              ' Name=', PFPrivateMembers[I].Name,
+              ' Read=', PFPrivateMembers[I].IsRead,
+              ' Written=', PFPrivateMembers[I].IsWritten,
+              ' Called=', PFPrivateMembers[I].IsCalled);
+    End;
+  End;
+End;
+
+{ --- TODO 14 : Accesseurs du module performance --- }
+Function IsPFInitialized: Boolean;
+Begin
+  IsPFInitialized := PFInitialized;
+End;
+
+Function GetPFBugCount: Integer;
+Begin
+  GetPFBugCount := PFBugCount;
+End;
+
+Function GetPFMemberCount: Integer;
+Begin
+  GetPFMemberCount := PFMemberCount;
+End;
+
+Function GetPFLabelNum: Integer;
+Begin
+  GetPFLabelNum := PFLabelNum;
+End;
+
+Function GetPFTotalConcatLoop: Integer;
+Begin
+  GetPFTotalConcatLoop := PFTotalConcatLoop;
+End;
+
+Function GetPFTotalURLBlocking: Integer;
+Begin
+  GetPFTotalURLBlocking := PFTotalURLBlocking;
+End;
+
+Function GetPFTotalBadToArray: Integer;
+Begin
+  GetPFTotalBadToArray := PFTotalBadToArray;
+End;
+
+Function GetPFTotalUnreadFields: Integer;
+Begin
+  GetPFTotalUnreadFields := PFTotalUnreadFields;
+End;
+
+Function GetPFTotalWrongMapIter: Integer;
+Begin
+  GetPFTotalWrongMapIter := PFTotalWrongMapIter;
+End;
+
+Function GetPFTotalUncalledMethods: Integer;
+Begin
+  GetPFTotalUncalledMethods := PFTotalUncalledMethods;
+End;
+
+Function GetPFBugType(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < PFBugCount) Then
+    GetPFBugType := PFBugs[Idx].BugType
+  Else
+    GetPFBugType := PF_NONE;
+End;
+
+Function GetPFBugPC(Idx: Integer): LongWord;
+Begin
+  If (Idx >= 0) and (Idx < PFBugCount) Then
+    GetPFBugPC := PFBugs[Idx].PC
+  Else
+    GetPFBugPC := 0;
+End;
+
+Function GetPFBugLine(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < PFBugCount) Then
+    GetPFBugLine := PFBugs[Idx].LineNum
+  Else
+    GetPFBugLine := 0;
+End;
 
 { ============================================================================ }
 { TODO 15 [A FAIRE] - Detecteur : vulnerabilites de securite                   }
