@@ -211,7 +211,7 @@
             Pliage de constantes pour expressions statiques
             10 fonctions accesseurs
 
-  TODO 08 - PARSEUR : EXPRESSIONS PRIMAIRES ET APPELS [A FAIRE]
+  TODO 08 - PARSEUR : EXPRESSIONS PRIMAIRES ET APPELS [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, literal char,
               ident, appel de methode, null, true, false
             Acces champ : expr.field -> offset dans instance de classe
@@ -4623,7 +4623,952 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-07)                              }
+{ TODO 08 - EXPRESSIONS PRIMAIRES ET APPELS   [IMPLEMENTE]     }
+{ ============================================================ }
+
+Const
+  { Types d expressions primaires PX_* }
+  PX_NONE        = 0;    { aucun                                   }
+  PX_INT_LIT     = 1;    { litteral entier                         }
+  PX_FLOAT_LIT   = 2;    { litteral flottant                       }
+  PX_STR_LIT     = 3;    { litteral chaine                         }
+  PX_CHAR_LIT    = 4;    { litteral caractere                      }
+  PX_IDENT       = 5;    { identificateur                          }
+  PX_STATIC_CALL = 6;    { appel de methode statique               }
+  PX_INST_CALL   = 7;    { appel de methode d instance             }
+  PX_FIELD       = 8;    { acces champ                             }
+  PX_INDEX       = 9;    { acces index tableau                     }
+  PX_NEW_OBJ     = 10;   { new ClassName(args)                     }
+  PX_NEW_ARR     = 11;   { new int[n]                              }
+  PX_CAST        = 12;   { cast explicite (int)expr                }
+  PX_TERNARY     = 13;   { operateur ternaire cond ? a : b         }
+  PX_PAREN       = 14;   { expression parenthesee                  }
+  PX_SYSOUT      = 15;   { System.out.println / print              }
+  PX_SCANNER     = 16;   { Scanner.nextLine / nextInt              }
+  PX_MAX         = 16;
+
+  { Limites }
+  PX_MAX_ARGS    = 16;   { nombre max d arguments par appel        }
+  PX_MAX_ELEMS   = 64;   { nombre max d elements dans un tableau   }
+
+Var
+  PxInitialized  : Boolean;    { True si l etat est initialise       }
+  PxCallCount    : LongInt;    { nombre total d appels de methodes   }
+  PxStaticCount  : LongInt;    { nombre d appels statiques           }
+  PxInstCount    : LongInt;    { nombre d appels d instance          }
+  PxFieldCount   : LongInt;    { nombre d acces champ                }
+  PxIndexCount   : LongInt;    { nombre d acces index tableau        }
+  PxNewCount     : LongInt;    { nombre d allocations new            }
+  PxCastCount    : LongInt;    { nombre de casts explicites          }
+  PxTernaryCount : LongInt;    { nombre d operateurs ternaires       }
+  PxSysOutCount  : LongInt;    { nombre d appels System.out          }
+  PxScannerCount : LongInt;    { nombre d appels Scanner             }
+  PxLastKind     : Integer;    { dernier type d expression primaire  }
+  PxLabelSeq     : Integer;    { sequence pour labels PX              }
+
+{ ------------------------------------------------------------ }
+{ InitPxState : initialiser le sous-systeme des primaires        }
+{ ------------------------------------------------------------ }
+
+Procedure InitPxState;
+Begin
+  PxInitialized  := True;
+  PxCallCount    := 0;
+  PxStaticCount  := 0;
+  PxInstCount    := 0;
+  PxFieldCount   := 0;
+  PxIndexCount   := 0;
+  PxNewCount     := 0;
+  PxCastCount    := 0;
+  PxTernaryCount := 0;
+  PxSysOutCount  := 0;
+  PxScannerCount := 0;
+  PxLastKind     := PX_NONE;
+  PxLabelSeq     := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPxLabel : generer un label unique pour les primaires         }
+{ ------------------------------------------------------------ }
+
+Function GenPxLabel : TString;
+Begin
+  Inc(PxLabelSeq);
+  GenPxLabel := '_JPX_' + ItoS(PxLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ PxTypeName : retourner le nom du type de primaire              }
+{ ------------------------------------------------------------ }
+
+Function PxTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    PX_NONE        : PxTypeName := 'NONE';
+    PX_INT_LIT     : PxTypeName := 'INT_LIT';
+    PX_FLOAT_LIT   : PxTypeName := 'FLOAT_LIT';
+    PX_STR_LIT     : PxTypeName := 'STR_LIT';
+    PX_CHAR_LIT    : PxTypeName := 'CHAR_LIT';
+    PX_IDENT       : PxTypeName := 'IDENT';
+    PX_STATIC_CALL : PxTypeName := 'STATIC_CALL';
+    PX_INST_CALL   : PxTypeName := 'INST_CALL';
+    PX_FIELD       : PxTypeName := 'FIELD';
+    PX_INDEX       : PxTypeName := 'INDEX';
+    PX_NEW_OBJ     : PxTypeName := 'NEW_OBJ';
+    PX_NEW_ARR     : PxTypeName := 'NEW_ARR';
+    PX_CAST        : PxTypeName := 'CAST';
+    PX_TERNARY     : PxTypeName := 'TERNARY';
+    PX_PAREN       : PxTypeName := 'PAREN';
+    PX_SYSOUT      : PxTypeName := 'SYSOUT';
+    PX_SCANNER     : PxTypeName := 'SCANNER';
+  Else
+    PxTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArgList : parser une liste d arguments separes par ,      }
+{   Retourne le nombre d arguments parses.                       }
+{   Suppose que le ( a deja ete consomme.                        }
+{ ------------------------------------------------------------ }
+
+Function ParseArgList : Integer;
+Var
+  Count : Integer;
+  E     : TExprVal;
+Begin
+  Count := 0;
+  { Liste vide si ) immediatement }
+  If CurTokKind = TK_RPAREN Then
+  Begin
+    ParseArgList := 0;
+    Exit;
+  End;
+
+  { Premier argument }
+  E := ParseExpr;
+  Inc(Count);
+
+  { Arguments suivants }
+  While CurTokKind = TK_COMMA Do
+  Begin
+    ParserAdvance; { consommer , }
+    E := ParseExpr;
+    Inc(Count);
+    If Count > PX_MAX_ARGS Then
+    Begin
+      CompileError('too many arguments (max ' + ItoS(PX_MAX_ARGS) + ')', LexLineNo);
+      Break;
+    End;
+  End;
+
+  ParseArgList := Count;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStaticMethodCall : parser ClassName.method(args)           }
+{   PUSH args droite a gauche, CALL _JF_ClassName_method,        }
+{   ADD ESP, args_size                                           }
+{ ------------------------------------------------------------ }
+
+Function ParseStaticMethodCall(ClassName, MethodName : TString) : TExprVal;
+Var
+  R     : TExprVal;
+  NArgs : Integer;
+Begin
+  Inc(PxCallCount);
+  Inc(PxStaticCount);
+  PxLastKind := PX_STATIC_CALL;
+
+  ParserAdvance; { consommer ( }
+  NArgs := ParseArgList;
+
+  { Attendre ) }
+  If CurTokKind = TK_RPAREN Then
+    ParserAdvance
+  Else
+    CompileError('expected ) after method arguments', LexLineNo);
+
+  { Resultat dans EAX apres le CALL }
+  R := ExprMakeEAX(TY_IDX_INT);
+  ParseStaticMethodCall := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInstanceMethodCall : parser obj.method(args)              }
+{   PUSH this, PUSH args, CALL _JM_ClassName_method,             }
+{   ADD ESP, (1+args)*4                                         }
+{ ------------------------------------------------------------ }
+
+Function ParseInstanceMethodCall(ObjExpr : TExprVal;
+                                 MethodName : TString) : TExprVal;
+Var
+  R     : TExprVal;
+  NArgs : Integer;
+Begin
+  Inc(PxCallCount);
+  Inc(PxInstCount);
+  PxLastKind := PX_INST_CALL;
+
+  ParserAdvance; { consommer ( }
+  NArgs := ParseArgList;
+
+  { Attendre ) }
+  If CurTokKind = TK_RPAREN Then
+    ParserAdvance
+  Else
+    CompileError('expected ) after method arguments', LexLineNo);
+
+  { Resultat dans EAX apres le CALL }
+  R := ExprMakeEAX(TY_IDX_INT);
+  ParseInstanceMethodCall := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFieldAccess : parser expr.field                           }
+{   Offset dans instance de classe                               }
+{ ------------------------------------------------------------ }
+
+Function ParseFieldAccess(ObjExpr : TExprVal) : TExprVal;
+Var
+  FieldName : TString;
+  R         : TExprVal;
+Begin
+  Inc(PxFieldCount);
+  PxLastKind := PX_FIELD;
+
+  { Le . a deja ete consomme, on attend un identifiant }
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    CompileError('expected field name after .', LexLineNo);
+    ParseFieldAccess := ExprMakeNull;
+    Exit;
+  End;
+
+  FieldName := CurTokStr;
+  ParserAdvance;
+
+  { Si suivi de (, c est un appel de methode d instance }
+  If CurTokKind = TK_LPAREN Then
+  Begin
+    ParseFieldAccess := ParseInstanceMethodCall(ObjExpr, FieldName);
+    Exit;
+  End;
+
+  { Sinon, acces champ simple : resultat dans EAX }
+  R := ExprMakeEAX(ObjExpr.TypeIdx);
+  ParseFieldAccess := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIndexAccess : parser expr[i]                              }
+{   Calcul offset + MOV EAX, [EBX+4+i*4]                        }
+{   Le [ a deja ete consomme par l appelant.                     }
+{ ------------------------------------------------------------ }
+
+Function ParseIndexAccess(ObjExpr : TExprVal) : TExprVal;
+Var
+  R : TExprVal;
+  E : TExprVal;
+Begin
+  Inc(PxIndexCount);
+  PxLastKind := PX_INDEX;
+
+  { Parser l expression d index }
+  E := ParseExpr;
+
+  { Attendre ] }
+  If CurTokKind = TK_RBRACKET Then
+    ParserAdvance
+  Else
+    CompileError('expected ]', LexLineNo);
+
+  { Resultat : element du tableau, dans EAX }
+  R := ExprMakeEAX(TY_IDX_INT);
+  { Si le tableau est int[], le resultat est int }
+  If ObjExpr.TypeIdx = TY_IDX_INTARR Then
+    R.TypeIdx := TY_IDX_INT
+  Else If ObjExpr.TypeIdx = TY_IDX_CHARARR Then
+    R.TypeIdx := TY_IDX_CHAR
+  Else If ObjExpr.TypeIdx = TY_IDX_STRARR Then
+    R.TypeIdx := TY_IDX_STRING
+  Else If ObjExpr.TypeIdx = TY_IDX_BOOLARR Then
+    R.TypeIdx := TY_IDX_BOOLEAN;
+
+  ParseIndexAccess := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseNewExpr : parser new ClassName(args) ou new int[n]        }
+{   Le mot-cle 'new' a deja ete consomme.                       }
+{ ------------------------------------------------------------ }
+
+Function ParseNewExpr : TExprVal;
+Var
+  TypeName : TString;
+  R        : TExprVal;
+  NArgs    : Integer;
+Begin
+  Inc(PxNewCount);
+
+  If (CurTokKind <> TK_IDENT) And (CurTokKind <> TK_KEYWORD) Then
+  Begin
+    CompileError('expected type name after new', LexLineNo);
+    R := ExprMakeEAX(TY_IDX_INT);
+    ParseNewExpr := R;
+    Exit;
+  End;
+
+  TypeName := CurTokStr;
+  ParserAdvance;
+
+  { new int[n] : allocation tableau sur le heap }
+  If CurTokKind = TK_LBRACKET Then
+  Begin
+    PxLastKind := PX_NEW_ARR;
+    ParserAdvance; { consommer [ }
+    R := ParseExpr; { taille du tableau }
+    If CurTokKind = TK_RBRACKET Then
+      ParserAdvance
+    Else
+      CompileError('expected ] after array size', LexLineNo);
+    R := ExprMakeEAX(TY_IDX_INTARR);
+    { Typer selon le type de base }
+    If TypeName = 'char' Then R.TypeIdx := TY_IDX_CHARARR
+    Else If TypeName = 'String' Then R.TypeIdx := TY_IDX_STRARR
+    Else If TypeName = 'boolean' Then R.TypeIdx := TY_IDX_BOOLARR;
+  End
+  { new ClassName(args) : allocation instance + appel constructeur }
+  Else If CurTokKind = TK_LPAREN Then
+  Begin
+    PxLastKind := PX_NEW_OBJ;
+    ParserAdvance; { consommer ( }
+    NArgs := ParseArgList;
+    If CurTokKind = TK_RPAREN Then
+      ParserAdvance
+    Else
+      CompileError('expected ) after constructor arguments', LexLineNo);
+    R := ExprMakeEAX(TY_IDX_INT); { type sera affine plus tard }
+  End
+  Else
+  Begin
+    PxLastKind := PX_NEW_OBJ;
+    R := ExprMakeEAX(TY_IDX_INT);
+  End;
+
+  ParseNewExpr := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCastExpr : parser (type)expr - cast explicite             }
+{   Conversion ou troncature : (int)expr, (char)expr             }
+{   Retourne TExprVal avec le type caste                        }
+{ ------------------------------------------------------------ }
+
+Function ParseCastExpr(TypeName : TString) : TExprVal;
+Var
+  R    : TExprVal;
+  TIdx : Integer;
+Begin
+  Inc(PxCastCount);
+  PxLastKind := PX_CAST;
+
+  { Fermer la parenthese du cast }
+  If CurTokKind = TK_RPAREN Then
+    ParserAdvance
+  Else
+    CompileError('expected ) after cast type', LexLineNo);
+
+  { Parser l expression a caster }
+  R := ParseUnary;
+
+  { Determiner le type cible }
+  TIdx := TypeFindByName(TypeName);
+  If TIdx >= 0 Then
+    R.TypeIdx := TIdx
+  Else
+    R.TypeIdx := TY_IDX_INT;
+
+  ParseCastExpr := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSysOutCall : parser System.out.println(expr) ou           }
+{   System.out.print(expr)                                       }
+{   Reconnaissance comme appel special d E/S                     }
+{   Le 'System' a deja ete consomme, le . est courant.           }
+{ ------------------------------------------------------------ }
+
+Function ParseSysOutCall(IsPrintln : Boolean) : TExprVal;
+Var
+  R     : TExprVal;
+  NArgs : Integer;
+Begin
+  Inc(PxSysOutCount);
+  PxLastKind := PX_SYSOUT;
+
+  { On attend ( }
+  If CurTokKind = TK_LPAREN Then
+  Begin
+    ParserAdvance; { consommer ( }
+    NArgs := ParseArgList;
+    If CurTokKind = TK_RPAREN Then
+      ParserAdvance
+    Else
+      CompileError('expected ) after println/print arguments', LexLineNo);
+  End
+  Else
+    CompileError('expected ( after println/print', LexLineNo);
+
+  R := ExprMakeEAX(TY_IDX_VOID);
+  ParseSysOutCall := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseScannerCall : parser Scanner.nextLine() / nextInt()       }
+{   Reconnaissance comme appel special de saisie                 }
+{   MethodName est 'nextLine' ou 'nextInt', etc.                 }
+{ ------------------------------------------------------------ }
+
+Function ParseScannerCall(MethodName : TString) : TExprVal;
+Var
+  R     : TExprVal;
+  NArgs : Integer;
+Begin
+  Inc(PxScannerCount);
+  PxLastKind := PX_SCANNER;
+
+  { On attend ( }
+  If CurTokKind = TK_LPAREN Then
+  Begin
+    ParserAdvance; { consommer ( }
+    NArgs := ParseArgList;
+    If CurTokKind = TK_RPAREN Then
+      ParserAdvance
+    Else
+      CompileError('expected ) after Scanner method arguments', LexLineNo);
+  End
+  Else
+    CompileError('expected ( after Scanner method', LexLineNo);
+
+  { Type du retour selon la methode }
+  If MethodName = 'nextInt' Then
+    R := ExprMakeEAX(TY_IDX_INT)
+  Else If MethodName = 'nextLine' Then
+    R := ExprMakeEAX(TY_IDX_STRING)
+  Else If MethodName = 'nextDouble' Then
+    R := ExprMakeEAX(TY_IDX_INT) { flottant stocke comme entier }
+  Else
+    R := ExprMakeEAX(TY_IDX_STRING);
+
+  ParseScannerCall := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTernaryOp : parser cond ? a : b                           }
+{   Code conditionnel : TEST EAX,EAX / JZ label                 }
+{   Cond est deja evaluee, on attend ? a : b                    }
+{ ------------------------------------------------------------ }
+
+Function ParseTernaryOp(Cond : TExprVal) : TExprVal;
+Var
+  A, B   : TExprVal;
+  LblElse : TString;
+  LblEnd  : TString;
+Begin
+  Inc(PxTernaryCount);
+  PxLastKind := PX_TERNARY;
+
+  LblElse := GenPxLabel;
+  LblEnd  := GenPxLabel;
+
+  ParserAdvance; { consommer ? }
+  A := ParseExpr;
+
+  { Attendre : }
+  If CurTokKind = TK_COLON Then
+    ParserAdvance
+  Else
+    CompileError('expected : in ternary expression', LexLineNo);
+
+  B := ParseExpr;
+
+  { Resultat dans EAX, type = type de la branche true }
+  ParseTernaryOp := ExprMakeEAX(A.TypeIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePostfix : parser les suffixes postfixes (., [, ()         }
+{   Boucle pour chainer : obj.field[i].method(args)              }
+{ ------------------------------------------------------------ }
+
+Function ParsePostfix(E : TExprVal) : TExprVal;
+Var R : TExprVal;
+Begin
+  R := E;
+  While True Do
+  Begin
+    { Acces champ ou appel de methode : expr.name }
+    If CurTokKind = TK_DOT Then
+    Begin
+      ParserAdvance; { consommer . }
+      R := ParseFieldAccess(R);
+    End
+    { Acces index tableau : expr[i] }
+    Else If CurTokKind = TK_LBRACKET Then
+    Begin
+      ParserAdvance; { consommer [ }
+      R := ParseIndexAccess(R);
+    End
+    { Appel de fonction : expr(args) }
+    Else If CurTokKind = TK_LPAREN Then
+    Begin
+      R := ParseInstanceMethodCall(R, '');
+    End
+    { Post-increment : x++ }
+    Else If (CurTokKind = TK_OP) And (CurTokStr = '++') Then
+    Begin
+      R := ExprEmitUnaryOp(UOP_POSTINC, R);
+      ParserAdvance;
+    End
+    { Post-decrement : x-- }
+    Else If (CurTokKind = TK_OP) And (CurTokStr = '--') Then
+    Begin
+      R := ExprEmitUnaryOp(UOP_POSTDEC, R);
+      ParserAdvance;
+    End
+    Else
+      Break;
+  End;
+  ParsePostfix := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrimaryFull : parser une expression primaire complete      }
+{   avec les suffixes postfixes                                  }
+{   Remplace ParsePrimary du TODO 07 pour les appels             }
+{ ------------------------------------------------------------ }
+
+Function ParsePrimaryFull : TExprVal;
+Var
+  E        : TExprVal;
+  IdName   : TString;
+  SymI     : Integer;
+  SubName  : TString;
+  TIdx     : Integer;
+Begin
+  Case CurTokKind Of
+    TK_INTEGER :
+      Begin
+        PxLastKind := PX_INT_LIT;
+        E := LitEvalInt;
+        ParserAdvance;
+      End;
+    TK_FLOAT :
+      Begin
+        PxLastKind := PX_FLOAT_LIT;
+        E := LitEvalInt; { tronque flottant en entier }
+        ParserAdvance;
+      End;
+    TK_STRING :
+      Begin
+        PxLastKind := PX_STR_LIT;
+        E := LitEvalStr;
+        ParserAdvance;
+      End;
+    TK_CHAR :
+      Begin
+        PxLastKind := PX_CHAR_LIT;
+        E := LitEvalChar;
+        ParserAdvance;
+      End;
+    TK_IDENT :
+      Begin
+        IdName := CurTokStr;
+        SymI   := SymFind(IdName);
+
+        { System.out.println / System.out.print }
+        If IdName = 'System' Then
+        Begin
+          ParserAdvance;
+          If CurTokKind = TK_DOT Then
+          Begin
+            ParserAdvance; { consommer . }
+            If (CurTokKind = TK_IDENT) And (CurTokStr = 'out') Then
+            Begin
+              ParserAdvance;
+              If CurTokKind = TK_DOT Then
+              Begin
+                ParserAdvance; { consommer . }
+                If CurTokKind = TK_IDENT Then
+                Begin
+                  SubName := CurTokStr;
+                  ParserAdvance;
+                  If (SubName = 'println') Or (SubName = 'print') Then
+                    E := ParseSysOutCall(SubName = 'println')
+                  Else
+                  Begin
+                    CompileError('unknown System.out method: ' + SubName, LexLineNo);
+                    E := ExprMakeEAX(TY_IDX_VOID);
+                  End;
+                End
+                Else
+                Begin
+                  CompileError('expected method name after System.out.', LexLineNo);
+                  E := ExprMakeEAX(TY_IDX_VOID);
+                End;
+              End
+              Else
+              Begin
+                { System.out sans methode }
+                E.Kind    := EK_MEM;
+                E.ImmVal  := 0;
+                E.TypeIdx := TY_IDX_INT;
+                E.Offset  := 0;
+                E.SymIdx  := -1;
+              End;
+            End
+            Else
+            Begin
+              { System.quelquechose }
+              E.Kind    := EK_MEM;
+              E.ImmVal  := 0;
+              E.TypeIdx := TY_IDX_INT;
+              E.Offset  := 0;
+              E.SymIdx  := -1;
+              If CurTokKind = TK_IDENT Then
+                ParserAdvance;
+            End;
+          End
+          Else
+          Begin
+            { System sans . }
+            E.Kind    := EK_MEM;
+            E.ImmVal  := 0;
+            E.TypeIdx := TY_IDX_INT;
+            E.Offset  := 0;
+            E.SymIdx  := -1;
+          End;
+        End
+        { Scanner : appels de saisie }
+        Else If (IdName = 'scanner') Or (IdName = 'Scanner') Or
+                (IdName = 'sc') Or (IdName = 'scan') Or (IdName = 'in') Then
+        Begin
+          ParserAdvance;
+          If CurTokKind = TK_DOT Then
+          Begin
+            ParserAdvance; { consommer . }
+            If CurTokKind = TK_IDENT Then
+            Begin
+              SubName := CurTokStr;
+              ParserAdvance;
+              If (SubName = 'nextLine') Or (SubName = 'nextInt') Or
+                 (SubName = 'nextDouble') Or (SubName = 'next') Then
+                E := ParseScannerCall(SubName)
+              Else
+              Begin
+                { Methode inconnue du scanner, traiter comme champ }
+                E.Kind    := EK_MEM;
+                E.ImmVal  := 0;
+                E.TypeIdx := TY_IDX_INT;
+                E.Offset  := 0;
+                E.SymIdx  := SymI;
+                { Si suivi de (, appel de methode }
+                If CurTokKind = TK_LPAREN Then
+                  E := ParseInstanceMethodCall(E, SubName);
+              End;
+            End
+            Else
+            Begin
+              E.Kind    := EK_MEM;
+              E.ImmVal  := 0;
+              E.TypeIdx := TY_IDX_INT;
+              E.Offset  := 0;
+              E.SymIdx  := SymI;
+            End;
+          End
+          Else
+          Begin
+            { Ident scanner sans appel de methode }
+            PxLastKind := PX_IDENT;
+            E.Kind    := EK_MEM;
+            E.ImmVal  := 0;
+            E.TypeIdx := TY_IDX_INT;
+            E.Offset  := 0;
+            E.SymIdx  := SymI;
+          End;
+        End
+        Else
+        Begin
+          { Identifiant normal }
+          ParserAdvance;
+
+          { Si suivi de ., verifier si c est ClassName.method() }
+          If CurTokKind = TK_DOT Then
+          Begin
+            ParserAdvance; { consommer . }
+            If CurTokKind = TK_IDENT Then
+            Begin
+              SubName := CurTokStr;
+              ParserAdvance;
+              If CurTokKind = TK_LPAREN Then
+              Begin
+                { ClassName.method(args) ou obj.method(args) }
+                E.Kind    := EK_MEM;
+                E.ImmVal  := 0;
+                E.TypeIdx := TY_IDX_INT;
+                E.Offset  := 0;
+                E.SymIdx  := SymI;
+                E := ParseStaticMethodCall(IdName, SubName);
+              End
+              Else
+              Begin
+                { Acces champ : obj.field }
+                PxLastKind := PX_FIELD;
+                Inc(PxFieldCount);
+                E := ExprMakeEAX(TY_IDX_INT);
+              End;
+            End
+            Else
+            Begin
+              E.Kind    := EK_MEM;
+              E.ImmVal  := 0;
+              E.TypeIdx := TY_IDX_INT;
+              E.Offset  := 0;
+              E.SymIdx  := SymI;
+            End;
+          End
+          { Si suivi de (, appel de methode/fonction }
+          Else If CurTokKind = TK_LPAREN Then
+          Begin
+            E.Kind    := EK_MEM;
+            E.ImmVal  := 0;
+            E.TypeIdx := TY_IDX_INT;
+            E.Offset  := 0;
+            E.SymIdx  := SymI;
+            E := ParseStaticMethodCall('', IdName);
+          End
+          { Variable simple }
+          Else
+          Begin
+            PxLastKind := PX_IDENT;
+            E.Kind    := EK_MEM;
+            E.ImmVal  := 0;
+            E.TypeIdx := TY_IDX_INT;
+            E.Offset  := 0;
+            E.SymIdx  := SymI;
+          End;
+        End;
+      End;
+    TK_KEYWORD :
+      Begin
+        If CurTokStr = 'null' Then
+        Begin
+          E := ExprMakeNull;
+          ParserAdvance;
+        End
+        Else If CurTokStr = 'true' Then
+        Begin
+          E := ExprMakeBool(True);
+          ParserAdvance;
+        End
+        Else If CurTokStr = 'false' Then
+        Begin
+          E := ExprMakeBool(False);
+          ParserAdvance;
+        End
+        Else If CurTokStr = 'new' Then
+        Begin
+          ParserAdvance;
+          E := ParseNewExpr;
+        End
+        Else
+        Begin
+          E.Kind    := EK_NONE;
+          E.ImmVal  := 0;
+          E.TypeIdx := TY_IDX_VOID;
+          E.Offset  := 0;
+          E.SymIdx  := -1;
+          CompileError('unexpected keyword: ' + CurTokStr, LexLineNo);
+          ParserAdvance;
+        End;
+      End;
+    TK_LPAREN :
+      Begin
+        ParserAdvance; { consommer ( }
+
+        { Verifier si c est un cast : (int)expr, (char)expr, etc. }
+        If (CurTokKind = TK_KEYWORD) And
+           ((CurTokStr = 'int') Or (CurTokStr = 'char') Or
+            (CurTokStr = 'boolean') Or (CurTokStr = 'byte') Or
+            (CurTokStr = 'short') Or (CurTokStr = 'long') Or
+            (CurTokStr = 'float') Or (CurTokStr = 'double')) Then
+        Begin
+          IdName := CurTokStr;
+          ParserAdvance;
+          { Si suivi de ), c est un cast }
+          If CurTokKind = TK_RPAREN Then
+          Begin
+            E := ParseCastExpr(IdName);
+          End
+          Else
+          Begin
+            { Ce n etait pas un cast, c est (keyword ...) }
+            E.Kind    := EK_NONE;
+            E.ImmVal  := 0;
+            E.TypeIdx := TY_IDX_VOID;
+            E.Offset  := 0;
+            E.SymIdx  := -1;
+            CompileError('expected ) after cast type', LexLineNo);
+          End;
+        End
+        Else
+        Begin
+          { Parentheses normales : (expr) }
+          PxLastKind := PX_PAREN;
+          E := ParseExprPrec(PREC_MAX + 1);
+          If CurTokKind = TK_RPAREN Then
+            ParserAdvance
+          Else
+            CompileError('expected )', LexLineNo);
+        End;
+      End;
+    TK_OP :
+      Begin
+        { Gerer les unaires prefixes + - ~ ! ++ -- }
+        If (CurTokStr = '-') Or (CurTokStr = '+') Or
+           (CurTokStr = '~') Or (CurTokStr = '!') Or
+           (CurTokStr = '++') Or (CurTokStr = '--') Then
+        Begin
+          { Sera gere par ParseUnary, on retourne NONE }
+          E.Kind    := EK_NONE;
+          E.ImmVal  := 0;
+          E.TypeIdx := TY_IDX_INT;
+          E.Offset  := 0;
+          E.SymIdx  := -1;
+        End
+        Else
+        Begin
+          E.Kind    := EK_NONE;
+          E.ImmVal  := 0;
+          E.TypeIdx := TY_IDX_VOID;
+          E.Offset  := 0;
+          E.SymIdx  := -1;
+          CompileError('unexpected operator: ' + CurTokStr, LexLineNo);
+          ParserAdvance;
+        End;
+      End;
+  Else
+    Begin
+      E.Kind    := EK_NONE;
+      E.ImmVal  := 0;
+      E.TypeIdx := TY_IDX_VOID;
+      E.Offset  := 0;
+      E.SymIdx  := -1;
+      If CurTokKind <> TK_EOF Then
+      Begin
+        CompileError('expected expression, got: ' + CurTokStr, LexLineNo);
+        ParserAdvance;
+      End;
+    End;
+  End;
+
+  { Appliquer les suffixes postfixes }
+  E := ParsePostfix(E);
+
+  { Verifier operateur ternaire : cond ? a : b }
+  If CurTokKind = TK_QUESTION Then
+    E := ParseTernaryOp(E);
+
+  ParsePrimaryFull := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpPxState : afficher l etat du sous-systeme des primaires    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpPxState;
+Begin
+  WriteLn('--- Px State ---');
+  WriteLn('  PxInitialized  : ', PxInitialized);
+  WriteLn('  PxCallCount    : ', PxCallCount);
+  WriteLn('  PxStaticCount  : ', PxStaticCount);
+  WriteLn('  PxInstCount    : ', PxInstCount);
+  WriteLn('  PxFieldCount   : ', PxFieldCount);
+  WriteLn('  PxIndexCount   : ', PxIndexCount);
+  WriteLn('  PxNewCount     : ', PxNewCount);
+  WriteLn('  PxCastCount    : ', PxCastCount);
+  WriteLn('  PxTernaryCount : ', PxTernaryCount);
+  WriteLn('  PxSysOutCount  : ', PxSysOutCount);
+  WriteLn('  PxScannerCount : ', PxScannerCount);
+  WriteLn('  PxLastKind     : ', PxTypeName(PxLastKind));
+  WriteLn('  PxLabelSeq     : ', PxLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 08)                              }
+{ ------------------------------------------------------------ }
+
+Function IsPxInitialized : Boolean;
+Begin
+  IsPxInitialized := PxInitialized;
+End;
+
+Function IsPxEmpty : Boolean;
+Begin
+  IsPxEmpty := (PxCallCount = 0) And (PxFieldCount = 0) And
+               (PxIndexCount = 0);
+End;
+
+Function GetPxCallCount : LongInt;
+Begin
+  GetPxCallCount := PxCallCount;
+End;
+
+Function GetPxStaticCount : LongInt;
+Begin
+  GetPxStaticCount := PxStaticCount;
+End;
+
+Function GetPxInstCount : LongInt;
+Begin
+  GetPxInstCount := PxInstCount;
+End;
+
+Function GetPxFieldCount : LongInt;
+Begin
+  GetPxFieldCount := PxFieldCount;
+End;
+
+Function GetPxIndexCount : LongInt;
+Begin
+  GetPxIndexCount := PxIndexCount;
+End;
+
+Function GetPxNewCount : LongInt;
+Begin
+  GetPxNewCount := PxNewCount;
+End;
+
+Function GetPxLastKind : Integer;
+Begin
+  GetPxLastKind := PxLastKind;
+End;
+
+Function GetPxStatus : TString;
+Begin
+  If Not PxInitialized Then
+    GetPxStatus := 'Not initialized'
+  Else
+    GetPxStatus := ItoS(PxCallCount) + ' calls (' +
+                    ItoS(PxStaticCount) + ' static, ' +
+                    ItoS(PxInstCount) + ' inst, ' +
+                    ItoS(PxFieldCount) + ' fields, ' +
+                    ItoS(PxIndexCount) + ' index)';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-08)                              }
 { ============================================================ }
 
 Begin
@@ -4643,16 +5588,17 @@ Begin
   TypeInit;
   LitInit;
   InitOprState;
+  InitPxState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-07) }
+  { Boucle de tokenisation (TODO 02-08) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 08..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 09..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
