@@ -251,19 +251,31 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               GetLoopTotalDeadStores, GetLoopLabelNum, GetLoopBugType,
               GetLoopBugPC, GetLoopBugLine
 
-  TODO 12 - DETECTEUR : MAUVAISES PRATIQUES (BAD PRACTICES) [A FAIRE]
-            Codes detectes : BC_UNCONFIRMED_CAST, DE_MIGHT_IGNORE,
-              CN_IMPLEMENTS_CLONE_BUT_NOT_CLONEABLE,
-              EQ_DOESNT_OVERRIDE_EQUALS, FI_PUBLIC_SHOULD_BE_PROTECTED,
-              HE_HASHCODE_USE_OBJECT_EQUALS, RR_NOT_CHECKED, SR_NOT_CHECKED
-            DetectBadPractices(Method) : analyser invocations et checkcast,
-              verifier qu'un instanceof precede tout checkcast,
-              detecter blocs catch avec corps vide (DE_MIGHT_IGNORE),
-              detecter read()/skip() dont le resultat est pop
-            DetectBadClassPractices(ClassInfo) : verifier coherence
-              equals/hashCode, verifier Cloneable pour clone(),
-              verifier que finalize() n'est pas public,
-              detecter sous-classes ajoutant des champs sans equals()
+  TODO 12 - DETECTEUR : MAUVAISES PRATIQUES (BAD PRACTICES) [IMPLEMENTE]
+            Constantes : MAX_BP_BUGS=64, MAX_BP_CASTS=64
+            Types de bugs : BP_NONE=0, BC_UNCONFIRMED_CAST=1,
+              CN_IMPLEMENTS_CLONE_BUT_NOT_CLONEABLE=2, DE_MIGHT_IGNORE=3,
+              EQ_DOESNT_OVERRIDE_EQUALS=4, FI_PUBLIC_SHOULD_BE_PROTECTED=5,
+              HE_HASHCODE_USE_OBJECT_EQUALS=6, HE_EQUALS_USE_OBJECT_HASHCODE=7,
+              RR_NOT_CHECKED=8, SR_NOT_CHECKED=9
+            Structure TBadPracticeBug (BugType, PC, LineNum, ClassName,
+              MethodName, TypeName)
+            Structure TCheckcastInfo (PC, TargetType, HasPriorInstanceof)
+            Variables : BPInitialized, BPBugs, BPBugCount, BPCasts, BPCastCount,
+              BPLabelNum, BPTotalCasts, BPTotalUnchecked, BPTotalIgnored,
+              BPTotalRetNotChecked, BPCurrentPC, BPCurrentLine, BPHasClone,
+              BPHasEquals, BPHasHashCode, BPHasFinalize, BPFinalizePublic,
+              BPImplementsCloneable
+            InitBadPracticesState, GenBPLabel, BPBugTypeName, AddBadPracticeBug,
+              IsReadMethod, IsSkipMethod, TrackCheckcast, MarkInstanceofSeen,
+              IsCatchBlockEmpty, HasCloneMethod, HasEqualsMethod,
+              HasHashCodeMethod, HasFinalizeMethod, ImplementsCloneable,
+              DetectBadPractices, DetectBadClassPractices,
+              AnalyzeMethodForBadPractices, DumpBadPracticesState
+            Accesseurs : IsBPInitialized, GetBPBugCount, GetBPCastCount,
+              GetBPTotalCasts, GetBPTotalUnchecked, GetBPTotalIgnored,
+              GetBPTotalRetNotChecked, GetBPLabelNum, GetBPBugType,
+              GetBPBugPC, GetBPBugLine
 
   TODO 13 - DETECTEUR : COMPARAISONS INCORRECTES D'OBJETS [A FAIRE]
             Codes detectes : EC_UNRELATED_TYPES,

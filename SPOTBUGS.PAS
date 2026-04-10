@@ -27,7 +27,7 @@
 {  TODO 09 [IMPLEMENTE] - Detecteur : dereferencement de pointeur null        }
 {  TODO 10 [IMPLEMENTE] - Detecteur : fuite de ressources (resource leaks)    }
 {  TODO 11 [IMPLEMENTE] - Detecteur : boucles infinies et blocs inaccessibles }
-{  TODO 12 [A FAIRE] - Detecteur : mauvaises pratiques (bad practices)        }
+{  TODO 12 [IMPLEMENTE] - Detecteur : mauvaises pratiques (bad practices)     }
 {  TODO 13 [A FAIRE] - Detecteur : comparaisons incorrectes d'objets          }
 {  TODO 14 [A FAIRE] - Detecteur : problemes de performance                   }
 {  TODO 15 [A FAIRE] - Detecteur : vulnerabilites de securite                 }
@@ -746,6 +746,22 @@ Const
   USELESS_CODE                  = 5;  { Code inaccessible                     }
   IL_CONTAINER_MODIFIED         = 6;  { Boucle avec modification container    }
 
+  { --- TODO 12 : Constantes pour le detecteur de mauvaises pratiques --- }
+  MAX_BP_BUGS      = 64;   { Nombre max de bugs bad practices par methode    }
+  MAX_BP_CASTS     = 64;   { Nombre max de checkcast a tracker                }
+
+  { Types de bugs de mauvaises pratiques }
+  BP_NONE                               = 0;  { Pas de bug                    }
+  BC_UNCONFIRMED_CAST                   = 1;  { Cast sans instanceof prealable}
+  CN_IMPLEMENTS_CLONE_BUT_NOT_CLONEABLE = 2;  { clone() sans Cloneable        }
+  DE_MIGHT_IGNORE                       = 3;  { Exception ignoree (catch vide)}
+  EQ_DOESNT_OVERRIDE_EQUALS             = 4;  { Sous-classe sans equals()     }
+  FI_PUBLIC_SHOULD_BE_PROTECTED         = 5;  { finalize() public             }
+  HE_HASHCODE_USE_OBJECT_EQUALS         = 6;  { hashCode sans equals          }
+  HE_EQUALS_USE_OBJECT_HASHCODE         = 7;  { equals sans hashCode          }
+  RR_NOT_CHECKED                        = 8;  { read() retour non verifie     }
+  SR_NOT_CHECKED                        = 9;  { skip() retour non verifie     }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -819,6 +835,25 @@ Type
   End;
   TDeadStoreArray = Array[0..MAX_DEAD_STORES-1] of TDeadStoreInfo;
 
+  { --- TODO 12 : Structure TBadPracticeBug : bug mauvaise pratique detecte --- }
+  TBadPracticeBug = Record
+    BugType     : Integer;    { Type de bug (BC_UNCONFIRMED_CAST, etc.)     }
+    PC          : LongWord;   { Position dans le bytecode                   }
+    LineNum     : Integer;    { Numero de ligne source                      }
+    ClassName   : String;     { Nom de classe concernee                     }
+    MethodName  : String;     { Nom de methode concernee                    }
+    TypeName    : String;     { Type cible (pour cast) ou info supplementaire }
+  End;
+  TBadPracticeBugArray = Array[0..MAX_BP_BUGS-1] of TBadPracticeBug;
+
+  { --- TODO 12 : Structure TCheckcastInfo : info checkcast a tracker --- }
+  TCheckcastInfo = Record
+    PC          : LongWord;   { PC de l'instruction checkcast               }
+    TargetType  : String;     { Type cible du cast                          }
+    HasPriorInstanceof : Boolean; { True si instanceof precede ce cast      }
+  End;
+  TCheckcastArray = Array[0..MAX_BP_CASTS-1] of TCheckcastInfo;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -886,6 +921,25 @@ Var
   LoopTotalDeadStores : Integer;  { Nombre total de dead stores detectes       }
   LoopCurrentPC    : LongWord;    { PC de l'instruction courante               }
   LoopCurrentLine  : Integer;     { Ligne source courante                      }
+  { --- TODO 12 : Variables du detecteur de mauvaises pratiques --- }
+  BPInitialized    : Boolean;     { True si module initialise                  }
+  BPBugs           : TBadPracticeBugArray; { Bugs detectes dans la methode     }
+  BPBugCount       : Integer;     { Nombre de bugs detectes                    }
+  BPCasts          : TCheckcastArray; { Table des checkcast a tracker          }
+  BPCastCount      : Integer;     { Nombre de checkcast trackes                }
+  BPLabelNum       : Integer;     { Compteur pour generation de labels         }
+  BPTotalCasts     : Integer;     { Nombre total de checkcast analyses         }
+  BPTotalUnchecked : Integer;     { Nombre total de casts sans instanceof      }
+  BPTotalIgnored   : Integer;     { Nombre total d'exceptions ignorees         }
+  BPTotalRetNotChecked : Integer; { Nombre total de read/skip non verifies     }
+  BPCurrentPC      : LongWord;    { PC de l'instruction courante               }
+  BPCurrentLine    : Integer;     { Ligne source courante                      }
+  BPHasClone       : Boolean;     { True si la classe a une methode clone()    }
+  BPHasEquals      : Boolean;     { True si la classe a une methode equals()   }
+  BPHasHashCode    : Boolean;     { True si la classe a une methode hashCode() }
+  BPHasFinalize    : Boolean;     { True si la classe a une methode finalize() }
+  BPFinalizePublic : Boolean;     { True si finalize() est public              }
+  BPImplementsCloneable : Boolean; { True si la classe implemente Cloneable    }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -5869,31 +5923,546 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 12 [A FAIRE] - Detecteur : mauvaises pratiques (bad practices)          }
+{ TODO 12 [IMPLEMENTE] - Detecteur : mauvaises pratiques (bad practices)       }
 { ============================================================================ }
-{                                                                              }
-{  - Codes de bugs detectes :                                                    }
-{      BC_UNCONFIRMED_CAST    : cast sans verification instanceof prealable     }
-{      CN_IMPLEMENTS_CLONE_BUT_NOT_CLONEABLE : clone() sans Cloneable          }
-{      DE_MIGHT_IGNORE        : exception capturee et ignoree (catch vide)      }
-{      EQ_DOESNT_OVERRIDE_EQUALS : sous-classe avec champs mais sans equals()  }
-{      FI_PUBLIC_SHOULD_BE_PROTECTED : finalize() public au lieu de protected  }
-{      HE_HASHCODE_USE_OBJECT_EQUALS : hashCode() sans equals() ou inversement }
-{      RR_NOT_CHECKED          : valeur de retour de read() non verifiee        }
-{      SR_NOT_CHECKED          : valeur de retour de skip() non verifiee        }
-{                                                                              }
-{  - Procedure DetectBadPractices(Method: TMethodInfo)                          }
-{      Analyser les invocations de methodes et les instructions checkcast       }
-{      Verifier qu'un instanceof precede tout checkcast                         }
-{      Detecter les blocs catch avec corps vide (DE_MIGHT_IGNORE)              }
-{      Detecter les appels a read()/skip() dont le resultat est pop             }
-{                                                                              }
-{  - Procedure DetectBadClassPractices(ClassInfo: TClassInfo)                   }
-{      Analyser la structure de la classe :                                     }
-{        Verifier la coherence equals/hashCode (un seul sans l'autre)           }
-{        Verifier que clone() est dans une classe qui implemente Cloneable      }
-{        Verifier que finalize() n'est pas public                               }
-{        Detecter les sous-classes ajoutant des champs sans redefinir equals()  }
+
+{ --- TODO 12 : Initialisation du detecteur de mauvaises pratiques --- }
+Procedure InitBadPracticesState;
+Var
+  I: Integer;
+Begin
+  BPInitialized := True;
+  BPBugCount := 0;
+  BPCastCount := 0;
+  BPLabelNum := 0;
+  BPTotalCasts := 0;
+  BPTotalUnchecked := 0;
+  BPTotalIgnored := 0;
+  BPTotalRetNotChecked := 0;
+  BPCurrentPC := 0;
+  BPCurrentLine := 0;
+  BPHasClone := False;
+  BPHasEquals := False;
+  BPHasHashCode := False;
+  BPHasFinalize := False;
+  BPFinalizePublic := False;
+  BPImplementsCloneable := False;
+  
+  { Reinitialiser la table des bugs }
+  For I := 0 to MAX_BP_BUGS - 1 Do Begin
+    BPBugs[I].BugType := BP_NONE;
+    BPBugs[I].PC := 0;
+    BPBugs[I].LineNum := 0;
+    BPBugs[I].ClassName := '';
+    BPBugs[I].MethodName := '';
+    BPBugs[I].TypeName := '';
+  End;
+  
+  { Reinitialiser la table des checkcast }
+  For I := 0 to MAX_BP_CASTS - 1 Do Begin
+    BPCasts[I].PC := 0;
+    BPCasts[I].TargetType := '';
+    BPCasts[I].HasPriorInstanceof := False;
+  End;
+End;
+
+{ --- TODO 12 : Generation d'un label unique pour le module BP --- }
+Function GenBPLabel: String;
+Begin
+  Inc(BPLabelNum);
+  GenBPLabel := '_BP_' + IntToStr_(BPLabelNum);
+End;
+
+{ --- TODO 12 : Nom du type de bug BP en chaine --- }
+Function BPBugTypeName(BugType: Integer): String;
+Begin
+  Case BugType of
+    BP_NONE                               : BPBugTypeName := 'NONE';
+    BC_UNCONFIRMED_CAST                   : BPBugTypeName := 'BC_UNCONFIRMED_CAST';
+    CN_IMPLEMENTS_CLONE_BUT_NOT_CLONEABLE : BPBugTypeName := 'CN_IMPLEMENTS_CLONE_BUT_NOT_CLONEABLE';
+    DE_MIGHT_IGNORE                       : BPBugTypeName := 'DE_MIGHT_IGNORE';
+    EQ_DOESNT_OVERRIDE_EQUALS             : BPBugTypeName := 'EQ_DOESNT_OVERRIDE_EQUALS';
+    FI_PUBLIC_SHOULD_BE_PROTECTED         : BPBugTypeName := 'FI_PUBLIC_SHOULD_BE_PROTECTED';
+    HE_HASHCODE_USE_OBJECT_EQUALS         : BPBugTypeName := 'HE_HASHCODE_USE_OBJECT_EQUALS';
+    HE_EQUALS_USE_OBJECT_HASHCODE         : BPBugTypeName := 'HE_EQUALS_USE_OBJECT_HASHCODE';
+    RR_NOT_CHECKED                        : BPBugTypeName := 'RR_NOT_CHECKED';
+    SR_NOT_CHECKED                        : BPBugTypeName := 'SR_NOT_CHECKED';
+  Else
+    BPBugTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 12 : Ajouter un bug bad practice detecte --- }
+Procedure AddBadPracticeBug(BugType: Integer; PC: LongWord; LineNum: Integer;
+                             ClassName, MethodName, TypeName: String);
+Begin
+  If BPBugCount < MAX_BP_BUGS Then Begin
+    BPBugs[BPBugCount].BugType := BugType;
+    BPBugs[BPBugCount].PC := PC;
+    BPBugs[BPBugCount].LineNum := LineNum;
+    BPBugs[BPBugCount].ClassName := ClassName;
+    BPBugs[BPBugCount].MethodName := MethodName;
+    BPBugs[BPBugCount].TypeName := TypeName;
+    Inc(BPBugCount);
+  End;
+End;
+
+{ --- TODO 12 : Verifier si une methode est read() d'InputStream --- }
+Function IsReadMethod(ClassName, MethodName, Descriptor: String): Boolean;
+Begin
+  { Detecter les appels a read() sur InputStream et ses sous-classes }
+  IsReadMethod := False;
+  If MethodName = 'read' Then Begin
+    If (Pos('InputStream', ClassName) > 0) or
+       (Pos('Reader', ClassName) > 0) Then Begin
+      { read() retourne un int (I) }
+      If (Pos(')I', Descriptor) > 0) Then
+        IsReadMethod := True;
+    End;
+  End;
+End;
+
+{ --- TODO 12 : Verifier si une methode est skip() d'InputStream --- }
+Function IsSkipMethod(ClassName, MethodName, Descriptor: String): Boolean;
+Begin
+  { Detecter les appels a skip() sur InputStream et ses sous-classes }
+  IsSkipMethod := False;
+  If MethodName = 'skip' Then Begin
+    If (Pos('InputStream', ClassName) > 0) or
+       (Pos('Reader', ClassName) > 0) Then Begin
+      { skip(long) retourne un long (J) }
+      If (Pos(')J', Descriptor) > 0) Then
+        IsSkipMethod := True;
+    End;
+  End;
+End;
+
+{ --- TODO 12 : Tracker un checkcast pour verification instanceof --- }
+Procedure TrackCheckcast(PC: LongWord; TargetType: String);
+Begin
+  If BPCastCount < MAX_BP_CASTS Then Begin
+    BPCasts[BPCastCount].PC := PC;
+    BPCasts[BPCastCount].TargetType := TargetType;
+    BPCasts[BPCastCount].HasPriorInstanceof := False;
+    Inc(BPCastCount);
+    Inc(BPTotalCasts);
+  End;
+End;
+
+{ --- TODO 12 : Marquer un instanceof pour le type donne --- }
+Procedure MarkInstanceofSeen(TargetType: String);
+Var
+  I: Integer;
+Begin
+  { Marquer tous les checkcast du meme type comme ayant un instanceof prealable }
+  For I := 0 to BPCastCount - 1 Do Begin
+    If BPCasts[I].TargetType = TargetType Then
+      BPCasts[I].HasPriorInstanceof := True;
+  End;
+End;
+
+{ --- TODO 12 : Verifier si un bloc catch est vide (exception ignoree) --- }
+Function IsCatchBlockEmpty(StartPC, EndPC: LongWord): Boolean;
+Var
+  I: Integer;
+  CodeLen: LongWord;
+  HasCode: Boolean;
+Begin
+  { Un catch block vide contient seulement astore (store exception) et
+    eventuellement aload + athrow, ou juste un return/goto }
+  IsCatchBlockEmpty := False;
+  
+  If (Instructions = Nil) or (InstrCount = 0) Then Exit;
+  
+  CodeLen := EndPC - StartPC;
+  HasCode := False;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    If (Instructions^[I].PC >= StartPC) and (Instructions^[I].PC < EndPC) Then Begin
+      { Verifier si c'est une instruction significative }
+      Case Instructions^[I].Opcode of
+        OP_ASTORE, OP_ASTORE_0, OP_ASTORE_1, OP_ASTORE_2, OP_ASTORE_3,
+        OP_POP, OP_POP2, OP_RETURN, OP_GOTO, OP_GOTO_W:
+          ; { Ces instructions sont acceptables dans un catch vide }
+      Else
+        HasCode := True; { Instruction significative trouvee }
+      End;
+    End;
+  End;
+  
+  { Si tres peu de code et pas d'instruction significative, le catch est vide }
+  If (CodeLen <= 5) and (not HasCode) Then
+    IsCatchBlockEmpty := True;
+End;
+
+{ --- TODO 12 : Verifier si la classe a une methode clone() --- }
+Function HasCloneMethod: Boolean;
+Var
+  I: Integer;
+Begin
+  HasCloneMethod := False;
+  For I := 0 to MethodCount - 1 Do Begin
+    If (Methods[I].Name = 'clone') and
+       (Methods[I].Descriptor = '()Ljava/lang/Object;') Then Begin
+      HasCloneMethod := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 12 : Verifier si la classe a une methode equals(Object) --- }
+Function HasEqualsMethod: Boolean;
+Var
+  I: Integer;
+Begin
+  HasEqualsMethod := False;
+  For I := 0 to MethodCount - 1 Do Begin
+    If (Methods[I].Name = 'equals') and
+       (Methods[I].Descriptor = '(Ljava/lang/Object;)Z') Then Begin
+      HasEqualsMethod := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 12 : Verifier si la classe a une methode hashCode() --- }
+Function HasHashCodeMethod: Boolean;
+Var
+  I: Integer;
+Begin
+  HasHashCodeMethod := False;
+  For I := 0 to MethodCount - 1 Do Begin
+    If (Methods[I].Name = 'hashCode') and
+       (Methods[I].Descriptor = '()I') Then Begin
+      HasHashCodeMethod := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 12 : Verifier si la classe a une methode finalize() et si elle est public --- }
+Function HasFinalizeMethod(Var IsPublic: Boolean): Boolean;
+Var
+  I: Integer;
+Begin
+  HasFinalizeMethod := False;
+  IsPublic := False;
+  For I := 0 to MethodCount - 1 Do Begin
+    If (Methods[I].Name = 'finalize') and
+       (Methods[I].Descriptor = '()V') Then Begin
+      HasFinalizeMethod := True;
+      IsPublic := Methods[I].IsPublic;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 12 : Verifier si la classe implemente Cloneable --- }
+Function ImplementsCloneable: Boolean;
+Var
+  I: Integer;
+Begin
+  ImplementsCloneable := False;
+  For I := 0 to ClassInfo.InterfaceCount - 1 Do Begin
+    If Pos('Cloneable', ClassInfo.Interfaces[I]) > 0 Then Begin
+      ImplementsCloneable := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 12 : Detecter les mauvaises pratiques dans une methode --- }
+Procedure DetectBadPractices(MethIdx: Integer);
+Var
+  I, J, K: Integer;
+  Inst: TInstruction;
+  CpIdx: Word;
+  ClassName, MethodName, Descriptor: String;
+  TargetType: String;
+  LineNum: Integer;
+  FoundInstanceof: Boolean;
+  PrevOpcode: Byte;
+Begin
+  If (Instructions = Nil) or (InstrCount = 0) Then Exit;
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  
+  { Reinitialiser les checkcast trackes pour cette methode }
+  BPCastCount := 0;
+  
+  { Premiere passe : collecter tous les instanceof }
+  For I := 0 to InstrCount - 1 Do Begin
+    Inst := Instructions^[I];
+    If Inst.Opcode = OP_INSTANCEOF Then Begin
+      { Extraire le type cible de l'instanceof }
+      CpIdx := Inst.Op1;
+      If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
+        TargetType := CPGetClassName(CpIdx);
+        MarkInstanceofSeen(TargetType);
+      End;
+    End;
+  End;
+  
+  { Deuxieme passe : analyser les instructions }
+  PrevOpcode := OP_NOP;
+  For I := 0 to InstrCount - 1 Do Begin
+    Inst := Instructions^[I];
+    BPCurrentPC := Inst.PC;
+    LineNum := GetLineNumber(Methods[MethIdx], Inst.PC);
+    BPCurrentLine := LineNum;
+    
+    Case Inst.Opcode of
+      OP_CHECKCAST: Begin
+        { Verifier si un instanceof precede ce checkcast }
+        CpIdx := Inst.Op1;
+        If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
+          TargetType := CPGetClassName(CpIdx);
+          
+          { Chercher si un instanceof pour ce type a ete vu avant }
+          FoundInstanceof := False;
+          For J := 0 to I - 1 Do Begin
+            If Instructions^[J].Opcode = OP_INSTANCEOF Then Begin
+              K := Instructions^[J].Op1;
+              If (K > 0) and (K < CPCount) Then Begin
+                If CPGetClassName(K) = TargetType Then Begin
+                  FoundInstanceof := True;
+                  Break;
+                End;
+              End;
+            End;
+          End;
+          
+          If not FoundInstanceof Then Begin
+            { Cast sans instanceof prealable = bug potentiel }
+            AddBadPracticeBug(BC_UNCONFIRMED_CAST, Inst.PC, LineNum,
+                              ClassInfo.ThisClass,
+                              Methods[MethIdx].Name, TargetType);
+            Inc(BPTotalUnchecked);
+          End;
+        End;
+      End;
+      
+      OP_INVOKEVIRTUAL, OP_INVOKEINTERFACE: Begin
+        { Verifier les appels a read() ou skip() }
+        CpIdx := Inst.Op1;
+        If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
+          ClassName := '';
+          MethodName := '';
+          Descriptor := '';
+          CPGetMemberRef(CpIdx, ClassName, MethodName, Descriptor);
+          
+          { Detecter read() dont le retour n'est pas verifie }
+          If IsReadMethod(ClassName, MethodName, Descriptor) Then Begin
+            { Verifier si l'instruction suivante est pop (ignore le resultat) }
+            If (I + 1 < InstrCount) Then Begin
+              If (Instructions^[I + 1].Opcode = OP_POP) or
+                 (Instructions^[I + 1].Opcode = OP_POP2) Then Begin
+                AddBadPracticeBug(RR_NOT_CHECKED, Inst.PC, LineNum,
+                                  ClassName, MethodName, '');
+                Inc(BPTotalRetNotChecked);
+              End;
+            End;
+          End;
+          
+          { Detecter skip() dont le retour n'est pas verifie }
+          If IsSkipMethod(ClassName, MethodName, Descriptor) Then Begin
+            If (I + 1 < InstrCount) Then Begin
+              If (Instructions^[I + 1].Opcode = OP_POP) or
+                 (Instructions^[I + 1].Opcode = OP_POP2) Then Begin
+                AddBadPracticeBug(SR_NOT_CHECKED, Inst.PC, LineNum,
+                                  ClassName, MethodName, '');
+                Inc(BPTotalRetNotChecked);
+              End;
+            End;
+          End;
+        End;
+      End;
+    End;
+    
+    PrevOpcode := Inst.Opcode;
+  End;
+  
+  { Analyser les blocs catch pour les exceptions ignorees }
+  For I := 0 to Methods[MethIdx].ExcCount - 1 Do Begin
+    If IsCatchBlockEmpty(Methods[MethIdx].ExcTable[I].HandlerPC,
+                         Methods[MethIdx].ExcTable[I].HandlerPC + 5) Then Begin
+      LineNum := GetLineNumber(Methods[MethIdx], Methods[MethIdx].ExcTable[I].HandlerPC);
+      AddBadPracticeBug(DE_MIGHT_IGNORE, Methods[MethIdx].ExcTable[I].HandlerPC,
+                        LineNum, ClassInfo.ThisClass,
+                        Methods[MethIdx].Name,
+                        Methods[MethIdx].ExcTable[I].CatchName);
+      Inc(BPTotalIgnored);
+    End;
+  End;
+End;
+
+{ --- TODO 12 : Detecter les mauvaises pratiques au niveau de la classe --- }
+Procedure DetectBadClassPractices;
+Var
+  FinalizeIsPublic: Boolean;
+Begin
+  { Analyser la structure de la classe }
+  BPHasClone := HasCloneMethod;
+  BPHasEquals := HasEqualsMethod;
+  BPHasHashCode := HasHashCodeMethod;
+  BPHasFinalize := HasFinalizeMethod(FinalizeIsPublic);
+  BPFinalizePublic := FinalizeIsPublic;
+  BPImplementsCloneable := ImplementsCloneable;
+  
+  { Verifier clone() sans Cloneable }
+  If BPHasClone and (not BPImplementsCloneable) Then Begin
+    AddBadPracticeBug(CN_IMPLEMENTS_CLONE_BUT_NOT_CLONEABLE, 0, 0,
+                      ClassInfo.ThisClass, 'clone', '');
+  End;
+  
+  { Verifier equals() sans hashCode() }
+  If BPHasEquals and (not BPHasHashCode) Then Begin
+    AddBadPracticeBug(HE_EQUALS_USE_OBJECT_HASHCODE, 0, 0,
+                      ClassInfo.ThisClass, 'equals', '');
+  End;
+  
+  { Verifier hashCode() sans equals() }
+  If BPHasHashCode and (not BPHasEquals) Then Begin
+    AddBadPracticeBug(HE_HASHCODE_USE_OBJECT_EQUALS, 0, 0,
+                      ClassInfo.ThisClass, 'hashCode', '');
+  End;
+  
+  { Verifier finalize() public }
+  If BPHasFinalize and BPFinalizePublic Then Begin
+    AddBadPracticeBug(FI_PUBLIC_SHOULD_BE_PROTECTED, 0, 0,
+                      ClassInfo.ThisClass, 'finalize', '');
+  End;
+  
+  { Verifier sous-classe avec champs supplementaires sans equals() }
+  { Note: cette detection complete necessite d'analyser la super-classe }
+  { Pour l'instant, on detecte seulement les classes avec champs et super != Object }
+  If (FieldCount > 0) and (not BPHasEquals) Then Begin
+    If ClassInfo.SuperClass <> '' Then Begin
+      If ClassInfo.SuperClass <> 'java/lang/Object' Then Begin
+        { La classe a des champs et herite d'autre chose qu'Object }
+        { Si elle n'a pas equals(), c'est potentiellement un probleme }
+        AddBadPracticeBug(EQ_DOESNT_OVERRIDE_EQUALS, 0, 0,
+                          ClassInfo.ThisClass, '', '');
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 12 : Analyser une methode pour les mauvaises pratiques --- }
+Procedure AnalyzeMethodForBadPractices(MethIdx: Integer);
+Begin
+  If not BPInitialized Then
+    InitBadPracticesState;
+    
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  
+  { Decoder les instructions si pas deja fait }
+  If (Instructions = Nil) or (InstrCount = 0) Then Begin
+    If Methods[MethIdx].CodeLen > 0 Then Begin
+      AllocInstructions;
+      DecodeInstructions(Methods[MethIdx]);
+    End;
+  End;
+  
+  { Detecter les mauvaises pratiques dans cette methode }
+  DetectBadPractices(MethIdx);
+End;
+
+{ --- TODO 12 : Dump de l'etat du module bad practices --- }
+Procedure DumpBadPracticesState;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== Bad Practices State ===');
+  WriteLn('Initialized: ', BPInitialized);
+  WriteLn('Bug Count: ', BPBugCount);
+  WriteLn('Cast Count: ', BPCastCount);
+  WriteLn('Total Casts: ', BPTotalCasts);
+  WriteLn('Total Unchecked: ', BPTotalUnchecked);
+  WriteLn('Total Ignored: ', BPTotalIgnored);
+  WriteLn('Total Ret Not Checked: ', BPTotalRetNotChecked);
+  WriteLn('Has Clone: ', BPHasClone);
+  WriteLn('Has Equals: ', BPHasEquals);
+  WriteLn('Has HashCode: ', BPHasHashCode);
+  WriteLn('Has Finalize: ', BPHasFinalize);
+  WriteLn('Finalize Public: ', BPFinalizePublic);
+  WriteLn('Implements Cloneable: ', BPImplementsCloneable);
+  
+  If BPBugCount > 0 Then Begin
+    WriteLn('--- Bugs ---');
+    For I := 0 to BPBugCount - 1 Do Begin
+      WriteLn('  [', I, '] Type=', BPBugTypeName(BPBugs[I].BugType),
+              ' PC=', BPBugs[I].PC, ' Line=', BPBugs[I].LineNum,
+              ' Class=', BPBugs[I].ClassName,
+              ' Method=', BPBugs[I].MethodName,
+              ' Info=', BPBugs[I].TypeName);
+    End;
+  End;
+End;
+
+{ --- TODO 12 : Accesseurs du module bad practices --- }
+Function IsBPInitialized: Boolean;
+Begin
+  IsBPInitialized := BPInitialized;
+End;
+
+Function GetBPBugCount: Integer;
+Begin
+  GetBPBugCount := BPBugCount;
+End;
+
+Function GetBPCastCount: Integer;
+Begin
+  GetBPCastCount := BPCastCount;
+End;
+
+Function GetBPTotalCasts: Integer;
+Begin
+  GetBPTotalCasts := BPTotalCasts;
+End;
+
+Function GetBPTotalUnchecked: Integer;
+Begin
+  GetBPTotalUnchecked := BPTotalUnchecked;
+End;
+
+Function GetBPTotalIgnored: Integer;
+Begin
+  GetBPTotalIgnored := BPTotalIgnored;
+End;
+
+Function GetBPTotalRetNotChecked: Integer;
+Begin
+  GetBPTotalRetNotChecked := BPTotalRetNotChecked;
+End;
+
+Function GetBPLabelNum: Integer;
+Begin
+  GetBPLabelNum := BPLabelNum;
+End;
+
+Function GetBPBugType(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < BPBugCount) Then
+    GetBPBugType := BPBugs[Idx].BugType
+  Else
+    GetBPBugType := BP_NONE;
+End;
+
+Function GetBPBugPC(Idx: Integer): LongWord;
+Begin
+  If (Idx >= 0) and (Idx < BPBugCount) Then
+    GetBPBugPC := BPBugs[Idx].PC
+  Else
+    GetBPBugPC := 0;
+End;
+
+Function GetBPBugLine(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < BPBugCount) Then
+    GetBPBugLine := BPBugs[Idx].LineNum
+  Else
+    GetBPBugLine := 0;
+End;
 
 { ============================================================================ }
 { TODO 13 [A FAIRE] - Detecteur : comparaisons incorrectes d'objets            }
