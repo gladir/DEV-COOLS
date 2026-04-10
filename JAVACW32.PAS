@@ -133,7 +133,7 @@
               _JF_ClassName_methodName
             10 fonctions accesseurs
 
-  TODO 05 - SYSTEME DE TYPES JAVA [A FAIRE]
+  TODO 05 - SYSTEME DE TYPES JAVA [IMPLEMENTE]
             TTypeKind : TYK_INT (32 bits signe), TYK_BOOLEAN (32 bits),
               TYK_CHAR (32 bits elargi), TYK_VOID (pas de valeur),
               TYK_STRING (ptr chaine), TYK_ARRAY (ptr tableau),
@@ -3086,7 +3086,384 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-04)                              }
+{ TODO 05 - SYSTEME DE TYPES JAVA               [IMPLEMENTE]  }
+{ ============================================================ }
+
+Const
+  { TTypeKind : types Java }
+  TYK_INT     = 0;    { entier 32 bits signe                     }
+  TYK_BOOLEAN = 1;    { booleen 32 bits (0 ou 1)                 }
+  TYK_CHAR    = 2;    { caractere 32 bits elargi                 }
+  TYK_VOID    = 3;    { pas de valeur (retour void)              }
+  TYK_STRING  = 4;    { ptr vers chaine (java.lang.String)       }
+  TYK_ARRAY   = 5;    { ptr vers tableau                         }
+  TYK_OBJECT  = 6;    { ptr vers instance de classe              }
+  TYK_CLASS   = 7;    { descripteur de classe                    }
+  TYK_NULL    = 8;    { reference nulle                          }
+  TYK_MAX     = 8;    { valeur maximale TYK_*                    }
+
+  { Indices des types primitifs dans TypeTab }
+  TY_IDX_INT     = 0;
+  TY_IDX_BOOLEAN = 1;
+  TY_IDX_CHAR    = 2;
+  TY_IDX_VOID    = 3;
+  TY_IDX_STRING  = 4;
+  TY_IDX_NULL    = 5;
+  TY_IDX_INTARR  = 6;
+  TY_IDX_CHARARR = 7;
+  TY_IDX_STRARR  = 8;
+  TY_IDX_BOOLARR = 9;
+  TY_PRIM_COUNT  = 10;  { nombre de types primitifs              }
+
+Type
+  TTypeRec = Record
+    Name     : TString;       { nom du type ('int', 'boolean', ...)  }
+    Kind     : Integer;       { TYK_INT..TYK_NULL                    }
+    Size     : Integer;       { taille en octets (32 bits)           }
+    IsArray  : Boolean;       { True si type tableau                 }
+    ElemType : Integer;       { indice du type element (si tableau)  }
+  End;
+
+Var
+  TypeTab         : Array[0..MAX_TYPE-1] Of TTypeRec;
+  TypeCount       : Integer;       { nombre de types enregistres        }
+  TypInitialized  : Boolean;       { True si l etat est initialise      }
+  TypLabelSeq     : Integer;       { sequence pour labels uniques       }
+  TypAddCount     : LongInt;       { nombre total de TypeAdd            }
+  TypFindCount    : LongInt;       { nombre total de TypeFindByName     }
+  TypFindHit      : LongInt;       { nombre de TypeFindByName OK        }
+  TypLastName     : TString;       { dernier nom cherche/ajoute         }
+
+{ ------------------------------------------------------------ }
+{ TypeInit : initialiser la table des types et enregistrer      }
+{ les 10 types primitifs Java                                   }
+{ ------------------------------------------------------------ }
+
+Procedure TypeInit;
+
+  Procedure AddPrim(Const N : TString; K, S : Integer;
+                    Arr : Boolean; Elem : Integer);
+  Begin
+    If TypeCount < MAX_TYPE Then
+    Begin
+      TypeTab[TypeCount].Name     := N;
+      TypeTab[TypeCount].Kind     := K;
+      TypeTab[TypeCount].Size     := S;
+      TypeTab[TypeCount].IsArray  := Arr;
+      TypeTab[TypeCount].ElemType := Elem;
+      Inc(TypeCount);
+    End;
+  End;
+
+Begin
+  TypInitialized := True;
+  TypeCount      := 0;
+  TypLabelSeq    := 0;
+  TypAddCount    := 0;
+  TypFindCount   := 0;
+  TypFindHit     := 0;
+  TypLastName    := '';
+  { Enregistrer les 10 types primitifs (ordre = TY_IDX_*) }
+  AddPrim('int',       TYK_INT,     4, False, -1);  { TY_IDX_INT     = 0 }
+  AddPrim('boolean',   TYK_BOOLEAN, 4, False, -1);  { TY_IDX_BOOLEAN = 1 }
+  AddPrim('char',      TYK_CHAR,    4, False, -1);  { TY_IDX_CHAR    = 2 }
+  AddPrim('void',      TYK_VOID,    0, False, -1);  { TY_IDX_VOID    = 3 }
+  AddPrim('String',    TYK_STRING,  4, False, -1);  { TY_IDX_STRING  = 4 }
+  AddPrim('null',      TYK_NULL,    4, False, -1);  { TY_IDX_NULL    = 5 }
+  AddPrim('int[]',     TYK_ARRAY,   4, True,  TY_IDX_INT);     { TY_IDX_INTARR  = 6 }
+  AddPrim('char[]',    TYK_ARRAY,   4, True,  TY_IDX_CHAR);    { TY_IDX_CHARARR = 7 }
+  AddPrim('String[]',  TYK_ARRAY,   4, True,  TY_IDX_STRING);  { TY_IDX_STRARR  = 8 }
+  AddPrim('boolean[]', TYK_ARRAY,   4, True,  TY_IDX_BOOLEAN); { TY_IDX_BOOLARR = 9 }
+End;
+
+{ ------------------------------------------------------------ }
+{ GenTypLabel : generer un label unique _TYP_N                  }
+{ ------------------------------------------------------------ }
+
+Function GenTypLabel : TString;
+Begin
+  Inc(TypLabelSeq);
+  GenTypLabel := '_TYP_' + ItoS(TypLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeKindStr : nom textuel d un TTypeKind                      }
+{ ------------------------------------------------------------ }
+
+Function TypeKindStr(K : Integer) : TString;
+Begin
+  Case K Of
+    TYK_INT     : TypeKindStr := 'TYK_INT';
+    TYK_BOOLEAN : TypeKindStr := 'TYK_BOOLEAN';
+    TYK_CHAR    : TypeKindStr := 'TYK_CHAR';
+    TYK_VOID    : TypeKindStr := 'TYK_VOID';
+    TYK_STRING  : TypeKindStr := 'TYK_STRING';
+    TYK_ARRAY   : TypeKindStr := 'TYK_ARRAY';
+    TYK_OBJECT  : TypeKindStr := 'TYK_OBJECT';
+    TYK_CLASS   : TypeKindStr := 'TYK_CLASS';
+    TYK_NULL    : TypeKindStr := 'TYK_NULL';
+  Else
+    TypeKindStr := 'TYK_?(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypTypeName : nom textuel pour un indice dans TypeTab         }
+{ ------------------------------------------------------------ }
+
+Function TypTypeName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) Then
+    TypTypeName := TypeTab[Idx].Name
+  Else
+    TypTypeName := '?type(' + ItoS(Idx) + ')';
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeKindOf : retourner le TTypeKind pour un indice            }
+{ ------------------------------------------------------------ }
+
+Function TypeKindOf(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) Then
+    TypeKindOf := TypeTab[Idx].Kind
+  Else
+    TypeKindOf := TYK_VOID;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeSizeOf : retourner la taille en octets pour un indice     }
+{ INT=4, BOOLEAN=4, CHAR=4, STRING=4(ptr), ARRAY=4(ptr),       }
+{ OBJECT=4(ptr), VOID=0                                        }
+{ ------------------------------------------------------------ }
+
+Function TypeSizeOf(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) Then
+    TypeSizeOf := TypeTab[Idx].Size
+  Else
+    TypeSizeOf := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeFindByName : rechercher un type par nom -> index          }
+{ Retourne l indice ou -1 si non trouve                         }
+{ ------------------------------------------------------------ }
+
+Function TypeFindByName(Const Name : TString) : Integer;
+Var
+  I      : Integer;
+  Result : Integer;
+Begin
+  Inc(TypFindCount);
+  TypLastName := Name;
+  Result := -1;
+  For I := 0 To TypeCount - 1 Do
+  Begin
+    If TypeTab[I].Name = Name Then
+    Begin
+      Result := I;
+      Inc(TypFindHit);
+      Break;
+    End;
+  End;
+  TypeFindByName := Result;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeAdd : ajouter un nouveau type dans la table               }
+{ Retourne l indice ou -1 si table pleine                       }
+{ ------------------------------------------------------------ }
+
+Function TypeAdd(Const Name : TString; Kind, Size : Integer;
+                 IsArr : Boolean; ElemTyp : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    CompileError('Type table full (max ' + ItoS(MAX_TYPE) + ')',
+                 LexLineNo);
+    TypeAdd := -1;
+    Exit;
+  End;
+  Idx := TypeCount;
+  TypeTab[Idx].Name     := Name;
+  TypeTab[Idx].Kind     := Kind;
+  TypeTab[Idx].Size     := Size;
+  TypeTab[Idx].IsArray  := IsArr;
+  TypeTab[Idx].ElemType := ElemTyp;
+  Inc(TypeCount);
+  Inc(TypAddCount);
+  TypLastName := Name;
+  TypeAdd := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsAssignable : verifier la compatibilite d affectation    }
+{ destIdx := srcIdx  (verification statique a la compilation)   }
+{ Retourne True si le type source est compatible avec le dest   }
+{ ------------------------------------------------------------ }
+
+Function TypeIsAssignable(DestIdx, SrcIdx : Integer) : Boolean;
+Var
+  DK, SK : Integer;
+Begin
+  { Meme type -> toujours OK }
+  If DestIdx = SrcIdx Then
+  Begin
+    TypeIsAssignable := True;
+    Exit;
+  End;
+  DK := TypeKindOf(DestIdx);
+  SK := TypeKindOf(SrcIdx);
+  { null assignable a tout type reference (String, Array, Object) }
+  If SK = TYK_NULL Then
+  Begin
+    TypeIsAssignable := (DK = TYK_STRING) Or (DK = TYK_ARRAY) Or
+                        (DK = TYK_OBJECT) Or (DK = TYK_CLASS);
+    Exit;
+  End;
+  { int <-> char compatibles (elargi a 32 bits) }
+  If ((DK = TYK_INT) And (SK = TYK_CHAR)) Or
+     ((DK = TYK_CHAR) And (SK = TYK_INT)) Then
+  Begin
+    TypeIsAssignable := True;
+    Exit;
+  End;
+  { Object <- tout type reference }
+  If (DK = TYK_OBJECT) And
+     ((SK = TYK_STRING) Or (SK = TYK_ARRAY) Or (SK = TYK_OBJECT)) Then
+  Begin
+    TypeIsAssignable := True;
+    Exit;
+  End;
+  TypeIsAssignable := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsInstanceOf : verification dynamique instanceof          }
+{ Retourne True si le type de l objet est compatible            }
+{ (pour generer EAX=0|1 a l execution)                         }
+{ ------------------------------------------------------------ }
+
+Function TypeIsInstanceOf(ObjIdx, TestIdx : Integer) : Boolean;
+Var
+  OK, TK : Integer;
+Begin
+  OK := TypeKindOf(ObjIdx);
+  TK := TypeKindOf(TestIdx);
+  { null instanceof X -> toujours false }
+  If OK = TYK_NULL Then
+  Begin
+    TypeIsInstanceOf := False;
+    Exit;
+  End;
+  { Meme type -> true }
+  If ObjIdx = TestIdx Then
+  Begin
+    TypeIsInstanceOf := True;
+    Exit;
+  End;
+  { tout objet instanceof Object -> true }
+  If (TK = TYK_OBJECT) And
+     ((OK = TYK_STRING) Or (OK = TYK_ARRAY) Or (OK = TYK_OBJECT)) Then
+  Begin
+    TypeIsInstanceOf := True;
+    Exit;
+  End;
+  { String instanceof String -> true (deja couvert par egalite) }
+  TypeIsInstanceOf := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpTypState : afficher l etat du systeme de types            }
+{ ------------------------------------------------------------ }
+
+Procedure DumpTypState;
+Var I : Integer;
+Begin
+  WriteLn('--- Typ State ---');
+  WriteLn('  TypInitialized : ', TypInitialized);
+  WriteLn('  TypeCount      : ', TypeCount);
+  WriteLn('  TypLabelSeq    : ', TypLabelSeq);
+  WriteLn('  TypAddCount    : ', TypAddCount);
+  WriteLn('  TypFindCount   : ', TypFindCount);
+  WriteLn('  TypFindHit     : ', TypFindHit);
+  WriteLn('  TypLastName    : ', TypLastName);
+  WriteLn('--- Type Table (', TypeCount, ' entries) ---');
+  For I := 0 To TypeCount - 1 Do
+  Begin
+    WriteLn('  [', I, '] ', TypeTab[I].Name,
+            '  kind=', TypeKindStr(TypeTab[I].Kind),
+            '  size=', TypeTab[I].Size);
+    If TypeTab[I].IsArray Then
+      WriteLn('       array elem=', TypeTab[I].ElemType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 05)                             }
+{ ------------------------------------------------------------ }
+
+Function IsTypInitialized : Boolean;
+Begin
+  IsTypInitialized := TypInitialized;
+End;
+
+Function IsTypEmpty : Boolean;
+Begin
+  IsTypEmpty := (TypeCount = 0);
+End;
+
+Function GetTypeCount : Integer;
+Begin
+  GetTypeCount := TypeCount;
+End;
+
+Function GetTypAddCount : LongInt;
+Begin
+  GetTypAddCount := TypAddCount;
+End;
+
+Function GetTypFindCount : LongInt;
+Begin
+  GetTypFindCount := TypFindCount;
+End;
+
+Function GetTypFindHit : LongInt;
+Begin
+  GetTypFindHit := TypFindHit;
+End;
+
+Function GetTypLabelSeq : Integer;
+Begin
+  GetTypLabelSeq := TypLabelSeq;
+End;
+
+Function GetTypLastName : TString;
+Begin
+  GetTypLastName := TypLastName;
+End;
+
+Function GetTypPrimCount : Integer;
+Begin
+  GetTypPrimCount := TY_PRIM_COUNT;
+End;
+
+Function GetTypStatus : TString;
+Begin
+  If Not TypInitialized Then
+    GetTypStatus := 'Not initialized'
+  Else
+    GetTypStatus := ItoS(TypeCount) + ' types (' +
+                    ItoS(TY_PRIM_COUNT) + ' primitifs, ' +
+                    ItoS(TypAddCount) + ' adds, ' +
+                    ItoS(TypFindCount) + ' finds)';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-05)                              }
 { ============================================================ }
 
 Begin
@@ -3103,16 +3480,17 @@ Begin
 
   InitKwState;
   SymInit;
+  TypeInit;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-04) }
+  { Boucle de tokenisation (TODO 02-05) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 05..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 06..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;

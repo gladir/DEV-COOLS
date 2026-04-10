@@ -125,7 +125,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
               _JF_ClassName_methodName
             10 fonctions accesseurs
 
-  TODO 05 - SYSTEME DE TYPES JAVA [A FAIRE]
+  TODO 05 - SYSTEME DE TYPES JAVA [IMPLEMENTE]
             TTypeKind : TYK_INT (32 bits signe), TYK_BOOLEAN (32 bits),
               TYK_CHAR (32 bits elargi), TYK_VOID (pas de valeur),
               TYK_STRING (ptr chaine), TYK_ARRAY (ptr tableau),
