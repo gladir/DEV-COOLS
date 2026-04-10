@@ -7505,7 +7505,7 @@ Var
   I: Integer;
   Op: Word;
   CPIdx: Word;
-  ClassName, MethodName: String;
+  ClassName, MethodName, Descriptor: String;
   PC: LongWord;
   LineNum: Integer;
 Begin
@@ -7515,14 +7515,16 @@ Begin
   For I := 0 to InstrCount - 1 Do Begin
     Op := Instructions^[I].Opcode;
     PC := Instructions^[I].PC;
-    LineNum := GetLineNumber(MethIdx, PC);
+    LineNum := GetLineNumber(Methods[MethIdx], Word(PC));
     
     { Chercher invokevirtual String.concat ou StringBuilder.append }
     If (Op = OP_INVOKEVIRTUAL) or (Op = OP_INVOKEINTERFACE) Then Begin
-      CPIdx := Instructions^[I].CpRef;
+      CPIdx := Instructions^[I].Op1;
       If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
-        ClassName := CPGetClassName(CPIdx);
-        MethodName := CPGetMethodName(CPIdx);
+        ClassName := '';
+        MethodName := '';
+        Descriptor := '';
+        CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
         
         { String.concat dans une boucle }
         If (ClassName = 'java/lang/String') and (MethodName = 'concat') Then Begin
@@ -7559,7 +7561,7 @@ Var
   I: Integer;
   Op: Word;
   CPIdx: Word;
-  ClassName, MethodName: String;
+  ClassName, MethodName, Descriptor: String;
   PC: LongWord;
   LineNum: Integer;
 Begin
@@ -7569,13 +7571,15 @@ Begin
   For I := 0 to InstrCount - 1 Do Begin
     Op := Instructions^[I].Opcode;
     PC := Instructions^[I].PC;
-    LineNum := GetLineNumber(MethIdx, PC);
+    LineNum := GetLineNumber(Methods[MethIdx], Word(PC));
     
     If (Op = OP_INVOKEVIRTUAL) or (Op = OP_INVOKEINTERFACE) Then Begin
-      CPIdx := Instructions^[I].CpRef;
+      CPIdx := Instructions^[I].Op1;
       If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
-        ClassName := CPGetClassName(CPIdx);
-        MethodName := CPGetMethodName(CPIdx);
+        ClassName := '';
+        MethodName := '';
+        Descriptor := '';
+        CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
         
         If IsURLType(ClassName) and IsURLBlockingMethod(MethodName) Then Begin
           AddPerfBug(DMI_BLOCKING_METHODS_ON_URL, PC, LineNum,
@@ -7593,7 +7597,7 @@ Var
   I: Integer;
   Op: Word;
   CPIdx: Word;
-  ClassName, MethodName: String;
+  ClassName, MethodName, Descriptor: String;
   PC: LongWord;
   LineNum: Integer;
   PrevOp: Word;
@@ -7604,13 +7608,15 @@ Begin
   For I := 0 to InstrCount - 1 Do Begin
     Op := Instructions^[I].Opcode;
     PC := Instructions^[I].PC;
-    LineNum := GetLineNumber(MethIdx, PC);
+    LineNum := GetLineNumber(Methods[MethIdx], Word(PC));
     
     If (Op = OP_INVOKEINTERFACE) or (Op = OP_INVOKEVIRTUAL) Then Begin
-      CPIdx := Instructions^[I].CpRef;
+      CPIdx := Instructions^[I].Op1;
       If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
-        ClassName := CPGetClassName(CPIdx);
-        MethodName := CPGetMethodName(CPIdx);
+        ClassName := '';
+        MethodName := '';
+        Descriptor := '';
+        CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
         
         { Collection.toArray(T[]) }
         If (MethodName = 'toArray') and (Pos('Collection', ClassName) > 0) Then Begin
@@ -7638,7 +7644,7 @@ Var
   I, J: Integer;
   Op: Word;
   CPIdx: Word;
-  ClassName, MethodName: String;
+  ClassName, MethodName, Descriptor: String;
   PC: LongWord;
   LineNum: Integer;
   HasKeySet: Boolean;
@@ -7659,24 +7665,28 @@ Begin
     Op := Instructions^[I].Opcode;
     
     If (Op = OP_INVOKEINTERFACE) or (Op = OP_INVOKEVIRTUAL) Then Begin
-      CPIdx := Instructions^[I].CpRef;
+      CPIdx := Instructions^[I].Op1;
       If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
-        ClassName := CPGetClassName(CPIdx);
-        MethodName := CPGetMethodName(CPIdx);
+        ClassName := '';
+        MethodName := '';
+        Descriptor := '';
+        CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
         
         If IsMapType(ClassName) and IsMapKeySetMethod(MethodName) Then Begin
           HasKeySet := True;
           KeySetPC := Instructions^[I].PC;
-          KeySetLine := GetLineNumber(MethIdx, KeySetPC);
+          KeySetLine := GetLineNumber(Methods[MethIdx], Word(KeySetPC));
           
           { Chercher un get() apres keySet() dans la meme methode }
           For J := I + 1 to InstrCount - 1 Do Begin
             If (Instructions^[J].Opcode = OP_INVOKEINTERFACE) or
                (Instructions^[J].Opcode = OP_INVOKEVIRTUAL) Then Begin
-              CPIdx := Instructions^[J].CpRef;
+              CPIdx := Instructions^[J].Op1;
               If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
-                ClassName := CPGetClassName(CPIdx);
-                MethodName := CPGetMethodName(CPIdx);
+                ClassName := '';
+                MethodName := '';
+                Descriptor := '';
+                CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
                 If IsMapType(ClassName) and (MethodName = 'get') Then Begin
                   HasGet := True;
                   Break;
@@ -7704,33 +7714,38 @@ Var
   I: Integer;
   Op: Word;
   CPIdx: Word;
-  FieldName, FieldDesc: String;
-  MethodName, MethodDesc: String;
+  ClassName, MemberName, MemberDesc: String;
 Begin
   If Instructions = nil Then Exit;
   If InstrCount = 0 Then Exit;
   
   For I := 0 to InstrCount - 1 Do Begin
     Op := Instructions^[I].Opcode;
-    CPIdx := Instructions^[I].CpRef;
+    CPIdx := Instructions^[I].Op1;
     
     If (CPIdx = 0) or (CPIdx >= CPCount) Then Continue;
     
     Case Op of
       OP_GETFIELD, OP_GETSTATIC: Begin
-        FieldName := CPGetFieldName(CPIdx);
-        FieldDesc := CPGetFieldDesc(CPIdx);
-        MarkMemberUsed(FieldName, FieldDesc, True, False, False);
+        ClassName := '';
+        MemberName := '';
+        MemberDesc := '';
+        CPGetMemberRef(CPIdx, ClassName, MemberName, MemberDesc);
+        MarkMemberUsed(MemberName, MemberDesc, True, False, False);
       End;
       OP_PUTFIELD, OP_PUTSTATIC: Begin
-        FieldName := CPGetFieldName(CPIdx);
-        FieldDesc := CPGetFieldDesc(CPIdx);
-        MarkMemberUsed(FieldName, FieldDesc, False, True, False);
+        ClassName := '';
+        MemberName := '';
+        MemberDesc := '';
+        CPGetMemberRef(CPIdx, ClassName, MemberName, MemberDesc);
+        MarkMemberUsed(MemberName, MemberDesc, False, True, False);
       End;
       OP_INVOKEVIRTUAL, OP_INVOKESPECIAL, OP_INVOKESTATIC, OP_INVOKEINTERFACE: Begin
-        MethodName := CPGetMethodName(CPIdx);
-        MethodDesc := CPGetMethodDesc(CPIdx);
-        MarkMemberUsed(MethodName, MethodDesc, False, False, True);
+        ClassName := '';
+        MemberName := '';
+        MemberDesc := '';
+        CPGetMemberRef(CPIdx, ClassName, MemberName, MemberDesc);
+        MarkMemberUsed(MemberName, MemberDesc, False, False, True);
       End;
     End;
   End;
@@ -7747,7 +7762,7 @@ Begin
   { Scanner toutes les methodes pour les references }
   For I := 0 to MethodCount - 1 Do Begin
     If Methods[I].Code <> nil Then Begin
-      DecodeInstructions(I);
+      DecodeInstructions(Methods[I]);
       ScanMemberReferences(I);
     End;
   End;
@@ -7796,7 +7811,7 @@ Begin
   If Methods[MethIdx].Code = nil Then Exit;
   
   { Decoder les instructions }
-  DecodeInstructions(MethIdx);
+  DecodeInstructions(Methods[MethIdx]);
   
   { Detecter les concatenations de String dans les boucles }
   DetectStringConcatInLoop(MethIdx);
