@@ -4530,6 +4530,64 @@ Begin
   ExprFlushToEAX := R;
 End;
 
+Function ExprTryGetConstString(E : TExprVal; Var S : TString) : Boolean;
+Begin
+  S := '';
+  ExprTryGetConstString := False;
+
+  If (E.Kind = EK_MEM) Then
+  Begin
+    If (E.SymIdx >= 0) And (E.SymIdx < SymTabCount) And
+       SymTab[E.SymIdx].HasSimVal Then
+    Begin
+      Case SymTab[E.SymIdx].TypeIdx Of
+        TY_IDX_STRING  : S := SymTab[E.SymIdx].SimStrVal;
+        TY_IDX_INT     : S := ItoS(SymTab[E.SymIdx].SimIntVal);
+        TY_IDX_BOOLEAN : If SymTab[E.SymIdx].SimBoolVal Then S := 'true'
+                         Else S := 'false';
+        TY_IDX_CHAR    : S := SymTab[E.SymIdx].SimCharVal;
+      Else
+        Exit;
+      End;
+      ExprTryGetConstString := True;
+      Exit;
+    End;
+
+    { Litteral string compile-time (DataTab) }
+    If (E.TypeIdx = TY_IDX_STRING) And (E.SymIdx < 0) And
+       (E.Offset >= 0) And (E.Offset < DataCount) And
+       (DataTab[E.Offset].Kind = DK_STR) Then
+    Begin
+      S := DataTab[E.Offset].StrVal;
+      ExprTryGetConstString := True;
+      Exit;
+    End;
+  End
+  Else If E.Kind = EK_IMM Then
+  Begin
+    Case E.TypeIdx Of
+      TY_IDX_INT     : S := ItoS(E.ImmVal);
+      TY_IDX_BOOLEAN : If E.ImmVal <> 0 Then S := 'true' Else S := 'false';
+      TY_IDX_CHAR    : S := Chr(E.ImmVal And $FF);
+    Else
+      Exit;
+    End;
+    ExprTryGetConstString := True;
+    Exit;
+  End;
+End;
+
+Function ExprMakeStringConst(Const S : TString) : TExprVal;
+Begin
+  ExprMakeStringConst.Kind    := EK_MEM;
+  ExprMakeStringConst.ImmVal  := 0;
+  ExprMakeStringConst.TypeIdx := TY_IDX_STRING;
+  ExprMakeStringConst.Offset  := 0;
+  ExprMakeStringConst.SymIdx  := -1;
+  DataAddStr(S);
+  ExprMakeStringConst.Offset := DataCount - 1;
+End;
+
 { ------------------------------------------------------------ }
 { ConstFoldBinOp : pliage de constantes pour deux immediats      }
 { Retourne True si le pliage a pu etre effectue                  }
@@ -4585,13 +4643,29 @@ End;
 { ------------------------------------------------------------ }
 
 Function ExprEmitBinOp(Op : Integer; L, R : TExprVal) : TExprVal;
-Var Folded : TExprVal;
+Var
+  Folded : TExprVal;
+  LS, RS : TString;
 Begin
   Inc(OprBinOpCount);
   OprLastOp := Op;
   OprLastPrec := BinOpPrec(Op);
   If OprLastPrec > OprMaxPrec Then
     OprMaxPrec := OprLastPrec;
+
+  { Concatenation String au compile-time si possible }
+  If (Op = OP_ADD) And ((L.TypeIdx = TY_IDX_STRING) Or
+                        (R.TypeIdx = TY_IDX_STRING)) Then
+  Begin
+    If ExprTryGetConstString(L, LS) And ExprTryGetConstString(R, RS) Then
+    Begin
+      ExprEmitBinOp := ExprMakeStringConst(LS + RS);
+      Inc(OprFoldCount);
+      Exit;
+    End;
+    ExprEmitBinOp := ExprMakeEAX(TY_IDX_STRING);
+    Exit;
+  End;
 
   { Tenter le pliage de constantes }
   If ConstFoldBinOp(Op, L, R, Folded) Then
@@ -5507,6 +5581,7 @@ Var
   R        : TExprVal;
   ArgExpr  : TExprVal;
   SymI     : Integer;
+  SVal     : TString;
   VarKind  : Integer;
   SavedTok : TString;
   SavedKind : Integer;
@@ -5537,8 +5612,62 @@ Begin
     { Cas simple : litterale chaine }
     If CurTokKind = TK_STRING Then
     Begin
-      AddOutMsgStr(CurTokStr, IsPrintln, LexLineNo);
+      SVal := CurTokStr;
       ParserAdvance;
+
+      { Concatenation simple : "txt" + var + "..." }
+      While CurTokStr = '+' Do
+      Begin
+        ParserAdvance; { consommer + }
+        If CurTokKind = TK_STRING Then
+        Begin
+          SVal := SVal + CurTokStr;
+          ParserAdvance;
+        End
+        Else If CurTokKind = TK_INTEGER Then
+        Begin
+          SVal := SVal + CurTokStr;
+          ParserAdvance;
+        End
+        Else If CurTokKind = TK_CHAR Then
+        Begin
+          SVal := SVal + CurTokStr;
+          ParserAdvance;
+        End
+        Else If (CurTokKind = TK_KEYWORD) And
+                ((CurTokStr = 'true') Or (CurTokStr = 'false')) Then
+        Begin
+          SVal := SVal + CurTokStr;
+          ParserAdvance;
+        End
+        Else If CurTokKind = TK_IDENT Then
+        Begin
+          SymI := SymFind(CurTokStr);
+          If (SymI >= 0) And (SymI < SymTabCount) And SymTab[SymI].HasSimVal Then
+          Begin
+            Case SymTab[SymI].TypeIdx Of
+              TY_IDX_STRING:
+                SVal := SVal + SymTab[SymI].SimStrVal;
+              TY_IDX_INT:
+                SVal := SVal + ItoS(SymTab[SymI].SimIntVal);
+              TY_IDX_BOOLEAN:
+                If SymTab[SymI].SimBoolVal Then SVal := SVal + 'true'
+                Else SVal := SVal + 'false';
+              TY_IDX_CHAR:
+                SVal := SVal + SymTab[SymI].SimCharVal;
+            Else
+              SVal := SVal + '?';
+            End;
+          End
+          Else
+            SVal := SVal + '?';
+          ParserAdvance;
+        End
+        Else
+          Break;
+      End;
+
+      AddOutMsgStr(SVal, IsPrintln, LexLineNo);
     End
     { Cas : litterale entiere }
     Else If CurTokKind = TK_INTEGER Then
@@ -6501,6 +6630,7 @@ Procedure ParseVarDecl;
 Var
   TypeKW   : Integer;
   TypeIdx  : Integer;
+  TypeName : TString;
   IsFinal  : Boolean;
   IsArray  : Boolean;
   VarName  : TString;
@@ -6516,14 +6646,22 @@ Begin
     LexNextToken;
   End;
 
-  { Lire le type }
-  If CurTokKind <> TK_KEYWORD Then
+  { Lire le type (mot-cle ou identifiant de type, ex: String) }
+  If (CurTokKind <> TK_KEYWORD) And (CurTokKind <> TK_IDENT) Then
   Begin
     CompileError('Type expected in variable declaration', LexLineNo);
     Exit;
   End;
-  TypeKW  := CurTokInt;
-  TypeIdx := ResolveVarType(TypeKW);
+  If CurTokKind = TK_KEYWORD Then
+  Begin
+    TypeKW  := CurTokInt;
+    TypeIdx := ResolveVarType(TypeKW);
+  End
+  Else
+  Begin
+    TypeName := CurTokStr;
+    TypeIdx := ResolveVarTypeStr(TypeName);
+  End;
   If TypeIdx < 0 Then
   Begin
     CompileError('Unknown type in variable declaration', LexLineNo);
@@ -6607,6 +6745,14 @@ Begin
           SymTab[VarIdx].SimBoolVal := SymTab[E.SymIdx].SimBoolVal;
           SymTab[VarIdx].SimCharVal := SymTab[E.SymIdx].SimCharVal;
           SymTab[VarIdx].SimStrVal  := SymTab[E.SymIdx].SimStrVal;
+        End
+        Else If (SymTab[VarIdx].TypeIdx = TY_IDX_STRING) And
+                (E.Kind = EK_MEM) And (E.SymIdx < 0) And
+                (E.Offset >= 0) And (E.Offset < DataCount) And
+                (DataTab[E.Offset].Kind = DK_STR) Then
+        Begin
+          SymTab[VarIdx].HasSimVal := True;
+          SymTab[VarIdx].SimStrVal := DataTab[E.Offset].StrVal;
         End
         Else
           SymTab[VarIdx].HasSimVal := False;
@@ -6764,6 +6910,14 @@ Begin
     SymTab[VarIdx].SimBoolVal := SymTab[E.SymIdx].SimBoolVal;
     SymTab[VarIdx].SimCharVal := SymTab[E.SymIdx].SimCharVal;
     SymTab[VarIdx].SimStrVal  := SymTab[E.SymIdx].SimStrVal;
+  End
+  Else If (SymTab[VarIdx].TypeIdx = TY_IDX_STRING) And
+          (E.Kind = EK_MEM) And (E.SymIdx < 0) And
+          (E.Offset >= 0) And (E.Offset < DataCount) And
+          (DataTab[E.Offset].Kind = DK_STR) Then
+  Begin
+    SymTab[VarIdx].HasSimVal := True;
+    SymTab[VarIdx].SimStrVal := DataTab[E.Offset].StrVal;
   End
   Else
     { Expression non constante - valeur inconnue au compile-time }
@@ -19976,6 +20130,11 @@ Begin
     ParseVarDecl;  { ParseVarDecl consomme le ; }
     Exit;
   End;
+  If (CurTokKind = TK_IDENT) And (CurTokStr = 'String') Then
+  Begin
+    ParseVarDecl;  { ParseVarDecl consomme le ; }
+    Exit;
+  End;
   { Sinon : expression (assignation, pre-inc, etc.) }
   If CurTokKind = TK_IDENT Then
   Begin
@@ -20435,6 +20594,13 @@ Begin
   Else If (CurTokKind = TK_KEYWORD) And
           ((CurTokStr = 'int') Or (CurTokStr = 'boolean') Or
            (CurTokStr = 'char') Or (CurTokStr = 'String')) Then
+  Begin
+    ParseVarDecl;
+    If CurTokKind = TK_SEMICOLON Then
+      ParserAdvance;
+  End
+  { Declarations de variables String : String s; }
+  Else If (CurTokKind = TK_IDENT) And (CurTokStr = 'String') Then
   Begin
     ParseVarDecl;
     If CurTokKind = TK_SEMICOLON Then
