@@ -14095,9 +14095,44 @@ Type
   End;
   TPyVar = Record
     Name    : TString;
-    Kind    : Integer;  { 0=int, 1=str }
+    Kind    : Integer;  { 0=int, 1=str, 2=object }
     IntVal  : LongInt;
     StrVal  : TString;
+    ObjIdx  : Integer;  { index dans PyObjects si Kind=2 }
+  End;
+
+Const
+  PY_MAX_CLASSES  = 16;
+  PY_MAX_METHS    = 16;
+  PY_MAX_PARAMS   = 8;
+  PY_MAX_BLINES   = 256;
+  PY_MAX_OBJECTS  = 32;
+  PY_MAX_ATTRS    = 16;
+
+Type
+  TPyMethRec = Record
+    Name       : TString;
+    ParamCount : Integer;
+    Params     : Array[1..PY_MAX_PARAMS] Of TString;
+    BodyStart  : Integer;   { index 1-based dans PyBodyPool }
+    BodyCount  : Integer;   { nombre de lignes }
+  End;
+  TPyClassRec = Record
+    Name        : TString;
+    Parent      : TString;
+    MethCount   : Integer;
+    Meths       : Array[1..PY_MAX_METHS] Of TPyMethRec;
+  End;
+  TPyAttrRec = Record
+    Name   : TString;
+    Kind   : Integer;  { 0=int, 1=str }
+    IntVal : LongInt;
+    StrVal : TString;
+  End;
+  TPyObjRec = Record
+    ClassIdx  : Integer;
+    AttrCount : Integer;
+    Attrs     : Array[1..PY_MAX_ATTRS] Of TPyAttrRec;
   End;
 
 Var
@@ -14138,6 +14173,18 @@ Var
   PyVars           : Array[1..PE_MAX_VARS] Of TPyVar;
   PyVarCount       : Integer;
 
+  { Classes Python }
+  PyClasses        : Array[1..PY_MAX_CLASSES] Of TPyClassRec;
+  PyClassCount     : Integer;
+
+  { Pool de lignes source pour les corps de methodes }
+  PyBodyPool       : Array[1..PY_MAX_BLINES] Of TString;
+  PyBodyPoolCount  : Integer;
+
+  { Objets instancies }
+  PyObjects        : Array[1..PY_MAX_OBJECTS] Of TPyObjRec;
+  PyObjectCount    : Integer;
+
 { ------------------------------------------------------------ }
 { InitPeState : initialiser le sous-systeme PE/COFF                 }
 { ------------------------------------------------------------ }
@@ -14169,6 +14216,9 @@ Begin
   PeEntryPt        := 0;
   PyMsgCount       := 0;
   PyVarCount       := 0;
+  PyClassCount     := 0;
+  PyBodyPoolCount  := 0;
+  PyObjectCount    := 0;
   For I := 0 To 65535 Do PeTextBuf[I] := 0;
   For I := 0 To 16383 Do PeRdataBuf[I] := 0;
   For I := 0 To 16383 Do PeDataBuf[I] := 0;
@@ -16347,12 +16397,33 @@ Begin
   PyStrMul := R;
 End;
 
+{ Forward declarations pour les fonctions classes }
+Function PyFindClass(Const Name : TString) : Integer; Forward;
+Function PyCallMethod(ObjIdx : Integer; Const MethName : TString;
+                      Const Args : Array Of LongInt;
+                      ArgCount : Integer;
+                      Var RetKind : Integer;
+                      Var RetInt : LongInt;
+                      Var RetStr : TString) : Boolean; Forward;
+Function PyInstantiateClass(ClsIdx : Integer;
+                            Const Args : Array Of LongInt;
+                            ArgCount : Integer) : Integer; Forward;
+Procedure PyParseClassDef; Forward;
+
 { PyParsePrint : parser print(...) }
+{ Gere aussi print(obj.method()) }
 Procedure PyParsePrint;
 Var
   First : Boolean;
   Idx : Integer;
   S : TString;
+  OIdx : Integer;
+  MethName : TString;
+  ArgVals : Array[0..7] Of LongInt;
+  ArgsN : Integer;
+  RetK : Integer;
+  RetI : LongInt;
+  RetS : TString;
 Begin
   ParserAdvance; { consommer 'print' }
   If (CurTokKind <> TK_PUNCT) Or (CurTokStr <> '(') Then
@@ -16401,16 +16472,70 @@ Begin
     Else If CurTokKind = TK_IDENT Then
     Begin
       Idx := PyFindVar(CurTokStr);
-      If Idx > 0 Then
+      { Appel de methode : obj.method() }
+      If (Idx > 0) And (PyVars[Idx].Kind = 2) Then
+      Begin
+        OIdx := PyVars[Idx].ObjIdx;
+        ParserAdvance; { consommer le nom de l objet }
+        If CurTokKind = TK_DOT Then
+        Begin
+          ParserAdvance;
+          If CurTokKind = TK_IDENT Then
+          Begin
+            MethName := CurTokStr;
+            ParserAdvance;
+            ArgsN := 0;
+            If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+            Begin
+              ParserAdvance;
+              While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_NEWLINE) And
+                    Not ((CurTokKind = TK_PUNCT) And (CurTokStr = ')')) Do
+              Begin
+                If (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Then
+                  ParserAdvance
+                Else
+                Begin
+                  If ArgsN < 8 Then
+                  Begin
+                    ArgVals[ArgsN] := PyEvalExprInt;
+                    Inc(ArgsN);
+                  End
+                  Else
+                    ParserAdvance;
+                End;
+              End;
+              If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+                ParserAdvance;
+            End;
+            RetK := 0; RetI := 0; RetS := '';
+            If PyCallMethod(OIdx, MethName, ArgVals, ArgsN,
+                            RetK, RetI, RetS) Then
+            Begin
+              If RetK = 1 Then
+                PyAddMsg(RetS, False)
+              Else
+                PyAddMsg(ItoS(RetI), False);
+            End
+            Else
+              PyAddMsg('?', False);
+          End;
+        End
+        Else
+          PyAddMsg(ItoS(PyVars[Idx].IntVal), False);
+      End
+      Else If Idx > 0 Then
       Begin
         If PyVars[Idx].Kind = 0 Then
           PyAddMsg(ItoS(PyVars[Idx].IntVal), False)
         Else
           PyAddMsg(PyVars[Idx].StrVal, False);
+        ParserAdvance;
       End
       Else
+      Begin
         PyAddMsg(CurTokStr, False);
-      ParserAdvance;
+        ParserAdvance;
+      End;
     End
     Else
       ParserAdvance;
@@ -16427,6 +16552,7 @@ Begin
 End;
 
 { PyParseAssign : parser nom = expression }
+{ Gere aussi l instanciation d objets et les appels de methode }
 Procedure PyParseAssign;
 Var
   VarName : TString;
@@ -16437,6 +16563,14 @@ Var
   IsStr : Boolean;
   MulN : LongInt;
   CmpOp : TString;
+  ClsIdx, OIdx : Integer;
+  ArgVals : Array[0..7] Of LongInt;
+  ArgsN : Integer;
+  MethName : TString;
+  RetK : Integer;
+  RetI : LongInt;
+  RetS : TString;
+  VIdx : Integer;
 Begin
   VarName := CurTokStr;
   ParserAdvance; { consommer le nom }
@@ -16446,8 +16580,127 @@ Begin
     Exit;
   End;
   ParserAdvance; { consommer '=' }
-  { Determiner si c est une chaine ou un entier }
-  { True/False/None/not/(  et entiers -> int }
+
+  { --- Instanciation d objet : var = ClassName(args...) --- }
+  If CurTokKind = TK_IDENT Then
+  Begin
+    ClsIdx := PyFindClass(CurTokStr);
+    If ClsIdx > 0 Then
+    Begin
+      ParserAdvance; { consommer le nom de classe }
+      ArgsN := 0;
+      If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+      Begin
+        ParserAdvance;
+        While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_NEWLINE) And
+              Not ((CurTokKind = TK_PUNCT) And (CurTokStr = ')')) Do
+        Begin
+          If (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Then
+            ParserAdvance
+          Else If CurTokKind = TK_STRING Then
+          Begin
+            If ArgsN < 8 Then
+            Begin
+              ArgVals[ArgsN] := 0;
+              Inc(ArgsN);
+            End;
+            PySetVarStr('__arg' + ItoS(ArgsN), CurTokStr);
+            ParserAdvance;
+          End
+          Else
+          Begin
+            If ArgsN < 8 Then
+            Begin
+              ArgVals[ArgsN] := PyEvalExprInt;
+              Inc(ArgsN);
+            End
+            Else
+              ParserAdvance;
+          End;
+        End;
+        If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+          ParserAdvance;
+      End;
+      OIdx := PyInstantiateClass(ClsIdx, ArgVals, ArgsN);
+      If OIdx > 0 Then
+      Begin
+        VIdx := PyFindVar(VarName);
+        If VIdx = 0 Then
+        Begin
+          If PyVarCount < PE_MAX_VARS Then
+          Begin
+            Inc(PyVarCount);
+            VIdx := PyVarCount;
+          End;
+        End;
+        If VIdx > 0 Then
+        Begin
+          PyVars[VIdx].Name := VarName;
+          PyVars[VIdx].Kind := 2;
+          PyVars[VIdx].IntVal := 0;
+          PyVars[VIdx].StrVal := '';
+          PyVars[VIdx].ObjIdx := OIdx;
+        End;
+      End;
+      SkipToEOL;
+      Exit;
+    End;
+
+    { --- Appel de methode : var = obj.method() --- }
+    VIdx := PyFindVar(CurTokStr);
+    If (VIdx > 0) And (PyVars[VIdx].Kind = 2) Then
+    Begin
+      OIdx := PyVars[VIdx].ObjIdx;
+      ParserAdvance; { consommer le nom de l objet }
+      If CurTokKind = TK_DOT Then
+      Begin
+        ParserAdvance;
+        If CurTokKind = TK_IDENT Then
+        Begin
+          MethName := CurTokStr;
+          ParserAdvance;
+          ArgsN := 0;
+          If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+          Begin
+            ParserAdvance;
+            While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_NEWLINE) And
+                  Not ((CurTokKind = TK_PUNCT) And (CurTokStr = ')')) Do
+            Begin
+              If (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Then
+                ParserAdvance
+              Else
+              Begin
+                If ArgsN < 8 Then
+                Begin
+                  ArgVals[ArgsN] := PyEvalExprInt;
+                  Inc(ArgsN);
+                End
+                Else
+                  ParserAdvance;
+              End;
+            End;
+            If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+              ParserAdvance;
+          End;
+          RetK := 0; RetI := 0; RetS := '';
+          If PyCallMethod(OIdx, MethName, ArgVals, ArgsN,
+                          RetK, RetI, RetS) Then
+          Begin
+            If RetK = 1 Then
+              PySetVarStr(VarName, RetS)
+            Else
+              PySetVarInt(VarName, RetI);
+          End;
+          SkipToEOL;
+          Exit;
+        End;
+      End;
+      SkipToEOL;
+      Exit;
+    End;
+  End;
+
+  { --- Expression chaine ou entiere normale --- }
   IsStr := False;
   If CurTokKind = TK_STRING Then
     IsStr := True
@@ -16498,6 +16751,486 @@ Begin
   SkipToEOL;
 End;
 
+{ ============================================================ }
+{ Support des classes Python (compile-time)                    }
+{ ============================================================ }
+
+{ PyFindClass : trouver une classe par nom, retourne index ou 0 }
+Function PyFindClass(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  PyFindClass := 0;
+  For I := 1 To PyClassCount Do
+    If PyClasses[I].Name = Name Then
+    Begin
+      PyFindClass := I;
+      Exit;
+    End;
+End;
+
+{ PyObjGetAttr : lire un attribut d un objet                   }
+{ Retourne True si trouve, met Kind/IntVal/StrVal              }
+Function PyObjGetAttr(ObjIdx : Integer; Const AName : TString;
+                      Var AKind : Integer; Var AInt : LongInt;
+                      Var AStr : TString) : Boolean;
+Var I : Integer;
+Begin
+  PyObjGetAttr := False;
+  If (ObjIdx < 1) Or (ObjIdx > PyObjectCount) Then Exit;
+  For I := 1 To PyObjects[ObjIdx].AttrCount Do
+    If PyObjects[ObjIdx].Attrs[I].Name = AName Then
+    Begin
+      AKind := PyObjects[ObjIdx].Attrs[I].Kind;
+      AInt  := PyObjects[ObjIdx].Attrs[I].IntVal;
+      AStr  := PyObjects[ObjIdx].Attrs[I].StrVal;
+      PyObjGetAttr := True;
+      Exit;
+    End;
+End;
+
+{ PyObjSetAttrInt : ecrire un attribut entier                  }
+Procedure PyObjSetAttrInt(ObjIdx : Integer; Const AName : TString;
+                          Val : LongInt);
+Var I, Idx : Integer;
+Begin
+  If (ObjIdx < 1) Or (ObjIdx > PyObjectCount) Then Exit;
+  Idx := 0;
+  For I := 1 To PyObjects[ObjIdx].AttrCount Do
+    If PyObjects[ObjIdx].Attrs[I].Name = AName Then
+    Begin Idx := I; Break; End;
+  If Idx = 0 Then
+  Begin
+    If PyObjects[ObjIdx].AttrCount >= PY_MAX_ATTRS Then Exit;
+    Inc(PyObjects[ObjIdx].AttrCount);
+    Idx := PyObjects[ObjIdx].AttrCount;
+  End;
+  PyObjects[ObjIdx].Attrs[Idx].Name   := AName;
+  PyObjects[ObjIdx].Attrs[Idx].Kind   := 0;
+  PyObjects[ObjIdx].Attrs[Idx].IntVal := Val;
+  PyObjects[ObjIdx].Attrs[Idx].StrVal := '';
+End;
+
+{ PyObjSetAttrStr : ecrire un attribut chaine                  }
+Procedure PyObjSetAttrStr(ObjIdx : Integer; Const AName : TString;
+                          Const Val : TString);
+Var I, Idx : Integer;
+Begin
+  If (ObjIdx < 1) Or (ObjIdx > PyObjectCount) Then Exit;
+  Idx := 0;
+  For I := 1 To PyObjects[ObjIdx].AttrCount Do
+    If PyObjects[ObjIdx].Attrs[I].Name = AName Then
+    Begin Idx := I; Break; End;
+  If Idx = 0 Then
+  Begin
+    If PyObjects[ObjIdx].AttrCount >= PY_MAX_ATTRS Then Exit;
+    Inc(PyObjects[ObjIdx].AttrCount);
+    Idx := PyObjects[ObjIdx].AttrCount;
+  End;
+  PyObjects[ObjIdx].Attrs[Idx].Name   := AName;
+  PyObjects[ObjIdx].Attrs[Idx].Kind   := 1;
+  PyObjects[ObjIdx].Attrs[Idx].IntVal := 0;
+  PyObjects[ObjIdx].Attrs[Idx].StrVal := Val;
+End;
+
+{ PyFindMethod : trouver une methode dans la classe ou parent  }
+Function PyFindMethod(ClsIdx : Integer; Const MName : TString;
+                      Var MethClsIdx : Integer;
+                      Var MethIdx : Integer) : Boolean;
+Var I, ParIdx : Integer;
+Begin
+  PyFindMethod := False;
+  If (ClsIdx < 1) Or (ClsIdx > PyClassCount) Then Exit;
+  For I := 1 To PyClasses[ClsIdx].MethCount Do
+    If PyClasses[ClsIdx].Meths[I].Name = MName Then
+    Begin
+      MethClsIdx := ClsIdx;
+      MethIdx := I;
+      PyFindMethod := True;
+      Exit;
+    End;
+  { Chercher dans la classe parent }
+  If PyClasses[ClsIdx].Parent <> '' Then
+  Begin
+    ParIdx := PyFindClass(PyClasses[ClsIdx].Parent);
+    If ParIdx > 0 Then
+      PyFindMethod := PyFindMethod(ParIdx, MName, MethClsIdx, MethIdx);
+  End;
+End;
+
+{ PyExecMethodBody : executer les lignes du corps d une methode }
+{ sur un objet donne, avec les parametres lies                  }
+{ Retourne le resultat (Kind, IntVal, StrVal) via un return     }
+Procedure PyExecMethodBody(ObjIdx : Integer;
+                           Var Meth : TPyMethRec;
+                           Const Args : Array Of LongInt;
+                           ArgCount : Integer;
+                           Var RetKind : Integer;
+                           Var RetInt : LongInt;
+                           Var RetStr : TString);
+Var
+  Line, Tok1, Tok2, Tok3, Rest : TString;
+  I, P, Q : Integer;
+  AttrName, RHS : TString;
+  AKind : Integer;
+  AInt : LongInt;
+  AStr : TString;
+  V1Int, V2Int : LongInt;
+  OpCh : Char;
+  GotOp : Boolean;
+Begin
+  RetKind := 0;
+  RetInt := 0;
+  RetStr := '';
+
+  For I := Meth.BodyStart To Meth.BodyStart + Meth.BodyCount - 1 Do
+  Begin
+    If (I < 1) Or (I > PyBodyPoolCount) Then Continue;
+    Line := PyBodyPool[I];
+
+    { Supprimer les espaces en debut }
+    While (Length(Line) > 0) And
+          ((Line[1] = ' ') Or (Line[1] = #9)) Do
+      Delete(Line, 1, 1);
+
+    If Length(Line) = 0 Then Continue;
+
+    { --- self.attr = expr --- }
+    If (Length(Line) > 5) And
+       (Copy(Line, 1, 5) = 'self.') Then
+    Begin
+      P := Pos('=', Line);
+      If P > 6 Then
+      Begin
+        AttrName := Copy(Line, 6, P - 6);
+        { Supprimer espaces dans AttrName }
+        While (Length(AttrName) > 0) And
+              (AttrName[Length(AttrName)] = ' ') Do
+          Delete(AttrName, Length(AttrName), 1);
+        RHS := Copy(Line, P + 1, Length(Line) - P);
+        { Supprimer espaces en debut de RHS }
+        While (Length(RHS) > 0) And (RHS[1] = ' ') Do
+          Delete(RHS, 1, 1);
+
+
+        { RHS est un nom de parametre ? }
+        AInt := 0;
+        AKind := 0;
+        AStr := '';
+        For Q := 1 To Meth.ParamCount Do
+        Begin
+          If RHS = Meth.Params[Q] Then
+          Begin
+            If Q <= ArgCount Then
+              AInt := Args[Q - 1]
+            Else
+              AInt := 0;
+            AKind := 0;
+            Break;
+          End;
+        End;
+        { Essayer un litteral entier }
+        If (Length(RHS) > 0) And (RHS[1] >= '0') And (RHS[1] <= '9') Then
+        Begin
+          AInt := 0;
+          For Q := 1 To Length(RHS) Do
+            If (RHS[Q] >= '0') And (RHS[Q] <= '9') Then
+              AInt := AInt * 10 + (Ord(RHS[Q]) - Ord('0'))
+            Else Break;
+          AKind := 0;
+        End;
+        { Chaine litterale }
+        If (Length(RHS) >= 2) And
+           ((RHS[1] = '"') Or (RHS[1] = '''')) Then
+        Begin
+          AStr := Copy(RHS, 2, Length(RHS) - 2);
+          AKind := 1;
+        End;
+
+        If AKind = 0 Then
+          PyObjSetAttrInt(ObjIdx, AttrName, AInt)
+        Else
+          PyObjSetAttrStr(ObjIdx, AttrName, AStr);
+      End;
+      Continue;
+    End;
+
+    { --- return expr --- }
+    If (Length(Line) >= 6) And (Copy(Line, 1, 6) = 'return') Then
+    Begin
+      RHS := Copy(Line, 7, Length(Line) - 6);
+      While (Length(RHS) > 0) And (RHS[1] = ' ') Do
+        Delete(RHS, 1, 1);
+
+      { return self.attr OP self.attr }
+      If (Length(RHS) > 5) And (Copy(RHS, 1, 5) = 'self.') Then
+      Begin
+        { Chercher un operateur binaire }
+        GotOp := False;
+        P := 6;
+        While P <= Length(RHS) Do
+        Begin
+          If (RHS[P] = '+') Or (RHS[P] = '-') Or
+             (RHS[P] = '*') Then
+          Begin
+            GotOp := True;
+            Break;
+          End;
+          Inc(P);
+        End;
+
+        If GotOp Then
+        Begin
+          Tok1 := Copy(RHS, 6, P - 6);
+          While (Length(Tok1) > 0) And (Tok1[Length(Tok1)] = ' ') Do
+            Delete(Tok1, Length(Tok1), 1);
+          OpCh := RHS[P];
+          Tok2 := Copy(RHS, P + 1, Length(RHS) - P);
+          While (Length(Tok2) > 0) And (Tok2[1] = ' ') Do
+            Delete(Tok2, 1, 1);
+          { Tok2 devrait commencer par 'self.' }
+          If (Length(Tok2) > 5) And (Copy(Tok2, 1, 5) = 'self.') Then
+            Tok2 := Copy(Tok2, 6, Length(Tok2) - 5);
+          V1Int := 0; V2Int := 0;
+          If PyObjGetAttr(ObjIdx, Tok1, AKind, V1Int, AStr) Then;
+          If PyObjGetAttr(ObjIdx, Tok2, AKind, V2Int, AStr) Then;
+          Case OpCh Of
+            '+' : RetInt := V1Int + V2Int;
+            '-' : RetInt := V1Int - V2Int;
+            '*' : RetInt := V1Int * V2Int;
+          Else
+            RetInt := V1Int;
+          End;
+          RetKind := 0;
+        End
+        Else
+        Begin
+          { return self.attr (simple) }
+          Tok1 := Copy(RHS, 6, Length(RHS) - 5);
+          While (Length(Tok1) > 0) And (Tok1[Length(Tok1)] = ' ') Do
+            Delete(Tok1, Length(Tok1), 1);
+          If PyObjGetAttr(ObjIdx, Tok1, AKind, AInt, AStr) Then
+          Begin
+            RetKind := AKind;
+            RetInt := AInt;
+            RetStr := AStr;
+          End;
+        End;
+        Exit; { return termine l execution }
+      End;
+      { return d un parametre }
+      For Q := 1 To Meth.ParamCount Do
+      Begin
+        If RHS = Meth.Params[Q] Then
+        Begin
+          If Q <= ArgCount Then
+            RetInt := Args[Q - 1];
+          RetKind := 0;
+          Exit;
+        End;
+      End;
+      Exit;
+    End;
+
+  End; { for I }
+End;
+
+{ PyParseClassDef : parser class Name: ou class Name(Parent):  }
+{ Lit le corps entier de la classe (methodes def)               }
+Procedure PyParseClassDef;
+Var
+  ClsIdx : Integer;
+  MIdx : Integer;
+  PIdx : Integer;
+  ClsName, ParName : TString;
+Begin
+  ParserAdvance; { consommer 'class' }
+  If CurTokKind <> TK_IDENT Then Begin SkipToEOL; Exit; End;
+  ClsName := CurTokStr;
+  ParserAdvance;
+
+  { Heritage optionnel (Parent) }
+  ParName := '';
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+  Begin
+    ParserAdvance;
+    If CurTokKind = TK_IDENT Then
+    Begin
+      ParName := CurTokStr;
+      ParserAdvance;
+    End;
+    If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+      ParserAdvance;
+  End;
+
+  { Consommer : et NEWLINE }
+  If (CurTokKind = TK_COLON) Then ParserAdvance;
+  If CurTokKind = TK_NEWLINE Then ParserAdvance;
+
+  { Creer l entree de classe }
+  If PyClassCount >= PY_MAX_CLASSES Then Begin SkipToEOL; Exit; End;
+  Inc(PyClassCount);
+  ClsIdx := PyClassCount;
+  PyClasses[ClsIdx].Name := ClsName;
+  PyClasses[ClsIdx].Parent := ParName;
+  PyClasses[ClsIdx].MethCount := 0;
+
+  { Lire le corps de la classe (INDENT ... DEDENT) }
+  If CurTokKind = TK_INDENT Then ParserAdvance;
+
+  While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_DEDENT) Do
+  Begin
+    If CurTokKind = TK_NEWLINE Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+    If (CurTokKind = TK_INDENT) Or (CurTokKind = TK_DEDENT) Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    { def method_name(self, params...): }
+    If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_DEF) Then
+    Begin
+      ParserAdvance; { consommer 'def' }
+      If CurTokKind <> TK_IDENT Then Begin SkipToEOL; Continue; End;
+
+      If PyClasses[ClsIdx].MethCount >= PY_MAX_METHS Then
+      Begin SkipToEOL; Continue; End;
+      Inc(PyClasses[ClsIdx].MethCount);
+      MIdx := PyClasses[ClsIdx].MethCount;
+      PyClasses[ClsIdx].Meths[MIdx].Name := CurTokStr;
+      PyClasses[ClsIdx].Meths[MIdx].ParamCount := 0;
+      PyClasses[ClsIdx].Meths[MIdx].BodyStart := 0;
+      PyClasses[ClsIdx].Meths[MIdx].BodyCount := 0;
+      ParserAdvance; { consommer le nom }
+
+      { Parser (self, param1, param2, ...) }
+      If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+      Begin
+        ParserAdvance;
+        { Passer 'self' }
+        If (CurTokKind = TK_IDENT) And (CurTokStr = 'self') Then
+        Begin
+          ParserAdvance;
+          If (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Then
+            ParserAdvance;
+        End;
+        { Parametres restants }
+        While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_NEWLINE) And
+              Not ((CurTokKind = TK_PUNCT) And (CurTokStr = ')')) Do
+        Begin
+          If CurTokKind = TK_IDENT Then
+          Begin
+            PIdx := PyClasses[ClsIdx].Meths[MIdx].ParamCount;
+            If PIdx < PY_MAX_PARAMS Then
+            Begin
+              Inc(PyClasses[ClsIdx].Meths[MIdx].ParamCount);
+              Inc(PIdx);
+              PyClasses[ClsIdx].Meths[MIdx].Params[PIdx] := CurTokStr;
+            End;
+          End;
+          ParserAdvance;
+          If (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Then
+            ParserAdvance;
+        End;
+        If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+          ParserAdvance;
+      End;
+
+      { Consommer : et NEWLINE }
+      If CurTokKind = TK_COLON Then ParserAdvance;
+      If CurTokKind = TK_NEWLINE Then ParserAdvance;
+
+      { Lire le corps de la methode (INDENT ... DEDENT) }
+      If CurTokKind = TK_INDENT Then ParserAdvance;
+
+      PyClasses[ClsIdx].Meths[MIdx].BodyStart := PyBodyPoolCount + 1;
+      PyClasses[ClsIdx].Meths[MIdx].BodyCount := 0;
+
+      While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_DEDENT) Do
+      Begin
+        If CurTokKind = TK_NEWLINE Then
+        Begin
+          ParserAdvance;
+          Continue;
+        End;
+        { Reconstituer la ligne de tokens jusqu au NEWLINE ou DEDENT }
+        If PyBodyPoolCount < PY_MAX_BLINES Then
+        Begin
+          Inc(PyBodyPoolCount);
+          PyBodyPool[PyBodyPoolCount] := '';
+          While (CurTokKind <> TK_EOF) And
+                (CurTokKind <> TK_NEWLINE) And
+                (CurTokKind <> TK_DEDENT) Do
+          Begin
+            { Pas d espace avant/apres le point (self.x, pas self . x) }
+            If (Length(PyBodyPool[PyBodyPoolCount]) > 0) And
+               (CurTokStr <> '.') And
+               (PyBodyPool[PyBodyPoolCount][Length(PyBodyPool[PyBodyPoolCount])] <> '.') Then
+              PyBodyPool[PyBodyPoolCount] := PyBodyPool[PyBodyPoolCount] + ' ';
+            PyBodyPool[PyBodyPoolCount] := PyBodyPool[PyBodyPoolCount] + CurTokStr;
+            ParserAdvance;
+          End;
+          Inc(PyClasses[ClsIdx].Meths[MIdx].BodyCount);
+        End
+        Else
+          SkipToEOL;
+        If CurTokKind = TK_NEWLINE Then ParserAdvance;
+      End;
+
+      If CurTokKind = TK_DEDENT Then ParserAdvance;
+      Continue;
+    End;
+
+    { Autre dans le corps de la classe }
+    SkipToEOL;
+  End;
+  If CurTokKind = TK_DEDENT Then ParserAdvance;
+End;
+
+{ PyCallMethod : appeler une methode sur un objet, retourner   }
+{ le resultat dans RetKind/RetInt/RetStr                        }
+Function PyCallMethod(ObjIdx : Integer; Const MethName : TString;
+                      Const Args : Array Of LongInt;
+                      ArgCount : Integer;
+                      Var RetKind : Integer;
+                      Var RetInt : LongInt;
+                      Var RetStr : TString) : Boolean;
+Var
+  ClsIdx, MClsIdx, MIdx : Integer;
+Begin
+  PyCallMethod := False;
+  If (ObjIdx < 1) Or (ObjIdx > PyObjectCount) Then Exit;
+  ClsIdx := PyObjects[ObjIdx].ClassIdx;
+  If Not PyFindMethod(ClsIdx, MethName, MClsIdx, MIdx) Then Exit;
+  PyExecMethodBody(ObjIdx, PyClasses[MClsIdx].Meths[MIdx],
+                   Args, ArgCount, RetKind, RetInt, RetStr);
+  PyCallMethod := True;
+End;
+
+{ PyInstantiateClass : creer un objet et appeler __init__       }
+Function PyInstantiateClass(ClsIdx : Integer;
+                            Const Args : Array Of LongInt;
+                            ArgCount : Integer) : Integer;
+Var
+  OIdx : Integer;
+  DummyK : Integer;
+  DummyI : LongInt;
+  DummyS : TString;
+Begin
+  PyInstantiateClass := 0;
+  If PyObjectCount >= PY_MAX_OBJECTS Then Exit;
+  Inc(PyObjectCount);
+  OIdx := PyObjectCount;
+  PyObjects[OIdx].ClassIdx := ClsIdx;
+  PyObjects[OIdx].AttrCount := 0;
+  { Appeler __init__ si elle existe }
+  PyCallMethod(OIdx, '__init__', Args, ArgCount, DummyK, DummyI, DummyS);
+  PyInstantiateClass := OIdx;
+End;
+
 { PyParseProgram : boucle principale du parseur }
 Procedure PyParseProgram;
 Begin
@@ -16517,6 +17250,11 @@ Begin
     Else If (CurTokKind = TK_INDENT) Or (CurTokKind = TK_DEDENT) Then
     Begin
       ParserAdvance;
+    End
+    { class Name: / class Name(Parent): }
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_CLASS) Then
+    Begin
+      PyParseClassDef;
     End
     { print(...) }
     Else If (CurTokKind = TK_IDENT) And (CurTokStr = 'print') Then

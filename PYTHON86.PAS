@@ -2,13 +2,13 @@
   @created: 2026
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Compilateur Python vers assembleur 8086
 }
 
 (* ============================================================
   PYTHON86.PAS - Compilateur Python vers assembleur 8086
-  Turbo Pascal / Free Pascal (-Mtp)
+  Free Pascal (-Mtp)
   Cible : MASM .MODEL SMALL, DOS 16 bits
 
   FEUILLE DE ROUTE - 25 TODOS
@@ -459,22 +459,24 @@ Procedure ShowBanner;
 Begin
   WriteLn('PYTHON86 v', PYTHON86_VERSION, ' (', PYTHON86_DATE, ')');
   WriteLn('Compilateur Python -> assembleur 8086 (MASM .MODEL SMALL)');
-  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn('Free Pascal (-Mtp)');
   WriteLn;
 End;
 
-Procedure ShowUsage;
-Begin
-  WriteLn('Usage: PYTHON86 <source.py> [sortie.asm] [-v] [-d] [-w]');
-  WriteLn;
-  WriteLn('  source.py  : fichier Python source');
-  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
-  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
-  WriteLn('  -d         : debug tokens (affiche chaque token)');
-  WriteLn('  -w         : activer les avertissements');
-  WriteLn('  -h, --help : cette aide');
-  WriteLn;
-  Halt(EXIT_USAGE);
+Procedure ShowUsage;Begin
+ WriteLn('PYTHON86 - Cette commande permet de lancer le compilateur ',
+         'Python pour l''assembleur du microprocesseur 8086 ou 8088.');
+ WriteLn;
+ WriteLn('Syntaxe: PYTHON86 <source.py> [sortie.asm] [-v] [-d] [-w]');
+ WriteLn;
+ WriteLn('  source.py  : fichier Python source');
+ WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+ WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+ WriteLn('  -d         : debug tokens (affiche chaque token)');
+ WriteLn('  -w         : activer les avertissements');
+ WriteLn('  -h, --help : cette aide');
+ WriteLn;
+ Halt(EXIT_USAGE);
 End;
 
 Procedure ShowStats;
@@ -9127,7 +9129,7 @@ End;
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
-Begin
+BEGIN
   ParseArgs;
   Run;
-End.
+END.
