@@ -732,6 +732,19 @@ Const
   MAX_IMPORT     = 32;
   MAX_TYPE       = 64;
 
+  { Limite pour les messages de sortie }
+  MAX_OUTMSGS    = 256;
+
+  { Types de valeurs de sortie (utilises par le code generation) }
+  OMK_STRING   = 1;   { chaine litterale                          }
+  OMK_INT      = 2;   { valeur entiere                            }
+  OMK_BOOL     = 3;   { valeur booleenne                          }
+  OMK_CHAR     = 4;   { caractere                                 }
+  OMK_VAR_INT  = 5;   { variable entiere                          }
+  OMK_VAR_BOOL = 6;   { variable booleenne                        }
+  OMK_VAR_CHAR = 7;   { variable caractere                        }
+  OMK_VAR_STR  = 8;   { variable chaine                           }
+
   { Prefixes de nommage ASM }
   JV_VAR_PFX  = '_JV_';     { variable globale / champ statique      }
   JV_FN_PFX   = '_JF_';     { methode statique                       }
@@ -755,6 +768,18 @@ Type
     EmitAsm    : Boolean;   { -asm : produire aussi un .ASM          }
   End;
 
+  { Type pour les messages de sortie (System.out.println) }
+  TOutMsgRec = Record
+    Kind       : Integer;  { OMK_STRING, OMK_INT, etc.              }
+    StrVal     : TString;  { valeur si chaine                       }
+    IntVal     : LongInt;  { valeur si entier                       }
+    BoolVal    : Boolean;  { valeur si booleen                      }
+    CharVal    : Char;     { valeur si caractere                    }
+    VarName    : TString;  { nom de variable si OMK_VAR_*           }
+    IsPrintln  : Boolean;  { True si println, False si print        }
+    Line       : Integer;  { ligne source                           }
+  End;
+
 Var
   { Options }
   Opts : TOptions;
@@ -771,6 +796,10 @@ Var
   { Drapeau pour la generation binaire PE (mini-assembleur) }
   BcActive   : Boolean;
 
+  { Messages de sortie collectes (System.out.println) }
+  OutMsgs      : Array[1..MAX_OUTMSGS] Of TOutMsgRec;
+  OutMsgCount  : Integer;
+
 { ------------------------------------------------------------ }
 { Fonctions utilitaires                                        }
 { ------------------------------------------------------------ }
@@ -780,6 +809,113 @@ Var S : TString;
 Begin
   Str(V, S);
   ItoS := S;
+End;
+
+{ StrToIntDef : convertir une chaine en entier avec defaut }
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V    : LongInt;
+  Code : Integer;
+Begin
+  Val(S, V, Code);
+  If Code = 0 Then
+    StrToIntDef := V
+  Else
+    StrToIntDef := Def;
+End;
+
+{ InitOutMsgs : initialiser le tableau des messages de sortie }
+Procedure InitOutMsgs;
+Var I : Integer;
+Begin
+  OutMsgCount := 0;
+  For I := 1 To MAX_OUTMSGS Do
+  Begin
+    OutMsgs[I].Kind     := 0;
+    OutMsgs[I].StrVal   := '';
+    OutMsgs[I].IntVal   := 0;
+    OutMsgs[I].BoolVal  := False;
+    OutMsgs[I].CharVal  := #0;
+    OutMsgs[I].VarName  := '';
+    OutMsgs[I].IsPrintln := True;
+    OutMsgs[I].Line     := 0;
+  End;
+End;
+
+{ AddOutMsgStr : ajouter un message de sortie chaine }
+Procedure AddOutMsgStr(Const S : TString; IsPrintln : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind     := OMK_STRING;
+  OutMsgs[OutMsgCount].StrVal   := S;
+  OutMsgs[OutMsgCount].IntVal   := 0;
+  OutMsgs[OutMsgCount].BoolVal  := False;
+  OutMsgs[OutMsgCount].CharVal  := #0;
+  OutMsgs[OutMsgCount].VarName  := '';
+  OutMsgs[OutMsgCount].IsPrintln := IsPrintln;
+  OutMsgs[OutMsgCount].Line     := Ln;
+End;
+
+{ AddOutMsgInt : ajouter un message de sortie entier }
+Procedure AddOutMsgInt(V : LongInt; IsPrintln : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind     := OMK_INT;
+  OutMsgs[OutMsgCount].StrVal   := '';
+  OutMsgs[OutMsgCount].IntVal   := V;
+  OutMsgs[OutMsgCount].BoolVal  := False;
+  OutMsgs[OutMsgCount].CharVal  := #0;
+  OutMsgs[OutMsgCount].VarName  := '';
+  OutMsgs[OutMsgCount].IsPrintln := IsPrintln;
+  OutMsgs[OutMsgCount].Line     := Ln;
+End;
+
+{ AddOutMsgBool : ajouter un message de sortie booleen }
+Procedure AddOutMsgBool(V : Boolean; IsPrintln : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind     := OMK_BOOL;
+  OutMsgs[OutMsgCount].StrVal   := '';
+  OutMsgs[OutMsgCount].IntVal   := 0;
+  OutMsgs[OutMsgCount].BoolVal  := V;
+  OutMsgs[OutMsgCount].CharVal  := #0;
+  OutMsgs[OutMsgCount].VarName  := '';
+  OutMsgs[OutMsgCount].IsPrintln := IsPrintln;
+  OutMsgs[OutMsgCount].Line     := Ln;
+End;
+
+{ AddOutMsgChar : ajouter un message de sortie caractere }
+Procedure AddOutMsgChar(C : Char; IsPrintln : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind     := OMK_CHAR;
+  OutMsgs[OutMsgCount].StrVal   := '';
+  OutMsgs[OutMsgCount].IntVal   := 0;
+  OutMsgs[OutMsgCount].BoolVal  := False;
+  OutMsgs[OutMsgCount].CharVal  := C;
+  OutMsgs[OutMsgCount].VarName  := '';
+  OutMsgs[OutMsgCount].IsPrintln := IsPrintln;
+  OutMsgs[OutMsgCount].Line     := Ln;
+End;
+
+{ AddOutMsgVar : ajouter un message de sortie variable }
+Procedure AddOutMsgVar(Const VarName : TString; VarKind : Integer;
+                       IsPrintln : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind     := VarKind;
+  OutMsgs[OutMsgCount].StrVal   := '';
+  OutMsgs[OutMsgCount].IntVal   := 0;
+  OutMsgs[OutMsgCount].BoolVal  := False;
+  OutMsgs[OutMsgCount].CharVal  := #0;
+  OutMsgs[OutMsgCount].VarName  := VarName;
+  OutMsgs[OutMsgCount].IsPrintln := IsPrintln;
+  OutMsgs[OutMsgCount].Line     := Ln;
 End;
 
 Function HexNibble(V : Integer) : Char;
@@ -4458,6 +4594,9 @@ Begin
   ParsePrimary := E;
 End;
 
+{ Declaration forward pour ParsePrimaryFull }
+Function ParsePrimaryFull : TExprVal; Forward;
+
 { ------------------------------------------------------------ }
 { ParseUnary : parser un operateur unaire (+ - ~ ! ++ --)       }
 { ------------------------------------------------------------ }
@@ -4484,7 +4623,7 @@ Begin
     ParseUnary := ExprEmitUnaryOp(UOp, E);
   End
   Else
-    ParseUnary := ParsePrimary;
+    ParseUnary := ParsePrimaryFull;  { Utiliser la version complete }
 End;
 
 { ------------------------------------------------------------ }
@@ -5001,8 +5140,12 @@ End;
 
 Function ParseSysOutCall(IsPrintln : Boolean) : TExprVal;
 Var
-  R     : TExprVal;
-  NArgs : Integer;
+  R        : TExprVal;
+  ArgExpr  : TExprVal;
+  SymI     : Integer;
+  VarKind  : Integer;
+  SavedTok : TString;
+  SavedKind : Integer;
 Begin
   Inc(PxSysOutCount);
   PxLastKind := PX_SYSOUT;
@@ -5011,7 +5154,92 @@ Begin
   If CurTokKind = TK_LPAREN Then
   Begin
     ParserAdvance; { consommer ( }
-    NArgs := ParseArgList;
+    
+    { Liste vide si ) immediatement = println() seul }
+    If CurTokKind = TK_RPAREN Then
+    Begin
+      { println() sans argument - juste newline }
+      AddOutMsgStr('', IsPrintln, LexLineNo);
+      ParserAdvance;
+      R := ExprMakeEAX(TY_IDX_VOID);
+      ParseSysOutCall := R;
+      Exit;
+    End;
+    
+    { Sauvegarder le token courant avant parse }
+    SavedTok  := CurTokStr;
+    SavedKind := CurTokKind;
+    
+    { Cas simple : litterale chaine }
+    If CurTokKind = TK_STRING Then
+    Begin
+      AddOutMsgStr(CurTokStr, IsPrintln, LexLineNo);
+      ParserAdvance;
+    End
+    { Cas : litterale entiere }
+    Else If CurTokKind = TK_INTEGER Then
+    Begin
+      AddOutMsgInt(StrToIntDef(CurTokStr, 0), IsPrintln, LexLineNo);
+      ParserAdvance;
+    End
+    { Cas : true / false }
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'true') Then
+    Begin
+      AddOutMsgBool(True, IsPrintln, LexLineNo);
+      ParserAdvance;
+    End
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'false') Then
+    Begin
+      AddOutMsgBool(False, IsPrintln, LexLineNo);
+      ParserAdvance;
+    End
+    { Cas : litterale caractere }
+    Else If CurTokKind = TK_CHAR Then
+    Begin
+      If Length(CurTokStr) > 0 Then
+        AddOutMsgChar(CurTokStr[1], IsPrintln, LexLineNo)
+      Else
+        AddOutMsgChar(#0, IsPrintln, LexLineNo);
+      ParserAdvance;
+    End
+    { Cas : identificateur (variable) }
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      SymI := SymFind(CurTokStr);
+      If SymI > 0 Then
+      Begin
+        { Determiner le type de la variable }
+        Case SymTab[SymI].TypeIdx Of
+          TY_IDX_INT     : VarKind := OMK_VAR_INT;
+          TY_IDX_BOOLEAN : VarKind := OMK_VAR_BOOL;
+          TY_IDX_CHAR    : VarKind := OMK_VAR_CHAR;
+          TY_IDX_STRING  : VarKind := OMK_VAR_STR;
+        Else
+          VarKind := OMK_VAR_INT;
+        End;
+        AddOutMsgVar(CurTokStr, VarKind, IsPrintln, LexLineNo);
+      End
+      Else
+      Begin
+        { Variable non trouvee - supposer int }
+        AddOutMsgVar(CurTokStr, OMK_VAR_INT, IsPrintln, LexLineNo);
+      End;
+      ArgExpr := ParseExpr;
+    End
+    { Autres cas : expression complexe }
+    Else
+    Begin
+      ArgExpr := ParseExpr;
+      { Pour les expressions, on ne stocke rien pour l'instant }
+    End;
+    
+    { Consommer les arguments supplementaires (concatenation) }
+    While CurTokKind = TK_COMMA Do
+    Begin
+      ParserAdvance;
+      ArgExpr := ParseExpr;
+    End;
+    
     If CurTokKind = TK_RPAREN Then
       ParserAdvance
     Else
@@ -8103,11 +8331,37 @@ Const
   { Limites }
   IO_MAX_CONCAT    = 16;   { nombre max de parties concatenees     }
   IO_MAX_SCANNERS  = 4;    { nombre max de variables Scanner       }
+  IO_MAX_OUTPUTS   = 256;  { nombre max d operations de sortie     }
+
+  { Types de valeurs pour les outputs }
+  IOV_NONE     = 0;   { aucune valeur                             }
+  IOV_STRING   = 1;   { chaine litterale                          }
+  IOV_INT      = 2;   { valeur entiere                            }
+  IOV_BOOL     = 3;   { valeur booleenne                          }
+  IOV_CHAR     = 4;   { caractere                                 }
+  IOV_VAR_INT  = 5;   { variable entiere                          }
+  IOV_VAR_BOOL = 6;   { variable booleenne                        }
+  IOV_VAR_CHAR = 7;   { variable caractere                        }
+  IOV_VAR_STR  = 8;   { variable chaine                           }
+  IOV_EXPR     = 9;   { expression complexe                       }
 
 Type
   TIoScannerRec = Record
     Name       : TString;  { nom de la variable Scanner            }
     DeclLine   : Integer;  { ligne de declaration                  }
+  End;
+
+  { Enregistrement pour une operation de sortie }
+  TIoOutputRec = Record
+    Kind       : Integer;  { IO_PRINTLN_STR, IO_PRINTLN_INT, etc.  }
+    ValKind    : Integer;  { IOV_STRING, IOV_INT, etc.             }
+    StrVal     : TString;  { valeur si chaine                      }
+    IntVal     : LongInt;  { valeur si entier                      }
+    BoolVal    : Boolean;  { valeur si booleen                     }
+    CharVal    : Char;     { valeur si caractere                   }
+    VarName    : TString;  { nom de variable si IOV_VAR_*          }
+    IsPrintln  : Boolean;  { True si println, False si print       }
+    Line       : Integer;  { ligne source                          }
   End;
 
 Var
@@ -8125,6 +8379,9 @@ Var
   IoCurScannerName  : TString;    { nom du Scanner courant              }
   IoScanners        : Array[1..IO_MAX_SCANNERS] Of TIoScannerRec;
   IoScannerCount    : Integer;    { nombre de Scanners enregistres      }
+  { Tableau des operations de sortie collectees }
+  IoOutputs         : Array[1..IO_MAX_OUTPUTS] Of TIoOutputRec;
+  IoOutputCount     : Integer;    { nombre d outputs enregistres        }
 
 { ------------------------------------------------------------ }
 { InitIoState : initialiser le sous-systeme entrees/sorties      }
@@ -8146,10 +8403,23 @@ Begin
   IoCurIsPrintln    := True;
   IoCurScannerName  := '';
   IoScannerCount    := 0;
+  IoOutputCount     := 0;
   For I := 1 To IO_MAX_SCANNERS Do
   Begin
     IoScanners[I].Name     := '';
     IoScanners[I].DeclLine := 0;
+  End;
+  For I := 1 To IO_MAX_OUTPUTS Do
+  Begin
+    IoOutputs[I].Kind     := IO_NONE;
+    IoOutputs[I].ValKind  := IOV_NONE;
+    IoOutputs[I].StrVal   := '';
+    IoOutputs[I].IntVal   := 0;
+    IoOutputs[I].BoolVal  := False;
+    IoOutputs[I].CharVal  := #0;
+    IoOutputs[I].VarName  := '';
+    IoOutputs[I].IsPrintln := True;
+    IoOutputs[I].Line     := 0;
   End;
 End;
 
@@ -8187,6 +8457,101 @@ Begin
   Else
     IoTypeName := 'IO_UNKNOWN(' + ItoS(K) + ')';
   End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddIoOutput : ajouter un output a la liste                     }
+{   Utilisee pour collecter les println/print pendant parsing   }
+{ ------------------------------------------------------------ }
+
+Function AddIoOutput(Kind, ValKind : Integer; Const StrV : TString;
+                     IntV : LongInt; BoolV : Boolean; CharV : Char;
+                     Const VarN : TString; IsPLn : Boolean;
+                     Ln : Integer) : Integer;
+Begin
+  If IoOutputCount >= IO_MAX_OUTPUTS Then
+  Begin
+    AddIoOutput := 0;
+    Exit;
+  End;
+  Inc(IoOutputCount);
+  IoOutputs[IoOutputCount].Kind     := Kind;
+  IoOutputs[IoOutputCount].ValKind  := ValKind;
+  IoOutputs[IoOutputCount].StrVal   := StrV;
+  IoOutputs[IoOutputCount].IntVal   := IntV;
+  IoOutputs[IoOutputCount].BoolVal  := BoolV;
+  IoOutputs[IoOutputCount].CharVal  := CharV;
+  IoOutputs[IoOutputCount].VarName  := VarN;
+  IoOutputs[IoOutputCount].IsPrintln := IsPLn;
+  IoOutputs[IoOutputCount].Line     := Ln;
+  AddIoOutput := IoOutputCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddIoOutputStr : raccourci pour ajouter une sortie chaine      }
+{ ------------------------------------------------------------ }
+
+Procedure AddIoOutputStr(Const S : TString; IsPLn : Boolean; Ln : Integer);
+Var Kind : Integer;
+Begin
+  If IsPLn Then Kind := IO_PRINTLN_STR Else Kind := IO_PRINT_STR;
+  AddIoOutput(Kind, IOV_STRING, S, 0, False, #0, '', IsPLn, Ln);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddIoOutputInt : raccourci pour ajouter une sortie entiere     }
+{ ------------------------------------------------------------ }
+
+Procedure AddIoOutputInt(V : LongInt; IsPLn : Boolean; Ln : Integer);
+Var Kind : Integer;
+Begin
+  If IsPLn Then Kind := IO_PRINTLN_INT Else Kind := IO_PRINT_INT;
+  AddIoOutput(Kind, IOV_INT, '', V, False, #0, '', IsPLn, Ln);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddIoOutputBool : raccourci pour ajouter une sortie booleenne  }
+{ ------------------------------------------------------------ }
+
+Procedure AddIoOutputBool(V : Boolean; IsPLn : Boolean; Ln : Integer);
+Var Kind : Integer;
+Begin
+  If IsPLn Then Kind := IO_PRINTLN_BOOL Else Kind := IO_PRINT_BOOL;
+  AddIoOutput(Kind, IOV_BOOL, '', 0, V, #0, '', IsPLn, Ln);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddIoOutputChar : raccourci pour ajouter une sortie caractere  }
+{ ------------------------------------------------------------ }
+
+Procedure AddIoOutputChar(C : Char; IsPLn : Boolean; Ln : Integer);
+Var Kind : Integer;
+Begin
+  If IsPLn Then Kind := IO_PRINTLN_CHAR Else Kind := IO_PRINT_CHAR;
+  AddIoOutput(Kind, IOV_CHAR, '', 0, False, C, '', IsPLn, Ln);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddIoOutputVar : ajouter une sortie de variable                }
+{ ------------------------------------------------------------ }
+
+Procedure AddIoOutputVar(Const VarN : TString; VarKind : Integer;
+                         IsPLn : Boolean; Ln : Integer);
+Var Kind : Integer;
+Begin
+  Case VarKind Of
+    IOV_VAR_INT  : If IsPLn Then Kind := IO_PRINTLN_INT
+                   Else Kind := IO_PRINT_INT;
+    IOV_VAR_BOOL : If IsPLn Then Kind := IO_PRINTLN_BOOL
+                   Else Kind := IO_PRINT_BOOL;
+    IOV_VAR_CHAR : If IsPLn Then Kind := IO_PRINTLN_CHAR
+                   Else Kind := IO_PRINT_CHAR;
+    IOV_VAR_STR  : If IsPLn Then Kind := IO_PRINTLN_STR
+                   Else Kind := IO_PRINT_STR;
+  Else
+    If IsPLn Then Kind := IO_PRINTLN_INT Else Kind := IO_PRINT_INT;
+  End;
+  AddIoOutput(Kind, VarKind, '', 0, False, #0, VarN, IsPLn, Ln);
 End;
 
 { ------------------------------------------------------------ }
@@ -16333,11 +16698,15 @@ Var
   StdOutAddr, WrittenAddr, MsgAddr : LongInt;
   MsgLen : Integer;
   Msg : TString;
+  UseCompiledCode : Boolean;
 Begin
   PeIsCoff := False;
   ImageBase := PE_IMAGE_BASE_DEFAULT;  { $00400000 }
   
-  { Layout PE fixe pour Hello World :                    }
+  { Verifier si du code a ete compile }
+  UseCompiledCode := (OutMsgCount > 0) And (PeTextSize > 0) And (PeDataSize > 0);
+  
+  { Layout PE fixe :                                      }
   {   .text  RVA $1000  - code                           }
   {   .rdata RVA $2000  - imports                        }
   {   .data  RVA $3000  - donnees                        }
@@ -16346,7 +16715,7 @@ Begin
   RdataRVA  := $2000;
   DataRVA   := $3000;
   
-  { Message a afficher }
+  { Message a afficher (par defaut) }
   Msg := 'Hello, World!';
   MsgLen := Length(Msg);
   
@@ -16425,75 +16794,78 @@ Begin
   ImportSize := 40;  { Seulement la taille de l'IDT }
   
   { ===== Construire la section .data ===== }
-  PeDataSize := 0;  { Reset }
+  If Not UseCompiledCode Then
+  Begin
+    PeDataSize := 0;  { Reset }
   
-  { Offset 0: hStdOut (DWORD) }
-  StdOutAddr := ImageBase + DataRVA + 0;
-  EmitDataDWord(0);
+    { Offset 0: hStdOut (DWORD) }
+    StdOutAddr := ImageBase + DataRVA + 0;
+    EmitDataDWord(0);
   
-  { Offset 4: bytesWritten (DWORD) }
-  WrittenAddr := ImageBase + DataRVA + 4;
-  EmitDataDWord(0);
+    { Offset 4: bytesWritten (DWORD) }
+    WrittenAddr := ImageBase + DataRVA + 4;
+    EmitDataDWord(0);
   
-  { Offset 8: message string }
-  MsgAddr := ImageBase + DataRVA + 8;
-  EmitDataString(Msg);
+    { Offset 8: message string }
+    MsgAddr := ImageBase + DataRVA + 8;
+    EmitDataString(Msg);
   
-  { ===== Construire la section .text (code) ===== }
-  PeTextSize := 0;  { Reset }
-  PeEntryPoint := 0;
+    { ===== Construire la section .text (code) ===== }
+    PeTextSize := 0;  { Reset }
+    PeEntryPoint := 0;
   
-  { _start: }
-  { PUSH -11 (STD_OUTPUT_HANDLE) }
-  EmitTextByte($68);  { PUSH imm32 }
-  EmitTextDWord(-11);
+    { _start: }
+    { PUSH -11 (STD_OUTPUT_HANDLE) }
+    EmitTextByte($68);  { PUSH imm32 }
+    EmitTextDWord(-11);
   
-  { CALL [GetStdHandle] }
-  EmitTextByte($FF);
-  EmitTextByte($15);
-  EmitTextDWord(IatGetStdHandle);
+    { CALL [GetStdHandle] }
+    EmitTextByte($FF);
+    EmitTextByte($15);
+    EmitTextDWord(IatGetStdHandle);
   
-  { MOV [hStdOut], EAX }
-  EmitTextByte($A3);  { MOV moffs32, EAX }
-  EmitTextDWord(StdOutAddr);
+    { MOV [hStdOut], EAX }
+    EmitTextByte($A3);  { MOV moffs32, EAX }
+    EmitTextDWord(StdOutAddr);
   
-  { PUSH 0 (lpOverlapped) }
-  EmitTextByte($6A);  { PUSH imm8 }
-  EmitTextByte(0);
+    { PUSH 0 (lpOverlapped) }
+    EmitTextByte($6A);  { PUSH imm8 }
+    EmitTextByte(0);
   
-  { PUSH WrittenAddr }
-  EmitTextByte($68);
-  EmitTextDWord(WrittenAddr);
+    { PUSH WrittenAddr }
+    EmitTextByte($68);
+    EmitTextDWord(WrittenAddr);
   
-  { PUSH MsgLen }
-  EmitTextByte($68);
-  EmitTextDWord(MsgLen);
+    { PUSH MsgLen }
+    EmitTextByte($68);
+    EmitTextDWord(MsgLen);
   
-  { PUSH MsgAddr }
-  EmitTextByte($68);
-  EmitTextDWord(MsgAddr);
+    { PUSH MsgAddr }
+    EmitTextByte($68);
+    EmitTextDWord(MsgAddr);
   
-  { PUSH [hStdOut] }
-  EmitTextByte($FF);
-  EmitTextByte($35);
-  EmitTextDWord(StdOutAddr);
+    { PUSH [hStdOut] }
+    EmitTextByte($FF);
+    EmitTextByte($35);
+    EmitTextDWord(StdOutAddr);
   
-  { CALL [WriteFile] }
-  EmitTextByte($FF);
-  EmitTextByte($15);
-  EmitTextDWord(IatWriteFile);
+    { CALL [WriteFile] }
+    EmitTextByte($FF);
+    EmitTextByte($15);
+    EmitTextDWord(IatWriteFile);
   
-  { PUSH 0 (exit code) }
-  EmitTextByte($6A);
-  EmitTextByte(0);
+    { PUSH 0 (exit code) }
+    EmitTextByte($6A);
+    EmitTextByte(0);
   
-  { CALL [ExitProcess] }
-  EmitTextByte($FF);
-  EmitTextByte($15);
-  EmitTextDWord(IatExitProcess);
+    { CALL [ExitProcess] }
+    EmitTextByte($FF);
+    EmitTextByte($15);
+    EmitTextDWord(IatExitProcess);
   
-  { RET }
-  EmitTextByte($C3);
+    { RET }
+    EmitTextByte($C3);
+  End;
   
   { Calculer les tailles alignees }
   TextAligned := PeAlignTo(PeTextSize, PE_SECTION_ALIGNMENT);
@@ -18463,6 +18835,185 @@ Begin
 End;
 
 { ============================================================ }
+{ Generation de code pour le programme compile                   }
+{ ============================================================ }
+
+{ EmitCompiledOutput : generer le code PE a partir des outputs  }
+{   collectes pendant le parsing                                 }
+{                                                                }
+{ Structure generee :                                            }
+{   .data : hStdOut, bytesWritten, puis les chaines              }
+{   .text : code pour afficher chaque output                     }
+{                                                                }
+{ Pour chaque output de type IOV_STRING :                        }
+{   - Stocker la chaine dans .data                               }
+{   - Generer PUSH lpOverlapped=0, PUSH lpBytesWritten,          }
+{     PUSH nBytes, PUSH lpBuffer, PUSH hFile                     }
+{   - CALL WriteFile                                             }
+{   - Si println : afficher aussi CRLF                           }
+{ ============================================================ }
+
+Procedure EmitCompiledOutput;
+Var
+  I          : Integer;
+  TotalMsgs  : Integer;
+  MsgAddrs   : Array[1..256] Of LongInt;
+  MsgLens    : Array[1..256] Of Integer;
+  MsgPrintln : Array[1..256] Of Boolean;
+  CrlfAddr   : LongInt;
+  CrlfLen    : Integer;
+  ImageBase, TextRVA, DataRVA, ImportRVA : LongInt;
+  StdOutAddr, WrittenAddr, CurDataOff : LongInt;
+  GetStdHandleRVA, WriteFileRVA, ExitProcessRVA : LongInt;
+  S          : TString;
+Begin
+  { Si aucun output, rien a faire }
+  If OutMsgCount = 0 Then
+    Exit;
+
+  { Configuration de base }
+  ImageBase := PE_IMAGE_BASE_DEFAULT;
+  TextRVA   := $1000;
+  DataRVA   := $2000;
+  ImportRVA := $3000;
+
+  { ===== Construire la section .data ===== }
+  { Offset 0: hStdOut (DWORD) }
+  StdOutAddr := ImageBase + DataRVA + PeDataSize;
+  EmitDataDWord(0);
+
+  { Offset 4: bytesWritten (DWORD) }
+  WrittenAddr := ImageBase + DataRVA + PeDataSize;
+  EmitDataDWord(0);
+
+  { CRLF pour println }
+  CrlfAddr := ImageBase + DataRVA + PeDataSize;
+  CrlfLen := 2;
+  EmitDataByte(13);  { CR }
+  EmitDataByte(10);  { LF }
+  EmitDataByte(0);   { null terminator }
+
+  { Stocker toutes les chaines des outputs }
+  TotalMsgs := 0;
+  For I := 1 To OutMsgCount Do
+  Begin
+    Inc(TotalMsgs);
+    MsgAddrs[TotalMsgs] := ImageBase + DataRVA + PeDataSize;
+    MsgPrintln[TotalMsgs] := OutMsgs[I].IsPrintln;
+
+    Case OutMsgs[I].Kind Of
+      OMK_STRING:
+        Begin
+          S := OutMsgs[I].StrVal;
+          MsgLens[TotalMsgs] := Length(S);
+          EmitDataString(S);
+        End;
+      OMK_INT:
+        Begin
+          S := ItoS(OutMsgs[I].IntVal);
+          MsgLens[TotalMsgs] := Length(S);
+          EmitDataString(S);
+        End;
+      OMK_BOOL:
+        Begin
+          If OutMsgs[I].BoolVal Then S := 'true' Else S := 'false';
+          MsgLens[TotalMsgs] := Length(S);
+          EmitDataString(S);
+        End;
+      OMK_CHAR:
+        Begin
+          S := OutMsgs[I].CharVal;
+          MsgLens[TotalMsgs] := Length(S);
+          EmitDataString(S);
+        End;
+    Else
+      { Pour les variables et expressions, on genere une chaine vide pour l instant }
+      MsgLens[TotalMsgs] := 0;
+      S := '';
+      EmitDataString(S);
+    End;
+  End;
+
+  { ===== Construire la section .text (code) ===== }
+
+  { Point d entree }
+  PeEntryPoint := PeTextSize;
+
+  { Calculer les RVAs des imports (valeurs temporaires) }
+  GetStdHandleRVA := ImportRVA + $100;
+  WriteFileRVA    := ImportRVA + $104;
+  ExitProcessRVA  := ImportRVA + $108;
+
+  { _start: Obtenir le handle de la console }
+  { PUSH -11 (STD_OUTPUT_HANDLE) }
+  EmitX86PushImm32(-11);
+
+  { CALL [GetStdHandle] }
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(ImageBase + GetStdHandleRVA);
+
+  { MOV [hStdOut], EAX }
+  EmitX86MovMemReg(StdOutAddr, 0);
+
+  { Emettre le code pour chaque message }
+  For I := 1 To TotalMsgs Do
+  Begin
+    { Afficher le message seulement si non-vide }
+    If MsgLens[I] > 0 Then
+    Begin
+      { WriteFile(hStdOut, msg, len, &written, NULL) }
+      { PUSH 0 (lpOverlapped) }
+      EmitX86PushImm32(0);
+
+      { PUSH &written }
+      EmitX86PushImm32(WrittenAddr);
+
+      { PUSH len }
+      EmitX86PushImm32(MsgLens[I]);
+
+      { PUSH msg_addr }
+      EmitX86PushImm32(MsgAddrs[I]);
+
+      { PUSH [hStdOut] }
+      EmitTextByte($FF);
+      EmitTextByte($35);
+      EmitTextDWord(StdOutAddr);
+
+      { CALL [WriteFile] }
+      EmitTextByte($FF);
+      EmitTextByte($15);
+      EmitTextDWord(ImageBase + WriteFileRVA);
+    End;
+
+    { Si println, ajouter CRLF }
+    If MsgPrintln[I] Then
+    Begin
+      { WriteFile(hStdOut, crlf, 2, &written, NULL) }
+      EmitX86PushImm32(0);
+      EmitX86PushImm32(WrittenAddr);
+      EmitX86PushImm32(CrlfLen);
+      EmitX86PushImm32(CrlfAddr);
+      EmitTextByte($FF);
+      EmitTextByte($35);
+      EmitTextDWord(StdOutAddr);
+      EmitTextByte($FF);
+      EmitTextByte($15);
+      EmitTextDWord(ImageBase + WriteFileRVA);
+    End;
+  End;
+
+  { ExitProcess(0) }
+  EmitX86PushImm32(0);
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(ImageBase + ExitProcessRVA);
+
+  { RET (securite) }
+  EmitX86Ret;
+End;
+
+{ ============================================================ }
 { Generation de code pour un programme Hello World minimal      }
 { ============================================================ }
 
@@ -18586,8 +19137,16 @@ Begin
   { Parser declarations de classe }
   While CurTokKind <> TK_EOF Do
   Begin
+    { System.out.println / System.out.print }
+    If (CurTokKind = TK_IDENT) And (CurTokStr = 'System') Then
+    Begin
+      ParseExpr;
+      { Consommer ; si present }
+      If CurTokKind = TK_SEMICOLON Then
+        ParserAdvance;
+    End
     { public class ... }
-    If CurTokStr = 'public' Then
+    Else If CurTokStr = 'public' Then
     Begin
       ParserAdvance;
       If CurTokStr = 'class' Then
@@ -18600,6 +19159,7 @@ Begin
           HadClass := True;
         End;
       End;
+      { Sinon c'est autre chose (public static void main...), on continue }
     End
     { class ... }
     Else If CurTokStr = 'class' Then
@@ -18612,19 +19172,20 @@ Begin
         HadClass := True;
       End;
     End
+    { Autres tokens }
     Else
       ParserAdvance;
   End;
 
-  { Si aucune classe trouvee, generer un programme minimal }
-  If Not HadClass Then
-  Begin
-    WriteLn('JAVACW32: avertissement - aucune classe trouvee,');
-    WriteLn('          generation d''un Hello World minimal');
-  End;
+  { Debug : afficher le nombre de messages }
+  If Opts.Verbose Then
+    WriteLn('OutMsgCount = ', OutMsgCount);
 
   { Generer le code machine }
-  EmitMinimalHelloWorld;
+  If OutMsgCount > 0 Then
+    EmitCompiledOutput
+  Else
+    EmitMinimalHelloWorld;
 End;
 
 { ============================================================ }
@@ -18707,6 +19268,7 @@ Begin
   InitRtState;
   InitPeState;
   InitWiState;
+  InitOutMsgs;
   InitAsmState;
   InitPhState;
   InitTsState;
