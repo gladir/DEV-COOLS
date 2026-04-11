@@ -800,6 +800,10 @@ Var
   OutMsgs      : Array[1..MAX_OUTMSGS] Of TOutMsgRec;
   OutMsgCount  : Integer;
 
+  { Variables alimentees par Scanner.* (pour emission runtime) }
+  ScanVarCount : Integer;
+  ScanVars     : Array[1..MAX_SYM] Of TString;
+
 { ------------------------------------------------------------ }
 { Fonctions utilitaires                                        }
 { ------------------------------------------------------------ }
@@ -829,6 +833,7 @@ Procedure InitOutMsgs;
 Var I : Integer;
 Begin
   OutMsgCount := 0;
+  ScanVarCount := 0;
   For I := 1 To MAX_OUTMSGS Do
   Begin
     OutMsgs[I].Kind     := 0;
@@ -839,6 +844,53 @@ Begin
     OutMsgs[I].VarName  := '';
     OutMsgs[I].IsPrintln := True;
     OutMsgs[I].Line     := 0;
+  End;
+End;
+
+Function IsScannerVar(Const Name : TString) : Boolean;
+Var
+  I : Integer;
+Begin
+  IsScannerVar := False;
+  For I := 1 To ScanVarCount Do
+    If ScanVars[I] = Name Then
+    Begin
+      IsScannerVar := True;
+      Exit;
+    End;
+End;
+
+Procedure SetScannerVar(Const Name : TString; IsScan : Boolean);
+Var
+  I, Idx : Integer;
+Begin
+  Idx := 0;
+  For I := 1 To ScanVarCount Do
+    If ScanVars[I] = Name Then
+    Begin
+      Idx := I;
+      Break;
+    End;
+
+  If IsScan Then
+  Begin
+    If Idx = 0 Then
+    Begin
+      If ScanVarCount < MAX_SYM Then
+      Begin
+        Inc(ScanVarCount);
+        ScanVars[ScanVarCount] := Name;
+      End;
+    End;
+  End
+  Else
+  Begin
+    If Idx > 0 Then
+    Begin
+      For I := Idx To ScanVarCount - 1 Do
+        ScanVars[I] := ScanVars[I + 1];
+      Dec(ScanVarCount);
+    End;
   End;
 End;
 
@@ -5582,6 +5634,7 @@ Var
   ArgExpr  : TExprVal;
   SymI     : Integer;
   SVal     : TString;
+  PartS    : TString;
   VarKind  : Integer;
   SavedTok : TString;
   SavedKind : Integer;
@@ -5656,12 +5709,20 @@ Begin
               TY_IDX_CHAR:
                 SVal := SVal + SymTab[SymI].SimCharVal;
             Else
-              SVal := SVal + '?';
+              SVal := SVal + '<' + CurTokStr + '>';
             End;
           End
           Else
-            SVal := SVal + '?';
+            SVal := SVal + '<' + CurTokStr + '>';
           ParserAdvance;
+        End
+        Else If CurTokKind = TK_LPAREN Then
+        Begin
+          ArgExpr := ParseExpr;
+          If ExprTryGetConstString(ArgExpr, PartS) Then
+            SVal := SVal + PartS
+          Else
+            SVal := SVal + '<expr>';
         End
         Else
           Break;
@@ -5789,7 +5850,12 @@ Begin
       End
       Else
         { Expression non evaluable au compile-time }
-        AddOutMsgStr('?', IsPrintln, LexLineNo);
+      Begin
+        If ExprTryGetConstString(ArgExpr, PartS) Then
+          AddOutMsgStr(PartS, IsPrintln, LexLineNo)
+        Else
+          AddOutMsgStr('<expr>', IsPrintln, LexLineNo);
+      End;
     End;
 
     { Consommer les arguments supplementaires (concatenation) }
@@ -6753,9 +6819,25 @@ Begin
         Begin
           SymTab[VarIdx].HasSimVal := True;
           SymTab[VarIdx].SimStrVal := DataTab[E.Offset].StrVal;
+          SetScannerVar(VarName, False);
+        End
+        Else If (E.Kind = EK_EAX) And (E.TypeIdx = TY_IDX_STRING) Then
+        Begin
+          { Exemple: String x = Scanner.nextLine(); -> runtime }
+          SymTab[VarIdx].HasSimVal := False;
+          SetScannerVar(VarName, True);
+        End
+        Else If (E.Kind = EK_EAX) And (E.TypeIdx = TY_IDX_INT) Then
+        Begin
+          { Exemple: int n = Scanner.nextInt(); -> runtime }
+          SymTab[VarIdx].HasSimVal := False;
+          SetScannerVar(VarName, True);
         End
         Else
+        Begin
           SymTab[VarIdx].HasSimVal := False;
+          SetScannerVar(VarName, False);
+        End;
 
         EmitVarStore(VarIdx);
         If IsFinal Then
@@ -6918,10 +7000,26 @@ Begin
   Begin
     SymTab[VarIdx].HasSimVal := True;
     SymTab[VarIdx].SimStrVal := DataTab[E.Offset].StrVal;
+    SetScannerVar(VarName, False);
+  End
+  Else If (E.Kind = EK_EAX) And (SymTab[VarIdx].TypeIdx = TY_IDX_STRING) Then
+  Begin
+    { Exemple: t = Scanner.nextLine(); -> runtime }
+    SymTab[VarIdx].HasSimVal := False;
+    SetScannerVar(VarName, True);
+  End
+  Else If (E.Kind = EK_EAX) And (SymTab[VarIdx].TypeIdx = TY_IDX_INT) Then
+  Begin
+    { Exemple: n = Scanner.nextInt(); -> runtime }
+    SymTab[VarIdx].HasSimVal := False;
+    SetScannerVar(VarName, True);
   End
   Else
+  Begin
     { Expression non constante - valeur inconnue au compile-time }
     SymTab[VarIdx].HasSimVal := False;
+    SetScannerVar(VarName, False);
+  End;
 
   { Verifier la compatibilite de type }
   CheckTypeCompat(SymTab[VarIdx].TypeIdx, E.TypeIdx);
@@ -9529,22 +9627,6 @@ Begin
   { ADD ESP, 4                                    }
   { EAX = valeur entiere                          }
   EmitScanNextInt := ExprMakeEAX(TY_IDX_INT);
-End;
-
-{ ------------------------------------------------------------ }
-{ IsScannerVar : verifier si un nom est un Scanner enregistre    }
-{ ------------------------------------------------------------ }
-
-Function IsScannerVar(Name : TString) : Boolean;
-Var I : Integer;
-Begin
-  IsScannerVar := False;
-  For I := 1 To IoScannerCount Do
-    If IoScanners[I].Name = Name Then
-    Begin
-      IsScannerVar := True;
-      Exit;
-    End;
 End;
 
 { ------------------------------------------------------------ }
@@ -17400,7 +17482,7 @@ Var
   ImageSize : LongInt;
   ImportRVA, ImportSize : LongInt;
   ImageBase : LongInt;
-  IatGetStdHandle, IatWriteFile, IatExitProcess : LongInt;
+  IatGetStdHandle, IatWriteFile, IatReadFile, IatExitProcess : LongInt;
   IdtOff, IltOff, IatOff, HntOff, DllNameOff : LongInt;
   StdOutAddr, WrittenAddr, MsgAddr : LongInt;
   MsgLen : Integer;
@@ -17431,27 +17513,29 @@ Begin
   { ===== Construire la section .rdata (imports) ===== }
   { Layout .rdata :                                     }
   {   Offset 0   : Import Directory Table (IDT) - 40 bytes (1 DLL + null) }
-  {   Offset 40  : Import Lookup Table (ILT) - 16 bytes (3 funcs + null) }
-  {   Offset 56  : Import Address Table (IAT) - 16 bytes (copie de ILT) }
-  {   Offset 72  : Hint/Name Table entries              }
+  {   Offset 40  : Import Lookup Table (ILT) - 20 bytes (4 funcs + null) }
+  {   Offset 60  : Import Address Table (IAT) - 20 bytes (copie de ILT) }
+  {   Offset 80  : Hint/Name Table entries              }
   {   Offset xxx : DLL name "kernel32.dll"              }
 
   IdtOff := 0;       { Import Directory Table }
   IltOff := 40;      { Import Lookup Table }
-  IatOff := 56;      { Import Address Table }
-  HntOff := 72;      { Hint/Name entries }
+  IatOff := 60;      { Import Address Table }
+  HntOff := 80;      { Hint/Name entries }
 
   { Calculer les vrais offsets des Hint/Name entries :
     GetStdHandle : 2 + 12 + 1 = 15 -> 16 avec padding (offset 0)
     WriteFile    : 2 + 9 + 1  = 12 (pair)              (offset 16)
-    ExitProcess  : 2 + 11 + 1 = 14 (pair)              (offset 16+12=28)
-    Total apres ExitProcess : 28 + 14 = 42 bytes }
-  DllNameOff := HntOff + 42;  { kernel32.dll\0 = 13 bytes }
+    ReadFile     : 2 + 8 + 1  = 11 -> 12 avec padding (offset 28)
+    ExitProcess  : 2 + 11 + 1 = 14 (pair)              (offset 40)
+    Total apres ExitProcess : 40 + 14 = 54 bytes }
+  DllNameOff := HntOff + 54;  { kernel32.dll\0 = 13 bytes }
 
   { Calculer les adresses IAT pour les appels }
   IatGetStdHandle := ImageBase + RdataRVA + IatOff + 0;
   IatWriteFile    := ImageBase + RdataRVA + IatOff + 4;
-  IatExitProcess  := ImageBase + RdataRVA + IatOff + 8;
+  IatReadFile     := ImageBase + RdataRVA + IatOff + 8;
+  IatExitProcess  := ImageBase + RdataRVA + IatOff + 12;
 
   PeRdataSize := 0;  { Reset }
 
@@ -17469,16 +17553,18 @@ Begin
   EmitRdataDWord(0);
   EmitRdataDWord(0);
 
-  { Import Lookup Table (ILT) - 3 fonctions + null }
+  { Import Lookup Table (ILT) - 4 fonctions + null }
   EmitRdataDWord(RdataRVA + HntOff + 0);   { -> GetStdHandle }
   EmitRdataDWord(RdataRVA + HntOff + 16);  { -> WriteFile }
-  EmitRdataDWord(RdataRVA + HntOff + 28);  { -> ExitProcess }
+  EmitRdataDWord(RdataRVA + HntOff + 28);  { -> ReadFile }
+  EmitRdataDWord(RdataRVA + HntOff + 40);  { -> ExitProcess }
   EmitRdataDWord(0);                        { null terminator }
 
   { Import Address Table (IAT) - copie de ILT, sera patche par le loader }
   EmitRdataDWord(RdataRVA + HntOff + 0);   { -> GetStdHandle }
   EmitRdataDWord(RdataRVA + HntOff + 16);  { -> WriteFile }
-  EmitRdataDWord(RdataRVA + HntOff + 28);  { -> ExitProcess }
+  EmitRdataDWord(RdataRVA + HntOff + 28);  { -> ReadFile }
+  EmitRdataDWord(RdataRVA + HntOff + 40);  { -> ExitProcess }
   EmitRdataDWord(0);                        { null terminator }
 
   { Hint/Name Table entries }
@@ -17491,7 +17577,12 @@ Begin
   EmitRdataWord(0);
   EmitRdataString('WriteFile');
 
-  { ExitProcess (offset HntOff + 28) : 2 + 11 + 1 = 14 }
+  { ReadFile (offset HntOff + 28) : 2 + 8 + 1 = 11 -> 12 avec padding }
+  EmitRdataWord(0);
+  EmitRdataString('ReadFile');
+  EmitRdataByte(0);
+
+  { ExitProcess (offset HntOff + 40) : 2 + 11 + 1 = 14 }
   EmitRdataWord(0);
   EmitRdataString('ExitProcess');
   If (PeRdataSize Mod 2) <> 0 Then EmitRdataByte(0);
@@ -19563,17 +19654,22 @@ End;
 { ============================================================ }
 
 Procedure EmitCompiledOutput;
+Const
+  MSGK_STATIC   = 0;
+  MSGK_INPUTSTR = 1;
+  INPUT_BUF_LEN = 255;
 Var
   I          : Integer;
   TotalMsgs  : Integer;
   MsgAddrs   : Array[1..256] Of LongInt;
   MsgLens    : Array[1..256] Of Integer;
+  MsgKinds   : Array[1..256] Of Integer;
   MsgPrintln : Array[1..256] Of Boolean;
   CrlfAddr   : LongInt;
   CrlfLen    : Integer;
   ImageBase, TextRVA, DataRVA, ImportRVA : LongInt;
-  StdOutAddr, WrittenAddr, CurDataOff : LongInt;
-  GetStdHandleRVA, WriteFileRVA, ExitProcessRVA : LongInt;
+  StdOutAddr, StdInAddr, WrittenAddr, ReadAddr, InBufAddr : LongInt;
+  GetStdHandleRVA, WriteFileRVA, ReadFileRVA, ExitProcessRVA : LongInt;
   S          : TString;
 Begin
   { Si aucun output, rien a faire }
@@ -19591,8 +19687,16 @@ Begin
   StdOutAddr := ImageBase + DataRVA + PeDataSize;
   EmitDataDWord(0);
 
-  { Offset 4: bytesWritten (DWORD) }
+  { Offset 4: hStdIn (DWORD) }
+  StdInAddr := ImageBase + DataRVA + PeDataSize;
+  EmitDataDWord(0);
+
+  { Offset 8: bytesWritten (DWORD) }
   WrittenAddr := ImageBase + DataRVA + PeDataSize;
+  EmitDataDWord(0);
+
+  { Offset 12: bytesRead (DWORD) }
+  ReadAddr := ImageBase + DataRVA + PeDataSize;
   EmitDataDWord(0);
 
   { CRLF pour println }
@@ -19602,31 +19706,39 @@ Begin
   EmitDataByte(10);  { LF }
   EmitDataByte(0);   { null terminator }
 
+  { Buffer de saisie runtime pour Scanner.nextLine() }
+  InBufAddr := ImageBase + DataRVA + PeDataSize;
+  For I := 1 To INPUT_BUF_LEN + 1 Do
+    EmitDataByte(0);
+
   { Stocker toutes les chaines des outputs }
   TotalMsgs := 0;
   For I := 1 To OutMsgCount Do
   Begin
     Inc(TotalMsgs);
-    MsgAddrs[TotalMsgs] := ImageBase + DataRVA + PeDataSize;
     MsgPrintln[TotalMsgs] := OutMsgs[I].IsPrintln;
+    MsgKinds[TotalMsgs] := MSGK_STATIC;
 
     Case OutMsgs[I].Kind Of
       OMK_STRING:
         Begin
           S := OutMsgs[I].StrVal;
           MsgLens[TotalMsgs] := Length(S);
+          MsgAddrs[TotalMsgs] := ImageBase + DataRVA + PeDataSize;
           EmitDataString(S);
         End;
       OMK_INT:
         Begin
           S := ItoS(OutMsgs[I].IntVal);
           MsgLens[TotalMsgs] := Length(S);
+          MsgAddrs[TotalMsgs] := ImageBase + DataRVA + PeDataSize;
           EmitDataString(S);
         End;
       OMK_BOOL:
         Begin
           If OutMsgs[I].BoolVal Then S := 'true' Else S := 'false';
           MsgLens[TotalMsgs] := Length(S);
+          MsgAddrs[TotalMsgs] := ImageBase + DataRVA + PeDataSize;
           EmitDataString(S);
         End;
       OMK_CHAR:
@@ -19636,12 +19748,30 @@ Begin
           If OutMsgs[I].CharVal <> #0 Then
             S := OutMsgs[I].CharVal;
           MsgLens[TotalMsgs] := Length(S);
+          MsgAddrs[TotalMsgs] := ImageBase + DataRVA + PeDataSize;
           EmitDataString(S);
+        End;
+      OMK_VAR_STR:
+        Begin
+          If IsScannerVar(OutMsgs[I].VarName) Then
+          Begin
+            MsgKinds[TotalMsgs] := MSGK_INPUTSTR;
+            MsgAddrs[TotalMsgs] := InBufAddr;
+            MsgLens[TotalMsgs] := INPUT_BUF_LEN;
+          End
+          Else
+          Begin
+            MsgLens[TotalMsgs] := 0;
+            S := '';
+            MsgAddrs[TotalMsgs] := ImageBase + DataRVA + PeDataSize;
+            EmitDataString(S);
+          End;
         End;
     Else
       { Pour les variables et expressions, on genere une chaine vide pour l instant }
       MsgLens[TotalMsgs] := 0;
       S := '';
+      MsgAddrs[TotalMsgs] := ImageBase + DataRVA + PeDataSize;
       EmitDataString(S);
     End;
   End;
@@ -19651,10 +19781,11 @@ Begin
   { Point d entree }
   PeEntryPoint := PeTextSize;
 
-  { Calculer les RVAs des imports (IAT a offset 56 dans .rdata) }
-  GetStdHandleRVA := ImportRVA + 56;
-  WriteFileRVA    := ImportRVA + 56 + 4;
-  ExitProcessRVA  := ImportRVA + 56 + 8;
+  { Calculer les RVAs des imports (IAT a offset 60 dans .rdata) }
+  GetStdHandleRVA := ImportRVA + 60;
+  WriteFileRVA    := ImportRVA + 60 + 4;
+  ReadFileRVA     := ImportRVA + 60 + 8;
+  ExitProcessRVA  := ImportRVA + 60 + 12;
 
   { _start: Obtenir le handle de la console }
   { PUSH -11 (STD_OUTPUT_HANDLE) }
@@ -19668,11 +19799,47 @@ Begin
   { MOV [hStdOut], EAX }
   EmitX86MovMemReg(StdOutAddr, 0);
 
+  { Recuperer aussi le handle d'entree console (STD_INPUT_HANDLE=-10) }
+  EmitX86PushImm32(-10);
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(ImageBase + GetStdHandleRVA);
+  EmitX86MovMemReg(StdInAddr, 0);
+
   { Emettre le code pour chaque message }
   For I := 1 To TotalMsgs Do
   Begin
-    { Afficher le message seulement si non-vide }
-    If MsgLens[I] > 0 Then
+    { Message runtime: lire Scanner.nextLine() puis l'afficher }
+    If MsgKinds[I] = MSGK_INPUTSTR Then
+    Begin
+      { ReadFile(hStdIn, inBuf, INPUT_BUF_LEN, &bytesRead, NULL) }
+      EmitX86PushImm32(0);
+      EmitX86PushImm32(ReadAddr);
+      EmitX86PushImm32(MsgLens[I]);
+      EmitX86PushImm32(MsgAddrs[I]);
+      EmitTextByte($FF);
+      EmitTextByte($35);
+      EmitTextDWord(StdInAddr);
+      EmitTextByte($FF);
+      EmitTextByte($15);
+      EmitTextDWord(ImageBase + ReadFileRVA);
+
+      { WriteFile(hStdOut, inBuf, bytesRead, &written, NULL) }
+      EmitX86PushImm32(0);
+      EmitX86PushImm32(WrittenAddr);
+      EmitTextByte($FF);
+      EmitTextByte($35);
+      EmitTextDWord(ReadAddr);
+      EmitX86PushImm32(MsgAddrs[I]);
+      EmitTextByte($FF);
+      EmitTextByte($35);
+      EmitTextDWord(StdOutAddr);
+      EmitTextByte($FF);
+      EmitTextByte($15);
+      EmitTextDWord(ImageBase + WriteFileRVA);
+    End
+    { Afficher le message statique seulement si non-vide }
+    Else If MsgLens[I] > 0 Then
     Begin
       { WriteFile(hStdOut, msg, len, &written, NULL) }
       { PUSH 0 (lpOverlapped) }
@@ -19699,7 +19866,7 @@ Begin
     End;
 
     { Si println, ajouter CRLF }
-    If MsgPrintln[I] Then
+    If MsgPrintln[I] And (MsgKinds[I] <> MSGK_INPUTSTR) Then
     Begin
       { WriteFile(hStdOut, crlf, 2, &written, NULL) }
       EmitX86PushImm32(0);
@@ -19773,7 +19940,7 @@ Begin
 
   { CALL GetStdHandle }
   { Cet appel sera patche apres construction de l IAT }
-  GetStdHandleRVA := ImportRVA + 56; { IAT offset 56 dans .rdata }
+  GetStdHandleRVA := ImportRVA + 60; { IAT offset 60 dans .rdata }
   EmitTextByte($FF);  { CALL [addr32] }
   EmitTextByte($15);
   EmitTextDWord(ImageBase + GetStdHandleRVA);
@@ -19799,7 +19966,7 @@ Begin
   EmitTextDWord(StdOutAddr);
 
   { CALL WriteFile }
-  WriteFileRVA := ImportRVA + 56 + 4; { IAT offset 56+4 dans .rdata }
+  WriteFileRVA := ImportRVA + 60 + 4; { IAT offset 60+4 dans .rdata }
   EmitTextByte($FF);
   EmitTextByte($15);
   EmitTextDWord(ImageBase + WriteFileRVA);
@@ -19808,7 +19975,7 @@ Begin
   EmitX86PushImm32(0);
 
   { CALL ExitProcess }
-  ExitProcessRVA := ImportRVA + 56 + 8; { IAT offset 56+8 dans .rdata }
+  ExitProcessRVA := ImportRVA + 60 + 12; { IAT offset 60+12 dans .rdata }
   EmitTextByte($FF);
   EmitTextByte($15);
   EmitTextDWord(ImageBase + ExitProcessRVA);
