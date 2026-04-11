@@ -16101,6 +16101,53 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ EmitRdataByte : emettre un octet dans la section .rdata        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRdataByte(B : Byte);
+Begin
+  If PeRdataSize < 16384 Then
+  Begin
+    PeRdataBuffer[PeRdataSize] := B;
+    Inc(PeRdataSize);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRdataWord : emettre un mot 16 bits dans .rdata             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRdataWord(W : Word);
+Begin
+  EmitRdataByte(W And $FF);
+  EmitRdataByte((W Shr 8) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRdataDWord : emettre un mot 32 bits dans .rdata            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRdataDWord(D : LongInt);
+Begin
+  EmitRdataByte(D And $FF);
+  EmitRdataByte((D Shr 8) And $FF);
+  EmitRdataByte((D Shr 16) And $FF);
+  EmitRdataByte((D Shr 24) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRdataString : emettre une chaine terminee par zero         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRdataString(Const S : TString);
+Var I : Integer;
+Begin
+  For I := 1 To Length(S) Do
+    EmitRdataByte(Ord(S[I]));
+  EmitRdataByte(0);
+End;
+
+{ ------------------------------------------------------------ }
 { WriteDosHeader : ecrire le DOS Header                          }
 { ------------------------------------------------------------ }
 
@@ -16280,21 +16327,179 @@ Var
   TextAligned, RdataAligned, DataAligned : LongInt;
   ImageSize : LongInt;
   ImportRVA, ImportSize : LongInt;
+  ImageBase : LongInt;
+  IatGetStdHandle, IatWriteFile, IatExitProcess : LongInt;
+  IdtOff, IltOff, IatOff, HntOff, DllNameOff : LongInt;
+  StdOutAddr, WrittenAddr, MsgAddr : LongInt;
+  MsgLen : Integer;
+  Msg : TString;
 Begin
   PeIsCoff := False;
+  ImageBase := PE_IMAGE_BASE_DEFAULT;  { $00400000 }
   
-  { Calculer les RVAs des sections }
-  TextRVA := PE_SECTION_ALIGNMENT;  { $1000 }
+  { Layout PE fixe pour Hello World :                    }
+  {   .text  RVA $1000  - code                           }
+  {   .rdata RVA $2000  - imports                        }
+  {   .data  RVA $3000  - donnees                        }
+  
+  TextRVA   := $1000;
+  RdataRVA  := $2000;
+  DataRVA   := $3000;
+  
+  { Message a afficher }
+  Msg := 'Hello, World!';
+  MsgLen := Length(Msg);
+  
+  { ===== Construire la section .rdata (imports) ===== }
+  { Layout .rdata :                                     }
+  {   Offset 0   : Import Directory Table (IDT) - 40 bytes (1 DLL + null) }
+  {   Offset 40  : Import Lookup Table (ILT) - 16 bytes (3 funcs + null) }
+  {   Offset 56  : Import Address Table (IAT) - 16 bytes (copie de ILT) }
+  {   Offset 72  : Hint/Name Table entries              }
+  {   Offset xxx : DLL name "kernel32.dll"              }
+  
+  IdtOff := 0;       { Import Directory Table }
+  IltOff := 40;      { Import Lookup Table }
+  IatOff := 56;      { Import Address Table }
+  HntOff := 72;      { Hint/Name entries }
+  
+  { Calculer les vrais offsets des Hint/Name entries :
+    GetStdHandle : 2 + 12 + 1 = 15 -> 16 avec padding (offset 0)
+    WriteFile    : 2 + 9 + 1  = 12 (pair)              (offset 16)
+    ExitProcess  : 2 + 11 + 1 = 14 (pair)              (offset 16+12=28)
+    Total apres ExitProcess : 28 + 14 = 42 bytes }
+  DllNameOff := HntOff + 42;  { kernel32.dll\0 = 13 bytes }
+  
+  { Calculer les adresses IAT pour les appels }
+  IatGetStdHandle := ImageBase + RdataRVA + IatOff + 0;
+  IatWriteFile    := ImageBase + RdataRVA + IatOff + 4;
+  IatExitProcess  := ImageBase + RdataRVA + IatOff + 8;
+  
+  PeRdataSize := 0;  { Reset }
+  
+  { Import Directory Table - 1 entree + null }
+  { Entree pour kernel32.dll }
+  EmitRdataDWord(RdataRVA + IltOff);       { Import Lookup Table RVA }
+  EmitRdataDWord(0);                        { TimeDateStamp }
+  EmitRdataDWord(0);                        { ForwarderChain }
+  EmitRdataDWord(RdataRVA + DllNameOff);   { Name RVA }
+  EmitRdataDWord(RdataRVA + IatOff);       { Import Address Table RVA }
+  { Entree null }
+  EmitRdataDWord(0);
+  EmitRdataDWord(0);
+  EmitRdataDWord(0);
+  EmitRdataDWord(0);
+  EmitRdataDWord(0);
+  
+  { Import Lookup Table (ILT) - 3 fonctions + null }
+  EmitRdataDWord(RdataRVA + HntOff + 0);   { -> GetStdHandle }
+  EmitRdataDWord(RdataRVA + HntOff + 16);  { -> WriteFile }
+  EmitRdataDWord(RdataRVA + HntOff + 28);  { -> ExitProcess }
+  EmitRdataDWord(0);                        { null terminator }
+  
+  { Import Address Table (IAT) - copie de ILT, sera patche par le loader }
+  EmitRdataDWord(RdataRVA + HntOff + 0);   { -> GetStdHandle }
+  EmitRdataDWord(RdataRVA + HntOff + 16);  { -> WriteFile }
+  EmitRdataDWord(RdataRVA + HntOff + 28);  { -> ExitProcess }
+  EmitRdataDWord(0);                        { null terminator }
+  
+  { Hint/Name Table entries }
+  { GetStdHandle (offset HntOff + 0) : 2 + 12 + 1 + 1(pad) = 16 }
+  EmitRdataWord(0);                         { Hint }
+  EmitRdataString('GetStdHandle');          { Nom + null = 13 bytes }
+  EmitRdataByte(0);                         { Padding pour atteindre 16 }
+  
+  { WriteFile (offset HntOff + 16) : 2 + 9 + 1 = 12 }
+  EmitRdataWord(0);
+  EmitRdataString('WriteFile');
+  
+  { ExitProcess (offset HntOff + 28) : 2 + 11 + 1 = 14 }
+  EmitRdataWord(0);
+  EmitRdataString('ExitProcess');
+  If (PeRdataSize Mod 2) <> 0 Then EmitRdataByte(0);
+  
+  { DLL name }
+  EmitRdataString('kernel32.dll');
+  
+  ImportRVA := RdataRVA;
+  ImportSize := 40;  { Seulement la taille de l'IDT }
+  
+  { ===== Construire la section .data ===== }
+  PeDataSize := 0;  { Reset }
+  
+  { Offset 0: hStdOut (DWORD) }
+  StdOutAddr := ImageBase + DataRVA + 0;
+  EmitDataDWord(0);
+  
+  { Offset 4: bytesWritten (DWORD) }
+  WrittenAddr := ImageBase + DataRVA + 4;
+  EmitDataDWord(0);
+  
+  { Offset 8: message string }
+  MsgAddr := ImageBase + DataRVA + 8;
+  EmitDataString(Msg);
+  
+  { ===== Construire la section .text (code) ===== }
+  PeTextSize := 0;  { Reset }
+  PeEntryPoint := 0;
+  
+  { _start: }
+  { PUSH -11 (STD_OUTPUT_HANDLE) }
+  EmitTextByte($68);  { PUSH imm32 }
+  EmitTextDWord(-11);
+  
+  { CALL [GetStdHandle] }
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(IatGetStdHandle);
+  
+  { MOV [hStdOut], EAX }
+  EmitTextByte($A3);  { MOV moffs32, EAX }
+  EmitTextDWord(StdOutAddr);
+  
+  { PUSH 0 (lpOverlapped) }
+  EmitTextByte($6A);  { PUSH imm8 }
+  EmitTextByte(0);
+  
+  { PUSH WrittenAddr }
+  EmitTextByte($68);
+  EmitTextDWord(WrittenAddr);
+  
+  { PUSH MsgLen }
+  EmitTextByte($68);
+  EmitTextDWord(MsgLen);
+  
+  { PUSH MsgAddr }
+  EmitTextByte($68);
+  EmitTextDWord(MsgAddr);
+  
+  { PUSH [hStdOut] }
+  EmitTextByte($FF);
+  EmitTextByte($35);
+  EmitTextDWord(StdOutAddr);
+  
+  { CALL [WriteFile] }
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(IatWriteFile);
+  
+  { PUSH 0 (exit code) }
+  EmitTextByte($6A);
+  EmitTextByte(0);
+  
+  { CALL [ExitProcess] }
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(IatExitProcess);
+  
+  { RET }
+  EmitTextByte($C3);
+  
+  { Calculer les tailles alignees }
   TextAligned := PeAlignTo(PeTextSize, PE_SECTION_ALIGNMENT);
-  RdataRVA := TextRVA + TextAligned;
   RdataAligned := PeAlignTo(PeRdataSize, PE_SECTION_ALIGNMENT);
-  DataRVA := RdataRVA + RdataAligned;
   DataAligned := PeAlignTo(PeDataSize, PE_SECTION_ALIGNMENT);
   ImageSize := DataRVA + DataAligned;
-  
-  { Import table dans .rdata }
-  ImportRVA := RdataRVA;
-  ImportSize := PeRdataSize;
   
   { Calculer les offsets fichier }
   TextFileOff := PE_FILE_ALIGNMENT;  { $200 }
