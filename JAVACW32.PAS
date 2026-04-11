@@ -502,7 +502,7 @@
               Avertissement pour les casts potentiellement perdants
             10 fonctions accesseurs
 
-  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [A FAIRE]
+  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [IMPLEMENTE]
             Section .data (variables initialisees) :
               Champ statique int : _JV_ClassName_field DD 0
               Champ statique String : _JV_ClassName_field DD _JK_N (ptr)
@@ -13267,7 +13267,728 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-20)                              }
+{ TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386     }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d elements du segment DATA }
+  DT_NONE              = 0;    { aucun / non defini                    }
+  DT_STATIC_INT        = 1;    { champ statique int : DD 0             }
+  DT_STATIC_BOOL       = 2;    { champ statique boolean : DD 0         }
+  DT_STATIC_CHAR       = 3;    { champ statique char : DD 0            }
+  DT_STATIC_STRING     = 4;    { champ statique String : DD ptr        }
+  DT_STRING_CONST      = 5;    { constante chaine : DB 'x', 0          }
+  DT_FORMAT_CONST      = 6;    { constante de format : DB '...', 0     }
+  DT_SPECIAL_TRUE      = 7;    { _JK_TRUE : DB 'true', 0               }
+  DT_SPECIAL_FALSE     = 8;    { _JK_FALSE : DB 'false', 0             }
+  DT_SPECIAL_NULL      = 9;    { _JK_NULL : DB 'null', 0               }
+  DT_SPECIAL_CRLF      = 10;   { _JK_CRLF : DB 13, 10, 0               }
+  DT_SPECIAL_SPACE     = 11;   { _JK_SPACE : DB ' ', 0                 }
+  DT_BSS_IOBUF         = 12;   { _J_IOBUF : DB 256 DUP(?)              }
+  DT_BSS_NUMBUF        = 13;   { _J_NUMBUF : DB 32 DUP(?)              }
+  DT_RT_STDOUT         = 14;   { _J_STDOUT : DD ?                      }
+  DT_RT_STDIN          = 15;   { _J_STDIN : DD ?                       }
+  DT_RT_WRITTEN        = 16;   { _J_WRITTEN : DD ?                     }
+  DT_RT_READ           = 17;   { _J_READ : DD ?                        }
+  DT_HEAP_AREA         = 18;   { _J_HEAP : DB 65536 DUP(0)             }
+  DT_HEAP_TOP          = 19;   { _J_HEAPTOP : DD 0                     }
+  DT_ARRAY_BLOCK       = 20;   { bloc de DD avec compteur              }
+  DT_MAX               = 20;
+
+  { Limites }
+  DT_MAX_STATIC_FIELDS = 256;  { nombre max de champs statiques        }
+  DT_MAX_STRING_CONST  = 512;  { nombre max de constantes chaines      }
+  DT_MAX_FORMAT_CONST  = 64;   { nombre max de constantes de format    }
+  DT_HEAP_SIZE         = 65536;{ taille du heap en octets              }
+  DT_IOBUF_SIZE        = 256;  { taille du buffer I/O                  }
+  DT_NUMBUF_SIZE       = 32;   { taille du buffer numerique            }
+  DT_DWORD_ALIGN       = 4;    { alignement DWORD (4 octets)           }
+
+Type
+  TDtStaticField = Record
+    ClassName  : TString;      { nom de la classe proprietaire         }
+    FieldName  : TString;      { nom du champ                          }
+    FieldType  : Integer;      { type TYK_*                            }
+    AsmLabel   : TString;      { label ASM _JV_Class_field             }
+    InitValue  : LongInt;      { valeur initiale (int/bool/char)       }
+    InitStrIdx : Integer;      { idx chaine init (si String)           }
+    Line       : Integer;      { ligne de declaration                  }
+  End;
+
+  TDtStringConst = Record
+    Value      : TString;      { contenu de la chaine                  }
+    AsmLabel   : TString;      { label ASM _JK_N                       }
+    Length     : Integer;      { longueur sans le NUL                  }
+    IsFormat   : Boolean;      { True si format (printf-style)         }
+    RefCount   : Integer;      { nombre de references                  }
+  End;
+
+  TDtFormatConst = Record
+    Format     : TString;      { chaine de format                      }
+    AsmLabel   : TString;      { label ASM _JK_FMT_N                   }
+    ArgCount   : Integer;      { nombre d arguments attendus           }
+  End;
+
+Var
+  DtInitialized      : Boolean;    { True si l etat est initialise       }
+  DtStaticFields     : Array[1..DT_MAX_STATIC_FIELDS] Of TDtStaticField;
+  DtStaticCount      : Integer;    { nombre de champs statiques          }
+  DtStringConsts     : Array[1..DT_MAX_STRING_CONST] Of TDtStringConst;
+  DtStringCount      : Integer;    { nombre de constantes chaines        }
+  DtFormatConsts     : Array[1..DT_MAX_FORMAT_CONST] Of TDtFormatConst;
+  DtFormatCount      : Integer;    { nombre de constantes de format      }
+  DtSpecialEmitted   : Boolean;    { True si constantes speciales emises }
+  DtBssEmitted       : Boolean;    { True si section BSS emise           }
+  DtRuntimeEmitted   : Boolean;    { True si vars runtime emises         }
+  DtHeapEmitted      : Boolean;    { True si heap emis                   }
+  DtLabelSeq         : Integer;    { sequence pour labels DT             }
+  DtTotalBytes       : LongInt;    { total octets segment DATA           }
+  DtBssBytes         : LongInt;    { total octets segment BSS            }
+  DtLastType         : Integer;    { dernier type d element              }
+
+{ ------------------------------------------------------------ }
+{ InitDtState : initialiser le sous-systeme segment de donnees  }
+{ ------------------------------------------------------------ }
+
+Procedure InitDtState;
+Var I : Integer;
+Begin
+  DtInitialized      := True;
+  DtStaticCount      := 0;
+  DtStringCount      := 0;
+  DtFormatCount      := 0;
+  DtSpecialEmitted   := False;
+  DtBssEmitted       := False;
+  DtRuntimeEmitted   := False;
+  DtHeapEmitted      := False;
+  DtLabelSeq         := 0;
+  DtTotalBytes       := 0;
+  DtBssBytes         := 0;
+  DtLastType         := DT_NONE;
+  For I := 1 To DT_MAX_STATIC_FIELDS Do
+  Begin
+    DtStaticFields[I].ClassName  := '';
+    DtStaticFields[I].FieldName  := '';
+    DtStaticFields[I].FieldType  := TYK_INT;
+    DtStaticFields[I].AsmLabel   := '';
+    DtStaticFields[I].InitValue  := 0;
+    DtStaticFields[I].InitStrIdx := -1;
+    DtStaticFields[I].Line       := 0;
+  End;
+  For I := 1 To DT_MAX_STRING_CONST Do
+  Begin
+    DtStringConsts[I].Value    := '';
+    DtStringConsts[I].AsmLabel := '';
+    DtStringConsts[I].Length   := 0;
+    DtStringConsts[I].IsFormat := False;
+    DtStringConsts[I].RefCount := 0;
+  End;
+  For I := 1 To DT_MAX_FORMAT_CONST Do
+  Begin
+    DtFormatConsts[I].Format   := '';
+    DtFormatConsts[I].AsmLabel := '';
+    DtFormatConsts[I].ArgCount := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDtLabel : generer un label unique pour segment donnees      }
+{ ------------------------------------------------------------ }
+
+Function GenDtLabel : TString;
+Begin
+  Inc(DtLabelSeq);
+  GenDtLabel := '_JL_DT_' + ItoS(DtLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ DtTypeName : nom textuel d un type d element DATA              }
+{ ------------------------------------------------------------ }
+
+Function DtTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    DT_NONE              : DtTypeName := 'DT_NONE';
+    DT_STATIC_INT        : DtTypeName := 'DT_STATIC_INT';
+    DT_STATIC_BOOL       : DtTypeName := 'DT_STATIC_BOOL';
+    DT_STATIC_CHAR       : DtTypeName := 'DT_STATIC_CHAR';
+    DT_STATIC_STRING     : DtTypeName := 'DT_STATIC_STRING';
+    DT_STRING_CONST      : DtTypeName := 'DT_STRING_CONST';
+    DT_FORMAT_CONST      : DtTypeName := 'DT_FORMAT_CONST';
+    DT_SPECIAL_TRUE      : DtTypeName := 'DT_SPECIAL_TRUE';
+    DT_SPECIAL_FALSE     : DtTypeName := 'DT_SPECIAL_FALSE';
+    DT_SPECIAL_NULL      : DtTypeName := 'DT_SPECIAL_NULL';
+    DT_SPECIAL_CRLF      : DtTypeName := 'DT_SPECIAL_CRLF';
+    DT_SPECIAL_SPACE     : DtTypeName := 'DT_SPECIAL_SPACE';
+    DT_BSS_IOBUF         : DtTypeName := 'DT_BSS_IOBUF';
+    DT_BSS_NUMBUF        : DtTypeName := 'DT_BSS_NUMBUF';
+    DT_RT_STDOUT         : DtTypeName := 'DT_RT_STDOUT';
+    DT_RT_STDIN          : DtTypeName := 'DT_RT_STDIN';
+    DT_RT_WRITTEN        : DtTypeName := 'DT_RT_WRITTEN';
+    DT_RT_READ           : DtTypeName := 'DT_RT_READ';
+    DT_HEAP_AREA         : DtTypeName := 'DT_HEAP_AREA';
+    DT_HEAP_TOP          : DtTypeName := 'DT_HEAP_TOP';
+    DT_ARRAY_BLOCK       : DtTypeName := 'DT_ARRAY_BLOCK';
+  Else
+    DtTypeName := 'DT_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterStaticField : enregistrer un champ statique            }
+{   Retourne l indice ou -1 si table pleine                      }
+{ ------------------------------------------------------------ }
+
+Function RegisterStaticField(Const ClassName, FieldName : TString;
+                             FieldType : Integer;
+                             InitVal : LongInt;
+                             InitStrIdx, Line : Integer) : Integer;
+Var Idx : Integer;
+    Lbl : TString;
+Begin
+  If DtStaticCount >= DT_MAX_STATIC_FIELDS Then
+  Begin
+    CompileError('static fields table full (max ' +
+                 ItoS(DT_MAX_STATIC_FIELDS) + ')', Line);
+    RegisterStaticField := -1;
+    Exit;
+  End;
+  Inc(DtStaticCount);
+  Idx := DtStaticCount;
+  Lbl := '_JV_' + AsmIdent(ClassName) + '_' + AsmIdent(FieldName);
+  DtStaticFields[Idx].ClassName  := ClassName;
+  DtStaticFields[Idx].FieldName  := FieldName;
+  DtStaticFields[Idx].FieldType  := FieldType;
+  DtStaticFields[Idx].AsmLabel   := Lbl;
+  DtStaticFields[Idx].InitValue  := InitVal;
+  DtStaticFields[Idx].InitStrIdx := InitStrIdx;
+  DtStaticFields[Idx].Line       := Line;
+  DtLastType := DT_STATIC_INT;
+  If FieldType = TYK_BOOLEAN Then DtLastType := DT_STATIC_BOOL
+  Else If FieldType = TYK_CHAR Then DtLastType := DT_STATIC_CHAR
+  Else If FieldType = TYK_STRING Then DtLastType := DT_STATIC_STRING;
+  Inc(DtTotalBytes, DT_DWORD_ALIGN);
+  RegisterStaticField := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterStringConst : enregistrer une constante chaine         }
+{   Retourne l indice ou -1 si table pleine                      }
+{   Si la chaine existe deja, retourne l indice existant         }
+{ ------------------------------------------------------------ }
+
+Function RegisterStringConst(Const Value : TString;
+                             IsFormat : Boolean) : Integer;
+Var I, Idx : Integer;
+    Lbl    : TString;
+Begin
+  { Verifier si la chaine existe deja }
+  For I := 1 To DtStringCount Do
+  Begin
+    If DtStringConsts[I].Value = Value Then
+    Begin
+      Inc(DtStringConsts[I].RefCount);
+      RegisterStringConst := I;
+      Exit;
+    End;
+  End;
+
+  { Ajouter une nouvelle chaine }
+  If DtStringCount >= DT_MAX_STRING_CONST Then
+  Begin
+    CompileError('string constants table full (max ' +
+                 ItoS(DT_MAX_STRING_CONST) + ')', LexLineNo);
+    RegisterStringConst := -1;
+    Exit;
+  End;
+  Inc(DtStringCount);
+  Idx := DtStringCount;
+  Lbl := '_JK_' + ItoS(Idx);
+  DtStringConsts[Idx].Value    := Value;
+  DtStringConsts[Idx].AsmLabel := Lbl;
+  DtStringConsts[Idx].Length   := Length(Value);
+  DtStringConsts[Idx].IsFormat := IsFormat;
+  DtStringConsts[Idx].RefCount := 1;
+  DtLastType := DT_STRING_CONST;
+  Inc(DtTotalBytes, Length(Value) + 1);
+  { Alignement sur DWORD si necessaire }
+  While (DtTotalBytes Mod DT_DWORD_ALIGN) <> 0 Do
+    Inc(DtTotalBytes);
+  RegisterStringConst := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterFormatConst : enregistrer une constante de format      }
+{   Retourne l indice ou -1 si table pleine                      }
+{ ------------------------------------------------------------ }
+
+Function RegisterFormatConst(Const Fmt : TString;
+                             ArgCount : Integer) : Integer;
+Var Idx : Integer;
+    Lbl : TString;
+Begin
+  If DtFormatCount >= DT_MAX_FORMAT_CONST Then
+  Begin
+    CompileError('format constants table full (max ' +
+                 ItoS(DT_MAX_FORMAT_CONST) + ')', LexLineNo);
+    RegisterFormatConst := -1;
+    Exit;
+  End;
+  Inc(DtFormatCount);
+  Idx := DtFormatCount;
+  Lbl := '_JK_FMT_' + ItoS(Idx);
+  DtFormatConsts[Idx].Format   := Fmt;
+  DtFormatConsts[Idx].AsmLabel := Lbl;
+  DtFormatConsts[Idx].ArgCount := ArgCount;
+  DtLastType := DT_FORMAT_CONST;
+  Inc(DtTotalBytes, Length(Fmt) + 1);
+  While (DtTotalBytes Mod DT_DWORD_ALIGN) <> 0 Do
+    Inc(DtTotalBytes);
+  RegisterFormatConst := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindStaticField : trouver un champ statique par nom            }
+{   Retourne l indice ou -1 si non trouve                        }
+{ ------------------------------------------------------------ }
+
+Function FindStaticField(Const ClassName, FieldName : TString) : Integer;
+Var I : Integer;
+Begin
+  FindStaticField := -1;
+  For I := 1 To DtStaticCount Do
+  Begin
+    If (DtStaticFields[I].ClassName = ClassName) And
+       (DtStaticFields[I].FieldName = FieldName) Then
+    Begin
+      FindStaticField := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindStringConst : trouver une constante chaine par valeur      }
+{   Retourne l indice ou -1 si non trouve                        }
+{ ------------------------------------------------------------ }
+
+Function FindStringConst(Const Value : TString) : Integer;
+Var I : Integer;
+Begin
+  FindStringConst := -1;
+  For I := 1 To DtStringCount Do
+  Begin
+    If DtStringConsts[I].Value = Value Then
+    Begin
+      FindStringConst := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetStaticFieldLabel : obtenir le label ASM d un champ statique }
+{ ------------------------------------------------------------ }
+
+Function GetStaticFieldLabel(Idx : Integer) : TString;
+Begin
+  If (Idx >= 1) And (Idx <= DtStaticCount) Then
+    GetStaticFieldLabel := DtStaticFields[Idx].AsmLabel
+  Else
+    GetStaticFieldLabel := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ GetStringConstLabel : obtenir le label ASM d une constante     }
+{ ------------------------------------------------------------ }
+
+Function GetStringConstLabel(Idx : Integer) : TString;
+Begin
+  If (Idx >= 1) And (Idx <= DtStringCount) Then
+    GetStringConstLabel := DtStringConsts[Idx].AsmLabel
+  Else
+    GetStringConstLabel := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ EscapeAsmString : echapper une chaine pour assembleur MASM     }
+{   Remplace les caracteres speciaux par leur code ASCII        }
+{ ------------------------------------------------------------ }
+
+Function EscapeAsmString(Const S : TString) : TString;
+Var I   : Integer;
+    Ch  : Char;
+    Res : TString;
+Begin
+  Res := '';
+  For I := 1 To Length(S) Do
+  Begin
+    Ch := S[I];
+    If (Ord(Ch) >= 32) And (Ord(Ch) <= 126) And
+       (Ch <> '''') And (Ch <> '"') Then
+    Begin
+      If Res = '' Then
+        Res := '''' + Ch
+      Else If Res[Length(Res)] = '''' Then
+        Res := Res + Ch
+      Else
+        Res := Res + ', ''' + Ch;
+    End
+    Else
+    Begin
+      { Caractere special -> code ASCII }
+      If (Length(Res) > 0) And (Res[Length(Res)] <> '''') Then
+        Res := Res + ''''
+      Else If (Length(Res) > 0) Then
+        Res := Res + '''';
+      If Res = '' Then
+        Res := ItoS(Ord(Ch))
+      Else
+        Res := Res + ', ' + ItoS(Ord(Ch));
+    End;
+  End;
+  { Fermer la derniere chaine si ouverte }
+  If (Length(Res) > 0) And (Res[1] = '''') And
+     (Res[Length(Res)] <> '''') Then
+    Res := Res + '''';
+  EscapeAsmString := Res;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitSpecialConstants : emettre les constantes speciales        }
+{   _JK_TRUE, _JK_FALSE, _JK_NULL, _JK_CRLF, _JK_SPACE          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitSpecialConstants;
+Begin
+  If DtSpecialEmitted Then Exit;
+  DtSpecialEmitted := True;
+  WriteLn('  ; --- Constantes speciales ---');
+  WriteLn('_JK_TRUE   DB ''true'', 0');
+  DtLastType := DT_SPECIAL_TRUE;
+  Inc(DtTotalBytes, 5);
+  WriteLn('_JK_FALSE  DB ''false'', 0');
+  DtLastType := DT_SPECIAL_FALSE;
+  Inc(DtTotalBytes, 6);
+  WriteLn('_JK_NULL   DB ''null'', 0');
+  DtLastType := DT_SPECIAL_NULL;
+  Inc(DtTotalBytes, 5);
+  WriteLn('_JK_CRLF   DB 13, 10, 0');
+  DtLastType := DT_SPECIAL_CRLF;
+  Inc(DtTotalBytes, 3);
+  WriteLn('_JK_SPACE  DB '' '', 0');
+  DtLastType := DT_SPECIAL_SPACE;
+  Inc(DtTotalBytes, 2);
+  { Alignement }
+  WriteLn('           ALIGN 4');
+  While (DtTotalBytes Mod DT_DWORD_ALIGN) <> 0 Do
+    Inc(DtTotalBytes);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStaticFieldData : emettre les champs statiques             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStaticFieldData;
+Var I : Integer;
+Begin
+  If DtStaticCount = 0 Then Exit;
+  WriteLn('  ; --- Champs statiques ---');
+  For I := 1 To DtStaticCount Do
+  Begin
+    Write(DtStaticFields[I].AsmLabel, ' DD ');
+    Case DtStaticFields[I].FieldType Of
+      TYK_INT, TYK_BOOLEAN, TYK_CHAR:
+        WriteLn(DtStaticFields[I].InitValue);
+      TYK_STRING:
+        Begin
+          If DtStaticFields[I].InitStrIdx > 0 Then
+            WriteLn('OFFSET ',
+                    DtStringConsts[DtStaticFields[I].InitStrIdx].AsmLabel)
+          Else
+            WriteLn('0');
+        End;
+    Else
+      WriteLn('0');
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStringData : emettre les constantes chaines                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStringData;
+Var I     : Integer;
+    Esc   : TString;
+Begin
+  If DtStringCount = 0 Then Exit;
+  WriteLn('  ; --- Constantes chaines ---');
+  For I := 1 To DtStringCount Do
+  Begin
+    Esc := EscapeAsmString(DtStringConsts[I].Value);
+    If Length(Esc) = 0 Then
+      WriteLn(DtStringConsts[I].AsmLabel, ' DB 0')
+    Else
+      WriteLn(DtStringConsts[I].AsmLabel, ' DB ', Esc, ', 0');
+  End;
+  WriteLn('           ALIGN 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFormatData : emettre les constantes de format              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFormatData;
+Var I   : Integer;
+    Esc : TString;
+Begin
+  If DtFormatCount = 0 Then Exit;
+  WriteLn('  ; --- Constantes de format ---');
+  For I := 1 To DtFormatCount Do
+  Begin
+    Esc := EscapeAsmString(DtFormatConsts[I].Format);
+    If Length(Esc) = 0 Then
+      WriteLn(DtFormatConsts[I].AsmLabel, ' DB 0')
+    Else
+      WriteLn(DtFormatConsts[I].AsmLabel, ' DB ', Esc, ', 0');
+  End;
+  WriteLn('           ALIGN 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitHeapArea : emettre le heap dynamique                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitHeapArea;
+Begin
+  If DtHeapEmitted Then Exit;
+  DtHeapEmitted := True;
+  WriteLn('  ; --- Heap dynamique ---');
+  WriteLn('_J_HEAP    DB ', DT_HEAP_SIZE, ' DUP(0)');
+  WriteLn('_J_HEAPTOP DD 0');
+  DtLastType := DT_HEAP_TOP;
+  Inc(DtTotalBytes, DT_HEAP_SIZE + 4);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitArrayData : emettre un bloc de donnees pour tableau        }
+{   Format: compteur (DD) suivi des elements (DD chaque)        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitArrayData(Const Lbl : TString; ElemCount : Integer);
+Var I : Integer;
+Begin
+  WriteLn('  ; tableau ', Lbl, ' [', ElemCount, ' elements]');
+  WriteLn(Lbl, ':');
+  WriteLn('  DD ', ElemCount, '  ; compteur elements');
+  For I := 1 To ElemCount Do
+    WriteLn('  DD 0');
+  DtLastType := DT_ARRAY_BLOCK;
+  Inc(DtTotalBytes, (ElemCount + 1) * 4);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataSection : emettre la section .data complete            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataSection;
+Begin
+  WriteLn('; ============================================================');
+  WriteLn('; Section .data (variables initialisees)');
+  WriteLn('; ============================================================');
+  WriteLn('.DATA');
+  WriteLn;
+  EmitSpecialConstants;
+  WriteLn;
+  EmitStaticFieldData;
+  WriteLn;
+  EmitStringData;
+  WriteLn;
+  EmitFormatData;
+  WriteLn;
+  EmitHeapArea;
+  WriteLn;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRuntimeVars : emettre les variables runtime dans BSS       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRuntimeVars;
+Begin
+  If DtRuntimeEmitted Then Exit;
+  DtRuntimeEmitted := True;
+  WriteLn('  ; --- Variables runtime ---');
+  WriteLn('_J_STDOUT  DD ?');
+  DtLastType := DT_RT_STDOUT;
+  Inc(DtBssBytes, 4);
+  WriteLn('_J_STDIN   DD ?');
+  DtLastType := DT_RT_STDIN;
+  Inc(DtBssBytes, 4);
+  WriteLn('_J_WRITTEN DD ?');
+  DtLastType := DT_RT_WRITTEN;
+  Inc(DtBssBytes, 4);
+  WriteLn('_J_READ    DD ?');
+  DtLastType := DT_RT_READ;
+  Inc(DtBssBytes, 4);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBssSection : emettre la section .data? (BSS)               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBssSection;
+Begin
+  If DtBssEmitted Then Exit;
+  DtBssEmitted := True;
+  WriteLn('; ============================================================');
+  WriteLn('; Section .data? (BSS - variables non initialisees)');
+  WriteLn('; ============================================================');
+  WriteLn('.DATA?');
+  WriteLn;
+  WriteLn('  ; --- Buffers I/O ---');
+  WriteLn('_J_IOBUF   DB ', DT_IOBUF_SIZE, ' DUP(?)');
+  DtLastType := DT_BSS_IOBUF;
+  Inc(DtBssBytes, DT_IOBUF_SIZE);
+  WriteLn('_J_NUMBUF  DB ', DT_NUMBUF_SIZE, ' DUP(?)');
+  DtLastType := DT_BSS_NUMBUF;
+  Inc(DtBssBytes, DT_NUMBUF_SIZE);
+  WriteLn;
+  EmitRuntimeVars;
+  WriteLn;
+  { Buffer pour conversion char->String }
+  WriteLn('  ; --- Buffer conversion ---');
+  WriteLn('_JX_CV_BUF DB 4 DUP(?)');
+  Inc(DtBssBytes, 4);
+  WriteLn;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataSectionComplete : emettre DATA + BSS                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataSectionComplete;
+Begin
+  EmitDataSection;
+  EmitBssSection;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetDtStaticFieldType : obtenir le type d un champ statique     }
+{ ------------------------------------------------------------ }
+
+Function GetDtStaticFieldType(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 1) And (Idx <= DtStaticCount) Then
+    GetDtStaticFieldType := DtStaticFields[Idx].FieldType
+  Else
+    GetDtStaticFieldType := TYK_INT;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpDtState : afficher l etat du sous-systeme DATA             }
+{ ------------------------------------------------------------ }
+
+Procedure DumpDtState;
+Var I : Integer;
+Begin
+  WriteLn('--- DtState dump ---');
+  WriteLn('  DtInitialized     : ', DtInitialized);
+  WriteLn('  DtStaticCount     : ', DtStaticCount);
+  WriteLn('  DtStringCount     : ', DtStringCount);
+  WriteLn('  DtFormatCount     : ', DtFormatCount);
+  WriteLn('  DtTotalBytes      : ', DtTotalBytes);
+  WriteLn('  DtBssBytes        : ', DtBssBytes);
+  WriteLn('  DtSpecialEmitted  : ', DtSpecialEmitted);
+  WriteLn('  DtBssEmitted      : ', DtBssEmitted);
+  WriteLn('  DtRuntimeEmitted  : ', DtRuntimeEmitted);
+  WriteLn('  DtHeapEmitted     : ', DtHeapEmitted);
+  WriteLn('  DtLastType        : ', DtTypeName(DtLastType));
+  If DtStaticCount > 0 Then
+  Begin
+    WriteLn('  --- Champs statiques ---');
+    For I := 1 To DtStaticCount Do
+      WriteLn('    [', I, '] ', DtStaticFields[I].ClassName, '.',
+              DtStaticFields[I].FieldName, ' : ',
+              TypeKindStr(DtStaticFields[I].FieldType), ' = ',
+              DtStaticFields[I].AsmLabel);
+  End;
+  If DtStringCount > 0 Then
+  Begin
+    WriteLn('  --- Constantes chaines ---');
+    For I := 1 To DtStringCount Do
+      WriteLn('    [', I, '] ', DtStringConsts[I].AsmLabel, ' = "',
+              DtStringConsts[I].Value, '" (refs=',
+              DtStringConsts[I].RefCount, ')');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 21)                              }
+{ ------------------------------------------------------------ }
+
+Function IsDtInitialized : Boolean;
+Begin
+  IsDtInitialized := DtInitialized;
+End;
+
+Function IsDtEmpty : Boolean;
+Begin
+  IsDtEmpty := (DtStaticCount = 0) And (DtStringCount = 0) And
+               (DtFormatCount = 0);
+End;
+
+Function GetDtStaticCount : LongInt;
+Begin
+  GetDtStaticCount := DtStaticCount;
+End;
+
+Function GetDtStringCount : LongInt;
+Begin
+  GetDtStringCount := DtStringCount;
+End;
+
+Function GetDtFormatCount : LongInt;
+Begin
+  GetDtFormatCount := DtFormatCount;
+End;
+
+Function GetDtTotalBytes : LongInt;
+Begin
+  GetDtTotalBytes := DtTotalBytes;
+End;
+
+Function GetDtBssBytes : LongInt;
+Begin
+  GetDtBssBytes := DtBssBytes;
+End;
+
+Function GetDtLabelSeq : LongInt;
+Begin
+  GetDtLabelSeq := DtLabelSeq;
+End;
+
+Function GetDtLastType : Integer;
+Begin
+  GetDtLastType := DtLastType;
+End;
+
+Function GetDtStatus : TString;
+Begin
+  If Not DtInitialized Then
+    GetDtStatus := 'Not initialized'
+  Else
+    GetDtStatus := ItoS(DtStaticCount) + ' static fields, ' +
+                   ItoS(DtStringCount) + ' strings, ' +
+                   ItoS(DtFormatCount) + ' formats, ' +
+                   ItoS(DtTotalBytes) + ' DATA bytes, ' +
+                   ItoS(DtBssBytes) + ' BSS bytes';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-21)                              }
 { ============================================================ }
 
 Begin
@@ -13300,16 +14021,17 @@ Begin
   InitExState;
   InitImState;
   InitCvState;
+  InitDtState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-20) }
+  { Boucle de tokenisation (TODO 02-21) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 21..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 22..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;

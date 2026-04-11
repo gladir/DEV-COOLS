@@ -494,7 +494,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
               Avertissement pour les casts potentiellement perdants
             10 fonctions accesseurs
 
-  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [A FAIRE]
+  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [IMPLEMENTE]
             Section .data (variables initialisees) :
               Champ statique int : _JV_ClassName_field DD 0
               Champ statique String : _JV_ClassName_field DD _JK_N (ptr)
