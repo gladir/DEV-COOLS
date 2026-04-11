@@ -7,7 +7,7 @@ Il possède également des IDE, comme DEVENV :
 
 <img width="639" height="479" alt="image" src="https://github.com/user-attachments/assets/bc6193a5-1ae5-471b-a9d5-54619b45407b" />
 
-Lequel supporte, les langages de programmations comme ABAP/4, Ada, C, C#, Pascal,...
+Lequel supporte, les langages de programmations comme ABAP/4, Ada, C, C#, Java, Pascal,...
 
 <h2>Liste des fichiers</h2>
 
@@ -492,6 +492,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		<tr>
 			<td><b>PSPCW32.PAS</b></td>
 			<td>Cette commande permet de compiler du PSP (Pascal Server Pages) pour de l'assembleur du microprocesseur 80386 (en véritable exécutable Windows 32 bits de format EXE PE Windows).</td>
+		</tr>
+		<tr>
+			<td><b>PYTHON86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur de Python pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
 			<td><b>QPUDEP.PAS</b></td>
