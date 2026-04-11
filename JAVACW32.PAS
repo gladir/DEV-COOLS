@@ -1362,6 +1362,11 @@ Var
   LexColNo    : Integer;       { colonne courante dans LexLine         }
   LexEOF      : Boolean;       { fin de fichier atteinte ?             }
 
+  { Buffer source pour rewind (boucles while) }
+  LexSrcBuf   : Array[1..8192] Of TString;  { buffer des lignes source }
+  LexSrcCount : Integer;       { nombre de lignes dans le buffer       }
+  LexUseBuffer: Boolean;       { True si on lit depuis le buffer       }
+
   { Token courant }
   CurTokKind  : Integer;       { type de token (TK_*)                  }
   CurTokStr   : TString;       { valeur textuelle du token             }
@@ -1372,6 +1377,20 @@ Var
 
   { Compteur de tokens }
   LexTokCount : LongInt;       { nombre total de tokens emis           }
+
+Type
+  { Etat sauvegarde du lexer pour rewind }
+  TLexState = Record
+    LineNo   : Integer;
+    ColNo    : Integer;
+    IsEOF    : Boolean;
+    Line     : TString;
+    TokKind  : Integer;
+    TokStr   : TString;
+    TokInt   : LongInt;
+    TokLine  : Integer;
+    TokCol   : Integer;
+  End;
 
 { ------------------------------------------------------------ }
 { Fonctions de classification de caracteres                    }
@@ -1426,19 +1445,79 @@ Function LookupKeyword(Const S : TString) : Integer; Forward;
 Procedure LexNextLine;
 Begin
   If LexEOF Then Exit;
-  If EOF(LexSrcF) Then
+  If LexUseBuffer Then
   Begin
-    LexEOF   := True;
-    LexLine  := '';
-    LexColNo := 1;
+    { Lire depuis le buffer }
+    If LexLineNo >= LexSrcCount Then
+    Begin
+      LexEOF   := True;
+      LexLine  := '';
+      LexColNo := 1;
+    End
+    Else
+    Begin
+      Inc(LexLineNo);
+      LexLine  := LexSrcBuf[LexLineNo];
+      LexColNo := 1;
+    End;
   End
   Else
   Begin
-    ReadLn(LexSrcF, LexLine);
-    Inc(LexLineNo);
-    Inc(TotalLines);
-    LexColNo := 1;
+    If EOF(LexSrcF) Then
+    Begin
+      LexEOF   := True;
+      LexLine  := '';
+      LexColNo := 1;
+    End
+    Else
+    Begin
+      ReadLn(LexSrcF, LexLine);
+      Inc(LexLineNo);
+      Inc(TotalLines);
+      LexColNo := 1;
+      { Stocker dans le buffer }
+      If LexLineNo <= 8192 Then
+      Begin
+        LexSrcBuf[LexLineNo] := LexLine;
+        LexSrcCount := LexLineNo;
+      End;
+    End;
   End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexSaveState : sauvegarder l etat du lexer                   }
+{ ------------------------------------------------------------ }
+
+Procedure LexSaveState(Var St : TLexState);
+Begin
+  St.LineNo  := LexLineNo;
+  St.ColNo   := LexColNo;
+  St.IsEOF   := LexEOF;
+  St.Line    := LexLine;
+  St.TokKind := CurTokKind;
+  St.TokStr  := CurTokStr;
+  St.TokInt  := CurTokInt;
+  St.TokLine := CurTokLine;
+  St.TokCol  := CurTokCol;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexRestoreState : restaurer l etat du lexer depuis buffer    }
+{ ------------------------------------------------------------ }
+
+Procedure LexRestoreState(Const St : TLexState);
+Begin
+  LexLineNo   := St.LineNo;
+  LexColNo    := St.ColNo;
+  LexEOF      := St.IsEOF;
+  LexLine     := St.Line;
+  LexUseBuffer := True;
+  CurTokKind  := St.TokKind;
+  CurTokStr   := St.TokStr;
+  CurTokInt   := St.TokInt;
+  CurTokLine  := St.TokLine;
+  CurTokCol   := St.TokCol;
 End;
 
 { ------------------------------------------------------------ }
@@ -1446,6 +1525,7 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure LexInit;
+Var TmpLine : TString;
 Begin
   Assign(LexSrcF, Opts.SrcFile);
   {$I-}
@@ -1454,10 +1534,26 @@ Begin
   If IOResult <> 0 Then
     FatalError('Impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
   LexOpened   := True;
+
+  { Lire tout le fichier dans le buffer }
+  LexSrcCount := 0;
+  While Not EOF(LexSrcF) Do
+  Begin
+    ReadLn(LexSrcF, TmpLine);
+    Inc(LexSrcCount);
+    If LexSrcCount <= 8192 Then
+      LexSrcBuf[LexSrcCount] := TmpLine;
+  End;
+  Close(LexSrcF);
+  LexOpened := False;
+
+  { Initialiser le lexer en mode buffer }
   LexLineNo   := 0;
   LexColNo    := 1;
   LexEOF      := False;
   LexLine     := '';
+  LexUseBuffer := True;
+  TotalLines  := LexSrcCount;
   CurTokKind  := TK_EOF;
   CurTokStr   := '';
   CurTokInt   := 0;
@@ -19378,17 +19474,39 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Variables globales pour break/continue dans les boucles        }
+{ ------------------------------------------------------------ }
+
+Var
+  LoopBreakFlag    : Boolean;  { True si break rencontre              }
+  LoopContinueFlag : Boolean;  { True si continue rencontre           }
+
+{ ------------------------------------------------------------ }
 { ParseBlock : parser un bloc d instructions                     }
 {   Appele pour les corps de if/else                             }
 { ------------------------------------------------------------ }
 
 Procedure ParseBlock;
+Var Depth : Integer;
 Begin
   If CurTokKind = TK_LBRACE Then
   Begin
     ParserAdvance; (* consommer lbrace *)
-    While (CurTokKind <> TK_RBRACE) And (CurTokKind <> TK_EOF) Do
+    While (CurTokKind <> TK_RBRACE) And (CurTokKind <> TK_EOF) And
+          (Not LoopBreakFlag) And (Not LoopContinueFlag) Do
       ParseOneStatement;
+    { Si break ou continue, sauter le reste du bloc }
+    If (LoopBreakFlag Or LoopContinueFlag) And
+       (CurTokKind <> TK_RBRACE) And (CurTokKind <> TK_EOF) Then
+    Begin
+      Depth := 1;
+      While (CurTokKind <> TK_EOF) And (Depth > 0) Do
+      Begin
+        If CurTokKind = TK_LBRACE Then Inc(Depth)
+        Else If CurTokKind = TK_RBRACE Then Dec(Depth);
+        If Depth > 0 Then ParserAdvance;
+      End;
+    End;
     If CurTokKind = TK_RBRACE Then
       ParserAdvance; (* consommer rbrace *)
   End
@@ -19486,10 +19604,96 @@ Begin
   End;
 End;
 
+Const
+  WHILE_MAX_ITER = 100000;     { securite : iterations max             }
+
+{ ------------------------------------------------------------ }
+{ ParseWhileStatement : simuler une boucle while au compile-time }
+{   Le mot-cle 'while' a deja ete consomme par l appelant.       }
+{   Sauvegarde l etat du lexer et reboucle tant que la condition }
+{   est vraie, avec limite de securite.                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseWhileStatement;
+Var
+  SavedState : TLexState;
+  CondExpr   : TExprVal;
+  CondVal    : Boolean;
+  CondKnown  : Boolean;
+  IterCount  : LongInt;
+Begin
+  { Sauvegarder l etat juste avant le ( de la condition }
+  LexSaveState(SavedState);
+
+  IterCount := 0;
+  While IterCount < WHILE_MAX_ITER Do
+  Begin
+    Inc(IterCount);
+
+    { Restaurer au debut de la condition }
+    LexRestoreState(SavedState);
+
+    { Parser la condition entre parentheses }
+    If CurTokKind = TK_LPAREN Then
+      ParserAdvance
+    Else
+    Begin
+      CompileError('expected ( after while', LexLineNo);
+      Exit;
+    End;
+
+    CondExpr := ParseExpr;
+
+    If CurTokKind = TK_RPAREN Then
+      ParserAdvance
+    Else
+    Begin
+      CompileError('expected ) after while condition', LexLineNo);
+      Exit;
+    End;
+
+    { Evaluer la condition }
+    CondKnown := False;
+    CondVal   := False;
+    If CondExpr.Kind = EK_IMM Then
+    Begin
+      CondKnown := True;
+      CondVal   := (CondExpr.ImmVal <> 0);
+    End;
+
+    { Si condition fausse ou inconnue, sortir }
+    If (Not CondKnown) Or (Not CondVal) Then
+    Begin
+      { Sauter le bloc }
+      SkipBlock;
+      Exit;
+    End;
+
+    { Condition vraie : parser le corps }
+    LoopBreakFlag    := False;
+    LoopContinueFlag := False;
+    ParseBlock;
+
+    { Si break rencontre, sortir de la boucle }
+    If LoopBreakFlag Then
+    Begin
+      LoopBreakFlag := False;
+      Exit;
+    End;
+
+    { Si continue, on reboucle (le flag est deja gere) }
+    LoopContinueFlag := False;
+  End;
+
+  { Securite : trop d iterations }
+  If IterCount >= WHILE_MAX_ITER Then
+    CompileError('while loop exceeded maximum iterations', LexLineNo);
+End;
+
 { ------------------------------------------------------------ }
 { ParseOneStatement : parser une instruction Java                }
 {   Gere : declarations, affectations, System.out.println,       }
-{   if/else, class, accolades de bloc, etc.                      }
+{   if/else, while, break, continue, class, blocs, etc.          }
 { ------------------------------------------------------------ }
 
 Procedure ParseOneStatement;
@@ -19517,6 +19721,26 @@ Begin
   Begin
     ParserAdvance; { consommer if }
     ParseIfStatement;
+  End
+  { while statement }
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'while') Then
+  Begin
+    ParserAdvance; { consommer while }
+    ParseWhileStatement;
+  End
+  { break }
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'break') Then
+  Begin
+    ParserAdvance; { consommer break }
+    If CurTokKind = TK_SEMICOLON Then ParserAdvance;
+    LoopBreakFlag := True;
+  End
+  { continue }
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'continue') Then
+  Begin
+    ParserAdvance; { consommer continue }
+    If CurTokKind = TK_SEMICOLON Then ParserAdvance;
+    LoopContinueFlag := True;
   End
   { Assignation ou post-increment d une variable }
   Else If CurTokKind = TK_IDENT Then
