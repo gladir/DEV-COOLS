@@ -5190,7 +5190,7 @@ Begin
   If CurTokKind = TK_LPAREN Then
   Begin
     ParserAdvance; { consommer ( }
-    
+
     { Liste vide si ) immediatement = println() seul }
     If CurTokKind = TK_RPAREN Then
     Begin
@@ -5201,11 +5201,11 @@ Begin
       ParseSysOutCall := R;
       Exit;
     End;
-    
+
     { Sauvegarder le token courant avant parse }
     SavedTok  := CurTokStr;
     SavedKind := CurTokKind;
-    
+
     { Cas simple : litterale chaine }
     If CurTokKind = TK_STRING Then
     Begin
@@ -5244,7 +5244,7 @@ Begin
       SymI := SymFind(CurTokStr);
       { Evaluer l expression complete - cela consomme les tokens }
       ArgExpr := ParseExpr;
-      
+
       { Si c est une valeur immediate (expression constante evaluee) }
       If ArgExpr.Kind = EK_IMM Then
       Begin
@@ -5334,14 +5334,14 @@ Begin
         { Expression non evaluable au compile-time }
         AddOutMsgStr('?', IsPrintln, LexLineNo);
     End;
-    
+
     { Consommer les arguments supplementaires (concatenation) }
     While CurTokKind = TK_COMMA Do
     Begin
       ParserAdvance;
       ArgExpr := ParseExpr;
     End;
-    
+
     If CurTokKind = TK_RPAREN Then
       ParserAdvance
     Else
@@ -16902,25 +16902,25 @@ Var
 Begin
   PeIsCoff := False;
   ImageBase := PE_IMAGE_BASE_DEFAULT;  { $00400000 }
-  
+
   { Verifier si des messages de sortie ont ete collectes }
   { Les buffers PeTextSize et PeDataSize seront deja remplis }
   { par EmitCompiledOutput si OutMsgCount > 0               }
   HasCollectedOutputs := (OutMsgCount > 0);
-  
+
   { Layout PE fixe :                                      }
   {   .text  RVA $1000  - code                           }
   {   .rdata RVA $2000  - imports                        }
   {   .data  RVA $3000  - donnees                        }
-  
+
   TextRVA   := $1000;
   RdataRVA  := $2000;
   DataRVA   := $3000;
-  
+
   { Message a afficher (par defaut) }
   Msg := 'Hello, World!';
   MsgLen := Length(Msg);
-  
+
   { ===== Construire la section .rdata (imports) ===== }
   { Layout .rdata :                                     }
   {   Offset 0   : Import Directory Table (IDT) - 40 bytes (1 DLL + null) }
@@ -16928,26 +16928,26 @@ Begin
   {   Offset 56  : Import Address Table (IAT) - 16 bytes (copie de ILT) }
   {   Offset 72  : Hint/Name Table entries              }
   {   Offset xxx : DLL name "kernel32.dll"              }
-  
+
   IdtOff := 0;       { Import Directory Table }
   IltOff := 40;      { Import Lookup Table }
   IatOff := 56;      { Import Address Table }
   HntOff := 72;      { Hint/Name entries }
-  
+
   { Calculer les vrais offsets des Hint/Name entries :
     GetStdHandle : 2 + 12 + 1 = 15 -> 16 avec padding (offset 0)
     WriteFile    : 2 + 9 + 1  = 12 (pair)              (offset 16)
     ExitProcess  : 2 + 11 + 1 = 14 (pair)              (offset 16+12=28)
     Total apres ExitProcess : 28 + 14 = 42 bytes }
   DllNameOff := HntOff + 42;  { kernel32.dll\0 = 13 bytes }
-  
+
   { Calculer les adresses IAT pour les appels }
   IatGetStdHandle := ImageBase + RdataRVA + IatOff + 0;
   IatWriteFile    := ImageBase + RdataRVA + IatOff + 4;
   IatExitProcess  := ImageBase + RdataRVA + IatOff + 8;
-  
+
   PeRdataSize := 0;  { Reset }
-  
+
   { Import Directory Table - 1 entree + null }
   { Entree pour kernel32.dll }
   EmitRdataDWord(RdataRVA + IltOff);       { Import Lookup Table RVA }
@@ -16961,132 +16961,132 @@ Begin
   EmitRdataDWord(0);
   EmitRdataDWord(0);
   EmitRdataDWord(0);
-  
+
   { Import Lookup Table (ILT) - 3 fonctions + null }
   EmitRdataDWord(RdataRVA + HntOff + 0);   { -> GetStdHandle }
   EmitRdataDWord(RdataRVA + HntOff + 16);  { -> WriteFile }
   EmitRdataDWord(RdataRVA + HntOff + 28);  { -> ExitProcess }
   EmitRdataDWord(0);                        { null terminator }
-  
+
   { Import Address Table (IAT) - copie de ILT, sera patche par le loader }
   EmitRdataDWord(RdataRVA + HntOff + 0);   { -> GetStdHandle }
   EmitRdataDWord(RdataRVA + HntOff + 16);  { -> WriteFile }
   EmitRdataDWord(RdataRVA + HntOff + 28);  { -> ExitProcess }
   EmitRdataDWord(0);                        { null terminator }
-  
+
   { Hint/Name Table entries }
   { GetStdHandle (offset HntOff + 0) : 2 + 12 + 1 + 1(pad) = 16 }
   EmitRdataWord(0);                         { Hint }
   EmitRdataString('GetStdHandle');          { Nom + null = 13 bytes }
   EmitRdataByte(0);                         { Padding pour atteindre 16 }
-  
+
   { WriteFile (offset HntOff + 16) : 2 + 9 + 1 = 12 }
   EmitRdataWord(0);
   EmitRdataString('WriteFile');
-  
+
   { ExitProcess (offset HntOff + 28) : 2 + 11 + 1 = 14 }
   EmitRdataWord(0);
   EmitRdataString('ExitProcess');
   If (PeRdataSize Mod 2) <> 0 Then EmitRdataByte(0);
-  
+
   { DLL name }
   EmitRdataString('kernel32.dll');
-  
+
   ImportRVA := RdataRVA;
   ImportSize := 40;  { Seulement la taille de l'IDT }
-  
+
   { ===== Construire la section .data ===== }
   If Not HasCollectedOutputs Then
   Begin
     PeDataSize := 0;  { Reset }
-  
+
     { Offset 0: hStdOut (DWORD) }
     StdOutAddr := ImageBase + DataRVA + 0;
     EmitDataDWord(0);
-  
+
     { Offset 4: bytesWritten (DWORD) }
     WrittenAddr := ImageBase + DataRVA + 4;
     EmitDataDWord(0);
-  
+
     { Offset 8: message string }
     MsgAddr := ImageBase + DataRVA + 8;
     EmitDataString(Msg);
-  
+
     { ===== Construire la section .text (code) ===== }
     PeTextSize := 0;  { Reset }
     PeEntryPoint := 0;
-  
+
     { _start: }
     { PUSH -11 (STD_OUTPUT_HANDLE) }
     EmitTextByte($68);  { PUSH imm32 }
     EmitTextDWord(-11);
-  
+
     { CALL [GetStdHandle] }
     EmitTextByte($FF);
     EmitTextByte($15);
     EmitTextDWord(IatGetStdHandle);
-  
+
     { MOV [hStdOut], EAX }
     EmitTextByte($A3);  { MOV moffs32, EAX }
     EmitTextDWord(StdOutAddr);
-  
+
     { PUSH 0 (lpOverlapped) }
     EmitTextByte($6A);  { PUSH imm8 }
     EmitTextByte(0);
-  
+
     { PUSH WrittenAddr }
     EmitTextByte($68);
     EmitTextDWord(WrittenAddr);
-  
+
     { PUSH MsgLen }
     EmitTextByte($68);
     EmitTextDWord(MsgLen);
-  
+
     { PUSH MsgAddr }
     EmitTextByte($68);
     EmitTextDWord(MsgAddr);
-  
+
     { PUSH [hStdOut] }
     EmitTextByte($FF);
     EmitTextByte($35);
     EmitTextDWord(StdOutAddr);
-  
+
     { CALL [WriteFile] }
     EmitTextByte($FF);
     EmitTextByte($15);
     EmitTextDWord(IatWriteFile);
-  
+
     { PUSH 0 (exit code) }
     EmitTextByte($6A);
     EmitTextByte(0);
-  
+
     { CALL [ExitProcess] }
     EmitTextByte($FF);
     EmitTextByte($15);
     EmitTextDWord(IatExitProcess);
-  
+
     { RET }
     EmitTextByte($C3);
   End;
-  
+
   { Calculer les tailles alignees }
   TextAligned := PeAlignTo(PeTextSize, PE_SECTION_ALIGNMENT);
   RdataAligned := PeAlignTo(PeRdataSize, PE_SECTION_ALIGNMENT);
   DataAligned := PeAlignTo(PeDataSize, PE_SECTION_ALIGNMENT);
   ImageSize := DataRVA + DataAligned;
-  
+
   { Calculer les offsets fichier }
   TextFileOff := PE_FILE_ALIGNMENT;  { $200 }
   RdataFileOff := TextFileOff + PeAlignTo(PeTextSize, PE_FILE_ALIGNMENT);
   DataFileOff := RdataFileOff + PeAlignTo(PeRdataSize, PE_FILE_ALIGNMENT);
-  
+
   { Configurer les sections }
-  PeTextSection := AddPeSection('.text', PeTextSize, 
+  PeTextSection := AddPeSection('.text', PeTextSize,
     PeAlignTo(PeTextSize, PE_FILE_ALIGNMENT),
     PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
   PeSections[PeTextSection].VirtualAddress := TextRVA;
   PeSections[PeTextSection].PointerToRawData := TextFileOff;
-  
+
   If PeRdataSize > 0 Then
   Begin
     PeRdataSection := AddPeSection('.rdata', PeRdataSize,
@@ -17095,7 +17095,7 @@ Begin
     PeSections[PeRdataSection].VirtualAddress := RdataRVA;
     PeSections[PeRdataSection].PointerToRawData := RdataFileOff;
   End;
-  
+
   If PeDataSize > 0 Then
   Begin
     PeDataSection := AddPeSection('.data', PeDataSize,
@@ -17104,10 +17104,10 @@ Begin
     PeSections[PeDataSection].VirtualAddress := DataRVA;
     PeSections[PeDataSection].PointerToRawData := DataFileOff;
   End;
-  
+
   { Resoudre les fixups }
   ResolveFixups;
-  
+
   { Ouvrir le fichier de sortie }
   Assign(PeOutputFile, OutputPath);
   {$I-}
@@ -17120,54 +17120,54 @@ Begin
   End;
   PeOutputOpen := True;
   PeFileOffset := 0;
-  
+
   { Ecrire DOS Header et stub }
   WriteDosHeader;
   WriteDosStub;
-  
+
   { Aligner sur $80 }
   PeWritePadding($80 - PeFileOffset);
-  
+
   { Ecrire PE signature }
   WritePeSignature;
-  
+
   { Ecrire COFF File Header }
-  WriteCoffFileHeader(PeSectionCount, 224, 
+  WriteCoffFileHeader(PeSectionCount, 224,
     PE_IMAGE_FILE_EXECUTABLE Or PE_IMAGE_FILE_32BIT);
-  
+
   { Ecrire Optional Header }
   WriteOptionalHeader(PeTextSize, PeDataSize + PeRdataSize, 0,
     TextRVA + PeEntryPoint, TextRVA, RdataRVA, DataRVA,
     ImageSize, ImportRVA, ImportSize);
-  
+
   { Ecrire Section Headers }
   WriteSectionHeader(PeSections[PeTextSection]);
   If PeRdataSection > 0 Then
     WriteSectionHeader(PeSections[PeRdataSection]);
   If PeDataSection > 0 Then
     WriteSectionHeader(PeSections[PeDataSection]);
-  
+
   { Aligner sur FileAlignment }
   PeAlignFileOffset;
-  
+
   { Ecrire section .text }
   PeWriteBuffer(PeTextBuffer, PeTextSize);
   PeAlignFileOffset;
-  
+
   { Ecrire section .rdata }
   If PeRdataSize > 0 Then
   Begin
     PeWriteBuffer(PeRdataBuffer, PeRdataSize);
     PeAlignFileOffset;
   End;
-  
+
   { Ecrire section .data }
   If PeDataSize > 0 Then
   Begin
     PeWriteBuffer(PeDataBuffer, PeDataSize);
     PeAlignFileOffset;
   End;
-  
+
   { Fermer le fichier }
   Close(PeOutputFile);
   PeOutputOpen := False;
@@ -17187,7 +17187,7 @@ Var
   RelocOff : LongInt;
 Begin
   PeIsCoff := True;
-  
+
   { Ouvrir le fichier de sortie }
   Assign(PeOutputFile, OutputPath);
   {$I-}
@@ -17200,24 +17200,24 @@ Begin
   End;
   PeOutputOpen := True;
   PeFileOffset := 0;
-  
+
   { Calculer les offsets }
-  TextOff := SizeOf(TCoffFileHeader) + 
+  TextOff := SizeOf(TCoffFileHeader) +
              (3 * SizeOf(TPeSectionHeader));  { 3 sections }
   RdataOff := TextOff + PeTextSize;
   DataOff := RdataOff + PeRdataSize;
   RelocOff := DataOff + PeDataSize;
   SymTabOff := RelocOff + (PeFixupCount * 10);  { Relocations }
-  
+
   { Compter les symboles }
   SymCount := PeSymbolCount;
-  
+
   { Taille de la table des chaines }
   StrTabSize := 4;  { Taille elle-meme }
   For I := 1 To PeSymbolCount Do
     If Length(PeSymbols[I].Name) > 8 Then
       StrTabSize := StrTabSize + Length(PeSymbols[I].Name) + 1;
-  
+
   { Ecrire COFF File Header }
   CoffHdr.Machine := PE_IMAGE_FILE_MACHINE_I386;
   CoffHdr.NumberOfSections := 3;
@@ -17227,7 +17227,7 @@ Begin
   CoffHdr.SizeOfOptionalHeader := 0;
   CoffHdr.Characteristics := 0;
   PeWriteBuffer(CoffHdr, SizeOf(TCoffFileHeader));
-  
+
   { Configurer et ecrire les sections }
   { Section .text }
   PeTextSection := AddPeSection('.text', 0, PeTextSize,
@@ -17236,7 +17236,7 @@ Begin
   PeSections[PeTextSection].PointerToRelocations := RelocOff;
   PeSections[PeTextSection].NumberOfRelocations := PeFixupCount;
   WriteSectionHeader(PeSections[PeTextSection]);
-  
+
   { Section .rdata }
   If PeRdataSize > 0 Then
   Begin
@@ -17251,7 +17251,7 @@ Begin
       PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ);
     WriteSectionHeader(PeSections[PeRdataSection]);
   End;
-  
+
   { Section .data }
   If PeDataSize > 0 Then
   Begin
@@ -17266,18 +17266,18 @@ Begin
       PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
     WriteSectionHeader(PeSections[PeDataSection]);
   End;
-  
+
   { Ecrire section .text }
   PeWriteBuffer(PeTextBuffer, PeTextSize);
-  
+
   { Ecrire section .rdata }
   If PeRdataSize > 0 Then
     PeWriteBuffer(PeRdataBuffer, PeRdataSize);
-  
+
   { Ecrire section .data }
   If PeDataSize > 0 Then
     PeWriteBuffer(PeDataBuffer, PeDataSize);
-  
+
   { Ecrire les relocations }
   For I := 1 To PeFixupCount Do
   Begin
@@ -17289,7 +17289,7 @@ Begin
     Else
       PeWriteWord(IMAGE_REL_I386_DIR32);
   End;
-  
+
   { Ecrire la table des symboles }
   StrTabOff := 4;  { Offset dans la table des chaines }
   For I := 1 To PeSymbolCount Do
@@ -17318,7 +17318,7 @@ Begin
     PeWriteByte(PeSymbols[I].SClass);  { StorageClass }
     PeWriteByte(0);  { NumberOfAuxSymbols }
   End;
-  
+
   { Ecrire la table des chaines }
   StrTabSize := 4;
   For I := 1 To PeSymbolCount Do
@@ -17328,7 +17328,7 @@ Begin
   For I := 1 To PeSymbolCount Do
     If Length(PeSymbols[I].Name) > 8 Then
       PeWriteString(PeSymbols[I].Name);
-  
+
   { Fermer le fichier }
   Close(PeOutputFile);
   PeOutputOpen := False;
@@ -17530,7 +17530,7 @@ Var
   WiUsedCount        : Integer;        { Nombre d imports utilises       }
   WiIatSize          : LongInt;        { Taille de l IAT                 }
   WiHintNameSize     : LongInt;        { Taille de la Hint/Name Table    }
-  
+
   { Generateur ASM }
   AsmInitialized     : Boolean;        { True si initialise              }
   AsmFile            : Text;           { Fichier de sortie ASM           }
@@ -17699,7 +17699,7 @@ Var I, DllIdx : Integer;
 Begin
   { Chercher si deja present }
   For I := 1 To WiImportCount Do
-    If (WiImports[I].DllName = DllName) And 
+    If (WiImports[I].DllName = DllName) And
        (WiImports[I].FuncName = FuncName) Then
     Begin
       RegisterImport := I;
@@ -17838,7 +17838,7 @@ Var
 Begin
   UsedDlls := 0;
   HintNameTotal := 0;
-  
+
   { Compter les DLLs avec imports utilises }
   For I := 1 To WiDllCount Do
   Begin
@@ -17847,19 +17847,19 @@ Begin
     Inc(UsedDlls);
     HintNameTotal := HintNameTotal + Length(WiDlls[I].DllName) + 1;
   End;
-  
+
   { Calculer taille IAT : 4 octets par import + 4 octets NULL par DLL }
   WiIatSize := (WiUsedCount + UsedDlls) * 4;
-  
+
   { Calculer taille Hint/Name : 2 octets hint + nom + padding }
   For I := 1 To WiImportCount Do
     If WiImports[I].Used Then
       HintNameTotal := HintNameTotal + 2 + Length(WiImports[I].FuncName) + 1;
-  
+
   { Aligner sur 2 octets }
   If (HintNameTotal Mod 2) <> 0 Then
     Inc(HintNameTotal);
-  
+
   WiHintNameSize := HintNameTotal;
 End;
 
@@ -18116,18 +18116,18 @@ Begin
     CompileError('Cannot create ASM file: ' + OutputPath, 0);
     Exit;
   End;
-  
+
   WriteAsmHeader;
-  
+
   { Includelibs }
   WriteAsmIncludelib('kernel32.lib');
   If WiMsvcrtIdx > 0 Then
     WriteAsmIncludelib('msvcrt.lib');
   AsmWriteRaw('');
-  
+
   { Externs }
   WriteAsmExterns;
-  
+
   { Section .DATA }
   WriteAsmDataSection;
   WriteAsmComment('Constantes et donnees initialisees');
@@ -18136,7 +18136,7 @@ Begin
   WriteAsmDb('_JRT_FALSE', '''false'', 0');
   WriteAsmDb('_JRT_NULL', '''null'', 0');
   AsmWriteRaw('');
-  
+
   { Section .DATA? }
   WriteAsmDataQSection;
   WriteAsmComment('Variables non initialisees');
@@ -18145,10 +18145,10 @@ Begin
   WriteAsmDd('_JRT_HHEAP', '?');
   WriteAsmDd('_JRT_BYTESWR', '?');
   AsmWriteRaw('');
-  
+
   { Section .CODE }
   WriteAsmCodeSection;
-  
+
   { Point d entree }
   WriteAsmProc('_start');
   WriteAsmComment('Point d''entree du programme');
@@ -18159,7 +18159,7 @@ Begin
   WriteAsmInstr('PUSH 0');
   WriteAsmInstr('CALL _ExitProcess@4');
   WriteAsmEndp;
-  
+
   { Routine d initialisation I/O }
   WriteAsmProc('_JRT_INITIO');
   WriteAsmComment('Initialisation des handles console');
@@ -18173,16 +18173,16 @@ Begin
   WriteAsmInstr('MOV [_JRT_HHEAP], EAX');
   WriteAsmInstr('RET');
   WriteAsmEndp;
-  
+
   { Placeholder pour main }
   WriteAsmProc('_JM_main');
   WriteAsmComment('Methode main() - a generer');
   WriteAsmInstr('RET');
   WriteAsmEndp;
-  
+
   { Fin }
   WriteAsmEnd('_start');
-  
+
   CloseAsmFile;
 End;
 
@@ -18540,7 +18540,7 @@ Begin
   PhOpts[PhOptCount].BytesSaved := BytesSaved;
   PhTotalSaved := PhTotalSaved + BytesSaved;
   PhLastType := OptType;
-  
+
   Case OptType Of
     PH_MOV_ZERO  : Inc(PhMovZeroCount);
     PH_PUSH_POP  : Inc(PhPushPopCount);
@@ -18549,7 +18549,7 @@ Begin
     PH_SUB_ONE   : Inc(PhSubOneCount);
     PH_MUL_TWO, PH_MUL_FOUR, PH_MUL_EIGHT : Inc(PhMulShiftCount);
   End;
-  
+
   AddPhOpt := PhOptCount;
 End;
 
@@ -18705,9 +18705,9 @@ Begin
     ApplyPeephole := Instr;
     Exit;
   End;
-  
+
   Result := Instr;
-  
+
   { Appliquer les optimisations en sequence }
   Result := PhOptMovZero(Result, LineNum);
   If Result <> Instr Then
@@ -18715,28 +18715,28 @@ Begin
     ApplyPeephole := Result;
     Exit;
   End;
-  
+
   Result := PhOptAddOne(Result, LineNum);
   If Result <> Instr Then
   Begin
     ApplyPeephole := Result;
     Exit;
   End;
-  
+
   Result := PhOptSubOne(Result, LineNum);
   If Result <> Instr Then
   Begin
     ApplyPeephole := Result;
     Exit;
   End;
-  
+
   Result := PhOptMulShift(Result, LineNum);
   If Result <> Instr Then
   Begin
     ApplyPeephole := Result;
     Exit;
   End;
-  
+
   Result := PhOptCmpZero(Result, LineNum);
   ApplyPeephole := Result;
 End;
@@ -19311,6 +19311,276 @@ Begin
 End;
 
 { ============================================================ }
+{ Procedures de parsing structurel : if/else, blocs              }
+{ ============================================================ }
+
+{ Forward declarations }
+Procedure ParseOneStatement; Forward;
+
+{ ------------------------------------------------------------ }
+{ SkipBlock : sauter un bloc delimiteur sans le traiter          }
+{   Compte les accolades pour gerer l imbrication                }
+{ ------------------------------------------------------------ }
+
+Procedure SkipBlock;
+Var Depth : Integer;
+Begin
+  If CurTokKind = TK_LBRACE Then
+  Begin
+    Depth := 1;
+    ParserAdvance; (* consommer lbrace *)
+    While (CurTokKind <> TK_EOF) And (Depth > 0) Do
+    Begin
+      If CurTokKind = TK_LBRACE Then Inc(Depth)
+      Else If CurTokKind = TK_RBRACE Then Dec(Depth);
+      If Depth > 0 Then ParserAdvance;
+    End;
+    If CurTokKind = TK_RBRACE Then ParserAdvance; (* consommer rbrace *)
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SkipIfChain : sauter un if (cond) bloc [else [if] ...]         }
+{   Appele apres avoir consomme le 'if'                          }
+{   Saute la condition, le bloc, et tout else/else-if suivant    }
+{ ------------------------------------------------------------ }
+
+Procedure SkipIfChain;
+Var Depth : Integer;
+Begin
+  { Sauter la condition entre parentheses }
+  If CurTokKind = TK_LPAREN Then
+  Begin
+    Depth := 1;
+    ParserAdvance;
+    While (CurTokKind <> TK_EOF) And (Depth > 0) Do
+    Begin
+      If CurTokKind = TK_LPAREN Then Inc(Depth)
+      Else If CurTokKind = TK_RPAREN Then Dec(Depth);
+      If Depth > 0 Then ParserAdvance;
+    End;
+    If CurTokKind = TK_RPAREN Then ParserAdvance;
+  End;
+  { Sauter le bloc then }
+  SkipBlock;
+  { Sauter le else eventuel }
+  If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'else') Then
+  Begin
+    ParserAdvance; { consommer else }
+    If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'if') Then
+    Begin
+      ParserAdvance; { consommer if }
+      SkipIfChain;   { recursion pour else if }
+    End
+    Else
+      SkipBlock;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBlock : parser un bloc d instructions                     }
+{   Appele pour les corps de if/else                             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseBlock;
+Begin
+  If CurTokKind = TK_LBRACE Then
+  Begin
+    ParserAdvance; (* consommer lbrace *)
+    While (CurTokKind <> TK_RBRACE) And (CurTokKind <> TK_EOF) Do
+      ParseOneStatement;
+    If CurTokKind = TK_RBRACE Then
+      ParserAdvance; (* consommer rbrace *)
+  End
+  Else
+    { Instruction unique sans accolades }
+    ParseOneStatement;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIfStatement : parser if (cond) bloc [else bloc]           }
+{   Evalue la condition au compile-time.                         }
+{   Si la condition est connue, ne traite que la bonne branche.  }
+{   Le mot-cle 'if' a deja ete consomme par l appelant.          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIfStatement;
+Var
+  CondExpr  : TExprVal;
+  CondVal   : Boolean;
+  CondKnown : Boolean;
+Begin
+  { Parser la condition entre parentheses }
+  If CurTokKind = TK_LPAREN Then
+    ParserAdvance  { consommer ( }
+  Else
+    CompileError('expected ( after if', LexLineNo);
+
+  { Evaluer la condition }
+  CondExpr := ParseExpr;
+
+  If CurTokKind = TK_RPAREN Then
+    ParserAdvance  { consommer ) }
+  Else
+    CompileError('expected ) after if condition', LexLineNo);
+
+  { Determiner la valeur de la condition au compile-time }
+  CondKnown := False;
+  CondVal   := False;
+  If CondExpr.Kind = EK_IMM Then
+  Begin
+    CondKnown := True;
+    CondVal   := (CondExpr.ImmVal <> 0);
+  End;
+
+  If CondKnown Then
+  Begin
+    If CondVal Then
+    Begin
+      { Condition vraie : parser le bloc then, sauter le else }
+      ParseBlock;
+      If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'else') Then
+      Begin
+        ParserAdvance; { consommer else }
+        If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'if') Then
+        Begin
+          ParserAdvance; { consommer if }
+          SkipIfChain;   { sauter toute la chaine else-if }
+        End
+        Else
+          SkipBlock;     { sauter le bloc else }
+      End;
+    End
+    Else
+    Begin
+      { Condition fausse : sauter le bloc then, parser le else }
+      SkipBlock;
+      If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'else') Then
+      Begin
+        ParserAdvance; { consommer else }
+        If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'if') Then
+        Begin
+          ParserAdvance; { consommer if }
+          ParseIfStatement; { recursion pour else if }
+        End
+        Else
+          ParseBlock;     { parser le bloc else }
+      End;
+    End;
+  End
+  Else
+  Begin
+    { Condition inconnue au compile-time : parser les deux branches }
+    ParseBlock;
+    If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'else') Then
+    Begin
+      ParserAdvance;
+      If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'if') Then
+      Begin
+        ParserAdvance;
+        ParseIfStatement;
+      End
+      Else
+        ParseBlock;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOneStatement : parser une instruction Java                }
+{   Gere : declarations, affectations, System.out.println,       }
+{   if/else, class, accolades de bloc, etc.                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseOneStatement;
+Var
+  VarName : TString;
+Begin
+  { System.out.println / System.out.print }
+  If (CurTokKind = TK_IDENT) And (CurTokStr = 'System') Then
+  Begin
+    ParseExpr;
+    If CurTokKind = TK_SEMICOLON Then
+      ParserAdvance;
+  End
+  { Declarations de variables: int, boolean, char, String }
+  Else If (CurTokKind = TK_KEYWORD) And
+          ((CurTokStr = 'int') Or (CurTokStr = 'boolean') Or
+           (CurTokStr = 'char') Or (CurTokStr = 'String')) Then
+  Begin
+    ParseVarDecl;
+    If CurTokKind = TK_SEMICOLON Then
+      ParserAdvance;
+  End
+  { if statement }
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'if') Then
+  Begin
+    ParserAdvance; { consommer if }
+    ParseIfStatement;
+  End
+  { Assignation ou post-increment d une variable }
+  Else If CurTokKind = TK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    ParserAdvance;
+    If CurTokStr = '=' Then
+    Begin
+      ParseAssignSimple(VarName);
+      If CurTokKind = TK_SEMICOLON Then
+        ParserAdvance;
+    End
+    Else If (CurTokStr = '+=') Or (CurTokStr = '-=') Or
+            (CurTokStr = '*=') Or (CurTokStr = '/=') Or
+            (CurTokStr = '%=') Or (CurTokStr = '&=') Or
+            (CurTokStr = '|=') Or (CurTokStr = '^=') Or
+            (CurTokStr = '<<=') Or (CurTokStr = '>>=') Then
+    Begin
+      ParseAssignAugmented(VarName, IsAssignOp);
+      If CurTokKind = TK_SEMICOLON Then
+        ParserAdvance;
+    End
+    Else If (CurTokStr = '++') Or (CurTokStr = '--') Then
+    Begin
+      ParsePostIncDec(VarName, CurTokStr = '++');
+      If CurTokKind = TK_SEMICOLON Then
+        ParserAdvance;
+    End;
+  End
+  { public class ... }
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'public') Then
+  Begin
+    ParserAdvance;
+    If CurTokStr = 'class' Then
+    Begin
+      ParserAdvance;
+      If CurTokKind = TK_IDENT Then
+      Begin
+        VarName := CurTokStr;
+        ParseClassDecl(True, LexLineNo);
+      End;
+    End;
+  End
+  { class ... }
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'class') Then
+  Begin
+    ParserAdvance;
+    If CurTokKind = TK_IDENT Then
+    Begin
+      VarName := CurTokStr;
+      ParseClassDecl(False, LexLineNo);
+    End;
+  End
+  { Accolades de bloc (ignore) }
+  Else If CurTokKind = TK_LBRACE Then
+    ParserAdvance
+  Else If CurTokKind = TK_RBRACE Then
+    ParserAdvance
+  { Autres tokens }
+  Else
+    ParserAdvance;
+End;
+
+{ ============================================================ }
 { ParseCompilationUnit : parser un fichier Java complet          }
 { ============================================================ }
 
@@ -19339,86 +19609,9 @@ Begin
     ParserAdvance; { passer ; }
   End;
 
-  { Parser declarations de classe }
+  { Parser declarations de classe et instructions }
   While CurTokKind <> TK_EOF Do
-  Begin
-    { System.out.println / System.out.print }
-    If (CurTokKind = TK_IDENT) And (CurTokStr = 'System') Then
-    Begin
-      ParseExpr;
-      { Consommer ; si present }
-      If CurTokKind = TK_SEMICOLON Then
-        ParserAdvance;
-    End
-    { Declarations de variables: int, boolean, char, String }
-    Else If (CurTokKind = TK_KEYWORD) And
-            ((CurTokStr = 'int') Or (CurTokStr = 'boolean') Or
-             (CurTokStr = 'char') Or (CurTokStr = 'String')) Then
-    Begin
-      ParseVarDecl;
-      If CurTokKind = TK_SEMICOLON Then
-        ParserAdvance;
-    End
-    { Assignation de variable: identificateur suivi de = }
-    Else If CurTokKind = TK_IDENT Then
-    Begin
-      ClassName := CurTokStr;  { reuse ClassName pour stocker le nom }
-      ParserAdvance;
-      If CurTokStr = '=' Then
-      Begin
-        ParseAssignSimple(ClassName);
-        If CurTokKind = TK_SEMICOLON Then
-          ParserAdvance;
-      End
-      Else If (CurTokStr = '+=') Or (CurTokStr = '-=') Or
-              (CurTokStr = '*=') Or (CurTokStr = '/=') Or
-              (CurTokStr = '%=') Or (CurTokStr = '&=') Or
-              (CurTokStr = '|=') Or (CurTokStr = '^=') Or
-              (CurTokStr = '<<=') Or (CurTokStr = '>>=') Then
-      Begin
-        ParseAssignAugmented(ClassName, IsAssignOp);
-        If CurTokKind = TK_SEMICOLON Then
-          ParserAdvance;
-      End
-      Else If (CurTokStr = '++') Or (CurTokStr = '--') Then
-      Begin
-        ParsePostIncDec(ClassName, CurTokStr = '++');
-        If CurTokKind = TK_SEMICOLON Then
-          ParserAdvance;
-      End;
-      { Autres cas comme appels de methode, etc. - continuer }
-    End
-    { public class ... }
-    Else If CurTokStr = 'public' Then
-    Begin
-      ParserAdvance;
-      If CurTokStr = 'class' Then
-      Begin
-        ParserAdvance;
-        If CurTokKind = TK_IDENT Then
-        Begin
-          ClassName := CurTokStr;
-          ParseClassDecl(True, LexLineNo);
-          HadClass := True;
-        End;
-      End;
-      { Sinon c'est autre chose (public static void main...), on continue }
-    End
-    { class ... }
-    Else If CurTokStr = 'class' Then
-    Begin
-      ParserAdvance;
-      If CurTokKind = TK_IDENT Then
-      Begin
-        ClassName := CurTokStr;
-        ParseClassDecl(False, LexLineNo);
-        HadClass := True;
-      End;
-    End
-    { Autres tokens }
-    Else
-      ParserAdvance;
-  End;
+    ParseOneStatement;
 
   { Generer le code machine }
   If OutMsgCount > 0 Then
@@ -19524,7 +19717,7 @@ Begin
   { Finaliser et ecrire les fichiers de sortie }
   FinalizeAndWriteOutput;
 
-  WriteLn('JAVACW32: compilation terminee (TODOs 01-25 implementes)');
+  WriteLn('JAVACW32: compilation terminee');
 
   ShowStats;
   Cleanup;
