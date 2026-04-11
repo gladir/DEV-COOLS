@@ -9502,7 +9502,7 @@ Begin
       LexNextToken;
   End;
 
-  (* Consommer accolade ferm‚ *)
+  (* Consommer accolade fermï¿½ *)
   If (CurTokKind = TK_OP) And (CurTokStr = '}') Then
     LexNextToken;
 
@@ -14061,6 +14061,45 @@ Const
   PE_SYM_STATIC    = 3;   { IMAGE_SYM_CLASS_STATIC                 }
   PE_SYM_LABEL     = 6;   { IMAGE_SYM_CLASS_LABEL                  }
 
+  { Constantes PE32 binaire supplementaires }
+  PE_IMAGE_DOS_SIG      = $5A4D;
+  PE_IMAGE_NT_SIG       = $00004550;
+  PE_FILE_EXEC          = $0002;
+  PE_FILE_32BIT         = $0100;
+  PE_OPT_MAGIC32        = $010B;
+  PE_FIL_ALIGN          = $0200;
+  PE_SCN_CODE           = $00000020;
+  PE_SCN_IDATA          = $00000040;
+  PE_SCN_MEM_X          = $20000000;
+  PE_SCN_MEM_R          = $40000000;
+  PE_MAX_MSGS           = 512;
+  PE_MAX_VARS           = 256;
+
+Const
+  DosStubData : Array[0..63] Of Byte = (
+    $0E, $1F, $BA, $0E, $00, $B4, $09, $CD,
+    $21, $B8, $01, $4C, $CD, $21, $54, $68,
+    $69, $73, $20, $70, $72, $6F, $67, $72,
+    $61, $6D, $20, $63, $61, $6E, $6E, $6F,
+    $74, $20, $62, $65, $20, $72, $75, $6E,
+    $20, $69, $6E, $20, $44, $4F, $53, $20,
+    $6D, $6F, $64, $65, $2E, $0D, $0D, $0A,
+    $24, $00, $00, $00, $00, $00, $00, $00
+  );
+
+Type
+  TPyMsg = Record
+    Str     : TString;
+    Len     : Integer;
+    NewLine : Boolean;
+  End;
+  TPyVar = Record
+    Name    : TString;
+    Kind    : Integer;  { 0=int, 1=str }
+    IntVal  : LongInt;
+    StrVal  : TString;
+  End;
+
 Var
   PeInitialized    : Boolean;    { True si l etat est initialise       }
   PeDosHdrCount    : LongInt;    { nombre de DOS Headers emis          }
@@ -14079,11 +14118,32 @@ Var
   PeLastKind       : Integer;    { dernier type d operation            }
   PeLabelSeq       : Integer;    { sequence pour labels PE             }
 
+  { Buffers binaires PE }
+  PeTextBuf        : Array[0..65535] Of Byte;
+  PeTextSize       : LongInt;
+  PeRdataBuf       : Array[0..16383] Of Byte;
+  PeRdataSize      : LongInt;
+  PeDataBuf        : Array[0..16383] Of Byte;
+  PeDataSize       : LongInt;
+  PeOutFile        : File;
+  PeOutOpen        : Boolean;
+  PeFileOfs        : LongInt;
+  PeEntryPt        : LongInt;
+
+  { Messages de sortie collectes }
+  PyMsgs           : Array[1..PE_MAX_MSGS] Of TPyMsg;
+  PyMsgCount       : Integer;
+
+  { Variables Python evaluees a la compilation }
+  PyVars           : Array[1..PE_MAX_VARS] Of TPyVar;
+  PyVarCount       : Integer;
+
 { ------------------------------------------------------------ }
 { InitPeState : initialiser le sous-systeme PE/COFF                 }
 { ------------------------------------------------------------ }
 
 Procedure InitPeState;
+Var I : LongInt;
 Begin
   PeInitialized    := True;
   PeDosHdrCount    := 0;
@@ -14101,6 +14161,17 @@ Begin
   PeSymbolCount    := 0;
   PeLastKind       := PE_NONE;
   PeLabelSeq       := 0;
+  PeTextSize       := 0;
+  PeRdataSize      := 0;
+  PeDataSize       := 0;
+  PeOutOpen        := False;
+  PeFileOfs        := 0;
+  PeEntryPt        := 0;
+  PyMsgCount       := 0;
+  PyVarCount       := 0;
+  For I := 0 To 65535 Do PeTextBuf[I] := 0;
+  For I := 0 To 16383 Do PeRdataBuf[I] := 0;
+  For I := 0 To 16383 Do PeDataBuf[I] := 0;
 End;
 
 { ------------------------------------------------------------ }
@@ -14140,146 +14211,128 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ WriteDosHeader : ecrire le DOS Header MZ (64 octets) + stub       }
+{ Fonctions bas niveau d ecriture PE binaire                        }
 { ------------------------------------------------------------ }
 
-Procedure WriteDosHeader;
+Procedure PeWrByte(B : Byte);
 Begin
-  Inc(PeDosHdrCount);
-  PeLastKind := PE_DOS_HEADER;
-  WriteLn('; --- DOS Header (MZ, 64 octets) ---');
-  WriteLn(';   e_magic    : $5A4D (MZ)');
-  WriteLn(';   e_lfanew   : offset vers PE signature');
-  WriteLn(';   DOS stub   : "This program cannot be run in DOS mode."');
+  If PeOutOpen Then
+  Begin
+    BlockWrite(PeOutFile, B, 1);
+    Inc(PeFileOfs);
+  End;
+End;
+
+Procedure PeWrWord(W : Word);
+Begin
+  PeWrByte(W And $FF);
+  PeWrByte((W Shr 8) And $FF);
+End;
+
+Procedure PeWrDWord(D : LongInt);
+Begin
+  PeWrByte(D And $FF);
+  PeWrByte((D Shr 8) And $FF);
+  PeWrByte((D Shr 16) And $FF);
+  PeWrByte((D Shr 24) And $FF);
+End;
+
+Procedure PeWrBuf(Var Buf; Size : LongInt);
+Begin
+  If PeOutOpen And (Size > 0) Then
+  Begin
+    BlockWrite(PeOutFile, Buf, Size);
+    Inc(PeFileOfs, Size);
+  End;
+End;
+
+Procedure PeWrPad(Count : LongInt);
+Var I : LongInt;
+Begin
+  For I := 1 To Count Do PeWrByte(0);
 End;
 
 { ------------------------------------------------------------ }
-{ WritePeSignature : ecrire la signature PE "PE\0\0"                }
+{ Fonctions d emission dans les buffers PE                           }
 { ------------------------------------------------------------ }
 
-Procedure WritePeSignature;
+Procedure EmtTextByte(B : Byte);
 Begin
-  Inc(PeSignatureCount);
-  PeLastKind := PE_SIGNATURE;
-  WriteLn('; --- PE Signature ---');
-  WriteLn(';   Signature  : $00004550 ("PE\0\0")');
+  If PeTextSize < 65536 Then
+  Begin
+    PeTextBuf[PeTextSize] := B;
+    Inc(PeTextSize);
+  End;
+End;
+
+Procedure EmtTextDWord(D : LongInt);
+Begin
+  EmtTextByte(D And $FF);
+  EmtTextByte((D Shr 8) And $FF);
+  EmtTextByte((D Shr 16) And $FF);
+  EmtTextByte((D Shr 24) And $FF);
+End;
+
+Procedure EmtRdByte(B : Byte);
+Begin
+  If PeRdataSize < 16384 Then
+  Begin
+    PeRdataBuf[PeRdataSize] := B;
+    Inc(PeRdataSize);
+  End;
+End;
+
+Procedure EmtRdWord(W : Word);
+Begin
+  EmtRdByte(W And $FF);
+  EmtRdByte((W Shr 8) And $FF);
+End;
+
+Procedure EmtRdDWord(D : LongInt);
+Begin
+  EmtRdByte(D And $FF);
+  EmtRdByte((D Shr 8) And $FF);
+  EmtRdByte((D Shr 16) And $FF);
+  EmtRdByte((D Shr 24) And $FF);
+End;
+
+Procedure EmtRdString(Const S : TString);
+Var I : Integer;
+Begin
+  For I := 1 To Length(S) Do EmtRdByte(Ord(S[I]));
+  EmtRdByte(0);
+End;
+
+Procedure EmtDataByte(B : Byte);
+Begin
+  If PeDataSize < 16384 Then
+  Begin
+    PeDataBuf[PeDataSize] := B;
+    Inc(PeDataSize);
+  End;
+End;
+
+Procedure EmtDataDWord(D : LongInt);
+Begin
+  EmtDataByte(D And $FF);
+  EmtDataByte((D Shr 8) And $FF);
+  EmtDataByte((D Shr 16) And $FF);
+  EmtDataByte((D Shr 24) And $FF);
+End;
+
+Procedure EmtDataString(Const S : TString);
+Var I : Integer;
+Begin
+  For I := 1 To Length(S) Do EmtDataByte(Ord(S[I]));
+  EmtDataByte(0);
 End;
 
 { ------------------------------------------------------------ }
-{ WriteCoffHeader : ecrire le COFF File Header (20 octets)          }
-{ ------------------------------------------------------------ }
-
-Procedure WriteCoffHeader;
-Begin
-  Inc(PeCoffHdrCount);
-  PeLastKind := PE_COFF_HEADER;
-  WriteLn('; --- COFF File Header (20 octets) ---');
-  WriteLn(';   Machine           : $014C (i386)');
-  WriteLn(';   NumberOfSections  : 3 (.text, .rdata, .data)');
-  WriteLn(';   SizeOfOptionalHdr : 224');
-  WriteLn(';   Characteristics   : $0102 (EXECUTABLE_IMAGE | 32BIT)');
-End;
-
-{ ------------------------------------------------------------ }
-{ WriteOptionalHeader : ecrire l Optional Header PE32 (224 octets)  }
-{ ------------------------------------------------------------ }
-
-Procedure WriteOptionalHeader;
-Begin
-  Inc(PeOptHdrCount);
-  PeLastKind := PE_OPT_HEADER;
-  WriteLn('; --- Optional Header PE32 (224 octets) ---');
-  WriteLn(';   Magic             : $010B (PE32)');
-  WriteLn(';   AddressOfEntryPt  : RVA de _start');
-  WriteLn(';   ImageBase         : $00400000');
-  WriteLn(';   SectionAlignment  : $1000 (4096)');
-  WriteLn(';   FileAlignment     : $0200 (512)');
-  WriteLn(';   Subsystem         : 3 (IMAGE_SUBSYSTEM_WINDOWS_CUI)');
-  WriteLn(';   DataDirectory[1]  : Import Table RVA/Size');
-End;
-
-{ ------------------------------------------------------------ }
-{ WriteSectionHeaders : ecrire les en-tetes de sections             }
-{ ------------------------------------------------------------ }
-
-Procedure WriteSectionHeaders;
-Begin
-  Inc(PeSectHdrCount);
-  PeLastKind := PE_SECTION_HDR;
-  WriteLn('; --- Section Headers (3 x 40 octets) ---');
-  WriteLn(';   Section .text   : code, READ|EXECUTE');
-  WriteLn(';   Section .rdata  : imports, READ');
-  WriteLn(';   Section .data   : donnees, READ|WRITE');
-End;
-
-{ ------------------------------------------------------------ }
-{ WriteSectionText : ecrire le contenu de la section .text          }
-{ ------------------------------------------------------------ }
-
-Procedure WriteSectionText;
-Begin
-  Inc(PeTextSecCount);
-  PeLastKind := PE_TEXT_SECTION;
-  WriteLn('; --- Section .text (code machine 80386) ---');
-  WriteLn(';   Point d entree : _start');
-  WriteLn(';   Code genere par le compilateur Python');
-  WriteLn(';   Appels via CALL [IAT_xxx] pour imports');
-End;
-
-{ ------------------------------------------------------------ }
-{ WriteSectionRdata : ecrire la section .rdata (imports)            }
-{ ------------------------------------------------------------ }
-
-Procedure WriteSectionRdata;
-Begin
-  Inc(PeRdataSecCount);
-  PeLastKind := PE_RDATA_SECTION;
-  WriteLn('; --- Section .rdata (Import Directory + IAT) ---');
-  WriteLn(';   Import Directory Table (ILT)');
-  WriteLn(';   Import Address Table (IAT)');
-  WriteLn(';   Hint/Name Table (noms des fonctions)');
-  WriteLn(';   DLL name : "kernel32.dll"');
-End;
-
-{ ------------------------------------------------------------ }
-{ WriteSectionData : ecrire la section .data (variables)            }
-{ ------------------------------------------------------------ }
-
-Procedure WriteSectionData;
-Begin
-  Inc(PeDataSecCount);
-  PeLastKind := PE_DATA_SECTION;
-  WriteLn('; --- Section .data (variables et constantes) ---');
-  WriteLn(';   Variables globales Python');
-  WriteLn(';   Constantes chaines');
-  WriteLn(';   Tampons E/S');
-End;
-
-{ ------------------------------------------------------------ }
-{ ResolveFixups : resoudre les fixups d adresses                    }
-{ ------------------------------------------------------------ }
-
-Procedure ResolveFixups;
-Begin
-  Inc(PeFixupCount);
-  PeLastKind := PE_FIXUP;
-  WriteLn('; --- Resolution des fixups ---');
-  WriteLn(';   Adresses absolues (ImageBase + RVA)');
-  WriteLn(';   Adresses relatives (CALL/JMP rel32)');
-  WriteLn(';   Patch des entries IAT');
-End;
-
-{ ------------------------------------------------------------ }
-{ PadToAlignment : calculer le remplissage pour alignement          }
-{   Size  : taille actuelle en octets                               }
-{   Align : alignement requis (ex: 512 ou 4096)                    }
-{   Retourne la taille alignee                                      }
+{ PadToAlignment : arrondir a l alignement superieur                 }
 { ------------------------------------------------------------ }
 
 Function PadToAlignment(Size, Align : LongInt) : LongInt;
 Begin
-  Inc(PeAlignCount);
-  PeLastKind := PE_ALIGN;
   If (Size Mod Align) = 0 Then
     PadToAlignment := Size
   Else
@@ -14287,22 +14340,401 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ GeneratePeExe : orchestrateur principal de generation PE .EXE     }
+{ PyAddMsg : ajouter un message de sortie                            }
+{ ------------------------------------------------------------ }
+
+Procedure PyAddMsg(Const S : TString; NL : Boolean);
+Begin
+  If PyMsgCount < PE_MAX_MSGS Then
+  Begin
+    Inc(PyMsgCount);
+    PyMsgs[PyMsgCount].Str := S;
+    PyMsgs[PyMsgCount].Len := Length(S);
+    PyMsgs[PyMsgCount].NewLine := NL;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PyFindVar : trouver une variable par nom, retourne index ou 0     }
+{ ------------------------------------------------------------ }
+
+Function PyFindVar(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  PyFindVar := 0;
+  For I := 1 To PyVarCount Do
+    If PyVars[I].Name = Name Then
+    Begin
+      PyFindVar := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PySetVarInt : creer/modifier une variable entiere                  }
+{ ------------------------------------------------------------ }
+
+Procedure PySetVarInt(Const Name : TString; Val : LongInt);
+Var Idx : Integer;
+Begin
+  Idx := PyFindVar(Name);
+  If Idx = 0 Then
+  Begin
+    If PyVarCount < PE_MAX_VARS Then
+    Begin
+      Inc(PyVarCount);
+      Idx := PyVarCount;
+    End Else Exit;
+  End;
+  PyVars[Idx].Name := Name;
+  PyVars[Idx].Kind := 0;
+  PyVars[Idx].IntVal := Val;
+  PyVars[Idx].StrVal := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ PySetVarStr : creer/modifier une variable chaine                   }
+{ ------------------------------------------------------------ }
+
+Procedure PySetVarStr(Const Name : TString; Const Val : TString);
+Var Idx : Integer;
+Begin
+  Idx := PyFindVar(Name);
+  If Idx = 0 Then
+  Begin
+    If PyVarCount < PE_MAX_VARS Then
+    Begin
+      Inc(PyVarCount);
+      Idx := PyVarCount;
+    End Else Exit;
+  End;
+  PyVars[Idx].Name := Name;
+  PyVars[Idx].Kind := 1;
+  PyVars[Idx].IntVal := 0;
+  PyVars[Idx].StrVal := Val;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteDosHeader : ecrire le vrai DOS Header MZ binaire              }
+{ ------------------------------------------------------------ }
+
+Procedure WriteDosHeader;
+Var I : Integer;
+Begin
+  Inc(PeDosHdrCount);
+  PeLastKind := PE_DOS_HEADER;
+  { e_magic = MZ }
+  PeWrWord(PE_IMAGE_DOS_SIG);
+  { Remplir les champs standard du DOS header }
+  PeWrWord($0090);  { e_cblp  }
+  PeWrWord($0003);  { e_cp    }
+  PeWrWord($0000);  { e_crlc  }
+  PeWrWord($0004);  { e_cparhdr }
+  PeWrWord($0000);  { e_minalloc }
+  PeWrWord($FFFF);  { e_maxalloc }
+  PeWrWord($0000);  { e_ss    }
+  PeWrWord($00B8);  { e_sp    }
+  PeWrWord($0000);  { e_csum  }
+  PeWrWord($0000);  { e_ip    }
+  PeWrWord($0000);  { e_cs    }
+  PeWrWord($0040);  { e_lfarlc }
+  PeWrWord($0000);  { e_ovno  }
+  For I := 1 To 4 Do PeWrWord(0);  { e_res[4] }
+  PeWrWord($0000);  { e_oemid }
+  PeWrWord($0000);  { e_oeminfo }
+  For I := 1 To 10 Do PeWrWord(0); { e_res2[10] }
+  PeWrDWord($80);   { e_lfanew = offset PE header }
+  { DOS stub }
+  PeWrBuf(DosStubData, 64);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPeCode : construire .rdata/.data/.text et ecrire PE            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPeCode;
+Var
+  TextRVA, RdataRVA, DataRVA : LongInt;
+  TextFileOfs, RdataFileOfs, DataFileOfs : LongInt;
+  TextAlgn, RdataAlgn, DataAlgn : LongInt;
+  ImgSize : LongInt;
+  IatOfs, HntOfs, DllOfs : LongInt;
+  IatGetStd, IatWriteF, IatExitP : LongInt;
+  StdOutA, WrittenA, CrlfA : LongInt;
+  MsgAddr : Array[1..PE_MAX_MSGS] Of LongInt;
+  I, Pad : Integer;
+  S : TString;
+Begin
+  TextRVA  := $1000;
+  RdataRVA := $2000;
+  DataRVA  := $3000;
+
+  { ===== Section .rdata : table d imports ===== }
+  PeRdataSize := 0;
+
+  { IDT : 1 DLL + null (2 x 20 = 40 octets) }
+  { Entry ker32 }
+  EmtRdDWord(RdataRVA + 40);                { ILT RVA }
+  EmtRdDWord(0);                             { TimeDateStamp }
+  EmtRdDWord(0);                             { ForwarderChain }
+  { ILT: 3 foncs + null = 4 DWords = 16 octets (40..55) }
+  { IAT: 3 foncs + null = 4 DWords = 16 octets (56..71) }
+  { HNT: GetStdHandle(16) + WriteFile(12) + ExitProcess(14) = 42 (72..113) }
+  { DLL name at offset 114 }
+  IatOfs := 56;
+  HntOfs := 72;
+  DllOfs := HntOfs + 16 + 12 + 14;  { = 114 }
+  EmtRdDWord(RdataRVA + DllOfs);             { Name RVA }
+  EmtRdDWord(RdataRVA + IatOfs);             { IAT RVA }
+  { Null entry }
+  For I := 1 To 5 Do EmtRdDWord(0);
+
+  { ILT : 3 fonctions + null (4 x 4 = 16 octets, at offset 40) }
+  EmtRdDWord(RdataRVA + HntOfs + 0);   { -> GetStdHandle }
+  EmtRdDWord(RdataRVA + HntOfs + 16);  { -> WriteFile    }
+  EmtRdDWord(RdataRVA + HntOfs + 28);  { -> ExitProcess  }
+  EmtRdDWord(0);                         { null }
+
+  { IAT : copie ILT (at offset 60, patche par le loader) }
+  EmtRdDWord(RdataRVA + HntOfs + 0);   { -> GetStdHandle }
+  EmtRdDWord(RdataRVA + HntOfs + 16);  { -> WriteFile    }
+  EmtRdDWord(RdataRVA + HntOfs + 28);  { -> ExitProcess  }
+  EmtRdDWord(0);                         { null }
+
+  { Hint/Name Table (at offset 76) }
+  { GetStdHandle (0): hint + "GetStdHandle\0" + pad = 16 }
+  EmtRdWord(0);
+  EmtRdString('GetStdHandle');
+  EmtRdByte(0);  { pad to 16 }
+
+  { WriteFile (16): hint + "WriteFile\0" = 12 }
+  EmtRdWord(0);
+  EmtRdString('WriteFile');
+
+  { ExitProcess (28): hint + "ExitProcess\0" = 14 }
+  EmtRdWord(0);
+  EmtRdString('ExitProcess');
+  If (PeRdataSize Mod 2) <> 0 Then EmtRdByte(0);
+
+  { DLL name }
+  EmtRdString('kernel32.dll');
+
+  IatGetStd := PE_IMG_BASE + RdataRVA + IatOfs + 0;
+  IatWriteF := PE_IMG_BASE + RdataRVA + IatOfs + 4;
+  IatExitP  := PE_IMG_BASE + RdataRVA + IatOfs + 8;
+
+  { ===== Section .data ===== }
+  PeDataSize := 0;
+  { +0: hStdOut (DWORD) }
+  StdOutA := PE_IMG_BASE + DataRVA + 0;
+  EmtDataDWord(0);
+  { +4: bytesWritten (DWORD) }
+  WrittenA := PE_IMG_BASE + DataRVA + 4;
+  EmtDataDWord(0);
+  { +8: CRLF }
+  CrlfA := PE_IMG_BASE + DataRVA + PeDataSize;
+  EmtDataByte(13); EmtDataByte(10); EmtDataByte(0);
+
+  { Stocker les chaines des messages }
+  For I := 1 To PyMsgCount Do
+  Begin
+    S := PyMsgs[I].Str;
+    If Length(S) > 0 Then
+    Begin
+      MsgAddr[I] := PE_IMG_BASE + DataRVA + PeDataSize;
+      EmtDataString(S);
+    End
+    Else
+      MsgAddr[I] := 0;
+  End;
+
+  { ===== Section .text (code x86) ===== }
+  PeTextSize := 0;
+  PeEntryPt := 0;
+
+  { PUSH -11 (STD_OUTPUT_HANDLE) }
+  EmtTextByte($68); EmtTextDWord(-11);
+  { CALL [GetStdHandle] }
+  EmtTextByte($FF); EmtTextByte($15); EmtTextDWord(IatGetStd);
+  { MOV [hStdOut], EAX }
+  EmtTextByte($A3); EmtTextDWord(StdOutA);
+
+  { Emettre le code pour chaque message }
+  For I := 1 To PyMsgCount Do
+  Begin
+    If PyMsgs[I].Len > 0 Then
+    Begin
+      { WriteFile(hStdOut, msg, len, &written, NULL) }
+      EmtTextByte($6A); EmtTextByte(0);           { PUSH 0 }
+      EmtTextByte($68); EmtTextDWord(WrittenA);    { PUSH &written }
+      EmtTextByte($68); EmtTextDWord(PyMsgs[I].Len); { PUSH len }
+      EmtTextByte($68); EmtTextDWord(MsgAddr[I]);  { PUSH msg }
+      EmtTextByte($FF); EmtTextByte($35);          { PUSH [hStdOut] }
+      EmtTextDWord(StdOutA);
+      EmtTextByte($FF); EmtTextByte($15);          { CALL [WriteFile] }
+      EmtTextDWord(IatWriteF);
+    End;
+    If PyMsgs[I].NewLine Then
+    Begin
+      { WriteFile(hStdOut, crlf, 2, &written, NULL) }
+      EmtTextByte($6A); EmtTextByte(0);
+      EmtTextByte($68); EmtTextDWord(WrittenA);
+      EmtTextByte($68); EmtTextDWord(2);
+      EmtTextByte($68); EmtTextDWord(CrlfA);
+      EmtTextByte($FF); EmtTextByte($35);
+      EmtTextDWord(StdOutA);
+      EmtTextByte($FF); EmtTextByte($15);
+      EmtTextDWord(IatWriteF);
+    End;
+  End;
+
+  { ExitProcess(0) }
+  EmtTextByte($6A); EmtTextByte(0);
+  EmtTextByte($FF); EmtTextByte($15); EmtTextDWord(IatExitP);
+  EmtTextByte($C3); { RET }
+
+  { ===== Calculer alignements ===== }
+  TextAlgn  := PadToAlignment(PeTextSize, PE_SEC_ALIGN);
+  RdataAlgn := PadToAlignment(PeRdataSize, PE_SEC_ALIGN);
+  DataAlgn  := PadToAlignment(PeDataSize, PE_SEC_ALIGN);
+  ImgSize   := DataRVA + DataAlgn;
+
+  TextFileOfs  := PE_FIL_ALIGN;
+  RdataFileOfs := TextFileOfs + PadToAlignment(PeTextSize, PE_FIL_ALIGN);
+  DataFileOfs  := RdataFileOfs + PadToAlignment(PeRdataSize, PE_FIL_ALIGN);
+
+  { ===== Ouvrir le fichier de sortie ===== }
+  Assign(PeOutFile, Opts.OutFile);
+  {$I-}
+  Rewrite(PeOutFile, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('Erreur : impossible de creer ', Opts.OutFile);
+    Exit;
+  End;
+  PeOutOpen := True;
+  PeFileOfs := 0;
+
+  { DOS Header + stub }
+  WriteDosHeader;
+  { Aligner a $80 }
+  PeWrPad($80 - PeFileOfs);
+
+  { PE Signature }
+  Inc(PeSignatureCount);
+  PeWrDWord(PE_IMAGE_NT_SIG);
+
+  { COFF File Header (20 octets) }
+  Inc(PeCoffHdrCount);
+  PeWrWord(PE_MACHINE_I386);       { Machine }
+  PeWrWord(3);                      { NumberOfSections }
+  PeWrDWord(0);                     { TimeDateStamp }
+  PeWrDWord(0);                     { PointerToSymbolTable }
+  PeWrDWord(0);                     { NumberOfSymbols }
+  PeWrWord(224);                    { SizeOfOptionalHeader }
+  PeWrWord(PE_FILE_EXEC Or PE_FILE_32BIT); { Characteristics }
+
+  { Optional Header PE32 (224 octets) }
+  Inc(PeOptHdrCount);
+  PeWrWord(PE_OPT_MAGIC32);        { Magic }
+  PeWrByte(1); PeWrByte(0);        { LinkerVersion }
+  PeWrDWord(PeTextSize);           { SizeOfCode }
+  PeWrDWord(PeDataSize + PeRdataSize); { SizeOfInitializedData }
+  PeWrDWord(0);                     { SizeOfUninitializedData }
+  PeWrDWord(TextRVA + PeEntryPt);  { AddressOfEntryPoint }
+  PeWrDWord(TextRVA);              { BaseOfCode }
+  PeWrDWord(DataRVA);              { BaseOfData }
+  PeWrDWord(PE_IMG_BASE);          { ImageBase }
+  PeWrDWord(PE_SEC_ALIGN);         { SectionAlignment }
+  PeWrDWord(PE_FIL_ALIGN);         { FileAlignment }
+  PeWrWord(6); PeWrWord(0);        { OS Version }
+  PeWrWord(0); PeWrWord(0);        { ImageVersion }
+  PeWrWord(6); PeWrWord(0);        { SubsystemVersion }
+  PeWrDWord(0);                     { Win32VersionValue }
+  PeWrDWord(ImgSize);              { SizeOfImage }
+  PeWrDWord($200);                  { SizeOfHeaders }
+  PeWrDWord(0);                     { CheckSum }
+  PeWrWord(PE_SUBSYS_CUI);         { Subsystem }
+  PeWrWord(0);                      { DllCharacteristics }
+  PeWrDWord($100000);              { SizeOfStackReserve }
+  PeWrDWord($1000);                { SizeOfStackCommit }
+  PeWrDWord($100000);              { SizeOfHeapReserve }
+  PeWrDWord($1000);                { SizeOfHeapCommit }
+  PeWrDWord(0);                     { LoaderFlags }
+  PeWrDWord(16);                    { NumberOfRvaAndSizes }
+  { Data Directories (16 entries = 128 octets) }
+  PeWrDWord(0); PeWrDWord(0);      { Export }
+  PeWrDWord(RdataRVA); PeWrDWord(40); { Import }
+  For I := 3 To 16 Do
+  Begin
+    PeWrDWord(0); PeWrDWord(0);
+  End;
+
+  { Section Header .text }
+  Inc(PeSectHdrCount);
+  PeWrBuf(PChar('.text'#0#0#0)^, 8);
+  PeWrDWord(PeTextSize);           { VirtualSize }
+  PeWrDWord(TextRVA);              { VirtualAddress }
+  PeWrDWord(PadToAlignment(PeTextSize, PE_FIL_ALIGN)); { SizeOfRawData }
+  PeWrDWord(TextFileOfs);          { PointerToRawData }
+  PeWrDWord(0); PeWrDWord(0);      { Relocations/LineNumbers }
+  PeWrWord(0); PeWrWord(0);
+  PeWrDWord(PE_SCN_CODE Or PE_SCN_MEM_X Or PE_SCN_MEM_R);
+
+  { Section Header .rdata }
+  PeWrBuf(PChar('.rdata'#0#0)^, 8);
+  PeWrDWord(PeRdataSize);
+  PeWrDWord(RdataRVA);
+  PeWrDWord(PadToAlignment(PeRdataSize, PE_FIL_ALIGN));
+  PeWrDWord(RdataFileOfs);
+  PeWrDWord(0); PeWrDWord(0);
+  PeWrWord(0); PeWrWord(0);
+  PeWrDWord(PE_SCN_IDATA Or PE_SCN_MEM_R);
+
+  { Section Header .data }
+  PeWrBuf(PChar('.data'#0#0#0)^, 8);
+  PeWrDWord(PeDataSize);
+  PeWrDWord(DataRVA);
+  PeWrDWord(PadToAlignment(PeDataSize, PE_FIL_ALIGN));
+  PeWrDWord(DataFileOfs);
+  PeWrDWord(0); PeWrDWord(0);
+  PeWrWord(0); PeWrWord(0);
+  PeWrDWord(LongInt(PE_SCN_IDATA Or PE_SCN_MEM_R) Or LongInt($80000000));
+
+  { Aligner au FileAlignment }
+  Pad := PE_FIL_ALIGN - (PeFileOfs Mod PE_FIL_ALIGN);
+  If Pad < PE_FIL_ALIGN Then PeWrPad(Pad);
+
+  { .text }
+  PeWrBuf(PeTextBuf, PeTextSize);
+  Pad := PadToAlignment(PeTextSize, PE_FIL_ALIGN) - PeTextSize;
+  If Pad > 0 Then PeWrPad(Pad);
+
+  { .rdata }
+  PeWrBuf(PeRdataBuf, PeRdataSize);
+  Pad := PadToAlignment(PeRdataSize, PE_FIL_ALIGN) - PeRdataSize;
+  If Pad > 0 Then PeWrPad(Pad);
+
+  { .data }
+  PeWrBuf(PeDataBuf, PeDataSize);
+  Pad := PadToAlignment(PeDataSize, PE_FIL_ALIGN) - PeRdataSize;
+  If Pad > 0 Then PeWrPad(Pad);
+
+  Close(PeOutFile);
+  PeOutOpen := False;
+
+  WriteLn('PE32 executable genere : ', Opts.OutFile,
+          ' (', PeFileOfs, ' octets)');
+End;
+
+{ ------------------------------------------------------------ }
+{ GeneratePeExe : orchestrateur principal (appelle EmitPeCode)      }
 { ------------------------------------------------------------ }
 
 Procedure GeneratePeExe;
 Begin
-  WriteLn('; ===== Generation PE32 Executable =====');
-  WriteDosHeader;
-  WritePeSignature;
-  WriteCoffHeader;
-  WriteOptionalHeader;
-  WriteSectionHeaders;
-  WriteSectionText;
-  WriteSectionRdata;
-  WriteSectionData;
-  ResolveFixups;
-  WriteLn('; ===== Fin generation PE32 =====');
+  EmitPeCode;
 End;
 
 { ------------------------------------------------------------ }
@@ -15572,6 +16004,313 @@ Begin
 End;
 
 { ============================================================ }
+{ Parseur Python a evaluation compilee (compile-time eval)     }
+{ ============================================================ }
+
+{ SkipToEOL : avancer jusqu a fin de ligne }
+Procedure SkipToEOL;
+Begin
+  While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_NEWLINE) Do
+    ParserAdvance;
+  If CurTokKind = TK_NEWLINE Then ParserAdvance;
+End;
+
+{ PyEvalExprStr : evaluer une expression chaine simple }
+{ Supporte: "literal", variable, concatenation + }
+Function PyEvalExprStr : TString;
+Var
+  Result : TString;
+  Idx : Integer;
+  Tmp : TString;
+Begin
+  Result := '';
+  If CurTokKind = TK_STRING Then
+  Begin
+    Result := CurTokStr;
+    ParserAdvance;
+  End
+  Else If CurTokKind = TK_IDENT Then
+  Begin
+    Idx := PyFindVar(CurTokStr);
+    If (Idx > 0) And (PyVars[Idx].Kind = 1) Then
+      Result := PyVars[Idx].StrVal
+    Else
+      Result := '';
+    ParserAdvance;
+  End;
+  { Concatenation avec + }
+  While (CurTokKind = TK_OP) And (CurTokStr = '+') Do
+  Begin
+    ParserAdvance;
+    If CurTokKind = TK_STRING Then
+    Begin
+      Result := Result + CurTokStr;
+      ParserAdvance;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      Idx := PyFindVar(CurTokStr);
+      If (Idx > 0) And (PyVars[Idx].Kind = 1) Then
+        Result := Result + PyVars[Idx].StrVal;
+      ParserAdvance;
+    End;
+  End;
+  PyEvalExprStr := Result;
+End;
+
+{ PyEvalExprInt : evaluer une expression entiere simple }
+{ Supporte: literal, variable, +, -, *, -, negatif }
+Function PyEvalExprInt : LongInt;
+Var
+  Result : LongInt;
+  Idx : Integer;
+  Op : Char;
+  Right : LongInt;
+  Neg : Boolean;
+Begin
+  Result := 0;
+  Neg := False;
+  { Unaire - }
+  If (CurTokKind = TK_OP) And (CurTokStr = '-') Then
+  Begin
+    Neg := True;
+    ParserAdvance;
+  End;
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    Result := CurTokInt;
+    ParserAdvance;
+  End
+  Else If CurTokKind = TK_IDENT Then
+  Begin
+    Idx := PyFindVar(CurTokStr);
+    If (Idx > 0) And (PyVars[Idx].Kind = 0) Then
+      Result := PyVars[Idx].IntVal;
+    ParserAdvance;
+  End;
+  If Neg Then Result := -Result;
+  { Operations binaires }
+  While (CurTokKind = TK_OP) And
+        ((CurTokStr = '+') Or (CurTokStr = '-') Or
+         (CurTokStr = '*')) Do
+  Begin
+    Op := CurTokStr[1];
+    ParserAdvance;
+    Right := 0;
+    Neg := False;
+    If (CurTokKind = TK_OP) And (CurTokStr = '-') Then
+    Begin
+      Neg := True;
+      ParserAdvance;
+    End;
+    If CurTokKind = TK_INTEGER Then
+    Begin
+      Right := CurTokInt;
+      ParserAdvance;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      Idx := PyFindVar(CurTokStr);
+      If (Idx > 0) And (PyVars[Idx].Kind = 0) Then
+        Right := PyVars[Idx].IntVal;
+      ParserAdvance;
+    End;
+    If Neg Then Right := -Right;
+    Case Op Of
+      '+' : Result := Result + Right;
+      '-' : Result := Result - Right;
+      '*' : Result := Result * Right;
+    End;
+  End;
+  PyEvalExprInt := Result;
+End;
+
+{ PyStrMul : repeter une chaine N fois }
+Function PyStrMul(Const S : TString; N : LongInt) : TString;
+Var
+  R : TString;
+  I : LongInt;
+Begin
+  R := '';
+  For I := 1 To N Do
+  Begin
+    If Length(R) + Length(S) > 255 Then Break;
+    R := R + S;
+  End;
+  PyStrMul := R;
+End;
+
+{ PyParsePrint : parser print(...) }
+Procedure PyParsePrint;
+Var
+  First : Boolean;
+  Idx : Integer;
+  S : TString;
+Begin
+  ParserAdvance; { consommer 'print' }
+  If (CurTokKind <> TK_PUNCT) Or (CurTokStr <> '(') Then
+  Begin
+    SkipToEOL;
+    Exit;
+  End;
+  ParserAdvance; { consommer '(' }
+  { print() sans arguments }
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+  Begin
+    PyAddMsg('', True);
+    ParserAdvance;
+    SkipToEOL;
+    Exit;
+  End;
+  First := True;
+  While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_NEWLINE) And
+        Not ((CurTokKind = TK_PUNCT) And (CurTokStr = ')')) Do
+  Begin
+    If Not First Then
+      PyAddMsg(' ', False); { separateur espace }
+    First := False;
+    If CurTokKind = TK_STRING Then
+    Begin
+      S := CurTokStr;
+      ParserAdvance;
+      { Concatenation de chaines inline }
+      While (CurTokKind = TK_OP) And (CurTokStr = '+') Do
+      Begin
+        ParserAdvance;
+        If CurTokKind = TK_STRING Then
+        Begin
+          S := S + CurTokStr;
+          ParserAdvance;
+        End
+        Else Break;
+      End;
+      PyAddMsg(S, False);
+    End
+    Else If CurTokKind = TK_INTEGER Then
+    Begin
+      PyAddMsg(ItoS(CurTokInt), False);
+      ParserAdvance;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      Idx := PyFindVar(CurTokStr);
+      If Idx > 0 Then
+      Begin
+        If PyVars[Idx].Kind = 0 Then
+          PyAddMsg(ItoS(PyVars[Idx].IntVal), False)
+        Else
+          PyAddMsg(PyVars[Idx].StrVal, False);
+      End
+      Else
+        PyAddMsg(CurTokStr, False);
+      ParserAdvance;
+    End
+    Else
+      ParserAdvance;
+    { Virgule = prochain argument }
+    If (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Then
+      ParserAdvance;
+  End;
+  { La derniere piece ajoute un newline }
+  If PyMsgCount > 0 Then
+    PyMsgs[PyMsgCount].NewLine := True;
+  If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+    ParserAdvance;
+  SkipToEOL;
+End;
+
+{ PyParseAssign : parser nom = expression }
+Procedure PyParseAssign;
+Var
+  VarName : TString;
+  StrVal : TString;
+  IntVal : LongInt;
+  Idx : Integer;
+  IsStr : Boolean;
+  MulStr : TString;
+  MulN : LongInt;
+Begin
+  VarName := CurTokStr;
+  ParserAdvance; { consommer le nom }
+  If (CurTokKind <> TK_OP) Or (CurTokStr <> '=') Then
+  Begin
+    SkipToEOL;
+    Exit;
+  End;
+  ParserAdvance; { consommer '=' }
+  { Determiner si c est une chaine ou un entier }
+  IsStr := False;
+  If CurTokKind = TK_STRING Then
+    IsStr := True
+  Else If CurTokKind = TK_IDENT Then
+  Begin
+    Idx := PyFindVar(CurTokStr);
+    If (Idx > 0) And (PyVars[Idx].Kind = 1) Then
+      IsStr := True;
+  End;
+  If IsStr Then
+  Begin
+    StrVal := PyEvalExprStr;
+    { Gerer la repetition * N }
+    If (CurTokKind = TK_OP) And (CurTokStr = '*') Then
+    Begin
+      ParserAdvance;
+      MulN := PyEvalExprInt;
+      StrVal := PyStrMul(StrVal, MulN);
+    End;
+    PySetVarStr(VarName, StrVal);
+  End
+  Else
+  Begin
+    IntVal := PyEvalExprInt;
+    PySetVarInt(VarName, IntVal);
+  End;
+  SkipToEOL;
+End;
+
+{ PyParseProgram : boucle principale du parseur }
+Procedure PyParseProgram;
+Begin
+  While CurTokKind <> TK_EOF Do
+  Begin
+    { Sauter les lignes vides et newlines }
+    If CurTokKind = TK_NEWLINE Then
+    Begin
+      ParserAdvance;
+    End
+    { Sauter les commentaires (le lexer gere deja # en general) }
+    Else If (CurTokKind = TK_OP) And (CurTokStr = '#') Then
+    Begin
+      SkipToEOL;
+    End
+    { Sauter indent/dedent }
+    Else If (CurTokKind = TK_INDENT) Or (CurTokKind = TK_DEDENT) Then
+    Begin
+      ParserAdvance;
+    End
+    { print(...) }
+    Else If (CurTokKind = TK_IDENT) And (CurTokStr = 'print') Then
+    Begin
+      PyParsePrint;
+    End
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'print') Then
+    Begin
+      PyParsePrint;
+    End
+    { nom = expr }
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      PyParseAssign;
+    End
+    { Tout autre token : sauter la ligne }
+    Else
+    Begin
+      SkipToEOL;
+    End;
+  End;
+End;
+
+{ ============================================================ }
 { Procedure Run (stub pour les futurs TODOs)                   }
 { ============================================================ }
 
@@ -15688,8 +16427,12 @@ Begin
   { Lire le premier token }
   LexNextToken;
 
-  { --- Les futurs TODOs ajouteront ici le parseur Python --- }
-  { --- et la generation de code, etc.                    --- }
+  { Parser le programme Python (evaluation compile-time) }
+  PyParseProgram;
+
+  { Generer l executable PE32 }
+  If (ErrorCount = 0) And Opts.EmitExe Then
+    GeneratePeExe;
 
   { Fermer le fichier source }
   LexClose;
