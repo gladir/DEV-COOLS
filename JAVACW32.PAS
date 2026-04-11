@@ -3383,6 +3383,74 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Support des tableaux au compile-time                          }
+{ Stocke les elementy d'un tableau pendant la simulation        }
+{ ------------------------------------------------------------ }
+
+Const
+  MAX_ARRAY_VARS = 64;      { nombre max de tableaux }
+  MAX_ARRAY_SIZE = 256;     { taille max d un tableau }
+
+Type
+  TArrayContent = Record
+    VarName  : TString;                          { nom de la variable }
+    ElemType : Integer;                          { type des elements }
+    Size     : Integer;                          { nombre d elements }
+    Values   : Array[0..MAX_ARRAY_SIZE-1] Of LongInt; { les valeurs }
+  End;
+
+Var
+  ArrayTab      : Array[0..MAX_ARRAY_VARS-1] Of TArrayContent;
+  ArrayTabCount : Integer;
+
+Procedure InitArrayTab;
+Var I, J : Integer;
+Begin
+  ArrayTabCount := 0;
+  For I := 0 To MAX_ARRAY_VARS - 1 Do
+  Begin
+    ArrayTab[I].VarName := '';
+    ArrayTab[I].ElemType := 0;    { TY_IDX_INT = 0 (const not yet in scope) }
+    ArrayTab[I].Size := 0;
+    For J := 0 To MAX_ARRAY_SIZE - 1 Do
+      ArrayTab[I].Values[J] := 0;
+  End;
+End;
+
+Function FindOrCreateArray(Const VarName : TString; Size : Integer;
+                           ElemType : Integer) : Integer;
+Var I : Integer;
+Begin
+  { Chercher un array avec ce nom }
+  For I := 0 To ArrayTabCount - 1 Do
+    If ArrayTab[I].VarName = VarName Then
+    Begin
+      FindOrCreateArray := I;
+      Exit;
+    End;
+
+  { Créer un nouveau array }
+  If ArrayTabCount >= MAX_ARRAY_VARS Then
+  Begin
+    FindOrCreateArray := -1;
+    Exit;
+  End;
+
+  I := ArrayTabCount;
+  Inc(ArrayTabCount);
+  ArrayTab[I].VarName := VarName;
+  ArrayTab[I].ElemType := ElemType;
+  ArrayTab[I].Size := Size;
+  FindOrCreateArray := I;
+End;
+
+Function StoreScanString(Const S : TString) : TString;
+Begin
+  { Stocker une chaine de scanner et retourner une clé }
+  StoreScanString := S;
+End;
+
+{ ------------------------------------------------------------ }
 { DumpSymState : afficher l etat de la table des symboles       }
 { ------------------------------------------------------------ }
 
@@ -3400,6 +3468,7 @@ Begin
   WriteLn('  SymScopeEnter  : ', SymScopeEnter);
   WriteLn('  SymScopeLeave  : ', SymScopeLeave);
   WriteLn('  SymLastName    : ', SymLastName);
+  WriteLn('  ArrayTabCount  : ', ArrayTabCount);
 End;
 
 { ------------------------------------------------------------ }
@@ -5143,6 +5212,7 @@ Var
   PxScannerCount : LongInt;    { nombre d appels Scanner             }
   PxLastKind     : Integer;    { dernier type d expression primaire  }
   PxLabelSeq     : Integer;    { sequence pour labels PX              }
+  PxLastNewArraySize : LongInt; { taille du dernier new int[N]        }
 
 Type
   TSimMethodParamNames = Array[1..PX_MAX_ARGS] Of TString;
@@ -5190,6 +5260,7 @@ Begin
   PxScannerCount := 0;
   PxLastKind     := PX_NONE;
   PxLabelSeq     := 0;
+  PxLastNewArraySize := 0;
   SimMethodCount := 0;
   SimMethodExecDepth := 0;
   SimMethodReturnFlag := False;
@@ -5491,7 +5562,7 @@ End;
 
 { ------------------------------------------------------------ }
 { ParseIndexAccess : parser expr[i]                              }
-{   Calcul offset + MOV EAX, [EBX+4+i*4]                        }
+{   Retourne la valeur si connue au compile-time                }
 {   Le [ a deja ete consomme par l appelant.                     }
 { ------------------------------------------------------------ }
 
@@ -5499,6 +5570,10 @@ Function ParseIndexAccess(ObjExpr : TExprVal) : TExprVal;
 Var
   R : TExprVal;
   E : TExprVal;
+  IndexVal : LongInt;
+  ArrayIdx : Integer;
+  ElemVal : LongInt;
+  VarName : TString;
 Begin
   Inc(PxIndexCount);
   PxLastKind := PX_INDEX;
@@ -5523,6 +5598,22 @@ Begin
     R.TypeIdx := TY_IDX_STRING
   Else If ObjExpr.TypeIdx = TY_IDX_BOOLARR Then
     R.TypeIdx := TY_IDX_BOOLEAN;
+
+  { Si l index est une constante, chercher la valeur stockée }
+  If (E.Kind = EK_IMM) And (ObjExpr.SymIdx >= 0) Then
+  Begin
+    IndexVal := E.ImmVal;
+    VarName := SymTab[ObjExpr.SymIdx].Name;
+    ArrayIdx := FindOrCreateArray(VarName, 100, ObjExpr.TypeIdx);
+    If (ArrayIdx >= 0) And (IndexVal >= 0) And
+       (IndexVal < ArrayTab[ArrayIdx].Size) Then
+    Begin
+      { Retrouver la valeur stockée }
+      ElemVal := ArrayTab[ArrayIdx].Values[IndexVal];
+      R.Kind := EK_IMM;
+      R.ImmVal := ElemVal;
+    End;
+  End;
 
   ParseIndexAccess := R;
 End;
@@ -5557,6 +5648,11 @@ Begin
     PxLastKind := PX_NEW_ARR;
     ParserAdvance; { consommer [ }
     R := ParseExpr; { taille du tableau }
+    { Sauvegarder la taille pour la declaration }
+    If R.Kind = EK_IMM Then
+      PxLastNewArraySize := R.ImmVal
+    Else
+      PxLastNewArraySize := 0;
     If CurTokKind = TK_RBRACKET Then
       ParserAdvance
     Else
@@ -6788,6 +6884,11 @@ Begin
     Begin
       LexNextToken;
       E := ParseExpr;
+
+      { Si c est un tableau avec new, creer l entree ArrayTab }
+      If IsArray And (PxLastNewArraySize > 0) Then
+        FindOrCreateArray(VarName, PxLastNewArraySize, TypeIdx);
+
       If VarIdx >= 0 Then
       Begin
         { Propager la valeur simulee au compile-time si connue }
@@ -6941,6 +7042,7 @@ End;
 
 { ------------------------------------------------------------ }
 { ParseAssignSimple : traiter une affectation simple x = expr    }
+{ ou une assignation d elemeny tab[index] = expr                }
 { Attend : CurTokStr contient le nom de la variable              }
 { Le token '=' a ete detecte par l appelant                      }
 { ------------------------------------------------------------ }
@@ -6949,6 +7051,11 @@ Procedure ParseAssignSimple(Const VarName : TString);
 Var
   VarIdx : Integer;
   E      : TExprVal;
+  IndexE : TExprVal;
+  IndexVal : LongInt;
+  ArrayIdx : Integer;
+  IsArrayElem : Boolean;
+  ArraySize : Integer;
 Begin
   VaLastKind := VA_ASSIGN;
   Inc(VaAssignCount);
@@ -6961,68 +7068,128 @@ Begin
     Exit;
   End;
 
-  If Opts.Verbose Then
-    WriteLn('; assign simple: ', VarName, ' = <expr>');
-
-  { Avancer apres le '=' }
-  LexNextToken;
-
-  { Evaluer l expression a droite (resultat dans EAX) }
-  E := ParseExpr;
-
-  { Mettre a jour la valeur simulee au compile-time si connue }
-  If E.Kind = EK_IMM Then
+  { Vérifier si c'est une assignation de tableau : var[index] = value }
+  IsArrayElem := False;
+  If CurTokKind = TK_LBRACKET Then
   Begin
-    SymTab[VarIdx].HasSimVal := True;
-    Case SymTab[VarIdx].TypeIdx Of
-      TY_IDX_INT:
-        SymTab[VarIdx].SimIntVal := E.ImmVal;
-      TY_IDX_BOOLEAN:
-        SymTab[VarIdx].SimBoolVal := (E.ImmVal <> 0);
-      TY_IDX_CHAR:
-        SymTab[VarIdx].SimCharVal := Chr(E.ImmVal And $FF);
+    { Parserassignation d'élément }
+    IsArrayElem := True;
+    ParserAdvance; { consommer [ }
+    IndexE := ParseExpr;
+
+    If CurTokKind = TK_RBRACKET Then
+      ParserAdvance
+    Else
+      CompileError('expected ]', LexLineNo);
+
+    If CurTokStr = '=' Then  { = }
+      ParserAdvance
+    Else
+    Begin
+      CompileError('expected = after array index', LexLineNo);
+      Exit;
     End;
-  End
-  Else If (E.Kind = EK_MEM) And (E.SymIdx >= 0) And
-          (E.SymIdx < SymTabCount) And SymTab[E.SymIdx].HasSimVal Then
-  Begin
-    { Propager la valeur simulee d une autre variable }
-    SymTab[VarIdx].HasSimVal  := True;
-    SymTab[VarIdx].SimIntVal  := SymTab[E.SymIdx].SimIntVal;
-    SymTab[VarIdx].SimBoolVal := SymTab[E.SymIdx].SimBoolVal;
-    SymTab[VarIdx].SimCharVal := SymTab[E.SymIdx].SimCharVal;
-    SymTab[VarIdx].SimStrVal  := SymTab[E.SymIdx].SimStrVal;
-  End
-  Else If (SymTab[VarIdx].TypeIdx = TY_IDX_STRING) And
-          (E.Kind = EK_MEM) And (E.SymIdx < 0) And
-          (E.Offset >= 0) And (E.Offset < DataCount) And
-          (DataTab[E.Offset].Kind = DK_STR) Then
-  Begin
-    SymTab[VarIdx].HasSimVal := True;
-    SymTab[VarIdx].SimStrVal := DataTab[E.Offset].StrVal;
-    SetScannerVar(VarName, False);
-  End
-  Else If (E.Kind = EK_EAX) And (SymTab[VarIdx].TypeIdx = TY_IDX_STRING) Then
-  Begin
-    { Exemple: t = Scanner.nextLine(); -> runtime }
-    SymTab[VarIdx].HasSimVal := False;
-    SetScannerVar(VarName, True);
-  End
-  Else If (E.Kind = EK_EAX) And (SymTab[VarIdx].TypeIdx = TY_IDX_INT) Then
-  Begin
-    { Exemple: n = Scanner.nextInt(); -> runtime }
-    SymTab[VarIdx].HasSimVal := False;
-    SetScannerVar(VarName, True);
+
+    { Si l'index est une constante, on peut stocker la valeur }
+    If IndexE.Kind = EK_IMM Then
+      IndexVal := IndexE.ImmVal
+    Else
+      IndexVal := -1;  { Index non-constant, on ignore }
+
+    If Opts.Verbose Then
+      WriteLn('; assign array: ', VarName, '[', IndexVal, '] = <expr>');
   End
   Else
   Begin
-    { Expression non constante - valeur inconnue au compile-time }
-    SymTab[VarIdx].HasSimVal := False;
-    SetScannerVar(VarName, False);
+    { Cas simple : var = expr — consommer le '=' }
+    If CurTokStr = '=' Then
+      ParserAdvance
+    Else
+    Begin
+      CompileError('expected = in assignment', LexLineNo);
+      Exit;
+    End;
+
+    If Opts.Verbose Then
+      WriteLn('; assign simple: ', VarName, ' = <expr>');
   End;
 
-  { Verifier la compatibilite de type }
-  CheckTypeCompat(SymTab[VarIdx].TypeIdx, E.TypeIdx);
+  { Évaluer l'expression à droite (résultat dans EAX) }
+  E := ParseExpr;
+
+  If IsArrayElem Then
+  Begin
+    { Assignation d'élément de tableau }
+    { Créer ou trouver le tableau dans la table de contenu }
+    ArraySize := 0;
+    If SymTab[VarIdx].TypeIdx = TY_IDX_INTARR Then ArraySize := MAX_ARRAY_SIZE;
+    If SymTab[VarIdx].TypeIdx = TY_IDX_CHARARR Then ArraySize := MAX_ARRAY_SIZE;
+    If SymTab[VarIdx].TypeIdx = TY_IDX_STRARR Then ArraySize := MAX_ARRAY_SIZE;
+
+    ArrayIdx := FindOrCreateArray(VarName, ArraySize, SymTab[VarIdx].TypeIdx);
+    If (ArrayIdx >= 0) And (IndexVal >= 0) And (IndexVal < ArraySize) Then
+    Begin
+      If E.Kind = EK_IMM Then
+        ArrayTab[ArrayIdx].Values[IndexVal] := E.ImmVal;
+    End;
+  End
+  Else
+  Begin
+    { Assignation simple }
+    { Mettre a jour la valeur simulee au compile-time si connue }
+    If E.Kind = EK_IMM Then
+    Begin
+      SymTab[VarIdx].HasSimVal := True;
+      Case SymTab[VarIdx].TypeIdx Of
+        TY_IDX_INT:
+          SymTab[VarIdx].SimIntVal := E.ImmVal;
+        TY_IDX_BOOLEAN:
+          SymTab[VarIdx].SimBoolVal := (E.ImmVal <> 0);
+        TY_IDX_CHAR:
+          SymTab[VarIdx].SimCharVal := Chr(E.ImmVal And $FF);
+      End;
+    End
+    Else If (E.Kind = EK_MEM) And (E.SymIdx >= 0) And
+            (E.SymIdx < SymTabCount) And SymTab[E.SymIdx].HasSimVal Then
+    Begin
+      { Propager la valeur simulee d une autre variable }
+      SymTab[VarIdx].HasSimVal  := True;
+      SymTab[VarIdx].SimIntVal  := SymTab[E.SymIdx].SimIntVal;
+      SymTab[VarIdx].SimBoolVal := SymTab[E.SymIdx].SimBoolVal;
+      SymTab[VarIdx].SimCharVal := SymTab[E.SymIdx].SimCharVal;
+      SymTab[VarIdx].SimStrVal  := SymTab[E.SymIdx].SimStrVal;
+    End
+    Else If (SymTab[VarIdx].TypeIdx = TY_IDX_STRING) And
+            (E.Kind = EK_MEM) And (E.SymIdx < 0) And
+            (E.Offset >= 0) And (E.Offset < DataCount) And
+            (DataTab[E.Offset].Kind = DK_STR) Then
+    Begin
+      SymTab[VarIdx].HasSimVal := True;
+      SymTab[VarIdx].SimStrVal := DataTab[E.Offset].StrVal;
+      SetScannerVar(VarName, False);
+    End
+    Else If (E.Kind = EK_EAX) And (SymTab[VarIdx].TypeIdx = TY_IDX_STRING) Then
+    Begin
+      { Exemple: t = Scanner.nextLine(); -> runtime }
+      SymTab[VarIdx].HasSimVal := False;
+      SetScannerVar(VarName, True);
+    End
+    Else If (E.Kind = EK_EAX) And (SymTab[VarIdx].TypeIdx = TY_IDX_INT) Then
+    Begin
+      { Exemple: n = Scanner.nextInt(); -> runtime }
+      SymTab[VarIdx].HasSimVal := False;
+      SetScannerVar(VarName, True);
+    End
+    Else
+    Begin
+      { Expression non constante - valeur inconnue au compile-time }
+      SymTab[VarIdx].HasSimVal := False;
+      SetScannerVar(VarName, False);
+    End;
+
+    { Verifier la compatibilite de type }
+    CheckTypeCompat(SymTab[VarIdx].TypeIdx, E.TypeIdx);
+  End;
 
   { Stocker EAX dans la variable }
   EmitVarStore(VarIdx);
@@ -20275,39 +20442,258 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ ParseForEachInit : parser la partie init d'une boucle for-each }
+{   for (int x : tab) ...                                         }
+{   Retourne le nom de la variable de boucle                      }
+{   Retourne False si ce n'est pas un for-each (trouvé ; au lieu de :) }
+{   Consomme jusqu a : inclus si for-each, sinon ne consomme rien }
+{ ------------------------------------------------------------ }
+
+Function ParseForEachInit(Var VarName : TString;
+                          Var TypeIdx : Integer) : Boolean;
+Var TypeKW : Integer;
+    TypeName : TString;
+    IsArray : Boolean;
+    SaveState : TLexState;
+Begin
+  ParseForEachInit := False;
+  VarName := '';
+  TypeIdx := -1;
+
+  { Sauvegarder l'état avant de commencer }
+  LexSaveState(SaveState);
+
+  { Lire le type (mot-cle ou identifiant type) }
+  If (CurTokKind <> TK_KEYWORD) And (CurTokKind <> TK_IDENT) Then
+  Begin
+    LexRestoreState(SaveState);
+    Exit;
+  End;
+
+  If CurTokKind = TK_KEYWORD Then
+  Begin
+    TypeKW := CurTokInt;
+    TypeIdx := ResolveVarType(TypeKW);
+  End
+  Else
+  Begin
+    TypeName := CurTokStr;
+    TypeIdx := ResolveVarTypeStr(TypeName);
+  End;
+
+  If TypeIdx < 0 Then
+  Begin
+    LexRestoreState(SaveState);
+    Exit;
+  End;
+  ParserAdvance;
+
+  { Detecter tableau notation : int[] }
+  IsArray := False;
+  If CurTokKind = TK_LBRACKET Then
+  Begin
+    ParserAdvance;
+    If CurTokKind = TK_RBRACKET Then
+      ParserAdvance
+    Else
+    Begin
+      LexRestoreState(SaveState);
+      Exit;
+    End;
+    IsArray := True;
+  End;
+
+  { Lire le nom de la variable }
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    LexRestoreState(SaveState);
+    Exit;
+  End;
+  VarName := CurTokStr;
+  ParserAdvance;
+
+  { Vérifier le ':' (sinon c'est un for normal) }
+  If CurTokStr <> ':' Then
+  Begin
+    LexRestoreState(SaveState);
+    Exit;
+  End;
+  ParserAdvance; { consommer le ':' }
+  ParseForEachInit := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForEachBody : executer la boucle for-each               }
+{   for (Type var : array) corps                              }
+{   Simule l iteration sur tous les elements du tableau        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForEachBody(Const VarName : TString; TypeIdx : Integer);
+Var
+  VarIdx : Integer;
+  SavedSymTop : Integer;
+  ArrayName : TString;
+  ArrCTIdx : Integer;
+  ArrDeclIdx : Integer;
+  ArrRealSize : Integer;
+  ElemIdx : Integer;
+  BodyState : TLexState;
+Begin
+  { Entrer dans un nouveau scope pour la variable }
+  SavedSymTop := SymTabCount;
+
+  { Ajouter la variable de boucle au scope }
+  Inc(VaLocalOffset, 4);
+  VarIdx := SymAdd(VarName, SK_LOCAL, TypeIdx, LexLineNo,
+                   '', False, False, False);
+  If VarIdx >= 0 Then
+    SymTab[VarIdx].Offset := VaLocalOffset;
+
+  If Opts.Verbose Then
+    WriteLn('; for-each var: ', VarName, ' type=',
+            TypeKindStr(TypeIdx));
+
+  { Parser l expr du tableau (variable ou expression) }
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    CompileError('Array reference expected in for-each', LexLineNo);
+    Exit;
+  End;
+
+  { Lire le nom du tableau }
+  ArrayName := CurTokStr;
+  ParserAdvance;
+
+  { Consommer le ) }
+  If CurTokKind <> TK_RPAREN Then
+    CompileError(') expected after array in for-each', LexLineNo);
+  ParserAdvance;
+
+  { Trouver le tableau dans ArrayTab (valeurs compile-time) }
+  ArrCTIdx := -1;
+  For ElemIdx := 0 To ArrayTabCount - 1 Do
+    If ArrayTab[ElemIdx].VarName = ArrayName Then
+    Begin
+      ArrCTIdx := ElemIdx;
+      Break;
+    End;
+
+  If ArrCTIdx < 0 Then
+  Begin
+    { Tableau non trouve dans la table compile-time : parser le corps une fois }
+    LoopBreakFlag := False;
+    LoopContinueFlag := False;
+    ParseBlock;
+    SymTabCount := SavedSymTop;
+    Exit;
+  End;
+
+  { Sauvegarder l etat au debut du corps }
+  LexSaveState(BodyState);
+
+  { Utiliser la taille reelle depuis ArArrays si disponible }
+  ArrDeclIdx := FindArrayByName(ArrayName);
+  If ArrDeclIdx > 0 Then
+    ArrRealSize := ArArrays[ArrDeclIdx].Size
+  Else
+    ArrRealSize := ArrayTab[ArrCTIdx].Size;
+
+  { Iterer sur chaque element du tableau }
+  For ElemIdx := 0 To ArrRealSize - 1 Do
+  Begin
+    { Assigner la valeur de l element a la variable de boucle }
+    If VarIdx >= 0 Then
+    Begin
+      SymTab[VarIdx].HasSimVal := True;
+      SymTab[VarIdx].SimIntVal := ArrayTab[ArrCTIdx].Values[ElemIdx];
+    End;
+
+    { Restaurer au debut du corps pour chaque iteration }
+    LexRestoreState(BodyState);
+    LoopBreakFlag := False;
+    LoopContinueFlag := False;
+    ParseBlock;
+
+    If LoopBreakFlag Then
+    Begin
+      LoopBreakFlag := False;
+      Break;
+    End;
+    If SimMethodReturnFlag Then Break;
+  End;
+
+  { Restaurer le scope }
+  SymTabCount := SavedSymTop;
+End;
+
+{ ------------------------------------------------------------ }
 { ParseForInit : executer l initialisation du for                }
 {   Gere : int i = 0  /  i = 0  /  vide (;)                    }
 {   Consomme jusqu au ; inclus                                   }
+{   Retourne True si c'est un for-each detecte au ":"            }
 { ------------------------------------------------------------ }
 
-Procedure ParseForInit;
+Function ParseForInit : Boolean;
 Var VarName : TString;
+    TypeIdx : Integer;
+    SaveState : TLexState;
 Begin
+  ParseForInit := False;
+
   { Cas init vide : for (; ... }
   If CurTokKind = TK_SEMICOLON Then
   Begin
     ParserAdvance;
     Exit;
   End;
-  { Declaration de variable : int i = 0 }
+
+  { Declaration de variable : int i = 0 ou int x : array }
   If (CurTokKind = TK_KEYWORD) And
      ((CurTokStr = 'int') Or (CurTokStr = 'boolean') Or
       (CurTokStr = 'char') Or (CurTokStr = 'String')) Then
   Begin
-    ParseVarDecl;  { ParseVarDecl consomme le ; }
+    { Essayer de detecter for-each en sauvegardant l etat }
+    LexSaveState(SaveState);
+    If ParseForEachInit(VarName, TypeIdx) Then
+    Begin
+      { C est un for-each ! }
+      ParseForEachBody(VarName, TypeIdx);
+      ParseForInit := True;
+      Exit;
+    End;
+    { Restaurer et traiter comme for normal }
+    LexRestoreState(SaveState);
+    ParseVarDecl;
     Exit;
   End;
+
   If (CurTokKind = TK_IDENT) And (CurTokStr = 'String') Then
   Begin
-    ParseVarDecl;  { ParseVarDecl consomme le ; }
+    LexSaveState(SaveState);
+    If ParseForEachInit(VarName, TypeIdx) Then
+    Begin
+      ParseForEachBody(VarName, TypeIdx);
+      ParseForInit := True;
+      Exit;
+    End;
+    LexRestoreState(SaveState);
+    ParseVarDecl;
     Exit;
   End;
+
   { Sinon : expression (assignation, pre-inc, etc.) }
   If CurTokKind = TK_IDENT Then
   Begin
     VarName := CurTokStr;
     ParserAdvance;
-    If CurTokStr = '=' Then
+    { Checker pour acces de tableau : var[index] = ... }
+    If CurTokKind = TK_LBRACKET Then
+    Begin
+      { Laisser ParseAssignSimple gerer le [index] = expr }
+      ParseAssignSimple(VarName);
+      If CurTokKind = TK_SEMICOLON Then ParserAdvance;
+    End
+    Else If CurTokStr = '=' Then
     Begin
       ParseAssignSimple(VarName);
       If CurTokKind = TK_SEMICOLON Then ParserAdvance;
@@ -20364,7 +20750,13 @@ Begin
   Begin
     VarName := CurTokStr;
     ParserAdvance;
-    If CurTokStr = '=' Then
+    { Checker pour acces de tableau : var[index] = ... }
+    If CurTokKind = TK_LBRACKET Then
+    Begin
+      { Laisser ParseAssignSimple gerer le [index] = expr }
+      ParseAssignSimple(VarName);
+    End
+    Else If CurTokStr = '=' Then
     Begin
       ParseAssignSimple(VarName);
     End
@@ -20427,6 +20819,7 @@ Var
   CondVal     : Boolean;
   CondKnown   : Boolean;
   IterCount   : LongInt;
+  IsForEach   : Boolean;
 Begin
   { Consommer ( }
   If CurTokKind = TK_LPAREN Then
@@ -20437,8 +20830,12 @@ Begin
     Exit;
   End;
 
-  { 1. Parser l init (consomme le ;) }
-  ParseForInit;
+  { 1. Parser l init (consomme le ;) - retourne True si for-each }
+  IsForEach := ParseForInit;
+
+  { Si c etait un for-each, on a deja traite le corps et on sort }
+  If IsForEach Then
+    Exit;
 
   { 2. Sauvegarder l etat au debut de la condition }
   LexSaveState(CondState);
@@ -20851,6 +21248,13 @@ Begin
     Else If (CurTokStr = '++') Or (CurTokStr = '--') Then
     Begin
       ParsePostIncDec(VarName, CurTokStr = '++');
+      If CurTokKind = TK_SEMICOLON Then
+        ParserAdvance;
+    End
+    Else If CurTokKind = TK_LBRACKET Then
+    Begin
+      { Assignation d element de tableau : tab[i] = expr }
+      ParseAssignSimple(VarName);
       If CurTokKind = TK_SEMICOLON Then
         ParserAdvance;
     End
