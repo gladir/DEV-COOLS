@@ -1265,6 +1265,13 @@ Const
  AWK_EXT_SOURCE       = '.awk';     { extension source AWK            }
  AWK_EXT_EXE          = '.exe';     { extension executable            }
 
+ { Integration compilateur Java }
+ JAVA_COMPILER_WIN32  = 'JAVACW32'; { compilateur Java Win32 PE       }
+ JAVA_COMPILER_DOS    = 'JAVAC86';  { compilateur Java DOS 8086       }
+ JAVA_TEMP_OUTPUT     = '_javaout.tmp'; { fichier temp sortie compil  }
+ JAVA_EXT_SOURCE      = '.java';    { extension source Java           }
+ JAVA_EXT_EXE         = '.exe';     { extension executable            }
+
  { Systeme de build et configuration }
  BUILD_MAX_ORDER       = 64;       { nombre max projets dans l ordre }
  BUILD_CFG_DLG_WIDTH   = 400;      { largeur dialogue configuration  }
@@ -2483,6 +2490,23 @@ Type
   UseWarnings    : Boolean;        { afficher avertissements         }
  End;
 
+ TJavaCompilerContext = Record
+  CompilerPath   : String[255];    { chemin complet du compilateur   }
+  CompilerName   : String[40];     { nom du compilateur (JAVACW32/JAVAC86) }
+  CompilerFound  : Boolean;        { compilateur disponible          }
+  LastResult     : TCompilerResult;{ dernier resultat de compilation }
+  ErrorCount     : Integer;        { nombre d erreurs derniere compil}
+  WarningCount   : Integer;        { nombre d avertissements         }
+  FilesCompiled  : Integer;        { nombre de fichiers compiles     }
+  TotalFiles     : Integer;        { nombre total de fichiers source }
+  OutputFile     : String[255];    { fichier de sortie genere        }
+  TempFile       : String[255];    { fichier temporaire de sortie    }
+  IsCompiling    : Boolean;        { compilation en cours            }
+  UseDebugSymbols: Boolean;        { inclure symboles de debogage    }
+  UseVerbose     : Boolean;        { mode verbeux                    }
+  UseWarnings    : Boolean;        { afficher avertissements         }
+ End;
+
  { Etat de build d un projet }
  TBuildStatus = (
   BS_PENDING,          { en attente de compilation               }
@@ -2711,6 +2735,8 @@ Var
  PSPContext     : TPSPCompilerContext;
  { Contexte compilateur AWK }
  AWKContext     : TAWKCompilerContext;
+ { Contexte compilateur Java }
+ JavaContext    : TJavaCompilerContext;
  { Gestionnaire de build }
  BuildMgr       : TBuildManager;
  { Gestionnaire de configurations }
@@ -22228,6 +22254,55 @@ Begin
 End;
 
 { ============================================================
+  INTEGRATION COMPILATEUR JAVA
+  ============================================================ }
+
+{ --- Initialiser le contexte du compilateur Java --- }
+
+Procedure InitJavaContext(Var Ctx: TJavaCompilerContext);
+Begin
+ Ctx.CompilerPath := '';
+ Ctx.CompilerName := '';
+ Ctx.CompilerFound := False;
+ Ctx.LastResult := CR_NOT_FOUND;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ Ctx.TotalFiles := 0;
+ Ctx.OutputFile := '';
+ Ctx.TempFile := JAVA_TEMP_OUTPUT;
+ Ctx.IsCompiling := False;
+ Ctx.UseDebugSymbols := False;
+ Ctx.UseVerbose := False;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Detecter le compilateur Java disponible --- }
+
+Procedure DetectJavaCompiler(Var Ctx: TJavaCompilerContext);
+Var
+ Path: String;
+Begin
+ { Essayer d abord JAVACW32 (Win32 PE) }
+ Path := FindCompiler(JAVA_COMPILER_WIN32);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := JAVA_COMPILER_WIN32;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ { Sinon essayer JAVAC86 (DOS 8086) }
+ Path := FindCompiler(JAVA_COMPILER_DOS);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := JAVA_COMPILER_DOS;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ Ctx.CompilerFound := False;
+End;
+
+{ ============================================================
   TODO 28 - SYSTEME DE BUILD ET CONFIGURATION [IMPLEMENTE]
   ============================================================ }
 
@@ -23931,6 +24006,26 @@ Begin
    Exit;
   End;
  End
+ Else If (Ext = '.java') Then Begin
+  { Compilation Java }
+  DetectJavaCompiler(JavaContext);
+  If JavaContext.CompilerFound Then Begin
+   CmdLine := JavaContext.CompilerPath + ' ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine,
+    Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End Else Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur Java non trouve (JAVACW32/JAVAC86).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+ End
  Else Begin
   AppendOutput(OutputPanel,
    'Erreur : type de fichier non supporte (' + Ext + ').',
@@ -24516,6 +24611,7 @@ BEGIN
  InitABAPContext(ABAPContext);
  InitPSPContext(PSPContext);
  InitAWKContext(AWKContext);
+ InitJavaContext(JavaContext);
  InitBuildManager(BuildMgr);
  InitConfigurationManager(CfgMgr);
  InitBreakpointManager(BPMgr);
