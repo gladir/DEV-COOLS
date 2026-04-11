@@ -2843,6 +2843,12 @@ Type
     IsPublic   : Boolean;       { True si declare public               }
     DeclLine   : Integer;       { numero de ligne de declaration       }
     ClassName  : TString;       { nom de la classe proprietaire        }
+    { Valeurs simulees au compile-time pour l evaluation des expressions }
+    HasSimVal  : Boolean;       { True si la valeur simulee est connue }
+    SimIntVal  : LongInt;       { valeur entiere simulee               }
+    SimBoolVal : Boolean;       { valeur booleenne simulee             }
+    SimCharVal : Char;          { valeur caractere simulee             }
+    SimStrVal  : TString;       { valeur chaine simulee                }
   End;
 
 Var
@@ -3012,6 +3018,12 @@ Begin
   SymTab[Idx].IsPublic   := Pub;
   SymTab[Idx].DeclLine   := DeclLine;
   SymTab[Idx].ClassName  := ClsName;
+  { Initialiser les valeurs simulees }
+  SymTab[Idx].HasSimVal  := False;
+  SymTab[Idx].SimIntVal  := 0;
+  SymTab[Idx].SimBoolVal := False;
+  SymTab[Idx].SimCharVal := #0;
+  SymTab[Idx].SimStrVal  := '';
   Inc(SymTabCount);
   Inc(SymAddCount);
   SymLastName := Name;
@@ -5202,36 +5214,101 @@ Begin
         AddOutMsgChar(#0, IsPrintln, LexLineNo);
       ParserAdvance;
     End
-    { Cas : identificateur (variable) }
+    { Cas : identificateur (variable) ou expression }
     Else If CurTokKind = TK_IDENT Then
     Begin
       SymI := SymFind(CurTokStr);
-      If SymI > 0 Then
+      { Evaluer l expression complete - cela consomme les tokens }
+      ArgExpr := ParseExpr;
+      
+      { Si c est une valeur immediate (expression constante evaluee) }
+      If ArgExpr.Kind = EK_IMM Then
       Begin
-        { Determiner le type de la variable }
-        Case SymTab[SymI].TypeIdx Of
-          TY_IDX_INT     : VarKind := OMK_VAR_INT;
-          TY_IDX_BOOLEAN : VarKind := OMK_VAR_BOOL;
-          TY_IDX_CHAR    : VarKind := OMK_VAR_CHAR;
-          TY_IDX_STRING  : VarKind := OMK_VAR_STR;
+        Case ArgExpr.TypeIdx Of
+          TY_IDX_INT     : AddOutMsgInt(ArgExpr.ImmVal, IsPrintln, LexLineNo);
+          TY_IDX_BOOLEAN : AddOutMsgBool(ArgExpr.ImmVal <> 0, IsPrintln, LexLineNo);
+          TY_IDX_CHAR    : AddOutMsgChar(Chr(ArgExpr.ImmVal And $FF), IsPrintln, LexLineNo);
         Else
-          VarKind := OMK_VAR_INT;
+          AddOutMsgInt(ArgExpr.ImmVal, IsPrintln, LexLineNo);
         End;
-        AddOutMsgVar(CurTokStr, VarKind, IsPrintln, LexLineNo);
+      End
+      { Si c est une reference memoire a une variable avec valeur simulee }
+      Else If (ArgExpr.Kind = EK_MEM) And (ArgExpr.SymIdx >= 0) And
+              (ArgExpr.SymIdx < SymTabCount) And
+              SymTab[ArgExpr.SymIdx].HasSimVal Then
+      Begin
+        Case SymTab[ArgExpr.SymIdx].TypeIdx Of
+          TY_IDX_INT     : AddOutMsgInt(SymTab[ArgExpr.SymIdx].SimIntVal, IsPrintln, LexLineNo);
+          TY_IDX_BOOLEAN : AddOutMsgBool(SymTab[ArgExpr.SymIdx].SimBoolVal, IsPrintln, LexLineNo);
+          TY_IDX_CHAR    : AddOutMsgChar(SymTab[ArgExpr.SymIdx].SimCharVal, IsPrintln, LexLineNo);
+          TY_IDX_STRING  : AddOutMsgStr(SymTab[ArgExpr.SymIdx].SimStrVal, IsPrintln, LexLineNo);
+        Else
+          AddOutMsgInt(SymTab[ArgExpr.SymIdx].SimIntVal, IsPrintln, LexLineNo);
+        End;
+      End
+      { Si la variable originale a une valeur simulee connue (pour expressions simples) }
+      Else If (SymI >= 0) And (SymI < SymTabCount) And SymTab[SymI].HasSimVal Then
+      Begin
+        Case SymTab[SymI].TypeIdx Of
+          TY_IDX_INT     : AddOutMsgInt(SymTab[SymI].SimIntVal, IsPrintln, LexLineNo);
+          TY_IDX_BOOLEAN : AddOutMsgBool(SymTab[SymI].SimBoolVal, IsPrintln, LexLineNo);
+          TY_IDX_CHAR    : AddOutMsgChar(SymTab[SymI].SimCharVal, IsPrintln, LexLineNo);
+          TY_IDX_STRING  : AddOutMsgStr(SymTab[SymI].SimStrVal, IsPrintln, LexLineNo);
+        Else
+          AddOutMsgInt(SymTab[SymI].SimIntVal, IsPrintln, LexLineNo);
+        End;
       End
       Else
       Begin
-        { Variable non trouvee - supposer int }
-        AddOutMsgVar(CurTokStr, OMK_VAR_INT, IsPrintln, LexLineNo);
+        { Variable non connue ou valeur non simulable }
+        If SymI >= 0 Then
+        Begin
+          Case SymTab[SymI].TypeIdx Of
+            TY_IDX_INT     : VarKind := OMK_VAR_INT;
+            TY_IDX_BOOLEAN : VarKind := OMK_VAR_BOOL;
+            TY_IDX_CHAR    : VarKind := OMK_VAR_CHAR;
+            TY_IDX_STRING  : VarKind := OMK_VAR_STR;
+          Else
+            VarKind := OMK_VAR_INT;
+          End;
+          AddOutMsgVar(SavedTok, VarKind, IsPrintln, LexLineNo);
+        End
+        Else
+          AddOutMsgVar(SavedTok, OMK_VAR_INT, IsPrintln, LexLineNo);
       End;
-      { TODO: Utiliser ArgExpr pour evaluer la variable a l execution }
-      ArgExpr := ParseExpr;
     End
-    { Autres cas : expression complexe }
+    { Autres cas : expression complexe (commence par autre chose qu un ident) }
     Else
     Begin
-      { TODO: Evaluer l expression et stocker le resultat }
       ArgExpr := ParseExpr;
+      { Si l expression est une constante evaluable }
+      If ArgExpr.Kind = EK_IMM Then
+      Begin
+        Case ArgExpr.TypeIdx Of
+          TY_IDX_INT     : AddOutMsgInt(ArgExpr.ImmVal, IsPrintln, LexLineNo);
+          TY_IDX_BOOLEAN : AddOutMsgBool(ArgExpr.ImmVal <> 0, IsPrintln, LexLineNo);
+          TY_IDX_CHAR    : AddOutMsgChar(Chr(ArgExpr.ImmVal And $FF), IsPrintln, LexLineNo);
+        Else
+          AddOutMsgInt(ArgExpr.ImmVal, IsPrintln, LexLineNo);
+        End;
+      End
+      { Si c est une reference memoire a une variable avec valeur simulee }
+      Else If (ArgExpr.Kind = EK_MEM) And (ArgExpr.SymIdx >= 0) And
+              (ArgExpr.SymIdx < SymTabCount) And
+              SymTab[ArgExpr.SymIdx].HasSimVal Then
+      Begin
+        Case SymTab[ArgExpr.SymIdx].TypeIdx Of
+          TY_IDX_INT     : AddOutMsgInt(SymTab[ArgExpr.SymIdx].SimIntVal, IsPrintln, LexLineNo);
+          TY_IDX_BOOLEAN : AddOutMsgBool(SymTab[ArgExpr.SymIdx].SimBoolVal, IsPrintln, LexLineNo);
+          TY_IDX_CHAR    : AddOutMsgChar(SymTab[ArgExpr.SymIdx].SimCharVal, IsPrintln, LexLineNo);
+          TY_IDX_STRING  : AddOutMsgStr(SymTab[ArgExpr.SymIdx].SimStrVal, IsPrintln, LexLineNo);
+        Else
+          AddOutMsgInt(SymTab[ArgExpr.SymIdx].SimIntVal, IsPrintln, LexLineNo);
+        End;
+      End
+      Else
+        { Expression non evaluable au compile-time }
+        AddOutMsgStr('?', IsPrintln, LexLineNo);
     End;
     
     { Consommer les arguments supplementaires (concatenation) }
@@ -6264,6 +6341,23 @@ Begin
   { Evaluer l expression a droite (resultat dans EAX) }
   E := ParseExpr;
 
+  { Mettre a jour la valeur simulee au compile-time si connue }
+  If E.Kind = EK_IMM Then
+  Begin
+    SymTab[VarIdx].HasSimVal := True;
+    Case SymTab[VarIdx].TypeIdx Of
+      TY_IDX_INT:
+        SymTab[VarIdx].SimIntVal := E.ImmVal;
+      TY_IDX_BOOLEAN:
+        SymTab[VarIdx].SimBoolVal := (E.ImmVal <> 0);
+      TY_IDX_CHAR:
+        SymTab[VarIdx].SimCharVal := Chr(E.ImmVal And $FF);
+    End;
+  End
+  Else
+    { Expression non constante - valeur inconnue au compile-time }
+    SymTab[VarIdx].HasSimVal := False;
+
   { Verifier la compatibilite de type }
   CheckTypeCompat(SymTab[VarIdx].TypeIdx, E.TypeIdx);
 
@@ -6283,6 +6377,8 @@ Var
   VarIdx : Integer;
   BinOp  : Integer;
   E      : TExprVal;
+  OldVal : LongInt;
+  NewVal : LongInt;
 Begin
   VaLastKind := VA_AUG_ASSIGN;
   Inc(VaAugCount);
@@ -6312,6 +6408,33 @@ Begin
 
   { Evaluer l expression a droite }
   E := ParseExpr;
+
+  { Mettre a jour la valeur simulee si les deux valeurs sont connues }
+  If SymTab[VarIdx].HasSimVal And (E.Kind = EK_IMM) Then
+  Begin
+    OldVal := SymTab[VarIdx].SimIntVal;
+    Case BinOp Of
+      OP_ADD  : NewVal := OldVal + E.ImmVal;
+      OP_SUB  : NewVal := OldVal - E.ImmVal;
+      OP_MUL  : NewVal := OldVal * E.ImmVal;
+      OP_DIV  : If E.ImmVal <> 0 Then NewVal := OldVal Div E.ImmVal
+                Else NewVal := 0;
+      OP_MOD  : If E.ImmVal <> 0 Then NewVal := OldVal Mod E.ImmVal
+                Else NewVal := 0;
+      OP_BAND : NewVal := OldVal And E.ImmVal;
+      OP_BOR  : NewVal := OldVal Or E.ImmVal;
+      OP_BXOR : NewVal := OldVal Xor E.ImmVal;
+      OP_SHL  : NewVal := OldVal Shl E.ImmVal;
+      OP_SHR  : NewVal := OldVal Shr E.ImmVal;
+    Else
+      NewVal := OldVal;
+      SymTab[VarIdx].HasSimVal := False;
+    End;
+    If SymTab[VarIdx].HasSimVal Then
+      SymTab[VarIdx].SimIntVal := NewVal;
+  End
+  Else
+    SymTab[VarIdx].HasSimVal := False;
 
   { Appliquer l operation binaire }
   If Opts.Verbose Then
@@ -19150,6 +19273,38 @@ Begin
       { Consommer ; si present }
       If CurTokKind = TK_SEMICOLON Then
         ParserAdvance;
+    End
+    { Declarations de variables: int, boolean, char, String }
+    Else If (CurTokKind = TK_KEYWORD) And
+            ((CurTokStr = 'int') Or (CurTokStr = 'boolean') Or
+             (CurTokStr = 'char') Or (CurTokStr = 'String')) Then
+    Begin
+      ParseVarDecl;
+      If CurTokKind = TK_SEMICOLON Then
+        ParserAdvance;
+    End
+    { Assignation de variable: identificateur suivi de = }
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      ClassName := CurTokStr;  { reuse ClassName pour stocker le nom }
+      ParserAdvance;
+      If CurTokStr = '=' Then
+      Begin
+        ParseAssignSimple(ClassName);
+        If CurTokKind = TK_SEMICOLON Then
+          ParserAdvance;
+      End
+      Else If (CurTokStr = '+=') Or (CurTokStr = '-=') Or
+              (CurTokStr = '*=') Or (CurTokStr = '/=') Or
+              (CurTokStr = '%=') Or (CurTokStr = '&=') Or
+              (CurTokStr = '|=') Or (CurTokStr = '^=') Or
+              (CurTokStr = '<<=') Or (CurTokStr = '>>=') Then
+      Begin
+        ParseAssignAugmented(ClassName, IsAssignOp);
+        If CurTokKind = TK_SEMICOLON Then
+          ParserAdvance;
+      End;
+      { Autres cas comme appels de methode, etc. - continuer }
     End
     { public class ... }
     Else If CurTokStr = 'public' Then
