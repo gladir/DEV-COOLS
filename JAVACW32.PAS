@@ -533,7 +533,7 @@
             Alignement des donnees sur 4 octets (DWORD)
             10 fonctions accesseurs
 
-  TODO 22 - BIBLIOTHEQUE RUNTIME JAVA (E/S, CONVERSIONS VIA WIN32) [A FAIRE]
+  TODO 22 - BIBLIOTHEQUE RUNTIME JAVA (E/S, CONVERSIONS VIA WIN32) [IMPLEMENTE]
             Routines de conversion :
               _JRT_ITOA : entier 32 bits -> chaine decimale ASCII
                 Utilisation de DIV par 10 en boucle
@@ -13990,7 +13990,1523 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-21)                              }
+{ TODO 22 - BIBLIOTHEQUE RUNTIME JAVA (E/S, CONVERSIONS)       }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types de routines runtime }
+  RT_NONE              = 0;    { aucun / non defini                    }
+  RT_ITOA              = 1;    { _JRT_ITOA : int -> string             }
+  RT_ATOI              = 2;    { _JRT_ATOI : string -> int             }
+  RT_BOOLTOSTR         = 3;    { _JRT_BOOLTOSTR : bool -> string       }
+  RT_CHARTOSTR         = 4;    { _JRT_CHARTOSTR : char -> string       }
+  RT_NULLTOSTR         = 5;    { _JRT_NULLTOSTR : -> "null"            }
+  RT_INITIO            = 6;    { _JRT_INITIO : init console handles    }
+  RT_WRITESTR          = 7;    { _JRT_WRITESTR : ecrire chaine         }
+  RT_WRITECRLF         = 8;    { _JRT_WRITECRLF : ecrire CRLF          }
+  RT_READLINE          = 9;    { _JRT_READLINE : lire ligne            }
+  RT_STRLEN            = 10;   { _JRT_STRLEN : longueur chaine         }
+  RT_STRCONCAT         = 11;   { _JRT_STRCONCAT : concatener           }
+  RT_STRCMP            = 12;   { _JRT_STRCMP : comparer chaines        }
+  RT_STRSLICE          = 13;   { _JRT_STRSLICE : substring             }
+  RT_STRFIND           = 14;   { _JRT_STRFIND : indexOf                }
+  RT_STRUPPER          = 15;   { _JRT_STRUPPER : toUpperCase           }
+  RT_STRLOWER          = 16;   { _JRT_STRLOWER : toLowerCase           }
+  RT_STRTRIM           = 17;   { _JRT_STRTRIM : trim                   }
+  RT_STRREPLACE        = 18;   { _JRT_STRREPLACE : replace             }
+  RT_STRCONTAINS       = 19;   { _JRT_STRCONTAINS : contains           }
+  RT_STRSTARTSWITH     = 20;   { _JRT_STRSTARTSWITH : startsWith       }
+  RT_STRENDSWITH       = 21;   { _JRT_STRENDSWITH : endsWith           }
+  RT_ARRALLOC          = 22;   { _JRT_ARRALLOC : allocation tableau    }
+  RT_ARRGET            = 23;   { _JRT_ARRGET : lecture element         }
+  RT_ARRSET            = 24;   { _JRT_ARRSET : ecriture element        }
+  RT_ARRLEN            = 25;   { _JRT_ARRLEN : longueur tableau        }
+  RT_ARRCOPY           = 26;   { _JRT_ARRCOPY : copie tableau          }
+  RT_OBJNEW            = 27;   { _JRT_OBJNEW : allocation objet        }
+  RT_HEAPALLOC         = 28;   { _JRT_HEAPALLOC : alloc generique      }
+  RT_PANIC             = 29;   { _JRT_PANIC : erreur fatale            }
+  RT_BOUNDS_ERR        = 30;   { _JRT_BOUNDS_ERR : index hors bornes   }
+  RT_NULL_ERR          = 31;   { _JRT_NULL_ERR : pointeur nul          }
+  RT_MAX               = 31;
+
+  { Limites }
+  RT_MAX_ROUTINES      = 64;   { nombre max de routines tracees        }
+  RT_NUMBUF_SIZE       = 32;   { taille buffer conversion nombre       }
+  RT_IOBUF_SIZE        = 256;  { taille buffer I/O                     }
+
+  { Constantes Win32 }
+  STD_INPUT_HANDLE     = -10;
+  STD_OUTPUT_HANDLE    = -11;
+
+Type
+  TRtRoutineRec = Record
+    Kind       : Integer;      { type RT_*                             }
+    Name       : TString;      { nom ASM (_JRT_...)                    }
+    CallCount  : Integer;      { nombre d appels                       }
+    Emitted    : Boolean;      { True si deja emis                     }
+  End;
+
+Var
+  RtInitialized      : Boolean;    { True si l etat est initialise       }
+  RtRoutines         : Array[1..RT_MAX_ROUTINES] Of TRtRoutineRec;
+  RtRoutineCount     : Integer;    { nombre de routines enregistrees     }
+  RtConversionCount  : LongInt;    { appels routines conversion          }
+  RtIoCount          : LongInt;    { appels routines I/O                 }
+  RtStringCount      : LongInt;    { appels routines chaines             }
+  RtArrayCount       : LongInt;    { appels routines tableaux            }
+  RtObjectCount      : LongInt;    { appels routines objets              }
+  RtErrorCount       : LongInt;    { appels routines erreur              }
+  RtEmittedCount     : Integer;    { nombre de routines emises           }
+  RtLabelSeq         : Integer;    { sequence pour labels RT             }
+  RtLastType         : Integer;    { dernier type de routine             }
+  RtInitIoEmitted    : Boolean;    { True si _JRT_INITIO emis            }
+  RtHeapAllocEmitted : Boolean;    { True si _JRT_HEAPALLOC emis         }
+  RtPanicEmitted     : Boolean;    { True si _JRT_PANIC emis             }
+
+{ ------------------------------------------------------------ }
+{ InitRtState : initialiser le sous-systeme runtime             }
+{ ------------------------------------------------------------ }
+
+Procedure InitRtState;
+Var I : Integer;
+Begin
+  RtInitialized      := True;
+  RtRoutineCount     := 0;
+  RtConversionCount  := 0;
+  RtIoCount          := 0;
+  RtStringCount      := 0;
+  RtArrayCount       := 0;
+  RtObjectCount      := 0;
+  RtErrorCount       := 0;
+  RtEmittedCount     := 0;
+  RtLabelSeq         := 0;
+  RtLastType         := RT_NONE;
+  RtInitIoEmitted    := False;
+  RtHeapAllocEmitted := False;
+  RtPanicEmitted     := False;
+  For I := 1 To RT_MAX_ROUTINES Do
+  Begin
+    RtRoutines[I].Kind      := RT_NONE;
+    RtRoutines[I].Name      := '';
+    RtRoutines[I].CallCount := 0;
+    RtRoutines[I].Emitted   := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtLabel : generer un label unique pour routines runtime     }
+{ ------------------------------------------------------------ }
+
+Function GenRtLabel : TString;
+Begin
+  Inc(RtLabelSeq);
+  GenRtLabel := '_JL_RT_' + ItoS(RtLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ RtTypeName : nom textuel d un type de routine runtime          }
+{ ------------------------------------------------------------ }
+
+Function RtTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    RT_NONE              : RtTypeName := 'RT_NONE';
+    RT_ITOA              : RtTypeName := 'RT_ITOA';
+    RT_ATOI              : RtTypeName := 'RT_ATOI';
+    RT_BOOLTOSTR         : RtTypeName := 'RT_BOOLTOSTR';
+    RT_CHARTOSTR         : RtTypeName := 'RT_CHARTOSTR';
+    RT_NULLTOSTR         : RtTypeName := 'RT_NULLTOSTR';
+    RT_INITIO            : RtTypeName := 'RT_INITIO';
+    RT_WRITESTR          : RtTypeName := 'RT_WRITESTR';
+    RT_WRITECRLF         : RtTypeName := 'RT_WRITECRLF';
+    RT_READLINE          : RtTypeName := 'RT_READLINE';
+    RT_STRLEN            : RtTypeName := 'RT_STRLEN';
+    RT_STRCONCAT         : RtTypeName := 'RT_STRCONCAT';
+    RT_STRCMP            : RtTypeName := 'RT_STRCMP';
+    RT_STRSLICE          : RtTypeName := 'RT_STRSLICE';
+    RT_STRFIND           : RtTypeName := 'RT_STRFIND';
+    RT_STRUPPER          : RtTypeName := 'RT_STRUPPER';
+    RT_STRLOWER          : RtTypeName := 'RT_STRLOWER';
+    RT_STRTRIM           : RtTypeName := 'RT_STRTRIM';
+    RT_STRREPLACE        : RtTypeName := 'RT_STRREPLACE';
+    RT_STRCONTAINS       : RtTypeName := 'RT_STRCONTAINS';
+    RT_STRSTARTSWITH     : RtTypeName := 'RT_STRSTARTSWITH';
+    RT_STRENDSWITH       : RtTypeName := 'RT_STRENDSWITH';
+    RT_ARRALLOC          : RtTypeName := 'RT_ARRALLOC';
+    RT_ARRGET            : RtTypeName := 'RT_ARRGET';
+    RT_ARRSET            : RtTypeName := 'RT_ARRSET';
+    RT_ARRLEN            : RtTypeName := 'RT_ARRLEN';
+    RT_ARRCOPY           : RtTypeName := 'RT_ARRCOPY';
+    RT_OBJNEW            : RtTypeName := 'RT_OBJNEW';
+    RT_HEAPALLOC         : RtTypeName := 'RT_HEAPALLOC';
+    RT_PANIC             : RtTypeName := 'RT_PANIC';
+    RT_BOUNDS_ERR        : RtTypeName := 'RT_BOUNDS_ERR';
+    RT_NULL_ERR          : RtTypeName := 'RT_NULL_ERR';
+  Else
+    RtTypeName := 'RT_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterRtRoutine : enregistrer une routine runtime            }
+{   Retourne l indice ou -1 si table pleine                      }
+{ ------------------------------------------------------------ }
+
+Function RegisterRtRoutine(Kind : Integer;
+                           Const Name : TString) : Integer;
+Var I, Idx : Integer;
+Begin
+  { Verifier si deja enregistree }
+  For I := 1 To RtRoutineCount Do
+  Begin
+    If RtRoutines[I].Kind = Kind Then
+    Begin
+      Inc(RtRoutines[I].CallCount);
+      RegisterRtRoutine := I;
+      Exit;
+    End;
+  End;
+
+  { Nouvelle routine }
+  If RtRoutineCount >= RT_MAX_ROUTINES Then
+  Begin
+    CompileError('runtime routines table full (max ' +
+                 ItoS(RT_MAX_ROUTINES) + ')', LexLineNo);
+    RegisterRtRoutine := -1;
+    Exit;
+  End;
+  Inc(RtRoutineCount);
+  Idx := RtRoutineCount;
+  RtRoutines[Idx].Kind      := Kind;
+  RtRoutines[Idx].Name      := Name;
+  RtRoutines[Idx].CallCount := 1;
+  RtRoutines[Idx].Emitted   := False;
+  RtLastType := Kind;
+  RegisterRtRoutine := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtItoa : emettre _JRT_ITOA (int -> string)                 }
+{   Entree : EAX = valeur entiere                               }
+{   Sortie : EAX = pointeur vers chaine dans _J_NUMBUF          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtItoa;
+Var LblLoop, LblDone, LblNeg, LblPosEnd : TString;
+Begin
+  LblLoop   := GenRtLabel;
+  LblDone   := GenRtLabel;
+  LblNeg    := GenRtLabel;
+  LblPosEnd := GenRtLabel;
+  Inc(RtConversionCount);
+  RtLastType := RT_ITOA;
+  WriteLn('_JRT_ITOA PROC');
+  WriteLn('  ; Convertir entier EAX en chaine ASCII');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH EDX');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ECX, EAX            ; sauvegarder valeur');
+  WriteLn('  LEA EDI, [_J_NUMBUF+31] ; pointer fin buffer');
+  WriteLn('  MOV BYTE PTR [EDI], 0   ; terminateur nul');
+  WriteLn('  DEC EDI');
+  WriteLn('  MOV EBX, 10             ; diviseur');
+  WriteLn('  TEST ECX, ECX           ; tester signe');
+  WriteLn('  JNS ', LblPosEnd);
+  WriteLn('  NEG ECX                 ; rendre positif');
+  WriteLn(LblPosEnd, ':');
+  WriteLn(LblLoop, ':');
+  WriteLn('  XOR EDX, EDX');
+  WriteLn('  MOV EAX, ECX');
+  WriteLn('  DIV EBX                 ; EAX=quotient, EDX=reste');
+  WriteLn('  ADD DL, 30h             ; convertir en ASCII');
+  WriteLn('  MOV [EDI], DL');
+  WriteLn('  DEC EDI');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JNZ ', LblLoop);
+  WriteLn('  ; Ajouter signe si negatif');
+  WriteLn('  POP EDI');
+  WriteLn('  POP EDX');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  ; Ajuster pointeur debut');
+  WriteLn('  LEA EAX, [_J_NUMBUF]');
+  WriteLn('  ; Trouver debut de la chaine');
+  WriteLn(LblDone, ':');
+  WriteLn('  CMP BYTE PTR [EAX], 0');
+  WriteLn('  JNE ', LblDone, '_end');
+  WriteLn('  INC EAX');
+  WriteLn('  JMP ', LblDone);
+  WriteLn(LblDone, '_end:');
+  WriteLn('  RET');
+  WriteLn('_JRT_ITOA ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtAtoi : emettre _JRT_ATOI (string -> int)                 }
+{   Entree : EAX = pointeur vers chaine                         }
+{   Sortie : EAX = valeur entiere                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtAtoi;
+Var LblLoop, LblDone, LblNeg : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblDone := GenRtLabel;
+  LblNeg  := GenRtLabel;
+  Inc(RtConversionCount);
+  RtLastType := RT_ATOI;
+  WriteLn('_JRT_ATOI PROC');
+  WriteLn('  ; Convertir chaine EAX en entier');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH EDX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  MOV ESI, EAX            ; pointeur chaine');
+  WriteLn('  XOR EAX, EAX            ; resultat = 0');
+  WriteLn('  XOR ECX, ECX            ; signe = 0 (positif)');
+  WriteLn('  MOV BL, [ESI]');
+  WriteLn('  CMP BL, ''-''');
+  WriteLn('  JNE ', LblLoop);
+  WriteLn('  MOV ECX, 1              ; signe = negatif');
+  WriteLn('  INC ESI');
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV BL, [ESI]');
+  WriteLn('  TEST BL, BL');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  CMP BL, ''0''');
+  WriteLn('  JB ', LblDone);
+  WriteLn('  CMP BL, ''9''');
+  WriteLn('  JA ', LblDone);
+  WriteLn('  SUB BL, ''0''           ; convertir ASCII->digit');
+  WriteLn('  IMUL EAX, 10');
+  WriteLn('  MOVZX EDX, BL');
+  WriteLn('  ADD EAX, EDX');
+  WriteLn('  INC ESI');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JZ ', LblNeg);
+  WriteLn('  NEG EAX');
+  WriteLn(LblNeg, ':');
+  WriteLn('  POP ESI');
+  WriteLn('  POP EDX');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_ATOI ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtBoolToStr : emettre _JRT_BOOLTOSTR (bool -> string)      }
+{   Entree : EAX = 0 (false) ou <>0 (true)                      }
+{   Sortie : EAX = pointeur vers "true" ou "false"              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtBoolToStr;
+Var LblTrue, LblEnd : TString;
+Begin
+  LblTrue := GenRtLabel;
+  LblEnd  := GenRtLabel;
+  Inc(RtConversionCount);
+  RtLastType := RT_BOOLTOSTR;
+  WriteLn('_JRT_BOOLTOSTR PROC');
+  WriteLn('  ; Convertir boolean EAX en chaine');
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JNZ ', LblTrue);
+  WriteLn('  MOV EAX, OFFSET _JK_FALSE');
+  WriteLn('  JMP ', LblEnd);
+  WriteLn(LblTrue, ':');
+  WriteLn('  MOV EAX, OFFSET _JK_TRUE');
+  WriteLn(LblEnd, ':');
+  WriteLn('  RET');
+  WriteLn('_JRT_BOOLTOSTR ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtCharToStr : emettre _JRT_CHARTOSTR (char -> string)      }
+{   Entree : EAX = caractere (octet bas)                        }
+{   Sortie : EAX = pointeur vers chaine 1 caractere             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtCharToStr;
+Begin
+  Inc(RtConversionCount);
+  RtLastType := RT_CHARTOSTR;
+  WriteLn('_JRT_CHARTOSTR PROC');
+  WriteLn('  ; Convertir char EAX en chaine');
+  WriteLn('  MOV BYTE PTR [_JX_CV_BUF], AL');
+  WriteLn('  MOV BYTE PTR [_JX_CV_BUF+1], 0');
+  WriteLn('  LEA EAX, [_JX_CV_BUF]');
+  WriteLn('  RET');
+  WriteLn('_JRT_CHARTOSTR ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtNullToStr : emettre _JRT_NULLTOSTR (-> "null")           }
+{   Sortie : EAX = pointeur vers "null"                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtNullToStr;
+Begin
+  Inc(RtConversionCount);
+  RtLastType := RT_NULLTOSTR;
+  WriteLn('_JRT_NULLTOSTR PROC');
+  WriteLn('  ; Retourner pointeur vers "null"');
+  WriteLn('  MOV EAX, OFFSET _JK_NULL');
+  WriteLn('  RET');
+  WriteLn('_JRT_NULLTOSTR ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtInitIo : emettre _JRT_INITIO (initialiser handles I/O)   }
+{   Appeler GetStdHandle pour obtenir les handles console       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtInitIo;
+Begin
+  If RtInitIoEmitted Then Exit;
+  RtInitIoEmitted := True;
+  Inc(RtIoCount);
+  RtLastType := RT_INITIO;
+  WriteLn('_JRT_INITIO PROC');
+  WriteLn('  ; Initialiser les handles console');
+  WriteLn('  PUSH ', STD_OUTPUT_HANDLE);
+  WriteLn('  CALL _GetStdHandle@4');
+  WriteLn('  MOV [_J_STDOUT], EAX');
+  WriteLn('  PUSH ', STD_INPUT_HANDLE);
+  WriteLn('  CALL _GetStdHandle@4');
+  WriteLn('  MOV [_J_STDIN], EAX');
+  WriteLn('  RET');
+  WriteLn('_JRT_INITIO ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtWriteStr : emettre _JRT_WRITESTR (ecrire chaine)         }
+{   Entree : EAX = pointeur vers chaine                         }
+{   Appelle _JRT_STRLEN puis WriteFile                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtWriteStr;
+Begin
+  Inc(RtIoCount);
+  RtLastType := RT_WRITESTR;
+  WriteLn('_JRT_WRITESTR PROC');
+  WriteLn('  ; Ecrire chaine EAX sur la console');
+  WriteLn('  PUSH EBX');
+  WriteLn('  MOV EBX, EAX            ; sauvegarder pointeur');
+  WriteLn('  CALL _JRT_STRLEN        ; longueur dans EAX');
+  WriteLn('  PUSH 0                  ; lpOverlapped = NULL');
+  WriteLn('  LEA ECX, [_J_WRITTEN]');
+  WriteLn('  PUSH ECX                ; lpNumberOfBytesWritten');
+  WriteLn('  PUSH EAX                ; nNumberOfBytesToWrite');
+  WriteLn('  PUSH EBX                ; lpBuffer');
+  WriteLn('  PUSH [_J_STDOUT]        ; hFile');
+  WriteLn('  CALL _WriteFile@20');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_WRITESTR ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtWriteCrlf : emettre _JRT_WRITECRLF (ecrire CRLF)         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtWriteCrlf;
+Begin
+  Inc(RtIoCount);
+  RtLastType := RT_WRITECRLF;
+  WriteLn('_JRT_WRITECRLF PROC');
+  WriteLn('  ; Ecrire retour a la ligne');
+  WriteLn('  PUSH 0');
+  WriteLn('  LEA EAX, [_J_WRITTEN]');
+  WriteLn('  PUSH EAX');
+  WriteLn('  PUSH 2                  ; longueur CRLF');
+  WriteLn('  PUSH OFFSET _JK_CRLF');
+  WriteLn('  PUSH [_J_STDOUT]');
+  WriteLn('  CALL _WriteFile@20');
+  WriteLn('  RET');
+  WriteLn('_JRT_WRITECRLF ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtReadLine : emettre _JRT_READLINE (lire ligne console)    }
+{   Sortie : EAX = pointeur vers chaine lue dans _J_IOBUF       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtReadLine;
+Var LblLoop, LblDone : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblDone := GenRtLabel;
+  Inc(RtIoCount);
+  RtLastType := RT_READLINE;
+  WriteLn('_JRT_READLINE PROC');
+  WriteLn('  ; Lire une ligne depuis la console');
+  WriteLn('  PUSH 0                  ; lpOverlapped = NULL');
+  WriteLn('  LEA EAX, [_J_READ]');
+  WriteLn('  PUSH EAX                ; lpNumberOfBytesRead');
+  WriteLn('  PUSH ', RT_IOBUF_SIZE, ' ; nNumberOfBytesToRead');
+  WriteLn('  PUSH OFFSET _J_IOBUF    ; lpBuffer');
+  WriteLn('  PUSH [_J_STDIN]         ; hFile');
+  WriteLn('  CALL _ReadFile@20');
+  WriteLn('  ; Supprimer CR/LF final');
+  WriteLn('  MOV ECX, [_J_READ]');
+  WriteLn('  LEA EAX, [_J_IOBUF]');
+  WriteLn(LblLoop, ':');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  DEC ECX');
+  WriteLn('  CMP BYTE PTR [EAX+ECX], 13');
+  WriteLn('  JE ', LblLoop, '_trim');
+  WriteLn('  CMP BYTE PTR [EAX+ECX], 10');
+  WriteLn('  JE ', LblLoop, '_trim');
+  WriteLn('  INC ECX');
+  WriteLn('  JMP ', LblDone);
+  WriteLn(LblLoop, '_trim:');
+  WriteLn('  MOV BYTE PTR [EAX+ECX], 0');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('  MOV BYTE PTR [EAX+ECX], 0 ; terminateur');
+  WriteLn('  LEA EAX, [_J_IOBUF]');
+  WriteLn('  RET');
+  WriteLn('_JRT_READLINE ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrlen : emettre _JRT_STRLEN (longueur chaine)           }
+{   Entree : EAX = pointeur vers chaine                         }
+{   Sortie : EAX = longueur (sans le NUL)                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrlen;
+Var LblLoop : TString;
+Begin
+  LblLoop := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRLEN;
+  WriteLn('_JRT_STRLEN PROC');
+  WriteLn('  ; Calculer longueur de chaine EAX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  XOR ECX, ECX');
+  WriteLn(LblLoop, ':');
+  WriteLn('  CMP BYTE PTR [EDI], 0');
+  WriteLn('  JE ', LblLoop, '_end');
+  WriteLn('  INC EDI');
+  WriteLn('  INC ECX');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblLoop, '_end:');
+  WriteLn('  MOV EAX, ECX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ECX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRLEN ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrConcat : emettre _JRT_STRCONCAT (concatener)          }
+{   Entree : EAX = ptr str1, EDX = ptr str2                     }
+{   Sortie : EAX = ptr nouvelle chaine sur heap                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrConcat;
+Var LblCopy1, LblCopy2, LblDone : TString;
+Begin
+  LblCopy1 := GenRtLabel;
+  LblCopy2 := GenRtLabel;
+  LblDone  := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRCONCAT;
+  WriteLn('_JRT_STRCONCAT PROC');
+  WriteLn('  ; Concatener EAX + EDX -> nouvelle chaine');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX            ; src1');
+  WriteLn('  MOV EBX, EDX            ; src2');
+  WriteLn('  ; Calculer longueur totale');
+  WriteLn('  CALL _JRT_STRLEN');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  MOV EAX, EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  CALL _JRT_STRLEN');
+  WriteLn('  POP ECX');
+  WriteLn('  ADD ECX, EAX');
+  WriteLn('  INC ECX                 ; +1 pour NUL');
+  WriteLn('  ; Allouer sur le heap');
+  WriteLn('  PUSH ECX');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  POP ECX');
+  WriteLn('  MOV EDI, EAX            ; dest');
+  WriteLn('  ; Copier str1');
+  WriteLn(LblCopy1, ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblCopy2);
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblCopy1);
+  WriteLn(LblCopy2, ':');
+  WriteLn('  ; Copier str2');
+  WriteLn('  MOV ESI, EBX');
+  WriteLn(LblCopy2, '_loop:');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblCopy2, '_loop');
+  WriteLn(LblDone, ':');
+  WriteLn('  ; Retourner debut de la chaine');
+  WriteLn('  MOV EAX, [ESP+16]       ; dest originale');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRCONCAT ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrCmp : emettre _JRT_STRCMP (comparer chaines)          }
+{   Entree : EAX = ptr str1, EDX = ptr str2                     }
+{   Sortie : EAX = 0 si egales, <>0 sinon                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrCmp;
+Var LblLoop, LblEqual, LblNotEqual : TString;
+Begin
+  LblLoop     := GenRtLabel;
+  LblEqual    := GenRtLabel;
+  LblNotEqual := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRCMP;
+  WriteLn('_JRT_STRCMP PROC');
+  WriteLn('  ; Comparer chaines EAX et EDX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  MOV EDI, EDX');
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  MOV AH, [EDI]');
+  WriteLn('  CMP AL, AH');
+  WriteLn('  JNE ', LblNotEqual);
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblEqual);
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblEqual, ':');
+  WriteLn('  XOR EAX, EAX            ; egales');
+  WriteLn('  JMP ', LblNotEqual, '_end');
+  WriteLn(LblNotEqual, ':');
+  WriteLn('  MOVZX EAX, AL');
+  WriteLn('  MOVZX EDX, AH');
+  WriteLn('  SUB EAX, EDX            ; difference');
+  WriteLn(LblNotEqual, '_end:');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRCMP ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrSlice : emettre _JRT_STRSLICE (substring)             }
+{   Entree : EAX = ptr str, ECX = start, EDX = end              }
+{   Sortie : EAX = ptr nouvelle sous-chaine                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrSlice;
+Var LblCopy, LblDone : TString;
+Begin
+  LblCopy := GenRtLabel;
+  LblDone := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRSLICE;
+  WriteLn('_JRT_STRSLICE PROC');
+  WriteLn('  ; Extraire substring EAX[ECX..EDX]');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  ADD ESI, ECX            ; debut');
+  WriteLn('  MOV EBX, EDX');
+  WriteLn('  SUB EBX, ECX            ; longueur');
+  WriteLn('  INC EBX                 ; +1 pour NUL');
+  WriteLn('  ; Allouer');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  MOV ECX, EBX');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  POP ESI');
+  WriteLn('  POP EBX');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  DEC EBX                 ; longueur sans NUL');
+  WriteLn(LblCopy, ':');
+  WriteLn('  TEST EBX, EBX');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  DEC EBX');
+  WriteLn('  JMP ', LblCopy);
+  WriteLn(LblDone, ':');
+  WriteLn('  MOV BYTE PTR [EDI], 0');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRSLICE ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrFind : emettre _JRT_STRFIND (indexOf)                 }
+{   Entree : EAX = ptr str, EDX = ptr substr                    }
+{   Sortie : EAX = index ou -1 si non trouve                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrFind;
+Var LblOuter, LblInner, LblFound, LblNotFound : TString;
+Begin
+  LblOuter    := GenRtLabel;
+  LblInner    := GenRtLabel;
+  LblFound    := GenRtLabel;
+  LblNotFound := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRFIND;
+  WriteLn('_JRT_STRFIND PROC');
+  WriteLn('  ; Chercher EDX dans EAX, retourner index');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX            ; chaine principale');
+  WriteLn('  MOV EBX, EDX            ; sous-chaine');
+  WriteLn('  XOR ECX, ECX            ; index = 0');
+  WriteLn(LblOuter, ':');
+  WriteLn('  CMP BYTE PTR [ESI], 0');
+  WriteLn('  JE ', LblNotFound);
+  WriteLn('  ; Comparer a partir de ESI');
+  WriteLn('  MOV EDI, EBX');
+  WriteLn('  PUSH ESI');
+  WriteLn(LblInner, ':');
+  WriteLn('  MOV AL, [EDI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblFound, '_match');
+  WriteLn('  CMP AL, [ESI]');
+  WriteLn('  JNE ', LblInner, '_nomatch');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblInner);
+  WriteLn(LblInner, '_nomatch:');
+  WriteLn('  POP ESI');
+  WriteLn('  INC ESI');
+  WriteLn('  INC ECX');
+  WriteLn('  JMP ', LblOuter);
+  WriteLn(LblFound, '_match:');
+  WriteLn('  POP ESI');
+  WriteLn('  MOV EAX, ECX');
+  WriteLn('  JMP ', LblFound);
+  WriteLn(LblNotFound, ':');
+  WriteLn('  MOV EAX, -1');
+  WriteLn(LblFound, ':');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRFIND ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrUpper : emettre _JRT_STRUPPER (toUpperCase)           }
+{   Entree : EAX = ptr str                                      }
+{   Sortie : EAX = ptr nouvelle chaine en majuscules            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrUpper;
+Var LblLoop, LblNoConv, LblDone : TString;
+Begin
+  LblLoop   := GenRtLabel;
+  LblNoConv := GenRtLabel;
+  LblDone   := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRUPPER;
+  WriteLn('_JRT_STRUPPER PROC');
+  WriteLn('  ; Convertir chaine EAX en majuscules');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  ; Calculer longueur et allouer');
+  WriteLn('  CALL _JRT_STRLEN');
+  WriteLn('  INC EAX');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  MOV EBX, EAX            ; sauvegarder debut');
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  CMP AL, ''a''');
+  WriteLn('  JB ', LblNoConv);
+  WriteLn('  CMP AL, ''z''');
+  WriteLn('  JA ', LblNoConv);
+  WriteLn('  SUB AL, 32              ; a-z -> A-Z');
+  WriteLn(LblNoConv, ':');
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('  MOV BYTE PTR [EDI], 0');
+  WriteLn('  MOV EAX, EBX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRUPPER ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrLower : emettre _JRT_STRLOWER (toLowerCase)           }
+{   Entree : EAX = ptr str                                      }
+{   Sortie : EAX = ptr nouvelle chaine en minuscules            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrLower;
+Var LblLoop, LblNoConv, LblDone : TString;
+Begin
+  LblLoop   := GenRtLabel;
+  LblNoConv := GenRtLabel;
+  LblDone   := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRLOWER;
+  WriteLn('_JRT_STRLOWER PROC');
+  WriteLn('  ; Convertir chaine EAX en minuscules');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  CALL _JRT_STRLEN');
+  WriteLn('  INC EAX');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  MOV EBX, EAX');
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  CMP AL, ''A''');
+  WriteLn('  JB ', LblNoConv);
+  WriteLn('  CMP AL, ''Z''');
+  WriteLn('  JA ', LblNoConv);
+  WriteLn('  ADD AL, 32              ; A-Z -> a-z');
+  WriteLn(LblNoConv, ':');
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('  MOV BYTE PTR [EDI], 0');
+  WriteLn('  MOV EAX, EBX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRLOWER ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrTrim : emettre _JRT_STRTRIM (trim)                    }
+{   Entree : EAX = ptr str                                      }
+{   Sortie : EAX = ptr nouvelle chaine sans espaces             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrTrim;
+Var LblSkipHead, LblFindEnd, LblCopy, LblDone : TString;
+Begin
+  LblSkipHead := GenRtLabel;
+  LblFindEnd  := GenRtLabel;
+  LblCopy     := GenRtLabel;
+  LblDone     := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRTRIM;
+  WriteLn('_JRT_STRTRIM PROC');
+  WriteLn('  ; Supprimer espaces debut/fin de EAX');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  ; Sauter espaces au debut');
+  WriteLn(LblSkipHead, ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  CMP AL, '' ''');
+  WriteLn('  JA ', LblFindEnd);
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblDone, '_empty');
+  WriteLn('  INC ESI');
+  WriteLn('  JMP ', LblSkipHead);
+  WriteLn(LblFindEnd, ':');
+  WriteLn('  ; Trouver la fin');
+  WriteLn('  MOV EDI, ESI');
+  WriteLn(LblFindEnd, '_loop:');
+  WriteLn('  CMP BYTE PTR [EDI], 0');
+  WriteLn('  JE ', LblFindEnd, '_trim');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblFindEnd, '_loop');
+  WriteLn(LblFindEnd, '_trim:');
+  WriteLn('  DEC EDI');
+  WriteLn('  CMP EDI, ESI');
+  WriteLn('  JB ', LblCopy);
+  WriteLn('  CMP BYTE PTR [EDI], '' ''');
+  WriteLn('  JA ', LblCopy);
+  WriteLn('  JMP ', LblFindEnd, '_trim');
+  WriteLn(LblCopy, ':');
+  WriteLn('  ; Calculer longueur');
+  WriteLn('  INC EDI');
+  WriteLn('  MOV ECX, EDI');
+  WriteLn('  SUB ECX, ESI');
+  WriteLn('  INC ECX                 ; +1 pour NUL');
+  WriteLn('  ; Allouer et copier');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  DEC ECX');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  MOV EBX, EAX');
+  WriteLn(LblCopy, '_loop:');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  DEC ECX');
+  WriteLn('  JMP ', LblCopy, '_loop');
+  WriteLn(LblDone, '_empty:');
+  WriteLn('  ; Chaine vide');
+  WriteLn('  MOV ECX, 1');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  MOV BYTE PTR [EAX], 0');
+  WriteLn('  JMP ', LblDone, '_ret');
+  WriteLn(LblDone, ':');
+  WriteLn('  MOV BYTE PTR [EDI], 0');
+  WriteLn('  MOV EAX, EBX');
+  WriteLn(LblDone, '_ret:');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRTRIM ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrContains : emettre _JRT_STRCONTAINS (contains)        }
+{   Entree : EAX = ptr str, EDX = ptr substr                    }
+{   Sortie : EAX = 1 si contient, 0 sinon                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrContains;
+Var LblFound, LblNotFound : TString;
+Begin
+  LblFound    := GenRtLabel;
+  LblNotFound := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRCONTAINS;
+  WriteLn('_JRT_STRCONTAINS PROC');
+  WriteLn('  ; Tester si EAX contient EDX');
+  WriteLn('  CALL _JRT_STRFIND');
+  WriteLn('  CMP EAX, -1');
+  WriteLn('  JE ', LblNotFound);
+  WriteLn('  MOV EAX, 1');
+  WriteLn('  JMP ', LblFound);
+  WriteLn(LblNotFound, ':');
+  WriteLn('  XOR EAX, EAX');
+  WriteLn(LblFound, ':');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRCONTAINS ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrStartsWith : emettre _JRT_STRSTARTSWITH (startsWith)  }
+{   Entree : EAX = ptr str, EDX = ptr prefix                    }
+{   Sortie : EAX = 1 si commence par prefix, 0 sinon            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrStartsWith;
+Var LblLoop, LblYes, LblNo : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblYes  := GenRtLabel;
+  LblNo   := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRSTARTSWITH;
+  WriteLn('_JRT_STRSTARTSWITH PROC');
+  WriteLn('  ; Tester si EAX commence par EDX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  MOV EDI, EDX');
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV AL, [EDI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblYes);
+  WriteLn('  CMP AL, [ESI]');
+  WriteLn('  JNE ', LblNo);
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblYes, ':');
+  WriteLn('  MOV EAX, 1');
+  WriteLn('  JMP ', LblNo, '_end');
+  WriteLn(LblNo, ':');
+  WriteLn('  XOR EAX, EAX');
+  WriteLn(LblNo, '_end:');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRSTARTSWITH ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrEndsWith : emettre _JRT_STRENDSWITH (endsWith)        }
+{   Entree : EAX = ptr str, EDX = ptr suffix                    }
+{   Sortie : EAX = 1 si termine par suffix, 0 sinon             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrEndsWith;
+Var LblLoop, LblYes, LblNo : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblYes  := GenRtLabel;
+  LblNo   := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRENDSWITH;
+  WriteLn('_JRT_STRENDSWITH PROC');
+  WriteLn('  ; Tester si EAX termine par EDX');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  MOV EDI, EDX');
+  WriteLn('  ; Calculer longueurs');
+  WriteLn('  CALL _JRT_STRLEN');
+  WriteLn('  MOV EBX, EAX');
+  WriteLn('  MOV EAX, EDI');
+  WriteLn('  CALL _JRT_STRLEN');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  ; Verifier si str assez longue');
+  WriteLn('  CMP EBX, ECX');
+  WriteLn('  JB ', LblNo);
+  WriteLn('  ; Positionner a la fin - len(suffix)');
+  WriteLn('  SUB EBX, ECX');
+  WriteLn('  ADD ESI, EBX');
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV AL, [EDI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblYes);
+  WriteLn('  CMP AL, [ESI]');
+  WriteLn('  JNE ', LblNo);
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblYes, ':');
+  WriteLn('  MOV EAX, 1');
+  WriteLn('  JMP ', LblNo, '_end');
+  WriteLn(LblNo, ':');
+  WriteLn('  XOR EAX, EAX');
+  WriteLn(LblNo, '_end:');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRENDSWITH ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtArrAlloc : emettre _JRT_ARRALLOC (allocation tableau)    }
+{   Entree : ECX = nombre d elements                            }
+{   Sortie : EAX = ptr vers tableau (4 octets compteur + data)  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtArrAlloc;
+Begin
+  Inc(RtArrayCount);
+  RtLastType := RT_ARRALLOC;
+  WriteLn('_JRT_ARRALLOC PROC');
+  WriteLn('  ; Allouer tableau de ECX elements');
+  WriteLn('  PUSH EBX');
+  WriteLn('  MOV EBX, ECX            ; sauvegarder count');
+  WriteLn('  SHL ECX, 2              ; * 4 octets par element');
+  WriteLn('  ADD ECX, 4              ; + 4 pour compteur');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  MOV [EAX], EBX          ; stocker compteur');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_ARRALLOC ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtArrGet : emettre _JRT_ARRGET (lecture element)           }
+{   Entree : EAX = ptr tableau, ECX = index                     }
+{   Sortie : EAX = valeur element                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtArrGet;
+Var LblOk : TString;
+Begin
+  LblOk := GenRtLabel;
+  Inc(RtArrayCount);
+  RtLastType := RT_ARRGET;
+  WriteLn('_JRT_ARRGET PROC');
+  WriteLn('  ; Lire element [ECX] du tableau EAX');
+  WriteLn('  ; Verification des bornes');
+  WriteLn('  CMP ECX, [EAX]');
+  WriteLn('  JAE _JRT_BOUNDS_ERR');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JS _JRT_BOUNDS_ERR');
+  WriteLn('  ; Lire element');
+  WriteLn('  MOV EAX, [EAX + ECX*4 + 4]');
+  WriteLn('  RET');
+  WriteLn('_JRT_ARRGET ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtArrSet : emettre _JRT_ARRSET (ecriture element)          }
+{   Entree : EAX = ptr tableau, ECX = index, EDX = valeur       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtArrSet;
+Begin
+  Inc(RtArrayCount);
+  RtLastType := RT_ARRSET;
+  WriteLn('_JRT_ARRSET PROC');
+  WriteLn('  ; Ecrire EDX dans [ECX] du tableau EAX');
+  WriteLn('  ; Verification des bornes');
+  WriteLn('  CMP ECX, [EAX]');
+  WriteLn('  JAE _JRT_BOUNDS_ERR');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JS _JRT_BOUNDS_ERR');
+  WriteLn('  ; Ecrire element');
+  WriteLn('  MOV [EAX + ECX*4 + 4], EDX');
+  WriteLn('  RET');
+  WriteLn('_JRT_ARRSET ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtArrLen : emettre _JRT_ARRLEN (longueur tableau)          }
+{   Entree : EAX = ptr tableau                                  }
+{   Sortie : EAX = nombre d elements                            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtArrLen;
+Begin
+  Inc(RtArrayCount);
+  RtLastType := RT_ARRLEN;
+  WriteLn('_JRT_ARRLEN PROC');
+  WriteLn('  ; Retourner longueur du tableau EAX');
+  WriteLn('  MOV EAX, [EAX]');
+  WriteLn('  RET');
+  WriteLn('_JRT_ARRLEN ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtArrCopy : emettre _JRT_ARRCOPY (copie tableau)           }
+{   Entree : EAX = ptr tableau source                           }
+{   Sortie : EAX = ptr nouveau tableau copie                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtArrCopy;
+Var LblLoop : TString;
+Begin
+  LblLoop := GenRtLabel;
+  Inc(RtArrayCount);
+  RtLastType := RT_ARRCOPY;
+  WriteLn('_JRT_ARRCOPY PROC');
+  WriteLn('  ; Copier tableau EAX -> nouveau tableau');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  MOV ECX, [ESI]          ; longueur');
+  WriteLn('  ; Allouer nouveau tableau');
+  WriteLn('  CALL _JRT_ARRALLOC');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  MOV EBX, EAX            ; sauvegarder debut');
+  WriteLn('  MOV ECX, [ESI]');
+  WriteLn('  ADD ESI, 4              ; passer compteur');
+  WriteLn('  ADD EDI, 4');
+  WriteLn(LblLoop, ':');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JZ ', LblLoop, '_end');
+  WriteLn('  MOV EAX, [ESI]');
+  WriteLn('  MOV [EDI], EAX');
+  WriteLn('  ADD ESI, 4');
+  WriteLn('  ADD EDI, 4');
+  WriteLn('  DEC ECX');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblLoop, '_end:');
+  WriteLn('  MOV EAX, EBX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_ARRCOPY ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtObjNew : emettre _JRT_OBJNEW (allocation objet)          }
+{   Entree : ECX = taille en octets                             }
+{   Sortie : EAX = ptr vers objet (memoire initialisee a 0)     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtObjNew;
+Var LblLoop : TString;
+Begin
+  LblLoop := GenRtLabel;
+  Inc(RtObjectCount);
+  RtLastType := RT_OBJNEW;
+  WriteLn('_JRT_OBJNEW PROC');
+  WriteLn('  ; Allouer objet de ECX octets');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV EBX, ECX');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  ; Initialiser a zero');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  PUSH EAX');
+  WriteLn(LblLoop, ':');
+  WriteLn('  TEST EBX, EBX');
+  WriteLn('  JZ ', LblLoop, '_end');
+  WriteLn('  MOV BYTE PTR [EDI], 0');
+  WriteLn('  INC EDI');
+  WriteLn('  DEC EBX');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblLoop, '_end:');
+  WriteLn('  POP EAX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_OBJNEW ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtHeapAlloc : emettre _JRT_HEAPALLOC (alloc generique)     }
+{   Entree : ECX = taille en octets                             }
+{   Sortie : EAX = ptr vers memoire allouee                     }
+{   Utilise le heap interne _J_HEAP                             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtHeapAlloc;
+Var LblOk : TString;
+Begin
+  If RtHeapAllocEmitted Then Exit;
+  RtHeapAllocEmitted := True;
+  LblOk := GenRtLabel;
+  Inc(RtObjectCount);
+  RtLastType := RT_HEAPALLOC;
+  WriteLn('_JRT_HEAPALLOC PROC');
+  WriteLn('  ; Allouer ECX octets sur le heap interne');
+  WriteLn('  PUSH EBX');
+  WriteLn('  MOV EAX, [_J_HEAPTOP]');
+  WriteLn('  MOV EBX, EAX');
+  WriteLn('  ADD EBX, ECX');
+  WriteLn('  ; Verifier overflow (simple)');
+  WriteLn('  CMP EBX, 65536');
+  WriteLn('  JA _JRT_PANIC');
+  WriteLn('  ; Allouer');
+  WriteLn('  LEA EAX, [_J_HEAP]');
+  WriteLn('  ADD EAX, [_J_HEAPTOP]');
+  WriteLn('  MOV [_J_HEAPTOP], EBX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_HEAPALLOC ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtPanic : emettre _JRT_PANIC (erreur fatale)               }
+{   Affiche message d erreur et termine le programme            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtPanic;
+Begin
+  If RtPanicEmitted Then Exit;
+  RtPanicEmitted := True;
+  Inc(RtErrorCount);
+  RtLastType := RT_PANIC;
+  WriteLn('_JRT_PANIC PROC');
+  WriteLn('  ; Erreur fatale - terminer programme');
+  WriteLn('  MOV EAX, OFFSET _JK_PANIC_MSG');
+  WriteLn('  CALL _JRT_WRITESTR');
+  WriteLn('  CALL _JRT_WRITECRLF');
+  WriteLn('  PUSH 1');
+  WriteLn('  CALL _ExitProcess@4');
+  WriteLn('_JRT_PANIC ENDP');
+  WriteLn;
+  WriteLn('_JK_PANIC_MSG DB ''Runtime error: heap overflow'', 0');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtBoundsErr : emettre _JRT_BOUNDS_ERR (index hors bornes)  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtBoundsErr;
+Begin
+  Inc(RtErrorCount);
+  RtLastType := RT_BOUNDS_ERR;
+  WriteLn('_JRT_BOUNDS_ERR PROC');
+  WriteLn('  ; ArrayIndexOutOfBoundsException');
+  WriteLn('  MOV EAX, OFFSET _JK_BOUNDS_MSG');
+  WriteLn('  CALL _JRT_WRITESTR');
+  WriteLn('  CALL _JRT_WRITECRLF');
+  WriteLn('  PUSH 1');
+  WriteLn('  CALL _ExitProcess@4');
+  WriteLn('_JRT_BOUNDS_ERR ENDP');
+  WriteLn;
+  WriteLn('_JK_BOUNDS_MSG DB ''ArrayIndexOutOfBoundsException'', 0');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtNullErr : emettre _JRT_NULL_ERR (pointeur nul)           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtNullErr;
+Begin
+  Inc(RtErrorCount);
+  RtLastType := RT_NULL_ERR;
+  WriteLn('_JRT_NULL_ERR PROC');
+  WriteLn('  ; NullPointerException');
+  WriteLn('  MOV EAX, OFFSET _JK_NULL_MSG');
+  WriteLn('  CALL _JRT_WRITESTR');
+  WriteLn('  CALL _JRT_WRITECRLF');
+  WriteLn('  PUSH 1');
+  WriteLn('  CALL _ExitProcess@4');
+  WriteLn('_JRT_NULL_ERR ENDP');
+  WriteLn;
+  WriteLn('_JK_NULL_MSG DB ''NullPointerException'', 0');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAllRtRoutines : emettre toutes les routines runtime        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitAllRtRoutines;
+Begin
+  WriteLn('; ============================================================');
+  WriteLn('; Bibliotheque Runtime Java (routines Win32)');
+  WriteLn('; ============================================================');
+  WriteLn;
+  WriteLn('; --- Routines de conversion ---');
+  EmitRtItoa;
+  EmitRtAtoi;
+  EmitRtBoolToStr;
+  EmitRtCharToStr;
+  EmitRtNullToStr;
+  WriteLn('; --- Routines E/S console ---');
+  EmitRtInitIo;
+  EmitRtWriteStr;
+  EmitRtWriteCrlf;
+  EmitRtReadLine;
+  WriteLn('; --- Routines chaines ---');
+  EmitRtStrlen;
+  EmitRtStrConcat;
+  EmitRtStrCmp;
+  EmitRtStrSlice;
+  EmitRtStrFind;
+  EmitRtStrUpper;
+  EmitRtStrLower;
+  EmitRtStrTrim;
+  EmitRtStrContains;
+  EmitRtStrStartsWith;
+  EmitRtStrEndsWith;
+  WriteLn('; --- Routines tableaux ---');
+  EmitRtArrAlloc;
+  EmitRtArrGet;
+  EmitRtArrSet;
+  EmitRtArrLen;
+  EmitRtArrCopy;
+  WriteLn('; --- Routines objets ---');
+  EmitRtObjNew;
+  EmitRtHeapAlloc;
+  WriteLn('; --- Routines erreur ---');
+  EmitRtPanic;
+  EmitRtBoundsErr;
+  EmitRtNullErr;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpRtState : afficher l etat du sous-systeme runtime          }
+{ ------------------------------------------------------------ }
+
+Procedure DumpRtState;
+Var I : Integer;
+Begin
+  WriteLn('--- RtState dump ---');
+  WriteLn('  RtInitialized      : ', RtInitialized);
+  WriteLn('  RtRoutineCount     : ', RtRoutineCount);
+  WriteLn('  RtEmittedCount     : ', RtEmittedCount);
+  WriteLn('  RtConversionCount  : ', RtConversionCount);
+  WriteLn('  RtIoCount          : ', RtIoCount);
+  WriteLn('  RtStringCount      : ', RtStringCount);
+  WriteLn('  RtArrayCount       : ', RtArrayCount);
+  WriteLn('  RtObjectCount      : ', RtObjectCount);
+  WriteLn('  RtErrorCount       : ', RtErrorCount);
+  WriteLn('  RtLastType         : ', RtTypeName(RtLastType));
+  If RtRoutineCount > 0 Then
+  Begin
+    WriteLn('  --- Routines enregistrees ---');
+    For I := 1 To RtRoutineCount Do
+      WriteLn('    [', I, '] ', RtRoutines[I].Name, ' (',
+              RtTypeName(RtRoutines[I].Kind), ') calls=',
+              RtRoutines[I].CallCount,
+              ' emitted=', RtRoutines[I].Emitted);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 22)                              }
+{ ------------------------------------------------------------ }
+
+Function IsRtInitialized : Boolean;
+Begin
+  IsRtInitialized := RtInitialized;
+End;
+
+Function IsRtEmpty : Boolean;
+Begin
+  IsRtEmpty := (RtRoutineCount = 0);
+End;
+
+Function GetRtRoutineCount : LongInt;
+Begin
+  GetRtRoutineCount := RtRoutineCount;
+End;
+
+Function GetRtEmittedCount : LongInt;
+Begin
+  GetRtEmittedCount := RtEmittedCount;
+End;
+
+Function GetRtConversionCount : LongInt;
+Begin
+  GetRtConversionCount := RtConversionCount;
+End;
+
+Function GetRtIoCount : LongInt;
+Begin
+  GetRtIoCount := RtIoCount;
+End;
+
+Function GetRtStringCount : LongInt;
+Begin
+  GetRtStringCount := RtStringCount;
+End;
+
+Function GetRtArrayCount : LongInt;
+Begin
+  GetRtArrayCount := RtArrayCount;
+End;
+
+Function GetRtLastType : Integer;
+Begin
+  GetRtLastType := RtLastType;
+End;
+
+Function GetRtStatus : TString;
+Begin
+  If Not RtInitialized Then
+    GetRtStatus := 'Not initialized'
+  Else
+    GetRtStatus := ItoS(RtRoutineCount) + ' routines, ' +
+                   ItoS(RtEmittedCount) + ' emitted, ' +
+                   ItoS(RtConversionCount) + ' conv, ' +
+                   ItoS(RtIoCount) + ' I/O, ' +
+                   ItoS(RtStringCount) + ' string, ' +
+                   ItoS(RtArrayCount) + ' array';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-22)                              }
 { ============================================================ }
 
 Begin
@@ -14024,16 +15540,17 @@ Begin
   InitImState;
   InitCvState;
   InitDtState;
+  InitRtState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-21) }
+  { Boucle de tokenisation (TODO 02-22) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 22..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 23..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
