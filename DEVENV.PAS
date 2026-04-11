@@ -1011,6 +1011,9 @@ Const
  { Coloration syntaxique C }
  MAX_C_KEYWORDS        = 32;      { nombre de mots-cles C          }
 
+ { Coloration syntaxique Java }
+ MAX_JAVA_KEYWORDS     = 50;      { nombre de mots-cles Java       }
+
  { Coloration syntaxique C# }
  MAX_CSHARP_KEYWORDS   = 79;      { nombre de mots-cles C#         }
  MAX_CSHARP_CTXKW      = 28;      { nombre de mots-cles contextuels}
@@ -1732,6 +1735,13 @@ Type
  TAWKHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_AWK_KEYWORDS - 1] Of String[15];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee Java }
+ TJavaHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_JAVA_KEYWORDS - 1] Of String[15];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -2667,6 +2677,8 @@ Var
  AbapHL       : TAbapHighlighter;
  { Coloration syntaxique AWK }
  AWKHL        : TAWKHighlighter;
+ { Coloration syntaxique Java }
+ JavaHL       : TJavaHighlighter;
  { Coloration syntaxique XML }
  XMLHL        : TXMLHighlighter;
  { Coloration syntaxique PSP }
@@ -6412,6 +6424,12 @@ Procedure HighlightPSPLine(Var HL: TPSPHighlighter;
                            Line: String;
                            Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightJavaLine --- }
+
+Procedure HighlightJavaLine(Var HL: TJavaHighlighter;
+                            Line: String;
+                            Var Colors: Array Of Byte); Forward;
+
 { --- Dessiner l editeur complet --- }
 
 Procedure DrawEditor(Var Ed: TEditor);
@@ -6431,6 +6449,7 @@ Var
  IsAbap: Boolean;
  IsAWK: Boolean;
  IsPSP: Boolean;
+ IsJava: Boolean;
  Ext: String;
 Begin
  { Detecter si le fichier est du Pascal }
@@ -6443,6 +6462,7 @@ Begin
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
  IsPSP := (Ext = '.PSP');
+ IsJava := (Ext = '.JAVA');
  { Mettre a jour la gouttiere }
  Ed.GutterWidth := CalcGutterWidth(Ed.Buffer.LineCount, Ed.CharWidth);
  Ed.VisibleCols := (Ed.Width - Ed.GutterWidth) Div Ed.CharWidth;
@@ -6482,7 +6502,10 @@ Begin
     HighlightAWKLine(AWKHL, FullLine, Colors)
    Else If IsPSP And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
-    HighlightPSPLine(PSPHL, FullLine, Colors);
+    HighlightPSPLine(PSPHL, FullLine, Colors)
+   Else If IsJava And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightJavaLine(JavaHL, FullLine, Colors);
    { Extraire la partie visible }
    If Ed.ScrollCol <= Length(FullLine) Then Begin
     Len := Length(FullLine) - Ed.ScrollCol + 1;
@@ -10417,6 +10440,170 @@ Begin
  Begin
   Start := Pos;
   TC := GetAWKTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE JAVA
+  ============================================================ }
+
+{ --- Initialiser les mots-cles Java --- }
+
+Procedure InitJavaKeywords(Var HL: TJavaHighlighter);
+Begin
+ HL.KeywordCount := MAX_JAVA_KEYWORDS;
+ HL.Keywords[0]  := 'abstract';
+ HL.Keywords[1]  := 'assert';
+ HL.Keywords[2]  := 'boolean';
+ HL.Keywords[3]  := 'break';
+ HL.Keywords[4]  := 'byte';
+ HL.Keywords[5]  := 'case';
+ HL.Keywords[6]  := 'catch';
+ HL.Keywords[7]  := 'char';
+ HL.Keywords[8]  := 'class';
+ HL.Keywords[9]  := 'const';
+ HL.Keywords[10] := 'continue';
+ HL.Keywords[11] := 'default';
+ HL.Keywords[12] := 'do';
+ HL.Keywords[13] := 'double';
+ HL.Keywords[14] := 'else';
+ HL.Keywords[15] := 'enum';
+ HL.Keywords[16] := 'extends';
+ HL.Keywords[17] := 'final';
+ HL.Keywords[18] := 'finally';
+ HL.Keywords[19] := 'float';
+ HL.Keywords[20] := 'for';
+ HL.Keywords[21] := 'goto';
+ HL.Keywords[22] := 'if';
+ HL.Keywords[23] := 'implements';
+ HL.Keywords[24] := 'import';
+ HL.Keywords[25] := 'instanceof';
+ HL.Keywords[26] := 'int';
+ HL.Keywords[27] := 'interface';
+ HL.Keywords[28] := 'long';
+ HL.Keywords[29] := 'native';
+ HL.Keywords[30] := 'new';
+ HL.Keywords[31] := 'package';
+ HL.Keywords[32] := 'private';
+ HL.Keywords[33] := 'protected';
+ HL.Keywords[34] := 'public';
+ HL.Keywords[35] := 'return';
+ HL.Keywords[36] := 'short';
+ HL.Keywords[37] := 'static';
+ HL.Keywords[38] := 'strictfp';
+ HL.Keywords[39] := 'super';
+ HL.Keywords[40] := 'switch';
+ HL.Keywords[41] := 'synchronized';
+ HL.Keywords[42] := 'this';
+ HL.Keywords[43] := 'throw';
+ HL.Keywords[44] := 'throws';
+ HL.Keywords[45] := 'transient';
+ HL.Keywords[46] := 'try';
+ HL.Keywords[47] := 'void';
+ HL.Keywords[48] := 'volatile';
+ HL.Keywords[49] := 'while';
+End;
+
+{ --- Initialiser le moteur de coloration Java --- }
+
+Procedure InitJavaHighlighter(Var HL: TJavaHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'Java');
+ InitJavaKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle Java --- }
+
+Function IsJavaKeyword(Var HL: TJavaHighlighter;
+                       Word: String): Boolean;
+Var
+ I: Integer;
+Begin
+ IsJavaKeyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+ Begin
+  If Word = HL.Keywords[I] Then
+  Begin
+   IsJavaKeyword := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un mot est un type predefini Java --- }
+
+Function IsJavaType(Word: String): Boolean;
+Begin
+ IsJavaType :=
+  (Word = 'String') Or (Word = 'Integer') Or (Word = 'Long') Or
+  (Word = 'Double') Or (Word = 'Float') Or (Word = 'Boolean') Or
+  (Word = 'Byte') Or (Word = 'Short') Or (Word = 'Character') Or
+  (Word = 'Object') Or (Word = 'Void') Or (Word = 'Number') Or
+  (Word = 'System') Or (Word = 'Math') Or (Word = 'Arrays') Or
+  (Word = 'List') Or (Word = 'Map') Or (Word = 'Set') Or
+  (Word = 'ArrayList') Or (Word = 'HashMap') Or
+  (Word = 'true') Or (Word = 'false') Or (Word = 'null');
+End;
+
+{ --- Classifier un jeton Java (identifier -> keyword/type) --- }
+
+Function ClassifyJavaToken(Var HL: TJavaHighlighter;
+                           Line: String;
+                           StartPos, EndPos: Integer): TTokenClass;
+Var
+ Word: String;
+Begin
+ Word := Copy(Line, StartPos, EndPos - StartPos);
+ If IsJavaType(Word) Then
+  ClassifyJavaToken := TC_TYPE
+ Else If IsJavaKeyword(HL, Word) Then
+  ClassifyJavaToken := TC_KEYWORD
+ Else
+  ClassifyJavaToken := TC_IDENTIFIER;
+End;
+
+{ --- Obtenir la classe de jeton Java a une position --- }
+
+Function GetJavaTokenClass(Var HL: TJavaHighlighter;
+                           Line: String;
+                           Var Pos: Integer): TTokenClass;
+Var
+ StartPos: Integer;
+ TC: TTokenClass;
+Begin
+ StartPos := Pos;
+ TC := GetTokenClass(HL.Base, Line, Pos);
+ If TC = TC_IDENTIFIER Then
+  GetJavaTokenClass := ClassifyJavaToken(HL, Line, StartPos, Pos)
+ Else
+  GetJavaTokenClass := TC;
+End;
+
+{ --- Colorier une ligne Java entiere --- }
+
+Procedure HighlightJavaLine(Var HL: TJavaHighlighter;
+                            Line: String;
+                            Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Start := Pos;
+  TC := GetJavaTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
   Begin
@@ -24304,6 +24491,7 @@ BEGIN
  InitAdaHighlighter(AdaHL);
  InitAbapHighlighter(AbapHL);
  InitAWKHighlighter(AWKHL);
+ InitJavaHighlighter(JavaHL);
  InitXMLHighlighter(XMLHL);
  InitPSPHighlighter(PSPHL);
  InitExplorer(SolExplorer);
