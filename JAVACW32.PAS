@@ -1353,18 +1353,29 @@ Const
   { Constante pour LookupKeyword (forward) }
   KW_NONE = 0;
 
+Type
+  { Noeud de liste chainee pour le buffer source }
+  PLexSrcNode = ^TLexSrcNode;
+  TLexSrcNode = Record
+    Line : TString;            { contenu de la ligne source            }
+    Next : PLexSrcNode;        { pointeur vers le noeud suivant        }
+  End;
+
 Var
   { Fichier source }
   LexSrcF     : Text;          { handle du fichier source              }
   LexOpened   : Boolean;       { fichier ouvert ?                      }
   LexLine     : TString;       { ligne courante                        }
-  LexLineNo   : Integer;       { numero de ligne courante              }
+  LexLineNo   : LongInt;       { numero de ligne courante              }
   LexColNo    : Integer;       { colonne courante dans LexLine         }
   LexEOF      : Boolean;       { fin de fichier atteinte ?             }
 
-  { Buffer source pour rewind (boucles while) }
-  LexSrcBuf   : Array[1..8192] Of TString;  { buffer des lignes source }
-  LexSrcCount : Integer;       { nombre de lignes dans le buffer       }
+  { Buffer source pour rewind (boucles while) - liste chainee }
+  LexSrcHead  : PLexSrcNode;   { tete de la liste chainee              }
+  LexSrcTail  : PLexSrcNode;   { queue de la liste (pour ajout rapide) }
+  LexSrcCur   : PLexSrcNode;   { noeud courant (curseur de lecture)    }
+  LexSrcCurNo : LongInt;       { numero de ligne du curseur courant    }
+  LexSrcCount : LongInt;       { nombre de lignes dans le buffer       }
   LexUseBuffer: Boolean;       { True si on lit depuis le buffer       }
 
   { Token courant }
@@ -1442,12 +1453,50 @@ Function LookupKeyword(Const S : TString) : Integer; Forward;
 { LexNextLine : lire la prochaine ligne du fichier source      }
 { ------------------------------------------------------------ }
 
+{ ------------------------------------------------------------ }
+{ LexSrcSeek : positionner le curseur sur la ligne N           }
+{ Optimise pour acces sequentiel (avance depuis la position    }
+{ courante si possible, sinon repart de la tete)               }
+{ ------------------------------------------------------------ }
+
+Function LexSrcSeek(N : LongInt) : PLexSrcNode;
+Var P : PLexSrcNode;
+    I : LongInt;
+Begin
+  { Si le curseur est deja sur la bonne ligne }
+  If (LexSrcCur <> Nil) And (LexSrcCurNo = N) Then
+  Begin
+    LexSrcSeek := LexSrcCur;
+    Exit;
+  End;
+  { Si le curseur est avant la ligne demandee, avancer }
+  If (LexSrcCur <> Nil) And (LexSrcCurNo < N) Then
+  Begin
+    P := LexSrcCur;
+    I := LexSrcCurNo;
+  End
+  Else
+  Begin
+    P := LexSrcHead;
+    I := 1;
+  End;
+  While (P <> Nil) And (I < N) Do
+  Begin
+    P := P^.Next;
+    Inc(I);
+  End;
+  LexSrcCur   := P;
+  LexSrcCurNo := N;
+  LexSrcSeek  := P;
+End;
+
 Procedure LexNextLine;
+Var Node : PLexSrcNode;
 Begin
   If LexEOF Then Exit;
   If LexUseBuffer Then
   Begin
-    { Lire depuis le buffer }
+    { Lire depuis la liste chainee }
     If LexLineNo >= LexSrcCount Then
     Begin
       LexEOF   := True;
@@ -1457,7 +1506,14 @@ Begin
     Else
     Begin
       Inc(LexLineNo);
-      LexLine  := LexSrcBuf[LexLineNo];
+      Node := LexSrcSeek(LexLineNo);
+      If Node <> Nil Then
+        LexLine := Node^.Line
+      Else
+      Begin
+        LexEOF  := True;
+        LexLine := '';
+      End;
       LexColNo := 1;
     End;
   End
@@ -1475,12 +1531,6 @@ Begin
       Inc(LexLineNo);
       Inc(TotalLines);
       LexColNo := 1;
-      { Stocker dans le buffer }
-      If LexLineNo <= 8192 Then
-      Begin
-        LexSrcBuf[LexLineNo] := LexLine;
-        LexSrcCount := LexLineNo;
-      End;
     End;
   End;
 End;
@@ -1513,6 +1563,9 @@ Begin
   LexEOF      := St.IsEOF;
   LexLine     := St.Line;
   LexUseBuffer := True;
+  { Repositionner le curseur sur la ligne restauree }
+  LexSrcCur   := Nil;
+  LexSrcCurNo := 0;
   CurTokKind  := St.TokKind;
   CurTokStr   := St.TokStr;
   CurTokInt   := St.TokInt;
@@ -1526,6 +1579,7 @@ End;
 
 Procedure LexInit;
 Var TmpLine : TString;
+    Node    : PLexSrcNode;
 Begin
   Assign(LexSrcF, Opts.SrcFile);
   {$I-}
@@ -1535,14 +1589,24 @@ Begin
     FatalError('Impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
   LexOpened   := True;
 
-  { Lire tout le fichier dans le buffer }
+  { Lire tout le fichier dans la liste chainee }
+  LexSrcHead  := Nil;
+  LexSrcTail  := Nil;
+  LexSrcCur   := Nil;
+  LexSrcCurNo := 0;
   LexSrcCount := 0;
   While Not EOF(LexSrcF) Do
   Begin
     ReadLn(LexSrcF, TmpLine);
+    New(Node);
+    Node^.Line := TmpLine;
+    Node^.Next := Nil;
+    If LexSrcHead = Nil Then
+      LexSrcHead := Node
+    Else
+      LexSrcTail^.Next := Node;
+    LexSrcTail := Node;
     Inc(LexSrcCount);
-    If LexSrcCount <= 8192 Then
-      LexSrcBuf[LexSrcCount] := TmpLine;
   End;
   Close(LexSrcF);
   LexOpened := False;
@@ -1553,6 +1617,8 @@ Begin
   LexEOF      := False;
   LexLine     := '';
   LexUseBuffer := True;
+  LexSrcCur   := LexSrcHead;
+  LexSrcCurNo := 1;
   TotalLines  := LexSrcCount;
   CurTokKind  := TK_EOF;
   CurTokStr   := '';
@@ -1569,12 +1635,27 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure LexClose;
+Var
+  P, Next : PLexSrcNode;
 Begin
   If LexOpened Then
   Begin
     Close(LexSrcF);
     LexOpened := False;
   End;
+  { Liberer la liste chainee }
+  P := LexSrcHead;
+  While P <> Nil Do
+  Begin
+    Next := P^.Next;
+    Dispose(P);
+    P := Next;
+  End;
+  LexSrcHead  := Nil;
+  LexSrcTail  := Nil;
+  LexSrcCur   := Nil;
+  LexSrcCurNo := 0;
+  LexSrcCount := 0;
 End;
 
 { ------------------------------------------------------------ }
