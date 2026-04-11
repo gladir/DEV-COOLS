@@ -311,7 +311,7 @@
             10 fonctions accesseurs
 
   TODO 13 - PARSEUR : ENTREES/SORTIES (print / input) [IMPLEMENTE]
-            print(*args, sep=' ', end='\n') :
+            print( *args, sep=' ', end='\n') :
               Evaluer chaque argument, convertir en chaine si necessaire
               Appeler _PYRT_WRITESTR pour chaque argument
               Inserer le separateur (espace par defaut) entre les args
@@ -1242,7 +1242,7 @@ Var
   LexEOF      : Boolean;       { fin de fichier atteinte ?             }
 
   { Token courant }
-  CurTokKind  : Integer;       { type de token (TK_*)                  }
+  CurTokKind  : Integer;       { type de token (TK_* )                 }
   CurTokStr   : TString;       { valeur textuelle du token             }
   CurTokInt   : LongInt;       { valeur numerique (entier)             }
   CurTokFloat : Real;          { valeur numerique (flottant)           }
@@ -2537,8 +2537,8 @@ Var
   BiLookupCount : LongInt;       { nombre d appels a LookupBuiltin       }
   BiHitCount    : LongInt;       { nombre de builtins reconnus           }
   KwLabelSeq    : Integer;       { sequence pour labels uniques          }
-  KwLastKW      : Integer;       { dernier mot-cle reconnu (KW_*)        }
-  KwLastBI      : Integer;       { dernier builtin reconnu (BI_*)        }
+  KwLastKW      : Integer;       { dernier mot-cle reconnu (KW_* )       }
+  KwLastBI      : Integer;       { dernier builtin reconnu (BI_* )       }
   KwTotalIdents : LongInt;       { total d identificateurs testes        }
 
 { ------------------------------------------------------------ }
@@ -3400,7 +3400,7 @@ Begin
   TypFindCount   := 0;
   TypFindHit     := 0;
   TypLastName    := '';
-  { Enregistrer les 10 types primitifs (ordre = TY_IDX_*) }
+  { Enregistrer les 10 types primitifs (ordre = TY_IDX_* ) }
   AddPrim('int',    TYK_INT,    4);   { TY_IDX_INT    = 0 }
   AddPrim('str',    TYK_STR,    4);   { TY_IDX_STR    = 1 }
   AddPrim('bool',   TYK_BOOL,   4);   { TY_IDX_BOOL   = 2 }
@@ -9422,7 +9422,7 @@ Begin
   Begin
     { Dict vide }
     EmitDictEmpty;
-    LexNextToken;  (* consommer '}' *)
+    LexNextToken;  (* consommer accolade *)
     Exit;
   End;
 
@@ -9502,7 +9502,7 @@ Begin
       LexNextToken;
   End;
 
-  (* Consommer '}' *)
+  (* Consommer accolade ferm‚ *)
   If (CurTokKind = TK_OP) And (CurTokStr = '}') Then
     LexNextToken;
 
@@ -15868,6 +15868,6 @@ End;
 { Programme principal                                          }
 { ============================================================ }
 
-Begin
-  Run;
-End.
+BEGIN
+ Run;
+END.
