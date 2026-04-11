@@ -32,7 +32,7 @@
 {  TODO 14 [IMPLEMENTE] - Detecteur : problemes de performance                }
 {  TODO 15 [A FAIRE] - Detecteur : vulnerabilites de securite                 }
 {  TODO 16 [IMPLEMENTE] - Detecteur : problemes de multi-threading            }
-{  TODO 17 [A FAIRE] - Detecteur : exceptions masquees et flux d'erreur       }
+{  TODO 17 [IMPLEMENTE] - Detecteur : exceptions masquees et flux d'erreur    }
 {  TODO 18 [A FAIRE] - Detecteur : erreurs logiques et retours incorrects     }
 {  TODO 19 [A FAIRE] - Detecteur : problemes d'internationalisation           }
 {  TODO 20 [A FAIRE] - Calcul des scores et niveaux de severite               }
@@ -827,6 +827,28 @@ Const
   SYNC_METHOD      = 1;  { Dans une methode synchronized                       }
   SYNC_BLOCK       = 2;  { Dans un bloc synchronized                           }
 
+  { --- TODO 17 : Constantes pour le detecteur d'exceptions masquees --- }
+  MAX_EX_BUGS        = 64;   { Nombre max de bugs exception par methode          }
+  MAX_EX_CATCH_INFO  = 32;   { Nombre max de catch blocks trackes                 }
+  MAX_EX_FINALLY_INFO = 16;  { Nombre max de finally blocks trackes               }
+
+  { Types de bugs d'exceptions masquees - prefixe EXH_ pour eviter conflit }
+  EXH_NONE                               = 0;  { Pas de bug                         }
+  EXH_THROWN_IGNORED                     = 1;  { exception capturee et ignoree      }
+  EXH_CATCH_EXCEPTION                    = 2;  { catch(Exception) trop large        }
+  EXH_REDUNDANT_NULLCHECK                = 3;  { null check apres dereferencement   }
+  EXH_FINALLY_RETURN                     = 4;  { return dans finally masque except  }
+  EXH_NO_SUPER_EQUALS                    = 5;  { equals() sans super.equals()       }
+  EXH_CATCH_THROWABLE                    = 6;  { catch(Throwable) trop large        }
+  EXH_POP_ONLY                           = 7;  { catch vide (pop seul)              }
+  EXH_DROPPED                            = 8;  { exception capturee mais non relancee }
+
+  { Etats de bloc pour l'analyse }
+  BLOCK_NONE       = 0;  { Pas dans un bloc try/catch/finally                   }
+  BLOCK_TRY        = 1;  { Dans un bloc try                                     }
+  BLOCK_CATCH      = 2;  { Dans un bloc catch                                   }
+  BLOCK_FINALLY    = 3;  { Dans un bloc finally                                 }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -1003,6 +1025,42 @@ Type
   End;
   TFieldAccessArray = Array[0..MAX_MT_FIELDS-1] of TFieldAccessInfo;
 
+  { --- TODO 17 : Structure TExHandlingBug : bug exception masquee detecte --- }
+  TExHandlingBug = Record
+    BugType     : Integer;    { Type de bug (THROWN_EXCEPTION_IGNORED, etc.) }
+    PC          : LongWord;   { Position dans le bytecode                    }
+    LineNum     : Integer;    { Numero de ligne source                       }
+    ClassName   : String;     { Nom de classe concernee                      }
+    MethodName  : String;     { Nom de methode concernee                     }
+    CatchType   : String;     { Type capture (Exception, Throwable, etc.)    }
+    Details     : String;     { Details supplementaires                      }
+  End;
+  TExHandlingBugArray = Array[0..MAX_EX_BUGS-1] of TExHandlingBug;
+
+  { --- TODO 17 : Structure TExCatchInfo : info bloc catch a tracker --- }
+  TExCatchInfo = Record
+    StartPC     : LongWord;   { PC de debut du bloc try                      }
+    EndPC       : LongWord;   { PC de fin du bloc try                        }
+    HandlerPC   : LongWord;   { PC du handler (debut du catch)               }
+    CatchType   : String;     { Type capture (Exception, Throwable, etc.)    }
+    HandlerLen  : Integer;    { Longueur du bloc catch en instructions       }
+    IsPopOnly   : Boolean;    { True si le catch ne fait que pop             }
+    IsPopReturn : Boolean;    { True si catch fait pop + return              }
+    IsTooWide   : Boolean;    { True si catch(Exception/Throwable)           }
+    ExcTableIdx : Integer;    { Index dans exception_table                   }
+  End;
+  TExCatchInfoArray = Array[0..MAX_EX_CATCH_INFO-1] of TExCatchInfo;
+
+  { --- TODO 17 : Structure TExFinallyInfo : info bloc finally a tracker --- }
+  TExFinallyInfo = Record
+    StartPC     : LongWord;   { PC de debut du finally                       }
+    EndPC       : LongWord;   { PC de fin du finally                         }
+    HasReturn   : Boolean;    { True si contient un return                   }
+    ReturnPC    : LongWord;   { PC de l'instruction return                   }
+    ExcTableIdx : Integer;    { Index dans exception_table (catch any)       }
+  End;
+  TExFinallyInfoArray = Array[0..MAX_EX_FINALLY_INFO-1] of TExFinallyInfo;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -1139,6 +1197,26 @@ Var
   MTCurrentLine    : Integer;     { Ligne source courante                      }
   MTInSyncMethod   : Boolean;     { True si dans une methode synchronized      }
   MTInSyncBlock    : Boolean;     { True si dans un bloc synchronized          }
+  { --- TODO 17 : Variables du detecteur d'exceptions masquees --- }
+  EXInitialized    : Boolean;     { True si module initialise                  }
+  EXBugs           : TExHandlingBugArray; { Bugs detectes dans la methode      }
+  EXBugCount       : Integer;     { Nombre de bugs detectes                    }
+  EXCatchInfos     : TExCatchInfoArray; { Info blocs catch trackes             }
+  EXCatchCount     : Integer;     { Nombre de blocs catch trackes              }
+  EXFinallyInfos   : TExFinallyInfoArray; { Info blocs finally trackes         }
+  EXFinallyCount   : Integer;     { Nombre de blocs finally trackes            }
+  EXLabelNum       : Integer;     { Compteur pour generation de labels         }
+  EXTotalIgnored   : Integer;     { Nombre total d'exceptions ignorees         }
+  EXTotalTooWide   : Integer;     { Nombre total de catch trop larges          }
+  EXTotalFinallyReturn : Integer; { Nombre total de return dans finally        }
+  EXTotalRedundantNull : Integer; { Nombre total de null check redondants      }
+  EXTotalPopOnly   : Integer;     { Nombre total de catch pop only             }
+  EXTotalNoSuperEquals : Integer; { Nombre total de equals sans super          }
+  EXCurrentPC      : LongWord;    { PC de l'instruction courante               }
+  EXCurrentLine    : Integer;     { Ligne source courante                      }
+  EXInTryBlock     : Boolean;     { True si dans un bloc try                   }
+  EXInCatchBlock   : Boolean;     { True si dans un bloc catch                 }
+  EXInFinallyBlock : Boolean;     { True si dans un bloc finally               }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -8814,25 +8892,700 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 17 [A FAIRE] - Detecteur : exceptions masquees et flux d'erreur         }
+{ TODO 17 [IMPLEMENTE] - Detecteur : exceptions masquees et flux d'erreur      }
 { ============================================================================ }
-{                                                                              }
-{  - Codes de bugs detectes :                                                    }
-{      THROWN_EXCEPTION_IGNORED  : exception capturee et ignoree silencieusement}
-{      REC_CATCH_EXCEPTION        : capture de java.lang.Exception trop large  }
-{      RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE : null check apres usage  }
-{      FINALLY_NULLIFIES_EXCEPTION : return dans finally masque l'exception     }
-{      OVERRIDDEN_EQUALS_NO_SUPER_CALL : equals() ne fait pas super.equals()   }
-{                                                                              }
-{  - Procedure DetectExceptionHandlingIssues(Method: TMethodInfo)               }
-{      Analyser les blocs catch (debut/fin/handler depuis exception_table)      }
-{      Detecter les catch(Exception) / catch(Throwable) trop larges             }
-{      Detecter les blocs catch dont le corps ne contient que pop + return      }
-{        ou pop seul (exception ignoree silencieusement)                        }
-{      Detecter les instructions return dans les blocs finally                  }
-{        (masque toute exception levee dans le bloc try)                        }
-{      Detecter les verifications null apres un dereferencement de la variable  }
-{        (l'exception aurait deja ete lancee avant le test)                     }
+
+{ --- TODO 17 : Initialisation du module exceptions masquees --- }
+Procedure InitExHandlingState;
+Var
+  I: Integer;
+Begin
+  EXInitialized := True;
+  EXBugCount := 0;
+  EXCatchCount := 0;
+  EXFinallyCount := 0;
+  EXLabelNum := 0;
+  EXTotalIgnored := 0;
+  EXTotalTooWide := 0;
+  EXTotalFinallyReturn := 0;
+  EXTotalRedundantNull := 0;
+  EXTotalPopOnly := 0;
+  EXTotalNoSuperEquals := 0;
+  EXCurrentPC := 0;
+  EXCurrentLine := 0;
+  EXInTryBlock := False;
+  EXInCatchBlock := False;
+  EXInFinallyBlock := False;
+  
+  For I := 0 to MAX_EX_BUGS - 1 Do Begin
+    EXBugs[I].BugType := EXH_NONE;
+    EXBugs[I].PC := 0;
+    EXBugs[I].LineNum := 0;
+    EXBugs[I].ClassName := '';
+    EXBugs[I].MethodName := '';
+    EXBugs[I].CatchType := '';
+    EXBugs[I].Details := '';
+  End;
+  
+  For I := 0 to MAX_EX_CATCH_INFO - 1 Do Begin
+    EXCatchInfos[I].StartPC := 0;
+    EXCatchInfos[I].EndPC := 0;
+    EXCatchInfos[I].HandlerPC := 0;
+    EXCatchInfos[I].CatchType := '';
+    EXCatchInfos[I].HandlerLen := 0;
+    EXCatchInfos[I].IsPopOnly := False;
+    EXCatchInfos[I].IsPopReturn := False;
+    EXCatchInfos[I].IsTooWide := False;
+    EXCatchInfos[I].ExcTableIdx := -1;
+  End;
+  
+  For I := 0 to MAX_EX_FINALLY_INFO - 1 Do Begin
+    EXFinallyInfos[I].StartPC := 0;
+    EXFinallyInfos[I].EndPC := 0;
+    EXFinallyInfos[I].HasReturn := False;
+    EXFinallyInfos[I].ReturnPC := 0;
+    EXFinallyInfos[I].ExcTableIdx := -1;
+  End;
+End;
+
+{ --- TODO 17 : Generation d'un label unique pour le module --- }
+Function GenEXLabel: String;
+Begin
+  Inc(EXLabelNum);
+  GenEXLabel := '_EX_' + IntToStr_(EXLabelNum);
+End;
+
+{ --- TODO 17 : Conversion du type de bug en chaine --- }
+Function EXBugTypeName(BugType: Integer): String;
+Begin
+  Case BugType of
+    EXH_NONE:                              EXBugTypeName := 'EXH_NONE';
+    EXH_THROWN_IGNORED:                    EXBugTypeName := 'THROWN_EXCEPTION_IGNORED';
+    EXH_CATCH_EXCEPTION:                   EXBugTypeName := 'REC_CATCH_EXCEPTION';
+    EXH_REDUNDANT_NULLCHECK:               EXBugTypeName := 'RCN_REDUNDANT_NULLCHECK';
+    EXH_FINALLY_RETURN:                    EXBugTypeName := 'FINALLY_NULLIFIES_EXCEPTION';
+    EXH_NO_SUPER_EQUALS:                   EXBugTypeName := 'OVERRIDDEN_EQUALS_NO_SUPER_CALL';
+    EXH_CATCH_THROWABLE:                   EXBugTypeName := 'REC_CATCH_THROWABLE';
+    EXH_POP_ONLY:                          EXBugTypeName := 'DE_MIGHT_IGNORE';
+    EXH_DROPPED:                           EXBugTypeName := 'DE_MIGHT_DROP';
+  Else
+    EXBugTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 17 : Detecter si un type est java.lang.Exception --- }
+Function IsCatchException(TypeName: String): Boolean;
+Begin
+  IsCatchException := (TypeName = 'java/lang/Exception') or
+                      (TypeName = 'Exception') or
+                      (Pos('Exception', TypeName) = Length(TypeName) - 8);
+End;
+
+{ --- TODO 17 : Detecter si un type est java.lang.Throwable --- }
+Function IsCatchThrowable(TypeName: String): Boolean;
+Begin
+  IsCatchThrowable := (TypeName = 'java/lang/Throwable') or
+                      (TypeName = 'Throwable');
+End;
+
+{ --- TODO 17 : Detecter si c'est un catch all (finally interne) --- }
+Function IsCatchAll(TypeName: String): Boolean;
+Begin
+  IsCatchAll := (TypeName = '') or (TypeName = 'any');
+End;
+
+{ --- TODO 17 : Detecter si un catch est trop large --- }
+Function IsTooWideCatch(TypeName: String): Boolean;
+Begin
+  IsTooWideCatch := IsCatchException(TypeName) or IsCatchThrowable(TypeName);
+End;
+
+{ --- TODO 17 : Detecter si c'est une methode equals --- }
+Function IsEqualsMethod(MethodName, Descriptor: String): Boolean;
+Begin
+  IsEqualsMethod := (MethodName = 'equals') and 
+                    (Descriptor = '(Ljava/lang/Object;)Z');
+End;
+
+{ --- TODO 17 : Detecter si un opcode est un return --- }
+Function IsReturnOpcode(Opcode: Integer): Boolean;
+Begin
+  IsReturnOpcode := (Opcode = OP_IRETURN) or (Opcode = OP_LRETURN) or
+                    (Opcode = OP_FRETURN) or (Opcode = OP_DRETURN) or
+                    (Opcode = OP_ARETURN) or (Opcode = OP_RETURN);
+End;
+
+{ --- TODO 17 : Detecter si un opcode est pop --- }
+Function IsPopOpcode(Opcode: Integer): Boolean;
+Begin
+  IsPopOpcode := (Opcode = OP_POP) or (Opcode = OP_POP2);
+End;
+
+{ --- TODO 17 : Detecter si un opcode est astore --- }
+Function IsAstoreOpcode(Opcode: Integer): Boolean;
+Begin
+  IsAstoreOpcode := (Opcode = OP_ASTORE) or (Opcode = OP_ASTORE_0) or
+                    (Opcode = OP_ASTORE_1) or (Opcode = OP_ASTORE_2) or
+                    (Opcode = OP_ASTORE_3);
+End;
+
+{ --- TODO 17 : Detecter si c'est un appel invokespecial super.equals --- }
+Function IsSuperEqualsCall(MethodIdx: Integer; InstrIdx: Integer): Boolean;
+Var
+  CpIdx: Word;
+  ClassIdx, NatIdx, NameIdx, DescIdx: Word;
+  MemberClass, MemberName, MemberDesc: String;
+  CurrentClass: String;
+Begin
+  IsSuperEqualsCall := False;
+  If (InstrIdx < 0) or (InstrIdx >= InstrCount) Then Exit;
+  If Instructions^[InstrIdx].Opcode <> OP_INVOKESPECIAL Then Exit;
+  
+  { Op1 contient l'index dans le constant pool }
+  CpIdx := Instructions^[InstrIdx].Op1;
+  If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
+    MemberClass := '';
+    MemberName := '';
+    MemberDesc := '';
+    { Extraire classe et nom de methode du constant pool }
+    If CP^[CpIdx].Tag = CP_METHODREF Then Begin
+      { Ref1 = class_index, Ref2 = name_and_type_index }
+      ClassIdx := CP^[CpIdx].Ref1;
+      NatIdx := CP^[CpIdx].Ref2;
+      
+      { Obtenir le nom de classe }
+      If (ClassIdx > 0) and (ClassIdx < CPCount) Then Begin
+        If CP^[ClassIdx].Tag = CP_CLASS Then Begin
+          { Ref1 = name_index }
+          NameIdx := CP^[ClassIdx].Ref1;
+          If (NameIdx > 0) and (NameIdx < CPCount) Then Begin
+            If CP^[NameIdx].Tag = CP_UTF8 Then
+              MemberClass := CP^[NameIdx].StrVal;
+          End;
+        End;
+      End;
+      
+      { Obtenir le nom et descripteur de methode }
+      If (NatIdx > 0) and (NatIdx < CPCount) Then Begin
+        If CP^[NatIdx].Tag = CP_NAMEANDTYPE Then Begin
+          { Ref1 = name_index, Ref2 = descriptor_index }
+          NameIdx := CP^[NatIdx].Ref1;
+          DescIdx := CP^[NatIdx].Ref2;
+          
+          If (NameIdx > 0) and (NameIdx < CPCount) Then Begin
+            If CP^[NameIdx].Tag = CP_UTF8 Then
+              MemberName := CP^[NameIdx].StrVal;
+          End;
+          
+          If (DescIdx > 0) and (DescIdx < CPCount) Then Begin
+            If CP^[DescIdx].Tag = CP_UTF8 Then
+              MemberDesc := CP^[DescIdx].StrVal;
+          End;
+        End;
+      End;
+    End;
+    
+    { Verifier que c'est super.equals() }
+    CurrentClass := ClassInfo.ThisClass;
+    If (MemberClass <> '') and (MemberClass <> CurrentClass) and
+       (MemberName = 'equals') and (MemberDesc = '(Ljava/lang/Object;)Z') Then Begin
+      IsSuperEqualsCall := True;
+    End;
+  End;
+End;
+
+{ --- TODO 17 : Ajouter un bug d'exception masquee --- }
+Procedure AddExHandlingBug(BugType: Integer; PC: LongWord; LineNum: Integer;
+                           CatchType, Details: String);
+Begin
+  If EXBugCount >= MAX_EX_BUGS Then Exit;
+  
+  EXBugs[EXBugCount].BugType := BugType;
+  EXBugs[EXBugCount].PC := PC;
+  EXBugs[EXBugCount].LineNum := LineNum;
+  EXBugs[EXBugCount].ClassName := ClassInfo.ThisClass;
+  If (MethodCount > 0) and (EXCurrentLine >= 0) Then Begin
+    { Utiliser le nom de la methode courante si disponible }
+    EXBugs[EXBugCount].MethodName := '<current>';
+  End Else Begin
+    EXBugs[EXBugCount].MethodName := '';
+  End;
+  EXBugs[EXBugCount].CatchType := CatchType;
+  EXBugs[EXBugCount].Details := Details;
+  
+  Inc(EXBugCount);
+  
+  { Incrementer les compteurs selon le type }
+  Case BugType of
+    EXH_THROWN_IGNORED: Inc(EXTotalIgnored);
+    EXH_CATCH_EXCEPTION: Inc(EXTotalTooWide);
+    EXH_CATCH_THROWABLE: Inc(EXTotalTooWide);
+    EXH_REDUNDANT_NULLCHECK: Inc(EXTotalRedundantNull);
+    EXH_FINALLY_RETURN: Inc(EXTotalFinallyReturn);
+    EXH_POP_ONLY: Inc(EXTotalPopOnly);
+    EXH_NO_SUPER_EQUALS: Inc(EXTotalNoSuperEquals);
+  End;
+End;
+
+{ --- TODO 17 : Analyser un bloc catch pour determiner s'il ignore l'exception --- }
+Procedure AnalyzeCatchBlock(MethodIdx: Integer; HandlerPC: LongWord; 
+                            CatchType: String; ExcIdx: Integer);
+Var
+  I, StartInstr, InstrLen: Integer;
+  PC: LongWord;
+  Opcode1, Opcode2: Integer;
+  IsPopOnly, IsPopReturn: Boolean;
+  LineNum: Integer;
+Begin
+  If (Instructions = nil) or (InstrCount = 0) Then Exit;
+  
+  { Trouver l'instruction au HandlerPC }
+  StartInstr := -1;
+  For I := 0 to InstrCount - 1 Do Begin
+    If Instructions^[I].PC = HandlerPC Then Begin
+      StartInstr := I;
+      Break;
+    End;
+  End;
+  
+  If StartInstr < 0 Then Exit;
+  
+  LineNum := GetLineNumber(Methods[MethodIdx], HandlerPC);
+  IsPopOnly := False;
+  IsPopReturn := False;
+  
+  { Compter les instructions dans le catch handler }
+  { Un catch minimal est : astore (stocker exception) ou pop (ignorer) }
+  { suivi d'autres instructions ou return }
+  
+  InstrLen := 0;
+  I := StartInstr;
+  While (I < InstrCount) and (InstrLen < 10) Do Begin
+    PC := Instructions^[I].PC;
+    
+    { Sortir si on atteint un autre handler ou une branche arriere }
+    If (InstrLen > 0) and (IsBranchOpcode(Instructions^[I].Opcode) or 
+        IsReturnOpcode(Instructions^[I].Opcode) or
+        (Instructions^[I].Opcode = OP_ATHROW)) Then Begin
+      Break;
+    End;
+    
+    Inc(InstrLen);
+    Inc(I);
+  End;
+  
+  { Detecter les patterns de catch ignore }
+  If (StartInstr < InstrCount) Then Begin
+    Opcode1 := Instructions^[StartInstr].Opcode;
+    
+    { Pattern 1: pop seul ou pop + goto/return }
+    If IsPopOpcode(Opcode1) Then Begin
+      If (InstrLen = 1) Then Begin
+        IsPopOnly := True;
+      End Else If (InstrLen = 2) and (StartInstr + 1 < InstrCount) Then Begin
+        Opcode2 := Instructions^[StartInstr + 1].Opcode;
+        If IsReturnOpcode(Opcode2) or (Opcode2 = OP_GOTO) Then Begin
+          IsPopReturn := True;
+        End;
+      End;
+    End;
+    
+    { Pattern 2: astore suivi uniquement de return }
+    If IsAstoreOpcode(Opcode1) and (InstrLen = 2) and 
+       (StartInstr + 1 < InstrCount) Then Begin
+      Opcode2 := Instructions^[StartInstr + 1].Opcode;
+      If IsReturnOpcode(Opcode2) Then Begin
+        IsPopReturn := True;
+      End;
+    End;
+  End;
+  
+  { Enregistrer le catch block }
+  If EXCatchCount < MAX_EX_CATCH_INFO Then Begin
+    EXCatchInfos[EXCatchCount].StartPC := 0; { sera rempli depuis exc table }
+    EXCatchInfos[EXCatchCount].EndPC := 0;
+    EXCatchInfos[EXCatchCount].HandlerPC := HandlerPC;
+    EXCatchInfos[EXCatchCount].CatchType := CatchType;
+    EXCatchInfos[EXCatchCount].HandlerLen := InstrLen;
+    EXCatchInfos[EXCatchCount].IsPopOnly := IsPopOnly;
+    EXCatchInfos[EXCatchCount].IsPopReturn := IsPopReturn;
+    EXCatchInfos[EXCatchCount].IsTooWide := IsTooWideCatch(CatchType);
+    EXCatchInfos[EXCatchCount].ExcTableIdx := ExcIdx;
+    Inc(EXCatchCount);
+  End;
+  
+  { Reporter les bugs detectes }
+  If IsPopOnly Then Begin
+    AddExHandlingBug(EXH_POP_ONLY, HandlerPC, LineNum, CatchType,
+                     'Exception capturee mais corps catch ne contient que pop');
+  End Else If IsPopReturn Then Begin
+    AddExHandlingBug(EXH_THROWN_IGNORED, HandlerPC, LineNum, CatchType,
+                     'Exception capturee et ignoree silencieusement');
+  End;
+  
+  { Reporter catch trop large }
+  If IsCatchThrowable(CatchType) Then Begin
+    AddExHandlingBug(EXH_CATCH_THROWABLE, HandlerPC, LineNum, CatchType,
+                     'catch(Throwable) capture toutes les erreurs y compris Error');
+  End Else If IsCatchException(CatchType) and not IsCatchAll(CatchType) Then Begin
+    AddExHandlingBug(EXH_CATCH_EXCEPTION, HandlerPC, LineNum, CatchType,
+                     'catch(Exception) est trop large, capturer des exceptions specifiques');
+  End;
+End;
+
+{ --- TODO 17 : Analyser les blocs finally pour detecter return --- }
+Procedure AnalyzeFinallyBlock(MethodIdx: Integer; HandlerPC: LongWord; 
+                              ExcIdx: Integer);
+Var
+  I, StartInstr: Integer;
+  PC, ReturnPC: LongWord;
+  HasReturn: Boolean;
+  LineNum: Integer;
+  EndPC: LongWord;
+Begin
+  If (Instructions = nil) or (InstrCount = 0) Then Exit;
+  
+  { Trouver l'instruction au HandlerPC }
+  StartInstr := -1;
+  For I := 0 to InstrCount - 1 Do Begin
+    If Instructions^[I].PC = HandlerPC Then Begin
+      StartInstr := I;
+      Break;
+    End;
+  End;
+  
+  If StartInstr < 0 Then Exit;
+  
+  HasReturn := False;
+  ReturnPC := 0;
+  EndPC := HandlerPC;
+  
+  { Scanner le bloc finally pour trouver un return }
+  I := StartInstr;
+  While I < InstrCount Do Begin
+    PC := Instructions^[I].PC;
+    EndPC := PC;
+    
+    If IsReturnOpcode(Instructions^[I].Opcode) Then Begin
+      HasReturn := True;
+      ReturnPC := PC;
+      Break;
+    End;
+    
+    { Sortir si on atteint athrow (fin normale du finally) }
+    If Instructions^[I].Opcode = OP_ATHROW Then Break;
+    
+    Inc(I);
+  End;
+  
+  { Enregistrer le finally block }
+  If EXFinallyCount < MAX_EX_FINALLY_INFO Then Begin
+    EXFinallyInfos[EXFinallyCount].StartPC := HandlerPC;
+    EXFinallyInfos[EXFinallyCount].EndPC := EndPC;
+    EXFinallyInfos[EXFinallyCount].HasReturn := HasReturn;
+    EXFinallyInfos[EXFinallyCount].ReturnPC := ReturnPC;
+    EXFinallyInfos[EXFinallyCount].ExcTableIdx := ExcIdx;
+    Inc(EXFinallyCount);
+  End;
+  
+  { Reporter le bug si return dans finally }
+  If HasReturn Then Begin
+    LineNum := GetLineNumber(Methods[MethodIdx], ReturnPC);
+    AddExHandlingBug(EXH_FINALLY_RETURN, ReturnPC, LineNum, '',
+                     'return dans finally masque toute exception du try');
+  End;
+End;
+
+{ --- TODO 17 : Detecter equals() sans appel super.equals() --- }
+Procedure DetectEqualsNoSuper(MethodIdx: Integer);
+Var
+  I: Integer;
+  HasSuperEquals: Boolean;
+  LineNum: Integer;
+  CurrentClass: String;
+Begin
+  If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
+  If (Instructions = nil) or (InstrCount = 0) Then Exit;
+  
+  { Verifier que c'est bien une methode equals }
+  If not IsEqualsMethod(Methods[MethodIdx].Name, Methods[MethodIdx].Descriptor) Then
+    Exit;
+    
+  { Verifier que ce n'est pas la classe Object elle-meme }
+  CurrentClass := ClassInfo.ThisClass;
+  If (CurrentClass = 'java/lang/Object') or (CurrentClass = 'Object') Then Exit;
+  If Pos('java/lang/Object', CurrentClass) > 0 Then Exit;
+  
+  { Chercher un appel super.equals() }
+  HasSuperEquals := False;
+  For I := 0 to InstrCount - 1 Do Begin
+    If IsSuperEqualsCall(MethodIdx, I) Then Begin
+      HasSuperEquals := True;
+      Break;
+    End;
+  End;
+  
+  { Reporter si pas d'appel super.equals() }
+  If not HasSuperEquals Then Begin
+    LineNum := GetLineNumber(Methods[MethodIdx], 0);
+    AddExHandlingBug(EXH_NO_SUPER_EQUALS, 0, LineNum, '',
+                     'equals() ne fait pas appel a super.equals()');
+  End;
+End;
+
+{ --- TODO 17 : Detecter les null check redondants apres dereferencement --- }
+Procedure DetectRedundantNullCheck(MethodIdx: Integer);
+Var
+  I: Integer;
+  VarUsed: Array[0..63] of Boolean;  { Variables dereferencees }
+  VarDerefPC: Array[0..63] of LongWord;
+  VarIdx: Integer;
+  PC: LongWord;
+  LineNum: Integer;
+Begin
+  If (Instructions = nil) or (InstrCount = 0) Then Exit;
+  
+  { Initialiser }
+  For I := 0 to 63 Do Begin
+    VarUsed[I] := False;
+    VarDerefPC[I] := 0;
+  End;
+  
+  { Scanner les instructions }
+  For I := 0 to InstrCount - 1 Do Begin
+    PC := Instructions^[I].PC;
+    
+    { Detecter un dereferencement (getfield, invokevirtual apres aload) }
+    If (I > 0) and ((Instructions^[I].Opcode = OP_GETFIELD) or
+        (Instructions^[I].Opcode = OP_INVOKEVIRTUAL) or
+        (Instructions^[I].Opcode = OP_INVOKEINTERFACE)) Then Begin
+      { L'instruction precedente devrait avoir charge une reference }
+      If (Instructions^[I-1].Opcode >= OP_ALOAD_0) and 
+         (Instructions^[I-1].Opcode <= OP_ALOAD_3) Then Begin
+        VarIdx := Instructions^[I-1].Opcode - OP_ALOAD_0;
+        If (VarIdx >= 0) and (VarIdx < 64) Then Begin
+          If not VarUsed[VarIdx] Then Begin
+            VarUsed[VarIdx] := True;
+            VarDerefPC[VarIdx] := PC;
+          End;
+        End;
+      End Else If Instructions^[I-1].Opcode = OP_ALOAD Then Begin
+        VarIdx := Instructions^[I-1].Op1;
+        If (VarIdx >= 0) and (VarIdx < 64) Then Begin
+          If not VarUsed[VarIdx] Then Begin
+            VarUsed[VarIdx] := True;
+            VarDerefPC[VarIdx] := PC;
+          End;
+        End;
+      End;
+    End;
+    
+    { Detecter un null check (ifnull, ifnonnull, ou comparaison avec aconst_null) }
+    If (Instructions^[I].Opcode = OP_IFNULL) or 
+       (Instructions^[I].Opcode = OP_IFNONNULL) Then Begin
+      { Verifier si la variable a deja ete dereferencee }
+      If (I > 0) Then Begin
+        If (Instructions^[I-1].Opcode >= OP_ALOAD_0) and 
+           (Instructions^[I-1].Opcode <= OP_ALOAD_3) Then Begin
+          VarIdx := Instructions^[I-1].Opcode - OP_ALOAD_0;
+          If (VarIdx >= 0) and (VarIdx < 64) and VarUsed[VarIdx] Then Begin
+            LineNum := GetLineNumber(Methods[MethodIdx], PC);
+            AddExHandlingBug(EXH_REDUNDANT_NULLCHECK, PC, LineNum, '',
+                           'Verification null apres dereferencement de la variable ' + IntToStr_(VarIdx));
+          End;
+        End Else If Instructions^[I-1].Opcode = OP_ALOAD Then Begin
+          VarIdx := Instructions^[I-1].Op1;
+          If (VarIdx >= 0) and (VarIdx < 64) and VarUsed[VarIdx] Then Begin
+            LineNum := GetLineNumber(Methods[MethodIdx], PC);
+            AddExHandlingBug(EXH_REDUNDANT_NULLCHECK, PC, LineNum, '',
+                           'Verification null apres dereferencement de la variable ' + IntToStr_(VarIdx));
+          End;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 17 : Detecter les problemes de gestion d'exception dans une methode --- }
+Procedure DetectExceptionHandlingIssues(MethodIdx: Integer);
+Var
+  I: Integer;
+  CatchType: String;
+Begin
+  If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
+  
+  { Reinitialiser les compteurs locaux }
+  EXCatchCount := 0;
+  EXFinallyCount := 0;
+  
+  { Analyser la table d'exceptions de la methode }
+  For I := 0 to Methods[MethodIdx].ExcCount - 1 Do Begin
+    CatchType := Methods[MethodIdx].ExcTable[I].CatchName;
+    
+    { Detecter si c'est un finally (catch all) }
+    If IsCatchAll(CatchType) Then Begin
+      AnalyzeFinallyBlock(MethodIdx, Methods[MethodIdx].ExcTable[I].HandlerPC, I);
+    End Else Begin
+      AnalyzeCatchBlock(MethodIdx, Methods[MethodIdx].ExcTable[I].HandlerPC, 
+                        CatchType, I);
+    End;
+  End;
+  
+  { Detecter equals() sans super.equals() }
+  DetectEqualsNoSuper(MethodIdx);
+  
+  { Detecter les null check redondants }
+  DetectRedundantNullCheck(MethodIdx);
+End;
+
+{ --- TODO 17 : Analyser une methode pour les problemes d'exception --- }
+Procedure AnalyzeMethodForExceptions(MethodIdx: Integer);
+Var
+  OldPC: LongWord;
+  OldLine: Integer;
+Begin
+  If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
+  If Methods[MethodIdx].CodeLen = 0 Then Exit; { Methode abstraite ou native }
+  
+  { Sauvegarder l'etat courant }
+  OldPC := EXCurrentPC;
+  OldLine := EXCurrentLine;
+  
+  { Decoder les instructions si pas deja fait }
+  If (Instructions = nil) or (InstrCount = 0) Then Begin
+    AllocInstructions;
+    DecodeInstructions(Methods[MethodIdx]);
+  End;
+  
+  { Mettre a jour le nom de methode dans les bugs }
+  { Lancer la detection }
+  DetectExceptionHandlingIssues(MethodIdx);
+  
+  { Restaurer l'etat }
+  EXCurrentPC := OldPC;
+  EXCurrentLine := OldLine;
+End;
+
+{ --- TODO 17 : Analyser toutes les methodes d'une classe --- }
+Procedure DetectAllExceptionIssues;
+Var
+  I: Integer;
+Begin
+  InitExHandlingState;
+  
+  { Analyser toutes les methodes }
+  For I := 0 to MethodCount - 1 Do Begin
+    AnalyzeMethodForExceptions(I);
+  End;
+End;
+
+{ --- TODO 17 : Afficher l'etat du module d'exceptions masquees --- }
+Procedure DumpExHandlingState;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== Etat du module de detection d''exceptions masquees ===');
+  WriteLn('Initialise         : ', EXInitialized);
+  WriteLn('Bugs detectes      : ', EXBugCount);
+  WriteLn('Catch blocks       : ', EXCatchCount);
+  WriteLn('Finally blocks     : ', EXFinallyCount);
+  WriteLn('Total ignores      : ', EXTotalIgnored);
+  WriteLn('Total trop larges  : ', EXTotalTooWide);
+  WriteLn('Total finally ret  : ', EXTotalFinallyReturn);
+  WriteLn('Total null redond  : ', EXTotalRedundantNull);
+  WriteLn('Total pop only     : ', EXTotalPopOnly);
+  WriteLn('Total no super eq  : ', EXTotalNoSuperEquals);
+  WriteLn;
+  
+  If EXBugCount > 0 Then Begin
+    WriteLn('--- Bugs d''exceptions detectes ---');
+    For I := 0 to EXBugCount - 1 Do Begin
+      WriteLn(I + 1, '. ', EXBugTypeName(EXBugs[I].BugType));
+      WriteLn('   Classe  : ', EXBugs[I].ClassName);
+      WriteLn('   Methode : ', EXBugs[I].MethodName);
+      If EXBugs[I].CatchType <> '' Then
+        WriteLn('   Catch   : ', EXBugs[I].CatchType);
+      WriteLn('   Ligne   : ', EXBugs[I].LineNum);
+      WriteLn('   Details : ', EXBugs[I].Details);
+      WriteLn;
+    End;
+  End;
+End;
+
+{ --- TODO 17 : Accesseurs pour le module d'exceptions masquees --- }
+Function GetEXInitialized: Boolean;
+Begin
+  GetEXInitialized := EXInitialized;
+End;
+
+Function GetEXBugCount: Integer;
+Begin
+  GetEXBugCount := EXBugCount;
+End;
+
+Function GetEXCatchCount: Integer;
+Begin
+  GetEXCatchCount := EXCatchCount;
+End;
+
+Function GetEXFinallyCount: Integer;
+Begin
+  GetEXFinallyCount := EXFinallyCount;
+End;
+
+Function GetEXTotalIgnored: Integer;
+Begin
+  GetEXTotalIgnored := EXTotalIgnored;
+End;
+
+Function GetEXTotalTooWide: Integer;
+Begin
+  GetEXTotalTooWide := EXTotalTooWide;
+End;
+
+Function GetEXTotalFinallyReturn: Integer;
+Begin
+  GetEXTotalFinallyReturn := EXTotalFinallyReturn;
+End;
+
+Function GetEXTotalRedundantNull: Integer;
+Begin
+  GetEXTotalRedundantNull := EXTotalRedundantNull;
+End;
+
+Function GetEXTotalPopOnly: Integer;
+Begin
+  GetEXTotalPopOnly := EXTotalPopOnly;
+End;
+
+Function GetEXTotalNoSuperEquals: Integer;
+Begin
+  GetEXTotalNoSuperEquals := EXTotalNoSuperEquals;
+End;
+
+Function GetEXBugType(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < EXBugCount) Then
+    GetEXBugType := EXBugs[Idx].BugType
+  Else
+    GetEXBugType := EXH_NONE;
+End;
+
+Function GetEXBugPC(Idx: Integer): LongWord;
+Begin
+  If (Idx >= 0) and (Idx < EXBugCount) Then
+    GetEXBugPC := EXBugs[Idx].PC
+  Else
+    GetEXBugPC := 0;
+End;
+
+Function GetEXBugLine(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < EXBugCount) Then
+    GetEXBugLine := EXBugs[Idx].LineNum
+  Else
+    GetEXBugLine := 0;
+End;
 
 { ============================================================================ }
 { TODO 18 [A FAIRE] - Detecteur : erreurs logiques et retours incorrects       }

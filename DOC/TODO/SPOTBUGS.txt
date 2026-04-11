@@ -389,7 +389,7 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               synchronized{} vides, detecter wait() hors d'une boucle while,
               detecter notify() sans mise a jour d'un etat partage
 
-  TODO 17 - DETECTEUR : EXCEPTIONS MASQUEES ET FLUX D'ERREUR [A FAIRE]
+  TODO 17 - DETECTEUR : EXCEPTIONS MASQUEES ET FLUX D'ERREUR [IMPLEMENTE]
             Codes detectes : THROWN_EXCEPTION_IGNORED, REC_CATCH_EXCEPTION,
               RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE,
               FINALLY_NULLIFIES_EXCEPTION,
