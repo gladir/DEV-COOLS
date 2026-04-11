@@ -13617,40 +13617,42 @@ End;
 { ------------------------------------------------------------ }
 
 Function EscapeAsmString(Const S : TString) : TString;
-Var I   : Integer;
-    Ch  : Char;
-    Res : TString;
+Var I       : Integer;
+    Ch      : Char;
+    Res     : TString;
+    InQuote : Boolean;
 Begin
   Res := '';
+  InQuote := False;
   For I := 1 To Length(S) Do
   Begin
     Ch := S[I];
+    { Caracteres imprimables normaux (sauf guillemets) }
     If (Ord(Ch) >= 32) And (Ord(Ch) <= 126) And
        (Ch <> '''') And (Ch <> '"') Then
     Begin
-      If Res = '' Then
-        Res := '''' + Ch
-      Else If Res[Length(Res)] = '''' Then
-        Res := Res + Ch
-      Else
-        Res := Res + ', ''' + Ch;
+      If Not InQuote Then
+      Begin
+        If Res <> '' Then Res := Res + ', ';
+        Res := Res + '''';
+        InQuote := True;
+      End;
+      Res := Res + Ch;
     End
     Else
     Begin
-      { Caractere special -> code ASCII }
-      If (Length(Res) > 0) And (Res[Length(Res)] <> '''') Then
-        Res := Res + ''''
-      Else If (Length(Res) > 0) Then
+      { Caractere special ou guillemet -> code ASCII numerique }
+      If InQuote Then
+      Begin
         Res := Res + '''';
-      If Res = '' Then
-        Res := ItoS(Ord(Ch))
-      Else
-        Res := Res + ', ' + ItoS(Ord(Ch));
+        InQuote := False;
+      End;
+      If Res <> '' Then Res := Res + ', ';
+      Res := Res + ItoS(Ord(Ch));
     End;
   End;
   { Fermer la derniere chaine si ouverte }
-  If (Length(Res) > 0) And (Res[1] = '''') And
-     (Res[Length(Res)] <> '''') Then
+  If InQuote Then
     Res := Res + '''';
   EscapeAsmString := Res;
 End;
