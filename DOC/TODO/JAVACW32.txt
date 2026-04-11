@@ -494,7 +494,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
               Avertissement pour les casts potentiellement perdants
             10 fonctions accesseurs
 
-  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [A FAIRE]
+  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [IMPLEMENTE]
             Section .data (variables initialisees) :
               Champ statique int : _JV_ClassName_field DD 0
               Champ statique String : _JV_ClassName_field DD _JK_N (ptr)
@@ -525,7 +525,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
             Alignement des donnees sur 4 octets (DWORD)
             10 fonctions accesseurs
 
-  TODO 22 - BIBLIOTHEQUE RUNTIME JAVA (E/S, CONVERSIONS VIA WIN32) [A FAIRE]
+  TODO 22 - BIBLIOTHEQUE RUNTIME JAVA (E/S, CONVERSIONS VIA WIN32) [IMPLEMENTE]
             Routines de conversion :
               _JRT_ITOA : entier 32 bits -> chaine decimale ASCII
                 Utilisation de DIV par 10 en boucle
@@ -568,7 +568,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
             Heap allocation : _JRT_HEAPALLOC(ECX=taille) -> EAX=ptr
             10 fonctions accesseurs
 
-  TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ [A FAIRE]
+  TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ [IMPLEMENTE]
             Ecrivain PE (.EXE) - structure PE32 complete :
               DOS Header (64 octets) avec DOS stub
               Signature PE "PE\0\0"
@@ -601,7 +601,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
             Mode -obj : appeler GenerateCoffObj au lieu de GeneratePeExe
             10 fonctions accesseurs
 
-  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [A FAIRE]
+  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [IMPLEMENTE]
             Imports kernel32.dll :
               ExitProcess : terminer le programme
               GetStdHandle : obtenir les handles console
@@ -640,7 +640,7 @@ JAVACW32.PAS - Compilateur Java vers assembleur
               Indentation et formatage lisible
             10 fonctions accesseurs
 
-  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\JAVA\* [A FAIRE]
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\JAVA\* [IMPLEMENTE]
             Optimisations peephole :
               MOV EAX, 0 -> XOR EAX, EAX
               PUSH EAX / POP EAX -> (eliminer)

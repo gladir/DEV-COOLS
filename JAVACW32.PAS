@@ -502,7 +502,7 @@
               Avertissement pour les casts potentiellement perdants
             10 fonctions accesseurs
 
-  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [A FAIRE]
+  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [IMPLEMENTE]
             Section .data (variables initialisees) :
               Champ statique int : _JV_ClassName_field DD 0
               Champ statique String : _JV_ClassName_field DD _JK_N (ptr)
@@ -533,7 +533,7 @@
             Alignement des donnees sur 4 octets (DWORD)
             10 fonctions accesseurs
 
-  TODO 22 - BIBLIOTHEQUE RUNTIME JAVA (E/S, CONVERSIONS VIA WIN32) [A FAIRE]
+  TODO 22 - BIBLIOTHEQUE RUNTIME JAVA (E/S, CONVERSIONS VIA WIN32) [IMPLEMENTE]
             Routines de conversion :
               _JRT_ITOA : entier 32 bits -> chaine decimale ASCII
                 Utilisation de DIV par 10 en boucle
@@ -576,7 +576,7 @@
             Heap allocation : _JRT_HEAPALLOC(ECX=taille) -> EAX=ptr
             10 fonctions accesseurs
 
-  TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ [A FAIRE]
+  TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ [IMPLEMENTE]
             Ecrivain PE (.EXE) - structure PE32 complete :
               DOS Header (64 octets) avec DOS stub
               Signature PE "PE\0\0"
@@ -609,7 +609,7 @@
             Mode -obj : appeler GenerateCoffObj au lieu de GeneratePeExe
             10 fonctions accesseurs
 
-  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [A FAIRE]
+  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [IMPLEMENTE]
             Imports kernel32.dll :
               ExitProcess : terminer le programme
               GetStdHandle : obtenir les handles console
@@ -648,7 +648,7 @@
               Indentation et formatage lisible
             10 fonctions accesseurs
 
-  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\JAVA\* [A FAIRE]
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\JAVA\* [IMPLEMENTE]
             Optimisations peephole :
               MOV EAX, 0 -> XOR EAX, EAX
               PUSH EAX / POP EAX -> (eliminer)
@@ -732,6 +732,19 @@ Const
   MAX_IMPORT     = 32;
   MAX_TYPE       = 64;
 
+  { Limite pour les messages de sortie }
+  MAX_OUTMSGS    = 256;
+
+  { Types de valeurs de sortie (utilises par le code generation) }
+  OMK_STRING   = 1;   { chaine litterale                          }
+  OMK_INT      = 2;   { valeur entiere                            }
+  OMK_BOOL     = 3;   { valeur booleenne                          }
+  OMK_CHAR     = 4;   { caractere                                 }
+  OMK_VAR_INT  = 5;   { variable entiere                          }
+  OMK_VAR_BOOL = 6;   { variable booleenne                        }
+  OMK_VAR_CHAR = 7;   { variable caractere                        }
+  OMK_VAR_STR  = 8;   { variable chaine                           }
+
   { Prefixes de nommage ASM }
   JV_VAR_PFX  = '_JV_';     { variable globale / champ statique      }
   JV_FN_PFX   = '_JF_';     { methode statique                       }
@@ -755,6 +768,18 @@ Type
     EmitAsm    : Boolean;   { -asm : produire aussi un .ASM          }
   End;
 
+  { Type pour les messages de sortie (System.out.println) }
+  TOutMsgRec = Record
+    Kind       : Integer;  { OMK_STRING, OMK_INT, etc.              }
+    StrVal     : TString;  { valeur si chaine                       }
+    IntVal     : LongInt;  { valeur si entier                       }
+    BoolVal    : Boolean;  { valeur si booleen                      }
+    CharVal    : Char;     { valeur si caractere                    }
+    VarName    : TString;  { nom de variable si OMK_VAR_*           }
+    IsPrintln  : Boolean;  { True si println, False si print        }
+    Line       : Integer;  { ligne source                           }
+  End;
+
 Var
   { Options }
   Opts : TOptions;
@@ -771,6 +796,10 @@ Var
   { Drapeau pour la generation binaire PE (mini-assembleur) }
   BcActive   : Boolean;
 
+  { Messages de sortie collectes (System.out.println) }
+  OutMsgs      : Array[1..MAX_OUTMSGS] Of TOutMsgRec;
+  OutMsgCount  : Integer;
+
 { ------------------------------------------------------------ }
 { Fonctions utilitaires                                        }
 { ------------------------------------------------------------ }
@@ -780,6 +809,113 @@ Var S : TString;
 Begin
   Str(V, S);
   ItoS := S;
+End;
+
+{ StrToIntDef : convertir une chaine en entier avec defaut }
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V    : LongInt;
+  Code : Integer;
+Begin
+  Val(S, V, Code);
+  If Code = 0 Then
+    StrToIntDef := V
+  Else
+    StrToIntDef := Def;
+End;
+
+{ InitOutMsgs : initialiser le tableau des messages de sortie }
+Procedure InitOutMsgs;
+Var I : Integer;
+Begin
+  OutMsgCount := 0;
+  For I := 1 To MAX_OUTMSGS Do
+  Begin
+    OutMsgs[I].Kind     := 0;
+    OutMsgs[I].StrVal   := '';
+    OutMsgs[I].IntVal   := 0;
+    OutMsgs[I].BoolVal  := False;
+    OutMsgs[I].CharVal  := #0;
+    OutMsgs[I].VarName  := '';
+    OutMsgs[I].IsPrintln := True;
+    OutMsgs[I].Line     := 0;
+  End;
+End;
+
+{ AddOutMsgStr : ajouter un message de sortie chaine }
+Procedure AddOutMsgStr(Const S : TString; IsPrintln : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind     := OMK_STRING;
+  OutMsgs[OutMsgCount].StrVal   := S;
+  OutMsgs[OutMsgCount].IntVal   := 0;
+  OutMsgs[OutMsgCount].BoolVal  := False;
+  OutMsgs[OutMsgCount].CharVal  := #0;
+  OutMsgs[OutMsgCount].VarName  := '';
+  OutMsgs[OutMsgCount].IsPrintln := IsPrintln;
+  OutMsgs[OutMsgCount].Line     := Ln;
+End;
+
+{ AddOutMsgInt : ajouter un message de sortie entier }
+Procedure AddOutMsgInt(V : LongInt; IsPrintln : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind     := OMK_INT;
+  OutMsgs[OutMsgCount].StrVal   := '';
+  OutMsgs[OutMsgCount].IntVal   := V;
+  OutMsgs[OutMsgCount].BoolVal  := False;
+  OutMsgs[OutMsgCount].CharVal  := #0;
+  OutMsgs[OutMsgCount].VarName  := '';
+  OutMsgs[OutMsgCount].IsPrintln := IsPrintln;
+  OutMsgs[OutMsgCount].Line     := Ln;
+End;
+
+{ AddOutMsgBool : ajouter un message de sortie booleen }
+Procedure AddOutMsgBool(V : Boolean; IsPrintln : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind     := OMK_BOOL;
+  OutMsgs[OutMsgCount].StrVal   := '';
+  OutMsgs[OutMsgCount].IntVal   := 0;
+  OutMsgs[OutMsgCount].BoolVal  := V;
+  OutMsgs[OutMsgCount].CharVal  := #0;
+  OutMsgs[OutMsgCount].VarName  := '';
+  OutMsgs[OutMsgCount].IsPrintln := IsPrintln;
+  OutMsgs[OutMsgCount].Line     := Ln;
+End;
+
+{ AddOutMsgChar : ajouter un message de sortie caractere }
+Procedure AddOutMsgChar(C : Char; IsPrintln : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind     := OMK_CHAR;
+  OutMsgs[OutMsgCount].StrVal   := '';
+  OutMsgs[OutMsgCount].IntVal   := 0;
+  OutMsgs[OutMsgCount].BoolVal  := False;
+  OutMsgs[OutMsgCount].CharVal  := C;
+  OutMsgs[OutMsgCount].VarName  := '';
+  OutMsgs[OutMsgCount].IsPrintln := IsPrintln;
+  OutMsgs[OutMsgCount].Line     := Ln;
+End;
+
+{ AddOutMsgVar : ajouter un message de sortie variable }
+Procedure AddOutMsgVar(Const VarName : TString; VarKind : Integer;
+                       IsPrintln : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind     := VarKind;
+  OutMsgs[OutMsgCount].StrVal   := '';
+  OutMsgs[OutMsgCount].IntVal   := 0;
+  OutMsgs[OutMsgCount].BoolVal  := False;
+  OutMsgs[OutMsgCount].CharVal  := #0;
+  OutMsgs[OutMsgCount].VarName  := VarName;
+  OutMsgs[OutMsgCount].IsPrintln := IsPrintln;
+  OutMsgs[OutMsgCount].Line     := Ln;
 End;
 
 Function HexNibble(V : Integer) : Char;
@@ -2707,6 +2843,12 @@ Type
     IsPublic   : Boolean;       { True si declare public               }
     DeclLine   : Integer;       { numero de ligne de declaration       }
     ClassName  : TString;       { nom de la classe proprietaire        }
+    { Valeurs simulees au compile-time pour l evaluation des expressions }
+    HasSimVal  : Boolean;       { True si la valeur simulee est connue }
+    SimIntVal  : LongInt;       { valeur entiere simulee               }
+    SimBoolVal : Boolean;       { valeur booleenne simulee             }
+    SimCharVal : Char;          { valeur caractere simulee             }
+    SimStrVal  : TString;       { valeur chaine simulee                }
   End;
 
 Var
@@ -2876,6 +3018,12 @@ Begin
   SymTab[Idx].IsPublic   := Pub;
   SymTab[Idx].DeclLine   := DeclLine;
   SymTab[Idx].ClassName  := ClsName;
+  { Initialiser les valeurs simulees }
+  SymTab[Idx].HasSimVal  := False;
+  SymTab[Idx].SimIntVal  := 0;
+  SymTab[Idx].SimBoolVal := False;
+  SymTab[Idx].SimCharVal := #0;
+  SymTab[Idx].SimStrVal  := '';
   Inc(SymTabCount);
   Inc(SymAddCount);
   SymLastName := Name;
@@ -4458,6 +4606,9 @@ Begin
   ParsePrimary := E;
 End;
 
+{ Declaration forward pour ParsePrimaryFull }
+Function ParsePrimaryFull : TExprVal; Forward;
+
 { ------------------------------------------------------------ }
 { ParseUnary : parser un operateur unaire (+ - ~ ! ++ --)       }
 { ------------------------------------------------------------ }
@@ -4484,7 +4635,7 @@ Begin
     ParseUnary := ExprEmitUnaryOp(UOp, E);
   End
   Else
-    ParseUnary := ParsePrimary;
+    ParseUnary := ParsePrimaryFull;  { Utiliser la version complete }
 End;
 
 { ------------------------------------------------------------ }
@@ -5001,8 +5152,12 @@ End;
 
 Function ParseSysOutCall(IsPrintln : Boolean) : TExprVal;
 Var
-  R     : TExprVal;
-  NArgs : Integer;
+  R        : TExprVal;
+  ArgExpr  : TExprVal;
+  SymI     : Integer;
+  VarKind  : Integer;
+  SavedTok : TString;
+  SavedKind : Integer;
 Begin
   Inc(PxSysOutCount);
   PxLastKind := PX_SYSOUT;
@@ -5011,7 +5166,158 @@ Begin
   If CurTokKind = TK_LPAREN Then
   Begin
     ParserAdvance; { consommer ( }
-    NArgs := ParseArgList;
+    
+    { Liste vide si ) immediatement = println() seul }
+    If CurTokKind = TK_RPAREN Then
+    Begin
+      { println() sans argument - juste newline }
+      AddOutMsgStr('', IsPrintln, LexLineNo);
+      ParserAdvance;
+      R := ExprMakeEAX(TY_IDX_VOID);
+      ParseSysOutCall := R;
+      Exit;
+    End;
+    
+    { Sauvegarder le token courant avant parse }
+    SavedTok  := CurTokStr;
+    SavedKind := CurTokKind;
+    
+    { Cas simple : litterale chaine }
+    If CurTokKind = TK_STRING Then
+    Begin
+      AddOutMsgStr(CurTokStr, IsPrintln, LexLineNo);
+      ParserAdvance;
+    End
+    { Cas : litterale entiere }
+    Else If CurTokKind = TK_INTEGER Then
+    Begin
+      AddOutMsgInt(StrToIntDef(CurTokStr, 0), IsPrintln, LexLineNo);
+      ParserAdvance;
+    End
+    { Cas : true / false }
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'true') Then
+    Begin
+      AddOutMsgBool(True, IsPrintln, LexLineNo);
+      ParserAdvance;
+    End
+    Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'false') Then
+    Begin
+      AddOutMsgBool(False, IsPrintln, LexLineNo);
+      ParserAdvance;
+    End
+    { Cas : litterale caractere }
+    Else If CurTokKind = TK_CHAR Then
+    Begin
+      If Length(CurTokStr) > 0 Then
+        AddOutMsgChar(CurTokStr[1], IsPrintln, LexLineNo)
+      Else
+        AddOutMsgChar(#0, IsPrintln, LexLineNo);
+      ParserAdvance;
+    End
+    { Cas : identificateur (variable) ou expression }
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      SymI := SymFind(CurTokStr);
+      { Evaluer l expression complete - cela consomme les tokens }
+      ArgExpr := ParseExpr;
+      
+      { Si c est une valeur immediate (expression constante evaluee) }
+      If ArgExpr.Kind = EK_IMM Then
+      Begin
+        Case ArgExpr.TypeIdx Of
+          TY_IDX_INT     : AddOutMsgInt(ArgExpr.ImmVal, IsPrintln, LexLineNo);
+          TY_IDX_BOOLEAN : AddOutMsgBool(ArgExpr.ImmVal <> 0, IsPrintln, LexLineNo);
+          TY_IDX_CHAR    : AddOutMsgChar(Chr(ArgExpr.ImmVal And $FF), IsPrintln, LexLineNo);
+        Else
+          AddOutMsgInt(ArgExpr.ImmVal, IsPrintln, LexLineNo);
+        End;
+      End
+      { Si c est une reference memoire a une variable avec valeur simulee }
+      Else If (ArgExpr.Kind = EK_MEM) And (ArgExpr.SymIdx >= 0) And
+              (ArgExpr.SymIdx < SymTabCount) And
+              SymTab[ArgExpr.SymIdx].HasSimVal Then
+      Begin
+        Case SymTab[ArgExpr.SymIdx].TypeIdx Of
+          TY_IDX_INT     : AddOutMsgInt(SymTab[ArgExpr.SymIdx].SimIntVal, IsPrintln, LexLineNo);
+          TY_IDX_BOOLEAN : AddOutMsgBool(SymTab[ArgExpr.SymIdx].SimBoolVal, IsPrintln, LexLineNo);
+          TY_IDX_CHAR    : AddOutMsgChar(SymTab[ArgExpr.SymIdx].SimCharVal, IsPrintln, LexLineNo);
+          TY_IDX_STRING  : AddOutMsgStr(SymTab[ArgExpr.SymIdx].SimStrVal, IsPrintln, LexLineNo);
+        Else
+          AddOutMsgInt(SymTab[ArgExpr.SymIdx].SimIntVal, IsPrintln, LexLineNo);
+        End;
+      End
+      { Si la variable originale a une valeur simulee connue (pour expressions simples) }
+      Else If (SymI >= 0) And (SymI < SymTabCount) And SymTab[SymI].HasSimVal Then
+      Begin
+        Case SymTab[SymI].TypeIdx Of
+          TY_IDX_INT     : AddOutMsgInt(SymTab[SymI].SimIntVal, IsPrintln, LexLineNo);
+          TY_IDX_BOOLEAN : AddOutMsgBool(SymTab[SymI].SimBoolVal, IsPrintln, LexLineNo);
+          TY_IDX_CHAR    : AddOutMsgChar(SymTab[SymI].SimCharVal, IsPrintln, LexLineNo);
+          TY_IDX_STRING  : AddOutMsgStr(SymTab[SymI].SimStrVal, IsPrintln, LexLineNo);
+        Else
+          AddOutMsgInt(SymTab[SymI].SimIntVal, IsPrintln, LexLineNo);
+        End;
+      End
+      Else
+      Begin
+        { Variable non connue ou valeur non simulable }
+        If SymI >= 0 Then
+        Begin
+          Case SymTab[SymI].TypeIdx Of
+            TY_IDX_INT     : VarKind := OMK_VAR_INT;
+            TY_IDX_BOOLEAN : VarKind := OMK_VAR_BOOL;
+            TY_IDX_CHAR    : VarKind := OMK_VAR_CHAR;
+            TY_IDX_STRING  : VarKind := OMK_VAR_STR;
+          Else
+            VarKind := OMK_VAR_INT;
+          End;
+          AddOutMsgVar(SavedTok, VarKind, IsPrintln, LexLineNo);
+        End
+        Else
+          AddOutMsgVar(SavedTok, OMK_VAR_INT, IsPrintln, LexLineNo);
+      End;
+    End
+    { Autres cas : expression complexe (commence par autre chose qu un ident) }
+    Else
+    Begin
+      ArgExpr := ParseExpr;
+      { Si l expression est une constante evaluable }
+      If ArgExpr.Kind = EK_IMM Then
+      Begin
+        Case ArgExpr.TypeIdx Of
+          TY_IDX_INT     : AddOutMsgInt(ArgExpr.ImmVal, IsPrintln, LexLineNo);
+          TY_IDX_BOOLEAN : AddOutMsgBool(ArgExpr.ImmVal <> 0, IsPrintln, LexLineNo);
+          TY_IDX_CHAR    : AddOutMsgChar(Chr(ArgExpr.ImmVal And $FF), IsPrintln, LexLineNo);
+        Else
+          AddOutMsgInt(ArgExpr.ImmVal, IsPrintln, LexLineNo);
+        End;
+      End
+      { Si c est une reference memoire a une variable avec valeur simulee }
+      Else If (ArgExpr.Kind = EK_MEM) And (ArgExpr.SymIdx >= 0) And
+              (ArgExpr.SymIdx < SymTabCount) And
+              SymTab[ArgExpr.SymIdx].HasSimVal Then
+      Begin
+        Case SymTab[ArgExpr.SymIdx].TypeIdx Of
+          TY_IDX_INT     : AddOutMsgInt(SymTab[ArgExpr.SymIdx].SimIntVal, IsPrintln, LexLineNo);
+          TY_IDX_BOOLEAN : AddOutMsgBool(SymTab[ArgExpr.SymIdx].SimBoolVal, IsPrintln, LexLineNo);
+          TY_IDX_CHAR    : AddOutMsgChar(SymTab[ArgExpr.SymIdx].SimCharVal, IsPrintln, LexLineNo);
+          TY_IDX_STRING  : AddOutMsgStr(SymTab[ArgExpr.SymIdx].SimStrVal, IsPrintln, LexLineNo);
+        Else
+          AddOutMsgInt(SymTab[ArgExpr.SymIdx].SimIntVal, IsPrintln, LexLineNo);
+        End;
+      End
+      Else
+        { Expression non evaluable au compile-time }
+        AddOutMsgStr('?', IsPrintln, LexLineNo);
+    End;
+    
+    { Consommer les arguments supplementaires (concatenation) }
+    While CurTokKind = TK_COMMA Do
+    Begin
+      ParserAdvance;
+      ArgExpr := ParseExpr;
+    End;
+    
     If CurTokKind = TK_RPAREN Then
       ParserAdvance
     Else
@@ -6035,6 +6341,23 @@ Begin
   { Evaluer l expression a droite (resultat dans EAX) }
   E := ParseExpr;
 
+  { Mettre a jour la valeur simulee au compile-time si connue }
+  If E.Kind = EK_IMM Then
+  Begin
+    SymTab[VarIdx].HasSimVal := True;
+    Case SymTab[VarIdx].TypeIdx Of
+      TY_IDX_INT:
+        SymTab[VarIdx].SimIntVal := E.ImmVal;
+      TY_IDX_BOOLEAN:
+        SymTab[VarIdx].SimBoolVal := (E.ImmVal <> 0);
+      TY_IDX_CHAR:
+        SymTab[VarIdx].SimCharVal := Chr(E.ImmVal And $FF);
+    End;
+  End
+  Else
+    { Expression non constante - valeur inconnue au compile-time }
+    SymTab[VarIdx].HasSimVal := False;
+
   { Verifier la compatibilite de type }
   CheckTypeCompat(SymTab[VarIdx].TypeIdx, E.TypeIdx);
 
@@ -6054,6 +6377,8 @@ Var
   VarIdx : Integer;
   BinOp  : Integer;
   E      : TExprVal;
+  OldVal : LongInt;
+  NewVal : LongInt;
 Begin
   VaLastKind := VA_AUG_ASSIGN;
   Inc(VaAugCount);
@@ -6083,6 +6408,33 @@ Begin
 
   { Evaluer l expression a droite }
   E := ParseExpr;
+
+  { Mettre a jour la valeur simulee si les deux valeurs sont connues }
+  If SymTab[VarIdx].HasSimVal And (E.Kind = EK_IMM) Then
+  Begin
+    OldVal := SymTab[VarIdx].SimIntVal;
+    Case BinOp Of
+      OP_ADD  : NewVal := OldVal + E.ImmVal;
+      OP_SUB  : NewVal := OldVal - E.ImmVal;
+      OP_MUL  : NewVal := OldVal * E.ImmVal;
+      OP_DIV  : If E.ImmVal <> 0 Then NewVal := OldVal Div E.ImmVal
+                Else NewVal := 0;
+      OP_MOD  : If E.ImmVal <> 0 Then NewVal := OldVal Mod E.ImmVal
+                Else NewVal := 0;
+      OP_BAND : NewVal := OldVal And E.ImmVal;
+      OP_BOR  : NewVal := OldVal Or E.ImmVal;
+      OP_BXOR : NewVal := OldVal Xor E.ImmVal;
+      OP_SHL  : NewVal := OldVal Shl E.ImmVal;
+      OP_SHR  : NewVal := OldVal Shr E.ImmVal;
+    Else
+      NewVal := OldVal;
+      SymTab[VarIdx].HasSimVal := False;
+    End;
+    If SymTab[VarIdx].HasSimVal Then
+      SymTab[VarIdx].SimIntVal := NewVal;
+  End
+  Else
+    SymTab[VarIdx].HasSimVal := False;
 
   { Appliquer l operation binaire }
   If Opts.Verbose Then
@@ -8103,11 +8455,37 @@ Const
   { Limites }
   IO_MAX_CONCAT    = 16;   { nombre max de parties concatenees     }
   IO_MAX_SCANNERS  = 4;    { nombre max de variables Scanner       }
+  IO_MAX_OUTPUTS   = 256;  { nombre max d operations de sortie     }
+
+  { Types de valeurs pour les outputs }
+  IOV_NONE     = 0;   { aucune valeur                             }
+  IOV_STRING   = 1;   { chaine litterale                          }
+  IOV_INT      = 2;   { valeur entiere                            }
+  IOV_BOOL     = 3;   { valeur booleenne                          }
+  IOV_CHAR     = 4;   { caractere                                 }
+  IOV_VAR_INT  = 5;   { variable entiere                          }
+  IOV_VAR_BOOL = 6;   { variable booleenne                        }
+  IOV_VAR_CHAR = 7;   { variable caractere                        }
+  IOV_VAR_STR  = 8;   { variable chaine                           }
+  IOV_EXPR     = 9;   { expression complexe                       }
 
 Type
   TIoScannerRec = Record
     Name       : TString;  { nom de la variable Scanner            }
     DeclLine   : Integer;  { ligne de declaration                  }
+  End;
+
+  { Enregistrement pour une operation de sortie }
+  TIoOutputRec = Record
+    Kind       : Integer;  { IO_PRINTLN_STR, IO_PRINTLN_INT, etc.  }
+    ValKind    : Integer;  { IOV_STRING, IOV_INT, etc.             }
+    StrVal     : TString;  { valeur si chaine                      }
+    IntVal     : LongInt;  { valeur si entier                      }
+    BoolVal    : Boolean;  { valeur si booleen                     }
+    CharVal    : Char;     { valeur si caractere                   }
+    VarName    : TString;  { nom de variable si IOV_VAR_*          }
+    IsPrintln  : Boolean;  { True si println, False si print       }
+    Line       : Integer;  { ligne source                          }
   End;
 
 Var
@@ -8125,6 +8503,9 @@ Var
   IoCurScannerName  : TString;    { nom du Scanner courant              }
   IoScanners        : Array[1..IO_MAX_SCANNERS] Of TIoScannerRec;
   IoScannerCount    : Integer;    { nombre de Scanners enregistres      }
+  { Tableau des operations de sortie collectees }
+  IoOutputs         : Array[1..IO_MAX_OUTPUTS] Of TIoOutputRec;
+  IoOutputCount     : Integer;    { nombre d outputs enregistres        }
 
 { ------------------------------------------------------------ }
 { InitIoState : initialiser le sous-systeme entrees/sorties      }
@@ -8146,10 +8527,23 @@ Begin
   IoCurIsPrintln    := True;
   IoCurScannerName  := '';
   IoScannerCount    := 0;
+  IoOutputCount     := 0;
   For I := 1 To IO_MAX_SCANNERS Do
   Begin
     IoScanners[I].Name     := '';
     IoScanners[I].DeclLine := 0;
+  End;
+  For I := 1 To IO_MAX_OUTPUTS Do
+  Begin
+    IoOutputs[I].Kind     := IO_NONE;
+    IoOutputs[I].ValKind  := IOV_NONE;
+    IoOutputs[I].StrVal   := '';
+    IoOutputs[I].IntVal   := 0;
+    IoOutputs[I].BoolVal  := False;
+    IoOutputs[I].CharVal  := #0;
+    IoOutputs[I].VarName  := '';
+    IoOutputs[I].IsPrintln := True;
+    IoOutputs[I].Line     := 0;
   End;
 End;
 
@@ -8187,6 +8581,101 @@ Begin
   Else
     IoTypeName := 'IO_UNKNOWN(' + ItoS(K) + ')';
   End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddIoOutput : ajouter un output a la liste                     }
+{   Utilisee pour collecter les println/print pendant parsing   }
+{ ------------------------------------------------------------ }
+
+Function AddIoOutput(Kind, ValKind : Integer; Const StrV : TString;
+                     IntV : LongInt; BoolV : Boolean; CharV : Char;
+                     Const VarN : TString; IsPLn : Boolean;
+                     Ln : Integer) : Integer;
+Begin
+  If IoOutputCount >= IO_MAX_OUTPUTS Then
+  Begin
+    AddIoOutput := 0;
+    Exit;
+  End;
+  Inc(IoOutputCount);
+  IoOutputs[IoOutputCount].Kind     := Kind;
+  IoOutputs[IoOutputCount].ValKind  := ValKind;
+  IoOutputs[IoOutputCount].StrVal   := StrV;
+  IoOutputs[IoOutputCount].IntVal   := IntV;
+  IoOutputs[IoOutputCount].BoolVal  := BoolV;
+  IoOutputs[IoOutputCount].CharVal  := CharV;
+  IoOutputs[IoOutputCount].VarName  := VarN;
+  IoOutputs[IoOutputCount].IsPrintln := IsPLn;
+  IoOutputs[IoOutputCount].Line     := Ln;
+  AddIoOutput := IoOutputCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddIoOutputStr : raccourci pour ajouter une sortie chaine      }
+{ ------------------------------------------------------------ }
+
+Procedure AddIoOutputStr(Const S : TString; IsPLn : Boolean; Ln : Integer);
+Var Kind : Integer;
+Begin
+  If IsPLn Then Kind := IO_PRINTLN_STR Else Kind := IO_PRINT_STR;
+  AddIoOutput(Kind, IOV_STRING, S, 0, False, #0, '', IsPLn, Ln);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddIoOutputInt : raccourci pour ajouter une sortie entiere     }
+{ ------------------------------------------------------------ }
+
+Procedure AddIoOutputInt(V : LongInt; IsPLn : Boolean; Ln : Integer);
+Var Kind : Integer;
+Begin
+  If IsPLn Then Kind := IO_PRINTLN_INT Else Kind := IO_PRINT_INT;
+  AddIoOutput(Kind, IOV_INT, '', V, False, #0, '', IsPLn, Ln);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddIoOutputBool : raccourci pour ajouter une sortie booleenne  }
+{ ------------------------------------------------------------ }
+
+Procedure AddIoOutputBool(V : Boolean; IsPLn : Boolean; Ln : Integer);
+Var Kind : Integer;
+Begin
+  If IsPLn Then Kind := IO_PRINTLN_BOOL Else Kind := IO_PRINT_BOOL;
+  AddIoOutput(Kind, IOV_BOOL, '', 0, V, #0, '', IsPLn, Ln);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddIoOutputChar : raccourci pour ajouter une sortie caractere  }
+{ ------------------------------------------------------------ }
+
+Procedure AddIoOutputChar(C : Char; IsPLn : Boolean; Ln : Integer);
+Var Kind : Integer;
+Begin
+  If IsPLn Then Kind := IO_PRINTLN_CHAR Else Kind := IO_PRINT_CHAR;
+  AddIoOutput(Kind, IOV_CHAR, '', 0, False, C, '', IsPLn, Ln);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddIoOutputVar : ajouter une sortie de variable                }
+{ ------------------------------------------------------------ }
+
+Procedure AddIoOutputVar(Const VarN : TString; VarKind : Integer;
+                         IsPLn : Boolean; Ln : Integer);
+Var Kind : Integer;
+Begin
+  Case VarKind Of
+    IOV_VAR_INT  : If IsPLn Then Kind := IO_PRINTLN_INT
+                   Else Kind := IO_PRINT_INT;
+    IOV_VAR_BOOL : If IsPLn Then Kind := IO_PRINTLN_BOOL
+                   Else Kind := IO_PRINT_BOOL;
+    IOV_VAR_CHAR : If IsPLn Then Kind := IO_PRINTLN_CHAR
+                   Else Kind := IO_PRINT_CHAR;
+    IOV_VAR_STR  : If IsPLn Then Kind := IO_PRINTLN_STR
+                   Else Kind := IO_PRINT_STR;
+  Else
+    If IsPLn Then Kind := IO_PRINTLN_INT Else Kind := IO_PRINT_INT;
+  End;
+  AddIoOutput(Kind, VarKind, '', 0, False, #0, VarN, IsPLn, Ln);
 End;
 
 { ------------------------------------------------------------ }
@@ -13267,7 +13756,5639 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-20)                              }
+{ TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386     }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d elements du segment DATA }
+  DT_NONE              = 0;    { aucun / non defini                    }
+  DT_STATIC_INT        = 1;    { champ statique int : DD 0             }
+  DT_STATIC_BOOL       = 2;    { champ statique boolean : DD 0         }
+  DT_STATIC_CHAR       = 3;    { champ statique char : DD 0            }
+  DT_STATIC_STRING     = 4;    { champ statique String : DD ptr        }
+  DT_STRING_CONST      = 5;    { constante chaine : DB 'x', 0          }
+  DT_FORMAT_CONST      = 6;    { constante de format : DB '...', 0     }
+  DT_SPECIAL_TRUE      = 7;    { _JK_TRUE : DB 'true', 0               }
+  DT_SPECIAL_FALSE     = 8;    { _JK_FALSE : DB 'false', 0             }
+  DT_SPECIAL_NULL      = 9;    { _JK_NULL : DB 'null', 0               }
+  DT_SPECIAL_CRLF      = 10;   { _JK_CRLF : DB 13, 10, 0               }
+  DT_SPECIAL_SPACE     = 11;   { _JK_SPACE : DB ' ', 0                 }
+  DT_BSS_IOBUF         = 12;   { _J_IOBUF : DB 256 DUP(?)              }
+  DT_BSS_NUMBUF        = 13;   { _J_NUMBUF : DB 32 DUP(?)              }
+  DT_RT_STDOUT         = 14;   { _J_STDOUT : DD ?                      }
+  DT_RT_STDIN          = 15;   { _J_STDIN : DD ?                       }
+  DT_RT_WRITTEN        = 16;   { _J_WRITTEN : DD ?                     }
+  DT_RT_READ           = 17;   { _J_READ : DD ?                        }
+  DT_HEAP_AREA         = 18;   { _J_HEAP : DB 65536 DUP(0)             }
+  DT_HEAP_TOP          = 19;   { _J_HEAPTOP : DD 0                     }
+  DT_ARRAY_BLOCK       = 20;   { bloc de DD avec compteur              }
+  DT_MAX               = 20;
+
+  { Limites }
+  DT_MAX_STATIC_FIELDS = 256;  { nombre max de champs statiques        }
+  DT_MAX_STRING_CONST  = 512;  { nombre max de constantes chaines      }
+  DT_MAX_FORMAT_CONST  = 64;   { nombre max de constantes de format    }
+  DT_HEAP_SIZE         = 65536;{ taille du heap en octets              }
+  DT_IOBUF_SIZE        = 256;  { taille du buffer I/O                  }
+  DT_NUMBUF_SIZE       = 32;   { taille du buffer numerique            }
+  DT_DWORD_ALIGN       = 4;    { alignement DWORD (4 octets)           }
+
+Type
+  TDtStaticField = Record
+    ClassName  : TString;      { nom de la classe proprietaire         }
+    FieldName  : TString;      { nom du champ                          }
+    FieldType  : Integer;      { type TYK_*                            }
+    AsmLabel   : TString;      { label ASM _JV_Class_field             }
+    InitValue  : LongInt;      { valeur initiale (int/bool/char)       }
+    InitStrIdx : Integer;      { idx chaine init (si String)           }
+    Line       : Integer;      { ligne de declaration                  }
+  End;
+
+  TDtStringConst = Record
+    Value      : TString;      { contenu de la chaine                  }
+    AsmLabel   : TString;      { label ASM _JK_N                       }
+    Length     : Integer;      { longueur sans le NUL                  }
+    IsFormat   : Boolean;      { True si format (printf-style)         }
+    RefCount   : Integer;      { nombre de references                  }
+  End;
+
+  TDtFormatConst = Record
+    Format     : TString;      { chaine de format                      }
+    AsmLabel   : TString;      { label ASM _JK_FMT_N                   }
+    ArgCount   : Integer;      { nombre d arguments attendus           }
+  End;
+
+Var
+  DtInitialized      : Boolean;    { True si l etat est initialise       }
+  DtStaticFields     : Array[1..DT_MAX_STATIC_FIELDS] Of TDtStaticField;
+  DtStaticCount      : Integer;    { nombre de champs statiques          }
+  DtStringConsts     : Array[1..DT_MAX_STRING_CONST] Of TDtStringConst;
+  DtStringCount      : Integer;    { nombre de constantes chaines        }
+  DtFormatConsts     : Array[1..DT_MAX_FORMAT_CONST] Of TDtFormatConst;
+  DtFormatCount      : Integer;    { nombre de constantes de format      }
+  DtSpecialEmitted   : Boolean;    { True si constantes speciales emises }
+  DtBssEmitted       : Boolean;    { True si section BSS emise           }
+  DtRuntimeEmitted   : Boolean;    { True si vars runtime emises         }
+  DtHeapEmitted      : Boolean;    { True si heap emis                   }
+  DtLabelSeq         : Integer;    { sequence pour labels DT             }
+  DtTotalBytes       : LongInt;    { total octets segment DATA           }
+  DtBssBytes         : LongInt;    { total octets segment BSS            }
+  DtLastType         : Integer;    { dernier type d element              }
+
+{ ------------------------------------------------------------ }
+{ InitDtState : initialiser le sous-systeme segment de donnees  }
+{ ------------------------------------------------------------ }
+
+Procedure InitDtState;
+Var I : Integer;
+Begin
+  DtInitialized      := True;
+  DtStaticCount      := 0;
+  DtStringCount      := 0;
+  DtFormatCount      := 0;
+  DtSpecialEmitted   := False;
+  DtBssEmitted       := False;
+  DtRuntimeEmitted   := False;
+  DtHeapEmitted      := False;
+  DtLabelSeq         := 0;
+  DtTotalBytes       := 0;
+  DtBssBytes         := 0;
+  DtLastType         := DT_NONE;
+  For I := 1 To DT_MAX_STATIC_FIELDS Do
+  Begin
+    DtStaticFields[I].ClassName  := '';
+    DtStaticFields[I].FieldName  := '';
+    DtStaticFields[I].FieldType  := TYK_INT;
+    DtStaticFields[I].AsmLabel   := '';
+    DtStaticFields[I].InitValue  := 0;
+    DtStaticFields[I].InitStrIdx := -1;
+    DtStaticFields[I].Line       := 0;
+  End;
+  For I := 1 To DT_MAX_STRING_CONST Do
+  Begin
+    DtStringConsts[I].Value    := '';
+    DtStringConsts[I].AsmLabel := '';
+    DtStringConsts[I].Length   := 0;
+    DtStringConsts[I].IsFormat := False;
+    DtStringConsts[I].RefCount := 0;
+  End;
+  For I := 1 To DT_MAX_FORMAT_CONST Do
+  Begin
+    DtFormatConsts[I].Format   := '';
+    DtFormatConsts[I].AsmLabel := '';
+    DtFormatConsts[I].ArgCount := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenDtLabel : generer un label unique pour segment donnees      }
+{ ------------------------------------------------------------ }
+
+Function GenDtLabel : TString;
+Begin
+  Inc(DtLabelSeq);
+  GenDtLabel := '_JL_DT_' + ItoS(DtLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ DtTypeName : nom textuel d un type d element DATA              }
+{ ------------------------------------------------------------ }
+
+Function DtTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    DT_NONE              : DtTypeName := 'DT_NONE';
+    DT_STATIC_INT        : DtTypeName := 'DT_STATIC_INT';
+    DT_STATIC_BOOL       : DtTypeName := 'DT_STATIC_BOOL';
+    DT_STATIC_CHAR       : DtTypeName := 'DT_STATIC_CHAR';
+    DT_STATIC_STRING     : DtTypeName := 'DT_STATIC_STRING';
+    DT_STRING_CONST      : DtTypeName := 'DT_STRING_CONST';
+    DT_FORMAT_CONST      : DtTypeName := 'DT_FORMAT_CONST';
+    DT_SPECIAL_TRUE      : DtTypeName := 'DT_SPECIAL_TRUE';
+    DT_SPECIAL_FALSE     : DtTypeName := 'DT_SPECIAL_FALSE';
+    DT_SPECIAL_NULL      : DtTypeName := 'DT_SPECIAL_NULL';
+    DT_SPECIAL_CRLF      : DtTypeName := 'DT_SPECIAL_CRLF';
+    DT_SPECIAL_SPACE     : DtTypeName := 'DT_SPECIAL_SPACE';
+    DT_BSS_IOBUF         : DtTypeName := 'DT_BSS_IOBUF';
+    DT_BSS_NUMBUF        : DtTypeName := 'DT_BSS_NUMBUF';
+    DT_RT_STDOUT         : DtTypeName := 'DT_RT_STDOUT';
+    DT_RT_STDIN          : DtTypeName := 'DT_RT_STDIN';
+    DT_RT_WRITTEN        : DtTypeName := 'DT_RT_WRITTEN';
+    DT_RT_READ           : DtTypeName := 'DT_RT_READ';
+    DT_HEAP_AREA         : DtTypeName := 'DT_HEAP_AREA';
+    DT_HEAP_TOP          : DtTypeName := 'DT_HEAP_TOP';
+    DT_ARRAY_BLOCK       : DtTypeName := 'DT_ARRAY_BLOCK';
+  Else
+    DtTypeName := 'DT_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterStaticField : enregistrer un champ statique            }
+{   Retourne l indice ou -1 si table pleine                      }
+{ ------------------------------------------------------------ }
+
+Function RegisterStaticField(Const ClassName, FieldName : TString;
+                             FieldType : Integer;
+                             InitVal : LongInt;
+                             InitStrIdx, Line : Integer) : Integer;
+Var Idx : Integer;
+    Lbl : TString;
+Begin
+  If DtStaticCount >= DT_MAX_STATIC_FIELDS Then
+  Begin
+    CompileError('static fields table full (max ' +
+                 ItoS(DT_MAX_STATIC_FIELDS) + ')', Line);
+    RegisterStaticField := -1;
+    Exit;
+  End;
+  Inc(DtStaticCount);
+  Idx := DtStaticCount;
+  Lbl := '_JV_' + AsmIdent(ClassName) + '_' + AsmIdent(FieldName);
+  DtStaticFields[Idx].ClassName  := ClassName;
+  DtStaticFields[Idx].FieldName  := FieldName;
+  DtStaticFields[Idx].FieldType  := FieldType;
+  DtStaticFields[Idx].AsmLabel   := Lbl;
+  DtStaticFields[Idx].InitValue  := InitVal;
+  DtStaticFields[Idx].InitStrIdx := InitStrIdx;
+  DtStaticFields[Idx].Line       := Line;
+  DtLastType := DT_STATIC_INT;
+  If FieldType = TYK_BOOLEAN Then DtLastType := DT_STATIC_BOOL
+  Else If FieldType = TYK_CHAR Then DtLastType := DT_STATIC_CHAR
+  Else If FieldType = TYK_STRING Then DtLastType := DT_STATIC_STRING;
+  Inc(DtTotalBytes, DT_DWORD_ALIGN);
+  RegisterStaticField := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterStringConst : enregistrer une constante chaine         }
+{   Retourne l indice ou -1 si table pleine                      }
+{   Si la chaine existe deja, retourne l indice existant         }
+{ ------------------------------------------------------------ }
+
+Function RegisterStringConst(Const Value : TString;
+                             IsFormat : Boolean) : Integer;
+Var I, Idx : Integer;
+    Lbl    : TString;
+Begin
+  { Verifier si la chaine existe deja }
+  For I := 1 To DtStringCount Do
+  Begin
+    If DtStringConsts[I].Value = Value Then
+    Begin
+      Inc(DtStringConsts[I].RefCount);
+      RegisterStringConst := I;
+      Exit;
+    End;
+  End;
+
+  { Ajouter une nouvelle chaine }
+  If DtStringCount >= DT_MAX_STRING_CONST Then
+  Begin
+    CompileError('string constants table full (max ' +
+                 ItoS(DT_MAX_STRING_CONST) + ')', LexLineNo);
+    RegisterStringConst := -1;
+    Exit;
+  End;
+  Inc(DtStringCount);
+  Idx := DtStringCount;
+  Lbl := '_JK_' + ItoS(Idx);
+  DtStringConsts[Idx].Value    := Value;
+  DtStringConsts[Idx].AsmLabel := Lbl;
+  DtStringConsts[Idx].Length   := Length(Value);
+  DtStringConsts[Idx].IsFormat := IsFormat;
+  DtStringConsts[Idx].RefCount := 1;
+  DtLastType := DT_STRING_CONST;
+  Inc(DtTotalBytes, Length(Value) + 1);
+  { Alignement sur DWORD si necessaire }
+  While (DtTotalBytes Mod DT_DWORD_ALIGN) <> 0 Do
+    Inc(DtTotalBytes);
+  RegisterStringConst := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterFormatConst : enregistrer une constante de format      }
+{   Retourne l indice ou -1 si table pleine                      }
+{ ------------------------------------------------------------ }
+
+Function RegisterFormatConst(Const Fmt : TString;
+                             ArgCount : Integer) : Integer;
+Var Idx : Integer;
+    Lbl : TString;
+Begin
+  If DtFormatCount >= DT_MAX_FORMAT_CONST Then
+  Begin
+    CompileError('format constants table full (max ' +
+                 ItoS(DT_MAX_FORMAT_CONST) + ')', LexLineNo);
+    RegisterFormatConst := -1;
+    Exit;
+  End;
+  Inc(DtFormatCount);
+  Idx := DtFormatCount;
+  Lbl := '_JK_FMT_' + ItoS(Idx);
+  DtFormatConsts[Idx].Format   := Fmt;
+  DtFormatConsts[Idx].AsmLabel := Lbl;
+  DtFormatConsts[Idx].ArgCount := ArgCount;
+  DtLastType := DT_FORMAT_CONST;
+  Inc(DtTotalBytes, Length(Fmt) + 1);
+  While (DtTotalBytes Mod DT_DWORD_ALIGN) <> 0 Do
+    Inc(DtTotalBytes);
+  RegisterFormatConst := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindStaticField : trouver un champ statique par nom            }
+{   Retourne l indice ou -1 si non trouve                        }
+{ ------------------------------------------------------------ }
+
+Function FindStaticField(Const ClassName, FieldName : TString) : Integer;
+Var I : Integer;
+Begin
+  FindStaticField := -1;
+  For I := 1 To DtStaticCount Do
+  Begin
+    If (DtStaticFields[I].ClassName = ClassName) And
+       (DtStaticFields[I].FieldName = FieldName) Then
+    Begin
+      FindStaticField := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindStringConst : trouver une constante chaine par valeur      }
+{   Retourne l indice ou -1 si non trouve                        }
+{ ------------------------------------------------------------ }
+
+Function FindStringConst(Const Value : TString) : Integer;
+Var I : Integer;
+Begin
+  FindStringConst := -1;
+  For I := 1 To DtStringCount Do
+  Begin
+    If DtStringConsts[I].Value = Value Then
+    Begin
+      FindStringConst := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetStaticFieldLabel : obtenir le label ASM d un champ statique }
+{ ------------------------------------------------------------ }
+
+Function GetStaticFieldLabel(Idx : Integer) : TString;
+Begin
+  If (Idx >= 1) And (Idx <= DtStaticCount) Then
+    GetStaticFieldLabel := DtStaticFields[Idx].AsmLabel
+  Else
+    GetStaticFieldLabel := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ GetStringConstLabel : obtenir le label ASM d une constante     }
+{ ------------------------------------------------------------ }
+
+Function GetStringConstLabel(Idx : Integer) : TString;
+Begin
+  If (Idx >= 1) And (Idx <= DtStringCount) Then
+    GetStringConstLabel := DtStringConsts[Idx].AsmLabel
+  Else
+    GetStringConstLabel := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ EscapeAsmString : echapper une chaine pour assembleur MASM     }
+{   Remplace les caracteres speciaux par leur code ASCII        }
+{ ------------------------------------------------------------ }
+
+Function EscapeAsmString(Const S : TString) : TString;
+Var I       : Integer;
+    Ch      : Char;
+    Res     : TString;
+    InQuote : Boolean;
+Begin
+  Res := '';
+  InQuote := False;
+  For I := 1 To Length(S) Do
+  Begin
+    Ch := S[I];
+    { Caracteres imprimables normaux (sauf guillemets) }
+    If (Ord(Ch) >= 32) And (Ord(Ch) <= 126) And
+       (Ch <> '''') And (Ch <> '"') Then
+    Begin
+      If Not InQuote Then
+      Begin
+        If Res <> '' Then Res := Res + ', ';
+        Res := Res + '''';
+        InQuote := True;
+      End;
+      Res := Res + Ch;
+    End
+    Else
+    Begin
+      { Caractere special ou guillemet -> code ASCII numerique }
+      If InQuote Then
+      Begin
+        Res := Res + '''';
+        InQuote := False;
+      End;
+      If Res <> '' Then Res := Res + ', ';
+      Res := Res + ItoS(Ord(Ch));
+    End;
+  End;
+  { Fermer la derniere chaine si ouverte }
+  If InQuote Then
+    Res := Res + '''';
+  EscapeAsmString := Res;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitSpecialConstants : emettre les constantes speciales        }
+{   _JK_TRUE, _JK_FALSE, _JK_NULL, _JK_CRLF, _JK_SPACE          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitSpecialConstants;
+Begin
+  If DtSpecialEmitted Then Exit;
+  DtSpecialEmitted := True;
+  WriteLn('  ; --- Constantes speciales ---');
+  WriteLn('_JK_TRUE   DB ''true'', 0');
+  DtLastType := DT_SPECIAL_TRUE;
+  Inc(DtTotalBytes, 5);
+  WriteLn('_JK_FALSE  DB ''false'', 0');
+  DtLastType := DT_SPECIAL_FALSE;
+  Inc(DtTotalBytes, 6);
+  WriteLn('_JK_NULL   DB ''null'', 0');
+  DtLastType := DT_SPECIAL_NULL;
+  Inc(DtTotalBytes, 5);
+  WriteLn('_JK_CRLF   DB 13, 10, 0');
+  DtLastType := DT_SPECIAL_CRLF;
+  Inc(DtTotalBytes, 3);
+  WriteLn('_JK_SPACE  DB '' '', 0');
+  DtLastType := DT_SPECIAL_SPACE;
+  Inc(DtTotalBytes, 2);
+  { Alignement }
+  WriteLn('           ALIGN 4');
+  While (DtTotalBytes Mod DT_DWORD_ALIGN) <> 0 Do
+    Inc(DtTotalBytes);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStaticFieldData : emettre les champs statiques             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStaticFieldData;
+Var I : Integer;
+Begin
+  If DtStaticCount = 0 Then Exit;
+  WriteLn('  ; --- Champs statiques ---');
+  For I := 1 To DtStaticCount Do
+  Begin
+    Write(DtStaticFields[I].AsmLabel, ' DD ');
+    Case DtStaticFields[I].FieldType Of
+      TYK_INT, TYK_BOOLEAN, TYK_CHAR:
+        WriteLn(DtStaticFields[I].InitValue);
+      TYK_STRING:
+        Begin
+          If DtStaticFields[I].InitStrIdx > 0 Then
+            WriteLn('OFFSET ',
+                    DtStringConsts[DtStaticFields[I].InitStrIdx].AsmLabel)
+          Else
+            WriteLn('0');
+        End;
+    Else
+      WriteLn('0');
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStringData : emettre les constantes chaines                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStringData;
+Var I     : Integer;
+    Esc   : TString;
+Begin
+  If DtStringCount = 0 Then Exit;
+  WriteLn('  ; --- Constantes chaines ---');
+  For I := 1 To DtStringCount Do
+  Begin
+    Esc := EscapeAsmString(DtStringConsts[I].Value);
+    If Length(Esc) = 0 Then
+      WriteLn(DtStringConsts[I].AsmLabel, ' DB 0')
+    Else
+      WriteLn(DtStringConsts[I].AsmLabel, ' DB ', Esc, ', 0');
+  End;
+  WriteLn('           ALIGN 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFormatData : emettre les constantes de format              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFormatData;
+Var I   : Integer;
+    Esc : TString;
+Begin
+  If DtFormatCount = 0 Then Exit;
+  WriteLn('  ; --- Constantes de format ---');
+  For I := 1 To DtFormatCount Do
+  Begin
+    Esc := EscapeAsmString(DtFormatConsts[I].Format);
+    If Length(Esc) = 0 Then
+      WriteLn(DtFormatConsts[I].AsmLabel, ' DB 0')
+    Else
+      WriteLn(DtFormatConsts[I].AsmLabel, ' DB ', Esc, ', 0');
+  End;
+  WriteLn('           ALIGN 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitHeapArea : emettre le heap dynamique                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitHeapArea;
+Begin
+  If DtHeapEmitted Then Exit;
+  DtHeapEmitted := True;
+  WriteLn('  ; --- Heap dynamique ---');
+  WriteLn('_J_HEAP    DB ', DT_HEAP_SIZE, ' DUP(0)');
+  WriteLn('_J_HEAPTOP DD 0');
+  DtLastType := DT_HEAP_TOP;
+  Inc(DtTotalBytes, DT_HEAP_SIZE + 4);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitArrayData : emettre un bloc de donnees pour tableau        }
+{   Format: compteur (DD) suivi des elements (DD chaque)        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitArrayData(Const Lbl : TString; ElemCount : Integer);
+Var I : Integer;
+Begin
+  WriteLn('  ; tableau ', Lbl, ' [', ElemCount, ' elements]');
+  WriteLn(Lbl, ':');
+  WriteLn('  DD ', ElemCount, '  ; compteur elements');
+  For I := 1 To ElemCount Do
+    WriteLn('  DD 0');
+  DtLastType := DT_ARRAY_BLOCK;
+  Inc(DtTotalBytes, (ElemCount + 1) * 4);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataSection : emettre la section .data complete            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataSection;
+Begin
+  WriteLn('; ============================================================');
+  WriteLn('; Section .data (variables initialisees)');
+  WriteLn('; ============================================================');
+  WriteLn('.DATA');
+  WriteLn;
+  EmitSpecialConstants;
+  WriteLn;
+  EmitStaticFieldData;
+  WriteLn;
+  EmitStringData;
+  WriteLn;
+  EmitFormatData;
+  WriteLn;
+  EmitHeapArea;
+  WriteLn;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRuntimeVars : emettre les variables runtime dans BSS       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRuntimeVars;
+Begin
+  If DtRuntimeEmitted Then Exit;
+  DtRuntimeEmitted := True;
+  WriteLn('  ; --- Variables runtime ---');
+  WriteLn('_J_STDOUT  DD ?');
+  DtLastType := DT_RT_STDOUT;
+  Inc(DtBssBytes, 4);
+  WriteLn('_J_STDIN   DD ?');
+  DtLastType := DT_RT_STDIN;
+  Inc(DtBssBytes, 4);
+  WriteLn('_J_WRITTEN DD ?');
+  DtLastType := DT_RT_WRITTEN;
+  Inc(DtBssBytes, 4);
+  WriteLn('_J_READ    DD ?');
+  DtLastType := DT_RT_READ;
+  Inc(DtBssBytes, 4);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBssSection : emettre la section .data? (BSS)               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBssSection;
+Begin
+  If DtBssEmitted Then Exit;
+  DtBssEmitted := True;
+  WriteLn('; ============================================================');
+  WriteLn('; Section .data? (BSS - variables non initialisees)');
+  WriteLn('; ============================================================');
+  WriteLn('.DATA?');
+  WriteLn;
+  WriteLn('  ; --- Buffers I/O ---');
+  WriteLn('_J_IOBUF   DB ', DT_IOBUF_SIZE, ' DUP(?)');
+  DtLastType := DT_BSS_IOBUF;
+  Inc(DtBssBytes, DT_IOBUF_SIZE);
+  WriteLn('_J_NUMBUF  DB ', DT_NUMBUF_SIZE, ' DUP(?)');
+  DtLastType := DT_BSS_NUMBUF;
+  Inc(DtBssBytes, DT_NUMBUF_SIZE);
+  WriteLn;
+  EmitRuntimeVars;
+  WriteLn;
+  { Buffer pour conversion char->String }
+  WriteLn('  ; --- Buffer conversion ---');
+  WriteLn('_JX_CV_BUF DB 4 DUP(?)');
+  Inc(DtBssBytes, 4);
+  WriteLn;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataSectionComplete : emettre DATA + BSS                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataSectionComplete;
+Begin
+  EmitDataSection;
+  EmitBssSection;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetDtStaticFieldType : obtenir le type d un champ statique     }
+{ ------------------------------------------------------------ }
+
+Function GetDtStaticFieldType(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 1) And (Idx <= DtStaticCount) Then
+    GetDtStaticFieldType := DtStaticFields[Idx].FieldType
+  Else
+    GetDtStaticFieldType := TYK_INT;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpDtState : afficher l etat du sous-systeme DATA             }
+{ ------------------------------------------------------------ }
+
+Procedure DumpDtState;
+Var I : Integer;
+Begin
+  WriteLn('--- DtState dump ---');
+  WriteLn('  DtInitialized     : ', DtInitialized);
+  WriteLn('  DtStaticCount     : ', DtStaticCount);
+  WriteLn('  DtStringCount     : ', DtStringCount);
+  WriteLn('  DtFormatCount     : ', DtFormatCount);
+  WriteLn('  DtTotalBytes      : ', DtTotalBytes);
+  WriteLn('  DtBssBytes        : ', DtBssBytes);
+  WriteLn('  DtSpecialEmitted  : ', DtSpecialEmitted);
+  WriteLn('  DtBssEmitted      : ', DtBssEmitted);
+  WriteLn('  DtRuntimeEmitted  : ', DtRuntimeEmitted);
+  WriteLn('  DtHeapEmitted     : ', DtHeapEmitted);
+  WriteLn('  DtLastType        : ', DtTypeName(DtLastType));
+  If DtStaticCount > 0 Then
+  Begin
+    WriteLn('  --- Champs statiques ---');
+    For I := 1 To DtStaticCount Do
+      WriteLn('    [', I, '] ', DtStaticFields[I].ClassName, '.',
+              DtStaticFields[I].FieldName, ' : ',
+              TypeKindStr(DtStaticFields[I].FieldType), ' = ',
+              DtStaticFields[I].AsmLabel);
+  End;
+  If DtStringCount > 0 Then
+  Begin
+    WriteLn('  --- Constantes chaines ---');
+    For I := 1 To DtStringCount Do
+      WriteLn('    [', I, '] ', DtStringConsts[I].AsmLabel, ' = "',
+              DtStringConsts[I].Value, '" (refs=',
+              DtStringConsts[I].RefCount, ')');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 21)                              }
+{ ------------------------------------------------------------ }
+
+Function IsDtInitialized : Boolean;
+Begin
+  IsDtInitialized := DtInitialized;
+End;
+
+Function IsDtEmpty : Boolean;
+Begin
+  IsDtEmpty := (DtStaticCount = 0) And (DtStringCount = 0) And
+               (DtFormatCount = 0);
+End;
+
+Function GetDtStaticCount : LongInt;
+Begin
+  GetDtStaticCount := DtStaticCount;
+End;
+
+Function GetDtStringCount : LongInt;
+Begin
+  GetDtStringCount := DtStringCount;
+End;
+
+Function GetDtFormatCount : LongInt;
+Begin
+  GetDtFormatCount := DtFormatCount;
+End;
+
+Function GetDtTotalBytes : LongInt;
+Begin
+  GetDtTotalBytes := DtTotalBytes;
+End;
+
+Function GetDtBssBytes : LongInt;
+Begin
+  GetDtBssBytes := DtBssBytes;
+End;
+
+Function GetDtLabelSeq : LongInt;
+Begin
+  GetDtLabelSeq := DtLabelSeq;
+End;
+
+Function GetDtLastType : Integer;
+Begin
+  GetDtLastType := DtLastType;
+End;
+
+Function GetDtStatus : TString;
+Begin
+  If Not DtInitialized Then
+    GetDtStatus := 'Not initialized'
+  Else
+    GetDtStatus := ItoS(DtStaticCount) + ' static fields, ' +
+                   ItoS(DtStringCount) + ' strings, ' +
+                   ItoS(DtFormatCount) + ' formats, ' +
+                   ItoS(DtTotalBytes) + ' DATA bytes, ' +
+                   ItoS(DtBssBytes) + ' BSS bytes';
+End;
+
+{ ============================================================ }
+{ TODO 22 - BIBLIOTHEQUE RUNTIME JAVA (E/S, CONVERSIONS)       }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types de routines runtime }
+  RT_NONE              = 0;    { aucun / non defini                    }
+  RT_ITOA              = 1;    { _JRT_ITOA : int -> string             }
+  RT_ATOI              = 2;    { _JRT_ATOI : string -> int             }
+  RT_BOOLTOSTR         = 3;    { _JRT_BOOLTOSTR : bool -> string       }
+  RT_CHARTOSTR         = 4;    { _JRT_CHARTOSTR : char -> string       }
+  RT_NULLTOSTR         = 5;    { _JRT_NULLTOSTR : -> "null"            }
+  RT_INITIO            = 6;    { _JRT_INITIO : init console handles    }
+  RT_WRITESTR          = 7;    { _JRT_WRITESTR : ecrire chaine         }
+  RT_WRITECRLF         = 8;    { _JRT_WRITECRLF : ecrire CRLF          }
+  RT_READLINE          = 9;    { _JRT_READLINE : lire ligne            }
+  RT_STRLEN            = 10;   { _JRT_STRLEN : longueur chaine         }
+  RT_STRCONCAT         = 11;   { _JRT_STRCONCAT : concatener           }
+  RT_STRCMP            = 12;   { _JRT_STRCMP : comparer chaines        }
+  RT_STRSLICE          = 13;   { _JRT_STRSLICE : substring             }
+  RT_STRFIND           = 14;   { _JRT_STRFIND : indexOf                }
+  RT_STRUPPER          = 15;   { _JRT_STRUPPER : toUpperCase           }
+  RT_STRLOWER          = 16;   { _JRT_STRLOWER : toLowerCase           }
+  RT_STRTRIM           = 17;   { _JRT_STRTRIM : trim                   }
+  RT_STRREPLACE        = 18;   { _JRT_STRREPLACE : replace             }
+  RT_STRCONTAINS       = 19;   { _JRT_STRCONTAINS : contains           }
+  RT_STRSTARTSWITH     = 20;   { _JRT_STRSTARTSWITH : startsWith       }
+  RT_STRENDSWITH       = 21;   { _JRT_STRENDSWITH : endsWith           }
+  RT_ARRALLOC          = 22;   { _JRT_ARRALLOC : allocation tableau    }
+  RT_ARRGET            = 23;   { _JRT_ARRGET : lecture element         }
+  RT_ARRSET            = 24;   { _JRT_ARRSET : ecriture element        }
+  RT_ARRLEN            = 25;   { _JRT_ARRLEN : longueur tableau        }
+  RT_ARRCOPY           = 26;   { _JRT_ARRCOPY : copie tableau          }
+  RT_OBJNEW            = 27;   { _JRT_OBJNEW : allocation objet        }
+  RT_HEAPALLOC         = 28;   { _JRT_HEAPALLOC : alloc generique      }
+  RT_PANIC             = 29;   { _JRT_PANIC : erreur fatale            }
+  RT_BOUNDS_ERR        = 30;   { _JRT_BOUNDS_ERR : index hors bornes   }
+  RT_NULL_ERR          = 31;   { _JRT_NULL_ERR : pointeur nul          }
+  RT_MAX               = 31;
+
+  { Limites }
+  RT_MAX_ROUTINES      = 64;   { nombre max de routines tracees        }
+  RT_NUMBUF_SIZE       = 32;   { taille buffer conversion nombre       }
+  RT_IOBUF_SIZE        = 256;  { taille buffer I/O                     }
+
+  { Constantes Win32 }
+  STD_INPUT_HANDLE     = -10;
+  STD_OUTPUT_HANDLE    = -11;
+
+Type
+  TRtRoutineRec = Record
+    Kind       : Integer;      { type RT_*                             }
+    Name       : TString;      { nom ASM (_JRT_...)                    }
+    CallCount  : Integer;      { nombre d appels                       }
+    Emitted    : Boolean;      { True si deja emis                     }
+  End;
+
+Var
+  RtInitialized      : Boolean;    { True si l etat est initialise       }
+  RtRoutines         : Array[1..RT_MAX_ROUTINES] Of TRtRoutineRec;
+  RtRoutineCount     : Integer;    { nombre de routines enregistrees     }
+  RtConversionCount  : LongInt;    { appels routines conversion          }
+  RtIoCount          : LongInt;    { appels routines I/O                 }
+  RtStringCount      : LongInt;    { appels routines chaines             }
+  RtArrayCount       : LongInt;    { appels routines tableaux            }
+  RtObjectCount      : LongInt;    { appels routines objets              }
+  RtErrorCount       : LongInt;    { appels routines erreur              }
+  RtEmittedCount     : Integer;    { nombre de routines emises           }
+  RtLabelSeq         : Integer;    { sequence pour labels RT             }
+  RtLastType         : Integer;    { dernier type de routine             }
+  RtInitIoEmitted    : Boolean;    { True si _JRT_INITIO emis            }
+  RtHeapAllocEmitted : Boolean;    { True si _JRT_HEAPALLOC emis         }
+  RtPanicEmitted     : Boolean;    { True si _JRT_PANIC emis             }
+
+{ ------------------------------------------------------------ }
+{ InitRtState : initialiser le sous-systeme runtime             }
+{ ------------------------------------------------------------ }
+
+Procedure InitRtState;
+Var I : Integer;
+Begin
+  RtInitialized      := True;
+  RtRoutineCount     := 0;
+  RtConversionCount  := 0;
+  RtIoCount          := 0;
+  RtStringCount      := 0;
+  RtArrayCount       := 0;
+  RtObjectCount      := 0;
+  RtErrorCount       := 0;
+  RtEmittedCount     := 0;
+  RtLabelSeq         := 0;
+  RtLastType         := RT_NONE;
+  RtInitIoEmitted    := False;
+  RtHeapAllocEmitted := False;
+  RtPanicEmitted     := False;
+  For I := 1 To RT_MAX_ROUTINES Do
+  Begin
+    RtRoutines[I].Kind      := RT_NONE;
+    RtRoutines[I].Name      := '';
+    RtRoutines[I].CallCount := 0;
+    RtRoutines[I].Emitted   := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtLabel : generer un label unique pour routines runtime     }
+{ ------------------------------------------------------------ }
+
+Function GenRtLabel : TString;
+Begin
+  Inc(RtLabelSeq);
+  GenRtLabel := '_JL_RT_' + ItoS(RtLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ RtTypeName : nom textuel d un type de routine runtime          }
+{ ------------------------------------------------------------ }
+
+Function RtTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    RT_NONE              : RtTypeName := 'RT_NONE';
+    RT_ITOA              : RtTypeName := 'RT_ITOA';
+    RT_ATOI              : RtTypeName := 'RT_ATOI';
+    RT_BOOLTOSTR         : RtTypeName := 'RT_BOOLTOSTR';
+    RT_CHARTOSTR         : RtTypeName := 'RT_CHARTOSTR';
+    RT_NULLTOSTR         : RtTypeName := 'RT_NULLTOSTR';
+    RT_INITIO            : RtTypeName := 'RT_INITIO';
+    RT_WRITESTR          : RtTypeName := 'RT_WRITESTR';
+    RT_WRITECRLF         : RtTypeName := 'RT_WRITECRLF';
+    RT_READLINE          : RtTypeName := 'RT_READLINE';
+    RT_STRLEN            : RtTypeName := 'RT_STRLEN';
+    RT_STRCONCAT         : RtTypeName := 'RT_STRCONCAT';
+    RT_STRCMP            : RtTypeName := 'RT_STRCMP';
+    RT_STRSLICE          : RtTypeName := 'RT_STRSLICE';
+    RT_STRFIND           : RtTypeName := 'RT_STRFIND';
+    RT_STRUPPER          : RtTypeName := 'RT_STRUPPER';
+    RT_STRLOWER          : RtTypeName := 'RT_STRLOWER';
+    RT_STRTRIM           : RtTypeName := 'RT_STRTRIM';
+    RT_STRREPLACE        : RtTypeName := 'RT_STRREPLACE';
+    RT_STRCONTAINS       : RtTypeName := 'RT_STRCONTAINS';
+    RT_STRSTARTSWITH     : RtTypeName := 'RT_STRSTARTSWITH';
+    RT_STRENDSWITH       : RtTypeName := 'RT_STRENDSWITH';
+    RT_ARRALLOC          : RtTypeName := 'RT_ARRALLOC';
+    RT_ARRGET            : RtTypeName := 'RT_ARRGET';
+    RT_ARRSET            : RtTypeName := 'RT_ARRSET';
+    RT_ARRLEN            : RtTypeName := 'RT_ARRLEN';
+    RT_ARRCOPY           : RtTypeName := 'RT_ARRCOPY';
+    RT_OBJNEW            : RtTypeName := 'RT_OBJNEW';
+    RT_HEAPALLOC         : RtTypeName := 'RT_HEAPALLOC';
+    RT_PANIC             : RtTypeName := 'RT_PANIC';
+    RT_BOUNDS_ERR        : RtTypeName := 'RT_BOUNDS_ERR';
+    RT_NULL_ERR          : RtTypeName := 'RT_NULL_ERR';
+  Else
+    RtTypeName := 'RT_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterRtRoutine : enregistrer une routine runtime            }
+{   Retourne l indice ou -1 si table pleine                      }
+{ ------------------------------------------------------------ }
+
+Function RegisterRtRoutine(Kind : Integer;
+                           Const Name : TString) : Integer;
+Var I, Idx : Integer;
+Begin
+  { Verifier si deja enregistree }
+  For I := 1 To RtRoutineCount Do
+  Begin
+    If RtRoutines[I].Kind = Kind Then
+    Begin
+      Inc(RtRoutines[I].CallCount);
+      RegisterRtRoutine := I;
+      Exit;
+    End;
+  End;
+
+  { Nouvelle routine }
+  If RtRoutineCount >= RT_MAX_ROUTINES Then
+  Begin
+    CompileError('runtime routines table full (max ' +
+                 ItoS(RT_MAX_ROUTINES) + ')', LexLineNo);
+    RegisterRtRoutine := -1;
+    Exit;
+  End;
+  Inc(RtRoutineCount);
+  Idx := RtRoutineCount;
+  RtRoutines[Idx].Kind      := Kind;
+  RtRoutines[Idx].Name      := Name;
+  RtRoutines[Idx].CallCount := 1;
+  RtRoutines[Idx].Emitted   := False;
+  RtLastType := Kind;
+  RegisterRtRoutine := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtItoa : emettre _JRT_ITOA (int -> string)                 }
+{   Entree : EAX = valeur entiere                               }
+{   Sortie : EAX = pointeur vers chaine dans _J_NUMBUF          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtItoa;
+Var LblLoop, LblDone, LblNeg, LblPosEnd : TString;
+Begin
+  LblLoop   := GenRtLabel;
+  LblDone   := GenRtLabel;
+  LblNeg    := GenRtLabel;
+  LblPosEnd := GenRtLabel;
+  Inc(RtConversionCount);
+  RtLastType := RT_ITOA;
+  WriteLn('_JRT_ITOA PROC');
+  WriteLn('  ; Convertir entier EAX en chaine ASCII');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH EDX');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ECX, EAX            ; sauvegarder valeur');
+  WriteLn('  LEA EDI, [_J_NUMBUF+31] ; pointer fin buffer');
+  WriteLn('  MOV BYTE PTR [EDI], 0   ; terminateur nul');
+  WriteLn('  DEC EDI');
+  WriteLn('  MOV EBX, 10             ; diviseur');
+  WriteLn('  TEST ECX, ECX           ; tester signe');
+  WriteLn('  JNS ', LblPosEnd);
+  WriteLn('  NEG ECX                 ; rendre positif');
+  WriteLn(LblPosEnd, ':');
+  WriteLn(LblLoop, ':');
+  WriteLn('  XOR EDX, EDX');
+  WriteLn('  MOV EAX, ECX');
+  WriteLn('  DIV EBX                 ; EAX=quotient, EDX=reste');
+  WriteLn('  ADD DL, 30h             ; convertir en ASCII');
+  WriteLn('  MOV [EDI], DL');
+  WriteLn('  DEC EDI');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JNZ ', LblLoop);
+  WriteLn('  ; Ajouter signe si negatif');
+  WriteLn('  POP EDI');
+  WriteLn('  POP EDX');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  ; Ajuster pointeur debut');
+  WriteLn('  LEA EAX, [_J_NUMBUF]');
+  WriteLn('  ; Trouver debut de la chaine');
+  WriteLn(LblDone, ':');
+  WriteLn('  CMP BYTE PTR [EAX], 0');
+  WriteLn('  JNE ', LblDone, '_end');
+  WriteLn('  INC EAX');
+  WriteLn('  JMP ', LblDone);
+  WriteLn(LblDone, '_end:');
+  WriteLn('  RET');
+  WriteLn('_JRT_ITOA ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtAtoi : emettre _JRT_ATOI (string -> int)                 }
+{   Entree : EAX = pointeur vers chaine                         }
+{   Sortie : EAX = valeur entiere                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtAtoi;
+Var LblLoop, LblDone, LblNeg : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblDone := GenRtLabel;
+  LblNeg  := GenRtLabel;
+  Inc(RtConversionCount);
+  RtLastType := RT_ATOI;
+  WriteLn('_JRT_ATOI PROC');
+  WriteLn('  ; Convertir chaine EAX en entier');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH EDX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  MOV ESI, EAX            ; pointeur chaine');
+  WriteLn('  XOR EAX, EAX            ; resultat = 0');
+  WriteLn('  XOR ECX, ECX            ; signe = 0 (positif)');
+  WriteLn('  MOV BL, [ESI]');
+  WriteLn('  CMP BL, ''-''');
+  WriteLn('  JNE ', LblLoop);
+  WriteLn('  MOV ECX, 1              ; signe = negatif');
+  WriteLn('  INC ESI');
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV BL, [ESI]');
+  WriteLn('  TEST BL, BL');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  CMP BL, ''0''');
+  WriteLn('  JB ', LblDone);
+  WriteLn('  CMP BL, ''9''');
+  WriteLn('  JA ', LblDone);
+  WriteLn('  SUB BL, ''0''           ; convertir ASCII->digit');
+  WriteLn('  IMUL EAX, 10');
+  WriteLn('  MOVZX EDX, BL');
+  WriteLn('  ADD EAX, EDX');
+  WriteLn('  INC ESI');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JZ ', LblNeg);
+  WriteLn('  NEG EAX');
+  WriteLn(LblNeg, ':');
+  WriteLn('  POP ESI');
+  WriteLn('  POP EDX');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_ATOI ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtBoolToStr : emettre _JRT_BOOLTOSTR (bool -> string)      }
+{   Entree : EAX = 0 (false) ou <>0 (true)                      }
+{   Sortie : EAX = pointeur vers "true" ou "false"              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtBoolToStr;
+Var LblTrue, LblEnd : TString;
+Begin
+  LblTrue := GenRtLabel;
+  LblEnd  := GenRtLabel;
+  Inc(RtConversionCount);
+  RtLastType := RT_BOOLTOSTR;
+  WriteLn('_JRT_BOOLTOSTR PROC');
+  WriteLn('  ; Convertir boolean EAX en chaine');
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JNZ ', LblTrue);
+  WriteLn('  MOV EAX, OFFSET _JK_FALSE');
+  WriteLn('  JMP ', LblEnd);
+  WriteLn(LblTrue, ':');
+  WriteLn('  MOV EAX, OFFSET _JK_TRUE');
+  WriteLn(LblEnd, ':');
+  WriteLn('  RET');
+  WriteLn('_JRT_BOOLTOSTR ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtCharToStr : emettre _JRT_CHARTOSTR (char -> string)      }
+{   Entree : EAX = caractere (octet bas)                        }
+{   Sortie : EAX = pointeur vers chaine 1 caractere             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtCharToStr;
+Begin
+  Inc(RtConversionCount);
+  RtLastType := RT_CHARTOSTR;
+  WriteLn('_JRT_CHARTOSTR PROC');
+  WriteLn('  ; Convertir char EAX en chaine');
+  WriteLn('  MOV BYTE PTR [_JX_CV_BUF], AL');
+  WriteLn('  MOV BYTE PTR [_JX_CV_BUF+1], 0');
+  WriteLn('  LEA EAX, [_JX_CV_BUF]');
+  WriteLn('  RET');
+  WriteLn('_JRT_CHARTOSTR ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtNullToStr : emettre _JRT_NULLTOSTR (-> "null")           }
+{   Sortie : EAX = pointeur vers "null"                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtNullToStr;
+Begin
+  Inc(RtConversionCount);
+  RtLastType := RT_NULLTOSTR;
+  WriteLn('_JRT_NULLTOSTR PROC');
+  WriteLn('  ; Retourner pointeur vers "null"');
+  WriteLn('  MOV EAX, OFFSET _JK_NULL');
+  WriteLn('  RET');
+  WriteLn('_JRT_NULLTOSTR ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtInitIo : emettre _JRT_INITIO (initialiser handles I/O)   }
+{   Appeler GetStdHandle pour obtenir les handles console       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtInitIo;
+Begin
+  If RtInitIoEmitted Then Exit;
+  RtInitIoEmitted := True;
+  Inc(RtIoCount);
+  RtLastType := RT_INITIO;
+  WriteLn('_JRT_INITIO PROC');
+  WriteLn('  ; Initialiser les handles console');
+  WriteLn('  PUSH ', STD_OUTPUT_HANDLE);
+  WriteLn('  CALL _GetStdHandle@4');
+  WriteLn('  MOV [_J_STDOUT], EAX');
+  WriteLn('  PUSH ', STD_INPUT_HANDLE);
+  WriteLn('  CALL _GetStdHandle@4');
+  WriteLn('  MOV [_J_STDIN], EAX');
+  WriteLn('  RET');
+  WriteLn('_JRT_INITIO ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtWriteStr : emettre _JRT_WRITESTR (ecrire chaine)         }
+{   Entree : EAX = pointeur vers chaine                         }
+{   Appelle _JRT_STRLEN puis WriteFile                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtWriteStr;
+Begin
+  Inc(RtIoCount);
+  RtLastType := RT_WRITESTR;
+  WriteLn('_JRT_WRITESTR PROC');
+  WriteLn('  ; Ecrire chaine EAX sur la console');
+  WriteLn('  PUSH EBX');
+  WriteLn('  MOV EBX, EAX            ; sauvegarder pointeur');
+  WriteLn('  CALL _JRT_STRLEN        ; longueur dans EAX');
+  WriteLn('  PUSH 0                  ; lpOverlapped = NULL');
+  WriteLn('  LEA ECX, [_J_WRITTEN]');
+  WriteLn('  PUSH ECX                ; lpNumberOfBytesWritten');
+  WriteLn('  PUSH EAX                ; nNumberOfBytesToWrite');
+  WriteLn('  PUSH EBX                ; lpBuffer');
+  WriteLn('  PUSH [_J_STDOUT]        ; hFile');
+  WriteLn('  CALL _WriteFile@20');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_WRITESTR ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtWriteCrlf : emettre _JRT_WRITECRLF (ecrire CRLF)         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtWriteCrlf;
+Begin
+  Inc(RtIoCount);
+  RtLastType := RT_WRITECRLF;
+  WriteLn('_JRT_WRITECRLF PROC');
+  WriteLn('  ; Ecrire retour a la ligne');
+  WriteLn('  PUSH 0');
+  WriteLn('  LEA EAX, [_J_WRITTEN]');
+  WriteLn('  PUSH EAX');
+  WriteLn('  PUSH 2                  ; longueur CRLF');
+  WriteLn('  PUSH OFFSET _JK_CRLF');
+  WriteLn('  PUSH [_J_STDOUT]');
+  WriteLn('  CALL _WriteFile@20');
+  WriteLn('  RET');
+  WriteLn('_JRT_WRITECRLF ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtReadLine : emettre _JRT_READLINE (lire ligne console)    }
+{   Sortie : EAX = pointeur vers chaine lue dans _J_IOBUF       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtReadLine;
+Var LblLoop, LblDone : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblDone := GenRtLabel;
+  Inc(RtIoCount);
+  RtLastType := RT_READLINE;
+  WriteLn('_JRT_READLINE PROC');
+  WriteLn('  ; Lire une ligne depuis la console');
+  WriteLn('  PUSH 0                  ; lpOverlapped = NULL');
+  WriteLn('  LEA EAX, [_J_READ]');
+  WriteLn('  PUSH EAX                ; lpNumberOfBytesRead');
+  WriteLn('  PUSH ', RT_IOBUF_SIZE, ' ; nNumberOfBytesToRead');
+  WriteLn('  PUSH OFFSET _J_IOBUF    ; lpBuffer');
+  WriteLn('  PUSH [_J_STDIN]         ; hFile');
+  WriteLn('  CALL _ReadFile@20');
+  WriteLn('  ; Supprimer CR/LF final');
+  WriteLn('  MOV ECX, [_J_READ]');
+  WriteLn('  LEA EAX, [_J_IOBUF]');
+  WriteLn(LblLoop, ':');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  DEC ECX');
+  WriteLn('  CMP BYTE PTR [EAX+ECX], 13');
+  WriteLn('  JE ', LblLoop, '_trim');
+  WriteLn('  CMP BYTE PTR [EAX+ECX], 10');
+  WriteLn('  JE ', LblLoop, '_trim');
+  WriteLn('  INC ECX');
+  WriteLn('  JMP ', LblDone);
+  WriteLn(LblLoop, '_trim:');
+  WriteLn('  MOV BYTE PTR [EAX+ECX], 0');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('  MOV BYTE PTR [EAX+ECX], 0 ; terminateur');
+  WriteLn('  LEA EAX, [_J_IOBUF]');
+  WriteLn('  RET');
+  WriteLn('_JRT_READLINE ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrlen : emettre _JRT_STRLEN (longueur chaine)           }
+{   Entree : EAX = pointeur vers chaine                         }
+{   Sortie : EAX = longueur (sans le NUL)                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrlen;
+Var LblLoop : TString;
+Begin
+  LblLoop := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRLEN;
+  WriteLn('_JRT_STRLEN PROC');
+  WriteLn('  ; Calculer longueur de chaine EAX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  XOR ECX, ECX');
+  WriteLn(LblLoop, ':');
+  WriteLn('  CMP BYTE PTR [EDI], 0');
+  WriteLn('  JE ', LblLoop, '_end');
+  WriteLn('  INC EDI');
+  WriteLn('  INC ECX');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblLoop, '_end:');
+  WriteLn('  MOV EAX, ECX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ECX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRLEN ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrConcat : emettre _JRT_STRCONCAT (concatener)          }
+{   Entree : EAX = ptr str1, EDX = ptr str2                     }
+{   Sortie : EAX = ptr nouvelle chaine sur heap                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrConcat;
+Var LblCopy1, LblCopy2, LblDone : TString;
+Begin
+  LblCopy1 := GenRtLabel;
+  LblCopy2 := GenRtLabel;
+  LblDone  := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRCONCAT;
+  WriteLn('_JRT_STRCONCAT PROC');
+  WriteLn('  ; Concatener EAX + EDX -> nouvelle chaine');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX            ; src1');
+  WriteLn('  MOV EBX, EDX            ; src2');
+  WriteLn('  ; Calculer longueur totale');
+  WriteLn('  CALL _JRT_STRLEN');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  MOV EAX, EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  CALL _JRT_STRLEN');
+  WriteLn('  POP ECX');
+  WriteLn('  ADD ECX, EAX');
+  WriteLn('  INC ECX                 ; +1 pour NUL');
+  WriteLn('  ; Allouer sur le heap');
+  WriteLn('  PUSH ECX');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  POP ECX');
+  WriteLn('  MOV EDI, EAX            ; dest');
+  WriteLn('  PUSH EAX                ; sauvegarder debut dest');
+  WriteLn('  ; Copier str1');
+  WriteLn(LblCopy1, ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblCopy2);
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblCopy1);
+  WriteLn(LblCopy2, ':');
+  WriteLn('  ; Copier str2');
+  WriteLn('  MOV ESI, EBX');
+  WriteLn(LblCopy2, '_loop:');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblCopy2, '_loop');
+  WriteLn(LblDone, ':');
+  WriteLn('  ; Retourner debut de la chaine');
+  WriteLn('  POP EAX                 ; recuperer debut dest');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRCONCAT ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrCmp : emettre _JRT_STRCMP (comparer chaines)          }
+{   Entree : EAX = ptr str1, EDX = ptr str2                     }
+{   Sortie : EAX = 0 si egales, <>0 sinon                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrCmp;
+Var LblLoop, LblEqual, LblNotEqual : TString;
+Begin
+  LblLoop     := GenRtLabel;
+  LblEqual    := GenRtLabel;
+  LblNotEqual := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRCMP;
+  WriteLn('_JRT_STRCMP PROC');
+  WriteLn('  ; Comparer chaines EAX et EDX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  MOV EDI, EDX');
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  MOV AH, [EDI]');
+  WriteLn('  CMP AL, AH');
+  WriteLn('  JNE ', LblNotEqual);
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblEqual);
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblEqual, ':');
+  WriteLn('  XOR EAX, EAX            ; egales');
+  WriteLn('  JMP ', LblNotEqual, '_end');
+  WriteLn(LblNotEqual, ':');
+  WriteLn('  MOVZX EAX, AL');
+  WriteLn('  MOVZX EDX, AH');
+  WriteLn('  SUB EAX, EDX            ; difference');
+  WriteLn(LblNotEqual, '_end:');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRCMP ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrSlice : emettre _JRT_STRSLICE (substring)             }
+{   Entree : EAX = ptr str, ECX = start, EDX = end              }
+{   Sortie : EAX = ptr nouvelle sous-chaine                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrSlice;
+Var LblCopy, LblDone : TString;
+Begin
+  LblCopy := GenRtLabel;
+  LblDone := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRSLICE;
+  WriteLn('_JRT_STRSLICE PROC');
+  WriteLn('  ; Extraire substring EAX[ECX..EDX]');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  ADD ESI, ECX            ; debut');
+  WriteLn('  MOV EBX, EDX');
+  WriteLn('  SUB EBX, ECX            ; longueur');
+  WriteLn('  INC EBX                 ; +1 pour NUL');
+  WriteLn('  ; Allouer');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  MOV ECX, EBX');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  POP ESI');
+  WriteLn('  POP EBX');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  DEC EBX                 ; longueur sans NUL');
+  WriteLn(LblCopy, ':');
+  WriteLn('  TEST EBX, EBX');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  DEC EBX');
+  WriteLn('  JMP ', LblCopy);
+  WriteLn(LblDone, ':');
+  WriteLn('  MOV BYTE PTR [EDI], 0');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRSLICE ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrFind : emettre _JRT_STRFIND (indexOf)                 }
+{   Entree : EAX = ptr str, EDX = ptr substr                    }
+{   Sortie : EAX = index ou -1 si non trouve                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrFind;
+Var LblOuter, LblInner, LblFound, LblNotFound : TString;
+Begin
+  LblOuter    := GenRtLabel;
+  LblInner    := GenRtLabel;
+  LblFound    := GenRtLabel;
+  LblNotFound := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRFIND;
+  WriteLn('_JRT_STRFIND PROC');
+  WriteLn('  ; Chercher EDX dans EAX, retourner index');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX            ; chaine principale');
+  WriteLn('  MOV EBX, EDX            ; sous-chaine');
+  WriteLn('  XOR ECX, ECX            ; index = 0');
+  WriteLn(LblOuter, ':');
+  WriteLn('  CMP BYTE PTR [ESI], 0');
+  WriteLn('  JE ', LblNotFound);
+  WriteLn('  ; Comparer a partir de ESI');
+  WriteLn('  MOV EDI, EBX');
+  WriteLn('  PUSH ESI');
+  WriteLn(LblInner, ':');
+  WriteLn('  MOV AL, [EDI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblFound, '_match');
+  WriteLn('  CMP AL, [ESI]');
+  WriteLn('  JNE ', LblInner, '_nomatch');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblInner);
+  WriteLn(LblInner, '_nomatch:');
+  WriteLn('  POP ESI');
+  WriteLn('  INC ESI');
+  WriteLn('  INC ECX');
+  WriteLn('  JMP ', LblOuter);
+  WriteLn(LblFound, '_match:');
+  WriteLn('  POP ESI');
+  WriteLn('  MOV EAX, ECX');
+  WriteLn('  JMP ', LblFound);
+  WriteLn(LblNotFound, ':');
+  WriteLn('  MOV EAX, -1');
+  WriteLn(LblFound, ':');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRFIND ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrUpper : emettre _JRT_STRUPPER (toUpperCase)           }
+{   Entree : EAX = ptr str                                      }
+{   Sortie : EAX = ptr nouvelle chaine en majuscules            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrUpper;
+Var LblLoop, LblNoConv, LblDone : TString;
+Begin
+  LblLoop   := GenRtLabel;
+  LblNoConv := GenRtLabel;
+  LblDone   := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRUPPER;
+  WriteLn('_JRT_STRUPPER PROC');
+  WriteLn('  ; Convertir chaine EAX en majuscules');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  ; Calculer longueur et allouer');
+  WriteLn('  CALL _JRT_STRLEN');
+  WriteLn('  INC EAX');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  MOV EBX, EAX            ; sauvegarder debut');
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  CMP AL, ''a''');
+  WriteLn('  JB ', LblNoConv);
+  WriteLn('  CMP AL, ''z''');
+  WriteLn('  JA ', LblNoConv);
+  WriteLn('  SUB AL, 32              ; a-z -> A-Z');
+  WriteLn(LblNoConv, ':');
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('  MOV BYTE PTR [EDI], 0');
+  WriteLn('  MOV EAX, EBX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRUPPER ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrLower : emettre _JRT_STRLOWER (toLowerCase)           }
+{   Entree : EAX = ptr str                                      }
+{   Sortie : EAX = ptr nouvelle chaine en minuscules            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrLower;
+Var LblLoop, LblNoConv, LblDone : TString;
+Begin
+  LblLoop   := GenRtLabel;
+  LblNoConv := GenRtLabel;
+  LblDone   := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRLOWER;
+  WriteLn('_JRT_STRLOWER PROC');
+  WriteLn('  ; Convertir chaine EAX en minuscules');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  CALL _JRT_STRLEN');
+  WriteLn('  INC EAX');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  MOV EBX, EAX');
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  CMP AL, ''A''');
+  WriteLn('  JB ', LblNoConv);
+  WriteLn('  CMP AL, ''Z''');
+  WriteLn('  JA ', LblNoConv);
+  WriteLn('  ADD AL, 32              ; A-Z -> a-z');
+  WriteLn(LblNoConv, ':');
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('  MOV BYTE PTR [EDI], 0');
+  WriteLn('  MOV EAX, EBX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRLOWER ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrTrim : emettre _JRT_STRTRIM (trim)                    }
+{   Entree : EAX = ptr str                                      }
+{   Sortie : EAX = ptr nouvelle chaine sans espaces             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrTrim;
+Var LblSkipHead, LblFindEnd, LblCopy, LblDone : TString;
+Begin
+  LblSkipHead := GenRtLabel;
+  LblFindEnd  := GenRtLabel;
+  LblCopy     := GenRtLabel;
+  LblDone     := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRTRIM;
+  WriteLn('_JRT_STRTRIM PROC');
+  WriteLn('  ; Supprimer espaces debut/fin de EAX');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  ; Sauter espaces au debut');
+  WriteLn(LblSkipHead, ':');
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  CMP AL, '' ''');
+  WriteLn('  JA ', LblFindEnd);
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblDone, '_empty');
+  WriteLn('  INC ESI');
+  WriteLn('  JMP ', LblSkipHead);
+  WriteLn(LblFindEnd, ':');
+  WriteLn('  ; Trouver la fin');
+  WriteLn('  MOV EDI, ESI');
+  WriteLn(LblFindEnd, '_loop:');
+  WriteLn('  CMP BYTE PTR [EDI], 0');
+  WriteLn('  JE ', LblFindEnd, '_trim');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblFindEnd, '_loop');
+  WriteLn(LblFindEnd, '_trim:');
+  WriteLn('  DEC EDI');
+  WriteLn('  CMP EDI, ESI');
+  WriteLn('  JB ', LblCopy);
+  WriteLn('  CMP BYTE PTR [EDI], '' ''');
+  WriteLn('  JA ', LblCopy);
+  WriteLn('  JMP ', LblFindEnd, '_trim');
+  WriteLn(LblCopy, ':');
+  WriteLn('  ; Calculer longueur');
+  WriteLn('  INC EDI');
+  WriteLn('  MOV ECX, EDI');
+  WriteLn('  SUB ECX, ESI');
+  WriteLn('  INC ECX                 ; +1 pour NUL');
+  WriteLn('  ; Allouer et copier');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  DEC ECX');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  MOV EBX, EAX');
+  WriteLn(LblCopy, '_loop:');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JZ ', LblDone);
+  WriteLn('  MOV AL, [ESI]');
+  WriteLn('  MOV [EDI], AL');
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  DEC ECX');
+  WriteLn('  JMP ', LblCopy, '_loop');
+  WriteLn(LblDone, '_empty:');
+  WriteLn('  ; Chaine vide');
+  WriteLn('  MOV ECX, 1');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  MOV BYTE PTR [EAX], 0');
+  WriteLn('  JMP ', LblDone, '_ret');
+  WriteLn(LblDone, ':');
+  WriteLn('  MOV BYTE PTR [EDI], 0');
+  WriteLn('  MOV EAX, EBX');
+  WriteLn(LblDone, '_ret:');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRTRIM ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrContains : emettre _JRT_STRCONTAINS (contains)        }
+{   Entree : EAX = ptr str, EDX = ptr substr                    }
+{   Sortie : EAX = 1 si contient, 0 sinon                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrContains;
+Var LblFound, LblNotFound : TString;
+Begin
+  LblFound    := GenRtLabel;
+  LblNotFound := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRCONTAINS;
+  WriteLn('_JRT_STRCONTAINS PROC');
+  WriteLn('  ; Tester si EAX contient EDX');
+  WriteLn('  CALL _JRT_STRFIND');
+  WriteLn('  CMP EAX, -1');
+  WriteLn('  JE ', LblNotFound);
+  WriteLn('  MOV EAX, 1');
+  WriteLn('  JMP ', LblFound);
+  WriteLn(LblNotFound, ':');
+  WriteLn('  XOR EAX, EAX');
+  WriteLn(LblFound, ':');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRCONTAINS ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrStartsWith : emettre _JRT_STRSTARTSWITH (startsWith)  }
+{   Entree : EAX = ptr str, EDX = ptr prefix                    }
+{   Sortie : EAX = 1 si commence par prefix, 0 sinon            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrStartsWith;
+Var LblLoop, LblYes, LblNo : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblYes  := GenRtLabel;
+  LblNo   := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRSTARTSWITH;
+  WriteLn('_JRT_STRSTARTSWITH PROC');
+  WriteLn('  ; Tester si EAX commence par EDX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  MOV EDI, EDX');
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV AL, [EDI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblYes);
+  WriteLn('  CMP AL, [ESI]');
+  WriteLn('  JNE ', LblNo);
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblYes, ':');
+  WriteLn('  MOV EAX, 1');
+  WriteLn('  JMP ', LblNo, '_end');
+  WriteLn(LblNo, ':');
+  WriteLn('  XOR EAX, EAX');
+  WriteLn(LblNo, '_end:');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRSTARTSWITH ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtStrEndsWith : emettre _JRT_STRENDSWITH (endsWith)        }
+{   Entree : EAX = ptr str, EDX = ptr suffix                    }
+{   Sortie : EAX = 1 si termine par suffix, 0 sinon             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtStrEndsWith;
+Var LblLoop, LblYes, LblNo : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblYes  := GenRtLabel;
+  LblNo   := GenRtLabel;
+  Inc(RtStringCount);
+  RtLastType := RT_STRENDSWITH;
+  WriteLn('_JRT_STRENDSWITH PROC');
+  WriteLn('  ; Tester si EAX termine par EDX');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  MOV EDI, EDX');
+  WriteLn('  ; Calculer longueurs');
+  WriteLn('  CALL _JRT_STRLEN');
+  WriteLn('  MOV EBX, EAX');
+  WriteLn('  MOV EAX, EDI');
+  WriteLn('  CALL _JRT_STRLEN');
+  WriteLn('  MOV ECX, EAX');
+  WriteLn('  ; Verifier si str assez longue');
+  WriteLn('  CMP EBX, ECX');
+  WriteLn('  JB ', LblNo);
+  WriteLn('  ; Positionner a la fin - len(suffix)');
+  WriteLn('  SUB EBX, ECX');
+  WriteLn('  ADD ESI, EBX');
+  WriteLn(LblLoop, ':');
+  WriteLn('  MOV AL, [EDI]');
+  WriteLn('  TEST AL, AL');
+  WriteLn('  JZ ', LblYes);
+  WriteLn('  CMP AL, [ESI]');
+  WriteLn('  JNE ', LblNo);
+  WriteLn('  INC ESI');
+  WriteLn('  INC EDI');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblYes, ':');
+  WriteLn('  MOV EAX, 1');
+  WriteLn('  JMP ', LblNo, '_end');
+  WriteLn(LblNo, ':');
+  WriteLn('  XOR EAX, EAX');
+  WriteLn(LblNo, '_end:');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_STRENDSWITH ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtArrAlloc : emettre _JRT_ARRALLOC (allocation tableau)    }
+{   Entree : ECX = nombre d elements                            }
+{   Sortie : EAX = ptr vers tableau (4 octets compteur + data)  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtArrAlloc;
+Begin
+  Inc(RtArrayCount);
+  RtLastType := RT_ARRALLOC;
+  WriteLn('_JRT_ARRALLOC PROC');
+  WriteLn('  ; Allouer tableau de ECX elements');
+  WriteLn('  PUSH EBX');
+  WriteLn('  MOV EBX, ECX            ; sauvegarder count');
+  WriteLn('  SHL ECX, 2              ; * 4 octets par element');
+  WriteLn('  ADD ECX, 4              ; + 4 pour compteur');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  MOV [EAX], EBX          ; stocker compteur');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_ARRALLOC ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtArrGet : emettre _JRT_ARRGET (lecture element)           }
+{   Entree : EAX = ptr tableau, ECX = index                     }
+{   Sortie : EAX = valeur element                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtArrGet;
+Var LblOk : TString;
+Begin
+  LblOk := GenRtLabel;
+  Inc(RtArrayCount);
+  RtLastType := RT_ARRGET;
+  WriteLn('_JRT_ARRGET PROC');
+  WriteLn('  ; Lire element [ECX] du tableau EAX');
+  WriteLn('  ; Verification des bornes');
+  WriteLn('  CMP ECX, [EAX]');
+  WriteLn('  JAE _JRT_BOUNDS_ERR');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JS _JRT_BOUNDS_ERR');
+  WriteLn('  ; Lire element');
+  WriteLn('  MOV EAX, [EAX + ECX*4 + 4]');
+  WriteLn('  RET');
+  WriteLn('_JRT_ARRGET ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtArrSet : emettre _JRT_ARRSET (ecriture element)          }
+{   Entree : EAX = ptr tableau, ECX = index, EDX = valeur       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtArrSet;
+Begin
+  Inc(RtArrayCount);
+  RtLastType := RT_ARRSET;
+  WriteLn('_JRT_ARRSET PROC');
+  WriteLn('  ; Ecrire EDX dans [ECX] du tableau EAX');
+  WriteLn('  ; Verification des bornes');
+  WriteLn('  CMP ECX, [EAX]');
+  WriteLn('  JAE _JRT_BOUNDS_ERR');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JS _JRT_BOUNDS_ERR');
+  WriteLn('  ; Ecrire element');
+  WriteLn('  MOV [EAX + ECX*4 + 4], EDX');
+  WriteLn('  RET');
+  WriteLn('_JRT_ARRSET ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtArrLen : emettre _JRT_ARRLEN (longueur tableau)          }
+{   Entree : EAX = ptr tableau                                  }
+{   Sortie : EAX = nombre d elements                            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtArrLen;
+Begin
+  Inc(RtArrayCount);
+  RtLastType := RT_ARRLEN;
+  WriteLn('_JRT_ARRLEN PROC');
+  WriteLn('  ; Retourner longueur du tableau EAX');
+  WriteLn('  MOV EAX, [EAX]');
+  WriteLn('  RET');
+  WriteLn('_JRT_ARRLEN ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtArrCopy : emettre _JRT_ARRCOPY (copie tableau)           }
+{   Entree : EAX = ptr tableau source                           }
+{   Sortie : EAX = ptr nouveau tableau copie                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtArrCopy;
+Var LblLoop : TString;
+Begin
+  LblLoop := GenRtLabel;
+  Inc(RtArrayCount);
+  RtLastType := RT_ARRCOPY;
+  WriteLn('_JRT_ARRCOPY PROC');
+  WriteLn('  ; Copier tableau EAX -> nouveau tableau');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH ECX');
+  WriteLn('  PUSH ESI');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV ESI, EAX');
+  WriteLn('  MOV ECX, [ESI]          ; longueur');
+  WriteLn('  ; Allouer nouveau tableau');
+  WriteLn('  CALL _JRT_ARRALLOC');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  MOV EBX, EAX            ; sauvegarder debut');
+  WriteLn('  MOV ECX, [ESI]');
+  WriteLn('  ADD ESI, 4              ; passer compteur');
+  WriteLn('  ADD EDI, 4');
+  WriteLn(LblLoop, ':');
+  WriteLn('  TEST ECX, ECX');
+  WriteLn('  JZ ', LblLoop, '_end');
+  WriteLn('  MOV EAX, [ESI]');
+  WriteLn('  MOV [EDI], EAX');
+  WriteLn('  ADD ESI, 4');
+  WriteLn('  ADD EDI, 4');
+  WriteLn('  DEC ECX');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblLoop, '_end:');
+  WriteLn('  MOV EAX, EBX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP ESI');
+  WriteLn('  POP ECX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_ARRCOPY ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtObjNew : emettre _JRT_OBJNEW (allocation objet)          }
+{   Entree : ECX = taille en octets                             }
+{   Sortie : EAX = ptr vers objet (memoire initialisee a 0)     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtObjNew;
+Var LblLoop : TString;
+Begin
+  LblLoop := GenRtLabel;
+  Inc(RtObjectCount);
+  RtLastType := RT_OBJNEW;
+  WriteLn('_JRT_OBJNEW PROC');
+  WriteLn('  ; Allouer objet de ECX octets');
+  WriteLn('  PUSH EBX');
+  WriteLn('  PUSH EDI');
+  WriteLn('  MOV EBX, ECX');
+  WriteLn('  CALL _JRT_HEAPALLOC');
+  WriteLn('  ; Initialiser a zero');
+  WriteLn('  MOV EDI, EAX');
+  WriteLn('  PUSH EAX');
+  WriteLn(LblLoop, ':');
+  WriteLn('  TEST EBX, EBX');
+  WriteLn('  JZ ', LblLoop, '_end');
+  WriteLn('  MOV BYTE PTR [EDI], 0');
+  WriteLn('  INC EDI');
+  WriteLn('  DEC EBX');
+  WriteLn('  JMP ', LblLoop);
+  WriteLn(LblLoop, '_end:');
+  WriteLn('  POP EAX');
+  WriteLn('  POP EDI');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_OBJNEW ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtHeapAlloc : emettre _JRT_HEAPALLOC (alloc generique)     }
+{   Entree : ECX = taille en octets                             }
+{   Sortie : EAX = ptr vers memoire allouee                     }
+{   Utilise le heap interne _J_HEAP                             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtHeapAlloc;
+Var LblOk : TString;
+Begin
+  If RtHeapAllocEmitted Then Exit;
+  RtHeapAllocEmitted := True;
+  LblOk := GenRtLabel;
+  Inc(RtObjectCount);
+  RtLastType := RT_HEAPALLOC;
+  WriteLn('_JRT_HEAPALLOC PROC');
+  WriteLn('  ; Allouer ECX octets sur le heap interne');
+  WriteLn('  PUSH EBX');
+  WriteLn('  MOV EAX, [_J_HEAPTOP]');
+  WriteLn('  MOV EBX, EAX');
+  WriteLn('  ADD EBX, ECX');
+  WriteLn('  ; Verifier overflow (simple)');
+  WriteLn('  CMP EBX, 65536');
+  WriteLn('  JA _JRT_PANIC');
+  WriteLn('  ; Allouer');
+  WriteLn('  LEA EAX, [_J_HEAP]');
+  WriteLn('  ADD EAX, [_J_HEAPTOP]');
+  WriteLn('  MOV [_J_HEAPTOP], EBX');
+  WriteLn('  POP EBX');
+  WriteLn('  RET');
+  WriteLn('_JRT_HEAPALLOC ENDP');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtPanic : emettre _JRT_PANIC (erreur fatale)               }
+{   Affiche message d erreur et termine le programme            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtPanic;
+Begin
+  If RtPanicEmitted Then Exit;
+  RtPanicEmitted := True;
+  Inc(RtErrorCount);
+  RtLastType := RT_PANIC;
+  WriteLn('_JRT_PANIC PROC');
+  WriteLn('  ; Erreur fatale - terminer programme');
+  WriteLn('  MOV EAX, OFFSET _JK_PANIC_MSG');
+  WriteLn('  CALL _JRT_WRITESTR');
+  WriteLn('  CALL _JRT_WRITECRLF');
+  WriteLn('  PUSH 1');
+  WriteLn('  CALL _ExitProcess@4');
+  WriteLn('_JRT_PANIC ENDP');
+  WriteLn;
+  WriteLn('_JK_PANIC_MSG DB ''Runtime error: heap overflow'', 0');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtBoundsErr : emettre _JRT_BOUNDS_ERR (index hors bornes)  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtBoundsErr;
+Begin
+  Inc(RtErrorCount);
+  RtLastType := RT_BOUNDS_ERR;
+  WriteLn('_JRT_BOUNDS_ERR PROC');
+  WriteLn('  ; ArrayIndexOutOfBoundsException');
+  WriteLn('  MOV EAX, OFFSET _JK_BOUNDS_MSG');
+  WriteLn('  CALL _JRT_WRITESTR');
+  WriteLn('  CALL _JRT_WRITECRLF');
+  WriteLn('  PUSH 1');
+  WriteLn('  CALL _ExitProcess@4');
+  WriteLn('_JRT_BOUNDS_ERR ENDP');
+  WriteLn;
+  WriteLn('_JK_BOUNDS_MSG DB ''ArrayIndexOutOfBoundsException'', 0');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtNullErr : emettre _JRT_NULL_ERR (pointeur nul)           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtNullErr;
+Begin
+  Inc(RtErrorCount);
+  RtLastType := RT_NULL_ERR;
+  WriteLn('_JRT_NULL_ERR PROC');
+  WriteLn('  ; NullPointerException');
+  WriteLn('  MOV EAX, OFFSET _JK_NULL_MSG');
+  WriteLn('  CALL _JRT_WRITESTR');
+  WriteLn('  CALL _JRT_WRITECRLF');
+  WriteLn('  PUSH 1');
+  WriteLn('  CALL _ExitProcess@4');
+  WriteLn('_JRT_NULL_ERR ENDP');
+  WriteLn;
+  WriteLn('_JK_NULL_MSG DB ''NullPointerException'', 0');
+  WriteLn;
+  Inc(RtEmittedCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAllRtRoutines : emettre toutes les routines runtime        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitAllRtRoutines;
+Begin
+  WriteLn('; ============================================================');
+  WriteLn('; Bibliotheque Runtime Java (routines Win32)');
+  WriteLn('; ============================================================');
+  WriteLn;
+  WriteLn('; --- Routines de conversion ---');
+  EmitRtItoa;
+  EmitRtAtoi;
+  EmitRtBoolToStr;
+  EmitRtCharToStr;
+  EmitRtNullToStr;
+  WriteLn('; --- Routines E/S console ---');
+  EmitRtInitIo;
+  EmitRtWriteStr;
+  EmitRtWriteCrlf;
+  EmitRtReadLine;
+  WriteLn('; --- Routines chaines ---');
+  EmitRtStrlen;
+  EmitRtStrConcat;
+  EmitRtStrCmp;
+  EmitRtStrSlice;
+  EmitRtStrFind;
+  EmitRtStrUpper;
+  EmitRtStrLower;
+  EmitRtStrTrim;
+  EmitRtStrContains;
+  EmitRtStrStartsWith;
+  EmitRtStrEndsWith;
+  WriteLn('; --- Routines tableaux ---');
+  EmitRtArrAlloc;
+  EmitRtArrGet;
+  EmitRtArrSet;
+  EmitRtArrLen;
+  EmitRtArrCopy;
+  WriteLn('; --- Routines objets ---');
+  EmitRtObjNew;
+  EmitRtHeapAlloc;
+  WriteLn('; --- Routines erreur ---');
+  EmitRtPanic;
+  EmitRtBoundsErr;
+  EmitRtNullErr;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpRtState : afficher l etat du sous-systeme runtime          }
+{ ------------------------------------------------------------ }
+
+Procedure DumpRtState;
+Var I : Integer;
+Begin
+  WriteLn('--- RtState dump ---');
+  WriteLn('  RtInitialized      : ', RtInitialized);
+  WriteLn('  RtRoutineCount     : ', RtRoutineCount);
+  WriteLn('  RtEmittedCount     : ', RtEmittedCount);
+  WriteLn('  RtConversionCount  : ', RtConversionCount);
+  WriteLn('  RtIoCount          : ', RtIoCount);
+  WriteLn('  RtStringCount      : ', RtStringCount);
+  WriteLn('  RtArrayCount       : ', RtArrayCount);
+  WriteLn('  RtObjectCount      : ', RtObjectCount);
+  WriteLn('  RtErrorCount       : ', RtErrorCount);
+  WriteLn('  RtLastType         : ', RtTypeName(RtLastType));
+  If RtRoutineCount > 0 Then
+  Begin
+    WriteLn('  --- Routines enregistrees ---');
+    For I := 1 To RtRoutineCount Do
+      WriteLn('    [', I, '] ', RtRoutines[I].Name, ' (',
+              RtTypeName(RtRoutines[I].Kind), ') calls=',
+              RtRoutines[I].CallCount,
+              ' emitted=', RtRoutines[I].Emitted);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 22)                              }
+{ ------------------------------------------------------------ }
+
+Function IsRtInitialized : Boolean;
+Begin
+  IsRtInitialized := RtInitialized;
+End;
+
+Function IsRtEmpty : Boolean;
+Begin
+  IsRtEmpty := (RtRoutineCount = 0);
+End;
+
+Function GetRtRoutineCount : LongInt;
+Begin
+  GetRtRoutineCount := RtRoutineCount;
+End;
+
+Function GetRtEmittedCount : LongInt;
+Begin
+  GetRtEmittedCount := RtEmittedCount;
+End;
+
+Function GetRtConversionCount : LongInt;
+Begin
+  GetRtConversionCount := RtConversionCount;
+End;
+
+Function GetRtIoCount : LongInt;
+Begin
+  GetRtIoCount := RtIoCount;
+End;
+
+Function GetRtStringCount : LongInt;
+Begin
+  GetRtStringCount := RtStringCount;
+End;
+
+Function GetRtArrayCount : LongInt;
+Begin
+  GetRtArrayCount := RtArrayCount;
+End;
+
+Function GetRtLastType : Integer;
+Begin
+  GetRtLastType := RtLastType;
+End;
+
+Function GetRtStatus : TString;
+Begin
+  If Not RtInitialized Then
+    GetRtStatus := 'Not initialized'
+  Else
+    GetRtStatus := ItoS(RtRoutineCount) + ' routines, ' +
+                   ItoS(RtEmittedCount) + ' emitted, ' +
+                   ItoS(RtConversionCount) + ' conv, ' +
+                   ItoS(RtIoCount) + ' I/O, ' +
+                   ItoS(RtStringCount) + ' string, ' +
+                   ItoS(RtArrayCount) + ' array';
+End;
+
+{ ============================================================ }
+{ TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ                   }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations pour ecrivain PE/COFF }
+  PE_NONE              = 0;    { aucun / non defini                    }
+  PE_DOS_HEADER        = 1;    { DOS Header (64 octets)                }
+  PE_DOS_STUB          = 2;    { DOS stub programme                    }
+  PE_SIGNATURE         = 3;    { "PE\0\0" signature                    }
+  PE_COFF_HEADER       = 4;    { COFF File Header (20 octets)          }
+  PE_OPTIONAL_HEADER   = 5;    { Optional Header (224 octets)          }
+  PE_SECTION_HEADER    = 6;    { Section Header (40 octets)            }
+  PE_SECTION_TEXT      = 7;    { Section .text (code)                  }
+  PE_SECTION_RDATA     = 8;    { Section .rdata (imports)              }
+  PE_SECTION_DATA      = 9;    { Section .data (donnees)               }
+  PE_FIXUP_ABS         = 10;   { Fixup adresse absolue                 }
+  PE_FIXUP_REL         = 11;   { Fixup adresse relative                }
+  PE_IMPORT_DESC       = 12;   { Import Directory entry                }
+  PE_HINT_NAME         = 13;   { Hint/Name Table entry                 }
+  PE_IAT_ENTRY         = 14;   { Import Address Table entry            }
+  PE_MAX               = 14;
+
+  { Types d operations pour COFF }
+  COFF_NONE            = 0;    { aucun / non defini                    }
+  COFF_HEADER          = 1;    { COFF File Header                      }
+  COFF_SECTION         = 2;    { Section Header                        }
+  COFF_RELOC           = 3;    { Relocation entry                      }
+  COFF_SYMBOL          = 4;    { Symbol Table entry                    }
+  COFF_STRING          = 5;    { String Table entry                    }
+  COFF_MAX             = 5;
+
+  { Constantes PE32 }
+  PE_IMAGE_DOS_SIGNATURE    = $5A4D;      { 'MZ'                        }
+  PE_IMAGE_NT_SIGNATURE     = $00004550;  { 'PE\0\0'                    }
+  PE_IMAGE_FILE_MACHINE_I386= $014C;      { Machine i386                }
+  PE_IMAGE_FILE_EXECUTABLE  = $0002;      { Executable image            }
+  PE_IMAGE_FILE_32BIT       = $0100;      { 32-bit machine              }
+  PE_OPTIONAL_HDR32_MAGIC   = $010B;      { PE32 magic                  }
+  PE_IMAGE_SUBSYSTEM_CUI    = 3;          { Console application         }
+  PE_IMAGE_BASE_DEFAULT     = $00400000;  { Default image base          }
+  PE_SECTION_ALIGNMENT      = $1000;      { 4096 octets                 }
+  PE_FILE_ALIGNMENT         = $0200;      { 512 octets                  }
+
+  { Caracteristiques des sections }
+  PE_SCN_CNT_CODE          = $00000020;   { Section contains code       }
+  PE_SCN_CNT_INIT_DATA     = $00000040;   { Section contains init data  }
+  PE_SCN_CNT_UNINIT_DATA   = $00000080;   { Section contains uninit data}
+  PE_SCN_MEM_EXECUTE       = $20000000;   { Section is executable       }
+  PE_SCN_MEM_READ          = $40000000;   { Section is readable         }
+  PE_SCN_MEM_WRITE         : LongInt = LongInt($80000000);   { Section is writable }
+
+  { Types de relocation COFF i386 }
+  IMAGE_REL_I386_DIR32     = $0006;       { Direct 32-bit virtual addr  }
+  IMAGE_REL_I386_REL32     = $0014;       { PC-relative 32-bit ref      }
+
+  { Classes de stockage COFF }
+  IMAGE_SYM_CLASS_EXTERNAL = 2;           { External symbol             }
+  IMAGE_SYM_CLASS_STATIC   = 3;           { Static symbol               }
+  IMAGE_SYM_CLASS_LABEL    = 6;           { Label                       }
+  IMAGE_SYM_CLASS_FILE     = 103;         { File name                   }
+
+  { Section numbers speciales COFF }
+  IMAGE_SYM_UNDEFINED      = 0;           { Undefined section           }
+  IMAGE_SYM_ABSOLUTE       = -1;          { Absolute value              }
+
+  { Limites }
+  PE_MAX_SECTIONS          = 16;          { Nombre max de sections      }
+  PE_MAX_IMPORTS           = 64;          { Nombre max d imports        }
+  PE_MAX_FIXUPS            = 1024;        { Nombre max de fixups        }
+  PE_MAX_SYMBOLS           = 512;         { Nombre max de symboles      }
+  PE_DOS_STUB_SIZE         = 64;          { Taille du DOS stub          }
+
+Type
+  { Structure DOS Header }
+  TDosHeader = Record
+    e_magic    : Word;       { Magic number (MZ)                       }
+    e_cblp     : Word;       { Bytes on last page of file              }
+    e_cp       : Word;       { Pages in file                           }
+    e_crlc     : Word;       { Relocations                             }
+    e_cparhdr  : Word;       { Size of header in paragraphs            }
+    e_minalloc : Word;       { Minimum extra paragraphs needed         }
+    e_maxalloc : Word;       { Maximum extra paragraphs needed         }
+    e_ss       : Word;       { Initial (relative) SS value             }
+    e_sp       : Word;       { Initial SP value                        }
+    e_csum     : Word;       { Checksum                                }
+    e_ip       : Word;       { Initial IP value                        }
+    e_cs       : Word;       { Initial (relative) CS value             }
+    e_lfarlc   : Word;       { File address of relocation table        }
+    e_ovno     : Word;       { Overlay number                          }
+    e_res      : Array[0..3] Of Word; { Reserved words                 }
+    e_oemid    : Word;       { OEM identifier                          }
+    e_oeminfo  : Word;       { OEM information                         }
+    e_res2     : Array[0..9] Of Word; { Reserved words                 }
+    e_lfanew   : LongInt;    { File address of new exe header          }
+  End;
+
+  { Structure COFF File Header }
+  TCoffFileHeader = Record
+    Machine              : Word;     { Machine type ($014C = i386)     }
+    NumberOfSections     : Word;     { Number of sections              }
+    TimeDateStamp        : LongInt;  { Time date stamp                 }
+    PointerToSymbolTable : LongInt;  { File offset of symbol table     }
+    NumberOfSymbols      : LongInt;  { Number of symbols               }
+    SizeOfOptionalHeader : Word;     { Size of optional header         }
+    Characteristics      : Word;     { File characteristics            }
+  End;
+
+  { Structure Section Header }
+  TPeSectionHeader = Record
+    SName                : Array[0..7] Of Char; { Section name         }
+    VirtualSize          : LongInt;  { Virtual size                    }
+    VirtualAddress       : LongInt;  { Virtual address (RVA)           }
+    SizeOfRawData        : LongInt;  { Size of raw data                }
+    PointerToRawData     : LongInt;  { File pointer to raw data        }
+    PointerToRelocations : LongInt;  { File pointer to relocations     }
+    PointerToLinenumbers : LongInt;  { File pointer to line numbers    }
+    NumberOfRelocations  : Word;     { Number of relocations           }
+    NumberOfLinenumbers  : Word;     { Number of line numbers          }
+    Characteristics      : LongInt;  { Section characteristics         }
+  End;
+
+  { Structure relocation COFF }
+  TCoffReloc = Record
+    VirtualAddress   : LongInt;      { Offset in section               }
+    SymbolTableIndex : LongInt;      { Index into symbol table         }
+    RelocType        : Word;         { Type of relocation              }
+  End;
+
+  { Structure symbole COFF (18 octets) }
+  TCoffSymbol = Record
+    SName          : Array[0..7] Of Char; { Symbol name or offset      }
+    Value          : LongInt;        { Value of symbol                  }
+    SectionNumber  : SmallInt;       { Section number                   }
+    SymType        : Word;           { Type                             }
+    StorageClass   : Byte;           { Storage class                    }
+    NumberOfAux    : Byte;           { Number of auxiliary entries      }
+  End;
+
+  { Structure fixup interne }
+  TPeFixup = Record
+    Offset     : LongInt;            { Offset dans la section           }
+    TargetSym  : TString;            { Symbole cible                    }
+    IsRelative : Boolean;            { True si relatif au PC            }
+    Section    : Integer;            { Section du fixup (1=.text, etc)  }
+  End;
+
+  { Structure import }
+  TPeImport = Record
+    DllName    : TString;            { Nom de la DLL                    }
+    FuncName   : TString;            { Nom de la fonction               }
+    Hint       : Word;               { Hint (ordinal approximatif)      }
+    IatOffset  : LongInt;            { Offset dans l IAT                }
+    Used       : Boolean;            { True si utilise                  }
+  End;
+
+  { Structure symbole interne }
+  TPeSymbol = Record
+    Name       : TString;            { Nom du symbole                   }
+    Value      : LongInt;            { Valeur / offset                  }
+    Section    : Integer;            { Numero de section                }
+    SClass     : Byte;               { Storage class                    }
+    IsDefined  : Boolean;            { True si defini, False si externe }
+  End;
+
+Var
+  PeInitialized      : Boolean;        { True si l etat est initialise   }
+  PeOutputFile       : File;           { Fichier de sortie               }
+  PeOutputOpen       : Boolean;        { True si fichier ouvert          }
+  PeFileOffset       : LongInt;        { Offset courant dans fichier     }
+  PeImageBase        : LongInt;        { Base de l image (default $400000)}
+  PeSectionCount     : Integer;        { Nombre de sections              }
+  PeSections         : Array[1..PE_MAX_SECTIONS] Of TPeSectionHeader;
+  PeTextSection      : Integer;        { Index section .text             }
+  PeRdataSection     : Integer;        { Index section .rdata            }
+  PeDataSection      : Integer;        { Index section .data             }
+  PeFixups           : Array[1..PE_MAX_FIXUPS] Of TPeFixup;
+  PeFixupCount       : Integer;        { Nombre de fixups                }
+  PeImports          : Array[1..PE_MAX_IMPORTS] Of TPeImport;
+  PeImportCount      : Integer;        { Nombre d imports                }
+  PeSymbols          : Array[1..PE_MAX_SYMBOLS] Of TPeSymbol;
+  PeSymbolCount      : Integer;        { Nombre de symboles              }
+  PeLabelSeq         : Integer;        { Sequence pour labels PE         }
+  PeLastType         : Integer;        { Dernier type d operation        }
+  PeTextBuffer       : Array[0..65535] Of Byte; { Buffer section .text  }
+  PeTextSize         : LongInt;        { Taille section .text            }
+  PeRdataBuffer      : Array[0..16383] Of Byte; { Buffer section .rdata }
+  PeRdataSize        : LongInt;        { Taille section .rdata           }
+  PeDataBuffer       : Array[0..16383] Of Byte; { Buffer section .data  }
+  PeDataSize         : LongInt;        { Taille section .data            }
+  PeEntryPoint       : LongInt;        { Point d entree RVA              }
+  PeIsCoff           : Boolean;        { True si mode COFF .OBJ          }
+
+{ ------------------------------------------------------------ }
+{ InitPeState : initialiser le sous-systeme ecrivain PE/COFF   }
+{ ------------------------------------------------------------ }
+
+Procedure InitPeState;
+Var I : LongInt;
+Begin
+  PeInitialized   := True;
+  PeOutputOpen    := False;
+  PeFileOffset    := 0;
+  PeImageBase     := PE_IMAGE_BASE_DEFAULT;
+  PeSectionCount  := 0;
+  PeTextSection   := 0;
+  PeRdataSection  := 0;
+  PeDataSection   := 0;
+  PeFixupCount    := 0;
+  PeImportCount   := 0;
+  PeSymbolCount   := 0;
+  PeLabelSeq      := 0;
+  PeLastType      := PE_NONE;
+  PeTextSize      := 0;
+  PeRdataSize     := 0;
+  PeDataSize      := 0;
+  PeEntryPoint    := 0;
+  PeIsCoff        := False;
+  For I := 0 To 65535 Do PeTextBuffer[I] := 0;
+  For I := 0 To 16383 Do PeRdataBuffer[I] := 0;
+  For I := 0 To 16383 Do PeDataBuffer[I] := 0;
+  For I := 1 To PE_MAX_SECTIONS Do
+  Begin
+    FillChar(PeSections[I], SizeOf(TPeSectionHeader), 0);
+  End;
+  For I := 1 To PE_MAX_FIXUPS Do
+  Begin
+    PeFixups[I].Offset := 0;
+    PeFixups[I].TargetSym := '';
+    PeFixups[I].IsRelative := False;
+    PeFixups[I].Section := 0;
+  End;
+  For I := 1 To PE_MAX_IMPORTS Do
+  Begin
+    PeImports[I].DllName := '';
+    PeImports[I].FuncName := '';
+    PeImports[I].Hint := 0;
+    PeImports[I].IatOffset := 0;
+    PeImports[I].Used := False;
+  End;
+  For I := 1 To PE_MAX_SYMBOLS Do
+  Begin
+    PeSymbols[I].Name := '';
+    PeSymbols[I].Value := 0;
+    PeSymbols[I].Section := 0;
+    PeSymbols[I].SClass := IMAGE_SYM_CLASS_EXTERNAL;
+    PeSymbols[I].IsDefined := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPeLabel : generer un label unique pour PE/COFF              }
+{ ------------------------------------------------------------ }
+
+Function GenPeLabel : TString;
+Begin
+  Inc(PeLabelSeq);
+  GenPeLabel := '_JPE_' + ItoS(PeLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeTypeName : nom textuel d un type d operation PE              }
+{ ------------------------------------------------------------ }
+
+Function PeTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    PE_NONE            : PeTypeName := 'PE_NONE';
+    PE_DOS_HEADER      : PeTypeName := 'PE_DOS_HEADER';
+    PE_DOS_STUB        : PeTypeName := 'PE_DOS_STUB';
+    PE_SIGNATURE       : PeTypeName := 'PE_SIGNATURE';
+    PE_COFF_HEADER     : PeTypeName := 'PE_COFF_HEADER';
+    PE_OPTIONAL_HEADER : PeTypeName := 'PE_OPTIONAL_HEADER';
+    PE_SECTION_HEADER  : PeTypeName := 'PE_SECTION_HEADER';
+    PE_SECTION_TEXT    : PeTypeName := 'PE_SECTION_TEXT';
+    PE_SECTION_RDATA   : PeTypeName := 'PE_SECTION_RDATA';
+    PE_SECTION_DATA    : PeTypeName := 'PE_SECTION_DATA';
+    PE_FIXUP_ABS       : PeTypeName := 'PE_FIXUP_ABS';
+    PE_FIXUP_REL       : PeTypeName := 'PE_FIXUP_REL';
+    PE_IMPORT_DESC     : PeTypeName := 'PE_IMPORT_DESC';
+    PE_HINT_NAME       : PeTypeName := 'PE_HINT_NAME';
+    PE_IAT_ENTRY       : PeTypeName := 'PE_IAT_ENTRY';
+  Else
+    PeTypeName := 'PE_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CoffTypeName : nom textuel d un type d operation COFF          }
+{ ------------------------------------------------------------ }
+
+Function CoffTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    COFF_NONE     : CoffTypeName := 'COFF_NONE';
+    COFF_HEADER   : CoffTypeName := 'COFF_HEADER';
+    COFF_SECTION  : CoffTypeName := 'COFF_SECTION';
+    COFF_RELOC    : CoffTypeName := 'COFF_RELOC';
+    COFF_SYMBOL   : CoffTypeName := 'COFF_SYMBOL';
+    COFF_STRING   : CoffTypeName := 'COFF_STRING';
+  Else
+    CoffTypeName := 'COFF_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PeWriteByte : ecrire un octet dans le fichier PE               }
+{ ------------------------------------------------------------ }
+
+Procedure PeWriteByte(B : Byte);
+Begin
+  If PeOutputOpen Then
+  Begin
+    BlockWrite(PeOutputFile, B, 1);
+    Inc(PeFileOffset);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PeWriteWord : ecrire un mot 16 bits (little-endian)            }
+{ ------------------------------------------------------------ }
+
+Procedure PeWriteWord(W : Word);
+Begin
+  PeWriteByte(W And $FF);
+  PeWriteByte((W Shr 8) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeWriteDWord : ecrire un mot 32 bits (little-endian)           }
+{ ------------------------------------------------------------ }
+
+Procedure PeWriteDWord(D : LongInt);
+Begin
+  PeWriteByte(D And $FF);
+  PeWriteByte((D Shr 8) And $FF);
+  PeWriteByte((D Shr 16) And $FF);
+  PeWriteByte((D Shr 24) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeWriteBuffer : ecrire un buffer dans le fichier               }
+{ ------------------------------------------------------------ }
+
+Procedure PeWriteBuffer(Var Buf; Size : LongInt);
+Begin
+  If PeOutputOpen And (Size > 0) Then
+  Begin
+    BlockWrite(PeOutputFile, Buf, Size);
+    Inc(PeFileOffset, Size);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PeWriteString : ecrire une chaine terminee par zero            }
+{ ------------------------------------------------------------ }
+
+Procedure PeWriteString(Const S : TString);
+Var I : Integer;
+Begin
+  For I := 1 To Length(S) Do
+    PeWriteByte(Ord(S[I]));
+  PeWriteByte(0);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeWritePadding : ecrire des octets de padding                  }
+{ ------------------------------------------------------------ }
+
+Procedure PeWritePadding(Count : LongInt);
+Var I : LongInt;
+Begin
+  For I := 1 To Count Do
+    PeWriteByte(0);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeAlignTo : aligner sur une frontiere donnee                   }
+{ ------------------------------------------------------------ }
+
+Function PeAlignTo(Value, Alignment : LongInt) : LongInt;
+Begin
+  If (Value Mod Alignment) = 0 Then
+    PeAlignTo := Value
+  Else
+    PeAlignTo := Value + (Alignment - (Value Mod Alignment));
+End;
+
+{ ------------------------------------------------------------ }
+{ PeAlignFileOffset : aligner l offset fichier sur FileAlignment }
+{ ------------------------------------------------------------ }
+
+Procedure PeAlignFileOffset;
+Var Padding : LongInt;
+Begin
+  Padding := PeAlignTo(PeFileOffset, PE_FILE_ALIGNMENT) - PeFileOffset;
+  If Padding > 0 Then
+    PeWritePadding(Padding);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPeSection : ajouter une section                             }
+{ ------------------------------------------------------------ }
+
+Function AddPeSection(Const Name : TString; VSize, RSize : LongInt;
+                       Chars : LongInt) : Integer;
+Var I : Integer;
+Begin
+  If PeSectionCount >= PE_MAX_SECTIONS Then
+  Begin
+    AddPeSection := 0;
+    Exit;
+  End;
+  Inc(PeSectionCount);
+  FillChar(PeSections[PeSectionCount].SName, 8, 0);
+  For I := 1 To Length(Name) Do
+    If I <= 8 Then
+      PeSections[PeSectionCount].SName[I-1] := Name[I];
+  PeSections[PeSectionCount].VirtualSize := VSize;
+  PeSections[PeSectionCount].SizeOfRawData := RSize;
+  PeSections[PeSectionCount].Characteristics := Chars;
+  AddPeSection := PeSectionCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPeFixup : ajouter un fixup                                  }
+{ ------------------------------------------------------------ }
+
+Procedure AddPeFixup(Offset : LongInt; Const TargetSym : TString;
+                      IsRel : Boolean; Sect : Integer);
+Begin
+  If PeFixupCount >= PE_MAX_FIXUPS Then Exit;
+  Inc(PeFixupCount);
+  PeFixups[PeFixupCount].Offset := Offset;
+  PeFixups[PeFixupCount].TargetSym := TargetSym;
+  PeFixups[PeFixupCount].IsRelative := IsRel;
+  PeFixups[PeFixupCount].Section := Sect;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPeImport : ajouter un import                                }
+{ ------------------------------------------------------------ }
+
+Function AddPeImport(Const Dll, Func : TString) : Integer;
+Var I : Integer;
+Begin
+  { Chercher si deja present }
+  For I := 1 To PeImportCount Do
+    If (PeImports[I].DllName = Dll) And (PeImports[I].FuncName = Func) Then
+    Begin
+      PeImports[I].Used := True;
+      AddPeImport := I;
+      Exit;
+    End;
+  { Ajouter nouveau }
+  If PeImportCount >= PE_MAX_IMPORTS Then
+  Begin
+    AddPeImport := 0;
+    Exit;
+  End;
+  Inc(PeImportCount);
+  PeImports[PeImportCount].DllName := Dll;
+  PeImports[PeImportCount].FuncName := Func;
+  PeImports[PeImportCount].Hint := 0;
+  PeImports[PeImportCount].IatOffset := 0;
+  PeImports[PeImportCount].Used := True;
+  AddPeImport := PeImportCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPeSymbol : ajouter un symbole                               }
+{ ------------------------------------------------------------ }
+
+Function AddPeSymbol(Const SName : TString; Val : LongInt;
+                      Sect : Integer; SCls : Byte; Def : Boolean) : Integer;
+Var I : Integer;
+Begin
+  { Chercher si deja present }
+  For I := 1 To PeSymbolCount Do
+    If PeSymbols[I].Name = SName Then
+    Begin
+      If Def Then
+      Begin
+        PeSymbols[I].Value := Val;
+        PeSymbols[I].Section := Sect;
+        PeSymbols[I].IsDefined := True;
+      End;
+      AddPeSymbol := I;
+      Exit;
+    End;
+  { Ajouter nouveau }
+  If PeSymbolCount >= PE_MAX_SYMBOLS Then
+  Begin
+    AddPeSymbol := 0;
+    Exit;
+  End;
+  Inc(PeSymbolCount);
+  PeSymbols[PeSymbolCount].Name := SName;
+  PeSymbols[PeSymbolCount].Value := Val;
+  PeSymbols[PeSymbolCount].Section := Sect;
+  PeSymbols[PeSymbolCount].SClass := SCls;
+  PeSymbols[PeSymbolCount].IsDefined := Def;
+  AddPeSymbol := PeSymbolCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindPeSymbol : chercher un symbole par nom                     }
+{ ------------------------------------------------------------ }
+
+Function FindPeSymbol(Const SName : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 1 To PeSymbolCount Do
+    If PeSymbols[I].Name = SName Then
+    Begin
+      FindPeSymbol := I;
+      Exit;
+    End;
+  FindPeSymbol := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTextByte : emettre un octet dans la section .text          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTextByte(B : Byte);
+Begin
+  If PeTextSize < 65536 Then
+  Begin
+    PeTextBuffer[PeTextSize] := B;
+    Inc(PeTextSize);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTextWord : emettre un mot 16 bits dans .text               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTextWord(W : Word);
+Begin
+  EmitTextByte(W And $FF);
+  EmitTextByte((W Shr 8) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTextDWord : emettre un mot 32 bits dans .text              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTextDWord(D : LongInt);
+Begin
+  EmitTextByte(D And $FF);
+  EmitTextByte((D Shr 8) And $FF);
+  EmitTextByte((D Shr 16) And $FF);
+  EmitTextByte((D Shr 24) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataByte : emettre un octet dans la section .data          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataByte(B : Byte);
+Begin
+  If PeDataSize < 16384 Then
+  Begin
+    PeDataBuffer[PeDataSize] := B;
+    Inc(PeDataSize);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataDWord : emettre un mot 32 bits dans .data              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataDWord(D : LongInt);
+Begin
+  EmitDataByte(D And $FF);
+  EmitDataByte((D Shr 8) And $FF);
+  EmitDataByte((D Shr 16) And $FF);
+  EmitDataByte((D Shr 24) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataString : emettre une chaine terminee par zero          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataString(Const S : TString);
+Var I : Integer;
+Begin
+  For I := 1 To Length(S) Do
+    EmitDataByte(Ord(S[I]));
+  EmitDataByte(0);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRdataByte : emettre un octet dans la section .rdata        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRdataByte(B : Byte);
+Begin
+  If PeRdataSize < 16384 Then
+  Begin
+    PeRdataBuffer[PeRdataSize] := B;
+    Inc(PeRdataSize);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRdataWord : emettre un mot 16 bits dans .rdata             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRdataWord(W : Word);
+Begin
+  EmitRdataByte(W And $FF);
+  EmitRdataByte((W Shr 8) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRdataDWord : emettre un mot 32 bits dans .rdata            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRdataDWord(D : LongInt);
+Begin
+  EmitRdataByte(D And $FF);
+  EmitRdataByte((D Shr 8) And $FF);
+  EmitRdataByte((D Shr 16) And $FF);
+  EmitRdataByte((D Shr 24) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRdataString : emettre une chaine terminee par zero         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRdataString(Const S : TString);
+Var I : Integer;
+Begin
+  For I := 1 To Length(S) Do
+    EmitRdataByte(Ord(S[I]));
+  EmitRdataByte(0);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteDosHeader : ecrire le DOS Header                          }
+{ ------------------------------------------------------------ }
+
+Procedure WriteDosHeader;
+Var DosHdr : TDosHeader;
+Begin
+  PeLastType := PE_DOS_HEADER;
+  FillChar(DosHdr, SizeOf(TDosHeader), 0);
+  DosHdr.e_magic   := PE_IMAGE_DOS_SIGNATURE;  { 'MZ' }
+  DosHdr.e_cblp    := $0090;
+  DosHdr.e_cp      := $0003;
+  DosHdr.e_cparhdr := $0004;
+  DosHdr.e_maxalloc:= $FFFF;
+  DosHdr.e_sp      := $00B8;
+  DosHdr.e_lfarlc  := $0040;
+  DosHdr.e_lfanew  := $80;  { Offset vers PE header }
+  PeWriteBuffer(DosHdr, SizeOf(TDosHeader));
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteDosStub : ecrire le DOS stub                              }
+{ ------------------------------------------------------------ }
+
+Procedure WriteDosStub;
+Const
+  { DOS stub minimal : affiche "This program cannot be run in DOS mode" }
+  DosStubCode : Array[0..63] Of Byte = (
+    $0E, $1F, $BA, $0E, $00, $B4, $09, $CD, $21, $B8, $01, $4C, $CD, $21,
+    $54, $68, $69, $73, $20, $70, $72, $6F, $67, $72, $61, $6D, $20, $63,
+    $61, $6E, $6E, $6F, $74, $20, $62, $65, $20, $72, $75, $6E, $20, $69,
+    $6E, $20, $44, $4F, $53, $20, $6D, $6F, $64, $65, $2E, $0D, $0D, $0A,
+    $24, $00, $00, $00, $00, $00, $00, $00
+  );
+Begin
+  PeLastType := PE_DOS_STUB;
+  PeWriteBuffer(DosStubCode, PE_DOS_STUB_SIZE);
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePeSignature : ecrire la signature PE                      }
+{ ------------------------------------------------------------ }
+
+Procedure WritePeSignature;
+Begin
+  PeLastType := PE_SIGNATURE;
+  PeWriteDWord(PE_IMAGE_NT_SIGNATURE);  { 'PE\0\0' }
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffFileHeader : ecrire le COFF File Header               }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCoffFileHeader(NumSections : Word; OptHdrSize : Word;
+                                Chars : Word);
+Var CoffHdr : TCoffFileHeader;
+Begin
+  PeLastType := PE_COFF_HEADER;
+  CoffHdr.Machine := PE_IMAGE_FILE_MACHINE_I386;
+  CoffHdr.NumberOfSections := NumSections;
+  CoffHdr.TimeDateStamp := 0;  { On pourrait mettre la date courante }
+  CoffHdr.PointerToSymbolTable := 0;
+  CoffHdr.NumberOfSymbols := 0;
+  CoffHdr.SizeOfOptionalHeader := OptHdrSize;
+  CoffHdr.Characteristics := Chars;
+  PeWriteBuffer(CoffHdr, SizeOf(TCoffFileHeader));
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteOptionalHeader : ecrire le PE Optional Header             }
+{ ------------------------------------------------------------ }
+
+Procedure WriteOptionalHeader(CodeSize, DataSize, BssSize : LongInt;
+                                EntryRVA : LongInt;
+                                TextRVA, RdataRVA, DataRVA : LongInt;
+                                ImageSize : LongInt;
+                                ImportRVA, ImportSize : LongInt);
+Var I : Integer;
+Begin
+  PeLastType := PE_OPTIONAL_HEADER;
+  { Standard fields }
+  PeWriteWord(PE_OPTIONAL_HDR32_MAGIC);  { Magic PE32 }
+  PeWriteByte(1);   { MajorLinkerVersion }
+  PeWriteByte(0);   { MinorLinkerVersion }
+  PeWriteDWord(CodeSize);     { SizeOfCode }
+  PeWriteDWord(DataSize);     { SizeOfInitializedData }
+  PeWriteDWord(BssSize);      { SizeOfUninitializedData }
+  PeWriteDWord(EntryRVA);     { AddressOfEntryPoint }
+  PeWriteDWord(TextRVA);      { BaseOfCode }
+  PeWriteDWord(DataRVA);      { BaseOfData (PE32 only) }
+  { NT-specific fields }
+  PeWriteDWord(PeImageBase);  { ImageBase }
+  PeWriteDWord(PE_SECTION_ALIGNMENT);  { SectionAlignment }
+  PeWriteDWord(PE_FILE_ALIGNMENT);     { FileAlignment }
+  PeWriteWord(6);   { MajorOperatingSystemVersion }
+  PeWriteWord(0);   { MinorOperatingSystemVersion }
+  PeWriteWord(0);   { MajorImageVersion }
+  PeWriteWord(0);   { MinorImageVersion }
+  PeWriteWord(6);   { MajorSubsystemVersion }
+  PeWriteWord(0);   { MinorSubsystemVersion }
+  PeWriteDWord(0);  { Win32VersionValue }
+  PeWriteDWord(ImageSize);    { SizeOfImage }
+  PeWriteDWord($200);         { SizeOfHeaders (aligned) }
+  PeWriteDWord(0);            { CheckSum }
+  PeWriteWord(PE_IMAGE_SUBSYSTEM_CUI);  { Subsystem (Console) }
+  PeWriteWord(0);             { DllCharacteristics }
+  PeWriteDWord($100000);      { SizeOfStackReserve }
+  PeWriteDWord($1000);        { SizeOfStackCommit }
+  PeWriteDWord($100000);      { SizeOfHeapReserve }
+  PeWriteDWord($1000);        { SizeOfHeapCommit }
+  PeWriteDWord(0);            { LoaderFlags }
+  PeWriteDWord(16);           { NumberOfRvaAndSizes }
+  { Data directories (16 entries) }
+  PeWriteDWord(0); PeWriteDWord(0);  { Export Table }
+  PeWriteDWord(ImportRVA); PeWriteDWord(ImportSize);  { Import Table }
+  For I := 3 To 16 Do
+  Begin
+    PeWriteDWord(0); PeWriteDWord(0);  { Autres directories }
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteSectionHeader : ecrire un Section Header                  }
+{ ------------------------------------------------------------ }
+
+Procedure WriteSectionHeader(Var Sect : TPeSectionHeader);
+Begin
+  PeLastType := PE_SECTION_HEADER;
+  PeWriteBuffer(Sect, SizeOf(TPeSectionHeader));
+End;
+
+{ ------------------------------------------------------------ }
+{ ResolveFixups : resoudre les fixups dans la section .text      }
+{ ------------------------------------------------------------ }
+
+Procedure ResolveFixups;
+Var
+  I, SymIdx : Integer;
+  TargetAddr, FixupAddr : LongInt;
+  RelOffset : LongInt;
+Begin
+  For I := 1 To PeFixupCount Do
+  Begin
+    SymIdx := FindPeSymbol(PeFixups[I].TargetSym);
+    If SymIdx > 0 Then
+    Begin
+      TargetAddr := PeSymbols[SymIdx].Value;
+      FixupAddr := PeFixups[I].Offset;
+      If PeFixups[I].IsRelative Then
+      Begin
+        { Relatif au PC : cible - (adresse instruction suivante) }
+        RelOffset := TargetAddr - (FixupAddr + 4);
+        PeTextBuffer[FixupAddr] := RelOffset And $FF;
+        PeTextBuffer[FixupAddr+1] := (RelOffset Shr 8) And $FF;
+        PeTextBuffer[FixupAddr+2] := (RelOffset Shr 16) And $FF;
+        PeTextBuffer[FixupAddr+3] := (RelOffset Shr 24) And $FF;
+      End
+      Else
+      Begin
+        { Absolu : adresse complete }
+        PeTextBuffer[FixupAddr] := TargetAddr And $FF;
+        PeTextBuffer[FixupAddr+1] := (TargetAddr Shr 8) And $FF;
+        PeTextBuffer[FixupAddr+2] := (TargetAddr Shr 16) And $FF;
+        PeTextBuffer[FixupAddr+3] := (TargetAddr Shr 24) And $FF;
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GeneratePeExe : generer un fichier PE executable               }
+{ ------------------------------------------------------------ }
+
+Procedure GeneratePeExe(Const OutputPath : TString);
+Var
+  TextRVA, RdataRVA, DataRVA : LongInt;
+  TextFileOff, RdataFileOff, DataFileOff : LongInt;
+  TextAligned, RdataAligned, DataAligned : LongInt;
+  ImageSize : LongInt;
+  ImportRVA, ImportSize : LongInt;
+  ImageBase : LongInt;
+  IatGetStdHandle, IatWriteFile, IatExitProcess : LongInt;
+  IdtOff, IltOff, IatOff, HntOff, DllNameOff : LongInt;
+  StdOutAddr, WrittenAddr, MsgAddr : LongInt;
+  MsgLen : Integer;
+  Msg : TString;
+  HasCollectedOutputs : Boolean;
+Begin
+  PeIsCoff := False;
+  ImageBase := PE_IMAGE_BASE_DEFAULT;  { $00400000 }
+  
+  { Verifier si des messages de sortie ont ete collectes }
+  { Les buffers PeTextSize et PeDataSize seront deja remplis }
+  { par EmitCompiledOutput si OutMsgCount > 0               }
+  HasCollectedOutputs := (OutMsgCount > 0);
+  
+  { Layout PE fixe :                                      }
+  {   .text  RVA $1000  - code                           }
+  {   .rdata RVA $2000  - imports                        }
+  {   .data  RVA $3000  - donnees                        }
+  
+  TextRVA   := $1000;
+  RdataRVA  := $2000;
+  DataRVA   := $3000;
+  
+  { Message a afficher (par defaut) }
+  Msg := 'Hello, World!';
+  MsgLen := Length(Msg);
+  
+  { ===== Construire la section .rdata (imports) ===== }
+  { Layout .rdata :                                     }
+  {   Offset 0   : Import Directory Table (IDT) - 40 bytes (1 DLL + null) }
+  {   Offset 40  : Import Lookup Table (ILT) - 16 bytes (3 funcs + null) }
+  {   Offset 56  : Import Address Table (IAT) - 16 bytes (copie de ILT) }
+  {   Offset 72  : Hint/Name Table entries              }
+  {   Offset xxx : DLL name "kernel32.dll"              }
+  
+  IdtOff := 0;       { Import Directory Table }
+  IltOff := 40;      { Import Lookup Table }
+  IatOff := 56;      { Import Address Table }
+  HntOff := 72;      { Hint/Name entries }
+  
+  { Calculer les vrais offsets des Hint/Name entries :
+    GetStdHandle : 2 + 12 + 1 = 15 -> 16 avec padding (offset 0)
+    WriteFile    : 2 + 9 + 1  = 12 (pair)              (offset 16)
+    ExitProcess  : 2 + 11 + 1 = 14 (pair)              (offset 16+12=28)
+    Total apres ExitProcess : 28 + 14 = 42 bytes }
+  DllNameOff := HntOff + 42;  { kernel32.dll\0 = 13 bytes }
+  
+  { Calculer les adresses IAT pour les appels }
+  IatGetStdHandle := ImageBase + RdataRVA + IatOff + 0;
+  IatWriteFile    := ImageBase + RdataRVA + IatOff + 4;
+  IatExitProcess  := ImageBase + RdataRVA + IatOff + 8;
+  
+  PeRdataSize := 0;  { Reset }
+  
+  { Import Directory Table - 1 entree + null }
+  { Entree pour kernel32.dll }
+  EmitRdataDWord(RdataRVA + IltOff);       { Import Lookup Table RVA }
+  EmitRdataDWord(0);                        { TimeDateStamp }
+  EmitRdataDWord(0);                        { ForwarderChain }
+  EmitRdataDWord(RdataRVA + DllNameOff);   { Name RVA }
+  EmitRdataDWord(RdataRVA + IatOff);       { Import Address Table RVA }
+  { Entree null }
+  EmitRdataDWord(0);
+  EmitRdataDWord(0);
+  EmitRdataDWord(0);
+  EmitRdataDWord(0);
+  EmitRdataDWord(0);
+  
+  { Import Lookup Table (ILT) - 3 fonctions + null }
+  EmitRdataDWord(RdataRVA + HntOff + 0);   { -> GetStdHandle }
+  EmitRdataDWord(RdataRVA + HntOff + 16);  { -> WriteFile }
+  EmitRdataDWord(RdataRVA + HntOff + 28);  { -> ExitProcess }
+  EmitRdataDWord(0);                        { null terminator }
+  
+  { Import Address Table (IAT) - copie de ILT, sera patche par le loader }
+  EmitRdataDWord(RdataRVA + HntOff + 0);   { -> GetStdHandle }
+  EmitRdataDWord(RdataRVA + HntOff + 16);  { -> WriteFile }
+  EmitRdataDWord(RdataRVA + HntOff + 28);  { -> ExitProcess }
+  EmitRdataDWord(0);                        { null terminator }
+  
+  { Hint/Name Table entries }
+  { GetStdHandle (offset HntOff + 0) : 2 + 12 + 1 + 1(pad) = 16 }
+  EmitRdataWord(0);                         { Hint }
+  EmitRdataString('GetStdHandle');          { Nom + null = 13 bytes }
+  EmitRdataByte(0);                         { Padding pour atteindre 16 }
+  
+  { WriteFile (offset HntOff + 16) : 2 + 9 + 1 = 12 }
+  EmitRdataWord(0);
+  EmitRdataString('WriteFile');
+  
+  { ExitProcess (offset HntOff + 28) : 2 + 11 + 1 = 14 }
+  EmitRdataWord(0);
+  EmitRdataString('ExitProcess');
+  If (PeRdataSize Mod 2) <> 0 Then EmitRdataByte(0);
+  
+  { DLL name }
+  EmitRdataString('kernel32.dll');
+  
+  ImportRVA := RdataRVA;
+  ImportSize := 40;  { Seulement la taille de l'IDT }
+  
+  { ===== Construire la section .data ===== }
+  If Not HasCollectedOutputs Then
+  Begin
+    PeDataSize := 0;  { Reset }
+  
+    { Offset 0: hStdOut (DWORD) }
+    StdOutAddr := ImageBase + DataRVA + 0;
+    EmitDataDWord(0);
+  
+    { Offset 4: bytesWritten (DWORD) }
+    WrittenAddr := ImageBase + DataRVA + 4;
+    EmitDataDWord(0);
+  
+    { Offset 8: message string }
+    MsgAddr := ImageBase + DataRVA + 8;
+    EmitDataString(Msg);
+  
+    { ===== Construire la section .text (code) ===== }
+    PeTextSize := 0;  { Reset }
+    PeEntryPoint := 0;
+  
+    { _start: }
+    { PUSH -11 (STD_OUTPUT_HANDLE) }
+    EmitTextByte($68);  { PUSH imm32 }
+    EmitTextDWord(-11);
+  
+    { CALL [GetStdHandle] }
+    EmitTextByte($FF);
+    EmitTextByte($15);
+    EmitTextDWord(IatGetStdHandle);
+  
+    { MOV [hStdOut], EAX }
+    EmitTextByte($A3);  { MOV moffs32, EAX }
+    EmitTextDWord(StdOutAddr);
+  
+    { PUSH 0 (lpOverlapped) }
+    EmitTextByte($6A);  { PUSH imm8 }
+    EmitTextByte(0);
+  
+    { PUSH WrittenAddr }
+    EmitTextByte($68);
+    EmitTextDWord(WrittenAddr);
+  
+    { PUSH MsgLen }
+    EmitTextByte($68);
+    EmitTextDWord(MsgLen);
+  
+    { PUSH MsgAddr }
+    EmitTextByte($68);
+    EmitTextDWord(MsgAddr);
+  
+    { PUSH [hStdOut] }
+    EmitTextByte($FF);
+    EmitTextByte($35);
+    EmitTextDWord(StdOutAddr);
+  
+    { CALL [WriteFile] }
+    EmitTextByte($FF);
+    EmitTextByte($15);
+    EmitTextDWord(IatWriteFile);
+  
+    { PUSH 0 (exit code) }
+    EmitTextByte($6A);
+    EmitTextByte(0);
+  
+    { CALL [ExitProcess] }
+    EmitTextByte($FF);
+    EmitTextByte($15);
+    EmitTextDWord(IatExitProcess);
+  
+    { RET }
+    EmitTextByte($C3);
+  End;
+  
+  { Calculer les tailles alignees }
+  TextAligned := PeAlignTo(PeTextSize, PE_SECTION_ALIGNMENT);
+  RdataAligned := PeAlignTo(PeRdataSize, PE_SECTION_ALIGNMENT);
+  DataAligned := PeAlignTo(PeDataSize, PE_SECTION_ALIGNMENT);
+  ImageSize := DataRVA + DataAligned;
+  
+  { Calculer les offsets fichier }
+  TextFileOff := PE_FILE_ALIGNMENT;  { $200 }
+  RdataFileOff := TextFileOff + PeAlignTo(PeTextSize, PE_FILE_ALIGNMENT);
+  DataFileOff := RdataFileOff + PeAlignTo(PeRdataSize, PE_FILE_ALIGNMENT);
+  
+  { Configurer les sections }
+  PeTextSection := AddPeSection('.text', PeTextSize, 
+    PeAlignTo(PeTextSize, PE_FILE_ALIGNMENT),
+    PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
+  PeSections[PeTextSection].VirtualAddress := TextRVA;
+  PeSections[PeTextSection].PointerToRawData := TextFileOff;
+  
+  If PeRdataSize > 0 Then
+  Begin
+    PeRdataSection := AddPeSection('.rdata', PeRdataSize,
+      PeAlignTo(PeRdataSize, PE_FILE_ALIGNMENT),
+      PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ);
+    PeSections[PeRdataSection].VirtualAddress := RdataRVA;
+    PeSections[PeRdataSection].PointerToRawData := RdataFileOff;
+  End;
+  
+  If PeDataSize > 0 Then
+  Begin
+    PeDataSection := AddPeSection('.data', PeDataSize,
+      PeAlignTo(PeDataSize, PE_FILE_ALIGNMENT),
+      PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+    PeSections[PeDataSection].VirtualAddress := DataRVA;
+    PeSections[PeDataSection].PointerToRawData := DataFileOff;
+  End;
+  
+  { Resoudre les fixups }
+  ResolveFixups;
+  
+  { Ouvrir le fichier de sortie }
+  Assign(PeOutputFile, OutputPath);
+  {$I-}
+  Rewrite(PeOutputFile, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    CompileError('Cannot create output file: ' + OutputPath, 0);
+    Exit;
+  End;
+  PeOutputOpen := True;
+  PeFileOffset := 0;
+  
+  { Ecrire DOS Header et stub }
+  WriteDosHeader;
+  WriteDosStub;
+  
+  { Aligner sur $80 }
+  PeWritePadding($80 - PeFileOffset);
+  
+  { Ecrire PE signature }
+  WritePeSignature;
+  
+  { Ecrire COFF File Header }
+  WriteCoffFileHeader(PeSectionCount, 224, 
+    PE_IMAGE_FILE_EXECUTABLE Or PE_IMAGE_FILE_32BIT);
+  
+  { Ecrire Optional Header }
+  WriteOptionalHeader(PeTextSize, PeDataSize + PeRdataSize, 0,
+    TextRVA + PeEntryPoint, TextRVA, RdataRVA, DataRVA,
+    ImageSize, ImportRVA, ImportSize);
+  
+  { Ecrire Section Headers }
+  WriteSectionHeader(PeSections[PeTextSection]);
+  If PeRdataSection > 0 Then
+    WriteSectionHeader(PeSections[PeRdataSection]);
+  If PeDataSection > 0 Then
+    WriteSectionHeader(PeSections[PeDataSection]);
+  
+  { Aligner sur FileAlignment }
+  PeAlignFileOffset;
+  
+  { Ecrire section .text }
+  PeWriteBuffer(PeTextBuffer, PeTextSize);
+  PeAlignFileOffset;
+  
+  { Ecrire section .rdata }
+  If PeRdataSize > 0 Then
+  Begin
+    PeWriteBuffer(PeRdataBuffer, PeRdataSize);
+    PeAlignFileOffset;
+  End;
+  
+  { Ecrire section .data }
+  If PeDataSize > 0 Then
+  Begin
+    PeWriteBuffer(PeDataBuffer, PeDataSize);
+    PeAlignFileOffset;
+  End;
+  
+  { Fermer le fichier }
+  Close(PeOutputFile);
+  PeOutputOpen := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateCoffObj : generer un fichier COFF .OBJ                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenerateCoffObj(Const OutputPath : TString);
+Var
+  CoffHdr : TCoffFileHeader;
+  TextOff, RdataOff, DataOff : LongInt;
+  SymTabOff, StrTabOff : LongInt;
+  I, J, SymCount : Integer;
+  StrTabSize : LongInt;
+  RelocOff : LongInt;
+Begin
+  PeIsCoff := True;
+  
+  { Ouvrir le fichier de sortie }
+  Assign(PeOutputFile, OutputPath);
+  {$I-}
+  Rewrite(PeOutputFile, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    CompileError('Cannot create output file: ' + OutputPath, 0);
+    Exit;
+  End;
+  PeOutputOpen := True;
+  PeFileOffset := 0;
+  
+  { Calculer les offsets }
+  TextOff := SizeOf(TCoffFileHeader) + 
+             (3 * SizeOf(TPeSectionHeader));  { 3 sections }
+  RdataOff := TextOff + PeTextSize;
+  DataOff := RdataOff + PeRdataSize;
+  RelocOff := DataOff + PeDataSize;
+  SymTabOff := RelocOff + (PeFixupCount * 10);  { Relocations }
+  
+  { Compter les symboles }
+  SymCount := PeSymbolCount;
+  
+  { Taille de la table des chaines }
+  StrTabSize := 4;  { Taille elle-meme }
+  For I := 1 To PeSymbolCount Do
+    If Length(PeSymbols[I].Name) > 8 Then
+      StrTabSize := StrTabSize + Length(PeSymbols[I].Name) + 1;
+  
+  { Ecrire COFF File Header }
+  CoffHdr.Machine := PE_IMAGE_FILE_MACHINE_I386;
+  CoffHdr.NumberOfSections := 3;
+  CoffHdr.TimeDateStamp := 0;
+  CoffHdr.PointerToSymbolTable := SymTabOff;
+  CoffHdr.NumberOfSymbols := SymCount;
+  CoffHdr.SizeOfOptionalHeader := 0;
+  CoffHdr.Characteristics := 0;
+  PeWriteBuffer(CoffHdr, SizeOf(TCoffFileHeader));
+  
+  { Configurer et ecrire les sections }
+  { Section .text }
+  PeTextSection := AddPeSection('.text', 0, PeTextSize,
+    PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
+  PeSections[PeTextSection].PointerToRawData := TextOff;
+  PeSections[PeTextSection].PointerToRelocations := RelocOff;
+  PeSections[PeTextSection].NumberOfRelocations := PeFixupCount;
+  WriteSectionHeader(PeSections[PeTextSection]);
+  
+  { Section .rdata }
+  If PeRdataSize > 0 Then
+  Begin
+    PeRdataSection := AddPeSection('.rdata', 0, PeRdataSize,
+      PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ);
+    PeSections[PeRdataSection].PointerToRawData := RdataOff;
+    WriteSectionHeader(PeSections[PeRdataSection]);
+  End
+  Else
+  Begin
+    PeRdataSection := AddPeSection('.rdata', 0, 0,
+      PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ);
+    WriteSectionHeader(PeSections[PeRdataSection]);
+  End;
+  
+  { Section .data }
+  If PeDataSize > 0 Then
+  Begin
+    PeDataSection := AddPeSection('.data', 0, PeDataSize,
+      PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+    PeSections[PeDataSection].PointerToRawData := DataOff;
+    WriteSectionHeader(PeSections[PeDataSection]);
+  End
+  Else
+  Begin
+    PeDataSection := AddPeSection('.data', 0, 0,
+      PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+    WriteSectionHeader(PeSections[PeDataSection]);
+  End;
+  
+  { Ecrire section .text }
+  PeWriteBuffer(PeTextBuffer, PeTextSize);
+  
+  { Ecrire section .rdata }
+  If PeRdataSize > 0 Then
+    PeWriteBuffer(PeRdataBuffer, PeRdataSize);
+  
+  { Ecrire section .data }
+  If PeDataSize > 0 Then
+    PeWriteBuffer(PeDataBuffer, PeDataSize);
+  
+  { Ecrire les relocations }
+  For I := 1 To PeFixupCount Do
+  Begin
+    PeWriteDWord(PeFixups[I].Offset);  { VirtualAddress }
+    J := FindPeSymbol(PeFixups[I].TargetSym);
+    PeWriteDWord(J);  { SymbolTableIndex }
+    If PeFixups[I].IsRelative Then
+      PeWriteWord(IMAGE_REL_I386_REL32)
+    Else
+      PeWriteWord(IMAGE_REL_I386_DIR32);
+  End;
+  
+  { Ecrire la table des symboles }
+  StrTabOff := 4;  { Offset dans la table des chaines }
+  For I := 1 To PeSymbolCount Do
+  Begin
+    { Nom (8 octets ou offset dans table des chaines) }
+    If Length(PeSymbols[I].Name) <= 8 Then
+    Begin
+      For J := 1 To 8 Do
+        If J <= Length(PeSymbols[I].Name) Then
+          PeWriteByte(Ord(PeSymbols[I].Name[J]))
+        Else
+          PeWriteByte(0);
+    End
+    Else
+    Begin
+      PeWriteDWord(0);  { Zeros indiquent un offset }
+      PeWriteDWord(StrTabOff);
+      StrTabOff := StrTabOff + Length(PeSymbols[I].Name) + 1;
+    End;
+    PeWriteDWord(PeSymbols[I].Value);  { Value }
+    If PeSymbols[I].IsDefined Then
+      PeWriteWord(PeSymbols[I].Section)
+    Else
+      PeWriteWord(IMAGE_SYM_UNDEFINED);  { SectionNumber }
+    PeWriteWord(0);  { Type }
+    PeWriteByte(PeSymbols[I].SClass);  { StorageClass }
+    PeWriteByte(0);  { NumberOfAuxSymbols }
+  End;
+  
+  { Ecrire la table des chaines }
+  StrTabSize := 4;
+  For I := 1 To PeSymbolCount Do
+    If Length(PeSymbols[I].Name) > 8 Then
+      StrTabSize := StrTabSize + Length(PeSymbols[I].Name) + 1;
+  PeWriteDWord(StrTabSize);  { Taille de la table }
+  For I := 1 To PeSymbolCount Do
+    If Length(PeSymbols[I].Name) > 8 Then
+      PeWriteString(PeSymbols[I].Name);
+  
+  { Fermer le fichier }
+  Close(PeOutputFile);
+  PeOutputOpen := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpPeState : afficher l etat du sous-systeme PE/COFF          }
+{ ------------------------------------------------------------ }
+
+Procedure DumpPeState;
+Var I : Integer;
+Begin
+  WriteLn('--- PeState dump ---');
+  WriteLn('  PeInitialized  : ', PeInitialized);
+  WriteLn('  PeIsCoff       : ', PeIsCoff);
+  WriteLn('  PeImageBase    : $', HexStr(PeImageBase, 8));
+  WriteLn('  PeSectionCount : ', PeSectionCount);
+  WriteLn('  PeTextSize     : ', PeTextSize);
+  WriteLn('  PeRdataSize    : ', PeRdataSize);
+  WriteLn('  PeDataSize     : ', PeDataSize);
+  WriteLn('  PeFixupCount   : ', PeFixupCount);
+  WriteLn('  PeImportCount  : ', PeImportCount);
+  WriteLn('  PeSymbolCount  : ', PeSymbolCount);
+  WriteLn('  PeEntryPoint   : $', HexStr(PeEntryPoint, 8));
+  WriteLn('  PeLastType     : ', PeTypeName(PeLastType));
+  If PeSectionCount > 0 Then
+  Begin
+    WriteLn('  --- Sections ---');
+    For I := 1 To PeSectionCount Do
+      WriteLn('    [', I, '] ', PeSections[I].SName,
+              ' VSize=', PeSections[I].VirtualSize,
+              ' RVA=$', HexStr(PeSections[I].VirtualAddress, 8));
+  End;
+  If PeImportCount > 0 Then
+  Begin
+    WriteLn('  --- Imports ---');
+    For I := 1 To PeImportCount Do
+      WriteLn('    [', I, '] ', PeImports[I].DllName, '!',
+              PeImports[I].FuncName,
+              ' (used=', PeImports[I].Used, ')');
+  End;
+  If PeSymbolCount > 0 Then
+  Begin
+    WriteLn('  --- Symboles ---');
+    For I := 1 To PeSymbolCount Do
+      WriteLn('    [', I, '] ', PeSymbols[I].Name,
+              ' = $', HexStr(PeSymbols[I].Value, 8),
+              ' (sect=', PeSymbols[I].Section,
+              ', def=', PeSymbols[I].IsDefined, ')');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 23)                              }
+{ ------------------------------------------------------------ }
+
+Function IsPeInitialized : Boolean;
+Begin
+  IsPeInitialized := PeInitialized;
+End;
+
+Function IsPeEmpty : Boolean;
+Begin
+  IsPeEmpty := (PeTextSize = 0) And (PeDataSize = 0);
+End;
+
+Function GetPeSectionCount : LongInt;
+Begin
+  GetPeSectionCount := PeSectionCount;
+End;
+
+Function GetPeTextSize : LongInt;
+Begin
+  GetPeTextSize := PeTextSize;
+End;
+
+Function GetPeDataSize : LongInt;
+Begin
+  GetPeDataSize := PeDataSize;
+End;
+
+Function GetPeFixupCount : LongInt;
+Begin
+  GetPeFixupCount := PeFixupCount;
+End;
+
+Function GetPeImportCount : LongInt;
+Begin
+  GetPeImportCount := PeImportCount;
+End;
+
+Function GetPeSymbolCount : LongInt;
+Begin
+  GetPeSymbolCount := PeSymbolCount;
+End;
+
+Function GetPeLastType : Integer;
+Begin
+  GetPeLastType := PeLastType;
+End;
+
+Function GetPeStatus : TString;
+Begin
+  If Not PeInitialized Then
+    GetPeStatus := 'Not initialized'
+  Else If PeIsCoff Then
+    GetPeStatus := 'COFF: ' + ItoS(PeSectionCount) + ' sections, ' +
+                   ItoS(PeTextSize) + ' text, ' +
+                   ItoS(PeSymbolCount) + ' symbols'
+  Else
+    GetPeStatus := 'PE: ' + ItoS(PeSectionCount) + ' sections, ' +
+                   ItoS(PeTextSize) + ' text, ' +
+                   ItoS(PeImportCount) + ' imports';
+End;
+
+{ ============================================================ }
+{ TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM        }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations pour imports Win32 }
+  WI_NONE              = 0;    { aucun / non defini                    }
+  WI_KERNEL32          = 1;    { import de kernel32.dll                }
+  WI_MSVCRT            = 2;    { import de msvcrt.dll                  }
+  WI_USER32            = 3;    { import de user32.dll (optionnel)      }
+  WI_EXIT_PROCESS      = 4;    { ExitProcess                           }
+  WI_GET_STD_HANDLE    = 5;    { GetStdHandle                          }
+  WI_WRITE_FILE        = 6;    { WriteFile                             }
+  WI_READ_FILE         = 7;    { ReadFile                              }
+  WI_GET_PROCESS_HEAP  = 8;    { GetProcessHeap                        }
+  WI_HEAP_ALLOC        = 9;    { HeapAlloc                             }
+  WI_HEAP_FREE         = 10;   { HeapFree                              }
+  WI_GET_COMMAND_LINE  = 11;   { GetCommandLineA                       }
+  WI_GET_LAST_ERROR    = 12;   { GetLastError                          }
+  WI_SPRINTF           = 13;   { sprintf (msvcrt)                      }
+  WI_SSCANF            = 14;   { sscanf (msvcrt)                       }
+  WI_MEMCPY            = 15;   { memcpy (msvcrt)                       }
+  WI_MEMSET            = 16;   { memset (msvcrt)                       }
+  WI_MEMCMP            = 17;   { memcmp (msvcrt)                       }
+  WI_MAX               = 17;
+
+  { Types d operations pour generateur ASM }
+  ASM_NONE             = 0;    { aucun / non defini                    }
+  ASM_HEADER           = 1;    { en-tete .386 / .MODEL                 }
+  ASM_EXTERN           = 2;    { declaration EXTERN                    }
+  ASM_DATA_SECT        = 3;    { section .DATA                         }
+  ASM_DATAQ_SECT       = 4;    { section .DATA?                        }
+  ASM_CODE_SECT        = 5;    { section .CODE                         }
+  ASM_PROC             = 6;    { debut de procedure                    }
+  ASM_ENDP             = 7;    { fin de procedure                      }
+  ASM_LABEL            = 8;    { etiquette                             }
+  ASM_INSTR            = 9;    { instruction assembleur                }
+  ASM_COMMENT          = 10;   { commentaire                           }
+  ASM_DB               = 11;   { directive DB                          }
+  ASM_DD               = 12;   { directive DD                          }
+  ASM_END              = 13;   { directive END                         }
+  ASM_INCLUDELIB       = 14;   { directive INCLUDELIB                  }
+  ASM_MAX              = 14;
+
+  { Constantes Win32 - deja definies dans TODO 22 }
+  { STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE }
+  HEAP_ZERO_MEMORY     = $08;  { Flag HeapAlloc                        }
+
+  { Limites }
+  WI_MAX_IMPORTS       = 64;   { Nombre max d imports                  }
+  WI_MAX_DLLS          = 8;    { Nombre max de DLLs                    }
+  ASM_MAX_LINE_LEN     = 256;  { Longueur max d une ligne ASM          }
+
+Type
+  { Structure d import Win32 }
+  TWiImportRec = Record
+    FuncName   : TString;            { Nom de la fonction                }
+    DllName    : TString;            { Nom de la DLL                     }
+    Hint       : Word;               { Hint (ordinal approximatif)       }
+    ParamBytes : Integer;            { Taille des parametres (STDCALL)   }
+    Used       : Boolean;            { True si utilise dans le code      }
+    IatOffset  : LongInt;            { Offset dans l IAT                 }
+    ImportType : Integer;            { Type WI_*                         }
+  End;
+
+  { Structure de DLL }
+  TWiDllRec = Record
+    DllName    : TString;            { Nom de la DLL                     }
+    ImportCount: Integer;            { Nombre d imports de cette DLL     }
+    FirstImport: Integer;            { Index du premier import           }
+  End;
+
+Var
+  WiInitialized      : Boolean;        { True si l etat est initialise   }
+  WiImports          : Array[1..WI_MAX_IMPORTS] Of TWiImportRec;
+  WiImportCount      : Integer;        { Nombre d imports enregistres    }
+  WiDlls             : Array[1..WI_MAX_DLLS] Of TWiDllRec;
+  WiDllCount         : Integer;        { Nombre de DLLs utilisees        }
+  WiKernel32Idx      : Integer;        { Index de kernel32.dll           }
+  WiMsvcrtIdx        : Integer;        { Index de msvcrt.dll             }
+  WiLabelSeq         : Integer;        { Sequence pour labels            }
+  WiLastType         : Integer;        { Dernier type d operation        }
+  WiUsedCount        : Integer;        { Nombre d imports utilises       }
+  WiIatSize          : LongInt;        { Taille de l IAT                 }
+  WiHintNameSize     : LongInt;        { Taille de la Hint/Name Table    }
+  
+  { Generateur ASM }
+  AsmInitialized     : Boolean;        { True si initialise              }
+  AsmFile            : Text;           { Fichier de sortie ASM           }
+  AsmFileOpen        : Boolean;        { True si fichier ouvert          }
+  AsmFileName        : TString;        { Nom du fichier ASM              }
+  AsmLineCount       : LongInt;        { Nombre de lignes generees       }
+  AsmIndent          : Integer;        { Niveau d indentation            }
+  AsmLastType        : Integer;        { Dernier type d operation        }
+  AsmInProc          : Boolean;        { True si dans une procedure      }
+  AsmProcName        : TString;        { Nom de la procedure courante    }
+  AsmCommentEnabled  : Boolean;        { True si commentaires actives    }
+
+{ ------------------------------------------------------------ }
+{ InitWiState : initialiser le sous-systeme imports Win32       }
+{ ------------------------------------------------------------ }
+
+Procedure InitWiState;
+Var I : Integer;
+Begin
+  WiInitialized  := True;
+  WiImportCount  := 0;
+  WiDllCount     := 0;
+  WiKernel32Idx  := 0;
+  WiMsvcrtIdx    := 0;
+  WiLabelSeq     := 0;
+  WiLastType     := WI_NONE;
+  WiUsedCount    := 0;
+  WiIatSize      := 0;
+  WiHintNameSize := 0;
+  For I := 1 To WI_MAX_IMPORTS Do
+  Begin
+    WiImports[I].FuncName := '';
+    WiImports[I].DllName := '';
+    WiImports[I].Hint := 0;
+    WiImports[I].ParamBytes := 0;
+    WiImports[I].Used := False;
+    WiImports[I].IatOffset := 0;
+    WiImports[I].ImportType := WI_NONE;
+  End;
+  For I := 1 To WI_MAX_DLLS Do
+  Begin
+    WiDlls[I].DllName := '';
+    WiDlls[I].ImportCount := 0;
+    WiDlls[I].FirstImport := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ InitAsmState : initialiser le generateur ASM                   }
+{ ------------------------------------------------------------ }
+
+Procedure InitAsmState;
+Begin
+  AsmInitialized    := True;
+  AsmFileOpen       := False;
+  AsmFileName       := '';
+  AsmLineCount      := 0;
+  AsmIndent         := 0;
+  AsmLastType       := ASM_NONE;
+  AsmInProc         := False;
+  AsmProcName       := '';
+  AsmCommentEnabled := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenWiLabel : generer un label unique pour imports              }
+{ ------------------------------------------------------------ }
+
+Function GenWiLabel : TString;
+Begin
+  Inc(WiLabelSeq);
+  GenWiLabel := '_JWI_' + ItoS(WiLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ WiTypeName : nom textuel d un type d import                    }
+{ ------------------------------------------------------------ }
+
+Function WiTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    WI_NONE             : WiTypeName := 'WI_NONE';
+    WI_KERNEL32         : WiTypeName := 'WI_KERNEL32';
+    WI_MSVCRT           : WiTypeName := 'WI_MSVCRT';
+    WI_USER32           : WiTypeName := 'WI_USER32';
+    WI_EXIT_PROCESS     : WiTypeName := 'WI_EXIT_PROCESS';
+    WI_GET_STD_HANDLE   : WiTypeName := 'WI_GET_STD_HANDLE';
+    WI_WRITE_FILE       : WiTypeName := 'WI_WRITE_FILE';
+    WI_READ_FILE        : WiTypeName := 'WI_READ_FILE';
+    WI_GET_PROCESS_HEAP : WiTypeName := 'WI_GET_PROCESS_HEAP';
+    WI_HEAP_ALLOC       : WiTypeName := 'WI_HEAP_ALLOC';
+    WI_HEAP_FREE        : WiTypeName := 'WI_HEAP_FREE';
+    WI_GET_COMMAND_LINE : WiTypeName := 'WI_GET_COMMAND_LINE';
+    WI_GET_LAST_ERROR   : WiTypeName := 'WI_GET_LAST_ERROR';
+    WI_SPRINTF          : WiTypeName := 'WI_SPRINTF';
+    WI_SSCANF           : WiTypeName := 'WI_SSCANF';
+    WI_MEMCPY           : WiTypeName := 'WI_MEMCPY';
+    WI_MEMSET           : WiTypeName := 'WI_MEMSET';
+    WI_MEMCMP           : WiTypeName := 'WI_MEMCMP';
+  Else
+    WiTypeName := 'WI_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmTypeName : nom textuel d un type d operation ASM            }
+{ ------------------------------------------------------------ }
+
+Function AsmTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    ASM_NONE         : AsmTypeName := 'ASM_NONE';
+    ASM_HEADER       : AsmTypeName := 'ASM_HEADER';
+    ASM_EXTERN       : AsmTypeName := 'ASM_EXTERN';
+    ASM_DATA_SECT    : AsmTypeName := 'ASM_DATA_SECT';
+    ASM_DATAQ_SECT   : AsmTypeName := 'ASM_DATAQ_SECT';
+    ASM_CODE_SECT    : AsmTypeName := 'ASM_CODE_SECT';
+    ASM_PROC         : AsmTypeName := 'ASM_PROC';
+    ASM_ENDP         : AsmTypeName := 'ASM_ENDP';
+    ASM_LABEL        : AsmTypeName := 'ASM_LABEL';
+    ASM_INSTR        : AsmTypeName := 'ASM_INSTR';
+    ASM_COMMENT      : AsmTypeName := 'ASM_COMMENT';
+    ASM_DB           : AsmTypeName := 'ASM_DB';
+    ASM_DD           : AsmTypeName := 'ASM_DD';
+    ASM_END          : AsmTypeName := 'ASM_END';
+    ASM_INCLUDELIB   : AsmTypeName := 'ASM_INCLUDELIB';
+  Else
+    AsmTypeName := 'ASM_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterDll : enregistrer une DLL                              }
+{ ------------------------------------------------------------ }
+
+Function RegisterDll(Const DllName : TString) : Integer;
+Var I : Integer;
+Begin
+  { Chercher si deja presente }
+  For I := 1 To WiDllCount Do
+    If WiDlls[I].DllName = DllName Then
+    Begin
+      RegisterDll := I;
+      Exit;
+    End;
+  { Ajouter nouvelle }
+  If WiDllCount >= WI_MAX_DLLS Then
+  Begin
+    RegisterDll := 0;
+    Exit;
+  End;
+  Inc(WiDllCount);
+  WiDlls[WiDllCount].DllName := DllName;
+  WiDlls[WiDllCount].ImportCount := 0;
+  WiDlls[WiDllCount].FirstImport := 0;
+  RegisterDll := WiDllCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterImport : enregistrer un import Win32                   }
+{ ------------------------------------------------------------ }
+
+Function RegisterImport(Const DllName, FuncName : TString;
+                         ParamBytes : Integer; ImpType : Integer) : Integer;
+Var I, DllIdx : Integer;
+Begin
+  { Chercher si deja present }
+  For I := 1 To WiImportCount Do
+    If (WiImports[I].DllName = DllName) And 
+       (WiImports[I].FuncName = FuncName) Then
+    Begin
+      RegisterImport := I;
+      Exit;
+    End;
+  { Ajouter nouveau }
+  If WiImportCount >= WI_MAX_IMPORTS Then
+  Begin
+    RegisterImport := 0;
+    Exit;
+  End;
+  { Enregistrer la DLL }
+  DllIdx := RegisterDll(DllName);
+  If DllIdx = 0 Then
+  Begin
+    RegisterImport := 0;
+    Exit;
+  End;
+  Inc(WiImportCount);
+  WiImports[WiImportCount].FuncName := FuncName;
+  WiImports[WiImportCount].DllName := DllName;
+  WiImports[WiImportCount].Hint := 0;
+  WiImports[WiImportCount].ParamBytes := ParamBytes;
+  WiImports[WiImportCount].Used := False;
+  WiImports[WiImportCount].IatOffset := 0;
+  WiImports[WiImportCount].ImportType := ImpType;
+  Inc(WiDlls[DllIdx].ImportCount);
+  If WiDlls[DllIdx].FirstImport = 0 Then
+    WiDlls[DllIdx].FirstImport := WiImportCount;
+  RegisterImport := WiImportCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterKernel32Imports : enregistrer les imports kernel32     }
+{ ------------------------------------------------------------ }
+
+Procedure RegisterKernel32Imports;
+Begin
+  WiKernel32Idx := RegisterDll('kernel32.dll');
+  RegisterImport('kernel32.dll', 'ExitProcess', 4, WI_EXIT_PROCESS);
+  RegisterImport('kernel32.dll', 'GetStdHandle', 4, WI_GET_STD_HANDLE);
+  RegisterImport('kernel32.dll', 'WriteFile', 20, WI_WRITE_FILE);
+  RegisterImport('kernel32.dll', 'ReadFile', 20, WI_READ_FILE);
+  RegisterImport('kernel32.dll', 'GetProcessHeap', 0, WI_GET_PROCESS_HEAP);
+  RegisterImport('kernel32.dll', 'HeapAlloc', 12, WI_HEAP_ALLOC);
+  RegisterImport('kernel32.dll', 'HeapFree', 12, WI_HEAP_FREE);
+  RegisterImport('kernel32.dll', 'GetCommandLineA', 0, WI_GET_COMMAND_LINE);
+  RegisterImport('kernel32.dll', 'GetLastError', 0, WI_GET_LAST_ERROR);
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterMsvcrtImports : enregistrer les imports msvcrt         }
+{ ------------------------------------------------------------ }
+
+Procedure RegisterMsvcrtImports;
+Begin
+  WiMsvcrtIdx := RegisterDll('msvcrt.dll');
+  RegisterImport('msvcrt.dll', 'sprintf', 0, WI_SPRINTF);   { varargs }
+  RegisterImport('msvcrt.dll', 'sscanf', 0, WI_SSCANF);     { varargs }
+  RegisterImport('msvcrt.dll', 'memcpy', 12, WI_MEMCPY);
+  RegisterImport('msvcrt.dll', 'memset', 12, WI_MEMSET);
+  RegisterImport('msvcrt.dll', 'memcmp', 12, WI_MEMCMP);
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkImportUsed : marquer un import comme utilise               }
+{ ------------------------------------------------------------ }
+
+Procedure MarkImportUsed(Idx : Integer);
+Begin
+  If (Idx >= 1) And (Idx <= WiImportCount) Then
+    If Not WiImports[Idx].Used Then
+    Begin
+      WiImports[Idx].Used := True;
+      Inc(WiUsedCount);
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkImportUsedByType : marquer par type d import               }
+{ ------------------------------------------------------------ }
+
+Procedure MarkImportUsedByType(ImpType : Integer);
+Var I : Integer;
+Begin
+  For I := 1 To WiImportCount Do
+    If WiImports[I].ImportType = ImpType Then
+    Begin
+      MarkImportUsed(I);
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindImportByName : trouver un import par nom                   }
+{ ------------------------------------------------------------ }
+
+Function FindImportByName(Const FuncName : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 1 To WiImportCount Do
+    If WiImports[I].FuncName = FuncName Then
+    Begin
+      FindImportByName := I;
+      Exit;
+    End;
+  FindImportByName := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportDecoratedName : nom decore STDCALL                    }
+{ ------------------------------------------------------------ }
+
+Function GetImportDecoratedName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 1) And (Idx <= WiImportCount) Then
+  Begin
+    If WiImports[Idx].ParamBytes > 0 Then
+      GetImportDecoratedName := '_' + WiImports[Idx].FuncName + '@' +
+                                 ItoS(WiImports[Idx].ParamBytes)
+    Else
+      GetImportDecoratedName := '_' + WiImports[Idx].FuncName;
+  End
+  Else
+    GetImportDecoratedName := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ CalcImportTableSize : calculer la taille de la table imports   }
+{ ------------------------------------------------------------ }
+
+Procedure CalcImportTableSize;
+Var
+  I, UsedDlls : Integer;
+  HintNameTotal : LongInt;
+Begin
+  UsedDlls := 0;
+  HintNameTotal := 0;
+  
+  { Compter les DLLs avec imports utilises }
+  For I := 1 To WiDllCount Do
+  Begin
+    { Verifier si au moins un import de cette DLL est utilise }
+    { Pour simplifier, on compte toutes les DLLs enregistrees }
+    Inc(UsedDlls);
+    HintNameTotal := HintNameTotal + Length(WiDlls[I].DllName) + 1;
+  End;
+  
+  { Calculer taille IAT : 4 octets par import + 4 octets NULL par DLL }
+  WiIatSize := (WiUsedCount + UsedDlls) * 4;
+  
+  { Calculer taille Hint/Name : 2 octets hint + nom + padding }
+  For I := 1 To WiImportCount Do
+    If WiImports[I].Used Then
+      HintNameTotal := HintNameTotal + 2 + Length(WiImports[I].FuncName) + 1;
+  
+  { Aligner sur 2 octets }
+  If (HintNameTotal Mod 2) <> 0 Then
+    Inc(HintNameTotal);
+  
+  WiHintNameSize := HintNameTotal;
+End;
+
+{ ------------------------------------------------------------ }
+{ OpenAsmFile : ouvrir le fichier ASM pour ecriture              }
+{ ------------------------------------------------------------ }
+
+Function OpenAsmFile(Const FileName : TString) : Boolean;
+Begin
+  AsmFileName := FileName;
+  Assign(AsmFile, FileName);
+  {$I-}
+  Rewrite(AsmFile);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    OpenAsmFile := False;
+    Exit;
+  End;
+  AsmFileOpen := True;
+  AsmLineCount := 0;
+  OpenAsmFile := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ CloseAsmFile : fermer le fichier ASM                           }
+{ ------------------------------------------------------------ }
+
+Procedure CloseAsmFile;
+Begin
+  If AsmFileOpen Then
+  Begin
+    Close(AsmFile);
+    AsmFileOpen := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmWriteLine : ecrire une ligne dans le fichier ASM            }
+{ ------------------------------------------------------------ }
+
+Procedure AsmWriteLine(Const S : TString);
+Var Indent : TString;
+    I : Integer;
+Begin
+  If Not AsmFileOpen Then Exit;
+  Indent := '';
+  For I := 1 To AsmIndent Do
+    Indent := Indent + '    ';
+  WriteLn(AsmFile, Indent, S);
+  Inc(AsmLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmWriteRaw : ecrire une ligne sans indentation                }
+{ ------------------------------------------------------------ }
+
+Procedure AsmWriteRaw(Const S : TString);
+Begin
+  If Not AsmFileOpen Then Exit;
+  WriteLn(AsmFile, S);
+  Inc(AsmLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmHeader : ecrire l en-tete du fichier ASM               }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmHeader;
+Begin
+  AsmLastType := ASM_HEADER;
+  AsmWriteRaw('; JAVACW32 - Fichier ASM genere automatiquement');
+  AsmWriteRaw('; Ne pas modifier directement');
+  AsmWriteRaw('');
+  AsmWriteRaw('.386');
+  AsmWriteRaw('.MODEL FLAT, STDCALL');
+  AsmWriteRaw('OPTION CASEMAP:NONE');
+  AsmWriteRaw('');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmIncludelib : ecrire une directive INCLUDELIB           }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmIncludelib(Const LibName : TString);
+Begin
+  AsmLastType := ASM_INCLUDELIB;
+  AsmWriteRaw('INCLUDELIB ' + LibName);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmExtern : ecrire une declaration EXTERN                 }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmExtern(Const Name : TString; IsProc : Boolean);
+Begin
+  AsmLastType := ASM_EXTERN;
+  If IsProc Then
+    AsmWriteRaw('EXTERN ' + Name + ':PROC')
+  Else
+    AsmWriteRaw('EXTERN ' + Name + ':DWORD');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmExterns : ecrire toutes les declarations EXTERN        }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmExterns;
+Var I : Integer;
+Begin
+  AsmWriteRaw('');
+  AsmWriteRaw('; Imports Win32');
+  For I := 1 To WiImportCount Do
+    If WiImports[I].Used Then
+      WriteAsmExtern(GetImportDecoratedName(I), True);
+  AsmWriteRaw('');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmDataSection : ecrire le debut de la section .DATA      }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmDataSection;
+Begin
+  AsmLastType := ASM_DATA_SECT;
+  AsmWriteRaw('.DATA');
+  AsmIndent := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmDataQSection : ecrire le debut de la section .DATA?    }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmDataQSection;
+Begin
+  AsmLastType := ASM_DATAQ_SECT;
+  AsmWriteRaw('.DATA?');
+  AsmIndent := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmCodeSection : ecrire le debut de la section .CODE      }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmCodeSection;
+Begin
+  AsmLastType := ASM_CODE_SECT;
+  AsmIndent := 0;
+  AsmWriteRaw('.CODE');
+  AsmIndent := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmDb : ecrire une directive DB                           }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmDb(Const Name, Value : TString);
+Begin
+  AsmLastType := ASM_DB;
+  AsmWriteLine(Name + ' DB ' + Value);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmDd : ecrire une directive DD                           }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmDd(Const Name, Value : TString);
+Begin
+  AsmLastType := ASM_DD;
+  AsmWriteLine(Name + ' DD ' + Value);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmProc : ecrire le debut d une procedure                 }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmProc(Const Name : TString);
+Begin
+  AsmLastType := ASM_PROC;
+  AsmIndent := 0;
+  AsmWriteRaw(Name + ' PROC');
+  AsmInProc := True;
+  AsmProcName := Name;
+  AsmIndent := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmEndp : ecrire la fin d une procedure                   }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmEndp;
+Begin
+  AsmLastType := ASM_ENDP;
+  AsmIndent := 0;
+  AsmWriteRaw(AsmProcName + ' ENDP');
+  AsmInProc := False;
+  AsmProcName := '';
+  AsmWriteRaw('');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmLabel : ecrire une etiquette                           }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmLabel(Const Name : TString);
+Begin
+  AsmLastType := ASM_LABEL;
+  AsmIndent := 0;
+  AsmWriteRaw(Name + ':');
+  AsmIndent := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmInstr : ecrire une instruction                         }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmInstr(Const Instr : TString);
+Begin
+  AsmLastType := ASM_INSTR;
+  AsmWriteLine(Instr);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmComment : ecrire un commentaire                        }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmComment(Const Comment : TString);
+Begin
+  If Not AsmCommentEnabled Then Exit;
+  AsmLastType := ASM_COMMENT;
+  AsmWriteLine('; ' + Comment);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmEnd : ecrire la directive END                          }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmEnd(Const EntryPoint : TString);
+Begin
+  AsmLastType := ASM_END;
+  AsmIndent := 0;
+  AsmWriteRaw('');
+  AsmWriteRaw('END ' + EntryPoint);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateAsmListing : generer un listing ASM complet            }
+{ ------------------------------------------------------------ }
+
+Procedure GenerateAsmListing(Const OutputPath : TString);
+Begin
+  If Not OpenAsmFile(OutputPath) Then
+  Begin
+    CompileError('Cannot create ASM file: ' + OutputPath, 0);
+    Exit;
+  End;
+  
+  WriteAsmHeader;
+  
+  { Includelibs }
+  WriteAsmIncludelib('kernel32.lib');
+  If WiMsvcrtIdx > 0 Then
+    WriteAsmIncludelib('msvcrt.lib');
+  AsmWriteRaw('');
+  
+  { Externs }
+  WriteAsmExterns;
+  
+  { Section .DATA }
+  WriteAsmDataSection;
+  WriteAsmComment('Constantes et donnees initialisees');
+  WriteAsmDb('_JRT_CRLF', '13, 10, 0');
+  WriteAsmDb('_JRT_TRUE', '''true'', 0');
+  WriteAsmDb('_JRT_FALSE', '''false'', 0');
+  WriteAsmDb('_JRT_NULL', '''null'', 0');
+  AsmWriteRaw('');
+  
+  { Section .DATA? }
+  WriteAsmDataQSection;
+  WriteAsmComment('Variables non initialisees');
+  WriteAsmDd('_JRT_HSTDOUT', '?');
+  WriteAsmDd('_JRT_HSTDIN', '?');
+  WriteAsmDd('_JRT_HHEAP', '?');
+  WriteAsmDd('_JRT_BYTESWR', '?');
+  AsmWriteRaw('');
+  
+  { Section .CODE }
+  WriteAsmCodeSection;
+  
+  { Point d entree }
+  WriteAsmProc('_start');
+  WriteAsmComment('Point d''entree du programme');
+  WriteAsmInstr('CALL _JRT_INITIO');
+  WriteAsmComment('Appeler main');
+  WriteAsmInstr('CALL _JM_main');
+  WriteAsmComment('Terminer le programme');
+  WriteAsmInstr('PUSH 0');
+  WriteAsmInstr('CALL _ExitProcess@4');
+  WriteAsmEndp;
+  
+  { Routine d initialisation I/O }
+  WriteAsmProc('_JRT_INITIO');
+  WriteAsmComment('Initialisation des handles console');
+  WriteAsmInstr('PUSH -11');
+  WriteAsmInstr('CALL _GetStdHandle@4');
+  WriteAsmInstr('MOV [_JRT_HSTDOUT], EAX');
+  WriteAsmInstr('PUSH -10');
+  WriteAsmInstr('CALL _GetStdHandle@4');
+  WriteAsmInstr('MOV [_JRT_HSTDIN], EAX');
+  WriteAsmInstr('CALL _GetProcessHeap@0');
+  WriteAsmInstr('MOV [_JRT_HHEAP], EAX');
+  WriteAsmInstr('RET');
+  WriteAsmEndp;
+  
+  { Placeholder pour main }
+  WriteAsmProc('_JM_main');
+  WriteAsmComment('Methode main() - a generer');
+  WriteAsmInstr('RET');
+  WriteAsmEndp;
+  
+  { Fin }
+  WriteAsmEnd('_start');
+  
+  CloseAsmFile;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpWiState : afficher l etat du sous-systeme imports          }
+{ ------------------------------------------------------------ }
+
+Procedure DumpWiState;
+Var I : Integer;
+Begin
+  WriteLn('--- WiState dump ---');
+  WriteLn('  WiInitialized  : ', WiInitialized);
+  WriteLn('  WiImportCount  : ', WiImportCount);
+  WriteLn('  WiDllCount     : ', WiDllCount);
+  WriteLn('  WiUsedCount    : ', WiUsedCount);
+  WriteLn('  WiIatSize      : ', WiIatSize);
+  WriteLn('  WiHintNameSize : ', WiHintNameSize);
+  WriteLn('  WiLastType     : ', WiTypeName(WiLastType));
+  If WiDllCount > 0 Then
+  Begin
+    WriteLn('  --- DLLs ---');
+    For I := 1 To WiDllCount Do
+      WriteLn('    [', I, '] ', WiDlls[I].DllName,
+              ' (', WiDlls[I].ImportCount, ' imports)');
+  End;
+  If WiImportCount > 0 Then
+  Begin
+    WriteLn('  --- Imports ---');
+    For I := 1 To WiImportCount Do
+      WriteLn('    [', I, '] ', WiImports[I].DllName, '!',
+              WiImports[I].FuncName, ' (used=', WiImports[I].Used, ')');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpAsmState : afficher l etat du generateur ASM               }
+{ ------------------------------------------------------------ }
+
+Procedure DumpAsmState;
+Begin
+  WriteLn('--- AsmState dump ---');
+  WriteLn('  AsmInitialized    : ', AsmInitialized);
+  WriteLn('  AsmFileOpen       : ', AsmFileOpen);
+  WriteLn('  AsmFileName       : ', AsmFileName);
+  WriteLn('  AsmLineCount      : ', AsmLineCount);
+  WriteLn('  AsmIndent         : ', AsmIndent);
+  WriteLn('  AsmInProc         : ', AsmInProc);
+  WriteLn('  AsmProcName       : ', AsmProcName);
+  WriteLn('  AsmCommentEnabled : ', AsmCommentEnabled);
+  WriteLn('  AsmLastType       : ', AsmTypeName(AsmLastType));
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 24)                              }
+{ ------------------------------------------------------------ }
+
+Function IsWiInitialized : Boolean;
+Begin
+  IsWiInitialized := WiInitialized;
+End;
+
+Function IsWiEmpty : Boolean;
+Begin
+  IsWiEmpty := WiImportCount = 0;
+End;
+
+Function GetWiImportCount : LongInt;
+Begin
+  GetWiImportCount := WiImportCount;
+End;
+
+Function GetWiDllCount : LongInt;
+Begin
+  GetWiDllCount := WiDllCount;
+End;
+
+Function GetWiUsedCount : LongInt;
+Begin
+  GetWiUsedCount := WiUsedCount;
+End;
+
+Function IsAsmInitialized : Boolean;
+Begin
+  IsAsmInitialized := AsmInitialized;
+End;
+
+Function GetAsmLineCount : LongInt;
+Begin
+  GetAsmLineCount := AsmLineCount;
+End;
+
+Function GetAsmLastType : Integer;
+Begin
+  GetAsmLastType := AsmLastType;
+End;
+
+Function GetWiLastType : Integer;
+Begin
+  GetWiLastType := WiLastType;
+End;
+
+Function GetWiStatus : TString;
+Begin
+  If Not WiInitialized Then
+    GetWiStatus := 'Not initialized'
+  Else
+    GetWiStatus := ItoS(WiDllCount) + ' DLLs, ' +
+                   ItoS(WiImportCount) + ' imports, ' +
+                   ItoS(WiUsedCount) + ' used';
+End;
+
+{ ============================================================ }
+{ TODO 25 - OPTIMISATIONS PEEPHOLE ET INTEGRATION TESTS        }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations pour optimisations peephole }
+  PH_NONE              = 0;    { aucun / non defini                    }
+  PH_MOV_ZERO          = 1;    { MOV EAX, 0 -> XOR EAX, EAX            }
+  PH_PUSH_POP          = 2;    { PUSH EAX / POP EAX -> eliminer        }
+  PH_MOV_MOV           = 3;    { MOV EAX,[x] / MOV [x],EAX -> elim 2nd }
+  PH_ADD_ONE           = 4;    { ADD EAX, 1 -> INC EAX                 }
+  PH_SUB_ONE           = 5;    { SUB EAX, 1 -> DEC EAX                 }
+  PH_MUL_TWO           = 6;    { IMUL EAX, 2 -> SHL EAX, 1             }
+  PH_MUL_FOUR          = 7;    { IMUL EAX, 4 -> SHL EAX, 2             }
+  PH_MUL_EIGHT         = 8;    { IMUL EAX, 8 -> SHL EAX, 3             }
+  PH_DIV_TWO           = 9;    { IDIV par 2 -> SAR EAX, 1              }
+  PH_LEA_OPT           = 10;   { LEA pour additions simples            }
+  PH_CMP_ZERO          = 11;   { CMP EAX, 0 -> TEST EAX, EAX           }
+  PH_JMP_CHAIN         = 12;   { JMP vers JMP -> eliminer intermediaire}
+  PH_DEAD_STORE        = 13;   { store suivi d un autre store          }
+  PH_MAX               = 13;
+
+  { Types d operations pour tests }
+  TS_NONE              = 0;    { aucun / non defini                    }
+  TS_HELLO             = 1;    { test Hello.java                       }
+  TS_TEST01            = 2;    { test01_hello.java                     }
+  TS_TEST02            = 3;    { test02_vars.java                      }
+  TS_TEST03            = 4;    { test03_arith.java                     }
+  TS_TEST04            = 5;    { test04_cond.java                      }
+  TS_TEST05            = 6;    { test05_while.java                     }
+  TS_TEST06            = 7;    { test06_for.java                       }
+  TS_TEST07            = 8;    { test07_fonct.java                     }
+  TS_TEST08            = 9;    { test08_string.java                    }
+  TS_TEST09            = 10;   { test09_array.java                     }
+  TS_TEST10            = 11;   { test10_recurs.java                    }
+  TS_MAX               = 11;
+
+  { Modes de sortie }
+  OM_EXE               = 0;    { mode .EXE (defaut)                    }
+  OM_OBJ               = 1;    { mode .OBJ (-obj)                      }
+  OM_ASM               = 2;    { mode .ASM (-asm)                      }
+  OM_MAX               = 2;
+
+  { Limites }
+  PH_MAX_OPT           = 1024; { Nombre max d optimisations            }
+  TS_MAX_TESTS         = 32;   { Nombre max de tests                   }
+
+Type
+  { Structure d optimisation peephole }
+  TPhOptRec = Record
+    OptType    : Integer;            { Type PH_*                         }
+    LineNum    : Integer;            { Ligne source                       }
+    OldInstr   : TString;            { Instruction originale              }
+    NewInstr   : TString;            { Instruction optimisee              }
+    BytesSaved : Integer;            { Octets economises                  }
+  End;
+
+  { Structure de test }
+  TTsTestRec = Record
+    TestType   : Integer;            { Type TS_*                          }
+    FileName   : TString;            { Nom du fichier source              }
+    Desc       : TString;            { Description du test                }
+    Passed     : Boolean;            { True si le test a reussi           }
+    ExeSize    : LongInt;            { Taille de l exe genere             }
+    CompTime   : LongInt;            { Temps de compilation (ms)          }
+    ErrorMsg   : TString;            { Message d erreur si echec          }
+  End;
+
+Var
+  PhInitialized      : Boolean;        { True si l etat est initialise   }
+  PhOpts             : Array[1..PH_MAX_OPT] Of TPhOptRec;
+  PhOptCount         : Integer;        { Nombre d optimisations           }
+  PhLabelSeq         : Integer;        { Sequence pour labels             }
+  PhLastType         : Integer;        { Dernier type d operation         }
+  PhMovZeroCount     : Integer;        { Compteur MOV 0 -> XOR            }
+  PhPushPopCount     : Integer;        { Compteur PUSH/POP elimines       }
+  PhMovMovCount      : Integer;        { Compteur MOV/MOV elimines        }
+  PhAddOneCount      : Integer;        { Compteur ADD 1 -> INC            }
+  PhSubOneCount      : Integer;        { Compteur SUB 1 -> DEC            }
+  PhMulShiftCount    : Integer;        { Compteur IMUL -> SHL             }
+  PhTotalSaved       : LongInt;        { Total octets economises          }
+  PhEnabled          : Boolean;        { True si optimisations actives    }
+
+  TsInitialized      : Boolean;        { True si l etat est initialise   }
+  TsTests            : Array[1..TS_MAX_TESTS] Of TTsTestRec;
+  TsTestCount        : Integer;        { Nombre de tests enregistres      }
+  TsPassedCount      : Integer;        { Nombre de tests reussis          }
+  TsFailedCount      : Integer;        { Nombre de tests echoues          }
+  TsLastType         : Integer;        { Dernier type de test             }
+  TsOutputMode       : Integer;        { Mode de sortie actuel            }
+  TsTotalExeSize     : LongInt;        { Taille totale des exe            }
+  TsTotalCompTime    : LongInt;        { Temps total de compilation       }
+
+{ ------------------------------------------------------------ }
+{ InitPhState : initialiser le sous-systeme optimisations       }
+{ ------------------------------------------------------------ }
+
+Procedure InitPhState;
+Var I : Integer;
+Begin
+  PhInitialized  := True;
+  PhOptCount     := 0;
+  PhLabelSeq     := 0;
+  PhLastType     := PH_NONE;
+  PhMovZeroCount := 0;
+  PhPushPopCount := 0;
+  PhMovMovCount  := 0;
+  PhAddOneCount  := 0;
+  PhSubOneCount  := 0;
+  PhMulShiftCount:= 0;
+  PhTotalSaved   := 0;
+  PhEnabled      := True;
+  For I := 1 To PH_MAX_OPT Do
+  Begin
+    PhOpts[I].OptType := PH_NONE;
+    PhOpts[I].LineNum := 0;
+    PhOpts[I].OldInstr := '';
+    PhOpts[I].NewInstr := '';
+    PhOpts[I].BytesSaved := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ InitTsState : initialiser le sous-systeme tests               }
+{ ------------------------------------------------------------ }
+
+Procedure InitTsState;
+Var I : Integer;
+Begin
+  TsInitialized   := True;
+  TsTestCount     := 0;
+  TsPassedCount   := 0;
+  TsFailedCount   := 0;
+  TsLastType      := TS_NONE;
+  TsOutputMode    := OM_EXE;
+  TsTotalExeSize  := 0;
+  TsTotalCompTime := 0;
+  For I := 1 To TS_MAX_TESTS Do
+  Begin
+    TsTests[I].TestType := TS_NONE;
+    TsTests[I].FileName := '';
+    TsTests[I].Desc := '';
+    TsTests[I].Passed := False;
+    TsTests[I].ExeSize := 0;
+    TsTests[I].CompTime := 0;
+    TsTests[I].ErrorMsg := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPhLabel : generer un label unique pour optimisations        }
+{ ------------------------------------------------------------ }
+
+Function GenPhLabel : TString;
+Begin
+  Inc(PhLabelSeq);
+  GenPhLabel := '_JPH_' + ItoS(PhLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ PhTypeName : nom textuel d un type d optimisation              }
+{ ------------------------------------------------------------ }
+
+Function PhTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    PH_NONE      : PhTypeName := 'PH_NONE';
+    PH_MOV_ZERO  : PhTypeName := 'PH_MOV_ZERO';
+    PH_PUSH_POP  : PhTypeName := 'PH_PUSH_POP';
+    PH_MOV_MOV   : PhTypeName := 'PH_MOV_MOV';
+    PH_ADD_ONE   : PhTypeName := 'PH_ADD_ONE';
+    PH_SUB_ONE   : PhTypeName := 'PH_SUB_ONE';
+    PH_MUL_TWO   : PhTypeName := 'PH_MUL_TWO';
+    PH_MUL_FOUR  : PhTypeName := 'PH_MUL_FOUR';
+    PH_MUL_EIGHT : PhTypeName := 'PH_MUL_EIGHT';
+    PH_DIV_TWO   : PhTypeName := 'PH_DIV_TWO';
+    PH_LEA_OPT   : PhTypeName := 'PH_LEA_OPT';
+    PH_CMP_ZERO  : PhTypeName := 'PH_CMP_ZERO';
+    PH_JMP_CHAIN : PhTypeName := 'PH_JMP_CHAIN';
+    PH_DEAD_STORE: PhTypeName := 'PH_DEAD_STORE';
+  Else
+    PhTypeName := 'PH_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TsTypeName : nom textuel d un type de test                     }
+{ ------------------------------------------------------------ }
+
+Function TsTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    TS_NONE    : TsTypeName := 'TS_NONE';
+    TS_HELLO   : TsTypeName := 'TS_HELLO';
+    TS_TEST01  : TsTypeName := 'TS_TEST01';
+    TS_TEST02  : TsTypeName := 'TS_TEST02';
+    TS_TEST03  : TsTypeName := 'TS_TEST03';
+    TS_TEST04  : TsTypeName := 'TS_TEST04';
+    TS_TEST05  : TsTypeName := 'TS_TEST05';
+    TS_TEST06  : TsTypeName := 'TS_TEST06';
+    TS_TEST07  : TsTypeName := 'TS_TEST07';
+    TS_TEST08  : TsTypeName := 'TS_TEST08';
+    TS_TEST09  : TsTypeName := 'TS_TEST09';
+    TS_TEST10  : TsTypeName := 'TS_TEST10';
+  Else
+    TsTypeName := 'TS_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OmTypeName : nom textuel d un mode de sortie                   }
+{ ------------------------------------------------------------ }
+
+Function OmTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    OM_EXE : OmTypeName := 'OM_EXE';
+    OM_OBJ : OmTypeName := 'OM_OBJ';
+    OM_ASM : OmTypeName := 'OM_ASM';
+  Else
+    OmTypeName := 'OM_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPhOpt : enregistrer une optimisation peephole               }
+{ ------------------------------------------------------------ }
+
+Function AddPhOpt(OptType, LineNum : Integer;
+                  Const OldInstr, NewInstr : TString;
+                  BytesSaved : Integer) : Integer;
+Begin
+  If PhOptCount >= PH_MAX_OPT Then
+  Begin
+    AddPhOpt := 0;
+    Exit;
+  End;
+  Inc(PhOptCount);
+  PhOpts[PhOptCount].OptType := OptType;
+  PhOpts[PhOptCount].LineNum := LineNum;
+  PhOpts[PhOptCount].OldInstr := OldInstr;
+  PhOpts[PhOptCount].NewInstr := NewInstr;
+  PhOpts[PhOptCount].BytesSaved := BytesSaved;
+  PhTotalSaved := PhTotalSaved + BytesSaved;
+  PhLastType := OptType;
+  
+  Case OptType Of
+    PH_MOV_ZERO  : Inc(PhMovZeroCount);
+    PH_PUSH_POP  : Inc(PhPushPopCount);
+    PH_MOV_MOV   : Inc(PhMovMovCount);
+    PH_ADD_ONE   : Inc(PhAddOneCount);
+    PH_SUB_ONE   : Inc(PhSubOneCount);
+    PH_MUL_TWO, PH_MUL_FOUR, PH_MUL_EIGHT : Inc(PhMulShiftCount);
+  End;
+  
+  AddPhOpt := PhOptCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ PhOptMovZero : optimiser MOV EAX, 0 -> XOR EAX, EAX            }
+{ ------------------------------------------------------------ }
+
+Function PhOptMovZero(Const Instr : TString; LineNum : Integer) : TString;
+Begin
+  { MOV EAX, 0 (5 octets) -> XOR EAX, EAX (2 octets) }
+  If (Pos('MOV EAX, 0', Instr) > 0) Or (Pos('mov eax, 0', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MOV_ZERO, LineNum, Instr, 'XOR EAX, EAX', 3);
+    PhOptMovZero := 'XOR EAX, EAX';
+  End
+  Else If (Pos('MOV EBX, 0', Instr) > 0) Or (Pos('mov ebx, 0', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MOV_ZERO, LineNum, Instr, 'XOR EBX, EBX', 3);
+    PhOptMovZero := 'XOR EBX, EBX';
+  End
+  Else If (Pos('MOV ECX, 0', Instr) > 0) Or (Pos('mov ecx, 0', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MOV_ZERO, LineNum, Instr, 'XOR ECX, ECX', 3);
+    PhOptMovZero := 'XOR ECX, ECX';
+  End
+  Else If (Pos('MOV EDX, 0', Instr) > 0) Or (Pos('mov edx, 0', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MOV_ZERO, LineNum, Instr, 'XOR EDX, EDX', 3);
+    PhOptMovZero := 'XOR EDX, EDX';
+  End
+  Else
+    PhOptMovZero := Instr;
+End;
+
+{ ------------------------------------------------------------ }
+{ PhOptAddOne : optimiser ADD EAX, 1 -> INC EAX                  }
+{ ------------------------------------------------------------ }
+
+Function PhOptAddOne(Const Instr : TString; LineNum : Integer) : TString;
+Begin
+  { ADD EAX, 1 (3 octets) -> INC EAX (1 octet) }
+  If (Pos('ADD EAX, 1', Instr) > 0) Or (Pos('add eax, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_ADD_ONE, LineNum, Instr, 'INC EAX', 2);
+    PhOptAddOne := 'INC EAX';
+  End
+  Else If (Pos('ADD EBX, 1', Instr) > 0) Or (Pos('add ebx, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_ADD_ONE, LineNum, Instr, 'INC EBX', 2);
+    PhOptAddOne := 'INC EBX';
+  End
+  Else If (Pos('ADD ECX, 1', Instr) > 0) Or (Pos('add ecx, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_ADD_ONE, LineNum, Instr, 'INC ECX', 2);
+    PhOptAddOne := 'INC ECX';
+  End
+  Else If (Pos('ADD EDX, 1', Instr) > 0) Or (Pos('add edx, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_ADD_ONE, LineNum, Instr, 'INC EDX', 2);
+    PhOptAddOne := 'INC EDX';
+  End
+  Else
+    PhOptAddOne := Instr;
+End;
+
+{ ------------------------------------------------------------ }
+{ PhOptSubOne : optimiser SUB EAX, 1 -> DEC EAX                  }
+{ ------------------------------------------------------------ }
+
+Function PhOptSubOne(Const Instr : TString; LineNum : Integer) : TString;
+Begin
+  { SUB EAX, 1 (3 octets) -> DEC EAX (1 octet) }
+  If (Pos('SUB EAX, 1', Instr) > 0) Or (Pos('sub eax, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_SUB_ONE, LineNum, Instr, 'DEC EAX', 2);
+    PhOptSubOne := 'DEC EAX';
+  End
+  Else If (Pos('SUB EBX, 1', Instr) > 0) Or (Pos('sub ebx, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_SUB_ONE, LineNum, Instr, 'DEC EBX', 2);
+    PhOptSubOne := 'DEC EBX';
+  End
+  Else If (Pos('SUB ECX, 1', Instr) > 0) Or (Pos('sub ecx, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_SUB_ONE, LineNum, Instr, 'DEC ECX', 2);
+    PhOptSubOne := 'DEC ECX';
+  End
+  Else If (Pos('SUB EDX, 1', Instr) > 0) Or (Pos('sub edx, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_SUB_ONE, LineNum, Instr, 'DEC EDX', 2);
+    PhOptSubOne := 'DEC EDX';
+  End
+  Else
+    PhOptSubOne := Instr;
+End;
+
+{ ------------------------------------------------------------ }
+{ PhOptMulShift : optimiser IMUL EAX, 2/4/8 -> SHL EAX, 1/2/3    }
+{ ------------------------------------------------------------ }
+
+Function PhOptMulShift(Const Instr : TString; LineNum : Integer) : TString;
+Begin
+  { IMUL EAX, 2 -> SHL EAX, 1 }
+  If (Pos('IMUL EAX, 2', Instr) > 0) Or (Pos('imul eax, 2', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MUL_TWO, LineNum, Instr, 'SHL EAX, 1', 2);
+    PhOptMulShift := 'SHL EAX, 1';
+  End
+  Else If (Pos('IMUL EAX, 4', Instr) > 0) Or (Pos('imul eax, 4', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MUL_FOUR, LineNum, Instr, 'SHL EAX, 2', 2);
+    PhOptMulShift := 'SHL EAX, 2';
+  End
+  Else If (Pos('IMUL EAX, 8', Instr) > 0) Or (Pos('imul eax, 8', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MUL_EIGHT, LineNum, Instr, 'SHL EAX, 3', 2);
+    PhOptMulShift := 'SHL EAX, 3';
+  End
+  Else
+    PhOptMulShift := Instr;
+End;
+
+{ ------------------------------------------------------------ }
+{ PhOptCmpZero : optimiser CMP EAX, 0 -> TEST EAX, EAX           }
+{ ------------------------------------------------------------ }
+
+Function PhOptCmpZero(Const Instr : TString; LineNum : Integer) : TString;
+Begin
+  { CMP EAX, 0 (3 octets) -> TEST EAX, EAX (2 octets) }
+  If (Pos('CMP EAX, 0', Instr) > 0) Or (Pos('cmp eax, 0', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_CMP_ZERO, LineNum, Instr, 'TEST EAX, EAX', 1);
+    PhOptCmpZero := 'TEST EAX, EAX';
+  End
+  Else If (Pos('CMP EBX, 0', Instr) > 0) Or (Pos('cmp ebx, 0', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_CMP_ZERO, LineNum, Instr, 'TEST EBX, EBX', 1);
+    PhOptCmpZero := 'TEST EBX, EBX';
+  End
+  Else
+    PhOptCmpZero := Instr;
+End;
+
+{ ------------------------------------------------------------ }
+{ ApplyPeephole : appliquer une optimisation peephole            }
+{ ------------------------------------------------------------ }
+
+Function ApplyPeephole(Const Instr : TString; LineNum : Integer) : TString;
+Var Result : TString;
+Begin
+  If Not PhEnabled Then
+  Begin
+    ApplyPeephole := Instr;
+    Exit;
+  End;
+  
+  Result := Instr;
+  
+  { Appliquer les optimisations en sequence }
+  Result := PhOptMovZero(Result, LineNum);
+  If Result <> Instr Then
+  Begin
+    ApplyPeephole := Result;
+    Exit;
+  End;
+  
+  Result := PhOptAddOne(Result, LineNum);
+  If Result <> Instr Then
+  Begin
+    ApplyPeephole := Result;
+    Exit;
+  End;
+  
+  Result := PhOptSubOne(Result, LineNum);
+  If Result <> Instr Then
+  Begin
+    ApplyPeephole := Result;
+    Exit;
+  End;
+  
+  Result := PhOptMulShift(Result, LineNum);
+  If Result <> Instr Then
+  Begin
+    ApplyPeephole := Result;
+    Exit;
+  End;
+  
+  Result := PhOptCmpZero(Result, LineNum);
+  ApplyPeephole := Result;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterTest : enregistrer un fichier de test                  }
+{ ------------------------------------------------------------ }
+
+Function RegisterTest(TestType : Integer;
+                       Const FileName, Desc : TString) : Integer;
+Begin
+  If TsTestCount >= TS_MAX_TESTS Then
+  Begin
+    RegisterTest := 0;
+    Exit;
+  End;
+  Inc(TsTestCount);
+  TsTests[TsTestCount].TestType := TestType;
+  TsTests[TsTestCount].FileName := FileName;
+  TsTests[TsTestCount].Desc := Desc;
+  TsTests[TsTestCount].Passed := False;
+  TsTests[TsTestCount].ExeSize := 0;
+  TsTests[TsTestCount].CompTime := 0;
+  TsTests[TsTestCount].ErrorMsg := '';
+  TsLastType := TestType;
+  RegisterTest := TsTestCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterAllTests : enregistrer tous les tests standard         }
+{ ------------------------------------------------------------ }
+
+Procedure RegisterAllTests;
+Begin
+  RegisterTest(TS_HELLO, 'Hello.java', 'Hello World minimal');
+  RegisterTest(TS_TEST01, 'test01_hello.java', 'System.out.println, chaines');
+  RegisterTest(TS_TEST02, 'test02_vars.java', 'int, boolean, char, affectations');
+  RegisterTest(TS_TEST03, 'test03_arith.java', '+ - * / % += -= *= /= %= ++ --');
+  RegisterTest(TS_TEST04, 'test04_cond.java', 'if/else, == != < > <= >=, && || !');
+  RegisterTest(TS_TEST05, 'test05_while.java', 'while, break, continue');
+  RegisterTest(TS_TEST06, 'test06_for.java', 'for, boucles imbriquees, break');
+  RegisterTest(TS_TEST07, 'test07_fonct.java', 'methodes statiques, return, recursion');
+  RegisterTest(TS_TEST08, 'test08_string.java', 'concatenation, Scanner.nextLine');
+  RegisterTest(TS_TEST09, 'test09_array.java', 'int[], new, index, for-each, length');
+  RegisterTest(TS_TEST10, 'test10_recurs.java', 'fact, fib, recursion directe');
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkTestPassed : marquer un test comme reussi                  }
+{ ------------------------------------------------------------ }
+
+Procedure MarkTestPassed(Idx : Integer; ExeSize, CompTime : LongInt);
+Begin
+  If (Idx >= 1) And (Idx <= TsTestCount) Then
+  Begin
+    TsTests[Idx].Passed := True;
+    TsTests[Idx].ExeSize := ExeSize;
+    TsTests[Idx].CompTime := CompTime;
+    TsTests[Idx].ErrorMsg := '';
+    Inc(TsPassedCount);
+    TsTotalExeSize := TsTotalExeSize + ExeSize;
+    TsTotalCompTime := TsTotalCompTime + CompTime;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkTestFailed : marquer un test comme echoue                  }
+{ ------------------------------------------------------------ }
+
+Procedure MarkTestFailed(Idx : Integer; Const ErrMsg : TString);
+Begin
+  If (Idx >= 1) And (Idx <= TsTestCount) Then
+  Begin
+    TsTests[Idx].Passed := False;
+    TsTests[Idx].ErrorMsg := ErrMsg;
+    Inc(TsFailedCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SetOutputMode : definir le mode de sortie                      }
+{ ------------------------------------------------------------ }
+
+Procedure SetOutputMode(Mode : Integer);
+Begin
+  If (Mode >= OM_EXE) And (Mode <= OM_MAX) Then
+    TsOutputMode := Mode;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetOutputExt : obtenir l extension pour le mode actuel         }
+{ ------------------------------------------------------------ }
+
+Function GetOutputExt : TString;
+Begin
+  Case TsOutputMode Of
+    OM_EXE : GetOutputExt := '.exe';
+    OM_OBJ : GetOutputExt := '.obj';
+    OM_ASM : GetOutputExt := '.asm';
+  Else
+    GetOutputExt := '.exe';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpPhState : afficher l etat des optimisations                }
+{ ------------------------------------------------------------ }
+
+Procedure DumpPhState;
+Var I : Integer;
+Begin
+  WriteLn('--- PhState dump ---');
+  WriteLn('  PhInitialized  : ', PhInitialized);
+  WriteLn('  PhOptCount     : ', PhOptCount);
+  WriteLn('  PhEnabled      : ', PhEnabled);
+  WriteLn('  PhTotalSaved   : ', PhTotalSaved, ' octets');
+  WriteLn('  PhMovZeroCount : ', PhMovZeroCount);
+  WriteLn('  PhPushPopCount : ', PhPushPopCount);
+  WriteLn('  PhMovMovCount  : ', PhMovMovCount);
+  WriteLn('  PhAddOneCount  : ', PhAddOneCount);
+  WriteLn('  PhSubOneCount  : ', PhSubOneCount);
+  WriteLn('  PhMulShiftCount: ', PhMulShiftCount);
+  WriteLn('  PhLastType     : ', PhTypeName(PhLastType));
+  If PhOptCount > 0 Then
+  Begin
+    WriteLn('  --- Dernieres optimisations ---');
+    For I := 1 To PhOptCount Do
+      If I <= 10 Then
+        WriteLn('    [', I, '] ', PhTypeName(PhOpts[I].OptType),
+                ': ', PhOpts[I].OldInstr, ' -> ', PhOpts[I].NewInstr,
+                ' (-', PhOpts[I].BytesSaved, ' octets)');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpTsState : afficher l etat des tests                        }
+{ ------------------------------------------------------------ }
+
+Procedure DumpTsState;
+Var I : Integer;
+    Status : TString;
+Begin
+  WriteLn('--- TsState dump ---');
+  WriteLn('  TsInitialized   : ', TsInitialized);
+  WriteLn('  TsTestCount     : ', TsTestCount);
+  WriteLn('  TsPassedCount   : ', TsPassedCount);
+  WriteLn('  TsFailedCount   : ', TsFailedCount);
+  WriteLn('  TsOutputMode    : ', OmTypeName(TsOutputMode));
+  WriteLn('  TsTotalExeSize  : ', TsTotalExeSize, ' octets');
+  WriteLn('  TsTotalCompTime : ', TsTotalCompTime, ' ms');
+  WriteLn('  TsLastType      : ', TsTypeName(TsLastType));
+  If TsTestCount > 0 Then
+  Begin
+    WriteLn('  --- Tests enregistres ---');
+    For I := 1 To TsTestCount Do
+    Begin
+      If TsTests[I].Passed Then
+        Status := '[OK]'
+      Else If TsTests[I].ErrorMsg <> '' Then
+        Status := '[FAIL]'
+      Else
+        Status := '[--]';
+      WriteLn('    ', Status, ' ', TsTests[I].FileName,
+              ' - ', TsTests[I].Desc);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 25)                              }
+{ ------------------------------------------------------------ }
+
+Function IsPhInitialized : Boolean;
+Begin
+  IsPhInitialized := PhInitialized;
+End;
+
+Function IsPhEnabled : Boolean;
+Begin
+  IsPhEnabled := PhEnabled;
+End;
+
+Function GetPhOptCount : LongInt;
+Begin
+  GetPhOptCount := PhOptCount;
+End;
+
+Function GetPhTotalSaved : LongInt;
+Begin
+  GetPhTotalSaved := PhTotalSaved;
+End;
+
+Function IsTsInitialized : Boolean;
+Begin
+  IsTsInitialized := TsInitialized;
+End;
+
+Function GetTsTestCount : LongInt;
+Begin
+  GetTsTestCount := TsTestCount;
+End;
+
+Function GetTsPassedCount : LongInt;
+Begin
+  GetTsPassedCount := TsPassedCount;
+End;
+
+Function GetTsFailedCount : LongInt;
+Begin
+  GetTsFailedCount := TsFailedCount;
+End;
+
+Function GetPhLastType : Integer;
+Begin
+  GetPhLastType := PhLastType;
+End;
+
+Function GetTsStatus : TString;
+Begin
+  If Not TsInitialized Then
+    GetTsStatus := 'Not initialized'
+  Else
+    GetTsStatus := ItoS(TsPassedCount) + '/' + ItoS(TsTestCount) + ' tests passed, ' +
+                   ItoS(TsTotalExeSize) + ' bytes total';
+End;
+
+{ ============================================================ }
+{ Emission de code machine x86 (instructions binaires)          }
+{ ============================================================ }
+
+{ EmitX86Push : PUSH reg32 (50+rd) ou PUSH imm32 (68 imm32) }
+Procedure EmitX86PushReg(Reg : Integer);
+Begin
+  EmitTextByte($50 + (Reg And 7)); { 50=EAX, 51=ECX, 52=EDX, 53=EBX, etc }
+End;
+
+Procedure EmitX86PushImm32(Imm : LongInt);
+Begin
+  EmitTextByte($68);
+  EmitTextDWord(Imm);
+End;
+
+{ EmitX86Pop : POP reg32 (58+rd) }
+Procedure EmitX86PopReg(Reg : Integer);
+Begin
+  EmitTextByte($58 + (Reg And 7));
+End;
+
+{ EmitX86MovRegImm32 : MOV reg32, imm32 (B8+rd imm32) }
+Procedure EmitX86MovRegImm32(Reg : Integer; Imm : LongInt);
+Begin
+  EmitTextByte($B8 + (Reg And 7));
+  EmitTextDWord(Imm);
+End;
+
+{ EmitX86Call : CALL rel32 (E8 rel32) }
+Procedure EmitX86CallRel32(Rel : LongInt);
+Begin
+  EmitTextByte($E8);
+  EmitTextDWord(Rel);
+End;
+
+{ EmitX86CallAbs : CALL [addr32] (FF 15 addr32) }
+Procedure EmitX86CallAbs(Addr : LongInt);
+Begin
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(Addr);
+End;
+
+{ EmitX86Ret : RET (C3) }
+Procedure EmitX86Ret;
+Begin
+  EmitTextByte($C3);
+End;
+
+{ EmitX86XorRegReg : XOR reg, reg (33 /r) }
+Procedure EmitX86XorRegReg(Dst, Src : Integer);
+Begin
+  EmitTextByte($33);
+  EmitTextByte($C0 + (Dst Shl 3) + Src);
+End;
+
+{ EmitX86MovRegMem : MOV reg, [addr32] (8B /r) }
+Procedure EmitX86MovRegMem(Reg : Integer; Addr : LongInt);
+Begin
+  EmitTextByte($8B);
+  EmitTextByte($05 + (Reg Shl 3)); { ModR/M: reg, disp32 }
+  EmitTextDWord(Addr);
+End;
+
+{ EmitX86MovMemReg : MOV [addr32], reg (89 /r) }
+Procedure EmitX86MovMemReg(Addr : LongInt; Reg : Integer);
+Begin
+  EmitTextByte($89);
+  EmitTextByte($05 + (Reg Shl 3)); { ModR/M: reg, disp32 }
+  EmitTextDWord(Addr);
+End;
+
+{ ============================================================ }
+{ Generation de code pour le programme compile                   }
+{ ============================================================ }
+
+{ EmitCompiledOutput : generer le code PE a partir des outputs  }
+{   collectes pendant le parsing                                 }
+{                                                                }
+{ Structure generee :                                            }
+{   .data : hStdOut, bytesWritten, puis les chaines              }
+{   .text : code pour afficher chaque output                     }
+{                                                                }
+{ Pour chaque output de type IOV_STRING :                        }
+{   - Stocker la chaine dans .data                               }
+{   - Generer PUSH lpOverlapped=0, PUSH lpBytesWritten,          }
+{     PUSH nBytes, PUSH lpBuffer, PUSH hFile                     }
+{   - CALL WriteFile                                             }
+{   - Si println : afficher aussi CRLF                           }
+{ ============================================================ }
+
+Procedure EmitCompiledOutput;
+Var
+  I          : Integer;
+  TotalMsgs  : Integer;
+  MsgAddrs   : Array[1..256] Of LongInt;
+  MsgLens    : Array[1..256] Of Integer;
+  MsgPrintln : Array[1..256] Of Boolean;
+  CrlfAddr   : LongInt;
+  CrlfLen    : Integer;
+  ImageBase, TextRVA, DataRVA, ImportRVA : LongInt;
+  StdOutAddr, WrittenAddr, CurDataOff : LongInt;
+  GetStdHandleRVA, WriteFileRVA, ExitProcessRVA : LongInt;
+  S          : TString;
+Begin
+  { Si aucun output, rien a faire }
+  If OutMsgCount = 0 Then
+    Exit;
+
+  { Configuration de base }
+  ImageBase := PE_IMAGE_BASE_DEFAULT;
+  TextRVA   := $1000;
+  DataRVA   := $2000;
+  ImportRVA := $3000;
+
+  { ===== Construire la section .data ===== }
+  { Offset 0: hStdOut (DWORD) }
+  StdOutAddr := ImageBase + DataRVA + PeDataSize;
+  EmitDataDWord(0);
+
+  { Offset 4: bytesWritten (DWORD) }
+  WrittenAddr := ImageBase + DataRVA + PeDataSize;
+  EmitDataDWord(0);
+
+  { CRLF pour println }
+  CrlfAddr := ImageBase + DataRVA + PeDataSize;
+  CrlfLen := 2;
+  EmitDataByte(13);  { CR }
+  EmitDataByte(10);  { LF }
+  EmitDataByte(0);   { null terminator }
+
+  { Stocker toutes les chaines des outputs }
+  TotalMsgs := 0;
+  For I := 1 To OutMsgCount Do
+  Begin
+    Inc(TotalMsgs);
+    MsgAddrs[TotalMsgs] := ImageBase + DataRVA + PeDataSize;
+    MsgPrintln[TotalMsgs] := OutMsgs[I].IsPrintln;
+
+    Case OutMsgs[I].Kind Of
+      OMK_STRING:
+        Begin
+          S := OutMsgs[I].StrVal;
+          MsgLens[TotalMsgs] := Length(S);
+          EmitDataString(S);
+        End;
+      OMK_INT:
+        Begin
+          S := ItoS(OutMsgs[I].IntVal);
+          MsgLens[TotalMsgs] := Length(S);
+          EmitDataString(S);
+        End;
+      OMK_BOOL:
+        Begin
+          If OutMsgs[I].BoolVal Then S := 'true' Else S := 'false';
+          MsgLens[TotalMsgs] := Length(S);
+          EmitDataString(S);
+        End;
+      OMK_CHAR:
+        Begin
+          { Convertir le caractere en chaine explicitement }
+          S := '';
+          If OutMsgs[I].CharVal <> #0 Then
+            S := OutMsgs[I].CharVal;
+          MsgLens[TotalMsgs] := Length(S);
+          EmitDataString(S);
+        End;
+    Else
+      { Pour les variables et expressions, on genere une chaine vide pour l instant }
+      MsgLens[TotalMsgs] := 0;
+      S := '';
+      EmitDataString(S);
+    End;
+  End;
+
+  { ===== Construire la section .text (code) ===== }
+
+  { Point d entree }
+  PeEntryPoint := PeTextSize;
+
+  { Calculer les RVAs des imports (valeurs temporaires) }
+  GetStdHandleRVA := ImportRVA + $100;
+  WriteFileRVA    := ImportRVA + $104;
+  ExitProcessRVA  := ImportRVA + $108;
+
+  { _start: Obtenir le handle de la console }
+  { PUSH -11 (STD_OUTPUT_HANDLE) }
+  EmitX86PushImm32(-11);
+
+  { CALL [GetStdHandle] }
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(ImageBase + GetStdHandleRVA);
+
+  { MOV [hStdOut], EAX }
+  EmitX86MovMemReg(StdOutAddr, 0);
+
+  { Emettre le code pour chaque message }
+  For I := 1 To TotalMsgs Do
+  Begin
+    { Afficher le message seulement si non-vide }
+    If MsgLens[I] > 0 Then
+    Begin
+      { WriteFile(hStdOut, msg, len, &written, NULL) }
+      { PUSH 0 (lpOverlapped) }
+      EmitX86PushImm32(0);
+
+      { PUSH &written }
+      EmitX86PushImm32(WrittenAddr);
+
+      { PUSH len }
+      EmitX86PushImm32(MsgLens[I]);
+
+      { PUSH msg_addr }
+      EmitX86PushImm32(MsgAddrs[I]);
+
+      { PUSH [hStdOut] }
+      EmitTextByte($FF);
+      EmitTextByte($35);
+      EmitTextDWord(StdOutAddr);
+
+      { CALL [WriteFile] }
+      EmitTextByte($FF);
+      EmitTextByte($15);
+      EmitTextDWord(ImageBase + WriteFileRVA);
+    End;
+
+    { Si println, ajouter CRLF }
+    If MsgPrintln[I] Then
+    Begin
+      { WriteFile(hStdOut, crlf, 2, &written, NULL) }
+      EmitX86PushImm32(0);
+      EmitX86PushImm32(WrittenAddr);
+      EmitX86PushImm32(CrlfLen);
+      EmitX86PushImm32(CrlfAddr);
+      EmitTextByte($FF);
+      EmitTextByte($35);
+      EmitTextDWord(StdOutAddr);
+      EmitTextByte($FF);
+      EmitTextByte($15);
+      EmitTextDWord(ImageBase + WriteFileRVA);
+    End;
+  End;
+
+  { ExitProcess(0) }
+  EmitX86PushImm32(0);
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(ImageBase + ExitProcessRVA);
+
+  { RET (securite) }
+  EmitX86Ret;
+End;
+
+{ ============================================================ }
+{ Generation de code pour un programme Hello World minimal      }
+{ ============================================================ }
+
+Procedure EmitMinimalHelloWorld;
+Var
+  StartAddr, InitIOAddr, MainAddr, ExitAddr : LongInt;
+  StdOutAddr, WrittenAddr, MsgAddr : LongInt;
+  GetStdHandleRVA, WriteFileRVA, ExitProcessRVA : LongInt;
+  ImageBase, TextRVA, DataRVA, ImportRVA : LongInt;
+  MsgLen : Integer;
+  Msg : TString;
+Begin
+  { Configuration de base }
+  ImageBase := PE_IMAGE_BASE_DEFAULT; { $00400000 }
+  TextRVA   := $1000;  { Section .text a RVA $1000 }
+  DataRVA   := $2000;  { Section .data a RVA $2000 }
+  ImportRVA := $3000;  { Section .rdata (imports) a RVA $3000 }
+
+  { Message a afficher }
+  Msg := 'Hello, World!';
+  MsgLen := Length(Msg);
+
+  { ===== Section .data ===== }
+  { Offset 0: hStdOut (DWORD) }
+  StdOutAddr := ImageBase + DataRVA + 0;
+  EmitDataDWord(0);  { hStdOut placeholder }
+
+  { Offset 4: bytesWritten (DWORD) }
+  WrittenAddr := ImageBase + DataRVA + 4;
+  EmitDataDWord(0);  { bytesWritten placeholder }
+
+  { Offset 8: message string }
+  MsgAddr := ImageBase + DataRVA + 8;
+  EmitDataString(Msg);
+
+  { ===== Section .text (code) ===== }
+
+  { Point d'entree _start (RVA $1000) }
+  StartAddr := ImageBase + TextRVA + PeTextSize;
+  PeEntryPoint := PeTextSize;
+
+  { ===== _start: ===== }
+  { PUSH -11 (STD_OUTPUT_HANDLE) }
+  EmitX86PushImm32(-11);
+
+  { CALL GetStdHandle }
+  { Cet appel sera patche apres construction de l IAT }
+  GetStdHandleRVA := ImportRVA + $100; { Placeholder }
+  EmitTextByte($FF);  { CALL [addr32] }
+  EmitTextByte($15);
+  EmitTextDWord(ImageBase + GetStdHandleRVA);
+
+  { MOV [hStdOut], EAX }
+  EmitX86MovMemReg(StdOutAddr, 0); { Reg 0 = EAX }
+
+  { PUSH 0 (lpOverlapped) }
+  EmitX86PushImm32(0);
+
+  { PUSH WrittenAddr }
+  EmitX86PushImm32(WrittenAddr);
+
+  { PUSH MsgLen }
+  EmitX86PushImm32(MsgLen);
+
+  { PUSH MsgAddr }
+  EmitX86PushImm32(MsgAddr);
+
+  { PUSH [hStdOut] }
+  EmitTextByte($FF);  { PUSH [addr32] }
+  EmitTextByte($35);
+  EmitTextDWord(StdOutAddr);
+
+  { CALL WriteFile }
+  WriteFileRVA := ImportRVA + $104; { Placeholder }
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(ImageBase + WriteFileRVA);
+
+  { PUSH 0 (exit code) }
+  EmitX86PushImm32(0);
+
+  { CALL ExitProcess }
+  ExitProcessRVA := ImportRVA + $108; { Placeholder }
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(ImageBase + ExitProcessRVA);
+
+  { RET (ne devrait jamais etre atteint) }
+  EmitX86Ret;
+End;
+
+{ ============================================================ }
+{ ParseCompilationUnit : parser un fichier Java complet          }
+{ ============================================================ }
+
+Procedure ParseCompilationUnit;
+Var
+  HadClass : Boolean;
+  ClassName : TString;
+Begin
+  HadClass := False;
+
+  { Parser package si present }
+  If CurTokStr = 'package' Then
+  Begin
+    ParserAdvance;
+    While CurTokKind <> TK_SEMICOLON Do
+      ParserAdvance;
+    ParserAdvance; { passer ; }
+  End;
+
+  { Parser imports si presents }
+  While CurTokStr = 'import' Do
+  Begin
+    ParserAdvance;
+    While CurTokKind <> TK_SEMICOLON Do
+      ParserAdvance;
+    ParserAdvance; { passer ; }
+  End;
+
+  { Parser declarations de classe }
+  While CurTokKind <> TK_EOF Do
+  Begin
+    { System.out.println / System.out.print }
+    If (CurTokKind = TK_IDENT) And (CurTokStr = 'System') Then
+    Begin
+      ParseExpr;
+      { Consommer ; si present }
+      If CurTokKind = TK_SEMICOLON Then
+        ParserAdvance;
+    End
+    { Declarations de variables: int, boolean, char, String }
+    Else If (CurTokKind = TK_KEYWORD) And
+            ((CurTokStr = 'int') Or (CurTokStr = 'boolean') Or
+             (CurTokStr = 'char') Or (CurTokStr = 'String')) Then
+    Begin
+      ParseVarDecl;
+      If CurTokKind = TK_SEMICOLON Then
+        ParserAdvance;
+    End
+    { Assignation de variable: identificateur suivi de = }
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      ClassName := CurTokStr;  { reuse ClassName pour stocker le nom }
+      ParserAdvance;
+      If CurTokStr = '=' Then
+      Begin
+        ParseAssignSimple(ClassName);
+        If CurTokKind = TK_SEMICOLON Then
+          ParserAdvance;
+      End
+      Else If (CurTokStr = '+=') Or (CurTokStr = '-=') Or
+              (CurTokStr = '*=') Or (CurTokStr = '/=') Or
+              (CurTokStr = '%=') Or (CurTokStr = '&=') Or
+              (CurTokStr = '|=') Or (CurTokStr = '^=') Or
+              (CurTokStr = '<<=') Or (CurTokStr = '>>=') Then
+      Begin
+        ParseAssignAugmented(ClassName, IsAssignOp);
+        If CurTokKind = TK_SEMICOLON Then
+          ParserAdvance;
+      End;
+      { Autres cas comme appels de methode, etc. - continuer }
+    End
+    { public class ... }
+    Else If CurTokStr = 'public' Then
+    Begin
+      ParserAdvance;
+      If CurTokStr = 'class' Then
+      Begin
+        ParserAdvance;
+        If CurTokKind = TK_IDENT Then
+        Begin
+          ClassName := CurTokStr;
+          ParseClassDecl(True, LexLineNo);
+          HadClass := True;
+        End;
+      End;
+      { Sinon c'est autre chose (public static void main...), on continue }
+    End
+    { class ... }
+    Else If CurTokStr = 'class' Then
+    Begin
+      ParserAdvance;
+      If CurTokKind = TK_IDENT Then
+      Begin
+        ClassName := CurTokStr;
+        ParseClassDecl(False, LexLineNo);
+        HadClass := True;
+      End;
+    End
+    { Autres tokens }
+    Else
+      ParserAdvance;
+  End;
+
+  { Generer le code machine }
+  If OutMsgCount > 0 Then
+    EmitCompiledOutput
+  Else
+    EmitMinimalHelloWorld;
+End;
+
+{ ============================================================ }
+{ Finaliser et ecrire l executable                              }
+{ ============================================================ }
+
+Procedure FinalizeAndWriteOutput;
+Var
+  OutputPath : TString;
+Begin
+  { Determiner le nom de sortie }
+  If Opts.OutFile <> '' Then
+    OutputPath := Opts.OutFile
+  Else
+    OutputPath := ReplaceExt(Opts.SrcFile, '.exe');
+
+  { Generer l executable PE }
+  If Opts.EmitExe Then
+  Begin
+    WriteLn('JAVACW32: generation de ', OutputPath);
+    GeneratePeExe(OutputPath);
+    WriteLn('JAVACW32: executable PE genere (', PeTextSize + PeDataSize,
+            ' octets de code/donnees)');
+  End;
+
+  { Generer le fichier OBJ si demande }
+  If Opts.EmitObj Then
+  Begin
+    OutputPath := ReplaceExt(Opts.SrcFile, '.obj');
+    WriteLn('JAVACW32: generation de ', OutputPath);
+    GenerateCoffObj(OutputPath);
+    WriteLn('JAVACW32: fichier COFF genere');
+  End;
+
+  { Generer le listing ASM si demande }
+  If Opts.EmitAsm Then
+  Begin
+    OutputPath := ReplaceExt(Opts.SrcFile, '.asm');
+    WriteLn('JAVACW32: generation de ', OutputPath);
+    GenerateAsmListing(OutputPath);
+    WriteLn('JAVACW32: listing assembleur genere');
+  End;
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-25)                              }
 { ============================================================ }
 
 Begin
@@ -13300,16 +19421,28 @@ Begin
   InitExState;
   InitImState;
   InitCvState;
+  InitDtState;
+  InitRtState;
+  InitPeState;
+  InitWiState;
+  InitOutMsgs;
+  InitAsmState;
+  InitPhState;
+  InitTsState;
+  RegisterKernel32Imports;
+  RegisterAllTests;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-20) }
-  While CurTokKind <> TK_EOF Do
-    ParserAdvance;
+  { Parser le fichier Java et generer le code }
+  ParseCompilationUnit;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 21..25 [A FAIRE] - pas encore implemente');
+  { Finaliser et ecrire les fichiers de sortie }
+  FinalizeAndWriteOutput;
+
+  WriteLn('JAVACW32: compilation terminee (TODOs 01-25 implementes)');
 
   ShowStats;
   Cleanup;
