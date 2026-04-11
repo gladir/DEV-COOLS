@@ -4498,6 +4498,30 @@ Begin
         E.TypeIdx := TY_IDX_INT;
         E.Offset  := 0;
         E.SymIdx  := SymFind(CurTokStr);
+        { Promouvoir en EK_IMM si la valeur simulee est connue }
+        If (E.SymIdx >= 0) And (E.SymIdx < SymTabCount) And
+           SymTab[E.SymIdx].HasSimVal Then
+        Begin
+          E.TypeIdx := SymTab[E.SymIdx].TypeIdx;
+          Case SymTab[E.SymIdx].TypeIdx Of
+            TY_IDX_INT:
+              Begin
+                E.Kind   := EK_IMM;
+                E.ImmVal := SymTab[E.SymIdx].SimIntVal;
+              End;
+            TY_IDX_BOOLEAN:
+              Begin
+                E.Kind   := EK_IMM;
+                If SymTab[E.SymIdx].SimBoolVal Then E.ImmVal := 1
+                Else E.ImmVal := 0;
+              End;
+            TY_IDX_CHAR:
+              Begin
+                E.Kind   := EK_IMM;
+                E.ImmVal := Ord(SymTab[E.SymIdx].SimCharVal);
+              End;
+          End;
+        End;
         ParserAdvance;
       End;
     TK_KEYWORD :
@@ -5663,6 +5687,30 @@ Begin
             E.TypeIdx := TY_IDX_INT;
             E.Offset  := 0;
             E.SymIdx  := SymI;
+            { Promouvoir en EK_IMM si la valeur simulee est connue }
+            If (SymI >= 0) And (SymI < SymTabCount) And
+               SymTab[SymI].HasSimVal Then
+            Begin
+              E.TypeIdx := SymTab[SymI].TypeIdx;
+              Case SymTab[SymI].TypeIdx Of
+                TY_IDX_INT:
+                  Begin
+                    E.Kind   := EK_IMM;
+                    E.ImmVal := SymTab[SymI].SimIntVal;
+                  End;
+                TY_IDX_BOOLEAN:
+                  Begin
+                    E.Kind   := EK_IMM;
+                    If SymTab[SymI].SimBoolVal Then E.ImmVal := 1
+                    Else E.ImmVal := 0;
+                  End;
+                TY_IDX_CHAR:
+                  Begin
+                    E.Kind   := EK_IMM;
+                    E.ImmVal := Ord(SymTab[SymI].SimCharVal);
+                  End;
+              End;
+            End;
           End;
         End;
       End;
@@ -6354,6 +6402,16 @@ Begin
         SymTab[VarIdx].SimCharVal := Chr(E.ImmVal And $FF);
     End;
   End
+  Else If (E.Kind = EK_MEM) And (E.SymIdx >= 0) And
+          (E.SymIdx < SymTabCount) And SymTab[E.SymIdx].HasSimVal Then
+  Begin
+    { Propager la valeur simulee d une autre variable }
+    SymTab[VarIdx].HasSimVal  := True;
+    SymTab[VarIdx].SimIntVal  := SymTab[E.SymIdx].SimIntVal;
+    SymTab[VarIdx].SimBoolVal := SymTab[E.SymIdx].SimBoolVal;
+    SymTab[VarIdx].SimCharVal := SymTab[E.SymIdx].SimCharVal;
+    SymTab[VarIdx].SimStrVal  := SymTab[E.SymIdx].SimStrVal;
+  End
   Else
     { Expression non constante - valeur inconnue au compile-time }
     SymTab[VarIdx].HasSimVal := False;
@@ -6498,6 +6556,15 @@ Begin
       WriteLn('; DEC EAX (--', VarName, ')');
   End;
 
+  { Mettre a jour la valeur simulee au compile-time }
+  If SymTab[VarIdx].HasSimVal Then
+  Begin
+    If IsInc Then
+      SymTab[VarIdx].SimIntVal := SymTab[VarIdx].SimIntVal + 1
+    Else
+      SymTab[VarIdx].SimIntVal := SymTab[VarIdx].SimIntVal - 1;
+  End;
+
   { Stocker le resultat }
   EmitVarStore(VarIdx);
 End;
@@ -6550,6 +6617,15 @@ Begin
   Begin
     If Opts.Verbose Then
       WriteLn('; DEC (', VarName, '--)');
+  End;
+
+  { Mettre a jour la valeur simulee au compile-time }
+  If SymTab[VarIdx].HasSimVal Then
+  Begin
+    If IsInc Then
+      SymTab[VarIdx].SimIntVal := SymTab[VarIdx].SimIntVal + 1
+    Else
+      SymTab[VarIdx].SimIntVal := SymTab[VarIdx].SimIntVal - 1;
   End;
 
   { Stocker la valeur incrementee/decrementee }
@@ -19301,6 +19377,12 @@ Begin
               (CurTokStr = '<<=') Or (CurTokStr = '>>=') Then
       Begin
         ParseAssignAugmented(ClassName, IsAssignOp);
+        If CurTokKind = TK_SEMICOLON Then
+          ParserAdvance;
+      End
+      Else If (CurTokStr = '++') Or (CurTokStr = '--') Then
+      Begin
+        ParsePostIncDec(ClassName, CurTokStr = '++');
         If CurTokKind = TK_SEMICOLON Then
           ParserAdvance;
       End;
