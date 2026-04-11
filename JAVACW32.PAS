@@ -14563,6 +14563,7 @@ Begin
   WriteLn('  CALL _JRT_HEAPALLOC');
   WriteLn('  POP ECX');
   WriteLn('  MOV EDI, EAX            ; dest');
+  WriteLn('  PUSH EAX                ; sauvegarder debut dest');
   WriteLn('  ; Copier str1');
   WriteLn(LblCopy1, ':');
   WriteLn('  MOV AL, [ESI]');
@@ -14585,7 +14586,7 @@ Begin
   WriteLn('  JMP ', LblCopy2, '_loop');
   WriteLn(LblDone, ':');
   WriteLn('  ; Retourner debut de la chaine');
-  WriteLn('  MOV EAX, [ESP+16]       ; dest originale');
+  WriteLn('  POP EAX                 ; recuperer debut dest');
   WriteLn('  POP EDI');
   WriteLn('  POP ESI');
   WriteLn('  POP ECX');
