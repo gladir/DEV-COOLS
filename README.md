@@ -398,6 +398,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>JAVAC86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Java (Java-Lite) pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
+	    <tr>
+			<td><b>JAVACW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Java pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
 		<tr>
 			<td><b>JOVIAL86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Jovial 73 pour l'assembleur du microprocesseur 8086.</td>
