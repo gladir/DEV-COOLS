@@ -5018,6 +5018,33 @@ Var
   PxLastKind     : Integer;    { dernier type d expression primaire  }
   PxLabelSeq     : Integer;    { sequence pour labels PX              }
 
+Type
+  TSimMethodParamNames = Array[1..PX_MAX_ARGS] Of TString;
+  TSimMethodParamTypes = Array[1..PX_MAX_ARGS] Of Integer;
+  TSimArgArray         = Array[1..PX_MAX_ARGS] Of TExprVal;
+
+  TSimMethodRec = Record
+    ClassName : TString;
+    Name      : TString;
+    RetType   : Integer;
+    ParamCount: Integer;
+    ParamNames: TSimMethodParamNames;
+    ParamTypes: TSimMethodParamTypes;
+    BodyState : TLexState;
+  End;
+
+Var
+  SimMethodCount         : Integer;
+  SimMethods             : Array[1..MAX_METHOD] Of TSimMethodRec;
+  SimMethodExecDepth     : Integer;
+  SimMethodReturnFlag    : Boolean;
+  SimMethodReturnHasValue: Boolean;
+  SimMethodReturnExpr    : TExprVal;
+
+Function ExecSimStaticMethod(Const ClassName, MethodName : TString;
+                             ArgCount : Integer;
+                             Var Args : TSimArgArray) : TExprVal; Forward;
+
 { ------------------------------------------------------------ }
 { InitPxState : initialiser le sous-systeme des primaires        }
 { ------------------------------------------------------------ }
@@ -5037,6 +5064,11 @@ Begin
   PxScannerCount := 0;
   PxLastKind     := PX_NONE;
   PxLabelSeq     := 0;
+  SimMethodCount := 0;
+  SimMethodExecDepth := 0;
+  SimMethodReturnFlag := False;
+  SimMethodReturnHasValue := False;
+  SimMethodReturnExpr := ExprMakeEAX(TY_IDX_VOID);
 End;
 
 { ------------------------------------------------------------ }
@@ -5047,6 +5079,103 @@ Function GenPxLabel : TString;
 Begin
   Inc(PxLabelSeq);
   GenPxLabel := '_JPX_' + ItoS(PxLabelSeq);
+End;
+
+Function PromoteSimExpr(E : TExprVal) : TExprVal;
+Begin
+  PromoteSimExpr := E;
+  If (E.Kind = EK_MEM) And (E.SymIdx >= 0) And
+     (E.SymIdx < SymTabCount) And SymTab[E.SymIdx].HasSimVal Then
+  Begin
+    Case SymTab[E.SymIdx].TypeIdx Of
+      TY_IDX_INT:
+        Begin
+          PromoteSimExpr.Kind := EK_IMM;
+          PromoteSimExpr.TypeIdx := TY_IDX_INT;
+          PromoteSimExpr.ImmVal := SymTab[E.SymIdx].SimIntVal;
+        End;
+      TY_IDX_BOOLEAN:
+        Begin
+          PromoteSimExpr.Kind := EK_IMM;
+          PromoteSimExpr.TypeIdx := TY_IDX_BOOLEAN;
+          If SymTab[E.SymIdx].SimBoolVal Then
+            PromoteSimExpr.ImmVal := 1
+          Else
+            PromoteSimExpr.ImmVal := 0;
+        End;
+      TY_IDX_CHAR:
+        Begin
+          PromoteSimExpr.Kind := EK_IMM;
+          PromoteSimExpr.TypeIdx := TY_IDX_CHAR;
+          PromoteSimExpr.ImmVal := Ord(SymTab[E.SymIdx].SimCharVal);
+        End;
+    End;
+  End;
+End;
+
+Function FindSimMethod(Const ClassName, MethodName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  FindSimMethod := -1;
+  If (ClassName <> '') Then
+  Begin
+    For I := 1 To SimMethodCount Do
+      If (SimMethods[I].Name = MethodName) And
+         (SimMethods[I].ClassName = ClassName) Then
+      Begin
+        FindSimMethod := I;
+        Exit;
+      End;
+  End;
+
+  For I := 1 To SimMethodCount Do
+    If SimMethods[I].Name = MethodName Then
+    Begin
+      FindSimMethod := I;
+      Exit;
+    End;
+End;
+
+Procedure RegisterSimMethod(Const ClassName, MethodName : TString;
+                            RetType, ParamCount : Integer;
+                            Const ParamNames : TSimMethodParamNames;
+                            Const ParamTypes : TSimMethodParamTypes;
+                            Const BodyState : TLexState);
+Var
+  I, MIdx : Integer;
+Begin
+  MIdx := FindSimMethod(ClassName, MethodName);
+  If MIdx < 0 Then
+  Begin
+    If SimMethodCount >= MAX_METHOD Then
+    Begin
+      CompileError('too many methods (max ' + ItoS(MAX_METHOD) + ')', LexLineNo);
+      Exit;
+    End;
+    Inc(SimMethodCount);
+    MIdx := SimMethodCount;
+  End;
+
+  SimMethods[MIdx].ClassName := ClassName;
+  SimMethods[MIdx].Name      := MethodName;
+  SimMethods[MIdx].RetType   := RetType;
+  SimMethods[MIdx].ParamCount:= ParamCount;
+  SimMethods[MIdx].BodyState := BodyState;
+
+  For I := 1 To PX_MAX_ARGS Do
+  Begin
+    If I <= ParamCount Then
+    Begin
+      SimMethods[MIdx].ParamNames[I] := ParamNames[I];
+      SimMethods[MIdx].ParamTypes[I] := ParamTypes[I];
+    End
+    Else
+    Begin
+      SimMethods[MIdx].ParamNames[I] := '';
+      SimMethods[MIdx].ParamTypes[I] := TY_IDX_INT;
+    End;
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -5125,15 +5254,38 @@ End;
 
 Function ParseStaticMethodCall(ClassName, MethodName : TString) : TExprVal;
 Var
-  R     : TExprVal;
-  NArgs : Integer;
+  R        : TExprVal;
+  ArgCount : Integer;
+  ArgVals  : TSimArgArray;
 Begin
   Inc(PxCallCount);
   Inc(PxStaticCount);
   PxLastKind := PX_STATIC_CALL;
 
   ParserAdvance; { consommer ( }
-  NArgs := ParseArgList;
+
+  ArgCount := 0;
+  If CurTokKind <> TK_RPAREN Then
+  Begin
+    While CurTokKind <> TK_EOF Do
+    Begin
+      If ArgCount < PX_MAX_ARGS Then
+      Begin
+        Inc(ArgCount);
+        ArgVals[ArgCount] := PromoteSimExpr(ParseExpr);
+      End
+      Else
+      Begin
+        CompileError('too many arguments (max ' + ItoS(PX_MAX_ARGS) + ')', LexLineNo);
+        ParseExpr;
+      End;
+
+      If CurTokKind = TK_COMMA Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+  End;
 
   { Attendre ) }
   If CurTokKind = TK_RPAREN Then
@@ -5141,8 +5293,7 @@ Begin
   Else
     CompileError('expected ) after method arguments', LexLineNo);
 
-  { Resultat dans EAX apres le CALL }
-  R := ExprMakeEAX(TY_IDX_INT);
+  R := ExecSimStaticMethod(ClassName, MethodName, ArgCount, ArgVals);
   ParseStaticMethodCall := R;
 End;
 
@@ -6435,6 +6586,31 @@ Begin
       E := ParseExpr;
       If VarIdx >= 0 Then
       Begin
+        { Propager la valeur simulee au compile-time si connue }
+        If E.Kind = EK_IMM Then
+        Begin
+          SymTab[VarIdx].HasSimVal := True;
+          Case SymTab[VarIdx].TypeIdx Of
+            TY_IDX_INT:
+              SymTab[VarIdx].SimIntVal := E.ImmVal;
+            TY_IDX_BOOLEAN:
+              SymTab[VarIdx].SimBoolVal := (E.ImmVal <> 0);
+            TY_IDX_CHAR:
+              SymTab[VarIdx].SimCharVal := Chr(E.ImmVal And $FF);
+          End;
+        End
+        Else If (E.Kind = EK_MEM) And (E.SymIdx >= 0) And
+                (E.SymIdx < SymTabCount) And SymTab[E.SymIdx].HasSimVal Then
+        Begin
+          SymTab[VarIdx].HasSimVal  := True;
+          SymTab[VarIdx].SimIntVal  := SymTab[E.SymIdx].SimIntVal;
+          SymTab[VarIdx].SimBoolVal := SymTab[E.SymIdx].SimBoolVal;
+          SymTab[VarIdx].SimCharVal := SymTab[E.SymIdx].SimCharVal;
+          SymTab[VarIdx].SimStrVal  := SymTab[E.SymIdx].SimStrVal;
+        End
+        Else
+          SymTab[VarIdx].HasSimVal := False;
+
         EmitVarStore(VarIdx);
         If IsFinal Then
         Begin
@@ -19574,10 +19750,11 @@ Begin
   Begin
     ParserAdvance; (* consommer lbrace *)
     While (CurTokKind <> TK_RBRACE) And (CurTokKind <> TK_EOF) And
-          (Not LoopBreakFlag) And (Not LoopContinueFlag) Do
+          (Not LoopBreakFlag) And (Not LoopContinueFlag) And
+          (Not SimMethodReturnFlag) Do
       ParseOneStatement;
-    { Si break ou continue, sauter le reste du bloc }
-    If (LoopBreakFlag Or LoopContinueFlag) And
+    { Si break/continue/return, sauter le reste du bloc }
+    If (LoopBreakFlag Or LoopContinueFlag Or SimMethodReturnFlag) And
        (CurTokKind <> TK_RBRACE) And (CurTokKind <> TK_EOF) Then
     Begin
       Depth := 1;
@@ -19638,6 +19815,7 @@ Begin
     Begin
       { Condition vraie : parser le bloc then, sauter le else }
       ParseBlock;
+      If SimMethodReturnFlag Then Exit;
       If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'else') Then
       Begin
         ParserAdvance; { consommer else }
@@ -19664,6 +19842,7 @@ Begin
         End
         Else
           ParseBlock;     { parser le bloc else }
+        If SimMethodReturnFlag Then Exit;
       End;
     End;
   End
@@ -19671,6 +19850,7 @@ Begin
   Begin
     { Condition inconnue au compile-time : parser les deux branches }
     ParseBlock;
+    If SimMethodReturnFlag Then Exit;
     If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'else') Then
     Begin
       ParserAdvance;
@@ -19681,6 +19861,7 @@ Begin
       End
       Else
         ParseBlock;
+      If SimMethodReturnFlag Then Exit;
     End;
   End;
 End;
@@ -19754,6 +19935,7 @@ Begin
     LoopBreakFlag    := False;
     LoopContinueFlag := False;
     ParseBlock;
+    If SimMethodReturnFlag Then Exit;
 
     { Si break rencontre, sortir de la boucle }
     If LoopBreakFlag Then
@@ -19978,6 +20160,7 @@ Begin
     LoopBreakFlag    := False;
     LoopContinueFlag := False;
     ParseBlock;
+    If SimMethodReturnFlag Then Exit;
 
     { Si break rencontre, sortir }
     If LoopBreakFlag Then
@@ -19996,6 +20179,236 @@ Begin
     CompileError('for loop exceeded maximum iterations', LexLineNo);
 End;
 
+Function ExecSimStaticMethod(Const ClassName, MethodName : TString;
+                             ArgCount : Integer;
+                             Var Args : TSimArgArray) : TExprVal;
+Var
+  MIdx, I          : Integer;
+  ParamSymIdx      : Integer;
+  SaveSymCount     : Integer;
+  SaveVaLocalOff   : Integer;
+  SavedState       : TLexState;
+  SavedBreak       : Boolean;
+  SavedContinue    : Boolean;
+  SavedRetFlag     : Boolean;
+  SavedRetHasValue : Boolean;
+  SavedRetExpr     : TExprVal;
+  ArgExpr          : TExprVal;
+  R                : TExprVal;
+Begin
+  R := ExprMakeEAX(TY_IDX_INT);
+  MIdx := FindSimMethod(ClassName, MethodName);
+  If MIdx < 0 Then
+  Begin
+    ExecSimStaticMethod := R;
+    Exit;
+  End;
+
+  If SimMethodExecDepth >= 64 Then
+  Begin
+    CompileError('method recursion depth exceeded', LexLineNo);
+    ExecSimStaticMethod := R;
+    Exit;
+  End;
+
+  LexSaveState(SavedState);
+  SaveSymCount   := SymTabCount;
+  SaveVaLocalOff := VaLocalOffset;
+  SavedBreak     := LoopBreakFlag;
+  SavedContinue  := LoopContinueFlag;
+  SavedRetFlag   := SimMethodReturnFlag;
+  SavedRetHasValue := SimMethodReturnHasValue;
+  SavedRetExpr   := SimMethodReturnExpr;
+
+  Inc(SimMethodExecDepth);
+  SimMethodReturnFlag := False;
+  SimMethodReturnHasValue := False;
+  SimMethodReturnExpr := ExprMakeEAX(TY_IDX_VOID);
+
+  For I := 1 To SimMethods[MIdx].ParamCount Do
+  Begin
+    ParamSymIdx := SymAdd(SimMethods[MIdx].ParamNames[I], SK_PARAM,
+                          SimMethods[MIdx].ParamTypes[I], LexLineNo,
+                          SimMethods[MIdx].ClassName, False, False, False);
+    If ParamSymIdx >= 0 Then
+    Begin
+      If I <= ArgCount Then
+        ArgExpr := PromoteSimExpr(Args[I])
+      Else
+        ArgExpr := ExprMakeEAX(SimMethods[MIdx].ParamTypes[I]);
+
+      If ArgExpr.Kind = EK_IMM Then
+      Begin
+        SymTab[ParamSymIdx].HasSimVal := True;
+        Case SymTab[ParamSymIdx].TypeIdx Of
+          TY_IDX_BOOLEAN:
+            SymTab[ParamSymIdx].SimBoolVal := (ArgExpr.ImmVal <> 0);
+          TY_IDX_CHAR:
+            SymTab[ParamSymIdx].SimCharVal := Chr(ArgExpr.ImmVal And $FF);
+        Else
+          SymTab[ParamSymIdx].SimIntVal := ArgExpr.ImmVal;
+        End;
+      End
+      Else
+        SymTab[ParamSymIdx].HasSimVal := False;
+    End;
+  End;
+
+  LexRestoreState(SimMethods[MIdx].BodyState);
+  ParseBlock;
+
+  If SimMethodReturnHasValue Then
+    R := PromoteSimExpr(SimMethodReturnExpr)
+  Else If SimMethods[MIdx].RetType = TY_IDX_VOID Then
+    R := ExprMakeEAX(TY_IDX_VOID)
+  Else
+    R := ExprMakeImm(0, SimMethods[MIdx].RetType);
+
+  SymTabCount := SaveSymCount;
+  VaLocalOffset := SaveVaLocalOff;
+  LoopBreakFlag := SavedBreak;
+  LoopContinueFlag := SavedContinue;
+  SimMethodReturnFlag := SavedRetFlag;
+  SimMethodReturnHasValue := SavedRetHasValue;
+  SimMethodReturnExpr := SavedRetExpr;
+  Dec(SimMethodExecDepth);
+  LexRestoreState(SavedState);
+
+  ExecSimStaticMethod := R;
+End;
+
+Procedure ParseStaticMethodDecl;
+Var
+  RetTypeName  : TString;
+  RetTypeIdx   : Integer;
+  MethName     : TString;
+  ParamType    : TString;
+  ParamTypeIdx : Integer;
+  ParamNames   : TSimMethodParamNames;
+  ParamTypes   : TSimMethodParamTypes;
+  ParamCount   : Integer;
+  I            : Integer;
+  BodyState    : TLexState;
+  IsMain       : Boolean;
+  SaveRetFlag  : Boolean;
+  SaveRetHas   : Boolean;
+  SaveRetExpr  : TExprVal;
+Begin
+  If (CurTokKind <> TK_KEYWORD) And (CurTokKind <> TK_IDENT) Then
+  Begin
+    CompileError('method return type expected', LexLineNo);
+    Exit;
+  End;
+
+  RetTypeName := CurTokStr;
+  RetTypeIdx := ResolveVarTypeStr(RetTypeName);
+  If RetTypeIdx < 0 Then
+    RetTypeIdx := TY_IDX_INT;
+  ParserAdvance;
+
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    CompileError('method name expected', LexLineNo);
+    Exit;
+  End;
+  MethName := CurTokStr;
+  ParserAdvance;
+
+  If CurTokKind <> TK_LPAREN Then
+  Begin
+    While (CurTokKind <> TK_SEMICOLON) And (CurTokKind <> TK_EOF) Do
+      ParserAdvance;
+    If CurTokKind = TK_SEMICOLON Then
+      ParserAdvance;
+    Exit;
+  End;
+  ParserAdvance;
+
+  For I := 1 To PX_MAX_ARGS Do
+  Begin
+    ParamNames[I] := '';
+    ParamTypes[I] := TY_IDX_INT;
+  End;
+
+  ParamCount := 0;
+  While (CurTokKind <> TK_RPAREN) And (CurTokKind <> TK_EOF) Do
+  Begin
+    If (CurTokKind <> TK_KEYWORD) And (CurTokKind <> TK_IDENT) Then
+    Begin
+      CompileError('parameter type expected', LexLineNo);
+      Break;
+    End;
+    ParamType := CurTokStr;
+    ParamTypeIdx := ResolveVarTypeStr(ParamType);
+    If ParamTypeIdx < 0 Then
+      ParamTypeIdx := TY_IDX_INT;
+    ParserAdvance;
+
+    { Type tableau : String[] ou int[] }
+    If CurTokKind = TK_LBRACKET Then
+    Begin
+      ParserAdvance;
+      If CurTokKind = TK_RBRACKET Then
+        ParserAdvance;
+    End;
+
+    If CurTokKind <> TK_IDENT Then
+    Begin
+      CompileError('parameter name expected', LexLineNo);
+      Break;
+    End;
+
+    If ParamCount < PX_MAX_ARGS Then
+    Begin
+      Inc(ParamCount);
+      ParamNames[ParamCount] := CurTokStr;
+      ParamTypes[ParamCount] := ParamTypeIdx;
+    End
+    Else
+      CompileError('too many parameters (max ' + ItoS(PX_MAX_ARGS) + ')', LexLineNo);
+
+    ParserAdvance;
+    If CurTokKind = TK_COMMA Then
+      ParserAdvance
+    Else
+      Break;
+  End;
+
+  If CurTokKind = TK_RPAREN Then
+    ParserAdvance
+  Else
+    CompileError('expected ) after method parameters', LexLineNo);
+
+  If CurTokKind <> TK_LBRACE Then
+  Begin
+    CompileError('expected method body', LexLineNo);
+    Exit;
+  End;
+
+  LexSaveState(BodyState);
+  RegisterSimMethod(ClCurClassName, MethName, RetTypeIdx,
+                    ParamCount, ParamNames, ParamTypes, BodyState);
+
+  IsMain := (MethName = 'main') And (RetTypeIdx = TY_IDX_VOID);
+  If IsMain Then
+  Begin
+    SaveRetFlag := SimMethodReturnFlag;
+    SaveRetHas  := SimMethodReturnHasValue;
+    SaveRetExpr := SimMethodReturnExpr;
+    SimMethodReturnFlag := False;
+    SimMethodReturnHasValue := False;
+    SimMethodReturnExpr := ExprMakeEAX(TY_IDX_VOID);
+    Inc(SimMethodExecDepth);
+    ParseBlock;
+    Dec(SimMethodExecDepth);
+    SimMethodReturnFlag := SaveRetFlag;
+    SimMethodReturnHasValue := SaveRetHas;
+    SimMethodReturnExpr := SaveRetExpr;
+  End
+  Else
+    SkipBlock;
+End;
+
 { ------------------------------------------------------------ }
 { ParseOneStatement : parser une instruction Java                }
 {   Gere : declarations, affectations, System.out.println,       }
@@ -20004,8 +20417,13 @@ End;
 
 Procedure ParseOneStatement;
 Var
-  VarName : TString;
+  VarName         : TString;
+  StmtStartState  : TLexState;
+  RetExpr         : TExprVal;
+  HasRetExpr      : Boolean;
 Begin
+  LexSaveState(StmtStartState);
+
   { System.out.println / System.out.print }
   If (CurTokKind = TK_IDENT) And (CurTokStr = 'System') Then
   Begin
@@ -20054,6 +20472,28 @@ Begin
     If CurTokKind = TK_SEMICOLON Then ParserAdvance;
     LoopContinueFlag := True;
   End
+  { return }
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'return') Then
+  Begin
+    ParserAdvance; { consommer return }
+    HasRetExpr := False;
+    RetExpr := ExprMakeEAX(TY_IDX_VOID);
+    If CurTokKind <> TK_SEMICOLON Then
+    Begin
+      RetExpr := PromoteSimExpr(ParseExpr);
+      HasRetExpr := True;
+    End;
+    If CurTokKind = TK_SEMICOLON Then
+      ParserAdvance;
+    If SimMethodExecDepth > 0 Then
+    Begin
+      SimMethodReturnFlag := True;
+      SimMethodReturnHasValue := HasRetExpr;
+      SimMethodReturnExpr := RetExpr;
+    End
+    Else
+      CompileError('return outside method', LexLineNo);
+  End
   { Assignation ou post-increment d une variable }
   Else If CurTokKind = TK_IDENT Then
   Begin
@@ -20080,6 +20520,14 @@ Begin
       ParsePostIncDec(VarName, CurTokStr = '++');
       If CurTokKind = TK_SEMICOLON Then
         ParserAdvance;
+    End
+    Else
+    Begin
+      { Instruction expression : appel de methode/fonction, etc. }
+      LexRestoreState(StmtStartState);
+      ParseExpr;
+      If CurTokKind = TK_SEMICOLON Then
+        ParserAdvance;
     End;
   End
   { public class ... }
@@ -20095,6 +20543,11 @@ Begin
         ParseClassDecl(True, LexLineNo);
       End;
     End;
+    If CurTokStr = 'static' Then
+    Begin
+      ParserAdvance;
+      ParseStaticMethodDecl;
+    End;
   End
   { class ... }
   Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'class') Then
@@ -20105,6 +20558,12 @@ Begin
       VarName := CurTokStr;
       ParseClassDecl(False, LexLineNo);
     End;
+  End
+  { static ... }
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'static') Then
+  Begin
+    ParserAdvance;
+    ParseStaticMethodDecl;
   End
   { Accolades de bloc (ignore) }
   Else If CurTokKind = TK_LBRACE Then
