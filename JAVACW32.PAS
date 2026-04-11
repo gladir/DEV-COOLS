@@ -609,7 +609,7 @@
             Mode -obj : appeler GenerateCoffObj au lieu de GeneratePeExe
             10 fonctions accesseurs
 
-  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [A FAIRE]
+  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [IMPLEMENTE]
             Imports kernel32.dll :
               ExitProcess : terminer le programme
               GetStdHandle : obtenir les handles console
@@ -16666,7 +16666,857 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-23)                              }
+{ TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM        }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations pour imports Win32 }
+  WI_NONE              = 0;    { aucun / non defini                    }
+  WI_KERNEL32          = 1;    { import de kernel32.dll                }
+  WI_MSVCRT            = 2;    { import de msvcrt.dll                  }
+  WI_USER32            = 3;    { import de user32.dll (optionnel)      }
+  WI_EXIT_PROCESS      = 4;    { ExitProcess                           }
+  WI_GET_STD_HANDLE    = 5;    { GetStdHandle                          }
+  WI_WRITE_FILE        = 6;    { WriteFile                             }
+  WI_READ_FILE         = 7;    { ReadFile                              }
+  WI_GET_PROCESS_HEAP  = 8;    { GetProcessHeap                        }
+  WI_HEAP_ALLOC        = 9;    { HeapAlloc                             }
+  WI_HEAP_FREE         = 10;   { HeapFree                              }
+  WI_GET_COMMAND_LINE  = 11;   { GetCommandLineA                       }
+  WI_GET_LAST_ERROR    = 12;   { GetLastError                          }
+  WI_SPRINTF           = 13;   { sprintf (msvcrt)                      }
+  WI_SSCANF            = 14;   { sscanf (msvcrt)                       }
+  WI_MEMCPY            = 15;   { memcpy (msvcrt)                       }
+  WI_MEMSET            = 16;   { memset (msvcrt)                       }
+  WI_MEMCMP            = 17;   { memcmp (msvcrt)                       }
+  WI_MAX               = 17;
+
+  { Types d operations pour generateur ASM }
+  ASM_NONE             = 0;    { aucun / non defini                    }
+  ASM_HEADER           = 1;    { en-tete .386 / .MODEL                 }
+  ASM_EXTERN           = 2;    { declaration EXTERN                    }
+  ASM_DATA_SECT        = 3;    { section .DATA                         }
+  ASM_DATAQ_SECT       = 4;    { section .DATA?                        }
+  ASM_CODE_SECT        = 5;    { section .CODE                         }
+  ASM_PROC             = 6;    { debut de procedure                    }
+  ASM_ENDP             = 7;    { fin de procedure                      }
+  ASM_LABEL            = 8;    { etiquette                             }
+  ASM_INSTR            = 9;    { instruction assembleur                }
+  ASM_COMMENT          = 10;   { commentaire                           }
+  ASM_DB               = 11;   { directive DB                          }
+  ASM_DD               = 12;   { directive DD                          }
+  ASM_END              = 13;   { directive END                         }
+  ASM_INCLUDELIB       = 14;   { directive INCLUDELIB                  }
+  ASM_MAX              = 14;
+
+  { Constantes Win32 - deja definies dans TODO 22 }
+  { STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE }
+  HEAP_ZERO_MEMORY     = $08;  { Flag HeapAlloc                        }
+
+  { Limites }
+  WI_MAX_IMPORTS       = 64;   { Nombre max d imports                  }
+  WI_MAX_DLLS          = 8;    { Nombre max de DLLs                    }
+  ASM_MAX_LINE_LEN     = 256;  { Longueur max d une ligne ASM          }
+
+Type
+  { Structure d import Win32 }
+  TWiImportRec = Record
+    FuncName   : TString;            { Nom de la fonction                }
+    DllName    : TString;            { Nom de la DLL                     }
+    Hint       : Word;               { Hint (ordinal approximatif)       }
+    ParamBytes : Integer;            { Taille des parametres (STDCALL)   }
+    Used       : Boolean;            { True si utilise dans le code      }
+    IatOffset  : LongInt;            { Offset dans l IAT                 }
+    ImportType : Integer;            { Type WI_*                         }
+  End;
+
+  { Structure de DLL }
+  TWiDllRec = Record
+    DllName    : TString;            { Nom de la DLL                     }
+    ImportCount: Integer;            { Nombre d imports de cette DLL     }
+    FirstImport: Integer;            { Index du premier import           }
+  End;
+
+Var
+  WiInitialized      : Boolean;        { True si l etat est initialise   }
+  WiImports          : Array[1..WI_MAX_IMPORTS] Of TWiImportRec;
+  WiImportCount      : Integer;        { Nombre d imports enregistres    }
+  WiDlls             : Array[1..WI_MAX_DLLS] Of TWiDllRec;
+  WiDllCount         : Integer;        { Nombre de DLLs utilisees        }
+  WiKernel32Idx      : Integer;        { Index de kernel32.dll           }
+  WiMsvcrtIdx        : Integer;        { Index de msvcrt.dll             }
+  WiLabelSeq         : Integer;        { Sequence pour labels            }
+  WiLastType         : Integer;        { Dernier type d operation        }
+  WiUsedCount        : Integer;        { Nombre d imports utilises       }
+  WiIatSize          : LongInt;        { Taille de l IAT                 }
+  WiHintNameSize     : LongInt;        { Taille de la Hint/Name Table    }
+  
+  { Generateur ASM }
+  AsmInitialized     : Boolean;        { True si initialise              }
+  AsmFile            : Text;           { Fichier de sortie ASM           }
+  AsmFileOpen        : Boolean;        { True si fichier ouvert          }
+  AsmFileName        : TString;        { Nom du fichier ASM              }
+  AsmLineCount       : LongInt;        { Nombre de lignes generees       }
+  AsmIndent          : Integer;        { Niveau d indentation            }
+  AsmLastType        : Integer;        { Dernier type d operation        }
+  AsmInProc          : Boolean;        { True si dans une procedure      }
+  AsmProcName        : TString;        { Nom de la procedure courante    }
+  AsmCommentEnabled  : Boolean;        { True si commentaires actives    }
+
+{ ------------------------------------------------------------ }
+{ InitWiState : initialiser le sous-systeme imports Win32       }
+{ ------------------------------------------------------------ }
+
+Procedure InitWiState;
+Var I : Integer;
+Begin
+  WiInitialized  := True;
+  WiImportCount  := 0;
+  WiDllCount     := 0;
+  WiKernel32Idx  := 0;
+  WiMsvcrtIdx    := 0;
+  WiLabelSeq     := 0;
+  WiLastType     := WI_NONE;
+  WiUsedCount    := 0;
+  WiIatSize      := 0;
+  WiHintNameSize := 0;
+  For I := 1 To WI_MAX_IMPORTS Do
+  Begin
+    WiImports[I].FuncName := '';
+    WiImports[I].DllName := '';
+    WiImports[I].Hint := 0;
+    WiImports[I].ParamBytes := 0;
+    WiImports[I].Used := False;
+    WiImports[I].IatOffset := 0;
+    WiImports[I].ImportType := WI_NONE;
+  End;
+  For I := 1 To WI_MAX_DLLS Do
+  Begin
+    WiDlls[I].DllName := '';
+    WiDlls[I].ImportCount := 0;
+    WiDlls[I].FirstImport := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ InitAsmState : initialiser le generateur ASM                   }
+{ ------------------------------------------------------------ }
+
+Procedure InitAsmState;
+Begin
+  AsmInitialized    := True;
+  AsmFileOpen       := False;
+  AsmFileName       := '';
+  AsmLineCount      := 0;
+  AsmIndent         := 0;
+  AsmLastType       := ASM_NONE;
+  AsmInProc         := False;
+  AsmProcName       := '';
+  AsmCommentEnabled := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenWiLabel : generer un label unique pour imports              }
+{ ------------------------------------------------------------ }
+
+Function GenWiLabel : TString;
+Begin
+  Inc(WiLabelSeq);
+  GenWiLabel := '_JWI_' + ItoS(WiLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ WiTypeName : nom textuel d un type d import                    }
+{ ------------------------------------------------------------ }
+
+Function WiTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    WI_NONE             : WiTypeName := 'WI_NONE';
+    WI_KERNEL32         : WiTypeName := 'WI_KERNEL32';
+    WI_MSVCRT           : WiTypeName := 'WI_MSVCRT';
+    WI_USER32           : WiTypeName := 'WI_USER32';
+    WI_EXIT_PROCESS     : WiTypeName := 'WI_EXIT_PROCESS';
+    WI_GET_STD_HANDLE   : WiTypeName := 'WI_GET_STD_HANDLE';
+    WI_WRITE_FILE       : WiTypeName := 'WI_WRITE_FILE';
+    WI_READ_FILE        : WiTypeName := 'WI_READ_FILE';
+    WI_GET_PROCESS_HEAP : WiTypeName := 'WI_GET_PROCESS_HEAP';
+    WI_HEAP_ALLOC       : WiTypeName := 'WI_HEAP_ALLOC';
+    WI_HEAP_FREE        : WiTypeName := 'WI_HEAP_FREE';
+    WI_GET_COMMAND_LINE : WiTypeName := 'WI_GET_COMMAND_LINE';
+    WI_GET_LAST_ERROR   : WiTypeName := 'WI_GET_LAST_ERROR';
+    WI_SPRINTF          : WiTypeName := 'WI_SPRINTF';
+    WI_SSCANF           : WiTypeName := 'WI_SSCANF';
+    WI_MEMCPY           : WiTypeName := 'WI_MEMCPY';
+    WI_MEMSET           : WiTypeName := 'WI_MEMSET';
+    WI_MEMCMP           : WiTypeName := 'WI_MEMCMP';
+  Else
+    WiTypeName := 'WI_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmTypeName : nom textuel d un type d operation ASM            }
+{ ------------------------------------------------------------ }
+
+Function AsmTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    ASM_NONE         : AsmTypeName := 'ASM_NONE';
+    ASM_HEADER       : AsmTypeName := 'ASM_HEADER';
+    ASM_EXTERN       : AsmTypeName := 'ASM_EXTERN';
+    ASM_DATA_SECT    : AsmTypeName := 'ASM_DATA_SECT';
+    ASM_DATAQ_SECT   : AsmTypeName := 'ASM_DATAQ_SECT';
+    ASM_CODE_SECT    : AsmTypeName := 'ASM_CODE_SECT';
+    ASM_PROC         : AsmTypeName := 'ASM_PROC';
+    ASM_ENDP         : AsmTypeName := 'ASM_ENDP';
+    ASM_LABEL        : AsmTypeName := 'ASM_LABEL';
+    ASM_INSTR        : AsmTypeName := 'ASM_INSTR';
+    ASM_COMMENT      : AsmTypeName := 'ASM_COMMENT';
+    ASM_DB           : AsmTypeName := 'ASM_DB';
+    ASM_DD           : AsmTypeName := 'ASM_DD';
+    ASM_END          : AsmTypeName := 'ASM_END';
+    ASM_INCLUDELIB   : AsmTypeName := 'ASM_INCLUDELIB';
+  Else
+    AsmTypeName := 'ASM_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterDll : enregistrer une DLL                              }
+{ ------------------------------------------------------------ }
+
+Function RegisterDll(Const DllName : TString) : Integer;
+Var I : Integer;
+Begin
+  { Chercher si deja presente }
+  For I := 1 To WiDllCount Do
+    If WiDlls[I].DllName = DllName Then
+    Begin
+      RegisterDll := I;
+      Exit;
+    End;
+  { Ajouter nouvelle }
+  If WiDllCount >= WI_MAX_DLLS Then
+  Begin
+    RegisterDll := 0;
+    Exit;
+  End;
+  Inc(WiDllCount);
+  WiDlls[WiDllCount].DllName := DllName;
+  WiDlls[WiDllCount].ImportCount := 0;
+  WiDlls[WiDllCount].FirstImport := 0;
+  RegisterDll := WiDllCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterImport : enregistrer un import Win32                   }
+{ ------------------------------------------------------------ }
+
+Function RegisterImport(Const DllName, FuncName : TString;
+                         ParamBytes : Integer; ImpType : Integer) : Integer;
+Var I, DllIdx : Integer;
+Begin
+  { Chercher si deja present }
+  For I := 1 To WiImportCount Do
+    If (WiImports[I].DllName = DllName) And 
+       (WiImports[I].FuncName = FuncName) Then
+    Begin
+      RegisterImport := I;
+      Exit;
+    End;
+  { Ajouter nouveau }
+  If WiImportCount >= WI_MAX_IMPORTS Then
+  Begin
+    RegisterImport := 0;
+    Exit;
+  End;
+  { Enregistrer la DLL }
+  DllIdx := RegisterDll(DllName);
+  If DllIdx = 0 Then
+  Begin
+    RegisterImport := 0;
+    Exit;
+  End;
+  Inc(WiImportCount);
+  WiImports[WiImportCount].FuncName := FuncName;
+  WiImports[WiImportCount].DllName := DllName;
+  WiImports[WiImportCount].Hint := 0;
+  WiImports[WiImportCount].ParamBytes := ParamBytes;
+  WiImports[WiImportCount].Used := False;
+  WiImports[WiImportCount].IatOffset := 0;
+  WiImports[WiImportCount].ImportType := ImpType;
+  Inc(WiDlls[DllIdx].ImportCount);
+  If WiDlls[DllIdx].FirstImport = 0 Then
+    WiDlls[DllIdx].FirstImport := WiImportCount;
+  RegisterImport := WiImportCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterKernel32Imports : enregistrer les imports kernel32     }
+{ ------------------------------------------------------------ }
+
+Procedure RegisterKernel32Imports;
+Begin
+  WiKernel32Idx := RegisterDll('kernel32.dll');
+  RegisterImport('kernel32.dll', 'ExitProcess', 4, WI_EXIT_PROCESS);
+  RegisterImport('kernel32.dll', 'GetStdHandle', 4, WI_GET_STD_HANDLE);
+  RegisterImport('kernel32.dll', 'WriteFile', 20, WI_WRITE_FILE);
+  RegisterImport('kernel32.dll', 'ReadFile', 20, WI_READ_FILE);
+  RegisterImport('kernel32.dll', 'GetProcessHeap', 0, WI_GET_PROCESS_HEAP);
+  RegisterImport('kernel32.dll', 'HeapAlloc', 12, WI_HEAP_ALLOC);
+  RegisterImport('kernel32.dll', 'HeapFree', 12, WI_HEAP_FREE);
+  RegisterImport('kernel32.dll', 'GetCommandLineA', 0, WI_GET_COMMAND_LINE);
+  RegisterImport('kernel32.dll', 'GetLastError', 0, WI_GET_LAST_ERROR);
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterMsvcrtImports : enregistrer les imports msvcrt         }
+{ ------------------------------------------------------------ }
+
+Procedure RegisterMsvcrtImports;
+Begin
+  WiMsvcrtIdx := RegisterDll('msvcrt.dll');
+  RegisterImport('msvcrt.dll', 'sprintf', 0, WI_SPRINTF);   { varargs }
+  RegisterImport('msvcrt.dll', 'sscanf', 0, WI_SSCANF);     { varargs }
+  RegisterImport('msvcrt.dll', 'memcpy', 12, WI_MEMCPY);
+  RegisterImport('msvcrt.dll', 'memset', 12, WI_MEMSET);
+  RegisterImport('msvcrt.dll', 'memcmp', 12, WI_MEMCMP);
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkImportUsed : marquer un import comme utilise               }
+{ ------------------------------------------------------------ }
+
+Procedure MarkImportUsed(Idx : Integer);
+Begin
+  If (Idx >= 1) And (Idx <= WiImportCount) Then
+    If Not WiImports[Idx].Used Then
+    Begin
+      WiImports[Idx].Used := True;
+      Inc(WiUsedCount);
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkImportUsedByType : marquer par type d import               }
+{ ------------------------------------------------------------ }
+
+Procedure MarkImportUsedByType(ImpType : Integer);
+Var I : Integer;
+Begin
+  For I := 1 To WiImportCount Do
+    If WiImports[I].ImportType = ImpType Then
+    Begin
+      MarkImportUsed(I);
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindImportByName : trouver un import par nom                   }
+{ ------------------------------------------------------------ }
+
+Function FindImportByName(Const FuncName : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 1 To WiImportCount Do
+    If WiImports[I].FuncName = FuncName Then
+    Begin
+      FindImportByName := I;
+      Exit;
+    End;
+  FindImportByName := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportDecoratedName : nom decore STDCALL                    }
+{ ------------------------------------------------------------ }
+
+Function GetImportDecoratedName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 1) And (Idx <= WiImportCount) Then
+  Begin
+    If WiImports[Idx].ParamBytes > 0 Then
+      GetImportDecoratedName := '_' + WiImports[Idx].FuncName + '@' +
+                                 ItoS(WiImports[Idx].ParamBytes)
+    Else
+      GetImportDecoratedName := '_' + WiImports[Idx].FuncName;
+  End
+  Else
+    GetImportDecoratedName := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ CalcImportTableSize : calculer la taille de la table imports   }
+{ ------------------------------------------------------------ }
+
+Procedure CalcImportTableSize;
+Var
+  I, UsedDlls : Integer;
+  HintNameTotal : LongInt;
+Begin
+  UsedDlls := 0;
+  HintNameTotal := 0;
+  
+  { Compter les DLLs avec imports utilises }
+  For I := 1 To WiDllCount Do
+  Begin
+    { Verifier si au moins un import de cette DLL est utilise }
+    { Pour simplifier, on compte toutes les DLLs enregistrees }
+    Inc(UsedDlls);
+    HintNameTotal := HintNameTotal + Length(WiDlls[I].DllName) + 1;
+  End;
+  
+  { Calculer taille IAT : 4 octets par import + 4 octets NULL par DLL }
+  WiIatSize := (WiUsedCount + UsedDlls) * 4;
+  
+  { Calculer taille Hint/Name : 2 octets hint + nom + padding }
+  For I := 1 To WiImportCount Do
+    If WiImports[I].Used Then
+      HintNameTotal := HintNameTotal + 2 + Length(WiImports[I].FuncName) + 1;
+  
+  { Aligner sur 2 octets }
+  If (HintNameTotal Mod 2) <> 0 Then
+    Inc(HintNameTotal);
+  
+  WiHintNameSize := HintNameTotal;
+End;
+
+{ ------------------------------------------------------------ }
+{ OpenAsmFile : ouvrir le fichier ASM pour ecriture              }
+{ ------------------------------------------------------------ }
+
+Function OpenAsmFile(Const FileName : TString) : Boolean;
+Begin
+  AsmFileName := FileName;
+  Assign(AsmFile, FileName);
+  {$I-}
+  Rewrite(AsmFile);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    OpenAsmFile := False;
+    Exit;
+  End;
+  AsmFileOpen := True;
+  AsmLineCount := 0;
+  OpenAsmFile := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ CloseAsmFile : fermer le fichier ASM                           }
+{ ------------------------------------------------------------ }
+
+Procedure CloseAsmFile;
+Begin
+  If AsmFileOpen Then
+  Begin
+    Close(AsmFile);
+    AsmFileOpen := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmWriteLine : ecrire une ligne dans le fichier ASM            }
+{ ------------------------------------------------------------ }
+
+Procedure AsmWriteLine(Const S : TString);
+Var Indent : TString;
+    I : Integer;
+Begin
+  If Not AsmFileOpen Then Exit;
+  Indent := '';
+  For I := 1 To AsmIndent Do
+    Indent := Indent + '    ';
+  WriteLn(AsmFile, Indent, S);
+  Inc(AsmLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmWriteRaw : ecrire une ligne sans indentation                }
+{ ------------------------------------------------------------ }
+
+Procedure AsmWriteRaw(Const S : TString);
+Begin
+  If Not AsmFileOpen Then Exit;
+  WriteLn(AsmFile, S);
+  Inc(AsmLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmHeader : ecrire l en-tete du fichier ASM               }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmHeader;
+Begin
+  AsmLastType := ASM_HEADER;
+  AsmWriteRaw('; JAVACW32 - Fichier ASM genere automatiquement');
+  AsmWriteRaw('; Ne pas modifier directement');
+  AsmWriteRaw('');
+  AsmWriteRaw('.386');
+  AsmWriteRaw('.MODEL FLAT, STDCALL');
+  AsmWriteRaw('OPTION CASEMAP:NONE');
+  AsmWriteRaw('');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmIncludelib : ecrire une directive INCLUDELIB           }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmIncludelib(Const LibName : TString);
+Begin
+  AsmLastType := ASM_INCLUDELIB;
+  AsmWriteRaw('INCLUDELIB ' + LibName);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmExtern : ecrire une declaration EXTERN                 }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmExtern(Const Name : TString; IsProc : Boolean);
+Begin
+  AsmLastType := ASM_EXTERN;
+  If IsProc Then
+    AsmWriteRaw('EXTERN ' + Name + ':PROC')
+  Else
+    AsmWriteRaw('EXTERN ' + Name + ':DWORD');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmExterns : ecrire toutes les declarations EXTERN        }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmExterns;
+Var I : Integer;
+Begin
+  AsmWriteRaw('');
+  AsmWriteRaw('; Imports Win32');
+  For I := 1 To WiImportCount Do
+    If WiImports[I].Used Then
+      WriteAsmExtern(GetImportDecoratedName(I), True);
+  AsmWriteRaw('');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmDataSection : ecrire le debut de la section .DATA      }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmDataSection;
+Begin
+  AsmLastType := ASM_DATA_SECT;
+  AsmWriteRaw('.DATA');
+  AsmIndent := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmDataQSection : ecrire le debut de la section .DATA?    }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmDataQSection;
+Begin
+  AsmLastType := ASM_DATAQ_SECT;
+  AsmWriteRaw('.DATA?');
+  AsmIndent := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmCodeSection : ecrire le debut de la section .CODE      }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmCodeSection;
+Begin
+  AsmLastType := ASM_CODE_SECT;
+  AsmIndent := 0;
+  AsmWriteRaw('.CODE');
+  AsmIndent := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmDb : ecrire une directive DB                           }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmDb(Const Name, Value : TString);
+Begin
+  AsmLastType := ASM_DB;
+  AsmWriteLine(Name + ' DB ' + Value);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmDd : ecrire une directive DD                           }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmDd(Const Name, Value : TString);
+Begin
+  AsmLastType := ASM_DD;
+  AsmWriteLine(Name + ' DD ' + Value);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmProc : ecrire le debut d une procedure                 }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmProc(Const Name : TString);
+Begin
+  AsmLastType := ASM_PROC;
+  AsmIndent := 0;
+  AsmWriteRaw(Name + ' PROC');
+  AsmInProc := True;
+  AsmProcName := Name;
+  AsmIndent := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmEndp : ecrire la fin d une procedure                   }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmEndp;
+Begin
+  AsmLastType := ASM_ENDP;
+  AsmIndent := 0;
+  AsmWriteRaw(AsmProcName + ' ENDP');
+  AsmInProc := False;
+  AsmProcName := '';
+  AsmWriteRaw('');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmLabel : ecrire une etiquette                           }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmLabel(Const Name : TString);
+Begin
+  AsmLastType := ASM_LABEL;
+  AsmIndent := 0;
+  AsmWriteRaw(Name + ':');
+  AsmIndent := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmInstr : ecrire une instruction                         }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmInstr(Const Instr : TString);
+Begin
+  AsmLastType := ASM_INSTR;
+  AsmWriteLine(Instr);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmComment : ecrire un commentaire                        }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmComment(Const Comment : TString);
+Begin
+  If Not AsmCommentEnabled Then Exit;
+  AsmLastType := ASM_COMMENT;
+  AsmWriteLine('; ' + Comment);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteAsmEnd : ecrire la directive END                          }
+{ ------------------------------------------------------------ }
+
+Procedure WriteAsmEnd(Const EntryPoint : TString);
+Begin
+  AsmLastType := ASM_END;
+  AsmIndent := 0;
+  AsmWriteRaw('');
+  AsmWriteRaw('END ' + EntryPoint);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateAsmListing : generer un listing ASM complet            }
+{ ------------------------------------------------------------ }
+
+Procedure GenerateAsmListing(Const OutputPath : TString);
+Begin
+  If Not OpenAsmFile(OutputPath) Then
+  Begin
+    CompileError('Cannot create ASM file: ' + OutputPath, 0);
+    Exit;
+  End;
+  
+  WriteAsmHeader;
+  
+  { Includelibs }
+  WriteAsmIncludelib('kernel32.lib');
+  If WiMsvcrtIdx > 0 Then
+    WriteAsmIncludelib('msvcrt.lib');
+  AsmWriteRaw('');
+  
+  { Externs }
+  WriteAsmExterns;
+  
+  { Section .DATA }
+  WriteAsmDataSection;
+  WriteAsmComment('Constantes et donnees initialisees');
+  WriteAsmDb('_JRT_CRLF', '13, 10, 0');
+  WriteAsmDb('_JRT_TRUE', '''true'', 0');
+  WriteAsmDb('_JRT_FALSE', '''false'', 0');
+  WriteAsmDb('_JRT_NULL', '''null'', 0');
+  AsmWriteRaw('');
+  
+  { Section .DATA? }
+  WriteAsmDataQSection;
+  WriteAsmComment('Variables non initialisees');
+  WriteAsmDd('_JRT_HSTDOUT', '?');
+  WriteAsmDd('_JRT_HSTDIN', '?');
+  WriteAsmDd('_JRT_HHEAP', '?');
+  WriteAsmDd('_JRT_BYTESWR', '?');
+  AsmWriteRaw('');
+  
+  { Section .CODE }
+  WriteAsmCodeSection;
+  
+  { Point d entree }
+  WriteAsmProc('_start');
+  WriteAsmComment('Point d''entree du programme');
+  WriteAsmInstr('CALL _JRT_INITIO');
+  WriteAsmComment('Appeler main');
+  WriteAsmInstr('CALL _JM_main');
+  WriteAsmComment('Terminer le programme');
+  WriteAsmInstr('PUSH 0');
+  WriteAsmInstr('CALL _ExitProcess@4');
+  WriteAsmEndp;
+  
+  { Routine d initialisation I/O }
+  WriteAsmProc('_JRT_INITIO');
+  WriteAsmComment('Initialisation des handles console');
+  WriteAsmInstr('PUSH -11');
+  WriteAsmInstr('CALL _GetStdHandle@4');
+  WriteAsmInstr('MOV [_JRT_HSTDOUT], EAX');
+  WriteAsmInstr('PUSH -10');
+  WriteAsmInstr('CALL _GetStdHandle@4');
+  WriteAsmInstr('MOV [_JRT_HSTDIN], EAX');
+  WriteAsmInstr('CALL _GetProcessHeap@0');
+  WriteAsmInstr('MOV [_JRT_HHEAP], EAX');
+  WriteAsmInstr('RET');
+  WriteAsmEndp;
+  
+  { Placeholder pour main }
+  WriteAsmProc('_JM_main');
+  WriteAsmComment('Methode main() - a generer');
+  WriteAsmInstr('RET');
+  WriteAsmEndp;
+  
+  { Fin }
+  WriteAsmEnd('_start');
+  
+  CloseAsmFile;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpWiState : afficher l etat du sous-systeme imports          }
+{ ------------------------------------------------------------ }
+
+Procedure DumpWiState;
+Var I : Integer;
+Begin
+  WriteLn('--- WiState dump ---');
+  WriteLn('  WiInitialized  : ', WiInitialized);
+  WriteLn('  WiImportCount  : ', WiImportCount);
+  WriteLn('  WiDllCount     : ', WiDllCount);
+  WriteLn('  WiUsedCount    : ', WiUsedCount);
+  WriteLn('  WiIatSize      : ', WiIatSize);
+  WriteLn('  WiHintNameSize : ', WiHintNameSize);
+  WriteLn('  WiLastType     : ', WiTypeName(WiLastType));
+  If WiDllCount > 0 Then
+  Begin
+    WriteLn('  --- DLLs ---');
+    For I := 1 To WiDllCount Do
+      WriteLn('    [', I, '] ', WiDlls[I].DllName,
+              ' (', WiDlls[I].ImportCount, ' imports)');
+  End;
+  If WiImportCount > 0 Then
+  Begin
+    WriteLn('  --- Imports ---');
+    For I := 1 To WiImportCount Do
+      WriteLn('    [', I, '] ', WiImports[I].DllName, '!',
+              WiImports[I].FuncName, ' (used=', WiImports[I].Used, ')');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpAsmState : afficher l etat du generateur ASM               }
+{ ------------------------------------------------------------ }
+
+Procedure DumpAsmState;
+Begin
+  WriteLn('--- AsmState dump ---');
+  WriteLn('  AsmInitialized    : ', AsmInitialized);
+  WriteLn('  AsmFileOpen       : ', AsmFileOpen);
+  WriteLn('  AsmFileName       : ', AsmFileName);
+  WriteLn('  AsmLineCount      : ', AsmLineCount);
+  WriteLn('  AsmIndent         : ', AsmIndent);
+  WriteLn('  AsmInProc         : ', AsmInProc);
+  WriteLn('  AsmProcName       : ', AsmProcName);
+  WriteLn('  AsmCommentEnabled : ', AsmCommentEnabled);
+  WriteLn('  AsmLastType       : ', AsmTypeName(AsmLastType));
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 24)                              }
+{ ------------------------------------------------------------ }
+
+Function IsWiInitialized : Boolean;
+Begin
+  IsWiInitialized := WiInitialized;
+End;
+
+Function IsWiEmpty : Boolean;
+Begin
+  IsWiEmpty := WiImportCount = 0;
+End;
+
+Function GetWiImportCount : LongInt;
+Begin
+  GetWiImportCount := WiImportCount;
+End;
+
+Function GetWiDllCount : LongInt;
+Begin
+  GetWiDllCount := WiDllCount;
+End;
+
+Function GetWiUsedCount : LongInt;
+Begin
+  GetWiUsedCount := WiUsedCount;
+End;
+
+Function IsAsmInitialized : Boolean;
+Begin
+  IsAsmInitialized := AsmInitialized;
+End;
+
+Function GetAsmLineCount : LongInt;
+Begin
+  GetAsmLineCount := AsmLineCount;
+End;
+
+Function GetAsmLastType : Integer;
+Begin
+  GetAsmLastType := AsmLastType;
+End;
+
+Function GetWiLastType : Integer;
+Begin
+  GetWiLastType := WiLastType;
+End;
+
+Function GetWiStatus : TString;
+Begin
+  If Not WiInitialized Then
+    GetWiStatus := 'Not initialized'
+  Else
+    GetWiStatus := ItoS(WiDllCount) + ' DLLs, ' +
+                   ItoS(WiImportCount) + ' imports, ' +
+                   ItoS(WiUsedCount) + ' used';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-24)                              }
 { ============================================================ }
 
 Begin
@@ -16702,16 +17552,19 @@ Begin
   InitDtState;
   InitRtState;
   InitPeState;
+  InitWiState;
+  InitAsmState;
+  RegisterKernel32Imports;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-23) }
+  { Boucle de tokenisation (TODO 02-24) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 24..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
