@@ -5224,13 +5224,14 @@ Begin
         { Variable non trouvee - supposer int }
         AddOutMsgVar(CurTokStr, OMK_VAR_INT, IsPrintln, LexLineNo);
       End;
+      { TODO: Utiliser ArgExpr pour evaluer la variable a l execution }
       ArgExpr := ParseExpr;
     End
     { Autres cas : expression complexe }
     Else
     Begin
+      { TODO: Evaluer l expression et stocker le resultat }
       ArgExpr := ParseExpr;
-      { Pour les expressions, on ne stocke rien pour l'instant }
     End;
     
     { Consommer les arguments supplementaires (concatenation) }
@@ -16698,13 +16699,15 @@ Var
   StdOutAddr, WrittenAddr, MsgAddr : LongInt;
   MsgLen : Integer;
   Msg : TString;
-  UseCompiledCode : Boolean;
+  HasCollectedOutputs : Boolean;
 Begin
   PeIsCoff := False;
   ImageBase := PE_IMAGE_BASE_DEFAULT;  { $00400000 }
   
-  { Verifier si du code a ete compile }
-  UseCompiledCode := (OutMsgCount > 0) And (PeTextSize > 0) And (PeDataSize > 0);
+  { Verifier si des messages de sortie ont ete collectes }
+  { Les buffers PeTextSize et PeDataSize seront deja remplis }
+  { par EmitCompiledOutput si OutMsgCount > 0               }
+  HasCollectedOutputs := (OutMsgCount > 0);
   
   { Layout PE fixe :                                      }
   {   .text  RVA $1000  - code                           }
@@ -16794,7 +16797,7 @@ Begin
   ImportSize := 40;  { Seulement la taille de l'IDT }
   
   { ===== Construire la section .data ===== }
-  If Not UseCompiledCode Then
+  If Not HasCollectedOutputs Then
   Begin
     PeDataSize := 0;  { Reset }
   
@@ -18922,7 +18925,10 @@ Begin
         End;
       OMK_CHAR:
         Begin
-          S := OutMsgs[I].CharVal;
+          { Convertir le caractere en chaine explicitement }
+          S := '';
+          If OutMsgs[I].CharVal <> #0 Then
+            S := OutMsgs[I].CharVal;
           MsgLens[TotalMsgs] := Length(S);
           EmitDataString(S);
         End;
@@ -19176,10 +19182,6 @@ Begin
     Else
       ParserAdvance;
   End;
-
-  { Debug : afficher le nombre de messages }
-  If Opts.Verbose Then
-    WriteLn('OutMsgCount = ', OutMsgCount);
 
   { Generer le code machine }
   If OutMsgCount > 0 Then
