@@ -18997,11 +18997,11 @@ Begin
   If OutMsgCount = 0 Then
     Exit;
 
-  { Configuration de base }
+  { Configuration de base - doit correspondre a GeneratePeExe }
   ImageBase := PE_IMAGE_BASE_DEFAULT;
   TextRVA   := $1000;
-  DataRVA   := $2000;
-  ImportRVA := $3000;
+  DataRVA   := $3000;   { .data  a RVA $3000 }
+  ImportRVA := $2000;   { .rdata a RVA $2000 }
 
   { ===== Construire la section .data ===== }
   { Offset 0: hStdOut (DWORD) }
@@ -19068,10 +19068,10 @@ Begin
   { Point d entree }
   PeEntryPoint := PeTextSize;
 
-  { Calculer les RVAs des imports (valeurs temporaires) }
-  GetStdHandleRVA := ImportRVA + $100;
-  WriteFileRVA    := ImportRVA + $104;
-  ExitProcessRVA  := ImportRVA + $108;
+  { Calculer les RVAs des imports (IAT a offset 56 dans .rdata) }
+  GetStdHandleRVA := ImportRVA + 56;
+  WriteFileRVA    := ImportRVA + 56 + 4;
+  ExitProcessRVA  := ImportRVA + 56 + 8;
 
   { _start: Obtenir le handle de la console }
   { PUSH -11 (STD_OUTPUT_HANDLE) }
@@ -19155,11 +19155,11 @@ Var
   MsgLen : Integer;
   Msg : TString;
 Begin
-  { Configuration de base }
+  { Configuration de base - doit correspondre a GeneratePeExe }
   ImageBase := PE_IMAGE_BASE_DEFAULT; { $00400000 }
-  TextRVA   := $1000;  { Section .text a RVA $1000 }
-  DataRVA   := $2000;  { Section .data a RVA $2000 }
-  ImportRVA := $3000;  { Section .rdata (imports) a RVA $3000 }
+  TextRVA   := $1000;  { Section .text  a RVA $1000 }
+  DataRVA   := $3000;  { Section .data  a RVA $3000 }
+  ImportRVA := $2000;  { Section .rdata a RVA $2000 }
 
   { Message a afficher }
   Msg := 'Hello, World!';
@@ -19190,7 +19190,7 @@ Begin
 
   { CALL GetStdHandle }
   { Cet appel sera patche apres construction de l IAT }
-  GetStdHandleRVA := ImportRVA + $100; { Placeholder }
+  GetStdHandleRVA := ImportRVA + 56; { IAT offset 56 dans .rdata }
   EmitTextByte($FF);  { CALL [addr32] }
   EmitTextByte($15);
   EmitTextDWord(ImageBase + GetStdHandleRVA);
@@ -19216,7 +19216,7 @@ Begin
   EmitTextDWord(StdOutAddr);
 
   { CALL WriteFile }
-  WriteFileRVA := ImportRVA + $104; { Placeholder }
+  WriteFileRVA := ImportRVA + 56 + 4; { IAT offset 56+4 dans .rdata }
   EmitTextByte($FF);
   EmitTextByte($15);
   EmitTextDWord(ImageBase + WriteFileRVA);
@@ -19225,7 +19225,7 @@ Begin
   EmitX86PushImm32(0);
 
   { CALL ExitProcess }
-  ExitProcessRVA := ImportRVA + $108; { Placeholder }
+  ExitProcessRVA := ImportRVA + 56 + 8; { IAT offset 56+8 dans .rdata }
   EmitTextByte($FF);
   EmitTextByte($15);
   EmitTextDWord(ImageBase + ExitProcessRVA);
