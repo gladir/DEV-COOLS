@@ -14718,7 +14718,7 @@ Begin
 
   { .data }
   PeWrBuf(PeDataBuf, PeDataSize);
-  Pad := PadToAlignment(PeDataSize, PE_FIL_ALIGN) - PeRdataSize;
+  Pad := PadToAlignment(PeDataSize, PE_FIL_ALIGN) - PeDataSize;
   If Pad > 0 Then PeWrPad(Pad);
 
   Close(PeOutFile);
@@ -16058,71 +16058,278 @@ Begin
   PyEvalExprStr := Result;
 End;
 
-{ PyEvalExprInt : evaluer une expression entiere simple }
-{ Supporte: literal, variable, +, -, *, -, negatif }
-Function PyEvalExprInt : LongInt;
+{ PyEvalExprInt : evaluer une expression entiere complete      }
+{ Descente recursive avec priorites Python :                   }
+{   or < and < not < compare < bitor < bitxor < bitand <       }
+{   shift < addsub < muldiv < unary < power < atom             }
+{ Supporte: literaux, True/False/None, variables, ()           }
+{   Operateurs: + - * // % ** & | ^ << >> == != < <= > >=      }
+{   Booleens: and or not                                       }
+
+Function PyExprOr : LongInt; Forward;
+
+Function PyExprAtom : LongInt;
 Var
-  Result : LongInt;
+  R : LongInt;
   Idx : Integer;
-  Op : Char;
-  Right : LongInt;
-  Neg : Boolean;
 Begin
-  Result := 0;
-  Neg := False;
-  { Unaire - }
-  If (CurTokKind = TK_OP) And (CurTokStr = '-') Then
-  Begin
-    Neg := True;
-    ParserAdvance;
-  End;
+  R := 0;
   If CurTokKind = TK_INTEGER Then
   Begin
-    Result := CurTokInt;
+    R := CurTokInt;
+    ParserAdvance;
+  End
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_TRUE) Then
+  Begin
+    R := 1;
+    ParserAdvance;
+  End
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_FALSE) Then
+  Begin
+    R := 0;
+    ParserAdvance;
+  End
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_PY_NONE) Then
+  Begin
+    R := 0;
     ParserAdvance;
   End
   Else If CurTokKind = TK_IDENT Then
   Begin
     Idx := PyFindVar(CurTokStr);
     If (Idx > 0) And (PyVars[Idx].Kind = 0) Then
-      Result := PyVars[Idx].IntVal;
+      R := PyVars[Idx].IntVal;
     ParserAdvance;
+  End
+  Else If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+  Begin
+    ParserAdvance;
+    R := PyExprOr;
+    If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+      ParserAdvance;
   End;
-  If Neg Then Result := -Result;
-  { Operations binaires }
+  PyExprAtom := R;
+End;
+
+Function PyExprPow : LongInt;
+Var
+  Base, Exp, R : LongInt;
+  I : LongInt;
+Begin
+  R := PyExprAtom;
+  If (CurTokKind = TK_OP) And (CurTokStr = '**') Then
+  Begin
+    ParserAdvance;
+    Exp := PyExprPow; { right-associative }
+    Base := R;
+    R := 1;
+    For I := 1 To Exp Do R := R * Base;
+  End;
+  PyExprPow := R;
+End;
+
+Function PyExprUnary : LongInt;
+Var
+  R : LongInt;
+Begin
+  If (CurTokKind = TK_OP) And (CurTokStr = '-') Then
+  Begin
+    ParserAdvance;
+    R := -PyExprUnary;
+  End
+  Else If (CurTokKind = TK_OP) And (CurTokStr = '+') Then
+  Begin
+    ParserAdvance;
+    R := PyExprUnary;
+  End
+  Else If (CurTokKind = TK_OP) And (CurTokStr = '~') Then
+  Begin
+    ParserAdvance;
+    R := Not PyExprUnary;
+  End
+  Else
+    R := PyExprPow;
+  PyExprUnary := R;
+End;
+
+Function PyExprMulDiv : LongInt;
+Var
+  R, Right : LongInt;
+  Op : TString;
+Begin
+  R := PyExprUnary;
   While (CurTokKind = TK_OP) And
-        ((CurTokStr = '+') Or (CurTokStr = '-') Or
-         (CurTokStr = '*')) Do
+        ((CurTokStr = '*') Or (CurTokStr = '//') Or
+         (CurTokStr = '%') Or (CurTokStr = '/')) Do
+  Begin
+    Op := CurTokStr;
+    ParserAdvance;
+    Right := PyExprUnary;
+    If Op = '*' Then
+      R := R * Right
+    Else If (Op = '//') Or (Op = '/') Then
+    Begin
+      If Right <> 0 Then R := R Div Right Else R := 0;
+    End
+    Else If Op = '%' Then
+    Begin
+      If Right <> 0 Then R := R Mod Right Else R := 0;
+    End;
+  End;
+  PyExprMulDiv := R;
+End;
+
+Function PyExprAddSub : LongInt;
+Var
+  R, Right : LongInt;
+  Op : Char;
+Begin
+  R := PyExprMulDiv;
+  While (CurTokKind = TK_OP) And
+        ((CurTokStr = '+') Or (CurTokStr = '-')) Do
   Begin
     Op := CurTokStr[1];
     ParserAdvance;
-    Right := 0;
-    Neg := False;
-    If (CurTokKind = TK_OP) And (CurTokStr = '-') Then
-    Begin
-      Neg := True;
-      ParserAdvance;
-    End;
-    If CurTokKind = TK_INTEGER Then
-    Begin
-      Right := CurTokInt;
-      ParserAdvance;
-    End
-    Else If CurTokKind = TK_IDENT Then
-    Begin
-      Idx := PyFindVar(CurTokStr);
-      If (Idx > 0) And (PyVars[Idx].Kind = 0) Then
-        Right := PyVars[Idx].IntVal;
-      ParserAdvance;
-    End;
-    If Neg Then Right := -Right;
-    Case Op Of
-      '+' : Result := Result + Right;
-      '-' : Result := Result - Right;
-      '*' : Result := Result * Right;
-    End;
+    Right := PyExprMulDiv;
+    If Op = '+' Then R := R + Right
+    Else R := R - Right;
   End;
-  PyEvalExprInt := Result;
+  PyExprAddSub := R;
+End;
+
+Function PyExprShift : LongInt;
+Var
+  R, Right : LongInt;
+  Op : TString;
+Begin
+  R := PyExprAddSub;
+  While (CurTokKind = TK_OP) And
+        ((CurTokStr = '<<') Or (CurTokStr = '>>')) Do
+  Begin
+    Op := CurTokStr;
+    ParserAdvance;
+    Right := PyExprAddSub;
+    If Op = '<<' Then R := R Shl Right
+    Else R := R Shr Right;
+  End;
+  PyExprShift := R;
+End;
+
+Function PyExprBitAnd : LongInt;
+Var
+  R : LongInt;
+Begin
+  R := PyExprShift;
+  While (CurTokKind = TK_OP) And (CurTokStr = '&') Do
+  Begin
+    ParserAdvance;
+    R := R And PyExprShift;
+  End;
+  PyExprBitAnd := R;
+End;
+
+Function PyExprBitXor : LongInt;
+Var
+  R : LongInt;
+Begin
+  R := PyExprBitAnd;
+  While (CurTokKind = TK_OP) And (CurTokStr = '^') Do
+  Begin
+    ParserAdvance;
+    R := R Xor PyExprBitAnd;
+  End;
+  PyExprBitXor := R;
+End;
+
+Function PyExprBitOr : LongInt;
+Var
+  R : LongInt;
+Begin
+  R := PyExprBitXor;
+  While (CurTokKind = TK_OP) And (CurTokStr = '|') Do
+  Begin
+    ParserAdvance;
+    R := R Or PyExprBitXor;
+  End;
+  PyExprBitOr := R;
+End;
+
+Function PyExprCompare : LongInt;
+Var
+  R, Right : LongInt;
+  Op : TString;
+Begin
+  R := PyExprBitOr;
+  While (CurTokKind = TK_OP) And
+        ((CurTokStr = '==') Or (CurTokStr = '!=') Or
+         (CurTokStr = '<') Or (CurTokStr = '<=') Or
+         (CurTokStr = '>') Or (CurTokStr = '>=')) Do
+  Begin
+    Op := CurTokStr;
+    ParserAdvance;
+    Right := PyExprBitOr;
+    If Op = '==' Then Begin If R = Right Then R := 1 Else R := 0; End
+    Else If Op = '!=' Then Begin If R <> Right Then R := 1 Else R := 0; End
+    Else If Op = '<' Then Begin If R < Right Then R := 1 Else R := 0; End
+    Else If Op = '<=' Then Begin If R <= Right Then R := 1 Else R := 0; End
+    Else If Op = '>' Then Begin If R > Right Then R := 1 Else R := 0; End
+    Else If Op = '>=' Then Begin If R >= Right Then R := 1 Else R := 0; End;
+  End;
+  PyExprCompare := R;
+End;
+
+Function PyExprNot : LongInt;
+Var
+  R : LongInt;
+Begin
+  If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_NOT) Then
+  Begin
+    ParserAdvance;
+    R := PyExprNot;
+    If R <> 0 Then R := 0 Else R := 1;
+  End
+  Else
+    R := PyExprCompare;
+  PyExprNot := R;
+End;
+
+Function PyExprAnd : LongInt;
+Var
+  R, Dummy : LongInt;
+Begin
+  R := PyExprNot;
+  While (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_AND) Do
+  Begin
+    ParserAdvance;
+    If R = 0 Then
+      Dummy := PyExprNot    { evaluate but discard (short-circuit) }
+    Else
+      R := PyExprNot;
+    If R <> 0 Then R := 1;
+  End;
+  PyExprAnd := R;
+End;
+
+Function PyExprOr : LongInt;
+Var
+  R, Dummy : LongInt;
+Begin
+  R := PyExprAnd;
+  While (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_OR) Do
+  Begin
+    ParserAdvance;
+    If R <> 0 Then
+      Dummy := PyExprAnd    { evaluate but discard (short-circuit) }
+    Else
+      R := PyExprAnd;
+    If R <> 0 Then R := 1;
+  End;
+  PyExprOr := R;
+End;
+
+Function PyEvalExprInt : LongInt;
+Begin
+  PyEvalExprInt := PyExprOr;
 End;
 
 { PyStrMul : repeter une chaine N fois }
@@ -16224,11 +16431,12 @@ Procedure PyParseAssign;
 Var
   VarName : TString;
   StrVal : TString;
+  StrVal2 : TString;
   IntVal : LongInt;
   Idx : Integer;
   IsStr : Boolean;
-  MulStr : TString;
   MulN : LongInt;
+  CmpOp : TString;
 Begin
   VarName := CurTokStr;
   ParserAdvance; { consommer le nom }
@@ -16239,6 +16447,7 @@ Begin
   End;
   ParserAdvance; { consommer '=' }
   { Determiner si c est une chaine ou un entier }
+  { True/False/None/not/(  et entiers -> int }
   IsStr := False;
   If CurTokKind = TK_STRING Then
     IsStr := True
@@ -16251,14 +16460,35 @@ Begin
   If IsStr Then
   Begin
     StrVal := PyEvalExprStr;
-    { Gerer la repetition * N }
-    If (CurTokKind = TK_OP) And (CurTokStr = '*') Then
+    { Comparaison de chaines -> resultat entier (0/1) }
+    If (CurTokKind = TK_OP) And
+       ((CurTokStr = '==') Or (CurTokStr = '!=') Or
+        (CurTokStr = '<') Or (CurTokStr = '<=') Or
+        (CurTokStr = '>') Or (CurTokStr = '>=')) Then
     Begin
+      CmpOp := CurTokStr;
       ParserAdvance;
-      MulN := PyEvalExprInt;
-      StrVal := PyStrMul(StrVal, MulN);
+      StrVal2 := PyEvalExprStr;
+      IntVal := 0;
+      If CmpOp = '==' Then Begin If StrVal = StrVal2 Then IntVal := 1; End
+      Else If CmpOp = '!=' Then Begin If StrVal <> StrVal2 Then IntVal := 1; End
+      Else If CmpOp = '<' Then Begin If StrVal < StrVal2 Then IntVal := 1; End
+      Else If CmpOp = '<=' Then Begin If StrVal <= StrVal2 Then IntVal := 1; End
+      Else If CmpOp = '>' Then Begin If StrVal > StrVal2 Then IntVal := 1; End
+      Else If CmpOp = '>=' Then Begin If StrVal >= StrVal2 Then IntVal := 1; End;
+      PySetVarInt(VarName, IntVal);
+    End
+    Else
+    Begin
+      { Gerer la repetition * N }
+      If (CurTokKind = TK_OP) And (CurTokStr = '*') Then
+      Begin
+        ParserAdvance;
+        MulN := PyEvalExprInt;
+        StrVal := PyStrMul(StrVal, MulN);
+      End;
+      PySetVarStr(VarName, StrVal);
     End;
-    PySetVarStr(VarName, StrVal);
   End
   Else
   Begin
