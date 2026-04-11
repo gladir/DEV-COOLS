@@ -14095,10 +14095,12 @@ Type
   End;
   TPyVar = Record
     Name    : TString;
-    Kind    : Integer;  { 0=int, 1=str, 2=object }
+    Kind    : Integer;  { 0=int, 1=str, 2=object, 3=list, 4=dict }
     IntVal  : LongInt;
     StrVal  : TString;
     ObjIdx  : Integer;  { index dans PyObjects si Kind=2 }
+    ListIdx : Integer;  { index dans PyLists si Kind=3 }
+    DictIdx : Integer;  { index dans PyDicts si Kind=4 }
   End;
 
 Const
@@ -14108,6 +14110,24 @@ Const
   PY_MAX_BLINES   = 256;
   PY_MAX_OBJECTS  = 32;
   PY_MAX_ATTRS    = 16;
+  PY_MAX_LISTS    = 32;
+  PY_MAX_LIST_EL  = 256;
+  PY_MAX_DICTS    = 16;
+  PY_MAX_DICT_EL  = 64;
+
+Type
+  TPyListRec = Record
+    Count : Integer;
+    Items : Array[0..PY_MAX_LIST_EL - 1] Of LongInt;
+  End;
+  TPyDictEntry = Record
+    Key : LongInt;
+    Val : LongInt;
+  End;
+  TPyDictRec = Record
+    Count : Integer;
+    Entries : Array[0..PY_MAX_DICT_EL - 1] Of TPyDictEntry;
+  End;
 
 Type
   TPyMethRec = Record
@@ -14185,6 +14205,14 @@ Var
   PyObjects        : Array[1..PY_MAX_OBJECTS] Of TPyObjRec;
   PyObjectCount    : Integer;
 
+  { Listes Python }
+  PyLists          : Array[1..PY_MAX_LISTS] Of TPyListRec;
+  PyListCount      : Integer;
+
+  { Dictionnaires Python }
+  PyDicts          : Array[1..PY_MAX_DICTS] Of TPyDictRec;
+  PyDictCount      : Integer;
+
 { ------------------------------------------------------------ }
 { InitPeState : initialiser le sous-systeme PE/COFF                 }
 { ------------------------------------------------------------ }
@@ -14219,6 +14247,8 @@ Begin
   PyClassCount     := 0;
   PyBodyPoolCount  := 0;
   PyObjectCount    := 0;
+  PyListCount      := 0;
+  PyDictCount      := 0;
   For I := 0 To 65535 Do PeTextBuf[I] := 0;
   For I := 0 To 16383 Do PeRdataBuf[I] := 0;
   For I := 0 To 16383 Do PeDataBuf[I] := 0;
@@ -14462,6 +14492,52 @@ Begin
   PyVars[Idx].Kind := 1;
   PyVars[Idx].IntVal := 0;
   PyVars[Idx].StrVal := Val;
+End;
+
+{ ------------------------------------------------------------ }
+{ PySetVarList : creer/modifier une variable liste                   }
+{ ------------------------------------------------------------ }
+
+Procedure PySetVarList(Const Name : TString; LIdx : Integer);
+Var Idx : Integer;
+Begin
+  Idx := PyFindVar(Name);
+  If Idx = 0 Then
+  Begin
+    If PyVarCount < PE_MAX_VARS Then
+    Begin
+      Inc(PyVarCount);
+      Idx := PyVarCount;
+    End Else Exit;
+  End;
+  PyVars[Idx].Name := Name;
+  PyVars[Idx].Kind := 3;
+  PyVars[Idx].IntVal := 0;
+  PyVars[Idx].StrVal := '';
+  PyVars[Idx].ListIdx := LIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ PySetVarDict : creer/modifier une variable dictionnaire            }
+{ ------------------------------------------------------------ }
+
+Procedure PySetVarDict(Const Name : TString; DIdx : Integer);
+Var Idx : Integer;
+Begin
+  Idx := PyFindVar(Name);
+  If Idx = 0 Then
+  Begin
+    If PyVarCount < PE_MAX_VARS Then
+    Begin
+      Inc(PyVarCount);
+      Idx := PyVarCount;
+    End Else Exit;
+  End;
+  PyVars[Idx].Name := Name;
+  PyVars[Idx].Kind := 4;
+  PyVars[Idx].IntVal := 0;
+  PyVars[Idx].StrVal := '';
+  PyVars[Idx].DictIdx := DIdx;
 End;
 
 { ------------------------------------------------------------ }
@@ -16122,6 +16198,9 @@ Function PyExprAtom : LongInt;
 Var
   R : LongInt;
   Idx : Integer;
+  VName : TString;
+  LI, DI, J : Integer;
+  IdxVal : LongInt;
 Begin
   R := 0;
   If CurTokKind = TK_INTEGER Then
@@ -16146,10 +16225,68 @@ Begin
   End
   Else If CurTokKind = TK_IDENT Then
   Begin
-    Idx := PyFindVar(CurTokStr);
-    If (Idx > 0) And (PyVars[Idx].Kind = 0) Then
-      R := PyVars[Idx].IntVal;
-    ParserAdvance;
+    VName := CurTokStr;
+    { len(var) }
+    If VName = 'len' Then
+    Begin
+      ParserAdvance; { consommer 'len' }
+      If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+      Begin
+        ParserAdvance; { consommer '(' }
+        If CurTokKind = TK_IDENT Then
+        Begin
+          Idx := PyFindVar(CurTokStr);
+          If (Idx > 0) And (PyVars[Idx].Kind = 3) Then
+          Begin
+            LI := PyVars[Idx].ListIdx;
+            R := PyLists[LI].Count;
+          End
+          Else If (Idx > 0) And (PyVars[Idx].Kind = 4) Then
+          Begin
+            DI := PyVars[Idx].DictIdx;
+            R := PyDicts[DI].Count;
+          End
+          Else If (Idx > 0) And (PyVars[Idx].Kind = 1) Then
+            R := Length(PyVars[Idx].StrVal);
+          ParserAdvance; { consommer le nom de variable }
+        End;
+        If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+          ParserAdvance;
+      End;
+    End
+    Else
+    Begin
+      Idx := PyFindVar(VName);
+      ParserAdvance; { consommer l identifiant }
+      { var[N] - indexation de liste ou dictionnaire }
+      If CurTokKind = TK_LBRACKET Then
+      Begin
+        ParserAdvance; { consommer '[' }
+        IdxVal := PyExprOr;
+        If CurTokKind = TK_RBRACKET Then
+          ParserAdvance;
+        If (Idx > 0) And (PyVars[Idx].Kind = 3) Then
+        Begin
+          LI := PyVars[Idx].ListIdx;
+          If (IdxVal >= 0) And (IdxVal < PyLists[LI].Count) Then
+            R := PyLists[LI].Items[IdxVal];
+        End
+        Else If (Idx > 0) And (PyVars[Idx].Kind = 4) Then
+        Begin
+          DI := PyVars[Idx].DictIdx;
+          For J := 0 To PyDicts[DI].Count - 1 Do
+          Begin
+            If PyDicts[DI].Entries[J].Key = IdxVal Then
+            Begin
+              R := PyDicts[DI].Entries[J].Val;
+              Break;
+            End;
+          End;
+        End;
+      End
+      Else If (Idx > 0) And (PyVars[Idx].Kind = 0) Then
+        R := PyVars[Idx].IntVal;
+    End;
   End
   Else If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
   Begin
@@ -16471,10 +16608,22 @@ Begin
     End
     Else If CurTokKind = TK_IDENT Then
     Begin
-      Idx := PyFindVar(CurTokStr);
-      { Appel de methode : obj.method() }
-      If (Idx > 0) And (PyVars[Idx].Kind = 2) Then
+      { len(var) }
+      If CurTokStr = 'len' Then
       Begin
+        PyAddMsg(ItoS(PyEvalExprInt), False);
+      End
+      Else
+      Begin
+        Idx := PyFindVar(CurTokStr);
+        { Liste ou dictionnaire avec indexation var[N] }
+        If (Idx > 0) And ((PyVars[Idx].Kind = 3) Or (PyVars[Idx].Kind = 4)) Then
+        Begin
+          PyAddMsg(ItoS(PyEvalExprInt), False);
+        End
+        { Appel de methode : obj.method() }
+        Else If (Idx > 0) And (PyVars[Idx].Kind = 2) Then
+        Begin
         OIdx := PyVars[Idx].ObjIdx;
         ParserAdvance; { consommer le nom de l objet }
         If CurTokKind = TK_DOT Then
@@ -16536,6 +16685,7 @@ Begin
         PyAddMsg(CurTokStr, False);
         ParserAdvance;
       End;
+      End; { fin du bloc Else non-len }
     End
     Else
       ParserAdvance;
@@ -16549,6 +16699,125 @@ Begin
   If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
     ParserAdvance;
   SkipToEOL;
+End;
+
+{ ------------------------------------------------------------ }
+{ PyEvalTemplateInt : evaluer une expression template simple         }
+{ remplace VName par VVal, supporte var, var*N, var+N, var-N,       }
+{ var>N, var<N, var>=N, var<=N, var==N, var!=N                       }
+{ ------------------------------------------------------------ }
+
+Function PyEvalTemplateInt(Const Tpl : TString;
+                           Const VName : TString;
+                           VVal : LongInt) : LongInt;
+Var
+  P : Integer;
+  NumStr : TString;
+  NumVal : LongInt;
+  Code : Integer;
+Begin
+  PyEvalTemplateInt := VVal;
+  If Tpl = VName Then Exit;
+  { Tester les operateurs dans l ordre }
+  P := Pos(' * ', Tpl);
+  If P > 0 Then
+  Begin
+    NumStr := Copy(Tpl, P + 3, 255);
+    Val(NumStr, NumVal, Code);
+    If Code = 0 Then PyEvalTemplateInt := VVal * NumVal;
+    Exit;
+  End;
+  P := Pos(' + ', Tpl);
+  If P > 0 Then
+  Begin
+    NumStr := Copy(Tpl, P + 3, 255);
+    Val(NumStr, NumVal, Code);
+    If Code = 0 Then PyEvalTemplateInt := VVal + NumVal;
+    Exit;
+  End;
+  P := Pos(' - ', Tpl);
+  If P > 0 Then
+  Begin
+    NumStr := Copy(Tpl, P + 3, 255);
+    Val(NumStr, NumVal, Code);
+    If Code = 0 Then PyEvalTemplateInt := VVal - NumVal;
+    Exit;
+  End;
+  P := Pos(' >= ', Tpl);
+  If P > 0 Then
+  Begin
+    NumStr := Copy(Tpl, P + 4, 255);
+    Val(NumStr, NumVal, Code);
+    If Code = 0 Then
+    Begin
+      If VVal >= NumVal Then PyEvalTemplateInt := 1
+      Else PyEvalTemplateInt := 0;
+    End;
+    Exit;
+  End;
+  P := Pos(' <= ', Tpl);
+  If P > 0 Then
+  Begin
+    NumStr := Copy(Tpl, P + 4, 255);
+    Val(NumStr, NumVal, Code);
+    If Code = 0 Then
+    Begin
+      If VVal <= NumVal Then PyEvalTemplateInt := 1
+      Else PyEvalTemplateInt := 0;
+    End;
+    Exit;
+  End;
+  P := Pos(' != ', Tpl);
+  If P > 0 Then
+  Begin
+    NumStr := Copy(Tpl, P + 4, 255);
+    Val(NumStr, NumVal, Code);
+    If Code = 0 Then
+    Begin
+      If VVal <> NumVal Then PyEvalTemplateInt := 1
+      Else PyEvalTemplateInt := 0;
+    End;
+    Exit;
+  End;
+  P := Pos(' == ', Tpl);
+  If P > 0 Then
+  Begin
+    NumStr := Copy(Tpl, P + 4, 255);
+    Val(NumStr, NumVal, Code);
+    If Code = 0 Then
+    Begin
+      If VVal = NumVal Then PyEvalTemplateInt := 1
+      Else PyEvalTemplateInt := 0;
+    End;
+    Exit;
+  End;
+  P := Pos(' > ', Tpl);
+  If P > 0 Then
+  Begin
+    NumStr := Copy(Tpl, P + 3, 255);
+    Val(NumStr, NumVal, Code);
+    If Code = 0 Then
+    Begin
+      If VVal > NumVal Then PyEvalTemplateInt := 1
+      Else PyEvalTemplateInt := 0;
+    End;
+    Exit;
+  End;
+  P := Pos(' < ', Tpl);
+  If P > 0 Then
+  Begin
+    NumStr := Copy(Tpl, P + 3, 255);
+    Val(NumStr, NumVal, Code);
+    If Code = 0 Then
+    Begin
+      If VVal < NumVal Then PyEvalTemplateInt := 1
+      Else PyEvalTemplateInt := 0;
+    End;
+    Exit;
+  End;
+  { Tenter de lire comme un nombre brut }
+  Val(Tpl, NumVal, Code);
+  If Code = 0 Then PyEvalTemplateInt := NumVal;
 End;
 
 { PyParseAssign : parser nom = expression }
@@ -16571,6 +16840,19 @@ Var
   RetI : LongInt;
   RetS : TString;
   VIdx : Integer;
+  LI, DI : Integer;
+  IterVar : TString;
+  RangeA, RangeB : LongInt;
+  HasFilter : Boolean;
+  FilterTpl : TString;
+  ExprTpl : TString;
+  KeyTpl : TString;
+  ValTpl : TString;
+  IV : LongInt;
+  EvalVal : LongInt;
+  KeyVal : LongInt;
+  VV : LongInt;
+  SaveIdx : Integer;
 Begin
   VarName := CurTokStr;
   ParserAdvance; { consommer le nom }
@@ -16580,6 +16862,192 @@ Begin
     Exit;
   End;
   ParserAdvance; { consommer '=' }
+
+  { --- List comprehension : var = [expr for iter in range(...) [if cond]] --- }
+  If CurTokKind = TK_LBRACKET Then
+  Begin
+    ParserAdvance; { consommer '[' }
+    { Collecter les tokens de l expression }
+    ExprTpl := '';
+    While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_NEWLINE) And
+          Not ((CurTokKind = TK_KEYWORD) And (CurTokInt = KW_FOR)) Do
+    Begin
+      If ExprTpl <> '' Then ExprTpl := ExprTpl + ' ';
+      ExprTpl := ExprTpl + CurTokStr;
+      ParserAdvance;
+    End;
+    { Consommer 'for' }
+    If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_FOR) Then
+      ParserAdvance;
+    { Lire la variable iterateur }
+    IterVar := '';
+    If CurTokKind = TK_IDENT Then
+    Begin
+      IterVar := CurTokStr;
+      ParserAdvance;
+    End;
+    { Consommer 'in' }
+    If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_IN) Then
+      ParserAdvance;
+    { Consommer 'range' }
+    RangeA := 0;
+    RangeB := 0;
+    If (CurTokKind = TK_IDENT) And (CurTokStr = 'range') Then
+    Begin
+      ParserAdvance;
+      If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+      Begin
+        ParserAdvance;
+        RangeA := PyEvalExprInt;
+        If (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Then
+        Begin
+          ParserAdvance;
+          RangeB := PyEvalExprInt;
+        End
+        Else
+        Begin
+          RangeB := RangeA;
+          RangeA := 0;
+        End;
+        If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+          ParserAdvance;
+      End;
+    End;
+    { Verifier s il y a un filtre if - collecter l expression }
+    HasFilter := False;
+    FilterTpl := '';
+    If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_IF) Then
+    Begin
+      HasFilter := True;
+      ParserAdvance; { consommer 'if' }
+      While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_NEWLINE) And
+            (CurTokKind <> TK_RBRACKET) Do
+      Begin
+        If FilterTpl <> '' Then FilterTpl := FilterTpl + ' ';
+        FilterTpl := FilterTpl + CurTokStr;
+        ParserAdvance;
+      End;
+    End;
+    { Consommer ] }
+    If CurTokKind = TK_RBRACKET Then
+      ParserAdvance;
+    { Creer une nouvelle liste }
+    If PyListCount < PY_MAX_LISTS Then
+      Inc(PyListCount);
+    LI := PyListCount;
+    PyLists[LI].Count := 0;
+    { Iterer }
+    For IV := RangeA To RangeB - 1 Do
+    Begin
+      { Evaluer le filtre si present }
+      If HasFilter Then
+      Begin
+        If PyEvalTemplateInt(FilterTpl, IterVar, IV) = 0 Then
+          Continue;
+      End;
+      { Evaluer l expression }
+      EvalVal := PyEvalTemplateInt(ExprTpl, IterVar, IV);
+      { Ajouter a la liste }
+      If PyLists[LI].Count < PY_MAX_LIST_EL Then
+      Begin
+        PyLists[LI].Items[PyLists[LI].Count] := EvalVal;
+        Inc(PyLists[LI].Count);
+      End;
+    End;
+    PySetVarList(VarName, LI);
+    SkipToEOL;
+    Exit;
+  End;
+
+  (* --- Dict comprehension : var = key: val for iter in range(n) --- *)
+  If CurTokKind = TK_LBRACE Then
+  Begin
+    ParserAdvance; (* consommer accolade ouvrante *)
+    { Collecter les tokens de l expression cle }
+    KeyTpl := '';
+    While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_NEWLINE) And
+          (CurTokKind <> TK_COLON) Do
+    Begin
+      If KeyTpl <> '' Then KeyTpl := KeyTpl + ' ';
+      KeyTpl := KeyTpl + CurTokStr;
+      ParserAdvance;
+    End;
+    { Consommer ':' }
+    If CurTokKind = TK_COLON Then
+      ParserAdvance;
+    { Collecter les tokens de l expression valeur }
+    ValTpl := '';
+    While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_NEWLINE) And
+          Not ((CurTokKind = TK_KEYWORD) And (CurTokInt = KW_FOR)) Do
+    Begin
+      If ValTpl <> '' Then ValTpl := ValTpl + ' ';
+      ValTpl := ValTpl + CurTokStr;
+      ParserAdvance;
+    End;
+    { Consommer 'for' }
+    If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_FOR) Then
+      ParserAdvance;
+    { Lire la variable iterateur }
+    IterVar := '';
+    If CurTokKind = TK_IDENT Then
+    Begin
+      IterVar := CurTokStr;
+      ParserAdvance;
+    End;
+    { Consommer 'in' }
+    If (CurTokKind = TK_KEYWORD) And (CurTokInt = KW_IN) Then
+      ParserAdvance;
+    { Consommer 'range(...)' }
+    RangeA := 0;
+    RangeB := 0;
+    If (CurTokKind = TK_IDENT) And (CurTokStr = 'range') Then
+    Begin
+      ParserAdvance;
+      If (CurTokKind = TK_PUNCT) And (CurTokStr = '(') Then
+      Begin
+        ParserAdvance;
+        RangeA := PyEvalExprInt;
+        If (CurTokKind = TK_PUNCT) And (CurTokStr = ',') Then
+        Begin
+          ParserAdvance;
+          RangeB := PyEvalExprInt;
+        End
+        Else
+        Begin
+          RangeB := RangeA;
+          RangeA := 0;
+        End;
+        If (CurTokKind = TK_PUNCT) And (CurTokStr = ')') Then
+          ParserAdvance;
+      End;
+    End;
+    { Creer un nouveau dictionnaire }
+    If PyDictCount < PY_MAX_DICTS Then
+      Inc(PyDictCount);
+    DI := PyDictCount;
+    PyDicts[DI].Count := 0;
+    { Iterer }
+    For IV := RangeA To RangeB - 1 Do
+    Begin
+      { Evaluer la cle }
+      KeyVal := PyEvalTemplateInt(KeyTpl, IterVar, IV);
+      { Evaluer la valeur }
+      VV := PyEvalTemplateInt(ValTpl, IterVar, IV);
+      { Ajouter au dictionnaire }
+      If PyDicts[DI].Count < PY_MAX_DICT_EL Then
+      Begin
+        PyDicts[DI].Entries[PyDicts[DI].Count].Key := KeyVal;
+        PyDicts[DI].Entries[PyDicts[DI].Count].Val := VV;
+        Inc(PyDicts[DI].Count);
+      End;
+    End;
+    PySetVarDict(VarName, DI);
+    (* Consommer accolade fermante *)
+    If CurTokKind = TK_RBRACE Then
+      ParserAdvance;
+    SkipToEOL;
+    Exit;
+  End;
 
   { --- Instanciation d objet : var = ClassName(args...) --- }
   If CurTokKind = TK_IDENT Then
