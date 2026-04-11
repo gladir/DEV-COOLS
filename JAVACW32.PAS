@@ -1392,7 +1392,7 @@ Var
 Type
   { Etat sauvegarde du lexer pour rewind }
   TLexState = Record
-    LineNo   : Integer;
+    LineNo   : LongInt;
     ColNo    : Integer;
     IsEOF    : Boolean;
     Line     : TString;
@@ -19772,9 +19772,234 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ ParseForInit : executer l initialisation du for                }
+{   Gere : int i = 0  /  i = 0  /  vide (;)                    }
+{   Consomme jusqu au ; inclus                                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForInit;
+Var VarName : TString;
+Begin
+  { Cas init vide : for (; ... }
+  If CurTokKind = TK_SEMICOLON Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+  { Declaration de variable : int i = 0 }
+  If (CurTokKind = TK_KEYWORD) And
+     ((CurTokStr = 'int') Or (CurTokStr = 'boolean') Or
+      (CurTokStr = 'char') Or (CurTokStr = 'String')) Then
+  Begin
+    ParseVarDecl;  { ParseVarDecl consomme le ; }
+    Exit;
+  End;
+  { Sinon : expression (assignation, pre-inc, etc.) }
+  If CurTokKind = TK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    ParserAdvance;
+    If CurTokStr = '=' Then
+    Begin
+      ParseAssignSimple(VarName);
+      If CurTokKind = TK_SEMICOLON Then ParserAdvance;
+    End
+    Else If (CurTokStr = '+=') Or (CurTokStr = '-=') Or
+            (CurTokStr = '*=') Or (CurTokStr = '/=') Or
+            (CurTokStr = '%=') Then
+    Begin
+      ParseAssignAugmented(VarName, IsAssignOp);
+      If CurTokKind = TK_SEMICOLON Then ParserAdvance;
+    End
+    Else If (CurTokStr = '++') Or (CurTokStr = '--') Then
+    Begin
+      ParsePostIncDec(VarName, CurTokStr = '++');
+      If CurTokKind = TK_SEMICOLON Then ParserAdvance;
+    End
+    Else
+    Begin
+      { Expression generique : consommer jusqu au ; }
+      While (CurTokKind <> TK_SEMICOLON) And (CurTokKind <> TK_EOF) Do
+        ParserAdvance;
+      If CurTokKind = TK_SEMICOLON Then ParserAdvance;
+    End;
+  End
+  Else
+  Begin
+    { Autre expression : consommer jusqu au ; }
+    While (CurTokKind <> TK_SEMICOLON) And (CurTokKind <> TK_EOF) Do
+      ParserAdvance;
+    If CurTokKind = TK_SEMICOLON Then ParserAdvance;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForUpdate : executer l update du for (i++, i--, etc.)     }
+{   Consomme les tokens de l update                              }
+{   Ne consomme PAS le ) final                                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForUpdate;
+Var VarName : TString;
+Begin
+  { Update vide : for (...; ...; ) }
+  If CurTokKind = TK_RPAREN Then
+    Exit;
+  { Pre-increment: ++i ou --i }
+  If (CurTokKind = TK_OP) And
+     ((CurTokStr = '++') Or (CurTokStr = '--')) Then
+  Begin
+    ParsePreIncDec(CurTokStr = '++');
+    Exit;
+  End;
+  If CurTokKind = TK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    ParserAdvance;
+    If CurTokStr = '=' Then
+    Begin
+      ParseAssignSimple(VarName);
+    End
+    Else If (CurTokStr = '+=') Or (CurTokStr = '-=') Or
+            (CurTokStr = '*=') Or (CurTokStr = '/=') Or
+            (CurTokStr = '%=') Then
+    Begin
+      ParseAssignAugmented(VarName, IsAssignOp);
+    End
+    Else If (CurTokStr = '++') Or (CurTokStr = '--') Then
+    Begin
+      ParsePostIncDec(VarName, CurTokStr = '++');
+    End
+    Else
+    Begin
+      While (CurTokKind <> TK_RPAREN) And (CurTokKind <> TK_EOF) Do
+        ParserAdvance;
+    End;
+  End
+  Else
+  Begin
+    While (CurTokKind <> TK_RPAREN) And (CurTokKind <> TK_EOF) Do
+      ParserAdvance;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SkipForUpdate : sauter l update sans l executer                }
+{   Consomme les tokens jusqu au ) exclu                         }
+{ ------------------------------------------------------------ }
+
+Procedure SkipForUpdate;
+Var Depth : Integer;
+Begin
+  Depth := 0;
+  While (CurTokKind <> TK_EOF) Do
+  Begin
+    If CurTokKind = TK_LPAREN Then Inc(Depth)
+    Else If CurTokKind = TK_RPAREN Then
+    Begin
+      If Depth = 0 Then Exit;
+      Dec(Depth);
+    End;
+    ParserAdvance;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForStatement : simuler une boucle for au compile-time     }
+{   Le mot-cle 'for' a deja ete consomme par l appelant.         }
+{   for (init; cond; update) body                                }
+{   Simule : init puis while(cond) do body puis update           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForStatement;
+Var
+  CondState   : TLexState;
+  UpdateState : TLexState;
+  CondExpr    : TExprVal;
+  CondVal     : Boolean;
+  CondKnown   : Boolean;
+  IterCount   : LongInt;
+Begin
+  { Consommer ( }
+  If CurTokKind = TK_LPAREN Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('expected ( after for', LexLineNo);
+    Exit;
+  End;
+
+  { 1. Parser l init (consomme le ;) }
+  ParseForInit;
+
+  { 2. Sauvegarder l etat au debut de la condition }
+  LexSaveState(CondState);
+
+  IterCount := 0;
+  While IterCount < WHILE_MAX_ITER Do
+  Begin
+    Inc(IterCount);
+
+    { Restaurer au debut de la condition }
+    LexRestoreState(CondState);
+
+    { Parser la condition }
+    CondExpr := ParseExpr;
+
+    { Evaluer la condition }
+    CondKnown := False;
+    CondVal   := False;
+    If CondExpr.Kind = EK_IMM Then
+    Begin
+      CondKnown := True;
+      CondVal   := (CondExpr.ImmVal <> 0);
+    End;
+
+    { Consommer le ; apres la condition }
+    If CurTokKind = TK_SEMICOLON Then
+      ParserAdvance;
+
+    { Sauvegarder l etat au debut de l update }
+    LexSaveState(UpdateState);
+
+    { Sauter l update et le ) }
+    SkipForUpdate;
+    If CurTokKind = TK_RPAREN Then
+      ParserAdvance;
+
+    { Si condition fausse ou inconnue, sauter le body et sortir }
+    If (Not CondKnown) Or (Not CondVal) Then
+    Begin
+      SkipBlock;
+      Exit;
+    End;
+
+    { Condition vraie : parser le body }
+    LoopBreakFlag    := False;
+    LoopContinueFlag := False;
+    ParseBlock;
+
+    { Si break rencontre, sortir }
+    If LoopBreakFlag Then
+    Begin
+      LoopBreakFlag := False;
+      Exit;
+    End;
+
+    { Executer l update : restaurer au debut de l update }
+    LoopContinueFlag := False;
+    LexRestoreState(UpdateState);
+    ParseForUpdate;
+  End;
+
+  If IterCount >= WHILE_MAX_ITER Then
+    CompileError('for loop exceeded maximum iterations', LexLineNo);
+End;
+
+{ ------------------------------------------------------------ }
 { ParseOneStatement : parser une instruction Java                }
 {   Gere : declarations, affectations, System.out.println,       }
-{   if/else, while, break, continue, class, blocs, etc.          }
+{   if/else, while, for, break, continue, class, blocs, etc.    }
 { ------------------------------------------------------------ }
 
 Procedure ParseOneStatement;
@@ -19808,6 +20033,12 @@ Begin
   Begin
     ParserAdvance; { consommer while }
     ParseWhileStatement;
+  End
+  { for statement }
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'for') Then
+  Begin
+    ParserAdvance; { consommer for }
+    ParseForStatement;
   End
   { break }
   Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'break') Then
