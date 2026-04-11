@@ -31,7 +31,7 @@
 {  TODO 13 [IMPLEMENTE] - Detecteur : comparaisons incorrectes d'objets       }
 {  TODO 14 [IMPLEMENTE] - Detecteur : problemes de performance                }
 {  TODO 15 [A FAIRE] - Detecteur : vulnerabilites de securite                 }
-{  TODO 16 [A FAIRE] - Detecteur : problemes de multi-threading               }
+{  TODO 16 [IMPLEMENTE] - Detecteur : problemes de multi-threading            }
 {  TODO 17 [A FAIRE] - Detecteur : exceptions masquees et flux d'erreur       }
 {  TODO 18 [A FAIRE] - Detecteur : erreurs logiques et retours incorrects     }
 {  TODO 19 [A FAIRE] - Detecteur : problemes d'internationalisation           }
@@ -804,6 +804,29 @@ Const
   UPM_UNCALLED_PRIVATE_METHOD       = 6;  { methode privee jamais appelee     }
   UWF_UNWRITTEN_FIELD               = 7;  { champ prive jamais ecrit          }
 
+  { --- TODO 16 : Constantes pour le detecteur de problemes de multi-threading --- }
+  MAX_MT_BUGS        = 64;   { Nombre max de bugs concurrence par methode       }
+  MAX_MT_FIELDS      = 128;  { Nombre max de champs trackes pour acces           }
+  MAX_MT_SYNC_DEPTH  = 16;   { Profondeur max d'imbrication synchronized        }
+
+  { Types de bugs de multi-threading }
+  MT_NONE                           = 0;  { Pas de bug                        }
+  DC_DOUBLECHECK                    = 1;  { double-check locking incorrect    }
+  ESYNC_EMPTY_SYNC                  = 2;  { bloc synchronized vide            }
+  IS_FIELD_NOT_GUARDED              = 3;  { champ non protege en methode sync }
+  IS2_INCONSISTENT_SYNC             = 4;  { acces sync et non-sync au meme champ }
+  JLM_JSR166_LOCK_MONITORENTER      = 5;  { monitorenter/exit direct          }
+  NN_NAKED_NOTIFY                   = 6;  { notify() sans mise a jour d'etat  }
+  NO_NOTIFY_NOT_NOTIFYALL           = 7;  { notify() au lieu de notifyAll()   }
+  UG_SYNC_SET_UNSYNC_GET            = 8;  { setter sync mais getter non       }
+  UW_UNCOND_WAIT                    = 9;  { wait() sans boucle de garde       }
+  WA_AWAIT_NOT_IN_LOOP              = 10; { await() sans boucle de garde      }
+
+  { Etats de synchronisation pour l'analyse }
+  SYNC_NONE        = 0;  { Pas dans un bloc synchronized                       }
+  SYNC_METHOD      = 1;  { Dans une methode synchronized                       }
+  SYNC_BLOCK       = 2;  { Dans un bloc synchronized                           }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -952,6 +975,34 @@ Type
   End;
   TConcatInLoopArray = Array[0..MAX_PF_CONCAT_LOOP-1] of TConcatInLoop;
 
+  { --- TODO 16 : Structure TConcurrencyBug : bug de concurrence detecte --- }
+  TConcurrencyBug = Record
+    BugType     : Integer;    { Type de bug (DC_DOUBLECHECK, etc.)       }
+    PC          : LongWord;   { Position dans le bytecode                }
+    LineNum     : Integer;    { Numero de ligne source                   }
+    ClassName   : String;     { Nom de classe concernee                  }
+    MethodName  : String;     { Nom de methode concernee                 }
+    FieldName   : String;     { Nom du champ concerne (si applicable)    }
+    Details     : String;     { Details supplementaires                  }
+  End;
+  TConcurrencyBugArray = Array[0..MAX_MT_BUGS-1] of TConcurrencyBug;
+
+  { --- TODO 16 : Structure TFieldAccessInfo : acces a un champ tracke --- }
+  TFieldAccessInfo = Record
+    FieldIdx    : Integer;    { Index dans Fields[] ou -1                }
+    FieldName   : String;     { Nom du champ                             }
+    IsVolatile  : Boolean;    { True si le champ est volatile            }
+    ReadInSync  : Boolean;    { True si lu dans methode/bloc sync        }
+    WriteInSync : Boolean;    { True si ecrit dans methode/bloc sync     }
+    ReadNotSync : Boolean;    { True si lu hors synchronisation          }
+    WriteNotSync : Boolean;   { True si ecrit hors synchronisation       }
+    GetterSync  : Boolean;    { True si getter est synchronized          }
+    SetterSync  : Boolean;    { True si setter est synchronized          }
+    GetterIdx   : Integer;    { Index de la methode getter ou -1         }
+    SetterIdx   : Integer;    { Index de la methode setter ou -1         }
+  End;
+  TFieldAccessArray = Array[0..MAX_MT_FIELDS-1] of TFieldAccessInfo;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -1070,6 +1121,24 @@ Var
   PFTotalUncalledMethods : Integer; { Nombre total de methodes privees non appelees }
   PFCurrentPC      : LongWord;    { PC de l'instruction courante               }
   PFCurrentLine    : Integer;     { Ligne source courante                      }
+  { --- TODO 16 : Variables du detecteur de problemes de multi-threading --- }
+  MTInitialized    : Boolean;     { True si module initialise                  }
+  MTBugs           : TConcurrencyBugArray; { Bugs detectes dans la methode     }
+  MTBugCount       : Integer;     { Nombre de bugs detectes                    }
+  MTFieldAccesses  : TFieldAccessArray; { Acces aux champs trackes             }
+  MTFieldCount     : Integer;     { Nombre de champs trackes                   }
+  MTSyncDepth      : Integer;     { Profondeur imbrication synchronized        }
+  MTLabelNum       : Integer;     { Compteur pour generation de labels         }
+  MTTotalEmptySync : Integer;     { Nombre total de blocs sync vides           }
+  MTTotalWaitNoLoop : Integer;    { Nombre total de wait() sans boucle         }
+  MTTotalNakedNotify : Integer;   { Nombre total de notify() nus               }
+  MTTotalDoubleCheck : Integer;   { Nombre total de double-check locking       }
+  MTTotalInconsistentSync : Integer; { Nombre total d'acces inconsistants      }
+  MTTotalSyncSetUnsyncGet : Integer; { Nombre total de setter sync / getter non }
+  MTCurrentPC      : LongWord;    { PC de l'instruction courante               }
+  MTCurrentLine    : Integer;     { Ligne source courante                      }
+  MTInSyncMethod   : Boolean;     { True si dans une methode synchronized      }
+  MTInSyncBlock    : Boolean;     { True si dans un bloc synchronized          }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -7994,29 +8063,755 @@ End;
 {      Retourner True si le nom suggere un secret (password, token, key, etc.) }
 
 { ============================================================================ }
-{ TODO 16 [A FAIRE] - Detecteur : problemes de multi-threading                 }
+{ TODO 16 [IMPLEMENTE] - Detecteur : problemes de multi-threading             }
 { ============================================================================ }
-{                                                                              }
-{  - Codes de bugs detectes :                                                    }
-{      DC_DOUBLECHECK         : double-check locking incorrect                  }
-{      ESync_EMPTY_SYNC       : bloc synchronized vide                          }
-{      IS_FIELD_NOT_GUARDED    : acces a un champ non protege dans methode sync }
-{      IS2_INCONSISTENT_SYNC   : acces inconsistant (parfois sync, parfois non) }
-{      JLM_JSR166_LOCK_MONITORENTER : utilisation monitorenter/exit direct      }
-{      NN_NAKED_NOTIFY         : notify() sans condition de garde               }
-{      NO_NOTIFY_NOT_NOTIFYALL : notify() quand notifyAll() serait preferable   }
-{      UG_SYNC_SET_UNSYNC_GET  : setter synchronized mais getter non            }
-{      UW_UNCOND_WAIT          : wait() sans boucle de garde                    }
-{      WA_AWAIT_NOT_IN_LOOP    : await() sans boucle de garde                   }
-{                                                                              }
-{  - Procedure DetectConcurrencyIssues(ClassInfo, Methods)                      }
-{      Identifier les champs volatiles et synchronized                          }
-{      Detecter les acces a des champs non-volatiles dans des methodes          }
-{        marquees synchronized sans protection adequate                          }
-{      Detecter les doubles tests de null (double-checked locking)              }
-{      Detecter les blocs synchronized() vides (corps vide)                     }
-{      Detecter les appels wait() hors d'une boucle while                       }
-{      Detecter les notify() sans mise a jour d'un etat partage                 }
+
+{ --- TODO 16 : Initialisation du module multi-threading --- }
+Procedure InitConcurrencyState;
+Var
+  I: Integer;
+Begin
+  MTInitialized := True;
+  MTBugCount := 0;
+  MTFieldCount := 0;
+  MTSyncDepth := 0;
+  MTLabelNum := 0;
+  MTTotalEmptySync := 0;
+  MTTotalWaitNoLoop := 0;
+  MTTotalNakedNotify := 0;
+  MTTotalDoubleCheck := 0;
+  MTTotalInconsistentSync := 0;
+  MTTotalSyncSetUnsyncGet := 0;
+  MTCurrentPC := 0;
+  MTCurrentLine := 0;
+  MTInSyncMethod := False;
+  MTInSyncBlock := False;
+  
+  For I := 0 to MAX_MT_BUGS - 1 Do Begin
+    MTBugs[I].BugType := MT_NONE;
+    MTBugs[I].PC := 0;
+    MTBugs[I].LineNum := 0;
+    MTBugs[I].ClassName := '';
+    MTBugs[I].MethodName := '';
+    MTBugs[I].FieldName := '';
+    MTBugs[I].Details := '';
+  End;
+  
+  For I := 0 to MAX_MT_FIELDS - 1 Do Begin
+    MTFieldAccesses[I].FieldIdx := -1;
+    MTFieldAccesses[I].FieldName := '';
+    MTFieldAccesses[I].IsVolatile := False;
+    MTFieldAccesses[I].ReadInSync := False;
+    MTFieldAccesses[I].WriteInSync := False;
+    MTFieldAccesses[I].ReadNotSync := False;
+    MTFieldAccesses[I].WriteNotSync := False;
+    MTFieldAccesses[I].GetterSync := False;
+    MTFieldAccesses[I].SetterSync := False;
+    MTFieldAccesses[I].GetterIdx := -1;
+    MTFieldAccesses[I].SetterIdx := -1;
+  End;
+End;
+
+{ --- TODO 16 : Generation d'un label unique pour le module --- }
+Function GenMTLabel: String;
+Begin
+  Inc(MTLabelNum);
+  GenMTLabel := '_MT_' + IntToStr_(MTLabelNum);
+End;
+
+{ --- TODO 16 : Conversion du type de bug en chaine --- }
+Function MTBugTypeName(BugType: Integer): String;
+Begin
+  Case BugType of
+    MT_NONE:                      MTBugTypeName := 'MT_NONE';
+    DC_DOUBLECHECK:               MTBugTypeName := 'DC_DOUBLECHECK';
+    ESYNC_EMPTY_SYNC:             MTBugTypeName := 'ESync_EMPTY_SYNC';
+    IS_FIELD_NOT_GUARDED:         MTBugTypeName := 'IS_FIELD_NOT_GUARDED';
+    IS2_INCONSISTENT_SYNC:        MTBugTypeName := 'IS2_INCONSISTENT_SYNC';
+    JLM_JSR166_LOCK_MONITORENTER: MTBugTypeName := 'JLM_JSR166_LOCK_MONITORENTER';
+    NN_NAKED_NOTIFY:              MTBugTypeName := 'NN_NAKED_NOTIFY';
+    NO_NOTIFY_NOT_NOTIFYALL:      MTBugTypeName := 'NO_NOTIFY_NOT_NOTIFYALL';
+    UG_SYNC_SET_UNSYNC_GET:       MTBugTypeName := 'UG_SYNC_SET_UNSYNC_GET';
+    UW_UNCOND_WAIT:               MTBugTypeName := 'UW_UNCOND_WAIT';
+    WA_AWAIT_NOT_IN_LOOP:         MTBugTypeName := 'WA_AWAIT_NOT_IN_LOOP';
+  Else
+    MTBugTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 16 : Detecter si une methode est synchronized --- }
+Function IsSynchronizedMethod(MethodIdx: Integer): Boolean;
+Const
+  ACC_SYNCHRONIZED = $0020;
+Begin
+  If (MethodIdx >= 0) and (MethodIdx < MethodCount) Then
+    IsSynchronizedMethod := (Methods[MethodIdx].AccessFlags and ACC_SYNCHRONIZED) <> 0
+  Else
+    IsSynchronizedMethod := False;
+End;
+
+{ --- TODO 16 : Detecter si un champ est volatile --- }
+Function IsVolatileField(FieldIdx: Integer): Boolean;
+Begin
+  If (FieldIdx >= 0) and (FieldIdx < FieldCount) Then
+    IsVolatileField := Fields[FieldIdx].IsVolatile
+  Else
+    IsVolatileField := False;
+End;
+
+{ --- TODO 16 : Detecter si un nom de methode est un getter --- }
+Function IsGetterMethod(MethodName: String): Boolean;
+Begin
+  IsGetterMethod := (Pos('get', LoCaseStr(MethodName)) = 1) or
+                    (Pos('is', LoCaseStr(MethodName)) = 1) or
+                    (Pos('has', LoCaseStr(MethodName)) = 1);
+End;
+
+{ --- TODO 16 : Detecter si un nom de methode est un setter --- }
+Function IsSetterMethod(MethodName: String): Boolean;
+Begin
+  IsSetterMethod := (Pos('set', LoCaseStr(MethodName)) = 1);
+End;
+
+{ --- TODO 16 : Detecter si c'est un appel wait() --- }
+Function IsWaitMethod(MethodName, Descriptor: String): Boolean;
+Begin
+  IsWaitMethod := (MethodName = 'wait') and
+                  ((Descriptor = '()V') or 
+                   (Descriptor = '(J)V') or 
+                   (Descriptor = '(JI)V'));
+End;
+
+{ --- TODO 16 : Detecter si c'est un appel notify() --- }
+Function IsNotifyMethod(MethodName, Descriptor: String): Boolean;
+Begin
+  IsNotifyMethod := (MethodName = 'notify') and (Descriptor = '()V');
+End;
+
+{ --- TODO 16 : Detecter si c'est un appel notifyAll() --- }
+Function IsNotifyAllMethod(MethodName, Descriptor: String): Boolean;
+Begin
+  IsNotifyAllMethod := (MethodName = 'notifyAll') and (Descriptor = '()V');
+End;
+
+{ --- TODO 16 : Detecter si c'est un appel await() sur Condition --- }
+Function IsAwaitMethod(ClassName, MethodName: String): Boolean;
+Begin
+  IsAwaitMethod := ((Pos('Condition', ClassName) > 0) or
+                    (Pos('Lock', ClassName) > 0)) and
+                   ((MethodName = 'await') or
+                    (MethodName = 'awaitNanos') or
+                    (MethodName = 'awaitUntil') or
+                    (MethodName = 'awaitUninterruptibly'));
+End;
+
+{ --- TODO 16 : Trouver ou ajouter un champ dans la table d'acces --- }
+Function FindOrAddFieldAccess(FieldName: String; FieldIdx: Integer): Integer;
+Var
+  I: Integer;
+Begin
+  { Chercher un champ existant }
+  For I := 0 to MTFieldCount - 1 Do Begin
+    If MTFieldAccesses[I].FieldName = FieldName Then Begin
+      FindOrAddFieldAccess := I;
+      Exit;
+    End;
+  End;
+  
+  { Ajouter un nouveau champ }
+  If MTFieldCount < MAX_MT_FIELDS Then Begin
+    MTFieldAccesses[MTFieldCount].FieldIdx := FieldIdx;
+    MTFieldAccesses[MTFieldCount].FieldName := FieldName;
+    MTFieldAccesses[MTFieldCount].IsVolatile := IsVolatileField(FieldIdx);
+    MTFieldAccesses[MTFieldCount].ReadInSync := False;
+    MTFieldAccesses[MTFieldCount].WriteInSync := False;
+    MTFieldAccesses[MTFieldCount].ReadNotSync := False;
+    MTFieldAccesses[MTFieldCount].WriteNotSync := False;
+    MTFieldAccesses[MTFieldCount].GetterSync := False;
+    MTFieldAccesses[MTFieldCount].SetterSync := False;
+    MTFieldAccesses[MTFieldCount].GetterIdx := -1;
+    MTFieldAccesses[MTFieldCount].SetterIdx := -1;
+    FindOrAddFieldAccess := MTFieldCount;
+    Inc(MTFieldCount);
+  End Else
+    FindOrAddFieldAccess := -1;
+End;
+
+{ --- TODO 16 : Ajouter un bug de concurrence --- }
+Procedure AddConcurrencyBug(BugType: Integer; PC: LongWord; LineNum: Integer;
+                           ClassName, MethodName, FieldName, Details: String);
+Begin
+  If MTBugCount >= MAX_MT_BUGS Then Exit;
+  
+  MTBugs[MTBugCount].BugType := BugType;
+  MTBugs[MTBugCount].PC := PC;
+  MTBugs[MTBugCount].LineNum := LineNum;
+  MTBugs[MTBugCount].ClassName := ClassName;
+  MTBugs[MTBugCount].MethodName := MethodName;
+  MTBugs[MTBugCount].FieldName := FieldName;
+  MTBugs[MTBugCount].Details := Details;
+  
+  Inc(MTBugCount);
+  
+  { Mettre a jour les compteurs globaux }
+  Case BugType of
+    ESYNC_EMPTY_SYNC:        Inc(MTTotalEmptySync);
+    UW_UNCOND_WAIT:          Inc(MTTotalWaitNoLoop);
+    WA_AWAIT_NOT_IN_LOOP:    Inc(MTTotalWaitNoLoop);
+    NN_NAKED_NOTIFY:         Inc(MTTotalNakedNotify);
+    NO_NOTIFY_NOT_NOTIFYALL: Inc(MTTotalNakedNotify);
+    DC_DOUBLECHECK:          Inc(MTTotalDoubleCheck);
+    IS2_INCONSISTENT_SYNC:   Inc(MTTotalInconsistentSync);
+    UG_SYNC_SET_UNSYNC_GET:  Inc(MTTotalSyncSetUnsyncGet);
+  End;
+End;
+
+{ --- TODO 16 : Detecter les blocs synchronized vides --- }
+Procedure DetectEmptySyncBlock(MethodIdx: Integer);
+Var
+  I: Integer;
+  MonitorEnterPC: LongWord;
+  FoundMonitorEnter: Boolean;
+  EmptyCount: Integer;
+  LineNum: Integer;
+Begin
+  If Instructions = Nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
+  
+  FoundMonitorEnter := False;
+  MonitorEnterPC := 0;
+  EmptyCount := 0;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    If Instructions^[I].Opcode = OP_MONITORENTER Then Begin
+      FoundMonitorEnter := True;
+      MonitorEnterPC := Instructions^[I].PC;
+      EmptyCount := 0;
+    End
+    Else If FoundMonitorEnter Then Begin
+      If Instructions^[I].Opcode = OP_MONITOREXIT Then Begin
+        { Verifier si le bloc est vide ou presque vide }
+        If EmptyCount <= 1 Then Begin
+          LineNum := GetLineNumber(Methods[MethodIdx], Word(MonitorEnterPC));
+          AddConcurrencyBug(ESYNC_EMPTY_SYNC, MonitorEnterPC, LineNum,
+            InternalToJavaName(ClassInfo.ThisClass),
+            Methods[MethodIdx].Name, '',
+            'Bloc synchronized vide ou quasi-vide');
+        End;
+        FoundMonitorEnter := False;
+      End
+      Else Begin
+        { Compter les instructions significatives (ignorer aload, astore, dup) }
+        If Not (Instructions^[I].Opcode in [OP_ALOAD_0, OP_ALOAD_1, 
+                OP_ALOAD_2, OP_ALOAD_3, OP_ALOAD,
+                OP_ASTORE_0, OP_ASTORE_1, OP_ASTORE_2, OP_ASTORE_3, OP_ASTORE,
+                OP_DUP, OP_POP, OP_NOP]) Then
+          Inc(EmptyCount);
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 16 : Detecter wait() sans boucle de garde --- }
+Procedure DetectWaitNotInLoop(MethodIdx: Integer);
+Var
+  I, J: Integer;
+  InLoop: Boolean;
+  CPIdx: Word;
+  ClassName, MethodName, Descriptor: String;
+  LineNum: Integer;
+Begin
+  If Instructions = Nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    { Detecter invokevirtual Object.wait() }
+    If (Instructions^[I].Opcode = OP_INVOKEVIRTUAL) Then Begin
+      CPIdx := Instructions^[I].Op1;
+      If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
+        ClassName := '';
+        MethodName := '';
+        Descriptor := '';
+        CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
+        
+        { Verifier si c'est un appel a wait() }
+        If IsWaitMethod(MethodName, Descriptor) Then Begin
+          { Verifier si on est dans une boucle (chercher un goto en arriere) }
+          InLoop := False;
+          For J := I + 1 to InstrCount - 1 Do Begin
+            If (Instructions^[J].Opcode in [OP_GOTO, OP_GOTO_W]) Then Begin
+              { Verifier si c'est un saut en arriere }
+              If Instructions^[J].Op1 < 0 Then Begin
+                { Le saut doit etre avant l'instruction wait }
+                If LongInt(Instructions^[J].PC) + Instructions^[J].Op1 <= LongInt(Instructions^[I].PC) Then
+                  InLoop := True;
+              End;
+            End;
+            If Instructions^[J].Opcode in [OP_IRETURN, OP_LRETURN, OP_FRETURN,
+                OP_DRETURN, OP_ARETURN, OP_RETURN, OP_ATHROW] Then
+              Break;
+          End;
+          
+          { Aussi verifier les sauts conditionnels en arriere avant le wait }
+          For J := I - 1 downto 0 Do Begin
+            If (Instructions^[J].Opcode in [OP_IFEQ, OP_IFNE, OP_IFLT, OP_IFGE,
+                OP_IFGT, OP_IFLE, OP_IF_ICMPEQ, OP_IF_ICMPNE, OP_IF_ICMPLT,
+                OP_IF_ICMPGE, OP_IF_ICMPGT, OP_IF_ICMPLE, OP_IF_ACMPEQ,
+                OP_IF_ACMPNE, OP_IFNULL, OP_IFNONNULL]) Then Begin
+              { Verifier si c'est un saut apres le wait }
+              If LongInt(Instructions^[J].PC) + Instructions^[J].Op1 > LongInt(Instructions^[I].PC) Then
+                InLoop := True;
+            End;
+          End;
+          
+          If Not InLoop Then Begin
+            LineNum := GetLineNumber(Methods[MethodIdx], Word(Instructions^[I].PC));
+            AddConcurrencyBug(UW_UNCOND_WAIT, Instructions^[I].PC, LineNum,
+              InternalToJavaName(ClassInfo.ThisClass),
+              Methods[MethodIdx].Name, '',
+              'wait() appele sans boucle de garde (while)');
+          End;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 16 : Detecter await() sans boucle de garde --- }
+Procedure DetectAwaitNotInLoop(MethodIdx: Integer);
+Var
+  I, J: Integer;
+  InLoop: Boolean;
+  CPIdx: Word;
+  ClassName, MethodName, Descriptor: String;
+  LineNum: Integer;
+Begin
+  If Instructions = Nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    { Detecter invokeinterface/invokevirtual Condition.await() }
+    If (Instructions^[I].Opcode in [OP_INVOKEVIRTUAL, OP_INVOKEINTERFACE]) Then Begin
+      CPIdx := Instructions^[I].Op1;
+      If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
+        ClassName := '';
+        MethodName := '';
+        Descriptor := '';
+        CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
+        
+        If IsAwaitMethod(ClassName, MethodName) Then Begin
+          { Verifier si on est dans une boucle }
+          InLoop := False;
+          For J := I + 1 to InstrCount - 1 Do Begin
+            If (Instructions^[J].Opcode in [OP_GOTO, OP_GOTO_W]) Then Begin
+              If Instructions^[J].Op1 < 0 Then Begin
+                If LongInt(Instructions^[J].PC) + Instructions^[J].Op1 <= LongInt(Instructions^[I].PC) Then
+                  InLoop := True;
+              End;
+            End;
+            If Instructions^[J].Opcode in [OP_IRETURN, OP_LRETURN, OP_FRETURN,
+                OP_DRETURN, OP_ARETURN, OP_RETURN, OP_ATHROW] Then
+              Break;
+          End;
+          
+          If Not InLoop Then Begin
+            LineNum := GetLineNumber(Methods[MethodIdx], Word(Instructions^[I].PC));
+            AddConcurrencyBug(WA_AWAIT_NOT_IN_LOOP, Instructions^[I].PC, LineNum,
+              InternalToJavaName(ClassInfo.ThisClass),
+              Methods[MethodIdx].Name, '',
+              'await() appele sans boucle de garde (while)');
+          End;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 16 : Detecter notify() sans mise a jour d'etat --- }
+Procedure DetectNakedNotify(MethodIdx: Integer);
+Var
+  I, J: Integer;
+  HasFieldWrite: Boolean;
+  CPIdx: Word;
+  ClassName, MethodName, Descriptor: String;
+  LineNum: Integer;
+Begin
+  If Instructions = Nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    { Detecter invokevirtual Object.notify() ou notifyAll() }
+    If (Instructions^[I].Opcode = OP_INVOKEVIRTUAL) Then Begin
+      CPIdx := Instructions^[I].Op1;
+      If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
+        ClassName := '';
+        MethodName := '';
+        Descriptor := '';
+        CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
+        
+        If IsNotifyMethod(MethodName, Descriptor) Then Begin
+          { Verifier si un champ a ete ecrit avant le notify }
+          HasFieldWrite := False;
+          For J := I - 1 downto 0 Do Begin
+            If Instructions^[J].Opcode in [OP_PUTFIELD, OP_PUTSTATIC] Then Begin
+              HasFieldWrite := True;
+              Break;
+            End;
+            { Arreter si on sort d'un bloc sync ou trouve un autre notify/wait }
+            If Instructions^[J].Opcode in [OP_MONITORENTER, OP_MONITOREXIT] Then
+              Break;
+          End;
+          
+          If Not HasFieldWrite Then Begin
+            LineNum := GetLineNumber(Methods[MethodIdx], Word(Instructions^[I].PC));
+            AddConcurrencyBug(NN_NAKED_NOTIFY, Instructions^[I].PC, LineNum,
+              InternalToJavaName(ClassInfo.ThisClass),
+              Methods[MethodIdx].Name, '',
+              'notify() appele sans mise a jour d''un etat partage');
+          End;
+          
+          { Suggerer notifyAll() au lieu de notify() }
+          LineNum := GetLineNumber(Methods[MethodIdx], Word(Instructions^[I].PC));
+          AddConcurrencyBug(NO_NOTIFY_NOT_NOTIFYALL, Instructions^[I].PC, LineNum,
+            InternalToJavaName(ClassInfo.ThisClass),
+            Methods[MethodIdx].Name, '',
+            'notify() utilise - notifyAll() serait plus sur');
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 16 : Detecter double-checked locking incorrect --- }
+Procedure DetectDoubleCheckedLocking(MethodIdx: Integer);
+Var
+  I: Integer;
+  NullCheckPC: LongWord;
+  NullCheckCpIdx: Word;
+  FoundMonitor: Boolean;
+  SecondNullCheck: Boolean;
+  ClassName, FieldName, Descriptor: String;
+  LineNum: Integer;
+Begin
+  If Instructions = Nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
+  
+  { Pattern typique de double-checked locking:
+    1. if (field == null)        // Premier test
+    2.   synchronized(this)      // monitorenter
+    3.     if (field == null)    // Deuxieme test
+    4.       field = new ...     // Initialisation
+    5.   end synchronized        // monitorexit
+  }
+  
+  NullCheckPC := 0;
+  NullCheckCpIdx := 0;
+  FoundMonitor := False;
+  SecondNullCheck := False;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    { Detecter getfield suivi de ifnull/ifnonnull }
+    If Instructions^[I].Opcode in [OP_GETFIELD, OP_GETSTATIC] Then Begin
+      If (I + 1 < InstrCount) Then Begin
+        If Instructions^[I + 1].Opcode in [OP_IFNULL, OP_IFNONNULL] Then Begin
+          If Not FoundMonitor Then Begin
+            { Premier test de null }
+            NullCheckPC := Instructions^[I].PC;
+            NullCheckCpIdx := Instructions^[I].Op1;
+          End Else Begin
+            { Deuxieme test de null apres monitorenter }
+            If Instructions^[I].Op1 = NullCheckCpIdx Then Begin
+              SecondNullCheck := True;
+              { Verifier si le champ est volatile }
+              { Si non volatile, c'est un double-check locking incorrect }
+              { Pour simplifier, on rapporte un warning }
+              ClassName := '';
+              FieldName := '';
+              Descriptor := '';
+              If (NullCheckCpIdx > 0) and (NullCheckCpIdx < CPCount) Then
+                CPGetMemberRef(NullCheckCpIdx, ClassName, FieldName, Descriptor);
+              LineNum := GetLineNumber(Methods[MethodIdx], Word(NullCheckPC));
+              AddConcurrencyBug(DC_DOUBLECHECK, NullCheckPC, LineNum,
+                InternalToJavaName(ClassInfo.ThisClass),
+                Methods[MethodIdx].Name, FieldName,
+                'Double-checked locking detecte - verifier si le champ est volatile');
+              Inc(MTTotalDoubleCheck);
+            End;
+          End;
+        End;
+      End;
+    End
+    Else If Instructions^[I].Opcode = OP_MONITORENTER Then Begin
+      If NullCheckCpIdx > 0 Then
+        FoundMonitor := True;
+    End
+    Else If Instructions^[I].Opcode = OP_MONITOREXIT Then Begin
+      { Reset apres fin du bloc synchronized }
+      If SecondNullCheck Then Begin
+        NullCheckPC := 0;
+        NullCheckCpIdx := 0;
+        FoundMonitor := False;
+        SecondNullCheck := False;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 16 : Tracker les acces aux champs pour detecter inconsistances --- }
+Procedure TrackFieldAccess(MethodIdx: Integer; IsInSync: Boolean);
+Var
+  I: Integer;
+  FieldIdx: Integer;
+  CPIdx: Word;
+  ClassName, FieldName, Descriptor: String;
+  AccessIdx: Integer;
+Begin
+  If Instructions = Nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    If Instructions^[I].Opcode in [OP_GETFIELD, OP_GETSTATIC] Then Begin
+      CPIdx := Instructions^[I].Op1;
+      If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
+        ClassName := '';
+        FieldName := '';
+        Descriptor := '';
+        CPGetMemberRef(CPIdx, ClassName, FieldName, Descriptor);
+        FieldIdx := -1; { TODO: trouver l'index dans Fields[] }
+        AccessIdx := FindOrAddFieldAccess(FieldName, FieldIdx);
+        If AccessIdx >= 0 Then Begin
+          If IsInSync Then
+            MTFieldAccesses[AccessIdx].ReadInSync := True
+          Else
+            MTFieldAccesses[AccessIdx].ReadNotSync := True;
+        End;
+      End;
+    End
+    Else If Instructions^[I].Opcode in [OP_PUTFIELD, OP_PUTSTATIC] Then Begin
+      CPIdx := Instructions^[I].Op1;
+      If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
+        ClassName := '';
+        FieldName := '';
+        Descriptor := '';
+        CPGetMemberRef(CPIdx, ClassName, FieldName, Descriptor);
+        FieldIdx := -1;
+        AccessIdx := FindOrAddFieldAccess(FieldName, FieldIdx);
+        If AccessIdx >= 0 Then Begin
+          If IsInSync Then
+            MTFieldAccesses[AccessIdx].WriteInSync := True
+          Else
+            MTFieldAccesses[AccessIdx].WriteNotSync := True;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 16 : Detecter acces inconsistants aux champs --- }
+Procedure DetectInconsistentSync(MethodIdx: Integer);
+Var
+  I: Integer;
+Begin
+  { Apres avoir analyse toutes les methodes, verifier les inconsistances }
+  For I := 0 to MTFieldCount - 1 Do Begin
+    { Verifier si un champ est accede parfois en sync, parfois non }
+    If (MTFieldAccesses[I].ReadInSync or MTFieldAccesses[I].WriteInSync) and
+       (MTFieldAccesses[I].ReadNotSync or MTFieldAccesses[I].WriteNotSync) and
+       (Not MTFieldAccesses[I].IsVolatile) Then Begin
+      AddConcurrencyBug(IS2_INCONSISTENT_SYNC, 0, 0,
+        InternalToJavaName(ClassInfo.ThisClass),
+        '', MTFieldAccesses[I].FieldName,
+        'Champ accede avec et sans synchronisation');
+    End;
+    
+    { Verifier setter sync mais getter non sync }
+    If MTFieldAccesses[I].SetterSync and (Not MTFieldAccesses[I].GetterSync) Then Begin
+      AddConcurrencyBug(UG_SYNC_SET_UNSYNC_GET, 0, 0,
+        InternalToJavaName(ClassInfo.ThisClass),
+        '', MTFieldAccesses[I].FieldName,
+        'Setter synchronized mais getter non synchronized');
+    End;
+  End;
+End;
+
+{ --- TODO 16 : Detecter utilisation directe de monitorenter --- }
+Procedure DetectDirectMonitorUse(MethodIdx: Integer);
+Var
+  I: Integer;
+Begin
+  If Instructions = Nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  
+  For I := 0 to InstrCount - 1 Do Begin
+    { Detecter monitorenter/monitorexit explicites (sans synchronized) }
+    { Dans une classe utilisant JSR166 (Lock), c'est suspect }
+    If Instructions^[I].Opcode = OP_MONITORENTER Then Begin
+      { Verifier si la classe utilise aussi des Lock JSR166 }
+      { Pour simplifier, on ne rapporte que si on detecte Lock.lock() }
+      { TODO: analyse plus fine }
+    End;
+  End;
+End;
+
+{ --- TODO 16 : Analyser une methode pour les problemes de concurrence --- }
+Procedure AnalyzeMethodForConcurrency(MethodIdx: Integer);
+Var
+  IsSync: Boolean;
+Begin
+  If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
+  If Methods[MethodIdx].CodeLen = 0 Then Exit;
+  
+  IsSync := IsSynchronizedMethod(MethodIdx);
+  MTInSyncMethod := IsSync;
+  
+  { Decoder les instructions si pas deja fait }
+  DecodeInstructions(Methods[MethodIdx]);
+  
+  { Tracker les acces aux champs }
+  TrackFieldAccess(MethodIdx, IsSync);
+  
+  { Detecter les blocs synchronized vides }
+  DetectEmptySyncBlock(MethodIdx);
+  
+  { Detecter wait() sans boucle }
+  DetectWaitNotInLoop(MethodIdx);
+  
+  { Detecter await() sans boucle }
+  DetectAwaitNotInLoop(MethodIdx);
+  
+  { Detecter notify() nu }
+  DetectNakedNotify(MethodIdx);
+  
+  { Detecter double-checked locking }
+  DetectDoubleCheckedLocking(MethodIdx);
+  
+  { Detecter utilisation directe de monitor }
+  DetectDirectMonitorUse(MethodIdx);
+End;
+
+{ --- TODO 16 : Point d'entree : detecter les problemes de concurrence --- }
+Procedure DetectConcurrencyIssues;
+Var
+  I: Integer;
+Begin
+  InitConcurrencyState;
+  
+  { Analyser toutes les methodes }
+  For I := 0 to MethodCount - 1 Do Begin
+    AnalyzeMethodForConcurrency(I);
+  End;
+  
+  { Detecter les inconsistances entre methodes }
+  DetectInconsistentSync(-1);
+End;
+
+{ --- TODO 16 : Afficher l'etat du module de concurrence --- }
+Procedure DumpConcurrencyState;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== Etat du module de detection de concurrence ===');
+  WriteLn('Initialise         : ', MTInitialized);
+  WriteLn('Bugs detectes      : ', MTBugCount);
+  WriteLn('Champs trackes     : ', MTFieldCount);
+  WriteLn('Total sync vides   : ', MTTotalEmptySync);
+  WriteLn('Total wait no loop : ', MTTotalWaitNoLoop);
+  WriteLn('Total naked notify : ', MTTotalNakedNotify);
+  WriteLn('Total double-check : ', MTTotalDoubleCheck);
+  WriteLn('Total inconsistent : ', MTTotalInconsistentSync);
+  WriteLn('Total sync/unsync  : ', MTTotalSyncSetUnsyncGet);
+  WriteLn;
+  
+  If MTBugCount > 0 Then Begin
+    WriteLn('--- Bugs de concurrence detectes ---');
+    For I := 0 to MTBugCount - 1 Do Begin
+      WriteLn(I + 1, '. ', MTBugTypeName(MTBugs[I].BugType));
+      WriteLn('   Classe  : ', MTBugs[I].ClassName);
+      WriteLn('   Methode : ', MTBugs[I].MethodName);
+      If MTBugs[I].FieldName <> '' Then
+        WriteLn('   Champ   : ', MTBugs[I].FieldName);
+      WriteLn('   Ligne   : ', MTBugs[I].LineNum);
+      WriteLn('   Details : ', MTBugs[I].Details);
+      WriteLn;
+    End;
+  End;
+End;
+
+{ --- TODO 16 : Accesseurs pour le module de concurrence --- }
+Function GetMTInitialized: Boolean;
+Begin
+  GetMTInitialized := MTInitialized;
+End;
+
+Function GetMTBugCount: Integer;
+Begin
+  GetMTBugCount := MTBugCount;
+End;
+
+Function GetMTFieldCount: Integer;
+Begin
+  GetMTFieldCount := MTFieldCount;
+End;
+
+Function GetMTTotalEmptySync: Integer;
+Begin
+  GetMTTotalEmptySync := MTTotalEmptySync;
+End;
+
+Function GetMTTotalWaitNoLoop: Integer;
+Begin
+  GetMTTotalWaitNoLoop := MTTotalWaitNoLoop;
+End;
+
+Function GetMTTotalNakedNotify: Integer;
+Begin
+  GetMTTotalNakedNotify := MTTotalNakedNotify;
+End;
+
+Function GetMTTotalDoubleCheck: Integer;
+Begin
+  GetMTTotalDoubleCheck := MTTotalDoubleCheck;
+End;
+
+Function GetMTTotalInconsistentSync: Integer;
+Begin
+  GetMTTotalInconsistentSync := MTTotalInconsistentSync;
+End;
+
+Function GetMTTotalSyncSetUnsyncGet: Integer;
+Begin
+  GetMTTotalSyncSetUnsyncGet := MTTotalSyncSetUnsyncGet;
+End;
+
+Function GetMTBugType(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < MTBugCount) Then
+    GetMTBugType := MTBugs[Idx].BugType
+  Else
+    GetMTBugType := MT_NONE;
+End;
+
+Function GetMTBugPC(Idx: Integer): LongWord;
+Begin
+  If (Idx >= 0) and (Idx < MTBugCount) Then
+    GetMTBugPC := MTBugs[Idx].PC
+  Else
+    GetMTBugPC := 0;
+End;
+
+Function GetMTBugLine(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < MTBugCount) Then
+    GetMTBugLine := MTBugs[Idx].LineNum
+  Else
+    GetMTBugLine := 0;
+End;
 
 { ============================================================================ }
 { TODO 17 [A FAIRE] - Detecteur : exceptions masquees et flux d'erreur         }

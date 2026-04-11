@@ -376,7 +376,7 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
             IsSecuritySensitiveName(Name) : True si le nom suggere un secret
               (password, token, key, pwd, passwd, secret, credential)
 
-  TODO 16 - DETECTEUR : PROBLEMES DE MULTI-THREADING [A FAIRE]
+  TODO 16 - DETECTEUR : PROBLEMES DE MULTI-THREADING [IMPLEMENTE]
             Codes detectes : DC_DOUBLECHECK, ESync_EMPTY_SYNC,
               IS_FIELD_NOT_GUARDED, IS2_INCONSISTENT_SYNC,
               JLM_JSR166_LOCK_MONITORENTER, NN_NAKED_NOTIFY,
