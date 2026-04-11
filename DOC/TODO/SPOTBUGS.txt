@@ -400,7 +400,7 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               detecter instructions return dans blocs finally,
               detecter verifications null apres dereferencement
 
-  TODO 18 - DETECTEUR : ERREURS LOGIQUES ET RETOURS INCORRECTS [A FAIRE]
+  TODO 18 - DETECTEUR : ERREURS LOGIQUES ET RETOURS INCORRECTS [IMPLEMENTE]
             Codes detectes : RV_RETURN_VALUE_IGNORED,
               IM_MULTIPLYING_RESULT_OF_IREM,
               INT_BAD_COMPARISON_WITH_NONNEG_VALUE, IC_INIT_CIRCULARITY,

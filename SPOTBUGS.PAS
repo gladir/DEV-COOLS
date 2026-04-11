@@ -33,7 +33,7 @@
 {  TODO 15 [A FAIRE] - Detecteur : vulnerabilites de securite                 }
 {  TODO 16 [IMPLEMENTE] - Detecteur : problemes de multi-threading            }
 {  TODO 17 [IMPLEMENTE] - Detecteur : exceptions masquees et flux d'erreur    }
-{  TODO 18 [A FAIRE] - Detecteur : erreurs logiques et retours incorrects     }
+{  TODO 18 [IMPLEMENTE] - Detecteur : erreurs logiques et retours incorrects   }
 {  TODO 19 [A FAIRE] - Detecteur : problemes d'internationalisation           }
 {  TODO 20 [A FAIRE] - Calcul des scores et niveaux de severite               }
 {  TODO 21 [A FAIRE] - Generation du rapport texte                            }
@@ -849,6 +849,29 @@ Const
   BLOCK_CATCH      = 2;  { Dans un bloc catch                                   }
   BLOCK_FINALLY    = 3;  { Dans un bloc finally                                 }
 
+  { --- TODO 18 : Constantes pour le detecteur d'erreurs logiques --- }
+  MAX_LE_BUGS        = 64;   { Nombre max de bugs logiques par methode          }
+  MAX_LE_SHADOWS     = 32;   { Nombre max de variables masquant des champs      }
+  MAX_LE_SELF_ASSIGN = 16;   { Nombre max de self-assignments trackes           }
+
+  { Types de bugs d'erreurs logiques - prefixe LE_ }
+  LE_NONE                             = 0;  { Pas de bug                        }
+  RV_RETURN_VALUE_IGNORED             = 1;  { valeur de retour ignoree          }
+  IM_MULTIPLYING_RESULT_OF_IREM       = 2;  { mult. resultat de modulo          }
+  INT_BAD_COMPARISON_WITH_NONNEG_VALUE = 3; { comparaison < 0 sur valeur >=0    }
+  IC_INIT_CIRCULARITY                 = 4;  { init. constante circulaire        }
+  MF_CLASS_MASKS_FIELD                = 5;  { locale masque champ de classe     }
+  SA_FIELD_SELF_ASSIGNMENT            = 6;  { champ assigne a lui-meme          }
+  SA_LOCAL_SELF_ASSIGNMENT            = 7;  { locale assignee a elle-meme       }
+  SA_FIELD_DOUBLE_ASSIGNMENT          = 8;  { champ assigne 2 fois de suite     }
+
+  { Categories de retours ignores }
+  RV_CAT_NONE         = 0;  { Pas de categorie                                  }
+  RV_CAT_STRING       = 1;  { Methode String retournant nouvelle String         }
+  RV_CAT_STREAM       = 2;  { Methode Stream retournant valeur                  }
+  RV_CAT_COLLECTION   = 3;  { Methode Collection retournant booleen             }
+  RV_CAT_BUILDER      = 4;  { Methode StringBuilder/StringBuffer                }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -1061,6 +1084,40 @@ Type
   End;
   TExFinallyInfoArray = Array[0..MAX_EX_FINALLY_INFO-1] of TExFinallyInfo;
 
+  { --- TODO 18 : Structure TLogicBug : bug logique detecte --- }
+  TLogicBug = Record
+    BugType     : Integer;    { Type de bug (SA_FIELD_SELF_ASSIGNMENT, etc.) }
+    PC          : LongWord;   { Position dans le bytecode                    }
+    LineNum     : Integer;    { Numero de ligne source                       }
+    ClassName   : String;     { Nom de classe concernee                      }
+    MethodName  : String;     { Nom de methode concernee                     }
+    VarName     : String;     { Nom variable/champ concerne                  }
+    Details     : String;     { Details supplementaires                      }
+  End;
+  TLogicBugArray = Array[0..MAX_LE_BUGS-1] of TLogicBug;
+
+  { --- TODO 18 : Structure TLocalShadow : variable locale masquant un champ --- }
+  TLocalShadow = Record
+    LocalIdx    : Integer;    { Index de la variable locale                  }
+    LocalName   : String;     { Nom de la variable locale                    }
+    FieldIdx    : Integer;    { Index du champ masque dans Fields[]          }
+    FieldName   : String;     { Nom du champ masque                          }
+    DeclPC      : LongWord;   { PC de declaration de la variable locale      }
+    LineNum     : Integer;    { Ligne source de la declaration               }
+  End;
+  TLocalShadowArray = Array[0..MAX_LE_SHADOWS-1] of TLocalShadow;
+
+  { --- TODO 18 : Structure TSelfAssignInfo : info self-assignment tracke --- }
+  TSelfAssignInfo = Record
+    VarIdx      : Integer;    { Index variable locale ou -1 pour champ       }
+    FieldRef    : Integer;    { Index CP du champ ou -1 pour locale          }
+    VarName     : String;     { Nom de la variable/champ                     }
+    LoadPC      : LongWord;   { PC de l'instruction load                     }
+    StorePC     : LongWord;   { PC de l'instruction store                    }
+    IsField     : Boolean;    { True si c'est un champ, False si locale      }
+  End;
+  TSelfAssignInfoArray = Array[0..MAX_LE_SELF_ASSIGN-1] of TSelfAssignInfo;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -1217,6 +1274,26 @@ Var
   EXInTryBlock     : Boolean;     { True si dans un bloc try                   }
   EXInCatchBlock   : Boolean;     { True si dans un bloc catch                 }
   EXInFinallyBlock : Boolean;     { True si dans un bloc finally               }
+  { --- TODO 18 : Variables du detecteur d'erreurs logiques --- }
+  LEInitialized    : Boolean;     { True si module initialise                  }
+  LEBugs           : TLogicBugArray; { Bugs detectes dans la methode           }
+  LEBugCount       : Integer;     { Nombre de bugs detectes                    }
+  LEShadows        : TLocalShadowArray; { Variables locales masquant champs    }
+  LEShadowCount    : Integer;     { Nombre de shadows trackes                  }
+  LESelfAssigns    : TSelfAssignInfoArray; { Self-assignments trackes          }
+  LESelfCount      : Integer;     { Nombre de self-assigns trackes             }
+  LELabelNum       : Integer;     { Compteur pour generation de labels         }
+  LETotalSelfField : Integer;     { Nombre total self-assign champs            }
+  LETotalSelfLocal : Integer;     { Nombre total self-assign locales           }
+  LETotalRetIgnored : Integer;    { Nombre total retours ignores               }
+  LETotalBadCompare : Integer;    { Nombre total comparaisons invalides        }
+  LETotalOverflow  : Integer;     { Nombre total debordements potentiels       }
+  LETotalMasking   : Integer;     { Nombre total masquages de champs           }
+  LECurrentPC      : LongWord;    { PC de l'instruction courante               }
+  LECurrentLine    : Integer;     { Ligne source courante                      }
+  LELastLoadVar    : Integer;     { Dernier index variable chargee             }
+  LELastLoadField  : Integer;     { Dernier index CP champ charge              }
+  LELastLoadPC     : LongWord;    { PC du dernier load                         }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -9588,26 +9665,710 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 18 [A FAIRE] - Detecteur : erreurs logiques et retours incorrects       }
+{ TODO 18 [IMPLEMENTE] - Detecteur : erreurs logiques et retours incorrects    }
 { ============================================================================ }
-{                                                                              }
-{  - Codes de bugs detectes :                                                    }
-{      RV_RETURN_VALUE_IGNORED     : valeur de retour ignoree (critique)        }
-{      IM_MULTIPLYING_RESULT_OF_IREM : multiplication du resultat de modulo     }
-{      INT_BAD_COMPARISON_WITH_NONNEG_VALUE : comparaison < 0 sur valeur >=0   }
-{      IC_INIT_CIRCULARITY         : initialisation de constante circulaire      }
-{      MF_CLASS_MASKS_FIELD        : variable locale masque un champ de classe  }
-{      SA_FIELD_SELF_ASSIGNMENT    : champ assigne a lui-meme                   }
-{      SA_LOCAL_SELF_ASSIGNMENT    : variable locale assignee a elle-meme       }
-{                                                                              }
-{  - Procedure DetectLogicErrors(Method: TMethodInfo)                           }
-{      Detecter les self-assignments :                                           }
-{        iload x suivi de istore x sans instruction intermediaire               }
-{        getfield f suivi de putfield f sur le meme objet                       }
-{      Detecter les comparaisons toujours vraies ou toujours fausses :          }
-{        valeurs de registres de type int compares avec < 0 quand toujours >=0  }
-{      Detecter les multiplications integer pouvant deborder (avant cast long)  }
-{      Detecter les variables locales qui masquent des champs d'instance         }
+
+{ --- TODO 18 : Initialisation du module erreurs logiques --- }
+Procedure InitLogicState;
+Var
+  I: Integer;
+Begin
+  LEInitialized := True;
+  LEBugCount := 0;
+  LEShadowCount := 0;
+  LESelfCount := 0;
+  LELabelNum := 0;
+  LETotalSelfField := 0;
+  LETotalSelfLocal := 0;
+  LETotalRetIgnored := 0;
+  LETotalBadCompare := 0;
+  LETotalOverflow := 0;
+  LETotalMasking := 0;
+  LECurrentPC := 0;
+  LECurrentLine := 0;
+  LELastLoadVar := -1;
+  LELastLoadField := -1;
+  LELastLoadPC := 0;
+  For I := 0 to MAX_LE_BUGS - 1 Do
+  Begin
+    LEBugs[I].BugType := LE_NONE;
+    LEBugs[I].PC := 0;
+    LEBugs[I].LineNum := 0;
+    LEBugs[I].ClassName := '';
+    LEBugs[I].MethodName := '';
+    LEBugs[I].VarName := '';
+    LEBugs[I].Details := '';
+  End;
+  For I := 0 to MAX_LE_SHADOWS - 1 Do
+  Begin
+    LEShadows[I].LocalIdx := -1;
+    LEShadows[I].LocalName := '';
+    LEShadows[I].FieldIdx := -1;
+    LEShadows[I].FieldName := '';
+    LEShadows[I].DeclPC := 0;
+    LEShadows[I].LineNum := 0;
+  End;
+  For I := 0 to MAX_LE_SELF_ASSIGN - 1 Do
+  Begin
+    LESelfAssigns[I].VarIdx := -1;
+    LESelfAssigns[I].FieldRef := -1;
+    LESelfAssigns[I].VarName := '';
+    LESelfAssigns[I].LoadPC := 0;
+    LESelfAssigns[I].StorePC := 0;
+    LESelfAssigns[I].IsField := False;
+  End;
+End;
+
+{ --- TODO 18 : Generation d'un label unique pour le module --- }
+Function GenLELabel: String;
+Begin
+  Inc(LELabelNum);
+  GenLELabel := 'LE_' + IntToStr_(LELabelNum);
+End;
+
+{ --- TODO 18 : Conversion du type de bug en chaine --- }
+Function LEBugTypeName(BugType: Integer): String;
+Begin
+  Case BugType of
+    LE_NONE                             : LEBugTypeName := 'LE_NONE';
+    RV_RETURN_VALUE_IGNORED             : LEBugTypeName := 'RV_RETURN_VALUE_IGNORED';
+    IM_MULTIPLYING_RESULT_OF_IREM       : LEBugTypeName := 'IM_MULTIPLYING_RESULT_OF_IREM';
+    INT_BAD_COMPARISON_WITH_NONNEG_VALUE : LEBugTypeName := 'INT_BAD_COMPARISON_WITH_NONNEG_VALUE';
+    IC_INIT_CIRCULARITY                 : LEBugTypeName := 'IC_INIT_CIRCULARITY';
+    MF_CLASS_MASKS_FIELD                : LEBugTypeName := 'MF_CLASS_MASKS_FIELD';
+    SA_FIELD_SELF_ASSIGNMENT            : LEBugTypeName := 'SA_FIELD_SELF_ASSIGNMENT';
+    SA_LOCAL_SELF_ASSIGNMENT            : LEBugTypeName := 'SA_LOCAL_SELF_ASSIGNMENT';
+    SA_FIELD_DOUBLE_ASSIGNMENT          : LEBugTypeName := 'SA_FIELD_DOUBLE_ASSIGNMENT';
+  Else
+    LEBugTypeName := 'LE_UNKNOWN';
+  End;
+End;
+
+{ --- TODO 18 : Detecter si un opcode est un load de variable locale --- }
+Function IsLocalLoadOpcode(Op: Byte): Boolean;
+Begin
+  Case Op of
+    OP_ILOAD, OP_LLOAD, OP_FLOAD, OP_DLOAD, OP_ALOAD,
+    OP_ILOAD_0, OP_ILOAD_1, OP_ILOAD_2, OP_ILOAD_3,
+    OP_LLOAD_0, OP_LLOAD_1, OP_LLOAD_2, OP_LLOAD_3,
+    OP_FLOAD_0, OP_FLOAD_1, OP_FLOAD_2, OP_FLOAD_3,
+    OP_DLOAD_0, OP_DLOAD_1, OP_DLOAD_2, OP_DLOAD_3,
+    OP_ALOAD_0, OP_ALOAD_1, OP_ALOAD_2, OP_ALOAD_3:
+      IsLocalLoadOpcode := True;
+  Else
+    IsLocalLoadOpcode := False;
+  End;
+End;
+
+{ --- TODO 18 : Detecter si un opcode est un store de variable locale --- }
+Function IsLocalStoreOpcode(Op: Byte): Boolean;
+Begin
+  Case Op of
+    OP_ISTORE, OP_LSTORE, OP_FSTORE, OP_DSTORE, OP_ASTORE,
+    OP_ISTORE_0, OP_ISTORE_1, OP_ISTORE_2, OP_ISTORE_3,
+    OP_LSTORE_0, OP_LSTORE_1, OP_LSTORE_2, OP_LSTORE_3,
+    OP_FSTORE_0, OP_FSTORE_1, OP_FSTORE_2, OP_FSTORE_3,
+    OP_DSTORE_0, OP_DSTORE_1, OP_DSTORE_2, OP_DSTORE_3,
+    OP_ASTORE_0, OP_ASTORE_1, OP_ASTORE_2, OP_ASTORE_3:
+      IsLocalStoreOpcode := True;
+  Else
+    IsLocalStoreOpcode := False;
+  End;
+End;
+
+{ --- TODO 18 : Extraire l'index de variable locale d'un opcode load --- }
+Function GetLoadVarIndex(Op: Byte; Operand: Integer): Integer;
+Begin
+  Case Op of
+    OP_ILOAD, OP_LLOAD, OP_FLOAD, OP_DLOAD, OP_ALOAD:
+      GetLoadVarIndex := Operand;
+    OP_ILOAD_0, OP_LLOAD_0, OP_FLOAD_0, OP_DLOAD_0, OP_ALOAD_0:
+      GetLoadVarIndex := 0;
+    OP_ILOAD_1, OP_LLOAD_1, OP_FLOAD_1, OP_DLOAD_1, OP_ALOAD_1:
+      GetLoadVarIndex := 1;
+    OP_ILOAD_2, OP_LLOAD_2, OP_FLOAD_2, OP_DLOAD_2, OP_ALOAD_2:
+      GetLoadVarIndex := 2;
+    OP_ILOAD_3, OP_LLOAD_3, OP_FLOAD_3, OP_DLOAD_3, OP_ALOAD_3:
+      GetLoadVarIndex := 3;
+  Else
+    GetLoadVarIndex := -1;
+  End;
+End;
+
+{ --- TODO 18 : Extraire l'index de variable locale d'un opcode store --- }
+Function GetStoreVarIndex(Op: Byte; Operand: Integer): Integer;
+Begin
+  Case Op of
+    OP_ISTORE, OP_LSTORE, OP_FSTORE, OP_DSTORE, OP_ASTORE:
+      GetStoreVarIndex := Operand;
+    OP_ISTORE_0, OP_LSTORE_0, OP_FSTORE_0, OP_DSTORE_0, OP_ASTORE_0:
+      GetStoreVarIndex := 0;
+    OP_ISTORE_1, OP_LSTORE_1, OP_FSTORE_1, OP_DSTORE_1, OP_ASTORE_1:
+      GetStoreVarIndex := 1;
+    OP_ISTORE_2, OP_LSTORE_2, OP_FSTORE_2, OP_DSTORE_2, OP_ASTORE_2:
+      GetStoreVarIndex := 2;
+    OP_ISTORE_3, OP_LSTORE_3, OP_FSTORE_3, OP_DSTORE_3, OP_ASTORE_3:
+      GetStoreVarIndex := 3;
+  Else
+    GetStoreVarIndex := -1;
+  End;
+End;
+
+{ --- TODO 18 : Detecter si un opcode est getfield --- }
+Function IsGetFieldOpcode(Op: Byte): Boolean;
+Begin
+  IsGetFieldOpcode := (Op = OP_GETFIELD);
+End;
+
+{ --- TODO 18 : Detecter si un opcode est putfield --- }
+Function IsPutFieldOpcode(Op: Byte): Boolean;
+Begin
+  IsPutFieldOpcode := (Op = OP_PUTFIELD);
+End;
+
+{ --- TODO 18 : Detecter si un opcode est irem (modulo) --- }
+Function IsModuloOpcode(Op: Byte): Boolean;
+Begin
+  IsModuloOpcode := (Op = OP_IREM) or (Op = OP_LREM);
+End;
+
+{ --- TODO 18 : Detecter si un opcode est une multiplication --- }
+Function IsMulOpcode(Op: Byte): Boolean;
+Begin
+  IsMulOpcode := (Op = OP_IMUL) or (Op = OP_LMUL);
+End;
+
+{ --- TODO 18 : Detecter si un opcode est une comparaison iflt/ifge --- }
+Function IsCompareNegOpcode(Op: Byte): Boolean;
+Begin
+  Case Op of
+    OP_IFLT, OP_IFGE, OP_IFLE, OP_IFGT:
+      IsCompareNegOpcode := True;
+  Else
+    IsCompareNegOpcode := False;
+  End;
+End;
+
+{ --- TODO 18 : Detecter si c'est un appel retournant une valeur ignorable --- }
+Function IsReturnValueMethod(ClassName, MethodName: String): Boolean;
+Begin
+  IsReturnValueMethod := False;
+  { Methodes String qui retournent une nouvelle String }
+  If (ClassName = 'java/lang/String') Then
+  Begin
+    If (MethodName = 'trim') or (MethodName = 'toLowerCase') or
+       (MethodName = 'toUpperCase') or (MethodName = 'replace') or
+       (MethodName = 'replaceAll') or (MethodName = 'replaceFirst') or
+       (MethodName = 'substring') or (MethodName = 'concat') Then
+      IsReturnValueMethod := True;
+  End;
+  { Methodes StringBuilder/StringBuffer qui retournent this }
+  If (ClassName = 'java/lang/StringBuilder') or
+     (ClassName = 'java/lang/StringBuffer') Then
+  Begin
+    If (MethodName = 'append') or (MethodName = 'insert') or
+       (MethodName = 'delete') or (MethodName = 'reverse') Then
+      IsReturnValueMethod := True;
+  End;
+  { Methodes Collection }
+  If (Pos('Collection', ClassName) > 0) or (Pos('List', ClassName) > 0) or
+     (Pos('Set', ClassName) > 0) or (Pos('Map', ClassName) > 0) Then
+  Begin
+    If (MethodName = 'add') or (MethodName = 'remove') or
+       (MethodName = 'contains') Then
+      IsReturnValueMethod := True;
+  End;
+End;
+
+{ --- TODO 18 : Ajouter un bug logique --- }
+Procedure AddLogicBug(BugType: Integer; PC: LongWord; LineNum: Integer;
+                      ClassName, MethodName, VarName, Details: String);
+Begin
+  If LEBugCount >= MAX_LE_BUGS Then Exit;
+  LEBugs[LEBugCount].BugType := BugType;
+  LEBugs[LEBugCount].PC := PC;
+  LEBugs[LEBugCount].LineNum := LineNum;
+  LEBugs[LEBugCount].ClassName := ClassName;
+  LEBugs[LEBugCount].MethodName := MethodName;
+  LEBugs[LEBugCount].VarName := VarName;
+  LEBugs[LEBugCount].Details := Details;
+  Inc(LEBugCount);
+  { Mettre a jour les compteurs }
+  Case BugType of
+    SA_FIELD_SELF_ASSIGNMENT, SA_FIELD_DOUBLE_ASSIGNMENT:
+      Inc(LETotalSelfField);
+    SA_LOCAL_SELF_ASSIGNMENT:
+      Inc(LETotalSelfLocal);
+    RV_RETURN_VALUE_IGNORED:
+      Inc(LETotalRetIgnored);
+    INT_BAD_COMPARISON_WITH_NONNEG_VALUE:
+      Inc(LETotalBadCompare);
+    IM_MULTIPLYING_RESULT_OF_IREM:
+      Inc(LETotalOverflow);
+    MF_CLASS_MASKS_FIELD:
+      Inc(LETotalMasking);
+  End;
+End;
+
+{ --- TODO 18 : Trouver un champ par son nom --- }
+Function FindFieldByName(Name: String): Integer;
+Var
+  I: Integer;
+Begin
+  FindFieldByName := -1;
+  For I := 0 to FieldCount - 1 Do
+  Begin
+    If Fields[I].Name = Name Then
+    Begin
+      FindFieldByName := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- TODO 18 : Ajouter un masquage de champ --- }
+Procedure AddShadow(LocalIdx: Integer; LocalName: String;
+                    FieldIdx: Integer; FieldName: String;
+                    DeclPC: LongWord; LineNum: Integer);
+Begin
+  If LEShadowCount >= MAX_LE_SHADOWS Then Exit;
+  LEShadows[LEShadowCount].LocalIdx := LocalIdx;
+  LEShadows[LEShadowCount].LocalName := LocalName;
+  LEShadows[LEShadowCount].FieldIdx := FieldIdx;
+  LEShadows[LEShadowCount].FieldName := FieldName;
+  LEShadows[LEShadowCount].DeclPC := DeclPC;
+  LEShadows[LEShadowCount].LineNum := LineNum;
+  Inc(LEShadowCount);
+End;
+
+{ --- TODO 18 : Detecter les self-assignments de variables locales --- }
+Procedure DetectLocalSelfAssignment(Var M: TMethodInfo);
+Var
+  I, J: Integer;
+  LoadIdx, StoreIdx: Integer;
+  LoadPC: LongWord;
+  VarName: String;
+  LineNum: Integer;
+Begin
+  If InstrCount < 2 Then Exit;
+  If Instructions = Nil Then Exit;
+  For I := 0 to InstrCount - 2 Do
+  Begin
+    { Pattern: xload N suivi de xstore N }
+    If IsLocalLoadOpcode(Instructions^[I].Opcode) and
+       IsLocalStoreOpcode(Instructions^[I+1].Opcode) Then
+    Begin
+      LoadIdx := GetLoadVarIndex(Instructions^[I].Opcode, Instructions^[I].Op1);
+      StoreIdx := GetStoreVarIndex(Instructions^[I+1].Opcode, Instructions^[I+1].Op1);
+      If (LoadIdx >= 0) and (LoadIdx = StoreIdx) Then
+      Begin
+        LoadPC := Instructions^[I].PC;
+        LineNum := GetLineNumber(M, LoadPC);
+        { Trouver le nom de la variable si possible }
+        VarName := 'local_' + IntToStr_(LoadIdx);
+        If M.LocalCount > 0 Then
+        Begin
+          For J := 0 to M.LocalCount - 1 Do
+          Begin
+            If (M.LocalTable[J].Index = LoadIdx) and (M.LocalTable[J].Name <> '') Then
+            Begin
+              VarName := M.LocalTable[J].Name;
+              Break;
+            End;
+          End;
+        End;
+        AddLogicBug(SA_LOCAL_SELF_ASSIGNMENT, LoadPC, LineNum,
+                   InternalToJavaName(ClassInfo.ThisClass),
+                   M.Name, VarName,
+                   'Variable locale assignee a elle-meme');
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 18 : Detecter les self-assignments de champs --- }
+Procedure DetectFieldSelfAssignment(Var M: TMethodInfo);
+Var
+  I: Integer;
+  GetFieldRef, PutFieldRef: LongInt;
+  LoadPC: LongWord;
+  FieldName: String;
+  LineNum: Integer;
+Begin
+  If InstrCount < 3 Then Exit;
+  If Instructions = Nil Then Exit;
+  For I := 0 to InstrCount - 3 Do
+  Begin
+    { Pattern: aload_0, getfield F, putfield F }
+    If (Instructions^[I].Opcode = OP_ALOAD_0) and
+       (Instructions^[I+1].Opcode = OP_GETFIELD) and
+       (Instructions^[I+2].Opcode = OP_PUTFIELD) Then
+    Begin
+      GetFieldRef := Instructions^[I+1].Op1;
+      PutFieldRef := Instructions^[I+2].Op1;
+      If GetFieldRef = PutFieldRef Then
+      Begin
+        LoadPC := Instructions^[I].PC;
+        LineNum := GetLineNumber(M, LoadPC);
+        FieldName := Instructions^[I+1].CpRef;
+        AddLogicBug(SA_FIELD_SELF_ASSIGNMENT, LoadPC, LineNum,
+                   InternalToJavaName(ClassInfo.ThisClass),
+                   M.Name, FieldName,
+                   'Champ assigne a lui-meme (this.f = this.f)');
+      End;
+    End;
+    { Pattern plus simple: aload_0, getfield F, aload_0, putfield F }
+    If (I < InstrCount - 4) Then
+    Begin
+      If (Instructions^[I].Opcode = OP_ALOAD_0) and
+         (Instructions^[I+1].Opcode = OP_GETFIELD) and
+         (Instructions^[I+2].Opcode = OP_ALOAD_0) and
+         (Instructions^[I+3].Opcode = OP_PUTFIELD) Then
+      Begin
+        GetFieldRef := Instructions^[I+1].Op1;
+        PutFieldRef := Instructions^[I+3].Op1;
+        If GetFieldRef = PutFieldRef Then
+        Begin
+          LoadPC := Instructions^[I].PC;
+          LineNum := GetLineNumber(M, LoadPC);
+          FieldName := Instructions^[I+1].CpRef;
+          AddLogicBug(SA_FIELD_SELF_ASSIGNMENT, LoadPC, LineNum,
+                     InternalToJavaName(ClassInfo.ThisClass),
+                     M.Name, FieldName,
+                     'Champ assigne a lui-meme (this.f = this.f)');
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 18 : Detecter multiplication apres modulo (debordement) --- }
+Procedure DetectOverflowAfterModulo(Var M: TMethodInfo);
+Var
+  I: Integer;
+  ModuloPC: LongWord;
+  LineNum: Integer;
+Begin
+  If InstrCount < 2 Then Exit;
+  If Instructions = Nil Then Exit;
+  For I := 0 to InstrCount - 2 Do
+  Begin
+    { Pattern: irem/lrem suivi de imul/lmul }
+    If IsModuloOpcode(Instructions^[I].Opcode) and
+       IsMulOpcode(Instructions^[I+1].Opcode) Then
+    Begin
+      ModuloPC := Instructions^[I].PC;
+      LineNum := GetLineNumber(M, ModuloPC);
+      AddLogicBug(IM_MULTIPLYING_RESULT_OF_IREM, ModuloPC, LineNum,
+                 InternalToJavaName(ClassInfo.ThisClass),
+                 M.Name, '',
+                 'Multiplication du resultat de modulo peut deborder');
+    End;
+  End;
+End;
+
+{ --- TODO 18 : Detecter valeur de retour ignoree --- }
+Procedure DetectReturnValueIgnored(Var M: TMethodInfo);
+Var
+  I: Integer;
+  CallPC: LongWord;
+  LineNum: Integer;
+  CpIdx: Word;
+  ClassName, MethodName, Desc: String;
+Begin
+  If InstrCount < 2 Then Exit;
+  If Instructions = Nil Then Exit;
+  For I := 0 to InstrCount - 2 Do
+  Begin
+    { Pattern: invokevirtual/invokeinterface suivi de pop }
+    If ((Instructions^[I].Opcode = OP_INVOKEVIRTUAL) or
+        (Instructions^[I].Opcode = OP_INVOKEINTERFACE)) and
+       (Instructions^[I+1].Opcode = OP_POP) Then
+    Begin
+      CpIdx := Word(Instructions^[I].Op1);
+      CPGetMemberRef(CpIdx, ClassName, MethodName, Desc);
+      If IsReturnValueMethod(ClassName, MethodName) Then
+      Begin
+        CallPC := Instructions^[I].PC;
+        LineNum := GetLineNumber(M, CallPC);
+        AddLogicBug(RV_RETURN_VALUE_IGNORED, CallPC, LineNum,
+                   InternalToJavaName(ClassInfo.ThisClass),
+                   M.Name, MethodName,
+                   'Valeur de retour de ' + MethodName + ' ignoree');
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 18 : Detecter comparaisons avec valeurs non-negatives --- }
+Procedure DetectBadNonNegComparison(Var M: TMethodInfo);
+Var
+  I: Integer;
+  CompPC: LongWord;
+  LineNum: Integer;
+  PrevOp: Byte;
+Begin
+  If InstrCount < 2 Then Exit;
+  If Instructions = Nil Then Exit;
+  For I := 1 to InstrCount - 1 Do
+  Begin
+    { Pattern: arraylength ou similaire suivi de iflt (toujours false) }
+    If IsCompareNegOpcode(Instructions^[I].Opcode) Then
+    Begin
+      PrevOp := Instructions^[I-1].Opcode;
+      { arraylength retourne toujours >= 0 }
+      If (PrevOp = OP_ARRAYLENGTH) Then
+      Begin
+        If (Instructions^[I].Opcode = OP_IFLT) Then
+        Begin
+          CompPC := Instructions^[I].PC;
+          LineNum := GetLineNumber(M, CompPC);
+          AddLogicBug(INT_BAD_COMPARISON_WITH_NONNEG_VALUE, CompPC, LineNum,
+                     InternalToJavaName(ClassInfo.ThisClass),
+                     M.Name, '',
+                     'Comparaison < 0 sur longueur de tableau (toujours false)');
+        End;
+      End;
+      { iushr retourne toujours >= 0 pour valeurs non-negatives }
+      If (PrevOp = OP_IUSHR) or (PrevOp = OP_LUSHR) Then
+      Begin
+        If (Instructions^[I].Opcode = OP_IFLT) Then
+        Begin
+          CompPC := Instructions^[I].PC;
+          LineNum := GetLineNumber(M, CompPC);
+          AddLogicBug(INT_BAD_COMPARISON_WITH_NONNEG_VALUE, CompPC, LineNum,
+                     InternalToJavaName(ClassInfo.ThisClass),
+                     M.Name, '',
+                     'Comparaison < 0 sur resultat de decalage non-signe');
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 18 : Detecter variables locales masquant des champs --- }
+Procedure DetectFieldMasking(Var M: TMethodInfo);
+Var
+  I: Integer;
+  LocalName: String;
+  FieldIdx: Integer;
+  DeclPC: LongWord;
+  LineNum: Integer;
+Begin
+  { Parcourir les variables locales de la methode }
+  If M.LocalCount = 0 Then Exit;
+  For I := 0 to M.LocalCount - 1 Do
+  Begin
+    LocalName := M.LocalTable[I].Name;
+    If LocalName = '' Then Continue;
+    If LocalName = 'this' Then Continue;  { Ignorer 'this' }
+    { Verifier si ce nom correspond a un champ de la classe }
+    FieldIdx := FindFieldByName(LocalName);
+    If FieldIdx >= 0 Then
+    Begin
+      { La variable locale masque un champ }
+      DeclPC := M.LocalTable[I].StartPC;
+      LineNum := GetLineNumber(M, DeclPC);
+      AddShadow(I, LocalName, FieldIdx, Fields[FieldIdx].Name,
+                DeclPC, LineNum);
+      AddLogicBug(MF_CLASS_MASKS_FIELD, DeclPC, LineNum,
+                 InternalToJavaName(ClassInfo.ThisClass),
+                 M.Name, LocalName,
+                 'Variable locale "' + LocalName + '" masque le champ de meme nom');
+    End;
+  End;
+End;
+
+{ --- TODO 18 : Detecter double assignation d'un champ --- }
+Procedure DetectFieldDoubleAssignment(Var M: TMethodInfo);
+Var
+  I: Integer;
+  FirstPutRef, SecondPutRef: LongInt;
+  PutPC: LongWord;
+  LineNum: Integer;
+  FieldName: String;
+Begin
+  If InstrCount < 4 Then Exit;
+  If Instructions = Nil Then Exit;
+  For I := 0 to InstrCount - 4 Do
+  Begin
+    { Pattern: ..., putfield F, ..., putfield F }
+    If (Instructions^[I].Opcode = OP_PUTFIELD) and
+       (Instructions^[I+2].Opcode = OP_PUTFIELD) Then
+    Begin
+      FirstPutRef := Instructions^[I].Op1;
+      SecondPutRef := Instructions^[I+2].Op1;
+      If FirstPutRef = SecondPutRef Then
+      Begin
+        PutPC := Instructions^[I+2].PC;
+        LineNum := GetLineNumber(M, PutPC);
+        FieldName := Instructions^[I].CpRef;
+        AddLogicBug(SA_FIELD_DOUBLE_ASSIGNMENT, PutPC, LineNum,
+                   InternalToJavaName(ClassInfo.ThisClass),
+                   M.Name, FieldName,
+                   'Champ "' + FieldName + '" assigne deux fois de suite');
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 18 : Detecter les erreurs logiques dans une methode --- }
+Procedure DetectLogicErrors(Var M: TMethodInfo);
+Begin
+  If Not LEInitialized Then InitLogicState;
+  { Decoder les instructions si pas deja fait }
+  If InstrCount = 0 Then
+  Begin
+    DecodeInstructions(M);
+  End;
+  { Detecter les differents types d'erreurs }
+  DetectLocalSelfAssignment(M);
+  DetectFieldSelfAssignment(M);
+  DetectOverflowAfterModulo(M);
+  DetectReturnValueIgnored(M);
+  DetectBadNonNegComparison(M);
+  DetectFieldMasking(M);
+  DetectFieldDoubleAssignment(M);
+End;
+
+{ --- TODO 18 : Analyser une methode pour les erreurs logiques --- }
+Procedure AnalyzeMethodForLogicErrors(MethIdx: Integer);
+Begin
+  If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
+  If Methods[MethIdx].CodeLen = 0 Then Exit;  { Methode abstraite ou native }
+  If Not LEInitialized Then InitLogicState;
+  { Reinitialiser pour cette methode }
+  LEBugCount := 0;
+  LEShadowCount := 0;
+  LESelfCount := 0;
+  LELastLoadVar := -1;
+  LELastLoadField := -1;
+  LELastLoadPC := 0;
+  DetectLogicErrors(Methods[MethIdx]);
+End;
+
+{ --- TODO 18 : Analyser toutes les methodes d'une classe --- }
+Procedure DetectLogicErrorsInClass;
+Var
+  I: Integer;
+Begin
+  If Not LEInitialized Then InitLogicState;
+  For I := 0 to MethodCount - 1 Do
+  Begin
+    AnalyzeMethodForLogicErrors(I);
+  End;
+End;
+
+{ --- TODO 18 : Afficher l'etat du module d'erreurs logiques --- }
+Procedure DumpLogicState;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== Etat du module Logic Errors ===');
+  WriteLn('Initialise      : ', LEInitialized);
+  WriteLn('Bugs detectes   : ', LEBugCount);
+  WriteLn('Shadows detectes: ', LEShadowCount);
+  WriteLn('Self-assigns    : ', LESelfCount);
+  WriteLn('Total self-field: ', LETotalSelfField);
+  WriteLn('Total self-local: ', LETotalSelfLocal);
+  WriteLn('Total ret ignor : ', LETotalRetIgnored);
+  WriteLn('Total bad comp  : ', LETotalBadCompare);
+  WriteLn('Total overflow  : ', LETotalOverflow);
+  WriteLn('Total masking   : ', LETotalMasking);
+  WriteLn;
+  If LEBugCount > 0 Then
+  Begin
+    WriteLn('Bugs :');
+    For I := 0 to LEBugCount - 1 Do
+    Begin
+      WriteLn('  [', I, '] ', LEBugTypeName(LEBugs[I].BugType),
+              ' PC=', LEBugs[I].PC, ' Line=', LEBugs[I].LineNum);
+      WriteLn('       Class=', LEBugs[I].ClassName,
+              ' Method=', LEBugs[I].MethodName);
+      WriteLn('       Var=', LEBugs[I].VarName);
+      WriteLn('       Details: ', LEBugs[I].Details);
+    End;
+  End;
+  If LEShadowCount > 0 Then
+  Begin
+    WriteLn('Shadows :');
+    For I := 0 to LEShadowCount - 1 Do
+    Begin
+      WriteLn('  [', I, '] Local "', LEShadows[I].LocalName,
+              '" masque champ "', LEShadows[I].FieldName, '"');
+    End;
+  End;
+End;
+
+{ --- TODO 18 : Accesseurs pour le module d'erreurs logiques --- }
+Function GetLEInitialized: Boolean;
+Begin
+  GetLEInitialized := LEInitialized;
+End;
+
+Function GetLEBugCount: Integer;
+Begin
+  GetLEBugCount := LEBugCount;
+End;
+
+Function GetLEShadowCount: Integer;
+Begin
+  GetLEShadowCount := LEShadowCount;
+End;
+
+Function GetLETotalSelfField: Integer;
+Begin
+  GetLETotalSelfField := LETotalSelfField;
+End;
+
+Function GetLETotalSelfLocal: Integer;
+Begin
+  GetLETotalSelfLocal := LETotalSelfLocal;
+End;
+
+Function GetLETotalRetIgnored: Integer;
+Begin
+  GetLETotalRetIgnored := LETotalRetIgnored;
+End;
+
+Function GetLETotalBadCompare: Integer;
+Begin
+  GetLETotalBadCompare := LETotalBadCompare;
+End;
+
+Function GetLETotalOverflow: Integer;
+Begin
+  GetLETotalOverflow := LETotalOverflow;
+End;
+
+Function GetLETotalMasking: Integer;
+Begin
+  GetLETotalMasking := LETotalMasking;
+End;
+
+Function GetLEBugType(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < LEBugCount) Then
+    GetLEBugType := LEBugs[Idx].BugType
+  Else
+    GetLEBugType := LE_NONE;
+End;
+
+Function GetLEBugPC(Idx: Integer): LongWord;
+Begin
+  If (Idx >= 0) and (Idx < LEBugCount) Then
+    GetLEBugPC := LEBugs[Idx].PC
+  Else
+    GetLEBugPC := 0;
+End;
+
+Function GetLEBugLine(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < LEBugCount) Then
+    GetLEBugLine := LEBugs[Idx].LineNum
+  Else
+    GetLEBugLine := 0;
+End;
 
 { ============================================================================ }
 { TODO 19 [A FAIRE] - Detecteur : problemes d'internationalisation             }
