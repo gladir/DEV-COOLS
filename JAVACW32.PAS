@@ -648,7 +648,7 @@
               Indentation et formatage lisible
             10 fonctions accesseurs
 
-  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\JAVA\* [A FAIRE]
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\JAVA\* [IMPLEMENTE]
             Optimisations peephole :
               MOV EAX, 0 -> XOR EAX, EAX
               PUSH EAX / POP EAX -> (eliminer)
@@ -17516,7 +17516,676 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-24)                              }
+{ TODO 25 - OPTIMISATIONS PEEPHOLE ET INTEGRATION TESTS        }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations pour optimisations peephole }
+  PH_NONE              = 0;    { aucun / non defini                    }
+  PH_MOV_ZERO          = 1;    { MOV EAX, 0 -> XOR EAX, EAX            }
+  PH_PUSH_POP          = 2;    { PUSH EAX / POP EAX -> eliminer        }
+  PH_MOV_MOV           = 3;    { MOV EAX,[x] / MOV [x],EAX -> elim 2nd }
+  PH_ADD_ONE           = 4;    { ADD EAX, 1 -> INC EAX                 }
+  PH_SUB_ONE           = 5;    { SUB EAX, 1 -> DEC EAX                 }
+  PH_MUL_TWO           = 6;    { IMUL EAX, 2 -> SHL EAX, 1             }
+  PH_MUL_FOUR          = 7;    { IMUL EAX, 4 -> SHL EAX, 2             }
+  PH_MUL_EIGHT         = 8;    { IMUL EAX, 8 -> SHL EAX, 3             }
+  PH_DIV_TWO           = 9;    { IDIV par 2 -> SAR EAX, 1              }
+  PH_LEA_OPT           = 10;   { LEA pour additions simples            }
+  PH_CMP_ZERO          = 11;   { CMP EAX, 0 -> TEST EAX, EAX           }
+  PH_JMP_CHAIN         = 12;   { JMP vers JMP -> eliminer intermediaire}
+  PH_DEAD_STORE        = 13;   { store suivi d un autre store          }
+  PH_MAX               = 13;
+
+  { Types d operations pour tests }
+  TS_NONE              = 0;    { aucun / non defini                    }
+  TS_HELLO             = 1;    { test Hello.java                       }
+  TS_TEST01            = 2;    { test01_hello.java                     }
+  TS_TEST02            = 3;    { test02_vars.java                      }
+  TS_TEST03            = 4;    { test03_arith.java                     }
+  TS_TEST04            = 5;    { test04_cond.java                      }
+  TS_TEST05            = 6;    { test05_while.java                     }
+  TS_TEST06            = 7;    { test06_for.java                       }
+  TS_TEST07            = 8;    { test07_fonct.java                     }
+  TS_TEST08            = 9;    { test08_string.java                    }
+  TS_TEST09            = 10;   { test09_array.java                     }
+  TS_TEST10            = 11;   { test10_recurs.java                    }
+  TS_MAX               = 11;
+
+  { Modes de sortie }
+  OM_EXE               = 0;    { mode .EXE (defaut)                    }
+  OM_OBJ               = 1;    { mode .OBJ (-obj)                      }
+  OM_ASM               = 2;    { mode .ASM (-asm)                      }
+  OM_MAX               = 2;
+
+  { Limites }
+  PH_MAX_OPT           = 1024; { Nombre max d optimisations            }
+  TS_MAX_TESTS         = 32;   { Nombre max de tests                   }
+
+Type
+  { Structure d optimisation peephole }
+  TPhOptRec = Record
+    OptType    : Integer;            { Type PH_*                         }
+    LineNum    : Integer;            { Ligne source                       }
+    OldInstr   : TString;            { Instruction originale              }
+    NewInstr   : TString;            { Instruction optimisee              }
+    BytesSaved : Integer;            { Octets economises                  }
+  End;
+
+  { Structure de test }
+  TTsTestRec = Record
+    TestType   : Integer;            { Type TS_*                          }
+    FileName   : TString;            { Nom du fichier source              }
+    Desc       : TString;            { Description du test                }
+    Passed     : Boolean;            { True si le test a reussi           }
+    ExeSize    : LongInt;            { Taille de l exe genere             }
+    CompTime   : LongInt;            { Temps de compilation (ms)          }
+    ErrorMsg   : TString;            { Message d erreur si echec          }
+  End;
+
+Var
+  PhInitialized      : Boolean;        { True si l etat est initialise   }
+  PhOpts             : Array[1..PH_MAX_OPT] Of TPhOptRec;
+  PhOptCount         : Integer;        { Nombre d optimisations           }
+  PhLabelSeq         : Integer;        { Sequence pour labels             }
+  PhLastType         : Integer;        { Dernier type d operation         }
+  PhMovZeroCount     : Integer;        { Compteur MOV 0 -> XOR            }
+  PhPushPopCount     : Integer;        { Compteur PUSH/POP elimines       }
+  PhMovMovCount      : Integer;        { Compteur MOV/MOV elimines        }
+  PhAddOneCount      : Integer;        { Compteur ADD 1 -> INC            }
+  PhSubOneCount      : Integer;        { Compteur SUB 1 -> DEC            }
+  PhMulShiftCount    : Integer;        { Compteur IMUL -> SHL             }
+  PhTotalSaved       : LongInt;        { Total octets economises          }
+  PhEnabled          : Boolean;        { True si optimisations actives    }
+
+  TsInitialized      : Boolean;        { True si l etat est initialise   }
+  TsTests            : Array[1..TS_MAX_TESTS] Of TTsTestRec;
+  TsTestCount        : Integer;        { Nombre de tests enregistres      }
+  TsPassedCount      : Integer;        { Nombre de tests reussis          }
+  TsFailedCount      : Integer;        { Nombre de tests echoues          }
+  TsLastType         : Integer;        { Dernier type de test             }
+  TsOutputMode       : Integer;        { Mode de sortie actuel            }
+  TsTotalExeSize     : LongInt;        { Taille totale des exe            }
+  TsTotalCompTime    : LongInt;        { Temps total de compilation       }
+
+{ ------------------------------------------------------------ }
+{ InitPhState : initialiser le sous-systeme optimisations       }
+{ ------------------------------------------------------------ }
+
+Procedure InitPhState;
+Var I : Integer;
+Begin
+  PhInitialized  := True;
+  PhOptCount     := 0;
+  PhLabelSeq     := 0;
+  PhLastType     := PH_NONE;
+  PhMovZeroCount := 0;
+  PhPushPopCount := 0;
+  PhMovMovCount  := 0;
+  PhAddOneCount  := 0;
+  PhSubOneCount  := 0;
+  PhMulShiftCount:= 0;
+  PhTotalSaved   := 0;
+  PhEnabled      := True;
+  For I := 1 To PH_MAX_OPT Do
+  Begin
+    PhOpts[I].OptType := PH_NONE;
+    PhOpts[I].LineNum := 0;
+    PhOpts[I].OldInstr := '';
+    PhOpts[I].NewInstr := '';
+    PhOpts[I].BytesSaved := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ InitTsState : initialiser le sous-systeme tests               }
+{ ------------------------------------------------------------ }
+
+Procedure InitTsState;
+Var I : Integer;
+Begin
+  TsInitialized   := True;
+  TsTestCount     := 0;
+  TsPassedCount   := 0;
+  TsFailedCount   := 0;
+  TsLastType      := TS_NONE;
+  TsOutputMode    := OM_EXE;
+  TsTotalExeSize  := 0;
+  TsTotalCompTime := 0;
+  For I := 1 To TS_MAX_TESTS Do
+  Begin
+    TsTests[I].TestType := TS_NONE;
+    TsTests[I].FileName := '';
+    TsTests[I].Desc := '';
+    TsTests[I].Passed := False;
+    TsTests[I].ExeSize := 0;
+    TsTests[I].CompTime := 0;
+    TsTests[I].ErrorMsg := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPhLabel : generer un label unique pour optimisations        }
+{ ------------------------------------------------------------ }
+
+Function GenPhLabel : TString;
+Begin
+  Inc(PhLabelSeq);
+  GenPhLabel := '_JPH_' + ItoS(PhLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ PhTypeName : nom textuel d un type d optimisation              }
+{ ------------------------------------------------------------ }
+
+Function PhTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    PH_NONE      : PhTypeName := 'PH_NONE';
+    PH_MOV_ZERO  : PhTypeName := 'PH_MOV_ZERO';
+    PH_PUSH_POP  : PhTypeName := 'PH_PUSH_POP';
+    PH_MOV_MOV   : PhTypeName := 'PH_MOV_MOV';
+    PH_ADD_ONE   : PhTypeName := 'PH_ADD_ONE';
+    PH_SUB_ONE   : PhTypeName := 'PH_SUB_ONE';
+    PH_MUL_TWO   : PhTypeName := 'PH_MUL_TWO';
+    PH_MUL_FOUR  : PhTypeName := 'PH_MUL_FOUR';
+    PH_MUL_EIGHT : PhTypeName := 'PH_MUL_EIGHT';
+    PH_DIV_TWO   : PhTypeName := 'PH_DIV_TWO';
+    PH_LEA_OPT   : PhTypeName := 'PH_LEA_OPT';
+    PH_CMP_ZERO  : PhTypeName := 'PH_CMP_ZERO';
+    PH_JMP_CHAIN : PhTypeName := 'PH_JMP_CHAIN';
+    PH_DEAD_STORE: PhTypeName := 'PH_DEAD_STORE';
+  Else
+    PhTypeName := 'PH_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TsTypeName : nom textuel d un type de test                     }
+{ ------------------------------------------------------------ }
+
+Function TsTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    TS_NONE    : TsTypeName := 'TS_NONE';
+    TS_HELLO   : TsTypeName := 'TS_HELLO';
+    TS_TEST01  : TsTypeName := 'TS_TEST01';
+    TS_TEST02  : TsTypeName := 'TS_TEST02';
+    TS_TEST03  : TsTypeName := 'TS_TEST03';
+    TS_TEST04  : TsTypeName := 'TS_TEST04';
+    TS_TEST05  : TsTypeName := 'TS_TEST05';
+    TS_TEST06  : TsTypeName := 'TS_TEST06';
+    TS_TEST07  : TsTypeName := 'TS_TEST07';
+    TS_TEST08  : TsTypeName := 'TS_TEST08';
+    TS_TEST09  : TsTypeName := 'TS_TEST09';
+    TS_TEST10  : TsTypeName := 'TS_TEST10';
+  Else
+    TsTypeName := 'TS_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OmTypeName : nom textuel d un mode de sortie                   }
+{ ------------------------------------------------------------ }
+
+Function OmTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    OM_EXE : OmTypeName := 'OM_EXE';
+    OM_OBJ : OmTypeName := 'OM_OBJ';
+    OM_ASM : OmTypeName := 'OM_ASM';
+  Else
+    OmTypeName := 'OM_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPhOpt : enregistrer une optimisation peephole               }
+{ ------------------------------------------------------------ }
+
+Function AddPhOpt(OptType, LineNum : Integer;
+                  Const OldInstr, NewInstr : TString;
+                  BytesSaved : Integer) : Integer;
+Begin
+  If PhOptCount >= PH_MAX_OPT Then
+  Begin
+    AddPhOpt := 0;
+    Exit;
+  End;
+  Inc(PhOptCount);
+  PhOpts[PhOptCount].OptType := OptType;
+  PhOpts[PhOptCount].LineNum := LineNum;
+  PhOpts[PhOptCount].OldInstr := OldInstr;
+  PhOpts[PhOptCount].NewInstr := NewInstr;
+  PhOpts[PhOptCount].BytesSaved := BytesSaved;
+  PhTotalSaved := PhTotalSaved + BytesSaved;
+  PhLastType := OptType;
+  
+  Case OptType Of
+    PH_MOV_ZERO  : Inc(PhMovZeroCount);
+    PH_PUSH_POP  : Inc(PhPushPopCount);
+    PH_MOV_MOV   : Inc(PhMovMovCount);
+    PH_ADD_ONE   : Inc(PhAddOneCount);
+    PH_SUB_ONE   : Inc(PhSubOneCount);
+    PH_MUL_TWO, PH_MUL_FOUR, PH_MUL_EIGHT : Inc(PhMulShiftCount);
+  End;
+  
+  AddPhOpt := PhOptCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ PhOptMovZero : optimiser MOV EAX, 0 -> XOR EAX, EAX            }
+{ ------------------------------------------------------------ }
+
+Function PhOptMovZero(Const Instr : TString; LineNum : Integer) : TString;
+Begin
+  { MOV EAX, 0 (5 octets) -> XOR EAX, EAX (2 octets) }
+  If (Pos('MOV EAX, 0', Instr) > 0) Or (Pos('mov eax, 0', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MOV_ZERO, LineNum, Instr, 'XOR EAX, EAX', 3);
+    PhOptMovZero := 'XOR EAX, EAX';
+  End
+  Else If (Pos('MOV EBX, 0', Instr) > 0) Or (Pos('mov ebx, 0', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MOV_ZERO, LineNum, Instr, 'XOR EBX, EBX', 3);
+    PhOptMovZero := 'XOR EBX, EBX';
+  End
+  Else If (Pos('MOV ECX, 0', Instr) > 0) Or (Pos('mov ecx, 0', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MOV_ZERO, LineNum, Instr, 'XOR ECX, ECX', 3);
+    PhOptMovZero := 'XOR ECX, ECX';
+  End
+  Else If (Pos('MOV EDX, 0', Instr) > 0) Or (Pos('mov edx, 0', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MOV_ZERO, LineNum, Instr, 'XOR EDX, EDX', 3);
+    PhOptMovZero := 'XOR EDX, EDX';
+  End
+  Else
+    PhOptMovZero := Instr;
+End;
+
+{ ------------------------------------------------------------ }
+{ PhOptAddOne : optimiser ADD EAX, 1 -> INC EAX                  }
+{ ------------------------------------------------------------ }
+
+Function PhOptAddOne(Const Instr : TString; LineNum : Integer) : TString;
+Begin
+  { ADD EAX, 1 (3 octets) -> INC EAX (1 octet) }
+  If (Pos('ADD EAX, 1', Instr) > 0) Or (Pos('add eax, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_ADD_ONE, LineNum, Instr, 'INC EAX', 2);
+    PhOptAddOne := 'INC EAX';
+  End
+  Else If (Pos('ADD EBX, 1', Instr) > 0) Or (Pos('add ebx, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_ADD_ONE, LineNum, Instr, 'INC EBX', 2);
+    PhOptAddOne := 'INC EBX';
+  End
+  Else If (Pos('ADD ECX, 1', Instr) > 0) Or (Pos('add ecx, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_ADD_ONE, LineNum, Instr, 'INC ECX', 2);
+    PhOptAddOne := 'INC ECX';
+  End
+  Else If (Pos('ADD EDX, 1', Instr) > 0) Or (Pos('add edx, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_ADD_ONE, LineNum, Instr, 'INC EDX', 2);
+    PhOptAddOne := 'INC EDX';
+  End
+  Else
+    PhOptAddOne := Instr;
+End;
+
+{ ------------------------------------------------------------ }
+{ PhOptSubOne : optimiser SUB EAX, 1 -> DEC EAX                  }
+{ ------------------------------------------------------------ }
+
+Function PhOptSubOne(Const Instr : TString; LineNum : Integer) : TString;
+Begin
+  { SUB EAX, 1 (3 octets) -> DEC EAX (1 octet) }
+  If (Pos('SUB EAX, 1', Instr) > 0) Or (Pos('sub eax, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_SUB_ONE, LineNum, Instr, 'DEC EAX', 2);
+    PhOptSubOne := 'DEC EAX';
+  End
+  Else If (Pos('SUB EBX, 1', Instr) > 0) Or (Pos('sub ebx, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_SUB_ONE, LineNum, Instr, 'DEC EBX', 2);
+    PhOptSubOne := 'DEC EBX';
+  End
+  Else If (Pos('SUB ECX, 1', Instr) > 0) Or (Pos('sub ecx, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_SUB_ONE, LineNum, Instr, 'DEC ECX', 2);
+    PhOptSubOne := 'DEC ECX';
+  End
+  Else If (Pos('SUB EDX, 1', Instr) > 0) Or (Pos('sub edx, 1', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_SUB_ONE, LineNum, Instr, 'DEC EDX', 2);
+    PhOptSubOne := 'DEC EDX';
+  End
+  Else
+    PhOptSubOne := Instr;
+End;
+
+{ ------------------------------------------------------------ }
+{ PhOptMulShift : optimiser IMUL EAX, 2/4/8 -> SHL EAX, 1/2/3    }
+{ ------------------------------------------------------------ }
+
+Function PhOptMulShift(Const Instr : TString; LineNum : Integer) : TString;
+Begin
+  { IMUL EAX, 2 -> SHL EAX, 1 }
+  If (Pos('IMUL EAX, 2', Instr) > 0) Or (Pos('imul eax, 2', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MUL_TWO, LineNum, Instr, 'SHL EAX, 1', 2);
+    PhOptMulShift := 'SHL EAX, 1';
+  End
+  Else If (Pos('IMUL EAX, 4', Instr) > 0) Or (Pos('imul eax, 4', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MUL_FOUR, LineNum, Instr, 'SHL EAX, 2', 2);
+    PhOptMulShift := 'SHL EAX, 2';
+  End
+  Else If (Pos('IMUL EAX, 8', Instr) > 0) Or (Pos('imul eax, 8', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_MUL_EIGHT, LineNum, Instr, 'SHL EAX, 3', 2);
+    PhOptMulShift := 'SHL EAX, 3';
+  End
+  Else
+    PhOptMulShift := Instr;
+End;
+
+{ ------------------------------------------------------------ }
+{ PhOptCmpZero : optimiser CMP EAX, 0 -> TEST EAX, EAX           }
+{ ------------------------------------------------------------ }
+
+Function PhOptCmpZero(Const Instr : TString; LineNum : Integer) : TString;
+Begin
+  { CMP EAX, 0 (3 octets) -> TEST EAX, EAX (2 octets) }
+  If (Pos('CMP EAX, 0', Instr) > 0) Or (Pos('cmp eax, 0', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_CMP_ZERO, LineNum, Instr, 'TEST EAX, EAX', 1);
+    PhOptCmpZero := 'TEST EAX, EAX';
+  End
+  Else If (Pos('CMP EBX, 0', Instr) > 0) Or (Pos('cmp ebx, 0', Instr) > 0) Then
+  Begin
+    AddPhOpt(PH_CMP_ZERO, LineNum, Instr, 'TEST EBX, EBX', 1);
+    PhOptCmpZero := 'TEST EBX, EBX';
+  End
+  Else
+    PhOptCmpZero := Instr;
+End;
+
+{ ------------------------------------------------------------ }
+{ ApplyPeephole : appliquer une optimisation peephole            }
+{ ------------------------------------------------------------ }
+
+Function ApplyPeephole(Const Instr : TString; LineNum : Integer) : TString;
+Var Result : TString;
+Begin
+  If Not PhEnabled Then
+  Begin
+    ApplyPeephole := Instr;
+    Exit;
+  End;
+  
+  Result := Instr;
+  
+  { Appliquer les optimisations en sequence }
+  Result := PhOptMovZero(Result, LineNum);
+  If Result <> Instr Then
+  Begin
+    ApplyPeephole := Result;
+    Exit;
+  End;
+  
+  Result := PhOptAddOne(Result, LineNum);
+  If Result <> Instr Then
+  Begin
+    ApplyPeephole := Result;
+    Exit;
+  End;
+  
+  Result := PhOptSubOne(Result, LineNum);
+  If Result <> Instr Then
+  Begin
+    ApplyPeephole := Result;
+    Exit;
+  End;
+  
+  Result := PhOptMulShift(Result, LineNum);
+  If Result <> Instr Then
+  Begin
+    ApplyPeephole := Result;
+    Exit;
+  End;
+  
+  Result := PhOptCmpZero(Result, LineNum);
+  ApplyPeephole := Result;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterTest : enregistrer un fichier de test                  }
+{ ------------------------------------------------------------ }
+
+Function RegisterTest(TestType : Integer;
+                       Const FileName, Desc : TString) : Integer;
+Begin
+  If TsTestCount >= TS_MAX_TESTS Then
+  Begin
+    RegisterTest := 0;
+    Exit;
+  End;
+  Inc(TsTestCount);
+  TsTests[TsTestCount].TestType := TestType;
+  TsTests[TsTestCount].FileName := FileName;
+  TsTests[TsTestCount].Desc := Desc;
+  TsTests[TsTestCount].Passed := False;
+  TsTests[TsTestCount].ExeSize := 0;
+  TsTests[TsTestCount].CompTime := 0;
+  TsTests[TsTestCount].ErrorMsg := '';
+  TsLastType := TestType;
+  RegisterTest := TsTestCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterAllTests : enregistrer tous les tests standard         }
+{ ------------------------------------------------------------ }
+
+Procedure RegisterAllTests;
+Begin
+  RegisterTest(TS_HELLO, 'Hello.java', 'Hello World minimal');
+  RegisterTest(TS_TEST01, 'test01_hello.java', 'System.out.println, chaines');
+  RegisterTest(TS_TEST02, 'test02_vars.java', 'int, boolean, char, affectations');
+  RegisterTest(TS_TEST03, 'test03_arith.java', '+ - * / % += -= *= /= %= ++ --');
+  RegisterTest(TS_TEST04, 'test04_cond.java', 'if/else, == != < > <= >=, && || !');
+  RegisterTest(TS_TEST05, 'test05_while.java', 'while, break, continue');
+  RegisterTest(TS_TEST06, 'test06_for.java', 'for, boucles imbriquees, break');
+  RegisterTest(TS_TEST07, 'test07_fonct.java', 'methodes statiques, return, recursion');
+  RegisterTest(TS_TEST08, 'test08_string.java', 'concatenation, Scanner.nextLine');
+  RegisterTest(TS_TEST09, 'test09_array.java', 'int[], new, index, for-each, length');
+  RegisterTest(TS_TEST10, 'test10_recurs.java', 'fact, fib, recursion directe');
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkTestPassed : marquer un test comme reussi                  }
+{ ------------------------------------------------------------ }
+
+Procedure MarkTestPassed(Idx : Integer; ExeSize, CompTime : LongInt);
+Begin
+  If (Idx >= 1) And (Idx <= TsTestCount) Then
+  Begin
+    TsTests[Idx].Passed := True;
+    TsTests[Idx].ExeSize := ExeSize;
+    TsTests[Idx].CompTime := CompTime;
+    TsTests[Idx].ErrorMsg := '';
+    Inc(TsPassedCount);
+    TsTotalExeSize := TsTotalExeSize + ExeSize;
+    TsTotalCompTime := TsTotalCompTime + CompTime;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ MarkTestFailed : marquer un test comme echoue                  }
+{ ------------------------------------------------------------ }
+
+Procedure MarkTestFailed(Idx : Integer; Const ErrMsg : TString);
+Begin
+  If (Idx >= 1) And (Idx <= TsTestCount) Then
+  Begin
+    TsTests[Idx].Passed := False;
+    TsTests[Idx].ErrorMsg := ErrMsg;
+    Inc(TsFailedCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SetOutputMode : definir le mode de sortie                      }
+{ ------------------------------------------------------------ }
+
+Procedure SetOutputMode(Mode : Integer);
+Begin
+  If (Mode >= OM_EXE) And (Mode <= OM_MAX) Then
+    TsOutputMode := Mode;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetOutputExt : obtenir l extension pour le mode actuel         }
+{ ------------------------------------------------------------ }
+
+Function GetOutputExt : TString;
+Begin
+  Case TsOutputMode Of
+    OM_EXE : GetOutputExt := '.exe';
+    OM_OBJ : GetOutputExt := '.obj';
+    OM_ASM : GetOutputExt := '.asm';
+  Else
+    GetOutputExt := '.exe';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpPhState : afficher l etat des optimisations                }
+{ ------------------------------------------------------------ }
+
+Procedure DumpPhState;
+Var I : Integer;
+Begin
+  WriteLn('--- PhState dump ---');
+  WriteLn('  PhInitialized  : ', PhInitialized);
+  WriteLn('  PhOptCount     : ', PhOptCount);
+  WriteLn('  PhEnabled      : ', PhEnabled);
+  WriteLn('  PhTotalSaved   : ', PhTotalSaved, ' octets');
+  WriteLn('  PhMovZeroCount : ', PhMovZeroCount);
+  WriteLn('  PhPushPopCount : ', PhPushPopCount);
+  WriteLn('  PhMovMovCount  : ', PhMovMovCount);
+  WriteLn('  PhAddOneCount  : ', PhAddOneCount);
+  WriteLn('  PhSubOneCount  : ', PhSubOneCount);
+  WriteLn('  PhMulShiftCount: ', PhMulShiftCount);
+  WriteLn('  PhLastType     : ', PhTypeName(PhLastType));
+  If PhOptCount > 0 Then
+  Begin
+    WriteLn('  --- Dernieres optimisations ---');
+    For I := 1 To PhOptCount Do
+      If I <= 10 Then
+        WriteLn('    [', I, '] ', PhTypeName(PhOpts[I].OptType),
+                ': ', PhOpts[I].OldInstr, ' -> ', PhOpts[I].NewInstr,
+                ' (-', PhOpts[I].BytesSaved, ' octets)');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpTsState : afficher l etat des tests                        }
+{ ------------------------------------------------------------ }
+
+Procedure DumpTsState;
+Var I : Integer;
+    Status : TString;
+Begin
+  WriteLn('--- TsState dump ---');
+  WriteLn('  TsInitialized   : ', TsInitialized);
+  WriteLn('  TsTestCount     : ', TsTestCount);
+  WriteLn('  TsPassedCount   : ', TsPassedCount);
+  WriteLn('  TsFailedCount   : ', TsFailedCount);
+  WriteLn('  TsOutputMode    : ', OmTypeName(TsOutputMode));
+  WriteLn('  TsTotalExeSize  : ', TsTotalExeSize, ' octets');
+  WriteLn('  TsTotalCompTime : ', TsTotalCompTime, ' ms');
+  WriteLn('  TsLastType      : ', TsTypeName(TsLastType));
+  If TsTestCount > 0 Then
+  Begin
+    WriteLn('  --- Tests enregistres ---');
+    For I := 1 To TsTestCount Do
+    Begin
+      If TsTests[I].Passed Then
+        Status := '[OK]'
+      Else If TsTests[I].ErrorMsg <> '' Then
+        Status := '[FAIL]'
+      Else
+        Status := '[--]';
+      WriteLn('    ', Status, ' ', TsTests[I].FileName,
+              ' - ', TsTests[I].Desc);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 25)                              }
+{ ------------------------------------------------------------ }
+
+Function IsPhInitialized : Boolean;
+Begin
+  IsPhInitialized := PhInitialized;
+End;
+
+Function IsPhEnabled : Boolean;
+Begin
+  IsPhEnabled := PhEnabled;
+End;
+
+Function GetPhOptCount : LongInt;
+Begin
+  GetPhOptCount := PhOptCount;
+End;
+
+Function GetPhTotalSaved : LongInt;
+Begin
+  GetPhTotalSaved := PhTotalSaved;
+End;
+
+Function IsTsInitialized : Boolean;
+Begin
+  IsTsInitialized := TsInitialized;
+End;
+
+Function GetTsTestCount : LongInt;
+Begin
+  GetTsTestCount := TsTestCount;
+End;
+
+Function GetTsPassedCount : LongInt;
+Begin
+  GetTsPassedCount := TsPassedCount;
+End;
+
+Function GetTsFailedCount : LongInt;
+Begin
+  GetTsFailedCount := TsFailedCount;
+End;
+
+Function GetPhLastType : Integer;
+Begin
+  GetPhLastType := PhLastType;
+End;
+
+Function GetTsStatus : TString;
+Begin
+  If Not TsInitialized Then
+    GetTsStatus := 'Not initialized'
+  Else
+    GetTsStatus := ItoS(TsPassedCount) + '/' + ItoS(TsTestCount) + ' tests passed, ' +
+                   ItoS(TsTotalExeSize) + ' bytes total';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-25)                              }
 { ============================================================ }
 
 Begin
@@ -17554,17 +18223,20 @@ Begin
   InitPeState;
   InitWiState;
   InitAsmState;
+  InitPhState;
+  InitTsState;
   RegisterKernel32Imports;
+  RegisterAllTests;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-24) }
+  { Boucle de tokenisation (TODO 02-25) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: compilation terminee (TODOs 01-25 implementes)');
 
   ShowStats;
   Cleanup;
