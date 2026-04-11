@@ -576,7 +576,7 @@
             Heap allocation : _JRT_HEAPALLOC(ECX=taille) -> EAX=ptr
             10 fonctions accesseurs
 
-  TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ [A FAIRE]
+  TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ [IMPLEMENTE]
             Ecrivain PE (.EXE) - structure PE32 complete :
               DOS Header (64 octets) avec DOS stub
               Signature PE "PE\0\0"
@@ -15507,7 +15507,1166 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal (TODO 01-22)                              }
+{ TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ                   }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations pour ecrivain PE/COFF }
+  PE_NONE              = 0;    { aucun / non defini                    }
+  PE_DOS_HEADER        = 1;    { DOS Header (64 octets)                }
+  PE_DOS_STUB          = 2;    { DOS stub programme                    }
+  PE_SIGNATURE         = 3;    { "PE\0\0" signature                    }
+  PE_COFF_HEADER       = 4;    { COFF File Header (20 octets)          }
+  PE_OPTIONAL_HEADER   = 5;    { Optional Header (224 octets)          }
+  PE_SECTION_HEADER    = 6;    { Section Header (40 octets)            }
+  PE_SECTION_TEXT      = 7;    { Section .text (code)                  }
+  PE_SECTION_RDATA     = 8;    { Section .rdata (imports)              }
+  PE_SECTION_DATA      = 9;    { Section .data (donnees)               }
+  PE_FIXUP_ABS         = 10;   { Fixup adresse absolue                 }
+  PE_FIXUP_REL         = 11;   { Fixup adresse relative                }
+  PE_IMPORT_DESC       = 12;   { Import Directory entry                }
+  PE_HINT_NAME         = 13;   { Hint/Name Table entry                 }
+  PE_IAT_ENTRY         = 14;   { Import Address Table entry            }
+  PE_MAX               = 14;
+
+  { Types d operations pour COFF }
+  COFF_NONE            = 0;    { aucun / non defini                    }
+  COFF_HEADER          = 1;    { COFF File Header                      }
+  COFF_SECTION         = 2;    { Section Header                        }
+  COFF_RELOC           = 3;    { Relocation entry                      }
+  COFF_SYMBOL          = 4;    { Symbol Table entry                    }
+  COFF_STRING          = 5;    { String Table entry                    }
+  COFF_MAX             = 5;
+
+  { Constantes PE32 }
+  PE_IMAGE_DOS_SIGNATURE    = $5A4D;      { 'MZ'                        }
+  PE_IMAGE_NT_SIGNATURE     = $00004550;  { 'PE\0\0'                    }
+  PE_IMAGE_FILE_MACHINE_I386= $014C;      { Machine i386                }
+  PE_IMAGE_FILE_EXECUTABLE  = $0002;      { Executable image            }
+  PE_IMAGE_FILE_32BIT       = $0100;      { 32-bit machine              }
+  PE_OPTIONAL_HDR32_MAGIC   = $010B;      { PE32 magic                  }
+  PE_IMAGE_SUBSYSTEM_CUI    = 3;          { Console application         }
+  PE_IMAGE_BASE_DEFAULT     = $00400000;  { Default image base          }
+  PE_SECTION_ALIGNMENT      = $1000;      { 4096 octets                 }
+  PE_FILE_ALIGNMENT         = $0200;      { 512 octets                  }
+
+  { Caracteristiques des sections }
+  PE_SCN_CNT_CODE          = $00000020;   { Section contains code       }
+  PE_SCN_CNT_INIT_DATA     = $00000040;   { Section contains init data  }
+  PE_SCN_CNT_UNINIT_DATA   = $00000080;   { Section contains uninit data}
+  PE_SCN_MEM_EXECUTE       = $20000000;   { Section is executable       }
+  PE_SCN_MEM_READ          = $40000000;   { Section is readable         }
+  PE_SCN_MEM_WRITE         : LongInt = LongInt($80000000);   { Section is writable }
+
+  { Types de relocation COFF i386 }
+  IMAGE_REL_I386_DIR32     = $0006;       { Direct 32-bit virtual addr  }
+  IMAGE_REL_I386_REL32     = $0014;       { PC-relative 32-bit ref      }
+
+  { Classes de stockage COFF }
+  IMAGE_SYM_CLASS_EXTERNAL = 2;           { External symbol             }
+  IMAGE_SYM_CLASS_STATIC   = 3;           { Static symbol               }
+  IMAGE_SYM_CLASS_LABEL    = 6;           { Label                       }
+  IMAGE_SYM_CLASS_FILE     = 103;         { File name                   }
+
+  { Section numbers speciales COFF }
+  IMAGE_SYM_UNDEFINED      = 0;           { Undefined section           }
+  IMAGE_SYM_ABSOLUTE       = -1;          { Absolute value              }
+
+  { Limites }
+  PE_MAX_SECTIONS          = 16;          { Nombre max de sections      }
+  PE_MAX_IMPORTS           = 64;          { Nombre max d imports        }
+  PE_MAX_FIXUPS            = 1024;        { Nombre max de fixups        }
+  PE_MAX_SYMBOLS           = 512;         { Nombre max de symboles      }
+  PE_DOS_STUB_SIZE         = 64;          { Taille du DOS stub          }
+
+Type
+  { Structure DOS Header }
+  TDosHeader = Record
+    e_magic    : Word;       { Magic number (MZ)                       }
+    e_cblp     : Word;       { Bytes on last page of file              }
+    e_cp       : Word;       { Pages in file                           }
+    e_crlc     : Word;       { Relocations                             }
+    e_cparhdr  : Word;       { Size of header in paragraphs            }
+    e_minalloc : Word;       { Minimum extra paragraphs needed         }
+    e_maxalloc : Word;       { Maximum extra paragraphs needed         }
+    e_ss       : Word;       { Initial (relative) SS value             }
+    e_sp       : Word;       { Initial SP value                        }
+    e_csum     : Word;       { Checksum                                }
+    e_ip       : Word;       { Initial IP value                        }
+    e_cs       : Word;       { Initial (relative) CS value             }
+    e_lfarlc   : Word;       { File address of relocation table        }
+    e_ovno     : Word;       { Overlay number                          }
+    e_res      : Array[0..3] Of Word; { Reserved words                 }
+    e_oemid    : Word;       { OEM identifier                          }
+    e_oeminfo  : Word;       { OEM information                         }
+    e_res2     : Array[0..9] Of Word; { Reserved words                 }
+    e_lfanew   : LongInt;    { File address of new exe header          }
+  End;
+
+  { Structure COFF File Header }
+  TCoffFileHeader = Record
+    Machine              : Word;     { Machine type ($014C = i386)     }
+    NumberOfSections     : Word;     { Number of sections              }
+    TimeDateStamp        : LongInt;  { Time date stamp                 }
+    PointerToSymbolTable : LongInt;  { File offset of symbol table     }
+    NumberOfSymbols      : LongInt;  { Number of symbols               }
+    SizeOfOptionalHeader : Word;     { Size of optional header         }
+    Characteristics      : Word;     { File characteristics            }
+  End;
+
+  { Structure Section Header }
+  TPeSectionHeader = Record
+    SName                : Array[0..7] Of Char; { Section name         }
+    VirtualSize          : LongInt;  { Virtual size                    }
+    VirtualAddress       : LongInt;  { Virtual address (RVA)           }
+    SizeOfRawData        : LongInt;  { Size of raw data                }
+    PointerToRawData     : LongInt;  { File pointer to raw data        }
+    PointerToRelocations : LongInt;  { File pointer to relocations     }
+    PointerToLinenumbers : LongInt;  { File pointer to line numbers    }
+    NumberOfRelocations  : Word;     { Number of relocations           }
+    NumberOfLinenumbers  : Word;     { Number of line numbers          }
+    Characteristics      : LongInt;  { Section characteristics         }
+  End;
+
+  { Structure relocation COFF }
+  TCoffReloc = Record
+    VirtualAddress   : LongInt;      { Offset in section               }
+    SymbolTableIndex : LongInt;      { Index into symbol table         }
+    RelocType        : Word;         { Type of relocation              }
+  End;
+
+  { Structure symbole COFF (18 octets) }
+  TCoffSymbol = Record
+    SName          : Array[0..7] Of Char; { Symbol name or offset      }
+    Value          : LongInt;        { Value of symbol                  }
+    SectionNumber  : SmallInt;       { Section number                   }
+    SymType        : Word;           { Type                             }
+    StorageClass   : Byte;           { Storage class                    }
+    NumberOfAux    : Byte;           { Number of auxiliary entries      }
+  End;
+
+  { Structure fixup interne }
+  TPeFixup = Record
+    Offset     : LongInt;            { Offset dans la section           }
+    TargetSym  : TString;            { Symbole cible                    }
+    IsRelative : Boolean;            { True si relatif au PC            }
+    Section    : Integer;            { Section du fixup (1=.text, etc)  }
+  End;
+
+  { Structure import }
+  TPeImport = Record
+    DllName    : TString;            { Nom de la DLL                    }
+    FuncName   : TString;            { Nom de la fonction               }
+    Hint       : Word;               { Hint (ordinal approximatif)      }
+    IatOffset  : LongInt;            { Offset dans l IAT                }
+    Used       : Boolean;            { True si utilise                  }
+  End;
+
+  { Structure symbole interne }
+  TPeSymbol = Record
+    Name       : TString;            { Nom du symbole                   }
+    Value      : LongInt;            { Valeur / offset                  }
+    Section    : Integer;            { Numero de section                }
+    SClass     : Byte;               { Storage class                    }
+    IsDefined  : Boolean;            { True si defini, False si externe }
+  End;
+
+Var
+  PeInitialized      : Boolean;        { True si l etat est initialise   }
+  PeOutputFile       : File;           { Fichier de sortie               }
+  PeOutputOpen       : Boolean;        { True si fichier ouvert          }
+  PeFileOffset       : LongInt;        { Offset courant dans fichier     }
+  PeImageBase        : LongInt;        { Base de l image (default $400000)}
+  PeSectionCount     : Integer;        { Nombre de sections              }
+  PeSections         : Array[1..PE_MAX_SECTIONS] Of TPeSectionHeader;
+  PeTextSection      : Integer;        { Index section .text             }
+  PeRdataSection     : Integer;        { Index section .rdata            }
+  PeDataSection      : Integer;        { Index section .data             }
+  PeFixups           : Array[1..PE_MAX_FIXUPS] Of TPeFixup;
+  PeFixupCount       : Integer;        { Nombre de fixups                }
+  PeImports          : Array[1..PE_MAX_IMPORTS] Of TPeImport;
+  PeImportCount      : Integer;        { Nombre d imports                }
+  PeSymbols          : Array[1..PE_MAX_SYMBOLS] Of TPeSymbol;
+  PeSymbolCount      : Integer;        { Nombre de symboles              }
+  PeLabelSeq         : Integer;        { Sequence pour labels PE         }
+  PeLastType         : Integer;        { Dernier type d operation        }
+  PeTextBuffer       : Array[0..65535] Of Byte; { Buffer section .text  }
+  PeTextSize         : LongInt;        { Taille section .text            }
+  PeRdataBuffer      : Array[0..16383] Of Byte; { Buffer section .rdata }
+  PeRdataSize        : LongInt;        { Taille section .rdata           }
+  PeDataBuffer       : Array[0..16383] Of Byte; { Buffer section .data  }
+  PeDataSize         : LongInt;        { Taille section .data            }
+  PeEntryPoint       : LongInt;        { Point d entree RVA              }
+  PeIsCoff           : Boolean;        { True si mode COFF .OBJ          }
+
+{ ------------------------------------------------------------ }
+{ InitPeState : initialiser le sous-systeme ecrivain PE/COFF   }
+{ ------------------------------------------------------------ }
+
+Procedure InitPeState;
+Var I : LongInt;
+Begin
+  PeInitialized   := True;
+  PeOutputOpen    := False;
+  PeFileOffset    := 0;
+  PeImageBase     := PE_IMAGE_BASE_DEFAULT;
+  PeSectionCount  := 0;
+  PeTextSection   := 0;
+  PeRdataSection  := 0;
+  PeDataSection   := 0;
+  PeFixupCount    := 0;
+  PeImportCount   := 0;
+  PeSymbolCount   := 0;
+  PeLabelSeq      := 0;
+  PeLastType      := PE_NONE;
+  PeTextSize      := 0;
+  PeRdataSize     := 0;
+  PeDataSize      := 0;
+  PeEntryPoint    := 0;
+  PeIsCoff        := False;
+  For I := 0 To 65535 Do PeTextBuffer[I] := 0;
+  For I := 0 To 16383 Do PeRdataBuffer[I] := 0;
+  For I := 0 To 16383 Do PeDataBuffer[I] := 0;
+  For I := 1 To PE_MAX_SECTIONS Do
+  Begin
+    FillChar(PeSections[I], SizeOf(TPeSectionHeader), 0);
+  End;
+  For I := 1 To PE_MAX_FIXUPS Do
+  Begin
+    PeFixups[I].Offset := 0;
+    PeFixups[I].TargetSym := '';
+    PeFixups[I].IsRelative := False;
+    PeFixups[I].Section := 0;
+  End;
+  For I := 1 To PE_MAX_IMPORTS Do
+  Begin
+    PeImports[I].DllName := '';
+    PeImports[I].FuncName := '';
+    PeImports[I].Hint := 0;
+    PeImports[I].IatOffset := 0;
+    PeImports[I].Used := False;
+  End;
+  For I := 1 To PE_MAX_SYMBOLS Do
+  Begin
+    PeSymbols[I].Name := '';
+    PeSymbols[I].Value := 0;
+    PeSymbols[I].Section := 0;
+    PeSymbols[I].SClass := IMAGE_SYM_CLASS_EXTERNAL;
+    PeSymbols[I].IsDefined := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPeLabel : generer un label unique pour PE/COFF              }
+{ ------------------------------------------------------------ }
+
+Function GenPeLabel : TString;
+Begin
+  Inc(PeLabelSeq);
+  GenPeLabel := '_JPE_' + ItoS(PeLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeTypeName : nom textuel d un type d operation PE              }
+{ ------------------------------------------------------------ }
+
+Function PeTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    PE_NONE            : PeTypeName := 'PE_NONE';
+    PE_DOS_HEADER      : PeTypeName := 'PE_DOS_HEADER';
+    PE_DOS_STUB        : PeTypeName := 'PE_DOS_STUB';
+    PE_SIGNATURE       : PeTypeName := 'PE_SIGNATURE';
+    PE_COFF_HEADER     : PeTypeName := 'PE_COFF_HEADER';
+    PE_OPTIONAL_HEADER : PeTypeName := 'PE_OPTIONAL_HEADER';
+    PE_SECTION_HEADER  : PeTypeName := 'PE_SECTION_HEADER';
+    PE_SECTION_TEXT    : PeTypeName := 'PE_SECTION_TEXT';
+    PE_SECTION_RDATA   : PeTypeName := 'PE_SECTION_RDATA';
+    PE_SECTION_DATA    : PeTypeName := 'PE_SECTION_DATA';
+    PE_FIXUP_ABS       : PeTypeName := 'PE_FIXUP_ABS';
+    PE_FIXUP_REL       : PeTypeName := 'PE_FIXUP_REL';
+    PE_IMPORT_DESC     : PeTypeName := 'PE_IMPORT_DESC';
+    PE_HINT_NAME       : PeTypeName := 'PE_HINT_NAME';
+    PE_IAT_ENTRY       : PeTypeName := 'PE_IAT_ENTRY';
+  Else
+    PeTypeName := 'PE_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CoffTypeName : nom textuel d un type d operation COFF          }
+{ ------------------------------------------------------------ }
+
+Function CoffTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    COFF_NONE     : CoffTypeName := 'COFF_NONE';
+    COFF_HEADER   : CoffTypeName := 'COFF_HEADER';
+    COFF_SECTION  : CoffTypeName := 'COFF_SECTION';
+    COFF_RELOC    : CoffTypeName := 'COFF_RELOC';
+    COFF_SYMBOL   : CoffTypeName := 'COFF_SYMBOL';
+    COFF_STRING   : CoffTypeName := 'COFF_STRING';
+  Else
+    CoffTypeName := 'COFF_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PeWriteByte : ecrire un octet dans le fichier PE               }
+{ ------------------------------------------------------------ }
+
+Procedure PeWriteByte(B : Byte);
+Begin
+  If PeOutputOpen Then
+  Begin
+    BlockWrite(PeOutputFile, B, 1);
+    Inc(PeFileOffset);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PeWriteWord : ecrire un mot 16 bits (little-endian)            }
+{ ------------------------------------------------------------ }
+
+Procedure PeWriteWord(W : Word);
+Begin
+  PeWriteByte(W And $FF);
+  PeWriteByte((W Shr 8) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeWriteDWord : ecrire un mot 32 bits (little-endian)           }
+{ ------------------------------------------------------------ }
+
+Procedure PeWriteDWord(D : LongInt);
+Begin
+  PeWriteByte(D And $FF);
+  PeWriteByte((D Shr 8) And $FF);
+  PeWriteByte((D Shr 16) And $FF);
+  PeWriteByte((D Shr 24) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeWriteBuffer : ecrire un buffer dans le fichier               }
+{ ------------------------------------------------------------ }
+
+Procedure PeWriteBuffer(Var Buf; Size : LongInt);
+Begin
+  If PeOutputOpen And (Size > 0) Then
+  Begin
+    BlockWrite(PeOutputFile, Buf, Size);
+    Inc(PeFileOffset, Size);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PeWriteString : ecrire une chaine terminee par zero            }
+{ ------------------------------------------------------------ }
+
+Procedure PeWriteString(Const S : TString);
+Var I : Integer;
+Begin
+  For I := 1 To Length(S) Do
+    PeWriteByte(Ord(S[I]));
+  PeWriteByte(0);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeWritePadding : ecrire des octets de padding                  }
+{ ------------------------------------------------------------ }
+
+Procedure PeWritePadding(Count : LongInt);
+Var I : LongInt;
+Begin
+  For I := 1 To Count Do
+    PeWriteByte(0);
+End;
+
+{ ------------------------------------------------------------ }
+{ PeAlignTo : aligner sur une frontiere donnee                   }
+{ ------------------------------------------------------------ }
+
+Function PeAlignTo(Value, Alignment : LongInt) : LongInt;
+Begin
+  If (Value Mod Alignment) = 0 Then
+    PeAlignTo := Value
+  Else
+    PeAlignTo := Value + (Alignment - (Value Mod Alignment));
+End;
+
+{ ------------------------------------------------------------ }
+{ PeAlignFileOffset : aligner l offset fichier sur FileAlignment }
+{ ------------------------------------------------------------ }
+
+Procedure PeAlignFileOffset;
+Var Padding : LongInt;
+Begin
+  Padding := PeAlignTo(PeFileOffset, PE_FILE_ALIGNMENT) - PeFileOffset;
+  If Padding > 0 Then
+    PeWritePadding(Padding);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPeSection : ajouter une section                             }
+{ ------------------------------------------------------------ }
+
+Function AddPeSection(Const Name : TString; VSize, RSize : LongInt;
+                       Chars : LongInt) : Integer;
+Var I : Integer;
+Begin
+  If PeSectionCount >= PE_MAX_SECTIONS Then
+  Begin
+    AddPeSection := 0;
+    Exit;
+  End;
+  Inc(PeSectionCount);
+  FillChar(PeSections[PeSectionCount].SName, 8, 0);
+  For I := 1 To Length(Name) Do
+    If I <= 8 Then
+      PeSections[PeSectionCount].SName[I-1] := Name[I];
+  PeSections[PeSectionCount].VirtualSize := VSize;
+  PeSections[PeSectionCount].SizeOfRawData := RSize;
+  PeSections[PeSectionCount].Characteristics := Chars;
+  AddPeSection := PeSectionCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPeFixup : ajouter un fixup                                  }
+{ ------------------------------------------------------------ }
+
+Procedure AddPeFixup(Offset : LongInt; Const TargetSym : TString;
+                      IsRel : Boolean; Sect : Integer);
+Begin
+  If PeFixupCount >= PE_MAX_FIXUPS Then Exit;
+  Inc(PeFixupCount);
+  PeFixups[PeFixupCount].Offset := Offset;
+  PeFixups[PeFixupCount].TargetSym := TargetSym;
+  PeFixups[PeFixupCount].IsRelative := IsRel;
+  PeFixups[PeFixupCount].Section := Sect;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPeImport : ajouter un import                                }
+{ ------------------------------------------------------------ }
+
+Function AddPeImport(Const Dll, Func : TString) : Integer;
+Var I : Integer;
+Begin
+  { Chercher si deja present }
+  For I := 1 To PeImportCount Do
+    If (PeImports[I].DllName = Dll) And (PeImports[I].FuncName = Func) Then
+    Begin
+      PeImports[I].Used := True;
+      AddPeImport := I;
+      Exit;
+    End;
+  { Ajouter nouveau }
+  If PeImportCount >= PE_MAX_IMPORTS Then
+  Begin
+    AddPeImport := 0;
+    Exit;
+  End;
+  Inc(PeImportCount);
+  PeImports[PeImportCount].DllName := Dll;
+  PeImports[PeImportCount].FuncName := Func;
+  PeImports[PeImportCount].Hint := 0;
+  PeImports[PeImportCount].IatOffset := 0;
+  PeImports[PeImportCount].Used := True;
+  AddPeImport := PeImportCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddPeSymbol : ajouter un symbole                               }
+{ ------------------------------------------------------------ }
+
+Function AddPeSymbol(Const SName : TString; Val : LongInt;
+                      Sect : Integer; SCls : Byte; Def : Boolean) : Integer;
+Var I : Integer;
+Begin
+  { Chercher si deja present }
+  For I := 1 To PeSymbolCount Do
+    If PeSymbols[I].Name = SName Then
+    Begin
+      If Def Then
+      Begin
+        PeSymbols[I].Value := Val;
+        PeSymbols[I].Section := Sect;
+        PeSymbols[I].IsDefined := True;
+      End;
+      AddPeSymbol := I;
+      Exit;
+    End;
+  { Ajouter nouveau }
+  If PeSymbolCount >= PE_MAX_SYMBOLS Then
+  Begin
+    AddPeSymbol := 0;
+    Exit;
+  End;
+  Inc(PeSymbolCount);
+  PeSymbols[PeSymbolCount].Name := SName;
+  PeSymbols[PeSymbolCount].Value := Val;
+  PeSymbols[PeSymbolCount].Section := Sect;
+  PeSymbols[PeSymbolCount].SClass := SCls;
+  PeSymbols[PeSymbolCount].IsDefined := Def;
+  AddPeSymbol := PeSymbolCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindPeSymbol : chercher un symbole par nom                     }
+{ ------------------------------------------------------------ }
+
+Function FindPeSymbol(Const SName : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 1 To PeSymbolCount Do
+    If PeSymbols[I].Name = SName Then
+    Begin
+      FindPeSymbol := I;
+      Exit;
+    End;
+  FindPeSymbol := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTextByte : emettre un octet dans la section .text          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTextByte(B : Byte);
+Begin
+  If PeTextSize < 65536 Then
+  Begin
+    PeTextBuffer[PeTextSize] := B;
+    Inc(PeTextSize);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTextWord : emettre un mot 16 bits dans .text               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTextWord(W : Word);
+Begin
+  EmitTextByte(W And $FF);
+  EmitTextByte((W Shr 8) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitTextDWord : emettre un mot 32 bits dans .text              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitTextDWord(D : LongInt);
+Begin
+  EmitTextByte(D And $FF);
+  EmitTextByte((D Shr 8) And $FF);
+  EmitTextByte((D Shr 16) And $FF);
+  EmitTextByte((D Shr 24) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataByte : emettre un octet dans la section .data          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataByte(B : Byte);
+Begin
+  If PeDataSize < 16384 Then
+  Begin
+    PeDataBuffer[PeDataSize] := B;
+    Inc(PeDataSize);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataDWord : emettre un mot 32 bits dans .data              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataDWord(D : LongInt);
+Begin
+  EmitDataByte(D And $FF);
+  EmitDataByte((D Shr 8) And $FF);
+  EmitDataByte((D Shr 16) And $FF);
+  EmitDataByte((D Shr 24) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitDataString : emettre une chaine terminee par zero          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataString(Const S : TString);
+Var I : Integer;
+Begin
+  For I := 1 To Length(S) Do
+    EmitDataByte(Ord(S[I]));
+  EmitDataByte(0);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteDosHeader : ecrire le DOS Header                          }
+{ ------------------------------------------------------------ }
+
+Procedure WriteDosHeader;
+Var DosHdr : TDosHeader;
+Begin
+  PeLastType := PE_DOS_HEADER;
+  FillChar(DosHdr, SizeOf(TDosHeader), 0);
+  DosHdr.e_magic   := PE_IMAGE_DOS_SIGNATURE;  { 'MZ' }
+  DosHdr.e_cblp    := $0090;
+  DosHdr.e_cp      := $0003;
+  DosHdr.e_cparhdr := $0004;
+  DosHdr.e_maxalloc:= $FFFF;
+  DosHdr.e_sp      := $00B8;
+  DosHdr.e_lfarlc  := $0040;
+  DosHdr.e_lfanew  := $80;  { Offset vers PE header }
+  PeWriteBuffer(DosHdr, SizeOf(TDosHeader));
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteDosStub : ecrire le DOS stub                              }
+{ ------------------------------------------------------------ }
+
+Procedure WriteDosStub;
+Const
+  { DOS stub minimal : affiche "This program cannot be run in DOS mode" }
+  DosStubCode : Array[0..63] Of Byte = (
+    $0E, $1F, $BA, $0E, $00, $B4, $09, $CD, $21, $B8, $01, $4C, $CD, $21,
+    $54, $68, $69, $73, $20, $70, $72, $6F, $67, $72, $61, $6D, $20, $63,
+    $61, $6E, $6E, $6F, $74, $20, $62, $65, $20, $72, $75, $6E, $20, $69,
+    $6E, $20, $44, $4F, $53, $20, $6D, $6F, $64, $65, $2E, $0D, $0D, $0A,
+    $24, $00, $00, $00, $00, $00, $00, $00
+  );
+Begin
+  PeLastType := PE_DOS_STUB;
+  PeWriteBuffer(DosStubCode, PE_DOS_STUB_SIZE);
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePeSignature : ecrire la signature PE                      }
+{ ------------------------------------------------------------ }
+
+Procedure WritePeSignature;
+Begin
+  PeLastType := PE_SIGNATURE;
+  PeWriteDWord(PE_IMAGE_NT_SIGNATURE);  { 'PE\0\0' }
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCoffFileHeader : ecrire le COFF File Header               }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCoffFileHeader(NumSections : Word; OptHdrSize : Word;
+                                Chars : Word);
+Var CoffHdr : TCoffFileHeader;
+Begin
+  PeLastType := PE_COFF_HEADER;
+  CoffHdr.Machine := PE_IMAGE_FILE_MACHINE_I386;
+  CoffHdr.NumberOfSections := NumSections;
+  CoffHdr.TimeDateStamp := 0;  { On pourrait mettre la date courante }
+  CoffHdr.PointerToSymbolTable := 0;
+  CoffHdr.NumberOfSymbols := 0;
+  CoffHdr.SizeOfOptionalHeader := OptHdrSize;
+  CoffHdr.Characteristics := Chars;
+  PeWriteBuffer(CoffHdr, SizeOf(TCoffFileHeader));
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteOptionalHeader : ecrire le PE Optional Header             }
+{ ------------------------------------------------------------ }
+
+Procedure WriteOptionalHeader(CodeSize, DataSize, BssSize : LongInt;
+                                EntryRVA : LongInt;
+                                TextRVA, RdataRVA, DataRVA : LongInt;
+                                ImageSize : LongInt;
+                                ImportRVA, ImportSize : LongInt);
+Var I : Integer;
+Begin
+  PeLastType := PE_OPTIONAL_HEADER;
+  { Standard fields }
+  PeWriteWord(PE_OPTIONAL_HDR32_MAGIC);  { Magic PE32 }
+  PeWriteByte(1);   { MajorLinkerVersion }
+  PeWriteByte(0);   { MinorLinkerVersion }
+  PeWriteDWord(CodeSize);     { SizeOfCode }
+  PeWriteDWord(DataSize);     { SizeOfInitializedData }
+  PeWriteDWord(BssSize);      { SizeOfUninitializedData }
+  PeWriteDWord(EntryRVA);     { AddressOfEntryPoint }
+  PeWriteDWord(TextRVA);      { BaseOfCode }
+  PeWriteDWord(DataRVA);      { BaseOfData (PE32 only) }
+  { NT-specific fields }
+  PeWriteDWord(PeImageBase);  { ImageBase }
+  PeWriteDWord(PE_SECTION_ALIGNMENT);  { SectionAlignment }
+  PeWriteDWord(PE_FILE_ALIGNMENT);     { FileAlignment }
+  PeWriteWord(6);   { MajorOperatingSystemVersion }
+  PeWriteWord(0);   { MinorOperatingSystemVersion }
+  PeWriteWord(0);   { MajorImageVersion }
+  PeWriteWord(0);   { MinorImageVersion }
+  PeWriteWord(6);   { MajorSubsystemVersion }
+  PeWriteWord(0);   { MinorSubsystemVersion }
+  PeWriteDWord(0);  { Win32VersionValue }
+  PeWriteDWord(ImageSize);    { SizeOfImage }
+  PeWriteDWord($200);         { SizeOfHeaders (aligned) }
+  PeWriteDWord(0);            { CheckSum }
+  PeWriteWord(PE_IMAGE_SUBSYSTEM_CUI);  { Subsystem (Console) }
+  PeWriteWord(0);             { DllCharacteristics }
+  PeWriteDWord($100000);      { SizeOfStackReserve }
+  PeWriteDWord($1000);        { SizeOfStackCommit }
+  PeWriteDWord($100000);      { SizeOfHeapReserve }
+  PeWriteDWord($1000);        { SizeOfHeapCommit }
+  PeWriteDWord(0);            { LoaderFlags }
+  PeWriteDWord(16);           { NumberOfRvaAndSizes }
+  { Data directories (16 entries) }
+  PeWriteDWord(0); PeWriteDWord(0);  { Export Table }
+  PeWriteDWord(ImportRVA); PeWriteDWord(ImportSize);  { Import Table }
+  For I := 3 To 16 Do
+  Begin
+    PeWriteDWord(0); PeWriteDWord(0);  { Autres directories }
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteSectionHeader : ecrire un Section Header                  }
+{ ------------------------------------------------------------ }
+
+Procedure WriteSectionHeader(Var Sect : TPeSectionHeader);
+Begin
+  PeLastType := PE_SECTION_HEADER;
+  PeWriteBuffer(Sect, SizeOf(TPeSectionHeader));
+End;
+
+{ ------------------------------------------------------------ }
+{ ResolveFixups : resoudre les fixups dans la section .text      }
+{ ------------------------------------------------------------ }
+
+Procedure ResolveFixups;
+Var
+  I, SymIdx : Integer;
+  TargetAddr, FixupAddr : LongInt;
+  RelOffset : LongInt;
+Begin
+  For I := 1 To PeFixupCount Do
+  Begin
+    SymIdx := FindPeSymbol(PeFixups[I].TargetSym);
+    If SymIdx > 0 Then
+    Begin
+      TargetAddr := PeSymbols[SymIdx].Value;
+      FixupAddr := PeFixups[I].Offset;
+      If PeFixups[I].IsRelative Then
+      Begin
+        { Relatif au PC : cible - (adresse instruction suivante) }
+        RelOffset := TargetAddr - (FixupAddr + 4);
+        PeTextBuffer[FixupAddr] := RelOffset And $FF;
+        PeTextBuffer[FixupAddr+1] := (RelOffset Shr 8) And $FF;
+        PeTextBuffer[FixupAddr+2] := (RelOffset Shr 16) And $FF;
+        PeTextBuffer[FixupAddr+3] := (RelOffset Shr 24) And $FF;
+      End
+      Else
+      Begin
+        { Absolu : adresse complete }
+        PeTextBuffer[FixupAddr] := TargetAddr And $FF;
+        PeTextBuffer[FixupAddr+1] := (TargetAddr Shr 8) And $FF;
+        PeTextBuffer[FixupAddr+2] := (TargetAddr Shr 16) And $FF;
+        PeTextBuffer[FixupAddr+3] := (TargetAddr Shr 24) And $FF;
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GeneratePeExe : generer un fichier PE executable               }
+{ ------------------------------------------------------------ }
+
+Procedure GeneratePeExe(Const OutputPath : TString);
+Var
+  TextRVA, RdataRVA, DataRVA : LongInt;
+  TextFileOff, RdataFileOff, DataFileOff : LongInt;
+  TextAligned, RdataAligned, DataAligned : LongInt;
+  ImageSize : LongInt;
+  ImportRVA, ImportSize : LongInt;
+Begin
+  PeIsCoff := False;
+  
+  { Calculer les RVAs des sections }
+  TextRVA := PE_SECTION_ALIGNMENT;  { $1000 }
+  TextAligned := PeAlignTo(PeTextSize, PE_SECTION_ALIGNMENT);
+  RdataRVA := TextRVA + TextAligned;
+  RdataAligned := PeAlignTo(PeRdataSize, PE_SECTION_ALIGNMENT);
+  DataRVA := RdataRVA + RdataAligned;
+  DataAligned := PeAlignTo(PeDataSize, PE_SECTION_ALIGNMENT);
+  ImageSize := DataRVA + DataAligned;
+  
+  { Import table dans .rdata }
+  ImportRVA := RdataRVA;
+  ImportSize := PeRdataSize;
+  
+  { Calculer les offsets fichier }
+  TextFileOff := PE_FILE_ALIGNMENT;  { $200 }
+  RdataFileOff := TextFileOff + PeAlignTo(PeTextSize, PE_FILE_ALIGNMENT);
+  DataFileOff := RdataFileOff + PeAlignTo(PeRdataSize, PE_FILE_ALIGNMENT);
+  
+  { Configurer les sections }
+  PeTextSection := AddPeSection('.text', PeTextSize, 
+    PeAlignTo(PeTextSize, PE_FILE_ALIGNMENT),
+    PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
+  PeSections[PeTextSection].VirtualAddress := TextRVA;
+  PeSections[PeTextSection].PointerToRawData := TextFileOff;
+  
+  If PeRdataSize > 0 Then
+  Begin
+    PeRdataSection := AddPeSection('.rdata', PeRdataSize,
+      PeAlignTo(PeRdataSize, PE_FILE_ALIGNMENT),
+      PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ);
+    PeSections[PeRdataSection].VirtualAddress := RdataRVA;
+    PeSections[PeRdataSection].PointerToRawData := RdataFileOff;
+  End;
+  
+  If PeDataSize > 0 Then
+  Begin
+    PeDataSection := AddPeSection('.data', PeDataSize,
+      PeAlignTo(PeDataSize, PE_FILE_ALIGNMENT),
+      PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+    PeSections[PeDataSection].VirtualAddress := DataRVA;
+    PeSections[PeDataSection].PointerToRawData := DataFileOff;
+  End;
+  
+  { Resoudre les fixups }
+  ResolveFixups;
+  
+  { Ouvrir le fichier de sortie }
+  Assign(PeOutputFile, OutputPath);
+  {$I-}
+  Rewrite(PeOutputFile, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    CompileError('Cannot create output file: ' + OutputPath, 0);
+    Exit;
+  End;
+  PeOutputOpen := True;
+  PeFileOffset := 0;
+  
+  { Ecrire DOS Header et stub }
+  WriteDosHeader;
+  WriteDosStub;
+  
+  { Aligner sur $80 }
+  PeWritePadding($80 - PeFileOffset);
+  
+  { Ecrire PE signature }
+  WritePeSignature;
+  
+  { Ecrire COFF File Header }
+  WriteCoffFileHeader(PeSectionCount, 224, 
+    PE_IMAGE_FILE_EXECUTABLE Or PE_IMAGE_FILE_32BIT);
+  
+  { Ecrire Optional Header }
+  WriteOptionalHeader(PeTextSize, PeDataSize + PeRdataSize, 0,
+    TextRVA + PeEntryPoint, TextRVA, RdataRVA, DataRVA,
+    ImageSize, ImportRVA, ImportSize);
+  
+  { Ecrire Section Headers }
+  WriteSectionHeader(PeSections[PeTextSection]);
+  If PeRdataSection > 0 Then
+    WriteSectionHeader(PeSections[PeRdataSection]);
+  If PeDataSection > 0 Then
+    WriteSectionHeader(PeSections[PeDataSection]);
+  
+  { Aligner sur FileAlignment }
+  PeAlignFileOffset;
+  
+  { Ecrire section .text }
+  PeWriteBuffer(PeTextBuffer, PeTextSize);
+  PeAlignFileOffset;
+  
+  { Ecrire section .rdata }
+  If PeRdataSize > 0 Then
+  Begin
+    PeWriteBuffer(PeRdataBuffer, PeRdataSize);
+    PeAlignFileOffset;
+  End;
+  
+  { Ecrire section .data }
+  If PeDataSize > 0 Then
+  Begin
+    PeWriteBuffer(PeDataBuffer, PeDataSize);
+    PeAlignFileOffset;
+  End;
+  
+  { Fermer le fichier }
+  Close(PeOutputFile);
+  PeOutputOpen := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenerateCoffObj : generer un fichier COFF .OBJ                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenerateCoffObj(Const OutputPath : TString);
+Var
+  CoffHdr : TCoffFileHeader;
+  TextOff, RdataOff, DataOff : LongInt;
+  SymTabOff, StrTabOff : LongInt;
+  I, J, SymCount : Integer;
+  StrTabSize : LongInt;
+  RelocOff : LongInt;
+Begin
+  PeIsCoff := True;
+  
+  { Ouvrir le fichier de sortie }
+  Assign(PeOutputFile, OutputPath);
+  {$I-}
+  Rewrite(PeOutputFile, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    CompileError('Cannot create output file: ' + OutputPath, 0);
+    Exit;
+  End;
+  PeOutputOpen := True;
+  PeFileOffset := 0;
+  
+  { Calculer les offsets }
+  TextOff := SizeOf(TCoffFileHeader) + 
+             (3 * SizeOf(TPeSectionHeader));  { 3 sections }
+  RdataOff := TextOff + PeTextSize;
+  DataOff := RdataOff + PeRdataSize;
+  RelocOff := DataOff + PeDataSize;
+  SymTabOff := RelocOff + (PeFixupCount * 10);  { Relocations }
+  
+  { Compter les symboles }
+  SymCount := PeSymbolCount;
+  
+  { Taille de la table des chaines }
+  StrTabSize := 4;  { Taille elle-meme }
+  For I := 1 To PeSymbolCount Do
+    If Length(PeSymbols[I].Name) > 8 Then
+      StrTabSize := StrTabSize + Length(PeSymbols[I].Name) + 1;
+  
+  { Ecrire COFF File Header }
+  CoffHdr.Machine := PE_IMAGE_FILE_MACHINE_I386;
+  CoffHdr.NumberOfSections := 3;
+  CoffHdr.TimeDateStamp := 0;
+  CoffHdr.PointerToSymbolTable := SymTabOff;
+  CoffHdr.NumberOfSymbols := SymCount;
+  CoffHdr.SizeOfOptionalHeader := 0;
+  CoffHdr.Characteristics := 0;
+  PeWriteBuffer(CoffHdr, SizeOf(TCoffFileHeader));
+  
+  { Configurer et ecrire les sections }
+  { Section .text }
+  PeTextSection := AddPeSection('.text', 0, PeTextSize,
+    PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or PE_SCN_MEM_READ);
+  PeSections[PeTextSection].PointerToRawData := TextOff;
+  PeSections[PeTextSection].PointerToRelocations := RelocOff;
+  PeSections[PeTextSection].NumberOfRelocations := PeFixupCount;
+  WriteSectionHeader(PeSections[PeTextSection]);
+  
+  { Section .rdata }
+  If PeRdataSize > 0 Then
+  Begin
+    PeRdataSection := AddPeSection('.rdata', 0, PeRdataSize,
+      PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ);
+    PeSections[PeRdataSection].PointerToRawData := RdataOff;
+    WriteSectionHeader(PeSections[PeRdataSection]);
+  End
+  Else
+  Begin
+    PeRdataSection := AddPeSection('.rdata', 0, 0,
+      PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ);
+    WriteSectionHeader(PeSections[PeRdataSection]);
+  End;
+  
+  { Section .data }
+  If PeDataSize > 0 Then
+  Begin
+    PeDataSection := AddPeSection('.data', 0, PeDataSize,
+      PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+    PeSections[PeDataSection].PointerToRawData := DataOff;
+    WriteSectionHeader(PeSections[PeDataSection]);
+  End
+  Else
+  Begin
+    PeDataSection := AddPeSection('.data', 0, 0,
+      PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or PE_SCN_MEM_WRITE);
+    WriteSectionHeader(PeSections[PeDataSection]);
+  End;
+  
+  { Ecrire section .text }
+  PeWriteBuffer(PeTextBuffer, PeTextSize);
+  
+  { Ecrire section .rdata }
+  If PeRdataSize > 0 Then
+    PeWriteBuffer(PeRdataBuffer, PeRdataSize);
+  
+  { Ecrire section .data }
+  If PeDataSize > 0 Then
+    PeWriteBuffer(PeDataBuffer, PeDataSize);
+  
+  { Ecrire les relocations }
+  For I := 1 To PeFixupCount Do
+  Begin
+    PeWriteDWord(PeFixups[I].Offset);  { VirtualAddress }
+    J := FindPeSymbol(PeFixups[I].TargetSym);
+    PeWriteDWord(J);  { SymbolTableIndex }
+    If PeFixups[I].IsRelative Then
+      PeWriteWord(IMAGE_REL_I386_REL32)
+    Else
+      PeWriteWord(IMAGE_REL_I386_DIR32);
+  End;
+  
+  { Ecrire la table des symboles }
+  StrTabOff := 4;  { Offset dans la table des chaines }
+  For I := 1 To PeSymbolCount Do
+  Begin
+    { Nom (8 octets ou offset dans table des chaines) }
+    If Length(PeSymbols[I].Name) <= 8 Then
+    Begin
+      For J := 1 To 8 Do
+        If J <= Length(PeSymbols[I].Name) Then
+          PeWriteByte(Ord(PeSymbols[I].Name[J]))
+        Else
+          PeWriteByte(0);
+    End
+    Else
+    Begin
+      PeWriteDWord(0);  { Zeros indiquent un offset }
+      PeWriteDWord(StrTabOff);
+      StrTabOff := StrTabOff + Length(PeSymbols[I].Name) + 1;
+    End;
+    PeWriteDWord(PeSymbols[I].Value);  { Value }
+    If PeSymbols[I].IsDefined Then
+      PeWriteWord(PeSymbols[I].Section)
+    Else
+      PeWriteWord(IMAGE_SYM_UNDEFINED);  { SectionNumber }
+    PeWriteWord(0);  { Type }
+    PeWriteByte(PeSymbols[I].SClass);  { StorageClass }
+    PeWriteByte(0);  { NumberOfAuxSymbols }
+  End;
+  
+  { Ecrire la table des chaines }
+  StrTabSize := 4;
+  For I := 1 To PeSymbolCount Do
+    If Length(PeSymbols[I].Name) > 8 Then
+      StrTabSize := StrTabSize + Length(PeSymbols[I].Name) + 1;
+  PeWriteDWord(StrTabSize);  { Taille de la table }
+  For I := 1 To PeSymbolCount Do
+    If Length(PeSymbols[I].Name) > 8 Then
+      PeWriteString(PeSymbols[I].Name);
+  
+  { Fermer le fichier }
+  Close(PeOutputFile);
+  PeOutputOpen := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpPeState : afficher l etat du sous-systeme PE/COFF          }
+{ ------------------------------------------------------------ }
+
+Procedure DumpPeState;
+Var I : Integer;
+Begin
+  WriteLn('--- PeState dump ---');
+  WriteLn('  PeInitialized  : ', PeInitialized);
+  WriteLn('  PeIsCoff       : ', PeIsCoff);
+  WriteLn('  PeImageBase    : $', HexStr(PeImageBase, 8));
+  WriteLn('  PeSectionCount : ', PeSectionCount);
+  WriteLn('  PeTextSize     : ', PeTextSize);
+  WriteLn('  PeRdataSize    : ', PeRdataSize);
+  WriteLn('  PeDataSize     : ', PeDataSize);
+  WriteLn('  PeFixupCount   : ', PeFixupCount);
+  WriteLn('  PeImportCount  : ', PeImportCount);
+  WriteLn('  PeSymbolCount  : ', PeSymbolCount);
+  WriteLn('  PeEntryPoint   : $', HexStr(PeEntryPoint, 8));
+  WriteLn('  PeLastType     : ', PeTypeName(PeLastType));
+  If PeSectionCount > 0 Then
+  Begin
+    WriteLn('  --- Sections ---');
+    For I := 1 To PeSectionCount Do
+      WriteLn('    [', I, '] ', PeSections[I].SName,
+              ' VSize=', PeSections[I].VirtualSize,
+              ' RVA=$', HexStr(PeSections[I].VirtualAddress, 8));
+  End;
+  If PeImportCount > 0 Then
+  Begin
+    WriteLn('  --- Imports ---');
+    For I := 1 To PeImportCount Do
+      WriteLn('    [', I, '] ', PeImports[I].DllName, '!',
+              PeImports[I].FuncName,
+              ' (used=', PeImports[I].Used, ')');
+  End;
+  If PeSymbolCount > 0 Then
+  Begin
+    WriteLn('  --- Symboles ---');
+    For I := 1 To PeSymbolCount Do
+      WriteLn('    [', I, '] ', PeSymbols[I].Name,
+              ' = $', HexStr(PeSymbols[I].Value, 8),
+              ' (sect=', PeSymbols[I].Section,
+              ', def=', PeSymbols[I].IsDefined, ')');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 23)                              }
+{ ------------------------------------------------------------ }
+
+Function IsPeInitialized : Boolean;
+Begin
+  IsPeInitialized := PeInitialized;
+End;
+
+Function IsPeEmpty : Boolean;
+Begin
+  IsPeEmpty := (PeTextSize = 0) And (PeDataSize = 0);
+End;
+
+Function GetPeSectionCount : LongInt;
+Begin
+  GetPeSectionCount := PeSectionCount;
+End;
+
+Function GetPeTextSize : LongInt;
+Begin
+  GetPeTextSize := PeTextSize;
+End;
+
+Function GetPeDataSize : LongInt;
+Begin
+  GetPeDataSize := PeDataSize;
+End;
+
+Function GetPeFixupCount : LongInt;
+Begin
+  GetPeFixupCount := PeFixupCount;
+End;
+
+Function GetPeImportCount : LongInt;
+Begin
+  GetPeImportCount := PeImportCount;
+End;
+
+Function GetPeSymbolCount : LongInt;
+Begin
+  GetPeSymbolCount := PeSymbolCount;
+End;
+
+Function GetPeLastType : Integer;
+Begin
+  GetPeLastType := PeLastType;
+End;
+
+Function GetPeStatus : TString;
+Begin
+  If Not PeInitialized Then
+    GetPeStatus := 'Not initialized'
+  Else If PeIsCoff Then
+    GetPeStatus := 'COFF: ' + ItoS(PeSectionCount) + ' sections, ' +
+                   ItoS(PeTextSize) + ' text, ' +
+                   ItoS(PeSymbolCount) + ' symbols'
+  Else
+    GetPeStatus := 'PE: ' + ItoS(PeSectionCount) + ' sections, ' +
+                   ItoS(PeTextSize) + ' text, ' +
+                   ItoS(PeImportCount) + ' imports';
+End;
+
+{ ============================================================ }
+{ Programme principal (TODO 01-23)                              }
 { ============================================================ }
 
 Begin
@@ -15542,16 +16701,17 @@ Begin
   InitCvState;
   InitDtState;
   InitRtState;
+  InitPeState;
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-22) }
+  { Boucle de tokenisation (TODO 02-23) }
   While CurTokKind <> TK_EOF Do
     ParserAdvance;
 
   LexClose;
 
-  WriteLn('JAVACW32: TODO 23..25 [A FAIRE] - pas encore implemente');
+  WriteLn('JAVACW32: TODO 24..25 [A FAIRE] - pas encore implemente');
 
   ShowStats;
   Cleanup;
