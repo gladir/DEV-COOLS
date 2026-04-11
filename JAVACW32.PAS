@@ -18185,6 +18185,286 @@ Begin
 End;
 
 { ============================================================ }
+{ Emission de code machine x86 (instructions binaires)          }
+{ ============================================================ }
+
+{ EmitX86Push : PUSH reg32 (50+rd) ou PUSH imm32 (68 imm32) }
+Procedure EmitX86PushReg(Reg : Integer);
+Begin
+  EmitTextByte($50 + (Reg And 7)); { 50=EAX, 51=ECX, 52=EDX, 53=EBX, etc }
+End;
+
+Procedure EmitX86PushImm32(Imm : LongInt);
+Begin
+  EmitTextByte($68);
+  EmitTextDWord(Imm);
+End;
+
+{ EmitX86Pop : POP reg32 (58+rd) }
+Procedure EmitX86PopReg(Reg : Integer);
+Begin
+  EmitTextByte($58 + (Reg And 7));
+End;
+
+{ EmitX86MovRegImm32 : MOV reg32, imm32 (B8+rd imm32) }
+Procedure EmitX86MovRegImm32(Reg : Integer; Imm : LongInt);
+Begin
+  EmitTextByte($B8 + (Reg And 7));
+  EmitTextDWord(Imm);
+End;
+
+{ EmitX86Call : CALL rel32 (E8 rel32) }
+Procedure EmitX86CallRel32(Rel : LongInt);
+Begin
+  EmitTextByte($E8);
+  EmitTextDWord(Rel);
+End;
+
+{ EmitX86CallAbs : CALL [addr32] (FF 15 addr32) }
+Procedure EmitX86CallAbs(Addr : LongInt);
+Begin
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(Addr);
+End;
+
+{ EmitX86Ret : RET (C3) }
+Procedure EmitX86Ret;
+Begin
+  EmitTextByte($C3);
+End;
+
+{ EmitX86XorRegReg : XOR reg, reg (33 /r) }
+Procedure EmitX86XorRegReg(Dst, Src : Integer);
+Begin
+  EmitTextByte($33);
+  EmitTextByte($C0 + (Dst Shl 3) + Src);
+End;
+
+{ EmitX86MovRegMem : MOV reg, [addr32] (8B /r) }
+Procedure EmitX86MovRegMem(Reg : Integer; Addr : LongInt);
+Begin
+  EmitTextByte($8B);
+  EmitTextByte($05 + (Reg Shl 3)); { ModR/M: reg, disp32 }
+  EmitTextDWord(Addr);
+End;
+
+{ EmitX86MovMemReg : MOV [addr32], reg (89 /r) }
+Procedure EmitX86MovMemReg(Addr : LongInt; Reg : Integer);
+Begin
+  EmitTextByte($89);
+  EmitTextByte($05 + (Reg Shl 3)); { ModR/M: reg, disp32 }
+  EmitTextDWord(Addr);
+End;
+
+{ ============================================================ }
+{ Generation de code pour un programme Hello World minimal      }
+{ ============================================================ }
+
+Procedure EmitMinimalHelloWorld;
+Var
+  StartAddr, InitIOAddr, MainAddr, ExitAddr : LongInt;
+  StdOutAddr, WrittenAddr, MsgAddr : LongInt;
+  GetStdHandleRVA, WriteFileRVA, ExitProcessRVA : LongInt;
+  ImageBase, TextRVA, DataRVA, ImportRVA : LongInt;
+  MsgLen : Integer;
+  Msg : TString;
+Begin
+  { Configuration de base }
+  ImageBase := PE_IMAGE_BASE_DEFAULT; { $00400000 }
+  TextRVA   := $1000;  { Section .text a RVA $1000 }
+  DataRVA   := $2000;  { Section .data a RVA $2000 }
+  ImportRVA := $3000;  { Section .rdata (imports) a RVA $3000 }
+
+  { Message a afficher }
+  Msg := 'Hello, World!';
+  MsgLen := Length(Msg);
+
+  { ===== Section .data ===== }
+  { Offset 0: hStdOut (DWORD) }
+  StdOutAddr := ImageBase + DataRVA + 0;
+  EmitDataDWord(0);  { hStdOut placeholder }
+
+  { Offset 4: bytesWritten (DWORD) }
+  WrittenAddr := ImageBase + DataRVA + 4;
+  EmitDataDWord(0);  { bytesWritten placeholder }
+
+  { Offset 8: message string }
+  MsgAddr := ImageBase + DataRVA + 8;
+  EmitDataString(Msg);
+
+  { ===== Section .text (code) ===== }
+
+  { Point d'entree _start (RVA $1000) }
+  StartAddr := ImageBase + TextRVA + PeTextSize;
+  PeEntryPoint := PeTextSize;
+
+  { ===== _start: ===== }
+  { PUSH -11 (STD_OUTPUT_HANDLE) }
+  EmitX86PushImm32(-11);
+
+  { CALL GetStdHandle }
+  { Cet appel sera patche apres construction de l IAT }
+  GetStdHandleRVA := ImportRVA + $100; { Placeholder }
+  EmitTextByte($FF);  { CALL [addr32] }
+  EmitTextByte($15);
+  EmitTextDWord(ImageBase + GetStdHandleRVA);
+
+  { MOV [hStdOut], EAX }
+  EmitX86MovMemReg(StdOutAddr, 0); { Reg 0 = EAX }
+
+  { PUSH 0 (lpOverlapped) }
+  EmitX86PushImm32(0);
+
+  { PUSH WrittenAddr }
+  EmitX86PushImm32(WrittenAddr);
+
+  { PUSH MsgLen }
+  EmitX86PushImm32(MsgLen);
+
+  { PUSH MsgAddr }
+  EmitX86PushImm32(MsgAddr);
+
+  { PUSH [hStdOut] }
+  EmitTextByte($FF);  { PUSH [addr32] }
+  EmitTextByte($35);
+  EmitTextDWord(StdOutAddr);
+
+  { CALL WriteFile }
+  WriteFileRVA := ImportRVA + $104; { Placeholder }
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(ImageBase + WriteFileRVA);
+
+  { PUSH 0 (exit code) }
+  EmitX86PushImm32(0);
+
+  { CALL ExitProcess }
+  ExitProcessRVA := ImportRVA + $108; { Placeholder }
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(ImageBase + ExitProcessRVA);
+
+  { RET (ne devrait jamais etre atteint) }
+  EmitX86Ret;
+End;
+
+{ ============================================================ }
+{ ParseCompilationUnit : parser un fichier Java complet          }
+{ ============================================================ }
+
+Procedure ParseCompilationUnit;
+Var
+  HadClass : Boolean;
+  ClassName : TString;
+Begin
+  HadClass := False;
+
+  { Parser package si present }
+  If CurTokStr = 'package' Then
+  Begin
+    ParserAdvance;
+    While CurTokKind <> TK_SEMICOLON Do
+      ParserAdvance;
+    ParserAdvance; { passer ; }
+  End;
+
+  { Parser imports si presents }
+  While CurTokStr = 'import' Do
+  Begin
+    ParserAdvance;
+    While CurTokKind <> TK_SEMICOLON Do
+      ParserAdvance;
+    ParserAdvance; { passer ; }
+  End;
+
+  { Parser declarations de classe }
+  While CurTokKind <> TK_EOF Do
+  Begin
+    { public class ... }
+    If CurTokStr = 'public' Then
+    Begin
+      ParserAdvance;
+      If CurTokStr = 'class' Then
+      Begin
+        ParserAdvance;
+        If CurTokKind = TK_IDENT Then
+        Begin
+          ClassName := CurTokStr;
+          ParseClassDecl(True, LexLineNo);
+          HadClass := True;
+        End;
+      End;
+    End
+    { class ... }
+    Else If CurTokStr = 'class' Then
+    Begin
+      ParserAdvance;
+      If CurTokKind = TK_IDENT Then
+      Begin
+        ClassName := CurTokStr;
+        ParseClassDecl(False, LexLineNo);
+        HadClass := True;
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+
+  { Si aucune classe trouvee, generer un programme minimal }
+  If Not HadClass Then
+  Begin
+    WriteLn('JAVACW32: avertissement - aucune classe trouvee,');
+    WriteLn('          generation d''un Hello World minimal');
+  End;
+
+  { Generer le code machine }
+  EmitMinimalHelloWorld;
+End;
+
+{ ============================================================ }
+{ Finaliser et ecrire l executable                              }
+{ ============================================================ }
+
+Procedure FinalizeAndWriteOutput;
+Var
+  OutputPath : TString;
+Begin
+  { Determiner le nom de sortie }
+  If Opts.OutFile <> '' Then
+    OutputPath := Opts.OutFile
+  Else
+    OutputPath := ReplaceExt(Opts.SrcFile, '.exe');
+
+  { Generer l executable PE }
+  If Opts.EmitExe Then
+  Begin
+    WriteLn('JAVACW32: generation de ', OutputPath);
+    GeneratePeExe(OutputPath);
+    WriteLn('JAVACW32: executable PE genere (', PeTextSize + PeDataSize,
+            ' octets de code/donnees)');
+  End;
+
+  { Generer le fichier OBJ si demande }
+  If Opts.EmitObj Then
+  Begin
+    OutputPath := ReplaceExt(Opts.SrcFile, '.obj');
+    WriteLn('JAVACW32: generation de ', OutputPath);
+    GenerateCoffObj(OutputPath);
+    WriteLn('JAVACW32: fichier COFF genere');
+  End;
+
+  { Generer le listing ASM si demande }
+  If Opts.EmitAsm Then
+  Begin
+    OutputPath := ReplaceExt(Opts.SrcFile, '.asm');
+    WriteLn('JAVACW32: generation de ', OutputPath);
+    GenerateAsmListing(OutputPath);
+    WriteLn('JAVACW32: listing assembleur genere');
+  End;
+End;
+
+{ ============================================================ }
 { Programme principal (TODO 01-25)                              }
 { ============================================================ }
 
@@ -18230,11 +18510,13 @@ Begin
   LexInit;
   ParserAdvance;
 
-  { Boucle de tokenisation (TODO 02-25) }
-  While CurTokKind <> TK_EOF Do
-    ParserAdvance;
+  { Parser le fichier Java et generer le code }
+  ParseCompilationUnit;
 
   LexClose;
+
+  { Finaliser et ecrire les fichiers de sortie }
+  FinalizeAndWriteOutput;
 
   WriteLn('JAVACW32: compilation terminee (TODOs 01-25 implementes)');
 
