@@ -18394,16 +18394,42 @@ Begin
  End;
 End;
 
-{ --- Dessiner le texte de la boite de message --- }
+{ --- Dessiner le texte de la boite de message (multi-lignes) --- }
 
 Procedure DrawMessageText(Var MB: TMessageBoxDlg);
 Var
- TX, TY: Integer;
+ TX, TY, MaxW, LineY: Integer;
+ Remaining, Word, CurLine: String;
+ P: Integer;
 Begin
  TX := MB.Base.X + DLG_PADDING + DLG_ICON_SIZE + DLG_PADDING;
  TY := MB.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ MaxW := MB.Base.X + MB.Base.Width - DLG_PADDING - TX;
  SetColor(CLR_BORDER);
- OutTextXY(TX, TY, MB.Text);
+ LineY := TY;
+ Remaining := MB.Text;
+ CurLine := '';
+ While Length(Remaining) > 0 Do Begin
+  P := Pos(' ', Remaining);
+  If P = 0 Then Begin
+   Word := Remaining;
+   Remaining := '';
+  End Else Begin
+   Word := Copy(Remaining, 1, P - 1);
+   Remaining := Copy(Remaining, P + 1, Length(Remaining) - P);
+  End;
+  If CurLine = '' Then
+   CurLine := Word
+  Else If TextWidth(CurLine + ' ' + Word) <= MaxW Then
+   CurLine := CurLine + ' ' + Word
+  Else Begin
+   OutTextXY(TX, LineY, CurLine);
+   LineY := LineY + TextHeight('A') + 4;
+   CurLine := Word;
+  End;
+ End;
+ If CurLine <> '' Then
+  OutTextXY(TX, LineY, CurLine);
 End;
 
 { --- Dessiner la boite de message complete --- }
