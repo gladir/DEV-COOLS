@@ -2798,6 +2798,7 @@ Var
  TermVisible  : Boolean;           { le panneau terminal est visible }
  TermSelectOpen : Boolean;         { le selectbox deroulant est ouvert}
  TermSelectIdx  : Integer;         { index surbrillance clavier 0..2 }
+ TerminalOnTop  : Boolean;         { True=terminal au-dessus de Sortie}
  TermX        : Integer;           { position X commune du panneau   }
  TermY        : Integer;           { position Y commune du panneau   }
  TermWidth    : Integer;           { largeur commune du panneau      }
@@ -4713,22 +4714,19 @@ Begin
   303: Begin { Terminal }
         TermVisible := Not TermVisible;
         If TermVisible Then Begin
-         { Le terminal remplace le OutputPanel a la meme position }
-         TermX := EXPLORER_WIDTH + SPLITTER_WIDTH;
+         { Le terminal occupe tout le bas de l ecran }
+         TermX := 0;
          TermY := GetScreenHeight - OUTPUT_HEIGHT
           - STATUSBAR_HEIGHT;
-         TermWidth := GetScreenWidth - EXPLORER_WIDTH
-          - SPLITTER_WIDTH;
+         TermWidth := GetScreenWidth - EXPLORER_WIDTH;
          TermHeight := OUTPUT_HEIGHT;
-         OutputPanel.Visible := False;
          If TermPanels[ActiveShell].LineCount = 0 Then
           TermAddLine(TermPanels[ActiveShell],
            'Terminal integre. Tapez HELP pour la liste des commandes.');
          TerminalHasFocus := True;
          TermSelectOpen := False;
+         TerminalOnTop := True;
         End Else Begin
-         { Restaurer le OutputPanel }
-         OutputPanel.Visible := True;
          TerminalHasFocus := False;
         End;
         FullRepaintNeeded := True;
@@ -15753,13 +15751,14 @@ Begin
  ScrW := GetScreenWidth;
  ScrH := GetScreenHeight;
  BottomY := ScrH - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
- TermX := EXPLORER_WIDTH + SPLITTER_WIDTH;
+ TermX := 0;
  TermY := BottomY;
- TermWidth := ScrW - EXPLORER_WIDTH - SPLITTER_WIDTH;
+ TermWidth := ScrW - EXPLORER_WIDTH;
  TermHeight := OUTPUT_HEIGHT;
  TermVisible := False;
  TermSelectOpen := False;
  TermSelectIdx := 1;
+ TerminalOnTop := True;
  TerminalHasFocus := False;
  ActiveShell := SK_POWERSHELL;
  InitTerminalPanel(TermPanels[SK_CMD], SK_CMD);
@@ -26156,8 +26155,14 @@ Begin
   DrawEditor(ActiveEditor);
  DrawExplorer(SolExplorer);
  DrawPropertiesPanel(PropsPanel);
- DrawOutputPanel(OutputPanel);
- DrawTerminalPanel(TermPanels[ActiveShell]);
+ { Dessiner Output et Terminal selon le z-order }
+ If TermVisible And TerminalOnTop Then Begin
+  DrawOutputPanel(OutputPanel);
+  DrawTerminalPanel(TermPanels[ActiveShell]);
+ End Else Begin
+  DrawTerminalPanel(TermPanels[ActiveShell]);
+  DrawOutputPanel(OutputPanel);
+ End;
  DrawErrorList(ErrorList);
  DrawStatusBar(StatusBar);
  { Dessiner le dialogue par-dessus si visible }
@@ -26266,7 +26271,8 @@ Begin
  { Evenements pour l editeur de texte actif }
  { Gestion du focus : clic souris determine qui recoit le clavier }
  If (Ev.Kind = EV_MOUSE_DOWN) Then Begin
-  If TermVisible And
+  { Verifier d abord le panneau au-dessus selon le z-order }
+  If TermVisible And TerminalOnTop And
      (Ev.MouseX >= TermX) And
      (Ev.MouseX < TermX + TermWidth) And
      (Ev.MouseY >= TermY) And
@@ -26274,7 +26280,45 @@ Begin
    TerminalHasFocus := True;
    HandleTerminalEvent(TermPanels[ActiveShell], Ev);
    Exit;
-  End Else Begin
+  End
+  Else If TermVisible And (Not TerminalOnTop) And
+     (Ev.MouseX >= OutputPanel.X) And
+     (Ev.MouseX < OutputPanel.X + OutputPanel.Width) And
+     (Ev.MouseY >= OutputPanel.Y) And
+     (Ev.MouseY < OutputPanel.Y + OutputPanel.Height) Then Begin
+   { Output est au-dessus et on clique dessus }
+   TerminalHasFocus := False;
+   If TermSelectOpen Then Begin
+    TermSelectOpen := False;
+    FullRepaintNeeded := True;
+   End;
+  End
+  Else If TermVisible And
+     (Ev.MouseX >= TermX) And
+     (Ev.MouseX < TermX + TermWidth) And
+     (Ev.MouseY >= TermY) And
+     (Ev.MouseY < TermY + TermHeight) Then Begin
+   { Terminal est en dessous mais on clique dessus }
+   TerminalOnTop := True;
+   TerminalHasFocus := True;
+   FullRepaintNeeded := True;
+   HandleTerminalEvent(TermPanels[ActiveShell], Ev);
+   Exit;
+  End
+  Else If TermVisible And
+     (Ev.MouseX >= OutputPanel.X) And
+     (Ev.MouseX < OutputPanel.X + OutputPanel.Width) And
+     (Ev.MouseY >= OutputPanel.Y) And
+     (Ev.MouseY < OutputPanel.Y + OutputPanel.Height) Then Begin
+   { Output est en dessous mais on clique dessus }
+   TerminalOnTop := False;
+   TerminalHasFocus := False;
+   FullRepaintNeeded := True;
+   If TermSelectOpen Then Begin
+    TermSelectOpen := False;
+   End;
+  End
+  Else Begin
    TerminalHasFocus := False;
    If TermSelectOpen Then Begin
     TermSelectOpen := False;
