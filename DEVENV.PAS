@@ -1338,6 +1338,9 @@ Const
  TERM_TAB_HEIGHT       = 22;      { hauteur de l onglet terminal   }
  MAX_TERM_HISTORY      = 50;      { historique des commandes       }
  MAX_TERM_DIRSTACK     = 20;      { pile de repertoires            }
+ TERM_SELECT_WIDTH     = 180;     { largeur du selecteur deroulant }
+ TERM_SELECT_HEIGHT    = 18;      { hauteur du selecteur ferme     }
+ TERM_SELECT_ITEM_H    = 18;      { hauteur d un item dans la liste}
 
  { Codes de retour }
  EXIT_OK               = 0;
@@ -2788,9 +2791,16 @@ Var
  PropsPanel   : TPropertiesPanel;
  { Panneau de sortie }
  OutputPanel  : TOutputPanel;
- { Terminal integre }
- TermPanel    : TTerminalPanel;
+ { Terminal integre : deux instances independantes (PS et CMD) }
+ TermPanels   : Array[TShellKind] Of TTerminalPanel;
+ ActiveShell  : TShellKind;        { shell actuellement affiche      }
  TerminalHasFocus : Boolean;       { le terminal a le focus clavier }
+ TermVisible  : Boolean;           { le panneau terminal est visible }
+ TermSelectOpen : Boolean;         { le selectbox deroulant est ouvert}
+ TermX        : Integer;           { position X commune du panneau   }
+ TermY        : Integer;           { position Y commune du panneau   }
+ TermWidth    : Integer;           { largeur commune du panneau      }
+ TermHeight   : Integer;           { hauteur commune du panneau      }
  { Panneau de liste d erreurs }
  ErrorList    : TErrorListPanel;
  { Dialogue de recherche/remplacement }
@@ -4700,21 +4710,24 @@ Begin
   500: HandleStartDebugging; { Generer la solution (F6) }
   600: HandleStartDebugging; { Demarrer le debogage (F5) }
   303: Begin { Terminal }
-        TermPanel.Visible := Not TermPanel.Visible;
-        If TermPanel.Visible Then Begin
-         { Ajuster le OutputPanel pour partager l espace }
-         TermPanel.Width := (GetScreenWidth - EXPLORER_WIDTH) Div 2;
-         OutputPanel.X := TermPanel.X + TermPanel.Width;
-         OutputPanel.Width := GetScreenWidth - EXPLORER_WIDTH
-          - TermPanel.Width;
-         If TermPanel.LineCount = 0 Then
-          TermAddLine(TermPanel,
+        TermVisible := Not TermVisible;
+        If TermVisible Then Begin
+         { Le terminal remplace le OutputPanel a la meme position }
+         TermX := EXPLORER_WIDTH + SPLITTER_WIDTH;
+         TermY := GetScreenHeight - OUTPUT_HEIGHT
+          - STATUSBAR_HEIGHT;
+         TermWidth := GetScreenWidth - EXPLORER_WIDTH
+          - SPLITTER_WIDTH;
+         TermHeight := OUTPUT_HEIGHT;
+         OutputPanel.Visible := False;
+         If TermPanels[ActiveShell].LineCount = 0 Then
+          TermAddLine(TermPanels[ActiveShell],
            'Terminal integre. Tapez HELP pour la liste des commandes.');
          TerminalHasFocus := True;
+         TermSelectOpen := False;
         End Else Begin
-         { Restaurer le OutputPanel a la largeur complete }
-         OutputPanel.X := 0;
-         OutputPanel.Width := GetScreenWidth - EXPLORER_WIDTH;
+         { Restaurer le OutputPanel }
+         OutputPanel.Visible := True;
          TerminalHasFocus := False;
         End;
         FullRepaintNeeded := True;
@@ -15610,13 +15623,12 @@ Begin
    '''' + CurrCmd + ''' n''est pas reconnu comme commande interne.');
 End;
 
-{ --- Initialiser le terminal --- }
+{ --- Initialiser un terminal (buffer seulement, pas le layout) --- }
 
-Procedure InitTerminalPanel(Var TP: TTerminalPanel);
+Procedure InitTerminalPanel(Var TP: TTerminalPanel;
+ Kind: TShellKind);
 Var
  I: Integer;
- ScrW, ScrH: Integer;
- BottomY: Integer;
 Begin
  For I := 0 To MAX_TERM_LINES - 1 Do
   TP.Lines[I] := '';
@@ -15625,49 +15637,122 @@ Begin
  TP.InputLine := '';
  TP.InputCol := 1;
  TP.PartialLine := '';
- ScrW := GetScreenWidth;
- ScrH := GetScreenHeight;
- BottomY := ScrH - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  TP.X := 0;
- TP.Y := BottomY;
- TP.Width := (ScrW - EXPLORER_WIDTH) Div 2;
- TP.Height := OUTPUT_HEIGHT;
+ TP.Y := 0;
+ TP.Width := 0;
+ TP.Height := 0;
  TP.Visible := False;
  TP.NeedRepaint := True;
- TP.Shell := SK_POWERSHELL;
+ TP.Shell := Kind;
  TP.Echo := True;
  TP.NumberHistory := 0;
  TP.HistoryPos := 0;
  TP.NumberDirStack := 0;
 End;
 
-{ --- Dessiner le terminal --- }
+{ --- Initialiser le conteneur des deux terminaux --- }
+
+Procedure InitTerminals;
+Var
+ ScrW, ScrH, BottomY: Integer;
+Begin
+ ScrW := GetScreenWidth;
+ ScrH := GetScreenHeight;
+ BottomY := ScrH - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ TermX := EXPLORER_WIDTH + SPLITTER_WIDTH;
+ TermY := BottomY;
+ TermWidth := ScrW - EXPLORER_WIDTH - SPLITTER_WIDTH;
+ TermHeight := OUTPUT_HEIGHT;
+ TermVisible := False;
+ TermSelectOpen := False;
+ TerminalHasFocus := False;
+ ActiveShell := SK_POWERSHELL;
+ InitTerminalPanel(TermPanels[SK_CMD], SK_CMD);
+ InitTerminalPanel(TermPanels[SK_POWERSHELL], SK_POWERSHELL);
+End;
+
+{ --- Dessiner le panneau terminal avec selecteur deroulant --- }
 
 Procedure DrawTerminalPanel(Var TP: TTerminalPanel);
 Var
  I, YPos, VisLines, StartIdx: Integer;
- S, PromptStr: String;
+ S, PromptStr, SelLabel: String;
  MaxCols: Integer;
+ PX, PY, PW, PH: Integer;
+ SBX, SBY: Integer;
 Begin
- If Not TP.Visible Then Exit;
- { Fond }
- SetColor(0); { noir }
- Bar(TP.X, TP.Y, TP.X + TP.Width - 1, TP.Y + TP.Height - 1);
- { Onglet }
- SetColor(CLR_TITLEBAR_ACTIVE);
- Bar(TP.X, TP.Y, TP.X + TP.Width - 1,
-  TP.Y + TERM_TAB_HEIGHT - 1);
- SetColor(15); { blanc }
- OutTextXY(TP.X + 8, TP.Y + 4, 'Terminal');
- { Bordure }
+ If Not TermVisible Then Exit;
+ PX := TermX;
+ PY := TermY;
+ PW := TermWidth;
+ PH := TermHeight;
+ { Fond noir }
+ SetFillStyle(SolidFill, 0);
+ Bar(PX, PY, PX + PW - 1, PY + PH - 1);
+ { Barre du haut avec titre TERMINAL et SelectBox }
+ SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
+ Bar(PX, PY, PX + PW - 1, PY + TERM_TAB_HEIGHT - 1);
+ SetColor(15);
+ OutTextXY(PX + 4, PY + 4, 'TERMINAL');
+ { SelectBox deroulant a droite du titre }
+ SBX := PX + 80;
+ SBY := PY + 2;
+ { Fond du selectbox : gris fonce }
+ SetFillStyle(SolidFill, 8);
+ Bar(SBX, SBY, SBX + TERM_SELECT_WIDTH - 1,
+  SBY + TERM_SELECT_HEIGHT - 1);
+ { Bordure du selectbox }
  SetColor(CLR_BORDER);
- Rectangle(TP.X, TP.Y, TP.X + TP.Width - 1,
-  TP.Y + TP.Height - 1);
+ Rectangle(SBX, SBY, SBX + TERM_SELECT_WIDTH - 1,
+  SBY + TERM_SELECT_HEIGHT - 1);
+ { Texte du SelectBox : nom du shell actif }
+ If ActiveShell = SK_POWERSHELL Then
+  SelLabel := 'PowerShell dev'
+ Else
+  SelLabel := 'Invite de commandes';
+ SetColor(15);
+ OutTextXY(SBX + 4, SBY + 3, SelLabel);
+ { Fleche vers le bas }
+ OutTextXY(SBX + TERM_SELECT_WIDTH - 14, SBY + 3, #31);
+ { Dessiner la liste deroulante si ouverte }
+ If TermSelectOpen Then Begin
+  { Item 1 : Invite de commandes }
+  If ActiveShell = SK_CMD Then
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
+  Else
+   SetFillStyle(SolidFill, 8);
+  Bar(SBX, SBY + TERM_SELECT_HEIGHT,
+   SBX + TERM_SELECT_WIDTH - 1,
+   SBY + TERM_SELECT_HEIGHT + TERM_SELECT_ITEM_H - 1);
+  SetColor(15);
+  OutTextXY(SBX + 4, SBY + TERM_SELECT_HEIGHT + 3,
+   'Invite de commandes');
+  { Item 2 : PowerShell dev }
+  If ActiveShell = SK_POWERSHELL Then
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
+  Else
+   SetFillStyle(SolidFill, 8);
+  Bar(SBX, SBY + TERM_SELECT_HEIGHT + TERM_SELECT_ITEM_H,
+   SBX + TERM_SELECT_WIDTH - 1,
+   SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H - 1);
+  SetColor(15);
+  OutTextXY(SBX + 4,
+   SBY + TERM_SELECT_HEIGHT + TERM_SELECT_ITEM_H + 3,
+   'PowerShell dev');
+  { Bordure de la liste }
+  SetColor(CLR_BORDER);
+  Rectangle(SBX, SBY + TERM_SELECT_HEIGHT,
+   SBX + TERM_SELECT_WIDTH - 1,
+   SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H - 1);
+ End;
+ { Bordure du panneau }
+ SetColor(CLR_BORDER);
+ Rectangle(PX, PY, PX + PW - 1, PY + PH - 1);
  { Zone de texte }
- VisLines := (TP.Height - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
+ VisLines := (PH - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
   Div TERM_LINE_HEIGHT;
  If VisLines < 1 Then VisLines := 1;
- MaxCols := (TP.Width - 8) Div TERM_CHAR_WIDTH;
+ MaxCols := (PW - 8) Div TERM_CHAR_WIDTH;
  If MaxCols < 10 Then MaxCols := 10;
  { Auto-scroll }
  If TP.LineCount > VisLines Then
@@ -15675,26 +15760,29 @@ Begin
  Else
   TP.ScrollTop := 0;
  { Afficher les lignes }
- SetColor(7); { gris clair : texte terminal }
- YPos := TP.Y + TERM_TAB_HEIGHT + 2;
+ SetColor(7);
+ YPos := PY + TERM_TAB_HEIGHT + 2;
  StartIdx := TP.ScrollTop;
  For I := 0 To VisLines - 1 Do Begin
   If StartIdx + I < TP.LineCount Then Begin
    S := TP.Lines[StartIdx + I];
    If Length(S) > MaxCols Then
     S := Copy(S, 1, MaxCols);
-   OutTextXY(TP.X + 4, YPos, S);
+   OutTextXY(PX + 4, YPos, S);
   End;
   YPos := YPos + TERM_LINE_HEIGHT;
  End;
- { Ligne de saisie en bas avec prompt du repertoire courant }
- SetColor(10); { vert : prompt }
- YPos := TP.Y + TP.Height - TERM_LINE_HEIGHT - 2;
+ { Ligne de saisie en bas avec prompt }
+ SetColor(10);
+ YPos := PY + PH - TERM_LINE_HEIGHT - 2;
  GetDir(0, PromptStr);
- PromptStr := PromptStr + '> ' + TP.InputLine + '_';
+ If TP.Shell = SK_POWERSHELL Then
+  PromptStr := 'PS ' + PromptStr + '> ' + TP.InputLine + '_'
+ Else
+  PromptStr := PromptStr + '> ' + TP.InputLine + '_';
  If Length(PromptStr) > MaxCols Then
   PromptStr := Copy(PromptStr, 1, MaxCols);
- OutTextXY(TP.X + 4, YPos, PromptStr);
+ OutTextXY(PX + 4, YPos, PromptStr);
  TP.NeedRepaint := False;
 End;
 
@@ -15705,16 +15793,82 @@ Procedure HandleTerminalEvent(Var TP: TTerminalPanel;
 Var
  Ch: Char;
  Dir: String;
+ SBX, SBY: Integer;
+ NewShell: TShellKind;
 Begin
- If Not TP.Visible Then Exit;
- { Verifier si l evenement est dans la zone du terminal }
+ If Not TermVisible Then Exit;
+ { Position du SelectBox }
+ SBX := TermX + 80;
+ SBY := TermY + 2;
+ { Clic souris }
  If (Ev.Kind = EV_MOUSE_DOWN) Then Begin
-  If (Ev.MouseX >= TP.X) And (Ev.MouseX < TP.X + TP.Width) And
-     (Ev.MouseY >= TP.Y) And
-     (Ev.MouseY < TP.Y + TP.Height) Then
-   { clic dans le terminal }
+  { Si la liste deroulante est ouverte, verifier clic sur un item }
+  If TermSelectOpen Then Begin
+   { Item 1 : Invite de commandes }
+   If (Ev.MouseX >= SBX) And
+      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
+      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT) And
+      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
+       + TERM_SELECT_ITEM_H) Then Begin
+    NewShell := SK_CMD;
+    TermSelectOpen := False;
+    If ActiveShell <> NewShell Then Begin
+     ActiveShell := NewShell;
+     If TermPanels[SK_CMD].LineCount = 0 Then
+      TermAddLine(TermPanels[SK_CMD],
+       'Invite de commandes developpeur. Tapez HELP.');
+    End;
+    TermPanels[ActiveShell].NeedRepaint := True;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
+   { Item 2 : PowerShell dev }
+   If (Ev.MouseX >= SBX) And
+      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
+      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
+       + TERM_SELECT_ITEM_H) And
+      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
+       + 2 * TERM_SELECT_ITEM_H) Then Begin
+    NewShell := SK_POWERSHELL;
+    TermSelectOpen := False;
+    If ActiveShell <> NewShell Then Begin
+     ActiveShell := NewShell;
+     If TermPanels[SK_POWERSHELL].LineCount = 0 Then
+      TermAddLine(TermPanels[SK_POWERSHELL],
+       'PowerShell developpeur. Tapez HELP.');
+    End;
+    TermPanels[ActiveShell].NeedRepaint := True;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
+   { Clic ailleurs : fermer la liste }
+   TermSelectOpen := False;
+   FullRepaintNeeded := True;
+  End;
+  { Clic sur le SelectBox ferme : ouvrir/fermer la liste }
+  If (Ev.MouseX >= SBX) And
+     (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
+     (Ev.MouseY >= SBY) And
+     (Ev.MouseY < SBY + TERM_SELECT_HEIGHT) Then Begin
+   TermSelectOpen := Not TermSelectOpen;
+   FullRepaintNeeded := True;
    Exit;
+  End;
+  { Clic dans la zone du terminal }
+  If (Ev.MouseX >= TermX) And
+     (Ev.MouseX < TermX + TermWidth) And
+     (Ev.MouseY >= TermY) And
+     (Ev.MouseY < TermY + TermHeight) Then Begin
+   If TermSelectOpen Then Begin
+    TermSelectOpen := False;
+    FullRepaintNeeded := True;
+   End;
+   Exit;
+  End;
  End;
+ { Si la liste deroulante est ouverte, ignorer le clavier }
+ If TermSelectOpen Then Exit;
+ { Clavier }
  If Ev.Kind = EV_KEY_CHAR Then Begin
   Ch := Ev.KeyChar;
   Case Ch Of
@@ -15727,7 +15881,10 @@ Begin
    End;
    #13: Begin { Enter }
     GetDir(0, Dir);
-    TermAddLine(TP, Dir + '> ' + TP.InputLine);
+    If TP.Shell = SK_POWERSHELL Then
+     TermAddLine(TP, 'PS ' + Dir + '> ' + TP.InputLine)
+    Else
+     TermAddLine(TP, Dir + '> ' + TP.InputLine);
     TermExecuteCommand(TP, TP.InputLine);
     TP.InputLine := '';
     TP.InputCol := 1;
@@ -25806,7 +25963,7 @@ Begin
  DrawExplorer(SolExplorer);
  DrawPropertiesPanel(PropsPanel);
  DrawOutputPanel(OutputPanel);
- DrawTerminalPanel(TermPanel);
+ DrawTerminalPanel(TermPanels[ActiveShell]);
  DrawErrorList(ErrorList);
  DrawStatusBar(StatusBar);
  { Dessiner le dialogue par-dessus si visible }
@@ -25915,21 +26072,26 @@ Begin
  { Evenements pour l editeur de texte actif }
  { Gestion du focus : clic souris determine qui recoit le clavier }
  If (Ev.Kind = EV_MOUSE_DOWN) Then Begin
-  If TermPanel.Visible And
-     (Ev.MouseX >= TermPanel.X) And
-     (Ev.MouseX < TermPanel.X + TermPanel.Width) And
-     (Ev.MouseY >= TermPanel.Y) And
-     (Ev.MouseY < TermPanel.Y + TermPanel.Height) Then Begin
+  If TermVisible And
+     (Ev.MouseX >= TermX) And
+     (Ev.MouseX < TermX + TermWidth) And
+     (Ev.MouseY >= TermY) And
+     (Ev.MouseY < TermY + TermHeight) Then Begin
    TerminalHasFocus := True;
-   TermPanel.NeedRepaint := True;
+   HandleTerminalEvent(TermPanels[ActiveShell], Ev);
    Exit;
-  End Else
+  End Else Begin
    TerminalHasFocus := False;
+   If TermSelectOpen Then Begin
+    TermSelectOpen := False;
+    FullRepaintNeeded := True;
+   End;
+  End;
  End;
  { Si le terminal a le focus, lui envoyer les evenements clavier }
- If TermPanel.Visible And TerminalHasFocus Then Begin
+ If TermVisible And TerminalHasFocus Then Begin
   If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Then Begin
-   HandleTerminalEvent(TermPanel, Ev);
+   HandleTerminalEvent(TermPanels[ActiveShell], Ev);
    Exit;
   End;
  End;
@@ -25962,8 +26124,8 @@ Begin
  { Evenements pour le panneau de sortie }
  HandleOutputEvent(OutputPanel, Ev);
  { Evenements pour le terminal integre }
- If TermPanel.Visible Then
-  HandleTerminalEvent(TermPanel, Ev);
+ If TermVisible Then
+  HandleTerminalEvent(TermPanels[ActiveShell], Ev);
  { Evenements pour la liste d erreurs }
  HandleErrorListEvent(ErrorList, Ev);
 End;
@@ -25986,8 +26148,8 @@ Begin
     DrawAllWidgets;
   End Else Begin
    { Meme sans evenement utilisateur, redessiner si le terminal a change }
-   If TermPanel.Visible And TermPanel.NeedRepaint Then
-    DrawTerminalPanel(TermPanel);
+   If TermVisible And TermPanels[ActiveShell].NeedRepaint Then
+    DrawTerminalPanel(TermPanels[ActiveShell]);
   End;
  End;
 End;
@@ -26000,7 +26162,7 @@ Begin
  InitMRUList(MRUList);
  LoadMRUList(MRUList);
  InitStartPage(StartPage);
- InitTerminalPanel(TermPanel);
+ InitTerminals;
  TerminalHasFocus := False;
  QuitRequested := False;
  FullRepaintNeeded := False;
