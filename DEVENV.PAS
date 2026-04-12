@@ -2017,7 +2017,7 @@ Type
  End;
 
  { Type de shell du terminal }
- TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH);
+ TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_AMIGADOS);
 
  { Terminal integre }
  TTerminalPanel = Record
@@ -15712,6 +15712,65 @@ Begin
     TermAddLine(TP, 'bash: ' + CurrCmd +
      ': command not found');
   End;
+  SK_AMIGADOS: Begin
+   If (CurrCmd = 'QUIT') Or (CurrCmd = 'ENDCLI') Then
+    TermVisible := False
+   Else If CurrCmd = 'CD' Then
+    TermCmd_CD(TP, ParamStr)
+   Else If CurrCmd = 'DIR' Then
+    TermCmd_DIR(TP, ParamStr)
+   Else If CurrCmd = 'LIST' Then
+    TermCmd_DIR(TP, ParamStr)
+   Else If CurrCmd = 'COPY' Then
+    TermCmd_COPY(TP, ParamStr)
+   Else If CurrCmd = 'DELETE' Then
+    TermCmd_DEL(TP, ParamStr)
+   Else If CurrCmd = 'ECHO' Then
+    TermCmd_ECHO(TP, ParamStr)
+   Else If CurrCmd = 'MAKEDIR' Then
+    TermCmd_MKDIR(TP, ParamStr)
+   Else If CurrCmd = 'RENAME' Then
+    TermCmd_REN(TP, ParamStr)
+   Else If CurrCmd = 'TYPE' Then
+    TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'DATE' Then
+    TermCmd_DATE(TP)
+   Else If CurrCmd = 'INFO' Then
+    TermCmd_PWD(TP)
+   Else If CurrCmd = 'STACK' Then
+    TermAddLine(TP, 'Stack size: 4096')
+   Else If CurrCmd = 'STATUS' Then
+    TermAddLine(TP, 'Process 1: AmigaDOS console')
+   Else If CurrCmd = 'FAULT' Then
+    TermAddLine(TP, 'No error')
+   Else If CurrCmd = 'WHY' Then
+    TermAddLine(TP, 'No error to report')
+   Else If CurrCmd = 'PROTECT' Then
+    TermAddLine(TP, 'Usage: PROTECT file flags')
+   Else If CurrCmd = 'SEARCH' Then
+    TermAddLine(TP, 'Usage: SEARCH FROM path SEARCH string')
+   Else If CurrCmd = 'SORT' Then
+    TermAddLine(TP, 'Usage: SORT FROM file TO file')
+   Else If CurrCmd = 'JOIN' Then
+    TermAddLine(TP, 'Usage: JOIN file1 file2 AS destfile')
+   Else If CurrCmd = 'PATH' Then
+    TermCmd_PWD(TP)
+   Else If CurrCmd = 'NEWCLI' Then
+    TermAddLine(TP, 'New CLI process started.')
+   Else If CurrCmd = 'ASSIGN' Then
+    TermAddLine(TP, 'Usage: ASSIGN name: device')
+   Else If (CurrCmd = '?') Or (CurrCmd = 'HELP') Then Begin
+    TermAddLine(TP, 'AmigaDOS built-in commands:');
+    TermAddLine(TP, ' ASSIGN  CD     COPY    DATE   DELETE');
+    TermAddLine(TP, ' DIR     ECHO   ENDCLI  FAULT  INFO');
+    TermAddLine(TP, ' JOIN    LIST   MAKEDIR NEWCLI PATH');
+    TermAddLine(TP, ' PROTECT QUIT   RENAME  SEARCH SORT');
+    TermAddLine(TP, ' STACK   STATUS TYPE    WHY');
+   End
+   Else
+    TermAddLine(TP, CurrCmd +
+     ': Unknown command');
+  End;
  End;
 End;
 
@@ -15764,6 +15823,7 @@ Begin
  InitTerminalPanel(TermPanels[SK_CMD], SK_CMD);
  InitTerminalPanel(TermPanels[SK_POWERSHELL], SK_POWERSHELL);
  InitTerminalPanel(TermPanels[SK_BASH], SK_BASH);
+ InitTerminalPanel(TermPanels[SK_AMIGADOS], SK_AMIGADOS);
 End;
 
 { --- Dessiner le panneau terminal avec selecteur deroulant --- }
@@ -15805,6 +15865,7 @@ Begin
   SK_CMD:        SelLabel := 'Invite de commandes';
   SK_POWERSHELL: SelLabel := 'PowerShell dev';
   SK_BASH:       SelLabel := 'Bash';
+  SK_AMIGADOS:   SelLabel := 'AmigaDOS';
  End;
  SetColor(15);
  OutTextXY(SBX + 4, SBY + 3, SelLabel);
@@ -15851,6 +15912,8 @@ Begin
    PromptStr := 'PS ' + PromptStr + '> ' + TP.InputLine + '_';
   SK_BASH:
    PromptStr := 'user$ ' + TP.InputLine + '_';
+  SK_AMIGADOS:
+   PromptStr := '1.SYS:> ' + TP.InputLine + '_';
  Else
   PromptStr := PromptStr + '> ' + TP.InputLine + '_';
  End;
@@ -15894,11 +15957,23 @@ Begin
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H + 3,
    'Bash');
+  { Item 4 : AmigaDOS }
+  If TermSelectIdx = 3 Then
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
+  Else
+   SetFillStyle(SolidFill, 8);
+  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H,
+   SBX + TERM_SELECT_WIDTH - 1,
+   SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H - 1);
+  SetColor(15);
+  OutTextXY(SBX + 4,
+   SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H + 3,
+   'AmigaDOS');
   { Bordure de la liste }
   SetColor(CLR_BORDER);
   Rectangle(SBX, SBY + TERM_SELECT_HEIGHT,
    SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H - 1);
+   SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H - 1);
  End;
  TP.NeedRepaint := False;
 End;
@@ -15975,6 +16050,25 @@ Begin
     FullRepaintNeeded := True;
     Exit;
    End;
+   { Item 4 : AmigaDOS }
+   If (Ev.MouseX >= SBX) And
+      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
+      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
+       + 3 * TERM_SELECT_ITEM_H) And
+      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
+       + 4 * TERM_SELECT_ITEM_H) Then Begin
+    NewShell := SK_AMIGADOS;
+    TermSelectOpen := False;
+    If ActiveShell <> NewShell Then Begin
+     ActiveShell := NewShell;
+     If TermPanels[SK_AMIGADOS].LineCount = 0 Then
+      TermAddLine(TermPanels[SK_AMIGADOS],
+       'AmigaDOS 3.1. Tapez ? pour la liste des commandes.');
+    End;
+    TermPanels[ActiveShell].NeedRepaint := True;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
    { Clic ailleurs : fermer la liste }
    TermSelectOpen := False;
    FullRepaintNeeded := True;
@@ -15990,6 +16084,7 @@ Begin
      SK_CMD:        TermSelectIdx := 0;
      SK_POWERSHELL: TermSelectIdx := 1;
      SK_BASH:       TermSelectIdx := 2;
+     SK_AMIGADOS:   TermSelectIdx := 3;
     End;
    FullRepaintNeeded := True;
    Exit;
@@ -16016,7 +16111,7 @@ Begin
     Exit;
    End;
    If Ev.KeyCode = $50 Then Begin { Fleche bas }
-    If TermSelectIdx < 2 Then
+    If TermSelectIdx < 3 Then
      Inc(TermSelectIdx);
     FullRepaintNeeded := True;
     Exit;
@@ -16028,6 +16123,7 @@ Begin
      0: NewShell := SK_CMD;
      1: NewShell := SK_POWERSHELL;
      2: NewShell := SK_BASH;
+     3: NewShell := SK_AMIGADOS;
     End;
     TermSelectOpen := False;
     If ActiveShell <> NewShell Then Begin
@@ -16043,6 +16139,9 @@ Begin
        SK_BASH:
         TermAddLine(TermPanels[SK_BASH],
          'Bash terminal. Tapez help.');
+       SK_AMIGADOS:
+        TermAddLine(TermPanels[SK_AMIGADOS],
+         'AmigaDOS 3.1. Tapez ? pour la liste des commandes.');
       End;
     End;
     TermPanels[ActiveShell].NeedRepaint := True;
@@ -16075,6 +16174,8 @@ Begin
       TermAddLine(TP, 'PS ' + Dir + '> ' + TP.InputLine);
      SK_BASH:
       TermAddLine(TP, 'user$ ' + TP.InputLine);
+     SK_AMIGADOS:
+      TermAddLine(TP, '1.SYS:> ' + TP.InputLine);
     Else
      TermAddLine(TP, Dir + '> ' + TP.InputLine);
     End;
