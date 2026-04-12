@@ -1313,7 +1313,7 @@ Const
  MRU_MAX_ENTRIES       = 16;       { nombre max de fichiers recents }
  MRU_FILENAME          = 'DEVENV.MRU'; { fichier MRU                }
  START_PAGE_TITLE_Y    = 40;       { position Y du titre            }
- START_PAGE_LIST_Y     = 100;      { position Y de la liste         }
+ START_PAGE_LIST_Y     = 160;      { position Y de la liste         }
  START_PAGE_BTN_Y      = 60;       { position Y des boutons         }
  START_PAGE_BTN_WIDTH  = 140;      { largeur bouton demarrage       }
  START_PAGE_BTN_HEIGHT = 28;       { hauteur bouton demarrage       }
@@ -26461,11 +26461,18 @@ Begin
     ItemIdx := (Ev.MouseY - (START_PAGE_LIST_Y + 44)) Div
      START_PAGE_ITEM_HEIGHT;
     If (ItemIdx >= 0) And (ItemIdx < MRU.Count) And
-       (ItemIdx < 10) Then Begin
+       (ItemIdx < 10) And
+       (Ev.MouseX >= CenterX - 200) And
+       (Ev.MouseX < CenterX + 200) Then Begin
      SP.SelectedItem := ItemIdx;
      SP.Visible := False;
      SP.NeedRepaint := True;
      FullRepaintNeeded := True;
+     DrawAllWidgets;
+     { Ouvrir le fichier selectionne }
+     FileDlg.SelectedFile := MRU.Entries[ItemIdx].FilePath;
+     HandleOpenFileConfirmed;
+     Exit;
     End;
    End;
  End;
@@ -26892,6 +26899,7 @@ Begin
  SolExplorer.SelectedIdx := SolExplorer.NodeCount - 1;
  SolExplorer.Nodes[SolExplorer.NodeCount - 1].Selected := True;
  SolExplorer.NeedRepaint := True;
+ AddMRUEntry(MRUList, FN);
  AppendOutput(OutputPanel, 'Fichier ouvert : ' + FN,
   Ord(OTK_BUILD));
 End;
@@ -27292,6 +27300,9 @@ End;
 { --- Demarrage de l IDE (procedure Run) --- }
 
 Procedure Run;
+Var
+ I: Integer;
+ SolIdx, ProjIdx: Integer;
 Begin
  InitStatusBar(StatusBar);
  InitMRUList(MRUList);
@@ -27302,8 +27313,48 @@ Begin
  QuitRequested := False;
  FullRepaintNeeded := False;
  EditorReady := False;
+ { Si un fichier solution .sln a ete passe en argument }
+ If Opts.SolutionFile <> '' Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+  { Parser le fichier solution }
+  ParseSolutionFile(Opts.SolutionFile, CurrentSolution);
+  SolutionLoaded := True;
+  SolutionModified := False;
+  { Peupler l explorateur avec la solution }
+  ClearExplorer(SolExplorer);
+  SolIdx := AddExplorerNode(SolExplorer,
+   CurrentSolution.Info.SolutionName, ENK_SOLUTION, -1);
+  If SolIdx >= 0 Then Begin
+   SolExplorer.Nodes[SolIdx].Expanded := True;
+   SolExplorer.Nodes[SolIdx].HasChildren :=
+    CurrentSolution.ProjectCount > 0;
+   { Ajouter chaque projet de la solution }
+   For I := 0 To CurrentSolution.ProjectCount - 1 Do Begin
+    ProjIdx := AddExplorerNode(SolExplorer,
+     CurrentSolution.Projects[I].ProjectName,
+     ENK_PROJECT, SolIdx);
+    If ProjIdx >= 0 Then Begin
+     SolExplorer.Nodes[ProjIdx].Expanded := True;
+     SolExplorer.Nodes[ProjIdx].HasChildren := True;
+     AddExplorerNode(SolExplorer, 'Properties',
+      ENK_PROPERTIES, ProjIdx);
+     AddExplorerNode(SolExplorer, 'References',
+      ENK_REFERENCES, ProjIdx);
+    End;
+   End;
+  End;
+  If SolExplorer.NodeCount > 0 Then Begin
+   SolExplorer.SelectedIdx := 0;
+   SolExplorer.Nodes[0].Selected := True;
+  End;
+  SolExplorer.NeedRepaint := True;
+  AddMRUEntry(MRUList, Opts.SolutionFile);
+  AppendOutput(OutputPanel,
+   'Solution ouverte : ' + Opts.SolutionFile, Ord(OTK_BUILD));
+ End
  { Si un fichier source a ete passe en argument, ouvrir directement l editeur }
- If Opts.SourceFile <> '' Then Begin
+ Else If Opts.SourceFile <> '' Then Begin
   StartPage.Visible := False;
   CreateEditorWindow(Opts.SourceFile);
   { Charger le fichier dans l editeur alloue }
@@ -27501,6 +27552,8 @@ Begin
   SaveProjectFile(ProjFile, CurrentProject);
  End;
  SolutionModified := False;
+ { Ajouter au MRU }
+ AddMRUEntry(MRUList, SolFile);
  AppendOutput(OutputPanel,
   'Solution enregistree : ' + SolFile, Ord(OTK_BUILD));
 End;
