@@ -2871,6 +2871,8 @@ Var
  StartPage      : TStartPage;
  { Dialogue nouveau projet / nouvelle solution }
  NewProjDlg     : TNewProjectDialog;
+ { Dialogue nouveau fichier }
+ NewFileDlg     : TNewFileDialog;
  { Dialogue ouvrir fichier }
  FileDlg        : TFileDialog;
  { Indicateur de sortie }
@@ -4489,6 +4491,14 @@ Procedure HandleNewProjectDialogEvent(Var Dlg: TNewProjectDialog;
  Var Ev: TEvent); Forward;
 Procedure DrawNewProjectDialog(Var Dlg: TNewProjectDialog); Forward;
 Procedure HandleNewSolutionConfirmed; Forward;
+Procedure HandleNewFileConfirmed; Forward;
+
+{ Declarations anticipees pour dialogue nouveau fichier }
+Procedure InitNewFileDialog(Var Dlg: TNewFileDialog); Forward;
+Procedure ShowNewFileDialog(Var Dlg: TNewFileDialog); Forward;
+Procedure HandleNewFileDialogEvent(Var Dlg: TNewFileDialog;
+ Var Ev: TEvent); Forward;
+Procedure DrawNewFileDialog(Var Dlg: TNewFileDialog); Forward;
 
 { Declarations anticipees pour sauvegarde }
 Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
@@ -4701,6 +4711,9 @@ Begin
  Case Item.Tag Of
   100: Begin { Nouveau projet }
         ShowNewProjectDialog(NewProjDlg);
+       End;
+  101: Begin { Nouveau fichier (Ctrl+N) }
+        ShowNewFileDialog(NewFileDlg);
        End;
   102: Begin { Nouvelle solution }
         InitNewProjectDialog(NewProjDlg);
@@ -27172,6 +27185,98 @@ Begin
   Ord(OTK_BUILD));
 End;
 
+{ --- Traitement de la confirmation nouveau fichier --- }
+
+Procedure HandleNewFileConfirmed;
+Var
+ FN: String;
+ FullPath: String;
+ SolDir: String;
+ ProjDir: String;
+ I: Integer;
+ ProjIdx: Integer;
+ WIdx: Integer;
+ TmpF: Text;
+Begin
+ FN := GetNewFileFullName(NewFileDlg);
+ If FN = '' Then Exit;
+ { Sauvegarder l editeur actuel }
+ If EditorReady And (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.ActiveIdx < WinMgr.WinCount) And
+    (Editors[WinMgr.ActiveIdx] <> Nil) Then
+  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ { Masquer la page de demarrage }
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ { Construire le chemin complet du fichier }
+ If SolutionLoaded And (CurrentSolution.ProjectCount > 0) Then
+ Begin
+  SolDir := CurrentSolution.Info.SolutionPath;
+  If Length(SolDir) > 0 Then Begin
+   If (SolDir[Length(SolDir)] <> '\') And
+      (SolDir[Length(SolDir)] <> '/') Then
+    SolDir := SolDir + '\';
+  End;
+  ProjDir := ExtractFilePath(
+   CurrentSolution.Projects[0].ProjectPath);
+  FullPath := SolDir + ProjDir + FN;
+ End
+ Else
+  FullPath := FN;
+ { Normaliser les separateurs }
+ For I := 1 To Length(FullPath) Do
+  If FullPath[I] = '/' Then FullPath[I] := '\';
+ { Creer le fichier vide s il n existe pas }
+ If Not FileExists(FullPath) Then Begin
+  Assign(TmpF, FullPath);
+  {$I-}
+  Rewrite(TmpF);
+  Close(TmpF);
+  {$I+}
+  If IOResult <> 0 Then ;
+ End;
+ { Ouvrir dans l editeur }
+ CreateEditorWindow(FullPath);
+ WIdx := WinMgr.ActiveIdx;
+ LoadFile(Editors[WIdx]^.Buffer, FullPath);
+ ActiveEditor := Editors[WIdx]^;
+ Opts.SourceFile := FullPath;
+ EditorReady := True;
+ { Ajouter le fichier a l explorateur }
+ If (SolExplorer.NodeCount = 0) Or
+    (SolExplorer.Nodes[0].Kind <> ENK_SOLUTION) Then Begin
+  ClearExplorer(SolExplorer);
+  AddExplorerNode(SolExplorer, 'Solution sans nom',
+   ENK_SOLUTION, -1);
+  SolExplorer.Nodes[0].Expanded := True;
+  SolExplorer.Nodes[0].HasChildren := True;
+ End;
+ ProjIdx := -1;
+ For I := 0 To SolExplorer.NodeCount - 1 Do
+  If SolExplorer.Nodes[I].Kind = ENK_PROJECT Then Begin
+   ProjIdx := I;
+   Break;
+  End;
+ If ProjIdx < 0 Then
+  ProjIdx := 0;
+ AddExplorerNode(SolExplorer,
+  FN, NodeKindFromExtension(FN), ProjIdx);
+ SolExplorer.SelectedIdx := SolExplorer.NodeCount - 1;
+ SolExplorer.Nodes[SolExplorer.NodeCount - 1].Selected := True;
+ SolExplorer.NeedRepaint := True;
+ { Ajouter au projet et sauvegarder }
+ If SolutionLoaded Then Begin
+  AddFileToProject(CurrentProject, FN);
+  SolutionModified := True;
+  SaveCurrentSolution;
+ End;
+ FullRepaintNeeded := True;
+ AppendOutput(OutputPanel,
+  'Nouveau fichier cree : ' + FullPath, Ord(OTK_BUILD));
+End;
+
 { --- Dessiner tous les widgets de l IDE --- }
 
 Procedure DrawAllWidgets;
@@ -27206,6 +27311,8 @@ Begin
  DrawErrorList(ErrorList);
  DrawStatusBar(StatusBar);
  { Dessiner le dialogue par-dessus si visible }
+ If NewFileDlg.Base.Visible Then
+  DrawNewFileDialog(NewFileDlg);
  If NewProjDlg.Base.Visible Then
   DrawNewProjectDialog(NewProjDlg);
  If FileDlg.Base.Visible Then
@@ -27323,6 +27430,10 @@ Begin
    HandleSaveCurrentFile;
    Exit;
   End;
+  If Ev.KeyChar = #14 Then Begin { Ctrl+N : nouveau fichier }
+   ShowNewFileDialog(NewFileDlg);
+   Exit;
+  End;
   If Ev.KeyChar = #15 Then Begin { Ctrl+O : ouvrir fichier }
    InitFileDialog(FileDlg, False);
    LoadDirectoryFiles(FileDlg);
@@ -27349,6 +27460,16 @@ Begin
    FullRepaintNeeded := True;
   End;
   DrawFileDialog(FileDlg);
+  Exit;
+ End;
+ If NewFileDlg.Base.Visible Then Begin
+  HandleNewFileDialogEvent(NewFileDlg, Ev);
+  If Not NewFileDlg.Base.Visible Then Begin
+   If NewFileDlg.Confirmed Then
+    HandleNewFileConfirmed;
+   FullRepaintNeeded := True;
+  End;
+  DrawNewFileDialog(NewFileDlg);
   Exit;
  End;
  If NewProjDlg.Base.Visible Then Begin
