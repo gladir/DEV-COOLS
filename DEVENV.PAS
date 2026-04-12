@@ -1941,6 +1941,10 @@ Type
   SplitterX  : Integer;             { position X du splitter         }
   Dragging   : Boolean;             { splitter en cours de drag      }
   NeedRepaint: Boolean;             { doit etre redessine            }
+  Renaming   : Boolean;             { mode renommage actif           }
+  RenameIdx  : Integer;             { index du noeud en renommage    }
+  RenameBuf  : String[127];         { tampon de saisie renommage     }
+  RenameCPos : Integer;             { position curseur renommage     }
  End;
 
  { Type de source pour le panneau de proprietes }
@@ -12978,6 +12982,10 @@ Begin
  Exp.SplitterX := Exp.X - SPLITTER_WIDTH;
  Exp.Dragging := False;
  Exp.NeedRepaint := True;
+ Exp.Renaming := False;
+ Exp.RenameIdx := -1;
+ Exp.RenameBuf := '';
+ Exp.RenameCPos := 0;
  For I := 0 To MAX_EXPLORER_NODES - 1 Do
   InitExplorerNode(Exp.Nodes[I]);
 End;
@@ -13240,12 +13248,30 @@ Begin
  Bar(DrawX, DrawY + 2, DrawX + EXPLORER_ICON_SIZE - 4,
   DrawY + EXPLORER_NODE_HEIGHT - 4);
  DrawX := DrawX + EXPLORER_ICON_SIZE;
- { Texte du noeud }
- If Exp.Nodes[NodeIdx].Selected Then
-  SetColor(CLR_EDITOR_BG)
- Else
+ { Texte du noeud ou champ de renommage }
+ If Exp.Renaming And (NodeIdx = Exp.RenameIdx) Then Begin
+  { Fond blanc pour le champ de saisie }
+  SetFillStyle(SolidFill, CLR_EDITOR_BG);
+  Bar(DrawX - 2, DrawY + 1,
+   Exp.X + Exp.Width - 14, DrawY + EXPLORER_NODE_HEIGHT - 2);
+  SetColor(CLR_TITLEBAR_ACTIVE);
+  Rectangle(DrawX - 2, DrawY + 1,
+   Exp.X + Exp.Width - 14, DrawY + EXPLORER_NODE_HEIGHT - 2);
   SetColor(CLR_MENU_TEXT);
- OutTextXY(DrawX, DrawY + 3, Exp.Nodes[NodeIdx].Caption);
+  OutTextXY(DrawX, DrawY + 3, Exp.RenameBuf);
+  { Curseur clignotant }
+  SetColor(CLR_MENU_TEXT);
+  Line(DrawX + TextWidth(Copy(Exp.RenameBuf, 1, Exp.RenameCPos)),
+   DrawY + 3,
+   DrawX + TextWidth(Copy(Exp.RenameBuf, 1, Exp.RenameCPos)),
+   DrawY + EXPLORER_NODE_HEIGHT - 4);
+ End Else Begin
+  If Exp.Nodes[NodeIdx].Selected Then
+   SetColor(CLR_EDITOR_BG)
+  Else
+   SetColor(CLR_MENU_TEXT);
+  OutTextXY(DrawX, DrawY + 3, Exp.Nodes[NodeIdx].Caption);
+ End;
 End;
 
 { --- Dessiner l explorateur de solution --- }
@@ -13342,12 +13368,107 @@ End;
 
 { --- Gerer les evenements de l explorateur --- }
 
+Procedure StartExplorerRename(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer);
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
+ Exp.Renaming := True;
+ Exp.RenameIdx := NodeIdx;
+ Exp.RenameBuf := Exp.Nodes[NodeIdx].Caption;
+ Exp.RenameCPos := Length(Exp.RenameBuf);
+ Exp.NeedRepaint := True;
+End;
+
+Procedure ConfirmExplorerRename(Var Exp: TSolutionExplorer);
+Begin
+ If Not Exp.Renaming Then Exit;
+ If Length(Exp.RenameBuf) > 0 Then
+  Exp.Nodes[Exp.RenameIdx].Caption := Exp.RenameBuf;
+ Exp.Renaming := False;
+ Exp.RenameIdx := -1;
+ Exp.NeedRepaint := True;
+End;
+
+Procedure CancelExplorerRename(Var Exp: TSolutionExplorer);
+Begin
+ Exp.Renaming := False;
+ Exp.RenameIdx := -1;
+ Exp.NeedRepaint := True;
+End;
+
 Procedure HandleExplorerEvent(Var Exp: TSolutionExplorer;
  Ev: TEvent);
 Var
  HitIdx: Integer;
  MaxScroll: Integer;
 Begin
+ { Mode renommage : intercepter les evenements clavier }
+ If Exp.Renaming Then Begin
+  If Ev.Kind = EV_KEY_CHAR Then Begin
+   If Ev.KeyChar = #27 Then { Escape : annuler }
+    CancelExplorerRename(Exp)
+   Else If Ev.KeyChar = #13 Then { Entree : confirmer }
+    ConfirmExplorerRename(Exp)
+   Else If Ev.KeyChar = #8 Then Begin { Backspace }
+    If Exp.RenameCPos > 0 Then Begin
+     Delete(Exp.RenameBuf, Exp.RenameCPos, 1);
+     Dec(Exp.RenameCPos);
+     Exp.NeedRepaint := True;
+    End;
+   End
+   Else If (Ev.KeyChar >= #32) And (Ev.KeyChar <= #126) Then Begin
+    { Caractere imprimable }
+    If Length(Exp.RenameBuf) < 127 Then Begin
+     Insert(Ev.KeyChar, Exp.RenameBuf, Exp.RenameCPos + 1);
+     Inc(Exp.RenameCPos);
+     Exp.NeedRepaint := True;
+    End;
+   End;
+   If Exp.NeedRepaint Then
+    DrawExplorer(Exp);
+   Exit;
+  End
+  Else If Ev.Kind = EV_KEY_DOWN Then Begin
+   If Ev.KeyCode = $4B Then Begin { Fleche gauche }
+    If Exp.RenameCPos > 0 Then Begin
+     Dec(Exp.RenameCPos);
+     Exp.NeedRepaint := True;
+     DrawExplorer(Exp);
+    End;
+   End
+   Else If Ev.KeyCode = $4D Then Begin { Fleche droite }
+    If Exp.RenameCPos < Length(Exp.RenameBuf) Then Begin
+     Inc(Exp.RenameCPos);
+     Exp.NeedRepaint := True;
+     DrawExplorer(Exp);
+    End;
+   End
+   Else If Ev.KeyCode = $47 Then Begin { Home }
+    Exp.RenameCPos := 0;
+    Exp.NeedRepaint := True;
+    DrawExplorer(Exp);
+   End
+   Else If Ev.KeyCode = $4F Then Begin { End }
+    Exp.RenameCPos := Length(Exp.RenameBuf);
+    Exp.NeedRepaint := True;
+    DrawExplorer(Exp);
+   End
+   Else If Ev.KeyCode = $53 Then Begin { Delete }
+    If Exp.RenameCPos < Length(Exp.RenameBuf) Then Begin
+     Delete(Exp.RenameBuf, Exp.RenameCPos + 1, 1);
+     Exp.NeedRepaint := True;
+     DrawExplorer(Exp);
+    End;
+   End;
+   Exit;
+  End
+  Else If Ev.Kind = EV_MOUSE_DOWN Then Begin
+   { Clic hors du champ : confirmer le renommage }
+   ConfirmExplorerRename(Exp);
+   DrawExplorer(Exp);
+   { Ne pas sortir, laisser le clic etre traite normalement }
+  End;
+ End;
  If Ev.Kind = EV_MOUSE_DOWN Then Begin
   { Clic droit : menu contextuel }
   If Ev.MouseBtn = MB_RIGHT Then Begin
@@ -26873,6 +26994,10 @@ Begin
       FileDlg.Base.Visible := True;
       DrawFileDialog(FileDlg);
      End;
+     320, 420, 520: Begin { Renommer }
+      StartExplorerRename(SolExplorer, CtxMenu.NodeIdx);
+      DrawExplorer(SolExplorer);
+     End;
      500: Begin { Ouvrir }
       { Ouvrir le noeud selectionne }
      End;
@@ -27052,6 +27177,12 @@ Begin
   End;
  End;
  If EditorReady And (WinMgr.ActiveIdx >= 0) Then Begin
+  { Si renommage en cours dans l explorateur, lui envoyer les touches }
+  If SolExplorer.Renaming And
+     ((Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN)) Then Begin
+   HandleExplorerEvent(SolExplorer, Ev);
+   Exit;
+  End;
   If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Then Begin
    HandleSelectionKey(ActiveEditor, EditorSel, EditorClip,
     EditorUndo, EditorRedo, Ev);
