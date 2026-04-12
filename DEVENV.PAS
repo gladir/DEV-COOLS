@@ -958,6 +958,11 @@ Uses DOS,
       Crt,Graph
      {$ENDIF};
 
+{$IFDEF WINDOWS}
+Function GetAsyncKeyState(vKey: LongInt): SmallInt;
+         StdCall; External 'user32.dll' Name 'GetAsyncKeyState';
+{$ENDIF}
+
 { ============================================================
   CONSTANTES GLOBALES
   ============================================================ }
@@ -3445,6 +3450,14 @@ Begin
    Ev.KeyChar := Ch;
    Ev.KeyCode := Ord(Ch);
   End;
+  {$IFDEF WINDOWS}
+  If GetAsyncKeyState($10) < 0 Then
+   Ev.ShiftState := Ev.ShiftState Or 1;
+  If GetAsyncKeyState($11) < 0 Then
+   Ev.ShiftState := Ev.ShiftState Or 2;
+  If GetAsyncKeyState($12) < 0 Then
+   Ev.ShiftState := Ev.ShiftState Or 4;
+  {$ENDIF}
   Exit;
  End;
 
@@ -6500,6 +6513,13 @@ Procedure HighlightPythonLine(Var HL: TPythonHighlighter;
                               Line: String;
                               Var Colors: Array Of Byte); Forward;
 
+{ --- Declarations anticipees pour la selection --- }
+
+Procedure StartSelection(Var Sel: TSelection; Line, Col: LongInt); Forward;
+Procedure ExtendSelection(Var Sel: TSelection; Line, Col: LongInt); Forward;
+Procedure ClearSelection(Var Sel: TSelection); Forward;
+Procedure DrawSelection(Var Ed: TEditor; Var Sel: TSelection); Forward;
+
 { --- Dessiner l editeur complet --- }
 
 Procedure DrawEditor(Var Ed: TEditor);
@@ -6545,6 +6565,8 @@ Begin
      Ed.X + Ed.Width - 1, Ed.Y + Ed.Height - 1);
  { Dessiner la surbrillance de la ligne courante }
  DrawLineHighlight(Ed);
+ { Dessiner la selection }
+ DrawSelection(Ed, EditorSel);
  { Dessiner le texte }
  For I := 0 To Ed.VisibleLines - 1 Do Begin
   LineNo := Ed.ScrollLine + I;
@@ -6660,7 +6682,6 @@ Var
  NewCol  : LongInt;
  LineLen : Integer;
 Begin
- If Ev.Kind <> EV_MOUSE_DOWN Then Exit;
  { Verifier que le clic est dans la zone texte de l editeur }
  If (Ev.MouseX < Ed.X + Ed.GutterWidth) Or
     (Ev.MouseX >= Ed.X + Ed.Width) Or
@@ -6681,12 +6702,41 @@ Begin
  LineLen := Length(Ed.Buffer.Lines[NewLine]);
  If NewCol > LineLen + 1 Then
   NewCol := LineLen + 1;
- { Appliquer la nouvelle position du curseur }
- Ed.CursorLine := NewLine;
- Ed.CursorCol := NewCol;
- EnsureCursorVisible(Ed);
- DrawEditor(Ed);
- DrawCursor(Ed);
+
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  { Clic : deplacer le curseur et demarrer une possible selection }
+  ClearSelection(EditorSel);
+  Ed.CursorLine := NewLine;
+  Ed.CursorCol := NewCol;
+  StartSelection(EditorSel, NewLine, NewCol);
+  EnsureCursorVisible(Ed);
+  DrawEditor(Ed);
+  DrawCursor(Ed);
+ End
+ Else If Ev.Kind = EV_MOUSE_MOVE Then Begin
+  { Glissement : etendre la selection si un bouton est enfonce }
+  If Ev.MouseBtn <> MB_NONE Then Begin
+   Ed.CursorLine := NewLine;
+   Ed.CursorCol := NewCol;
+   ExtendSelection(EditorSel, NewLine, NewCol);
+   EnsureCursorVisible(Ed);
+   DrawEditor(Ed);
+   DrawCursor(Ed);
+  End;
+ End
+ Else If Ev.Kind = EV_MOUSE_UP Then Begin
+  { Relachement : finaliser la selection }
+  Ed.CursorLine := NewLine;
+  Ed.CursorCol := NewCol;
+  ExtendSelection(EditorSel, NewLine, NewCol);
+  { Si debut = fin, pas de selection reelle }
+  If (EditorSel.StartLine = EditorSel.EndLine) And
+     (EditorSel.StartCol = EditorSel.EndCol) Then
+   ClearSelection(EditorSel);
+  EnsureCursorVisible(Ed);
+  DrawEditor(Ed);
+  DrawCursor(Ed);
+ End;
 End;
 
 { --- Gerer les touches de l editeur --- }
@@ -7499,37 +7549,37 @@ Var
  ShiftHeld: Boolean;
 Begin
  ShiftHeld := (Ev.ShiftState And 1) <> 0;
- If Ev.Kind = EV_KEY_DOWN Then Begin
-  { Ctrl+A : selectionner tout }
-  If (Ev.KeyChar = #1) Then Begin
-   SelectAll(Ed, Sel);
-   Exit;
-  End;
-  { Ctrl+C : copier }
-  If (Ev.KeyChar = #3) Then Begin
-   ClipboardCopy(Ed, Sel, Clip);
-   Exit;
-  End;
-  { Ctrl+X : couper }
-  If (Ev.KeyChar = #24) Then Begin
-   ClipboardCut(Ed, Sel, Clip);
-   Exit;
-  End;
-  { Ctrl+V : coller }
-  If (Ev.KeyChar = #22) Then Begin
-   ClipboardPaste(Ed, Sel, Clip);
-   Exit;
-  End;
-  { Ctrl+Z : annuler }
-  If (Ev.KeyChar = #26) Then Begin
-   Undo(Ed, UndoStk, RedoStk);
-   Exit;
-  End;
-  { Ctrl+Y : retablir }
-  If (Ev.KeyChar = #25) Then Begin
-   Redo(Ed, UndoStk, RedoStk);
-   Exit;
-  End;
+ { Ctrl+A : selectionner tout }
+ If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #1) Then Begin
+  SelectAll(Ed, Sel);
+  Exit;
+ End;
+ { Ctrl+C : copier }
+ If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #3) Then Begin
+  ClipboardCopy(Ed, Sel, Clip);
+  Exit;
+ End;
+ { Ctrl+X : couper }
+ If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #24) Then Begin
+  ClipboardCut(Ed, Sel, Clip);
+  Exit;
+ End;
+ { Ctrl+V : coller }
+ If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #22) Then Begin
+  If Sel.Active Then
+   DeleteSelectedText(Ed, Sel);
+  ClipboardPaste(Ed, Sel, Clip);
+  Exit;
+ End;
+ { Ctrl+Z : annuler }
+ If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #26) Then Begin
+  Undo(Ed, UndoStk, RedoStk);
+  Exit;
+ End;
+ { Ctrl+Y : retablir }
+ If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #25) Then Begin
+  Redo(Ed, UndoStk, RedoStk);
+  Exit;
  End;
  { Shift+fleches : etendre la selection }
  If ShiftHeld And (Ev.Kind = EV_KEY_DOWN) Then Begin
@@ -7537,9 +7587,14 @@ Begin
    StartSelection(Sel, Ed.CursorLine, Ed.CursorCol);
   HandleEditorKey(Ed, Ev);
   ExtendSelection(Sel, Ed.CursorLine, Ed.CursorCol);
- End Else If Ev.Kind = EV_KEY_DOWN Then Begin
+ End Else If (Ev.Kind = EV_KEY_DOWN) Then Begin
   If Sel.Active Then
    ClearSelection(Sel);
+  HandleEditorKey(Ed, Ev);
+ End Else Begin
+  { EV_KEY_CHAR normal : effacer la selection si active, puis taper }
+  If Sel.Active And (Ev.KeyChar >= ' ') Then
+   DeleteSelectedText(Ed, Sel);
   HandleEditorKey(Ed, Ev);
  End;
 End;
@@ -24772,7 +24827,8 @@ Begin
  { Evenements pour l editeur de texte actif }
  If EditorReady And (WinMgr.ActiveIdx >= 0) Then Begin
   If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Then Begin
-   HandleEditorKey(ActiveEditor, Ev);
+   HandleSelectionKey(ActiveEditor, EditorSel, EditorClip,
+    EditorUndo, EditorRedo, Ev);
    { Sauvegarder l etat de l editeur dans le tableau }
    If Editors[WinMgr.ActiveIdx] <> Nil Then
     Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
@@ -24781,7 +24837,8 @@ Begin
    WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
    Exit;
   End;
-  If (Ev.Kind = EV_MOUSE_DOWN) Then Begin
+  If (Ev.Kind = EV_MOUSE_DOWN) Or (Ev.Kind = EV_MOUSE_MOVE) Or
+     (Ev.Kind = EV_MOUSE_UP) Then Begin
    HandleEditorMouse(ActiveEditor, Ev);
    If Editors[WinMgr.ActiveIdx] <> Nil Then
     Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
