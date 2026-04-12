@@ -1353,7 +1353,7 @@ Const
  CLR_TITLEBAR_ACTIVE   = 1;    { bleu : barre de titre active        }
  CLR_MENUBAR           = 7;    { gris clair : barre de menus         }
  CLR_MENU_HIGHLIGHT    = 1;    { bleu : element de menu survole      }
- CLR_MENU_TEXT         = 0;    { noir : texte des menus              }
+ CLR_MENU_TEXT         = 8;    { gris fonce : texte des menus         }
  CLR_TOOLBAR           = 7;    { gris clair : barre d outils         }
  CLR_EDITOR_BG         = 15;   { blanc : fond de l editeur           }
  CLR_EDITOR_TEXT       = 0;    { noir : texte de l editeur           }
@@ -5495,7 +5495,7 @@ Begin
  { Fond }
  SetColor(14);  { jaune clair }
  Bar(TX, TY, TX + TW, TY + 16);
- SetColor(0);
+ SetColor(CLR_BORDER);
  Rectangle(TX, TY, TX + TW, TY + 16);
  OutTextXY(TX + 4, TY + 3, Tip);
 End;
@@ -17468,7 +17468,7 @@ Begin
  If Focused Then
   SetColor(15)
  Else
-  SetColor(CLR_MENU_TEXT);
+  SetColor(CLR_BORDER);
  OutTextXY(X + (DLG_BUTTON_WIDTH - TextWidth(Caption)) Div 2,
   Y + (DLG_BUTTON_HEIGHT - TextHeight(Caption)) Div 2, Caption);
 End;
@@ -18378,7 +18378,7 @@ Begin
    Line(CX, IY, IX, IY + DLG_ICON_SIZE);
    Line(CX, IY, IX + DLG_ICON_SIZE, IY + DLG_ICON_SIZE);
    Line(IX, IY + DLG_ICON_SIZE, IX + DLG_ICON_SIZE, IY + DLG_ICON_SIZE);
-   SetColor(0);
+   SetColor(CLR_BORDER);
    OutTextXY(CX - 2, CY - 2, '!');
   End;
   MI_ERROR: Begin
@@ -18402,7 +18402,7 @@ Var
 Begin
  TX := MB.Base.X + DLG_PADDING + DLG_ICON_SIZE + DLG_PADDING;
  TY := MB.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
- SetColor(CLR_MENU_TEXT);
+ SetColor(CLR_BORDER);
  OutTextXY(TX, TY, MB.Text);
 End;
 
