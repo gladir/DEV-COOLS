@@ -423,7 +423,7 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               Integer(n), new Double(d), etc.),
               detecter String.format() sans Locale
 
-  TODO 20 - CALCUL DES SCORES ET NIVEAUX DE SEVERITE [A FAIRE]
+  TODO 20 - CALCUL DES SCORES ET NIVEAUX DE SEVERITE [IMPLEMENTE]
             BugRankScore : entier de 1 a 20 (1=critique, 20=informatif)
             Priorite : HIGH (1-4), MEDIUM (5-9), LOW (10-14), INFO (15-20)
             ComputeBugRank(Bug) : calculer rang selon type/categorie,

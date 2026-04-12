@@ -35,7 +35,7 @@
 {  TODO 17 [IMPLEMENTE] - Detecteur : exceptions masquees et flux d'erreur    }
 {  TODO 18 [IMPLEMENTE] - Detecteur : erreurs logiques et retours incorrects   }
 {  TODO 19 [IMPLEMENTE] - Detecteur : problemes d'internationalisation        }
-{  TODO 20 [A FAIRE] - Calcul des scores et niveaux de severite               }
+{  TODO 20 [IMPLEMENTE] - Calcul des scores et niveaux de severite            }
 {  TODO 21 [A FAIRE] - Generation du rapport texte                            }
 {  TODO 22 [A FAIRE] - Generation du rapport XML (format SpotBugs)            }
 {  TODO 23 [A FAIRE] - Generation du rapport HTML                             }
@@ -895,6 +895,44 @@ Const
   IC_CAT_BOXING       = 4;  { Appel constructeur wrapper (Integer, Double...)   }
   IC_CAT_FORMAT       = 5;  { Appel String.format                               }
 
+  { --- TODO 20 : Constantes pour le calcul des scores et severites --- }
+  MAX_SC_BUGS         = 8192; { Nombre max de bugs pour le scoring              }
+  MAX_SC_CLASSES      = 512;  { Nombre max de classes pour le scoring           }
+  MAX_SC_CATEGORIES   = 8;    { Nombre de categories de bugs                    }
+
+  { Bornes de rangs SpotBugs (1=critique, 20=informatif) }
+  SC_RANK_MIN         = 1;    { Rang minimum (le plus severe)                   }
+  SC_RANK_MAX         = 20;   { Rang maximum (le moins severe)                  }
+  SC_RANK_HIGH_MIN    = 1;    { Debut plage HIGH                                }
+  SC_RANK_HIGH_MAX    = 4;    { Fin plage HIGH                                  }
+  SC_RANK_MEDIUM_MIN  = 5;    { Debut plage MEDIUM                              }
+  SC_RANK_MEDIUM_MAX  = 9;    { Fin plage MEDIUM                                }
+  SC_RANK_LOW_MIN     = 10;   { Debut plage LOW                                 }
+  SC_RANK_LOW_MAX     = 14;   { Fin plage LOW                                   }
+  SC_RANK_INFO_MIN    = 15;   { Debut plage INFO                                }
+  SC_RANK_INFO_MAX    = 20;   { Fin plage INFO                                  }
+
+  { Codes de priorite pour affichage }
+  SC_PRIO_HIGH        = 1;    { Priorite haute (critique)                       }
+  SC_PRIO_MEDIUM      = 2;    { Priorite moyenne                                }
+  SC_PRIO_LOW         = 3;    { Priorite basse                                  }
+  SC_PRIO_INFO        = 4;    { Information seulement                           }
+
+  { Poids des bugs selon la categorie pour le score de classe }
+  SC_WEIGHT_CORRECTNESS = 10; { Poids bugs correctness                          }
+  SC_WEIGHT_BADPRACTICE = 5;  { Poids bugs bad practice                         }
+  SC_WEIGHT_PERFORMANCE = 3;  { Poids bugs performance                          }
+  SC_WEIGHT_SECURITY    = 12; { Poids bugs securite                             }
+  SC_WEIGHT_MT          = 8;  { Poids bugs multi-threading                      }
+  SC_WEIGHT_I18N        = 2;  { Poids bugs internationalisation                 }
+  SC_WEIGHT_DODGY       = 4;  { Poids bugs code suspect                         }
+  SC_WEIGHT_MALICIOUS   = 15; { Poids bugs code malveillant                     }
+
+  { Confiances d'analyse }
+  SC_CONF_HIGH        = 1;    { Haute confiance (bug certain)                   }
+  SC_CONF_MEDIUM      = 2;    { Confiance moyenne                               }
+  SC_CONF_LOW         = 3;    { Faible confiance (potentiel faux positif)       }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -1166,6 +1204,47 @@ Type
   End;
   TI18NCallInfoArray = Array[0..MAX_I18N_CALLS-1] of TI18NCallInfo;
 
+  { --- TODO 20 : Structure TScoredBug : bug avec score calcule --- }
+  TScoredBug = Record
+    BugIndex    : Integer;    { Index du bug dans le tableau global Bugs[]  }
+    BugType     : String;     { Identifiant du type de bug (NP_NULL_ON_SOME_PATH) }
+    Category    : Integer;    { Categorie (CAT_*)                           }
+    Severity    : Integer;    { Severite initiale (SEV_*)                   }
+    Rank        : Integer;    { Rang calcule (1-20, 1=critique)             }
+    Priority    : Integer;    { Priorite derivee (SC_PRIO_*)                }
+    Confidence  : Integer;    { Confiance de l'analyse (SC_CONF_*)          }
+    ClassName   : String;     { Nom de classe Java                          }
+    MethodName  : String;     { Nom de methode                              }
+    LineNumber  : Integer;    { Numero de ligne source                      }
+    IsPublic    : Boolean;    { True si dans methode/classe publique        }
+    Message     : String;     { Description du bug                          }
+  End;
+  TScoredBugArray = Array[0..MAX_SC_BUGS-1] of TScoredBug;
+
+  { --- TODO 20 : Structure TClassScore : score d'une classe analysee --- }
+  TClassScore = Record
+    ClassName   : String;     { Nom complet de la classe Java               }
+    BugCount    : Integer;    { Nombre de bugs dans cette classe            }
+    HighCount   : Integer;    { Nombre de bugs HIGH                         }
+    MediumCount : Integer;    { Nombre de bugs MEDIUM                       }
+    LowCount    : Integer;    { Nombre de bugs LOW                          }
+    InfoCount   : Integer;    { Nombre de bugs INFO                         }
+    WeightedSum : Integer;    { Somme ponderee des rangs                    }
+    Score       : Integer;    { Score normalise 0-100 (100=propre)          }
+  End;
+  TClassScoreArray = Array[0..MAX_SC_CLASSES-1] of TClassScore;
+
+  { --- TODO 20 : Structure TCategoryStats : stats par categorie --- }
+  TCategoryStats = Record
+    Category    : Integer;    { Code categorie (CAT_*)                      }
+    TotalBugs   : Integer;    { Nombre total de bugs                        }
+    HighCount   : Integer;    { Nombre de bugs HIGH                         }
+    MediumCount : Integer;    { Nombre de bugs MEDIUM                       }
+    LowCount    : Integer;    { Nombre de bugs LOW                          }
+    InfoCount   : Integer;    { Nombre de bugs INFO                         }
+  End;
+  TCategoryStatsArray = Array[0..MAX_SC_CATEGORIES-1] of TCategoryStats;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -1357,6 +1436,21 @@ Var
   I18NTotalStringCtor : Integer;  { Nombre total new String(String) inutile    }
   I18NCurrentPC    : LongWord;    { PC de l'instruction courante               }
   I18NCurrentLine  : Integer;     { Ligne source courante                      }
+  { --- TODO 20 : Variables du module de scoring --- }
+  SCInitialized    : Boolean;     { True si module initialise                  }
+  ScoredBugs       : TScoredBugArray; { Bugs avec scores calcules              }
+  ScoredBugCount   : Integer;     { Nombre de bugs scores                      }
+  ClassScores      : TClassScoreArray; { Scores par classe                     }
+  ClassScoreCount  : Integer;     { Nombre de classes scorees                  }
+  CategoryStats    : TCategoryStatsArray; { Statistiques par categorie         }
+  SCLabelNum       : Integer;     { Compteur pour generation de labels         }
+  SCTotalHigh      : Integer;     { Nombre total de bugs HIGH                  }
+  SCTotalMedium    : Integer;     { Nombre total de bugs MEDIUM                }
+  SCTotalLow       : Integer;     { Nombre total de bugs LOW                   }
+  SCTotalInfo      : Integer;     { Nombre total de bugs INFO                  }
+  SCMinRank        : Integer;     { Rang minimum detecte                       }
+  SCMaxRank        : Integer;     { Rang maximum detecte                       }
+  SCTotalRankSum   : Integer;     { Somme de tous les rangs (pour moyenne)     }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -11030,30 +11124,606 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 20 [A FAIRE] - Calcul des scores et niveaux de severite                 }
+{ TODO 20 [IMPLEMENTE] - Calcul des scores et niveaux de severite              }
 { ============================================================================ }
-{                                                                              }
-{  - Formule de score SpotBugs :                                                 }
-{      BugRankScore : entier de 1 a 20 (1 = critique, 20 = informatif)         }
-{      Priorite     : HIGH (1-4), MEDIUM (5-9), LOW (10-14), INFO (15-20)      }
-{                                                                              }
-{  - Procedure ComputeBugRank(Var Bug: TBugReport)                              }
-{      Calculer le rang du bug selon son type et sa categorie                   }
-{      Tenir compte du contexte (methode publique vs privee)                    }
-{      Ajuster la priorite selon la confiance de l'analyse                      }
-{                                                                              }
-{  - Procedure SortBugsByPriority(Var Bugs: array; Count: Integer)              }
-{      Trier le tableau de bugs par severite decroissante                       }
-{      A priorite egale, trier par categorie puis par classe                    }
-{                                                                              }
-{  - Procedure ComputeClassScore(ClassName: String; Var Score: Integer)         }
-{      Calculer le score global d'une classe (somme ponderee des rangs)         }
-{      Normaliser sur une echelle de 0 a 100                                    }
-{                                                                              }
-{  - Procedure PrintBugStats                                                    }
-{      Afficher le nombre de bugs par categorie et par severite                 }
-{      Afficher le bilan general (classes, methodes, bugs, erreurs)             }
-{      Afficher les classes les plus problematiques                             }
+
+{ --- TODO 20 : Initialisation du module de scoring --- }
+Procedure InitScoreState;
+Var
+  I: Integer;
+Begin
+  SCInitialized := True;
+  ScoredBugCount := 0;
+  ClassScoreCount := 0;
+  SCLabelNum := 0;
+  SCTotalHigh := 0;
+  SCTotalMedium := 0;
+  SCTotalLow := 0;
+  SCTotalInfo := 0;
+  SCMinRank := SC_RANK_MAX;
+  SCMaxRank := SC_RANK_MIN;
+  SCTotalRankSum := 0;
+  { Initialiser les stats par categorie }
+  For I := 0 to MAX_SC_CATEGORIES - 1 do
+  Begin
+    CategoryStats[I].Category := I + 1;
+    CategoryStats[I].TotalBugs := 0;
+    CategoryStats[I].HighCount := 0;
+    CategoryStats[I].MediumCount := 0;
+    CategoryStats[I].LowCount := 0;
+    CategoryStats[I].InfoCount := 0;
+  End;
+End;
+
+{ --- TODO 20 : Generation d'un label unique pour le module --- }
+Function GenSCLabel: String;
+Begin
+  Inc(SCLabelNum);
+  GenSCLabel := 'SC_' + IntToStr_(SCLabelNum);
+End;
+
+{ --- TODO 20 : Conversion d'une priorite en chaine --- }
+Function SCPriorityName(Prio: Integer): String;
+Begin
+  Case Prio of
+    SC_PRIO_HIGH:   SCPriorityName := 'HIGH';
+    SC_PRIO_MEDIUM: SCPriorityName := 'MEDIUM';
+    SC_PRIO_LOW:    SCPriorityName := 'LOW';
+    SC_PRIO_INFO:   SCPriorityName := 'INFO';
+  Else
+    SCPriorityName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 20 : Conversion d'une priorite en lettre courte --- }
+Function SCPriorityLetter(Prio: Integer): Char;
+Begin
+  Case Prio of
+    SC_PRIO_HIGH:   SCPriorityLetter := 'H';
+    SC_PRIO_MEDIUM: SCPriorityLetter := 'M';
+    SC_PRIO_LOW:    SCPriorityLetter := 'L';
+    SC_PRIO_INFO:   SCPriorityLetter := 'I';
+  Else
+    SCPriorityLetter := '?';
+  End;
+End;
+
+{ --- TODO 20 : Conversion d'un rang en priorite --- }
+Function RankToPriority(Rank: Integer): Integer;
+Begin
+  If (Rank >= SC_RANK_HIGH_MIN) and (Rank <= SC_RANK_HIGH_MAX) Then
+    RankToPriority := SC_PRIO_HIGH
+  Else If (Rank >= SC_RANK_MEDIUM_MIN) and (Rank <= SC_RANK_MEDIUM_MAX) Then
+    RankToPriority := SC_PRIO_MEDIUM
+  Else If (Rank >= SC_RANK_LOW_MIN) and (Rank <= SC_RANK_LOW_MAX) Then
+    RankToPriority := SC_PRIO_LOW
+  Else
+    RankToPriority := SC_PRIO_INFO;
+End;
+
+{ --- TODO 20 : Conversion d'une severite en rang de base --- }
+Function SeverityToBaseRank(Sev: Integer): Integer;
+Begin
+  Case Sev of
+    SEV_HIGH:   SeverityToBaseRank := 2;   { Rang de base pour HIGH }
+    SEV_MEDIUM: SeverityToBaseRank := 7;   { Rang de base pour MEDIUM }
+    SEV_LOW:    SeverityToBaseRank := 12;  { Rang de base pour LOW }
+    SEV_INFO:   SeverityToBaseRank := 17;  { Rang de base pour INFO }
+  Else
+    SeverityToBaseRank := 10;
+  End;
+End;
+
+{ --- TODO 20 : Obtenir le poids d'une categorie de bugs --- }
+Function GetCategoryWeight(Cat: Integer): Integer;
+Begin
+  Case Cat of
+    CAT_CORRECTNESS:         GetCategoryWeight := SC_WEIGHT_CORRECTNESS;
+    CAT_BAD_PRACTICE:        GetCategoryWeight := SC_WEIGHT_BADPRACTICE;
+    CAT_PERFORMANCE:         GetCategoryWeight := SC_WEIGHT_PERFORMANCE;
+    CAT_SECURITY:            GetCategoryWeight := SC_WEIGHT_SECURITY;
+    CAT_MT_CORRECTNESS:      GetCategoryWeight := SC_WEIGHT_MT;
+    CAT_INTERNATIONALIZATION: GetCategoryWeight := SC_WEIGHT_I18N;
+    CAT_DODGY:               GetCategoryWeight := SC_WEIGHT_DODGY;
+    CAT_MALICIOUS:           GetCategoryWeight := SC_WEIGHT_MALICIOUS;
+  Else
+    GetCategoryWeight := 5;
+  End;
+End;
+
+{ --- TODO 20 : Obtenir le nom d'une categorie --- }
+Function GetCategoryName(Cat: Integer): String;
+Begin
+  Case Cat of
+    CAT_CORRECTNESS:         GetCategoryName := 'CORRECTNESS';
+    CAT_BAD_PRACTICE:        GetCategoryName := 'BAD_PRACTICE';
+    CAT_PERFORMANCE:         GetCategoryName := 'PERFORMANCE';
+    CAT_SECURITY:            GetCategoryName := 'SECURITY';
+    CAT_MT_CORRECTNESS:      GetCategoryName := 'MT_CORRECTNESS';
+    CAT_INTERNATIONALIZATION: GetCategoryName := 'I18N';
+    CAT_DODGY:               GetCategoryName := 'DODGY_CODE';
+    CAT_MALICIOUS:           GetCategoryName := 'MALICIOUS_CODE';
+  Else
+    GetCategoryName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 20 : Calculer le rang d'un bug selon type et categorie --- }
+Function ComputeBugRank(BugType: String; Cat: Integer; Sev: Integer;
+                        IsPublic: Boolean; Confidence: Integer): Integer;
+Var
+  BaseRank: Integer;
+  Adjust: Integer;
+Begin
+  { Commencer avec le rang de base selon la severite }
+  BaseRank := SeverityToBaseRank(Sev);
+  Adjust := 0;
+
+  { Ajuster selon la categorie }
+  Case Cat of
+    CAT_SECURITY:       Adjust := Adjust - 2;  { Plus severe }
+    CAT_MALICIOUS:      Adjust := Adjust - 3;  { Tres severe }
+    CAT_CORRECTNESS:    Adjust := Adjust - 1;  { Severe }
+    CAT_MT_CORRECTNESS: Adjust := Adjust - 1;  { Severe }
+    CAT_PERFORMANCE:    Adjust := Adjust + 1;  { Moins severe }
+    CAT_INTERNATIONALIZATION: Adjust := Adjust + 2;  { Encore moins severe }
+  End;
+
+  { Ajuster selon la visibilite (methode publique = plus important) }
+  If IsPublic Then
+    Adjust := Adjust - 1
+  Else
+    Adjust := Adjust + 1;
+
+  { Ajuster selon la confiance de l'analyse }
+  Case Confidence of
+    SC_CONF_HIGH:   Adjust := Adjust - 1;  { Haute confiance = plus severe }
+    SC_CONF_LOW:    Adjust := Adjust + 2;  { Faible confiance = moins severe }
+  End;
+
+  { Ajustements specifiques selon le type de bug }
+  If (Pos('NULL', UpCaseStr(BugType)) > 0) Then
+    Adjust := Adjust - 1;  { Bugs null pointer plus severes }
+  If (Pos('SQL', UpCaseStr(BugType)) > 0) Then
+    Adjust := Adjust - 2;  { Injection SQL tres severe }
+  If (Pos('CRYPTO', UpCaseStr(BugType)) > 0) Then
+    Adjust := Adjust - 2;  { Problemes crypto severes }
+  If (Pos('PASSWORD', UpCaseStr(BugType)) > 0) Then
+    Adjust := Adjust - 3;  { Problemes mot de passe tres severes }
+
+  { Calculer le rang final et le borner }
+  BaseRank := BaseRank + Adjust;
+  If BaseRank < SC_RANK_MIN Then
+    BaseRank := SC_RANK_MIN;
+  If BaseRank > SC_RANK_MAX Then
+    BaseRank := SC_RANK_MAX;
+  ComputeBugRank := BaseRank;
+End;
+
+{ --- TODO 20 : Scorer un bug et l'ajouter au tableau --- }
+Procedure ScoreBug(BugIdx: Integer);
+Var
+  Rank, Prio, CatIdx: Integer;
+  IsPublic: Boolean;
+Begin
+  If Not SCInitialized Then InitScoreState;
+  If ScoredBugCount >= MAX_SC_BUGS Then Exit;
+  If (BugIdx < 1) or (BugIdx > BugCount) Then Exit;
+
+  { Determiner si la methode est publique (heuristique simple) }
+  IsPublic := (Pos('public', LoCaseStr(Bugs[BugIdx].MethodName)) > 0) or
+              (Pos('main', LoCaseStr(Bugs[BugIdx].MethodName)) > 0);
+
+  { Calculer le rang }
+  Rank := ComputeBugRank(Bugs[BugIdx].BugType, Bugs[BugIdx].Category,
+                         Bugs[BugIdx].Severity, IsPublic, SC_CONF_MEDIUM);
+  Prio := RankToPriority(Rank);
+
+  { Remplir la structure }
+  With ScoredBugs[ScoredBugCount] do
+  Begin
+    BugIndex := BugIdx;
+    BugType := Bugs[BugIdx].BugType;
+    Category := Bugs[BugIdx].Category;
+    Severity := Bugs[BugIdx].Severity;
+    ScoredBugs[ScoredBugCount].Rank := Rank;
+    Priority := Prio;
+    Confidence := SC_CONF_MEDIUM;
+    ClassName := Bugs[BugIdx].ClassName;
+    MethodName := Bugs[BugIdx].MethodName;
+    LineNumber := Bugs[BugIdx].LineNumber;
+    ScoredBugs[ScoredBugCount].IsPublic := IsPublic;
+    Message := Bugs[BugIdx].Message;
+  End;
+
+  { Mettre a jour les statistiques }
+  Case Prio of
+    SC_PRIO_HIGH:   Inc(SCTotalHigh);
+    SC_PRIO_MEDIUM: Inc(SCTotalMedium);
+    SC_PRIO_LOW:    Inc(SCTotalLow);
+    SC_PRIO_INFO:   Inc(SCTotalInfo);
+  End;
+
+  If Rank < SCMinRank Then SCMinRank := Rank;
+  If Rank > SCMaxRank Then SCMaxRank := Rank;
+  SCTotalRankSum := SCTotalRankSum + Rank;
+
+  { Mettre a jour les stats par categorie }
+  CatIdx := Bugs[BugIdx].Category - 1;
+  If (CatIdx >= 0) and (CatIdx < MAX_SC_CATEGORIES) Then
+  Begin
+    Inc(CategoryStats[CatIdx].TotalBugs);
+    Case Prio of
+      SC_PRIO_HIGH:   Inc(CategoryStats[CatIdx].HighCount);
+      SC_PRIO_MEDIUM: Inc(CategoryStats[CatIdx].MediumCount);
+      SC_PRIO_LOW:    Inc(CategoryStats[CatIdx].LowCount);
+      SC_PRIO_INFO:   Inc(CategoryStats[CatIdx].InfoCount);
+    End;
+  End;
+
+  Inc(ScoredBugCount);
+End;
+
+{ --- TODO 20 : Scorer tous les bugs --- }
+Procedure ScoreAllBugs;
+Var
+  I: Integer;
+Begin
+  If Not SCInitialized Then InitScoreState;
+  For I := 1 to BugCount do
+    ScoreBug(I);
+End;
+
+{ --- TODO 20 : Trier les bugs par priorite (tri par insertion) --- }
+Procedure SortBugsByPriority;
+Var
+  I, J, MinIdx: Integer;
+  Temp: TScoredBug;
+Begin
+  { Tri par selection : d'abord par rang (croissant = plus severe d'abord) }
+  { puis par categorie, puis par classe }
+  For I := 0 to ScoredBugCount - 2 do
+  Begin
+    MinIdx := I;
+    For J := I + 1 to ScoredBugCount - 1 do
+    Begin
+      { Comparer d'abord par rang (plus petit = plus severe) }
+      If ScoredBugs[J].Rank < ScoredBugs[MinIdx].Rank Then
+        MinIdx := J
+      Else If ScoredBugs[J].Rank = ScoredBugs[MinIdx].Rank Then
+      Begin
+        { A rang egal, trier par categorie }
+        If ScoredBugs[J].Category < ScoredBugs[MinIdx].Category Then
+          MinIdx := J
+        Else If ScoredBugs[J].Category = ScoredBugs[MinIdx].Category Then
+        Begin
+          { A categorie egale, trier par classe }
+          If ScoredBugs[J].ClassName < ScoredBugs[MinIdx].ClassName Then
+            MinIdx := J;
+        End;
+      End;
+    End;
+    { Echanger si necessaire }
+    If MinIdx <> I Then
+    Begin
+      Temp := ScoredBugs[I];
+      ScoredBugs[I] := ScoredBugs[MinIdx];
+      ScoredBugs[MinIdx] := Temp;
+    End;
+  End;
+End;
+
+{ --- TODO 20 : Trouver ou creer une entree de score pour une classe --- }
+Function FindOrCreateClassScore(AClassName: String): Integer;
+Var
+  I: Integer;
+Begin
+  { Chercher si la classe existe deja }
+  For I := 0 to ClassScoreCount - 1 do
+    If ClassScores[I].ClassName = AClassName Then
+    Begin
+      FindOrCreateClassScore := I;
+      Exit;
+    End;
+
+  { Creer une nouvelle entree }
+  If ClassScoreCount >= MAX_SC_CLASSES Then
+  Begin
+    FindOrCreateClassScore := -1;
+    Exit;
+  End;
+
+  With ClassScores[ClassScoreCount] do
+  Begin
+    ClassName := AClassName;
+    BugCount := 0;
+    HighCount := 0;
+    MediumCount := 0;
+    LowCount := 0;
+    InfoCount := 0;
+    WeightedSum := 0;
+    Score := 100;  { Score parfait par defaut }
+  End;
+
+  FindOrCreateClassScore := ClassScoreCount;
+  Inc(ClassScoreCount);
+End;
+
+{ --- TODO 20 : Calculer les scores par classe --- }
+Procedure ComputeClassScores;
+Var
+  I, Idx, Weight: Integer;
+  MaxPossibleScore: Integer;
+Begin
+  If Not SCInitialized Then InitScoreState;
+
+  { Parcourir tous les bugs scores et accumuler par classe }
+  For I := 0 to ScoredBugCount - 1 do
+  Begin
+    Idx := FindOrCreateClassScore(ScoredBugs[I].ClassName);
+    If Idx < 0 Then Continue;
+
+    Inc(ClassScores[Idx].BugCount);
+    Weight := GetCategoryWeight(ScoredBugs[I].Category);
+
+    { Ajouter le poids inverse du rang (rang faible = poids eleve) }
+    ClassScores[Idx].WeightedSum :=
+      ClassScores[Idx].WeightedSum + (SC_RANK_MAX + 1 - ScoredBugs[I].Rank) * Weight;
+
+    Case ScoredBugs[I].Priority of
+      SC_PRIO_HIGH:   Inc(ClassScores[Idx].HighCount);
+      SC_PRIO_MEDIUM: Inc(ClassScores[Idx].MediumCount);
+      SC_PRIO_LOW:    Inc(ClassScores[Idx].LowCount);
+      SC_PRIO_INFO:   Inc(ClassScores[Idx].InfoCount);
+    End;
+  End;
+
+  { Calculer le score normalise pour chaque classe }
+  { Score = 100 - (weighted_sum * facteur de normalisation) }
+  For I := 0 to ClassScoreCount - 1 do
+  Begin
+    If ClassScores[I].BugCount = 0 Then
+      ClassScores[I].Score := 100
+    Else
+    Begin
+      { Estimation du score max possible pour normalisation }
+      MaxPossibleScore := ClassScores[I].BugCount * SC_RANK_MAX * SC_WEIGHT_MALICIOUS;
+      If MaxPossibleScore > 0 Then
+        ClassScores[I].Score := 100 - (ClassScores[I].WeightedSum * 100 div MaxPossibleScore)
+      Else
+        ClassScores[I].Score := 100;
+
+      { Borner entre 0 et 100 }
+      If ClassScores[I].Score < 0 Then ClassScores[I].Score := 0;
+      If ClassScores[I].Score > 100 Then ClassScores[I].Score := 100;
+    End;
+  End;
+End;
+
+{ --- TODO 20 : Trier les classes par score (pire en premier) --- }
+Procedure SortClassesByScore;
+Var
+  I, J, MinIdx: Integer;
+  Temp: TClassScore;
+Begin
+  For I := 0 to ClassScoreCount - 2 do
+  Begin
+    MinIdx := I;
+    For J := I + 1 to ClassScoreCount - 1 do
+    Begin
+      { Score plus bas = plus de bugs = doit etre en premier }
+      If ClassScores[J].Score < ClassScores[MinIdx].Score Then
+        MinIdx := J
+      Else If ClassScores[J].Score = ClassScores[MinIdx].Score Then
+      Begin
+        { A score egal, celle avec plus de bugs HIGH en premier }
+        If ClassScores[J].HighCount > ClassScores[MinIdx].HighCount Then
+          MinIdx := J;
+      End;
+    End;
+    If MinIdx <> I Then
+    Begin
+      Temp := ClassScores[I];
+      ClassScores[I] := ClassScores[MinIdx];
+      ClassScores[MinIdx] := Temp;
+    End;
+  End;
+End;
+
+{ --- TODO 20 : Afficher les statistiques de bugs --- }
+Procedure PrintBugStats;
+Var
+  I: Integer;
+  AvgRank: Integer;
+Begin
+  WriteLn;
+  WriteLn('===============================================================================');
+  WriteLn('                        SPOTBUGS - STATISTIQUES DE BUGS');
+  WriteLn('===============================================================================');
+  WriteLn;
+
+  { Resume general }
+  WriteLn('--- Resume general ---');
+  WriteLn('  Classes analysees   : ', ClassesScanned);
+  WriteLn('  Methodes analysees  : ', TotalMethods);
+  WriteLn('  Bugs detectes       : ', BugCount);
+  WriteLn('  Bugs scores         : ', ScoredBugCount);
+  WriteLn('  Erreurs d''analyse   : ', ErrorCount);
+  WriteLn;
+
+  { Repartition par priorite }
+  WriteLn('--- Repartition par priorite ---');
+  WriteLn('  HIGH   (critique)   : ', SCTotalHigh);
+  WriteLn('  MEDIUM (probable)   : ', SCTotalMedium);
+  WriteLn('  LOW    (possible)   : ', SCTotalLow);
+  WriteLn('  INFO   (information): ', SCTotalInfo);
+  WriteLn;
+
+  { Statistiques de rang }
+  If ScoredBugCount > 0 Then
+  Begin
+    AvgRank := SCTotalRankSum div ScoredBugCount;
+    WriteLn('--- Statistiques de rang ---');
+    WriteLn('  Rang minimum        : ', SCMinRank, ' (', SCPriorityName(RankToPriority(SCMinRank)), ')');
+    WriteLn('  Rang maximum        : ', SCMaxRank, ' (', SCPriorityName(RankToPriority(SCMaxRank)), ')');
+    WriteLn('  Rang moyen          : ', AvgRank, ' (', SCPriorityName(RankToPriority(AvgRank)), ')');
+    WriteLn;
+  End;
+
+  { Repartition par categorie }
+  WriteLn('--- Repartition par categorie ---');
+  For I := 0 to MAX_SC_CATEGORIES - 1 do
+  Begin
+    If CategoryStats[I].TotalBugs > 0 Then
+      WriteLn('  ', GetCategoryName(I + 1):20, ' : ', CategoryStats[I].TotalBugs:4,
+              ' (H:', CategoryStats[I].HighCount,
+              ' M:', CategoryStats[I].MediumCount,
+              ' L:', CategoryStats[I].LowCount,
+              ' I:', CategoryStats[I].InfoCount, ')');
+  End;
+  WriteLn;
+
+  { Top classes problematiques }
+  If ClassScoreCount > 0 Then
+  Begin
+    WriteLn('--- Classes les plus problematiques ---');
+    For I := 0 to ClassScoreCount - 1 do
+    Begin
+      If I >= 10 Then Break;  { Limiter a 10 }
+      If ClassScores[I].BugCount > 0 Then
+        WriteLn('  [', ClassScores[I].Score:3, '/100] ',
+                ClassScores[I].ClassName,
+                ' (', ClassScores[I].BugCount, ' bugs, ',
+                ClassScores[I].HighCount, ' HIGH)');
+    End;
+    WriteLn;
+  End;
+
+  WriteLn('===============================================================================');
+End;
+
+{ --- TODO 20 : Afficher l'etat complet du module de scoring --- }
+Procedure DumpScoreState;
+Var
+  I: Integer;
+Begin
+  WriteLn;
+  WriteLn('=== DUMP SCORE STATE ===');
+  WriteLn('Initialized: ', SCInitialized);
+  WriteLn('Scored bugs: ', ScoredBugCount);
+  WriteLn('Class scores: ', ClassScoreCount);
+  WriteLn('Label num: ', SCLabelNum);
+  WriteLn;
+  WriteLn('Priority totals:');
+  WriteLn('  HIGH:   ', SCTotalHigh);
+  WriteLn('  MEDIUM: ', SCTotalMedium);
+  WriteLn('  LOW:    ', SCTotalLow);
+  WriteLn('  INFO:   ', SCTotalInfo);
+  WriteLn;
+  WriteLn('Rank stats:');
+  WriteLn('  Min: ', SCMinRank);
+  WriteLn('  Max: ', SCMaxRank);
+  WriteLn('  Sum: ', SCTotalRankSum);
+  If ScoredBugCount > 0 Then
+    WriteLn('  Avg: ', SCTotalRankSum div ScoredBugCount);
+  WriteLn;
+
+  If ScoredBugCount > 0 Then
+  Begin
+    WriteLn('Scored bugs (first 20):');
+    For I := 0 to ScoredBugCount - 1 do
+    Begin
+      If I >= 20 Then Break;
+      WriteLn('  [', I, '] Rank=', ScoredBugs[I].Rank,
+              ' Prio=', SCPriorityName(ScoredBugs[I].Priority),
+              ' ', ScoredBugs[I].BugType,
+              ' in ', ScoredBugs[I].ClassName);
+    End;
+  End;
+End;
+
+{ --- TODO 20 : Accesseurs pour le module de scoring --- }
+Function IsSCInitialized: Boolean;
+Begin
+  IsSCInitialized := SCInitialized;
+End;
+
+Function GetScoredBugCount: Integer;
+Begin
+  GetScoredBugCount := ScoredBugCount;
+End;
+
+Function GetClassScoreCount: Integer;
+Begin
+  GetClassScoreCount := ClassScoreCount;
+End;
+
+Function GetSCLabelNum: Integer;
+Begin
+  GetSCLabelNum := SCLabelNum;
+End;
+
+Function GetSCTotalHigh: Integer;
+Begin
+  GetSCTotalHigh := SCTotalHigh;
+End;
+
+Function GetSCTotalMedium: Integer;
+Begin
+  GetSCTotalMedium := SCTotalMedium;
+End;
+
+Function GetSCTotalLow: Integer;
+Begin
+  GetSCTotalLow := SCTotalLow;
+End;
+
+Function GetSCTotalInfo: Integer;
+Begin
+  GetSCTotalInfo := SCTotalInfo;
+End;
+
+Function GetSCMinRank: Integer;
+Begin
+  GetSCMinRank := SCMinRank;
+End;
+
+Function GetSCMaxRank: Integer;
+Begin
+  GetSCMaxRank := SCMaxRank;
+End;
+
+Function GetScoredBugRank(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < ScoredBugCount) Then
+    GetScoredBugRank := ScoredBugs[Idx].Rank
+  Else
+    GetScoredBugRank := SC_RANK_MAX;
+End;
+
+Function GetScoredBugPriority(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < ScoredBugCount) Then
+    GetScoredBugPriority := ScoredBugs[Idx].Priority
+  Else
+    GetScoredBugPriority := SC_PRIO_INFO;
+End;
+
+Function GetClassScoreValue(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < ClassScoreCount) Then
+    GetClassScoreValue := ClassScores[Idx].Score
+  Else
+    GetClassScoreValue := 100;
+End;
+
+Function GetClassScoreName(Idx: Integer): String;
+Begin
+  If (Idx >= 0) and (Idx < ClassScoreCount) Then
+    GetClassScoreName := ClassScores[Idx].ClassName
+  Else
+    GetClassScoreName := '';
+End;
 
 { ============================================================================ }
 { TODO 21 [A FAIRE] - Generation du rapport texte                              }
