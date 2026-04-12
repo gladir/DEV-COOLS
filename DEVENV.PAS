@@ -26362,7 +26362,7 @@ Begin
  { Titre }
  Title := 'DEVENV - IDE Visual Studio';
  DrawText(CenterX - (Length(Title) * 8 Div 2),
-  START_PAGE_TITLE_Y, Title, CLR_EDITOR_TEXT);
+  START_PAGE_TITLE_Y, Title, 15);
  { Sous-titre }
  Title := 'DEV-COOLS v' + IDE_VERSION;
  DrawText(CenterX - (Length(Title) * 8 Div 2),
@@ -26399,15 +26399,19 @@ Begin
  { Liste des fichiers recents }
  If MRU.Count > 0 Then Begin
   DrawText(CenterX - 100, START_PAGE_LIST_Y + 20,
-   'Fichiers recents :', CLR_EDITOR_TEXT);
+   'Fichiers recents :', 15);
   Y := START_PAGE_LIST_Y + 44;
   For I := 0 To MRU.Count - 1 Do Begin
    If I >= 10 Then Break;
    If I = SP.SelectedItem Then
     DrawFilledRect(CenterX - 200, Y, CenterX + 200,
      Y + START_PAGE_ITEM_HEIGHT, CLR_SELECTION);
-   DrawText(CenterX - 196, Y + 2,
-    MRU.Entries[I].FilePath, CLR_EDITOR_TEXT);
+   If I = SP.SelectedItem Then
+    DrawText(CenterX - 196, Y + 2,
+     MRU.Entries[I].FilePath, 15)
+   Else
+    DrawText(CenterX - 196, Y + 2,
+     MRU.Entries[I].FilePath, 8);
    Y := Y + START_PAGE_ITEM_HEIGHT;
   End;
  End Else Begin
