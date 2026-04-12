@@ -13403,6 +13403,59 @@ Begin
  Exp.NeedRepaint := True;
 End;
 
+{ --- Ouvrir un fichier source depuis l explorateur --- }
+
+Procedure OpenExplorerFileNode(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer);
+Var
+ FN: String;
+ SolDir: String;
+ ProjDir: String;
+ FullPath: String;
+ WIdx: Integer;
+ I: Integer;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
+ FN := Exp.Nodes[NodeIdx].Caption;
+ If FN = '' Then Exit;
+ { Construire le chemin complet du fichier }
+ If SolutionLoaded And (CurrentSolution.ProjectCount > 0) Then
+ Begin
+  SolDir := CurrentSolution.Info.SolutionPath;
+  If Length(SolDir) > 0 Then Begin
+   If (SolDir[Length(SolDir)] <> '\') And
+      (SolDir[Length(SolDir)] <> '/') Then
+    SolDir := SolDir + '\';
+  End;
+  ProjDir := ExtractFilePath(
+   CurrentSolution.Projects[0].ProjectPath);
+  FullPath := SolDir + ProjDir + FN;
+  { Normaliser les separateurs }
+  For I := 1 To Length(FullPath) Do
+   If FullPath[I] = '/' Then FullPath[I] := '\';
+ End
+ Else
+  FullPath := FN;
+ { Sauvegarder l editeur actuel }
+ If EditorReady And (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.ActiveIdx < WinMgr.WinCount) And
+    (Editors[WinMgr.ActiveIdx] <> Nil) Then
+  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ { Masquer la page de demarrage }
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ { Ouvrir dans l editeur }
+ CreateEditorWindow(FullPath);
+ WIdx := WinMgr.ActiveIdx;
+ LoadFile(Editors[WIdx]^.Buffer, FullPath);
+ ActiveEditor := Editors[WIdx]^;
+ Opts.SourceFile := FullPath;
+ EditorReady := True;
+ FullRepaintNeeded := True;
+End;
+
 Procedure HandleExplorerEvent(Var Exp: TSolutionExplorer;
  Ev: TEvent);
 Var
@@ -13508,7 +13561,11 @@ Begin
    Exp.SelectedIdx := HitIdx;
    Exp.Nodes[HitIdx].Selected := True;
    If Exp.Nodes[HitIdx].HasChildren Then
-    ToggleNode(Exp, HitIdx);
+    ToggleNode(Exp, HitIdx)
+   Else If Exp.Nodes[HitIdx].Kind In
+    [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
+     ENK_FILE_OTHER] Then
+    OpenExplorerFileNode(Exp, HitIdx);
    Exp.NeedRepaint := True;
   End;
  End
@@ -13572,10 +13629,16 @@ Begin
       ExpandNode(Exp, Exp.SelectedIdx);
     End;
    End;
-   13: Begin { Entree : basculer }
+   13: Begin { Entree : basculer ou ouvrir }
     If (Exp.SelectedIdx >= 0) And
-       (Exp.SelectedIdx < Exp.NodeCount) Then
-     ToggleNode(Exp, Exp.SelectedIdx);
+       (Exp.SelectedIdx < Exp.NodeCount) Then Begin
+     If Exp.Nodes[Exp.SelectedIdx].Kind In
+      [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
+       ENK_FILE_OTHER] Then
+      OpenExplorerFileNode(Exp, Exp.SelectedIdx)
+     Else
+      ToggleNode(Exp, Exp.SelectedIdx);
+    End;
    End;
   End;
  End;
@@ -26946,6 +27009,9 @@ Var
  Idx: Integer;
  I: Integer;
  ProjIdx: Integer;
+ RelPath: String;
+ ProjDir: String;
+ SolDir: String;
 Begin
  FN := FileDlg.SelectedFile;
  If FN = '' Then Exit;
@@ -26992,15 +27058,40 @@ Begin
   End;
  If ProjIdx < 0 Then
   ProjIdx := 0; { Ajouter sous la solution si pas de projet }
+ { Calculer le chemin relatif par rapport au repertoire du projet }
+ RelPath := ExtractFileName(FN);
+ If SolutionLoaded And (CurrentSolution.ProjectCount > 0) Then
+ Begin
+  SolDir := CurrentSolution.Info.SolutionPath;
+  If Length(SolDir) > 0 Then Begin
+   If (SolDir[Length(SolDir)] <> '\') And
+      (SolDir[Length(SolDir)] <> '/') Then
+    SolDir := SolDir + '\';
+  End;
+  ProjDir := SolDir + ExtractFilePath(
+   CurrentSolution.Projects[0].ProjectPath);
+  { Normaliser les separateurs pour comparaison }
+  For I := 1 To Length(ProjDir) Do
+   If ProjDir[I] = '/' Then ProjDir[I] := '\';
+  For I := 1 To Length(FN) Do
+   If FN[I] = '/' Then FN[I] := '\';
+  { Retirer le prefixe du repertoire projet du chemin absolu }
+  If Length(ProjDir) > 0 Then Begin
+   If UpCaseStr(Copy(FN, 1, Length(ProjDir)))
+      = UpCaseStr(ProjDir) Then
+    RelPath := Copy(FN, Length(ProjDir) + 1,
+     Length(FN) - Length(ProjDir));
+  End;
+ End;
  AddExplorerNode(SolExplorer,
-  ExtractFileName(FN),
+  RelPath,
   NodeKindFromExtension(FN), ProjIdx);
  SolExplorer.SelectedIdx := SolExplorer.NodeCount - 1;
  SolExplorer.Nodes[SolExplorer.NodeCount - 1].Selected := True;
  SolExplorer.NeedRepaint := True;
  { Ajouter le fichier dans le projet courant }
  If SolutionLoaded Then Begin
-  AddFileToProject(CurrentProject, ExtractFileName(FN));
+  AddFileToProject(CurrentProject, RelPath);
   SolutionModified := True;
   SaveCurrentSolution;
  End;
@@ -27147,7 +27238,9 @@ Begin
       DrawExplorer(SolExplorer);
      End;
      500: Begin { Ouvrir }
-      { Ouvrir le noeud selectionne }
+      If (CtxMenu.NodeIdx >= 0) And
+         (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then
+       OpenExplorerFileNode(SolExplorer, CtxMenu.NodeIdx);
      End;
     End;
    End;
