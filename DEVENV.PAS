@@ -27217,6 +27217,7 @@ End;
 Procedure DispatchEvent(Var Ev: TEvent);
 Var
  CtxTag: LongInt;
+ I: Integer;
 Begin
  If Ev.Kind = EV_NONE Then Exit;
  { Menu contextuel en priorite si visible }
@@ -27241,6 +27242,45 @@ Begin
       If (CtxMenu.NodeIdx >= 0) And
          (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then
        OpenExplorerFileNode(SolExplorer, CtxMenu.NodeIdx);
+     End;
+     521: Begin { Supprimer fichier/reference }
+      If (CtxMenu.NodeIdx >= 0) And
+         (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then
+      Begin
+       If SolExplorer.Nodes[CtxMenu.NodeIdx].Kind In
+        [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
+         ENK_FILE_OTHER] Then
+       Begin
+        { Retirer du projet }
+        If SolutionLoaded Then Begin
+         I := FindFileInProject(CurrentProject,
+          SolExplorer.Nodes[CtxMenu.NodeIdx].Caption);
+         If I >= 0 Then
+          RemoveFileFromProject(CurrentProject, I);
+         SolutionModified := True;
+         SaveCurrentSolution;
+        End;
+        { Retirer de l explorateur }
+        RemoveExplorerNode(SolExplorer, CtxMenu.NodeIdx);
+        RefreshExplorer(SolExplorer);
+        SolExplorer.NeedRepaint := True;
+       End
+       Else If SolExplorer.Nodes[CtxMenu.NodeIdx].Kind
+        = ENK_REFERENCE Then
+       Begin
+        If SolutionLoaded Then Begin
+         I := FindReferenceInProject(CurrentProject,
+          SolExplorer.Nodes[CtxMenu.NodeIdx].Caption);
+         If I >= 0 Then
+          RemoveReferenceFromProject(CurrentProject, I);
+         SolutionModified := True;
+         SaveCurrentSolution;
+        End;
+        RemoveExplorerNode(SolExplorer, CtxMenu.NodeIdx);
+        RefreshExplorer(SolExplorer);
+        SolExplorer.NeedRepaint := True;
+       End;
+      End;
      End;
     End;
    End;
