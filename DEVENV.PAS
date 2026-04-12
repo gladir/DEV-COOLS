@@ -1150,9 +1150,9 @@ Const
 
  { Boites de dialogue projet/solution }
  NEWPROJ_WIDTH         = 520;     { largeur dialogue nouveau projet }
- NEWPROJ_HEIGHT        = 340;     { hauteur dialogue nouveau projet }
- NEWPROJ_TYPE_COUNT    = 5;       { nombre de types de projet       }
- NEWPROJ_LIST_HEIGHT   = 120;     { hauteur liste des types         }
+ NEWPROJ_HEIGHT        = 380;     { hauteur dialogue nouveau projet }
+ NEWPROJ_TYPE_COUNT    = 12;      { nombre de types de projet       }
+ NEWPROJ_LIST_HEIGHT   = 126;     { hauteur liste des types         }
  NEWFILE_WIDTH         = 420;     { largeur dialogue nouveau fichier}
  NEWFILE_HEIGHT        = 280;     { hauteur dialogue nouveau fichier}
  NEWFILE_TYPE_COUNT    = 5;       { nombre de types de fichier      }
@@ -1802,7 +1802,8 @@ Type
  PEditor = ^TEditor;
 
  { Types de projet reconnus }
- TProjectType = (PT_CSHARP, PT_VBNET, PT_PASCAL, PT_UNKNOWN);
+ TProjectType = (PT_ABAP, PT_ADA, PT_C, PT_CSHARP, PT_JAVA,
+  PT_JOVIAL, PT_PASCAL, PT_PSP, PT_PYTHON, PT_VBNET, PT_UNKNOWN);
 
  { Informations sur la solution }
  TSolutionInfo = Record
@@ -2170,9 +2171,16 @@ Type
 
  { Type de nouveau projet }
  TNewProjectType = (
+  NPT_CONSOLE_ABAP,    { Application console ABAP/4              }
+  NPT_CONSOLE_ADA,     { Application console Ada                 }
+  NPT_CONSOLE_C,       { Application console C                   }
   NPT_CONSOLE_CS,      { Application console C#                  }
-  NPT_CONSOLE_VB,      { Application console VB.NET              }
+  NPT_CONSOLE_JAVA,    { Application console Java                }
+  NPT_CONSOLE_JOVIAL,  { Application console Jovial              }
   NPT_CONSOLE_PAS,     { Application console Pascal              }
+  NPT_CONSOLE_PSP,     { Application console PSP                 }
+  NPT_CONSOLE_PY,      { Application console Python              }
+  NPT_CONSOLE_VB,      { Application console VB.NET              }
   NPT_LIBRARY_CS,      { Bibliotheque de classes C#              }
   NPT_LIBRARY_VB       { Bibliotheque de classes VB.NET          }
  );
@@ -18824,11 +18832,18 @@ End;
 Function NewProjectTypeName(T: Integer): String;
 Begin
  Case T Of
-  0: NewProjectTypeName := 'Application console C#';
-  1: NewProjectTypeName := 'Application console VB.NET';
-  2: NewProjectTypeName := 'Application console Pascal';
-  3: NewProjectTypeName := 'Bibliotheque de classes C#';
-  4: NewProjectTypeName := 'Bibliotheque de classes VB.NET';
+  0: NewProjectTypeName := 'Application console ABAP/4';
+  1: NewProjectTypeName := 'Application console Ada';
+  2: NewProjectTypeName := 'Application console C';
+  3: NewProjectTypeName := 'Application console C#';
+  4: NewProjectTypeName := 'Application console Java';
+  5: NewProjectTypeName := 'Application console Jovial';
+  6: NewProjectTypeName := 'Application console Pascal';
+  7: NewProjectTypeName := 'Application console PSP';
+  8: NewProjectTypeName := 'Application console Python';
+  9: NewProjectTypeName := 'Application console VB.NET';
+  10: NewProjectTypeName := 'Bibliotheque de classes C#';
+  11: NewProjectTypeName := 'Bibliotheque de classes VB.NET';
  Else
   NewProjectTypeName := 'Inconnu';
  End;
@@ -18839,11 +18854,18 @@ End;
 Function NewProjectTypeExtension(T: Integer): String;
 Begin
  Case T Of
-  0: NewProjectTypeExtension := '.csproj';
-  1: NewProjectTypeExtension := '.vbproj';
-  2: NewProjectTypeExtension := '.pasproj';
+  0: NewProjectTypeExtension := '.abpproj';
+  1: NewProjectTypeExtension := '.adaproj';
+  2: NewProjectTypeExtension := '.cproj';
   3: NewProjectTypeExtension := '.csproj';
-  4: NewProjectTypeExtension := '.vbproj';
+  4: NewProjectTypeExtension := '.javaproj';
+  5: NewProjectTypeExtension := '.jovproj';
+  6: NewProjectTypeExtension := '.pasproj';
+  7: NewProjectTypeExtension := '.pspproj';
+  8: NewProjectTypeExtension := '.pyproj';
+  9: NewProjectTypeExtension := '.vbproj';
+  10: NewProjectTypeExtension := '.csproj';
+  11: NewProjectTypeExtension := '.vbproj';
  Else
   NewProjectTypeExtension := '';
  End;
@@ -18854,11 +18876,18 @@ End;
 Function NewProjectTypeToProjectType(T: Integer): TProjectType;
 Begin
  Case T Of
-  0: NewProjectTypeToProjectType := PT_CSHARP;
-  1: NewProjectTypeToProjectType := PT_VBNET;
-  2: NewProjectTypeToProjectType := PT_PASCAL;
+  0: NewProjectTypeToProjectType := PT_ABAP;
+  1: NewProjectTypeToProjectType := PT_ADA;
+  2: NewProjectTypeToProjectType := PT_C;
   3: NewProjectTypeToProjectType := PT_CSHARP;
-  4: NewProjectTypeToProjectType := PT_VBNET;
+  4: NewProjectTypeToProjectType := PT_JAVA;
+  5: NewProjectTypeToProjectType := PT_JOVIAL;
+  6: NewProjectTypeToProjectType := PT_PASCAL;
+  7: NewProjectTypeToProjectType := PT_PSP;
+  8: NewProjectTypeToProjectType := PT_PYTHON;
+  9: NewProjectTypeToProjectType := PT_VBNET;
+  10: NewProjectTypeToProjectType := PT_CSHARP;
+  11: NewProjectTypeToProjectType := PT_VBNET;
  Else
   NewProjectTypeToProjectType := PT_UNKNOWN;
  End;
@@ -18872,8 +18901,15 @@ Begin
   0: NewProjectTypeToOutputType := OT_EXE;
   1: NewProjectTypeToOutputType := OT_EXE;
   2: NewProjectTypeToOutputType := OT_EXE;
-  3: NewProjectTypeToOutputType := OT_LIBRARY;
-  4: NewProjectTypeToOutputType := OT_LIBRARY;
+  3: NewProjectTypeToOutputType := OT_EXE;
+  4: NewProjectTypeToOutputType := OT_EXE;
+  5: NewProjectTypeToOutputType := OT_EXE;
+  6: NewProjectTypeToOutputType := OT_EXE;
+  7: NewProjectTypeToOutputType := OT_EXE;
+  8: NewProjectTypeToOutputType := OT_EXE;
+  9: NewProjectTypeToOutputType := OT_EXE;
+  10: NewProjectTypeToOutputType := OT_LIBRARY;
+  11: NewProjectTypeToOutputType := OT_LIBRARY;
  Else
   NewProjectTypeToOutputType := OT_EXE;
  End;
@@ -18962,9 +18998,9 @@ End;
 
 Procedure DrawNewProjectTypeList(Var Dlg: TNewProjectDialog);
 Var
- I: Integer;
+ I, VisIdx: Integer;
  LX, LY, LW, LH: Integer;
- RH: Integer;
+ RH, MaxVisible: Integer;
  Bg, Fg: LongInt;
 Begin
  LX := Dlg.Base.X + DLG_PADDING;
@@ -18972,23 +19008,26 @@ Begin
  LW := Dlg.Base.Width - DLG_PADDING * 2;
  LH := NEWPROJ_LIST_HEIGHT;
  RH := DLG_LIST_ROW_HEIGHT;
+ MaxVisible := LH Div RH;
  DrawFilledRect(LX, LY, LX + LW, LY + LH, CLR_WINDOW);
  DrawRect(LX, LY, LX + LW, LY + LH, CLR_BORDER);
- For I := 0 To NEWPROJ_TYPE_COUNT - 1 Do
+ For VisIdx := 0 To MaxVisible - 1 Do
  Begin
+  I := Dlg.ScrollTop + VisIdx;
+  If I >= NEWPROJ_TYPE_COUNT Then Break;
   If I = Dlg.SelType Then
   Begin
    Bg := CLR_HIGHLIGHT;
    Fg := CLR_HIGHLIGHTTEXT;
-   DrawFilledRect(LX + 1, LY + 1 + I * RH,
-    LX + LW - 1, LY + 1 + (I + 1) * RH, Bg);
+   DrawFilledRect(LX + 1, LY + 1 + VisIdx * RH,
+    LX + LW - 1, LY + 1 + (VisIdx + 1) * RH, Bg);
   End
   Else
   Begin
    Bg := CLR_WINDOW;
    Fg := CLR_WINDOWTEXT;
   End;
-  DrawText(LX + 4, LY + 2 + I * RH, NewProjectTypeName(I), Fg);
+  DrawText(LX + 4, LY + 2 + VisIdx * RH, NewProjectTypeName(I), Fg);
  End;
 End;
 
@@ -19061,7 +19100,7 @@ Begin
  If (MX >= LX) And (MX < LX + LW) And (MY >= LY) And
   (MY < LY + NEWPROJ_LIST_HEIGHT) Then
  Begin
-  I := (MY - LY) Div RH;
+  I := Dlg.ScrollTop + (MY - LY) Div RH;
   If (I >= 0) And (I < NEWPROJ_TYPE_COUNT) Then
    NewProjectTypeHitTest := I;
  End;
@@ -19103,6 +19142,25 @@ Begin
  If Key = $09 Then { Tab }
  Begin
   Dlg.FocusField := (Dlg.FocusField + 1) Mod 4;
+  Exit;
+ End;
+ { Fleches haut/bas pour naviguer dans la liste des types }
+ If Key = $48 Then Begin { Fleche haut }
+  If Dlg.SelType > 0 Then Begin
+   Dec(Dlg.SelType);
+   If Dlg.SelType < Dlg.ScrollTop Then
+    Dlg.ScrollTop := Dlg.SelType;
+  End;
+  Exit;
+ End;
+ If Key = $50 Then Begin { Fleche bas }
+  If Dlg.SelType < NEWPROJ_TYPE_COUNT - 1 Then Begin
+   Inc(Dlg.SelType);
+   If Dlg.SelType >= Dlg.ScrollTop +
+    (NEWPROJ_LIST_HEIGHT Div DLG_LIST_ROW_HEIGHT) Then
+    Dlg.ScrollTop := Dlg.SelType -
+     (NEWPROJ_LIST_HEIGHT Div DLG_LIST_ROW_HEIGHT) + 1;
+  End;
   Exit;
  End;
  { Saisie dans le champ actif }
