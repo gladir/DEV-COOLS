@@ -4425,6 +4425,8 @@ Procedure Undo(Var Ed: TEditor;
  Var UndoStk, RedoStk: TUndoStack); Forward;
 Procedure Redo(Var Ed: TEditor;
  Var UndoStk, RedoStk: TUndoStack); Forward;
+Procedure PushUndo(Var Stack: TUndoStack; Action: TUndoAction;
+ Line, Col: LongInt; Text, OldText: String; GroupId: LongInt); Forward;
 
 { --- Calcul du rectangle occupe par un menu deroulant --- }
 
@@ -6793,6 +6795,7 @@ Var
  LineLen: Integer;
  TabStr: String;
  I: Integer;
+ OldCh: Char;
 Begin
  { Traiter les caracteres (EV_KEY_CHAR) }
  If Ev.Kind = EV_KEY_CHAR Then Begin
@@ -6801,9 +6804,15 @@ Begin
    #8: Begin
     If Ed.CursorCol > 1 Then Begin
      Dec(Ed.CursorCol);
+     S := Ed.Buffer.Lines[Ed.CursorLine];
+     If Ed.CursorCol <= Length(S) Then
+      PushUndo(EditorUndo, UA_DELETE, Ed.CursorLine,
+       Ed.CursorCol, '', S[Ed.CursorCol], 0);
      DeleteChar(Ed.Buffer, Ed.CursorLine, Ed.CursorCol);
     End Else If Ed.CursorLine > 0 Then Begin
      LineLen := Length(Ed.Buffer.Lines[Ed.CursorLine - 1]);
+     PushUndo(EditorUndo, UA_JOIN_LINE, Ed.CursorLine - 1,
+      LineLen + 1, '', '', 0);
      Ed.Buffer.Lines[Ed.CursorLine - 1] :=
       Ed.Buffer.Lines[Ed.CursorLine - 1] +
       Ed.Buffer.Lines[Ed.CursorLine];
@@ -6819,12 +6828,16 @@ Begin
     TabStr := '';
     For I := 1 To Ed.TabSize Do
      TabStr := TabStr + ' ';
+    PushUndo(EditorUndo, UA_INSERT, Ed.CursorLine,
+     Ed.CursorCol, TabStr, '', 0);
     InsertText(Ed.Buffer, Ed.CursorLine, Ed.CursorCol, TabStr);
     Inc(Ed.CursorCol, Ed.TabSize);
     EnsureCursorVisible(Ed);
    End;
    { Enter }
    #13: Begin
+    PushUndo(EditorUndo, UA_SPLIT_LINE, Ed.CursorLine,
+     Ed.CursorCol, '', '', 0);
     S := Ed.Buffer.Lines[Ed.CursorLine];
     InsertLine(Ed.Buffer, Ed.CursorLine + 1,
                Copy(S, Ed.CursorCol, Length(S) - Ed.CursorCol + 1));
@@ -6849,14 +6862,22 @@ Begin
    { Caracteres imprimables }
    If (Ord(Ev.KeyChar) >= 32) And (Ord(Ev.KeyChar) <= 126) Then Begin
     If Ed.InsertMode Then Begin
+     PushUndo(EditorUndo, UA_INSERT, Ed.CursorLine,
+      Ed.CursorCol, Ev.KeyChar, '', 0);
      InsertChar(Ed.Buffer, Ed.CursorLine, Ed.CursorCol,
                 Ev.KeyChar);
     End Else Begin
      S := Ed.Buffer.Lines[Ed.CursorLine];
-     If Ed.CursorCol <= Length(S) Then
-      S[Ed.CursorCol] := Ev.KeyChar
-     Else
+     If Ed.CursorCol <= Length(S) Then Begin
+      OldCh := S[Ed.CursorCol];
+      PushUndo(EditorUndo, UA_REPLACE, Ed.CursorLine,
+       Ed.CursorCol, Ev.KeyChar, OldCh, 0);
+      S[Ed.CursorCol] := Ev.KeyChar;
+     End Else Begin
+      PushUndo(EditorUndo, UA_INSERT, Ed.CursorLine,
+       Ed.CursorCol, Ev.KeyChar, '', 0);
       S := S + Ev.KeyChar;
+     End;
      Ed.Buffer.Lines[Ed.CursorLine] := S;
      Ed.Buffer.Modified := True;
     End;
@@ -6954,6 +6975,14 @@ Begin
   End;
   { Delete }
   83: Begin
+   S := Ed.Buffer.Lines[Ed.CursorLine];
+   If (Ed.CursorCol >= 1) And (Ed.CursorCol <= Length(S)) Then
+    PushUndo(EditorUndo, UA_DELETE, Ed.CursorLine,
+     Ed.CursorCol, '', S[Ed.CursorCol], 0)
+   Else If (Ed.CursorCol > Length(S)) And
+           (Ed.CursorLine < Ed.Buffer.LineCount - 1) Then
+    PushUndo(EditorUndo, UA_JOIN_LINE, Ed.CursorLine,
+     Length(S) + 1, '', '', 0);
    DeleteChar(Ed.Buffer, Ed.CursorLine, Ed.CursorCol);
   End;
  End;
