@@ -4710,10 +4710,12 @@ Begin
          If TermPanel.LineCount = 0 Then
           TermAddLine(TermPanel,
            'Terminal integre. Tapez HELP pour la liste des commandes.');
+         TerminalHasFocus := True;
         End Else Begin
          { Restaurer le OutputPanel a la largeur complete }
          OutputPanel.X := 0;
          OutputPanel.Width := GetScreenWidth - EXPLORER_WIDTH;
+         TerminalHasFocus := False;
         End;
         FullRepaintNeeded := True;
        End;
