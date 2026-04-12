@@ -26423,8 +26423,8 @@ Begin
   HandleStartPageEvent(StartPage, MRUList, Ev);
   Exit;
  End;
- { Raccourcis clavier globaux }
- If (Ev.Kind = EV_KEY_DOWN) Or (Ev.Kind = EV_KEY_CHAR) Then Begin
+ { Raccourcis clavier globaux (touches speciales uniquement) }
+ If (Ev.Kind = EV_KEY_DOWN) Then Begin
   Case Ev.KeyCode Of
    $6B: Begin { Alt+F4 : quitter }
     QuitRequested := True;
@@ -26447,19 +26447,19 @@ Begin
     Exit;
    End;
   End;
+ End;
+ If (Ev.Kind = EV_KEY_CHAR) Then Begin
   { Raccourcis Ctrl+lettre via KeyChar }
-  If Ev.Kind = EV_KEY_CHAR Then Begin
-   If Ev.KeyChar = #19 Then Begin { Ctrl+S : enregistrer }
-    HandleSaveCurrentFile;
-    Exit;
-   End;
-   If Ev.KeyChar = #15 Then Begin { Ctrl+O : ouvrir fichier }
-    InitFileDialog(FileDlg, False);
-    LoadDirectoryFiles(FileDlg);
-    FileDlg.Base.Visible := True;
-    DrawFileDialog(FileDlg);
-    Exit;
-   End;
+  If Ev.KeyChar = #19 Then Begin { Ctrl+S : enregistrer }
+   HandleSaveCurrentFile;
+   Exit;
+  End;
+  If Ev.KeyChar = #15 Then Begin { Ctrl+O : ouvrir fichier }
+   InitFileDialog(FileDlg, False);
+   LoadDirectoryFiles(FileDlg);
+   FileDlg.Base.Visible := True;
+   DrawFileDialog(FileDlg);
+   Exit;
   End;
  End;
  { Distribuer aux panneaux dans l ordre de priorite }
