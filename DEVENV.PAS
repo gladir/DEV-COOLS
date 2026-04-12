@@ -4410,6 +4410,22 @@ Procedure HandleFileDialogEvent(Var FD: TFileDialog;
  Var Ev: TEvent); Forward;
 Procedure HandleOpenFileConfirmed; Forward;
 
+{ Declarations anticipees pour le menu Edition }
+Procedure EnsureCursorVisible(Var Ed: TEditor); Forward;
+Procedure ClipboardCopy(Var Ed: TEditor; Var Sel: TSelection;
+ Var Clip: TClipboard); Forward;
+Procedure ClipboardCut(Var Ed: TEditor; Var Sel: TSelection;
+ Var Clip: TClipboard); Forward;
+Procedure ClipboardPaste(Var Ed: TEditor; Var Sel: TSelection;
+ Var Clip: TClipboard); Forward;
+Procedure DeleteSelectedText(Var Ed: TEditor;
+ Var Sel: TSelection); Forward;
+Procedure SelectAll(Var Ed: TEditor; Var Sel: TSelection); Forward;
+Procedure Undo(Var Ed: TEditor;
+ Var UndoStk, RedoStk: TUndoStack); Forward;
+Procedure Redo(Var Ed: TEditor;
+ Var UndoStk, RedoStk: TUndoStack); Forward;
+
 { --- Calcul du rectangle occupe par un menu deroulant --- }
 
 Procedure GetMenuRect(Idx: Integer; Var X1,Y1,X2,Y2: Integer);
@@ -4604,6 +4620,36 @@ Begin
   199: Begin { Quitter }
         ShutdownGraphics;
         Halt(EXIT_OK);
+       End;
+  200: Begin { Annuler (Ctrl+Z) }
+        If EditorReady Then
+         Undo(ActiveEditor, EditorUndo, EditorRedo);
+       End;
+  201: Begin { Retablir (Ctrl+Y) }
+        If EditorReady Then
+         Redo(ActiveEditor, EditorUndo, EditorRedo);
+       End;
+  210: Begin { Couper (Ctrl+X) }
+        If EditorReady Then Begin
+         ClipboardCut(ActiveEditor, EditorSel, EditorClip);
+         EnsureCursorVisible(ActiveEditor);
+        End;
+       End;
+  211: Begin { Copier (Ctrl+C) }
+        If EditorReady Then
+         ClipboardCopy(ActiveEditor, EditorSel, EditorClip);
+       End;
+  212: Begin { Coller (Ctrl+V) }
+        If EditorReady Then Begin
+         If EditorSel.Active Then
+          DeleteSelectedText(ActiveEditor, EditorSel);
+         ClipboardPaste(ActiveEditor, EditorSel, EditorClip);
+         EnsureCursorVisible(ActiveEditor);
+        End;
+       End;
+  220: Begin { Selectionner tout (Ctrl+A) }
+        If EditorReady Then
+         SelectAll(ActiveEditor, EditorSel);
        End;
   500: HandleStartDebugging; { Generer la solution (F6) }
   600: HandleStartDebugging; { Demarrer le debogage (F5) }
@@ -7562,6 +7608,7 @@ Begin
  { Ctrl+X : couper }
  If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #24) Then Begin
   ClipboardCut(Ed, Sel, Clip);
+  EnsureCursorVisible(Ed);
   Exit;
  End;
  { Ctrl+V : coller }
@@ -7569,6 +7616,7 @@ Begin
   If Sel.Active Then
    DeleteSelectedText(Ed, Sel);
   ClipboardPaste(Ed, Sel, Clip);
+  EnsureCursorVisible(Ed);
   Exit;
  End;
  { Ctrl+Z : annuler }
@@ -7588,14 +7636,26 @@ Begin
   HandleEditorKey(Ed, Ev);
   ExtendSelection(Sel, Ed.CursorLine, Ed.CursorCol);
  End Else If (Ev.Kind = EV_KEY_DOWN) Then Begin
-  If Sel.Active Then
-   ClearSelection(Sel);
-  HandleEditorKey(Ed, Ev);
- End Else Begin
-  { EV_KEY_CHAR normal : effacer la selection si active, puis taper }
-  If Sel.Active And (Ev.KeyChar >= ' ') Then
+  { Delete : supprimer la selection si active }
+  If Sel.Active And (Ev.KeyCode = 83) Then Begin
    DeleteSelectedText(Ed, Sel);
-  HandleEditorKey(Ed, Ev);
+   EnsureCursorVisible(Ed);
+  End Else Begin
+   If Sel.Active Then
+    ClearSelection(Sel);
+   HandleEditorKey(Ed, Ev);
+  End;
+ End Else Begin
+  { Backspace : supprimer la selection si active }
+  If Sel.Active And (Ev.KeyChar = #8) Then Begin
+   DeleteSelectedText(Ed, Sel);
+   EnsureCursorVisible(Ed);
+  End Else Begin
+   { EV_KEY_CHAR normal : effacer la selection si active, puis taper }
+   If Sel.Active And (Ev.KeyChar >= ' ') Then
+    DeleteSelectedText(Ed, Sel);
+   HandleEditorKey(Ed, Ev);
+  End;
  End;
 End;
 
