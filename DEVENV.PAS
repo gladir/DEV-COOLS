@@ -4454,8 +4454,10 @@ Procedure DrawNewProjectDialog(Var Dlg: TNewProjectDialog); Forward;
 Procedure HandleNewSolutionConfirmed; Forward;
 
 { Declarations anticipees pour sauvegarde }
+Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
 Procedure HandleSaveCurrentFile; Forward;
 Procedure HandleSaveAll; Forward;
+Procedure TryQuit; Forward;
 
 { Declarations anticipees pour dialogue fichier }
 Procedure InitFileDialog(Var FD: TFileDialog;
@@ -4676,8 +4678,7 @@ Begin
   130: HandleSaveCurrentFile;  { Enregistrer (Ctrl+S) }
   132: HandleSaveAll;          { Enregistrer tout (Ctrl+Maj+S) }
   199: Begin { Quitter }
-        ShutdownGraphics;
-        Halt(EXIT_OK);
+        TryQuit;
        End;
   200: Begin { Annuler (Ctrl+Z) }
         If EditorReady Then
@@ -5910,11 +5911,20 @@ End;
 Procedure SaveAllWindows;
 Var
  I: Integer;
+ FN: String;
 Begin
+ { Synchroniser l editeur actif avant de sauvegarder }
+ If EditorReady And (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.ActiveIdx < WinMgr.WinCount) And
+    (Editors[WinMgr.ActiveIdx] <> Nil) Then
+  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
  For I := 0 To WinMgr.WinCount - 1 Do Begin
-  If WinMgr.Windows[I].Modified Then Begin
-   { SaveFile sera implemente dans un TODO futur (TODO 08+) }
-   WinMgr.Windows[I].Modified := False;
+  If (Editors[I] <> Nil) And Editors[I]^.Buffer.Modified Then Begin
+   FN := WinMgr.Windows[I].FileName;
+   If FN <> '' Then Begin
+    SaveFile(Editors[I]^.Buffer, FN);
+    WinMgr.Windows[I].Modified := False;
+   End;
   End;
  End;
 End;
@@ -6007,9 +6017,14 @@ Function CountModifiedWindows: Integer;
 Var
  I, Total: Integer;
 Begin
+ { Synchroniser l editeur actif dans le tableau }
+ If EditorReady And (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.ActiveIdx < WinMgr.WinCount) And
+    (Editors[WinMgr.ActiveIdx] <> Nil) Then
+  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
  Total := 0;
  For I := 0 To WinMgr.WinCount - 1 Do
-  If WinMgr.Windows[I].Modified Then
+  If (Editors[I] <> Nil) And Editors[I]^.Buffer.Modified Then
    Inc(Total);
  CountModifiedWindows := Total;
 End;
@@ -18467,11 +18482,20 @@ Function ShowMessageBox(Title, Text: String; Buttons: TMessageButtons;
  Icon: TMessageIcon): Integer;
 Var
  MB: TMessageBoxDlg;
+ Ev: TEvent;
 Begin
  InitMessageBox(MB, Title, Text, Buttons, Icon);
  DrawMessageBox(MB);
- { Boucle modale a implementer dans un TODO futur }
- ShowMessageBox := DR_OK;
+ { Boucle modale }
+ While MB.Base.Visible Do Begin
+  PollEvents(Ev);
+  If Ev.Kind <> EV_NONE Then Begin
+   HandleMessageBoxEvent(MB, Ev);
+   If MB.Base.Visible Then
+    DrawMessageBox(MB);
+  End;
+ End;
+ ShowMessageBox := MB.Base.Result;
 End;
 
 { --- Initialiser une boite de saisie --- }
@@ -26274,21 +26298,11 @@ End;
 { --- Sauvegarder tous les fichiers ouverts --- }
 
 Procedure HandleSaveAll;
-Var
- FN: String;
 Begin
- { Sauvegarder le fichier source courant }
  If EditorReady Then Begin
-  FN := '';
-  If Opts.SourceFile <> '' Then
-   FN := Opts.SourceFile
-  Else If WinMgr.ActiveIdx >= 0 Then
-   FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName;
-  If FN <> '' Then Begin
-   SaveFile(ActiveEditor.Buffer, FN);
-   AppendOutput(OutputPanel, 'Fichier enregistre : ' + FN,
-    Ord(OTK_BUILD));
-  End;
+  SaveAllWindows;
+  AppendOutput(OutputPanel, 'Tous les fichiers enregistres.',
+   Ord(OTK_BUILD));
  End;
 End;
 
@@ -26427,11 +26441,11 @@ Begin
  If (Ev.Kind = EV_KEY_DOWN) Then Begin
   Case Ev.KeyCode Of
    $6B: Begin { Alt+F4 : quitter }
-    QuitRequested := True;
+    TryQuit;
     Exit;
    End;
    $2D: Begin { Alt+X : quitter }
-    QuitRequested := True;
+    TryQuit;
     Exit;
    End;
    $3B: Begin { F1 : aide (stub) }
@@ -26820,11 +26834,37 @@ Begin
  IsQuitRequested := QuitRequested;
 End;
 
+{ --- Essayer de quitter avec confirmation --- }
+
+Procedure TryQuit;
+Var
+ N: Integer;
+ R: Integer;
+Begin
+ N := CountModifiedWindows;
+ If N = 0 Then Begin
+  QuitRequested := True;
+  Exit;
+ End;
+ R := ShowMessageBox('Fichiers non enregistres',
+  'Des fichiers ont ete modifies. Enregistrer avant de quitter ?',
+  MB_YESNOCANCEL, MI_QUESTION);
+ Case R Of
+  DR_YES: Begin
+   SaveAllWindows;
+   QuitRequested := True;
+  End;
+  DR_NO: Begin
+   QuitRequested := True;
+  End;
+ End;
+End;
+
 { --- Demander la sortie --- }
 
 Procedure RequestQuit;
 Begin
- QuitRequested := True;
+ TryQuit;
 End;
 
 { --- Annuler la demande de sortie --- }
