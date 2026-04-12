@@ -1033,6 +1033,9 @@ Const
  { Coloration syntaxique AWK }
  MAX_AWK_KEYWORDS      = 36;      { nombre de mots-cles AWK        }
 
+ { Coloration syntaxique Python }
+ MAX_PYTHON_KEYWORDS   = 35;      { nombre de mots-cles Python     }
+
  { Coloration syntaxique XML/PSP }
  MAX_XML_TAGS          = 32;      { nombre de tags XML predefinies  }
 
@@ -1271,6 +1274,13 @@ Const
  JAVA_TEMP_OUTPUT     = '_javaout.tmp'; { fichier temp sortie compil  }
  JAVA_EXT_SOURCE      = '.java';    { extension source Java           }
  JAVA_EXT_EXE         = '.exe';     { extension executable            }
+
+ { Integration compilateur Python }
+ PYTHON_COMPILER_WIN32 = 'PYTHCW32'; { compilateur Python Win32 PE    }
+ PYTHON_COMPILER_DOS   = 'PYTHON86'; { compilateur Python DOS 8086    }
+ PYTHON_TEMP_OUTPUT    = '_pyout.tmp'; { fichier temp sortie compil   }
+ PYTHON_EXT_SOURCE     = '.py';     { extension source Python         }
+ PYTHON_EXT_EXE        = '.exe';    { extension executable            }
 
  { Systeme de build et configuration }
  BUILD_MAX_ORDER       = 64;       { nombre max projets dans l ordre }
@@ -1749,6 +1759,13 @@ Type
  TJavaHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_JAVA_KEYWORDS - 1] Of String[15];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee Python }
+ TPythonHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_PYTHON_KEYWORDS - 1] Of String[15];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -2507,6 +2524,23 @@ Type
   UseWarnings    : Boolean;        { afficher avertissements         }
  End;
 
+ TPythonCompilerContext = Record
+  CompilerPath   : String[255];    { chemin complet du compilateur   }
+  CompilerName   : String[40];     { nom du compilateur              }
+  CompilerFound  : Boolean;        { compilateur disponible          }
+  LastResult     : TCompilerResult;{ dernier resultat de compilation }
+  ErrorCount     : Integer;        { nombre d erreurs derniere compil}
+  WarningCount   : Integer;        { nombre d avertissements         }
+  FilesCompiled  : Integer;        { nombre de fichiers compiles     }
+  TotalFiles     : Integer;        { nombre total de fichiers source }
+  OutputFile     : String[255];    { fichier de sortie genere        }
+  TempFile       : String[255];    { fichier temporaire de sortie    }
+  IsCompiling    : Boolean;        { compilation en cours            }
+  UseDebugSymbols: Boolean;        { inclure symboles de debogage    }
+  UseVerbose     : Boolean;        { mode verbeux                    }
+  UseWarnings    : Boolean;        { afficher avertissements         }
+ End;
+
  { Etat de build d un projet }
  TBuildStatus = (
   BS_PENDING,          { en attente de compilation               }
@@ -2703,6 +2737,8 @@ Var
  AWKHL        : TAWKHighlighter;
  { Coloration syntaxique Java }
  JavaHL       : TJavaHighlighter;
+ { Coloration syntaxique Python }
+ PythonHL     : TPythonHighlighter;
  { Coloration syntaxique XML }
  XMLHL        : TXMLHighlighter;
  { Coloration syntaxique PSP }
@@ -2737,6 +2773,8 @@ Var
  AWKContext     : TAWKCompilerContext;
  { Contexte compilateur Java }
  JavaContext    : TJavaCompilerContext;
+ { Contexte compilateur Python }
+ PythonContext  : TPythonCompilerContext;
  { Gestionnaire de build }
  BuildMgr       : TBuildManager;
  { Gestionnaire de configurations }
@@ -6456,6 +6494,12 @@ Procedure HighlightJavaLine(Var HL: TJavaHighlighter;
                             Line: String;
                             Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightPythonLine --- }
+
+Procedure HighlightPythonLine(Var HL: TPythonHighlighter;
+                              Line: String;
+                              Var Colors: Array Of Byte); Forward;
+
 { --- Dessiner l editeur complet --- }
 
 Procedure DrawEditor(Var Ed: TEditor);
@@ -6476,6 +6520,7 @@ Var
  IsAWK: Boolean;
  IsPSP: Boolean;
  IsJava: Boolean;
+ IsPython: Boolean;
  Ext: String;
 Begin
  { Detecter si le fichier est du Pascal }
@@ -6489,6 +6534,7 @@ Begin
  IsAWK := (Ext = '.AWK');
  IsPSP := (Ext = '.PSP');
  IsJava := (Ext = '.JAVA');
+ IsPython := (Ext = '.PY');
  { Mettre a jour la gouttiere }
  Ed.GutterWidth := CalcGutterWidth(Ed.Buffer.LineCount, Ed.CharWidth);
  Ed.VisibleCols := (Ed.Width - Ed.GutterWidth) Div Ed.CharWidth;
@@ -6531,7 +6577,10 @@ Begin
     HighlightPSPLine(PSPHL, FullLine, Colors)
    Else If IsJava And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
-    HighlightJavaLine(JavaHL, FullLine, Colors);
+    HighlightJavaLine(JavaHL, FullLine, Colors)
+   Else If IsPython And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightPythonLine(PythonHL, FullLine, Colors);
    { Extraire la partie visible }
    If Ed.ScrollCol <= Length(FullLine) Then Begin
     Len := Length(FullLine) - Ed.ScrollCol + 1;
@@ -10630,6 +10679,313 @@ Begin
  Begin
   Start := Pos;
   TC := GetJavaTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE PYTHON
+  ============================================================ }
+
+{ --- Initialiser les mots-cles Python --- }
+
+Procedure InitPythonKeywords(Var HL: TPythonHighlighter);
+Begin
+ HL.KeywordCount := MAX_PYTHON_KEYWORDS;
+ HL.Keywords[0]  := 'and';
+ HL.Keywords[1]  := 'as';
+ HL.Keywords[2]  := 'assert';
+ HL.Keywords[3]  := 'async';
+ HL.Keywords[4]  := 'await';
+ HL.Keywords[5]  := 'break';
+ HL.Keywords[6]  := 'class';
+ HL.Keywords[7]  := 'continue';
+ HL.Keywords[8]  := 'def';
+ HL.Keywords[9]  := 'del';
+ HL.Keywords[10] := 'elif';
+ HL.Keywords[11] := 'else';
+ HL.Keywords[12] := 'except';
+ HL.Keywords[13] := 'finally';
+ HL.Keywords[14] := 'for';
+ HL.Keywords[15] := 'from';
+ HL.Keywords[16] := 'global';
+ HL.Keywords[17] := 'if';
+ HL.Keywords[18] := 'import';
+ HL.Keywords[19] := 'in';
+ HL.Keywords[20] := 'is';
+ HL.Keywords[21] := 'lambda';
+ HL.Keywords[22] := 'nonlocal';
+ HL.Keywords[23] := 'not';
+ HL.Keywords[24] := 'or';
+ HL.Keywords[25] := 'pass';
+ HL.Keywords[26] := 'raise';
+ HL.Keywords[27] := 'return';
+ HL.Keywords[28] := 'try';
+ HL.Keywords[29] := 'while';
+ HL.Keywords[30] := 'with';
+ HL.Keywords[31] := 'yield';
+ HL.Keywords[32] := 'print';
+ HL.Keywords[33] := 'range';
+ HL.Keywords[34] := 'len';
+End;
+
+{ --- Initialiser le moteur de coloration Python --- }
+
+Procedure InitPythonHighlighter(Var HL: TPythonHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'Python');
+ InitPythonKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle Python --- }
+
+Function IsPythonKeyword(Var HL: TPythonHighlighter;
+                         Word: String): Boolean;
+Var
+ I: Integer;
+Begin
+ IsPythonKeyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+ Begin
+  If Word = HL.Keywords[I] Then
+  Begin
+   IsPythonKeyword := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un mot est un type/builtin Python --- }
+
+Function IsPythonBuiltin(Word: String): Boolean;
+Begin
+ IsPythonBuiltin :=
+  (Word = 'True') Or (Word = 'False') Or (Word = 'None') Or
+  (Word = 'int') Or (Word = 'float') Or (Word = 'str') Or
+  (Word = 'bool') Or (Word = 'list') Or (Word = 'dict') Or
+  (Word = 'tuple') Or (Word = 'set') Or (Word = 'type') Or
+  (Word = 'object') Or (Word = 'super') Or (Word = 'self') Or
+  (Word = 'Exception') Or (Word = 'ValueError') Or
+  (Word = 'TypeError') Or (Word = 'KeyError') Or
+  (Word = 'IndexError') Or (Word = 'RuntimeError');
+End;
+
+{ --- Obtenir la classe de jeton Python a une position --- }
+
+Function GetPythonTokenClass(Var HL: TPythonHighlighter;
+                             Line: String;
+                             Var Pos: Integer): TTokenClass;
+Var
+ Ch: Char;
+ Len: Integer;
+ StartPos: Integer;
+ Word: String;
+Begin
+ Len := Length(Line);
+ GetPythonTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then
+ Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetPythonTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire # }
+ If Ch = '#' Then
+ Begin
+  Pos := Len + 1;
+  GetPythonTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine triple guillemets doubles }
+ If (Ch = '"') And (Pos + 2 <= Len) And
+    (Line[Pos + 1] = '"') And (Line[Pos + 2] = '"') Then
+ Begin
+  Inc(Pos, 3);
+  While Pos + 2 <= Len Do
+  Begin
+   If (Line[Pos] = '"') And (Line[Pos + 1] = '"') And
+      (Line[Pos + 2] = '"') Then
+   Begin
+    Inc(Pos, 3);
+    GetPythonTokenClass := TC_STRING;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  Pos := Len + 1;
+  GetPythonTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Chaine triple apostrophes }
+ If (Ch = '''') And (Pos + 2 <= Len) And
+    (Line[Pos + 1] = '''') And (Line[Pos + 2] = '''') Then
+ Begin
+  Inc(Pos, 3);
+  While Pos + 2 <= Len Do
+  Begin
+   If (Line[Pos] = '''') And (Line[Pos + 1] = '''') And
+      (Line[Pos + 2] = '''') Then
+   Begin
+    Inc(Pos, 3);
+    GetPythonTokenClass := TC_STRING;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  Pos := Len + 1;
+  GetPythonTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Chaine guillemets doubles "..." }
+ If Ch = '"' Then
+ Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do
+  Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then
+    Inc(Pos, 2)
+   Else
+    Inc(Pos);
+  End;
+  If Pos <= Len Then
+   Inc(Pos);
+  GetPythonTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Chaine apostrophes '...' }
+ If Ch = '''' Then
+ Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '''') Do
+  Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then
+    Inc(Pos, 2)
+   Else
+    Inc(Pos);
+  End;
+  If Pos <= Len Then
+   Inc(Pos);
+  GetPythonTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Nombre hexadecimal 0x... }
+ If (Ch = '0') And (Pos < Len) And
+    ((Line[Pos + 1] = 'x') Or (Line[Pos + 1] = 'X') Or
+     (Line[Pos + 1] = 'b') Or (Line[Pos + 1] = 'B') Or
+     (Line[Pos + 1] = 'o') Or (Line[Pos + 1] = 'O')) Then
+ Begin
+  Inc(Pos, 2);
+  While (Pos <= Len) And (IsHexDigit(Line[Pos]) Or
+         (Line[Pos] = '_')) Do
+   Inc(Pos);
+  GetPythonTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Nombre decimal }
+ If IsDigitChar(Ch) Then
+ Begin
+  While (Pos <= Len) And (IsDigitChar(Line[Pos]) Or
+         (Line[Pos] = '_')) Do
+   Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '.') Then
+  Begin
+   Inc(Pos);
+   While (Pos <= Len) And (IsDigitChar(Line[Pos]) Or
+          (Line[Pos] = '_')) Do
+    Inc(Pos);
+  End;
+  If (Pos <= Len) And ((Line[Pos] = 'e') Or (Line[Pos] = 'E')) Then
+  Begin
+   Inc(Pos);
+   If (Pos <= Len) And ((Line[Pos] = '+') Or (Line[Pos] = '-')) Then
+    Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do
+    Inc(Pos);
+  End;
+  If (Pos <= Len) And ((Line[Pos] = 'j') Or (Line[Pos] = 'J')) Then
+   Inc(Pos);
+  GetPythonTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Decorateur @... }
+ If Ch = '@' Then
+ Begin
+  Inc(Pos);
+  While (Pos <= Len) And IsAlphaNumUS(Line[Pos]) Do
+   Inc(Pos);
+  GetPythonTokenClass := TC_DIRECTIVE;
+  Exit;
+ End;
+
+ { Identificateur ou mot-cle }
+ If IsAlphaUS(Ch) Then
+ Begin
+  StartPos := Pos;
+  While (Pos <= Len) And IsAlphaNumUS(Line[Pos]) Do
+   Inc(Pos);
+  Word := Copy(Line, StartPos, Pos - StartPos);
+  If IsPythonBuiltin(Word) Then
+   GetPythonTokenClass := TC_TYPE
+  Else If IsPythonKeyword(HL, Word) Then
+   GetPythonTokenClass := TC_KEYWORD
+  Else
+   GetPythonTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+
+ { Operateur }
+ If IsOperatorChar(Ch) Then
+ Begin
+  Inc(Pos);
+  If (Pos <= Len) And IsOperatorChar(Line[Pos]) Then
+   Inc(Pos);
+  GetPythonTokenClass := TC_OPERATOR;
+  Exit;
+ End;
+
+ { Autre caractere }
+ Inc(Pos);
+ GetPythonTokenClass := TC_NORMAL;
+End;
+
+{ --- Colorier une ligne Python entiere --- }
+
+Procedure HighlightPythonLine(Var HL: TPythonHighlighter;
+                              Line: String;
+                              Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Start := Pos;
+  TC := GetPythonTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
   Begin
@@ -22302,6 +22658,51 @@ Begin
  Ctx.CompilerFound := False;
 End;
 
+{ --- Initialiser le contexte compilateur Python --- }
+
+Procedure InitPythonContext(Var Ctx: TPythonCompilerContext);
+Begin
+ Ctx.CompilerPath := '';
+ Ctx.CompilerName := '';
+ Ctx.CompilerFound := False;
+ Ctx.LastResult := CR_NOT_FOUND;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ Ctx.TotalFiles := 0;
+ Ctx.OutputFile := '';
+ Ctx.TempFile := PYTHON_TEMP_OUTPUT;
+ Ctx.IsCompiling := False;
+ Ctx.UseDebugSymbols := False;
+ Ctx.UseVerbose := False;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Detecter le compilateur Python disponible --- }
+
+Procedure DetectPythonCompiler(Var Ctx: TPythonCompilerContext);
+Var
+ Path: String;
+Begin
+ { Essayer d abord PYTHCW32 (Win32 PE) }
+ Path := FindCompiler(PYTHON_COMPILER_WIN32);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := PYTHON_COMPILER_WIN32;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ { Sinon essayer PYTHON86 (DOS 8086) }
+ Path := FindCompiler(PYTHON_COMPILER_DOS);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := PYTHON_COMPILER_DOS;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ Ctx.CompilerFound := False;
+End;
+
 { ============================================================
   TODO 28 - SYSTEME DE BUILD ET CONFIGURATION [IMPLEMENTE]
   ============================================================ }
@@ -24026,6 +24427,26 @@ Begin
    Exit;
   End;
  End
+ Else If (Ext = '.py') Then Begin
+  { Compilation Python }
+  DetectPythonCompiler(PythonContext);
+  If PythonContext.CompilerFound Then Begin
+   CmdLine := PythonContext.CompilerPath + ' ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine,
+    Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End Else Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur Python non trouve (PYTHCW32/PYTHON86).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+ End
  Else Begin
   AppendOutput(OutputPanel,
    'Erreur : type de fichier non supporte (' + Ext + ').',
@@ -24587,6 +25008,7 @@ BEGIN
  InitAbapHighlighter(AbapHL);
  InitAWKHighlighter(AWKHL);
  InitJavaHighlighter(JavaHL);
+ InitPythonHighlighter(PythonHL);
  InitXMLHighlighter(XMLHL);
  InitPSPHighlighter(PSPHL);
  InitExplorer(SolExplorer);
@@ -24612,6 +25034,7 @@ BEGIN
  InitPSPContext(PSPContext);
  InitAWKContext(AWKContext);
  InitJavaContext(JavaContext);
+ InitPythonContext(PythonContext);
  InitBuildManager(BuildMgr);
  InitConfigurationManager(CfgMgr);
  InitBreakpointManager(BPMgr);
