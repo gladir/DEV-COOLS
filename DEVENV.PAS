@@ -15126,12 +15126,14 @@ End;
 
 { --- DIR / LS / GET-CHILDITEM --- }
 
-Procedure TermCmd_DIR(Var TP: TTerminalPanel; ParamStr: String);
+{ --- DIR style CMD (Windows command prompt) --- }
+
+Procedure TermCmd_DIR_CMD(Var TP: TTerminalPanel; ParamStr: String);
 Var
  Info: SearchRec;
  T: DateTime;
  ShowDir, S, Line: String;
- TotalFiles: LongInt;
+ TotalFiles, TotalDirs: LongInt;
  TotalSize: LongInt;
  FirstParam: String;
 Begin
@@ -15140,18 +15142,69 @@ Begin
   ShowDir := '*.*'
  Else
   ShowDir := FirstParam;
+ TermAddLine(TP, ' Volume in drive C has no label.');
+ TermAddLine(TP, ' Volume Serial Number is 1234-5678');
  TermAddLine(TP, '');
- TermAddLine(TP, ' Repertoire : ' + TermGetCurrentDir);
+ TermAddLine(TP, ' Directory of ' + TermGetCurrentDir);
  TermAddLine(TP, '');
- TermAddLine(TP,
-  'Mode         LastWriteTime        Length Name');
- TermAddLine(TP,
-  '----         -------------        ------ ----');
  TotalFiles := 0;
+ TotalDirs := 0;
  TotalSize := 0;
  FindFirst(ShowDir, AnyFile, Info);
  While DosError = 0 Do Begin
-  { Mode }
+  UnpackTime(Info.Time, T);
+  Line := TermPadZeroLeft(T.Month, 2) + '/' +
+   TermPadZeroLeft(T.Day, 2) + '/' +
+   TermPadZeroLeft(T.Year, 4) + '  ';
+  Str(T.Hour:2, S);
+  Line := Line + S + ':' + TermPadZeroLeft(T.Min, 2) + '    ';
+  If Info.Attr And Directory = Directory Then Begin
+   Line := Line + '<DIR>          ' + Info.Name;
+   Inc(TotalDirs);
+  End Else Begin
+   Str(Info.Size, S);
+   While Length(S) < 14 Do S := ' ' + S;
+   Line := Line + S + ' ' + Info.Name;
+   Inc(TotalFiles);
+   Inc(TotalSize, Info.Size);
+  End;
+  TermAddLine(TP, Line);
+  FindNext(Info);
+ End;
+ Str(TotalFiles, S);
+ While Length(S) < 16 Do S := ' ' + S;
+ Str(TotalSize, Line);
+ While Length(Line) < 14 Do Line := ' ' + Line;
+ TermAddLine(TP, S + ' File(s)' + Line + ' bytes');
+ Str(TotalDirs, S);
+ While Length(S) < 16 Do S := ' ' + S;
+ TermAddLine(TP, S + ' Dir(s)   bytes free');
+End;
+
+{ --- DIR style PowerShell (Get-ChildItem) --- }
+
+Procedure TermCmd_DIR_PS(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Info: SearchRec;
+ T: DateTime;
+ ShowDir, S, Line: String;
+ FirstParam: String;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ If FirstParam = '' Then
+  ShowDir := '*.*'
+ Else
+  ShowDir := FirstParam;
+ TermAddLine(TP, '');
+ TermAddLine(TP,
+  '    Directory: ' + TermGetCurrentDir);
+ TermAddLine(TP, '');
+ TermAddLine(TP,
+  'Mode                 LastWriteTime         Length Name');
+ TermAddLine(TP,
+  '----                 -------------         ------ ----');
+ FindFirst(ShowDir, AnyFile, Info);
+ While DosError = 0 Do Begin
   Line := '';
   If Info.Attr And Directory = Directory Then
    Line := Line + 'd' Else Line := Line + '-';
@@ -15164,34 +15217,121 @@ Begin
   If Info.Attr And SysFile = SysFile Then
    Line := Line + 's' Else Line := Line + '-';
   Line := Line + '-  ';
-  { Date et heure }
   UnpackTime(Info.Time, T);
-  Str(T.Year:4, S);
-  Line := Line + S + '-' +
-   TermPadZeroLeft(T.Month, 2) + '-' +
-   TermPadZeroLeft(T.Day, 2) + '  ';
-  Str(T.Hour:2, S);
-  Line := Line + S + ':' + TermPadZeroLeft(T.Min, 2) + '  ';
-  { Taille }
+  Str(T.Month, S);
+  Line := Line + S + '/' +
+   TermPadZeroLeft(T.Day, 2) + '/' +
+   TermPadZeroLeft(T.Year, 4) + '  ';
+  Str(T.Hour, S);
+  Line := Line + S + ':' +
+   TermPadZeroLeft(T.Min, 2) + ' ';
+  If T.Hour >= 12 Then Line := Line + 'PM'
+  Else Line := Line + 'AM';
+  Line := Line + '  ';
   If Info.Attr And Directory = Directory Then
-   Line := Line + TermPadRight('', 10)
+   Line := Line + TermPadRight('', 14)
   Else Begin
-   Str(Info.Size:10, S);
+   Str(Info.Size, S);
+   While Length(S) < 14 Do S := ' ' + S;
    Line := Line + S;
   End;
-  { Nom }
   Line := Line + ' ' + Info.Name;
   TermAddLine(TP, Line);
-  Inc(TotalFiles);
-  Inc(TotalSize, Info.Size);
   FindNext(Info);
  End;
  TermAddLine(TP, '');
+End;
+
+{ --- LS style Bash (colonnes simples) --- }
+
+Procedure TermCmd_DIR_BASH(Var TP: TTerminalPanel;
+ ParamStr: String);
+Var
+ Info: SearchRec;
+ T: DateTime;
+ ShowDir, S, Line: String;
+ FirstParam: String;
+ TotalSize: LongInt;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ If FirstParam = '' Then
+  ShowDir := '*.*'
+ Else
+  ShowDir := FirstParam;
+ TotalSize := 0;
+ FindFirst(ShowDir, AnyFile, Info);
+ While DosError = 0 Do Begin
+  Inc(TotalSize, Info.Size);
+  FindNext(Info);
+ End;
+ Str(TotalSize Div 1024, S);
+ TermAddLine(TP, 'total ' + S);
+ FindFirst(ShowDir, AnyFile, Info);
+ While DosError = 0 Do Begin
+  { drwxr-xr-x style permissions }
+  Line := '';
+  If Info.Attr And Directory = Directory Then
+   Line := 'd' Else Line := '-';
+  If Info.Attr And ReadOnly = ReadOnly Then
+   Line := Line + 'r--r--r--'
+  Else
+   Line := Line + 'rw-rw-rw-';
+  Line := Line + ' 1 user user ';
+  Str(Info.Size, S);
+  While Length(S) < 8 Do S := ' ' + S;
+  Line := Line + S + ' ';
+  UnpackTime(Info.Time, T);
+  Case T.Month Of
+   1: S := 'Jan'; 2: S := 'Feb'; 3: S := 'Mar';
+   4: S := 'Apr'; 5: S := 'May'; 6: S := 'Jun';
+   7: S := 'Jul'; 8: S := 'Aug'; 9: S := 'Sep';
+   10: S := 'Oct'; 11: S := 'Nov'; 12: S := 'Dec';
+  Else S := '???';
+  End;
+  Line := Line + S + ' ';
+  Str(T.Day:2, S);
+  Line := Line + S + ' ';
+  Str(T.Hour:2, S);
+  Line := Line + S + ':' + TermPadZeroLeft(T.Min, 2) + ' ';
+  Line := Line + Info.Name;
+  TermAddLine(TP, Line);
+  FindNext(Info);
+ End;
+End;
+
+{ --- DIR style AmigaDOS --- }
+
+Procedure TermCmd_DIR_AMIGA(Var TP: TTerminalPanel;
+ ParamStr: String);
+Var
+ Info: SearchRec;
+ ShowDir, S: String;
+ FirstParam: String;
+ TotalFiles, TotalDirs: LongInt;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ If FirstParam = '' Then
+  ShowDir := '*.*'
+ Else
+  ShowDir := FirstParam;
+ TotalFiles := 0;
+ TotalDirs := 0;
+ FindFirst(ShowDir, AnyFile, Info);
+ While DosError = 0 Do Begin
+  If Info.Attr And Directory = Directory Then Begin
+   TermAddLine(TP, '  ' + Info.Name + '           (dir)');
+   Inc(TotalDirs);
+  End Else Begin
+   Str(Info.Size, S);
+   While Length(S) < 8 Do S := ' ' + S;
+   TermAddLine(TP, '  ' + Info.Name);
+   Inc(TotalFiles);
+  End;
+  FindNext(Info);
+ End;
  Str(TotalFiles, S);
- Line := '  ' + S + ' element(s)';
- Str(TotalSize, S);
- Line := Line + '  ' + S + ' octets';
- TermAddLine(TP, Line);
+ TermAddLine(TP, S + ' files - ' +
+  TermPadZeroLeft(TotalDirs, 1) + ' directories');
 End;
 
 { --- COPY / COPY-ITEM --- }
@@ -15573,7 +15713,7 @@ Begin
    Else If CurrCmd = 'CLS' Then
     TermCmd_CLS(TP)
    Else If (CurrCmd = 'DIR') Then
-    TermCmd_DIR(TP, ParamStr)
+    TermCmd_DIR_CMD(TP, ParamStr)
    Else If CurrCmd = 'COPY' Then
     TermCmd_COPY(TP, ParamStr)
    Else If (CurrCmd = 'DEL') Or (CurrCmd = 'DELETE') Or
@@ -15624,7 +15764,7 @@ Begin
     TermCmd_CLS(TP)
    Else If (CurrCmd = 'DIR') Or (CurrCmd = 'LS') Or
     (CurrCmd = 'GET-CHILDITEM') Then
-    TermCmd_DIR(TP, ParamStr)
+    TermCmd_DIR_PS(TP, ParamStr)
    Else If (CurrCmd = 'COPY') Or
     (CurrCmd = 'COPY-ITEM') Then
     TermCmd_COPY(TP, ParamStr)
@@ -15679,7 +15819,7 @@ Begin
    Else If CurrCmd = 'CLEAR' Then
     TermCmd_CLS(TP)
    Else If (CurrCmd = 'LS') Or (CurrCmd = 'DIR') Then
-    TermCmd_DIR(TP, ParamStr)
+    TermCmd_DIR_BASH(TP, ParamStr)
    Else If CurrCmd = 'CP' Then
     TermCmd_COPY(TP, ParamStr)
    Else If CurrCmd = 'RM' Then
@@ -15718,9 +15858,9 @@ Begin
    Else If CurrCmd = 'CD' Then
     TermCmd_CD(TP, ParamStr)
    Else If CurrCmd = 'DIR' Then
-    TermCmd_DIR(TP, ParamStr)
+    TermCmd_DIR_AMIGA(TP, ParamStr)
    Else If CurrCmd = 'LIST' Then
-    TermCmd_DIR(TP, ParamStr)
+    TermCmd_DIR_AMIGA(TP, ParamStr)
    Else If CurrCmd = 'COPY' Then
     TermCmd_COPY(TP, ParamStr)
    Else If CurrCmd = 'DELETE' Then
