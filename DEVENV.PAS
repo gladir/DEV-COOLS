@@ -25935,6 +25935,8 @@ Begin
     SP.Visible := False;
     SP.NeedRepaint := True;
     FullRepaintNeeded := True;
+    DrawAllWidgets;
+    ShowNewProjectDialog(NewProjDlg);
     Exit;
    End;
    { Verifier clic sur bouton Ouvrir }
@@ -25945,6 +25947,11 @@ Begin
     SP.Visible := False;
     SP.NeedRepaint := True;
     FullRepaintNeeded := True;
+    DrawAllWidgets;
+    InitFileDialog(FileDlg, False);
+    LoadDirectoryFiles(FileDlg);
+    FileDlg.Base.Visible := True;
+    DrawFileDialog(FileDlg);
     Exit;
    End;
    { Verifier clic sur un element de la liste MRU }
@@ -25970,6 +25977,15 @@ Begin
          SP.Visible := False;
          SP.NeedRepaint := True;
          FullRepaintNeeded := True;
+         DrawAllWidgets;
+         If SP.FocusedBtn = 0 Then Begin
+          ShowNewProjectDialog(NewProjDlg);
+         End Else Begin
+          InitFileDialog(FileDlg, False);
+          LoadDirectoryFiles(FileDlg);
+          FileDlg.Base.Visible := True;
+          DrawFileDialog(FileDlg);
+         End;
         End;
    #27: Begin { Echap : fermer la page de demarrage }
          SP.Visible := False;
@@ -26360,12 +26376,19 @@ Begin
  Opts.SourceFile := FN;
  EditorReady := True;
  { Ajouter le fichier a l explorateur }
- ClearExplorer(SolExplorer);
+ If (SolExplorer.NodeCount = 0) Or
+    (SolExplorer.Nodes[0].Kind <> ENK_SOLUTION) Then Begin
+  ClearExplorer(SolExplorer);
+  AddExplorerNode(SolExplorer, 'Solution sans nom',
+   ENK_SOLUTION, -1);
+  SolExplorer.Nodes[0].Expanded := True;
+  SolExplorer.Nodes[0].HasChildren := True;
+ End;
  AddExplorerNode(SolExplorer,
   ExtractFileName(FN),
-  NodeKindFromExtension(FN), -1);
- SolExplorer.SelectedIdx := 0;
- SolExplorer.Nodes[0].Selected := True;
+  NodeKindFromExtension(FN), 0);
+ SolExplorer.SelectedIdx := SolExplorer.NodeCount - 1;
+ SolExplorer.Nodes[SolExplorer.NodeCount - 1].Selected := True;
  SolExplorer.NeedRepaint := True;
  AppendOutput(OutputPanel, 'Fichier ouvert : ' + FN,
   Ord(OTK_BUILD));
@@ -26710,11 +26733,15 @@ Begin
   EditorReady := True;
   { Peupler l explorateur de solutions avec le fichier ouvert }
   ClearExplorer(SolExplorer);
+  AddExplorerNode(SolExplorer, 'Solution sans nom',
+   ENK_SOLUTION, -1);
+  SolExplorer.Nodes[0].Expanded := True;
+  SolExplorer.Nodes[0].HasChildren := True;
   AddExplorerNode(SolExplorer,
    ExtractFileName(Opts.SourceFile),
-   NodeKindFromExtension(Opts.SourceFile), -1);
-  SolExplorer.SelectedIdx := 0;
-  SolExplorer.Nodes[0].Selected := True;
+   NodeKindFromExtension(Opts.SourceFile), 0);
+  SolExplorer.SelectedIdx := 1;
+  SolExplorer.Nodes[1].Selected := True;
   SolExplorer.NeedRepaint := True;
  End;
  DrawAllWidgets;
