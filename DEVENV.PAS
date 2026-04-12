@@ -2017,7 +2017,7 @@ Type
  End;
 
  { Type de shell du terminal }
- TShellKind = (SK_CMD, SK_POWERSHELL);
+ TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH);
 
  { Terminal integre }
  TTerminalPanel = Record
@@ -15672,6 +15672,47 @@ Begin
     TermAddLine(TP, CurrCmd +
      ' : le terme n''est pas reconnu comme nom de cmdlet.');
   End;
+  SK_BASH: Begin
+   If CurrCmd = 'EXIT' Then
+    TermVisible := False
+   Else If CurrCmd = 'CD' Then
+    TermCmd_CD(TP, ParamStr)
+   Else If CurrCmd = 'CLEAR' Then
+    TermCmd_CLS(TP)
+   Else If (CurrCmd = 'LS') Or (CurrCmd = 'DIR') Then
+    TermCmd_DIR(TP, ParamStr)
+   Else If CurrCmd = 'CP' Then
+    TermCmd_COPY(TP, ParamStr)
+   Else If CurrCmd = 'RM' Then
+    TermCmd_DEL(TP, ParamStr)
+   Else If CurrCmd = 'ECHO' Then
+    TermCmd_ECHO(TP, ParamStr)
+   Else If CurrCmd = 'MKDIR' Then
+    TermCmd_MKDIR(TP, ParamStr)
+   Else If CurrCmd = 'RMDIR' Then
+    TermCmd_RMDIR(TP, ParamStr)
+   Else If CurrCmd = 'MV' Then
+    TermCmd_MOVE(TP, ParamStr)
+   Else If CurrCmd = 'CAT' Then
+    TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'DATE' Then
+    TermCmd_DATE(TP)
+   Else If CurrCmd = 'PWD' Then
+    TermCmd_PWD(TP)
+   Else If CurrCmd = 'PUSHD' Then
+    TermCmd_PUSHD(TP, ParamStr)
+   Else If CurrCmd = 'POPD' Then
+    TermCmd_POPD(TP)
+   Else If CurrCmd = 'EXPORT' Then
+    TermCmd_SET(TP, ParamStr)
+   Else If CurrCmd = 'HISTORY' Then
+    TermCmd_HELP(TP)
+   Else If CurrCmd = 'HELP' Then
+    TermCmd_HELP(TP)
+   Else
+    TermAddLine(TP, 'bash: ' + CurrCmd +
+     ': command not found');
+  End;
  End;
 End;
 
@@ -15721,6 +15762,7 @@ Begin
  ActiveShell := SK_POWERSHELL;
  InitTerminalPanel(TermPanels[SK_CMD], SK_CMD);
  InitTerminalPanel(TermPanels[SK_POWERSHELL], SK_POWERSHELL);
+ InitTerminalPanel(TermPanels[SK_BASH], SK_BASH);
 End;
 
 { --- Dessiner le panneau terminal avec selecteur deroulant --- }
@@ -15738,8 +15780,8 @@ Begin
  PY := TermY;
  PW := TermWidth;
  PH := TermHeight;
- { Fond noir }
- SetFillStyle(SolidFill, 0);
+ { Fond sombre (8=gris fonce, pas 0 car SetBkColor remappe 0) }
+ SetFillStyle(SolidFill, 8);
  Bar(PX, PY, PX + PW - 1, PY + PH - 1);
  { Barre du haut avec titre TERMINAL et SelectBox }
  SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
@@ -15758,15 +15800,63 @@ Begin
  Rectangle(SBX, SBY, SBX + TERM_SELECT_WIDTH - 1,
   SBY + TERM_SELECT_HEIGHT - 1);
  { Texte du SelectBox : nom du shell actif }
- If ActiveShell = SK_POWERSHELL Then
-  SelLabel := 'PowerShell dev'
- Else
-  SelLabel := 'Invite de commandes';
+ Case ActiveShell Of
+  SK_CMD:        SelLabel := 'Invite de commandes';
+  SK_POWERSHELL: SelLabel := 'PowerShell dev';
+  SK_BASH:       SelLabel := 'Bash';
+ End;
  SetColor(15);
  OutTextXY(SBX + 4, SBY + 3, SelLabel);
  { Fleche vers le bas }
  OutTextXY(SBX + TERM_SELECT_WIDTH - 14, SBY + 3, #31);
- { Dessiner la liste deroulante si ouverte }
+ { Bordure du panneau }
+ SetColor(CLR_BORDER);
+ Rectangle(PX, PY, PX + PW - 1, PY + PH - 1);
+ { Zone de texte }
+ VisLines := (PH - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
+  Div TERM_LINE_HEIGHT;
+ If VisLines < 1 Then VisLines := 1;
+ MaxCols := (PW - 8) Div TERM_CHAR_WIDTH;
+ If MaxCols < 10 Then MaxCols := 10;
+ { Auto-scroll }
+ If TP.LineCount > VisLines Then
+  TP.ScrollTop := TP.LineCount - VisLines
+ Else
+  TP.ScrollTop := 0;
+ { Afficher les lignes }
+ SetColor(15);
+ YPos := PY + TERM_TAB_HEIGHT + 2;
+ StartIdx := TP.ScrollTop;
+ For I := 0 To VisLines - 1 Do Begin
+  If StartIdx + I < TP.LineCount Then Begin
+   S := TP.Lines[StartIdx + I];
+   If Length(S) > MaxCols Then
+    S := Copy(S, 1, MaxCols);
+   OutTextXY(PX + 4, YPos, S);
+  End;
+  YPos := YPos + TERM_LINE_HEIGHT;
+ End;
+ { Ligne de saisie juste apres la derniere ligne affichee }
+ SetColor(10);
+ If TP.LineCount < VisLines Then
+  YPos := PY + TERM_TAB_HEIGHT + 2
+   + TP.LineCount * TERM_LINE_HEIGHT
+ Else
+  YPos := PY + TERM_TAB_HEIGHT + 2
+   + VisLines * TERM_LINE_HEIGHT;
+ GetDir(0, PromptStr);
+ Case TP.Shell Of
+  SK_POWERSHELL:
+   PromptStr := 'PS ' + PromptStr + '> ' + TP.InputLine + '_';
+  SK_BASH:
+   PromptStr := 'user$ ' + TP.InputLine + '_';
+ Else
+  PromptStr := PromptStr + '> ' + TP.InputLine + '_';
+ End;
+ If Length(PromptStr) > MaxCols Then
+  PromptStr := Copy(PromptStr, 1, MaxCols);
+ OutTextXY(PX + 4, YPos, PromptStr);
+ { Dessiner la liste deroulante PAR-DESSUS le texte }
  If TermSelectOpen Then Begin
   { Item 1 : Invite de commandes }
   If ActiveShell = SK_CMD Then
@@ -15791,54 +15881,26 @@ Begin
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + TERM_SELECT_ITEM_H + 3,
    'PowerShell dev');
+  { Item 3 : Bash }
+  If ActiveShell = SK_BASH Then
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
+  Else
+   SetFillStyle(SolidFill, 8);
+  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H,
+   SBX + TERM_SELECT_WIDTH - 1,
+   SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H - 1);
+  SetColor(15);
+  OutTextXY(SBX + 4,
+   SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H + 3,
+   'Bash');
   { Bordure de la liste }
   SetColor(CLR_BORDER);
   Rectangle(SBX, SBY + TERM_SELECT_HEIGHT,
    SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H - 1);
+   SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H - 1);
  End;
- { Bordure du panneau }
- SetColor(CLR_BORDER);
- Rectangle(PX, PY, PX + PW - 1, PY + PH - 1);
- { Zone de texte }
- VisLines := (PH - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
-  Div TERM_LINE_HEIGHT;
- If VisLines < 1 Then VisLines := 1;
- MaxCols := (PW - 8) Div TERM_CHAR_WIDTH;
- If MaxCols < 10 Then MaxCols := 10;
- { Auto-scroll }
- If TP.LineCount > VisLines Then
-  TP.ScrollTop := TP.LineCount - VisLines
- Else
-  TP.ScrollTop := 0;
- { Afficher les lignes }
- SetColor(7);
- YPos := PY + TERM_TAB_HEIGHT + 2;
- StartIdx := TP.ScrollTop;
- For I := 0 To VisLines - 1 Do Begin
-  If StartIdx + I < TP.LineCount Then Begin
-   S := TP.Lines[StartIdx + I];
-   If Length(S) > MaxCols Then
-    S := Copy(S, 1, MaxCols);
-   OutTextXY(PX + 4, YPos, S);
-  End;
-  YPos := YPos + TERM_LINE_HEIGHT;
- End;
- { Ligne de saisie en bas avec prompt }
- SetColor(10);
- YPos := PY + PH - TERM_LINE_HEIGHT - 2;
- GetDir(0, PromptStr);
- If TP.Shell = SK_POWERSHELL Then
-  PromptStr := 'PS ' + PromptStr + '> ' + TP.InputLine + '_'
- Else
-  PromptStr := PromptStr + '> ' + TP.InputLine + '_';
- If Length(PromptStr) > MaxCols Then
-  PromptStr := Copy(PromptStr, 1, MaxCols);
- OutTextXY(PX + 4, YPos, PromptStr);
  TP.NeedRepaint := False;
 End;
-
-{ --- Gerer les evenements du terminal --- }
 
 Procedure HandleTerminalEvent(Var TP: TTerminalPanel;
  Var Ev: TEvent);
@@ -15893,6 +15955,25 @@ Begin
     FullRepaintNeeded := True;
     Exit;
    End;
+   { Item 3 : Bash }
+   If (Ev.MouseX >= SBX) And
+      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
+      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
+       + 2 * TERM_SELECT_ITEM_H) And
+      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
+       + 3 * TERM_SELECT_ITEM_H) Then Begin
+    NewShell := SK_BASH;
+    TermSelectOpen := False;
+    If ActiveShell <> NewShell Then Begin
+     ActiveShell := NewShell;
+     If TermPanels[SK_BASH].LineCount = 0 Then
+      TermAddLine(TermPanels[SK_BASH],
+       'Bash terminal. Tapez help.');
+    End;
+    TermPanels[ActiveShell].NeedRepaint := True;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
    { Clic ailleurs : fermer la liste }
    TermSelectOpen := False;
    FullRepaintNeeded := True;
@@ -15933,10 +16014,14 @@ Begin
    End;
    #13: Begin { Enter }
     GetDir(0, Dir);
-    If TP.Shell = SK_POWERSHELL Then
-     TermAddLine(TP, 'PS ' + Dir + '> ' + TP.InputLine)
+    Case TP.Shell Of
+     SK_POWERSHELL:
+      TermAddLine(TP, 'PS ' + Dir + '> ' + TP.InputLine);
+     SK_BASH:
+      TermAddLine(TP, 'user$ ' + TP.InputLine);
     Else
      TermAddLine(TP, Dir + '> ' + TP.InputLine);
+    End;
     TermExecuteCommand(TP, TP.InputLine);
     TP.InputLine := '';
     TP.InputCol := 1;
