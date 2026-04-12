@@ -26277,46 +26277,60 @@ Begin
      (Ev.MouseX < TermX + TermWidth) And
      (Ev.MouseY >= TermY) And
      (Ev.MouseY < TermY + TermHeight) Then Begin
+   { Le clic est dans la zone du terminal (au-dessus) }
+   { Verifier si c est aussi dans l OutputPanel (zone de chevauchement) }
+   If OutputPanel.Visible And
+      (Ev.MouseX >= OutputPanel.X) And
+      (Ev.MouseX < OutputPanel.X + OutputPanel.Width) And
+      (Ev.MouseY >= OutputPanel.Y) And
+      (Ev.MouseY < OutputPanel.Y + OutputPanel.Height) Then Begin
+    { Zone de chevauchement : le terminal est au-dessus, le prend }
+   End;
    TerminalHasFocus := True;
    HandleTerminalEvent(TermPanels[ActiveShell], Ev);
    Exit;
   End
   Else If TermVisible And (Not TerminalOnTop) And
+     OutputPanel.Visible And
      (Ev.MouseX >= OutputPanel.X) And
      (Ev.MouseX < OutputPanel.X + OutputPanel.Width) And
      (Ev.MouseY >= OutputPanel.Y) And
      (Ev.MouseY < OutputPanel.Y + OutputPanel.Height) Then Begin
-   { Output est au-dessus et on clique dessus }
+   { Output est au-dessus et on clique dessus : passer a HandleOutputEvent }
    TerminalHasFocus := False;
    If TermSelectOpen Then Begin
     TermSelectOpen := False;
     FullRepaintNeeded := True;
    End;
+   HandleOutputEvent(OutputPanel, Ev);
+   Exit;
   End
   Else If TermVisible And
      (Ev.MouseX >= TermX) And
      (Ev.MouseX < TermX + TermWidth) And
      (Ev.MouseY >= TermY) And
      (Ev.MouseY < TermY + TermHeight) Then Begin
-   { Terminal est en dessous mais on clique dessus }
+   { Terminal est en dessous mais on clique dessus (hors OutputPanel) }
    TerminalOnTop := True;
    TerminalHasFocus := True;
    FullRepaintNeeded := True;
    HandleTerminalEvent(TermPanels[ActiveShell], Ev);
    Exit;
   End
-  Else If TermVisible And
+  Else If TermVisible And OutputPanel.Visible And
      (Ev.MouseX >= OutputPanel.X) And
      (Ev.MouseX < OutputPanel.X + OutputPanel.Width) And
      (Ev.MouseY >= OutputPanel.Y) And
      (Ev.MouseY < OutputPanel.Y + OutputPanel.Height) Then Begin
-   { Output est en dessous mais on clique dessus }
+   { Output est en dessous mais on clique dessus (hors terminal) }
    TerminalOnTop := False;
    TerminalHasFocus := False;
    FullRepaintNeeded := True;
    If TermSelectOpen Then Begin
     TermSelectOpen := False;
    End;
+   HandleOutputEvent(OutputPanel, Ev);
+   Exit;
   End
   Else Begin
    TerminalHasFocus := False;
