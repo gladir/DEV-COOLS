@@ -437,7 +437,7 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               general (classes, methodes, bugs, erreurs), classes les plus
               problematiques
 
-  TODO 21 - GENERATION DU RAPPORT TEXTE [A FAIRE]
+  TODO 21 - GENERATION DU RAPPORT TEXTE [IMPLEMENTE]
             EmitTextReport(OutFile) : ouvrir fichier ou stdout si OutFile='',
               ecrire en-tete (version SpotBugs, date), pour chaque bug trie
               par priorite afficher ligne formatee et description, ecrire

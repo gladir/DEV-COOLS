@@ -36,7 +36,7 @@
 {  TODO 18 [IMPLEMENTE] - Detecteur : erreurs logiques et retours incorrects   }
 {  TODO 19 [IMPLEMENTE] - Detecteur : problemes d'internationalisation        }
 {  TODO 20 [IMPLEMENTE] - Calcul des scores et niveaux de severite            }
-{  TODO 21 [A FAIRE] - Generation du rapport texte                            }
+{  TODO 21 [IMPLEMENTE] - Generation du rapport texte                         }
 {  TODO 22 [A FAIRE] - Generation du rapport XML (format SpotBugs)            }
 {  TODO 23 [A FAIRE] - Generation du rapport HTML                             }
 {  TODO 24 [A FAIRE] - Filtrage, exclusions et configuration des regles       }
@@ -933,6 +933,13 @@ Const
   SC_CONF_MEDIUM      = 2;    { Confiance moyenne                               }
   SC_CONF_LOW         = 3;    { Faible confiance (potentiel faux positif)       }
 
+  { --- TODO 21 : Constantes pour la generation du rapport texte --- }
+  MAX_TR_DESC_ENTRIES = 128;  { Nombre max de descriptions de bugs             }
+  MAX_TR_LINE_LEN     = 200;  { Longueur max d'une ligne formatee              }
+  TR_INDENT           = 2;    { Indentation pour les details                   }
+  TR_SEP_CHAR         = '-';  { Caractere pour les separateurs                 }
+  TR_SEP_LEN          = 78;   { Longueur des separateurs                       }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -1245,6 +1252,16 @@ Type
   End;
   TCategoryStatsArray = Array[0..MAX_SC_CATEGORIES-1] of TCategoryStats;
 
+  { --- TODO 21 : Structure TBugDescription : description pre-enregistree --- }
+  TBugDescription = Record
+    BugCode     : String;     { Code court du bug (NP_NULL_ON_SOME_PATH)    }
+    ShortDesc   : String;     { Description courte (1 ligne)                }
+    LongDesc    : String;     { Description longue (explication)            }
+    Category    : Integer;    { Categorie du bug                            }
+    Severity    : Integer;    { Severite par defaut                         }
+  End;
+  TBugDescArray = Array[0..MAX_TR_DESC_ENTRIES-1] of TBugDescription;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -1451,6 +1468,20 @@ Var
   SCMinRank        : Integer;     { Rang minimum detecte                       }
   SCMaxRank        : Integer;     { Rang maximum detecte                       }
   SCTotalRankSum   : Integer;     { Somme de tous les rangs (pour moyenne)     }
+  { --- TODO 21 : Variables du module de rapport texte --- }
+  TRInitialized    : Boolean;     { True si module initialise                  }
+  TRLabelNum       : Integer;     { Compteur pour generation de labels         }
+  BugDescriptions  : TBugDescArray; { Descriptions pre-enregistrees            }
+  BugDescCount     : Integer;     { Nombre de descriptions enregistrees        }
+  TRReportFile     : Text;        { Fichier de sortie                          }
+  TRUseFile        : Boolean;     { True si sortie vers fichier                }
+  TRFileName       : String;      { Nom du fichier de sortie                   }
+  TRLinesWritten   : Integer;     { Nombre de lignes ecrites                   }
+  TRBugsWritten    : Integer;     { Nombre de bugs ecrits                      }
+  TRAnalysisTime   : String;      { Date/heure de l'analyse                    }
+  TRClassCount     : Integer;     { Nombre de classes analysees                }
+  TRMethodCount    : Integer;     { Nombre de methodes analysees               }
+  TRProjectName    : String;      { Nom du projet analyse                      }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -11726,25 +11757,679 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 21 [A FAIRE] - Generation du rapport texte                              }
+{ TODO 21 [IMPLEMENTE] - Generation du rapport texte                           }
 { ============================================================================ }
-{                                                                              }
-{  - Procedure EmitTextReport(OutFile: String)                                  }
-{      Ouvrir le fichier de sortie texte (ou stdout si OutFile='')              }
-{      Ecrire l'en-tete avec version de SpotBugs et date d'analyse              }
-{      Pour chaque bug trie par priorite :                                       }
-{        Afficher la ligne : [PRIORITE] CODE_BUG  Classe.methode(Fichier:Ligne) }
-{        Afficher la description lisible du bug                                  }
-{      Ecrire le pied de page avec les statistiques globales                     }
-{      Fermer le fichier                                                         }
-{                                                                              }
-{  - Procedure FormatBugLine(Bug: TBugReport): String                           }
-{      Produire la ligne de rapport au format court :                            }
-{      "[H] NP_NULL_ON_SOME_PATH: com.example.Foo.bar(Foo.java:42)"            }
-{                                                                              }
-{  - Procedure PrintBugDescription(BugType: String)                             }
-{      Afficher la description longue associee au code de bug                    }
-{      Utiliser un tableau statique de descriptions pre-enregistrees            }
+
+{ --- TODO 21 : Initialisation du module de rapport texte --- }
+Procedure InitTextReportState;
+Var
+  I: Integer;
+Begin
+  TRInitialized := True;
+  TRLabelNum := 0;
+  BugDescCount := 0;
+  TRUseFile := False;
+  TRFileName := '';
+  TRLinesWritten := 0;
+  TRBugsWritten := 0;
+  TRAnalysisTime := '';
+  TRClassCount := 0;
+  TRMethodCount := 0;
+  TRProjectName := 'SpotBugs Analysis';
+
+  { Initialiser le tableau de descriptions }
+  For I := 0 to MAX_TR_DESC_ENTRIES - 1 do
+  Begin
+    BugDescriptions[I].BugCode := '';
+    BugDescriptions[I].ShortDesc := '';
+    BugDescriptions[I].LongDesc := '';
+    BugDescriptions[I].Category := 0;
+    BugDescriptions[I].Severity := 0;
+  End;
+
+  { Enregistrer les descriptions de bugs courantes }
+  { Detecteur NullPointer (TODO 09) }
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'NP_NULL_ON_SOME_PATH';
+    BugDescriptions[BugDescCount].ShortDesc := 'Possible null pointer dereference';
+    BugDescriptions[BugDescCount].LongDesc := 'A null pointer may be dereferenced on some execution path.';
+    BugDescriptions[BugDescCount].Category := CAT_CORRECTNESS;
+    BugDescriptions[BugDescCount].Severity := SEV_HIGH;
+    Inc(BugDescCount);
+  End;
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'NP_ALWAYS_NULL';
+    BugDescriptions[BugDescCount].ShortDesc := 'Null pointer dereference';
+    BugDescriptions[BugDescCount].LongDesc := 'A null value is always dereferenced, causing NullPointerException.';
+    BugDescriptions[BugDescCount].Category := CAT_CORRECTNESS;
+    BugDescriptions[BugDescCount].Severity := SEV_HIGH;
+    Inc(BugDescCount);
+  End;
+
+  { Detecteur Resource Leak (TODO 10) }
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'OS_OPEN_STREAM';
+    BugDescriptions[BugDescCount].ShortDesc := 'Stream not closed';
+    BugDescriptions[BugDescCount].LongDesc := 'A stream is opened but may not be closed on all paths.';
+    BugDescriptions[BugDescCount].Category := CAT_BAD_PRACTICE;
+    BugDescriptions[BugDescCount].Severity := SEV_MEDIUM;
+    Inc(BugDescCount);
+  End;
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'OBL_UNSATISFIED_OBLIGATION';
+    BugDescriptions[BugDescCount].ShortDesc := 'Resource not cleaned up';
+    BugDescriptions[BugDescCount].LongDesc := 'A resource is allocated but may not be released properly.';
+    BugDescriptions[BugDescCount].Category := CAT_BAD_PRACTICE;
+    BugDescriptions[BugDescCount].Severity := SEV_MEDIUM;
+    Inc(BugDescCount);
+  End;
+
+  { Detecteur Bad Comparisons (TODO 13) }
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'EC_UNRELATED_TYPES';
+    BugDescriptions[BugDescCount].ShortDesc := 'Equals method compares unrelated types';
+    BugDescriptions[BugDescCount].LongDesc := 'The equals method compares objects of unrelated types.';
+    BugDescriptions[BugDescCount].Category := CAT_CORRECTNESS;
+    BugDescriptions[BugDescCount].Severity := SEV_HIGH;
+    Inc(BugDescCount);
+  End;
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'ES_COMPARING_STRINGS_WITH_EQ';
+    BugDescriptions[BugDescCount].ShortDesc := 'String comparison using == or !=';
+    BugDescriptions[BugDescCount].LongDesc := 'Strings are compared using == instead of equals().';
+    BugDescriptions[BugDescCount].Category := CAT_BAD_PRACTICE;
+    BugDescriptions[BugDescCount].Severity := SEV_MEDIUM;
+    Inc(BugDescCount);
+  End;
+
+  { Detecteur Performance (TODO 14) }
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'SBSC_USE_STRINGBUFFER_CONCATENATION';
+    BugDescriptions[BugDescCount].ShortDesc := 'String concatenation in loop';
+    BugDescriptions[BugDescCount].LongDesc := 'String concatenation inside a loop creates many intermediate objects.';
+    BugDescriptions[BugDescCount].Category := CAT_PERFORMANCE;
+    BugDescriptions[BugDescCount].Severity := SEV_LOW;
+    Inc(BugDescCount);
+  End;
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'URF_UNREAD_FIELD';
+    BugDescriptions[BugDescCount].ShortDesc := 'Unread field';
+    BugDescriptions[BugDescCount].LongDesc := 'A private field is never read, indicating dead code.';
+    BugDescriptions[BugDescCount].Category := CAT_PERFORMANCE;
+    BugDescriptions[BugDescCount].Severity := SEV_LOW;
+    Inc(BugDescCount);
+  End;
+
+  { Detecteur Multi-threading (TODO 16) }
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'DC_DOUBLECHECK';
+    BugDescriptions[BugDescCount].ShortDesc := 'Double-checked locking';
+    BugDescriptions[BugDescCount].LongDesc := 'Double-checked locking idiom is not thread-safe in Java.';
+    BugDescriptions[BugDescCount].Category := CAT_MT_CORRECTNESS;
+    BugDescriptions[BugDescCount].Severity := SEV_HIGH;
+    Inc(BugDescCount);
+  End;
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'ESYNC_EMPTY_SYNC';
+    BugDescriptions[BugDescCount].ShortDesc := 'Empty synchronized block';
+    BugDescriptions[BugDescCount].LongDesc := 'An empty synchronized block is useless and suspicious.';
+    BugDescriptions[BugDescCount].Category := CAT_MT_CORRECTNESS;
+    BugDescriptions[BugDescCount].Severity := SEV_MEDIUM;
+    Inc(BugDescCount);
+  End;
+
+  { Detecteur Exception Handling (TODO 17) }
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'DE_MIGHT_IGNORE';
+    BugDescriptions[BugDescCount].ShortDesc := 'Exception is ignored';
+    BugDescriptions[BugDescCount].LongDesc := 'An exception is caught but ignored, potentially hiding errors.';
+    BugDescriptions[BugDescCount].Category := CAT_BAD_PRACTICE;
+    BugDescriptions[BugDescCount].Severity := SEV_MEDIUM;
+    Inc(BugDescCount);
+  End;
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'REC_CATCH_EXCEPTION';
+    BugDescriptions[BugDescCount].ShortDesc := 'Catching Exception is too broad';
+    BugDescriptions[BugDescCount].LongDesc := 'Catching Exception is too broad and may hide programming errors.';
+    BugDescriptions[BugDescCount].Category := CAT_BAD_PRACTICE;
+    BugDescriptions[BugDescCount].Severity := SEV_LOW;
+    Inc(BugDescCount);
+  End;
+
+  { Detecteur Logic Errors (TODO 18) }
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'RV_RETURN_VALUE_IGNORED';
+    BugDescriptions[BugDescCount].ShortDesc := 'Return value ignored';
+    BugDescriptions[BugDescCount].LongDesc := 'The return value of a method is ignored when it should not be.';
+    BugDescriptions[BugDescCount].Category := CAT_CORRECTNESS;
+    BugDescriptions[BugDescCount].Severity := SEV_MEDIUM;
+    Inc(BugDescCount);
+  End;
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'SA_FIELD_SELF_ASSIGNMENT';
+    BugDescriptions[BugDescCount].ShortDesc := 'Field assigned to itself';
+    BugDescriptions[BugDescCount].LongDesc := 'A field is assigned to itself, which has no effect.';
+    BugDescriptions[BugDescCount].Category := CAT_CORRECTNESS;
+    BugDescriptions[BugDescCount].Severity := SEV_HIGH;
+    Inc(BugDescCount);
+  End;
+
+  { Detecteur I18N (TODO 19) }
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'DM_DEFAULT_ENCODING';
+    BugDescriptions[BugDescCount].ShortDesc := 'Default encoding used';
+    BugDescriptions[BugDescCount].LongDesc := 'Using platform default encoding instead of explicit charset.';
+    BugDescriptions[BugDescCount].Category := CAT_INTERNATIONALIZATION;
+    BugDescriptions[BugDescCount].Severity := SEV_LOW;
+    Inc(BugDescCount);
+  End;
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'DM_CONVERT_CASE';
+    BugDescriptions[BugDescCount].ShortDesc := 'Case conversion without Locale';
+    BugDescriptions[BugDescCount].LongDesc := 'toUpperCase/toLowerCase called without explicit Locale.';
+    BugDescriptions[BugDescCount].Category := CAT_INTERNATIONALIZATION;
+    BugDescriptions[BugDescCount].Severity := SEV_LOW;
+    Inc(BugDescCount);
+  End;
+
+  { Bad Practice (TODO 12) }
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'EQ_DOESNT_OVERRIDE_EQUALS';
+    BugDescriptions[BugDescCount].ShortDesc := 'equals() not overridden';
+    BugDescriptions[BugDescCount].LongDesc := 'Class should override equals() method from parent class.';
+    BugDescriptions[BugDescCount].Category := CAT_BAD_PRACTICE;
+    BugDescriptions[BugDescCount].Severity := SEV_MEDIUM;
+    Inc(BugDescCount);
+  End;
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'HE_EQUALS_NO_HASHCODE';
+    BugDescriptions[BugDescCount].ShortDesc := 'equals without hashCode';
+    BugDescriptions[BugDescCount].LongDesc := 'Class overrides equals() but not hashCode(), violating the contract.';
+    BugDescriptions[BugDescCount].Category := CAT_BAD_PRACTICE;
+    BugDescriptions[BugDescCount].Severity := SEV_HIGH;
+    Inc(BugDescCount);
+  End;
+
+  { Security (TODO 15 - placeholder) }
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'SQL_INJECTION';
+    BugDescriptions[BugDescCount].ShortDesc := 'SQL injection vulnerability';
+    BugDescriptions[BugDescCount].LongDesc := 'SQL query constructed from untrusted input without sanitization.';
+    BugDescriptions[BugDescCount].Category := CAT_SECURITY;
+    BugDescriptions[BugDescCount].Severity := SEV_HIGH;
+    Inc(BugDescCount);
+  End;
+  If BugDescCount < MAX_TR_DESC_ENTRIES Then
+  Begin
+    BugDescriptions[BugDescCount].BugCode := 'PATH_TRAVERSAL';
+    BugDescriptions[BugDescCount].ShortDesc := 'Path traversal vulnerability';
+    BugDescriptions[BugDescCount].LongDesc := 'File path constructed from untrusted input, allowing directory traversal.';
+    BugDescriptions[BugDescCount].Category := CAT_SECURITY;
+    BugDescriptions[BugDescCount].Severity := SEV_HIGH;
+    Inc(BugDescCount);
+  End;
+End;
+
+{ --- TODO 21 : Generation d'un label unique --- }
+Function GenTRLabel: String;
+Var
+  S: String;
+Begin
+  Inc(TRLabelNum);
+  Str(TRLabelNum, S);
+  GenTRLabel := 'TR' + S;
+End;
+
+{ --- TODO 21 : Obtenir la description courte d'un bug --- }
+Function GetBugShortDesc(BugCode: String): String;
+Var
+  I: Integer;
+  UpperCode: String;
+Begin
+  If Not TRInitialized Then InitTextReportState;
+  UpperCode := UpCaseStr(BugCode);
+  For I := 0 to BugDescCount - 1 do
+  Begin
+    If UpCaseStr(BugDescriptions[I].BugCode) = UpperCode Then
+    Begin
+      GetBugShortDesc := BugDescriptions[I].ShortDesc;
+      Exit;
+    End;
+  End;
+  GetBugShortDesc := 'Unknown bug type';
+End;
+
+{ --- TODO 21 : Obtenir la description longue d'un bug --- }
+Function GetBugLongDesc(BugCode: String): String;
+Var
+  I: Integer;
+  UpperCode: String;
+Begin
+  If Not TRInitialized Then InitTextReportState;
+  UpperCode := UpCaseStr(BugCode);
+  For I := 0 to BugDescCount - 1 do
+  Begin
+    If UpCaseStr(BugDescriptions[I].BugCode) = UpperCode Then
+    Begin
+      GetBugLongDesc := BugDescriptions[I].LongDesc;
+      Exit;
+    End;
+  End;
+  GetBugLongDesc := 'No description available for this bug type.';
+End;
+
+{ --- TODO 21 : Extraire le nom de fichier source depuis le nom de classe --- }
+Function ExtractSourceFile(ClassName: String): String;
+Var
+  I: Integer;
+  Simple: String;
+Begin
+  { Prendre la partie apres le dernier / ou \ }
+  Simple := ClassName;
+  For I := Length(ClassName) downto 1 do
+  Begin
+    If (ClassName[I] = '/') or (ClassName[I] = '\') or (ClassName[I] = '.') Then
+    Begin
+      Simple := Copy(ClassName, I + 1, Length(ClassName) - I);
+      Break;
+    End;
+  End;
+  { Ajouter .java }
+  ExtractSourceFile := Simple + '.java';
+End;
+
+{ --- TODO 21 : Formater une ligne de bug pour le rapport --- }
+Function FormatBugLine(Idx: Integer): String;
+Var
+  Line: String;
+  PrioChar: Char;
+  SourceFile: String;
+Begin
+  If (Idx < 0) or (Idx >= ScoredBugCount) Then
+  Begin
+    FormatBugLine := '';
+    Exit;
+  End;
+
+  { Caractere de priorite }
+  PrioChar := SCPriorityLetter(ScoredBugs[Idx].Priority);
+
+  { Extraire le nom de fichier source }
+  SourceFile := ExtractSourceFile(ScoredBugs[Idx].ClassName);
+
+  { Formater la ligne }
+  { Format: [H] NP_NULL_ON_SOME_PATH: com.example.Foo.bar(Foo.java:42) }
+  Line := '[' + PrioChar + '] ' + ScoredBugs[Idx].BugType + ': ';
+  Line := Line + ScoredBugs[Idx].ClassName;
+  If ScoredBugs[Idx].MethodName <> '' Then
+    Line := Line + '.' + ScoredBugs[Idx].MethodName;
+  Line := Line + '(' + SourceFile;
+  If ScoredBugs[Idx].LineNumber > 0 Then
+    Line := Line + ':' + IntToStr_(ScoredBugs[Idx].LineNumber);
+  Line := Line + ')';
+
+  FormatBugLine := Line;
+End;
+
+{ --- TODO 21 : Ecrire une ligne dans le rapport --- }
+Procedure TRWriteLine(S: String);
+Begin
+  If TRUseFile Then
+    WriteLn(TRReportFile, S)
+  Else
+    WriteLn(S);
+  Inc(TRLinesWritten);
+End;
+
+{ --- TODO 21 : Ecrire une ligne de separateur --- }
+Procedure TRWriteSeparator;
+Var
+  I: Integer;
+  Sep: String;
+Begin
+  Sep := '';
+  For I := 1 to TR_SEP_LEN do
+    Sep := Sep + TR_SEP_CHAR;
+  TRWriteLine(Sep);
+End;
+
+{ --- TODO 21 : Obtenir la date/heure courante --- }
+Function GetCurrentDateTime: String;
+Var
+  Y, M, D, DoW: Word;
+  H, Mi, S, S100: Word;
+  DateStr, TimeStr: String;
+Begin
+  GetDate(Y, M, D, DoW);
+  GetTime(H, Mi, S, S100);
+  Str(Y:4, DateStr);
+  DateStr := DateStr + '-';
+  If M < 10 Then DateStr := DateStr + '0';
+  Str(M:1, TimeStr);
+  DateStr := DateStr + TimeStr + '-';
+  If D < 10 Then DateStr := DateStr + '0';
+  Str(D:1, TimeStr);
+  DateStr := DateStr + TimeStr + ' ';
+  If H < 10 Then DateStr := DateStr + '0';
+  Str(H:1, TimeStr);
+  DateStr := DateStr + TimeStr + ':';
+  If Mi < 10 Then DateStr := DateStr + '0';
+  Str(Mi:1, TimeStr);
+  DateStr := DateStr + TimeStr + ':';
+  If S < 10 Then DateStr := DateStr + '0';
+  Str(S:1, TimeStr);
+  DateStr := DateStr + TimeStr;
+  GetCurrentDateTime := DateStr;
+End;
+
+{ --- TODO 21 : Ecrire l'en-tete du rapport --- }
+Procedure WriteReportHeader;
+Begin
+  TRWriteLine('');
+  TRWriteSeparator;
+  TRWriteLine('SpotBugs Analysis Report - Version ' + SPOTBUGS_VERSION);
+  TRWriteSeparator;
+  TRWriteLine('');
+  TRWriteLine('Analysis performed: ' + TRAnalysisTime);
+  If TRProjectName <> '' Then
+    TRWriteLine('Project: ' + TRProjectName);
+  TRWriteLine('');
+  TRWriteLine('Summary:');
+  TRWriteLine('  Classes analyzed: ' + IntToStr_(TRClassCount));
+  TRWriteLine('  Methods analyzed: ' + IntToStr_(TRMethodCount));
+  TRWriteLine('  Total bugs found: ' + IntToStr_(ScoredBugCount));
+  TRWriteLine('');
+  TRWriteLine('Bugs by priority:');
+  TRWriteLine('  HIGH:   ' + IntToStr_(SCTotalHigh));
+  TRWriteLine('  MEDIUM: ' + IntToStr_(SCTotalMedium));
+  TRWriteLine('  LOW:    ' + IntToStr_(SCTotalLow));
+  TRWriteLine('  INFO:   ' + IntToStr_(SCTotalInfo));
+  TRWriteLine('');
+  TRWriteSeparator;
+  TRWriteLine('');
+End;
+
+{ --- TODO 21 : Ecrire le corps du rapport (liste des bugs) --- }
+Procedure WriteReportBody;
+Var
+  I: Integer;
+  CurrentPrio, LastPrio: Integer;
+  BugLine, ShortDesc, LongDesc: String;
+  IndentStr: String;
+Begin
+  If ScoredBugCount = 0 Then
+  Begin
+    TRWriteLine('No bugs found.');
+    TRWriteLine('');
+    Exit;
+  End;
+
+  { Preparer l'indentation }
+  IndentStr := '';
+  For I := 1 to TR_INDENT do
+    IndentStr := IndentStr + ' ';
+
+  TRWriteLine('Detailed Bug List');
+  TRWriteLine('=================');
+  TRWriteLine('');
+
+  LastPrio := -1;
+  For I := 0 to ScoredBugCount - 1 do
+  Begin
+    CurrentPrio := ScoredBugs[I].Priority;
+
+    { Afficher un separateur quand la priorite change }
+    If CurrentPrio <> LastPrio Then
+    Begin
+      If LastPrio <> -1 Then
+        TRWriteLine('');
+      TRWriteLine('--- ' + SCPriorityName(CurrentPrio) + ' Priority Bugs ---');
+      TRWriteLine('');
+      LastPrio := CurrentPrio;
+    End;
+
+    { Afficher la ligne du bug }
+    BugLine := FormatBugLine(I);
+    TRWriteLine(BugLine);
+
+    { Afficher la description courte }
+    ShortDesc := GetBugShortDesc(ScoredBugs[I].BugType);
+    TRWriteLine(IndentStr + ShortDesc);
+
+    { Afficher la description longue }
+    LongDesc := GetBugLongDesc(ScoredBugs[I].BugType);
+    TRWriteLine(IndentStr + LongDesc);
+
+    { Afficher le message specifique si disponible }
+    If ScoredBugs[I].Message <> '' Then
+      TRWriteLine(IndentStr + 'Details: ' + ScoredBugs[I].Message);
+
+    TRWriteLine('');
+    Inc(TRBugsWritten);
+  End;
+End;
+
+{ --- TODO 21 : Ecrire les statistiques par categorie --- }
+Procedure WriteReportCategoryStats;
+Var
+  I: Integer;
+  CatName: String;
+Begin
+  TRWriteLine('Bugs by Category');
+  TRWriteLine('================');
+  TRWriteLine('');
+
+  For I := 0 to MAX_SC_CATEGORIES - 1 do
+  Begin
+    If CategoryStats[I].TotalBugs > 0 Then
+    Begin
+      CatName := GetCategoryName(I + 1);
+      TRWriteLine(CatName + ': ' + IntToStr_(CategoryStats[I].TotalBugs) + ' bugs');
+      TRWriteLine('  HIGH:   ' + IntToStr_(CategoryStats[I].HighCount));
+      TRWriteLine('  MEDIUM: ' + IntToStr_(CategoryStats[I].MediumCount));
+      TRWriteLine('  LOW:    ' + IntToStr_(CategoryStats[I].LowCount));
+      TRWriteLine('  INFO:   ' + IntToStr_(CategoryStats[I].InfoCount));
+      TRWriteLine('');
+    End;
+  End;
+End;
+
+{ --- TODO 21 : Ecrire les scores par classe --- }
+Procedure WriteReportClassScores;
+Var
+  I, MaxDisplay: Integer;
+Begin
+  If ClassScoreCount = 0 Then Exit;
+
+  TRWriteLine('Worst Classes (by bug score)');
+  TRWriteLine('============================');
+  TRWriteLine('');
+
+  { Afficher les 10 pires classes }
+  MaxDisplay := ClassScoreCount;
+  If MaxDisplay > 10 Then MaxDisplay := 10;
+
+  For I := 0 to MaxDisplay - 1 do
+  Begin
+    TRWriteLine(IntToStr_(I + 1) + '. ' + ClassScores[I].ClassName +
+                ' (Score: ' + IntToStr_(ClassScores[I].Score) +
+                ', Bugs: ' + IntToStr_(ClassScores[I].BugCount) + ')');
+  End;
+  TRWriteLine('');
+End;
+
+{ --- TODO 21 : Ecrire le pied de page du rapport --- }
+Procedure WriteReportFooter;
+Begin
+  TRWriteSeparator;
+  TRWriteLine('');
+  TRWriteLine('End of SpotBugs Analysis Report');
+  TRWriteLine('Total bugs reported: ' + IntToStr_(TRBugsWritten));
+  TRWriteLine('');
+  TRWriteSeparator;
+End;
+
+{ --- TODO 21 : Generer le rapport texte complet --- }
+Procedure EmitTextReport(OutFile: String);
+Begin
+  If Not TRInitialized Then InitTextReportState;
+  If Not SCInitialized Then InitScoreState;
+
+  { Reinitialiser les compteurs }
+  TRLinesWritten := 0;
+  TRBugsWritten := 0;
+  TRAnalysisTime := GetCurrentDateTime;
+  TRClassCount := ClassesScanned;
+  TRMethodCount := TotalMethods;
+
+  { Ouvrir le fichier de sortie si specifie }
+  TRFileName := OutFile;
+  If OutFile <> '' Then
+  Begin
+    {$I-}
+    Assign(TRReportFile, OutFile);
+    Rewrite(TRReportFile);
+    {$I+}
+    If IOResult = 0 Then
+      TRUseFile := True
+    Else
+    Begin
+      WriteLn('Error: Cannot open output file: ', OutFile);
+      TRUseFile := False;
+    End;
+  End
+  Else
+    TRUseFile := False;
+
+  { Generer le rapport }
+  WriteReportHeader;
+  WriteReportBody;
+  WriteReportCategoryStats;
+  WriteReportClassScores;
+  WriteReportFooter;
+
+  { Fermer le fichier }
+  If TRUseFile Then
+  Begin
+    {$I-}
+    Close(TRReportFile);
+    {$I+}
+    If IOResult = 0 Then
+      WriteLn('Report written to: ', OutFile);
+  End;
+End;
+
+{ --- TODO 21 : Afficher l'etat du module de rapport texte --- }
+Procedure DumpTextReportState;
+Var
+  I: Integer;
+Begin
+  WriteLn;
+  WriteLn('=== DUMP TEXT REPORT STATE ===');
+  WriteLn('Initialized: ', TRInitialized);
+  WriteLn('Label num: ', TRLabelNum);
+  WriteLn('Bug descriptions: ', BugDescCount);
+  WriteLn('Use file: ', TRUseFile);
+  WriteLn('File name: ', TRFileName);
+  WriteLn('Lines written: ', TRLinesWritten);
+  WriteLn('Bugs written: ', TRBugsWritten);
+  WriteLn('Analysis time: ', TRAnalysisTime);
+  WriteLn('Class count: ', TRClassCount);
+  WriteLn('Method count: ', TRMethodCount);
+  WriteLn('Project name: ', TRProjectName);
+  WriteLn;
+
+  If BugDescCount > 0 Then
+  Begin
+    WriteLn('Registered bug descriptions (first 10):');
+    For I := 0 to BugDescCount - 1 do
+    Begin
+      If I >= 10 Then Break;
+      WriteLn('  [', I, '] ', BugDescriptions[I].BugCode, ': ',
+              BugDescriptions[I].ShortDesc);
+    End;
+  End;
+End;
+
+{ --- TODO 21 : Accesseurs pour le module de rapport texte --- }
+Function IsTRInitialized: Boolean;
+Begin
+  IsTRInitialized := TRInitialized;
+End;
+
+Function GetTRLabelNum: Integer;
+Begin
+  GetTRLabelNum := TRLabelNum;
+End;
+
+Function GetBugDescCount: Integer;
+Begin
+  GetBugDescCount := BugDescCount;
+End;
+
+Function IsTRUseFile: Boolean;
+Begin
+  IsTRUseFile := TRUseFile;
+End;
+
+Function GetTRFileName: String;
+Begin
+  GetTRFileName := TRFileName;
+End;
+
+Function GetTRLinesWritten: Integer;
+Begin
+  GetTRLinesWritten := TRLinesWritten;
+End;
+
+Function GetTRBugsWritten: Integer;
+Begin
+  GetTRBugsWritten := TRBugsWritten;
+End;
+
+Function GetTRAnalysisTime: String;
+Begin
+  GetTRAnalysisTime := TRAnalysisTime;
+End;
+
+Function GetTRClassCount: Integer;
+Begin
+  GetTRClassCount := TRClassCount;
+End;
+
+Function GetTRMethodCount: Integer;
+Begin
+  GetTRMethodCount := TRMethodCount;
+End;
+
+Function GetTRProjectName: String;
+Begin
+  GetTRProjectName := TRProjectName;
+End;
+
+Procedure SetTRProjectName(Name: String);
+Begin
+  TRProjectName := Name;
+End;
 
 { ============================================================================ }
 { TODO 22 [A FAIRE] - Generation du rapport XML (format SpotBugs)              }
