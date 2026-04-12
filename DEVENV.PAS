@@ -977,6 +977,7 @@ Const
  { Limites des menus }
  MAX_MENUS             = 16;
  MAX_MENU_ITEMS        = 32;
+ MAX_CTX_ITEMS         = 16;      { items max menu contextuel     }
 
  { Limites de l editeur de texte }
  MAX_LINES             = 65536;
@@ -1537,6 +1538,17 @@ Type
   MenuCount  : Integer;       { nombre de menus                 }
   Y          : Integer;       { position Y (0 = haut)           }
   Height     : Integer;       { hauteur de la barre             }
+ End;
+
+ { Menu contextuel (clic droit) }
+ TContextMenu = Record
+  Items      : Array[0..MAX_CTX_ITEMS - 1] Of TMenuItem;
+  ItemCount  : Integer;       { nombre d elements               }
+  X, Y       : Integer;       { position d affichage            }
+  Width      : Integer;       { largeur calculee                }
+  Visible    : Boolean;        { menu affiche                    }
+  SelIdx     : Integer;       { item survole                    }
+  NodeIdx    : Integer;       { noeud de l explorateur concerne }
  End;
 
  { Icone 16x16 }
@@ -2795,6 +2807,8 @@ Var
  PSPHL        : TPSPHighlighter;
  { Explorateur de solution }
  SolExplorer  : TSolutionExplorer;
+ { Menu contextuel de l explorateur }
+ CtxMenu      : TContextMenu;
  { Panneau de proprietes }
  PropsPanel   : TPropertiesPanel;
  { Panneau de sortie }
@@ -4445,6 +4459,12 @@ Procedure DrawAllWidgets; Forward;
 
 { Declaration anticipee : HandleStartDebugging est defini plus loin }
 Procedure HandleStartDebugging; Forward;
+
+{ Declarations anticipees pour le menu contextuel }
+Procedure InitContextMenu(Var CM: TContextMenu); Forward;
+Procedure DrawExplorer(Var Exp: TSolutionExplorer); Forward;
+Procedure ShowExplorerContextMenu(Var Exp: TSolutionExplorer;
+ Var CM: TContextMenu; NodeIdx, MX, MY: Integer); Forward;
 
 { Declarations anticipees pour le terminal integre }
 Procedure TermAddLine(Var TP: TTerminalPanel; S: String);
@@ -13329,6 +13349,22 @@ Var
  MaxScroll: Integer;
 Begin
  If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  { Clic droit : menu contextuel }
+  If Ev.MouseBtn = MB_RIGHT Then Begin
+   HitIdx := ExplorerNodeHitTest(Exp, Ev.MouseX, Ev.MouseY);
+   If HitIdx >= 0 Then Begin
+    If (Exp.SelectedIdx >= 0) And
+       (Exp.SelectedIdx < Exp.NodeCount) Then
+     Exp.Nodes[Exp.SelectedIdx].Selected := False;
+    Exp.SelectedIdx := HitIdx;
+    Exp.Nodes[HitIdx].Selected := True;
+    Exp.NeedRepaint := True;
+    DrawExplorer(Exp);
+    ShowExplorerContextMenu(Exp, CtxMenu, HitIdx,
+     Ev.MouseX, Ev.MouseY);
+   End;
+   Exit;
+  End;
   { Verifier le clic sur le splitter }
   If (Ev.MouseX >= Exp.SplitterX) And
      (Ev.MouseX < Exp.SplitterX + SPLITTER_WIDTH) Then Begin
@@ -13422,6 +13458,231 @@ Begin
  If Exp.ScrollTop > MaxScroll Then Begin
   Exp.ScrollTop := MaxScroll;
   Exp.NeedRepaint := True;
+ End;
+End;
+
+{ --- Initialiser le menu contextuel --- }
+
+Procedure InitContextMenu(Var CM: TContextMenu);
+Begin
+ CM.ItemCount := 0;
+ CM.X := 0;
+ CM.Y := 0;
+ CM.Width := 160;
+ CM.Visible := False;
+ CM.SelIdx := -1;
+ CM.NodeIdx := -1;
+End;
+
+{ --- Ajouter un item au menu contextuel --- }
+
+Procedure AddContextItem(Var CM: TContextMenu; ACaption: String;
+ ATag: LongInt);
+Begin
+ If CM.ItemCount >= MAX_CTX_ITEMS Then Exit;
+ CM.Items[CM.ItemCount].Caption := ACaption;
+ CM.Items[CM.ItemCount].ShortCut := '';
+ CM.Items[CM.ItemCount].Tag := ATag;
+ CM.Items[CM.ItemCount].Enabled := True;
+ CM.Items[CM.ItemCount].Separator := False;
+ CM.Items[CM.ItemCount].Checked := False;
+ Inc(CM.ItemCount);
+End;
+
+{ --- Ajouter un separateur au menu contextuel --- }
+
+Procedure AddContextSeparator(Var CM: TContextMenu);
+Begin
+ If CM.ItemCount >= MAX_CTX_ITEMS Then Exit;
+ CM.Items[CM.ItemCount].Separator := True;
+ CM.Items[CM.ItemCount].Caption := '';
+ CM.Items[CM.ItemCount].Tag := 0;
+ Inc(CM.ItemCount);
+End;
+
+{ --- Dessiner le menu contextuel --- }
+
+Procedure DrawContextMenu(Var CM: TContextMenu);
+Var
+ I, YPos, MH: Integer;
+Begin
+ If Not CM.Visible Then Exit;
+ MH := 4;
+ For I := 0 To CM.ItemCount - 1 Do
+  If CM.Items[I].Separator Then MH := MH + 8
+  Else MH := MH + 16;
+ { Ombre }
+ SetColor(CLR_TITLEBAR);
+ Bar(CM.X + 2, CM.Y + 2, CM.X + CM.Width + 2, CM.Y + MH + 2);
+ { Fond }
+ SetColor(CLR_EDITOR_BG);
+ Bar(CM.X, CM.Y, CM.X + CM.Width, CM.Y + MH);
+ { Bordure }
+ SetColor(CLR_BORDER);
+ Rectangle(CM.X, CM.Y, CM.X + CM.Width, CM.Y + MH);
+ { Items }
+ YPos := CM.Y + 2;
+ For I := 0 To CM.ItemCount - 1 Do Begin
+  If CM.Items[I].Separator Then Begin
+   SetColor(CLR_BORDER);
+   Line(CM.X + 2, YPos + 3, CM.X + CM.Width - 2, YPos + 3);
+   YPos := YPos + 8;
+  End Else Begin
+   If I = CM.SelIdx Then Begin
+    SetColor(CLR_MENU_HIGHLIGHT);
+    Bar(CM.X + 1, YPos, CM.X + CM.Width - 1, YPos + 15);
+    SetColor(CLR_EDITOR_BG);
+   End Else
+    SetColor(CLR_MENU_TEXT);
+   OutTextXY(CM.X + 8, YPos + 2, CM.Items[I].Caption);
+   YPos := YPos + 16;
+  End;
+ End;
+End;
+
+{ --- Ouvrir le menu contextuel de l explorateur --- }
+
+Procedure ShowExplorerContextMenu(Var Exp: TSolutionExplorer;
+ Var CM: TContextMenu; NodeIdx, MX, MY: Integer);
+Var
+ Kind: TExplorerNodeKind;
+Begin
+ InitContextMenu(CM);
+ CM.X := MX;
+ CM.Y := MY;
+ CM.NodeIdx := NodeIdx;
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
+ Kind := Exp.Nodes[NodeIdx].Kind;
+ Case Kind Of
+  ENK_SOLUTION: Begin
+   AddContextItem(CM, 'Generer la solution', 300);
+   AddContextItem(CM, 'Regener. la solution', 301);
+   AddContextSeparator(CM);
+   AddContextItem(CM, 'Ajouter un projet...', 310);
+   AddContextItem(CM, 'Ajouter un fichier...', 311);
+   AddContextSeparator(CM);
+   AddContextItem(CM, 'Renommer', 320);
+   AddContextItem(CM, 'Proprietes', 399);
+  End;
+  ENK_PROJECT: Begin
+   AddContextItem(CM, 'Generer', 400);
+   AddContextItem(CM, 'Regenerer', 401);
+   AddContextSeparator(CM);
+   AddContextItem(CM, 'Ajouter un fichier...', 411);
+   AddContextItem(CM, 'Ajouter une reference...', 412);
+   AddContextSeparator(CM);
+   AddContextItem(CM, 'Renommer', 420);
+   AddContextItem(CM, 'Supprimer', 421);
+   AddContextItem(CM, 'Proprietes', 499);
+  End;
+  ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS, ENK_FILE_OTHER: Begin
+   AddContextItem(CM, 'Ouvrir', 500);
+   AddContextSeparator(CM);
+   AddContextItem(CM, 'Renommer', 520);
+   AddContextItem(CM, 'Supprimer', 521);
+  End;
+  ENK_REFERENCES: Begin
+   AddContextItem(CM, 'Ajouter une reference...', 412);
+  End;
+  ENK_REFERENCE: Begin
+   AddContextItem(CM, 'Supprimer', 521);
+  End;
+  ENK_FOLDER: Begin
+   AddContextItem(CM, 'Ajouter un fichier...', 411);
+   AddContextSeparator(CM);
+   AddContextItem(CM, 'Renommer', 520);
+   AddContextItem(CM, 'Supprimer', 521);
+  End;
+  ENK_PROPERTIES: Begin
+   AddContextItem(CM, 'Ouvrir', 500);
+  End;
+ End;
+ If CM.ItemCount > 0 Then
+  CM.Visible := True;
+ DrawContextMenu(CM);
+End;
+
+{ --- Gerer un evenement du menu contextuel --- }
+
+Function HandleContextMenuEvent(Var CM: TContextMenu;
+ Var Ev: TEvent): LongInt;
+Var
+ I, YPos, MH: Integer;
+Begin
+ HandleContextMenuEvent := 0;
+ If Not CM.Visible Then Exit;
+ If Ev.Kind = EV_MOUSE_MOVE Then Begin
+  { Survol : calculer l item sous la souris }
+  CM.SelIdx := -1;
+  MH := 4;
+  For I := 0 To CM.ItemCount - 1 Do
+   If CM.Items[I].Separator Then MH := MH + 8
+   Else MH := MH + 16;
+  If (Ev.MouseX >= CM.X) And (Ev.MouseX <= CM.X + CM.Width) And
+     (Ev.MouseY >= CM.Y) And (Ev.MouseY <= CM.Y + MH) Then Begin
+   YPos := CM.Y + 2;
+   For I := 0 To CM.ItemCount - 1 Do Begin
+    If CM.Items[I].Separator Then
+     YPos := YPos + 8
+    Else Begin
+     If (Ev.MouseY >= YPos) And (Ev.MouseY < YPos + 16) Then Begin
+      CM.SelIdx := I;
+      Break;
+     End;
+     YPos := YPos + 16;
+    End;
+   End;
+  End;
+  DrawContextMenu(CM);
+ End
+ Else If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  { Clic : verifier si c est sur un item }
+  YPos := CM.Y + 2;
+  For I := 0 To CM.ItemCount - 1 Do Begin
+   If CM.Items[I].Separator Then
+    YPos := YPos + 8
+   Else Begin
+    If (Ev.MouseX >= CM.X) And (Ev.MouseX <= CM.X + CM.Width) And
+       (Ev.MouseY >= YPos) And (Ev.MouseY < YPos + 16) Then Begin
+     HandleContextMenuEvent := CM.Items[I].Tag;
+     CM.Visible := False;
+     Exit;
+    End;
+    YPos := YPos + 16;
+   End;
+  End;
+  { Clic hors du menu : fermer }
+  CM.Visible := False;
+ End
+ Else If Ev.Kind = EV_KEY_CHAR Then Begin
+  If Ev.KeyChar = #27 Then { Escape }
+   CM.Visible := False;
+  If Ev.KeyChar = #13 Then Begin { Entree }
+   If (CM.SelIdx >= 0) And (CM.SelIdx < CM.ItemCount) And
+      (Not CM.Items[CM.SelIdx].Separator) Then Begin
+    HandleContextMenuEvent := CM.Items[CM.SelIdx].Tag;
+    CM.Visible := False;
+   End;
+  End;
+ End
+ Else If Ev.Kind = EV_KEY_DOWN Then Begin
+  If Ev.KeyCode = $48 Then Begin { Fleche haut }
+   If CM.SelIdx > 0 Then Begin
+    Dec(CM.SelIdx);
+    If CM.Items[CM.SelIdx].Separator And (CM.SelIdx > 0) Then
+     Dec(CM.SelIdx);
+   End;
+   DrawContextMenu(CM);
+  End
+  Else If Ev.KeyCode = $50 Then Begin { Fleche bas }
+   If CM.SelIdx < CM.ItemCount - 1 Then Begin
+    Inc(CM.SelIdx);
+    If CM.Items[CM.SelIdx].Separator And
+       (CM.SelIdx < CM.ItemCount - 1) Then
+     Inc(CM.SelIdx);
+   End;
+   DrawContextMenu(CM);
+  End;
  End;
 End;
 
@@ -26594,8 +26855,32 @@ End;
 { --- Traiter un evenement global --- }
 
 Procedure DispatchEvent(Var Ev: TEvent);
+Var
+ CtxTag: LongInt;
 Begin
  If Ev.Kind = EV_NONE Then Exit;
+ { Menu contextuel en priorite si visible }
+ If CtxMenu.Visible Then Begin
+  CtxTag := HandleContextMenuEvent(CtxMenu, Ev);
+  If Not CtxMenu.Visible Then Begin
+   FullRepaintNeeded := True;
+   { Traiter la commande selectionnee }
+   If CtxTag > 0 Then Begin
+    Case CtxTag Of
+     311, 411: Begin { Ajouter un fichier }
+      InitFileDialog(FileDlg, False);
+      LoadDirectoryFiles(FileDlg);
+      FileDlg.Base.Visible := True;
+      DrawFileDialog(FileDlg);
+     End;
+     500: Begin { Ouvrir }
+      { Ouvrir le noeud selectionne }
+     End;
+    End;
+   End;
+  End;
+  Exit;
+ End;
  { Page de demarrage en priorite si visible }
  If StartPage.Visible Then Begin
   HandleStartPageEvent(StartPage, MRUList, Ev);
@@ -26780,12 +27065,21 @@ Begin
   End;
   If (Ev.Kind = EV_MOUSE_DOWN) Or (Ev.Kind = EV_MOUSE_MOVE) Or
      (Ev.Kind = EV_MOUSE_UP) Then Begin
-   HandleEditorMouse(ActiveEditor, Ev);
-   If Editors[WinMgr.ActiveIdx] <> Nil Then
-    Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
-   WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
-   WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
-   Exit;
+   { Ne pas intercepter les clics dans l explorateur }
+   If (Ev.Kind = EV_MOUSE_DOWN) And
+      (Ev.MouseX >= SolExplorer.X) And
+      (Ev.MouseX < SolExplorer.X + SolExplorer.Width) And
+      (Ev.MouseY >= SolExplorer.Y) And
+      (Ev.MouseY < SolExplorer.Y + SolExplorer.Height) Then Begin
+    { Laisser passer vers HandleExplorerEvent }
+   End Else Begin
+    HandleEditorMouse(ActiveEditor, Ev);
+    If Editors[WinMgr.ActiveIdx] <> Nil Then
+     Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+    WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
+    WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+    Exit;
+   End;
   End;
  End;
  { Evenements pour l explorateur }
@@ -26815,8 +27109,12 @@ Begin
    UpdateStatusBar(StatusBar, WinMgr);
    { Ne pas redessiner tous les widgets si un menu est ouvert :
      DrawAllWidgets appelle DrawToolBar qui ecrase le menu deroulant }
-   If Not MenuActive Then
+   If Not MenuActive And Not CtxMenu.Visible Then
+    DrawAllWidgets
+   Else If CtxMenu.Visible Then Begin
     DrawAllWidgets;
+    DrawContextMenu(CtxMenu);
+   End;
   End Else Begin
    { Meme sans evenement utilisateur, redessiner si le terminal a change }
    If TermVisible And TermPanels[ActiveShell].NeedRepaint Then
@@ -27094,6 +27392,7 @@ BEGIN
  InitXMLHighlighter(XMLHL);
  InitPSPHighlighter(PSPHL);
  InitExplorer(SolExplorer);
+ InitContextMenu(CtxMenu);
  DrawExplorer(SolExplorer);
  InitPropertiesPanel(PropsPanel);
  DrawPropertiesPanel(PropsPanel);
