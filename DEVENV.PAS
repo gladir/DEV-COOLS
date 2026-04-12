@@ -19037,6 +19037,7 @@ Procedure DrawNewProjectFields(Var Dlg: TNewProjectDialog);
 Var
  FX, FY, FW: Integer;
  BaseY: Integer;
+ BorderCol: Integer;
 Begin
  FX := Dlg.Base.X + DLG_PADDING;
  FW := Dlg.Base.Width - DLG_PADDING * 2;
@@ -19044,27 +19045,42 @@ Begin
   NEWPROJ_LIST_HEIGHT + DLG_PADDING;
  { Etiquette et champ Nom du projet }
  DrawText(FX, BaseY, 'Nom :', CLR_WINDOWTEXT);
+ If Dlg.FocusField = 0 Then BorderCol := CLR_TITLEBAR_ACTIVE
+ Else BorderCol := CLR_BORDER;
  DrawFilledRect(FX + 80, BaseY - 2, FX + FW, BaseY + DLG_INPUT_HEIGHT,
   CLR_WINDOW);
  DrawRect(FX + 80, BaseY - 2, FX + FW, BaseY + DLG_INPUT_HEIGHT,
-  CLR_BORDER);
+  BorderCol);
  DrawText(FX + 84, BaseY, Dlg.ProjectName, CLR_WINDOWTEXT);
+ If Dlg.FocusField = 0 Then
+  DrawText(FX + 84 + TextWidth(Dlg.ProjectName), BaseY, '_',
+   CLR_TITLEBAR_ACTIVE);
  { Etiquette et champ Emplacement }
  BaseY := BaseY + PROJPROP_ROW_SPACING;
  DrawText(FX, BaseY, 'Emplacement :', CLR_WINDOWTEXT);
+ If Dlg.FocusField = 1 Then BorderCol := CLR_TITLEBAR_ACTIVE
+ Else BorderCol := CLR_BORDER;
  DrawFilledRect(FX + 80, BaseY - 2, FX + FW, BaseY + DLG_INPUT_HEIGHT,
   CLR_WINDOW);
  DrawRect(FX + 80, BaseY - 2, FX + FW, BaseY + DLG_INPUT_HEIGHT,
-  CLR_BORDER);
+  BorderCol);
  DrawText(FX + 84, BaseY, Dlg.Location, CLR_WINDOWTEXT);
+ If Dlg.FocusField = 1 Then
+  DrawText(FX + 84 + TextWidth(Dlg.Location), BaseY, '_',
+   CLR_TITLEBAR_ACTIVE);
  { Etiquette et champ Nom de la solution }
  BaseY := BaseY + PROJPROP_ROW_SPACING;
  DrawText(FX, BaseY, 'Solution :', CLR_WINDOWTEXT);
+ If Dlg.FocusField = 2 Then BorderCol := CLR_TITLEBAR_ACTIVE
+ Else BorderCol := CLR_BORDER;
  DrawFilledRect(FX + 80, BaseY - 2, FX + FW, BaseY + DLG_INPUT_HEIGHT,
   CLR_WINDOW);
  DrawRect(FX + 80, BaseY - 2, FX + FW, BaseY + DLG_INPUT_HEIGHT,
-  CLR_BORDER);
+  BorderCol);
  DrawText(FX + 84, BaseY, Dlg.SolutionName, CLR_WINDOWTEXT);
+ If Dlg.FocusField = 2 Then
+  DrawText(FX + 84 + TextWidth(Dlg.SolutionName), BaseY, '_',
+   CLR_TITLEBAR_ACTIVE);
  { Case a cocher Creer un repertoire pour la solution }
  BaseY := BaseY + PROJPROP_ROW_SPACING;
  DrawRect(FX, BaseY, FX + 12, BaseY + 12, CLR_BORDER);
@@ -19216,17 +19232,58 @@ Procedure HandleNewProjectDialogEvent(Var Dlg: TNewProjectDialog;
  Var Ev: TEvent);
 Var
  Idx, BtnR: Integer;
+ FX, FW, BaseY, FieldX1, FieldX2, FieldY1, FieldY2: Integer;
 Begin
  If Not Dlg.Base.Visible Then Exit;
  Case Ev.Kind Of
   EV_KEY_DOWN, EV_KEY_CHAR:
+  Begin
    HandleNewProjectDialogKey(Dlg, Ev.KeyCode, Ev.KeyChar);
+   If Dlg.Base.Visible Then
+    DrawNewProjectDialog(Dlg);
+  End;
   EV_MOUSE_DOWN:
   Begin
    Idx := NewProjectTypeHitTest(Dlg, Ev.MouseX, Ev.MouseY);
    If Idx >= 0 Then
    Begin
     Dlg.SelType := Idx;
+    DrawNewProjectDialog(Dlg);
+    Exit;
+   End;
+   { Hit test sur les 3 champs de saisie }
+   FX := Dlg.Base.X + DLG_PADDING;
+   FW := Dlg.Base.Width - DLG_PADDING * 2;
+   BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+    NEWPROJ_LIST_HEIGHT + DLG_PADDING;
+   FieldX1 := FX + 80;
+   FieldX2 := FX + FW;
+   { Champ 0 : Nom du projet }
+   FieldY1 := BaseY - 2;
+   FieldY2 := BaseY + DLG_INPUT_HEIGHT;
+   If (Ev.MouseX >= FieldX1) And (Ev.MouseX <= FieldX2) And
+      (Ev.MouseY >= FieldY1) And (Ev.MouseY <= FieldY2) Then Begin
+    Dlg.FocusField := 0;
+    DrawNewProjectDialog(Dlg);
+    Exit;
+   End;
+   { Champ 1 : Emplacement }
+   BaseY := BaseY + PROJPROP_ROW_SPACING;
+   FieldY1 := BaseY - 2;
+   FieldY2 := BaseY + DLG_INPUT_HEIGHT;
+   If (Ev.MouseX >= FieldX1) And (Ev.MouseX <= FieldX2) And
+      (Ev.MouseY >= FieldY1) And (Ev.MouseY <= FieldY2) Then Begin
+    Dlg.FocusField := 1;
+    DrawNewProjectDialog(Dlg);
+    Exit;
+   End;
+   { Champ 2 : Nom de la solution }
+   BaseY := BaseY + PROJPROP_ROW_SPACING;
+   FieldY1 := BaseY - 2;
+   FieldY2 := BaseY + DLG_INPUT_HEIGHT;
+   If (Ev.MouseX >= FieldX1) And (Ev.MouseX <= FieldX2) And
+      (Ev.MouseY >= FieldY1) And (Ev.MouseY <= FieldY2) Then Begin
+    Dlg.FocusField := 2;
     DrawNewProjectDialog(Dlg);
     Exit;
    End;
