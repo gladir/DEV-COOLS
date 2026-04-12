@@ -2877,6 +2877,11 @@ Var
  QuitRequested  : Boolean;
  { Drapeau nettoyage ecran transition page de demarrage -> IDE }
  FullRepaintNeeded : Boolean;
+ { Solution et projet courants }
+ CurrentSolution : TSolution;
+ CurrentProject  : TProject;
+ SolutionLoaded  : Boolean;
+ SolutionModified: Boolean;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -26895,12 +26900,42 @@ Procedure HandleNewSolutionConfirmed;
 Var
  SolName: String;
  ProjName: String;
+ ProjExt: String;
+ ProjType: TProjectType;
  SolIdx, ProjIdx: Integer;
 Begin
  SolName := NewProjDlg.SolutionName;
  ProjName := NewProjDlg.ProjectName;
  If SolName = '' Then SolName := 'MaSolution';
  If ProjName = '' Then ProjName := 'MonProjet';
+ ProjType := NewProjectTypeToProjectType(NewProjDlg.SelType);
+ ProjExt := NewProjectTypeExtension(NewProjDlg.SelType);
+ { Initialiser la structure de la solution courante }
+ CurrentSolution := CreateNewSolution(SolName,
+  NewProjDlg.Location);
+ AddProjectToSolution(CurrentSolution, ProjName,
+  ProjName + ProjExt, ProjType);
+ { Initialiser le projet courant }
+ InitProject(CurrentProject);
+ CurrentProject.Info.ProjectName := ProjName;
+ CurrentProject.Info.AssemblyName := ProjName;
+ CurrentProject.Info.RootNamespace := ProjName;
+ CurrentProject.Info.ProjectType := ProjType;
+ CurrentProject.Info.OutputType :=
+  NewProjectTypeToOutputType(NewProjDlg.SelType);
+ CurrentProject.Info.TargetFramework := 'v4.8';
+ CurrentProject.Info.OutputPath := 'bin\Debug\';
+ CurrentProject.CfgCount := 2;
+ CurrentProject.Configs[0].ConfigName := 'Debug|AnyCPU';
+ CurrentProject.Configs[0].OutputPath := 'bin\Debug\';
+ CurrentProject.Configs[0].Optimize := False;
+ CurrentProject.Configs[0].DebugSymbols := True;
+ CurrentProject.Configs[1].ConfigName := 'Release|AnyCPU';
+ CurrentProject.Configs[1].OutputPath := 'bin\Release\';
+ CurrentProject.Configs[1].Optimize := True;
+ CurrentProject.Configs[1].DebugSymbols := False;
+ SolutionLoaded := True;
+ SolutionModified := True;
  { Peupler l explorateur avec la nouvelle solution }
  ClearExplorer(SolExplorer);
  SolIdx := AddExplorerNode(SolExplorer, SolName,
@@ -27431,24 +27466,68 @@ Begin
  IsQuitRequested := QuitRequested;
 End;
 
+{ --- Sauvegarder la solution et le projet courants --- }
+
+Procedure SaveCurrentSolution;
+Var
+ SolDir: String;
+ SolFile: String;
+ ProjDir: String;
+ ProjFile: String;
+Begin
+ If Not SolutionLoaded Then Exit;
+ { Construire le chemin du repertoire de la solution }
+ SolDir := CurrentSolution.Info.SolutionPath;
+ If Length(SolDir) = 0 Then SolDir := '.';
+ { Creer le repertoire de la solution si necessaire }
+ {$I-}
+ MkDir(SolDir);
+ {$I+}
+ If IOResult <> 0 Then ; { Ignorer si existe deja }
+ { Sauvegarder le fichier .sln }
+ SolFile := SolDir + '\' + CurrentSolution.Info.SolutionName
+  + '.sln';
+ SaveSolutionFile(SolFile, CurrentSolution);
+ { Sauvegarder le projet si present }
+ If CurrentSolution.ProjectCount > 0 Then Begin
+  ProjDir := SolDir + '\'
+   + CurrentSolution.Projects[0].ProjectName;
+  {$I-}
+  MkDir(ProjDir);
+  {$I+}
+  If IOResult <> 0 Then ;
+  ProjFile := ProjDir + '\'
+   + CurrentSolution.Projects[0].ProjectPath;
+  SaveProjectFile(ProjFile, CurrentProject);
+ End;
+ SolutionModified := False;
+ AppendOutput(OutputPanel,
+  'Solution enregistree : ' + SolFile, Ord(OTK_BUILD));
+End;
+
 { --- Essayer de quitter avec confirmation --- }
 
 Procedure TryQuit;
 Var
  N: Integer;
  R: Integer;
+ NeedSave: Boolean;
 Begin
  N := CountModifiedWindows;
- If N = 0 Then Begin
+ NeedSave := (N > 0) Or (SolutionLoaded And SolutionModified);
+ If Not NeedSave Then Begin
   QuitRequested := True;
   Exit;
  End;
  R := ShowMessageBox('Fichiers non enregistres',
-  'Des fichiers ont ete modifies. Enregistrer avant de quitter ?',
+  'Des elements ont ete modifies. Enregistrer avant de quitter ?',
   MB_YESNOCANCEL, MI_QUESTION);
  Case R Of
   DR_YES: Begin
-   SaveAllWindows;
+   If N > 0 Then
+    SaveAllWindows;
+   If SolutionLoaded And SolutionModified Then
+    SaveCurrentSolution;
    QuitRequested := True;
   End;
   DR_NO: Begin
@@ -27524,6 +27603,10 @@ BEGIN
  InitPSPHighlighter(PSPHL);
  InitExplorer(SolExplorer);
  InitContextMenu(CtxMenu);
+ InitSolution(CurrentSolution);
+ InitProject(CurrentProject);
+ SolutionLoaded := False;
+ SolutionModified := False;
  DrawExplorer(SolExplorer);
  InitPropertiesPanel(PropsPanel);
  DrawPropertiesPanel(PropsPanel);
