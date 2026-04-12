@@ -1331,6 +1331,14 @@ Const
  STATUSBAR_HEIGHT      = 20;
  OUTPUT_HEIGHT         = 150;
 
+ { Terminal integre }
+ MAX_TERM_LINES        = 200;     { lignes de buffer du terminal   }
+ TERM_LINE_HEIGHT      = 14;      { hauteur d une ligne en pixels  }
+ TERM_CHAR_WIDTH       = 8;       { largeur d un caractere         }
+ TERM_TAB_HEIGHT       = 22;      { hauteur de l onglet terminal   }
+ MAX_TERM_HISTORY      = 50;      { historique des commandes       }
+ MAX_TERM_DIRSTACK     = 20;      { pile de repertoires            }
+
  { Codes de retour }
  EXIT_OK               = 0;
  EXIT_ERROR            = 1;
@@ -2003,6 +2011,32 @@ Type
   Dragging : Boolean;              { splitter en cours de drag      }
   Visible  : Boolean;              { panneau visible                }
   NeedRepaint: Boolean;            { doit etre redessine            }
+ End;
+
+ { Type de shell du terminal }
+ TShellKind = (SK_CMD, SK_POWERSHELL);
+
+ { Terminal integre }
+ TTerminalPanel = Record
+  Lines     : Array[0..MAX_TERM_LINES - 1] Of String;
+  LineCount : Integer;             { nombre de lignes dans le buffer}
+  ScrollTop : Integer;             { premiere ligne visible         }
+  InputLine : String;              { ligne de saisie en cours       }
+  InputCol  : Integer;             { position du curseur de saisie  }
+  PartialLine: String;             { fragment de ligne incomplete   }
+  X         : Integer;             { position X du panneau          }
+  Y         : Integer;             { position Y du panneau          }
+  Width     : Integer;             { largeur du panneau             }
+  Height    : Integer;             { hauteur du panneau             }
+  Visible   : Boolean;             { panneau visible                }
+  NeedRepaint: Boolean;            { doit etre redessine            }
+  Shell     : TShellKind;          { type de shell                  }
+  Echo      : Boolean;             { affichage du prompt actif      }
+  TermHistory: Array[1..MAX_TERM_HISTORY] Of String;
+  NumberHistory: Integer;          { nombre d entrees dans l histo  }
+  HistoryPos: Integer;             { position courante dans l histo }
+  DirStack  : Array[1..MAX_TERM_DIRSTACK] Of String;
+  NumberDirStack: Integer;         { taille de la pile repertoires  }
  End;
 
  { Severite d une erreur }
@@ -2754,6 +2788,9 @@ Var
  PropsPanel   : TPropertiesPanel;
  { Panneau de sortie }
  OutputPanel  : TOutputPanel;
+ { Terminal integre }
+ TermPanel    : TTerminalPanel;
+ TerminalHasFocus : Boolean;       { le terminal a le focus clavier }
  { Panneau de liste d erreurs }
  ErrorList    : TErrorListPanel;
  { Dialogue de recherche/remplacement }
@@ -4290,6 +4327,7 @@ Begin
  AddMenuItem(MainMenuBar.Menus[2], 'Explorateur de solution', 'Ctrl+Alt+L', 300);
  AddMenuItem(MainMenuBar.Menus[2], 'Sortie', 'Ctrl+Alt+O', 301);
  AddMenuItem(MainMenuBar.Menus[2], 'Liste d erreurs', 'Ctrl+\+E', 302);
+ AddMenuItem(MainMenuBar.Menus[2], 'Terminal', 'Ctrl+`', 303);
  AddMenuSeparator(MainMenuBar.Menus[2]);
  AddMenuItem(MainMenuBar.Menus[2], 'Barre d outils', '', 310);
  AddMenuItem(MainMenuBar.Menus[2], 'Plein ecran', 'Maj+Alt+Entree', 311);
@@ -4387,6 +4425,12 @@ Procedure DrawAllWidgets; Forward;
 
 { Declaration anticipee : HandleStartDebugging est defini plus loin }
 Procedure HandleStartDebugging; Forward;
+
+{ Declarations anticipees pour le terminal integre }
+Procedure TermAddLine(Var TP: TTerminalPanel; S: String);
+ Forward;
+Procedure TermExecuteCommand(Var TP: TTerminalPanel;
+ CmdStr: String); Forward;
 
 { Declarations anticipees pour dialogues }
 Procedure InitNewProjectDialog(Var Dlg: TNewProjectDialog);
@@ -4655,6 +4699,24 @@ Begin
        End;
   500: HandleStartDebugging; { Generer la solution (F6) }
   600: HandleStartDebugging; { Demarrer le debogage (F5) }
+  303: Begin { Terminal }
+        TermPanel.Visible := Not TermPanel.Visible;
+        If TermPanel.Visible Then Begin
+         { Ajuster le OutputPanel pour partager l espace }
+         TermPanel.Width := (GetScreenWidth - EXPLORER_WIDTH) Div 2;
+         OutputPanel.X := TermPanel.X + TermPanel.Width;
+         OutputPanel.Width := GetScreenWidth - EXPLORER_WIDTH
+          - TermPanel.Width;
+         If TermPanel.LineCount = 0 Then
+          TermAddLine(TermPanel,
+           'Terminal integre. Tapez HELP pour la liste des commandes.');
+        End Else Begin
+         { Restaurer le OutputPanel a la largeur complete }
+         OutputPanel.X := 0;
+         OutputPanel.Width := GetScreenWidth - EXPLORER_WIDTH;
+        End;
+        FullRepaintNeeded := True;
+       End;
  End;
 End;
 
@@ -14794,6 +14856,917 @@ Begin
 End;
 
 { ============================================================
+  TERMINAL INTEGRE - SHELL INTERNE
+  ============================================================ }
+
+{ --- Ajouter une ligne au buffer du terminal --- }
+
+Procedure TermAddLine(Var TP: TTerminalPanel; S: String);
+Begin
+ If TP.LineCount < MAX_TERM_LINES Then Begin
+  TP.Lines[TP.LineCount] := S;
+  Inc(TP.LineCount);
+ End Else Begin
+  { Buffer plein : decaler vers le haut }
+  Move(TP.Lines[1], TP.Lines[0],
+   (MAX_TERM_LINES - 1) * SizeOf(String));
+  TP.Lines[MAX_TERM_LINES - 1] := S;
+ End;
+ { Auto-scroll vers le bas }
+ TP.NeedRepaint := True;
+End;
+
+{ --- Fonctions utilitaires du shell --- }
+
+Function TermStrToUpper(S: String): String;
+Var
+ I: Integer;
+Begin
+ For I := 1 To Length(S) Do
+  If S[I] In ['a'..'z'] Then
+   S[I] := Chr(Ord(S[I]) - 32);
+ TermStrToUpper := S;
+End;
+
+Function TermTrimL(S: String): String;
+Var
+ I: Integer;
+Begin
+ For I := 1 To Length(S) Do Begin
+  If S[I] <> ' ' Then Begin
+   TermTrimL := Copy(S, I, 255);
+   Exit;
+  End;
+ End;
+ TermTrimL := S;
+End;
+
+Function TermTrimR(S: String): String;
+Var
+ I: Integer;
+Begin
+ I := Length(S);
+ While (I > 0) And (S[I] In [#9, ' ']) Do Dec(I);
+ S[0] := Chr(I);
+ TermTrimR := S;
+End;
+
+Function TermTrim(S: String): String;
+Begin
+ TermTrim := TermTrimL(TermTrimR(S));
+End;
+
+Function TermPadRight(S: String; Space: Integer): String;
+Var
+ I: Integer;
+Begin
+ If Length(S) < Space Then
+  For I := Length(S) + 1 To Space Do
+   S := S + ' ';
+ TermPadRight := S;
+End;
+
+Function TermPadZeroLeft(Value: Integer; Space: Integer): String;
+Var
+ S: String;
+Begin
+ Str(Value, S);
+ While Length(S) < Space Do S := '0' + S;
+ TermPadZeroLeft := S;
+End;
+
+Function TermGetCurrentDir: String;
+Var
+ Dir: String;
+Begin
+ GetDir(0, Dir);
+ TermGetCurrentDir := Dir;
+End;
+
+Function TermGetErrorMessage(Code: Word): String;
+Begin
+ Case Code Of
+  0: TermGetErrorMessage := '';
+  2: TermGetErrorMessage := 'Fichier introuvable';
+  3: TermGetErrorMessage := 'Chemin introuvable';
+  4: TermGetErrorMessage := 'Trop de fichiers ouverts';
+  5: TermGetErrorMessage := 'Acces refuse';
+  6: TermGetErrorMessage := 'Handle de fichier invalide';
+  12: TermGetErrorMessage := 'Mode d''acces sur disque invalide';
+  15: TermGetErrorMessage := 'Numero de disque invalide';
+  16: TermGetErrorMessage := 'Impossible de supprimer le repertoire';
+  17: TermGetErrorMessage := 'Impossible de renommer sur plusieurs volumes';
+  100: TermGetErrorMessage := 'Erreur de lecture a partir du disque';
+  101: TermGetErrorMessage := 'Erreur d''ecriture sur le disque';
+  102: TermGetErrorMessage := 'Fichier non attribue';
+  103: TermGetErrorMessage := 'Le fichier n''est pas ouvert';
+  104: TermGetErrorMessage := 'Le fichier n''est pas ouvert a l''entree';
+  105: TermGetErrorMessage := 'Le fichier n''est pas ouvert a la sortie';
+  106: TermGetErrorMessage := 'Numero invalide';
+  150: TermGetErrorMessage := 'Disque protege en ecriture';
+  152: TermGetErrorMessage := 'Disque pas pret';
+  Else TermGetErrorMessage := 'Erreur inconnue';
+ End;
+End;
+
+{ --- Extraction de la commande et des parametres --- }
+
+Procedure TermExtractCommand(CmdStr: String;
+ Var CurrCmd, ParamStr: String);
+Var
+ I: Integer;
+Begin
+ CmdStr := TermTrim(CmdStr);
+ For I := 1 To Length(CmdStr) Do Begin
+  If Not (CmdStr[I] In ['A'..'Z', 'a'..'z', '_', '-',
+   '0'..'9']) Then Begin
+   CurrCmd := TermStrToUpper(Copy(CmdStr, 1, I - 1));
+   ParamStr := TermTrimL(Copy(CmdStr, I, 255));
+   Exit;
+  End;
+ End;
+ CurrCmd := TermStrToUpper(CmdStr);
+ ParamStr := '';
+End;
+
+Function TermExtractParam(ParamStr: String;
+ Index: Integer): String;
+Var
+ Count, LocalIndex, L: Integer;
+ Temp: String;
+Begin
+ Temp := '';
+ Count := 1;
+ LocalIndex := 1;
+ L := 0;
+ While Count <= Length(ParamStr) Do Begin
+  If Not (ParamStr[Count] In [' ', #9]) Then Begin
+   If LocalIndex = Index Then Begin
+    While (Count <= Length(ParamStr)) And
+     (Not (ParamStr[Count] In [' ', #9])) And
+     (L < 255) Do Begin
+     Temp := Temp + ParamStr[Count];
+     Inc(L);
+     Inc(Count);
+    End;
+    TermExtractParam := Temp;
+    Exit;
+   End;
+   While (Count <= Length(ParamStr)) And
+    (Not (ParamStr[Count] In [' ', #9])) Do
+    Inc(Count);
+   Inc(LocalIndex);
+  End;
+  If Count >= Length(ParamStr) Then Break;
+  Inc(Count);
+ End;
+ TermExtractParam := Temp;
+End;
+
+{ --- Ajouter une commande a l historique du terminal --- }
+
+Procedure TermAddHistory(Var TP: TTerminalPanel; S: String);
+Var
+ I: Integer;
+Begin
+ If S = '' Then Exit;
+ If TP.NumberHistory >= MAX_TERM_HISTORY Then Begin
+  For I := 1 To MAX_TERM_HISTORY - 1 Do
+   TP.TermHistory[I] := TP.TermHistory[I + 1];
+  TP.TermHistory[MAX_TERM_HISTORY] := S;
+ End Else Begin
+  Inc(TP.NumberHistory);
+  TP.TermHistory[TP.NumberHistory] := S;
+ End;
+ TP.HistoryPos := TP.NumberHistory + 1;
+End;
+
+{ --- Copie de fichier interne --- }
+
+Function TermCopyFile(Var TP: TTerminalPanel;
+ Source, Target: String): Boolean;
+Var
+ SourceFile, TargetFile: File;
+ RecordsRead: Integer;
+ Buffer: Array[1..1000] Of Byte;
+Begin
+ TermCopyFile := False;
+ Assign(SourceFile, Source);
+ {$I-} Reset(SourceFile, 1); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'Fichier source introuvable : ' + Source);
+  Exit;
+ End;
+ Assign(TargetFile, Target);
+ {$I-} Rewrite(TargetFile, 1);
+ BlockRead(SourceFile, Buffer, SizeOf(Buffer), RecordsRead);
+ While RecordsRead > 0 Do Begin
+  BlockWrite(TargetFile, Buffer, RecordsRead);
+  BlockRead(SourceFile, Buffer, SizeOf(Buffer), RecordsRead);
+ End;
+ Close(SourceFile);
+ Close(TargetFile);
+ {$I+}
+ TermCopyFile := True;
+End;
+
+{ ============================================================
+  COMMANDES INTERNES DU TERMINAL
+  ============================================================ }
+
+{ --- CD / CHDIR / SET-LOCATION --- }
+
+Procedure TermCmd_CD(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Err: Word;
+ FirstParam, Dir: String;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ If Length(FirstParam) > 0 Then Begin
+  {$I-} ChDir(FirstParam); {$I+}
+  Err := IOResult;
+  If Err <> 0 Then
+   TermAddLine(TP, TermGetErrorMessage(Err))
+  Else Begin
+   GetDir(0, Dir);
+   TermAddLine(TP, Dir);
+  End;
+ End Else Begin
+  GetDir(0, Dir);
+  TermAddLine(TP, Dir);
+ End;
+End;
+
+{ --- CLS / CLEAR-HOST --- }
+
+Procedure TermCmd_CLS(Var TP: TTerminalPanel);
+Var
+ I: Integer;
+Begin
+ For I := 0 To MAX_TERM_LINES - 1 Do
+  TP.Lines[I] := '';
+ TP.LineCount := 0;
+ TP.ScrollTop := 0;
+ TP.NeedRepaint := True;
+End;
+
+{ --- DIR / LS / GET-CHILDITEM --- }
+
+Procedure TermCmd_DIR(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Info: SearchRec;
+ T: DateTime;
+ ShowDir, S, Line: String;
+ TotalFiles: LongInt;
+ TotalSize: LongInt;
+ FirstParam: String;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ If FirstParam = '' Then
+  ShowDir := '*.*'
+ Else
+  ShowDir := FirstParam;
+ TermAddLine(TP, '');
+ TermAddLine(TP, ' Repertoire : ' + TermGetCurrentDir);
+ TermAddLine(TP, '');
+ TermAddLine(TP,
+  'Mode         LastWriteTime        Length Name');
+ TermAddLine(TP,
+  '----         -------------        ------ ----');
+ TotalFiles := 0;
+ TotalSize := 0;
+ FindFirst(ShowDir, AnyFile, Info);
+ While DosError = 0 Do Begin
+  { Mode }
+  Line := '';
+  If Info.Attr And Directory = Directory Then
+   Line := Line + 'd' Else Line := Line + '-';
+  If Info.Attr And Archive = Archive Then
+   Line := Line + 'a' Else Line := Line + '-';
+  If Info.Attr And ReadOnly = ReadOnly Then
+   Line := Line + 'r' Else Line := Line + '-';
+  If Info.Attr And Hidden = Hidden Then
+   Line := Line + 'h' Else Line := Line + '-';
+  If Info.Attr And SysFile = SysFile Then
+   Line := Line + 's' Else Line := Line + '-';
+  Line := Line + '-  ';
+  { Date et heure }
+  UnpackTime(Info.Time, T);
+  Str(T.Year:4, S);
+  Line := Line + S + '-' +
+   TermPadZeroLeft(T.Month, 2) + '-' +
+   TermPadZeroLeft(T.Day, 2) + '  ';
+  Str(T.Hour:2, S);
+  Line := Line + S + ':' + TermPadZeroLeft(T.Min, 2) + '  ';
+  { Taille }
+  If Info.Attr And Directory = Directory Then
+   Line := Line + TermPadRight('', 10)
+  Else Begin
+   Str(Info.Size:10, S);
+   Line := Line + S;
+  End;
+  { Nom }
+  Line := Line + ' ' + Info.Name;
+  TermAddLine(TP, Line);
+  Inc(TotalFiles);
+  Inc(TotalSize, Info.Size);
+  FindNext(Info);
+ End;
+ TermAddLine(TP, '');
+ Str(TotalFiles, S);
+ Line := '  ' + S + ' element(s)';
+ Str(TotalSize, S);
+ Line := Line + '  ' + S + ' octets';
+ TermAddLine(TP, Line);
+End;
+
+{ --- COPY / COPY-ITEM --- }
+
+Procedure TermCmd_COPY(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Source, Target: String;
+Begin
+ Source := TermExtractParam(ParamStr, 1);
+ Target := TermExtractParam(ParamStr, 2);
+ If (Source = '') Or (Target = '') Then Begin
+  TermAddLine(TP,
+   'Syntaxe : COPY source destination');
+  Exit;
+ End;
+ If TermCopyFile(TP, Source, Target) Then
+  TermAddLine(TP, '1 fichier copie.')
+ Else
+  TermAddLine(TP, 'Echec de la copie.');
+End;
+
+{ --- DEL / DELETE / ERASE --- }
+
+Procedure TermCmd_DEL(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ P: Integer;
+ Err: Word;
+ F: File;
+ CurrParam: String;
+Begin
+ P := 0;
+ Repeat
+  Inc(P);
+  CurrParam := TermExtractParam(ParamStr, P);
+  If CurrParam = '' Then Begin
+   If P = 1 Then
+    TermAddLine(TP, 'Syntaxe : DEL fichier');
+   Break;
+  End;
+  {$I-} Assign(F, CurrParam);
+  Erase(F); {$I+}
+  Err := IOResult;
+  If Err = 0 Then
+   TermAddLine(TP, '1 fichier supprime.')
+  Else
+   TermAddLine(TP, TermGetErrorMessage(Err));
+  If P > 9 Then Break;
+ Until CurrParam = '';
+End;
+
+{ --- ECHO / WRITE / WRITE-OUTPUT --- }
+
+Procedure TermCmd_ECHO(Var TP: TTerminalPanel;
+ ParamStr: String);
+Begin
+ If TermStrToUpper(ParamStr) = 'OFF' Then
+  TP.Echo := False
+ Else If TermStrToUpper(ParamStr) = 'ON' Then
+  TP.Echo := True
+ Else If ParamStr = '.' Then
+  TermAddLine(TP, '')
+ Else
+  TermAddLine(TP, ParamStr);
+End;
+
+{ --- MKDIR / MD / NEW-ITEM --- }
+
+Procedure TermCmd_MKDIR(Var TP: TTerminalPanel;
+ ParamStr: String);
+Var
+ Err: Word;
+ CurrParam: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : MKDIR repertoire');
+  Exit;
+ End;
+ {$I-} MkDir(CurrParam); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then
+  TermAddLine(TP, TermGetErrorMessage(Err));
+End;
+
+{ --- RMDIR / RD / REMOVE-ITEM --- }
+
+Procedure TermCmd_RMDIR(Var TP: TTerminalPanel;
+ ParamStr: String);
+Var
+ Err: Word;
+ CurrParam: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : RMDIR repertoire');
+  Exit;
+ End;
+ {$I-} RmDir(CurrParam); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then
+  TermAddLine(TP, TermGetErrorMessage(Err));
+End;
+
+{ --- REN / RENAME / RENAME-ITEM --- }
+
+Procedure TermCmd_REN(Var TP: TTerminalPanel;
+ ParamStr: String);
+Var
+ Err: Word;
+ F: File;
+ Source, Target: String;
+Begin
+ Source := TermExtractParam(ParamStr, 1);
+ Target := TermExtractParam(ParamStr, 2);
+ If (Source = '') Or (Target = '') Then Begin
+  TermAddLine(TP,
+   'Syntaxe : REN anciennom nouveaunom');
+  Exit;
+ End;
+ {$I-} Assign(F, Source);
+ Rename(F, Target); {$I+}
+ Err := IOResult;
+ If Err = 0 Then
+  TermAddLine(TP, '1 fichier renomme.')
+ Else
+  TermAddLine(TP, TermGetErrorMessage(Err));
+End;
+
+{ --- MOVE --- }
+
+Procedure TermCmd_MOVE(Var TP: TTerminalPanel;
+ ParamStr: String);
+Var
+ Source, Target: String;
+ F: File;
+Begin
+ Source := TermExtractParam(ParamStr, 1);
+ Target := TermExtractParam(ParamStr, 2);
+ If (Source = '') Or (Target = '') Then Begin
+  TermAddLine(TP,
+   'Syntaxe : MOVE source destination');
+  Exit;
+ End;
+ If TermCopyFile(TP, Source, Target) Then Begin
+  {$I-} Assign(F, Source);
+  Erase(F); {$I+}
+  If IOResult = 0 Then
+   TermAddLine(TP, '1 fichier deplace.')
+  Else
+   TermAddLine(TP,
+    'Copie OK mais suppression de l''original echouee.');
+ End;
+End;
+
+{ --- TYPE / GET-CONTENT --- }
+
+Procedure TermCmd_TYPE(Var TP: TTerminalPanel;
+ ParamStr: String);
+Var
+ Err: Word;
+ Handle: Text;
+ CurrParam, CurrLine: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : TYPE fichier');
+  Exit;
+ End;
+ Assign(Handle, CurrParam);
+ {$I-} Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ While Not EOF(Handle) Do Begin
+  ReadLn(Handle, CurrLine);
+  TermAddLine(TP, CurrLine);
+ End;
+ Close(Handle);
+End;
+
+{ --- DATE --- }
+
+Procedure TermCmd_DATE(Var TP: TTerminalPanel);
+Var
+ Year, Month, Day, DayOfWeek: Word;
+Begin
+ GetDate(Year, Month, Day, DayOfWeek);
+ TermAddLine(TP, 'La date du jour est ' +
+  TermPadZeroLeft(Year, 4) + '-' +
+  TermPadZeroLeft(Month, 2) + '-' +
+  TermPadZeroLeft(Day, 2));
+End;
+
+{ --- TIME --- }
+
+Procedure TermCmd_TIME(Var TP: TTerminalPanel);
+Var
+ Hour, Min, Sec, Sec100: Word;
+Begin
+ GetTime(Hour, Min, Sec, Sec100);
+ TermAddLine(TP, 'L''heure actuelle est ' +
+  TermPadZeroLeft(Hour, 2) + ':' +
+  TermPadZeroLeft(Min, 2) + ':' +
+  TermPadZeroLeft(Sec, 2));
+End;
+
+{ --- VER --- }
+
+Procedure TermCmd_VER(Var TP: TTerminalPanel);
+Begin
+ TermAddLine(TP,
+  'DEVENV Terminal integre v' + DEVENV_VERSION);
+End;
+
+{ --- PWD --- }
+
+Procedure TermCmd_PWD(Var TP: TTerminalPanel);
+Var
+ Dir: String;
+Begin
+ GetDir(0, Dir);
+ TermAddLine(TP, Dir);
+End;
+
+{ --- PUSHD / PUSH-LOCATION --- }
+
+Procedure TermCmd_PUSHD(Var TP: TTerminalPanel;
+ ParamStr: String);
+Var
+ Err: Word;
+ FirstParam, Dir: String;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ If Length(FirstParam) > 0 Then Begin
+  GetDir(0, Dir);
+  If TP.NumberDirStack >= MAX_TERM_DIRSTACK Then Begin
+   TermAddLine(TP, 'Pile de repertoires pleine');
+   Exit;
+  End;
+  Inc(TP.NumberDirStack);
+  TP.DirStack[TP.NumberDirStack] := Dir;
+  {$I-} ChDir(FirstParam); {$I+}
+  Err := IOResult;
+  If Err <> 0 Then Begin
+   Dec(TP.NumberDirStack);
+   TermAddLine(TP, TermGetErrorMessage(Err));
+  End;
+ End Else Begin
+  GetDir(0, Dir);
+  If TP.NumberDirStack >= MAX_TERM_DIRSTACK Then Begin
+   TermAddLine(TP, 'Pile de repertoires pleine');
+   Exit;
+  End;
+  Inc(TP.NumberDirStack);
+  TP.DirStack[TP.NumberDirStack] := Dir;
+ End;
+End;
+
+{ --- POPD / POP-LOCATION --- }
+
+Procedure TermCmd_POPD(Var TP: TTerminalPanel);
+Var
+ Err: Word;
+ Dir: String;
+Begin
+ If TP.NumberDirStack <= 0 Then Begin
+  TermAddLine(TP, 'Pile de repertoires vide');
+  Exit;
+ End;
+ Dir := TP.DirStack[TP.NumberDirStack];
+ Dec(TP.NumberDirStack);
+ {$I-} ChDir(Dir); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then
+  TermAddLine(TP, TermGetErrorMessage(Err));
+End;
+
+{ --- SET --- }
+
+Procedure TermCmd_SET(Var TP: TTerminalPanel;
+ ParamStr: String);
+Var
+ I: Integer;
+Begin
+ If ParamStr = '' Then Begin
+  For I := 0 To EnvCount Do
+   TermAddLine(TP, EnvStr(I));
+ End Else
+  TermAddLine(TP,
+   'SET variable=valeur n''est pas supporte dans le terminal integre. ' +
+   'Utilisez l''environnement systeme.');
+End;
+
+{ --- HELP --- }
+
+Procedure TermCmd_HELP(Var TP: TTerminalPanel);
+Begin
+ TermAddLine(TP, 'Commandes disponibles :');
+ TermAddLine(TP, '');
+ TermAddLine(TP,
+  '  CD chemin        Changer de repertoire');
+ TermAddLine(TP,
+  '  CLS              Effacer le terminal');
+ TermAddLine(TP,
+  '  COPY src dst     Copier un fichier');
+ TermAddLine(TP,
+  '  DATE             Afficher la date');
+ TermAddLine(TP,
+  '  DEL fichier      Supprimer un fichier');
+ TermAddLine(TP,
+  '  DIR [chemin]     Lister un repertoire');
+ TermAddLine(TP,
+  '  ECHO texte       Afficher du texte');
+ TermAddLine(TP,
+  '  EXIT             Fermer le terminal');
+ TermAddLine(TP,
+  '  HELP             Cette aide');
+ TermAddLine(TP,
+  '  MKDIR rep        Creer un repertoire');
+ TermAddLine(TP,
+  '  MOVE src dst     Deplacer un fichier');
+ TermAddLine(TP,
+  '  POPD             Depiler un repertoire');
+ TermAddLine(TP,
+  '  PUSHD [chemin]   Empiler un repertoire');
+ TermAddLine(TP,
+  '  PWD              Repertoire courant');
+ TermAddLine(TP,
+  '  REN ancien nouv  Renommer un fichier');
+ TermAddLine(TP,
+  '  RMDIR rep        Supprimer un repertoire');
+ TermAddLine(TP,
+  '  SET              Variables d''environnement');
+ TermAddLine(TP,
+  '  TIME             Afficher l''heure');
+ TermAddLine(TP,
+  '  TYPE fichier     Afficher le contenu');
+ TermAddLine(TP,
+  '  VER              Version du terminal');
+End;
+
+{ ============================================================
+  EXECUTEUR DE COMMANDES DU TERMINAL
+  ============================================================ }
+
+Procedure TermExecuteCommand(Var TP: TTerminalPanel;
+ CmdStr: String);
+Var
+ CurrCmd, ParamStr, PipeS: String;
+ Err: Word;
+Begin
+ CmdStr := TermTrim(CmdStr);
+ If CmdStr = '' Then Exit;
+ TermAddHistory(TP, CmdStr);
+ { Changement de lecteur : A:, B:, C:, D:, ... }
+ If (Length(CmdStr) = 2) And (CmdStr[2] = ':') And
+  (CmdStr[1] In ['A'..'Z', 'a'..'z']) Then Begin
+  {$I-}
+  GetDir(Ord(UpCase(CmdStr[1])) - 64, PipeS);
+  If PipeS <> '' Then ChDir(PipeS)
+   Else ChDir(CmdStr + '\');
+  {$I+}
+  Err := IOResult;
+  If Err <> 0 Then
+   TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ { Extraire la commande et les parametres }
+ TermExtractCommand(CmdStr, CurrCmd, ParamStr);
+ { Dispatcher les commandes internes }
+ If (CurrCmd = 'CD') Or (CurrCmd = 'CHDIR') Or
+  (CurrCmd = 'SET-LOCATION') Then
+  TermCmd_CD(TP, ParamStr)
+ Else If (CurrCmd = 'CLS') Or
+  (CurrCmd = 'CLEAR-HOST') Or
+  (CurrCmd = 'CLEAR') Then
+  TermCmd_CLS(TP)
+ Else If (CurrCmd = 'DIR') Or (CurrCmd = 'LS') Or
+  (CurrCmd = 'GET-CHILDITEM') Then
+  TermCmd_DIR(TP, ParamStr)
+ Else If (CurrCmd = 'COPY') Or
+  (CurrCmd = 'COPY-ITEM') Then
+  TermCmd_COPY(TP, ParamStr)
+ Else If (CurrCmd = 'DEL') Or (CurrCmd = 'DELETE') Or
+  (CurrCmd = 'ERASE') Or (CurrCmd = 'ERA') Or
+  (CurrCmd = 'REMOVE-ITEM') Then
+  TermCmd_DEL(TP, ParamStr)
+ Else If (CurrCmd = 'ECHO') Or (CurrCmd = 'WRITE') Or
+  (CurrCmd = 'WRITE-OUTPUT') Then
+  TermCmd_ECHO(TP, ParamStr)
+ Else If CurrCmd = 'EXIT' Then
+  TP.Visible := False
+ Else If (CurrCmd = 'MKDIR') Or (CurrCmd = 'MD') Or
+  (CurrCmd = 'NEW-ITEM') Then
+  TermCmd_MKDIR(TP, ParamStr)
+ Else If (CurrCmd = 'RMDIR') Or (CurrCmd = 'RD') Then
+  TermCmd_RMDIR(TP, ParamStr)
+ Else If (CurrCmd = 'REN') Or (CurrCmd = 'RENAME') Or
+  (CurrCmd = 'RENAME-ITEM') Then
+  TermCmd_REN(TP, ParamStr)
+ Else If CurrCmd = 'MOVE' Then
+  TermCmd_MOVE(TP, ParamStr)
+ Else If (CurrCmd = 'TYPE') Or
+  (CurrCmd = 'GET-CONTENT') Then
+  TermCmd_TYPE(TP, ParamStr)
+ Else If CurrCmd = 'DATE' Then
+  TermCmd_DATE(TP)
+ Else If CurrCmd = 'TIME' Then
+  TermCmd_TIME(TP)
+ Else If CurrCmd = 'VER' Then
+  TermCmd_VER(TP)
+ Else If CurrCmd = 'PWD' Then
+  TermCmd_PWD(TP)
+ Else If (CurrCmd = 'PUSHD') Or
+  (CurrCmd = 'PUSH-LOCATION') Then
+  TermCmd_PUSHD(TP, ParamStr)
+ Else If (CurrCmd = 'POPD') Or
+  (CurrCmd = 'POP-LOCATION') Then
+  TermCmd_POPD(TP)
+ Else If CurrCmd = 'SET' Then
+  TermCmd_SET(TP, ParamStr)
+ Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
+  TermCmd_HELP(TP)
+ Else
+  TermAddLine(TP,
+   '''' + CurrCmd + ''' n''est pas reconnu comme commande interne.');
+End;
+
+{ --- Initialiser le terminal --- }
+
+Procedure InitTerminalPanel(Var TP: TTerminalPanel);
+Var
+ I: Integer;
+ ScrW, ScrH: Integer;
+ BottomY: Integer;
+Begin
+ For I := 0 To MAX_TERM_LINES - 1 Do
+  TP.Lines[I] := '';
+ TP.LineCount := 0;
+ TP.ScrollTop := 0;
+ TP.InputLine := '';
+ TP.InputCol := 1;
+ TP.PartialLine := '';
+ ScrW := GetScreenWidth;
+ ScrH := GetScreenHeight;
+ BottomY := ScrH - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ TP.X := 0;
+ TP.Y := BottomY;
+ TP.Width := (ScrW - EXPLORER_WIDTH) Div 2;
+ TP.Height := OUTPUT_HEIGHT;
+ TP.Visible := False;
+ TP.NeedRepaint := True;
+ TP.Shell := SK_POWERSHELL;
+ TP.Echo := True;
+ TP.NumberHistory := 0;
+ TP.HistoryPos := 0;
+ TP.NumberDirStack := 0;
+End;
+
+{ --- Dessiner le terminal --- }
+
+Procedure DrawTerminalPanel(Var TP: TTerminalPanel);
+Var
+ I, YPos, VisLines, StartIdx: Integer;
+ S, PromptStr: String;
+ MaxCols: Integer;
+Begin
+ If Not TP.Visible Then Exit;
+ { Fond }
+ SetColor(0); { noir }
+ Bar(TP.X, TP.Y, TP.X + TP.Width - 1, TP.Y + TP.Height - 1);
+ { Onglet }
+ SetColor(CLR_TITLEBAR_ACTIVE);
+ Bar(TP.X, TP.Y, TP.X + TP.Width - 1,
+  TP.Y + TERM_TAB_HEIGHT - 1);
+ SetColor(15); { blanc }
+ OutTextXY(TP.X + 8, TP.Y + 4, 'Terminal');
+ { Bordure }
+ SetColor(CLR_BORDER);
+ Rectangle(TP.X, TP.Y, TP.X + TP.Width - 1,
+  TP.Y + TP.Height - 1);
+ { Zone de texte }
+ VisLines := (TP.Height - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
+  Div TERM_LINE_HEIGHT;
+ If VisLines < 1 Then VisLines := 1;
+ MaxCols := (TP.Width - 8) Div TERM_CHAR_WIDTH;
+ If MaxCols < 10 Then MaxCols := 10;
+ { Auto-scroll }
+ If TP.LineCount > VisLines Then
+  TP.ScrollTop := TP.LineCount - VisLines
+ Else
+  TP.ScrollTop := 0;
+ { Afficher les lignes }
+ SetColor(7); { gris clair : texte terminal }
+ YPos := TP.Y + TERM_TAB_HEIGHT + 2;
+ StartIdx := TP.ScrollTop;
+ For I := 0 To VisLines - 1 Do Begin
+  If StartIdx + I < TP.LineCount Then Begin
+   S := TP.Lines[StartIdx + I];
+   If Length(S) > MaxCols Then
+    S := Copy(S, 1, MaxCols);
+   OutTextXY(TP.X + 4, YPos, S);
+  End;
+  YPos := YPos + TERM_LINE_HEIGHT;
+ End;
+ { Ligne de saisie en bas avec prompt du repertoire courant }
+ SetColor(10); { vert : prompt }
+ YPos := TP.Y + TP.Height - TERM_LINE_HEIGHT - 2;
+ GetDir(0, PromptStr);
+ PromptStr := PromptStr + '> ' + TP.InputLine + '_';
+ If Length(PromptStr) > MaxCols Then
+  PromptStr := Copy(PromptStr, 1, MaxCols);
+ OutTextXY(TP.X + 4, YPos, PromptStr);
+ TP.NeedRepaint := False;
+End;
+
+{ --- Gerer les evenements du terminal --- }
+
+Procedure HandleTerminalEvent(Var TP: TTerminalPanel;
+ Var Ev: TEvent);
+Var
+ Ch: Char;
+ Dir: String;
+Begin
+ If Not TP.Visible Then Exit;
+ { Verifier si l evenement est dans la zone du terminal }
+ If (Ev.Kind = EV_MOUSE_DOWN) Then Begin
+  If (Ev.MouseX >= TP.X) And (Ev.MouseX < TP.X + TP.Width) And
+     (Ev.MouseY >= TP.Y) And
+     (Ev.MouseY < TP.Y + TP.Height) Then
+   { clic dans le terminal }
+   Exit;
+ End;
+ If Ev.Kind = EV_KEY_CHAR Then Begin
+  Ch := Ev.KeyChar;
+  Case Ch Of
+   #8: Begin { Backspace }
+    If Length(TP.InputLine) > 0 Then Begin
+     TP.InputLine := Copy(TP.InputLine, 1,
+      Length(TP.InputLine) - 1);
+     TP.NeedRepaint := True;
+    End;
+   End;
+   #13: Begin { Enter }
+    GetDir(0, Dir);
+    TermAddLine(TP, Dir + '> ' + TP.InputLine);
+    TermExecuteCommand(TP, TP.InputLine);
+    TP.InputLine := '';
+    TP.InputCol := 1;
+    TP.NeedRepaint := True;
+   End;
+   #27: ; { Echap : ne rien faire }
+  Else
+   If (Ord(Ch) >= 32) And
+    (Length(TP.InputLine) < 240) Then Begin
+    TP.InputLine := TP.InputLine + Ch;
+    Inc(TP.InputCol);
+    TP.NeedRepaint := True;
+   End;
+  End;
+ End;
+ { Fleche haut/bas pour naviguer dans l historique }
+ If Ev.Kind = EV_KEY_DOWN Then Begin
+  If (Ev.KeyCode = $48) And { Fleche haut }
+   (TP.NumberHistory > 0) Then Begin
+   If TP.HistoryPos > 1 Then
+    Dec(TP.HistoryPos);
+   TP.InputLine := TP.TermHistory[TP.HistoryPos];
+   TP.InputCol := Length(TP.InputLine) + 1;
+   TP.NeedRepaint := True;
+  End
+  Else If (Ev.KeyCode = $50) And { Fleche bas }
+   (TP.NumberHistory > 0) Then Begin
+   If TP.HistoryPos < TP.NumberHistory Then Begin
+    Inc(TP.HistoryPos);
+    TP.InputLine := TP.TermHistory[TP.HistoryPos];
+   End Else Begin
+    TP.HistoryPos := TP.NumberHistory + 1;
+    TP.InputLine := '';
+   End;
+   TP.InputCol := Length(TP.InputLine) + 1;
+   TP.NeedRepaint := True;
+  End;
+ End;
+End;
+
+{ ============================================================
   TODO 20 - PANNEAU LISTE D ERREURS (ERROR LIST) [IMPLEMENTE]
   ============================================================ }
 
@@ -24831,6 +25804,7 @@ Begin
  DrawExplorer(SolExplorer);
  DrawPropertiesPanel(PropsPanel);
  DrawOutputPanel(OutputPanel);
+ DrawTerminalPanel(TermPanel);
  DrawErrorList(ErrorList);
  DrawStatusBar(StatusBar);
  { Dessiner le dialogue par-dessus si visible }
@@ -24937,6 +25911,26 @@ Begin
  { Evenements pour les onglets d editeurs }
  HandleTabEvent(Ev);
  { Evenements pour l editeur de texte actif }
+ { Gestion du focus : clic souris determine qui recoit le clavier }
+ If (Ev.Kind = EV_MOUSE_DOWN) Then Begin
+  If TermPanel.Visible And
+     (Ev.MouseX >= TermPanel.X) And
+     (Ev.MouseX < TermPanel.X + TermPanel.Width) And
+     (Ev.MouseY >= TermPanel.Y) And
+     (Ev.MouseY < TermPanel.Y + TermPanel.Height) Then Begin
+   TerminalHasFocus := True;
+   TermPanel.NeedRepaint := True;
+   Exit;
+  End Else
+   TerminalHasFocus := False;
+ End;
+ { Si le terminal a le focus, lui envoyer les evenements clavier }
+ If TermPanel.Visible And TerminalHasFocus Then Begin
+  If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Then Begin
+   HandleTerminalEvent(TermPanel, Ev);
+   Exit;
+  End;
+ End;
  If EditorReady And (WinMgr.ActiveIdx >= 0) Then Begin
   If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Then Begin
    HandleSelectionKey(ActiveEditor, EditorSel, EditorClip,
@@ -24965,6 +25959,9 @@ Begin
  HandlePropertiesEvent(PropsPanel, Ev);
  { Evenements pour le panneau de sortie }
  HandleOutputEvent(OutputPanel, Ev);
+ { Evenements pour le terminal integre }
+ If TermPanel.Visible Then
+  HandleTerminalEvent(TermPanel, Ev);
  { Evenements pour la liste d erreurs }
  HandleErrorListEvent(ErrorList, Ev);
 End;
@@ -24985,6 +25982,10 @@ Begin
      DrawAllWidgets appelle DrawToolBar qui ecrase le menu deroulant }
    If Not MenuActive Then
     DrawAllWidgets;
+  End Else Begin
+   { Meme sans evenement utilisateur, redessiner si le terminal a change }
+   If TermPanel.Visible And TermPanel.NeedRepaint Then
+    DrawTerminalPanel(TermPanel);
   End;
  End;
 End;
@@ -24997,6 +25998,8 @@ Begin
  InitMRUList(MRUList);
  LoadMRUList(MRUList);
  InitStartPage(StartPage);
+ InitTerminalPanel(TermPanel);
+ TerminalHasFocus := False;
  QuitRequested := False;
  FullRepaintNeeded := False;
  EditorReady := False;
