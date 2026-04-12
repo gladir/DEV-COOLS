@@ -6652,6 +6652,43 @@ Begin
  GetIndentation := Copy(S, 1, I - 1);
 End;
 
+{ --- Gerer les clics souris dans l editeur --- }
+
+Procedure HandleEditorMouse(Var Ed: TEditor; Ev: TEvent);
+Var
+ NewLine : LongInt;
+ NewCol  : LongInt;
+ LineLen : Integer;
+Begin
+ If Ev.Kind <> EV_MOUSE_DOWN Then Exit;
+ { Verifier que le clic est dans la zone texte de l editeur }
+ If (Ev.MouseX < Ed.X + Ed.GutterWidth) Or
+    (Ev.MouseX >= Ed.X + Ed.Width) Or
+    (Ev.MouseY < Ed.Y) Or
+    (Ev.MouseY >= Ed.Y + Ed.Height) Then Exit;
+ { Convertir les coordonnees pixel en ligne/colonne }
+ NewLine := Ed.ScrollLine +
+            (Ev.MouseY - Ed.Y) Div Ed.CharHeight;
+ NewCol := Ed.ScrollCol +
+           (Ev.MouseX - Ed.X - Ed.GutterWidth) Div Ed.CharWidth;
+ { Borner la ligne }
+ If NewLine < 0 Then NewLine := 0;
+ If NewLine >= Ed.Buffer.LineCount Then
+  NewLine := Ed.Buffer.LineCount - 1;
+ If NewLine < 0 Then NewLine := 0;
+ { Borner la colonne }
+ If NewCol < 1 Then NewCol := 1;
+ LineLen := Length(Ed.Buffer.Lines[NewLine]);
+ If NewCol > LineLen + 1 Then
+  NewCol := LineLen + 1;
+ { Appliquer la nouvelle position du curseur }
+ Ed.CursorLine := NewLine;
+ Ed.CursorCol := NewCol;
+ EnsureCursorVisible(Ed);
+ DrawEditor(Ed);
+ DrawCursor(Ed);
+End;
+
 { --- Gerer les touches de l editeur --- }
 
 Procedure HandleEditorKey(Var Ed: TEditor; Ev: TEvent);
@@ -24740,6 +24777,14 @@ Begin
    If Editors[WinMgr.ActiveIdx] <> Nil Then
     Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
    { Synchroniser curseur vers TEditorWindow pour la barre d etat }
+   WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
+   WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+   Exit;
+  End;
+  If (Ev.Kind = EV_MOUSE_DOWN) Then Begin
+   HandleEditorMouse(ActiveEditor, Ev);
+   If Editors[WinMgr.ActiveIdx] <> Nil Then
+    Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
    WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
    WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
    Exit;
