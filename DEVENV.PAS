@@ -19899,6 +19899,16 @@ Begin
   CloseDialog(Dlg.Base);
   Exit;
  End;
+ If Key = 72 Then Begin { Fleche haut }
+  If Dlg.SelType > 0 Then
+   Dec(Dlg.SelType);
+  Exit;
+ End;
+ If Key = 80 Then Begin { Fleche bas }
+  If Dlg.SelType < NEWFILE_TYPE_COUNT - 1 Then
+   Inc(Dlg.SelType);
+  Exit;
+ End;
  If (Ch >= ' ') And (Length(Dlg.FileName) < 127) Then
  Begin
   Dlg.FileName := Dlg.FileName + Ch;
