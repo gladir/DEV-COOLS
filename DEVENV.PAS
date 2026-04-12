@@ -4504,6 +4504,7 @@ Procedure DrawFileDialog(Var FD: TFileDialog); Forward;
 Procedure HandleFileDialogEvent(Var FD: TFileDialog;
  Var Ev: TEvent); Forward;
 Procedure HandleOpenFileConfirmed; Forward;
+Procedure SaveCurrentSolution; Forward;
 
 { Declarations anticipees pour le menu Edition }
 Procedure EnsureCursorVisible(Var Ed: TEditor); Forward;
@@ -11992,7 +11993,7 @@ Var
 Begin
  InitSolution(Sol);
  Sol.Info.SolutionPath := ExtractFilePath(FileName);
- Sol.Info.SolutionName := ExtractFileName(FileName);
+ Sol.Info.SolutionName := ChangeFileExt(ExtractFileName(FileName), '');
  Assign(F, FileName);
  {$I-}
  Reset(F);
@@ -26939,12 +26940,27 @@ Begin
   SolExplorer.Nodes[0].Expanded := True;
   SolExplorer.Nodes[0].HasChildren := True;
  End;
+ { Trouver le premier noeud projet pour y ajouter le fichier }
+ ProjIdx := -1;
+ For I := 0 To SolExplorer.NodeCount - 1 Do
+  If SolExplorer.Nodes[I].Kind = ENK_PROJECT Then Begin
+   ProjIdx := I;
+   Break;
+  End;
+ If ProjIdx < 0 Then
+  ProjIdx := 0; { Ajouter sous la solution si pas de projet }
  AddExplorerNode(SolExplorer,
   ExtractFileName(FN),
-  NodeKindFromExtension(FN), 0);
+  NodeKindFromExtension(FN), ProjIdx);
  SolExplorer.SelectedIdx := SolExplorer.NodeCount - 1;
  SolExplorer.Nodes[SolExplorer.NodeCount - 1].Selected := True;
  SolExplorer.NeedRepaint := True;
+ { Ajouter le fichier dans le projet courant }
+ If SolutionLoaded Then Begin
+  AddFileToProject(CurrentProject, ExtractFileName(FN));
+  SolutionModified := True;
+  SaveCurrentSolution;
+ End;
  AddMRUEntry(MRUList, FN);
  AppendOutput(OutputPanel, 'Fichier ouvert : ' + FN,
   Ord(OTK_BUILD));
@@ -27569,31 +27585,27 @@ Procedure SaveCurrentSolution;
 Var
  SolDir: String;
  SolFile: String;
- ProjDir: String;
  ProjFile: String;
 Begin
  If Not SolutionLoaded Then Exit;
  { Construire le chemin du repertoire de la solution }
  SolDir := CurrentSolution.Info.SolutionPath;
- If Length(SolDir) = 0 Then SolDir := '.';
+ If Length(SolDir) = 0 Then
+  SolDir := '.\' 
+ Else If SolDir[Length(SolDir)] <> '\' Then
+  SolDir := SolDir + '\';
  { Creer le repertoire de la solution si necessaire }
  {$I-}
  MkDir(SolDir);
  {$I+}
  If IOResult <> 0 Then ; { Ignorer si existe deja }
  { Sauvegarder le fichier .sln }
- SolFile := SolDir + '\' + CurrentSolution.Info.SolutionName
+ SolFile := SolDir + CurrentSolution.Info.SolutionName
   + '.sln';
  SaveSolutionFile(SolFile, CurrentSolution);
  { Sauvegarder le projet si present }
  If CurrentSolution.ProjectCount > 0 Then Begin
-  ProjDir := SolDir + '\'
-   + CurrentSolution.Projects[0].ProjectName;
-  {$I-}
-  MkDir(ProjDir);
-  {$I+}
-  If IOResult <> 0 Then ;
-  ProjFile := ProjDir + '\'
+  ProjFile := SolDir
    + CurrentSolution.Projects[0].ProjectPath;
   SaveProjectFile(ProjFile, CurrentProject);
  End;
