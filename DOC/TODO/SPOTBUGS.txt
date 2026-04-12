@@ -412,7 +412,7 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               toujours >=0), detecter multiplications pouvant deborder avant
               cast long, detecter variables locales masquant des champs
 
-  TODO 19 - DETECTEUR : PROBLEMES D'INTERNATIONALISATION [A FAIRE]
+  TODO 19 - DETECTEUR : PROBLEMES D'INTERNATIONALISATION [IMPLEMENTE]
             Codes detectes : DM_DEFAULT_ENCODING, DM_STRING_CTOR,
               DM_CONVERT_CASE, DM_BOXED_PRIMITIVE_FOR_COMPARE,
               DM_FP_NUMBER_CTOR, DM_NUMBER_CTOR

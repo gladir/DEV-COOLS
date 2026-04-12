@@ -34,7 +34,7 @@
 {  TODO 16 [IMPLEMENTE] - Detecteur : problemes de multi-threading            }
 {  TODO 17 [IMPLEMENTE] - Detecteur : exceptions masquees et flux d'erreur    }
 {  TODO 18 [IMPLEMENTE] - Detecteur : erreurs logiques et retours incorrects   }
-{  TODO 19 [A FAIRE] - Detecteur : problemes d'internationalisation           }
+{  TODO 19 [IMPLEMENTE] - Detecteur : problemes d'internationalisation        }
 {  TODO 20 [A FAIRE] - Calcul des scores et niveaux de severite               }
 {  TODO 21 [A FAIRE] - Generation du rapport texte                            }
 {  TODO 22 [A FAIRE] - Generation du rapport XML (format SpotBugs)            }
@@ -872,6 +872,29 @@ Const
   RV_CAT_COLLECTION   = 3;  { Methode Collection retournant booleen             }
   RV_CAT_BUILDER      = 4;  { Methode StringBuilder/StringBuffer                }
 
+  { --- TODO 19 : Constantes pour le detecteur d'internationalisation --- }
+  MAX_I18N_BUGS       = 64;   { Nombre max de bugs i18n par methode             }
+  MAX_I18N_CALLS      = 32;   { Nombre max d'appels i18n trackes                }
+
+  { Types de bugs d'internationalisation - prefixe IN_ }
+  IN_NONE                        = 0;  { Pas de bug                            }
+  DM_DEFAULT_ENCODING            = 1;  { String.getBytes() sans charset        }
+  DM_STRING_CTOR                 = 2;  { new String(String) inutile            }
+  DM_CONVERT_CASE                = 3;  { toUpperCase/toLowerCase sans Locale   }
+  DM_BOXED_PRIMITIVE_FOR_COMPARE = 4;  { boxing inutile avant comparaison      }
+  DM_FP_NUMBER_CTOR              = 5;  { new Double(x) au lieu valueOf(x)      }
+  DM_NUMBER_CTOR                 = 6;  { new Integer(n) au lieu valueOf(n)     }
+  DM_STRING_FORMAT_NO_LOCALE     = 7;  { String.format sans Locale             }
+  DM_NEW_STRING_BYTES_NO_CHARSET = 8;  { new String(bytes) sans charset        }
+
+  { Categories d'appels I18N }
+  IC_CAT_NONE         = 0;  { Pas de categorie                                  }
+  IC_CAT_GETBYTES     = 1;  { Appel String.getBytes()                           }
+  IC_CAT_CASE_CONV    = 2;  { Appel toUpperCase/toLowerCase                     }
+  IC_CAT_NEW_STRING   = 3;  { Appel new String(bytes)                           }
+  IC_CAT_BOXING       = 4;  { Appel constructeur wrapper (Integer, Double...)   }
+  IC_CAT_FORMAT       = 5;  { Appel String.format                               }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -1118,6 +1141,31 @@ Type
   End;
   TSelfAssignInfoArray = Array[0..MAX_LE_SELF_ASSIGN-1] of TSelfAssignInfo;
 
+  { --- TODO 19 : Structure TI18NBug : bug d'internationalisation detecte --- }
+  TI18NBug = Record
+    BugType     : Integer;    { Type de bug (DM_DEFAULT_ENCODING, etc.)    }
+    PC          : LongWord;   { Position dans le bytecode                  }
+    LineNum     : Integer;    { Numero de ligne source                     }
+    ClassName   : String;     { Nom de classe concernee                    }
+    MethodName  : String;     { Nom de methode concernee                   }
+    CallName    : String;     { Nom de l'appel problematique               }
+    Details     : String;     { Details supplementaires                    }
+  End;
+  TI18NBugArray = Array[0..MAX_I18N_BUGS-1] of TI18NBug;
+
+  { --- TODO 19 : Structure TI18NCallInfo : appel i18n tracke --- }
+  TI18NCallInfo = Record
+    CallType    : Integer;    { Type d'appel (IC_CAT_GETBYTES, etc.)       }
+    PC          : LongWord;   { PC de l'instruction invoke                 }
+    LineNum     : Integer;    { Numero de ligne source                     }
+    ClassName   : String;     { Classe sur laquelle l'appel est fait       }
+    MethodName  : String;     { Nom de la methode appelee                  }
+    Descriptor  : String;     { Descripteur de la methode                  }
+    HasLocale   : Boolean;    { True si argument Locale present            }
+    HasCharset  : Boolean;    { True si argument Charset present           }
+  End;
+  TI18NCallInfoArray = Array[0..MAX_I18N_CALLS-1] of TI18NCallInfo;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -1294,6 +1342,21 @@ Var
   LELastLoadVar    : Integer;     { Dernier index variable chargee             }
   LELastLoadField  : Integer;     { Dernier index CP champ charge              }
   LELastLoadPC     : LongWord;    { PC du dernier load                         }
+  { --- TODO 19 : Variables du detecteur d'internationalisation --- }
+  I18NInitialized  : Boolean;     { True si module initialise                  }
+  I18NBugs         : TI18NBugArray; { Bugs detectes dans la methode            }
+  I18NBugCount     : Integer;     { Nombre de bugs detectes                    }
+  I18NCalls        : TI18NCallInfoArray; { Appels i18n trackes                 }
+  I18NCallCount    : Integer;     { Nombre d'appels trackes                    }
+  I18NLabelNum     : Integer;     { Compteur pour generation de labels         }
+  I18NTotalGetBytes : Integer;    { Nombre total getBytes sans charset         }
+  I18NTotalCaseConv : Integer;    { Nombre total case conv sans Locale         }
+  I18NTotalNewString : Integer;   { Nombre total new String sans charset       }
+  I18NTotalBoxing  : Integer;     { Nombre total boxing inutile                }
+  I18NTotalFormat  : Integer;     { Nombre total format sans Locale            }
+  I18NTotalStringCtor : Integer;  { Nombre total new String(String) inutile    }
+  I18NCurrentPC    : LongWord;    { PC de l'instruction courante               }
+  I18NCurrentLine  : Integer;     { Ligne source courante                      }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -10371,25 +10434,600 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 19 [A FAIRE] - Detecteur : problemes d'internationalisation             }
+{ TODO 19 [IMPLEMENTE] - Detecteur : problemes d'internationalisation          }
 { ============================================================================ }
-{                                                                              }
-{  - Codes de bugs detectes :                                                    }
-{      DM_DEFAULT_ENCODING        : appel String.getBytes() sans charset        }
-{      DM_STRING_CTOR             : constructeur new String(String) inutile     }
-{      DM_CONVERT_CASE            : toUpperCase()/toLowerCase() sans Locale     }
-{      DM_BOXED_PRIMITIVE_FOR_COMPARE : boxing inutile avant comparaison        }
-{      DM_FP_NUMBER_CTOR          : new Double(x) au lieu de Double.valueOf(x)  }
-{      DM_NUMBER_CTOR             : new Integer(n) au lieu de Integer.valueOf(n)}
-{                                                                              }
-{  - Procedure DetectI18NIssues(Method: TMethodInfo)                            }
-{      Detecter les appels String.getBytes() sans argument (charset manquant)   }
-{      Detecter les appels String.toUpperCase()/toLowerCase() sans Locale       }
-{      Detecter les appels new String(bytes) sans charset                       }
-{      Detecter les constructeurs de types numeriques wrapper au lieu de        }
-{        valueOf() pour eviter la creation inutile d'objets                     }
-{      Detecter les appels new Integer(n) / new Double(d) etc.                  }
-{      Detecter les String.format() sans specification de Locale                }
+
+{ --- TODO 19 : Initialisation du module d'internationalisation --- }
+Procedure InitI18NState;
+Var
+  I: Integer;
+Begin
+  I18NInitialized := True;
+  I18NBugCount := 0;
+  I18NCallCount := 0;
+  I18NLabelNum := 0;
+  I18NTotalGetBytes := 0;
+  I18NTotalCaseConv := 0;
+  I18NTotalNewString := 0;
+  I18NTotalBoxing := 0;
+  I18NTotalFormat := 0;
+  I18NTotalStringCtor := 0;
+  I18NCurrentPC := 0;
+  I18NCurrentLine := 0;
+  For I := 0 to MAX_I18N_BUGS - 1 do
+  Begin
+    I18NBugs[I].BugType := IN_NONE;
+    I18NBugs[I].PC := 0;
+    I18NBugs[I].LineNum := 0;
+    I18NBugs[I].ClassName := '';
+    I18NBugs[I].MethodName := '';
+    I18NBugs[I].CallName := '';
+    I18NBugs[I].Details := '';
+  End;
+  For I := 0 to MAX_I18N_CALLS - 1 do
+  Begin
+    I18NCalls[I].CallType := IC_CAT_NONE;
+    I18NCalls[I].PC := 0;
+    I18NCalls[I].LineNum := 0;
+    I18NCalls[I].ClassName := '';
+    I18NCalls[I].MethodName := '';
+    I18NCalls[I].Descriptor := '';
+    I18NCalls[I].HasLocale := False;
+    I18NCalls[I].HasCharset := False;
+  End;
+End;
+
+{ --- TODO 19 : Generation d'un label unique pour le module --- }
+Function GenI18NLabel: String;
+Begin
+  Inc(I18NLabelNum);
+  GenI18NLabel := '@I18N_' + IntToStr_(I18NLabelNum);
+End;
+
+{ --- TODO 19 : Conversion du type de bug en chaine --- }
+Function I18NBugTypeName(BugType: Integer): String;
+Begin
+  Case BugType of
+    IN_NONE:                        I18NBugTypeName := 'IN_NONE';
+    DM_DEFAULT_ENCODING:            I18NBugTypeName := 'DM_DEFAULT_ENCODING';
+    DM_STRING_CTOR:                 I18NBugTypeName := 'DM_STRING_CTOR';
+    DM_CONVERT_CASE:                I18NBugTypeName := 'DM_CONVERT_CASE';
+    DM_BOXED_PRIMITIVE_FOR_COMPARE: I18NBugTypeName := 'DM_BOXED_PRIMITIVE_FOR_COMPARE';
+    DM_FP_NUMBER_CTOR:              I18NBugTypeName := 'DM_FP_NUMBER_CTOR';
+    DM_NUMBER_CTOR:                 I18NBugTypeName := 'DM_NUMBER_CTOR';
+    DM_STRING_FORMAT_NO_LOCALE:     I18NBugTypeName := 'DM_STRING_FORMAT_NO_LOCALE';
+    DM_NEW_STRING_BYTES_NO_CHARSET: I18NBugTypeName := 'DM_NEW_STRING_BYTES_NO_CHARSET';
+  Else
+    I18NBugTypeName := 'I18N_UNKNOWN';
+  End;
+End;
+
+{ --- TODO 19 : Conversion de la categorie d'appel en chaine --- }
+Function I18NCallTypeName(CallType: Integer): String;
+Begin
+  Case CallType of
+    IC_CAT_NONE:      I18NCallTypeName := 'NONE';
+    IC_CAT_GETBYTES:  I18NCallTypeName := 'GETBYTES';
+    IC_CAT_CASE_CONV: I18NCallTypeName := 'CASE_CONV';
+    IC_CAT_NEW_STRING: I18NCallTypeName := 'NEW_STRING';
+    IC_CAT_BOXING:    I18NCallTypeName := 'BOXING';
+    IC_CAT_FORMAT:    I18NCallTypeName := 'FORMAT';
+  Else
+    I18NCallTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 19 : Detecter si c'est un appel String.getBytes() sans charset --- }
+Function IsStringGetBytesNoArg(ClsName, MethName, Desc: String): Boolean;
+Begin
+  IsStringGetBytesNoArg := False;
+  { String.getBytes() retourne [B (byte array) }
+  If (Pos('java/lang/String', ClsName) > 0) or
+     (Pos('String', ClsName) > 0) Then
+  Begin
+    If (MethName = 'getBytes') Then
+    Begin
+      { getBytes() sans argument : descriptor = ()[B }
+      If (Desc = '()[B') Then
+        IsStringGetBytesNoArg := True;
+    End;
+  End;
+End;
+
+{ --- TODO 19 : Detecter si c'est un appel toUpperCase/toLowerCase sans Locale --- }
+Function IsStringCaseConvertNoLocale(ClsName, MethName, Desc: String): Boolean;
+Begin
+  IsStringCaseConvertNoLocale := False;
+  If (Pos('java/lang/String', ClsName) > 0) or
+     (Pos('String', ClsName) > 0) Then
+  Begin
+    { toUpperCase() ou toLowerCase() sans Locale }
+    If (MethName = 'toUpperCase') or (MethName = 'toLowerCase') Then
+    Begin
+      { Version sans argument : ()Ljava/lang/String; }
+      If (Desc = '()Ljava/lang/String;') Then
+        IsStringCaseConvertNoLocale := True;
+    End;
+  End;
+End;
+
+{ --- TODO 19 : Detecter si c'est un new String(bytes) sans charset --- }
+Function IsNewStringBytesNoCharset(ClsName, MethName, Desc: String): Boolean;
+Begin
+  IsNewStringBytesNoCharset := False;
+  If (Pos('java/lang/String', ClsName) > 0) or
+     (Pos('String', ClsName) > 0) Then
+  Begin
+    If (MethName = '<init>') Then
+    Begin
+      { new String([B) sans charset : descriptor = ([B)V }
+      If (Desc = '([B)V') Then
+        IsNewStringBytesNoCharset := True;
+      { new String([BII) sans charset : descriptor = ([BII)V }
+      If (Desc = '([BII)V') Then
+        IsNewStringBytesNoCharset := True;
+    End;
+  End;
+End;
+
+{ --- TODO 19 : Detecter si c'est un new String(String) inutile --- }
+Function IsNewStringFromString(ClsName, MethName, Desc: String): Boolean;
+Begin
+  IsNewStringFromString := False;
+  If (Pos('java/lang/String', ClsName) > 0) or
+     (Pos('String', ClsName) > 0) Then
+  Begin
+    If (MethName = '<init>') Then
+    Begin
+      { new String(String) inutile : descriptor = (Ljava/lang/String;)V }
+      If (Desc = '(Ljava/lang/String;)V') Then
+        IsNewStringFromString := True;
+    End;
+  End;
+End;
+
+{ --- TODO 19 : Detecter si c'est un constructeur de primitive wrapper --- }
+Function IsPrimitiveBoxingCtor(ClsName, MethName, Desc: String): Boolean;
+Begin
+  IsPrimitiveBoxingCtor := False;
+  If (MethName = '<init>') Then
+  Begin
+    { new Integer(int) : (I)V }
+    If ((Pos('java/lang/Integer', ClsName) > 0) or (ClsName = 'Integer')) and
+       (Desc = '(I)V') Then
+      IsPrimitiveBoxingCtor := True;
+    { new Long(long) : (J)V }
+    If ((Pos('java/lang/Long', ClsName) > 0) or (ClsName = 'Long')) and
+       (Desc = '(J)V') Then
+      IsPrimitiveBoxingCtor := True;
+    { new Short(short) : (S)V }
+    If ((Pos('java/lang/Short', ClsName) > 0) or (ClsName = 'Short')) and
+       (Desc = '(S)V') Then
+      IsPrimitiveBoxingCtor := True;
+    { new Byte(byte) : (B)V }
+    If ((Pos('java/lang/Byte', ClsName) > 0) or (ClsName = 'Byte')) and
+       (Desc = '(B)V') Then
+      IsPrimitiveBoxingCtor := True;
+    { new Boolean(boolean) : (Z)V }
+    If ((Pos('java/lang/Boolean', ClsName) > 0) or (ClsName = 'Boolean')) and
+       (Desc = '(Z)V') Then
+      IsPrimitiveBoxingCtor := True;
+    { new Character(char) : (C)V }
+    If ((Pos('java/lang/Character', ClsName) > 0) or (ClsName = 'Character')) and
+       (Desc = '(C)V') Then
+      IsPrimitiveBoxingCtor := True;
+  End;
+End;
+
+{ --- TODO 19 : Detecter si c'est un constructeur Double/Float --- }
+Function IsFloatPointBoxingCtor(ClsName, MethName, Desc: String): Boolean;
+Begin
+  IsFloatPointBoxingCtor := False;
+  If (MethName = '<init>') Then
+  Begin
+    { new Double(double) : (D)V }
+    If ((Pos('java/lang/Double', ClsName) > 0) or (ClsName = 'Double')) and
+       (Desc = '(D)V') Then
+      IsFloatPointBoxingCtor := True;
+    { new Float(float) : (F)V }
+    If ((Pos('java/lang/Float', ClsName) > 0) or (ClsName = 'Float')) and
+       (Desc = '(F)V') Then
+      IsFloatPointBoxingCtor := True;
+  End;
+End;
+
+{ --- TODO 19 : Detecter si c'est un String.format sans Locale --- }
+Function IsStringFormatNoLocale(ClsName, MethName, Desc: String): Boolean;
+Begin
+  IsStringFormatNoLocale := False;
+  If (Pos('java/lang/String', ClsName) > 0) or
+     (Pos('String', ClsName) > 0) Then
+  Begin
+    If (MethName = 'format') Then
+    Begin
+      { String.format(String, Object...) : (Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String; }
+      If (Pos('Ljava/util/Locale;', Desc) = 0) and
+         (Pos('Ljava/lang/String;', Desc) > 0) Then
+        IsStringFormatNoLocale := True;
+    End;
+  End;
+End;
+
+{ --- TODO 19 : Ajouter un bug d'internationalisation --- }
+Procedure AddI18NBug(BugType: Integer; PC: LongWord; LineNum: Integer;
+                     ClsName, MethName, CallName, Details: String);
+Begin
+  If I18NBugCount < MAX_I18N_BUGS Then
+  Begin
+    I18NBugs[I18NBugCount].BugType := BugType;
+    I18NBugs[I18NBugCount].PC := PC;
+    I18NBugs[I18NBugCount].LineNum := LineNum;
+    I18NBugs[I18NBugCount].ClassName := ClsName;
+    I18NBugs[I18NBugCount].MethodName := MethName;
+    I18NBugs[I18NBugCount].CallName := CallName;
+    I18NBugs[I18NBugCount].Details := Details;
+    Inc(I18NBugCount);
+    { Mettre a jour les compteurs par type }
+    Case BugType of
+      DM_DEFAULT_ENCODING:            Inc(I18NTotalGetBytes);
+      DM_CONVERT_CASE:                Inc(I18NTotalCaseConv);
+      DM_NEW_STRING_BYTES_NO_CHARSET: Inc(I18NTotalNewString);
+      DM_NUMBER_CTOR,
+      DM_BOXED_PRIMITIVE_FOR_COMPARE: Inc(I18NTotalBoxing);
+      DM_FP_NUMBER_CTOR:              Inc(I18NTotalBoxing);
+      DM_STRING_FORMAT_NO_LOCALE:     Inc(I18NTotalFormat);
+      DM_STRING_CTOR:                 Inc(I18NTotalStringCtor);
+    End;
+  End;
+End;
+
+{ --- TODO 19 : Tracker un appel i18n --- }
+Procedure TrackI18NCall(CallType: Integer; PC: LongWord; LineNum: Integer;
+                        ClsName, MethName, Desc: String;
+                        HasLocale, HasCharset: Boolean);
+Begin
+  If I18NCallCount < MAX_I18N_CALLS Then
+  Begin
+    I18NCalls[I18NCallCount].CallType := CallType;
+    I18NCalls[I18NCallCount].PC := PC;
+    I18NCalls[I18NCallCount].LineNum := LineNum;
+    I18NCalls[I18NCallCount].ClassName := ClsName;
+    I18NCalls[I18NCallCount].MethodName := MethName;
+    I18NCalls[I18NCallCount].Descriptor := Desc;
+    I18NCalls[I18NCallCount].HasLocale := HasLocale;
+    I18NCalls[I18NCallCount].HasCharset := HasCharset;
+    Inc(I18NCallCount);
+  End;
+End;
+
+{ --- TODO 19 : Extraire classe et methode d'un methodref CP --- }
+Procedure GetMethodRefInfo(CPIdx: Integer; Var ClsName, MethName, Desc: String);
+Var
+  ClassIdx, NATIdx: Integer;
+  NameIdx, DescIdx: Integer;
+Begin
+  ClsName := '';
+  MethName := '';
+  Desc := '';
+  If (CP = Nil) or (CPIdx < 1) or (CPIdx >= CPCount) Then Exit;
+  
+  { Tag 10 = Methodref, Tag 11 = InterfaceMethodref }
+  If (CP^[CPIdx].Tag = 10) or (CP^[CPIdx].Tag = 11) Then
+  Begin
+    ClassIdx := CP^[CPIdx].Ref1;
+    NATIdx := CP^[CPIdx].Ref2;
+    
+    { Obtenir le nom de la classe }
+    If (ClassIdx >= 1) and (ClassIdx < CPCount) Then
+    Begin
+      If CP^[ClassIdx].Tag = 7 Then { Class }
+      Begin
+        NameIdx := CP^[ClassIdx].Ref1;
+        If (NameIdx >= 1) and (NameIdx < CPCount) Then
+          If CP^[NameIdx].Tag = 1 Then { UTF8 }
+            ClsName := CP^[NameIdx].StrVal;
+      End;
+    End;
+    
+    { Obtenir le nom et descripteur de la methode }
+    If (NATIdx >= 1) and (NATIdx < CPCount) Then
+    Begin
+      If CP^[NATIdx].Tag = 12 Then { NameAndType }
+      Begin
+        NameIdx := CP^[NATIdx].Ref1;
+        DescIdx := CP^[NATIdx].Ref2;
+        If (NameIdx >= 1) and (NameIdx < CPCount) Then
+          If CP^[NameIdx].Tag = 1 Then
+            MethName := CP^[NameIdx].StrVal;
+        If (DescIdx >= 1) and (DescIdx < CPCount) Then
+          If CP^[DescIdx].Tag = 1 Then
+            Desc := CP^[DescIdx].StrVal;
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 19 : Extraire la classe d'un new (OP_NEW = 187) --- }
+Function GetNewClassName(CPIdx: Integer): String;
+Var
+  NameIdx: Integer;
+Begin
+  GetNewClassName := '';
+  If (CP = Nil) or (CPIdx < 1) or (CPIdx >= CPCount) Then Exit;
+  
+  { Tag 7 = Class }
+  If CP^[CPIdx].Tag = 7 Then
+  Begin
+    NameIdx := CP^[CPIdx].Ref1;
+    If (NameIdx >= 1) and (NameIdx < CPCount) Then
+      If CP^[NameIdx].Tag = 1 Then
+        GetNewClassName := CP^[NameIdx].StrVal;
+  End;
+End;
+
+{ --- TODO 19 : Detecter les problemes d'internationalisation dans le bytecode --- }
+Procedure DetectI18NIssues(MethIdx: Integer);
+Var
+  I: Integer;
+  Opcode: Byte;
+  PC: LongWord;
+  LineNum: Integer;
+  CPIdx: Integer;
+  ClsName, MethName, Desc: String;
+  LastNewClass: String;
+  LastNewPC: LongWord;
+  LastNewLine: Integer;
+Begin
+  If Instructions = Nil Then Exit;
+  If InstrCount = 0 Then Exit;
+  
+  LastNewClass := '';
+  LastNewPC := 0;
+  LastNewLine := 0;
+  
+  For I := 0 to InstrCount - 1 do
+  Begin
+    Opcode := Instructions^[I].Opcode;
+    PC := Instructions^[I].PC;
+    LineNum := Instructions^[I].LineNum;
+    I18NCurrentPC := PC;
+    I18NCurrentLine := LineNum;
+    
+    { Tracker les OP_NEW pour detecter les constructeurs de wrapper }
+    If Opcode = OP_NEW Then  { 187 = new }
+    Begin
+      CPIdx := Instructions^[I].Op1;
+      LastNewClass := GetNewClassName(CPIdx);
+      LastNewPC := PC;
+      LastNewLine := LineNum;
+    End;
+    
+    { Detecter les appels de methodes (invokevirtual, invokespecial, invokestatic) }
+    If (Opcode = OP_INVOKEVIRTUAL) or   { 182 }
+       (Opcode = OP_INVOKESPECIAL) or   { 183 }
+       (Opcode = OP_INVOKESTATIC) or    { 184 }
+       (Opcode = OP_INVOKEINTERFACE) Then { 185 }
+    Begin
+      CPIdx := Instructions^[I].Op1;
+      GetMethodRefInfo(CPIdx, ClsName, MethName, Desc);
+      
+      { String.getBytes() sans charset }
+      If IsStringGetBytesNoArg(ClsName, MethName, Desc) Then
+      Begin
+        AddI18NBug(DM_DEFAULT_ENCODING, PC, LineNum,
+                   ClsName, MethName, 'getBytes()',
+                   'Appel getBytes() sans charset explicite');
+        TrackI18NCall(IC_CAT_GETBYTES, PC, LineNum, ClsName, MethName, Desc,
+                      False, False);
+      End;
+      
+      { toUpperCase/toLowerCase sans Locale }
+      If IsStringCaseConvertNoLocale(ClsName, MethName, Desc) Then
+      Begin
+        AddI18NBug(DM_CONVERT_CASE, PC, LineNum,
+                   ClsName, MethName, MethName + '()',
+                   'Appel ' + MethName + '() sans Locale explicite');
+        TrackI18NCall(IC_CAT_CASE_CONV, PC, LineNum, ClsName, MethName, Desc,
+                      False, False);
+      End;
+      
+      { new String([B) sans charset }
+      If IsNewStringBytesNoCharset(ClsName, MethName, Desc) Then
+      Begin
+        AddI18NBug(DM_NEW_STRING_BYTES_NO_CHARSET, PC, LineNum,
+                   ClsName, MethName, 'new String(byte[])',
+                   'Constructeur String(byte[]) sans charset');
+        TrackI18NCall(IC_CAT_NEW_STRING, PC, LineNum, ClsName, MethName, Desc,
+                      False, False);
+      End;
+      
+      { new String(String) inutile }
+      If IsNewStringFromString(ClsName, MethName, Desc) Then
+      Begin
+        AddI18NBug(DM_STRING_CTOR, PC, LineNum,
+                   ClsName, MethName, 'new String(String)',
+                   'Constructeur new String(String) inutile');
+        TrackI18NCall(IC_CAT_NEW_STRING, PC, LineNum, ClsName, MethName, Desc,
+                      False, False);
+      End;
+      
+      { Constructeurs de primitive wrapper (Integer, Long, etc.) }
+      If IsPrimitiveBoxingCtor(ClsName, MethName, Desc) Then
+      Begin
+        AddI18NBug(DM_NUMBER_CTOR, LastNewPC, LastNewLine,
+                   LastNewClass, MethName, 'new ' + LastNewClass + '(...)',
+                   'Utiliser ' + LastNewClass + '.valueOf() a la place');
+        TrackI18NCall(IC_CAT_BOXING, PC, LineNum, ClsName, MethName, Desc,
+                      False, False);
+      End;
+      
+      { Constructeurs Double/Float }
+      If IsFloatPointBoxingCtor(ClsName, MethName, Desc) Then
+      Begin
+        AddI18NBug(DM_FP_NUMBER_CTOR, LastNewPC, LastNewLine,
+                   LastNewClass, MethName, 'new ' + LastNewClass + '(...)',
+                   'Utiliser ' + LastNewClass + '.valueOf() a la place');
+        TrackI18NCall(IC_CAT_BOXING, PC, LineNum, ClsName, MethName, Desc,
+                      False, False);
+      End;
+      
+      { String.format sans Locale }
+      If IsStringFormatNoLocale(ClsName, MethName, Desc) Then
+      Begin
+        AddI18NBug(DM_STRING_FORMAT_NO_LOCALE, PC, LineNum,
+                   ClsName, MethName, 'String.format(...)',
+                   'Appel String.format() sans Locale explicite');
+        TrackI18NCall(IC_CAT_FORMAT, PC, LineNum, ClsName, MethName, Desc,
+                      False, False);
+      End;
+    End;
+  End;
+End;
+
+{ --- TODO 19 : Analyser une methode pour les problemes d'internationalisation --- }
+Procedure AnalyzeMethodForI18N(MethIdx: Integer);
+Begin
+  If Not I18NInitialized Then
+    InitI18NState;
+  
+  { Reinitialiser les bugs pour cette methode }
+  I18NBugCount := 0;
+  I18NCallCount := 0;
+  
+  { Decoder les instructions si necessaire }
+  If (MethIdx >= 0) and (MethIdx < MethodCount) Then
+  Begin
+    If Methods[MethIdx].CodeLen > 0 Then
+    Begin
+      DecodeInstructions(Methods[MethIdx]);
+      DetectI18NIssues(MethIdx);
+    End;
+  End;
+End;
+
+{ --- TODO 19 : Analyser toutes les methodes d'une classe --- }
+Procedure AnalyzeClassForI18N;
+Var
+  M: Integer;
+Begin
+  If Not I18NInitialized Then
+    InitI18NState;
+  
+  For M := 0 to MethodCount - 1 do
+    AnalyzeMethodForI18N(M);
+End;
+
+{ --- TODO 19 : Afficher l'etat du module d'internationalisation --- }
+Procedure DumpI18NState;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== I18N State ===');
+  WriteLn('  Initialized: ', I18NInitialized);
+  WriteLn('  Bug count: ', I18NBugCount);
+  WriteLn('  Call count: ', I18NCallCount);
+  WriteLn('  Label num: ', I18NLabelNum);
+  WriteLn('  Totals:');
+  WriteLn('    GetBytes no charset: ', I18NTotalGetBytes);
+  WriteLn('    Case conv no Locale: ', I18NTotalCaseConv);
+  WriteLn('    New String no charset: ', I18NTotalNewString);
+  WriteLn('    Boxing ctors: ', I18NTotalBoxing);
+  WriteLn('    Format no Locale: ', I18NTotalFormat);
+  WriteLn('    String ctor: ', I18NTotalStringCtor);
+  If I18NBugCount > 0 Then
+  Begin
+    WriteLn('  Bugs:');
+    For I := 0 to I18NBugCount - 1 do
+    Begin
+      WriteLn('    [', I, '] ', I18NBugTypeName(I18NBugs[I].BugType),
+              ' at PC=', I18NBugs[I].PC,
+              ' line=', I18NBugs[I].LineNum);
+      WriteLn('        ', I18NBugs[I].CallName, ': ', I18NBugs[I].Details);
+    End;
+  End;
+  If I18NCallCount > 0 Then
+  Begin
+    WriteLn('  Tracked calls:');
+    For I := 0 to I18NCallCount - 1 do
+      WriteLn('    [', I, '] ', I18NCallTypeName(I18NCalls[I].CallType),
+              ' ', I18NCalls[I].ClassName, '.', I18NCalls[I].MethodName);
+  End;
+End;
+
+{ --- TODO 19 : Accesseurs pour le module d'internationalisation --- }
+Function IsI18NInitialized: Boolean;
+Begin
+  IsI18NInitialized := I18NInitialized;
+End;
+
+Function GetI18NBugCount: Integer;
+Begin
+  GetI18NBugCount := I18NBugCount;
+End;
+
+Function GetI18NCallCount: Integer;
+Begin
+  GetI18NCallCount := I18NCallCount;
+End;
+
+Function GetI18NLabelNum: Integer;
+Begin
+  GetI18NLabelNum := I18NLabelNum;
+End;
+
+Function GetI18NTotalGetBytes: Integer;
+Begin
+  GetI18NTotalGetBytes := I18NTotalGetBytes;
+End;
+
+Function GetI18NTotalCaseConv: Integer;
+Begin
+  GetI18NTotalCaseConv := I18NTotalCaseConv;
+End;
+
+Function GetI18NTotalNewString: Integer;
+Begin
+  GetI18NTotalNewString := I18NTotalNewString;
+End;
+
+Function GetI18NTotalBoxing: Integer;
+Begin
+  GetI18NTotalBoxing := I18NTotalBoxing;
+End;
+
+Function GetI18NTotalFormat: Integer;
+Begin
+  GetI18NTotalFormat := I18NTotalFormat;
+End;
+
+Function GetI18NTotalStringCtor: Integer;
+Begin
+  GetI18NTotalStringCtor := I18NTotalStringCtor;
+End;
+
+Function GetI18NBugType(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < I18NBugCount) Then
+    GetI18NBugType := I18NBugs[Idx].BugType
+  Else
+    GetI18NBugType := IN_NONE;
+End;
+
+Function GetI18NBugPC(Idx: Integer): LongWord;
+Begin
+  If (Idx >= 0) and (Idx < I18NBugCount) Then
+    GetI18NBugPC := I18NBugs[Idx].PC
+  Else
+    GetI18NBugPC := 0;
+End;
+
+Function GetI18NBugLine(Idx: Integer): Integer;
+Begin
+  If (Idx >= 0) and (Idx < I18NBugCount) Then
+    GetI18NBugLine := I18NBugs[Idx].LineNum
+  Else
+    GetI18NBugLine := 0;
+End;
 
 { ============================================================================ }
 { TODO 20 [A FAIRE] - Calcul des scores et niveaux de severite                 }
