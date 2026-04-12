@@ -2797,6 +2797,7 @@ Var
  TerminalHasFocus : Boolean;       { le terminal a le focus clavier }
  TermVisible  : Boolean;           { le panneau terminal est visible }
  TermSelectOpen : Boolean;         { le selectbox deroulant est ouvert}
+ TermSelectIdx  : Integer;         { index surbrillance clavier 0..2 }
  TermX        : Integer;           { position X commune du panneau   }
  TermY        : Integer;           { position Y commune du panneau   }
  TermWidth    : Integer;           { largeur commune du panneau      }
@@ -15758,6 +15759,7 @@ Begin
  TermHeight := OUTPUT_HEIGHT;
  TermVisible := False;
  TermSelectOpen := False;
+ TermSelectIdx := 1;
  TerminalHasFocus := False;
  ActiveShell := SK_POWERSHELL;
  InitTerminalPanel(TermPanels[SK_CMD], SK_CMD);
@@ -15859,7 +15861,7 @@ Begin
  { Dessiner la liste deroulante PAR-DESSUS le texte }
  If TermSelectOpen Then Begin
   { Item 1 : Invite de commandes }
-  If ActiveShell = SK_CMD Then
+  If TermSelectIdx = 0 Then
    SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
   Else
    SetFillStyle(SolidFill, 8);
@@ -15870,7 +15872,7 @@ Begin
   OutTextXY(SBX + 4, SBY + TERM_SELECT_HEIGHT + 3,
    'Invite de commandes');
   { Item 2 : PowerShell dev }
-  If ActiveShell = SK_POWERSHELL Then
+  If TermSelectIdx = 1 Then
    SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
   Else
    SetFillStyle(SolidFill, 8);
@@ -15882,7 +15884,7 @@ Begin
    SBY + TERM_SELECT_HEIGHT + TERM_SELECT_ITEM_H + 3,
    'PowerShell dev');
   { Item 3 : Bash }
-  If ActiveShell = SK_BASH Then
+  If TermSelectIdx = 2 Then
    SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
   Else
    SetFillStyle(SolidFill, 8);
@@ -15984,6 +15986,12 @@ Begin
      (Ev.MouseY >= SBY) And
      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT) Then Begin
    TermSelectOpen := Not TermSelectOpen;
+   If TermSelectOpen Then
+    Case ActiveShell Of
+     SK_CMD:        TermSelectIdx := 0;
+     SK_POWERSHELL: TermSelectIdx := 1;
+     SK_BASH:       TermSelectIdx := 2;
+    End;
    FullRepaintNeeded := True;
    Exit;
   End;
@@ -15999,8 +16007,57 @@ Begin
    Exit;
   End;
  End;
- { Si la liste deroulante est ouverte, ignorer le clavier }
- If TermSelectOpen Then Exit;
+ { Navigation clavier dans la liste deroulante }
+ If TermSelectOpen Then Begin
+  If Ev.Kind = EV_KEY_DOWN Then Begin
+   If Ev.KeyCode = $48 Then Begin { Fleche haut }
+    If TermSelectIdx > 0 Then
+     Dec(TermSelectIdx);
+    FullRepaintNeeded := True;
+    Exit;
+   End;
+   If Ev.KeyCode = $50 Then Begin { Fleche bas }
+    If TermSelectIdx < 2 Then
+     Inc(TermSelectIdx);
+    FullRepaintNeeded := True;
+    Exit;
+   End;
+  End;
+  If Ev.Kind = EV_KEY_CHAR Then Begin
+   If Ev.KeyChar = #13 Then Begin { Enter : confirmer }
+    Case TermSelectIdx Of
+     0: NewShell := SK_CMD;
+     1: NewShell := SK_POWERSHELL;
+     2: NewShell := SK_BASH;
+    End;
+    TermSelectOpen := False;
+    If ActiveShell <> NewShell Then Begin
+     ActiveShell := NewShell;
+     If TermPanels[ActiveShell].LineCount = 0 Then
+      Case ActiveShell Of
+       SK_CMD:
+        TermAddLine(TermPanels[SK_CMD],
+         'Invite de commandes developpeur. Tapez HELP.');
+       SK_POWERSHELL:
+        TermAddLine(TermPanels[SK_POWERSHELL],
+         'PowerShell developpeur. Tapez HELP.');
+       SK_BASH:
+        TermAddLine(TermPanels[SK_BASH],
+         'Bash terminal. Tapez help.');
+      End;
+    End;
+    TermPanels[ActiveShell].NeedRepaint := True;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
+   If Ev.KeyChar = #27 Then Begin { Echap : fermer }
+    TermSelectOpen := False;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
+  End;
+  Exit;
+ End;
  { Clavier }
  If Ev.Kind = EV_KEY_CHAR Then Begin
   Ch := Ev.KeyChar;
