@@ -15564,63 +15564,115 @@ Begin
  End;
  { Extraire la commande et les parametres }
  TermExtractCommand(CmdStr, CurrCmd, ParamStr);
- { Dispatcher les commandes internes }
- If (CurrCmd = 'CD') Or (CurrCmd = 'CHDIR') Or
-  (CurrCmd = 'SET-LOCATION') Then
-  TermCmd_CD(TP, ParamStr)
- Else If (CurrCmd = 'CLS') Or
-  (CurrCmd = 'CLEAR-HOST') Or
-  (CurrCmd = 'CLEAR') Then
-  TermCmd_CLS(TP)
- Else If (CurrCmd = 'DIR') Or (CurrCmd = 'LS') Or
-  (CurrCmd = 'GET-CHILDITEM') Then
-  TermCmd_DIR(TP, ParamStr)
- Else If (CurrCmd = 'COPY') Or
-  (CurrCmd = 'COPY-ITEM') Then
-  TermCmd_COPY(TP, ParamStr)
- Else If (CurrCmd = 'DEL') Or (CurrCmd = 'DELETE') Or
-  (CurrCmd = 'ERASE') Or (CurrCmd = 'ERA') Or
-  (CurrCmd = 'REMOVE-ITEM') Then
-  TermCmd_DEL(TP, ParamStr)
- Else If (CurrCmd = 'ECHO') Or (CurrCmd = 'WRITE') Or
-  (CurrCmd = 'WRITE-OUTPUT') Then
-  TermCmd_ECHO(TP, ParamStr)
- Else If CurrCmd = 'EXIT' Then
-  TP.Visible := False
- Else If (CurrCmd = 'MKDIR') Or (CurrCmd = 'MD') Or
-  (CurrCmd = 'NEW-ITEM') Then
-  TermCmd_MKDIR(TP, ParamStr)
- Else If (CurrCmd = 'RMDIR') Or (CurrCmd = 'RD') Then
-  TermCmd_RMDIR(TP, ParamStr)
- Else If (CurrCmd = 'REN') Or (CurrCmd = 'RENAME') Or
-  (CurrCmd = 'RENAME-ITEM') Then
-  TermCmd_REN(TP, ParamStr)
- Else If CurrCmd = 'MOVE' Then
-  TermCmd_MOVE(TP, ParamStr)
- Else If (CurrCmd = 'TYPE') Or
-  (CurrCmd = 'GET-CONTENT') Then
-  TermCmd_TYPE(TP, ParamStr)
- Else If CurrCmd = 'DATE' Then
-  TermCmd_DATE(TP)
- Else If CurrCmd = 'TIME' Then
-  TermCmd_TIME(TP)
- Else If CurrCmd = 'VER' Then
-  TermCmd_VER(TP)
- Else If CurrCmd = 'PWD' Then
-  TermCmd_PWD(TP)
- Else If (CurrCmd = 'PUSHD') Or
-  (CurrCmd = 'PUSH-LOCATION') Then
-  TermCmd_PUSHD(TP, ParamStr)
- Else If (CurrCmd = 'POPD') Or
-  (CurrCmd = 'POP-LOCATION') Then
-  TermCmd_POPD(TP)
- Else If CurrCmd = 'SET' Then
-  TermCmd_SET(TP, ParamStr)
- Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
-  TermCmd_HELP(TP)
- Else
-  TermAddLine(TP,
-   '''' + CurrCmd + ''' n''est pas reconnu comme commande interne.');
+ { Dispatcher selon le type de shell }
+ Case TP.Shell Of
+  SK_CMD: Begin
+   If CurrCmd = 'EXIT' Then
+    TermVisible := False
+   Else If (CurrCmd = 'CD') Or (CurrCmd = 'CHDIR') Then
+    TermCmd_CD(TP, ParamStr)
+   Else If CurrCmd = 'CLS' Then
+    TermCmd_CLS(TP)
+   Else If (CurrCmd = 'DIR') Then
+    TermCmd_DIR(TP, ParamStr)
+   Else If CurrCmd = 'COPY' Then
+    TermCmd_COPY(TP, ParamStr)
+   Else If (CurrCmd = 'DEL') Or (CurrCmd = 'DELETE') Or
+    (CurrCmd = 'ERASE') Or (CurrCmd = 'ERA') Then
+    TermCmd_DEL(TP, ParamStr)
+   Else If CurrCmd = 'ECHO' Then
+    TermCmd_ECHO(TP, ParamStr)
+   Else If (CurrCmd = 'MKDIR') Or (CurrCmd = 'MD') Then
+    TermCmd_MKDIR(TP, ParamStr)
+   Else If (CurrCmd = 'RMDIR') Or (CurrCmd = 'RD') Then
+    TermCmd_RMDIR(TP, ParamStr)
+   Else If (CurrCmd = 'REN') Or (CurrCmd = 'RENAME') Then
+    TermCmd_REN(TP, ParamStr)
+   Else If CurrCmd = 'MOVE' Then
+    TermCmd_MOVE(TP, ParamStr)
+   Else If CurrCmd = 'TYPE' Then
+    TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'DATE' Then
+    TermCmd_DATE(TP)
+   Else If CurrCmd = 'TIME' Then
+    TermCmd_TIME(TP)
+   Else If CurrCmd = 'VER' Then
+    TermCmd_VER(TP)
+   Else If CurrCmd = 'PWD' Then
+    TermCmd_PWD(TP)
+   Else If CurrCmd = 'PUSHD' Then
+    TermCmd_PUSHD(TP, ParamStr)
+   Else If CurrCmd = 'POPD' Then
+    TermCmd_POPD(TP)
+   Else If CurrCmd = 'SET' Then
+    TermCmd_SET(TP, ParamStr)
+   Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
+    TermCmd_HELP(TP)
+   Else
+    TermAddLine(TP,
+     '''' + CurrCmd +
+     ''' n''est pas reconnu comme commande interne.');
+  End;
+  SK_POWERSHELL: Begin
+   If CurrCmd = 'EXIT' Then
+    TermVisible := False
+   Else If (CurrCmd = 'CD') Or (CurrCmd = 'CHDIR') Or
+    (CurrCmd = 'SET-LOCATION') Then
+    TermCmd_CD(TP, ParamStr)
+   Else If (CurrCmd = 'CLS') Or
+    (CurrCmd = 'CLEAR-HOST') Or
+    (CurrCmd = 'CLEAR') Then
+    TermCmd_CLS(TP)
+   Else If (CurrCmd = 'DIR') Or (CurrCmd = 'LS') Or
+    (CurrCmd = 'GET-CHILDITEM') Then
+    TermCmd_DIR(TP, ParamStr)
+   Else If (CurrCmd = 'COPY') Or
+    (CurrCmd = 'COPY-ITEM') Then
+    TermCmd_COPY(TP, ParamStr)
+   Else If (CurrCmd = 'DEL') Or
+    (CurrCmd = 'REMOVE-ITEM') Then
+    TermCmd_DEL(TP, ParamStr)
+   Else If (CurrCmd = 'ECHO') Or
+    (CurrCmd = 'WRITE-OUTPUT') Then
+    TermCmd_ECHO(TP, ParamStr)
+   Else If (CurrCmd = 'MKDIR') Or
+    (CurrCmd = 'NEW-ITEM') Then
+    TermCmd_MKDIR(TP, ParamStr)
+   Else If (CurrCmd = 'RMDIR') Or (CurrCmd = 'RD') Then
+    TermCmd_RMDIR(TP, ParamStr)
+   Else If (CurrCmd = 'REN') Or
+    (CurrCmd = 'RENAME-ITEM') Then
+    TermCmd_REN(TP, ParamStr)
+   Else If (CurrCmd = 'MOVE') Or
+    (CurrCmd = 'MOVE-ITEM') Then
+    TermCmd_MOVE(TP, ParamStr)
+   Else If (CurrCmd = 'TYPE') Or (CurrCmd = 'CAT') Or
+    (CurrCmd = 'GET-CONTENT') Then
+    TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'DATE' Then
+    TermCmd_DATE(TP)
+   Else If CurrCmd = 'TIME' Then
+    TermCmd_TIME(TP)
+   Else If CurrCmd = 'VER' Then
+    TermCmd_VER(TP)
+   Else If CurrCmd = 'PWD' Then
+    TermCmd_PWD(TP)
+   Else If (CurrCmd = 'PUSHD') Or
+    (CurrCmd = 'PUSH-LOCATION') Then
+    TermCmd_PUSHD(TP, ParamStr)
+   Else If (CurrCmd = 'POPD') Or
+    (CurrCmd = 'POP-LOCATION') Then
+    TermCmd_POPD(TP)
+   Else If CurrCmd = 'SET' Then
+    TermCmd_SET(TP, ParamStr)
+   Else If (CurrCmd = 'HELP') Or
+    (CurrCmd = 'GET-HELP') Or (CurrCmd = '?') Then
+    TermCmd_HELP(TP)
+   Else
+    TermAddLine(TP, CurrCmd +
+     ' : le terme n''est pas reconnu comme nom de cmdlet.');
+  End;
+ End;
 End;
 
 { --- Initialiser un terminal (buffer seulement, pas le layout) --- }
