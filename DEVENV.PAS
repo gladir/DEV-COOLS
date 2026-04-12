@@ -7246,14 +7246,18 @@ Var
  SL, SC, EL, EC: LongInt;
  HeadPart, TailPart: String;
  I: LongInt;
+ DeletedText: String;
 Begin
  If Not Sel.Active Then Exit;
  GetOrderedSelection(Sel, SL, SC, EL, EC);
+ { Sauvegarder le texte selectionne pour undo }
+ DeletedText := GetSelectedText(Ed, Sel);
  If SL = EL Then Begin
   HeadPart := GetLine(Ed.Buffer, SL);
   TailPart := Copy(HeadPart, EC, Length(HeadPart) - EC + 1);
   HeadPart := Copy(HeadPart, 1, SC - 1);
   SetLine(Ed.Buffer, SL, HeadPart + TailPart);
+  PushUndo(EditorUndo, UA_DELETE, SL, SC, '', DeletedText, 0);
  End Else Begin
   HeadPart := Copy(GetLine(Ed.Buffer, SL), 1, SC - 1);
   TailPart := GetLine(Ed.Buffer, EL);
@@ -7261,8 +7265,15 @@ Begin
    TailPart := Copy(TailPart, EC, Length(TailPart) - EC + 1)
   Else
    TailPart := '';
-  For I := EL DownTo SL + 1 Do
+  { Enregistrer chaque ligne supprimee de bas en haut }
+  For I := EL DownTo SL + 1 Do Begin
+   PushUndo(EditorUndo, UA_DELETE_LINE, I, 1,
+    '', GetLine(Ed.Buffer, I), 0);
    DeleteLine(Ed.Buffer, I);
+  End;
+  { Enregistrer la modification de la premiere ligne }
+  PushUndo(EditorUndo, UA_REPLACE, SL, SC,
+   HeadPart + TailPart, GetLine(Ed.Buffer, SL), 0);
   SetLine(Ed.Buffer, SL, HeadPart + TailPart);
  End;
  Ed.CursorLine := SL;
@@ -7363,18 +7374,28 @@ Var
  Ch: Char;
  LineStart: Integer;
  Fragment: String;
+ SaveLine: LongInt;
+ SaveCol: LongInt;
 Begin
  If Not Clip.HasData Then Exit;
  If Sel.Active Then
   DeleteSelectedText(Ed, Sel);
+ SaveLine := Ed.CursorLine;
+ SaveCol := Ed.CursorCol;
  LineStart := 1;
  For I := 1 To Length(Clip.Text) Do Begin
   Ch := Clip.Text[I];
   If Ch = #10 Then Begin
    Fragment := Copy(Clip.Text, LineStart, I - LineStart);
-   InsertText(Ed.Buffer, Ed.CursorLine, Ed.CursorCol, Fragment);
-   Ed.CursorCol := Ed.CursorCol + Length(Fragment);
+   If Length(Fragment) > 0 Then Begin
+    PushUndo(EditorUndo, UA_INSERT, Ed.CursorLine,
+     Ed.CursorCol, Fragment, '', 0);
+    InsertText(Ed.Buffer, Ed.CursorLine, Ed.CursorCol, Fragment);
+    Ed.CursorCol := Ed.CursorCol + Length(Fragment);
+   End;
    { Inserer nouvelle ligne }
+   PushUndo(EditorUndo, UA_SPLIT_LINE, Ed.CursorLine,
+    Ed.CursorCol, '', '', 0);
    InsertLine(Ed.Buffer, Ed.CursorLine + 1,
     Copy(GetLine(Ed.Buffer, Ed.CursorLine), Ed.CursorCol,
      Length(GetLine(Ed.Buffer, Ed.CursorLine)) - Ed.CursorCol + 1));
@@ -7388,6 +7409,8 @@ Begin
  If LineStart <= Length(Clip.Text) Then Begin
   Fragment := Copy(Clip.Text, LineStart,
    Length(Clip.Text) - LineStart + 1);
+  PushUndo(EditorUndo, UA_INSERT, Ed.CursorLine,
+   Ed.CursorCol, Fragment, '', 0);
   InsertText(Ed.Buffer, Ed.CursorLine, Ed.CursorCol, Fragment);
   Ed.CursorCol := Ed.CursorCol + Length(Fragment);
  End;
