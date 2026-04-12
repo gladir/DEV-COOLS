@@ -585,7 +585,7 @@ Les fichiers Pascal n'ont aucune dépendances, il suffit de télécharger le fic
 
 <pre><b>fpc</b> <i>LEFICHIER.PAS</i></pre>
 	
-Sinon, vous pouvez également le compiler avec le Turbo Pascal à l'aide de la syntaxe de commande suivante :	
+Sinon, vous pouvez également le compiler avec le Turbo Pascal à l'aide de la syntaxe de commande suivante si le programme n'est pas trop gros :	
 
 <pre><b>tpc</b> <i>LEFICHIER.PAS</i></pre>
 	
