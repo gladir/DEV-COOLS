@@ -26862,7 +26862,10 @@ End;
 Procedure HandleOpenFileConfirmed;
 Var
  FN: String;
+ Ext: String;
  Idx: Integer;
+ I: Integer;
+ SolIdx, ProjIdx: Integer;
 Begin
  FN := FileDlg.SelectedFile;
  If FN = '' Then Exit;
@@ -26876,7 +26879,46 @@ Begin
   StartPage.Visible := False;
   FullRepaintNeeded := True;
  End;
- { Creer la fenetre editeur (alloue aussi l editeur) }
+ Ext := UpCaseStr(ExtractFileExt(FN));
+ { Fichier solution .sln : ouvrir comme solution }
+ If Ext = '.SLN' Then Begin
+  ParseSolutionFile(FN, CurrentSolution);
+  SolutionLoaded := True;
+  SolutionModified := False;
+  { Peupler l explorateur avec la solution }
+  ClearExplorer(SolExplorer);
+  SolIdx := AddExplorerNode(SolExplorer,
+   CurrentSolution.Info.SolutionName, ENK_SOLUTION, -1);
+  If SolIdx >= 0 Then Begin
+   SolExplorer.Nodes[SolIdx].Expanded := True;
+   SolExplorer.Nodes[SolIdx].HasChildren :=
+    CurrentSolution.ProjectCount > 0;
+   For I := 0 To CurrentSolution.ProjectCount - 1 Do Begin
+    ProjIdx := AddExplorerNode(SolExplorer,
+     CurrentSolution.Projects[I].ProjectName,
+     ENK_PROJECT, SolIdx);
+    If ProjIdx >= 0 Then Begin
+     SolExplorer.Nodes[ProjIdx].Expanded := True;
+     SolExplorer.Nodes[ProjIdx].HasChildren := True;
+     AddExplorerNode(SolExplorer, 'Properties',
+      ENK_PROPERTIES, ProjIdx);
+     AddExplorerNode(SolExplorer, 'References',
+      ENK_REFERENCES, ProjIdx);
+    End;
+   End;
+  End;
+  If SolExplorer.NodeCount > 0 Then Begin
+   SolExplorer.SelectedIdx := 0;
+   SolExplorer.Nodes[0].Selected := True;
+  End;
+  SolExplorer.NeedRepaint := True;
+  AddMRUEntry(MRUList, FN);
+  AppendOutput(OutputPanel,
+   'Solution ouverte : ' + FN, Ord(OTK_BUILD));
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ { Fichier source : ouvrir dans l editeur }
  CreateEditorWindow(FN);
  Idx := WinMgr.ActiveIdx;
  { Charger le fichier dans l editeur alloue }
