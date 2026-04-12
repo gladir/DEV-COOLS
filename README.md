@@ -7,7 +7,7 @@ Il possède également des IDE, comme DEVENV :
 
 <img width="639" height="479" alt="image" src="https://github.com/user-attachments/assets/bc6193a5-1ae5-471b-a9d5-54619b45407b" />
 
-Lequel supporte, les langages de programmations comme ABAP/4, Ada, C, C#, Java, Pascal,...
+Lequel supporte, les langages de programmations comme ABAP/4, Ada, C, C#, Java, Pascal, Python,...
 
 <h2>Liste des fichiers</h2>
 
