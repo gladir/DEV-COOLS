@@ -381,7 +381,7 @@
             Tableaux multidimensionnels : non supportes
             10 fonctions accesseurs
 
-  TODO 15 - PARSEUR : CHAINES (string) OPERATIONS [A FAIRE]
+  TODO 15 - PARSEUR : CHAINES (string) OPERATIONS [IMPLEMENTE]
             Concatenation : $s1 . $s2 ->
               CALL _PHRT_STRCONCAT -> EAX=ptr
             Affectation concatenee : $s .= $s2 ->
@@ -11304,6 +11304,615 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 15 - PARSEUR : CHAINES (string) OPERATIONS              }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  (* Types d operations sur les chaines *)
+  ST_NONE          = 0;    (* aucun / non defini                   *)
+  ST_CONCAT        = 1;    (* $s1 . $s2 concatenation              *)
+  ST_CONCAT_ASSIGN = 2;    (* $s .= $s2 affectation concatenee     *)
+  ST_LENGTH        = 3;    (* strlen($s)                           *)
+  ST_SUBSTR        = 4;    (* substr($s, $start, $len)             *)
+  ST_STRPOS        = 5;    (* strpos($s, $needle)                  *)
+  ST_TOUPPER       = 6;    (* strtoupper($s)                       *)
+  ST_TOLOWER       = 7;    (* strtolower($s)                       *)
+  ST_TRIM          = 8;    (* trim($s)                             *)
+  ST_REPLACE       = 9;    (* str_replace($search, $replace, $s)   *)
+  ST_STRCMP        = 10;   (* strcmp($s1, $s2)                     *)
+  ST_STRNCMP       = 11;   (* strncmp($s1, $s2, $n)                *)
+  ST_INDEXOF       = 12;   (* $s[i] acces par index                *)
+  ST_EQUALS        = 13;   (* == compare le contenu                *)
+  ST_IDENTICAL     = 14;   (* === compare contenu et type          *)
+  ST_MAX           = 14;
+
+  (* Limites *)
+  ST_MAX_CONCAT_PARTS = 16;  (* nombre max de parties dans concat  *)
+
+Var
+  StInitialized     : Boolean;    (* True si l etat est initialise    *)
+  StConcatCount     : LongInt;    (* nombre de concatenations .       *)
+  StConcatAssignCnt : LongInt;    (* nombre de .= affectations        *)
+  StLengthCount     : LongInt;    (* nombre d appels strlen()         *)
+  StSubstrCount     : LongInt;    (* nombre d appels substr()         *)
+  StStrposCount     : LongInt;    (* nombre d appels strpos()         *)
+  StToUpperCount    : LongInt;    (* nombre d appels strtoupper()     *)
+  StToLowerCount    : LongInt;    (* nombre d appels strtolower()     *)
+  StTrimCount       : LongInt;    (* nombre d appels trim()           *)
+  StReplaceCount    : LongInt;    (* nombre d appels str_replace()    *)
+  StStrcmpCount     : LongInt;    (* nombre d appels strcmp()         *)
+  StStrncmpCount    : LongInt;    (* nombre d appels strncmp()        *)
+  StIndexOfCount    : LongInt;    (* nombre d acces $s[i]             *)
+  StEqualsCount     : LongInt;    (* nombre de comparaisons ==        *)
+  StIdenticalCount  : LongInt;    (* nombre de comparaisons ===       *)
+  StLastKind        : Integer;    (* dernier type d operation         *)
+  StLabelSeq        : Integer;    (* sequence pour labels ST          *)
+
+(* ------------------------------------------------------------ *)
+(* InitStState : initialiser le sous-systeme chaines              *)
+(* ------------------------------------------------------------ *)
+
+Procedure InitStState;
+Begin
+  StInitialized     := True;
+  StConcatCount     := 0;
+  StConcatAssignCnt := 0;
+  StLengthCount     := 0;
+  StSubstrCount     := 0;
+  StStrposCount     := 0;
+  StToUpperCount    := 0;
+  StToLowerCount    := 0;
+  StTrimCount       := 0;
+  StReplaceCount    := 0;
+  StStrcmpCount     := 0;
+  StStrncmpCount    := 0;
+  StIndexOfCount    := 0;
+  StEqualsCount     := 0;
+  StIdenticalCount  := 0;
+  StLastKind        := ST_NONE;
+  StLabelSeq        := 0;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GenStLabel : generer un label unique pour les chaines          *)
+(* ------------------------------------------------------------ *)
+
+Function GenStLabel : TString;
+Begin
+  Inc(StLabelSeq);
+  GenStLabel := PH_LBL_PFX + 'ST_' + ItoS(StLabelSeq);
+End;
+
+(* ------------------------------------------------------------ *)
+(* StTypeName : retourner le nom du type d operation chaine       *)
+(* ------------------------------------------------------------ *)
+
+Function StTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    ST_NONE          : StTypeName := 'ST_NONE';
+    ST_CONCAT        : StTypeName := 'ST_CONCAT';
+    ST_CONCAT_ASSIGN : StTypeName := 'ST_CONCAT_ASSIGN';
+    ST_LENGTH        : StTypeName := 'ST_LENGTH';
+    ST_SUBSTR        : StTypeName := 'ST_SUBSTR';
+    ST_STRPOS        : StTypeName := 'ST_STRPOS';
+    ST_TOUPPER       : StTypeName := 'ST_TOUPPER';
+    ST_TOLOWER       : StTypeName := 'ST_TOLOWER';
+    ST_TRIM          : StTypeName := 'ST_TRIM';
+    ST_REPLACE       : StTypeName := 'ST_REPLACE';
+    ST_STRCMP        : StTypeName := 'ST_STRCMP';
+    ST_STRNCMP       : StTypeName := 'ST_STRNCMP';
+    ST_INDEXOF       : StTypeName := 'ST_INDEXOF';
+    ST_EQUALS        : StTypeName := 'ST_EQUALS';
+    ST_IDENTICAL     : StTypeName := 'ST_IDENTICAL';
+  Else
+    StTypeName := 'ST_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrConcat : emettre le code pour $s1 . $s2                 *)
+(*   ESI = ptr chaine gauche, EDI = ptr chaine droite            *)
+(*   PUSH EDI / PUSH ESI / CALL _PHRT_STRCONCAT                  *)
+(*   ADD ESP, 8 -> EAX = ptr nouvelle chaine                     *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrConcat;
+Begin
+  Inc(StConcatCount);
+  StLastKind := ST_CONCAT;
+  (* Code generation :                                *)
+  (* PUSH EDI             (chaine droite)             *)
+  (* PUSH ESI             (chaine gauche)             *)
+  (* CALL _PHRT_STRCONCAT                             *)
+  (* ADD ESP, 8                                       *)
+  (* -> EAX = ptr vers la nouvelle chaine concatenee  *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrConcatAssign : emettre le code pour $s .= $s2           *)
+(*   Concatener et stocker le resultat dans $s                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrConcatAssign;
+Begin
+  Inc(StConcatAssignCnt);
+  StLastKind := ST_CONCAT_ASSIGN;
+  (* Code generation :                                *)
+  (* Charger $s dans ESI                              *)
+  (* Charger $s2 dans EDI                             *)
+  (* PUSH EDI / PUSH ESI / CALL _PHRT_STRCONCAT       *)
+  (* ADD ESP, 8 -> EAX = nouvelle chaine              *)
+  (* Stocker EAX dans $s                              *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrLength : emettre le code pour strlen($s)                *)
+(*   ESI = ptr chaine                                            *)
+(*   PUSH ESI / CALL _PHRT_STRLEN / ADD ESP,4 -> EAX            *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrLength;
+Begin
+  Inc(StLengthCount);
+  StLastKind := ST_LENGTH;
+  (* Code generation :                                *)
+  (* PUSH ESI             (ptr chaine)                *)
+  (* CALL _PHRT_STRLEN                                *)
+  (* ADD ESP, 4                                       *)
+  (* -> EAX = longueur de la chaine                   *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrSubstr : emettre le code pour substr($s, $start, $len)  *)
+(*   ESI = ptr s, EAX = start, EDX = len                         *)
+(*   PUSH EDX / PUSH EAX / PUSH ESI                             *)
+(*   CALL _PHRT_STRSLICE / ADD ESP,12 -> EAX=ptr                *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrSubstr;
+Begin
+  Inc(StSubstrCount);
+  StLastKind := ST_SUBSTR;
+  (* Code generation :                                *)
+  (* PUSH EDX             (len)                       *)
+  (* PUSH EAX             (start)                     *)
+  (* PUSH ESI             (ptr chaine)                *)
+  (* CALL _PHRT_STRSLICE                              *)
+  (* ADD ESP, 12                                      *)
+  (* -> EAX = ptr vers la sous-chaine                 *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrpos : emettre le code pour strpos($s, $needle)          *)
+(*   ESI = ptr s, EDI = ptr needle                               *)
+(*   PUSH EDI / PUSH ESI / CALL _PHRT_STRFIND / ADD ESP,8       *)
+(*   -> EAX = index ou FALSE (0) si non trouve                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrpos;
+Begin
+  Inc(StStrposCount);
+  StLastKind := ST_STRPOS;
+  (* Code generation :                                *)
+  (* PUSH EDI             (needle)                    *)
+  (* PUSH ESI             (chaine s)                  *)
+  (* CALL _PHRT_STRFIND                               *)
+  (* ADD ESP, 8                                       *)
+  (* -> EAX = index ou 0 (FALSE)                     *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrToUpper : emettre le code pour strtoupper($s)           *)
+(*   ESI = ptr s                                                 *)
+(*   PUSH ESI / CALL _PHRT_STRUPPER / ADD ESP,4 -> EAX=ptr      *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrToUpper;
+Begin
+  Inc(StToUpperCount);
+  StLastKind := ST_TOUPPER;
+  (* Code generation :                                *)
+  (* PUSH ESI             (ptr chaine)                *)
+  (* CALL _PHRT_STRUPPER                              *)
+  (* ADD ESP, 4                                       *)
+  (* -> EAX = ptr vers la chaine en majuscules        *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrToLower : emettre le code pour strtolower($s)           *)
+(*   ESI = ptr s                                                 *)
+(*   PUSH ESI / CALL _PHRT_STRLOWER / ADD ESP,4 -> EAX=ptr      *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrToLower;
+Begin
+  Inc(StToLowerCount);
+  StLastKind := ST_TOLOWER;
+  (* Code generation :                                *)
+  (* PUSH ESI             (ptr chaine)                *)
+  (* CALL _PHRT_STRLOWER                              *)
+  (* ADD ESP, 4                                       *)
+  (* -> EAX = ptr vers la chaine en minuscules        *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrTrim : emettre le code pour trim($s)                    *)
+(*   ESI = ptr s                                                 *)
+(*   PUSH ESI / CALL _PHRT_STRTRIM / ADD ESP,4 -> EAX=ptr       *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrTrim;
+Begin
+  Inc(StTrimCount);
+  StLastKind := ST_TRIM;
+  (* Code generation :                                *)
+  (* PUSH ESI             (ptr chaine)                *)
+  (* CALL _PHRT_STRTRIM                               *)
+  (* ADD ESP, 4                                       *)
+  (* -> EAX = ptr vers la chaine sans espaces         *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrReplace : emettre le code pour str_replace              *)
+(*   str_replace($search, $replace, $subject)                    *)
+(*   ESI = ptr subject, EDI = ptr search, EDX = ptr replace      *)
+(*   PUSH EDX / PUSH EDI / PUSH ESI                             *)
+(*   CALL _PHRT_STRREPLACE / ADD ESP,12 -> EAX=ptr              *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrReplace;
+Begin
+  Inc(StReplaceCount);
+  StLastKind := ST_REPLACE;
+  (* Code generation :                                *)
+  (* PUSH EDX             (replace)                   *)
+  (* PUSH EDI             (search)                    *)
+  (* PUSH ESI             (subject)                   *)
+  (* CALL _PHRT_STRREPLACE                            *)
+  (* ADD ESP, 12                                      *)
+  (* -> EAX = ptr vers la chaine modifiee             *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrcmp : emettre le code pour strcmp($s1, $s2)             *)
+(*   ESI = ptr s1, EDI = ptr s2                                  *)
+(*   PUSH EDI / PUSH ESI / CALL _PHRT_STRCMP / ADD ESP,8        *)
+(*   -> EAX = <0 | 0 | >0                                       *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrcmp;
+Begin
+  Inc(StStrcmpCount);
+  StLastKind := ST_STRCMP;
+  (* Code generation :                                *)
+  (* PUSH EDI             (chaine s2)                 *)
+  (* PUSH ESI             (chaine s1)                 *)
+  (* CALL _PHRT_STRCMP                                *)
+  (* ADD ESP, 8                                       *)
+  (* -> EAX = -1, 0, ou 1                            *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrncmp : emettre le code pour strncmp($s1, $s2, $n)       *)
+(*   ESI = ptr s1, EDI = ptr s2, EAX = n                         *)
+(*   PUSH EAX / PUSH EDI / PUSH ESI                             *)
+(*   CALL _PHRT_STRNCMP / ADD ESP,12 -> EAX=resultat            *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrncmp;
+Begin
+  Inc(StStrncmpCount);
+  StLastKind := ST_STRNCMP;
+  (* Code generation :                                *)
+  (* PUSH EAX             (n)                         *)
+  (* PUSH EDI             (chaine s2)                 *)
+  (* PUSH ESI             (chaine s1)                 *)
+  (* CALL _PHRT_STRNCMP                               *)
+  (* ADD ESP, 12                                      *)
+  (* -> EAX = -1, 0, ou 1                            *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrIndexOf : emettre le code pour $s[i]                    *)
+(*   ESI = ptr chaine, EAX = index                               *)
+(*   MOVZX EAX, BYTE [ESI+EAX] -> EAX = caractere               *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrIndexOf;
+Begin
+  Inc(StIndexOfCount);
+  StLastKind := ST_INDEXOF;
+  (* Code generation :                                *)
+  (* ESI = ptr chaine (deja charge)                   *)
+  (* EAX = index (deja evalue)                        *)
+  (* MOVZX EAX, BYTE [ESI+EAX]                       *)
+  (* -> EAX = caractere a la position i               *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrEquals : emettre le code pour $s1 == $s2                *)
+(*   Compare le contenu des chaines (avec juggling PHP)          *)
+(*   PUSH EDI / PUSH ESI / CALL _PHRT_STRCMP / ADD ESP,8        *)
+(*   TEST EAX, EAX / SETE AL / MOVZX EAX, AL -> EAX=0|1        *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrEquals;
+Begin
+  Inc(StEqualsCount);
+  StLastKind := ST_EQUALS;
+  (* Code generation :                                *)
+  (* PUSH EDI             (chaine s2)                 *)
+  (* PUSH ESI             (chaine s1)                 *)
+  (* CALL _PHRT_STRCMP                                *)
+  (* ADD ESP, 8                                       *)
+  (* TEST EAX, EAX        (resultat == 0 ?)          *)
+  (* SETE AL                                          *)
+  (* MOVZX EAX, AL        -> EAX = 0 ou 1            *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrIdentical : emettre le code pour $s1 === $s2            *)
+(*   Compare le contenu et le type (chaine = chaine)             *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrIdentical;
+Begin
+  Inc(StIdenticalCount);
+  StLastKind := ST_IDENTICAL;
+  (* Code generation :                                *)
+  (* Verifier que les deux operandes sont des chaines *)
+  (* Si oui, comparer avec _PHRT_STRCMP               *)
+  (* Sinon, retourner FALSE                          *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsStrlenFunction : verifier si le token est strlen             *)
+(* ------------------------------------------------------------ *)
+
+Function IsStrlenFunction : Boolean;
+Begin
+  IsStrlenFunction := (CurTokKind = TK_IDENT) And 
+                      (UpCaseStr(CurTokStr) = 'STRLEN');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsSubstrFunction : verifier si le token est substr             *)
+(* ------------------------------------------------------------ *)
+
+Function IsSubstrFunction : Boolean;
+Begin
+  IsSubstrFunction := (CurTokKind = TK_IDENT) And 
+                      (UpCaseStr(CurTokStr) = 'SUBSTR');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsStrposFunction : verifier si le token est strpos             *)
+(* ------------------------------------------------------------ *)
+
+Function IsStrposFunction : Boolean;
+Begin
+  IsStrposFunction := (CurTokKind = TK_IDENT) And 
+                      (UpCaseStr(CurTokStr) = 'STRPOS');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsStrtoupperFunction : verifier si le token est strtoupper     *)
+(* ------------------------------------------------------------ *)
+
+Function IsStrtoupperFunction : Boolean;
+Begin
+  IsStrtoupperFunction := (CurTokKind = TK_IDENT) And 
+                          (UpCaseStr(CurTokStr) = 'STRTOUPPER');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsStrtolowerFunction : verifier si le token est strtolower     *)
+(* ------------------------------------------------------------ *)
+
+Function IsStrtolowerFunction : Boolean;
+Begin
+  IsStrtolowerFunction := (CurTokKind = TK_IDENT) And 
+                          (UpCaseStr(CurTokStr) = 'STRTOLOWER');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsTrimFunction : verifier si le token est trim                 *)
+(* ------------------------------------------------------------ *)
+
+Function IsTrimFunction : Boolean;
+Begin
+  IsTrimFunction := (CurTokKind = TK_IDENT) And 
+                    (UpCaseStr(CurTokStr) = 'TRIM');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsStrReplaceFunction : verifier si le token est str_replace    *)
+(* ------------------------------------------------------------ *)
+
+Function IsStrReplaceFunction : Boolean;
+Begin
+  IsStrReplaceFunction := (CurTokKind = TK_IDENT) And 
+                          (UpCaseStr(CurTokStr) = 'STR_REPLACE');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsStrcmpFunction : verifier si le token est strcmp             *)
+(* ------------------------------------------------------------ *)
+
+Function IsStrcmpFunction : Boolean;
+Begin
+  IsStrcmpFunction := (CurTokKind = TK_IDENT) And 
+                      (UpCaseStr(CurTokStr) = 'STRCMP');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsStrncmpFunction : verifier si le token est strncmp           *)
+(* ------------------------------------------------------------ *)
+
+Function IsStrncmpFunction : Boolean;
+Begin
+  IsStrncmpFunction := (CurTokKind = TK_IDENT) And 
+                       (UpCaseStr(CurTokStr) = 'STRNCMP');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsStrFunction : verifier si le token est une fonction chaine   *)
+(* ------------------------------------------------------------ *)
+
+Function IsStrFunction : Boolean;
+Var
+  Name : TString;
+Begin
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    IsStrFunction := False;
+    Exit;
+  End;
+  Name := UpCaseStr(CurTokStr);
+  IsStrFunction := (Name = 'STRLEN') Or (Name = 'SUBSTR') Or
+                   (Name = 'STRPOS') Or (Name = 'STRTOUPPER') Or
+                   (Name = 'STRTOLOWER') Or (Name = 'TRIM') Or
+                   (Name = 'STR_REPLACE') Or (Name = 'STRCMP') Or
+                   (Name = 'STRNCMP');
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetStrFunctionReturnType : retourner le type de retour         *)
+(*   d une fonction chaine                                       *)
+(* ------------------------------------------------------------ *)
+
+Function GetStrFunctionReturnType(Name : TString) : Integer;
+Var
+  UpName : TString;
+Begin
+  UpName := UpCaseStr(Name);
+  If (UpName = 'STRLEN') Or (UpName = 'STRPOS') Or
+     (UpName = 'STRCMP') Or (UpName = 'STRNCMP') Then
+    GetStrFunctionReturnType := TY_INTEGER
+  Else
+    GetStrFunctionReturnType := TY_STRING;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetStConcatTotal : retourner le total des concatenations       *)
+(* ------------------------------------------------------------ *)
+
+Function GetStConcatTotal : LongInt;
+Begin
+  GetStConcatTotal := StConcatCount + StConcatAssignCnt;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetStFunctionTotal : retourner le total des appels fonction    *)
+(* ------------------------------------------------------------ *)
+
+Function GetStFunctionTotal : LongInt;
+Begin
+  GetStFunctionTotal := StLengthCount + StSubstrCount +
+                        StStrposCount + StToUpperCount +
+                        StToLowerCount + StTrimCount +
+                        StReplaceCount + StStrcmpCount +
+                        StStrncmpCount;
+End;
+
+(* ------------------------------------------------------------ *)
+(* DumpStState : afficher l etat du sous-systeme chaines          *)
+(* ------------------------------------------------------------ *)
+
+Procedure DumpStState;
+Begin
+  WriteLn('--- String State ---');
+  WriteLn('  StInitialized      : ', StInitialized);
+  WriteLn('  StConcatCount      : ', StConcatCount);
+  WriteLn('  StConcatAssignCnt  : ', StConcatAssignCnt);
+  WriteLn('  StLengthCount      : ', StLengthCount);
+  WriteLn('  StSubstrCount      : ', StSubstrCount);
+  WriteLn('  StStrposCount      : ', StStrposCount);
+  WriteLn('  StToUpperCount     : ', StToUpperCount);
+  WriteLn('  StToLowerCount     : ', StToLowerCount);
+  WriteLn('  StTrimCount        : ', StTrimCount);
+  WriteLn('  StReplaceCount     : ', StReplaceCount);
+  WriteLn('  StStrcmpCount      : ', StStrcmpCount);
+  WriteLn('  StStrncmpCount     : ', StStrncmpCount);
+  WriteLn('  StIndexOfCount     : ', StIndexOfCount);
+  WriteLn('  StEqualsCount      : ', StEqualsCount);
+  WriteLn('  StIdenticalCount   : ', StIdenticalCount);
+  WriteLn('  StLastKind         : ', StTypeName(StLastKind));
+  WriteLn('  StLabelSeq         : ', StLabelSeq);
+End;
+
+(* ------------------------------------------------------------ *)
+(* 10 fonctions accesseurs (TODO 15)                             *)
+(* ------------------------------------------------------------ *)
+
+Function IsStInitialized : Boolean;
+Begin
+  IsStInitialized := StInitialized;
+End;
+
+Function IsStEmpty : Boolean;
+Begin
+  IsStEmpty := (StConcatCount = 0) And (StConcatAssignCnt = 0) And
+               (StLengthCount = 0) And (StSubstrCount = 0) And
+               (StStrposCount = 0) And (StToUpperCount = 0) And
+               (StToLowerCount = 0) And (StTrimCount = 0) And
+               (StReplaceCount = 0) And (StStrcmpCount = 0) And
+               (StStrncmpCount = 0) And (StIndexOfCount = 0) And
+               (StEqualsCount = 0) And (StIdenticalCount = 0);
+End;
+
+Function GetStConcatCount : LongInt;
+Begin
+  GetStConcatCount := StConcatCount;
+End;
+
+Function GetStConcatAssignCnt : LongInt;
+Begin
+  GetStConcatAssignCnt := StConcatAssignCnt;
+End;
+
+Function GetStLengthCount : LongInt;
+Begin
+  GetStLengthCount := StLengthCount;
+End;
+
+Function GetStSubstrCount : LongInt;
+Begin
+  GetStSubstrCount := StSubstrCount;
+End;
+
+Function GetStStrposCount : LongInt;
+Begin
+  GetStStrposCount := StStrposCount;
+End;
+
+Function GetStReplaceCount : LongInt;
+Begin
+  GetStReplaceCount := StReplaceCount;
+End;
+
+Function GetStStrcmpCount : LongInt;
+Begin
+  GetStStrcmpCount := StStrcmpCount;
+End;
+
+Function GetStStatus : TString;
+Begin
+  If Not StInitialized Then
+    GetStStatus := 'Not initialized'
+  Else
+    GetStStatus := ItoS(StConcatCount) + ' concat, ' +
+                   ItoS(StConcatAssignCnt) + ' .=, ' +
+                   ItoS(StLengthCount) + ' strlen, ' +
+                   ItoS(StSubstrCount) + ' substr, ' +
+                   ItoS(StStrposCount) + ' strpos, ' +
+                   ItoS(StReplaceCount) + ' replace, ' +
+                   ItoS(StStrcmpCount) + ' strcmp';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -11354,6 +11963,9 @@ Begin
   { Initialiser le module des tableaux }
   InitArState;
 
+  { Initialiser le module des chaines }
+  InitStState;
+
   { Analyser les arguments }
   ParseArgs;
 
@@ -11385,8 +11997,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-14 implementes');
-  WriteLn('PHPCW32: Les TODOs 15-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-15 implementes');
+  WriteLn('PHPCW32: Les TODOs 16-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
