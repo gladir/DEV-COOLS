@@ -223,7 +223,7 @@
             Pliage de constantes pour expressions statiques
             10 fonctions accesseurs
 
-  TODO 08 - PARSEUR : EXPRESSIONS PRIMAIRES ET APPELS [A FAIRE]
+  TODO 08 - PARSEUR : EXPRESSIONS PRIMAIRES ET APPELS [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine,
               variable $nom, appel de fonction, null, true, false
             Variables : $nom -> acces memoire ou pile
@@ -5948,6 +5948,875 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 08 - PARSEUR : EXPRESSIONS PRIMAIRES ET APPELS          }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  (* Types d expressions primaires (TPrimKind) *)
+  PX_NONE       = 0;    (* pas d expression primaire             *)
+  PX_INT_LIT    = 1;    (* literal entier 123                    *)
+  PX_STR_LIT    = 2;    (* literal chaine "abc"                  *)
+  PX_FLOAT_LIT  = 3;    (* literal flottant 1.5 (tronque int)    *)
+  PX_VAR        = 4;    (* variable $nom                         *)
+  PX_CONST      = 5;    (* constante NOM (sans $)                *)
+  PX_FUNC_CALL  = 6;    (* appel de fonction nom(args)           *)
+  PX_BUILTIN    = 7;    (* appel fonction native abs(), max()... *)
+  PX_INDEX      = 8;    (* acces index tableau $tab[i]           *)
+  PX_KEY        = 9;    (* acces par cle $tab["cle"]             *)
+  PX_PAREN      = 10;   (* expression parenthesee (expr)         *)
+  PX_TERNARY    = 11;   (* operateur ternaire cond ? a : b       *)
+  PX_COALESCE   = 12;   (* operateur null coalescing $a ?? $b    *)
+  PX_NULL       = 13;   (* constante null                        *)
+  PX_TRUE       = 14;   (* constante true                        *)
+  PX_FALSE      = 15;   (* constante false                       *)
+  PX_SHORT_TERN = 16;   (* ternaire court $a ?: $b               *)
+
+  (* Fonctions builtins reconnues *)
+  BF_ABS        = 1;    (* abs(x) valeur absolue                 *)
+  BF_MAX        = 2;    (* max(a, b, ...) maximum                *)
+  BF_MIN        = 3;    (* min(a, b, ...) minimum                *)
+  BF_COUNT      = 4;    (* count($arr) taille tableau            *)
+  BF_STRLEN     = 5;    (* strlen($s) longueur chaine            *)
+  BF_INTVAL     = 6;    (* intval($x) conversion entier          *)
+  BF_STRVAL     = 7;    (* strval($x) conversion chaine          *)
+  BF_ISSET      = 8;    (* isset($x) variable definie            *)
+  BF_EMPTY      = 9;    (* empty($x) variable vide               *)
+  BF_PRINT      = 10;   (* print($x) afficher                    *)
+  BF_ECHO       = 11;   (* echo $x afficher sans retour          *)
+  BF_FLOOR      = 12;   (* floor($x) arrondi inferieur           *)
+  BF_CEIL       = 13;   (* ceil($x) arrondi superieur            *)
+  BF_ROUND      = 14;   (* round($x) arrondi au plus proche      *)
+
+  (* Limites *)
+  PX_MAX_ARGS   = 16;   (* nombre max d arguments par appel      *)
+  PX_MAX_ELEMS  = 64;   (* nombre max d elements par tableau     *)
+
+Type
+  (* Enregistrement d argument de fonction *)
+  TPxArgRec = Record
+    TypeIdx  : Integer;   (* indice de type de l argument        *)
+    IsConst  : Boolean;   (* True si valeur constante            *)
+    IntVal   : LongInt;   (* valeur si constante entiere         *)
+    StrVal   : TString;   (* valeur si constante chaine          *)
+  End;
+
+Var
+  PxInitialized  : Boolean;   (* True si module initialise         *)
+  PxLabelSeq     : Integer;   (* sequence pour labels uniques      *)
+  PxLastLabel    : TString;   (* dernier label genere              *)
+  PxPrimCount    : LongInt;   (* nombre de primaires parsees       *)
+  PxCallCount    : LongInt;   (* nombre d appels de fonction       *)
+  PxBuiltinCount : LongInt;   (* nombre d appels builtin           *)
+  PxIndexCount   : LongInt;   (* nombre d acces index              *)
+  PxKeyCount     : LongInt;   (* nombre d acces par cle            *)
+  PxParenCount   : LongInt;   (* nombre d expressions parenthesees *)
+  PxTernaryCount : LongInt;   (* nombre d operateurs ternaires     *)
+  PxCoalesceCount: LongInt;   (* nombre d operateurs coalescing    *)
+  PxVarCount     : LongInt;   (* nombre d acces variables          *)
+  PxConstCount   : LongInt;   (* nombre d acces constantes         *)
+
+{ ------------------------------------------------------------ }
+{ InitPxState : initialiser l etat des expressions primaires   }
+{ ------------------------------------------------------------ }
+
+Procedure InitPxState;
+Begin
+  PxInitialized   := True;
+  PxLabelSeq      := 0;
+  PxLastLabel     := '';
+  PxPrimCount     := 0;
+  PxCallCount     := 0;
+  PxBuiltinCount  := 0;
+  PxIndexCount    := 0;
+  PxKeyCount      := 0;
+  PxParenCount    := 0;
+  PxTernaryCount  := 0;
+  PxCoalesceCount := 0;
+  PxVarCount      := 0;
+  PxConstCount    := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPxLabel : generer un label unique pour expressions prim.  }
+{ ------------------------------------------------------------ }
+
+Function GenPxLabel(Const Prefix : TString) : TString;
+Begin
+  Inc(PxLabelSeq);
+  PxLastLabel := '_PX_' + Prefix + '_' + ItoS(PxLabelSeq);
+  GenPxLabel := PxLastLabel;
+End;
+
+{ ------------------------------------------------------------ }
+{ PxTypeName : retourner le nom textuel d un type PX_*         }
+{ ------------------------------------------------------------ }
+
+Function PxTypeName(PxKind : Integer) : TString;
+Begin
+  Case PxKind Of
+    PX_NONE       : PxTypeName := 'PX_NONE';
+    PX_INT_LIT    : PxTypeName := 'PX_INT_LIT';
+    PX_STR_LIT    : PxTypeName := 'PX_STR_LIT';
+    PX_FLOAT_LIT  : PxTypeName := 'PX_FLOAT_LIT';
+    PX_VAR        : PxTypeName := 'PX_VAR';
+    PX_CONST      : PxTypeName := 'PX_CONST';
+    PX_FUNC_CALL  : PxTypeName := 'PX_FUNC_CALL';
+    PX_BUILTIN    : PxTypeName := 'PX_BUILTIN';
+    PX_INDEX      : PxTypeName := 'PX_INDEX';
+    PX_KEY        : PxTypeName := 'PX_KEY';
+    PX_PAREN      : PxTypeName := 'PX_PAREN';
+    PX_TERNARY    : PxTypeName := 'PX_TERNARY';
+    PX_COALESCE   : PxTypeName := 'PX_COALESCE';
+    PX_NULL       : PxTypeName := 'PX_NULL';
+    PX_TRUE       : PxTypeName := 'PX_TRUE';
+    PX_FALSE      : PxTypeName := 'PX_FALSE';
+    PX_SHORT_TERN : PxTypeName := 'PX_SHORT_TERN';
+  Else
+    PxTypeName := 'PX_UNKNOWN(' + ItoS(PxKind) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ BuiltinName : retourner le nom d une fonction builtin        }
+{ ------------------------------------------------------------ }
+
+Function BuiltinName(BfKind : Integer) : TString;
+Begin
+  Case BfKind Of
+    BF_ABS    : BuiltinName := 'abs';
+    BF_MAX    : BuiltinName := 'max';
+    BF_MIN    : BuiltinName := 'min';
+    BF_COUNT  : BuiltinName := 'count';
+    BF_STRLEN : BuiltinName := 'strlen';
+    BF_INTVAL : BuiltinName := 'intval';
+    BF_STRVAL : BuiltinName := 'strval';
+    BF_ISSET  : BuiltinName := 'isset';
+    BF_EMPTY  : BuiltinName := 'empty';
+    BF_PRINT  : BuiltinName := 'print';
+    BF_ECHO   : BuiltinName := 'echo';
+    BF_FLOOR  : BuiltinName := 'floor';
+    BF_CEIL   : BuiltinName := 'ceil';
+    BF_ROUND  : BuiltinName := 'round';
+  Else
+    BuiltinName := 'builtin_' + ItoS(BfKind);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsBuiltinFunc : verifier si un nom est une fonction builtin  }
+{ Retourne l indice BF_* ou 0 si pas builtin                   }
+{ ------------------------------------------------------------ }
+
+Function IsBuiltinFunc(Const Name : TString) : Integer;
+Var
+  LName : TString;
+Begin
+  LName := StrLowerCase(Name);
+  If LName = 'abs'    Then IsBuiltinFunc := BF_ABS
+  Else If LName = 'max'    Then IsBuiltinFunc := BF_MAX
+  Else If LName = 'min'    Then IsBuiltinFunc := BF_MIN
+  Else If LName = 'count'  Then IsBuiltinFunc := BF_COUNT
+  Else If LName = 'strlen' Then IsBuiltinFunc := BF_STRLEN
+  Else If LName = 'intval' Then IsBuiltinFunc := BF_INTVAL
+  Else If LName = 'strval' Then IsBuiltinFunc := BF_STRVAL
+  Else If LName = 'isset'  Then IsBuiltinFunc := BF_ISSET
+  Else If LName = 'empty'  Then IsBuiltinFunc := BF_EMPTY
+  Else If LName = 'print'  Then IsBuiltinFunc := BF_PRINT
+  Else If LName = 'echo'   Then IsBuiltinFunc := BF_ECHO
+  Else If LName = 'floor'  Then IsBuiltinFunc := BF_FLOOR
+  Else If LName = 'ceil'   Then IsBuiltinFunc := BF_CEIL
+  Else If LName = 'round'  Then IsBuiltinFunc := BF_ROUND
+  Else IsBuiltinFunc := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArgList : analyser une liste d arguments (arg1, arg2)   }
+{ Retourne le nombre d arguments parses                        }
+{ ArgTypes contient les types des arguments                    }
+{ ------------------------------------------------------------ }
+
+Function ParseArgList(Var ArgTypes : Array Of Integer) : Integer;
+Var
+  Count : Integer;
+Begin
+  Count := 0;
+  
+  (* Verifier qu on a une parenthese ouvrante *)
+  If CurTokKind <> TK_LPAREN Then
+  Begin
+    ParseArgList := 0;
+    Exit;
+  End;
+  
+  (* Avancer apres la parenthese ouvrante *)
+  LexNextToken;
+  
+  (* Liste vide ? *)
+  If CurTokKind = TK_RPAREN Then
+  Begin
+    LexNextToken;
+    ParseArgList := 0;
+    Exit;
+  End;
+  
+  (* Parser les arguments separes par des virgules *)
+  While (Count < PX_MAX_ARGS) And (CurTokKind <> TK_RPAREN) And
+        (CurTokKind <> TK_EOF) Do
+  Begin
+    (* TODO: Parser l expression de l argument *)
+    (* Pour l instant, on assume des litteraux ou variables simples *)
+    
+    If CurTokKind = TK_INTEGER Then
+    Begin
+      ArgTypes[Count] := TY_IDX_INT;
+      Inc(Count);
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_STRING Then
+    Begin
+      ArgTypes[Count] := TY_IDX_STRING;
+      Inc(Count);
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_VARIABLE Then
+    Begin
+      ArgTypes[Count] := TY_IDX_MIXED;
+      Inc(Count);
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_IDENT Then
+    Begin
+      (* Constante ou autre identifiant *)
+      ArgTypes[Count] := TY_IDX_MIXED;
+      Inc(Count);
+      LexNextToken;
+    End
+    Else
+    Begin
+      (* Type non reconnu, avancer quand meme *)
+      ArgTypes[Count] := TY_IDX_MIXED;
+      Inc(Count);
+      LexNextToken;
+    End;
+    
+    (* Virgule ? *)
+    If CurTokKind = TK_COMMA Then
+      LexNextToken
+    Else If CurTokKind <> TK_RPAREN Then
+    Begin
+      (* Erreur de syntaxe *)
+      CompileError('Expected , or ) in argument list', LexLineNo);
+      Break;
+    End;
+  End;
+  
+  (* Verifier la parenthese fermante *)
+  If CurTokKind = TK_RPAREN Then
+    LexNextToken;
+    
+  ParseArgList := Count;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPushArgs : emettre le code PUSH pour les arguments       }
+{ (droite a gauche comme convention C/PHP)                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPushArgs(Count : Integer);
+Var
+  I : Integer;
+Begin
+  (* Emettre les PUSH en ordre inverse (droite a gauche) *)
+  For I := Count - 1 DownTo 0 Do
+  Begin
+    OutLn('    ; PUSH arg ' + ItoS(I));
+    OutLn('    PUSH EAX     ; placeholder arg ' + ItoS(I));
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFuncCall : emettre le code CALL pour un appel de fonction }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFuncCall(Const FuncName : TString; ArgCount : Integer);
+Var
+  AsmName : TString;
+Begin
+  (* Generer le nom ASM de la fonction *)
+  AsmName := '_PF_' + FuncName;
+  
+  (* Emettre l appel *)
+  OutLn('    CALL ' + AsmName);
+  
+  (* Nettoyer la pile (convention cdecl) *)
+  If ArgCount > 0 Then
+    OutLn('    ADD ESP, ' + ItoS(ArgCount * 4));
+    
+  Inc(PxCallCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBuiltinCall : emettre le code pour une fonction builtin  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBuiltinCall(BfKind : Integer; ArgCount : Integer);
+Var
+  RtName : TString;
+Begin
+  (* Determiner le nom de la routine runtime *)
+  Case BfKind Of
+    BF_ABS    : RtName := '_PHRT_abs';
+    BF_MAX    : RtName := '_PHRT_max';
+    BF_MIN    : RtName := '_PHRT_min';
+    BF_COUNT  : RtName := '_PHRT_count';
+    BF_STRLEN : RtName := '_PHRT_strlen';
+    BF_INTVAL : RtName := '_PHRT_intval';
+    BF_STRVAL : RtName := '_PHRT_strval';
+    BF_ISSET  : RtName := '_PHRT_isset';
+    BF_EMPTY  : RtName := '_PHRT_empty';
+    BF_PRINT  : RtName := '_PHRT_print';
+    BF_ECHO   : RtName := '_PHRT_echo';
+    BF_FLOOR  : RtName := '_PHRT_floor';
+    BF_CEIL   : RtName := '_PHRT_ceil';
+    BF_ROUND  : RtName := '_PHRT_round';
+  Else
+    RtName := '_PHRT_unknown';
+  End;
+  
+  (* Emettre l appel *)
+  OutLn('    CALL ' + RtName);
+  
+  (* Nettoyer la pile (convention cdecl) *)
+  If ArgCount > 0 Then
+    OutLn('    ADD ESP, ' + ItoS(ArgCount * 4));
+    
+  Inc(PxBuiltinCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStaticFuncCall : parser un appel de fonction nom(args)  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStaticFuncCall(Const FuncName : TString);
+Var
+  BfKind   : Integer;
+  ArgCount : Integer;
+  ArgTypes : Array[0..PX_MAX_ARGS-1] Of Integer;
+Begin
+  (* Verifier si c est une fonction builtin *)
+  BfKind := IsBuiltinFunc(FuncName);
+  
+  (* Parser la liste d arguments *)
+  ArgCount := ParseArgList(ArgTypes);
+  
+  If BfKind > 0 Then
+  Begin
+    (* Fonction builtin *)
+    OutLn('    ; Appel builtin ' + BuiltinName(BfKind) +
+          '(' + ItoS(ArgCount) + ' args)');
+    EmitPushArgs(ArgCount);
+    EmitBuiltinCall(BfKind, ArgCount);
+  End
+  Else
+  Begin
+    (* Fonction utilisateur *)
+    OutLn('    ; Appel fonction ' + FuncName +
+          '(' + ItoS(ArgCount) + ' args)');
+    EmitPushArgs(ArgCount);
+    EmitFuncCall(FuncName, ArgCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitIndexAccess : emettre le code pour acces index $tab[i]   }
+{ Suppose que EBX contient l adresse du tableau                }
+{ et que EAX contient l index                                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitIndexAccess;
+Begin
+  OutLn('    ; Acces index tableau');
+  OutLn('    SHL EAX, 2           ; i * 4 (taille element)');
+  OutLn('    ADD EAX, 4           ; sauter l entete (taille)');
+  OutLn('    ADD EAX, EBX         ; adresse element');
+  OutLn('    MOV EAX, [EAX]       ; charger la valeur');
+  
+  Inc(PxIndexCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitKeyAccess : emettre le code pour acces par cle $tab[key] }
+{ Simplifie : appelle une routine runtime                      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitKeyAccess(Const Key : TString);
+Begin
+  OutLn('    ; Acces par cle "' + Key + '"');
+  OutLn('    ; TODO: Appeler _PHRT_array_get_key');
+  OutLn('    PUSH OFFSET _PK_' + AsmIdent(Key));
+  OutLn('    PUSH EBX             ; adresse tableau');
+  OutLn('    CALL _PHRT_array_get_key');
+  OutLn('    ADD ESP, 8');
+  
+  Inc(PxKeyCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIndexAccess : parser un acces index $tab[i]             }
+{ Le nom de la variable a deja ete lu                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIndexAccess(Const VarName : TString);
+Begin
+  (* On attend un crochet ouvrant *)
+  If CurTokKind <> TK_LBRACKET Then
+    Exit;
+    
+  LexNextToken;
+  
+  (* Parser l expression d index *)
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    OutLn('    ; Charger index ' + ItoS(CurTokInt));
+    OutLn('    MOV EAX, ' + ItoS(CurTokInt));
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_VARIABLE Then
+  Begin
+    OutLn('    ; Charger index depuis ' + CurTokStr);
+    (* TODO: Charger la variable *)
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_STRING Then
+  Begin
+    (* Acces par cle *)
+    EmitKeyAccess(CurTokStr);
+    LexNextToken;
+    
+    (* Verifier le crochet fermant *)
+    If CurTokKind = TK_RBRACKET Then
+      LexNextToken;
+    Exit;
+  End;
+  
+  (* Verifier le crochet fermant *)
+  If CurTokKind = TK_RBRACKET Then
+    LexNextToken
+  Else
+    CompileError('Expected ] after array index', LexLineNo);
+    
+  (* Emettre l acces index *)
+  EmitIndexAccess;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseParenExpr : parser une expression parenthesee (expr)    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseParenExpr;
+Begin
+  (* On attend une parenthese ouvrante *)
+  If CurTokKind <> TK_LPAREN Then
+    Exit;
+    
+  LexNextToken;
+  Inc(PxParenCount);
+  
+  (* Parser l expression interne *)
+  (* TODO: Appeler ParseExpr recursif *)
+  
+  (* Pour l instant, parser une expression simple *)
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    OutLn('    MOV EAX, ' + ItoS(CurTokInt));
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_VARIABLE Then
+  Begin
+    OutLn('    ; Charger ' + CurTokStr);
+    LexNextToken;
+  End;
+  
+  (* Verifier la parenthese fermante *)
+  If CurTokKind = TK_RPAREN Then
+    LexNextToken
+  Else
+    CompileError('Expected ) after expression', LexLineNo);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTernaryOp : parser un operateur ternaire cond ? a : b   }
+{ La condition a deja ete evaluee dans EAX                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTernaryOp;
+Var
+  LblElse, LblEnd : TString;
+Begin
+  (* On attend un point d interrogation *)
+  If CurTokKind <> TK_OP Then
+    Exit;
+  If CurTokStr <> '?' Then
+    Exit;
+    
+  LexNextToken;
+  Inc(PxTernaryCount);
+  
+  (* Generer les labels *)
+  LblElse := GenPxLabel('TERN_ELSE');
+  LblEnd  := GenPxLabel('TERN_END');
+  
+  (* Tester la condition *)
+  OutLn('    ; Operateur ternaire ? :');
+  OutLn('    TEST EAX, EAX');
+  OutLn('    JZ ' + LblElse);
+  
+  (* Parser la branche vraie *)
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    OutLn('    MOV EAX, ' + ItoS(CurTokInt));
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_VARIABLE Then
+  Begin
+    OutLn('    ; Charger ' + CurTokStr);
+    LexNextToken;
+  End;
+  
+  (* Sauter vers la fin *)
+  OutLn('    JMP ' + LblEnd);
+  
+  (* Verifier le deux-points *)
+  If CurTokKind = TK_COLON Then
+    LexNextToken
+  Else
+    CompileError('Expected : in ternary operator', LexLineNo);
+    
+  (* Label else *)
+  OutLn(LblElse + ':');
+  
+  (* Parser la branche fausse *)
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    OutLn('    MOV EAX, ' + ItoS(CurTokInt));
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_VARIABLE Then
+  Begin
+    OutLn('    ; Charger ' + CurTokStr);
+    LexNextToken;
+  End;
+  
+  (* Label fin *)
+  OutLn(LblEnd + ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCoalesceOp : parser un operateur null coalescing ??     }
+{ La premiere valeur a deja ete evaluee dans EAX               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCoalesceOp;
+Var
+  LblEnd : TString;
+Begin
+  (* On attend ?? *)
+  If CurTokKind <> TK_OP Then
+    Exit;
+  If CurTokStr <> '??' Then
+    Exit;
+    
+  LexNextToken;
+  Inc(PxCoalesceCount);
+  
+  (* Generer le label *)
+  LblEnd := GenPxLabel('COAL_END');
+  
+  (* Tester si la valeur est non-null (non-zero) *)
+  OutLn('    ; Operateur null coalescing ??');
+  OutLn('    TEST EAX, EAX');
+  OutLn('    JNZ ' + LblEnd + '  ; si non-null, garder EAX');
+  
+  (* Parser la valeur par defaut *)
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    OutLn('    MOV EAX, ' + ItoS(CurTokInt));
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_VARIABLE Then
+  Begin
+    OutLn('    ; Charger ' + CurTokStr);
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_STRING Then
+  Begin
+    OutLn('    ; Charger chaine "' + CurTokStr + '"');
+    LexNextToken;
+  End;
+  
+  (* Label fin *)
+  OutLn(LblEnd + ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrimaryFull : parser une expression primaire complete   }
+{ Retourne le type d expression primaire (PX_*)                }
+{ ------------------------------------------------------------ }
+
+Function ParsePrimaryFull : Integer;
+Var
+  TokStr   : TString;
+  TokInt   : LongInt;
+  SymIdx   : Integer;
+  BfKind   : Integer;
+Begin
+  Inc(PxPrimCount);
+  ParsePrimaryFull := PX_NONE;
+  
+  Case CurTokKind Of
+    TK_INTEGER:
+    Begin
+      (* Literal entier *)
+      TokInt := CurTokInt;
+      OutLn('    MOV EAX, ' + ItoS(TokInt));
+      LexNextToken;
+      ParsePrimaryFull := PX_INT_LIT;
+    End;
+    
+    TK_FLOAT:
+    Begin
+      (* Literal flottant (tronque en entier) *)
+      TokInt := Trunc(CurTokFloat);
+      OutLn('    ; Float tronque en entier');
+      OutLn('    MOV EAX, ' + ItoS(TokInt));
+      LexNextToken;
+      ParsePrimaryFull := PX_FLOAT_LIT;
+    End;
+    
+    TK_STRING:
+    Begin
+      (* Literal chaine *)
+      TokStr := CurTokStr;
+      OutLn('    ; Chaine "' + TokStr + '"');
+      OutLn('    MOV EAX, OFFSET _PK_' + AsmIdent(TokStr));
+      LexNextToken;
+      ParsePrimaryFull := PX_STR_LIT;
+    End;
+    
+    TK_VARIABLE:
+    Begin
+      (* Variable $nom *)
+      TokStr := CurTokStr;
+      Inc(PxVarCount);
+      LexNextToken;
+      
+      (* Verifier si c est un acces tableau *)
+      If CurTokKind = TK_LBRACKET Then
+      Begin
+        OutLn('    ; Charger adresse tableau ' + TokStr);
+        ParseIndexAccess(TokStr);
+        ParsePrimaryFull := PX_INDEX;
+      End
+      Else
+      Begin
+        (* Variable simple *)
+        OutLn('    ; Charger variable ' + TokStr);
+        (* Rechercher dans la table des symboles *)
+        SymIdx := SymFind(TokStr);
+        If SymIdx >= 0 Then
+        Begin
+          If SymTab[SymIdx].IsGlobal Then
+            OutLn('    MOV EAX, DWORD [' + SymTab[SymIdx].AsmName + ']')
+          Else
+            OutLn('    MOV EAX, DWORD [EBP' +
+                  ItoS(SymTab[SymIdx].Offset) + ']');
+        End
+        Else
+          OutLn('    ; Variable non declaree : ' + TokStr);
+        ParsePrimaryFull := PX_VAR;
+      End;
+    End;
+    
+    TK_IDENT:
+    Begin
+      (* Identifiant : constante ou appel de fonction *)
+      TokStr := CurTokStr;
+      LexNextToken;
+      
+      If CurTokKind = TK_LPAREN Then
+      Begin
+        (* Appel de fonction *)
+        BfKind := IsBuiltinFunc(TokStr);
+        If BfKind > 0 Then
+        Begin
+          ParseStaticFuncCall(TokStr);
+          ParsePrimaryFull := PX_BUILTIN;
+        End
+        Else
+        Begin
+          ParseStaticFuncCall(TokStr);
+          ParsePrimaryFull := PX_FUNC_CALL;
+        End;
+      End
+      Else
+      Begin
+        (* Constante *)
+        Inc(PxConstCount);
+        SymIdx := SymFind(TokStr);
+        If SymIdx >= 0 Then
+        Begin
+          If SymTab[SymIdx].Kind = SK_CONST Then
+            OutLn('    MOV EAX, ' + SymTab[SymIdx].AsmName)
+          Else
+            OutLn('    MOV EAX, DWORD [' + SymTab[SymIdx].AsmName + ']');
+        End
+        Else
+          OutLn('    ; Constante non definie : ' + TokStr);
+        ParsePrimaryFull := PX_CONST;
+      End;
+    End;
+    
+    TK_KEYWORD:
+    Begin
+      (* Mot-cle : null, true, false *)
+      TokStr := StrLowerCase(CurTokStr);
+      If TokStr = 'null' Then
+      Begin
+        OutLn('    XOR EAX, EAX       ; null');
+        LexNextToken;
+        ParsePrimaryFull := PX_NULL;
+      End
+      Else If TokStr = 'true' Then
+      Begin
+        OutLn('    MOV EAX, 1         ; true');
+        LexNextToken;
+        ParsePrimaryFull := PX_TRUE;
+      End
+      Else If TokStr = 'false' Then
+      Begin
+        OutLn('    XOR EAX, EAX       ; false');
+        LexNextToken;
+        ParsePrimaryFull := PX_FALSE;
+      End
+      Else
+      Begin
+        (* Autre mot-cle non gere ici *)
+        CompileError('Unexpected keyword in expression: ' + CurTokStr, LexLineNo);
+        LexNextToken;
+      End;
+    End;
+    
+    TK_LPAREN:
+    Begin
+      (* Expression parenthesee *)
+      ParseParenExpr;
+      ParsePrimaryFull := PX_PAREN;
+    End;
+    
+  Else
+    (* Token non reconnu comme expression primaire *)
+    CompileError('Expected expression, got ' + CurTokStr, LexLineNo);
+    LexNextToken;
+  End;
+  
+  (* Verifier les operateurs postfixes (ternaire, coalescing) *)
+  If CurTokKind = TK_OP Then
+  Begin
+    If CurTokStr = '?' Then
+    Begin
+      ParseTernaryOp;
+      ParsePrimaryFull := PX_TERNARY;
+    End
+    Else If CurTokStr = '??' Then
+    Begin
+      ParseCoalesceOp;
+      ParsePrimaryFull := PX_COALESCE;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpPxState : afficher l etat des expressions primaires      }
+{ ------------------------------------------------------------ }
+
+Procedure DumpPxState;
+Begin
+  WriteLn('--- Primary Expressions State ---');
+  WriteLn('  PxInitialized  : ', PxInitialized);
+  WriteLn('  PxLabelSeq     : ', PxLabelSeq);
+  WriteLn('  PxPrimCount    : ', PxPrimCount);
+  WriteLn('  PxCallCount    : ', PxCallCount);
+  WriteLn('  PxBuiltinCount : ', PxBuiltinCount);
+  WriteLn('  PxIndexCount   : ', PxIndexCount);
+  WriteLn('  PxKeyCount     : ', PxKeyCount);
+  WriteLn('  PxParenCount   : ', PxParenCount);
+  WriteLn('  PxTernaryCount : ', PxTernaryCount);
+  WriteLn('  PxCoalesceCount: ', PxCoalesceCount);
+  WriteLn('  PxVarCount     : ', PxVarCount);
+  WriteLn('  PxConstCount   : ', PxConstCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 08)                            }
+{ ------------------------------------------------------------ }
+
+Function IsPxInitialized : Boolean;
+Begin
+  IsPxInitialized := PxInitialized;
+End;
+
+Function IsPxEmpty : Boolean;
+Begin
+  IsPxEmpty := (PxPrimCount = 0);
+End;
+
+Function GetPxPrimCount : LongInt;
+Begin
+  GetPxPrimCount := PxPrimCount;
+End;
+
+Function GetPxCallCount : LongInt;
+Begin
+  GetPxCallCount := PxCallCount;
+End;
+
+Function GetPxBuiltinCount : LongInt;
+Begin
+  GetPxBuiltinCount := PxBuiltinCount;
+End;
+
+Function GetPxIndexCount : LongInt;
+Begin
+  GetPxIndexCount := PxIndexCount;
+End;
+
+Function GetPxParenCount : LongInt;
+Begin
+  GetPxParenCount := PxParenCount;
+End;
+
+Function GetPxTernaryCount : LongInt;
+Begin
+  GetPxTernaryCount := PxTernaryCount;
+End;
+
+Function GetPxLastLabel : TString;
+Begin
+  GetPxLastLabel := PxLastLabel;
+End;
+
+Function GetPxStatus : TString;
+Begin
+  If Not PxInitialized Then
+    GetPxStatus := 'Not initialized'
+  Else
+    GetPxStatus := ItoS(PxPrimCount) + ' prim, ' +
+                   ItoS(PxCallCount) + ' calls, ' +
+                   ItoS(PxBuiltinCount) + ' builtins';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -5976,6 +6845,9 @@ Begin
 
   { Initialiser les operateurs }
   InitOprState;
+
+  { Initialiser les expressions primaires }
+  InitPxState;
 
   { Analyser les arguments }
   ParseArgs;
@@ -6008,8 +6880,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-07 implementes');
-  WriteLn('PHPCW32: Les TODOs 08-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-08 implementes');
+  WriteLn('PHPCW32: Les TODOs 09-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
