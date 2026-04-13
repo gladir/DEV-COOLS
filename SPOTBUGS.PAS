@@ -2529,6 +2529,7 @@ Begin
   ClassInfo.InterfaceCount := IfCount;
   
   { Lire chaque interface (U2 -> index CP_CLASS) }
+  If IfCount > 0 Then
   For I := 0 to IfCount - 1 Do Begin
     If I < MAX_INTERFACES Then Begin
       IfIdx := ReadU2;
@@ -2851,6 +2852,8 @@ Begin
     Count := MAX_FIELDS;
   End;
   
+  If Count = 0 Then Exit;
+  
   For I := 0 to Count - 1 Do Begin
     { Lire les informations de base du champ }
     AccessFlags := ReadU2;
@@ -3135,6 +3138,7 @@ Begin
       ExcCount := ReadU2;
       M.ExcCount := ExcCount;
       If ExcCount > MAX_EXCEPTIONS Then ExcCount := MAX_EXCEPTIONS;
+      If ExcCount > 0 Then
       For ExcIdx := 0 to ExcCount - 1 Do Begin
         M.ExcTable[ExcIdx].StartPC := ReadU2;
         M.ExcTable[ExcIdx].EndPC := ReadU2;
@@ -3161,6 +3165,7 @@ Begin
       ExcCount := ReadU2;
       M.ThrowsCount := ExcCount;
       If ExcCount > MAX_THROWS Then ExcCount := MAX_THROWS;
+      If ExcCount > 0 Then
       For ExcIdx := 0 to ExcCount - 1 Do Begin
         SigIdx := ReadU2;
         M.Throws[ExcIdx] := CPGetClassName(SigIdx);
@@ -3258,6 +3263,8 @@ Begin
     Warning('Trop de methodes (' + IntToStr_(Count) + '), limite = ' + IntToStr_(MAX_METHODS));
     Count := MAX_METHODS;
   End;
+  
+  If Count = 0 Then Exit;
   
   For I := 0 to Count - 1 Do Begin
     { Initialiser la methode }
@@ -14782,6 +14789,7 @@ Begin
   ReadMethods;
   Inc(MnTotalClasses);
   { Analyser chaque methode }
+  If MethodCount > 0 Then
   For M := 0 to MethodCount - 1 do
   Begin
     If Methods[M].CodeLen > 0 Then
