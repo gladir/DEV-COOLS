@@ -113,7 +113,7 @@
               PHP_EOL : fin de ligne (CRLF sur Windows)
             10 fonctions accesseurs
 
-  TODO 04 - TABLE DES SYMBOLES PHP (32 BITS) [A FAIRE]
+  TODO 04 - TABLE DES SYMBOLES PHP (32 BITS) [IMPLEMENTE]
             Enregistrement TSymRec :
               Name      : nom PHP ($x, maFonction, MA_CONST)
               AsmName   : label ASM correspondant (_PH_x, _PF_maFonction)
@@ -3141,6 +3141,561 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 04 - TABLE DES SYMBOLES PHP (32 BITS)      [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  (* Types de symboles *)
+  SK_NONE     = 0;    (* symbole non initialise                    *)
+  SK_LOCAL    = 1;    (* variable locale (pile EBP-offset)         *)
+  SK_PARAM    = 2;    (* parametre de fonction (pile EBP+offset)   *)
+  SK_GLOBAL   = 3;    (* variable globale (segment DATA)           *)
+  SK_FUNC     = 4;    (* fonction utilisateur                      *)
+  SK_CONST    = 5;    (* constante define() ou const               *)
+  SK_ARRAY    = 6;    (* tableau (pointeur vers bloc)              *)
+
+Type
+  (* Enregistrement pour un symbole PHP *)
+  TSymRec = Record
+    Name       : TString;   (* nom PHP ($x, maFonction, MA_CONST)    *)
+    AsmName    : TString;   (* label ASM (_PH_x, _PF_maFonction)     *)
+    Kind       : Integer;   (* type de symbole (SK_LOCAL, etc.)      *)
+    TypeIdx    : Integer;   (* indice dans la table des types        *)
+    Offset     : Integer;   (* offset pile ou segment DATA           *)
+    ScopeLevel : Integer;   (* niveau de portee imbrique             *)
+    IsGlobal   : Boolean;   (* True si variable globale              *)
+    IsConst    : Boolean;   (* True si constante define() ou const   *)
+    DeclLine   : Integer;   (* numero de ligne de declaration        *)
+    ConstVal   : LongInt;   (* valeur si constante entiere           *)
+    ConstStr   : TString;   (* valeur si constante chaine            *)
+    ParamCount : Integer;   (* nombre de parametres si SK_FUNC       *)
+  End;
+
+  TSymArray = Array[1..MAX_SYM] Of TSymRec;
+
+Var
+  SymTab        : TSymArray;   (* table des symboles                  *)
+  SymCount      : Integer;     (* nombre de symboles enregistres      *)
+  SymInitialized: Boolean;     (* True si table initialisee           *)
+  CurScope      : Integer;     (* niveau de portee courant            *)
+  SymLabelSeq   : Integer;     (* sequence pour labels uniques        *)
+  SymLastAdd    : Integer;     (* dernier symbole ajoute              *)
+  SymGlobalOff  : Integer;     (* offset courant dans segment DATA    *)
+  SymLocalOff   : Integer;     (* offset courant dans pile locale     *)
+  SymParamOff   : Integer;     (* offset courant dans pile parametres *)
+  SymScopeStack : Array[1..MAX_SCOPE] Of Integer;  (* pile de portees *)
+  SymScopeTop   : Integer;     (* sommet de la pile de portees        *)
+  SymFindCount  : LongInt;     (* nombre de recherches effectuees     *)
+  SymAddCount   : LongInt;     (* nombre d ajouts effectues           *)
+
+{ ------------------------------------------------------------ }
+{ InitSymState : initialiser la table des symboles             }
+{ ------------------------------------------------------------ }
+
+Procedure InitSymState;
+Var I : Integer;
+Begin
+  SymInitialized := True;
+  SymCount       := 0;
+  CurScope       := 0;
+  SymLabelSeq    := 0;
+  SymLastAdd     := 0;
+  SymGlobalOff   := 0;
+  SymLocalOff    := 0;
+  SymParamOff    := 8;   (* EBP+8 pour premier parametre *)
+  SymScopeTop    := 0;
+  SymFindCount   := 0;
+  SymAddCount    := 0;
+
+  For I := 1 To MAX_SYM Do
+  Begin
+    SymTab[I].Name       := '';
+    SymTab[I].AsmName    := '';
+    SymTab[I].Kind       := SK_NONE;
+    SymTab[I].TypeIdx    := 0;
+    SymTab[I].Offset     := 0;
+    SymTab[I].ScopeLevel := 0;
+    SymTab[I].IsGlobal   := False;
+    SymTab[I].IsConst    := False;
+    SymTab[I].DeclLine   := 0;
+    SymTab[I].ConstVal   := 0;
+    SymTab[I].ConstStr   := '';
+    SymTab[I].ParamCount := 0;
+  End;
+
+  For I := 1 To MAX_SCOPE Do
+    SymScopeStack[I] := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSymLabel : generer un label unique _SY_N                   }
+{ ------------------------------------------------------------ }
+
+Function GenSymLabel : TString;
+Begin
+  Inc(SymLabelSeq);
+  GenSymLabel := '_SY_' + ItoS(SymLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ SymTypeName : retourner le nom du type de symbole SK_*       }
+{ ------------------------------------------------------------ }
+
+Function SymTypeName(SK : Integer) : TString;
+Begin
+  Case SK Of
+    SK_NONE   : SymTypeName := 'SK_NONE';
+    SK_LOCAL  : SymTypeName := 'SK_LOCAL';
+    SK_PARAM  : SymTypeName := 'SK_PARAM';
+    SK_GLOBAL : SymTypeName := 'SK_GLOBAL';
+    SK_FUNC   : SymTypeName := 'SK_FUNC';
+    SK_CONST  : SymTypeName := 'SK_CONST';
+    SK_ARRAY  : SymTypeName := 'SK_ARRAY';
+  Else
+    SymTypeName := 'SK_UNKNOWN(' + ItoS(SK) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymNameClean : nettoyer un nom de variable ($x -> x)          }
+{ ------------------------------------------------------------ }
+
+Function SymNameClean(Const S : TString) : TString;
+Begin
+  If (Length(S) > 0) And (S[1] = '$') Then
+    SymNameClean := Copy(S, 2, Length(S) - 1)
+  Else
+    SymNameClean := S;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymMakeAsmName : generer le nom ASM pour un symbole          }
+{ ------------------------------------------------------------ }
+
+Function SymMakeAsmName(Const Name : TString; Kind : Integer) : TString;
+Var Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Clean := AsmIdent(Clean);
+
+  Case Kind Of
+    SK_LOCAL  : SymMakeAsmName := Clean;  (* local = nom simple *)
+    SK_PARAM  : SymMakeAsmName := Clean;  (* param = nom simple *)
+    SK_GLOBAL : SymMakeAsmName := PH_VAR_PFX + Clean;
+    SK_FUNC   : SymMakeAsmName := PH_FN_PFX + Clean;
+    SK_CONST  : SymMakeAsmName := PH_VAR_PFX + Clean;
+    SK_ARRAY  : SymMakeAsmName := PH_ARR_PFX + Clean;
+  Else
+    SymMakeAsmName := Clean;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFind : rechercher un symbole par nom dans toutes portees  }
+{ Retourne l indice (1..SymCount) ou 0 si non trouve           }
+{ Recherche du scope courant vers le global                    }
+{ ------------------------------------------------------------ }
+
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I     : Integer;
+  Found : Integer;
+  Scope : Integer;
+Begin
+  Inc(SymFindCount);
+  Found := 0;
+
+  (* Recherche du scope courant vers le global *)
+  For Scope := CurScope DownTo 0 Do
+  Begin
+    For I := 1 To SymCount Do
+    Begin
+      If (SymTab[I].Name = Name) And
+         (SymTab[I].ScopeLevel = Scope) Then
+      Begin
+        Found := I;
+        Break;
+      End;
+    End;
+    If Found <> 0 Then Break;
+  End;
+
+  SymFind := Found;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFindInScope : rechercher un symbole dans une portee donnee}
+{ ------------------------------------------------------------ }
+
+Function SymFindInScope(Const Name : TString; Scope : Integer) : Integer;
+Var
+  I     : Integer;
+  Found : Integer;
+Begin
+  Inc(SymFindCount);
+  Found := 0;
+
+  For I := 1 To SymCount Do
+  Begin
+    If (SymTab[I].Name = Name) And
+       (SymTab[I].ScopeLevel = Scope) Then
+    Begin
+      Found := I;
+      Break;
+    End;
+  End;
+
+  SymFindInScope := Found;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFindGlobal : rechercher un symbole dans le scope global   }
+{ ------------------------------------------------------------ }
+
+Function SymFindGlobal(Const Name : TString) : Integer;
+Begin
+  SymFindGlobal := SymFindInScope(Name, 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ SymAdd : ajouter un symbole a la table                       }
+{ Retourne l indice du nouveau symbole ou 0 si erreur          }
+{ ------------------------------------------------------------ }
+
+Function SymAdd(Const Name : TString; Kind : Integer;
+                TypeIdx : Integer; DeclLine : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Inc(SymAddCount);
+
+  (* Verifier la limite *)
+  If SymCount >= MAX_SYM Then
+  Begin
+    WarnMsg('Limite de symboles atteinte (' + ItoS(MAX_SYM) + ')');
+    SymAdd := 0;
+    Exit;
+  End;
+
+  (* Verifier si deja declare dans le scope courant *)
+  Idx := SymFindInScope(Name, CurScope);
+  If Idx <> 0 Then
+  Begin
+    WarnMsg('Symbole "' + Name + '" deja declare ligne ' +
+            ItoS(SymTab[Idx].DeclLine));
+    SymAdd := Idx;  (* retourner l existant *)
+    Exit;
+  End;
+
+  (* Ajouter le nouveau symbole *)
+  Inc(SymCount);
+  Idx := SymCount;
+
+  SymTab[Idx].Name       := Name;
+  SymTab[Idx].AsmName    := SymMakeAsmName(Name, Kind);
+  SymTab[Idx].Kind       := Kind;
+  SymTab[Idx].TypeIdx    := TypeIdx;
+  SymTab[Idx].ScopeLevel := CurScope;
+  SymTab[Idx].DeclLine   := DeclLine;
+  SymTab[Idx].ConstVal   := 0;
+  SymTab[Idx].ConstStr   := '';
+  SymTab[Idx].ParamCount := 0;
+
+  (* Calculer l offset selon le type *)
+  Case Kind Of
+    SK_LOCAL:
+    Begin
+      Dec(SymLocalOff, 4);  (* 4 octets par variable locale *)
+      SymTab[Idx].Offset   := SymLocalOff;
+      SymTab[Idx].IsGlobal := False;
+      SymTab[Idx].IsConst  := False;
+    End;
+
+    SK_PARAM:
+    Begin
+      SymTab[Idx].Offset   := SymParamOff;
+      Inc(SymParamOff, 4);  (* 4 octets par parametre *)
+      SymTab[Idx].IsGlobal := False;
+      SymTab[Idx].IsConst  := False;
+    End;
+
+    SK_GLOBAL:
+    Begin
+      SymTab[Idx].Offset   := SymGlobalOff;
+      Inc(SymGlobalOff, 4); (* 4 octets par variable globale *)
+      SymTab[Idx].IsGlobal := True;
+      SymTab[Idx].IsConst  := False;
+    End;
+
+    SK_FUNC:
+    Begin
+      SymTab[Idx].Offset   := 0;  (* fonctions n ont pas d offset *)
+      SymTab[Idx].IsGlobal := True;
+      SymTab[Idx].IsConst  := False;
+    End;
+
+    SK_CONST:
+    Begin
+      SymTab[Idx].Offset   := SymGlobalOff;
+      Inc(SymGlobalOff, 4);
+      SymTab[Idx].IsGlobal := True;
+      SymTab[Idx].IsConst  := True;
+    End;
+
+    SK_ARRAY:
+    Begin
+      SymTab[Idx].Offset   := SymGlobalOff;
+      Inc(SymGlobalOff, 4); (* pointeur vers le bloc tableau *)
+      SymTab[Idx].IsGlobal := (CurScope = 0);
+      SymTab[Idx].IsConst  := False;
+    End;
+  Else
+    SymTab[Idx].Offset   := 0;
+    SymTab[Idx].IsGlobal := False;
+    SymTab[Idx].IsConst  := False;
+  End;
+
+  SymLastAdd := Idx;
+  SymAdd := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymAddConst : ajouter une constante avec sa valeur           }
+{ ------------------------------------------------------------ }
+
+Function SymAddConst(Const Name : TString; IntVal : LongInt;
+                     DeclLine : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := SymAdd(Name, SK_CONST, 0, DeclLine);
+  If Idx > 0 Then
+    SymTab[Idx].ConstVal := IntVal;
+  SymAddConst := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymAddConstStr : ajouter une constante chaine                }
+{ ------------------------------------------------------------ }
+
+Function SymAddConstStr(Const Name : TString; Const StrVal : TString;
+                        DeclLine : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := SymAdd(Name, SK_CONST, 0, DeclLine);
+  If Idx > 0 Then
+    SymTab[Idx].ConstStr := StrVal;
+  SymAddConstStr := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymAddFunc : ajouter une fonction avec son nombre de params  }
+{ ------------------------------------------------------------ }
+
+Function SymAddFunc(Const Name : TString; ParamCount : Integer;
+                    DeclLine : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := SymAdd(Name, SK_FUNC, 0, DeclLine);
+  If Idx > 0 Then
+    SymTab[Idx].ParamCount := ParamCount;
+  SymAddFunc := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymEnterScope : entrer dans une nouvelle portee              }
+{ ------------------------------------------------------------ }
+
+Procedure SymEnterScope;
+Begin
+  If SymScopeTop >= MAX_SCOPE Then
+  Begin
+    WarnMsg('Profondeur de portee maximale atteinte');
+    Exit;
+  End;
+
+  Inc(SymScopeTop);
+  SymScopeStack[SymScopeTop] := CurScope;
+  Inc(CurScope);
+
+  (* Reinitialiser les offsets locaux pour la nouvelle portee *)
+  SymLocalOff := 0;
+  SymParamOff := 8;  (* EBP+8 pour premier parametre *)
+End;
+
+{ ------------------------------------------------------------ }
+{ SymLeaveScope : quitter la portee courante                   }
+{ ------------------------------------------------------------ }
+
+Procedure SymLeaveScope;
+Begin
+  If SymScopeTop <= 0 Then
+  Begin
+    WarnMsg('Pas de portee a quitter');
+    Exit;
+  End;
+
+  CurScope := SymScopeStack[SymScopeTop];
+  Dec(SymScopeTop);
+End;
+
+{ ------------------------------------------------------------ }
+{ SymGetByIndex : obtenir un symbole par son index             }
+{ ------------------------------------------------------------ }
+
+Function SymGetName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 1) And (Idx <= SymCount) Then
+    SymGetName := SymTab[Idx].Name
+  Else
+    SymGetName := '';
+End;
+
+Function SymGetAsmName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 1) And (Idx <= SymCount) Then
+    SymGetAsmName := SymTab[Idx].AsmName
+  Else
+    SymGetAsmName := '';
+End;
+
+Function SymGetKind(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 1) And (Idx <= SymCount) Then
+    SymGetKind := SymTab[Idx].Kind
+  Else
+    SymGetKind := SK_NONE;
+End;
+
+Function SymGetOffset(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 1) And (Idx <= SymCount) Then
+    SymGetOffset := SymTab[Idx].Offset
+  Else
+    SymGetOffset := 0;
+End;
+
+Function SymGetConstVal(Idx : Integer) : LongInt;
+Begin
+  If (Idx >= 1) And (Idx <= SymCount) Then
+    SymGetConstVal := SymTab[Idx].ConstVal
+  Else
+    SymGetConstVal := 0;
+End;
+
+Function SymGetConstStr(Idx : Integer) : TString;
+Begin
+  If (Idx >= 1) And (Idx <= SymCount) Then
+    SymGetConstStr := SymTab[Idx].ConstStr
+  Else
+    SymGetConstStr := '';
+End;
+
+Function SymIsGlobal(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 1) And (Idx <= SymCount) Then
+    SymIsGlobal := SymTab[Idx].IsGlobal
+  Else
+    SymIsGlobal := False;
+End;
+
+Function SymIsConst(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 1) And (Idx <= SymCount) Then
+    SymIsConst := SymTab[Idx].IsConst
+  Else
+    SymIsConst := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpSymState : afficher l etat de la table des symboles      }
+{ ------------------------------------------------------------ }
+
+Procedure DumpSymState;
+Var I : Integer;
+Begin
+  WriteLn('--- Symbol Table State ---');
+  WriteLn('  SymInitialized : ', SymInitialized);
+  WriteLn('  SymCount       : ', SymCount);
+  WriteLn('  CurScope       : ', CurScope);
+  WriteLn('  SymScopeTop    : ', SymScopeTop);
+  WriteLn('  SymGlobalOff   : ', SymGlobalOff);
+  WriteLn('  SymLocalOff    : ', SymLocalOff);
+  WriteLn('  SymParamOff    : ', SymParamOff);
+  WriteLn('  SymFindCount   : ', SymFindCount);
+  WriteLn('  SymAddCount    : ', SymAddCount);
+
+  If SymCount > 0 Then
+  Begin
+    WriteLn('--- Symbols ---');
+    For I := 1 To SymCount Do
+    Begin
+      WriteLn('  [', I, '] ', SymTab[I].Name, ' -> ', SymTab[I].AsmName,
+              ' (', SymTypeName(SymTab[I].Kind), ')',
+              ' scope=', SymTab[I].ScopeLevel,
+              ' off=', SymTab[I].Offset,
+              ' line=', SymTab[I].DeclLine);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 04)                             }
+{ ------------------------------------------------------------ }
+
+Function IsSymInitialized : Boolean;
+Begin
+  IsSymInitialized := SymInitialized;
+End;
+
+Function IsSymEmpty : Boolean;
+Begin
+  IsSymEmpty := (SymCount = 0);
+End;
+
+Function GetSymCount : Integer;
+Begin
+  GetSymCount := SymCount;
+End;
+
+Function GetCurScope : Integer;
+Begin
+  GetCurScope := CurScope;
+End;
+
+Function GetSymGlobalOff : Integer;
+Begin
+  GetSymGlobalOff := SymGlobalOff;
+End;
+
+Function GetSymLocalOff : Integer;
+Begin
+  GetSymLocalOff := SymLocalOff;
+End;
+
+Function GetSymParamOff : Integer;
+Begin
+  GetSymParamOff := SymParamOff;
+End;
+
+Function GetSymFindCount : LongInt;
+Begin
+  GetSymFindCount := SymFindCount;
+End;
+
+Function GetSymAddCount : LongInt;
+Begin
+  GetSymAddCount := SymAddCount;
+End;
+
+Function GetSymStatus : TString;
+Begin
+  If Not SymInitialized Then
+    GetSymStatus := 'Not initialized'
+  Else
+    GetSymStatus := ItoS(SymCount) + ' symbols, scope=' + ItoS(CurScope);
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -3157,6 +3712,9 @@ Begin
 
   { Initialiser la reconnaissance des mots-cles }
   InitKwState;
+
+  { Initialiser la table des symboles }
+  InitSymState;
 
   { Analyser les arguments }
   ParseArgs;
@@ -3189,8 +3747,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-03 implementes');
-  WriteLn('PHPCW32: Les TODOs 04-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-04 implementes');
+  WriteLn('PHPCW32: Les TODOs 05-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
