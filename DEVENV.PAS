@@ -5725,6 +5725,24 @@ End;
 
 Procedure InitEditor(Var Ed: TEditor); Forward;
 
+{ --- Chercher un editeur deja ouvert avec le meme fichier --- }
+
+Function FindEditorByFileName(FN: String): Integer;
+Var
+ I: Integer;
+ A, B: String;
+Begin
+ FindEditorByFileName := -1;
+ A := UpCaseStr(FN);
+ For I := 0 To WinMgr.WinCount - 1 Do Begin
+  B := UpCaseStr(WinMgr.Windows[I].FileName);
+  If A = B Then Begin
+   FindEditorByFileName := I;
+   Exit;
+  End;
+ End;
+End;
+
 { --- Creer une nouvelle fenetre d editeur --- }
 
 Procedure CreateEditorWindow(AFileName: String);
@@ -13459,7 +13477,15 @@ Begin
   StartPage.Visible := False;
   FullRepaintNeeded := True;
  End;
- { Ouvrir dans l editeur }
+ { Verifier si le fichier est deja ouvert }
+ WIdx := FindEditorByFileName(FullPath);
+ If WIdx >= 0 Then Begin
+  { Activer l editeur existant }
+  ActivateWindow(WIdx);
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ { Ouvrir dans un nouvel editeur }
  CreateEditorWindow(FullPath);
  WIdx := WinMgr.ActiveIdx;
  LoadFile(Editors[WIdx]^.Buffer, FullPath);
@@ -27057,7 +27083,14 @@ Begin
   FullRepaintNeeded := True;
   Exit;
  End;
- { Fichier source : ouvrir dans l editeur }
+ { Fichier source : verifier si deja ouvert }
+ Idx := FindEditorByFileName(FN);
+ If Idx >= 0 Then Begin
+  ActivateWindow(Idx);
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ { Ouvrir dans un nouvel editeur }
  CreateEditorWindow(FN);
  Idx := WinMgr.ActiveIdx;
  { Charger le fichier dans l editeur alloue }
@@ -27249,7 +27282,14 @@ Begin
   {$I+}
   If IOResult <> 0 Then ;
  End;
- { Ouvrir dans l editeur }
+ { Verifier si le fichier est deja ouvert }
+ WIdx := FindEditorByFileName(FullPath);
+ If WIdx >= 0 Then Begin
+  ActivateWindow(WIdx);
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ { Ouvrir dans un nouvel editeur }
  CreateEditorWindow(FullPath);
  WIdx := WinMgr.ActiveIdx;
  LoadFile(Editors[WIdx]^.Buffer, FullPath);
