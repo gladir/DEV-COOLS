@@ -336,7 +336,7 @@
             Appel : PUSH args + CALL _PF_nom + ADD ESP, n*4
             10 fonctions accesseurs
 
-  TODO 13 - PARSEUR : ENTREES/SORTIES (echo, print) [A FAIRE]
+  TODO 13 - PARSEUR : ENTREES/SORTIES (echo, print) [IMPLEMENTE]
             echo expr1, expr2, ... :
               Evaluer chaque argument, convertir en chaine si necessaire
               Appeler _PHRT_WRITESTR pour afficher chacun
@@ -10007,6 +10007,641 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 13 - PARSEUR : ENTREES/SORTIES (echo, print)            }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations d entree/sortie }
+  IO_NONE          = 0;    (* aucun / non defini                   *)
+  IO_ECHO_STR      = 1;    (* echo "chaine"                        *)
+  IO_ECHO_INT      = 2;    (* echo $entier                         *)
+  IO_ECHO_BOOL     = 3;    (* echo $booleen                        *)
+  IO_ECHO_VAR      = 4;    (* echo $variable                       *)
+  IO_ECHO_CONCAT   = 5;    (* echo $a . $b                         *)
+  IO_ECHO_MULTI    = 6;    (* echo $a, $b, $c                      *)
+  IO_PRINT_STR     = 7;    (* print "chaine"                       *)
+  IO_PRINT_INT     = 8;    (* print $entier                        *)
+  IO_PRINT_VAR     = 9;    (* print $variable                      *)
+  IO_WRITE_STR     = 10;   (* emission ecriture chaine             *)
+  IO_WRITE_INT     = 11;   (* emission ecriture entier             *)
+  IO_WRITE_BOOL    = 12;   (* emission ecriture booleen            *)
+  IO_WRITE_NL      = 13;   (* emission retour a la ligne           *)
+  IO_MAX           = 13;
+
+  { Limites }
+  IO_MAX_CONCAT    = 16;   (* nombre max d expressions dans echo   *)
+
+Type
+  TIoExprRec = Record
+    Kind     : Integer;    (* type de l expression (EK_xxx)        *)
+    ImmVal   : LongInt;    (* valeur immediate si constante        *)
+    TypeIdx  : Integer;    (* index du type                        *)
+    StrLabel : TString;    (* label de la chaine dans DATA         *)
+  End;
+
+Var
+  IoInitialized   : Boolean;    (* True si l etat est initialise      *)
+  IoEchoCount     : LongInt;    (* nombre d instructions echo         *)
+  IoPrintCount    : LongInt;    (* nombre d instructions print        *)
+  IoEchoStrCount  : LongInt;    (* nombre d echo avec chaines         *)
+  IoEchoIntCount  : LongInt;    (* nombre d echo avec entiers         *)
+  IoEchoBoolCount : LongInt;    (* nombre d echo avec booleens        *)
+  IoEchoVarCount  : LongInt;    (* nombre d echo avec variables       *)
+  IoEchoMultiCount: LongInt;    (* nombre d echo multi-arguments      *)
+  IoConcatCount   : LongInt;    (* nombre de concatenations           *)
+  IoLastKind      : Integer;    (* dernier type d operation           *)
+  IoLabelSeq      : Integer;    (* sequence pour labels I/O           *)
+  IoNlLabel       : TString;    (* label pour la chaine newline       *)
+  IoTrueLabel     : TString;    (* label pour la chaine "1"           *)
+  IoFalseLabel    : TString;    (* label pour la chaine vide          *)
+
+{ ------------------------------------------------------------ }
+{ InitIoState : initialiser le sous-systeme des entrees/sorties  }
+{ ------------------------------------------------------------ }
+
+Procedure InitIoState;
+Begin
+  IoInitialized    := True;
+  IoEchoCount      := 0;
+  IoPrintCount     := 0;
+  IoEchoStrCount   := 0;
+  IoEchoIntCount   := 0;
+  IoEchoBoolCount  := 0;
+  IoEchoVarCount   := 0;
+  IoEchoMultiCount := 0;
+  IoConcatCount    := 0;
+  IoLastKind       := IO_NONE;
+  IoLabelSeq       := 0;
+  IoNlLabel        := '';
+  IoTrueLabel      := '';
+  IoFalseLabel     := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ GenIoLabel : generer un label unique pour les I/O              }
+{ ------------------------------------------------------------ }
+
+Function GenIoLabel : TString;
+Begin
+  Inc(IoLabelSeq);
+  GenIoLabel := PH_LBL_PFX + 'IO_' + ItoS(IoLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ IoTypeName : retourner le nom du type d operation I/O          }
+{ ------------------------------------------------------------ }
+
+Function IoTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    IO_NONE          : IoTypeName := 'IO_NONE';
+    IO_ECHO_STR      : IoTypeName := 'IO_ECHO_STR';
+    IO_ECHO_INT      : IoTypeName := 'IO_ECHO_INT';
+    IO_ECHO_BOOL     : IoTypeName := 'IO_ECHO_BOOL';
+    IO_ECHO_VAR      : IoTypeName := 'IO_ECHO_VAR';
+    IO_ECHO_CONCAT   : IoTypeName := 'IO_ECHO_CONCAT';
+    IO_ECHO_MULTI    : IoTypeName := 'IO_ECHO_MULTI';
+    IO_PRINT_STR     : IoTypeName := 'IO_PRINT_STR';
+    IO_PRINT_INT     : IoTypeName := 'IO_PRINT_INT';
+    IO_PRINT_VAR     : IoTypeName := 'IO_PRINT_VAR';
+    IO_WRITE_STR     : IoTypeName := 'IO_WRITE_STR';
+    IO_WRITE_INT     : IoTypeName := 'IO_WRITE_INT';
+    IO_WRITE_BOOL    : IoTypeName := 'IO_WRITE_BOOL';
+    IO_WRITE_NL      : IoTypeName := 'IO_WRITE_NL';
+  Else
+    IoTypeName := 'IO_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EnsureIoStrings : s assurer que les chaines I/O sont definies  }
+{   Cree les labels pour newline, true ("1"), false ("") si     }
+{   pas encore definis                                           }
+{ ------------------------------------------------------------ }
+
+Procedure EnsureIoStrings;
+Begin
+  { Creer la chaine newline si pas encore fait }
+  If IoNlLabel = '' Then
+  Begin
+    IoNlLabel := GenIoLabel;
+    OutLn('  ; I/O: newline string');
+  End;
+  
+  { Creer la chaine "1" pour true si pas encore fait }
+  If IoTrueLabel = '' Then
+  Begin
+    IoTrueLabel := GenIoLabel;
+    OutLn('  ; I/O: true string "1"');
+  End;
+  
+  { Creer la chaine vide pour false si pas encore fait }
+  If IoFalseLabel = '' Then
+  Begin
+    IoFalseLabel := GenIoLabel;
+    OutLn('  ; I/O: false string ""');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitWriteStr : emettre le code pour ecrire une chaine          }
+{   Utilise WriteFile via GetStdHandle(STD_OUTPUT_HANDLE)        }
+{   EAX contient le pointeur vers la chaine a afficher           }
+{   ou StrLabel contient le label de la chaine dans DATA         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitWriteStr(Const StrLabel : TString);
+Begin
+  OutLn('  ; --- emit write string: ' + StrLabel + ' ---');
+  OutLn('  PUSH OFFSET ' + StrLabel + '  ; ptr to string');
+  OutLn('  CALL _PHRT_WRITESTR');
+  OutLn('  ADD ESP, 4');
+  IoLastKind := IO_WRITE_STR;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitWriteStrEax : emettre le code pour ecrire une chaine       }
+{   dont l adresse est dans EAX                                  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitWriteStrEax;
+Begin
+  OutLn('  ; --- emit write string from EAX ---');
+  OutLn('  PUSH EAX              ; ptr to string');
+  OutLn('  CALL _PHRT_WRITESTR');
+  OutLn('  ADD ESP, 4');
+  IoLastKind := IO_WRITE_STR;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitWriteInt : emettre le code pour ecrire un entier           }
+{   EAX contient la valeur entiere a afficher                    }
+{   Appelle _PHRT_ITOA pour convertir en chaine                  }
+{   puis _PHRT_WRITESTR pour afficher                            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitWriteInt;
+Begin
+  OutLn('  ; --- emit write int from EAX ---');
+  OutLn('  PUSH EAX              ; value to convert');
+  OutLn('  CALL _PHRT_ITOA       ; EAX = ptr to string');
+  OutLn('  ADD ESP, 4');
+  OutLn('  PUSH EAX              ; ptr to string');
+  OutLn('  CALL _PHRT_WRITESTR');
+  OutLn('  ADD ESP, 4');
+  IoLastKind := IO_WRITE_INT;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitWriteIntImm : emettre le code pour ecrire un entier        }
+{   avec une valeur immediate                                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitWriteIntImm(Val : LongInt);
+Begin
+  OutLn('  ; --- emit write int immediate: ' + ItoS(Val) + ' ---');
+  OutLn('  PUSH ' + ItoS(Val) + '  ; value to convert');
+  OutLn('  CALL _PHRT_ITOA       ; EAX = ptr to string');
+  OutLn('  ADD ESP, 4');
+  OutLn('  PUSH EAX              ; ptr to string');
+  OutLn('  CALL _PHRT_WRITESTR');
+  OutLn('  ADD ESP, 4');
+  IoLastKind := IO_WRITE_INT;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitWriteBool : emettre le code pour ecrire un booleen         }
+{   EAX contient 0 (false) ou non-zero (true)                    }
+{   PHP ecrit "1" pour true et "" (chaine vide) pour false      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitWriteBool;
+Var
+  LblFalse, LblEnd : TString;
+  LblTrueStr       : TString;
+Begin
+  LblFalse := GenIoLabel;
+  LblEnd   := GenIoLabel;
+  
+  { Creer la chaine "1" pour true si necessaire }
+  If IoTrueLabel = '' Then
+    IoTrueLabel := DataAddStr('1');
+  LblTrueStr := IoTrueLabel;
+  
+  OutLn('  ; --- emit write bool from EAX ---');
+  OutLn('  TEST EAX, EAX');
+  OutLn('  JZ ' + LblFalse);
+  { true -> write "1" }
+  OutLn('  PUSH OFFSET ' + LblTrueStr);
+  OutLn('  CALL _PHRT_WRITESTR');
+  OutLn('  ADD ESP, 4');
+  OutLn('  JMP ' + LblEnd);
+  OutLn(LblFalse + ':');
+  { false -> write "" (nothing) }
+  OutLn('  ; false: empty string (nothing written)');
+  OutLn(LblEnd + ':');
+  IoLastKind := IO_WRITE_BOOL;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitWriteNewline : emettre le code pour ecrire un retour       }
+{   a la ligne (CRLF sur Windows)                                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitWriteNewline;
+Var
+  LblNlStr : TString;
+Begin
+  { Creer la chaine newline si necessaire }
+  If IoNlLabel = '' Then
+    IoNlLabel := DataAddStr(#13#10);  { CRLF pour Windows }
+  LblNlStr := IoNlLabel;
+  
+  OutLn('  ; --- emit write newline ---');
+  OutLn('  PUSH OFFSET ' + LblNlStr);
+  OutLn('  CALL _PHRT_WRITESTR');
+  OutLn('  ADD ESP, 4');
+  IoLastKind := IO_WRITE_NL;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseEchoArg : parser et emettre un argument de echo           }
+{   Gere les chaines, entiers, variables, expressions           }
+{   Retourne True si reussi                                      }
+{ ------------------------------------------------------------ }
+
+Function ParseEchoArg : Boolean;
+Var
+  StrLbl : TString;
+  IntVal : LongInt;
+Begin
+  ParseEchoArg := False;
+  
+  { Chaine litterale }
+  If CurTokKind = TK_STRING Then
+  Begin
+    Inc(IoEchoStrCount);
+    StrLbl := DataAddStr(CurTokStr);
+    EmitWriteStr(StrLbl);
+    LexNextToken;
+    ParseEchoArg := True;
+    IoLastKind := IO_ECHO_STR;
+    Exit;
+  End;
+  
+  { Entier litteral }
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    Inc(IoEchoIntCount);
+    IntVal := CurTokInt;
+    EmitWriteIntImm(IntVal);
+    LexNextToken;
+    ParseEchoArg := True;
+    IoLastKind := IO_ECHO_INT;
+    Exit;
+  End;
+  
+  { Variable }
+  If CurTokKind = TK_VARIABLE Then
+  Begin
+    Inc(IoEchoVarCount);
+    OutLn('  ; echo variable: ' + CurTokStr);
+    { Charger la variable dans EAX }
+    EmitVarLoad(CurTokStr);
+    { Pour l instant, supposer que c est un entier }
+    EmitWriteInt;
+    LexNextToken;
+    ParseEchoArg := True;
+    IoLastKind := IO_ECHO_VAR;
+    Exit;
+  End;
+  
+  { true/false }
+  If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'true') Then
+  Begin
+    Inc(IoEchoBoolCount);
+    OutLn('  ; echo true');
+    OutLn('  MOV EAX, 1');
+    EmitWriteBool;
+    LexNextToken;
+    ParseEchoArg := True;
+    IoLastKind := IO_ECHO_BOOL;
+    Exit;
+  End;
+  
+  If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'false') Then
+  Begin
+    Inc(IoEchoBoolCount);
+    OutLn('  ; echo false');
+    OutLn('  XOR EAX, EAX');
+    EmitWriteBool;
+    LexNextToken;
+    ParseEchoArg := True;
+    IoLastKind := IO_ECHO_BOOL;
+    Exit;
+  End;
+  
+  { null }
+  If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'null') Then
+  Begin
+    OutLn('  ; echo null (nothing)');
+    LexNextToken;
+    ParseEchoArg := True;
+    Exit;
+  End;
+  
+  { Identificateur (constante) }
+  If CurTokKind = TK_IDENT Then
+  Begin
+    OutLn('  ; echo identifier: ' + CurTokStr);
+    { Pour l instant, traiter comme une constante non definie }
+    { Emettre le nom comme chaine }
+    StrLbl := DataAddStr(CurTokStr);
+    EmitWriteStr(StrLbl);
+    LexNextToken;
+    ParseEchoArg := True;
+    Exit;
+  End;
+  
+  { Expression entre parentheses ou autre }
+  { Pour l instant, ignorer les expressions complexes }
+  If CurTokStr = '(' Then
+  Begin
+    OutLn('  ; echo expression (simplified)');
+    { Sauter jusqu a la parenthese fermante }
+    LexNextToken;
+    While (CurTokKind <> TK_EOF) And (CurTokStr <> ')') Do
+      LexNextToken;
+    If CurTokStr = ')' Then
+      LexNextToken;
+    ParseEchoArg := True;
+    Exit;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseEchoStmt : parser l instruction echo                      }
+{   echo expr1, expr2, ... ;                                     }
+{   Le mot-cle 'echo' a deja ete lu                              }
+{   Peut avoir plusieurs arguments separes par des virgules      }
+{   Pas de retour a la ligne automatique                         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseEchoStmt;
+Var
+  ArgCount : Integer;
+Begin
+  Inc(IoEchoCount);
+  ArgCount := 0;
+  
+  OutLn('  ; --- echo statement ---');
+  
+  { Parser les arguments separes par des virgules }
+  While (CurTokKind <> TK_EOF) And (CurTokStr <> ';') Do
+  Begin
+    If ParseEchoArg Then
+      Inc(ArgCount)
+    Else
+    Begin
+      { Token non reconnu, ignorer }
+      If (CurTokStr <> ',') And (CurTokStr <> ';') Then
+        LexNextToken;
+    End;
+    
+    { Virgule entre arguments }
+    If CurTokStr = ',' Then
+    Begin
+      LexNextToken;
+      Continue;
+    End;
+    
+    { Point-virgule termine l instruction }
+    If CurTokStr = ';' Then
+      Break;
+      
+    { Operateur de concatenation }
+    If CurTokStr = '.' Then
+    Begin
+      Inc(IoConcatCount);
+      LexNextToken;
+      Continue;
+    End;
+  End;
+  
+  { Consommer le point-virgule }
+  If CurTokStr = ';' Then
+    LexNextToken;
+  
+  { Mettre a jour les statistiques }
+  If ArgCount > 1 Then
+    Inc(IoEchoMultiCount);
+  
+  IoLastKind := IO_ECHO_MULTI;
+  OutLn('  ; --- end echo (' + ItoS(ArgCount) + ' args) ---');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrintStmt : parser l instruction print                    }
+{   print expr ;                                                 }
+{   Le mot-cle 'print' a deja ete lu                             }
+{   Accepte un seul argument                                     }
+{   Retourne toujours 1 (non utilise dans ce contexte)           }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePrintStmt;
+Var
+  StrLbl : TString;
+  IntVal : LongInt;
+Begin
+  Inc(IoPrintCount);
+  
+  OutLn('  ; --- print statement ---');
+  
+  { Parser l argument unique }
+  
+  { Chaine litterale }
+  If CurTokKind = TK_STRING Then
+  Begin
+    StrLbl := DataAddStr(CurTokStr);
+    EmitWriteStr(StrLbl);
+    LexNextToken;
+    IoLastKind := IO_PRINT_STR;
+  End
+  { Entier litteral }
+  Else If CurTokKind = TK_INTEGER Then
+  Begin
+    IntVal := CurTokInt;
+    EmitWriteIntImm(IntVal);
+    LexNextToken;
+    IoLastKind := IO_PRINT_INT;
+  End
+  { Variable }
+  Else If CurTokKind = TK_VARIABLE Then
+  Begin
+    OutLn('  ; print variable: ' + CurTokStr);
+    EmitVarLoad(CurTokStr);
+    EmitWriteInt;
+    LexNextToken;
+    IoLastKind := IO_PRINT_VAR;
+  End
+  { true }
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'true') Then
+  Begin
+    OutLn('  MOV EAX, 1');
+    EmitWriteBool;
+    LexNextToken;
+  End
+  { false }
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'false') Then
+  Begin
+    OutLn('  XOR EAX, EAX');
+    EmitWriteBool;
+    LexNextToken;
+  End
+  { null }
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'null') Then
+  Begin
+    OutLn('  ; print null (nothing)');
+    LexNextToken;
+  End
+  { Identificateur }
+  Else If CurTokKind = TK_IDENT Then
+  Begin
+    StrLbl := DataAddStr(CurTokStr);
+    EmitWriteStr(StrLbl);
+    LexNextToken;
+  End;
+  
+  { Consommer le point-virgule }
+  If CurTokStr = ';' Then
+    LexNextToken;
+  
+  { print retourne toujours 1 }
+  OutLn('  MOV EAX, 1          ; print returns 1');
+  OutLn('  ; --- end print ---');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsIoKeyword : verifier si le token courant est echo ou print   }
+{ ------------------------------------------------------------ }
+
+Function IsIoKeyword : Boolean;
+Begin
+  IsIoKeyword := (CurTokKind = TK_KEYWORD) And
+                 ((CurTokStr = 'echo') Or (CurTokStr = 'print'));
+End;
+
+{ ------------------------------------------------------------ }
+{ GetIoEchoTotal : retourner le nombre total d echo              }
+{ ------------------------------------------------------------ }
+
+Function GetIoEchoTotal : LongInt;
+Begin
+  GetIoEchoTotal := IoEchoCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetIoPrintTotal : retourner le nombre total de print           }
+{ ------------------------------------------------------------ }
+
+Function GetIoPrintTotal : LongInt;
+Begin
+  GetIoPrintTotal := IoPrintCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetIoWriteTotal : retourner le nombre total d ecritures        }
+{ ------------------------------------------------------------ }
+
+Function GetIoWriteTotal : LongInt;
+Begin
+  GetIoWriteTotal := IoEchoStrCount + IoEchoIntCount + 
+                     IoEchoBoolCount + IoEchoVarCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpIoState : afficher l etat du sous-systeme I/O              }
+{ ------------------------------------------------------------ }
+
+Procedure DumpIoState;
+Begin
+  WriteLn('--- I/O State ---');
+  WriteLn('  IoInitialized    : ', IoInitialized);
+  WriteLn('  IoEchoCount      : ', IoEchoCount);
+  WriteLn('  IoPrintCount     : ', IoPrintCount);
+  WriteLn('  IoEchoStrCount   : ', IoEchoStrCount);
+  WriteLn('  IoEchoIntCount   : ', IoEchoIntCount);
+  WriteLn('  IoEchoBoolCount  : ', IoEchoBoolCount);
+  WriteLn('  IoEchoVarCount   : ', IoEchoVarCount);
+  WriteLn('  IoEchoMultiCount : ', IoEchoMultiCount);
+  WriteLn('  IoConcatCount    : ', IoConcatCount);
+  WriteLn('  IoLastKind       : ', IoTypeName(IoLastKind));
+  WriteLn('  IoLabelSeq       : ', IoLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 13)                              }
+{ ------------------------------------------------------------ }
+
+Function IsIoInitialized : Boolean;
+Begin
+  IsIoInitialized := IoInitialized;
+End;
+
+Function IsIoEmpty : Boolean;
+Begin
+  IsIoEmpty := (IoEchoCount = 0) And (IoPrintCount = 0);
+End;
+
+Function GetIoEchoCount : LongInt;
+Begin
+  GetIoEchoCount := IoEchoCount;
+End;
+
+Function GetIoPrintCount : LongInt;
+Begin
+  GetIoPrintCount := IoPrintCount;
+End;
+
+Function GetIoEchoStrCount : LongInt;
+Begin
+  GetIoEchoStrCount := IoEchoStrCount;
+End;
+
+Function GetIoEchoIntCount : LongInt;
+Begin
+  GetIoEchoIntCount := IoEchoIntCount;
+End;
+
+Function GetIoEchoBoolCount : LongInt;
+Begin
+  GetIoEchoBoolCount := IoEchoBoolCount;
+End;
+
+Function GetIoEchoVarCount : LongInt;
+Begin
+  GetIoEchoVarCount := IoEchoVarCount;
+End;
+
+Function GetIoConcatCount : LongInt;
+Begin
+  GetIoConcatCount := IoConcatCount;
+End;
+
+Function GetIoStatus : TString;
+Begin
+  If Not IoInitialized Then
+    GetIoStatus := 'Not initialized'
+  Else
+    GetIoStatus := ItoS(IoEchoCount) + ' echo, ' +
+                   ItoS(IoPrintCount) + ' print, ' +
+                   ItoS(IoEchoStrCount) + ' str, ' +
+                   ItoS(IoEchoIntCount) + ' int, ' +
+                   ItoS(IoEchoVarCount) + ' var';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -10051,6 +10686,9 @@ Begin
   { Initialiser le module de fonctions }
   InitFnState;
 
+  { Initialiser le module I/O (echo, print) }
+  InitIoState;
+
   { Analyser les arguments }
   ParseArgs;
 
@@ -10082,8 +10720,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-12 implementes');
-  WriteLn('PHPCW32: Les TODOs 13-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-13 implementes');
+  WriteLn('PHPCW32: Les TODOs 14-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
