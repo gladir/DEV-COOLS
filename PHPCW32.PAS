@@ -159,7 +159,7 @@
               int <-> string, int <-> bool, string <-> bool
             10 fonctions accesseurs
 
-  TODO 06 - LITTERAUX ET CONSTANTES [A FAIRE]
+  TODO 06 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..2147483647 (32 bits signe)
             Entiers hexadecimaux : 0xFF, binaires : 0b1010, octaux : 0o777
             Separateur de chiffres : 1_000_000 (ignore le souligne)
@@ -4113,6 +4113,704 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 06 - LITTERAUX ET CONSTANTES               [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  (* Types de resultats d expression (TExprKind) *)
+  EK_NONE   = 0;    (* expression invalide ou non initialisee    *)
+  EK_IMM    = 1;    (* valeur immediate (constante)              *)
+  EK_EAX    = 2;    (* resultat dans EAX                         *)
+  EK_MEM    = 3;    (* reference memoire (variable/tableau)      *)
+
+  (* Types de donnees dans le segment DATA (TDataKind) *)
+  DK_DWORD     = 0; (* DWORD (entier 32 bits)                    *)
+  DK_BYTE      = 1; (* BYTE (octet)                              *)
+  DK_STR       = 2; (* chaine terminee par $00                   *)
+  DK_ARRAY_BLK = 3; (* bloc de tableau (size + elements)         *)
+
+  (* Limites pour le segment DATA *)
+  MAX_DATA_ENTRIES = 512;   (* nombre max d entrees DATA         *)
+  MAX_DATA_STRSIZE = 4096;  (* taille max d une chaine DATA      *)
+
+Type
+  (* Valeur d expression evaluee *)
+  TExprVal = Record
+    Kind    : Integer;      (* EK_NONE, EK_IMM, EK_EAX, EK_MEM   *)
+    ImmVal  : LongInt;      (* valeur immediate si EK_IMM        *)
+    TypeIdx : Integer;      (* indice du type dans TypeTab       *)
+    Offset  : Integer;      (* offset memoire si EK_MEM          *)
+    SymIdx  : Integer;      (* indice symbole si EK_MEM          *)
+  End;
+
+  (* Entree dans le segment DATA *)
+  TDataRec = Record
+    LblName   : TString;    (* label ASM (_PK_0, _PA_1, etc.)    *)
+    Kind      : Integer;    (* DK_DWORD, DK_STR, etc.            *)
+    IntVal    : LongInt;    (* valeur si DK_DWORD                *)
+    StrVal    : TString;    (* chaine si DK_STR                  *)
+    ElemCount : Integer;    (* nombre d elements si DK_ARRAY_BLK *)
+  End;
+
+  TDataArray = Array[1..MAX_DATA_ENTRIES] Of TDataRec;
+
+Var
+  LtInitialized : Boolean;    (* True si module initialise         *)
+  LtLabelSeq    : Integer;    (* sequence pour labels uniques      *)
+  DataTab       : TDataArray; (* table des donnees DATA            *)
+  DataCount     : Integer;    (* nombre d entrees DATA             *)
+  LtLastLabel   : TString;    (* dernier label genere              *)
+  LtStrCount    : Integer;    (* nombre de chaines ajoutees        *)
+  LtDWordCount  : Integer;    (* nombre de DWORDs ajoutes          *)
+  LtArrayCount  : Integer;    (* nombre de tableaux ajoutes        *)
+  LtTotalBytes  : LongInt;    (* total octets segment DATA         *)
+  LtFindCount   : LongInt;    (* nombre de recherches              *)
+  LtAddCount    : LongInt;    (* nombre d ajouts                   *)
+
+{ ------------------------------------------------------------ }
+{ InitLitState : initialiser l etat des litteraux et DATA      }
+{ ------------------------------------------------------------ }
+
+Procedure InitLitState;
+Var I : Integer;
+Begin
+  LtInitialized := True;
+  LtLabelSeq    := 0;
+  DataCount     := 0;
+  LtLastLabel   := '';
+  LtStrCount    := 0;
+  LtDWordCount  := 0;
+  LtArrayCount  := 0;
+  LtTotalBytes  := 0;
+  LtFindCount   := 0;
+  LtAddCount    := 0;
+
+  (* Initialiser la table DATA a vide *)
+  For I := 1 To MAX_DATA_ENTRIES Do
+  Begin
+    DataTab[I].LblName   := '';
+    DataTab[I].Kind      := DK_DWORD;
+    DataTab[I].IntVal    := 0;
+    DataTab[I].StrVal    := '';
+    DataTab[I].ElemCount := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLtLabel : generer un label unique _PL_N                   }
+{ ------------------------------------------------------------ }
+
+Function GenLtLabel : TString;
+Begin
+  Inc(LtLabelSeq);
+  LtLastLabel := '_PL_' + ItoS(LtLabelSeq);
+  GenLtLabel := LtLastLabel;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrLabel : generer un label pour constante chaine _PK_N   }
+{ ------------------------------------------------------------ }
+
+Function GenStrLabel : TString;
+Begin
+  Inc(LtLabelSeq);
+  LtLastLabel := '_PK_' + ItoS(LtLabelSeq);
+  GenStrLabel := LtLastLabel;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenArrayLabel : generer un label pour tableau _PA_N          }
+{ ------------------------------------------------------------ }
+
+Function GenArrayLabel : TString;
+Begin
+  Inc(LtLabelSeq);
+  LtLastLabel := '_PA_' + ItoS(LtLabelSeq);
+  GenArrayLabel := LtLastLabel;
+End;
+
+{ ------------------------------------------------------------ }
+{ LtExprKindName : nom textuel d un TExprKind                  }
+{ ------------------------------------------------------------ }
+
+Function LtExprKindName(K : Integer) : TString;
+Begin
+  Case K Of
+    EK_NONE : LtExprKindName := 'EK_NONE';
+    EK_IMM  : LtExprKindName := 'EK_IMM';
+    EK_EAX  : LtExprKindName := 'EK_EAX';
+    EK_MEM  : LtExprKindName := 'EK_MEM';
+  Else
+    LtExprKindName := 'EK_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LtDataKindName : nom textuel d un TDataKind                  }
+{ ------------------------------------------------------------ }
+
+Function LtDataKindName(K : Integer) : TString;
+Begin
+  Case K Of
+    DK_DWORD     : LtDataKindName := 'DK_DWORD';
+    DK_BYTE      : LtDataKindName := 'DK_BYTE';
+    DK_STR       : LtDataKindName := 'DK_STR';
+    DK_ARRAY_BLK : LtDataKindName := 'DK_ARRAY_BLK';
+  Else
+    LtDataKindName := 'DK_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAdd : ajouter une entree generique dans DATA             }
+{ Retourne l indice de l entree ou -1 si erreur                }
+{ ------------------------------------------------------------ }
+
+Function DataAdd(Const LblName : TString; Kind : Integer;
+                 IntVal : LongInt; Const StrVal : TString;
+                 ElemCount : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  Inc(LtAddCount);
+
+  (* Verifier la limite *)
+  If DataCount >= MAX_DATA_ENTRIES Then
+  Begin
+    WarnMsg('Limite de donnees DATA atteinte (' +
+            ItoS(MAX_DATA_ENTRIES) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+
+  (* Ajouter l entree *)
+  Inc(DataCount);
+  Idx := DataCount;
+  DataTab[Idx].LblName   := LblName;
+  DataTab[Idx].Kind      := Kind;
+  DataTab[Idx].IntVal    := IntVal;
+  DataTab[Idx].StrVal    := StrVal;
+  DataTab[Idx].ElemCount := ElemCount;
+
+  (* Mettre a jour les compteurs *)
+  Case Kind Of
+    DK_DWORD:
+    Begin
+      Inc(LtDWordCount);
+      Inc(LtTotalBytes, 4);
+    End;
+    DK_BYTE:
+      Inc(LtTotalBytes, 1);
+    DK_STR:
+    Begin
+      Inc(LtStrCount);
+      Inc(LtTotalBytes, Length(StrVal) + 1);  (* +1 pour $00 *)
+    End;
+    DK_ARRAY_BLK:
+    Begin
+      Inc(LtArrayCount);
+      Inc(LtTotalBytes, 4 + ElemCount * 4);  (* size + elements *)
+    End;
+  End;
+
+  DataAdd := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddStr : ajouter une chaine dans DATA                    }
+{ Retourne le label ASM de la chaine                           }
+{ ------------------------------------------------------------ }
+
+Function DataAddStr(Const Str : TString) : TString;
+Var
+  Lbl : TString;
+  Idx : Integer;
+Begin
+  Lbl := GenStrLabel;
+  Idx := DataAdd(Lbl, DK_STR, 0, Str, 0);
+  If Idx < 0 Then
+    DataAddStr := ''
+  Else
+    DataAddStr := Lbl;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddDWord : ajouter un DWORD dans DATA                    }
+{ Retourne le label ASM du DWORD                               }
+{ ------------------------------------------------------------ }
+
+Function DataAddDWord(Val : LongInt) : TString;
+Var
+  Lbl : TString;
+  Idx : Integer;
+Begin
+  Lbl := GenLtLabel;
+  Idx := DataAdd(Lbl, DK_DWORD, Val, '', 0);
+  If Idx < 0 Then
+    DataAddDWord := ''
+  Else
+    DataAddDWord := Lbl;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddArray : ajouter un bloc de tableau dans DATA          }
+{ Retourne le label ASM du tableau                             }
+{ ------------------------------------------------------------ }
+
+Function DataAddArray(ElemCount : Integer) : TString;
+Var
+  Lbl : TString;
+  Idx : Integer;
+Begin
+  Lbl := GenArrayLabel;
+  Idx := DataAdd(Lbl, DK_ARRAY_BLK, 0, '', ElemCount);
+  If Idx < 0 Then
+    DataAddArray := ''
+  Else
+    DataAddArray := Lbl;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataFindStr : rechercher une chaine existante dans DATA      }
+{ Retourne le label ASM ou '' si non trouvee                   }
+{ ------------------------------------------------------------ }
+
+Function DataFindStr(Const Str : TString) : TString;
+Var I : Integer;
+Begin
+  Inc(LtFindCount);
+  For I := 1 To DataCount Do
+  Begin
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = Str) Then
+    Begin
+      DataFindStr := DataTab[I].LblName;
+      Exit;
+    End;
+  End;
+  DataFindStr := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ DataGetOrAddStr : obtenir ou ajouter une chaine dans DATA    }
+{ Retourne le label ASM (reutilise si existante)               }
+{ ------------------------------------------------------------ }
+
+Function DataGetOrAddStr(Const Str : TString) : TString;
+Var Lbl : TString;
+Begin
+  Lbl := DataFindStr(Str);
+  If Lbl = '' Then
+    Lbl := DataAddStr(Str);
+  DataGetOrAddStr := Lbl;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprMakeImm : creer une expression immediate (constante)     }
+{ ------------------------------------------------------------ }
+
+Function ExprMakeImm(Val : LongInt; TypeIdx : Integer) : TExprVal;
+Var E : TExprVal;
+Begin
+  E.Kind    := EK_IMM;
+  E.ImmVal  := Val;
+  E.TypeIdx := TypeIdx;
+  E.Offset  := 0;
+  E.SymIdx  := -1;
+  ExprMakeImm := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprMakeNull : creer une expression null (PHP null)          }
+{ ------------------------------------------------------------ }
+
+Function ExprMakeNull : TExprVal;
+Var E : TExprVal;
+Begin
+  E.Kind    := EK_IMM;
+  E.ImmVal  := 0;
+  E.TypeIdx := TY_IDX_NULL;
+  E.Offset  := 0;
+  E.SymIdx  := -1;
+  ExprMakeNull := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprMakeBool : creer une expression booleenne (true/false)   }
+{ ------------------------------------------------------------ }
+
+Function ExprMakeBool(Val : Boolean) : TExprVal;
+Var E : TExprVal;
+Begin
+  E.Kind    := EK_IMM;
+  If Val Then
+    E.ImmVal := 1
+  Else
+    E.ImmVal := 0;
+  E.TypeIdx := TY_IDX_BOOL;
+  E.Offset  := 0;
+  E.SymIdx  := -1;
+  ExprMakeBool := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprMakeEAX : creer une expression resultat dans EAX         }
+{ ------------------------------------------------------------ }
+
+Function ExprMakeEAX(TypeIdx : Integer) : TExprVal;
+Var E : TExprVal;
+Begin
+  E.Kind    := EK_EAX;
+  E.ImmVal  := 0;
+  E.TypeIdx := TypeIdx;
+  E.Offset  := 0;
+  E.SymIdx  := -1;
+  ExprMakeEAX := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprMakeMem : creer une expression reference memoire         }
+{ ------------------------------------------------------------ }
+
+Function ExprMakeMem(Offset : Integer; SymIdx : Integer;
+                     TypeIdx : Integer) : TExprVal;
+Var E : TExprVal;
+Begin
+  E.Kind    := EK_MEM;
+  E.ImmVal  := 0;
+  E.TypeIdx := TypeIdx;
+  E.Offset  := Offset;
+  E.SymIdx  := SymIdx;
+  ExprMakeMem := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprMakeNone : creer une expression invalide/non initialisee }
+{ ------------------------------------------------------------ }
+
+Function ExprMakeNone : TExprVal;
+Var E : TExprVal;
+Begin
+  E.Kind    := EK_NONE;
+  E.ImmVal  := 0;
+  E.TypeIdx := TY_IDX_VOID;
+  E.Offset  := 0;
+  E.SymIdx  := -1;
+  ExprMakeNone := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ LitEvalInt : evaluer un litteral entier (decimal, hex, etc.) }
+{ Retourne la valeur 32 bits signee                            }
+{ ------------------------------------------------------------ }
+
+Function LitEvalInt(Const S : TString) : LongInt;
+Var
+  I, Len : Integer;
+  Val    : LongInt;
+  Ch     : Char;
+  Base   : Integer;
+  Neg    : Boolean;
+Begin
+  Len := Length(S);
+  If Len = 0 Then
+  Begin
+    LitEvalInt := 0;
+    Exit;
+  End;
+
+  Val := 0;
+  I   := 1;
+  Neg := False;
+
+  (* Gerer le signe negatif *)
+  If S[1] = '-' Then
+  Begin
+    Neg := True;
+    Inc(I);
+  End
+  Else If S[1] = '+' Then
+    Inc(I);
+
+  (* Determiner la base *)
+  Base := 10;
+  If (I <= Len - 1) And (S[I] = '0') Then
+  Begin
+    Ch := S[I + 1];
+    If (Ch = 'x') Or (Ch = 'X') Then
+    Begin
+      Base := 16;
+      Inc(I, 2);
+    End
+    Else If (Ch = 'b') Or (Ch = 'B') Then
+    Begin
+      Base := 2;
+      Inc(I, 2);
+    End
+    Else If (Ch = 'o') Or (Ch = 'O') Then
+    Begin
+      Base := 8;
+      Inc(I, 2);
+    End;
+  End;
+
+  (* Parser les chiffres *)
+  While I <= Len Do
+  Begin
+    Ch := S[I];
+    (* Ignorer le separateur _ *)
+    If Ch <> '_' Then
+    Begin
+      If (Ch >= '0') And (Ch <= '9') Then
+        Val := Val * Base + (Ord(Ch) - Ord('0'))
+      Else If (Ch >= 'a') And (Ch <= 'f') And (Base = 16) Then
+        Val := Val * Base + (Ord(Ch) - Ord('a') + 10)
+      Else If (Ch >= 'A') And (Ch <= 'F') And (Base = 16) Then
+        Val := Val * Base + (Ord(Ch) - Ord('A') + 10);
+    End;
+    Inc(I);
+  End;
+
+  If Neg Then
+    Val := -Val;
+
+  LitEvalInt := Val;
+End;
+
+{ ------------------------------------------------------------ }
+{ LitEvalStr : evaluer un litteral chaine avec echappements    }
+{ Retourne la chaine avec sequences interpretees               }
+{ ------------------------------------------------------------ }
+
+Function LitEvalStr(Const S : TString) : TString;
+Var
+  I, Len : Integer;
+  R      : TString;
+  Ch     : Char;
+  HexVal : Integer;
+Begin
+  Len := Length(S);
+  R   := '';
+  I   := 1;
+
+  While I <= Len Do
+  Begin
+    Ch := S[I];
+    If (Ch = '\') And (I < Len) Then
+    Begin
+      Inc(I);
+      Case S[I] Of
+        'n' : R := R + #10;
+        't' : R := R + #9;
+        'r' : R := R + #13;
+        '\' : R := R + '\';
+        '"' : R := R + '"';
+        '''' : R := R + '''';
+        '$' : R := R + '$';
+        '0' : R := R + #0;
+        'x', 'X' :
+        Begin
+          (* Sequence hexadecimale \xNN *)
+          If I + 2 <= Len Then
+          Begin
+            HexVal := 0;
+            Inc(I);
+            If (S[I] >= '0') And (S[I] <= '9') Then
+              HexVal := (Ord(S[I]) - Ord('0')) * 16
+            Else If (S[I] >= 'a') And (S[I] <= 'f') Then
+              HexVal := (Ord(S[I]) - Ord('a') + 10) * 16
+            Else If (S[I] >= 'A') And (S[I] <= 'F') Then
+              HexVal := (Ord(S[I]) - Ord('A') + 10) * 16;
+            Inc(I);
+            If (S[I] >= '0') And (S[I] <= '9') Then
+              HexVal := HexVal + (Ord(S[I]) - Ord('0'))
+            Else If (S[I] >= 'a') And (S[I] <= 'f') Then
+              HexVal := HexVal + (Ord(S[I]) - Ord('a') + 10)
+            Else If (S[I] >= 'A') And (S[I] <= 'F') Then
+              HexVal := HexVal + (Ord(S[I]) - Ord('A') + 10);
+            R := R + Chr(HexVal And $FF);
+          End;
+        End;
+      Else
+        R := R + S[I];  (* sequence inconnue : garder le caractere *)
+      End;
+    End
+    Else
+      R := R + Ch;
+    Inc(I);
+  End;
+
+  LitEvalStr := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ LitEval : evaluer un litteral (entier ou chaine)             }
+{ Retourne TExprVal avec le type et la valeur                  }
+{ ------------------------------------------------------------ }
+
+Function LitEval(Kind : Integer; Const S : TString;
+                 IntVal : LongInt) : TExprVal;
+Var
+  E   : TExprVal;
+  Lbl : TString;
+Begin
+  E.Kind   := EK_NONE;
+  E.ImmVal := 0;
+  E.Offset := 0;
+  E.SymIdx := -1;
+
+  Case Kind Of
+    TK_INTEGER:
+    Begin
+      E.Kind    := EK_IMM;
+      E.ImmVal  := IntVal;
+      E.TypeIdx := TY_IDX_INT;
+    End;
+    TK_FLOAT:
+    Begin
+      (* Flottants tronques en entiers *)
+      E.Kind    := EK_IMM;
+      E.ImmVal  := IntVal;
+      E.TypeIdx := TY_IDX_INT;
+    End;
+    TK_STRING:
+    Begin
+      (* Chaine : ajouter au segment DATA, retourner ptr *)
+      Lbl := DataGetOrAddStr(LitEvalStr(S));
+      E.Kind    := EK_MEM;
+      E.ImmVal  := 0;
+      E.TypeIdx := TY_IDX_STRING;
+      (* Offset sera resolu plus tard par l emetteur *)
+    End;
+  Else
+    E.TypeIdx := TY_IDX_VOID;
+  End;
+
+  LitEval := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprIsImm : teste si une expression est immediate            }
+{ ------------------------------------------------------------ }
+
+Function ExprIsImm(Const E : TExprVal) : Boolean;
+Begin
+  ExprIsImm := (E.Kind = EK_IMM);
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprIsEAX : teste si une expression est dans EAX             }
+{ ------------------------------------------------------------ }
+
+Function ExprIsEAX(Const E : TExprVal) : Boolean;
+Begin
+  ExprIsEAX := (E.Kind = EK_EAX);
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprIsMem : teste si une expression est en memoire           }
+{ ------------------------------------------------------------ }
+
+Function ExprIsMem(Const E : TExprVal) : Boolean;
+Begin
+  ExprIsMem := (E.Kind = EK_MEM);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpLitState : afficher l etat des litteraux et DATA         }
+{ ------------------------------------------------------------ }
+
+Procedure DumpLitState;
+Var I : Integer;
+Begin
+  WriteLn('--- Literal State ---');
+  WriteLn('  LtInitialized : ', LtInitialized);
+  WriteLn('  LtLabelSeq    : ', LtLabelSeq);
+  WriteLn('  DataCount     : ', DataCount);
+  WriteLn('  LtStrCount    : ', LtStrCount);
+  WriteLn('  LtDWordCount  : ', LtDWordCount);
+  WriteLn('  LtArrayCount  : ', LtArrayCount);
+  WriteLn('  LtTotalBytes  : ', LtTotalBytes);
+  WriteLn('  LtFindCount   : ', LtFindCount);
+  WriteLn('  LtAddCount    : ', LtAddCount);
+
+  If DataCount > 0 Then
+  Begin
+    WriteLn('--- DATA Entries ---');
+    For I := 1 To DataCount Do
+    Begin
+      Write('  [', I, '] ', DataTab[I].LblName, ' : ');
+      Write(LtDataKindName(DataTab[I].Kind));
+      Case DataTab[I].Kind Of
+        DK_DWORD:
+          Write(' = ', DataTab[I].IntVal);
+        DK_STR:
+          Write(' = "', DataTab[I].StrVal, '"');
+        DK_ARRAY_BLK:
+          Write(' [', DataTab[I].ElemCount, ' elements]');
+      End;
+      WriteLn;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 06)                             }
+{ ------------------------------------------------------------ }
+
+Function IsLtInitialized : Boolean;
+Begin
+  IsLtInitialized := LtInitialized;
+End;
+
+Function IsLtEmpty : Boolean;
+Begin
+  IsLtEmpty := (DataCount = 0);
+End;
+
+Function GetDataCount : Integer;
+Begin
+  GetDataCount := DataCount;
+End;
+
+Function GetLtLabelSeq : Integer;
+Begin
+  GetLtLabelSeq := LtLabelSeq;
+End;
+
+Function GetLtStrCount : Integer;
+Begin
+  GetLtStrCount := LtStrCount;
+End;
+
+Function GetLtDWordCount : Integer;
+Begin
+  GetLtDWordCount := LtDWordCount;
+End;
+
+Function GetLtArrayCount : Integer;
+Begin
+  GetLtArrayCount := LtArrayCount;
+End;
+
+Function GetLtTotalBytes : LongInt;
+Begin
+  GetLtTotalBytes := LtTotalBytes;
+End;
+
+Function GetLtLastLabel : TString;
+Begin
+  GetLtLastLabel := LtLastLabel;
+End;
+
+Function GetLtStatus : TString;
+Begin
+  If Not LtInitialized Then
+    GetLtStatus := 'Not initialized'
+  Else
+    GetLtStatus := ItoS(DataCount) + ' entries, ' +
+                   ItoS(LtTotalBytes) + ' bytes';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -4135,6 +4833,9 @@ Begin
 
   { Initialiser le systeme de types }
   InitTypeState;
+
+  { Initialiser les litteraux et le segment DATA }
+  InitLitState;
 
   { Analyser les arguments }
   ParseArgs;
@@ -4167,8 +4868,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-05 implementes');
-  WriteLn('PHPCW32: Les TODOs 06-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-06 implementes');
+  WriteLn('PHPCW32: Les TODOs 07-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
