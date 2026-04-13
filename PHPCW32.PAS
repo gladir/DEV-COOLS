@@ -244,7 +244,7 @@
               si $a est defini et non null, retourner $a, sinon $b
             10 fonctions accesseurs
 
-  TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [A FAIRE]
+  TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables locales : pile EBP, acces [EBP-offset]
               Declaration implicite a la premiere affectation
               PHP ne requiert pas de declaration explicite
@@ -6817,6 +6817,786 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 09 - PARSEUR : VARIABLES ET AFFECTATIONS                }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  (* Types d operations sur variables (TVarKind) *)
+  VA_NONE         = 0;    (* pas d operation                       *)
+  VA_LOCAL_LOAD   = 1;    (* charger variable locale [EBP-offset]  *)
+  VA_LOCAL_STORE  = 2;    (* stocker variable locale [EBP-offset]  *)
+  VA_GLOBAL_LOAD  = 3;    (* charger variable globale [_PH_nom]    *)
+  VA_GLOBAL_STORE = 4;    (* stocker variable globale [_PH_nom]    *)
+  VA_PARAM_LOAD   = 5;    (* charger parametre [EBP+offset]        *)
+  VA_PARAM_STORE  = 6;    (* stocker parametre [EBP+offset]        *)
+  VA_ASSIGN       = 7;    (* affectation simple $x = expr          *)
+  VA_ASSIGN_ADD   = 8;    (* affectation $x += expr                *)
+  VA_ASSIGN_SUB   = 9;    (* affectation $x -= expr                *)
+  VA_ASSIGN_MUL   = 10;   (* affectation $x *= expr                *)
+  VA_ASSIGN_DIV   = 11;   (* affectation $x /= expr                *)
+  VA_ASSIGN_MOD   = 12;   (* affectation $x %= expr                *)
+  VA_ASSIGN_CAT   = 13;   (* affectation $x .= expr (concat)       *)
+  VA_ASSIGN_AND   = 14;   (* affectation $x &= expr                *)
+  VA_ASSIGN_OR    = 15;   (* affectation $x |= expr                *)
+  VA_ASSIGN_XOR   = 16;   (* affectation $x ^= expr                *)
+  VA_ASSIGN_SHL   = 17;   (* affectation $x <<= expr               *)
+  VA_ASSIGN_SHR   = 18;   (* affectation $x >>= expr               *)
+  VA_ASSIGN_POW   = 19;   (* affectation $x **= expr               *)
+  VA_PRE_INC      = 20;   (* pre-increment ++$x                    *)
+  VA_PRE_DEC      = 21;   (* pre-decrement --$x                    *)
+  VA_POST_INC     = 22;   (* post-increment $x++                   *)
+  VA_POST_DEC     = 23;   (* post-decrement $x--                   *)
+  VA_ARRAY_STORE  = 24;   (* affectation tableau $tab[i] = expr    *)
+
+  (* Limites *)
+  VA_MAX_TARGETS  = 16;   (* nombre max de cibles par affectation  *)
+
+Var
+  VaInitialized   : Boolean;   (* True si module initialise          *)
+  VaLabelSeq      : Integer;   (* sequence pour labels uniques       *)
+  VaLastLabel     : TString;   (* dernier label genere               *)
+  VaAssignCount   : LongInt;   (* nombre d affectations simples      *)
+  VaAugmentCount  : LongInt;   (* nombre d affectations augmentees   *)
+  VaPreIncCount   : LongInt;   (* nombre de pre-increments           *)
+  VaPostIncCount  : LongInt;   (* nombre de post-increments          *)
+  VaLocalCount    : LongInt;   (* nombre d acces variables locales   *)
+  VaGlobalCount   : LongInt;   (* nombre d acces variables globales  *)
+  VaParamCount    : LongInt;   (* nombre d acces parametres          *)
+  VaArrayCount    : LongInt;   (* nombre d affectations tableau      *)
+
+{ ------------------------------------------------------------ }
+{ InitVaState : initialiser l etat des variables et affectation}
+{ ------------------------------------------------------------ }
+
+Procedure InitVaState;
+Begin
+  VaInitialized  := True;
+  VaLabelSeq     := 0;
+  VaLastLabel    := '';
+  VaAssignCount  := 0;
+  VaAugmentCount := 0;
+  VaPreIncCount  := 0;
+  VaPostIncCount := 0;
+  VaLocalCount   := 0;
+  VaGlobalCount  := 0;
+  VaParamCount   := 0;
+  VaArrayCount   := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenVaLabel : generer un label unique pour les affectations   }
+{ ------------------------------------------------------------ }
+
+Function GenVaLabel(Const Prefix : TString) : TString;
+Begin
+  Inc(VaLabelSeq);
+  VaLastLabel := '_VA_' + Prefix + '_' + ItoS(VaLabelSeq);
+  GenVaLabel := VaLastLabel;
+End;
+
+{ ------------------------------------------------------------ }
+{ VaTypeName : retourner le nom textuel d un type VA_*         }
+{ ------------------------------------------------------------ }
+
+Function VaTypeName(VaKind : Integer) : TString;
+Begin
+  Case VaKind Of
+    VA_NONE         : VaTypeName := 'VA_NONE';
+    VA_LOCAL_LOAD   : VaTypeName := 'VA_LOCAL_LOAD';
+    VA_LOCAL_STORE  : VaTypeName := 'VA_LOCAL_STORE';
+    VA_GLOBAL_LOAD  : VaTypeName := 'VA_GLOBAL_LOAD';
+    VA_GLOBAL_STORE : VaTypeName := 'VA_GLOBAL_STORE';
+    VA_PARAM_LOAD   : VaTypeName := 'VA_PARAM_LOAD';
+    VA_PARAM_STORE  : VaTypeName := 'VA_PARAM_STORE';
+    VA_ASSIGN       : VaTypeName := 'VA_ASSIGN';
+    VA_ASSIGN_ADD   : VaTypeName := 'VA_ASSIGN_ADD';
+    VA_ASSIGN_SUB   : VaTypeName := 'VA_ASSIGN_SUB';
+    VA_ASSIGN_MUL   : VaTypeName := 'VA_ASSIGN_MUL';
+    VA_ASSIGN_DIV   : VaTypeName := 'VA_ASSIGN_DIV';
+    VA_ASSIGN_MOD   : VaTypeName := 'VA_ASSIGN_MOD';
+    VA_ASSIGN_CAT   : VaTypeName := 'VA_ASSIGN_CAT';
+    VA_ASSIGN_AND   : VaTypeName := 'VA_ASSIGN_AND';
+    VA_ASSIGN_OR    : VaTypeName := 'VA_ASSIGN_OR';
+    VA_ASSIGN_XOR   : VaTypeName := 'VA_ASSIGN_XOR';
+    VA_ASSIGN_SHL   : VaTypeName := 'VA_ASSIGN_SHL';
+    VA_ASSIGN_SHR   : VaTypeName := 'VA_ASSIGN_SHR';
+    VA_ASSIGN_POW   : VaTypeName := 'VA_ASSIGN_POW';
+    VA_PRE_INC      : VaTypeName := 'VA_PRE_INC';
+    VA_PRE_DEC      : VaTypeName := 'VA_PRE_DEC';
+    VA_POST_INC     : VaTypeName := 'VA_POST_INC';
+    VA_POST_DEC     : VaTypeName := 'VA_POST_DEC';
+    VA_ARRAY_STORE  : VaTypeName := 'VA_ARRAY_STORE';
+  Else
+    VaTypeName := 'VA_UNKNOWN(' + ItoS(VaKind) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ResolveVarLocation : determiner si une variable est locale,  }
+{ globale ou parametre, et retourner son offset ou nom ASM     }
+{ ------------------------------------------------------------ }
+
+Procedure ResolveVarLocation(Const VarName : TString;
+                             Var IsGlobal : Boolean;
+                             Var IsParam : Boolean;
+                             Var Offset : Integer;
+                             Var AsmName : TString);
+Var
+  SymIdx : Integer;
+Begin
+  IsGlobal := False;
+  IsParam  := False;
+  Offset   := 0;
+  AsmName  := '';
+  
+  SymIdx := SymFind(VarName);
+  If SymIdx >= 0 Then
+  Begin
+    AsmName  := SymTab[SymIdx].AsmName;
+    Offset   := SymTab[SymIdx].Offset;
+    IsGlobal := SymTab[SymIdx].IsGlobal;
+    (* Les parametres ont un offset positif relatif a EBP *)
+    If (Not IsGlobal) And (Offset > 0) Then
+      IsParam := True;
+  End
+  Else
+  Begin
+    (* Variable non trouvee, declaration implicite comme globale *)
+    AsmName := '_PH_' + AsmIdent(VarName);
+    IsGlobal := True;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitVarLoad : emettre le code pour charger une variable      }
+{ Resultat dans EAX                                            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitVarLoad(Const VarName : TString);
+Var
+  IsGlobal, IsParam : Boolean;
+  Offset   : Integer;
+  AsmName  : TString;
+Begin
+  ResolveVarLocation(VarName, IsGlobal, IsParam, Offset, AsmName);
+  
+  OutLn('    ; Charger variable ' + VarName);
+  
+  If IsGlobal Then
+  Begin
+    OutLn('    MOV EAX, DWORD [' + AsmName + ']');
+    Inc(VaGlobalCount);
+  End
+  Else If IsParam Then
+  Begin
+    OutLn('    MOV EAX, DWORD [EBP+' + ItoS(Offset) + ']');
+    Inc(VaParamCount);
+  End
+  Else
+  Begin
+    (* Variable locale avec offset negatif *)
+    OutLn('    MOV EAX, DWORD [EBP' + ItoS(Offset) + ']');
+    Inc(VaLocalCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitVarStore : emettre le code pour stocker une variable     }
+{ EAX contient la valeur a stocker                             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitVarStore(Const VarName : TString);
+Var
+  IsGlobal, IsParam : Boolean;
+  Offset   : Integer;
+  AsmName  : TString;
+Begin
+  ResolveVarLocation(VarName, IsGlobal, IsParam, Offset, AsmName);
+  
+  OutLn('    ; Stocker variable ' + VarName);
+  
+  If IsGlobal Then
+  Begin
+    OutLn('    MOV DWORD [' + AsmName + '], EAX');
+    Inc(VaGlobalCount);
+  End
+  Else If IsParam Then
+  Begin
+    OutLn('    MOV DWORD [EBP+' + ItoS(Offset) + '], EAX');
+    Inc(VaParamCount);
+  End
+  Else
+  Begin
+    (* Variable locale avec offset negatif *)
+    OutLn('    MOV DWORD [EBP' + ItoS(Offset) + '], EAX');
+    Inc(VaLocalCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitVarLoadToEBX : emettre le code pour charger dans EBX     }
+{ (utilise pour conserver la valeur originale)                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitVarLoadToEBX(Const VarName : TString);
+Var
+  IsGlobal, IsParam : Boolean;
+  Offset   : Integer;
+  AsmName  : TString;
+Begin
+  ResolveVarLocation(VarName, IsGlobal, IsParam, Offset, AsmName);
+  
+  If IsGlobal Then
+    OutLn('    MOV EBX, DWORD [' + AsmName + ']')
+  Else If IsParam Then
+    OutLn('    MOV EBX, DWORD [EBP+' + ItoS(Offset) + ']')
+  Else
+    OutLn('    MOV EBX, DWORD [EBP' + ItoS(Offset) + ']');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAugmentedOp : emettre l operation pour affectation       }
+{ augmentee (EAX = EAX op valeur)                              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitAugmentedOp(OpKind : Integer);
+Begin
+  Case OpKind Of
+    VA_ASSIGN_ADD:
+    Begin
+      OutLn('    ADD EAX, EBX       ; += ');
+    End;
+    VA_ASSIGN_SUB:
+    Begin
+      OutLn('    SUB EAX, EBX       ; -= ');
+    End;
+    VA_ASSIGN_MUL:
+    Begin
+      OutLn('    IMUL EBX           ; *= ');
+    End;
+    VA_ASSIGN_DIV:
+    Begin
+      OutLn('    CDQ                ; /= ');
+      OutLn('    IDIV EBX');
+    End;
+    VA_ASSIGN_MOD:
+    Begin
+      OutLn('    CDQ                ; %= ');
+      OutLn('    IDIV EBX');
+      OutLn('    MOV EAX, EDX       ; reste');
+    End;
+    VA_ASSIGN_CAT:
+    Begin
+      OutLn('    ; .= concatenation (appel runtime)');
+      OutLn('    PUSH EBX');
+      OutLn('    PUSH EAX');
+      OutLn('    CALL _PHRT_strcat');
+      OutLn('    ADD ESP, 8');
+    End;
+    VA_ASSIGN_AND:
+    Begin
+      OutLn('    AND EAX, EBX       ; &= ');
+    End;
+    VA_ASSIGN_OR:
+    Begin
+      OutLn('    OR EAX, EBX        ; |= ');
+    End;
+    VA_ASSIGN_XOR:
+    Begin
+      OutLn('    XOR EAX, EBX       ; ^= ');
+    End;
+    VA_ASSIGN_SHL:
+    Begin
+      OutLn('    MOV ECX, EBX       ; <<= ');
+      OutLn('    SHL EAX, CL');
+    End;
+    VA_ASSIGN_SHR:
+    Begin
+      OutLn('    MOV ECX, EBX       ; >>= ');
+      OutLn('    SAR EAX, CL        ; shift arithmetique');
+    End;
+    VA_ASSIGN_POW:
+    Begin
+      OutLn('    ; **= puissance (appel runtime)');
+      OutLn('    PUSH EBX');
+      OutLn('    PUSH EAX');
+      OutLn('    CALL _PHRT_pow');
+      OutLn('    ADD ESP, 8');
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ MapAssignOp : convertir un operateur d affectation en VA_*   }
+{ Retourne VA_NONE si pas un operateur d affectation           }
+{ ------------------------------------------------------------ }
+
+Function MapAssignOp(Const OpStr : TString) : Integer;
+Begin
+  If OpStr = '=' Then MapAssignOp := VA_ASSIGN
+  Else If OpStr = '+=' Then MapAssignOp := VA_ASSIGN_ADD
+  Else If OpStr = '-=' Then MapAssignOp := VA_ASSIGN_SUB
+  Else If OpStr = '*=' Then MapAssignOp := VA_ASSIGN_MUL
+  Else If OpStr = '/=' Then MapAssignOp := VA_ASSIGN_DIV
+  Else If OpStr = '%=' Then MapAssignOp := VA_ASSIGN_MOD
+  Else If OpStr = '.=' Then MapAssignOp := VA_ASSIGN_CAT
+  Else If OpStr = '&=' Then MapAssignOp := VA_ASSIGN_AND
+  Else If OpStr = '|=' Then MapAssignOp := VA_ASSIGN_OR
+  Else If OpStr = '^=' Then MapAssignOp := VA_ASSIGN_XOR
+  Else If OpStr = '<<=' Then MapAssignOp := VA_ASSIGN_SHL
+  Else If OpStr = '>>=' Then MapAssignOp := VA_ASSIGN_SHR
+  Else If OpStr = '**=' Then MapAssignOp := VA_ASSIGN_POW
+  Else MapAssignOp := VA_NONE;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsAssignmentOp : verifier si le token est un operateur       }
+{ d affectation                                                }
+{ ------------------------------------------------------------ }
+
+Function IsAssignmentOp(Const OpStr : TString) : Boolean;
+Begin
+  IsAssignmentOp := MapAssignOp(OpStr) <> VA_NONE;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignSimple : parser une affectation simple $x = expr  }
+{ Le nom de la variable a deja ete lu                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignSimple(Const VarName : TString);
+Begin
+  (* Verifier qu on a un signe = *)
+  If (CurTokKind <> TK_OP) Or (CurTokStr <> '=') Then
+  Begin
+    CompileError('Expected = in assignment', LexLineNo);
+    Exit;
+  End;
+  
+  LexNextToken;
+  Inc(VaAssignCount);
+  
+  OutLn('    ; Affectation ' + VarName + ' = expr');
+  
+  (* Evaluer l expression droite *)
+  (* Pour l instant, parser une expression simple *)
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    OutLn('    MOV EAX, ' + ItoS(CurTokInt));
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_STRING Then
+  Begin
+    OutLn('    MOV EAX, OFFSET _PK_' + AsmIdent(CurTokStr));
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_VARIABLE Then
+  Begin
+    EmitVarLoad(CurTokStr);
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_KEYWORD Then
+  Begin
+    If StrLowerCase(CurTokStr) = 'null' Then
+      OutLn('    XOR EAX, EAX       ; null')
+    Else If StrLowerCase(CurTokStr) = 'true' Then
+      OutLn('    MOV EAX, 1         ; true')
+    Else If StrLowerCase(CurTokStr) = 'false' Then
+      OutLn('    XOR EAX, EAX       ; false');
+    LexNextToken;
+  End
+  Else
+  Begin
+    (* Expression plus complexe - appeler ParsePrimaryFull *)
+    ParsePrimaryFull;
+  End;
+  
+  (* Stocker le resultat *)
+  EmitVarStore(VarName);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignAugmented : parser une affectation augmentee      }
+{ $x += expr, $x -= expr, etc.                                 }
+{ Le nom de la variable a deja ete lu                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignAugmented(Const VarName : TString;
+                               OpKind : Integer);
+Begin
+  LexNextToken;  (* Avancer apres l operateur *)
+  Inc(VaAugmentCount);
+  
+  OutLn('    ; Affectation augmentee ' + VarName + ' ' +
+        VaTypeName(OpKind));
+  
+  (* Charger la valeur courante de la variable dans EAX *)
+  EmitVarLoad(VarName);
+  
+  (* Sauvegarder la valeur courante dans EBX *)
+  OutLn('    MOV EBX, EAX');
+  
+  (* Evaluer l expression droite dans EAX *)
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    OutLn('    MOV EAX, ' + ItoS(CurTokInt));
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_VARIABLE Then
+  Begin
+    EmitVarLoad(CurTokStr);
+    LexNextToken;
+  End
+  Else
+    ParsePrimaryFull;
+  
+  (* Echanger EAX et EBX pour avoir : EAX=var, EBX=expr *)
+  OutLn('    XCHG EAX, EBX');
+  
+  (* Appliquer l operation *)
+  EmitAugmentedOp(OpKind);
+  
+  (* Stocker le resultat *)
+  EmitVarStore(VarName);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePreIncDec : parser un pre-increment ou pre-decrement    }
+{ ++$x ou --$x                                                 }
+{ L operateur a deja ete lu (++ ou --)                         }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePreIncDec(IsIncrement : Boolean);
+Var
+  VarName : TString;
+Begin
+  (* Le token courant doit etre une variable *)
+  If CurTokKind <> TK_VARIABLE Then
+  Begin
+    CompileError('Expected variable after ++/--', LexLineNo);
+    Exit;
+  End;
+  
+  VarName := CurTokStr;
+  LexNextToken;
+  Inc(VaPreIncCount);
+  
+  If IsIncrement Then
+    OutLn('    ; Pre-increment ++' + VarName)
+  Else
+    OutLn('    ; Pre-decrement --' + VarName);
+  
+  (* Charger la variable *)
+  EmitVarLoad(VarName);
+  
+  (* Incrementer ou decrementer *)
+  If IsIncrement Then
+    OutLn('    INC EAX')
+  Else
+    OutLn('    DEC EAX');
+  
+  (* Stocker et garder la nouvelle valeur dans EAX *)
+  EmitVarStore(VarName);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePostIncDec : parser un post-increment ou post-decrement }
+{ $x++ ou $x--                                                 }
+{ Le nom de la variable a deja ete lu                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePostIncDec(Const VarName : TString;
+                          IsIncrement : Boolean);
+Begin
+  LexNextToken;  (* Avancer apres l operateur ++ ou -- *)
+  Inc(VaPostIncCount);
+  
+  If IsIncrement Then
+    OutLn('    ; Post-increment ' + VarName + '++')
+  Else
+    OutLn('    ; Post-decrement ' + VarName + '--');
+  
+  (* Charger la variable dans EAX (ancienne valeur a retourner) *)
+  EmitVarLoad(VarName);
+  
+  (* Sauvegarder l ancienne valeur sur la pile *)
+  OutLn('    PUSH EAX');
+  
+  (* Incrementer ou decrementer *)
+  If IsIncrement Then
+    OutLn('    INC EAX')
+  Else
+    OutLn('    DEC EAX');
+  
+  (* Stocker la nouvelle valeur *)
+  EmitVarStore(VarName);
+  
+  (* Restaurer l ancienne valeur dans EAX *)
+  OutLn('    POP EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArrayAssign : parser une affectation tableau            }
+{ $tab[i] = expr                                               }
+{ Le nom du tableau et l index ont deja ete lus                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArrayAssign(Const ArrayName : TString;
+                           IndexValue : LongInt);
+Begin
+  (* Verifier qu on a un signe = *)
+  If (CurTokKind <> TK_OP) Or (CurTokStr <> '=') Then
+  Begin
+    CompileError('Expected = in array assignment', LexLineNo);
+    Exit;
+  End;
+  
+  LexNextToken;
+  Inc(VaArrayCount);
+  
+  OutLn('    ; Affectation ' + ArrayName + '[' +
+        ItoS(IndexValue) + '] = expr');
+  
+  (* Charger l adresse du tableau dans EBX *)
+  OutLn('    MOV EBX, OFFSET _PA_' + AsmIdent(ArrayName));
+  
+  (* Evaluer l expression droite dans EAX *)
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    OutLn('    MOV EAX, ' + ItoS(CurTokInt));
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_VARIABLE Then
+  Begin
+    EmitVarLoad(CurTokStr);
+    LexNextToken;
+  End
+  Else
+    ParsePrimaryFull;
+  
+  (* Stocker a l adresse calculee *)
+  OutLn('    MOV DWORD [EBX+' + ItoS(4 + IndexValue * 4) +
+        '], EAX  ; element[' + ItoS(IndexValue) + ']');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArrayAssignVar : parser une affectation tableau avec    }
+{ index variable $tab[$i] = expr                               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArrayAssignVar(Const ArrayName : TString;
+                              Const IndexVar : TString);
+Begin
+  (* Verifier qu on a un signe = *)
+  If (CurTokKind <> TK_OP) Or (CurTokStr <> '=') Then
+  Begin
+    CompileError('Expected = in array assignment', LexLineNo);
+    Exit;
+  End;
+  
+  LexNextToken;
+  Inc(VaArrayCount);
+  
+  OutLn('    ; Affectation ' + ArrayName + '[' + IndexVar + '] = expr');
+  
+  (* Charger l index dans ECX *)
+  OutLn('    ; Charger index ' + IndexVar);
+  EmitVarLoad(IndexVar);
+  OutLn('    MOV ECX, EAX');
+  
+  (* Evaluer l expression droite dans EAX *)
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    OutLn('    MOV EAX, ' + ItoS(CurTokInt));
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_VARIABLE Then
+  Begin
+    (* Attention: ne pas ecraser ECX *)
+    OutLn('    PUSH ECX           ; sauver index');
+    EmitVarLoad(CurTokStr);
+    OutLn('    POP ECX            ; restaurer index');
+    LexNextToken;
+  End
+  Else
+  Begin
+    OutLn('    PUSH ECX           ; sauver index');
+    ParsePrimaryFull;
+    OutLn('    POP ECX            ; restaurer index');
+  End;
+  
+  (* Calculer l adresse et stocker *)
+  OutLn('    MOV EBX, OFFSET _PA_' + AsmIdent(ArrayName));
+  OutLn('    SHL ECX, 2           ; index * 4');
+  OutLn('    ADD ECX, 4           ; sauter entete');
+  OutLn('    MOV DWORD [EBX+ECX], EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseVarAssignment : parser une affectation ou acces variable}
+{ Entree : le token courant est une variable $nom              }
+{ Determine si c est une affectation, un acces, ou inc/dec     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseVarAssignment;
+Var
+  VarName  : TString;
+  OpKind   : Integer;
+  IndexVal : LongInt;
+  IndexVar : TString;
+Begin
+  (* Sauvegarder le nom de la variable *)
+  VarName := CurTokStr;
+  LexNextToken;
+  
+  (* Verifier si c est un acces tableau *)
+  If CurTokKind = TK_LBRACKET Then
+  Begin
+    LexNextToken;  (* Avancer apres [ *)
+    
+    (* Lire l index *)
+    If CurTokKind = TK_INTEGER Then
+    Begin
+      IndexVal := CurTokInt;
+      LexNextToken;
+      
+      (* Verifier ] *)
+      If CurTokKind = TK_RBRACKET Then
+        LexNextToken;
+        
+      (* Verifier si c est une affectation *)
+      If (CurTokKind = TK_OP) And (CurTokStr = '=') Then
+        ParseArrayAssign(VarName, IndexVal);
+    End
+    Else If CurTokKind = TK_VARIABLE Then
+    Begin
+      IndexVar := CurTokStr;
+      LexNextToken;
+      
+      (* Verifier ] *)
+      If CurTokKind = TK_RBRACKET Then
+        LexNextToken;
+        
+      (* Verifier si c est une affectation *)
+      If (CurTokKind = TK_OP) And (CurTokStr = '=') Then
+        ParseArrayAssignVar(VarName, IndexVar);
+    End;
+    Exit;
+  End;
+  
+  (* Verifier si c est un post-increment/decrement *)
+  If CurTokKind = TK_OP Then
+  Begin
+    If CurTokStr = '++' Then
+    Begin
+      ParsePostIncDec(VarName, True);
+      Exit;
+    End
+    Else If CurTokStr = '--' Then
+    Begin
+      ParsePostIncDec(VarName, False);
+      Exit;
+    End;
+    
+    (* Verifier les operateurs d affectation *)
+    OpKind := MapAssignOp(CurTokStr);
+    If OpKind = VA_ASSIGN Then
+    Begin
+      ParseAssignSimple(VarName);
+      Exit;
+    End
+    Else If OpKind <> VA_NONE Then
+    Begin
+      ParseAssignAugmented(VarName, OpKind);
+      Exit;
+    End;
+  End;
+  
+  (* Si on arrive ici, c est un simple acces variable *)
+  (* (deja gere par ParsePrimaryFull normalement)      *)
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpVaState : afficher l etat des variables et affectations  }
+{ ------------------------------------------------------------ }
+
+Procedure DumpVaState;
+Begin
+  WriteLn('--- Variables & Assignments State ---');
+  WriteLn('  VaInitialized  : ', VaInitialized);
+  WriteLn('  VaLabelSeq     : ', VaLabelSeq);
+  WriteLn('  VaAssignCount  : ', VaAssignCount);
+  WriteLn('  VaAugmentCount : ', VaAugmentCount);
+  WriteLn('  VaPreIncCount  : ', VaPreIncCount);
+  WriteLn('  VaPostIncCount : ', VaPostIncCount);
+  WriteLn('  VaLocalCount   : ', VaLocalCount);
+  WriteLn('  VaGlobalCount  : ', VaGlobalCount);
+  WriteLn('  VaParamCount   : ', VaParamCount);
+  WriteLn('  VaArrayCount   : ', VaArrayCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 09)                            }
+{ ------------------------------------------------------------ }
+
+Function IsVaInitialized : Boolean;
+Begin
+  IsVaInitialized := VaInitialized;
+End;
+
+Function IsVaEmpty : Boolean;
+Begin
+  IsVaEmpty := (VaAssignCount = 0) And (VaAugmentCount = 0) And
+               (VaPreIncCount = 0) And (VaPostIncCount = 0);
+End;
+
+Function GetVaAssignCount : LongInt;
+Begin
+  GetVaAssignCount := VaAssignCount;
+End;
+
+Function GetVaAugmentCount : LongInt;
+Begin
+  GetVaAugmentCount := VaAugmentCount;
+End;
+
+Function GetVaPreIncCount : LongInt;
+Begin
+  GetVaPreIncCount := VaPreIncCount;
+End;
+
+Function GetVaPostIncCount : LongInt;
+Begin
+  GetVaPostIncCount := VaPostIncCount;
+End;
+
+Function GetVaLocalCount : LongInt;
+Begin
+  GetVaLocalCount := VaLocalCount;
+End;
+
+Function GetVaGlobalCount : LongInt;
+Begin
+  GetVaGlobalCount := VaGlobalCount;
+End;
+
+Function GetVaLastLabel : TString;
+Begin
+  GetVaLastLabel := VaLastLabel;
+End;
+
+Function GetVaStatus : TString;
+Begin
+  If Not VaInitialized Then
+    GetVaStatus := 'Not initialized'
+  Else
+    GetVaStatus := ItoS(VaAssignCount) + ' assign, ' +
+                   ItoS(VaAugmentCount) + ' augment, ' +
+                   ItoS(VaPreIncCount + VaPostIncCount) + ' inc/dec';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -6849,6 +7629,9 @@ Begin
   { Initialiser les expressions primaires }
   InitPxState;
 
+  { Initialiser les variables et affectations }
+  InitVaState;
+
   { Analyser les arguments }
   ParseArgs;
 
@@ -6880,8 +7663,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-08 implementes');
-  WriteLn('PHPCW32: Les TODOs 09-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-09 implementes');
+  WriteLn('PHPCW32: Les TODOs 10-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
