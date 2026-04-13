@@ -94,7 +94,7 @@
             ParserAdvance : lire token suivant avec PrintToken si -d
             10 fonctions accesseurs
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES PHP [A FAIRE]
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES PHP [IMPLEMENTE]
             Tous les mots reserves PHP utilises dans ce sous-ensemble :
               Controle : if, elseif, else, while, for, foreach, do,
                 switch, case, default, break, continue, return
@@ -2780,14 +2780,364 @@ Begin
 End;
 
 { ============================================================ }
-{ Stub pour LookupKeyword (sera implemente dans TODO 03)       }
+{ TODO 03 - RECONNAISSANCE DES MOTS-CLES PHP      [IMPLEMENTE] }
 { ============================================================ }
 
-Function LookupKeyword(Const S : TString) : Integer;
+Const
+  (* Mots-cles PHP : controle *)
+  KW_IF         = 1;    (* if                                       *)
+  KW_ELSEIF     = 2;    (* elseif                                   *)
+  KW_ELSE       = 3;    (* else                                     *)
+  KW_WHILE      = 4;    (* while                                    *)
+  KW_FOR        = 5;    (* for                                      *)
+  KW_FOREACH    = 6;    (* foreach                                  *)
+  KW_DO         = 7;    (* do                                       *)
+  KW_SWITCH     = 8;    (* switch                                   *)
+  KW_CASE       = 9;    (* case                                     *)
+  KW_DEFAULT    = 10;   (* default                                  *)
+  KW_BREAK      = 11;   (* break                                    *)
+  KW_CONTINUE   = 12;   (* continue                                 *)
+  KW_RETURN     = 13;   (* return                                   *)
+
+  (* Mots-cles PHP : fonctions et constantes *)
+  KW_FUNCTION   = 20;   (* function                                 *)
+  KW_CONST      = 21;   (* const                                    *)
+  KW_DEFINE     = 22;   (* define                                   *)
+
+  (* Mots-cles PHP : tableaux *)
+  KW_ARRAY      = 30;   (* array                                    *)
+  KW_AS         = 31;   (* as                                       *)
+
+  (* Mots-cles PHP : logiques *)
+  KW_TRUE       = 40;   (* true                                     *)
+  KW_FALSE      = 41;   (* false                                    *)
+  KW_NULL       = 42;   (* null                                     *)
+  KW_AND        = 43;   (* and                                      *)
+  KW_OR         = 44;   (* or                                       *)
+  KW_XOR        = 45;   (* xor                                      *)
+
+  (* Mots-cles PHP : autres (non implementes pour l instant) *)
+  KW_ECHO       = 50;   (* echo                                     *)
+  KW_PRINT      = 51;   (* print                                    *)
+  KW_INCLUDE    = 52;   (* include                                  *)
+  KW_REQUIRE    = 53;   (* require                                  *)
+  KW_CLASS      = 54;   (* class (non implemente)                   *)
+  KW_NEW        = 55;   (* new (non implemente)                     *)
+
+  KW_TOTAL_KEYWORDS = 26;  (* nombre total de mots-cles PHP         *)
+
+  (* Constantes predefinies PHP *)
+  PHP_CONST_OS      = 'WINNT';
+  PHP_CONST_INT_MAX = 2147483647;
+  PHP_CONST_VERSION = '8.0';
+  PHP_CONST_EOL     = #13#10;     (* CRLF sur Windows *)
+
+Var
+  KwInitialized : Boolean;       (* True si etat initialise              *)
+  KwLookupCount : LongInt;       (* nombre d appels a LookupKeyword      *)
+  KwHitCount    : LongInt;       (* nombre de mots-cles reconnus         *)
+  KwLabelSeq    : Integer;       (* sequence pour labels uniques         *)
+  KwLastKW      : Integer;       (* dernier mot-cle reconnu - KW_x       *)
+  KwTotalIdents : LongInt;       (* total d identificateurs testes       *)
+
+{ ------------------------------------------------------------ }
+{ InitKwState : initialiser les compteurs de mots-cles         }
+{ ------------------------------------------------------------ }
+
+Procedure InitKwState;
 Begin
-  { Pour l instant, retourner KW_NONE (pas de mot-cle) }
-  { Sera implemente completement dans TODO 03 }
-  LookupKeyword := KW_NONE;
+  KwInitialized := True;
+  KwLookupCount := 0;
+  KwHitCount    := 0;
+  KwLabelSeq    := 0;
+  KwLastKW      := 0;
+  KwTotalIdents := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenKwLabel : generer un label unique _KW_N                    }
+{ ------------------------------------------------------------ }
+
+Function GenKwLabel : TString;
+Begin
+  Inc(KwLabelSeq);
+  GenKwLabel := '_KW_' + ItoS(KwLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ KwTypeName : retourner le nom du type de mot-cle KW_*        }
+{ ------------------------------------------------------------ }
+
+Function KwTypeName(KW : Integer) : TString;
+Begin
+  Case KW Of
+    KW_IF         : KwTypeName := 'KW_IF';
+    KW_ELSEIF     : KwTypeName := 'KW_ELSEIF';
+    KW_ELSE       : KwTypeName := 'KW_ELSE';
+    KW_WHILE      : KwTypeName := 'KW_WHILE';
+    KW_FOR        : KwTypeName := 'KW_FOR';
+    KW_FOREACH    : KwTypeName := 'KW_FOREACH';
+    KW_DO         : KwTypeName := 'KW_DO';
+    KW_SWITCH     : KwTypeName := 'KW_SWITCH';
+    KW_CASE       : KwTypeName := 'KW_CASE';
+    KW_DEFAULT    : KwTypeName := 'KW_DEFAULT';
+    KW_BREAK      : KwTypeName := 'KW_BREAK';
+    KW_CONTINUE   : KwTypeName := 'KW_CONTINUE';
+    KW_RETURN     : KwTypeName := 'KW_RETURN';
+    KW_FUNCTION   : KwTypeName := 'KW_FUNCTION';
+    KW_CONST      : KwTypeName := 'KW_CONST';
+    KW_DEFINE     : KwTypeName := 'KW_DEFINE';
+    KW_ARRAY      : KwTypeName := 'KW_ARRAY';
+    KW_AS         : KwTypeName := 'KW_AS';
+    KW_TRUE       : KwTypeName := 'KW_TRUE';
+    KW_FALSE      : KwTypeName := 'KW_FALSE';
+    KW_NULL       : KwTypeName := 'KW_NULL';
+    KW_AND        : KwTypeName := 'KW_AND';
+    KW_OR         : KwTypeName := 'KW_OR';
+    KW_XOR        : KwTypeName := 'KW_XOR';
+    KW_ECHO       : KwTypeName := 'KW_ECHO';
+    KW_PRINT      : KwTypeName := 'KW_PRINT';
+    KW_INCLUDE    : KwTypeName := 'KW_INCLUDE';
+    KW_REQUIRE    : KwTypeName := 'KW_REQUIRE';
+    KW_CLASS      : KwTypeName := 'KW_CLASS';
+    KW_NEW        : KwTypeName := 'KW_NEW';
+  Else
+    KwTypeName := 'KW_UNKNOWN(' + ItoS(KW) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LookupKeyword : retourner KW_xxx ou KW_NONE si non reconnu   }
+{ PHP est insensible a la casse pour les mots-cles             }
+{ ------------------------------------------------------------ }
+
+Function LookupKeyword(Const S : TString) : Integer;
+Var
+  R   : Integer;
+  Lwr : TString;
+Begin
+  Inc(KwLookupCount);
+  Inc(KwTotalIdents);
+  R := 0;
+
+  (* Convertir en minuscules pour comparaison insensible *)
+  Lwr := StrLowerCase(S);
+
+  (* Controle *)
+  If      Lwr = 'if'        Then R := KW_IF
+  Else If Lwr = 'elseif'    Then R := KW_ELSEIF
+  Else If Lwr = 'else'      Then R := KW_ELSE
+  Else If Lwr = 'while'     Then R := KW_WHILE
+  Else If Lwr = 'for'       Then R := KW_FOR
+  Else If Lwr = 'foreach'   Then R := KW_FOREACH
+  Else If Lwr = 'do'        Then R := KW_DO
+  Else If Lwr = 'switch'    Then R := KW_SWITCH
+  Else If Lwr = 'case'      Then R := KW_CASE
+  Else If Lwr = 'default'   Then R := KW_DEFAULT
+  Else If Lwr = 'break'     Then R := KW_BREAK
+  Else If Lwr = 'continue'  Then R := KW_CONTINUE
+  Else If Lwr = 'return'    Then R := KW_RETURN
+
+  (* Fonctions et constantes *)
+  Else If Lwr = 'function'  Then R := KW_FUNCTION
+  Else If Lwr = 'const'     Then R := KW_CONST
+  Else If Lwr = 'define'    Then R := KW_DEFINE
+
+  (* Tableaux *)
+  Else If Lwr = 'array'     Then R := KW_ARRAY
+  Else If Lwr = 'as'        Then R := KW_AS
+
+  (* Logiques *)
+  Else If Lwr = 'true'      Then R := KW_TRUE
+  Else If Lwr = 'false'     Then R := KW_FALSE
+  Else If Lwr = 'null'      Then R := KW_NULL
+  Else If Lwr = 'and'       Then R := KW_AND
+  Else If Lwr = 'or'        Then R := KW_OR
+  Else If Lwr = 'xor'       Then R := KW_XOR
+
+  (* Autres *)
+  Else If Lwr = 'echo'      Then R := KW_ECHO
+  Else If Lwr = 'print'     Then R := KW_PRINT
+  Else If Lwr = 'include'   Then R := KW_INCLUDE
+  Else If Lwr = 'require'   Then R := KW_REQUIRE
+  Else If Lwr = 'class'     Then R := KW_CLASS
+  Else If Lwr = 'new'       Then R := KW_NEW;
+
+  If R <> 0 Then
+  Begin
+    Inc(KwHitCount);
+    KwLastKW := R;
+  End;
+
+  LookupKeyword := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetKeywordName : retourner le mot-cle PHP pour un KW_*       }
+{ ------------------------------------------------------------ }
+
+Function GetKeywordName(KW : Integer) : TString;
+Begin
+  Case KW Of
+    KW_IF         : GetKeywordName := 'if';
+    KW_ELSEIF     : GetKeywordName := 'elseif';
+    KW_ELSE       : GetKeywordName := 'else';
+    KW_WHILE      : GetKeywordName := 'while';
+    KW_FOR        : GetKeywordName := 'for';
+    KW_FOREACH    : GetKeywordName := 'foreach';
+    KW_DO         : GetKeywordName := 'do';
+    KW_SWITCH     : GetKeywordName := 'switch';
+    KW_CASE       : GetKeywordName := 'case';
+    KW_DEFAULT    : GetKeywordName := 'default';
+    KW_BREAK      : GetKeywordName := 'break';
+    KW_CONTINUE   : GetKeywordName := 'continue';
+    KW_RETURN     : GetKeywordName := 'return';
+    KW_FUNCTION   : GetKeywordName := 'function';
+    KW_CONST      : GetKeywordName := 'const';
+    KW_DEFINE     : GetKeywordName := 'define';
+    KW_ARRAY      : GetKeywordName := 'array';
+    KW_AS         : GetKeywordName := 'as';
+    KW_TRUE       : GetKeywordName := 'true';
+    KW_FALSE      : GetKeywordName := 'false';
+    KW_NULL       : GetKeywordName := 'null';
+    KW_AND        : GetKeywordName := 'and';
+    KW_OR         : GetKeywordName := 'or';
+    KW_XOR        : GetKeywordName := 'xor';
+    KW_ECHO       : GetKeywordName := 'echo';
+    KW_PRINT      : GetKeywordName := 'print';
+    KW_INCLUDE    : GetKeywordName := 'include';
+    KW_REQUIRE    : GetKeywordName := 'require';
+    KW_CLASS      : GetKeywordName := 'class';
+    KW_NEW        : GetKeywordName := 'new';
+  Else
+    GetKeywordName := '?';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsKeyword : teste si un KW_* est valide (non zero)           }
+{ ------------------------------------------------------------ }
+
+Function IsKeyword(KW : Integer) : Boolean;
+Begin
+  IsKeyword := (KW > 0) And (KW <= KW_NEW);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsPHPConstant : teste si un identificateur est une constante }
+{ predefinies PHP (PHP_OS, PHP_INT_MAX, etc.)                  }
+{ ------------------------------------------------------------ }
+
+Function IsPHPConstant(Const S : TString) : Boolean;
+Begin
+  IsPHPConstant := (S = 'PHP_OS') Or (S = 'PHP_INT_MAX') Or
+                   (S = 'PHP_VERSION') Or (S = 'PHP_EOL');
+End;
+
+{ ------------------------------------------------------------ }
+{ GetPHPConstantValue : retourner la valeur d une constante    }
+{ predefinies PHP (version entiere)                            }
+{ ------------------------------------------------------------ }
+
+Function GetPHPConstantInt(Const S : TString) : LongInt;
+Begin
+  If S = 'PHP_INT_MAX' Then
+    GetPHPConstantInt := PHP_CONST_INT_MAX
+  Else
+    GetPHPConstantInt := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetPHPConstantStr : retourner la valeur d une constante      }
+{ predefinies PHP (version chaine)                             }
+{ ------------------------------------------------------------ }
+
+Function GetPHPConstantStr(Const S : TString) : TString;
+Begin
+  If S = 'PHP_OS' Then
+    GetPHPConstantStr := PHP_CONST_OS
+  Else If S = 'PHP_VERSION' Then
+    GetPHPConstantStr := PHP_CONST_VERSION
+  Else If S = 'PHP_EOL' Then
+    GetPHPConstantStr := PHP_CONST_EOL
+  Else
+    GetPHPConstantStr := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpKwState : afficher l etat de la reconnaissance           }
+{ ------------------------------------------------------------ }
+
+Procedure DumpKwState;
+Begin
+  WriteLn('--- KW State ---');
+  WriteLn('  KwInitialized : ', KwInitialized);
+  WriteLn('  KwLookupCount : ', KwLookupCount);
+  WriteLn('  KwHitCount    : ', KwHitCount);
+  WriteLn('  KwTotalIdents : ', KwTotalIdents);
+  WriteLn('  KwLastKW      : ', KwTypeName(KwLastKW));
+  WriteLn('  Keywords      : ', KW_TOTAL_KEYWORDS);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 03)                             }
+{ ------------------------------------------------------------ }
+
+Function IsKwInitialized : Boolean;
+Begin
+  IsKwInitialized := KwInitialized;
+End;
+
+Function IsKwEmpty : Boolean;
+Begin
+  IsKwEmpty := (KwHitCount = 0);
+End;
+
+Function GetKwLookupCount : LongInt;
+Begin
+  GetKwLookupCount := KwLookupCount;
+End;
+
+Function GetKwHitCount : LongInt;
+Begin
+  GetKwHitCount := KwHitCount;
+End;
+
+Function GetKwTotalIdents : LongInt;
+Begin
+  GetKwTotalIdents := KwTotalIdents;
+End;
+
+Function GetKwLastKW : Integer;
+Begin
+  GetKwLastKW := KwLastKW;
+End;
+
+Function GetKwLabelSeq : Integer;
+Begin
+  GetKwLabelSeq := KwLabelSeq;
+End;
+
+Function GetKwTotalKeywords : Integer;
+Begin
+  GetKwTotalKeywords := KW_TOTAL_KEYWORDS;
+End;
+
+Function GetKwLastKWName : TString;
+Begin
+  If KwLastKW <> 0 Then
+    GetKwLastKWName := GetKeywordName(KwLastKW)
+  Else
+    GetKwLastKWName := '(none)';
+End;
+
+Function GetKwStatus : TString;
+Begin
+  If Not KwInitialized Then
+    GetKwStatus := 'Not initialized'
+  Else
+    GetKwStatus := ItoS(KwHitCount) + ' keywords (' +
+                   ItoS(KwTotalIdents) + ' idents tested)';
 End;
 
 { ============================================================ }
@@ -2804,6 +3154,9 @@ Begin
 
   { Initialiser les messages de sortie }
   InitOutMsgs;
+
+  { Initialiser la reconnaissance des mots-cles }
+  InitKwState;
 
   { Analyser les arguments }
   ParseArgs;
@@ -2833,10 +3186,11 @@ Begin
   Begin
     WriteLn('PHPCW32: Tokenisation terminee');
     WriteLn('PHPCW32: ', LexTokCount, ' tokens lus');
+    WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-02 implementes');
-  WriteLn('PHPCW32: Les TODOs 03-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-03 implementes');
+  WriteLn('PHPCW32: Les TODOs 04-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
