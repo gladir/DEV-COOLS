@@ -553,7 +553,7 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               MatchPackage
             AddFilterRule, ParseXMLAttribute, TrimXMLLine
             LoadFilterFile (lecture fichier XML SpotBugs-compatible)
-            MapCategoryToFR, MapPriorityToFR, RuleMatchesBug
+            MapCategoryToFR, MapSeverityToFR, RuleMatchesBug
             IsBugFiltered, IsBugIdxFiltered
             ClearFilterRules, SetRuleActive, DumpFilterState
             Accesseurs : GetFRInitialized, GetFRRuleCount, GetFRExcludeCount,
