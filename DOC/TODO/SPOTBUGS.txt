@@ -562,7 +562,7 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               SetFRDefaultRank, SetFRCaseSensitive, GetFRExcludeFile,
               GetFRIncludeFile
 
-  TODO 25 - PROGRAMME PRINCIPAL, BALAYAGE RECURSIF ET EXEMPLES [A FAIRE]
+  TODO 25 - PROGRAMME PRINCIPAL, BALAYAGE RECURSIF ET EXEMPLES [IMPLEMENTE]
             ParseArgs : analyser ParamStr(1..ParamCount) :
               fichier.class ou repertoire (cibles d'analyse)
               -o <fichier>, -xml, -html, -textui,

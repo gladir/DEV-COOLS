@@ -40,7 +40,7 @@
 {  TODO 22 [IMPLEMENTE] - Generation du rapport XML (format SpotBugs)         }
 {  TODO 23 [IMPLEMENTE] - Generation du rapport HTML                          }
 {  TODO 24 [IMPLEMENTE] - Filtrage, exclusions et configuration des regles    }
-{  TODO 25 [A FAIRE] - Programme principal, balayage recursif et exemples     }
+{  TODO 25 [IMPLEMENTE] - Programme principal, balayage recursif et exemples  }
 { ---------------------------------------------------------------------------- }
 
 Program SPOTBUGS;
@@ -992,6 +992,33 @@ Const
   FR_SEV_HIGH         = 3;    { Severite haute (important)                      }
   FR_SEV_CRITICAL     = 4;    { Severite critique (urgent)                      }
 
+  { --- TODO 25 : Constantes pour le programme principal --- }
+  MN_VERSION          = '1.0.0';   { Version de SPOTBUGS                        }
+  MN_MAX_TARGETS      = 256;       { Nombre maximum de cibles                   }
+  MN_MAX_PATH_LEN     = 260;       { Longueur maximale d'un chemin              }
+  MN_MAX_EXT_LEN      = 16;        { Longueur maximale d'une extension          }
+
+  { Types de cibles }
+  MN_TARGET_NONE      = 0;    { Pas de cible                                    }
+  MN_TARGET_FILE      = 1;    { Fichier .class unique                           }
+  MN_TARGET_DIR       = 2;    { Repertoire a analyser                           }
+  MN_TARGET_JAR       = 3;    { Fichier JAR                                     }
+
+  { Formats de sortie }
+  MN_OUT_TEXT         = 0;    { Sortie texte (defaut)                           }
+  MN_OUT_XML          = 1;    { Sortie XML                                      }
+  MN_OUT_HTML         = 2;    { Sortie HTML                                     }
+
+  { Niveaux d'effort }
+  MN_EFFORT_MIN       = 1;    { Effort minimal (rapide)                         }
+  MN_EFFORT_DEFAULT   = 2;    { Effort par defaut                               }
+  MN_EFFORT_MAX       = 3;    { Effort maximal (complet)                        }
+
+  { Severites minimales pour le rapport }
+  MN_REPORT_LOW       = 1;    { Reporter tous les bugs                          }
+  MN_REPORT_MEDIUM    = 2;    { Reporter severite moyenne et plus               }
+  MN_REPORT_HIGH      = 3;    { Reporter uniquement les critiques               }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -1333,6 +1360,16 @@ Type
   End;
   TFilterRuleArray = Array[0..FR_MAX_RULES-1] of TFilterRule;
 
+  { --- TODO 25 : Structure TMnTargetRec : cible a analyser --- }
+  TMnTargetRec = Record
+    Path        : String;       { Chemin du fichier ou repertoire           }
+    TargetType  : Integer;      { Type de cible (MN_TARGET_*)               }
+    Processed   : Boolean;      { True si deja traite                       }
+    ClassCount  : Integer;      { Nombre de classes trouvees                }
+    BugCount    : Integer;      { Nombre de bugs detectes                   }
+  End;
+  TMnTargetArray = Array[0..MN_MAX_TARGETS-1] of TMnTargetRec;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -1601,6 +1638,23 @@ Var
   FREnableExclude  : Boolean;     { True si exclusions activees                }
   FREnableInclude  : Boolean;     { True si inclusions activees                }
   FRCaseSensitive  : Boolean;     { True si patterns sensibles a la casse      }
+
+  { --- TODO 25 : Variables du programme principal --- }
+  MnInitialized    : Boolean;     { True si module initialise                  }
+  MnTargets        : TMnTargetArray; { Tableau des cibles a analyser           }
+  MnTargetCount    : Integer;     { Nombre de cibles                           }
+  MnOutputFile     : String;      { Fichier de sortie                          }
+  MnOutputFormat   : Integer;     { Format de sortie (MN_OUT_*)                }
+  MnEffort         : Integer;     { Niveau d'effort (MN_EFFORT_*)              }
+  MnMinSeverity    : Integer;     { Severite minimale a rapporter              }
+  MnMaxRank        : Integer;     { Rang maximum a rapporter (1-20)            }
+  MnRecursive      : Boolean;     { True si analyse recursive des repertoires  }
+  MnShowVersion    : Boolean;     { True si -version demande                   }
+  MnShowHelp       : Boolean;     { True si -help demande                      }
+  MnTotalClasses   : Integer;     { Nombre total de classes analysees          }
+  MnTotalBugs      : Integer;     { Nombre total de bugs detectes              }
+  MnTotalErrors    : Integer;     { Nombre total d'erreurs                     }
+  MnLabelNum       : Integer;     { Compteur pour generation de labels         }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -14415,84 +14469,612 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 25 [A FAIRE] - Programme principal, balayage recursif et exemples       }
+{ TODO 25 [IMPLEMENTE] - Programme principal, balayage recursif et exemples   }
 { ============================================================================ }
-{                                                                              }
-{  - Procedure ParseArgs                                                        }
-{      Analyser ParamStr(1..ParamCount) :                                       }
-{        fichier.class ou repertoire (cibles d'analyse)                         }
-{        -o <fichier>  : fichier de rapport de sortie                           }
-{        -xml          : format de sortie XML (defaut: texte)                   }
-{        -html         : format de sortie HTML                                  }
-{        -textui       : format de sortie texte (explicite)                     }
-{        -effort:min / -effort:default / -effort:max : niveau d'analyse         }
-{        -low / -medium / -high : severite minimale a rapporter                 }
-{        -exclude <fichier> : fichier de regles d'exclusion                     }
-{        -include <fichier> : fichier de regles d'inclusion                     }
-{        -recursive    : analyser recursivement les sous-repertoires            }
-{        -maxRank <n>  : rang maximum a rapporter (1..20)                       }
-{        -version      : afficher la version et quitter                         }
-{        -help         : afficher l'aide et quitter                              }
-{      Validation : au moins une cible obligatoire                              }
-{                                                                              }
-{  - Procedure ScanDirectory(DirName: String; Recursive: Boolean)               }
-{      Lister tous les fichiers .class dans DirName                             }
-{      Pour chaque fichier .class trouve, appeler AnalyzeClass                  }
-{      Si Recursive, descendre dans les sous-repertoires                        }
-{      Supporter aussi les fichiers .jar (ZIP) en les decompressant en memoire  }
-{                                                                              }
-{  - Procedure AnalyzeClass(FileName: String)                                   }
-{      Orchestrer l'analyse complete d'un fichier .class :                      }
-{        1. OpenClassFile, ReadClassHeader (TODO 02)                             }
-{        2. ParseConstantPool (TODO 03)                                          }
-{        3. ReadClassInfo (TODO 04)                                              }
-{        4. ReadFields (TODO 05)                                                 }
-{        5. ReadMethods (TODO 06)                                                }
-{        6. Pour chaque methode :                                                }
-{             a. DecodeInstructions (TODO 07)                                    }
-{             b. BuildCFG (TODO 08)                                              }
-{             c. Lancer tous les detecteurs (TODOs 09 a 19)                      }
-{        7. Lancer DetectBadClassPractices (TODO 12)                             }
-{        8. Lancer DetectConcurrencyIssues (TODO 16)                             }
-{        9. CloseClassFile                                                       }
-{                                                                              }
-{  - Procedure PrintHelp                                                        }
-{      Afficher l'aide complete en ligne de commande :                          }
-{        usage: SPOTBUGS [options] <classes|jars|directories>                   }
-{        Options et descriptions detaillees                                     }
-{        Exemples d'utilisation                                                  }
-{                                                                              }
-{  - Fichiers exemples a creer dans SAMPLES\SPOTBUGS\ :                         }
-{      Foo.java / Foo.class   : classe avec dereferencement null simple         }
-{      Bar.java / Bar.class   : classe avec fuite de ressource (InputStream)    }
-{      Baz.java / Baz.class   : classe avec comparaison String par ==           }
-{      Loop.java / Loop.class : classe avec boucle potentiellement infinie      }
-{      Sql.java  / Sql.class  : classe avec injection SQL par concatenation     }
-{      Hash.java / Hash.class : classe avec equals() sans hashCode()            }
-{      Sync.java / Sync.class : classe avec bloc synchronized vide              }
-{      Cast.java / Cast.class : classe avec cast sans instanceof                 }
+
+{ --- TODO 25 : Initialisation du module principal --- }
+Procedure InitMnState;
+Var
+  I: Integer;
+Begin
+  MnInitialized := True;
+  MnTargetCount := 0;
+  For I := 0 to MN_MAX_TARGETS - 1 do
+  Begin
+    MnTargets[I].Path := '';
+    MnTargets[I].TargetType := MN_TARGET_NONE;
+    MnTargets[I].Processed := False;
+    MnTargets[I].ClassCount := 0;
+    MnTargets[I].BugCount := 0;
+  End;
+  MnOutputFile := '';
+  MnOutputFormat := MN_OUT_TEXT;
+  MnEffort := MN_EFFORT_DEFAULT;
+  MnMinSeverity := MN_REPORT_LOW;
+  MnMaxRank := 20;
+  MnRecursive := False;
+  MnShowVersion := False;
+  MnShowHelp := False;
+  MnTotalClasses := 0;
+  MnTotalBugs := 0;
+  MnTotalErrors := 0;
+  MnLabelNum := 0;
+End;
+
+{ --- TODO 25 : Generation d'un label unique --- }
+Function GenMnLabel: String;
+Begin
+  Inc(MnLabelNum);
+  GenMnLabel := 'MN_' + IntToStr_(MnLabelNum);
+End;
+
+{ --- TODO 25 : Nom du type de cible --- }
+Function MnTargetTypeName(T: Integer): String;
+Begin
+  Case T of
+    MN_TARGET_NONE: MnTargetTypeName := 'NONE';
+    MN_TARGET_FILE: MnTargetTypeName := 'FILE';
+    MN_TARGET_DIR:  MnTargetTypeName := 'DIRECTORY';
+    MN_TARGET_JAR:  MnTargetTypeName := 'JAR';
+  else
+    MnTargetTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 25 : Nom du format de sortie --- }
+Function MnOutputFormatName(F: Integer): String;
+Begin
+  Case F of
+    MN_OUT_TEXT: MnOutputFormatName := 'TEXT';
+    MN_OUT_XML:  MnOutputFormatName := 'XML';
+    MN_OUT_HTML: MnOutputFormatName := 'HTML';
+  else
+    MnOutputFormatName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 25 : Nom du niveau d'effort --- }
+Function MnEffortName(E: Integer): String;
+Begin
+  Case E of
+    MN_EFFORT_MIN:     MnEffortName := 'MIN';
+    MN_EFFORT_DEFAULT: MnEffortName := 'DEFAULT';
+    MN_EFFORT_MAX:     MnEffortName := 'MAX';
+  else
+    MnEffortName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 25 : Verifier si un chemin est un repertoire --- }
+Function IsDirectory(Path: String): Boolean;
+Var
+  SR: SearchRec;
+Begin
+  FindFirst(Path, Directory, SR);
+  IsDirectory := (DosError = 0) and ((SR.Attr and Directory) <> 0);
+  FindClose(SR);
+End;
+
+{ --- TODO 25 : Verifier si un fichier existe --- }
+Function FileExists(Path: String): Boolean;
+Var
+  F: File;
+Begin
+  {$I-}
+  Assign(F, Path);
+  Reset(F, 1);
+  If IOResult = 0 Then
+  Begin
+    Close(F);
+    FileExists := True;
+  End
+  Else
+    FileExists := False;
+  {$I+}
+End;
+
+{ --- TODO 25 : Extraire l'extension d'un fichier --- }
+Function GetFileExt(Path: String): String;
+Var
+  I: Integer;
+  Ext: String;
+Begin
+  Ext := '';
+  For I := Length(Path) downto 1 do
+  Begin
+    If Path[I] = '.' Then
+    Begin
+      Ext := Copy(Path, I, Length(Path) - I + 1);
+      Break;
+    End
+    Else If (Path[I] = '\') or (Path[I] = '/') Then
+      Break;
+  End;
+  GetFileExt := UpCaseStr(Ext);
+End;
+
+{ --- TODO 25 : Ajouter une cible a analyser --- }
+Function AddTarget(Path: String): Boolean;
+Var
+  Ext: String;
+Begin
+  If MnTargetCount >= MN_MAX_TARGETS Then
+  Begin
+    WriteLn('Erreur: Trop de cibles (max ', MN_MAX_TARGETS, ')');
+    AddTarget := False;
+    Exit;
+  End;
+  MnTargets[MnTargetCount].Path := Path;
+  MnTargets[MnTargetCount].Processed := False;
+  MnTargets[MnTargetCount].ClassCount := 0;
+  MnTargets[MnTargetCount].BugCount := 0;
+  If IsDirectory(Path) Then
+    MnTargets[MnTargetCount].TargetType := MN_TARGET_DIR
+  Else
+  Begin
+    Ext := GetFileExt(Path);
+    If Ext = '.CLASS' Then
+      MnTargets[MnTargetCount].TargetType := MN_TARGET_FILE
+    Else If Ext = '.JAR' Then
+      MnTargets[MnTargetCount].TargetType := MN_TARGET_JAR
+    Else
+    Begin
+      WriteLn('Avertissement: Type de fichier non reconnu: ', Path);
+      MnTargets[MnTargetCount].TargetType := MN_TARGET_FILE;
+    End;
+  End;
+  Inc(MnTargetCount);
+  AddTarget := True;
+End;
+
+{ --- TODO 25 : Afficher l'aide complete --- }
+Procedure PrintHelp;
+Begin
+  WriteLn('SPOTBUGS - Analyseur statique de bytecode Java');
+  WriteLn('Version ', MN_VERSION);
+  WriteLn;
+  WriteLn('Usage: SPOTBUGS [options] <fichiers.class|repertoires|fichiers.jar>');
+  WriteLn;
+  WriteLn('Options:');
+  WriteLn('  -o <fichier>      Fichier de rapport de sortie');
+  WriteLn('  -xml              Format de sortie XML (compatible SpotBugs/Jenkins)');
+  WriteLn('  -html             Format de sortie HTML');
+  WriteLn('  -textui           Format de sortie texte (defaut)');
+  WriteLn('  -effort:min       Analyse rapide (moins de bugs detectes)');
+  WriteLn('  -effort:default   Analyse standard (defaut)');
+  WriteLn('  -effort:max       Analyse approfondie (plus de bugs detectes)');
+  WriteLn('  -low              Reporter tous les bugs (defaut)');
+  WriteLn('  -medium           Reporter seulement severite moyenne et plus');
+  WriteLn('  -high             Reporter seulement les bugs critiques');
+  WriteLn('  -exclude <f>      Fichier XML de regles d''exclusion');
+  WriteLn('  -include <f>      Fichier XML de regles d''inclusion');
+  WriteLn('  -maxRank <n>      Rang maximum a rapporter (1-20, defaut: 20)');
+  WriteLn('  -recursive        Analyser recursivement les sous-repertoires');
+  WriteLn('  -version          Afficher la version et quitter');
+  WriteLn('  -help             Afficher cette aide et quitter');
+  WriteLn;
+  WriteLn('Exemples:');
+  WriteLn('  SPOTBUGS MyClass.class');
+  WriteLn('  SPOTBUGS -xml -o rapport.xml classes/');
+  WriteLn('  SPOTBUGS -high -recursive src/');
+  WriteLn('  SPOTBUGS -exclude filter.xml *.class');
+  WriteLn('  SPOTBUGS -effort:max -html -o rapport.html projet.jar');
+End;
+
+{ --- TODO 25 : Afficher la version --- }
+Procedure PrintVersion;
+Begin
+  WriteLn('SPOTBUGS version ', MN_VERSION);
+  WriteLn('Clone Pascal de SpotBugs - Analyseur statique de bytecode Java');
+  WriteLn('(c) 2026 Gladir.com - Licence libre');
+End;
+
+{ --- TODO 25 : Analyser les arguments de la ligne de commande --- }
+Procedure ParseArgs;
+Var
+  I: Integer;
+  Arg, NextArg: String;
+  RankVal: Integer;
+  Code: Integer;
+Begin
+  I := 1;
+  While I <= ParamCount do
+  Begin
+    Arg := ParamStr(I);
+    If (Arg = '-o') or (Arg = '--output') Then
+    Begin
+      If I < ParamCount Then
+      Begin
+        Inc(I);
+        MnOutputFile := ParamStr(I);
+      End
+      Else
+        WriteLn('Erreur: -o necessite un nom de fichier');
+    End
+    Else If (Arg = '-xml') or (Arg = '--xml') Then
+      MnOutputFormat := MN_OUT_XML
+    Else If (Arg = '-html') or (Arg = '--html') Then
+      MnOutputFormat := MN_OUT_HTML
+    Else If (Arg = '-textui') or (Arg = '--textui') Then
+      MnOutputFormat := MN_OUT_TEXT
+    Else If Arg = '-effort:min' Then
+      MnEffort := MN_EFFORT_MIN
+    Else If Arg = '-effort:default' Then
+      MnEffort := MN_EFFORT_DEFAULT
+    Else If Arg = '-effort:max' Then
+      MnEffort := MN_EFFORT_MAX
+    Else If (Arg = '-low') or (Arg = '--low') Then
+      MnMinSeverity := MN_REPORT_LOW
+    Else If (Arg = '-medium') or (Arg = '--medium') Then
+      MnMinSeverity := MN_REPORT_MEDIUM
+    Else If (Arg = '-high') or (Arg = '--high') Then
+      MnMinSeverity := MN_REPORT_HIGH
+    Else If (Arg = '-exclude') or (Arg = '--exclude') Then
+    Begin
+      If I < ParamCount Then
+      Begin
+        Inc(I);
+        FRExcludeFile := ParamStr(I);
+        FREnableExclude := True;
+      End
+      Else
+        WriteLn('Erreur: -exclude necessite un nom de fichier');
+    End
+    Else If (Arg = '-include') or (Arg = '--include') Then
+    Begin
+      If I < ParamCount Then
+      Begin
+        Inc(I);
+        FRIncludeFile := ParamStr(I);
+        FREnableInclude := True;
+      End
+      Else
+        WriteLn('Erreur: -include necessite un nom de fichier');
+    End
+    Else If (Arg = '-maxRank') or (Arg = '--maxRank') Then
+    Begin
+      If I < ParamCount Then
+      Begin
+        Inc(I);
+        NextArg := ParamStr(I);
+        Val(NextArg, RankVal, Code);
+        If (Code = 0) and (RankVal >= 1) and (RankVal <= 20) Then
+          MnMaxRank := RankVal
+        Else
+          WriteLn('Erreur: -maxRank doit etre entre 1 et 20');
+      End
+      Else
+        WriteLn('Erreur: -maxRank necessite une valeur');
+    End
+    Else If (Arg = '-recursive') or (Arg = '-r') or (Arg = '--recursive') Then
+      MnRecursive := True
+    Else If (Arg = '-version') or (Arg = '--version') Then
+      MnShowVersion := True
+    Else If (Arg = '-help') or (Arg = '-h') or (Arg = '--help') or (Arg = '-?') Then
+      MnShowHelp := True
+    Else If Arg[1] = '-' Then
+      WriteLn('Avertissement: Option inconnue: ', Arg)
+    Else
+      AddTarget(Arg);
+    Inc(I);
+  End;
+End;
+
+{ --- TODO 25 : Analyser une classe complete --- }
+Procedure AnalyzeClass(FileName: String);
+Var
+  M: Integer;
+  Header: TClassHeader;
+Begin
+  CurrentFile := FileName;
+  { Ouvrir et lire le fichier .class }
+  OpenClassFile(FileName);
+  { Lire l'en-tete }
+  Header := ReadClassHeader;
+  ClassHeader := Header;
+  { Parser le Constant Pool }
+  ParseConstantPool(Header.CPCount);
+  { Lire les informations de classe }
+  ReadClassInfo;
+  { Lire les champs }
+  ReadFields;
+  { Lire les methodes }
+  ReadMethods;
+  Inc(MnTotalClasses);
+  { Analyser chaque methode }
+  For M := 0 to MethodCount - 1 do
+  Begin
+    If Methods[M].CodeLen > 0 Then
+    Begin
+      Inc(TotalMethods);
+      { Decoder les instructions }
+      DecodeInstructions(Methods[M]);
+      { Construire le CFG }
+      BuildCFG(Methods[M]);
+      { Lancer les detecteurs }
+      DetectNullDereferences(M);
+      DetectResourceLeaks(M);
+      AnalyzeMethodForLoopBugs(M);
+      AnalyzeMethodForBadPractices(M);
+      AnalyzeMethodForBadComparisons(M);
+      AnalyzeMethodForPerformance(M);
+      AnalyzeMethodForConcurrency(M);
+      AnalyzeMethodForExceptions(M);
+      AnalyzeMethodForLogicErrors(M);
+      AnalyzeMethodForI18N(M);
+    End;
+  End;
+  { Detecteurs au niveau classe }
+  DetectBadClassPractices;
+  DetectConcurrencyIssues;
+  { Fermer le fichier }
+  CloseClassFile;
+  FreeMethods;
+End;
+
+{ --- TODO 25 : Scanner un repertoire --- }
+Procedure ScanDirectory(DirPath: String; Recursive: Boolean);
+Var
+  SR: SearchRec;
+  Path: String;
+  Ext: String;
+Begin
+  { Normaliser le chemin }
+  If (DirPath <> '') and (DirPath[Length(DirPath)] <> '\') and 
+     (DirPath[Length(DirPath)] <> '/') Then
+    DirPath := DirPath + '\';
+  { Chercher les fichiers .class }
+  FindFirst(DirPath + '*.class', Archive, SR);
+  While DosError = 0 do
+  Begin
+    Path := DirPath + SR.Name;
+    AnalyzeClass(Path);
+    FindNext(SR);
+  End;
+  FindClose(SR);
+  { Si recursif, descendre dans les sous-repertoires }
+  If Recursive Then
+  Begin
+    FindFirst(DirPath + '*', Directory, SR);
+    While DosError = 0 do
+    Begin
+      If ((SR.Attr and Directory) <> 0) and (SR.Name <> '.') and (SR.Name <> '..') Then
+      Begin
+        Path := DirPath + SR.Name;
+        ScanDirectory(Path, True);
+      End;
+      FindNext(SR);
+    End;
+    FindClose(SR);
+  End;
+End;
+
+{ --- TODO 25 : Traiter toutes les cibles --- }
+Procedure ProcessTargets;
+Var
+  I: Integer;
+  BugsBefore: Integer;
+Begin
+  For I := 0 to MnTargetCount - 1 do
+  Begin
+    If MnTargets[I].Processed Then Continue;
+    BugsBefore := BugCount;
+    Case MnTargets[I].TargetType of
+      MN_TARGET_FILE:
+        Begin
+          If FileExists(MnTargets[I].Path) Then
+            AnalyzeClass(MnTargets[I].Path)
+          Else
+          Begin
+            WriteLn('Erreur: Fichier non trouve: ', MnTargets[I].Path);
+            Inc(MnTotalErrors);
+          End;
+        End;
+      MN_TARGET_DIR:
+        ScanDirectory(MnTargets[I].Path, MnRecursive);
+      MN_TARGET_JAR:
+        Begin
+          { Note: Support JAR non implemente dans cette version }
+          WriteLn('Avertissement: Support JAR non disponible: ', MnTargets[I].Path);
+        End;
+    End;
+    MnTargets[I].Processed := True;
+    MnTargets[I].BugCount := BugCount - BugsBefore;
+  End;
+  MnTotalBugs := BugCount;
+End;
+
+{ --- TODO 25 : Generer le rapport final --- }
+Procedure GenerateReport;
+Var
+  OutFileName: String;
+Begin
+  If MnOutputFile <> '' Then
+    OutFileName := MnOutputFile
+  Else
+    OutFileName := '';
+  Case MnOutputFormat of
+    MN_OUT_XML:
+      EmitXmlReport(OutFileName);
+    MN_OUT_HTML:
+      EmitHtmlReport(OutFileName);
+    MN_OUT_TEXT:
+      EmitTextReport(OutFileName);
+  End;
+  If MnOutputFile <> '' Then
+    WriteLn('Rapport genere dans: ', MnOutputFile);
+End;
+
+{ --- TODO 25 : Afficher le resume --- }
+Procedure PrintSummary;
+Begin
+  WriteLn;
+  WriteLn('=== Resume de l''analyse ===');
+  WriteLn('Classes analysees : ', MnTotalClasses);
+  WriteLn('Methodes analysees: ', TotalMethods);
+  WriteLn('Bugs detectes     : ', MnTotalBugs);
+  WriteLn('Erreurs           : ', MnTotalErrors);
+  If MnTotalBugs = 0 Then
+    WriteLn('Aucun bug detecte!')
+  Else If MnTotalBugs = 1 Then
+    WriteLn('1 bug detecte.')
+  Else
+    WriteLn(MnTotalBugs, ' bugs detectes.');
+End;
+
+{ --- TODO 25 : Dump de l'etat du module principal --- }
+Procedure DumpMnState;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== Etat du module principal (TODO 25) ===');
+  WriteLn('Initialise        : ', MnInitialized);
+  WriteLn('Nombre de cibles  : ', MnTargetCount);
+  For I := 0 to MnTargetCount - 1 do
+  Begin
+    WriteLn('  Cible ', I, ': ', MnTargets[I].Path, 
+            ' (', MnTargetTypeName(MnTargets[I].TargetType), 
+            ', ', MnTargets[I].ClassCount, ' classes, ',
+            MnTargets[I].BugCount, ' bugs)');
+  End;
+  WriteLn('Fichier sortie    : ', MnOutputFile);
+  WriteLn('Format sortie     : ', MnOutputFormatName(MnOutputFormat));
+  WriteLn('Effort            : ', MnEffortName(MnEffort));
+  WriteLn('Severite min      : ', MnMinSeverity);
+  WriteLn('Rang max          : ', MnMaxRank);
+  WriteLn('Recursif          : ', MnRecursive);
+  WriteLn('Total classes     : ', MnTotalClasses);
+  WriteLn('Total bugs        : ', MnTotalBugs);
+  WriteLn('Total erreurs     : ', MnTotalErrors);
+End;
+
+{ --- TODO 25 : Accesseurs --- }
+Function GetMnInitialized: Boolean;
+Begin
+  GetMnInitialized := MnInitialized;
+End;
+
+Function GetMnTargetCount: Integer;
+Begin
+  GetMnTargetCount := MnTargetCount;
+End;
+
+Function GetMnOutputFile: String;
+Begin
+  GetMnOutputFile := MnOutputFile;
+End;
+
+Function GetMnOutputFormat: Integer;
+Begin
+  GetMnOutputFormat := MnOutputFormat;
+End;
+
+Function GetMnEffort: Integer;
+Begin
+  GetMnEffort := MnEffort;
+End;
+
+Function GetMnMinSeverity: Integer;
+Begin
+  GetMnMinSeverity := MnMinSeverity;
+End;
+
+Function GetMnMaxRank: Integer;
+Begin
+  GetMnMaxRank := MnMaxRank;
+End;
+
+Function GetMnRecursive: Boolean;
+Begin
+  GetMnRecursive := MnRecursive;
+End;
+
+Function GetMnTotalClasses: Integer;
+Begin
+  GetMnTotalClasses := MnTotalClasses;
+End;
+
+Function GetMnTotalBugs: Integer;
+Begin
+  GetMnTotalBugs := MnTotalBugs;
+End;
+
+Function GetMnTotalErrors: Integer;
+Begin
+  GetMnTotalErrors := MnTotalErrors;
+End;
+
+Procedure SetMnOutputFormat(F: Integer);
+Begin
+  If (F >= MN_OUT_TEXT) and (F <= MN_OUT_HTML) Then
+    MnOutputFormat := F;
+End;
+
+Procedure SetMnEffort(E: Integer);
+Begin
+  If (E >= MN_EFFORT_MIN) and (E <= MN_EFFORT_MAX) Then
+    MnEffort := E;
+End;
+
+Procedure SetMnMinSeverity(S: Integer);
+Begin
+  If (S >= MN_REPORT_LOW) and (S <= MN_REPORT_HIGH) Then
+    MnMinSeverity := S;
+End;
+
+Procedure SetMnMaxRank(R: Integer);
+Begin
+  If (R >= 1) and (R <= 20) Then
+    MnMaxRank := R;
+End;
+
+Procedure SetMnRecursive(R: Boolean);
+Begin
+  MnRecursive := R;
+End;
+
+{ ============================================================================ }
+{ Programme principal                                                          }
+{ ============================================================================ }
 
 Begin
- InitGlobals;
- WriteLn('SPOTBUGS : Cette commande permet d''analyser le bytecode des fichiers .class');
- WriteLn('           pour detecter des bugs potentiels dans le code Java.');
- WriteLn;
- WriteLn('Syntaxe : SPOTBUGS [options] <fichiers.class|repertoire|fichier.jar>');
- WriteLn;
- WriteLn('  -o <fichier>    Fichier de rapport de sortie');
- WriteLn('  -xml            Format de sortie XML (compatible Jenkins)');
- WriteLn('  -html           Format de sortie HTML');
- WriteLn('  -low            Reporter tous les bugs (faible severite et plus)');
- WriteLn('  -medium         Reporter les bugs de severite moyenne et plus');
- WriteLn('  -high           Reporter uniquement les bugs critiques');
- WriteLn('  -exclude <f>    Fichier XML de regles d''exclusion');
- WriteLn('  -include <f>    Fichier XML de regles d''inclusion');
- WriteLn('  -recursive      Analyser recursivement les sous-repertoires');
- WriteLn('  -version        Afficher la version');
- WriteLn('  -help           Afficher cette aide');
- WriteLn;
- WriteLn('Exemples :');
- WriteLn('  SPOTBUGS MyApp.class');
- WriteLn('  SPOTBUGS -xml -o rapport.xml classes/');
- WriteLn('  SPOTBUGS -high -recursive src/');
+  { Initialiser tous les modules }
+  InitGlobals;
+  InitMnState;
+  InitFilterState;
+  { Parser les arguments }
+  ParseArgs;
+  { Traiter les options speciales }
+  If MnShowVersion Then
+  Begin
+    PrintVersion;
+    Halt(0);
+  End;
+  If MnShowHelp Then
+  Begin
+    PrintHelp;
+    Halt(0);
+  End;
+  { Verifier qu'il y a au moins une cible }
+  If MnTargetCount = 0 Then
+  Begin
+    WriteLn('SPOTBUGS - Analyseur statique de bytecode Java');
+    WriteLn('Version ', MN_VERSION);
+    WriteLn;
+    WriteLn('Usage: SPOTBUGS [options] <fichiers.class|repertoires>');
+    WriteLn;
+    WriteLn('Utilisez -help pour plus d''informations.');
+    Halt(1);
+  End;
+  { Charger les fichiers de filtrage si specifies }
+  If FREnableExclude and (FRExcludeFile <> '') Then
+    LoadFilterFile(FRExcludeFile, True);
+  If FREnableInclude and (FRIncludeFile <> '') Then
+    LoadFilterFile(FRIncludeFile, False);
+  { Traiter toutes les cibles }
+  ProcessTargets;
+  { Generer le rapport }
+  GenerateReport;
+  { Afficher le resume }
+  PrintSummary;
 End.
