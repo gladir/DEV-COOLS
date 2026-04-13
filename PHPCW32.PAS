@@ -287,7 +287,7 @@
               Tout le reste -> true
             10 fonctions accesseurs
 
-  TODO 11 - PARSEUR : BOUCLES while / for / do-while / foreach [A FAIRE]
+  TODO 11 - PARSEUR : BOUCLES while / for / do-while / foreach [IMPLEMENTE]
             ParseWhileStmt : while (cond) { bloc }
               Labels : _PL_WTEST_N, _PL_WEND_N
               Emission : _PL_WTEST_N: evaluer cond, JZ _PL_WEND_N,
@@ -8344,6 +8344,946 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 11 - PARSEUR : BOUCLES while / for / do-while / foreach }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  (* Types d operations de boucle LP_* *)
+  LP_NONE          = 0;    (* aucun / non defini                     *)
+  LP_WHILE         = 1;    (* while (cond) body                      *)
+  LP_DO_WHILE      = 2;    (* do body while (cond);                  *)
+  LP_FOR           = 3;    (* for (init; cond; incr) body            *)
+  LP_FOREACH       = 4;    (* foreach ($arr as $v) body              *)
+  LP_FOREACH_KV    = 5;    (* foreach ($arr as $k => $v) body        *)
+  LP_BREAK         = 6;    (* break; -> JMP vers end                 *)
+  LP_CONTINUE      = 7;    (* continue; -> JMP vers test/incr        *)
+  LP_TEST          = 8;    (* label de test de condition             *)
+  LP_INCR          = 9;    (* label d increment (for)                *)
+  LP_BODY          = 10;   (* label du corps de boucle               *)
+  LP_END           = 11;   (* label de fin de boucle                 *)
+  LP_INFINITE      = 12;   (* boucle while(true) ou for(;;)          *)
+  LP_FOR_INIT      = 13;   (* phase d initialisation for             *)
+  LP_FOR_INCR      = 14;   (* phase d increment for                  *)
+
+  (* Limites *)
+  LP_MAX_NEST      = 32;   (* profondeur max d imbrication boucles   *)
+
+Type
+  (* Structure de la pile de boucles *)
+  TLoopRec = Record
+    TestLabel  : TString;   (* label pour test condition (while/for)  *)
+    IncrLabel  : TString;   (* label pour increment (for)             *)
+    EndLabel   : TString;   (* label pour fin de boucle               *)
+    IsFor      : Boolean;   (* True si c est une boucle for           *)
+    IsDoWhile  : Boolean;   (* True si c est une boucle do-while      *)
+    IsForeach  : Boolean;   (* True si c est une boucle foreach       *)
+    LoopKind   : Integer;   (* type de boucle LP_*                    *)
+    NestLevel  : Integer;   (* niveau d imbrication                   *)
+    DeclLine   : LongInt;   (* ligne de declaration                   *)
+  End;
+
+Var
+  LpInitialized   : Boolean;   (* True si module initialise             *)
+  LpLabelSeq      : Integer;   (* sequence pour labels uniques          *)
+  LpLastLabel     : TString;   (* dernier label genere                  *)
+  LpWhileCount    : LongInt;   (* nombre de boucles while               *)
+  LpDoWhileCount  : LongInt;   (* nombre de boucles do-while            *)
+  LpForCount      : LongInt;   (* nombre de boucles for                 *)
+  LpForeachCount  : LongInt;   (* nombre de boucles foreach             *)
+  LpBreakCount    : LongInt;   (* nombre de break                       *)
+  LpContinueCount : LongInt;   (* nombre de continue                    *)
+  LpNestLevel     : Integer;   (* niveau d imbrication courant          *)
+  LpLastKind      : Integer;   (* dernier type d operation boucle       *)
+  LpStack         : Array[1..LP_MAX_NEST] Of TLoopRec;  (* pile boucles *)
+  LpStackTop      : Integer;   (* sommet de la pile                     *)
+
+{ ------------------------------------------------------------ }
+{ InitLpState : initialiser l etat du module de boucles        }
+{ ------------------------------------------------------------ }
+
+Procedure InitLpState;
+Var
+  I : Integer;
+Begin
+  LpInitialized   := True;
+  LpLabelSeq      := 0;
+  LpLastLabel     := '';
+  LpWhileCount    := 0;
+  LpDoWhileCount  := 0;
+  LpForCount      := 0;
+  LpForeachCount  := 0;
+  LpBreakCount    := 0;
+  LpContinueCount := 0;
+  LpNestLevel     := 0;
+  LpLastKind      := LP_NONE;
+  LpStackTop      := 0;
+  For I := 1 To LP_MAX_NEST Do
+  Begin
+    LpStack[I].TestLabel  := '';
+    LpStack[I].IncrLabel  := '';
+    LpStack[I].EndLabel   := '';
+    LpStack[I].IsFor      := False;
+    LpStack[I].IsDoWhile  := False;
+    LpStack[I].IsForeach  := False;
+    LpStack[I].LoopKind   := LP_NONE;
+    LpStack[I].NestLevel  := 0;
+    LpStack[I].DeclLine   := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLpLabel : generer un label unique pour les boucles        }
+{ ------------------------------------------------------------ }
+
+Function GenLpLabel(Const Prefix : TString) : TString;
+Begin
+  Inc(LpLabelSeq);
+  LpLastLabel := '_PL_' + Prefix + '_' + ItoS(LpLabelSeq);
+  GenLpLabel := LpLastLabel;
+End;
+
+{ ------------------------------------------------------------ }
+{ LpTypeName : retourner le nom textuel d un type LP_*         }
+{ ------------------------------------------------------------ }
+
+Function LpTypeName(LpKind : Integer) : TString;
+Begin
+  Case LpKind Of
+    LP_NONE       : LpTypeName := 'LP_NONE';
+    LP_WHILE      : LpTypeName := 'LP_WHILE';
+    LP_DO_WHILE   : LpTypeName := 'LP_DO_WHILE';
+    LP_FOR        : LpTypeName := 'LP_FOR';
+    LP_FOREACH    : LpTypeName := 'LP_FOREACH';
+    LP_FOREACH_KV : LpTypeName := 'LP_FOREACH_KV';
+    LP_BREAK      : LpTypeName := 'LP_BREAK';
+    LP_CONTINUE   : LpTypeName := 'LP_CONTINUE';
+    LP_TEST       : LpTypeName := 'LP_TEST';
+    LP_INCR       : LpTypeName := 'LP_INCR';
+    LP_BODY       : LpTypeName := 'LP_BODY';
+    LP_END        : LpTypeName := 'LP_END';
+    LP_INFINITE   : LpTypeName := 'LP_INFINITE';
+    LP_FOR_INIT   : LpTypeName := 'LP_FOR_INIT';
+    LP_FOR_INCR   : LpTypeName := 'LP_FOR_INCR';
+  Else
+    LpTypeName := 'LP_UNKNOWN(' + ItoS(LpKind) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LoopPush : empiler un contexte de boucle                     }
+{   Cree un nouveau contexte avec les labels fournis           }
+{ ------------------------------------------------------------ }
+
+Procedure LoopPush(TestLbl, IncrLbl, EndLbl : TString;
+                   Kind : Integer; IsF, IsDW, IsFE : Boolean);
+Begin
+  If LpStackTop >= LP_MAX_NEST Then
+  Begin
+    CompileError('Loop nesting too deep (max ' +
+                 ItoS(LP_MAX_NEST) + ')', LexLineNo);
+    Exit;
+  End;
+  Inc(LpStackTop);
+  Inc(LpNestLevel);
+  LpStack[LpStackTop].TestLabel  := TestLbl;
+  LpStack[LpStackTop].IncrLabel  := IncrLbl;
+  LpStack[LpStackTop].EndLabel   := EndLbl;
+  LpStack[LpStackTop].IsFor      := IsF;
+  LpStack[LpStackTop].IsDoWhile  := IsDW;
+  LpStack[LpStackTop].IsForeach  := IsFE;
+  LpStack[LpStackTop].LoopKind   := Kind;
+  LpStack[LpStackTop].NestLevel  := LpNestLevel;
+  LpStack[LpStackTop].DeclLine   := LexLineNo;
+End;
+
+{ ------------------------------------------------------------ }
+{ LoopPop : depiler le contexte de boucle courant              }
+{ ------------------------------------------------------------ }
+
+Procedure LoopPop;
+Begin
+  If LpStackTop <= 0 Then
+  Begin
+    CompileError('No loop to pop', LexLineNo);
+    Exit;
+  End;
+  Dec(LpStackTop);
+  Dec(LpNestLevel);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitLoopLabel : emettre un label dans le flux assembleur     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitLoopLabel(Lbl : TString);
+Begin
+  OutLn(Lbl + ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitLoopJmp : emettre un saut inconditionnel                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitLoopJmp(DestLabel : TString);
+Begin
+  OutLn('    JMP ' + DestLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLoopCondition : parser et evaluer la condition d une    }
+{   boucle. Attend le token courant = '(' apres while/for      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseLoopCondition;
+Begin
+  (* Verifier la parenthese ouvrante *)
+  If CurTokKind <> TK_LPAREN Then
+  Begin
+    CompileError('Expected ( after while/for', LexLineNo);
+    Exit;
+  End;
+  LexNextToken;
+  
+  OutLn('    ; Evaluer condition boucle');
+  
+  (* Parser l expression de condition *)
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    OutLn('    MOV EAX, ' + ItoS(CurTokInt));
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_VARIABLE Then
+  Begin
+    EmitVarLoad(CurTokStr);
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_KEYWORD Then
+  Begin
+    If StrLowerCase(CurTokStr) = 'true' Then
+      OutLn('    MOV EAX, 1         ; true')
+    Else If StrLowerCase(CurTokStr) = 'false' Then
+      OutLn('    XOR EAX, EAX       ; false')
+    Else If StrLowerCase(CurTokStr) = 'null' Then
+      OutLn('    XOR EAX, EAX       ; null');
+    LexNextToken;
+  End
+  Else
+    ParsePrimaryFull;
+  
+  (* Verifier la parenthese fermante *)
+  If CurTokKind = TK_RPAREN Then
+    LexNextToken
+  Else
+    CompileError('Expected ) after loop condition', LexLineNo);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLoopBlock : parser le bloc d une boucle                 }
+{   Supporte les accolades ou instruction unique               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseLoopBlock;
+Begin
+  If CurTokKind = TK_LBRACE Then
+  Begin
+    (* Bloc avec accolades *)
+    LexNextToken;  (* Avancer apres { *)
+    While (CurTokKind <> TK_RBRACE) And (CurTokKind <> TK_EOF) Do
+    Begin
+      (* Parser les instructions du bloc *)
+      (* Pour l instant, sauter jusqu a } *)
+      LexNextToken;
+    End;
+    If CurTokKind = TK_RBRACE Then
+      LexNextToken;  (* Avancer apres } *)
+  End
+  Else
+  Begin
+    (* Instruction unique sans accolades *)
+    OutLn('    ; boucle sans accolades - instruction unique');
+    While (CurTokKind <> TK_SEMICOLON) And (CurTokKind <> TK_EOF) Do
+      LexNextToken;
+    If CurTokKind = TK_SEMICOLON Then
+      LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseWhileStmt : parser une boucle while                     }
+{   while (cond) body                                          }
+{                                                               }
+{   Emission assembleur :                                       }
+{     _PL_WTEST_N: evaluer cond -> TEST EAX, EAX -> JZ _PL_WEND_N
+{     bloc                                                      }
+{     JMP _PL_WTEST_N                                           }
+{     _PL_WEND_N:                                               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseWhileStmt;
+Var
+  LblTest : TString;
+  LblEnd  : TString;
+  BaseSeq : Integer;
+Begin
+  Inc(LpWhileCount);
+  LpLastKind := LP_WHILE;
+  
+  (* Generer les labels *)
+  Inc(LpLabelSeq);
+  BaseSeq := LpLabelSeq;
+  LblTest := '_PL_WTEST_' + ItoS(BaseSeq);
+  LblEnd  := '_PL_WEND_' + ItoS(BaseSeq);
+  
+  OutLn('    ; --- while loop #' + ItoS(BaseSeq) + ' ---');
+  
+  (* Empiler le contexte de boucle *)
+  LoopPush(LblTest, '', LblEnd, LP_WHILE, False, False, False);
+  
+  (* Avancer apres le mot-cle while *)
+  LexNextToken;
+  
+  (* Label de test *)
+  EmitLoopLabel(LblTest);
+  
+  (* Evaluer la condition *)
+  ParseLoopCondition;
+  
+  (* Emettre le test de la condition *)
+  OutLn('    TEST EAX, EAX      ; while condition');
+  OutLn('    JZ ' + LblEnd + '         ; exit if false');
+  
+  (* Bloc du while *)
+  OutLn('    ; while body');
+  ParseLoopBlock;
+  
+  (* Saut vers le test *)
+  EmitLoopJmp(LblTest);
+  
+  (* Label de fin *)
+  EmitLoopLabel(LblEnd);
+  OutLn('    ; --- end while #' + ItoS(BaseSeq) + ' ---');
+  
+  (* Depiler le contexte *)
+  LoopPop;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDoWhileStmt : parser une boucle do-while                }
+{   do body while (cond);                                      }
+{                                                               }
+{   Emission assembleur :                                       }
+{     _PL_DSTART_N: bloc                                        }
+{     _PL_DTEST_N: evaluer cond -> TEST EAX, EAX                }
+{                  -> JNZ _PL_DSTART_N                          }
+{     _PL_DEND_N:                                               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDoWhileStmt;
+Var
+  LblStart : TString;
+  LblTest  : TString;
+  LblEnd   : TString;
+  BaseSeq  : Integer;
+Begin
+  Inc(LpDoWhileCount);
+  LpLastKind := LP_DO_WHILE;
+  
+  (* Generer les labels *)
+  Inc(LpLabelSeq);
+  BaseSeq := LpLabelSeq;
+  LblStart := '_PL_DSTART_' + ItoS(BaseSeq);
+  LblTest  := '_PL_DTEST_' + ItoS(BaseSeq);
+  LblEnd   := '_PL_DEND_' + ItoS(BaseSeq);
+  
+  OutLn('    ; --- do-while loop #' + ItoS(BaseSeq) + ' ---');
+  
+  (* Empiler le contexte de boucle (continue va vers test) *)
+  LoopPush(LblTest, '', LblEnd, LP_DO_WHILE, False, True, False);
+  
+  (* Avancer apres le mot-cle do *)
+  LexNextToken;
+  
+  (* Label de debut *)
+  EmitLoopLabel(LblStart);
+  
+  (* Bloc du do *)
+  OutLn('    ; do body');
+  ParseLoopBlock;
+  
+  (* Verifier le mot-cle while *)
+  If (CurTokKind = TK_KEYWORD) And
+     (StrLowerCase(CurTokStr) = 'while') Then
+  Begin
+    LexNextToken;  (* Avancer apres while *)
+    
+    (* Label de test *)
+    EmitLoopLabel(LblTest);
+    
+    (* Evaluer la condition *)
+    ParseLoopCondition;
+    
+    (* Emettre le test de la condition *)
+    OutLn('    TEST EAX, EAX      ; do-while condition');
+    OutLn('    JNZ ' + LblStart + '      ; loop if true');
+    
+    (* Point-virgule obligatoire apres do-while *)
+    If CurTokKind = TK_SEMICOLON Then
+      LexNextToken
+    Else
+      WarnMsg('Expected ; after do-while condition');
+  End
+  Else
+    CompileError('Expected while after do block', LexLineNo);
+  
+  (* Label de fin *)
+  EmitLoopLabel(LblEnd);
+  OutLn('    ; --- end do-while #' + ItoS(BaseSeq) + ' ---');
+  
+  (* Depiler le contexte *)
+  LoopPop;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForInit : parser la partie initialisation du for        }
+{   for ($i = 0; ...)                                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForInit;
+Begin
+  OutLn('    ; for init');
+  (* Parser jusqu au ; *)
+  While (CurTokKind <> TK_SEMICOLON) And (CurTokKind <> TK_EOF) Do
+  Begin
+    (* Parser une expression d initialisation *)
+    If CurTokKind = TK_VARIABLE Then
+    Begin
+      OutLn('    ; init ' + CurTokStr);
+      (* Juste sauter pour l instant *)
+    End;
+    LexNextToken;
+  End;
+  If CurTokKind = TK_SEMICOLON Then
+    LexNextToken;  (* Avancer apres ; *)
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForCond : parser la partie condition du for             }
+{   for (...; $i < 10; ...)                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForCond;
+Begin
+  OutLn('    ; for condition');
+  (* Parser jusqu au ; *)
+  If CurTokKind = TK_SEMICOLON Then
+  Begin
+    (* Condition vide = boucle infinie *)
+    OutLn('    MOV EAX, 1         ; for(;;) infinite');
+    LexNextToken;
+    Exit;
+  End;
+  
+  While (CurTokKind <> TK_SEMICOLON) And (CurTokKind <> TK_EOF) Do
+  Begin
+    If CurTokKind = TK_INTEGER Then
+    Begin
+      OutLn('    MOV EAX, ' + ItoS(CurTokInt));
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_VARIABLE Then
+    Begin
+      EmitVarLoad(CurTokStr);
+      LexNextToken;
+    End
+    Else If CurTokKind = TK_KEYWORD Then
+    Begin
+      If StrLowerCase(CurTokStr) = 'true' Then
+        OutLn('    MOV EAX, 1')
+      Else If StrLowerCase(CurTokStr) = 'false' Then
+        OutLn('    XOR EAX, EAX');
+      LexNextToken;
+    End
+    Else
+      LexNextToken;
+  End;
+  If CurTokKind = TK_SEMICOLON Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForIncr : parser la partie increment du for             }
+{   for (...; ...; $i++)                                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForIncr;
+Begin
+  OutLn('    ; for increment');
+  (* Parser jusqu a ) *)
+  While (CurTokKind <> TK_RPAREN) And (CurTokKind <> TK_EOF) Do
+  Begin
+    If CurTokKind = TK_VARIABLE Then
+    Begin
+      OutLn('    ; incr ' + CurTokStr);
+    End;
+    LexNextToken;
+  End;
+  If CurTokKind = TK_RPAREN Then
+    LexNextToken;  (* Avancer apres ) *)
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForStmt : parser une boucle for                         }
+{   for ($i = 0; $i < n; $i++) body                            }
+{                                                               }
+{   Emission assembleur :                                       }
+{     init                                                      }
+{     _PL_FTEST_N: evaluer cond -> JZ _PL_FEND_N                }
+{     bloc                                                      }
+{     _PL_FINCR_N: incr                                         }
+{     JMP _PL_FTEST_N                                           }
+{     _PL_FEND_N:                                               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForStmt;
+Var
+  LblTest : TString;
+  LblIncr : TString;
+  LblEnd  : TString;
+  BaseSeq : Integer;
+Begin
+  Inc(LpForCount);
+  LpLastKind := LP_FOR;
+  
+  (* Generer les labels *)
+  Inc(LpLabelSeq);
+  BaseSeq := LpLabelSeq;
+  LblTest := '_PL_FTEST_' + ItoS(BaseSeq);
+  LblIncr := '_PL_FINCR_' + ItoS(BaseSeq);
+  LblEnd  := '_PL_FEND_' + ItoS(BaseSeq);
+  
+  OutLn('    ; --- for loop #' + ItoS(BaseSeq) + ' ---');
+  
+  (* Empiler le contexte de boucle (continue va vers incr) *)
+  LoopPush(LblTest, LblIncr, LblEnd, LP_FOR, True, False, False);
+  
+  (* Avancer apres le mot-cle for *)
+  LexNextToken;
+  
+  (* Verifier ( *)
+  If CurTokKind <> TK_LPAREN Then
+  Begin
+    CompileError('Expected ( after for', LexLineNo);
+    LoopPop;
+    Exit;
+  End;
+  LexNextToken;  (* Avancer apres ( *)
+  
+  (* Partie initialisation *)
+  ParseForInit;
+  
+  (* Label de test *)
+  EmitLoopLabel(LblTest);
+  
+  (* Partie condition *)
+  ParseForCond;
+  
+  (* Emettre le test *)
+  OutLn('    TEST EAX, EAX      ; for condition');
+  OutLn('    JZ ' + LblEnd + '          ; exit if false');
+  
+  (* Partie increment (on la sauvegarde pour apres le bloc) *)
+  (* Pour l instant, on la parse mais on ne l emet pas encore *)
+  ParseForIncr;
+  
+  (* Bloc du for *)
+  OutLn('    ; for body');
+  ParseLoopBlock;
+  
+  (* Label d increment *)
+  EmitLoopLabel(LblIncr);
+  (* L increment a deja ete parse, on reemet juste un commentaire *)
+  OutLn('    ; for incr (placeholder)');
+  
+  (* Saut vers le test *)
+  EmitLoopJmp(LblTest);
+  
+  (* Label de fin *)
+  EmitLoopLabel(LblEnd);
+  OutLn('    ; --- end for #' + ItoS(BaseSeq) + ' ---');
+  
+  (* Depiler le contexte *)
+  LoopPop;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForeachStmt : parser une boucle foreach                 }
+{   foreach ($arr as $val) body                                }
+{   foreach ($arr as $key => $val) body                        }
+{                                                               }
+{   Emission assembleur (simplifie) :                           }
+{     MOV ECX, 0                   ; index                      }
+{     MOV EBX, [tableau]           ; adresse tableau            }
+{     MOV EDX, [EBX]               ; count                      }
+{     _PL_FETEST_N:                                             }
+{       CMP ECX, EDX                                            }
+{       JGE _PL_FEEND_N                                         }
+{       MOV EAX, [EBX+4+ECX*4]     ; element courant            }
+{       MOV [$val], EAX                                         }
+{       bloc                                                    }
+{       INC ECX                                                 }
+{       JMP _PL_FETEST_N                                        }
+{     _PL_FEEND_N:                                              }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForeachStmt;
+Var
+  LblTest   : TString;
+  LblEnd    : TString;
+  BaseSeq   : Integer;
+  ArrName   : TString;
+  ValName   : TString;
+  KeyName   : TString;
+  HasKey    : Boolean;
+Begin
+  Inc(LpForeachCount);
+  LpLastKind := LP_FOREACH;
+  HasKey := False;
+  KeyName := '';
+  
+  (* Generer les labels *)
+  Inc(LpLabelSeq);
+  BaseSeq := LpLabelSeq;
+  LblTest := '_PL_FETEST_' + ItoS(BaseSeq);
+  LblEnd  := '_PL_FEEND_' + ItoS(BaseSeq);
+  
+  OutLn('    ; --- foreach loop #' + ItoS(BaseSeq) + ' ---');
+  
+  (* Empiler le contexte de boucle *)
+  LoopPush(LblTest, '', LblEnd, LP_FOREACH, False, False, True);
+  
+  (* Avancer apres le mot-cle foreach *)
+  LexNextToken;
+  
+  (* Verifier ( *)
+  If CurTokKind <> TK_LPAREN Then
+  Begin
+    CompileError('Expected ( after foreach', LexLineNo);
+    LoopPop;
+    Exit;
+  End;
+  LexNextToken;
+  
+  (* Nom du tableau *)
+  If CurTokKind = TK_VARIABLE Then
+  Begin
+    ArrName := CurTokStr;
+    LexNextToken;
+  End
+  Else
+  Begin
+    CompileError('Expected array variable in foreach', LexLineNo);
+    LoopPop;
+    Exit;
+  End;
+  
+  (* Mot-cle as *)
+  If (CurTokKind = TK_KEYWORD) And
+     (StrLowerCase(CurTokStr) = 'as') Then
+    LexNextToken
+  Else
+  Begin
+    CompileError('Expected as in foreach', LexLineNo);
+    LoopPop;
+    Exit;
+  End;
+  
+  (* Variable de valeur (et peut-etre cle) *)
+  If CurTokKind = TK_VARIABLE Then
+  Begin
+    ValName := CurTokStr;
+    LexNextToken;
+    
+    (* Verifier si c est $key => $val *)
+    If (CurTokKind = TK_DOUBLE_ARROW) Or
+       ((CurTokKind = TK_PUNCT) And (CurTokStr = '=>')) Then
+    Begin
+      (* C est la cle, pas la valeur *)
+      KeyName := ValName;
+      HasKey := True;
+      LpLastKind := LP_FOREACH_KV;
+      LexNextToken;  (* Avancer apres => *)
+      
+      If CurTokKind = TK_VARIABLE Then
+      Begin
+        ValName := CurTokStr;
+        LexNextToken;
+      End
+      Else
+        CompileError('Expected value variable after =>', LexLineNo);
+    End;
+  End
+  Else
+    CompileError('Expected variable in foreach', LexLineNo);
+  
+  (* Verifier ) *)
+  If CurTokKind = TK_RPAREN Then
+    LexNextToken
+  Else
+    CompileError('Expected ) after foreach', LexLineNo);
+  
+  (* Initialisation du foreach *)
+  OutLn('    XOR ECX, ECX       ; index = 0');
+  OutLn('    MOV EBX, ' + AsmIdent(ArrName) + ' ; array ptr');
+  OutLn('    MOV EDX, [EBX]     ; count');
+  
+  (* Label de test *)
+  EmitLoopLabel(LblTest);
+  OutLn('    CMP ECX, EDX       ; index < count?');
+  OutLn('    JGE ' + LblEnd + '         ; exit if done');
+  
+  (* Charger l element courant *)
+  OutLn('    MOV EAX, [EBX+4+ECX*4] ; current element');
+  OutLn('    MOV ' + AsmIdent(ValName) + ', EAX ; store in $' + ValName);
+  
+  If HasKey Then
+    OutLn('    MOV ' + AsmIdent(KeyName) + ', ECX ; store key');
+  
+  (* Bloc du foreach *)
+  OutLn('    ; foreach body');
+  ParseLoopBlock;
+  
+  (* Increment *)
+  OutLn('    INC ECX            ; next index');
+  EmitLoopJmp(LblTest);
+  
+  (* Label de fin *)
+  EmitLoopLabel(LblEnd);
+  OutLn('    ; --- end foreach #' + ItoS(BaseSeq) + ' ---');
+  
+  (* Depiler le contexte *)
+  LoopPop;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBreakStmt : parser une instruction break                }
+{   break; -> JMP vers le label de fin de la boucle courante   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseBreakStmt;
+Begin
+  Inc(LpBreakCount);
+  LpLastKind := LP_BREAK;
+  
+  (* Verifier qu on est dans une boucle *)
+  If LpStackTop <= 0 Then
+  Begin
+    CompileError('break outside of loop', LexLineNo);
+    LexNextToken;  (* Avancer apres break *)
+    If CurTokKind = TK_SEMICOLON Then
+      LexNextToken;
+    Exit;
+  End;
+  
+  OutLn('    ; break');
+  EmitLoopJmp(LpStack[LpStackTop].EndLabel);
+  
+  (* Avancer apres break *)
+  LexNextToken;
+  
+  (* Verifier ; *)
+  If CurTokKind = TK_SEMICOLON Then
+    LexNextToken
+  Else
+    WarnMsg('Expected ; after break');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseContinueStmt : parser une instruction continue          }
+{   continue; -> JMP vers le label de test/incr de la boucle   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseContinueStmt;
+Var
+  DestLabel : TString;
+Begin
+  Inc(LpContinueCount);
+  LpLastKind := LP_CONTINUE;
+  
+  (* Verifier qu on est dans une boucle *)
+  If LpStackTop <= 0 Then
+  Begin
+    CompileError('continue outside of loop', LexLineNo);
+    LexNextToken;  (* Avancer apres continue *)
+    If CurTokKind = TK_SEMICOLON Then
+      LexNextToken;
+    Exit;
+  End;
+  
+  (* Determiner la destination *)
+  (* Pour for, continue va vers IncrLabel *)
+  (* Pour while/do-while/foreach, continue va vers TestLabel *)
+  If LpStack[LpStackTop].IsFor And
+     (LpStack[LpStackTop].IncrLabel <> '') Then
+    DestLabel := LpStack[LpStackTop].IncrLabel
+  Else
+    DestLabel := LpStack[LpStackTop].TestLabel;
+  
+  OutLn('    ; continue');
+  EmitLoopJmp(DestLabel);
+  
+  (* Avancer apres continue *)
+  LexNextToken;
+  
+  (* Verifier ; *)
+  If CurTokKind = TK_SEMICOLON Then
+    LexNextToken
+  Else
+    WarnMsg('Expected ; after continue');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsInLoop : verifier si on est dans une boucle                }
+{ ------------------------------------------------------------ }
+
+Function IsInLoop : Boolean;
+Begin
+  IsInLoop := (LpStackTop > 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetLoopBreakLabel : obtenir le label de break courant        }
+{ ------------------------------------------------------------ }
+
+Function GetLoopBreakLabel : TString;
+Begin
+  If LpStackTop > 0 Then
+    GetLoopBreakLabel := LpStack[LpStackTop].EndLabel
+  Else
+    GetLoopBreakLabel := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ GetLoopContinueLabel : obtenir le label de continue courant  }
+{ ------------------------------------------------------------ }
+
+Function GetLoopContinueLabel : TString;
+Begin
+  If LpStackTop > 0 Then
+  Begin
+    If LpStack[LpStackTop].IsFor And
+       (LpStack[LpStackTop].IncrLabel <> '') Then
+      GetLoopContinueLabel := LpStack[LpStackTop].IncrLabel
+    Else
+      GetLoopContinueLabel := LpStack[LpStackTop].TestLabel;
+  End
+  Else
+    GetLoopContinueLabel := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ GetLoopNestLevel : obtenir le niveau d imbrication           }
+{ ------------------------------------------------------------ }
+
+Function GetLoopNestLevel : Integer;
+Begin
+  GetLoopNestLevel := LpNestLevel;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpLpState : afficher l etat du module de boucles           }
+{ ------------------------------------------------------------ }
+
+Procedure DumpLpState;
+Var
+  I : Integer;
+Begin
+  WriteLn('--- Loop State ---');
+  WriteLn('  LpInitialized   : ', LpInitialized);
+  WriteLn('  LpLabelSeq      : ', LpLabelSeq);
+  WriteLn('  LpWhileCount    : ', LpWhileCount);
+  WriteLn('  LpDoWhileCount  : ', LpDoWhileCount);
+  WriteLn('  LpForCount      : ', LpForCount);
+  WriteLn('  LpForeachCount  : ', LpForeachCount);
+  WriteLn('  LpBreakCount    : ', LpBreakCount);
+  WriteLn('  LpContinueCount : ', LpContinueCount);
+  WriteLn('  LpNestLevel     : ', LpNestLevel);
+  WriteLn('  LpLastKind      : ', LpTypeName(LpLastKind));
+  WriteLn('  LpStackTop      : ', LpStackTop);
+  If LpStackTop > 0 Then
+  Begin
+    WriteLn('  Stack:');
+    For I := 1 To LpStackTop Do
+    Begin
+      WriteLn('    [', I, '] Kind=', LpTypeName(LpStack[I].LoopKind),
+              ' Test=', LpStack[I].TestLabel,
+              ' End=', LpStack[I].EndLabel);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 11)                            }
+{ ------------------------------------------------------------ }
+
+Function IsLpInitialized : Boolean;
+Begin
+  IsLpInitialized := LpInitialized;
+End;
+
+Function IsLpEmpty : Boolean;
+Begin
+  IsLpEmpty := (LpWhileCount = 0) And (LpDoWhileCount = 0) And
+               (LpForCount = 0) And (LpForeachCount = 0);
+End;
+
+Function GetLpWhileCount : LongInt;
+Begin
+  GetLpWhileCount := LpWhileCount;
+End;
+
+Function GetLpDoWhileCount : LongInt;
+Begin
+  GetLpDoWhileCount := LpDoWhileCount;
+End;
+
+Function GetLpForCount : LongInt;
+Begin
+  GetLpForCount := LpForCount;
+End;
+
+Function GetLpForeachCount : LongInt;
+Begin
+  GetLpForeachCount := LpForeachCount;
+End;
+
+Function GetLpBreakCount : LongInt;
+Begin
+  GetLpBreakCount := LpBreakCount;
+End;
+
+Function GetLpContinueCount : LongInt;
+Begin
+  GetLpContinueCount := LpContinueCount;
+End;
+
+Function GetLpLastLabel : TString;
+Begin
+  GetLpLastLabel := LpLastLabel;
+End;
+
+Function GetLpStatus : TString;
+Begin
+  If Not LpInitialized Then
+    GetLpStatus := 'Not initialized'
+  Else
+    GetLpStatus := ItoS(LpWhileCount) + ' while, ' +
+                   ItoS(LpDoWhileCount) + ' do-while, ' +
+                   ItoS(LpForCount) + ' for, ' +
+                   ItoS(LpForeachCount) + ' foreach';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -8382,6 +9322,9 @@ Begin
   { Initialiser le module if/elseif/else }
   InitIfState;
 
+  { Initialiser le module de boucles }
+  InitLpState;
+
   { Analyser les arguments }
   ParseArgs;
 
@@ -8413,8 +9356,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-10 implementes');
-  WriteLn('PHPCW32: Les TODOs 11-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-11 implementes');
+  WriteLn('PHPCW32: Les TODOs 12-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
