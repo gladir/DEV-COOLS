@@ -26958,6 +26958,8 @@ Var
  SolDir: String;
  ProjFile: String;
 Begin
+ { Convertir en chemin absolu pour que ExtractFilePath ne soit pas vide }
+ FileName := FExpand(FileName);
  ParseSolutionFile(FileName, CurrentSolution);
  SolutionLoaded := True;
  SolutionModified := False;
