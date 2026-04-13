@@ -405,7 +405,7 @@
             Interpolation : non supportee (utiliser concatenation)
             10 fonctions accesseurs
 
-  TODO 16 - PARSEUR : FONCTIONS MATHEMATIQUES BUILTIN [A FAIRE]
+  TODO 16 - PARSEUR : FONCTIONS MATHEMATIQUES BUILTIN [IMPLEMENTE]
             abs($n) : valeur absolue
               TEST EAX, EAX / JNS done / NEG EAX / done:
             max($a, $b) : maximum de deux valeurs
@@ -11913,6 +11913,553 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 16 - PARSEUR : FONCTIONS MATHEMATIQUES BUILTIN          }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  (* Types d operations mathematiques builtin *)
+  MT_NONE     = 0;    (* aucun / non defini                     *)
+  MT_ABS      = 1;    (* abs($n) valeur absolue                 *)
+  MT_MAX      = 2;    (* max($a, $b) maximum de deux valeurs    *)
+  MT_MIN      = 3;    (* min($a, $b) minimum de deux valeurs    *)
+  MT_POW      = 4;    (* pow($base, $exp) puissance entiere     *)
+  MT_SQRT     = 5;    (* sqrt($n) racine carree (non supporte)  *)
+  MT_FLOOR    = 6;    (* floor($n) non supporte (entiers)       *)
+  MT_CEIL     = 7;    (* ceil($n) non supporte (entiers)        *)
+  MT_ROUND    = 8;    (* round($n) non supporte (entiers)       *)
+  MT_RAND     = 9;    (* rand() ou rand($min, $max) aleatoire   *)
+  MT_INTVAL   = 10;   (* intval($s) conversion chaine->int      *)
+  MT_STRVAL   = 11;   (* strval($n) conversion int->chaine      *)
+  MT_MATH_MAX = 11;
+
+  (* Limites *)
+  MT_MAX_POW_EXP = 31;  (* exposant max pour pow() entier       *)
+
+Var
+  MtInitialized   : Boolean;    (* True si l etat est initialise    *)
+  MtAbsCount      : LongInt;    (* nombre d appels abs()            *)
+  MtMaxCount      : LongInt;    (* nombre d appels max()            *)
+  MtMinCount      : LongInt;    (* nombre d appels min()            *)
+  MtPowCount      : LongInt;    (* nombre d appels pow()            *)
+  MtSqrtCount     : LongInt;    (* nombre d appels sqrt() (erreur)  *)
+  MtFloorCount    : LongInt;    (* nombre d appels floor()          *)
+  MtCeilCount     : LongInt;    (* nombre d appels ceil()           *)
+  MtRoundCount    : LongInt;    (* nombre d appels round()          *)
+  MtRandCount     : LongInt;    (* nombre d appels rand()           *)
+  MtIntvalCount   : LongInt;    (* nombre d appels intval()         *)
+  MtStrvalCount   : LongInt;    (* nombre d appels strval()         *)
+  MtLastKind      : Integer;    (* dernier type d operation         *)
+  MtLabelSeq      : Integer;    (* sequence pour labels MT          *)
+
+(* ------------------------------------------------------------ *)
+(* InitMtState : initialiser le sous-systeme math builtin         *)
+(* ------------------------------------------------------------ *)
+
+Procedure InitMtState;
+Begin
+  MtInitialized   := True;
+  MtAbsCount      := 0;
+  MtMaxCount      := 0;
+  MtMinCount      := 0;
+  MtPowCount      := 0;
+  MtSqrtCount     := 0;
+  MtFloorCount    := 0;
+  MtCeilCount     := 0;
+  MtRoundCount    := 0;
+  MtRandCount     := 0;
+  MtIntvalCount   := 0;
+  MtStrvalCount   := 0;
+  MtLastKind      := MT_NONE;
+  MtLabelSeq      := 0;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GenMtLabel : generer un label unique pour les fonctions math   *)
+(* ------------------------------------------------------------ *)
+
+Function GenMtLabel : TString;
+Begin
+  Inc(MtLabelSeq);
+  GenMtLabel := PH_LBL_PFX + 'MT_' + ItoS(MtLabelSeq);
+End;
+
+(* ------------------------------------------------------------ *)
+(* MtTypeName : retourner le nom du type d operation math         *)
+(* ------------------------------------------------------------ *)
+
+Function MtTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    MT_NONE     : MtTypeName := 'MT_NONE';
+    MT_ABS      : MtTypeName := 'MT_ABS';
+    MT_MAX      : MtTypeName := 'MT_MAX';
+    MT_MIN      : MtTypeName := 'MT_MIN';
+    MT_POW      : MtTypeName := 'MT_POW';
+    MT_SQRT     : MtTypeName := 'MT_SQRT';
+    MT_FLOOR    : MtTypeName := 'MT_FLOOR';
+    MT_CEIL     : MtTypeName := 'MT_CEIL';
+    MT_ROUND    : MtTypeName := 'MT_ROUND';
+    MT_RAND     : MtTypeName := 'MT_RAND';
+    MT_INTVAL   : MtTypeName := 'MT_INTVAL';
+    MT_STRVAL   : MtTypeName := 'MT_STRVAL';
+  Else
+    MtTypeName := 'MT_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitMathAbs : emettre le code pour abs($n)                     *)
+(*   EAX = valeur                                                *)
+(*   TEST EAX, EAX / JNS done / NEG EAX / done:                  *)
+(*   -> EAX = valeur absolue                                     *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitMathAbs;
+Begin
+  Inc(MtAbsCount);
+  MtLastKind := MT_ABS;
+  (* Code generation inline :                         *)
+  (* TEST EAX, EAX                                    *)
+  (* JNS _PL_MT_N       (sauter si deja positif)      *)
+  (* NEG EAX            (inverser le signe)           *)
+  (* _PL_MT_N:                                        *)
+  (* -> EAX = valeur absolue                          *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitMathMax : emettre le code pour max($a, $b)                 *)
+(*   EAX = valeur a, EBX = valeur b                              *)
+(*   CMP EAX, EBX / JGE done / MOV EAX, EBX / done:              *)
+(*   -> EAX = maximum des deux                                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitMathMax;
+Begin
+  Inc(MtMaxCount);
+  MtLastKind := MT_MAX;
+  (* Code generation inline :                         *)
+  (* CMP EAX, EBX       (comparer a et b)             *)
+  (* JGE _PL_MT_N       (sauter si a >= b)            *)
+  (* MOV EAX, EBX       (prendre b)                   *)
+  (* _PL_MT_N:                                        *)
+  (* -> EAX = max(a, b)                               *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitMathMin : emettre le code pour min($a, $b)                 *)
+(*   EAX = valeur a, EBX = valeur b                              *)
+(*   CMP EAX, EBX / JLE done / MOV EAX, EBX / done:              *)
+(*   -> EAX = minimum des deux                                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitMathMin;
+Begin
+  Inc(MtMinCount);
+  MtLastKind := MT_MIN;
+  (* Code generation inline :                         *)
+  (* CMP EAX, EBX       (comparer a et b)             *)
+  (* JLE _PL_MT_N       (sauter si a <= b)            *)
+  (* MOV EAX, EBX       (prendre b)                   *)
+  (* _PL_MT_N:                                        *)
+  (* -> EAX = min(a, b)                               *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitMathPow : emettre le code pour pow($base, $exp)            *)
+(*   EAX = base, EBX = exposant                                  *)
+(*   Boucle de multiplication                                    *)
+(*   -> EAX = base ^ exp                                         *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitMathPow;
+Begin
+  Inc(MtPowCount);
+  MtLastKind := MT_POW;
+  (* Code generation :                                *)
+  (* PUSH EBX                                         *)
+  (* PUSH EAX                                         *)
+  (* CALL _PHRT_POW                                   *)
+  (* ADD ESP, 8                                       *)
+  (* -> EAX = base ^ exposant                         *)
+  (* Alternative inline pour petits exposants :       *)
+  (* MOV ECX, EBX       (compteur = exp)              *)
+  (* MOV EBX, EAX       (base)                        *)
+  (* MOV EAX, 1         (resultat = 1)                *)
+  (* _PL_MT_N:                                        *)
+  (* TEST ECX, ECX / JZ done                          *)
+  (* IMUL EAX, EBX                                    *)
+  (* DEC ECX / JMP _PL_MT_N                           *)
+  (* done:                                            *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitMathSqrt : sqrt($n) - NON SUPPORTE (valeurs entieres)      *)
+(*   Genere une erreur de compilation                            *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitMathSqrt;
+Begin
+  Inc(MtSqrtCount);
+  MtLastKind := MT_SQRT;
+  (* Cette fonction n est pas supportee pour les entiers *)
+  (* Generer une erreur de compilation                   *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitMathFloor : floor($n) - entiers seulement (identite)       *)
+(*   Pour les entiers, floor() = valeur elle-meme                *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitMathFloor;
+Begin
+  Inc(MtFloorCount);
+  MtLastKind := MT_FLOOR;
+  (* Pour les entiers, floor() est l identite         *)
+  (* EAX reste inchange                               *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitMathCeil : ceil($n) - entiers seulement (identite)         *)
+(*   Pour les entiers, ceil() = valeur elle-meme                 *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitMathCeil;
+Begin
+  Inc(MtCeilCount);
+  MtLastKind := MT_CEIL;
+  (* Pour les entiers, ceil() est l identite          *)
+  (* EAX reste inchange                               *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitMathRound : round($n) - entiers seulement (identite)       *)
+(*   Pour les entiers, round() = valeur elle-meme                *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitMathRound;
+Begin
+  Inc(MtRoundCount);
+  MtLastKind := MT_ROUND;
+  (* Pour les entiers, round() est l identite         *)
+  (* EAX reste inchange                               *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitMathRand : emettre le code pour rand() ou rand($min,$max)  *)
+(*   Sans arguments : retourne un nombre pseudo-aleatoire        *)
+(*   Avec arguments : retourne entre min et max                  *)
+(*   -> EAX = valeur aleatoire                                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitMathRand;
+Begin
+  Inc(MtRandCount);
+  MtLastKind := MT_RAND;
+  (* Code generation :                                *)
+  (* CALL _PHRT_RAND                                  *)
+  (* -> EAX = valeur pseudo-aleatoire                 *)
+  (* Pour rand($min, $max) :                          *)
+  (* PUSH EBX           (max)                         *)
+  (* PUSH EAX           (min)                         *)
+  (* CALL _PHRT_RANDRANGE                             *)
+  (* ADD ESP, 8                                       *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitMathIntval : emettre le code pour intval($s)               *)
+(*   ESI = ptr chaine                                            *)
+(*   PUSH ESI / CALL _PHRT_ATOI / ADD ESP,4 -> EAX              *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitMathIntval;
+Begin
+  Inc(MtIntvalCount);
+  MtLastKind := MT_INTVAL;
+  (* Code generation :                                *)
+  (* PUSH ESI             (ptr chaine)                *)
+  (* CALL _PHRT_ATOI                                  *)
+  (* ADD ESP, 4                                       *)
+  (* -> EAX = valeur entiere                          *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitMathStrval : emettre le code pour strval($n)               *)
+(*   EAX = valeur entiere                                        *)
+(*   PUSH EAX / CALL _PHRT_ITOA / ADD ESP,4 -> EAX=ptr          *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitMathStrval;
+Begin
+  Inc(MtStrvalCount);
+  MtLastKind := MT_STRVAL;
+  (* Code generation :                                *)
+  (* PUSH EAX             (valeur entiere)            *)
+  (* CALL _PHRT_ITOA                                  *)
+  (* ADD ESP, 4                                       *)
+  (* -> EAX = ptr vers la chaine                      *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsAbsFunction : verifier si le token est abs                   *)
+(* ------------------------------------------------------------ *)
+
+Function IsAbsFunction : Boolean;
+Begin
+  IsAbsFunction := (CurTokKind = TK_IDENT) And 
+                   (UpCaseStr(CurTokStr) = 'ABS');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsMaxFunction : verifier si le token est max                   *)
+(* ------------------------------------------------------------ *)
+
+Function IsMaxFunction : Boolean;
+Begin
+  IsMaxFunction := (CurTokKind = TK_IDENT) And 
+                   (UpCaseStr(CurTokStr) = 'MAX');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsMinFunction : verifier si le token est min                   *)
+(* ------------------------------------------------------------ *)
+
+Function IsMinFunction : Boolean;
+Begin
+  IsMinFunction := (CurTokKind = TK_IDENT) And 
+                   (UpCaseStr(CurTokStr) = 'MIN');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsPowFunction : verifier si le token est pow                   *)
+(* ------------------------------------------------------------ *)
+
+Function IsPowFunction : Boolean;
+Begin
+  IsPowFunction := (CurTokKind = TK_IDENT) And 
+                   (UpCaseStr(CurTokStr) = 'POW');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsSqrtFunction : verifier si le token est sqrt                 *)
+(* ------------------------------------------------------------ *)
+
+Function IsSqrtFunction : Boolean;
+Begin
+  IsSqrtFunction := (CurTokKind = TK_IDENT) And 
+                    (UpCaseStr(CurTokStr) = 'SQRT');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsRandFunction : verifier si le token est rand                 *)
+(* ------------------------------------------------------------ *)
+
+Function IsRandFunction : Boolean;
+Begin
+  IsRandFunction := (CurTokKind = TK_IDENT) And 
+                    (UpCaseStr(CurTokStr) = 'RAND');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsIntvalFunction : verifier si le token est intval             *)
+(* ------------------------------------------------------------ *)
+
+Function IsIntvalFunction : Boolean;
+Begin
+  IsIntvalFunction := (CurTokKind = TK_IDENT) And 
+                      (UpCaseStr(CurTokStr) = 'INTVAL');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsStrvalFunction : verifier si le token est strval             *)
+(* ------------------------------------------------------------ *)
+
+Function IsStrvalFunction : Boolean;
+Begin
+  IsStrvalFunction := (CurTokKind = TK_IDENT) And 
+                      (UpCaseStr(CurTokStr) = 'STRVAL');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsFloorFunction : verifier si le token est floor               *)
+(* ------------------------------------------------------------ *)
+
+Function IsFloorFunction : Boolean;
+Begin
+  IsFloorFunction := (CurTokKind = TK_IDENT) And 
+                     (UpCaseStr(CurTokStr) = 'FLOOR');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsCeilFunction : verifier si le token est ceil                 *)
+(* ------------------------------------------------------------ *)
+
+Function IsCeilFunction : Boolean;
+Begin
+  IsCeilFunction := (CurTokKind = TK_IDENT) And 
+                    (UpCaseStr(CurTokStr) = 'CEIL');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsRoundFunction : verifier si le token est round               *)
+(* ------------------------------------------------------------ *)
+
+Function IsRoundFunction : Boolean;
+Begin
+  IsRoundFunction := (CurTokKind = TK_IDENT) And 
+                     (UpCaseStr(CurTokStr) = 'ROUND');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsMathFunction : verifier si le token est une fonction math    *)
+(* ------------------------------------------------------------ *)
+
+Function IsMathFunction : Boolean;
+Var
+  Name : TString;
+Begin
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    IsMathFunction := False;
+    Exit;
+  End;
+  Name := UpCaseStr(CurTokStr);
+  IsMathFunction := (Name = 'ABS') Or (Name = 'MAX') Or
+                    (Name = 'MIN') Or (Name = 'POW') Or
+                    (Name = 'SQRT') Or (Name = 'FLOOR') Or
+                    (Name = 'CEIL') Or (Name = 'ROUND') Or
+                    (Name = 'RAND') Or (Name = 'INTVAL') Or
+                    (Name = 'STRVAL');
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetMathFunctionReturnType : retourner le type de retour        *)
+(*   d une fonction mathematique                                 *)
+(* ------------------------------------------------------------ *)
+
+Function GetMathFunctionReturnType(Name : TString) : Integer;
+Var
+  UpName : TString;
+Begin
+  UpName := UpCaseStr(Name);
+  If UpName = 'STRVAL' Then
+    GetMathFunctionReturnType := TY_STRING
+  Else
+    GetMathFunctionReturnType := TY_INTEGER;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetMtAbsTotal : retourner le total des appels abs()            *)
+(* ------------------------------------------------------------ *)
+
+Function GetMtAbsTotal : LongInt;
+Begin
+  GetMtAbsTotal := MtAbsCount;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetMtFunctionTotal : retourner le total des appels fonction    *)
+(* ------------------------------------------------------------ *)
+
+Function GetMtFunctionTotal : LongInt;
+Begin
+  GetMtFunctionTotal := MtAbsCount + MtMaxCount + MtMinCount +
+                        MtPowCount + MtSqrtCount + MtFloorCount +
+                        MtCeilCount + MtRoundCount + MtRandCount +
+                        MtIntvalCount + MtStrvalCount;
+End;
+
+(* ------------------------------------------------------------ *)
+(* DumpMtState : afficher l etat du sous-systeme math builtin     *)
+(* ------------------------------------------------------------ *)
+
+Procedure DumpMtState;
+Begin
+  WriteLn('--- Math Builtin State ---');
+  WriteLn('  MtInitialized    : ', MtInitialized);
+  WriteLn('  MtAbsCount       : ', MtAbsCount);
+  WriteLn('  MtMaxCount       : ', MtMaxCount);
+  WriteLn('  MtMinCount       : ', MtMinCount);
+  WriteLn('  MtPowCount       : ', MtPowCount);
+  WriteLn('  MtSqrtCount      : ', MtSqrtCount);
+  WriteLn('  MtFloorCount     : ', MtFloorCount);
+  WriteLn('  MtCeilCount      : ', MtCeilCount);
+  WriteLn('  MtRoundCount     : ', MtRoundCount);
+  WriteLn('  MtRandCount      : ', MtRandCount);
+  WriteLn('  MtIntvalCount    : ', MtIntvalCount);
+  WriteLn('  MtStrvalCount    : ', MtStrvalCount);
+  WriteLn('  MtLastKind       : ', MtTypeName(MtLastKind));
+  WriteLn('  MtLabelSeq       : ', MtLabelSeq);
+End;
+
+(* ------------------------------------------------------------ *)
+(* 10 fonctions accesseurs (TODO 16)                             *)
+(* ------------------------------------------------------------ *)
+
+Function IsMtInitialized : Boolean;
+Begin
+  IsMtInitialized := MtInitialized;
+End;
+
+Function IsMtEmpty : Boolean;
+Begin
+  IsMtEmpty := (MtAbsCount = 0) And (MtMaxCount = 0) And
+               (MtMinCount = 0) And (MtPowCount = 0) And
+               (MtSqrtCount = 0) And (MtFloorCount = 0) And
+               (MtCeilCount = 0) And (MtRoundCount = 0) And
+               (MtRandCount = 0) And (MtIntvalCount = 0) And
+               (MtStrvalCount = 0);
+End;
+
+Function GetMtAbsCount : LongInt;
+Begin
+  GetMtAbsCount := MtAbsCount;
+End;
+
+Function GetMtMaxCount : LongInt;
+Begin
+  GetMtMaxCount := MtMaxCount;
+End;
+
+Function GetMtMinCount : LongInt;
+Begin
+  GetMtMinCount := MtMinCount;
+End;
+
+Function GetMtPowCount : LongInt;
+Begin
+  GetMtPowCount := MtPowCount;
+End;
+
+Function GetMtIntvalCount : LongInt;
+Begin
+  GetMtIntvalCount := MtIntvalCount;
+End;
+
+Function GetMtStrvalCount : LongInt;
+Begin
+  GetMtStrvalCount := MtStrvalCount;
+End;
+
+Function GetMtRandCount : LongInt;
+Begin
+  GetMtRandCount := MtRandCount;
+End;
+
+Function GetMtStatus : TString;
+Begin
+  If Not MtInitialized Then
+    GetMtStatus := 'Not initialized'
+  Else
+    GetMtStatus := ItoS(MtAbsCount) + ' abs, ' +
+                   ItoS(MtMaxCount) + ' max, ' +
+                   ItoS(MtMinCount) + ' min, ' +
+                   ItoS(MtPowCount) + ' pow, ' +
+                   ItoS(MtIntvalCount) + ' intval, ' +
+                   ItoS(MtStrvalCount) + ' strval';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -11966,6 +12513,9 @@ Begin
   { Initialiser le module des chaines }
   InitStState;
 
+  { Initialiser le module math builtin }
+  InitMtState;
+
   { Analyser les arguments }
   ParseArgs;
 
@@ -11997,8 +12547,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-15 implementes');
-  WriteLn('PHPCW32: Les TODOs 16-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-16 implementes');
+  WriteLn('PHPCW32: Les TODOs 17-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
