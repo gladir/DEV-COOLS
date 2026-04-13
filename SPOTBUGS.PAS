@@ -37,7 +37,7 @@
 {  TODO 19 [IMPLEMENTE] - Detecteur : problemes d'internationalisation        }
 {  TODO 20 [IMPLEMENTE] - Calcul des scores et niveaux de severite            }
 {  TODO 21 [IMPLEMENTE] - Generation du rapport texte                         }
-{  TODO 22 [A FAIRE] - Generation du rapport XML (format SpotBugs)            }
+{  TODO 22 [IMPLEMENTE] - Generation du rapport XML (format SpotBugs)         }
 {  TODO 23 [A FAIRE] - Generation du rapport HTML                             }
 {  TODO 24 [A FAIRE] - Filtrage, exclusions et configuration des regles       }
 {  TODO 25 [A FAIRE] - Programme principal, balayage recursif et exemples     }
@@ -940,6 +940,13 @@ Const
   TR_SEP_CHAR         = '-';  { Caractere pour les separateurs                 }
   TR_SEP_LEN          = 78;   { Longueur des separateurs                       }
 
+  { --- TODO 22 : Constantes pour la generation du rapport XML --- }
+  MAX_XR_INDENT       = 16;   { Niveau d'indentation maximum                   }
+  XR_INDENT_SPACES    = 2;    { Espaces par niveau d'indentation               }
+  XR_VERSION          = '4.0.0';  { Version du format XML SpotBugs             }
+  XR_SEQUENCE         = 0;    { Numero de sequence de l'analyse                }
+  MAX_XR_CATEGORIES   = 8;    { Nombre de categories de bugs                   }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -1482,6 +1489,22 @@ Var
   TRClassCount     : Integer;     { Nombre de classes analysees                }
   TRMethodCount    : Integer;     { Nombre de methodes analysees               }
   TRProjectName    : String;      { Nom du projet analyse                      }
+
+  { --- TODO 22 : Variables du module de rapport XML --- }
+  XRInitialized    : Boolean;     { True si module initialise                  }
+  XRLabelNum       : Integer;     { Compteur pour generation de labels         }
+  XRReportFile     : Text;        { Fichier de sortie XML                      }
+  XRUseFile        : Boolean;     { True si sortie vers fichier                }
+  XRFileName       : String;      { Nom du fichier de sortie                   }
+  XRLinesWritten   : Integer;     { Nombre de lignes ecrites                   }
+  XRBugsWritten    : Integer;     { Nombre de bugs ecrits                      }
+  XRAnalysisTime   : String;      { Timestamp de l'analyse                     }
+  XRClassCount     : Integer;     { Nombre de classes analysees                }
+  XRMethodCount    : Integer;     { Nombre de methodes analysees               }
+  XRProjectName    : String;      { Nom du projet analyse                      }
+  XRIndentLevel    : Integer;     { Niveau d'indentation courant               }
+  XRSrcDir         : String;      { Repertoire source du projet                }
+  XRClassDir       : String;      { Repertoire des classes compilees           }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -12432,42 +12455,560 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 22 [A FAIRE] - Generation du rapport XML (format SpotBugs)              }
+{ TODO 22 [IMPLEMENTE] - Generation du rapport XML (format SpotBugs)           }
 { ============================================================================ }
-{                                                                              }
-{  - Format XML cible (compatible spotbugs-gui et jenkins-spotbugs-plugin) :    }
-{      <?xml version="1.0" encoding="UTF-8"?>                                   }
-{      <BugCollection version="4.0.0" sequence="0"                             }
-{                     timestamp="..." analysisTimestamp="...">                  }
-{        <Project projectName="...">                                            }
-{          <SrcDir>src</SrcDir>                                                 }
-{          <ClassDir>classes</ClassDir>                                         }
-{        </Project>                                                             }
-{        <BugInstance type="NP_NULL_ON_SOME_PATH" priority="2" rank="9"        }
-{                     abbrev="NP" category="CORRECTNESS">                       }
-{          <ShortMessage>...</ShortMessage>                                     }
-{          <LongMessage>...</LongMessage>                                       }
-{          <Class classname="com.example.Foo" primary="true"/>                  }
-{          <Method classname="com.example.Foo" name="bar"                      }
-{                  signature="(I)V" isStatic="false" primary="true"/>           }
-{          <SourceLine classname="com.example.Foo" start="42" end="42"         }
-{                      sourcefile="Foo.java"/>                                  }
-{        </BugInstance>                                                         }
-{        <FindBugsSummary .../>                                                 }
-{        <ClassStats .../>                                                      }
-{      </BugCollection>                                                         }
-{                                                                              }
-{  - Procedure EmitXmlReport(OutFile: String)                                   }
-{      Ouvrir le fichier XML                                                    }
-{      Ecrire le prologue XML et la balise BugCollection                        }
-{      Ecrire la section Project avec les chemins source et classes             }
-{      Pour chaque bug, ecrire un element BugInstance avec tous ses attributs   }
-{      Ecrire FindBugsSummary (nb bugs par priorite et categorie)               }
-{      Ecrire un element ClassStats par classe analysee                         }
-{      Fermer les balises et le fichier                                          }
-{                                                                              }
-{  - Function XmlEscape(S: String): String                                      }
-{      Echapper les caracteres speciaux XML (&, <, >, ", ')                     }
+
+{ --- TODO 22 : Initialisation du module de rapport XML --- }
+Procedure InitXmlReportState;
+Begin
+  XRInitialized := True;
+  XRLabelNum := 0;
+  XRUseFile := False;
+  XRFileName := '';
+  XRLinesWritten := 0;
+  XRBugsWritten := 0;
+  XRAnalysisTime := '';
+  XRClassCount := 0;
+  XRMethodCount := 0;
+  XRProjectName := 'SpotBugs Analysis';
+  XRIndentLevel := 0;
+  XRSrcDir := 'src';
+  XRClassDir := 'classes';
+End;
+
+{ --- TODO 22 : Generation d'un label unique --- }
+Function GenXRLabel: String;
+Var
+  S: String;
+Begin
+  Inc(XRLabelNum);
+  Str(XRLabelNum, S);
+  GenXRLabel := 'XR' + S;
+End;
+
+{ --- TODO 22 : Echapper les caracteres speciaux XML --- }
+Function XmlEscape(S: String): String;
+Var
+  I: Integer;
+  R: String;
+  C: Char;
+Begin
+  R := '';
+  For I := 1 to Length(S) do
+  Begin
+    C := S[I];
+    Case C of
+      '&': R := R + '&amp;';
+      '<': R := R + '&lt;';
+      '>': R := R + '&gt;';
+      '"': R := R + '&quot;';
+      '''': R := R + '&apos;';
+    Else
+      R := R + C;
+    End;
+  End;
+  XmlEscape := R;
+End;
+
+{ --- TODO 22 : Generer une chaine d'indentation --- }
+Function XRIndentStr: String;
+Var
+  I, Spaces: Integer;
+  S: String;
+Begin
+  S := '';
+  Spaces := XRIndentLevel * XR_INDENT_SPACES;
+  If Spaces > MAX_XR_INDENT * XR_INDENT_SPACES Then
+    Spaces := MAX_XR_INDENT * XR_INDENT_SPACES;
+  For I := 1 to Spaces do
+    S := S + ' ';
+  XRIndentStr := S;
+End;
+
+{ --- TODO 22 : Ecrire une ligne dans le fichier XML --- }
+Procedure XRWriteLine(S: String);
+Begin
+  If XRUseFile Then
+    WriteLn(XRReportFile, S)
+  Else
+    WriteLn(S);
+  Inc(XRLinesWritten);
+End;
+
+{ --- TODO 22 : Ecrire une ligne indentee --- }
+Procedure XRWriteIndent(S: String);
+Begin
+  XRWriteLine(XRIndentStr + S);
+End;
+
+{ --- TODO 22 : Obtenir l'abreviation du type de bug --- }
+Function GetBugAbbrev(BugType: String): String;
+Var
+  I: Integer;
+Begin
+  { Extraire le prefixe avant le premier underscore }
+  For I := 1 to Length(BugType) do
+  Begin
+    If BugType[I] = '_' Then
+    Begin
+      GetBugAbbrev := Copy(BugType, 1, I - 1);
+      Exit;
+    End;
+  End;
+  { Si pas d'underscore, prendre les 2 premiers caracteres }
+  If Length(BugType) >= 2 Then
+    GetBugAbbrev := Copy(BugType, 1, 2)
+  Else
+    GetBugAbbrev := BugType;
+End;
+
+{ --- TODO 22 : Convertir severite en priorite SpotBugs (1-4) --- }
+Function SeverityToPriority(Sev: Integer): Integer;
+Begin
+  Case Sev of
+    SEV_HIGH:   SeverityToPriority := 1;  { High priority }
+    SEV_MEDIUM: SeverityToPriority := 2;  { Normal priority }
+    SEV_LOW:    SeverityToPriority := 3;  { Low priority }
+    SEV_INFO:   SeverityToPriority := 4;  { Experimental }
+  Else
+    SeverityToPriority := 2;  { Default }
+  End;
+End;
+
+{ --- TODO 22 : Convertir categorie en chaine SpotBugs --- }
+Function CategoryToXmlStr(Cat: Integer): String;
+Begin
+  Case Cat of
+    CAT_CORRECTNESS:          CategoryToXmlStr := 'CORRECTNESS';
+    CAT_BAD_PRACTICE:         CategoryToXmlStr := 'BAD_PRACTICE';
+    CAT_PERFORMANCE:          CategoryToXmlStr := 'PERFORMANCE';
+    CAT_SECURITY:             CategoryToXmlStr := 'SECURITY';
+    CAT_MT_CORRECTNESS:       CategoryToXmlStr := 'MT_CORRECTNESS';
+    CAT_INTERNATIONALIZATION: CategoryToXmlStr := 'I18N';
+    CAT_DODGY:                CategoryToXmlStr := 'STYLE';
+    CAT_MALICIOUS:            CategoryToXmlStr := 'MALICIOUS_CODE';
+  Else
+    CategoryToXmlStr := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 22 : Obtenir le timestamp courant au format ISO --- }
+Function GetXmlTimestamp: String;
+Var
+  Y, M, D, DoW: Word;
+  H, Mi, S, S100: Word;
+  DateStr, TimeStr: String;
+  TmpStr: String;
+Begin
+  GetDate(Y, M, D, DoW);
+  GetTime(H, Mi, S, S100);
+  Str(Y:4, DateStr);
+  DateStr := DateStr + '-';
+  If M < 10 Then DateStr := DateStr + '0';
+  Str(M:1, TmpStr);
+  DateStr := DateStr + TmpStr + '-';
+  If D < 10 Then DateStr := DateStr + '0';
+  Str(D:1, TmpStr);
+  DateStr := DateStr + TmpStr + 'T';
+  If H < 10 Then DateStr := DateStr + '0';
+  Str(H:1, TmpStr);
+  DateStr := DateStr + TmpStr + ':';
+  If Mi < 10 Then DateStr := DateStr + '0';
+  Str(Mi:1, TmpStr);
+  DateStr := DateStr + TmpStr + ':';
+  If S < 10 Then DateStr := DateStr + '0';
+  Str(S:1, TmpStr);
+  DateStr := DateStr + TmpStr;
+  GetXmlTimestamp := DateStr;
+End;
+
+{ --- TODO 22 : Convertir un nom de classe interne en format Java --- }
+Function XRClassToJava(ClassName: String): String;
+Var
+  I: Integer;
+  S: String;
+Begin
+  S := ClassName;
+  For I := 1 to Length(S) do
+    If S[I] = '/' Then S[I] := '.';
+  XRClassToJava := S;
+End;
+
+{ --- TODO 22 : Extraire le nom de fichier source simple --- }
+Function XRExtractSourceFile(ClassName: String): String;
+Var
+  I: Integer;
+  Simple: String;
+Begin
+  { Prendre la partie apres le dernier / ou \ ou . }
+  Simple := ClassName;
+  For I := Length(ClassName) downto 1 do
+  Begin
+    If (ClassName[I] = '/') or (ClassName[I] = '\') or (ClassName[I] = '.') Then
+    Begin
+      Simple := Copy(ClassName, I + 1, Length(ClassName) - I);
+      Break;
+    End;
+  End;
+  { Ajouter .java }
+  XRExtractSourceFile := Simple + '.java';
+End;
+
+{ --- TODO 22 : Ecrire le prologue XML --- }
+Procedure WriteXmlProlog;
+Var
+  Timestamp: String;
+Begin
+  If Not XRInitialized Then InitXmlReportState;
+  Timestamp := GetXmlTimestamp;
+  XRAnalysisTime := Timestamp;
+
+  XRWriteLine('<?xml version="1.0" encoding="UTF-8"?>');
+  XRWriteLine('<BugCollection version="' + XR_VERSION + '" sequence="' +
+              IntToStr_(XR_SEQUENCE) + '" timestamp="' + Timestamp +
+              '" analysisTimestamp="' + Timestamp + '">');
+  XRIndentLevel := 1;
+End;
+
+{ --- TODO 22 : Ecrire la section Project --- }
+Procedure WriteXmlProject;
+Begin
+  XRWriteIndent('<Project projectName="' + XmlEscape(XRProjectName) + '">');
+  Inc(XRIndentLevel);
+  XRWriteIndent('<SrcDir>' + XmlEscape(XRSrcDir) + '</SrcDir>');
+  XRWriteIndent('<ClassDir>' + XmlEscape(XRClassDir) + '</ClassDir>');
+  Dec(XRIndentLevel);
+  XRWriteIndent('</Project>');
+End;
+
+{ --- TODO 22 : Ecrire un element BugInstance --- }
+Procedure WriteXmlBugInstance(Idx: Integer);
+Var
+  BugType, ClassName, MethodName, SourceFile: String;
+  Category, Priority, Rank, LineNum: Integer;
+  Abbrev: String;
+  ShortDesc, LongDesc: String;
+  IsStatic: Boolean;
+Begin
+  If (Idx < 0) or (Idx >= ScoredBugCount) Then Exit;
+
+  { Extraire les informations du bug }
+  BugType := ScoredBugs[Idx].BugType;
+  Category := ScoredBugs[Idx].Category;
+  Priority := SeverityToPriority(ScoredBugs[Idx].Severity);
+  Rank := ScoredBugs[Idx].Rank;
+  ClassName := XRClassToJava(ScoredBugs[Idx].ClassName);
+  MethodName := ScoredBugs[Idx].MethodName;
+  LineNum := ScoredBugs[Idx].LineNumber;
+  Abbrev := GetBugAbbrev(BugType);
+  SourceFile := XRExtractSourceFile(ScoredBugs[Idx].ClassName);
+  ShortDesc := GetBugShortDesc(BugType);
+  LongDesc := GetBugLongDesc(BugType);
+  IsStatic := False;  { Par defaut }
+
+  { Ecrire l'element BugInstance }
+  XRWriteIndent('<BugInstance type="' + XmlEscape(BugType) +
+                '" priority="' + IntToStr_(Priority) +
+                '" rank="' + IntToStr_(Rank) +
+                '" abbrev="' + XmlEscape(Abbrev) +
+                '" category="' + CategoryToXmlStr(Category) + '">');
+  Inc(XRIndentLevel);
+
+  { ShortMessage et LongMessage }
+  XRWriteIndent('<ShortMessage>' + XmlEscape(ShortDesc) + '</ShortMessage>');
+  XRWriteIndent('<LongMessage>' + XmlEscape(LongDesc) + '</LongMessage>');
+
+  { Element Class }
+  XRWriteIndent('<Class classname="' + XmlEscape(ClassName) + '" primary="true"/>');
+
+  { Element Method (si present) }
+  If MethodName <> '' Then
+  Begin
+    XRWriteIndent('<Method classname="' + XmlEscape(ClassName) +
+                  '" name="' + XmlEscape(MethodName) +
+                  '" signature="()V' +
+                  '" isStatic="false" primary="true"/>');
+  End;
+
+  { Element SourceLine }
+  If LineNum > 0 Then
+  Begin
+    XRWriteIndent('<SourceLine classname="' + XmlEscape(ClassName) +
+                  '" start="' + IntToStr_(LineNum) +
+                  '" end="' + IntToStr_(LineNum) +
+                  '" sourcefile="' + XmlEscape(SourceFile) + '"/>');
+  End
+  Else
+  Begin
+    XRWriteIndent('<SourceLine classname="' + XmlEscape(ClassName) +
+                  '" sourcefile="' + XmlEscape(SourceFile) + '"/>');
+  End;
+
+  Dec(XRIndentLevel);
+  XRWriteIndent('</BugInstance>');
+  Inc(XRBugsWritten);
+End;
+
+{ --- TODO 22 : Ecrire FindBugsSummary --- }
+Procedure WriteXmlFindBugsSummary;
+Var
+  I: Integer;
+  TotalBugs, HighPrio, NormalPrio, LowPrio: Integer;
+  CatCounts: Array[1..8] of Integer;
+  Cat: Integer;
+Begin
+  TotalBugs := ScoredBugCount;
+  HighPrio := 0;
+  NormalPrio := 0;
+  LowPrio := 0;
+  For I := 1 to 8 do CatCounts[I] := 0;
+
+  { Compter par priorite et categorie }
+  For I := 0 to ScoredBugCount - 1 do
+  Begin
+    Case SeverityToPriority(ScoredBugs[I].Severity) of
+      1: Inc(HighPrio);
+      2: Inc(NormalPrio);
+    Else
+      Inc(LowPrio);
+    End;
+    Cat := ScoredBugs[I].Category;
+    If (Cat >= 1) and (Cat <= 8) Then Inc(CatCounts[Cat]);
+  End;
+
+  { Ecrire FindBugsSummary }
+  XRWriteIndent('<FindBugsSummary timestamp="' + XRAnalysisTime +
+                '" total_classes="' + IntToStr_(XRClassCount) +
+                '" total_bugs="' + IntToStr_(TotalBugs) +
+                '" total_size="0' +
+                '" num_packages="1' +
+                '" priority_1="' + IntToStr_(HighPrio) +
+                '" priority_2="' + IntToStr_(NormalPrio) +
+                '" priority_3="' + IntToStr_(LowPrio) + '">');
+  Inc(XRIndentLevel);
+
+  { PackageStats }
+  XRWriteIndent('<PackageStats package="" total_bugs="' + IntToStr_(TotalBugs) +
+                '" total_types="' + IntToStr_(XRClassCount) +
+                '" total_size="0">');
+  Inc(XRIndentLevel);
+
+  { ClassStats pour chaque classe analysee }
+  If ClassInfo.ThisClass <> '' Then
+  Begin
+    XRWriteIndent('<ClassStats class="' +
+                  XmlEscape(XRClassToJava(ClassInfo.ThisClass)) +
+                  '" sourceFile="' +
+                  XmlEscape(XRExtractSourceFile(ClassInfo.ThisClass)) +
+                  '" interface="false' +
+                  '" size="0' +
+                  '" bugs="' + IntToStr_(TotalBugs) + '"/>');
+  End;
+
+  Dec(XRIndentLevel);
+  XRWriteIndent('</PackageStats>');
+  Dec(XRIndentLevel);
+  XRWriteIndent('</FindBugsSummary>');
+End;
+
+{ --- TODO 22 : Ecrire les BugCategory definitions --- }
+Procedure WriteXmlBugCategories;
+Begin
+  XRWriteIndent('<BugCategory category="CORRECTNESS">');
+  Inc(XRIndentLevel);
+  XRWriteIndent('<Description>Correctness</Description>');
+  Dec(XRIndentLevel);
+  XRWriteIndent('</BugCategory>');
+
+  XRWriteIndent('<BugCategory category="BAD_PRACTICE">');
+  Inc(XRIndentLevel);
+  XRWriteIndent('<Description>Bad practice</Description>');
+  Dec(XRIndentLevel);
+  XRWriteIndent('</BugCategory>');
+
+  XRWriteIndent('<BugCategory category="PERFORMANCE">');
+  Inc(XRIndentLevel);
+  XRWriteIndent('<Description>Performance</Description>');
+  Dec(XRIndentLevel);
+  XRWriteIndent('</BugCategory>');
+
+  XRWriteIndent('<BugCategory category="SECURITY">');
+  Inc(XRIndentLevel);
+  XRWriteIndent('<Description>Security</Description>');
+  Dec(XRIndentLevel);
+  XRWriteIndent('</BugCategory>');
+
+  XRWriteIndent('<BugCategory category="MT_CORRECTNESS">');
+  Inc(XRIndentLevel);
+  XRWriteIndent('<Description>Multithreaded correctness</Description>');
+  Dec(XRIndentLevel);
+  XRWriteIndent('</BugCategory>');
+
+  XRWriteIndent('<BugCategory category="I18N">');
+  Inc(XRIndentLevel);
+  XRWriteIndent('<Description>Internationalization</Description>');
+  Dec(XRIndentLevel);
+  XRWriteIndent('</BugCategory>');
+
+  XRWriteIndent('<BugCategory category="STYLE">');
+  Inc(XRIndentLevel);
+  XRWriteIndent('<Description>Dodgy code</Description>');
+  Dec(XRIndentLevel);
+  XRWriteIndent('</BugCategory>');
+
+  XRWriteIndent('<BugCategory category="MALICIOUS_CODE">');
+  Inc(XRIndentLevel);
+  XRWriteIndent('<Description>Malicious code vulnerability</Description>');
+  Dec(XRIndentLevel);
+  XRWriteIndent('</BugCategory>');
+End;
+
+{ --- TODO 22 : Ecrire l'epilogue XML --- }
+Procedure WriteXmlEpilog;
+Begin
+  XRIndentLevel := 0;
+  XRWriteLine('</BugCollection>');
+End;
+
+{ --- TODO 22 : Generer le rapport XML complet --- }
+Procedure EmitXmlReport(OutFile: String);
+Var
+  I: Integer;
+Begin
+  If Not XRInitialized Then InitXmlReportState;
+
+  { Configurer la sortie }
+  XRFileName := OutFile;
+  If OutFile <> '' Then
+  Begin
+    Assign(XRReportFile, OutFile);
+    {$I-}
+    Rewrite(XRReportFile);
+    {$I+}
+    If IOResult = 0 Then
+      XRUseFile := True
+    Else
+    Begin
+      WriteLn('Error: Cannot create XML report file: ', OutFile);
+      XRUseFile := False;
+    End;
+  End
+  Else
+    XRUseFile := False;
+
+  { Mettre a jour les compteurs }
+  XRClassCount := ClassesScanned;
+  XRMethodCount := TotalMethods;
+
+  { Ecrire le prologue }
+  WriteXmlProlog;
+
+  { Ecrire la section Project }
+  WriteXmlProject;
+
+  { Ecrire les BugInstances }
+  For I := 0 to ScoredBugCount - 1 do
+    WriteXmlBugInstance(I);
+
+  { Ecrire FindBugsSummary }
+  WriteXmlFindBugsSummary;
+
+  { Ecrire les categories de bugs }
+  WriteXmlBugCategories;
+
+  { Ecrire l'epilogue }
+  WriteXmlEpilog;
+
+  { Fermer le fichier si necessaire }
+  If XRUseFile Then
+    Close(XRReportFile);
+End;
+
+{ --- TODO 22 : Afficher l'etat du module de rapport XML --- }
+Procedure DumpXmlReportState;
+Begin
+  WriteLn;
+  WriteLn('=== XML Report Module State ===');
+  WriteLn('Initialized   : ', XRInitialized);
+  WriteLn('Label counter : ', XRLabelNum);
+  WriteLn('Use file      : ', XRUseFile);
+  WriteLn('File name     : ', XRFileName);
+  WriteLn('Lines written : ', XRLinesWritten);
+  WriteLn('Bugs written  : ', XRBugsWritten);
+  WriteLn('Analysis time : ', XRAnalysisTime);
+  WriteLn('Class count   : ', XRClassCount);
+  WriteLn('Method count  : ', XRMethodCount);
+  WriteLn('Project name  : ', XRProjectName);
+  WriteLn('Indent level  : ', XRIndentLevel);
+  WriteLn('Src dir       : ', XRSrcDir);
+  WriteLn('Class dir     : ', XRClassDir);
+End;
+
+{ --- TODO 22 : Accesseurs pour le module de rapport XML --- }
+Function IsXRInitialized: Boolean;
+Begin
+  IsXRInitialized := XRInitialized;
+End;
+
+Function GetXRLabelNum: Integer;
+Begin
+  GetXRLabelNum := XRLabelNum;
+End;
+
+Function IsXRUseFile: Boolean;
+Begin
+  IsXRUseFile := XRUseFile;
+End;
+
+Function GetXRFileName: String;
+Begin
+  GetXRFileName := XRFileName;
+End;
+
+Function GetXRLinesWritten: Integer;
+Begin
+  GetXRLinesWritten := XRLinesWritten;
+End;
+
+Function GetXRBugsWritten: Integer;
+Begin
+  GetXRBugsWritten := XRBugsWritten;
+End;
+
+Function GetXRAnalysisTime: String;
+Begin
+  GetXRAnalysisTime := XRAnalysisTime;
+End;
+
+Function GetXRClassCount: Integer;
+Begin
+  GetXRClassCount := XRClassCount;
+End;
+
+Function GetXRMethodCount: Integer;
+Begin
+  GetXRMethodCount := XRMethodCount;
+End;
+
+Function GetXRProjectName: String;
+Begin
+  GetXRProjectName := XRProjectName;
+End;
+
+Procedure SetXRProjectName(Name: String);
+Begin
+  XRProjectName := Name;
+End;
+
+Procedure SetXRSrcDir(Dir: String);
+Begin
+  XRSrcDir := Dir;
+End;
+
+Procedure SetXRClassDir(Dir: String);
+Begin
+  XRClassDir := Dir;
+End;
 
 { ============================================================================ }
 { TODO 23 [A FAIRE] - Generation du rapport HTML                               }

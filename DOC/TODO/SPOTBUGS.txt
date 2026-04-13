@@ -447,7 +447,7 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
             PrintBugDescription(BugType) : afficher description longue depuis
               tableau statique de descriptions pre-enregistrees
 
-  TODO 22 - GENERATION DU RAPPORT XML (FORMAT SPOTBUGS) [A FAIRE]
+  TODO 22 - GENERATION DU RAPPORT XML (FORMAT SPOTBUGS) [IMPLEMENTE]
             Format XML compatible spotbugs-gui et jenkins-spotbugs-plugin :
               <?xml version="1.0" encoding="UTF-8"?>
               <BugCollection version="4.0.0" sequence="0" timestamp="..."
@@ -468,9 +468,36 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
                 <FindBugsSummary .../>
                 <ClassStats .../>
               </BugCollection>
-            EmitXmlReport(OutFile) : ouvrir XML, ecrire prologue, Project,
-              BugInstance par bug, FindBugsSummary, ClassStats, fermer
+            Constantes : MAX_XR_INDENT=16, XR_INDENT_SPACES=2,
+              XR_VERSION='4.0.0', XR_SEQUENCE=0, MAX_XR_CATEGORIES=8
+            Variables : XRInitialized, XRLabelNum, XRReportFile, XRUseFile,
+              XRFileName, XRLinesWritten, XRBugsWritten, XRAnalysisTime,
+              XRClassCount, XRMethodCount, XRProjectName, XRIndentLevel,
+              XRSrcDir, XRClassDir
+            InitXmlReportState : initialiser le module XML
+            GenXRLabel : generer un label unique
             XmlEscape(S) : echapper &, <, >, ", ' en entites XML
+            XRIndentStr : generer la chaine d'indentation
+            XRWriteLine(S) : ecrire une ligne dans le fichier
+            XRWriteIndent(S) : ecrire une ligne indentee
+            GetBugAbbrev(BugType) : extraire l'abreviation (prefixe avant _)
+            SeverityToPriority(Sev) : convertir severite en priorite SpotBugs
+            CategoryToXmlStr(Cat) : convertir categorie en chaine XML
+            GetXmlTimestamp : obtenir la date/heure au format ISO
+            XRClassToJava(ClassName) : convertir nom interne en format Java
+            XRExtractSourceFile(ClassName) : extraire le nom du fichier source
+            WriteXmlProlog : ecrire le prologue XML et BugCollection
+            WriteXmlProject : ecrire la section Project
+            WriteXmlBugInstance(Idx) : ecrire un element BugInstance
+            WriteXmlFindBugsSummary : ecrire les statistiques
+            WriteXmlBugCategories : ecrire les definitions de categories
+            WriteXmlEpilog : fermer les balises XML
+            EmitXmlReport(OutFile) : generer le rapport XML complet
+            DumpXmlReportState : afficher l'etat du module
+            Accesseurs : IsXRInitialized, GetXRLabelNum, IsXRUseFile,
+              GetXRFileName, GetXRLinesWritten, GetXRBugsWritten,
+              GetXRAnalysisTime, GetXRClassCount, GetXRMethodCount,
+              GetXRProjectName, SetXRProjectName, SetXRSrcDir, SetXRClassDir
 
   TODO 23 - GENERATION DU RAPPORT HTML [A FAIRE]
             EmitHtmlReport(OutFile) : generer rapport HTML autonome avec CSS
