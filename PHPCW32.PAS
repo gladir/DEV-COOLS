@@ -54,7 +54,7 @@
               ReplaceExt, AsmIdent
             10 fonctions accesseurs
 
-  TODO 02 - TOKENISEUR PHP (LEXER) [A FAIRE]
+  TODO 02 - TOKENISEUR PHP (LEXER) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source
@@ -1302,6 +1302,1495 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 02 - TOKENISEUR PHP (LEXER)                [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  { Types de tokens PHP }
+  TK_EOF         = 0;    { fin de fichier                          }
+  TK_INTEGER     = 1;    { litteral entier (42, 0xFF, 0b1010)      }
+  TK_FLOAT       = 2;    { litteral flottant (3.14, 1.5e5)         }
+  TK_STRING      = 3;    { litteral chaine "abc" ou 'abc'          }
+  TK_IDENT       = 4;    { identificateur (non mot-cle)             }
+  TK_VARIABLE    = 5;    (* variable PHP ($nom)                      *)
+  TK_KEYWORD     = 6;    (* mot-cle PHP reconnu                     *)
+  TK_OP          = 7;    (* operateur + - * / == != etc.             *)
+  TK_PUNCT       = 8;    (* ponctuation generique                    *)
+  TK_LBRACE      = 9;    (* accolade ouvrante                        *)
+  TK_RBRACE      = 10;   (* accolade fermante                        *)
+  TK_LBRACKET    = 11;   (* crochet ouvrant [                        *)
+  TK_RBRACKET    = 12;   (* crochet fermant ]                        *)
+  TK_LPAREN      = 13;   (* parenthese ouvrante (                    *)
+  TK_RPAREN      = 14;   (* parenthese fermante )                    *)
+  TK_SEMICOLON   = 15;   (* point-virgule ;                          *)
+  TK_COMMA       = 16;   (* virgule ,                                *)
+  TK_COLON       = 17;   (* deux-points :                            *)
+  TK_ARROW       = 18;   (* fleche -> (acces membre)                 *)
+  TK_DOUBLE_ARROW = 19;  (* double fleche => (tableaux assoc.)       *)
+  TK_CONCAT      = 20;   (* operateur de concatenation .             *)
+  TK_AT          = 21;   { arobase @ (suppression erreurs)          }
+  TK_QUESTION    = 22;   { point d interrogation ?                  }
+  TK_DOLLAR      = 23;   { dollar $ seul (variable variable)        }
+
+  { Constante pour LookupKeyword (forward) }
+  KW_NONE = 0;
+
+Type
+  { Noeud de liste chainee pour le buffer source }
+  PLexSrcNode = ^TLexSrcNode;
+  TLexSrcNode = Record
+    Line : TString;            { contenu de la ligne source            }
+    Next : PLexSrcNode;        { pointeur vers le noeud suivant        }
+  End;
+
+Var
+  { Fichier source }
+  LexSrcF     : Text;          { handle du fichier source              }
+  LexOpened   : Boolean;       { fichier ouvert ?                      }
+  LexLine     : TString;       { ligne courante                        }
+  LexLineNo   : LongInt;       { numero de ligne courante              }
+  LexColNo    : Integer;       { colonne courante dans LexLine         }
+  LexEOF      : Boolean;       { fin de fichier atteinte ?             }
+
+  { Mode PHP }
+  LexInPhp    : Boolean;       { True si dans <?php ... ?>             }
+
+  { Buffer source pour rewind (boucles while) - liste chainee }
+  LexSrcHead  : PLexSrcNode;   { tete de la liste chainee              }
+  LexSrcTail  : PLexSrcNode;   { queue de la liste (pour ajout rapide) }
+  LexSrcCur   : PLexSrcNode;   { noeud courant (curseur de lecture)    }
+  LexSrcCurNo : LongInt;       { numero de ligne du curseur courant    }
+  LexSrcCount : LongInt;       { nombre de lignes dans le buffer       }
+  LexUseBuffer: Boolean;       { True si on lit depuis le buffer       }
+
+  { Token courant }
+  CurTokKind  : Integer;       { type de token (TK_*)                  }
+  CurTokStr   : TString;       { valeur textuelle du token             }
+  CurTokInt   : LongInt;       { valeur numerique (entier)             }
+  CurTokFloat : Real;          { valeur numerique (flottant)           }
+  CurTokLine  : Integer;       { ligne du token                        }
+  CurTokCol   : Integer;       { colonne du token                      }
+
+  { Compteur de tokens }
+  LexTokCount : LongInt;       { nombre total de tokens emis           }
+
+Type
+  { Etat sauvegarde du lexer pour rewind }
+  TLexState = Record
+    LineNo   : LongInt;
+    ColNo    : Integer;
+    IsEOF    : Boolean;
+    Line     : TString;
+    InPhp    : Boolean;
+    TokKind  : Integer;
+    TokStr   : TString;
+    TokInt   : LongInt;
+    TokLine  : Integer;
+    TokCol   : Integer;
+  End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions de classification de caracteres                    }
+{ ------------------------------------------------------------ }
+
+Function IsDigit(Ch : Char) : Boolean;
+Begin
+  IsDigit := (Ch >= '0') And (Ch <= '9');
+End;
+
+Function IsAlpha(Ch : Char) : Boolean;
+Begin
+  IsAlpha := ((Ch >= 'A') And (Ch <= 'Z')) Or
+             ((Ch >= 'a') And (Ch <= 'z'));
+End;
+
+Function IsIdentStart(Ch : Char) : Boolean;
+Begin
+  { En PHP, les identificateurs commencent par lettre ou _ }
+  IsIdentStart := IsAlpha(Ch) Or (Ch = '_');
+End;
+
+Function IsIdentCont(Ch : Char) : Boolean;
+Begin
+  { En PHP, les identificateurs peuvent contenir lettres, chiffres, _ }
+  IsIdentCont := IsAlpha(Ch) Or IsDigit(Ch) Or (Ch = '_');
+End;
+
+Function IsHexDigit(Ch : Char) : Boolean;
+Begin
+  IsHexDigit := ((Ch >= '0') And (Ch <= '9')) Or
+                ((Ch >= 'A') And (Ch <= 'F')) Or
+                ((Ch >= 'a') And (Ch <= 'f'));
+End;
+
+Function IsOctDigit(Ch : Char) : Boolean;
+Begin
+  IsOctDigit := (Ch >= '0') And (Ch <= '7');
+End;
+
+Function HexVal(Ch : Char) : Integer;
+Begin
+  If (Ch >= '0') And (Ch <= '9') Then HexVal := Ord(Ch) - Ord('0')
+  Else If (Ch >= 'A') And (Ch <= 'F') Then HexVal := Ord(Ch) - Ord('A') + 10
+  Else HexVal := Ord(Ch) - Ord('a') + 10;
+End;
+
+{ ------------------------------------------------------------ }
+{ Forward declaration pour LookupKeyword (TODO 03)             }
+{ ------------------------------------------------------------ }
+
+Function LookupKeyword(Const S : TString) : Integer; Forward;
+
+{ ------------------------------------------------------------ }
+{ LexSrcSeek : positionner le curseur sur la ligne N           }
+{ Optimise pour acces sequentiel (avance depuis la position    }
+{ courante si possible, sinon repart de la tete)               }
+{ ------------------------------------------------------------ }
+
+Function LexSrcSeek(N : LongInt) : PLexSrcNode;
+Var P : PLexSrcNode;
+    I : LongInt;
+Begin
+  { Si le curseur est deja sur la bonne ligne }
+  If (LexSrcCur <> Nil) And (LexSrcCurNo = N) Then
+  Begin
+    LexSrcSeek := LexSrcCur;
+    Exit;
+  End;
+  { Si le curseur est avant la ligne demandee, avancer }
+  If (LexSrcCur <> Nil) And (LexSrcCurNo < N) Then
+  Begin
+    P := LexSrcCur;
+    I := LexSrcCurNo;
+  End
+  Else
+  Begin
+    P := LexSrcHead;
+    I := 1;
+  End;
+  While (P <> Nil) And (I < N) Do
+  Begin
+    P := P^.Next;
+    Inc(I);
+  End;
+  LexSrcCur   := P;
+  LexSrcCurNo := N;
+  LexSrcSeek  := P;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexNextLine : lire la prochaine ligne du fichier source      }
+{ ------------------------------------------------------------ }
+
+Procedure LexNextLine;
+Var Node : PLexSrcNode;
+Begin
+  If LexEOF Then Exit;
+  If LexUseBuffer Then
+  Begin
+    { Lire depuis la liste chainee }
+    If LexLineNo >= LexSrcCount Then
+    Begin
+      LexEOF   := True;
+      LexLine  := '';
+      LexColNo := 1;
+    End
+    Else
+    Begin
+      Inc(LexLineNo);
+      Node := LexSrcSeek(LexLineNo);
+      If Node <> Nil Then
+        LexLine := Node^.Line
+      Else
+      Begin
+        LexEOF  := True;
+        LexLine := '';
+      End;
+      LexColNo := 1;
+    End;
+  End
+  Else
+  Begin
+    If EOF(LexSrcF) Then
+    Begin
+      LexEOF   := True;
+      LexLine  := '';
+      LexColNo := 1;
+    End
+    Else
+    Begin
+      ReadLn(LexSrcF, LexLine);
+      Inc(LexLineNo);
+      Inc(TotalLines);
+      LexColNo := 1;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexSaveState : sauvegarder l etat du lexer                   }
+{ ------------------------------------------------------------ }
+
+Procedure LexSaveState(Var St : TLexState);
+Begin
+  St.LineNo  := LexLineNo;
+  St.ColNo   := LexColNo;
+  St.IsEOF   := LexEOF;
+  St.Line    := LexLine;
+  St.InPhp   := LexInPhp;
+  St.TokKind := CurTokKind;
+  St.TokStr  := CurTokStr;
+  St.TokInt  := CurTokInt;
+  St.TokLine := CurTokLine;
+  St.TokCol  := CurTokCol;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexRestoreState : restaurer l etat du lexer depuis buffer    }
+{ ------------------------------------------------------------ }
+
+Procedure LexRestoreState(Const St : TLexState);
+Begin
+  LexLineNo   := St.LineNo;
+  LexColNo    := St.ColNo;
+  LexEOF      := St.IsEOF;
+  LexLine     := St.Line;
+  LexInPhp    := St.InPhp;
+  LexUseBuffer := True;
+  { Repositionner le curseur sur la ligne restauree }
+  LexSrcCur   := Nil;
+  LexSrcCurNo := 0;
+  CurTokKind  := St.TokKind;
+  CurTokStr   := St.TokStr;
+  CurTokInt   := St.TokInt;
+  CurTokLine  := St.TokLine;
+  CurTokCol   := St.TokCol;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexInit : ouvrir le fichier source et initialiser le lexeur  }
+{ ------------------------------------------------------------ }
+
+Procedure LexInit;
+Var TmpLine : TString;
+    Node    : PLexSrcNode;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  {$I-}
+  Reset(LexSrcF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
+  LexOpened   := True;
+
+  { Lire tout le fichier dans la liste chainee }
+  LexSrcHead  := Nil;
+  LexSrcTail  := Nil;
+  LexSrcCur   := Nil;
+  LexSrcCurNo := 0;
+  LexSrcCount := 0;
+  While Not EOF(LexSrcF) Do
+  Begin
+    ReadLn(LexSrcF, TmpLine);
+    New(Node);
+    Node^.Line := TmpLine;
+    Node^.Next := Nil;
+    If LexSrcHead = Nil Then
+      LexSrcHead := Node
+    Else
+      LexSrcTail^.Next := Node;
+    LexSrcTail := Node;
+    Inc(LexSrcCount);
+  End;
+  Close(LexSrcF);
+  LexOpened := False;
+
+  { Initialiser le lexer en mode buffer }
+  LexLineNo   := 0;
+  LexColNo    := 1;
+  LexEOF      := False;
+  LexLine     := '';
+  LexInPhp    := False;  { commence hors mode PHP }
+  LexUseBuffer := True;
+  LexSrcCur   := LexSrcHead;
+  LexSrcCurNo := 1;
+  TotalLines  := LexSrcCount;
+  CurTokKind  := TK_EOF;
+  CurTokStr   := '';
+  CurTokInt   := 0;
+  CurTokFloat := 0.0;
+  CurTokLine  := 0;
+  CurTokCol   := 0;
+  LexTokCount := 0;
+  LexNextLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexClose : fermer le fichier source                          }
+{ ------------------------------------------------------------ }
+
+Procedure LexClose;
+Var
+  P, Next : PLexSrcNode;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+  { Liberer la liste chainee }
+  P := LexSrcHead;
+  While P <> Nil Do
+  Begin
+    Next := P^.Next;
+    Dispose(P);
+    P := Next;
+  End;
+  LexSrcHead  := Nil;
+  LexSrcTail  := Nil;
+  LexSrcCur   := Nil;
+  LexSrcCurNo := 0;
+  LexSrcCount := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanIdent : identificateur PHP (sensible a la casse pour  }
+{                variables, insensible pour fonctions/classes) }
+{ PHP accepte lettres, chiffres, _                              }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanIdent;
+Var
+  S  : TString;
+  KW : Integer;
+Begin
+  S := '';
+  While (LexColNo <= Length(LexLine)) And
+        IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  CurTokStr   := S;
+  CurTokFloat := 0.0;
+
+  { Tester si c est un mot-cle PHP (insensible a la casse) }
+  KW := LookupKeyword(S);
+  If KW <> KW_NONE Then
+  Begin
+    CurTokKind := TK_KEYWORD;
+    CurTokInt  := KW;
+  End
+  Else
+  Begin
+    CurTokKind := TK_IDENT;
+    CurTokInt  := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanVariable : variable PHP $nom                          }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanVariable;
+Var
+  S : TString;
+Begin
+  S := '$';
+  Inc(LexColNo);  { sauter le $ }
+
+  { Scanner le nom de la variable }
+  While (LexColNo <= Length(LexLine)) And
+        IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+
+  CurTokKind  := TK_VARIABLE;
+  CurTokStr   := S;
+  CurTokInt   := 0;
+  CurTokFloat := 0.0;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanNumber : litteral numerique PHP                       }
+{ Entiers : 123, 0xFF, 0b1010, 0o777, 1_000                    }
+{ Flottants : 1.5, 3.14e5 (tronques en entiers)               }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanNumber;
+Var
+  N        : LongInt;
+  Base     : Integer;
+  IsFloat  : Boolean;
+  NegExp   : Boolean;
+  Ch       : Char;
+  FracDiv  : Real;
+  FracVal  : Real;
+  ExpVal   : Integer;
+  FltVal   : Real;
+Begin
+  N       := 0;
+  Base    := 10;
+  IsFloat := False;
+  NegExp  := False;
+  FracVal := 0.0;
+  FracDiv := 10.0;
+  ExpVal  := 0;
+  Ch      := LexLine[LexColNo];
+
+  { Detecter prefixe 0x 0b 0o }
+  If (Ch = '0') And (LexColNo < Length(LexLine)) Then
+  Begin
+    Ch := LexLine[LexColNo + 1];
+    If (Ch = 'x') Or (Ch = 'X') Then
+    Begin
+      Base := 16;
+      Inc(LexColNo, 2);
+    End
+    Else If (Ch = 'b') Or (Ch = 'B') Then
+    Begin
+      Base := 2;
+      Inc(LexColNo, 2);
+    End
+    Else If (Ch = 'o') Or (Ch = 'O') Then
+    Begin
+      Base := 8;
+      Inc(LexColNo, 2);
+    End;
+  End;
+
+  { Scanner la partie entiere }
+  While LexColNo <= Length(LexLine) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If Ch = '_' Then
+      Inc(LexColNo)
+    Else If (Base = 16) And IsHexDigit(Ch) Then
+    Begin
+      N := N * 16 + HexVal(Ch);
+      Inc(LexColNo);
+    End
+    Else If (Base = 2) And ((Ch = '0') Or (Ch = '1')) Then
+    Begin
+      N := N * 2 + (Ord(Ch) - Ord('0'));
+      Inc(LexColNo);
+    End
+    Else If (Base = 8) And IsOctDigit(Ch) Then
+    Begin
+      N := N * 8 + (Ord(Ch) - Ord('0'));
+      Inc(LexColNo);
+    End
+    Else If (Base = 10) And (Ch >= '0') And (Ch <= '9') Then
+    Begin
+      N := N * 10 + (Ord(Ch) - Ord('0'));
+      Inc(LexColNo);
+    End
+    Else
+      Break;
+  End;
+
+  { Partie decimale .ddd (seulement en base 10) }
+  If (Base = 10) And (LexColNo <= Length(LexLine)) And
+     (LexLine[LexColNo] = '.') And
+     (LexColNo < Length(LexLine)) And
+     (LexLine[LexColNo + 1] >= '0') And
+     (LexLine[LexColNo + 1] <= '9') Then
+  Begin
+    IsFloat := True;
+    Inc(LexColNo);
+    FracDiv := 10.0;
+    FracVal := 0.0;
+    While (LexColNo <= Length(LexLine)) And
+          (((LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9')) Or
+           (LexLine[LexColNo] = '_')) Do
+    Begin
+      If LexLine[LexColNo] <> '_' Then
+      Begin
+        FracVal := FracVal +
+                   (Ord(LexLine[LexColNo]) - Ord('0')) / FracDiv;
+        FracDiv := FracDiv * 10.0;
+      End;
+      Inc(LexColNo);
+    End;
+  End;
+
+  { Exposant e/E [+-]ddd }
+  If (Base = 10) And (LexColNo <= Length(LexLine)) And
+     ((LexLine[LexColNo] = 'e') Or (LexLine[LexColNo] = 'E')) Then
+  Begin
+    IsFloat := True;
+    Inc(LexColNo);
+    NegExp := False;
+    If (LexColNo <= Length(LexLine)) And
+       (LexLine[LexColNo] = '-') Then
+    Begin
+      NegExp := True;
+      Inc(LexColNo);
+    End
+    Else If (LexColNo <= Length(LexLine)) And
+            (LexLine[LexColNo] = '+') Then
+      Inc(LexColNo);
+    ExpVal := 0;
+    While (LexColNo <= Length(LexLine)) And
+          (((LexLine[LexColNo] >= '0') And
+            (LexLine[LexColNo] <= '9')) Or
+           (LexLine[LexColNo] = '_')) Do
+    Begin
+      If LexLine[LexColNo] <> '_' Then
+        ExpVal := ExpVal * 10 +
+                  (Ord(LexLine[LexColNo]) - Ord('0'));
+      Inc(LexColNo);
+    End;
+  End;
+
+  { Calculer la valeur finale }
+  If IsFloat Then
+  Begin
+    FltVal := N + FracVal;
+    While ExpVal > 0 Do
+    Begin
+      If NegExp Then FltVal := FltVal / 10.0
+      Else           FltVal := FltVal * 10.0;
+      Dec(ExpVal);
+    End;
+    CurTokFloat := FltVal;
+    If FltVal > 2147483647.0 Then CurTokInt := 2147483647
+    Else If FltVal < -2147483647.0 Then CurTokInt := -2147483647
+    Else CurTokInt := Trunc(FltVal);
+    CurTokKind := TK_FLOAT;
+    Str(FltVal:0:6, CurTokStr);
+  End
+  Else
+  Begin
+    CurTokKind  := TK_INTEGER;
+    CurTokInt   := N;
+    CurTokFloat := 0.0;
+    CurTokStr   := ItoS(N);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanEscChar : decoder une sequence d echappement PHP      }
+{ Supporte : \n \t \r \\ \" \' \$ \xNN                        }
+{ ------------------------------------------------------------ }
+
+Function LexScanEscChar : Char;
+Var
+  Ch : Char;
+  V  : Integer;
+Begin
+  If LexColNo > Length(LexLine) Then
+  Begin
+    LexScanEscChar := '\';
+    Exit;
+  End;
+  Ch := LexLine[LexColNo];
+  Inc(LexColNo);
+  Case Ch Of
+    'n'        : LexScanEscChar := #10;
+    't'        : LexScanEscChar := #9;
+    'r'        : LexScanEscChar := #13;
+    '0'        : LexScanEscChar := #0;
+    'a'        : LexScanEscChar := #7;
+    'b'        : LexScanEscChar := #8;
+    'f'        : LexScanEscChar := #12;
+    'v'        : LexScanEscChar := #11;
+    '\'        : LexScanEscChar := '\';
+    ''''       : LexScanEscChar := '''';
+    '"'        : LexScanEscChar := '"';
+    '$'        : LexScanEscChar := '$';
+    'x', 'X'  :
+    Begin
+      V := 0;
+      If (LexColNo <= Length(LexLine)) And
+         IsHexDigit(LexLine[LexColNo]) Then
+      Begin
+        V := HexVal(LexLine[LexColNo]);
+        Inc(LexColNo);
+        If (LexColNo <= Length(LexLine)) And
+           IsHexDigit(LexLine[LexColNo]) Then
+        Begin
+          V := V * 16 + HexVal(LexLine[LexColNo]);
+          Inc(LexColNo);
+        End;
+      End;
+      LexScanEscChar := Chr(V And $FF);
+    End;
+  Else
+    LexScanEscChar := Ch;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanStringDouble : chaine PHP "texte" avec echappement    }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanStringDouble;
+Var
+  S  : TString;
+  Ch : Char;
+Begin
+  S := '';
+  Inc(LexColNo); { sauter le " ouvrant }
+  While LexColNo <= Length(LexLine) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If Ch = '"' Then
+    Begin
+      Inc(LexColNo);
+      Break;
+    End
+    Else If Ch = '\' Then
+    Begin
+      Inc(LexColNo);
+      Ch := LexScanEscChar;
+      If Length(S) < MAX_STR Then S := S + Ch;
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then S := S + Ch;
+      Inc(LexColNo);
+    End;
+  End;
+  CurTokKind  := TK_STRING;
+  CurTokStr   := S;
+  CurTokInt   := 0;
+  CurTokFloat := 0.0;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanStringSingle : chaine PHP 'texte' (pas d echappement) }
+{ Seul \' et \\ sont reconnus                                  }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanStringSingle;
+Var
+  S  : TString;
+  Ch : Char;
+Begin
+  S := '';
+  Inc(LexColNo); { sauter le ' ouvrant }
+  While LexColNo <= Length(LexLine) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If Ch = '''' Then
+    Begin
+      Inc(LexColNo);
+      Break;
+    End
+    Else If (Ch = '\') And (LexColNo < Length(LexLine)) Then
+    Begin
+      Ch := LexLine[LexColNo + 1];
+      If Ch = '''' Then
+      Begin
+        Inc(LexColNo, 2);
+        If Length(S) < MAX_STR Then S := S + '''';
+      End
+      Else If Ch = '\' Then
+      Begin
+        Inc(LexColNo, 2);
+        If Length(S) < MAX_STR Then S := S + '\';
+      End
+      Else
+      Begin
+        If Length(S) < MAX_STR Then S := S + LexLine[LexColNo];
+        Inc(LexColNo);
+      End;
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then S := S + Ch;
+      Inc(LexColNo);
+    End;
+  End;
+  CurTokKind  := TK_STRING;
+  CurTokStr   := S;
+  CurTokInt   := 0;
+  CurTokFloat := 0.0;
+End;
+
+{ ------------------------------------------------------------ }
+{ PrintToken : affichage debug de chaque token                 }
+{ ------------------------------------------------------------ }
+
+Procedure PrintToken;
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', CurTokLine, ',', CurTokCol, '] ');
+  Case CurTokKind Of
+    TK_EOF         : Write('EOF');
+    TK_INTEGER     : Write('INT(', CurTokInt, ')');
+    TK_FLOAT       : Write('FLOAT(', CurTokStr, ')');
+    TK_STRING      : Write('STR("', CurTokStr, '")');
+    TK_IDENT       : Write('IDENT(', CurTokStr, ')');
+    TK_VARIABLE    : Write('VAR(', CurTokStr, ')');
+    TK_KEYWORD     : Write('KW(', CurTokStr, ')');
+    TK_OP          : Write('OP(', CurTokStr, ')');
+    TK_PUNCT       : Write('PUNCT(', CurTokStr, ')');
+    TK_LBRACE      : Write('LBRACE');
+    TK_RBRACE      : Write('RBRACE');
+    TK_LBRACKET    : Write('LBRACKET');
+    TK_RBRACKET    : Write('RBRACKET');
+    TK_LPAREN      : Write('LPAREN');
+    TK_RPAREN      : Write('RPAREN');
+    TK_SEMICOLON   : Write('SEMICOLON');
+    TK_COMMA       : Write('COMMA');
+    TK_COLON       : Write('COLON');
+    TK_ARROW       : Write('ARROW');
+    TK_DOUBLE_ARROW: Write('DOUBLE_ARROW');
+    TK_CONCAT      : Write('CONCAT');
+    TK_AT          : Write('AT');
+    TK_QUESTION    : Write('QUESTION');
+    TK_DOLLAR      : Write('DOLLAR');
+  Else
+    Write('TOK(', CurTokKind, ')');
+  End;
+  WriteLn;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexNextToken : reconnaitre le prochain token PHP             }
+{ Gere les commentaires // # et /* */,                         }
+{ les balises <?php ... ?>, tous les operateurs PHP            }
+{ ------------------------------------------------------------ }
+
+Procedure LexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+Begin
+  CurTokInt   := 0;
+  CurTokFloat := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    { Avancer si on est en fin de ligne }
+    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+      LexNextLine;
+
+    { Fin de fichier }
+    If LexEOF Then
+    Begin
+      CurTokKind := TK_EOF;
+      CurTokStr  := '';
+      CurTokLine := LexLineNo;
+      CurTokCol  := LexColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    CurTokLine := LexLineNo;
+    CurTokCol  := LexColNo;
+    Ch := LexLine[LexColNo];
+
+    { Detecter <?php pour entrer en mode PHP }
+    If (Not LexInPhp) And (Ch = '<') And
+       (LexColNo + 4 <= Length(LexLine)) And
+       (LexLine[LexColNo + 1] = '?') And
+       ((LexLine[LexColNo + 2] = 'p') Or (LexLine[LexColNo + 2] = 'P')) And
+       ((LexLine[LexColNo + 3] = 'h') Or (LexLine[LexColNo + 3] = 'H')) And
+       ((LexLine[LexColNo + 4] = 'p') Or (LexLine[LexColNo + 4] = 'P')) Then
+    Begin
+      LexInPhp := True;
+      Inc(LexColNo, 5);
+      { Sauter les espaces apres <?php }
+      While (LexColNo <= Length(LexLine)) And
+            ((LexLine[LexColNo] = ' ') Or (LexLine[LexColNo] = #9)) Do
+        Inc(LexColNo);
+      Continue;
+    End;
+
+    { Si on n est pas en mode PHP, avancer }
+    If Not LexInPhp Then
+    Begin
+      Inc(LexColNo);
+      Continue;
+    End;
+
+    { Detecter ?> pour sortir du mode PHP }
+    If (Ch = '?') And (LexColNo < Length(LexLine)) And
+       (LexLine[LexColNo + 1] = '>') Then
+    Begin
+      LexInPhp := False;
+      Inc(LexColNo, 2);
+      Continue;
+    End;
+
+    { Espaces et tabulations }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+      Inc(LexColNo)
+
+    { Commentaire // : jusqu a fin de ligne }
+    Else If (Ch = '/') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '/') Then
+      LexColNo := Length(LexLine) + 1
+
+    { Commentaire # : jusqu a fin de ligne (style shell) }
+    Else If Ch = '#' Then
+      LexColNo := Length(LexLine) + 1
+
+    { Commentaire /* ... */ et /** ... */ (PHPDoc) }
+    Else If (Ch = '/') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      Inc(LexColNo, 2);
+      While Not LexEOF Do
+      Begin
+        If LexColNo > Length(LexLine) Then
+        Begin
+          LexNextLine;
+          Continue;
+        End;
+        If (LexLine[LexColNo] = '*') And
+           (LexColNo < Length(LexLine)) And
+           (LexLine[LexColNo + 1] = '/') Then
+        Begin
+          Inc(LexColNo, 2);
+          Break;
+        End;
+        Inc(LexColNo);
+      End;
+    End
+
+    { Variable PHP $nom }
+    Else If Ch = '$' Then
+    Begin
+      If (LexColNo < Length(LexLine)) And
+         IsIdentStart(LexLine[LexColNo + 1]) Then
+      Begin
+        LexScanVariable;
+        Scanning := False;
+      End
+      Else
+      Begin
+        { Dollar seul }
+        Inc(LexColNo);
+        CurTokKind := TK_DOLLAR;
+        CurTokStr  := '$';
+        Scanning := False;
+      End;
+    End
+
+    { Identificateur ou mot-cle }
+    Else If IsIdentStart(Ch) Then
+    Begin
+      LexScanIdent;
+      Scanning := False;
+    End
+
+    { Nombre }
+    Else If (Ch >= '0') And (Ch <= '9') Then
+    Begin
+      LexScanNumber;
+      Scanning := False;
+    End
+
+    { Chaine de caracteres "..." }
+    Else If Ch = '"' Then
+    Begin
+      LexScanStringDouble;
+      Scanning := False;
+    End
+
+    { Chaine de caracteres '...' }
+    Else If Ch = '''' Then
+    Begin
+      LexScanStringSingle;
+      Scanning := False;
+    End
+
+    { **= }
+    Else If (Ch = '*') And (LexColNo + 2 <= Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') And
+            (LexLine[LexColNo + 2] = '=') Then
+    Begin
+      Inc(LexColNo, 3);
+      CurTokKind := TK_OP; CurTokStr := '**=';
+      Scanning := False;
+    End
+
+    { ** (puissance) }
+    Else If (Ch = '*') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '**';
+      Scanning := False;
+    End
+
+    { <=> (spaceship) }
+    Else If (Ch = '<') And (LexColNo + 2 <= Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') And
+            (LexLine[LexColNo + 2] = '>') Then
+    Begin
+      Inc(LexColNo, 3);
+      CurTokKind := TK_OP; CurTokStr := '<=>';
+      Scanning := False;
+    End
+
+    { === }
+    Else If (Ch = '=') And (LexColNo + 2 <= Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') And
+            (LexLine[LexColNo + 2] = '=') Then
+    Begin
+      Inc(LexColNo, 3);
+      CurTokKind := TK_OP; CurTokStr := '===';
+      Scanning := False;
+    End
+
+    { !== }
+    Else If (Ch = '!') And (LexColNo + 2 <= Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') And
+            (LexLine[LexColNo + 2] = '=') Then
+    Begin
+      Inc(LexColNo, 3);
+      CurTokKind := TK_OP; CurTokStr := '!==';
+      Scanning := False;
+    End
+
+    { ?? (null coalescing) }
+    Else If (Ch = '?') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '?') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '??';
+      Scanning := False;
+    End
+
+    { ?: (Elvis/ternary short) }
+    Else If (Ch = '?') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = ':') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '?:';
+      Scanning := False;
+    End
+
+    { => (double arrow) }
+    Else If (Ch = '=') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '>') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_DOUBLE_ARROW;
+      CurTokStr  := '=>';
+      Scanning := False;
+    End
+
+    { -> (arrow) }
+    Else If (Ch = '-') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '>') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_ARROW;
+      CurTokStr  := '->';
+      Scanning := False;
+    End
+
+    { >>= }
+    Else If (Ch = '>') And (LexColNo + 2 <= Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '>') And
+            (LexLine[LexColNo + 2] = '=') Then
+    Begin
+      Inc(LexColNo, 3);
+      CurTokKind := TK_OP; CurTokStr := '>>=';
+      Scanning := False;
+    End
+
+    { >> }
+    Else If (Ch = '>') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '>') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '>>';
+      Scanning := False;
+    End
+
+    { >= }
+    Else If (Ch = '>') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '>=';
+      Scanning := False;
+    End
+
+    { > }
+    Else If Ch = '>' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '>';
+      Scanning := False;
+    End
+
+    { <<= }
+    Else If (Ch = '<') And (LexColNo + 2 <= Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '<') And
+            (LexLine[LexColNo + 2] = '=') Then
+    Begin
+      Inc(LexColNo, 3);
+      CurTokKind := TK_OP; CurTokStr := '<<=';
+      Scanning := False;
+    End
+
+    { << }
+    Else If (Ch = '<') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '<') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '<<';
+      Scanning := False;
+    End
+
+    { <= }
+    Else If (Ch = '<') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '<=';
+      Scanning := False;
+    End
+
+    { < }
+    Else If Ch = '<' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '<';
+      Scanning := False;
+    End
+
+    { == }
+    Else If (Ch = '=') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '==';
+      Scanning := False;
+    End
+
+    { = }
+    Else If Ch = '=' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '=';
+      Scanning := False;
+    End
+
+    { != }
+    Else If (Ch = '!') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '!=';
+      Scanning := False;
+    End
+
+    { ! }
+    Else If Ch = '!' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '!';
+      Scanning := False;
+    End
+
+    { && }
+    Else If (Ch = '&') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '&') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '&&';
+      Scanning := False;
+    End
+
+    { &= }
+    Else If (Ch = '&') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '&=';
+      Scanning := False;
+    End
+
+    { & }
+    Else If Ch = '&' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '&';
+      Scanning := False;
+    End
+
+    { || }
+    Else If (Ch = '|') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '|') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '||';
+      Scanning := False;
+    End
+
+    { |= }
+    Else If (Ch = '|') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '|=';
+      Scanning := False;
+    End
+
+    { | }
+    Else If Ch = '|' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '|';
+      Scanning := False;
+    End
+
+    { ^= }
+    Else If (Ch = '^') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '^=';
+      Scanning := False;
+    End
+
+    { ^ }
+    Else If Ch = '^' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '^';
+      Scanning := False;
+    End
+
+    { ~ }
+    Else If Ch = '~' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '~';
+      Scanning := False;
+    End
+
+    { ++ }
+    Else If (Ch = '+') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '+') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '++';
+      Scanning := False;
+    End
+
+    { += }
+    Else If (Ch = '+') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '+=';
+      Scanning := False;
+    End
+
+    { + }
+    Else If Ch = '+' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '+';
+      Scanning := False;
+    End
+
+    { -- }
+    Else If (Ch = '-') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '-') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '--';
+      Scanning := False;
+    End
+
+    { -= }
+    Else If (Ch = '-') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '-=';
+      Scanning := False;
+    End
+
+    { - }
+    Else If Ch = '-' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '-';
+      Scanning := False;
+    End
+
+    { *= }
+    Else If (Ch = '*') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '*=';
+      Scanning := False;
+    End
+
+    { * }
+    Else If Ch = '*' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '*';
+      Scanning := False;
+    End
+
+    { /= (/ et // deja geres dans les commentaires) }
+    Else If (Ch = '/') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '/=';
+      Scanning := False;
+    End
+
+    { / }
+    Else If Ch = '/' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '/';
+      Scanning := False;
+    End
+
+    { %= }
+    Else If (Ch = '%') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '%=';
+      Scanning := False;
+    End
+
+    { % }
+    Else If Ch = '%' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_OP; CurTokStr := '%';
+      Scanning := False;
+    End
+
+    { .= (concatenation avec assignation) }
+    Else If (Ch = '.') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      Inc(LexColNo, 2);
+      CurTokKind := TK_OP; CurTokStr := '.=';
+      Scanning := False;
+    End
+
+    { . (concatenation) }
+    Else If Ch = '.' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_CONCAT;
+      CurTokStr  := '.';
+      Scanning := False;
+    End
+
+    { ? }
+    Else If Ch = '?' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_QUESTION;
+      CurTokStr  := '?';
+      Scanning := False;
+    End
+
+    { : }
+    Else If Ch = ':' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_COLON;
+      CurTokStr  := ':';
+      Scanning := False;
+    End
+
+    { @ }
+    Else If Ch = '@' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_AT;
+      CurTokStr  := '@';
+      Scanning := False;
+    End
+
+    { , }
+    Else If Ch = ',' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_COMMA;
+      CurTokStr  := ',';
+      Scanning := False;
+    End
+
+    { ; }
+    Else If Ch = ';' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_SEMICOLON;
+      CurTokStr  := ';';
+      Scanning := False;
+    End
+
+    { ( }
+    Else If Ch = '(' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_LPAREN;
+      CurTokStr  := '(';
+      Scanning := False;
+    End
+
+    { ) }
+    Else If Ch = ')' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_RPAREN;
+      CurTokStr  := ')';
+      Scanning := False;
+    End
+
+    { [ }
+    Else If Ch = '[' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_LBRACKET;
+      CurTokStr  := '[';
+      Scanning := False;
+    End
+
+    { ] }
+    Else If Ch = ']' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_RBRACKET;
+      CurTokStr  := ']';
+      Scanning := False;
+    End
+
+    { accolade ouvrante }
+    Else If Ch = '{' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_LBRACE;
+      CurTokStr  := '{';
+      Scanning := False;
+    End
+
+    { accolade fermante }
+    Else If Ch = '}' Then
+    Begin
+      Inc(LexColNo);
+      CurTokKind := TK_RBRACE;
+      CurTokStr  := '}';
+      Scanning := False;
+    End
+
+    { Caractere inconnu : avertissement et avancer }
+    Else
+    Begin
+      WarnMsg('caractere inattendu: ''' + Ch + ''' (ASCII ' +
+              ItoS(Ord(Ch)) + ') ligne ' + ItoS(LexLineNo) +
+              ' colonne ' + ItoS(LexColNo));
+      Inc(LexColNo);
+    End;
+  End; { While Scanning }
+
+  Inc(LexTokCount);
+  PrintToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParserAdvance : lire le prochain token avec debug             }
+{ ------------------------------------------------------------ }
+
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 02)                             }
+{ ------------------------------------------------------------ }
+
+Function IsLexOpened : Boolean;
+Begin
+  IsLexOpened := LexOpened;
+End;
+
+Function IsLexEOF : Boolean;
+Begin
+  IsLexEOF := LexEOF;
+End;
+
+Function GetLexLineNo : Integer;
+Begin
+  GetLexLineNo := LexLineNo;
+End;
+
+Function GetLexColNo : Integer;
+Begin
+  GetLexColNo := LexColNo;
+End;
+
+Function GetLexTokCount : LongInt;
+Begin
+  GetLexTokCount := LexTokCount;
+End;
+
+Function GetCurTokKind : Integer;
+Begin
+  GetCurTokKind := CurTokKind;
+End;
+
+Function GetCurTokStr : TString;
+Begin
+  GetCurTokStr := CurTokStr;
+End;
+
+Function GetCurTokInt : LongInt;
+Begin
+  GetCurTokInt := CurTokInt;
+End;
+
+Function GetCurTokLine : Integer;
+Begin
+  GetCurTokLine := CurTokLine;
+End;
+
+Function GetLexStatus : TString;
+Begin
+  If Not LexOpened And (LexSrcHead = Nil) Then
+    GetLexStatus := 'Not opened'
+  Else If LexEOF Then
+    GetLexStatus := 'EOF at line ' + ItoS(LexLineNo) +
+                    ' (' + ItoS(LexTokCount) + ' tokens)'
+  Else
+    GetLexStatus := 'Line ' + ItoS(LexLineNo) +
+                    ' col ' + ItoS(LexColNo) +
+                    ' (' + ItoS(LexTokCount) + ' tokens)';
+End;
+
+{ ============================================================ }
+{ Stub pour LookupKeyword (sera implemente dans TODO 03)       }
+{ ============================================================ }
+
+Function LookupKeyword(Const S : TString) : Integer;
+Begin
+  { Pour l instant, retourner KW_NONE (pas de mot-cle) }
+  { Sera implemente completement dans TODO 03 }
+  LookupKeyword := KW_NONE;
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -1322,19 +2811,32 @@ Begin
   { Afficher la banniere si mode verbeux }
   ShowBanner;
 
-  { TODO: Les TODOs suivants implementeront :
-    - TODO 02 : Lexer (tokeniseur PHP)
-    - TODO 03 : Mots-cles PHP
-    - TODO 04 : Table des symboles
-    - TODO 05 : Systeme de types
-    - TODO 06 : Litteraux et constantes
-    - etc.
-  }
+  { Initialiser le lexer et lire le fichier source }
+  LexInit;
 
-  { Message temporaire }
-  WriteLn('PHPCW32: Compilation de ', Opts.SrcFile, ' ...');
-  WriteLn('PHPCW32: TODO 01 implemente - Infrastructure de base');
-  WriteLn('PHPCW32: Les TODOs 02-25 restent a implementer');
+  { Tokeniser tout le fichier pour test }
+  If Opts.Verbose Then
+    WriteLn('PHPCW32: Tokenisation de ', Opts.SrcFile, ' ...');
+
+  { Lire le premier token }
+  LexNextToken;
+
+  { Parcourir tous les tokens }
+  While CurTokKind <> TK_EOF Do
+    LexNextToken;
+
+  { Fermer le lexer }
+  LexClose;
+
+  { Message de succes }
+  If Opts.Verbose Then
+  Begin
+    WriteLn('PHPCW32: Tokenisation terminee');
+    WriteLn('PHPCW32: ', LexTokCount, ' tokens lus');
+  End;
+
+  WriteLn('PHPCW32: TODO 01-02 implementes');
+  WriteLn('PHPCW32: Les TODOs 03-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
