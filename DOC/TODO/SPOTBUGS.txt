@@ -588,3 +588,46 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               Hash.java/Hash.class : equals() sans hashCode()
               Sync.java/Sync.class : bloc synchronized vide
               Cast.java/Cast.class : cast sans instanceof
+
+  RESULTATS DE TEST (2026-04-13)
+  ============================================================
+
+  Bug corrige: For loops avec Count=0 causant crash (Word underflow)
+  ------------------------------------------------------------------
+    Probleme : En mode Turbo Pascal, "For I := 0 to Count - 1" avec Count=0
+               et I de type Word cause une boucle de 65536 iterations car
+               Count - 1 devient 65535 (underflow non-signe).
+    Solution : Ajouter "If Count = 0 Then Exit" ou "If Count > 0 Then For..."
+               avant les boucles dans ReadFields, ReadMethods, ReadClassInfo.
+
+  Fichiers de test crees:
+  -----------------------
+    TestNullPointer.java   - NullPointerException potentiels
+    TestResourceLeak.java  - Fuites de ressources (streams non fermes)
+    TestBadComparison.java - Comparaisons de types non-lies et == vs equals
+    TestDeadStore.java     - Variables assignees mais jamais utilisees
+    TestInfiniteLoop.java  - Boucles infinies potentielles
+
+  Resultats de l'analyse:
+  -----------------------
+    SimpleTest.class        -> 0 bugs (classe minimale)
+    TestNullPointer.class   -> 1 bug detecte
+    TestResourceLeak.class  -> 3 bugs detectes
+    TestBadComparison.class -> 0 bugs (detection a ameliorer)
+    TestDeadStore.class     -> 0 bugs (detection a ameliorer)
+    TestInfiniteLoop.class  -> 0 bugs (detection a ameliorer)
+
+  Validation:
+  -----------
+    - SPOTBUGS compile sans erreur avec fpc -Mtp (15088 lignes)
+    - Analyse des fichiers .class Java 8 et Java 17 reussie
+    - Aucun crash ou runtime error lors de l'execution
+    - Detection partielle des bugs (fuites de ressources, null pointers)
+    - Rapports generes en format texte, XML et HTML
+
+  Ameliorations futures:
+  ---------------------
+    - Ameliorer detection des dead stores
+    - Ameliorer detection des comparaisons incorrectes
+    - Corriger la synchronisation entre detection et rapport formel
+    - Ajouter plus de cas de test
