@@ -186,7 +186,7 @@
             LabelGen : generateur de labels uniques _PL_N
             10 fonctions accesseurs
 
-  TODO 07 - OPERATEURS ET PRECEDENCE [A FAIRE]
+  TODO 07 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques : + - * / % ** (puissance)
             Comparaison : == != === !== < <= > >= <=> (spaceship)
               == egalite avec juggling, === egalite stricte
@@ -1239,6 +1239,52 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure Cleanup;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OutLn : ecrire une ligne dans le fichier de sortie ASM       }
+{ ------------------------------------------------------------ }
+
+Procedure OutLn(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+{ ------------------------------------------------------------ }
+{ OutStr : ecrire une chaine sans saut de ligne                }
+{ ------------------------------------------------------------ }
+
+Procedure OutStr(Const S : TString);
+Begin
+  If OutFOpen Then
+    Write(OutF, S);
+End;
+
+{ ------------------------------------------------------------ }
+{ OutOpen : ouvrir le fichier de sortie ASM                    }
+{ ------------------------------------------------------------ }
+
+Procedure OutOpen(Const FileName : TString);
+Begin
+  If OutFOpen Then
+    Close(OutF);
+  Assign(OutF, FileName);
+  Rewrite(OutF);
+  OutFOpen := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ OutClose : fermer le fichier de sortie ASM                   }
+{ ------------------------------------------------------------ }
+
+Procedure OutClose;
 Begin
   If OutFOpen Then
   Begin
@@ -4811,6 +4857,1097 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 07 - OPERATEURS ET PRECEDENCE              [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  (* Operateurs binaires (TBinOp) *)
+  OP_NONE       = 0;    (* pas d operateur                       *)
+  OP_ADD        = 1;    (* +  addition                           *)
+  OP_SUB        = 2;    (* -  soustraction                       *)
+  OP_MUL        = 3;    (* *  multiplication                     *)
+  OP_DIV        = 4;    (* /  division                           *)
+  OP_MOD        = 5;    (* %  modulo                             *)
+  OP_POW        = 6;    (* ** puissance                          *)
+  OP_CONCAT     = 7;    (* .  concatenation                      *)
+  OP_EQ         = 8;    (* == egalite avec juggling              *)
+  OP_NE         = 9;    (* != difference avec juggling           *)
+  OP_EQQ        = 10;   (* === egalite stricte                   *)
+  OP_NEQ        = 11;   (* !== difference stricte                *)
+  OP_LT         = 12;   (* <  inferieur                          *)
+  OP_LE         = 13;   (* <= inferieur ou egal                  *)
+  OP_GT         = 14;   (* >  superieur                          *)
+  OP_GE         = 15;   (* >= superieur ou egal                  *)
+  OP_SPACESHIP  = 16;   (* <=> comparaison spaceship (-1,0,1)    *)
+  OP_AND        = 17;   (* && et logique (court-circuit)         *)
+  OP_OR         = 18;   (* || ou logique (court-circuit)         *)
+  OP_XOR        = 19;   (* xor ou exclusif logique               *)
+  OP_BIT_AND    = 20;   (* &  et bit a bit                       *)
+  OP_BIT_OR     = 21;   (* |  ou bit a bit                       *)
+  OP_BIT_XOR    = 22;   (* ^  ou exclusif bit a bit              *)
+  OP_SHL        = 23;   (* << decalage gauche                    *)
+  OP_SHR        = 24;   (* >> decalage droite                    *)
+  OP_COALESCE   = 25;   (* ?? null coalescing                    *)
+
+  (* Operateurs unaires (TUnaryOp) *)
+  UOP_NONE      = 0;    (* pas d operateur                       *)
+  UOP_PLUS      = 1;    (* + unaire (identite)                   *)
+  UOP_NEG       = 2;    (* - unaire (negation)                   *)
+  UOP_NOT       = 3;    (* ! negation logique                    *)
+  UOP_BIT_NOT   = 4;    (* ~ negation bit a bit                  *)
+  UOP_PREINC    = 5;    (* ++$x pre-increment                    *)
+  UOP_PREDEC    = 6;    (* --$x pre-decrement                    *)
+  UOP_POSTINC   = 7;    (* $x++ post-increment                   *)
+  UOP_POSTDEC   = 8;    (* $x-- post-decrement                   *)
+
+  (* Operateurs d affectation (TAssignOp) *)
+  AOP_ASSIGN    = 0;    (* =   affectation simple                *)
+  AOP_ADD       = 1;    (* +=  addition et affectation           *)
+  AOP_SUB       = 2;    (* -=  soustraction et affectation       *)
+  AOP_MUL       = 3;    (* *=  multiplication et affectation     *)
+  AOP_DIV       = 4;    (* /=  division et affectation           *)
+  AOP_MOD       = 5;    (* %=  modulo et affectation             *)
+  AOP_CONCAT    = 6;    (* .=  concatenation et affectation      *)
+  AOP_BIT_AND   = 7;    (* &=  et bit a bit et affectation       *)
+  AOP_BIT_OR    = 8;    (* |=  ou bit a bit et affectation       *)
+  AOP_BIT_XOR   = 9;    (* ^=  xor bit a bit et affectation      *)
+  AOP_SHL       = 10;   (* <<= decalage gauche et affectation    *)
+  AOP_SHR       = 11;   (* >>= decalage droite et affectation    *)
+  AOP_POW       = 12;   (* **= puissance et affectation          *)
+
+  (* Niveaux de precedence (du plus fort 1 au plus faible 19) *)
+  PREC_POSTFIX  = 1;    (* ++ -- postfixe                        *)
+  PREC_POW      = 2;    (* ** puissance (associatif a droite)    *)
+  PREC_UNARY    = 3;    (* ++ -- prefixe, + - ~ ! unaires        *)
+  PREC_MULDIV   = 4;    (* * / %                                 *)
+  PREC_ADDSUB   = 5;    (* + - .                                 *)
+  PREC_SHIFT    = 6;    (* << >>                                 *)
+  PREC_CMP      = 7;    (* < <= > >= <=>                         *)
+  PREC_EQUALITY = 8;    (* == != === !==                         *)
+  PREC_BIT_AND  = 9;    (* &                                     *)
+  PREC_BIT_XOR  = 10;   (* ^                                     *)
+  PREC_BIT_OR   = 11;   (* |                                     *)
+  PREC_LOG_AND  = 12;   (* &&                                    *)
+  PREC_LOG_OR   = 13;   (* ||                                    *)
+  PREC_COALESCE = 14;   (* ??                                    *)
+  PREC_TERNARY  = 15;   (* ? :                                   *)
+  PREC_ASSIGN   = 16;   (* = += -= etc. (associatif a droite)    *)
+  PREC_LOG_AND2 = 17;   (* and                                   *)
+  PREC_LOG_XOR  = 18;   (* xor                                   *)
+  PREC_LOG_OR2  = 19;   (* or                                    *)
+
+  (* Limites *)
+  OP_MAX_STACK  = 64;   (* pile pour evaluation d expressions    *)
+  OP_MAX_OPS    = 256;  (* nombre max d operations par expr      *)
+
+Var
+  OprInitialized : Boolean;   (* True si module initialise         *)
+  OprLabelSeq    : Integer;   (* sequence pour labels uniques      *)
+  OprLastLabel   : TString;   (* dernier label genere              *)
+  OprBinCount    : LongInt;   (* nombre d ops binaires emis        *)
+  OprUnaryCount  : LongInt;   (* nombre d ops unaires emis         *)
+  OprAssignCount : LongInt;   (* nombre d affectations emises      *)
+  OprConcatCount : LongInt;   (* nombre de concatenations          *)
+  OprFoldCount   : LongInt;   (* nombre de pliages de constantes   *)
+  OprExprCount   : LongInt;   (* nombre d expressions parsees      *)
+  OprTernaryCount: LongInt;   (* nombre de ternaires               *)
+  OprCoalesceCount:LongInt;   (* nombre de null coalescing         *)
+
+{ ------------------------------------------------------------ }
+{ InitOprState : initialiser l etat des operateurs             }
+{ ------------------------------------------------------------ }
+
+Procedure InitOprState;
+Begin
+  OprInitialized := True;
+  OprLabelSeq    := 0;
+  OprLastLabel   := '';
+  OprBinCount    := 0;
+  OprUnaryCount  := 0;
+  OprAssignCount := 0;
+  OprConcatCount := 0;
+  OprFoldCount   := 0;
+  OprExprCount   := 0;
+  OprTernaryCount := 0;
+  OprCoalesceCount := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenOprLabel : generer un label unique _PO_N                  }
+{ ------------------------------------------------------------ }
+
+Function GenOprLabel : TString;
+Begin
+  Inc(OprLabelSeq);
+  OprLastLabel := '_PO_' + ItoS(OprLabelSeq);
+  GenOprLabel := OprLastLabel;
+End;
+
+{ ------------------------------------------------------------ }
+{ OpName : nom textuel d un operateur binaire                  }
+{ ------------------------------------------------------------ }
+
+Function OpName(Op : Integer) : TString;
+Begin
+  Case Op Of
+    OP_NONE      : OpName := 'NONE';
+    OP_ADD       : OpName := '+';
+    OP_SUB       : OpName := '-';
+    OP_MUL       : OpName := '*';
+    OP_DIV       : OpName := '/';
+    OP_MOD       : OpName := '%';
+    OP_POW       : OpName := '**';
+    OP_CONCAT    : OpName := '.';
+    OP_EQ        : OpName := '==';
+    OP_NE        : OpName := '!=';
+    OP_EQQ       : OpName := '===';
+    OP_NEQ       : OpName := '!==';
+    OP_LT        : OpName := '<';
+    OP_LE        : OpName := '<=';
+    OP_GT        : OpName := '>';
+    OP_GE        : OpName := '>=';
+    OP_SPACESHIP : OpName := '<=>';
+    OP_AND       : OpName := '&&';
+    OP_OR        : OpName := '||';
+    OP_XOR       : OpName := 'xor';
+    OP_BIT_AND   : OpName := '&';
+    OP_BIT_OR    : OpName := '|';
+    OP_BIT_XOR   : OpName := '^';
+    OP_SHL       : OpName := '<<';
+    OP_SHR       : OpName := '>>';
+    OP_COALESCE  : OpName := '??';
+  Else
+    OpName := 'OP_UNKNOWN(' + ItoS(Op) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ UnaryOpName : nom textuel d un operateur unaire              }
+{ ------------------------------------------------------------ }
+
+Function UnaryOpName(Op : Integer) : TString;
+Begin
+  Case Op Of
+    UOP_NONE    : UnaryOpName := 'NONE';
+    UOP_PLUS    : UnaryOpName := '+';
+    UOP_NEG     : UnaryOpName := '-';
+    UOP_NOT     : UnaryOpName := '!';
+    UOP_BIT_NOT : UnaryOpName := '~';
+    UOP_PREINC  : UnaryOpName := '++';
+    UOP_PREDEC  : UnaryOpName := '--';
+    UOP_POSTINC : UnaryOpName := '++';
+    UOP_POSTDEC : UnaryOpName := '--';
+  Else
+    UnaryOpName := 'UOP_UNKNOWN(' + ItoS(Op) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AssignOpName : nom textuel d un operateur d affectation      }
+{ ------------------------------------------------------------ }
+
+Function AssignOpName(Op : Integer) : TString;
+Begin
+  Case Op Of
+    AOP_ASSIGN  : AssignOpName := '=';
+    AOP_ADD     : AssignOpName := '+=';
+    AOP_SUB     : AssignOpName := '-=';
+    AOP_MUL     : AssignOpName := '*=';
+    AOP_DIV     : AssignOpName := '/=';
+    AOP_MOD     : AssignOpName := '%=';
+    AOP_CONCAT  : AssignOpName := '.=';
+    AOP_BIT_AND : AssignOpName := '&=';
+    AOP_BIT_OR  : AssignOpName := '|=';
+    AOP_BIT_XOR : AssignOpName := '^=';
+    AOP_SHL     : AssignOpName := '<<=';
+    AOP_SHR     : AssignOpName := '>>=';
+    AOP_POW     : AssignOpName := '**=';
+  Else
+    AssignOpName := 'AOP_UNKNOWN(' + ItoS(Op) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ BinOpPrec : retourner le niveau de precedence d un op binaire}
+{ ------------------------------------------------------------ }
+
+Function BinOpPrec(Op : Integer) : Integer;
+Begin
+  Case Op Of
+    OP_POW       : BinOpPrec := PREC_POW;
+    OP_MUL,
+    OP_DIV,
+    OP_MOD       : BinOpPrec := PREC_MULDIV;
+    OP_ADD,
+    OP_SUB,
+    OP_CONCAT    : BinOpPrec := PREC_ADDSUB;
+    OP_SHL,
+    OP_SHR       : BinOpPrec := PREC_SHIFT;
+    OP_LT,
+    OP_LE,
+    OP_GT,
+    OP_GE,
+    OP_SPACESHIP : BinOpPrec := PREC_CMP;
+    OP_EQ,
+    OP_NE,
+    OP_EQQ,
+    OP_NEQ       : BinOpPrec := PREC_EQUALITY;
+    OP_BIT_AND   : BinOpPrec := PREC_BIT_AND;
+    OP_BIT_XOR   : BinOpPrec := PREC_BIT_XOR;
+    OP_BIT_OR    : BinOpPrec := PREC_BIT_OR;
+    OP_AND       : BinOpPrec := PREC_LOG_AND;
+    OP_OR        : BinOpPrec := PREC_LOG_OR;
+    OP_XOR       : BinOpPrec := PREC_LOG_XOR;
+    OP_COALESCE  : BinOpPrec := PREC_COALESCE;
+  Else
+    BinOpPrec := 0;  (* pas d operateur reconnu *)
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ BinOpIsRight : True si l op est associatif a droite          }
+{ ------------------------------------------------------------ }
+
+Function BinOpIsRight(Op : Integer) : Boolean;
+Begin
+  (* En PHP, ** et ?? sont associatifs a droite *)
+  BinOpIsRight := (Op = OP_POW) Or (Op = OP_COALESCE);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsAssignOp : True si le token courant est un op d affectation}
+{ ------------------------------------------------------------ }
+
+Function IsAssignOp : Boolean;
+Begin
+  If CurTokKind <> TK_OP Then
+  Begin
+    IsAssignOp := False;
+    Exit;
+  End;
+
+  IsAssignOp := (CurTokStr = '=') Or
+                (CurTokStr = '+=') Or (CurTokStr = '-=') Or
+                (CurTokStr = '*=') Or (CurTokStr = '/=') Or
+                (CurTokStr = '%=') Or (CurTokStr = '.=') Or
+                (CurTokStr = '&=') Or (CurTokStr = '|=') Or
+                (CurTokStr = '^=') Or (CurTokStr = '<<=') Or
+                (CurTokStr = '>>=') Or (CurTokStr = '**=');
+End;
+
+{ ------------------------------------------------------------ }
+{ TokenToBinOp : convertir le token courant en operateur binaire}
+{ ------------------------------------------------------------ }
+
+Function TokenToBinOp : Integer;
+Begin
+  If CurTokKind = TK_OP Then
+  Begin
+    If CurTokStr = '+'   Then TokenToBinOp := OP_ADD
+    Else If CurTokStr = '-'   Then TokenToBinOp := OP_SUB
+    Else If CurTokStr = '*'   Then TokenToBinOp := OP_MUL
+    Else If CurTokStr = '/'   Then TokenToBinOp := OP_DIV
+    Else If CurTokStr = '%'   Then TokenToBinOp := OP_MOD
+    Else If CurTokStr = '**'  Then TokenToBinOp := OP_POW
+    Else If CurTokStr = '=='  Then TokenToBinOp := OP_EQ
+    Else If CurTokStr = '!='  Then TokenToBinOp := OP_NE
+    Else If CurTokStr = '===' Then TokenToBinOp := OP_EQQ
+    Else If CurTokStr = '!==' Then TokenToBinOp := OP_NEQ
+    Else If CurTokStr = '<'   Then TokenToBinOp := OP_LT
+    Else If CurTokStr = '<='  Then TokenToBinOp := OP_LE
+    Else If CurTokStr = '>'   Then TokenToBinOp := OP_GT
+    Else If CurTokStr = '>='  Then TokenToBinOp := OP_GE
+    Else If CurTokStr = '<=>' Then TokenToBinOp := OP_SPACESHIP
+    Else If CurTokStr = '&&'  Then TokenToBinOp := OP_AND
+    Else If CurTokStr = '||'  Then TokenToBinOp := OP_OR
+    Else If CurTokStr = '&'   Then TokenToBinOp := OP_BIT_AND
+    Else If CurTokStr = '|'   Then TokenToBinOp := OP_BIT_OR
+    Else If CurTokStr = '^'   Then TokenToBinOp := OP_BIT_XOR
+    Else If CurTokStr = '<<'  Then TokenToBinOp := OP_SHL
+    Else If CurTokStr = '>>'  Then TokenToBinOp := OP_SHR
+    Else If CurTokStr = '??'  Then TokenToBinOp := OP_COALESCE
+    Else TokenToBinOp := OP_NONE;
+  End
+  Else If CurTokKind = TK_CONCAT Then
+    TokenToBinOp := OP_CONCAT
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'xor') Then
+    TokenToBinOp := OP_XOR
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'and') Then
+    TokenToBinOp := OP_AND
+  Else If (CurTokKind = TK_KEYWORD) And (CurTokStr = 'or') Then
+    TokenToBinOp := OP_OR
+  Else
+    TokenToBinOp := OP_NONE;
+End;
+
+{ ------------------------------------------------------------ }
+{ TokenToUnaryOp : convertir le token courant en op unaire     }
+{ ------------------------------------------------------------ }
+
+Function TokenToUnaryOp : Integer;
+Begin
+  If CurTokKind = TK_OP Then
+  Begin
+    If CurTokStr = '+'  Then TokenToUnaryOp := UOP_PLUS
+    Else If CurTokStr = '-'  Then TokenToUnaryOp := UOP_NEG
+    Else If CurTokStr = '!'  Then TokenToUnaryOp := UOP_NOT
+    Else If CurTokStr = '~'  Then TokenToUnaryOp := UOP_BIT_NOT
+    Else If CurTokStr = '++' Then TokenToUnaryOp := UOP_PREINC
+    Else If CurTokStr = '--' Then TokenToUnaryOp := UOP_PREDEC
+    Else TokenToUnaryOp := UOP_NONE;
+  End
+  Else
+    TokenToUnaryOp := UOP_NONE;
+End;
+
+{ ------------------------------------------------------------ }
+{ TokenToAssignOp : convertir le token courant en op affectation}
+{ ------------------------------------------------------------ }
+
+Function TokenToAssignOp : Integer;
+Begin
+  If CurTokKind = TK_OP Then
+  Begin
+    If CurTokStr = '='   Then TokenToAssignOp := AOP_ASSIGN
+    Else If CurTokStr = '+='  Then TokenToAssignOp := AOP_ADD
+    Else If CurTokStr = '-='  Then TokenToAssignOp := AOP_SUB
+    Else If CurTokStr = '*='  Then TokenToAssignOp := AOP_MUL
+    Else If CurTokStr = '/='  Then TokenToAssignOp := AOP_DIV
+    Else If CurTokStr = '%='  Then TokenToAssignOp := AOP_MOD
+    Else If CurTokStr = '.='  Then TokenToAssignOp := AOP_CONCAT
+    Else If CurTokStr = '&='  Then TokenToAssignOp := AOP_BIT_AND
+    Else If CurTokStr = '|='  Then TokenToAssignOp := AOP_BIT_OR
+    Else If CurTokStr = '^='  Then TokenToAssignOp := AOP_BIT_XOR
+    Else If CurTokStr = '<<=' Then TokenToAssignOp := AOP_SHL
+    Else If CurTokStr = '>>=' Then TokenToAssignOp := AOP_SHR
+    Else If CurTokStr = '**=' Then TokenToAssignOp := AOP_POW
+    Else TokenToAssignOp := -1;
+  End
+  Else
+    TokenToAssignOp := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ AssignOpToBinOp : convertir un op d affectation en op binaire}
+{ ------------------------------------------------------------ }
+
+Function AssignOpToBinOp(Aop : Integer) : Integer;
+Begin
+  Case Aop Of
+    AOP_ADD     : AssignOpToBinOp := OP_ADD;
+    AOP_SUB     : AssignOpToBinOp := OP_SUB;
+    AOP_MUL     : AssignOpToBinOp := OP_MUL;
+    AOP_DIV     : AssignOpToBinOp := OP_DIV;
+    AOP_MOD     : AssignOpToBinOp := OP_MOD;
+    AOP_CONCAT  : AssignOpToBinOp := OP_CONCAT;
+    AOP_BIT_AND : AssignOpToBinOp := OP_BIT_AND;
+    AOP_BIT_OR  : AssignOpToBinOp := OP_BIT_OR;
+    AOP_BIT_XOR : AssignOpToBinOp := OP_BIT_XOR;
+    AOP_SHL     : AssignOpToBinOp := OP_SHL;
+    AOP_SHR     : AssignOpToBinOp := OP_SHR;
+    AOP_POW     : AssignOpToBinOp := OP_POW;
+  Else
+    AssignOpToBinOp := OP_NONE;  (* = simple, pas d op binaire *)
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ConstFoldBinOp : pliage de constantes pour op binaire        }
+{ Retourne True si le pliage est possible                      }
+{ ------------------------------------------------------------ }
+
+Function ConstFoldBinOp(Left, Right : LongInt; Op : Integer;
+                        Var Result : LongInt) : Boolean;
+Begin
+  ConstFoldBinOp := True;
+  Inc(OprFoldCount);
+
+  Case Op Of
+    OP_ADD:
+      Result := Left + Right;
+    OP_SUB:
+      Result := Left - Right;
+    OP_MUL:
+      Result := Left * Right;
+    OP_DIV:
+    Begin
+      If Right = 0 Then
+      Begin
+        WarnMsg('Division par zero');
+        Result := 0;
+        ConstFoldBinOp := False;
+      End
+      Else
+        Result := Left Div Right;
+    End;
+    OP_MOD:
+    Begin
+      If Right = 0 Then
+      Begin
+        WarnMsg('Modulo par zero');
+        Result := 0;
+        ConstFoldBinOp := False;
+      End
+      Else
+        Result := Left Mod Right;
+    End;
+    OP_POW:
+    Begin
+      (* Puissance simple pour entiers positifs *)
+      If Right < 0 Then
+      Begin
+        Result := 0;
+        ConstFoldBinOp := False;
+      End
+      Else If Right = 0 Then
+        Result := 1
+      Else
+      Begin
+        Result := 1;
+        While Right > 0 Do
+        Begin
+          Result := Result * Left;
+          Dec(Right);
+        End;
+      End;
+    End;
+    OP_EQ, OP_EQQ:
+      If Left = Right Then Result := 1 Else Result := 0;
+    OP_NE, OP_NEQ:
+      If Left <> Right Then Result := 1 Else Result := 0;
+    OP_LT:
+      If Left < Right Then Result := 1 Else Result := 0;
+    OP_LE:
+      If Left <= Right Then Result := 1 Else Result := 0;
+    OP_GT:
+      If Left > Right Then Result := 1 Else Result := 0;
+    OP_GE:
+      If Left >= Right Then Result := 1 Else Result := 0;
+    OP_SPACESHIP:
+    Begin
+      If Left < Right Then Result := -1
+      Else If Left > Right Then Result := 1
+      Else Result := 0;
+    End;
+    OP_AND:
+      If (Left <> 0) And (Right <> 0) Then Result := 1 Else Result := 0;
+    OP_OR:
+      If (Left <> 0) Or (Right <> 0) Then Result := 1 Else Result := 0;
+    OP_XOR:
+      If ((Left <> 0) And (Right = 0)) Or
+         ((Left = 0) And (Right <> 0)) Then Result := 1
+      Else Result := 0;
+    OP_BIT_AND:
+      Result := Left And Right;
+    OP_BIT_OR:
+      Result := Left Or Right;
+    OP_BIT_XOR:
+      Result := Left Xor Right;
+    OP_SHL:
+      Result := Left Shl (Right And $1F);
+    OP_SHR:
+      Result := Left Shr (Right And $1F);
+  Else
+    ConstFoldBinOp := False;
+    Dec(OprFoldCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ConstFoldUnaryOp : pliage de constantes pour op unaire       }
+{ Retourne True si le pliage est possible                      }
+{ ------------------------------------------------------------ }
+
+Function ConstFoldUnaryOp(Val : LongInt; Op : Integer;
+                          Var Result : LongInt) : Boolean;
+Begin
+  ConstFoldUnaryOp := True;
+  Inc(OprFoldCount);
+
+  Case Op Of
+    UOP_PLUS:
+      Result := Val;
+    UOP_NEG:
+      Result := -Val;
+    UOP_NOT:
+      If Val = 0 Then Result := 1 Else Result := 0;
+    UOP_BIT_NOT:
+      Result := Not Val;
+  Else
+    ConstFoldUnaryOp := False;
+    Dec(OprFoldCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprFlushToEAX : materialiser le resultat d expr dans EAX    }
+{ Si l expression est deja dans EAX, ne rien faire             }
+{ Si c est une valeur immediate, generer MOV EAX, imm          }
+{ Si c est en memoire, generer MOV EAX, [mem]                  }
+{ ------------------------------------------------------------ }
+
+Procedure ExprFlushToEAX(Const E : TExprVal);
+Begin
+  Case E.Kind Of
+    EK_IMM:
+      OutLn('        MOV     EAX, ' + ItoS(E.ImmVal));
+    EK_EAX:
+      (* deja dans EAX, rien a faire *);
+    EK_MEM:
+      OutLn('        MOV     EAX, [' + ItoS(E.Offset) + ']');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprEmitBinOp : generer le code pour un operateur binaire    }
+{ Left est dans EAX, Right est pousse sur la pile ou immediate }
+{ Resultat dans EAX                                            }
+{ ------------------------------------------------------------ }
+
+Procedure ExprEmitBinOp(Op : Integer; RightImm : Boolean;
+                        RightVal : LongInt);
+Var
+  Lbl1, Lbl2 : TString;
+Begin
+  Inc(OprBinCount);
+
+  Case Op Of
+    OP_ADD:
+    Begin
+      If RightImm Then
+        OutLn('        ADD     EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        ADD     EAX, EBX');
+      End;
+    End;
+    OP_SUB:
+    Begin
+      If RightImm Then
+        OutLn('        SUB     EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        SUB     EBX, EAX');
+        OutLn('        MOV     EAX, EBX');
+      End;
+    End;
+    OP_MUL:
+    Begin
+      If RightImm Then
+        OutLn('        IMUL    EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        IMUL    EAX, EBX');
+      End;
+    End;
+    OP_DIV:
+    Begin
+      OutLn('        MOV     ECX, EAX');
+      If RightImm Then
+        OutLn('        MOV     EAX, ' + ItoS(RightVal))
+      Else
+        OutLn('        POP     EAX');
+      OutLn('        CDQ');
+      OutLn('        IDIV    ECX');
+    End;
+    OP_MOD:
+    Begin
+      OutLn('        MOV     ECX, EAX');
+      If RightImm Then
+        OutLn('        MOV     EAX, ' + ItoS(RightVal))
+      Else
+        OutLn('        POP     EAX');
+      OutLn('        CDQ');
+      OutLn('        IDIV    ECX');
+      OutLn('        MOV     EAX, EDX');
+    End;
+    OP_EQ, OP_EQQ:
+    Begin
+      If RightImm Then
+        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        CMP     EBX, EAX');
+      End;
+      OutLn('        SETE    AL');
+      OutLn('        MOVZX   EAX, AL');
+    End;
+    OP_NE, OP_NEQ:
+    Begin
+      If RightImm Then
+        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        CMP     EBX, EAX');
+      End;
+      OutLn('        SETNE   AL');
+      OutLn('        MOVZX   EAX, AL');
+    End;
+    OP_LT:
+    Begin
+      If RightImm Then
+        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        CMP     EBX, EAX');
+      End;
+      OutLn('        SETL    AL');
+      OutLn('        MOVZX   EAX, AL');
+    End;
+    OP_LE:
+    Begin
+      If RightImm Then
+        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        CMP     EBX, EAX');
+      End;
+      OutLn('        SETLE   AL');
+      OutLn('        MOVZX   EAX, AL');
+    End;
+    OP_GT:
+    Begin
+      If RightImm Then
+        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        CMP     EBX, EAX');
+      End;
+      OutLn('        SETG    AL');
+      OutLn('        MOVZX   EAX, AL');
+    End;
+    OP_GE:
+    Begin
+      If RightImm Then
+        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        CMP     EBX, EAX');
+      End;
+      OutLn('        SETGE   AL');
+      OutLn('        MOVZX   EAX, AL');
+    End;
+    OP_SPACESHIP:
+    Begin
+      (* Comparaison spaceship: -1, 0, ou 1 *)
+      Lbl1 := GenOprLabel;
+      Lbl2 := GenOprLabel;
+      If RightImm Then
+        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        CMP     EBX, EAX');
+      End;
+      OutLn('        JL      ' + Lbl1);
+      OutLn('        JG      ' + Lbl2);
+      OutLn('        XOR     EAX, EAX');
+      OutLn('        JMP     SHORT @end_cmp');
+      OutLn(Lbl1 + ':');
+      OutLn('        MOV     EAX, -1');
+      OutLn('        JMP     SHORT @end_cmp');
+      OutLn(Lbl2 + ':');
+      OutLn('        MOV     EAX, 1');
+      OutLn('@end_cmp:');
+    End;
+    OP_AND:
+    Begin
+      (* && avec court-circuit deja gere au parsing *)
+      OutLn('        TEST    EAX, EAX');
+      OutLn('        SETNE   AL');
+      OutLn('        MOVZX   EAX, AL');
+    End;
+    OP_OR:
+    Begin
+      (* || avec court-circuit deja gere au parsing *)
+      OutLn('        TEST    EAX, EAX');
+      OutLn('        SETNE   AL');
+      OutLn('        MOVZX   EAX, AL');
+    End;
+    OP_BIT_AND:
+    Begin
+      If RightImm Then
+        OutLn('        AND     EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        AND     EAX, EBX');
+      End;
+    End;
+    OP_BIT_OR:
+    Begin
+      If RightImm Then
+        OutLn('        OR      EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        OR      EAX, EBX');
+      End;
+    End;
+    OP_BIT_XOR:
+    Begin
+      If RightImm Then
+        OutLn('        XOR     EAX, ' + ItoS(RightVal))
+      Else
+      Begin
+        OutLn('        POP     EBX');
+        OutLn('        XOR     EAX, EBX');
+      End;
+    End;
+    OP_SHL:
+    Begin
+      OutLn('        MOV     ECX, EAX');
+      If RightImm Then
+        OutLn('        MOV     EAX, ' + ItoS(RightVal))
+      Else
+        OutLn('        POP     EAX');
+      OutLn('        SHL     EAX, CL');
+    End;
+    OP_SHR:
+    Begin
+      OutLn('        MOV     ECX, EAX');
+      If RightImm Then
+        OutLn('        MOV     EAX, ' + ItoS(RightVal))
+      Else
+        OutLn('        POP     EAX');
+      OutLn('        SAR     EAX, CL');
+    End;
+    OP_CONCAT:
+    Begin
+      Inc(OprConcatCount);
+      (* Concatenation de chaines : appel runtime *)
+      OutLn('        PUSH    EAX');
+      If RightImm Then
+        OutLn('        PUSH    ' + ItoS(RightVal))
+      Else
+        OutLn('        ; droite deja sur pile');
+      OutLn('        CALL    _PHRT_concat');
+      OutLn('        ADD     ESP, 8');
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprEmitUnaryOp : generer le code pour un operateur unaire   }
+{ Operande dans EAX, resultat dans EAX                         }
+{ ------------------------------------------------------------ }
+
+Procedure ExprEmitUnaryOp(Op : Integer);
+Begin
+  Inc(OprUnaryCount);
+
+  Case Op Of
+    UOP_PLUS:
+      (* rien a faire, identite *);
+    UOP_NEG:
+      OutLn('        NEG     EAX');
+    UOP_NOT:
+    Begin
+      OutLn('        TEST    EAX, EAX');
+      OutLn('        SETE    AL');
+      OutLn('        MOVZX   EAX, AL');
+    End;
+    UOP_BIT_NOT:
+      OutLn('        NOT     EAX');
+    UOP_PREINC:
+      OutLn('        INC     EAX');
+    UOP_PREDEC:
+      OutLn('        DEC     EAX');
+    UOP_POSTINC:
+      (* l ancienne valeur est deja dans EAX, on incremente la source apres *)
+      OutLn('        ; post-increment');
+    UOP_POSTDEC:
+      (* l ancienne valeur est deja dans EAX, on decremente la source apres *)
+      OutLn('        ; post-decrement');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrimary : parser une expression primaire                }
+{ ------------------------------------------------------------ }
+
+(* Declaration forward pour recursion mutuelle *)
+Function ParseExpr : TExprVal; Forward;
+
+Function ParsePrimary : TExprVal;
+Var
+  E : TExprVal;
+Begin
+  E.Kind    := EK_NONE;
+  E.ImmVal  := 0;
+  E.TypeIdx := TY_IDX_VOID;
+  E.Offset  := 0;
+  E.SymIdx  := -1;
+
+  Case CurTokKind Of
+    TK_INTEGER:
+    Begin
+      E := ExprMakeImm(CurTokInt, TY_IDX_INT);
+      LexNextToken;
+    End;
+    TK_FLOAT:
+    Begin
+      (* Flottants tronques en entiers *)
+      E := ExprMakeImm(CurTokInt, TY_IDX_INT);
+      LexNextToken;
+    End;
+    TK_STRING:
+    Begin
+      (* Chaine : ajouter au segment DATA *)
+      E.Kind    := EK_MEM;
+      E.TypeIdx := TY_IDX_STRING;
+      LexNextToken;
+    End;
+    TK_KEYWORD:
+    Begin
+      If CurTokStr = 'null' Then
+      Begin
+        E := ExprMakeNull;
+        LexNextToken;
+      End
+      Else If CurTokStr = 'true' Then
+      Begin
+        E := ExprMakeBool(True);
+        LexNextToken;
+      End
+      Else If CurTokStr = 'false' Then
+      Begin
+        E := ExprMakeBool(False);
+        LexNextToken;
+      End
+      Else
+        CompileError('Expression attendue, mot-cle ' + CurTokStr +
+                     ' inattendu', LexLineNo);
+    End;
+    TK_VARIABLE:
+    Begin
+      (* Variable $nom : reference memoire *)
+      E.Kind    := EK_MEM;
+      E.TypeIdx := TY_IDX_MIXED;
+      LexNextToken;
+    End;
+    TK_IDENT:
+    Begin
+      (* Constante ou appel de fonction *)
+      E.Kind    := EK_MEM;
+      E.TypeIdx := TY_IDX_MIXED;
+      LexNextToken;
+    End;
+    TK_LPAREN:
+    Begin
+      LexNextToken;
+      E := ParseExpr;
+      If CurTokKind <> TK_RPAREN Then
+        CompileError(') attendu', LexLineNo);
+      LexNextToken;
+    End;
+  Else
+    CompileError('Expression attendue', LexLineNo);
+  End;
+
+  Inc(OprExprCount);
+  ParsePrimary := E;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUnary : parser un operateur unaire                      }
+{ ------------------------------------------------------------ }
+
+Function ParseUnary : TExprVal;
+Var
+  Op    : Integer;
+  E     : TExprVal;
+  Res   : LongInt;
+Begin
+  Op := TokenToUnaryOp;
+  If Op <> UOP_NONE Then
+  Begin
+    LexNextToken;
+    E := ParseUnary;  (* recursif pour - - x etc. *)
+
+    (* Pliage de constante si possible *)
+    If E.Kind = EK_IMM Then
+    Begin
+      If ConstFoldUnaryOp(E.ImmVal, Op, Res) Then
+      Begin
+        E.ImmVal := Res;
+        ParseUnary := E;
+        Exit;
+      End;
+    End;
+
+    (* Generer le code *)
+    ExprFlushToEAX(E);
+    ExprEmitUnaryOp(Op);
+    ParseUnary := ExprMakeEAX(E.TypeIdx);
+  End
+  Else
+    ParseUnary := ParsePrimary;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExprPrec : parser une expression avec precedence        }
+{ Utilise l algorithme de Pratt / precedence climbing          }
+{ ------------------------------------------------------------ }
+
+Function ParseExprPrec(MinPrec : Integer) : TExprVal;
+Var
+  Left, Right : TExprVal;
+  Op, Prec    : Integer;
+  IsRight     : Boolean;
+  Res         : LongInt;
+Begin
+  Left := ParseUnary;
+
+  While True Do
+  Begin
+    Op := TokenToBinOp;
+    If Op = OP_NONE Then
+      Break;
+
+    Prec := BinOpPrec(Op);
+    If Prec = 0 Then
+      Break;
+    If Prec > MinPrec Then
+      Break;
+
+    IsRight := BinOpIsRight(Op);
+    LexNextToken;
+
+    (* Pour les ops associatifs a droite, on utilise la meme precedence *)
+    If IsRight Then
+      Right := ParseExprPrec(Prec)
+    Else
+      Right := ParseExprPrec(Prec - 1);
+
+    (* Pliage de constantes si les deux operandes sont immediates *)
+    If (Left.Kind = EK_IMM) And (Right.Kind = EK_IMM) Then
+    Begin
+      If ConstFoldBinOp(Left.ImmVal, Right.ImmVal, Op, Res) Then
+      Begin
+        Left.ImmVal := Res;
+        Continue;
+      End;
+    End;
+
+    (* Generer le code *)
+    If Right.Kind = EK_IMM Then
+    Begin
+      ExprFlushToEAX(Left);
+      ExprEmitBinOp(Op, True, Right.ImmVal);
+    End
+    Else
+    Begin
+      ExprFlushToEAX(Left);
+      OutLn('        PUSH    EAX');
+      ExprFlushToEAX(Right);
+      ExprEmitBinOp(Op, False, 0);
+    End;
+
+    Left := ExprMakeEAX(TY_IDX_INT);
+  End;
+
+  ParseExprPrec := Left;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExpr : parser une expression complete                   }
+{ ------------------------------------------------------------ }
+
+Function ParseExpr : TExprVal;
+Begin
+  Inc(OprExprCount);
+  ParseExpr := ParseExprPrec(PREC_LOG_OR2);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpOprState : afficher l etat des operateurs                }
+{ ------------------------------------------------------------ }
+
+Procedure DumpOprState;
+Begin
+  WriteLn('--- Operator State ---');
+  WriteLn('  OprInitialized  : ', OprInitialized);
+  WriteLn('  OprLabelSeq     : ', OprLabelSeq);
+  WriteLn('  OprBinCount     : ', OprBinCount);
+  WriteLn('  OprUnaryCount   : ', OprUnaryCount);
+  WriteLn('  OprAssignCount  : ', OprAssignCount);
+  WriteLn('  OprConcatCount  : ', OprConcatCount);
+  WriteLn('  OprFoldCount    : ', OprFoldCount);
+  WriteLn('  OprExprCount    : ', OprExprCount);
+  WriteLn('  OprTernaryCount : ', OprTernaryCount);
+  WriteLn('  OprCoalesceCount: ', OprCoalesceCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 07)                            }
+{ ------------------------------------------------------------ }
+
+Function IsOprInitialized : Boolean;
+Begin
+  IsOprInitialized := OprInitialized;
+End;
+
+Function IsOprEmpty : Boolean;
+Begin
+  IsOprEmpty := (OprBinCount = 0) And (OprUnaryCount = 0);
+End;
+
+Function GetOprBinCount : LongInt;
+Begin
+  GetOprBinCount := OprBinCount;
+End;
+
+Function GetOprUnaryCount : LongInt;
+Begin
+  GetOprUnaryCount := OprUnaryCount;
+End;
+
+Function GetOprAssignCount : LongInt;
+Begin
+  GetOprAssignCount := OprAssignCount;
+End;
+
+Function GetOprConcatCount : LongInt;
+Begin
+  GetOprConcatCount := OprConcatCount;
+End;
+
+Function GetOprFoldCount : LongInt;
+Begin
+  GetOprFoldCount := OprFoldCount;
+End;
+
+Function GetOprExprCount : LongInt;
+Begin
+  GetOprExprCount := OprExprCount;
+End;
+
+Function GetOprLastLabel : TString;
+Begin
+  GetOprLastLabel := OprLastLabel;
+End;
+
+Function GetOprStatus : TString;
+Begin
+  If Not OprInitialized Then
+    GetOprStatus := 'Not initialized'
+  Else
+    GetOprStatus := ItoS(OprBinCount) + ' bin, ' +
+                    ItoS(OprUnaryCount) + ' unary, ' +
+                    ItoS(OprFoldCount) + ' folded';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -4836,6 +5973,9 @@ Begin
 
   { Initialiser les litteraux et le segment DATA }
   InitLitState;
+
+  { Initialiser les operateurs }
+  InitOprState;
 
   { Analyser les arguments }
   ParseArgs;
@@ -4868,8 +6008,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-06 implementes');
-  WriteLn('PHPCW32: Les TODOs 07-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-07 implementes');
+  WriteLn('PHPCW32: Les TODOs 08-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
