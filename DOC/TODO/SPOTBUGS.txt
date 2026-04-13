@@ -1,0 +1,633 @@
+SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
+  Free Pascal (-Mtp)
+  Analyse le bytecode des fichiers .class Java pour detecter des bugs potentiels.
+
+  Supporte les fichiers .class individuels, les repertoires et les fichiers .jar.
+  Produit des rapports en format texte, XML (compatible Jenkins/SpotBugs) et HTML.
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES GLOBALES [IMPLEMENTE]
+            Constantes de dimensionnement :
+              MAX_CP_ENTRIES=65535, MAX_FIELDS=4096, MAX_METHODS=4096,
+              MAX_INTERFACES=256, MAX_BUGS=8192, MAX_CFG_NODES=65535,
+              MAX_STACK_DEPTH=512, MAX_CLASSES=4096, BUFSIZE=65536
+            Niveaux de severite : SEV_HIGH=1, SEV_MEDIUM=2, SEV_LOW=3, SEV_INFO=4
+            Categories de bugs : CAT_CORRECTNESS=1, CAT_BAD_PRACTICE=2,
+              CAT_PERFORMANCE=3, CAT_SECURITY=4, CAT_MT_CORRECTNESS=5,
+              CAT_INTERNATIONALIZATION=6, CAT_DODGY=7, CAT_MALICIOUS=8
+            Types Constant Pool : CP_UTF8=1, CP_INTEGER=3, CP_FLOAT=4,
+              CP_LONG=5, CP_DOUBLE=6, CP_CLASS=7, CP_STRING=8,
+              CP_FIELDREF=9, CP_METHODREF=10, CP_INTERFACEMETHODREF=11,
+              CP_NAMEANDTYPE=12, CP_METHODHANDLE=15, CP_METHODTYPE=16,
+              CP_INVOKEDYNAMIC=18
+            Flags d'acces : ACC_PUBLIC=$0001 .. ACC_ENUM=$4000
+            Structure TOptions (ClassPath, OutFile, OutFormat, MinSeverity,
+              Verbose, Recursive, ShowCount, ExcludeFile, IncludeFile, MaxBugs)
+            Structure TBugReport (BugType, Category, Severity, ClassName,
+              MethodName, FieldName, LineNumber, Message)
+            Variables globales (Opts, Bugs, BugCount, ClassesScanned,
+              TotalMethods, ErrorCount)
+            Utilitaires : ReadU1/ReadU2/ReadU4 (big-endian), HexByte/HexWord,
+              IntToStr_, StrToInt_, UpCaseStr, FileExists_, ChangeExt,
+              FatalError, Error, Warning, AddBug
+
+  TODO 02 - LECTURE ET VALIDATION DE L'EN-TETE .class [IMPLEMENTE]
+            Constante CLASS_MAGIC = $CAFEBABE
+            Structure TClassHeader (Magic, MinorVersion, MajorVersion,
+              CPCount, AccessFlags, ThisClass, SuperClass, InterfaceCount)
+            OpenClassFile(FileName) : ouvrir .class, valider magic $CAFEBABE
+            ReadClassHeader : lire version, valider (49=Java5..67=Java23),
+              avertissement si version inconnue ou trop recente
+            GetJavaVersion(Major) : 45->"Java 1.1"..67->"Java 23"
+            CloseClassFile : fermer le fichier et liberer le tampon
+
+  TODO 03 - DECODAGE DU CONSTANT POOL [IMPLEMENTE]
+            Structure TCPEntry (Tag, StrVal, IntVal, FloatVal,
+              Ref1, Ref2, IsDouble)
+            Tableau TCPArray et pointeur CP, variable CPCount
+            InitConstantPool : liberer le CP existant
+            AllocConstantPool(Count) : allouer le tableau CP
+            ParseConstantPool(Count) : lire les Count-1 entrees big-endian
+              CP_UTF8 : lire longueur U2 + octets -> StrVal
+              CP_INTEGER/FLOAT : 4 octets -> IntVal/FloatVal
+              CP_LONG/DOUBLE : 8 octets, occuper 2 slots (IsDouble=True)
+              CP_CLASS/STRING/METHODTYPE : 1 index U2 -> Ref1
+              CP_FIELDREF/METHODREF/INTERFACEMETHODREF/NAMEANDTYPE/
+              INVOKEDYNAMIC : 2 index U2 -> Ref1, Ref2
+              CP_METHODHANDLE : 1 octet + 1 index U2
+            CPGetUtf8(Idx) : retourner valeur Utf8, erreur si invalide
+            CPGetClassName(Idx) : resoudre CP_CLASS -> CPGetUtf8(Ref1)
+            CPGetNameAndType(Idx, Name, Desc) : resoudre CP_NAMEANDTYPE
+            CPGetMemberRef(Idx, Class, Name, Desc) : resoudre FIELDREF/METHODREF
+            CPGetString(Idx) : resoudre CP_STRING -> CPGetUtf8(Ref1)
+            CPGetInteger(Idx) : retourner valeur entiere
+            CPTagName(Tag) : nom textuel du tag (Utf8, Class, Methodref...)
+            DumpConstantPool : afficher le CP pour debug
+
+  TODO 04 - LECTURE DES FLAGS, THIS_CLASS, SUPER_CLASS, INTERFACES [IMPLEMENTE]
+            Structure TClassInfo (AccessFlags, ThisClass, SuperClass,
+              Interfaces[0..255], InterfaceCount, IsInterface, IsAbstract,
+              IsEnum, IsAnnotation, IsFinal, IsPublic, IsSynthetic, SourceFile)
+            InitClassInfo : initialiser la structure ClassInfo
+            ReadClassInfo : lire AccessFlags/ThisClass/SuperClass (U2 big-endian),
+              resoudre noms via CP, lire InterfaceCount puis chaque interface,
+              decoder les bits ACC_*
+            GetSimpleClassName(InternalName) : extraire le nom simple
+              "java/lang/RuntimeException" -> "RuntimeException"
+            GetPackageName(InternalName) : extraire le paquetage
+              "com/example/Foo" -> "com.example"
+            InternalToJavaName : convertir / en . dans les noms
+            SkipAttribute : sauter un attribut non gere
+            ReadAttributesClass : parcourir attributs classe (SourceFile,
+              Deprecated, InnerClasses, EnclosingMethod, Signature, Annotations)
+            DumpClassInfo : afficher les infos de classe (debug)
+
+  TODO 05 - LECTURE DES CHAMPS (FIELDS) DE LA CLASSE [IMPLEMENTE]
+            Structure TFieldInfo (AccessFlags, Name, Descriptor, JavaType,
+              IsSynthetic, IsStatic, IsFinal, IsVolatile, IsTransient, IsEnum,
+              IsPublic, IsPrivate, IsProtected, ConstValue, HasConstValue,
+              IsDeprecated, Signature)
+            TFieldArray : tableau des champs
+            Variables globales : Fields, FieldCount
+            InitFields : initialiser la table des champs
+            DecodeTypeDescriptor(Desc) : traduire descripteur JVM en type Java
+              V->void, I->int, J->long, D->double, F->float, B->byte,
+              C->char, S->short, Z->boolean, L<nom>;->nom, [X->X[]
+            DecodeTypeDescriptorFull(Desc) : avec nom de classe complet
+            GetConstantValue(CpIndex) : obtenir valeur constante depuis CP
+            ReadFieldAttributes(Field) : lire attributs d'un champ
+              (ConstantValue, Deprecated, Signature, Synthetic)
+            ReadFields : lire tous les champs de la classe
+            GetFieldAccessStr(Field) : obtenir modificateurs d'acces
+            FieldToJavaString(Field) : notation Java du champ
+            DumpFields : afficher les champs (debug)
+
+  TODO 06 - LECTURE DES METHODES ET DE L'ATTRIBUT CODE [IMPLEMENTE]
+            Structure TExceptionEntry (StartPC, EndPC, HandlerPC, CatchType,
+              CatchName)
+            Structure TLineEntry (StartPC, LineNum)
+            Structure TLocalVarEntry (StartPC, Length, Name, Descriptor, Index)
+            Structure TMethodInfo (AccessFlags, Name, Descriptor, JavaSignature,
+              MaxStack, MaxLocals, CodeLen, Code, ExcCount, ExcTable, LineCount,
+              LineTable, LocalCount, LocalTable, ThrowsCount, Throws, IsPublic,
+              IsPrivate, IsProtected, IsStatic, IsFinal, IsSynchronized,
+              IsNative, IsAbstract, IsStrict, IsBridge, IsSynthetic, IsVarArgs,
+              IsDeprecated, Signature)
+            InitMethod(M) : initialiser une structure TMethodInfo
+            ParseMethodDescriptor(Desc, ParamCount, Params, RetType) : analyser
+              le descripteur ex. (ILjava/lang/String;)V -> [int,String], void
+            BuildJavaSignature(Name, Desc) : construire signature Java lisible
+            ReadMethodAttributes(M) : lire Code, Exceptions, Deprecated, etc.
+            ReadCodeSubAttributes(M) : lire LineNumberTable, LocalVariableTable
+            ReadMethods : lire toutes les methodes de la classe
+            GetLineNumber(M, PC) : rechercher numero de ligne pour un PC
+            GetMethodAccessStr(M) : obtenir les modificateurs d'acces
+            MethodToJavaString(M) : notation Java complete de la methode
+            DumpMethods : afficher les informations de debug des methodes
+            FreeMethods : liberer la memoire allouee pour le bytecode
+
+  TODO 07 - DECODAGE DU BYTECODE JAVA (OPCODES JVM) [IMPLEMENTE]
+            Constantes d'opcodes JVM principaux :
+              OP_NOP=0, OP_ACONST_NULL=1, OP_ICONST_M1..OP_ICONST_5=2..8,
+              OP_ILOAD=21..OP_ALOAD=25, OP_ISTORE=54..OP_ASTORE=58,
+              OP_IADD=96..OP_DADD=99, OP_IRETURN=172..OP_RETURN=177,
+              OP_GETSTATIC=178..OP_PUTSTATIC=179, OP_GETFIELD=180..OP_PUTFIELD=181,
+              OP_INVOKEVIRTUAL=182..OP_INVOKEDYNAMIC=186,
+              OP_NEW=187, OP_NEWARRAY=188, OP_ANEWARRAY=189,
+              OP_ATHROW=191, OP_CHECKCAST=192, OP_INSTANCEOF=193,
+              OP_IFEQ=153..OP_IF_ACMPNE=166, OP_GOTO=167, OP_GOTO_W=200,
+              OP_TABLESWITCH=170, OP_LOOKUPSWITCH=171, OP_WIDE=196
+            Structure TInstruction (PC, Opcode, Mnemonic, Op1, Op2, Op3,
+              Size, CpRef, LineNum)
+            TInstrArray, Instructions/InstrCount vars
+            AllocInstructions, FreeInstructions : gestion memoire
+            DecodeInstructions(Method) : parcourir bytecode instruction par
+              instruction, gerer wide/tableswitch/lookupswitch/padding,
+              resoudre les references CP
+            GetInstrMnemonic(Op) : retourner mnemonique textuel de l'opcode
+            GetInstrSize(Op, PC, Code) : calculer taille de l'instruction,
+              tenir compte alignements tableswitch/lookupswitch et wide
+            GetCodeByte, GetCodeShort, GetCodeWord, GetCodeInt : lecture bytecode
+            DumpInstructions : afficher les instructions decodees
+            IsNullCheckOpcode, IsBranchOpcode, IsBlockTerminator : predicats
+            CanDereferenceNull : detection dereferences null potentiels
+            GetArrayTypeName : nom du type primitif pour newarray
+
+  TODO 08 - CONSTRUCTION DU GRAPHE DE FLUX DE CONTROLE (CFG) [IMPLEMENTE]
+            Structure TCFGNode (ID, StartPC, EndPC, InstStart, InstEnd,
+              Succs[0..3], SuccCount, Preds[0..15], PredCount, IsEntry,
+              IsExit, IsException, Visited, DomBy, IsBackEdge)
+            Constantes MAX_CFG_NODES=4096, MAX_CFG_SUCCS=4, MAX_CFG_PREDS=16,
+              MAX_LEADERS=4096, variables CFGNodes, CFGNodeCount, CFGUnreachable,
+              CFGBackEdges
+            InitCFGNode : initialiser un noeud CFG
+            AllocCFG / FreeCFG : allocation et liberation memoire
+            AddCFGSuccessor / AddCFGPredecessor : lier noeuds CFG
+            IsBranchTarget(PC) : verifier si PC est cible d'un branchement
+            IsExceptionHandler(M, PC) : verifier si PC est gestionnaire exception
+            IsBlockTerminator_(Op) : verifier si opcode termine un bloc
+            IsUnconditionalJump(Op) : verifier si opcode est saut inconditionnel
+            IsBlockLeader(M, PC) : verifier si PC est debut de bloc de base
+            FindCFGNodeByPC(PC) : trouver noeud contenant un PC
+            FindCFGNodeByStartPC(PC) : trouver noeud commencant a un PC
+            BuildCFG(Method) : identifier leaders, creer noeuds, lier successeurs,
+              calculer predecesseurs (4 phases completes)
+            CFGVisitDFS(NodeIdx) : parcours DFS depuis un noeud
+            FindUnreachableBlocks : identifier code mort via DFS
+            FindBackEdges : identifier aretes arriere (boucles) via numerotation DFS
+            ComputeDominators : calculer dominateurs (algorithme iteratif)
+            DumpCFG : afficher le CFG pour debug
+            10 accesseurs : GetCFGNodeCount, GetCFGUnreachableCount,
+              GetCFGBackEdgeCount, IsCFGAllocated, GetCFGNodeStartPC,
+              GetCFGNodeEndPC, IsCFGNodeEntry, IsCFGNodeExit,
+              IsCFGNodeUnreachable, IsCFGNodeLoop
+
+  TODO 09 - DETECTEUR : DEREFERENCEMENT DE POINTEUR NULL [IMPLEMENTE]
+            Constantes : MAX_NULL_STACK=64, MAX_NULL_LOCALS=256, MAX_NULL_BUGS=256
+            Valeurs abstraites : VAL_UNKNOWN=0, VAL_NULL=1, VAL_NONNULL=2,
+              VAL_MAYBE=3
+            Types de bugs : NP_NONE=0, NP_NULL_ON_SOME_PATH=1,
+              NP_NULL_ON_SOME_PATH_EXCEPTION=2, NP_ALWAYS_NULL=3,
+              NP_NULL_DEREF_ALL_TARGETS=4, NP_STORE_INTO_NONNULL_FIELD=5,
+              NP_GUARANTEED_DEREF=6
+            Structure TNullBugInfo (BugType, PC, LineNum, OpType)
+            Variables : NullInitialized, NullStack, NullStackTop, NullLocals,
+              NullLocalCount, NullBugs, NullBugCount, NullLabelNum,
+              NullTotalChecks, NullTotalDeref, NullCurrentPC, NullCurrentLine
+            InitNullState, GenNullLabel, NullTypeName, NullBugTypeName,
+              IsDerefOpcode, MergeNullValues, NullPush, NullPop, NullPeek,
+              NullPeekAt, NullLoadLocal, NullStoreLocal, AddNullBug,
+              AnalyzeNullForInstr, DetectNullDereferences, DumpNullState
+            Accesseurs : IsNullInitialized, GetNullStackTop, GetNullLocalCount,
+              GetNullBugCount, GetNullTotalChecks, GetNullTotalDeref,
+              GetNullLabelNum, GetNullBugType, GetNullBugPC, GetNullBugLine
+
+  TODO 10 - DETECTEUR : FUITE DE RESSOURCES (RESOURCE LEAKS) [IMPLEMENTE]
+            Constantes : MAX_RES_TRACKED=64, MAX_RES_BUGS=64, MAX_RES_CLASSES=16
+            Types de bugs : RL_NONE=0, RL_UNSATISFIED_OBLIGATION=1,
+              RL_UNSATISFIED_OBLIG_EXCEPT=2, RL_OPEN_STREAM=3,
+              RL_OPEN_STREAM_EXCEPTION=4
+            Etats de ressource : RS_UNKNOWN=0, RS_OPEN=1, RS_CLOSED=2, RS_MAYBE=3
+            Structure TResourceInfo (VarIdx, ClassName, OpenPC, ClosePC, State,
+              LineNum, InTryBlock, HasFinally)
+            Structure TResLeakBug (BugType, PC, LineNum, ClassName, VarIdx)
+            Variables : ResLeakInitialized, Resources, ResourceCount,
+              ResLeakBugs, ResLeakBugCount, ResLabelNum, ResTotalOpens,
+              ResTotalCloses, ResTotalLeaks, ResCurrentPC, ResCurrentLine
+            Classes ressources : java/io/InputStream, java/io/OutputStream,
+              java/io/Reader, java/io/Writer, java/sql/Connection,
+              java/sql/Statement, java/sql/ResultSet,
+              java/net/Socket, java/net/ServerSocket
+            InitResLeakState, GenResLabel, ResLeakBugTypeName, ResStateName,
+              IsCloseableClass, IsCloseMethod, ExtractClassFromMethodRef,
+              ExtractMethodNameFromRef, ExtractMethodDescFromRef,
+              TrackResourceOpen, TrackResourceClose, AddResLeakBug,
+              FindCloseCall, IsInExceptionHandler, HasFinallyHandler,
+              AnalyzeInstrForResourceLeak, DetectResourceLeaks, DumpResLeakState
+            Accesseurs : IsResLeakInitialized, GetResourceCount,
+              GetResLeakBugCount, GetResTotalOpens, GetResTotalCloses,
+              GetResTotalLeaks, GetResLabelNum, GetResLeakBugType,
+              GetResLeakBugPC, GetResLeakBugLine
+
+  TODO 11 - DETECTEUR : BOUCLES INFINIES ET BLOCS INACCESSIBLES [IMPLEMENTE]
+            Constantes : MAX_LOOP_BUGS=64, MAX_DEAD_STORES=128, MAX_LOOP_BLOCKS=64
+            Types de bugs : LP_NONE=0, IL_INFINITE_LOOP=1,
+              IL_INFINITE_RECURSIVE_LOOP=2, DLS_DEAD_LOCAL_STORE=3,
+              UC_USELESS_VOID_METHOD=4, USELESS_CODE=5, IL_CONTAINER_MODIFIED=6
+            Structure TLoopBugInfo (BugType, PC, LineNum, BlockID, VarIdx, MethodName)
+            Structure TDeadStoreInfo (VarIdx, StorePC, LineNum, IsRead)
+            Variables : LoopInitialized, LoopBugs, LoopBugCount, DeadStores,
+              DeadStoreCount, LoopLabelNum, LoopTotalInfinite, LoopTotalRecursive,
+              LoopTotalDead, LoopTotalDeadStores, LoopCurrentPC, LoopCurrentLine
+            InitLoopState, GenLoopLabel, LoopBugTypeName, AddLoopBug, AddDeadStore,
+              MarkVariableRead, IsStoreOpcode, IsLoadOpcode, GetStoreVarIdx,
+              GetLoadVarIdx, IsBlockInLoop, HasExitFromBlock, DetectInfiniteLoops,
+              DetectInfiniteRecursion, DetectDeadCode, DetectDeadLocalStores,
+              DetectUselessVoidMethods, AnalyzeMethodForLoopBugs, DumpLoopState
+            Accesseurs : IsLoopInitialized, GetLoopBugCount, GetDeadStoreCount,
+              GetLoopTotalInfinite, GetLoopTotalRecursive, GetLoopTotalDead,
+              GetLoopTotalDeadStores, GetLoopLabelNum, GetLoopBugType,
+              GetLoopBugPC, GetLoopBugLine
+
+  TODO 12 - DETECTEUR : MAUVAISES PRATIQUES (BAD PRACTICES) [IMPLEMENTE]
+            Constantes : MAX_BP_BUGS=64, MAX_BP_CASTS=64
+            Types de bugs : BP_NONE=0, BC_UNCONFIRMED_CAST=1,
+              CN_IMPLEMENTS_CLONE_BUT_NOT_CLONEABLE=2, DE_MIGHT_IGNORE=3,
+              EQ_DOESNT_OVERRIDE_EQUALS=4, FI_PUBLIC_SHOULD_BE_PROTECTED=5,
+              HE_HASHCODE_USE_OBJECT_EQUALS=6, HE_EQUALS_USE_OBJECT_HASHCODE=7,
+              RR_NOT_CHECKED=8, SR_NOT_CHECKED=9
+            Structure TBadPracticeBug (BugType, PC, LineNum, ClassName,
+              MethodName, TypeName)
+            Structure TCheckcastInfo (PC, TargetType, HasPriorInstanceof)
+            Variables : BPInitialized, BPBugs, BPBugCount, BPCasts, BPCastCount,
+              BPLabelNum, BPTotalCasts, BPTotalUnchecked, BPTotalIgnored,
+              BPTotalRetNotChecked, BPCurrentPC, BPCurrentLine, BPHasClone,
+              BPHasEquals, BPHasHashCode, BPHasFinalize, BPFinalizePublic,
+              BPImplementsCloneable
+            InitBadPracticesState, GenBPLabel, BPBugTypeName, AddBadPracticeBug,
+              IsReadMethod, IsSkipMethod, TrackCheckcast, MarkInstanceofSeen,
+              IsCatchBlockEmpty, HasCloneMethod, HasEqualsMethod,
+              HasHashCodeMethod, HasFinalizeMethod, ImplementsCloneable,
+              DetectBadPractices, DetectBadClassPractices,
+              AnalyzeMethodForBadPractices, DumpBadPracticesState
+            Accesseurs : IsBPInitialized, GetBPBugCount, GetBPCastCount,
+              GetBPTotalCasts, GetBPTotalUnchecked, GetBPTotalIgnored,
+              GetBPTotalRetNotChecked, GetBPLabelNum, GetBPBugType,
+              GetBPBugPC, GetBPBugLine
+
+  TODO 13 - DETECTEUR : COMPARAISONS INCORRECTES D'OBJETS [IMPLEMENTE]
+            Codes detectes : EC_UNRELATED_TYPES,
+              ES_COMPARING_STRINGS_WITH_EQ,
+              RC_REF_COMPARISON_BAD_PRACTICE, GC_UNRELATED_TYPES,
+              EC_ARRAY_AND_NONARRAY, EC_BAD_ARRAY_COMPARE,
+              RC_REF_COMPARISON_BAD_PRACTICE_BOOLEAN
+            Constantes : MAX_BC_BUGS=64, MAX_BC_STACK_TYPES=64
+            Types pile : ST_UNKNOWN..ST_COLLECTION (11 types)
+            Types : TBadCompBug (BugType, PC, LineNum, ClassName, MethodName,
+              Type1, Type2), TStackTypeInfo (StackType, TypeName, SourcePC, IsNew)
+            Variables : BCInitialized, BCBugs, BCBugCount, BCStackTypes,
+              BCStackTypeTop, BCLabelNum, BCTotalCompares, BCTotalBadString,
+              BCTotalBadWrapper, BCTotalUnrelated, BCTotalBadCollection,
+              BCCurrentPC, BCCurrentLine
+            InitBadCompState : initialiser toutes les variables du module
+            GenBCLabel : generer un label unique _BC_N
+            BCBugTypeName(BugType) : convertir type de bug en chaine
+            BCStackTypeName(StackType) : convertir type de pile en chaine
+            IsStringType(Desc) : True si descripteur = java/lang/String
+            IsWrapperType(ClassName) : True si type wrapper Java
+              (Integer, Long, Short, Byte, Character, Float, Double, Boolean)
+            IsCollectionType(ClassName) : True si type Collection
+              (List, Set, Map, ArrayList, HashMap, etc.)
+            IsCollectionGetMethod(MethodName) : True si methode get/contains
+            DescriptorToStackType(Desc) : convertir descripteur en type pile
+            BCPushType(StackType, TypeName, PC, IsNew) : pousser type sur pile
+            BCPopType : depiler et retourner type
+            BCClearStack : vider la pile de types
+            AddBadCompBug(BugType, PC, Line, Class, Method, Type1, Type2)
+            AreTypesRelated(Type1, Type2) : True si types compatibles
+            DetectBadComparisons(MethIdx) : detecter if_acmpeq/if_acmpne
+              comparant des String, detecter comparaisons == sur types wrapper,
+              analyser les types sur la pile, detecter array vs non-array
+            AnalyzeMethodForBadComparisons(MethIdx) : analyser une methode
+            DumpBadCompState : afficher l'etat du module
+            Accesseurs (10) : IsBCInitialized, GetBCBugCount, GetBCStackTypeTop,
+              GetBCTotalCompares, GetBCTotalBadString, GetBCTotalBadWrapper,
+              GetBCTotalUnrelated, GetBCTotalBadCollection, GetBCLabelNum,
+              GetBCBugType, GetBCBugPC, GetBCBugLine
+
+  TODO 14 - DETECTEUR : PROBLEMES DE PERFORMANCE [IMPLEMENTE]
+            Codes detectes : SBSC_USE_STRINGBUFFER_CONCATENATION,
+              DMI_BLOCKING_METHODS_ON_URL, ITA_INEFFICIENT_TO_ARRAY,
+              URF_UNREAD_FIELD, WMI_WRONG_MAP_ITERATOR,
+              UPM_UNCALLED_PRIVATE_METHOD, UWF_UNWRITTEN_FIELD
+            Constantes : MAX_PF_BUGS=64, MAX_PF_MEMBERS=128, MAX_PF_CONCAT_LOOP=32
+            Types bugs : PF_NONE..UWF_UNWRITTEN_FIELD (8 types)
+            Types : TPerfBug (BugType, PC, LineNum, ClassName, MethodName,
+              MemberName, Details), TPrivateMember (MemberType, Name, Descriptor,
+              DeclLine, IsRead, IsWritten, IsCalled, FieldIdx, MethodIdx),
+              TConcatInLoop (PC, LineNum, LoopStart, LoopEnd)
+            Variables : PFInitialized, PFBugs, PFBugCount, PFPrivateMembers,
+              PFMemberCount, PFConcatLoops, PFConcatLoopCount, PFLabelNum,
+              PFTotalConcatLoop, PFTotalURLBlocking, PFTotalBadToArray,
+              PFTotalUnreadFields, PFTotalUnwrittenFields, PFTotalWrongMapIter,
+              PFTotalUncalledMethods, PFCurrentPC, PFCurrentLine
+            InitPerfState : initialiser toutes les variables du module
+            GenPFLabel : generer un label unique _PF_N
+            PFBugTypeName(BugType) : convertir type de bug en chaine
+            IsStringBuilderType(ClassName) : True si StringBuilder/StringBuffer
+            IsURLType(ClassName) : True si java/net/URL
+            IsMapType(ClassName) : True si type Map (HashMap, TreeMap, etc.)
+            IsURLBlockingMethod(MethodName) : True si equals/hashCode/getHost
+            IsMapKeySetMethod(MethodName) : True si keySet
+            AddPerfBug(BugType, PC, LineNum, ClassName, MethodName, MemberName, Details)
+            CollectPrivateMembers : collecter champs et methodes prives
+            MarkMemberUsed(Name, Descriptor, IsRead, IsWrite, IsCall)
+            IsInLoop(PC) : True si PC est dans une boucle (back-edge)
+            DetectStringConcatInLoop(MethIdx) : detecter String.concat en boucle
+            DetectURLBlockingCalls(MethIdx) : detecter URL.equals/hashCode
+            DetectInefficientToArray(MethIdx) : detecter toArray(new T[0])
+            DetectWrongMapIterator(MethIdx) : detecter keySet() + get()
+            ScanMemberReferences(MethIdx) : scanner les references aux membres
+            DetectUnusedPrivateMembers : detecter membres prives non utilises
+            DetectPerformanceIssues(MethIdx) : analyser une methode
+            AnalyzeMethodForPerformance(MethIdx) : wrapper d'analyse methode
+            AnalyzeClassForPerformance : analyser toute la classe
+            DumpPerfState : afficher l'etat du module
+            Accesseurs (12) : IsPFInitialized, GetPFBugCount, GetPFMemberCount,
+              GetPFLabelNum, GetPFTotalConcatLoop, GetPFTotalURLBlocking,
+              GetPFTotalBadToArray, GetPFTotalUnreadFields, GetPFTotalWrongMapIter,
+              GetPFTotalUncalledMethods, GetPFBugType, GetPFBugPC, GetPFBugLine
+
+  TODO 15 - DETECTEUR : VULNERABILITES DE SECURITE [A FAIRE]
+            Codes detectes : SQL_INJECTION, XSS_JSP_PRINT,
+              PT_ABSOLUTE_PATH_TRAVERSAL,
+              HRS_REQUEST_PARAMETER_TO_HTTP_HEADER,
+              WEAK_HASH_ALGORITHM, HARD_CODE_PASSWORD,
+              PREDICTABLE_RANDOM, CIPHER_INTEGRITY
+            DetectSecurityIssues(Method) : detecter Statement.execute avec
+              concatenation (SQL injection), detecter
+              MessageDigest.getInstance("MD5") / ("SHA-1"), detecter
+              constantes de chaine ressemblant a des mots de passe,
+              detecter new Random() au lieu de SecureRandom, detecter
+              Cipher.getInstance("AES") sans mode GCM, detecter
+              Runtime.exec() avec argument externe
+            IsSecuritySensitiveName(Name) : True si le nom suggere un secret
+              (password, token, key, pwd, passwd, secret, credential)
+
+  TODO 16 - DETECTEUR : PROBLEMES DE MULTI-THREADING [IMPLEMENTE]
+            Codes detectes : DC_DOUBLECHECK, ESync_EMPTY_SYNC,
+              IS_FIELD_NOT_GUARDED, IS2_INCONSISTENT_SYNC,
+              JLM_JSR166_LOCK_MONITORENTER, NN_NAKED_NOTIFY,
+              NO_NOTIFY_NOT_NOTIFYALL, UG_SYNC_SET_UNSYNC_GET,
+              UW_UNCOND_WAIT, WA_AWAIT_NOT_IN_LOOP
+            DetectConcurrencyIssues(ClassInfo, Methods) : identifier champs
+              volatiles et synchronized, detecter acces a champs non-volatiles
+              dans methodes sync sans protection adequate, detecter double
+              test de null (double-checked locking), detecter blocs
+              synchronized{} vides, detecter wait() hors d'une boucle while,
+              detecter notify() sans mise a jour d'un etat partage
+
+  TODO 17 - DETECTEUR : EXCEPTIONS MASQUEES ET FLUX D'ERREUR [IMPLEMENTE]
+            Codes detectes : THROWN_EXCEPTION_IGNORED, REC_CATCH_EXCEPTION,
+              RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE,
+              FINALLY_NULLIFIES_EXCEPTION,
+              OVERRIDDEN_EQUALS_NO_SUPER_CALL
+            DetectExceptionHandlingIssues(Method) : analyser blocs catch,
+              detecter catch(Exception)/catch(Throwable) trop larges,
+              detecter corps catch = pop+return ou pop seul (ignoree),
+              detecter instructions return dans blocs finally,
+              detecter verifications null apres dereferencement
+
+  TODO 18 - DETECTEUR : ERREURS LOGIQUES ET RETOURS INCORRECTS [IMPLEMENTE]
+            Codes detectes : RV_RETURN_VALUE_IGNORED,
+              IM_MULTIPLYING_RESULT_OF_IREM,
+              INT_BAD_COMPARISON_WITH_NONNEG_VALUE, IC_INIT_CIRCULARITY,
+              MF_CLASS_MASKS_FIELD, SA_FIELD_SELF_ASSIGNMENT,
+              SA_LOCAL_SELF_ASSIGNMENT
+            DetectLogicErrors(Method) : detecter self-assignments (iload x
+              suivi de istore x, getfield f suivi de putfield f),
+              detecter comparaisons toujours vraies/fausses (int < 0 quand
+              toujours >=0), detecter multiplications pouvant deborder avant
+              cast long, detecter variables locales masquant des champs
+
+  TODO 19 - DETECTEUR : PROBLEMES D'INTERNATIONALISATION [IMPLEMENTE]
+            Codes detectes : DM_DEFAULT_ENCODING, DM_STRING_CTOR,
+              DM_CONVERT_CASE, DM_BOXED_PRIMITIVE_FOR_COMPARE,
+              DM_FP_NUMBER_CTOR, DM_NUMBER_CTOR
+            DetectI18NIssues(Method) : detecter String.getBytes() sans
+              argument, detecter toUpperCase()/toLowerCase() sans Locale,
+              detecter new String(bytes) sans charset,
+              detecter constructeurs wrapper au lieu de valueOf() (new
+              Integer(n), new Double(d), etc.),
+              detecter String.format() sans Locale
+
+  TODO 20 - CALCUL DES SCORES ET NIVEAUX DE SEVERITE [IMPLEMENTE]
+            BugRankScore : entier de 1 a 20 (1=critique, 20=informatif)
+            Priorite : HIGH (1-4), MEDIUM (5-9), LOW (10-14), INFO (15-20)
+            ComputeBugRank(Bug) : calculer rang selon type/categorie,
+              tenir compte du contexte (methode publique vs privee),
+              ajuster la priorite selon la confiance de l'analyse
+            SortBugsByPriority(Bugs, Count) : trier par severite decroissante,
+              a priorite egale trier par categorie puis par classe
+            ComputeClassScore(ClassName, Score) : calculer score global d'une
+              classe (somme ponderee des rangs, normalise 0-100)
+            PrintBugStats : afficher nb bugs par categorie et severite, bilan
+              general (classes, methodes, bugs, erreurs), classes les plus
+              problematiques
+
+  TODO 21 - GENERATION DU RAPPORT TEXTE [IMPLEMENTE]
+            EmitTextReport(OutFile) : ouvrir fichier ou stdout si OutFile='',
+              ecrire en-tete (version SpotBugs, date), pour chaque bug trie
+              par priorite afficher ligne formatee et description, ecrire
+              pied de page avec statistiques
+            FormatBugLine(Bug) : produire ligne courte format :
+              "[H] NP_NULL_ON_SOME_PATH: com.example.Foo.bar(Foo.java:42)"
+            PrintBugDescription(BugType) : afficher description longue depuis
+              tableau statique de descriptions pre-enregistrees
+
+  TODO 22 - GENERATION DU RAPPORT XML (FORMAT SPOTBUGS) [IMPLEMENTE]
+            Format XML compatible spotbugs-gui et jenkins-spotbugs-plugin :
+              <?xml version="1.0" encoding="UTF-8"?>
+              <BugCollection version="4.0.0" sequence="0" timestamp="..."
+                             analysisTimestamp="...">
+                <Project projectName="...">
+                  <SrcDir>src</SrcDir><ClassDir>classes</ClassDir>
+                </Project>
+                <BugInstance type="..." priority="2" rank="9"
+                             abbrev="NP" category="CORRECTNESS">
+                  <ShortMessage>...</ShortMessage>
+                  <LongMessage>...</LongMessage>
+                  <Class classname="com.example.Foo" primary="true"/>
+                  <Method classname="..." name="..." signature="..."
+                          isStatic="false" primary="true"/>
+                  <SourceLine classname="..." start="42" end="42"
+                              sourcefile="Foo.java"/>
+                </BugInstance>
+                <FindBugsSummary .../>
+                <ClassStats .../>
+              </BugCollection>
+            Constantes : MAX_XR_INDENT=16, XR_INDENT_SPACES=2,
+              XR_VERSION='4.0.0', XR_SEQUENCE=0, MAX_XR_CATEGORIES=8
+            Variables : XRInitialized, XRLabelNum, XRReportFile, XRUseFile,
+              XRFileName, XRLinesWritten, XRBugsWritten, XRAnalysisTime,
+              XRClassCount, XRMethodCount, XRProjectName, XRIndentLevel,
+              XRSrcDir, XRClassDir
+            InitXmlReportState : initialiser le module XML
+            GenXRLabel : generer un label unique
+            XmlEscape(S) : echapper &, <, >, ", ' en entites XML
+            XRIndentStr : generer la chaine d'indentation
+            XRWriteLine(S) : ecrire une ligne dans le fichier
+            XRWriteIndent(S) : ecrire une ligne indentee
+            GetBugAbbrev(BugType) : extraire l'abreviation (prefixe avant _)
+            SeverityToPriority(Sev) : convertir severite en priorite SpotBugs
+            CategoryToXmlStr(Cat) : convertir categorie en chaine XML
+            GetXmlTimestamp : obtenir la date/heure au format ISO
+            XRClassToJava(ClassName) : convertir nom interne en format Java
+            XRExtractSourceFile(ClassName) : extraire le nom du fichier source
+            WriteXmlProlog : ecrire le prologue XML et BugCollection
+            WriteXmlProject : ecrire la section Project
+            WriteXmlBugInstance(Idx) : ecrire un element BugInstance
+            WriteXmlFindBugsSummary : ecrire les statistiques
+            WriteXmlBugCategories : ecrire les definitions de categories
+            WriteXmlEpilog : fermer les balises XML
+            EmitXmlReport(OutFile) : generer le rapport XML complet
+            DumpXmlReportState : afficher l'etat du module
+            Accesseurs : IsXRInitialized, GetXRLabelNum, IsXRUseFile,
+              GetXRFileName, GetXRLinesWritten, GetXRBugsWritten,
+              GetXRAnalysisTime, GetXRClassCount, GetXRMethodCount,
+              GetXRProjectName, SetXRProjectName, SetXRSrcDir, SetXRClassDir
+
+  TODO 23 - GENERATION DU RAPPORT HTML [IMPLEMENTE]
+            Constantes : HR_MAX_TITLE_LEN, HR_MAX_CLASS_ROWS, HR_TABLE_WIDTH,
+              HR_COL_RANK_W, HR_COL_TYPE_W, HR_COL_CLASS_W, HR_COL_METHOD_W,
+              HR_COL_LINE_W, HR_COL_DESC_W
+            Variables : HRInitialized, HRLabelNum, HRReportFile, HRUseFile,
+              HRFileName, HRLinesWritten, HRBugsWritten, HRAnalysisTime,
+              HRClassCount, HRMethodCount, HRProjectName, HRTitle, HRSrcDir
+            InitHtmlReportState : initialiser toutes les variables du module
+            GenHRLabel : generer un label unique pour les ancres HTML
+            HtmlEscape(S) : echapper les caracteres speciaux HTML (&lt; etc)
+            HRWriteLine(S) : ecrire une ligne dans le fichier HTML
+            HRPriorityColor(Prio) : couleur CSS selon la priorite (#ff6666...)
+            HRPriorityClass(Prio) : classe CSS selon la priorite (high/medium...)
+            HRPriorityName(Prio) : nom de priorite (HIGH/MEDIUM/LOW/INFO)
+            GetHtmlTimestamp : timestamp lisible YYYY-MM-DD HH:MM:SS
+            HRClassToJava(Name) : convertir nom interne en format Java
+            HRExtractSourceFile(ClassName) : extraire nom fichier source
+            GetBugDocUrl(BugType) : URL documentation SpotBugs par bug
+            WriteHtmlStyle : ecrire le CSS integre avec styles complets
+            WriteHtmlHead : ecrire le prologue HTML avec meta et CSS
+            WriteHtmlTitle : ecrire le titre et la navigation avec ancres
+            WriteHtmlSummary : ecrire les statistiques et boites de resume
+            WriteHtmlBugRow(Idx) : ecrire une ligne de bug avec coloration
+            WriteHtmlBugTable : ecrire la table complete des bugs
+            HRScoreClass(Score) : classe CSS pour le score de classe
+            WriteHtmlClassScores : ecrire la table des classes avec scores
+            WriteHtmlFoot : ecrire le pied de page et fermer les balises
+            EmitHtmlReport(OutFile) : generer le rapport HTML complet
+            DumpHtmlReportState : afficher l'etat du module HTML
+            12 accesseurs : IsHRInitialized, GetHRLabelNum, IsHRUseFile,
+              GetHRFileName, GetHRLinesWritten, GetHRBugsWritten,
+              GetHRAnalysisTime, GetHRClassCount, GetHRMethodCount,
+              GetHRProjectName, SetHRProjectName, SetHRSrcDir
+
+  TODO 24 - FILTRAGE, EXCLUSIONS ET CONFIGURATION DES REGLES [IMPLEMENTE]
+            Constantes FR_MAX_RULES=256, FR_MAX_PATTERN_LEN=256,
+              FR_MAX_CATEGORIES=32, FR_MAX_LINE_LEN=1024, FR_MAX_ATTR_LEN=256
+            Types de regles FR_RULE_CLASS..FR_RULE_PACKAGE (8 types)
+            Categories FR_CAT_ALL..FR_CAT_MALICIOUS (9 categories)
+            Severites FR_SEV_LOW..FR_SEV_CRITICAL (4 niveaux)
+            Structure TFilterRule (RuleType, ClassPattern, MethodPattern,
+              BugPattern, BugCode, PackagePattern, Category, MinSeverity,
+              MaxRank, IsExclude, IsActive, Priority, SourceFile, LineNum)
+            Variables FRInitialized + 14 state vars (FRRules, FRRuleCount,
+              FRExcludeCount, FRIncludeCount, FRFilteredCount, FRPassedCount,
+              FRExcludeFile, FRIncludeFile, FRDefaultSev, FRDefaultRank,
+              FREnableExclude, FREnableInclude, FRCaseSensitive)
+            InitFilterState, GenFRLabel, FRRuleTypeName, FRCategoryName,
+              FRSeverityName
+            MatchPattern (correspondance avec * et ?)
+            MatchClassName, MatchMethodName, MatchBugCode, MatchBugPattern,
+              MatchPackage
+            AddFilterRule, ParseXMLAttribute, TrimXMLLine
+            LoadFilterFile (lecture fichier XML SpotBugs-compatible)
+            MapCategoryToFR, MapSeverityToFR, RuleMatchesBug
+            IsBugFiltered, IsBugIdxFiltered
+            ClearFilterRules, SetRuleActive, DumpFilterState
+            Accesseurs : GetFRInitialized, GetFRRuleCount, GetFRExcludeCount,
+              GetFRIncludeCount, GetFRFilteredCount, GetFRPassedCount,
+              GetFREnableExclude, GetFREnableInclude, SetFRDefaultSev,
+              SetFRDefaultRank, SetFRCaseSensitive, GetFRExcludeFile,
+              GetFRIncludeFile
+
+  TODO 25 - PROGRAMME PRINCIPAL, BALAYAGE RECURSIF ET EXEMPLES [IMPLEMENTE]
+            ParseArgs : analyser ParamStr(1..ParamCount) :
+              fichier.class ou repertoire (cibles d'analyse)
+              -o <fichier>, -xml, -html, -textui,
+              -effort:min/default/max, -low/-medium/-high,
+              -exclude <f>, -include <f>, -recursive,
+              -maxRank <n> (1..20), -version, -help
+            ScanDirectory(DirName, Recursive) : lister .class dans DirName,
+              analyser chaque fichier, descendre si Recursive,
+              supporter aussi les .jar (ZIP) en decompressant en memoire
+            AnalyzeClass(FileName) : orchestrer analyse complete :
+              OpenClassFile, ParseConstantPool, ReadClassInfo, ReadFields,
+              ReadMethods, puis pour chaque methode DecodeInstructions +
+              BuildCFG + tous les detecteurs (TODOs 09 a 19), puis
+              DetectBadClassPractices + DetectConcurrencyIssues,
+              CloseClassFile
+            PrintHelp : afficher aide complete (usage, options, exemples)
+            Fichiers exemples SAMPLES\SPOTBUGS\ :
+              Foo.java/Foo.class   : dereferencement null simple
+              Bar.java/Bar.class   : fuite de ressource (InputStream)
+              Baz.java/Baz.class   : comparaison String par == au lieu equals
+              Loop.java/Loop.class : boucle potentiellement infinie
+              Sql.java/Sql.class   : injection SQL par concatenation
+              Hash.java/Hash.class : equals() sans hashCode()
+              Sync.java/Sync.class : bloc synchronized vide
+              Cast.java/Cast.class : cast sans instanceof
+
+  RESULTATS DE TEST (2026-04-13)
+  ============================================================
+
+  Bug corrige: For loops avec Count=0 causant crash (Word underflow)
+  ------------------------------------------------------------------
+    Probleme : En mode Turbo Pascal, "For I := 0 to Count - 1" avec Count=0
+               et I de type Word cause une boucle de 65536 iterations car
+               Count - 1 devient 65535 (underflow non-signe).
+    Solution : Ajouter "If Count = 0 Then Exit" ou "If Count > 0 Then For..."
+               avant les boucles dans ReadFields, ReadMethods, ReadClassInfo.
+
+  Fichiers de test crees:
+  -----------------------
+    TestNullPointer.java   - NullPointerException potentiels
+    TestResourceLeak.java  - Fuites de ressources (streams non fermes)
+    TestBadComparison.java - Comparaisons de types non-lies et == vs equals
+    TestDeadStore.java     - Variables assignees mais jamais utilisees
+    TestInfiniteLoop.java  - Boucles infinies potentielles
+
+  Resultats de l'analyse:
+  -----------------------
+    SimpleTest.class        -> 0 bugs (classe minimale)
+    TestNullPointer.class   -> 1 bug detecte
+    TestResourceLeak.class  -> 3 bugs detectes
+    TestBadComparison.class -> 0 bugs (detection a ameliorer)
+    TestDeadStore.class     -> 0 bugs (detection a ameliorer)
+    TestInfiniteLoop.class  -> 0 bugs (detection a ameliorer)
+
+  Validation:
+  -----------
+    - SPOTBUGS compile sans erreur avec fpc -Mtp (15088 lignes)
+    - Analyse des fichiers .class Java 8 et Java 17 reussie
+    - Aucun crash ou runtime error lors de l'execution
+    - Detection partielle des bugs (fuites de ressources, null pointers)
+    - Rapports generes en format texte, XML et HTML
+
+  Ameliorations futures:
+  ---------------------
+    - Ameliorer detection des dead stores
+    - Ameliorer detection des comparaisons incorrectes
+    - Corriger la synchronisation entre detection et rapport formel
+    - Ajouter plus de cas de test
