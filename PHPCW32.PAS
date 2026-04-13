@@ -136,7 +136,7 @@
             Mangling des noms de fonctions : _PF_nomfonction
             10 fonctions accesseurs
 
-  TODO 05 - SYSTEME DE TYPES PHP [A FAIRE]
+  TODO 05 - SYSTEME DE TYPES PHP [IMPLEMENTE]
             TTypeKind : TYK_INT (32 bits signe), TYK_FLOAT (tronque int),
               TYK_STRING (ptr chaine), TYK_BOOL (32 bits 0/1),
               TYK_ARRAY (ptr tableau), TYK_NULL (reference nulle),
@@ -3696,6 +3696,423 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 05 - SYSTEME DE TYPES PHP                  [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  (* Types de donnees PHP (TTypeKind) *)
+  TYK_INT     = 0;    (* entier 32 bits signe                      *)
+  TYK_FLOAT   = 1;    (* flottant (tronque en entier)              *)
+  TYK_STRING  = 2;    (* pointeur vers chaine                      *)
+  TYK_BOOL    = 3;    (* booleen 32 bits (0/1)                     *)
+  TYK_ARRAY   = 4;    (* pointeur vers tableau                     *)
+  TYK_NULL    = 5;    (* reference nulle                           *)
+  TYK_MIXED   = 6;    (* type dynamique                            *)
+  TYK_VOID    = 7;    (* pas de valeur (retour fonction)           *)
+
+  (* Indices des types primitifs dans TypeTab *)
+  TY_IDX_INT    = 0;
+  TY_IDX_FLOAT  = 1;
+  TY_IDX_STRING = 2;
+  TY_IDX_BOOL   = 3;
+  TY_IDX_ARRAY  = 4;
+  TY_IDX_NULL   = 5;
+  TY_IDX_MIXED  = 6;
+  TY_IDX_VOID   = 7;
+
+  TY_PRIMITIVE_COUNT = 8;   (* nombre de types primitifs *)
+
+Type
+  (* Enregistrement pour un type PHP *)
+  TTypeRec = Record
+    Name     : TString;    (* nom du type (int, string, etc.)         *)
+    Kind     : Integer;    (* TYK_INT, TYK_STRING, etc.               *)
+    Size     : Integer;    (* taille en octets (4 pour 32 bits)       *)
+    IsArray  : Boolean;    (* True si type tableau                    *)
+    ElemType : Integer;    (* indice du type element si tableau       *)
+  End;
+
+  TTypeArray = Array[0..MAX_TYPE-1] Of TTypeRec;
+
+Var
+  TypeTab        : TTypeArray;  (* table des types                      *)
+  TypeCount      : Integer;     (* nombre de types enregistres          *)
+  TyInitialized  : Boolean;     (* True si table initialisee            *)
+  TyLabelSeq     : Integer;     (* sequence pour labels uniques         *)
+  TyLastAdd      : Integer;     (* dernier type ajoute                  *)
+  TyFindCount    : LongInt;     (* nombre de recherches effectuees      *)
+  TyAddCount     : LongInt;     (* nombre d ajouts effectues            *)
+
+{ ------------------------------------------------------------ }
+{ InitTypeState : initialiser la table des types primitifs     }
+{ ------------------------------------------------------------ }
+
+Procedure InitTypeState;
+Var I : Integer;
+Begin
+  TyInitialized := True;
+  TypeCount     := 0;
+  TyLabelSeq    := 0;
+  TyLastAdd     := -1;
+  TyFindCount   := 0;
+  TyAddCount    := 0;
+
+  (* Initialiser tous les slots a vide *)
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name     := '';
+    TypeTab[I].Kind     := TYK_VOID;
+    TypeTab[I].Size     := 0;
+    TypeTab[I].IsArray  := False;
+    TypeTab[I].ElemType := -1;
+  End;
+
+  (* Enregistrer les types primitifs PHP dans l ordre fixe *)
+  (* Index 0 : int *)
+  TypeTab[TY_IDX_INT].Name     := 'int';
+  TypeTab[TY_IDX_INT].Kind     := TYK_INT;
+  TypeTab[TY_IDX_INT].Size     := 4;
+  TypeTab[TY_IDX_INT].IsArray  := False;
+  TypeTab[TY_IDX_INT].ElemType := -1;
+
+  (* Index 1 : float *)
+  TypeTab[TY_IDX_FLOAT].Name     := 'float';
+  TypeTab[TY_IDX_FLOAT].Kind     := TYK_FLOAT;
+  TypeTab[TY_IDX_FLOAT].Size     := 4;  (* tronque en int 32 bits *)
+  TypeTab[TY_IDX_FLOAT].IsArray  := False;
+  TypeTab[TY_IDX_FLOAT].ElemType := -1;
+
+  (* Index 2 : string *)
+  TypeTab[TY_IDX_STRING].Name     := 'string';
+  TypeTab[TY_IDX_STRING].Kind     := TYK_STRING;
+  TypeTab[TY_IDX_STRING].Size     := 4;  (* pointeur 32 bits *)
+  TypeTab[TY_IDX_STRING].IsArray  := False;
+  TypeTab[TY_IDX_STRING].ElemType := -1;
+
+  (* Index 3 : bool *)
+  TypeTab[TY_IDX_BOOL].Name     := 'bool';
+  TypeTab[TY_IDX_BOOL].Kind     := TYK_BOOL;
+  TypeTab[TY_IDX_BOOL].Size     := 4;
+  TypeTab[TY_IDX_BOOL].IsArray  := False;
+  TypeTab[TY_IDX_BOOL].ElemType := -1;
+
+  (* Index 4 : array *)
+  TypeTab[TY_IDX_ARRAY].Name     := 'array';
+  TypeTab[TY_IDX_ARRAY].Kind     := TYK_ARRAY;
+  TypeTab[TY_IDX_ARRAY].Size     := 4;  (* pointeur 32 bits *)
+  TypeTab[TY_IDX_ARRAY].IsArray  := True;
+  TypeTab[TY_IDX_ARRAY].ElemType := TY_IDX_MIXED;
+
+  (* Index 5 : null *)
+  TypeTab[TY_IDX_NULL].Name     := 'null';
+  TypeTab[TY_IDX_NULL].Kind     := TYK_NULL;
+  TypeTab[TY_IDX_NULL].Size     := 0;
+  TypeTab[TY_IDX_NULL].IsArray  := False;
+  TypeTab[TY_IDX_NULL].ElemType := -1;
+
+  (* Index 6 : mixed *)
+  TypeTab[TY_IDX_MIXED].Name     := 'mixed';
+  TypeTab[TY_IDX_MIXED].Kind     := TYK_MIXED;
+  TypeTab[TY_IDX_MIXED].Size     := 4;
+  TypeTab[TY_IDX_MIXED].IsArray  := False;
+  TypeTab[TY_IDX_MIXED].ElemType := -1;
+
+  (* Index 7 : void *)
+  TypeTab[TY_IDX_VOID].Name     := 'void';
+  TypeTab[TY_IDX_VOID].Kind     := TYK_VOID;
+  TypeTab[TY_IDX_VOID].Size     := 0;
+  TypeTab[TY_IDX_VOID].IsArray  := False;
+  TypeTab[TY_IDX_VOID].ElemType := -1;
+
+  TypeCount := TY_PRIMITIVE_COUNT;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenTyLabel : generer un label unique _TY_N                    }
+{ ------------------------------------------------------------ }
+
+Function GenTyLabel : TString;
+Begin
+  Inc(TyLabelSeq);
+  GenTyLabel := '_TY_' + ItoS(TyLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ TyKindName : retourner le nom textuel d un TTypeKind         }
+{ ------------------------------------------------------------ }
+
+Function TyKindName(K : Integer) : TString;
+Begin
+  Case K Of
+    TYK_INT    : TyKindName := 'TYK_INT';
+    TYK_FLOAT  : TyKindName := 'TYK_FLOAT';
+    TYK_STRING : TyKindName := 'TYK_STRING';
+    TYK_BOOL   : TyKindName := 'TYK_BOOL';
+    TYK_ARRAY  : TyKindName := 'TYK_ARRAY';
+    TYK_NULL   : TyKindName := 'TYK_NULL';
+    TYK_MIXED  : TyKindName := 'TYK_MIXED';
+    TYK_VOID   : TyKindName := 'TYK_VOID';
+  Else
+    TyKindName := 'TYK_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeKindOf : retourner le TTypeKind pour un indice de type   }
+{ ------------------------------------------------------------ }
+
+Function TypeKindOf(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) Then
+    TypeKindOf := TypeTab[Idx].Kind
+  Else
+    TypeKindOf := TYK_VOID;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeSizeOf : retourner la taille en octets d un type         }
+{ ------------------------------------------------------------ }
+
+Function TypeSizeOf(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) Then
+    TypeSizeOf := TypeTab[Idx].Size
+  Else
+    TypeSizeOf := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeNameOf : retourner le nom d un type par son indice       }
+{ ------------------------------------------------------------ }
+
+Function TypeNameOf(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) Then
+    TypeNameOf := TypeTab[Idx].Name
+  Else
+    TypeNameOf := '?';
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeFindByName : rechercher un type par nom                  }
+{ Retourne l indice ou -1 si non trouve                        }
+{ ------------------------------------------------------------ }
+
+Function TypeFindByName(Const Name : TString) : Integer;
+Var
+  I   : Integer;
+  Lwr : TString;
+Begin
+  Inc(TyFindCount);
+  Lwr := StrLowerCase(Name);
+
+  For I := 0 To TypeCount - 1 Do
+  Begin
+    If StrLowerCase(TypeTab[I].Name) = Lwr Then
+    Begin
+      TypeFindByName := I;
+      Exit;
+    End;
+  End;
+
+  TypeFindByName := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeAdd : ajouter un nouveau type dans la table              }
+{ Retourne l indice du nouveau type ou -1 si erreur            }
+{ ------------------------------------------------------------ }
+
+Function TypeAdd(Const Name : TString; Kind : Integer;
+                 Size : Integer; IsArray : Boolean;
+                 ElemType : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  Inc(TyAddCount);
+
+  (* Verifier la limite *)
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    WarnMsg('Limite de types atteinte (' + ItoS(MAX_TYPE) + ')');
+    TypeAdd := -1;
+    Exit;
+  End;
+
+  (* Verifier si deja defini *)
+  Idx := TypeFindByName(Name);
+  If Idx >= 0 Then
+  Begin
+    TypeAdd := Idx;  (* retourner l existant *)
+    Exit;
+  End;
+
+  (* Ajouter le nouveau type *)
+  Idx := TypeCount;
+  TypeTab[Idx].Name     := Name;
+  TypeTab[Idx].Kind     := Kind;
+  TypeTab[Idx].Size     := Size;
+  TypeTab[Idx].IsArray  := IsArray;
+  TypeTab[Idx].ElemType := ElemType;
+
+  Inc(TypeCount);
+  TyLastAdd := Idx;
+  TypeAdd := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsArray : teste si un type est un tableau                }
+{ ------------------------------------------------------------ }
+
+Function TypeIsArray(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) Then
+    TypeIsArray := TypeTab[Idx].IsArray
+  Else
+    TypeIsArray := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeGetElem : retourne l indice du type element (tableau)    }
+{ ------------------------------------------------------------ }
+
+Function TypeGetElem(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) And TypeTab[Idx].IsArray Then
+    TypeGetElem := TypeTab[Idx].ElemType
+  Else
+    TypeGetElem := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeCanJuggle : teste si le juggling est possible entre      }
+{ deux types PHP (conversion implicite)                        }
+{ ------------------------------------------------------------ }
+
+Function TypeCanJuggle(FromIdx, ToIdx : Integer) : Boolean;
+Var FromK, ToK : Integer;
+Begin
+  FromK := TypeKindOf(FromIdx);
+  ToK   := TypeKindOf(ToIdx);
+
+  (* Meme type : toujours OK *)
+  If FromK = ToK Then
+  Begin
+    TypeCanJuggle := True;
+    Exit;
+  End;
+
+  (* Regles de juggling PHP *)
+  Case FromK Of
+    TYK_INT:
+      TypeCanJuggle := (ToK = TYK_FLOAT) Or (ToK = TYK_STRING) Or
+                       (ToK = TYK_BOOL) Or (ToK = TYK_MIXED);
+    TYK_FLOAT:
+      TypeCanJuggle := (ToK = TYK_INT) Or (ToK = TYK_STRING) Or
+                       (ToK = TYK_BOOL) Or (ToK = TYK_MIXED);
+    TYK_STRING:
+      TypeCanJuggle := (ToK = TYK_INT) Or (ToK = TYK_FLOAT) Or
+                       (ToK = TYK_BOOL) Or (ToK = TYK_MIXED);
+    TYK_BOOL:
+      TypeCanJuggle := (ToK = TYK_INT) Or (ToK = TYK_STRING) Or
+                       (ToK = TYK_MIXED);
+    TYK_NULL:
+      TypeCanJuggle := (ToK = TYK_BOOL) Or (ToK = TYK_STRING) Or
+                       (ToK = TYK_MIXED);
+    TYK_MIXED:
+      TypeCanJuggle := True;  (* mixed accepte tout *)
+  Else
+    TypeCanJuggle := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpTypeState : afficher l etat de la table des types        }
+{ ------------------------------------------------------------ }
+
+Procedure DumpTypeState;
+Var I : Integer;
+Begin
+  WriteLn('--- Type State ---');
+  WriteLn('  TyInitialized : ', TyInitialized);
+  WriteLn('  TypeCount     : ', TypeCount);
+  WriteLn('  TyLabelSeq    : ', TyLabelSeq);
+  WriteLn('  TyFindCount   : ', TyFindCount);
+  WriteLn('  TyAddCount    : ', TyAddCount);
+
+  If TypeCount > 0 Then
+  Begin
+    WriteLn('--- Types ---');
+    For I := 0 To TypeCount - 1 Do
+    Begin
+      Write('  [', I, '] ', TypeTab[I].Name, ' : ');
+      Write(TyKindName(TypeTab[I].Kind));
+      Write(', size=', TypeTab[I].Size);
+      If TypeTab[I].IsArray Then
+        Write(', array of [', TypeTab[I].ElemType, ']');
+      WriteLn;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 05)                             }
+{ ------------------------------------------------------------ }
+
+Function IsTyInitialized : Boolean;
+Begin
+  IsTyInitialized := TyInitialized;
+End;
+
+Function IsTyEmpty : Boolean;
+Begin
+  IsTyEmpty := (TypeCount = 0);
+End;
+
+Function GetTypeCount : Integer;
+Begin
+  GetTypeCount := TypeCount;
+End;
+
+Function GetTyLabelSeq : Integer;
+Begin
+  GetTyLabelSeq := TyLabelSeq;
+End;
+
+Function GetTyLastAdd : Integer;
+Begin
+  GetTyLastAdd := TyLastAdd;
+End;
+
+Function GetTyFindCount : LongInt;
+Begin
+  GetTyFindCount := TyFindCount;
+End;
+
+Function GetTyAddCount : LongInt;
+Begin
+  GetTyAddCount := TyAddCount;
+End;
+
+Function GetTyPrimitiveCount : Integer;
+Begin
+  GetTyPrimitiveCount := TY_PRIMITIVE_COUNT;
+End;
+
+Function GetTyIdxMixed : Integer;
+Begin
+  GetTyIdxMixed := TY_IDX_MIXED;
+End;
+
+Function GetTyStatus : TString;
+Begin
+  If Not TyInitialized Then
+    GetTyStatus := 'Not initialized'
+  Else
+    GetTyStatus := ItoS(TypeCount) + ' types (' +
+                   ItoS(TY_PRIMITIVE_COUNT) + ' primitives)';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -3715,6 +4132,9 @@ Begin
 
   { Initialiser la table des symboles }
   InitSymState;
+
+  { Initialiser le systeme de types }
+  InitTypeState;
 
   { Analyser les arguments }
   ParseArgs;
@@ -3747,8 +4167,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-04 implementes');
-  WriteLn('PHPCW32: Les TODOs 05-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-05 implementes');
+  WriteLn('PHPCW32: Les TODOs 06-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
