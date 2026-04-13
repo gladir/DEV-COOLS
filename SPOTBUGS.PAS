@@ -38,7 +38,7 @@
 {  TODO 20 [IMPLEMENTE] - Calcul des scores et niveaux de severite            }
 {  TODO 21 [IMPLEMENTE] - Generation du rapport texte                         }
 {  TODO 22 [IMPLEMENTE] - Generation du rapport XML (format SpotBugs)         }
-{  TODO 23 [A FAIRE] - Generation du rapport HTML                             }
+{  TODO 23 [IMPLEMENTE] - Generation du rapport HTML                          }
 {  TODO 24 [A FAIRE] - Filtrage, exclusions et configuration des regles       }
 {  TODO 25 [A FAIRE] - Programme principal, balayage recursif et exemples     }
 { ---------------------------------------------------------------------------- }
@@ -947,6 +947,17 @@ Const
   XR_SEQUENCE         = 0;    { Numero de sequence de l'analyse                }
   MAX_XR_CATEGORIES   = 8;    { Nombre de categories de bugs                   }
 
+  { --- TODO 23 : Constantes pour la generation du rapport HTML --- }
+  HR_MAX_TITLE_LEN    = 128;  { Longueur max du titre du rapport               }
+  HR_MAX_CLASS_ROWS   = 50;   { Nombre max de classes a afficher               }
+  HR_TABLE_WIDTH      = 100;  { Largeur table en %                             }
+  HR_COL_RANK_W       = 5;    { Largeur colonne Rank en %                       }
+  HR_COL_TYPE_W       = 20;   { Largeur colonne Type en %                       }
+  HR_COL_CLASS_W      = 25;   { Largeur colonne Class en %                      }
+  HR_COL_METHOD_W     = 15;   { Largeur colonne Method en %                     }
+  HR_COL_LINE_W       = 8;    { Largeur colonne Line en %                       }
+  HR_COL_DESC_W       = 27;   { Largeur colonne Description en %                }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -1505,6 +1516,21 @@ Var
   XRIndentLevel    : Integer;     { Niveau d'indentation courant               }
   XRSrcDir         : String;      { Repertoire source du projet                }
   XRClassDir       : String;      { Repertoire des classes compilees           }
+
+  { --- TODO 23 : Variables du module de rapport HTML --- }
+  HRInitialized    : Boolean;     { True si module initialise                  }
+  HRLabelNum       : Integer;     { Compteur pour generation de labels         }
+  HRReportFile     : Text;        { Fichier de sortie HTML                     }
+  HRUseFile        : Boolean;     { True si sortie vers fichier                }
+  HRFileName       : String;      { Nom du fichier de sortie                   }
+  HRLinesWritten   : Integer;     { Nombre de lignes ecrites                   }
+  HRBugsWritten    : Integer;     { Nombre de bugs ecrits                      }
+  HRAnalysisTime   : String;      { Timestamp de l'analyse                     }
+  HRClassCount     : Integer;     { Nombre de classes analysees                }
+  HRMethodCount    : Integer;     { Nombre de methodes analysees               }
+  HRProjectName    : String;      { Nom du projet analyse                      }
+  HRTitle          : String;      { Titre du rapport                           }
+  HRSrcDir         : String;      { Repertoire source du projet                }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -13011,25 +13037,590 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 23 [A FAIRE] - Generation du rapport HTML                               }
+{ TODO 23 [IMPLEMENTE] - Generation du rapport HTML                            }
 { ============================================================================ }
-{                                                                              }
-{  - Procedure EmitHtmlReport(OutFile: String)                                  }
-{      Generer un rapport HTML autonome avec styles CSS integres                 }
-{      Structure HTML :                                                           }
-{        <html><head><title>SpotBugs Report</title><style>...</style></head>    }
-{        <body>                                                                  }
-{          <h1>SpotBugs - Rapport d'analyse</h1>                               }
-{          <div class="summary">Statistiques generales</div>                    }
-{          <table> Pour chaque categorie de bugs :                               }
-{            <tr class="HIGH/MEDIUM/LOW"> colonnes : rang, type, classe,        }
-{            methode, ligne, description </tr>                                   }
-{          </table>                                                              }
-{        </body></html>                                                          }
-{      Colorer les lignes selon la priorite (rouge, orange, jaune, vert)        }
-{      Inclure un lien vers la documentation SpotBugs par bug type              }
-{      Afficher la liste des classes analysees avec leur score                   }
-{      Generer des ancres HTML pour chaque section de bugs                       }
+
+{ --- TODO 23 : Initialisation du module de rapport HTML --- }
+Procedure InitHtmlReportState;
+Begin
+  HRInitialized := True;
+  HRLabelNum := 0;
+  HRUseFile := False;
+  HRFileName := '';
+  HRLinesWritten := 0;
+  HRBugsWritten := 0;
+  HRAnalysisTime := '';
+  HRClassCount := 0;
+  HRMethodCount := 0;
+  HRProjectName := 'SpotBugs Analysis';
+  HRTitle := 'SpotBugs Report';
+  HRSrcDir := '.';
+End;
+
+{ --- TODO 23 : Generation d'un label unique --- }
+Function GenHRLabel: String;
+Var
+  S: String;
+Begin
+  Inc(HRLabelNum);
+  Str(HRLabelNum, S);
+  GenHRLabel := 'hr_' + S;
+End;
+
+{ --- TODO 23 : Echapper les caracteres speciaux HTML --- }
+Function HtmlEscape(S: String): String;
+Var
+  Result: String;
+  I: Integer;
+  C: Char;
+Begin
+  Result := '';
+  For I := 1 to Length(S) do
+  Begin
+    C := S[I];
+    Case C of
+      '<': Result := Result + '&lt;';
+      '>': Result := Result + '&gt;';
+      '&': Result := Result + '&amp;';
+      '"': Result := Result + '&quot;';
+      '''': Result := Result + '&#39;';
+    Else
+      Result := Result + C;
+    End;
+  End;
+  HtmlEscape := Result;
+End;
+
+{ --- TODO 23 : Ecrire une ligne dans le fichier HTML --- }
+Procedure HRWriteLine(S: String);
+Begin
+  If HRUseFile Then
+    WriteLn(HRReportFile, S)
+  Else
+    WriteLn(S);
+  Inc(HRLinesWritten);
+End;
+
+{ --- TODO 23 : Obtenir la couleur CSS selon la priorite --- }
+Function HRPriorityColor(Prio: Integer): String;
+Begin
+  Case Prio of
+    SC_PRIO_HIGH:   HRPriorityColor := '#ff6666';   { Rouge clair       }
+    SC_PRIO_MEDIUM: HRPriorityColor := '#ffcc66';   { Orange clair      }
+    SC_PRIO_LOW:    HRPriorityColor := '#ffff99';   { Jaune clair       }
+    SC_PRIO_INFO:   HRPriorityColor := '#ccffcc';   { Vert clair        }
+  Else
+    HRPriorityColor := '#ffffff';                   { Blanc par defaut  }
+  End;
+End;
+
+{ --- TODO 23 : Obtenir la classe CSS selon la priorite --- }
+Function HRPriorityClass(Prio: Integer): String;
+Begin
+  Case Prio of
+    SC_PRIO_HIGH:   HRPriorityClass := 'high';
+    SC_PRIO_MEDIUM: HRPriorityClass := 'medium';
+    SC_PRIO_LOW:    HRPriorityClass := 'low';
+    SC_PRIO_INFO:   HRPriorityClass := 'info';
+  Else
+    HRPriorityClass := 'unknown';
+  End;
+End;
+
+{ --- TODO 23 : Obtenir le nom de priorite --- }
+Function HRPriorityName(Prio: Integer): String;
+Begin
+  Case Prio of
+    SC_PRIO_HIGH:   HRPriorityName := 'HIGH';
+    SC_PRIO_MEDIUM: HRPriorityName := 'MEDIUM';
+    SC_PRIO_LOW:    HRPriorityName := 'LOW';
+    SC_PRIO_INFO:   HRPriorityName := 'INFO';
+  Else
+    HRPriorityName := '?';
+  End;
+End;
+
+{ --- TODO 23 : Obtenir le timestamp courant au format lisible --- }
+Function GetHtmlTimestamp: String;
+Var
+  Y, M, D, DoW: Word;
+  H, Mi, S, S100: Word;
+  DateStr, TimeStr: String;
+Begin
+  GetDate(Y, M, D, DoW);
+  GetTime(H, Mi, S, S100);
+  Str(Y:4, DateStr);
+  DateStr := DateStr + '-';
+  If M < 10 Then DateStr := DateStr + '0';
+  Str(M:1, TimeStr);
+  DateStr := DateStr + TimeStr + '-';
+  If D < 10 Then DateStr := DateStr + '0';
+  Str(D:1, TimeStr);
+  DateStr := DateStr + TimeStr + ' ';
+  If H < 10 Then DateStr := DateStr + '0';
+  Str(H:1, TimeStr);
+  DateStr := DateStr + TimeStr + ':';
+  If Mi < 10 Then DateStr := DateStr + '0';
+  Str(Mi:1, TimeStr);
+  DateStr := DateStr + TimeStr + ':';
+  If S < 10 Then DateStr := DateStr + '0';
+  Str(S:1, TimeStr);
+  DateStr := DateStr + TimeStr;
+  GetHtmlTimestamp := DateStr;
+End;
+
+{ --- TODO 23 : Convertir nom de classe interne en format Java --- }
+Function HRClassToJava(InternalName: String): String;
+Var
+  I: Integer;
+  Result: String;
+Begin
+  Result := InternalName;
+  For I := 1 to Length(Result) do
+    If Result[I] = '/' Then Result[I] := '.';
+  HRClassToJava := Result;
+End;
+
+{ --- TODO 23 : Extraire le nom simple de fichier source --- }
+Function HRExtractSourceFile(ClassName: String): String;
+Var
+  I, LastSlash: Integer;
+  Name: String;
+Begin
+  LastSlash := 0;
+  For I := 1 to Length(ClassName) do
+    If (ClassName[I] = '/') or (ClassName[I] = '.') Then
+      LastSlash := I;
+  If LastSlash > 0 Then
+    Name := Copy(ClassName, LastSlash + 1, Length(ClassName) - LastSlash)
+  Else
+    Name := ClassName;
+  { Retirer $ et classe interne }
+  For I := 1 to Length(Name) do
+    If Name[I] = '$' Then
+    Begin
+      Name := Copy(Name, 1, I - 1);
+      Break;
+    End;
+  HRExtractSourceFile := Name + '.java';
+End;
+
+{ --- TODO 23 : Obtenir le lien vers la documentation SpotBugs --- }
+Function GetBugDocUrl(BugType: String): String;
+Begin
+  GetBugDocUrl := 'https://spotbugs.readthedocs.io/en/latest/bugDescriptions.html#' +
+                  LoCaseStr(BugType);
+End;
+
+{ --- TODO 23 : Ecrire le CSS integre --- }
+Procedure WriteHtmlStyle;
+Begin
+  HRWriteLine('<style type="text/css">');
+  HRWriteLine('body { font-family: Arial, Helvetica, sans-serif; margin: 20px; background-color: #f5f5f5; }');
+  HRWriteLine('h1 { color: #333366; border-bottom: 2px solid #333366; padding-bottom: 10px; }');
+  HRWriteLine('h2 { color: #333366; margin-top: 30px; }');
+  HRWriteLine('h3 { color: #666699; }');
+  HRWriteLine('.summary { background-color: #ffffff; border: 1px solid #cccccc; padding: 15px; margin: 20px 0; border-radius: 5px; }');
+  HRWriteLine('.summary table { border-collapse: collapse; }');
+  HRWriteLine('.summary td { padding: 5px 15px 5px 0; }');
+  HRWriteLine('.summary .label { font-weight: bold; color: #666666; }');
+  HRWriteLine('.stats { display: flex; gap: 20px; flex-wrap: wrap; margin: 20px 0; }');
+  HRWriteLine('.stat-box { background-color: #ffffff; border: 1px solid #cccccc; padding: 15px; border-radius: 5px; min-width: 150px; text-align: center; }');
+  HRWriteLine('.stat-box .number { font-size: 32px; font-weight: bold; }');
+  HRWriteLine('.stat-box .label { color: #666666; }');
+  HRWriteLine('.stat-high .number { color: #cc0000; }');
+  HRWriteLine('.stat-medium .number { color: #cc6600; }');
+  HRWriteLine('.stat-low .number { color: #999900; }');
+  HRWriteLine('.stat-info .number { color: #009900; }');
+  HRWriteLine('table.bugs { width: 100%; border-collapse: collapse; background-color: #ffffff; margin: 20px 0; }');
+  HRWriteLine('table.bugs th { background-color: #333366; color: #ffffff; padding: 10px; text-align: left; }');
+  HRWriteLine('table.bugs td { padding: 8px; border-bottom: 1px solid #dddddd; vertical-align: top; }');
+  HRWriteLine('table.bugs tr:hover { background-color: #f0f0f0; }');
+  HRWriteLine('table.bugs tr.high { background-color: #ffe6e6; }');
+  HRWriteLine('table.bugs tr.medium { background-color: #fff2e6; }');
+  HRWriteLine('table.bugs tr.low { background-color: #ffffcc; }');
+  HRWriteLine('table.bugs tr.info { background-color: #e6ffe6; }');
+  HRWriteLine('table.bugs a { color: #333366; text-decoration: none; }');
+  HRWriteLine('table.bugs a:hover { text-decoration: underline; }');
+  HRWriteLine('table.classes { width: 100%; border-collapse: collapse; background-color: #ffffff; margin: 20px 0; }');
+  HRWriteLine('table.classes th { background-color: #336633; color: #ffffff; padding: 10px; text-align: left; }');
+  HRWriteLine('table.classes td { padding: 8px; border-bottom: 1px solid #dddddd; }');
+  HRWriteLine('.score { font-weight: bold; }');
+  HRWriteLine('.score-good { color: #009900; }');
+  HRWriteLine('.score-ok { color: #999900; }');
+  HRWriteLine('.score-bad { color: #cc6600; }');
+  HRWriteLine('.score-critical { color: #cc0000; }');
+  HRWriteLine('.nav { background-color: #333366; padding: 10px; margin: 20px 0; border-radius: 5px; }');
+  HRWriteLine('.nav a { color: #ffffff; margin-right: 20px; text-decoration: none; }');
+  HRWriteLine('.nav a:hover { text-decoration: underline; }');
+  HRWriteLine('.footer { margin-top: 30px; padding-top: 15px; border-top: 1px solid #cccccc; color: #666666; font-size: 12px; }');
+  HRWriteLine('.category-header { background-color: #eeeeff; padding: 10px; margin-top: 20px; border-left: 4px solid #333366; }');
+  HRWriteLine('</style>');
+End;
+
+{ --- TODO 23 : Ecrire l'en-tete HTML --- }
+Procedure WriteHtmlHead;
+Var
+  Timestamp: String;
+Begin
+  If Not HRInitialized Then InitHtmlReportState;
+  Timestamp := GetHtmlTimestamp;
+  HRAnalysisTime := Timestamp;
+
+  HRWriteLine('<!DOCTYPE html>');
+  HRWriteLine('<html lang="fr">');
+  HRWriteLine('<head>');
+  HRWriteLine('<meta charset="UTF-8">');
+  HRWriteLine('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
+  HRWriteLine('<meta name="generator" content="SPOTBUGS Pascal Clone">');
+  HRWriteLine('<title>' + HtmlEscape(HRTitle) + '</title>');
+  WriteHtmlStyle;
+  HRWriteLine('</head>');
+  HRWriteLine('<body>');
+End;
+
+{ --- TODO 23 : Ecrire le titre et la navigation --- }
+Procedure WriteHtmlTitle;
+Begin
+  HRWriteLine('<h1>SpotBugs - Rapport d''analyse</h1>');
+  HRWriteLine('<div class="nav">');
+  HRWriteLine('<a href="#summary">Resume</a>');
+  HRWriteLine('<a href="#bugs">Bugs</a>');
+  HRWriteLine('<a href="#classes">Classes</a>');
+  HRWriteLine('</div>');
+End;
+
+{ --- TODO 23 : Ecrire le resume statistique --- }
+Procedure WriteHtmlSummary;
+Begin
+  HRWriteLine('<a name="summary"></a>');
+  HRWriteLine('<h2>Resume de l''analyse</h2>');
+
+  HRWriteLine('<div class="summary">');
+  HRWriteLine('<table>');
+  HRWriteLine('<tr><td class="label">Projet :</td><td>' +
+              HtmlEscape(HRProjectName) + '</td></tr>');
+  HRWriteLine('<tr><td class="label">Date d''analyse :</td><td>' +
+              HtmlEscape(HRAnalysisTime) + '</td></tr>');
+  HRWriteLine('<tr><td class="label">Classes analysees :</td><td>' +
+              IntToStr_(HRClassCount) + '</td></tr>');
+  HRWriteLine('<tr><td class="label">Methodes analysees :</td><td>' +
+              IntToStr_(HRMethodCount) + '</td></tr>');
+  HRWriteLine('<tr><td class="label">Bugs detectes :</td><td>' +
+              IntToStr_(ScoredBugCount) + '</td></tr>');
+  HRWriteLine('</table>');
+  HRWriteLine('</div>');
+
+  { Statistiques par priorite }
+  HRWriteLine('<div class="stats">');
+  HRWriteLine('<div class="stat-box stat-high">');
+  HRWriteLine('<div class="number">' + IntToStr_(SCTotalHigh) + '</div>');
+  HRWriteLine('<div class="label">HIGH</div>');
+  HRWriteLine('</div>');
+  HRWriteLine('<div class="stat-box stat-medium">');
+  HRWriteLine('<div class="number">' + IntToStr_(SCTotalMedium) + '</div>');
+  HRWriteLine('<div class="label">MEDIUM</div>');
+  HRWriteLine('</div>');
+  HRWriteLine('<div class="stat-box stat-low">');
+  HRWriteLine('<div class="number">' + IntToStr_(SCTotalLow) + '</div>');
+  HRWriteLine('<div class="label">LOW</div>');
+  HRWriteLine('</div>');
+  HRWriteLine('<div class="stat-box stat-info">');
+  HRWriteLine('<div class="number">' + IntToStr_(SCTotalInfo) + '</div>');
+  HRWriteLine('<div class="label">INFO</div>');
+  HRWriteLine('</div>');
+  HRWriteLine('</div>');
+End;
+
+{ --- TODO 23 : Ecrire une ligne de bug dans la table --- }
+Procedure WriteHtmlBugRow(Idx: Integer);
+Var
+  BugType, ClassName, MethodName, SourceFile: String;
+  Priority, Rank, LineNum: Integer;
+  ShortDesc, DocUrl, PrioClass: String;
+Begin
+  If (Idx < 0) or (Idx >= ScoredBugCount) Then Exit;
+
+  { Extraire les informations du bug }
+  BugType := ScoredBugs[Idx].BugType;
+  Priority := ScoredBugs[Idx].Priority;
+  Rank := ScoredBugs[Idx].Rank;
+  ClassName := HRClassToJava(ScoredBugs[Idx].ClassName);
+  MethodName := ScoredBugs[Idx].MethodName;
+  LineNum := ScoredBugs[Idx].LineNumber;
+  ShortDesc := GetBugShortDesc(BugType);
+  SourceFile := HRExtractSourceFile(ScoredBugs[Idx].ClassName);
+  DocUrl := GetBugDocUrl(BugType);
+  PrioClass := HRPriorityClass(Priority);
+
+  HRWriteLine('<tr class="' + PrioClass + '">');
+  HRWriteLine('<td>' + IntToStr_(Rank) + '</td>');
+  HRWriteLine('<td><a href="' + HtmlEscape(DocUrl) + '" target="_blank" title="' +
+              HtmlEscape(ShortDesc) + '">' + HtmlEscape(BugType) + '</a></td>');
+  HRWriteLine('<td>' + HtmlEscape(ClassName) + '</td>');
+  HRWriteLine('<td>' + HtmlEscape(MethodName) + '</td>');
+  If LineNum > 0 Then
+    HRWriteLine('<td>' + IntToStr_(LineNum) + '</td>')
+  Else
+    HRWriteLine('<td>-</td>');
+  HRWriteLine('<td>' + HtmlEscape(ShortDesc) + '</td>');
+  HRWriteLine('</tr>');
+
+  Inc(HRBugsWritten);
+End;
+
+{ --- TODO 23 : Ecrire la table des bugs --- }
+Procedure WriteHtmlBugTable;
+Var
+  I: Integer;
+Begin
+  HRWriteLine('<a name="bugs"></a>');
+  HRWriteLine('<h2>Liste des bugs detectes</h2>');
+
+  If ScoredBugCount = 0 Then
+  Begin
+    HRWriteLine('<p>Aucun bug detecte.</p>');
+    Exit;
+  End;
+
+  HRWriteLine('<table class="bugs">');
+  HRWriteLine('<thead>');
+  HRWriteLine('<tr>');
+  HRWriteLine('<th>Rank</th>');
+  HRWriteLine('<th>Type</th>');
+  HRWriteLine('<th>Classe</th>');
+  HRWriteLine('<th>Methode</th>');
+  HRWriteLine('<th>Ligne</th>');
+  HRWriteLine('<th>Description</th>');
+  HRWriteLine('</tr>');
+  HRWriteLine('</thead>');
+  HRWriteLine('<tbody>');
+
+  For I := 0 to ScoredBugCount - 1 do
+    WriteHtmlBugRow(I);
+
+  HRWriteLine('</tbody>');
+  HRWriteLine('</table>');
+End;
+
+{ --- TODO 23 : Obtenir la classe CSS pour le score --- }
+Function HRScoreClass(Score: Integer): String;
+Begin
+  If Score >= 90 Then
+    HRScoreClass := 'score-good'
+  Else If Score >= 70 Then
+    HRScoreClass := 'score-ok'
+  Else If Score >= 50 Then
+    HRScoreClass := 'score-bad'
+  Else
+    HRScoreClass := 'score-critical';
+End;
+
+{ --- TODO 23 : Ecrire la table des classes avec scores --- }
+Procedure WriteHtmlClassScores;
+Var
+  I, MaxDisplay: Integer;
+  ScoreClass: String;
+Begin
+  HRWriteLine('<a name="classes"></a>');
+  HRWriteLine('<h2>Scores des classes analysees</h2>');
+
+  If ClassScoreCount = 0 Then
+  Begin
+    HRWriteLine('<p>Aucune classe analysee.</p>');
+    Exit;
+  End;
+
+  HRWriteLine('<table class="classes">');
+  HRWriteLine('<thead>');
+  HRWriteLine('<tr>');
+  HRWriteLine('<th>#</th>');
+  HRWriteLine('<th>Classe</th>');
+  HRWriteLine('<th>Score</th>');
+  HRWriteLine('<th>Bugs</th>');
+  HRWriteLine('<th>HIGH</th>');
+  HRWriteLine('<th>MEDIUM</th>');
+  HRWriteLine('<th>LOW</th>');
+  HRWriteLine('<th>INFO</th>');
+  HRWriteLine('</tr>');
+  HRWriteLine('</thead>');
+  HRWriteLine('<tbody>');
+
+  MaxDisplay := ClassScoreCount;
+  If MaxDisplay > HR_MAX_CLASS_ROWS Then
+    MaxDisplay := HR_MAX_CLASS_ROWS;
+
+  For I := 0 to MaxDisplay - 1 do
+  Begin
+    ScoreClass := HRScoreClass(ClassScores[I].Score);
+    HRWriteLine('<tr>');
+    HRWriteLine('<td>' + IntToStr_(I + 1) + '</td>');
+    HRWriteLine('<td>' + HtmlEscape(HRClassToJava(ClassScores[I].ClassName)) + '</td>');
+    HRWriteLine('<td class="score ' + ScoreClass + '">' +
+                IntToStr_(ClassScores[I].Score) + '/100</td>');
+    HRWriteLine('<td>' + IntToStr_(ClassScores[I].BugCount) + '</td>');
+    HRWriteLine('<td>' + IntToStr_(ClassScores[I].HighCount) + '</td>');
+    HRWriteLine('<td>' + IntToStr_(ClassScores[I].MediumCount) + '</td>');
+    HRWriteLine('<td>' + IntToStr_(ClassScores[I].LowCount) + '</td>');
+    HRWriteLine('<td>' + IntToStr_(ClassScores[I].InfoCount) + '</td>');
+    HRWriteLine('</tr>');
+  End;
+
+  HRWriteLine('</tbody>');
+  HRWriteLine('</table>');
+
+  If ClassScoreCount > HR_MAX_CLASS_ROWS Then
+    HRWriteLine('<p><em>(' + IntToStr_(ClassScoreCount - HR_MAX_CLASS_ROWS) +
+                ' classes supplementaires non affichees)</em></p>');
+End;
+
+{ --- TODO 23 : Ecrire le pied de page --- }
+Procedure WriteHtmlFoot;
+Begin
+  HRWriteLine('<div class="footer">');
+  HRWriteLine('<p>Rapport genere par <strong>SPOTBUGS</strong> (Clone Pascal) - ' +
+              HtmlEscape(HRAnalysisTime) + '</p>');
+  HRWriteLine('<p>Documentation SpotBugs : <a href="https://spotbugs.github.io/" target="_blank">https://spotbugs.github.io/</a></p>');
+  HRWriteLine('</div>');
+  HRWriteLine('</body>');
+  HRWriteLine('</html>');
+End;
+
+{ --- TODO 23 : Generer le rapport HTML complet --- }
+Procedure EmitHtmlReport(OutFile: String);
+Var
+  IORes: Integer;
+Begin
+  If Not HRInitialized Then InitHtmlReportState;
+
+  { Configurer la sortie }
+  If OutFile <> '' Then
+  Begin
+    HRUseFile := True;
+    HRFileName := OutFile;
+    Assign(HRReportFile, OutFile);
+    {$I-}
+    Rewrite(HRReportFile);
+    {$I+}
+    IORes := IOResult;
+    If IORes <> 0 Then
+    Begin
+      WriteLn('Erreur: Impossible de creer le fichier HTML ', OutFile);
+      HRUseFile := False;
+      Exit;
+    End;
+  End
+  Else
+  Begin
+    HRUseFile := False;
+    HRFileName := '';
+  End;
+
+  { Mettre a jour les compteurs }
+  HRClassCount := ClassesScanned;
+  HRMethodCount := TotalMethods;
+
+  { Reinitialiser les compteurs }
+  HRLinesWritten := 0;
+  HRBugsWritten := 0;
+
+  { Generer le rapport }
+  WriteHtmlHead;
+  WriteHtmlTitle;
+  WriteHtmlSummary;
+  WriteHtmlBugTable;
+  WriteHtmlClassScores;
+  WriteHtmlFoot;
+
+  { Fermer le fichier si necessaire }
+  If HRUseFile Then
+  Begin
+    Close(HRReportFile);
+    WriteLn('Rapport HTML genere : ', OutFile);
+    WriteLn('  Lignes ecrites : ', HRLinesWritten);
+    WriteLn('  Bugs documentes : ', HRBugsWritten);
+  End;
+End;
+
+{ --- TODO 23 : Afficher l'etat du module de rapport HTML --- }
+Procedure DumpHtmlReportState;
+Begin
+  WriteLn;
+  WriteLn('=== DUMP HTML REPORT STATE ===');
+  WriteLn('Initialized: ', HRInitialized);
+  WriteLn('Label num: ', HRLabelNum);
+  WriteLn('Use file: ', HRUseFile);
+  WriteLn('File name: ', HRFileName);
+  WriteLn('Lines written: ', HRLinesWritten);
+  WriteLn('Bugs written: ', HRBugsWritten);
+  WriteLn('Analysis time: ', HRAnalysisTime);
+  WriteLn('Class count: ', HRClassCount);
+  WriteLn('Method count: ', HRMethodCount);
+  WriteLn('Project name: ', HRProjectName);
+  WriteLn('Title: ', HRTitle);
+  WriteLn('Source dir: ', HRSrcDir);
+End;
+
+{ --- TODO 23 : Accesseurs pour le module de rapport HTML --- }
+Function IsHRInitialized: Boolean;
+Begin
+  IsHRInitialized := HRInitialized;
+End;
+
+Function GetHRLabelNum: Integer;
+Begin
+  GetHRLabelNum := HRLabelNum;
+End;
+
+Function IsHRUseFile: Boolean;
+Begin
+  IsHRUseFile := HRUseFile;
+End;
+
+Function GetHRFileName: String;
+Begin
+  GetHRFileName := HRFileName;
+End;
+
+Function GetHRLinesWritten: Integer;
+Begin
+  GetHRLinesWritten := HRLinesWritten;
+End;
+
+Function GetHRBugsWritten: Integer;
+Begin
+  GetHRBugsWritten := HRBugsWritten;
+End;
+
+Function GetHRAnalysisTime: String;
+Begin
+  GetHRAnalysisTime := HRAnalysisTime;
+End;
+
+Function GetHRClassCount: Integer;
+Begin
+  GetHRClassCount := HRClassCount;
+End;
+
+Function GetHRMethodCount: Integer;
+Begin
+  GetHRMethodCount := HRMethodCount;
+End;
+
+Function GetHRProjectName: String;
+Begin
+  GetHRProjectName := HRProjectName;
+End;
+
+Procedure SetHRProjectName(Name: String);
+Begin
+  HRProjectName := Name;
+End;
+
+Procedure SetHRSrcDir(Dir: String);
+Begin
+  HRSrcDir := Dir;
+End;
 
 { ============================================================================ }
 { TODO 24 [A FAIRE] - Filtrage, exclusions et configuration des regles         }

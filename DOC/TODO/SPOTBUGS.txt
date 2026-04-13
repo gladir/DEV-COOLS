@@ -499,12 +499,39 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               GetXRAnalysisTime, GetXRClassCount, GetXRMethodCount,
               GetXRProjectName, SetXRProjectName, SetXRSrcDir, SetXRClassDir
 
-  TODO 23 - GENERATION DU RAPPORT HTML [A FAIRE]
-            EmitHtmlReport(OutFile) : generer rapport HTML autonome avec CSS
-              integre, structure HTML (h1, div summary, table de bugs),
-              coloration des lignes par priorite (rouge/orange/jaune/vert),
-              lien vers documentation SpotBugs par type de bug, liste des
-              classes analysees avec score, ancres HTML par section
+  TODO 23 - GENERATION DU RAPPORT HTML [IMPLEMENTE]
+            Constantes : HR_MAX_TITLE_LEN, HR_MAX_CLASS_ROWS, HR_TABLE_WIDTH,
+              HR_COL_RANK_W, HR_COL_TYPE_W, HR_COL_CLASS_W, HR_COL_METHOD_W,
+              HR_COL_LINE_W, HR_COL_DESC_W
+            Variables : HRInitialized, HRLabelNum, HRReportFile, HRUseFile,
+              HRFileName, HRLinesWritten, HRBugsWritten, HRAnalysisTime,
+              HRClassCount, HRMethodCount, HRProjectName, HRTitle, HRSrcDir
+            InitHtmlReportState : initialiser toutes les variables du module
+            GenHRLabel : generer un label unique pour les ancres HTML
+            HtmlEscape(S) : echapper les caracteres speciaux HTML (&lt; etc)
+            HRWriteLine(S) : ecrire une ligne dans le fichier HTML
+            HRPriorityColor(Prio) : couleur CSS selon la priorite (#ff6666...)
+            HRPriorityClass(Prio) : classe CSS selon la priorite (high/medium...)
+            HRPriorityName(Prio) : nom de priorite (HIGH/MEDIUM/LOW/INFO)
+            GetHtmlTimestamp : timestamp lisible YYYY-MM-DD HH:MM:SS
+            HRClassToJava(Name) : convertir nom interne en format Java
+            HRExtractSourceFile(ClassName) : extraire nom fichier source
+            GetBugDocUrl(BugType) : URL documentation SpotBugs par bug
+            WriteHtmlStyle : ecrire le CSS integre avec styles complets
+            WriteHtmlHead : ecrire le prologue HTML avec meta et CSS
+            WriteHtmlTitle : ecrire le titre et la navigation avec ancres
+            WriteHtmlSummary : ecrire les statistiques et boites de resume
+            WriteHtmlBugRow(Idx) : ecrire une ligne de bug avec coloration
+            WriteHtmlBugTable : ecrire la table complete des bugs
+            HRScoreClass(Score) : classe CSS pour le score de classe
+            WriteHtmlClassScores : ecrire la table des classes avec scores
+            WriteHtmlFoot : ecrire le pied de page et fermer les balises
+            EmitHtmlReport(OutFile) : generer le rapport HTML complet
+            DumpHtmlReportState : afficher l'etat du module HTML
+            12 accesseurs : IsHRInitialized, GetHRLabelNum, IsHRUseFile,
+              GetHRFileName, GetHRLinesWritten, GetHRBugsWritten,
+              GetHRAnalysisTime, GetHRClassCount, GetHRMethodCount,
+              GetHRProjectName, SetHRProjectName, SetHRSrcDir
 
   TODO 24 - FILTRAGE, EXCLUSIONS ET CONFIGURATION DES REGLES [A FAIRE]
             Format fichier d'exclusion XML (compatible SpotBugs) :
