@@ -20,7 +20,7 @@
 
   Voir DOC/TODO/PHPCW32.txt pour la feuille de route complete.
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [A FAIRE]
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm)
             ParseArgs : analyser argv (source.php [-o sortie] [-v]
@@ -688,8 +688,663 @@ Program PHPCW32;
 {$ENDIF}
 {$I-}
 
+{ ============================================================ }
+{ TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES    [IMPLEMENTE] }
+{           PE/COFF                                              }
+{ ============================================================ }
+
+Const
+  PHPCW32_VERSION = '0.1';
+  PHPCW32_DATE    = '2026';
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Constantes PE/COFF }
+  PE_DOS_MAGIC    = $5A4D;    { 'MZ' }
+  PE_PE_SIG       = $00004550; { 'PE\0\0' }
+  PE_MACHINE_I386 = $014C;
+  PE_OPT_SIZE     = $E0;      { 224 octets }
+  PE_MAGIC_32     = $010B;
+  PE_IMG_BASE     = $00400000;
+  PE_SEC_ALIGN    = 4096;
+  PE_FILE_ALIGN   = 512;
+  PE_SUBSYS_CUI   = 3;  { Console }
+
+  { Tailles des tampons binaires }
+  MAX_BIN_CODE = 65536;
+  MAX_BIN_DATA = 65536;
+  MAX_BIN_LBL  = 4096;
+  MAX_BIN_FIX  = 8192;
+
+  { Limites internes (32 bits) }
+  MAX_SYM        = 4096;
+  MAX_LABEL      = 4096;
+  MAX_SCOPE      = 64;
+  MAX_DATA       = 512;
+  MAX_PARAM      = 64;
+  MAX_LOCAL      = 128;
+  MAX_LOOP_NEST  = 32;
+  MAX_FUNC_NEST  = 16;
+  MAX_ERRORS     = 30;
+  MAX_STR        = 255;
+  MAX_CONST      = 256;
+  MAX_FUNC       = 256;
+  MAX_ARRAY      = 256;
+  MAX_IMPORT     = 32;
+  MAX_TYPE       = 64;
+
+  { Limite pour les messages de sortie }
+  MAX_OUTMSGS    = 256;
+
+  { Types de valeurs de sortie (utilises par le code generation) }
+  OMK_STRING   = 1;   { chaine litterale                          }
+  OMK_INT      = 2;   { valeur entiere                            }
+  OMK_BOOL     = 3;   { valeur booleenne                          }
+  OMK_VAR_INT  = 4;   { variable entiere                          }
+  OMK_VAR_BOOL = 5;   { variable booleenne                        }
+  OMK_VAR_STR  = 6;   { variable chaine                           }
+
+  { Prefixes de nommage ASM }
+  PH_VAR_PFX  = '_PH_';     { variable globale                       }
+  PH_FN_PFX   = '_PF_';     { fonction utilisateur                   }
+  PH_STR_PFX  = '_PK_';     { constante chaine litterale             }
+  PH_RT_PFX   = '_PHRT_';   { routine runtime                        }
+  PH_LBL_PFX  = '_PL_';     { label de saut interne                  }
+  PH_ARR_PFX  = '_PA_';     { tableau                                }
+
+Type
+  TString = String;
+
+  TOptions = Record
+    SrcFile    : TString;   { fichier source PHP (.php)              }
+    OutFile    : TString;   { fichier sortie (.exe, .obj)            }
+    Verbose    : Boolean;   { -v : banniere et statistiques          }
+    DebugMode  : Boolean;   { -d : affichage de chaque token         }
+    Warnings   : Boolean;   { -w : afficher les avertissements       }
+    EmitExe    : Boolean;   { par defaut : produire un .EXE (PE)     }
+    EmitObj    : Boolean;   { -obj : produire seulement un .OBJ      }
+    EmitAsm    : Boolean;   { -asm : produire aussi un .ASM          }
+  End;
+
+  { Type pour les messages de sortie (echo) }
+  TOutMsgRec = Record
+    Kind       : Integer;  { OMK_STRING, OMK_INT, etc.              }
+    StrVal     : TString;  { valeur si chaine                       }
+    IntVal     : LongInt;  { valeur si entier                       }
+    BoolVal    : Boolean;  { valeur si booleen                      }
+    VarName    : TString;  { nom de variable si OMK_VAR_*           }
+    AddNewLine : Boolean;  { True si ajouter un retour a la ligne   }
+    Line       : Integer;  { ligne source                           }
+  End;
+
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+  { Fichier de sortie interne (pour future emission) }
+  OutF       : Text;
+  OutFOpen   : Boolean;
+
+  { Drapeau pour la generation binaire PE (mini-assembleur) }
+  BcActive   : Boolean;
+
+  { Messages de sortie collectes (echo) }
+  OutMsgs      : Array[1..MAX_OUTMSGS] Of TOutMsgRec;
+  OutMsgCount  : Integer;
+
+{ ------------------------------------------------------------ }
+{ Fonctions utilitaires                                        }
+{ ------------------------------------------------------------ }
+
+Function ItoS(V : LongInt) : TString;
+Var S : TString;
 Begin
-  WriteLn('PHPCW32 - Compilateur PHP vers Windows 32 bits');
-  WriteLn('Version 0.1 - En cours de developpement');
-  WriteLn('Voir les TODOs dans le fichier source pour la feuille de route.');
+  Str(V, S);
+  ItoS := S;
+End;
+
+{ StrToIntDef : convertir une chaine en entier avec defaut }
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V    : LongInt;
+  Code : Integer;
+Begin
+  Val(S, V, Code);
+  If Code = 0 Then
+    StrToIntDef := V
+  Else
+    StrToIntDef := Def;
+End;
+
+{ InitOutMsgs : initialiser le tableau des messages de sortie }
+Procedure InitOutMsgs;
+Var I : Integer;
+Begin
+  OutMsgCount := 0;
+  For I := 1 To MAX_OUTMSGS Do
+  Begin
+    OutMsgs[I].Kind       := 0;
+    OutMsgs[I].StrVal     := '';
+    OutMsgs[I].IntVal     := 0;
+    OutMsgs[I].BoolVal    := False;
+    OutMsgs[I].VarName    := '';
+    OutMsgs[I].AddNewLine := False;
+    OutMsgs[I].Line       := 0;
+  End;
+End;
+
+{ AddOutMsgStr : ajouter un message de sortie chaine }
+Procedure AddOutMsgStr(Const S : TString; AddNewLine : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind       := OMK_STRING;
+  OutMsgs[OutMsgCount].StrVal     := S;
+  OutMsgs[OutMsgCount].IntVal     := 0;
+  OutMsgs[OutMsgCount].BoolVal    := False;
+  OutMsgs[OutMsgCount].VarName    := '';
+  OutMsgs[OutMsgCount].AddNewLine := AddNewLine;
+  OutMsgs[OutMsgCount].Line       := Ln;
+End;
+
+{ AddOutMsgInt : ajouter un message de sortie entier }
+Procedure AddOutMsgInt(V : LongInt; AddNewLine : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind       := OMK_INT;
+  OutMsgs[OutMsgCount].StrVal     := '';
+  OutMsgs[OutMsgCount].IntVal     := V;
+  OutMsgs[OutMsgCount].BoolVal    := False;
+  OutMsgs[OutMsgCount].VarName    := '';
+  OutMsgs[OutMsgCount].AddNewLine := AddNewLine;
+  OutMsgs[OutMsgCount].Line       := Ln;
+End;
+
+{ AddOutMsgBool : ajouter un message de sortie booleen }
+Procedure AddOutMsgBool(V : Boolean; AddNewLine : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind       := OMK_BOOL;
+  OutMsgs[OutMsgCount].StrVal     := '';
+  OutMsgs[OutMsgCount].IntVal     := 0;
+  OutMsgs[OutMsgCount].BoolVal    := V;
+  OutMsgs[OutMsgCount].VarName    := '';
+  OutMsgs[OutMsgCount].AddNewLine := AddNewLine;
+  OutMsgs[OutMsgCount].Line       := Ln;
+End;
+
+{ AddOutMsgVar : ajouter un message de sortie variable }
+Procedure AddOutMsgVar(Const VarName : TString; VarKind : Integer;
+                       AddNewLine : Boolean; Ln : Integer);
+Begin
+  If OutMsgCount >= MAX_OUTMSGS Then Exit;
+  Inc(OutMsgCount);
+  OutMsgs[OutMsgCount].Kind       := VarKind;
+  OutMsgs[OutMsgCount].StrVal     := '';
+  OutMsgs[OutMsgCount].IntVal     := 0;
+  OutMsgs[OutMsgCount].BoolVal    := False;
+  OutMsgs[OutMsgCount].VarName    := VarName;
+  OutMsgs[OutMsgCount].AddNewLine := AddNewLine;
+  OutMsgs[OutMsgCount].Line       := Ln;
+End;
+
+Function HexNibble(V : Integer) : Char;
+Begin
+  V := V And $0F;
+  If V < 10 Then
+    HexNibble := Chr(Ord('0') + V)
+  Else
+    HexNibble := Chr(Ord('A') + V - 10);
+End;
+
+Function HexByte(V : Integer) : TString;
+Begin
+  HexByte := HexNibble(V Shr 4) + HexNibble(V);
+End;
+
+Function HexWord(V : Integer) : TString;
+Begin
+  HexWord := HexByte(V Shr 8) + HexByte(V);
+End;
+
+Function HexLong(V : LongInt) : TString;
+Begin
+  HexLong := HexWord(V Shr 16) + HexWord(V);
+End;
+
+Function UpCaseStr(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'a') And (Tmp[I] <= 'z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) - 32);
+  UpCaseStr := Tmp;
+End;
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'A') And (Tmp[I] <= 'Z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) + 32);
+  StrLowerCase := Tmp;
+End;
+
+{ Transforme un nom PHP en identifiant valide pour l assembleur }
+Function AsmIdent(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := '';
+  For I := 1 To Length(S) Do
+  Begin
+    If ((S[I] >= 'A') And (S[I] <= 'Z')) Or
+       ((S[I] >= 'a') And (S[I] <= 'z')) Or
+       ((S[I] >= '0') And (S[I] <= '9')) Or
+       (S[I] = '_') Then
+      Tmp := Tmp + S[I]
+    Else
+      Tmp := Tmp + '_';
+  End;
+  AsmIdent := Tmp;
+End;
+
+{ Extrait le nom de base d un chemin (sans repertoire ni extension) }
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+{ Retourne l extension d un chemin (avec le point, en minuscules) }
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot,
+                     Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ Retourne le repertoire d un chemin (avec le separateur final) }
+Function ExtractDir(Const Path : TString) : TString;
+Var
+  I, LastSep : Integer;
+Begin
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+  If LastSep > 0 Then
+    ExtractDir := Copy(Path, 1, LastSep)
+  Else
+    ExtractDir := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ FatalError / CompileError / WarnMsg                          }
+{ ------------------------------------------------------------ }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('PHPCW32: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString; Line : Integer);
+Begin
+  Write('PHPCW32:');
+  If Line > 0 Then
+    Write(Opts.SrcFile, ':', Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('PHPCW32: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ InitOptions                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile    := '';
+  Opts.OutFile    := '';
+  Opts.Verbose    := False;
+  Opts.DebugMode  := False;
+  Opts.Warnings   := False;
+  Opts.EmitExe    := True;
+  Opts.EmitObj    := False;
+  Opts.EmitAsm    := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowHelp                                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ShowHelp;
+Begin
+  WriteLn('PHPCW32 v', PHPCW32_VERSION, ' (', PHPCW32_DATE,
+          ') - Compilateur PHP vers 80386 (Windows PE 32 bits)');
+  WriteLn('PHPCW32 - Cette commande permet de lancer le compilateur PHP ',
+          'pour l''assembleur du microprocesseur 80386 (en executable ',
+          'Windows 32 bits).');
+  WriteLn;
+  WriteLn('Syntaxe : PHPCW32 [options] <source.php> [options]');
+  WriteLn;
+  WriteLn('Sortie :');
+  WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
+  WriteLn('  -obj           Produire seulement un fichier .OBJ (COFF)');
+  WriteLn('  -asm           Produire egalement un fichier .ASM lisible');
+  WriteLn('  -o <fichier>   Specifier le nom du fichier de sortie');
+  WriteLn;
+  WriteLn('General :');
+  WriteLn('  -v             Mode verbeux (banniere + statistiques)');
+  WriteLn('  -d             Debug tokens (affiche chaque token)');
+  WriteLn('  -w             Afficher les avertissements');
+  WriteLn('  -h, --help, /? Afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  PHPCW32 hello.php');
+  WriteLn('  PHPCW32 hello.php -o hello.exe -v');
+  WriteLn('  PHPCW32 control.php -asm');
+  WriteLn('  PHPCW32 math.php -obj -w');
+  Halt(EXIT_OK);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArgs                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArgs;
+Var
+  I    : Integer;
+  Arg  : TString;
+  Ext  : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowHelp;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-asm' Then
+      Opts.EmitAsm := True
+    Else If Arg = '-obj' Then
+    Begin
+      Opts.EmitObj := True;
+      Opts.EmitExe := False;
+    End
+    Else If Arg = '-o' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('-o necessite un nom de fichier');
+      Opts.OutFile := ParamStr(I);
+    End
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+      FatalError('Option inconnue: ' + Arg)
+    Else
+    Begin
+      { Argument positionnel : fichier source }
+      If Opts.SrcFile = '' Then
+        Opts.SrcFile := Arg
+      Else
+        FatalError('Argument inattendu: ' + Arg);
+    End;
+
+    Inc(I);
+  End;
+
+  { Validation : fichier source requis }
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('PHPCW32: fichier source manquant');
+    ShowHelp;
+  End;
+
+  { Verifier l extension .php }
+  Ext := ExtractExt(Opts.SrcFile);
+  If Ext <> '.php' Then
+    WarnMsg('extension attendue .php, trouvee: ' + Ext);
+
+  { Fichier de sortie par defaut }
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.EmitObj Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowBanner / ShowStats                                        }
+{ ------------------------------------------------------------ }
+
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('PHPCW32 v', PHPCW32_VERSION, ' (', PHPCW32_DATE,
+          ') - Compilateur PHP -> 80386 PE Win32');
+  WriteLn('Source   : ', Opts.SrcFile);
+  WriteLn('Sortie   : ', Opts.OutFile);
+  If Opts.EmitAsm Then
+    WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
+  If Opts.EmitObj Then
+    WriteLn('Mode     : OBJ (COFF 32 bits)')
+  Else
+    WriteLn('Mode     : EXE (PE Win32)');
+  WriteLn;
+End;
+
+Procedure ShowStats;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn;
+  WriteLn('--- Statistiques ---');
+  WriteLn('Lignes analysees : ', TotalLines);
+  WriteLn('Erreurs          : ', ErrorCount);
+  WriteLn('Avertissements   : ', WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Cleanup                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure Cleanup;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 01)                             }
+{ ------------------------------------------------------------ }
+
+Function GetCompilerVersion : TString;
+Begin
+  GetCompilerVersion := PHPCW32_VERSION;
+End;
+
+Function GetCompilerDate : TString;
+Begin
+  GetCompilerDate := PHPCW32_DATE;
+End;
+
+Function IsEmitExe : Boolean;
+Begin
+  IsEmitExe := Opts.EmitExe;
+End;
+
+Function IsEmitObj : Boolean;
+Begin
+  IsEmitObj := Opts.EmitObj;
+End;
+
+Function IsEmitAsm : Boolean;
+Begin
+  IsEmitAsm := Opts.EmitAsm;
+End;
+
+Function IsVerbose : Boolean;
+Begin
+  IsVerbose := Opts.Verbose;
+End;
+
+Function IsDebugMode : Boolean;
+Begin
+  IsDebugMode := Opts.DebugMode;
+End;
+
+Function IsWarnings : Boolean;
+Begin
+  IsWarnings := Opts.Warnings;
+End;
+
+Function GetSrcFile : TString;
+Begin
+  GetSrcFile := Opts.SrcFile;
+End;
+
+Function GetOutFile : TString;
+Begin
+  GetOutFile := Opts.OutFile;
+End;
+
+{ ============================================================ }
+{ Programme principal                                          }
+{ ============================================================ }
+
+Begin
+  { Initialiser les compteurs }
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  OutFOpen   := False;
+  BcActive   := False;
+
+  { Initialiser les messages de sortie }
+  InitOutMsgs;
+
+  { Analyser les arguments }
+  ParseArgs;
+
+  { Afficher la banniere si mode verbeux }
+  ShowBanner;
+
+  { TODO: Les TODOs suivants implementeront :
+    - TODO 02 : Lexer (tokeniseur PHP)
+    - TODO 03 : Mots-cles PHP
+    - TODO 04 : Table des symboles
+    - TODO 05 : Systeme de types
+    - TODO 06 : Litteraux et constantes
+    - etc.
+  }
+
+  { Message temporaire }
+  WriteLn('PHPCW32: Compilation de ', Opts.SrcFile, ' ...');
+  WriteLn('PHPCW32: TODO 01 implemente - Infrastructure de base');
+  WriteLn('PHPCW32: Les TODOs 02-25 restent a implementer');
+
+  { Afficher les statistiques si mode verbeux }
+  ShowStats;
+
+  { Nettoyage }
+  Cleanup;
+
+  { Code de sortie }
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
 End.
