@@ -533,26 +533,34 @@ SPOTBUGS.PAS - Clone de SpotBugs - Analyseur statique de bytecode Java (.class)
               GetHRAnalysisTime, GetHRClassCount, GetHRMethodCount,
               GetHRProjectName, SetHRProjectName, SetHRSrcDir
 
-  TODO 24 - FILTRAGE, EXCLUSIONS ET CONFIGURATION DES REGLES [A FAIRE]
-            Format fichier d'exclusion XML (compatible SpotBugs) :
-              <FindBugsFilter>
-                <Match>
-                  <Class name="com.example.Foo"/>
-                  <Bug code="NP,BC"/>
-                </Match>
-                <Match>
-                  <Bug pattern="NP_NULL_ON_SOME_PATH"/>
-                  <Class pattern=".*Test"/>
-                </Match>
-              </FindBugsFilter>
-            Structure TFilterRule (ClassPattern, MethodPattern, BugPattern,
-              Category, MinSeverity, IsExclude)
-            LoadFilterFile(FileName, IsExclude) : analyser XML de filtre
-              (mini-parseur), extraire regles Match avec Class/Bug/Method,
-              compiler les motifs en regles de filtrage
-            IsBugFiltered(Bug) : verifier regles d'exclusion et d'inclusion
-            MatchPattern(Pattern, Value) : correspondance avec jokers
-              (* = toute sequence, ? = un caractere)
+  TODO 24 - FILTRAGE, EXCLUSIONS ET CONFIGURATION DES REGLES [IMPLEMENTE]
+            Constantes FR_MAX_RULES=256, FR_MAX_PATTERN_LEN=256,
+              FR_MAX_CATEGORIES=32, FR_MAX_LINE_LEN=1024, FR_MAX_ATTR_LEN=256
+            Types de regles FR_RULE_CLASS..FR_RULE_PACKAGE (8 types)
+            Categories FR_CAT_ALL..FR_CAT_MALICIOUS (9 categories)
+            Severites FR_SEV_LOW..FR_SEV_CRITICAL (4 niveaux)
+            Structure TFilterRule (RuleType, ClassPattern, MethodPattern,
+              BugPattern, BugCode, PackagePattern, Category, MinSeverity,
+              MaxRank, IsExclude, IsActive, Priority, SourceFile, LineNum)
+            Variables FRInitialized + 14 state vars (FRRules, FRRuleCount,
+              FRExcludeCount, FRIncludeCount, FRFilteredCount, FRPassedCount,
+              FRExcludeFile, FRIncludeFile, FRDefaultSev, FRDefaultRank,
+              FREnableExclude, FREnableInclude, FRCaseSensitive)
+            InitFilterState, GenFRLabel, FRRuleTypeName, FRCategoryName,
+              FRSeverityName
+            MatchPattern (correspondance avec * et ?)
+            MatchClassName, MatchMethodName, MatchBugCode, MatchBugPattern,
+              MatchPackage
+            AddFilterRule, ParseXMLAttribute, TrimXMLLine
+            LoadFilterFile (lecture fichier XML SpotBugs-compatible)
+            MapCategoryToFR, MapPriorityToFR, RuleMatchesBug
+            IsBugFiltered, IsBugIdxFiltered
+            ClearFilterRules, SetRuleActive, DumpFilterState
+            Accesseurs : GetFRInitialized, GetFRRuleCount, GetFRExcludeCount,
+              GetFRIncludeCount, GetFRFilteredCount, GetFRPassedCount,
+              GetFREnableExclude, GetFREnableInclude, SetFRDefaultSev,
+              SetFRDefaultRank, SetFRCaseSensitive, GetFRExcludeFile,
+              GetFRIncludeFile
 
   TODO 25 - PROGRAMME PRINCIPAL, BALAYAGE RECURSIF ET EXEMPLES [A FAIRE]
             ParseArgs : analyser ParamStr(1..ParamCount) :

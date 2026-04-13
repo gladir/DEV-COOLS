@@ -39,7 +39,7 @@
 {  TODO 21 [IMPLEMENTE] - Generation du rapport texte                         }
 {  TODO 22 [IMPLEMENTE] - Generation du rapport XML (format SpotBugs)         }
 {  TODO 23 [IMPLEMENTE] - Generation du rapport HTML                          }
-{  TODO 24 [A FAIRE] - Filtrage, exclusions et configuration des regles       }
+{  TODO 24 [IMPLEMENTE] - Filtrage, exclusions et configuration des regles    }
 {  TODO 25 [A FAIRE] - Programme principal, balayage recursif et exemples     }
 { ---------------------------------------------------------------------------- }
 
@@ -958,6 +958,40 @@ Const
   HR_COL_LINE_W       = 8;    { Largeur colonne Line en %                       }
   HR_COL_DESC_W       = 27;   { Largeur colonne Description en %                }
 
+  { --- TODO 24 : Constantes pour le filtrage et la configuration --- }
+  FR_MAX_RULES        = 256;  { Nombre maximum de regles de filtrage            }
+  FR_MAX_PATTERN_LEN  = 256;  { Longueur maximale d'un pattern                  }
+  FR_MAX_CATEGORIES   = 32;   { Nombre maximum de categories filtrables         }
+  FR_MAX_LINE_LEN     = 1024; { Longueur maximale d'une ligne XML               }
+  FR_MAX_ATTR_LEN     = 256;  { Longueur maximale d'un attribut XML             }
+
+  { Types de regles de filtrage }
+  FR_RULE_CLASS       = 1;    { Regle basee sur le nom de classe                }
+  FR_RULE_METHOD      = 2;    { Regle basee sur le nom de methode               }
+  FR_RULE_BUG         = 3;    { Regle basee sur le code de bug                  }
+  FR_RULE_PATTERN     = 4;    { Regle basee sur le pattern de bug               }
+  FR_RULE_CATEGORY    = 5;    { Regle basee sur la categorie                    }
+  FR_RULE_SEVERITY    = 6;    { Regle basee sur la severite                     }
+  FR_RULE_RANK        = 7;    { Regle basee sur le rang                         }
+  FR_RULE_PACKAGE     = 8;    { Regle basee sur le package                      }
+
+  { Categories de bugs (pour filtrage) }
+  FR_CAT_ALL          = 0;    { Toutes les categories                           }
+  FR_CAT_CORRECTNESS  = 1;    { Erreurs de correction (CORRECTNESS)             }
+  FR_CAT_BAD_PRACTICE = 2;    { Mauvaises pratiques (BAD_PRACTICE)              }
+  FR_CAT_PERFORMANCE  = 3;    { Problemes de performance (PERFORMANCE)          }
+  FR_CAT_MT_SAFETY    = 4;    { Securite multi-thread (MT_CORRECTNESS)          }
+  FR_CAT_SECURITY     = 5;    { Vulnerabilites de securite (SECURITY)           }
+  FR_CAT_STYLE        = 6;    { Problemes de style (STYLE)                      }
+  FR_CAT_I18N         = 7;    { Internationalisation (I18N)                     }
+  FR_CAT_MALICIOUS    = 8;    { Code malicieux (MALICIOUS_CODE)                 }
+
+  { Niveaux de severite pour filtrage }
+  FR_SEV_LOW          = 1;    { Severite basse (informatif)                     }
+  FR_SEV_MEDIUM       = 2;    { Severite moyenne (attention)                    }
+  FR_SEV_HIGH         = 3;    { Severite haute (important)                      }
+  FR_SEV_CRITICAL     = 4;    { Severite critique (urgent)                      }
+
 Type
   { --- TODO 08 : Structure TCFGNode : noeud du graphe de flux de controle --- }
   TCFGNode = Record
@@ -1280,6 +1314,25 @@ Type
   End;
   TBugDescArray = Array[0..MAX_TR_DESC_ENTRIES-1] of TBugDescription;
 
+  { --- TODO 24 : Structure TFilterRule : regle de filtrage --- }
+  TFilterRule = Record
+    RuleType      : Integer;    { Type de regle (FR_RULE_*)                 }
+    ClassPattern  : String;     { Pattern sur le nom de classe (jokers)     }
+    MethodPattern : String;     { Pattern sur le nom de methode (jokers)    }
+    BugPattern    : String;     { Pattern sur le code de bug (jokers)       }
+    BugCode       : String;     { Code de bug exact (NP, BC, etc.)          }
+    PackagePattern: String;     { Pattern sur le package                    }
+    Category      : Integer;    { Categorie a filtrer (FR_CAT_*)            }
+    MinSeverity   : Integer;    { Severite minimale (FR_SEV_*)              }
+    MaxRank       : Integer;    { Rang maximum (1-20)                       }
+    IsExclude     : Boolean;    { True = exclusion, False = inclusion       }
+    IsActive      : Boolean;    { True si la regle est active               }
+    Priority      : Integer;    { Priorite de la regle (plus haut = first)  }
+    SourceFile    : String;     { Fichier source de la regle                }
+    LineNum       : Integer;    { Ligne dans le fichier source              }
+  End;
+  TFilterRuleArray = Array[0..FR_MAX_RULES-1] of TFilterRule;
+
 { ============================================================================ }
 { Variables globales                                                           }
 { ============================================================================ }
@@ -1531,6 +1584,23 @@ Var
   HRProjectName    : String;      { Nom du projet analyse                      }
   HRTitle          : String;      { Titre du rapport                           }
   HRSrcDir         : String;      { Repertoire source du projet                }
+
+  { --- TODO 24 : Variables du module de filtrage --- }
+  FRInitialized    : Boolean;     { True si module initialise                  }
+  FRLabelNum       : Integer;     { Compteur pour generation de labels         }
+  FRRules          : TFilterRuleArray; { Tableau des regles de filtrage        }
+  FRRuleCount      : Integer;     { Nombre de regles enregistrees              }
+  FRExcludeCount   : Integer;     { Nombre de regles d'exclusion               }
+  FRIncludeCount   : Integer;     { Nombre de regles d'inclusion               }
+  FRFilteredCount  : Integer;     { Nombre de bugs filtres                     }
+  FRPassedCount    : Integer;     { Nombre de bugs non filtres                 }
+  FRExcludeFile    : String;      { Fichier d'exclusion charge                 }
+  FRIncludeFile    : String;      { Fichier d'inclusion charge                 }
+  FRDefaultSev     : Integer;     { Severite minimale par defaut               }
+  FRDefaultRank    : Integer;     { Rang maximum par defaut (1-20)             }
+  FREnableExclude  : Boolean;     { True si exclusions activees                }
+  FREnableInclude  : Boolean;     { True si inclusions activees                }
+  FRCaseSensitive  : Boolean;     { True si patterns sensibles a la casse      }
 
 { ============================================================================ }
 { Utilitaires chaines et conversions                                           }
@@ -13623,41 +13693,726 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 24 [A FAIRE] - Filtrage, exclusions et configuration des regles         }
+{ TODO 24 [IMPLEMENTE] - Filtrage, exclusions et configuration des regles     }
 { ============================================================================ }
-{                                                                              }
-{  - Format du fichier d'exclusion (XML, compatible SpotBugs) :                 }
-{      <FindBugsFilter>                                                          }
-{        <Match>                                                                 }
-{          <Class name="com.example.Foo"/>                                       }
-{          <Bug code="NP,BC"/>                                                   }
-{        </Match>                                                                }
-{        <Match>                                                                 }
-{          <Bug pattern="NP_NULL_ON_SOME_PATH"/>                                 }
-{          <Class pattern=".*Test"/>                                              }
-{        </Match>                                                                }
-{      </FindBugsFilter>                                                         }
-{                                                                              }
-{  - Structure TFilterRule :                                                      }
-{      ClassPattern  : String   (expression reguliere sur le nom de classe)     }
-{      MethodPattern : String   (expression reguliere sur le nom de methode)    }
-{      BugPattern    : String   (expression reguliere sur le code de bug)       }
-{      Category      : Integer  (categorie a filtrer, 0 = toutes)               }
-{      MinSeverity   : Integer  (severite minimale a filtrer)                   }
-{      IsExclude     : Boolean  (True = exclusion, False = inclusion)           }
-{                                                                              }
-{  - Procedure LoadFilterFile(FileName: String; IsExclude: Boolean)             }
-{      Analyser le fichier XML de filtre (mini-parseur XML)                     }
-{      Extraire les regles Match avec Class, Bug, Method                        }
-{      Compiler les motifs en regles de filtrage                                 }
-{                                                                              }
-{  - Function IsBugFiltered(Bug: TBugReport): Boolean                           }
-{      Verifier si le bug correspond a une regle d'exclusion                    }
-{      Verifier qu'il correspond a une regle d'inclusion (si fournie)           }
-{      Utiliser une correspondance simple (prefixe, suffixe, joker *)           }
-{                                                                              }
-{  - Function MatchPattern(Pattern, Value: String): Boolean                     }
-{      Correspondance avec jokers (* = toute sequence, ? = un caractere)        }
+
+{ --- TODO 24 : Initialisation du module de filtrage --- }
+Procedure InitFilterState;
+Var
+  I: Integer;
+Begin
+  FRInitialized := True;
+  FRLabelNum := 0;
+  FRRuleCount := 0;
+  FRExcludeCount := 0;
+  FRIncludeCount := 0;
+  FRFilteredCount := 0;
+  FRPassedCount := 0;
+  FRExcludeFile := '';
+  FRIncludeFile := '';
+  FRDefaultSev := FR_SEV_LOW;
+  FRDefaultRank := 20;
+  FREnableExclude := False;
+  FREnableInclude := False;
+  FRCaseSensitive := False;
+  For I := 0 to FR_MAX_RULES - 1 do
+  Begin
+    FRRules[I].RuleType := 0;
+    FRRules[I].ClassPattern := '';
+    FRRules[I].MethodPattern := '';
+    FRRules[I].BugPattern := '';
+    FRRules[I].BugCode := '';
+    FRRules[I].PackagePattern := '';
+    FRRules[I].Category := FR_CAT_ALL;
+    FRRules[I].MinSeverity := FR_SEV_LOW;
+    FRRules[I].MaxRank := 20;
+    FRRules[I].IsExclude := True;
+    FRRules[I].IsActive := False;
+    FRRules[I].Priority := 0;
+    FRRules[I].SourceFile := '';
+    FRRules[I].LineNum := 0;
+  End;
+End;
+
+{ --- TODO 24 : Generation d'un label unique --- }
+Function GenFRLabel: String;
+Begin
+  Inc(FRLabelNum);
+  GenFRLabel := 'FR_' + IntToStr_(FRLabelNum);
+End;
+
+{ --- TODO 24 : Nom du type de regle --- }
+Function FRRuleTypeName(RuleType: Integer): String;
+Begin
+  Case RuleType of
+    FR_RULE_CLASS:    FRRuleTypeName := 'CLASS';
+    FR_RULE_METHOD:   FRRuleTypeName := 'METHOD';
+    FR_RULE_BUG:      FRRuleTypeName := 'BUG';
+    FR_RULE_PATTERN:  FRRuleTypeName := 'PATTERN';
+    FR_RULE_CATEGORY: FRRuleTypeName := 'CATEGORY';
+    FR_RULE_SEVERITY: FRRuleTypeName := 'SEVERITY';
+    FR_RULE_RANK:     FRRuleTypeName := 'RANK';
+    FR_RULE_PACKAGE:  FRRuleTypeName := 'PACKAGE';
+    Else              FRRuleTypeName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 24 : Nom de la categorie --- }
+Function FRCategoryName(Cat: Integer): String;
+Begin
+  Case Cat of
+    FR_CAT_ALL:          FRCategoryName := 'ALL';
+    FR_CAT_CORRECTNESS:  FRCategoryName := 'CORRECTNESS';
+    FR_CAT_BAD_PRACTICE: FRCategoryName := 'BAD_PRACTICE';
+    FR_CAT_PERFORMANCE:  FRCategoryName := 'PERFORMANCE';
+    FR_CAT_MT_SAFETY:    FRCategoryName := 'MT_CORRECTNESS';
+    FR_CAT_SECURITY:     FRCategoryName := 'SECURITY';
+    FR_CAT_STYLE:        FRCategoryName := 'STYLE';
+    FR_CAT_I18N:         FRCategoryName := 'I18N';
+    FR_CAT_MALICIOUS:    FRCategoryName := 'MALICIOUS_CODE';
+    Else                 FRCategoryName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 24 : Nom de la severite --- }
+Function FRSeverityName(Sev: Integer): String;
+Begin
+  Case Sev of
+    FR_SEV_LOW:      FRSeverityName := 'LOW';
+    FR_SEV_MEDIUM:   FRSeverityName := 'MEDIUM';
+    FR_SEV_HIGH:     FRSeverityName := 'HIGH';
+    FR_SEV_CRITICAL: FRSeverityName := 'CRITICAL';
+    Else             FRSeverityName := 'UNKNOWN';
+  End;
+End;
+
+{ --- TODO 24 : Correspondance avec jokers (* = seq, ? = char) --- }
+Function MatchPattern(Pattern, Value: String): Boolean;
+Var
+  PPos, VPos: Integer;
+  PatLen, ValLen: Integer;
+  SavedPPos, SavedVPos: Integer;
+  HasStar: Boolean;
+Begin
+  If Not FRCaseSensitive Then
+  Begin
+    Pattern := UpCaseStr(Pattern);
+    Value := UpCaseStr(Value);
+  End;
+  PatLen := Length(Pattern);
+  ValLen := Length(Value);
+  If (PatLen = 0) and (ValLen = 0) Then
+  Begin
+    MatchPattern := True;
+    Exit;
+  End;
+  If PatLen = 0 Then
+  Begin
+    MatchPattern := False;
+    Exit;
+  End;
+  If Pattern = '*' Then
+  Begin
+    MatchPattern := True;
+    Exit;
+  End;
+  PPos := 1;
+  VPos := 1;
+  SavedPPos := 0;
+  SavedVPos := 0;
+  HasStar := False;
+  While VPos <= ValLen do
+  Begin
+    If (PPos <= PatLen) and ((Pattern[PPos] = '?') or (Pattern[PPos] = Value[VPos])) Then
+    Begin
+      Inc(PPos);
+      Inc(VPos);
+    End
+    Else If (PPos <= PatLen) and (Pattern[PPos] = '*') Then
+    Begin
+      HasStar := True;
+      SavedPPos := PPos;
+      SavedVPos := VPos;
+      Inc(PPos);
+    End
+    Else If HasStar Then
+    Begin
+      PPos := SavedPPos + 1;
+      Inc(SavedVPos);
+      VPos := SavedVPos;
+    End
+    Else
+    Begin
+      MatchPattern := False;
+      Exit;
+    End;
+  End;
+  While (PPos <= PatLen) and (Pattern[PPos] = '*') do
+    Inc(PPos);
+  MatchPattern := (PPos > PatLen);
+End;
+
+{ --- TODO 24 : Verifier si une classe correspond au pattern --- }
+Function MatchClassName(Pattern, ClassName: String): Boolean;
+Begin
+  If Pattern = '' Then
+    MatchClassName := True
+  Else
+    MatchClassName := MatchPattern(Pattern, ClassName);
+End;
+
+{ --- TODO 24 : Verifier si une methode correspond au pattern --- }
+Function MatchMethodName(Pattern, MethodName: String): Boolean;
+Begin
+  If Pattern = '' Then
+    MatchMethodName := True
+  Else
+    MatchMethodName := MatchPattern(Pattern, MethodName);
+End;
+
+{ --- TODO 24 : Verifier si un code de bug correspond --- }
+Function MatchBugCode(CodeList, BugCode: String): Boolean;
+Var
+  I, Start: Integer;
+  Code: String;
+Begin
+  If CodeList = '' Then
+  Begin
+    MatchBugCode := True;
+    Exit;
+  End;
+  CodeList := UpCaseStr(CodeList);
+  BugCode := UpCaseStr(BugCode);
+  Start := 1;
+  For I := 1 to Length(CodeList) + 1 do
+  Begin
+    If (I > Length(CodeList)) or (CodeList[I] = ',') Then
+    Begin
+      Code := Copy(CodeList, Start, I - Start);
+      While (Length(Code) > 0) and (Code[1] = ' ') do
+        Delete(Code, 1, 1);
+      While (Length(Code) > 0) and (Code[Length(Code)] = ' ') do
+        Delete(Code, Length(Code), 1);
+      If Code <> '' Then
+      Begin
+        If Pos(Code, BugCode) = 1 Then
+        Begin
+          MatchBugCode := True;
+          Exit;
+        End;
+      End;
+      Start := I + 1;
+    End;
+  End;
+  MatchBugCode := False;
+End;
+
+{ --- TODO 24 : Verifier si un pattern de bug correspond --- }
+Function MatchBugPattern(Pattern, BugType: String): Boolean;
+Begin
+  If Pattern = '' Then
+    MatchBugPattern := True
+  Else
+    MatchBugPattern := MatchPattern(Pattern, BugType);
+End;
+
+{ --- TODO 24 : Verifier si un package correspond --- }
+Function MatchPackage(Pattern, ClassName: String): Boolean;
+Var
+  PkgName: String;
+  I: Integer;
+Begin
+  If Pattern = '' Then
+  Begin
+    MatchPackage := True;
+    Exit;
+  End;
+  PkgName := '';
+  For I := Length(ClassName) downto 1 do
+  Begin
+    If (ClassName[I] = '.') or (ClassName[I] = '/') Then
+    Begin
+      PkgName := Copy(ClassName, 1, I - 1);
+      Break;
+    End;
+  End;
+  MatchPackage := MatchPattern(Pattern, PkgName);
+End;
+
+{ --- TODO 24 : Ajouter une regle de filtrage --- }
+Function AddFilterRule(ClassPat, MethodPat, BugPat, BugCd, PkgPat: String;
+                       Cat, MinSev, MaxRk: Integer; IsExcl: Boolean;
+                       SrcFile: String; SrcLine: Integer): Integer;
+Begin
+  If FRRuleCount >= FR_MAX_RULES Then
+  Begin
+    AddFilterRule := -1;
+    Exit;
+  End;
+  FRRules[FRRuleCount].ClassPattern := ClassPat;
+  FRRules[FRRuleCount].MethodPattern := MethodPat;
+  FRRules[FRRuleCount].BugPattern := BugPat;
+  FRRules[FRRuleCount].BugCode := BugCd;
+  FRRules[FRRuleCount].PackagePattern := PkgPat;
+  FRRules[FRRuleCount].Category := Cat;
+  FRRules[FRRuleCount].MinSeverity := MinSev;
+  FRRules[FRRuleCount].MaxRank := MaxRk;
+  FRRules[FRRuleCount].IsExclude := IsExcl;
+  FRRules[FRRuleCount].IsActive := True;
+  FRRules[FRRuleCount].Priority := FRRuleCount;
+  FRRules[FRRuleCount].SourceFile := SrcFile;
+  FRRules[FRRuleCount].LineNum := SrcLine;
+  If ClassPat <> '' Then
+    FRRules[FRRuleCount].RuleType := FR_RULE_CLASS
+  Else If MethodPat <> '' Then
+    FRRules[FRRuleCount].RuleType := FR_RULE_METHOD
+  Else If BugPat <> '' Then
+    FRRules[FRRuleCount].RuleType := FR_RULE_PATTERN
+  Else If BugCd <> '' Then
+    FRRules[FRRuleCount].RuleType := FR_RULE_BUG
+  Else If PkgPat <> '' Then
+    FRRules[FRRuleCount].RuleType := FR_RULE_PACKAGE
+  Else If Cat <> FR_CAT_ALL Then
+    FRRules[FRRuleCount].RuleType := FR_RULE_CATEGORY
+  Else If MinSev > FR_SEV_LOW Then
+    FRRules[FRRuleCount].RuleType := FR_RULE_SEVERITY
+  Else
+    FRRules[FRRuleCount].RuleType := FR_RULE_RANK;
+  If IsExcl Then
+    Inc(FRExcludeCount)
+  Else
+    Inc(FRIncludeCount);
+  AddFilterRule := FRRuleCount;
+  Inc(FRRuleCount);
+End;
+
+{ --- TODO 24 : Extraire un attribut XML (name="value") --- }
+Function ParseXMLAttribute(Line: String; AttrName: String): String;
+Var
+  I, Start, EndPos: Integer;
+  Attr, Result_: String;
+Begin
+  Result_ := '';
+  Attr := AttrName + '="';
+  I := Pos(Attr, Line);
+  If I > 0 Then
+  Begin
+    Start := I + Length(Attr);
+    EndPos := Start;
+    While (EndPos <= Length(Line)) and (Line[EndPos] <> '"') do
+      Inc(EndPos);
+    Result_ := Copy(Line, Start, EndPos - Start);
+  End;
+  ParseXMLAttribute := Result_;
+End;
+
+{ --- TODO 24 : Nettoyer une ligne XML (supprimer espaces) --- }
+Function TrimXMLLine(Line: String): String;
+Begin
+  While (Length(Line) > 0) and (Line[1] in [' ', #9, #10, #13]) do
+    Delete(Line, 1, 1);
+  While (Length(Line) > 0) and (Line[Length(Line)] in [' ', #9, #10, #13]) do
+    Delete(Line, Length(Line), 1);
+  TrimXMLLine := Line;
+End;
+
+{ --- TODO 24 : Charger un fichier de filtre XML --- }
+Procedure LoadFilterFile(FileName: String; IsExclude: Boolean);
+Var
+  F: Text;
+  Line: String;
+  InMatch: Boolean;
+  ClassPat, MethodPat, BugPat, BugCode, PkgPat: String;
+  CurrLine: Integer;
+Begin
+  {$I-}
+  Assign(F, FileName);
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('Erreur: Impossible d''ouvrir le fichier de filtre: ', FileName);
+    Exit;
+  End;
+  If IsExclude Then
+  Begin
+    FRExcludeFile := FileName;
+    FREnableExclude := True;
+  End
+  Else
+  Begin
+    FRIncludeFile := FileName;
+    FREnableInclude := True;
+  End;
+  InMatch := False;
+  ClassPat := '';
+  MethodPat := '';
+  BugPat := '';
+  BugCode := '';
+  PkgPat := '';
+  CurrLine := 0;
+  While Not Eof(F) do
+  Begin
+    ReadLn(F, Line);
+    Inc(CurrLine);
+    Line := TrimXMLLine(Line);
+    If Line = '' Then Continue;
+    If Pos('<Match', Line) > 0 Then
+    Begin
+      InMatch := True;
+      ClassPat := '';
+      MethodPat := '';
+      BugPat := '';
+      BugCode := '';
+      PkgPat := '';
+    End
+    Else If Pos('</Match>', Line) > 0 Then
+    Begin
+      If InMatch Then
+      Begin
+        AddFilterRule(ClassPat, MethodPat, BugPat, BugCode, PkgPat,
+                      FR_CAT_ALL, FR_SEV_LOW, 20, IsExclude, FileName, CurrLine);
+      End;
+      InMatch := False;
+    End
+    Else If InMatch Then
+    Begin
+      If Pos('<Class', Line) > 0 Then
+      Begin
+        ClassPat := ParseXMLAttribute(Line, 'name');
+        If ClassPat = '' Then
+          ClassPat := ParseXMLAttribute(Line, 'pattern');
+      End
+      Else If Pos('<Method', Line) > 0 Then
+      Begin
+        MethodPat := ParseXMLAttribute(Line, 'name');
+        If MethodPat = '' Then
+          MethodPat := ParseXMLAttribute(Line, 'pattern');
+      End
+      Else If Pos('<Bug', Line) > 0 Then
+      Begin
+        BugCode := ParseXMLAttribute(Line, 'code');
+        If BugCode = '' Then
+          BugPat := ParseXMLAttribute(Line, 'pattern');
+      End
+      Else If Pos('<Package', Line) > 0 Then
+      Begin
+        PkgPat := ParseXMLAttribute(Line, 'name');
+        If PkgPat = '' Then
+          PkgPat := ParseXMLAttribute(Line, 'pattern');
+      End;
+    End;
+  End;
+  Close(F);
+End;
+
+{ --- TODO 24 : Convertir categorie interne en FR_CAT_* --- }
+Function MapCategoryToFR(Cat: Integer): Integer;
+Begin
+  Case Cat of
+    CAT_CORRECTNESS:        MapCategoryToFR := FR_CAT_CORRECTNESS;
+    CAT_BAD_PRACTICE:       MapCategoryToFR := FR_CAT_BAD_PRACTICE;
+    CAT_PERFORMANCE:        MapCategoryToFR := FR_CAT_PERFORMANCE;
+    CAT_MT_CORRECTNESS:     MapCategoryToFR := FR_CAT_MT_SAFETY;
+    CAT_SECURITY:           MapCategoryToFR := FR_CAT_SECURITY;
+    CAT_INTERNATIONALIZATION: MapCategoryToFR := FR_CAT_I18N;
+    CAT_DODGY:              MapCategoryToFR := FR_CAT_STYLE;
+    CAT_MALICIOUS:          MapCategoryToFR := FR_CAT_MALICIOUS;
+    Else                    MapCategoryToFR := FR_CAT_ALL;
+  End;
+End;
+
+{ --- TODO 24 : Convertir severite interne en FR_SEV_* --- }
+Function MapSeverityToFR(Sev: Integer): Integer;
+Begin
+  Case Sev of
+    SEV_LOW:      MapSeverityToFR := FR_SEV_LOW;
+    SEV_MEDIUM:   MapSeverityToFR := FR_SEV_MEDIUM;
+    SEV_HIGH:     MapSeverityToFR := FR_SEV_HIGH;
+    Else          MapSeverityToFR := FR_SEV_LOW;
+  End;
+End;
+
+{ --- TODO 24 : Verifier si un bug correspond a une regle --- }
+Function RuleMatchesBug(Var Rule: TFilterRule; BugType, ClassName, MethodName: String;
+                        Category, Severity, Rank: Integer): Boolean;
+Var
+  Matches: Boolean;
+Begin
+  If Not Rule.IsActive Then
+  Begin
+    RuleMatchesBug := False;
+    Exit;
+  End;
+  Matches := True;
+  If (Rule.ClassPattern <> '') and Not MatchClassName(Rule.ClassPattern, ClassName) Then
+    Matches := False;
+  If Matches and (Rule.MethodPattern <> '') and Not MatchMethodName(Rule.MethodPattern, MethodName) Then
+    Matches := False;
+  If Matches and (Rule.BugCode <> '') and Not MatchBugCode(Rule.BugCode, BugType) Then
+    Matches := False;
+  If Matches and (Rule.BugPattern <> '') and Not MatchBugPattern(Rule.BugPattern, BugType) Then
+    Matches := False;
+  If Matches and (Rule.PackagePattern <> '') and Not MatchPackage(Rule.PackagePattern, ClassName) Then
+    Matches := False;
+  If Matches and (Rule.Category <> FR_CAT_ALL) and (Rule.Category <> Category) Then
+    Matches := False;
+  If Matches and (Severity < Rule.MinSeverity) Then
+    Matches := False;
+  If Matches and (Rank > Rule.MaxRank) Then
+    Matches := False;
+  RuleMatchesBug := Matches;
+End;
+
+{ --- TODO 24 : Verifier si un bug doit etre filtre --- }
+Function IsBugFiltered(BugType, ClassName, MethodName: String;
+                       Category, Severity, Rank: Integer): Boolean;
+Var
+  I: Integer;
+  FRCategory, FRSeverity: Integer;
+  IncludeMatch, ExcludeMatch: Boolean;
+Begin
+  If Not FRInitialized Then
+  Begin
+    IsBugFiltered := False;
+    Exit;
+  End;
+  If (Not FREnableExclude) and (Not FREnableInclude) Then
+  Begin
+    If Severity < FRDefaultSev Then
+    Begin
+      Inc(FRFilteredCount);
+      IsBugFiltered := True;
+      Exit;
+    End;
+    If Rank > FRDefaultRank Then
+    Begin
+      Inc(FRFilteredCount);
+      IsBugFiltered := True;
+      Exit;
+    End;
+    Inc(FRPassedCount);
+    IsBugFiltered := False;
+    Exit;
+  End;
+  FRCategory := MapCategoryToFR(Category);
+  FRSeverity := MapSeverityToFR(Severity);
+  ExcludeMatch := False;
+  IncludeMatch := False;
+  For I := 0 to FRRuleCount - 1 do
+  Begin
+    If FRRules[I].IsExclude Then
+    Begin
+      If RuleMatchesBug(FRRules[I], BugType, ClassName, MethodName,
+                        FRCategory, FRSeverity, Rank) Then
+      Begin
+        ExcludeMatch := True;
+        Break;
+      End;
+    End;
+  End;
+  If FREnableInclude Then
+  Begin
+    For I := 0 to FRRuleCount - 1 do
+    Begin
+      If Not FRRules[I].IsExclude Then
+      Begin
+        If RuleMatchesBug(FRRules[I], BugType, ClassName, MethodName,
+                          FRCategory, FRSeverity, Rank) Then
+        Begin
+          IncludeMatch := True;
+          Break;
+        End;
+      End;
+    End;
+    If Not IncludeMatch Then
+    Begin
+      Inc(FRFilteredCount);
+      IsBugFiltered := True;
+      Exit;
+    End;
+  End;
+  If ExcludeMatch Then
+  Begin
+    Inc(FRFilteredCount);
+    IsBugFiltered := True;
+  End
+  Else
+  Begin
+    Inc(FRPassedCount);
+    IsBugFiltered := False;
+  End;
+End;
+
+{ --- TODO 24 : Verifier si un bug indexe doit etre filtre --- }
+Function IsBugIdxFiltered(BugIdx: Integer): Boolean;
+Var
+  DefaultRank: Integer;
+Begin
+  If (BugIdx < 1) or (BugIdx > BugCount) Then
+  Begin
+    IsBugIdxFiltered := True;
+    Exit;
+  End;
+  { TBugReport n'a pas de Rank, on calcule un rang par defaut selon Severity }
+  Case Bugs[BugIdx].Severity of
+    SEV_HIGH:   DefaultRank := 5;
+    SEV_MEDIUM: DefaultRank := 10;
+    SEV_LOW:    DefaultRank := 15;
+    Else        DefaultRank := 20;
+  End;
+  IsBugIdxFiltered := IsBugFiltered(
+    Bugs[BugIdx].BugType,
+    Bugs[BugIdx].ClassName,
+    Bugs[BugIdx].MethodName,
+    Bugs[BugIdx].Category,
+    Bugs[BugIdx].Severity,
+    DefaultRank
+  );
+End;
+
+{ --- TODO 24 : Effacer toutes les regles --- }
+Procedure ClearFilterRules;
+Var
+  I: Integer;
+Begin
+  For I := 0 to FRRuleCount - 1 do
+  Begin
+    FRRules[I].IsActive := False;
+    FRRules[I].ClassPattern := '';
+    FRRules[I].MethodPattern := '';
+    FRRules[I].BugPattern := '';
+    FRRules[I].BugCode := '';
+    FRRules[I].PackagePattern := '';
+  End;
+  FRRuleCount := 0;
+  FRExcludeCount := 0;
+  FRIncludeCount := 0;
+  FRFilteredCount := 0;
+  FRPassedCount := 0;
+End;
+
+{ --- TODO 24 : Activer/Desactiver une regle --- }
+Procedure SetRuleActive(RuleIdx: Integer; Active: Boolean);
+Begin
+  If (RuleIdx >= 0) and (RuleIdx < FRRuleCount) Then
+    FRRules[RuleIdx].IsActive := Active;
+End;
+
+{ --- TODO 24 : Afficher l'etat du module de filtrage --- }
+Procedure DumpFilterState;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== Etat du module de filtrage (TODO 24) ===');
+  WriteLn('FRInitialized    : ', FRInitialized);
+  WriteLn('FRRuleCount      : ', FRRuleCount);
+  WriteLn('FRExcludeCount   : ', FRExcludeCount);
+  WriteLn('FRIncludeCount   : ', FRIncludeCount);
+  WriteLn('FRFilteredCount  : ', FRFilteredCount);
+  WriteLn('FRPassedCount    : ', FRPassedCount);
+  WriteLn('FRExcludeFile    : ', FRExcludeFile);
+  WriteLn('FRIncludeFile    : ', FRIncludeFile);
+  WriteLn('FRDefaultSev     : ', FRSeverityName(FRDefaultSev));
+  WriteLn('FRDefaultRank    : ', FRDefaultRank);
+  WriteLn('FREnableExclude  : ', FREnableExclude);
+  WriteLn('FREnableInclude  : ', FREnableInclude);
+  WriteLn('FRCaseSensitive  : ', FRCaseSensitive);
+  If FRRuleCount > 0 Then
+  Begin
+    WriteLn;
+    WriteLn('--- Regles de filtrage ---');
+    For I := 0 to FRRuleCount - 1 do
+    Begin
+      Write('  [', I, '] ');
+      If FRRules[I].IsExclude Then
+        Write('EXCLUDE ')
+      Else
+        Write('INCLUDE ');
+      Write(FRRuleTypeName(FRRules[I].RuleType), ' ');
+      If FRRules[I].ClassPattern <> '' Then
+        Write('class="', FRRules[I].ClassPattern, '" ');
+      If FRRules[I].MethodPattern <> '' Then
+        Write('method="', FRRules[I].MethodPattern, '" ');
+      If FRRules[I].BugCode <> '' Then
+        Write('code="', FRRules[I].BugCode, '" ');
+      If FRRules[I].BugPattern <> '' Then
+        Write('pattern="', FRRules[I].BugPattern, '" ');
+      If Not FRRules[I].IsActive Then
+        Write('[DISABLED]');
+      WriteLn;
+    End;
+  End;
+  WriteLn('============================================');
+End;
+
+{ --- TODO 24 : Accesseurs pour le module de filtrage --- }
+
+Function GetFRInitialized: Boolean;
+Begin
+  GetFRInitialized := FRInitialized;
+End;
+
+Function GetFRRuleCount: Integer;
+Begin
+  GetFRRuleCount := FRRuleCount;
+End;
+
+Function GetFRExcludeCount: Integer;
+Begin
+  GetFRExcludeCount := FRExcludeCount;
+End;
+
+Function GetFRIncludeCount: Integer;
+Begin
+  GetFRIncludeCount := FRIncludeCount;
+End;
+
+Function GetFRFilteredCount: Integer;
+Begin
+  GetFRFilteredCount := FRFilteredCount;
+End;
+
+Function GetFRPassedCount: Integer;
+Begin
+  GetFRPassedCount := FRPassedCount;
+End;
+
+Function GetFREnableExclude: Boolean;
+Begin
+  GetFREnableExclude := FREnableExclude;
+End;
+
+Function GetFREnableInclude: Boolean;
+Begin
+  GetFREnableInclude := FREnableInclude;
+End;
+
+Procedure SetFRDefaultSev(Sev: Integer);
+Begin
+  FRDefaultSev := Sev;
+End;
+
+Procedure SetFRDefaultRank(Rank: Integer);
+Begin
+  If (Rank >= 1) and (Rank <= 20) Then
+    FRDefaultRank := Rank;
+End;
+
+Procedure SetFRCaseSensitive(Sensitive: Boolean);
+Begin
+  FRCaseSensitive := Sensitive;
+End;
+
+Function GetFRExcludeFile: String;
+Begin
+  GetFRExcludeFile := FRExcludeFile;
+End;
+
+Function GetFRIncludeFile: String;
+Begin
+  GetFRIncludeFile := FRIncludeFile;
+End;
 
 { ============================================================================ }
 { TODO 25 [A FAIRE] - Programme principal, balayage recursif et exemples       }
