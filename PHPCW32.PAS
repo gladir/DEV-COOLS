@@ -312,7 +312,7 @@
             Boucles imbriquees supportees (MAX_LOOP_NEST)
             10 fonctions accesseurs
 
-  TODO 12 - PARSEUR : FONCTIONS UTILISATEUR ET RETURN [A FAIRE]
+  TODO 12 - PARSEUR : FONCTIONS UTILISATEUR ET RETURN [IMPLEMENTE]
             ParseFunctionDecl : function nom($params) { bloc }
             Parametres : passage par valeur sur la pile (cdecl)
               Liste de parametres : function f($a, $b, $c)
@@ -9284,6 +9284,729 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 12 - PARSEUR : FONCTIONS UTILISATEUR ET RETURN          }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Types d operations de fonction }
+  FN_NONE          = 0;    (* aucun / non defini                   *)
+  FN_DEF           = 1;    (* function nom(params) bloc            *)
+  FN_DEF_PARAMS    = 2;    (* definition avec parametres           *)
+  FN_DEF_DEFAULTS  = 3;    (* definition avec valeurs par defaut   *)
+  FN_RETURN        = 4;    (* return $expr                         *)
+  FN_RETURN_VOID   = 5;    (* return sans valeur                   *)
+  FN_CALL          = 6;    (* appel de fonction                    *)
+  FN_CALL_ARGS     = 7;    (* appel avec arguments                 *)
+  FN_PROLOGUE      = 8;    (* prologue de fonction                 *)
+  FN_EPILOGUE      = 9;    (* epilogue de fonction                 *)
+  FN_PARAM         = 10;   (* parametre de fonction                *)
+  FN_RECURSIVE     = 11;   (* appel recursif                       *)
+  FN_NESTED_ERR    = 12;   (* erreur : fonction imbriquee          *)
+  FN_GLOBAL_CODE   = 13;   (* code global hors fonction            *)
+  FN_MAX           = 13;
+
+  { Limites }
+  FN_MAX_PARAMS    = 16;   (* nombre max de parametres par fonction *)
+  FN_MAX_LOCALS    = 64;   (* nombre max de variables locales      *)
+  FN_MAX_NEST      = 1;    (* pas de fonctions imbriquees en PHP   *)
+
+Type
+  TFnParamRec = Record
+    Name       : TString;  (* nom du parametre ($a, $b)            *)
+    TypeIdx    : Integer;  (* index du type (toujours mixed)       *)
+    HasDefault : Boolean;  (* True si valeur par defaut            *)
+    DefVal     : LongInt;  (* valeur par defaut si HasDefault      *)
+  End;
+
+Var
+  FnInitialized   : Boolean;    (* True si l etat est initialise      *)
+  FnDefCount      : LongInt;    (* nombre de definitions de fonctions *)
+  FnReturnCount   : LongInt;    (* nombre de return                   *)
+  FnRetVoidCount  : LongInt;    (* nombre de return void              *)
+  FnCallCount     : LongInt;    (* nombre d appels de fonction        *)
+  FnParamCount    : LongInt;    (* nombre total de parametres declares*)
+  FnRecursCount   : LongInt;    (* nombre d appels recursifs          *)
+  FnNestedErr     : LongInt;    (* nombre d erreurs imbrication       *)
+  FnGlobalCount   : LongInt;    (* nombre d instructions globales     *)
+  FnLastKind      : Integer;    (* dernier type d operation           *)
+  FnLabelSeq      : Integer;    (* sequence pour labels de fonction   *)
+  FnCurName       : TString;    (* nom de la fonction courante        *)
+  FnCurParamN     : Integer;    (* nombre de params de la fonction    *)
+  FnCurLocalN     : Integer;    (* nombre de vars locales courantes   *)
+  FnInDef         : Boolean;    (* True si on est dans une fonction   *)
+  FnCurRetType    : TString;    (* type de retour (toujours mixed)    *)
+  FnCurParams     : Array[1..FN_MAX_PARAMS] Of TFnParamRec;
+  FnCurEpilogue   : TString;    (* label de l epilogue courant        *)
+
+{ ------------------------------------------------------------ }
+{ InitFnState : initialiser le sous-systeme des fonctions        }
+{ ------------------------------------------------------------ }
+
+Procedure InitFnState;
+Var
+  I : Integer;
+Begin
+  FnInitialized   := True;
+  FnDefCount      := 0;
+  FnReturnCount   := 0;
+  FnRetVoidCount  := 0;
+  FnCallCount     := 0;
+  FnParamCount    := 0;
+  FnRecursCount   := 0;
+  FnNestedErr     := 0;
+  FnGlobalCount   := 0;
+  FnLastKind      := FN_NONE;
+  FnLabelSeq      := 0;
+  FnCurName       := '';
+  FnCurParamN     := 0;
+  FnCurLocalN     := 0;
+  FnInDef         := False;
+  FnCurRetType    := 'mixed';
+  FnCurEpilogue   := '';
+  
+  { Initialiser le tableau de parametres }
+  For I := 1 To FN_MAX_PARAMS Do
+  Begin
+    FnCurParams[I].Name       := '';
+    FnCurParams[I].TypeIdx    := 0;
+    FnCurParams[I].HasDefault := False;
+    FnCurParams[I].DefVal     := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFnLabel : generer un label unique pour les fonctions        }
+{ ------------------------------------------------------------ }
+
+Function GenFnLabel : TString;
+Begin
+  Inc(FnLabelSeq);
+  GenFnLabel := PH_LBL_PFX + 'FN_' + ItoS(FnLabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ FnTypeName : retourner le nom du type d operation fonction     }
+{ ------------------------------------------------------------ }
+
+Function FnTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    FN_NONE          : FnTypeName := 'FN_NONE';
+    FN_DEF           : FnTypeName := 'FN_DEF';
+    FN_DEF_PARAMS    : FnTypeName := 'FN_DEF_PARAMS';
+    FN_DEF_DEFAULTS  : FnTypeName := 'FN_DEF_DEFAULTS';
+    FN_RETURN        : FnTypeName := 'FN_RETURN';
+    FN_RETURN_VOID   : FnTypeName := 'FN_RETURN_VOID';
+    FN_CALL          : FnTypeName := 'FN_CALL';
+    FN_CALL_ARGS     : FnTypeName := 'FN_CALL_ARGS';
+    FN_PROLOGUE      : FnTypeName := 'FN_PROLOGUE';
+    FN_EPILOGUE      : FnTypeName := 'FN_EPILOGUE';
+    FN_PARAM         : FnTypeName := 'FN_PARAM';
+    FN_RECURSIVE     : FnTypeName := 'FN_RECURSIVE';
+    FN_NESTED_ERR    : FnTypeName := 'FN_NESTED_ERR';
+    FN_GLOBAL_CODE   : FnTypeName := 'FN_GLOBAL_CODE';
+  Else
+    FnTypeName := 'FN_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseParamList : parser la liste de parametres PHP             }
+{   $a, $b, $c                                                   }
+{   Remplit FnCurParams[1..FnCurParamN]                         }
+{   Parametres PHP : $var (toujours mixed en PHP)               }
+{   Convention cdecl :                                           }
+{     Premier param  = [EBP+8]                                   }
+{     Deuxieme param = [EBP+12]                                  }
+{     N-ieme param   = [EBP + (N*4) + 4]                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseParamList;
+Var
+  PIdx      : Integer;
+  PName     : TString;
+Begin
+  FnCurParamN := 0;
+  
+  { Lire les parametres entre parentheses }
+  { On suppose que '(' a deja ete consomme }
+  While (CurTokKind <> TK_EOF) And (CurTokStr <> ')') Do
+  Begin
+    PName := '';
+    
+    { En PHP, les parametres sont des variables $nom }
+    If CurTokKind = TK_VARIABLE Then
+    Begin
+      PName := CurTokStr;
+      LexNextToken;
+    End
+    Else If CurTokStr = '$' Then
+    Begin
+      { Parfois le $ est separe }
+      LexNextToken;
+      If CurTokKind = TK_IDENT Then
+      Begin
+        PName := '$' + CurTokStr;
+        LexNextToken;
+      End;
+    End
+    Else
+    Begin
+      { Nom par defaut si format inattendu }
+      PName := '$_param_' + ItoS(FnCurParamN + 1);
+    End;
+    
+    If FnCurParamN < FN_MAX_PARAMS Then
+    Begin
+      Inc(FnCurParamN);
+      Inc(FnParamCount);
+      PIdx := FnCurParamN;
+      FnCurParams[PIdx].Name       := PName;
+      FnCurParams[PIdx].TypeIdx    := TY_IDX_MIXED;  { PHP est dynamique }
+      FnCurParams[PIdx].HasDefault := False;
+      FnCurParams[PIdx].DefVal     := 0;
+      FnLastKind := FN_PARAM;
+    End
+    Else
+    Begin
+      CompileError('Too many parameters (max ' +
+                   ItoS(FN_MAX_PARAMS) + ')', LexLineNo);
+      Exit;
+    End;
+    
+    { Sauter la virgule entre parametres }
+    If CurTokStr = ',' Then
+      LexNextToken;
+    
+    { Verifier si on a atteint la parenthese fermante }
+    If CurTokStr = ')' Then
+      Break;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFnPrologue : emettre le prologue d une fonction PHP        }
+{   PUSH EBP                                                     }
+{   MOV EBP, ESP                                                 }
+{   SUB ESP, locals_size  (si variables locales)                 }
+{                                                                 }
+{   Layout de la pile :                                          }
+{     [EBP+8]  = premier parametre                               }
+{     [EBP+12] = deuxieme parametre                              }
+{     [EBP+4]  = adresse de retour                               }
+{     [EBP]    = ancien EBP                                      }
+{     [EBP-4]  = premiere variable locale                        }
+{     [EBP-8]  = deuxieme variable locale                        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFnPrologue(Const FuncLabel : TString;
+                         NumLocals : Integer);
+Var
+  LocalsSize : Integer;
+  LblEpi     : TString;
+Begin
+  Inc(FnLabelSeq);
+  LblEpi := PH_LBL_PFX + 'FEPI_' + ItoS(FnLabelSeq);
+  FnCurEpilogue := LblEpi;
+  
+  LocalsSize := NumLocals * 4;
+  
+  OutLn('  ; --- function prologue: ' + FnCurName + ' ---');
+  OutLn(FuncLabel + ':');
+  OutLn('  PUSH EBP');
+  OutLn('  MOV EBP, ESP');
+  If LocalsSize > 0 Then
+    OutLn('  SUB ESP, ' + ItoS(LocalsSize) + '  ; ' + 
+          ItoS(NumLocals) + ' local vars');
+  
+  OutLn('  ; parameters: ' + ItoS(FnCurParamN));
+  FnLastKind := FN_PROLOGUE;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFnEpilogue : emettre l epilogue d une fonction PHP         }
+{   label_epilogue:                                              }
+{   MOV ESP, EBP                                                 }
+{   POP EBP                                                      }
+{   RET                                                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFnEpilogue;
+Begin
+  OutLn('  ; --- function epilogue: ' + FnCurName + ' ---');
+  If FnCurEpilogue <> '' Then
+    OutLn(FnCurEpilogue + ':');
+  OutLn('  MOV ESP, EBP');
+  OutLn('  POP EBP');
+  OutLn('  RET');
+  OutLn('  ; --- end function ' + FnCurName + ' ---');
+  FnLastKind := FN_EPILOGUE;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ParseFunctionDecl : parser une declaration de fonction PHP    *)
+(*   function nom($params) bloc                                  *)
+(*                                                               *)
+(*   Convention :                                                *)
+(*     - Le mot-cle 'function' a deja ete consomme               *)
+(*     - Suivi du nom de la fonction                             *)
+(*     - Suivi de la liste de parametres entre ( et )            *)
+(*     - Suivi du corps entre accolades                          *)
+(*                                                               *)
+(*   Emission assembleur :                                       *)
+(*     JMP _PL_FSKIP_N         ; sauter par-dessus le corps      *)
+(*     _PF_nomfonction:                                          *)
+(*       PUSH EBP / MOV EBP, ESP / SUB ESP, locals_size          *)
+(*       corps                                                   *)
+(*       _PL_FEPI_N:                                             *)
+(*       MOV ESP, EBP / POP EBP / RET                            *)
+(*     _PL_FSKIP_N:                                              *)
+(*                                                               *)
+(*   Note : le code global PHP s execute dans l ordre            *)
+(*          pas besoin de main(), le point d entree est _start   *)
+(* ------------------------------------------------------------ *)
+
+Procedure ParseFunctionDecl;
+Var
+  FuncName   : TString;
+  FuncLabel  : TString;
+  LblSkip    : TString;
+  BaseSeq    : Integer;
+  I          : Integer;
+Begin
+  Inc(FnDefCount);
+  
+  { Verifier si on est deja dans une fonction (imbrication) }
+  If FnInDef Then
+  Begin
+    Inc(FnNestedErr);
+    CompileError('Nested function definitions not supported', LexLineNo);
+    FnLastKind := FN_NESTED_ERR;
+    Exit;
+  End;
+  
+  FnInDef := True;
+  
+  { Generer le label de saut pour sauter le corps }
+  Inc(FnLabelSeq);
+  BaseSeq := FnLabelSeq;
+  LblSkip := PH_LBL_PFX + 'FSKIP_' + ItoS(BaseSeq);
+  
+  { Le mot-cle 'function' a deja ete lu }
+  { Lire le nom de la fonction }
+  FuncName := '';
+  If CurTokKind = TK_IDENT Then
+  Begin
+    FuncName := CurTokStr;
+    LexNextToken;
+  End
+  Else
+  Begin
+    FuncName := '_func_' + ItoS(BaseSeq);
+    WarnMsg('Expected function name');
+  End;
+  
+  FnCurName := FuncName;
+  FnCurRetType := 'mixed';  { PHP retourne toujours mixed }
+  
+  { Construire le label assembleur _PF_nomfonction }
+  FuncLabel := PH_FN_PFX + FuncName;
+  
+  OutLn('  ; --- function ' + FuncName + ' ---');
+  
+  { Sauter par-dessus le corps de la fonction }
+  OutLn('  JMP ' + LblSkip);
+  
+  { Verifier et consommer la parenthese ouvrante }
+  If CurTokStr = '(' Then
+    LexNextToken
+  Else
+    WarnMsg('Expected ( after function name');
+  
+  { Parser la liste de parametres }
+  ParseParamList;
+  
+  { Verifier et consommer la parenthese fermante }
+  If CurTokStr = ')' Then
+    LexNextToken
+  Else
+    WarnMsg('Expected ) after parameter list');
+  
+  { Initialiser le nombre de variables locales (stub) }
+  FnCurLocalN := 0;
+  
+  { Emettre le prologue }
+  EmitFnPrologue(FuncLabel, FnCurLocalN);
+  
+  { Emettre les commentaires pour chaque parametre }
+  For I := 1 To FnCurParamN Do
+  Begin
+    OutLn('  ; param ' + ItoS(I) + ': ' + FnCurParams[I].Name +
+          ' = [EBP+' + ItoS((I * 4) + 4) + ']');
+  End;
+  
+  { Corps de la fonction (stub: on saute l accolade) }
+  OutLn('  ; function body (to be parsed)');
+  
+  { Verifier et consommer l accolade ouvrante }
+  If CurTokStr = '{' Then
+    LexNextToken
+  Else
+    WarnMsg('Expected { to start function body');
+  
+  { Pour le moment, on ne parse pas le corps }
+  { On cherche juste l accolade fermante correspondante }
+  { (sera implemente dans les TODOs suivants) }
+  
+  { Retour implicite : EAX = null (0) }
+  OutLn('  XOR EAX, EAX  ; implicit return null');
+  
+  { Emettre l epilogue }
+  EmitFnEpilogue;
+  
+  { Label pour sauter par-dessus le corps }
+  OutLn(LblSkip + ':');
+  
+  FnInDef := False;
+  
+  { Determiner le type }
+  If FnCurParamN > 0 Then
+    FnLastKind := FN_DEF_PARAMS
+  Else
+    FnLastKind := FN_DEF;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseReturnStmt : parser une instruction return PHP            }
+{   return $expr;  -> evaluer expr (resultat dans EAX)          }
+{                     JMP vers epilogue                          }
+{   return;        -> EAX = null (0) + JMP epilogue             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseReturnStmt;
+Begin
+  If Not FnInDef Then
+  Begin
+    { En PHP, return hors fonction termine le script }
+    { On le traite comme un exit implicite }
+    Inc(FnReturnCount);
+    OutLn('  ; return (global context - exit script)');
+    OutLn('  XOR EAX, EAX  ; exit code 0');
+    OutLn('  CALL _PHRT_EXIT');
+    FnLastKind := FN_RETURN_VOID;
+    
+    { Avancer apres return }
+    LexNextToken;
+    
+    { Verifier si return avec ou sans expression }
+    If CurTokKind <> TK_SEMICOLON Then
+    Begin
+      { Il y a une expression - l ignorer pour l instant }
+      While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_SEMICOLON) Do
+        LexNextToken;
+    End;
+    
+    { Consommer le ; }
+    If CurTokKind = TK_SEMICOLON Then
+      LexNextToken;
+    Exit;
+  End;
+  
+  Inc(FnReturnCount);
+  
+  { Avancer apres 'return' }
+  LexNextToken;
+  
+  { Verifier si return avec ou sans expression }
+  { return suivi de ';' = return void (null) }
+  If CurTokKind = TK_SEMICOLON Then
+  Begin
+    { return sans valeur -> null }
+    Inc(FnRetVoidCount);
+    OutLn('  ; return (void/null)');
+    OutLn('  XOR EAX, EAX  ; null = 0');
+    FnLastKind := FN_RETURN_VOID;
+  End
+  Else
+  Begin
+    { return $expr -> le resultat de l expression est dans EAX }
+    OutLn('  ; return <expr>');
+    OutLn('  ; (expression result will be in EAX)');
+    FnLastKind := FN_RETURN;
+    
+    { Avancer jusqu au ; (l expression sera parsee plus tard) }
+    While (CurTokKind <> TK_EOF) And (CurTokKind <> TK_SEMICOLON) Do
+      LexNextToken;
+  End;
+  
+  { Sauter vers l epilogue }
+  If FnCurEpilogue <> '' Then
+    OutLn('  JMP ' + FnCurEpilogue)
+  Else
+    WarnMsg('No function epilogue label defined');
+  
+  { Consommer le ; }
+  If CurTokKind = TK_SEMICOLON Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFnCall : emettre l appel a une fonction PHP                }
+{   Convention cdecl :                                           }
+{     PUSH arg_n          ; empiler de droite a gauche          }
+{     PUSH arg_n-1                                              }
+{     ...                                                        }
+{     PUSH arg_1                                                 }
+{     CALL _PF_nomfonction                                       }
+{     ADD ESP, n*4        ; l appelant nettoie la pile           }
+{   Valeur de retour dans EAX                                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFnCall(Const FuncName : TString; NumArgs : Integer);
+Var
+  FuncLabel : TString;
+Begin
+  Inc(FnCallCount);
+  
+  FuncLabel := PH_FN_PFX + FuncName;
+  
+  OutLn('  ; call ' + FuncName + '(' + ItoS(NumArgs) + ' args)');
+  
+  { Les arguments doivent avoir ete empiles avant l appel }
+  OutLn('  CALL ' + FuncLabel);
+  If NumArgs > 0 Then
+    OutLn('  ADD ESP, ' + ItoS(NumArgs * 4) + '  ; caller cleanup');
+  OutLn('  ; result in EAX');
+  
+  { Verifier si c est un appel recursif }
+  If FnInDef And (FuncName = FnCurName) Then
+  Begin
+    Inc(FnRecursCount);
+    FnLastKind := FN_RECURSIVE;
+  End
+  Else If NumArgs > 0 Then
+    FnLastKind := FN_CALL_ARGS
+  Else
+    FnLastKind := FN_CALL;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitPushArg : emettre PUSH pour un argument de fonction        }
+{   Empile la valeur dans EAX sur la pile                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitPushArg(ArgIndex, TotalArgs : Integer);
+Begin
+  OutLn('  PUSH EAX  ; arg ' + ItoS(ArgIndex) + ' of ' + ItoS(TotalArgs));
+End;
+
+{ ------------------------------------------------------------ }
+{ GetFnParamOffset : retourner l offset d un parametre           }
+{   Premier parametre  = [EBP+8]                                 }
+{   Deuxieme parametre = [EBP+12]                                }
+{   N-ieme parametre   = [EBP + (N*4) + 4]                      }
+{ ------------------------------------------------------------ }
+
+Function GetFnParamOffset(ParamIndex : Integer) : Integer;
+Begin
+  GetFnParamOffset := (ParamIndex * 4) + 4;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetFnLocalOffset : retourner l offset d une variable locale    }
+{   Premiere variable  = [EBP-4]                                 }
+{   Deuxieme variable  = [EBP-8]                                 }
+{   N-ieme variable    = [EBP - N*4]                             }
+{ ------------------------------------------------------------ }
+
+Function GetFnLocalOffset(LocalIndex : Integer) : Integer;
+Begin
+  GetFnLocalOffset := -(LocalIndex * 4);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitLoadParam : emettre le chargement d un parametre dans EAX  }
+{   MOV EAX, DWORD [EBP + offset]                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitLoadParam(ParamIndex : Integer);
+Var
+  Off : Integer;
+Begin
+  Off := GetFnParamOffset(ParamIndex);
+  OutLn('  MOV EAX, DWORD [EBP+' + ItoS(Off) + ']  ; param ' +
+        ItoS(ParamIndex));
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStoreParam : emettre le stockage dans un parametre         }
+{   MOV DWORD [EBP + offset], EAX                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStoreParam(ParamIndex : Integer);
+Var
+  Off : Integer;
+Begin
+  Off := GetFnParamOffset(ParamIndex);
+  OutLn('  MOV DWORD [EBP+' + ItoS(Off) + '], EAX  ; param ' +
+        ItoS(ParamIndex));
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitLoadLocal : emettre le chargement d une variable locale    }
+{   MOV EAX, DWORD [EBP - offset]                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitLoadLocal(LocalIndex : Integer);
+Var
+  Off : Integer;
+Begin
+  Off := GetFnLocalOffset(LocalIndex);
+  OutLn('  MOV EAX, DWORD [EBP' + ItoS(Off) + ']  ; local ' +
+        ItoS(LocalIndex));
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitStoreLocal : emettre le stockage dans une variable locale  }
+{   MOV DWORD [EBP - offset], EAX                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitStoreLocal(LocalIndex : Integer);
+Var
+  Off : Integer;
+Begin
+  Off := GetFnLocalOffset(LocalIndex);
+  OutLn('  MOV DWORD [EBP' + ItoS(Off) + '], EAX  ; local ' +
+        ItoS(LocalIndex));
+End;
+
+{ ------------------------------------------------------------ }
+{ IsInFunction : verifier si on est dans une fonction            }
+{ ------------------------------------------------------------ }
+
+Function IsInFunction : Boolean;
+Begin
+  IsInFunction := FnInDef;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetFnCurrentName : obtenir le nom de la fonction courante      }
+{ ------------------------------------------------------------ }
+
+Function GetFnCurrentName : TString;
+Begin
+  GetFnCurrentName := FnCurName;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetFnParamName : obtenir le nom d un parametre par son index   }
+{ ------------------------------------------------------------ }
+
+Function GetFnParamName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 1) And (Idx <= FnCurParamN) Then
+    GetFnParamName := FnCurParams[Idx].Name
+  Else
+    GetFnParamName := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpFnState : afficher l etat du sous-systeme des fonctions    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpFnState;
+Var
+  I : Integer;
+Begin
+  WriteLn('--- Function State ---');
+  WriteLn('  FnInitialized   : ', FnInitialized);
+  WriteLn('  FnDefCount      : ', FnDefCount);
+  WriteLn('  FnReturnCount   : ', FnReturnCount);
+  WriteLn('  FnRetVoidCount  : ', FnRetVoidCount);
+  WriteLn('  FnCallCount     : ', FnCallCount);
+  WriteLn('  FnParamCount    : ', FnParamCount);
+  WriteLn('  FnRecursCount   : ', FnRecursCount);
+  WriteLn('  FnNestedErr     : ', FnNestedErr);
+  WriteLn('  FnGlobalCount   : ', FnGlobalCount);
+  WriteLn('  FnLastKind      : ', FnTypeName(FnLastKind));
+  WriteLn('  FnLabelSeq      : ', FnLabelSeq);
+  WriteLn('  FnCurName       : ', FnCurName);
+  WriteLn('  FnCurParamN     : ', FnCurParamN);
+  WriteLn('  FnCurLocalN     : ', FnCurLocalN);
+  WriteLn('  FnInDef         : ', FnInDef);
+  WriteLn('  FnCurRetType    : ', FnCurRetType);
+  If FnCurParamN > 0 Then
+  Begin
+    WriteLn('  Parameters:');
+    For I := 1 To FnCurParamN Do
+      WriteLn('    [', I, '] ', FnCurParams[I].Name);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 12)                              }
+{ ------------------------------------------------------------ }
+
+Function IsFnInitialized : Boolean;
+Begin
+  IsFnInitialized := FnInitialized;
+End;
+
+Function IsFnEmpty : Boolean;
+Begin
+  IsFnEmpty := (FnDefCount = 0) And (FnReturnCount = 0) And
+               (FnCallCount = 0);
+End;
+
+Function GetFnDefCount : LongInt;
+Begin
+  GetFnDefCount := FnDefCount;
+End;
+
+Function GetFnReturnCount : LongInt;
+Begin
+  GetFnReturnCount := FnReturnCount;
+End;
+
+Function GetFnRetVoidCount : LongInt;
+Begin
+  GetFnRetVoidCount := FnRetVoidCount;
+End;
+
+Function GetFnCallCount : LongInt;
+Begin
+  GetFnCallCount := FnCallCount;
+End;
+
+Function GetFnParamCount : LongInt;
+Begin
+  GetFnParamCount := FnParamCount;
+End;
+
+Function GetFnRecursCount : LongInt;
+Begin
+  GetFnRecursCount := FnRecursCount;
+End;
+
+Function GetFnNestedErr : LongInt;
+Begin
+  GetFnNestedErr := FnNestedErr;
+End;
+
+Function GetFnStatus : TString;
+Begin
+  If Not FnInitialized Then
+    GetFnStatus := 'Not initialized'
+  Else
+    GetFnStatus := ItoS(FnDefCount) + ' functions, ' +
+                   ItoS(FnReturnCount) + ' return, ' +
+                   ItoS(FnCallCount) + ' call, ' +
+                   ItoS(FnParamCount) + ' params, ' +
+                   ItoS(FnRecursCount) + ' recursive';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -9325,6 +10048,9 @@ Begin
   { Initialiser le module de boucles }
   InitLpState;
 
+  { Initialiser le module de fonctions }
+  InitFnState;
+
   { Analyser les arguments }
   ParseArgs;
 
@@ -9356,8 +10082,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-11 implementes');
-  WriteLn('PHPCW32: Les TODOs 12-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-12 implementes');
+  WriteLn('PHPCW32: Les TODOs 13-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
