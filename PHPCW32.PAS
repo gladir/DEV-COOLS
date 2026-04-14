@@ -18218,6 +18218,13 @@ Begin
 End;
 
 (* ------------------------------------------------------------ *)
+(* Forward declarations pour les procedures d'import PE         *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImBuildImportTable(BaseRVA : LongInt); Forward;
+Procedure ImWriteImportSection(RdataRVA : LongInt; SectionSize : LongInt); Forward;
+
+(* ------------------------------------------------------------ *)
 (* BnGeneratePeExe : generer un fichier PE executable           *)
 (* ------------------------------------------------------------ *)
 
@@ -18692,13 +18699,6 @@ Var
   ImHNTRVA          : LongInt;     (* RVA de Hint/Name Table             *)
   ImAsmFile         : Text;        (* fichier ASM de sortie              *)
   ImAsmOpen         : Boolean;     (* True si fichier ouvert             *)
-
-(* ------------------------------------------------------------ *)
-(* Forward declarations pour les procedures d'import PE         *)
-(* ------------------------------------------------------------ *)
-
-Procedure ImBuildImportTable(BaseRVA : LongInt); Forward;
-Procedure ImWriteImportSection(RdataRVA : LongInt; SectionSize : LongInt); Forward;
 
 (* ------------------------------------------------------------ *)
 (* InitImState : initialiser le sous-systeme d'imports Win32   *)
