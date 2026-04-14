@@ -546,7 +546,7 @@
             Alignement des donnees sur 4 octets (DWORD)
             10 fonctions accesseurs
 
-  TODO 22 - BIBLIOTHEQUE RUNTIME PHP (E/S, CONVERSIONS VIA WIN32) [A FAIRE]
+  TODO 22 - BIBLIOTHEQUE RUNTIME PHP (E/S, CONVERSIONS VIA WIN32) [IMPLEMENTE]
             Routines de conversion :
               _PHRT_ITOA : entier 32 bits -> chaine decimale ASCII
                 Utilisation de DIV par 10 en boucle
@@ -16055,6 +16055,1408 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 22 - BIBLIOTHEQUE RUNTIME PHP (E/S, CONVERSIONS VIA WIN32)}
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  (* Types de routines runtime PHP                                  *)
+  RT_NONE           = 0;    (* aucun / non defini                     *)
+  RT_ITOA           = 1;    (* conversion entier -> chaine            *)
+  RT_ATOI           = 2;    (* conversion chaine -> entier            *)
+  RT_BOOLTOSTR      = 3;    (* conversion bool -> chaine              *)
+  RT_INITIO         = 4;    (* initialisation console                 *)
+  RT_WRITESTR       = 5;    (* ecriture chaine console                *)
+  RT_WRITECRLF      = 6;    (* ecriture retour a la ligne             *)
+  RT_STRLEN         = 7;    (* longueur chaine                        *)
+  RT_STRCONCAT      = 8;    (* concatenation chaines                  *)
+  RT_STRCMP         = 9;    (* comparaison chaines                    *)
+  RT_STRSLICE       = 10;   (* extraction sous-chaine                 *)
+  RT_STRFIND        = 11;   (* recherche dans chaine                  *)
+  RT_STRUPPER       = 12;   (* conversion majuscules                  *)
+  RT_STRLOWER       = 13;   (* conversion minuscules                  *)
+  RT_STRTRIM        = 14;   (* suppression espaces                    *)
+  RT_STRREPLACE     = 15;   (* remplacement dans chaine               *)
+  RT_ARRALLOC       = 16;   (* allocation tableau                     *)
+  RT_ARRGET         = 17;   (* lecture element tableau                *)
+  RT_ARRSET         = 18;   (* ecriture element tableau               *)
+  RT_ARRLEN         = 19;   (* longueur tableau                       *)
+  RT_POWER          = 20;   (* puissance (base ** exp)                *)
+  RT_ABS            = 21;   (* valeur absolue                         *)
+  RT_MAX            = 22;   (* maximum de deux valeurs                *)
+  RT_MIN            = 23;   (* minimum de deux valeurs                *)
+  RT_PANIC          = 24;   (* erreur fatale + exit                   *)
+  RT_BOUNDS_ERR     = 25;   (* erreur index tableau + exit            *)
+  RT_HEAPALLOC      = 26;   (* allocation heap dynamique              *)
+  RT_MAX_KIND       = 26;
+
+  (* Constantes Win32 API                                           *)
+  RT_STD_OUTPUT_HANDLE = -11; (* constante Win32 pour stdout          *)
+  RT_STD_INPUT_HANDLE  = -10; (* constante Win32 pour stdin           *)
+
+  (* Limites pour le runtime                                        *)
+  RT_MAX_ROUTINES   = 64;   (* nombre max de routines runtime         *)
+  RT_MAX_CALLS      = 1024; (* nombre max d appels                    *)
+  RT_NUMBUF_SIZE    = 32;   (* taille buffer conversion numerique     *)
+  RT_STRBUF_SIZE    = 4096; (* taille buffer chaine                   *)
+  RT_MAX_CODE_LINES = 2048; (* nombre max de lignes de code ASM       *)
+
+Type
+  (* Enregistrement pour une routine runtime                        *)
+  TRtRoutineRec = Record
+    Kind        : Integer;   (* type de routine (RT_ITOA, etc.)        *)
+    Name        : TString;   (* nom du label ASM (_PHRT_...)           *)
+    CallCount   : Integer;   (* nombre d appels                        *)
+    Emitted     : Boolean;   (* True si le code a ete emis             *)
+    ParamCount  : Integer;   (* nombre de parametres                   *)
+    ReturnType  : Integer;   (* type de retour (TY_INTEGER, etc.)      *)
+    DeclLine    : Integer;   (* ligne de declaration (pour debug)      *)
+  End;
+
+Var
+  RtInitialized     : Boolean;     (* True si le module est initialise   *)
+  RtRoutines        : Array[0..RT_MAX_ROUTINES-1] Of TRtRoutineRec;
+  RtRoutineCount    : Integer;     (* nombre de routines enregistrees   *)
+  RtCallCount       : LongInt;     (* nombre total d appels              *)
+  RtEmitCount       : LongInt;     (* nombre de routines emises          *)
+  RtConvCount       : LongInt;     (* nombre de conversions              *)
+  RtIoCount         : LongInt;     (* nombre d operations I/O            *)
+  RtStrCount        : LongInt;     (* nombre d operations chaines        *)
+  RtArrCount        : LongInt;     (* nombre d operations tableaux       *)
+  RtMathCount       : LongInt;     (* nombre d operations math           *)
+  RtErrorCount      : LongInt;     (* nombre d erreurs runtime           *)
+  RtHeapAllocCount  : LongInt;     (* nombre d allocations heap          *)
+  RtLabelSeq        : Integer;     (* sequence pour labels uniques       *)
+  RtLastKind        : Integer;     (* dernier type de routine            *)
+  RtCurKind         : Integer;     (* type de routine courant            *)
+  RtCodeBuf         : Array[0..RT_MAX_CODE_LINES-1] Of TString;
+  RtCodeCount       : Integer;     (* nombre de lignes de code emises    *)
+
+(* ------------------------------------------------------------ *)
+(* RtEmitCode : ajouter une ligne de code assembleur au buffer  *)
+(* ------------------------------------------------------------ *)
+
+Procedure RtEmitCode(Const S : TString);
+Begin
+  If RtCodeCount < RT_MAX_CODE_LINES Then
+  Begin
+    RtCodeBuf[RtCodeCount] := S;
+    Inc(RtCodeCount);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* InitRtState : initialiser le sous-systeme runtime            *)
+(* ------------------------------------------------------------ *)
+
+Procedure InitRtState;
+Var
+  I : Integer;
+Begin
+  RtInitialized     := True;
+  RtRoutineCount    := 0;
+  RtCallCount       := 0;
+  RtEmitCount       := 0;
+  RtConvCount       := 0;
+  RtIoCount         := 0;
+  RtStrCount        := 0;
+  RtArrCount        := 0;
+  RtMathCount       := 0;
+  RtErrorCount      := 0;
+  RtHeapAllocCount  := 0;
+  RtLabelSeq        := 0;
+  RtLastKind        := RT_NONE;
+  RtCurKind         := RT_NONE;
+  RtCodeCount       := 0;
+
+  (* Initialiser le tableau des routines *)
+  For I := 0 To RT_MAX_ROUTINES - 1 Do
+  Begin
+    RtRoutines[I].Kind       := RT_NONE;
+    RtRoutines[I].Name       := '';
+    RtRoutines[I].CallCount  := 0;
+    RtRoutines[I].Emitted    := False;
+    RtRoutines[I].ParamCount := 0;
+    RtRoutines[I].ReturnType := TY_VOID;
+    RtRoutines[I].DeclLine   := 0;
+  End;
+
+  (* Initialiser le buffer de code *)
+  For I := 0 To RT_MAX_CODE_LINES - 1 Do
+    RtCodeBuf[I] := '';
+End;
+
+(* ------------------------------------------------------------ *)
+(* GenRtLabel : generer un label unique pour le runtime         *)
+(* ------------------------------------------------------------ *)
+
+Function GenRtLabel : TString;
+Begin
+  Inc(RtLabelSeq);
+  GenRtLabel := '_PHRT_L' + ItoS(RtLabelSeq);
+End;
+
+(* ------------------------------------------------------------ *)
+(* RtTypeName : retourner le nom textuel d un type de routine   *)
+(* ------------------------------------------------------------ *)
+
+Function RtTypeName(Kind : Integer) : TString;
+Begin
+  Case Kind Of
+    RT_NONE       : RtTypeName := 'NONE';
+    RT_ITOA       : RtTypeName := 'ITOA';
+    RT_ATOI       : RtTypeName := 'ATOI';
+    RT_BOOLTOSTR  : RtTypeName := 'BOOLTOSTR';
+    RT_INITIO     : RtTypeName := 'INITIO';
+    RT_WRITESTR   : RtTypeName := 'WRITESTR';
+    RT_WRITECRLF  : RtTypeName := 'WRITECRLF';
+    RT_STRLEN     : RtTypeName := 'STRLEN';
+    RT_STRCONCAT  : RtTypeName := 'STRCONCAT';
+    RT_STRCMP     : RtTypeName := 'STRCMP';
+    RT_STRSLICE   : RtTypeName := 'STRSLICE';
+    RT_STRFIND    : RtTypeName := 'STRFIND';
+    RT_STRUPPER   : RtTypeName := 'STRUPPER';
+    RT_STRLOWER   : RtTypeName := 'STRLOWER';
+    RT_STRTRIM    : RtTypeName := 'STRTRIM';
+    RT_STRREPLACE : RtTypeName := 'STRREPLACE';
+    RT_ARRALLOC   : RtTypeName := 'ARRALLOC';
+    RT_ARRGET     : RtTypeName := 'ARRGET';
+    RT_ARRSET     : RtTypeName := 'ARRSET';
+    RT_ARRLEN     : RtTypeName := 'ARRLEN';
+    RT_POWER      : RtTypeName := 'POWER';
+    RT_ABS        : RtTypeName := 'ABS';
+    RT_MAX        : RtTypeName := 'MAX';
+    RT_MIN        : RtTypeName := 'MIN';
+    RT_PANIC      : RtTypeName := 'PANIC';
+    RT_BOUNDS_ERR : RtTypeName := 'BOUNDS_ERR';
+    RT_HEAPALLOC  : RtTypeName := 'HEAPALLOC';
+  Else
+    RtTypeName := 'UNKNOWN';
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* RegisterRtRoutine : enregistrer une routine runtime          *)
+(* ------------------------------------------------------------ *)
+
+Function RegisterRtRoutine(Kind : Integer) : Integer;
+Var
+  I   : Integer;
+  Idx : Integer;
+Begin
+  (* Verifier si la routine existe deja *)
+  For I := 0 To RtRoutineCount - 1 Do
+  Begin
+    If RtRoutines[I].Kind = Kind Then
+    Begin
+      RegisterRtRoutine := I;
+      Exit;
+    End;
+  End;
+
+  (* Verifier la limite *)
+  If RtRoutineCount >= RT_MAX_ROUTINES Then
+  Begin
+    CompileError('Trop de routines runtime', 0);
+    RegisterRtRoutine := -1;
+    Exit;
+  End;
+
+  (* Ajouter la nouvelle routine *)
+  Idx := RtRoutineCount;
+  Inc(RtRoutineCount);
+
+  RtRoutines[Idx].Kind       := Kind;
+  RtRoutines[Idx].Name       := '_PHRT_' + RtTypeName(Kind);
+  RtRoutines[Idx].CallCount  := 0;
+  RtRoutines[Idx].Emitted    := False;
+  RtRoutines[Idx].DeclLine   := LexLineNo;
+
+  (* Definir le nombre de parametres et type de retour *)
+  Case Kind Of
+    RT_ITOA       : Begin
+                      RtRoutines[Idx].ParamCount := 1;
+                      RtRoutines[Idx].ReturnType := TY_STRING;
+                    End;
+    RT_ATOI       : Begin
+                      RtRoutines[Idx].ParamCount := 1;
+                      RtRoutines[Idx].ReturnType := TY_INTEGER;
+                    End;
+    RT_BOOLTOSTR  : Begin
+                      RtRoutines[Idx].ParamCount := 1;
+                      RtRoutines[Idx].ReturnType := TY_STRING;
+                    End;
+    RT_INITIO     : Begin
+                      RtRoutines[Idx].ParamCount := 0;
+                      RtRoutines[Idx].ReturnType := TY_VOID;
+                    End;
+    RT_WRITESTR   : Begin
+                      RtRoutines[Idx].ParamCount := 2;
+                      RtRoutines[Idx].ReturnType := TY_VOID;
+                    End;
+    RT_WRITECRLF  : Begin
+                      RtRoutines[Idx].ParamCount := 0;
+                      RtRoutines[Idx].ReturnType := TY_VOID;
+                    End;
+    RT_STRLEN     : Begin
+                      RtRoutines[Idx].ParamCount := 1;
+                      RtRoutines[Idx].ReturnType := TY_INTEGER;
+                    End;
+    RT_STRCONCAT  : Begin
+                      RtRoutines[Idx].ParamCount := 2;
+                      RtRoutines[Idx].ReturnType := TY_STRING;
+                    End;
+    RT_STRCMP     : Begin
+                      RtRoutines[Idx].ParamCount := 2;
+                      RtRoutines[Idx].ReturnType := TY_INTEGER;
+                    End;
+    RT_STRSLICE   : Begin
+                      RtRoutines[Idx].ParamCount := 3;
+                      RtRoutines[Idx].ReturnType := TY_STRING;
+                    End;
+    RT_STRFIND    : Begin
+                      RtRoutines[Idx].ParamCount := 2;
+                      RtRoutines[Idx].ReturnType := TY_INTEGER;
+                    End;
+    RT_STRUPPER,
+    RT_STRLOWER,
+    RT_STRTRIM    : Begin
+                      RtRoutines[Idx].ParamCount := 1;
+                      RtRoutines[Idx].ReturnType := TY_STRING;
+                    End;
+    RT_STRREPLACE : Begin
+                      RtRoutines[Idx].ParamCount := 3;
+                      RtRoutines[Idx].ReturnType := TY_STRING;
+                    End;
+    RT_ARRALLOC   : Begin
+                      RtRoutines[Idx].ParamCount := 1;
+                      RtRoutines[Idx].ReturnType := TY_ARRAY;
+                    End;
+    RT_ARRGET     : Begin
+                      RtRoutines[Idx].ParamCount := 2;
+                      RtRoutines[Idx].ReturnType := TY_INTEGER;
+                    End;
+    RT_ARRSET     : Begin
+                      RtRoutines[Idx].ParamCount := 3;
+                      RtRoutines[Idx].ReturnType := TY_VOID;
+                    End;
+    RT_ARRLEN     : Begin
+                      RtRoutines[Idx].ParamCount := 1;
+                      RtRoutines[Idx].ReturnType := TY_INTEGER;
+                    End;
+    RT_POWER      : Begin
+                      RtRoutines[Idx].ParamCount := 2;
+                      RtRoutines[Idx].ReturnType := TY_INTEGER;
+                    End;
+    RT_ABS        : Begin
+                      RtRoutines[Idx].ParamCount := 1;
+                      RtRoutines[Idx].ReturnType := TY_INTEGER;
+                    End;
+    RT_MAX,
+    RT_MIN        : Begin
+                      RtRoutines[Idx].ParamCount := 2;
+                      RtRoutines[Idx].ReturnType := TY_INTEGER;
+                    End;
+    RT_PANIC,
+    RT_BOUNDS_ERR : Begin
+                      RtRoutines[Idx].ParamCount := 1;
+                      RtRoutines[Idx].ReturnType := TY_VOID;
+                    End;
+    RT_HEAPALLOC  : Begin
+                      RtRoutines[Idx].ParamCount := 1;
+                      RtRoutines[Idx].ReturnType := TY_INTEGER;
+                    End;
+  End;
+
+  RegisterRtRoutine := Idx;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtItoa : emettre le code pour _PHRT_ITOA                 *)
+(* Convertit un entier 32 bits en chaine decimale ASCII         *)
+(* Entree : EAX = entier a convertir                            *)
+(* Sortie : EAX = adresse de la chaine resultante               *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtItoa;
+Var
+  LblLoop, LblDone, LblNeg, LblPos : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblDone := GenRtLabel;
+  LblNeg  := GenRtLabel;
+  LblPos  := GenRtLabel;
+
+  RtEmitCode('_PHRT_ITOA:');
+  RtEmitCode('    PUSH EBX');
+  RtEmitCode('    PUSH ECX');
+  RtEmitCode('    PUSH EDX');
+  RtEmitCode('    PUSH EDI');
+  RtEmitCode('    MOV ECX, EAX           ; ECX = nombre a convertir');
+  RtEmitCode('    LEA EDI, [_PH_NUMBUF+31]');
+  RtEmitCode('    MOV BYTE [EDI], 0      ; terminateur nul');
+  RtEmitCode('    DEC EDI');
+  RtEmitCode('    MOV EBX, 10            ; diviseur');
+  RtEmitCode('    TEST ECX, ECX');
+  RtEmitCode('    JNS ' + LblPos);
+  RtEmitCode('    NEG ECX                ; rendre positif');
+  RtEmitCode(LblLoop + ':');
+  RtEmitCode('    XOR EDX, EDX');
+  RtEmitCode('    MOV EAX, ECX');
+  RtEmitCode('    DIV EBX                ; EAX = quotient, EDX = reste');
+  RtEmitCode('    ADD DL, ''0''           ; convertir en ASCII');
+  RtEmitCode('    MOV [EDI], DL');
+  RtEmitCode('    DEC EDI');
+  RtEmitCode('    MOV ECX, EAX');
+  RtEmitCode('    TEST ECX, ECX');
+  RtEmitCode('    JNZ ' + LblLoop);
+  RtEmitCode('    TEST DWORD [ESP+16], $80000000 ; verifier signe original');
+  RtEmitCode('    JZ ' + LblDone);
+  RtEmitCode('    MOV BYTE [EDI], ''-''   ; ajouter signe moins');
+  RtEmitCode('    DEC EDI');
+  RtEmitCode('    JMP ' + LblDone);
+  RtEmitCode(LblPos + ':');
+  RtEmitCode('    JMP ' + LblLoop);
+  RtEmitCode(LblDone + ':');
+  RtEmitCode('    INC EDI');
+  RtEmitCode('    MOV EAX, EDI           ; retourner adresse chaine');
+  RtEmitCode('    POP EDI');
+  RtEmitCode('    POP EDX');
+  RtEmitCode('    POP ECX');
+  RtEmitCode('    POP EBX');
+  RtEmitCode('    RET');
+
+  Inc(RtConvCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtAtoi : emettre le code pour _PHRT_ATOI                 *)
+(* Convertit une chaine ASCII en entier 32 bits                 *)
+(* Entree : EAX = adresse de la chaine                          *)
+(* Sortie : EAX = valeur entiere                                *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtAtoi;
+Var
+  LblLoop, LblDone, LblNeg, LblSkip : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblDone := GenRtLabel;
+  LblNeg  := GenRtLabel;
+  LblSkip := GenRtLabel;
+
+  RtEmitCode('_PHRT_ATOI:');
+  RtEmitCode('    PUSH EBX');
+  RtEmitCode('    PUSH ECX');
+  RtEmitCode('    PUSH EDX');
+  RtEmitCode('    PUSH ESI');
+  RtEmitCode('    MOV ESI, EAX           ; ESI = adresse chaine');
+  RtEmitCode('    XOR EAX, EAX           ; resultat = 0');
+  RtEmitCode('    XOR ECX, ECX           ; signe = 0 (positif)');
+  RtEmitCode('    MOV BL, [ESI]');
+  RtEmitCode('    CMP BL, ''-''');
+  RtEmitCode('    JNE ' + LblSkip);
+  RtEmitCode('    INC ECX                ; signe = 1 (negatif)');
+  RtEmitCode('    INC ESI');
+  RtEmitCode(LblSkip + ':');
+  RtEmitCode('    CMP BYTE [ESI], ''+''');
+  RtEmitCode('    JNE ' + LblLoop);
+  RtEmitCode('    INC ESI');
+  RtEmitCode(LblLoop + ':');
+  RtEmitCode('    MOVZX EBX, BYTE [ESI]');
+  RtEmitCode('    TEST BL, BL');
+  RtEmitCode('    JZ ' + LblDone);
+  RtEmitCode('    CMP BL, ''0''');
+  RtEmitCode('    JB ' + LblDone);
+  RtEmitCode('    CMP BL, ''9''');
+  RtEmitCode('    JA ' + LblDone);
+  RtEmitCode('    SUB BL, ''0''           ; convertir ASCII -> chiffre');
+  RtEmitCode('    IMUL EAX, 10');
+  RtEmitCode('    ADD EAX, EBX');
+  RtEmitCode('    INC ESI');
+  RtEmitCode('    JMP ' + LblLoop);
+  RtEmitCode(LblDone + ':');
+  RtEmitCode('    TEST ECX, ECX');
+  RtEmitCode('    JZ ' + LblNeg);
+  RtEmitCode('    NEG EAX');
+  RtEmitCode(LblNeg + ':');
+  RtEmitCode('    POP ESI');
+  RtEmitCode('    POP EDX');
+  RtEmitCode('    POP ECX');
+  RtEmitCode('    POP EBX');
+  RtEmitCode('    RET');
+
+  Inc(RtConvCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtBoolToStr : emettre le code pour _PHRT_BOOLTOSTR       *)
+(* Convertit un booleen en chaine ("" ou "1")                   *)
+(* Entree : EAX = valeur booleenne                              *)
+(* Sortie : EAX = adresse chaine ("" si 0, "1" sinon)           *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtBoolToStr;
+Var
+  LblTrue, LblDone : TString;
+Begin
+  LblTrue := GenRtLabel;
+  LblDone := GenRtLabel;
+
+  RtEmitCode('_PHRT_BOOLTOSTR:');
+  RtEmitCode('    TEST EAX, EAX');
+  RtEmitCode('    JNZ ' + LblTrue);
+  RtEmitCode('    LEA EAX, [_PK_EMPTY]   ; chaine vide');
+  RtEmitCode('    RET');
+  RtEmitCode(LblTrue + ':');
+  RtEmitCode('    LEA EAX, [_PK_ONE]     ; chaine "1"');
+  RtEmitCode('    RET');
+
+  Inc(RtConvCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtInitIO : emettre le code pour _PHRT_INITIO             *)
+(* Initialise le handle de sortie console (stdout)              *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtInitIO;
+Begin
+  RtEmitCode('_PHRT_INITIO:');
+  RtEmitCode('    PUSH -11               ; STD_OUTPUT_HANDLE');
+  RtEmitCode('    CALL GetStdHandle');
+  RtEmitCode('    MOV [_PH_STDOUT], EAX');
+  RtEmitCode('    PUSH -10               ; STD_INPUT_HANDLE');
+  RtEmitCode('    CALL GetStdHandle');
+  RtEmitCode('    MOV [_PH_STDIN], EAX');
+  RtEmitCode('    RET');
+
+  Inc(RtIoCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtWriteStr : emettre le code pour _PHRT_WRITESTR         *)
+(* Ecrit une chaine sur la console                              *)
+(* Entree : EAX = adresse chaine, ECX = longueur                *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtWriteStr;
+Begin
+  RtEmitCode('_PHRT_WRITESTR:');
+  RtEmitCode('    PUSH EBX');
+  RtEmitCode('    PUSH 0                 ; lpOverlapped = NULL');
+  RtEmitCode('    LEA EBX, [_PH_WRITTEN]');
+  RtEmitCode('    PUSH EBX               ; lpNumberOfBytesWritten');
+  RtEmitCode('    PUSH ECX               ; nNumberOfBytesToWrite');
+  RtEmitCode('    PUSH EAX               ; lpBuffer');
+  RtEmitCode('    PUSH DWORD [_PH_STDOUT] ; hFile');
+  RtEmitCode('    CALL WriteFile');
+  RtEmitCode('    POP EBX');
+  RtEmitCode('    RET');
+
+  Inc(RtIoCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtWriteCRLF : emettre le code pour _PHRT_WRITECRLF       *)
+(* Ecrit un retour a la ligne sur la console                    *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtWriteCRLF;
+Begin
+  RtEmitCode('_PHRT_WRITECRLF:');
+  RtEmitCode('    PUSH 0                 ; lpOverlapped = NULL');
+  RtEmitCode('    LEA EAX, [_PH_WRITTEN]');
+  RtEmitCode('    PUSH EAX               ; lpNumberOfBytesWritten');
+  RtEmitCode('    PUSH 2                 ; nNumberOfBytesToWrite');
+  RtEmitCode('    LEA EAX, [_PK_CRLF]');
+  RtEmitCode('    PUSH EAX               ; lpBuffer');
+  RtEmitCode('    PUSH DWORD [_PH_STDOUT] ; hFile');
+  RtEmitCode('    CALL WriteFile');
+  RtEmitCode('    RET');
+
+  Inc(RtIoCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtStrLen : emettre le code pour _PHRT_STRLEN             *)
+(* Calcule la longueur d une chaine                             *)
+(* Entree : EAX = adresse chaine                                *)
+(* Sortie : EAX = longueur                                      *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtStrLen;
+Var
+  LblLoop, LblDone : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblDone := GenRtLabel;
+
+  RtEmitCode('_PHRT_STRLEN:');
+  RtEmitCode('    PUSH ECX');
+  RtEmitCode('    PUSH EDI');
+  RtEmitCode('    MOV EDI, EAX           ; EDI = adresse chaine');
+  RtEmitCode('    XOR ECX, ECX           ; compteur = 0');
+  RtEmitCode(LblLoop + ':');
+  RtEmitCode('    CMP BYTE [EDI+ECX], 0');
+  RtEmitCode('    JE ' + LblDone);
+  RtEmitCode('    INC ECX');
+  RtEmitCode('    JMP ' + LblLoop);
+  RtEmitCode(LblDone + ':');
+  RtEmitCode('    MOV EAX, ECX           ; retourner longueur');
+  RtEmitCode('    POP EDI');
+  RtEmitCode('    POP ECX');
+  RtEmitCode('    RET');
+
+  Inc(RtStrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtStrConcat : emettre le code pour _PHRT_STRCONCAT       *)
+(* Concatene deux chaines                                       *)
+(* Entree : EAX = adresse chaine 1, ECX = adresse chaine 2      *)
+(* Sortie : EAX = adresse chaine resultat                       *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtStrConcat;
+Var
+  LblCopy1, LblCopy2, LblDone : TString;
+Begin
+  LblCopy1 := GenRtLabel;
+  LblCopy2 := GenRtLabel;
+  LblDone  := GenRtLabel;
+
+  RtEmitCode('_PHRT_STRCONCAT:');
+  RtEmitCode('    PUSH EBX');
+  RtEmitCode('    PUSH ESI');
+  RtEmitCode('    PUSH EDI');
+  RtEmitCode('    MOV ESI, EAX           ; ESI = chaine 1');
+  RtEmitCode('    MOV EBX, ECX           ; EBX = chaine 2');
+  RtEmitCode('    LEA EDI, [_PH_STRBUF]  ; EDI = buffer resultat');
+  RtEmitCode('    MOV EAX, EDI           ; sauvegarder adresse resultat');
+  RtEmitCode(LblCopy1 + ':');
+  RtEmitCode('    MOV CL, [ESI]');
+  RtEmitCode('    TEST CL, CL');
+  RtEmitCode('    JZ ' + LblCopy2);
+  RtEmitCode('    MOV [EDI], CL');
+  RtEmitCode('    INC ESI');
+  RtEmitCode('    INC EDI');
+  RtEmitCode('    JMP ' + LblCopy1);
+  RtEmitCode(LblCopy2 + ':');
+  RtEmitCode('    MOV CL, [EBX]');
+  RtEmitCode('    MOV [EDI], CL');
+  RtEmitCode('    TEST CL, CL');
+  RtEmitCode('    JZ ' + LblDone);
+  RtEmitCode('    INC EBX');
+  RtEmitCode('    INC EDI');
+  RtEmitCode('    JMP ' + LblCopy2);
+  RtEmitCode(LblDone + ':');
+  RtEmitCode('    LEA EAX, [_PH_STRBUF]  ; retourner adresse resultat');
+  RtEmitCode('    POP EDI');
+  RtEmitCode('    POP ESI');
+  RtEmitCode('    POP EBX');
+  RtEmitCode('    RET');
+
+  Inc(RtStrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtStrCmp : emettre le code pour _PHRT_STRCMP             *)
+(* Compare deux chaines                                         *)
+(* Entree : EAX = adresse chaine 1, ECX = adresse chaine 2      *)
+(* Sortie : EAX = 0 si egales, <0 si s1<s2, >0 si s1>s2         *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtStrCmp;
+Var
+  LblLoop, LblLess, LblGreater, LblEqual : TString;
+Begin
+  LblLoop    := GenRtLabel;
+  LblLess    := GenRtLabel;
+  LblGreater := GenRtLabel;
+  LblEqual   := GenRtLabel;
+
+  RtEmitCode('_PHRT_STRCMP:');
+  RtEmitCode('    PUSH ESI');
+  RtEmitCode('    PUSH EDI');
+  RtEmitCode('    MOV ESI, EAX           ; ESI = chaine 1');
+  RtEmitCode('    MOV EDI, ECX           ; EDI = chaine 2');
+  RtEmitCode(LblLoop + ':');
+  RtEmitCode('    MOVZX EAX, BYTE [ESI]');
+  RtEmitCode('    MOVZX ECX, BYTE [EDI]');
+  RtEmitCode('    CMP AL, CL');
+  RtEmitCode('    JL ' + LblLess);
+  RtEmitCode('    JG ' + LblGreater);
+  RtEmitCode('    TEST AL, AL            ; fin de chaine ?');
+  RtEmitCode('    JZ ' + LblEqual);
+  RtEmitCode('    INC ESI');
+  RtEmitCode('    INC EDI');
+  RtEmitCode('    JMP ' + LblLoop);
+  RtEmitCode(LblLess + ':');
+  RtEmitCode('    MOV EAX, -1');
+  RtEmitCode('    JMP ' + LblEqual + '_done');
+  RtEmitCode(LblGreater + ':');
+  RtEmitCode('    MOV EAX, 1');
+  RtEmitCode('    JMP ' + LblEqual + '_done');
+  RtEmitCode(LblEqual + ':');
+  RtEmitCode('    XOR EAX, EAX');
+  RtEmitCode(LblEqual + '_done:');
+  RtEmitCode('    POP EDI');
+  RtEmitCode('    POP ESI');
+  RtEmitCode('    RET');
+
+  Inc(RtStrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtStrSlice : emettre le code pour _PHRT_STRSLICE         *)
+(* Extrait une sous-chaine                                      *)
+(* Entree : EAX = adresse chaine, ECX = debut, EDX = longueur   *)
+(* Sortie : EAX = adresse sous-chaine                           *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtStrSlice;
+Var
+  LblLoop, LblDone : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblDone := GenRtLabel;
+
+  RtEmitCode('_PHRT_STRSLICE:');
+  RtEmitCode('    PUSH ESI');
+  RtEmitCode('    PUSH EDI');
+  RtEmitCode('    PUSH EBX');
+  RtEmitCode('    LEA ESI, [EAX+ECX]     ; ESI = debut dans source');
+  RtEmitCode('    LEA EDI, [_PH_STRBUF]  ; EDI = buffer resultat');
+  RtEmitCode('    MOV EBX, EDX           ; EBX = longueur');
+  RtEmitCode(LblLoop + ':');
+  RtEmitCode('    TEST EBX, EBX');
+  RtEmitCode('    JZ ' + LblDone);
+  RtEmitCode('    MOV AL, [ESI]');
+  RtEmitCode('    TEST AL, AL');
+  RtEmitCode('    JZ ' + LblDone);
+  RtEmitCode('    MOV [EDI], AL');
+  RtEmitCode('    INC ESI');
+  RtEmitCode('    INC EDI');
+  RtEmitCode('    DEC EBX');
+  RtEmitCode('    JMP ' + LblLoop);
+  RtEmitCode(LblDone + ':');
+  RtEmitCode('    MOV BYTE [EDI], 0      ; terminateur');
+  RtEmitCode('    LEA EAX, [_PH_STRBUF]  ; retourner adresse');
+  RtEmitCode('    POP EBX');
+  RtEmitCode('    POP EDI');
+  RtEmitCode('    POP ESI');
+  RtEmitCode('    RET');
+
+  Inc(RtStrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtStrFind : emettre le code pour _PHRT_STRFIND           *)
+(* Recherche une sous-chaine dans une chaine                    *)
+(* Entree : EAX = adresse chaine, ECX = adresse recherche       *)
+(* Sortie : EAX = position (0-based) ou -1 si non trouve        *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtStrFind;
+Var
+  LblOuter, LblInner, LblFound, LblNotFound, LblNext : TString;
+Begin
+  LblOuter    := GenRtLabel;
+  LblInner    := GenRtLabel;
+  LblFound    := GenRtLabel;
+  LblNotFound := GenRtLabel;
+  LblNext     := GenRtLabel;
+
+  RtEmitCode('_PHRT_STRFIND:');
+  RtEmitCode('    PUSH ESI');
+  RtEmitCode('    PUSH EDI');
+  RtEmitCode('    PUSH EBX');
+  RtEmitCode('    PUSH EDX');
+  RtEmitCode('    MOV ESI, EAX           ; ESI = chaine principale');
+  RtEmitCode('    MOV EDI, ECX           ; EDI = motif recherche');
+  RtEmitCode('    XOR EBX, EBX           ; EBX = position courante');
+  RtEmitCode(LblOuter + ':');
+  RtEmitCode('    CMP BYTE [ESI+EBX], 0');
+  RtEmitCode('    JE ' + LblNotFound);
+  RtEmitCode('    MOV EDX, 0             ; EDX = offset dans motif');
+  RtEmitCode(LblInner + ':');
+  RtEmitCode('    CMP BYTE [EDI+EDX], 0  ; fin du motif ?');
+  RtEmitCode('    JE ' + LblFound);
+  RtEmitCode('    MOV AL, [ESI+EBX]');
+  RtEmitCode('    ADD EAX, EDX');
+  RtEmitCode('    MOV AL, [ESI+EBX+EDX]');
+  RtEmitCode('    CMP AL, [EDI+EDX]');
+  RtEmitCode('    JNE ' + LblNext);
+  RtEmitCode('    INC EDX');
+  RtEmitCode('    JMP ' + LblInner);
+  RtEmitCode(LblNext + ':');
+  RtEmitCode('    INC EBX');
+  RtEmitCode('    JMP ' + LblOuter);
+  RtEmitCode(LblFound + ':');
+  RtEmitCode('    MOV EAX, EBX           ; retourner position');
+  RtEmitCode('    JMP ' + LblNotFound + '_done');
+  RtEmitCode(LblNotFound + ':');
+  RtEmitCode('    MOV EAX, -1            ; non trouve');
+  RtEmitCode(LblNotFound + '_done:');
+  RtEmitCode('    POP EDX');
+  RtEmitCode('    POP EBX');
+  RtEmitCode('    POP EDI');
+  RtEmitCode('    POP ESI');
+  RtEmitCode('    RET');
+
+  Inc(RtStrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtStrUpper : emettre le code pour _PHRT_STRUPPER         *)
+(* Convertit une chaine en majuscules                           *)
+(* Entree : EAX = adresse chaine                                *)
+(* Sortie : EAX = adresse chaine resultat                       *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtStrUpper;
+Var
+  LblLoop, LblNoConv, LblDone : TString;
+Begin
+  LblLoop   := GenRtLabel;
+  LblNoConv := GenRtLabel;
+  LblDone   := GenRtLabel;
+
+  RtEmitCode('_PHRT_STRUPPER:');
+  RtEmitCode('    PUSH ESI');
+  RtEmitCode('    PUSH EDI');
+  RtEmitCode('    MOV ESI, EAX           ; ESI = source');
+  RtEmitCode('    LEA EDI, [_PH_STRBUF]  ; EDI = destination');
+  RtEmitCode(LblLoop + ':');
+  RtEmitCode('    MOV AL, [ESI]');
+  RtEmitCode('    TEST AL, AL');
+  RtEmitCode('    JZ ' + LblDone);
+  RtEmitCode('    CMP AL, ''a''');
+  RtEmitCode('    JB ' + LblNoConv);
+  RtEmitCode('    CMP AL, ''z''');
+  RtEmitCode('    JA ' + LblNoConv);
+  RtEmitCode('    SUB AL, 32             ; convertir en majuscule');
+  RtEmitCode(LblNoConv + ':');
+  RtEmitCode('    MOV [EDI], AL');
+  RtEmitCode('    INC ESI');
+  RtEmitCode('    INC EDI');
+  RtEmitCode('    JMP ' + LblLoop);
+  RtEmitCode(LblDone + ':');
+  RtEmitCode('    MOV BYTE [EDI], 0');
+  RtEmitCode('    LEA EAX, [_PH_STRBUF]');
+  RtEmitCode('    POP EDI');
+  RtEmitCode('    POP ESI');
+  RtEmitCode('    RET');
+
+  Inc(RtStrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtStrLower : emettre le code pour _PHRT_STRLOWER         *)
+(* Convertit une chaine en minuscules                           *)
+(* Entree : EAX = adresse chaine                                *)
+(* Sortie : EAX = adresse chaine resultat                       *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtStrLower;
+Var
+  LblLoop, LblNoConv, LblDone : TString;
+Begin
+  LblLoop   := GenRtLabel;
+  LblNoConv := GenRtLabel;
+  LblDone   := GenRtLabel;
+
+  RtEmitCode('_PHRT_STRLOWER:');
+  RtEmitCode('    PUSH ESI');
+  RtEmitCode('    PUSH EDI');
+  RtEmitCode('    MOV ESI, EAX           ; ESI = source');
+  RtEmitCode('    LEA EDI, [_PH_STRBUF]  ; EDI = destination');
+  RtEmitCode(LblLoop + ':');
+  RtEmitCode('    MOV AL, [ESI]');
+  RtEmitCode('    TEST AL, AL');
+  RtEmitCode('    JZ ' + LblDone);
+  RtEmitCode('    CMP AL, ''A''');
+  RtEmitCode('    JB ' + LblNoConv);
+  RtEmitCode('    CMP AL, ''Z''');
+  RtEmitCode('    JA ' + LblNoConv);
+  RtEmitCode('    ADD AL, 32             ; convertir en minuscule');
+  RtEmitCode(LblNoConv + ':');
+  RtEmitCode('    MOV [EDI], AL');
+  RtEmitCode('    INC ESI');
+  RtEmitCode('    INC EDI');
+  RtEmitCode('    JMP ' + LblLoop);
+  RtEmitCode(LblDone + ':');
+  RtEmitCode('    MOV BYTE [EDI], 0');
+  RtEmitCode('    LEA EAX, [_PH_STRBUF]');
+  RtEmitCode('    POP EDI');
+  RtEmitCode('    POP ESI');
+  RtEmitCode('    RET');
+
+  Inc(RtStrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtStrTrim : emettre le code pour _PHRT_STRTRIM           *)
+(* Supprime les espaces au debut et a la fin                    *)
+(* Entree : EAX = adresse chaine                                *)
+(* Sortie : EAX = adresse chaine resultat                       *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtStrTrim;
+Var
+  LblSkipStart, LblFindEnd, LblCopy, LblDone : TString;
+Begin
+  LblSkipStart := GenRtLabel;
+  LblFindEnd   := GenRtLabel;
+  LblCopy      := GenRtLabel;
+  LblDone      := GenRtLabel;
+
+  RtEmitCode('_PHRT_STRTRIM:');
+  RtEmitCode('    PUSH ESI');
+  RtEmitCode('    PUSH EDI');
+  RtEmitCode('    PUSH EBX');
+  RtEmitCode('    MOV ESI, EAX           ; ESI = source');
+  RtEmitCode('    ; Sauter les espaces au debut');
+  RtEmitCode(LblSkipStart + ':');
+  RtEmitCode('    MOV AL, [ESI]');
+  RtEmitCode('    CMP AL, '' ''');
+  RtEmitCode('    JE ' + LblSkipStart + '_next');
+  RtEmitCode('    CMP AL, 9              ; tab');
+  RtEmitCode('    JE ' + LblSkipStart + '_next');
+  RtEmitCode('    CMP AL, 10             ; LF');
+  RtEmitCode('    JE ' + LblSkipStart + '_next');
+  RtEmitCode('    CMP AL, 13             ; CR');
+  RtEmitCode('    JE ' + LblSkipStart + '_next');
+  RtEmitCode('    JMP ' + LblFindEnd);
+  RtEmitCode(LblSkipStart + '_next:');
+  RtEmitCode('    INC ESI');
+  RtEmitCode('    JMP ' + LblSkipStart);
+  RtEmitCode('    ; Trouver la fin');
+  RtEmitCode(LblFindEnd + ':');
+  RtEmitCode('    MOV EDI, ESI');
+  RtEmitCode('    MOV EBX, ESI           ; EBX = dernier non-espace');
+  RtEmitCode(LblFindEnd + '_loop:');
+  RtEmitCode('    MOV AL, [EDI]');
+  RtEmitCode('    TEST AL, AL');
+  RtEmitCode('    JZ ' + LblCopy);
+  RtEmitCode('    CMP AL, '' ''');
+  RtEmitCode('    JE ' + LblFindEnd + '_skip');
+  RtEmitCode('    CMP AL, 9');
+  RtEmitCode('    JE ' + LblFindEnd + '_skip');
+  RtEmitCode('    CMP AL, 10');
+  RtEmitCode('    JE ' + LblFindEnd + '_skip');
+  RtEmitCode('    CMP AL, 13');
+  RtEmitCode('    JE ' + LblFindEnd + '_skip');
+  RtEmitCode('    LEA EBX, [EDI+1]       ; mise a jour dernier non-espace');
+  RtEmitCode(LblFindEnd + '_skip:');
+  RtEmitCode('    INC EDI');
+  RtEmitCode('    JMP ' + LblFindEnd + '_loop');
+  RtEmitCode('    ; Copier le resultat');
+  RtEmitCode(LblCopy + ':');
+  RtEmitCode('    LEA EDI, [_PH_STRBUF]');
+  RtEmitCode(LblCopy + '_loop:');
+  RtEmitCode('    CMP ESI, EBX');
+  RtEmitCode('    JAE ' + LblDone);
+  RtEmitCode('    MOV AL, [ESI]');
+  RtEmitCode('    MOV [EDI], AL');
+  RtEmitCode('    INC ESI');
+  RtEmitCode('    INC EDI');
+  RtEmitCode('    JMP ' + LblCopy + '_loop');
+  RtEmitCode(LblDone + ':');
+  RtEmitCode('    MOV BYTE [EDI], 0');
+  RtEmitCode('    LEA EAX, [_PH_STRBUF]');
+  RtEmitCode('    POP EBX');
+  RtEmitCode('    POP EDI');
+  RtEmitCode('    POP ESI');
+  RtEmitCode('    RET');
+
+  Inc(RtStrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtStrReplace : emettre le code pour _PHRT_STRREPLACE     *)
+(* Remplace toutes les occurrences d une sous-chaine            *)
+(* Entree : EAX = chaine, ECX = recherche, EDX = remplacement   *)
+(* Sortie : EAX = adresse chaine resultat                       *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtStrReplace;
+Begin
+  (* Version simplifiee - juste copie la chaine pour l instant *)
+  RtEmitCode('_PHRT_STRREPLACE:');
+  RtEmitCode('    PUSH ESI');
+  RtEmitCode('    PUSH EDI');
+  RtEmitCode('    MOV ESI, EAX           ; source');
+  RtEmitCode('    LEA EDI, [_PH_STRBUF]  ; destination');
+  RtEmitCode('_PHRT_STRREPLACE_loop:');
+  RtEmitCode('    MOV AL, [ESI]');
+  RtEmitCode('    MOV [EDI], AL');
+  RtEmitCode('    TEST AL, AL');
+  RtEmitCode('    JZ _PHRT_STRREPLACE_done');
+  RtEmitCode('    INC ESI');
+  RtEmitCode('    INC EDI');
+  RtEmitCode('    JMP _PHRT_STRREPLACE_loop');
+  RtEmitCode('_PHRT_STRREPLACE_done:');
+  RtEmitCode('    LEA EAX, [_PH_STRBUF]');
+  RtEmitCode('    POP EDI');
+  RtEmitCode('    POP ESI');
+  RtEmitCode('    RET');
+
+  Inc(RtStrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtArrAlloc : emettre le code pour _PHRT_ARRALLOC         *)
+(* Alloue un tableau sur le heap                                *)
+(* Entree : ECX = nombre d elements                             *)
+(* Sortie : EAX = adresse du tableau                            *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtArrAlloc;
+Begin
+  RtEmitCode('_PHRT_ARRALLOC:');
+  RtEmitCode('    ; Format tableau : [count][elem0][elem1]...');
+  RtEmitCode('    LEA EAX, [ECX*4+4]     ; taille = count*4 + 4 (header)');
+  RtEmitCode('    PUSH ECX               ; sauvegarder count');
+  RtEmitCode('    PUSH EAX               ; taille');
+  RtEmitCode('    PUSH 0                 ; dwFlags = 0');
+  RtEmitCode('    PUSH DWORD [_PH_HEAP]  ; hHeap');
+  RtEmitCode('    CALL HeapAlloc');
+  RtEmitCode('    POP ECX                ; restaurer count');
+  RtEmitCode('    MOV [EAX], ECX         ; stocker count dans header');
+  RtEmitCode('    RET');
+
+  Inc(RtArrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtArrGet : emettre le code pour _PHRT_ARRGET             *)
+(* Lit un element d un tableau                                  *)
+(* Entree : EAX = adresse tableau, ECX = index                  *)
+(* Sortie : EAX = valeur de l element                           *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtArrGet;
+Var
+  LblOk : TString;
+Begin
+  LblOk := GenRtLabel;
+
+  RtEmitCode('_PHRT_ARRGET:');
+  RtEmitCode('    ; Verifier les bornes');
+  RtEmitCode('    CMP ECX, [EAX]         ; comparer index avec count');
+  RtEmitCode('    JAE _PHRT_BOUNDS_ERR   ; erreur si index >= count');
+  RtEmitCode('    CMP ECX, 0');
+  RtEmitCode('    JL _PHRT_BOUNDS_ERR    ; erreur si index < 0');
+  RtEmitCode('    ; Lire l element');
+  RtEmitCode('    MOV EAX, [EAX+ECX*4+4] ; element = arr[index+1]');
+  RtEmitCode('    RET');
+
+  Inc(RtArrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtArrSet : emettre le code pour _PHRT_ARRSET             *)
+(* Ecrit un element dans un tableau                             *)
+(* Entree : EAX = adresse tableau, ECX = index, EDX = valeur    *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtArrSet;
+Begin
+  RtEmitCode('_PHRT_ARRSET:');
+  RtEmitCode('    ; Verifier les bornes');
+  RtEmitCode('    CMP ECX, [EAX]         ; comparer index avec count');
+  RtEmitCode('    JAE _PHRT_BOUNDS_ERR   ; erreur si index >= count');
+  RtEmitCode('    CMP ECX, 0');
+  RtEmitCode('    JL _PHRT_BOUNDS_ERR    ; erreur si index < 0');
+  RtEmitCode('    ; Ecrire l element');
+  RtEmitCode('    MOV [EAX+ECX*4+4], EDX ; arr[index+1] = valeur');
+  RtEmitCode('    RET');
+
+  Inc(RtArrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtArrLen : emettre le code pour _PHRT_ARRLEN             *)
+(* Retourne le nombre d elements d un tableau                   *)
+(* Entree : EAX = adresse tableau                               *)
+(* Sortie : EAX = nombre d elements (count)                     *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtArrLen;
+Begin
+  RtEmitCode('_PHRT_ARRLEN:');
+  RtEmitCode('    MOV EAX, [EAX]         ; count est dans le header');
+  RtEmitCode('    RET');
+
+  Inc(RtArrCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtPower : emettre le code pour _PHRT_POWER               *)
+(* Calcule base ** exponent                                     *)
+(* Entree : EAX = base, ECX = exponent                          *)
+(* Sortie : EAX = resultat                                      *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtPower;
+Var
+  LblLoop, LblDone, LblZero : TString;
+Begin
+  LblLoop := GenRtLabel;
+  LblDone := GenRtLabel;
+  LblZero := GenRtLabel;
+
+  RtEmitCode('_PHRT_POWER:');
+  RtEmitCode('    PUSH EBX');
+  RtEmitCode('    PUSH EDX');
+  RtEmitCode('    TEST ECX, ECX          ; exp == 0 ?');
+  RtEmitCode('    JZ ' + LblZero);
+  RtEmitCode('    MOV EBX, EAX           ; EBX = base');
+  RtEmitCode('    MOV EAX, 1             ; resultat = 1');
+  RtEmitCode(LblLoop + ':');
+  RtEmitCode('    TEST ECX, ECX');
+  RtEmitCode('    JZ ' + LblDone);
+  RtEmitCode('    IMUL EAX, EBX          ; resultat *= base');
+  RtEmitCode('    DEC ECX');
+  RtEmitCode('    JMP ' + LblLoop);
+  RtEmitCode(LblZero + ':');
+  RtEmitCode('    MOV EAX, 1             ; x**0 = 1');
+  RtEmitCode(LblDone + ':');
+  RtEmitCode('    POP EDX');
+  RtEmitCode('    POP EBX');
+  RtEmitCode('    RET');
+
+  Inc(RtMathCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtAbs : emettre le code pour _PHRT_ABS                   *)
+(* Calcule la valeur absolue                                    *)
+(* Entree : EAX = valeur                                        *)
+(* Sortie : EAX = |valeur|                                      *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtAbs;
+Var
+  LblPos : TString;
+Begin
+  LblPos := GenRtLabel;
+
+  RtEmitCode('_PHRT_ABS:');
+  RtEmitCode('    TEST EAX, EAX');
+  RtEmitCode('    JNS ' + LblPos);
+  RtEmitCode('    NEG EAX');
+  RtEmitCode(LblPos + ':');
+  RtEmitCode('    RET');
+
+  Inc(RtMathCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtMax : emettre le code pour _PHRT_MAX                   *)
+(* Retourne le maximum de deux valeurs                          *)
+(* Entree : EAX = valeur 1, ECX = valeur 2                      *)
+(* Sortie : EAX = max(valeur1, valeur2)                         *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtMax;
+Var
+  LblDone : TString;
+Begin
+  LblDone := GenRtLabel;
+
+  RtEmitCode('_PHRT_MAX:');
+  RtEmitCode('    CMP EAX, ECX');
+  RtEmitCode('    JGE ' + LblDone);
+  RtEmitCode('    MOV EAX, ECX');
+  RtEmitCode(LblDone + ':');
+  RtEmitCode('    RET');
+
+  Inc(RtMathCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtMin : emettre le code pour _PHRT_MIN                   *)
+(* Retourne le minimum de deux valeurs                          *)
+(* Entree : EAX = valeur 1, ECX = valeur 2                      *)
+(* Sortie : EAX = min(valeur1, valeur2)                         *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtMin;
+Var
+  LblDone : TString;
+Begin
+  LblDone := GenRtLabel;
+
+  RtEmitCode('_PHRT_MIN:');
+  RtEmitCode('    CMP EAX, ECX');
+  RtEmitCode('    JLE ' + LblDone);
+  RtEmitCode('    MOV EAX, ECX');
+  RtEmitCode(LblDone + ':');
+  RtEmitCode('    RET');
+
+  Inc(RtMathCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtPanic : emettre le code pour _PHRT_PANIC               *)
+(* Affiche un message d erreur et termine le programme          *)
+(* Entree : EAX = adresse du message d erreur                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtPanic;
+Begin
+  RtEmitCode('_PHRT_PANIC:');
+  RtEmitCode('    PUSH EAX               ; sauvegarder message');
+  RtEmitCode('    ; Calculer longueur du message');
+  RtEmitCode('    CALL _PHRT_STRLEN');
+  RtEmitCode('    MOV ECX, EAX           ; ECX = longueur');
+  RtEmitCode('    POP EAX                ; EAX = message');
+  RtEmitCode('    CALL _PHRT_WRITESTR');
+  RtEmitCode('    CALL _PHRT_WRITECRLF');
+  RtEmitCode('    PUSH 1                 ; code de sortie = 1');
+  RtEmitCode('    CALL ExitProcess');
+
+  Inc(RtErrorCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtBoundsErr : emettre le code pour _PHRT_BOUNDS_ERR      *)
+(* Affiche une erreur d index hors bornes et termine            *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtBoundsErr;
+Begin
+  RtEmitCode('_PHRT_BOUNDS_ERR:');
+  RtEmitCode('    LEA EAX, [_PK_BOUNDS_ERR]');
+  RtEmitCode('    JMP _PHRT_PANIC');
+
+  Inc(RtErrorCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRtHeapAlloc : emettre le code pour _PHRT_HEAPALLOC       *)
+(* Alloue de la memoire sur le heap                             *)
+(* Entree : ECX = taille en octets                              *)
+(* Sortie : EAX = adresse du bloc alloue                        *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRtHeapAlloc;
+Begin
+  RtEmitCode('_PHRT_HEAPALLOC:');
+  RtEmitCode('    PUSH ECX               ; dwBytes');
+  RtEmitCode('    PUSH 0                 ; dwFlags = 0');
+  RtEmitCode('    PUSH DWORD [_PH_HEAP]  ; hHeap');
+  RtEmitCode('    CALL HeapAlloc');
+  RtEmitCode('    RET');
+
+  Inc(RtHeapAllocCount);
+  Inc(RtEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitAllRuntimeRoutines : emettre toutes les routines runtime *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitAllRuntimeRoutines;
+Begin
+  RtEmitCode('');
+  RtEmitCode('; ============================================================');
+  RtEmitCode('; BIBLIOTHEQUE RUNTIME PHP');
+  RtEmitCode('; ============================================================');
+  RtEmitCode('');
+
+  (* Routines de conversion *)
+  EmitRtItoa;
+  RtEmitCode('');
+  EmitRtAtoi;
+  RtEmitCode('');
+  EmitRtBoolToStr;
+  RtEmitCode('');
+
+  (* Routines I/O *)
+  EmitRtInitIO;
+  RtEmitCode('');
+  EmitRtWriteStr;
+  RtEmitCode('');
+  EmitRtWriteCRLF;
+  RtEmitCode('');
+
+  (* Routines chaines *)
+  EmitRtStrLen;
+  RtEmitCode('');
+  EmitRtStrConcat;
+  RtEmitCode('');
+  EmitRtStrCmp;
+  RtEmitCode('');
+  EmitRtStrSlice;
+  RtEmitCode('');
+  EmitRtStrFind;
+  RtEmitCode('');
+  EmitRtStrUpper;
+  RtEmitCode('');
+  EmitRtStrLower;
+  RtEmitCode('');
+  EmitRtStrTrim;
+  RtEmitCode('');
+  EmitRtStrReplace;
+  RtEmitCode('');
+
+  (* Routines tableaux *)
+  EmitRtArrAlloc;
+  RtEmitCode('');
+  EmitRtArrGet;
+  RtEmitCode('');
+  EmitRtArrSet;
+  RtEmitCode('');
+  EmitRtArrLen;
+  RtEmitCode('');
+
+  (* Routines mathematiques *)
+  EmitRtPower;
+  RtEmitCode('');
+  EmitRtAbs;
+  RtEmitCode('');
+  EmitRtMax;
+  RtEmitCode('');
+  EmitRtMin;
+  RtEmitCode('');
+
+  (* Routines d erreur *)
+  EmitRtBoundsErr;
+  RtEmitCode('');
+  EmitRtPanic;
+  RtEmitCode('');
+
+  (* Allocation heap *)
+  EmitRtHeapAlloc;
+  RtEmitCode('');
+End;
+
+(* ------------------------------------------------------------ *)
+(* DumpRtState : afficher l etat du sous-systeme runtime        *)
+(* ------------------------------------------------------------ *)
+
+Procedure DumpRtState;
+Var
+  I : Integer;
+Begin
+  WriteLn('=== Runtime State ===');
+  WriteLn('Initialized: ', RtInitialized);
+  WriteLn('Routines registered: ', RtRoutineCount);
+  WriteLn('Total calls: ', RtCallCount);
+  WriteLn('Emitted routines: ', RtEmitCount);
+  WriteLn('Conversions: ', RtConvCount);
+  WriteLn('I/O operations: ', RtIoCount);
+  WriteLn('String operations: ', RtStrCount);
+  WriteLn('Array operations: ', RtArrCount);
+  WriteLn('Math operations: ', RtMathCount);
+  WriteLn('Error handlers: ', RtErrorCount);
+  WriteLn('Heap allocations: ', RtHeapAllocCount);
+  WriteLn('Label sequence: ', RtLabelSeq);
+
+  If RtRoutineCount > 0 Then
+  Begin
+    WriteLn('--- Registered Routines ---');
+    For I := 0 To RtRoutineCount - 1 Do
+    Begin
+      Write('  [', I, '] ', RtRoutines[I].Name);
+      Write(' (', RtTypeName(RtRoutines[I].Kind), ')');
+      Write(' calls=', RtRoutines[I].CallCount);
+      If RtRoutines[I].Emitted Then
+        Write(' [EMITTED]');
+      WriteLn;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* 10 fonctions accesseurs pour le module runtime               *)
+(* ------------------------------------------------------------ *)
+
+Function IsRtInitialized : Boolean;
+Begin
+  IsRtInitialized := RtInitialized;
+End;
+
+Function IsRtEmpty : Boolean;
+Begin
+  IsRtEmpty := (RtRoutineCount = 0);
+End;
+
+Function GetRtRoutineCount : Integer;
+Begin
+  GetRtRoutineCount := RtRoutineCount;
+End;
+
+Function GetRtCallCount : LongInt;
+Begin
+  GetRtCallCount := RtCallCount;
+End;
+
+Function GetRtEmitCount : LongInt;
+Begin
+  GetRtEmitCount := RtEmitCount;
+End;
+
+Function GetRtConvCount : LongInt;
+Begin
+  GetRtConvCount := RtConvCount;
+End;
+
+Function GetRtIoCount : LongInt;
+Begin
+  GetRtIoCount := RtIoCount;
+End;
+
+Function GetRtStrCount : LongInt;
+Begin
+  GetRtStrCount := RtStrCount;
+End;
+
+Function GetRtArrCount : LongInt;
+Begin
+  GetRtArrCount := RtArrCount;
+End;
+
+Function GetRtStatus : TString;
+Begin
+  If Not RtInitialized Then
+    GetRtStatus := 'Not initialized'
+  Else
+    GetRtStatus := ItoS(RtRoutineCount) + ' routines, ' +
+                   ItoS(RtEmitCount) + ' emitted, ' +
+                   ItoS(RtCallCount) + ' calls';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -16126,6 +17528,9 @@ Begin
   { Initialiser le module du segment de donnees (TODO 21) }
   InitDsState;
 
+  { Initialiser le module runtime (TODO 22) }
+  InitRtState;
+
   { Enregistrer les constantes PHP predefinies }
   RegisterPredefinedConsts;
 
@@ -16160,8 +17565,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-21 implementes');
-  WriteLn('PHPCW32: Les TODOs 22-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-22 implementes');
+  WriteLn('PHPCW32: Les TODOs 23-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
