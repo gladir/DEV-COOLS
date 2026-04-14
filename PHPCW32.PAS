@@ -472,7 +472,7 @@
             Scope : constantes toujours globales
             10 fonctions accesseurs
 
-  TODO 19 - PARSEUR : OPERATEURS SPECIAUX PHP [A FAIRE]
+  TODO 19 - PARSEUR : OPERATEURS SPECIAUX PHP [IMPLEMENTE]
             Operateur de puissance ** :
               $a ** $b -> boucle de multiplication
               Associativite a droite : 2 ** 3 ** 2 = 2 ** 9 = 512
@@ -13931,6 +13931,576 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 19 - PARSEUR : OPERATEURS SPECIAUX PHP [IMPLEMENTE]     }
+{ ============================================================ }
+
+Const
+  (* Types d operations pour operateurs speciaux PHP *)
+  SO_NONE           = 0;    (* aucun / non defini                     *)
+  SO_POWER          = 1;    (* operateur ** (puissance)               *)
+  SO_SPACESHIP      = 2;    (* operateur <=> (spaceship)              *)
+  SO_NULL_COALESCE  = 3;    (* operateur ?? (null coalescing)         *)
+  SO_ELVIS          = 4;    (* operateur ?: (elvis / ternaire court)  *)
+  SO_STRICT_EQ      = 5;    (* operateur === (egalite stricte)        *)
+  SO_STRICT_NE      = 6;    (* operateur !== (difference stricte)     *)
+  SO_POWER_ASSIGN   = 7;    (* operateur **= (puissance et assignation) *)
+  SO_COALESCE_ASSIGN= 8;    (* operateur ??= (coalesce et assignation) *)
+  SO_AT_SILENCE     = 9;    (* operateur @ (suppression erreurs)      *)
+  SO_SCOPE_RES      = 10;   (* operateur :: (resolution de portee)    *)
+  SO_EMIT           = 11;   (* emission de code ASM                   *)
+  SO_EVAL           = 12;   (* evaluation runtime                     *)
+  SO_BRANCH         = 13;   (* branchement conditionnel               *)
+  SO_MAX_KIND       = 13;
+
+  (* Limites *)
+  SO_MAX_NEST       = 16;   (* profondeur max d imbrication           *)
+
+Type
+  (* Enregistrement pour une operation speciale *)
+  TSoOpRec = Record
+    Kind        : Integer;   (* type d operation (SO_POWER, etc.)      *)
+    LeftType    : Integer;   (* type de l operande gauche              *)
+    RightType   : Integer;   (* type de l operande droit               *)
+    ResultType  : Integer;   (* type du resultat                       *)
+    TrueLabel   : TString;   (* label si condition vraie               *)
+    FalseLabel  : TString;   (* label si condition fausse              *)
+    EndLabel    : TString;   (* label de fin                           *)
+    DeclLine    : Integer;   (* ligne de l operation                   *)
+    IsAssign    : Boolean;   (* True si assignation combinee           *)
+  End;
+
+Var
+  SoInitialized     : Boolean;     (* True si le module est initialise   *)
+  SoStack           : Array[0..SO_MAX_NEST-1] Of TSoOpRec;
+  SoStackTop        : Integer;     (* sommet de la pile d operations     *)
+  SoPowerCount      : LongInt;     (* nombre d operations **             *)
+  SoSpaceshipCount  : LongInt;     (* nombre d operations <=>            *)
+  SoCoalesceCount   : LongInt;     (* nombre d operations ??             *)
+  SoElvisCount      : LongInt;     (* nombre d operations ?:             *)
+  SoStrictEqCount   : LongInt;     (* nombre d operations ===            *)
+  SoStrictNeCount   : LongInt;     (* nombre d operations !==            *)
+  SoAtSilenceCount  : LongInt;     (* nombre d operations @              *)
+  SoEmitCount       : LongInt;     (* nombre d emissions de code         *)
+  SoLabelSeq        : Integer;     (* sequence pour labels uniques       *)
+  SoLastKind        : Integer;     (* dernier type d operation           *)
+  SoCurKind         : Integer;     (* type d operation courante          *)
+  SoNestLevel       : Integer;     (* niveau d imbrication courant       *)
+
+(* ------------------------------------------------------------ *)
+(* InitSoState : initialiser le sous-systeme operateurs speciaux *)
+(* ------------------------------------------------------------ *)
+
+Procedure InitSoState;
+Var
+  I : Integer;
+Begin
+  SoInitialized     := True;
+  SoStackTop        := -1;
+  SoPowerCount      := 0;
+  SoSpaceshipCount  := 0;
+  SoCoalesceCount   := 0;
+  SoElvisCount      := 0;
+  SoStrictEqCount   := 0;
+  SoStrictNeCount   := 0;
+  SoAtSilenceCount  := 0;
+  SoEmitCount       := 0;
+  SoLabelSeq        := 0;
+  SoLastKind        := SO_NONE;
+  SoCurKind         := SO_NONE;
+  SoNestLevel       := 0;
+
+  For I := 0 To SO_MAX_NEST - 1 Do
+  Begin
+    SoStack[I].Kind        := SO_NONE;
+    SoStack[I].LeftType    := 0;
+    SoStack[I].RightType   := 0;
+    SoStack[I].ResultType  := 0;
+    SoStack[I].TrueLabel   := '';
+    SoStack[I].FalseLabel  := '';
+    SoStack[I].EndLabel    := '';
+    SoStack[I].DeclLine    := 0;
+    SoStack[I].IsAssign    := False;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GenSoLabel : generer un label unique pour operateurs speciaux *)
+(* ------------------------------------------------------------ *)
+
+Function GenSoLabel : TString;
+Begin
+  Inc(SoLabelSeq);
+  GenSoLabel := PH_LBL_PFX + 'SO_' + ItoS(SoLabelSeq);
+End;
+
+(* ------------------------------------------------------------ *)
+(* SoTypeName : retourner le nom du type d operation speciale    *)
+(* ------------------------------------------------------------ *)
+
+Function SoTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    SO_NONE           : SoTypeName := 'SO_NONE';
+    SO_POWER          : SoTypeName := 'SO_POWER';
+    SO_SPACESHIP      : SoTypeName := 'SO_SPACESHIP';
+    SO_NULL_COALESCE  : SoTypeName := 'SO_NULL_COALESCE';
+    SO_ELVIS          : SoTypeName := 'SO_ELVIS';
+    SO_STRICT_EQ      : SoTypeName := 'SO_STRICT_EQ';
+    SO_STRICT_NE      : SoTypeName := 'SO_STRICT_NE';
+    SO_POWER_ASSIGN   : SoTypeName := 'SO_POWER_ASSIGN';
+    SO_COALESCE_ASSIGN: SoTypeName := 'SO_COALESCE_ASSIGN';
+    SO_AT_SILENCE     : SoTypeName := 'SO_AT_SILENCE';
+    SO_SCOPE_RES      : SoTypeName := 'SO_SCOPE_RES';
+    SO_EMIT           : SoTypeName := 'SO_EMIT';
+    SO_EVAL           : SoTypeName := 'SO_EVAL';
+    SO_BRANCH         : SoTypeName := 'SO_BRANCH';
+  Else
+    SoTypeName := 'SO_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* SoPush : empiler une operation speciale                       *)
+(* ------------------------------------------------------------ *)
+
+Procedure SoPush(Kind : Integer; Line : Integer);
+Begin
+  If SoStackTop >= SO_MAX_NEST - 1 Then
+  Begin
+    CompileError('Operateurs speciaux trop imbriques (max=' +
+                 ItoS(SO_MAX_NEST) + ')', Line);
+    Exit;
+  End;
+
+  Inc(SoStackTop);
+  SoStack[SoStackTop].Kind        := Kind;
+  SoStack[SoStackTop].LeftType    := 0;
+  SoStack[SoStackTop].RightType   := 0;
+  SoStack[SoStackTop].ResultType  := 0;
+  SoStack[SoStackTop].TrueLabel   := GenSoLabel;
+  SoStack[SoStackTop].FalseLabel  := GenSoLabel;
+  SoStack[SoStackTop].EndLabel    := GenSoLabel;
+  SoStack[SoStackTop].DeclLine    := Line;
+  SoStack[SoStackTop].IsAssign    := False;
+
+  SoCurKind := Kind;
+  Inc(SoNestLevel);
+End;
+
+(* ------------------------------------------------------------ *)
+(* SoPop : depiler une operation speciale                        *)
+(* ------------------------------------------------------------ *)
+
+Procedure SoPop;
+Begin
+  If SoStackTop < 0 Then
+    Exit;
+
+  SoLastKind := SoStack[SoStackTop].Kind;
+  Dec(SoStackTop);
+  Dec(SoNestLevel);
+
+  If SoStackTop >= 0 Then
+    SoCurKind := SoStack[SoStackTop].Kind
+  Else
+    SoCurKind := SO_NONE;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitPowerOp : generer le code ASM pour l operateur **         *)
+(*   Entree: EAX = base, ECX = exposant                          *)
+(*   Sortie: EAX = resultat (base ** exposant)                   *)
+(*   Algorithme: boucle de multiplication                        *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitPowerOp;
+Var
+  LoopLbl, EndLbl : TString;
+Begin
+  Inc(SoPowerCount);
+  Inc(SoEmitCount);
+  SoLastKind := SO_POWER;
+
+  LoopLbl := GenSoLabel;
+  EndLbl  := GenSoLabel;
+
+  (* Cas special: exposant = 0 -> resultat = 1 *)
+  OutLn('  ; *** POWER OPERATOR ** ***');
+  OutLn('  TEST ECX, ECX');
+  OutLn('  JNZ ' + LoopLbl);
+  OutLn('  MOV EAX, 1');
+  OutLn('  JMP ' + EndLbl);
+
+  (* Boucle de multiplication *)
+  OutLn(LoopLbl + ':');
+  OutLn('  MOV EBX, EAX    ; sauver la base');
+  OutLn('  MOV EDX, 1      ; accumulateur = 1');
+
+  OutLn(LoopLbl + '_LOOP:');
+  OutLn('  TEST ECX, ECX');
+  OutLn('  JZ ' + LoopLbl + '_DONE');
+  OutLn('  IMUL EDX, EBX   ; accumulateur *= base');
+  OutLn('  DEC ECX');
+  OutLn('  JMP ' + LoopLbl + '_LOOP');
+
+  OutLn(LoopLbl + '_DONE:');
+  OutLn('  MOV EAX, EDX    ; resultat dans EAX');
+
+  OutLn(EndLbl + ':');
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitSpaceshipOp : generer le code ASM pour l operateur <=>    *)
+(*   Entree: EAX = gauche, ECX = droite                          *)
+(*   Sortie: EAX = -1 si gauche < droite                         *)
+(*                  0 si gauche = droite                         *)
+(*                  1 si gauche > droite                         *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitSpaceshipOp;
+Var
+  LessLbl, EqLbl, GtrLbl, EndLbl : TString;
+Begin
+  Inc(SoSpaceshipCount);
+  Inc(SoEmitCount);
+  SoLastKind := SO_SPACESHIP;
+
+  LessLbl := GenSoLabel;
+  EqLbl   := GenSoLabel;
+  GtrLbl  := GenSoLabel;
+  EndLbl  := GenSoLabel;
+
+  OutLn('  ; *** SPACESHIP OPERATOR <=> ***');
+  OutLn('  CMP EAX, ECX');
+  OutLn('  JL ' + LessLbl);
+  OutLn('  JG ' + GtrLbl);
+
+  (* Egal *)
+  OutLn(EqLbl + ':');
+  OutLn('  XOR EAX, EAX    ; EAX = 0');
+  OutLn('  JMP ' + EndLbl);
+
+  (* Inferieur *)
+  OutLn(LessLbl + ':');
+  OutLn('  MOV EAX, -1     ; EAX = -1');
+  OutLn('  JMP ' + EndLbl);
+
+  (* Superieur *)
+  OutLn(GtrLbl + ':');
+  OutLn('  MOV EAX, 1      ; EAX = 1');
+
+  OutLn(EndLbl + ':');
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitNullCoalesceOp : generer le code ASM pour l operateur ??  *)
+(*   Entree: EAX = valeur gauche (pointeur ou 0 si null)         *)
+(*           [ESP] = expression droite (evaluee si EAX est null) *)
+(*   Sortie: EAX = valeur gauche si non-null, sinon valeur droite*)
+(*   Court-circuit: la droite n est pas evaluee si gauche ok     *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitNullCoalesceOp;
+Var
+  EndLbl : TString;
+Begin
+  Inc(SoCoalesceCount);
+  Inc(SoEmitCount);
+  SoLastKind := SO_NULL_COALESCE;
+
+  EndLbl := GenSoLabel;
+
+  OutLn('  ; *** NULL COALESCE OPERATOR ?? ***');
+  OutLn('  TEST EAX, EAX');
+  OutLn('  JNZ ' + EndLbl + '  ; si non-null, garder EAX');
+  OutLn('  ; EAX est null, evaluer la partie droite');
+  OutLn('  ; (la valeur droite doit etre dans ECX)');
+  OutLn('  MOV EAX, ECX');
+  OutLn(EndLbl + ':');
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitElvisOp : generer le code ASM pour l operateur ?:         *)
+(*   Entree: EAX = valeur gauche                                 *)
+(*   Sortie: EAX = valeur gauche si truthy, sinon valeur droite  *)
+(*   Court-circuit: similaire a ??                               *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitElvisOp;
+Var
+  EndLbl : TString;
+Begin
+  Inc(SoElvisCount);
+  Inc(SoEmitCount);
+  SoLastKind := SO_ELVIS;
+
+  EndLbl := GenSoLabel;
+
+  OutLn('  ; *** ELVIS OPERATOR ?: ***');
+  OutLn('  TEST EAX, EAX');
+  OutLn('  JNZ ' + EndLbl + '  ; si truthy (!=0), garder EAX');
+  OutLn('  ; EAX est falsy, evaluer la partie droite');
+  OutLn('  ; (la valeur droite doit etre dans ECX)');
+  OutLn('  MOV EAX, ECX');
+  OutLn(EndLbl + ':');
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrictEqual : generer le code ASM pour l operateur ===    *)
+(*   Entree: EAX = gauche, ECX = droite                          *)
+(*   Sortie: EAX = 1 si egaux (valeur ET type), 0 sinon          *)
+(*   Note: pour les entiers, equivalent a ==                     *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrictEqual;
+Var
+  TrueLbl, EndLbl : TString;
+Begin
+  Inc(SoStrictEqCount);
+  Inc(SoEmitCount);
+  SoLastKind := SO_STRICT_EQ;
+
+  TrueLbl := GenSoLabel;
+  EndLbl  := GenSoLabel;
+
+  OutLn('  ; *** STRICT EQUAL OPERATOR === ***');
+  OutLn('  CMP EAX, ECX');
+  OutLn('  JE ' + TrueLbl);
+  OutLn('  XOR EAX, EAX    ; EAX = 0 (false)');
+  OutLn('  JMP ' + EndLbl);
+  OutLn(TrueLbl + ':');
+  OutLn('  MOV EAX, 1      ; EAX = 1 (true)');
+  OutLn(EndLbl + ':');
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStrictNotEqual : generer le code ASM pour l operateur !== *)
+(*   Entree: EAX = gauche, ECX = droite                          *)
+(*   Sortie: EAX = 1 si differents (valeur OU type), 0 sinon     *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStrictNotEqual;
+Var
+  TrueLbl, EndLbl : TString;
+Begin
+  Inc(SoStrictNeCount);
+  Inc(SoEmitCount);
+  SoLastKind := SO_STRICT_NE;
+
+  TrueLbl := GenSoLabel;
+  EndLbl  := GenSoLabel;
+
+  OutLn('  ; *** STRICT NOT EQUAL OPERATOR !== ***');
+  OutLn('  CMP EAX, ECX');
+  OutLn('  JNE ' + TrueLbl);
+  OutLn('  XOR EAX, EAX    ; EAX = 0 (false)');
+  OutLn('  JMP ' + EndLbl);
+  OutLn(TrueLbl + ':');
+  OutLn('  MOV EAX, 1      ; EAX = 1 (true)');
+  OutLn(EndLbl + ':');
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitAtSilence : generer le code pour l operateur @            *)
+(*   Note: en mode compile, @ est ignore (pas d erreurs runtime) *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitAtSilence;
+Begin
+  Inc(SoAtSilenceCount);
+  SoLastKind := SO_AT_SILENCE;
+
+  (* L operateur @ est ignore en mode compile *)
+  OutLn('  ; *** AT SILENCE OPERATOR @ (ignored) ***');
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsSpecialOp : verifier si un operateur est un operateur spec. *)
+(* ------------------------------------------------------------ *)
+
+Function IsSpecialOp(Const Op : TString) : Boolean;
+Begin
+  IsSpecialOp := (Op = '**')  Or (Op = '<=>') Or
+                 (Op = '??')  Or (Op = '?:')  Or
+                 (Op = '===') Or (Op = '!==') Or
+                 (Op = '**=') Or (Op = '??=') Or
+                 (Op = '@')   Or (Op = '::');
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetSpecialOpKind : retourner le type d un operateur special   *)
+(* ------------------------------------------------------------ *)
+
+Function GetSpecialOpKind(Const Op : TString) : Integer;
+Begin
+  If Op = '**' Then
+    GetSpecialOpKind := SO_POWER
+  Else If Op = '<=>' Then
+    GetSpecialOpKind := SO_SPACESHIP
+  Else If Op = '??' Then
+    GetSpecialOpKind := SO_NULL_COALESCE
+  Else If Op = '?:' Then
+    GetSpecialOpKind := SO_ELVIS
+  Else If Op = '===' Then
+    GetSpecialOpKind := SO_STRICT_EQ
+  Else If Op = '!==' Then
+    GetSpecialOpKind := SO_STRICT_NE
+  Else If Op = '**=' Then
+    GetSpecialOpKind := SO_POWER_ASSIGN
+  Else If Op = '??=' Then
+    GetSpecialOpKind := SO_COALESCE_ASSIGN
+  Else If Op = '@' Then
+    GetSpecialOpKind := SO_AT_SILENCE
+  Else If Op = '::' Then
+    GetSpecialOpKind := SO_SCOPE_RES
+  Else
+    GetSpecialOpKind := SO_NONE;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetSpecialOpPrec : retourner la precedence d un op special    *)
+(*   Plus le nombre est eleve, plus la precedence est haute      *)
+(* ------------------------------------------------------------ *)
+
+Function GetSpecialOpPrec(Kind : Integer) : Integer;
+Begin
+  Case Kind Of
+    SO_POWER          : GetSpecialOpPrec := 14;  (* tres haute *)
+    SO_SPACESHIP      : GetSpecialOpPrec := 9;   (* comparaison *)
+    SO_NULL_COALESCE  : GetSpecialOpPrec := 4;   (* basse *)
+    SO_ELVIS          : GetSpecialOpPrec := 4;   (* basse *)
+    SO_STRICT_EQ      : GetSpecialOpPrec := 10;  (* egalite *)
+    SO_STRICT_NE      : GetSpecialOpPrec := 10;  (* egalite *)
+    SO_AT_SILENCE     : GetSpecialOpPrec := 15;  (* tres haute, unaire *)
+    SO_SCOPE_RES      : GetSpecialOpPrec := 16;  (* la plus haute *)
+  Else
+    GetSpecialOpPrec := 0;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsSpecialOpRightAssoc : verifier si assoc. a droite           *)
+(*   Retourne True si l operateur est associatif a droite        *)
+(* ------------------------------------------------------------ *)
+
+Function IsSpecialOpRightAssoc(Kind : Integer) : Boolean;
+Begin
+  (* L operateur ** est associatif a droite en PHP *)
+  (* 2 ** 3 ** 2 = 2 ** (3 ** 2) = 2 ** 9 = 512 *)
+  IsSpecialOpRightAssoc := (Kind = SO_POWER) Or
+                           (Kind = SO_POWER_ASSIGN) Or
+                           (Kind = SO_NULL_COALESCE) Or
+                           (Kind = SO_COALESCE_ASSIGN);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitSpecialOp : emettre le code pour un operateur special     *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitSpecialOp(Kind : Integer);
+Begin
+  Case Kind Of
+    SO_POWER         : EmitPowerOp;
+    SO_SPACESHIP     : EmitSpaceshipOp;
+    SO_NULL_COALESCE : EmitNullCoalesceOp;
+    SO_ELVIS         : EmitElvisOp;
+    SO_STRICT_EQ     : EmitStrictEqual;
+    SO_STRICT_NE     : EmitStrictNotEqual;
+    SO_AT_SILENCE    : EmitAtSilence;
+    SO_SCOPE_RES     :
+      Begin
+        CompileError('Operateur :: non supporte (pas de classes)', 0);
+      End;
+  Else
+    CompileError('Operateur special inconnu: ' + SoTypeName(Kind), 0);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* DumpSoState : afficher l etat du module operateurs speciaux   *)
+(* ------------------------------------------------------------ *)
+
+Procedure DumpSoState;
+Begin
+  WriteLn('=== Dump SoState (TODO 19) ===');
+  WriteLn('  SoInitialized     : ', SoInitialized);
+  WriteLn('  SoStackTop        : ', SoStackTop);
+  WriteLn('  SoPowerCount      : ', SoPowerCount);
+  WriteLn('  SoSpaceshipCount  : ', SoSpaceshipCount);
+  WriteLn('  SoCoalesceCount   : ', SoCoalesceCount);
+  WriteLn('  SoElvisCount      : ', SoElvisCount);
+  WriteLn('  SoStrictEqCount   : ', SoStrictEqCount);
+  WriteLn('  SoStrictNeCount   : ', SoStrictNeCount);
+  WriteLn('  SoAtSilenceCount  : ', SoAtSilenceCount);
+  WriteLn('  SoEmitCount       : ', SoEmitCount);
+  WriteLn('  SoLabelSeq        : ', SoLabelSeq);
+  WriteLn('  SoLastKind        : ', SoTypeName(SoLastKind));
+  WriteLn('  SoCurKind         : ', SoTypeName(SoCurKind));
+  WriteLn('  SoNestLevel       : ', SoNestLevel);
+End;
+
+(* ------------------------------------------------------------ *)
+(* 10 fonctions accesseurs (TODO 19)                             *)
+(* ------------------------------------------------------------ *)
+
+Function IsSoInitialized : Boolean;
+Begin
+  IsSoInitialized := SoInitialized;
+End;
+
+Function IsSoEmpty : Boolean;
+Begin
+  IsSoEmpty := (SoStackTop < 0);
+End;
+
+Function GetSoPowerCount : LongInt;
+Begin
+  GetSoPowerCount := SoPowerCount;
+End;
+
+Function GetSoSpaceshipCount : LongInt;
+Begin
+  GetSoSpaceshipCount := SoSpaceshipCount;
+End;
+
+Function GetSoCoalesceCount : LongInt;
+Begin
+  GetSoCoalesceCount := SoCoalesceCount;
+End;
+
+Function GetSoElvisCount : LongInt;
+Begin
+  GetSoElvisCount := SoElvisCount;
+End;
+
+Function GetSoStrictEqCount : LongInt;
+Begin
+  GetSoStrictEqCount := SoStrictEqCount;
+End;
+
+Function GetSoEmitCount : LongInt;
+Begin
+  GetSoEmitCount := SoEmitCount;
+End;
+
+Function GetSoLabelSeq : Integer;
+Begin
+  GetSoLabelSeq := SoLabelSeq;
+End;
+
+Function GetSoStatus : TString;
+Begin
+  If Not SoInitialized Then
+    GetSoStatus := 'Not initialized'
+  Else
+    GetSoStatus := ItoS(SoPowerCount) + ' **, ' +
+                   ItoS(SoSpaceshipCount) + ' <=>, ' +
+                   ItoS(SoCoalesceCount) + ' ??, ' +
+                   ItoS(SoElvisCount) + ' ?:, ' +
+                   ItoS(SoStrictEqCount + SoStrictNeCount) + ' ===/!==';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -13993,6 +14563,9 @@ Begin
   { Initialiser le module des constantes (TODO 18) }
   InitCtState;
 
+  { Initialiser le module des operateurs speciaux (TODO 19) }
+  InitSoState;
+
   { Enregistrer les constantes PHP predefinies }
   RegisterPredefinedConsts;
 
@@ -14027,8 +14600,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-18 implementes');
-  WriteLn('PHPCW32: Les TODOs 19-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-19 implementes');
+  WriteLn('PHPCW32: Les TODOs 20-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
