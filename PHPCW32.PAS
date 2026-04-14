@@ -18098,7 +18098,8 @@ Begin
   (* Message "This program cannot be run in DOS mode." *)
   BnWriteString('This program cannot be run in DOS mode.'#13#10'$', 0);
   (* Padding pour atteindre 64 octets de stub *)
-  BnWriteZeros(BN_DOS_STUB_SIZE - 14 - 41);
+  (* Code=14 octets, Message=42 caracteres, Total=56, Padding=8 *)
+  BnWriteZeros(BN_DOS_STUB_SIZE - 14 - 42);
 End;
 
 (* ------------------------------------------------------------ *)
