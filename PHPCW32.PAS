@@ -517,7 +517,7 @@
             settype($var, "type") : non supporte
             10 fonctions accesseurs
 
-  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [A FAIRE]
+  TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386 [IMPLEMENTE]
             Section .data (variables initialisees) :
               Variable globale int : _PH_nom DD 0
               Variable globale string : _PH_nom DD _PK_N (ptr)
@@ -15365,6 +15365,696 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 21 - GENERATION DE CODE : SEGMENT DE DONNEES 80386     }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  (* Types de donnees dans le segment DATA                        *)
+  DS_NONE           = 0;    (* aucun / non defini                     *)
+  DS_GLOBAL_INT     = 1;    (* variable globale entiere               *)
+  DS_GLOBAL_STR     = 2;    (* variable globale chaine (pointeur)     *)
+  DS_GLOBAL_BOOL    = 3;    (* variable globale booleenne             *)
+  DS_GLOBAL_ARRAY   = 4;    (* variable globale tableau (pointeur)    *)
+  DS_CONST_STR      = 5;    (* constante chaine litterale             *)
+  DS_CONST_FMT      = 6;    (* constante format (printf-like)         *)
+  DS_CONST_SPECIAL  = 7;    (* constante speciale (TRUE, FALSE, etc.) *)
+  DS_RUNTIME_VAR    = 8;    (* variable runtime (STDOUT, etc.)        *)
+  DS_HEAP_BLOCK     = 9;    (* bloc heap dynamique                    *)
+  DS_BSS_BUFFER     = 10;   (* buffer BSS (non initialise)            *)
+  DS_BSS_VAR        = 11;   (* variable BSS                           *)
+  DS_ARRAY_DATA     = 12;   (* donnees tableau (bloc DD)              *)
+  DS_ALIGN          = 13;   (* directive d alignement                 *)
+  DS_MAX_KIND       = 13;
+
+  (* Limites pour le segment DATA                                 *)
+  DS_MAX_ENTRIES    = 512;  (* nombre max d entrees dans DATA         *)
+  DS_MAX_STRINGS    = 256;  (* nombre max de constantes chaines       *)
+  DS_MAX_GLOBALS    = 128;  (* nombre max de variables globales       *)
+  DS_HEAP_SIZE      = 65536;(* taille du bloc heap (64 Ko)            *)
+  DS_IOBUF_SIZE     = 256;  (* taille du buffer I/O                   *)
+  DS_NUMBUF_SIZE    = 32;   (* taille du buffer numerique             *)
+
+Type
+  (* Enregistrement pour une entree dans le segment DATA          *)
+  TDsDataRec = Record
+    Kind        : Integer;   (* type d entree (DS_GLOBAL_INT, etc.)    *)
+    Name        : TString;   (* nom du label ASM                       *)
+    VarName     : TString;   (* nom PHP original (sans $)              *)
+    Value       : LongInt;   (* valeur initiale (entier/pointeur)      *)
+    StrValue    : TString;   (* valeur chaine (pour DS_CONST_STR)      *)
+    TypeIdx     : Integer;   (* index de type (TY_INTEGER, etc.)       *)
+    Size        : Integer;   (* taille en octets                       *)
+    IsExtern    : Boolean;   (* True si reference externe              *)
+    IsInitialized : Boolean; (* True si initialise                     *)
+    DeclLine    : Integer;   (* numero de ligne de declaration         *)
+  End;
+
+Var
+  DsInitialized     : Boolean;     (* True si le module est initialise   *)
+  DsEntries         : Array[0..DS_MAX_ENTRIES-1] Of TDsDataRec;
+  DsEntryCount      : Integer;     (* nombre d entrees                   *)
+  DsStringCount     : LongInt;     (* nombre de constantes chaines       *)
+  DsGlobalIntCount  : LongInt;     (* nombre de globales entieres        *)
+  DsGlobalStrCount  : LongInt;     (* nombre de globales chaines         *)
+  DsGlobalBoolCount : LongInt;     (* nombre de globales booleennes      *)
+  DsGlobalArrayCount: LongInt;     (* nombre de globales tableaux        *)
+  DsRuntimeVarCount : LongInt;     (* nombre de variables runtime        *)
+  DsBssSize         : LongInt;     (* taille totale du segment BSS       *)
+  DsDataSize        : LongInt;     (* taille totale du segment DATA      *)
+  DsLabelSeq        : Integer;     (* sequence pour labels uniques       *)
+  DsLastKind        : Integer;     (* dernier type d entree              *)
+  DsCurKind         : Integer;     (* type d entree courant              *)
+  DsEmitCount       : LongInt;     (* nombre total d emissions           *)
+
+(* ------------------------------------------------------------ *)
+(* InitDsState : initialiser le sous-systeme segment DATA       *)
+(* ------------------------------------------------------------ *)
+
+Procedure InitDsState;
+Var
+  I : Integer;
+Begin
+  DsInitialized     := True;
+  DsEntryCount      := 0;
+  DsStringCount     := 0;
+  DsGlobalIntCount  := 0;
+  DsGlobalStrCount  := 0;
+  DsGlobalBoolCount := 0;
+  DsGlobalArrayCount:= 0;
+  DsRuntimeVarCount := 0;
+  DsBssSize         := 0;
+  DsDataSize        := 0;
+  DsLabelSeq        := 0;
+  DsLastKind        := DS_NONE;
+  DsCurKind         := DS_NONE;
+  DsEmitCount       := 0;
+
+  For I := 0 To DS_MAX_ENTRIES - 1 Do
+  Begin
+    DsEntries[I].Kind        := DS_NONE;
+    DsEntries[I].Name        := '';
+    DsEntries[I].VarName     := '';
+    DsEntries[I].Value       := 0;
+    DsEntries[I].StrValue    := '';
+    DsEntries[I].TypeIdx     := 0;
+    DsEntries[I].Size        := 0;
+    DsEntries[I].IsExtern    := False;
+    DsEntries[I].IsInitialized := False;
+    DsEntries[I].DeclLine    := 0;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GenDsLabel : generer un label unique pour le segment DATA    *)
+(* ------------------------------------------------------------ *)
+
+Function GenDsLabel(Prefix : TString) : TString;
+Begin
+  Inc(DsLabelSeq);
+  GenDsLabel := PH_STR_PFX + Prefix + '_' + ItoS(DsLabelSeq);
+End;
+
+(* ------------------------------------------------------------ *)
+(* DsTypeName : convertir un type DS_* en chaine                *)
+(* ------------------------------------------------------------ *)
+
+Function DsTypeName(Kind : Integer) : TString;
+Begin
+  Case Kind Of
+    DS_NONE          : DsTypeName := 'NONE';
+    DS_GLOBAL_INT    : DsTypeName := 'GLOBAL_INT';
+    DS_GLOBAL_STR    : DsTypeName := 'GLOBAL_STR';
+    DS_GLOBAL_BOOL   : DsTypeName := 'GLOBAL_BOOL';
+    DS_GLOBAL_ARRAY  : DsTypeName := 'GLOBAL_ARRAY';
+    DS_CONST_STR     : DsTypeName := 'CONST_STR';
+    DS_CONST_FMT     : DsTypeName := 'CONST_FMT';
+    DS_CONST_SPECIAL : DsTypeName := 'CONST_SPECIAL';
+    DS_RUNTIME_VAR   : DsTypeName := 'RUNTIME_VAR';
+    DS_HEAP_BLOCK    : DsTypeName := 'HEAP_BLOCK';
+    DS_BSS_BUFFER    : DsTypeName := 'BSS_BUFFER';
+    DS_BSS_VAR       : DsTypeName := 'BSS_VAR';
+    DS_ARRAY_DATA    : DsTypeName := 'ARRAY_DATA';
+    DS_ALIGN         : DsTypeName := 'ALIGN';
+  Else
+    DsTypeName := 'UNKNOWN';
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* AddDsEntry : ajouter une entree dans le segment DATA         *)
+(*   Retourne l index de l entree ajoutee ou -1 si erreur       *)
+(* ------------------------------------------------------------ *)
+
+Function AddDsEntry(Kind : Integer; AsmName, PhpName : TString;
+                    InitValue : LongInt; StrVal : TString;
+                    AType, ASize : Integer) : Integer;
+Begin
+  If DsEntryCount >= DS_MAX_ENTRIES Then
+  Begin
+    WarnMsg('Trop d entrees DATA (max ' + ItoS(DS_MAX_ENTRIES) + ')');
+    AddDsEntry := -1;
+    Exit;
+  End;
+
+  DsEntries[DsEntryCount].Kind        := Kind;
+  DsEntries[DsEntryCount].Name        := AsmName;
+  DsEntries[DsEntryCount].VarName     := PhpName;
+  DsEntries[DsEntryCount].Value       := InitValue;
+  DsEntries[DsEntryCount].StrValue    := StrVal;
+  DsEntries[DsEntryCount].TypeIdx     := AType;
+  DsEntries[DsEntryCount].Size        := ASize;
+  DsEntries[DsEntryCount].IsExtern    := False;
+  DsEntries[DsEntryCount].IsInitialized := True;
+  DsEntries[DsEntryCount].DeclLine    := LexLineNo;
+
+  DsLastKind := DsCurKind;
+  DsCurKind  := Kind;
+
+  Case Kind Of
+    DS_GLOBAL_INT    : Inc(DsGlobalIntCount);
+    DS_GLOBAL_STR    : Inc(DsGlobalStrCount);
+    DS_GLOBAL_BOOL   : Inc(DsGlobalBoolCount);
+    DS_GLOBAL_ARRAY  : Inc(DsGlobalArrayCount);
+    DS_CONST_STR,
+    DS_CONST_FMT,
+    DS_CONST_SPECIAL : Inc(DsStringCount);
+    DS_RUNTIME_VAR   : Inc(DsRuntimeVarCount);
+    DS_BSS_BUFFER,
+    DS_BSS_VAR       : Inc(DsBssSize, ASize);
+  End;
+
+  Inc(DsDataSize, ASize);
+  AddDsEntry := DsEntryCount;
+  Inc(DsEntryCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* RegisterGlobalInt : enregistrer une variable globale entiere *)
+(* ------------------------------------------------------------ *)
+
+Function RegisterGlobalInt(VarName : TString; InitValue : LongInt) : Integer;
+Var
+  AsmName : TString;
+Begin
+  AsmName := PH_VAR_PFX + AsmIdent(VarName);
+  RegisterGlobalInt := AddDsEntry(DS_GLOBAL_INT, AsmName, VarName,
+                                  InitValue, '', TY_INTEGER, 4);
+End;
+
+(* ------------------------------------------------------------ *)
+(* RegisterGlobalStr : enregistrer une variable globale chaine  *)
+(*   La valeur est un pointeur vers une constante chaine        *)
+(* ------------------------------------------------------------ *)
+
+Function RegisterGlobalStr(VarName : TString; StrConstLabel : TString) : Integer;
+Var
+  AsmName : TString;
+Begin
+  AsmName := PH_VAR_PFX + AsmIdent(VarName);
+  RegisterGlobalStr := AddDsEntry(DS_GLOBAL_STR, AsmName, VarName,
+                                  0, StrConstLabel, TY_STRING, 4);
+End;
+
+(* ------------------------------------------------------------ *)
+(* RegisterGlobalBool : enregistrer une variable globale bool   *)
+(* ------------------------------------------------------------ *)
+
+Function RegisterGlobalBool(VarName : TString; InitValue : Boolean) : Integer;
+Var
+  AsmName : TString;
+  Val     : LongInt;
+Begin
+  AsmName := PH_VAR_PFX + AsmIdent(VarName);
+  If InitValue Then Val := 1 Else Val := 0;
+  RegisterGlobalBool := AddDsEntry(DS_GLOBAL_BOOL, AsmName, VarName,
+                                   Val, '', TY_BOOLEAN, 4);
+End;
+
+(* ------------------------------------------------------------ *)
+(* RegisterGlobalArray : enregistrer un tableau global          *)
+(*   La valeur est un pointeur vers le bloc de donnees tableau  *)
+(* ------------------------------------------------------------ *)
+
+Function RegisterGlobalArray(VarName : TString; ArrayLabel : TString) : Integer;
+Var
+  AsmName : TString;
+Begin
+  AsmName := PH_VAR_PFX + AsmIdent(VarName);
+  RegisterGlobalArray := AddDsEntry(DS_GLOBAL_ARRAY, AsmName, VarName,
+                                    0, ArrayLabel, TY_ARRAY, 4);
+End;
+
+(* ------------------------------------------------------------ *)
+(* RegisterStringConst : enregistrer une constante chaine       *)
+(*   Retourne le label genere pour la constante                 *)
+(* ------------------------------------------------------------ *)
+
+Function RegisterStringConst(StrValue : TString) : TString;
+Var
+  AsmName : TString;
+Begin
+  AsmName := GenDsLabel('S');
+  AddDsEntry(DS_CONST_STR, AsmName, '', 0, StrValue, TY_STRING,
+             Length(StrValue) + 1);
+  RegisterStringConst := AsmName;
+End;
+
+(* ------------------------------------------------------------ *)
+(* RegisterFormatConst : enregistrer une constante de format    *)
+(* ------------------------------------------------------------ *)
+
+Function RegisterFormatConst(FmtValue : TString) : TString;
+Var
+  AsmName : TString;
+Begin
+  AsmName := GenDsLabel('FMT');
+  AddDsEntry(DS_CONST_FMT, AsmName, '', 0, FmtValue, TY_STRING,
+             Length(FmtValue) + 1);
+  RegisterFormatConst := AsmName;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EscapeAsmString : echapper une chaine pour l assembleur      *)
+(*   Convertit les caracteres speciaux en sequences ASM         *)
+(* ------------------------------------------------------------ *)
+
+Function EscapeAsmString(S : TString) : TString;
+Var
+  I      : Integer;
+  C      : Char;
+  Result : TString;
+  InQuote: Boolean;
+Begin
+  If Length(S) = 0 Then
+  Begin
+    EscapeAsmString := '0';
+    Exit;
+  End;
+
+  Result := '';
+  InQuote := False;
+
+  For I := 1 To Length(S) Do
+  Begin
+    C := S[I];
+    If (Ord(C) >= 32) And (Ord(C) <= 126) And (C <> '''') Then
+    Begin
+      (* Caractere imprimable normal *)
+      If Not InQuote Then
+      Begin
+        If Length(Result) > 0 Then
+          Result := Result + ', ';
+        Result := Result + '''';
+        InQuote := True;
+      End;
+      Result := Result + C;
+    End
+    Else
+    Begin
+      (* Caractere special - utiliser code numerique *)
+      If InQuote Then
+      Begin
+        Result := Result + '''';
+        InQuote := False;
+      End;
+      If Length(Result) > 0 Then
+        Result := Result + ', ';
+      Result := Result + ItoS(Ord(C));
+    End;
+  End;
+
+  If InQuote Then
+    Result := Result + '''';
+
+  (* Ajouter le terminateur NUL *)
+  If Length(Result) > 0 Then
+    Result := Result + ', ';
+  Result := Result + '0';
+
+  EscapeAsmString := Result;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitStringConst : emettre une constante chaine en ASM        *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitStringConst(AsmLabel, StrValue : TString);
+Begin
+  OutLn(AsmLabel + ' DB ' + EscapeAsmString(StrValue));
+  Inc(DsEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitGlobalVarInt : emettre une variable globale entiere      *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitGlobalVarInt(AsmLabel : TString; InitValue : LongInt);
+Begin
+  OutLn(AsmLabel + ' DD ' + ItoS(InitValue));
+  Inc(DsEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitGlobalVarPtr : emettre une variable globale pointeur     *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitGlobalVarPtr(AsmLabel, PtrLabel : TString);
+Begin
+  If Length(PtrLabel) > 0 Then
+    OutLn(AsmLabel + ' DD ' + PtrLabel)
+  Else
+    OutLn(AsmLabel + ' DD 0');
+  Inc(DsEmitCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitSpecialConsts : emettre les constantes speciales PHP     *)
+(*   TRUE, FALSE, NULL, CRLF, SPACE                             *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitSpecialConsts;
+Begin
+  OutLn('; Constantes speciales PHP');
+  OutLn(PH_STR_PFX + 'TRUE DB ''1'', 0');
+  OutLn(PH_STR_PFX + 'FALSE DB 0');
+  OutLn(PH_STR_PFX + 'NULL DB 0');
+  OutLn(PH_STR_PFX + 'CRLF DB 13, 10, 0');
+  OutLn(PH_STR_PFX + 'SPACE DB '' '', 0');
+  OutLn(PH_STR_PFX + 'NEWLINE DB 10, 0');
+  Inc(DsEmitCount, 6);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitRuntimeVars : emettre les variables runtime              *)
+(*   STDOUT, WRITTEN, etc.                                      *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitRuntimeVarsData;
+Begin
+  OutLn('; Variables runtime (DATA)');
+  OutLn(PH_VAR_PFX + 'ARGC DD 0');
+  OutLn(PH_VAR_PFX + 'ARGV DD 0');
+  Inc(DsEmitCount, 2);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitBssVars : emettre les variables BSS (non initialisees)   *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitBssVars;
+Begin
+  OutLn('; Variables runtime (BSS)');
+  OutLn(PH_VAR_PFX + 'STDOUT DD ?');
+  OutLn(PH_VAR_PFX + 'WRITTEN DD ?');
+  OutLn(PH_VAR_PFX + 'EXITCODE DD ?');
+  Inc(DsEmitCount, 3);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitIoBuffers : emettre les buffers I/O                      *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitIoBuffers;
+Begin
+  OutLn('; Buffers I/O');
+  OutLn(PH_VAR_PFX + 'IOBUF DB ' + ItoS(DS_IOBUF_SIZE) + ' DUP(?)');
+  OutLn(PH_VAR_PFX + 'NUMBUF DB ' + ItoS(DS_NUMBUF_SIZE) + ' DUP(?)');
+  Inc(DsEmitCount, 2);
+  Inc(DsBssSize, DS_IOBUF_SIZE + DS_NUMBUF_SIZE);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitHeapBlock : emettre le bloc heap dynamique               *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitHeapBlock;
+Begin
+  OutLn('; Heap dynamique');
+  OutLn(PH_VAR_PFX + 'HEAP DB ' + ItoS(DS_HEAP_SIZE) + ' DUP(0)');
+  OutLn(PH_VAR_PFX + 'HEAPTOP DD 0');
+  Inc(DsEmitCount, 2);
+  Inc(DsDataSize, DS_HEAP_SIZE + 4);
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitDataSegment : emettre le segment .data complet           *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitDataSegment;
+Var
+  I : Integer;
+Begin
+  OutLn('');
+  OutLn('; ============================================================');
+  OutLn('; SEGMENT DE DONNEES INITIALISEES (.data)');
+  OutLn('; ============================================================');
+  OutLn('.data');
+  OutLn('');
+
+  (* Constantes speciales *)
+  EmitSpecialConsts;
+  OutLn('');
+
+  (* Variables runtime (DATA) *)
+  EmitRuntimeVarsData;
+  OutLn('');
+
+  (* Heap dynamique *)
+  EmitHeapBlock;
+  OutLn('');
+
+  (* Parcourir toutes les entrees DATA *)
+  For I := 0 To DsEntryCount - 1 Do
+  Begin
+    Case DsEntries[I].Kind Of
+      DS_GLOBAL_INT :
+        EmitGlobalVarInt(DsEntries[I].Name, DsEntries[I].Value);
+
+      DS_GLOBAL_STR :
+        EmitGlobalVarPtr(DsEntries[I].Name, DsEntries[I].StrValue);
+
+      DS_GLOBAL_BOOL :
+        EmitGlobalVarInt(DsEntries[I].Name, DsEntries[I].Value);
+
+      DS_GLOBAL_ARRAY :
+        EmitGlobalVarPtr(DsEntries[I].Name, DsEntries[I].StrValue);
+
+      DS_CONST_STR,
+      DS_CONST_FMT,
+      DS_CONST_SPECIAL :
+        EmitStringConst(DsEntries[I].Name, DsEntries[I].StrValue);
+
+      DS_ARRAY_DATA :
+      Begin
+        OutLn('; Donnees tableau ' + DsEntries[I].VarName);
+        OutLn(DsEntries[I].Name + ' DD ' + ItoS(DsEntries[I].Value) +
+              ' DUP(0)');
+        Inc(DsEmitCount);
+      End;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitBssSegment : emettre le segment .data? (BSS)             *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitBssSegment;
+Var
+  I : Integer;
+Begin
+  OutLn('');
+  OutLn('; ============================================================');
+  OutLn('; SEGMENT DE DONNEES NON INITIALISEES (.data? / BSS)');
+  OutLn('; ============================================================');
+  OutLn('.data?');
+  OutLn('');
+
+  (* Variables runtime BSS *)
+  EmitBssVars;
+  OutLn('');
+
+  (* Buffers I/O *)
+  EmitIoBuffers;
+  OutLn('');
+
+  (* Parcourir les entrees BSS *)
+  For I := 0 To DsEntryCount - 1 Do
+  Begin
+    Case DsEntries[I].Kind Of
+      DS_BSS_BUFFER :
+      Begin
+        OutLn(DsEntries[I].Name + ' DB ' + ItoS(DsEntries[I].Size) + ' DUP(?)');
+        Inc(DsEmitCount);
+      End;
+
+      DS_BSS_VAR :
+      Begin
+        OutLn(DsEntries[I].Name + ' DD ?');
+        Inc(DsEmitCount);
+      End;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitDataAndBss : emettre les deux segments DATA et BSS       *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitDataAndBss;
+Begin
+  EmitDataSegment;
+  EmitBssSegment;
+End;
+
+(* ------------------------------------------------------------ *)
+(* FindDsEntryByName : rechercher une entree par nom PHP        *)
+(* ------------------------------------------------------------ *)
+
+Function FindDsEntryByName(VarName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To DsEntryCount - 1 Do
+  Begin
+    If DsEntries[I].VarName = VarName Then
+    Begin
+      FindDsEntryByName := I;
+      Exit;
+    End;
+  End;
+  FindDsEntryByName := -1;
+End;
+
+(* ------------------------------------------------------------ *)
+(* FindDsEntryByAsmName : rechercher une entree par nom ASM     *)
+(* ------------------------------------------------------------ *)
+
+Function FindDsEntryByAsmName(AsmName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To DsEntryCount - 1 Do
+  Begin
+    If DsEntries[I].Name = AsmName Then
+    Begin
+      FindDsEntryByAsmName := I;
+      Exit;
+    End;
+  End;
+  FindDsEntryByAsmName := -1;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetDsEntryAsmName : obtenir le nom ASM d une entree          *)
+(* ------------------------------------------------------------ *)
+
+Function GetDsEntryAsmName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < DsEntryCount) Then
+    GetDsEntryAsmName := DsEntries[Idx].Name
+  Else
+    GetDsEntryAsmName := '';
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetDsEntryKind : obtenir le type d une entree                *)
+(* ------------------------------------------------------------ *)
+
+Function GetDsEntryKind(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < DsEntryCount) Then
+    GetDsEntryKind := DsEntries[Idx].Kind
+  Else
+    GetDsEntryKind := DS_NONE;
+End;
+
+(* ------------------------------------------------------------ *)
+(* DumpDsState : afficher l etat du module segment DATA         *)
+(* ------------------------------------------------------------ *)
+
+Procedure DumpDsState;
+Begin
+  WriteLn('=== Dump DsState (TODO 21) ===');
+  WriteLn('  DsInitialized      : ', DsInitialized);
+  WriteLn('  DsEntryCount       : ', DsEntryCount);
+  WriteLn('  DsStringCount      : ', DsStringCount);
+  WriteLn('  DsGlobalIntCount   : ', DsGlobalIntCount);
+  WriteLn('  DsGlobalStrCount   : ', DsGlobalStrCount);
+  WriteLn('  DsGlobalBoolCount  : ', DsGlobalBoolCount);
+  WriteLn('  DsGlobalArrayCount : ', DsGlobalArrayCount);
+  WriteLn('  DsRuntimeVarCount  : ', DsRuntimeVarCount);
+  WriteLn('  DsBssSize          : ', DsBssSize);
+  WriteLn('  DsDataSize         : ', DsDataSize);
+  WriteLn('  DsLabelSeq         : ', DsLabelSeq);
+  WriteLn('  DsEmitCount        : ', DsEmitCount);
+  WriteLn('  DsLastKind         : ', DsTypeName(DsLastKind));
+  WriteLn('  DsCurKind          : ', DsTypeName(DsCurKind));
+End;
+
+(* ------------------------------------------------------------ *)
+(* 10 fonctions accesseurs (TODO 21)                            *)
+(* ------------------------------------------------------------ *)
+
+Function IsDsInitialized : Boolean;
+Begin
+  IsDsInitialized := DsInitialized;
+End;
+
+Function IsDsEmpty : Boolean;
+Begin
+  IsDsEmpty := (DsEntryCount = 0);
+End;
+
+Function GetDsEntryCount : Integer;
+Begin
+  GetDsEntryCount := DsEntryCount;
+End;
+
+Function GetDsStringCount : LongInt;
+Begin
+  GetDsStringCount := DsStringCount;
+End;
+
+Function GetDsGlobalCount : LongInt;
+Begin
+  GetDsGlobalCount := DsGlobalIntCount + DsGlobalStrCount +
+                      DsGlobalBoolCount + DsGlobalArrayCount;
+End;
+
+Function GetDsBssSize : LongInt;
+Begin
+  GetDsBssSize := DsBssSize;
+End;
+
+Function GetDsDataSize : LongInt;
+Begin
+  GetDsDataSize := DsDataSize;
+End;
+
+Function GetDsEmitCount : LongInt;
+Begin
+  GetDsEmitCount := DsEmitCount;
+End;
+
+Function GetDsLabelSeq : Integer;
+Begin
+  GetDsLabelSeq := DsLabelSeq;
+End;
+
+Function GetDsStatus : TString;
+Begin
+  If Not DsInitialized Then
+    GetDsStatus := 'Not initialized'
+  Else
+    GetDsStatus := ItoS(DsGlobalIntCount) + ' int, ' +
+                   ItoS(DsGlobalStrCount) + ' str, ' +
+                   ItoS(DsStringCount) + ' const, ' +
+                   ItoS(DsBssSize) + ' BSS bytes';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -15433,6 +16123,9 @@ Begin
   { Initialiser le module des conversions de types (TODO 20) }
   InitTcState;
 
+  { Initialiser le module du segment de donnees (TODO 21) }
+  InitDsState;
+
   { Enregistrer les constantes PHP predefinies }
   RegisterPredefinedConsts;
 
@@ -15467,8 +16160,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-20 implementes');
-  WriteLn('PHPCW32: Les TODOs 21-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-21 implementes');
+  WriteLn('PHPCW32: Les TODOs 22-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
