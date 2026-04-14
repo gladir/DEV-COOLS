@@ -17515,6 +17515,7 @@ Const
   BN_MAX_DATA            = 32768;   (* taille max section donnees     *)
   BN_MAX_IMPORTS         = 64;      (* nombre max de fonctions import *)
   BN_MAX_DLLS            = 8;       (* nombre max de DLLs importees   *)
+  BN_MAX_IMP_FIXUPS      = 256;     (* nombre max de fixups d'imports *)
 
   (* Indices de sections standard                                    *)
   BN_SEC_TEXT_IDX        = 0;       (* index section .text            *)
@@ -17580,6 +17581,12 @@ Type
     NameOffset   : LongInt;     (* offset nom DLL                     *)
   End;
 
+  (* Enregistrement pour un fixup d'import                           *)
+  TBnImpFixupRec = Record
+    CodeOffset   : LongInt;     (* offset dans BnCodeBuffer           *)
+    ImportIdx    : Integer;     (* index dans ImImports               *)
+  End;
+
 Var
   BnInitialized     : Boolean;     (* True si le module est initialise   *)
   BnFormat          : Integer;     (* format de sortie actuel            *)
@@ -17593,6 +17600,8 @@ Var
   BnImportCount     : Integer;     (* nombre de fonctions importees      *)
   BnDlls            : Array[0..BN_MAX_DLLS-1] Of TBnDllRec;
   BnDllCount        : Integer;     (* nombre de DLLs                     *)
+  BnImpFixups       : Array[0..BN_MAX_IMP_FIXUPS-1] Of TBnImpFixupRec;
+  BnImpFixupCount   : Integer;     (* nombre de fixups d'imports         *)
   BnStringTable     : Array[0..BN_MAX_STRINGS-1] Of Char;
   BnStringOffset    : LongInt;     (* offset courant dans table chaines  *)
   BnCodeBuffer      : Array[0..BN_MAX_CODE-1] Of Byte;
@@ -17638,6 +17647,7 @@ Begin
   BnObjWritten      := 0;
   BnAsmWritten      := 0;
   BnFixupCount      := 0;
+  BnImpFixupCount   := 0;
   BnOutOpen         := False;
 
   (* Initialiser les tableaux *)
@@ -17662,6 +17672,12 @@ Begin
     BnRelocs[I].SectionIdx := 0;
     BnRelocs[I].TargetRVA  := 0;
     BnRelocs[I].IsAbsolute := False;
+  End;
+
+  For I := 0 To BN_MAX_IMP_FIXUPS - 1 Do
+  Begin
+    BnImpFixups[I].CodeOffset := 0;
+    BnImpFixups[I].ImportIdx  := 0;
   End;
 
   For I := 0 To BN_MAX_SYMBOLS - 1 Do
@@ -17866,6 +17882,25 @@ Begin
 
   BnAddDll := BnDllCount;
   Inc(BnDllCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnAddImpFixup : ajouter un fixup pour un appel d'import      *)
+(* ------------------------------------------------------------ *)
+
+Function BnAddImpFixup(ACodeOffset : LongInt; AImportIdx : Integer) : Integer;
+Begin
+  If BnImpFixupCount >= BN_MAX_IMP_FIXUPS Then
+  Begin
+    BnAddImpFixup := -1;
+    Exit;
+  End;
+
+  BnImpFixups[BnImpFixupCount].CodeOffset := ACodeOffset;
+  BnImpFixups[BnImpFixupCount].ImportIdx  := AImportIdx;
+
+  BnAddImpFixup := BnImpFixupCount;
+  Inc(BnImpFixupCount);
 End;
 
 (* ------------------------------------------------------------ *)
@@ -18498,6 +18533,14 @@ Begin
 End;
 
 (* ------------------------------------------------------------ *)
+(* BnResolveImpFixups : resoudre les fixups d'imports           *)
+(* Doit etre appele apres ImBuildImportTable                    *)
+(* Cette procedure est definie apres le module Im               *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnResolveImpFixups; Forward;
+
+(* ------------------------------------------------------------ *)
 (* DumpBnState : afficher l etat du module binaire              *)
 (* ------------------------------------------------------------ *)
 
@@ -18876,6 +18919,38 @@ Begin
   (* GetStdHandle et WriteFile pour echo/print *)
   ImImports[1].IsUsed := True;  (* GetStdHandle *)
   ImImports[2].IsUsed := True;  (* WriteFile *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnResolveImpFixups : resoudre les fixups d'imports           *)
+(* Implementation reelle apres declaration de ImImports         *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnResolveImpFixups;
+Var
+  I : Integer;
+  Offset : LongInt;
+  ImportIdx : Integer;
+  IATAddr : LongInt;
+Begin
+  For I := 0 To BnImpFixupCount - 1 Do
+  Begin
+    Offset := BnImpFixups[I].CodeOffset;
+    ImportIdx := BnImpFixups[I].ImportIdx;
+
+    (* Calculer l'adresse absolue de l'entree IAT *)
+    (* L'adresse est ImageBase + ThunkRVA *)
+    IATAddr := BN_IMAGE_BASE + ImImports[ImportIdx].ThunkRVA;
+
+    (* Patcher l'adresse dans le code *)
+    If (Offset + 3 < BN_MAX_CODE) Then
+    Begin
+      BnCodeBuffer[Offset]     := IATAddr And $FF;
+      BnCodeBuffer[Offset + 1] := (IATAddr Shr 8) And $FF;
+      BnCodeBuffer[Offset + 2] := (IATAddr Shr 16) And $FF;
+      BnCodeBuffer[Offset + 3] := (IATAddr Shr 24) And $FF;
+    End;
+  End;
 End;
 
 (* ------------------------------------------------------------ *)
