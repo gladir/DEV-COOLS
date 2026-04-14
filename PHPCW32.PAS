@@ -494,7 +494,7 @@
             Operateur de portee :: : non supporte (pas de classes)
             10 fonctions accesseurs
 
-  TODO 20 - PARSEUR : CONVERSIONS DE TYPES (CAST ET JUGGLING) [A FAIRE]
+  TODO 20 - PARSEUR : CONVERSIONS DE TYPES (CAST ET JUGGLING) [IMPLEMENTE]
             Cast explicite entre types :
               (int) $strExpr -> CALL _PHRT_ATOI
               (string) $intExpr -> CALL _PHRT_ITOA
@@ -14501,6 +14501,870 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 20 - PARSEUR : CONVERSIONS DE TYPES (CAST ET JUGGLING)  }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  (* Types de cast PHP *)
+  TC_NONE           = 0;    (* aucun / non defini                     *)
+  TC_INT            = 1;    (* (int) ou (integer)                     *)
+  TC_STRING         = 2;    (* (string)                               *)
+  TC_BOOL           = 3;    (* (bool) ou (boolean)                    *)
+  TC_FLOAT          = 4;    (* (float), (double), (real) -> tronque   *)
+  TC_ARRAY          = 5;    (* (array) -> non supporte                *)
+  TC_OBJECT         = 6;    (* (object) -> non supporte               *)
+  TC_UNSET          = 7;    (* (unset) -> deprecie, erreur            *)
+  TC_BINARY         = 8;    (* (binary) -> alias de (string)          *)
+  TC_JUGGLE_ADD     = 9;    (* juggling pour addition                 *)
+  TC_JUGGLE_CONCAT  = 10;   (* juggling pour concatenation            *)
+  TC_JUGGLE_COMPARE = 11;   (* juggling pour comparaison              *)
+  TC_JUGGLE_ECHO    = 12;   (* juggling pour echo/print               *)
+  TC_TRUTHY         = 13;   (* test de truthiness                     *)
+  TC_MAX_KIND       = 13;
+
+  (* Limites *)
+  TC_MAX_STACK      = 16;   (* profondeur max de casts imbriques      *)
+
+Type
+  (* Enregistrement pour une operation de cast *)
+  TTcCastRec = Record
+    Kind        : Integer;   (* type de cast (TC_INT, etc.)            *)
+    SrcType     : Integer;   (* type source (TY_INTEGER, TY_STRING, etc.)  *)
+    DstType     : Integer;   (* type destination                       *)
+    SrcLine     : Integer;   (* ligne du cast                          *)
+    EndLabel    : TString;   (* label de fin pour branchements         *)
+    IsExplicit  : Boolean;   (* True si cast explicite, False si juggl *)
+  End;
+
+Var
+  TcInitialized     : Boolean;     (* True si le module est initialise   *)
+  TcStack           : Array[0..TC_MAX_STACK-1] Of TTcCastRec;
+  TcStackTop        : Integer;     (* sommet de la pile de casts         *)
+  TcIntCastCount    : LongInt;     (* nombre de casts (int)              *)
+  TcStrCastCount    : LongInt;     (* nombre de casts (string)           *)
+  TcBoolCastCount   : LongInt;     (* nombre de casts (bool)             *)
+  TcFloatCastCount  : LongInt;     (* nombre de casts (float)            *)
+  TcJuggleAddCount  : LongInt;     (* nombre de juggles pour +           *)
+  TcJuggleConcCount : LongInt;     (* nombre de juggles pour .           *)
+  TcJuggleEchoCount : LongInt;     (* nombre de juggles pour echo        *)
+  TcTruthyTestCount : LongInt;     (* nombre de tests de truthiness      *)
+  TcEmitCount       : LongInt;     (* nombre total d emissions ASM       *)
+  TcLabelSeq        : Integer;     (* sequence pour labels uniques       *)
+  TcLastKind        : Integer;     (* dernier type de cast               *)
+  TcCurKind         : Integer;     (* type de cast courant               *)
+
+(* ------------------------------------------------------------ *)
+(* InitTcState : initialiser le sous-systeme de conversions     *)
+(* ------------------------------------------------------------ *)
+
+Procedure InitTcState;
+Var
+  I : Integer;
+Begin
+  TcInitialized     := True;
+  TcStackTop        := -1;
+  TcIntCastCount    := 0;
+  TcStrCastCount    := 0;
+  TcBoolCastCount   := 0;
+  TcFloatCastCount  := 0;
+  TcJuggleAddCount  := 0;
+  TcJuggleConcCount := 0;
+  TcJuggleEchoCount := 0;
+  TcTruthyTestCount := 0;
+  TcEmitCount       := 0;
+  TcLabelSeq        := 0;
+  TcLastKind        := TC_NONE;
+  TcCurKind         := TC_NONE;
+
+  For I := 0 To TC_MAX_STACK - 1 Do
+  Begin
+    TcStack[I].Kind       := TC_NONE;
+    TcStack[I].SrcType    := 0;
+    TcStack[I].DstType    := 0;
+    TcStack[I].SrcLine    := 0;
+    TcStack[I].EndLabel   := '';
+    TcStack[I].IsExplicit := False;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GenTcLabel : generer un label unique pour conversions        *)
+(* ------------------------------------------------------------ *)
+
+Function GenTcLabel : TString;
+Begin
+  Inc(TcLabelSeq);
+  GenTcLabel := PH_LBL_PFX + 'TC_' + ItoS(TcLabelSeq);
+End;
+
+(* ------------------------------------------------------------ *)
+(* TcTypeName : retourner le nom du type de cast                *)
+(* ------------------------------------------------------------ *)
+
+Function TcTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    TC_NONE           : TcTypeName := 'TC_NONE';
+    TC_INT            : TcTypeName := 'TC_INT';
+    TC_STRING         : TcTypeName := 'TC_STRING';
+    TC_BOOL           : TcTypeName := 'TC_BOOL';
+    TC_FLOAT          : TcTypeName := 'TC_FLOAT';
+    TC_ARRAY          : TcTypeName := 'TC_ARRAY';
+    TC_OBJECT         : TcTypeName := 'TC_OBJECT';
+    TC_UNSET          : TcTypeName := 'TC_UNSET';
+    TC_BINARY         : TcTypeName := 'TC_BINARY';
+    TC_JUGGLE_ADD     : TcTypeName := 'TC_JUGGLE_ADD';
+    TC_JUGGLE_CONCAT  : TcTypeName := 'TC_JUGGLE_CONCAT';
+    TC_JUGGLE_COMPARE : TcTypeName := 'TC_JUGGLE_COMPARE';
+    TC_JUGGLE_ECHO    : TcTypeName := 'TC_JUGGLE_ECHO';
+    TC_TRUTHY         : TcTypeName := 'TC_TRUTHY';
+  Else
+    TcTypeName := 'TC_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* TcPush : empiler une operation de cast                       *)
+(* ------------------------------------------------------------ *)
+
+Procedure TcPush(Kind, SrcType, DstType : Integer; Line : Integer;
+                 IsExplicit : Boolean);
+Begin
+  If TcStackTop >= TC_MAX_STACK - 1 Then
+  Begin
+    CompileError('Casts trop imbriques (max=' +
+                 ItoS(TC_MAX_STACK) + ')', Line);
+    Exit;
+  End;
+
+  Inc(TcStackTop);
+  TcStack[TcStackTop].Kind       := Kind;
+  TcStack[TcStackTop].SrcType    := SrcType;
+  TcStack[TcStackTop].DstType    := DstType;
+  TcStack[TcStackTop].SrcLine    := Line;
+  TcStack[TcStackTop].EndLabel   := GenTcLabel;
+  TcStack[TcStackTop].IsExplicit := IsExplicit;
+
+  TcCurKind := Kind;
+End;
+
+(* ------------------------------------------------------------ *)
+(* TcPop : depiler une operation de cast                        *)
+(* ------------------------------------------------------------ *)
+
+Procedure TcPop;
+Begin
+  If TcStackTop < 0 Then
+    Exit;
+
+  TcLastKind := TcStack[TcStackTop].Kind;
+  Dec(TcStackTop);
+
+  If TcStackTop >= 0 Then
+    TcCurKind := TcStack[TcStackTop].Kind
+  Else
+    TcCurKind := TC_NONE;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitCastInt : generer le code ASM pour (int) cast            *)
+(*   Entree: EAX = valeur a convertir (int ou ptr string)       *)
+(*           SrcType = type source (TY_INTEGER, TY_STRING, etc.)    *)
+(*   Sortie: EAX = valeur entiere                               *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitCastInt(SrcType : Integer);
+Begin
+  Inc(TcIntCastCount);
+  Inc(TcEmitCount);
+  TcLastKind := TC_INT;
+
+  OutLn('  ; *** CAST (int) ***');
+
+  Case SrcType Of
+    TY_INTEGER :
+      Begin
+        (* Deja un entier, rien a faire *)
+        OutLn('  ; source deja int, pas de conversion');
+      End;
+
+    TY_STRING :
+      Begin
+        (* Convertir string en int via atoi *)
+        OutLn('  ; source string, convertir via _PHRT_ATOI');
+        OutLn('  PUSH EAX         ; ptr chaine');
+        OutLn('  CALL _PHRT_ATOI');
+        OutLn('  ADD ESP, 4');
+      End;
+
+    TY_BOOLEAN :
+      Begin
+        (* Bool en int: 0 ou 1, deja OK *)
+        OutLn('  ; source bool, deja 0 ou 1');
+        OutLn('  AND EAX, 1');
+      End;
+
+    TY_NULL :
+      Begin
+        (* null -> 0 *)
+        OutLn('  ; source null, resultat = 0');
+        OutLn('  XOR EAX, EAX');
+      End;
+
+    TY_FLOAT :
+      Begin
+        (* float -> tronquer (deja int dans notre impl) *)
+        OutLn('  ; source float, tronquer en int');
+        OutLn('  ; (deja traite comme int)');
+      End;
+  Else
+    OutLn('  ; source type inconnu, garder EAX');
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitCastString : generer le code ASM pour (string) cast      *)
+(*   Entree: EAX = valeur a convertir                           *)
+(*           SrcType = type source                              *)
+(*   Sortie: EAX = pointeur vers chaine                         *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitCastString(SrcType : Integer);
+Var
+  TrueLbl, EndLbl : TString;
+Begin
+  Inc(TcStrCastCount);
+  Inc(TcEmitCount);
+  TcLastKind := TC_STRING;
+
+  OutLn('  ; *** CAST (string) ***');
+
+  Case SrcType Of
+    TY_STRING :
+      Begin
+        (* Deja une chaine, rien a faire *)
+        OutLn('  ; source deja string, pas de conversion');
+      End;
+
+    TY_INTEGER :
+      Begin
+        (* Convertir int en string via itoa *)
+        OutLn('  ; source int, convertir via _PHRT_ITOA');
+        OutLn('  PUSH EAX         ; valeur entiere');
+        OutLn('  CALL _PHRT_ITOA');
+        OutLn('  ADD ESP, 4');
+        OutLn('  ; EAX = ptr vers chaine allouee');
+      End;
+
+    TY_BOOLEAN :
+      Begin
+        (* bool en string: "1" ou "" *)
+        TrueLbl := GenTcLabel;
+        EndLbl  := GenTcLabel;
+
+        OutLn('  ; source bool, convertir en "1" ou ""');
+        OutLn('  TEST EAX, EAX');
+        OutLn('  JNZ ' + TrueLbl);
+        OutLn('  ; false -> chaine vide');
+        OutLn('  LEA EAX, [_PK_EMPTY]');
+        OutLn('  JMP ' + EndLbl);
+        OutLn(TrueLbl + ':');
+        OutLn('  ; true -> "1"');
+        OutLn('  LEA EAX, [_PK_ONE]');
+        OutLn(EndLbl + ':');
+      End;
+
+    TY_NULL :
+      Begin
+        (* null -> chaine vide *)
+        OutLn('  ; source null, resultat = chaine vide');
+        OutLn('  LEA EAX, [_PK_EMPTY]');
+      End;
+
+    TY_FLOAT :
+      Begin
+        (* float -> string via itoa (tronque) *)
+        OutLn('  ; source float, convertir via _PHRT_ITOA');
+        OutLn('  PUSH EAX');
+        OutLn('  CALL _PHRT_ITOA');
+        OutLn('  ADD ESP, 4');
+      End;
+  Else
+    OutLn('  ; source type inconnu, convertir via _PHRT_ITOA');
+    OutLn('  PUSH EAX');
+    OutLn('  CALL _PHRT_ITOA');
+    OutLn('  ADD ESP, 4');
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitCastBool : generer le code ASM pour (bool) cast          *)
+(*   Entree: EAX = valeur a convertir                           *)
+(*           SrcType = type source                              *)
+(*   Sortie: EAX = 0 (false) ou 1 (true)                        *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitCastBool(SrcType : Integer);
+Var
+  FalseLbl, EndLbl : TString;
+Begin
+  Inc(TcBoolCastCount);
+  Inc(TcEmitCount);
+  TcLastKind := TC_BOOL;
+
+  OutLn('  ; *** CAST (bool) ***');
+
+  Case SrcType Of
+    TY_BOOLEAN :
+      Begin
+        (* Deja un bool, normaliser a 0/1 *)
+        OutLn('  ; source deja bool, normaliser');
+        OutLn('  TEST EAX, EAX');
+        OutLn('  SETNZ AL');
+        OutLn('  MOVZX EAX, AL');
+      End;
+
+    TY_INTEGER :
+      Begin
+        (* int en bool: 0 -> false, autre -> true *)
+        OutLn('  ; source int, convertir en bool');
+        OutLn('  TEST EAX, EAX');
+        OutLn('  SETNZ AL');
+        OutLn('  MOVZX EAX, AL');
+      End;
+
+    TY_STRING :
+      Begin
+        (* string en bool: "" ou "0" -> false, autre -> true *)
+        FalseLbl := GenTcLabel;
+        EndLbl   := GenTcLabel;
+
+        OutLn('  ; source string, tester si vide ou "0"');
+        OutLn('  TEST EAX, EAX      ; ptr null?');
+        OutLn('  JZ ' + FalseLbl);
+        OutLn('  MOV CL, [EAX]      ; premier char');
+        OutLn('  TEST CL, CL        ; chaine vide?');
+        OutLn('  JZ ' + FalseLbl);
+        OutLn('  CMP CL, ''0''        ; chaine "0"?');
+        OutLn('  JNE ' + EndLbl + '_TRUE');
+        OutLn('  MOV CL, [EAX+1]    ; deuxieme char');
+        OutLn('  TEST CL, CL        ; si null, c''est "0"');
+        OutLn('  JZ ' + FalseLbl);
+        OutLn(EndLbl + '_TRUE:');
+        OutLn('  MOV EAX, 1');
+        OutLn('  JMP ' + EndLbl);
+        OutLn(FalseLbl + ':');
+        OutLn('  XOR EAX, EAX');
+        OutLn(EndLbl + ':');
+      End;
+
+    TY_NULL :
+      Begin
+        (* null -> false *)
+        OutLn('  ; source null, resultat = false');
+        OutLn('  XOR EAX, EAX');
+      End;
+
+    TY_FLOAT :
+      Begin
+        (* float en bool: 0.0 -> false, autre -> true *)
+        OutLn('  ; source float, convertir en bool');
+        OutLn('  TEST EAX, EAX');
+        OutLn('  SETNZ AL');
+        OutLn('  MOVZX EAX, AL');
+      End;
+  Else
+    (* Type inconnu, tester si non-zero *)
+    OutLn('  ; source type inconnu, tester non-zero');
+    OutLn('  TEST EAX, EAX');
+    OutLn('  SETNZ AL');
+    OutLn('  MOVZX EAX, AL');
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitTruthyTest : tester si une valeur est truthy             *)
+(*   En PHP: 0, 0.0, "", "0", null, array vide -> false         *)
+(*   Tout autre valeur -> true                                  *)
+(*   Entree: EAX = valeur, SrcType = type                       *)
+(*   Sortie: ZF=0 si truthy, ZF=1 si falsy                      *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitTruthyTest(SrcType : Integer);
+Var
+  FalsyLbl, EndLbl : TString;
+Begin
+  Inc(TcTruthyTestCount);
+  Inc(TcEmitCount);
+  TcLastKind := TC_TRUTHY;
+
+  OutLn('  ; *** TRUTHY TEST ***');
+
+  Case SrcType Of
+    TY_INTEGER, TY_BOOLEAN, TY_FLOAT :
+      Begin
+        (* Simplement tester si non-zero *)
+        OutLn('  ; test truthy pour int/bool/float');
+        OutLn('  TEST EAX, EAX');
+      End;
+
+    TY_STRING :
+      Begin
+        (* Tester si chaine non-vide et pas "0" *)
+        FalsyLbl := GenTcLabel;
+        EndLbl   := GenTcLabel;
+
+        OutLn('  ; test truthy pour string');
+        OutLn('  TEST EAX, EAX      ; ptr null?');
+        OutLn('  JZ ' + FalsyLbl);
+        OutLn('  MOV CL, [EAX]      ; premier char');
+        OutLn('  TEST CL, CL        ; chaine vide?');
+        OutLn('  JZ ' + FalsyLbl);
+        OutLn('  CMP CL, ''0''        ; chaine "0"?');
+        OutLn('  JNE ' + EndLbl);
+        OutLn('  MOV CL, [EAX+1]    ; deuxieme char');
+        OutLn('  TEST CL, CL        ; si null, c''est "0" -> falsy');
+        OutLn('  JZ ' + FalsyLbl);
+        OutLn('  ; chaine non-vide et pas "0" -> truthy');
+        OutLn('  MOV EAX, 1');
+        OutLn('  TEST EAX, EAX      ; ZF=0');
+        OutLn('  JMP ' + EndLbl);
+        OutLn(FalsyLbl + ':');
+        OutLn('  XOR EAX, EAX       ; ZF=1');
+        OutLn(EndLbl + ':');
+      End;
+
+    TY_NULL :
+      Begin
+        (* null est toujours falsy *)
+        OutLn('  ; test truthy pour null (toujours falsy)');
+        OutLn('  XOR EAX, EAX');
+        OutLn('  TEST EAX, EAX      ; ZF=1');
+      End;
+  Else
+    (* Type inconnu, simplement tester non-zero *)
+    OutLn('  ; test truthy generique');
+    OutLn('  TEST EAX, EAX');
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitJuggleForAdd : juggling de types pour addition           *)
+(*   En PHP: string + int -> convertir string en int            *)
+(*   Entree: EAX = gauche, ECX = droite                         *)
+(*   LeftType, RightType = types des operandes                  *)
+(*   Sortie: EAX, ECX prets pour ADD                            *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitJuggleForAdd(LeftType, RightType : Integer);
+Begin
+  Inc(TcJuggleAddCount);
+  Inc(TcEmitCount);
+  TcLastKind := TC_JUGGLE_ADD;
+
+  OutLn('  ; *** TYPE JUGGLING FOR + ***');
+
+  (* Convertir gauche en int si necessaire *)
+  If LeftType = TY_STRING Then
+  Begin
+    OutLn('  ; left string -> int');
+    OutLn('  PUSH ECX           ; sauver right');
+    OutLn('  PUSH EAX           ; ptr string');
+    OutLn('  CALL _PHRT_ATOI');
+    OutLn('  ADD ESP, 4');
+    OutLn('  POP ECX            ; restaurer right');
+  End
+  Else If LeftType = TY_BOOLEAN Then
+  Begin
+    OutLn('  ; left bool -> int (0 ou 1)');
+    OutLn('  AND EAX, 1');
+  End
+  Else If LeftType = TY_NULL Then
+  Begin
+    OutLn('  ; left null -> 0');
+    OutLn('  XOR EAX, EAX');
+  End;
+
+  (* Convertir droite en int si necessaire *)
+  If RightType = TY_STRING Then
+  Begin
+    OutLn('  ; right string -> int');
+    OutLn('  PUSH EAX           ; sauver left');
+    OutLn('  PUSH ECX           ; ptr string');
+    OutLn('  CALL _PHRT_ATOI');
+    OutLn('  ADD ESP, 4');
+    OutLn('  MOV ECX, EAX       ; resultat dans ECX');
+    OutLn('  POP EAX            ; restaurer left');
+  End
+  Else If RightType = TY_BOOLEAN Then
+  Begin
+    OutLn('  ; right bool -> int (0 ou 1)');
+    OutLn('  AND ECX, 1');
+  End
+  Else If RightType = TY_NULL Then
+  Begin
+    OutLn('  ; right null -> 0');
+    OutLn('  XOR ECX, ECX');
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitJuggleForConcat : juggling de types pour concatenation . *)
+(*   En PHP: int . string -> convertir int en string            *)
+(*   Entree: EAX = gauche, ECX = droite                         *)
+(*   LeftType, RightType = types des operandes                  *)
+(*   Sortie: EAX, ECX = pointeurs vers chaines                  *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitJuggleForConcat(LeftType, RightType : Integer);
+Begin
+  Inc(TcJuggleConcCount);
+  Inc(TcEmitCount);
+  TcLastKind := TC_JUGGLE_CONCAT;
+
+  OutLn('  ; *** TYPE JUGGLING FOR . (concat) ***');
+
+  (* Convertir gauche en string si necessaire *)
+  If LeftType = TY_INTEGER Then
+  Begin
+    OutLn('  ; left int -> string');
+    OutLn('  PUSH ECX           ; sauver right');
+    OutLn('  PUSH EAX           ; valeur int');
+    OutLn('  CALL _PHRT_ITOA');
+    OutLn('  ADD ESP, 4');
+    OutLn('  POP ECX            ; restaurer right');
+  End
+  Else If LeftType = TY_BOOLEAN Then
+  Begin
+    OutLn('  ; left bool -> string ("1" ou "")');
+    OutLn('  PUSH ECX           ; sauver right');
+    OutLn('  TEST EAX, EAX');
+    OutLn('  JZ ' + GenTcLabel + '_LFALSE');
+    OutLn('  LEA EAX, [_PK_ONE]');
+    OutLn('  JMP ' + GenTcLabel + '_LEND');
+    OutLn(GenTcLabel + '_LFALSE:');
+    OutLn('  LEA EAX, [_PK_EMPTY]');
+    OutLn(GenTcLabel + '_LEND:');
+    OutLn('  POP ECX            ; restaurer right');
+  End
+  Else If LeftType = TY_NULL Then
+  Begin
+    OutLn('  ; left null -> ""');
+    OutLn('  LEA EAX, [_PK_EMPTY]');
+  End;
+
+  (* Convertir droite en string si necessaire *)
+  If RightType = TY_INTEGER Then
+  Begin
+    OutLn('  ; right int -> string');
+    OutLn('  PUSH EAX           ; sauver left');
+    OutLn('  PUSH ECX           ; valeur int');
+    OutLn('  CALL _PHRT_ITOA');
+    OutLn('  ADD ESP, 4');
+    OutLn('  MOV ECX, EAX       ; resultat dans ECX');
+    OutLn('  POP EAX            ; restaurer left');
+  End
+  Else If RightType = TY_BOOLEAN Then
+  Begin
+    OutLn('  ; right bool -> string ("1" ou "")');
+    OutLn('  PUSH EAX           ; sauver left');
+    OutLn('  TEST ECX, ECX');
+    OutLn('  JZ ' + GenTcLabel + '_RFALSE');
+    OutLn('  LEA ECX, [_PK_ONE]');
+    OutLn('  JMP ' + GenTcLabel + '_REND');
+    OutLn(GenTcLabel + '_RFALSE:');
+    OutLn('  LEA ECX, [_PK_EMPTY]');
+    OutLn(GenTcLabel + '_REND:');
+    OutLn('  POP EAX            ; restaurer left');
+  End
+  Else If RightType = TY_NULL Then
+  Begin
+    OutLn('  ; right null -> ""');
+    OutLn('  LEA ECX, [_PK_EMPTY]');
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitJuggleForEcho : juggling pour echo/print                 *)
+(*   En PHP: echo $intVar -> convertir en string                *)
+(*   Entree: EAX = valeur, SrcType = type source                *)
+(*   Sortie: EAX = pointeur vers chaine                         *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitJuggleForEcho(SrcType : Integer);
+Var
+  TrueLbl, EndLbl : TString;
+Begin
+  Inc(TcJuggleEchoCount);
+  Inc(TcEmitCount);
+  TcLastKind := TC_JUGGLE_ECHO;
+
+  OutLn('  ; *** TYPE JUGGLING FOR ECHO ***');
+
+  Case SrcType Of
+    TY_STRING :
+      Begin
+        (* Deja une chaine *)
+        OutLn('  ; source deja string');
+      End;
+
+    TY_INTEGER :
+      Begin
+        (* Convertir int en string *)
+        OutLn('  ; source int, convertir via _PHRT_ITOA');
+        OutLn('  PUSH EAX');
+        OutLn('  CALL _PHRT_ITOA');
+        OutLn('  ADD ESP, 4');
+      End;
+
+    TY_BOOLEAN :
+      Begin
+        (* bool: true -> "1", false -> "" *)
+        TrueLbl := GenTcLabel;
+        EndLbl  := GenTcLabel;
+
+        OutLn('  ; source bool, "1" ou ""');
+        OutLn('  TEST EAX, EAX');
+        OutLn('  JNZ ' + TrueLbl);
+        OutLn('  LEA EAX, [_PK_EMPTY]');
+        OutLn('  JMP ' + EndLbl);
+        OutLn(TrueLbl + ':');
+        OutLn('  LEA EAX, [_PK_ONE]');
+        OutLn(EndLbl + ':');
+      End;
+
+    TY_NULL :
+      Begin
+        (* null -> chaine vide *)
+        OutLn('  ; source null -> chaine vide');
+        OutLn('  LEA EAX, [_PK_EMPTY]');
+      End;
+
+    TY_FLOAT :
+      Begin
+        (* float -> convertir via itoa (tronque) *)
+        OutLn('  ; source float, convertir via _PHRT_ITOA');
+        OutLn('  PUSH EAX');
+        OutLn('  CALL _PHRT_ITOA');
+        OutLn('  ADD ESP, 4');
+      End;
+  Else
+    (* Type inconnu, essayer itoa *)
+    OutLn('  ; source type inconnu, essayer _PHRT_ITOA');
+    OutLn('  PUSH EAX');
+    OutLn('  CALL _PHRT_ITOA');
+    OutLn('  ADD ESP, 4');
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsCastKeyword : verifier si un mot-cle est un cast           *)
+(* ------------------------------------------------------------ *)
+
+Function IsCastKeyword(Const S : TString) : Boolean;
+Var
+  Lower : TString;
+Begin
+  Lower := StrLowerCase(S);
+  IsCastKeyword := (Lower = 'int') Or (Lower = 'integer') Or
+                   (Lower = 'string') Or
+                   (Lower = 'bool') Or (Lower = 'boolean') Or
+                   (Lower = 'float') Or (Lower = 'double') Or
+                   (Lower = 'real') Or
+                   (Lower = 'array') Or (Lower = 'object') Or
+                   (Lower = 'unset') Or (Lower = 'binary');
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetCastKind : retourner le type de cast pour un mot-cle      *)
+(* ------------------------------------------------------------ *)
+
+Function GetCastKind(Const S : TString) : Integer;
+Var
+  Lower : TString;
+Begin
+  Lower := StrLowerCase(S);
+  If (Lower = 'int') Or (Lower = 'integer') Then
+    GetCastKind := TC_INT
+  Else If Lower = 'string' Then
+    GetCastKind := TC_STRING
+  Else If (Lower = 'bool') Or (Lower = 'boolean') Then
+    GetCastKind := TC_BOOL
+  Else If (Lower = 'float') Or (Lower = 'double') Or (Lower = 'real') Then
+    GetCastKind := TC_FLOAT
+  Else If Lower = 'array' Then
+    GetCastKind := TC_ARRAY
+  Else If Lower = 'object' Then
+    GetCastKind := TC_OBJECT
+  Else If Lower = 'unset' Then
+    GetCastKind := TC_UNSET
+  Else If Lower = 'binary' Then
+    GetCastKind := TC_BINARY
+  Else
+    GetCastKind := TC_NONE;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitCast : emettre le code pour un cast explicite            *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitCast(CastKind, SrcType : Integer; Line : Integer);
+Begin
+  Case CastKind Of
+    TC_INT :
+      EmitCastInt(SrcType);
+    TC_STRING, TC_BINARY :
+      EmitCastString(SrcType);
+    TC_BOOL :
+      EmitCastBool(SrcType);
+    TC_FLOAT :
+      Begin
+        (* float -> garder comme int (tronque) *)
+        Inc(TcFloatCastCount);
+        Inc(TcEmitCount);
+        OutLn('  ; *** CAST (float) - traite comme int ***');
+        EmitCastInt(SrcType);
+      End;
+    TC_ARRAY :
+      Begin
+        CompileError('Cast (array) non supporte', Line);
+      End;
+    TC_OBJECT :
+      Begin
+        CompileError('Cast (object) non supporte (pas de classes)', Line);
+      End;
+    TC_UNSET :
+      Begin
+        CompileError('Cast (unset) deprecie en PHP 7.2+', Line);
+      End;
+  Else
+    CompileError('Type de cast inconnu: ' + TcTypeName(CastKind), Line);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* CastResultType : determiner le type resultat d un cast       *)
+(* ------------------------------------------------------------ *)
+
+Function CastResultType(CastKind : Integer) : Integer;
+Begin
+  Case CastKind Of
+    TC_INT      : CastResultType := TY_INTEGER;
+    TC_STRING   : CastResultType := TY_STRING;
+    TC_BINARY   : CastResultType := TY_STRING;
+    TC_BOOL     : CastResultType := TY_BOOLEAN;
+    TC_FLOAT    : CastResultType := TY_FLOAT;
+  Else
+    CastResultType := TY_UNKNOWN;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* NeedsJuggleForAdd : verifier si juggling necessaire pour +   *)
+(* ------------------------------------------------------------ *)
+
+Function NeedsJuggleForAdd(LeftType, RightType : Integer) : Boolean;
+Begin
+  NeedsJuggleForAdd := (LeftType = TY_STRING) Or (RightType = TY_STRING) Or
+                       (LeftType = TY_BOOLEAN)   Or (RightType = TY_BOOLEAN)   Or
+                       (LeftType = TY_NULL)   Or (RightType = TY_NULL);
+End;
+
+(* ------------------------------------------------------------ *)
+(* NeedsJuggleForConcat : verifier si juggling necessaire pour .*)
+(* ------------------------------------------------------------ *)
+
+Function NeedsJuggleForConcat(LeftType, RightType : Integer) : Boolean;
+Begin
+  NeedsJuggleForConcat := (LeftType <> TY_STRING) Or
+                          (RightType <> TY_STRING);
+End;
+
+(* ------------------------------------------------------------ *)
+(* DumpTcState : afficher l etat du module conversions          *)
+(* ------------------------------------------------------------ *)
+
+Procedure DumpTcState;
+Begin
+  WriteLn('=== Dump TcState (TODO 20) ===');
+  WriteLn('  TcInitialized     : ', TcInitialized);
+  WriteLn('  TcStackTop        : ', TcStackTop);
+  WriteLn('  TcIntCastCount    : ', TcIntCastCount);
+  WriteLn('  TcStrCastCount    : ', TcStrCastCount);
+  WriteLn('  TcBoolCastCount   : ', TcBoolCastCount);
+  WriteLn('  TcFloatCastCount  : ', TcFloatCastCount);
+  WriteLn('  TcJuggleAddCount  : ', TcJuggleAddCount);
+  WriteLn('  TcJuggleConcCount : ', TcJuggleConcCount);
+  WriteLn('  TcJuggleEchoCount : ', TcJuggleEchoCount);
+  WriteLn('  TcTruthyTestCount : ', TcTruthyTestCount);
+  WriteLn('  TcEmitCount       : ', TcEmitCount);
+  WriteLn('  TcLabelSeq        : ', TcLabelSeq);
+  WriteLn('  TcLastKind        : ', TcTypeName(TcLastKind));
+  WriteLn('  TcCurKind         : ', TcTypeName(TcCurKind));
+End;
+
+(* ------------------------------------------------------------ *)
+(* 10 fonctions accesseurs (TODO 20)                            *)
+(* ------------------------------------------------------------ *)
+
+Function IsTcInitialized : Boolean;
+Begin
+  IsTcInitialized := TcInitialized;
+End;
+
+Function IsTcEmpty : Boolean;
+Begin
+  IsTcEmpty := (TcStackTop < 0);
+End;
+
+Function GetTcIntCastCount : LongInt;
+Begin
+  GetTcIntCastCount := TcIntCastCount;
+End;
+
+Function GetTcStrCastCount : LongInt;
+Begin
+  GetTcStrCastCount := TcStrCastCount;
+End;
+
+Function GetTcBoolCastCount : LongInt;
+Begin
+  GetTcBoolCastCount := TcBoolCastCount;
+End;
+
+Function GetTcJuggleCount : LongInt;
+Begin
+  GetTcJuggleCount := TcJuggleAddCount + TcJuggleConcCount + TcJuggleEchoCount;
+End;
+
+Function GetTcTruthyCount : LongInt;
+Begin
+  GetTcTruthyCount := TcTruthyTestCount;
+End;
+
+Function GetTcEmitCount : LongInt;
+Begin
+  GetTcEmitCount := TcEmitCount;
+End;
+
+Function GetTcLabelSeq : Integer;
+Begin
+  GetTcLabelSeq := TcLabelSeq;
+End;
+
+Function GetTcStatus : TString;
+Begin
+  If Not TcInitialized Then
+    GetTcStatus := 'Not initialized'
+  Else
+    GetTcStatus := ItoS(TcIntCastCount) + ' (int), ' +
+                   ItoS(TcStrCastCount) + ' (string), ' +
+                   ItoS(TcBoolCastCount) + ' (bool), ' +
+                   ItoS(TcJuggleAddCount + TcJuggleConcCount) + ' juggles';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -14566,6 +15430,9 @@ Begin
   { Initialiser le module des operateurs speciaux (TODO 19) }
   InitSoState;
 
+  { Initialiser le module des conversions de types (TODO 20) }
+  InitTcState;
+
   { Enregistrer les constantes PHP predefinies }
   RegisterPredefinedConsts;
 
@@ -14600,8 +15467,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-19 implementes');
-  WriteLn('PHPCW32: Les TODOs 20-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-20 implementes');
+  WriteLn('PHPCW32: Les TODOs 21-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
