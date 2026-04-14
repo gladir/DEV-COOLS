@@ -20219,6 +20219,241 @@ Begin
                    ItoS(PhTestsPassed) + '/' + ItoS(PhTotalTests) + ' tests';
 End;
 
+(* ============================================================ *)
+(* ParseStatement : parser un statement PHP                      *)
+(* ============================================================ *)
+
+Procedure ParseStatement; Forward;
+
+Procedure ParseBlock;
+Begin
+  If CurTokKind = TK_LBRACE Then
+  Begin
+    ParserAdvance; (* consommer accolade ouvrante *)
+    While (CurTokKind <> TK_RBRACE) And (CurTokKind <> TK_EOF) Do
+      ParseStatement;
+    If CurTokKind = TK_RBRACE Then
+      ParserAdvance; (* consommer accolade fermante *)
+  End
+  Else
+    ParseStatement;
+End;
+
+Procedure ParseStatement;
+Var
+  KwCode : Integer;
+  VarName : TString;
+Begin
+  If CurTokKind = TK_EOF Then
+    Exit;
+
+  (* Statement vide - point-virgule *)
+  If CurTokKind = TK_SEMICOLON Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  (* Bloc avec accolades *)
+  If CurTokKind = TK_LBRACE Then
+  Begin
+    ParseBlock;
+    Exit;
+  End;
+
+  (* Mot-cle PHP *)
+  If CurTokKind = TK_KEYWORD Then
+  Begin
+    KwCode := GetKeywordCode(CurTokStr);
+    Case KwCode Of
+      KW_ECHO:
+        Begin
+          ParseEchoStmt;
+        End;
+      KW_IF:
+        Begin
+          ParseIfStmt;
+        End;
+      KW_WHILE:
+        Begin
+          ParseWhileStmt;
+        End;
+      KW_DO:
+        Begin
+          ParseDoWhileStmt;
+        End;
+      KW_FOR:
+        Begin
+          ParseForStmt;
+        End;
+      KW_FOREACH:
+        Begin
+          ParseForeachStmt;
+        End;
+      KW_SWITCH:
+        Begin
+          ParseSwitchStmt;
+        End;
+      KW_FUNCTION:
+        Begin
+          ParseFunctionDecl;
+        End;
+      KW_RETURN:
+        Begin
+          ParseReturnStmt;
+        End;
+      KW_BREAK:
+        Begin
+          ParseBreakStmt;
+        End;
+      KW_CONTINUE:
+        Begin
+          ParseContinueStmt;
+        End;
+      KW_DEFINE:
+        Begin
+          ParseDefineStmt;
+        End;
+      KW_CONST:
+        Begin
+          ParseConstDecl;
+        End;
+      KW_PRINT:
+        Begin
+          ParsePrintStmt;
+        End;
+      Else
+        Begin
+          (* Mot-cle non gere, avancer *)
+          ParserAdvance;
+        End;
+    End;
+    Exit;
+  End;
+
+  (* Variable PHP - affectation *)
+  If CurTokKind = TK_VARIABLE Then
+  Begin
+    ParseVarAssignment;
+    Exit;
+  End;
+
+  (* Expression ou appel de fonction *)
+  If CurTokKind = TK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    ParserAdvance;
+    If CurTokKind = TK_LPAREN Then
+    Begin
+      (* Appel de fonction *)
+      ParseStaticFuncCall(VarName);
+      If CurTokKind = TK_SEMICOLON Then
+        ParserAdvance;
+    End;
+    Exit;
+  End;
+
+  (* Autre token - avancer *)
+  ParserAdvance;
+End;
+
+(* ============================================================ *)
+(* ParseScript : parser un script PHP complet                    *)
+(* ============================================================ *)
+
+Procedure ParseScript;
+Begin
+  (* Generer le prologue du programme *)
+  EmitMainPrologue;
+
+  (* Parser tous les statements *)
+  While CurTokKind <> TK_EOF Do
+  Begin
+    ParseStatement;
+  End;
+
+  (* Generer l epilogue du programme *)
+  EmitMainEpilogue;
+End;
+
+(* ============================================================ *)
+(* FinalizeAndWriteOutput : generer les fichiers de sortie      *)
+(* ============================================================ *)
+
+Procedure FinalizeAndWriteOutput;
+Var
+  OutputPath : TString;
+Begin
+  (* Determiner le nom de sortie *)
+  If Opts.OutFile <> '' Then
+    OutputPath := Opts.OutFile
+  Else
+    OutputPath := ReplaceExt(Opts.SrcFile, '.exe');
+
+  (* Generer l executable PE *)
+  If Opts.EmitExe Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('PHPCW32: generation de ', OutputPath);
+    BnGeneratePeExe(OutputPath);
+    If Opts.Verbose Then
+      WriteLn('PHPCW32: executable PE genere (',
+              BnCodeSize + BnDataSize, ' octets de code/donnees)');
+  End;
+
+  (* Generer le fichier OBJ si demande *)
+  If Opts.EmitObj Then
+  Begin
+    OutputPath := ReplaceExt(Opts.SrcFile, '.obj');
+    If Opts.Verbose Then
+      WriteLn('PHPCW32: generation de ', OutputPath);
+    BnGenerateCoffObj(OutputPath);
+    If Opts.Verbose Then
+      WriteLn('PHPCW32: fichier COFF genere');
+  End;
+
+  (* Generer le listing ASM si demande *)
+  If Opts.EmitAsm Then
+  Begin
+    OutputPath := ReplaceExt(Opts.SrcFile, '.asm');
+    If Opts.Verbose Then
+      WriteLn('PHPCW32: generation de ', OutputPath);
+    ImGenerateAsmListing(OutputPath);
+    If Opts.Verbose Then
+      WriteLn('PHPCW32: listing assembleur genere');
+  End;
+End;
+
+{ ============================================================ }
+{ EmitMainPrologue : generer le prologue du programme principal}
+{ ============================================================ }
+
+Procedure EmitMainPrologue;
+Begin
+  { Emettre le point d'entree _start }
+  BnEmitByte($55);              { PUSH EBP }
+  BnEmitByte($89); BnEmitByte($E5);  { MOV EBP, ESP }
+  BnEmitByte($83); BnEmitByte($EC); BnEmitByte($20);  { SUB ESP, 32 }
+End;
+
+{ ============================================================ }
+{ EmitMainEpilogue : generer l'epilogue du programme principal }
+{ ============================================================ }
+
+Procedure EmitMainEpilogue;
+Begin
+  { Appeler ExitProcess(0) }
+  BnEmitByte($6A); BnEmitByte($00);  { PUSH 0 }
+  { CALL ExitProcess - sera resolu plus tard }
+  BnEmitByte($B8); BnEmitDWord(0);   { MOV EAX, 0 (placeholder) }
+  BnEmitByte($FF); BnEmitByte($D0);  { CALL EAX }
+
+  { Ou simplement retourner }
+  BnEmitByte($89); BnEmitByte($EC);  { MOV ESP, EBP }
+  BnEmitByte($5D);              { POP EBP }
+  BnEmitByte($C3);              { RET }
+End;
+
 Begin
   { Initialiser les compteurs }
   ErrorCount := 0;
@@ -20311,30 +20546,28 @@ Begin
   { Initialiser le lexer et lire le fichier source }
   LexInit;
 
-  { Tokeniser tout le fichier pour test }
   If Opts.Verbose Then
-    WriteLn('PHPCW32: Tokenisation de ', Opts.SrcFile, ' ...');
+    WriteLn('PHPCW32: compilation de ', Opts.SrcFile, ' ...');
 
   { Lire le premier token }
-  LexNextToken;
+  ParserAdvance;
 
-  { Parcourir tous les tokens }
-  While CurTokKind <> TK_EOF Do
-    LexNextToken;
+  { Parser le script PHP et generer le code }
+  ParseScript;
 
   { Fermer le lexer }
   LexClose;
 
+  { Finaliser et ecrire les fichiers de sortie }
+  FinalizeAndWriteOutput;
+
   { Message de succes }
   If Opts.Verbose Then
   Begin
-    WriteLn('PHPCW32: Tokenisation terminee');
+    WriteLn('PHPCW32: compilation terminee');
     WriteLn('PHPCW32: ', LexTokCount, ' tokens lus');
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
-
-  WriteLn('PHPCW32: TODO 01-25 implementes');
-  WriteLn('PHPCW32: Compilateur PHP vers assembleur 80386 Win32');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
