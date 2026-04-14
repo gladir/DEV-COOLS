@@ -18021,6 +18021,778 @@ Begin
   BnEmitDataByte(0); (* null terminator *)
 End;
 
+(* ============================================================ *)
+(* FONCTIONS D'EMISSION BINAIRE x86 (INSTRUCTIONS MACHINE)      *)
+(* Ces fonctions emettent les opcodes x86 32 bits directement   *)
+(* dans le buffer de code binaire BnCodeBuffer                  *)
+(* ============================================================ *)
+
+Const
+  (* Registres x86 32 bits - encodage ModR/M                        *)
+  REG_EAX = 0;    (* 000 - Accumulateur                             *)
+  REG_ECX = 1;    (* 001 - Compteur                                 *)
+  REG_EDX = 2;    (* 010 - Donnees                                  *)
+  REG_EBX = 3;    (* 011 - Base                                     *)
+  REG_ESP = 4;    (* 100 - Stack Pointer                            *)
+  REG_EBP = 5;    (* 101 - Base Pointer                             *)
+  REG_ESI = 6;    (* 110 - Source Index                             *)
+  REG_EDI = 7;    (* 111 - Destination Index                        *)
+
+(* ------------------------------------------------------------ *)
+(* BnRegName : retourner le nom d'un registre x86               *)
+(* ------------------------------------------------------------ *)
+
+Function BnRegName(Reg : Integer) : TString;
+Begin
+  Case Reg Of
+    REG_EAX : BnRegName := 'EAX';
+    REG_ECX : BnRegName := 'ECX';
+    REG_EDX : BnRegName := 'EDX';
+    REG_EBX : BnRegName := 'EBX';
+    REG_ESP : BnRegName := 'ESP';
+    REG_EBP : BnRegName := 'EBP';
+    REG_ESI : BnRegName := 'ESI';
+    REG_EDI : BnRegName := 'EDI';
+  Else
+    BnRegName := 'REG' + ItoS(Reg);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitPushReg : emettre PUSH reg (50+rd)                     *)
+(* Opcode : 50+rd (50h=EAX, 51h=ECX, 52h=EDX, 53h=EBX,          *)
+(*                 54h=ESP, 55h=EBP, 56h=ESI, 57h=EDI)          *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitPushReg(Reg : Integer);
+Begin
+  BnEmitByte($50 + (Reg And 7)); { PUSH reg }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitPopReg : emettre POP reg (58+rd)                       *)
+(* Opcode : 58+rd (58h=EAX, 59h=ECX, 5Ah=EDX, 5Bh=EBX,          *)
+(*                 5Ch=ESP, 5Dh=EBP, 5Eh=ESI, 5Fh=EDI)          *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitPopReg(Reg : Integer);
+Begin
+  BnEmitByte($58 + (Reg And 7)); { POP reg }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitPushImm32 : emettre PUSH imm32 (68h imm32)             *)
+(* Pousse une valeur immediate 32 bits sur la pile              *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitPushImm32(Imm : LongInt);
+Begin
+  BnEmitByte($68);    { PUSH imm32 }
+  BnEmitDWord(Imm);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitPushImm8 : emettre PUSH imm8 (6Ah imm8)                *)
+(* Pousse une valeur immediate 8 bits (sign-extended) sur pile  *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitPushImm8(Imm : Byte);
+Begin
+  BnEmitByte($6A);    { PUSH imm8 }
+  BnEmitByte(Imm);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitMovRegImm32 : emettre MOV reg, imm32 (B8+rd id)        *)
+(* Opcode : B8+rd suivi de 4 octets immediats                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitMovRegImm32(Reg : Integer; Imm : LongInt);
+Begin
+  BnEmitByte($B8 + (Reg And 7)); { MOV reg, imm32 }
+  BnEmitDWord(Imm);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitMovRegReg : emettre MOV dest, src (89h /r)             *)
+(* Opcode : 89h ModR/M (mod=11, reg=src, r/m=dest)              *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitMovRegReg(Dest, Src : Integer);
+Begin
+  BnEmitByte($89);    { MOV r/m32, r32 }
+  BnEmitByte($C0 + ((Src And 7) Shl 3) + (Dest And 7)); { ModR/M }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitMovRegMem : emettre MOV reg, [addr] (8Bh /r)           *)
+(* Charge le registre depuis une adresse memoire absolue        *)
+(* Mode disp32 : ModR/M = 00 reg 101, suivi de disp32           *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitMovRegMem(Reg : Integer; Addr : LongInt);
+Begin
+  BnEmitByte($8B);    { MOV r32, r/m32 }
+  BnEmitByte($05 + ((Reg And 7) Shl 3)); { ModR/M: [disp32] }
+  BnEmitDWord(Addr);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitMovMemReg : emettre MOV [addr], reg (89h /r)           *)
+(* Stocke le registre dans une adresse memoire absolue          *)
+(* Mode disp32 : ModR/M = 00 reg 101, suivi de disp32           *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitMovMemReg(Addr : LongInt; Reg : Integer);
+Begin
+  BnEmitByte($89);    { MOV r/m32, r32 }
+  BnEmitByte($05 + ((Reg And 7) Shl 3)); { ModR/M: [disp32] }
+  BnEmitDWord(Addr);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitMovRegEbpDisp : emettre MOV reg, [EBP+disp8/32]        *)
+(* Charge le registre depuis la pile (variable locale/param)    *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitMovRegEbpDisp(Reg : Integer; Disp : LongInt);
+Begin
+  BnEmitByte($8B);    { MOV r32, r/m32 }
+  If (Disp >= -128) And (Disp <= 127) Then
+  Begin
+    { Mode [EBP+disp8] }
+    BnEmitByte($45 + ((Reg And 7) Shl 3)); { ModR/M: 01 reg 101 }
+    BnEmitByte(Disp And $FF);
+  End
+  Else
+  Begin
+    { Mode [EBP+disp32] }
+    BnEmitByte($85 + ((Reg And 7) Shl 3)); { ModR/M: 10 reg 101 }
+    BnEmitDWord(Disp);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitMovEbpDispReg : emettre MOV [EBP+disp8/32], reg        *)
+(* Stocke le registre dans la pile (variable locale/param)      *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitMovEbpDispReg(Disp : LongInt; Reg : Integer);
+Begin
+  BnEmitByte($89);    { MOV r/m32, r32 }
+  If (Disp >= -128) And (Disp <= 127) Then
+  Begin
+    { Mode [EBP+disp8] }
+    BnEmitByte($45 + ((Reg And 7) Shl 3)); { ModR/M: 01 reg 101 }
+    BnEmitByte(Disp And $FF);
+  End
+  Else
+  Begin
+    { Mode [EBP+disp32] }
+    BnEmitByte($85 + ((Reg And 7) Shl 3)); { ModR/M: 10 reg 101 }
+    BnEmitDWord(Disp);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitLea : emettre LEA reg, [addr] (8Dh /r)                 *)
+(* Charge l'adresse effective dans le registre                  *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitLea(Reg : Integer; Addr : LongInt);
+Begin
+  BnEmitByte($8D);    { LEA r32, m }
+  BnEmitByte($05 + ((Reg And 7) Shl 3)); { ModR/M: [disp32] }
+  BnEmitDWord(Addr);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitLeaEbpDisp : emettre LEA reg, [EBP+disp]               *)
+(* Charge l'adresse effective d'une variable locale             *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitLeaEbpDisp(Reg : Integer; Disp : LongInt);
+Begin
+  BnEmitByte($8D);    { LEA r32, m }
+  If (Disp >= -128) And (Disp <= 127) Then
+  Begin
+    BnEmitByte($45 + ((Reg And 7) Shl 3)); { ModR/M: 01 reg 101 }
+    BnEmitByte(Disp And $FF);
+  End
+  Else
+  Begin
+    BnEmitByte($85 + ((Reg And 7) Shl 3)); { ModR/M: 10 reg 101 }
+    BnEmitDWord(Disp);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitCallRel32 : emettre CALL rel32 (E8h rel32)             *)
+(* Appel relatif avec offset 32 bits signe                      *)
+(* rel32 = adresse_cible - (adresse_instruction + 5)            *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitCallRel32(Rel32 : LongInt);
+Begin
+  BnEmitByte($E8);    { CALL rel32 }
+  BnEmitDWord(Rel32);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitCallInd : emettre CALL [addr] (FFh /2)                 *)
+(* Appel indirect via une adresse memoire (IAT pour imports)    *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitCallInd(Addr : LongInt);
+Begin
+  BnEmitByte($FF);    { CALL r/m32 }
+  BnEmitByte($15);    { ModR/M: 00 010 101 = [disp32] }
+  BnEmitDWord(Addr);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitCallIndWithFixup : emettre CALL [addr] avec fixup IAT  *)
+(* Enregistre un fixup pour l'adresse IAT a resoudre plus tard  *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitCallIndWithFixup(ImportIdx : Integer);
+Var
+  FixupOfs : LongInt;
+Begin
+  BnEmitByte($FF);    { CALL r/m32 }
+  BnEmitByte($15);    { ModR/M: 00 010 101 = [disp32] }
+  FixupOfs := BnCodeSize;
+  BnEmitDWord(0);     { placeholder - sera resolu plus tard }
+  BnAddImpFixup(FixupOfs, ImportIdx);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitJmpRel32 : emettre JMP rel32 (E9h rel32)               *)
+(* Saut inconditionnel relatif 32 bits                          *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitJmpRel32(Rel32 : LongInt);
+Begin
+  BnEmitByte($E9);    { JMP rel32 }
+  BnEmitDWord(Rel32);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitJmpRel8 : emettre JMP rel8 (EBh rel8)                  *)
+(* Saut court inconditionnel relatif 8 bits                     *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitJmpRel8(Rel8 : ShortInt);
+Begin
+  BnEmitByte($EB);    { JMP rel8 }
+  BnEmitByte(Byte(Rel8));
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitRet : emettre RET (C3h)                                *)
+(* Retour de procedure sans nettoyage de pile                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitRet;
+Begin
+  BnEmitByte($C3);    { RET }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitRetN : emettre RET imm16 (C2h iw)                      *)
+(* Retour de procedure avec nettoyage de pile                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitRetN(StackPop : Word);
+Begin
+  BnEmitByte($C2);    { RET imm16 }
+  BnEmitWord(StackPop);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitAddRegImm32 : emettre ADD reg, imm32 (81h /0 id)       *)
+(* Ajoute une valeur immediate 32 bits au registre              *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitAddRegImm32(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = REG_EAX Then
+  Begin
+    BnEmitByte($05);    { ADD EAX, imm32 - forme courte }
+    BnEmitDWord(Imm);
+  End
+  Else
+  Begin
+    BnEmitByte($81);    { ADD r/m32, imm32 }
+    BnEmitByte($C0 + (Reg And 7)); { ModR/M: 11 000 reg }
+    BnEmitDWord(Imm);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitAddRegImm8 : emettre ADD reg, imm8 (83h /0 ib)         *)
+(* Ajoute une valeur immediate 8 bits (sign-extended) au reg    *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitAddRegImm8(Reg : Integer; Imm : ShortInt);
+Begin
+  BnEmitByte($83);    { ADD r/m32, imm8 }
+  BnEmitByte($C0 + (Reg And 7)); { ModR/M: 11 000 reg }
+  BnEmitByte(Byte(Imm));
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitAddRegReg : emettre ADD dest, src (01h /r)             *)
+(* Ajoute le registre source au registre destination            *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitAddRegReg(Dest, Src : Integer);
+Begin
+  BnEmitByte($01);    { ADD r/m32, r32 }
+  BnEmitByte($C0 + ((Src And 7) Shl 3) + (Dest And 7)); { ModR/M }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitSubRegImm32 : emettre SUB reg, imm32 (81h /5 id)       *)
+(* Soustrait une valeur immediate 32 bits du registre           *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitSubRegImm32(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = REG_EAX Then
+  Begin
+    BnEmitByte($2D);    { SUB EAX, imm32 - forme courte }
+    BnEmitDWord(Imm);
+  End
+  Else
+  Begin
+    BnEmitByte($81);    { SUB r/m32, imm32 }
+    BnEmitByte($E8 + (Reg And 7)); { ModR/M: 11 101 reg }
+    BnEmitDWord(Imm);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitSubRegImm8 : emettre SUB reg, imm8 (83h /5 ib)         *)
+(* Soustrait une valeur immediate 8 bits (sign-extended) du reg *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitSubRegImm8(Reg : Integer; Imm : ShortInt);
+Begin
+  BnEmitByte($83);    { SUB r/m32, imm8 }
+  BnEmitByte($E8 + (Reg And 7)); { ModR/M: 11 101 reg }
+  BnEmitByte(Byte(Imm));
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitSubRegReg : emettre SUB dest, src (29h /r)             *)
+(* Soustrait le registre source du registre destination         *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitSubRegReg(Dest, Src : Integer);
+Begin
+  BnEmitByte($29);    { SUB r/m32, r32 }
+  BnEmitByte($C0 + ((Src And 7) Shl 3) + (Dest And 7)); { ModR/M }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitImulRegImm32 : emettre IMUL reg, reg, imm32 (69h /r id)*)
+(* Multiplication signee avec resultat dans le registre         *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitImulRegImm32(Reg : Integer; Imm : LongInt);
+Begin
+  BnEmitByte($69);    { IMUL r32, r/m32, imm32 }
+  BnEmitByte($C0 + ((Reg And 7) Shl 3) + (Reg And 7)); { ModR/M }
+  BnEmitDWord(Imm);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitImulRegReg : emettre IMUL dest, src (0Fh AFh /r)       *)
+(* Multiplication signee de deux registres                      *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitImulRegReg(Dest, Src : Integer);
+Begin
+  BnEmitByte($0F);    { prefix 0F }
+  BnEmitByte($AF);    { IMUL r32, r/m32 }
+  BnEmitByte($C0 + ((Dest And 7) Shl 3) + (Src And 7)); { ModR/M }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitCdq : emettre CDQ (99h)                                *)
+(* Etend le signe de EAX dans EDX (pour IDIV)                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitCdq;
+Begin
+  BnEmitByte($99);    { CDQ }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitIdivReg : emettre IDIV reg (F7h /7)                    *)
+(* Division signee EDX:EAX par reg, resultat EAX, reste EDX     *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitIdivReg(Reg : Integer);
+Begin
+  BnEmitByte($F7);    { IDIV r/m32 }
+  BnEmitByte($F8 + (Reg And 7)); { ModR/M: 11 111 reg }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitXorRegReg : emettre XOR dest, src (31h /r)             *)
+(* Utile pour XOR EAX, EAX (mise a zero optimisee)              *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitXorRegReg(Dest, Src : Integer);
+Begin
+  BnEmitByte($31);    { XOR r/m32, r32 }
+  BnEmitByte($C0 + ((Src And 7) Shl 3) + (Dest And 7)); { ModR/M }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitAndRegReg : emettre AND dest, src (21h /r)             *)
+(* ET logique bit a bit                                         *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitAndRegReg(Dest, Src : Integer);
+Begin
+  BnEmitByte($21);    { AND r/m32, r32 }
+  BnEmitByte($C0 + ((Src And 7) Shl 3) + (Dest And 7)); { ModR/M }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitOrRegReg : emettre OR dest, src (09h /r)               *)
+(* OU logique bit a bit                                         *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitOrRegReg(Dest, Src : Integer);
+Begin
+  BnEmitByte($09);    { OR r/m32, r32 }
+  BnEmitByte($C0 + ((Src And 7) Shl 3) + (Dest And 7)); { ModR/M }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitNotReg : emettre NOT reg (F7h /2)                      *)
+(* Complement a un du registre                                  *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitNotReg(Reg : Integer);
+Begin
+  BnEmitByte($F7);    { NOT r/m32 }
+  BnEmitByte($D0 + (Reg And 7)); { ModR/M: 11 010 reg }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitNegReg : emettre NEG reg (F7h /3)                      *)
+(* Complement a deux du registre (negation)                     *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitNegReg(Reg : Integer);
+Begin
+  BnEmitByte($F7);    { NEG r/m32 }
+  BnEmitByte($D8 + (Reg And 7)); { ModR/M: 11 011 reg }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitIncReg : emettre INC reg (40+rd)                       *)
+(* Incremente le registre de 1                                  *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitIncReg(Reg : Integer);
+Begin
+  BnEmitByte($40 + (Reg And 7)); { INC reg }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitDecReg : emettre DEC reg (48+rd)                       *)
+(* Decremente le registre de 1                                  *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitDecReg(Reg : Integer);
+Begin
+  BnEmitByte($48 + (Reg And 7)); { DEC reg }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitShlRegImm8 : emettre SHL reg, imm8 (C1h /4 ib)         *)
+(* Decalage logique a gauche                                    *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitShlRegImm8(Reg : Integer; Imm : Byte);
+Begin
+  If Imm = 1 Then
+  Begin
+    BnEmitByte($D1);  { SHL r/m32, 1 }
+    BnEmitByte($E0 + (Reg And 7)); { ModR/M: 11 100 reg }
+  End
+  Else
+  Begin
+    BnEmitByte($C1);  { SHL r/m32, imm8 }
+    BnEmitByte($E0 + (Reg And 7)); { ModR/M: 11 100 reg }
+    BnEmitByte(Imm);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitShrRegImm8 : emettre SHR reg, imm8 (C1h /5 ib)         *)
+(* Decalage logique a droite                                    *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitShrRegImm8(Reg : Integer; Imm : Byte);
+Begin
+  If Imm = 1 Then
+  Begin
+    BnEmitByte($D1);  { SHR r/m32, 1 }
+    BnEmitByte($E8 + (Reg And 7)); { ModR/M: 11 101 reg }
+  End
+  Else
+  Begin
+    BnEmitByte($C1);  { SHR r/m32, imm8 }
+    BnEmitByte($E8 + (Reg And 7)); { ModR/M: 11 101 reg }
+    BnEmitByte(Imm);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitSarRegImm8 : emettre SAR reg, imm8 (C1h /7 ib)         *)
+(* Decalage arithmetique a droite (preserve le signe)           *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitSarRegImm8(Reg : Integer; Imm : Byte);
+Begin
+  If Imm = 1 Then
+  Begin
+    BnEmitByte($D1);  { SAR r/m32, 1 }
+    BnEmitByte($F8 + (Reg And 7)); { ModR/M: 11 111 reg }
+  End
+  Else
+  Begin
+    BnEmitByte($C1);  { SAR r/m32, imm8 }
+    BnEmitByte($F8 + (Reg And 7)); { ModR/M: 11 111 reg }
+    BnEmitByte(Imm);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitCmpRegImm32 : emettre CMP reg, imm32 (81h /7 id)       *)
+(* Compare le registre avec une valeur immediate                *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitCmpRegImm32(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = REG_EAX Then
+  Begin
+    BnEmitByte($3D);    { CMP EAX, imm32 - forme courte }
+    BnEmitDWord(Imm);
+  End
+  Else
+  Begin
+    BnEmitByte($81);    { CMP r/m32, imm32 }
+    BnEmitByte($F8 + (Reg And 7)); { ModR/M: 11 111 reg }
+    BnEmitDWord(Imm);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitCmpRegImm8 : emettre CMP reg, imm8 (83h /7 ib)         *)
+(* Compare le registre avec une valeur immediate 8 bits         *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitCmpRegImm8(Reg : Integer; Imm : ShortInt);
+Begin
+  BnEmitByte($83);    { CMP r/m32, imm8 }
+  BnEmitByte($F8 + (Reg And 7)); { ModR/M: 11 111 reg }
+  BnEmitByte(Byte(Imm));
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitCmpRegReg : emettre CMP dest, src (39h /r)             *)
+(* Compare deux registres                                       *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitCmpRegReg(Dest, Src : Integer);
+Begin
+  BnEmitByte($39);    { CMP r/m32, r32 }
+  BnEmitByte($C0 + ((Src And 7) Shl 3) + (Dest And 7)); { ModR/M }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitTestRegReg : emettre TEST dest, src (85h /r)           *)
+(* AND logique sans modifier les operandes, affecte les flags   *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitTestRegReg(Dest, Src : Integer);
+Begin
+  BnEmitByte($85);    { TEST r/m32, r32 }
+  BnEmitByte($C0 + ((Src And 7) Shl 3) + (Dest And 7)); { ModR/M }
+End;
+
+(* ------------------------------------------------------------ *)
+(* Sauts conditionnels (Jcc rel8 et rel32)                      *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitJeRel8(Rel8 : ShortInt);  { JE/JZ }
+Begin
+  BnEmitByte($74);
+  BnEmitByte(Byte(Rel8));
+End;
+
+Procedure BnEmitJneRel8(Rel8 : ShortInt); { JNE/JNZ }
+Begin
+  BnEmitByte($75);
+  BnEmitByte(Byte(Rel8));
+End;
+
+Procedure BnEmitJlRel8(Rel8 : ShortInt);  { JL/JNGE }
+Begin
+  BnEmitByte($7C);
+  BnEmitByte(Byte(Rel8));
+End;
+
+Procedure BnEmitJleRel8(Rel8 : ShortInt); { JLE/JNG }
+Begin
+  BnEmitByte($7E);
+  BnEmitByte(Byte(Rel8));
+End;
+
+Procedure BnEmitJgRel8(Rel8 : ShortInt);  { JG/JNLE }
+Begin
+  BnEmitByte($7F);
+  BnEmitByte(Byte(Rel8));
+End;
+
+Procedure BnEmitJgeRel8(Rel8 : ShortInt); { JGE/JNL }
+Begin
+  BnEmitByte($7D);
+  BnEmitByte(Byte(Rel8));
+End;
+
+Procedure BnEmitJeRel32(Rel32 : LongInt);  { JE/JZ rel32 }
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($84);
+  BnEmitDWord(Rel32);
+End;
+
+Procedure BnEmitJneRel32(Rel32 : LongInt); { JNE/JNZ rel32 }
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($85);
+  BnEmitDWord(Rel32);
+End;
+
+Procedure BnEmitJlRel32(Rel32 : LongInt);  { JL/JNGE rel32 }
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($8C);
+  BnEmitDWord(Rel32);
+End;
+
+Procedure BnEmitJleRel32(Rel32 : LongInt); { JLE/JNG rel32 }
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($8E);
+  BnEmitDWord(Rel32);
+End;
+
+Procedure BnEmitJgRel32(Rel32 : LongInt);  { JG/JNLE rel32 }
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($8F);
+  BnEmitDWord(Rel32);
+End;
+
+Procedure BnEmitJgeRel32(Rel32 : LongInt); { JGE/JNL rel32 }
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($8D);
+  BnEmitDWord(Rel32);
+End;
+
+(* ------------------------------------------------------------ *)
+(* Instructions SETcc : positionner un octet selon condition    *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitSeteAl;  { SETE AL - si egal }
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($94);
+  BnEmitByte($C0); { ModR/M: 11 000 000 = AL }
+End;
+
+Procedure BnEmitSetneAl; { SETNE AL - si non egal }
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($95);
+  BnEmitByte($C0);
+End;
+
+Procedure BnEmitSetlAl;  { SETL AL - si inferieur (signe) }
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($9C);
+  BnEmitByte($C0);
+End;
+
+Procedure BnEmitSetleAl; { SETLE AL - si inferieur ou egal }
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($9E);
+  BnEmitByte($C0);
+End;
+
+Procedure BnEmitSetgAl;  { SETG AL - si superieur (signe) }
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($9F);
+  BnEmitByte($C0);
+End;
+
+Procedure BnEmitSetgeAl; { SETGE AL - si superieur ou egal }
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($9D);
+  BnEmitByte($C0);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitMovzxEaxAl : emettre MOVZX EAX, AL (0Fh B6h C0h)       *)
+(* Zero-extend AL vers EAX                                      *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitMovzxEaxAl;
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($B6);
+  BnEmitByte($C0); { ModR/M: 11 000 000 }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitNop : emettre NOP (90h)                                *)
+(* No-operation, utile pour le padding                          *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitNop;
+Begin
+  BnEmitByte($90);    { NOP }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitInt3 : emettre INT 3 (CCh)                             *)
+(* Point d'arret pour debugger                                  *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitInt3;
+Begin
+  BnEmitByte($CC);    { INT 3 }
+End;
+
+(* ============================================================ *)
+(* FIN DES FONCTIONS D'EMISSION BINAIRE x86                     *)
+(* ============================================================ *)
+
 (* ------------------------------------------------------------ *)
 (* BnWriteByte : ecrire un octet dans le fichier                *)
 (* ------------------------------------------------------------ *)
