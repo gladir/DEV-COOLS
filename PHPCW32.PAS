@@ -20707,17 +20707,27 @@ End;
 { ============================================================ }
 
 Procedure EmitMainEpilogue;
+Var
+  FixupOfs : LongInt;
 Begin
-  { Appeler ExitProcess(0) }
+  { Appeler ExitProcess(0) via l'IAT }
   BnEmitByte($6A); BnEmitByte($00);  { PUSH 0 }
-  { CALL ExitProcess - sera resolu plus tard }
-  BnEmitByte($B8); BnEmitDWord(0);   { MOV EAX, 0 (placeholder) }
-  BnEmitByte($FF); BnEmitByte($D0);  { CALL EAX }
 
-  { Ou simplement retourner }
+  { CALL [IAT_ExitProcess] - appel indirect via IAT }
+  BnEmitByte($FF); BnEmitByte($15);  { CALL [addr] - opcode FF 15 }
+
+  { Memoriser l'offset pour le fixup, puis emettre placeholder }
+  FixupOfs := BnCodeSize;
+  BnEmitDWord(0);                    { adresse IAT (placeholder) }
+
+  { Ajouter fixup pour l'adresse IAT de ExitProcess (index 0) }
+  BnAddImpFixup(FixupOfs, 0);
+  ImImports[0].IsUsed := True;       { Marquer ExitProcess comme utilise }
+
+  { Code de secours (ne devrait jamais etre atteint) }
   BnEmitByte($89); BnEmitByte($EC);  { MOV ESP, EBP }
-  BnEmitByte($5D);              { POP EBP }
-  BnEmitByte($C3);              { RET }
+  BnEmitByte($5D);                   { POP EBP }
+  BnEmitByte($C3);                   { RET }
 End;
 
 Begin
