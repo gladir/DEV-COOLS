@@ -18694,6 +18694,13 @@ Var
   ImAsmOpen         : Boolean;     (* True si fichier ouvert             *)
 
 (* ------------------------------------------------------------ *)
+(* Forward declarations pour les procedures d'import PE         *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImBuildImportTable(BaseRVA : LongInt); Forward;
+Procedure ImWriteImportSection(RdataRVA : LongInt; SectionSize : LongInt); Forward;
+
+(* ------------------------------------------------------------ *)
 (* InitImState : initialiser le sous-systeme d'imports Win32   *)
 (* ------------------------------------------------------------ *)
 
