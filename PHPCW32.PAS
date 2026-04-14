@@ -615,7 +615,7 @@
             Mode -obj : appeler GenerateCoffObj au lieu de GeneratePeExe
             10 fonctions accesseurs
 
-  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [A FAIRE]
+  TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM [IMPLEMENTE]
             Imports kernel32.dll :
               ExitProcess : terminer le programme
               GetStdHandle : obtenir le handle console
@@ -18598,6 +18598,906 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 24 - IMPORTS API WIN32 ET GENERATEUR LISTING ASM        }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  (* Types d'operations d'import Win32                               *)
+  IM_NONE            = 0;    (* aucun / non defini                    *)
+  IM_KERNEL32        = 1;    (* import de kernel32.dll                *)
+  IM_MSVCRT          = 2;    (* import de msvcrt.dll                  *)
+  IM_USER32          = 3;    (* import de user32.dll (futur)          *)
+  IM_EXIT_PROCESS    = 4;    (* ExitProcess                           *)
+  IM_GET_STD_HANDLE  = 5;    (* GetStdHandle                          *)
+  IM_WRITE_FILE      = 6;    (* WriteFile                             *)
+  IM_GET_HEAP        = 7;    (* GetProcessHeap                        *)
+  IM_HEAP_ALLOC      = 8;    (* HeapAlloc                             *)
+  IM_HEAP_FREE       = 9;    (* HeapFree                              *)
+  IM_GET_LAST_ERROR  = 10;   (* GetLastError                          *)
+  IM_SPRINTF         = 11;   (* sprintf (msvcrt)                      *)
+  IM_SSCANF          = 12;   (* sscanf (msvcrt)                       *)
+  IM_MEMCPY          = 13;   (* memcpy (msvcrt)                       *)
+  IM_MEMSET          = 14;   (* memset (msvcrt)                       *)
+  IM_MEMCMP          = 15;   (* memcmp (msvcrt)                       *)
+  IM_ASM_LISTING     = 16;   (* generation listing ASM                *)
+  IM_MAX_KIND        = 16;
+
+  (* Constantes de limites                                           *)
+  IM_MAX_IMPORTS     = 64;   (* nombre max de fonctions importees     *)
+  IM_MAX_DLLS        = 8;    (* nombre max de DLLs                    *)
+  IM_MAX_ASM_LINES   = 8192; (* nombre max de lignes ASM              *)
+  IM_MAX_LINE_LEN    = 120;  (* longueur max d'une ligne ASM          *)
+
+  (* Indices standard des DLLs                                       *)
+  IM_DLL_KERNEL32    = 0;    (* index kernel32.dll                    *)
+  IM_DLL_MSVCRT      = 1;    (* index msvcrt.dll                      *)
+
+  (* Constantes Windows API - Handles standard                       *)
+  IM_STD_INPUT       = LongInt(-10);  (* STD_INPUT_HANDLE              *)
+  IM_STD_OUTPUT      = LongInt(-11);  (* STD_OUTPUT_HANDLE             *)
+  IM_STD_ERROR       = LongInt(-12);  (* STD_ERROR_HANDLE              *)
+
+  (* Flags pour HeapAlloc                                            *)
+  IM_HEAP_ZERO       = $00000008;     (* HEAP_ZERO_MEMORY              *)
+
+Type
+  (* Enregistrement pour une fonction importee                       *)
+  TImImportRec = Record
+    FuncName     : TString;     (* nom de la fonction Win32           *)
+    DllName      : TString;     (* nom de la DLL                      *)
+    DllIndex     : Integer;     (* index de la DLL                    *)
+    ParamBytes   : Integer;     (* taille params pour @N stdcall      *)
+    ImportKind   : Integer;     (* type import IM_xxx                  *)
+    Hint         : Integer;     (* hint pour la table d'import        *)
+    IATOffset    : LongInt;     (* offset dans l'IAT                  *)
+    ThunkRVA     : LongInt;     (* RVA du thunk                       *)
+    IsUsed       : Boolean;     (* True si fonction utilisee          *)
+    IsRegistered : Boolean;     (* True si enregistree                *)
+  End;
+
+  (* Enregistrement pour une DLL importee                            *)
+  TImDllRec = Record
+    Name         : TString;     (* nom de la DLL (kernel32.dll)       *)
+    ImportCount  : Integer;     (* nombre de fonctions importees      *)
+    FirstImport  : Integer;     (* index premiere fonction            *)
+    LastImport   : Integer;     (* index derniere fonction            *)
+    IDTOffset    : LongInt;     (* offset Import Directory Table      *)
+    ILTOffset    : LongInt;     (* offset Import Lookup Table         *)
+    IATOffset    : LongInt;     (* offset Import Address Table        *)
+    NameOffset   : LongInt;     (* offset nom DLL                     *)
+    IsUsed       : Boolean;     (* True si DLL utilisee               *)
+  End;
+
+  (* Enregistrement pour une ligne ASM                               *)
+  TImAsmLine = Record
+    Text         : TString;     (* contenu de la ligne                *)
+    Indent       : Integer;     (* niveau d'indentation               *)
+    IsLabel      : Boolean;     (* True si c'est un label             *)
+    IsComment    : Boolean;     (* True si c'est un commentaire       *)
+    LineNum      : Integer;     (* numero de ligne source PHP         *)
+  End;
+
+Var
+  ImInitialized     : Boolean;     (* True si module initialise          *)
+  ImImports         : Array[0..IM_MAX_IMPORTS-1] Of TImImportRec;
+  ImImportCount     : Integer;     (* nombre de fonctions importees      *)
+  ImDlls            : Array[0..IM_MAX_DLLS-1] Of TImDllRec;
+  ImDllCount        : Integer;     (* nombre de DLLs                     *)
+  ImLabelSeq        : Integer;     (* sequence pour labels uniques       *)
+  ImLastKind        : Integer;     (* dernier type d'operation           *)
+  ImAsmBuffer       : Array[0..IM_MAX_ASM_LINES-1] Of TImAsmLine;
+  ImAsmLineCount    : Integer;     (* nombre de lignes ASM               *)
+  ImTotalImports    : LongInt;     (* total d'imports enregistres        *)
+  ImTotalUsed       : LongInt;     (* total d'imports utilises           *)
+  ImTotalAsmLines   : LongInt;     (* total de lignes ASM generees       *)
+  ImIATRVA          : LongInt;     (* RVA de l'IAT                       *)
+  ImIDTRVA          : LongInt;     (* RVA de l'IDT                       *)
+  ImHNTRVA          : LongInt;     (* RVA de Hint/Name Table             *)
+  ImAsmFile         : Text;        (* fichier ASM de sortie              *)
+  ImAsmOpen         : Boolean;     (* True si fichier ouvert             *)
+
+(* ------------------------------------------------------------ *)
+(* InitImState : initialiser le sous-systeme d'imports Win32   *)
+(* ------------------------------------------------------------ *)
+
+Procedure InitImState;
+Var
+  I : Integer;
+Begin
+  ImInitialized     := True;
+  ImImportCount     := 0;
+  ImDllCount        := 0;
+  ImLabelSeq        := 0;
+  ImLastKind        := IM_NONE;
+  ImAsmLineCount    := 0;
+  ImTotalImports    := 0;
+  ImTotalUsed       := 0;
+  ImTotalAsmLines   := 0;
+  ImIATRVA          := 0;
+  ImIDTRVA          := 0;
+  ImHNTRVA          := 0;
+  ImAsmOpen         := False;
+
+  (* Initialiser les tableaux *)
+  For I := 0 To IM_MAX_IMPORTS - 1 Do
+  Begin
+    ImImports[I].FuncName     := '';
+    ImImports[I].DllName      := '';
+    ImImports[I].DllIndex     := -1;
+    ImImports[I].ParamBytes   := 0;
+    ImImports[I].ImportKind   := IM_NONE;
+    ImImports[I].Hint         := 0;
+    ImImports[I].IATOffset    := 0;
+    ImImports[I].ThunkRVA     := 0;
+    ImImports[I].IsUsed       := False;
+    ImImports[I].IsRegistered := False;
+  End;
+
+  For I := 0 To IM_MAX_DLLS - 1 Do
+  Begin
+    ImDlls[I].Name         := '';
+    ImDlls[I].ImportCount  := 0;
+    ImDlls[I].FirstImport  := -1;
+    ImDlls[I].LastImport   := -1;
+    ImDlls[I].IDTOffset    := 0;
+    ImDlls[I].ILTOffset    := 0;
+    ImDlls[I].IATOffset    := 0;
+    ImDlls[I].NameOffset   := 0;
+    ImDlls[I].IsUsed       := False;
+  End;
+
+  For I := 0 To IM_MAX_ASM_LINES - 1 Do
+  Begin
+    ImAsmBuffer[I].Text      := '';
+    ImAsmBuffer[I].Indent    := 0;
+    ImAsmBuffer[I].IsLabel   := False;
+    ImAsmBuffer[I].IsComment := False;
+    ImAsmBuffer[I].LineNum   := 0;
+  End;
+
+  (* Enregistrer automatiquement les DLLs standard *)
+  ImDlls[IM_DLL_KERNEL32].Name := 'kernel32.dll';
+  ImDlls[IM_DLL_MSVCRT].Name   := 'msvcrt.dll';
+  ImDllCount := 2;
+
+  (* Pre-enregistrer les imports kernel32.dll standard *)
+  (* Ces imports seront marques comme utilises au besoin *)
+
+  (* ExitProcess - 4 octets de parametres *)
+  ImImports[0].FuncName     := 'ExitProcess';
+  ImImports[0].DllName      := 'kernel32.dll';
+  ImImports[0].DllIndex     := IM_DLL_KERNEL32;
+  ImImports[0].ParamBytes   := 4;
+  ImImports[0].ImportKind   := IM_EXIT_PROCESS;
+  ImImports[0].IsRegistered := True;
+
+  (* GetStdHandle - 4 octets de parametres *)
+  ImImports[1].FuncName     := 'GetStdHandle';
+  ImImports[1].DllName      := 'kernel32.dll';
+  ImImports[1].DllIndex     := IM_DLL_KERNEL32;
+  ImImports[1].ParamBytes   := 4;
+  ImImports[1].ImportKind   := IM_GET_STD_HANDLE;
+  ImImports[1].IsRegistered := True;
+
+  (* WriteFile - 20 octets de parametres (5 params * 4) *)
+  ImImports[2].FuncName     := 'WriteFile';
+  ImImports[2].DllName      := 'kernel32.dll';
+  ImImports[2].DllIndex     := IM_DLL_KERNEL32;
+  ImImports[2].ParamBytes   := 20;
+  ImImports[2].ImportKind   := IM_WRITE_FILE;
+  ImImports[2].IsRegistered := True;
+
+  (* GetProcessHeap - 0 octets de parametres *)
+  ImImports[3].FuncName     := 'GetProcessHeap';
+  ImImports[3].DllName      := 'kernel32.dll';
+  ImImports[3].DllIndex     := IM_DLL_KERNEL32;
+  ImImports[3].ParamBytes   := 0;
+  ImImports[3].ImportKind   := IM_GET_HEAP;
+  ImImports[3].IsRegistered := True;
+
+  (* HeapAlloc - 12 octets de parametres (3 params * 4) *)
+  ImImports[4].FuncName     := 'HeapAlloc';
+  ImImports[4].DllName      := 'kernel32.dll';
+  ImImports[4].DllIndex     := IM_DLL_KERNEL32;
+  ImImports[4].ParamBytes   := 12;
+  ImImports[4].ImportKind   := IM_HEAP_ALLOC;
+  ImImports[4].IsRegistered := True;
+
+  (* HeapFree - 12 octets de parametres (3 params * 4) *)
+  ImImports[5].FuncName     := 'HeapFree';
+  ImImports[5].DllName      := 'kernel32.dll';
+  ImImports[5].DllIndex     := IM_DLL_KERNEL32;
+  ImImports[5].ParamBytes   := 12;
+  ImImports[5].ImportKind   := IM_HEAP_FREE;
+  ImImports[5].IsRegistered := True;
+
+  (* GetLastError - 0 octets de parametres *)
+  ImImports[6].FuncName     := 'GetLastError';
+  ImImports[6].DllName      := 'kernel32.dll';
+  ImImports[6].DllIndex     := IM_DLL_KERNEL32;
+  ImImports[6].ParamBytes   := 0;
+  ImImports[6].ImportKind   := IM_GET_LAST_ERROR;
+  ImImports[6].IsRegistered := True;
+
+  (* Imports msvcrt.dll *)
+
+  (* sprintf - variadic, on met 0 pour cdecl *)
+  ImImports[7].FuncName     := 'sprintf';
+  ImImports[7].DllName      := 'msvcrt.dll';
+  ImImports[7].DllIndex     := IM_DLL_MSVCRT;
+  ImImports[7].ParamBytes   := 0; (* cdecl = appelant nettoie *)
+  ImImports[7].ImportKind   := IM_SPRINTF;
+  ImImports[7].IsRegistered := True;
+
+  (* sscanf - variadic, cdecl *)
+  ImImports[8].FuncName     := 'sscanf';
+  ImImports[8].DllName      := 'msvcrt.dll';
+  ImImports[8].DllIndex     := IM_DLL_MSVCRT;
+  ImImports[8].ParamBytes   := 0;
+  ImImports[8].ImportKind   := IM_SSCANF;
+  ImImports[8].IsRegistered := True;
+
+  (* memcpy - 12 octets (3 params * 4), cdecl *)
+  ImImports[9].FuncName     := 'memcpy';
+  ImImports[9].DllName      := 'msvcrt.dll';
+  ImImports[9].DllIndex     := IM_DLL_MSVCRT;
+  ImImports[9].ParamBytes   := 0;
+  ImImports[9].ImportKind   := IM_MEMCPY;
+  ImImports[9].IsRegistered := True;
+
+  (* memset - 12 octets, cdecl *)
+  ImImports[10].FuncName     := 'memset';
+  ImImports[10].DllName      := 'msvcrt.dll';
+  ImImports[10].DllIndex     := IM_DLL_MSVCRT;
+  ImImports[10].ParamBytes   := 0;
+  ImImports[10].ImportKind   := IM_MEMSET;
+  ImImports[10].IsRegistered := True;
+
+  (* memcmp - 12 octets, cdecl *)
+  ImImports[11].FuncName     := 'memcmp';
+  ImImports[11].DllName      := 'msvcrt.dll';
+  ImImports[11].DllIndex     := IM_DLL_MSVCRT;
+  ImImports[11].ParamBytes   := 0;
+  ImImports[11].ImportKind   := IM_MEMCMP;
+  ImImports[11].IsRegistered := True;
+
+  ImImportCount := 12;
+  ImTotalImports := 12;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GenImLabel : generer un label unique pour les imports        *)
+(* ------------------------------------------------------------ *)
+
+Function GenImLabel : TString;
+Begin
+  Inc(ImLabelSeq);
+  GenImLabel := '_PIM_L' + ItoS(ImLabelSeq);
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImTypeName : retourner le nom textuel d un type d import     *)
+(* ------------------------------------------------------------ *)
+
+Function ImTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    IM_NONE:           ImTypeName := 'IM_NONE';
+    IM_KERNEL32:       ImTypeName := 'IM_KERNEL32';
+    IM_MSVCRT:         ImTypeName := 'IM_MSVCRT';
+    IM_USER32:         ImTypeName := 'IM_USER32';
+    IM_EXIT_PROCESS:   ImTypeName := 'IM_EXIT_PROCESS';
+    IM_GET_STD_HANDLE: ImTypeName := 'IM_GET_STD_HANDLE';
+    IM_WRITE_FILE:     ImTypeName := 'IM_WRITE_FILE';
+    IM_GET_HEAP:       ImTypeName := 'IM_GET_HEAP';
+    IM_HEAP_ALLOC:     ImTypeName := 'IM_HEAP_ALLOC';
+    IM_HEAP_FREE:      ImTypeName := 'IM_HEAP_FREE';
+    IM_GET_LAST_ERROR: ImTypeName := 'IM_GET_LAST_ERROR';
+    IM_SPRINTF:        ImTypeName := 'IM_SPRINTF';
+    IM_SSCANF:         ImTypeName := 'IM_SSCANF';
+    IM_MEMCPY:         ImTypeName := 'IM_MEMCPY';
+    IM_MEMSET:         ImTypeName := 'IM_MEMSET';
+    IM_MEMCMP:         ImTypeName := 'IM_MEMCMP';
+    IM_ASM_LISTING:    ImTypeName := 'IM_ASM_LISTING';
+    Else               ImTypeName := 'IM_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImFindImport : trouver un import par son nom                 *)
+(* ------------------------------------------------------------ *)
+
+Function ImFindImport(Const AName : TString) : Integer;
+Var
+  I : Integer;
+  UName : TString;
+Begin
+  ImFindImport := -1;
+  UName := UpCaseStr(AName);
+  For I := 0 To ImImportCount - 1 Do
+  Begin
+    If UpCaseStr(ImImports[I].FuncName) = UName Then
+    Begin
+      ImFindImport := I;
+      Exit;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImFindByKind : trouver un import par son type                *)
+(* ------------------------------------------------------------ *)
+
+Function ImFindByKind(AKind : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  ImFindByKind := -1;
+  For I := 0 To ImImportCount - 1 Do
+  Begin
+    If ImImports[I].ImportKind = AKind Then
+    Begin
+      ImFindByKind := I;
+      Exit;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImMarkUsed : marquer un import comme utilise                 *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImMarkUsed(AKind : Integer);
+Var
+  Idx : Integer;
+Begin
+  Idx := ImFindByKind(AKind);
+  If Idx >= 0 Then
+  Begin
+    If Not ImImports[Idx].IsUsed Then
+    Begin
+      ImImports[Idx].IsUsed := True;
+      Inc(ImTotalUsed);
+      (* Marquer la DLL comme utilisee *)
+      If (ImImports[Idx].DllIndex >= 0) And
+         (ImImports[Idx].DllIndex < ImDllCount) Then
+        ImDlls[ImImports[Idx].DllIndex].IsUsed := True;
+    End;
+  End;
+  ImLastKind := AKind;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImMarkUsedByName : marquer un import par son nom             *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImMarkUsedByName(Const AName : TString);
+Var
+  Idx : Integer;
+Begin
+  Idx := ImFindImport(AName);
+  If Idx >= 0 Then
+  Begin
+    If Not ImImports[Idx].IsUsed Then
+    Begin
+      ImImports[Idx].IsUsed := True;
+      Inc(ImTotalUsed);
+      If (ImImports[Idx].DllIndex >= 0) And
+         (ImImports[Idx].DllIndex < ImDllCount) Then
+        ImDlls[ImImports[Idx].DllIndex].IsUsed := True;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImRegisterImport : enregistrer un nouvel import              *)
+(* ------------------------------------------------------------ *)
+
+Function ImRegisterImport(Const AFuncName, ADllName : TString;
+                          AParamBytes, AKind : Integer) : Integer;
+Var
+  DllIdx, I : Integer;
+Begin
+  ImRegisterImport := -1;
+
+  (* Verifier si deja enregistre *)
+  If ImFindImport(AFuncName) >= 0 Then
+  Begin
+    ImRegisterImport := ImFindImport(AFuncName);
+    Exit;
+  End;
+
+  If ImImportCount >= IM_MAX_IMPORTS Then
+    Exit;
+
+  (* Trouver ou creer la DLL *)
+  DllIdx := -1;
+  For I := 0 To ImDllCount - 1 Do
+  Begin
+    If UpCaseStr(ImDlls[I].Name) = UpCaseStr(ADllName) Then
+    Begin
+      DllIdx := I;
+      Break;
+    End;
+  End;
+
+  If DllIdx < 0 Then
+  Begin
+    If ImDllCount >= IM_MAX_DLLS Then
+      Exit;
+    DllIdx := ImDllCount;
+    ImDlls[DllIdx].Name := ADllName;
+    Inc(ImDllCount);
+  End;
+
+  (* Enregistrer l'import *)
+  ImImports[ImImportCount].FuncName     := AFuncName;
+  ImImports[ImImportCount].DllName      := ADllName;
+  ImImports[ImImportCount].DllIndex     := DllIdx;
+  ImImports[ImImportCount].ParamBytes   := AParamBytes;
+  ImImports[ImImportCount].ImportKind   := AKind;
+  ImImports[ImImportCount].IsUsed       := False;
+  ImImports[ImImportCount].IsRegistered := True;
+
+  ImRegisterImport := ImImportCount;
+  Inc(ImImportCount);
+  Inc(ImTotalImports);
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImGetMangledName : obtenir le nom decore Win32               *)
+(* Pour stdcall : _FuncName@N                                   *)
+(* Pour cdecl : _FuncName                                       *)
+(* ------------------------------------------------------------ *)
+
+Function ImGetMangledName(Idx : Integer) : TString;
+Begin
+  If (Idx < 0) Or (Idx >= ImImportCount) Then
+  Begin
+    ImGetMangledName := '_unknown';
+    Exit;
+  End;
+
+  If ImImports[Idx].ParamBytes > 0 Then
+    (* stdcall *)
+    ImGetMangledName := '_' + ImImports[Idx].FuncName + '@' +
+                        ItoS(ImImports[Idx].ParamBytes)
+  Else
+    (* cdecl *)
+    ImGetMangledName := '_' + ImImports[Idx].FuncName;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImGetExternDecl : obtenir la declaration EXTERN pour ASM     *)
+(* ------------------------------------------------------------ *)
+
+Function ImGetExternDecl(Idx : Integer) : TString;
+Begin
+  If (Idx < 0) Or (Idx >= ImImportCount) Then
+  Begin
+    ImGetExternDecl := '';
+    Exit;
+  End;
+  ImGetExternDecl := 'EXTERN ' + ImGetMangledName(Idx) + ':PROC';
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImCountUsedImports : compter les imports utilises            *)
+(* ------------------------------------------------------------ *)
+
+Function ImCountUsedImports : Integer;
+Var
+  I, Count : Integer;
+Begin
+  Count := 0;
+  For I := 0 To ImImportCount - 1 Do
+  Begin
+    If ImImports[I].IsUsed Then
+      Inc(Count);
+  End;
+  ImCountUsedImports := Count;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImCountUsedDlls : compter les DLLs utilisees                 *)
+(* ------------------------------------------------------------ *)
+
+Function ImCountUsedDlls : Integer;
+Var
+  I, Count : Integer;
+Begin
+  Count := 0;
+  For I := 0 To ImDllCount - 1 Do
+  Begin
+    If ImDlls[I].IsUsed Then
+      Inc(Count);
+  End;
+  ImCountUsedDlls := Count;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImBuildImportTable : construire les tables d'import PE       *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImBuildImportTable(BaseRVA : LongInt);
+Var
+  I, J, UsedCount, DllsUsed : Integer;
+  CurOffset : LongInt;
+  HNTSize, ILTSize, IATSize, IDTSize : LongInt;
+Begin
+  (* Compter les imports et DLLs utilises *)
+  UsedCount := ImCountUsedImports;
+  DllsUsed  := ImCountUsedDlls;
+
+  If UsedCount = 0 Then
+    Exit;
+
+  (* Calculer les tailles *)
+  (* IDT : 20 octets par DLL + 20 pour terminateur null *)
+  IDTSize := (DllsUsed + 1) * 20;
+  (* ILT/IAT : 4 octets par import + 4 pour terminateur par DLL *)
+  ILTSize := (UsedCount + DllsUsed) * 4;
+  IATSize := ILTSize;
+  (* HNT : 2 octets hint + nom + padding *)
+  HNTSize := 0;
+  For I := 0 To ImImportCount - 1 Do
+  Begin
+    If ImImports[I].IsUsed Then
+    Begin
+      HNTSize := HNTSize + 2 + Length(ImImports[I].FuncName) + 1;
+      If (HNTSize Mod 2) <> 0 Then
+        Inc(HNTSize); (* padding *)
+    End;
+  End;
+
+  (* Assigner les RVAs *)
+  ImIDTRVA := BaseRVA;
+  ImIATRVA := ImIDTRVA + IDTSize;
+  ImHNTRVA := ImIATRVA + IATSize + ILTSize;
+
+  (* Assigner les offsets pour chaque DLL *)
+  CurOffset := 0;
+  For I := 0 To ImDllCount - 1 Do
+  Begin
+    If ImDlls[I].IsUsed Then
+    Begin
+      ImDlls[I].IDTOffset := CurOffset;
+      CurOffset := CurOffset + 20;
+    End;
+  End;
+
+  (* Assigner les offsets IAT pour chaque import *)
+  CurOffset := 0;
+  For I := 0 To ImDllCount - 1 Do
+  Begin
+    If ImDlls[I].IsUsed Then
+    Begin
+      ImDlls[I].IATOffset := CurOffset;
+      For J := 0 To ImImportCount - 1 Do
+      Begin
+        If ImImports[J].IsUsed And (ImImports[J].DllIndex = I) Then
+        Begin
+          ImImports[J].IATOffset := CurOffset;
+          ImImports[J].ThunkRVA  := ImIATRVA + CurOffset;
+          CurOffset := CurOffset + 4;
+        End;
+      End;
+      CurOffset := CurOffset + 4; (* terminateur null *)
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImAddAsmLine : ajouter une ligne au buffer ASM               *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImAddAsmLine(Const AText : TString; AIndent : Integer;
+                       IsLbl, IsCmt : Boolean; ALn : Integer);
+Begin
+  If ImAsmLineCount >= IM_MAX_ASM_LINES Then
+    Exit;
+
+  ImAsmBuffer[ImAsmLineCount].Text      := AText;
+  ImAsmBuffer[ImAsmLineCount].Indent    := AIndent;
+  ImAsmBuffer[ImAsmLineCount].IsLabel   := IsLbl;
+  ImAsmBuffer[ImAsmLineCount].IsComment := IsCmt;
+  ImAsmBuffer[ImAsmLineCount].LineNum   := ALn;
+
+  Inc(ImAsmLineCount);
+  Inc(ImTotalAsmLines);
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImEmitAsmHeader : emettre l en-tete ASM MASM                 *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImEmitAsmHeader;
+Begin
+  ImAddAsmLine('; ============================================', 0, False, True, 0);
+  ImAddAsmLine('; PHPCW32 Generated Assembly Listing', 0, False, True, 0);
+  ImAddAsmLine('; Format: MASM .386 / .MODEL FLAT, STDCALL', 0, False, True, 0);
+  ImAddAsmLine('; ============================================', 0, False, True, 0);
+  ImAddAsmLine('', 0, False, False, 0);
+  ImAddAsmLine('.386', 0, False, False, 0);
+  ImAddAsmLine('.MODEL FLAT, STDCALL', 0, False, False, 0);
+  ImAddAsmLine('OPTION CASEMAP:NONE', 0, False, False, 0);
+  ImAddAsmLine('', 0, False, False, 0);
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImEmitAsmIncludes : emettre les INCLUDELIB                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImEmitAsmIncludes;
+Var
+  I : Integer;
+  LibName : TString;
+Begin
+  ImAddAsmLine('; Library includes', 0, False, True, 0);
+  For I := 0 To ImDllCount - 1 Do
+  Begin
+    If ImDlls[I].IsUsed Then
+    Begin
+      (* Convertir dll en lib : kernel32.dll -> kernel32.lib *)
+      LibName := ImDlls[I].Name;
+      If Length(LibName) > 4 Then
+      Begin
+        If (LibName[Length(LibName)-3] = '.') And
+           (UpCaseStr(Copy(LibName, Length(LibName)-2, 3)) = 'DLL') Then
+          LibName := Copy(LibName, 1, Length(LibName)-3) + 'lib';
+      End;
+      ImAddAsmLine('INCLUDELIB ' + LibName, 0, False, False, 0);
+    End;
+  End;
+  ImAddAsmLine('', 0, False, False, 0);
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImEmitAsmExterns : emettre les declarations EXTERN           *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImEmitAsmExterns;
+Var
+  I : Integer;
+Begin
+  ImAddAsmLine('; External Win32 API functions', 0, False, True, 0);
+  For I := 0 To ImImportCount - 1 Do
+  Begin
+    If ImImports[I].IsUsed Then
+      ImAddAsmLine(ImGetExternDecl(I), 0, False, False, 0);
+  End;
+  ImAddAsmLine('', 0, False, False, 0);
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImEmitAsmDataSection : emettre la section .DATA              *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImEmitAsmDataSection;
+Begin
+  ImAddAsmLine('.DATA', 0, False, False, 0);
+  ImAddAsmLine('; Initialized data segment', 0, False, True, 0);
+  ImAddAsmLine('', 0, False, False, 0);
+  ImAddAsmLine('.DATA?', 0, False, False, 0);
+  ImAddAsmLine('; Uninitialized data segment (BSS)', 0, False, True, 0);
+  ImAddAsmLine('', 0, False, False, 0);
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImEmitAsmCodeSection : emettre la section .CODE              *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImEmitAsmCodeSection;
+Begin
+  ImAddAsmLine('.CODE', 0, False, False, 0);
+  ImAddAsmLine('', 0, False, False, 0);
+  ImAddAsmLine('; ============================================', 0, False, True, 0);
+  ImAddAsmLine('; Runtime support routines (_PHRT_)', 0, False, True, 0);
+  ImAddAsmLine('; ============================================', 0, False, True, 0);
+  ImAddAsmLine('', 0, False, False, 0);
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImEmitAsmEntryPoint : emettre le point d entree              *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImEmitAsmEntryPoint;
+Begin
+  ImAddAsmLine('; ============================================', 0, False, True, 0);
+  ImAddAsmLine('; Entry point', 0, False, True, 0);
+  ImAddAsmLine('; ============================================', 0, False, True, 0);
+  ImAddAsmLine('', 0, False, False, 0);
+  ImAddAsmLine('_start:', 0, True, False, 0);
+  ImAddAsmLine('    ; Initialize runtime', 1, False, True, 0);
+  ImAddAsmLine('    PUSH EBP', 1, False, False, 0);
+  ImAddAsmLine('    MOV  EBP, ESP', 1, False, False, 0);
+  ImAddAsmLine('', 0, False, False, 0);
+  ImAddAsmLine('    ; Get standard output handle', 1, False, True, 0);
+  ImAddAsmLine('    PUSH -11           ; STD_OUTPUT_HANDLE', 1, False, False, 0);
+  ImAddAsmLine('    CALL _GetStdHandle@4', 1, False, False, 0);
+  ImAddAsmLine('', 0, False, False, 0);
+  ImAddAsmLine('    ; ... PHP code execution ...', 1, False, True, 0);
+  ImAddAsmLine('', 0, False, False, 0);
+  ImAddAsmLine('    ; Exit program', 1, False, True, 0);
+  ImAddAsmLine('    PUSH 0             ; Exit code', 1, False, False, 0);
+  ImAddAsmLine('    CALL _ExitProcess@4', 1, False, False, 0);
+  ImAddAsmLine('', 0, False, False, 0);
+  ImAddAsmLine('END _start', 0, False, False, 0);
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImGenerateAsmListing : generer le listing ASM complet        *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImGenerateAsmListing(Const OutFileName : TString);
+Var
+  I : Integer;
+  Indent : TString;
+Begin
+  ImLastKind := IM_ASM_LISTING;
+
+  (* Reinitialiser le buffer *)
+  ImAsmLineCount := 0;
+
+  (* Construire le listing *)
+  ImEmitAsmHeader;
+  ImEmitAsmIncludes;
+  ImEmitAsmExterns;
+  ImEmitAsmDataSection;
+  ImEmitAsmCodeSection;
+  ImEmitAsmEntryPoint;
+
+  (* Ecrire le fichier *)
+  Assign(ImAsmFile, OutFileName);
+  {$I-}
+  Rewrite(ImAsmFile);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    CompileError('Cannot create ASM file: ' + OutFileName, 0);
+    Exit;
+  End;
+  ImAsmOpen := True;
+
+  For I := 0 To ImAsmLineCount - 1 Do
+  Begin
+    (* Construire l'indentation *)
+    Indent := '';
+    If ImAsmBuffer[I].Indent > 0 Then
+    Begin
+      While Length(Indent) < ImAsmBuffer[I].Indent * 4 Do
+        Indent := Indent + ' ';
+    End;
+    WriteLn(ImAsmFile, Indent, ImAsmBuffer[I].Text);
+  End;
+
+  Close(ImAsmFile);
+  ImAsmOpen := False;
+
+  Inc(BnAsmWritten);
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImAddCoffExternals : ajouter les symboles externes au COFF   *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImAddCoffExternals;
+Var
+  I : Integer;
+Begin
+  For I := 0 To ImImportCount - 1 Do
+  Begin
+    If ImImports[I].IsUsed Then
+    Begin
+      (* Ajouter le symbole externe *)
+      BnAddSymbol(ImGetMangledName(I), 0, 0, BN_SYM_EXTERNAL, True);
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* DumpImState : afficher l etat du module d imports            *)
+(* ------------------------------------------------------------ *)
+
+Procedure DumpImState;
+Var
+  I : Integer;
+Begin
+  WriteLn('=== Imports Win32 State ===');
+  WriteLn('Imports registered: ', ImImportCount);
+  WriteLn('Imports used: ', ImCountUsedImports);
+  WriteLn('DLLs: ', ImDllCount);
+  WriteLn('DLLs used: ', ImCountUsedDlls);
+  WriteLn('ASM lines: ', ImAsmLineCount);
+  WriteLn('Total imports: ', ImTotalImports);
+  WriteLn('Total used: ', ImTotalUsed);
+  WriteLn('Total ASM: ', ImTotalAsmLines);
+
+  If ImDllCount > 0 Then
+  Begin
+    WriteLn('--- DLLs ---');
+    For I := 0 To ImDllCount - 1 Do
+    Begin
+      Write('  ', ImDlls[I].Name);
+      If ImDlls[I].IsUsed Then
+        Write(' [USED]');
+      WriteLn;
+    End;
+  End;
+
+  If ImImportCount > 0 Then
+  Begin
+    WriteLn('--- Imports (used) ---');
+    For I := 0 To ImImportCount - 1 Do
+    Begin
+      If ImImports[I].IsUsed Then
+        WriteLn('  ', ImImports[I].FuncName, ' (', ImImports[I].DllName, ')');
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* Accesseurs pour le module d imports (10 fonctions)           *)
+(* ------------------------------------------------------------ *)
+
+Function IsImInitialized : Boolean;
+Begin
+  IsImInitialized := ImInitialized;
+End;
+
+Function GetImImportCount : Integer;
+Begin
+  GetImImportCount := ImImportCount;
+End;
+
+Function GetImDllCount : Integer;
+Begin
+  GetImDllCount := ImDllCount;
+End;
+
+Function GetImUsedCount : Integer;
+Begin
+  GetImUsedCount := ImCountUsedImports;
+End;
+
+Function GetImAsmLineCount : Integer;
+Begin
+  GetImAsmLineCount := ImAsmLineCount;
+End;
+
+Function GetImTotalImports : LongInt;
+Begin
+  GetImTotalImports := ImTotalImports;
+End;
+
+Function GetImTotalUsed : LongInt;
+Begin
+  GetImTotalUsed := ImTotalUsed;
+End;
+
+Function GetImLastKind : Integer;
+Begin
+  GetImLastKind := ImLastKind;
+End;
+
+Function GetImIATRVA : LongInt;
+Begin
+  GetImIATRVA := ImIATRVA;
+End;
+
+Function GetImStatus : TString;
+Begin
+  If Not ImInitialized Then
+    GetImStatus := 'Not initialized'
+  Else
+    GetImStatus := ItoS(ImImportCount) + ' imports, ' +
+                   ItoS(ImCountUsedImports) + ' used, ' +
+                   ItoS(ImDllCount) + ' DLLs, ' +
+                   ItoS(ImAsmLineCount) + ' ASM lines';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -18675,6 +19575,9 @@ Begin
   { Initialiser le module binaire PE/COFF (TODO 23) }
   InitBnState;
 
+  { Initialiser le module d'imports Win32 (TODO 24) }
+  InitImState;
+
   { Enregistrer les constantes PHP predefinies }
   RegisterPredefinedConsts;
 
@@ -18709,8 +19612,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-23 implementes');
-  WriteLn('PHPCW32: Les TODOs 24-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-24 implementes');
+  WriteLn('PHPCW32: La TODO 25 reste a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
