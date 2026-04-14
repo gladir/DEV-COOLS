@@ -450,7 +450,7 @@
               (non supportee, utiliser accolades)
             10 fonctions accesseurs
 
-  TODO 18 - PARSEUR : CONSTANTES DEFINE() ET CONST [A FAIRE]
+  TODO 18 - PARSEUR : CONSTANTES DEFINE() ET CONST [IMPLEMENTE]
             define('NOM', valeur) : definir une constante globale
               Enregistrer dans SymTab avec SK_CONST
               NOM sans $ pour l acces : echo NOM;
@@ -747,12 +747,13 @@ Const
   OMK_VAR_STR  = 6;   { variable chaine                           }
 
   { Prefixes de nommage ASM }
-  PH_VAR_PFX  = '_PH_';     { variable globale                       }
-  PH_FN_PFX   = '_PF_';     { fonction utilisateur                   }
-  PH_STR_PFX  = '_PK_';     { constante chaine litterale             }
-  PH_RT_PFX   = '_PHRT_';   { routine runtime                        }
-  PH_LBL_PFX  = '_PL_';     { label de saut interne                  }
-  PH_ARR_PFX  = '_PA_';     { tableau                                }
+  PH_VAR_PFX   = '_PH_';     { variable globale                       }
+  PH_FN_PFX    = '_PF_';     { fonction utilisateur                   }
+  PH_STR_PFX   = '_PK_';     { constante chaine litterale             }
+  PH_RT_PFX    = '_PHRT_';   { routine runtime                        }
+  PH_LBL_PFX   = '_PL_';     { label de saut interne                  }
+  PH_ARR_PFX   = '_PA_';     { tableau                                }
+  PH_CONST_PFX = '_PC_';     { constante define/const                 }
 
 Type
   TString = String;
@@ -13212,6 +13213,724 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 18 - PARSEUR : CONSTANTES DEFINE() ET CONST [IMPLEMENTE]}
+{ ============================================================ }
+
+Const
+  (* Types d operations pour constantes *)
+  CT_NONE         = 0;    (* aucun / non defini                     *)
+  CT_DEFINE       = 1;    (* define('NOM', valeur)                  *)
+  CT_CONST        = 2;    (* const NOM = valeur                     *)
+  CT_PREDEF_INT   = 3;    (* constante predefinie entiere           *)
+  CT_PREDEF_STR   = 4;    (* constante predefinie chaine            *)
+  CT_PREDEF_BOOL  = 5;    (* constante predefinie booleenne         *)
+  CT_PREDEF_NULL  = 6;    (* constante predefinie null              *)
+  CT_USER_INT     = 7;    (* constante utilisateur entiere          *)
+  CT_USER_STR     = 8;    (* constante utilisateur chaine           *)
+  CT_DEFINED_CHK  = 9;    (* verification defined('NOM')            *)
+  CT_LOAD         = 10;   (* chargement de constante                *)
+  CT_EMIT         = 11;   (* emission de code                       *)
+  CT_SUBSTITUTE   = 12;   (* substitution en expression             *)
+  CT_MAX_KIND     = 12;
+
+  (* Limites *)
+  CT_MAX_CONSTS   = 256;  (* nombre max de constantes               *)
+
+Type
+  (* Enregistrement pour une constante *)
+  TCtConstRec = Record
+    Name        : TString;   (* nom de la constante (sans $)          *)
+    AsmLabel    : TString;   (* label ASM pour l acces                *)
+    Kind        : Integer;   (* type de constante (CT_USER_INT, etc.) *)
+    IntValue    : LongInt;   (* valeur si constante entiere           *)
+    StrValue    : TString;   (* valeur si constante chaine            *)
+    IsPredefined: Boolean;   (* True si constante predefinie PHP      *)
+    IsString    : Boolean;   (* True si constante chaine              *)
+    DeclLine    : Integer;   (* ligne de declaration (0 si predef)    *)
+    SymIdx      : Integer;   (* indice dans table des symboles        *)
+  End;
+
+Var
+  CtInitialized     : Boolean;     (* True si le module est initialise   *)
+  CtConstants       : Array[0..CT_MAX_CONSTS-1] Of TCtConstRec;
+  CtCount           : Integer;     (* nombre de constantes enregistrees  *)
+  CtDefineCount     : LongInt;     (* nombre de define() parses          *)
+  CtConstDeclCount  : LongInt;     (* nombre de const parses             *)
+  CtPredefinedCount : Integer;     (* nombre de constantes predefinies   *)
+  CtUserCount       : Integer;     (* nombre de constantes utilisateur   *)
+  CtLookupCount     : LongInt;     (* nombre de recherches effectuees    *)
+  CtLoadCount       : LongInt;     (* nombre de chargements emis         *)
+  CtSubstCount      : LongInt;     (* nombre de substitutions            *)
+  CtLastKind        : Integer;     (* dernier type d operation           *)
+  CtLabelSeq        : Integer;     (* sequence pour labels uniques       *)
+  CtCurName         : TString;     (* nom de la constante courante       *)
+  CtCurIdx          : Integer;     (* indice de la constante courante    *)
+
+(* ------------------------------------------------------------ *)
+(* InitCtState : initialiser le sous-systeme constantes           *)
+(* ------------------------------------------------------------ *)
+
+Procedure InitCtState;
+Var
+  I : Integer;
+Begin
+  CtInitialized     := True;
+  CtCount           := 0;
+  CtDefineCount     := 0;
+  CtConstDeclCount  := 0;
+  CtPredefinedCount := 0;
+  CtUserCount       := 0;
+  CtLookupCount     := 0;
+  CtLoadCount       := 0;
+  CtSubstCount      := 0;
+  CtLastKind        := CT_NONE;
+  CtLabelSeq        := 0;
+  CtCurName         := '';
+  CtCurIdx          := -1;
+
+  For I := 0 To CT_MAX_CONSTS - 1 Do
+  Begin
+    CtConstants[I].Name        := '';
+    CtConstants[I].AsmLabel    := '';
+    CtConstants[I].Kind        := CT_NONE;
+    CtConstants[I].IntValue    := 0;
+    CtConstants[I].StrValue    := '';
+    CtConstants[I].IsPredefined:= False;
+    CtConstants[I].IsString    := False;
+    CtConstants[I].DeclLine    := 0;
+    CtConstants[I].SymIdx      := 0;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GenCtLabel : generer un label unique pour constante            *)
+(* ------------------------------------------------------------ *)
+
+Function GenCtLabel : TString;
+Begin
+  Inc(CtLabelSeq);
+  GenCtLabel := PH_CONST_PFX + 'C_' + ItoS(CtLabelSeq);
+End;
+
+(* ------------------------------------------------------------ *)
+(* CtTypeName : retourner le nom du type d operation constante    *)
+(* ------------------------------------------------------------ *)
+
+Function CtTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    CT_NONE         : CtTypeName := 'CT_NONE';
+    CT_DEFINE       : CtTypeName := 'CT_DEFINE';
+    CT_CONST        : CtTypeName := 'CT_CONST';
+    CT_PREDEF_INT   : CtTypeName := 'CT_PREDEF_INT';
+    CT_PREDEF_STR   : CtTypeName := 'CT_PREDEF_STR';
+    CT_PREDEF_BOOL  : CtTypeName := 'CT_PREDEF_BOOL';
+    CT_PREDEF_NULL  : CtTypeName := 'CT_PREDEF_NULL';
+    CT_USER_INT     : CtTypeName := 'CT_USER_INT';
+    CT_USER_STR     : CtTypeName := 'CT_USER_STR';
+    CT_DEFINED_CHK  : CtTypeName := 'CT_DEFINED_CHK';
+    CT_LOAD         : CtTypeName := 'CT_LOAD';
+    CT_EMIT         : CtTypeName := 'CT_EMIT';
+    CT_SUBSTITUTE   : CtTypeName := 'CT_SUBSTITUTE';
+  Else
+    CtTypeName := 'CT_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* CtFindByName : rechercher une constante par nom                *)
+(*   Retourne l indice (0..CtCount-1) ou -1 si non trouvee       *)
+(* ------------------------------------------------------------ *)
+
+Function CtFindByName(Const Name : TString) : Integer;
+Var
+  I   : Integer;
+  Upr : TString;
+Begin
+  Inc(CtLookupCount);
+  Upr := UpCaseStr(Name);
+
+  For I := 0 To CtCount - 1 Do
+  Begin
+    If UpCaseStr(CtConstants[I].Name) = Upr Then
+    Begin
+      CtFindByName := I;
+      Exit;
+    End;
+  End;
+
+  CtFindByName := -1;
+End;
+
+(* ------------------------------------------------------------ *)
+(* CtRegisterInt : enregistrer une constante entiere              *)
+(*   Retourne l indice ou -1 si erreur                           *)
+(* ------------------------------------------------------------ *)
+
+Function CtRegisterInt(Const Name : TString; Value : LongInt;
+                       Kind : Integer; IsPre : Boolean;
+                       DeclLine : Integer) : Integer;
+Var
+  Idx    : Integer;
+  SymIdx : Integer;
+Begin
+  If CtCount >= CT_MAX_CONSTS Then
+  Begin
+    CompileError('Trop de constantes (max=' + ItoS(CT_MAX_CONSTS) + ')',
+                 DeclLine);
+    CtRegisterInt := -1;
+    Exit;
+  End;
+
+  (* Verifier si la constante existe deja *)
+  Idx := CtFindByName(Name);
+  If Idx >= 0 Then
+  Begin
+    If Not IsPre Then
+      CompileError('Constante ''' + Name + ''' deja definie', DeclLine);
+    CtRegisterInt := -1;
+    Exit;
+  End;
+
+  Idx := CtCount;
+  CtConstants[Idx].Name        := Name;
+  CtConstants[Idx].AsmLabel    := GenCtLabel;
+  CtConstants[Idx].Kind        := Kind;
+  CtConstants[Idx].IntValue    := Value;
+  CtConstants[Idx].StrValue    := '';
+  CtConstants[Idx].IsPredefined:= IsPre;
+  CtConstants[Idx].IsString    := False;
+  CtConstants[Idx].DeclLine    := DeclLine;
+
+  (* Ajouter a la table des symboles *)
+  SymIdx := SymAddConst(Name, Value, DeclLine);
+  CtConstants[Idx].SymIdx := SymIdx;
+
+  Inc(CtCount);
+  If IsPre Then
+    Inc(CtPredefinedCount)
+  Else
+    Inc(CtUserCount);
+
+  CtLastKind := Kind;
+  CtRegisterInt := Idx;
+End;
+
+(* ------------------------------------------------------------ *)
+(* CtRegisterStr : enregistrer une constante chaine               *)
+(*   Retourne l indice ou -1 si erreur                           *)
+(* ------------------------------------------------------------ *)
+
+Function CtRegisterStr(Const Name : TString; Const Value : TString;
+                       Kind : Integer; IsPre : Boolean;
+                       DeclLine : Integer) : Integer;
+Var
+  Idx    : Integer;
+  SymIdx : Integer;
+Begin
+  If CtCount >= CT_MAX_CONSTS Then
+  Begin
+    CompileError('Trop de constantes (max=' + ItoS(CT_MAX_CONSTS) + ')',
+                 DeclLine);
+    CtRegisterStr := -1;
+    Exit;
+  End;
+
+  (* Verifier si la constante existe deja *)
+  Idx := CtFindByName(Name);
+  If Idx >= 0 Then
+  Begin
+    If Not IsPre Then
+      CompileError('Constante ''' + Name + ''' deja definie', DeclLine);
+    CtRegisterStr := -1;
+    Exit;
+  End;
+
+  Idx := CtCount;
+  CtConstants[Idx].Name        := Name;
+  CtConstants[Idx].AsmLabel    := GenCtLabel;
+  CtConstants[Idx].Kind        := Kind;
+  CtConstants[Idx].IntValue    := 0;
+  CtConstants[Idx].StrValue    := Value;
+  CtConstants[Idx].IsPredefined:= IsPre;
+  CtConstants[Idx].IsString    := True;
+  CtConstants[Idx].DeclLine    := DeclLine;
+
+  (* Ajouter a la table des symboles *)
+  SymIdx := SymAddConstStr(Name, Value, DeclLine);
+  CtConstants[Idx].SymIdx := SymIdx;
+
+  Inc(CtCount);
+  If IsPre Then
+    Inc(CtPredefinedCount)
+  Else
+    Inc(CtUserCount);
+
+  CtLastKind := Kind;
+  CtRegisterStr := Idx;
+End;
+
+(* ------------------------------------------------------------ *)
+(* RegisterPredefinedConsts : enregistrer les constantes PHP      *)
+(* ------------------------------------------------------------ *)
+
+Procedure RegisterPredefinedConsts;
+Begin
+  (* Constantes booleennes *)
+  CtRegisterInt('TRUE', 1, CT_PREDEF_BOOL, True, 0);
+  CtRegisterInt('FALSE', 0, CT_PREDEF_BOOL, True, 0);
+  CtRegisterInt('NULL', 0, CT_PREDEF_NULL, True, 0);
+
+  (* Constantes de version PHP *)
+  CtRegisterStr('PHP_VERSION', '8.0', CT_PREDEF_STR, True, 0);
+  CtRegisterStr('PHP_OS', 'WINNT', CT_PREDEF_STR, True, 0);
+  CtRegisterStr('PHP_EOL', #13#10, CT_PREDEF_STR, True, 0);
+
+  (* Constantes numeriques PHP *)
+  CtRegisterInt('PHP_INT_MAX', 2147483647, CT_PREDEF_INT, True, 0);
+  CtRegisterInt('PHP_INT_MIN', -2147483648, CT_PREDEF_INT, True, 0);
+  CtRegisterInt('PHP_INT_SIZE', 4, CT_PREDEF_INT, True, 0);
+
+  (* Constantes de compatibilite *)
+  CtRegisterInt('E_ALL', $7FFF, CT_PREDEF_INT, True, 0);
+  CtRegisterInt('E_ERROR', 1, CT_PREDEF_INT, True, 0);
+  CtRegisterInt('E_WARNING', 2, CT_PREDEF_INT, True, 0);
+  CtRegisterInt('E_NOTICE', 8, CT_PREDEF_INT, True, 0);
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsConstant : verifier si un identificateur est une constante   *)
+(* ------------------------------------------------------------ *)
+
+Function IsConstant(Const Name : TString) : Boolean;
+Begin
+  IsConstant := (CtFindByName(Name) >= 0);
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetConstValue : obtenir la valeur entiere d une constante      *)
+(*   Retourne la valeur ou 0 si non trouvee                      *)
+(* ------------------------------------------------------------ *)
+
+Function GetConstValue(Const Name : TString) : LongInt;
+Var
+  Idx : Integer;
+Begin
+  Idx := CtFindByName(Name);
+  If Idx >= 0 Then
+    GetConstValue := CtConstants[Idx].IntValue
+  Else
+    GetConstValue := 0;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GetConstStrValue : obtenir la valeur chaine d une constante    *)
+(* ------------------------------------------------------------ *)
+
+Function GetConstStrValue(Const Name : TString) : TString;
+Var
+  Idx : Integer;
+Begin
+  Idx := CtFindByName(Name);
+  If Idx >= 0 Then
+    GetConstStrValue := CtConstants[Idx].StrValue
+  Else
+    GetConstStrValue := '';
+End;
+
+(* ------------------------------------------------------------ *)
+(* IsConstString : verifier si une constante est de type chaine   *)
+(* ------------------------------------------------------------ *)
+
+Function IsConstString(Const Name : TString) : Boolean;
+Var
+  Idx : Integer;
+Begin
+  Idx := CtFindByName(Name);
+  If Idx >= 0 Then
+    IsConstString := CtConstants[Idx].IsString
+  Else
+    IsConstString := False;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitConstLoad : emettre le code pour charger une constante     *)
+(*   Charge la valeur dans EAX                                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitConstLoad(Const Name : TString);
+Var
+  Idx : Integer;
+Begin
+  Idx := CtFindByName(Name);
+  If Idx < 0 Then
+  Begin
+    CompileError('Constante ''' + Name + ''' non definie', LexLineNo);
+    Exit;
+  End;
+
+  If CtConstants[Idx].IsString Then
+  Begin
+    (* Charger l adresse de la chaine *)
+    OutLn('  MOV EAX, OFFSET ' + CtConstants[Idx].AsmLabel +
+          '  ; ' + Name + ' (string)');
+  End
+  Else
+  Begin
+    (* Charger la valeur entiere *)
+    OutLn('  MOV EAX, ' + ItoS(CtConstants[Idx].IntValue) +
+          '  ; ' + Name);
+  End;
+
+  Inc(CtLoadCount);
+  CtLastKind := CT_LOAD;
+End;
+
+(* ------------------------------------------------------------ *)
+(* EmitConstDataSection : emettre les constantes chaines dans     *)
+(*   le segment DATA                                             *)
+(* ------------------------------------------------------------ *)
+
+Procedure EmitConstDataSection;
+Var
+  I : Integer;
+Begin
+  For I := 0 To CtCount - 1 Do
+  Begin
+    If CtConstants[I].IsString Then
+    Begin
+      OutLn(CtConstants[I].AsmLabel + ' DB ''' +
+            CtConstants[I].StrValue + ''', 0  ; ' +
+            CtConstants[I].Name);
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ParseDefineStmt : analyser define('NOM', valeur)               *)
+(*   Appellee quand le token courant est 'define'                *)
+(* ------------------------------------------------------------ *)
+
+Procedure ParseDefineStmt;
+Var
+  ConstName : TString;
+  IntVal    : LongInt;
+  StrVal    : TString;
+  IsStr     : Boolean;
+  DeclLine  : Integer;
+Begin
+  DeclLine := LexLineNo;
+  Inc(CtDefineCount);
+
+  (* Avancer apres 'define' *)
+  LexNextToken;
+
+  (* Attendre '(' *)
+  If CurTokKind <> TK_LPAREN Then
+  Begin
+    CompileError('( attendu apres define', LexLineNo);
+    Exit;
+  End;
+  LexNextToken;
+
+  (* Attendre le nom de la constante (chaine) *)
+  If CurTokKind <> TK_STRING Then
+  Begin
+    CompileError('Nom de constante (chaine) attendu', LexLineNo);
+    Exit;
+  End;
+  ConstName := CurTokStr;
+  LexNextToken;
+
+  (* Attendre ',' *)
+  If CurTokKind <> TK_COMMA Then
+  Begin
+    CompileError(', attendu apres le nom de constante', LexLineNo);
+    Exit;
+  End;
+  LexNextToken;
+
+  (* Lire la valeur *)
+  IsStr := False;
+  IntVal := 0;
+  StrVal := '';
+
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    IntVal := CurTokInt;
+    IsStr := False;
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_STRING Then
+  Begin
+    StrVal := CurTokStr;
+    IsStr := True;
+    LexNextToken;
+  End
+  Else If (CurTokKind = TK_KEYWORD) And (StrLowerCase(CurTokStr) = 'true') Then
+  Begin
+    IntVal := 1;
+    IsStr := False;
+    LexNextToken;
+  End
+  Else If (CurTokKind = TK_KEYWORD) And (StrLowerCase(CurTokStr) = 'false') Then
+  Begin
+    IntVal := 0;
+    IsStr := False;
+    LexNextToken;
+  End
+  Else If (CurTokKind = TK_KEYWORD) And (StrLowerCase(CurTokStr) = 'null') Then
+  Begin
+    IntVal := 0;
+    IsStr := False;
+    LexNextToken;
+  End
+  Else
+  Begin
+    CompileError('Valeur constante (entier ou chaine) attendue', LexLineNo);
+    Exit;
+  End;
+
+  (* Attendre ')' *)
+  If CurTokKind <> TK_RPAREN Then
+  Begin
+    CompileError(') attendu', LexLineNo);
+    Exit;
+  End;
+  LexNextToken;
+
+  (* Attendre ';' *)
+  If CurTokKind <> TK_SEMICOLON Then
+  Begin
+    CompileError('; attendu apres define()', LexLineNo);
+    Exit;
+  End;
+  LexNextToken;
+
+  (* Enregistrer la constante *)
+  If IsStr Then
+    CtRegisterStr(ConstName, StrVal, CT_USER_STR, False, DeclLine)
+  Else
+    CtRegisterInt(ConstName, IntVal, CT_USER_INT, False, DeclLine);
+
+  CtLastKind := CT_DEFINE;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ParseConstDecl : analyser const NOM = valeur;                  *)
+(*   Appellee quand le token courant est 'const'                 *)
+(* ------------------------------------------------------------ *)
+
+Procedure ParseConstDecl;
+Var
+  ConstName : TString;
+  IntVal    : LongInt;
+  StrVal    : TString;
+  IsStr     : Boolean;
+  DeclLine  : Integer;
+Begin
+  DeclLine := LexLineNo;
+  Inc(CtConstDeclCount);
+
+  (* Avancer apres 'const' *)
+  LexNextToken;
+
+  (* Attendre le nom de la constante (identificateur) *)
+  If CurTokKind <> TK_IDENT Then
+  Begin
+    CompileError('Nom de constante attendu apres const', LexLineNo);
+    Exit;
+  End;
+  ConstName := CurTokStr;
+  LexNextToken;
+
+  (* Attendre '=' *)
+  If (CurTokKind <> TK_OP) Or (CurTokStr <> '=') Then
+  Begin
+    CompileError('= attendu apres le nom de constante', LexLineNo);
+    Exit;
+  End;
+  LexNextToken;
+
+  (* Lire la valeur *)
+  IsStr := False;
+  IntVal := 0;
+  StrVal := '';
+
+  If CurTokKind = TK_INTEGER Then
+  Begin
+    IntVal := CurTokInt;
+    IsStr := False;
+    LexNextToken;
+  End
+  Else If CurTokKind = TK_STRING Then
+  Begin
+    StrVal := CurTokStr;
+    IsStr := True;
+    LexNextToken;
+  End
+  Else If (CurTokKind = TK_KEYWORD) And (StrLowerCase(CurTokStr) = 'true') Then
+  Begin
+    IntVal := 1;
+    IsStr := False;
+    LexNextToken;
+  End
+  Else If (CurTokKind = TK_KEYWORD) And (StrLowerCase(CurTokStr) = 'false') Then
+  Begin
+    IntVal := 0;
+    IsStr := False;
+    LexNextToken;
+  End
+  Else If (CurTokKind = TK_KEYWORD) And (StrLowerCase(CurTokStr) = 'null') Then
+  Begin
+    IntVal := 0;
+    IsStr := False;
+    LexNextToken;
+  End
+  Else
+  Begin
+    CompileError('Valeur constante attendue', LexLineNo);
+    Exit;
+  End;
+
+  (* Attendre ';' *)
+  If CurTokKind <> TK_SEMICOLON Then
+  Begin
+    CompileError('; attendu apres declaration const', LexLineNo);
+    Exit;
+  End;
+  LexNextToken;
+
+  (* Enregistrer la constante *)
+  If IsStr Then
+    CtRegisterStr(ConstName, StrVal, CT_USER_STR, False, DeclLine)
+  Else
+    CtRegisterInt(ConstName, IntVal, CT_USER_INT, False, DeclLine);
+
+  CtLastKind := CT_CONST;
+End;
+
+(* ------------------------------------------------------------ *)
+(* SubstituteConstant : substituer une constante dans une expr    *)
+(*   Retourne True si la constante a ete substituee              *)
+(* ------------------------------------------------------------ *)
+
+Function SubstituteConstant(Const Name : TString) : Boolean;
+Var
+  Idx : Integer;
+Begin
+  Idx := CtFindByName(Name);
+  If Idx < 0 Then
+  Begin
+    SubstituteConstant := False;
+    Exit;
+  End;
+
+  EmitConstLoad(Name);
+  Inc(CtSubstCount);
+  CtLastKind := CT_SUBSTITUTE;
+  SubstituteConstant := True;
+End;
+
+(* ------------------------------------------------------------ *)
+(* DumpCtState : afficher l etat du sous-systeme constantes       *)
+(* ------------------------------------------------------------ *)
+
+Procedure DumpCtState;
+Var
+  I : Integer;
+Begin
+  WriteLn('--- Constants State ---');
+  WriteLn('  CtInitialized     : ', CtInitialized);
+  WriteLn('  CtCount           : ', CtCount);
+  WriteLn('  CtDefineCount     : ', CtDefineCount);
+  WriteLn('  CtConstDeclCount  : ', CtConstDeclCount);
+  WriteLn('  CtPredefinedCount : ', CtPredefinedCount);
+  WriteLn('  CtUserCount       : ', CtUserCount);
+  WriteLn('  CtLookupCount     : ', CtLookupCount);
+  WriteLn('  CtLoadCount       : ', CtLoadCount);
+  WriteLn('  CtSubstCount      : ', CtSubstCount);
+  WriteLn('  CtLastKind        : ', CtTypeName(CtLastKind));
+  WriteLn('  CtLabelSeq        : ', CtLabelSeq);
+  WriteLn;
+
+  If CtCount > 0 Then
+  Begin
+    WriteLn('  Registered constants:');
+    For I := 0 To CtCount - 1 Do
+    Begin
+      Write('    ', CtConstants[I].Name, ' = ');
+      If CtConstants[I].IsString Then
+        Write('"', CtConstants[I].StrValue, '"')
+      Else
+        Write(CtConstants[I].IntValue);
+      If CtConstants[I].IsPredefined Then
+        Write(' [predefined]');
+      WriteLn;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* 10 fonctions accesseurs (TODO 18)                             *)
+(* ------------------------------------------------------------ *)
+
+Function IsCtInitialized : Boolean;
+Begin
+  IsCtInitialized := CtInitialized;
+End;
+
+Function IsCtEmpty : Boolean;
+Begin
+  IsCtEmpty := (CtCount = 0);
+End;
+
+Function GetCtCount : Integer;
+Begin
+  GetCtCount := CtCount;
+End;
+
+Function GetCtDefineCount : LongInt;
+Begin
+  GetCtDefineCount := CtDefineCount;
+End;
+
+Function GetCtConstDeclCount : LongInt;
+Begin
+  GetCtConstDeclCount := CtConstDeclCount;
+End;
+
+Function GetCtPredefinedCount : Integer;
+Begin
+  GetCtPredefinedCount := CtPredefinedCount;
+End;
+
+Function GetCtUserCount : Integer;
+Begin
+  GetCtUserCount := CtUserCount;
+End;
+
+Function GetCtLookupCount : LongInt;
+Begin
+  GetCtLookupCount := CtLookupCount;
+End;
+
+Function GetCtLabelSeq : Integer;
+Begin
+  GetCtLabelSeq := CtLabelSeq;
+End;
+
+Function GetCtStatus : TString;
+Begin
+  If Not CtInitialized Then
+    GetCtStatus := 'Not initialized'
+  Else
+    GetCtStatus := ItoS(CtCount) + ' consts (' +
+                   ItoS(CtPredefinedCount) + ' predefined, ' +
+                   ItoS(CtUserCount) + ' user)';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -13271,6 +13990,12 @@ Begin
   { Initialiser le module switch }
   InitSwState;
 
+  { Initialiser le module des constantes (TODO 18) }
+  InitCtState;
+
+  { Enregistrer les constantes PHP predefinies }
+  RegisterPredefinedConsts;
+
   { Analyser les arguments }
   ParseArgs;
 
@@ -13302,8 +14027,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-17 implementes');
-  WriteLn('PHPCW32: Les TODOs 18-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-18 implementes');
+  WriteLn('PHPCW32: Les TODOs 19-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
