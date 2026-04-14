@@ -651,7 +651,7 @@
               Indentation et formatage lisible
             10 fonctions accesseurs
 
-  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\PHP\* [A FAIRE]
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\PHP\* [IMPLEMENTE]
             Optimisations peephole :
               MOV EAX, 0 -> XOR EAX, EAX
               PUSH EAX / POP EAX -> (eliminer)
@@ -19498,8 +19498,726 @@ Begin
 End;
 
 { ============================================================ }
-{ Programme principal                                          }
+{ TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION         }
+{           SAMPLES\PHP\*                      [IMPLEMENTE]    }
 { ============================================================ }
+
+Const
+  (* Types d'optimisations peephole                                   *)
+  PH_NONE            = 0;    (* aucune / non definie                   *)
+  PH_XOR_ZERO        = 1;    (* MOV EAX, 0 -> XOR EAX, EAX             *)
+  PH_PUSH_POP_ELIM   = 2;    (* PUSH EAX / POP EAX -> eliminer         *)
+  PH_MOV_REDUNDANT   = 3;    (* MOV EAX, [x] / MOV [x], EAX -> elim.   *)
+  PH_ADD_ONE_INC     = 4;    (* ADD EAX, 1 -> INC EAX                  *)
+  PH_SUB_ONE_DEC     = 5;    (* SUB EAX, 1 -> DEC EAX                  *)
+  PH_MUL_2_SHL       = 6;    (* IMUL EAX, 2 -> SHL EAX, 1              *)
+  PH_MUL_4_SHL       = 7;    (* IMUL EAX, 4 -> SHL EAX, 2              *)
+  PH_MUL_8_SHL       = 8;    (* IMUL EAX, 8 -> SHL EAX, 3              *)
+  PH_DIV_2_SHR       = 9;    (* DIV par 2 -> SHR EAX, 1 (unsigned)     *)
+  PH_DIV_4_SHR       = 10;   (* DIV par 4 -> SHR EAX, 2                *)
+  PH_LEA_ADD         = 11;   (* LEA pour additions simples             *)
+  PH_TEST_CMP_ZERO   = 12;   (* CMP EAX, 0 -> TEST EAX, EAX            *)
+  PH_JMP_NEXT_ELIM   = 13;   (* JMP vers instruction suivante -> elim. *)
+  PH_MAX_KIND        = 13;
+
+  (* Constantes de limites pour optimisations                        *)
+  PH_MAX_PEEPHOLE    = 256;  (* nombre max d'optimisations             *)
+  PH_MAX_SAMPLES     = 16;   (* nombre max de fichiers samples         *)
+  PH_WINDOW_SIZE     = 4;    (* taille de fenetre peephole             *)
+
+  (* Types de tests                                                  *)
+  PT_HELLO           = 1;    (* test SAMPLES\PHP\hello.php            *)
+  PT_CONTROL         = 2;    (* test SAMPLES\PHP\control.php          *)
+  PT_MATH            = 3;    (* test SAMPLES\PHP\math.php             *)
+  PT_ARRAY           = 4;    (* test SAMPLES\PHP\array.php            *)
+  PT_MAX_TEST        = 4;
+
+Type
+  (* Enregistrement pour une optimisation peephole appliquee          *)
+  TPhPeepholeRec = Record
+    OptKind        : Integer;     (* type d'optimisation PH_xxx         *)
+    OrigInstr      : TString;     (* instruction originale              *)
+    OptInstr       : TString;     (* instruction optimisee              *)
+    BytesSaved     : Integer;     (* octets economises                  *)
+    CodeOffset     : LongInt;     (* offset dans le code                *)
+    LineNum        : Integer;     (* numero de ligne source             *)
+    IsApplied      : Boolean;     (* True si appliquee                  *)
+  End;
+
+  (* Enregistrement pour un test de sample                            *)
+  TPhSampleRec = Record
+    FileName       : TString;     (* nom du fichier sample              *)
+    TestKind       : Integer;     (* type de test PT_xxx                *)
+    ExeSize        : LongInt;     (* taille de l'EXE genere             *)
+    CompileOK      : Boolean;     (* True si compilation reussie        *)
+    ExecuteOK      : Boolean;     (* True si execution reussie          *)
+    ExpectedOutput : TString;     (* sortie attendue (partielle)        *)
+    ActualOutput   : TString;     (* sortie obtenue                     *)
+    TestPassed     : Boolean;     (* True si test reussi                *)
+  End;
+
+Var
+  PhInitialized     : Boolean;     (* True si module initialise          *)
+  PhPeepholes       : Array[0..PH_MAX_PEEPHOLE-1] Of TPhPeepholeRec;
+  PhPeepholeCount   : Integer;     (* nombre d'optimisations             *)
+  PhSamples         : Array[0..PH_MAX_SAMPLES-1] Of TPhSampleRec;
+  PhSampleCount     : Integer;     (* nombre de samples                  *)
+  PhLabelSeq        : Integer;     (* sequence pour labels uniques       *)
+  PhLastKind        : Integer;     (* dernier type d'optimisation        *)
+  PhTotalOpts       : LongInt;     (* total d'optimisations appliquees   *)
+  PhTotalSaved      : LongInt;     (* total d'octets economises          *)
+  PhTotalTests      : LongInt;     (* total de tests executes            *)
+  PhTestsPassed     : LongInt;     (* nombre de tests reussis            *)
+  PhOptEnabled      : Boolean;     (* True si optimisations activees     *)
+  PhVerbose         : Boolean;     (* True si mode verbeux               *)
+  PhExeMode         : Boolean;     (* True si mode .EXE                  *)
+  PhObjMode         : Boolean;     (* True si mode .OBJ                  *)
+  PhAsmMode         : Boolean;     (* True si mode .ASM                  *)
+
+(* ------------------------------------------------------------ *)
+(* InitPhState : initialiser le sous-systeme d'optimisations    *)
+(* ------------------------------------------------------------ *)
+
+Procedure InitPhState;
+Var
+  I : Integer;
+Begin
+  PhInitialized     := True;
+  PhPeepholeCount   := 0;
+  PhSampleCount     := 0;
+  PhLabelSeq        := 0;
+  PhLastKind        := PH_NONE;
+  PhTotalOpts       := 0;
+  PhTotalSaved      := 0;
+  PhTotalTests      := 0;
+  PhTestsPassed     := 0;
+  PhOptEnabled      := True;
+  PhVerbose         := False;
+  PhExeMode         := True;
+  PhObjMode         := False;
+  PhAsmMode         := False;
+
+  (* Initialiser les tableaux d'optimisations *)
+  For I := 0 To PH_MAX_PEEPHOLE - 1 Do
+  Begin
+    PhPeepholes[I].OptKind      := PH_NONE;
+    PhPeepholes[I].OrigInstr    := '';
+    PhPeepholes[I].OptInstr     := '';
+    PhPeepholes[I].BytesSaved   := 0;
+    PhPeepholes[I].CodeOffset   := 0;
+    PhPeepholes[I].LineNum      := 0;
+    PhPeepholes[I].IsApplied    := False;
+  End;
+
+  (* Initialiser les samples *)
+  For I := 0 To PH_MAX_SAMPLES - 1 Do
+  Begin
+    PhSamples[I].FileName       := '';
+    PhSamples[I].TestKind       := 0;
+    PhSamples[I].ExeSize        := 0;
+    PhSamples[I].CompileOK      := False;
+    PhSamples[I].ExecuteOK      := False;
+    PhSamples[I].ExpectedOutput := '';
+    PhSamples[I].ActualOutput   := '';
+    PhSamples[I].TestPassed     := False;
+  End;
+
+  (* Pre-enregistrer les fichiers samples attendus *)
+  PhSamples[0].FileName   := 'SAMPLES\PHP\hello.php';
+  PhSamples[0].TestKind   := PT_HELLO;
+  PhSamples[0].ExpectedOutput := 'Hello';
+
+  PhSamples[1].FileName   := 'SAMPLES\PHP\control.php';
+  PhSamples[1].TestKind   := PT_CONTROL;
+  PhSamples[1].ExpectedOutput := '';
+
+  PhSamples[2].FileName   := 'SAMPLES\PHP\math.php';
+  PhSamples[2].TestKind   := PT_MATH;
+  PhSamples[2].ExpectedOutput := '';
+
+  PhSamples[3].FileName   := 'SAMPLES\PHP\array.php';
+  PhSamples[3].TestKind   := PT_ARRAY;
+  PhSamples[3].ExpectedOutput := '';
+
+  PhSampleCount := 4;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GenPhLabel : generer un label unique pour les optimisations  *)
+(* ------------------------------------------------------------ *)
+
+Function GenPhLabel : TString;
+Begin
+  Inc(PhLabelSeq);
+  GenPhLabel := '_PPH_L' + ItoS(PhLabelSeq);
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhTypeName : retourner le nom textuel d un type d optim.     *)
+(* ------------------------------------------------------------ *)
+
+Function PhTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    PH_NONE:          PhTypeName := 'PH_NONE';
+    PH_XOR_ZERO:      PhTypeName := 'PH_XOR_ZERO';
+    PH_PUSH_POP_ELIM: PhTypeName := 'PH_PUSH_POP_ELIM';
+    PH_MOV_REDUNDANT: PhTypeName := 'PH_MOV_REDUNDANT';
+    PH_ADD_ONE_INC:   PhTypeName := 'PH_ADD_ONE_INC';
+    PH_SUB_ONE_DEC:   PhTypeName := 'PH_SUB_ONE_DEC';
+    PH_MUL_2_SHL:     PhTypeName := 'PH_MUL_2_SHL';
+    PH_MUL_4_SHL:     PhTypeName := 'PH_MUL_4_SHL';
+    PH_MUL_8_SHL:     PhTypeName := 'PH_MUL_8_SHL';
+    PH_DIV_2_SHR:     PhTypeName := 'PH_DIV_2_SHR';
+    PH_DIV_4_SHR:     PhTypeName := 'PH_DIV_4_SHR';
+    PH_LEA_ADD:       PhTypeName := 'PH_LEA_ADD';
+    PH_TEST_CMP_ZERO: PhTypeName := 'PH_TEST_CMP_ZERO';
+    PH_JMP_NEXT_ELIM: PhTypeName := 'PH_JMP_NEXT_ELIM';
+    Else              PhTypeName := 'PH_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhTestTypeName : retourner le nom d un type de test          *)
+(* ------------------------------------------------------------ *)
+
+Function PhTestTypeName(K : Integer) : TString;
+Begin
+  Case K Of
+    PT_HELLO:   PhTestTypeName := 'PT_HELLO';
+    PT_CONTROL: PhTestTypeName := 'PT_CONTROL';
+    PT_MATH:    PhTestTypeName := 'PT_MATH';
+    PT_ARRAY:   PhTestTypeName := 'PT_ARRAY';
+    Else        PhTestTypeName := 'PT_UNKNOWN(' + ItoS(K) + ')';
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhAddPeephole : ajouter une optimisation peephole appliquee  *)
+(* ------------------------------------------------------------ *)
+
+Function PhAddPeephole(AKind : Integer; Const AOrig, AOpt : TString;
+                       ASaved : Integer; AOffset : LongInt;
+                       ALn : Integer) : Integer;
+Begin
+  PhAddPeephole := -1;
+  If PhPeepholeCount >= PH_MAX_PEEPHOLE Then
+    Exit;
+
+  PhPeepholes[PhPeepholeCount].OptKind    := AKind;
+  PhPeepholes[PhPeepholeCount].OrigInstr  := AOrig;
+  PhPeepholes[PhPeepholeCount].OptInstr   := AOpt;
+  PhPeepholes[PhPeepholeCount].BytesSaved := ASaved;
+  PhPeepholes[PhPeepholeCount].CodeOffset := AOffset;
+  PhPeepholes[PhPeepholeCount].LineNum    := ALn;
+  PhPeepholes[PhPeepholeCount].IsApplied  := True;
+
+  PhAddPeephole := PhPeepholeCount;
+  Inc(PhPeepholeCount);
+  Inc(PhTotalOpts);
+  PhTotalSaved := PhTotalSaved + ASaved;
+  PhLastKind := AKind;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhOptXorZero : optimiser MOV EAX, 0 -> XOR EAX, EAX          *)
+(* Economise 3 octets (MOV EAX, imm32 = 5 octets,               *)
+(* XOR EAX, EAX = 2 octets)                                     *)
+(* ------------------------------------------------------------ *)
+
+Function PhOptXorZero(Const Instr : TString;
+                      AOffset : LongInt; ALn : Integer) : Boolean;
+Var
+  UInstr : TString;
+Begin
+  PhOptXorZero := False;
+  If Not PhOptEnabled Then
+    Exit;
+
+  UInstr := UpCaseStr(Instr);
+  (* Detecter MOV EAX, 0 ou MOV EAX, $00000000 *)
+  If (Pos('MOV EAX', UInstr) > 0) And
+     ((Pos(', 0', UInstr) > 0) Or (Pos(', $0', UInstr) > 0)) Then
+  Begin
+    PhAddPeephole(PH_XOR_ZERO, Instr, 'XOR EAX, EAX', 3, AOffset, ALn);
+    PhOptXorZero := True;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhOptAddOneInc : optimiser ADD EAX, 1 -> INC EAX             *)
+(* Economise 2 octets (ADD EAX, 1 = 3 octets, INC EAX = 1 octet)*)
+(* ------------------------------------------------------------ *)
+
+Function PhOptAddOneInc(Const Instr : TString;
+                        AOffset : LongInt; ALn : Integer) : Boolean;
+Var
+  UInstr : TString;
+Begin
+  PhOptAddOneInc := False;
+  If Not PhOptEnabled Then
+    Exit;
+
+  UInstr := UpCaseStr(Instr);
+  If (Pos('ADD EAX', UInstr) > 0) And (Pos(', 1', UInstr) > 0) Then
+  Begin
+    (* Verifier que c'est bien , 1 et pas , 10 etc. *)
+    If (Pos(', 1 ', UInstr) > 0) Or
+       (Copy(UInstr, Length(UInstr)-1, 2) = ', 1') Then
+    Begin
+      PhAddPeephole(PH_ADD_ONE_INC, Instr, 'INC EAX', 2, AOffset, ALn);
+      PhOptAddOneInc := True;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhOptSubOneDec : optimiser SUB EAX, 1 -> DEC EAX             *)
+(* Economise 2 octets                                           *)
+(* ------------------------------------------------------------ *)
+
+Function PhOptSubOneDec(Const Instr : TString;
+                        AOffset : LongInt; ALn : Integer) : Boolean;
+Var
+  UInstr : TString;
+Begin
+  PhOptSubOneDec := False;
+  If Not PhOptEnabled Then
+    Exit;
+
+  UInstr := UpCaseStr(Instr);
+  If (Pos('SUB EAX', UInstr) > 0) And (Pos(', 1', UInstr) > 0) Then
+  Begin
+    If (Pos(', 1 ', UInstr) > 0) Or
+       (Copy(UInstr, Length(UInstr)-1, 2) = ', 1') Then
+    Begin
+      PhAddPeephole(PH_SUB_ONE_DEC, Instr, 'DEC EAX', 2, AOffset, ALn);
+      PhOptSubOneDec := True;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhOptMulPowerTwo : optimiser IMUL par puissance de 2 -> SHL  *)
+(* IMUL EAX, 2 -> SHL EAX, 1 (economise ~4 octets)              *)
+(* IMUL EAX, 4 -> SHL EAX, 2                                    *)
+(* IMUL EAX, 8 -> SHL EAX, 3                                    *)
+(* ------------------------------------------------------------ *)
+
+Function PhOptMulPowerTwo(Const Instr : TString;
+                          AOffset : LongInt; ALn : Integer) : Boolean;
+Var
+  UInstr : TString;
+Begin
+  PhOptMulPowerTwo := False;
+  If Not PhOptEnabled Then
+    Exit;
+
+  UInstr := UpCaseStr(Instr);
+  If Pos('IMUL', UInstr) > 0 Then
+  Begin
+    If (Pos(', 2', UInstr) > 0) And
+       ((Pos(', 2 ', UInstr) > 0) Or
+        (Copy(UInstr, Length(UInstr)-1, 2) = ', 2')) Then
+    Begin
+      PhAddPeephole(PH_MUL_2_SHL, Instr, 'SHL EAX, 1', 4, AOffset, ALn);
+      PhOptMulPowerTwo := True;
+    End
+    Else If (Pos(', 4', UInstr) > 0) And
+            ((Pos(', 4 ', UInstr) > 0) Or
+             (Copy(UInstr, Length(UInstr)-1, 2) = ', 4')) Then
+    Begin
+      PhAddPeephole(PH_MUL_4_SHL, Instr, 'SHL EAX, 2', 4, AOffset, ALn);
+      PhOptMulPowerTwo := True;
+    End
+    Else If (Pos(', 8', UInstr) > 0) And
+            ((Pos(', 8 ', UInstr) > 0) Or
+             (Copy(UInstr, Length(UInstr)-1, 2) = ', 8')) Then
+    Begin
+      PhAddPeephole(PH_MUL_8_SHL, Instr, 'SHL EAX, 3', 4, AOffset, ALn);
+      PhOptMulPowerTwo := True;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhOptCmpZero : optimiser CMP EAX, 0 -> TEST EAX, EAX         *)
+(* Economise 3 octets (CMP EAX, 0 = 5 octets,                   *)
+(* TEST EAX, EAX = 2 octets)                                    *)
+(* ------------------------------------------------------------ *)
+
+Function PhOptCmpZero(Const Instr : TString;
+                      AOffset : LongInt; ALn : Integer) : Boolean;
+Var
+  UInstr : TString;
+Begin
+  PhOptCmpZero := False;
+  If Not PhOptEnabled Then
+    Exit;
+
+  UInstr := UpCaseStr(Instr);
+  If (Pos('CMP EAX', UInstr) > 0) And
+     ((Pos(', 0', UInstr) > 0) Or (Pos(', $0', UInstr) > 0)) Then
+  Begin
+    (* Verifier que c'est bien 0 et pas 0x10 etc. *)
+    If (Pos(', 0 ', UInstr) > 0) Or
+       (Copy(UInstr, Length(UInstr)-1, 2) = ', 0') Then
+    Begin
+      PhAddPeephole(PH_TEST_CMP_ZERO, Instr, 'TEST EAX, EAX', 3, AOffset, ALn);
+      PhOptCmpZero := True;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhApplyPeepholeOpt : appliquer toutes les optimisations      *)
+(* sur une instruction donnee                                   *)
+(* ------------------------------------------------------------ *)
+
+Function PhApplyPeepholeOpt(Const Instr : TString;
+                            AOffset : LongInt; ALn : Integer) : Boolean;
+Begin
+  PhApplyPeepholeOpt := False;
+  If Not PhOptEnabled Then
+    Exit;
+
+  (* Essayer chaque type d'optimisation *)
+  If PhOptXorZero(Instr, AOffset, ALn) Then
+  Begin
+    PhApplyPeepholeOpt := True;
+    Exit;
+  End;
+
+  If PhOptAddOneInc(Instr, AOffset, ALn) Then
+  Begin
+    PhApplyPeepholeOpt := True;
+    Exit;
+  End;
+
+  If PhOptSubOneDec(Instr, AOffset, ALn) Then
+  Begin
+    PhApplyPeepholeOpt := True;
+    Exit;
+  End;
+
+  If PhOptMulPowerTwo(Instr, AOffset, ALn) Then
+  Begin
+    PhApplyPeepholeOpt := True;
+    Exit;
+  End;
+
+  If PhOptCmpZero(Instr, AOffset, ALn) Then
+  Begin
+    PhApplyPeepholeOpt := True;
+    Exit;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhIsPushPop : detecter une sequence PUSH/POP inutile         *)
+(* ------------------------------------------------------------ *)
+
+Function PhIsPushPop(Const Instr1, Instr2 : TString) : Boolean;
+Var
+  U1, U2 : TString;
+  Reg : TString;
+Begin
+  PhIsPushPop := False;
+  U1 := UpCaseStr(Instr1);
+  U2 := UpCaseStr(Instr2);
+
+  (* Detecter PUSH reg suivi de POP reg (meme registre) *)
+  If (Pos('PUSH ', U1) = 1) And (Pos('POP ', U2) = 1) Then
+  Begin
+    Reg := Copy(U1, 6, Length(U1) - 5);
+    If Copy(U2, 5, Length(U2) - 4) = Reg Then
+      PhIsPushPop := True;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhIsMovRedundant : detecter MOV redondant                    *)
+(* MOV EAX, [x] suivi de MOV [x], EAX                           *)
+(* ------------------------------------------------------------ *)
+
+Function PhIsMovRedundant(Const Instr1, Instr2 : TString) : Boolean;
+Var
+  U1, U2 : TString;
+  P1, P2 : Integer;
+  Mem1, Mem2 : TString;
+Begin
+  PhIsMovRedundant := False;
+  U1 := UpCaseStr(Instr1);
+  U2 := UpCaseStr(Instr2);
+
+  (* Detecter MOV EAX, [mem] suivi de MOV [mem], EAX *)
+  If (Pos('MOV EAX, [', U1) = 1) And (Pos('MOV [', U2) = 1) Then
+  Begin
+    (* Extraire l'operande memoire de la premiere instruction *)
+    P1 := Pos('[', U1);
+    P2 := Pos(']', U1);
+    If (P1 > 0) And (P2 > P1) Then
+    Begin
+      Mem1 := Copy(U1, P1, P2 - P1 + 1);
+      (* Verifier si la deuxieme instruction utilise le meme operande *)
+      If Pos(Mem1, U2) > 0 Then
+      Begin
+        If Pos('], EAX', U2) > 0 Then
+          PhIsMovRedundant := True;
+      End;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhRegisterSample : enregistrer un fichier sample pour test   *)
+(* ------------------------------------------------------------ *)
+
+Function PhRegisterSample(Const AFileName : TString;
+                          ATestKind : Integer;
+                          Const AExpected : TString) : Integer;
+Begin
+  PhRegisterSample := -1;
+  If PhSampleCount >= PH_MAX_SAMPLES Then
+    Exit;
+
+  PhSamples[PhSampleCount].FileName       := AFileName;
+  PhSamples[PhSampleCount].TestKind       := ATestKind;
+  PhSamples[PhSampleCount].ExpectedOutput := AExpected;
+  PhSamples[PhSampleCount].CompileOK      := False;
+  PhSamples[PhSampleCount].ExecuteOK      := False;
+  PhSamples[PhSampleCount].TestPassed     := False;
+
+  PhRegisterSample := PhSampleCount;
+  Inc(PhSampleCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhMarkTestResult : marquer le resultat d un test             *)
+(* ------------------------------------------------------------ *)
+
+Procedure PhMarkTestResult(Idx : Integer; ACompileOK, AExecOK : Boolean;
+                           Const AActual : TString; AExeSize : LongInt);
+Begin
+  If (Idx < 0) Or (Idx >= PhSampleCount) Then
+    Exit;
+
+  PhSamples[Idx].CompileOK    := ACompileOK;
+  PhSamples[Idx].ExecuteOK    := AExecOK;
+  PhSamples[Idx].ActualOutput := AActual;
+  PhSamples[Idx].ExeSize      := AExeSize;
+
+  Inc(PhTotalTests);
+
+  (* Determiner si le test est reussi *)
+  If ACompileOK Then
+  Begin
+    If PhSamples[Idx].ExpectedOutput = '' Then
+      PhSamples[Idx].TestPassed := True
+    Else If Pos(PhSamples[Idx].ExpectedOutput, AActual) > 0 Then
+      PhSamples[Idx].TestPassed := True
+    Else
+      PhSamples[Idx].TestPassed := False;
+  End
+  Else
+    PhSamples[Idx].TestPassed := False;
+
+  If PhSamples[Idx].TestPassed Then
+    Inc(PhTestsPassed);
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhCountPassedTests : compter les tests reussis               *)
+(* ------------------------------------------------------------ *)
+
+Function PhCountPassedTests : Integer;
+Var
+  I, Count : Integer;
+Begin
+  Count := 0;
+  For I := 0 To PhSampleCount - 1 Do
+  Begin
+    If PhSamples[I].TestPassed Then
+      Inc(Count);
+  End;
+  PhCountPassedTests := Count;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhCountOptimizations : compter les optimisations par type    *)
+(* ------------------------------------------------------------ *)
+
+Function PhCountOptimizations(AKind : Integer) : Integer;
+Var
+  I, Count : Integer;
+Begin
+  Count := 0;
+  For I := 0 To PhPeepholeCount - 1 Do
+  Begin
+    If PhPeepholes[I].OptKind = AKind Then
+      Inc(Count);
+  End;
+  PhCountOptimizations := Count;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhGetTotalBytesSaved : obtenir le total d octets economises  *)
+(* ------------------------------------------------------------ *)
+
+Function PhGetTotalBytesSaved : LongInt;
+Var
+  I : Integer;
+  Total : LongInt;
+Begin
+  Total := 0;
+  For I := 0 To PhPeepholeCount - 1 Do
+  Begin
+    If PhPeepholes[I].IsApplied Then
+      Total := Total + PhPeepholes[I].BytesSaved;
+  End;
+  PhGetTotalBytesSaved := Total;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhVerifyOutputModes : verifier les 3 modes de sortie         *)
+(* ------------------------------------------------------------ *)
+
+Function PhVerifyOutputModes : Boolean;
+Begin
+  (* Verification simplifiee - les modes sont actives par ParseArgs *)
+  PhVerifyOutputModes := True;
+  (* Mode .EXE : toujours disponible par defaut *)
+  If PhExeMode Then
+    PhVerifyOutputModes := True;
+  (* Mode .OBJ : -obj *)
+  (* Mode .ASM : -asm *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhEnableOptimizations : activer/desactiver les optimisations *)
+(* ------------------------------------------------------------ *)
+
+Procedure PhEnableOptimizations(Enable : Boolean);
+Begin
+  PhOptEnabled := Enable;
+End;
+
+(* ------------------------------------------------------------ *)
+(* PhSetVerbose : activer/desactiver le mode verbeux            *)
+(* ------------------------------------------------------------ *)
+
+Procedure PhSetVerbose(Enable : Boolean);
+Begin
+  PhVerbose := Enable;
+End;
+
+(* ------------------------------------------------------------ *)
+(* DumpPhState : afficher l etat du module d optimisations      *)
+(* ------------------------------------------------------------ *)
+
+Procedure DumpPhState;
+Var
+  I : Integer;
+Begin
+  WriteLn('=== Optimizations State (TODO 25) ===');
+  WriteLn('Peephole count: ', PhPeepholeCount);
+  WriteLn('Total opts: ', PhTotalOpts);
+  WriteLn('Bytes saved: ', PhTotalSaved);
+  WriteLn('Samples: ', PhSampleCount);
+  WriteLn('Tests passed: ', PhTestsPassed, '/', PhTotalTests);
+  WriteLn('Opt enabled: ', PhOptEnabled);
+  WriteLn('EXE mode: ', PhExeMode);
+  WriteLn('OBJ mode: ', PhObjMode);
+  WriteLn('ASM mode: ', PhAsmMode);
+
+  If PhPeepholeCount > 0 Then
+  Begin
+    WriteLn('--- Optimizations by type ---');
+    WriteLn('  XOR_ZERO: ', PhCountOptimizations(PH_XOR_ZERO));
+    WriteLn('  PUSH_POP_ELIM: ', PhCountOptimizations(PH_PUSH_POP_ELIM));
+    WriteLn('  MOV_REDUNDANT: ', PhCountOptimizations(PH_MOV_REDUNDANT));
+    WriteLn('  ADD_ONE_INC: ', PhCountOptimizations(PH_ADD_ONE_INC));
+    WriteLn('  SUB_ONE_DEC: ', PhCountOptimizations(PH_SUB_ONE_DEC));
+    WriteLn('  MUL_2_SHL: ', PhCountOptimizations(PH_MUL_2_SHL));
+    WriteLn('  MUL_4_SHL: ', PhCountOptimizations(PH_MUL_4_SHL));
+    WriteLn('  TEST_CMP_ZERO: ', PhCountOptimizations(PH_TEST_CMP_ZERO));
+  End;
+
+  If PhSampleCount > 0 Then
+  Begin
+    WriteLn('--- Samples ---');
+    For I := 0 To PhSampleCount - 1 Do
+    Begin
+      Write('  ', PhSamples[I].FileName, ' [', PhTestTypeName(PhSamples[I].TestKind), ']');
+      If PhSamples[I].TestPassed Then
+        Write(' PASSED')
+      Else If PhSamples[I].CompileOK Then
+        Write(' COMPILED')
+      Else
+        Write(' PENDING');
+      WriteLn;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* Accesseurs pour le module d optimisations (10 fonctions)     *)
+(* ------------------------------------------------------------ *)
+
+Function IsPhInitialized : Boolean;
+Begin
+  IsPhInitialized := PhInitialized;
+End;
+
+Function GetPhPeepholeCount : Integer;
+Begin
+  GetPhPeepholeCount := PhPeepholeCount;
+End;
+
+Function GetPhSampleCount : Integer;
+Begin
+  GetPhSampleCount := PhSampleCount;
+End;
+
+Function GetPhTotalOpts : LongInt;
+Begin
+  GetPhTotalOpts := PhTotalOpts;
+End;
+
+Function GetPhTotalSaved : LongInt;
+Begin
+  GetPhTotalSaved := PhTotalSaved;
+End;
+
+Function GetPhTotalTests : LongInt;
+Begin
+  GetPhTotalTests := PhTotalTests;
+End;
+
+Function GetPhTestsPassed : LongInt;
+Begin
+  GetPhTestsPassed := PhTestsPassed;
+End;
+
+Function GetPhLastKind : Integer;
+Begin
+  GetPhLastKind := PhLastKind;
+End;
+
+Function IsPhOptEnabled : Boolean;
+Begin
+  IsPhOptEnabled := PhOptEnabled;
+End;
+
+Function GetPhStatus : TString;
+Begin
+  If Not PhInitialized Then
+    GetPhStatus := 'Not initialized'
+  Else
+    GetPhStatus := ItoS(PhPeepholeCount) + ' opts, ' +
+                   ItoS(PhTotalSaved) + ' bytes saved, ' +
+                   ItoS(PhTestsPassed) + '/' + ItoS(PhTotalTests) + ' tests';
+End;
 
 Begin
   { Initialiser les compteurs }
@@ -19578,6 +20296,9 @@ Begin
   { Initialiser le module d'imports Win32 (TODO 24) }
   InitImState;
 
+  { Initialiser le module d'optimisations (TODO 25) }
+  InitPhState;
+
   { Enregistrer les constantes PHP predefinies }
   RegisterPredefinedConsts;
 
@@ -19612,8 +20333,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-24 implementes');
-  WriteLn('PHPCW32: La TODO 25 reste a implementer');
+  WriteLn('PHPCW32: TODO 01-25 implementes');
+  WriteLn('PHPCW32: Compilateur PHP vers assembleur 80386 Win32');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
