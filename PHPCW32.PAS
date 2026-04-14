@@ -18258,6 +18258,7 @@ End;
 
 Procedure ImBuildImportTable(BaseRVA : LongInt); Forward;
 Procedure ImWriteImportSection(RdataRVA : LongInt; SectionSize : LongInt); Forward;
+Procedure BnResolveImpFixups; Forward;
 
 (* ------------------------------------------------------------ *)
 (* BnGeneratePeExe : generer un fichier PE executable           *)
@@ -18348,12 +18349,19 @@ Begin
                BN_PE_SIG_SIZE + BN_COFF_HEADER_SIZE + BN_OPT_HEADER_SIZE +
                NumSections * BN_SECTION_HEADER_SIZE));
 
-  (* Ecrire la section .text (code) *)
+  (* Construire la table d'imports AVANT d'ecrire le code *)
+  (* afin de connaitre les ThunkRVA pour les fixups *)
+  ImBuildImportTable(RdataRVA);
+
+  (* Resoudre les fixups d'imports dans le code *)
+  (* (patcher les adresses IAT dans BnCodeBuffer) *)
+  BnResolveImpFixups;
+
+  (* Ecrire la section .text (code patche) *)
   BnWriteBuffer(BnCodeBuffer, BnCodeSize);
   BnWriteZeros(TextSize - BnCodeSize);
 
   (* Ecrire la section .rdata (imports) *)
-  ImBuildImportTable(RdataRVA);
   ImWriteImportSection(RdataRVA, RdataSize);
 
   (* Ecrire la section .data *)
@@ -18536,9 +18544,8 @@ End;
 (* BnResolveImpFixups : resoudre les fixups d'imports           *)
 (* Doit etre appele apres ImBuildImportTable                    *)
 (* Cette procedure est definie apres le module Im               *)
+(* (Forward declaration deplacee avec les autres a la ligne 18261) *)
 (* ------------------------------------------------------------ *)
-
-Procedure BnResolveImpFixups; Forward;
 
 (* ------------------------------------------------------------ *)
 (* DumpBnState : afficher l etat du module binaire              *)
