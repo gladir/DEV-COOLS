@@ -582,7 +582,7 @@
             Heap allocation : _PHRT_HEAPALLOC(ECX=taille) -> EAX=ptr
             10 fonctions accesseurs
 
-  TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ [A FAIRE]
+  TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ [IMPLEMENTE]
             Ecrivain PE (.EXE) - structure PE32 complete :
               DOS Header (64 octets) avec DOS stub
               Signature PE "PE\0\0"
@@ -17457,6 +17457,1147 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 23 - ECRIVAIN BINAIRE PE ET COFF .OBJ [IMPLEMENTE]      }
+{ ============================================================ }
+
+Const
+  (* Types de formats de sortie binaire                              *)
+  BN_NONE           = 0;    (* aucun / non defini                     *)
+  BN_PE_EXE         = 1;    (* format PE executable Windows           *)
+  BN_COFF_OBJ       = 2;    (* format COFF objet relocalisable        *)
+  BN_ASM_LISTING    = 3;    (* listing assembleur MASM                *)
+  BN_MAX_KIND       = 3;
+
+  (* Constantes PE/COFF format (octets)                              *)
+  BN_DOS_HEADER_SIZE     = 64;    (* taille DOS Header                *)
+  BN_DOS_STUB_SIZE       = 64;    (* taille DOS stub minimal          *)
+  BN_PE_SIG_SIZE         = 4;     (* taille signature PE              *)
+  BN_COFF_HEADER_SIZE    = 20;    (* taille COFF File Header          *)
+  BN_OPT_HEADER_SIZE     = 224;   (* taille Optional Header PE32      *)
+  BN_SECTION_HEADER_SIZE = 40;    (* taille Section Header            *)
+  BN_RELOC_ENTRY_SIZE    = 10;    (* taille entree relocation COFF    *)
+  BN_SYMBOL_SIZE         = 18;    (* taille entree symbole COFF       *)
+
+  (* Constantes magiques PE/COFF                                     *)
+  BN_DOS_MAGIC           = $5A4D;    (* 'MZ' signature DOS            *)
+  BN_PE_SIGNATURE        = $00004550; (* 'PE\0\0' signature PE        *)
+  BN_MACHINE_I386        = $014C;    (* machine Intel 80386           *)
+  BN_PE_MAGIC_32         = $010B;    (* magic PE32                    *)
+
+  (* Constantes d'alignement                                         *)
+  BN_SECTION_ALIGN       = $1000;   (* alignement sections (4096)     *)
+  BN_FILE_ALIGN          = $0200;   (* alignement fichier (512)       *)
+  BN_IMAGE_BASE          = $00400000; (* adresse de base image        *)
+
+  (* Constantes Windows API                                          *)
+  BN_SUBSYS_CUI          = 3;       (* Console User Interface         *)
+  BN_SUBSYS_GUI          = 2;       (* Graphical User Interface       *)
+
+  (* Caracteristiques des sections                                   *)
+  BN_SEC_CODE            = $00000020; (* section contient du code     *)
+  BN_SEC_DATA            = $00000040; (* section contient des donnees *)
+  BN_SEC_BSS             = $00000080; (* section BSS non initialisee  *)
+  BN_SEC_EXEC            = $20000000; (* section executable           *)
+  BN_SEC_READ            = $40000000; (* section lisible              *)
+  BN_SEC_WRITE           = LongInt($80000000); (* section modifiable  *)
+
+  (* Types de relocations COFF i386                                  *)
+  BN_REL_ABS             = $0000;   (* pas de relocation              *)
+  BN_REL_DIR32           = $0006;   (* adresse absolue 32 bits        *)
+  BN_REL_REL32           = $0014;   (* adresse relative 32 bits       *)
+
+  (* Classes de stockage symboles COFF                               *)
+  BN_SYM_EXTERNAL        = 2;       (* symbole externe                *)
+  BN_SYM_STATIC          = 3;       (* symbole statique               *)
+  BN_SYM_LABEL           = 6;       (* label de code                  *)
+  BN_SYM_SECTION         = 104;     (* definition de section          *)
+
+  (* Limites pour le module binaire                                  *)
+  BN_MAX_SECTIONS        = 8;       (* nombre max de sections         *)
+  BN_MAX_RELOCS          = 4096;    (* nombre max de relocations      *)
+  BN_MAX_SYMBOLS         = 2048;    (* nombre max de symboles         *)
+  BN_MAX_STRINGS         = 32767;   (* taille max table des chaines   *)
+  BN_MAX_CODE            = 32768;   (* taille max section code        *)
+  BN_MAX_DATA            = 32768;   (* taille max section donnees     *)
+  BN_MAX_IMPORTS         = 64;      (* nombre max de fonctions import *)
+  BN_MAX_DLLS            = 8;       (* nombre max de DLLs importees   *)
+
+  (* Indices de sections standard                                    *)
+  BN_SEC_TEXT_IDX        = 0;       (* index section .text            *)
+  BN_SEC_RDATA_IDX       = 1;       (* index section .rdata           *)
+  BN_SEC_DATA_IDX        = 2;       (* index section .data            *)
+  BN_SEC_BSS_IDX         = 3;       (* index section .bss             *)
+
+Type
+  (* Enregistrement pour une section binaire                         *)
+  TBnSectionRec = Record
+    Name         : TString;     (* nom de la section (.text, etc.)    *)
+    VirtAddr     : LongInt;     (* adresse virtuelle (RVA)            *)
+    VirtSize     : LongInt;     (* taille virtuelle                   *)
+    RawOffset    : LongInt;     (* offset dans le fichier             *)
+    RawSize      : LongInt;     (* taille dans le fichier             *)
+    Flags        : LongInt;     (* caracteristiques                   *)
+    RelocOffset  : LongInt;     (* offset table relocations           *)
+    RelocCount   : Integer;     (* nombre de relocations              *)
+    SectionIdx   : Integer;     (* index de section (1-based COFF)    *)
+  End;
+
+  (* Enregistrement pour une relocation                              *)
+  TBnRelocRec = Record
+    Offset       : LongInt;     (* offset dans la section             *)
+    SymbolIdx    : Integer;     (* index du symbole (COFF)            *)
+    RelocType    : Integer;     (* type de relocation                 *)
+    SectionIdx   : Integer;     (* section contenant la relocation    *)
+    TargetRVA    : LongInt;     (* RVA cible pour PE                  *)
+    IsAbsolute   : Boolean;     (* True si adresse absolue            *)
+  End;
+
+  (* Enregistrement pour un symbole COFF                             *)
+  TBnSymbolRec = Record
+    Name         : TString;     (* nom du symbole                     *)
+    Value        : LongInt;     (* valeur/offset                      *)
+    SectionNum   : Integer;     (* numero de section (1-based)        *)
+    SymType      : Integer;     (* type de symbole                    *)
+    StorageClass : Integer;     (* classe de stockage                 *)
+    AuxCount     : Integer;     (* nombre de symboles auxiliaires     *)
+    IsExternal   : Boolean;     (* True si symbole externe (import)   *)
+    IsDefined    : Boolean;     (* True si symbole defini             *)
+  End;
+
+  (* Enregistrement pour une fonction importee                       *)
+  TBnImportRec = Record
+    FuncName     : TString;     (* nom de la fonction Win32           *)
+    DllName      : TString;     (* nom de la DLL                      *)
+    Hint         : Integer;     (* hint pour la table d'import        *)
+    IATOffset    : LongInt;     (* offset dans l'IAT                  *)
+    HNTOffset    : LongInt;     (* offset dans Hint/Name Table        *)
+    ThunkRVA     : LongInt;     (* RVA du thunk                       *)
+    IsUsed       : Boolean;     (* True si fonction utilisee          *)
+  End;
+
+  (* Enregistrement pour une DLL importee                            *)
+  TBnDllRec = Record
+    Name         : TString;     (* nom de la DLL                      *)
+    ImportCount  : Integer;     (* nombre de fonctions importees      *)
+    FirstImport  : Integer;     (* index premiere fonction            *)
+    IDTOffset    : LongInt;     (* offset Import Directory            *)
+    ILTOffset    : LongInt;     (* offset Import Lookup Table         *)
+    IATOffset    : LongInt;     (* offset Import Address Table        *)
+    NameOffset   : LongInt;     (* offset nom DLL                     *)
+  End;
+
+Var
+  BnInitialized     : Boolean;     (* True si le module est initialise   *)
+  BnFormat          : Integer;     (* format de sortie actuel            *)
+  BnSections        : Array[0..BN_MAX_SECTIONS-1] Of TBnSectionRec;
+  BnSectionCount    : Integer;     (* nombre de sections definies        *)
+  BnRelocs          : Array[0..BN_MAX_RELOCS-1] Of TBnRelocRec;
+  BnRelocCount      : Integer;     (* nombre de relocations              *)
+  BnSymbols         : Array[0..BN_MAX_SYMBOLS-1] Of TBnSymbolRec;
+  BnSymbolCount     : Integer;     (* nombre de symboles                 *)
+  BnImports         : Array[0..BN_MAX_IMPORTS-1] Of TBnImportRec;
+  BnImportCount     : Integer;     (* nombre de fonctions importees      *)
+  BnDlls            : Array[0..BN_MAX_DLLS-1] Of TBnDllRec;
+  BnDllCount        : Integer;     (* nombre de DLLs                     *)
+  BnStringTable     : Array[0..BN_MAX_STRINGS-1] Of Char;
+  BnStringOffset    : LongInt;     (* offset courant dans table chaines  *)
+  BnCodeBuffer      : Array[0..BN_MAX_CODE-1] Of Byte;
+  BnCodeSize        : LongInt;     (* taille du code genere              *)
+  BnDataBuffer      : Array[0..BN_MAX_DATA-1] Of Byte;
+  BnDataSize        : LongInt;     (* taille des donnees                 *)
+  BnBssSize         : LongInt;     (* taille BSS                         *)
+  BnEntryPoint      : LongInt;     (* RVA du point d'entree              *)
+  BnImageSize       : LongInt;     (* taille totale de l'image           *)
+  BnHeadersSize     : LongInt;     (* taille des headers                 *)
+  BnLabelSeq        : Integer;     (* sequence pour labels uniques       *)
+  BnPeWritten       : LongInt;     (* nombre PE ecrits                   *)
+  BnObjWritten      : LongInt;     (* nombre OBJ ecrits                  *)
+  BnAsmWritten      : LongInt;     (* nombre ASM ecrits                  *)
+  BnFixupCount      : LongInt;     (* nombre de fixups resolus           *)
+  BnOutFile         : File;        (* fichier de sortie binaire          *)
+  BnOutOpen         : Boolean;     (* True si fichier ouvert             *)
+
+(* ------------------------------------------------------------ *)
+(* InitBnState : initialiser le sous-systeme binaire            *)
+(* ------------------------------------------------------------ *)
+
+Procedure InitBnState;
+Var
+  I : LongInt;
+Begin
+  BnInitialized     := True;
+  BnFormat          := BN_NONE;
+  BnSectionCount    := 0;
+  BnRelocCount      := 0;
+  BnSymbolCount     := 0;
+  BnImportCount     := 0;
+  BnDllCount        := 0;
+  BnStringOffset    := 4; (* les 4 premiers octets = taille table *)
+  BnCodeSize        := 0;
+  BnDataSize        := 0;
+  BnBssSize         := 0;
+  BnEntryPoint      := 0;
+  BnImageSize       := 0;
+  BnHeadersSize     := 0;
+  BnLabelSeq        := 0;
+  BnPeWritten       := 0;
+  BnObjWritten      := 0;
+  BnAsmWritten      := 0;
+  BnFixupCount      := 0;
+  BnOutOpen         := False;
+
+  (* Initialiser les tableaux *)
+  For I := 0 To BN_MAX_SECTIONS - 1 Do
+  Begin
+    BnSections[I].Name        := '';
+    BnSections[I].VirtAddr    := 0;
+    BnSections[I].VirtSize    := 0;
+    BnSections[I].RawOffset   := 0;
+    BnSections[I].RawSize     := 0;
+    BnSections[I].Flags       := 0;
+    BnSections[I].RelocOffset := 0;
+    BnSections[I].RelocCount  := 0;
+    BnSections[I].SectionIdx  := 0;
+  End;
+
+  For I := 0 To BN_MAX_RELOCS - 1 Do
+  Begin
+    BnRelocs[I].Offset     := 0;
+    BnRelocs[I].SymbolIdx  := 0;
+    BnRelocs[I].RelocType  := BN_REL_ABS;
+    BnRelocs[I].SectionIdx := 0;
+    BnRelocs[I].TargetRVA  := 0;
+    BnRelocs[I].IsAbsolute := False;
+  End;
+
+  For I := 0 To BN_MAX_SYMBOLS - 1 Do
+  Begin
+    BnSymbols[I].Name         := '';
+    BnSymbols[I].Value        := 0;
+    BnSymbols[I].SectionNum   := 0;
+    BnSymbols[I].SymType      := 0;
+    BnSymbols[I].StorageClass := BN_SYM_STATIC;
+    BnSymbols[I].AuxCount     := 0;
+    BnSymbols[I].IsExternal   := False;
+    BnSymbols[I].IsDefined    := False;
+  End;
+
+  For I := 0 To BN_MAX_IMPORTS - 1 Do
+  Begin
+    BnImports[I].FuncName   := '';
+    BnImports[I].DllName    := '';
+    BnImports[I].Hint       := 0;
+    BnImports[I].IATOffset  := 0;
+    BnImports[I].HNTOffset  := 0;
+    BnImports[I].ThunkRVA   := 0;
+    BnImports[I].IsUsed     := False;
+  End;
+
+  For I := 0 To BN_MAX_DLLS - 1 Do
+  Begin
+    BnDlls[I].Name        := '';
+    BnDlls[I].ImportCount := 0;
+    BnDlls[I].FirstImport := 0;
+    BnDlls[I].IDTOffset   := 0;
+    BnDlls[I].ILTOffset   := 0;
+    BnDlls[I].IATOffset   := 0;
+    BnDlls[I].NameOffset  := 0;
+  End;
+
+  For I := 0 To BN_MAX_STRINGS - 1 Do
+    BnStringTable[I] := #0;
+
+  For I := 0 To BN_MAX_CODE - 1 Do
+    BnCodeBuffer[I] := 0;
+
+  For I := 0 To BN_MAX_DATA - 1 Do
+    BnDataBuffer[I] := 0;
+End;
+
+(* ------------------------------------------------------------ *)
+(* GenBnLabel : generer un label unique pour le binaire         *)
+(* ------------------------------------------------------------ *)
+
+Function GenBnLabel : TString;
+Begin
+  Inc(BnLabelSeq);
+  GenBnLabel := '_PBN_L' + ItoS(BnLabelSeq);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnTypeName : retourner le nom textuel d un type de format    *)
+(* ------------------------------------------------------------ *)
+
+Function BnTypeName(AType : Integer) : TString;
+Begin
+  Case AType Of
+    BN_NONE:        BnTypeName := 'NONE';
+    BN_PE_EXE:      BnTypeName := 'PE_EXE';
+    BN_COFF_OBJ:    BnTypeName := 'COFF_OBJ';
+    BN_ASM_LISTING: BnTypeName := 'ASM_LISTING';
+    Else            BnTypeName := 'UNKNOWN';
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnAlignUp : aligner une valeur vers le haut                  *)
+(* ------------------------------------------------------------ *)
+
+Function BnAlignUp(Value, Align : LongInt) : LongInt;
+Begin
+  If (Value Mod Align) = 0 Then
+    BnAlignUp := Value
+  Else
+    BnAlignUp := Value + (Align - (Value Mod Align));
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnAddSection : ajouter une section au fichier binaire        *)
+(* ------------------------------------------------------------ *)
+
+Function BnAddSection(Const AName : TString; AFlags : LongInt) : Integer;
+Begin
+  If BnSectionCount >= BN_MAX_SECTIONS Then
+  Begin
+    BnAddSection := -1;
+    Exit;
+  End;
+
+  BnSections[BnSectionCount].Name        := AName;
+  BnSections[BnSectionCount].VirtAddr    := 0;
+  BnSections[BnSectionCount].VirtSize    := 0;
+  BnSections[BnSectionCount].RawOffset   := 0;
+  BnSections[BnSectionCount].RawSize     := 0;
+  BnSections[BnSectionCount].Flags       := AFlags;
+  BnSections[BnSectionCount].RelocOffset := 0;
+  BnSections[BnSectionCount].RelocCount  := 0;
+  BnSections[BnSectionCount].SectionIdx  := BnSectionCount + 1;
+
+  BnAddSection := BnSectionCount;
+  Inc(BnSectionCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnAddReloc : ajouter une relocation                          *)
+(* ------------------------------------------------------------ *)
+
+Function BnAddReloc(AOffset : LongInt; ASymIdx, AType, ASec : Integer) : Integer;
+Begin
+  If BnRelocCount >= BN_MAX_RELOCS Then
+  Begin
+    BnAddReloc := -1;
+    Exit;
+  End;
+
+  BnRelocs[BnRelocCount].Offset     := AOffset;
+  BnRelocs[BnRelocCount].SymbolIdx  := ASymIdx;
+  BnRelocs[BnRelocCount].RelocType  := AType;
+  BnRelocs[BnRelocCount].SectionIdx := ASec;
+  BnRelocs[BnRelocCount].TargetRVA  := 0;
+  BnRelocs[BnRelocCount].IsAbsolute := (AType = BN_REL_DIR32);
+
+  BnAddReloc := BnRelocCount;
+  Inc(BnRelocCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnAddSymbol : ajouter un symbole                             *)
+(* ------------------------------------------------------------ *)
+
+Function BnAddSymbol(Const AName : TString; AValue : LongInt;
+                     ASec, AClass : Integer; AExt : Boolean) : Integer;
+Begin
+  If BnSymbolCount >= BN_MAX_SYMBOLS Then
+  Begin
+    BnAddSymbol := -1;
+    Exit;
+  End;
+
+  BnSymbols[BnSymbolCount].Name         := AName;
+  BnSymbols[BnSymbolCount].Value        := AValue;
+  BnSymbols[BnSymbolCount].SectionNum   := ASec;
+  BnSymbols[BnSymbolCount].SymType      := 0;
+  BnSymbols[BnSymbolCount].StorageClass := AClass;
+  BnSymbols[BnSymbolCount].AuxCount     := 0;
+  BnSymbols[BnSymbolCount].IsExternal   := AExt;
+  BnSymbols[BnSymbolCount].IsDefined    := Not AExt;
+
+  BnAddSymbol := BnSymbolCount;
+  Inc(BnSymbolCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnAddImport : ajouter une fonction importee                  *)
+(* ------------------------------------------------------------ *)
+
+Function BnAddImport(Const AFuncName, ADllName : TString) : Integer;
+Begin
+  If BnImportCount >= BN_MAX_IMPORTS Then
+  Begin
+    BnAddImport := -1;
+    Exit;
+  End;
+
+  BnImports[BnImportCount].FuncName   := AFuncName;
+  BnImports[BnImportCount].DllName    := ADllName;
+  BnImports[BnImportCount].Hint       := 0;
+  BnImports[BnImportCount].IATOffset  := 0;
+  BnImports[BnImportCount].HNTOffset  := 0;
+  BnImports[BnImportCount].ThunkRVA   := 0;
+  BnImports[BnImportCount].IsUsed     := True;
+
+  BnAddImport := BnImportCount;
+  Inc(BnImportCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnAddDll : ajouter une DLL importee                          *)
+(* ------------------------------------------------------------ *)
+
+Function BnAddDll(Const AName : TString) : Integer;
+Begin
+  If BnDllCount >= BN_MAX_DLLS Then
+  Begin
+    BnAddDll := -1;
+    Exit;
+  End;
+
+  BnDlls[BnDllCount].Name        := AName;
+  BnDlls[BnDllCount].ImportCount := 0;
+  BnDlls[BnDllCount].FirstImport := BnImportCount;
+  BnDlls[BnDllCount].IDTOffset   := 0;
+  BnDlls[BnDllCount].ILTOffset   := 0;
+  BnDlls[BnDllCount].IATOffset   := 0;
+  BnDlls[BnDllCount].NameOffset  := 0;
+
+  BnAddDll := BnDllCount;
+  Inc(BnDllCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnFindSymbol : trouver un symbole par son nom                *)
+(* ------------------------------------------------------------ *)
+
+Function BnFindSymbol(Const AName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  BnFindSymbol := -1;
+  For I := 0 To BnSymbolCount - 1 Do
+    If BnSymbols[I].Name = AName Then
+    Begin
+      BnFindSymbol := I;
+      Exit;
+    End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnAddString : ajouter une chaine a la table des chaines      *)
+(* ------------------------------------------------------------ *)
+
+Function BnAddString(Const S : TString) : LongInt;
+Var
+  I, Len : Integer;
+  StartOfs : LongInt;
+Begin
+  Len := Length(S);
+  If BnStringOffset + Len + 1 >= BN_MAX_STRINGS Then
+  Begin
+    BnAddString := 0;
+    Exit;
+  End;
+
+  StartOfs := BnStringOffset;
+  For I := 1 To Len Do
+  Begin
+    BnStringTable[BnStringOffset] := S[I];
+    Inc(BnStringOffset);
+  End;
+  BnStringTable[BnStringOffset] := #0;
+  Inc(BnStringOffset);
+
+  BnAddString := StartOfs;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitByte : emettre un octet dans le buffer code            *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitByte(B : Byte);
+Begin
+  If BnCodeSize < BN_MAX_CODE Then
+  Begin
+    BnCodeBuffer[BnCodeSize] := B;
+    Inc(BnCodeSize);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitWord : emettre un mot 16 bits (little-endian)          *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitWord(W : Word);
+Begin
+  BnEmitByte(W And $FF);
+  BnEmitByte((W Shr 8) And $FF);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitDWord : emettre un double-mot 32 bits (little-endian)  *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitDWord(D : LongInt);
+Begin
+  BnEmitByte(D And $FF);
+  BnEmitByte((D Shr 8) And $FF);
+  BnEmitByte((D Shr 16) And $FF);
+  BnEmitByte((D Shr 24) And $FF);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitDataByte : emettre un octet dans le buffer donnees     *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitDataByte(B : Byte);
+Begin
+  If BnDataSize < BN_MAX_DATA Then
+  Begin
+    BnDataBuffer[BnDataSize] := B;
+    Inc(BnDataSize);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitDataDWord : emettre un DWORD dans le buffer donnees    *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitDataDWord(D : LongInt);
+Begin
+  BnEmitDataByte(D And $FF);
+  BnEmitDataByte((D Shr 8) And $FF);
+  BnEmitDataByte((D Shr 16) And $FF);
+  BnEmitDataByte((D Shr 24) And $FF);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitDataString : emettre une chaine dans le buffer donnees *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitDataString(Const S : TString);
+Var
+  I : Integer;
+Begin
+  For I := 1 To Length(S) Do
+    BnEmitDataByte(Ord(S[I]));
+  BnEmitDataByte(0); (* null terminator *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnWriteByte : ecrire un octet dans le fichier                *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnWriteByte(B : Byte);
+Begin
+  If BnOutOpen Then
+    BlockWrite(BnOutFile, B, 1);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnWriteWord : ecrire un mot 16 bits dans le fichier          *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnWriteWord(W : Word);
+Begin
+  BnWriteByte(W And $FF);
+  BnWriteByte((W Shr 8) And $FF);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnWriteDWord : ecrire un DWORD dans le fichier               *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnWriteDWord(D : LongInt);
+Begin
+  BnWriteByte(D And $FF);
+  BnWriteByte((D Shr 8) And $FF);
+  BnWriteByte((D Shr 16) And $FF);
+  BnWriteByte((D Shr 24) And $FF);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnWriteZeros : ecrire des zeros de padding                   *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnWriteZeros(Count : LongInt);
+Var
+  I : LongInt;
+Begin
+  For I := 1 To Count Do
+    BnWriteByte(0);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnWriteString : ecrire une chaine dans le fichier            *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnWriteString(Const S : TString; PadTo : Integer);
+Var
+  I : Integer;
+Begin
+  For I := 1 To Length(S) Do
+    BnWriteByte(Ord(S[I]));
+  (* Padding si necessaire *)
+  For I := Length(S) + 1 To PadTo Do
+    BnWriteByte(0);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnWriteBuffer : ecrire un buffer dans le fichier             *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnWriteBuffer(Var Buf; Size : LongInt);
+Begin
+  If BnOutOpen And (Size > 0) Then
+    BlockWrite(BnOutFile, Buf, Size);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnWriteDosHeader : ecrire l'en-tete DOS avec stub            *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnWriteDosHeader;
+Var
+  PeOffset : LongInt;
+Begin
+  (* L'offset PE se trouve apres DOS Header + DOS Stub *)
+  PeOffset := BN_DOS_HEADER_SIZE + BN_DOS_STUB_SIZE;
+
+  (* DOS Header (64 octets) *)
+  BnWriteWord(BN_DOS_MAGIC);         (* e_magic : 'MZ'                  *)
+  BnWriteWord($0090);                (* e_cblp : derniere page          *)
+  BnWriteWord($0003);                (* e_cp : pages                    *)
+  BnWriteWord($0000);                (* e_crlc : relocations            *)
+  BnWriteWord($0004);                (* e_cparhdr : header paras        *)
+  BnWriteWord($0000);                (* e_minalloc                      *)
+  BnWriteWord($FFFF);                (* e_maxalloc                      *)
+  BnWriteWord($0000);                (* e_ss                            *)
+  BnWriteWord($00B8);                (* e_sp                            *)
+  BnWriteWord($0000);                (* e_csum                          *)
+  BnWriteWord($0000);                (* e_ip                            *)
+  BnWriteWord($0000);                (* e_cs                            *)
+  BnWriteWord($0040);                (* e_lfarlc                        *)
+  BnWriteWord($0000);                (* e_ovno                          *)
+  BnWriteZeros(8);                   (* e_res[4]                        *)
+  BnWriteWord($0000);                (* e_oemid                         *)
+  BnWriteWord($0000);                (* e_oeminfo                       *)
+  BnWriteZeros(20);                  (* e_res2[10]                      *)
+  BnWriteDWord(PeOffset);            (* e_lfanew : offset vers PE       *)
+
+  (* DOS Stub minimal - affiche "This program cannot be run..." *)
+  BnWriteByte($0E);                  (* PUSH CS                         *)
+  BnWriteByte($1F);                  (* POP DS                          *)
+  BnWriteByte($BA); BnWriteWord($0E);(* MOV DX, 0Eh                     *)
+  BnWriteByte($B4); BnWriteByte($09);(* MOV AH, 09h                     *)
+  BnWriteByte($CD); BnWriteByte($21);(* INT 21h                         *)
+  BnWriteByte($B8); BnWriteWord($4C01);(* MOV AX, 4C01h                 *)
+  BnWriteByte($CD); BnWriteByte($21);(* INT 21h                         *)
+  (* Message "This program cannot be run in DOS mode." *)
+  BnWriteString('This program cannot be run in DOS mode.'#13#10'$', 0);
+  (* Padding pour atteindre 64 octets de stub *)
+  BnWriteZeros(BN_DOS_STUB_SIZE - 14 - 41);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnWritePeSignature : ecrire la signature PE                  *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnWritePeSignature;
+Begin
+  BnWriteDWord(BN_PE_SIGNATURE); (* 'PE\0\0' *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnWriteCoffHeader : ecrire l'en-tete COFF                    *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnWriteCoffHeader(NumSections : Integer; HasOptHdr : Boolean;
+                            TimeStamp : LongInt);
+Var
+  OptHdrSize : Word;
+  Chars : Word;
+Begin
+  If HasOptHdr Then
+    OptHdrSize := BN_OPT_HEADER_SIZE
+  Else
+    OptHdrSize := 0;
+
+  (* Caracteristiques : executable, pas de relocations, 32 bits *)
+  Chars := $0103; (* RELOCS_STRIPPED | EXECUTABLE_IMAGE | 32BIT_MACHINE *)
+  If Not HasOptHdr Then
+    Chars := $0100; (* 32BIT_MACHINE seulement pour .OBJ *)
+
+  BnWriteWord(BN_MACHINE_I386);      (* Machine : i386                  *)
+  BnWriteWord(NumSections);          (* NumberOfSections                *)
+  BnWriteDWord(TimeStamp);           (* TimeDateStamp                   *)
+  BnWriteDWord(0);                   (* PointerToSymbolTable (PE: 0)    *)
+  BnWriteDWord(0);                   (* NumberOfSymbols (PE: 0)         *)
+  BnWriteWord(OptHdrSize);           (* SizeOfOptionalHeader            *)
+  BnWriteWord(Chars);                (* Characteristics                 *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnWriteOptionalHeader : ecrire l'Optional Header PE32        *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnWriteOptionalHeader(EntryRVA, CodeSize, DataSize,
+                                TextRVA, DataRVA, ImportRVA,
+                                ImportSize, ImageSize : LongInt);
+Var
+  I : Integer;
+Begin
+  (* Standard fields *)
+  BnWriteWord(BN_PE_MAGIC_32);       (* Magic : PE32                    *)
+  BnWriteByte(1);                    (* MajorLinkerVersion              *)
+  BnWriteByte(0);                    (* MinorLinkerVersion              *)
+  BnWriteDWord(CodeSize);            (* SizeOfCode                      *)
+  BnWriteDWord(DataSize);            (* SizeOfInitializedData           *)
+  BnWriteDWord(0);                   (* SizeOfUninitializedData         *)
+  BnWriteDWord(EntryRVA);            (* AddressOfEntryPoint             *)
+  BnWriteDWord(TextRVA);             (* BaseOfCode                      *)
+  BnWriteDWord(DataRVA);             (* BaseOfData                      *)
+
+  (* Windows-specific fields *)
+  BnWriteDWord(BN_IMAGE_BASE);       (* ImageBase                       *)
+  BnWriteDWord(BN_SECTION_ALIGN);    (* SectionAlignment                *)
+  BnWriteDWord(BN_FILE_ALIGN);       (* FileAlignment                   *)
+  BnWriteWord(6);                    (* MajorOSVersion                  *)
+  BnWriteWord(0);                    (* MinorOSVersion                  *)
+  BnWriteWord(0);                    (* MajorImageVersion               *)
+  BnWriteWord(0);                    (* MinorImageVersion               *)
+  BnWriteWord(6);                    (* MajorSubsystemVersion           *)
+  BnWriteWord(0);                    (* MinorSubsystemVersion           *)
+  BnWriteDWord(0);                   (* Win32VersionValue               *)
+  BnWriteDWord(ImageSize);           (* SizeOfImage                     *)
+  BnWriteDWord(BnHeadersSize);       (* SizeOfHeaders                   *)
+  BnWriteDWord(0);                   (* CheckSum                        *)
+  BnWriteWord(BN_SUBSYS_CUI);        (* Subsystem : Console             *)
+  BnWriteWord(0);                    (* DllCharacteristics              *)
+  BnWriteDWord($100000);             (* SizeOfStackReserve              *)
+  BnWriteDWord($1000);               (* SizeOfStackCommit               *)
+  BnWriteDWord($100000);             (* SizeOfHeapReserve               *)
+  BnWriteDWord($1000);               (* SizeOfHeapCommit                *)
+  BnWriteDWord(0);                   (* LoaderFlags                     *)
+  BnWriteDWord(16);                  (* NumberOfRvaAndSizes             *)
+
+  (* Data Directories (16 entries) *)
+  BnWriteDWord(0); BnWriteDWord(0);  (* Export Table                    *)
+  BnWriteDWord(ImportRVA);           (* Import Table RVA                *)
+  BnWriteDWord(ImportSize);          (* Import Table Size               *)
+  (* Les 14 autres directories sont zeros *)
+  For I := 3 To 16 Do
+  Begin
+    BnWriteDWord(0);
+    BnWriteDWord(0);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnWriteSectionHeader : ecrire un en-tete de section          *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnWriteSectionHeader(Const Name : TString;
+                               VirtSize, VirtAddr : LongInt;
+                               RawSize, RawAddr : LongInt;
+                               Flags : LongInt);
+Begin
+  BnWriteString(Name, 8);            (* Name (8 octets max)             *)
+  BnWriteDWord(VirtSize);            (* VirtualSize                     *)
+  BnWriteDWord(VirtAddr);            (* VirtualAddress (RVA)            *)
+  BnWriteDWord(RawSize);             (* SizeOfRawData                   *)
+  BnWriteDWord(RawAddr);             (* PointerToRawData                *)
+  BnWriteDWord(0);                   (* PointerToRelocations            *)
+  BnWriteDWord(0);                   (* PointerToLinenumbers            *)
+  BnWriteWord(0);                    (* NumberOfRelocations             *)
+  BnWriteWord(0);                    (* NumberOfLinenumbers             *)
+  BnWriteDWord(Flags);               (* Characteristics                 *)
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnGeneratePeExe : generer un fichier PE executable           *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnGeneratePeExe(Const OutFileName : TString);
+Var
+  TextRVA, RdataRVA, DataRVA : LongInt;
+  TextSize, RdataSize, DataSizeAligned : LongInt;
+  TextRaw, RdataRaw, DataRaw : LongInt;
+  NumSections : Integer;
+  ImageSize : LongInt;
+Begin
+  BnFormat := BN_PE_EXE;
+
+  (* Calculer la taille des headers *)
+  (* DOS Header (64) + DOS Stub (64) + PE Sig (4) + COFF Hdr (20) *)
+  (* + Opt Hdr (224) + Section Hdrs (3 * 40) = 496 *)
+  NumSections := 3; (* .text, .rdata, .data *)
+  BnHeadersSize := BN_DOS_HEADER_SIZE + BN_DOS_STUB_SIZE +
+                   BN_PE_SIG_SIZE + BN_COFF_HEADER_SIZE +
+                   BN_OPT_HEADER_SIZE + (NumSections * BN_SECTION_HEADER_SIZE);
+  BnHeadersSize := BnAlignUp(BnHeadersSize, BN_FILE_ALIGN);
+
+  (* Calculer les RVA des sections *)
+  TextRVA := BN_SECTION_ALIGN; (* premiere section apres les headers *)
+  TextSize := BnAlignUp(BnCodeSize, BN_FILE_ALIGN);
+  If TextSize = 0 Then TextSize := BN_FILE_ALIGN;
+
+  RdataRVA := TextRVA + BnAlignUp(BnCodeSize, BN_SECTION_ALIGN);
+  RdataSize := BN_FILE_ALIGN; (* minimal pour imports *)
+
+  DataRVA := RdataRVA + BN_SECTION_ALIGN;
+  DataSizeAligned := BnAlignUp(BnDataSize, BN_FILE_ALIGN);
+  If DataSizeAligned = 0 Then DataSizeAligned := BN_FILE_ALIGN;
+
+  (* Calculer les offsets fichier *)
+  TextRaw := BnHeadersSize;
+  RdataRaw := TextRaw + TextSize;
+  DataRaw := RdataRaw + RdataSize;
+
+  (* Taille totale de l'image *)
+  ImageSize := DataRVA + BnAlignUp(BnDataSize + BnBssSize, BN_SECTION_ALIGN);
+  BnImageSize := ImageSize;
+
+  (* Point d'entree *)
+  BnEntryPoint := TextRVA;
+
+  (* Ouvrir le fichier de sortie *)
+  Assign(BnOutFile, OutFileName);
+  {$I-}
+  Rewrite(BnOutFile, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    CompileError('Cannot create output file: ' + OutFileName, 0);
+    Exit;
+  End;
+  BnOutOpen := True;
+
+  (* Ecrire l'en-tete DOS avec stub *)
+  BnWriteDosHeader;
+
+  (* Ecrire la signature PE *)
+  BnWritePeSignature;
+
+  (* Ecrire l'en-tete COFF *)
+  BnWriteCoffHeader(NumSections, True, 0);
+
+  (* Ecrire l'Optional Header *)
+  BnWriteOptionalHeader(BnEntryPoint, BnCodeSize, BnDataSize,
+                        TextRVA, DataRVA, RdataRVA, RdataSize, ImageSize);
+
+  (* Ecrire les en-tetes de section *)
+  (* .text *)
+  BnWriteSectionHeader('.text', BnCodeSize, TextRVA, TextSize, TextRaw,
+                       BN_SEC_CODE Or BN_SEC_EXEC Or BN_SEC_READ);
+  (* .rdata *)
+  BnWriteSectionHeader('.rdata', RdataSize, RdataRVA, RdataSize, RdataRaw,
+                       BN_SEC_DATA Or BN_SEC_READ);
+  (* .data *)
+  BnWriteSectionHeader('.data', BnDataSize + BnBssSize, DataRVA,
+                       DataSizeAligned, DataRaw,
+                       BN_SEC_DATA Or BN_SEC_READ Or BN_SEC_WRITE);
+
+  (* Padding jusqu'a l'alignement fichier *)
+  BnWriteZeros(BnHeadersSize - (BN_DOS_HEADER_SIZE + BN_DOS_STUB_SIZE +
+               BN_PE_SIG_SIZE + BN_COFF_HEADER_SIZE + BN_OPT_HEADER_SIZE +
+               NumSections * BN_SECTION_HEADER_SIZE));
+
+  (* Ecrire la section .text (code) *)
+  BnWriteBuffer(BnCodeBuffer, BnCodeSize);
+  BnWriteZeros(TextSize - BnCodeSize);
+
+  (* Ecrire la section .rdata (imports - placeholder) *)
+  BnWriteZeros(RdataSize);
+
+  (* Ecrire la section .data *)
+  BnWriteBuffer(BnDataBuffer, BnDataSize);
+  BnWriteZeros(DataSizeAligned - BnDataSize);
+
+  (* Fermer le fichier *)
+  Close(BnOutFile);
+  BnOutOpen := False;
+
+  Inc(BnPeWritten);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnGenerateCoffObj : generer un fichier COFF objet            *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnGenerateCoffObj(Const OutFileName : TString);
+Var
+  NumSections, SymOffset : Integer;
+  TextRaw, DataRaw, RelocRaw : LongInt;
+  TextSize, DataSize : LongInt;
+  HeaderEnd : LongInt;
+  I : Integer;
+Begin
+  BnFormat := BN_COFF_OBJ;
+
+  NumSections := 2; (* .text, .data *)
+  TextSize := BnCodeSize;
+  DataSize := BnDataSize;
+
+  (* Calculer les offsets *)
+  HeaderEnd := BN_COFF_HEADER_SIZE + (NumSections * BN_SECTION_HEADER_SIZE);
+  TextRaw := HeaderEnd;
+  DataRaw := TextRaw + TextSize;
+  RelocRaw := DataRaw + DataSize;
+  SymOffset := RelocRaw + (BnRelocCount * BN_RELOC_ENTRY_SIZE);
+
+  (* Ouvrir le fichier de sortie *)
+  Assign(BnOutFile, OutFileName);
+  {$I-}
+  Rewrite(BnOutFile, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    CompileError('Cannot create output file: ' + OutFileName, 0);
+    Exit;
+  End;
+  BnOutOpen := True;
+
+  (* Ecrire l'en-tete COFF (sans Optional Header) *)
+  BnWriteWord(BN_MACHINE_I386);          (* Machine                     *)
+  BnWriteWord(NumSections);              (* NumberOfSections            *)
+  BnWriteDWord(0);                       (* TimeDateStamp               *)
+  BnWriteDWord(SymOffset);               (* PointerToSymbolTable        *)
+  BnWriteDWord(BnSymbolCount);           (* NumberOfSymbols             *)
+  BnWriteWord(0);                        (* SizeOfOptionalHeader        *)
+  BnWriteWord($0100);                    (* Characteristics (32-bit)    *)
+
+  (* Ecrire les en-tetes de section *)
+  (* .text *)
+  BnWriteString('.text', 8);
+  BnWriteDWord(0);                       (* VirtualSize                 *)
+  BnWriteDWord(0);                       (* VirtualAddress              *)
+  BnWriteDWord(TextSize);                (* SizeOfRawData               *)
+  BnWriteDWord(TextRaw);                 (* PointerToRawData            *)
+  BnWriteDWord(RelocRaw);                (* PointerToRelocations        *)
+  BnWriteDWord(0);                       (* PointerToLinenumbers        *)
+  BnWriteWord(BnRelocCount);             (* NumberOfRelocations         *)
+  BnWriteWord(0);                        (* NumberOfLinenumbers         *)
+  BnWriteDWord(BN_SEC_CODE Or BN_SEC_EXEC Or BN_SEC_READ);
+
+  (* .data *)
+  BnWriteString('.data', 8);
+  BnWriteDWord(0);
+  BnWriteDWord(0);
+  BnWriteDWord(DataSize);
+  BnWriteDWord(DataRaw);
+  BnWriteDWord(0);                       (* pas de relocations *)
+  BnWriteDWord(0);
+  BnWriteWord(0);
+  BnWriteWord(0);
+  BnWriteDWord(BN_SEC_DATA Or BN_SEC_READ Or BN_SEC_WRITE);
+
+  (* Ecrire les sections *)
+  BnWriteBuffer(BnCodeBuffer, TextSize);
+  BnWriteBuffer(BnDataBuffer, DataSize);
+
+  (* Ecrire les relocations *)
+  For I := 0 To BnRelocCount - 1 Do
+  Begin
+    BnWriteDWord(BnRelocs[I].Offset);
+    BnWriteDWord(BnRelocs[I].SymbolIdx);
+    BnWriteWord(BnRelocs[I].RelocType);
+  End;
+
+  (* Ecrire les symboles *)
+  For I := 0 To BnSymbolCount - 1 Do
+  Begin
+    (* Nom : 8 octets ou offset dans table des chaines *)
+    If Length(BnSymbols[I].Name) <= 8 Then
+      BnWriteString(BnSymbols[I].Name, 8)
+    Else
+    Begin
+      BnWriteDWord(0); (* zeros indiquent offset *)
+      BnWriteDWord(BnAddString(BnSymbols[I].Name));
+    End;
+    BnWriteDWord(BnSymbols[I].Value);
+    BnWriteWord(BnSymbols[I].SectionNum);
+    BnWriteWord(BnSymbols[I].SymType);
+    BnWriteByte(BnSymbols[I].StorageClass);
+    BnWriteByte(BnSymbols[I].AuxCount);
+  End;
+
+  (* Ecrire la table des chaines *)
+  BnWriteDWord(BnStringOffset);
+  BnWriteBuffer(BnStringTable[4], BnStringOffset - 4);
+
+  (* Fermer le fichier *)
+  Close(BnOutFile);
+  BnOutOpen := False;
+
+  Inc(BnObjWritten);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnResolveFixups : resoudre toutes les relocations            *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnResolveFixups;
+Var
+  I : Integer;
+  SymIdx : Integer;
+  TargetAddr : LongInt;
+  Offset : LongInt;
+Begin
+  For I := 0 To BnRelocCount - 1 Do
+  Begin
+    SymIdx := BnRelocs[I].SymbolIdx;
+    If (SymIdx >= 0) And (SymIdx < BnSymbolCount) Then
+    Begin
+      TargetAddr := BnSymbols[SymIdx].Value;
+
+      (* Pour PE, ajouter ImageBase *)
+      If BnFormat = BN_PE_EXE Then
+        TargetAddr := TargetAddr + BN_IMAGE_BASE;
+
+      Offset := BnRelocs[I].Offset;
+
+      If BnRelocs[I].IsAbsolute Then
+      Begin
+        (* Adresse absolue 32 bits *)
+        If (Offset + 3 < BN_MAX_CODE) Then
+        Begin
+          BnCodeBuffer[Offset]     := TargetAddr And $FF;
+          BnCodeBuffer[Offset + 1] := (TargetAddr Shr 8) And $FF;
+          BnCodeBuffer[Offset + 2] := (TargetAddr Shr 16) And $FF;
+          BnCodeBuffer[Offset + 3] := (TargetAddr Shr 24) And $FF;
+        End;
+      End
+      Else
+      Begin
+        (* Adresse relative 32 bits *)
+        TargetAddr := TargetAddr - (Offset + 4);
+        If (Offset + 3 < BN_MAX_CODE) Then
+        Begin
+          BnCodeBuffer[Offset]     := TargetAddr And $FF;
+          BnCodeBuffer[Offset + 1] := (TargetAddr Shr 8) And $FF;
+          BnCodeBuffer[Offset + 2] := (TargetAddr Shr 16) And $FF;
+          BnCodeBuffer[Offset + 3] := (TargetAddr Shr 24) And $FF;
+        End;
+      End;
+
+      Inc(BnFixupCount);
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* DumpBnState : afficher l etat du module binaire              *)
+(* ------------------------------------------------------------ *)
+
+Procedure DumpBnState;
+Var
+  I : Integer;
+Begin
+  WriteLn('=== Binary Writer State ===');
+  WriteLn('Format: ', BnTypeName(BnFormat));
+  WriteLn('Sections: ', BnSectionCount);
+  WriteLn('Relocations: ', BnRelocCount);
+  WriteLn('Symbols: ', BnSymbolCount);
+  WriteLn('Imports: ', BnImportCount);
+  WriteLn('DLLs: ', BnDllCount);
+  WriteLn('Code size: ', BnCodeSize, ' bytes');
+  WriteLn('Data size: ', BnDataSize, ' bytes');
+  WriteLn('BSS size: ', BnBssSize, ' bytes');
+  WriteLn('PE written: ', BnPeWritten);
+  WriteLn('OBJ written: ', BnObjWritten);
+  WriteLn('Fixups resolved: ', BnFixupCount);
+
+  If BnSectionCount > 0 Then
+  Begin
+    WriteLn('--- Sections ---');
+    For I := 0 To BnSectionCount - 1 Do
+      WriteLn('  ', BnSections[I].Name, ' RVA=', BnSections[I].VirtAddr,
+              ' Size=', BnSections[I].VirtSize);
+  End;
+
+  If BnSymbolCount > 0 Then
+  Begin
+    WriteLn('--- Symbols (first 10) ---');
+    For I := 0 To BnSymbolCount - 1 Do
+    Begin
+      If I >= 10 Then Break;
+      WriteLn('  ', BnSymbols[I].Name, ' = ', BnSymbols[I].Value,
+              ' sec=', BnSymbols[I].SectionNum);
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* Accesseurs pour le module binaire (10 fonctions)             *)
+(* ------------------------------------------------------------ *)
+
+Function IsBnInitialized : Boolean;
+Begin
+  IsBnInitialized := BnInitialized;
+End;
+
+Function GetBnFormat : Integer;
+Begin
+  GetBnFormat := BnFormat;
+End;
+
+Function GetBnSectionCount : Integer;
+Begin
+  GetBnSectionCount := BnSectionCount;
+End;
+
+Function GetBnRelocCount : Integer;
+Begin
+  GetBnRelocCount := BnRelocCount;
+End;
+
+Function GetBnSymbolCount : Integer;
+Begin
+  GetBnSymbolCount := BnSymbolCount;
+End;
+
+Function GetBnCodeSize : LongInt;
+Begin
+  GetBnCodeSize := BnCodeSize;
+End;
+
+Function GetBnDataSize : LongInt;
+Begin
+  GetBnDataSize := BnDataSize;
+End;
+
+Function GetBnPeWritten : LongInt;
+Begin
+  GetBnPeWritten := BnPeWritten;
+End;
+
+Function GetBnObjWritten : LongInt;
+Begin
+  GetBnObjWritten := BnObjWritten;
+End;
+
+Function GetBnStatus : TString;
+Begin
+  If Not BnInitialized Then
+    GetBnStatus := 'Not initialized'
+  Else
+    GetBnStatus := BnTypeName(BnFormat) + ', ' +
+                   ItoS(BnCodeSize) + ' code, ' +
+                   ItoS(BnDataSize) + ' data, ' +
+                   ItoS(BnPeWritten) + ' PE, ' +
+                   ItoS(BnObjWritten) + ' OBJ';
+End;
+
+{ ============================================================ }
 { Programme principal                                          }
 { ============================================================ }
 
@@ -17531,6 +18672,9 @@ Begin
   { Initialiser le module runtime (TODO 22) }
   InitRtState;
 
+  { Initialiser le module binaire PE/COFF (TODO 23) }
+  InitBnState;
+
   { Enregistrer les constantes PHP predefinies }
   RegisterPredefinedConsts;
 
@@ -17565,8 +18709,8 @@ Begin
     WriteLn('PHPCW32: ', KwHitCount, ' mots-cles reconnus');
   End;
 
-  WriteLn('PHPCW32: TODO 01-22 implementes');
-  WriteLn('PHPCW32: Les TODOs 23-25 restent a implementer');
+  WriteLn('PHPCW32: TODO 01-23 implementes');
+  WriteLn('PHPCW32: Les TODOs 24-25 restent a implementer');
 
   { Afficher les statistiques si mode verbeux }
   ShowStats;
