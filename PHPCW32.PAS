@@ -6726,6 +6726,38 @@ Begin
       ParsePrimaryFull := PX_PAREN;
     End;
     
+    TK_LBRACKET:
+    Begin
+      (* Tableau literal syntaxe courte [1, 2, 3] *)
+      OutLn('    ; Array literal []');
+      Inc(PxIndexCount);
+      LexNextToken;  (* Avancer apres [ *)
+      
+      (* Parser les elements du tableau *)
+      While (CurTokKind <> TK_RBRACKET) And (CurTokKind <> TK_EOF) Do
+      Begin
+        (* Sauter l element *)
+        If CurTokKind = TK_INTEGER Then
+          LexNextToken
+        Else If CurTokKind = TK_STRING Then
+          LexNextToken
+        Else If CurTokKind = TK_VARIABLE Then
+          LexNextToken
+        Else
+          LexNextToken;
+        
+        (* Sauter la virgule si presente *)
+        If CurTokStr = ',' Then
+          LexNextToken;
+      End;
+      
+      (* Consommer ] *)
+      If CurTokKind = TK_RBRACKET Then
+        LexNextToken;
+      
+      ParsePrimaryFull := PX_INDEX;
+    End;
+    
   Else
     (* Token non reconnu comme expression primaire *)
     CompileError('Expected expression, got ' + CurTokStr, LexLineNo);
@@ -7828,6 +7860,8 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure ParseIfCondition;
+Var
+  DummyVal : TExprVal;
 Begin
   (* Verifier la parenthese ouvrante *)
   If CurTokKind <> TK_LPAREN Then
@@ -7839,30 +7873,8 @@ Begin
   
   OutLn('    ; Evaluer condition if');
   
-  (* Parser l expression de condition *)
-  (* Pour l instant, expressions simples *)
-  If CurTokKind = TK_INTEGER Then
-  Begin
-    OutLn('    MOV EAX, ' + ItoS(CurTokInt));
-    LexNextToken;
-  End
-  Else If CurTokKind = TK_VARIABLE Then
-  Begin
-    EmitVarLoad(CurTokStr);
-    LexNextToken;
-  End
-  Else If CurTokKind = TK_KEYWORD Then
-  Begin
-    If StrLowerCase(CurTokStr) = 'true' Then
-      OutLn('    MOV EAX, 1         ; true')
-    Else If StrLowerCase(CurTokStr) = 'false' Then
-      OutLn('    XOR EAX, EAX       ; false')
-    Else If StrLowerCase(CurTokStr) = 'null' Then
-      OutLn('    XOR EAX, EAX       ; null');
-    LexNextToken;
-  End
-  Else
-    ParsePrimaryFull;
+  (* Parser l expression de condition complete (avec comparaisons) *)
+  DummyVal := ParseExpr;
   
   (* Verifier la parenthese fermante *)
   If CurTokKind = TK_RPAREN Then
@@ -8548,6 +8560,8 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure ParseLoopCondition;
+Var
+  DummyVal : TExprVal;
 Begin
   (* Verifier la parenthese ouvrante *)
   If CurTokKind <> TK_LPAREN Then
@@ -8559,29 +8573,8 @@ Begin
   
   OutLn('    ; Evaluer condition boucle');
   
-  (* Parser l expression de condition *)
-  If CurTokKind = TK_INTEGER Then
-  Begin
-    OutLn('    MOV EAX, ' + ItoS(CurTokInt));
-    LexNextToken;
-  End
-  Else If CurTokKind = TK_VARIABLE Then
-  Begin
-    EmitVarLoad(CurTokStr);
-    LexNextToken;
-  End
-  Else If CurTokKind = TK_KEYWORD Then
-  Begin
-    If StrLowerCase(CurTokStr) = 'true' Then
-      OutLn('    MOV EAX, 1         ; true')
-    Else If StrLowerCase(CurTokStr) = 'false' Then
-      OutLn('    XOR EAX, EAX       ; false')
-    Else If StrLowerCase(CurTokStr) = 'null' Then
-      OutLn('    XOR EAX, EAX       ; null');
-    LexNextToken;
-  End
-  Else
-    ParsePrimaryFull;
+  (* Parser l expression de condition complete (avec comparaisons) *)
+  DummyVal := ParseExpr;
   
   (* Verifier la parenthese fermante *)
   If CurTokKind = TK_RPAREN Then
@@ -9465,8 +9458,9 @@ Begin
     End
     Else
     Begin
-      { Nom par defaut si format inattendu }
-      PName := '$_param_' + ItoS(FnCurParamN + 1);
+      { Token inattendu - sauter }
+      LexNextToken;
+      Continue;
     End;
     
     If FnCurParamN < FN_MAX_PARAMS Then
