@@ -18310,8 +18310,9 @@ Begin
   BnWriteBuffer(BnCodeBuffer, BnCodeSize);
   BnWriteZeros(TextSize - BnCodeSize);
 
-  (* Ecrire la section .rdata (imports - placeholder) *)
-  BnWriteZeros(RdataSize);
+  (* Ecrire la section .rdata (imports) *)
+  ImBuildImportTable(RdataRVA);
+  ImWriteImportSection(RdataRVA, RdataSize);
 
   (* Ecrire la section .data *)
   BnWriteBuffer(BnDataBuffer, BnDataSize);
@@ -18859,6 +18860,15 @@ Begin
 
   ImImportCount := 12;
   ImTotalImports := 12;
+
+  (* Marquer les imports essentiels comme utilises *)
+  (* ExitProcess est toujours necessaire pour terminer le programme *)
+  ImImports[0].IsUsed := True;
+  ImDlls[IM_DLL_KERNEL32].IsUsed := True;
+  
+  (* GetStdHandle et WriteFile pour echo/print *)
+  ImImports[1].IsUsed := True;  (* GetStdHandle *)
+  ImImports[2].IsUsed := True;  (* WriteFile *)
 End;
 
 (* ------------------------------------------------------------ *)
@@ -19181,6 +19191,183 @@ Begin
       CurOffset := CurOffset + 4; (* terminateur null *)
     End;
   End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* ImWriteImportSection : ecrire les tables d'import dans rdata *)
+(* ------------------------------------------------------------ *)
+
+Procedure ImWriteImportSection(RdataRVA : LongInt; SectionSize : LongInt);
+Var
+  I, J : Integer;
+  DllsUsed, ImportsUsed : Integer;
+  CurOffset, NameOffset : LongInt;
+  IDTSize, ILTSize, IATSize, HNTSize : LongInt;
+  DllNameOffset : Array[0..IM_MAX_DLLS-1] Of LongInt;
+  FuncHNTOffset : Array[0..IM_MAX_IMPORTS-1] Of LongInt;
+  Written : LongInt;
+Begin
+  (* Compter les DLLs et imports utilises *)
+  DllsUsed := ImCountUsedDlls;
+  ImportsUsed := ImCountUsedImports;
+  
+  If (DllsUsed = 0) Or (ImportsUsed = 0) Then
+  Begin
+    (* Pas d'imports, ecrire des zeros *)
+    BnWriteZeros(SectionSize);
+    Exit;
+  End;
+
+  (* Calculer les tailles *)
+  IDTSize := (DllsUsed + 1) * 20; (* +1 pour terminateur null *)
+  ILTSize := 0;
+  IATSize := 0;
+  For I := 0 To ImDllCount - 1 Do
+  Begin
+    If ImDlls[I].IsUsed Then
+    Begin
+      (* Compter les imports pour cette DLL + terminateur *)
+      For J := 0 To ImImportCount - 1 Do
+        If ImImports[J].IsUsed And (ImImports[J].DllIndex = I) Then
+          Inc(ILTSize, 4);
+      Inc(ILTSize, 4); (* terminateur null *)
+    End;
+  End;
+  IATSize := ILTSize; (* IAT a la meme taille que ILT *)
+  
+  (* Calculer HNT size + noms de DLLs *)
+  HNTSize := 0;
+  For I := 0 To ImImportCount - 1 Do
+  Begin
+    If ImImports[I].IsUsed Then
+    Begin
+      FuncHNTOffset[I] := HNTSize;
+      HNTSize := HNTSize + 2 + Length(ImImports[I].FuncName) + 1;
+      If (HNTSize Mod 2) <> 0 Then Inc(HNTSize); (* padding *)
+    End;
+  End;
+  
+  (* Ajouter les noms de DLLs *)
+  NameOffset := HNTSize;
+  For I := 0 To ImDllCount - 1 Do
+  Begin
+    If ImDlls[I].IsUsed Then
+    Begin
+      DllNameOffset[I] := NameOffset;
+      NameOffset := NameOffset + Length(ImDlls[I].Name) + 1;
+    End;
+  End;
+  
+  Written := 0;
+  
+  (* === Ecrire IDT (Import Directory Table) === *)
+  (* Format: 20 octets par DLL *)
+  (* - ILT RVA (4), TimeDateStamp (4), ForwarderChain (4), Name RVA (4), IAT RVA (4) *)
+  CurOffset := IDTSize + ILTSize; (* ILT apres IDT, IAT apres ILT *)
+  For I := 0 To ImDllCount - 1 Do
+  Begin
+    If ImDlls[I].IsUsed Then
+    Begin
+      (* ILT RVA *)
+      BnWriteDWord(RdataRVA + IDTSize + ImDlls[I].IATOffset);
+      (* TimeDateStamp *)
+      BnWriteDWord(0);
+      (* ForwarderChain *)
+      BnWriteDWord(0);
+      (* Name RVA *)
+      BnWriteDWord(RdataRVA + IDTSize + ILTSize + IATSize + DllNameOffset[I]);
+      (* IAT RVA *)
+      BnWriteDWord(RdataRVA + IDTSize + ILTSize + ImDlls[I].IATOffset);
+      Written := Written + 20;
+    End;
+  End;
+  (* Terminateur IDT (20 zeros) *)
+  BnWriteZeros(20);
+  Written := Written + 20;
+  
+  (* === Ecrire ILT (Import Lookup Table) === *)
+  For I := 0 To ImDllCount - 1 Do
+  Begin
+    If ImDlls[I].IsUsed Then
+    Begin
+      For J := 0 To ImImportCount - 1 Do
+      Begin
+        If ImImports[J].IsUsed And (ImImports[J].DllIndex = I) Then
+        Begin
+          (* RVA vers Hint/Name Table entry *)
+          BnWriteDWord(RdataRVA + IDTSize + ILTSize + IATSize + FuncHNTOffset[J]);
+          Written := Written + 4;
+        End;
+      End;
+      (* Terminateur null *)
+      BnWriteDWord(0);
+      Written := Written + 4;
+    End;
+  End;
+  
+  (* === Ecrire IAT (Import Address Table) - identique a ILT === *)
+  For I := 0 To ImDllCount - 1 Do
+  Begin
+    If ImDlls[I].IsUsed Then
+    Begin
+      For J := 0 To ImImportCount - 1 Do
+      Begin
+        If ImImports[J].IsUsed And (ImImports[J].DllIndex = I) Then
+        Begin
+          (* RVA vers Hint/Name Table entry *)
+          BnWriteDWord(RdataRVA + IDTSize + ILTSize + IATSize + FuncHNTOffset[J]);
+          Written := Written + 4;
+        End;
+      End;
+      (* Terminateur null *)
+      BnWriteDWord(0);
+      Written := Written + 4;
+    End;
+  End;
+  
+  (* === Ecrire HNT (Hint/Name Table) === *)
+  For I := 0 To ImImportCount - 1 Do
+  Begin
+    If ImImports[I].IsUsed Then
+    Begin
+      (* Hint (2 octets) *)
+      BnWriteWord(0);
+      Written := Written + 2;
+      (* Nom de la fonction *)
+      For J := 1 To Length(ImImports[I].FuncName) Do
+      Begin
+        BnWriteByte(Ord(ImImports[I].FuncName[J]));
+        Inc(Written);
+      End;
+      BnWriteByte(0); (* null terminator *)
+      Inc(Written);
+      (* Padding pour alignement sur 2 octets *)
+      If ((2 + Length(ImImports[I].FuncName) + 1) Mod 2) <> 0 Then
+      Begin
+        BnWriteByte(0);
+        Inc(Written);
+      End;
+    End;
+  End;
+  
+  (* === Ecrire noms des DLLs === *)
+  For I := 0 To ImDllCount - 1 Do
+  Begin
+    If ImDlls[I].IsUsed Then
+    Begin
+      For J := 1 To Length(ImDlls[I].Name) Do
+      Begin
+        BnWriteByte(Ord(ImDlls[I].Name[J]));
+        Inc(Written);
+      End;
+      BnWriteByte(0); (* null terminator *)
+      Inc(Written);
+    End;
+  End;
+  
+  (* Padding jusqu'a SectionSize *)
+  If Written < SectionSize Then
+    BnWriteZeros(SectionSize - Written);
 End;
 
 (* ------------------------------------------------------------ *)
