@@ -20224,6 +20224,8 @@ End;
 (* ============================================================ *)
 
 Procedure ParseStatement; Forward;
+Procedure EmitMainPrologue; Forward;
+Procedure EmitMainEpilogue; Forward;
 
 Procedure ParseBlock;
 Begin
@@ -20264,7 +20266,7 @@ Begin
   (* Mot-cle PHP *)
   If CurTokKind = TK_KEYWORD Then
   Begin
-    KwCode := GetKeywordCode(CurTokStr);
+    KwCode := LookupKeyword(CurTokStr);
     Case KwCode Of
       KW_ECHO:
         Begin
