@@ -6636,7 +6636,7 @@ Begin
         OutLn('    ; Charger variable ' + TokStr);
         (* Rechercher dans la table des symboles *)
         SymIdx := SymFind(TokStr);
-        If SymIdx >= 0 Then
+        If SymIdx > 0 Then
         Begin
           If SymTab[SymIdx].IsGlobal Then
             OutLn('    MOV EAX, DWORD [' + SymTab[SymIdx].AsmName + ']')
@@ -6676,7 +6676,7 @@ Begin
         (* Constante *)
         Inc(PxConstCount);
         SymIdx := SymFind(TokStr);
-        If SymIdx >= 0 Then
+        If SymIdx > 0 Then
         Begin
           If SymTab[SymIdx].Kind = SK_CONST Then
             OutLn('    MOV EAX, ' + SymTab[SymIdx].AsmName)
@@ -6995,7 +6995,7 @@ Begin
   AsmName  := '';
   
   SymIdx := SymFind(VarName);
-  If SymIdx >= 0 Then
+  If SymIdx > 0 Then
   Begin
     AsmName  := SymTab[SymIdx].AsmName;
     Offset   := SymTab[SymIdx].Offset;
@@ -19246,7 +19246,8 @@ End;
 
 Procedure BnWriteOptionalHeader(EntryRVA, CodeSize, DataSize,
                                 TextRVA, DataRVA, ImportRVA,
-                                ImportSize, ImageSize : LongInt);
+                                ImportSize, IATRVA, IATSize,
+                                ImageSize : LongInt);
 Var
   I : Integer;
 Begin
@@ -19284,16 +19285,23 @@ Begin
   BnWriteDWord(0);                   (* LoaderFlags                     *)
   BnWriteDWord(16);                  (* NumberOfRvaAndSizes             *)
 
-  (* Data Directories (16 entries) *)
-  BnWriteDWord(0); BnWriteDWord(0);  (* Export Table                    *)
-  BnWriteDWord(ImportRVA);           (* Import Table RVA                *)
-  BnWriteDWord(ImportSize);          (* Import Table Size               *)
-  (* Les 14 autres directories sont zeros *)
-  For I := 3 To 16 Do
-  Begin
-    BnWriteDWord(0);
-    BnWriteDWord(0);
-  End;
+  (* Data Directories (16 entries, indices 0..15) *)
+  BnWriteDWord(0); BnWriteDWord(0);              (*  0 : Export Table      *)
+  BnWriteDWord(ImportRVA); BnWriteDWord(ImportSize); (*  1 : Import Table  *)
+  BnWriteDWord(0); BnWriteDWord(0);              (*  2 : Resource Table    *)
+  BnWriteDWord(0); BnWriteDWord(0);              (*  3 : Exception Table   *)
+  BnWriteDWord(0); BnWriteDWord(0);              (*  4 : Certificate Table *)
+  BnWriteDWord(0); BnWriteDWord(0);              (*  5 : Base Relocation   *)
+  BnWriteDWord(0); BnWriteDWord(0);              (*  6 : Debug             *)
+  BnWriteDWord(0); BnWriteDWord(0);              (*  7 : Architecture      *)
+  BnWriteDWord(0); BnWriteDWord(0);              (*  8 : Global Ptr        *)
+  BnWriteDWord(0); BnWriteDWord(0);              (*  9 : TLS Table         *)
+  BnWriteDWord(0); BnWriteDWord(0);              (* 10 : Load Config       *)
+  BnWriteDWord(0); BnWriteDWord(0);              (* 11 : Bound Import      *)
+  BnWriteDWord(IATRVA); BnWriteDWord(IATSize);   (* 12 : IAT               *)
+  BnWriteDWord(0); BnWriteDWord(0);              (* 13 : Delay Import      *)
+  BnWriteDWord(0); BnWriteDWord(0);              (* 14 : CLR Runtime       *)
+  BnWriteDWord(0); BnWriteDWord(0);              (* 15 : Reserved          *)
 End;
 
 (* ------------------------------------------------------------ *)
@@ -19324,6 +19332,8 @@ End;
 Procedure ImBuildImportTable(BaseRVA : LongInt); Forward;
 Procedure ImWriteImportSection(RdataRVA : LongInt; SectionSize : LongInt); Forward;
 Procedure BnResolveImpFixups; Forward;
+Function GetImIATRVA : LongInt; Forward;
+Function GetImIATTotalSize : LongInt; Forward;
 
 (* ------------------------------------------------------------ *)
 (* BnGeneratePeExe : generer un fichier PE executable           *)
@@ -19367,10 +19377,16 @@ Begin
 
   (* Taille totale de l'image *)
   ImageSize := DataRVA + BnAlignUp(BnDataSize + BnBssSize, BN_SECTION_ALIGN);
+  If ImageSize <= DataRVA Then
+    ImageSize := DataRVA + BN_SECTION_ALIGN;
   BnImageSize := ImageSize;
 
   (* Point d'entree *)
   BnEntryPoint := TextRVA;
+
+  (* Construire la table d'imports AVANT d'ecrire les en-tetes *)
+  (* afin de connaitre les ThunkRVA pour les fixups et l'IAT RVA *)
+  ImBuildImportTable(RdataRVA);
 
   (* Ouvrir le fichier de sortie *)
   Assign(BnOutFile, OutFileName);
@@ -19393,9 +19409,11 @@ Begin
   (* Ecrire l'en-tete COFF *)
   BnWriteCoffHeader(NumSections, True, 0);
 
-  (* Ecrire l'Optional Header *)
+  (* Ecrire l'Optional Header avec IAT Data Directory *)
   BnWriteOptionalHeader(BnEntryPoint, BnCodeSize, BnDataSize,
-                        TextRVA, DataRVA, RdataRVA, RdataSize, ImageSize);
+                        TextRVA, DataRVA, RdataRVA, RdataSize,
+                        GetImIATRVA, GetImIATTotalSize,
+                        ImageSize);
 
   (* Ecrire les en-tetes de section *)
   (* .text *)
@@ -19413,10 +19431,6 @@ Begin
   BnWriteZeros(BnHeadersSize - (BN_DOS_HEADER_SIZE + BN_DOS_STUB_SIZE +
                BN_PE_SIG_SIZE + BN_COFF_HEADER_SIZE + BN_OPT_HEADER_SIZE +
                NumSections * BN_SECTION_HEADER_SIZE));
-
-  (* Construire la table d'imports AVANT d'ecrire le code *)
-  (* afin de connaitre les ThunkRVA pour les fixups *)
-  ImBuildImportTable(RdataRVA);
 
   (* Resoudre les fixups d'imports dans le code *)
   (* (patcher les adresses IAT dans BnCodeBuffer) *)
@@ -19812,6 +19826,7 @@ Var
   ImTotalUsed       : LongInt;     (* total d'imports utilises           *)
   ImTotalAsmLines   : LongInt;     (* total de lignes ASM generees       *)
   ImIATRVA          : LongInt;     (* RVA de l'IAT                       *)
+  ImIATTotalSize    : LongInt;     (* taille totale de l'IAT en octets   *)
   ImIDTRVA          : LongInt;     (* RVA de l'IDT                       *)
   ImHNTRVA          : LongInt;     (* RVA de Hint/Name Table             *)
   ImAsmFile         : Text;        (* fichier ASM de sortie              *)
@@ -19835,6 +19850,7 @@ Begin
   ImTotalUsed       := 0;
   ImTotalAsmLines   := 0;
   ImIATRVA          := 0;
+  ImIATTotalSize    := 0;
   ImIDTRVA          := 0;
   ImHNTRVA          := 0;
   ImAsmOpen         := False;
@@ -20331,9 +20347,11 @@ Begin
   End;
 
   (* Assigner les RVAs *)
+  (* Layout dans ImWriteImportSection : IDT | ILT | IAT | HNT | DLL names *)
   ImIDTRVA := BaseRVA;
-  ImIATRVA := ImIDTRVA + IDTSize;
-  ImHNTRVA := ImIATRVA + IATSize + ILTSize;
+  ImIATRVA := ImIDTRVA + IDTSize + ILTSize;
+  ImIATTotalSize := IATSize;
+  ImHNTRVA := ImIATRVA + IATSize;
 
   (* Assigner les offsets pour chaque DLL *)
   CurOffset := 0;
@@ -20840,6 +20858,11 @@ End;
 Function GetImIATRVA : LongInt;
 Begin
   GetImIATRVA := ImIATRVA;
+End;
+
+Function GetImIATTotalSize : LongInt;
+Begin
+  GetImIATTotalSize := ImIATTotalSize;
 End;
 
 Function GetImStatus : TString;
