@@ -19802,6 +19802,814 @@ Begin
 End;
 
 { ============================================================ }
+{ Fonctions BnEmit* : API d'emission binaire x86 complete        }
+{ ============================================================ }
+
+Const
+  { Codes des registres 32 bits (selon convention Intel) }
+  BN_REG_EAX = 0;
+  BN_REG_ECX = 1;
+  BN_REG_EDX = 2;
+  BN_REG_EBX = 3;
+  BN_REG_ESP = 4;
+  BN_REG_EBP = 5;
+  BN_REG_ESI = 6;
+  BN_REG_EDI = 7;
+
+  { Types de relocation }
+  BN_RELOC_NONE  = 0;
+  BN_RELOC_ABS32 = 1;  { Adresse absolue 32 bits }
+  BN_RELOC_REL32 = 2;  { Adresse relative 32 bits }
+
+  { Imports kernel32.dll }
+  BN_IMP_EXITPROCESS   = 0;
+  BN_IMP_GETSTDHANDLE  = 1;
+  BN_IMP_WRITEFILE     = 2;
+  BN_IMP_READFILE      = 3;
+  BN_IMP_GETPROCESSHEAP = 4;
+  BN_IMP_HEAPALLOC     = 5;
+  BN_IMP_HEAPFREE      = 6;
+  BN_IMP_GETCOMMANDLINEA = 7;
+  BN_IMP_GETLASTERROR  = 8;
+  BN_IMP_MAX           = 9;
+
+  { Constantes de condition pour Jcc }
+  BN_CC_O  = $00;  { Overflow }
+  BN_CC_NO = $01;  { No overflow }
+  BN_CC_B  = $02;  { Below (CF=1) }
+  BN_CC_AE = $03;  { Above or equal (CF=0) }
+  BN_CC_E  = $04;  { Equal (ZF=1) }
+  BN_CC_NE = $05;  { Not equal (ZF=0) }
+  BN_CC_BE = $06;  { Below or equal }
+  BN_CC_A  = $07;  { Above }
+  BN_CC_S  = $08;  { Sign (negative) }
+  BN_CC_NS = $09;  { No sign }
+  BN_CC_P  = $0A;  { Parity even }
+  BN_CC_NP = $0B;  { Parity odd }
+  BN_CC_L  = $0C;  { Less than (signed) }
+  BN_CC_GE = $0D;  { Greater or equal (signed) }
+  BN_CC_LE = $0E;  { Less or equal (signed) }
+  BN_CC_G  = $0F;  { Greater than (signed) }
+
+Var
+  BnImportRVAs : Array[0..BN_IMP_MAX-1] Of LongInt;  { RVAs des imports }
+  BnInitialized : Boolean;  { True si InitBnState appele }
+
+{ ------------------------------------------------------------ }
+{ InitBnState : initialiser l'etat de l'emetteur binaire         }
+{ ------------------------------------------------------------ }
+
+Procedure InitBnState;
+Var I : Integer;
+Begin
+  BnInitialized := True;
+  For I := 0 To BN_IMP_MAX-1 Do
+    BnImportRVAs[I] := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ BnSetImportRVA : definir le RVA d'un import                    }
+{ ------------------------------------------------------------ }
+
+Procedure BnSetImportRVA(ImpIdx : Integer; RVA : LongInt);
+Begin
+  If (ImpIdx >= 0) And (ImpIdx < BN_IMP_MAX) Then
+    BnImportRVAs[ImpIdx] := RVA;
+End;
+
+{ ------------------------------------------------------------ }
+{ BnGetImportRVA : obtenir le RVA d'un import                    }
+{ ------------------------------------------------------------ }
+
+Function BnGetImportRVA(ImpIdx : Integer) : LongInt;
+Begin
+  If (ImpIdx >= 0) And (ImpIdx < BN_IMP_MAX) Then
+    BnGetImportRVA := BnImportRVAs[ImpIdx]
+  Else
+    BnGetImportRVA := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitPush : PUSH (registre, immediat, ou memoire)             }
+{ ------------------------------------------------------------ }
+
+{ PUSH reg32 : opcode 50+rd }
+Procedure BnEmitPushReg(Reg : Integer);
+Begin
+  EmitTextByte($50 + (Reg And 7));
+End;
+
+{ PUSH imm32 : opcode 68 imm32 }
+Procedure BnEmitPushImm(Imm : LongInt);
+Begin
+  EmitTextByte($68);
+  EmitTextDWord(Imm);
+End;
+
+{ PUSH [addr32] : opcode FF 35 addr32 }
+Procedure BnEmitPushMem(Addr : LongInt);
+Begin
+  EmitTextByte($FF);
+  EmitTextByte($35);
+  EmitTextDWord(Addr);
+End;
+
+{ PUSH [EBP+disp8] : opcode FF 75 disp8 }
+Procedure BnEmitPushEbpDisp8(Disp : Integer);
+Begin
+  EmitTextByte($FF);
+  EmitTextByte($75);
+  EmitTextByte(Disp And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitPop : POP registre                                       }
+{ ------------------------------------------------------------ }
+
+{ POP reg32 : opcode 58+rd }
+Procedure BnEmitPopReg(Reg : Integer);
+Begin
+  EmitTextByte($58 + (Reg And 7));
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitCall : CALL (relatif, absolu, ou import)                 }
+{ ------------------------------------------------------------ }
+
+{ CALL rel32 : opcode E8 rel32 }
+Procedure BnEmitCallRel(Rel : LongInt);
+Begin
+  EmitTextByte($E8);
+  EmitTextDWord(Rel);
+End;
+
+{ CALL [addr32] : opcode FF 15 addr32 (pour imports) }
+Procedure BnEmitCallAbs(Addr : LongInt);
+Begin
+  EmitTextByte($FF);
+  EmitTextByte($15);
+  EmitTextDWord(Addr);
+End;
+
+{ CALL d'un import Windows via son index }
+Procedure BnEmitCallImport(ImpIdx : Integer; ImageBase : LongInt);
+Begin
+  If (ImpIdx >= 0) And (ImpIdx < BN_IMP_MAX) Then
+    BnEmitCallAbs(ImageBase + BnImportRVAs[ImpIdx]);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitMov : MOV (registre-registre, imm, mem)                  }
+{ ------------------------------------------------------------ }
+
+{ MOV reg32, imm32 : opcode B8+rd imm32 }
+Procedure BnEmitMovRegImm(Reg : Integer; Imm : LongInt);
+Begin
+  EmitTextByte($B8 + (Reg And 7));
+  EmitTextDWord(Imm);
+End;
+
+{ MOV reg32, reg32 : opcode 8B C0+rd*8+rs (ou 89 C0+rs*8+rd) }
+Procedure BnEmitMovRegReg(Dst, Src : Integer);
+Begin
+  EmitTextByte($8B);
+  EmitTextByte($C0 + ((Dst And 7) Shl 3) + (Src And 7));
+End;
+
+{ MOV reg32, [addr32] : opcode 8B /r disp32 }
+Procedure BnEmitMovRegMem(Reg : Integer; Addr : LongInt);
+Begin
+  EmitTextByte($8B);
+  EmitTextByte($05 + ((Reg And 7) Shl 3));
+  EmitTextDWord(Addr);
+End;
+
+{ MOV [addr32], reg32 : opcode 89 /r disp32 }
+Procedure BnEmitMovMemReg(Addr : LongInt; Reg : Integer);
+Begin
+  EmitTextByte($89);
+  EmitTextByte($05 + ((Reg And 7) Shl 3));
+  EmitTextDWord(Addr);
+End;
+
+{ MOV reg32, [EBP+disp8] : opcode 8B 45+rd*8 disp8 }
+Procedure BnEmitMovRegEbpDisp8(Reg, Disp : Integer);
+Begin
+  EmitTextByte($8B);
+  EmitTextByte($45 + ((Reg And 7) Shl 3));
+  EmitTextByte(Disp And $FF);
+End;
+
+{ MOV [EBP+disp8], reg32 : opcode 89 45+rs*8 disp8 }
+Procedure BnEmitMovEbpDisp8Reg(Disp, Reg : Integer);
+Begin
+  EmitTextByte($89);
+  EmitTextByte($45 + ((Reg And 7) Shl 3));
+  EmitTextByte(Disp And $FF);
+End;
+
+{ MOV reg32, [reg32] : opcode 8B /r (ModR/M reg,[reg]) }
+Procedure BnEmitMovRegIndReg(Dst, Base : Integer);
+Begin
+  EmitTextByte($8B);
+  If Base = BN_REG_EBP Then
+    EmitTextByte($45 + ((Dst And 7) Shl 3))  { [EBP+disp8=0] }
+  Else If Base = BN_REG_ESP Then
+  Begin
+    EmitTextByte($04 + ((Dst And 7) Shl 3));  { SIB needed }
+    EmitTextByte($24);  { SIB byte for [ESP] }
+  End
+  Else
+    EmitTextByte(((Dst And 7) Shl 3) + (Base And 7));  { [reg] }
+  If Base = BN_REG_EBP Then
+    EmitTextByte(0);  { disp8 = 0 pour [EBP] }
+End;
+
+{ MOV [reg32], reg32 : opcode 89 /r }
+Procedure BnEmitMovIndRegReg(Base, Src : Integer);
+Begin
+  EmitTextByte($89);
+  If Base = BN_REG_EBP Then
+    EmitTextByte($45 + ((Src And 7) Shl 3))
+  Else If Base = BN_REG_ESP Then
+  Begin
+    EmitTextByte($04 + ((Src And 7) Shl 3));
+    EmitTextByte($24);
+  End
+  Else
+    EmitTextByte(((Src And 7) Shl 3) + (Base And 7));
+  If Base = BN_REG_EBP Then
+    EmitTextByte(0);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitLea : LEA (Load Effective Address)                       }
+{ ------------------------------------------------------------ }
+
+{ LEA reg32, [addr32] : opcode 8D /r disp32 }
+Procedure BnEmitLeaRegMem(Reg : Integer; Addr : LongInt);
+Begin
+  EmitTextByte($8D);
+  EmitTextByte($05 + ((Reg And 7) Shl 3));
+  EmitTextDWord(Addr);
+End;
+
+{ LEA reg32, [EBP+disp8] : opcode 8D 45+rd*8 disp8 }
+Procedure BnEmitLeaRegEbpDisp8(Reg, Disp : Integer);
+Begin
+  EmitTextByte($8D);
+  EmitTextByte($45 + ((Reg And 7) Shl 3));
+  EmitTextByte(Disp And $FF);
+End;
+
+{ LEA reg, [reg+disp8] }
+Procedure BnEmitLeaRegRegDisp8(Dst, Base, Disp : Integer);
+Begin
+  EmitTextByte($8D);
+  EmitTextByte($40 + ((Dst And 7) Shl 3) + (Base And 7));
+  EmitTextByte(Disp And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitAdd : ADD                                                }
+{ ------------------------------------------------------------ }
+
+{ ADD reg32, imm32 : opcode 81 /0 rd imm32 }
+Procedure BnEmitAddRegImm(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = BN_REG_EAX Then
+  Begin
+    EmitTextByte($05);  { ADD EAX, imm32 }
+    EmitTextDWord(Imm);
+  End
+  Else
+  Begin
+    EmitTextByte($81);
+    EmitTextByte($C0 + (Reg And 7));
+    EmitTextDWord(Imm);
+  End;
+End;
+
+{ ADD reg32, imm8 : opcode 83 /0 rd imm8 }
+Procedure BnEmitAddRegImm8(Reg : Integer; Imm : Integer);
+Begin
+  EmitTextByte($83);
+  EmitTextByte($C0 + (Reg And 7));
+  EmitTextByte(Imm And $FF);
+End;
+
+{ ADD reg32, reg32 : opcode 03 /r }
+Procedure BnEmitAddRegReg(Dst, Src : Integer);
+Begin
+  EmitTextByte($03);
+  EmitTextByte($C0 + ((Dst And 7) Shl 3) + (Src And 7));
+End;
+
+{ ADD ESP, imm8 (nettoyage pile) }
+Procedure BnEmitAddEspImm8(Imm : Integer);
+Begin
+  BnEmitAddRegImm8(BN_REG_ESP, Imm);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitSub : SUB                                                }
+{ ------------------------------------------------------------ }
+
+{ SUB reg32, imm32 : opcode 81 /5 rd imm32 }
+Procedure BnEmitSubRegImm(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = BN_REG_EAX Then
+  Begin
+    EmitTextByte($2D);  { SUB EAX, imm32 }
+    EmitTextDWord(Imm);
+  End
+  Else
+  Begin
+    EmitTextByte($81);
+    EmitTextByte($E8 + (Reg And 7));
+    EmitTextDWord(Imm);
+  End;
+End;
+
+{ SUB reg32, imm8 : opcode 83 /5 rd imm8 }
+Procedure BnEmitSubRegImm8(Reg : Integer; Imm : Integer);
+Begin
+  EmitTextByte($83);
+  EmitTextByte($E8 + (Reg And 7));
+  EmitTextByte(Imm And $FF);
+End;
+
+{ SUB reg32, reg32 : opcode 2B /r }
+Procedure BnEmitSubRegReg(Dst, Src : Integer);
+Begin
+  EmitTextByte($2B);
+  EmitTextByte($C0 + ((Dst And 7) Shl 3) + (Src And 7));
+End;
+
+{ SUB ESP, imm8 (reserve espace pile) }
+Procedure BnEmitSubEspImm8(Imm : Integer);
+Begin
+  BnEmitSubRegImm8(BN_REG_ESP, Imm);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitMul : IMUL (multiplication signee)                       }
+{ ------------------------------------------------------------ }
+
+{ IMUL reg32, reg32 : opcode 0F AF /r }
+Procedure BnEmitImulRegReg(Dst, Src : Integer);
+Begin
+  EmitTextByte($0F);
+  EmitTextByte($AF);
+  EmitTextByte($C0 + ((Dst And 7) Shl 3) + (Src And 7));
+End;
+
+{ IMUL reg32, reg32, imm8 : opcode 6B /r ib }
+Procedure BnEmitImulRegRegImm8(Dst, Src, Imm : Integer);
+Begin
+  EmitTextByte($6B);
+  EmitTextByte($C0 + ((Dst And 7) Shl 3) + (Src And 7));
+  EmitTextByte(Imm And $FF);
+End;
+
+{ IMUL reg32, imm32 : opcode 69 /r id }
+Procedure BnEmitImulRegImm(Reg : Integer; Imm : LongInt);
+Begin
+  EmitTextByte($69);
+  EmitTextByte($C0 + ((Reg And 7) Shl 3) + (Reg And 7));
+  EmitTextDWord(Imm);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitDiv : IDIV (division signee EDX:EAX / src)               }
+{ ------------------------------------------------------------ }
+
+{ IDIV reg32 : opcode F7 /7 }
+Procedure BnEmitIdivReg(Reg : Integer);
+Begin
+  EmitTextByte($F7);
+  EmitTextByte($F8 + (Reg And 7));
+End;
+
+{ CDQ : signe-etend EAX dans EDX:EAX (opcode 99) }
+Procedure BnEmitCdq;
+Begin
+  EmitTextByte($99);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitXor : XOR                                                }
+{ ------------------------------------------------------------ }
+
+{ XOR reg32, reg32 : opcode 33 /r }
+Procedure BnEmitXorRegReg(Dst, Src : Integer);
+Begin
+  EmitTextByte($33);
+  EmitTextByte($C0 + ((Dst And 7) Shl 3) + (Src And 7));
+End;
+
+{ XOR reg32, imm32 }
+Procedure BnEmitXorRegImm(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = BN_REG_EAX Then
+  Begin
+    EmitTextByte($35);
+    EmitTextDWord(Imm);
+  End
+  Else
+  Begin
+    EmitTextByte($81);
+    EmitTextByte($F0 + (Reg And 7));
+    EmitTextDWord(Imm);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitAnd : AND                                                }
+{ ------------------------------------------------------------ }
+
+{ AND reg32, reg32 : opcode 23 /r }
+Procedure BnEmitAndRegReg(Dst, Src : Integer);
+Begin
+  EmitTextByte($23);
+  EmitTextByte($C0 + ((Dst And 7) Shl 3) + (Src And 7));
+End;
+
+{ AND reg32, imm32 }
+Procedure BnEmitAndRegImm(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = BN_REG_EAX Then
+  Begin
+    EmitTextByte($25);
+    EmitTextDWord(Imm);
+  End
+  Else
+  Begin
+    EmitTextByte($81);
+    EmitTextByte($E0 + (Reg And 7));
+    EmitTextDWord(Imm);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitOr : OR                                                  }
+{ ------------------------------------------------------------ }
+
+{ OR reg32, reg32 : opcode 0B /r }
+Procedure BnEmitOrRegReg(Dst, Src : Integer);
+Begin
+  EmitTextByte($0B);
+  EmitTextByte($C0 + ((Dst And 7) Shl 3) + (Src And 7));
+End;
+
+{ OR reg32, imm32 }
+Procedure BnEmitOrRegImm(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = BN_REG_EAX Then
+  Begin
+    EmitTextByte($0D);
+    EmitTextDWord(Imm);
+  End
+  Else
+  Begin
+    EmitTextByte($81);
+    EmitTextByte($C8 + (Reg And 7));
+    EmitTextDWord(Imm);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitNot : NOT (complement binaire)                           }
+{ ------------------------------------------------------------ }
+
+{ NOT reg32 : opcode F7 /2 }
+Procedure BnEmitNotReg(Reg : Integer);
+Begin
+  EmitTextByte($F7);
+  EmitTextByte($D0 + (Reg And 7));
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitNeg : NEG (negation arithmetique)                        }
+{ ------------------------------------------------------------ }
+
+{ NEG reg32 : opcode F7 /3 }
+Procedure BnEmitNegReg(Reg : Integer);
+Begin
+  EmitTextByte($F7);
+  EmitTextByte($D8 + (Reg And 7));
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitInc/Dec : INC / DEC                                      }
+{ ------------------------------------------------------------ }
+
+{ INC reg32 : opcode 40+rd }
+Procedure BnEmitIncReg(Reg : Integer);
+Begin
+  EmitTextByte($40 + (Reg And 7));
+End;
+
+{ DEC reg32 : opcode 48+rd }
+Procedure BnEmitDecReg(Reg : Integer);
+Begin
+  EmitTextByte($48 + (Reg And 7));
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitShl/Shr/Sar : decalages                                  }
+{ ------------------------------------------------------------ }
+
+{ SHL reg32, imm8 : opcode C1 /4 ib }
+Procedure BnEmitShlRegImm8(Reg, Imm : Integer);
+Begin
+  EmitTextByte($C1);
+  EmitTextByte($E0 + (Reg And 7));
+  EmitTextByte(Imm And $1F);
+End;
+
+{ SHR reg32, imm8 : opcode C1 /5 ib }
+Procedure BnEmitShrRegImm8(Reg, Imm : Integer);
+Begin
+  EmitTextByte($C1);
+  EmitTextByte($E8 + (Reg And 7));
+  EmitTextByte(Imm And $1F);
+End;
+
+{ SAR reg32, imm8 : opcode C1 /7 ib }
+Procedure BnEmitSarRegImm8(Reg, Imm : Integer);
+Begin
+  EmitTextByte($C1);
+  EmitTextByte($F8 + (Reg And 7));
+  EmitTextByte(Imm And $1F);
+End;
+
+{ SHL reg32, CL : opcode D3 /4 }
+Procedure BnEmitShlRegCl(Reg : Integer);
+Begin
+  EmitTextByte($D3);
+  EmitTextByte($E0 + (Reg And 7));
+End;
+
+{ SHR reg32, CL : opcode D3 /5 }
+Procedure BnEmitShrRegCl(Reg : Integer);
+Begin
+  EmitTextByte($D3);
+  EmitTextByte($E8 + (Reg And 7));
+End;
+
+{ SAR reg32, CL : opcode D3 /7 }
+Procedure BnEmitSarRegCl(Reg : Integer);
+Begin
+  EmitTextByte($D3);
+  EmitTextByte($F8 + (Reg And 7));
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitCmp : CMP (comparaison)                                  }
+{ ------------------------------------------------------------ }
+
+{ CMP reg32, reg32 : opcode 3B /r }
+Procedure BnEmitCmpRegReg(Dst, Src : Integer);
+Begin
+  EmitTextByte($3B);
+  EmitTextByte($C0 + ((Dst And 7) Shl 3) + (Src And 7));
+End;
+
+{ CMP reg32, imm32 : opcode 81 /7 }
+Procedure BnEmitCmpRegImm(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = BN_REG_EAX Then
+  Begin
+    EmitTextByte($3D);
+    EmitTextDWord(Imm);
+  End
+  Else
+  Begin
+    EmitTextByte($81);
+    EmitTextByte($F8 + (Reg And 7));
+    EmitTextDWord(Imm);
+  End;
+End;
+
+{ CMP reg32, imm8 : opcode 83 /7 }
+Procedure BnEmitCmpRegImm8(Reg : Integer; Imm : Integer);
+Begin
+  EmitTextByte($83);
+  EmitTextByte($F8 + (Reg And 7));
+  EmitTextByte(Imm And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitTest : TEST                                              }
+{ ------------------------------------------------------------ }
+
+{ TEST reg32, reg32 : opcode 85 /r }
+Procedure BnEmitTestRegReg(Dst, Src : Integer);
+Begin
+  EmitTextByte($85);
+  EmitTextByte($C0 + ((Src And 7) Shl 3) + (Dst And 7));
+End;
+
+{ TEST reg32, imm32 }
+Procedure BnEmitTestRegImm(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = BN_REG_EAX Then
+  Begin
+    EmitTextByte($A9);
+    EmitTextDWord(Imm);
+  End
+  Else
+  Begin
+    EmitTextByte($F7);
+    EmitTextByte($C0 + (Reg And 7));
+    EmitTextDWord(Imm);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitJmp : JMP (saut inconditionnel)                          }
+{ ------------------------------------------------------------ }
+
+{ JMP rel8 : opcode EB rel8 }
+Procedure BnEmitJmpRel8(Rel : Integer);
+Begin
+  EmitTextByte($EB);
+  EmitTextByte(Rel And $FF);
+End;
+
+{ JMP rel32 : opcode E9 rel32 }
+Procedure BnEmitJmpRel32(Rel : LongInt);
+Begin
+  EmitTextByte($E9);
+  EmitTextDWord(Rel);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitJcc : Jcc (saut conditionnel)                            }
+{ ------------------------------------------------------------ }
+
+{ Jcc rel8 : opcode 70+cc rel8 }
+Procedure BnEmitJccRel8(CC : Integer; Rel : Integer);
+Begin
+  EmitTextByte($70 + (CC And $0F));
+  EmitTextByte(Rel And $FF);
+End;
+
+{ Jcc rel32 : opcode 0F 80+cc rel32 }
+Procedure BnEmitJccRel32(CC : Integer; Rel : LongInt);
+Begin
+  EmitTextByte($0F);
+  EmitTextByte($80 + (CC And $0F));
+  EmitTextDWord(Rel);
+End;
+
+{ Raccourcis pour les sauts conditionnels courants }
+Procedure BnEmitJeRel8(Rel : Integer);  Begin BnEmitJccRel8(BN_CC_E, Rel); End;
+Procedure BnEmitJneRel8(Rel : Integer); Begin BnEmitJccRel8(BN_CC_NE, Rel); End;
+Procedure BnEmitJlRel8(Rel : Integer);  Begin BnEmitJccRel8(BN_CC_L, Rel); End;
+Procedure BnEmitJleRel8(Rel : Integer); Begin BnEmitJccRel8(BN_CC_LE, Rel); End;
+Procedure BnEmitJgRel8(Rel : Integer);  Begin BnEmitJccRel8(BN_CC_G, Rel); End;
+Procedure BnEmitJgeRel8(Rel : Integer); Begin BnEmitJccRel8(BN_CC_GE, Rel); End;
+
+Procedure BnEmitJeRel32(Rel : LongInt);  Begin BnEmitJccRel32(BN_CC_E, Rel); End;
+Procedure BnEmitJneRel32(Rel : LongInt); Begin BnEmitJccRel32(BN_CC_NE, Rel); End;
+Procedure BnEmitJlRel32(Rel : LongInt);  Begin BnEmitJccRel32(BN_CC_L, Rel); End;
+Procedure BnEmitJleRel32(Rel : LongInt); Begin BnEmitJccRel32(BN_CC_LE, Rel); End;
+Procedure BnEmitJgRel32(Rel : LongInt);  Begin BnEmitJccRel32(BN_CC_G, Rel); End;
+Procedure BnEmitJgeRel32(Rel : LongInt); Begin BnEmitJccRel32(BN_CC_GE, Rel); End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitRet : RET (retour de fonction)                           }
+{ ------------------------------------------------------------ }
+
+{ RET : opcode C3 }
+Procedure BnEmitRet;
+Begin
+  EmitTextByte($C3);
+End;
+
+{ RET imm16 : opcode C2 imm16 (nettoie imm16 octets de la pile) }
+Procedure BnEmitRetImm16(Imm : Integer);
+Begin
+  EmitTextByte($C2);
+  EmitTextWord(Imm And $FFFF);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitNop : NOP                                                }
+{ ------------------------------------------------------------ }
+
+{ NOP : opcode 90 }
+Procedure BnEmitNop;
+Begin
+  EmitTextByte($90);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitInt3 : INT 3 (point d'arret debugger)                    }
+{ ------------------------------------------------------------ }
+
+{ INT 3 : opcode CC }
+Procedure BnEmitInt3;
+Begin
+  EmitTextByte($CC);
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitSetcc : SETcc (positionner octet selon condition)        }
+{ ------------------------------------------------------------ }
+
+{ SETcc r/m8 : opcode 0F 90+cc /0 }
+Procedure BnEmitSetccReg8(CC, Reg : Integer);
+Begin
+  EmitTextByte($0F);
+  EmitTextByte($90 + (CC And $0F));
+  EmitTextByte($C0 + (Reg And 7));
+End;
+
+{ MOVZX reg32, r/m8 : opcode 0F B6 /r }
+Procedure BnEmitMovzxReg32Reg8(Dst, Src : Integer);
+Begin
+  EmitTextByte($0F);
+  EmitTextByte($B6);
+  EmitTextByte($C0 + ((Dst And 7) Shl 3) + (Src And 7));
+End;
+
+{ ------------------------------------------------------------ }
+{ BnEmitPrologue/Epilogue : prologue/epilogue de fonction        }
+{ ------------------------------------------------------------ }
+
+{ Prologue standard : PUSH EBP / MOV EBP, ESP / SUB ESP, locals }
+Procedure BnEmitPrologue(LocalsSize : Integer);
+Begin
+  BnEmitPushReg(BN_REG_EBP);
+  BnEmitMovRegReg(BN_REG_EBP, BN_REG_ESP);
+  If LocalsSize > 0 Then
+    BnEmitSubRegImm8(BN_REG_ESP, LocalsSize);
+End;
+
+{ Epilogue standard : MOV ESP, EBP / POP EBP / RET }
+Procedure BnEmitEpilogue;
+Begin
+  BnEmitMovRegReg(BN_REG_ESP, BN_REG_EBP);
+  BnEmitPopReg(BN_REG_EBP);
+  BnEmitRet;
+End;
+
+{ ------------------------------------------------------------ }
+{ BnGetCodeSize : obtenir la taille du code emis                 }
+{ ------------------------------------------------------------ }
+
+Function BnGetCodeSize : LongInt;
+Begin
+  BnGetCodeSize := PeTextSize;
+End;
+
+{ ------------------------------------------------------------ }
+{ BnGetCurrentPos : obtenir la position courante                 }
+{ ------------------------------------------------------------ }
+
+Function BnGetCurrentPos : LongInt;
+Begin
+  BnGetCurrentPos := PeTextSize;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (BnEmit)                               }
+{ ------------------------------------------------------------ }
+
+Function GetBnInitialized : Boolean;
+Begin GetBnInitialized := BnInitialized; End;
+
+Function GetBnCodeSize : LongInt;
+Begin GetBnCodeSize := PeTextSize; End;
+
+Function GetBnRegEax : Integer;
+Begin GetBnRegEax := BN_REG_EAX; End;
+
+Function GetBnRegEcx : Integer;
+Begin GetBnRegEcx := BN_REG_ECX; End;
+
+Function GetBnRegEdx : Integer;
+Begin GetBnRegEdx := BN_REG_EDX; End;
+
+Function GetBnRegEbx : Integer;
+Begin GetBnRegEbx := BN_REG_EBX; End;
+
+Function GetBnRegEsp : Integer;
+Begin GetBnRegEsp := BN_REG_ESP; End;
+
+Function GetBnRegEbp : Integer;
+Begin GetBnRegEbp := BN_REG_EBP; End;
+
+Function GetBnRegEsi : Integer;
+Begin GetBnRegEsi := BN_REG_ESI; End;
+
+Function GetBnRegEdi : Integer;
+Begin GetBnRegEdi := BN_REG_EDI; End;
+
+{ ============================================================ }
 { Generation de code pour le programme compile                   }
 { ============================================================ }
 
