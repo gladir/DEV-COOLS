@@ -18789,6 +18789,299 @@ Begin
   BnEmitByte($CC);    { INT 3 }
 End;
 
+(* ------------------------------------------------------------ *)
+(* BnEmitPushMem : emettre PUSH [addr] (FFh 35h disp32)         *)
+(* Push contenu de l'adresse memoire                             *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitPushMem(Addr : LongInt);
+Begin
+  BnEmitByte($FF);
+  BnEmitByte($35);    { ModR/M: 00 110 101 = PUSH [disp32] }
+  BnEmitDWord(Addr);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitPushEbpDisp8 : emettre PUSH [EBP+disp8]                *)
+(* Push depuis la pile locale                                    *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitPushEbpDisp8(Disp : ShortInt);
+Begin
+  BnEmitByte($FF);
+  BnEmitByte($75);    { ModR/M: 01 110 101 = PUSH [EBP+disp8] }
+  BnEmitByte(Disp And $FF);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitMovRegIndReg : emettre MOV reg, [base]                 *)
+(* MOV dest, [src] - charge depuis memoire pointee par base      *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitMovRegIndReg(Dest, Base : Integer);
+Begin
+  BnEmitByte($8B);    { MOV r32, r/m32 }
+  If Base = REG_ESP Then
+  Begin
+    { ESP necessite un octet SIB }
+    BnEmitByte($04 Or (Dest Shl 3)); { ModR/M: 00 reg 100 }
+    BnEmitByte($24);   { SIB: 00 100 100 = [ESP] }
+  End
+  Else If Base = REG_EBP Then
+  Begin
+    { [EBP] n'existe pas, utiliser [EBP+0] }
+    BnEmitByte($45 Or (Dest Shl 3)); { ModR/M: 01 reg 101 }
+    BnEmitByte($00);   { disp8 = 0 }
+  End
+  Else
+    BnEmitByte((Dest Shl 3) Or Base); { ModR/M: 00 reg base }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitMovIndRegReg : emettre MOV [base], reg                 *)
+(* MOV [dest], src - stocke vers memoire pointee par base        *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitMovIndRegReg(Base, Src : Integer);
+Begin
+  BnEmitByte($89);    { MOV r/m32, r32 }
+  If Base = REG_ESP Then
+  Begin
+    BnEmitByte($04 Or (Src Shl 3)); { ModR/M: 00 reg 100 }
+    BnEmitByte($24);   { SIB: 00 100 100 = [ESP] }
+  End
+  Else If Base = REG_EBP Then
+  Begin
+    BnEmitByte($45 Or (Src Shl 3)); { ModR/M: 01 reg 101 }
+    BnEmitByte($00);
+  End
+  Else
+    BnEmitByte((Src Shl 3) Or Base);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitLeaRegRegDisp8 : LEA reg, [base+disp8]                 *)
+(* Load effective address avec deplacement 8 bits                *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitLeaRegRegDisp8(Dest, Base : Integer; Disp : ShortInt);
+Begin
+  BnEmitByte($8D);    { LEA }
+  If Base = REG_ESP Then
+  Begin
+    BnEmitByte($44 Or (Dest Shl 3)); { ModR/M: 01 reg 100 }
+    BnEmitByte($24);   { SIB }
+    BnEmitByte(Disp And $FF);
+  End
+  Else
+  Begin
+    BnEmitByte($40 Or (Dest Shl 3) Or Base); { ModR/M: 01 reg base }
+    BnEmitByte(Disp And $FF);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitPrologue : prologue de fonction standard                *)
+(* PUSH EBP / MOV EBP, ESP / SUB ESP, LocalsSize                *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitPrologue(LocalsSize : Integer);
+Begin
+  BnEmitPushReg(REG_EBP);
+  BnEmitMovRegReg(REG_EBP, REG_ESP);
+  If LocalsSize > 0 Then
+  Begin
+    If (LocalsSize >= -128) And (LocalsSize <= 127) Then
+      BnEmitSubRegImm8(REG_ESP, LocalsSize)
+    Else
+      BnEmitSubRegImm32(REG_ESP, LocalsSize);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitEpilogue : epilogue de fonction standard                *)
+(* MOV ESP, EBP / POP EBP / RET                                  *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitEpilogue;
+Begin
+  BnEmitMovRegReg(REG_ESP, REG_EBP);
+  BnEmitPopReg(REG_EBP);
+  BnEmitRet;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitShlRegCl : SHL reg, CL (decalage par registre CL)      *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitShlRegCl(Reg : Integer);
+Begin
+  BnEmitByte($D3);    { Shift r/m32, CL }
+  BnEmitByte($E0 Or Reg); { ModR/M: 11 100 reg = SHL }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitShrRegCl : SHR reg, CL (decalage logique)              *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitShrRegCl(Reg : Integer);
+Begin
+  BnEmitByte($D3);
+  BnEmitByte($E8 Or Reg); { ModR/M: 11 101 reg = SHR }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitSarRegCl : SAR reg, CL (decalage arithmetique)         *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitSarRegCl(Reg : Integer);
+Begin
+  BnEmitByte($D3);
+  BnEmitByte($F8 Or Reg); { ModR/M: 11 111 reg = SAR }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitJccRel8 : Jcc rel8 generique (saut conditionnel court) *)
+(* CC = code de condition (0=O, 1=NO, 2=B, ..., E=LE, F=G)      *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitJccRel8(CC : Integer; Rel8 : ShortInt);
+Begin
+  BnEmitByte($70 Or (CC And $0F));
+  BnEmitByte(Rel8 And $FF);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitJccRel32 : Jcc rel32 generique (saut conditionnel long) *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitJccRel32(CC : Integer; Rel32 : LongInt);
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($80 Or (CC And $0F));
+  BnEmitDWord(Rel32);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitSetccReg8 : SETcc reg8 generique                       *)
+(* Positionne le registre 8 bits selon la condition              *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitSetccReg8(CC, Reg : Integer);
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($90 Or (CC And $0F));
+  BnEmitByte($C0 Or Reg); { ModR/M: 11 000 reg }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitAndRegImm32 : AND reg, imm32                           *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitAndRegImm32(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = REG_EAX Then
+  Begin
+    BnEmitByte($25);  { AND EAX, imm32 }
+    BnEmitDWord(Imm);
+  End
+  Else
+  Begin
+    BnEmitByte($81);
+    BnEmitByte($E0 Or Reg); { ModR/M: 11 100 reg = AND }
+    BnEmitDWord(Imm);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitOrRegImm32 : OR reg, imm32                             *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitOrRegImm32(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = REG_EAX Then
+  Begin
+    BnEmitByte($0D);  { OR EAX, imm32 }
+    BnEmitDWord(Imm);
+  End
+  Else
+  Begin
+    BnEmitByte($81);
+    BnEmitByte($C8 Or Reg); { ModR/M: 11 001 reg = OR }
+    BnEmitDWord(Imm);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitXorRegImm32 : XOR reg, imm32                           *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitXorRegImm32(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = REG_EAX Then
+  Begin
+    BnEmitByte($35);  { XOR EAX, imm32 }
+    BnEmitDWord(Imm);
+  End
+  Else
+  Begin
+    BnEmitByte($81);
+    BnEmitByte($F0 Or Reg); { ModR/M: 11 110 reg = XOR }
+    BnEmitDWord(Imm);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitTestRegImm32 : TEST reg, imm32                         *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitTestRegImm32(Reg : Integer; Imm : LongInt);
+Begin
+  If Reg = REG_EAX Then
+  Begin
+    BnEmitByte($A9);  { TEST EAX, imm32 }
+    BnEmitDWord(Imm);
+  End
+  Else
+  Begin
+    BnEmitByte($F7);
+    BnEmitByte($C0 Or Reg); { ModR/M: 11 000 reg = TEST }
+    BnEmitDWord(Imm);
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitCallAbs : CALL absolu via FF 15 (call [addr])          *)
+(* Utile pour appeler via IAT                                    *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitCallAbs(Addr : LongInt);
+Begin
+  BnEmitByte($FF);
+  BnEmitByte($15);    { CALL [disp32] }
+  BnEmitDWord(Addr);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitCallImport : CALL un import via son index IAT          *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitCallImport(ImpIdx : Integer; IatBase : LongInt);
+Begin
+  BnEmitCallAbs(IatBase + (ImpIdx * 4));
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitMovzxReg32Reg8 : MOVZX r32, r8 (extension zero)        *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitMovzxReg32Reg8(Dest, Src : Integer);
+Begin
+  BnEmitByte($0F);
+  BnEmitByte($B6);
+  BnEmitByte($C0 Or (Dest Shl 3) Or Src); { ModR/M: 11 dest src }
+End;
+
 (* ============================================================ *)
 (* FIN DES FONCTIONS D'EMISSION BINAIRE x86                     *)
 (* ============================================================ *)
@@ -19440,13 +19733,15 @@ Const
   IM_HEAP_ALLOC      = 8;    (* HeapAlloc                             *)
   IM_HEAP_FREE       = 9;    (* HeapFree                              *)
   IM_GET_LAST_ERROR  = 10;   (* GetLastError                          *)
-  IM_SPRINTF         = 11;   (* sprintf (msvcrt)                      *)
-  IM_SSCANF          = 12;   (* sscanf (msvcrt)                       *)
-  IM_MEMCPY          = 13;   (* memcpy (msvcrt)                       *)
-  IM_MEMSET          = 14;   (* memset (msvcrt)                       *)
-  IM_MEMCMP          = 15;   (* memcmp (msvcrt)                       *)
-  IM_ASM_LISTING     = 16;   (* generation listing ASM                *)
-  IM_MAX_KIND        = 16;
+  IM_READ_FILE       = 11;   (* ReadFile                              *)
+  IM_GET_CMD_LINE    = 12;   (* GetCommandLineA                       *)
+  IM_SPRINTF         = 13;   (* sprintf (msvcrt)                      *)
+  IM_SSCANF          = 14;   (* sscanf (msvcrt)                       *)
+  IM_MEMCPY          = 15;   (* memcpy (msvcrt)                       *)
+  IM_MEMSET          = 16;   (* memset (msvcrt)                       *)
+  IM_MEMCMP          = 17;   (* memcmp (msvcrt)                       *)
+  IM_ASM_LISTING     = 18;   (* generation listing ASM                *)
+  IM_MAX_KIND        = 18;
 
   (* Constantes de limites                                           *)
   IM_MAX_IMPORTS     = 64;   (* nombre max de fonctions importees     *)
@@ -19645,50 +19940,66 @@ Begin
   ImImports[6].ImportKind   := IM_GET_LAST_ERROR;
   ImImports[6].IsRegistered := True;
 
+  (* ReadFile - 20 octets de parametres (5 params * 4) *)
+  ImImports[7].FuncName     := 'ReadFile';
+  ImImports[7].DllName      := 'kernel32.dll';
+  ImImports[7].DllIndex     := IM_DLL_KERNEL32;
+  ImImports[7].ParamBytes   := 20;
+  ImImports[7].ImportKind   := IM_READ_FILE;
+  ImImports[7].IsRegistered := True;
+
+  (* GetCommandLineA - 0 octets de parametres *)
+  ImImports[8].FuncName     := 'GetCommandLineA';
+  ImImports[8].DllName      := 'kernel32.dll';
+  ImImports[8].DllIndex     := IM_DLL_KERNEL32;
+  ImImports[8].ParamBytes   := 0;
+  ImImports[8].ImportKind   := IM_GET_CMD_LINE;
+  ImImports[8].IsRegistered := True;
+
   (* Imports msvcrt.dll *)
 
   (* sprintf - variadic, on met 0 pour cdecl *)
-  ImImports[7].FuncName     := 'sprintf';
-  ImImports[7].DllName      := 'msvcrt.dll';
-  ImImports[7].DllIndex     := IM_DLL_MSVCRT;
-  ImImports[7].ParamBytes   := 0; (* cdecl = appelant nettoie *)
-  ImImports[7].ImportKind   := IM_SPRINTF;
-  ImImports[7].IsRegistered := True;
-
-  (* sscanf - variadic, cdecl *)
-  ImImports[8].FuncName     := 'sscanf';
-  ImImports[8].DllName      := 'msvcrt.dll';
-  ImImports[8].DllIndex     := IM_DLL_MSVCRT;
-  ImImports[8].ParamBytes   := 0;
-  ImImports[8].ImportKind   := IM_SSCANF;
-  ImImports[8].IsRegistered := True;
-
-  (* memcpy - 12 octets (3 params * 4), cdecl *)
-  ImImports[9].FuncName     := 'memcpy';
+  ImImports[9].FuncName     := 'sprintf';
   ImImports[9].DllName      := 'msvcrt.dll';
   ImImports[9].DllIndex     := IM_DLL_MSVCRT;
-  ImImports[9].ParamBytes   := 0;
-  ImImports[9].ImportKind   := IM_MEMCPY;
+  ImImports[9].ParamBytes   := 0; (* cdecl = appelant nettoie *)
+  ImImports[9].ImportKind   := IM_SPRINTF;
   ImImports[9].IsRegistered := True;
 
-  (* memset - 12 octets, cdecl *)
-  ImImports[10].FuncName     := 'memset';
+  (* sscanf - variadic, cdecl *)
+  ImImports[10].FuncName     := 'sscanf';
   ImImports[10].DllName      := 'msvcrt.dll';
   ImImports[10].DllIndex     := IM_DLL_MSVCRT;
   ImImports[10].ParamBytes   := 0;
-  ImImports[10].ImportKind   := IM_MEMSET;
+  ImImports[10].ImportKind   := IM_SSCANF;
   ImImports[10].IsRegistered := True;
 
-  (* memcmp - 12 octets, cdecl *)
-  ImImports[11].FuncName     := 'memcmp';
+  (* memcpy - 12 octets (3 params * 4), cdecl *)
+  ImImports[11].FuncName     := 'memcpy';
   ImImports[11].DllName      := 'msvcrt.dll';
   ImImports[11].DllIndex     := IM_DLL_MSVCRT;
   ImImports[11].ParamBytes   := 0;
-  ImImports[11].ImportKind   := IM_MEMCMP;
+  ImImports[11].ImportKind   := IM_MEMCPY;
   ImImports[11].IsRegistered := True;
 
-  ImImportCount := 12;
-  ImTotalImports := 12;
+  (* memset - 12 octets, cdecl *)
+  ImImports[12].FuncName     := 'memset';
+  ImImports[12].DllName      := 'msvcrt.dll';
+  ImImports[12].DllIndex     := IM_DLL_MSVCRT;
+  ImImports[12].ParamBytes   := 0;
+  ImImports[12].ImportKind   := IM_MEMSET;
+  ImImports[12].IsRegistered := True;
+
+  (* memcmp - 12 octets, cdecl *)
+  ImImports[13].FuncName     := 'memcmp';
+  ImImports[13].DllName      := 'msvcrt.dll';
+  ImImports[13].DllIndex     := IM_DLL_MSVCRT;
+  ImImports[13].ParamBytes   := 0;
+  ImImports[13].ImportKind   := IM_MEMCMP;
+  ImImports[13].IsRegistered := True;
+
+  ImImportCount := 14;
+  ImTotalImports := 14;
 
   (* Marquer les imports essentiels comme utilises *)
   (* ExitProcess est toujours necessaire pour terminer le programme *)
@@ -19760,6 +20071,8 @@ Begin
     IM_HEAP_ALLOC:     ImTypeName := 'IM_HEAP_ALLOC';
     IM_HEAP_FREE:      ImTypeName := 'IM_HEAP_FREE';
     IM_GET_LAST_ERROR: ImTypeName := 'IM_GET_LAST_ERROR';
+    IM_READ_FILE:      ImTypeName := 'IM_READ_FILE';
+    IM_GET_CMD_LINE:   ImTypeName := 'IM_GET_CMD_LINE';
     IM_SPRINTF:        ImTypeName := 'IM_SPRINTF';
     IM_SSCANF:         ImTypeName := 'IM_SSCANF';
     IM_MEMCPY:         ImTypeName := 'IM_MEMCPY';
