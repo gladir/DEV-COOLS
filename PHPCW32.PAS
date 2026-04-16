@@ -4873,6 +4873,11 @@ End;
 { ============================================================ }
 
 Const
+  (* Registres x86 - constantes dupliquees pour usage precoce *)
+  BN_EAX = 0;    BN_ECX = 1;    BN_EDX = 2;    BN_EBX = 3;
+  BN_ESP = 4;    BN_EBP = 5;    BN_ESI = 6;    BN_EDI = 7;
+
+Const
   (* Operateurs binaires (TBinOp) *)
   OP_NONE       = 0;    (* pas d operateur                       *)
   OP_ADD        = 1;    (* +  addition                           *)
@@ -5398,11 +5403,59 @@ End;
 { Si c est en memoire, generer MOV EAX, [mem]                  }
 { ------------------------------------------------------------ }
 
+(* Forward declarations supplementaires pour emission binaire  *)
+(* dans ExprFlushToEAX et ExprEmitBinOp                         *)
+Procedure BnEmitMovRegImm32(Reg : Integer; Imm : LongInt); Forward;
+Procedure BnEmitAddRegImm32(Reg : Integer; Imm : LongInt); Forward;
+Procedure BnEmitAddRegImm8(Reg : Integer; Imm : ShortInt); Forward;
+Procedure BnEmitAddRegReg(Dest, Src : Integer); Forward;
+Procedure BnEmitSubRegReg(Dest, Src : Integer); Forward;
+Procedure BnEmitImulRegReg(Dest, Src : Integer); Forward;
+Procedure BnEmitCmpRegImm32(Reg : Integer; Imm : LongInt); Forward;
+Procedure BnEmitCmpRegReg(Dest, Src : Integer); Forward;
+Procedure BnEmitTestRegReg(Dest, Src : Integer); Forward;
+Procedure BnEmitPushReg(Reg : Integer); Forward;
+Procedure BnEmitPopReg(Reg : Integer); Forward;
+Procedure BnEmitXorRegReg(Dest, Src : Integer); Forward;
+Procedure BnEmitSetlAl; Forward;
+Procedure BnEmitSetleAl; Forward;
+Procedure BnEmitSetgAl; Forward;
+Procedure BnEmitSetgeAl; Forward;
+Procedure BnEmitSeteAl; Forward;
+Procedure BnEmitSetneAl; Forward;
+Procedure BnEmitMovzxEaxAl; Forward;
+Procedure BnEmitMovRegReg(Dest, Src : Integer); Forward;
+Procedure BnEmitSubRegImm32(Reg : Integer; Imm : LongInt); Forward;
+Procedure BnEmitCdq; Forward;
+Procedure BnEmitIdivReg(Reg : Integer); Forward;
+Procedure BnEmitIncReg(Reg : Integer); Forward;
+Procedure BnEmitDecReg(Reg : Integer); Forward;
+Procedure BnEmitNegReg(Reg : Integer); Forward;
+Procedure BnEmitNotReg(Reg : Integer); Forward;
+Procedure BnEmitAndRegReg(Dest, Src : Integer); Forward;
+Procedure BnEmitOrRegReg(Dest, Src : Integer); Forward;
+Procedure BnEmitShlRegImm8(Reg : Integer; Imm : Byte); Forward;
+Procedure BnEmitCallIndWithFixup(ImportIdx : Integer); Forward;
+Procedure BnEmitPushImm32(Imm : LongInt); Forward;
+Procedure BnEmitPushImm8(Imm : Byte); Forward;
+Procedure BnEmitJmpRel32(Rel32 : LongInt); Forward;
+Procedure BnEmitJeRel32(Rel32 : LongInt); Forward;
+Procedure BnEmitJneRel32(Rel32 : LongInt); Forward;
+Procedure BnEmitJlRel32(Rel32 : LongInt); Forward;
+Procedure BnEmitJgeRel32(Rel32 : LongInt); Forward;
+Procedure BnEmitMovRegMem(Reg : Integer; Addr : LongInt); Forward;
+Procedure BnEmitMovMemReg(Addr : LongInt; Reg : Integer); Forward;
+Procedure BnEmitImulRegImm32(Reg : Integer; Imm : LongInt); Forward;
+
 Procedure ExprFlushToEAX(Const E : TExprVal);
 Begin
   Case E.Kind Of
     EK_IMM:
+    Begin
       OutLn('        MOV     EAX, ' + ItoS(E.ImmVal));
+      { Emission binaire : MOV EAX, imm32 }
+      BnEmitMovRegImm32(BN_EAX, E.ImmVal);
+    End;
     EK_EAX:
       (* deja dans EAX, rien a faire *);
     EK_MEM:
@@ -5427,32 +5480,48 @@ Begin
     OP_ADD:
     Begin
       If RightImm Then
-        OutLn('        ADD     EAX, ' + ItoS(RightVal))
+      Begin
+        OutLn('        ADD     EAX, ' + ItoS(RightVal));
+        BnEmitAddRegImm32(BN_EAX, RightVal);
+      End
       Else
       Begin
         OutLn('        POP     EBX');
         OutLn('        ADD     EAX, EBX');
+        BnEmitPopReg(BN_EBX);
+        BnEmitAddRegReg(BN_EAX, BN_EBX);
       End;
     End;
     OP_SUB:
     Begin
       If RightImm Then
-        OutLn('        SUB     EAX, ' + ItoS(RightVal))
+      Begin
+        OutLn('        SUB     EAX, ' + ItoS(RightVal));
+        BnEmitSubRegImm32(BN_EAX, RightVal);
+      End
       Else
       Begin
         OutLn('        POP     EBX');
         OutLn('        SUB     EBX, EAX');
         OutLn('        MOV     EAX, EBX');
+        BnEmitPopReg(BN_EBX);
+        BnEmitSubRegReg(BN_EBX, BN_EAX);
+        BnEmitMovRegReg(BN_EAX, BN_EBX);
       End;
     End;
     OP_MUL:
     Begin
       If RightImm Then
-        OutLn('        IMUL    EAX, ' + ItoS(RightVal))
+      Begin
+        OutLn('        IMUL    EAX, ' + ItoS(RightVal));
+        BnEmitImulRegImm32(BN_EAX, RightVal);
+      End
       Else
       Begin
         OutLn('        POP     EBX');
         OutLn('        IMUL    EAX, EBX');
+        BnEmitPopReg(BN_EBX);
+        BnEmitImulRegReg(BN_EAX, BN_EBX);
       End;
     End;
     OP_DIV:
@@ -5479,74 +5548,116 @@ Begin
     OP_EQ, OP_EQQ:
     Begin
       If RightImm Then
-        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Begin
+        OutLn('        CMP     EAX, ' + ItoS(RightVal));
+        BnEmitCmpRegImm32(BN_EAX, RightVal);
+      End
       Else
       Begin
         OutLn('        POP     EBX');
         OutLn('        CMP     EBX, EAX');
+        BnEmitPopReg(BN_EBX);
+        BnEmitCmpRegReg(BN_EBX, BN_EAX);
       End;
       OutLn('        SETE    AL');
       OutLn('        MOVZX   EAX, AL');
+      BnEmitSeteAl;
+      BnEmitMovzxEaxAl;
     End;
     OP_NE, OP_NEQ:
     Begin
       If RightImm Then
-        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Begin
+        OutLn('        CMP     EAX, ' + ItoS(RightVal));
+        BnEmitCmpRegImm32(BN_EAX, RightVal);
+      End
       Else
       Begin
         OutLn('        POP     EBX');
         OutLn('        CMP     EBX, EAX');
+        BnEmitPopReg(BN_EBX);
+        BnEmitCmpRegReg(BN_EBX, BN_EAX);
       End;
       OutLn('        SETNE   AL');
       OutLn('        MOVZX   EAX, AL');
+      BnEmitSetneAl;
+      BnEmitMovzxEaxAl;
     End;
     OP_LT:
     Begin
       If RightImm Then
-        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Begin
+        OutLn('        CMP     EAX, ' + ItoS(RightVal));
+        BnEmitCmpRegImm32(BN_EAX, RightVal);
+      End
       Else
       Begin
         OutLn('        POP     EBX');
         OutLn('        CMP     EBX, EAX');
+        BnEmitPopReg(BN_EBX);
+        BnEmitCmpRegReg(BN_EBX, BN_EAX);
       End;
       OutLn('        SETL    AL');
       OutLn('        MOVZX   EAX, AL');
+      BnEmitSetlAl;
+      BnEmitMovzxEaxAl;
     End;
     OP_LE:
     Begin
       If RightImm Then
-        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Begin
+        OutLn('        CMP     EAX, ' + ItoS(RightVal));
+        BnEmitCmpRegImm32(BN_EAX, RightVal);
+      End
       Else
       Begin
         OutLn('        POP     EBX');
         OutLn('        CMP     EBX, EAX');
+        BnEmitPopReg(BN_EBX);
+        BnEmitCmpRegReg(BN_EBX, BN_EAX);
       End;
       OutLn('        SETLE   AL');
       OutLn('        MOVZX   EAX, AL');
+      BnEmitSetleAl;
+      BnEmitMovzxEaxAl;
     End;
     OP_GT:
     Begin
       If RightImm Then
-        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Begin
+        OutLn('        CMP     EAX, ' + ItoS(RightVal));
+        BnEmitCmpRegImm32(BN_EAX, RightVal);
+      End
       Else
       Begin
         OutLn('        POP     EBX');
         OutLn('        CMP     EBX, EAX');
+        BnEmitPopReg(BN_EBX);
+        BnEmitCmpRegReg(BN_EBX, BN_EAX);
       End;
       OutLn('        SETG    AL');
       OutLn('        MOVZX   EAX, AL');
+      BnEmitSetgAl;
+      BnEmitMovzxEaxAl;
     End;
     OP_GE:
     Begin
       If RightImm Then
-        OutLn('        CMP     EAX, ' + ItoS(RightVal))
+      Begin
+        OutLn('        CMP     EAX, ' + ItoS(RightVal));
+        BnEmitCmpRegImm32(BN_EAX, RightVal);
+      End
       Else
       Begin
         OutLn('        POP     EBX');
         OutLn('        CMP     EBX, EAX');
+        BnEmitPopReg(BN_EBX);
+        BnEmitCmpRegReg(BN_EBX, BN_EAX);
       End;
       OutLn('        SETGE   AL');
       OutLn('        MOVZX   EAX, AL');
+      BnEmitSetgeAl;
+      BnEmitMovzxEaxAl;
     End;
     OP_SPACESHIP:
     Begin
@@ -5861,6 +5972,7 @@ Begin
     Begin
       ExprFlushToEAX(Left);
       OutLn('        PUSH    EAX');
+      BnEmitPushReg(BN_EAX);
       ExprFlushToEAX(Right);
       ExprEmitBinOp(Op, False, 0);
     End;
@@ -6993,6 +7105,22 @@ Procedure BnEmitItoaRoutine; Forward;
 Procedure BnResolveCodeFixups; Forward;
 Procedure BnEmitMovRegEbpDisp(Reg : Integer; Disp : LongInt); Forward;
 Procedure BnEmitMovEbpDispReg(Disp : LongInt; Reg : Integer); Forward;
+Procedure BnEmitDataByte(B : Byte); Forward;
+Procedure BnEmitDataDWord(D : LongInt); Forward;
+
+(* Branch fixup helpers pour emission binaire des sauts *)
+
+Function BnBranchAlloc : Integer; Forward;
+Procedure BnBranchEmitJz(BrId : Integer); Forward;
+Procedure BnBranchEmitJmp(BrId : Integer); Forward;
+Procedure BnBranchPatch(BrId : Integer); Forward;
+Procedure BnBranchEmitJge(BrId : Integer); Forward;
+Function BnBranchGetCodePos : LongInt; Forward;
+Procedure BnBranchEmitJmpTo(TargetOfs : LongInt); Forward;
+
+(* Forward declarations pour les operations tableau *)
+Procedure EmitArrayLoad; Forward;
+Procedure EmitArrayLength; Forward;
 
 { ------------------------------------------------------------ }
 { ResolveVarLocation : determiner si une variable est locale,  }
@@ -7024,9 +7152,19 @@ Begin
   End
   Else
   Begin
-    (* Variable non trouvee, declaration implicite comme globale *)
-    AsmName := '_PH_' + AsmIdent(VarName);
-    IsGlobal := True;
+    (* Variable non trouvee, declaration implicite comme locale *)
+    SymIdx := SymAdd(VarName, SK_LOCAL, 0, LexLineNo);
+    If SymIdx > 0 Then
+    Begin
+      AsmName  := SymTab[SymIdx].AsmName;
+      Offset   := SymTab[SymIdx].Offset;
+      IsGlobal := False;
+    End
+    Else
+    Begin
+      AsmName := '_PH_' + AsmIdent(VarName);
+      IsGlobal := True;
+    End;
   End;
 End;
 
@@ -7231,6 +7369,122 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ ParseAssignArrayBody : code commun pour stocker les elements }
+{   Appele apres avoir consomme array( ou [                    }
+{   Lit les valeurs entieres, alloue, stocke, store le ptr     }
+{   CloseTok = ')' ou ']' selon la syntaxe                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignArrayBody(Const VarName : TString;
+                               Const CloseTok : Char);
+Var
+  Elems    : Array[0..255] Of LongInt;
+  ElemCount : Integer;
+  TotalBytes : LongInt;
+  I        : Integer;
+  IsGlobal, IsParam : Boolean;
+  Offset   : Integer;
+  AsmName  : TString;
+Begin
+  ElemCount := 0;
+  
+  { Lire les elements }
+  While (CurTokKind <> TK_EOF) And (CurTokStr <> CloseTok) Do
+  Begin
+    If CurTokKind = TK_INTEGER Then
+    Begin
+      If ElemCount < 256 Then
+        Elems[ElemCount] := CurTokInt;
+      Inc(ElemCount);
+      LexNextToken;
+    End
+    Else
+    Begin
+      { Sauter token inconnu }
+      Inc(ElemCount);
+      LexNextToken;
+    End;
+    If CurTokStr = ',' Then
+      LexNextToken;
+  End;
+  
+  { Consommer le token fermant }
+  If CurTokStr = CloseTok Then
+    LexNextToken;
+  
+  If ElemCount > 256 Then
+    ElemCount := 256;
+  
+  TotalBytes := (ElemCount + 1) * 4;
+  
+  { --- ASM texte : allocation --- }
+  OutLn('    ; --- array alloc ' + ItoS(ElemCount) + ' elements ---');
+  OutLn('    CALL _PHRT_GETPROCESSHEAP');
+  OutLn('    PUSH ' + ItoS(TotalBytes));
+  OutLn('    PUSH 0');
+  OutLn('    PUSH EAX');
+  OutLn('    CALL HeapAlloc');
+  OutLn('    MOV DWORD [EAX], ' + ItoS(ElemCount));
+  
+  { --- Binaire : GetProcessHeap() --- }
+  BnEmitCallIndWithFixup(3);              { CALL [GetProcessHeap] }
+  { --- Binaire : HeapAlloc(hHeap, 0, TotalBytes) --- }
+  BnEmitPushImm32(TotalBytes);            { dwBytes }
+  BnEmitPushImm8(0);                      { dwFlags = 0 }
+  BnEmitPushReg(BN_EAX);                  { hHeap }
+  BnEmitCallIndWithFixup(4);              { CALL [HeapAlloc] }
+  { EAX = pointeur du bloc alloue }
+  { Stocker le count dans [EAX] }
+  { MOV DWORD [EAX], ElemCount => C7 00 xx xx xx xx }
+  BnEmitByte($C7);
+  BnEmitByte($00);
+  BnEmitDWord(ElemCount);
+  
+  { --- Stocker les elements --- }
+  For I := 0 To ElemCount - 1 Do
+  Begin
+    OutLn('    MOV DWORD [EAX+' + ItoS(4 + I*4) + '], ' + ItoS(Elems[I]));
+    { MOV DWORD [EAX+disp8], imm32 => C7 40 disp8 imm32 }
+    BnEmitByte($C7);
+    BnEmitByte($40);
+    BnEmitByte(4 + I * 4);
+    BnEmitDWord(Elems[I]);
+  End;
+  
+  { --- Stocker le pointeur dans la variable --- }
+  EmitVarStore(VarName);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignArray : parser $var = array(val1, val2, ...)      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignArray(Const VarName : TString);
+Begin
+  { Consommer 'array' }
+  LexNextToken;
+  { Consommer '(' }
+  If CurTokStr <> '(' Then
+  Begin
+    CompileError('( attendu apres array', LexLineNo);
+    Exit;
+  End;
+  LexNextToken;
+  ParseAssignArrayBody(VarName, ')');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAssignArrayShort : parser $var = [val1, val2, ...]      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAssignArrayShort(Const VarName : TString);
+Begin
+  { Consommer '[' }
+  LexNextToken;
+  ParseAssignArrayBody(VarName, ']');
+End;
+
+{ ------------------------------------------------------------ }
 { ParseAssignSimple : parser une affectation simple $x = expr  }
 { Le nom de la variable a deja ete lu                          }
 { ------------------------------------------------------------ }
@@ -7268,6 +7522,18 @@ Begin
   Begin
     EmitVarLoad(CurTokStr);
     LexNextToken;
+  End
+  Else If (CurTokKind = TK_KEYWORD) And (StrLowerCase(CurTokStr) = 'array') Then
+  Begin
+    (* Syntaxe longue : $var = array(val1, val2, ...) *)
+    ParseAssignArray(VarName);
+    Exit; (* ParseAssignArray fait le store *)
+  End
+  Else If CurTokKind = TK_LBRACKET Then
+  Begin
+    (* Syntaxe courte : $var = [val1, val2, ...] *)
+    ParseAssignArrayShort(VarName);
+    Exit; (* ParseAssignArrayShort fait le store *)
   End
   Else If CurTokKind = TK_KEYWORD Then
   Begin
@@ -7711,6 +7977,8 @@ Var
   IfTestCount     : LongInt;   (* nombre de TEST EAX, EAX emis          *)
   IfLastKind      : Integer;   (* dernier type d operation if           *)
   IfNestLevel     : Integer;   (* niveau d imbrication courant          *)
+  IfBnBranchId    : Integer;   (* dernier branch ID binaire (pour JZ)   *)
+  IfBnJmpId       : Integer;   (* dernier branch ID binaire (pour JMP)  *)
 
 { ------------------------------------------------------------ }
 { InitIfState : initialiser l etat du module if/elseif/else    }
@@ -7842,6 +8110,10 @@ Begin
   OutLn(Lbl + ':');
 End;
 
+(* Forward declaration pour recursion mutuelle avec ParseIfBlock
+   et ParseLoopBlock *)
+Procedure ParseStatement; Forward;
+
 { ------------------------------------------------------------ }
 { EmitIfJmp : emettre un saut inconditionnel                    }
 { ------------------------------------------------------------ }
@@ -7925,9 +8197,7 @@ Begin
     LexNextToken;  (* Avancer apres { *)
     While (CurTokKind <> TK_RBRACE) And (CurTokKind <> TK_EOF) Do
     Begin
-      (* Parser les instructions du bloc *)
-      (* Pour l instant, sauter jusqu a } *)
-      LexNextToken;
+      ParseStatement;
     End;
     If CurTokKind = TK_RBRACE Then
       LexNextToken;  (* Avancer apres } *)
@@ -7937,11 +8207,7 @@ Begin
     (* Instruction unique sans accolades *)
     Inc(IfNoBraceCount);
     OutLn('    ; if sans accolades - instruction unique');
-    (* Parser une instruction *)
-    While (CurTokKind <> TK_SEMICOLON) And (CurTokKind <> TK_EOF) Do
-      LexNextToken;
-    If CurTokKind = TK_SEMICOLON Then
-      LexNextToken;
+    ParseStatement;
   End;
 End;
 
@@ -7971,11 +8237,16 @@ Var
   HasElse    : Boolean;
   BaseSeq    : Integer;
   NextKw     : TString;
+  BnTestId   : Integer;  (* branch ID pour JZ apres test *)
+  BnJmpIds   : Array[0..IF_MAX_ELIF+1] Of Integer; (* JMP vers endif *)
+  BnJmpCount : Integer;
+  I          : Integer;
 Begin
   Inc(IfStmtCount);
   Inc(IfNestLevel);
   HasElse := False;
   ElifIdx := 0;
+  BnJmpCount := 0;
   
   (* Generer les labels de base *)
   Inc(IfLabelSeq);
@@ -7996,6 +8267,9 @@ Begin
   
   (* Emettre le test de la condition *)
   EmitTestTruthy(LblElif);
+  (* Binaire : TEST EAX,EAX + JZ -> elif/else *)
+  BnTestId := BnBranchAlloc;
+  BnBranchEmitJz(BnTestId);
   
   (* Bloc du if *)
   OutLn('    ; if body');
@@ -8003,9 +8277,15 @@ Begin
   
   (* Saut vers la fin apres le bloc *)
   EmitIfJmp(LblEndIf);
+  (* Binaire : JMP -> endif *)
+  BnJmpIds[BnJmpCount] := BnBranchAlloc;
+  BnBranchEmitJmp(BnJmpIds[BnJmpCount]);
+  Inc(BnJmpCount);
   
   (* Label pour elseif ou else *)
   EmitIfLabel(LblElif);
+  (* Binaire : patcher le JZ pour pointer ici *)
+  BnBranchPatch(BnTestId);
   
   (* Parser les elseif (PHP supporte elseif comme un mot) *)
   While ElifIdx < IF_MAX_ELIF Do
@@ -8035,6 +8315,8 @@ Begin
         
         (* Emettre le test *)
         EmitTestTruthy(LblElif);
+        BnTestId := BnBranchAlloc;
+        BnBranchEmitJz(BnTestId);
         
         (* Bloc du elseif *)
         OutLn('    ; elseif body');
@@ -8042,9 +8324,13 @@ Begin
         
         (* Saut vers la fin *)
         EmitIfJmp(LblEndIf);
+        BnJmpIds[BnJmpCount] := BnBranchAlloc;
+        BnBranchEmitJmp(BnJmpIds[BnJmpCount]);
+        Inc(BnJmpCount);
         
         (* Label pour le prochain elseif ou else *)
         EmitIfLabel(LblElif);
+        BnBranchPatch(BnTestId);
       End
       Else If NextKw = 'else' Then
       Begin
@@ -8074,6 +8360,8 @@ Begin
           
           (* Emettre le test *)
           EmitTestTruthy(LblElif);
+          BnTestId := BnBranchAlloc;
+          BnBranchEmitJz(BnTestId);
           
           (* Bloc *)
           OutLn('    ; else if body');
@@ -8081,9 +8369,13 @@ Begin
           
           (* Saut vers la fin *)
           EmitIfJmp(LblEndIf);
+          BnJmpIds[BnJmpCount] := BnBranchAlloc;
+          BnBranchEmitJmp(BnJmpIds[BnJmpCount]);
+          Inc(BnJmpCount);
           
           (* Label pour le prochain *)
           EmitIfLabel(LblElif);
+          BnBranchPatch(BnTestId);
         End
         Else
         Begin
@@ -8110,6 +8402,9 @@ Begin
   
   (* Label de fin *)
   EmitIfLabel(LblEndIf);
+  (* Binaire : patcher tous les JMP -> endif *)
+  For I := 0 To BnJmpCount - 1 Do
+    BnBranchPatch(BnJmpIds[I]);
   OutLn('    ; --- end if #' + ItoS(BaseSeq) + ' ---');
   
   Dec(IfNestLevel);
@@ -8625,9 +8920,7 @@ Begin
     LexNextToken;  (* Avancer apres { *)
     While (CurTokKind <> TK_RBRACE) And (CurTokKind <> TK_EOF) Do
     Begin
-      (* Parser les instructions du bloc *)
-      (* Pour l instant, sauter jusqu a } *)
-      LexNextToken;
+      ParseStatement;
     End;
     If CurTokKind = TK_RBRACE Then
       LexNextToken;  (* Avancer apres } *)
@@ -8636,10 +8929,7 @@ Begin
   Begin
     (* Instruction unique sans accolades *)
     OutLn('    ; boucle sans accolades - instruction unique');
-    While (CurTokKind <> TK_SEMICOLON) And (CurTokKind <> TK_EOF) Do
-      LexNextToken;
-    If CurTokKind = TK_SEMICOLON Then
-      LexNextToken;
+    ParseStatement;
   End;
 End;
 
@@ -8979,6 +9269,8 @@ Var
   ValName   : TString;
   KeyName   : TString;
   HasKey    : Boolean;
+  BnTestId  : Integer;
+  BnLoopTopOfs : LongInt;
 Begin
   Inc(LpForeachCount);
   LpLastKind := LP_FOREACH;
@@ -9068,31 +9360,84 @@ Begin
   
   (* Initialisation du foreach *)
   OutLn('    XOR ECX, ECX       ; index = 0');
-  OutLn('    MOV EBX, ' + AsmIdent(ArrName) + ' ; array ptr');
+  { Charger le tableau dans EBX via EmitVarLoad }
+  EmitVarLoad(ArrName);
+  OutLn('    MOV EBX, EAX       ; array ptr');
   OutLn('    MOV EDX, [EBX]     ; count');
+  
+  { Binaire : XOR ECX, ECX }
+  BnEmitXorRegReg(BN_ECX, BN_ECX);
+  { EAX deja charge par EmitVarLoad }
+  { MOV EBX, EAX }
+  BnEmitMovRegReg(BN_EBX, BN_EAX);
+  { MOV EDX, [EBX] => 8B 13 }
+  BnEmitByte($8B);
+  BnEmitByte($13);
   
   (* Label de test *)
   EmitLoopLabel(LblTest);
+  BnLoopTopOfs := BnBranchGetCodePos;
   OutLn('    CMP ECX, EDX       ; index < count?');
   OutLn('    JGE ' + LblEnd + '         ; exit if done');
   
+  { Binaire : CMP ECX, EDX + JGE end }
+  BnEmitCmpRegReg(BN_ECX, BN_EDX);
+  BnTestId := BnBranchAlloc;
+  BnBranchEmitJge(BnTestId);
+  
   (* Charger l element courant *)
   OutLn('    MOV EAX, [EBX+4+ECX*4] ; current element');
+  
+  { Binaire : MOV EAX, [EBX+ECX*4+4] => 8B 44 8B 04 }
+  BnEmitByte($8B);
+  BnEmitByte($44);
+  BnEmitByte($8B);
+  BnEmitByte($04);
+  
   OutLn('    MOV ' + AsmIdent(ValName) + ', EAX ; store in $' + ValName);
+  EmitVarStore(ValName);
   
   If HasKey Then
+  Begin
     OutLn('    MOV ' + AsmIdent(KeyName) + ', ECX ; store key');
+    { MOV EAX, ECX puis EmitVarStore }
+    OutLn('    MOV EAX, ECX');
+    BnEmitMovRegReg(BN_EAX, BN_ECX);
+    EmitVarStore(KeyName);
+  End;
+  
+  { Sauvegarder ECX, EBX, EDX avant le body }
+  BnEmitPushReg(BN_ECX);
+  BnEmitPushReg(BN_EBX);
+  BnEmitPushReg(BN_EDX);
+  OutLn('    PUSH ECX');
+  OutLn('    PUSH EBX');
+  OutLn('    PUSH EDX');
   
   (* Bloc du foreach *)
   OutLn('    ; foreach body');
   ParseLoopBlock;
   
+  { Restaurer EDX, EBX, ECX }
+  BnEmitPopReg(BN_EDX);
+  BnEmitPopReg(BN_EBX);
+  BnEmitPopReg(BN_ECX);
+  OutLn('    POP EDX');
+  OutLn('    POP EBX');
+  OutLn('    POP ECX');
+  
   (* Increment *)
   OutLn('    INC ECX            ; next index');
+  BnEmitIncReg(BN_ECX);
+  
+  { JMP vers LblTest }
   EmitLoopJmp(LblTest);
+  BnBranchEmitJmpTo(BnLoopTopOfs);
   
   (* Label de fin *)
   EmitLoopLabel(LblEnd);
+  { Patcher le JGE pour pointer ici }
+  BnBranchPatch(BnTestId);
   OutLn('    ; --- end foreach #' + ItoS(BaseSeq) + ' ---');
   
   (* Depiler le contexte *)
@@ -10348,6 +10693,8 @@ Function ParseEchoArg : Boolean;
 Var
   StrLbl : TString;
   IntVal : LongInt;
+  VName  : TString;
+  IdxVal : LongInt;
 Begin
   ParseEchoArg := False;
   
@@ -10379,12 +10726,50 @@ Begin
   If CurTokKind = TK_VARIABLE Then
   Begin
     Inc(IoEchoVarCount);
-    OutLn('  ; echo variable: ' + CurTokStr);
-    { Charger la variable dans EAX }
-    EmitVarLoad(CurTokStr);
-    { Pour l instant, supposer que c est un entier }
-    EmitWriteInt;
+    VName := CurTokStr;
     LexNextToken;
+    
+    { Verifier si c est un acces tableau $arr[i] }
+    If CurTokKind = TK_LBRACKET Then
+    Begin
+      LexNextToken;
+      If CurTokKind = TK_INTEGER Then
+      Begin
+        IdxVal := CurTokInt;
+        LexNextToken;
+      End
+      Else
+      Begin
+        IdxVal := 0;
+        LexNextToken;
+      End;
+      If CurTokKind = TK_RBRACKET Then
+        LexNextToken;
+      
+      OutLn('  ; echo array access: ' + VName + '[' + ItoS(IdxVal) + ']');
+      { Charger le pointeur du tableau dans EBX }
+      OutLn('    MOV EBX, ' + AsmIdent(VName));
+      EmitVarLoad(VName);
+      OutLn('    MOV EBX, EAX');
+      { Binaire : MOV EBX, EAX }
+      BnEmitMovRegReg(BN_EBX, BN_EAX);
+      { Charger l index dans EAX }
+      OutLn('    MOV EAX, ' + ItoS(IdxVal));
+      BnEmitMovRegImm32(BN_EAX, IdxVal);
+      { Emettre l acces tableau }
+      EmitArrayLoad;
+      { Afficher le resultat }
+      EmitWriteInt;
+    End
+    Else
+    Begin
+      OutLn('  ; echo variable: ' + VName);
+      { Charger la variable dans EAX }
+      EmitVarLoad(VName);
+      { Pour l instant, supposer que c est un entier }
+      EmitWriteInt;
+    End;
+    
     ParseEchoArg := True;
     IoLastKind := IO_ECHO_VAR;
     Exit;
@@ -10424,15 +10809,39 @@ Begin
     Exit;
   End;
   
-  { Identificateur (constante) }
+  { Identificateur (constante ou fonction builtin) }
   If CurTokKind = TK_IDENT Then
   Begin
-    OutLn('  ; echo identifier: ' + CurTokStr);
+    VName := CurTokStr;
+    LexNextToken;
+    
+    { Verifier si c est un appel count($arr) }
+    If (StrLowerCase(VName) = 'count') And (CurTokStr = '(') Then
+    Begin
+      LexNextToken;
+      If CurTokKind = TK_VARIABLE Then
+      Begin
+        OutLn('  ; echo count(' + CurTokStr + ')');
+        { Charger le pointeur du tableau dans EBX }
+        EmitVarLoad(CurTokStr);
+        OutLn('    MOV EBX, EAX');
+        BnEmitMovRegReg(BN_EBX, BN_EAX);
+        LexNextToken;
+      End;
+      If CurTokStr = ')' Then
+        LexNextToken;
+      { Emettre array length : MOV EAX, [EBX] }
+      EmitArrayLength;
+      EmitWriteInt;
+      ParseEchoArg := True;
+      Exit;
+    End;
+    
+    OutLn('  ; echo identifier: ' + VName);
     { Pour l instant, traiter comme une constante non definie }
     { Emettre le nom comme chaine }
-    StrLbl := DataAddStr(CurTokStr);
+    StrLbl := DataAddStr(VName);
     EmitWriteStr(StrLbl);
-    LexNextToken;
     ParseEchoArg := True;
     Exit;
   End;
@@ -11018,6 +11427,18 @@ Begin
   OutLn('  ADD EAX, 4           ; skip count header');
   OutLn('  ADD EAX, EBX         ; add base');
   OutLn('  MOV EAX, DWORD [EAX] ; load element');
+  
+  { Emission binaire }
+  { SHL EAX, 2 }
+  BnEmitShlRegImm8(BN_EAX, 2);
+  { ADD EAX, 4 }
+  BnEmitAddRegImm8(BN_EAX, 4);
+  { ADD EAX, EBX }
+  BnEmitAddRegReg(BN_EAX, BN_EBX);
+  { MOV EAX, [EAX] => 8B 00 }
+  BnEmitByte($8B);
+  BnEmitByte($00);
+  
   Inc(ArLoadCount);
   ArLastKind := AR_LOAD;
 End;
@@ -11057,6 +11478,9 @@ Procedure EmitArrayLength;
 Begin
   OutLn('  ; --- array length (count) ---');
   OutLn('  MOV EAX, DWORD [EBX] ; get array count');
+  { Binaire : MOV EAX, [EBX] => 8B 03 }
+  BnEmitByte($8B);
+  BnEmitByte($03);
   Inc(ArLengthCount);
   ArLastKind := AR_LENGTH;
 End;
@@ -17693,6 +18117,9 @@ Var
   BnCodeFixupCount  : Integer;     (* nombre de fixups de code interne   *)
   BnItoaBufOfs      : LongInt;     (* offset du buffer ITOA dans .data   *)
   BnItoaCodeOfs     : LongInt;     (* offset de la routine ITOA dans .text *)
+  (* Branch fixup system pour les sauts if/else/foreach/while *)
+  BnBranchFixups    : Array[0..511] Of LongInt; (* offset du rel32 placeholder *)
+  BnBranchCount     : Integer;     (* prochain ID de branch fixup        *)
   BnStringTable     : Array[0..BN_MAX_STRINGS-1] Of Char;
   BnStringOffset    : LongInt;     (* offset courant dans table chaines  *)
   BnCodeBuffer      : Array[0..BN_MAX_CODE-1] Of Byte;
@@ -17743,6 +18170,7 @@ Begin
   BnCodeFixupCount  := 0;
   BnItoaBufOfs      := -1;
   BnItoaCodeOfs     := -1;
+  BnBranchCount     := 0;
   BnOutOpen         := False;
 
   (* Initialiser les tableaux *)
@@ -18733,6 +19161,98 @@ Begin
       BnCodeBuffer[Offset + 3] := (Rel32 Shr 24) And $FF;
     End;
   End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnBranchAlloc : allouer un ID de branch fixup                 *)
+(* Retourne l ID unique pour ce branch point                    *)
+(* ------------------------------------------------------------ *)
+
+Function BnBranchAlloc : Integer;
+Begin
+  BnBranchAlloc := BnBranchCount;
+  BnBranchFixups[BnBranchCount] := -1;
+  Inc(BnBranchCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnBranchEmitJz : emettre TEST EAX,EAX + JZ rel32 (placeholder) *)
+(* L offset du rel32 est stocke dans BnBranchFixups[BrId]      *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnBranchEmitJz(BrId : Integer);
+Begin
+  (* TEST EAX, EAX *)
+  BnEmitByte($85); BnEmitByte($C0);
+  (* JZ rel32 = 0F 84 rel32 *)
+  BnEmitByte($0F); BnEmitByte($84);
+  BnBranchFixups[BrId] := BnCodeSize;
+  BnEmitDWord(0);  { placeholder }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnBranchEmitJge : emettre JGE rel32 (placeholder)            *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnBranchEmitJge(BrId : Integer);
+Begin
+  (* JGE rel32 = 0F 8D rel32 *)
+  BnEmitByte($0F); BnEmitByte($8D);
+  BnBranchFixups[BrId] := BnCodeSize;
+  BnEmitDWord(0);  { placeholder }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnBranchEmitJmp : emettre JMP rel32 (placeholder)            *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnBranchEmitJmp(BrId : Integer);
+Begin
+  BnEmitByte($E9);   { JMP rel32 }
+  BnBranchFixups[BrId] := BnCodeSize;
+  BnEmitDWord(0);    { placeholder }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnBranchPatch : patcher le rel32 avec la position courante   *)
+(* rel32 = current_code_pos - (fixup_offset + 4)               *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnBranchPatch(BrId : Integer);
+Var
+  FixOfs : LongInt;
+  Rel32  : LongInt;
+Begin
+  FixOfs := BnBranchFixups[BrId];
+  If FixOfs < 0 Then Exit;
+  Rel32 := BnCodeSize - (FixOfs + 4);
+  BnCodeBuffer[FixOfs]     := Rel32 And $FF;
+  BnCodeBuffer[FixOfs + 1] := (Rel32 Shr 8) And $FF;
+  BnCodeBuffer[FixOfs + 2] := (Rel32 Shr 16) And $FF;
+  BnCodeBuffer[FixOfs + 3] := (Rel32 Shr 24) And $FF;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnBranchGetCodePos : retourner la position courante du code  *)
+(* ------------------------------------------------------------ *)
+
+Function BnBranchGetCodePos : LongInt;
+Begin
+  BnBranchGetCodePos := BnCodeSize;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnBranchEmitJmpTo : emettre un JMP rel32 vers un offset     *)
+(* connu (pour les retours de boucle)                           *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnBranchEmitJmpTo(TargetOfs : LongInt);
+Var
+  Rel32 : LongInt;
+Begin
+  BnEmitByte($E9);   { JMP rel32 }
+  Rel32 := TargetOfs - (BnCodeSize + 4);
+  BnEmitDWord(Rel32);
 End;
 
 (* ------------------------------------------------------------ *)
@@ -20503,6 +21023,8 @@ Begin
   (* GetStdHandle et WriteFile pour echo/print *)
   ImImports[1].IsUsed := True;  (* GetStdHandle *)
   ImImports[2].IsUsed := True;  (* WriteFile *)
+  ImImports[3].IsUsed := True;  (* GetProcessHeap *)
+  ImImports[4].IsUsed := True;  (* HeapAlloc *)
 End;
 
 (* ------------------------------------------------------------ *)
@@ -22151,7 +22673,6 @@ End;
 (* ParseStatement : parser un statement PHP                      *)
 (* ============================================================ *)
 
-Procedure ParseStatement; Forward;
 Procedure EmitMainPrologue; Forward;
 Procedure EmitMainEpilogue; Forward;
 
@@ -22379,7 +22900,8 @@ Begin
   { Emettre le point d'entree _start }
   BnEmitByte($55);              { PUSH EBP }
   BnEmitByte($89); BnEmitByte($E5);  { MOV EBP, ESP }
-  BnEmitByte($83); BnEmitByte($EC); BnEmitByte($20);  { SUB ESP, 32 }
+  BnEmitByte($81); BnEmitByte($EC);  { SUB ESP, imm32 }
+  BnEmitDWord(128);                 { 128 octets = 32 variables locales }
 End;
 
 { ============================================================ }
