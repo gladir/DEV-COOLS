@@ -6977,6 +6977,24 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Forward declarations pour les routines binaires Bn*          }
+{ (necessaires car utilisees dans EmitVarLoad/Store et autres  }
+{  avant leur definition complete)                             }
+{ ------------------------------------------------------------ }
+
+Procedure BnEmitByte(B : Byte); Forward;
+Procedure BnEmitDWord(D : LongInt); Forward;
+Procedure BnEmitDataString(Const S : TString); Forward;
+Procedure BnEmitWriteStr(DataOfs : LongInt; StrLen : LongInt); Forward;
+Function GetBnDataSize : LongInt; Forward;
+Procedure BnEmitWriteIntImm(Val : LongInt); Forward;
+Procedure BnEmitWriteIntEax; Forward;
+Procedure BnEmitItoaRoutine; Forward;
+Procedure BnResolveCodeFixups; Forward;
+Procedure BnEmitMovRegEbpDisp(Reg : Integer; Disp : LongInt); Forward;
+Procedure BnEmitMovEbpDispReg(Disp : LongInt; Reg : Integer); Forward;
+
+{ ------------------------------------------------------------ }
 { ResolveVarLocation : determiner si une variable est locale,  }
 { globale ou parametre, et retourner son offset ou nom ASM     }
 { ------------------------------------------------------------ }
@@ -7043,6 +7061,10 @@ Begin
     OutLn('    MOV EAX, DWORD [EBP' + ItoS(Offset) + ']');
     Inc(VaLocalCount);
   End;
+
+  { Emission binaire pour les variables locales/parametres }
+  If (Not IsGlobal) Then
+    BnEmitMovRegEbpDisp(0 { EAX }, Offset);
 End;
 
 { ------------------------------------------------------------ }
@@ -7076,6 +7098,10 @@ Begin
     OutLn('    MOV DWORD [EBP' + ItoS(Offset) + '], EAX');
     Inc(VaLocalCount);
   End;
+
+  { Emission binaire pour les variables locales/parametres }
+  If (Not IsGlobal) Then
+    BnEmitMovEbpDispReg(Offset, 0 { EAX });
 End;
 
 { ------------------------------------------------------------ }
@@ -7228,6 +7254,9 @@ Begin
   If CurTokKind = TK_INTEGER Then
   Begin
     OutLn('    MOV EAX, ' + ItoS(CurTokInt));
+    { Emission binaire : MOV EAX, imm32 }
+    BnEmitByte($B8);
+    BnEmitDWord(CurTokInt);
     LexNextToken;
   End
   Else If CurTokKind = TK_STRING Then
@@ -10151,14 +10180,6 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ Forward declarations pour emission binaire                    }
-{ ------------------------------------------------------------ }
-
-Procedure BnEmitDataString(Const S : TString); Forward;
-Procedure BnEmitWriteStr(DataOfs : LongInt; StrLen : LongInt); Forward;
-Function GetBnDataSize : LongInt; Forward;
-
-{ ------------------------------------------------------------ }
 { EmitWriteStr : emettre le code pour ecrire une chaine          }
 {   Utilise WriteFile via GetStdHandle(STD_OUTPUT_HANDLE)        }
 {   EAX contient le pointeur vers la chaine a afficher           }
@@ -10240,6 +10261,9 @@ Begin
   OutLn('  CALL _PHRT_WRITESTR');
   OutLn('  ADD ESP, 4');
   IoLastKind := IO_WRITE_INT;
+
+  { Emission binaire }
+  BnEmitWriteIntEax;
 End;
 
 { ------------------------------------------------------------ }
@@ -10257,6 +10281,9 @@ Begin
   OutLn('  CALL _PHRT_WRITESTR');
   OutLn('  ADD ESP, 4');
   IoLastKind := IO_WRITE_INT;
+
+  { Emission binaire }
+  BnEmitWriteIntImm(Val);
 End;
 
 { ------------------------------------------------------------ }
@@ -17557,6 +17584,8 @@ Const
   BN_MAX_DLLS            = 8;       (* nombre max de DLLs importees   *)
   BN_MAX_IMP_FIXUPS      = 256;     (* nombre max de fixups d'imports *)
   BN_MAX_DATA_FIXUPS     = 256;     (* nombre max de fixups de donnees *)
+  BN_MAX_CODE_FIXUPS     = 256;     (* nombre max de fixups de code interne *)
+  BN_ITOA_BUF_SIZE       = 32;      (* taille buffer conversion ITOA  *)
 
   (* Indices de sections standard                                    *)
   BN_SEC_TEXT_IDX        = 0;       (* index section .text            *)
@@ -17635,6 +17664,14 @@ Type
     DataOffset   : LongInt;     (* offset dans BnDataBuffer           *)
   End;
 
+  (* Enregistrement pour un fixup de code interne                    *)
+  (* Pour les CALL rel32 vers des routines internes (ex: ITOA)      *)
+  (* Le rel32 sera patche quand on connait l adresse cible          *)
+  TBnCodeFixupRec = Record
+    CodeOffset   : LongInt;     (* offset du rel32 dans BnCodeBuffer  *)
+    TargetId     : Integer;     (* id de la cible (0=ITOA)            *)
+  End;
+
 Var
   BnInitialized     : Boolean;     (* True si le module est initialise   *)
   BnFormat          : Integer;     (* format de sortie actuel            *)
@@ -17652,6 +17689,10 @@ Var
   BnImpFixupCount   : Integer;     (* nombre de fixups d'imports         *)
   BnDataFixups      : Array[0..BN_MAX_DATA_FIXUPS-1] Of TBnDataFixupRec;
   BnDataFixupCount  : Integer;     (* nombre de fixups de donnees        *)
+  BnCodeFixups      : Array[0..BN_MAX_CODE_FIXUPS-1] Of TBnCodeFixupRec;
+  BnCodeFixupCount  : Integer;     (* nombre de fixups de code interne   *)
+  BnItoaBufOfs      : LongInt;     (* offset du buffer ITOA dans .data   *)
+  BnItoaCodeOfs     : LongInt;     (* offset de la routine ITOA dans .text *)
   BnStringTable     : Array[0..BN_MAX_STRINGS-1] Of Char;
   BnStringOffset    : LongInt;     (* offset courant dans table chaines  *)
   BnCodeBuffer      : Array[0..BN_MAX_CODE-1] Of Byte;
@@ -17699,6 +17740,9 @@ Begin
   BnFixupCount      := 0;
   BnImpFixupCount   := 0;
   BnDataFixupCount  := 0;
+  BnCodeFixupCount  := 0;
+  BnItoaBufOfs      := -1;
+  BnItoaCodeOfs     := -1;
   BnOutOpen         := False;
 
   (* Initialiser les tableaux *)
@@ -17735,6 +17779,12 @@ Begin
   Begin
     BnDataFixups[I].CodeOffset := 0;
     BnDataFixups[I].DataOffset := 0;
+  End;
+
+  For I := 0 To BN_MAX_CODE_FIXUPS - 1 Do
+  Begin
+    BnCodeFixups[I].CodeOffset := 0;
+    BnCodeFixups[I].TargetId   := 0;
   End;
 
   For I := 0 To BN_MAX_SYMBOLS - 1 Do
@@ -17979,6 +18029,27 @@ Begin
 
   BnAddDataFixup := BnDataFixupCount;
   Inc(BnDataFixupCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnAddCodeFixup : ajouter un fixup pour un CALL rel32 interne *)
+(* CodeOffset = offset du rel32 dans BnCodeBuffer               *)
+(* TargetId = 0 pour ITOA                                       *)
+(* ------------------------------------------------------------ *)
+
+Function BnAddCodeFixup(ACodeOffset : LongInt; ATargetId : Integer) : Integer;
+Begin
+  If BnCodeFixupCount >= BN_MAX_CODE_FIXUPS Then
+  Begin
+    BnAddCodeFixup := -1;
+    Exit;
+  End;
+
+  BnCodeFixups[BnCodeFixupCount].CodeOffset := ACodeOffset;
+  BnCodeFixups[BnCodeFixupCount].TargetId   := ATargetId;
+
+  BnAddCodeFixup := BnCodeFixupCount;
+  Inc(BnCodeFixupCount);
 End;
 
 (* ------------------------------------------------------------ *)
@@ -18391,6 +18462,277 @@ Begin
   (* Liberer les 4 octets reserves pour lpNumberOfBytesWritten *)
   (* ADD ESP, 4 = 83 C4 04 *)
   BnEmitByte($83); BnEmitByte($C4); BnEmitByte($04);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitCallItoa : emettre CALL rel32 vers la routine ITOA     *)
+(* interne. Le rel32 sera patche par BnResolveCodeFixups.       *)
+(* A l entree : EAX = valeur entiere                            *)
+(* A la sortie: EAX = offset data du resultat, ECX = longueur  *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitCallItoa;
+Var
+  FixupOfs : LongInt;
+Begin
+  BnEmitByte($E8);    { CALL rel32 }
+  FixupOfs := BnCodeSize;
+  BnEmitDWord(0);     { placeholder rel32 }
+  BnAddCodeFixup(FixupOfs, 0); { target 0 = ITOA }
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitWriteIntImm : emettre le code binaire pour ecrire un  *)
+(* entier immediat sur stdout (ITOA + GetStdHandle + WriteFile) *)
+(* Val = valeur entiere a afficher                              *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitWriteIntImm(Val : LongInt);
+Begin
+  (* Charger la valeur dans EAX *)
+  (* MOV EAX, imm32 = B8 + dword *)
+  BnEmitByte($B8);
+  BnEmitDWord(Val);
+
+  (* Appeler ITOA : EAX=valeur -> EAX=data_ofs, ECX=longueur *)
+  BnEmitCallItoa;
+
+  (* Maintenant on a EAX=offset data du buffer, ECX=longueur *)
+  (* On doit appeler GetStdHandle + WriteFile *)
+  (* SUB ESP, 4 pour lpNumberOfBytesWritten *)
+  BnEmitByte($83); BnEmitByte($EC); BnEmitByte($04);
+
+  (* Sauver ECX (longueur) et EAX (data ptr) *)
+  BnEmitPushReg(REG_ECX);                { PUSH ECX = longueur }
+  BnEmitPushReg(REG_EAX);                { PUSH EAX = data ptr }
+
+  (* GetStdHandle(-11) *)
+  BnEmitPushImm32(LongInt($FFFFFFF5));
+  BnEmitCallIndWithFixup(1);
+
+  (* Recuperer data ptr et longueur *)
+  BnEmitPopReg(REG_EDX);                 { POP EDX = data ptr }
+  BnEmitPopReg(REG_ECX);                 { POP ECX = longueur }
+
+  (* WriteFile(hFile=EAX, lpBuffer=EDX, nBytes=ECX, lpWritten, 0) *)
+  BnEmitPushImm8(0);                     { lpOverlapped = NULL }
+
+  (* LEA EBX, [ESP+4] = 8D 5C 24 04 *)
+  BnEmitByte($8D); BnEmitByte($5C); BnEmitByte($24); BnEmitByte($04);
+  BnEmitPushReg(REG_EBX);                { lpNumberOfBytesWritten }
+
+  BnEmitPushReg(REG_ECX);                { nNumberOfBytesToWrite }
+  BnEmitPushReg(REG_EDX);                { lpBuffer }
+  BnEmitPushReg(REG_EAX);                { hFile }
+  BnEmitCallIndWithFixup(2);             { CALL [WriteFile] }
+
+  (* ADD ESP, 4 *)
+  BnEmitByte($83); BnEmitByte($C4); BnEmitByte($04);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitWriteIntEax : emettre le code binaire pour ecrire      *)
+(* un entier dont la valeur est dans EAX                        *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitWriteIntEax;
+Begin
+  (* EAX contient deja la valeur *)
+  (* Appeler ITOA : EAX=valeur -> EAX=data_ofs, ECX=longueur *)
+  BnEmitCallItoa;
+
+  (* SUB ESP, 4 pour lpNumberOfBytesWritten *)
+  BnEmitByte($83); BnEmitByte($EC); BnEmitByte($04);
+
+  BnEmitPushReg(REG_ECX);                { sauver longueur }
+  BnEmitPushReg(REG_EAX);                { sauver data ptr }
+
+  BnEmitPushImm32(LongInt($FFFFFFF5));
+  BnEmitCallIndWithFixup(1);             { GetStdHandle(-11) }
+
+  BnEmitPopReg(REG_EDX);                 { data ptr }
+  BnEmitPopReg(REG_ECX);                 { longueur }
+
+  BnEmitPushImm8(0);                     { lpOverlapped }
+  BnEmitByte($8D); BnEmitByte($5C); BnEmitByte($24); BnEmitByte($04);
+  BnEmitPushReg(REG_EBX);                { lpWritten }
+  BnEmitPushReg(REG_ECX);                { nBytes }
+  BnEmitPushReg(REG_EDX);                { lpBuffer }
+  BnEmitPushReg(REG_EAX);                { hFile }
+  BnEmitCallIndWithFixup(2);             { WriteFile }
+
+  BnEmitByte($83); BnEmitByte($C4); BnEmitByte($04);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitItoaRoutine : emettre la routine ITOA en code machine  *)
+(* dans BnCodeBuffer. Convertit EAX en chaine ASCII dans le     *)
+(* buffer ITOA en .data.                                        *)
+(* Entree : EAX = valeur signee 32 bits                        *)
+(* Sortie : EAX = adresse absolue du buffer, ECX = longueur    *)
+(* Le buffer ITOA a ete reserve dans .data a BnItoaBufOfs.     *)
+(* On stocke l offset dans le buffer et le code patche après   *)
+(* par BnResolveDataFixups quand DataRVA est connu.            *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitItoaRoutine;
+Var
+  LblLoop, LblDone, LblPos, LblNeg : LongInt;
+  FixupOfs : LongInt;
+Begin
+  (* Sauver l offset de debut de la routine *)
+  BnItoaCodeOfs := BnCodeSize;
+
+  (* Sauver les registres *)
+  BnEmitPushReg(REG_EBX);                { PUSH EBX }
+  BnEmitPushReg(REG_EDX);                { PUSH EDX }
+  BnEmitPushReg(REG_EDI);                { PUSH EDI }
+  BnEmitPushReg(REG_ESI);                { PUSH ESI }
+
+  (* ESI = signe original (0 ou 1) *)
+  (* XOR ESI, ESI *)
+  BnEmitByte($31); BnEmitByte($F6);
+
+  (* Tester si negatif *)
+  (* TEST EAX, EAX *)
+  BnEmitByte($85); BnEmitByte($C0);
+  (* JNS LblPos (saut si positif) - JNS rel8 = 79 xx *)
+  BnEmitByte($79); BnEmitByte($04);  { JNS +4 }
+
+  (* Negatif : NEG EAX + MOV ESI, 1 *)
+  (* NEG EAX = F7 D8 *)
+  BnEmitByte($F7); BnEmitByte($D8);
+  (* MOV ESI, 1 - on utilise INC ESI = 46 apres XOR ESI,ESI=0 *)
+  BnEmitByte($46); (* INC ESI *)
+  (* NOP pour garder l offset correct du JNS *)
+  BnEmitByte($90);
+
+  (* LblPos: *)
+  (* EDI = adresse du buffer ITOA + 31 (fin) *)
+  (* MOV EDI, imm32 = BF + dword (adresse absolue du buffer+31) *)
+  BnEmitByte($BF);
+  FixupOfs := BnCodeSize;
+  BnEmitDWord(0);  { placeholder - sera patche avec ImageBase+DataRVA+BnItoaBufOfs+31 }
+  BnAddDataFixup(FixupOfs, BnItoaBufOfs + 31);
+
+  (* MOV BYTE [EDI], 0 = terminateur nul *)
+  (* C6 07 00 *)
+  BnEmitByte($C6); BnEmitByte($07); BnEmitByte($00);
+
+  (* DEC EDI *)
+  BnEmitByte($4F);
+
+  (* MOV EBX, 10 = diviseur *)
+  BnEmitByte($BB); BnEmitDWord(10);
+
+  (* MOV ECX, EAX = copier valeur dans ECX *)
+  BnEmitByte($89); BnEmitByte($C1);  { MOV ECX, EAX }
+
+  (* LblLoop: *)
+  LblLoop := BnCodeSize;
+
+  (* XOR EDX, EDX *)
+  BnEmitByte($31); BnEmitByte($D2);
+
+  (* MOV EAX, ECX *)
+  BnEmitByte($89); BnEmitByte($C8);
+
+  (* DIV EBX = EAX / 10, quotient dans EAX, reste dans EDX *)
+  (* F7 F3 *)
+  BnEmitByte($F7); BnEmitByte($F3);
+
+  (* ADD DL, '0' = 30h *)
+  BnEmitByte($80); BnEmitByte($C2); BnEmitByte($30);
+
+  (* MOV [EDI], DL *)
+  BnEmitByte($88); BnEmitByte($17);
+
+  (* DEC EDI *)
+  BnEmitByte($4F);
+
+  (* MOV ECX, EAX = quotient *)
+  BnEmitByte($89); BnEmitByte($C1);
+
+  (* TEST ECX, ECX *)
+  BnEmitByte($85); BnEmitByte($C9);
+
+  (* JNZ LblLoop *)
+  BnEmitByte($75);
+  BnEmitByte(Byte((LblLoop - (BnCodeSize + 1)) And $FF));
+
+  (* Ajouter signe si necessaire *)
+  (* TEST ESI, ESI *)
+  BnEmitByte($85); BnEmitByte($F6);
+  (* JZ LblDone = 74 xx *)
+  BnEmitByte($74); BnEmitByte($04);
+
+  (* MOV BYTE [EDI], '-' = 2Dh *)
+  BnEmitByte($C6); BnEmitByte($07); BnEmitByte($2D);
+  (* DEC EDI *)
+  BnEmitByte($4F);
+
+  (* LblDone: *)
+  (* INC EDI pour pointer vers le premier caractere *)
+  BnEmitByte($47);  { INC EDI }
+
+  (* Calculer la longueur : ECX = buffer_end - EDI *)
+  (* LEA ECX, [buffer+31] *)
+  BnEmitByte($B9);  { MOV ECX, imm32 }
+  FixupOfs := BnCodeSize;
+  BnEmitDWord(0);
+  BnAddDataFixup(FixupOfs, BnItoaBufOfs + 31);
+
+  (* SUB ECX, EDI *)
+  BnEmitByte($29); BnEmitByte($F9);
+
+  (* MOV EAX, EDI = adresse du premier caractere *)
+  BnEmitByte($89); BnEmitByte($F8);  { MOV EAX, EDI }
+
+  (* Restaurer les registres *)
+  BnEmitPopReg(REG_ESI);
+  BnEmitPopReg(REG_EDI);
+  BnEmitPopReg(REG_EDX);
+  BnEmitPopReg(REG_EBX);
+
+  (* RET *)
+  BnEmitByte($C3);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnResolveCodeFixups : patcher les CALL rel32 internes        *)
+(* Doit etre appele apres que toutes les routines internes      *)
+(* ont ete emises dans BnCodeBuffer.                            *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnResolveCodeFixups;
+Var
+  I : Integer;
+  Offset : LongInt;
+  TargetOfs : LongInt;
+  Rel32 : LongInt;
+Begin
+  For I := 0 To BnCodeFixupCount - 1 Do
+  Begin
+    Offset := BnCodeFixups[I].CodeOffset;
+
+    (* Trouver l adresse cible *)
+    Case BnCodeFixups[I].TargetId Of
+      0 : TargetOfs := BnItoaCodeOfs;
+    Else
+      TargetOfs := 0;
+    End;
+
+    (* CALL rel32 : rel32 = target - (call_offset + 4) *)
+    Rel32 := TargetOfs - (Offset + 4);
+
+    If (Offset + 3 < BN_MAX_CODE) Then
+    Begin
+      BnCodeBuffer[Offset]     := Rel32 And $FF;
+      BnCodeBuffer[Offset + 1] := (Rel32 Shr 8) And $FF;
+      BnCodeBuffer[Offset + 2] := (Rel32 Shr 16) And $FF;
+      BnCodeBuffer[Offset + 3] := (Rel32 Shr 24) And $FF;
+    End;
+  End;
 End;
 
 (* ------------------------------------------------------------ *)
@@ -21962,6 +22304,12 @@ Begin
 
   (* Generer l epilogue du programme *)
   EmitMainEpilogue;
+
+  (* Emettre la routine ITOA interne apres le code principal *)
+  BnEmitItoaRoutine;
+
+  (* Patcher les CALL rel32 internes *)
+  BnResolveCodeFixups;
 End;
 
 (* ============================================================ *)
@@ -22017,7 +22365,17 @@ End;
 { ============================================================ }
 
 Procedure EmitMainPrologue;
+Var
+  I : Integer;
 Begin
+  { Reserver le buffer ITOA dans .data (32 octets) }
+  If BnItoaBufOfs < 0 Then
+  Begin
+    BnItoaBufOfs := BnDataSize;
+    For I := 1 To BN_ITOA_BUF_SIZE Do
+      BnEmitDataByte(0);
+  End;
+
   { Emettre le point d'entree _start }
   BnEmitByte($55);              { PUSH EBP }
   BnEmitByte($89); BnEmitByte($E5);  { MOV EBP, ESP }
