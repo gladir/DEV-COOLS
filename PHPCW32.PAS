@@ -4384,7 +4384,7 @@ Var
   Idx : Integer;
 Begin
   Lbl := GenStrLabel;
-  Idx := DataAdd(Lbl, DK_STR, 0, Str, 0);
+  Idx := DataAdd(Lbl, DK_STR, -1, Str, 0);
   If Idx < 0 Then
     DataAddStr := ''
   Else
@@ -10151,6 +10151,14 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Forward declarations pour emission binaire                    }
+{ ------------------------------------------------------------ }
+
+Procedure BnEmitDataString(Const S : TString); Forward;
+Procedure BnEmitWriteStr(DataOfs : LongInt; StrLen : LongInt); Forward;
+Function GetBnDataSize : LongInt; Forward;
+
+{ ------------------------------------------------------------ }
 { EmitWriteStr : emettre le code pour ecrire une chaine          }
 {   Utilise WriteFile via GetStdHandle(STD_OUTPUT_HANDLE)        }
 {   EAX contient le pointeur vers la chaine a afficher           }
@@ -10158,12 +10166,47 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure EmitWriteStr(Const StrLabel : TString);
+Var
+  I       : Integer;
+  DataOfs : LongInt;
+  StrVal  : TString;
+  Idx     : Integer;
 Begin
   OutLn('  ; --- emit write string: ' + StrLabel + ' ---');
   OutLn('  PUSH OFFSET ' + StrLabel + '  ; ptr to string');
   OutLn('  CALL _PHRT_WRITESTR');
   OutLn('  ADD ESP, 4');
   IoLastKind := IO_WRITE_STR;
+
+  { Emission binaire : retrouver la chaine dans DataTab par son label }
+  Idx := 0;
+  For I := 1 To DataCount Do
+  Begin
+    If DataTab[I].LblName = StrLabel Then
+    Begin
+      Idx := I;
+      Break;
+    End;
+  End;
+
+  If Idx > 0 Then
+  Begin
+    StrVal := DataTab[Idx].StrVal;
+    If Length(StrVal) > 0 Then
+    Begin
+      { Si la chaine n a pas encore ete emise dans BnDataBuffer }
+      If DataTab[Idx].IntVal < 0 Then
+      Begin
+        DataOfs := GetBnDataSize;
+        BnEmitDataString(StrVal);
+        DataTab[Idx].IntVal := DataOfs;
+      End
+      Else
+        DataOfs := DataTab[Idx].IntVal;
+
+      BnEmitWriteStr(DataOfs, Length(StrVal));
+    End;
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -10264,10 +10307,7 @@ Begin
     IoNlLabel := DataAddStr(#13#10);  { CRLF pour Windows }
   LblNlStr := IoNlLabel;
   
-  OutLn('  ; --- emit write newline ---');
-  OutLn('  PUSH OFFSET ' + LblNlStr);
-  OutLn('  CALL _PHRT_WRITESTR');
-  OutLn('  ADD ESP, 4');
+  EmitWriteStr(LblNlStr);
   IoLastKind := IO_WRITE_NL;
 End;
 
@@ -17516,6 +17556,7 @@ Const
   BN_MAX_IMPORTS         = 64;      (* nombre max de fonctions import *)
   BN_MAX_DLLS            = 8;       (* nombre max de DLLs importees   *)
   BN_MAX_IMP_FIXUPS      = 256;     (* nombre max de fixups d'imports *)
+  BN_MAX_DATA_FIXUPS     = 256;     (* nombre max de fixups de donnees *)
 
   (* Indices de sections standard                                    *)
   BN_SEC_TEXT_IDX        = 0;       (* index section .text            *)
@@ -17587,6 +17628,13 @@ Type
     ImportIdx    : Integer;     (* index dans ImImports               *)
   End;
 
+  (* Enregistrement pour un fixup de donnees                         *)
+  (* Permet de patcher une adresse absolue de donnees dans le code  *)
+  TBnDataFixupRec = Record
+    CodeOffset   : LongInt;     (* offset dans BnCodeBuffer           *)
+    DataOffset   : LongInt;     (* offset dans BnDataBuffer           *)
+  End;
+
 Var
   BnInitialized     : Boolean;     (* True si le module est initialise   *)
   BnFormat          : Integer;     (* format de sortie actuel            *)
@@ -17602,6 +17650,8 @@ Var
   BnDllCount        : Integer;     (* nombre de DLLs                     *)
   BnImpFixups       : Array[0..BN_MAX_IMP_FIXUPS-1] Of TBnImpFixupRec;
   BnImpFixupCount   : Integer;     (* nombre de fixups d'imports         *)
+  BnDataFixups      : Array[0..BN_MAX_DATA_FIXUPS-1] Of TBnDataFixupRec;
+  BnDataFixupCount  : Integer;     (* nombre de fixups de donnees        *)
   BnStringTable     : Array[0..BN_MAX_STRINGS-1] Of Char;
   BnStringOffset    : LongInt;     (* offset courant dans table chaines  *)
   BnCodeBuffer      : Array[0..BN_MAX_CODE-1] Of Byte;
@@ -17648,6 +17698,7 @@ Begin
   BnAsmWritten      := 0;
   BnFixupCount      := 0;
   BnImpFixupCount   := 0;
+  BnDataFixupCount  := 0;
   BnOutOpen         := False;
 
   (* Initialiser les tableaux *)
@@ -17678,6 +17729,12 @@ Begin
   Begin
     BnImpFixups[I].CodeOffset := 0;
     BnImpFixups[I].ImportIdx  := 0;
+  End;
+
+  For I := 0 To BN_MAX_DATA_FIXUPS - 1 Do
+  Begin
+    BnDataFixups[I].CodeOffset := 0;
+    BnDataFixups[I].DataOffset := 0;
   End;
 
   For I := 0 To BN_MAX_SYMBOLS - 1 Do
@@ -17901,6 +17958,27 @@ Begin
 
   BnAddImpFixup := BnImpFixupCount;
   Inc(BnImpFixupCount);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnAddDataFixup : ajouter un fixup pour une adresse de donnees*)
+(* CodeOffset = offset dans BnCodeBuffer ou ecrire l adresse    *)
+(* DataOffset = offset dans BnDataBuffer de la donnee cible     *)
+(* ------------------------------------------------------------ *)
+
+Function BnAddDataFixup(ACodeOffset : LongInt; ADataOffset : LongInt) : Integer;
+Begin
+  If BnDataFixupCount >= BN_MAX_DATA_FIXUPS Then
+  Begin
+    BnAddDataFixup := -1;
+    Exit;
+  End;
+
+  BnDataFixups[BnDataFixupCount].CodeOffset := ACodeOffset;
+  BnDataFixups[BnDataFixupCount].DataOffset := ADataOffset;
+
+  BnAddDataFixup := BnDataFixupCount;
+  Inc(BnDataFixupCount);
 End;
 
 (* ------------------------------------------------------------ *)
@@ -18264,6 +18342,55 @@ Begin
   FixupOfs := BnCodeSize;
   BnEmitDWord(0);     { placeholder - sera resolu plus tard }
   BnAddImpFixup(FixupOfs, ImportIdx);
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnEmitWriteStr : emettre le code binaire pour ecrire une     *)
+(* chaine sur stdout via GetStdHandle + WriteFile (stdcall)     *)
+(* DataOfs = offset de la chaine dans BnDataBuffer              *)
+(* StrLen  = nombre d octets a ecrire                           *)
+(* Import 1 = GetStdHandle, Import 2 = WriteFile               *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnEmitWriteStr(DataOfs : LongInt; StrLen : LongInt);
+Var
+  FixupOfs : LongInt;
+Begin
+  (* Reserver 4 octets sur la pile pour lpNumberOfBytesWritten *)
+  (* SUB ESP, 4 = 83 EC 04 *)
+  BnEmitByte($83); BnEmitByte($EC); BnEmitByte($04);
+
+  (* GetStdHandle(STD_OUTPUT_HANDLE = -11 = 0xFFFFFFF5) *)
+  BnEmitPushImm32(LongInt($FFFFFFF5));   { PUSH -11 }
+  BnEmitCallIndWithFixup(1);             { CALL [GetStdHandle] }
+
+  (* Preparer les arguments de WriteFile(hFile, lpBuffer, nBytes, lpWritten, lpOverlapped) *)
+  (* Convention stdcall : arguments empiles de droite a gauche *)
+
+  BnEmitPushImm8(0);                     { PUSH 0 = lpOverlapped }
+
+  (* LEA ECX, [ESP+4] -- pointeur vers lpNumberOfBytesWritten *)
+  (* Apres le PUSH 0, le DWORD reserve est a [ESP+4] *)
+  (* LEA ECX, [ESP+4] = 8D 4C 24 04 *)
+  BnEmitByte($8D); BnEmitByte($4C); BnEmitByte($24); BnEmitByte($04);
+
+  BnEmitPushReg(REG_ECX);                { PUSH ECX = lpWritten }
+
+  BnEmitPushImm32(StrLen);               { PUSH nBytes }
+
+  (* PUSH adresse de la chaine (data fixup placeholder) *)
+  BnEmitByte($68);                        { PUSH imm32 }
+  FixupOfs := BnCodeSize;
+  BnEmitDWord(0);                         { placeholder pour adresse data }
+  BnAddDataFixup(FixupOfs, DataOfs);
+
+  BnEmitPushReg(REG_EAX);                { PUSH EAX = hFile }
+
+  BnEmitCallIndWithFixup(2);             { CALL [WriteFile] }
+
+  (* Liberer les 4 octets reserves pour lpNumberOfBytesWritten *)
+  (* ADD ESP, 4 = 83 C4 04 *)
+  BnEmitByte($83); BnEmitByte($C4); BnEmitByte($04);
 End;
 
 (* ------------------------------------------------------------ *)
@@ -19332,6 +19459,8 @@ End;
 Procedure ImBuildImportTable(BaseRVA : LongInt); Forward;
 Procedure ImWriteImportSection(RdataRVA : LongInt; SectionSize : LongInt); Forward;
 Procedure BnResolveImpFixups; Forward;
+Procedure BnResolveDataFixups(DataRVA : LongInt); Forward;
+Procedure BnFlushDataTab; Forward;
 Function GetImIATRVA : LongInt; Forward;
 Function GetImIATTotalSize : LongInt; Forward;
 
@@ -19348,6 +19477,9 @@ Var
   ImageSize : LongInt;
 Begin
   BnFormat := BN_PE_EXE;
+
+  (* Transferer les donnees restantes de DataTab dans BnDataBuffer *)
+  BnFlushDataTab;
 
   (* Calculer la taille des headers *)
   (* DOS Header (64) + DOS Stub (64) + PE Sig (4) + COFF Hdr (20) *)
@@ -19435,6 +19567,10 @@ Begin
   (* Resoudre les fixups d'imports dans le code *)
   (* (patcher les adresses IAT dans BnCodeBuffer) *)
   BnResolveImpFixups;
+
+  (* Resoudre les fixups de donnees dans le code *)
+  (* (patcher les adresses absolues de donnees dans BnCodeBuffer) *)
+  BnResolveDataFixups(DataRVA);
 
   (* Ecrire la section .text (code patche) *)
   BnWriteBuffer(BnCodeBuffer, BnCodeSize);
@@ -20055,6 +20191,77 @@ Begin
       BnCodeBuffer[Offset + 1] := (IATAddr Shr 8) And $FF;
       BnCodeBuffer[Offset + 2] := (IATAddr Shr 16) And $FF;
       BnCodeBuffer[Offset + 3] := (IATAddr Shr 24) And $FF;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnResolveDataFixups : patcher les adresses de donnees        *)
+(* dans BnCodeBuffer. Chaque fixup contient l offset code ou    *)
+(* ecrire l adresse absolue ImageBase + DataRVA + DataOffset    *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnResolveDataFixups(DataRVA : LongInt);
+Var
+  I : Integer;
+  Offset : LongInt;
+  AbsAddr : LongInt;
+Begin
+  For I := 0 To BnDataFixupCount - 1 Do
+  Begin
+    Offset := BnDataFixups[I].CodeOffset;
+    AbsAddr := BN_IMAGE_BASE + DataRVA + BnDataFixups[I].DataOffset;
+
+    If (Offset + 3 < BN_MAX_CODE) Then
+    Begin
+      BnCodeBuffer[Offset]     := AbsAddr And $FF;
+      BnCodeBuffer[Offset + 1] := (AbsAddr Shr 8) And $FF;
+      BnCodeBuffer[Offset + 2] := (AbsAddr Shr 16) And $FF;
+      BnCodeBuffer[Offset + 3] := (AbsAddr Shr 24) And $FF;
+    End;
+  End;
+End;
+
+(* ------------------------------------------------------------ *)
+(* BnFlushDataTab : transferer les entrees DataTab dans         *)
+(* BnDataBuffer. Stocke l offset resultat dans IntVal.          *)
+(* Doit etre appele avant BnGeneratePeExe.                      *)
+(* ------------------------------------------------------------ *)
+
+Procedure BnFlushDataTab;
+Var
+  I, J : Integer;
+  Ofs  : LongInt;
+Begin
+  For I := 1 To DataCount Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_STR:
+      Begin
+        { Ne pas re-emettre si deja dans BnDataBuffer }
+        If DataTab[I].IntVal < 0 Then
+        Begin
+          Ofs := BnDataSize;
+          DataTab[I].IntVal := Ofs;
+          For J := 1 To Length(DataTab[I].StrVal) Do
+            BnEmitDataByte(Ord(DataTab[I].StrVal[J]));
+          BnEmitDataByte(0); (* terminateur nul *)
+        End;
+      End;
+      DK_DWORD:
+      Begin
+        Ofs := BnDataSize;
+        DataTab[I].IntVal := Ofs;
+        BnEmitDataDWord(DataTab[I].IntVal);
+      End;
+      DK_ARRAY_BLK:
+      Begin
+        Ofs := BnDataSize;
+        DataTab[I].IntVal := Ofs;
+        BnEmitDataDWord(DataTab[I].ElemCount);
+        For J := 1 To DataTab[I].ElemCount Do
+          BnEmitDataDWord(0);
+      End;
     End;
   End;
 End;
