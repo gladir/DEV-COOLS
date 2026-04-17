@@ -1723,7 +1723,11 @@ End;
 Procedure FloodFillArea(X, Y: Integer; FillColor, BorderColor: Byte);
 Begin
  SetFillStyle(SolidFill, FillColor);
+ {$IFDEF FPC}
  PtcGraph.FloodFill(X, Y, BorderColor);
+ {$ELSE}
+ Graph.FloodFill(X, Y, BorderColor);
+ {$ENDIF}
  ImageBuffer.Modified := True;
 End;
 
