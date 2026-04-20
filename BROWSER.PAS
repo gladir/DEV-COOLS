@@ -21,7 +21,7 @@
   12. DONE: Implementer le rendu des listes (ul, ol, li, dl, dt, dd)
   13. DONE: Implementer le rendu des tableaux (table, tr, td, th, thead, tbody)
   14. DONE: Implementer le rendu des formulaires (form, input, button, select, textarea)
-  15. TODO: Implementer la detection et le rendu des liens hypertexte (balise <a href>)
+  15. DONE: Implementer la detection et le rendu des liens hypertexte (balise <a href>)
   16. TODO: Implementer la navigation par clic sur les liens URL dans les pages
   17. TODO: Creer l'interpreteur JavaScript pour le support des scripts cote client
   18. TODO: Implementer le DOM (Document Object Model) pour la manipulation JavaScript
@@ -326,6 +326,11 @@ Const
  RENDER_BG_COLOR = 15;         { Blanc }
  RENDER_TEXT_COLOR = 0;        { Noir }
  RENDER_LINK_COLOR = 1;        { Bleu }
+ RENDER_LINK_VISITED_COLOR = 5;{ Violet/Magenta }
+ RENDER_LINK_ACTIVE_COLOR = 4; { Rouge }
+
+ { Parametres pour les liens }
+ MAX_LINKS = 100;              { Nombre maximum de liens sur une page }
 
  { Styles de texte (flags combinables) }
  TEXT_STYLE_NORMAL = 0;
@@ -358,6 +363,14 @@ Type
   Parent: HTMLNodePtr;       { Pointeur vers le noeud parent }
  End;
 
+ { Structure pour stocker les zones de liens cliquables }
+ LinkArea = Record
+  X1, Y1, X2, Y2: Integer;   { Rectangle de la zone cliquable }
+  Href: String[255];         { URL du lien }
+  Title: String[128];        { Titre du lien (attribut title) }
+  Active: Boolean;           { Zone active ou non }
+ End;
+
  { Contexte de rendu HTML }
  RenderContext = Record
   X: Integer;                { Position X courante }
@@ -386,6 +399,8 @@ Type
   InForm: Boolean;           { Dans un formulaire }
   InSelect: Boolean;         { Dans un element select }
   SelectOptionIndex: Integer;{ Index de l'option courante dans select }
+  InLink: Boolean;           { Dans un lien hypertexte }
+  CurrentLinkHref: String[255]; { URL du lien en cours de rendu }
  End;
 
 Var
@@ -422,6 +437,10 @@ Var
  { Variables pour le parseur HTML }
  HTMLDocument: HTMLNodePtr;   { Racine du document HTML parse }
  HTMLParseError: String;      { Message d'erreur de parsing }
+
+ { Variables pour les zones de liens cliquables }
+ LinkAreas: Array[1..MAX_LINKS] Of LinkArea;
+ LinkCount: Integer;
 
 { =====================================================
   PARSEUR HTML - Fonctions et procedures
@@ -974,6 +993,53 @@ Begin
  Ctx.InForm := False;
  Ctx.InSelect := False;
  Ctx.SelectOptionIndex := 0;
+ Ctx.InLink := False;
+ Ctx.CurrentLinkHref := '';
+End;
+
+{ Procedure pour reinitialiser les zones de liens }
+Procedure ClearLinkAreas;
+Var
+ I: Integer;
+Begin
+ For I := 1 To MAX_LINKS Do Begin
+  LinkAreas[I].Active := False;
+  LinkAreas[I].Href := '';
+  LinkAreas[I].Title := '';
+ End;
+ LinkCount := 0;
+End;
+
+{ Procedure pour ajouter une zone de lien cliquable }
+Procedure AddLinkArea(X1, Y1, X2, Y2: Integer; Href, Title: String);
+Begin
+ If LinkCount < MAX_LINKS Then Begin
+  Inc(LinkCount);
+  LinkAreas[LinkCount].X1 := X1;
+  LinkAreas[LinkCount].Y1 := Y1;
+  LinkAreas[LinkCount].X2 := X2;
+  LinkAreas[LinkCount].Y2 := Y2;
+  LinkAreas[LinkCount].Href := Href;
+  LinkAreas[LinkCount].Title := Title;
+  LinkAreas[LinkCount].Active := True;
+ End;
+End;
+
+{ Fonction pour trouver un lien a une position donnee }
+Function FindLinkAtPosition(X, Y: Integer): Integer;
+Var
+ I: Integer;
+Begin
+ FindLinkAtPosition := 0;
+ For I := 1 To LinkCount Do Begin
+  If LinkAreas[I].Active Then Begin
+   If (X >= LinkAreas[I].X1) And (X <= LinkAreas[I].X2) And
+      (Y >= LinkAreas[I].Y1) And (Y <= LinkAreas[I].Y2) Then Begin
+    FindLinkAtPosition := I;
+    Exit;
+   End;
+  End;
+ End;
 End;
 
 { Procedure pour effacer la zone de rendu }
@@ -2315,6 +2381,110 @@ End;
 { =====================================================
   FIN RENDU FORMULAIRES
   ===================================================== }
+
+{ =====================================================
+  RENDU HTML - Liens hypertexte (balise <a href>)
+  ===================================================== }
+
+{ Procedure pour rendre la balise A (lien hypertexte) }
+Procedure RenderTagA(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Href, Title: String;
+ OldTextColor: Integer;
+ OldTextStyle: Byte;
+ OldInLink: Boolean;
+ StartX, StartY: Integer;
+ EndX, EndY: Integer;
+ I: Integer;
+ ChildNode: HTMLNodePtr;
+ LinkText: String;
+ TextW: Integer;
+Begin
+ { Obtenir les attributs href et title }
+ Href := GetNodeAttribute(Node, 'href');
+ Title := GetNodeAttribute(Node, 'title');
+
+ { Si pas de href, rendre comme du texte normal }
+ If Href = '' Then Begin
+  RenderChildren(Node, Ctx);
+  Exit;
+ End;
+
+ { Sauvegarder l'etat courant }
+ OldTextColor := Ctx.TextColor;
+ OldTextStyle := Ctx.TextStyle;
+ OldInLink := Ctx.InLink;
+
+ { Configurer le style de lien }
+ Ctx.TextColor := RENDER_LINK_COLOR;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_UNDERLINE;
+ Ctx.InLink := True;
+ Ctx.CurrentLinkHref := Href;
+
+ { Memoriser la position de debut }
+ StartX := Ctx.X;
+ StartY := Ctx.Y;
+
+ { Appliquer la couleur du lien }
+ SetColor(RENDER_LINK_COLOR);
+
+ { Rendre le contenu du lien }
+ RenderChildren(Node, Ctx);
+
+ { Calculer la position de fin }
+ EndX := Ctx.X;
+ EndY := Ctx.Y;
+
+ { Si le lien a occupe plusieurs lignes, ajuster la zone }
+ If EndY > StartY Then Begin
+  { Zone multiligne - on enregistre seulement la derniere ligne }
+  { Pour une implementation plus complete, il faudrait plusieurs zones }
+  StartX := RENDER_AREA_X + RENDER_MARGIN_LEFT;
+ End;
+
+ { Calculer la largeur du texte du lien pour la zone cliquable }
+ LinkText := '';
+ For I := 1 To Node^.ChildCount Do Begin
+  ChildNode := Node^.Children[I];
+  If (ChildNode <> Nil) And (ChildNode^.NodeType = HTML_NODE_TEXT) Then Begin
+   LinkText := LinkText + ChildNode^.Content;
+  End;
+ End;
+
+ { Si on a trouve du texte, ajouter la zone de lien }
+ If LinkText <> '' Then Begin
+  TextW := TextWidth(LinkText);
+  If EndY = StartY Then Begin
+   { Lien sur une seule ligne }
+   AddLinkArea(StartX, StartY, StartX + TextW, StartY + Ctx.LineHeight, Href, Title);
+  End
+  Else Begin
+   { Lien multiligne - enregistrer la zone de la derniere ligne }
+   AddLinkArea(StartX, EndY, EndX, EndY + Ctx.LineHeight, Href, Title);
+  End;
+ End
+ Else Begin
+  { Utiliser la position courante comme estimation }
+  If EndX > StartX Then
+   AddLinkArea(StartX, StartY, EndX, StartY + Ctx.LineHeight, Href, Title);
+ End;
+
+ { Dessiner le soulignement si pas deja fait par RenderText }
+ { Le soulignement est gere par TEXT_STYLE_UNDERLINE dans RenderText }
+
+ { Restaurer l'etat }
+ Ctx.TextColor := OldTextColor;
+ Ctx.TextStyle := OldTextStyle;
+ Ctx.InLink := OldInLink;
+ Ctx.CurrentLinkHref := '';
+
+ { Restaurer la couleur }
+ SetColor(OldTextColor);
+End;
+
+{ =====================================================
+  FIN RENDU LIENS HYPERTEXTE
+  ===================================================== }
 Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
  If Node = Nil Then Exit;
@@ -2406,6 +2576,9 @@ Begin
     TAG_TEXTAREA: RenderTagTextarea(Node, Ctx);
     TAG_LABEL:    RenderTagLabel(Node, Ctx);
 
+    { Liens hypertexte }
+    TAG_A:        RenderTagA(Node, Ctx);
+
     Else Begin
      { Balise non geree - rendre les enfants par defaut }
      RenderChildren(Node, Ctx);
@@ -2428,6 +2601,9 @@ Begin
 
  { Initialiser le contexte de rendu }
  InitRenderContext(Ctx);
+
+ { Reinitialiser les zones de liens }
+ ClearLinkAreas;
 
  { Effacer la zone de rendu }
  ClearRenderArea;
