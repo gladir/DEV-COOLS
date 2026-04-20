@@ -826,6 +826,13 @@ Var
  { Etat de l'editeur WYSIWYG de dialogues }
  DlgEdState: TDialogEditorState;
 
+ { Etat de l'editeur de tables de chaines }
+ StrEdSelectedRow: Integer;  { Ligne selectionnee, 0 = aucune }
+ StrEdEditing: Boolean;      { Mode edition actif }
+ StrEdText: String;           { Texte en cours d'edition }
+ StrEdCursorPos: Integer;     { Position du curseur dans le texte }
+ StrEdTopRow: Integer;        { Premiere ligne visible (defilement) }
+
  { Boucle principale }
  Running: Boolean;
  NeedRedraw: Boolean;
@@ -3705,24 +3712,117 @@ Begin
  OutTextXY(Windows[WndIndex].ClientArea.X1 + 4, Windows[WndIndex].ClientArea.Y1 + 4, 'Structure du menu:');
 End;
 
+Procedure StartStringEdit;
+Begin
+ If (StrEdSelectedRow >= 1) And (StrEdSelectedRow <= StringCount) Then Begin
+  StrEdEditing := True;
+  StrEdText := StringEntries[StrEdSelectedRow].Text;
+  StrEdCursorPos := Length(StrEdText);
+ End;
+End;
+
+Function HandleStringTableClick(WndIndex, MX, MY: Integer): Boolean;
+Var
+ CY1: Integer;
+ RowOffset, ClickedRow: Integer;
+Begin
+ HandleStringTableClick := False;
+ If (WndIndex < 1) Or (WndIndex > WindowCount) Then Exit;
+ If Windows[WndIndex].WindowType <> 4 Then Exit;
+ CY1 := Windows[WndIndex].ClientArea.Y1;
+ { Verifier si le clic est dans la zone de donnees (sous l'en-tete) }
+ If MY < CY1 + 20 Then Exit;
+ RowOffset := (MY - CY1 - 20) Div 16;
+ ClickedRow := StrEdTopRow + RowOffset;
+ If (ClickedRow >= 1) And (ClickedRow <= StringCount) Then Begin
+  { Si on clique sur la meme ligne en mode edition, repositionner le curseur }
+  If StrEdEditing And (ClickedRow = StrEdSelectedRow) Then Begin
+   StrEdCursorPos := (MX - Windows[WndIndex].ClientArea.X1 - 62) Div 8;
+   If StrEdCursorPos < 0 Then StrEdCursorPos := 0;
+   If StrEdCursorPos > Length(StrEdText) Then StrEdCursorPos := Length(StrEdText);
+  End Else Begin
+   { Valider l'edition en cours si necessaire }
+   If StrEdEditing And (StrEdSelectedRow >= 1) And (StrEdSelectedRow <= StringCount) Then Begin
+    StringEntries[StrEdSelectedRow].Text := StrEdText;
+    AppState.ProjectModified := True;
+   End;
+   { Si on reclique la meme ligne, entrer en mode edition }
+   If (ClickedRow = StrEdSelectedRow) And Not StrEdEditing Then Begin
+    StartStringEdit;
+   End Else Begin
+    { Selectionner la nouvelle ligne }
+    StrEdSelectedRow := ClickedRow;
+    StrEdEditing := False;
+   End;
+  End;
+  HandleStringTableClick := True;
+ End Else Begin
+  { Clic en dehors — valider l'edition }
+  If StrEdEditing And (StrEdSelectedRow >= 1) And (StrEdSelectedRow <= StringCount) Then Begin
+   StringEntries[StrEdSelectedRow].Text := StrEdText;
+   AppState.ProjectModified := True;
+  End;
+  StrEdEditing := False;
+  StrEdSelectedRow := 0;
+  HandleStringTableClick := True;
+ End;
+End;
+
 Procedure DrawStringTableEditor(WndIndex: Integer);
 Var
- I, Y: Integer;
+ I, Y, VisIdx: Integer;
+ MaxRows: Integer;
+ CX1, CY1, CX2, CY2: Integer;
 Begin
  If (WndIndex < 1) Or (WndIndex > WindowCount) Then Exit;
  If Windows[WndIndex].WindowType <> 4 Then Exit;
+ CX1 := Windows[WndIndex].ClientArea.X1;
+ CY1 := Windows[WndIndex].ClientArea.Y1;
+ CX2 := Windows[WndIndex].ClientArea.X2;
+ CY2 := Windows[WndIndex].ClientArea.Y2;
+ { En-tete de colonne }
  SetFillStyle(SolidFill, COLOR_BUTTON);
- Bar(Windows[WndIndex].ClientArea.X1, Windows[WndIndex].ClientArea.Y1, Windows[WndIndex].ClientArea.X2, Windows[WndIndex].ClientArea.Y1 + 18);
+ Bar(CX1, CY1, CX2, CY1 + 18);
  SetColor(COLOR_BUTTONTEXT);
- OutTextXY(Windows[WndIndex].ClientArea.X1 + 4, Windows[WndIndex].ClientArea.Y1 + 4, 'ID');
- OutTextXY(Windows[WndIndex].ClientArea.X1 + 60, Windows[WndIndex].ClientArea.Y1 + 4, 'Texte');
- Y := Windows[WndIndex].ClientArea.Y1 + 20;
- For I := 1 To StringCount Do Begin
-  If Y > Windows[WndIndex].ClientArea.Y2 - 16 Then Break;
-  SetColor(COLOR_WINDOWTEXT);
-  OutTextXY(Windows[WndIndex].ClientArea.X1 + 4, Y, IntToStr(StringEntries[I].StringId));
-  OutTextXY(Windows[WndIndex].ClientArea.X1 + 60, Y, StringEntries[I].Text);
+ OutTextXY(CX1 + 4, CY1 + 4, 'ID');
+ OutTextXY(CX1 + 60, CY1 + 4, 'Texte');
+ { Lignes de donnees }
+ Y := CY1 + 20;
+ MaxRows := (CY2 - CY1 - 20) Div 16;
+ If StrEdTopRow < 1 Then StrEdTopRow := 1;
+ VisIdx := 0;
+ For I := StrEdTopRow To StringCount Do Begin
+  If VisIdx >= MaxRows Then Break;
+  If Y > CY2 - 16 Then Break;
+  { Fond de selection }
+  If I = StrEdSelectedRow Then Begin
+   SetFillStyle(SolidFill, COLOR_HIGHLIGHT);
+   Bar(CX1 + 1, Y, CX2 - 1, Y + 15);
+   SetColor(COLOR_HIGHLIGHTTEXT);
+  End Else Begin
+   SetColor(COLOR_WINDOWTEXT);
+  End;
+  { ID }
+  OutTextXY(CX1 + 4, Y, IntToStr(StringEntries[I].StringId));
+  { Texte - si en mode edition sur cette ligne, afficher le texte edite }
+  If (I = StrEdSelectedRow) And StrEdEditing Then Begin
+   { Zone d'edition }
+   SetFillStyle(SolidFill, White);
+   Bar(CX1 + 58, Y, CX2 - 2, Y + 15);
+   Draw3DRect(CX1 + 58, Y, CX2 - 2, Y + 15, False);
+   SetColor(COLOR_WINDOWTEXT);
+   OutTextXY(CX1 + 62, Y, StrEdText);
+   { Curseur clignotant }
+   SetColor(COLOR_WINDOWTEXT);
+   Line(CX1 + 62 + StrEdCursorPos * 8, Y + 1, CX1 + 62 + StrEdCursorPos * 8, Y + 14);
+  End Else Begin
+   If I = StrEdSelectedRow Then
+    OutTextXY(CX1 + 60, Y, StringEntries[I].Text)
+   Else
+    OutTextXY(CX1 + 60, Y, StringEntries[I].Text);
+  End;
   Inc(Y, 16);
+  Inc(VisIdx);
  End;
 End;
 
@@ -4697,6 +4797,89 @@ Begin
  NeedRedraw := True;
 End;
 
+Function ConfirmSaveDialog: Integer;
+{ Retourne: 1 = Oui (sauvegarder), 2 = Non (ne pas sauvegarder), 0 = Annuler }
+Var
+ X, Y, W, H: Integer;
+ BtnYesX, BtnNoX, BtnCancelX, BtnY: Integer;
+ Result: Integer;
+Begin
+ ConfirmSaveDialog := 0;
+ W := 360;
+ H := 120;
+ X := (SCREEN_WIDTH - W) Div 2;
+ Y := (SCREEN_HEIGHT - H) Div 2;
+ BtnY := Y + H - 32;
+ BtnYesX := X + 20;
+ BtnNoX := X + (W - 80) Div 2;
+ BtnCancelX := X + W - 100;
+ HideMouse;
+ SetFillStyle(SolidFill, COLOR_WINDOW);
+ Bar(X, Y, X + W, Y + H);
+ Draw3DRect(X, Y, X + W, Y + H, True);
+ SetFillStyle(SolidFill, COLOR_TITLEBAR);
+ Bar(X + 2, Y + 2, X + W - 2, Y + 18);
+ SetColor(COLOR_TITLETEXT);
+ OutTextXY(X + 4, Y + 4, 'Sauvegarder les modifications');
+ SetColor(COLOR_WINDOWTEXT);
+ OutTextXY(X + 20, Y + 35, 'Le projet a ete modifie.');
+ OutTextXY(X + 20, Y + 55, 'Voulez-vous sauvegarder avant de quitter?');
+ DrawButton(BtnYesX, BtnY, 80, 24, 'Oui', False, True);
+ DrawButton(BtnNoX, BtnY, 80, 24, 'Non', False, True);
+ DrawButton(BtnCancelX, BtnY, 80, 24, 'Annuler', False, True);
+ ShowMouse;
+ Result := 0;
+ Repeat
+  UpdateMouse;
+  If MouseClicked Then Begin
+   If (MouseY >= BtnY) And (MouseY <= BtnY + 24) Then Begin
+    If (MouseX >= BtnYesX) And (MouseX <= BtnYesX + 80) Then
+     Result := 1
+    Else If (MouseX >= BtnNoX) And (MouseX <= BtnNoX + 80) Then
+     Result := 2
+    Else If (MouseX >= BtnCancelX) And (MouseX <= BtnCancelX + 80) Then
+     Result := 3;
+   End;
+  End;
+  If KeyPressed Then Begin
+   Case ReadKey Of
+    'o', 'O': Result := 1;
+    'n', 'N': Result := 2;
+    #27: Result := 3;
+   End;
+  End;
+ Until Result > 0;
+ NeedRedraw := True;
+ If Result = 3 Then
+  ConfirmSaveDialog := 0
+ Else
+  ConfirmSaveDialog := Result;
+End;
+
+Procedure RequestQuit;
+Var
+ Answer: Integer;
+Begin
+ { Valider l'edition string en cours si necessaire }
+ If StrEdEditing And (StrEdSelectedRow >= 1) And (StrEdSelectedRow <= StringCount) Then Begin
+  StringEntries[StrEdSelectedRow].Text := StrEdText;
+  StrEdEditing := False;
+  AppState.ProjectModified := True;
+ End;
+ If AppState.ProjectModified Then Begin
+  Answer := ConfirmSaveDialog;
+  Case Answer Of
+   1: Begin { Oui - sauvegarder puis quitter }
+    SaveProject;
+    Running := False;
+   End;
+   2: Running := False; { Non - quitter sans sauvegarder }
+   { 0 = Annuler - ne rien faire }
+  End;
+ End Else
+  Running := False;
+End;
+
 { ============================================================
   TRAITEMENT DES COMMANDES
   ============================================================ }
@@ -4715,7 +4898,7 @@ Begin
   CMD_FILE_SAVE: SaveProject;
   CMD_FILE_IMPORT_MAC: ImportMacResource('');
   CMD_FILE_IMPORT_GEM: ImportGEMResource('');
-  CMD_FILE_EXIT: Running := False;
+  CMD_FILE_EXIT: RequestQuit;
   CMD_EDIT_CUT: CutResource(1);
   CMD_EDIT_COPY: CopyResource(1);
   CMD_EDIT_PASTE: PasteResource;
@@ -4811,7 +4994,58 @@ Begin
       If NewMenu > MainMenuBar.Count Then NewMenu := 1;
       MenuSwitchTo(NewMenu);
      End;
-     #107: Running := False;   { Alt+F4 }
+     #107: RequestQuit;   { Alt+F4 }
+    End;
+   End
+   Else If StrEdEditing Then Begin
+    { Mode edition string table : fleches gauche/droite }
+    Case Ch Of
+     #75: Begin { Fleche gauche }
+      If StrEdCursorPos > 0 Then Begin
+       Dec(StrEdCursorPos);
+       NeedRedraw := True;
+      End;
+     End;
+     #77: Begin { Fleche droite }
+      If StrEdCursorPos < Length(StrEdText) Then Begin
+       Inc(StrEdCursorPos);
+       NeedRedraw := True;
+      End;
+     End;
+     #83: Begin { Delete }
+      If StrEdCursorPos < Length(StrEdText) Then Begin
+       Delete(StrEdText, StrEdCursorPos + 1, 1);
+       NeedRedraw := True;
+      End;
+     End;
+     #71: Begin { Home }
+      StrEdCursorPos := 0;
+      NeedRedraw := True;
+     End;
+     #79: Begin { End }
+      StrEdCursorPos := Length(StrEdText);
+      NeedRedraw := True;
+     End;
+     #107: RequestQuit; { Alt+F4 }
+    End;
+   End
+   Else If StrEdSelectedRow > 0 Then Begin
+    { Ligne selectionnee sans edition : fleches haut/bas }
+    Case Ch Of
+     #72: Begin { Fleche haut }
+      If StrEdSelectedRow > 1 Then Begin
+       Dec(StrEdSelectedRow);
+       If StrEdSelectedRow < StrEdTopRow Then StrEdTopRow := StrEdSelectedRow;
+       NeedRedraw := True;
+      End;
+     End;
+     #80: Begin { Fleche bas }
+      If StrEdSelectedRow < StringCount Then Begin
+       Inc(StrEdSelectedRow);
+       NeedRedraw := True;
+      End;
+     End;
+     #107: RequestQuit; { Alt+F4 }
     End;
    End
    Else Begin
@@ -4820,8 +5054,8 @@ Begin
      #60: ProcessCommand(CMD_FILE_SAVE);
      #61: ProcessCommand(CMD_VIEW_EXPLORER);
      #67: ProcessCommand(CMD_PROJECT_COMPILE);
-     #68: Running := False;
-     #107: Running := False; { Alt+F4 }
+     #68: RequestQuit;
+     #107: RequestQuit; { Alt+F4 }
     End;
    End;
   End
@@ -4838,6 +5072,50 @@ Begin
       If Cmd <> CMD_NONE Then ProcessCommand(Cmd);
      End;
      #27: CloseAllMenus; { Escape }
+    End;
+   End
+   Else If StrEdEditing Then Begin
+    { Mode edition string table : caracteres }
+    Case Ch Of
+     #13: Begin { Enter - valider l'edition }
+      If (StrEdSelectedRow >= 1) And (StrEdSelectedRow <= StringCount) Then Begin
+       StringEntries[StrEdSelectedRow].Text := StrEdText;
+       AppState.ProjectModified := True;
+      End;
+      StrEdEditing := False;
+      NeedRedraw := True;
+     End;
+     #27: Begin { Escape - annuler l'edition }
+      StrEdEditing := False;
+      NeedRedraw := True;
+     End;
+     #8: Begin { Backspace }
+      If (Length(StrEdText) > 0) And (StrEdCursorPos > 0) Then Begin
+       Delete(StrEdText, StrEdCursorPos, 1);
+       Dec(StrEdCursorPos);
+       NeedRedraw := True;
+      End;
+     End;
+     Else Begin { Caractere imprimable }
+      If (Length(StrEdText) < 255) And (Ch >= ' ') Then Begin
+       Insert(Ch, StrEdText, StrEdCursorPos + 1);
+       Inc(StrEdCursorPos);
+       NeedRedraw := True;
+      End;
+     End;
+    End;
+   End
+   Else If StrEdSelectedRow > 0 Then Begin
+    { Ligne selectionnee sans edition : Enter pour editer, F2 aussi }
+    Case Ch Of
+     #13: Begin { Enter - entrer en mode edition }
+      StartStringEdit;
+      NeedRedraw := True;
+     End;
+     #27: Begin { Escape - deselectionner }
+      StrEdSelectedRow := 0;
+      NeedRedraw := True;
+     End;
     End;
    End
    Else Begin
@@ -4883,6 +5161,10 @@ Begin
       End Else If Windows[I].WindowType = 2 Then Begin
        { Editeur de dialogue WYSIWYG }
        If HandleDialogEditorClick(I, MouseX, MouseY, MouseButton) Then
+        NeedRedraw := True;
+      End Else If Windows[I].WindowType = 4 Then Begin
+       { Editeur de tables de chaines }
+       If HandleStringTableClick(I, MouseX, MouseY) Then
         NeedRedraw := True;
       End;
       Break;
@@ -4987,6 +5269,12 @@ Begin
  DlgEdState.DragMode := 0;
  DlgEdState.PaletteSelection := CTRL_PUSHBUTTON;
  DlgEdState.ShowHandles := True;
+ { Initialiser l'editeur de tables de chaines }
+ StrEdSelectedRow := 0;
+ StrEdEditing := False;
+ StrEdText := '';
+ StrEdCursorPos := 0;
+ StrEdTopRow := 1;
  InitializeGraphics;
  InitMouse;
  InitMenuBar;
