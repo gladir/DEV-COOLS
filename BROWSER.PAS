@@ -24,7 +24,7 @@
   15. DONE: Implementer la detection et le rendu des liens hypertexte (balise <a href>)
   16. DONE: Implementer la navigation par clic sur les liens URL dans les pages
   17. DONE: Creer l'interpreteur JavaScript pour le support des scripts cote client
-  18. TODO: Implementer le DOM (Document Object Model) pour la manipulation JavaScript
+  18. DONE: Implementer le DOM (Document Object Model) pour la manipulation JavaScript
   19. TODO: Creer le parseur CSS pour le support des feuilles de style
   20. TODO: Implementer l'application des styles CSS aux elements HTML (cascade et heritage)
   21. TODO: Implementer le decodeur et l'affichage des images BMP
@@ -413,6 +413,38 @@ Const
  MAX_JS_STRING_LEN = 1024;       { Longueur maximale d'une chaine }
  MAX_JS_FUNCTIONS = 64;          { Nombre maximum de fonctions }
 
+ { =====================================================
+   Constantes pour le DOM (Document Object Model)
+   ===================================================== }
+
+ { Types de noeuds DOM }
+ DOM_NODE_ELEMENT = 1;           { Element HTML }
+ DOM_NODE_TEXT = 3;              { Noeud texte }
+ DOM_NODE_COMMENT = 8;           { Commentaire }
+ DOM_NODE_DOCUMENT = 9;          { Document }
+ DOM_NODE_DOCUMENT_FRAGMENT = 11;{ Fragment de document }
+
+ { Limites du DOM }
+ MAX_DOM_QUERY_RESULTS = 100;    { Nombre maximum de resultats de requete }
+ MAX_DOM_EVENT_LISTENERS = 32;   { Nombre maximum de gestionnaires d'evenements }
+
+ { Types d'evenements DOM }
+ DOM_EVENT_CLICK = 1;
+ DOM_EVENT_DBLCLICK = 2;
+ DOM_EVENT_MOUSEDOWN = 3;
+ DOM_EVENT_MOUSEUP = 4;
+ DOM_EVENT_MOUSEOVER = 5;
+ DOM_EVENT_MOUSEOUT = 6;
+ DOM_EVENT_KEYDOWN = 7;
+ DOM_EVENT_KEYUP = 8;
+ DOM_EVENT_KEYPRESS = 9;
+ DOM_EVENT_LOAD = 10;
+ DOM_EVENT_UNLOAD = 11;
+ DOM_EVENT_SUBMIT = 12;
+ DOM_EVENT_CHANGE = 13;
+ DOM_EVENT_FOCUS = 14;
+ DOM_EVENT_BLUR = 15;
+
 Type
  { Type pour un attribut HTML }
  HTMLAttribute = Record
@@ -526,6 +558,55 @@ Type
   DocumentOutput: String;     { Sortie de document.write }
  End;
 
+ { =====================================================
+   Types pour le DOM (Document Object Model)
+   ===================================================== }
+
+ { Pointeur vers un element DOM (meme que HTMLNode pour l'instant) }
+ DOMElementPtr = HTMLNodePtr;
+
+ { Liste de noeuds DOM (resultat de requetes comme getElementsByTagName) }
+ DOMNodeList = Record
+  Nodes: Array[1..MAX_DOM_QUERY_RESULTS] Of HTMLNodePtr;
+  Length: Integer;
+ End;
+
+ { Gestionnaire d'evenement DOM }
+ DOMEventListener = Record
+  EventType: Byte;            { Type d'evenement (DOM_EVENT_*) }
+  Handler: String;            { Code JavaScript du gestionnaire }
+  Element: HTMLNodePtr;       { Element cible }
+  Active: Boolean;            { Gestionnaire actif }
+ End;
+
+ { Evenement DOM }
+ DOMEvent = Record
+  EventType: Byte;            { Type d'evenement }
+  Target: HTMLNodePtr;        { Element cible }
+  CurrentTarget: HTMLNodePtr; { Element courant }
+  Bubbles: Boolean;           { L'evenement propage-t-il? }
+  Cancelable: Boolean;        { L'evenement peut-il etre annule? }
+  DefaultPrevented: Boolean;  { L'action par defaut a-t-elle ete annulee? }
+  StopPropagation: Boolean;   { La propagation doit-elle s'arreter? }
+ End;
+
+ { Style CSS d'un element DOM }
+ DOMStyle = Record
+  Color: String[32];
+  BackgroundColor: String[32];
+  FontSize: String[16];
+  FontWeight: String[16];
+  FontStyle: String[16];
+  TextDecoration: String[32];
+  Display: String[16];
+  Visibility: String[16];
+  Width: String[16];
+  Height: String[16];
+  Margin: String[32];
+  Padding: String[32];
+  Border: String[32];
+ End;
+
 Var
  { Variables globales pour la barre d'URL }
  CurrentURL: String;
@@ -569,6 +650,10 @@ Var
  JSCtx: JSContext;            { Contexte d'execution JavaScript }
  JSEnabled: Boolean;          { JavaScript active ou non }
  JSLastAlert: String;         { Dernier message d'alerte }
+
+ { Variables pour le DOM }
+ DOMEventListeners: Array[1..MAX_DOM_EVENT_LISTENERS] Of DOMEventListener;
+ DOMEventListenerCount: Integer;
 
 { =====================================================
   PARSEUR HTML - Fonctions et procedures
@@ -2281,6 +2366,750 @@ End;
 
 { =====================================================
   FIN INTERPRETEUR JAVASCRIPT
+  ===================================================== }
+
+{ =====================================================
+  DOM (Document Object Model) - Fonctions et procedures
+  ===================================================== }
+
+{ Initialiser le DOM }
+Procedure InitDOM;
+Var
+ I: Integer;
+Begin
+ DOMEventListenerCount := 0;
+ For I := 1 To MAX_DOM_EVENT_LISTENERS Do Begin
+  DOMEventListeners[I].Active := False;
+  DOMEventListeners[I].EventType := 0;
+  DOMEventListeners[I].Handler := '';
+  DOMEventListeners[I].Element := Nil;
+ End;
+End;
+
+{ Obtenir un attribut d'un noeud HTML }
+Function DOMGetAttribute(Node: HTMLNodePtr; AttrName: String): String;
+Var
+ I: Integer;
+ LowerAttr, LowerName: String;
+Begin
+ DOMGetAttribute := '';
+ If Node = Nil Then Exit;
+
+ LowerAttr := HTMLLowerCase(AttrName);
+ For I := 1 To Node^.AttributeCount Do Begin
+  LowerName := HTMLLowerCase(Node^.Attributes[I].Name);
+  If LowerName = LowerAttr Then Begin
+   DOMGetAttribute := Node^.Attributes[I].Value;
+   Exit;
+  End;
+ End;
+End;
+
+{ Definir un attribut sur un noeud HTML }
+Procedure DOMSetAttribute(Node: HTMLNodePtr; AttrName, AttrValue: String);
+Var
+ I: Integer;
+ LowerAttr, LowerName: String;
+ Found: Boolean;
+Begin
+ If Node = Nil Then Exit;
+
+ LowerAttr := HTMLLowerCase(AttrName);
+ Found := False;
+
+ { Chercher si l'attribut existe deja }
+ For I := 1 To Node^.AttributeCount Do Begin
+  LowerName := HTMLLowerCase(Node^.Attributes[I].Name);
+  If LowerName = LowerAttr Then Begin
+   Node^.Attributes[I].Value := AttrValue;
+   Found := True;
+   Break;
+  End;
+ End;
+
+ { Ajouter un nouvel attribut si non trouve }
+ If Not Found And (Node^.AttributeCount < MAX_ATTRIBUTES) Then Begin
+  Inc(Node^.AttributeCount);
+  Node^.Attributes[Node^.AttributeCount].Name := AttrName;
+  Node^.Attributes[Node^.AttributeCount].Value := AttrValue;
+ End;
+End;
+
+{ Supprimer un attribut d'un noeud HTML }
+Procedure DOMRemoveAttribute(Node: HTMLNodePtr; AttrName: String);
+Var
+ I, J: Integer;
+ LowerAttr, LowerName: String;
+Begin
+ If Node = Nil Then Exit;
+
+ LowerAttr := HTMLLowerCase(AttrName);
+
+ For I := 1 To Node^.AttributeCount Do Begin
+  LowerName := HTMLLowerCase(Node^.Attributes[I].Name);
+  If LowerName = LowerAttr Then Begin
+   { Decaler tous les attributs suivants }
+   For J := I To Node^.AttributeCount - 1 Do
+    Node^.Attributes[J] := Node^.Attributes[J + 1];
+   Dec(Node^.AttributeCount);
+   Exit;
+  End;
+ End;
+End;
+
+{ Verifier si un noeud a un attribut }
+Function DOMHasAttribute(Node: HTMLNodePtr; AttrName: String): Boolean;
+Var
+ I: Integer;
+ LowerAttr, LowerName: String;
+Begin
+ DOMHasAttribute := False;
+ If Node = Nil Then Exit;
+
+ LowerAttr := HTMLLowerCase(AttrName);
+ For I := 1 To Node^.AttributeCount Do Begin
+  LowerName := HTMLLowerCase(Node^.Attributes[I].Name);
+  If LowerName = LowerAttr Then Begin
+   DOMHasAttribute := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ Fonction recursive pour chercher un element par ID }
+Function DOMGetElementByIdRecursive(Node: HTMLNodePtr; Id: String): HTMLNodePtr;
+Var
+ I: Integer;
+ NodeId: String;
+ Result: HTMLNodePtr;
+Begin
+ DOMGetElementByIdRecursive := Nil;
+ If Node = Nil Then Exit;
+
+ { Verifier l'ID de ce noeud }
+ NodeId := DOMGetAttribute(Node, 'id');
+ If NodeId = Id Then Begin
+  DOMGetElementByIdRecursive := Node;
+  Exit;
+ End;
+
+ { Parcourir les enfants }
+ For I := 1 To Node^.ChildCount Do Begin
+  Result := DOMGetElementByIdRecursive(Node^.Children[I], Id);
+  If Result <> Nil Then Begin
+   DOMGetElementByIdRecursive := Result;
+   Exit;
+  End;
+ End;
+End;
+
+{ Obtenir un element par son ID (document.getElementById) }
+Function DOMGetElementById(Id: String): HTMLNodePtr;
+Begin
+ DOMGetElementById := DOMGetElementByIdRecursive(HTMLDocument, Id);
+End;
+
+{ Procedure recursive pour chercher des elements par nom de balise }
+Procedure DOMGetElementsByTagNameRecursive(Node: HTMLNodePtr; TagName: String; Var List: DOMNodeList);
+Var
+ I: Integer;
+ LowerTag, LowerNodeTag: String;
+Begin
+ If Node = Nil Then Exit;
+
+ LowerTag := HTMLLowerCase(TagName);
+
+ { Verifier le nom de balise de ce noeud }
+ If Node^.NodeType = HTML_NODE_ELEMENT Then Begin
+  LowerNodeTag := HTMLLowerCase(Node^.TagName);
+  If (LowerTag = '*') Or (LowerNodeTag = LowerTag) Then Begin
+   If List.Length < MAX_DOM_QUERY_RESULTS Then Begin
+    Inc(List.Length);
+    List.Nodes[List.Length] := Node;
+   End;
+  End;
+ End;
+
+ { Parcourir les enfants }
+ For I := 1 To Node^.ChildCount Do
+  DOMGetElementsByTagNameRecursive(Node^.Children[I], TagName, List);
+End;
+
+{ Obtenir des elements par nom de balise (document.getElementsByTagName) }
+Function DOMGetElementsByTagName(TagName: String): DOMNodeList;
+Var
+ List: DOMNodeList;
+Begin
+ List.Length := 0;
+ DOMGetElementsByTagNameRecursive(HTMLDocument, TagName, List);
+ DOMGetElementsByTagName := List;
+End;
+
+{ Verifier si un noeud a une classe specifique }
+Function DOMHasClass(Node: HTMLNodePtr; ClassName: String): Boolean;
+Var
+ ClassAttr: String;
+ I, StartPos: Integer;
+ CurrentClass: String;
+Begin
+ DOMHasClass := False;
+ If Node = Nil Then Exit;
+
+ ClassAttr := DOMGetAttribute(Node, 'class');
+ If ClassAttr = '' Then Exit;
+
+ { Parser les classes (separees par des espaces) }
+ StartPos := 1;
+ For I := 1 To Length(ClassAttr) + 1 Do Begin
+  If (I > Length(ClassAttr)) Or (ClassAttr[I] = ' ') Then Begin
+   If I > StartPos Then Begin
+    CurrentClass := Copy(ClassAttr, StartPos, I - StartPos);
+    If CurrentClass = ClassName Then Begin
+     DOMHasClass := True;
+     Exit;
+    End;
+   End;
+   StartPos := I + 1;
+  End;
+ End;
+End;
+
+{ Procedure recursive pour chercher des elements par classe }
+Procedure DOMGetElementsByClassNameRecursive(Node: HTMLNodePtr; ClassName: String; Var List: DOMNodeList);
+Var
+ I: Integer;
+Begin
+ If Node = Nil Then Exit;
+
+ { Verifier la classe de ce noeud }
+ If DOMHasClass(Node, ClassName) Then Begin
+  If List.Length < MAX_DOM_QUERY_RESULTS Then Begin
+   Inc(List.Length);
+   List.Nodes[List.Length] := Node;
+  End;
+ End;
+
+ { Parcourir les enfants }
+ For I := 1 To Node^.ChildCount Do
+  DOMGetElementsByClassNameRecursive(Node^.Children[I], ClassName, List);
+End;
+
+{ Obtenir des elements par classe (document.getElementsByClassName) }
+Function DOMGetElementsByClassName(ClassName: String): DOMNodeList;
+Var
+ List: DOMNodeList;
+Begin
+ List.Length := 0;
+ DOMGetElementsByClassNameRecursive(HTMLDocument, ClassName, List);
+ DOMGetElementsByClassName := List;
+End;
+
+{ Obtenir le texte d'un noeud (innerText/textContent) }
+Function DOMGetTextContent(Node: HTMLNodePtr): String;
+Var
+ I: Integer;
+ Result: String;
+Begin
+ Result := '';
+ If Node = Nil Then Begin
+  DOMGetTextContent := Result;
+  Exit;
+ End;
+
+ If Node^.NodeType = HTML_NODE_TEXT Then
+  Result := Node^.Content
+ Else Begin
+  For I := 1 To Node^.ChildCount Do
+   Result := Result + DOMGetTextContent(Node^.Children[I]);
+ End;
+
+ DOMGetTextContent := Result;
+End;
+
+{ Definir le texte d'un noeud (innerText/textContent) }
+Procedure DOMSetTextContent(Node: HTMLNodePtr; Text: String);
+Begin
+ If Node = Nil Then Exit;
+
+ { Supprimer tous les enfants existants }
+ Node^.ChildCount := 0;
+
+ { Creer un nouveau noeud texte comme seul enfant }
+ If Length(Text) > 0 Then Begin
+  New(Node^.Children[1]);
+  Node^.Children[1]^.NodeType := HTML_NODE_TEXT;
+  Node^.Children[1]^.TagType := 0;
+  Node^.Children[1]^.TagName := '';
+  Node^.Children[1]^.Content := Text;
+  Node^.Children[1]^.AttributeCount := 0;
+  Node^.Children[1]^.ChildCount := 0;
+  Node^.Children[1]^.Parent := Node;
+  Node^.ChildCount := 1;
+ End;
+End;
+
+{ Creer un nouvel element HTML (document.createElement) }
+Function DOMCreateElement(TagName: String): HTMLNodePtr;
+Var
+ NewNode: HTMLNodePtr;
+Begin
+ New(NewNode);
+ NewNode^.NodeType := HTML_NODE_ELEMENT;
+ NewNode^.TagType := GetTagType(TagName);
+ NewNode^.TagName := TagName;
+ NewNode^.Content := '';
+ NewNode^.AttributeCount := 0;
+ NewNode^.ChildCount := 0;
+ NewNode^.Parent := Nil;
+ DOMCreateElement := NewNode;
+End;
+
+{ Creer un noeud texte (document.createTextNode) }
+Function DOMCreateTextNode(Text: String): HTMLNodePtr;
+Var
+ NewNode: HTMLNodePtr;
+Begin
+ New(NewNode);
+ NewNode^.NodeType := HTML_NODE_TEXT;
+ NewNode^.TagType := 0;
+ NewNode^.TagName := '';
+ NewNode^.Content := Text;
+ NewNode^.AttributeCount := 0;
+ NewNode^.ChildCount := 0;
+ NewNode^.Parent := Nil;
+ DOMCreateTextNode := NewNode;
+End;
+
+{ Ajouter un enfant a un element (appendChild) }
+Function DOMAppendChild(Parent, Child: HTMLNodePtr): HTMLNodePtr;
+Begin
+ DOMAppendChild := Nil;
+ If (Parent = Nil) Or (Child = Nil) Then Exit;
+
+ If Parent^.ChildCount < MAX_CHILDREN Then Begin
+  Inc(Parent^.ChildCount);
+  Parent^.Children[Parent^.ChildCount] := Child;
+  Child^.Parent := Parent;
+  DOMAppendChild := Child;
+ End;
+End;
+
+{ Inserer un enfant avant un autre (insertBefore) }
+Function DOMInsertBefore(Parent, NewChild, RefChild: HTMLNodePtr): HTMLNodePtr;
+Var
+ I, J, RefIndex: Integer;
+Begin
+ DOMInsertBefore := Nil;
+ If (Parent = Nil) Or (NewChild = Nil) Then Exit;
+
+ If RefChild = Nil Then Begin
+  { Inserer a la fin si pas de reference }
+  DOMInsertBefore := DOMAppendChild(Parent, NewChild);
+  Exit;
+ End;
+
+ { Trouver l'index de l'enfant de reference }
+ RefIndex := 0;
+ For I := 1 To Parent^.ChildCount Do Begin
+  If Parent^.Children[I] = RefChild Then Begin
+   RefIndex := I;
+   Break;
+  End;
+ End;
+
+ If RefIndex = 0 Then Exit; { Enfant de reference non trouve }
+
+ If Parent^.ChildCount >= MAX_CHILDREN Then Exit;
+
+ { Decaler les enfants suivants }
+ Inc(Parent^.ChildCount);
+ For J := Parent^.ChildCount DownTo RefIndex + 1 Do
+  Parent^.Children[J] := Parent^.Children[J - 1];
+
+ { Inserer le nouvel enfant }
+ Parent^.Children[RefIndex] := NewChild;
+ NewChild^.Parent := Parent;
+ DOMInsertBefore := NewChild;
+End;
+
+{ Supprimer un enfant (removeChild) }
+Function DOMRemoveChild(Parent, Child: HTMLNodePtr): HTMLNodePtr;
+Var
+ I, J, ChildIndex: Integer;
+Begin
+ DOMRemoveChild := Nil;
+ If (Parent = Nil) Or (Child = Nil) Then Exit;
+
+ { Trouver l'index de l'enfant }
+ ChildIndex := 0;
+ For I := 1 To Parent^.ChildCount Do Begin
+  If Parent^.Children[I] = Child Then Begin
+   ChildIndex := I;
+   Break;
+  End;
+ End;
+
+ If ChildIndex = 0 Then Exit; { Enfant non trouve }
+
+ { Decaler les enfants suivants }
+ For J := ChildIndex To Parent^.ChildCount - 1 Do
+  Parent^.Children[J] := Parent^.Children[J + 1];
+ Dec(Parent^.ChildCount);
+
+ Child^.Parent := Nil;
+ DOMRemoveChild := Child;
+End;
+
+{ Remplacer un enfant (replaceChild) }
+Function DOMReplaceChild(Parent, NewChild, OldChild: HTMLNodePtr): HTMLNodePtr;
+Var
+ I: Integer;
+Begin
+ DOMReplaceChild := Nil;
+ If (Parent = Nil) Or (NewChild = Nil) Or (OldChild = Nil) Then Exit;
+
+ For I := 1 To Parent^.ChildCount Do Begin
+  If Parent^.Children[I] = OldChild Then Begin
+   Parent^.Children[I] := NewChild;
+   NewChild^.Parent := Parent;
+   OldChild^.Parent := Nil;
+   DOMReplaceChild := OldChild;
+   Exit;
+  End;
+ End;
+End;
+
+{ Cloner un noeud (cloneNode) }
+Function DOMCloneNode(Node: HTMLNodePtr; Deep: Boolean): HTMLNodePtr;
+Var
+ Clone, ChildClone: HTMLNodePtr;
+ I: Integer;
+Begin
+ DOMCloneNode := Nil;
+ If Node = Nil Then Exit;
+
+ New(Clone);
+ Clone^.NodeType := Node^.NodeType;
+ Clone^.TagType := Node^.TagType;
+ Clone^.TagName := Node^.TagName;
+ Clone^.Content := Node^.Content;
+ Clone^.AttributeCount := Node^.AttributeCount;
+ Clone^.ChildCount := 0;
+ Clone^.Parent := Nil;
+
+ { Copier les attributs }
+ For I := 1 To Node^.AttributeCount Do
+  Clone^.Attributes[I] := Node^.Attributes[I];
+
+ { Cloner les enfants si demande }
+ If Deep Then Begin
+  For I := 1 To Node^.ChildCount Do Begin
+   ChildClone := DOMCloneNode(Node^.Children[I], True);
+   If ChildClone <> Nil Then Begin
+    Inc(Clone^.ChildCount);
+    Clone^.Children[Clone^.ChildCount] := ChildClone;
+    ChildClone^.Parent := Clone;
+   End;
+  End;
+ End;
+
+ DOMCloneNode := Clone;
+End;
+
+{ Obtenir le parent d'un noeud (parentNode/parentElement) }
+Function DOMGetParentNode(Node: HTMLNodePtr): HTMLNodePtr;
+Begin
+ If Node = Nil Then
+  DOMGetParentNode := Nil
+ Else
+  DOMGetParentNode := Node^.Parent;
+End;
+
+{ Obtenir le premier enfant (firstChild) }
+Function DOMGetFirstChild(Node: HTMLNodePtr): HTMLNodePtr;
+Begin
+ If (Node = Nil) Or (Node^.ChildCount = 0) Then
+  DOMGetFirstChild := Nil
+ Else
+  DOMGetFirstChild := Node^.Children[1];
+End;
+
+{ Obtenir le dernier enfant (lastChild) }
+Function DOMGetLastChild(Node: HTMLNodePtr): HTMLNodePtr;
+Begin
+ If (Node = Nil) Or (Node^.ChildCount = 0) Then
+  DOMGetLastChild := Nil
+ Else
+  DOMGetLastChild := Node^.Children[Node^.ChildCount];
+End;
+
+{ Obtenir le frere precedent (previousSibling) }
+Function DOMGetPreviousSibling(Node: HTMLNodePtr): HTMLNodePtr;
+Var
+ Parent: HTMLNodePtr;
+ I: Integer;
+Begin
+ DOMGetPreviousSibling := Nil;
+ If Node = Nil Then Exit;
+
+ Parent := Node^.Parent;
+ If Parent = Nil Then Exit;
+
+ For I := 2 To Parent^.ChildCount Do Begin
+  If Parent^.Children[I] = Node Then Begin
+   DOMGetPreviousSibling := Parent^.Children[I - 1];
+   Exit;
+  End;
+ End;
+End;
+
+{ Obtenir le frere suivant (nextSibling) }
+Function DOMGetNextSibling(Node: HTMLNodePtr): HTMLNodePtr;
+Var
+ Parent: HTMLNodePtr;
+ I: Integer;
+Begin
+ DOMGetNextSibling := Nil;
+ If Node = Nil Then Exit;
+
+ Parent := Node^.Parent;
+ If Parent = Nil Then Exit;
+
+ For I := 1 To Parent^.ChildCount - 1 Do Begin
+  If Parent^.Children[I] = Node Then Begin
+   DOMGetNextSibling := Parent^.Children[I + 1];
+   Exit;
+  End;
+ End;
+End;
+
+{ Obtenir le nombre d'enfants (childNodes.length) }
+Function DOMGetChildCount(Node: HTMLNodePtr): Integer;
+Begin
+ If Node = Nil Then
+  DOMGetChildCount := 0
+ Else
+  DOMGetChildCount := Node^.ChildCount;
+End;
+
+{ Verifier si un noeud a des enfants (hasChildNodes) }
+Function DOMHasChildNodes(Node: HTMLNodePtr): Boolean;
+Begin
+ If Node = Nil Then
+  DOMHasChildNodes := False
+ Else
+  DOMHasChildNodes := Node^.ChildCount > 0;
+End;
+
+{ Ajouter un gestionnaire d'evenement (addEventListener) }
+Procedure DOMAddEventListener(Element: HTMLNodePtr; EventType: Byte; Handler: String);
+Var
+ I: Integer;
+Begin
+ If Element = Nil Then Exit;
+ If DOMEventListenerCount >= MAX_DOM_EVENT_LISTENERS Then Exit;
+
+ { Verifier si ce gestionnaire existe deja }
+ For I := 1 To DOMEventListenerCount Do Begin
+  If DOMEventListeners[I].Active And
+     (DOMEventListeners[I].Element = Element) And
+     (DOMEventListeners[I].EventType = EventType) And
+     (DOMEventListeners[I].Handler = Handler) Then Exit;
+ End;
+
+ { Ajouter le gestionnaire }
+ Inc(DOMEventListenerCount);
+ DOMEventListeners[DOMEventListenerCount].EventType := EventType;
+ DOMEventListeners[DOMEventListenerCount].Handler := Handler;
+ DOMEventListeners[DOMEventListenerCount].Element := Element;
+ DOMEventListeners[DOMEventListenerCount].Active := True;
+End;
+
+{ Supprimer un gestionnaire d'evenement (removeEventListener) }
+Procedure DOMRemoveEventListener(Element: HTMLNodePtr; EventType: Byte; Handler: String);
+Var
+ I: Integer;
+Begin
+ For I := 1 To DOMEventListenerCount Do Begin
+  If DOMEventListeners[I].Active And
+     (DOMEventListeners[I].Element = Element) And
+     (DOMEventListeners[I].EventType = EventType) And
+     (DOMEventListeners[I].Handler = Handler) Then Begin
+   DOMEventListeners[I].Active := False;
+   Exit;
+  End;
+ End;
+End;
+
+{ Declencher un evenement sur un element (dispatchEvent) }
+Procedure DOMDispatchEvent(Element: HTMLNodePtr; EventType: Byte);
+Var
+ I: Integer;
+Begin
+ If Element = Nil Then Exit;
+
+ For I := 1 To DOMEventListenerCount Do Begin
+  If DOMEventListeners[I].Active And
+     (DOMEventListeners[I].Element = Element) And
+     (DOMEventListeners[I].EventType = EventType) Then Begin
+   { Executer le gestionnaire JavaScript }
+   JSExecuteScript(DOMEventListeners[I].Handler);
+  End;
+ End;
+End;
+
+{ Obtenir le body du document (document.body) }
+Function DOMGetBody: HTMLNodePtr;
+Var
+ List: DOMNodeList;
+Begin
+ List := DOMGetElementsByTagName('body');
+ If List.Length > 0 Then
+  DOMGetBody := List.Nodes[1]
+ Else
+  DOMGetBody := Nil;
+End;
+
+{ Obtenir le head du document (document.head) }
+Function DOMGetHead: HTMLNodePtr;
+Var
+ List: DOMNodeList;
+Begin
+ List := DOMGetElementsByTagName('head');
+ If List.Length > 0 Then
+  DOMGetHead := List.Nodes[1]
+ Else
+  DOMGetHead := Nil;
+End;
+
+{ Obtenir le titre du document (document.title) }
+Function DOMGetTitle: String;
+Var
+ List: DOMNodeList;
+Begin
+ List := DOMGetElementsByTagName('title');
+ If List.Length > 0 Then
+  DOMGetTitle := DOMGetTextContent(List.Nodes[1])
+ Else
+  DOMGetTitle := '';
+End;
+
+{ Definir le titre du document (document.title) }
+Procedure DOMSetTitle(Title: String);
+Var
+ List: DOMNodeList;
+Begin
+ List := DOMGetElementsByTagName('title');
+ If List.Length > 0 Then
+  DOMSetTextContent(List.Nodes[1], Title);
+End;
+
+{ Convertir un type d'evenement en nom }
+Function DOMEventTypeToName(EventType: Byte): String;
+Begin
+ Case EventType Of
+  DOM_EVENT_CLICK:     DOMEventTypeToName := 'click';
+  DOM_EVENT_DBLCLICK:  DOMEventTypeToName := 'dblclick';
+  DOM_EVENT_MOUSEDOWN: DOMEventTypeToName := 'mousedown';
+  DOM_EVENT_MOUSEUP:   DOMEventTypeToName := 'mouseup';
+  DOM_EVENT_MOUSEOVER: DOMEventTypeToName := 'mouseover';
+  DOM_EVENT_MOUSEOUT:  DOMEventTypeToName := 'mouseout';
+  DOM_EVENT_KEYDOWN:   DOMEventTypeToName := 'keydown';
+  DOM_EVENT_KEYUP:     DOMEventTypeToName := 'keyup';
+  DOM_EVENT_KEYPRESS:  DOMEventTypeToName := 'keypress';
+  DOM_EVENT_LOAD:      DOMEventTypeToName := 'load';
+  DOM_EVENT_UNLOAD:    DOMEventTypeToName := 'unload';
+  DOM_EVENT_SUBMIT:    DOMEventTypeToName := 'submit';
+  DOM_EVENT_CHANGE:    DOMEventTypeToName := 'change';
+  DOM_EVENT_FOCUS:     DOMEventTypeToName := 'focus';
+  DOM_EVENT_BLUR:      DOMEventTypeToName := 'blur';
+  Else                 DOMEventTypeToName := '';
+ End;
+End;
+
+{ Convertir un nom d'evenement en type }
+Function DOMNameToEventType(Name: String): Byte;
+Var
+ LowerName: String;
+Begin
+ LowerName := HTMLLowerCase(Name);
+ If LowerName = 'click' Then DOMNameToEventType := DOM_EVENT_CLICK
+ Else If LowerName = 'dblclick' Then DOMNameToEventType := DOM_EVENT_DBLCLICK
+ Else If LowerName = 'mousedown' Then DOMNameToEventType := DOM_EVENT_MOUSEDOWN
+ Else If LowerName = 'mouseup' Then DOMNameToEventType := DOM_EVENT_MOUSEUP
+ Else If LowerName = 'mouseover' Then DOMNameToEventType := DOM_EVENT_MOUSEOVER
+ Else If LowerName = 'mouseout' Then DOMNameToEventType := DOM_EVENT_MOUSEOUT
+ Else If LowerName = 'keydown' Then DOMNameToEventType := DOM_EVENT_KEYDOWN
+ Else If LowerName = 'keyup' Then DOMNameToEventType := DOM_EVENT_KEYUP
+ Else If LowerName = 'keypress' Then DOMNameToEventType := DOM_EVENT_KEYPRESS
+ Else If LowerName = 'load' Then DOMNameToEventType := DOM_EVENT_LOAD
+ Else If LowerName = 'unload' Then DOMNameToEventType := DOM_EVENT_UNLOAD
+ Else If LowerName = 'submit' Then DOMNameToEventType := DOM_EVENT_SUBMIT
+ Else If LowerName = 'change' Then DOMNameToEventType := DOM_EVENT_CHANGE
+ Else If LowerName = 'focus' Then DOMNameToEventType := DOM_EVENT_FOCUS
+ Else If LowerName = 'blur' Then DOMNameToEventType := DOM_EVENT_BLUR
+ Else DOMNameToEventType := 0;
+End;
+
+{ Executer un selecteur CSS simple (querySelector - supporte #id, .class, tag) }
+Function DOMQuerySelector(Selector: String): HTMLNodePtr;
+Var
+ List: DOMNodeList;
+Begin
+ DOMQuerySelector := Nil;
+ If Length(Selector) = 0 Then Exit;
+
+ If Selector[1] = '#' Then Begin
+  { Selecteur ID }
+  DOMQuerySelector := DOMGetElementById(Copy(Selector, 2, Length(Selector) - 1));
+ End
+ Else If Selector[1] = '.' Then Begin
+  { Selecteur de classe }
+  List := DOMGetElementsByClassName(Copy(Selector, 2, Length(Selector) - 1));
+  If List.Length > 0 Then DOMQuerySelector := List.Nodes[1];
+ End
+ Else Begin
+  { Selecteur de balise }
+  List := DOMGetElementsByTagName(Selector);
+  If List.Length > 0 Then DOMQuerySelector := List.Nodes[1];
+ End;
+End;
+
+{ Executer un selecteur CSS simple (querySelectorAll) }
+Function DOMQuerySelectorAll(Selector: String): DOMNodeList;
+Var
+ List: DOMNodeList;
+ Element: HTMLNodePtr;
+Begin
+ List.Length := 0;
+
+ If Length(Selector) = 0 Then Begin
+  DOMQuerySelectorAll := List;
+  Exit;
+ End;
+
+ If Selector[1] = '#' Then Begin
+  { Selecteur ID - retourne un seul element }
+  Element := DOMGetElementById(Copy(Selector, 2, Length(Selector) - 1));
+  If Element <> Nil Then Begin
+   List.Length := 1;
+   List.Nodes[1] := Element;
+  End;
+ End
+ Else If Selector[1] = '.' Then Begin
+  { Selecteur de classe }
+  List := DOMGetElementsByClassName(Copy(Selector, 2, Length(Selector) - 1));
+ End
+ Else Begin
+  { Selecteur de balise }
+  List := DOMGetElementsByTagName(Selector);
+ End;
+
+ DOMQuerySelectorAll := List;
+End;
+
+{ =====================================================
+  FIN DOM (Document Object Model)
   ===================================================== }
 
 { =====================================================
@@ -4945,6 +5774,7 @@ BEGIN
  InitMouse;
  InitHTMLParser;
  InitJSContext;  { Initialiser l'interpreteur JavaScript }
+ InitDOM;        { Initialiser le DOM }
  InitBackButton;
  InitForwardButton;
  InitRefreshButton;
