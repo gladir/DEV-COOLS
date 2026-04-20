@@ -2300,12 +2300,12 @@ Begin
  If Eof(RCFile) Then Exit;
  ReadLn(RCFile, RCLine);
  Inc(RCLineNum);
- 
+
  { Enlever les commentaires // }
  I := Pos('//', RCLine);
  If I > 0 Then
   RCLine := Copy(RCLine, 1, I - 1);
- 
+
  { Tokeniser la ligne }
  RCTokenCount := 0;
  I := 1;
@@ -2314,11 +2314,11 @@ Begin
   While (I <= Length(RCLine)) And (RCLine[I] In [' ', #9, ',']) Do
    Inc(I);
   If I > Length(RCLine) Then Break;
-  
+
   If RCTokenCount >= 64 Then Break;
   Inc(RCTokenCount);
   RCTokens[RCTokenCount] := '';
-  
+
   { Chaine entre guillemets }
   If RCLine[I] = '"' Then Begin
    Inc(I);
@@ -2336,7 +2336,7 @@ Begin
    End;
   End;
  End;
- 
+
  RCTokenIndex := 1;
  ReadRCLine := RCTokenCount > 0;
 End;
@@ -2427,7 +2427,7 @@ Begin
  Inc(DialogCount);
  DlgIdx := DialogCount;
  FillChar(Dialogs[DlgIdx], SizeOf(TDialogData), 0);
- 
+
  { ID x, y, width, height }
  X := RCTokenToWord(GetRCToken);
  Y := RCTokenToWord(GetRCToken);
@@ -2437,7 +2437,7 @@ Begin
  Dialogs[DlgIdx].Y := Y;
  Dialogs[DlgIdx].W := W;
  Dialogs[DlgIdx].H := H;
- 
+
  { Lire les lignes suivantes jusqu'a BEGIN }
  While ReadRCLine Do Begin
   Token := UpCaseStr(PeekRCToken);
@@ -2463,13 +2463,13 @@ Begin
    Dialogs[DlgIdx].Style := Dialogs[DlgIdx].Style Or $40; { DS_SETFONT }
   End;
  End;
- 
+
  { Lire les controles jusqu'a END }
  While ReadRCLine Do Begin
   Token := UpCaseStr(PeekRCToken);
   If Token = 'END' Then Break;
   If Dialogs[DlgIdx].ControlCount >= MAX_CONTROLS Then Continue;
-  
+
   If Token = 'LTEXT' Then Begin
    CtrlType := 1; { STATIC }
    GetRCToken;
@@ -2520,11 +2520,11 @@ Begin
   End
   Else
    Continue;
-  
+
   Inc(Dialogs[DlgIdx].ControlCount);
   I := Dialogs[DlgIdx].ControlCount;
   Dialogs[DlgIdx].Controls[I].CtrlType := CtrlType;
-  
+
   { Text, ID, x, y, width, height }
   If Token <> 'EDITTEXT' Then
    Dialogs[DlgIdx].Controls[I].Text := GetRCToken;
@@ -2533,7 +2533,7 @@ Begin
   Dialogs[DlgIdx].Controls[I].Y := RCTokenToWord(GetRCToken);
   Dialogs[DlgIdx].Controls[I].W := RCTokenToWord(GetRCToken);
   Dialogs[DlgIdx].Controls[I].H := RCTokenToWord(GetRCToken);
-  
+
   { Style optionnel }
   StyleStr := '';
   While RCTokenIndex <= RCTokenCount Do
@@ -2541,7 +2541,7 @@ Begin
   If StyleStr <> '' Then
    Dialogs[DlgIdx].Controls[I].Style := ParseRCStyle(StyleStr);
  End;
- 
+
  { Ajouter a la liste des ressources }
  If ResourceCount < MAX_RESOURCES Then Begin
   Inc(ResourceCount);
@@ -2564,7 +2564,7 @@ Begin
  Inc(MenuDataCount);
  MenuIdx := MenuDataCount;
  FillChar(ResMenus[MenuIdx], SizeOf(TMenuData), 0);
- 
+
  { Chercher BEGIN }
  While ReadRCLine Do Begin
   Token := UpCaseStr(PeekRCToken);
@@ -2573,7 +2573,7 @@ Begin
    Break;
   End;
  End;
- 
+
  { Lire les items }
  Level := 0;
  While ReadRCLine Do Begin
@@ -2590,9 +2590,9 @@ Begin
      ResMenus[MenuIdx].Items[ResMenus[MenuIdx].ItemCount].Flags Or $80;
    Continue;
   End;
-  
+
   If ResMenus[MenuIdx].ItemCount >= MAX_MENU_ITEMS_RES Then Continue;
-  
+
   If Token = 'POPUP' Then Begin
    GetRCToken;
    Inc(ResMenus[MenuIdx].ItemCount);
@@ -2633,7 +2633,7 @@ Begin
    End;
   End;
  End;
- 
+
  { Ajouter a la liste des ressources }
  If ResourceCount < MAX_RESOURCES Then Begin
   Inc(ResourceCount);
@@ -2659,14 +2659,14 @@ Begin
    Break;
   End;
  End;
- 
+
  { Lire les chaines }
  While ReadRCLine Do Begin
   Token := UpCaseStr(PeekRCToken);
   If Token = 'END' Then Break;
-  
+
   If StringCount >= MAX_STRINGS Then Continue;
-  
+
   StringId := RCTokenToWord(GetRCToken);
   If StringId > 0 Then Begin
    Inc(StringCount);
@@ -2689,43 +2689,43 @@ Begin
  DialogCount := 0;
  MenuDataCount := 0;
  StringCount := 0;
- 
+
  {$I-}
  Assign(RCFile, FileName);
  Reset(RCFile);
  {$I+}
  If IOResult <> 0 Then Exit;
- 
+
  RCLineNum := 0;
- 
+
  While Not Eof(RCFile) Do Begin
   If Not ReadRCLine Then Continue;
-  
+
   Token := UpCaseStr(PeekRCToken);
-  
+
   { Ignorer les directives preprocesseur }
   If (Length(Token) > 0) And (Token[1] = '#') Then Continue;
-  
+
   { STRINGTABLE }
   If Token = 'STRINGTABLE' Then Begin
    GetRCToken; { Consommer STRINGTABLE }
    ParseRCStringTable;
    Continue;
   End;
-  
+
   { Format: ID DIALOG/DIALOGEX/MENU/MENUEX }
   { Le premier token est l'ID de ressource }
   ResIdStr := GetRCToken;
   Val(ResIdStr, ResId, ValCode);
   If ValCode <> 0 Then ResId := 100; { Default si pas un nombre }
-  
+
   Token := UpCaseStr(GetRCToken);
   If (Token = 'DIALOG') Or (Token = 'DIALOGEX') Then
    ParseRCDialog(ResId)
   Else If (Token = 'MENU') Or (Token = 'MENUEX') Then
    ParseRCMenu(ResId);
  End;
- 
+
  Close(RCFile);
 End;
 
@@ -3015,7 +3015,7 @@ Begin
   Y := 10;
   W := RootObj.ob_width;
   H := RootObj.ob_height;
-  Style := $90C80000; { WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU }
+  Style := LongInt($90C80000); { WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU }
   ExStyle := 0;
   FontName := 'MS Sans Serif';
   FontSize := 8;
@@ -4651,6 +4651,7 @@ Begin
     #61: ProcessCommand(CMD_VIEW_EXPLORER);
     #67: ProcessCommand(CMD_PROJECT_COMPILE);
     #68: Running := False;
+    #107: Running := False; { Alt+F4 }
    End;
   End
   Else Begin
@@ -4669,7 +4670,7 @@ Var
  ClickedOnExplorer: Boolean;
 Begin
  If MouseClicked Then Begin
-  If MouseY < MENU_BAR_HEIGHT Then Begin
+  If (MouseY < MENU_BAR_HEIGHT) Or MainMenuBar.MenuOpen Then Begin
    Cmd := HandleMenuClick(MouseX, MouseY);
    If Cmd <> CMD_NONE Then ProcessCommand(Cmd);
   End
