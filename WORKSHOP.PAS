@@ -1703,12 +1703,226 @@ Begin
  WriteResDWord(0);
 End;
 
+{ Ecriture d'une chaine Unicode (UTF-16LE) terminee par null }
+Procedure WriteResString(Const S: String);
+Var
+ I: Integer;
+Begin
+ For I := 1 To Length(S) Do
+  WriteResWord(Ord(S[I]));
+ WriteResWord(0); { Terminateur null }
+End;
+
+{ Ecriture de l'en-tete d'une ressource 32-bit }
+Procedure WriteResHeader32(DataSize: LongInt; ResType, ResId: Word; MemFlags: Word);
+Var
+ HeaderSize: LongInt;
+Begin
+ { En-tete de ressource 32-bit }
+ HeaderSize := 32;
+ WriteResDWord(DataSize);   { Taille des donnees }
+ WriteResDWord(HeaderSize); { Taille de l'en-tete }
+ WriteResWord($FFFF);       { Type = nombre }
+ WriteResWord(ResType);     { Type de ressource }
+ WriteResWord($FFFF);       { ID = nombre }
+ WriteResWord(ResId);       { ID de ressource }
+ WriteResDWord(0);          { Version des donnees }
+ WriteResWord(MemFlags);    { Flags memoire }
+ WriteResWord($0409);       { Language ID (US English) }
+ WriteResDWord(0);          { Version }
+ WriteResDWord(0);          { Caracteristiques }
+End;
+
+{ Calcul de la taille d'un dialogue en format binaire }
+Function CalcDialogSize(DlgIdx: Integer): LongInt;
+Var
+ Size: LongInt;
+ I: Integer;
+Begin
+ Size := 18; { DLGTEMPLATE de base }
+ { Menu, Class, Title - tous vides pour simplifier }
+ Size := Size + 2 + 2 + (Length(Dialogs[DlgIdx].Caption) + 1) * 2;
+ { Font si DS_SETFONT }
+ If (Dialogs[DlgIdx].Style And $40) <> 0 Then Begin
+  Size := Size + 2; { Font size }
+  Size := Size + (Length(Dialogs[DlgIdx].FontName) + 1) * 2;
+ End;
+ { Controles }
+ For I := 1 To Dialogs[DlgIdx].ControlCount Do Begin
+  Size := Size + 18; { DLGITEMTEMPLATE }
+  { Class, Title, Extra }
+  Size := Size + 2 + (Length(Dialogs[DlgIdx].Controls[I].Text) + 1) * 2 + 2;
+  { Aligner sur DWORD }
+  If (Size Mod 4) <> 0 Then
+   Size := Size + (4 - (Size Mod 4));
+ End;
+ CalcDialogSize := Size;
+End;
+
+{ Ecriture d'un dialogue au format ressource binaire 32-bit }
+Procedure WriteResDialog(DlgIdx: Integer);
+Var
+ I: Integer;
+ DataSize: LongInt;
+Begin
+ If (DlgIdx < 1) Or (DlgIdx > DialogCount) Then Exit;
+
+ DataSize := CalcDialogSize(DlgIdx);
+ WriteResHeader32(DataSize, RT_DIALOG, DlgIdx, $1030);
+
+ { DLGTEMPLATE }
+ WriteResDWord(Dialogs[DlgIdx].Style);   { Style }
+ WriteResDWord(Dialogs[DlgIdx].ExStyle); { ExStyle }
+ WriteResWord(Dialogs[DlgIdx].ControlCount); { Nombre de controles }
+ WriteResWord(Dialogs[DlgIdx].X);        { X }
+ WriteResWord(Dialogs[DlgIdx].Y);        { Y }
+ WriteResWord(Dialogs[DlgIdx].W);        { CX }
+ WriteResWord(Dialogs[DlgIdx].H);        { CY }
+ WriteResWord(0);  { Menu - pas de menu }
+ WriteResWord(0);  { Class - classe standard }
+ WriteResString(Dialogs[DlgIdx].Caption); { Title }
+
+ { Font (si DS_SETFONT est dans le style) }
+ If (Dialogs[DlgIdx].Style And $40) <> 0 Then Begin
+  WriteResWord(Dialogs[DlgIdx].FontSize);
+  WriteResString(Dialogs[DlgIdx].FontName);
+ End;
+
+ { Controles }
+ For I := 1 To Dialogs[DlgIdx].ControlCount Do Begin
+  { Alignement sur DWORD avant chaque controle }
+  While (FilePos(OutResFile) Mod 4) <> 0 Do
+   WriteResByte(0);
+
+  WriteResDWord(Dialogs[DlgIdx].Controls[I].Style);   { Style }
+  WriteResDWord(Dialogs[DlgIdx].Controls[I].ExStyle); { ExStyle }
+  WriteResWord(Dialogs[DlgIdx].Controls[I].X);        { X }
+  WriteResWord(Dialogs[DlgIdx].Controls[I].Y);        { Y }
+  WriteResWord(Dialogs[DlgIdx].Controls[I].W);        { CX }
+  WriteResWord(Dialogs[DlgIdx].Controls[I].H);        { CY }
+  WriteResWord(Dialogs[DlgIdx].Controls[I].CtrlId);   { ID }
+
+  { Class - utiliser type de controle comme classe predefinies }
+  WriteResWord($FFFF);
+  WriteResWord($0080 + Dialogs[DlgIdx].Controls[I].CtrlType); { Classe standard }
+
+  { Title }
+  WriteResString(Dialogs[DlgIdx].Controls[I].Text);
+
+  { Extra bytes }
+  WriteResWord(0);
+ End;
+End;
+
+{ Ecriture d'un menu au format ressource binaire 32-bit }
+Procedure WriteResMenu(MenuIdx: Integer);
+Var
+ I: Integer;
+ DataSize: LongInt;
+ Flags: Word;
+Begin
+ If (MenuIdx < 1) Or (MenuIdx > MenuDataCount) Then Exit;
+
+ { Calculer taille }
+ DataSize := 4; { Version + Offset }
+ For I := 1 To ResMenus[MenuIdx].ItemCount Do Begin
+  DataSize := DataSize + 2; { Flags }
+  If ResMenus[MenuIdx].Items[I].ItemType <> 1 Then { Pas un POPUP }
+   DataSize := DataSize + 2; { ID }
+  DataSize := DataSize + (Length(ResMenus[MenuIdx].Items[I].Text) + 1) * 2;
+ End;
+
+ WriteResHeader32(DataSize, RT_MENU, MenuIdx, $1030);
+
+ { MENUHEADER }
+ WriteResWord(0); { Version }
+ WriteResWord(0); { Offset vers premier item }
+
+ { Items }
+ For I := 1 To ResMenus[MenuIdx].ItemCount Do Begin
+  Flags := ResMenus[MenuIdx].Items[I].Flags;
+  { Dernier item du niveau }
+  If I = ResMenus[MenuIdx].ItemCount Then
+   Flags := Flags Or $80; { MF_END }
+
+  WriteResWord(Flags);
+
+  { ID seulement si pas un POPUP }
+  If (Flags And $10) = 0 Then
+   WriteResWord(ResMenus[MenuIdx].Items[I].ItemId);
+
+  WriteResString(ResMenus[MenuIdx].Items[I].Text);
+ End;
+End;
+
+{ Ecriture d'une table de chaines au format ressource binaire 32-bit }
+Procedure WriteResStringTable;
+Var
+ I, J, BundleId: Integer;
+ StringsInBundle: Array[0..15] Of String[255];
+ DataSize: LongInt;
+ HasStrings: Boolean;
+Begin
+ If StringCount = 0 Then Exit;
+
+ { Parcourir par bundles de 16 chaines }
+ For BundleId := 0 To 255 Do Begin
+  { Initialiser bundle }
+  For J := 0 To 15 Do
+   StringsInBundle[J] := '';
+
+  { Collecter les chaines pour ce bundle }
+  HasStrings := False;
+  For I := 1 To StringCount Do Begin
+   If (StringEntries[I].StringId Div 16) = BundleId Then Begin
+    StringsInBundle[StringEntries[I].StringId Mod 16] := StringEntries[I].Text;
+    HasStrings := True;
+   End;
+  End;
+
+  If HasStrings Then Begin
+   { Calculer taille }
+   DataSize := 0;
+   For J := 0 To 15 Do
+    DataSize := DataSize + 2 + Length(StringsInBundle[J]) * 2;
+
+   WriteResHeader32(DataSize, RT_STRING, BundleId + 1, $1030);
+
+   { Ecrire les 16 chaines du bundle }
+   For J := 0 To 15 Do Begin
+    WriteResWord(Length(StringsInBundle[J]));
+    For I := 1 To Length(StringsInBundle[J]) Do
+     WriteResWord(Ord(StringsInBundle[J][I]));
+   End;
+  End;
+ End;
+End;
+
+{ Sauvegarde du fichier .RES complet }
 Procedure SaveResFile(Const FileName: String; Is32Bit: Boolean);
+Var
+ I: Integer;
 Begin
  CreateOutResFile(FileName);
- If Is32Bit Then
+
+ If Is32Bit Then Begin
+  { Ecrire l'en-tete null requis par le format 32-bit }
   WriteNullHeader32;
+
+  { Ecrire tous les dialogues }
+  For I := 1 To DialogCount Do
+   WriteResDialog(I);
+
+  { Ecrire tous les menus }
+  For I := 1 To MenuDataCount Do
+   WriteResMenu(I);
+
+  { Ecrire la table de chaines }
+  WriteResStringTable;
+ End;
+
  CloseOutResFile;
+ AppState.ProjectModified := False;
 End;
 
 { Ecriture fichiers RC }
