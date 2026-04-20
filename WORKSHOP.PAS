@@ -356,6 +356,36 @@ Const
  RT_HTML = 23;
  RT_MANIFEST = 24;
 
+ { Types d'objets GEM/AES (Atari ST) }
+ G_BOX      = 20;  { Boite rectangle }
+ G_TEXT     = 21;  { Texte }
+ G_BOXTEXT  = 22;  { Texte dans une boite }
+ G_IMAGE    = 23;  { Image bitmap }
+ G_PROGDEF  = 24;  { Objet defini par programme }
+ G_IBOX     = 25;  { Boite invisible }
+ G_BUTTON   = 26;  { Bouton }
+ G_BOXCHAR  = 27;  { Caractere dans une boite }
+ G_STRING   = 28;  { Chaine de caracteres }
+ G_FTEXT    = 29;  { Texte editable formatte }
+ G_FBOXTEXT = 30;  { Texte editable dans boite }
+ G_ICON     = 31;  { Icone }
+ G_TITLE    = 32;  { Titre de menu }
+ G_CICON    = 33;  { Icone couleur }
+
+ { Flags d'objets GEM }
+ GEM_SELECTABLE = $0001;
+ GEM_DEFAULT    = $0002;
+ GEM_EXIT       = $0004;
+ GEM_EDITABLE   = $0008;
+ GEM_RBUTTON    = $0010;
+ GEM_LASTOB     = $0020;
+ GEM_TOUCHEXIT  = $0040;
+ GEM_HIDETREE   = $0080;
+ GEM_INDIRECT   = $0100;
+ GEM_FL3DIND    = $0200;
+ GEM_FL3DACT    = $0400;
+ GEM_SUBMENU    = $0800;
+
  { Limites }
  MAX_RESOURCES = 1024;
  MAX_STRINGS = 4096;
@@ -566,6 +596,101 @@ Type
   MaskSize: Integer;
  End;
 
+ { Structures pour import GEM RSC (Atari ST) }
+ { En-tete du fichier RSC - 36 octets }
+ TRSCHeader = Record
+  vrsn: Word;        { Version du fichier RSC }
+  object_: Word;     { Offset vers tableau OBJECT }
+  tedinfo: Word;     { Offset vers tableau TEDINFO }
+  iconblk: Word;     { Offset vers tableau ICONBLK }
+  bitblk: Word;      { Offset vers tableau BITBLK }
+  frstr: Word;       { Offset vers free strings }
+  string_: Word;     { Offset vers premier string }
+  imdata: Word;      { Offset vers donnees image }
+  frimg: Word;       { Offset vers free images }
+  trindex: Word;     { Offset vers tree index }
+  nobs: Word;        { Nombre d'objects }
+  ntree: Word;       { Nombre d'arbres }
+  nted: Word;        { Nombre de TEDINFO }
+  nib: Word;         { Nombre d'ICONBLK }
+  nbb: Word;         { Nombre de BITBLK }
+  nstring: Word;     { Nombre de strings }
+  nimages: Word;     { Nombre d'images }
+  rssize: Word;      { Taille totale du fichier RSC }
+ End;
+
+ { Structure OBJECT GEM - 24 octets }
+ TGEMObject = Record
+  ob_next: SmallInt;  { Index du prochain objet }
+  ob_head: SmallInt;  { Index du premier enfant }
+  ob_tail: SmallInt;  { Index du dernier enfant }
+  ob_type: Word;      { Type d'objet }
+  ob_flags: Word;     { Flags }
+  ob_state: Word;     { Etat de l'objet }
+  ob_spec: LongInt;   { Pointeur vers donnees specifiques }
+  ob_x: SmallInt;     { Position X }
+  ob_y: SmallInt;     { Position Y }
+  ob_width: SmallInt; { Largeur }
+  ob_height: SmallInt;{ Hauteur }
+ End;
+
+ { Structure TEDINFO GEM - 28 octets }
+ TGEMTedInfo = Record
+  te_ptext: LongInt;    { Pointeur vers texte editable }
+  te_ptmplt: LongInt;   { Pointeur vers template }
+  te_pvalid: LongInt;   { Pointeur vers validation string }
+  te_font: SmallInt;    { Font ID }
+  te_fontid: SmallInt;  { Font ID reserve }
+  te_just: SmallInt;    { Justification (0=left, 1=right, 2=center) }
+  te_color: SmallInt;   { Couleur }
+  te_fontsize: SmallInt;{ Taille de fonte }
+  te_thickness: SmallInt;{ Epaisseur de la bordure }
+  te_txtlen: SmallInt;  { Longueur max du texte }
+  te_tmplen: SmallInt;  { Longueur du template }
+ End;
+
+ { Structure ICONBLK GEM - 34 octets }
+ TGEMIconBlk = Record
+  ib_pmask: LongInt;  { Pointeur vers masque }
+  ib_pdata: LongInt;  { Pointeur vers donnees image }
+  ib_ptext: LongInt;  { Pointeur vers texte de l'icone }
+  ib_char: SmallInt;  { Caractere dans l'icone }
+  ib_xchar: SmallInt; { Position X du caractere }
+  ib_ychar: SmallInt; { Position Y du caractere }
+  ib_xicon: SmallInt; { Position X de l'icone }
+  ib_yicon: SmallInt; { Position Y de l'icone }
+  ib_wicon: SmallInt; { Largeur de l'icone }
+  ib_hicon: SmallInt; { Hauteur de l'icone }
+  ib_xtext: SmallInt; { Position X du texte }
+  ib_ytext: SmallInt; { Position Y du texte }
+  ib_wtext: SmallInt; { Largeur du texte }
+  ib_htext: SmallInt; { Hauteur du texte }
+ End;
+
+ { Structure BITBLK GEM - 14 octets }
+ TGEMBitBlk = Record
+  bi_pdata: LongInt;  { Pointeur vers donnees bitmap }
+  bi_wb: SmallInt;    { Largeur en octets }
+  bi_hl: SmallInt;    { Hauteur en lignes }
+  bi_x: SmallInt;     { Position X }
+  bi_y: SmallInt;     { Position Y }
+  bi_color: SmallInt; { Couleur }
+ End;
+
+ { Donnees RSC en memoire }
+ TRSCData = Record
+  Header: TRSCHeader;
+  Objects: Array[1..256] Of TGEMObject;
+  ObjectCount: Integer;
+  TedInfos: Array[1..64] Of TGEMTedInfo;
+  TedInfoCount: Integer;
+  IconBlks: Array[1..32] Of TGEMIconBlk;
+  IconBlkCount: Integer;
+  BitBlks: Array[1..32] Of TGEMBitBlk;
+  BitBlkCount: Integer;
+  TreeCount: Integer;
+ End;
+
  { Presse-papiers interne }
  TClipboard = Record
   HasData: Boolean;
@@ -629,6 +754,10 @@ Var
  IconCount: Integer;
  Cursors: Array[1..16] Of TCursorData;
  CursorCount: Integer;
+
+ { Donnees GEM RSC importees }
+ RSCData: TRSCData;
+ RSCFileBuffer: Array[0..65535] Of Byte;
 
  { Presse-papiers }
  Clipboard: TClipboard;
@@ -765,8 +894,11 @@ End;
 Procedure GetMouseStateFPC(Var X, Y, Button: LongInt);
 Var
  MX, MY: LongInt;
- MB: Word;
+ MB: LongInt;
 Begin
+ MB := 0;
+ MX := 0;
+ MY := 0;
  PtcMouse.GetMouseState(MX, MY, MB);
  X := MX;
  Y := MY;
@@ -1576,10 +1708,476 @@ Begin
  AppState.ProjectModified := True;
 End;
 
-{ Import GEM }
-Procedure ImportGEMResource(Const FileName: String);
+{ ============================================================
+  TODO 10 - IMPORT DES FICHIERS GEM .RSC
+  ============================================================ }
+
+{ Fonction pour echanger les octets d'un word (big endian -> little endian) }
+Function SwapWord(W: Word): Word;
+Var
+ B: Array[0..1] Of Byte Absolute W;
+ TempByte: Byte;
 Begin
- If Not FileExists(FileName) Then Exit;
+ TempByte := B[0]; B[0] := B[1]; B[1] := TempByte;
+ SwapWord := W;
+End;
+
+{ Fonction pour echanger les octets d'un longint (big endian -> little endian) }
+Function SwapLongInt(L: LongInt): LongInt;
+Var
+ B: Array[0..3] Of Byte Absolute L;
+ TempByte: Byte;
+Begin
+ TempByte := B[0]; B[0] := B[3]; B[3] := TempByte;
+ TempByte := B[1]; B[1] := B[2]; B[2] := TempByte;
+ SwapLongInt := L;
+End;
+
+{ Lecture de l'en-tete du fichier RSC }
+Function ReadRSCHeader(Var F: File; Var Header: TRSCHeader): Boolean;
+Var
+ BytesRead: Integer;
+Begin
+ ReadRSCHeader := False;
+ {$I-}
+ BlockRead(F, Header, SizeOf(TRSCHeader), BytesRead);
+ {$I+}
+ If (IOResult <> 0) Or (BytesRead <> SizeOf(TRSCHeader)) Then Exit;
+ { Conversion big endian -> little endian (Atari ST est 68000 = big endian) }
+ Header.vrsn := SwapWord(Header.vrsn);
+ Header.object_ := SwapWord(Header.object_);
+ Header.tedinfo := SwapWord(Header.tedinfo);
+ Header.iconblk := SwapWord(Header.iconblk);
+ Header.bitblk := SwapWord(Header.bitblk);
+ Header.frstr := SwapWord(Header.frstr);
+ Header.string_ := SwapWord(Header.string_);
+ Header.imdata := SwapWord(Header.imdata);
+ Header.frimg := SwapWord(Header.frimg);
+ Header.trindex := SwapWord(Header.trindex);
+ Header.nobs := SwapWord(Header.nobs);
+ Header.ntree := SwapWord(Header.ntree);
+ Header.nted := SwapWord(Header.nted);
+ Header.nib := SwapWord(Header.nib);
+ Header.nbb := SwapWord(Header.nbb);
+ Header.nstring := SwapWord(Header.nstring);
+ Header.nimages := SwapWord(Header.nimages);
+ Header.rssize := SwapWord(Header.rssize);
+ ReadRSCHeader := True;
+End;
+
+{ Lecture d'un objet GEM depuis le fichier }
+Procedure ReadGEMObject(Var Obj: TGEMObject; Offset: Word);
+Begin
+ Move(RSCFileBuffer[Offset], Obj, SizeOf(TGEMObject));
+ { Conversion big endian -> little endian }
+ Obj.ob_next := SmallInt(SwapWord(Word(Obj.ob_next)));
+ Obj.ob_head := SmallInt(SwapWord(Word(Obj.ob_head)));
+ Obj.ob_tail := SmallInt(SwapWord(Word(Obj.ob_tail)));
+ Obj.ob_type := SwapWord(Obj.ob_type);
+ Obj.ob_flags := SwapWord(Obj.ob_flags);
+ Obj.ob_state := SwapWord(Obj.ob_state);
+ Obj.ob_spec := SwapLongInt(Obj.ob_spec);
+ Obj.ob_x := SmallInt(SwapWord(Word(Obj.ob_x)));
+ Obj.ob_y := SmallInt(SwapWord(Word(Obj.ob_y)));
+ Obj.ob_width := SmallInt(SwapWord(Word(Obj.ob_width)));
+ Obj.ob_height := SmallInt(SwapWord(Word(Obj.ob_height)));
+End;
+
+{ Lecture d'un TEDINFO depuis le fichier }
+Procedure ReadGEMTedInfo(Var Ted: TGEMTedInfo; Offset: Word);
+Begin
+ Move(RSCFileBuffer[Offset], Ted, SizeOf(TGEMTedInfo));
+ { Conversion big endian -> little endian }
+ Ted.te_ptext := SwapLongInt(Ted.te_ptext);
+ Ted.te_ptmplt := SwapLongInt(Ted.te_ptmplt);
+ Ted.te_pvalid := SwapLongInt(Ted.te_pvalid);
+ Ted.te_font := SmallInt(SwapWord(Word(Ted.te_font)));
+ Ted.te_fontid := SmallInt(SwapWord(Word(Ted.te_fontid)));
+ Ted.te_just := SmallInt(SwapWord(Word(Ted.te_just)));
+ Ted.te_color := SmallInt(SwapWord(Word(Ted.te_color)));
+ Ted.te_fontsize := SmallInt(SwapWord(Word(Ted.te_fontsize)));
+ Ted.te_thickness := SmallInt(SwapWord(Word(Ted.te_thickness)));
+ Ted.te_txtlen := SmallInt(SwapWord(Word(Ted.te_txtlen)));
+ Ted.te_tmplen := SmallInt(SwapWord(Word(Ted.te_tmplen)));
+End;
+
+{ Lecture d'un ICONBLK depuis le fichier }
+Procedure ReadGEMIconBlk(Var Icon: TGEMIconBlk; Offset: Word);
+Begin
+ Move(RSCFileBuffer[Offset], Icon, SizeOf(TGEMIconBlk));
+ { Conversion big endian -> little endian }
+ Icon.ib_pmask := SwapLongInt(Icon.ib_pmask);
+ Icon.ib_pdata := SwapLongInt(Icon.ib_pdata);
+ Icon.ib_ptext := SwapLongInt(Icon.ib_ptext);
+ Icon.ib_char := SmallInt(SwapWord(Word(Icon.ib_char)));
+ Icon.ib_xchar := SmallInt(SwapWord(Word(Icon.ib_xchar)));
+ Icon.ib_ychar := SmallInt(SwapWord(Word(Icon.ib_ychar)));
+ Icon.ib_xicon := SmallInt(SwapWord(Word(Icon.ib_xicon)));
+ Icon.ib_yicon := SmallInt(SwapWord(Word(Icon.ib_yicon)));
+ Icon.ib_wicon := SmallInt(SwapWord(Word(Icon.ib_wicon)));
+ Icon.ib_hicon := SmallInt(SwapWord(Word(Icon.ib_hicon)));
+ Icon.ib_xtext := SmallInt(SwapWord(Word(Icon.ib_xtext)));
+ Icon.ib_ytext := SmallInt(SwapWord(Word(Icon.ib_ytext)));
+ Icon.ib_wtext := SmallInt(SwapWord(Word(Icon.ib_wtext)));
+ Icon.ib_htext := SmallInt(SwapWord(Word(Icon.ib_htext)));
+End;
+
+{ Lecture d'un BITBLK depuis le fichier }
+Procedure ReadGEMBitBlk(Var Bit: TGEMBitBlk; Offset: Word);
+Begin
+ Move(RSCFileBuffer[Offset], Bit, SizeOf(TGEMBitBlk));
+ { Conversion big endian -> little endian }
+ Bit.bi_pdata := SwapLongInt(Bit.bi_pdata);
+ Bit.bi_wb := SmallInt(SwapWord(Word(Bit.bi_wb)));
+ Bit.bi_hl := SmallInt(SwapWord(Word(Bit.bi_hl)));
+ Bit.bi_x := SmallInt(SwapWord(Word(Bit.bi_x)));
+ Bit.bi_y := SmallInt(SwapWord(Word(Bit.bi_y)));
+ Bit.bi_color := SmallInt(SwapWord(Word(Bit.bi_color)));
+End;
+
+{ Lecture d'une chaine depuis le buffer RSC (null-terminated) }
+Function ReadRSCString(Offset: Word): String;
+Var
+ S: String;
+ I: Integer;
+Begin
+ S := '';
+ I := 0;
+ While (I < 255) And (Offset + I < SizeOf(RSCFileBuffer)) And (RSCFileBuffer[Offset + I] <> 0) Do Begin
+  S := S + Chr(RSCFileBuffer[Offset + I]);
+  Inc(I);
+ End;
+ ReadRSCString := S;
+End;
+
+{ Conversion d'un objet GEM vers un controle Windows }
+Procedure ConvertGEMObjectToControl(Const Obj: TGEMObject; Var Ctrl: TDialogControl; ObjIndex: Integer);
+Var
+ ObjectType: Word;
+ Ted: TGEMTedInfo;
+Begin
+ ObjectType := Obj.ob_type And $00FF; { Type de base sans extended type }
+ Ctrl.X := Obj.ob_x;
+ Ctrl.Y := Obj.ob_y;
+ Ctrl.W := Obj.ob_width;
+ Ctrl.H := Obj.ob_height;
+ Ctrl.CtrlId := ObjIndex;
+ Ctrl.Style := 0;
+ Ctrl.ExStyle := 0;
+ Ctrl.Text := '';
+ Ctrl.ClassName := '';
+
+ Case ObjectType Of
+  G_BOX, G_IBOX: Begin
+   Ctrl.CtrlType := 0; { STATIC / Group Box }
+   Ctrl.ClassName := 'STATIC';
+   Ctrl.Style := $50000007; { WS_CHILD | WS_VISIBLE | SS_BLACKFRAME }
+  End;
+  G_TEXT, G_FTEXT: Begin
+   Ctrl.CtrlType := 1; { STATIC text }
+   Ctrl.ClassName := 'STATIC';
+   Ctrl.Style := $50000000; { WS_CHILD | WS_VISIBLE }
+   { Lecture du texte depuis TEDINFO si present }
+   If (Obj.ob_spec > 0) And (Obj.ob_spec < SizeOf(RSCFileBuffer)) Then Begin
+    ReadGEMTedInfo(Ted, Word(Obj.ob_spec));
+    If (Ted.te_ptext > 0) And (Ted.te_ptext < SizeOf(RSCFileBuffer)) Then
+     Ctrl.Text := ReadRSCString(Word(Ted.te_ptext));
+   End;
+  End;
+  G_BOXTEXT, G_FBOXTEXT: Begin
+   Ctrl.CtrlType := 1; { STATIC text dans boite }
+   Ctrl.ClassName := 'STATIC';
+   Ctrl.Style := $50000007; { WS_CHILD | WS_VISIBLE | SS_BLACKFRAME }
+   If (Obj.ob_spec > 0) And (Obj.ob_spec < SizeOf(RSCFileBuffer)) Then Begin
+    ReadGEMTedInfo(Ted, Word(Obj.ob_spec));
+    If (Ted.te_ptext > 0) And (Ted.te_ptext < SizeOf(RSCFileBuffer)) Then
+     Ctrl.Text := ReadRSCString(Word(Ted.te_ptext));
+   End;
+  End;
+  G_BUTTON: Begin
+   If (Obj.ob_flags And GEM_RBUTTON) <> 0 Then Begin
+    Ctrl.CtrlType := 3; { Radio button }
+    Ctrl.ClassName := 'BUTTON';
+    Ctrl.Style := $50000009; { WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON }
+   End Else If (Obj.ob_flags And GEM_EXIT) <> 0 Then Begin
+    Ctrl.CtrlType := 2; { Push button }
+    Ctrl.ClassName := 'BUTTON';
+    Ctrl.Style := $50010000; { WS_CHILD | WS_VISIBLE | WS_TABSTOP }
+    If (Obj.ob_flags And GEM_DEFAULT) <> 0 Then
+     Ctrl.Style := Ctrl.Style Or $0001; { BS_DEFPUSHBUTTON }
+   End Else Begin
+    Ctrl.CtrlType := 2; { Standard button }
+    Ctrl.ClassName := 'BUTTON';
+    Ctrl.Style := $50010000;
+   End;
+   If (Obj.ob_spec > 0) And (Obj.ob_spec < SizeOf(RSCFileBuffer)) Then
+    Ctrl.Text := ReadRSCString(Word(Obj.ob_spec));
+  End;
+  G_STRING, G_TITLE: Begin
+   Ctrl.CtrlType := 1; { STATIC string }
+   Ctrl.ClassName := 'STATIC';
+   Ctrl.Style := $50000000;
+   If (Obj.ob_spec > 0) And (Obj.ob_spec < SizeOf(RSCFileBuffer)) Then
+    Ctrl.Text := ReadRSCString(Word(Obj.ob_spec));
+  End;
+  G_IMAGE: Begin
+   Ctrl.CtrlType := 4; { Image/Bitmap }
+   Ctrl.ClassName := 'STATIC';
+   Ctrl.Style := $50000003; { WS_CHILD | WS_VISIBLE | SS_BITMAP }
+  End;
+  G_ICON, G_CICON: Begin
+   Ctrl.CtrlType := 5; { Icon }
+   Ctrl.ClassName := 'STATIC';
+   Ctrl.Style := $50000003; { WS_CHILD | WS_VISIBLE | SS_ICON }
+  End;
+  G_BOXCHAR: Begin
+   Ctrl.CtrlType := 1; { STATIC char }
+   Ctrl.ClassName := 'STATIC';
+   Ctrl.Style := $50000001; { WS_CHILD | WS_VISIBLE | SS_CENTER }
+   Ctrl.Text := Chr((Obj.ob_spec Shr 24) And $FF);
+  End;
+ Else Begin
+   Ctrl.CtrlType := 0;
+   Ctrl.ClassName := 'STATIC';
+   Ctrl.Style := $50000000;
+  End;
+ End;
+End;
+
+{ Conversion d'un formulaire GEM vers un dialogue Windows }
+Procedure ConvertGEMTreeToDialog(TreeIndex: Integer);
+Var
+ ObjIndex, CtrlCount: Integer;
+ TreeOffset: Word;
+ Obj: TGEMObject;
+ RootObj: TGEMObject;
+Begin
+ If DialogCount >= 64 Then Exit;
+ If TreeIndex >= RSCData.Header.ntree Then Exit;
+
+ { Lecture de l'offset de l'arbre depuis la table d'index }
+ Move(RSCFileBuffer[RSCData.Header.trindex + TreeIndex * 4], TreeOffset, 2);
+ TreeOffset := SwapWord(TreeOffset);
+
+ { Lecture de l'objet racine }
+ ReadGEMObject(RootObj, RSCData.Header.object_ + TreeOffset);
+
+ Inc(DialogCount);
+ With Dialogs[DialogCount] Do Begin
+  Caption := 'GEM Form ' + IntToStr(TreeIndex);
+  X := 10;
+  Y := 10;
+  W := RootObj.ob_width;
+  H := RootObj.ob_height;
+  Style := $90C80000; { WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU }
+  ExStyle := 0;
+  FontName := 'MS Sans Serif';
+  FontSize := 8;
+  FontWeight := 400;
+  FontItalic := False;
+  ControlCount := 0;
+
+  { Parcourir tous les objets de l'arbre }
+  ObjIndex := 0;
+  CtrlCount := 0;
+  While (ObjIndex < RSCData.Header.nobs) And (CtrlCount < MAX_CONTROLS) Do Begin
+   ReadGEMObject(Obj, RSCData.Header.object_ + (TreeOffset + ObjIndex * SizeOf(TGEMObject)));
+
+   { Convertir l'objet sauf la racine }
+   If ObjIndex > 0 Then Begin
+    Inc(CtrlCount);
+    ConvertGEMObjectToControl(Obj, Controls[CtrlCount], ObjIndex);
+   End;
+
+   { Verifier si c'est le dernier objet }
+   If (Obj.ob_flags And GEM_LASTOB) <> 0 Then Break;
+   Inc(ObjIndex);
+  End;
+
+  ControlCount := CtrlCount;
+ End;
+
+ { Ajouter une entree de ressource }
+ If ResourceCount < MAX_RESOURCES Then Begin
+  Inc(ResourceCount);
+  With Resources[ResourceCount] Do Begin
+   ResType := RT_DIALOG;
+   TypeName := 'DIALOG';
+   ResId.IsNumeric := True;
+   ResId.NumId := 1000 + TreeIndex;
+   ResId.StrId := '';
+   LangId := $0409; { English US }
+   MemFlags := $1010;
+   DataSize := 0;
+   DataOffset := 0;
+   Modified := True;
+  End;
+ End;
+End;
+
+{ Extraction des icones GEM vers format Windows }
+Procedure ExtractGEMIcons;
+Var
+ I: Integer;
+ Icon: TGEMIconBlk;
+Begin
+ For I := 0 To RSCData.Header.nib - 1 Do Begin
+  If IconCount >= 32 Then Break;
+  ReadGEMIconBlk(Icon, RSCData.Header.iconblk + I * SizeOf(TGEMIconBlk));
+
+  Inc(IconCount);
+  With Icons[IconCount] Do Begin
+   ImageCount := 1;
+   Images[1].Width := Icon.ib_wicon;
+   Images[1].Height := Icon.ib_hicon;
+   Images[1].BitsPerPixel := 1; { Icones GEM monochromes }
+   Images[1].DataSize := (Icon.ib_wicon Div 8) * Icon.ib_hicon;
+   Images[1].MaskSize := Images[1].DataSize;
+  End;
+
+  { Ajouter une ressource ICON }
+  If ResourceCount < MAX_RESOURCES Then Begin
+   Inc(ResourceCount);
+   With Resources[ResourceCount] Do Begin
+    ResType := RT_ICON;
+    TypeName := 'ICON';
+    ResId.IsNumeric := True;
+    ResId.NumId := 2000 + I;
+    ResId.StrId := '';
+    LangId := $0409;
+    MemFlags := $1010;
+    DataSize := Icons[IconCount].Images[1].DataSize;
+    DataOffset := Icon.ib_pdata;
+    Modified := True;
+   End;
+  End;
+ End;
+End;
+
+{ Extraction des images bitmap GEM vers format Windows }
+Procedure ExtractGEMBitmaps;
+Var
+ I: Integer;
+ Bit: TGEMBitBlk;
+Begin
+ For I := 0 To RSCData.Header.nbb - 1 Do Begin
+  If BitmapCount >= 32 Then Break;
+  ReadGEMBitBlk(Bit, RSCData.Header.bitblk + I * SizeOf(TGEMBitBlk));
+
+  Inc(BitmapCount);
+  With Bitmaps[BitmapCount] Do Begin
+   Width := Bit.bi_wb * 8; { bi_wb est en octets }
+   Height := Bit.bi_hl;
+   BitsPerPixel := 1; { Images GEM monochromes }
+   PaletteCount := 2;
+   Palette[0].R := 255; Palette[0].G := 255; Palette[0].B := 255;
+   Palette[1].R := 0; Palette[1].G := 0; Palette[1].B := 0;
+   DataSize := Bit.bi_wb * Bit.bi_hl;
+  End;
+
+  { Ajouter une ressource BITMAP }
+  If ResourceCount < MAX_RESOURCES Then Begin
+   Inc(ResourceCount);
+   With Resources[ResourceCount] Do Begin
+    ResType := RT_BITMAP;
+    TypeName := 'BITMAP';
+    ResId.IsNumeric := True;
+    ResId.NumId := 3000 + I;
+    ResId.StrId := '';
+    LangId := $0409;
+    MemFlags := $1010;
+    DataSize := Bitmaps[BitmapCount].DataSize;
+    DataOffset := Bit.bi_pdata;
+    Modified := True;
+   End;
+  End;
+ End;
+End;
+
+{ Procedure principale d'import GEM RSC }
+Procedure ImportGEMResource(Const FileName: String);
+Var
+ F: File;
+ BytesRead: Integer;
+ I: Integer;
+ ActualFileName: String;
+Begin
+ { Si pas de nom fourni, utiliser une boite de dialogue (non implementee) }
+ ActualFileName := FileName;
+ If ActualFileName = '' Then Exit;
+
+ { Verifier l'existence du fichier }
+ If Not FileExists(ActualFileName) Then Exit;
+
+ { Ouvrir le fichier en mode binaire }
+ Assign(F, ActualFileName);
+ {$I-}
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+
+ { Lire l'en-tete RSC }
+ If Not ReadRSCHeader(F, RSCData.Header) Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Verifier la taille du fichier }
+ If RSCData.Header.rssize > SizeOf(RSCFileBuffer) Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Relire tout le fichier dans le buffer }
+ Seek(F, 0);
+ BlockRead(F, RSCFileBuffer, RSCData.Header.rssize, BytesRead);
+ Close(F);
+
+ If BytesRead < RSCData.Header.rssize Then Exit;
+
+ { Initialiser les compteurs }
+ RSCData.ObjectCount := RSCData.Header.nobs;
+ RSCData.TedInfoCount := RSCData.Header.nted;
+ RSCData.IconBlkCount := RSCData.Header.nib;
+ RSCData.BitBlkCount := RSCData.Header.nbb;
+ RSCData.TreeCount := RSCData.Header.ntree;
+
+ { Lire les objets GEM }
+ For I := 0 To RSCData.Header.nobs - 1 Do Begin
+  If I >= 256 Then Break;
+  ReadGEMObject(RSCData.Objects[I + 1], RSCData.Header.object_ + I * SizeOf(TGEMObject));
+ End;
+
+ { Lire les TEDINFO }
+ For I := 0 To RSCData.Header.nted - 1 Do Begin
+  If I >= 64 Then Break;
+  ReadGEMTedInfo(RSCData.TedInfos[I + 1], RSCData.Header.tedinfo + I * SizeOf(TGEMTedInfo));
+ End;
+
+ { Lire les ICONBLK }
+ For I := 0 To RSCData.Header.nib - 1 Do Begin
+  If I >= 32 Then Break;
+  ReadGEMIconBlk(RSCData.IconBlks[I + 1], RSCData.Header.iconblk + I * SizeOf(TGEMIconBlk));
+ End;
+
+ { Lire les BITBLK }
+ For I := 0 To RSCData.Header.nbb - 1 Do Begin
+  If I >= 32 Then Break;
+  ReadGEMBitBlk(RSCData.BitBlks[I + 1], RSCData.Header.bitblk + I * SizeOf(TGEMBitBlk));
+ End;
+
+ { Convertir les arbres GEM vers des dialogues Windows }
+ For I := 0 To RSCData.Header.ntree - 1 Do Begin
+  ConvertGEMTreeToDialog(I);
+ End;
+
+ { Extraire les icones }
+ ExtractGEMIcons;
+
+ { Extraire les bitmaps }
+ ExtractGEMBitmaps;
+
+ { Marquer le projet comme modifie }
  AppState.ProjectModified := True;
 End;
 
