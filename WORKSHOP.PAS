@@ -1643,7 +1643,10 @@ Begin
   DetectResFormat := 1;
 End;
 
-{ Lecture d'une chaine UTF-16LE terminee par null et conversion en ANSI }
+{ Lecture d'une chaine UTF-16LE terminee par null et conversion en ANSI.
+  Note: Supporte uniquement les caracteres du Basic Multilingual Plane dans
+  la plage U+0000 a U+00FF (Latin-1). Les caracteres hors de cette plage
+  sont silencieusement ignores. }
 Function ReadResUnicodeString: String;
 Var
  S: String;
@@ -1658,7 +1661,8 @@ Begin
  ReadResUnicodeString := S;
 End;
 
-{ Lecture d'une chaine UTF-16LE avec longueur prefixee }
+{ Lecture d'une chaine UTF-16LE avec longueur prefixee (format STRINGTABLE).
+  Memes limitations que ReadResUnicodeString concernant les caracteres. }
 Function ReadResCountedString: String;
 Var
  S: String;
