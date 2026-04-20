@@ -19,7 +19,7 @@
   10. DONE: Implementer le rendu des balises de structure HTML (html, head, body, div, span)
   11. DONE: Implementer le rendu des balises de texte (p, h1-h6, strong, em, pre, code)
   12. DONE: Implementer le rendu des listes (ul, ol, li, dl, dt, dd)
-  13. TODO: Implementer le rendu des tableaux (table, tr, td, th, thead, tbody)
+  13. DONE: Implementer le rendu des tableaux (table, tr, td, th, thead, tbody)
   14. TODO: Implementer le rendu des formulaires (form, input, button, select, textarea)
   15. TODO: Implementer la detection et le rendu des liens hypertexte (balise <a href>)
   16. TODO: Implementer la navigation par clic sur les liens URL dans les pages
@@ -290,6 +290,16 @@ Const
  LIST_TYPE_OL = 2;             { Liste ordonnee }
  LIST_TYPE_DL = 3;             { Liste de definitions }
 
+ { Parametres pour les tableaux }
+ TABLE_CELL_PADDING = 4;       { Padding interieur des cellules }
+ TABLE_BORDER_WIDTH = 1;       { Epaisseur des bordures }
+ TABLE_CELL_MIN_WIDTH = 40;    { Largeur minimale d'une cellule }
+ TABLE_CELL_SPACING = 2;       { Espacement entre cellules }
+ TABLE_MARGIN = 8;             { Marge autour du tableau }
+ TABLE_BORDER_COLOR = 8;       { Couleur des bordures (gris fonce) }
+ TABLE_HEADER_BG = 7;          { Couleur de fond des en-tetes (gris clair) }
+ MAX_TABLE_COLS = 20;          { Nombre maximum de colonnes }
+
  { Couleurs de rendu }
  RENDER_BG_COLOR = 15;         { Blanc }
  RENDER_TEXT_COLOR = 0;        { Noir }
@@ -343,6 +353,14 @@ Type
   ListType: Byte;            { Type de liste courante (UL, OL, DL) }
   ListLevel: Integer;        { Niveau d'imbrication des listes }
   ListItemNumber: Integer;   { Numero de l'element courant dans OL }
+  InTable: Boolean;          { Dans un tableau }
+  InTableHeader: Boolean;    { Dans l'en-tete du tableau (thead/th) }
+  TableX: Integer;           { Position X de depart du tableau }
+  TableCellX: Integer;       { Position X de la cellule courante }
+  TableCellWidth: Integer;   { Largeur de la cellule courante }
+  TableColIndex: Integer;    { Index de la colonne courante }
+  TableRowY: Integer;        { Position Y de debut de la ligne }
+  TableRowHeight: Integer;   { Hauteur de la ligne courante }
  End;
 
 Var
@@ -920,6 +938,14 @@ Begin
  Ctx.ListType := LIST_TYPE_NONE;
  Ctx.ListLevel := 0;
  Ctx.ListItemNumber := 0;
+ Ctx.InTable := False;
+ Ctx.InTableHeader := False;
+ Ctx.TableX := 0;
+ Ctx.TableCellX := 0;
+ Ctx.TableCellWidth := TABLE_CELL_MIN_WIDTH;
+ Ctx.TableColIndex := 0;
+ Ctx.TableRowY := 0;
+ Ctx.TableRowHeight := RENDER_LINE_HEIGHT;
 End;
 
 { Procedure pour effacer la zone de rendu }
@@ -1623,7 +1649,263 @@ End;
   FIN RENDU LISTES
   ===================================================== }
 
-{ Procedure principale pour rendre un noeud HTML }
+{ =====================================================
+  RENDU HTML - Tableaux (table, tr, td, th, thead, tbody)
+  ===================================================== }
+
+{ Fonction utilitaire pour compter les colonnes d'un tableau }
+Function CountTableColumns(Node: HTMLNodePtr): Integer;
+Var
+ I, J, MaxCols, RowCols: Integer;
+ ChildNode, CellNode: HTMLNodePtr;
+Begin
+ MaxCols := 0;
+
+ { Parcourir les enfants pour trouver tr, thead, tbody }
+ For I := 1 To Node^.ChildCount Do Begin
+  ChildNode := Node^.Children[I];
+  If ChildNode <> Nil Then Begin
+   If (ChildNode^.TagType = TAG_TR) Then Begin
+    { Compter les cellules dans cette ligne }
+    RowCols := 0;
+    For J := 1 To ChildNode^.ChildCount Do Begin
+     CellNode := ChildNode^.Children[J];
+     If CellNode <> Nil Then Begin
+      If (CellNode^.TagType = TAG_TD) Or (CellNode^.TagType = TAG_TH) Then
+       Inc(RowCols);
+     End;
+    End;
+    If RowCols > MaxCols Then MaxCols := RowCols;
+   End
+   Else If (ChildNode^.TagType = TAG_THEAD) Or (ChildNode^.TagType = TAG_TBODY) Then Begin
+    { Parcourir les lignes dans thead/tbody }
+    For J := 1 To ChildNode^.ChildCount Do Begin
+     If (ChildNode^.Children[J] <> Nil) And (ChildNode^.Children[J]^.TagType = TAG_TR) Then Begin
+      RowCols := CountTableColumns(ChildNode);
+      If RowCols > MaxCols Then MaxCols := RowCols;
+     End;
+    End;
+   End;
+  End;
+ End;
+
+ If MaxCols > MAX_TABLE_COLS Then MaxCols := MAX_TABLE_COLS;
+ If MaxCols = 0 Then MaxCols := 1;
+ CountTableColumns := MaxCols;
+End;
+
+{ Procedure pour rendre la balise TABLE }
+Procedure RenderTagTable(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInTable: Boolean;
+ OldTableX: Integer;
+ NumCols, TableWidth: Integer;
+Begin
+ { Nouvelle ligne avant le tableau si necessaire }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, TABLE_MARGIN);
+
+ { Sauvegarder l'etat }
+ OldInTable := Ctx.InTable;
+ OldTableX := Ctx.TableX;
+
+ { Configurer le contexte pour le tableau }
+ Ctx.InTable := True;
+ Ctx.TableX := Ctx.X;
+ Ctx.TableColIndex := 0;
+ Ctx.TableRowY := Ctx.Y;
+ Ctx.TableRowHeight := RENDER_LINE_HEIGHT;
+
+ { Calculer la largeur des cellules }
+ NumCols := CountTableColumns(Node);
+ TableWidth := Ctx.MaxX - Ctx.X - TABLE_MARGIN;
+ Ctx.TableCellWidth := (TableWidth - (NumCols * TABLE_CELL_SPACING)) Div NumCols;
+ If Ctx.TableCellWidth < TABLE_CELL_MIN_WIDTH Then
+  Ctx.TableCellWidth := TABLE_CELL_MIN_WIDTH;
+
+ { Dessiner la bordure superieure du tableau }
+ SetColor(TABLE_BORDER_COLOR);
+ Line(Ctx.TableX, Ctx.Y, Ctx.TableX + (NumCols * (Ctx.TableCellWidth + TABLE_CELL_SPACING)), Ctx.Y);
+ Inc(Ctx.Y, TABLE_BORDER_WIDTH);
+
+ { Rendre les enfants }
+ RenderChildren(Node, Ctx);
+
+ { Dessiner la bordure inferieure du tableau }
+ SetColor(TABLE_BORDER_COLOR);
+ Line(Ctx.TableX, Ctx.Y, Ctx.TableX + (NumCols * (Ctx.TableCellWidth + TABLE_CELL_SPACING)), Ctx.Y);
+ Inc(Ctx.Y, TABLE_BORDER_WIDTH);
+
+ { Restaurer l'etat }
+ Ctx.InTable := OldInTable;
+ Ctx.TableX := OldTableX;
+
+ { Retour a la position X de depart et espacement apres }
+ Ctx.X := RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+ RenderBlockSpacing(Ctx, TABLE_MARGIN);
+End;
+
+{ Procedure pour rendre la balise THEAD (en-tete du tableau) }
+Procedure RenderTagThead(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInTableHeader: Boolean;
+Begin
+ OldInTableHeader := Ctx.InTableHeader;
+ Ctx.InTableHeader := True;
+
+ RenderChildren(Node, Ctx);
+
+ Ctx.InTableHeader := OldInTableHeader;
+End;
+
+{ Procedure pour rendre la balise TBODY (corps du tableau) }
+Procedure RenderTagTbody(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { TBODY est principalement semantique, rendre simplement les enfants }
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise TR (ligne de tableau) }
+Procedure RenderTagTR(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ I: Integer;
+ MaxRowHeight: Integer;
+ ChildNode: HTMLNodePtr;
+Begin
+ If Not Ctx.InTable Then Begin
+  { Si pas dans un tableau, rendre comme un bloc }
+  RenderChildren(Node, Ctx);
+  Exit;
+ End;
+
+ { Initialiser la ligne }
+ Ctx.TableColIndex := 0;
+ Ctx.TableCellX := Ctx.TableX;
+ Ctx.TableRowY := Ctx.Y;
+ Ctx.TableRowHeight := RENDER_LINE_HEIGHT + (2 * TABLE_CELL_PADDING);
+
+ { Dessiner la bordure gauche de la ligne }
+ SetColor(TABLE_BORDER_COLOR);
+ Line(Ctx.TableX, Ctx.Y, Ctx.TableX, Ctx.Y + Ctx.TableRowHeight);
+
+ { Rendre les cellules }
+ RenderChildren(Node, Ctx);
+
+ { Dessiner la bordure droite de la ligne }
+ SetColor(TABLE_BORDER_COLOR);
+ Line(Ctx.TableCellX, Ctx.TableRowY, Ctx.TableCellX, Ctx.TableRowY + Ctx.TableRowHeight);
+
+ { Passer a la ligne suivante }
+ Ctx.Y := Ctx.TableRowY + Ctx.TableRowHeight;
+ Ctx.X := Ctx.TableX;
+
+ { Dessiner la bordure horizontale sous la ligne }
+ SetColor(TABLE_BORDER_COLOR);
+ Line(Ctx.TableX, Ctx.Y, Ctx.TableCellX, Ctx.Y);
+ Inc(Ctx.Y, TABLE_BORDER_WIDTH);
+End;
+
+{ Procedure pour rendre la balise TD (cellule de donnees) }
+Procedure RenderTagTD(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ CellStartX, CellStartY: Integer;
+ OldMaxX: Integer;
+Begin
+ If Not Ctx.InTable Then Begin
+  { Si pas dans un tableau, rendre comme un bloc }
+  RenderChildren(Node, Ctx);
+  Exit;
+ End;
+
+ { Position de la cellule }
+ CellStartX := Ctx.TableCellX;
+ CellStartY := Ctx.TableRowY;
+
+ { Dessiner le fond de la cellule }
+ SetFillStyle(SolidFill, RENDER_BG_COLOR);
+ Bar(CellStartX + TABLE_BORDER_WIDTH, CellStartY + TABLE_BORDER_WIDTH,
+     CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight - TABLE_BORDER_WIDTH);
+
+ { Configurer le contexte pour le contenu de la cellule }
+ Ctx.X := CellStartX + TABLE_CELL_PADDING;
+ Ctx.Y := CellStartY + TABLE_CELL_PADDING;
+ OldMaxX := Ctx.MaxX;
+ Ctx.MaxX := CellStartX + Ctx.TableCellWidth - TABLE_CELL_PADDING;
+
+ { Rendre le contenu }
+ RenderChildren(Node, Ctx);
+
+ { Restaurer MaxX }
+ Ctx.MaxX := OldMaxX;
+
+ { Passer a la cellule suivante }
+ Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + TABLE_CELL_SPACING;
+ Inc(Ctx.TableColIndex);
+
+ { Dessiner la bordure droite de la cellule }
+ SetColor(TABLE_BORDER_COLOR);
+ Line(Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY, Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY + Ctx.TableRowHeight);
+
+ { Remettre Y a la position de la ligne }
+ Ctx.Y := CellStartY;
+End;
+
+{ Procedure pour rendre la balise TH (cellule d'en-tete) }
+Procedure RenderTagTH(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ CellStartX, CellStartY: Integer;
+ OldMaxX: Integer;
+ OldTextStyle: Byte;
+Begin
+ If Not Ctx.InTable Then Begin
+  { Si pas dans un tableau, rendre comme un bloc en gras }
+  OldTextStyle := Ctx.TextStyle;
+  Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD;
+  RenderChildren(Node, Ctx);
+  Ctx.TextStyle := OldTextStyle;
+  Exit;
+ End;
+
+ { Position de la cellule }
+ CellStartX := Ctx.TableCellX;
+ CellStartY := Ctx.TableRowY;
+
+ { Dessiner le fond de la cellule d'en-tete (gris clair) }
+ SetFillStyle(SolidFill, TABLE_HEADER_BG);
+ Bar(CellStartX + TABLE_BORDER_WIDTH, CellStartY + TABLE_BORDER_WIDTH,
+     CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight - TABLE_BORDER_WIDTH);
+
+ { Configurer le contexte pour le contenu de la cellule }
+ Ctx.X := CellStartX + TABLE_CELL_PADDING;
+ Ctx.Y := CellStartY + TABLE_CELL_PADDING;
+ OldMaxX := Ctx.MaxX;
+ Ctx.MaxX := CellStartX + Ctx.TableCellWidth - TABLE_CELL_PADDING;
+
+ { Rendre le contenu en gras }
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD;
+ RenderChildren(Node, Ctx);
+ Ctx.TextStyle := OldTextStyle;
+
+ { Restaurer MaxX }
+ Ctx.MaxX := OldMaxX;
+
+ { Passer a la cellule suivante }
+ Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + TABLE_CELL_SPACING;
+ Inc(Ctx.TableColIndex);
+
+ { Dessiner la bordure droite de la cellule }
+ SetColor(TABLE_BORDER_COLOR);
+ Line(Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY, Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY + Ctx.TableRowHeight);
+
+ { Remettre Y a la position de la ligne }
+ Ctx.Y := CellStartY;
+End;
+
+{ =====================================================
+  FIN RENDU TABLEAUX
+  ===================================================== }
 Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
  If Node = Nil Then Exit;
@@ -1697,6 +1979,14 @@ Begin
     TAG_DL:       RenderTagDL(Node, Ctx);
     TAG_DT:       RenderTagDT(Node, Ctx);
     TAG_DD:       RenderTagDD(Node, Ctx);
+
+    { Balises de tableaux }
+    TAG_TABLE:    RenderTagTable(Node, Ctx);
+    TAG_THEAD:    RenderTagThead(Node, Ctx);
+    TAG_TBODY:    RenderTagTbody(Node, Ctx);
+    TAG_TR:       RenderTagTR(Node, Ctx);
+    TAG_TD:       RenderTagTD(Node, Ctx);
+    TAG_TH:       RenderTagTH(Node, Ctx);
 
     Else Begin
      { Balise non geree - rendre les enfants par defaut }
