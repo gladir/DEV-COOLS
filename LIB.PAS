@@ -1123,7 +1123,8 @@ Begin
  Assign(InF, OutputName);
  Erase(InF);
  {$I+}
- If IOResult <> 0 Then; { Ignorer si le fichier n'existe pas }
+ { Ignorer le IOResult car le fichier peut ne pas exister }
+ I := IOResult;
 
  {$I-}
  Assign(InF, TempName);
