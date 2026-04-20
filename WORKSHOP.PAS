@@ -249,7 +249,7 @@ Program WORKSHOP;
 {$A-}
 
 Uses {$IFDEF FPC}
-      Crt,PtcGraph,PtcCrt,PtcMouse,SysUtils
+      Crt,PtcGraph,PtcCrt,PtcMouse,Dos
      {$ELSE}
       Crt,Graph,Dos
      {$ENDIF};
@@ -4280,7 +4280,7 @@ Var
  TopIndex: Integer;
  SelectedIndex: Integer;
  I, J: Integer;
- SearchRec: TSearchRec;
+ DirInfo: SearchRec;
  Done: Boolean;
  Result: Boolean;
  Ch: Char;
@@ -4292,30 +4292,28 @@ Var
 
  Procedure ScanFiles;
  Var
-  Sr: TSearchRec;
+  Sr: SearchRec;
   I, J: Integer;
   TmpStr: String;
  Begin
   FileCount := 0;
   { Chercher les fichiers .RC }
-  If FindFirst('*.RC', faArchive, Sr) = 0 Then Begin
-   Repeat
-    If FileCount < MAX_FILES Then Begin
-     Inc(FileCount);
-     Files[FileCount] := Sr.Name;
-    End;
-   Until FindNext(Sr) <> 0;
-   FindClose(Sr);
+  FindFirst('*.RC', Archive, Sr);
+  While DosError = 0 Do Begin
+   If FileCount < MAX_FILES Then Begin
+    Inc(FileCount);
+    Files[FileCount] := Sr.Name;
+   End;
+   FindNext(Sr);
   End;
   { Chercher les fichiers .RES }
-  If FindFirst('*.RES', faArchive, Sr) = 0 Then Begin
-   Repeat
-    If FileCount < MAX_FILES Then Begin
-     Inc(FileCount);
-     Files[FileCount] := Sr.Name;
-    End;
-   Until FindNext(Sr) <> 0;
-   FindClose(Sr);
+  FindFirst('*.RES', Archive, Sr);
+  While DosError = 0 Do Begin
+   If FileCount < MAX_FILES Then Begin
+    Inc(FileCount);
+    Files[FileCount] := Sr.Name;
+   End;
+   FindNext(Sr);
   End;
   { Trier les fichiers par ordre alphabetique }
   For I := 1 To FileCount - 1 Do
