@@ -61,7 +61,7 @@
 Program IIS;
 
 Uses {$IFDEF FPC}
-      Crt,PtcGraph,PtcCrt,PtcMouse,mouse
+      Crt,PtcGraph,PtcCrt,PtcMouse,Mouse
      {$ELSE}
       Crt,Graph,Dos
      {$ENDIF};
@@ -482,9 +482,8 @@ Var
  End;
 
  { GetMouseState via PtcMouse : on interroge l'etat courant de la souris.
-   PtcMouse implemente le pilote mouse FPC standard (TMouseState) accessible
-   via l'unite mouse. Pour eviter tout conflit de nom, on utilise les variables
-   globales FPCMouseX, FPCMouseY, FPCMouseBtn mises a jour par PtcCrt. }
+   PtcMouse implemente le pilote Mouse FPC standard. La structure TMouseState
+   retournee par Mouse.GetMouseState contient les champs X, Y et Buttons. }
  Procedure GetMouseState(Var X, Y, Button: LongInt);
  Var
   MS : TMouseState;
@@ -1616,10 +1615,29 @@ End;
   SUPPORT CGI - TODO point 20
   ================================================================ }
 
+{ Validation du chemin d'execution pour eviter les injections de commandes
+  Retourne True si le chemin ne contient pas de caracteres dangereux. }
+Function IsValidExePath(Const Path: String): Boolean;
+Var I : Integer;
+Begin
+ IsValidExePath := False;
+ If Length(Path) = 0 Then Exit;
+ { Refuser les caracteres d'injection shell }
+ For I := 1 To Length(Path) Do
+  If Path[I] In [';', '|', '&', '`', '$', '<', '>', '(', ')', '{', '}', '*', '?', '#', '!', '^'] Then
+   Exit;
+ { Refuser les sequences de traversee de repertoire }
+ If (Pos('..', Path) > 0) Then Exit;
+ IsValidExePath := True;
+End;
+
 Procedure AddCGIEntry(Extension, ExePath: String);
 Begin
  If CGICount >= MAX_CGI Then Begin
   ShowDialog('CGI', 'Nombre maximum d''entrees CGI atteint.'); Exit;
+ End;
+ If Not IsValidExePath(ExePath) Then Begin
+  ShowDialog('CGI', 'Chemin de programme invalide.'); Exit;
  End;
  Inc(CGICount);
  CGIEntries[CGICount].Extension := Extension;
@@ -1633,16 +1651,17 @@ Var
  CmdLine : String;
 Begin
  If ExePath = '' Then Exit;
+ If Not IsValidExePath(ExePath) Then Begin
+  ShowDialog('Erreur CGI', 'Chemin de programme invalide.'); Exit;
+ End;
  {$IFDEF FPC}
- { Free Pascal : ExecuteProcess ou Shell }
+ { Free Pascal : ExecuteProcess ou fpSystem }
  CmdLine := ExePath;
- {$I-}
  {$IFDEF UNIX}
   fpSystem(CmdLine);
  {$ELSE}
   ExecuteProcess(ExePath, '');
  {$ENDIF}
- {$I+}
  {$ELSE}
  { Turbo Pascal : Exec via COMSPEC }
  SwapVectors;
@@ -1695,6 +1714,9 @@ Begin
  If FastCGICount >= MAX_FASTCGI Then Begin
   ShowDialog('FastCGI', 'Nombre maximum d''entrees FastCGI atteint.'); Exit;
  End;
+ If Not IsValidExePath(ExePath) Then Begin
+  ShowDialog('FastCGI', 'Chemin de programme invalide.'); Exit;
+ End;
  Inc(FastCGICount);
  FastCGIEntries[FastCGICount].ExePath   := ExePath;
  FastCGIEntries[FastCGICount].Processes := Processes;
@@ -1707,6 +1729,9 @@ Var
  I : Integer;
 Begin
  If ExePath = '' Then Exit;
+ If Not IsValidExePath(ExePath) Then Begin
+  ShowDialog('Erreur FastCGI', 'Chemin de programme invalide.'); Exit;
+ End;
  For I := 1 To Processes Do Begin
   {$IFDEF FPC}
   {$IFDEF UNIX}
