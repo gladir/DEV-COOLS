@@ -4338,33 +4338,155 @@ End;
   ============================================================ }
 
 Procedure DrawToolbar;
+Const
+ TB_COUNT = 9;
 Var
- X, Y: Integer;
+ X, Y, BX, BY: Integer;
+ I: Integer;
+ { Positions X des boutons pour la detection de clics }
 Begin
  Y := MENU_BAR_HEIGHT;
  HideMouse;
  SetFillStyle(SolidFill, COLOR_BUTTON);
  Bar(0, Y, SCREEN_WIDTH - 1, Y + TOOLBAR_HEIGHT - 1);
  Draw3DRect(0, Y, SCREEN_WIDTH - 1, Y + TOOLBAR_HEIGHT - 1, True);
+
  X := 4;
- DrawButton(X, Y + 4, 24, 24, 'N', False, True);
+
+ { Bouton 0 : Nouveau - feuille blanche avec coin plie }
+ DrawButton(X, Y + 4, 24, 24, '', False, True);
+ BX := X + 4; BY := Y + 6;
+ SetFillStyle(SolidFill, 15); Bar(BX, BY, BX + 14, BY + 18);
+ SetColor(8); Rectangle(BX, BY, BX + 14, BY + 18);
+ SetColor(8); Line(BX + 10, BY, BX + 14, BY + 4);
+ Line(BX + 10, BY, BX + 10, BY + 4); Line(BX + 10, BY + 4, BX + 14, BY + 4);
  X := X + 28;
- DrawButton(X, Y + 4, 24, 24, 'O', False, True);
+
+ { Bouton 1 : Ouvrir - dossier jaune ouvert }
+ DrawButton(X, Y + 4, 24, 24, '', False, True);
+ BX := X + 4; BY := Y + 8;
+ SetFillStyle(SolidFill, 14); Bar(BX, BY + 4, BX + 16, BY + 14);
+ SetColor(8); Rectangle(BX, BY + 4, BX + 16, BY + 14);
+ SetFillStyle(SolidFill, 14); Bar(BX, BY, BX + 6, BY + 4);
+ SetColor(8); Rectangle(BX, BY, BX + 6, BY + 4);
+ SetColor(8); Line(BX + 1, BY + 7, BX + 15, BY + 7);
  X := X + 28;
- DrawButton(X, Y + 4, 24, 24, 'S', False, True);
- X := X + 36;
- DrawButton(X, Y + 4, 24, 24, 'X', False, True);
+
+ { Bouton 2 : Sauvegarder - disquette bleue }
+ DrawButton(X, Y + 4, 24, 24, '', False, True);
+ BX := X + 5; BY := Y + 7;
+ SetFillStyle(SolidFill, 1); Bar(BX, BY, BX + 14, BY + 16);
+ SetColor(8); Rectangle(BX, BY, BX + 14, BY + 16);
+ SetFillStyle(SolidFill, 15); Bar(BX + 3, BY, BX + 11, BY + 5);
+ SetColor(8); Rectangle(BX + 3, BY, BX + 11, BY + 5);
+ SetFillStyle(SolidFill, 7); Bar(BX + 3, BY + 10, BX + 11, BY + 16);
+ SetColor(8); Rectangle(BX + 3, BY + 10, BX + 11, BY + 16);
+ X := X + 32;
+
+ { Separateur }
+ SetColor(COLOR_BORDER3D_DARK);
+ Line(X, Y + 6, X, Y + TOOLBAR_HEIGHT - 6);
+ SetColor(COLOR_BORDER3D_LIGHT);
+ Line(X + 1, Y + 6, X + 1, Y + TOOLBAR_HEIGHT - 6);
+ X := X + 6;
+
+ { Bouton 3 : Couper - ciseaux }
+ DrawButton(X, Y + 4, 24, 24, '', False, True);
+ BX := X + 6; BY := Y + 7;
+ SetColor(8);
+ Line(BX + 2, BY, BX + 5, BY + 6);
+ Line(BX + 10, BY, BX + 7, BY + 6);
+ Line(BX + 5, BY + 6, BX + 2, BY + 12);
+ Line(BX + 7, BY + 6, BX + 10, BY + 12);
+ Rectangle(BX, BY + 12, BX + 4, BY + 16);
+ Rectangle(BX + 8, BY + 12, BX + 12, BY + 16);
  X := X + 28;
- DrawButton(X, Y + 4, 24, 24, 'C', False, True);
+
+ { Bouton 4 : Copier - deux feuilles }
+ DrawButton(X, Y + 4, 24, 24, '', False, True);
+ BX := X + 4; BY := Y + 6;
+ SetFillStyle(SolidFill, 15); Bar(BX + 4, BY + 4, BX + 16, BY + 18);
+ SetColor(8); Rectangle(BX + 4, BY + 4, BX + 16, BY + 18);
+ SetFillStyle(SolidFill, 15); Bar(BX, BY, BX + 12, BY + 14);
+ SetColor(8); Rectangle(BX, BY, BX + 12, BY + 14);
+ SetColor(8); Line(BX + 2, BY + 4, BX + 10, BY + 4);
+ Line(BX + 2, BY + 7, BX + 10, BY + 7);
+ Line(BX + 2, BY + 10, BX + 8, BY + 10);
  X := X + 28;
- DrawButton(X, Y + 4, 24, 24, 'V', False, True);
- X := X + 36;
- DrawButton(X, Y + 4, 24, 24, 'Z', False, True);
- X := X + 36;
+
+ { Bouton 5 : Coller - presse-papiers }
+ DrawButton(X, Y + 4, 24, 24, '', False, True);
+ BX := X + 4; BY := Y + 6;
+ SetFillStyle(SolidFill, 14); Bar(BX, BY + 2, BX + 14, BY + 18);
+ SetColor(8); Rectangle(BX, BY + 2, BX + 14, BY + 18);
+ SetFillStyle(SolidFill, 7); Bar(BX + 4, BY, BX + 10, BY + 3);
+ SetColor(8); Rectangle(BX + 4, BY, BX + 10, BY + 3);
+ SetFillStyle(SolidFill, 15); Bar(BX + 2, BY + 6, BX + 12, BY + 16);
+ SetColor(8); Rectangle(BX + 2, BY + 6, BX + 12, BY + 16);
+ X := X + 32;
+
+ { Separateur }
+ SetColor(COLOR_BORDER3D_DARK);
+ Line(X, Y + 6, X, Y + TOOLBAR_HEIGHT - 6);
+ SetColor(COLOR_BORDER3D_LIGHT);
+ Line(X + 1, Y + 6, X + 1, Y + TOOLBAR_HEIGHT - 6);
+ X := X + 6;
+
+ { Bouton 6 : Zoom - loupe avec + }
+ DrawButton(X, Y + 4, 24, 24, '', False, True);
+ BX := X + 4; BY := Y + 6;
+ SetColor(8);
+ Circle(BX + 6, BY + 6, 5);
+ Line(BX + 10, BY + 10, BX + 15, BY + 15);
+ Line(BX + 11, BY + 10, BX + 16, BY + 15);
+ Line(BX + 4, BY + 6, BX + 8, BY + 6);
+ Line(BX + 6, BY + 4, BX + 6, BY + 8);
+ X := X + 28;
+
+ { Bouton 7 : Zoom+ }
  DrawButton(X, Y + 4, 24, 24, '+', False, True);
  X := X + 28;
+
+ { Bouton 8 : Zoom- }
  DrawButton(X, Y + 4, 24, 24, '-', False, True);
+
  ShowMouse;
+End;
+
+Function GetToolbarCommand(MX: Integer): Integer;
+Var
+ BtnX, BtnIdx: Integer;
+Begin
+ GetToolbarCommand := CMD_NONE;
+ { Calculer la position de chaque bouton comme dans DrawToolbar }
+ BtnX := 4;
+ BtnIdx := 0;
+ { Bouton 0 : Nouveau }
+ If (MX >= BtnX) And (MX < BtnX + 24) Then Begin GetToolbarCommand := CMD_FILE_NEW; Exit; End;
+ BtnX := BtnX + 28;
+ { Bouton 1 : Ouvrir }
+ If (MX >= BtnX) And (MX < BtnX + 24) Then Begin GetToolbarCommand := CMD_FILE_OPEN; Exit; End;
+ BtnX := BtnX + 28;
+ { Bouton 2 : Sauvegarder }
+ If (MX >= BtnX) And (MX < BtnX + 24) Then Begin GetToolbarCommand := CMD_FILE_SAVE; Exit; End;
+ BtnX := BtnX + 32 + 6; { + separateur }
+ { Bouton 3 : Couper }
+ If (MX >= BtnX) And (MX < BtnX + 24) Then Begin GetToolbarCommand := CMD_EDIT_CUT; Exit; End;
+ BtnX := BtnX + 28;
+ { Bouton 4 : Copier }
+ If (MX >= BtnX) And (MX < BtnX + 24) Then Begin GetToolbarCommand := CMD_EDIT_COPY; Exit; End;
+ BtnX := BtnX + 28;
+ { Bouton 5 : Coller }
+ If (MX >= BtnX) And (MX < BtnX + 24) Then Begin GetToolbarCommand := CMD_EDIT_PASTE; Exit; End;
+ BtnX := BtnX + 32 + 6; { + separateur }
+ { Bouton 6 : Zoom }
+ If (MX >= BtnX) And (MX < BtnX + 24) Then Begin GetToolbarCommand := CMD_VIEW_GRID; Exit; End;
+ BtnX := BtnX + 28;
+ { Bouton 7 : Zoom+ }
+ If (MX >= BtnX) And (MX < BtnX + 24) Then Begin GetToolbarCommand := CMD_VIEW_ZOOMIN; Exit; End;
+ BtnX := BtnX + 28;
+ { Bouton 8 : Zoom- }
+ If (MX >= BtnX) And (MX < BtnX + 24) Then Begin GetToolbarCommand := CMD_VIEW_ZOOMOUT; Exit; End;
 End;
 
 { ============================================================
@@ -5141,6 +5263,8 @@ Begin
   End
   Else If MouseY < MENU_BAR_HEIGHT + TOOLBAR_HEIGHT Then Begin
    { Toolbar clicks }
+   Cmd := GetToolbarCommand(MouseX);
+   If Cmd <> CMD_NONE Then ProcessCommand(Cmd);
   End
   Else If MouseY < SCREEN_HEIGHT - STATUS_BAR_HEIGHT Then Begin
    { Verifier d'abord si le clic est dans l'explorateur de ressources }
