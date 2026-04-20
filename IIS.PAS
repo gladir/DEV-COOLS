@@ -2330,10 +2330,257 @@ Begin
 End;
 
 { ================================================================
+  LIGNE DE COMMANDE (CLI)
+  ================================================================ }
+
+{ Affiche l'aide en mode texte }
+Procedure ShowCLIHelp;
+Begin
+ WriteLn('IIS - Clone de l''Internet Information Services');
+ WriteLn('');
+ WriteLn('Syntaxe: IIS [/?] [options]');
+ WriteLn('         IIS AppCmd <commande> [arguments]');
+ WriteLn('');
+ WriteLn('Options globales :');
+ WriteLn('  /?         Affiche cette aide');
+ WriteLn('  /stop      Arrete tous les sites Web');
+ WriteLn('  /start     Demarre tous les sites Web');
+ WriteLn('  /restart   Redémarre tous les sites Web');
+ WriteLn('');
+ WriteLn('Commandes AppCmd :');
+ WriteLn('  AppCmd list site');
+ WriteLn('             Liste tous les sites Web');
+ WriteLn('  AppCmd list apppool');
+ WriteLn('             Liste tous les pools d''applications');
+ WriteLn('  AppCmd start site "<nom>"');
+ WriteLn('             Demarre le site specifie');
+ WriteLn('  AppCmd stop site "<nom>"');
+ WriteLn('             Arrete le site specifie');
+ WriteLn('  AppCmd recycle apppool "<nom>"');
+ WriteLn('             Recycle le pool d''applications specifie');
+ WriteLn('');
+ WriteLn('Exemples :');
+ WriteLn('  IIS AppCmd list site');
+ WriteLn('  IIS AppCmd start site "Default Web Site"');
+ WriteLn('  IIS AppCmd stop site "Default Web Site"');
+ WriteLn('  IIS AppCmd recycle apppool "DefaultAppPool"');
+End;
+
+{ Trouve l'index d'un site par son nom (insensible a la casse), 0 si absent }
+Function FindSiteByName(Const Name: String): Integer;
+Var I : Integer;
+Begin
+ FindSiteByName := 0;
+ For I := 1 To SiteCount Do
+  If UpStr(Sites[I].Name) = UpStr(Name) Then Begin
+   FindSiteByName := I; Exit;
+  End;
+End;
+
+{ Trouve l'index d'un pool par son nom (insensible a la casse), 0 si absent }
+Function FindPoolByName(Const Name: String): Integer;
+Var I : Integer;
+Begin
+ FindPoolByName := 0;
+ For I := 1 To PoolCount Do
+  If UpStr(Pools[I].Name) = UpStr(Name) Then Begin
+   FindPoolByName := I; Exit;
+  End;
+End;
+
+{ Retire les guillemets encadrant une chaine, si presents }
+Function StripQuotes(S: String): String;
+Begin
+ If (Length(S) >= 2) And (S[1] = '"') And (S[Length(S)] = '"') Then
+  S := Copy(S, 2, Length(S) - 2)
+ Else If (Length(S) >= 2) And (S[1] = '''') And (S[Length(S)] = '''') Then
+  S := Copy(S, 2, Length(S) - 2);
+ StripQuotes := S;
+End;
+
+{ Regroupe les parametres de l'index Start a ParamCount en une seule chaine }
+Function JoinParams(Start: Integer): String;
+Var
+ I : Integer;
+ R : String;
+Begin
+ R := '';
+ For I := Start To ParamCount Do Begin
+  If I > Start Then R := R + ' ';
+  R := R + ParamStr(I);
+ End;
+ JoinParams := R;
+End;
+
+{ Traitement de la ligne de commande.
+  Retourne True si le programme doit se terminer apres l'appel (mode CLI),
+  False si l'interface graphique doit etre lancee. }
+Function ParseCommandLine: Boolean;
+Var
+ Arg1, Arg2, Arg4 : String;
+ Idx, I                  : Integer;
+ AnyChange               : Boolean;
+Begin
+ ParseCommandLine := False;
+ If ParamCount = 0 Then Exit; { Mode GUI par defaut }
+
+ Arg1 := UpStr(TrimStr(ParamStr(1)));
+
+ { /? ou /HELP : aide }
+ If (Arg1 = '/?') Or (Arg1 = '/HELP') Or (Arg1 = '-H') Or (Arg1 = '--HELP') Then Begin
+  ShowCLIHelp;
+  ParseCommandLine := True; Exit;
+ End;
+
+ { Charger la configuration pour toutes les autres commandes }
+ InitDefaultData;
+ LoadConfig;
+
+ { /stop : arreter tous les sites }
+ If Arg1 = '/STOP' Then Begin
+  AnyChange := False;
+  For I := 1 To SiteCount Do Begin
+   If Sites[I].Started Then Begin
+    Sites[I].Started := False;
+    WriteLn('Site "' + Sites[I].Name + '" arrete.');
+    AnyChange := True;
+   End;
+  End;
+  If Not AnyChange Then WriteLn('Aucun site en cours d''execution.');
+  SaveConfig;
+  ParseCommandLine := True; Exit;
+ End;
+
+ { /start : demarrer tous les sites }
+ If Arg1 = '/START' Then Begin
+  AnyChange := False;
+  For I := 1 To SiteCount Do Begin
+   If Not Sites[I].Started Then Begin
+    Sites[I].Started := True;
+    WriteLn('Site "' + Sites[I].Name + '" demarre.');
+    AnyChange := True;
+   End;
+  End;
+  If Not AnyChange Then WriteLn('Tous les sites sont deja en cours d''execution.');
+  SaveConfig;
+  ParseCommandLine := True; Exit;
+ End;
+
+ { /restart : redemarrer tous les sites }
+ If Arg1 = '/RESTART' Then Begin
+  For I := 1 To SiteCount Do Begin
+   Sites[I].Started := False;
+   Sites[I].Started := True;
+   WriteLn('Site "' + Sites[I].Name + '" redemarre.');
+  End;
+  SaveConfig;
+  ParseCommandLine := True; Exit;
+ End;
+
+ { AppCmd ... }
+ If Arg1 = 'APPCMD' Then Begin
+  If ParamCount < 2 Then Begin
+   WriteLn('Erreur : commande AppCmd manquante.');
+   WriteLn('Utilisez IIS /? pour l''aide.');
+   ParseCommandLine := True; Exit;
+  End;
+  Arg2 := UpStr(TrimStr(ParamStr(2)));
+
+  { AppCmd list site }
+  If (Arg2 = 'LIST') And (ParamCount >= 3) And (UpStr(TrimStr(ParamStr(3))) = 'SITE') Then Begin
+   If SiteCount = 0 Then
+    WriteLn('Aucun site configure.')
+   Else
+    For I := 1 To SiteCount Do Begin
+     If Sites[I].Started Then
+      WriteLn('SITE "' + Sites[I].Name + '"  (Etat:Demarre  Port:' + IntToStr(Sites[I].Port) + ')')
+     Else
+      WriteLn('SITE "' + Sites[I].Name + '"  (Etat:Arrete  Port:' + IntToStr(Sites[I].Port) + ')');
+    End;
+   ParseCommandLine := True; Exit;
+  End;
+
+  { AppCmd list apppool }
+  If (Arg2 = 'LIST') And (ParamCount >= 3) And (UpStr(TrimStr(ParamStr(3))) = 'APPPOOL') Then Begin
+   If PoolCount = 0 Then
+    WriteLn('Aucun pool configure.')
+   Else
+    For I := 1 To PoolCount Do Begin
+     If Pools[I].Started Then
+      WriteLn('APPPOOL "' + Pools[I].Name + '"  (Etat:Demarre  Runtime:' + Pools[I].Runtime + ')')
+     Else
+      WriteLn('APPPOOL "' + Pools[I].Name + '"  (Etat:Arrete  Runtime:' + Pools[I].Runtime + ')');
+    End;
+   ParseCommandLine := True; Exit;
+  End;
+
+  { AppCmd start site "<nom>" }
+  If (Arg2 = 'START') And (ParamCount >= 4) And (UpStr(TrimStr(ParamStr(3))) = 'SITE') Then Begin
+   Arg4 := StripQuotes(JoinParams(4));
+   Idx  := FindSiteByName(Arg4);
+   If Idx = 0 Then
+    WriteLn('Erreur : site "' + Arg4 + '" introuvable.')
+   Else If Sites[Idx].Started Then
+    WriteLn('Site "' + Sites[Idx].Name + '" est deja demarre.')
+   Else Begin
+    Sites[Idx].Started := True;
+    WriteLn('Site "' + Sites[Idx].Name + '" demarre.');
+    SaveConfig;
+   End;
+   ParseCommandLine := True; Exit;
+  End;
+
+  { AppCmd stop site "<nom>" }
+  If (Arg2 = 'STOP') And (ParamCount >= 4) And (UpStr(TrimStr(ParamStr(3))) = 'SITE') Then Begin
+   Arg4 := StripQuotes(JoinParams(4));
+   Idx  := FindSiteByName(Arg4);
+   If Idx = 0 Then
+    WriteLn('Erreur : site "' + Arg4 + '" introuvable.')
+   Else If Not Sites[Idx].Started Then
+    WriteLn('Site "' + Sites[Idx].Name + '" est deja arrete.')
+   Else Begin
+    Sites[Idx].Started := False;
+    WriteLn('Site "' + Sites[Idx].Name + '" arrete.');
+    SaveConfig;
+   End;
+   ParseCommandLine := True; Exit;
+  End;
+
+  { AppCmd recycle apppool "<nom>" }
+  If (Arg2 = 'RECYCLE') And (ParamCount >= 4) And (UpStr(TrimStr(ParamStr(3))) = 'APPPOOL') Then Begin
+   Arg4 := StripQuotes(JoinParams(4));
+   Idx  := FindPoolByName(Arg4);
+   If Idx = 0 Then
+    WriteLn('Erreur : pool "' + Arg4 + '" introuvable.')
+   Else Begin
+    Pools[Idx].Started := False;
+    Pools[Idx].Started := True;
+    WriteLn('Pool "' + Pools[Idx].Name + '" recycle.');
+    SaveConfig;
+   End;
+   ParseCommandLine := True; Exit;
+  End;
+
+  { Commande AppCmd inconnue }
+  WriteLn('Erreur : commande AppCmd inconnue : ' + ParamStr(2));
+  WriteLn('Utilisez IIS /? pour l''aide.');
+  ParseCommandLine := True; Exit;
+ End;
+
+ { Argument inconnu }
+ WriteLn('Erreur : argument inconnu : ' + ParamStr(1));
+ WriteLn('Utilisez IIS /? pour l''aide.');
+ ParseCommandLine := True;
+End;
+
+{ ================================================================
   PROGRAMME PRINCIPAL
   ================================================================ }
 
 BEGIN
+ { Traiter la ligne de commande en priorite (mode texte) }
+ If ParseCommandLine Then Halt(0);
+ { Mode graphique si aucun argument CLI n'a ete traite }
  InitializeGraphics;
  InitializeApp;
  RunEventLoop;
