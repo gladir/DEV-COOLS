@@ -2256,6 +2256,466 @@ Begin
  AppState.ProjectModified := False;
 End;
 
+{ ============================================================
+  LECTURE FICHIERS RC (Resource Script)
+  ============================================================ }
+
+Var
+ RCFile: Text;
+ RCLine: String;
+ RCLineNum: Integer;
+ RCTokenIndex: Integer;
+ RCTokens: Array[1..64] Of String[127];
+ RCTokenCount: Integer;
+
+{ Lecture d'une ligne et tokenisation }
+Function ReadRCLine: Boolean;
+Var
+ I: Integer;
+Begin
+ ReadRCLine := False;
+ If Eof(RCFile) Then Exit;
+ ReadLn(RCFile, RCLine);
+ Inc(RCLineNum);
+ 
+ { Enlever les commentaires // }
+ I := Pos('//', RCLine);
+ If I > 0 Then
+  RCLine := Copy(RCLine, 1, I - 1);
+ 
+ { Tokeniser la ligne }
+ RCTokenCount := 0;
+ I := 1;
+ While I <= Length(RCLine) Do Begin
+  { Sauter les espaces }
+  While (I <= Length(RCLine)) And (RCLine[I] In [' ', #9, ',']) Do
+   Inc(I);
+  If I > Length(RCLine) Then Break;
+  
+  If RCTokenCount >= 64 Then Break;
+  Inc(RCTokenCount);
+  RCTokens[RCTokenCount] := '';
+  
+  { Chaine entre guillemets }
+  If RCLine[I] = '"' Then Begin
+   Inc(I);
+   While (I <= Length(RCLine)) And (RCLine[I] <> '"') Do Begin
+    RCTokens[RCTokenCount] := RCTokens[RCTokenCount] + RCLine[I];
+    Inc(I);
+   End;
+   If I <= Length(RCLine) Then Inc(I);
+  End
+  { Token normal }
+  Else Begin
+   While (I <= Length(RCLine)) And Not (RCLine[I] In [' ', #9, ',']) Do Begin
+    RCTokens[RCTokenCount] := RCTokens[RCTokenCount] + RCLine[I];
+    Inc(I);
+   End;
+  End;
+ End;
+ 
+ RCTokenIndex := 1;
+ ReadRCLine := RCTokenCount > 0;
+End;
+
+Function GetRCToken: String;
+Begin
+ If RCTokenIndex <= RCTokenCount Then Begin
+  GetRCToken := RCTokens[RCTokenIndex];
+  Inc(RCTokenIndex);
+ End
+ Else
+  GetRCToken := '';
+End;
+
+Function PeekRCToken: String;
+Begin
+ If RCTokenIndex <= RCTokenCount Then
+  PeekRCToken := RCTokens[RCTokenIndex]
+ Else
+  PeekRCToken := '';
+End;
+
+Function RCTokenToInt(Const S: String): LongInt;
+Var
+ Code: Integer;
+ L: LongInt;
+Begin
+ Val(S, L, Code);
+ If Code = 0 Then
+  RCTokenToInt := L
+ Else
+  RCTokenToInt := 0;
+End;
+
+Function RCTokenToWord(Const S: String): Word;
+Begin
+ RCTokenToWord := Word(RCTokenToInt(S));
+End;
+
+{ Parser un style de dialogue/controle }
+Function ParseRCStyle(Const S: String): LongInt;
+Var
+ Style: LongInt;
+Begin
+ Style := 0;
+ If Pos('WS_VISIBLE', S) > 0 Then Style := Style Or $10000000;
+ If Pos('WS_CHILD', S) > 0 Then Style := Style Or $40000000;
+ If Pos('WS_POPUP', S) > 0 Then Style := Style Or $80000000;
+ If Pos('WS_CAPTION', S) > 0 Then Style := Style Or $00C00000;
+ If Pos('WS_SYSMENU', S) > 0 Then Style := Style Or $00080000;
+ If Pos('WS_THICKFRAME', S) > 0 Then Style := Style Or $00040000;
+ If Pos('WS_MINIMIZEBOX', S) > 0 Then Style := Style Or $00020000;
+ If Pos('WS_MAXIMIZEBOX', S) > 0 Then Style := Style Or $00010000;
+ If Pos('DS_MODALFRAME', S) > 0 Then Style := Style Or $80;
+ If Pos('DS_SETFONT', S) > 0 Then Style := Style Or $40;
+ If Pos('DS_CENTER', S) > 0 Then Style := Style Or $0800;
+ If Pos('BS_PUSHBUTTON', S) > 0 Then Style := Style Or $0000;
+ If Pos('BS_DEFPUSHBUTTON', S) > 0 Then Style := Style Or $0001;
+ If Pos('BS_CHECKBOX', S) > 0 Then Style := Style Or $0002;
+ If Pos('BS_AUTOCHECKBOX', S) > 0 Then Style := Style Or $0003;
+ If Pos('BS_RADIOBUTTON', S) > 0 Then Style := Style Or $0004;
+ If Pos('BS_AUTORADIOBUTTON', S) > 0 Then Style := Style Or $0009;
+ If Pos('BS_GROUPBOX', S) > 0 Then Style := Style Or $0007;
+ If Pos('ES_LEFT', S) > 0 Then Style := Style Or $0000;
+ If Pos('ES_CENTER', S) > 0 Then Style := Style Or $0001;
+ If Pos('ES_RIGHT', S) > 0 Then Style := Style Or $0002;
+ If Pos('ES_MULTILINE', S) > 0 Then Style := Style Or $0004;
+ If Pos('ES_AUTOHSCROLL', S) > 0 Then Style := Style Or $0080;
+ If Pos('ES_AUTOVSCROLL', S) > 0 Then Style := Style Or $0040;
+ If Pos('SS_LEFT', S) > 0 Then Style := Style Or $0000;
+ If Pos('SS_CENTER', S) > 0 Then Style := Style Or $0001;
+ If Pos('SS_RIGHT', S) > 0 Then Style := Style Or $0002;
+ If Pos('CBS_DROPDOWN', S) > 0 Then Style := Style Or $0002;
+ If Pos('CBS_DROPDOWNLIST', S) > 0 Then Style := Style Or $0003;
+ If Pos('LBS_STANDARD', S) > 0 Then Style := Style Or $00A00003;
+ ParseRCStyle := Style;
+End;
+
+{ Parser un dialogue }
+Procedure ParseRCDialog(ResId: Word);
+Var
+ DlgIdx, I: Integer;
+ Token, StyleStr: String;
+ X, Y, W, H: Integer;
+ CtrlType: Word;
+Begin
+ If DialogCount >= 64 Then Exit;
+ Inc(DialogCount);
+ DlgIdx := DialogCount;
+ FillChar(Dialogs[DlgIdx], SizeOf(TDialogData), 0);
+ 
+ { ID x, y, width, height }
+ X := RCTokenToWord(GetRCToken);
+ Y := RCTokenToWord(GetRCToken);
+ W := RCTokenToWord(GetRCToken);
+ H := RCTokenToWord(GetRCToken);
+ Dialogs[DlgIdx].X := X;
+ Dialogs[DlgIdx].Y := Y;
+ Dialogs[DlgIdx].W := W;
+ Dialogs[DlgIdx].H := H;
+ 
+ { Lire les lignes suivantes jusqu'a BEGIN }
+ While ReadRCLine Do Begin
+  Token := UpCaseStr(PeekRCToken);
+  If Token = 'BEGIN' Then Begin
+   GetRCToken;
+   Break;
+  End;
+  If Token = 'STYLE' Then Begin
+   GetRCToken;
+   StyleStr := '';
+   While RCTokenIndex <= RCTokenCount Do
+    StyleStr := StyleStr + ' ' + GetRCToken;
+   Dialogs[DlgIdx].Style := ParseRCStyle(StyleStr);
+  End
+  Else If Token = 'CAPTION' Then Begin
+   GetRCToken;
+   Dialogs[DlgIdx].Caption := GetRCToken;
+  End
+  Else If Token = 'FONT' Then Begin
+   GetRCToken;
+   Dialogs[DlgIdx].FontSize := RCTokenToWord(GetRCToken);
+   Dialogs[DlgIdx].FontName := GetRCToken;
+   Dialogs[DlgIdx].Style := Dialogs[DlgIdx].Style Or $40; { DS_SETFONT }
+  End;
+ End;
+ 
+ { Lire les controles jusqu'a END }
+ While ReadRCLine Do Begin
+  Token := UpCaseStr(PeekRCToken);
+  If Token = 'END' Then Break;
+  If Dialogs[DlgIdx].ControlCount >= MAX_CONTROLS Then Continue;
+  
+  If Token = 'LTEXT' Then Begin
+   CtrlType := 1; { STATIC }
+   GetRCToken;
+  End
+  Else If Token = 'CTEXT' Then Begin
+   CtrlType := 1;
+   GetRCToken;
+  End
+  Else If Token = 'RTEXT' Then Begin
+   CtrlType := 1;
+   GetRCToken;
+  End
+  Else If Token = 'PUSHBUTTON' Then Begin
+   CtrlType := 0; { BUTTON }
+   GetRCToken;
+  End
+  Else If Token = 'DEFPUSHBUTTON' Then Begin
+   CtrlType := 0;
+   GetRCToken;
+  End
+  Else If Token = 'CHECKBOX' Then Begin
+   CtrlType := 0;
+   GetRCToken;
+  End
+  Else If Token = 'RADIOBUTTON' Then Begin
+   CtrlType := 0;
+   GetRCToken;
+  End
+  Else If Token = 'GROUPBOX' Then Begin
+   CtrlType := 0;
+   GetRCToken;
+  End
+  Else If Token = 'EDITTEXT' Then Begin
+   CtrlType := 2; { EDIT }
+   GetRCToken;
+  End
+  Else If Token = 'COMBOBOX' Then Begin
+   CtrlType := 3; { COMBOBOX }
+   GetRCToken;
+  End
+  Else If Token = 'LISTBOX' Then Begin
+   CtrlType := 4; { LISTBOX }
+   GetRCToken;
+  End
+  Else If Token = 'CONTROL' Then Begin
+   CtrlType := 0;
+   GetRCToken;
+  End
+  Else
+   Continue;
+  
+  Inc(Dialogs[DlgIdx].ControlCount);
+  I := Dialogs[DlgIdx].ControlCount;
+  Dialogs[DlgIdx].Controls[I].CtrlType := CtrlType;
+  
+  { Text, ID, x, y, width, height }
+  If Token <> 'EDITTEXT' Then
+   Dialogs[DlgIdx].Controls[I].Text := GetRCToken;
+  Dialogs[DlgIdx].Controls[I].CtrlId := RCTokenToWord(GetRCToken);
+  Dialogs[DlgIdx].Controls[I].X := RCTokenToWord(GetRCToken);
+  Dialogs[DlgIdx].Controls[I].Y := RCTokenToWord(GetRCToken);
+  Dialogs[DlgIdx].Controls[I].W := RCTokenToWord(GetRCToken);
+  Dialogs[DlgIdx].Controls[I].H := RCTokenToWord(GetRCToken);
+  
+  { Style optionnel }
+  StyleStr := '';
+  While RCTokenIndex <= RCTokenCount Do
+   StyleStr := StyleStr + ' ' + GetRCToken;
+  If StyleStr <> '' Then
+   Dialogs[DlgIdx].Controls[I].Style := ParseRCStyle(StyleStr);
+ End;
+ 
+ { Ajouter a la liste des ressources }
+ If ResourceCount < MAX_RESOURCES Then Begin
+  Inc(ResourceCount);
+  Resources[ResourceCount].ResType := RT_DIALOG;
+  Resources[ResourceCount].ResId.IsNumeric := True;
+  Resources[ResourceCount].ResId.NumId := ResId;
+  Resources[ResourceCount].ResId.StrId := '';
+  Resources[ResourceCount].LangId := $0409;
+ End;
+End;
+
+{ Parser un menu }
+Procedure ParseRCMenu(ResId: Word);
+Var
+ MenuIdx, I: Integer;
+ Token: String;
+ Level: Integer;
+Begin
+ If MenuDataCount >= 64 Then Exit;
+ Inc(MenuDataCount);
+ MenuIdx := MenuDataCount;
+ FillChar(ResMenus[MenuIdx], SizeOf(TMenuData), 0);
+ 
+ { Chercher BEGIN }
+ While ReadRCLine Do Begin
+  Token := UpCaseStr(PeekRCToken);
+  If Token = 'BEGIN' Then Begin
+   GetRCToken;
+   Break;
+  End;
+ End;
+ 
+ { Lire les items }
+ Level := 0;
+ While ReadRCLine Do Begin
+  Token := UpCaseStr(PeekRCToken);
+  If Token = 'END' Then Begin
+   If Level > 0 Then
+    Dec(Level)
+   Else
+    Break;
+   GetRCToken;
+   { Marquer le dernier item comme MF_END }
+   If ResMenus[MenuIdx].ItemCount > 0 Then
+    ResMenus[MenuIdx].Items[ResMenus[MenuIdx].ItemCount].Flags :=
+     ResMenus[MenuIdx].Items[ResMenus[MenuIdx].ItemCount].Flags Or $80;
+   Continue;
+  End;
+  
+  If ResMenus[MenuIdx].ItemCount >= MAX_MENU_ITEMS_RES Then Continue;
+  
+  If Token = 'POPUP' Then Begin
+   GetRCToken;
+   Inc(ResMenus[MenuIdx].ItemCount);
+   I := ResMenus[MenuIdx].ItemCount;
+   ResMenus[MenuIdx].Items[I].ItemType := 1;
+   ResMenus[MenuIdx].Items[I].Text := GetRCToken;
+   ResMenus[MenuIdx].Items[I].Flags := $10; { MF_POPUP }
+   ResMenus[MenuIdx].Items[I].Level := Level;
+   { Chercher BEGIN du sous-menu }
+   While ReadRCLine Do Begin
+    If UpCaseStr(PeekRCToken) = 'BEGIN' Then Begin
+     GetRCToken;
+     Inc(Level);
+     Break;
+    End;
+   End;
+  End
+  Else If Token = 'MENUITEM' Then Begin
+   GetRCToken;
+   Token := GetRCToken;
+   If UpCaseStr(Token) = 'SEPARATOR' Then Begin
+    Inc(ResMenus[MenuIdx].ItemCount);
+    I := ResMenus[MenuIdx].ItemCount;
+    ResMenus[MenuIdx].Items[I].ItemType := 2; { Separateur }
+    ResMenus[MenuIdx].Items[I].Text := '';
+    ResMenus[MenuIdx].Items[I].ItemId := 0;
+    ResMenus[MenuIdx].Items[I].Flags := $800; { MF_SEPARATOR }
+    ResMenus[MenuIdx].Items[I].Level := Level;
+   End
+   Else Begin
+    Inc(ResMenus[MenuIdx].ItemCount);
+    I := ResMenus[MenuIdx].ItemCount;
+    ResMenus[MenuIdx].Items[I].ItemType := 0;
+    ResMenus[MenuIdx].Items[I].Text := Token;
+    ResMenus[MenuIdx].Items[I].ItemId := RCTokenToWord(GetRCToken);
+    ResMenus[MenuIdx].Items[I].Flags := 0;
+    ResMenus[MenuIdx].Items[I].Level := Level;
+   End;
+  End;
+ End;
+ 
+ { Ajouter a la liste des ressources }
+ If ResourceCount < MAX_RESOURCES Then Begin
+  Inc(ResourceCount);
+  Resources[ResourceCount].ResType := RT_MENU;
+  Resources[ResourceCount].ResId.IsNumeric := True;
+  Resources[ResourceCount].ResId.NumId := ResId;
+  Resources[ResourceCount].ResId.StrId := '';
+  Resources[ResourceCount].LangId := $0409;
+ End;
+End;
+
+{ Parser une table de chaines }
+Procedure ParseRCStringTable;
+Var
+ Token: String;
+ StringId: Word;
+Begin
+ { Chercher BEGIN }
+ While ReadRCLine Do Begin
+  Token := UpCaseStr(PeekRCToken);
+  If Token = 'BEGIN' Then Begin
+   GetRCToken;
+   Break;
+  End;
+ End;
+ 
+ { Lire les chaines }
+ While ReadRCLine Do Begin
+  Token := UpCaseStr(PeekRCToken);
+  If Token = 'END' Then Break;
+  
+  If StringCount >= MAX_STRINGS Then Continue;
+  
+  StringId := RCTokenToWord(GetRCToken);
+  If StringId > 0 Then Begin
+   Inc(StringCount);
+   StringEntries[StringCount].StringId := StringId;
+   StringEntries[StringCount].Text := GetRCToken;
+   StringEntries[StringCount].LangId := $0409;
+  End;
+ End;
+End;
+
+{ Lecture complete d'un fichier RC }
+Procedure ReadRCFile(Const FileName: String);
+Var
+ Token, ResIdStr: String;
+ ResId: Word;
+Begin
+ { Reinitialiser les donnees }
+ ResourceCount := 0;
+ DialogCount := 0;
+ MenuDataCount := 0;
+ StringCount := 0;
+ 
+ {$I-}
+ Assign(RCFile, FileName);
+ Reset(RCFile);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ 
+ RCLineNum := 0;
+ 
+ While Not Eof(RCFile) Do Begin
+  If Not ReadRCLine Then Continue;
+  
+  Token := UpCaseStr(PeekRCToken);
+  
+  { Ignorer les directives preprocesseur }
+  If (Length(Token) > 0) And (Token[1] = '#') Then Continue;
+  
+  { STRINGTABLE }
+  If Token = 'STRINGTABLE' Then Begin
+   GetRCToken;
+   ParseRCStringTable;
+   Continue;
+  End;
+  
+  { DIALOG ou DIALOGEX }
+  If (Token = 'DIALOG') Or (Token = 'DIALOGEX') Then Begin
+   { L'ID est avant DIALOG }
+   Continue;
+  End;
+  
+  { MENU ou MENUEX }
+  If (Token = 'MENU') Or (Token = 'MENUEX') Then Begin
+   Continue;
+  End;
+  
+  { ID DIALOG / ID MENU }
+  ResIdStr := GetRCToken;
+  Val(ResIdStr, ResId, RCLineNum);
+  If RCLineNum <> 0 Then ResId := 100; { Default si pas un nombre }
+  RCLineNum := 0;
+  
+  Token := UpCaseStr(GetRCToken);
+  If (Token = 'DIALOG') Or (Token = 'DIALOGEX') Then
+   ParseRCDialog(ResId)
+  Else If (Token = 'MENU') Or (Token = 'MENUEX') Then
+   ParseRCMenu(ResId);
+ End;
+ 
+ Close(RCFile);
+End;
+
 { Ecriture fichiers RC }
 Procedure WriteRCFile(Const FileName: String);
 Var
@@ -3381,8 +3841,10 @@ Begin
   End;
  End;
  NewProject;
- If (Ext = '.RES') Then
-  LoadResFile(FileName);
+ If Ext = '.RES' Then
+  LoadResFile(FileName)
+ Else If Ext = '.RC' Then
+  ReadRCFile(FileName);
  AppState.ProjectFile := FileName;
  AppState.ProjectModified := False;
  NeedRedraw := True;
