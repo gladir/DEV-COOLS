@@ -282,6 +282,7 @@ Const
  COLOR_BUTTONTEXT = 0;
  COLOR_DISABLED = 8;
  COLOR_SCROLLBAR = 7;
+ COLOR_GRAYTEXT = 8;
 
  { Constantes de menus }
  MAX_MENUS = 8;
@@ -709,6 +710,16 @@ Type
  End;
 
  { Etat de l'application }
+ { Etat de l'arbre de ressources dans l'explorateur }
+ TTreeNodeState = Record
+  Expanded: Boolean;           { Noeud est-il deplie }
+  HasChildren: Boolean;        { Noeud a-t-il des enfants }
+  Level: Integer;              { Niveau d'indentation (0=racine, 1=type, 2=ressource) }
+  ResType: Word;               { Type de ressource pour les noeuds de niveau 1 }
+  ResIndex: Integer;           { Index de la ressource pour niveau 2 (-1 si noeud type) }
+  Y: Integer;                  { Position Y a l'ecran pour detection clics }
+ End;
+
  TAppState = Record
   ProjectFile: String[127];
   ProjectModified: Boolean;
@@ -721,6 +732,13 @@ Type
   GridSize: Integer;
   ShowExplorer: Boolean;
   ShowProperties: Boolean;
+  { Arbre de ressources }
+  TreeNodes: Array[1..256] Of TTreeNodeState;
+  TreeNodeCount: Integer;
+  TreeSelectedNode: Integer;   { Noeud selectionne dans l'arbre }
+  TreeScrollPos: Integer;      { Position de defilement vertical }
+  { Etats d'expansion par type de ressource }
+  TreeExpanded: Array[1..16] Of Boolean; { Expansion par RT_xxx }
  End;
 
  { Etat de l'editeur de dialogues WYSIWYG }
@@ -3710,46 +3728,327 @@ End;
 Const
  EXPLORER_WIDTH = 180;
 
+{ Obtenir le nom d'un type de ressource }
+Function GetResourceTypeName(ResType: Word): String;
+Begin
+ Case ResType Of
+  RT_CURSOR: GetResourceTypeName := 'Curseurs';
+  RT_BITMAP: GetResourceTypeName := 'Bitmaps';
+  RT_ICON: GetResourceTypeName := 'Icones';
+  RT_MENU: GetResourceTypeName := 'Menus';
+  RT_DIALOG: GetResourceTypeName := 'Dialogues';
+  RT_STRING: GetResourceTypeName := 'Chaines';
+  RT_ACCELERATOR: GetResourceTypeName := 'Accelerateurs';
+  RT_RCDATA: GetResourceTypeName := 'RCDATA';
+  RT_VERSION: GetResourceTypeName := 'Version';
+  Else GetResourceTypeName := 'Autre';
+ End;
+End;
+
+{ Obtenir l'ID d'un type de ressource pour le tableau TreeExpanded }
+Function GetTreeExpandedIndex(ResType: Word): Integer;
+Begin
+ If (ResType >= 1) And (ResType <= 16) Then
+  GetTreeExpandedIndex := ResType
+ Else
+  GetTreeExpandedIndex := 16;
+End;
+
+{ Compter les ressources d'un type donne }
+Function CountResourcesOfType(ResType: Word): Integer;
+Var
+ I, Cnt: Integer;
+Begin
+ Cnt := 0;
+ For I := 1 To ResourceCount Do
+  If Resources[I].ResType = ResType Then Inc(Cnt);
+ CountResourcesOfType := Cnt;
+End;
+
+{ Obtenir l'index global d'une ressource par type et rang }
+Function GetResourceByTypeAndRank(ResType: Word; Rank: Integer): Integer;
+Var
+ I, Cnt: Integer;
+Begin
+ Cnt := 0;
+ GetResourceByTypeAndRank := 0;
+ For I := 1 To ResourceCount Do Begin
+  If Resources[I].ResType = ResType Then Begin
+   Inc(Cnt);
+   If Cnt = Rank Then Begin
+    GetResourceByTypeAndRank := I;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ Construire l'arbre des ressources }
+Procedure BuildResourceTree;
+Var
+ I, J, NodeIdx, TypeIdx: Integer;
+ TypesFound: Array[1..16] Of Word;
+ TypeCount: Integer;
+ Found: Boolean;
+Begin
+ { Reinitialiser l'arbre }
+ AppState.TreeNodeCount := 0;
+ NodeIdx := 0;
+
+ { Collecter tous les types de ressources presents }
+ TypeCount := 0;
+ For I := 1 To ResourceCount Do Begin
+  Found := False;
+  For J := 1 To TypeCount Do Begin
+   If TypesFound[J] = Resources[I].ResType Then Begin
+    Found := True;
+    Break;
+   End;
+  End;
+  If Not Found And (TypeCount < 16) Then Begin
+   Inc(TypeCount);
+   TypesFound[TypeCount] := Resources[I].ResType;
+  End;
+ End;
+
+ { Creer les noeuds pour chaque type }
+ For TypeIdx := 1 To TypeCount Do Begin
+  If NodeIdx >= 256 Then Break;
+  Inc(NodeIdx);
+  With AppState.TreeNodes[NodeIdx] Do Begin
+   Expanded := AppState.TreeExpanded[GetTreeExpandedIndex(TypesFound[TypeIdx])];
+   HasChildren := True;
+   Level := 1;
+   ResType := TypesFound[TypeIdx];
+   ResIndex := -1;
+   Y := 0;
+  End;
+
+  { Si le noeud est deplie, ajouter les ressources enfants }
+  If AppState.TreeExpanded[GetTreeExpandedIndex(TypesFound[TypeIdx])] Then Begin
+   For I := 1 To ResourceCount Do Begin
+    If Resources[I].ResType = TypesFound[TypeIdx] Then Begin
+     If NodeIdx >= 256 Then Break;
+     Inc(NodeIdx);
+     With AppState.TreeNodes[NodeIdx] Do Begin
+      Expanded := False;
+      HasChildren := False;
+      Level := 2;
+      ResType := TypesFound[TypeIdx];
+      ResIndex := I;
+      Y := 0;
+     End;
+    End;
+   End;
+  End;
+ End;
+
+ AppState.TreeNodeCount := NodeIdx;
+End;
+
+{ Dessiner l'icone +/- pour les noeuds avec enfants }
+Procedure DrawTreeExpandIcon(X, Y: Integer; Expanded: Boolean);
+Begin
+ SetColor(COLOR_BUTTONTEXT);
+ Rectangle(X, Y, X + 8, Y + 8);
+ Line(X + 2, Y + 4, X + 6, Y + 4);  { Trait horizontal }
+ If Not Expanded Then
+  Line(X + 4, Y + 2, X + 4, Y + 6);  { Trait vertical pour le + }
+End;
+
+{ Ouvrir l'editeur pour une ressource selectionnee }
+Procedure OpenResourceEditor(ResIndex: Integer);
+Var
+ I: Integer;
+ WinType: Integer;
+ Title: String;
+Begin
+ If (ResIndex < 1) Or (ResIndex > ResourceCount) Then Exit;
+
+ { Determiner le type de fenetre a ouvrir }
+ Case Resources[ResIndex].ResType Of
+  RT_BITMAP, RT_ICON, RT_CURSOR: WinType := 1;  { Editeur bitmap }
+  RT_DIALOG: WinType := 2;                       { Editeur dialogue }
+  RT_MENU: WinType := 3;                         { Editeur menu }
+  RT_STRING: WinType := 4;                       { Editeur chaines }
+  RT_ACCELERATOR: WinType := 5;                  { Editeur accelerateurs }
+  RT_RCDATA: WinType := 6;                       { Editeur RCDATA }
+  RT_VERSION: WinType := 7;                      { Editeur version }
+  Else Exit;
+ End;
+
+ { Creer le titre de la fenetre }
+ If Resources[ResIndex].ResId.IsNumeric Then
+  Title := GetResourceTypeName(Resources[ResIndex].ResType) + ' #' + IntToStr(Resources[ResIndex].ResId.NumId)
+ Else
+  Title := GetResourceTypeName(Resources[ResIndex].ResType) + ' ' + Resources[ResIndex].ResId.StrId;
+
+ { Verifier si une fenetre pour cette ressource existe deja }
+ For I := 1 To WindowCount Do Begin
+  If Windows[I].Title = Title Then Begin
+   ActivateWindow(I);
+   Exit;
+  End;
+ End;
+
+ { Creer une nouvelle fenetre }
+ If WindowCount < MAX_WINDOWS Then Begin
+  Inc(WindowCount);
+  With Windows[WindowCount] Do Begin
+   If AppState.ShowExplorer Then Begin
+    Bounds.X1 := EXPLORER_WIDTH + 5;
+    Bounds.X2 := SCREEN_WIDTH - 10;
+   End Else Begin
+    Bounds.X1 := 10;
+    Bounds.X2 := SCREEN_WIDTH - 10;
+   End;
+   Bounds.Y1 := MENU_BAR_HEIGHT + TOOLBAR_HEIGHT + 5;
+   Bounds.Y2 := SCREEN_HEIGHT - STATUS_BAR_HEIGHT - 10;
+   Windows[WindowCount].Title := Title;
+   Visible := True;
+   Active := True;
+   Moveable := True;
+   Resizable := True;
+   WindowType := WinType;
+   ResourceIndex := ResIndex;
+  End;
+  ActivateWindow(WindowCount);
+  { Pour les dialogues, initialiser l'editeur avec l'index de ressource }
+  If WinType = 2 Then Begin
+   { Trouver le dialogue correspondant - utiliser l'ordre des ressources }
+   DlgEdState.DialogIndex := 1;  { Par defaut, premier dialogue }
+   DlgEdState.SelectedControl := -1;
+  End;
+ End;
+
+ NeedRedraw := True;
+End;
+
 Procedure DrawResourceExplorer;
 Var
  X, Y, I: Integer;
- TypeName: String;
+ TreeY: Integer;
+ ExpandIcon: String;
+ ItemText: String;
+ IndentX: Integer;
+ MaxY: Integer;
 Begin
  If Not AppState.ShowExplorer Then Exit;
+
+ { Reconstruire l'arbre }
+ BuildResourceTree;
+
  X := 0;
  Y := MENU_BAR_HEIGHT + TOOLBAR_HEIGHT;
+ MaxY := SCREEN_HEIGHT - STATUS_BAR_HEIGHT - 16;
+
  HideMouse;
+
+ { Fond du panneau }
  SetFillStyle(SolidFill, COLOR_WINDOW);
  Bar(X, Y, X + EXPLORER_WIDTH - 1, SCREEN_HEIGHT - STATUS_BAR_HEIGHT - 1);
  Draw3DRect(X, Y, X + EXPLORER_WIDTH - 1, SCREEN_HEIGHT - STATUS_BAR_HEIGHT - 1, False);
+
+ { En-tete }
  SetFillStyle(SolidFill, COLOR_BUTTON);
  Bar(X + 1, Y + 1, X + EXPLORER_WIDTH - 2, Y + 18);
  SetColor(COLOR_BUTTONTEXT);
  OutTextXY(X + 4, Y + 4, 'Ressources');
- Y := Y + 22;
- For I := 1 To ResourceCount Do Begin
-  If Y > SCREEN_HEIGHT - STATUS_BAR_HEIGHT - 20 Then Break;
-  Case Resources[I].ResType Of
-   RT_CURSOR: TypeName := '+ Curseurs';
-   RT_BITMAP: TypeName := '+ Bitmaps';
-   RT_ICON: TypeName := '+ Icones';
-   RT_MENU: TypeName := '+ Menus';
-   RT_DIALOG: TypeName := '+ Dialogues';
-   RT_STRING: TypeName := '+ Chaines';
-   RT_ACCELERATOR: TypeName := '+ Accelerateurs';
-   RT_RCDATA: TypeName := '+ RCDATA';
-   RT_VERSION: TypeName := '+ Version';
-   Else TypeName := '+ Ressource';
+
+ TreeY := Y + 22;
+
+ { Dessiner les noeuds de l'arbre }
+ For I := 1 To AppState.TreeNodeCount Do Begin
+  If TreeY > MaxY Then Break;
+
+  { Calculer l'indentation }
+  IndentX := X + 4 + (AppState.TreeNodes[I].Level - 1) * 16;
+
+  { Sauvegarder la position Y pour la detection des clics }
+  AppState.TreeNodes[I].Y := TreeY;
+
+  { Dessiner la selection si c'est le noeud selectionne }
+  If I = AppState.TreeSelectedNode Then Begin
+   SetFillStyle(SolidFill, COLOR_HIGHLIGHT);
+   Bar(X + 2, TreeY, X + EXPLORER_WIDTH - 3, TreeY + 14);
+   SetColor(COLOR_HIGHLIGHTTEXT);
+  End Else Begin
+   SetColor(COLOR_WINDOWTEXT);
   End;
-  SetColor(COLOR_WINDOWTEXT);
-  OutTextXY(X + 8, Y, TypeName);
-  If Resources[I].ResId.IsNumeric Then
-   OutTextXY(X + 20, Y + 14, '#' + IntToStr(Resources[I].ResId.NumId))
-  Else
-   OutTextXY(X + 20, Y + 14, Resources[I].ResId.StrId);
-  Inc(Y, 30);
+
+  { Dessiner l'icone +/- pour les noeuds avec enfants }
+  If AppState.TreeNodes[I].HasChildren Then Begin
+   DrawTreeExpandIcon(IndentX, TreeY + 2, AppState.TreeNodes[I].Expanded);
+   IndentX := IndentX + 12;
+  End;
+
+  { Preparer le texte a afficher }
+  If AppState.TreeNodes[I].Level = 1 Then Begin
+   { Noeud de type }
+   ItemText := GetResourceTypeName(AppState.TreeNodes[I].ResType);
+   ItemText := ItemText + ' (' + IntToStr(CountResourcesOfType(AppState.TreeNodes[I].ResType)) + ')';
+  End Else Begin
+   { Noeud de ressource individuelle }
+   If (AppState.TreeNodes[I].ResIndex >= 1) And
+      (AppState.TreeNodes[I].ResIndex <= ResourceCount) Then Begin
+    If Resources[AppState.TreeNodes[I].ResIndex].ResId.IsNumeric Then
+     ItemText := '#' + IntToStr(Resources[AppState.TreeNodes[I].ResIndex].ResId.NumId)
+    Else
+     ItemText := Resources[AppState.TreeNodes[I].ResIndex].ResId.StrId;
+   End Else
+    ItemText := '???';
+  End;
+
+  { Afficher le texte }
+  OutTextXY(IndentX, TreeY + 2, ItemText);
+
+  Inc(TreeY, 16);
  End;
+
+ { Message si aucune ressource }
+ If ResourceCount = 0 Then Begin
+  SetColor(COLOR_GRAYTEXT);
+  OutTextXY(X + 8, Y + 30, '(Aucune ressource)');
+ End;
+
  ShowMouse;
+End;
+
+{ Gestion des clics dans l'explorateur de ressources }
+Function HandleResourceExplorerClick(ClickX, ClickY: Integer): Boolean;
+Var
+ I: Integer;
+ ExpIdx: Integer;
+Begin
+ HandleResourceExplorerClick := False;
+
+ If Not AppState.ShowExplorer Then Exit;
+ If ClickX > EXPLORER_WIDTH Then Exit;
+ If ClickY < MENU_BAR_HEIGHT + TOOLBAR_HEIGHT + 20 Then Exit;
+
+ { Parcourir les noeuds pour trouver celui qui a ete clique }
+ For I := 1 To AppState.TreeNodeCount Do Begin
+  If (ClickY >= AppState.TreeNodes[I].Y) And
+     (ClickY < AppState.TreeNodes[I].Y + 16) Then Begin
+   { Noeud trouve }
+   If AppState.TreeNodes[I].HasChildren Then Begin
+    { C'est un noeud de type - basculer l'expansion }
+    ExpIdx := GetTreeExpandedIndex(AppState.TreeNodes[I].ResType);
+    AppState.TreeExpanded[ExpIdx] := Not AppState.TreeExpanded[ExpIdx];
+    AppState.TreeSelectedNode := I;
+    HandleResourceExplorerClick := True;
+    NeedRedraw := True;
+   End Else Begin
+    { C'est un noeud de ressource - le selectionner et ouvrir l'editeur }
+    AppState.TreeSelectedNode := I;
+    If AppState.TreeNodes[I].ResIndex > 0 Then
+     OpenResourceEditor(AppState.TreeNodes[I].ResIndex);
+    HandleResourceExplorerClick := True;
+    NeedRedraw := True;
+   End;
+   Exit;
+  End;
+ End;
 End;
 
 { ============================================================
@@ -4074,6 +4373,7 @@ Var
  Cmd: Integer;
  I: Integer;
  R: TRect;
+ ClickedOnExplorer: Boolean;
 Begin
  If MouseClicked Then Begin
   If MouseY < MENU_BAR_HEIGHT Then Begin
@@ -4084,19 +4384,28 @@ Begin
    { Toolbar clicks }
   End
   Else If MouseY < SCREEN_HEIGHT - STATUS_BAR_HEIGHT Then Begin
-   For I := WindowCount DownTo 1 Do Begin
-    R := Windows[I].Bounds;
-    If MouseInRect(R) Then Begin
-     ActivateWindow(I);
-     If (MouseX >= R.X2 - 18) And (MouseX <= R.X2 - 4) And
-        (MouseY >= R.Y1 + 4) And (MouseY <= R.Y1 + 18) Then Begin
-      CloseWindow(I);
-     End Else If Windows[I].WindowType = 2 Then Begin
-      { Editeur de dialogue WYSIWYG }
-      If HandleDialogEditorClick(I, MouseX, MouseY, MouseButton) Then
-       NeedRedraw := True;
+   { Verifier d'abord si le clic est dans l'explorateur de ressources }
+   ClickedOnExplorer := False;
+   If AppState.ShowExplorer And (MouseX < EXPLORER_WIDTH) Then Begin
+    ClickedOnExplorer := HandleResourceExplorerClick(MouseX, MouseY);
+   End;
+
+   { Si pas dans l'explorateur, verifier les fenetres }
+   If Not ClickedOnExplorer Then Begin
+    For I := WindowCount DownTo 1 Do Begin
+     R := Windows[I].Bounds;
+     If MouseInRect(R) Then Begin
+      ActivateWindow(I);
+      If (MouseX >= R.X2 - 18) And (MouseX <= R.X2 - 4) And
+         (MouseY >= R.Y1 + 4) And (MouseY <= R.Y1 + 18) Then Begin
+       CloseWindow(I);
+      End Else If Windows[I].WindowType = 2 Then Begin
+       { Editeur de dialogue WYSIWYG }
+       If HandleDialogEditorClick(I, MouseX, MouseY, MouseButton) Then
+        NeedRedraw := True;
+      End;
+      Break;
      End;
-     Break;
     End;
    End;
   End;
@@ -4153,6 +4462,8 @@ Begin
 End;
 
 Procedure Initialize;
+Var
+ I: Integer;
 Begin
  Running := True;
  NeedRedraw := True;
@@ -4179,6 +4490,12 @@ Begin
  AppState.GridSize := 8;
  AppState.ShowExplorer := True;
  AppState.ShowProperties := True;
+ { Initialiser l'arbre de ressources }
+ AppState.TreeNodeCount := 0;
+ AppState.TreeSelectedNode := 0;
+ AppState.TreeScrollPos := 0;
+ For I := 1 To 16 Do
+  AppState.TreeExpanded[I] := True;  { Tous les noeuds deplies par defaut }
  { Initialiser l'editeur WYSIWYG de dialogues }
  DlgEdState.DialogIndex := 0;
  DlgEdState.SelectedControl := -1;
