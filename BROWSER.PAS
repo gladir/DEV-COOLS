@@ -8,7 +8,7 @@
   TODO: Liste des 25 points a implementer pour le navigateur Web graphique
 
   1.  DONE: Implementer la barre d'URL avec champ de saisie de texte editable
-  2.  TODO: Creer le bouton "Precedent" pour naviguer vers la page precedente dans l'historique
+  2.  DONE: Creer le bouton "Precedent" pour naviguer vers la page precedente dans l'historique
   3.  TODO: Creer le bouton "Suivant" pour naviguer vers la page suivante dans l'historique
   4.  TODO: Creer le bouton "Actualiser" pour recharger la page courante
   5.  TODO: Creer le bouton "Favori" pour ajouter/gerer les marque-pages
@@ -50,17 +50,30 @@ Const
  URL_BAR_HEIGHT = 20;
  URL_MAX_LENGTH = 255;
 
+ { Constantes pour le bouton Precedent }
+ BACK_BTN_X = 515;
+ BACK_BTN_Y = 5;
+ BACK_BTN_WIDTH = 30;
+ BACK_BTN_HEIGHT = 20;
+
  { Couleurs de l'interface }
  COLOR_URL_BAR_BG = 15;       { Blanc }
  COLOR_URL_BAR_BORDER = 0;    { Noir }
  COLOR_URL_BAR_TEXT = 0;      { Noir }
  COLOR_URL_BAR_CURSOR = 0;    { Noir }
+ COLOR_BTN_BG = 7;            { Gris clair }
+ COLOR_BTN_BORDER = 0;        { Noir }
+ COLOR_BTN_TEXT = 0;          { Noir }
+ COLOR_BTN_DISABLED = 8;      { Gris fonce }
 
 Var
  { Variables globales pour la barre d'URL }
  CurrentURL: String;
  URLCursorPos: Integer;
  URLBarFocused: Boolean;
+
+ { Variables pour le bouton Precedent }
+ BackButtonEnabled: Boolean;
 
 { Procedure pour dessiner la barre d'URL }
 Procedure DrawURLBar;
@@ -94,6 +107,65 @@ Begin
   Line(TextX + (URLCursorPos * 8), URL_BAR_Y + 3,
        TextX + (URLCursorPos * 8), URL_BAR_Y + URL_BAR_HEIGHT - 3);
  End;
+End;
+
+{ Procedure pour dessiner le bouton Precedent }
+Procedure DrawBackButton;
+Var
+ CenterX, CenterY: Integer;
+ ArrowColor: Integer;
+Begin
+ { Dessiner le fond du bouton }
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(BACK_BTN_X, BACK_BTN_Y, BACK_BTN_X + BACK_BTN_WIDTH, BACK_BTN_Y + BACK_BTN_HEIGHT);
+
+ { Dessiner la bordure du bouton }
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(BACK_BTN_X, BACK_BTN_Y, BACK_BTN_X + BACK_BTN_WIDTH, BACK_BTN_Y + BACK_BTN_HEIGHT);
+
+ { Dessiner la fleche vers la gauche (symbole <) }
+ CenterX := BACK_BTN_X + (BACK_BTN_WIDTH Div 2);
+ CenterY := BACK_BTN_Y + (BACK_BTN_HEIGHT Div 2);
+
+ { Couleur de la fleche selon l'etat du bouton }
+ If BackButtonEnabled Then
+  ArrowColor := COLOR_BTN_TEXT
+ Else
+  ArrowColor := COLOR_BTN_DISABLED;
+
+ SetColor(ArrowColor);
+ { Dessiner une fleche vers la gauche }
+ Line(CenterX + 5, CenterY - 5, CenterX - 5, CenterY);
+ Line(CenterX - 5, CenterY, CenterX + 5, CenterY + 5);
+ Line(CenterX - 5, CenterY, CenterX + 8, CenterY);
+End;
+
+{ Fonction pour verifier si un clic est dans le bouton Precedent }
+Function IsClickInBackButton(X, Y: Integer): Boolean;
+Begin
+ IsClickInBackButton := (X >= BACK_BTN_X) And (X <= BACK_BTN_X + BACK_BTN_WIDTH) And
+                        (Y >= BACK_BTN_Y) And (Y <= BACK_BTN_Y + BACK_BTN_HEIGHT);
+End;
+
+{ Procedure pour gerer le clic sur le bouton Precedent }
+Procedure HandleBackButtonClick;
+Begin
+ If Not BackButtonEnabled Then Exit;
+ { La navigation vers la page precedente sera implementee }
+ { quand l'historique sera disponible (TODO 6) }
+End;
+
+{ Procedure pour initialiser le bouton Precedent }
+Procedure InitBackButton;
+Begin
+ BackButtonEnabled := False; { Desactive par defaut car pas d'historique }
+End;
+
+{ Procedure pour activer/desactiver le bouton Precedent }
+Procedure SetBackButtonEnabled(Enabled: Boolean);
+Begin
+ BackButtonEnabled := Enabled;
+ DrawBackButton;
 End;
 
 { Procedure pour verifier si un clic est dans la barre d'URL }
@@ -266,7 +338,9 @@ Var
 BEGIN
  InitializeGraphics;
  InitURLBar;
+ InitBackButton;
  DrawURLBar;
+ DrawBackButton;
  { Boucle principale temporaire pour tester la barre d'URL }
  URLBarFocused := True;
  Repeat
