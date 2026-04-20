@@ -2659,6 +2659,7 @@ Procedure ReadRCFile(Const FileName: String);
 Var
  Token, ResIdStr: String;
  ResId: Word;
+ ValCode: Integer;
 Begin
  { Reinitialiser les donnees }
  ResourceCount := 0;
@@ -2684,27 +2685,16 @@ Begin
   
   { STRINGTABLE }
   If Token = 'STRINGTABLE' Then Begin
-   GetRCToken;
+   GetRCToken; { Consommer STRINGTABLE }
    ParseRCStringTable;
    Continue;
   End;
   
-  { DIALOG ou DIALOGEX }
-  If (Token = 'DIALOG') Or (Token = 'DIALOGEX') Then Begin
-   { L'ID est avant DIALOG }
-   Continue;
-  End;
-  
-  { MENU ou MENUEX }
-  If (Token = 'MENU') Or (Token = 'MENUEX') Then Begin
-   Continue;
-  End;
-  
-  { ID DIALOG / ID MENU }
+  { Format: ID DIALOG/DIALOGEX/MENU/MENUEX }
+  { Le premier token est l'ID de ressource }
   ResIdStr := GetRCToken;
-  Val(ResIdStr, ResId, RCLineNum);
-  If RCLineNum <> 0 Then ResId := 100; { Default si pas un nombre }
-  RCLineNum := 0;
+  Val(ResIdStr, ResId, ValCode);
+  If ValCode <> 0 Then ResId := 100; { Default si pas un nombre }
   
   Token := UpCaseStr(GetRCToken);
   If (Token = 'DIALOG') Or (Token = 'DIALOGEX') Then
