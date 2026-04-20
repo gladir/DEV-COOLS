@@ -3706,11 +3706,122 @@ Begin
 End;
 
 Procedure DrawMenuEditor(WndIndex: Integer);
+Var
+ I, J, MenuIdx, ResIdx: Integer;
+ CX1, CY1, CX2, CY2: Integer;
+ Y, IndentX, MaxY: Integer;
+ ItemText, IdStr: String;
+ IsPopup, IsSep: Boolean;
 Begin
  If (WndIndex < 1) Or (WndIndex > WindowCount) Then Exit;
  If Windows[WndIndex].WindowType <> 3 Then Exit;
- SetColor(COLOR_WINDOWTEXT);
- OutTextXY(Windows[WndIndex].ClientArea.X1 + 4, Windows[WndIndex].ClientArea.Y1 + 4, 'Structure du menu:');
+
+ CX1 := Windows[WndIndex].ClientArea.X1;
+ CY1 := Windows[WndIndex].ClientArea.Y1;
+ CX2 := Windows[WndIndex].ClientArea.X2;
+ CY2 := Windows[WndIndex].ClientArea.Y2;
+
+ { Trouver l'index du menu dans ResMenus[] }
+ ResIdx := Windows[WndIndex].ResourceIndex;
+ MenuIdx := 0;
+ J := 0;
+ For I := 1 To ResourceCount Do Begin
+  If Resources[I].ResType = RT_MENU Then Begin
+   Inc(J);
+   If I = ResIdx Then Begin
+    MenuIdx := J;
+    Break;
+   End;
+  End;
+ End;
+
+ { En-tete }
+ SetFillStyle(SolidFill, COLOR_BUTTON);
+ Bar(CX1, CY1, CX2, CY1 + 18);
+ Draw3DRect(CX1, CY1, CX2, CY1 + 18, False);
+ SetColor(COLOR_BUTTONTEXT);
+ OutTextXY(CX1 + 4, CY1 + 4, 'Structure du menu:');
+
+ If (MenuIdx < 1) Or (MenuIdx > MenuDataCount) Then Begin
+  SetColor(COLOR_GRAYTEXT);
+  OutTextXY(CX1 + 8, CY1 + 28, '(Menu introuvable)');
+  Exit;
+ End;
+
+ If ResMenus[MenuIdx].ItemCount = 0 Then Begin
+  SetColor(COLOR_GRAYTEXT);
+  OutTextXY(CX1 + 8, CY1 + 28, '(Menu vide)');
+  Exit;
+ End;
+
+ { Zone de liste }
+ SetFillStyle(SolidFill, COLOR_WINDOW);
+ Bar(CX1 + 1, CY1 + 20, CX2 - 1, CY2 - 1);
+
+ Y := CY1 + 22;
+ MaxY := CY2 - 16;
+
+ For I := 1 To ResMenus[MenuIdx].ItemCount Do Begin
+  If Y > MaxY Then Break;
+
+  IsPopup := (ResMenus[MenuIdx].Items[I].Flags And $10) <> 0;
+  IsSep := (ResMenus[MenuIdx].Items[I].ItemType = 2) Or
+           (ResMenus[MenuIdx].Items[I].Text = '-') Or
+           (ResMenus[MenuIdx].Items[I].Text = '');
+
+  { Si le texte est vide et pas un popup, c'est un separateur }
+  If (Not IsPopup) And (ResMenus[MenuIdx].Items[I].Text = '') Then
+   IsSep := True;
+
+  { Indentation selon le niveau }
+  IndentX := CX1 + 8 + ResMenus[MenuIdx].Items[I].Level * 20;
+
+  If IsSep And (Not IsPopup) Then Begin
+   { Separateur }
+   SetColor(COLOR_BORDER3D_DARK);
+   Line(IndentX, Y + 6, IndentX + 120, Y + 6);
+   SetColor(COLOR_BORDER3D_LIGHT);
+   Line(IndentX, Y + 7, IndentX + 120, Y + 7);
+  End Else Begin
+   { Icone de type }
+   If IsPopup Then Begin
+    { Dossier pour POPUP }
+    SetFillStyle(SolidFill, 14);
+    Bar(IndentX, Y + 1, IndentX + 12, Y + 11);
+    SetColor(8);
+    Rectangle(IndentX, Y + 1, IndentX + 12, Y + 11);
+    SetFillStyle(SolidFill, 14);
+    Bar(IndentX, Y - 1, IndentX + 5, Y + 1);
+    SetColor(8);
+    Rectangle(IndentX, Y - 1, IndentX + 5, Y + 1);
+   End Else Begin
+    { Feuille pour item normal }
+    SetFillStyle(SolidFill, 15);
+    Bar(IndentX, Y + 1, IndentX + 10, Y + 11);
+    SetColor(8);
+    Rectangle(IndentX, Y + 1, IndentX + 10, Y + 11);
+    Line(IndentX + 2, Y + 4, IndentX + 8, Y + 4);
+    Line(IndentX + 2, Y + 7, IndentX + 6, Y + 7);
+   End;
+
+   { Texte de l'item }
+   SetColor(COLOR_WINDOWTEXT);
+   ItemText := ResMenus[MenuIdx].Items[I].Text;
+   OutTextXY(IndentX + 16, Y + 1, ItemText);
+
+   { ID pour les items non-popup }
+   If Not IsPopup Then Begin
+    IdStr := 'ID=' + IntToStr(ResMenus[MenuIdx].Items[I].ItemId);
+    SetColor(COLOR_GRAYTEXT);
+    OutTextXY(CX2 - 70, Y + 1, IdStr);
+   End Else Begin
+    SetColor(COLOR_GRAYTEXT);
+    OutTextXY(CX2 - 70, Y + 1, 'POPUP');
+   End;
+  End;
+
+  Inc(Y, 16);
+ End;
 End;
 
 Procedure StartStringEdit;
