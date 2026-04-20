@@ -26,7 +26,7 @@
   17. DONE: Creer l'interpreteur JavaScript pour le support des scripts cote client
   18. DONE: Implementer le DOM (Document Object Model) pour la manipulation JavaScript
   19. DONE: Creer le parseur CSS pour le support des feuilles de style
-  20. TODO: Implementer l'application des styles CSS aux elements HTML (cascade et heritage)
+  20. DONE: Implementer l'application des styles CSS aux elements HTML (cascade et heritage)
   21. TODO: Implementer le decodeur et l'affichage des images BMP
   22. TODO: Implementer le decodeur et l'affichage des images GIF (y compris anime)
   23. TODO: Implementer le decodeur et l'affichage des images JPEG
@@ -4152,6 +4152,354 @@ Begin
 End;
 
 { =====================================================
+  APPLICATION DES STYLES CSS - Cascade et Heritage
+  ===================================================== }
+
+{ Proprietes CSS heritables (du parent vers l'enfant) }
+Function CSSIsInheritableProperty(PropId: Byte): Boolean;
+Begin
+ Case PropId Of
+  CSS_PROP_COLOR,
+  CSS_PROP_FONT_SIZE,
+  CSS_PROP_FONT_WEIGHT,
+  CSS_PROP_FONT_STYLE,
+  CSS_PROP_FONT_FAMILY,
+  CSS_PROP_TEXT_DECORATION,
+  CSS_PROP_TEXT_ALIGN,
+  CSS_PROP_LINE_HEIGHT,
+  CSS_PROP_LIST_STYLE,
+  CSS_PROP_LIST_STYLE_TYPE,
+  CSS_PROP_VISIBILITY,
+  CSS_PROP_WHITE_SPACE,
+  CSS_PROP_CURSOR:
+   CSSIsInheritableProperty := True;
+  Else
+   CSSIsInheritableProperty := False;
+ End;
+End;
+
+{ Structure pour stocker les regles correspondantes triees par specificite }
+Type
+ CSSMatchedRule = Record
+  Rule: CSSRule;
+  SelectorIndex: Integer;
+  Specificity: LongInt;
+  SourceOrder: Integer;
+ End;
+
+{ Comparer deux regles pour le tri par cascade }
+Function CSSCompareRules(Const A, B: CSSMatchedRule): Integer;
+Begin
+ { !important a la priorite maximale (gere separement) }
+ { Sinon: specificite > ordre de source }
+ If A.Specificity > B.Specificity Then
+  CSSCompareRules := 1
+ Else If A.Specificity < B.Specificity Then
+  CSSCompareRules := -1
+ Else If A.SourceOrder > B.SourceOrder Then
+  CSSCompareRules := 1
+ Else If A.SourceOrder < B.SourceOrder Then
+  CSSCompareRules := -1
+ Else
+  CSSCompareRules := 0;
+End;
+
+{ Heriter les proprietes CSS du parent }
+Procedure CSSInheritStyle(Var ChildStyle: DOMStyle; Const ParentStyle: DOMStyle);
+Begin
+ { Color herite si non defini }
+ If (Length(ChildStyle.Color) = 0) And (Length(ParentStyle.Color) > 0) Then
+  ChildStyle.Color := ParentStyle.Color;
+
+ { Font-size herite si non defini }
+ If (Length(ChildStyle.FontSize) = 0) And (Length(ParentStyle.FontSize) > 0) Then
+  ChildStyle.FontSize := ParentStyle.FontSize;
+
+ { Font-weight herite si non defini }
+ If (Length(ChildStyle.FontWeight) = 0) And (Length(ParentStyle.FontWeight) > 0) Then
+  ChildStyle.FontWeight := ParentStyle.FontWeight;
+
+ { Font-style herite si non defini }
+ If (Length(ChildStyle.FontStyle) = 0) And (Length(ParentStyle.FontStyle) > 0) Then
+  ChildStyle.FontStyle := ParentStyle.FontStyle;
+
+ { Text-decoration herite si non defini }
+ If (Length(ChildStyle.TextDecoration) = 0) And (Length(ParentStyle.TextDecoration) > 0) Then
+  ChildStyle.TextDecoration := ParentStyle.TextDecoration;
+
+ { Visibility herite si non defini }
+ If (Length(ChildStyle.Visibility) = 0) And (Length(ParentStyle.Visibility) > 0) Then
+  ChildStyle.Visibility := ParentStyle.Visibility;
+End;
+
+{ Resoudre la cascade CSS pour un element avec heritage }
+Procedure CSSResolveCascade(Element: HTMLNodePtr; Var Style: DOMStyle);
+Var
+ ParentStyle: DOMStyle;
+ I, J, K: Integer;
+ Rule: CSSRule;
+ MatchedRules: Array[1..128] Of CSSMatchedRule;
+ MatchedCount: Integer;
+ Temp: CSSMatchedRule;
+ InlineStyle: String;
+Begin
+ { Initialiser avec valeurs par defaut }
+ Style.Color := '';
+ Style.BackgroundColor := '';
+ Style.FontSize := '';
+ Style.FontWeight := '';
+ Style.FontStyle := '';
+ Style.TextDecoration := '';
+ Style.Display := '';
+ Style.Visibility := '';
+ Style.Width := '';
+ Style.Height := '';
+ Style.Margin := '';
+ Style.Padding := '';
+ Style.Border := '';
+
+ If Element = Nil Then Exit;
+
+ { Obtenir le style herite du parent }
+ If Element^.Parent <> Nil Then Begin
+  CSSResolveCascade(Element^.Parent, ParentStyle);
+  CSSInheritStyle(Style, ParentStyle);
+ End;
+
+ { Collecter les regles correspondantes }
+ MatchedCount := 0;
+ For I := 1 To CSSGlobalStylesheet.RuleCount Do Begin
+  Rule := CSSGlobalStylesheet.Rules[I];
+  For J := 1 To Rule.SelectorCount Do Begin
+   If CSSMatchSelector(Rule.Selectors[J], Element) Then Begin
+    If MatchedCount < 128 Then Begin
+     Inc(MatchedCount);
+     MatchedRules[MatchedCount].Rule := Rule;
+     MatchedRules[MatchedCount].SelectorIndex := J;
+     MatchedRules[MatchedCount].Specificity := Rule.Selectors[J].Specificity;
+     MatchedRules[MatchedCount].SourceOrder := I;
+    End;
+    Break;
+   End;
+  End;
+ End;
+
+ { Trier par specificite et ordre de source (tri a bulles simple) }
+ For I := 1 To MatchedCount - 1 Do
+  For J := I + 1 To MatchedCount Do
+   If CSSCompareRules(MatchedRules[I], MatchedRules[J]) > 0 Then Begin
+    Temp := MatchedRules[I];
+    MatchedRules[I] := MatchedRules[J];
+    MatchedRules[J] := Temp;
+   End;
+
+ { Appliquer les regles dans l'ordre de cascade }
+ { D'abord les regles normales }
+ For I := 1 To MatchedCount Do Begin
+  Rule := MatchedRules[I].Rule;
+  For J := 1 To Rule.PropertyCount Do Begin
+   If Not Rule.Properties[J].Important Then Begin
+    Case Rule.Properties[J].PropId Of
+     CSS_PROP_COLOR: Style.Color := Rule.Properties[J].Value;
+     CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := Rule.Properties[J].Value;
+     CSS_PROP_FONT_SIZE: Style.FontSize := Rule.Properties[J].Value;
+     CSS_PROP_FONT_WEIGHT: Style.FontWeight := Rule.Properties[J].Value;
+     CSS_PROP_FONT_STYLE: Style.FontStyle := Rule.Properties[J].Value;
+     CSS_PROP_TEXT_DECORATION: Style.TextDecoration := Rule.Properties[J].Value;
+     CSS_PROP_DISPLAY: Style.Display := Rule.Properties[J].Value;
+     CSS_PROP_VISIBILITY: Style.Visibility := Rule.Properties[J].Value;
+     CSS_PROP_WIDTH: Style.Width := Rule.Properties[J].Value;
+     CSS_PROP_HEIGHT: Style.Height := Rule.Properties[J].Value;
+     CSS_PROP_MARGIN: Style.Margin := Rule.Properties[J].Value;
+     CSS_PROP_PADDING: Style.Padding := Rule.Properties[J].Value;
+     CSS_PROP_BORDER: Style.Border := Rule.Properties[J].Value;
+    End;
+   End;
+  End;
+ End;
+
+ { Ensuite les regles !important }
+ For I := 1 To MatchedCount Do Begin
+  Rule := MatchedRules[I].Rule;
+  For J := 1 To Rule.PropertyCount Do Begin
+   If Rule.Properties[J].Important Then Begin
+    Case Rule.Properties[J].PropId Of
+     CSS_PROP_COLOR: Style.Color := Rule.Properties[J].Value;
+     CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := Rule.Properties[J].Value;
+     CSS_PROP_FONT_SIZE: Style.FontSize := Rule.Properties[J].Value;
+     CSS_PROP_FONT_WEIGHT: Style.FontWeight := Rule.Properties[J].Value;
+     CSS_PROP_FONT_STYLE: Style.FontStyle := Rule.Properties[J].Value;
+     CSS_PROP_TEXT_DECORATION: Style.TextDecoration := Rule.Properties[J].Value;
+     CSS_PROP_DISPLAY: Style.Display := Rule.Properties[J].Value;
+     CSS_PROP_VISIBILITY: Style.Visibility := Rule.Properties[J].Value;
+     CSS_PROP_WIDTH: Style.Width := Rule.Properties[J].Value;
+     CSS_PROP_HEIGHT: Style.Height := Rule.Properties[J].Value;
+     CSS_PROP_MARGIN: Style.Margin := Rule.Properties[J].Value;
+     CSS_PROP_PADDING: Style.Padding := Rule.Properties[J].Value;
+     CSS_PROP_BORDER: Style.Border := Rule.Properties[J].Value;
+    End;
+   End;
+  End;
+ End;
+
+ { Appliquer le style inline (priorite maximale sauf !important) }
+ InlineStyle := DOMGetAttribute(Element, 'style');
+ If Length(InlineStyle) > 0 Then
+  CSSParseInlineStyle(InlineStyle, Style);
+End;
+
+{ Appliquer les styles CSS au contexte de rendu }
+Procedure CSSApplyStylesToContext(Const Style: DOMStyle; Var Ctx: RenderContext);
+Var
+ ColorIndex: Integer;
+ FontWeightLower, FontStyleLower: String;
+Begin
+ { Appliquer la couleur du texte }
+ If Length(Style.Color) > 0 Then Begin
+  ColorIndex := CSSColorToIndex(Style.Color);
+  If ColorIndex >= 0 Then
+   Ctx.TextColor := ColorIndex;
+ End;
+
+ { Appliquer la couleur de fond }
+ If Length(Style.BackgroundColor) > 0 Then Begin
+  ColorIndex := CSSColorToIndex(Style.BackgroundColor);
+  If ColorIndex >= 0 Then
+   Ctx.BgColor := ColorIndex;
+ End;
+
+ { Appliquer le font-weight }
+ If Length(Style.FontWeight) > 0 Then Begin
+  FontWeightLower := HTMLLowerCase(Style.FontWeight);
+  If (FontWeightLower = 'bold') Or (FontWeightLower = '700') Or
+     (FontWeightLower = '800') Or (FontWeightLower = '900') Then
+   Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD
+  Else If (FontWeightLower = 'normal') Or (FontWeightLower = '400') Then
+   Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_BOLD);
+ End;
+
+ { Appliquer le font-style }
+ If Length(Style.FontStyle) > 0 Then Begin
+  FontStyleLower := HTMLLowerCase(Style.FontStyle);
+  If FontStyleLower = 'italic' Then
+   Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_ITALIC
+  Else If FontStyleLower = 'normal' Then
+   Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_ITALIC);
+ End;
+
+ { Appliquer text-decoration }
+ If Length(Style.TextDecoration) > 0 Then Begin
+  If System.Pos('underline', HTMLLowerCase(Style.TextDecoration)) > 0 Then
+   Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_UNDERLINE
+  Else If HTMLLowerCase(Style.TextDecoration) = 'none' Then
+   Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_UNDERLINE);
+ End;
+
+ { Appliquer visibility }
+ If HTMLLowerCase(Style.Visibility) = 'hidden' Then Begin
+  { Element cache mais prend de l'espace - simuler en ne pas dessiner }
+  { Note: necessiterait un flag InVisible dans le contexte }
+ End;
+End;
+
+{ Verifier si un element doit etre cache (display: none) }
+Function CSSIsElementHidden(Const Style: DOMStyle): Boolean;
+Var
+ DisplayLower: String;
+Begin
+ CSSIsElementHidden := False;
+ If Length(Style.Display) > 0 Then Begin
+  DisplayLower := HTMLLowerCase(Style.Display);
+  If DisplayLower = 'none' Then
+   CSSIsElementHidden := True;
+ End;
+ If Length(Style.Visibility) > 0 Then Begin
+  If HTMLLowerCase(Style.Visibility) = 'hidden' Then
+   CSSIsElementHidden := True;
+ End;
+End;
+
+{ Verifier si un element est un element de bloc }
+Function CSSIsBlockElement(Const Style: DOMStyle; TagType: Byte): Boolean;
+Var
+ DisplayLower: String;
+Begin
+ { Verifier d'abord le style CSS }
+ If Length(Style.Display) > 0 Then Begin
+  DisplayLower := HTMLLowerCase(Style.Display);
+  If DisplayLower = 'block' Then Begin
+   CSSIsBlockElement := True;
+   Exit;
+  End
+  Else If DisplayLower = 'inline' Then Begin
+   CSSIsBlockElement := False;
+   Exit;
+  End
+  Else If DisplayLower = 'inline-block' Then Begin
+   CSSIsBlockElement := False;
+   Exit;
+  End;
+ End;
+
+ { Sinon utiliser le comportement par defaut de la balise }
+ Case TagType Of
+  TAG_DIV, TAG_P, TAG_H1, TAG_H2, TAG_H3, TAG_H4, TAG_H5, TAG_H6,
+  TAG_SECTION, TAG_ARTICLE, TAG_NAV, TAG_ASIDE, TAG_HEADER, TAG_FOOTER,
+  TAG_MAIN, TAG_UL, TAG_OL, TAG_LI, TAG_DL, TAG_DT, TAG_DD,
+  TAG_TABLE, TAG_TR, TAG_FORM, TAG_PRE, TAG_BLOCKQUOTE, TAG_HR,
+  TAG_FIGCAPTION, TAG_FIGURE, TAG_ADDRESS, TAG_DETAILS, TAG_SUMMARY:
+   CSSIsBlockElement := True;
+  Else
+   CSSIsBlockElement := False;
+ End;
+End;
+
+{ Parser une valeur de dimension CSS (px, em, %, etc.) et retourner en pixels }
+Function CSSParseDimension(Const Value: String; DefaultPx: Integer): Integer;
+Var
+ NumStr: String;
+ NumVal: Real;
+ UnitStr: String;
+ I, Code: Integer;
+Begin
+ CSSParseDimension := DefaultPx;
+ If Length(Value) = 0 Then Exit;
+
+ { Extraire la partie numerique }
+ NumStr := '';
+ I := 1;
+ While (I <= Length(Value)) And (Value[I] In ['0'..'9', '.', '-']) Do Begin
+  NumStr := NumStr + Value[I];
+  Inc(I);
+ End;
+
+ If Length(NumStr) = 0 Then Exit;
+ Val(NumStr, NumVal, Code);
+ If Code <> 0 Then Exit;
+
+ { Extraire l'unite }
+ UnitStr := HTMLLowerCase(Copy(Value, I, Length(Value) - I + 1));
+
+ { Convertir selon l'unite }
+ If (UnitStr = 'px') Or (Length(UnitStr) = 0) Then
+  CSSParseDimension := Round(NumVal)
+ Else If UnitStr = 'em' Then
+  CSSParseDimension := Round(NumVal * 16) { 1em = 16px par defaut }
+ Else If UnitStr = 'rem' Then
+  CSSParseDimension := Round(NumVal * 16)
+ Else If UnitStr = '%' Then
+  CSSParseDimension := Round((NumVal / 100) * DefaultPx)
+ Else If UnitStr = 'pt' Then
+  CSSParseDimension := Round(NumVal * 1.33) { 1pt = 1.33px }
+ Else
+  CSSParseDimension := Round(NumVal);
+End;
+
+{ =====================================================
+  FIN APPLICATION DES STYLES CSS
+  ===================================================== }
+
+{ =====================================================
   FIN PARSEUR CSS
   ===================================================== }
 
@@ -5750,10 +6098,35 @@ End;
   FIN RENDU SCRIPTS
   ===================================================== }
 
+{ Variable globale pour activer/desactiver l'application CSS automatique }
+Var
+ CSSAutoApply: Boolean;
+
 Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ NodeStyle: DOMStyle;
+ OldTextColor: Integer;
+ OldBgColor: Integer;
+ OldTextStyle: Byte;
 Begin
  If Node = Nil Then Exit;
  If Ctx.Y > Ctx.MaxY Then Exit; { Depasse la zone de rendu }
+
+ { Sauvegarder le contexte actuel pour restauration apres le rendu }
+ OldTextColor := Ctx.TextColor;
+ OldBgColor := Ctx.BgColor;
+ OldTextStyle := Ctx.TextStyle;
+
+ { Appliquer les styles CSS si active et si c'est un element }
+ If CSSAutoApply And CSSEnabled And (Node^.NodeType = HTML_NODE_ELEMENT) Then Begin
+  CSSResolveCascade(Node, NodeStyle);
+
+  { Verifier si l'element doit etre cache }
+  If CSSIsElementHidden(NodeStyle) Then Exit;
+
+  { Appliquer les styles au contexte }
+  CSSApplyStylesToContext(NodeStyle, Ctx);
+ End;
 
  Case Node^.NodeType Of
   HTML_NODE_TEXT: Begin
@@ -5863,6 +6236,13 @@ Begin
    { Commentaire - ne rien afficher }
   End;
  End;
+
+ { Restaurer le contexte apres le rendu de cet element }
+ If CSSAutoApply And CSSEnabled And (Node^.NodeType = HTML_NODE_ELEMENT) Then Begin
+  Ctx.TextColor := OldTextColor;
+  Ctx.BgColor := OldBgColor;
+  Ctx.TextStyle := OldTextStyle;
+ End;
 End;
 
 { Procedure pour rendre un document HTML complet }
@@ -5875,13 +6255,20 @@ Begin
  { Initialiser le contexte de rendu }
  InitRenderContext(Ctx);
 
+ { Activer l'application automatique des styles CSS }
+ CSSAutoApply := True;
+
+ { Extraire et parser les styles CSS des balises <style> }
+ If CSSEnabled Then
+  CSSExtractFromDocument;
+
  { Reinitialiser les zones de liens }
  ClearLinkAreas;
 
  { Effacer la zone de rendu }
  ClearRenderArea;
 
- { Rendre le document }
+ { Rendre le document avec application des styles CSS }
  RenderHTMLNode(Doc, Ctx);
 End;
 
