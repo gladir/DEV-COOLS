@@ -104,6 +104,13 @@ Type
   Next:PSymbolNode;
  End;
 
+ { Noeud de liste chainee pour les LNAMES }
+ PLNameNode=^TLNameNode;
+ TLNameNode=Record
+  Name:String[64];
+  Next:PLNameNode;
+ End;
+
  { Noeud de liste chainee pour les fichiers d'entree }
  PInputFileNode=^TInputFileNode;
  TInputFileNode=Record
@@ -152,7 +159,8 @@ Var
  LibFile:File;
  OutputLib:File;
  TempFile:File;
- LNamesList:Array[0..MAX_LNAME_ENTRIES] of String[64];
+ LNamesHead:PLNameNode;
+ LNamesTail:PLNameNode;
  LNameCount:Integer;
  CurrentModuleName:String[64];
  CurrentModuleStart:LongInt;
@@ -360,6 +368,40 @@ Begin
  SymbolsHead := Nil;
  SymbolsTail := Nil;
  SymbolCount := 0;
+End;
+
+Procedure AddLName(S:String);
+Var
+ Node:PLNameNode;
+Begin
+ If LNameCount >= MAX_LNAME_ENTRIES Then Exit;
+ New(Node);
+ Node^.Name := S;
+ Node^.Next := Nil;
+ If LNamesHead = Nil Then Begin
+  LNamesHead := Node;
+  LNamesTail := Node;
+ End
+ Else Begin
+  LNamesTail^.Next := Node;
+  LNamesTail := Node;
+ End;
+ Inc(LNameCount);
+End;
+
+Procedure ClearLNames;
+Var
+ Node, NextNode:PLNameNode;
+Begin
+ Node := LNamesHead;
+ While Node <> Nil Do Begin
+  NextNode := Node^.Next;
+  Dispose(Node);
+  Node := NextNode;
+ End;
+ LNamesHead := Nil;
+ LNamesTail := Nil;
+ LNameCount := 0;
 End;
 
 Function UpperCase(S:String):String;
@@ -773,11 +815,7 @@ Begin
  RecLeft := RecLen;
 
  While RecLeft > 1 do Begin
-  Inc(LNameCount);
-  If LNameCount <= MAX_LNAME_ENTRIES Then
-   LNamesList[LNameCount] := GetName
-  Else
-   GetName;
+  AddLName(GetName);
  End;
 End;
 
@@ -851,7 +889,7 @@ Begin
   Exit;
  End;
 
- LNameCount := 0;
+ ClearLNames;
  CurrentModuleName := StripExtension(ExtractFileName(FileName));
  Done := False;
 
@@ -930,7 +968,7 @@ Begin
 
  InModule := False;
  ModuleStart := CurrentPos;
- LNameCount := 0;
+ ClearLNames;
 
  While Not Eof(F) do Begin
   If Not ReadRecord(F) Then Break;
@@ -959,7 +997,7 @@ Begin
    If ModulesTail <> Nil Then
     ModulesTail^.Data.Size := CurrentPos - ModuleStart;
    InModule := False;
-   LNameCount := 0;
+  ClearLNames;
    { Aligner sur la prochaine page }
    NextPos := ((CurrentPos + PageSize - 1) div PageSize) * PageSize;
    If NextPos > CurrentPos Then
@@ -1316,17 +1354,22 @@ BEGIN
  SymbolsHead := Nil;
  SymbolsTail := Nil;
  SymbolCount := 0;
+ LNamesHead := Nil;
+ LNamesTail := Nil;
+ LNameCount := 0;
  ParseCommandLine;
  If ParamCount = 0 Then Begin
   ClearInputFiles;
   ClearModules;
   ClearSymbols;
+  ClearLNames;
   ShowHelp;
   Halt(0);
  End;
  ShowBanner;
  ClearModules;
  ClearSymbols;
+ ClearLNames;
   { Si /LIST ou /SYMBOLS sans fichier de sortie, afficher les informations }
  If (OptList or OptSymbols) and (InputFileCount > 0) Then Begin
     ReadLibrary(GetInputFileAt(1));
@@ -1359,9 +1402,11 @@ BEGIN
   ClearInputFiles;
     ClearModules;
     ClearSymbols;
+    ClearLNames;
   Error('Aucun fichier sp�cifi�');
  End;
  ClearInputFiles;
    ClearModules;
    ClearSymbols;
+   ClearLNames;
 END.
