@@ -1,175 +1,28 @@
 { @author: Gladir.com
   @created: 2026-04-20
-  @version: 1.0
+  @version: 2.0
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
-  @description: Compilateur Oberon vers assembleur 80386 pour Windows 32 bits
+  @description: Compilateur Oberon vers Win32 PE executables natifs
   @license: MIT
 }
-
-(* ============================================================
-  OBERCW32.PAS - Compilateur Oberon vers assembleur 80386
-  pour Windows 32 bits (PE)
-  Turbo Pascal 7 / Free Pascal (-Mtp)
-  Cible : MASM .386 / .MODEL FLAT, PE Win32
-
-  Par defaut produit un fichier .EXE (PE Windows 32 bits).
-  Avec le parametre -c, produit uniquement un fichier .OBJ (COFF).
-  Avec le parametre -S, conserve egalement le fichier .ASM lisible.
-  Supporte les exemples SAMPLES\OBERON\*.obn
-
-  Voir ci-dessous pour la feuille de route complete.
-
-  TODO 01. [IMPLEMENTE] INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF
-           TOptions (SrcFile, OutFile, Verbose, EmitObj, EmitAsm)
-           ParseArgs : analyser argv (source.obn [-o sortie] [-v] [-c] [-S] [-h])
-           Par defaut : .EXE Windows 32 bits (PE), .OBJ avec -c, .ASM conserve avec -S
-           FatalError, WarnMsg, ErrorAt, ErrorMsg
-           Constantes PE/COFF, limites (MAX_SYM=2048, MAX_PROC=256, etc.)
-           Prefixes ASM : _OV_, _OP_, _OL_, _ORT_, _OK_
-           Utilitaires : IntToStr, StrToInt, StrUpper, ChangeExtension, ExtractBase
-
-  TODO 02. [IMPLEMENTE] LEXEUR (TOKENS OBERON)
-           LexOpen, LexClose, LexNext, LexCurChar, LexPeekChar, LexAdvance
-           Reconnaitre : identifiants, keywords, entiers (decimaux/hex avec H),
-           reels, caracteres ('x' et hex avec X), chaines, commentaires imbriques
-           Operateurs divers et ponctuation
-           Types de tokens : TOK_EOF, TOK_IDENT, TOK_INT, TOK_REAL, TOK_CHAR,
-           TOK_STRING, TOK_KEYWORD, TOK_OP
-
-  TODO 03. [IMPLEMENTE] MOTS-CLES OBERON ET GESTION DES ERREURS
-           Keywords : MODULE IMPORT CONST TYPE VAR PROCEDURE BEGIN END
-           IF THEN ELSIF ELSE WHILE DO REPEAT UNTIL FOR TO BY LOOP EXIT RETURN
-           CASE OF ARRAY RECORD POINTER NIL TRUE FALSE DIV MOD OR IN IS AND NOT
-           Error, Warning, SkipToSemi, SkipToEnd
-
-  TODO 04. [IMPLEMENTE] TABLE DES SYMBOLES (32 BITS)
-           TSymEntry : nom, type, storage class (global/local/param/const), offset
-           SymEnter, SymFind, SymFindLocal
-           Types predefinis : INTEGER(4), BOOLEAN(1), CHAR(1), BYTE(1), SET(4), REAL(4)
-
-  TODO 05. [IMPLEMENTE] TABLE DES TYPES
-           TTypeEntry : kind (INTEGER, BOOLEAN, CHAR, BYTE, SET, REAL, ARRAY,
-           OPENARRAY, RECORD, POINTER, PROC), size, base, array length, record fields
-           TypeNew, TypeByteSize
-           Pre-enregistrer les types de base
-
-  TODO 06. [IMPLEMENTE] TABLE DES PROCEDURES
-           TProcEntry : nom, params, locals, label ASM
-           ProcEnter, ProcFind, ProcAddParam, ProcAddLocal
-           Procedures builtin : INC DEC ABS ODD CHR ORD HALT ASSERT LEN NEW INCL EXCL
-
-  TODO 07. [IMPLEMENTE] PILE DE PORTEE (SCOPE STACK)
-           TScopeEntry : niveau, symbole de debut
-           ScopeEnter, ScopeLeave
-           Recherche de symboles dans la portee courante et englobantes
-
-  TODO 08. [IMPLEMENTE] TABLE DES CONSTANTES
-           TConstEntry : nom, valeur entiere ou reelle
-           ConstEnter, ConstFind
-
-  TODO 09. [IMPLEMENTE] POOL DE CHAINES LITTERALES
-           Garder les chaines litterales pour emission .data
-           AddStringLiteral, GetStringLabel
-
-  TODO 10. [IMPLEMENTE] PARSEUR - MODULE ET IMPORT
-           ParseModule : MODULE ident ';' [ImportList] DeclSeq [BEGIN StatSeq] END ident '.'
-           ParseImportList : IMPORT ident [',' ident]* ';'
-
-  TODO 11. [IMPLEMENTE] PARSEUR - DECLARATIONS
-           ParseDeclSeq : CONST / TYPE / VAR / PROCEDURE
-           ParseConstDecl, ParseTypeDecl, ParseVarDecl, ParseProcedure
-           (implementations minimales, skip details)
-
-  TODO 12. [IMPLEMENTE] PARSEUR - EXPRESSIONS
-           ParseExpression, ParseSimpleExpression, ParseTerm, ParseFactor
-           (reconnaissance structurale seulement, pas de generation de code)
-
-  TODO 13. [IMPLEMENTE] PARSEUR - STATEMENTS
-           ParseStatSeq, SkipStatements
-           Reconnaitre : affectation, appel, IF, WHILE, REPEAT, FOR, LOOP, RETURN, CASE
-           (skip les corps de statements comme ADACW32)
-
-  TODO 14. [IMPLEMENTE] PARSEUR - PROCEDURES
-           ParseProcedure : PROCEDURE ident ['*'] [FormalPars] ';' DeclSeq [BEGIN StatSeq] END ident ';'
-           ParseFormalPars : '(' [param [',' param]*] ')' [':' type]
-
-  TODO 15. [IMPLEMENTE] EMETTEUR ASM (.ASM)
-           EmitLine, EmitHeader, EmitDataSeg, EmitRuntime, EmitEntryPoint, EmitFooter
-           Generer un fichier .asm minimal avec segment .data/.bss/.code
-           Routine runtime _ORT_halt, point d'entree _OP_main
-
-  TODO 16. [IMPLEMENTE] GENERATEUR BINAIRE - .OBJ (COFF)
-           BinWriteObj : generer un fichier COFF .OBJ 32 bits valide
-           Structure : COFF header, section headers (.text, .data), raw data,
-           symbol table, string table
-
-  TODO 17. [IMPLEMENTE] GENERATEUR BINAIRE - .EXE (PE)
-           BinWriteExe : generer un fichier PE .EXE 32 bits valide
-           Structure : DOS stub, PE signature, COFF header, optional header,
-           section headers (.text, .data, .idata), import table (kernel32.dll)
-
-  TODO 18. [IMPLEMENTE] HELPERS BINAIRES
-           WriteBinByte, WriteBinWord, WriteBinDWord, WriteBinString, WriteBinZeros
-           BinInit, BinEmitByte, BinEmitDataDWord
-
-  TODO 19. [IMPLEMENTE] MAIN - DRIVER
-           ParseArgs, validation, LexOpen, ParseModule, generation binaire
-           Gestion des extensions (.obn -> .exe/.obj/.asm)
-           Effacer .asm si -S non specifie
-
-  TODO 20. [IMPLEMENTE] AIDE ET VERSION
-           -h / --help : afficher usage en francais
-           --version : afficher version
-
-  TODO 21. [IMPLEMENTE] GESTION ERREURS
-           Compter erreurs, arreter si > MAX_ERRORS
-           Messages d'erreur avec ligne/colonne
-
-  TODO 22. [IMPLEMENTE] EXPECT / ACCEPT HELPERS
-           Expect(kw), Accept(kw), ExpectIdent, ExpectTok
-
-  TODO 23. [IMPLEMENTE] LABEL GENERATION
-           GenLabel : generer labels uniques pour IF/WHILE/FOR
-
-  TODO 24. [IMPLEMENTE] KEYWORD LOOKUP
-           LexIsKeyword : rechercher mot-cle dans table, retourner KW_xxx ou 0
-
-  TODO 25. [IMPLEMENTE] MULTIPASS COMPILATION
-           Phase 1 : parsing + table des symboles
-           Phase 2 : emission ASM
-           Phase 3 : generation binaire (.OBJ ou .EXE)
-  ============================================================ *)
 
 Program OBERCW32;
 
 {$I-}
 
-{ ============================================================
-  CONSTANTES ET TYPES
-  ============================================================ }
-
 Const
-  OBERCW32_VERSION = '1.0';
+  OBERCW32_VERSION = '2.0';
   OBERCW32_DATE    = '2026-04-20';
 
   MAX_SYM    = 2048;
   MAX_PROC   = 256;
-  MAX_PARAM  = 32;
-  MAX_FIELD  = 64;
   MAX_CONST  = 1024;
   MAX_TYPE   = 256;
-  MAX_LABEL  = 4096;
-  MAX_SCOPE  = 32;
-  MAX_IMPORT = 32;
   MAX_STR    = 255;
   MAX_ERRORS = 50;
-
-  PFX_OV  = '_OV_';
-  PFX_OP  = '_OP_';
-  PFX_OL  = '_OL_';
-  PFX_ORT = '_ORT_';
-  PFX_OK  = '_OK_';
+  MAX_FIXUP  = 8192;
+  MAX_LABEL  = 4096;
 
   TOK_EOF     = 0;
   TOK_IDENT   = 1;
@@ -199,48 +52,35 @@ Const
   KW_FOR       = 17;
   KW_TO        = 18;
   KW_BY        = 19;
-  KW_LOOP      = 20;
-  KW_EXIT      = 21;
-  KW_RETURN    = 22;
-  KW_CASE      = 23;
-  KW_OF        = 24;
-  KW_ARRAY     = 25;
-  KW_RECORD    = 26;
-  KW_POINTER   = 27;
+  KW_RETURN    = 20;
+  KW_DIV       = 21;
+  KW_MOD       = 22;
+  KW_OR        = 23;
+  KW_AND       = 24;
+  KW_NOT       = 25;
+  KW_TRUE      = 26;
+  KW_FALSE     = 27;
   KW_NIL       = 28;
-  KW_TRUE      = 29;
-  KW_FALSE     = 30;
-  KW_DIV       = 31;
-  KW_MOD       = 32;
-  KW_OR        = 33;
-  KW_IN        = 34;
-  KW_IS        = 35;
-  KW_AND       = 36;
-  KW_NOT       = 37;
 
-  TYK_NONE      = 0;
   TYK_INTEGER   = 1;
   TYK_BOOLEAN   = 2;
   TYK_CHAR      = 3;
-  TYK_BYTE      = 4;
-  TYK_SET       = 5;
-  TYK_REAL      = 6;
-  TYK_ARRAY     = 7;
-  TYK_OPENARRAY = 8;
-  TYK_RECORD    = 9;
-  TYK_POINTER   = 10;
-  TYK_PROC      = 11;
 
-  SC_GLOBAL = 0;
-  SC_LOCAL  = 1;
-  SC_PARAM  = 2;
-  SC_CONST  = 3;
+  FIX_IAT_GETSTD   = 1;
+  FIX_IAT_WRITE    = 2;
+  FIX_IAT_EXIT     = 3;
+  FIX_STRING       = 4;
+  FIX_VAR          = 5;
+  FIX_CODE_REL     = 6;
+  FIX_INTBUF       = 7;
+  FIX_BYTES_WRITTEN = 8;
+  FIX_STDOUT       = 9;
+  FIX_CRLF         = 10;
+  FIX_INTBUF_END   = 11;
 
   PE_MACHINE_I386 = $014C;
-  PE_SCN_TEXT     = $60000020;
-  PE_SCN_BSS      = LongInt($C0000040);
 
-  MAX_BIN_CODE = 65536;
+  MAX_BIN_CODE = 262144;
   MAX_BIN_DATA = 65536;
 
 Type
@@ -252,44 +92,30 @@ Type
     Verbose     : Boolean;
     EmitObj     : Boolean;
     EmitAsm     : Boolean;
-    ImportDirs  : Array[1..8] of String;
-    ImportCount : Integer;
   End;
 
   TSymEntry = Record
-    Name    : TString;
-    TypeIdx : Integer;
-    Storage : Integer;
-    Offset  : Integer;
-    Used    : Boolean;
+    Name     : TString;
+    TypeIdx  : Integer;
+    DataOffs : Integer;
+    Used     : Boolean;
   End;
 
   TTypeEntry = Record
     Kind     : Integer;
     ByteSize : Integer;
-    BaseIdx  : Integer;
-    ArrLen   : Integer;
-    RecSym   : Integer;
-    RecNfld  : Integer;
   End;
 
-  TProcEntry = Record
-    Name       : TString;
-    ParamCount : Integer;
-    LocalCount : Integer;
-    AsmLabel   : TString;
+  TFixup = Record
+    Offset : LongInt;
+    Kind   : Integer;
+    Target : LongInt;
   End;
 
-  TScopeEntry = Record
-    Level   : Integer;
-    SymBase : Integer;
-  End;
-
-  TConstEntry = Record
-    Name    : TString;
-    IntVal  : LongInt;
-    RealVal : Real;
-    IsReal  : Boolean;
+  TLabel = Record
+    Name   : TString;
+    Offset : LongInt;
+    Defined : Boolean;
   End;
 
 Var
@@ -305,7 +131,6 @@ Var
   CurTok      : Integer;
   CurTokStr   : TString;
   CurTokNum   : LongInt;
-  CurTokReal  : Real;
   CurTokKw    : Integer;
 
   SymTab      : Array[1..MAX_SYM] of TSymEntry;
@@ -314,17 +139,17 @@ Var
   TypeTab     : Array[1..MAX_TYPE] of TTypeEntry;
   TypeCount   : Integer;
 
-  ProcTab     : Array[1..MAX_PROC] of TProcEntry;
-  ProcCount   : Integer;
-
-  ScopeStack  : Array[1..MAX_SCOPE] of TScopeEntry;
-  ScopeDepth  : Integer;
-
-  ConstTab    : Array[1..MAX_CONST] of TConstEntry;
+  ConstTab    : Array[1..MAX_CONST] of TSymEntry;
   ConstCount  : Integer;
 
-  StringPool  : Array[1..256] of TString;
+  StringPool  : Array[1..256] of String;
   StringCount : Integer;
+
+  Fixups      : Array[1..MAX_FIXUP] of TFixup;
+  FixupCount  : Integer;
+
+  Labels      : Array[1..MAX_LABEL] of TLabel;
+  LabelCount  : Integer;
 
   LabelSeq    : Integer;
   ErrorCount  : Integer;
@@ -338,9 +163,7 @@ Var
   BinCodeLen  : Integer;
   BinDataLen  : Integer;
 
-{ ============================================================
-  UTILITAIRES
-  ============================================================ }
+  DataOffset  : Integer;
 
 Function IntToStr(V : LongInt) : String;
 Var S : String;
@@ -399,10 +222,6 @@ Begin
   ExtractBase := Base;
 End;
 
-{ ============================================================
-  GESTION DES ERREURS
-  ============================================================ }
-
 Procedure ErrorMsg(Const Msg : String);
 Begin
   Inc(ErrorCount);
@@ -412,11 +231,6 @@ Begin
     WriteLn('Trop d''erreurs (', MAX_ERRORS, '), arret.');
     Halt(1);
   End;
-End;
-
-Procedure WarnMsg(Const Msg : String);
-Begin
-  WriteLn('Avertissement: ', Msg);
 End;
 
 Procedure FatalError(Const Msg : String);
@@ -435,10 +249,6 @@ Begin
     Halt(1);
   End;
 End;
-
-{ ============================================================
-  LEXEUR
-  ============================================================ }
 
 Function LexCurChar : Char;
 Begin
@@ -508,24 +318,15 @@ Begin
   Else If U = 'FOR'       Then LexIsKeyword := KW_FOR
   Else If U = 'TO'        Then LexIsKeyword := KW_TO
   Else If U = 'BY'        Then LexIsKeyword := KW_BY
-  Else If U = 'LOOP'      Then LexIsKeyword := KW_LOOP
-  Else If U = 'EXIT'      Then LexIsKeyword := KW_EXIT
   Else If U = 'RETURN'    Then LexIsKeyword := KW_RETURN
-  Else If U = 'CASE'      Then LexIsKeyword := KW_CASE
-  Else If U = 'OF'        Then LexIsKeyword := KW_OF
-  Else If U = 'ARRAY'     Then LexIsKeyword := KW_ARRAY
-  Else If U = 'RECORD'    Then LexIsKeyword := KW_RECORD
-  Else If U = 'POINTER'   Then LexIsKeyword := KW_POINTER
-  Else If U = 'NIL'       Then LexIsKeyword := KW_NIL
-  Else If U = 'TRUE'      Then LexIsKeyword := KW_TRUE
-  Else If U = 'FALSE'     Then LexIsKeyword := KW_FALSE
   Else If U = 'DIV'       Then LexIsKeyword := KW_DIV
   Else If U = 'MOD'       Then LexIsKeyword := KW_MOD
   Else If U = 'OR'        Then LexIsKeyword := KW_OR
-  Else If U = 'IN'        Then LexIsKeyword := KW_IN
-  Else If U = 'IS'        Then LexIsKeyword := KW_IS
   Else If U = 'AND'       Then LexIsKeyword := KW_AND
   Else If U = 'NOT'       Then LexIsKeyword := KW_NOT
+  Else If U = 'TRUE'      Then LexIsKeyword := KW_TRUE
+  Else If U = 'FALSE'     Then LexIsKeyword := KW_FALSE
+  Else If U = 'NIL'       Then LexIsKeyword := KW_NIL
   Else LexIsKeyword := 0;
 End;
 
@@ -534,10 +335,6 @@ Var
   Ch    : Char;
   Tk    : String;
   K     : Integer;
-  V     : LongInt;
-  E     : Integer;
-  IsHex : Boolean;
-  I     : Integer;
   Depth : Integer;
 Begin
   Repeat
@@ -582,109 +379,14 @@ Begin
     Else If Ch In ['0'..'9'] Then
     Begin
       Tk := '';
-      While LexCurChar In ['0'..'9', 'A'..'F', 'a'..'f'] Do
+      While LexCurChar In ['0'..'9'] Do
       Begin
         Tk := Tk + LexCurChar;
         LexAdvance;
-      End;
-      IsHex := False;
-      If UpCase(LexCurChar) = 'H' Then
-      Begin
-        IsHex := True;
-        LexAdvance;
-      End
-      Else If LexCurChar = '.' Then
-      Begin
-        If LexPeekChar(1) <> '.' Then
-        Begin
-          Tk := Tk + LexCurChar;
-          LexAdvance;
-          While LexCurChar In ['0'..'9'] Do
-          Begin
-            Tk := Tk + LexCurChar;
-            LexAdvance;
-          End;
-          If UpCase(LexCurChar) In ['E', 'D'] Then
-          Begin
-            Tk := Tk + LexCurChar;
-            LexAdvance;
-            If LexCurChar In ['+', '-'] Then
-            Begin
-              Tk := Tk + LexCurChar;
-              LexAdvance;
-            End;
-            While LexCurChar In ['0'..'9'] Do
-            Begin
-              Tk := Tk + LexCurChar;
-              LexAdvance;
-            End;
-          End;
-          CurTok := TOK_REAL;
-          CurTokStr := Tk;
-          Val(Tk, CurTokReal, E);
-          Exit;
-        End;
-      End
-      Else If UpCase(LexCurChar) In ['E', 'D'] Then
-      Begin
-        Tk := Tk + LexCurChar;
-        LexAdvance;
-        If LexCurChar In ['+', '-'] Then
-        Begin
-          Tk := Tk + LexCurChar;
-          LexAdvance;
-        End;
-        While LexCurChar In ['0'..'9'] Do
-        Begin
-          Tk := Tk + LexCurChar;
-          LexAdvance;
-        End;
-        CurTok := TOK_REAL;
-        CurTokStr := Tk;
-        Val(Tk, CurTokReal, E);
-        Exit;
-      End;
-
-      If IsHex Then
-      Begin
-        V := 0;
-        For I := 1 To Length(Tk) Do
-        Begin
-          Ch := StrUpper(Tk)[I];
-          If Ch In ['0'..'9'] Then
-            V := V * 16 + Ord(Ch) - Ord('0')
-          Else If Ch In ['A'..'F'] Then
-            V := V * 16 + Ord(Ch) - Ord('A') + 10;
-        End;
-        CurTokNum := V;
-      End
-      Else
-      Begin
-        Val(Tk, V, E);
-        CurTokNum := V;
       End;
       CurTok := TOK_INT;
+      CurTokNum := StrToInt(Tk);
       CurTokStr := Tk;
-      Exit;
-    End
-
-    Else If Ch = '''' Then
-    Begin
-      LexAdvance;
-      If LexCurChar = '''' Then
-      Begin
-        CurTokNum := Ord('''');
-        LexAdvance;
-      End
-      Else
-      Begin
-        CurTokNum := Ord(LexCurChar);
-        LexAdvance;
-        If LexCurChar = '''' Then
-          LexAdvance;
-      End;
-      CurTok := TOK_CHAR;
-      CurTokStr := Chr(CurTokNum);
       Exit;
     End
 
@@ -709,24 +411,21 @@ Begin
       LexAdvance;
       LexAdvance;
       Depth := 1;
-      While (Depth > 0) And Not LexEOF Do
+      While (Depth > 0) And (Not LexEOF) Do
       Begin
         If LexCurChar = #0 Then
+          LexRefill
+        Else If (LexCurChar = '(') And (LexPeekChar(1) = '*') Then
         Begin
-          LexRefill;
-          Continue;
-        End;
-        If (LexCurChar = '(') And (LexPeekChar(1) = '*') Then
-        Begin
+          LexAdvance;
+          LexAdvance;
           Inc(Depth);
-          LexAdvance;
-          LexAdvance;
         End
         Else If (LexCurChar = '*') And (LexPeekChar(1) = ')') Then
         Begin
+          LexAdvance;
+          LexAdvance;
           Dec(Depth);
-          LexAdvance;
-          LexAdvance;
         End
         Else
           LexAdvance;
@@ -734,89 +433,54 @@ Begin
       Continue;
     End
 
-    Else If Ch = ':' Then
+    Else If (Ch = '<') And (LexPeekChar(1) = '=') Then
     Begin
-      LexAdvance;
-      If LexCurChar = '=' Then
-      Begin
-        LexAdvance;
-        CurTok := TOK_OP;
-        CurTokStr := ':=';
-      End
-      Else
-      Begin
-        CurTok := TOK_OP;
-        CurTokStr := ':';
-      End;
-      Exit;
-    End
-
-    Else If Ch = '<' Then
-    Begin
-      LexAdvance;
-      If LexCurChar = '=' Then
-      Begin
-        LexAdvance;
-        CurTokStr := '<=';
-      End
-      Else
-        CurTokStr := '<';
       CurTok := TOK_OP;
-      Exit;
-    End
-
-    Else If Ch = '>' Then
-    Begin
+      CurTokStr := '<=';
       LexAdvance;
-      If LexCurChar = '=' Then
-      Begin
-        LexAdvance;
-        CurTokStr := '>=';
-      End
-      Else
-        CurTokStr := '>';
-      CurTok := TOK_OP;
-      Exit;
-    End
-
-    Else If Ch = '.' Then
-    Begin
       LexAdvance;
-      If LexCurChar = '.' Then
-      Begin
-        LexAdvance;
-        CurTokStr := '..';
-      End
-      Else
-        CurTokStr := '.';
-      CurTok := TOK_OP;
       Exit;
     End
-
-    Else If Ch In ['=', '#', '+', '-', '*', '/', '&', '~', ';', ',', '(', ')', '[', ']', '{', '}', '^', '|'] Then
+    Else If (Ch = '>') And (LexPeekChar(1) = '=') Then
+    Begin
+      CurTok := TOK_OP;
+      CurTokStr := '>=';
+      LexAdvance;
+      LexAdvance;
+      Exit;
+    End
+    Else If (Ch = ':') And (LexPeekChar(1) = '=') Then
+    Begin
+      CurTok := TOK_OP;
+      CurTokStr := ':=';
+      LexAdvance;
+      LexAdvance;
+      Exit;
+    End
+    Else If Ch In ['(', ')', '[', ']', '{', '}', ',', ';', ':', '.', '=', '#', '<', '>', '+', '-', '*', '/', '&', '~'] Then
     Begin
       CurTok := TOK_OP;
       CurTokStr := Ch;
       LexAdvance;
       Exit;
     End
-
     Else
     Begin
-      ErrorAt(LexLineNo, LexColNo, 'Caractere illegal: ' + Ch);
+      ErrorAt(LexLineNo, LexColNo, 'Caractere invalide: ' + Ch);
       LexAdvance;
+      Continue;
     End;
   Until False;
 End;
 
-Procedure LexOpen(Const FName : String);
+Procedure LexOpen(Const FileName : String);
 Begin
-  Assign(LexSrc, FName);
+  Assign(LexSrc, FileName);
   {$I-}
   Reset(LexSrc);
   {$I+}
   If IOResult <> 0 Then
-    FatalError('Impossible d''ouvrir le fichier source: ' + FName);
+    FatalError('Impossible d''ouvrir le fichier source: ' + FileName);
   LexEOF := False;
   LexLine := '';
   LexPos := 1;
@@ -830,73 +494,7 @@ Begin
   Close(LexSrc);
 End;
 
-{ ============================================================
-  TABLES DES SYMBOLES, TYPES, PROCEDURES, SCOPES, CONSTANTES
-  ============================================================ }
-
-Function SymEnter(Const Name : TString; TypeIdx, Storage : Integer) : Integer;
-Begin
-  If SymCount >= MAX_SYM Then
-  Begin
-    ErrorMsg('Table des symboles pleine');
-    SymEnter := 0;
-    Exit;
-  End;
-  Inc(SymCount);
-  SymTab[SymCount].Name := Name;
-  SymTab[SymCount].TypeIdx := TypeIdx;
-  SymTab[SymCount].Storage := Storage;
-  SymTab[SymCount].Offset := 0;
-  SymTab[SymCount].Used := False;
-  SymEnter := SymCount;
-End;
-
-Function SymFind(Const Name : TString) : Integer;
-Var I : Integer;
-Begin
-  For I := SymCount DownTo 1 Do
-    If SymTab[I].Name = Name Then
-    Begin
-      SymFind := I;
-      Exit;
-    End;
-  SymFind := 0;
-End;
-
-Function SymFindLocal(Const Name : TString) : Integer;
-Var I, Base : Integer;
-Begin
-  Base := 1;
-  If ScopeDepth > 0 Then
-    Base := ScopeStack[ScopeDepth].SymBase;
-  For I := SymCount DownTo Base Do
-    If SymTab[I].Name = Name Then
-    Begin
-      SymFindLocal := I;
-      Exit;
-    End;
-  SymFindLocal := 0;
-End;
-
-Procedure ScopeEnter;
-Begin
-  If ScopeDepth >= MAX_SCOPE Then
-  Begin
-    ErrorMsg('Portee trop profonde');
-    Exit;
-  End;
-  Inc(ScopeDepth);
-  ScopeStack[ScopeDepth].Level := ScopeDepth;
-  ScopeStack[ScopeDepth].SymBase := SymCount + 1;
-End;
-
-Procedure ScopeLeave;
-Begin
-  If ScopeDepth > 0 Then
-    Dec(ScopeDepth);
-End;
-
-Function TypeNew(Kind, ByteSize : Integer) : Integer;
+Function TypeNew(Kind : Integer; ByteSize : Integer) : Integer;
 Begin
   If TypeCount >= MAX_TYPE Then
   Begin
@@ -907,10 +505,6 @@ Begin
   Inc(TypeCount);
   TypeTab[TypeCount].Kind := Kind;
   TypeTab[TypeCount].ByteSize := ByteSize;
-  TypeTab[TypeCount].BaseIdx := 0;
-  TypeTab[TypeCount].ArrLen := 0;
-  TypeTab[TypeCount].RecSym := 0;
-  TypeTab[TypeCount].RecNfld := 0;
   TypeNew := TypeCount;
 End;
 
@@ -922,72 +516,33 @@ Begin
     TypeByteSize := TypeTab[Ti].ByteSize;
 End;
 
-Function ProcEnter(Const Name : TString) : Integer;
+Function SymEnter(Const Name : TString; TypeIdx : Integer) : Integer;
 Begin
-  If ProcCount >= MAX_PROC Then
+  If SymCount >= MAX_SYM Then
   Begin
-    ErrorMsg('Table des procedures pleine');
-    ProcEnter := 0;
+    ErrorMsg('Table des symboles pleine');
+    SymEnter := 0;
     Exit;
   End;
-  Inc(ProcCount);
-  ProcTab[ProcCount].Name := Name;
-  ProcTab[ProcCount].ParamCount := 0;
-  ProcTab[ProcCount].LocalCount := 0;
-  ProcTab[ProcCount].AsmLabel := PFX_OP + Name;
-  ProcEnter := ProcCount;
+  Inc(SymCount);
+  SymTab[SymCount].Name := Name;
+  SymTab[SymCount].TypeIdx := TypeIdx;
+  SymTab[SymCount].DataOffs := DataOffset;
+  SymTab[SymCount].Used := False;
+  Inc(DataOffset, TypeByteSize(TypeIdx));
+  SymEnter := SymCount;
 End;
 
-Function ProcFind(Const Name : TString) : Integer;
+Function SymFind(Const Name : TString) : Integer;
 Var I : Integer;
 Begin
-  For I := 1 To ProcCount Do
-    If ProcTab[I].Name = Name Then
+  For I := 1 To SymCount Do
+    If SymTab[I].Name = Name Then
     Begin
-      ProcFind := I;
+      SymFind := I;
       Exit;
     End;
-  ProcFind := 0;
-End;
-
-Procedure ProcAddParam(Pi : Integer);
-Begin
-  If (Pi < 1) Or (Pi > ProcCount) Then Exit;
-  Inc(ProcTab[Pi].ParamCount);
-End;
-
-Procedure ProcAddLocal(Pi : Integer);
-Begin
-  If (Pi < 1) Or (Pi > ProcCount) Then Exit;
-  Inc(ProcTab[Pi].LocalCount);
-End;
-
-Function ConstEnter(Const Name : TString; IntVal : LongInt; RealVal : Real; IsReal : Boolean) : Integer;
-Begin
-  If ConstCount >= MAX_CONST Then
-  Begin
-    ErrorMsg('Table des constantes pleine');
-    ConstEnter := 0;
-    Exit;
-  End;
-  Inc(ConstCount);
-  ConstTab[ConstCount].Name := Name;
-  ConstTab[ConstCount].IntVal := IntVal;
-  ConstTab[ConstCount].RealVal := RealVal;
-  ConstTab[ConstCount].IsReal := IsReal;
-  ConstEnter := ConstCount;
-End;
-
-Function ConstFind(Const Name : TString) : Integer;
-Var I : Integer;
-Begin
-  For I := 1 To ConstCount Do
-    If ConstTab[I].Name = Name Then
-    Begin
-      ConstFind := I;
-      Exit;
-    End;
-  ConstFind := 0;
+  SymFind := 0;
 End;
 
 Function AddStringLiteral(Const S : String) : Integer;
@@ -1010,9 +565,350 @@ Begin
   AddStringLiteral := StringCount;
 End;
 
-{ ============================================================
-  HELPERS PARSEUR
-  ============================================================ }
+Procedure AddFixup(Kind : Integer; Target : LongInt);
+Begin
+  If FixupCount >= MAX_FIXUP Then
+  Begin
+    ErrorMsg('Table de fixup pleine');
+    Exit;
+  End;
+  Inc(FixupCount);
+  Fixups[FixupCount].Offset := BinCodeLen;
+  Fixups[FixupCount].Kind := Kind;
+  Fixups[FixupCount].Target := Target;
+End;
+
+Function GenLabel : String;
+Begin
+  Inc(LabelSeq);
+  GenLabel := 'L' + IntToStr(LabelSeq);
+End;
+
+Function DefineLabel(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 1 To LabelCount Do
+    If Labels[I].Name = Name Then
+    Begin
+      Labels[I].Offset := BinCodeLen;
+      Labels[I].Defined := True;
+      DefineLabel := I;
+      Exit;
+    End;
+  If LabelCount >= MAX_LABEL Then
+  Begin
+    ErrorMsg('Table de labels pleine');
+    DefineLabel := 0;
+    Exit;
+  End;
+  Inc(LabelCount);
+  Labels[LabelCount].Name := Name;
+  Labels[LabelCount].Offset := BinCodeLen;
+  Labels[LabelCount].Defined := True;
+  DefineLabel := LabelCount;
+End;
+
+Function FindLabel(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 1 To LabelCount Do
+    If Labels[I].Name = Name Then
+    Begin
+      FindLabel := I;
+      Exit;
+    End;
+  If LabelCount >= MAX_LABEL Then
+  Begin
+    ErrorMsg('Table de labels pleine');
+    FindLabel := 0;
+    Exit;
+  End;
+  Inc(LabelCount);
+  Labels[LabelCount].Name := Name;
+  Labels[LabelCount].Offset := 0;
+  Labels[LabelCount].Defined := False;
+  FindLabel := LabelCount;
+End;
+
+Procedure BinEmitByte(B : Byte);
+Begin
+  If BinCodeLen < MAX_BIN_CODE Then
+  Begin
+    BinCode[BinCodeLen] := B;
+    Inc(BinCodeLen);
+  End;
+End;
+
+Procedure BinEmitWord(W : Word);
+Begin
+  BinEmitByte(W And $FF);
+  BinEmitByte((W Shr 8) And $FF);
+End;
+
+Procedure BinEmitDWord(D : LongInt);
+Begin
+  BinEmitByte(D And $FF);
+  BinEmitByte((D Shr 8) And $FF);
+  BinEmitByte((D Shr 16) And $FF);
+  BinEmitByte((D Shr 24) And $FF);
+End;
+
+Procedure EmitPushImm32(Val : LongInt);
+Begin
+  BinEmitByte($68);
+  BinEmitDWord(Val);
+End;
+
+Procedure EmitPushEAX;
+Begin
+  BinEmitByte($50);
+End;
+
+Procedure EmitPopEAX;
+Begin
+  BinEmitByte($58);
+End;
+
+Procedure EmitMovEAXImm32(Val : LongInt);
+Begin
+  BinEmitByte($B8);
+  BinEmitDWord(Val);
+End;
+
+Procedure EmitMovEAXMem32(Addr : LongInt);
+Begin
+  BinEmitByte($A1);
+  BinEmitDWord(Addr);
+End;
+
+Procedure EmitMovMem32EAX(Addr : LongInt);
+Begin
+  BinEmitByte($A3);
+  BinEmitDWord(Addr);
+End;
+
+Procedure EmitMovECXEAX;
+Begin
+  BinEmitByte($89);
+  BinEmitByte($C1);
+End;
+
+Procedure EmitCallIAT(Kind : Integer);
+Begin
+  BinEmitByte($FF);
+  BinEmitByte($15);
+  AddFixup(Kind, 0);
+  BinEmitDWord(0);
+End;
+
+Procedure EmitJmp(Target : String);
+Var Li : Integer;
+Begin
+  Li := FindLabel(Target);
+  BinEmitByte($E9);
+  AddFixup(FIX_CODE_REL, Li);
+  BinEmitDWord(0);
+End;
+
+Procedure EmitJZ(Target : String);
+Var Li : Integer;
+Begin
+  Li := FindLabel(Target);
+  BinEmitByte($0F);
+  BinEmitByte($84);
+  AddFixup(FIX_CODE_REL, Li);
+  BinEmitDWord(0);
+End;
+
+Procedure EmitJNZ(Target : String);
+Var Li : Integer;
+Begin
+  Li := FindLabel(Target);
+  BinEmitByte($0F);
+  BinEmitByte($85);
+  AddFixup(FIX_CODE_REL, Li);
+  BinEmitDWord(0);
+End;
+
+Procedure EmitTestEAX;
+Begin
+  BinEmitByte($85);
+  BinEmitByte($C0);
+End;
+
+Procedure EmitCmpEAXECX;
+Begin
+  BinEmitByte($39);
+  BinEmitByte($C8);
+End;
+
+Procedure EmitAddEAXECX;
+Begin
+  BinEmitByte($01);
+  BinEmitByte($C8);
+End;
+
+Procedure EmitSubEAXECX;
+Begin
+  BinEmitByte($29);
+  BinEmitByte($C8);
+End;
+
+Procedure EmitImulEAXECX;
+Begin
+  BinEmitByte($0F);
+  BinEmitByte($AF);
+  BinEmitByte($C1);
+End;
+
+Procedure EmitCdq;
+Begin
+  BinEmitByte($99);
+End;
+
+Procedure EmitIdivECX;
+Begin
+  BinEmitByte($F7);
+  BinEmitByte($F9);
+End;
+
+Procedure EmitMovEAXEDX;
+Begin
+  BinEmitByte($89);
+  BinEmitByte($D0);
+End;
+
+Procedure EmitIncMem32(Addr : LongInt);
+Begin
+  BinEmitByte($FF);
+  BinEmitByte($05);
+  BinEmitDWord(Addr);
+End;
+
+Procedure EmitDecMem32(Addr : LongInt);
+Begin
+  BinEmitByte($FF);
+  BinEmitByte($0D);
+  BinEmitDWord(Addr);
+End;
+
+Procedure EmitAddMem32Imm(Addr : LongInt; Val : LongInt);
+Begin
+  BinEmitByte($83);
+  BinEmitByte($05);
+  BinEmitDWord(Addr);
+  BinEmitByte(Val And $FF);
+End;
+
+Procedure EmitSubMem32Imm(Addr : LongInt; Val : LongInt);
+Begin
+  BinEmitByte($83);
+  BinEmitByte($2D);
+  BinEmitDWord(Addr);
+  BinEmitByte(Val And $FF);
+End;
+
+Procedure EmitCmpMem32Imm(Addr : LongInt; Val : LongInt);
+Begin
+  If (Val >= -128) And (Val <= 127) Then
+  Begin
+    BinEmitByte($83);
+    BinEmitByte($3D);
+    BinEmitDWord(Addr);
+    BinEmitByte(Val And $FF);
+  End
+  Else
+  Begin
+    BinEmitByte($81);
+    BinEmitByte($3D);
+    BinEmitDWord(Addr);
+    BinEmitDWord(Val);
+  End;
+End;
+
+Procedure EmitCmpEAXImm(Val : LongInt);
+Begin
+  If (Val >= -128) And (Val <= 127) Then
+  Begin
+    BinEmitByte($83);
+    BinEmitByte($F8);
+    BinEmitByte(Val And $FF);
+  End
+  Else
+  Begin
+    BinEmitByte($3D);
+    BinEmitDWord(Val);
+  End;
+End;
+
+Procedure EmitJG(Target : String);
+Var Li : Integer;
+Begin
+  Li := FindLabel(Target);
+  BinEmitByte($0F);
+  BinEmitByte($8F);
+  AddFixup(FIX_CODE_REL, Li);
+  BinEmitDWord(0);
+End;
+
+Procedure EmitJLE(Target : String);
+Var Li : Integer;
+Begin
+  Li := FindLabel(Target);
+  BinEmitByte($0F);
+  BinEmitByte($8E);
+  AddFixup(FIX_CODE_REL, Li);
+  BinEmitDWord(0);
+End;
+
+Procedure EmitSetE;
+Begin
+  BinEmitByte($0F);
+  BinEmitByte($94);
+  BinEmitByte($C0);
+End;
+
+Procedure EmitSetNE;
+Begin
+  BinEmitByte($0F);
+  BinEmitByte($95);
+  BinEmitByte($C0);
+End;
+
+Procedure EmitSetL;
+Begin
+  BinEmitByte($0F);
+  BinEmitByte($9C);
+  BinEmitByte($C0);
+End;
+
+Procedure EmitSetLE;
+Begin
+  BinEmitByte($0F);
+  BinEmitByte($9E);
+  BinEmitByte($C0);
+End;
+
+Procedure EmitSetG;
+Begin
+  BinEmitByte($0F);
+  BinEmitByte($9F);
+  BinEmitByte($C0);
+End;
+
+Procedure EmitSetGE;
+Begin
+  BinEmitByte($0F);
+  BinEmitByte($9D);
+  BinEmitByte($C0);
+End;
+
+Procedure EmitMovzxEAXAL;
+Begin
+  BinEmitByte($0F);
+  BinEmitByte($B6);
+  BinEmitByte($C0);
+End;
 
 Procedure Expect(Kw : Integer);
 Begin
@@ -1036,315 +932,635 @@ Procedure ExpectIdent;
 Begin
   If CurTok <> TOK_IDENT Then
     ErrorAt(LexLineNo, LexColNo, 'Identificateur attendu');
+End;
+
+Procedure ExpectOp(Const Op : String);
+Begin
+  If (CurTok <> TOK_OP) Or (CurTokStr <> Op) Then
+    ErrorAt(LexLineNo, LexColNo, 'Operateur "' + Op + '" attendu');
   LexNext;
 End;
 
-Procedure ExpectTok(Tok : Integer);
+Function AcceptOp(Const Op : String) : Boolean;
 Begin
-  If CurTok <> Tok Then
-    ErrorAt(LexLineNo, LexColNo, 'Token attendu');
-  LexNext;
+  If (CurTok = TOK_OP) And (CurTokStr = Op) Then
+  Begin
+    LexNext;
+    AcceptOp := True;
+  End
+  Else
+    AcceptOp := False;
 End;
 
-Function GenLabel : String;
-Begin
-  Inc(LabelSeq);
-  GenLabel := PFX_OL + IntToStr(LabelSeq);
-End;
+Procedure GenExpression; Forward;
 
-{ ============================================================
-  PARSEUR - EXPRESSIONS (reconnaissance structurale seulement)
-  ============================================================ }
-
-Procedure ParseFactor; Forward;
-Procedure ParseTerm; Forward;
-Procedure ParseSimpleExpression; Forward;
-Procedure ParseExpression; Forward;
-
-Procedure ParseFactor;
+Procedure GenFactor;
+Var Si, StrIdx : Integer;
 Begin
   If CurTok = TOK_IDENT Then
   Begin
-    LexNext;
-    If (CurTok = TOK_OP) And (CurTokStr = '(') Then
+    Si := SymFind(CurTokStr);
+    If Si > 0 Then
     Begin
-      LexNext;
-      If (CurTok <> TOK_OP) Or (CurTokStr <> ')') Then
-      Begin
-        ParseExpression;
-        While (CurTok = TOK_OP) And (CurTokStr = ',') Do
-        Begin
-          LexNext;
-          ParseExpression;
-        End;
-      End;
-      If (CurTok = TOK_OP) And (CurTokStr = ')') Then
-        LexNext;
-    End;
+      SymTab[Si].Used := True;
+      EmitMovEAXMem32($400000 + $2000 + SymTab[Si].DataOffs);
+      BinCodeLen := BinCodeLen - 4;
+      AddFixup(FIX_VAR, Si);
+      BinCodeLen := BinCodeLen + 4;
+    End
+    Else
+      ErrorAt(LexLineNo, LexColNo, 'Variable inconnue: ' + CurTokStr);
+    LexNext;
   End
   Else If CurTok = TOK_INT Then
-    LexNext
-  Else If CurTok = TOK_REAL Then
-    LexNext
-  Else If CurTok = TOK_CHAR Then
-    LexNext
-  Else If CurTok = TOK_STRING Then
-    LexNext
-  Else If (CurTok = TOK_KEYWORD) And (CurTokKw In [KW_TRUE, KW_FALSE, KW_NIL]) Then
-    LexNext
+  Begin
+    EmitMovEAXImm32(CurTokNum);
+    LexNext;
+  End
+  Else If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_TRUE) Then
+  Begin
+    EmitMovEAXImm32(1);
+    LexNext;
+  End
+  Else If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_FALSE) Then
+  Begin
+    EmitMovEAXImm32(0);
+    LexNext;
+  End
   Else If (CurTok = TOK_OP) And (CurTokStr = '(') Then
   Begin
     LexNext;
-    ParseExpression;
-    If (CurTok = TOK_OP) And (CurTokStr = ')') Then
-      LexNext;
+    GenExpression;
+    ExpectOp(')');
   End
-  Else If (CurTok = TOK_OP) And (CurTokStr = '{') Then
+  Else If (CurTok = TOK_OP) And (CurTokStr = '-') Then
   Begin
     LexNext;
-    If (CurTok <> TOK_OP) Or (CurTokStr <> '}') Then
+    GenFactor;
+    BinEmitByte($F7);
+    BinEmitByte($D8);
+  End
+  Else
+    ErrorAt(LexLineNo, LexColNo, 'Facteur attendu');
+End;
+
+Procedure GenTerm;
+Var Op : String;
+Begin
+  GenFactor;
+  While ((CurTok = TOK_OP) And ((CurTokStr = '*') Or (CurTokStr = '/'))) Or
+        ((CurTok = TOK_KEYWORD) And ((CurTokKw = KW_DIV) Or (CurTokKw = KW_MOD))) Do
+  Begin
+    Op := CurTokStr;
+    If CurTok = TOK_KEYWORD Then
     Begin
-      ParseExpression;
-      While (CurTok = TOK_OP) And (CurTokStr = ',') Do
-      Begin
-        LexNext;
-        ParseExpression;
-      End;
+      If CurTokKw = KW_DIV Then
+        Op := 'DIV'
+      Else
+        Op := 'MOD';
     End;
-    If (CurTok = TOK_OP) And (CurTokStr = '}') Then
-      LexNext;
-  End
-  Else If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_NOT) Then
-  Begin
     LexNext;
-    ParseFactor;
-  End
-  Else If (CurTok = TOK_OP) And ((CurTokStr = '~') Or (CurTokStr = '+') Or (CurTokStr = '-')) Then
-  Begin
-    LexNext;
-    ParseFactor;
-  End;
-End;
-
-Procedure ParseTerm;
-Begin
-  ParseFactor;
-  While (CurTok = TOK_OP) And ((CurTokStr = '*') Or (CurTokStr = '/') Or (CurTokStr = '&')) Or
-        ((CurTok = TOK_KEYWORD) And (CurTokKw In [KW_DIV, KW_MOD, KW_AND])) Do
-  Begin
-    LexNext;
-    ParseFactor;
-  End;
-End;
-
-Procedure ParseSimpleExpression;
-Begin
-  ParseTerm;
-  While (CurTok = TOK_OP) And ((CurTokStr = '+') Or (CurTokStr = '-')) Or
-        ((CurTok = TOK_KEYWORD) And (CurTokKw = KW_OR)) Do
-  Begin
-    LexNext;
-    ParseTerm;
-  End;
-End;
-
-Procedure ParseExpression;
-Begin
-  ParseSimpleExpression;
-  While (CurTok = TOK_OP) And ((CurTokStr = '=') Or (CurTokStr = '#') Or (CurTokStr = '<') Or (CurTokStr = '>') Or (CurTokStr = '<=') Or (CurTokStr = '>=')) Or
-        ((CurTok = TOK_KEYWORD) And (CurTokKw In [KW_IN, KW_IS])) Do
-  Begin
-    LexNext;
-    ParseSimpleExpression;
-  End;
-End;
-
-{ ============================================================
-  PARSEUR - STATEMENTS (skip jusqu'a END correspondant)
-  ============================================================ }
-
-Procedure SkipStatements;
-Var Depth : Integer;
-Begin
-  Depth := 1;
-  While (CurTok <> TOK_EOF) And (Depth > 0) Do
-  Begin
-    If (CurTok = TOK_KEYWORD) Then
+    EmitPushEAX;
+    GenFactor;
+    EmitMovECXEAX;
+    EmitPopEAX;
+    If Op = '*' Then
+      EmitImulEAXECX
+    Else If Op = 'DIV' Then
     Begin
-      If CurTokKw In [KW_BEGIN, KW_IF, KW_WHILE, KW_REPEAT, KW_FOR, KW_LOOP, KW_CASE] Then
-        Inc(Depth)
-      Else If CurTokKw = KW_END Then
+      EmitCdq;
+      EmitIdivECX;
+    End
+    Else If Op = 'MOD' Then
+    Begin
+      EmitCdq;
+      EmitIdivECX;
+      EmitMovEAXEDX;
+    End;
+  End;
+End;
+
+Procedure GenSimpleExpression;
+Var Op : String;
+Begin
+  GenTerm;
+  While ((CurTok = TOK_OP) And ((CurTokStr = '+') Or (CurTokStr = '-'))) Do
+  Begin
+    Op := CurTokStr;
+    LexNext;
+    EmitPushEAX;
+    GenTerm;
+    EmitMovECXEAX;
+    EmitPopEAX;
+    If Op = '+' Then
+      EmitAddEAXECX
+    Else If Op = '-' Then
+      EmitSubEAXECX;
+  End;
+End;
+
+Procedure GenExpression;
+Var Op : String;
+Begin
+  GenSimpleExpression;
+  If (CurTok = TOK_OP) And ((CurTokStr = '=') Or (CurTokStr = '#') Or 
+     (CurTokStr = '<') Or (CurTokStr = '>') Or (CurTokStr = '<=') Or (CurTokStr = '>=')) Then
+  Begin
+    Op := CurTokStr;
+    LexNext;
+    EmitPushEAX;
+    GenSimpleExpression;
+    EmitMovECXEAX;
+    EmitPopEAX;
+    EmitCmpEAXECX;
+    If Op = '=' Then
+      EmitSetE
+    Else If Op = '#' Then
+      EmitSetNE
+    Else If Op = '<' Then
+      EmitSetL
+    Else If Op = '<=' Then
+      EmitSetLE
+    Else If Op = '>' Then
+      EmitSetG
+    Else If Op = '>=' Then
+      EmitSetGE;
+    EmitMovzxEAXAL;
+  End;
+End;
+
+Procedure GenStatement; Forward;
+
+Procedure GenStatSeq;
+Begin
+  GenStatement;
+  While AcceptOp(';') Do
+    GenStatement;
+End;
+
+Procedure GenOutString(Const S : String);
+Var StrIdx : Integer;
+Begin
+  StrIdx := AddStringLiteral(S);
+  EmitPushImm32(0);
+  EmitPushImm32($400000 + $2000);
+  BinCodeLen := BinCodeLen - 4;
+  AddFixup(FIX_BYTES_WRITTEN, 0);
+  BinCodeLen := BinCodeLen + 4;
+  EmitPushImm32(Length(S));
+  EmitPushImm32($400000 + $2000);
+  BinCodeLen := BinCodeLen - 4;
+  AddFixup(FIX_STRING, StrIdx);
+  BinCodeLen := BinCodeLen + 4;
+  EmitMovEAXMem32($400000 + $2000);
+  BinCodeLen := BinCodeLen - 4;
+  AddFixup(FIX_STDOUT, 0);
+  BinCodeLen := BinCodeLen + 4;
+  EmitPushEAX;
+  EmitCallIAT(FIX_IAT_WRITE);
+End;
+
+Procedure GenOutLn;
+Begin
+  EmitPushImm32(0);
+  EmitPushImm32($400000 + $2000);
+  BinCodeLen := BinCodeLen - 4;
+  AddFixup(FIX_BYTES_WRITTEN, 0);
+  BinCodeLen := BinCodeLen + 4;
+  EmitPushImm32(2);
+  EmitPushImm32($400000 + $2000);
+  BinCodeLen := BinCodeLen - 4;
+  AddFixup(FIX_CRLF, 0);
+  BinCodeLen := BinCodeLen + 4;
+  EmitMovEAXMem32($400000 + $2000);
+  BinCodeLen := BinCodeLen - 4;
+  AddFixup(FIX_STDOUT, 0);
+  BinCodeLen := BinCodeLen + 4;
+  EmitPushEAX;
+  EmitCallIAT(FIX_IAT_WRITE);
+End;
+
+Procedure GenOutInt;
+Begin
+  GenExpression;
+  EmitPushEAX;
+  BinEmitByte($E8);
+  AddFixup(FIX_CODE_REL, FindLabel('_printint'));
+  BinEmitDWord(0);
+End;
+
+Procedure GenOutCall;
+Var Proc : String;
+Begin
+  Proc := CurTokStr;
+  LexNext;
+  If AcceptOp('.') Then
+  Begin
+    If CurTok = TOK_IDENT Then
+    Begin
+      Proc := Proc + '.' + CurTokStr;
+      LexNext;
+    End;
+  End;
+  If AcceptOp('(') Then
+  Begin
+    If (CurTok <> TOK_OP) Or (CurTokStr <> ')') Then
+    Begin
+      If Proc = 'Out.Int' Then
       Begin
-        Dec(Depth);
-        If Depth = 0 Then Exit;
-      End
-      Else If CurTokKw = KW_UNTIL Then
-      Begin
-        Dec(Depth);
-        If Depth = 0 Then
+        GenOutInt;
+        If AcceptOp(',') Then
         Begin
-          LexNext;
-          ParseExpression;
-          Exit;
+          GenExpression;
         End;
+      End
+      Else
+      Begin
+        GenExpression;
+        While AcceptOp(',') Do
+          GenExpression;
       End;
     End;
-    LexNext;
+    ExpectOp(')');
   End;
-End;
-
-Procedure ParseStatSeq;
-Begin
-  SkipStatements;
-End;
-
-{ ============================================================
-  PARSEUR - DECLARATIONS
-  ============================================================ }
-
-Procedure ParseConstDecl;
-Begin
-  While (CurTok = TOK_IDENT) Do
+  If Proc = 'Out.String' Then
   Begin
-    LexNext;
-    If (CurTok = TOK_OP) And (CurTokStr = '=') Then
-      LexNext;
-    ParseExpression;
-    If (CurTok = TOK_OP) And (CurTokStr = ';') Then
-      LexNext;
-  End;
-End;
-
-Procedure ParseTypeDecl;
-Begin
-  While (CurTok = TOK_IDENT) Do
+  End
+  Else If Proc = 'Out.Ln' Then
+    GenOutLn
+  Else If Proc = 'Out.Int' Then
   Begin
-    LexNext;
-    If (CurTok = TOK_OP) And (CurTokStr = '=') Then
-      LexNext;
-    While (CurTok <> TOK_OP) Or (CurTokStr <> ';') Do
-    Begin
-      If CurTok = TOK_EOF Then Exit;
-      If (CurTok = TOK_KEYWORD) And (CurTokKw In [KW_CONST, KW_TYPE, KW_VAR, KW_PROCEDURE, KW_BEGIN, KW_END]) Then
-        Exit;
-      LexNext;
-    End;
-    If (CurTok = TOK_OP) And (CurTokStr = ';') Then
-      LexNext;
   End;
 End;
 
-Procedure ParseVarDecl;
+Procedure GenStatement;
+Var 
+  VarName : String;
+  Si : Integer;
+  Lab1, Lab2, Lab3, Lab4 : String;
+  LoopVar : String;
+  LoopVarSi : Integer;
+  HiVal : LongInt;
 Begin
-  While (CurTok = TOK_IDENT) Do
-  Begin
-    LexNext;
-    While (CurTok = TOK_OP) And (CurTokStr = ',') Do
-    Begin
-      LexNext;
-      If CurTok = TOK_IDENT Then
-        LexNext;
-    End;
-    If (CurTok = TOK_OP) And (CurTokStr = ':') Then
-      LexNext;
-    While (CurTok <> TOK_OP) Or (CurTokStr <> ';') Do
-    Begin
-      If CurTok = TOK_EOF Then Exit;
-      If (CurTok = TOK_KEYWORD) And (CurTokKw In [KW_CONST, KW_TYPE, KW_VAR, KW_PROCEDURE, KW_BEGIN, KW_END]) Then
-        Exit;
-      LexNext;
-    End;
-    If (CurTok = TOK_OP) And (CurTokStr = ';') Then
-      LexNext;
-  End;
-End;
-
-Procedure ParseProcedure;
-Var PName : TString;
-Begin
-  Expect(KW_PROCEDURE);
   If CurTok = TOK_IDENT Then
   Begin
-    PName := CurTokStr;
+    VarName := CurTokStr;
+    Si := SymFind(VarName);
     LexNext;
-  End;
-  If (CurTok = TOK_OP) And (CurTokStr = '*') Then
-    LexNext;
-  If (CurTok = TOK_OP) And (CurTokStr = '(') Then
+    If AcceptOp(':=') Then
+    Begin
+      GenExpression;
+      If Si > 0 Then
+      Begin
+        EmitMovMem32EAX($400000 + $2000 + SymTab[Si].DataOffs);
+        BinCodeLen := BinCodeLen - 4;
+        AddFixup(FIX_VAR, Si);
+        BinCodeLen := BinCodeLen + 4;
+      End;
+    End
+    Else If AcceptOp('.') Then
+    Begin
+      If (CurTok = TOK_IDENT) Then
+      Begin
+        VarName := VarName + '.' + CurTokStr;
+        LexNext;
+      End;
+      If VarName = 'Out.String' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          If CurTok = TOK_STRING Then
+          Begin
+            GenOutString(CurTokStr);
+            LexNext;
+          End;
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'Out.Ln' Then
+        GenOutLn
+      Else If VarName = 'Out.Int' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenOutInt;
+          If AcceptOp(',') Then
+          Begin
+            GenExpression;
+          End;
+          ExpectOp(')');
+        End;
+      End;
+    End
+    Else If AcceptOp('(') Then
+    Begin
+      If VarName = 'INC' Then
+      Begin
+        If CurTok = TOK_IDENT Then
+        Begin
+          Si := SymFind(CurTokStr);
+          If Si > 0 Then
+          Begin
+            LexNext;
+            If AcceptOp(',') Then
+            Begin
+              If CurTok = TOK_INT Then
+              Begin
+                EmitAddMem32Imm($400000 + $2000 + SymTab[Si].DataOffs, CurTokNum);
+                AddFixup(FIX_VAR, Si);
+                BinCodeLen := BinCodeLen - 6;
+                BinEmitByte(0);
+                BinEmitDWord(0);
+                BinEmitByte(CurTokNum And $FF);
+                LexNext;
+              End;
+            End
+            Else
+            Begin
+              EmitIncMem32($400000 + $2000 + SymTab[Si].DataOffs);
+              BinCodeLen := BinCodeLen - 4;
+              AddFixup(FIX_VAR, Si);
+              BinCodeLen := BinCodeLen + 4;
+            End;
+          End;
+        End;
+        ExpectOp(')');
+      End
+      Else If VarName = 'DEC' Then
+      Begin
+        If CurTok = TOK_IDENT Then
+        Begin
+          Si := SymFind(CurTokStr);
+          If Si > 0 Then
+          Begin
+            LexNext;
+            If AcceptOp(',') Then
+            Begin
+              If CurTok = TOK_INT Then
+              Begin
+                EmitSubMem32Imm($400000 + $2000 + SymTab[Si].DataOffs, CurTokNum);
+                AddFixup(FIX_VAR, Si);
+                BinCodeLen := BinCodeLen - 6;
+                BinEmitByte(0);
+                BinEmitDWord(0);
+                BinEmitByte(CurTokNum And $FF);
+                LexNext;
+              End;
+            End
+            Else
+            Begin
+              EmitDecMem32($400000 + $2000 + SymTab[Si].DataOffs);
+              BinCodeLen := BinCodeLen - 4;
+              AddFixup(FIX_VAR, Si);
+              BinCodeLen := BinCodeLen + 4;
+            End;
+          End;
+        End;
+        ExpectOp(')');
+      End;
+    End;
+  End
+
+  Else If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_IF) Then
   Begin
     LexNext;
-    While (CurTok <> TOK_OP) Or (CurTokStr <> ')') Do
+    GenExpression;
+    Expect(KW_THEN);
+    Lab1 := GenLabel;
+    Lab2 := GenLabel;
+    EmitTestEAX;
+    EmitJZ(Lab1);
+    GenStatSeq;
+    While (CurTok = TOK_KEYWORD) And (CurTokKw = KW_ELSIF) Do
     Begin
-      If CurTok = TOK_EOF Then Exit;
       LexNext;
+      EmitJmp(Lab2);
+      DefineLabel(Lab1);
+      GenExpression;
+      Expect(KW_THEN);
+      Lab1 := GenLabel;
+      EmitTestEAX;
+      EmitJZ(Lab1);
+      GenStatSeq;
     End;
+    If Accept(KW_ELSE) Then
+    Begin
+      EmitJmp(Lab2);
+      DefineLabel(Lab1);
+      GenStatSeq;
+      Lab1 := Lab2;
+    End;
+    DefineLabel(Lab1);
+    If Lab1 <> Lab2 Then
+      DefineLabel(Lab2);
+    Expect(KW_END);
+  End
+
+  Else If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_WHILE) Then
+  Begin
     LexNext;
-  End;
-  If (CurTok = TOK_OP) And (CurTokStr = ':') Then
+    Lab1 := GenLabel;
+    Lab2 := GenLabel;
+    DefineLabel(Lab1);
+    GenExpression;
+    Expect(KW_DO);
+    EmitTestEAX;
+    EmitJZ(Lab2);
+    GenStatSeq;
+    EmitJmp(Lab1);
+    DefineLabel(Lab2);
+    Expect(KW_END);
+  End
+
+  Else If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_REPEAT) Then
+  Begin
+    LexNext;
+    Lab1 := GenLabel;
+    DefineLabel(Lab1);
+    GenStatSeq;
+    Expect(KW_UNTIL);
+    GenExpression;
+    EmitTestEAX;
+    EmitJZ(Lab1);
+  End
+
+  Else If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_FOR) Then
   Begin
     LexNext;
     If CurTok = TOK_IDENT Then
-      LexNext;
-  End;
-  If (CurTok = TOK_OP) And (CurTokStr = ';') Then
-    LexNext;
-  While (CurTok = TOK_KEYWORD) And (CurTokKw In [KW_CONST, KW_TYPE, KW_VAR]) Do
-  Begin
-    If CurTokKw = KW_CONST Then
     Begin
+      LoopVar := CurTokStr;
+      LoopVarSi := SymFind(LoopVar);
       LexNext;
-      ParseConstDecl;
-    End
-    Else If CurTokKw = KW_TYPE Then
-    Begin
-      LexNext;
-      ParseTypeDecl;
-    End
-    Else If CurTokKw = KW_VAR Then
-    Begin
-      LexNext;
-      ParseVarDecl;
-    End;
-  End;
-  If Accept(KW_BEGIN) Then
-    ParseStatSeq;
-  Expect(KW_END);
-  If CurTok = TOK_IDENT Then
-    LexNext;
-  If (CurTok = TOK_OP) And (CurTokStr = ';') Then
-    LexNext;
-End;
-
-Procedure ParseDeclSeq;
-Begin
-  While (CurTok <> TOK_EOF) Do
-  Begin
-    If (CurTok = TOK_KEYWORD) Then
-    Begin
-      If CurTokKw = KW_CONST Then
+      ExpectOp(':=');
+      GenExpression;
+      If LoopVarSi > 0 Then
       Begin
+        EmitMovMem32EAX($400000 + $2000 + SymTab[LoopVarSi].DataOffs);
+        BinCodeLen := BinCodeLen - 4;
+        AddFixup(FIX_VAR, LoopVarSi);
+        BinCodeLen := BinCodeLen + 4;
+      End;
+      Expect(KW_TO);
+      If CurTok = TOK_INT Then
+      Begin
+        HiVal := CurTokNum;
         LexNext;
-        ParseConstDecl;
-      End
-      Else If CurTokKw = KW_TYPE Then
-      Begin
-        LexNext;
-        ParseTypeDecl;
-      End
-      Else If CurTokKw = KW_VAR Then
-      Begin
-        LexNext;
-        ParseVarDecl;
-      End
-      Else If CurTokKw = KW_PROCEDURE Then
-      Begin
-        ParseProcedure;
       End
       Else
-        Exit;
-    End
-    Else
-      Exit;
+        HiVal := 10;
+      If Accept(KW_BY) Then
+      Begin
+        If CurTok = TOK_INT Then
+          LexNext;
+      End;
+      Expect(KW_DO);
+      Lab1 := GenLabel;
+      Lab2 := GenLabel;
+      DefineLabel(Lab1);
+      If LoopVarSi > 0 Then
+      Begin
+        EmitMovEAXMem32($400000 + $2000 + SymTab[LoopVarSi].DataOffs);
+        BinCodeLen := BinCodeLen - 4;
+        AddFixup(FIX_VAR, LoopVarSi);
+        BinCodeLen := BinCodeLen + 4;
+      End;
+      EmitCmpEAXImm(HiVal);
+      EmitJG(Lab2);
+      GenStatSeq;
+      If LoopVarSi > 0 Then
+      Begin
+        EmitIncMem32($400000 + $2000 + SymTab[LoopVarSi].DataOffs);
+        BinCodeLen := BinCodeLen - 4;
+        AddFixup(FIX_VAR, LoopVarSi);
+        BinCodeLen := BinCodeLen + 4;
+      End;
+      EmitJmp(Lab1);
+      DefineLabel(Lab2);
+      Expect(KW_END);
+    End;
+  End;
+End;
+
+Procedure GenPrintIntHelper;
+Var
+  LabZero, LabLoop, LabLoopEnd, LabWrite : String;
+Begin
+  DefineLabel('_printint');
+
+  { Preserve callee-save registers used (ebx, esi, edi) }
+  BinEmitByte($53);                        { push ebx }
+  BinEmitByte($56);                        { push esi }
+  BinEmitByte($57);                        { push edi }
+
+  { eax = value from [esp + 16] (3 saved regs + ret addr) }
+  BinEmitByte($8B); BinEmitByte($44); BinEmitByte($24); BinEmitByte($10);
+
+  LabZero    := GenLabel;
+  LabLoop    := GenLabel;
+  LabLoopEnd := GenLabel;
+  LabWrite   := GenLabel;
+
+  { if (eax == 0) goto LabZero }
+  EmitTestEAX;
+  EmitJZ(LabZero);
+
+  { edi := IntBufAddr + 12 (write pointer, digits stored backwards) }
+  BinEmitByte($BF);                        { mov edi, imm32 }
+  AddFixup(FIX_INTBUF_END, 0);
+  BinEmitDWord(0);
+
+  { ebx := 10 }
+  BinEmitByte($BB); BinEmitDWord(10);
+
+  DefineLabel(LabLoop);
+  BinEmitByte($31); BinEmitByte($D2);      { xor edx, edx }
+  BinEmitByte($F7); BinEmitByte($F3);      { div ebx }
+  BinEmitByte($80); BinEmitByte($C2); BinEmitByte($30);  { add dl, '0' }
+  BinEmitByte($4F);                        { dec edi }
+  BinEmitByte($88); BinEmitByte($17);      { mov [edi], dl }
+  EmitTestEAX;
+  EmitJNZ(LabLoop);
+
+  { esi := IntBufAddr + 12 ; esi -= edi  --> length }
+  BinEmitByte($BE);                        { mov esi, imm32 }
+  AddFixup(FIX_INTBUF_END, 0);
+  BinEmitDWord(0);
+  BinEmitByte($29); BinEmitByte($FE);      { sub esi, edi }
+  EmitJmp(LabWrite);
+
+  DefineLabel(LabZero);
+  { edi := IntBufAddr ; byte [edi] := '0' ; esi := 1 }
+  BinEmitByte($BF);                        { mov edi, imm32 }
+  AddFixup(FIX_INTBUF, 0);
+  BinEmitDWord(0);
+  BinEmitByte($C6); BinEmitByte($07); BinEmitByte($30);  { mov byte [edi], '0' }
+  BinEmitByte($BE); BinEmitDWord(1);       { mov esi, 1 }
+
+  DefineLabel(LabWrite);
+  { WriteFile(stdout, edi, esi, &bytes_written, NULL) }
+  BinEmitByte($6A); BinEmitByte($00);      { push 0 (lpOverlapped) }
+
+  BinEmitByte($68);                        { push imm32 bytes_written addr }
+  AddFixup(FIX_BYTES_WRITTEN, 0);
+  BinEmitDWord(0);
+
+  BinEmitByte($56);                        { push esi (length) }
+  BinEmitByte($57);                        { push edi (buffer) }
+
+  { push dword [stdout_var] : FF 35 imm32 }
+  BinEmitByte($FF); BinEmitByte($35);
+  AddFixup(FIX_STDOUT, 0);
+  BinEmitDWord(0);
+
+  EmitCallIAT(FIX_IAT_WRITE);
+
+  BinEmitByte($5F);                        { pop edi }
+  BinEmitByte($5E);                        { pop esi }
+  BinEmitByte($5B);                        { pop ebx }
+  BinEmitByte($C2); BinEmitWord(4);        { ret 4 }
+End;
+
+Procedure ParseVarDecl;
+Var
+  VarNames : Array[1..32] of String;
+  VarCount : Integer;
+  I : Integer;
+  TypeName : String;
+  TypeIdx : Integer;
+Begin
+  While (CurTok = TOK_IDENT) Do
+  Begin
+    VarCount := 0;
+    Inc(VarCount);
+    VarNames[VarCount] := CurTokStr;
+    LexNext;
+    While AcceptOp(',') Do
+    Begin
+      If CurTok = TOK_IDENT Then
+      Begin
+        Inc(VarCount);
+        VarNames[VarCount] := CurTokStr;
+        LexNext;
+      End;
+    End;
+    ExpectOp(':');
+    If CurTok = TOK_IDENT Then
+    Begin
+      TypeName := StrUpper(CurTokStr);
+      If TypeName = 'INTEGER' Then
+        TypeIdx := 1
+      Else If TypeName = 'BOOLEAN' Then
+        TypeIdx := 2
+      Else If TypeName = 'CHAR' Then
+        TypeIdx := 3
+      Else
+        TypeIdx := 1;
+      LexNext;
+    End;
+    For I := 1 To VarCount Do
+      SymEnter(VarNames[I], TypeIdx);
+    ExpectOp(';');
   End;
 End;
 
@@ -1354,13 +1570,12 @@ Begin
   While CurTok = TOK_IDENT Do
   Begin
     LexNext;
-    If (CurTok = TOK_OP) And (CurTokStr = ',') Then
-      LexNext
+    If AcceptOp(',') Then
+      Continue
     Else
       Break;
   End;
-  If (CurTok = TOK_OP) And (CurTokStr = ';') Then
-    LexNext;
+  ExpectOp(';');
 End;
 
 Procedure ParseModule;
@@ -1373,84 +1588,278 @@ Begin
   End
   Else
     ModuleName := 'Main';
-  If (CurTok = TOK_OP) And (CurTokStr = ';') Then
-    LexNext;
+  ExpectOp(';');
   If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_IMPORT) Then
     ParseImportList;
-  ParseDeclSeq;
+  While (CurTok = TOK_KEYWORD) Do
+  Begin
+    If CurTokKw = KW_CONST Then
+    Begin
+      LexNext;
+      While (CurTok = TOK_IDENT) Do
+      Begin
+        LexNext;
+        While (CurTok <> TOK_EOF) And ((CurTok <> TOK_OP) Or (CurTokStr <> ';')) Do
+          LexNext;
+        If AcceptOp(';') Then
+          Continue;
+      End;
+    End
+    Else If CurTokKw = KW_TYPE Then
+    Begin
+      LexNext;
+      While (CurTok = TOK_IDENT) Do
+      Begin
+        LexNext;
+        While (CurTok <> TOK_EOF) And ((CurTok <> TOK_OP) Or (CurTokStr <> ';')) Do
+          LexNext;
+        If AcceptOp(';') Then
+          Continue;
+      End;
+    End
+    Else If CurTokKw = KW_VAR Then
+    Begin
+      LexNext;
+      ParseVarDecl;
+    End
+    Else If CurTokKw = KW_PROCEDURE Then
+    Begin
+      LexNext;
+      While (CurTok <> TOK_EOF) And ((CurTok <> TOK_KEYWORD) Or (CurTokKw <> KW_END)) Do
+        LexNext;
+      If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_END) Then
+        LexNext;
+      If CurTok = TOK_IDENT Then
+        LexNext;
+      If AcceptOp(';') Then
+        Continue;
+    End
+    Else
+      Break;
+  End;
   If Accept(KW_BEGIN) Then
-    ParseStatSeq;
+    GenStatSeq;
   Expect(KW_END);
   If CurTok = TOK_IDENT Then
     LexNext;
-  If (CurTok = TOK_OP) And (CurTokStr = '.') Then
-    LexNext;
+  ExpectOp('.');
 End;
 
-{ ============================================================
-  EMETTEUR ASM
-  ============================================================ }
-
-Procedure EmitLine(Const S : String);
+Procedure EmitCodePrologue;
 Begin
-  WriteLn(AsmFile, S);
+  EmitPushImm32(-11);
+  EmitCallIAT(FIX_IAT_GETSTD);
+  EmitMovMem32EAX($400000 + $2000);
+  BinCodeLen := BinCodeLen - 4;
+  AddFixup(FIX_STDOUT, 0);
+  BinCodeLen := BinCodeLen + 4;
 End;
 
-Procedure EmitHeader(Const ModName : String);
+Procedure EmitCodeEpilogue;
 Begin
-  EmitLine(';; Generated by OBERCW32 v' + OBERCW32_VERSION + ' - module: ' + ModName);
-  EmitLine(';; Oberon -> 80386 / Windows 32 bits');
-  EmitLine('.386');
-  EmitLine('.model flat, stdcall');
-  EmitLine('option casemap:none');
-  EmitLine('includelib kernel32.lib');
-  EmitLine('');
-  EmitLine('extern ExitProcess : proc');
-  EmitLine('extern GetStdHandle : proc');
-  EmitLine('extern WriteFile : proc');
-  EmitLine('');
+  EmitPushImm32(0);
+  EmitCallIAT(FIX_IAT_EXIT);
 End;
 
-Procedure EmitDataSeg;
-Var I : Integer;
+Procedure ResolveFixups(TextRVA, DataRVA, IdataRVA : LongInt);
+Var
+  I, Si, Li : Integer;
+  TargetAddr, CalleeAddr, RelAddr : LongInt;
+  ImageBase : LongInt;
+  StdoutAddr, CRLFAddr, IntBufAddr, BytesWrittenAddr : LongInt;
+  StrAddr : LongInt;
+  IATGetStd, IATWrite, IATExit : LongInt;
+  VarBase, TotalStr : LongInt;
 Begin
-  EmitLine('.data');
+  ImageBase := $400000;
+  StdoutAddr := ImageBase + DataRVA;
+  BytesWrittenAddr := StdoutAddr + 4;
+  IntBufAddr := BytesWrittenAddr + 4;
+  CRLFAddr := IntBufAddr + 12;
+
+  TotalStr := 0;
+  For Li := 1 To StringCount Do
+    TotalStr := TotalStr + Length(StringPool[Li]);
+  VarBase := 22 + TotalStr;
+  While (VarBase Mod 4) <> 0 Do
+    VarBase := VarBase + 1;
+  
+  IATGetStd := ImageBase + IdataRVA + 60;
+  IATWrite := IATGetStd + 4;
+  IATExit := IATWrite + 4;
+  
+  For I := 1 To FixupCount Do
+  Begin
+    Case Fixups[I].Kind Of
+      FIX_IAT_GETSTD:
+        Begin
+          TargetAddr := IATGetStd;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_IAT_WRITE:
+        Begin
+          TargetAddr := IATWrite;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_IAT_EXIT:
+        Begin
+          TargetAddr := IATExit;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_STRING:
+        Begin
+          Si := Fixups[I].Target;
+          StrAddr := CRLFAddr + 2;
+          If Si > 0 Then
+          Begin
+            For Li := 1 To Si-1 Do
+              StrAddr := StrAddr + Length(StringPool[Li]);
+            TargetAddr := StrAddr;
+            BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+            BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+            BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+            BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+          End;
+        End;
+      FIX_VAR:
+        Begin
+          Si := Fixups[I].Target;
+          If (Si > 0) And (Si <= SymCount) Then
+          Begin
+            TargetAddr := ImageBase + DataRVA + VarBase + SymTab[Si].DataOffs;
+            BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+            BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+            BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+            BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+          End;
+        End;
+      FIX_CODE_REL:
+        Begin
+          Li := Fixups[I].Target;
+          If (Li > 0) And (Li <= LabelCount) Then
+          Begin
+            If Labels[Li].Defined Then
+            Begin
+              CalleeAddr := ImageBase + TextRVA + Labels[Li].Offset;
+              RelAddr := CalleeAddr - (ImageBase + TextRVA + Fixups[I].Offset + 4);
+              BinCode[Fixups[I].Offset] := RelAddr And $FF;
+              BinCode[Fixups[I].Offset+1] := (RelAddr Shr 8) And $FF;
+              BinCode[Fixups[I].Offset+2] := (RelAddr Shr 16) And $FF;
+              BinCode[Fixups[I].Offset+3] := (RelAddr Shr 24) And $FF;
+            End;
+          End;
+        End;
+      FIX_INTBUF:
+        Begin
+          TargetAddr := IntBufAddr;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_BYTES_WRITTEN:
+        Begin
+          TargetAddr := BytesWrittenAddr;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_STDOUT:
+        Begin
+          TargetAddr := StdoutAddr;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_CRLF:
+        Begin
+          TargetAddr := CRLFAddr;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_INTBUF_END:
+        Begin
+          TargetAddr := IntBufAddr + 12;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+    End;
+  End;
+End;
+
+Procedure BuildDataSection;
+Var I, J : Integer;
+Begin
+  BinDataLen := 0;
+  
+  For I := 1 To 4 Do
+  Begin
+    BinData[BinDataLen] := 0;
+    Inc(BinDataLen);
+  End;
+  
+  For I := 1 To 4 Do
+  Begin
+    BinData[BinDataLen] := 0;
+    Inc(BinDataLen);
+  End;
+  
+  For I := 1 To 12 Do
+  Begin
+    BinData[BinDataLen] := Ord(' ');
+    Inc(BinDataLen);
+  End;
+  
+  BinData[BinDataLen] := $0D;
+  Inc(BinDataLen);
+  BinData[BinDataLen] := $0A;
+  Inc(BinDataLen);
+  
   For I := 1 To StringCount Do
-    EmitLine(PFX_OK + IntToStr(I) + ' db "' + StringPool[I] + '",0');
-  EmitLine('');
+  Begin
+    For J := 1 To Length(StringPool[I]) Do
+    Begin
+      BinData[BinDataLen] := Ord(StringPool[I][J]);
+      Inc(BinDataLen);
+    End;
+  End;
+  
+  While (BinDataLen Mod 4) <> 0 Do
+  Begin
+    BinData[BinDataLen] := 0;
+    Inc(BinDataLen);
+  End;
+  
+  For I := 1 To SymCount Do
+  Begin
+    For J := 1 To TypeByteSize(SymTab[I].TypeIdx) Do
+    Begin
+      BinData[BinDataLen] := 0;
+      Inc(BinDataLen);
+    End;
+  End;
+  
+  While (BinDataLen Mod 512) <> 0 Do
+  Begin
+    BinData[BinDataLen] := 0;
+    Inc(BinDataLen);
+  End;
 End;
-
-Procedure EmitRuntime;
-Begin
-  EmitLine('.code');
-  EmitLine('');
-  EmitLine(PFX_ORT + 'halt proc');
-  EmitLine('    push 0');
-  EmitLine('    call ExitProcess');
-  EmitLine('    ret');
-  EmitLine(PFX_ORT + 'halt endp');
-  EmitLine('');
-End;
-
-Procedure EmitEntryPoint(Const ModName : String);
-Begin
-  EmitLine(PFX_OP + 'main proc');
-  EmitLine('    ; TODO: generer le corps du module');
-  EmitLine('    push 0');
-  EmitLine('    call ExitProcess');
-  EmitLine('    ret');
-  EmitLine(PFX_OP + 'main endp');
-  EmitLine('');
-End;
-
-Procedure EmitFooter(Const ModName : String);
-Begin
-  EmitLine('end ' + PFX_OP + 'main');
-End;
-
-{ ============================================================
-  HELPERS BINAIRES
-  ============================================================ }
 
 Procedure WriteBinByte(Var F : File; B : Byte);
 Begin
@@ -1481,144 +1890,6 @@ Begin
     WriteBinByte(F, Z);
 End;
 
-Procedure BinInit;
-Begin
-  BinCodeLen := 0;
-  BinDataLen := 0;
-  FillChar(BinCode, SizeOf(BinCode), 0);
-  FillChar(BinData, SizeOf(BinData), 0);
-End;
-
-Procedure BinEmitByte(B : Byte);
-Begin
-  If BinCodeLen < MAX_BIN_CODE Then
-  Begin
-    BinCode[BinCodeLen] := B;
-    Inc(BinCodeLen);
-  End;
-End;
-
-Procedure BinEmitDataDWord(D : LongInt);
-Begin
-  If BinDataLen + 4 <= MAX_BIN_DATA Then
-  Begin
-    BinData[BinDataLen] := D And $FF;
-    BinData[BinDataLen+1] := (D Shr 8) And $FF;
-    BinData[BinDataLen+2] := (D Shr 16) And $FF;
-    BinData[BinDataLen+3] := (D Shr 24) And $FF;
-    Inc(BinDataLen, 4);
-  End;
-End;
-
-{ ============================================================
-  GENERATEUR .OBJ (COFF)
-  ============================================================ }
-
-Procedure BinWriteObj;
-Var
-  F           : File;
-  ObjFile     : String;
-  NumSections : Word;
-  TextDataOfs : LongInt;
-  DataDataOfs : LongInt;
-  SymTabOfs   : LongInt;
-  NumSymbols  : LongInt;
-  Pad         : LongInt;
-Begin
-  ObjFile := Opts.OutFile;
-  Assign(F, ObjFile);
-  {$I-}
-  Rewrite(F, 1);
-  {$I+}
-  If IOResult <> 0 Then
-  Begin
-    WriteLn('OBERCW32: erreur: impossible de creer ', ObjFile);
-    Exit;
-  End;
-
-  BinInit;
-  NumSections := 2;
-
-  BinEmitByte($CC);
-  BinEmitByte($C3);
-
-  BinEmitDataDWord(0);
-
-  TextDataOfs := 20 + NumSections * 40;
-  DataDataOfs := TextDataOfs + BinCodeLen;
-  NumSymbols := 2;
-  SymTabOfs := DataDataOfs + BinDataLen;
-
-  WriteBinWord(F, PE_MACHINE_I386);
-  WriteBinWord(F, NumSections);
-  WriteBinDWord(F, 0);
-  WriteBinDWord(F, SymTabOfs);
-  WriteBinDWord(F, NumSymbols);
-  WriteBinWord(F, 0);
-  WriteBinWord(F, 0);
-
-  WriteBinString(F, '.text');
-  Pad := 8 - (Length('.text') + 1);
-  If Pad > 0 Then WriteBinZeros(F, Pad);
-  WriteBinDWord(F, BinCodeLen);
-  WriteBinDWord(F, 0);
-  WriteBinDWord(F, BinCodeLen);
-  WriteBinDWord(F, TextDataOfs);
-  WriteBinDWord(F, 0);
-  WriteBinDWord(F, 0);
-  WriteBinWord(F, 0);
-  WriteBinWord(F, 0);
-  WriteBinDWord(F, PE_SCN_TEXT);
-
-  WriteBinString(F, '.data');
-  Pad := 8 - (Length('.data') + 1);
-  If Pad > 0 Then WriteBinZeros(F, Pad);
-  WriteBinDWord(F, BinDataLen);
-  WriteBinDWord(F, 0);
-  WriteBinDWord(F, BinDataLen);
-  WriteBinDWord(F, DataDataOfs);
-  WriteBinDWord(F, 0);
-  WriteBinDWord(F, 0);
-  WriteBinWord(F, 0);
-  WriteBinWord(F, 0);
-  WriteBinDWord(F, PE_SCN_BSS);
-
-  BlockWrite(F, BinCode, BinCodeLen);
-  BlockWrite(F, BinData, BinDataLen);
-
-  WriteBinString(F, '.text');
-  Pad := 8 - (Length('.text') + 1);
-  If Pad > 0 Then WriteBinZeros(F, Pad);
-  WriteBinDWord(F, 0);
-  WriteBinWord(F, 1);
-  WriteBinWord(F, 0);
-  WriteBinByte(F, 3);
-  WriteBinByte(F, 0);
-
-  WriteBinString(F, '.data');
-  Pad := 8 - (Length('.data') + 1);
-  If Pad > 0 Then WriteBinZeros(F, Pad);
-  WriteBinDWord(F, 0);
-  WriteBinWord(F, 2);
-  WriteBinWord(F, 0);
-  WriteBinByte(F, 3);
-  WriteBinByte(F, 0);
-
-  WriteBinDWord(F, 4);
-
-  Close(F);
-  If Opts.Verbose Then
-  Begin
-    WriteLn('OBERCW32: fichier OBJ genere: ', ObjFile);
-    WriteLn('OBERCW32: .text = ', BinCodeLen, ' octets');
-    WriteLn('OBERCW32: .data = ', BinDataLen, ' octets');
-  End;
-End;
-
-{ ============================================================
-  GENERATEUR .EXE (PE)
-  ============================================================ }
-
 Procedure BinWriteExe;
 Var
   F            : File;
@@ -1639,11 +1910,6 @@ Var
   I            : Integer;
   Pad          : LongInt;
   IdataBuf     : Array[0..1023] of Byte;
-  IdataBufLen  : LongInt;
-  IatOfs       : LongInt;
-  DllNameOfs   : LongInt;
-  HintOfs      : LongInt;
-  IltOfs       : LongInt;
 Begin
   ExeFile := Opts.OutFile;
   Assign(F, ExeFile);
@@ -1658,87 +1924,96 @@ Begin
 
   NumSections := 3;
 
-  FillChar(IdataBuf, SizeOf(IdataBuf), 0);
-  IltOfs := 40;
-  IatOfs := IltOfs + 8;
-  DllNameOfs := IatOfs + 8;
-  HintOfs := DllNameOfs + 16;
-
-  IdataBuf[0] := (HintOfs) And $FF;
-  IdataBuf[1] := (HintOfs Shr 8) And $FF;
-  IdataBuf[2] := (HintOfs Shr 16) And $FF;
-  IdataBuf[3] := (HintOfs Shr 24) And $FF;
-  IdataBuf[12] := (DllNameOfs) And $FF;
-  IdataBuf[13] := (DllNameOfs Shr 8) And $FF;
-  IdataBuf[14] := (DllNameOfs Shr 16) And $FF;
-  IdataBuf[15] := (DllNameOfs Shr 24) And $FF;
-  IdataBuf[16] := (IatOfs) And $FF;
-  IdataBuf[17] := (IatOfs Shr 8) And $FF;
-  IdataBuf[18] := (IatOfs Shr 16) And $FF;
-  IdataBuf[19] := (IatOfs Shr 24) And $FF;
-
-  IdataBuf[IltOfs] := (HintOfs) And $FF;
-  IdataBuf[IltOfs+1] := (HintOfs Shr 8) And $FF;
-  IdataBuf[IltOfs+2] := (HintOfs Shr 16) And $FF;
-  IdataBuf[IltOfs+3] := (HintOfs Shr 24) And $FF;
-
-  IdataBuf[IatOfs] := (HintOfs) And $FF;
-  IdataBuf[IatOfs+1] := (HintOfs Shr 8) And $FF;
-  IdataBuf[IatOfs+2] := (HintOfs Shr 16) And $FF;
-  IdataBuf[IatOfs+3] := (HintOfs Shr 24) And $FF;
-
-  Move('KERNEL32.DLL'#0, IdataBuf[DllNameOfs], 13);
-  IdataBuf[HintOfs] := 0;
-  IdataBuf[HintOfs+1] := 0;
-  Move('ExitProcess'#0, IdataBuf[HintOfs+2], 12);
-
-  IdataBufLen := 512;
-
-  BinInit;
-  BinEmitByte($6A);
-  BinEmitByte($00);
-  BinEmitByte($FF);
-  BinEmitByte($15);
-  BinEmitByte($08);
-  BinEmitByte($20);
-  BinEmitByte($40);
-  BinEmitByte($00);
-  BinEmitByte($C3);
-
-  While (BinCodeLen < 512) Do
-    BinEmitByte($00);
-
-  BinEmitDataDWord(0);
-  While (BinDataLen < 512) Do
-  Begin
-    BinData[BinDataLen] := 0;
-    Inc(BinDataLen);
-  End;
-
   TextRVA := $1000;
   DataRVA := $2000;
   IdataRVA := $3000;
 
   HdrSize := 1024;
   TextFileOfs := HdrSize;
-  DataFileOfs := TextFileOfs + 512;
-  IdataFileOfs := DataFileOfs + 512;
-
-  TextSize := 512;
-  DataSize := 512;
+  
+  While (BinCodeLen Mod 512) <> 0 Do
+    BinEmitByte($90);
+  
+  TextSize := BinCodeLen;
+  If TextSize < 512 Then
+    TextSize := 512;
+  
+  DataFileOfs := TextFileOfs + TextSize;
+  DataSize := BinDataLen;
+  If DataSize < 512 Then
+    DataSize := 512;
+  
+  IdataFileOfs := DataFileOfs + DataSize;
   IdataSize := 512;
-
+  
   ImageSize := $4000;
   EntryRVA := $1000;
+
+  ResolveFixups(TextRVA, DataRVA, IdataRVA);
+
+  FillChar(IdataBuf, SizeOf(IdataBuf), 0);
+  
+  IdataBuf[0] := ($3000 + 40) And $FF;
+  IdataBuf[1] := (($3000 + 40) Shr 8) And $FF;
+  IdataBuf[2] := (($3000 + 40) Shr 16) And $FF;
+  IdataBuf[3] := (($3000 + 40) Shr 24) And $FF;
+  
+  IdataBuf[12] := ($3000 + 100) And $FF;
+  IdataBuf[13] := (($3000 + 100) Shr 8) And $FF;
+  IdataBuf[14] := (($3000 + 100) Shr 16) And $FF;
+  IdataBuf[15] := (($3000 + 100) Shr 24) And $FF;
+  
+  IdataBuf[16] := ($3000 + 60) And $FF;
+  IdataBuf[17] := (($3000 + 60) Shr 8) And $FF;
+  IdataBuf[18] := (($3000 + 60) Shr 16) And $FF;
+  IdataBuf[19] := (($3000 + 60) Shr 24) And $FF;
+  
+  IdataBuf[40] := ($3000 + 120) And $FF;
+  IdataBuf[41] := (($3000 + 120) Shr 8) And $FF;
+  IdataBuf[42] := (($3000 + 120) Shr 16) And $FF;
+  IdataBuf[43] := (($3000 + 120) Shr 24) And $FF;
+  
+  IdataBuf[44] := ($3000 + 136) And $FF;
+  IdataBuf[45] := (($3000 + 136) Shr 8) And $FF;
+  IdataBuf[46] := (($3000 + 136) Shr 16) And $FF;
+  IdataBuf[47] := (($3000 + 136) Shr 24) And $FF;
+  
+  IdataBuf[48] := ($3000 + 150) And $FF;
+  IdataBuf[49] := (($3000 + 150) Shr 8) And $FF;
+  IdataBuf[50] := (($3000 + 150) Shr 16) And $FF;
+  IdataBuf[51] := (($3000 + 150) Shr 24) And $FF;
+  
+  IdataBuf[60] := ($3000 + 120) And $FF;
+  IdataBuf[61] := (($3000 + 120) Shr 8) And $FF;
+  IdataBuf[62] := (($3000 + 120) Shr 16) And $FF;
+  IdataBuf[63] := (($3000 + 120) Shr 24) And $FF;
+  
+  IdataBuf[64] := ($3000 + 136) And $FF;
+  IdataBuf[65] := (($3000 + 136) Shr 8) And $FF;
+  IdataBuf[66] := (($3000 + 136) Shr 16) And $FF;
+  IdataBuf[67] := (($3000 + 136) Shr 24) And $FF;
+  
+  IdataBuf[68] := ($3000 + 150) And $FF;
+  IdataBuf[69] := (($3000 + 150) Shr 8) And $FF;
+  IdataBuf[70] := (($3000 + 150) Shr 16) And $FF;
+  IdataBuf[71] := (($3000 + 150) Shr 24) And $FF;
+  
+  Move('KERNEL32.DLL'#0, IdataBuf[100], 13);
+  IdataBuf[120] := 0;
+  IdataBuf[121] := 0;
+  Move('GetStdHandle'#0, IdataBuf[122], 13);
+  IdataBuf[136] := 0;
+  IdataBuf[137] := 0;
+  Move('WriteFile'#0, IdataBuf[138], 10);
+  IdataBuf[150] := 0;
+  IdataBuf[151] := 0;
+  Move('ExitProcess'#0, IdataBuf[152], 12);
 
   WriteBinByte(F, Ord('M'));
   WriteBinByte(F, Ord('Z'));
   For I := 1 To 58 Do
     WriteBinByte(F, 0);
   WriteBinDWord(F, $40);
-
-  For I := 1 To 60 Do
-    WriteBinByte(F, 0);
 
   WriteBinByte(F, Ord('P'));
   WriteBinByte(F, Ord('E'));
@@ -1782,12 +2057,11 @@ Begin
   WriteBinDWord(F, $1000);
   WriteBinDWord(F, $100000);
   WriteBinDWord(F, $1000);
-  WriteBinDWord(F, 0);
-  WriteBinDWord(F, 0);
-  WriteBinDWord(F, 16);
+  WriteBinDWord(F, 0);         { LoaderFlags }
+  WriteBinDWord(F, 16);        { NumberOfRvaAndSizes }
 
-  WriteBinDWord(F, 0);
-  WriteBinDWord(F, 0);
+  WriteBinDWord(F, 0);         { Export Table RVA }
+  WriteBinDWord(F, 0);         { Export Table Size }
   WriteBinDWord(F, IdataRVA);
   WriteBinDWord(F, IdataSize);
   For I := 1 To 14 Do
@@ -1838,9 +2112,9 @@ Begin
   While FilePos(F) < HdrSize Do
     WriteBinByte(F, 0);
 
-  BlockWrite(F, BinCode, 512);
-  BlockWrite(F, BinData, 512);
-  BlockWrite(F, IdataBuf, 512);
+  BlockWrite(F, BinCode, TextSize);
+  BlockWrite(F, BinData, DataSize);
+  BlockWrite(F, IdataBuf, IdataSize);
 
   Close(F);
   If Opts.Verbose Then
@@ -1852,18 +2126,12 @@ Begin
   End;
 End;
 
-{ ============================================================
-  OPTIONS ET ARGUMENTS
-  ============================================================ }
-
 Procedure PrintUsage;
 Begin
   WriteLn('OBERCW32 version ', OBERCW32_VERSION);
   WriteLn('Usage: OBERCW32 <source.obn> [options]');
   WriteLn('Options:');
   WriteLn('  -o <fichier>  : specifier le nom du fichier de sortie');
-  WriteLn('  -c            : generer un fichier .OBJ (COFF) au lieu de .EXE');
-  WriteLn('  -S            : conserver le fichier .ASM intermediaire');
   WriteLn('  -v            : mode verbeux');
   WriteLn('  -h, --help    : afficher cette aide');
   WriteLn('  --version     : afficher la version');
@@ -1881,7 +2149,6 @@ Begin
   Opts.Verbose := False;
   Opts.EmitObj := False;
   Opts.EmitAsm := False;
-  Opts.ImportCount := 0;
 
   If ParamCount = 0 Then
   Begin
@@ -1905,8 +2172,6 @@ Begin
     End
     Else If Arg = '-v' Then
       Opts.Verbose := True
-    Else If Arg = '-c' Then
-      Opts.EmitObj := True
     Else If Arg = '-S' Then
       Opts.EmitAsm := True
     Else If Arg = '-o' Then
@@ -1947,63 +2212,42 @@ Begin
   If Opts.OutFile = '' Then
   Begin
     Base := ExtractBase(Opts.SrcFile);
-    If Opts.EmitObj Then
-      Opts.OutFile := Base + '.obj'
-    Else
-      Opts.OutFile := Base + '.exe';
+    Opts.OutFile := Base + '.exe';
   End;
 
   AsmName := ChangeExtension(Opts.SrcFile, '.asm');
 End;
-
-{ ============================================================
-  INITIALISATION
-  ============================================================ }
 
 Procedure InitTables;
 Var Ti : Integer;
 Begin
   SymCount := 0;
   TypeCount := 0;
-  ProcCount := 0;
-  ScopeDepth := 0;
   ConstCount := 0;
   StringCount := 0;
+  FixupCount := 0;
+  LabelCount := 0;
   LabelSeq := 0;
   ErrorCount := 0;
+  BinCodeLen := 0;
+  BinDataLen := 0;
+  DataOffset := 0;
 
   Ti := TypeNew(TYK_INTEGER, 4);
   Ti := TypeNew(TYK_BOOLEAN, 1);
   Ti := TypeNew(TYK_CHAR, 1);
-  Ti := TypeNew(TYK_BYTE, 1);
-  Ti := TypeNew(TYK_SET, 4);
-  Ti := TypeNew(TYK_REAL, 4);
-
-  ProcEnter('INC');
-  ProcEnter('DEC');
-  ProcEnter('ABS');
-  ProcEnter('ODD');
-  ProcEnter('CHR');
-  ProcEnter('ORD');
-  ProcEnter('HALT');
-  ProcEnter('ASSERT');
-  ProcEnter('LEN');
-  ProcEnter('NEW');
-  ProcEnter('INCL');
-  ProcEnter('EXCL');
 End;
-
-{ ============================================================
-  MAIN
-  ============================================================ }
 
 Begin
   ParseArgs;
-
   InitTables;
-
   LexOpen(Opts.SrcFile);
+  
+  EmitCodePrologue;
   ParseModule;
+  EmitCodeEpilogue;
+  GenPrintIntHelper;
+  
   LexClose;
 
   If ErrorCount > 0 Then
@@ -2012,33 +2256,8 @@ Begin
     Halt(1);
   End;
 
-  Assign(AsmFile, AsmName);
-  {$I-}
-  Rewrite(AsmFile);
-  {$I+}
-  If IOResult <> 0 Then
-    FatalError('Impossible de creer le fichier ASM: ' + AsmName);
-
-  EmitHeader(ModuleName);
-  EmitDataSeg;
-  EmitRuntime;
-  EmitEntryPoint(ModuleName);
-  EmitFooter(ModuleName);
-
-  Close(AsmFile);
-
-  If Opts.EmitObj Then
-    BinWriteObj
-  Else
-    BinWriteExe;
-
-  If Not Opts.EmitAsm Then
-  Begin
-    {$I-}
-    Erase(AsmFile);
-    {$I+}
-    If IOResult <> 0 Then { ignore };
-  End;
+  BuildDataSection;
+  BinWriteExe;
 
   If Opts.Verbose Then
   Begin
