@@ -1703,7 +1703,9 @@ Begin
  WriteResDWord(0);
 End;
 
-{ Ecriture d'une chaine Unicode (UTF-16LE) terminee par null }
+{ Ecriture d'une chaine ANSI vers UTF-16LE terminee par null.
+  Note: Convertit caracteres ANSI (0-255) en UTF-16LE. Ne supporte pas
+  les caracteres multi-octets ou l'encodage UTF-8 complet. }
 Procedure WriteResString(Const S: String);
 Var
  I: Integer;
@@ -1739,7 +1741,9 @@ Var
  Size: LongInt;
  I: Integer;
 Begin
- Size := 18; { DLGTEMPLATE de base }
+ { DLGTEMPLATE de base: Style(4) + ExStyle(4) + ControlCount(2) +
+   X(2) + Y(2) + CX(2) + CY(2) = 18 octets }
+ Size := 18;
  { Menu, Class, Title - tous vides pour simplifier }
  Size := Size + 2 + 2 + (Length(Dialogs[DlgIdx].Caption) + 1) * 2;
  { Font si DS_SETFONT }
@@ -1762,8 +1766,9 @@ End;
 { Ecriture d'un dialogue au format ressource binaire 32-bit }
 Procedure WriteResDialog(DlgIdx: Integer);
 Var
- I: Integer;
+ I, J: Integer;
  DataSize: LongInt;
+ Padding: Integer;
 Begin
  If (DlgIdx < 1) Or (DlgIdx > DialogCount) Then Exit;
 
@@ -1791,7 +1796,9 @@ Begin
  { Controles }
  For I := 1 To Dialogs[DlgIdx].ControlCount Do Begin
   { Alignement sur DWORD avant chaque controle }
-  While (FilePos(OutResFile) Mod 4) <> 0 Do
+  { Calculer le padding necessaire une seule fois }
+  Padding := (4 - (FilePos(OutResFile) Mod 4)) Mod 4;
+  For J := 1 To Padding Do
    WriteResByte(0);
 
   WriteResDWord(Dialogs[DlgIdx].Controls[I].Style);   { Style }
