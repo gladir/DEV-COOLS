@@ -28,7 +28,7 @@
   19. DONE: Creer le parseur CSS pour le support des feuilles de style
   20. DONE: Implementer l'application des styles CSS aux elements HTML (cascade et heritage)
   21. DONE: Implementer le decodeur et l'affichage des images BMP
-  22. TODO: Implementer le decodeur et l'affichage des images GIF (y compris anime)
+  22. DONE: Implementer le decodeur et l'affichage des images GIF (y compris anime)
   23. TODO: Implementer le decodeur et l'affichage des images JPEG
   24. TODO: Implementer le decodeur et l'affichage des images PNG
   25. TODO: Implementer le parseur et le rendu des fichiers SVG (Scalable Vector Graphics)
@@ -6589,13 +6589,15 @@ End;
 Procedure RenderTagImg(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  Src, Alt, WidthAttr, HeightAttr: String;
- ImgPath: String;
- Img: BMPImage;
+ ImgPath, ImgExt: String;
+ BMPImg: BMPImage;
+ GIFImg: GIFImage;
  CacheIdx: Integer;
  ImgWidth, ImgHeight: Integer;
  DrawWidth, DrawHeight: Integer;
  AltWidth: Integer;
  Code: Integer;
+ IsBMP, IsGIF: Boolean;
 Begin
  If Node = Nil Then Exit;
  If Ctx.InHead Then Exit; { Pas d'affichage dans head }
@@ -6616,10 +6618,17 @@ Begin
  { Construire le chemin complet de l'image }
  ImgPath := BMPBuildImagePath(Src);
 
- { Verifier si c'est une image BMP }
- If (Length(ImgPath) < 4) Or
-    (HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 3, 4)) <> '.bmp') Then Begin
-  { Pas une image BMP, afficher le texte alternatif }
+ { Determiner le type d'image }
+ IsBMP := False;
+ IsGIF := False;
+ If Length(ImgPath) >= 4 Then Begin
+  ImgExt := HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 3, 4));
+  If ImgExt = '.bmp' Then IsBMP := True
+  Else If ImgExt = '.gif' Then IsGIF := True;
+ End;
+
+ { Si format non supporte, afficher le texte alternatif }
+ If Not IsBMP And Not IsGIF Then Begin
   If Length(Alt) > 0 Then
    RenderText(Ctx, '[' + Alt + ']')
   Else
@@ -6627,73 +6636,1030 @@ Begin
   Exit;
  End;
 
- { Chercher dans le cache }
- CacheIdx := BMPFindInCache(ImgPath);
- If CacheIdx > 0 Then Begin
-  Img := BMPImageCache[CacheIdx].Image;
- End
- Else Begin
-  { Charger l'image }
-  If Not BMPLoadFromFile(ImgPath, Img) Then Begin
-   { Echec du chargement, afficher le texte alternatif }
-   If Length(Alt) > 0 Then
-    RenderText(Ctx, '[' + Alt + ']')
-   Else
-    RenderText(Ctx, '[IMG: ' + Src + ']');
-   Exit;
+ { Traitement des images BMP }
+ If IsBMP Then Begin
+  CacheIdx := BMPFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   BMPImg := BMPImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   If Not BMPLoadFromFile(ImgPath, BMPImg) Then Begin
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   BMPAddToCache(ImgPath, BMPImg);
   End;
 
-  { Ajouter au cache }
-  BMPAddToCache(ImgPath, Img);
- End;
+  ImgWidth := BMPImg.Width;
+  ImgHeight := BMPImg.Height;
 
- { Determiner les dimensions d'affichage }
- ImgWidth := Img.Width;
- ImgHeight := Img.Height;
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
 
- { Utiliser les attributs width/height si specifies }
- If Length(WidthAttr) > 0 Then Begin
-  Val(WidthAttr, DrawWidth, Code);
-  If Code <> 0 Then DrawWidth := ImgWidth;
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+   BMPDrawImage(BMPImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+  Else
+   BMPDrawImageScaled(BMPImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
  End
- Else
-  DrawWidth := ImgWidth;
 
- If Length(HeightAttr) > 0 Then Begin
-  Val(HeightAttr, DrawHeight, Code);
-  If Code <> 0 Then DrawHeight := ImgHeight;
- End
- Else
-  DrawHeight := ImgHeight;
+ { Traitement des images GIF }
+ Else If IsGIF Then Begin
+  CacheIdx := GIFFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   GIFImg := GIFImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   If Not GIFLoadFromFile(ImgPath, GIFImg) Then Begin
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   GIFAddToCache(ImgPath, GIFImg);
+  End;
 
- { Verifier si l'image tient sur la ligne }
- If Ctx.X + DrawWidth > Ctx.MaxX Then Begin
-  { Passer a la ligne suivante }
-  RenderNewLine(Ctx);
+  ImgWidth := GIFImg.Width;
+  ImgHeight := GIFImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+   GIFDrawImage(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+  Else
+   GIFDrawImageScaled(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
  End;
-
- { Verifier si l'image tient dans la zone de rendu }
- If DrawWidth > Ctx.MaxX - Ctx.X Then
-  DrawWidth := Ctx.MaxX - Ctx.X;
- If DrawHeight > Ctx.MaxY - Ctx.Y Then
-  DrawHeight := Ctx.MaxY - Ctx.Y;
-
- { Dessiner l'image }
- If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
-  BMPDrawImage(Img, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
- Else
-  BMPDrawImageScaled(Img, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
-
- { Mettre a jour la position }
- Ctx.X := Ctx.X + DrawWidth;
-
- { Mettre a jour la hauteur de ligne si necessaire }
- If DrawHeight > Ctx.LineHeight Then
-  Ctx.LineHeight := DrawHeight;
 End;
 
 { =====================================================
   FIN DECODEUR IMAGES BMP
+  ===================================================== }
+
+{ =====================================================
+  DECODEUR ET AFFICHAGE D'IMAGES GIF (y compris anime)
+  ===================================================== }
+
+Const
+ { Signature GIF }
+ GIF_SIGNATURE_87A = 'GIF87a';
+ GIF_SIGNATURE_89A = 'GIF89a';
+
+ { Types d'extensions GIF }
+ GIF_EXT_GRAPHIC_CONTROL = $F9;
+ GIF_EXT_COMMENT = $FE;
+ GIF_EXT_PLAINTEXT = $01;
+ GIF_EXT_APPLICATION = $FF;
+
+ { Separateurs GIF }
+ GIF_IMAGE_SEPARATOR = $2C;
+ GIF_EXTENSION_INTRODUCER = $21;
+ GIF_TRAILER = $3B;
+
+ { Taille maximale d'image GIF supportee }
+ GIF_MAX_WIDTH = 800;
+ GIF_MAX_HEIGHT = 600;
+ GIF_MAX_FRAMES = 100;
+
+ { LZW Constants }
+ LZW_MAX_CODES = 4096;
+ LZW_CLEAR_CODE_OFFSET = 0;
+ LZW_EOI_CODE_OFFSET = 1;
+
+Type
+ { En-tete de fichier GIF (6 octets) }
+ GIFHeader = Record
+  Signature: Array[1..6] Of Char; { 'GIF87a' ou 'GIF89a' }
+ End;
+
+ { Descripteur d'ecran logique GIF (7 octets) }
+ GIFLogicalScreenDesc = Record
+  Width: Word;           { Largeur de l'ecran logique }
+  Height: Word;          { Hauteur de l'ecran logique }
+  PackedFields: Byte;    { Champs compresses }
+  BgColorIndex: Byte;    { Index de couleur de fond }
+  PixelAspectRatio: Byte; { Ratio d'aspect }
+ End;
+
+ { Entree de palette GIF (3 octets) }
+ GIFPaletteEntry = Record
+  Red: Byte;
+  Green: Byte;
+  Blue: Byte;
+ End;
+
+ { Palette de couleurs GIF }
+ GIFPalette = Array[0..255] Of GIFPaletteEntry;
+ GIFPalettePtr = ^GIFPalette;
+
+ { Extension de controle graphique GIF }
+ GIFGraphicControlExt = Record
+  DisposalMethod: Byte;  { Methode de disposition (0-7) }
+  UserInputFlag: Boolean; { Attend une entree utilisateur }
+  TransparentFlag: Boolean; { Transparence activee }
+  DelayTime: Word;       { Delai en 1/100 secondes }
+  TransparentIndex: Byte; { Index de couleur transparente }
+ End;
+
+ { Descripteur d'image GIF }
+ GIFImageDescriptor = Record
+  Left: Word;            { Position X de l'image }
+  Top: Word;             { Position Y de l'image }
+  Width: Word;           { Largeur de l'image }
+  Height: Word;          { Hauteur de l'image }
+  PackedFields: Byte;    { Champs compresses }
+ End;
+
+ { Frame d'animation GIF }
+ GIFFrame = Record
+  Left: Integer;
+  Top: Integer;
+  Width: Integer;
+  Height: Integer;
+  Data: Pointer;         { Pointeur vers les pixels de la frame }
+  DataSize: LongInt;
+  DelayTime: Word;       { Delai avant la prochaine frame (1/100 sec) }
+  DisposalMethod: Byte;  { Comment disposer de cette frame }
+  TransparentFlag: Boolean;
+  TransparentIndex: Byte;
+  HasLocalPalette: Boolean;
+  LocalPalette: GIFPalette;
+  LocalPaletteSize: Integer;
+  Valid: Boolean;
+ End;
+
+ GIFFramePtr = ^GIFFrame;
+
+ { Structure d'image GIF complete en memoire }
+ GIFImage = Record
+  Width: Integer;        { Largeur de l'ecran logique }
+  Height: Integer;       { Hauteur de l'ecran logique }
+  GlobalPalette: GIFPalette;
+  GlobalPaletteSize: Integer;
+  HasGlobalPalette: Boolean;
+  BgColorIndex: Byte;
+  FrameCount: Integer;   { Nombre de frames }
+  Frames: Array[1..GIF_MAX_FRAMES] Of GIFFrame;
+  CurrentFrame: Integer; { Frame actuelle pour l'animation }
+  LastFrameTime: LongInt; { Temps de la derniere frame }
+  IsAnimated: Boolean;   { True si GIF anime }
+  LoopCount: Integer;    { Nombre de boucles (0 = infini) }
+  Valid: Boolean;
+ End;
+
+ GIFImagePtr = ^GIFImage;
+
+ { Table LZW pour le decodage }
+ LZWEntry = Record
+  Prefix: Integer;       { Code prefixe (-1 si racine) }
+  Suffix: Byte;          { Octet suffixe }
+  Length: Integer;       { Longueur de la chaine }
+ End;
+
+ LZWTable = Array[0..LZW_MAX_CODES - 1] Of LZWEntry;
+ LZWTablePtr = ^LZWTable;
+
+Var
+ { Cache d'images GIF chargees }
+ GIFImageCache: Array[1..16] Of Record
+  URL: String[255];
+  Image: GIFImage;
+  Used: Boolean;
+ End;
+ GIFImageCacheCount: Integer;
+
+ { Buffer de lecture LZW }
+ LZWBitBuffer: LongInt;
+ LZWBitsInBuffer: Integer;
+ LZWDataBuffer: Array[0..255] Of Byte;
+ LZWDataPos: Integer;
+ LZWDataLen: Integer;
+ LZWFileHandle: File;
+
+{ Initialiser le cache d'images GIF }
+Procedure GIFInitCache;
+Var
+ I, J: Integer;
+Begin
+ For I := 1 To 16 Do Begin
+  GIFImageCache[I].URL := '';
+  GIFImageCache[I].Used := False;
+  GIFImageCache[I].Image.Valid := False;
+  GIFImageCache[I].Image.FrameCount := 0;
+  For J := 1 To GIF_MAX_FRAMES Do Begin
+   GIFImageCache[I].Image.Frames[J].Data := Nil;
+   GIFImageCache[I].Image.Frames[J].Valid := False;
+  End;
+ End;
+ GIFImageCacheCount := 0;
+End;
+
+{ Convertir une couleur RGB en index de palette VGA }
+Function GIFRGBToVGAColor(R, G, B: Byte): Byte;
+Var
+ BestColor, BestDist, Dist: Integer;
+ I: Integer;
+Const
+ VGAPalette: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0),       { 0: Noir }
+  (0, 0, 170),     { 1: Bleu }
+  (0, 170, 0),     { 2: Vert }
+  (0, 170, 170),   { 3: Cyan }
+  (170, 0, 0),     { 4: Rouge }
+  (170, 0, 170),   { 5: Magenta }
+  (170, 85, 0),    { 6: Marron }
+  (170, 170, 170), { 7: Gris clair }
+  (85, 85, 85),    { 8: Gris fonce }
+  (85, 85, 255),   { 9: Bleu clair }
+  (85, 255, 85),   { 10: Vert clair }
+  (85, 255, 255),  { 11: Cyan clair }
+  (255, 85, 85),   { 12: Rouge clair }
+  (255, 85, 255),  { 13: Magenta clair }
+  (255, 255, 85),  { 14: Jaune }
+  (255, 255, 255)  { 15: Blanc }
+ );
+Begin
+ BestColor := 0;
+ BestDist := 256 * 256 * 3;
+
+ For I := 0 To 15 Do Begin
+  Dist := (Integer(R) - Integer(VGAPalette[I, 0])) *
+          (Integer(R) - Integer(VGAPalette[I, 0])) +
+          (Integer(G) - Integer(VGAPalette[I, 1])) *
+          (Integer(G) - Integer(VGAPalette[I, 1])) +
+          (Integer(B) - Integer(VGAPalette[I, 2])) *
+          (Integer(B) - Integer(VGAPalette[I, 2]));
+  If Dist < BestDist Then Begin
+   BestDist := Dist;
+   BestColor := I;
+  End;
+ End;
+
+ GIFRGBToVGAColor := BestColor;
+End;
+
+{ Liberer la memoire d'une frame GIF }
+Procedure GIFFreeFrame(Var Frame: GIFFrame);
+Begin
+ If Frame.Data <> Nil Then Begin
+  FreeMem(Frame.Data, Frame.DataSize);
+  Frame.Data := Nil;
+ End;
+ Frame.Valid := False;
+ Frame.DataSize := 0;
+End;
+
+{ Liberer la memoire d'une image GIF complete }
+Procedure GIFFreeImage(Var Img: GIFImage);
+Var
+ I: Integer;
+Begin
+ For I := 1 To Img.FrameCount Do
+  GIFFreeFrame(Img.Frames[I]);
+ Img.FrameCount := 0;
+ Img.Valid := False;
+End;
+
+{ Lire un bloc de sous-donnees GIF }
+Function GIFReadSubBlock(Var F: File; Var Buffer; MaxSize: Integer): Integer;
+Var
+ BlockSize: Byte;
+ BytesRead: Word;
+Begin
+ GIFReadSubBlock := 0;
+ BlockRead(F, BlockSize, 1, BytesRead);
+ If (BytesRead <> 1) Or (BlockSize = 0) Then Exit;
+ 
+ If BlockSize > MaxSize Then BlockSize := MaxSize;
+ BlockRead(F, Buffer, BlockSize, BytesRead);
+ GIFReadSubBlock := BytesRead;
+End;
+
+{ Sauter les sous-blocs restants }
+Procedure GIFSkipSubBlocks(Var F: File);
+Var
+ BlockSize: Byte;
+ BytesRead: Word;
+ TempBuffer: Array[0..255] Of Byte;
+Begin
+ Repeat
+  BlockRead(F, BlockSize, 1, BytesRead);
+  If (BytesRead <> 1) Or (BlockSize = 0) Then Exit;
+  BlockRead(F, TempBuffer, BlockSize, BytesRead);
+ Until (BlockSize = 0) Or (BytesRead = 0);
+End;
+
+{ Initialiser le buffer de lecture LZW }
+Procedure LZWInitBuffer(Var F: File);
+Begin
+ LZWBitBuffer := 0;
+ LZWBitsInBuffer := 0;
+ LZWDataPos := 0;
+ LZWDataLen := 0;
+ LZWFileHandle := F;
+End;
+
+{ Lire le prochain sous-bloc de donnees }
+Function LZWReadNextBlock: Boolean;
+Var
+ BlockSize: Byte;
+ BytesRead: Word;
+Begin
+ LZWReadNextBlock := False;
+ BlockRead(LZWFileHandle, BlockSize, 1, BytesRead);
+ If (BytesRead <> 1) Or (BlockSize = 0) Then Exit;
+ 
+ BlockRead(LZWFileHandle, LZWDataBuffer, BlockSize, BytesRead);
+ If BytesRead <> BlockSize Then Exit;
+ 
+ LZWDataPos := 0;
+ LZWDataLen := BlockSize;
+ LZWReadNextBlock := True;
+End;
+
+{ Lire N bits du flux LZW }
+Function LZWReadBits(NumBits: Integer): Integer;
+Var
+ Result: Integer;
+ NextByte: Byte;
+Begin
+ LZWReadBits := -1;
+ 
+ { S'assurer qu'on a assez de bits }
+ While LZWBitsInBuffer < NumBits Do Begin
+  { Besoin de plus de donnees }
+  If LZWDataPos >= LZWDataLen Then Begin
+   If Not LZWReadNextBlock Then Exit;
+  End;
+  
+  NextByte := LZWDataBuffer[LZWDataPos];
+  Inc(LZWDataPos);
+  
+  LZWBitBuffer := LZWBitBuffer Or (LongInt(NextByte) Shl LZWBitsInBuffer);
+  Inc(LZWBitsInBuffer, 8);
+ End;
+ 
+ { Extraire les bits requis }
+ Result := LZWBitBuffer And ((1 Shl NumBits) - 1);
+ LZWBitBuffer := LZWBitBuffer Shr NumBits;
+ Dec(LZWBitsInBuffer, NumBits);
+ 
+ LZWReadBits := Result;
+End;
+
+{ Decoder les donnees d'image LZW }
+Function GIFDecodeLZW(Var F: File; MinCodeSize: Byte; 
+                       OutputBuffer: Pointer; MaxOutput: LongInt): LongInt;
+Var
+ Table: LZWTablePtr;
+ ClearCode, EOICode: Integer;
+ CodeSize, NextCode: Integer;
+ OldCode, Code, TempCode: Integer;
+ Stack: Array[0..LZW_MAX_CODES - 1] Of Byte;
+ StackPtr: Integer;
+ FirstChar: Byte;
+ OutputPos: LongInt;
+ OutPtr: ^Byte;
+ I: Integer;
+Begin
+ GIFDecodeLZW := 0;
+ 
+ { Allouer la table LZW }
+ GetMem(Table, SizeOf(LZWTable));
+ If Table = Nil Then Exit;
+ 
+ { Initialiser les codes speciaux }
+ ClearCode := 1 Shl MinCodeSize;
+ EOICode := ClearCode + 1;
+ 
+ { Initialiser le buffer de lecture }
+ LZWInitBuffer(F);
+ 
+ { Initialiser les variables }
+ CodeSize := MinCodeSize + 1;
+ NextCode := EOICode + 1;
+ OldCode := -1;
+ FirstChar := 0;
+ OutputPos := 0;
+ OutPtr := OutputBuffer;
+ 
+ { Initialiser la table avec les codes de base }
+ For I := 0 To ClearCode - 1 Do Begin
+  Table^[I].Prefix := -1;
+  Table^[I].Suffix := I;
+  Table^[I].Length := 1;
+ End;
+ 
+ { Decoder le flux }
+ While OutputPos < MaxOutput Do Begin
+  Code := LZWReadBits(CodeSize);
+  If Code < 0 Then Break; { Erreur de lecture }
+  
+  If Code = EOICode Then Break; { Fin de l'image }
+  
+  If Code = ClearCode Then Begin
+   { Reinitialiser la table }
+   CodeSize := MinCodeSize + 1;
+   NextCode := EOICode + 1;
+   OldCode := -1;
+   Continue;
+  End;
+  
+  If OldCode = -1 Then Begin
+   { Premier code apres clear }
+   If Code < ClearCode Then Begin
+    OutPtr^ := Code;
+    Inc(OutPtr);
+    Inc(OutputPos);
+    FirstChar := Code;
+    OldCode := Code;
+   End;
+   Continue;
+  End;
+  
+  { Decoder la chaine }
+  TempCode := Code;
+  StackPtr := 0;
+  
+  If Code >= NextCode Then Begin
+   { Cas special: code pas encore dans la table }
+   Stack[StackPtr] := FirstChar;
+   Inc(StackPtr);
+   TempCode := OldCode;
+  End;
+  
+  { Suivre la chaine de prefixes }
+  While TempCode >= ClearCode Do Begin
+   If TempCode >= NextCode Then Break; { Code invalide }
+   Stack[StackPtr] := Table^[TempCode].Suffix;
+   Inc(StackPtr);
+   TempCode := Table^[TempCode].Prefix;
+   If StackPtr >= LZW_MAX_CODES Then Break; { Debordement }
+  End;
+  
+  { Ajouter le dernier caractere }
+  If TempCode >= 0 Then Begin
+   Stack[StackPtr] := TempCode;
+   Inc(StackPtr);
+   FirstChar := TempCode;
+  End;
+  
+  { Ecrire la pile dans l'ordre inverse }
+  While (StackPtr > 0) And (OutputPos < MaxOutput) Do Begin
+   Dec(StackPtr);
+   OutPtr^ := Stack[StackPtr];
+   Inc(OutPtr);
+   Inc(OutputPos);
+  End;
+  
+  { Ajouter une nouvelle entree a la table }
+  If NextCode < LZW_MAX_CODES Then Begin
+   Table^[NextCode].Prefix := OldCode;
+   Table^[NextCode].Suffix := FirstChar;
+   Table^[NextCode].Length := Table^[OldCode].Length + 1;
+   Inc(NextCode);
+   
+   { Augmenter la taille du code si necessaire }
+   If (NextCode >= (1 Shl CodeSize)) And (CodeSize < 12) Then
+    Inc(CodeSize);
+  End;
+  
+  OldCode := Code;
+ End;
+ 
+ { Liberer la table }
+ FreeMem(Table, SizeOf(LZWTable));
+ 
+ GIFDecodeLZW := OutputPos;
+End;
+
+{ Charger une image GIF depuis un fichier }
+Function GIFLoadFromFile(Const FileName: String; Var Img: GIFImage): Boolean;
+Var
+ F: File;
+ Header: GIFHeader;
+ ScreenDesc: GIFLogicalScreenDesc;
+ ImageDesc: GIFImageDescriptor;
+ BytesRead: Word;
+ I: Integer;
+ GlobalPaletteSize: Integer;
+ Introducer, Label_: Byte;
+ GCE: GIFGraphicControlExt;
+ HasGCE: Boolean;
+ BlockSize: Byte;
+ GCEData: Array[0..5] Of Byte;
+ MinCodeSize: Byte;
+ FrameWidth, FrameHeight: Integer;
+ FrameDataSize: LongInt;
+ LocalPaletteSize: Integer;
+ DecodedSize: LongInt;
+ AppId: Array[1..11] Of Char;
+ LoopData: Array[0..2] Of Byte;
+Begin
+ GIFLoadFromFile := False;
+ Img.Valid := False;
+ Img.FrameCount := 0;
+ Img.CurrentFrame := 1;
+ Img.IsAnimated := False;
+ Img.LoopCount := 0;
+ Img.HasGlobalPalette := False;
+ 
+ { Initialiser le GCE }
+ HasGCE := False;
+ GCE.DisposalMethod := 0;
+ GCE.UserInputFlag := False;
+ GCE.TransparentFlag := False;
+ GCE.DelayTime := 0;
+ GCE.TransparentIndex := 0;
+ 
+ { Ouvrir le fichier }
+ {$I-}
+ Assign(F, FileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ 
+ { Lire l'en-tete GIF }
+ BlockRead(F, Header, SizeOf(GIFHeader), BytesRead);
+ If BytesRead <> SizeOf(GIFHeader) Then Begin
+  Close(F);
+  Exit;
+ End;
+ 
+ { Verifier la signature GIF }
+ If (Header.Signature <> GIF_SIGNATURE_87A) And
+    (Header.Signature <> GIF_SIGNATURE_89A) Then Begin
+  Close(F);
+  Exit;
+ End;
+ 
+ { Lire le descripteur d'ecran logique }
+ BlockRead(F, ScreenDesc, SizeOf(GIFLogicalScreenDesc), BytesRead);
+ If BytesRead <> SizeOf(GIFLogicalScreenDesc) Then Begin
+  Close(F);
+  Exit;
+ End;
+ 
+ { Verifier les dimensions }
+ If (ScreenDesc.Width > GIF_MAX_WIDTH) Or
+    (ScreenDesc.Height > GIF_MAX_HEIGHT) Then Begin
+  Close(F);
+  Exit;
+ End;
+ 
+ Img.Width := ScreenDesc.Width;
+ Img.Height := ScreenDesc.Height;
+ Img.BgColorIndex := ScreenDesc.BgColorIndex;
+ 
+ { Lire la palette globale si presente }
+ If (ScreenDesc.PackedFields And $80) <> 0 Then Begin
+  GlobalPaletteSize := 1 Shl ((ScreenDesc.PackedFields And $07) + 1);
+  Img.GlobalPaletteSize := GlobalPaletteSize;
+  Img.HasGlobalPalette := True;
+  
+  For I := 0 To GlobalPaletteSize - 1 Do Begin
+   BlockRead(F, Img.GlobalPalette[I], SizeOf(GIFPaletteEntry), BytesRead);
+   If BytesRead <> SizeOf(GIFPaletteEntry) Then Begin
+    Close(F);
+    Exit;
+   End;
+  End;
+ End;
+ 
+ { Parcourir les blocs GIF }
+ While True Do Begin
+  BlockRead(F, Introducer, 1, BytesRead);
+  If BytesRead <> 1 Then Break;
+  
+  Case Introducer Of
+   GIF_TRAILER: Break; { Fin du fichier GIF }
+   
+   GIF_EXTENSION_INTRODUCER: Begin
+    { Lire le type d'extension }
+    BlockRead(F, Label_, 1, BytesRead);
+    If BytesRead <> 1 Then Break;
+    
+    Case Label_ Of
+     GIF_EXT_GRAPHIC_CONTROL: Begin
+      { Extension de controle graphique }
+      BlockRead(F, BlockSize, 1, BytesRead);
+      If (BytesRead = 1) And (BlockSize >= 4) Then Begin
+       BlockRead(F, GCEData, BlockSize, BytesRead);
+       If BytesRead = BlockSize Then Begin
+        GCE.DisposalMethod := (GCEData[0] Shr 2) And $07;
+        GCE.UserInputFlag := (GCEData[0] And $02) <> 0;
+        GCE.TransparentFlag := (GCEData[0] And $01) <> 0;
+        GCE.DelayTime := GCEData[1] Or (Word(GCEData[2]) Shl 8);
+        GCE.TransparentIndex := GCEData[3];
+        HasGCE := True;
+       End;
+      End;
+      { Lire le terminateur }
+      BlockRead(F, BlockSize, 1, BytesRead);
+     End;
+     
+     GIF_EXT_APPLICATION: Begin
+      { Extension d'application (NETSCAPE pour les boucles) }
+      BlockRead(F, BlockSize, 1, BytesRead);
+      If (BytesRead = 1) And (BlockSize = 11) Then Begin
+       BlockRead(F, AppId, 11, BytesRead);
+       If (BytesRead = 11) And (Copy(AppId, 1, 8) = 'NETSCAPE') Then Begin
+        { Lire le sous-bloc de boucle }
+        BlockRead(F, BlockSize, 1, BytesRead);
+        If (BytesRead = 1) And (BlockSize = 3) Then Begin
+         BlockRead(F, LoopData, 3, BytesRead);
+         If BytesRead = 3 Then
+          Img.LoopCount := LoopData[1] Or (Word(LoopData[2]) Shl 8);
+        End;
+       End;
+      End;
+      GIFSkipSubBlocks(F);
+     End;
+     
+     Else Begin
+      { Sauter les autres extensions }
+      GIFSkipSubBlocks(F);
+     End;
+    End;
+   End;
+   
+   GIF_IMAGE_SEPARATOR: Begin
+    { Nouvelle frame d'image }
+    If Img.FrameCount >= GIF_MAX_FRAMES Then Break;
+    
+    { Lire le descripteur d'image }
+    BlockRead(F, ImageDesc, SizeOf(GIFImageDescriptor), BytesRead);
+    If BytesRead <> SizeOf(GIFImageDescriptor) Then Break;
+    
+    Inc(Img.FrameCount);
+    
+    With Img.Frames[Img.FrameCount] Do Begin
+     Left := ImageDesc.Left;
+     Top := ImageDesc.Top;
+     Width := ImageDesc.Width;
+     Height := ImageDesc.Height;
+     Valid := False;
+     Data := Nil;
+     HasLocalPalette := False;
+     LocalPaletteSize := 0;
+     
+     { Appliquer les parametres GCE si disponibles }
+     If HasGCE Then Begin
+      DelayTime := GCE.DelayTime;
+      DisposalMethod := GCE.DisposalMethod;
+      TransparentFlag := GCE.TransparentFlag;
+      TransparentIndex := GCE.TransparentIndex;
+      HasGCE := False; { Consommer le GCE }
+     End
+     Else Begin
+      DelayTime := 0;
+      DisposalMethod := 0;
+      TransparentFlag := False;
+      TransparentIndex := 0;
+     End;
+     
+     { Lire la palette locale si presente }
+     If (ImageDesc.PackedFields And $80) <> 0 Then Begin
+      LocalPaletteSize := 1 Shl ((ImageDesc.PackedFields And $07) + 1);
+      HasLocalPalette := True;
+      Img.Frames[Img.FrameCount].LocalPaletteSize := LocalPaletteSize;
+      
+      For I := 0 To LocalPaletteSize - 1 Do Begin
+       BlockRead(F, LocalPalette[I], SizeOf(GIFPaletteEntry), BytesRead);
+       If BytesRead <> SizeOf(GIFPaletteEntry) Then Begin
+        Close(F);
+        Exit;
+       End;
+      End;
+     End;
+     
+     { Lire le code LZW minimum }
+     BlockRead(F, MinCodeSize, 1, BytesRead);
+     If BytesRead <> 1 Then Begin
+      Close(F);
+      Exit;
+     End;
+     
+     { Allouer la memoire pour les pixels }
+     FrameWidth := ImageDesc.Width;
+     FrameHeight := ImageDesc.Height;
+     FrameDataSize := LongInt(FrameWidth) * LongInt(FrameHeight);
+     
+     If FrameDataSize > 65520 Then Begin
+      { Trop grand, sauter cette frame }
+      GIFSkipSubBlocks(F);
+      Dec(Img.FrameCount);
+      Continue;
+     End;
+     
+     GetMem(Data, FrameDataSize);
+     If Data = Nil Then Begin
+      GIFSkipSubBlocks(F);
+      Dec(Img.FrameCount);
+      Continue;
+     End;
+     DataSize := FrameDataSize;
+     
+     { Decoder les donnees LZW }
+     DecodedSize := GIFDecodeLZW(F, MinCodeSize, Data, FrameDataSize);
+     
+     If DecodedSize > 0 Then
+      Valid := True
+     Else Begin
+      FreeMem(Data, FrameDataSize);
+      Data := Nil;
+      Dec(Img.FrameCount);
+     End;
+    End;
+   End;
+  End;
+ End;
+ 
+ Close(F);
+ 
+ { Verifier si on a charge au moins une frame }
+ If Img.FrameCount > 0 Then Begin
+  Img.Valid := True;
+  Img.IsAnimated := (Img.FrameCount > 1);
+  Img.CurrentFrame := 1;
+  Img.LastFrameTime := 0;
+  GIFLoadFromFile := True;
+ End;
+End;
+
+{ Obtenir la couleur d'un pixel dans une frame GIF }
+Function GIFGetPixel(Const Img: GIFImage; FrameIdx: Integer; 
+                      X, Y: Integer; Var IsTransparent: Boolean): Byte;
+Var
+ Offset: LongInt;
+ PixelIndex: Byte;
+ Palette: ^GIFPalette;
+ DataPtr: ^Byte;
+Begin
+ GIFGetPixel := 0;
+ IsTransparent := False;
+ 
+ If Not Img.Valid Then Exit;
+ If (FrameIdx < 1) Or (FrameIdx > Img.FrameCount) Then Exit;
+ If Not Img.Frames[FrameIdx].Valid Then Exit;
+ 
+ With Img.Frames[FrameIdx] Do Begin
+  If (X < 0) Or (X >= Width) Or (Y < 0) Or (Y >= Height) Then Exit;
+  
+  Offset := LongInt(Y) * LongInt(Width) + LongInt(X);
+  DataPtr := Data;
+  Inc(DataPtr, Offset);
+  PixelIndex := DataPtr^;
+  
+  { Verifier la transparence }
+  If TransparentFlag And (PixelIndex = TransparentIndex) Then Begin
+   IsTransparent := True;
+   Exit;
+  End;
+  
+  { Choisir la palette appropriee }
+  If HasLocalPalette Then
+   Palette := @LocalPalette
+  Else If Img.HasGlobalPalette Then
+   Palette := @Img.GlobalPalette
+  Else Begin
+   GIFGetPixel := PixelIndex And $0F; { Utiliser l'index directement }
+   Exit;
+  End;
+  
+  { Convertir en couleur VGA }
+  GIFGetPixel := GIFRGBToVGAColor(
+   Palette^[PixelIndex].Red,
+   Palette^[PixelIndex].Green,
+   Palette^[PixelIndex].Blue);
+ End;
+End;
+
+{ Dessiner une frame GIF a l'ecran }
+Procedure GIFDrawFrame(Const Img: GIFImage; FrameIdx: Integer;
+                        DestX, DestY: Integer; MaxWidth, MaxHeight: Integer);
+Var
+ X, Y: Integer;
+ DrawWidth, DrawHeight: Integer;
+ PixelColor: Byte;
+ IsTransparent: Boolean;
+ FrameX, FrameY: Integer;
+Begin
+ If Not Img.Valid Then Exit;
+ If (FrameIdx < 1) Or (FrameIdx > Img.FrameCount) Then Exit;
+ If Not Img.Frames[FrameIdx].Valid Then Exit;
+ 
+ With Img.Frames[FrameIdx] Do Begin
+  { Calculer les dimensions a dessiner }
+  DrawWidth := Width;
+  DrawHeight := Height;
+  
+  If DrawWidth > MaxWidth Then DrawWidth := MaxWidth;
+  If DrawHeight > MaxHeight Then DrawHeight := MaxHeight;
+  
+  { Dessiner pixel par pixel }
+  For Y := 0 To DrawHeight - 1 Do Begin
+   For X := 0 To DrawWidth - 1 Do Begin
+    PixelColor := GIFGetPixel(Img, FrameIdx, X, Y, IsTransparent);
+    If Not IsTransparent Then Begin
+     FrameX := DestX + Left + X;
+     FrameY := DestY + Top + Y;
+     PutPixel(FrameX, FrameY, PixelColor);
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ Dessiner une image GIF (premiere frame ou frame courante) }
+Procedure GIFDrawImage(Const Img: GIFImage; DestX, DestY: Integer;
+                        MaxWidth, MaxHeight: Integer);
+Begin
+ If Img.Valid And (Img.FrameCount > 0) Then
+  GIFDrawFrame(Img, Img.CurrentFrame, DestX, DestY, MaxWidth, MaxHeight);
+End;
+
+{ Dessiner une image GIF avec mise a l'echelle }
+Procedure GIFDrawImageScaled(Const Img: GIFImage; DestX, DestY: Integer;
+                              DestWidth, DestHeight: Integer);
+Var
+ X, Y: Integer;
+ SrcX, SrcY: Integer;
+ PixelColor: Byte;
+ IsTransparent: Boolean;
+ FrameIdx: Integer;
+Begin
+ If Not Img.Valid Then Exit;
+ If (DestWidth <= 0) Or (DestHeight <= 0) Then Exit;
+ If Img.FrameCount < 1 Then Exit;
+ 
+ FrameIdx := Img.CurrentFrame;
+ If Not Img.Frames[FrameIdx].Valid Then Exit;
+ 
+ { Dessiner avec mise a l'echelle }
+ For Y := 0 To DestHeight - 1 Do Begin
+  SrcY := (Y * Img.Frames[FrameIdx].Height) Div DestHeight;
+  For X := 0 To DestWidth - 1 Do Begin
+   SrcX := (X * Img.Frames[FrameIdx].Width) Div DestWidth;
+   PixelColor := GIFGetPixel(Img, FrameIdx, SrcX, SrcY, IsTransparent);
+   If Not IsTransparent Then
+    PutPixel(DestX + X, DestY + Y, PixelColor);
+  End;
+ End;
+End;
+
+{ Avancer a la prochaine frame d'animation }
+Function GIFNextFrame(Var Img: GIFImage): Boolean;
+Begin
+ GIFNextFrame := False;
+ If Not Img.Valid Then Exit;
+ If Not Img.IsAnimated Then Exit;
+ 
+ Inc(Img.CurrentFrame);
+ If Img.CurrentFrame > Img.FrameCount Then
+  Img.CurrentFrame := 1;
+ 
+ GIFNextFrame := True;
+End;
+
+{ Verifier si l'animation doit avancer (basee sur le temps) }
+Function GIFShouldAdvance(Const Img: GIFImage; CurrentTime: LongInt): Boolean;
+Var
+ DelayMs: LongInt;
+Begin
+ GIFShouldAdvance := False;
+ If Not Img.Valid Then Exit;
+ If Not Img.IsAnimated Then Exit;
+ 
+ { Calculer le delai en millisecondes }
+ DelayMs := LongInt(Img.Frames[Img.CurrentFrame].DelayTime) * 10;
+ If DelayMs < 20 Then DelayMs := 100; { Delai minimum }
+ 
+ { Verifier si assez de temps s'est ecoule }
+ If CurrentTime - Img.LastFrameTime >= DelayMs Then
+  GIFShouldAdvance := True;
+End;
+
+{ Mettre a jour le temps de la derniere frame }
+Procedure GIFUpdateFrameTime(Var Img: GIFImage; CurrentTime: LongInt);
+Begin
+ Img.LastFrameTime := CurrentTime;
+End;
+
+{ Chercher une image GIF dans le cache }
+Function GIFFindInCache(Const URL: String): Integer;
+Var
+ I: Integer;
+Begin
+ GIFFindInCache := 0;
+ For I := 1 To 16 Do Begin
+  If GIFImageCache[I].Used And (GIFImageCache[I].URL = URL) Then Begin
+   GIFFindInCache := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Ajouter une image GIF au cache }
+Function GIFAddToCache(Const URL: String; Const Img: GIFImage): Integer;
+Var
+ I: Integer;
+ Slot: Integer;
+Begin
+ GIFAddToCache := 0;
+ 
+ { Chercher un slot libre }
+ Slot := 0;
+ For I := 1 To 16 Do Begin
+  If Not GIFImageCache[I].Used Then Begin
+   Slot := I;
+   Break;
+  End;
+ End;
+ 
+ { Si pas de slot libre, utiliser le premier }
+ If Slot = 0 Then Begin
+  If GIFImageCache[1].Image.Valid Then
+   GIFFreeImage(GIFImageCache[1].Image);
+  Slot := 1;
+ End;
+ 
+ GIFImageCache[Slot].URL := URL;
+ GIFImageCache[Slot].Image := Img;
+ GIFImageCache[Slot].Used := True;
+ GIFAddToCache := Slot;
+End;
+
+{ Construire le chemin complet d'une image GIF }
+Function GIFBuildImagePath(Const Src: String): String;
+Var
+ BasePath: String;
+ I: Integer;
+Begin
+ { Si c'est un chemin absolu, le retourner tel quel }
+ If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
+     ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
+  GIFBuildImagePath := Src;
+  Exit;
+ End;
+ 
+ { Sinon construire le chemin relatif a l'URL courante }
+ BasePath := CurrentURL;
+ 
+ { Retirer le nom de fichier de l'URL courante }
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Break;
+  End;
+ End;
+ 
+ GIFBuildImagePath := BasePath + Src;
+End;
+
+{ =====================================================
+  FIN DECODEUR IMAGES GIF
   ===================================================== }
 
 { Variable globale pour activer/desactiver l'application CSS automatique }
