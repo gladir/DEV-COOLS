@@ -15,7 +15,7 @@
   6.  DONE: Implementer la gestion de l'historique de navigation (pile de pages visitees)
   7.  DONE: Implementer le support de la souris pour Turbo Pascal via INT 33h
   8.  DONE: Implementer le support de la souris pour Free Pascal via PtcMouse
-  9.  TODO: Creer le parseur HTML supportant toutes les balises HTML (HTML 1.0 a HTML5)
+  9.  DONE: Creer le parseur HTML supportant toutes les balises HTML (HTML 1.0 a HTML5)
   10. TODO: Implementer le rendu des balises de structure HTML (html, head, body, div, span)
   11. TODO: Implementer le rendu des balises de texte (p, h1-h6, strong, em, pre, code)
   12. TODO: Implementer le rendu des listes (ul, ol, li, dl, dt, dd)
@@ -95,6 +95,187 @@ Const
  MOUSE_RIGHT_BUTTON = 2;
  MOUSE_MIDDLE_BUTTON = 4;
 
+ { =====================================================
+   Constantes pour le parseur HTML (HTML 1.0 a HTML5)
+   ===================================================== }
+
+ { Types de noeuds HTML }
+ HTML_NODE_ELEMENT = 1;      { Element HTML (balise) }
+ HTML_NODE_TEXT = 2;         { Noeud texte }
+ HTML_NODE_COMMENT = 3;      { Commentaire HTML }
+ HTML_NODE_DOCTYPE = 4;      { Declaration DOCTYPE }
+ HTML_NODE_CDATA = 5;        { Section CDATA }
+
+ { Types de balises HTML - Structure }
+ TAG_HTML = 1;
+ TAG_HEAD = 2;
+ TAG_BODY = 3;
+ TAG_DIV = 4;
+ TAG_SPAN = 5;
+ TAG_SECTION = 6;
+ TAG_ARTICLE = 7;
+ TAG_NAV = 8;
+ TAG_ASIDE = 9;
+ TAG_HEADER = 10;
+ TAG_FOOTER = 11;
+ TAG_MAIN = 12;
+
+ { Types de balises HTML - Titres }
+ TAG_H1 = 20;
+ TAG_H2 = 21;
+ TAG_H3 = 22;
+ TAG_H4 = 23;
+ TAG_H5 = 24;
+ TAG_H6 = 25;
+
+ { Types de balises HTML - Texte }
+ TAG_P = 30;
+ TAG_BR = 31;
+ TAG_HR = 32;
+ TAG_STRONG = 33;
+ TAG_B = 34;
+ TAG_EM = 35;
+ TAG_I = 36;
+ TAG_U = 37;
+ TAG_S = 38;
+ TAG_STRIKE = 39;
+ TAG_DEL = 40;
+ TAG_INS = 41;
+ TAG_SUB = 42;
+ TAG_SUP = 43;
+ TAG_SMALL = 44;
+ TAG_BIG = 45;
+ TAG_MARK = 46;
+ TAG_ABBR = 47;
+ TAG_CITE = 48;
+ TAG_DFN = 49;
+ TAG_CODE = 50;
+ TAG_PRE = 51;
+ TAG_KBD = 52;
+ TAG_SAMP = 53;
+ TAG_VAR = 54;
+ TAG_Q = 55;
+ TAG_BLOCKQUOTE = 56;
+
+ { Types de balises HTML - Liens et media }
+ TAG_A = 60;
+ TAG_IMG = 61;
+ TAG_AUDIO = 62;
+ TAG_VIDEO = 63;
+ TAG_SOURCE = 64;
+ TAG_TRACK = 65;
+ TAG_EMBED = 66;
+ TAG_OBJECT = 67;
+ TAG_PARAM = 68;
+ TAG_IFRAME = 69;
+ TAG_CANVAS = 70;
+ TAG_SVG = 71;
+ TAG_PICTURE = 72;
+ TAG_FIGURE = 73;
+ TAG_FIGCAPTION = 74;
+
+ { Types de balises HTML - Listes }
+ TAG_UL = 80;
+ TAG_OL = 81;
+ TAG_LI = 82;
+ TAG_DL = 83;
+ TAG_DT = 84;
+ TAG_DD = 85;
+ TAG_MENU = 86;
+
+ { Types de balises HTML - Tableaux }
+ TAG_TABLE = 90;
+ TAG_TR = 91;
+ TAG_TD = 92;
+ TAG_TH = 93;
+ TAG_THEAD = 94;
+ TAG_TBODY = 95;
+ TAG_TFOOT = 96;
+ TAG_CAPTION = 97;
+ TAG_COLGROUP = 98;
+ TAG_COL = 99;
+
+ { Types de balises HTML - Formulaires }
+ TAG_FORM = 100;
+ TAG_INPUT = 101;
+ TAG_BUTTON = 102;
+ TAG_SELECT = 103;
+ TAG_OPTION = 104;
+ TAG_OPTGROUP = 105;
+ TAG_TEXTAREA = 106;
+ TAG_LABEL = 107;
+ TAG_FIELDSET = 108;
+ TAG_LEGEND = 109;
+ TAG_DATALIST = 110;
+ TAG_OUTPUT = 111;
+ TAG_PROGRESS = 112;
+ TAG_METER = 113;
+
+ { Types de balises HTML - Metadonnees }
+ TAG_TITLE = 120;
+ TAG_META = 121;
+ TAG_LINK = 122;
+ TAG_STYLE = 123;
+ TAG_SCRIPT = 124;
+ TAG_NOSCRIPT = 125;
+ TAG_BASE = 126;
+ TAG_TEMPLATE = 127;
+ TAG_SLOT = 128;
+
+ { Types de balises HTML - Semantique }
+ TAG_ADDRESS = 130;
+ TAG_TIME = 131;
+ TAG_DATA = 132;
+ TAG_DETAILS = 133;
+ TAG_SUMMARY = 134;
+ TAG_DIALOG = 135;
+
+ { Types de balises HTML - Ruby (annotations asiatiques) }
+ TAG_RUBY = 140;
+ TAG_RT = 141;
+ TAG_RP = 142;
+ TAG_RB = 143;
+ TAG_RTC = 144;
+
+ { Types de balises HTML - Autres }
+ TAG_WBR = 150;
+ TAG_BDI = 151;
+ TAG_BDO = 152;
+ TAG_MAP = 153;
+ TAG_AREA = 154;
+
+ { Balise inconnue }
+ TAG_UNKNOWN = 255;
+
+ { Nombre maximum d'attributs par balise }
+ MAX_ATTRIBUTES = 32;
+
+ { Nombre maximum d'enfants par noeud }
+ MAX_CHILDREN = 256;
+
+Type
+ { Type pour un attribut HTML }
+ HTMLAttribute = Record
+  Name: String[64];
+  Value: String[255];
+ End;
+
+ { Pointeur vers un noeud HTML (declaration forward) }
+ HTMLNodePtr = ^HTMLNode;
+
+ { Type pour un noeud HTML }
+ HTMLNode = Record
+  NodeType: Byte;            { Type de noeud (element, texte, commentaire, etc.) }
+  TagType: Byte;             { Type de balise (TAG_P, TAG_DIV, etc.) }
+  TagName: String[32];       { Nom de la balise originale }
+  Content: String;           { Contenu texte pour les noeuds texte }
+  Attributes: Array[1..MAX_ATTRIBUTES] Of HTMLAttribute;
+  AttributeCount: Integer;
+  Children: Array[1..MAX_CHILDREN] Of HTMLNodePtr;
+  ChildCount: Integer;
+  Parent: HTMLNodePtr;       { Pointeur vers le noeud parent }
+ End;
+
 Var
  { Variables globales pour la barre d'URL }
  CurrentURL: String;
@@ -125,6 +306,524 @@ Var
  MouseX, MouseY: LongInt;
  MouseButton: LongInt;
  LastMouseButton: LongInt;
+
+ { Variables pour le parseur HTML }
+ HTMLDocument: HTMLNodePtr;   { Racine du document HTML parse }
+ HTMLParseError: String;      { Message d'erreur de parsing }
+
+{ =====================================================
+  PARSEUR HTML - Fonctions et procedures
+  ===================================================== }
+
+{ Fonction pour convertir une chaine en minuscules }
+Function HTMLLowerCase(S: String): String;
+Var
+ I: Integer;
+Begin
+ For I := 1 To Length(S) Do
+  If (S[I] >= 'A') And (S[I] <= 'Z') Then
+   S[I] := Chr(Ord(S[I]) + 32);
+ HTMLLowerCase := S;
+End;
+
+{ Fonction pour ignorer les espaces blancs }
+Function HTMLSkipWhitespace(Const S: String; Pos: Integer): Integer;
+Begin
+ While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do
+  Inc(Pos);
+ HTMLSkipWhitespace := Pos;
+End;
+
+{ Fonction pour verifier si une balise est auto-fermante (void element) }
+Function IsVoidElement(Const TagName: String): Boolean;
+Var
+ LowerName: String;
+Begin
+ LowerName := HTMLLowerCase(TagName);
+ IsVoidElement := (LowerName = 'area') Or (LowerName = 'base') Or
+                  (LowerName = 'br') Or (LowerName = 'col') Or
+                  (LowerName = 'embed') Or (LowerName = 'hr') Or
+                  (LowerName = 'img') Or (LowerName = 'input') Or
+                  (LowerName = 'link') Or (LowerName = 'meta') Or
+                  (LowerName = 'param') Or (LowerName = 'source') Or
+                  (LowerName = 'track') Or (LowerName = 'wbr');
+End;
+
+{ Fonction pour obtenir le type de balise a partir du nom }
+Function GetTagType(Const TagName: String): Byte;
+Var
+ LowerName: String;
+Begin
+ LowerName := HTMLLowerCase(TagName);
+
+ { Balises de structure }
+ If LowerName = 'html' Then GetTagType := TAG_HTML
+ Else If LowerName = 'head' Then GetTagType := TAG_HEAD
+ Else If LowerName = 'body' Then GetTagType := TAG_BODY
+ Else If LowerName = 'div' Then GetTagType := TAG_DIV
+ Else If LowerName = 'span' Then GetTagType := TAG_SPAN
+ Else If LowerName = 'section' Then GetTagType := TAG_SECTION
+ Else If LowerName = 'article' Then GetTagType := TAG_ARTICLE
+ Else If LowerName = 'nav' Then GetTagType := TAG_NAV
+ Else If LowerName = 'aside' Then GetTagType := TAG_ASIDE
+ Else If LowerName = 'header' Then GetTagType := TAG_HEADER
+ Else If LowerName = 'footer' Then GetTagType := TAG_FOOTER
+ Else If LowerName = 'main' Then GetTagType := TAG_MAIN
+
+ { Titres }
+ Else If LowerName = 'h1' Then GetTagType := TAG_H1
+ Else If LowerName = 'h2' Then GetTagType := TAG_H2
+ Else If LowerName = 'h3' Then GetTagType := TAG_H3
+ Else If LowerName = 'h4' Then GetTagType := TAG_H4
+ Else If LowerName = 'h5' Then GetTagType := TAG_H5
+ Else If LowerName = 'h6' Then GetTagType := TAG_H6
+
+ { Balises de texte }
+ Else If LowerName = 'p' Then GetTagType := TAG_P
+ Else If LowerName = 'br' Then GetTagType := TAG_BR
+ Else If LowerName = 'hr' Then GetTagType := TAG_HR
+ Else If LowerName = 'strong' Then GetTagType := TAG_STRONG
+ Else If LowerName = 'b' Then GetTagType := TAG_B
+ Else If LowerName = 'em' Then GetTagType := TAG_EM
+ Else If LowerName = 'i' Then GetTagType := TAG_I
+ Else If LowerName = 'u' Then GetTagType := TAG_U
+ Else If LowerName = 's' Then GetTagType := TAG_S
+ Else If LowerName = 'strike' Then GetTagType := TAG_STRIKE
+ Else If LowerName = 'del' Then GetTagType := TAG_DEL
+ Else If LowerName = 'ins' Then GetTagType := TAG_INS
+ Else If LowerName = 'sub' Then GetTagType := TAG_SUB
+ Else If LowerName = 'sup' Then GetTagType := TAG_SUP
+ Else If LowerName = 'small' Then GetTagType := TAG_SMALL
+ Else If LowerName = 'big' Then GetTagType := TAG_BIG
+ Else If LowerName = 'mark' Then GetTagType := TAG_MARK
+ Else If LowerName = 'abbr' Then GetTagType := TAG_ABBR
+ Else If LowerName = 'cite' Then GetTagType := TAG_CITE
+ Else If LowerName = 'dfn' Then GetTagType := TAG_DFN
+ Else If LowerName = 'code' Then GetTagType := TAG_CODE
+ Else If LowerName = 'pre' Then GetTagType := TAG_PRE
+ Else If LowerName = 'kbd' Then GetTagType := TAG_KBD
+ Else If LowerName = 'samp' Then GetTagType := TAG_SAMP
+ Else If LowerName = 'var' Then GetTagType := TAG_VAR
+ Else If LowerName = 'q' Then GetTagType := TAG_Q
+ Else If LowerName = 'blockquote' Then GetTagType := TAG_BLOCKQUOTE
+
+ { Liens et media }
+ Else If LowerName = 'a' Then GetTagType := TAG_A
+ Else If LowerName = 'img' Then GetTagType := TAG_IMG
+ Else If LowerName = 'audio' Then GetTagType := TAG_AUDIO
+ Else If LowerName = 'video' Then GetTagType := TAG_VIDEO
+ Else If LowerName = 'source' Then GetTagType := TAG_SOURCE
+ Else If LowerName = 'track' Then GetTagType := TAG_TRACK
+ Else If LowerName = 'embed' Then GetTagType := TAG_EMBED
+ Else If LowerName = 'object' Then GetTagType := TAG_OBJECT
+ Else If LowerName = 'param' Then GetTagType := TAG_PARAM
+ Else If LowerName = 'iframe' Then GetTagType := TAG_IFRAME
+ Else If LowerName = 'canvas' Then GetTagType := TAG_CANVAS
+ Else If LowerName = 'svg' Then GetTagType := TAG_SVG
+ Else If LowerName = 'picture' Then GetTagType := TAG_PICTURE
+ Else If LowerName = 'figure' Then GetTagType := TAG_FIGURE
+ Else If LowerName = 'figcaption' Then GetTagType := TAG_FIGCAPTION
+
+ { Listes }
+ Else If LowerName = 'ul' Then GetTagType := TAG_UL
+ Else If LowerName = 'ol' Then GetTagType := TAG_OL
+ Else If LowerName = 'li' Then GetTagType := TAG_LI
+ Else If LowerName = 'dl' Then GetTagType := TAG_DL
+ Else If LowerName = 'dt' Then GetTagType := TAG_DT
+ Else If LowerName = 'dd' Then GetTagType := TAG_DD
+ Else If LowerName = 'menu' Then GetTagType := TAG_MENU
+
+ { Tableaux }
+ Else If LowerName = 'table' Then GetTagType := TAG_TABLE
+ Else If LowerName = 'tr' Then GetTagType := TAG_TR
+ Else If LowerName = 'td' Then GetTagType := TAG_TD
+ Else If LowerName = 'th' Then GetTagType := TAG_TH
+ Else If LowerName = 'thead' Then GetTagType := TAG_THEAD
+ Else If LowerName = 'tbody' Then GetTagType := TAG_TBODY
+ Else If LowerName = 'tfoot' Then GetTagType := TAG_TFOOT
+ Else If LowerName = 'caption' Then GetTagType := TAG_CAPTION
+ Else If LowerName = 'colgroup' Then GetTagType := TAG_COLGROUP
+ Else If LowerName = 'col' Then GetTagType := TAG_COL
+
+ { Formulaires }
+ Else If LowerName = 'form' Then GetTagType := TAG_FORM
+ Else If LowerName = 'input' Then GetTagType := TAG_INPUT
+ Else If LowerName = 'button' Then GetTagType := TAG_BUTTON
+ Else If LowerName = 'select' Then GetTagType := TAG_SELECT
+ Else If LowerName = 'option' Then GetTagType := TAG_OPTION
+ Else If LowerName = 'optgroup' Then GetTagType := TAG_OPTGROUP
+ Else If LowerName = 'textarea' Then GetTagType := TAG_TEXTAREA
+ Else If LowerName = 'label' Then GetTagType := TAG_LABEL
+ Else If LowerName = 'fieldset' Then GetTagType := TAG_FIELDSET
+ Else If LowerName = 'legend' Then GetTagType := TAG_LEGEND
+ Else If LowerName = 'datalist' Then GetTagType := TAG_DATALIST
+ Else If LowerName = 'output' Then GetTagType := TAG_OUTPUT
+ Else If LowerName = 'progress' Then GetTagType := TAG_PROGRESS
+ Else If LowerName = 'meter' Then GetTagType := TAG_METER
+
+ { Metadonnees }
+ Else If LowerName = 'title' Then GetTagType := TAG_TITLE
+ Else If LowerName = 'meta' Then GetTagType := TAG_META
+ Else If LowerName = 'link' Then GetTagType := TAG_LINK
+ Else If LowerName = 'style' Then GetTagType := TAG_STYLE
+ Else If LowerName = 'script' Then GetTagType := TAG_SCRIPT
+ Else If LowerName = 'noscript' Then GetTagType := TAG_NOSCRIPT
+ Else If LowerName = 'base' Then GetTagType := TAG_BASE
+ Else If LowerName = 'template' Then GetTagType := TAG_TEMPLATE
+ Else If LowerName = 'slot' Then GetTagType := TAG_SLOT
+
+ { Semantique }
+ Else If LowerName = 'address' Then GetTagType := TAG_ADDRESS
+ Else If LowerName = 'time' Then GetTagType := TAG_TIME
+ Else If LowerName = 'data' Then GetTagType := TAG_DATA
+ Else If LowerName = 'details' Then GetTagType := TAG_DETAILS
+ Else If LowerName = 'summary' Then GetTagType := TAG_SUMMARY
+ Else If LowerName = 'dialog' Then GetTagType := TAG_DIALOG
+
+ { Ruby }
+ Else If LowerName = 'ruby' Then GetTagType := TAG_RUBY
+ Else If LowerName = 'rt' Then GetTagType := TAG_RT
+ Else If LowerName = 'rp' Then GetTagType := TAG_RP
+ Else If LowerName = 'rb' Then GetTagType := TAG_RB
+ Else If LowerName = 'rtc' Then GetTagType := TAG_RTC
+
+ { Autres }
+ Else If LowerName = 'wbr' Then GetTagType := TAG_WBR
+ Else If LowerName = 'bdi' Then GetTagType := TAG_BDI
+ Else If LowerName = 'bdo' Then GetTagType := TAG_BDO
+ Else If LowerName = 'map' Then GetTagType := TAG_MAP
+ Else If LowerName = 'area' Then GetTagType := TAG_AREA
+
+ Else GetTagType := TAG_UNKNOWN;
+End;
+
+{ Procedure pour creer un nouveau noeud HTML }
+Function CreateHTMLNode: HTMLNodePtr;
+Var
+ Node: HTMLNodePtr;
+ I: Integer;
+Begin
+ New(Node);
+ Node^.NodeType := HTML_NODE_ELEMENT;
+ Node^.TagType := TAG_UNKNOWN;
+ Node^.TagName := '';
+ Node^.Content := '';
+ Node^.AttributeCount := 0;
+ Node^.ChildCount := 0;
+ Node^.Parent := Nil;
+ For I := 1 To MAX_ATTRIBUTES Do Begin
+  Node^.Attributes[I].Name := '';
+  Node^.Attributes[I].Value := '';
+ End;
+ For I := 1 To MAX_CHILDREN Do
+  Node^.Children[I] := Nil;
+ CreateHTMLNode := Node;
+End;
+
+{ Procedure pour liberer un noeud HTML et ses enfants }
+Procedure FreeHTMLNode(Node: HTMLNodePtr);
+Var
+ I: Integer;
+Begin
+ If Node = Nil Then Exit;
+ { Liberer recursivement tous les enfants }
+ For I := 1 To Node^.ChildCount Do
+  If Node^.Children[I] <> Nil Then
+   FreeHTMLNode(Node^.Children[I]);
+ Dispose(Node);
+End;
+
+{ Fonction pour extraire le nom d'une balise }
+Function ExtractTagName(Const S: String; Var Pos: Integer): String;
+Var
+ StartPos: Integer;
+ TagName: String;
+Begin
+ TagName := '';
+ Pos := HTMLSkipWhitespace(S, Pos);
+ StartPos := Pos;
+ While (Pos <= Length(S)) And
+       Not (S[Pos] In [' ', '>', '/', #9, #10, #13, '=']) Do
+  Inc(Pos);
+ TagName := Copy(S, StartPos, Pos - StartPos);
+ ExtractTagName := TagName;
+End;
+
+{ Fonction pour extraire la valeur d'un attribut }
+Function ExtractAttributeValue(Const S: String; Var Pos: Integer): String;
+Var
+ Quote: Char;
+ StartPos: Integer;
+ Value: String;
+Begin
+ Value := '';
+ Pos := HTMLSkipWhitespace(S, Pos);
+ If Pos > Length(S) Then Begin
+  ExtractAttributeValue := '';
+  Exit;
+ End;
+ { Verifier si la valeur est entre guillemets }
+ If S[Pos] In ['"', ''''] Then Begin
+  Quote := S[Pos];
+  Inc(Pos);
+  StartPos := Pos;
+  While (Pos <= Length(S)) And (S[Pos] <> Quote) Do
+   Inc(Pos);
+  Value := Copy(S, StartPos, Pos - StartPos);
+  If Pos <= Length(S) Then Inc(Pos); { Passer le guillemet fermant }
+ End
+ Else Begin
+  { Valeur sans guillemets }
+  StartPos := Pos;
+  While (Pos <= Length(S)) And Not (S[Pos] In [' ', '>', '/', #9, #10, #13]) Do
+   Inc(Pos);
+  Value := Copy(S, StartPos, Pos - StartPos);
+ End;
+ ExtractAttributeValue := Value;
+End;
+
+{ Procedure pour parser les attributs d'une balise }
+Procedure ParseHTMLAttributes(Const S: String; Var Pos: Integer; Node: HTMLNodePtr);
+Var
+ AttrName, AttrValue: String;
+Begin
+ While Pos <= Length(S) Do Begin
+  Pos := HTMLSkipWhitespace(S, Pos);
+  If Pos > Length(S) Then Exit;
+  If S[Pos] In ['>', '/'] Then Exit;
+
+  { Extraire le nom de l'attribut }
+  AttrName := ExtractTagName(S, Pos);
+  If AttrName = '' Then Exit;
+
+  Pos := HTMLSkipWhitespace(S, Pos);
+  AttrValue := '';
+
+  { Verifier s'il y a une valeur }
+  If (Pos <= Length(S)) And (S[Pos] = '=') Then Begin
+   Inc(Pos);
+   AttrValue := ExtractAttributeValue(S, Pos);
+  End;
+
+  { Ajouter l'attribut au noeud }
+  If Node^.AttributeCount < MAX_ATTRIBUTES Then Begin
+   Inc(Node^.AttributeCount);
+   Node^.Attributes[Node^.AttributeCount].Name := HTMLLowerCase(AttrName);
+   Node^.Attributes[Node^.AttributeCount].Value := AttrValue;
+  End;
+ End;
+End;
+
+{ Fonction principale pour parser du HTML }
+Function ParseHTML(Const HTMLSource: String): HTMLNodePtr;
+Var
+ Pos, StartPos, EndTagPos: Integer;
+ Root, CurrentNode, NewNode, TextNode: HTMLNodePtr;
+ TagName, CloseTagName, TextContent: String;
+ IsClosingTag, IsSelfClosing: Boolean;
+Begin
+ Root := CreateHTMLNode;
+ Root^.NodeType := HTML_NODE_ELEMENT;
+ Root^.TagName := 'document';
+ Root^.TagType := TAG_UNKNOWN;
+ CurrentNode := Root;
+ Pos := 1;
+ HTMLParseError := '';
+
+ While Pos <= Length(HTMLSource) Do Begin
+  { Chercher le debut d'une balise }
+  StartPos := Pos;
+  While (Pos <= Length(HTMLSource)) And (HTMLSource[Pos] <> '<') Do
+   Inc(Pos);
+
+  { Traiter le texte avant la balise }
+  If Pos > StartPos Then Begin
+   TextContent := Copy(HTMLSource, StartPos, Pos - StartPos);
+   { Ignorer le texte qui ne contient que des espaces }
+   If Trim(TextContent) <> '' Then Begin
+    TextNode := CreateHTMLNode;
+    TextNode^.NodeType := HTML_NODE_TEXT;
+    TextNode^.Content := TextContent;
+    TextNode^.Parent := CurrentNode;
+    If CurrentNode^.ChildCount < MAX_CHILDREN Then Begin
+     Inc(CurrentNode^.ChildCount);
+     CurrentNode^.Children[CurrentNode^.ChildCount] := TextNode;
+    End;
+   End;
+  End;
+
+  If Pos > Length(HTMLSource) Then Break;
+
+  { On est sur un '<' }
+  Inc(Pos);
+  If Pos > Length(HTMLSource) Then Break;
+
+  { Verifier le type de balise }
+  If HTMLSource[Pos] = '!' Then Begin
+   { Commentaire ou DOCTYPE }
+   Inc(Pos);
+   If (Pos + 1 <= Length(HTMLSource)) And
+      (HTMLSource[Pos] = '-') And (HTMLSource[Pos + 1] = '-') Then Begin
+    { Commentaire HTML <!-- ... --> }
+    Inc(Pos, 2);
+    StartPos := Pos;
+    While (Pos + 2 <= Length(HTMLSource)) And
+          Not ((HTMLSource[Pos] = '-') And (HTMLSource[Pos + 1] = '-') And
+               (HTMLSource[Pos + 2] = '>')) Do
+     Inc(Pos);
+    NewNode := CreateHTMLNode;
+    NewNode^.NodeType := HTML_NODE_COMMENT;
+    NewNode^.Content := Copy(HTMLSource, StartPos, Pos - StartPos);
+    NewNode^.Parent := CurrentNode;
+    If CurrentNode^.ChildCount < MAX_CHILDREN Then Begin
+     Inc(CurrentNode^.ChildCount);
+     CurrentNode^.Children[CurrentNode^.ChildCount] := NewNode;
+    End;
+    Inc(Pos, 3);
+   End
+   Else Begin
+    { DOCTYPE ou autre declaration }
+    While (Pos <= Length(HTMLSource)) And (HTMLSource[Pos] <> '>') Do
+     Inc(Pos);
+    Inc(Pos);
+   End;
+  End
+  Else If HTMLSource[Pos] = '/' Then Begin
+   { Balise fermante </tag> }
+   Inc(Pos);
+   CloseTagName := ExtractTagName(HTMLSource, Pos);
+   { Trouver le '>' }
+   While (Pos <= Length(HTMLSource)) And (HTMLSource[Pos] <> '>') Do
+    Inc(Pos);
+   Inc(Pos);
+   { Remonter au parent si le nom correspond }
+   If (CurrentNode <> Root) And
+      (HTMLLowerCase(CurrentNode^.TagName) = HTMLLowerCase(CloseTagName)) Then
+    CurrentNode := CurrentNode^.Parent;
+  End
+  Else Begin
+   { Balise ouvrante <tag ...> }
+   TagName := ExtractTagName(HTMLSource, Pos);
+   If TagName <> '' Then Begin
+    NewNode := CreateHTMLNode;
+    NewNode^.NodeType := HTML_NODE_ELEMENT;
+    NewNode^.TagName := TagName;
+    NewNode^.TagType := GetTagType(TagName);
+    NewNode^.Parent := CurrentNode;
+
+    { Parser les attributs }
+    ParseHTMLAttributes(HTMLSource, Pos, NewNode);
+
+    { Verifier si c'est une balise auto-fermante }
+    Pos := HTMLSkipWhitespace(HTMLSource, Pos);
+    IsSelfClosing := False;
+    If (Pos <= Length(HTMLSource)) And (HTMLSource[Pos] = '/') Then Begin
+     IsSelfClosing := True;
+     Inc(Pos);
+    End;
+
+    { Trouver le '>' }
+    While (Pos <= Length(HTMLSource)) And (HTMLSource[Pos] <> '>') Do
+     Inc(Pos);
+    Inc(Pos);
+
+    { Ajouter le noeud comme enfant du noeud courant }
+    If CurrentNode^.ChildCount < MAX_CHILDREN Then Begin
+     Inc(CurrentNode^.ChildCount);
+     CurrentNode^.Children[CurrentNode^.ChildCount] := NewNode;
+    End;
+
+    { Si ce n'est pas une balise auto-fermante ou void, descendre dans le noeud }
+    If Not IsSelfClosing And Not IsVoidElement(TagName) Then
+     CurrentNode := NewNode;
+   End;
+  End;
+ End;
+
+ ParseHTML := Root;
+End;
+
+{ Fonction pour obtenir un attribut d'un noeud HTML }
+Function GetHTMLAttribute(Node: HTMLNodePtr; Const AttrName: String): String;
+Var
+ I: Integer;
+ LowerName: String;
+Begin
+ GetHTMLAttribute := '';
+ If Node = Nil Then Exit;
+ LowerName := HTMLLowerCase(AttrName);
+ For I := 1 To Node^.AttributeCount Do
+  If Node^.Attributes[I].Name = LowerName Then Begin
+   GetHTMLAttribute := Node^.Attributes[I].Value;
+   Exit;
+  End;
+End;
+
+{ Fonction pour trouver un element par son ID }
+Function FindElementById(Node: HTMLNodePtr; Const Id: String): HTMLNodePtr;
+Var
+ I: Integer;
+ Found: HTMLNodePtr;
+Begin
+ FindElementById := Nil;
+ If Node = Nil Then Exit;
+ If GetHTMLAttribute(Node, 'id') = Id Then Begin
+  FindElementById := Node;
+  Exit;
+ End;
+ { Rechercher dans les enfants }
+ For I := 1 To Node^.ChildCount Do Begin
+  Found := FindElementById(Node^.Children[I], Id);
+  If Found <> Nil Then Begin
+   FindElementById := Found;
+   Exit;
+  End;
+ End;
+End;
+
+{ Fonction pour compter les elements avec un certain tag }
+Function CountElementsByTag(Node: HTMLNodePtr; TagType: Byte): Integer;
+Var
+ I, Count: Integer;
+Begin
+ Count := 0;
+ If Node = Nil Then Begin
+  CountElementsByTag := 0;
+  Exit;
+ End;
+ If Node^.TagType = TagType Then Inc(Count);
+ For I := 1 To Node^.ChildCount Do
+  Count := Count + CountElementsByTag(Node^.Children[I], TagType);
+ CountElementsByTag := Count;
+End;
+
+{ Fonction Trim pour supprimer les espaces en debut et fin }
+Function Trim(Const S: String): String;
+Var
+ StartPos, EndPos: Integer;
+Begin
+ StartPos := 1;
+ EndPos := Length(S);
+ While (StartPos <= EndPos) And (S[StartPos] In [' ', #9, #10, #13]) Do
+  Inc(StartPos);
+ While (EndPos >= StartPos) And (S[EndPos] In [' ', #9, #10, #13]) Do
+  Dec(EndPos);
+ If StartPos > EndPos Then
+  Trim := ''
+ Else
+  Trim := Copy(S, StartPos, EndPos - StartPos + 1);
+End;
+
+{ Procedure pour initialiser le parseur HTML }
+Procedure InitHTMLParser;
+Begin
+ HTMLDocument := Nil;
+ HTMLParseError := '';
+End;
+
+{ =====================================================
+  FIN PARSEUR HTML
+  ===================================================== }
 
 { Declarations forward pour l'historique de navigation }
 Procedure GoBack; Forward;
@@ -977,6 +1676,7 @@ BEGIN
  InitURLBar;
  InitHistory;
  InitMouse;
+ InitHTMLParser;
  InitBackButton;
  InitForwardButton;
  InitRefreshButton;
