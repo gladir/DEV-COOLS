@@ -1,0 +1,70 @@
+(* Exemple synthetique : couverture des mots reserves OBERON supportes
+   par le compilateur OBERCW32.
+
+   Ce fichier exerce les mots reserves les plus courants afin de
+   verifier qu'ils sont tous acceptes et correctement compiles.
+   (Un seul mot reserve par bloc de code pour que l'effet observe
+    soit attribuable sans ambiguite.) *)
+
+MODULE Keywords;           (* MODULE, en-tete *)
+IMPORT Out;                (* IMPORT *)
+
+CONST                      (* CONST : ignore par le compilateur minimal,
+                              mais la syntaxe doit etre acceptee *)
+  Zero = 0;
+  Dix  = 10;
+
+TYPE                       (* TYPE : de meme, la section est tolerante *)
+  Compteur = INTEGER;
+
+VAR                        (* VAR *)
+  i, somme, produit : INTEGER;
+  fini : BOOLEAN;
+
+BEGIN                      (* BEGIN : debut du corps du module *)
+
+  (* IF / THEN / ELSIF / ELSE / END *)
+  i := 7;
+  IF i < 0 THEN
+    Out.String("negatif")
+  ELSIF i = 0 THEN
+    Out.String("nul")
+  ELSE
+    Out.String("positif")
+  END;
+  Out.Ln;
+
+  (* WHILE / DO / END *)
+  i := 1;
+  somme := 0;
+  WHILE i <= 10 DO
+    somme := somme + i;
+    INC(i)
+  END;
+  Out.String("Somme 1..10 = "); Out.Int(somme, 0); Out.Ln;
+
+  (* FOR / TO / DO / END *)
+  produit := 1;
+  FOR i := 1 TO 5 DO
+    produit := produit * i
+  END;
+  Out.String("5! (FOR) = "); Out.Int(produit, 0); Out.Ln;
+
+  (* REPEAT / UNTIL *)
+  i := 0;
+  REPEAT
+    INC(i)
+  UNTIL i = 5;
+  Out.String("REPEAT jusqu'a 5 : i = "); Out.Int(i, 0); Out.Ln;
+
+  (* DIV, MOD, comparaisons *)
+  Out.String("17 DIV 5 = "); Out.Int(17 DIV 5, 0);
+  Out.String(", 17 MOD 5 = "); Out.Int(17 MOD 5, 0); Out.Ln;
+
+  (* NIL / BOOLEAN / RETURN-equivalent : on termine simplement par END. *)
+  fini := TRUE;
+  IF fini THEN
+    Out.String("fin (fini = TRUE)"); Out.Ln
+  END
+
+END Keywords.              (* END  .  : fin du MODULE *)

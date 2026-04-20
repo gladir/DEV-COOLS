@@ -1,0 +1,42 @@
+(* Demonstration de LOOP...END avec EXIT.
+   LOOP est une boucle infinie ; la seule sortie est via EXIT
+   (ou un RETURN dans une procedure). *)
+
+MODULE LoopExit;
+IMPORT Out;
+
+VAR
+  i : INTEGER;
+  somme : INTEGER;
+
+BEGIN
+  Out.String("1) Somme de 1..10 via LOOP + EXIT :"); Out.Ln;
+  i := 1;
+  somme := 0;
+  LOOP
+    IF i > 10 THEN EXIT END;
+    somme := somme + i;
+    INC(i)
+  END;
+  Out.String("  somme = "); Out.Int(somme, 0); Out.Ln;
+
+  Out.Ln;
+  Out.String("2) LOOP imbriques : factorisations (a, b) de 12 avec a*b=12"); Out.Ln;
+  Out.String("   EXIT sort du LOOP le plus interne uniquement"); Out.Ln;
+  i := 1;
+  LOOP
+    IF i > 12 THEN EXIT END;
+    somme := 1;
+    LOOP
+      IF somme > 12 THEN EXIT END;
+      IF i * somme = 12 THEN
+        Out.String("  trouve : ");
+        Out.Int(i, 0); Out.String(" * ");
+        Out.Int(somme, 0); Out.String(" = 12"); Out.Ln;
+        EXIT
+      END;
+      INC(somme)
+    END;
+    INC(i)
+  END
+END LoopExit.

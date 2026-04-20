@@ -61,6 +61,15 @@ Const
   KW_TRUE      = 26;
   KW_FALSE     = 27;
   KW_NIL       = 28;
+  KW_ARRAY     = 29;
+  KW_CASE      = 30;
+  KW_EXIT      = 31;
+  KW_IN        = 32;
+  KW_LOOP      = 33;
+  KW_OF        = 34;
+  KW_POINTER   = 35;
+  KW_RECORD    = 36;
+  KW_WITH      = 37;
 
   TYK_INTEGER   = 1;
   TYK_BOOLEAN   = 2;
@@ -164,6 +173,10 @@ Var
   BinDataLen  : Integer;
 
   DataOffset  : Integer;
+
+  { Pile d'etiquettes de sortie pour LOOP...EXIT }
+  ExitLabels    : Array[1..32] of String;
+  ExitLabelTop  : Integer;
 
 Function IntToStr(V : LongInt) : String;
 Var S : String;
@@ -327,6 +340,15 @@ Begin
   Else If U = 'TRUE'      Then LexIsKeyword := KW_TRUE
   Else If U = 'FALSE'     Then LexIsKeyword := KW_FALSE
   Else If U = 'NIL'       Then LexIsKeyword := KW_NIL
+  Else If U = 'ARRAY'     Then LexIsKeyword := KW_ARRAY
+  Else If U = 'CASE'      Then LexIsKeyword := KW_CASE
+  Else If U = 'EXIT'      Then LexIsKeyword := KW_EXIT
+  Else If U = 'IN'        Then LexIsKeyword := KW_IN
+  Else If U = 'LOOP'      Then LexIsKeyword := KW_LOOP
+  Else If U = 'OF'        Then LexIsKeyword := KW_OF
+  Else If U = 'POINTER'   Then LexIsKeyword := KW_POINTER
+  Else If U = 'RECORD'    Then LexIsKeyword := KW_RECORD
+  Else If U = 'WITH'      Then LexIsKeyword := KW_WITH
   Else LexIsKeyword := 0;
 End;
 
@@ -457,7 +479,7 @@ Begin
       LexAdvance;
       Exit;
     End
-    Else If Ch In ['(', ')', '[', ']', '{', '}', ',', ';', ':', '.', '=', '#', '<', '>', '+', '-', '*', '/', '&', '~'] Then
+    Else If Ch In ['(', ')', '[', ']', '{', '}', ',', ';', ':', '.', '=', '#', '<', '>', '+', '-', '*', '/', '&', '~', '|'] Then
     Begin
       CurTok := TOK_OP;
       CurTokStr := Ch;
@@ -908,6 +930,32 @@ Begin
   BinEmitByte($0F);
   BinEmitByte($B6);
   BinEmitByte($C0);
+End;
+
+Procedure EmitMovEAXStackTop;
+Begin
+  { mov eax, dword ptr [esp]  -->  8B 04 24 }
+  BinEmitByte($8B);
+  BinEmitByte($04);
+  BinEmitByte($24);
+End;
+
+Procedure EmitAddESP4;
+Begin
+  { add esp, 4  -->  83 C4 04 }
+  BinEmitByte($83);
+  BinEmitByte($C4);
+  BinEmitByte($04);
+End;
+
+Procedure EmitJE(Target : String);
+Var Li : Integer;
+Begin
+  Li := FindLabel(Target);
+  BinEmitByte($0F);
+  BinEmitByte($84);
+  AddFixup(FIX_CODE_REL, Li);
+  BinEmitDWord(0);
 End;
 
 Procedure Expect(Kw : Integer);
@@ -1439,6 +1487,103 @@ Begin
       DefineLabel(Lab2);
       Expect(KW_END);
     End;
+  End
+
+  Else If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_LOOP) Then
+  Begin
+    LexNext;
+    Lab1 := GenLabel;   { debut de boucle }
+    Lab2 := GenLabel;   { sortie EXIT }
+    DefineLabel(Lab1);
+    Inc(ExitLabelTop);
+    If ExitLabelTop > 32 Then
+      ErrorAt(LexLineNo, LexColNo, 'LOOP imbriques trop profondement');
+    ExitLabels[ExitLabelTop] := Lab2;
+    GenStatSeq;
+    Dec(ExitLabelTop);
+    EmitJmp(Lab1);
+    DefineLabel(Lab2);
+    Expect(KW_END);
+  End
+
+  Else If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_EXIT) Then
+  Begin
+    LexNext;
+    If ExitLabelTop <= 0 Then
+      ErrorAt(LexLineNo, LexColNo, 'EXIT en dehors d''un LOOP')
+    Else
+      EmitJmp(ExitLabels[ExitLabelTop]);
+  End
+
+  Else If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_CASE) Then
+  Begin
+    LexNext;
+    GenExpression;
+    Expect(KW_OF);
+    { Sauvegarde la valeur sur la pile : push eax }
+    BinEmitByte($50);
+    Lab3 := GenLabel;   { etiquette de fin (EndCase) }
+    Lab4 := GenLabel;   { etiquette "saut vers ELSE ou sortie" apres tests }
+    Lab2 := Lab4;       { Lab2 sera le "prochain test" pour l'alternative en cours }
+    { Parse chaque alternative : littereaux puis stmts, separees par | }
+    If (CurTok = TOK_INT) Or (CurTok = TOK_STRING) Then
+    Begin
+      While True Do
+      Begin
+        Lab1 := GenLabel;   { corps de cette alternative }
+        { Emet les comparaisons : pour chaque litteral, cmp + je Lab1 }
+        While (CurTok = TOK_INT) Or (CurTok = TOK_STRING) Do
+        Begin
+          If CurTok = TOK_INT Then
+          Begin
+            EmitMovEAXStackTop;
+            EmitCmpEAXImm(CurTokNum);
+            EmitJE(Lab1);
+            LexNext;
+          End
+          Else
+          Begin
+            { chaine de 1 caractere : on compare par valeur ASCII }
+            If Length(CurTokStr) >= 1 Then
+            Begin
+              EmitMovEAXStackTop;
+              EmitCmpEAXImm(Ord(CurTokStr[1]));
+              EmitJE(Lab1);
+            End;
+            LexNext;
+          End;
+          If AcceptOp(',') Then
+            Continue
+          Else
+            Break;
+        End;
+        ExpectOp(':');
+        { Pas de correspondance pour cette alternative : saute au test suivant }
+        EmitJmp(Lab2);
+        { Corps de l'alternative : pop valeur saved ; stmts ; jmp EndCase }
+        DefineLabel(Lab1);
+        EmitAddESP4;
+        GenStatSeq;
+        EmitJmp(Lab3);
+        { Prepare le label du test suivant }
+        DefineLabel(Lab2);
+        { Separateur d'alternatives '|' ? }
+        If (CurTok = TOK_OP) And (CurTokStr = '|') Then
+        Begin
+          LexNext;
+          Lab2 := GenLabel;
+          Continue;
+        End
+        Else
+          Break;
+      End;
+    End;
+    { Partie ELSE ou sortie : on arrive ici sans match }
+    EmitAddESP4;
+    If Accept(KW_ELSE) Then
+      GenStatSeq;
+    DefineLabel(Lab3);
+    Expect(KW_END);
   End;
 End;
 
@@ -1545,7 +1690,7 @@ Procedure ParseVarDecl;
 Var
   VarNames : Array[1..32] of String;
   VarCount : Integer;
-  I : Integer;
+  I, Depth : Integer;
   TypeName : String;
   TypeIdx : Integer;
 Begin
@@ -1565,6 +1710,7 @@ Begin
       End;
     End;
     ExpectOp(':');
+    TypeIdx := 1;
     If CurTok = TOK_IDENT Then
     Begin
       TypeName := StrUpper(CurTokStr);
@@ -1577,6 +1723,27 @@ Begin
       Else
         TypeIdx := 1;
       LexNext;
+    End
+    Else If (CurTok = TOK_KEYWORD) And
+            ((CurTokKw = KW_ARRAY) Or (CurTokKw = KW_POINTER) Or
+             (CurTokKw = KW_RECORD)) Then
+    Begin
+      { Type construit : non supporte semantiquement, on reserve 4 octets
+        et on saute jusqu'au ';' en equilibrant les RECORD...END. }
+      Depth := 0;
+      While (CurTok <> TOK_EOF) And
+            (((CurTok <> TOK_OP) Or (CurTokStr <> ';')) Or (Depth > 0)) Do
+      Begin
+        If CurTok = TOK_KEYWORD Then
+        Begin
+          If CurTokKw = KW_RECORD Then
+            Inc(Depth)
+          Else If (CurTokKw = KW_END) And (Depth > 0) Then
+            Dec(Depth);
+        End;
+        LexNext;
+      End;
+      TypeIdx := 1;
     End;
     For I := 1 To VarCount Do
       SymEnter(VarNames[I], TypeIdx);
@@ -1599,6 +1766,8 @@ Begin
 End;
 
 Procedure ParseModule;
+Var
+  I : Integer;
 Begin
   Expect(KW_MODULE);
   If CurTok = TOK_IDENT Then
@@ -1631,8 +1800,20 @@ Begin
       While (CurTok = TOK_IDENT) Do
       Begin
         LexNext;
-        While (CurTok <> TOK_EOF) And ((CurTok <> TOK_OP) Or (CurTokStr <> ';')) Do
+        { Skip jusqu'a ';' de la meme profondeur en comptant RECORD...END }
+        I := 0;
+        While (CurTok <> TOK_EOF) And
+              (((CurTok <> TOK_OP) Or (CurTokStr <> ';')) Or (I > 0)) Do
+        Begin
+          If CurTok = TOK_KEYWORD Then
+          Begin
+            If CurTokKw = KW_RECORD Then
+              Inc(I)
+            Else If (CurTokKw = KW_END) And (I > 0) Then
+              Dec(I);
+          End;
           LexNext;
+        End;
         If AcceptOp(';') Then
           Continue;
       End;
@@ -2252,6 +2433,7 @@ Begin
   BinCodeLen := 0;
   BinDataLen := 0;
   DataOffset := 0;
+  ExitLabelTop := 0;
 
   Ti := TypeNew(TYK_INTEGER, 4);
   Ti := TypeNew(TYK_BOOLEAN, 1);

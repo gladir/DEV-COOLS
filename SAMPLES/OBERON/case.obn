@@ -1,0 +1,40 @@
+(* Demonstration du mot reserve CASE.
+   CASE evalue une expression entiere et branche vers l'alternative
+   dont le litteral correspond.  ELSE est optionnel. *)
+
+MODULE CaseDemo;
+IMPORT Out;
+
+VAR i : INTEGER;
+
+BEGIN
+  Out.String("Classification des chiffres 0..9 :"); Out.Ln;
+  i := 0;
+  WHILE i <= 9 DO
+    Out.Int(i, 0); Out.String(" -> ");
+    CASE i OF
+      0      : Out.String("zero")
+    | 1, 3, 5, 7, 9
+             : Out.String("impair")
+    | 2, 4, 6, 8
+             : Out.String("pair non nul")
+    ELSE
+      Out.String("hors plage")
+    END;
+    Out.Ln;
+    INC(i)
+  END;
+
+  Out.Ln;
+  Out.String("Sans ELSE, les valeurs non listees ne font rien :"); Out.Ln;
+  i := 0;
+  WHILE i <= 4 DO
+    Out.Int(i, 0); Out.String(" : ");
+    CASE i OF
+      1 : Out.String("un")
+    | 3 : Out.String("trois")
+    END;
+    Out.Ln;
+    INC(i)
+  END
+END CaseDemo.
