@@ -386,6 +386,13 @@ Const
  GEM_FL3DACT    = $0400;
  GEM_SUBMENU    = $0800;
 
+ { Constantes pour import GEM RSC }
+ GEM_DIALOG_ID_BASE = 1000;  { Base pour IDs de dialogues importes }
+ GEM_ICON_ID_BASE   = 2000;  { Base pour IDs d'icones importees }
+ GEM_BITMAP_ID_BASE = 3000;  { Base pour IDs de bitmaps importes }
+ TREE_INDEX_SIZE    = 4;     { Taille d'une entree dans l'index d'arbres }
+ MAX_RSC_STRING_LEN = 255;   { Longueur max des chaines RSC }
+
  { Limites }
  MAX_RESOURCES = 1024;
  MAX_STRINGS = 4096;
@@ -1722,17 +1729,6 @@ Begin
  SwapWord := W;
 End;
 
-{ Fonction pour echanger les octets d'un longint (big endian -> little endian) }
-Function SwapLongInt(L: LongInt): LongInt;
-Var
- B: Array[0..3] Of Byte Absolute L;
- TempByte: Byte;
-Begin
- TempByte := B[0]; B[0] := B[3]; B[3] := TempByte;
- TempByte := B[1]; B[1] := B[2]; B[2] := TempByte;
- SwapLongInt := L;
-End;
-
 { Lecture de l'en-tete du fichier RSC }
 Function ReadRSCHeader(Var F: File; Var Header: TRSCHeader): Boolean;
 Var
@@ -1776,7 +1772,7 @@ Begin
  Obj.ob_type := SwapWord(Obj.ob_type);
  Obj.ob_flags := SwapWord(Obj.ob_flags);
  Obj.ob_state := SwapWord(Obj.ob_state);
- Obj.ob_spec := SwapLongInt(Obj.ob_spec);
+ Obj.ob_spec := SwapLong(Obj.ob_spec);
  Obj.ob_x := SmallInt(SwapWord(Word(Obj.ob_x)));
  Obj.ob_y := SmallInt(SwapWord(Word(Obj.ob_y)));
  Obj.ob_width := SmallInt(SwapWord(Word(Obj.ob_width)));
@@ -1788,9 +1784,9 @@ Procedure ReadGEMTedInfo(Var Ted: TGEMTedInfo; Offset: Word);
 Begin
  Move(RSCFileBuffer[Offset], Ted, SizeOf(TGEMTedInfo));
  { Conversion big endian -> little endian }
- Ted.te_ptext := SwapLongInt(Ted.te_ptext);
- Ted.te_ptmplt := SwapLongInt(Ted.te_ptmplt);
- Ted.te_pvalid := SwapLongInt(Ted.te_pvalid);
+ Ted.te_ptext := SwapLong(Ted.te_ptext);
+ Ted.te_ptmplt := SwapLong(Ted.te_ptmplt);
+ Ted.te_pvalid := SwapLong(Ted.te_pvalid);
  Ted.te_font := SmallInt(SwapWord(Word(Ted.te_font)));
  Ted.te_fontid := SmallInt(SwapWord(Word(Ted.te_fontid)));
  Ted.te_just := SmallInt(SwapWord(Word(Ted.te_just)));
@@ -1806,9 +1802,9 @@ Procedure ReadGEMIconBlk(Var Icon: TGEMIconBlk; Offset: Word);
 Begin
  Move(RSCFileBuffer[Offset], Icon, SizeOf(TGEMIconBlk));
  { Conversion big endian -> little endian }
- Icon.ib_pmask := SwapLongInt(Icon.ib_pmask);
- Icon.ib_pdata := SwapLongInt(Icon.ib_pdata);
- Icon.ib_ptext := SwapLongInt(Icon.ib_ptext);
+ Icon.ib_pmask := SwapLong(Icon.ib_pmask);
+ Icon.ib_pdata := SwapLong(Icon.ib_pdata);
+ Icon.ib_ptext := SwapLong(Icon.ib_ptext);
  Icon.ib_char := SmallInt(SwapWord(Word(Icon.ib_char)));
  Icon.ib_xchar := SmallInt(SwapWord(Word(Icon.ib_xchar)));
  Icon.ib_ychar := SmallInt(SwapWord(Word(Icon.ib_ychar)));
@@ -1827,7 +1823,7 @@ Procedure ReadGEMBitBlk(Var Bit: TGEMBitBlk; Offset: Word);
 Begin
  Move(RSCFileBuffer[Offset], Bit, SizeOf(TGEMBitBlk));
  { Conversion big endian -> little endian }
- Bit.bi_pdata := SwapLongInt(Bit.bi_pdata);
+ Bit.bi_pdata := SwapLong(Bit.bi_pdata);
  Bit.bi_wb := SmallInt(SwapWord(Word(Bit.bi_wb)));
  Bit.bi_hl := SmallInt(SwapWord(Word(Bit.bi_hl)));
  Bit.bi_x := SmallInt(SwapWord(Word(Bit.bi_x)));
@@ -1843,7 +1839,7 @@ Var
 Begin
  S := '';
  I := 0;
- While (I < 255) And (Offset + I < SizeOf(RSCFileBuffer)) And (RSCFileBuffer[Offset + I] <> 0) Do Begin
+ While (I < MAX_RSC_STRING_LEN) And (Offset + I < SizeOf(RSCFileBuffer)) And (RSCFileBuffer[Offset + I] <> 0) Do Begin
   S := S + Chr(RSCFileBuffer[Offset + I]);
   Inc(I);
  End;
@@ -1956,7 +1952,7 @@ Begin
  If TreeIndex >= RSCData.Header.ntree Then Exit;
 
  { Lecture de l'offset de l'arbre depuis la table d'index }
- Move(RSCFileBuffer[RSCData.Header.trindex + TreeIndex * 4], TreeOffset, 2);
+ Move(RSCFileBuffer[RSCData.Header.trindex + TreeIndex * TREE_INDEX_SIZE], TreeOffset, 2);
  TreeOffset := SwapWord(TreeOffset);
 
  { Lecture de l'objet racine }
@@ -2004,7 +2000,7 @@ Begin
    ResType := RT_DIALOG;
    TypeName := 'DIALOG';
    ResId.IsNumeric := True;
-   ResId.NumId := 1000 + TreeIndex;
+   ResId.NumId := GEM_DIALOG_ID_BASE + TreeIndex;
    ResId.StrId := '';
    LangId := $0409; { English US }
    MemFlags := $1010;
@@ -2042,7 +2038,7 @@ Begin
     ResType := RT_ICON;
     TypeName := 'ICON';
     ResId.IsNumeric := True;
-    ResId.NumId := 2000 + I;
+    ResId.NumId := GEM_ICON_ID_BASE + I;
     ResId.StrId := '';
     LangId := $0409;
     MemFlags := $1010;
@@ -2082,7 +2078,7 @@ Begin
     ResType := RT_BITMAP;
     TypeName := 'BITMAP';
     ResId.IsNumeric := True;
-    ResId.NumId := 3000 + I;
+    ResId.NumId := GEM_BITMAP_ID_BASE + I;
     ResId.StrId := '';
     LangId := $0409;
     MemFlags := $1010;
