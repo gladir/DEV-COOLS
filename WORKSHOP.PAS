@@ -723,6 +723,32 @@ Type
   ShowProperties: Boolean;
  End;
 
+ { Etat de l'editeur de dialogues WYSIWYG }
+ TDialogEditorState = Record
+  DialogIndex: Integer;       { Index du dialogue en cours d'edition }
+  SelectedControl: Integer;   { Index du controle selectionne (-1 = aucun, 0 = dialogue) }
+  DragMode: Integer;          { 0=aucun, 1=deplacement, 2=redim }
+  DragStartX, DragStartY: Integer;
+  DragOffsetX, DragOffsetY: Integer;
+  ResizeHandle: Integer;      { 0-7 pour les 8 poignees de redim }
+  PaletteSelection: Integer;  { Type de controle dans la palette }
+  ShowHandles: Boolean;       { Afficher les poignees de selection }
+ End;
+
+ { Types de controles pour la palette WYSIWYG }
+Const
+ CTRL_PUSHBUTTON   = 0;
+ CTRL_DEFPUSHBUTTON= 1;
+ CTRL_CHECKBOX     = 2;
+ CTRL_RADIOBUTTON  = 3;
+ CTRL_EDITTEXT     = 4;
+ CTRL_COMBOBOX     = 5;
+ CTRL_LISTBOX      = 6;
+ CTRL_SCROLLBAR    = 7;
+ CTRL_STATIC       = 8;
+ CTRL_GROUPBOX     = 9;
+ CTRL_ICON         = 10;
+
 Var
  { Mode graphique }
  GrDriver, GrMode: Integer;
@@ -771,6 +797,9 @@ Var
 
  { Etat de l'application }
  AppState: TAppState;
+
+ { Etat de l'editeur WYSIWYG de dialogues }
+ DlgEdState: TDialogEditorState;
 
  { Boucle principale }
  Running: Boolean;
@@ -2197,16 +2226,428 @@ Begin
  DrawButton(Windows[WndIndex].ClientArea.X1 + 78, Windows[WndIndex].ClientArea.Y1, 24, 24, 'F', AppState.CurrentTool = TOOL_FILL, True);
 End;
 
+{ ============================================================
+  TODO 14 - EDITEUR DE BOITES DE DIALOGUE WYSIWYG
+  ============================================================ }
+
+{ Dessiner un controle Windows dans l'editeur WYSIWYG }
+Procedure DrawWYSIWYGControl(BaseX, BaseY: Integer; Const Ctrl: TDialogControl; Selected: Boolean);
+Var
+ CX, CY, CW, CH: Integer;
+ CtrlText: String;
+Begin
+ { Calculer position absolue du controle }
+ CX := BaseX + Ctrl.X;
+ CY := BaseY + Ctrl.Y;
+ CW := Ctrl.W;
+ CH := Ctrl.H;
+ CtrlText := Ctrl.Text;
+
+ Case Ctrl.CtrlType Of
+  CTRL_PUSHBUTTON, CTRL_DEFPUSHBUTTON: Begin
+   { Bouton standard }
+   SetFillStyle(SolidFill, COLOR_BUTTON);
+   Bar(CX, CY, CX + CW - 1, CY + CH - 1);
+   Draw3DRect(CX, CY, CX + CW - 1, CY + CH - 1, False);
+   SetColor(COLOR_BUTTONTEXT);
+   OutTextXY(CX + (CW - Length(CtrlText) * 8) Div 2, CY + (CH - 8) Div 2, CtrlText);
+   If Ctrl.CtrlType = CTRL_DEFPUSHBUTTON Then Begin
+    SetColor(0);
+    Rectangle(CX - 1, CY - 1, CX + CW, CY + CH);
+   End;
+  End;
+  CTRL_CHECKBOX: Begin
+   { Case a cocher }
+   SetFillStyle(SolidFill, COLOR_WINDOW);
+   Bar(CX, CY + 2, CX + 12, CY + 14);
+   Draw3DRect(CX, CY + 2, CX + 12, CY + 14, True);
+   SetColor(COLOR_WINDOWTEXT);
+   OutTextXY(CX + 16, CY + 3, CtrlText);
+  End;
+  CTRL_RADIOBUTTON: Begin
+   { Bouton radio }
+   SetFillStyle(SolidFill, COLOR_WINDOW);
+   SetColor(COLOR_BORDER3D_DARK);
+   Circle(CX + 6, CY + 8, 6);
+   SetColor(COLOR_WINDOWTEXT);
+   OutTextXY(CX + 16, CY + 3, CtrlText);
+  End;
+  CTRL_EDITTEXT: Begin
+   { Zone de saisie }
+   SetFillStyle(SolidFill, COLOR_WINDOW);
+   Bar(CX, CY, CX + CW - 1, CY + CH - 1);
+   Draw3DRect(CX, CY, CX + CW - 1, CY + CH - 1, True);
+   SetColor(COLOR_WINDOWTEXT);
+   OutTextXY(CX + 2, CY + 2, CtrlText);
+  End;
+  CTRL_COMBOBOX: Begin
+   { Liste deroulante }
+   SetFillStyle(SolidFill, COLOR_WINDOW);
+   Bar(CX, CY, CX + CW - 17, CY + CH - 1);
+   Draw3DRect(CX, CY, CX + CW - 1, CY + CH - 1, True);
+   SetFillStyle(SolidFill, COLOR_BUTTON);
+   Bar(CX + CW - 16, CY + 1, CX + CW - 2, CY + CH - 2);
+   Draw3DRect(CX + CW - 16, CY + 1, CX + CW - 2, CY + CH - 2, False);
+   SetColor(COLOR_BUTTONTEXT);
+   OutTextXY(CX + CW - 12, CY + 4, 'v');
+  End;
+  CTRL_LISTBOX: Begin
+   { Liste }
+   SetFillStyle(SolidFill, COLOR_WINDOW);
+   Bar(CX, CY, CX + CW - 1, CY + CH - 1);
+   Draw3DRect(CX, CY, CX + CW - 1, CY + CH - 1, True);
+  End;
+  CTRL_SCROLLBAR: Begin
+   { Barre de defilement }
+   SetFillStyle(SolidFill, COLOR_SCROLLBAR);
+   Bar(CX, CY, CX + CW - 1, CY + CH - 1);
+   Draw3DRect(CX, CY, CX + CW - 1, CY + CH - 1, True);
+   If CW > CH Then Begin
+    { Horizontal }
+    DrawButton(CX, CY, 16, CH, '<', False, True);
+    DrawButton(CX + CW - 16, CY, 16, CH, '>', False, True);
+   End Else Begin
+    { Vertical }
+    DrawButton(CX, CY, CW, 16, '^', False, True);
+    DrawButton(CX, CY + CH - 16, CW, 16, 'v', False, True);
+   End;
+  End;
+  CTRL_STATIC: Begin
+   { Etiquette texte }
+   SetColor(COLOR_WINDOWTEXT);
+   OutTextXY(CX, CY + 2, CtrlText);
+  End;
+  CTRL_GROUPBOX: Begin
+   { Groupe }
+   SetColor(COLOR_BORDER3D_DARK);
+   Rectangle(CX, CY + 6, CX + CW - 1, CY + CH - 1);
+   SetFillStyle(SolidFill, COLOR_BUTTON);
+   Bar(CX + 8, CY, CX + 8 + Length(CtrlText) * 8, CY + 12);
+   SetColor(COLOR_WINDOWTEXT);
+   OutTextXY(CX + 8, CY, CtrlText);
+  End;
+  CTRL_ICON: Begin
+   { Icone }
+   SetFillStyle(SolidFill, COLOR_WINDOW);
+   Bar(CX, CY, CX + 31, CY + 31);
+   SetColor(COLOR_BORDER3D_DARK);
+   Rectangle(CX, CY, CX + 31, CY + 31);
+   SetColor(COLOR_WINDOWTEXT);
+   OutTextXY(CX + 8, CY + 12, 'ICO');
+  End;
+ Else Begin
+   { Controle inconnu }
+   SetFillStyle(SolidFill, COLOR_WINDOW);
+   Bar(CX, CY, CX + CW - 1, CY + CH - 1);
+   SetColor(COLOR_BORDER3D_DARK);
+   Rectangle(CX, CY, CX + CW - 1, CY + CH - 1);
+  End;
+ End;
+
+ { Dessiner les poignees de selection }
+ If Selected Then Begin
+  SetColor(0);
+  SetLineStyle(DashedLn, 0, NormWidth);
+  Rectangle(CX - 1, CY - 1, CX + CW, CY + CH);
+  SetLineStyle(SolidLn, 0, NormWidth);
+  { Poignees aux 8 positions }
+  SetFillStyle(SolidFill, 0);
+  Bar(CX - 3, CY - 3, CX + 2, CY + 2); { Top-left }
+  Bar(CX + CW Div 2 - 2, CY - 3, CX + CW Div 2 + 3, CY + 2); { Top-center }
+  Bar(CX + CW - 2, CY - 3, CX + CW + 3, CY + 2); { Top-right }
+  Bar(CX - 3, CY + CH Div 2 - 2, CX + 2, CY + CH Div 2 + 3); { Mid-left }
+  Bar(CX + CW - 2, CY + CH Div 2 - 2, CX + CW + 3, CY + CH Div 2 + 3); { Mid-right }
+  Bar(CX - 3, CY + CH - 2, CX + 2, CY + CH + 3); { Bottom-left }
+  Bar(CX + CW Div 2 - 2, CY + CH - 2, CX + CW Div 2 + 3, CY + CH + 3); { Bottom-center }
+  Bar(CX + CW - 2, CY + CH - 2, CX + CW + 3, CY + CH + 3); { Bottom-right }
+ End;
+End;
+
+{ Dessiner la palette de controles WYSIWYG }
+Procedure DrawWYSIWYGPalette(X, Y: Integer; SelectedTool: Integer);
+Const
+ PaletteLabels: Array[0..10] Of String[8] = (
+  'Button', 'DefBtn', 'Check', 'Radio', 'Edit',
+  'Combo', 'List', 'Scroll', 'Static', 'Group', 'Icon'
+ );
+Var
+ I, BtnX, BtnY: Integer;
+Begin
+ SetFillStyle(SolidFill, COLOR_BUTTON);
+ Bar(X, Y, X + 64, Y + 250);
+ Draw3DRect(X, Y, X + 64, Y + 250, False);
+
+ For I := 0 To 10 Do Begin
+  BtnX := X + 2;
+  BtnY := Y + 2 + I * 22;
+  DrawButton(BtnX, BtnY, 60, 20, PaletteLabels[I], I = SelectedTool, True);
+ End;
+End;
+
+{ Dessiner la grille d'alignement }
+Procedure DrawAlignmentGrid(X1, Y1, X2, Y2, GridSize: Integer);
+Var
+ GX, GY: Integer;
+Begin
+ SetColor(COLOR_DISABLED);
+ SetLineStyle(DottedLn, 0, NormWidth);
+ GX := X1;
+ While GX <= X2 Do Begin
+  Line(GX, Y1, GX, Y2);
+  Inc(GX, GridSize);
+ End;
+ GY := Y1;
+ While GY <= Y2 Do Begin
+  Line(X1, GY, X2, GY);
+  Inc(GY, GridSize);
+ End;
+ SetLineStyle(SolidLn, 0, NormWidth);
+End;
+
+{ Editeur de dialogue WYSIWYG complet }
 Procedure DrawDialogEditor(WndIndex: Integer);
+Var
+ I, DlgIdx: Integer;
+ DesignX, DesignY, DesignW, DesignH: Integer;
+ PaletteX, PaletteY: Integer;
+ PropX, PropY: Integer;
 Begin
  If (WndIndex < 1) Or (WndIndex > WindowCount) Then Exit;
  If Windows[WndIndex].WindowType <> 2 Then Exit;
- DrawButton(Windows[WndIndex].ClientArea.X1, Windows[WndIndex].ClientArea.Y1, 60, 20, 'Button', False, True);
- DrawButton(Windows[WndIndex].ClientArea.X1, Windows[WndIndex].ClientArea.Y1 + 22, 60, 20, 'Edit', False, True);
- DrawButton(Windows[WndIndex].ClientArea.X1, Windows[WndIndex].ClientArea.Y1 + 44, 60, 20, 'Static', False, True);
- SetFillStyle(SolidFill, COLOR_WINDOW);
- Bar(Windows[WndIndex].ClientArea.X1 + 70, Windows[WndIndex].ClientArea.Y1, Windows[WndIndex].ClientArea.X2 - 120, Windows[WndIndex].ClientArea.Y2);
- Draw3DRect(Windows[WndIndex].ClientArea.X1 + 70, Windows[WndIndex].ClientArea.Y1, Windows[WndIndex].ClientArea.X2 - 120, Windows[WndIndex].ClientArea.Y2, True);
+
+ DlgIdx := Windows[WndIndex].ResourceIndex;
+ If (DlgIdx < 1) Or (DlgIdx > DialogCount) Then DlgIdx := 1;
+
+ { Calculer les zones }
+ PaletteX := Windows[WndIndex].ClientArea.X1;
+ PaletteY := Windows[WndIndex].ClientArea.Y1;
+ DesignX := Windows[WndIndex].ClientArea.X1 + 70;
+ DesignY := Windows[WndIndex].ClientArea.Y1;
+ DesignW := Windows[WndIndex].ClientArea.X2 - Windows[WndIndex].ClientArea.X1 - 200;
+ DesignH := Windows[WndIndex].ClientArea.Y2 - Windows[WndIndex].ClientArea.Y1;
+ PropX := Windows[WndIndex].ClientArea.X2 - 125;
+ PropY := Windows[WndIndex].ClientArea.Y1;
+
+ { Dessiner la palette de controles }
+ DrawWYSIWYGPalette(PaletteX, PaletteY, DlgEdState.PaletteSelection);
+
+ { Zone de design du dialogue }
+ SetFillStyle(SolidFill, COLOR_BACKGROUND);
+ Bar(DesignX, DesignY, DesignX + DesignW, DesignY + DesignH);
+
+ { Dessiner la grille si activee }
+ If AppState.ShowGrid Then
+  DrawAlignmentGrid(DesignX, DesignY, DesignX + DesignW, DesignY + DesignH, AppState.GridSize);
+
+ { Dessiner le cadre du dialogue lui-meme }
+ If DialogCount > 0 Then Begin
+  SetFillStyle(SolidFill, COLOR_BUTTON);
+  Bar(DesignX + 10, DesignY + 10, DesignX + 10 + Dialogs[DlgIdx].W, DesignY + 10 + Dialogs[DlgIdx].H);
+  { Barre de titre du dialogue }
+  SetFillStyle(SolidFill, COLOR_TITLEBAR);
+  Bar(DesignX + 10, DesignY + 10, DesignX + 10 + Dialogs[DlgIdx].W, DesignY + 28);
+  SetColor(COLOR_TITLETEXT);
+  OutTextXY(DesignX + 14, DesignY + 14, Dialogs[DlgIdx].Caption);
+  { Bordure }
+  Draw3DRect(DesignX + 10, DesignY + 10, DesignX + 10 + Dialogs[DlgIdx].W, DesignY + 10 + Dialogs[DlgIdx].H, False);
+
+  { Dessiner tous les controles du dialogue }
+  For I := 1 To Dialogs[DlgIdx].ControlCount Do Begin
+   DrawWYSIWYGControl(DesignX + 10, DesignY + 30,
+                      Dialogs[DlgIdx].Controls[I],
+                      I = DlgEdState.SelectedControl);
+  End;
+
+  { Selection du dialogue lui-meme }
+  If DlgEdState.SelectedControl = 0 Then Begin
+   SetColor(0);
+   SetLineStyle(DashedLn, 0, NormWidth);
+   Rectangle(DesignX + 9, DesignY + 9, DesignX + 11 + Dialogs[DlgIdx].W, DesignY + 11 + Dialogs[DlgIdx].H);
+   SetLineStyle(SolidLn, 0, NormWidth);
+  End;
+ End Else Begin
+  SetColor(COLOR_DISABLED);
+  OutTextXY(DesignX + 20, DesignY + 20, 'Aucun dialogue. Creez-en un nouveau.');
+ End;
+
+ { Zone des proprietes }
+ SetFillStyle(SolidFill, COLOR_BUTTON);
+ Bar(PropX, PropY, PropX + 120, PropY + 200);
+ Draw3DRect(PropX, PropY, PropX + 120, PropY + 200, True);
+ SetColor(COLOR_WINDOWTEXT);
+ OutTextXY(PropX + 4, PropY + 4, 'Proprietes');
+ Line(PropX, PropY + 18, PropX + 120, PropY + 18);
+
+ If DialogCount > 0 Then Begin
+  If DlgEdState.SelectedControl = 0 Then Begin
+   { Proprietes du dialogue }
+   OutTextXY(PropX + 4, PropY + 24, 'Dialogue:');
+   OutTextXY(PropX + 4, PropY + 40, 'X: ' + IntToStr(Dialogs[DlgIdx].X));
+   OutTextXY(PropX + 4, PropY + 56, 'Y: ' + IntToStr(Dialogs[DlgIdx].Y));
+   OutTextXY(PropX + 4, PropY + 72, 'W: ' + IntToStr(Dialogs[DlgIdx].W));
+   OutTextXY(PropX + 4, PropY + 88, 'H: ' + IntToStr(Dialogs[DlgIdx].H));
+  End Else If (DlgEdState.SelectedControl >= 1) And
+              (DlgEdState.SelectedControl <= Dialogs[DlgIdx].ControlCount) Then Begin
+   { Proprietes du controle selectionne }
+   With Dialogs[DlgIdx].Controls[DlgEdState.SelectedControl] Do Begin
+    OutTextXY(PropX + 4, PropY + 24, 'Controle #' + IntToStr(DlgEdState.SelectedControl));
+    OutTextXY(PropX + 4, PropY + 40, 'ID: ' + IntToStr(CtrlId));
+    OutTextXY(PropX + 4, PropY + 56, 'X: ' + IntToStr(X));
+    OutTextXY(PropX + 4, PropY + 72, 'Y: ' + IntToStr(Y));
+    OutTextXY(PropX + 4, PropY + 88, 'W: ' + IntToStr(W));
+    OutTextXY(PropX + 4, PropY + 104, 'H: ' + IntToStr(H));
+    OutTextXY(PropX + 4, PropY + 120, 'Text: ' + Copy(Text, 1, 10));
+   End;
+  End;
+ End;
+End;
+
+{ Gestion des clics dans l'editeur WYSIWYG }
+Function HandleDialogEditorClick(WndIndex: Integer; MX, MY: Integer; MBtn: Integer): Boolean;
+Var
+ I, DlgIdx: Integer;
+ DesignX, DesignY: Integer;
+ PaletteX, PaletteY: Integer;
+ CtrlX, CtrlY, CtrlW, CtrlH: Integer;
+ ClickedControl: Integer;
+Begin
+ HandleDialogEditorClick := False;
+ If (WndIndex < 1) Or (WndIndex > WindowCount) Then Exit;
+ If Windows[WndIndex].WindowType <> 2 Then Exit;
+
+ DlgIdx := Windows[WndIndex].ResourceIndex;
+ If (DlgIdx < 1) Or (DlgIdx > DialogCount) Then Exit;
+
+ PaletteX := Windows[WndIndex].ClientArea.X1;
+ PaletteY := Windows[WndIndex].ClientArea.Y1;
+ DesignX := Windows[WndIndex].ClientArea.X1 + 70;
+ DesignY := Windows[WndIndex].ClientArea.Y1;
+
+ { Verifier clic sur palette }
+ If (MX >= PaletteX) And (MX <= PaletteX + 64) And
+    (MY >= PaletteY) And (MY <= PaletteY + 250) Then Begin
+  I := (MY - PaletteY - 2) Div 22;
+  If (I >= 0) And (I <= 10) Then Begin
+   DlgEdState.PaletteSelection := I;
+   HandleDialogEditorClick := True;
+   Exit;
+  End;
+ End;
+
+ { Verifier clic sur zone de design }
+ If (MX >= DesignX + 10) And (MX <= DesignX + 10 + Dialogs[DlgIdx].W) And
+    (MY >= DesignY + 10) And (MY <= DesignY + 10 + Dialogs[DlgIdx].H) Then Begin
+
+  ClickedControl := -1;
+
+  { Verifier si clic sur un controle existant }
+  For I := Dialogs[DlgIdx].ControlCount DownTo 1 Do Begin
+   CtrlX := DesignX + 10 + Dialogs[DlgIdx].Controls[I].X;
+   CtrlY := DesignY + 30 + Dialogs[DlgIdx].Controls[I].Y;
+   CtrlW := Dialogs[DlgIdx].Controls[I].W;
+   CtrlH := Dialogs[DlgIdx].Controls[I].H;
+   If (MX >= CtrlX) And (MX <= CtrlX + CtrlW) And
+      (MY >= CtrlY) And (MY <= CtrlY + CtrlH) Then Begin
+    ClickedControl := I;
+    Break;
+   End;
+  End;
+
+  If ClickedControl > 0 Then Begin
+   { Selectionner le controle clique }
+   DlgEdState.SelectedControl := ClickedControl;
+   DlgEdState.DragMode := 1; { Mode deplacement }
+   DlgEdState.DragStartX := MX;
+   DlgEdState.DragStartY := MY;
+   DlgEdState.DragOffsetX := MX - (DesignX + 10 + Dialogs[DlgIdx].Controls[ClickedControl].X);
+   DlgEdState.DragOffsetY := MY - (DesignY + 30 + Dialogs[DlgIdx].Controls[ClickedControl].Y);
+  End Else Begin
+   { Clic sur le dialogue vide - ajouter nouveau controle si outil selectionne }
+   If DlgEdState.PaletteSelection >= 0 Then Begin
+    If Dialogs[DlgIdx].ControlCount < MAX_CONTROLS Then Begin
+     Inc(Dialogs[DlgIdx].ControlCount);
+     With Dialogs[DlgIdx].Controls[Dialogs[DlgIdx].ControlCount] Do Begin
+      CtrlType := DlgEdState.PaletteSelection;
+      CtrlId := 100 + Dialogs[DlgIdx].ControlCount;
+      X := MX - DesignX - 10;
+      Y := MY - DesignY - 30;
+      { Taille par defaut selon le type }
+      Case CtrlType Of
+       CTRL_PUSHBUTTON, CTRL_DEFPUSHBUTTON: Begin W := 75; H := 23; Text := 'Button'; End;
+       CTRL_CHECKBOX: Begin W := 80; H := 16; Text := 'CheckBox'; End;
+       CTRL_RADIOBUTTON: Begin W := 80; H := 16; Text := 'Radio'; End;
+       CTRL_EDITTEXT: Begin W := 100; H := 20; Text := ''; End;
+       CTRL_COMBOBOX: Begin W := 100; H := 200; Text := ''; End;
+       CTRL_LISTBOX: Begin W := 100; H := 80; Text := ''; End;
+       CTRL_SCROLLBAR: Begin W := 16; H := 100; Text := ''; End;
+       CTRL_STATIC: Begin W := 60; H := 16; Text := 'Label'; End;
+       CTRL_GROUPBOX: Begin W := 120; H := 80; Text := 'Group'; End;
+       CTRL_ICON: Begin W := 32; H := 32; Text := ''; End;
+      Else Begin W := 50; H := 20; Text := ''; End;
+      End;
+      Style := 0;
+      ExStyle := 0;
+      ClassName := '';
+     End;
+     DlgEdState.SelectedControl := Dialogs[DlgIdx].ControlCount;
+     AppState.ProjectModified := True;
+    End;
+   End Else Begin
+    { Deselectionner - clic sur fond dialogue }
+    DlgEdState.SelectedControl := 0;
+   End;
+  End;
+  HandleDialogEditorClick := True;
+ End;
+End;
+
+{ Gestion du drag pour deplacement/redimensionnement }
+Procedure HandleDialogEditorDrag(WndIndex: Integer; MX, MY: Integer);
+Var
+ DlgIdx: Integer;
+ DesignX, DesignY: Integer;
+ NewX, NewY: Integer;
+Begin
+ If DlgEdState.DragMode = 0 Then Exit;
+ If (WndIndex < 1) Or (WndIndex > WindowCount) Then Exit;
+
+ DlgIdx := Windows[WndIndex].ResourceIndex;
+ If (DlgIdx < 1) Or (DlgIdx > DialogCount) Then Exit;
+ If (DlgEdState.SelectedControl < 1) Or
+    (DlgEdState.SelectedControl > Dialogs[DlgIdx].ControlCount) Then Exit;
+
+ DesignX := Windows[WndIndex].ClientArea.X1 + 70;
+ DesignY := Windows[WndIndex].ClientArea.Y1;
+
+ If DlgEdState.DragMode = 1 Then Begin
+  { Mode deplacement }
+  NewX := MX - DlgEdState.DragOffsetX - DesignX - 10;
+  NewY := MY - DlgEdState.DragOffsetY - DesignY - 30;
+
+  { Aligner sur grille si active }
+  If AppState.ShowGrid Then Begin
+   NewX := (NewX Div AppState.GridSize) * AppState.GridSize;
+   NewY := (NewY Div AppState.GridSize) * AppState.GridSize;
+  End;
+
+  { Limiter dans les bornes du dialogue }
+  If NewX < 0 Then NewX := 0;
+  If NewY < 0 Then NewY := 0;
+  If NewX + Dialogs[DlgIdx].Controls[DlgEdState.SelectedControl].W > Dialogs[DlgIdx].W Then
+   NewX := Dialogs[DlgIdx].W - Dialogs[DlgIdx].Controls[DlgEdState.SelectedControl].W;
+  If NewY + Dialogs[DlgIdx].Controls[DlgEdState.SelectedControl].H > Dialogs[DlgIdx].H - 20 Then
+   NewY := Dialogs[DlgIdx].H - 20 - Dialogs[DlgIdx].Controls[DlgEdState.SelectedControl].H;
+
+  Dialogs[DlgIdx].Controls[DlgEdState.SelectedControl].X := NewX;
+  Dialogs[DlgIdx].Controls[DlgEdState.SelectedControl].Y := NewY;
+  AppState.ProjectModified := True;
+ End;
+End;
+
+{ Fin du drag }
+Procedure HandleDialogEditorRelease;
+Begin
+ DlgEdState.DragMode := 0;
 End;
 
 Procedure DrawMenuEditor(WndIndex: Integer);
@@ -2650,6 +3091,10 @@ Begin
      If (MouseX >= R.X2 - 18) And (MouseX <= R.X2 - 4) And
         (MouseY >= R.Y1 + 4) And (MouseY <= R.Y1 + 18) Then Begin
       CloseWindow(I);
+     End Else If Windows[I].WindowType = 2 Then Begin
+      { Editeur de dialogue WYSIWYG }
+      If HandleDialogEditorClick(I, MouseX, MouseY, MouseButton) Then
+       NeedRedraw := True;
      End;
      Break;
     End;
@@ -2658,6 +3103,20 @@ Begin
  End
  Else If MainMenuBar.MenuOpen Then Begin
   UpdateMenuHighlight(MouseX, MouseY);
+ End
+ Else Begin
+  { Gestion du drag dans l'editeur de dialogues }
+  If (MouseButton And 1 = 1) And (DlgEdState.DragMode > 0) Then Begin
+   For I := 1 To WindowCount Do Begin
+    If Windows[I].WindowType = 2 Then Begin
+     HandleDialogEditorDrag(I, MouseX, MouseY);
+     NeedRedraw := True;
+     Break;
+    End;
+   End;
+  End Else If (MouseButton And 1 = 0) And (DlgEdState.DragMode > 0) Then Begin
+   HandleDialogEditorRelease;
+  End;
  End;
 End;
 
@@ -2720,6 +3179,12 @@ Begin
  AppState.GridSize := 8;
  AppState.ShowExplorer := True;
  AppState.ShowProperties := True;
+ { Initialiser l'editeur WYSIWYG de dialogues }
+ DlgEdState.DialogIndex := 0;
+ DlgEdState.SelectedControl := -1;
+ DlgEdState.DragMode := 0;
+ DlgEdState.PaletteSelection := CTRL_PUSHBUTTON;
+ DlgEdState.ShowHandles := True;
  InitializeGraphics;
  InitMouse;
  InitMenuBar;
