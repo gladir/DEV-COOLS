@@ -285,6 +285,7 @@ Const
  COLOR_DISABLED = 8;
  COLOR_SCROLLBAR = 7;
  COLOR_GRAYTEXT = 8;
+ COLOR_DIALOG = 7;         { Fond gris pour les boites de dialogue }
 
  { Constantes de menus }
  MAX_MENUS = 8;
@@ -4617,7 +4618,7 @@ Var
  Begin
   HideMouse;
   { Fond de la boite de dialogue }
-  SetFillStyle(SolidFill, COLOR_WINDOW);
+  SetFillStyle(SolidFill, COLOR_DIALOG);
   Bar(X, Y, X + W, Y + H);
   Draw3DRect(X, Y, X + W, Y + H, True);
   { Barre de titre }
@@ -4899,7 +4900,7 @@ Begin
  X := (SCREEN_WIDTH - W) Div 2;
  Y := (SCREEN_HEIGHT - H) Div 2;
  HideMouse;
- SetFillStyle(SolidFill, COLOR_WINDOW);
+ SetFillStyle(SolidFill, COLOR_DIALOG);
  Bar(X, Y, X + W, Y + H);
  Draw3DRect(X, Y, X + W, Y + H, True);
  SetFillStyle(SolidFill, COLOR_TITLEBAR);
@@ -4936,7 +4937,7 @@ Begin
  BtnNoX := X + (W - 80) Div 2;
  BtnCancelX := X + W - 100;
  HideMouse;
- SetFillStyle(SolidFill, COLOR_WINDOW);
+ SetFillStyle(SolidFill, COLOR_DIALOG);
  Bar(X, Y, X + W, Y + H);
  Draw3DRect(X, Y, X + W, Y + H, True);
  SetFillStyle(SolidFill, COLOR_TITLEBAR);
