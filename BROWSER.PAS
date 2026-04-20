@@ -16,7 +16,7 @@
   7.  DONE: Implementer le support de la souris pour Turbo Pascal via INT 33h
   8.  DONE: Implementer le support de la souris pour Free Pascal via PtcMouse
   9.  DONE: Creer le parseur HTML supportant toutes les balises HTML (HTML 1.0 a HTML5)
-  10. TODO: Implementer le rendu des balises de structure HTML (html, head, body, div, span)
+  10. DONE: Implementer le rendu des balises de structure HTML (html, head, body, div, span)
   11. TODO: Implementer le rendu des balises de texte (p, h1-h6, strong, em, pre, code)
   12. TODO: Implementer le rendu des listes (ul, ol, li, dl, dt, dd)
   13. TODO: Implementer le rendu des tableaux (table, tr, td, th, thead, tbody)
@@ -253,6 +253,28 @@ Const
  { Nombre maximum d'enfants par noeud }
  MAX_CHILDREN = 256;
 
+ { =====================================================
+   Constantes pour le rendu HTML
+   ===================================================== }
+
+ { Zone de rendu du contenu HTML }
+ RENDER_AREA_X = 5;
+ RENDER_AREA_Y = 30;           { Sous la barre d'URL }
+ RENDER_AREA_WIDTH = 630;
+ RENDER_AREA_HEIGHT = 440;
+
+ { Marges et espacements }
+ RENDER_MARGIN_LEFT = 10;
+ RENDER_MARGIN_TOP = 5;
+ RENDER_LINE_HEIGHT = 16;
+ RENDER_PARAGRAPH_SPACING = 8;
+ RENDER_DIV_MARGIN = 4;
+
+ { Couleurs de rendu }
+ RENDER_BG_COLOR = 15;         { Blanc }
+ RENDER_TEXT_COLOR = 0;        { Noir }
+ RENDER_LINK_COLOR = 1;        { Bleu }
+
 Type
  { Type pour un attribut HTML }
  HTMLAttribute = Record
@@ -274,6 +296,20 @@ Type
   Children: Array[1..MAX_CHILDREN] Of HTMLNodePtr;
   ChildCount: Integer;
   Parent: HTMLNodePtr;       { Pointeur vers le noeud parent }
+ End;
+
+ { Contexte de rendu HTML }
+ RenderContext = Record
+  X: Integer;                { Position X courante }
+  Y: Integer;                { Position Y courante }
+  MaxX: Integer;             { Limite droite de la zone }
+  MaxY: Integer;             { Limite basse de la zone }
+  LineHeight: Integer;       { Hauteur de ligne courante }
+  TextColor: Integer;        { Couleur du texte courante }
+  BgColor: Integer;          { Couleur de fond courante }
+  InHead: Boolean;           { Dans la section head (ne pas afficher) }
+  InBody: Boolean;           { Dans la section body }
+  BlockLevel: Integer;       { Niveau d'imbrication des blocs }
  End;
 
 Var
@@ -823,6 +859,322 @@ End;
 
 { =====================================================
   FIN PARSEUR HTML
+  ===================================================== }
+
+{ =====================================================
+  RENDU HTML - Balises de structure (html, head, body, div, span)
+  ===================================================== }
+
+Var
+ { Variables globales pour le rendu HTML }
+ CurrentRenderContext: RenderContext;
+
+{ Procedure pour initialiser le contexte de rendu }
+Procedure InitRenderContext(Var Ctx: RenderContext);
+Begin
+ Ctx.X := RENDER_AREA_X + RENDER_MARGIN_LEFT;
+ Ctx.Y := RENDER_AREA_Y + RENDER_MARGIN_TOP;
+ Ctx.MaxX := RENDER_AREA_X + RENDER_AREA_WIDTH - RENDER_MARGIN_LEFT;
+ Ctx.MaxY := RENDER_AREA_Y + RENDER_AREA_HEIGHT;
+ Ctx.LineHeight := RENDER_LINE_HEIGHT;
+ Ctx.TextColor := RENDER_TEXT_COLOR;
+ Ctx.BgColor := RENDER_BG_COLOR;
+ Ctx.InHead := False;
+ Ctx.InBody := False;
+ Ctx.BlockLevel := 0;
+End;
+
+{ Procedure pour effacer la zone de rendu }
+Procedure ClearRenderArea;
+Begin
+ SetFillStyle(SolidFill, RENDER_BG_COLOR);
+ Bar(RENDER_AREA_X, RENDER_AREA_Y,
+     RENDER_AREA_X + RENDER_AREA_WIDTH,
+     RENDER_AREA_Y + RENDER_AREA_HEIGHT);
+ SetColor(0);
+ Rectangle(RENDER_AREA_X, RENDER_AREA_Y,
+           RENDER_AREA_X + RENDER_AREA_WIDTH,
+           RENDER_AREA_Y + RENDER_AREA_HEIGHT);
+End;
+
+{ Procedure pour passer a la ligne suivante }
+Procedure RenderNewLine(Var Ctx: RenderContext);
+Begin
+ Ctx.X := RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+ Ctx.Y := Ctx.Y + Ctx.LineHeight;
+End;
+
+{ Procedure pour ajouter un espacement de bloc }
+Procedure RenderBlockSpacing(Var Ctx: RenderContext; Spacing: Integer);
+Begin
+ Ctx.Y := Ctx.Y + Spacing;
+ Ctx.X := RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+End;
+
+{ Fonction pour calculer la largeur d'un texte }
+Function GetTextWidth(Const Text: String): Integer;
+Begin
+ GetTextWidth := Length(Text) * 8; { Police par defaut = 8 pixels par caractere }
+End;
+
+{ Procedure pour afficher du texte avec retour a la ligne automatique }
+Procedure RenderText(Var Ctx: RenderContext; Const Text: String);
+Var
+ I, StartWord, EndWord, WordWidth: Integer;
+ Word: String;
+Begin
+ If Ctx.InHead Then Exit; { Ne pas afficher le contenu de head }
+ If Ctx.Y > Ctx.MaxY Then Exit; { Depasse la zone de rendu }
+
+ SetColor(Ctx.TextColor);
+ I := 1;
+
+ While I <= Length(Text) Do Begin
+  { Ignorer les espaces en debut de ligne }
+  While (I <= Length(Text)) And (Text[I] In [' ', #9, #10, #13]) Do Begin
+   If Text[I] In [#10, #13] Then Begin
+    { Nouvelle ligne dans le texte source }
+    If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+     RenderNewLine(Ctx);
+   End
+   Else If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then Begin
+    { Espace entre les mots }
+    Ctx.X := Ctx.X + 8;
+   End;
+   Inc(I);
+  End;
+
+  If I > Length(Text) Then Break;
+
+  { Extraire le mot suivant }
+  StartWord := I;
+  While (I <= Length(Text)) And Not (Text[I] In [' ', #9, #10, #13]) Do
+   Inc(I);
+  EndWord := I - 1;
+  Word := Copy(Text, StartWord, EndWord - StartWord + 1);
+  WordWidth := GetTextWidth(Word);
+
+  { Retour a la ligne si le mot ne tient pas }
+  If (Ctx.X + WordWidth > Ctx.MaxX) And
+     (Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
+   RenderNewLine(Ctx);
+
+  { Afficher le mot si on est dans la zone visible }
+  If Ctx.Y <= Ctx.MaxY Then Begin
+   OutTextXY(Ctx.X, Ctx.Y, Word);
+   Ctx.X := Ctx.X + WordWidth;
+  End;
+ End;
+End;
+
+{ Declaration forward pour la recursion }
+Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext); Forward;
+
+{ Procedure pour rendre les enfants d'un noeud }
+Procedure RenderChildren(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ I: Integer;
+Begin
+ For I := 1 To Node^.ChildCount Do
+  If Node^.Children[I] <> Nil Then
+   RenderHTMLNode(Node^.Children[I], Ctx);
+End;
+
+{ Procedure pour rendre la balise HTML (racine du document) }
+Procedure RenderTagHTML(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { La balise html est un conteneur, on rend juste ses enfants }
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise HEAD (metadonnees, ne pas afficher) }
+Procedure RenderTagHead(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInHead: Boolean;
+Begin
+ OldInHead := Ctx.InHead;
+ Ctx.InHead := True;
+ { On peut parser le contenu de head pour le titre, mais on n'affiche rien }
+ RenderChildren(Node, Ctx);
+ Ctx.InHead := OldInHead;
+End;
+
+{ Procedure pour rendre la balise BODY (contenu principal) }
+Procedure RenderTagBody(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInBody: Boolean;
+ BgColorAttr: String;
+Begin
+ OldInBody := Ctx.InBody;
+ Ctx.InBody := True;
+
+ { Verifier l'attribut bgcolor }
+ BgColorAttr := GetHTMLAttribute(Node, 'bgcolor');
+ { Note: Le support complet des couleurs sera ajoute avec le CSS }
+
+ RenderChildren(Node, Ctx);
+ Ctx.InBody := OldInBody;
+End;
+
+{ Procedure pour rendre la balise DIV (bloc) }
+Procedure RenderTagDiv(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { DIV est un element de bloc - nouvelle ligne avant et apres }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+
+ Inc(Ctx.BlockLevel);
+ RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+ RenderChildren(Node, Ctx);
+ Dec(Ctx.BlockLevel);
+
+ RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+End;
+
+{ Procedure pour rendre la balise SPAN (inline) }
+Procedure RenderTagSpan(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { SPAN est un element inline - pas de saut de ligne }
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise SECTION (HTML5 bloc semantique) }
+Procedure RenderTagSection(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ RenderChildren(Node, Ctx);
+ RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+End;
+
+{ Procedure pour rendre la balise ARTICLE (HTML5 bloc semantique) }
+Procedure RenderTagArticle(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ RenderChildren(Node, Ctx);
+ RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+End;
+
+{ Procedure pour rendre la balise NAV (HTML5 navigation) }
+Procedure RenderTagNav(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderChildren(Node, Ctx);
+ RenderNewLine(Ctx);
+End;
+
+{ Procedure pour rendre la balise ASIDE (HTML5 contenu lateral) }
+Procedure RenderTagAside(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ Inc(Ctx.BlockLevel);
+ RenderChildren(Node, Ctx);
+ Dec(Ctx.BlockLevel);
+ RenderNewLine(Ctx);
+End;
+
+{ Procedure pour rendre la balise HEADER (HTML5 en-tete) }
+Procedure RenderTagHeader(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderChildren(Node, Ctx);
+ RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+End;
+
+{ Procedure pour rendre la balise FOOTER (HTML5 pied de page) }
+Procedure RenderTagFooter(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise MAIN (HTML5 contenu principal) }
+Procedure RenderTagMain(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure principale pour rendre un noeud HTML }
+Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ If Node = Nil Then Exit;
+ If Ctx.Y > Ctx.MaxY Then Exit; { Depasse la zone de rendu }
+
+ Case Node^.NodeType Of
+  HTML_NODE_TEXT: Begin
+   { Noeud texte - afficher le contenu }
+   RenderText(Ctx, Node^.Content);
+  End;
+
+  HTML_NODE_ELEMENT: Begin
+   { Element HTML - traiter selon le type de balise }
+   Case Node^.TagType Of
+    TAG_HTML:     RenderTagHTML(Node, Ctx);
+    TAG_HEAD:     RenderTagHead(Node, Ctx);
+    TAG_BODY:     RenderTagBody(Node, Ctx);
+    TAG_DIV:      RenderTagDiv(Node, Ctx);
+    TAG_SPAN:     RenderTagSpan(Node, Ctx);
+    TAG_SECTION:  RenderTagSection(Node, Ctx);
+    TAG_ARTICLE:  RenderTagArticle(Node, Ctx);
+    TAG_NAV:      RenderTagNav(Node, Ctx);
+    TAG_ASIDE:    RenderTagAside(Node, Ctx);
+    TAG_HEADER:   RenderTagHeader(Node, Ctx);
+    TAG_FOOTER:   RenderTagFooter(Node, Ctx);
+    TAG_MAIN:     RenderTagMain(Node, Ctx);
+    Else Begin
+     { Balise non geree - rendre les enfants par defaut }
+     RenderChildren(Node, Ctx);
+    End;
+   End;
+  End;
+
+  HTML_NODE_COMMENT: Begin
+   { Commentaire - ne rien afficher }
+  End;
+ End;
+End;
+
+{ Procedure pour rendre un document HTML complet }
+Procedure RenderHTMLDocument(Doc: HTMLNodePtr);
+Var
+ Ctx: RenderContext;
+Begin
+ If Doc = Nil Then Exit;
+
+ { Initialiser le contexte de rendu }
+ InitRenderContext(Ctx);
+
+ { Effacer la zone de rendu }
+ ClearRenderArea;
+
+ { Rendre le document }
+ RenderHTMLNode(Doc, Ctx);
+End;
+
+{ Procedure pour tester le rendu avec du HTML }
+Procedure TestHTMLRender(Const HTMLSource: String);
+Var
+ Doc: HTMLNodePtr;
+Begin
+ Doc := ParseHTML(HTMLSource);
+ If Doc <> Nil Then Begin
+  RenderHTMLDocument(Doc);
+  FreeHTMLNode(Doc);
+ End;
+End;
+
+{ =====================================================
+  FIN RENDU HTML
   ===================================================== }
 
 { Declarations forward pour l'historique de navigation }
