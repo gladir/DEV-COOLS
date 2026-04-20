@@ -132,6 +132,7 @@ Var
  LNameCount:Integer;
  CurrentModuleName:String[64];
  CurrentModuleStart:LongInt;
+ MainIdx:Integer;
 
 Procedure ShowBanner;
 Begin
@@ -1164,8 +1165,8 @@ BEGIN
  Else If OptExtractCount > 0 Then Begin
   If InputFileCount > 0 Then Begin
    ReadLibrary(InputFiles[1]);
-   For ModuleCount := 1 to OptExtractCount do
-    ExtractModule(OptExtract[ModuleCount], InputFiles[1]);
+   For MainIdx := 1 to OptExtractCount do
+    ExtractModule(OptExtract[MainIdx], InputFiles[1]);
   End
   Else
    Error('Aucune bibliothèque spécifiée pour l''extraction');
