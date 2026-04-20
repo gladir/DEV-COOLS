@@ -18,7 +18,7 @@
   9.  DONE: Creer le parseur HTML supportant toutes les balises HTML (HTML 1.0 a HTML5)
   10. DONE: Implementer le rendu des balises de structure HTML (html, head, body, div, span)
   11. DONE: Implementer le rendu des balises de texte (p, h1-h6, strong, em, pre, code)
-  12. TODO: Implementer le rendu des listes (ul, ol, li, dl, dt, dd)
+  12. DONE: Implementer le rendu des listes (ul, ol, li, dl, dt, dd)
   13. TODO: Implementer le rendu des tableaux (table, tr, td, th, thead, tbody)
   14. TODO: Implementer le rendu des formulaires (form, input, button, select, textarea)
   15. TODO: Implementer la detection et le rendu des liens hypertexte (balise <a href>)
@@ -278,6 +278,18 @@ Const
  RENDER_H5_HEIGHT = 18;
  RENDER_H6_HEIGHT = 16;
 
+ { Parametres pour les listes }
+ RENDER_LIST_INDENT = 20;      { Indentation par niveau de liste }
+ RENDER_LIST_SPACING = 2;      { Espacement entre elements de liste }
+ RENDER_DT_SPACING = 4;        { Espacement avant terme de definition }
+ RENDER_DD_INDENT = 30;        { Indentation pour les definitions }
+
+ { Types de listes }
+ LIST_TYPE_NONE = 0;
+ LIST_TYPE_UL = 1;             { Liste non ordonnee }
+ LIST_TYPE_OL = 2;             { Liste ordonnee }
+ LIST_TYPE_DL = 3;             { Liste de definitions }
+
  { Couleurs de rendu }
  RENDER_BG_COLOR = 15;         { Blanc }
  RENDER_TEXT_COLOR = 0;        { Noir }
@@ -328,6 +340,9 @@ Type
   BlockLevel: Integer;       { Niveau d'imbrication des blocs }
   TextStyle: Byte;           { Style de texte (gras, italique, etc.) }
   InPreformatted: Boolean;   { Dans une balise pre (conserver espaces) }
+  ListType: Byte;            { Type de liste courante (UL, OL, DL) }
+  ListLevel: Integer;        { Niveau d'imbrication des listes }
+  ListItemNumber: Integer;   { Numero de l'element courant dans OL }
  End;
 
 Var
@@ -902,6 +917,9 @@ Begin
  Ctx.BlockLevel := 0;
  Ctx.TextStyle := TEXT_STYLE_NORMAL;
  Ctx.InPreformatted := False;
+ Ctx.ListType := LIST_TYPE_NONE;
+ Ctx.ListLevel := 0;
+ Ctx.ListItemNumber := 0;
 End;
 
 { Procedure pour effacer la zone de rendu }
@@ -1422,6 +1440,189 @@ End;
   FIN RENDU BALISES DE TEXTE
   ===================================================== }
 
+{ =====================================================
+  RENDU HTML - Listes (ul, ol, li, dl, dt, dd)
+  ===================================================== }
+
+{ Procedure pour rendre la balise UL (liste non ordonnee) }
+Procedure RenderTagUL(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldListType: Byte;
+ OldListItemNumber: Integer;
+Begin
+ { Nouvelle ligne avant la liste si necessaire }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+
+ { Sauvegarder l'etat de la liste parente }
+ OldListType := Ctx.ListType;
+ OldListItemNumber := Ctx.ListItemNumber;
+
+ { Configurer pour liste non ordonnee }
+ Ctx.ListType := LIST_TYPE_UL;
+ Ctx.ListItemNumber := 0;
+ Inc(Ctx.ListLevel);
+
+ RenderChildren(Node, Ctx);
+
+ { Restaurer l'etat }
+ Dec(Ctx.ListLevel);
+ Ctx.ListType := OldListType;
+ Ctx.ListItemNumber := OldListItemNumber;
+
+ { Espacement apres la liste }
+ RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+End;
+
+{ Procedure pour rendre la balise OL (liste ordonnee) }
+Procedure RenderTagOL(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldListType: Byte;
+ OldListItemNumber: Integer;
+Begin
+ { Nouvelle ligne avant la liste si necessaire }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+
+ { Sauvegarder l'etat de la liste parente }
+ OldListType := Ctx.ListType;
+ OldListItemNumber := Ctx.ListItemNumber;
+
+ { Configurer pour liste ordonnee }
+ Ctx.ListType := LIST_TYPE_OL;
+ Ctx.ListItemNumber := 0;
+ Inc(Ctx.ListLevel);
+
+ RenderChildren(Node, Ctx);
+
+ { Restaurer l'etat }
+ Dec(Ctx.ListLevel);
+ Ctx.ListType := OldListType;
+ Ctx.ListItemNumber := OldListItemNumber;
+
+ { Espacement apres la liste }
+ RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+End;
+
+{ Procedure pour rendre la balise LI (element de liste) }
+Procedure RenderTagLI(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ BulletText: String;
+ IndentX: Integer;
+Begin
+ { Nouvelle ligne pour l'element }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT) Then
+  RenderNewLine(Ctx);
+
+ { Calculer l'indentation }
+ IndentX := RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT);
+ Ctx.X := IndentX;
+
+ { Incrementer le numero d'element pour les listes ordonnees }
+ If Ctx.ListType = LIST_TYPE_OL Then
+  Inc(Ctx.ListItemNumber);
+
+ { Afficher le marqueur de liste }
+ Case Ctx.ListType Of
+  LIST_TYPE_UL: Begin
+   { Puce pour liste non ordonnee - utiliser differentes puces selon le niveau }
+   Case Ctx.ListLevel Of
+    1: BulletText := '• ';   { Puce ronde }
+    2: BulletText := '○ ';   { Cercle vide }
+    3: BulletText := '■ ';   { Carre plein }
+    Else BulletText := '- '; { Tiret pour niveaux plus profonds }
+   End;
+   RenderText(Ctx, BulletText);
+  End;
+  LIST_TYPE_OL: Begin
+   { Numero pour liste ordonnee }
+   Str(Ctx.ListItemNumber, BulletText);
+   BulletText := BulletText + '. ';
+   RenderText(Ctx, BulletText);
+  End;
+  Else Begin
+   { Pas de marqueur si pas dans une liste }
+  End;
+ End;
+
+ { Rendre le contenu de l'element }
+ RenderChildren(Node, Ctx);
+
+ { Espacement apres l'element }
+ RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+End;
+
+{ Procedure pour rendre la balise DL (liste de definitions) }
+Procedure RenderTagDL(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldListType: Byte;
+Begin
+ { Nouvelle ligne avant la liste si necessaire }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+
+ { Sauvegarder l'etat }
+ OldListType := Ctx.ListType;
+
+ { Configurer pour liste de definitions }
+ Ctx.ListType := LIST_TYPE_DL;
+ Inc(Ctx.ListLevel);
+
+ RenderChildren(Node, Ctx);
+
+ { Restaurer l'etat }
+ Dec(Ctx.ListLevel);
+ Ctx.ListType := OldListType;
+
+ { Espacement apres la liste }
+ RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+End;
+
+{ Procedure pour rendre la balise DT (terme de definition) }
+Procedure RenderTagDT(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldTextStyle: Byte;
+Begin
+ { Nouvelle ligne pour le terme }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, RENDER_DT_SPACING);
+
+ { Position sans indentation supplementaire }
+ Ctx.X := RENDER_AREA_X + RENDER_MARGIN_LEFT + ((Ctx.ListLevel - 1) * RENDER_LIST_INDENT);
+
+ { Rendre le terme en gras }
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD;
+
+ RenderChildren(Node, Ctx);
+
+ Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Procedure pour rendre la balise DD (definition) }
+Procedure RenderTagDD(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Nouvelle ligne pour la definition }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT Then
+  RenderNewLine(Ctx);
+
+ { Indenter la definition }
+ Ctx.X := RENDER_AREA_X + RENDER_MARGIN_LEFT + ((Ctx.ListLevel - 1) * RENDER_LIST_INDENT) + RENDER_DD_INDENT;
+
+ RenderChildren(Node, Ctx);
+
+ { Espacement apres la definition }
+ RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+End;
+
+{ =====================================================
+  FIN RENDU LISTES
+  ===================================================== }
+
 { Procedure principale pour rendre un noeud HTML }
 Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
@@ -1488,6 +1689,14 @@ Begin
     TAG_ABBR:     RenderTagSemanticInline(Node, Ctx);
     TAG_CITE:     RenderTagSemanticInline(Node, Ctx);
     TAG_DFN:      RenderTagSemanticInline(Node, Ctx);
+
+    { Balises de listes }
+    TAG_UL:       RenderTagUL(Node, Ctx);
+    TAG_OL:       RenderTagOL(Node, Ctx);
+    TAG_LI:       RenderTagLI(Node, Ctx);
+    TAG_DL:       RenderTagDL(Node, Ctx);
+    TAG_DT:       RenderTagDT(Node, Ctx);
+    TAG_DD:       RenderTagDD(Node, Ctx);
 
     Else Begin
      { Balise non geree - rendre les enfants par defaut }
