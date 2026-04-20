@@ -25,7 +25,7 @@
   16. DONE: Implementer la navigation par clic sur les liens URL dans les pages
   17. DONE: Creer l'interpreteur JavaScript pour le support des scripts cote client
   18. DONE: Implementer le DOM (Document Object Model) pour la manipulation JavaScript
-  19. TODO: Creer le parseur CSS pour le support des feuilles de style
+  19. DONE: Creer le parseur CSS pour le support des feuilles de style
   20. TODO: Implementer l'application des styles CSS aux elements HTML (cascade et heritage)
   21. TODO: Implementer le decodeur et l'affichage des images BMP
   22. TODO: Implementer le decodeur et l'affichage des images GIF (y compris anime)
@@ -445,6 +445,105 @@ Const
  DOM_EVENT_FOCUS = 14;
  DOM_EVENT_BLUR = 15;
 
+ { =====================================================
+   Constantes pour le parseur CSS
+   ===================================================== }
+
+ { Types de tokens CSS }
+ CSS_TOK_EOF = 0;
+ CSS_TOK_IDENT = 1;          { Identifiant (nom de propriete, nom de classe, etc.) }
+ CSS_TOK_STRING = 2;         { Chaine entre guillemets }
+ CSS_TOK_NUMBER = 3;         { Nombre (entier ou decimal) }
+ CSS_TOK_PERCENTAGE = 4;     { Pourcentage (10%) }
+ CSS_TOK_DIMENSION = 5;      { Dimension avec unite (10px, 2em, etc.) }
+ CSS_TOK_HASH = 6;           { #id ou #couleur }
+ CSS_TOK_DOT = 7;            { . (selecteur de classe) }
+ CSS_TOK_COLON = 8;          { : (pseudo-classe ou propriete:valeur) }
+ CSS_TOK_SEMICOLON = 9;      { ; (fin de declaration) }
+ CSS_TOK_LBRACE = 10;        { { (debut de bloc) }
+ CSS_TOK_RBRACE = 11;        { } (fin de bloc) }
+ CSS_TOK_LPAREN = 12;        { ( (debut de fonction) }
+ CSS_TOK_RPAREN = 13;        { ) (fin de fonction) }
+ CSS_TOK_COMMA = 14;         { , (separateur) }
+ CSS_TOK_WHITESPACE = 15;    { Espace blanc }
+ CSS_TOK_COMMENT = 16;       { Commentaire /* */ }
+ CSS_TOK_GT = 17;            { > (selecteur enfant direct) }
+ CSS_TOK_PLUS = 18;          { + (selecteur frere adjacent) }
+ CSS_TOK_TILDE = 19;         { ~ (selecteur frere general) }
+ CSS_TOK_STAR = 20;          { * (selecteur universel) }
+ CSS_TOK_LBRACKET = 21;      { [ (selecteur d'attribut) }
+ CSS_TOK_RBRACKET = 22;      { ] (fin selecteur d'attribut) }
+ CSS_TOK_AT = 23;            { @ (at-rule comme @media, @import) }
+ CSS_TOK_IMPORTANT = 24;     { !important }
+ CSS_TOK_URL = 25;           { url(...) }
+ CSS_TOK_FUNCTION = 26;      { nom-fonction( }
+
+ { Types de selecteurs CSS }
+ CSS_SEL_TAG = 1;            { Selecteur de balise (div, p, etc.) }
+ CSS_SEL_CLASS = 2;          { Selecteur de classe (.classname) }
+ CSS_SEL_ID = 3;             { Selecteur d'ID (#idname) }
+ CSS_SEL_UNIVERSAL = 4;      { Selecteur universel (*) }
+ CSS_SEL_ATTRIBUTE = 5;      { Selecteur d'attribut ([attr], [attr=val]) }
+ CSS_SEL_PSEUDO_CLASS = 6;   { Pseudo-classe (:hover, :first-child) }
+ CSS_SEL_PSEUDO_ELEMENT = 7; { Pseudo-element (::before, ::after) }
+
+ { Combinateurs CSS }
+ CSS_COMB_NONE = 0;          { Pas de combinateur (premier selecteur) }
+ CSS_COMB_DESCENDANT = 1;    { Espace (descendant) }
+ CSS_COMB_CHILD = 2;         { > (enfant direct) }
+ CSS_COMB_ADJACENT = 3;      { + (frere adjacent) }
+ CSS_COMB_SIBLING = 4;       { ~ (frere general) }
+
+ { Limites du parseur CSS }
+ MAX_CSS_RULES = 256;        { Nombre maximum de regles CSS }
+ MAX_CSS_SELECTORS = 16;     { Selecteurs maximum par regle }
+ MAX_CSS_PROPERTIES = 64;    { Proprietes maximum par regle }
+ MAX_CSS_SELECTOR_PARTS = 8; { Parties maximum par selecteur compose }
+
+ { Indices des proprietes CSS supportees }
+ CSS_PROP_COLOR = 1;
+ CSS_PROP_BACKGROUND_COLOR = 2;
+ CSS_PROP_BACKGROUND = 3;
+ CSS_PROP_FONT_SIZE = 4;
+ CSS_PROP_FONT_WEIGHT = 5;
+ CSS_PROP_FONT_STYLE = 6;
+ CSS_PROP_FONT_FAMILY = 7;
+ CSS_PROP_TEXT_DECORATION = 8;
+ CSS_PROP_TEXT_ALIGN = 9;
+ CSS_PROP_DISPLAY = 10;
+ CSS_PROP_VISIBILITY = 11;
+ CSS_PROP_WIDTH = 12;
+ CSS_PROP_HEIGHT = 13;
+ CSS_PROP_MARGIN = 14;
+ CSS_PROP_MARGIN_TOP = 15;
+ CSS_PROP_MARGIN_RIGHT = 16;
+ CSS_PROP_MARGIN_BOTTOM = 17;
+ CSS_PROP_MARGIN_LEFT = 18;
+ CSS_PROP_PADDING = 19;
+ CSS_PROP_PADDING_TOP = 20;
+ CSS_PROP_PADDING_RIGHT = 21;
+ CSS_PROP_PADDING_BOTTOM = 22;
+ CSS_PROP_PADDING_LEFT = 23;
+ CSS_PROP_BORDER = 24;
+ CSS_PROP_BORDER_COLOR = 25;
+ CSS_PROP_BORDER_WIDTH = 26;
+ CSS_PROP_BORDER_STYLE = 27;
+ CSS_PROP_POSITION = 28;
+ CSS_PROP_TOP = 29;
+ CSS_PROP_RIGHT = 30;
+ CSS_PROP_LEFT = 31;
+ CSS_PROP_BOTTOM = 32;
+ CSS_PROP_FLOAT = 33;
+ CSS_PROP_CLEAR = 34;
+ CSS_PROP_LINE_HEIGHT = 35;
+ CSS_PROP_OVERFLOW = 36;
+ CSS_PROP_CURSOR = 37;
+ CSS_PROP_LIST_STYLE = 38;
+ CSS_PROP_LIST_STYLE_TYPE = 39;
+ CSS_PROP_VERTICAL_ALIGN = 40;
+ CSS_PROP_WHITE_SPACE = 41;
+ CSS_PROP_UNKNOWN = 255;
+
 Type
  { Type pour un attribut HTML }
  HTMLAttribute = Record
@@ -607,6 +706,62 @@ Type
   Border: String[32];
  End;
 
+ { =====================================================
+   Types pour le parseur CSS
+   ===================================================== }
+
+ { Token CSS }
+ CSSToken = Record
+  TokType: Byte;              { Type du token (CSS_TOK_*) }
+  Value: String;              { Valeur textuelle du token }
+  NumValue: Real;             { Valeur numerique (si nombre) }
+  UnitValue: String[8];       { Unite (px, em, %, etc.) }
+  Line: Integer;              { Numero de ligne }
+  Column: Integer;            { Numero de colonne }
+ End;
+
+ { Partie d'un selecteur CSS compose }
+ CSSSelectorPart = Record
+  PartType: Byte;             { Type (CSS_SEL_*) }
+  Value: String[64];          { Valeur (nom de balise, classe, id) }
+  Combinator: Byte;           { Combinateur precedent (CSS_COMB_*) }
+  AttrName: String[32];       { Nom d'attribut (pour selecteur d'attribut) }
+  AttrValue: String[64];      { Valeur d'attribut }
+  AttrOp: Byte;               { Operateur d'attribut (=, ~=, |=, etc.) }
+ End;
+
+ { Selecteur CSS complet (peut etre compose de plusieurs parties) }
+ CSSSelector = Record
+  Parts: Array[1..MAX_CSS_SELECTOR_PARTS] Of CSSSelectorPart;
+  PartCount: Integer;
+  Specificity: LongInt;       { Specificite (pour cascade) }
+ End;
+
+ { Propriete CSS }
+ CSSProperty = Record
+  PropId: Byte;               { ID de la propriete (CSS_PROP_*) }
+  PropName: String[32];       { Nom de la propriete }
+  Value: String;              { Valeur de la propriete }
+  Important: Boolean;         { Flag !important }
+ End;
+
+ { Regle CSS (selecteurs + declarations) }
+ CSSRule = Record
+  Selectors: Array[1..MAX_CSS_SELECTORS] Of CSSSelector;
+  SelectorCount: Integer;
+  Properties: Array[1..MAX_CSS_PROPERTIES] Of CSSProperty;
+  PropertyCount: Integer;
+ End;
+
+ { Feuille de style CSS }
+ CSSStylesheet = Record
+  Rules: Array[1..MAX_CSS_RULES] Of CSSRule;
+  RuleCount: Integer;
+ End;
+
+ { Pointeur vers une feuille de style }
+ CSSStylesheetPtr = ^CSSStylesheet;
+
 Var
  { Variables globales pour la barre d'URL }
  CurrentURL: String;
@@ -654,6 +809,11 @@ Var
  { Variables pour le DOM }
  DOMEventListeners: Array[1..MAX_DOM_EVENT_LISTENERS] Of DOMEventListener;
  DOMEventListenerCount: Integer;
+
+ { Variables pour le parseur CSS }
+ CSSGlobalStylesheet: CSSStylesheet;  { Feuille de style globale }
+ CSSParseError: String;               { Message d'erreur de parsing }
+ CSSEnabled: Boolean;                 { CSS active ou non }
 
 { =====================================================
   PARSEUR HTML - Fonctions et procedures
@@ -3110,6 +3270,889 @@ End;
 
 { =====================================================
   FIN DOM (Document Object Model)
+  ===================================================== }
+
+{ =====================================================
+  PARSEUR CSS - Fonctions et procedures
+  ===================================================== }
+
+{ Initialiser le parseur CSS }
+Procedure InitCSS;
+Var
+ I, J: Integer;
+Begin
+ CSSEnabled := True;
+ CSSParseError := '';
+ CSSGlobalStylesheet.RuleCount := 0;
+
+ For I := 1 To MAX_CSS_RULES Do Begin
+  CSSGlobalStylesheet.Rules[I].SelectorCount := 0;
+  CSSGlobalStylesheet.Rules[I].PropertyCount := 0;
+  For J := 1 To MAX_CSS_SELECTORS Do
+   CSSGlobalStylesheet.Rules[I].Selectors[J].PartCount := 0;
+ End;
+End;
+
+{ Ignorer les espaces blancs dans le CSS }
+Function CSSSkipWhitespace(Const S: String; Pos: Integer): Integer;
+Begin
+ While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do
+  Inc(Pos);
+ CSSSkipWhitespace := Pos;
+End;
+
+{ Ignorer les commentaires CSS /* */ }
+Function CSSSkipComment(Const S: String; Pos: Integer): Integer;
+Begin
+ If (Pos < Length(S)) And (S[Pos] = '/') And (S[Pos + 1] = '*') Then Begin
+  Inc(Pos, 2);
+  While (Pos < Length(S)) Do Begin
+   If (S[Pos] = '*') And (S[Pos + 1] = '/') Then Begin
+    Inc(Pos, 2);
+    Break;
+   End;
+   Inc(Pos);
+  End;
+ End;
+ CSSSkipComment := Pos;
+End;
+
+{ Ignorer espaces et commentaires }
+Function CSSSkipWhitespaceAndComments(Const S: String; Pos: Integer): Integer;
+Var
+ OldPos: Integer;
+Begin
+ Repeat
+  OldPos := Pos;
+  Pos := CSSSkipWhitespace(S, Pos);
+  Pos := CSSSkipComment(S, Pos);
+ Until Pos = OldPos;
+ CSSSkipWhitespaceAndComments := Pos;
+End;
+
+{ Verifier si un caractere est valide pour un identifiant CSS }
+Function CSSIsIdentChar(C: Char; IsFirst: Boolean): Boolean;
+Begin
+ If IsFirst Then
+  CSSIsIdentChar := (C In ['A'..'Z', 'a'..'z', '_', '-']) Or (Ord(C) >= 128)
+ Else
+  CSSIsIdentChar := (C In ['A'..'Z', 'a'..'z', '0'..'9', '_', '-']) Or (Ord(C) >= 128);
+End;
+
+{ Lire un identifiant CSS }
+Function CSSReadIdent(Const S: String; Var Pos: Integer): String;
+Var
+ Start: Integer;
+Begin
+ CSSReadIdent := '';
+ If Pos > Length(S) Then Exit;
+ If Not CSSIsIdentChar(S[Pos], True) Then Exit;
+
+ Start := Pos;
+ Inc(Pos);
+ While (Pos <= Length(S)) And CSSIsIdentChar(S[Pos], False) Do
+  Inc(Pos);
+
+ CSSReadIdent := Copy(S, Start, Pos - Start);
+End;
+
+{ Lire une chaine entre guillemets }
+Function CSSReadString(Const S: String; Var Pos: Integer): String;
+Var
+ Quote: Char;
+ Start: Integer;
+Begin
+ CSSReadString := '';
+ If Pos > Length(S) Then Exit;
+ If Not (S[Pos] In ['"', '''']) Then Exit;
+
+ Quote := S[Pos];
+ Inc(Pos);
+ Start := Pos;
+
+ While (Pos <= Length(S)) And (S[Pos] <> Quote) Do Begin
+  { Gerer les echappements }
+  If (S[Pos] = '\') And (Pos < Length(S)) Then Inc(Pos);
+  Inc(Pos);
+ End;
+
+ CSSReadString := Copy(S, Start, Pos - Start);
+ If (Pos <= Length(S)) And (S[Pos] = Quote) Then Inc(Pos);
+End;
+
+{ Lire un nombre CSS (avec unite optionnelle) }
+Procedure CSSReadNumber(Const S: String; Var Pos: Integer; Var NumVal: Real; Var UnitStr: String);
+Var
+ Start: Integer;
+ NumStr: String;
+ Negative: Boolean;
+Begin
+ NumVal := 0;
+ UnitStr := '';
+ Negative := False;
+
+ { Signe optionnel }
+ If (Pos <= Length(S)) And (S[Pos] = '-') Then Begin
+  Negative := True;
+  Inc(Pos);
+ End
+ Else If (Pos <= Length(S)) And (S[Pos] = '+') Then
+  Inc(Pos);
+
+ { Partie entiere }
+ Start := Pos;
+ While (Pos <= Length(S)) And (S[Pos] In ['0'..'9']) Do
+  Inc(Pos);
+
+ { Partie decimale }
+ If (Pos <= Length(S)) And (S[Pos] = '.') Then Begin
+  Inc(Pos);
+  While (Pos <= Length(S)) And (S[Pos] In ['0'..'9']) Do
+   Inc(Pos);
+ End;
+
+ NumStr := Copy(S, Start, Pos - Start);
+ If Length(NumStr) > 0 Then Begin
+  Val(NumStr, NumVal, Start);
+  If Negative Then NumVal := -NumVal;
+ End;
+
+ { Unite }
+ Start := Pos;
+ While (Pos <= Length(S)) And (S[Pos] In ['A'..'Z', 'a'..'z', '%']) Do
+  Inc(Pos);
+ UnitStr := Copy(S, Start, Pos - Start);
+End;
+
+{ Lire un token CSS }
+Function CSSReadToken(Const S: String; Var Pos: Integer): CSSToken;
+Var
+ Token: CSSToken;
+ C: Char;
+Begin
+ Token.TokType := CSS_TOK_EOF;
+ Token.Value := '';
+ Token.NumValue := 0;
+ Token.UnitValue := '';
+ Token.Line := 1;
+ Token.Column := Pos;
+
+ Pos := CSSSkipWhitespaceAndComments(S, Pos);
+
+ If Pos > Length(S) Then Begin
+  CSSReadToken := Token;
+  Exit;
+ End;
+
+ C := S[Pos];
+
+ Case C Of
+  '{': Begin
+   Token.TokType := CSS_TOK_LBRACE;
+   Token.Value := '{';
+   Inc(Pos);
+  End;
+  '}': Begin
+   Token.TokType := CSS_TOK_RBRACE;
+   Token.Value := '}';
+   Inc(Pos);
+  End;
+  '(': Begin
+   Token.TokType := CSS_TOK_LPAREN;
+   Token.Value := '(';
+   Inc(Pos);
+  End;
+  ')': Begin
+   Token.TokType := CSS_TOK_RPAREN;
+   Token.Value := ')';
+   Inc(Pos);
+  End;
+  '[': Begin
+   Token.TokType := CSS_TOK_LBRACKET;
+   Token.Value := '[';
+   Inc(Pos);
+  End;
+  ']': Begin
+   Token.TokType := CSS_TOK_RBRACKET;
+   Token.Value := ']';
+   Inc(Pos);
+  End;
+  ':': Begin
+   Token.TokType := CSS_TOK_COLON;
+   Token.Value := ':';
+   Inc(Pos);
+  End;
+  ';': Begin
+   Token.TokType := CSS_TOK_SEMICOLON;
+   Token.Value := ';';
+   Inc(Pos);
+  End;
+  ',': Begin
+   Token.TokType := CSS_TOK_COMMA;
+   Token.Value := ',';
+   Inc(Pos);
+  End;
+  '>': Begin
+   Token.TokType := CSS_TOK_GT;
+   Token.Value := '>';
+   Inc(Pos);
+  End;
+  '+': Begin
+   Token.TokType := CSS_TOK_PLUS;
+   Token.Value := '+';
+   Inc(Pos);
+  End;
+  '~': Begin
+   Token.TokType := CSS_TOK_TILDE;
+   Token.Value := '~';
+   Inc(Pos);
+  End;
+  '*': Begin
+   Token.TokType := CSS_TOK_STAR;
+   Token.Value := '*';
+   Inc(Pos);
+  End;
+  '@': Begin
+   Token.TokType := CSS_TOK_AT;
+   Token.Value := '@';
+   Inc(Pos);
+  End;
+  '.': Begin
+   Token.TokType := CSS_TOK_DOT;
+   Token.Value := '.';
+   Inc(Pos);
+  End;
+  '#': Begin
+   Token.TokType := CSS_TOK_HASH;
+   Inc(Pos);
+   Token.Value := '#' + CSSReadIdent(S, Pos);
+  End;
+  '"', '''': Begin
+   Token.TokType := CSS_TOK_STRING;
+   Token.Value := CSSReadString(S, Pos);
+  End;
+  '0'..'9', '-': Begin
+   If (C = '-') And (Pos < Length(S)) And Not (S[Pos + 1] In ['0'..'9', '.']) Then Begin
+    { C'est un identifiant commencant par - }
+    Token.TokType := CSS_TOK_IDENT;
+    Token.Value := CSSReadIdent(S, Pos);
+   End
+   Else Begin
+    CSSReadNumber(S, Pos, Token.NumValue, Token.UnitValue);
+    If Token.UnitValue = '%' Then
+     Token.TokType := CSS_TOK_PERCENTAGE
+    Else If Length(Token.UnitValue) > 0 Then
+     Token.TokType := CSS_TOK_DIMENSION
+    Else
+     Token.TokType := CSS_TOK_NUMBER;
+    Str(Token.NumValue:0:2, Token.Value);
+   End;
+  End;
+  Else Begin
+   If CSSIsIdentChar(C, True) Then Begin
+    Token.TokType := CSS_TOK_IDENT;
+    Token.Value := CSSReadIdent(S, Pos);
+   End
+   Else Begin
+    { Caractere inconnu, avancer }
+    Inc(Pos);
+   End;
+  End;
+ End;
+
+ CSSReadToken := Token;
+End;
+
+{ Obtenir l'ID d'une propriete CSS a partir de son nom }
+Function CSSGetPropertyId(Const Name: String): Byte;
+Var
+ LowerName: String;
+Begin
+ LowerName := HTMLLowerCase(Name);
+
+ If LowerName = 'color' Then CSSGetPropertyId := CSS_PROP_COLOR
+ Else If LowerName = 'background-color' Then CSSGetPropertyId := CSS_PROP_BACKGROUND_COLOR
+ Else If LowerName = 'background' Then CSSGetPropertyId := CSS_PROP_BACKGROUND
+ Else If LowerName = 'font-size' Then CSSGetPropertyId := CSS_PROP_FONT_SIZE
+ Else If LowerName = 'font-weight' Then CSSGetPropertyId := CSS_PROP_FONT_WEIGHT
+ Else If LowerName = 'font-style' Then CSSGetPropertyId := CSS_PROP_FONT_STYLE
+ Else If LowerName = 'font-family' Then CSSGetPropertyId := CSS_PROP_FONT_FAMILY
+ Else If LowerName = 'text-decoration' Then CSSGetPropertyId := CSS_PROP_TEXT_DECORATION
+ Else If LowerName = 'text-align' Then CSSGetPropertyId := CSS_PROP_TEXT_ALIGN
+ Else If LowerName = 'display' Then CSSGetPropertyId := CSS_PROP_DISPLAY
+ Else If LowerName = 'visibility' Then CSSGetPropertyId := CSS_PROP_VISIBILITY
+ Else If LowerName = 'width' Then CSSGetPropertyId := CSS_PROP_WIDTH
+ Else If LowerName = 'height' Then CSSGetPropertyId := CSS_PROP_HEIGHT
+ Else If LowerName = 'margin' Then CSSGetPropertyId := CSS_PROP_MARGIN
+ Else If LowerName = 'margin-top' Then CSSGetPropertyId := CSS_PROP_MARGIN_TOP
+ Else If LowerName = 'margin-right' Then CSSGetPropertyId := CSS_PROP_MARGIN_RIGHT
+ Else If LowerName = 'margin-bottom' Then CSSGetPropertyId := CSS_PROP_MARGIN_BOTTOM
+ Else If LowerName = 'margin-left' Then CSSGetPropertyId := CSS_PROP_MARGIN_LEFT
+ Else If LowerName = 'padding' Then CSSGetPropertyId := CSS_PROP_PADDING
+ Else If LowerName = 'padding-top' Then CSSGetPropertyId := CSS_PROP_PADDING_TOP
+ Else If LowerName = 'padding-right' Then CSSGetPropertyId := CSS_PROP_PADDING_RIGHT
+ Else If LowerName = 'padding-bottom' Then CSSGetPropertyId := CSS_PROP_PADDING_BOTTOM
+ Else If LowerName = 'padding-left' Then CSSGetPropertyId := CSS_PROP_PADDING_LEFT
+ Else If LowerName = 'border' Then CSSGetPropertyId := CSS_PROP_BORDER
+ Else If LowerName = 'border-color' Then CSSGetPropertyId := CSS_PROP_BORDER_COLOR
+ Else If LowerName = 'border-width' Then CSSGetPropertyId := CSS_PROP_BORDER_WIDTH
+ Else If LowerName = 'border-style' Then CSSGetPropertyId := CSS_PROP_BORDER_STYLE
+ Else If LowerName = 'position' Then CSSGetPropertyId := CSS_PROP_POSITION
+ Else If LowerName = 'top' Then CSSGetPropertyId := CSS_PROP_TOP
+ Else If LowerName = 'right' Then CSSGetPropertyId := CSS_PROP_RIGHT
+ Else If LowerName = 'left' Then CSSGetPropertyId := CSS_PROP_LEFT
+ Else If LowerName = 'bottom' Then CSSGetPropertyId := CSS_PROP_BOTTOM
+ Else If LowerName = 'float' Then CSSGetPropertyId := CSS_PROP_FLOAT
+ Else If LowerName = 'clear' Then CSSGetPropertyId := CSS_PROP_CLEAR
+ Else If LowerName = 'line-height' Then CSSGetPropertyId := CSS_PROP_LINE_HEIGHT
+ Else If LowerName = 'overflow' Then CSSGetPropertyId := CSS_PROP_OVERFLOW
+ Else If LowerName = 'cursor' Then CSSGetPropertyId := CSS_PROP_CURSOR
+ Else If LowerName = 'list-style' Then CSSGetPropertyId := CSS_PROP_LIST_STYLE
+ Else If LowerName = 'list-style-type' Then CSSGetPropertyId := CSS_PROP_LIST_STYLE_TYPE
+ Else If LowerName = 'vertical-align' Then CSSGetPropertyId := CSS_PROP_VERTICAL_ALIGN
+ Else If LowerName = 'white-space' Then CSSGetPropertyId := CSS_PROP_WHITE_SPACE
+ Else CSSGetPropertyId := CSS_PROP_UNKNOWN;
+End;
+
+{ Parser une partie de selecteur simple }
+Function CSSParseSimpleSelector(Const S: String; Var Pos: Integer): CSSSelectorPart;
+Var
+ Part: CSSSelectorPart;
+ Token: CSSToken;
+ StartPos: Integer;
+Begin
+ Part.PartType := CSS_SEL_TAG;
+ Part.Value := '';
+ Part.Combinator := CSS_COMB_NONE;
+ Part.AttrName := '';
+ Part.AttrValue := '';
+ Part.AttrOp := 0;
+
+ Pos := CSSSkipWhitespaceAndComments(S, Pos);
+ If Pos > Length(S) Then Begin
+  CSSParseSimpleSelector := Part;
+  Exit;
+ End;
+
+ StartPos := Pos;
+ Token := CSSReadToken(S, Pos);
+
+ Case Token.TokType Of
+  CSS_TOK_HASH: Begin
+   Part.PartType := CSS_SEL_ID;
+   Part.Value := Copy(Token.Value, 2, Length(Token.Value) - 1);
+  End;
+  CSS_TOK_DOT: Begin
+   Part.PartType := CSS_SEL_CLASS;
+   Part.Value := CSSReadIdent(S, Pos);
+  End;
+  CSS_TOK_STAR: Begin
+   Part.PartType := CSS_SEL_UNIVERSAL;
+   Part.Value := '*';
+  End;
+  CSS_TOK_IDENT: Begin
+   Part.PartType := CSS_SEL_TAG;
+   Part.Value := HTMLLowerCase(Token.Value);
+  End;
+  CSS_TOK_COLON: Begin
+   { Pseudo-classe ou pseudo-element }
+   If (Pos <= Length(S)) And (S[Pos] = ':') Then Begin
+    Inc(Pos);
+    Part.PartType := CSS_SEL_PSEUDO_ELEMENT;
+   End
+   Else
+    Part.PartType := CSS_SEL_PSEUDO_CLASS;
+   Part.Value := CSSReadIdent(S, Pos);
+  End;
+  CSS_TOK_LBRACKET: Begin
+   { Selecteur d'attribut }
+   Part.PartType := CSS_SEL_ATTRIBUTE;
+   Part.AttrName := CSSReadIdent(S, Pos);
+   Pos := CSSSkipWhitespaceAndComments(S, Pos);
+
+   { Verifier operateur }
+   If (Pos <= Length(S)) And (S[Pos] In ['=', '~', '|', '^', '$', '*']) Then Begin
+    If S[Pos] = '=' Then Part.AttrOp := 1
+    Else If (S[Pos] = '~') And (Pos < Length(S)) And (S[Pos + 1] = '=') Then Begin
+     Part.AttrOp := 2; Inc(Pos);
+    End
+    Else If (S[Pos] = '|') And (Pos < Length(S)) And (S[Pos + 1] = '=') Then Begin
+     Part.AttrOp := 3; Inc(Pos);
+    End
+    Else If (S[Pos] = '^') And (Pos < Length(S)) And (S[Pos + 1] = '=') Then Begin
+     Part.AttrOp := 4; Inc(Pos);
+    End
+    Else If (S[Pos] = '$') And (Pos < Length(S)) And (S[Pos + 1] = '=') Then Begin
+     Part.AttrOp := 5; Inc(Pos);
+    End
+    Else If (S[Pos] = '*') And (Pos < Length(S)) And (S[Pos + 1] = '=') Then Begin
+     Part.AttrOp := 6; Inc(Pos);
+    End;
+    Inc(Pos);
+    Pos := CSSSkipWhitespaceAndComments(S, Pos);
+    Token := CSSReadToken(S, Pos);
+    If Token.TokType = CSS_TOK_STRING Then
+     Part.AttrValue := Token.Value
+    Else If Token.TokType = CSS_TOK_IDENT Then
+     Part.AttrValue := Token.Value;
+   End;
+
+   { Chercher ] }
+   While (Pos <= Length(S)) And (S[Pos] <> ']') Do Inc(Pos);
+   If Pos <= Length(S) Then Inc(Pos);
+  End;
+  Else Begin
+   { Pas de selecteur valide, restaurer position }
+   Pos := StartPos;
+  End;
+ End;
+
+ CSSParseSimpleSelector := Part;
+End;
+
+{ Parser un selecteur CSS complet }
+Function CSSParseSelector(Const S: String; Var Pos: Integer): CSSSelector;
+Var
+ Sel: CSSSelector;
+ Part: CSSSelectorPart;
+ Combinator: Byte;
+ HasWhitespace: Boolean;
+ StartPos: Integer;
+Begin
+ Sel.PartCount := 0;
+ Sel.Specificity := 0;
+
+ While Pos <= Length(S) Do Begin
+  StartPos := Pos;
+
+  { Detecter espaces (combinateur descendant) }
+  HasWhitespace := False;
+  While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do Begin
+   HasWhitespace := True;
+   Inc(Pos);
+  End;
+
+  { Ignorer commentaires }
+  Pos := CSSSkipComment(S, Pos);
+
+  { Verifier fin de selecteur }
+  If (Pos > Length(S)) Or (S[Pos] In ['{', ',']) Then Break;
+
+  { Detecter combinateurs explicites }
+  Combinator := CSS_COMB_NONE;
+  If Sel.PartCount > 0 Then Begin
+   If S[Pos] = '>' Then Begin
+    Combinator := CSS_COMB_CHILD;
+    Inc(Pos);
+    Pos := CSSSkipWhitespaceAndComments(S, Pos);
+   End
+   Else If S[Pos] = '+' Then Begin
+    Combinator := CSS_COMB_ADJACENT;
+    Inc(Pos);
+    Pos := CSSSkipWhitespaceAndComments(S, Pos);
+   End
+   Else If S[Pos] = '~' Then Begin
+    Combinator := CSS_COMB_SIBLING;
+    Inc(Pos);
+    Pos := CSSSkipWhitespaceAndComments(S, Pos);
+   End
+   Else If HasWhitespace Then
+    Combinator := CSS_COMB_DESCENDANT;
+  End;
+
+  { Parser partie du selecteur }
+  Part := CSSParseSimpleSelector(S, Pos);
+  If Length(Part.Value) = 0 Then Break;
+
+  Part.Combinator := Combinator;
+
+  If Sel.PartCount < MAX_CSS_SELECTOR_PARTS Then Begin
+   Inc(Sel.PartCount);
+   Sel.Parts[Sel.PartCount] := Part;
+
+   { Calculer specificite }
+   Case Part.PartType Of
+    CSS_SEL_ID: Inc(Sel.Specificity, 10000);
+    CSS_SEL_CLASS, CSS_SEL_ATTRIBUTE, CSS_SEL_PSEUDO_CLASS: Inc(Sel.Specificity, 100);
+    CSS_SEL_TAG, CSS_SEL_PSEUDO_ELEMENT: Inc(Sel.Specificity, 1);
+   End;
+  End;
+ End;
+
+ CSSParseSelector := Sel;
+End;
+
+{ Parser les declarations CSS (proprietes) }
+Procedure CSSParseDeclarations(Const S: String; Var Pos: Integer; Var Rule: CSSRule);
+Var
+ PropName, PropValue: String;
+ Token: CSSToken;
+ Important: Boolean;
+ StartValue: Integer;
+Begin
+ { Chercher { }
+ While (Pos <= Length(S)) And (S[Pos] <> '{') Do Inc(Pos);
+ If Pos <= Length(S) Then Inc(Pos);
+
+ While Pos <= Length(S) Do Begin
+  Pos := CSSSkipWhitespaceAndComments(S, Pos);
+  If (Pos > Length(S)) Or (S[Pos] = '}') Then Break;
+
+  { Lire nom de propriete }
+  PropName := CSSReadIdent(S, Pos);
+  If Length(PropName) = 0 Then Begin
+   Inc(Pos);
+   Continue;
+  End;
+
+  { Chercher : }
+  Pos := CSSSkipWhitespaceAndComments(S, Pos);
+  If (Pos <= Length(S)) And (S[Pos] = ':') Then Inc(Pos);
+
+  { Lire valeur }
+  Pos := CSSSkipWhitespaceAndComments(S, Pos);
+  StartValue := Pos;
+  PropValue := '';
+  Important := False;
+
+  While (Pos <= Length(S)) And Not (S[Pos] In [';', '}']) Do Begin
+   Inc(Pos);
+  End;
+
+  PropValue := Trim(Copy(S, StartValue, Pos - StartValue));
+
+  { Verifier !important }
+  If System.Pos('!important', HTMLLowerCase(PropValue)) > 0 Then Begin
+   Important := True;
+   PropValue := Trim(Copy(PropValue, 1, System.Pos('!important', HTMLLowerCase(PropValue)) - 1));
+  End;
+
+  { Ajouter propriete }
+  If (Length(PropName) > 0) And (Rule.PropertyCount < MAX_CSS_PROPERTIES) Then Begin
+   Inc(Rule.PropertyCount);
+   Rule.Properties[Rule.PropertyCount].PropId := CSSGetPropertyId(PropName);
+   Rule.Properties[Rule.PropertyCount].PropName := PropName;
+   Rule.Properties[Rule.PropertyCount].Value := PropValue;
+   Rule.Properties[Rule.PropertyCount].Important := Important;
+  End;
+
+  If (Pos <= Length(S)) And (S[Pos] = ';') Then Inc(Pos);
+ End;
+
+ If (Pos <= Length(S)) And (S[Pos] = '}') Then Inc(Pos);
+End;
+
+{ Parser une regle CSS complete }
+Function CSSParseRule(Const S: String; Var Pos: Integer): CSSRule;
+Var
+ Rule: CSSRule;
+ Sel: CSSSelector;
+ Token: CSSToken;
+Begin
+ Rule.SelectorCount := 0;
+ Rule.PropertyCount := 0;
+
+ { Parser les selecteurs (separes par des virgules) }
+ While Pos <= Length(S) Do Begin
+  Pos := CSSSkipWhitespaceAndComments(S, Pos);
+  If (Pos > Length(S)) Or (S[Pos] = '{') Then Break;
+
+  Sel := CSSParseSelector(S, Pos);
+  If Sel.PartCount > 0 Then Begin
+   If Rule.SelectorCount < MAX_CSS_SELECTORS Then Begin
+    Inc(Rule.SelectorCount);
+    Rule.Selectors[Rule.SelectorCount] := Sel;
+   End;
+  End;
+
+  Pos := CSSSkipWhitespaceAndComments(S, Pos);
+  If (Pos <= Length(S)) And (S[Pos] = ',') Then Begin
+   Inc(Pos);
+   Continue;
+  End;
+
+  Break;
+ End;
+
+ { Parser les declarations }
+ If Rule.SelectorCount > 0 Then
+  CSSParseDeclarations(S, Pos, Rule);
+
+ CSSParseRule := Rule;
+End;
+
+{ Parser une feuille de style CSS complete }
+Procedure CSSParseStylesheet(Const CSS: String);
+Var
+ Pos: Integer;
+ Rule: CSSRule;
+ Token: CSSToken;
+Begin
+ Pos := 1;
+
+ While Pos <= Length(CSS) Do Begin
+  Pos := CSSSkipWhitespaceAndComments(CSS, Pos);
+  If Pos > Length(CSS) Then Break;
+
+  { Ignorer les at-rules pour l'instant (sauf @charset) }
+  If CSS[Pos] = '@' Then Begin
+   Inc(Pos);
+   While (Pos <= Length(CSS)) And (CSS[Pos] <> ';') And (CSS[Pos] <> '{') Do
+    Inc(Pos);
+   If (Pos <= Length(CSS)) And (CSS[Pos] = '{') Then Begin
+    { At-rule avec bloc - sauter le bloc }
+    Inc(Pos);
+    While (Pos <= Length(CSS)) And (CSS[Pos] <> '}') Do Inc(Pos);
+   End;
+   If Pos <= Length(CSS) Then Inc(Pos);
+   Continue;
+  End;
+
+  { Parser une regle normale }
+  Rule := CSSParseRule(CSS, Pos);
+  If Rule.SelectorCount > 0 Then Begin
+   If CSSGlobalStylesheet.RuleCount < MAX_CSS_RULES Then Begin
+    Inc(CSSGlobalStylesheet.RuleCount);
+    CSSGlobalStylesheet.Rules[CSSGlobalStylesheet.RuleCount] := Rule;
+   End;
+  End;
+ End;
+End;
+
+{ Parser un attribut style inline }
+Procedure CSSParseInlineStyle(Const StyleAttr: String; Var Style: DOMStyle);
+Var
+ Pos: Integer;
+ PropName, PropValue: String;
+ StartValue: Integer;
+Begin
+ Pos := 1;
+
+ While Pos <= Length(StyleAttr) Do Begin
+  Pos := CSSSkipWhitespaceAndComments(StyleAttr, Pos);
+  If Pos > Length(StyleAttr) Then Break;
+
+  { Lire nom de propriete }
+  PropName := HTMLLowerCase(CSSReadIdent(StyleAttr, Pos));
+  If Length(PropName) = 0 Then Begin
+   Inc(Pos);
+   Continue;
+  End;
+
+  { Chercher : }
+  Pos := CSSSkipWhitespaceAndComments(StyleAttr, Pos);
+  If (Pos <= Length(StyleAttr)) And (StyleAttr[Pos] = ':') Then Inc(Pos);
+
+  { Lire valeur }
+  Pos := CSSSkipWhitespaceAndComments(StyleAttr, Pos);
+  StartValue := Pos;
+  While (Pos <= Length(StyleAttr)) And Not (StyleAttr[Pos] In [';']) Do
+   Inc(Pos);
+  PropValue := Trim(Copy(StyleAttr, StartValue, Pos - StartValue));
+
+  { Appliquer la propriete au style }
+  If PropName = 'color' Then Style.Color := PropValue
+  Else If PropName = 'background-color' Then Style.BackgroundColor := PropValue
+  Else If PropName = 'font-size' Then Style.FontSize := PropValue
+  Else If PropName = 'font-weight' Then Style.FontWeight := PropValue
+  Else If PropName = 'font-style' Then Style.FontStyle := PropValue
+  Else If PropName = 'text-decoration' Then Style.TextDecoration := PropValue
+  Else If PropName = 'display' Then Style.Display := PropValue
+  Else If PropName = 'visibility' Then Style.Visibility := PropValue
+  Else If PropName = 'width' Then Style.Width := PropValue
+  Else If PropName = 'height' Then Style.Height := PropValue
+  Else If PropName = 'margin' Then Style.Margin := PropValue
+  Else If PropName = 'padding' Then Style.Padding := PropValue
+  Else If PropName = 'border' Then Style.Border := PropValue;
+
+  If (Pos <= Length(StyleAttr)) And (StyleAttr[Pos] = ';') Then Inc(Pos);
+ End;
+End;
+
+{ Verifier si un selecteur correspond a un element }
+Function CSSMatchSelector(Sel: CSSSelector; Element: HTMLNodePtr): Boolean;
+Var
+ I: Integer;
+ Part: CSSSelectorPart;
+ Node: HTMLNodePtr;
+ ClassName, NodeClass: String;
+ Match: Boolean;
+Begin
+ CSSMatchSelector := False;
+ If Element = Nil Then Exit;
+ If Sel.PartCount = 0 Then Exit;
+
+ Node := Element;
+
+ { Parcourir les parties du selecteur de droite a gauche }
+ For I := Sel.PartCount DownTo 1 Do Begin
+  If Node = Nil Then Exit;
+  Part := Sel.Parts[I];
+
+  { Verifier la correspondance }
+  Repeat
+   Match := False;
+   Case Part.PartType Of
+    CSS_SEL_TAG: Begin
+     Match := HTMLLowerCase(Node^.TagName) = Part.Value;
+    End;
+    CSS_SEL_CLASS: Begin
+     NodeClass := DOMGetAttribute(Node, 'class');
+     Match := DOMHasClass(Node, Part.Value);
+    End;
+    CSS_SEL_ID: Begin
+     Match := DOMGetAttribute(Node, 'id') = Part.Value;
+    End;
+    CSS_SEL_UNIVERSAL: Begin
+     Match := True;
+    End;
+    CSS_SEL_ATTRIBUTE: Begin
+     Match := DOMHasAttribute(Node, Part.AttrName);
+     If Match And (Part.AttrOp > 0) Then
+      Match := DOMGetAttribute(Node, Part.AttrName) = Part.AttrValue;
+    End;
+   End;
+
+   If Not Match Then Begin
+    Case Part.Combinator Of
+     CSS_COMB_DESCENDANT: Begin
+      { Remonter dans l'arbre }
+      Node := Node^.Parent;
+      If Node = Nil Then Exit;
+     End;
+     Else Exit;
+    End;
+   End;
+  Until Match;
+
+  { Passer au noeud suivant selon le combinateur }
+  If I > 1 Then Begin
+   Case Sel.Parts[I - 1].Combinator Of
+    CSS_COMB_NONE, CSS_COMB_DESCENDANT: Node := Node^.Parent;
+    CSS_COMB_CHILD: Node := Node^.Parent;
+    CSS_COMB_ADJACENT: Node := DOMGetPreviousSibling(Node);
+    CSS_COMB_SIBLING: Node := DOMGetPreviousSibling(Node);
+   End;
+  End;
+ End;
+
+ CSSMatchSelector := True;
+End;
+
+{ Obtenir les styles CSS appliques a un element }
+Procedure CSSGetComputedStyle(Element: HTMLNodePtr; Var Style: DOMStyle);
+Var
+ I, J: Integer;
+ Rule: CSSRule;
+ InlineStyle: String;
+Begin
+ { Initialiser avec valeurs par defaut }
+ Style.Color := '';
+ Style.BackgroundColor := '';
+ Style.FontSize := '';
+ Style.FontWeight := '';
+ Style.FontStyle := '';
+ Style.TextDecoration := '';
+ Style.Display := '';
+ Style.Visibility := '';
+ Style.Width := '';
+ Style.Height := '';
+ Style.Margin := '';
+ Style.Padding := '';
+ Style.Border := '';
+
+ If Element = Nil Then Exit;
+
+ { Appliquer les regles de la feuille de style }
+ For I := 1 To CSSGlobalStylesheet.RuleCount Do Begin
+  Rule := CSSGlobalStylesheet.Rules[I];
+  For J := 1 To Rule.SelectorCount Do Begin
+   If CSSMatchSelector(Rule.Selectors[J], Element) Then Begin
+    { Appliquer les proprietes }
+    For J := 1 To Rule.PropertyCount Do Begin
+     Case Rule.Properties[J].PropId Of
+      CSS_PROP_COLOR: Style.Color := Rule.Properties[J].Value;
+      CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := Rule.Properties[J].Value;
+      CSS_PROP_FONT_SIZE: Style.FontSize := Rule.Properties[J].Value;
+      CSS_PROP_FONT_WEIGHT: Style.FontWeight := Rule.Properties[J].Value;
+      CSS_PROP_FONT_STYLE: Style.FontStyle := Rule.Properties[J].Value;
+      CSS_PROP_TEXT_DECORATION: Style.TextDecoration := Rule.Properties[J].Value;
+      CSS_PROP_DISPLAY: Style.Display := Rule.Properties[J].Value;
+      CSS_PROP_VISIBILITY: Style.Visibility := Rule.Properties[J].Value;
+      CSS_PROP_WIDTH: Style.Width := Rule.Properties[J].Value;
+      CSS_PROP_HEIGHT: Style.Height := Rule.Properties[J].Value;
+      CSS_PROP_MARGIN: Style.Margin := Rule.Properties[J].Value;
+      CSS_PROP_PADDING: Style.Padding := Rule.Properties[J].Value;
+      CSS_PROP_BORDER: Style.Border := Rule.Properties[J].Value;
+     End;
+    End;
+    Break;
+   End;
+  End;
+ End;
+
+ { Appliquer le style inline (priorite maximale) }
+ InlineStyle := DOMGetAttribute(Element, 'style');
+ If Length(InlineStyle) > 0 Then
+  CSSParseInlineStyle(InlineStyle, Style);
+End;
+
+{ Convertir une couleur CSS en index de couleur EGA/VGA }
+Function CSSColorToIndex(Const ColorStr: String): Integer;
+Var
+ LowerColor: String;
+Begin
+ LowerColor := HTMLLowerCase(ColorStr);
+
+ { Couleurs nommees }
+ If LowerColor = 'black' Then CSSColorToIndex := 0
+ Else If LowerColor = 'blue' Then CSSColorToIndex := 1
+ Else If LowerColor = 'green' Then CSSColorToIndex := 2
+ Else If LowerColor = 'cyan' Then CSSColorToIndex := 3
+ Else If LowerColor = 'red' Then CSSColorToIndex := 4
+ Else If LowerColor = 'magenta' Then CSSColorToIndex := 5
+ Else If LowerColor = 'brown' Then CSSColorToIndex := 6
+ Else If LowerColor = 'lightgray' Then CSSColorToIndex := 7
+ Else If LowerColor = 'darkgray' Then CSSColorToIndex := 8
+ Else If LowerColor = 'lightblue' Then CSSColorToIndex := 9
+ Else If LowerColor = 'lightgreen' Then CSSColorToIndex := 10
+ Else If LowerColor = 'lightcyan' Then CSSColorToIndex := 11
+ Else If LowerColor = 'lightred' Then CSSColorToIndex := 12
+ Else If LowerColor = 'lightmagenta' Then CSSColorToIndex := 13
+ Else If LowerColor = 'yellow' Then CSSColorToIndex := 14
+ Else If LowerColor = 'white' Then CSSColorToIndex := 15
+ { Couleurs HTML standard }
+ Else If LowerColor = 'navy' Then CSSColorToIndex := 1
+ Else If LowerColor = 'teal' Then CSSColorToIndex := 3
+ Else If LowerColor = 'maroon' Then CSSColorToIndex := 4
+ Else If LowerColor = 'purple' Then CSSColorToIndex := 5
+ Else If LowerColor = 'olive' Then CSSColorToIndex := 6
+ Else If LowerColor = 'silver' Then CSSColorToIndex := 7
+ Else If LowerColor = 'gray' Then CSSColorToIndex := 8
+ Else If LowerColor = 'lime' Then CSSColorToIndex := 10
+ Else If LowerColor = 'aqua' Then CSSColorToIndex := 11
+ Else If LowerColor = 'fuchsia' Then CSSColorToIndex := 13
+ Else If LowerColor = 'orange' Then CSSColorToIndex := 6
+ Else CSSColorToIndex := -1;
+End;
+
+{ Extraire le CSS des balises <style> du document }
+Procedure CSSExtractFromDocument;
+Var
+ List: DOMNodeList;
+ I: Integer;
+ StyleContent: String;
+Begin
+ List := DOMGetElementsByTagName('style');
+ For I := 1 To List.Length Do Begin
+  StyleContent := DOMGetTextContent(List.Nodes[I]);
+  If Length(StyleContent) > 0 Then
+   CSSParseStylesheet(StyleContent);
+ End;
+End;
+
+{ =====================================================
+  FIN PARSEUR CSS
   ===================================================== }
 
 { =====================================================
@@ -5775,6 +6818,7 @@ BEGIN
  InitHTMLParser;
  InitJSContext;  { Initialiser l'interpreteur JavaScript }
  InitDOM;        { Initialiser le DOM }
+ InitCSS;        { Initialiser le parseur CSS }
  InitBackButton;
  InitForwardButton;
  InitRefreshButton;
