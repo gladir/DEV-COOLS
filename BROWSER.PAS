@@ -20,7 +20,7 @@
   11. DONE: Implementer le rendu des balises de texte (p, h1-h6, strong, em, pre, code)
   12. DONE: Implementer le rendu des listes (ul, ol, li, dl, dt, dd)
   13. DONE: Implementer le rendu des tableaux (table, tr, td, th, thead, tbody)
-  14. TODO: Implementer le rendu des formulaires (form, input, button, select, textarea)
+  14. DONE: Implementer le rendu des formulaires (form, input, button, select, textarea)
   15. TODO: Implementer la detection et le rendu des liens hypertexte (balise <a href>)
   16. TODO: Implementer la navigation par clic sur les liens URL dans les pages
   17. TODO: Creer l'interpreteur JavaScript pour le support des scripts cote client
@@ -300,6 +300,28 @@ Const
  TABLE_HEADER_BG = 7;          { Couleur de fond des en-tetes (gris clair) }
  MAX_TABLE_COLS = 20;          { Nombre maximum de colonnes }
 
+ { Parametres pour les formulaires }
+ FORM_MARGIN = 6;              { Marge autour du formulaire }
+ INPUT_WIDTH = 120;            { Largeur par defaut d'un champ input }
+ INPUT_HEIGHT = 16;            { Hauteur d'un champ input }
+ INPUT_PADDING = 3;            { Padding interieur des inputs }
+ INPUT_BORDER_COLOR = 8;       { Couleur de bordure (gris fonce) }
+ INPUT_BG_COLOR = 15;          { Couleur de fond (blanc) }
+ INPUT_TEXT_COLOR = 0;         { Couleur du texte (noir) }
+ BUTTON_PADDING_X = 8;         { Padding horizontal des boutons }
+ BUTTON_PADDING_Y = 4;         { Padding vertical des boutons }
+ BUTTON_BG_COLOR = 7;          { Couleur de fond des boutons (gris clair) }
+ BUTTON_BORDER_COLOR = 8;      { Couleur de bordure des boutons }
+ BUTTON_SHADOW_COLOR = 8;      { Couleur de l'ombre }
+ CHECKBOX_SIZE = 12;           { Taille des cases a cocher }
+ RADIO_SIZE = 12;              { Taille des boutons radio }
+ SELECT_WIDTH = 100;           { Largeur par defaut d'un select }
+ SELECT_ARROW_WIDTH = 16;      { Largeur de la fleche du select }
+ TEXTAREA_WIDTH = 200;         { Largeur par defaut d'un textarea }
+ TEXTAREA_HEIGHT = 60;         { Hauteur par defaut d'un textarea }
+ TEXTAREA_ROWS_DEFAULT = 4;    { Nombre de lignes par defaut }
+ TEXTAREA_COLS_DEFAULT = 20;   { Nombre de colonnes par defaut }
+
  { Couleurs de rendu }
  RENDER_BG_COLOR = 15;         { Blanc }
  RENDER_TEXT_COLOR = 0;        { Noir }
@@ -361,6 +383,9 @@ Type
   TableColIndex: Integer;    { Index de la colonne courante }
   TableRowY: Integer;        { Position Y de debut de la ligne }
   TableRowHeight: Integer;   { Hauteur de la ligne courante }
+  InForm: Boolean;           { Dans un formulaire }
+  InSelect: Boolean;         { Dans un element select }
+  SelectOptionIndex: Integer;{ Index de l'option courante dans select }
  End;
 
 Var
@@ -946,6 +971,9 @@ Begin
  Ctx.TableColIndex := 0;
  Ctx.TableRowY := 0;
  Ctx.TableRowHeight := RENDER_LINE_HEIGHT;
+ Ctx.InForm := False;
+ Ctx.InSelect := False;
+ Ctx.SelectOptionIndex := 0;
 End;
 
 { Procedure pour effacer la zone de rendu }
@@ -1906,6 +1934,387 @@ End;
 { =====================================================
   FIN RENDU TABLEAUX
   ===================================================== }
+
+{ =====================================================
+  RENDU HTML - Formulaires (form, input, button, select, textarea)
+  ===================================================== }
+
+{ Fonction utilitaire pour obtenir la valeur d'un attribut }
+Function GetNodeAttribute(Node: HTMLNodePtr; AttrName: String): String;
+Var
+ I: Integer;
+ LowerAttr: String;
+Begin
+ GetNodeAttribute := '';
+ If Node = Nil Then Exit;
+
+ LowerAttr := '';
+ For I := 1 To Length(AttrName) Do
+  LowerAttr := LowerAttr + LoCase(AttrName[I]);
+
+ For I := 1 To Node^.AttrCount Do Begin
+  If Node^.Attrs[I].Name = LowerAttr Then Begin
+   GetNodeAttribute := Node^.Attrs[I].Value;
+   Exit;
+  End;
+ End;
+End;
+
+{ Procedure pour rendre la balise FORM }
+Procedure RenderTagForm(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInForm: Boolean;
+Begin
+ { Nouvelle ligne avant le formulaire si necessaire }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, FORM_MARGIN);
+
+ { Sauvegarder l'etat }
+ OldInForm := Ctx.InForm;
+ Ctx.InForm := True;
+
+ { Rendre les enfants du formulaire }
+ RenderChildren(Node, Ctx);
+
+ { Restaurer l'etat }
+ Ctx.InForm := OldInForm;
+
+ { Espacement apres le formulaire }
+ RenderBlockSpacing(Ctx, FORM_MARGIN);
+End;
+
+{ Procedure pour dessiner un champ de saisie text/password }
+Procedure DrawInputField(X, Y, W, H: Integer; Value: String; IsPassword: Boolean);
+Var
+ DisplayText: String;
+ I: Integer;
+Begin
+ { Fond blanc }
+ SetFillStyle(SolidFill, INPUT_BG_COLOR);
+ Bar(X, Y, X + W, Y + H);
+
+ { Bordure }
+ SetColor(INPUT_BORDER_COLOR);
+ Rectangle(X, Y, X + W, Y + H);
+
+ { Texte (masque pour password) }
+ If IsPassword Then Begin
+  DisplayText := '';
+  For I := 1 To Length(Value) Do
+   DisplayText := DisplayText + '*';
+ End
+ Else
+  DisplayText := Value;
+
+ SetColor(INPUT_TEXT_COLOR);
+ If Length(DisplayText) > 0 Then
+  OutTextXY(X + INPUT_PADDING, Y + INPUT_PADDING, DisplayText);
+End;
+
+{ Procedure pour dessiner une case a cocher }
+Procedure DrawCheckbox(X, Y: Integer; Checked: Boolean);
+Begin
+ { Fond blanc }
+ SetFillStyle(SolidFill, INPUT_BG_COLOR);
+ Bar(X, Y, X + CHECKBOX_SIZE, Y + CHECKBOX_SIZE);
+
+ { Bordure }
+ SetColor(INPUT_BORDER_COLOR);
+ Rectangle(X, Y, X + CHECKBOX_SIZE, Y + CHECKBOX_SIZE);
+
+ { Coche si selectionne }
+ If Checked Then Begin
+  SetColor(INPUT_TEXT_COLOR);
+  Line(X + 2, Y + (CHECKBOX_SIZE Div 2), X + (CHECKBOX_SIZE Div 2), Y + CHECKBOX_SIZE - 3);
+  Line(X + (CHECKBOX_SIZE Div 2), Y + CHECKBOX_SIZE - 3, X + CHECKBOX_SIZE - 2, Y + 2);
+ End;
+End;
+
+{ Procedure pour dessiner un bouton radio }
+Procedure DrawRadioButton(X, Y: Integer; Selected: Boolean);
+Var
+ CenterX, CenterY, Radius: Integer;
+Begin
+ CenterX := X + (RADIO_SIZE Div 2);
+ CenterY := Y + (RADIO_SIZE Div 2);
+ Radius := RADIO_SIZE Div 2;
+
+ { Cercle exterieur }
+ SetColor(INPUT_BORDER_COLOR);
+ Circle(CenterX, CenterY, Radius);
+
+ { Remplir si selectionne }
+ If Selected Then Begin
+  SetFillStyle(SolidFill, INPUT_TEXT_COLOR);
+  FillEllipse(CenterX, CenterY, Radius - 3, Radius - 3);
+ End;
+End;
+
+{ Procedure pour dessiner un bouton }
+Procedure DrawButton(X, Y: Integer; Caption: String);
+Var
+ W, H: Integer;
+Begin
+ W := TextWidth(Caption) + (2 * BUTTON_PADDING_X);
+ H := TextHeight(Caption) + (2 * BUTTON_PADDING_Y);
+
+ { Ombre }
+ SetFillStyle(SolidFill, BUTTON_SHADOW_COLOR);
+ Bar(X + 2, Y + 2, X + W + 2, Y + H + 2);
+
+ { Fond du bouton }
+ SetFillStyle(SolidFill, BUTTON_BG_COLOR);
+ Bar(X, Y, X + W, Y + H);
+
+ { Bordure }
+ SetColor(BUTTON_BORDER_COLOR);
+ Rectangle(X, Y, X + W, Y + H);
+
+ { Effet 3D (bord haut/gauche clair) }
+ SetColor(15);
+ Line(X, Y, X + W, Y);
+ Line(X, Y, X, Y + H);
+
+ { Effet 3D (bord bas/droite fonce) }
+ SetColor(8);
+ Line(X, Y + H, X + W, Y + H);
+ Line(X + W, Y, X + W, Y + H);
+
+ { Texte du bouton }
+ SetColor(INPUT_TEXT_COLOR);
+ OutTextXY(X + BUTTON_PADDING_X, Y + BUTTON_PADDING_Y, Caption);
+End;
+
+{ Procedure pour rendre la balise INPUT }
+Procedure RenderTagInput(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ InputType, InputValue, InputName: String;
+ Checked: Boolean;
+ W, H: Integer;
+Begin
+ { Obtenir les attributs }
+ InputType := GetNodeAttribute(Node, 'type');
+ InputValue := GetNodeAttribute(Node, 'value');
+ InputName := GetNodeAttribute(Node, 'name');
+
+ { Type par defaut: text }
+ If InputType = '' Then InputType := 'text';
+
+ { Verifier si checked }
+ Checked := (GetNodeAttribute(Node, 'checked') <> '');
+
+ { Rendre selon le type }
+ If (InputType = 'text') Or (InputType = 'password') Or (InputType = 'email') Or
+    (InputType = 'number') Or (InputType = 'search') Or (InputType = 'tel') Or
+    (InputType = 'url') Then Begin
+  { Champ de saisie }
+  DrawInputField(Ctx.X, Ctx.Y, INPUT_WIDTH, INPUT_HEIGHT, InputValue, InputType = 'password');
+  Inc(Ctx.X, INPUT_WIDTH + 6);
+ End
+ Else If InputType = 'checkbox' Then Begin
+  { Case a cocher }
+  DrawCheckbox(Ctx.X, Ctx.Y, Checked);
+  Inc(Ctx.X, CHECKBOX_SIZE + 6);
+ End
+ Else If InputType = 'radio' Then Begin
+  { Bouton radio }
+  DrawRadioButton(Ctx.X, Ctx.Y, Checked);
+  Inc(Ctx.X, RADIO_SIZE + 6);
+ End
+ Else If (InputType = 'submit') Or (InputType = 'button') Or (InputType = 'reset') Then Begin
+  { Bouton }
+  If InputValue = '' Then Begin
+   If InputType = 'submit' Then InputValue := 'Envoyer'
+   Else If InputType = 'reset' Then InputValue := 'Effacer'
+   Else InputValue := 'Bouton';
+  End;
+  DrawButton(Ctx.X, Ctx.Y, InputValue);
+  W := TextWidth(InputValue) + (2 * BUTTON_PADDING_X);
+  Inc(Ctx.X, W + 6);
+ End
+ Else If InputType = 'hidden' Then Begin
+  { Input cache - ne rien afficher }
+ End
+ Else Begin
+  { Type inconnu - afficher comme texte }
+  DrawInputField(Ctx.X, Ctx.Y, INPUT_WIDTH, INPUT_HEIGHT, InputValue, False);
+  Inc(Ctx.X, INPUT_WIDTH + 6);
+ End;
+
+ { Gerer le debordement de ligne }
+ If Ctx.X > Ctx.MaxX Then Begin
+  RenderNewLine(Ctx);
+ End;
+End;
+
+{ Procedure pour rendre la balise BUTTON }
+Procedure RenderTagButton(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ ButtonText: String;
+ W: Integer;
+Begin
+ { Obtenir le texte du bouton }
+ ButtonText := GetNodeAttribute(Node, 'value');
+
+ { Si pas de valeur, utiliser le contenu textuel }
+ If ButtonText = '' Then Begin
+  If (Node^.ChildCount > 0) And (Node^.Children[1] <> Nil) Then Begin
+   If Node^.Children[1]^.NodeType = HTML_NODE_TEXT Then
+    ButtonText := Node^.Children[1]^.Content;
+  End;
+ End;
+
+ If ButtonText = '' Then ButtonText := 'Bouton';
+
+ { Dessiner le bouton }
+ DrawButton(Ctx.X, Ctx.Y, ButtonText);
+ W := TextWidth(ButtonText) + (2 * BUTTON_PADDING_X);
+ Inc(Ctx.X, W + 6);
+
+ { Gerer le debordement de ligne }
+ If Ctx.X > Ctx.MaxX Then Begin
+  RenderNewLine(Ctx);
+ End;
+End;
+
+{ Procedure pour rendre la balise SELECT }
+Procedure RenderTagSelect(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInSelect: Boolean;
+ I: Integer;
+ FirstOptionText: String;
+ ChildNode: HTMLNodePtr;
+Begin
+ { Trouver le texte de la premiere option }
+ FirstOptionText := '';
+ For I := 1 To Node^.ChildCount Do Begin
+  ChildNode := Node^.Children[I];
+  If (ChildNode <> Nil) And (ChildNode^.TagType = TAG_OPTION) Then Begin
+   If (ChildNode^.ChildCount > 0) And (ChildNode^.Children[1] <> Nil) Then Begin
+    If ChildNode^.Children[1]^.NodeType = HTML_NODE_TEXT Then Begin
+     FirstOptionText := ChildNode^.Children[1]^.Content;
+     Break;
+    End;
+   End;
+  End;
+ End;
+
+ If FirstOptionText = '' Then FirstOptionText := '---';
+
+ { Dessiner le fond de la liste deroulante }
+ SetFillStyle(SolidFill, INPUT_BG_COLOR);
+ Bar(Ctx.X, Ctx.Y, Ctx.X + SELECT_WIDTH, Ctx.Y + INPUT_HEIGHT);
+
+ { Bordure }
+ SetColor(INPUT_BORDER_COLOR);
+ Rectangle(Ctx.X, Ctx.Y, Ctx.X + SELECT_WIDTH, Ctx.Y + INPUT_HEIGHT);
+
+ { Zone de la fleche }
+ SetFillStyle(SolidFill, BUTTON_BG_COLOR);
+ Bar(Ctx.X + SELECT_WIDTH - SELECT_ARROW_WIDTH, Ctx.Y + 1,
+     Ctx.X + SELECT_WIDTH - 1, Ctx.Y + INPUT_HEIGHT - 1);
+
+ { Dessiner la fleche vers le bas }
+ SetColor(INPUT_TEXT_COLOR);
+ Line(Ctx.X + SELECT_WIDTH - SELECT_ARROW_WIDTH + 4, Ctx.Y + 5,
+      Ctx.X + SELECT_WIDTH - (SELECT_ARROW_WIDTH Div 2), Ctx.Y + INPUT_HEIGHT - 5);
+ Line(Ctx.X + SELECT_WIDTH - (SELECT_ARROW_WIDTH Div 2), Ctx.Y + INPUT_HEIGHT - 5,
+      Ctx.X + SELECT_WIDTH - 4, Ctx.Y + 5);
+
+ { Texte de l'option selectionnee }
+ SetColor(INPUT_TEXT_COLOR);
+ OutTextXY(Ctx.X + INPUT_PADDING, Ctx.Y + INPUT_PADDING, FirstOptionText);
+
+ Inc(Ctx.X, SELECT_WIDTH + 6);
+
+ { Gerer le debordement de ligne }
+ If Ctx.X > Ctx.MaxX Then Begin
+  RenderNewLine(Ctx);
+ End;
+
+ { Note: Les options ne sont pas rendues visiblement (liste fermee par defaut) }
+End;
+
+{ Procedure pour rendre la balise OPTION }
+Procedure RenderTagOption(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Les options sont gerees par SELECT, ne rien faire ici }
+ { Le texte de l'option est lu directement par RenderTagSelect }
+End;
+
+{ Procedure pour rendre la balise TEXTAREA }
+Procedure RenderTagTextarea(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Rows, Cols: Integer;
+ W, H: Integer;
+ TextContent: String;
+ RowsStr, ColsStr: String;
+ Code: Integer;
+Begin
+ { Obtenir les dimensions }
+ RowsStr := GetNodeAttribute(Node, 'rows');
+ ColsStr := GetNodeAttribute(Node, 'cols');
+
+ Rows := TEXTAREA_ROWS_DEFAULT;
+ Cols := TEXTAREA_COLS_DEFAULT;
+
+ If RowsStr <> '' Then Begin
+  Val(RowsStr, Rows, Code);
+  If Code <> 0 Then Rows := TEXTAREA_ROWS_DEFAULT;
+ End;
+
+ If ColsStr <> '' Then Begin
+  Val(ColsStr, Cols, Code);
+  If Code <> 0 Then Cols := TEXTAREA_COLS_DEFAULT;
+ End;
+
+ { Calculer les dimensions en pixels }
+ W := Cols * 8;  { Approximation: 8 pixels par caractere }
+ H := Rows * RENDER_LINE_HEIGHT;
+
+ If W < TEXTAREA_WIDTH Div 2 Then W := TEXTAREA_WIDTH;
+ If H < TEXTAREA_HEIGHT Div 2 Then H := TEXTAREA_HEIGHT;
+
+ { Nouvelle ligne si necessaire }
+ If Ctx.X + W > Ctx.MaxX Then
+  RenderNewLine(Ctx);
+
+ { Fond blanc }
+ SetFillStyle(SolidFill, INPUT_BG_COLOR);
+ Bar(Ctx.X, Ctx.Y, Ctx.X + W, Ctx.Y + H);
+
+ { Bordure }
+ SetColor(INPUT_BORDER_COLOR);
+ Rectangle(Ctx.X, Ctx.Y, Ctx.X + W, Ctx.Y + H);
+
+ { Contenu textuel (si present) }
+ If (Node^.ChildCount > 0) And (Node^.Children[1] <> Nil) Then Begin
+  If Node^.Children[1]^.NodeType = HTML_NODE_TEXT Then Begin
+   TextContent := Node^.Children[1]^.Content;
+   SetColor(INPUT_TEXT_COLOR);
+   OutTextXY(Ctx.X + INPUT_PADDING, Ctx.Y + INPUT_PADDING, TextContent);
+  End;
+ End;
+
+ Inc(Ctx.X, W + 6);
+
+ { Gerer le debordement de ligne }
+ If Ctx.X > Ctx.MaxX Then Begin
+  RenderNewLine(Ctx);
+ End;
+End;
+
+{ Procedure pour rendre la balise LABEL }
+Procedure RenderTagLabel(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Label est rendu comme du texte normal avec ses enfants }
+ RenderChildren(Node, Ctx);
+End;
+
+{ =====================================================
+  FIN RENDU FORMULAIRES
+  ===================================================== }
 Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
  If Node = Nil Then Exit;
@@ -1987,6 +2396,15 @@ Begin
     TAG_TR:       RenderTagTR(Node, Ctx);
     TAG_TD:       RenderTagTD(Node, Ctx);
     TAG_TH:       RenderTagTH(Node, Ctx);
+
+    { Balises de formulaires }
+    TAG_FORM:     RenderTagForm(Node, Ctx);
+    TAG_INPUT:    RenderTagInput(Node, Ctx);
+    TAG_BUTTON:   RenderTagButton(Node, Ctx);
+    TAG_SELECT:   RenderTagSelect(Node, Ctx);
+    TAG_OPTION:   RenderTagOption(Node, Ctx);
+    TAG_TEXTAREA: RenderTagTextarea(Node, Ctx);
+    TAG_LABEL:    RenderTagLabel(Node, Ctx);
 
     Else Begin
      { Balise non geree - rendre les enfants par defaut }
