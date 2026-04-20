@@ -4639,26 +4639,97 @@ End;
   GESTION DES EVENEMENTS
   ============================================================ }
 
+Procedure MenuSelectNext(Dir: Integer);
+Var
+ MI, Start: Integer;
+Begin
+ If Not MainMenuBar.MenuOpen Then Exit;
+ MI := MainMenuBar.Menus[MainMenuBar.ActiveMenu].SelectedItem;
+ If MI = 0 Then Begin
+  If Dir > 0 Then MI := 1 Else MI := MainMenuBar.Menus[MainMenuBar.ActiveMenu].Count;
+ End
+ Else Begin
+  Start := MI;
+  Repeat
+   MI := MI + Dir;
+   If MI < 1 Then MI := MainMenuBar.Menus[MainMenuBar.ActiveMenu].Count;
+   If MI > MainMenuBar.Menus[MainMenuBar.ActiveMenu].Count Then MI := 1;
+   If Not MainMenuBar.Menus[MainMenuBar.ActiveMenu].Items[MI].IsSeparator Then Break;
+  Until MI = Start;
+ End;
+ { S'assurer qu'on ne s'arrete pas sur un separateur }
+ If MainMenuBar.Menus[MainMenuBar.ActiveMenu].Items[MI].IsSeparator Then Exit;
+ MainMenuBar.Menus[MainMenuBar.ActiveMenu].SelectedItem := MI;
+ NeedRedraw := True;
+End;
+
+Procedure MenuSwitchTo(NewIndex: Integer);
+Begin
+ If (NewIndex < 1) Or (NewIndex > MainMenuBar.Count) Then Exit;
+ MainMenuBar.Menus[MainMenuBar.ActiveMenu].Visible := False;
+ MainMenuBar.Menus[MainMenuBar.ActiveMenu].SelectedItem := 0;
+ MainMenuBar.ActiveMenu := NewIndex;
+ MainMenuBar.Menus[NewIndex].Visible := True;
+ MainMenuBar.Menus[NewIndex].SelectedItem := 0;
+ NeedRedraw := True;
+End;
+
 Procedure HandleKeyPress;
 Var
  Ch: Char;
+ Cmd, NewMenu: Integer;
 Begin
  If KeyPressed Then Begin
   Ch := ReadKey;
   If Ch = #0 Then Begin
    Ch := ReadKey;
-   Case Ch Of
-    #59: ProcessCommand(CMD_HELP_INDEX);
-    #60: ProcessCommand(CMD_FILE_SAVE);
-    #61: ProcessCommand(CMD_VIEW_EXPLORER);
-    #67: ProcessCommand(CMD_PROJECT_COMPILE);
-    #68: Running := False;
-    #107: Running := False; { Alt+F4 }
+   If MainMenuBar.MenuOpen Then Begin
+    Case Ch Of
+     #72: MenuSelectNext(-1);  { Fleche haut }
+     #80: MenuSelectNext(1);   { Fleche bas }
+     #75: Begin                 { Fleche gauche }
+      NewMenu := MainMenuBar.ActiveMenu - 1;
+      If NewMenu < 1 Then NewMenu := MainMenuBar.Count;
+      MenuSwitchTo(NewMenu);
+     End;
+     #77: Begin                 { Fleche droite }
+      NewMenu := MainMenuBar.ActiveMenu + 1;
+      If NewMenu > MainMenuBar.Count Then NewMenu := 1;
+      MenuSwitchTo(NewMenu);
+     End;
+     #107: Running := False;   { Alt+F4 }
+    End;
+   End
+   Else Begin
+    Case Ch Of
+     #59: ProcessCommand(CMD_HELP_INDEX);
+     #60: ProcessCommand(CMD_FILE_SAVE);
+     #61: ProcessCommand(CMD_VIEW_EXPLORER);
+     #67: ProcessCommand(CMD_PROJECT_COMPILE);
+     #68: Running := False;
+     #107: Running := False; { Alt+F4 }
+    End;
    End;
   End
   Else Begin
-   Case Ch Of
-    #27: CloseAllMenus;
+   If MainMenuBar.MenuOpen Then Begin
+    Case Ch Of
+     #13: Begin { Enter - selectionner l'item courant }
+      Cmd := 0;
+      If MainMenuBar.Menus[MainMenuBar.ActiveMenu].SelectedItem > 0 Then Begin
+       If MainMenuBar.Menus[MainMenuBar.ActiveMenu].Items[MainMenuBar.Menus[MainMenuBar.ActiveMenu].SelectedItem].Enabled Then
+        Cmd := MainMenuBar.Menus[MainMenuBar.ActiveMenu].Items[MainMenuBar.Menus[MainMenuBar.ActiveMenu].SelectedItem].CommandId;
+      End;
+      CloseAllMenus;
+      If Cmd <> CMD_NONE Then ProcessCommand(Cmd);
+     End;
+     #27: CloseAllMenus; { Escape }
+    End;
+   End
+   Else Begin
+    Case Ch Of
+     #27: CloseAllMenus;
+    End;
    End;
   End;
  End;
@@ -4707,7 +4778,9 @@ Begin
   End;
  End
  Else If MainMenuBar.MenuOpen Then Begin
-  UpdateMenuHighlight(MouseX, MouseY);
+  { Ne mettre a jour la selection que si la souris a bouge }
+  If (MouseX <> LastMouseX) Or (MouseY <> LastMouseY) Then
+   UpdateMenuHighlight(MouseX, MouseY);
  End
  Else Begin
   { Gestion du drag dans l'editeur de dialogues }
@@ -4833,6 +4906,17 @@ End;
   ============================================================ }
 
 BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('WORKSHOP - Cette commande permet de lancer l''editeur de ',
+          'ressources.');
+  WriteLn;
+  WriteLn('Syntaxe : WORKSHOP [fichier]');
+  WriteLn;
+  WriteLn('  fichier : Nom du fichier ressource (.RC, .RES., .RSC)');
+  Halt;
+ End;
+
  Initialize;
  If ParamCount > 0 Then
   OpenProject(ParamStr(1));
