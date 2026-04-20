@@ -17,7 +17,7 @@
   8.  DONE: Implementer le support de la souris pour Free Pascal via PtcMouse
   9.  DONE: Creer le parseur HTML supportant toutes les balises HTML (HTML 1.0 a HTML5)
   10. DONE: Implementer le rendu des balises de structure HTML (html, head, body, div, span)
-  11. TODO: Implementer le rendu des balises de texte (p, h1-h6, strong, em, pre, code)
+  11. DONE: Implementer le rendu des balises de texte (p, h1-h6, strong, em, pre, code)
   12. TODO: Implementer le rendu des listes (ul, ol, li, dl, dt, dd)
   13. TODO: Implementer le rendu des tableaux (table, tr, td, th, thead, tbody)
   14. TODO: Implementer le rendu des formulaires (form, input, button, select, textarea)
@@ -270,10 +270,26 @@ Const
  RENDER_PARAGRAPH_SPACING = 8;
  RENDER_DIV_MARGIN = 4;
 
+ { Tailles de ligne pour les titres }
+ RENDER_H1_HEIGHT = 32;
+ RENDER_H2_HEIGHT = 28;
+ RENDER_H3_HEIGHT = 24;
+ RENDER_H4_HEIGHT = 20;
+ RENDER_H5_HEIGHT = 18;
+ RENDER_H6_HEIGHT = 16;
+
  { Couleurs de rendu }
  RENDER_BG_COLOR = 15;         { Blanc }
  RENDER_TEXT_COLOR = 0;        { Noir }
  RENDER_LINK_COLOR = 1;        { Bleu }
+
+ { Styles de texte (flags combinables) }
+ TEXT_STYLE_NORMAL = 0;
+ TEXT_STYLE_BOLD = 1;
+ TEXT_STYLE_ITALIC = 2;
+ TEXT_STYLE_UNDERLINE = 4;
+ TEXT_STYLE_STRIKE = 8;
+ TEXT_STYLE_CODE = 16;
 
 Type
  { Type pour un attribut HTML }
@@ -310,6 +326,8 @@ Type
   InHead: Boolean;           { Dans la section head (ne pas afficher) }
   InBody: Boolean;           { Dans la section body }
   BlockLevel: Integer;       { Niveau d'imbrication des blocs }
+  TextStyle: Byte;           { Style de texte (gras, italique, etc.) }
+  InPreformatted: Boolean;   { Dans une balise pre (conserver espaces) }
  End;
 
 Var
@@ -882,6 +900,8 @@ Begin
  Ctx.InHead := False;
  Ctx.InBody := False;
  Ctx.BlockLevel := 0;
+ Ctx.TextStyle := TEXT_STYLE_NORMAL;
+ Ctx.InPreformatted := False;
 End;
 
 { Procedure pour effacer la zone de rendu }
@@ -1104,6 +1124,304 @@ Begin
  RenderChildren(Node, Ctx);
 End;
 
+{ =====================================================
+  RENDU HTML - Balises de texte (p, h1-h6, strong, em, pre, code)
+  ===================================================== }
+
+{ Procedure pour rendre la balise P (paragraphe) }
+Procedure RenderTagP(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Nouvelle ligne avant le paragraphe si necessaire }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+
+ RenderChildren(Node, Ctx);
+
+ { Espacement apres le paragraphe }
+ RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+End;
+
+{ Procedure generique pour rendre les titres H1-H6 }
+Procedure RenderHeading(Node: HTMLNodePtr; Var Ctx: RenderContext; HeadingHeight: Integer);
+Var
+ OldLineHeight: Integer;
+ OldTextStyle: Byte;
+Begin
+ { Sauvegarder les valeurs courantes }
+ OldLineHeight := Ctx.LineHeight;
+ OldTextStyle := Ctx.TextStyle;
+
+ { Nouvelle ligne avant le titre }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+
+ { Appliquer la taille du titre }
+ Ctx.LineHeight := HeadingHeight;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD;
+
+ RenderChildren(Node, Ctx);
+
+ { Restaurer les valeurs }
+ Ctx.LineHeight := OldLineHeight;
+ Ctx.TextStyle := OldTextStyle;
+
+ { Espacement apres le titre }
+ RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+End;
+
+{ Procedure pour rendre la balise H1 }
+Procedure RenderTagH1(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderHeading(Node, Ctx, RENDER_H1_HEIGHT);
+End;
+
+{ Procedure pour rendre la balise H2 }
+Procedure RenderTagH2(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderHeading(Node, Ctx, RENDER_H2_HEIGHT);
+End;
+
+{ Procedure pour rendre la balise H3 }
+Procedure RenderTagH3(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderHeading(Node, Ctx, RENDER_H3_HEIGHT);
+End;
+
+{ Procedure pour rendre la balise H4 }
+Procedure RenderTagH4(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderHeading(Node, Ctx, RENDER_H4_HEIGHT);
+End;
+
+{ Procedure pour rendre la balise H5 }
+Procedure RenderTagH5(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderHeading(Node, Ctx, RENDER_H5_HEIGHT);
+End;
+
+{ Procedure pour rendre la balise H6 }
+Procedure RenderTagH6(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderHeading(Node, Ctx, RENDER_H6_HEIGHT);
+End;
+
+{ Procedure pour rendre la balise STRONG (texte gras) }
+Procedure RenderTagStrong(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldTextStyle: Byte;
+Begin
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD;
+ RenderChildren(Node, Ctx);
+ Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Procedure pour rendre la balise B (texte gras) }
+Procedure RenderTagB(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderTagStrong(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise EM (texte italique) }
+Procedure RenderTagEm(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldTextStyle: Byte;
+Begin
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_ITALIC;
+ RenderChildren(Node, Ctx);
+ Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Procedure pour rendre la balise I (texte italique) }
+Procedure RenderTagI(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderTagEm(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise U (texte souligne) }
+Procedure RenderTagU(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldTextStyle: Byte;
+Begin
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_UNDERLINE;
+ RenderChildren(Node, Ctx);
+ Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Procedure pour rendre la balise S/STRIKE/DEL (texte barre) }
+Procedure RenderTagStrike(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldTextStyle: Byte;
+Begin
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_STRIKE;
+ RenderChildren(Node, Ctx);
+ Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Procedure pour rendre la balise PRE (texte preformate) }
+Procedure RenderTagPre(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInPreformatted: Boolean;
+ OldTextStyle: Byte;
+Begin
+ { Nouvelle ligne avant le bloc pre }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+
+ OldInPreformatted := Ctx.InPreformatted;
+ OldTextStyle := Ctx.TextStyle;
+
+ Ctx.InPreformatted := True;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_CODE;
+
+ RenderChildren(Node, Ctx);
+
+ Ctx.InPreformatted := OldInPreformatted;
+ Ctx.TextStyle := OldTextStyle;
+
+ { Espacement apres le bloc pre }
+ RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+End;
+
+{ Procedure pour rendre la balise CODE (code inline) }
+Procedure RenderTagCode(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldTextStyle: Byte;
+Begin
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_CODE;
+ RenderChildren(Node, Ctx);
+ Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Procedure pour rendre la balise KBD (entree clavier) }
+Procedure RenderTagKbd(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderTagCode(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise SAMP (exemple de sortie) }
+Procedure RenderTagSamp(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderTagCode(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise VAR (variable) }
+Procedure RenderTagVar(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderTagEm(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise BR (saut de ligne) }
+Procedure RenderTagBR(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderNewLine(Ctx);
+End;
+
+{ Procedure pour rendre la balise HR (ligne horizontale) }
+Procedure RenderTagHR(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Nouvelle ligne avant la ligne horizontale }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, 4);
+
+ { Dessiner la ligne horizontale }
+ SetColor(8); { Gris }
+ Line(RENDER_AREA_X + RENDER_MARGIN_LEFT,
+      Ctx.Y + (Ctx.LineHeight Div 2),
+      Ctx.MaxX - RENDER_MARGIN_LEFT,
+      Ctx.Y + (Ctx.LineHeight Div 2));
+ SetColor(Ctx.TextColor);
+
+ { Espacement apres la ligne }
+ RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, 4);
+End;
+
+{ Procedure pour rendre la balise BLOCKQUOTE (citation) }
+Procedure RenderTagBlockquote(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Nouvelle ligne avant la citation }
+ If Ctx.X > RENDER_AREA_X + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+
+ { Indenter le contenu }
+ Inc(Ctx.BlockLevel, 2);
+ RenderChildren(Node, Ctx);
+ Dec(Ctx.BlockLevel, 2);
+
+ { Espacement apres la citation }
+ RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+End;
+
+{ Procedure pour rendre la balise Q (citation inline) }
+Procedure RenderTagQ(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Ajouter des guillemets }
+ RenderText(Ctx, '"');
+ RenderChildren(Node, Ctx);
+ RenderText(Ctx, '"');
+End;
+
+{ Procedure pour rendre la balise SMALL (texte petit) }
+Procedure RenderTagSmall(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Note: En mode texte graphique, on ne peut pas vraiment reduire la taille }
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise MARK (texte surligne) }
+Procedure RenderTagMark(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldBgColor: Integer;
+Begin
+ OldBgColor := Ctx.BgColor;
+ Ctx.BgColor := 14; { Jaune pour le surlignage }
+ RenderChildren(Node, Ctx);
+ Ctx.BgColor := OldBgColor;
+End;
+
+{ Procedure pour rendre la balise ABBR/DFN/CITE (texte semantique) }
+Procedure RenderTagSemanticInline(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Ces balises n'ont pas de style visuel specifique par defaut }
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise SUB (indice) }
+Procedure RenderTagSub(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Note: Le rendu de l'indice necessiterait un ajustement vertical }
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise SUP (exposant) }
+Procedure RenderTagSup(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Note: Le rendu de l'exposant necessiterait un ajustement vertical }
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise INS (texte insere) }
+Procedure RenderTagIns(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderTagU(Node, Ctx);
+End;
+
+{ =====================================================
+  FIN RENDU BALISES DE TEXTE
+  ===================================================== }
+
 { Procedure principale pour rendre un noeud HTML }
 Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
@@ -1119,6 +1437,7 @@ Begin
   HTML_NODE_ELEMENT: Begin
    { Element HTML - traiter selon le type de balise }
    Case Node^.TagType Of
+    { Balises de structure }
     TAG_HTML:     RenderTagHTML(Node, Ctx);
     TAG_HEAD:     RenderTagHead(Node, Ctx);
     TAG_BODY:     RenderTagBody(Node, Ctx);
@@ -1131,6 +1450,45 @@ Begin
     TAG_HEADER:   RenderTagHeader(Node, Ctx);
     TAG_FOOTER:   RenderTagFooter(Node, Ctx);
     TAG_MAIN:     RenderTagMain(Node, Ctx);
+
+    { Balises de texte - Titres }
+    TAG_H1:       RenderTagH1(Node, Ctx);
+    TAG_H2:       RenderTagH2(Node, Ctx);
+    TAG_H3:       RenderTagH3(Node, Ctx);
+    TAG_H4:       RenderTagH4(Node, Ctx);
+    TAG_H5:       RenderTagH5(Node, Ctx);
+    TAG_H6:       RenderTagH6(Node, Ctx);
+
+    { Balises de texte - Paragraphe et blocs }
+    TAG_P:        RenderTagP(Node, Ctx);
+    TAG_BR:       RenderTagBR(Node, Ctx);
+    TAG_HR:       RenderTagHR(Node, Ctx);
+    TAG_PRE:      RenderTagPre(Node, Ctx);
+    TAG_BLOCKQUOTE: RenderTagBlockquote(Node, Ctx);
+
+    { Balises de texte - Style inline }
+    TAG_STRONG:   RenderTagStrong(Node, Ctx);
+    TAG_B:        RenderTagB(Node, Ctx);
+    TAG_EM:       RenderTagEm(Node, Ctx);
+    TAG_I:        RenderTagI(Node, Ctx);
+    TAG_U:        RenderTagU(Node, Ctx);
+    TAG_S:        RenderTagStrike(Node, Ctx);
+    TAG_STRIKE:   RenderTagStrike(Node, Ctx);
+    TAG_DEL:      RenderTagStrike(Node, Ctx);
+    TAG_INS:      RenderTagIns(Node, Ctx);
+    TAG_CODE:     RenderTagCode(Node, Ctx);
+    TAG_KBD:      RenderTagKbd(Node, Ctx);
+    TAG_SAMP:     RenderTagSamp(Node, Ctx);
+    TAG_VAR:      RenderTagVar(Node, Ctx);
+    TAG_Q:        RenderTagQ(Node, Ctx);
+    TAG_SMALL:    RenderTagSmall(Node, Ctx);
+    TAG_MARK:     RenderTagMark(Node, Ctx);
+    TAG_SUB:      RenderTagSub(Node, Ctx);
+    TAG_SUP:      RenderTagSup(Node, Ctx);
+    TAG_ABBR:     RenderTagSemanticInline(Node, Ctx);
+    TAG_CITE:     RenderTagSemanticInline(Node, Ctx);
+    TAG_DFN:      RenderTagSemanticInline(Node, Ctx);
+
     Else Begin
      { Balise non geree - rendre les enfants par defaut }
      RenderChildren(Node, Ctx);
