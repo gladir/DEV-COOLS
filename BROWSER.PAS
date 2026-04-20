@@ -13,7 +13,7 @@
   4.  DONE: Creer le bouton "Actualiser" pour recharger la page courante
   5.  DONE: Creer le bouton "Favori" pour ajouter/gerer les marque-pages
   6.  DONE: Implementer la gestion de l'historique de navigation (pile de pages visitees)
-  7.  TODO: Implementer le support de la souris pour Turbo Pascal via INT 33h
+  7.  DONE: Implementer le support de la souris pour Turbo Pascal via INT 33h
   8.  TODO: Implementer le support de la souris pour Free Pascal via PtcMouse
   9.  TODO: Creer le parseur HTML supportant toutes les balises HTML (HTML 1.0 a HTML5)
   10. TODO: Implementer le rendu des balises de structure HTML (html, head, body, div, span)
@@ -90,6 +90,11 @@ Const
  COLOR_BTN_TEXT = 0;          { Noir }
  COLOR_BTN_DISABLED = 8;      { Gris fonce }
 
+ { Constantes pour les boutons de la souris }
+ MOUSE_LEFT_BUTTON = 1;
+ MOUSE_RIGHT_BUTTON = 2;
+ MOUSE_MIDDLE_BUTTON = 4;
+
 Var
  { Variables globales pour la barre d'URL }
  CurrentURL: String;
@@ -114,6 +119,12 @@ Var
  History: Array[1..MAX_HISTORY] Of String;
  HistoryCount: Integer;
  HistoryIndex: Integer;
+
+ { Variables pour le support de la souris }
+ MouseAvailable: Boolean;
+ MouseX, MouseY: LongInt;
+ MouseButton: LongInt;
+ LastMouseButton: LongInt;
 
 { Declarations forward pour l'historique de navigation }
 Procedure GoBack; Forward;
@@ -699,6 +710,72 @@ End;
   X := Regs.CX;
   Y := Regs.DX;
  End;
+
+ { Procedure pour definir les limites horizontales du curseur souris }
+ Procedure SetMouseHorizontalBounds(MinX, MaxX: Integer);
+ Var
+  Regs: Registers;
+ Begin
+  Regs.AX := $0007;
+  Regs.CX := MinX;
+  Regs.DX := MaxX;
+  Intr($33, Regs);
+ End;
+
+ { Procedure pour definir les limites verticales du curseur souris }
+ Procedure SetMouseVerticalBounds(MinY, MaxY: Integer);
+ Var
+  Regs: Registers;
+ Begin
+  Regs.AX := $0008;
+  Regs.CX := MinY;
+  Regs.DX := MaxY;
+  Intr($33, Regs);
+ End;
+
+ { Procedure pour positionner le curseur souris }
+ Procedure SetMousePosition(X, Y: Integer);
+ Var
+  Regs: Registers;
+ Begin
+  Regs.AX := $0004;
+  Regs.CX := X;
+  Regs.DX := Y;
+  Intr($33, Regs);
+ End;
+
+ { Fonction pour obtenir le nombre de clics du bouton gauche }
+ Function GetMouseLeftClicks: Integer;
+ Var
+  Regs: Registers;
+ Begin
+  Regs.AX := $0005;
+  Regs.BX := 0; { Bouton gauche }
+  Intr($33, Regs);
+  GetMouseLeftClicks := Regs.BX;
+ End;
+
+ { Fonction pour obtenir le nombre de clics du bouton droit }
+ Function GetMouseRightClicks: Integer;
+ Var
+  Regs: Registers;
+ Begin
+  Regs.AX := $0005;
+  Regs.BX := 1; { Bouton droit }
+  Intr($33, Regs);
+  GetMouseRightClicks := Regs.BX;
+ End;
+
+ { Fonction pour obtenir le deplacement de la souris depuis le dernier appel }
+ Procedure GetMouseMotion(Var DeltaX, DeltaY: Integer);
+ Var
+  Regs: Registers;
+ Begin
+  Regs.AX := $000B;
+  Intr($33, Regs);
+  DeltaX := Regs.CX;
+  DeltaY := Regs.DX;
+ End;
 {$ELSE}
  Function MouseDriverFound: Boolean;
  Begin
@@ -714,7 +791,115 @@ End;
  Begin
   { Pas d'implémentation pour Free Pascal }
  End;
+
+ Procedure SetMouseHorizontalBounds(MinX, MaxX: Integer);
+ Begin
+  { Pas d'implementation pour Free Pascal - utilise PtcMouse }
+ End;
+
+ Procedure SetMouseVerticalBounds(MinY, MaxY: Integer);
+ Begin
+  { Pas d'implementation pour Free Pascal - utilise PtcMouse }
+ End;
+
+ Procedure SetMousePosition(X, Y: Integer);
+ Begin
+  { Pas d'implementation pour Free Pascal - utilise PtcMouse }
+ End;
+
+ Function GetMouseLeftClicks: Integer;
+ Begin
+  GetMouseLeftClicks := 0;
+ End;
+
+ Function GetMouseRightClicks: Integer;
+ Begin
+  GetMouseRightClicks := 0;
+ End;
+
+ Procedure GetMouseMotion(Var DeltaX, DeltaY: Integer);
+ Begin
+  DeltaX := 0;
+  DeltaY := 0;
+ End;
 {$ENDIF}
+
+{ Procedure pour initialiser la souris }
+Procedure InitMouse;
+Begin
+ MouseAvailable := MouseDriverFound;
+ If MouseAvailable Then Begin
+  ShowMouse;
+  SetMouseHorizontalBounds(0, GetMaxX);
+  SetMouseVerticalBounds(0, GetMaxY);
+  SetMousePosition(GetMaxX Div 2, GetMaxY Div 2);
+  MouseX := GetMaxX Div 2;
+  MouseY := GetMaxY Div 2;
+  MouseButton := 0;
+  LastMouseButton := 0;
+ End;
+End;
+
+{ Procedure pour gerer les clics de souris sur l'interface }
+Procedure HandleMouseClick(X, Y: Integer);
+Begin
+ { Verifier si le clic est dans la barre d'URL }
+ If IsClickInURLBar(X, Y) Then Begin
+  URLBarFocused := True;
+  { Calculer la position du curseur dans l'URL }
+  URLCursorPos := (X - URL_BAR_X - 5) Div 8;
+  If URLCursorPos > Length(CurrentURL) Then
+   URLCursorPos := Length(CurrentURL);
+  If URLCursorPos < 0 Then
+   URLCursorPos := 0;
+  DrawURLBar;
+ End
+  Else
+ Begin
+  URLBarFocused := False;
+  DrawURLBar;
+ End;
+
+ { Verifier si le clic est dans le bouton Precedent }
+ If IsClickInBackButton(X, Y) Then Begin
+  HandleBackButtonClick;
+ End;
+
+ { Verifier si le clic est dans le bouton Suivant }
+ If IsClickInForwardButton(X, Y) Then Begin
+  HandleForwardButtonClick;
+ End;
+
+ { Verifier si le clic est dans le bouton Actualiser }
+ If IsClickInRefreshButton(X, Y) Then Begin
+  HandleRefreshButtonClick;
+ End;
+
+ { Verifier si le clic est dans le bouton Favori }
+ If IsClickInFavoriteButton(X, Y) Then Begin
+  HandleFavoriteButtonClick;
+ End;
+End;
+
+{ Procedure pour traiter les evenements de la souris }
+Procedure ProcessMouseInput;
+Begin
+ If Not MouseAvailable Then Exit;
+
+ { Obtenir l'etat actuel de la souris }
+ GetMouseState(MouseX, MouseY, MouseButton);
+
+ { Detecter un clic (transition de non-presse a presse) }
+ If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And
+    ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then Begin
+  HideMouse;
+  HandleMouseClick(MouseX, MouseY);
+  ShowMouse;
+ End;
+
+ { Sauvegarder l'etat du bouton pour la prochaine iteration }
+ LastMouseButton := MouseButton;
+End;
 
 Var
  Key: Char;
@@ -723,6 +908,7 @@ BEGIN
  InitializeGraphics;
  InitURLBar;
  InitHistory;
+ InitMouse;
  InitBackButton;
  InitForwardButton;
  InitRefreshButton;
@@ -734,9 +920,12 @@ BEGIN
  DrawForwardButton;
  DrawRefreshButton;
  DrawFavoriteButton;
- { Boucle principale temporaire pour tester la barre d'URL }
+ { Boucle principale pour gerer le clavier et la souris }
  URLBarFocused := True;
  Repeat
+  { Traiter les evenements de la souris }
+  ProcessMouseInput;
+  { Traiter les evenements du clavier }
   If KeyPressed Then Begin
    Key := ReadKey;
    If Key = #0 Then Begin
@@ -748,5 +937,7 @@ BEGIN
    HandleURLInput(Key);
   End;
  Until Key = #27;
+ { Cacher la souris avant de fermer }
+ If MouseAvailable Then HideMouse;
  CloseGraph;
 END.
