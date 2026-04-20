@@ -3,7 +3,7 @@
   @version: 1.00
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Turbo Pascal 7, Free Pascal 3.2
-  @description: Application de l'éditeur de ressource (RES ou RC)
+  @description: Application de l'éditeur de ressource Macintosh
 }
 
 Program RESEDIT;
