@@ -12,7 +12,7 @@
   3.  DONE: Creer le bouton "Suivant" pour naviguer vers la page suivante dans l'historique
   4.  DONE: Creer le bouton "Actualiser" pour recharger la page courante
   5.  DONE: Creer le bouton "Favori" pour ajouter/gerer les marque-pages
-  6.  TODO: Implementer la gestion de l'historique de navigation (pile de pages visitees)
+  6.  DONE: Implementer la gestion de l'historique de navigation (pile de pages visitees)
   7.  TODO: Implementer le support de la souris pour Turbo Pascal via INT 33h
   8.  TODO: Implementer le support de la souris pour Free Pascal via PtcMouse
   9.  TODO: Creer le parseur HTML supportant toutes les balises HTML (HTML 1.0 a HTML5)
@@ -77,6 +77,9 @@ Const
  { Constantes pour les favoris }
  MAX_FAVORITES = 100;
 
+ { Constantes pour l'historique de navigation }
+ MAX_HISTORY = 100;
+
  { Couleurs de l'interface }
  COLOR_URL_BAR_BG = 15;       { Blanc }
  COLOR_URL_BAR_BORDER = 0;    { Noir }
@@ -106,6 +109,15 @@ Var
  FavoriteButtonEnabled: Boolean;
  Favorites: Array[1..MAX_FAVORITES] Of String;
  FavoriteCount: Integer;
+
+ { Variables pour l'historique de navigation }
+ History: Array[1..MAX_HISTORY] Of String;
+ HistoryCount: Integer;
+ HistoryIndex: Integer;
+
+{ Declarations forward pour l'historique de navigation }
+Procedure GoBack; Forward;
+Procedure GoForward; Forward;
 
 { Procedure pour dessiner la barre d'URL }
 Procedure DrawURLBar;
@@ -183,8 +195,7 @@ End;
 Procedure HandleBackButtonClick;
 Begin
  If Not BackButtonEnabled Then Exit;
- { La navigation vers la page precedente sera implementee }
- { quand l'historique sera disponible (TODO 6) }
+ GoBack;
 End;
 
 { Procedure pour initialiser le bouton Precedent }
@@ -242,8 +253,7 @@ End;
 Procedure HandleForwardButtonClick;
 Begin
  If Not ForwardButtonEnabled Then Exit;
- { La navigation vers la page suivante sera implementee }
- { quand l'historique sera disponible (TODO 6) }
+ GoForward;
 End;
 
 { Procedure pour initialiser le bouton Suivant }
@@ -442,6 +452,106 @@ Begin
  DrawFavoriteButton;
 End;
 
+{ Fonction pour verifier si on peut revenir en arriere dans l'historique }
+Function CanGoBack: Boolean;
+Begin
+ CanGoBack := HistoryIndex > 1;
+End;
+
+{ Fonction pour verifier si on peut avancer dans l'historique }
+Function CanGoForward: Boolean;
+Begin
+ CanGoForward := HistoryIndex < HistoryCount;
+End;
+
+{ Procedure pour mettre a jour l'etat des boutons de navigation }
+Procedure UpdateNavigationButtons;
+Begin
+ BackButtonEnabled := CanGoBack;
+ ForwardButtonEnabled := CanGoForward;
+ DrawBackButton;
+ DrawForwardButton;
+End;
+
+{ Procedure pour naviguer vers une nouvelle URL et l'ajouter a l'historique }
+Procedure NavigateTo(URL: String);
+Var
+ I: Integer;
+Begin
+ { Si on navigue depuis un point intermediaire de l'historique, }
+ { on supprime tout ce qui est apres la position actuelle }
+ If HistoryIndex < HistoryCount Then Begin
+  HistoryCount := HistoryIndex;
+ End;
+
+ { Ajouter la nouvelle URL a l'historique si l'historique n'est pas plein }
+ If HistoryCount < MAX_HISTORY Then Begin
+  Inc(HistoryCount);
+  History[HistoryCount] := URL;
+  HistoryIndex := HistoryCount;
+ End
+  Else
+ Begin
+  { Si l'historique est plein, decaler tout vers le haut et ajouter a la fin }
+  For I := 1 To MAX_HISTORY - 1 Do
+   History[I] := History[I + 1];
+  History[MAX_HISTORY] := URL;
+  HistoryIndex := MAX_HISTORY;
+ End;
+
+ { Mettre a jour l'URL courante }
+ CurrentURL := URL;
+ URLCursorPos := Length(CurrentURL);
+ DrawURLBar;
+ DrawFavoriteButton;
+ UpdateNavigationButtons;
+End;
+
+{ Procedure pour aller a la page precedente }
+Procedure GoBack;
+Begin
+ If CanGoBack Then Begin
+  Dec(HistoryIndex);
+  CurrentURL := History[HistoryIndex];
+  URLCursorPos := Length(CurrentURL);
+  DrawURLBar;
+  DrawFavoriteButton;
+  UpdateNavigationButtons;
+ End;
+End;
+
+{ Procedure pour aller a la page suivante }
+Procedure GoForward;
+Begin
+ If CanGoForward Then Begin
+  Inc(HistoryIndex);
+  CurrentURL := History[HistoryIndex];
+  URLCursorPos := Length(CurrentURL);
+  DrawURLBar;
+  DrawFavoriteButton;
+  UpdateNavigationButtons;
+ End;
+End;
+
+{ Procedure pour initialiser l'historique }
+Procedure InitHistory;
+Begin
+ HistoryCount := 0;
+ HistoryIndex := 0;
+End;
+
+{ Fonction pour obtenir le nombre d'elements dans l'historique }
+Function GetHistoryCount: Integer;
+Begin
+ GetHistoryCount := HistoryCount;
+End;
+
+{ Fonction pour obtenir la position actuelle dans l'historique }
+Function GetHistoryIndex: Integer;
+Begin
+ GetHistoryIndex := HistoryIndex;
+End;
+
 { Procedure pour verifier si un clic est dans la barre d'URL }
 Function IsClickInURLBar(X, Y: Integer): Boolean;
 Begin
@@ -612,10 +722,13 @@ Var
 BEGIN
  InitializeGraphics;
  InitURLBar;
+ InitHistory;
  InitBackButton;
  InitForwardButton;
  InitRefreshButton;
  InitFavoriteButton;
+ { Ajouter l'URL initiale a l'historique }
+ NavigateTo(CurrentURL);
  DrawURLBar;
  DrawBackButton;
  DrawForwardButton;
