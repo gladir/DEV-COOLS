@@ -23,7 +23,7 @@
   14. DONE: Implementer le rendu des formulaires (form, input, button, select, textarea)
   15. DONE: Implementer la detection et le rendu des liens hypertexte (balise <a href>)
   16. DONE: Implementer la navigation par clic sur les liens URL dans les pages
-  17. TODO: Creer l'interpreteur JavaScript pour le support des scripts cote client
+  17. DONE: Creer l'interpreteur JavaScript pour le support des scripts cote client
   18. TODO: Implementer le DOM (Document Object Model) pour la manipulation JavaScript
   19. TODO: Creer le parseur CSS pour le support des feuilles de style
   20. TODO: Implementer l'application des styles CSS aux elements HTML (cascade et heritage)
@@ -340,6 +340,79 @@ Const
  TEXT_STYLE_STRIKE = 8;
  TEXT_STYLE_CODE = 16;
 
+ { =====================================================
+   Constantes pour l'interpreteur JavaScript
+   ===================================================== }
+
+ { Types de tokens JavaScript }
+ JS_TOK_EOF = 0;
+ JS_TOK_NUMBER = 1;
+ JS_TOK_STRING = 2;
+ JS_TOK_IDENTIFIER = 3;
+ JS_TOK_KEYWORD = 4;
+ JS_TOK_OPERATOR = 5;
+ JS_TOK_PUNCTUATOR = 6;
+ JS_TOK_BOOLEAN = 7;
+ JS_TOK_NULL = 8;
+ JS_TOK_UNDEFINED = 9;
+
+ { Types de valeurs JavaScript }
+ JS_VAL_UNDEFINED = 0;
+ JS_VAL_NULL = 1;
+ JS_VAL_BOOLEAN = 2;
+ JS_VAL_NUMBER = 3;
+ JS_VAL_STRING = 4;
+ JS_VAL_OBJECT = 5;
+ JS_VAL_FUNCTION = 6;
+ JS_VAL_ARRAY = 7;
+
+ { Types d'operations JavaScript }
+ JS_OP_ADD = 1;
+ JS_OP_SUB = 2;
+ JS_OP_MUL = 3;
+ JS_OP_DIV = 4;
+ JS_OP_MOD = 5;
+ JS_OP_EQ = 6;
+ JS_OP_NEQ = 7;
+ JS_OP_LT = 8;
+ JS_OP_GT = 9;
+ JS_OP_LTE = 10;
+ JS_OP_GTE = 11;
+ JS_OP_AND = 12;
+ JS_OP_OR = 13;
+ JS_OP_NOT = 14;
+ JS_OP_ASSIGN = 15;
+ JS_OP_STRICT_EQ = 16;
+ JS_OP_STRICT_NEQ = 17;
+
+ { Mots-cles JavaScript }
+ JS_KW_VAR = 1;
+ JS_KW_LET = 2;
+ JS_KW_CONST = 3;
+ JS_KW_FUNCTION = 4;
+ JS_KW_IF = 5;
+ JS_KW_ELSE = 6;
+ JS_KW_FOR = 7;
+ JS_KW_WHILE = 8;
+ JS_KW_DO = 9;
+ JS_KW_RETURN = 10;
+ JS_KW_BREAK = 11;
+ JS_KW_CONTINUE = 12;
+ JS_KW_TRUE = 13;
+ JS_KW_FALSE = 14;
+ JS_KW_NULL = 15;
+ JS_KW_UNDEFINED = 16;
+ JS_KW_NEW = 17;
+ JS_KW_THIS = 18;
+ JS_KW_TYPEOF = 19;
+
+ { Limites de l'interpreteur JavaScript }
+ MAX_JS_VARS = 256;              { Nombre maximum de variables }
+ MAX_JS_STACK = 64;              { Taille maximale de la pile }
+ MAX_JS_SCRIPT_SIZE = 32000;     { Taille maximale d'un script }
+ MAX_JS_STRING_LEN = 1024;       { Longueur maximale d'une chaine }
+ MAX_JS_FUNCTIONS = 64;          { Nombre maximum de fonctions }
+
 Type
  { Type pour un attribut HTML }
  HTMLAttribute = Record
@@ -403,6 +476,56 @@ Type
   CurrentLinkHref: String[255]; { URL du lien en cours de rendu }
  End;
 
+ { =====================================================
+   Types pour l'interpreteur JavaScript
+   ===================================================== }
+
+ { Valeur JavaScript }
+ JSValue = Record
+  ValType: Byte;              { Type de la valeur (JS_VAL_*) }
+  BoolVal: Boolean;           { Valeur booleenne }
+  NumVal: Real;               { Valeur numerique }
+  StrVal: String;             { Valeur chaine }
+ End;
+
+ { Token JavaScript }
+ JSToken = Record
+  TokType: Byte;              { Type du token (JS_TOK_*) }
+  TokValue: String;           { Valeur textuelle du token }
+  NumValue: Real;             { Valeur numerique (si nombre) }
+  KeywordType: Byte;          { Type de mot-cle (si JS_TOK_KEYWORD) }
+  Line: Integer;              { Numero de ligne }
+  Column: Integer;            { Numero de colonne }
+ End;
+
+ { Variable JavaScript }
+ JSVariable = Record
+  Name: String[64];           { Nom de la variable }
+  Value: JSValue;             { Valeur de la variable }
+  IsConst: Boolean;           { Variable constante (const) }
+ End;
+
+ { Fonction JavaScript utilisateur }
+ JSFunctionDef = Record
+  Name: String[64];           { Nom de la fonction }
+  Body: String;               { Corps de la fonction (code source) }
+  ParamCount: Integer;        { Nombre de parametres }
+  ParamNames: Array[1..10] Of String[32]; { Noms des parametres }
+ End;
+
+ { Contexte d'execution JavaScript }
+ JSContext = Record
+  Variables: Array[1..MAX_JS_VARS] Of JSVariable;
+  VarCount: Integer;
+  Functions: Array[1..MAX_JS_FUNCTIONS] Of JSFunctionDef;
+  FuncCount: Integer;
+  Stack: Array[1..MAX_JS_STACK] Of JSValue;
+  StackTop: Integer;
+  ErrorMsg: String;           { Message d'erreur }
+  HasError: Boolean;          { Indicateur d'erreur }
+  DocumentOutput: String;     { Sortie de document.write }
+ End;
+
 Var
  { Variables globales pour la barre d'URL }
  CurrentURL: String;
@@ -441,6 +564,11 @@ Var
  { Variables pour les zones de liens cliquables }
  LinkAreas: Array[1..MAX_LINKS] Of LinkArea;
  LinkCount: Integer;
+
+ { Variables pour l'interpreteur JavaScript }
+ JSCtx: JSContext;            { Contexte d'execution JavaScript }
+ JSEnabled: Boolean;          { JavaScript active ou non }
+ JSLastAlert: String;         { Dernier message d'alerte }
 
 { =====================================================
   PARSEUR HTML - Fonctions et procedures
@@ -954,6 +1082,1205 @@ End;
 
 { =====================================================
   FIN PARSEUR HTML
+  ===================================================== }
+
+{ =====================================================
+  INTERPRETEUR JAVASCRIPT
+  ===================================================== }
+
+{ Initialiser le contexte JavaScript }
+Procedure InitJSContext;
+Var
+ I: Integer;
+Begin
+ JSCtx.VarCount := 0;
+ JSCtx.FuncCount := 0;
+ JSCtx.StackTop := 0;
+ JSCtx.ErrorMsg := '';
+ JSCtx.HasError := False;
+ JSCtx.DocumentOutput := '';
+ JSEnabled := True;
+ JSLastAlert := '';
+
+ For I := 1 To MAX_JS_VARS Do Begin
+  JSCtx.Variables[I].Name := '';
+  JSCtx.Variables[I].Value.ValType := JS_VAL_UNDEFINED;
+ End;
+
+ For I := 1 To MAX_JS_FUNCTIONS Do Begin
+  JSCtx.Functions[I].Name := '';
+  JSCtx.Functions[I].Body := '';
+  JSCtx.Functions[I].ParamCount := 0;
+ End;
+End;
+
+{ Creer une valeur JavaScript undefined }
+Function JSUndefined: JSValue;
+Var
+ V: JSValue;
+Begin
+ V.ValType := JS_VAL_UNDEFINED;
+ V.BoolVal := False;
+ V.NumVal := 0;
+ V.StrVal := '';
+ JSUndefined := V;
+End;
+
+{ Creer une valeur JavaScript null }
+Function JSNull: JSValue;
+Var
+ V: JSValue;
+Begin
+ V.ValType := JS_VAL_NULL;
+ V.BoolVal := False;
+ V.NumVal := 0;
+ V.StrVal := '';
+ JSNull := V;
+End;
+
+{ Creer une valeur JavaScript booleenne }
+Function JSBool(B: Boolean): JSValue;
+Var
+ V: JSValue;
+Begin
+ V.ValType := JS_VAL_BOOLEAN;
+ V.BoolVal := B;
+ V.NumVal := 0;
+ V.StrVal := '';
+ JSBool := V;
+End;
+
+{ Creer une valeur JavaScript numerique }
+Function JSNumber(N: Real): JSValue;
+Var
+ V: JSValue;
+Begin
+ V.ValType := JS_VAL_NUMBER;
+ V.BoolVal := False;
+ V.NumVal := N;
+ V.StrVal := '';
+ JSNumber := V;
+End;
+
+{ Creer une valeur JavaScript chaine }
+Function JSString(S: String): JSValue;
+Var
+ V: JSValue;
+Begin
+ V.ValType := JS_VAL_STRING;
+ V.BoolVal := False;
+ V.NumVal := 0;
+ V.StrVal := S;
+ JSString := V;
+End;
+
+{ Convertir une valeur JavaScript en chaine }
+Function JSValueToString(V: JSValue): String;
+Var
+ S: String;
+Begin
+ Case V.ValType Of
+  JS_VAL_UNDEFINED: JSValueToString := 'undefined';
+  JS_VAL_NULL: JSValueToString := 'null';
+  JS_VAL_BOOLEAN: If V.BoolVal Then JSValueToString := 'true' Else JSValueToString := 'false';
+  JS_VAL_NUMBER: Begin
+   Str(V.NumVal:0:6, S);
+   { Supprimer les zeros inutiles }
+   While (Length(S) > 1) And (S[Length(S)] = '0') And (Pos('.', S) > 0) Do
+    Delete(S, Length(S), 1);
+   If S[Length(S)] = '.' Then Delete(S, Length(S), 1);
+   JSValueToString := S;
+  End;
+  JS_VAL_STRING: JSValueToString := V.StrVal;
+  JS_VAL_OBJECT: JSValueToString := '[object Object]';
+  JS_VAL_FUNCTION: JSValueToString := '[function]';
+  JS_VAL_ARRAY: JSValueToString := '[array]';
+  Else JSValueToString := '';
+ End;
+End;
+
+{ Convertir une valeur JavaScript en nombre }
+Function JSValueToNumber(V: JSValue): Real;
+Var
+ Code: Integer;
+ N: Real;
+Begin
+ Case V.ValType Of
+  JS_VAL_UNDEFINED: JSValueToNumber := 0;
+  JS_VAL_NULL: JSValueToNumber := 0;
+  JS_VAL_BOOLEAN: If V.BoolVal Then JSValueToNumber := 1 Else JSValueToNumber := 0;
+  JS_VAL_NUMBER: JSValueToNumber := V.NumVal;
+  JS_VAL_STRING: Begin
+   Val(V.StrVal, N, Code);
+   If Code = 0 Then JSValueToNumber := N Else JSValueToNumber := 0;
+  End;
+  Else JSValueToNumber := 0;
+ End;
+End;
+
+{ Convertir une valeur JavaScript en booleen }
+Function JSValueToBool(V: JSValue): Boolean;
+Begin
+ Case V.ValType Of
+  JS_VAL_UNDEFINED: JSValueToBool := False;
+  JS_VAL_NULL: JSValueToBool := False;
+  JS_VAL_BOOLEAN: JSValueToBool := V.BoolVal;
+  JS_VAL_NUMBER: JSValueToBool := V.NumVal <> 0;
+  JS_VAL_STRING: JSValueToBool := Length(V.StrVal) > 0;
+  Else JSValueToBool := True;
+ End;
+End;
+
+{ Verifier si un caractere est un chiffre }
+Function JSIsDigit(C: Char): Boolean;
+Begin
+ JSIsDigit := (C >= '0') And (C <= '9');
+End;
+
+{ Verifier si un caractere est une lettre }
+Function JSIsAlpha(C: Char): Boolean;
+Begin
+ JSIsAlpha := ((C >= 'a') And (C <= 'z')) Or ((C >= 'A') And (C <= 'Z')) Or (C = '_') Or (C = '$');
+End;
+
+{ Verifier si un caractere est alphanumerique }
+Function JSIsAlphaNum(C: Char): Boolean;
+Begin
+ JSIsAlphaNum := JSIsAlpha(C) Or JSIsDigit(C);
+End;
+
+{ Verifier si un caractere est un espace blanc }
+Function JSIsWhitespace(C: Char): Boolean;
+Begin
+ JSIsWhitespace := (C = ' ') Or (C = #9) Or (C = #10) Or (C = #13);
+End;
+
+{ Obtenir le type de mot-cle JavaScript }
+Function JSGetKeywordType(S: String): Byte;
+Begin
+ If S = 'var' Then JSGetKeywordType := JS_KW_VAR
+ Else If S = 'let' Then JSGetKeywordType := JS_KW_LET
+ Else If S = 'const' Then JSGetKeywordType := JS_KW_CONST
+ Else If S = 'function' Then JSGetKeywordType := JS_KW_FUNCTION
+ Else If S = 'if' Then JSGetKeywordType := JS_KW_IF
+ Else If S = 'else' Then JSGetKeywordType := JS_KW_ELSE
+ Else If S = 'for' Then JSGetKeywordType := JS_KW_FOR
+ Else If S = 'while' Then JSGetKeywordType := JS_KW_WHILE
+ Else If S = 'do' Then JSGetKeywordType := JS_KW_DO
+ Else If S = 'return' Then JSGetKeywordType := JS_KW_RETURN
+ Else If S = 'break' Then JSGetKeywordType := JS_KW_BREAK
+ Else If S = 'continue' Then JSGetKeywordType := JS_KW_CONTINUE
+ Else If S = 'true' Then JSGetKeywordType := JS_KW_TRUE
+ Else If S = 'false' Then JSGetKeywordType := JS_KW_FALSE
+ Else If S = 'null' Then JSGetKeywordType := JS_KW_NULL
+ Else If S = 'undefined' Then JSGetKeywordType := JS_KW_UNDEFINED
+ Else If S = 'new' Then JSGetKeywordType := JS_KW_NEW
+ Else If S = 'this' Then JSGetKeywordType := JS_KW_THIS
+ Else If S = 'typeof' Then JSGetKeywordType := JS_KW_TYPEOF
+ Else JSGetKeywordType := 0;
+End;
+
+{ Verifier si une chaine est un mot-cle JavaScript }
+Function JSIsKeyword(S: String): Boolean;
+Begin
+ JSIsKeyword := JSGetKeywordType(S) <> 0;
+End;
+
+{ Chercher une variable par nom }
+Function JSFindVariable(Name: String): Integer;
+Var
+ I: Integer;
+Begin
+ JSFindVariable := 0;
+ For I := 1 To JSCtx.VarCount Do Begin
+  If JSCtx.Variables[I].Name = Name Then Begin
+   JSFindVariable := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Definir ou mettre a jour une variable }
+Procedure JSSetVariable(Name: String; Value: JSValue; IsConst: Boolean);
+Var
+ Idx: Integer;
+Begin
+ Idx := JSFindVariable(Name);
+ If Idx > 0 Then Begin
+  { Variable existante }
+  If JSCtx.Variables[Idx].IsConst Then Begin
+   JSCtx.HasError := True;
+   JSCtx.ErrorMsg := 'TypeError: Assignment to constant variable: ' + Name;
+  End Else
+   JSCtx.Variables[Idx].Value := Value;
+ End Else Begin
+  { Nouvelle variable }
+  If JSCtx.VarCount < MAX_JS_VARS Then Begin
+   Inc(JSCtx.VarCount);
+   JSCtx.Variables[JSCtx.VarCount].Name := Name;
+   JSCtx.Variables[JSCtx.VarCount].Value := Value;
+   JSCtx.Variables[JSCtx.VarCount].IsConst := IsConst;
+  End Else Begin
+   JSCtx.HasError := True;
+   JSCtx.ErrorMsg := 'Error: Maximum number of variables exceeded';
+  End;
+ End;
+End;
+
+{ Obtenir la valeur d'une variable }
+Function JSGetVariable(Name: String): JSValue;
+Var
+ Idx: Integer;
+Begin
+ Idx := JSFindVariable(Name);
+ If Idx > 0 Then
+  JSGetVariable := JSCtx.Variables[Idx].Value
+ Else
+  JSGetVariable := JSUndefined;
+End;
+
+{ Chercher une fonction par nom }
+Function JSFindFunction(Name: String): Integer;
+Var
+ I: Integer;
+Begin
+ JSFindFunction := 0;
+ For I := 1 To JSCtx.FuncCount Do Begin
+  If JSCtx.Functions[I].Name = Name Then Begin
+   JSFindFunction := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Declaration forward pour l'evaluateur }
+Function JSEvaluate(Const Script: String): JSValue; Forward;
+
+{ Appeler une fonction utilisateur }
+Function JSCallUserFunction(FuncIdx: Integer; Args: Array Of JSValue; ArgCount: Integer): JSValue;
+Var
+ I: Integer;
+ OldVarCount: Integer;
+Begin
+ JSCallUserFunction := JSUndefined;
+ If (FuncIdx < 1) Or (FuncIdx > JSCtx.FuncCount) Then Exit;
+
+ { Sauvegarder l'etat des variables }
+ OldVarCount := JSCtx.VarCount;
+
+ { Definir les parametres comme variables locales }
+ For I := 1 To JSCtx.Functions[FuncIdx].ParamCount Do Begin
+  If I <= ArgCount Then
+   JSSetVariable(JSCtx.Functions[FuncIdx].ParamNames[I], Args[I-1], False)
+  Else
+   JSSetVariable(JSCtx.Functions[FuncIdx].ParamNames[I], JSUndefined, False);
+ End;
+
+ { Executer le corps de la fonction }
+ JSCallUserFunction := JSEvaluate(JSCtx.Functions[FuncIdx].Body);
+
+ { Restaurer l'etat des variables (cleanup des variables locales) }
+ JSCtx.VarCount := OldVarCount;
+End;
+
+{ Fonction native: alert() }
+Procedure JSNativeAlert(Msg: String);
+Begin
+ JSLastAlert := Msg;
+ { Dans une vraie implementation, on afficherait une boite de dialogue }
+ { Pour l'instant, on stocke juste le message }
+End;
+
+{ Fonction native: console.log() }
+Procedure JSNativeConsoleLog(Msg: String);
+Begin
+ { Dans une vraie implementation, on ecrirait dans une console }
+ { Pour l'instant, on ne fait rien de visible }
+End;
+
+{ Fonction native: document.write() }
+Procedure JSNativeDocumentWrite(Content: String);
+Begin
+ JSCtx.DocumentOutput := JSCtx.DocumentOutput + Content;
+End;
+
+{ Ignorer les espaces blancs dans le script }
+Function JSSkipWhitespace(Const Script: String; Pos: Integer): Integer;
+Begin
+ While (Pos <= Length(Script)) And JSIsWhitespace(Script[Pos]) Do
+  Inc(Pos);
+ JSSkipWhitespace := Pos;
+End;
+
+{ Ignorer les commentaires JavaScript }
+Function JSSkipComments(Const Script: String; Pos: Integer): Integer;
+Begin
+ Pos := JSSkipWhitespace(Script, Pos);
+ { Commentaire sur une ligne // }
+ If (Pos <= Length(Script) - 1) And (Script[Pos] = '/') And (Script[Pos + 1] = '/') Then Begin
+  Inc(Pos, 2);
+  While (Pos <= Length(Script)) And (Script[Pos] <> #10) And (Script[Pos] <> #13) Do
+   Inc(Pos);
+  Pos := JSSkipWhitespace(Script, Pos);
+ End;
+ { Commentaire multi-lignes /* */ }
+ If (Pos <= Length(Script) - 1) And (Script[Pos] = '/') And (Script[Pos + 1] = '*') Then Begin
+  Inc(Pos, 2);
+  While (Pos <= Length(Script) - 1) And Not ((Script[Pos] = '*') And (Script[Pos + 1] = '/')) Do
+   Inc(Pos);
+  If Pos <= Length(Script) - 1 Then Inc(Pos, 2);
+  Pos := JSSkipWhitespace(Script, Pos);
+ End;
+ JSSkipComments := Pos;
+End;
+
+{ Obtenir le prochain token du script }
+Function JSGetNextToken(Const Script: String; Var Pos: Integer): JSToken;
+Var
+ Token: JSToken;
+ StartPos: Integer;
+ QuoteChar: Char;
+ NumStr: String;
+ Code: Integer;
+Begin
+ Token.TokType := JS_TOK_EOF;
+ Token.TokValue := '';
+ Token.NumValue := 0;
+ Token.KeywordType := 0;
+ Token.Line := 1;
+ Token.Column := Pos;
+
+ Pos := JSSkipComments(Script, Pos);
+
+ If Pos > Length(Script) Then Begin
+  JSGetNextToken := Token;
+  Exit;
+ End;
+
+ { Nombre }
+ If JSIsDigit(Script[Pos]) Or
+    ((Script[Pos] = '.') And (Pos < Length(Script)) And JSIsDigit(Script[Pos + 1])) Then Begin
+  Token.TokType := JS_TOK_NUMBER;
+  StartPos := Pos;
+  While (Pos <= Length(Script)) And (JSIsDigit(Script[Pos]) Or (Script[Pos] = '.')) Do
+   Inc(Pos);
+  Token.TokValue := Copy(Script, StartPos, Pos - StartPos);
+  Val(Token.TokValue, Token.NumValue, Code);
+  JSGetNextToken := Token;
+  Exit;
+ End;
+
+ { Chaine de caracteres }
+ If (Script[Pos] = '''') Or (Script[Pos] = '"') Or (Script[Pos] = '`') Then Begin
+  Token.TokType := JS_TOK_STRING;
+  QuoteChar := Script[Pos];
+  Inc(Pos);
+  StartPos := Pos;
+  While (Pos <= Length(Script)) And (Script[Pos] <> QuoteChar) Do Begin
+   If (Script[Pos] = '\') And (Pos < Length(Script)) Then Inc(Pos);
+   Inc(Pos);
+  End;
+  Token.TokValue := Copy(Script, StartPos, Pos - StartPos);
+  If Pos <= Length(Script) Then Inc(Pos);
+  JSGetNextToken := Token;
+  Exit;
+ End;
+
+ { Identifiant ou mot-cle }
+ If JSIsAlpha(Script[Pos]) Then Begin
+  StartPos := Pos;
+  While (Pos <= Length(Script)) And JSIsAlphaNum(Script[Pos]) Do
+   Inc(Pos);
+  Token.TokValue := Copy(Script, StartPos, Pos - StartPos);
+  Token.KeywordType := JSGetKeywordType(Token.TokValue);
+  If Token.KeywordType <> 0 Then Begin
+   Token.TokType := JS_TOK_KEYWORD;
+   If Token.KeywordType = JS_KW_TRUE Then Begin
+    Token.TokType := JS_TOK_BOOLEAN;
+    Token.NumValue := 1;
+   End Else If Token.KeywordType = JS_KW_FALSE Then Begin
+    Token.TokType := JS_TOK_BOOLEAN;
+    Token.NumValue := 0;
+   End Else If Token.KeywordType = JS_KW_NULL Then
+    Token.TokType := JS_TOK_NULL
+   Else If Token.KeywordType = JS_KW_UNDEFINED Then
+    Token.TokType := JS_TOK_UNDEFINED;
+  End Else
+   Token.TokType := JS_TOK_IDENTIFIER;
+  JSGetNextToken := Token;
+  Exit;
+ End;
+
+ { Operateurs multi-caracteres }
+ If (Pos <= Length(Script) - 2) Then Begin
+  If (Script[Pos] = '=') And (Script[Pos+1] = '=') And (Script[Pos+2] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '===';
+   Inc(Pos, 3);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '!') And (Script[Pos+1] = '=') And (Script[Pos+2] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '!==';
+   Inc(Pos, 3);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+ End;
+
+ If (Pos <= Length(Script) - 1) Then Begin
+  If (Script[Pos] = '=') And (Script[Pos+1] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '==';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '!') And (Script[Pos+1] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '!=';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '<') And (Script[Pos+1] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '<=';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '>') And (Script[Pos+1] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '>=';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '&') And (Script[Pos+1] = '&') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '&&';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '|') And (Script[Pos+1] = '|') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '||';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '+') And (Script[Pos+1] = '+') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '++';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '-') And (Script[Pos+1] = '-') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '--';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '+') And (Script[Pos+1] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '+=';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '-') And (Script[Pos+1] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '-=';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+ End;
+
+ { Operateurs et ponctuateurs simples }
+ If Script[Pos] In ['+', '-', '*', '/', '%', '=', '<', '>', '!'] Then Begin
+  Token.TokType := JS_TOK_OPERATOR;
+  Token.TokValue := Script[Pos];
+  Inc(Pos);
+  JSGetNextToken := Token;
+  Exit;
+ End;
+
+ If Script[Pos] In ['(', ')', '{', '}', '[', ']', ';', ',', '.', ':'] Then Begin
+  Token.TokType := JS_TOK_PUNCTUATOR;
+  Token.TokValue := Script[Pos];
+  Inc(Pos);
+  JSGetNextToken := Token;
+  Exit;
+ End;
+
+ { Caractere inconnu - avancer }
+ Inc(Pos);
+ JSGetNextToken := Token;
+End;
+
+{ Evaluer une expression primaire (nombre, chaine, variable, parentheses) }
+Function JSEvalPrimary(Const Script: String; Var Pos: Integer): JSValue;
+Var
+ Token: JSToken;
+ VarName: String;
+ FuncIdx: Integer;
+ Args: Array[0..9] Of JSValue;
+ ArgCount: Integer;
+ SubExpr: String;
+ ParenLevel: Integer;
+ StartPos: Integer;
+Begin
+ JSEvalPrimary := JSUndefined;
+ If JSCtx.HasError Then Exit;
+
+ Token := JSGetNextToken(Script, Pos);
+
+ Case Token.TokType Of
+  JS_TOK_NUMBER: JSEvalPrimary := JSNumber(Token.NumValue);
+  JS_TOK_STRING: JSEvalPrimary := JSString(Token.TokValue);
+  JS_TOK_BOOLEAN: JSEvalPrimary := JSBool(Token.NumValue <> 0);
+  JS_TOK_NULL: JSEvalPrimary := JSNull;
+  JS_TOK_UNDEFINED: JSEvalPrimary := JSUndefined;
+
+  JS_TOK_IDENTIFIER: Begin
+   VarName := Token.TokValue;
+   Pos := JSSkipComments(Script, Pos);
+
+   { Verifier si c'est un appel de fonction }
+   If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+    Inc(Pos);
+    ArgCount := 0;
+
+    { Collecter les arguments }
+    Pos := JSSkipComments(Script, Pos);
+    While (Pos <= Length(Script)) And (Script[Pos] <> ')') Do Begin
+     If ArgCount < 10 Then Begin
+      { Trouver l'argument jusqu'a la virgule ou la parenthese fermante }
+      StartPos := Pos;
+      ParenLevel := 0;
+      While (Pos <= Length(Script)) Do Begin
+       If Script[Pos] = '(' Then Inc(ParenLevel)
+       Else If Script[Pos] = ')' Then Begin
+        If ParenLevel = 0 Then Break;
+        Dec(ParenLevel);
+       End
+       Else If (Script[Pos] = ',') And (ParenLevel = 0) Then Break;
+       Inc(Pos);
+      End;
+      SubExpr := Copy(Script, StartPos, Pos - StartPos);
+      Args[ArgCount] := JSEvaluate(SubExpr);
+      Inc(ArgCount);
+     End;
+     If (Pos <= Length(Script)) And (Script[Pos] = ',') Then Inc(Pos);
+     Pos := JSSkipComments(Script, Pos);
+    End;
+    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+
+    { Traiter les fonctions natives }
+    If VarName = 'alert' Then Begin
+     If ArgCount > 0 Then JSNativeAlert(JSValueToString(Args[0]));
+     JSEvalPrimary := JSUndefined;
+    End
+    Else If VarName = 'parseInt' Then Begin
+     If ArgCount > 0 Then JSEvalPrimary := JSNumber(Trunc(JSValueToNumber(Args[0])))
+     Else JSEvalPrimary := JSNumber(0);
+    End
+    Else If VarName = 'parseFloat' Then Begin
+     If ArgCount > 0 Then JSEvalPrimary := JSNumber(JSValueToNumber(Args[0]))
+     Else JSEvalPrimary := JSNumber(0);
+    End
+    Else If VarName = 'String' Then Begin
+     If ArgCount > 0 Then JSEvalPrimary := JSString(JSValueToString(Args[0]))
+     Else JSEvalPrimary := JSString('');
+    End
+    Else If VarName = 'Number' Then Begin
+     If ArgCount > 0 Then JSEvalPrimary := JSNumber(JSValueToNumber(Args[0]))
+     Else JSEvalPrimary := JSNumber(0);
+    End
+    Else If VarName = 'Boolean' Then Begin
+     If ArgCount > 0 Then JSEvalPrimary := JSBool(JSValueToBool(Args[0]))
+     Else JSEvalPrimary := JSBool(False);
+    End
+    Else Begin
+     { Fonction utilisateur }
+     FuncIdx := JSFindFunction(VarName);
+     If FuncIdx > 0 Then
+      JSEvalPrimary := JSCallUserFunction(FuncIdx, Args, ArgCount)
+     Else Begin
+      JSCtx.HasError := True;
+      JSCtx.ErrorMsg := 'ReferenceError: ' + VarName + ' is not defined';
+     End;
+    End;
+   End
+
+   { Verifier si c'est console.log ou document.write }
+   Else If (Pos <= Length(Script)) And (Script[Pos] = '.') Then Begin
+    Inc(Pos);
+    Token := JSGetNextToken(Script, Pos);
+    If (VarName = 'console') And (Token.TokValue = 'log') Then Begin
+     { console.log() }
+     Pos := JSSkipComments(Script, Pos);
+     If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+      Inc(Pos);
+      StartPos := Pos;
+      ParenLevel := 1;
+      While (Pos <= Length(Script)) And (ParenLevel > 0) Do Begin
+       If Script[Pos] = '(' Then Inc(ParenLevel)
+       Else If Script[Pos] = ')' Then Dec(ParenLevel);
+       If ParenLevel > 0 Then Inc(Pos);
+      End;
+      SubExpr := Copy(Script, StartPos, Pos - StartPos);
+      JSNativeConsoleLog(JSValueToString(JSEvaluate(SubExpr)));
+      If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+     End;
+     JSEvalPrimary := JSUndefined;
+    End
+    Else If (VarName = 'document') And (Token.TokValue = 'write') Then Begin
+     { document.write() }
+     Pos := JSSkipComments(Script, Pos);
+     If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+      Inc(Pos);
+      StartPos := Pos;
+      ParenLevel := 1;
+      While (Pos <= Length(Script)) And (ParenLevel > 0) Do Begin
+       If Script[Pos] = '(' Then Inc(ParenLevel)
+       Else If Script[Pos] = ')' Then Dec(ParenLevel);
+       If ParenLevel > 0 Then Inc(Pos);
+      End;
+      SubExpr := Copy(Script, StartPos, Pos - StartPos);
+      JSNativeDocumentWrite(JSValueToString(JSEvaluate(SubExpr)));
+      If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+     End;
+     JSEvalPrimary := JSUndefined;
+    End
+    Else Begin
+     { Acces a une propriete d'objet - non supporte pour l'instant }
+     JSEvalPrimary := JSUndefined;
+    End;
+   End
+   Else Begin
+    { Variable simple }
+    JSEvalPrimary := JSGetVariable(VarName);
+   End;
+  End;
+
+  JS_TOK_PUNCTUATOR: Begin
+   If Token.TokValue = '(' Then Begin
+    { Expression entre parentheses }
+    StartPos := Pos;
+    ParenLevel := 1;
+    While (Pos <= Length(Script)) And (ParenLevel > 0) Do Begin
+     If Script[Pos] = '(' Then Inc(ParenLevel)
+     Else If Script[Pos] = ')' Then Dec(ParenLevel);
+     If ParenLevel > 0 Then Inc(Pos);
+    End;
+    SubExpr := Copy(Script, StartPos, Pos - StartPos);
+    JSEvalPrimary := JSEvaluate(SubExpr);
+    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+   End;
+  End;
+
+  JS_TOK_OPERATOR: Begin
+   { Operateur unaire - ou ! }
+   If Token.TokValue = '-' Then
+    JSEvalPrimary := JSNumber(-JSValueToNumber(JSEvalPrimary(Script, Pos)))
+   Else If Token.TokValue = '!' Then
+    JSEvalPrimary := JSBool(Not JSValueToBool(JSEvalPrimary(Script, Pos)))
+   Else If Token.TokValue = '+' Then
+    JSEvalPrimary := JSNumber(JSValueToNumber(JSEvalPrimary(Script, Pos)));
+  End;
+ End;
+End;
+
+{ Evaluer une expression multiplicative (* / %) }
+Function JSEvalMultiplicative(Const Script: String; Var Pos: Integer): JSValue;
+Var
+ Left, Right: JSValue;
+ Op: String;
+ SavePos: Integer;
+ Token: JSToken;
+Begin
+ Left := JSEvalPrimary(Script, Pos);
+ If JSCtx.HasError Then Begin
+  JSEvalMultiplicative := Left;
+  Exit;
+ End;
+
+ While True Do Begin
+  SavePos := Pos;
+  Pos := JSSkipComments(Script, Pos);
+  If Pos > Length(Script) Then Break;
+
+  Token := JSGetNextToken(Script, Pos);
+  Op := Token.TokValue;
+
+  If (Op <> '*') And (Op <> '/') And (Op <> '%') Then Begin
+   Pos := SavePos;
+   Break;
+  End;
+
+  Right := JSEvalPrimary(Script, Pos);
+  If JSCtx.HasError Then Break;
+
+  If Op = '*' Then
+   Left := JSNumber(JSValueToNumber(Left) * JSValueToNumber(Right))
+  Else If Op = '/' Then Begin
+   If JSValueToNumber(Right) = 0 Then Begin
+    JSCtx.HasError := True;
+    JSCtx.ErrorMsg := 'Error: Division by zero';
+    Break;
+   End;
+   Left := JSNumber(JSValueToNumber(Left) / JSValueToNumber(Right));
+  End
+  Else If Op = '%' Then Begin
+   If Trunc(JSValueToNumber(Right)) = 0 Then Begin
+    JSCtx.HasError := True;
+    JSCtx.ErrorMsg := 'Error: Division by zero';
+    Break;
+   End;
+   Left := JSNumber(Trunc(JSValueToNumber(Left)) Mod Trunc(JSValueToNumber(Right)));
+  End;
+ End;
+
+ JSEvalMultiplicative := Left;
+End;
+
+{ Evaluer une expression additive (+ -) }
+Function JSEvalAdditive(Const Script: String; Var Pos: Integer): JSValue;
+Var
+ Left, Right: JSValue;
+ Op: String;
+ SavePos: Integer;
+ Token: JSToken;
+Begin
+ Left := JSEvalMultiplicative(Script, Pos);
+ If JSCtx.HasError Then Begin
+  JSEvalAdditive := Left;
+  Exit;
+ End;
+
+ While True Do Begin
+  SavePos := Pos;
+  Pos := JSSkipComments(Script, Pos);
+  If Pos > Length(Script) Then Break;
+
+  Token := JSGetNextToken(Script, Pos);
+  Op := Token.TokValue;
+
+  If (Op <> '+') And (Op <> '-') Then Begin
+   Pos := SavePos;
+   Break;
+  End;
+
+  Right := JSEvalMultiplicative(Script, Pos);
+  If JSCtx.HasError Then Break;
+
+  If Op = '+' Then Begin
+   { Concatenation si l'un des operandes est une chaine }
+   If (Left.ValType = JS_VAL_STRING) Or (Right.ValType = JS_VAL_STRING) Then
+    Left := JSString(JSValueToString(Left) + JSValueToString(Right))
+   Else
+    Left := JSNumber(JSValueToNumber(Left) + JSValueToNumber(Right));
+  End
+  Else If Op = '-' Then
+   Left := JSNumber(JSValueToNumber(Left) - JSValueToNumber(Right));
+ End;
+
+ JSEvalAdditive := Left;
+End;
+
+{ Evaluer une expression de comparaison (< > <= >= == != === !==) }
+Function JSEvalComparison(Const Script: String; Var Pos: Integer): JSValue;
+Var
+ Left, Right: JSValue;
+ Op: String;
+ SavePos: Integer;
+ Token: JSToken;
+Begin
+ Left := JSEvalAdditive(Script, Pos);
+ If JSCtx.HasError Then Begin
+  JSEvalComparison := Left;
+  Exit;
+ End;
+
+ SavePos := Pos;
+ Pos := JSSkipComments(Script, Pos);
+ If Pos > Length(Script) Then Begin
+  JSEvalComparison := Left;
+  Exit;
+ End;
+
+ Token := JSGetNextToken(Script, Pos);
+ Op := Token.TokValue;
+
+ If (Op <> '<') And (Op <> '>') And (Op <> '<=') And (Op <> '>=') And
+    (Op <> '==') And (Op <> '!=') And (Op <> '===') And (Op <> '!==') Then Begin
+  Pos := SavePos;
+  JSEvalComparison := Left;
+  Exit;
+ End;
+
+ Right := JSEvalAdditive(Script, Pos);
+ If JSCtx.HasError Then Begin
+  JSEvalComparison := Left;
+  Exit;
+ End;
+
+ If Op = '<' Then
+  JSEvalComparison := JSBool(JSValueToNumber(Left) < JSValueToNumber(Right))
+ Else If Op = '>' Then
+  JSEvalComparison := JSBool(JSValueToNumber(Left) > JSValueToNumber(Right))
+ Else If Op = '<=' Then
+  JSEvalComparison := JSBool(JSValueToNumber(Left) <= JSValueToNumber(Right))
+ Else If Op = '>=' Then
+  JSEvalComparison := JSBool(JSValueToNumber(Left) >= JSValueToNumber(Right))
+ Else If Op = '==' Then
+  JSEvalComparison := JSBool(JSValueToString(Left) = JSValueToString(Right))
+ Else If Op = '!=' Then
+  JSEvalComparison := JSBool(JSValueToString(Left) <> JSValueToString(Right))
+ Else If Op = '===' Then
+  JSEvalComparison := JSBool((Left.ValType = Right.ValType) And
+                             (JSValueToString(Left) = JSValueToString(Right)))
+ Else If Op = '!==' Then
+  JSEvalComparison := JSBool((Left.ValType <> Right.ValType) Or
+                             (JSValueToString(Left) <> JSValueToString(Right)))
+ Else
+  JSEvalComparison := Left;
+End;
+
+{ Evaluer une expression logique (&& ||) }
+Function JSEvalLogical(Const Script: String; Var Pos: Integer): JSValue;
+Var
+ Left, Right: JSValue;
+ Op: String;
+ SavePos: Integer;
+ Token: JSToken;
+Begin
+ Left := JSEvalComparison(Script, Pos);
+ If JSCtx.HasError Then Begin
+  JSEvalLogical := Left;
+  Exit;
+ End;
+
+ While True Do Begin
+  SavePos := Pos;
+  Pos := JSSkipComments(Script, Pos);
+  If Pos > Length(Script) Then Break;
+
+  Token := JSGetNextToken(Script, Pos);
+  Op := Token.TokValue;
+
+  If (Op <> '&&') And (Op <> '||') Then Begin
+   Pos := SavePos;
+   Break;
+  End;
+
+  { Short-circuit evaluation }
+  If Op = '&&' Then Begin
+   If Not JSValueToBool(Left) Then Begin
+    JSEvalLogical := Left;
+    Exit;
+   End;
+  End Else If Op = '||' Then Begin
+   If JSValueToBool(Left) Then Begin
+    JSEvalLogical := Left;
+    Exit;
+   End;
+  End;
+
+  Right := JSEvalComparison(Script, Pos);
+  If JSCtx.HasError Then Break;
+
+  Left := Right;
+ End;
+
+ JSEvalLogical := Left;
+End;
+
+{ Evaluer une expression complete }
+Function JSEvalExpression(Const Script: String; Var Pos: Integer): JSValue;
+Begin
+ JSEvalExpression := JSEvalLogical(Script, Pos);
+End;
+
+{ Evaluer un script JavaScript }
+Function JSEvaluate(Const Script: String): JSValue;
+Var
+ Pos: Integer;
+ Token: JSToken;
+ VarName: String;
+ Value: JSValue;
+ IsConst: Boolean;
+ FuncName: String;
+ FuncBody: String;
+ BraceLevel: Integer;
+ StartPos: Integer;
+ ParamStr: String;
+ I, J: Integer;
+ CondExpr: String;
+ ThenBlock: String;
+ ElseBlock: String;
+ CondValue: JSValue;
+Begin
+ JSEvaluate := JSUndefined;
+ If Length(Script) = 0 Then Exit;
+ If JSCtx.HasError Then Exit;
+
+ Pos := 1;
+
+ While Pos <= Length(Script) Do Begin
+  Pos := JSSkipComments(Script, Pos);
+  If Pos > Length(Script) Then Break;
+
+  { Sauvegarder la position pour analyse }
+  StartPos := Pos;
+  Token := JSGetNextToken(Script, Pos);
+
+  If Token.TokType = JS_TOK_EOF Then Break;
+
+  { Declaration de variable (var, let, const) }
+  If (Token.TokType = JS_TOK_KEYWORD) And
+     ((Token.KeywordType = JS_KW_VAR) Or
+      (Token.KeywordType = JS_KW_LET) Or
+      (Token.KeywordType = JS_KW_CONST)) Then Begin
+   IsConst := Token.KeywordType = JS_KW_CONST;
+
+   Token := JSGetNextToken(Script, Pos);
+   If Token.TokType <> JS_TOK_IDENTIFIER Then Begin
+    JSCtx.HasError := True;
+    JSCtx.ErrorMsg := 'SyntaxError: Expected identifier';
+    Exit;
+   End;
+   VarName := Token.TokValue;
+
+   Pos := JSSkipComments(Script, Pos);
+   If (Pos <= Length(Script)) And (Script[Pos] = '=') Then Begin
+    Inc(Pos);
+    { Trouver la fin de l'expression (jusqu'au ; ou fin) }
+    StartPos := Pos;
+    While (Pos <= Length(Script)) And (Script[Pos] <> ';') Do
+     Inc(Pos);
+    Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+   End Else
+    Value := JSUndefined;
+
+   JSSetVariable(VarName, Value, IsConst);
+   If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+  End
+
+  { Declaration de fonction }
+  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_FUNCTION) Then Begin
+   Token := JSGetNextToken(Script, Pos);
+   If Token.TokType <> JS_TOK_IDENTIFIER Then Begin
+    JSCtx.HasError := True;
+    JSCtx.ErrorMsg := 'SyntaxError: Expected function name';
+    Exit;
+   End;
+   FuncName := Token.TokValue;
+
+   { Parametres }
+   Pos := JSSkipComments(Script, Pos);
+   If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+    Inc(Pos);
+    StartPos := Pos;
+    While (Pos <= Length(Script)) And (Script[Pos] <> ')') Do
+     Inc(Pos);
+    ParamStr := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+   End Else
+    ParamStr := '';
+
+   { Corps de la fonction }
+   Pos := JSSkipComments(Script, Pos);
+   If (Pos <= Length(Script)) And (Script[Pos] = '{') Then Begin
+    Inc(Pos);
+    StartPos := Pos;
+    BraceLevel := 1;
+    While (Pos <= Length(Script)) And (BraceLevel > 0) Do Begin
+     If Script[Pos] = '{' Then Inc(BraceLevel)
+     Else If Script[Pos] = '}' Then Dec(BraceLevel);
+     If BraceLevel > 0 Then Inc(Pos);
+    End;
+    FuncBody := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
+   End Else
+    FuncBody := '';
+
+   { Enregistrer la fonction }
+   If JSCtx.FuncCount < MAX_JS_FUNCTIONS Then Begin
+    Inc(JSCtx.FuncCount);
+    JSCtx.Functions[JSCtx.FuncCount].Name := FuncName;
+    JSCtx.Functions[JSCtx.FuncCount].Body := FuncBody;
+    JSCtx.Functions[JSCtx.FuncCount].ParamCount := 0;
+
+    { Parser les parametres }
+    I := 1;
+    J := 0;
+    While I <= Length(ParamStr) Do Begin
+     While (I <= Length(ParamStr)) And (ParamStr[I] In [' ', ',']) Do Inc(I);
+     StartPos := I;
+     While (I <= Length(ParamStr)) And Not (ParamStr[I] In [' ', ',']) Do Inc(I);
+     If I > StartPos Then Begin
+      Inc(J);
+      If J <= 10 Then
+       JSCtx.Functions[JSCtx.FuncCount].ParamNames[J] := Copy(ParamStr, StartPos, I - StartPos);
+     End;
+    End;
+    JSCtx.Functions[JSCtx.FuncCount].ParamCount := J;
+   End;
+  End
+
+  { Instruction if }
+  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_IF) Then Begin
+   { Condition }
+   Pos := JSSkipComments(Script, Pos);
+   If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+    Inc(Pos);
+    StartPos := Pos;
+    BraceLevel := 1;
+    While (Pos <= Length(Script)) And (BraceLevel > 0) Do Begin
+     If Script[Pos] = '(' Then Inc(BraceLevel)
+     Else If Script[Pos] = ')' Then Dec(BraceLevel);
+     If BraceLevel > 0 Then Inc(Pos);
+    End;
+    CondExpr := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+   End Else
+    CondExpr := '';
+
+   { Bloc then }
+   Pos := JSSkipComments(Script, Pos);
+   If (Pos <= Length(Script)) And (Script[Pos] = '{') Then Begin
+    Inc(Pos);
+    StartPos := Pos;
+    BraceLevel := 1;
+    While (Pos <= Length(Script)) And (BraceLevel > 0) Do Begin
+     If Script[Pos] = '{' Then Inc(BraceLevel)
+     Else If Script[Pos] = '}' Then Dec(BraceLevel);
+     If BraceLevel > 0 Then Inc(Pos);
+    End;
+    ThenBlock := Copy(Script, StartPos, Pos - StartPos);
+    If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
+   End Else
+    ThenBlock := '';
+
+   { Bloc else optionnel }
+   ElseBlock := '';
+   Pos := JSSkipComments(Script, Pos);
+   StartPos := Pos;
+   Token := JSGetNextToken(Script, Pos);
+   If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_ELSE) Then Begin
+    Pos := JSSkipComments(Script, Pos);
+    If (Pos <= Length(Script)) And (Script[Pos] = '{') Then Begin
+     Inc(Pos);
+     StartPos := Pos;
+     BraceLevel := 1;
+     While (Pos <= Length(Script)) And (BraceLevel > 0) Do Begin
+      If Script[Pos] = '{' Then Inc(BraceLevel)
+      Else If Script[Pos] = '}' Then Dec(BraceLevel);
+      If BraceLevel > 0 Then Inc(Pos);
+     End;
+     ElseBlock := Copy(Script, StartPos, Pos - StartPos);
+     If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
+    End;
+   End Else
+    Pos := StartPos;
+
+   { Evaluer la condition et executer le bloc approprie }
+   CondValue := JSEvaluate(CondExpr);
+   If JSValueToBool(CondValue) Then
+    JSEvaluate := JSEvaluate(ThenBlock)
+   Else If Length(ElseBlock) > 0 Then
+    JSEvaluate := JSEvaluate(ElseBlock);
+  End
+
+  { Instruction return }
+  Else If (Token.TokType = JS_TOK_KEYWORD) And (Token.KeywordType = JS_KW_RETURN) Then Begin
+   StartPos := Pos;
+   While (Pos <= Length(Script)) And (Script[Pos] <> ';') Do
+    Inc(Pos);
+   JSEvaluate := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+   If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+   Exit;
+  End
+
+  { Expression simple (affectation ou appel de fonction) }
+  Else If Token.TokType = JS_TOK_IDENTIFIER Then Begin
+   VarName := Token.TokValue;
+   Pos := JSSkipComments(Script, Pos);
+
+   { Affectation }
+   If (Pos <= Length(Script)) And (Script[Pos] = '=') And
+      ((Pos >= Length(Script)) Or (Script[Pos+1] <> '=')) Then Begin
+    Inc(Pos);
+    StartPos := Pos;
+    While (Pos <= Length(Script)) And (Script[Pos] <> ';') Do
+     Inc(Pos);
+    Value := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+    JSSetVariable(VarName, Value, False);
+    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+   End Else Begin
+    { Autre expression - revenir en arriere et evaluer }
+    Pos := StartPos;
+    StartPos := Pos;
+    While (Pos <= Length(Script)) And (Script[Pos] <> ';') Do
+     Inc(Pos);
+    JSEvaluate := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+    If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+   End;
+  End
+
+  { Point-virgule seul }
+  Else If (Token.TokType = JS_TOK_PUNCTUATOR) And (Token.TokValue = ';') Then Begin
+   { Instruction vide, continuer }
+  End
+
+  { Autre expression }
+  Else Begin
+   Pos := StartPos;
+   StartPos := Pos;
+   While (Pos <= Length(Script)) And (Script[Pos] <> ';') Do
+    Inc(Pos);
+   If Pos > StartPos Then
+    JSEvaluate := JSEvalExpression(Copy(Script, StartPos, Pos - StartPos), StartPos);
+   If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+  End;
+
+  If JSCtx.HasError Then Exit;
+ End;
+End;
+
+{ Executer un script JavaScript }
+Procedure JSExecuteScript(Const Script: String);
+Begin
+ If Not JSEnabled Then Exit;
+ If Length(Script) = 0 Then Exit;
+
+ JSCtx.HasError := False;
+ JSCtx.ErrorMsg := '';
+ JSEvaluate(Script);
+End;
+
+{ Obtenir la sortie de document.write }
+Function JSGetDocumentOutput: String;
+Begin
+ JSGetDocumentOutput := JSCtx.DocumentOutput;
+End;
+
+{ Effacer la sortie de document.write }
+Procedure JSClearDocumentOutput;
+Begin
+ JSCtx.DocumentOutput := '';
+End;
+
+{ =====================================================
+  FIN INTERPRETEUR JAVASCRIPT
   ===================================================== }
 
 { =====================================================
@@ -2485,6 +3812,72 @@ End;
 { =====================================================
   FIN RENDU LIENS HYPERTEXTE
   ===================================================== }
+
+{ =====================================================
+  RENDU HTML - Scripts (balise <script>)
+  ===================================================== }
+
+{ Fonction pour extraire le contenu textuel d'un noeud }
+Function GetNodeTextContent(Node: HTMLNodePtr): String;
+Var
+ I: Integer;
+ Result: String;
+Begin
+ Result := '';
+ If Node = Nil Then Begin
+  GetNodeTextContent := Result;
+  Exit;
+ End;
+
+ If Node^.NodeType = HTML_NODE_TEXT Then
+  Result := Node^.Content
+ Else If Node^.NodeType = HTML_NODE_ELEMENT Then Begin
+  For I := 1 To Node^.ChildCount Do
+   Result := Result + GetNodeTextContent(Node^.Children[I]);
+ End;
+ GetNodeTextContent := Result;
+End;
+
+{ Procedure pour rendre la balise SCRIPT (execution JavaScript) }
+Procedure RenderTagScript(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ ScriptType, ScriptSrc: String;
+ ScriptContent: String;
+Begin
+ { Verifier le type de script }
+ ScriptType := GetNodeAttribute(Node, 'type');
+ ScriptSrc := GetNodeAttribute(Node, 'src');
+
+ { Ne supporter que JavaScript (par defaut ou explicitement) }
+ If (ScriptType <> '') And (ScriptType <> 'text/javascript') And
+    (ScriptType <> 'application/javascript') And
+    (ScriptType <> 'module') Then Begin
+  { Type de script non supporte, ignorer }
+  Exit;
+ End;
+
+ { Les scripts externes (src=) ne sont pas supportes pour l'instant }
+ If ScriptSrc <> '' Then Begin
+  { TODO: Charger et executer le script externe }
+  Exit;
+ End;
+
+ { Extraire le contenu du script }
+ ScriptContent := GetNodeTextContent(Node);
+
+ { Executer le script JavaScript }
+ If Length(ScriptContent) > 0 Then Begin
+  JSExecuteScript(ScriptContent);
+ End;
+
+ { Le script ne produit pas de rendu visuel direct }
+ { La sortie de document.write() est traitee separement }
+End;
+
+{ =====================================================
+  FIN RENDU SCRIPTS
+  ===================================================== }
+
 Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
  If Node = Nil Then Exit;
@@ -2578,6 +3971,14 @@ Begin
 
     { Liens hypertexte }
     TAG_A:        RenderTagA(Node, Ctx);
+
+    { Scripts JavaScript }
+    TAG_SCRIPT:   RenderTagScript(Node, Ctx);
+
+    { NOSCRIPT - afficher le contenu si JavaScript est desactive }
+    TAG_NOSCRIPT: Begin
+     If Not JSEnabled Then RenderChildren(Node, Ctx);
+    End;
 
     Else Begin
      { Balise non geree - rendre les enfants par defaut }
@@ -3543,6 +4944,7 @@ BEGIN
  InitHistory;
  InitMouse;
  InitHTMLParser;
+ InitJSContext;  { Initialiser l'interpreteur JavaScript }
  InitBackButton;
  InitForwardButton;
  InitRefreshButton;
