@@ -249,7 +249,7 @@ Program WORKSHOP;
 {$A-}
 
 Uses {$IFDEF FPC}
-      Crt,PtcGraph,PtcCrt,PtcMouse
+      Crt,PtcGraph,PtcCrt,PtcMouse,SysUtils
      {$ELSE}
       Crt,Graph,Dos
      {$ENDIF};
@@ -4266,6 +4266,289 @@ End;
   DIALOGUES MODAUX
   ============================================================ }
 
+{ Boite de dialogue Ouvrir fichier }
+Function ShowOpenFileDialog: String;
+Const
+ MAX_FILES = 50;
+ LIST_HEIGHT = 8;
+Var
+ X, Y, W, H: Integer;
+ EditText: String;
+ CursorPos: Integer;
+ Files: Array[1..MAX_FILES] Of String;
+ FileCount: Integer;
+ TopIndex: Integer;
+ SelectedIndex: Integer;
+ I, J: Integer;
+ SearchRec: TSearchRec;
+ Done: Boolean;
+ Result: Boolean;
+ Ch: Char;
+ ListY, ListH: Integer;
+ BtnOkX, BtnCancelX, BtnY: Integer;
+ EditX, EditY, EditW: Integer;
+ ClickedItem: Integer;
+ ExtFilter: String;
+
+ Procedure ScanFiles;
+ Var
+  Sr: TSearchRec;
+  I, J: Integer;
+  TmpStr: String;
+ Begin
+  FileCount := 0;
+  { Chercher les fichiers .RC }
+  If FindFirst('*.RC', faArchive, Sr) = 0 Then Begin
+   Repeat
+    If FileCount < MAX_FILES Then Begin
+     Inc(FileCount);
+     Files[FileCount] := Sr.Name;
+    End;
+   Until FindNext(Sr) <> 0;
+   FindClose(Sr);
+  End;
+  { Chercher les fichiers .RES }
+  If FindFirst('*.RES', faArchive, Sr) = 0 Then Begin
+   Repeat
+    If FileCount < MAX_FILES Then Begin
+     Inc(FileCount);
+     Files[FileCount] := Sr.Name;
+    End;
+   Until FindNext(Sr) <> 0;
+   FindClose(Sr);
+  End;
+  { Trier les fichiers par ordre alphabetique }
+  For I := 1 To FileCount - 1 Do
+   For J := I + 1 To FileCount Do
+    If Files[I] > Files[J] Then Begin
+     TmpStr := Files[I];
+     Files[I] := Files[J];
+     Files[J] := TmpStr;
+    End;
+ End;
+
+ Procedure DrawDialog;
+ Var
+  DisplayY, FileIdx, I: Integer;
+ Begin
+  HideMouse;
+  { Fond de la boite de dialogue }
+  SetFillStyle(SolidFill, COLOR_WINDOW);
+  Bar(X, Y, X + W, Y + H);
+  Draw3DRect(X, Y, X + W, Y + H, True);
+  { Barre de titre }
+  SetFillStyle(SolidFill, COLOR_TITLEBAR);
+  Bar(X + 2, Y + 2, X + W - 2, Y + 18);
+  SetColor(COLOR_TITLETEXT);
+  OutTextXY(X + 4, Y + 4, 'Ouvrir un fichier');
+  { Label "Nom du fichier:" }
+  SetColor(COLOR_WINDOWTEXT);
+  OutTextXY(X + 10, EditY - 16, 'Nom du fichier:');
+  { Champ d'edition }
+  SetFillStyle(SolidFill, White);
+  Bar(EditX, EditY, EditX + EditW, EditY + 18);
+  Draw3DRect(EditX, EditY, EditX + EditW, EditY + 18, False);
+  SetColor(Black);
+  OutTextXY(EditX + 4, EditY + 4, EditText);
+  { Curseur }
+  If CursorPos <= Length(EditText) Then
+   Line(EditX + 4 + CursorPos * 8, EditY + 2, EditX + 4 + CursorPos * 8, EditY + 16);
+  { Label "Fichiers:" }
+  SetColor(COLOR_WINDOWTEXT);
+  OutTextXY(X + 10, ListY - 16, 'Fichiers (.RC, .RES):');
+  { Liste des fichiers }
+  SetFillStyle(SolidFill, White);
+  Bar(X + 10, ListY, X + W - 90, ListY + ListH);
+  Draw3DRect(X + 10, ListY, X + W - 90, ListY + ListH, False);
+  SetColor(Black);
+  DisplayY := ListY + 2;
+  For I := TopIndex To TopIndex + LIST_HEIGHT - 1 Do Begin
+   If I <= FileCount Then Begin
+    FileIdx := I;
+    If FileIdx = SelectedIndex Then Begin
+     SetFillStyle(SolidFill, COLOR_HIGHLIGHT);
+     Bar(X + 11, DisplayY, X + W - 91, DisplayY + 14);
+     SetColor(COLOR_HIGHLIGHTTEXT);
+    End Else Begin
+     SetColor(Black);
+    End;
+    OutTextXY(X + 14, DisplayY + 2, Files[FileIdx]);
+    Inc(DisplayY, 14);
+   End;
+  End;
+  { Barre de defilement }
+  SetFillStyle(SolidFill, COLOR_SCROLLBAR);
+  Bar(X + W - 86, ListY, X + W - 70, ListY + ListH);
+  Draw3DRect(X + W - 86, ListY, X + W - 70, ListY + ListH, False);
+  { Bouton haut }
+  DrawButton(X + W - 85, ListY + 1, 14, 14, '^', False, True);
+  { Bouton bas }
+  DrawButton(X + W - 85, ListY + ListH - 15, 14, 14, 'v', False, True);
+  { Boutons Ouvrir et Annuler }
+  DrawButton(BtnOkX, BtnY, 70, 24, 'Ouvrir', False, True);
+  DrawButton(BtnCancelX, BtnY, 70, 24, 'Annuler', False, True);
+  { Message si aucun fichier }
+  If FileCount = 0 Then Begin
+   SetColor(COLOR_GRAYTEXT);
+   OutTextXY(X + 14, ListY + 20, '(Aucun fichier)');
+  End;
+  ShowMouse;
+ End;
+
+Begin
+ ShowOpenFileDialog := '';
+ W := 400;
+ H := 300;
+ X := (SCREEN_WIDTH - W) Div 2;
+ Y := (SCREEN_HEIGHT - H) Div 2;
+ EditX := X + 10;
+ EditY := Y + 36;
+ EditW := W - 100;
+ ListY := Y + 80;
+ ListH := LIST_HEIGHT * 14 + 4;
+ BtnOkX := X + W - 160;
+ BtnCancelX := X + W - 80;
+ BtnY := Y + H - 35;
+ EditText := '';
+ CursorPos := 0;
+ TopIndex := 1;
+ SelectedIndex := 0;
+ Done := False;
+ Result := False;
+ ScanFiles;
+ DrawDialog;
+
+ While Not Done Do Begin
+  UpdateMouse;
+
+  { Gestion des touches clavier }
+  If KeyPressed Then Begin
+   Ch := ReadKey;
+   If Ch = #0 Then Begin
+    Ch := ReadKey;
+    Case Ch Of
+     #72: Begin { Fleche haut }
+      If SelectedIndex > 1 Then Begin
+       Dec(SelectedIndex);
+       If SelectedIndex < TopIndex Then TopIndex := SelectedIndex;
+       EditText := Files[SelectedIndex];
+       CursorPos := Length(EditText);
+       DrawDialog;
+      End;
+     End;
+     #80: Begin { Fleche bas }
+      If SelectedIndex < FileCount Then Begin
+       Inc(SelectedIndex);
+       If SelectedIndex > TopIndex + LIST_HEIGHT - 1 Then TopIndex := SelectedIndex - LIST_HEIGHT + 1;
+       EditText := Files[SelectedIndex];
+       CursorPos := Length(EditText);
+       DrawDialog;
+      End;
+     End;
+     #75: Begin { Fleche gauche }
+      If CursorPos > 0 Then Begin
+       Dec(CursorPos);
+       DrawDialog;
+      End;
+     End;
+     #77: Begin { Fleche droite }
+      If CursorPos < Length(EditText) Then Begin
+       Inc(CursorPos);
+       DrawDialog;
+      End;
+     End;
+    End;
+   End Else Begin
+    Case Ch Of
+     #13: Begin { Entree }
+      If EditText <> '' Then Begin
+       Result := True;
+       Done := True;
+      End;
+     End;
+     #27: Begin { Echap }
+      Done := True;
+     End;
+     #8: Begin { Backspace }
+      If (Length(EditText) > 0) And (CursorPos > 0) Then Begin
+       Delete(EditText, CursorPos, 1);
+       Dec(CursorPos);
+       DrawDialog;
+      End;
+     End;
+     Else Begin
+      If (Length(EditText) < 127) And (Ch >= ' ') Then Begin
+       Insert(Ch, EditText, CursorPos + 1);
+       Inc(CursorPos);
+       DrawDialog;
+      End;
+     End;
+    End;
+   End;
+  End;
+
+  { Gestion des clics souris }
+  If MouseClicked Then Begin
+   { Clic sur un fichier de la liste }
+   If (MouseX >= X + 10) And (MouseX <= X + W - 90) And
+      (MouseY >= ListY) And (MouseY <= ListY + ListH) Then Begin
+    ClickedItem := TopIndex + (MouseY - ListY) Div 14;
+    If (ClickedItem >= 1) And (ClickedItem <= FileCount) Then Begin
+     SelectedIndex := ClickedItem;
+     EditText := Files[SelectedIndex];
+     CursorPos := Length(EditText);
+     DrawDialog;
+    End;
+   End
+   { Clic sur le champ d'edition }
+   Else If (MouseX >= EditX) And (MouseX <= EditX + EditW) And
+           (MouseY >= EditY) And (MouseY <= EditY + 18) Then Begin
+    CursorPos := (MouseX - EditX - 4) Div 8;
+    If CursorPos < 0 Then CursorPos := 0;
+    If CursorPos > Length(EditText) Then CursorPos := Length(EditText);
+    DrawDialog;
+   End
+   { Clic sur bouton Ouvrir }
+   Else If (MouseX >= BtnOkX) And (MouseX <= BtnOkX + 70) And
+           (MouseY >= BtnY) And (MouseY <= BtnY + 24) Then Begin
+    If EditText <> '' Then Begin
+     Result := True;
+     Done := True;
+    End;
+   End
+   { Clic sur bouton Annuler }
+   Else If (MouseX >= BtnCancelX) And (MouseX <= BtnCancelX + 70) And
+           (MouseY >= BtnY) And (MouseY <= BtnY + 24) Then Begin
+    Done := True;
+   End
+   { Clic sur bouton defilement haut }
+   Else If (MouseX >= X + W - 85) And (MouseX <= X + W - 71) And
+           (MouseY >= ListY + 1) And (MouseY <= ListY + 15) Then Begin
+    If TopIndex > 1 Then Begin
+     Dec(TopIndex);
+     DrawDialog;
+    End;
+   End
+   { Clic sur bouton defilement bas }
+   Else If (MouseX >= X + W - 85) And (MouseX <= X + W - 71) And
+           (MouseY >= ListY + ListH - 15) And (MouseY <= ListY + ListH - 1) Then Begin
+    If TopIndex + LIST_HEIGHT - 1 < FileCount Then Begin
+     Inc(TopIndex);
+     DrawDialog;
+    End;
+   End;
+  End;
+
+  Delay(10);
+ End;
+
+ If Result Then
+  ShowOpenFileDialog := EditText
+ Else
+  ShowOpenFileDialog := '';
+ NeedRedraw := True;
+End;
+
 Procedure ShowAboutDialog;
 Var
  X, Y, W, H: Integer;
@@ -4300,9 +4583,16 @@ End;
   ============================================================ }
 
 Procedure ProcessCommand(Cmd: Integer);
+Var
+ OpenFileName: String;
 Begin
  Case Cmd Of
   CMD_FILE_NEW: NewProject;
+  CMD_FILE_OPEN: Begin
+   OpenFileName := ShowOpenFileDialog;
+   If OpenFileName <> '' Then
+    OpenProject(OpenFileName);
+  End;
   CMD_FILE_SAVE: SaveProject;
   CMD_FILE_IMPORT_MAC: ImportMacResource('');
   CMD_FILE_IMPORT_GEM: ImportGEMResource('');
