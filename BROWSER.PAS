@@ -31,7 +31,7 @@
   22. DONE: Implementer le decodeur et l'affichage des images GIF (y compris anime)
   23. DONE: Implementer le decodeur et l'affichage des images JPEG
   24. DONE: Implementer le decodeur et l'affichage des images PNG
-  25. TODO: Implementer le parseur et le rendu des fichiers SVG (Scalable Vector Graphics)
+  25. DONE: Implementer le parseur et le rendu des fichiers SVG (Scalable Vector Graphics)
 }
 
 Program BROWSER;
@@ -6594,12 +6594,13 @@ Var
  GIFImg: GIFImage;
  JPEGImg: JPEGImage;
  PNGImg: PNGImage;
+ SVGImg: SVGImage;
  CacheIdx: Integer;
  ImgWidth, ImgHeight: Integer;
  DrawWidth, DrawHeight: Integer;
  AltWidth: Integer;
  Code: Integer;
- IsBMP, IsGIF, IsJPEG, IsPNG: Boolean;
+ IsBMP, IsGIF, IsJPEG, IsPNG, IsSVG: Boolean;
 Begin
  If Node = Nil Then Exit;
  If Ctx.InHead Then Exit; { Pas d'affichage dans head }
@@ -6625,13 +6626,15 @@ Begin
  IsGIF := False;
  IsJPEG := False;
  IsPNG := False;
+ IsSVG := False;
  If Length(ImgPath) >= 4 Then Begin
   ImgExt := HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 3, 4));
   If ImgExt = '.bmp' Then IsBMP := True
   Else If ImgExt = '.gif' Then IsGIF := True
   Else If ImgExt = '.jpg' Then IsJPEG := True
   Else If ImgExt = 'jpeg' Then IsJPEG := True
-  Else If ImgExt = '.png' Then IsPNG := True;
+  Else If ImgExt = '.png' Then IsPNG := True
+  Else If ImgExt = '.svg' Then IsSVG := True;
  End;
  { Verifier aussi .jpeg (5 caracteres) }
  If (Not IsJPEG) And (Length(ImgPath) >= 5) Then Begin
@@ -6640,7 +6643,7 @@ Begin
  End;
 
  { Si format non supporte, afficher le texte alternatif }
- If Not IsBMP And Not IsGIF And Not IsJPEG And Not IsPNG Then Begin
+ If Not IsBMP And Not IsGIF And Not IsJPEG And Not IsPNG And Not IsSVG Then Begin
   If Length(Alt) > 0 Then
    RenderText(Ctx, '[' + Alt + ']')
   Else
@@ -6835,6 +6838,51 @@ Begin
    PNGDrawImage(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
   Else
    PNGDrawImageScaled(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End
+
+ { Traitement des images SVG }
+ Else If IsSVG Then Begin
+  CacheIdx := SVGFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   SVGImg := SVGImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   If Not SVGLoadFromFile(ImgPath, SVGImg) Then Begin
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   SVGAddToCache(ImgPath, SVGImg);
+  End;
+
+  ImgWidth := SVGImg.Width;
+  ImgHeight := SVGImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  SVGDrawImageScaled(SVGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
 
   Ctx.X := Ctx.X + DrawWidth;
   If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
@@ -9850,6 +9898,1249 @@ End;
 
 { =====================================================
   FIN DECODEUR IMAGES PNG
+  ===================================================== }
+
+{ =====================================================
+  PARSEUR ET RENDU DE FICHIERS SVG (Scalable Vector Graphics)
+  ===================================================== }
+
+Const
+ { Types d'elements SVG }
+ SVG_ELEM_NONE = 0;
+ SVG_ELEM_SVG = 1;
+ SVG_ELEM_G = 2;
+ SVG_ELEM_RECT = 3;
+ SVG_ELEM_CIRCLE = 4;
+ SVG_ELEM_ELLIPSE = 5;
+ SVG_ELEM_LINE = 6;
+ SVG_ELEM_POLYLINE = 7;
+ SVG_ELEM_POLYGON = 8;
+ SVG_ELEM_PATH = 9;
+ SVG_ELEM_TEXT = 10;
+
+ { Commandes de chemin SVG }
+ SVG_CMD_MOVETO = 'M';
+ SVG_CMD_LINETO = 'L';
+ SVG_CMD_HLINETO = 'H';
+ SVG_CMD_VLINETO = 'V';
+ SVG_CMD_CURVETO = 'C';
+ SVG_CMD_SMOOTHCURVE = 'S';
+ SVG_CMD_QUADRATIC = 'Q';
+ SVG_CMD_SMOOTHQUAD = 'T';
+ SVG_CMD_ARC = 'A';
+ SVG_CMD_CLOSEPATH = 'Z';
+
+ { Taille maximale SVG }
+ SVG_MAX_WIDTH = 800;
+ SVG_MAX_HEIGHT = 600;
+ SVG_MAX_POINTS = 1024;
+ SVG_MAX_ELEMENTS = 256;
+
+Type
+ { Point 2D flottant }
+ SVGPoint = Record
+  X, Y: Real;
+ End;
+
+ { Matrice de transformation 2D }
+ SVGTransform = Record
+  A, B, C, D, E, F: Real;  { a b c d e f - matrice 3x3 }
+ End;
+
+ { Style SVG }
+ SVGStyle = Record
+  Fill: LongInt;        { Couleur de remplissage (-1 = none) }
+  Stroke: LongInt;      { Couleur de contour (-1 = none) }
+  StrokeWidth: Real;    { Largeur du contour }
+  Opacity: Real;        { Opacite 0.0 - 1.0 }
+  FillOpacity: Real;
+  StrokeOpacity: Real;
+ End;
+
+ { Element SVG de base }
+ SVGElementPtr = ^SVGElement;
+ SVGElement = Record
+  ElemType: Integer;
+  Style: SVGStyle;
+  Transform: SVGTransform;
+  { Proprietes specifiques selon le type }
+  X, Y: Real;           { Position }
+  Width, Height: Real;  { Dimensions }
+  RX, RY: Real;         { Rayons (pour rect arrondi, ellipse) }
+  X1, Y1, X2, Y2: Real; { Points (pour line) }
+  Points: Array[0..SVG_MAX_POINTS - 1] Of SVGPoint;
+  PointCount: Integer;
+  PathData: String;     { Donnees du chemin }
+  TextContent: String;  { Contenu texte }
+  Children: Array[0..31] Of SVGElementPtr;
+  ChildCount: Integer;
+  Parent: SVGElementPtr;
+ End;
+
+ { Image SVG complete }
+ SVGImage = Record
+  Width: Integer;
+  Height: Integer;
+  ViewBoxX, ViewBoxY: Real;
+  ViewBoxW, ViewBoxH: Real;
+  HasViewBox: Boolean;
+  Root: SVGElementPtr;
+  Elements: Array[0..SVG_MAX_ELEMENTS - 1] Of SVGElement;
+  ElementCount: Integer;
+  Valid: Boolean;
+ End;
+
+ SVGImagePtr = ^SVGImage;
+
+Var
+ { Cache d'images SVG }
+ SVGImageCache: Array[1..16] Of Record
+  URL: String[255];
+  Image: SVGImage;
+  Used: Boolean;
+ End;
+ SVGImageCacheCount: Integer;
+
+{ Initialiser le cache SVG }
+Procedure SVGInitCache;
+Var
+ I: Integer;
+Begin
+ For I := 1 To 16 Do Begin
+  SVGImageCache[I].URL := '';
+  SVGImageCache[I].Used := False;
+  SVGImageCache[I].Image.Valid := False;
+  SVGImageCache[I].Image.Root := Nil;
+ End;
+ SVGImageCacheCount := 0;
+End;
+
+{ Initialiser une transformation identite }
+Procedure SVGInitTransform(Var T: SVGTransform);
+Begin
+ T.A := 1.0; T.B := 0.0;
+ T.C := 0.0; T.D := 1.0;
+ T.E := 0.0; T.F := 0.0;
+End;
+
+{ Initialiser un style par defaut }
+Procedure SVGInitStyle(Var S: SVGStyle);
+Begin
+ S.Fill := 0;           { Noir }
+ S.Stroke := -1;        { Pas de contour }
+ S.StrokeWidth := 1.0;
+ S.Opacity := 1.0;
+ S.FillOpacity := 1.0;
+ S.StrokeOpacity := 1.0;
+End;
+
+{ Convertir une couleur SVG en couleur VGA }
+Function SVGColorToVGA(Color: LongInt): Byte;
+Var
+ R, G, B: Byte;
+ BestColor, BestDist, Dist: Integer;
+ I: Integer;
+Const
+ VGAPalette: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0),       { 0: Noir }
+  (0, 0, 170),     { 1: Bleu }
+  (0, 170, 0),     { 2: Vert }
+  (0, 170, 170),   { 3: Cyan }
+  (170, 0, 0),     { 4: Rouge }
+  (170, 0, 170),   { 5: Magenta }
+  (170, 85, 0),    { 6: Marron }
+  (170, 170, 170), { 7: Gris clair }
+  (85, 85, 85),    { 8: Gris fonce }
+  (85, 85, 255),   { 9: Bleu clair }
+  (85, 255, 85),   { 10: Vert clair }
+  (85, 255, 255),  { 11: Cyan clair }
+  (255, 85, 85),   { 12: Rouge clair }
+  (255, 85, 255),  { 13: Magenta clair }
+  (255, 255, 85),  { 14: Jaune }
+  (255, 255, 255)  { 15: Blanc }
+ );
+Begin
+ If Color < 0 Then Begin
+  SVGColorToVGA := 255; { Transparent }
+  Exit;
+ End;
+
+ R := (Color Shr 16) And $FF;
+ G := (Color Shr 8) And $FF;
+ B := Color And $FF;
+
+ BestColor := 0;
+ BestDist := 256 * 256 * 3;
+
+ For I := 0 To 15 Do Begin
+  Dist := (Integer(R) - Integer(VGAPalette[I, 0])) *
+          (Integer(R) - Integer(VGAPalette[I, 0])) +
+          (Integer(G) - Integer(VGAPalette[I, 1])) *
+          (Integer(G) - Integer(VGAPalette[I, 1])) +
+          (Integer(B) - Integer(VGAPalette[I, 2])) *
+          (Integer(B) - Integer(VGAPalette[I, 2]));
+  If Dist < BestDist Then Begin
+   BestDist := Dist;
+   BestColor := I;
+  End;
+ End;
+
+ SVGColorToVGA := BestColor;
+End;
+
+{ Parser une couleur SVG (hex, rgb, nommee) }
+Function SVGParseColor(Const S: String): LongInt;
+Var
+ Temp: String;
+ R, G, B: Integer;
+ Code: Integer;
+ I, J: Integer;
+Begin
+ SVGParseColor := 0;  { Noir par defaut }
+
+ If Length(S) = 0 Then Exit;
+
+ Temp := HTMLLowerCase(S);
+
+ { Couleur "none" = transparent }
+ If Temp = 'none' Then Begin
+  SVGParseColor := -1;
+  Exit;
+ End;
+
+ { Format hexadecimal #RRGGBB ou #RGB }
+ If S[1] = '#' Then Begin
+  If Length(S) = 7 Then Begin
+   Val('$' + Copy(S, 2, 2), R, Code);
+   Val('$' + Copy(S, 4, 2), G, Code);
+   Val('$' + Copy(S, 6, 2), B, Code);
+   SVGParseColor := (LongInt(R) Shl 16) Or (LongInt(G) Shl 8) Or LongInt(B);
+  End
+  Else If Length(S) = 4 Then Begin
+   Val('$' + S[2] + S[2], R, Code);
+   Val('$' + S[3] + S[3], G, Code);
+   Val('$' + S[4] + S[4], B, Code);
+   SVGParseColor := (LongInt(R) Shl 16) Or (LongInt(G) Shl 8) Or LongInt(B);
+  End;
+  Exit;
+ End;
+
+ { Format rgb(r,g,b) }
+ If Copy(Temp, 1, 4) = 'rgb(' Then Begin
+  Temp := Copy(S, 5, Length(S) - 5);
+  I := Pos(',', Temp);
+  If I > 0 Then Begin
+   Val(Copy(Temp, 1, I - 1), R, Code);
+   Delete(Temp, 1, I);
+   I := Pos(',', Temp);
+   If I > 0 Then Begin
+    Val(Copy(Temp, 1, I - 1), G, Code);
+    Delete(Temp, 1, I);
+    Val(Temp, B, Code);
+    SVGParseColor := (LongInt(R) Shl 16) Or (LongInt(G) Shl 8) Or LongInt(B);
+   End;
+  End;
+  Exit;
+ End;
+
+ { Couleurs nommees }
+ If Temp = 'black' Then SVGParseColor := $000000
+ Else If Temp = 'white' Then SVGParseColor := $FFFFFF
+ Else If Temp = 'red' Then SVGParseColor := $FF0000
+ Else If Temp = 'green' Then SVGParseColor := $008000
+ Else If Temp = 'blue' Then SVGParseColor := $0000FF
+ Else If Temp = 'yellow' Then SVGParseColor := $FFFF00
+ Else If Temp = 'cyan' Then SVGParseColor := $00FFFF
+ Else If Temp = 'magenta' Then SVGParseColor := $FF00FF
+ Else If Temp = 'orange' Then SVGParseColor := $FFA500
+ Else If Temp = 'purple' Then SVGParseColor := $800080
+ Else If Temp = 'gray' Then SVGParseColor := $808080
+ Else If Temp = 'grey' Then SVGParseColor := $808080
+ Else If Temp = 'silver' Then SVGParseColor := $C0C0C0
+ Else If Temp = 'navy' Then SVGParseColor := $000080
+ Else If Temp = 'teal' Then SVGParseColor := $008080
+ Else If Temp = 'olive' Then SVGParseColor := $808000
+ Else If Temp = 'maroon' Then SVGParseColor := $800000
+ Else If Temp = 'lime' Then SVGParseColor := $00FF00
+ Else If Temp = 'aqua' Then SVGParseColor := $00FFFF
+ Else If Temp = 'fuchsia' Then SVGParseColor := $FF00FF
+ Else If Temp = 'pink' Then SVGParseColor := $FFC0CB
+ Else If Temp = 'brown' Then SVGParseColor := $A52A2A
+ Else If Temp = 'coral' Then SVGParseColor := $FF7F50
+ Else If Temp = 'gold' Then SVGParseColor := $FFD700
+ Else If Temp = 'lightgray' Then SVGParseColor := $D3D3D3
+ Else If Temp = 'darkgray' Then SVGParseColor := $A9A9A9;
+End;
+
+{ Parser un nombre reel }
+Function SVGParseNumber(Const S: String; Var Pos: Integer): Real;
+Var
+ Start: Integer;
+ NumStr: String;
+ Code: Integer;
+ Value: Real;
+Begin
+ SVGParseNumber := 0.0;
+
+ { Sauter les espaces et separateurs }
+ While (Pos <= Length(S)) And (S[Pos] In [' ', ',', #9, #10, #13]) Do
+  Inc(Pos);
+
+ If Pos > Length(S) Then Exit;
+
+ Start := Pos;
+
+ { Signe optionnel }
+ If (Pos <= Length(S)) And (S[Pos] In ['+', '-']) Then Inc(Pos);
+
+ { Partie entiere }
+ While (Pos <= Length(S)) And (S[Pos] In ['0'..'9']) Do Inc(Pos);
+
+ { Partie decimale }
+ If (Pos <= Length(S)) And (S[Pos] = '.') Then Begin
+  Inc(Pos);
+  While (Pos <= Length(S)) And (S[Pos] In ['0'..'9']) Do Inc(Pos);
+ End;
+
+ { Exposant }
+ If (Pos <= Length(S)) And (S[Pos] In ['e', 'E']) Then Begin
+  Inc(Pos);
+  If (Pos <= Length(S)) And (S[Pos] In ['+', '-']) Then Inc(Pos);
+  While (Pos <= Length(S)) And (S[Pos] In ['0'..'9']) Do Inc(Pos);
+ End;
+
+ NumStr := Copy(S, Start, Pos - Start);
+ Val(NumStr, Value, Code);
+ If Code = 0 Then SVGParseNumber := Value;
+End;
+
+{ Sauter les espaces }
+Procedure SVGSkipWhitespace(Const S: String; Var Pos: Integer);
+Begin
+ While (Pos <= Length(S)) And (S[Pos] In [' ', ',', #9, #10, #13]) Do
+  Inc(Pos);
+End;
+
+{ Appliquer une transformation a un point }
+Procedure SVGTransformPoint(Const T: SVGTransform; Var P: SVGPoint);
+Var
+ NewX, NewY: Real;
+Begin
+ NewX := T.A * P.X + T.C * P.Y + T.E;
+ NewY := T.B * P.X + T.D * P.Y + T.F;
+ P.X := NewX;
+ P.Y := NewY;
+End;
+
+{ Multiplier deux transformations }
+Procedure SVGMultiplyTransform(Const T1, T2: SVGTransform; Var Result: SVGTransform);
+Begin
+ Result.A := T1.A * T2.A + T1.C * T2.B;
+ Result.B := T1.B * T2.A + T1.D * T2.B;
+ Result.C := T1.A * T2.C + T1.C * T2.D;
+ Result.D := T1.B * T2.C + T1.D * T2.D;
+ Result.E := T1.A * T2.E + T1.C * T2.F + T1.E;
+ Result.F := T1.B * T2.E + T1.D * T2.F + T1.F;
+End;
+
+{ Dessiner une ligne avec transformation }
+Procedure SVGDrawLine(X1, Y1, X2, Y2: Integer; Color: Byte;
+                       OffsetX, OffsetY: Integer);
+Var
+ DX, DY, Steps, I: Integer;
+ XInc, YInc: Real;
+ X, Y: Real;
+Begin
+ If Color = 255 Then Exit; { Transparent }
+
+ DX := X2 - X1;
+ DY := Y2 - Y1;
+
+ If Abs(DX) > Abs(DY) Then Steps := Abs(DX)
+ Else Steps := Abs(DY);
+
+ If Steps = 0 Then Begin
+  PutPixel(OffsetX + X1, OffsetY + Y1, Color);
+  Exit;
+ End;
+
+ XInc := DX / Steps;
+ YInc := DY / Steps;
+ X := X1;
+ Y := Y1;
+
+ For I := 0 To Steps Do Begin
+  PutPixel(OffsetX + Round(X), OffsetY + Round(Y), Color);
+  X := X + XInc;
+  Y := Y + YInc;
+ End;
+End;
+
+{ Dessiner un rectangle }
+Procedure SVGDrawRect(X, Y, W, H: Integer; FillColor, StrokeColor: Byte;
+                       OffsetX, OffsetY: Integer);
+Var
+ I, J: Integer;
+Begin
+ { Remplissage }
+ If FillColor <> 255 Then Begin
+  For J := Y To Y + H - 1 Do
+   For I := X To X + W - 1 Do
+    PutPixel(OffsetX + I, OffsetY + J, FillColor);
+ End;
+
+ { Contour }
+ If StrokeColor <> 255 Then Begin
+  { Haut et bas }
+  For I := X To X + W - 1 Do Begin
+   PutPixel(OffsetX + I, OffsetY + Y, StrokeColor);
+   PutPixel(OffsetX + I, OffsetY + Y + H - 1, StrokeColor);
+  End;
+  { Gauche et droite }
+  For J := Y To Y + H - 1 Do Begin
+   PutPixel(OffsetX + X, OffsetY + J, StrokeColor);
+   PutPixel(OffsetX + X + W - 1, OffsetY + J, StrokeColor);
+  End;
+ End;
+End;
+
+{ Dessiner un cercle (algorithme de Bresenham) }
+Procedure SVGDrawCircle(CX, CY, R: Integer; FillColor, StrokeColor: Byte;
+                         OffsetX, OffsetY: Integer);
+Var
+ X, Y, D: Integer;
+ I: Integer;
+Begin
+ If R <= 0 Then Exit;
+
+ { Remplissage par lignes horizontales }
+ If FillColor <> 255 Then Begin
+  For Y := -R To R Do Begin
+   X := Round(Sqrt(R * R - Y * Y));
+   For I := CX - X To CX + X Do
+    PutPixel(OffsetX + I, OffsetY + CY + Y, FillColor);
+  End;
+ End;
+
+ { Contour avec algorithme de Bresenham }
+ If StrokeColor <> 255 Then Begin
+  X := 0;
+  Y := R;
+  D := 3 - 2 * R;
+
+  While X <= Y Do Begin
+   PutPixel(OffsetX + CX + X, OffsetY + CY + Y, StrokeColor);
+   PutPixel(OffsetX + CX - X, OffsetY + CY + Y, StrokeColor);
+   PutPixel(OffsetX + CX + X, OffsetY + CY - Y, StrokeColor);
+   PutPixel(OffsetX + CX - X, OffsetY + CY - Y, StrokeColor);
+   PutPixel(OffsetX + CX + Y, OffsetY + CY + X, StrokeColor);
+   PutPixel(OffsetX + CX - Y, OffsetY + CY + X, StrokeColor);
+   PutPixel(OffsetX + CX + Y, OffsetY + CY - X, StrokeColor);
+   PutPixel(OffsetX + CX - Y, OffsetY + CY - X, StrokeColor);
+
+   If D < 0 Then
+    D := D + 4 * X + 6
+   Else Begin
+    D := D + 4 * (X - Y) + 10;
+    Dec(Y);
+   End;
+   Inc(X);
+  End;
+ End;
+End;
+
+{ Dessiner une ellipse }
+Procedure SVGDrawEllipse(CX, CY, RX, RY: Integer; FillColor, StrokeColor: Byte;
+                          OffsetX, OffsetY: Integer);
+Var
+ X, Y: Integer;
+ XLen: Integer;
+Begin
+ If (RX <= 0) Or (RY <= 0) Then Exit;
+
+ { Remplissage par lignes horizontales }
+ If FillColor <> 255 Then Begin
+  For Y := -RY To RY Do Begin
+   XLen := Round(RX * Sqrt(1 - (Y * Y) / (RY * RY)));
+   For X := CX - XLen To CX + XLen Do
+    PutPixel(OffsetX + X, OffsetY + CY + Y, FillColor);
+  End;
+ End;
+
+ { Contour approximatif }
+ If StrokeColor <> 255 Then Begin
+  For Y := -RY To RY Do Begin
+   XLen := Round(RX * Sqrt(1 - (Y * Y) / (RY * RY)));
+   PutPixel(OffsetX + CX - XLen, OffsetY + CY + Y, StrokeColor);
+   PutPixel(OffsetX + CX + XLen, OffsetY + CY + Y, StrokeColor);
+  End;
+ End;
+End;
+
+{ Dessiner un polygone rempli (scanline) }
+Procedure SVGDrawPolygon(Const Points: Array Of SVGPoint; Count: Integer;
+                          FillColor, StrokeColor: Byte;
+                          OffsetX, OffsetY: Integer);
+Var
+ MinY, MaxY, Y: Integer;
+ I, J: Integer;
+ X1, Y1, X2, Y2: Integer;
+ Intersections: Array[0..255] Of Integer;
+ IntCount: Integer;
+ Temp: Integer;
+Begin
+ If Count < 3 Then Exit;
+
+ { Trouver les bornes Y }
+ MinY := Round(Points[0].Y);
+ MaxY := MinY;
+ For I := 1 To Count - 1 Do Begin
+  If Round(Points[I].Y) < MinY Then MinY := Round(Points[I].Y);
+  If Round(Points[I].Y) > MaxY Then MaxY := Round(Points[I].Y);
+ End;
+
+ { Remplissage par scanline }
+ If FillColor <> 255 Then Begin
+  For Y := MinY To MaxY Do Begin
+   IntCount := 0;
+   J := Count - 1;
+   For I := 0 To Count - 1 Do Begin
+    Y1 := Round(Points[J].Y);
+    Y2 := Round(Points[I].Y);
+    If ((Y1 <= Y) And (Y2 > Y)) Or ((Y2 <= Y) And (Y1 > Y)) Then Begin
+     X1 := Round(Points[J].X);
+     X2 := Round(Points[I].X);
+     If IntCount < 256 Then Begin
+      Intersections[IntCount] := X1 + ((Y - Y1) * (X2 - X1)) Div (Y2 - Y1);
+      Inc(IntCount);
+     End;
+    End;
+    J := I;
+   End;
+
+   { Trier les intersections }
+   For I := 0 To IntCount - 2 Do
+    For J := I + 1 To IntCount - 1 Do
+     If Intersections[I] > Intersections[J] Then Begin
+      Temp := Intersections[I];
+      Intersections[I] := Intersections[J];
+      Intersections[J] := Temp;
+     End;
+
+   { Remplir entre les paires d'intersections }
+   I := 0;
+   While I < IntCount - 1 Do Begin
+    For J := Intersections[I] To Intersections[I + 1] Do
+     PutPixel(OffsetX + J, OffsetY + Y, FillColor);
+    Inc(I, 2);
+   End;
+  End;
+ End;
+
+ { Contour }
+ If StrokeColor <> 255 Then Begin
+  For I := 0 To Count - 1 Do Begin
+   J := (I + 1) Mod Count;
+   SVGDrawLine(Round(Points[I].X), Round(Points[I].Y),
+               Round(Points[J].X), Round(Points[J].Y),
+               StrokeColor, OffsetX, OffsetY);
+  End;
+ End;
+End;
+
+{ Parser les donnees d'un chemin SVG }
+Procedure SVGParsePath(Const D: String; Var Points: Array Of SVGPoint;
+                        Var PointCount: Integer);
+Var
+ Pos: Integer;
+ Cmd: Char;
+ IsRelative: Boolean;
+ CurX, CurY: Real;
+ StartX, StartY: Real;
+ X, Y, X1, Y1, X2, Y2: Real;
+ LastCmd: Char;
+Begin
+ PointCount := 0;
+ Pos := 1;
+ CurX := 0; CurY := 0;
+ StartX := 0; StartY := 0;
+ LastCmd := ' ';
+
+ While Pos <= Length(D) Do Begin
+  SVGSkipWhitespace(D, Pos);
+  If Pos > Length(D) Then Break;
+
+  { Lire la commande }
+  If D[Pos] In ['M', 'm', 'L', 'l', 'H', 'h', 'V', 'v', 'C', 'c',
+                'S', 's', 'Q', 'q', 'T', 't', 'A', 'a', 'Z', 'z'] Then Begin
+   Cmd := D[Pos];
+   Inc(Pos);
+  End
+  Else
+   Cmd := LastCmd;
+
+  IsRelative := Cmd In ['m', 'l', 'h', 'v', 'c', 's', 'q', 't', 'a', 'z'];
+  Cmd := UpCase(Cmd);
+
+  Case Cmd Of
+   'M': Begin { MoveTo }
+    X := SVGParseNumber(D, Pos);
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then Begin
+     CurX := CurX + X;
+     CurY := CurY + Y;
+    End
+    Else Begin
+     CurX := X;
+     CurY := Y;
+    End;
+    StartX := CurX;
+    StartY := CurY;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := 'L'; { Suivants implicites = LineTo }
+   End;
+
+   'L': Begin { LineTo }
+    X := SVGParseNumber(D, Pos);
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then Begin
+     CurX := CurX + X;
+     CurY := CurY + Y;
+    End
+    Else Begin
+     CurX := X;
+     CurY := Y;
+    End;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'H': Begin { Horizontal LineTo }
+    X := SVGParseNumber(D, Pos);
+    If IsRelative Then CurX := CurX + X
+    Else CurX := X;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'V': Begin { Vertical LineTo }
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then CurY := CurY + Y
+    Else CurY := Y;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'C': Begin { Cubic Bezier - approximer par segments }
+    X1 := SVGParseNumber(D, Pos);
+    Y1 := SVGParseNumber(D, Pos);
+    X2 := SVGParseNumber(D, Pos);
+    Y2 := SVGParseNumber(D, Pos);
+    X := SVGParseNumber(D, Pos);
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then Begin
+     X1 := CurX + X1; Y1 := CurY + Y1;
+     X2 := CurX + X2; Y2 := CurY + Y2;
+     X := CurX + X; Y := CurY + Y;
+    End;
+    { Approximation lineaire du point final }
+    CurX := X;
+    CurY := Y;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'S': Begin { Smooth Cubic Bezier }
+    X2 := SVGParseNumber(D, Pos);
+    Y2 := SVGParseNumber(D, Pos);
+    X := SVGParseNumber(D, Pos);
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then Begin
+     X2 := CurX + X2; Y2 := CurY + Y2;
+     X := CurX + X; Y := CurY + Y;
+    End;
+    CurX := X;
+    CurY := Y;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'Q': Begin { Quadratic Bezier }
+    X1 := SVGParseNumber(D, Pos);
+    Y1 := SVGParseNumber(D, Pos);
+    X := SVGParseNumber(D, Pos);
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then Begin
+     X1 := CurX + X1; Y1 := CurY + Y1;
+     X := CurX + X; Y := CurY + Y;
+    End;
+    CurX := X;
+    CurY := Y;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'T': Begin { Smooth Quadratic Bezier }
+    X := SVGParseNumber(D, Pos);
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then Begin
+     X := CurX + X; Y := CurY + Y;
+    End;
+    CurX := X;
+    CurY := Y;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'A': Begin { Arc - approximer par ligne directe }
+    { Sauter rx, ry, x-axis-rotation, large-arc-flag, sweep-flag }
+    X1 := SVGParseNumber(D, Pos); { rx }
+    Y1 := SVGParseNumber(D, Pos); { ry }
+    X2 := SVGParseNumber(D, Pos); { x-axis-rotation }
+    X := SVGParseNumber(D, Pos);  { large-arc-flag }
+    Y := SVGParseNumber(D, Pos);  { sweep-flag }
+    X := SVGParseNumber(D, Pos);  { x }
+    Y := SVGParseNumber(D, Pos);  { y }
+    If IsRelative Then Begin
+     X := CurX + X; Y := CurY + Y;
+    End;
+    CurX := X;
+    CurY := Y;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'Z': Begin { ClosePath }
+    CurX := StartX;
+    CurY := StartY;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   Else Inc(Pos); { Caractere inconnu }
+  End;
+ End;
+End;
+
+{ Extraire un attribut d'un element XML }
+Function SVGGetAttribute(Const Element, AttrName: String): String;
+Var
+ Pos, StartPos, EndPos: Integer;
+ AttrLower: String;
+ C: Char;
+Begin
+ SVGGetAttribute := '';
+ AttrLower := HTMLLowerCase(AttrName) + '=';
+ Pos := 1;
+
+ While Pos <= Length(Element) Do Begin
+  If HTMLLowerCase(Copy(Element, Pos, Length(AttrLower))) = AttrLower Then Begin
+   Inc(Pos, Length(AttrLower));
+   If Pos > Length(Element) Then Exit;
+   C := Element[Pos];
+   If C In ['"', ''''] Then Begin
+    Inc(Pos);
+    StartPos := Pos;
+    While (Pos <= Length(Element)) And (Element[Pos] <> C) Do Inc(Pos);
+    SVGGetAttribute := Copy(Element, StartPos, Pos - StartPos);
+    Exit;
+   End;
+  End
+  Else
+   Inc(Pos);
+ End;
+End;
+
+{ Charger une image SVG depuis un fichier }
+Function SVGLoadFromFile(Const FileName: String; Var Img: SVGImage): Boolean;
+Var
+ F: Text;
+ Line, Content, Element, TagName: String;
+ Pos, TagStart, TagEnd: Integer;
+ InTag: Boolean;
+ CurElem: SVGElementPtr;
+ Temp: String;
+ Code: Integer;
+ I: Integer;
+Begin
+ SVGLoadFromFile := False;
+ Img.Valid := False;
+ Img.ElementCount := 0;
+ Img.Root := Nil;
+ Img.Width := 100;
+ Img.Height := 100;
+ Img.HasViewBox := False;
+
+ { Ouvrir le fichier }
+ {$I-}
+ Assign(F, FileName);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+
+ { Lire tout le contenu }
+ Content := '';
+ While Not EOF(F) Do Begin
+  ReadLn(F, Line);
+  Content := Content + Line + ' ';
+ End;
+ Close(F);
+
+ { Parser les elements SVG }
+ Pos := 1;
+ While Pos <= Length(Content) Do Begin
+  { Chercher le debut d'un tag }
+  TagStart := Pos;
+  While (TagStart <= Length(Content)) And (Content[TagStart] <> '<') Do
+   Inc(TagStart);
+  If TagStart > Length(Content) Then Break;
+
+  { Chercher la fin du tag }
+  TagEnd := TagStart + 1;
+  While (TagEnd <= Length(Content)) And (Content[TagEnd] <> '>') Do
+   Inc(TagEnd);
+  If TagEnd > Length(Content) Then Break;
+
+  Element := Copy(Content, TagStart + 1, TagEnd - TagStart - 1);
+  Pos := TagEnd + 1;
+
+  { Ignorer les commentaires et declarations }
+  If (Length(Element) > 0) And ((Element[1] = '!') Or (Element[1] = '?')) Then
+   Continue;
+
+  { Ignorer les tags de fermeture }
+  If (Length(Element) > 0) And (Element[1] = '/') Then Continue;
+
+  { Extraire le nom du tag }
+  TagName := '';
+  I := 1;
+  While (I <= Length(Element)) And Not (Element[I] In [' ', '/', '>']) Do Begin
+   TagName := TagName + Element[I];
+   Inc(I);
+  End;
+  TagName := HTMLLowerCase(TagName);
+
+  { Traiter les elements }
+  If TagName = 'svg' Then Begin
+   { Element racine SVG }
+   Temp := SVGGetAttribute(Element, 'width');
+   If Length(Temp) > 0 Then Begin
+    Val(Temp, Img.Width, Code);
+    If Code <> 0 Then Img.Width := 100;
+   End;
+   Temp := SVGGetAttribute(Element, 'height');
+   If Length(Temp) > 0 Then Begin
+    Val(Temp, Img.Height, Code);
+    If Code <> 0 Then Img.Height := 100;
+   End;
+   Temp := SVGGetAttribute(Element, 'viewBox');
+   If Length(Temp) > 0 Then Begin
+    Img.HasViewBox := True;
+    I := 1;
+    Img.ViewBoxX := SVGParseNumber(Temp, I);
+    Img.ViewBoxY := SVGParseNumber(Temp, I);
+    Img.ViewBoxW := SVGParseNumber(Temp, I);
+    Img.ViewBoxH := SVGParseNumber(Temp, I);
+   End;
+  End
+
+  Else If (TagName = 'rect') And (Img.ElementCount < SVG_MAX_ELEMENTS) Then Begin
+   CurElem := @Img.Elements[Img.ElementCount];
+   CurElem^.ElemType := SVG_ELEM_RECT;
+   SVGInitStyle(CurElem^.Style);
+   SVGInitTransform(CurElem^.Transform);
+
+   Temp := SVGGetAttribute(Element, 'x');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.X := SVGParseNumber(Temp, I); End
+   Else CurElem^.X := 0;
+
+   Temp := SVGGetAttribute(Element, 'y');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Y := SVGParseNumber(Temp, I); End
+   Else CurElem^.Y := 0;
+
+   Temp := SVGGetAttribute(Element, 'width');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Width := SVGParseNumber(Temp, I); End
+   Else CurElem^.Width := 0;
+
+   Temp := SVGGetAttribute(Element, 'height');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Height := SVGParseNumber(Temp, I); End
+   Else CurElem^.Height := 0;
+
+   Temp := SVGGetAttribute(Element, 'rx');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.RX := SVGParseNumber(Temp, I); End
+   Else CurElem^.RX := 0;
+
+   Temp := SVGGetAttribute(Element, 'ry');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.RY := SVGParseNumber(Temp, I); End
+   Else CurElem^.RY := 0;
+
+   Temp := SVGGetAttribute(Element, 'fill');
+   If Length(Temp) > 0 Then CurElem^.Style.Fill := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke');
+   If Length(Temp) > 0 Then CurElem^.Style.Stroke := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke-width');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Style.StrokeWidth := SVGParseNumber(Temp, I); End;
+
+   Inc(Img.ElementCount);
+  End
+
+  Else If (TagName = 'circle') And (Img.ElementCount < SVG_MAX_ELEMENTS) Then Begin
+   CurElem := @Img.Elements[Img.ElementCount];
+   CurElem^.ElemType := SVG_ELEM_CIRCLE;
+   SVGInitStyle(CurElem^.Style);
+   SVGInitTransform(CurElem^.Transform);
+
+   Temp := SVGGetAttribute(Element, 'cx');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.X := SVGParseNumber(Temp, I); End
+   Else CurElem^.X := 0;
+
+   Temp := SVGGetAttribute(Element, 'cy');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Y := SVGParseNumber(Temp, I); End
+   Else CurElem^.Y := 0;
+
+   Temp := SVGGetAttribute(Element, 'r');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.RX := SVGParseNumber(Temp, I); End
+   Else CurElem^.RX := 0;
+   CurElem^.RY := CurElem^.RX;
+
+   Temp := SVGGetAttribute(Element, 'fill');
+   If Length(Temp) > 0 Then CurElem^.Style.Fill := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke');
+   If Length(Temp) > 0 Then CurElem^.Style.Stroke := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke-width');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Style.StrokeWidth := SVGParseNumber(Temp, I); End;
+
+   Inc(Img.ElementCount);
+  End
+
+  Else If (TagName = 'ellipse') And (Img.ElementCount < SVG_MAX_ELEMENTS) Then Begin
+   CurElem := @Img.Elements[Img.ElementCount];
+   CurElem^.ElemType := SVG_ELEM_ELLIPSE;
+   SVGInitStyle(CurElem^.Style);
+   SVGInitTransform(CurElem^.Transform);
+
+   Temp := SVGGetAttribute(Element, 'cx');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.X := SVGParseNumber(Temp, I); End
+   Else CurElem^.X := 0;
+
+   Temp := SVGGetAttribute(Element, 'cy');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Y := SVGParseNumber(Temp, I); End
+   Else CurElem^.Y := 0;
+
+   Temp := SVGGetAttribute(Element, 'rx');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.RX := SVGParseNumber(Temp, I); End
+   Else CurElem^.RX := 0;
+
+   Temp := SVGGetAttribute(Element, 'ry');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.RY := SVGParseNumber(Temp, I); End
+   Else CurElem^.RY := 0;
+
+   Temp := SVGGetAttribute(Element, 'fill');
+   If Length(Temp) > 0 Then CurElem^.Style.Fill := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke');
+   If Length(Temp) > 0 Then CurElem^.Style.Stroke := SVGParseColor(Temp);
+
+   Inc(Img.ElementCount);
+  End
+
+  Else If (TagName = 'line') And (Img.ElementCount < SVG_MAX_ELEMENTS) Then Begin
+   CurElem := @Img.Elements[Img.ElementCount];
+   CurElem^.ElemType := SVG_ELEM_LINE;
+   SVGInitStyle(CurElem^.Style);
+   SVGInitTransform(CurElem^.Transform);
+
+   Temp := SVGGetAttribute(Element, 'x1');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.X1 := SVGParseNumber(Temp, I); End
+   Else CurElem^.X1 := 0;
+
+   Temp := SVGGetAttribute(Element, 'y1');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Y1 := SVGParseNumber(Temp, I); End
+   Else CurElem^.Y1 := 0;
+
+   Temp := SVGGetAttribute(Element, 'x2');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.X2 := SVGParseNumber(Temp, I); End
+   Else CurElem^.X2 := 0;
+
+   Temp := SVGGetAttribute(Element, 'y2');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Y2 := SVGParseNumber(Temp, I); End
+   Else CurElem^.Y2 := 0;
+
+   Temp := SVGGetAttribute(Element, 'stroke');
+   If Length(Temp) > 0 Then CurElem^.Style.Stroke := SVGParseColor(Temp)
+   Else CurElem^.Style.Stroke := 0; { Noir par defaut }
+
+   Temp := SVGGetAttribute(Element, 'stroke-width');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Style.StrokeWidth := SVGParseNumber(Temp, I); End;
+
+   Inc(Img.ElementCount);
+  End
+
+  Else If ((TagName = 'polygon') Or (TagName = 'polyline')) And
+          (Img.ElementCount < SVG_MAX_ELEMENTS) Then Begin
+   CurElem := @Img.Elements[Img.ElementCount];
+   If TagName = 'polygon' Then CurElem^.ElemType := SVG_ELEM_POLYGON
+   Else CurElem^.ElemType := SVG_ELEM_POLYLINE;
+   SVGInitStyle(CurElem^.Style);
+   SVGInitTransform(CurElem^.Transform);
+
+   Temp := SVGGetAttribute(Element, 'points');
+   If Length(Temp) > 0 Then Begin
+    CurElem^.PointCount := 0;
+    I := 1;
+    While I <= Length(Temp) Do Begin
+     SVGSkipWhitespace(Temp, I);
+     If I > Length(Temp) Then Break;
+     If CurElem^.PointCount < SVG_MAX_POINTS Then Begin
+      CurElem^.Points[CurElem^.PointCount].X := SVGParseNumber(Temp, I);
+      CurElem^.Points[CurElem^.PointCount].Y := SVGParseNumber(Temp, I);
+      Inc(CurElem^.PointCount);
+     End
+     Else Break;
+    End;
+   End;
+
+   Temp := SVGGetAttribute(Element, 'fill');
+   If Length(Temp) > 0 Then CurElem^.Style.Fill := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke');
+   If Length(Temp) > 0 Then CurElem^.Style.Stroke := SVGParseColor(Temp);
+
+   Inc(Img.ElementCount);
+  End
+
+  Else If (TagName = 'path') And (Img.ElementCount < SVG_MAX_ELEMENTS) Then Begin
+   CurElem := @Img.Elements[Img.ElementCount];
+   CurElem^.ElemType := SVG_ELEM_PATH;
+   SVGInitStyle(CurElem^.Style);
+   SVGInitTransform(CurElem^.Transform);
+
+   Temp := SVGGetAttribute(Element, 'd');
+   If Length(Temp) > 0 Then
+    SVGParsePath(Temp, CurElem^.Points, CurElem^.PointCount);
+
+   Temp := SVGGetAttribute(Element, 'fill');
+   If Length(Temp) > 0 Then CurElem^.Style.Fill := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke');
+   If Length(Temp) > 0 Then CurElem^.Style.Stroke := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke-width');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Style.StrokeWidth := SVGParseNumber(Temp, I); End;
+
+   Inc(Img.ElementCount);
+  End;
+ End;
+
+ Img.Valid := True;
+ SVGLoadFromFile := True;
+End;
+
+{ Dessiner une image SVG }
+Procedure SVGDrawImage(Const Img: SVGImage; DestX, DestY: Integer;
+                        MaxWidth, MaxHeight: Integer);
+Var
+ I: Integer;
+ Elem: SVGElementPtr;
+ FillColor, StrokeColor: Byte;
+ ScaleX, ScaleY: Real;
+ X, Y, W, H, RX, RY: Integer;
+ X1, Y1, X2, Y2: Integer;
+Begin
+ If Not Img.Valid Then Exit;
+
+ { Calculer l'echelle }
+ ScaleX := 1.0;
+ ScaleY := 1.0;
+ If Img.HasViewBox And (Img.ViewBoxW > 0) And (Img.ViewBoxH > 0) Then Begin
+  ScaleX := MaxWidth / Img.ViewBoxW;
+  ScaleY := MaxHeight / Img.ViewBoxH;
+ End
+ Else If (Img.Width > 0) And (Img.Height > 0) Then Begin
+  ScaleX := MaxWidth / Img.Width;
+  ScaleY := MaxHeight / Img.Height;
+ End;
+
+ { Dessiner chaque element }
+ For I := 0 To Img.ElementCount - 1 Do Begin
+  Elem := @Img.Elements[I];
+  FillColor := SVGColorToVGA(Elem^.Style.Fill);
+  StrokeColor := SVGColorToVGA(Elem^.Style.Stroke);
+
+  Case Elem^.ElemType Of
+   SVG_ELEM_RECT: Begin
+    X := Round(Elem^.X * ScaleX);
+    Y := Round(Elem^.Y * ScaleY);
+    W := Round(Elem^.Width * ScaleX);
+    H := Round(Elem^.Height * ScaleY);
+    SVGDrawRect(X, Y, W, H, FillColor, StrokeColor, DestX, DestY);
+   End;
+
+   SVG_ELEM_CIRCLE: Begin
+    X := Round(Elem^.X * ScaleX);
+    Y := Round(Elem^.Y * ScaleY);
+    RX := Round(Elem^.RX * ScaleX);
+    SVGDrawCircle(X, Y, RX, FillColor, StrokeColor, DestX, DestY);
+   End;
+
+   SVG_ELEM_ELLIPSE: Begin
+    X := Round(Elem^.X * ScaleX);
+    Y := Round(Elem^.Y * ScaleY);
+    RX := Round(Elem^.RX * ScaleX);
+    RY := Round(Elem^.RY * ScaleY);
+    SVGDrawEllipse(X, Y, RX, RY, FillColor, StrokeColor, DestX, DestY);
+   End;
+
+   SVG_ELEM_LINE: Begin
+    X1 := Round(Elem^.X1 * ScaleX);
+    Y1 := Round(Elem^.Y1 * ScaleY);
+    X2 := Round(Elem^.X2 * ScaleX);
+    Y2 := Round(Elem^.Y2 * ScaleY);
+    SVGDrawLine(X1, Y1, X2, Y2, StrokeColor, DestX, DestY);
+   End;
+
+   SVG_ELEM_POLYGON, SVG_ELEM_PATH: Begin
+    If Elem^.PointCount > 2 Then Begin
+     { Appliquer l'echelle aux points }
+     For X := 0 To Elem^.PointCount - 1 Do Begin
+      Elem^.Points[X].X := Elem^.Points[X].X * ScaleX;
+      Elem^.Points[X].Y := Elem^.Points[X].Y * ScaleY;
+     End;
+     SVGDrawPolygon(Elem^.Points, Elem^.PointCount,
+                    FillColor, StrokeColor, DestX, DestY);
+    End;
+   End;
+
+   SVG_ELEM_POLYLINE: Begin
+    If Elem^.PointCount > 1 Then Begin
+     For X := 0 To Elem^.PointCount - 2 Do Begin
+      X1 := Round(Elem^.Points[X].X * ScaleX);
+      Y1 := Round(Elem^.Points[X].Y * ScaleY);
+      X2 := Round(Elem^.Points[X + 1].X * ScaleX);
+      Y2 := Round(Elem^.Points[X + 1].Y * ScaleY);
+      SVGDrawLine(X1, Y1, X2, Y2, StrokeColor, DestX, DestY);
+     End;
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ Dessiner une image SVG avec mise a l'echelle }
+Procedure SVGDrawImageScaled(Const Img: SVGImage; DestX, DestY: Integer;
+                              DestWidth, DestHeight: Integer);
+Begin
+ SVGDrawImage(Img, DestX, DestY, DestWidth, DestHeight);
+End;
+
+{ Chercher une image SVG dans le cache }
+Function SVGFindInCache(Const URL: String): Integer;
+Var
+ I: Integer;
+Begin
+ SVGFindInCache := 0;
+ For I := 1 To 16 Do Begin
+  If SVGImageCache[I].Used And (SVGImageCache[I].URL = URL) Then Begin
+   SVGFindInCache := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Ajouter une image SVG au cache }
+Function SVGAddToCache(Const URL: String; Const Img: SVGImage): Integer;
+Var
+ I: Integer;
+ Slot: Integer;
+Begin
+ SVGAddToCache := 0;
+
+ Slot := 0;
+ For I := 1 To 16 Do Begin
+  If Not SVGImageCache[I].Used Then Begin
+   Slot := I;
+   Break;
+  End;
+ End;
+
+ If Slot = 0 Then Slot := 1; { Remplacer le premier }
+
+ SVGImageCache[Slot].URL := URL;
+ SVGImageCache[Slot].Image := Img;
+ SVGImageCache[Slot].Used := True;
+ SVGAddToCache := Slot;
+End;
+
+{ Construire le chemin complet d'une image SVG }
+Function SVGBuildImagePath(Const Src: String): String;
+Var
+ BasePath: String;
+ I: Integer;
+Begin
+ If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
+     ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
+  SVGBuildImagePath := Src;
+  Exit;
+ End;
+
+ BasePath := CurrentURL;
+
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Break;
+  End;
+ End;
+
+ SVGBuildImagePath := BasePath + Src;
+End;
+
+{ =====================================================
+  FIN PARSEUR ET RENDU SVG
   ===================================================== }
 
 { Variable globale pour activer/desactiver l'application CSS automatique }
