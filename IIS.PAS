@@ -61,7 +61,7 @@
 Program IIS;
 
 Uses {$IFDEF FPC}
-      Crt,PtcGraph,PtcCrt,PtcMouse,Mouse
+      Crt,PtcGraph,PtcCrt,PtcMouse
      {$ELSE}
       Crt,Graph,Dos
      {$ENDIF};
@@ -481,20 +481,16 @@ Var
   { PtcMouse : masquage non necessaire en mode graphique }
  End;
 
- { GetMouseState via PtcMouse : on interroge l'etat courant de la souris.
-   PtcMouse implemente le pilote Mouse FPC standard. La structure TMouseState
-   retournee par Mouse.GetMouseState contient les champs X, Y et Buttons. }
+ { GetMouseState via PtcMouse : appel direct PtcMouse.GetMouseState }
  Procedure GetMouseState(Var X, Y, Button: LongInt);
  Var
-  MS : TMouseState;
+  MB : LongInt;
  Begin
-  { Appel qualifie a l'unite mouse du FPC (via PtcMouse) }
-  mouse.GetMouseState(MS);
-  X      := MS.X;
-  Y      := MS.Y;
+  MB := 0;
+  PtcMouse.GetMouseState(X, Y, MB);
   Button := 0;
-  If MS.Buttons And 1 <> 0 Then Button := Button Or MOUSE_LEFT;
-  If MS.Buttons And 2 <> 0 Then Button := Button Or MOUSE_RIGHT;
+  If MB And 1 <> 0 Then Button := Button Or MOUSE_LEFT;
+  If MB And 2 <> 0 Then Button := Button Or MOUSE_RIGHT;
  End;
 
 {$ENDIF}
