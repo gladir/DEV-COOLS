@@ -7,7 +7,7 @@
 
   TODO: Liste des 25 points a implementer pour le navigateur Web graphique
 
-  1.  TODO: Implementer la barre d'URL avec champ de saisie de texte editable
+  1.  DONE: Implementer la barre d'URL avec champ de saisie de texte editable
   2.  TODO: Creer le bouton "Precedent" pour naviguer vers la page precedente dans l'historique
   3.  TODO: Creer le bouton "Suivant" pour naviguer vers la page suivante dans l'historique
   4.  TODO: Creer le bouton "Actualiser" pour recharger la page courante
@@ -39,8 +39,148 @@ Program BROWSER;
 Uses {$IFDEF FPC}
       Crt,PtcGraph,PtcCrt,PtcMouse
      {$ELSE}
-      Crt,Graph
+      Crt,Graph,Dos
      {$ENDIF};
+
+Const
+ { Constantes pour la barre d'URL }
+ URL_BAR_X = 5;
+ URL_BAR_Y = 5;
+ URL_BAR_WIDTH = 500;
+ URL_BAR_HEIGHT = 20;
+ URL_MAX_LENGTH = 255;
+
+ { Couleurs de l'interface }
+ COLOR_URL_BAR_BG = 15;       { Blanc }
+ COLOR_URL_BAR_BORDER = 0;    { Noir }
+ COLOR_URL_BAR_TEXT = 0;      { Noir }
+ COLOR_URL_BAR_CURSOR = 0;    { Noir }
+
+Var
+ { Variables globales pour la barre d'URL }
+ CurrentURL: String;
+ URLCursorPos: Integer;
+ URLBarFocused: Boolean;
+
+{ Procedure pour dessiner la barre d'URL }
+Procedure DrawURLBar;
+Var
+ TextX, TextY: Integer;
+ DisplayURL: String;
+Begin
+ { Dessiner le fond de la barre d'URL }
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(URL_BAR_X, URL_BAR_Y, URL_BAR_X + URL_BAR_WIDTH, URL_BAR_Y + URL_BAR_HEIGHT);
+
+ { Dessiner la bordure de la barre d'URL }
+ SetColor(COLOR_URL_BAR_BORDER);
+ Rectangle(URL_BAR_X, URL_BAR_Y, URL_BAR_X + URL_BAR_WIDTH, URL_BAR_Y + URL_BAR_HEIGHT);
+
+ { Afficher l'URL courante }
+ SetColor(COLOR_URL_BAR_TEXT);
+ TextX := URL_BAR_X + 5;
+ TextY := URL_BAR_Y + 5;
+
+ { Tronquer l'URL si elle est trop longue pour l'affichage }
+ DisplayURL := CurrentURL;
+ If Length(DisplayURL) > 60 Then
+  DisplayURL := Copy(DisplayURL, 1, 60) + '...';
+
+ OutTextXY(TextX, TextY, DisplayURL);
+
+ { Dessiner le curseur si la barre a le focus }
+ If URLBarFocused Then Begin
+  SetColor(COLOR_URL_BAR_CURSOR);
+  Line(TextX + (URLCursorPos * 8), URL_BAR_Y + 3,
+       TextX + (URLCursorPos * 8), URL_BAR_Y + URL_BAR_HEIGHT - 3);
+ End;
+End;
+
+{ Procedure pour verifier si un clic est dans la barre d'URL }
+Function IsClickInURLBar(X, Y: Integer): Boolean;
+Begin
+ IsClickInURLBar := (X >= URL_BAR_X) And (X <= URL_BAR_X + URL_BAR_WIDTH) And
+                    (Y >= URL_BAR_Y) And (Y <= URL_BAR_Y + URL_BAR_HEIGHT);
+End;
+
+{ Procedure pour gerer la saisie de texte dans la barre d'URL }
+Procedure HandleURLInput(Key: Char);
+Begin
+ If Not URLBarFocused Then Exit;
+
+ Case Ord(Key) Of
+  8: Begin { Backspace }
+   If (URLCursorPos > 0) And (Length(CurrentURL) > 0) Then Begin
+    Delete(CurrentURL, URLCursorPos, 1);
+    Dec(URLCursorPos);
+   End;
+  End;
+  13: Begin { Enter - Valider l'URL }
+   URLBarFocused := False;
+   { Ici on pourrait appeler une procedure de navigation }
+  End;
+  27: Begin { Escape - Annuler la saisie }
+   URLBarFocused := False;
+  End;
+  Else Begin { Caractere normal }
+   If (Key >= #32) And (Key <= #126) Then Begin
+    If Length(CurrentURL) < URL_MAX_LENGTH Then Begin
+     Inc(URLCursorPos);
+     Insert(Key, CurrentURL, URLCursorPos);
+    End;
+   End;
+  End;
+ End;
+ DrawURLBar;
+End;
+
+{ Procedure pour gerer les touches speciales (fleches) dans la barre d'URL }
+Procedure HandleURLSpecialKey(ScanCode: Byte);
+Begin
+ If Not URLBarFocused Then Exit;
+
+ Case ScanCode Of
+  75: Begin { Fleche gauche }
+   If URLCursorPos > 0 Then Dec(URLCursorPos);
+  End;
+  77: Begin { Fleche droite }
+   If URLCursorPos < Length(CurrentURL) Then Inc(URLCursorPos);
+  End;
+  71: Begin { Home }
+   URLCursorPos := 0;
+  End;
+  79: Begin { End }
+   URLCursorPos := Length(CurrentURL);
+  End;
+  83: Begin { Delete }
+   If URLCursorPos < Length(CurrentURL) Then
+    Delete(CurrentURL, URLCursorPos + 1, 1);
+  End;
+ End;
+ DrawURLBar;
+End;
+
+{ Procedure pour initialiser la barre d'URL }
+Procedure InitURLBar;
+Begin
+ CurrentURL := 'https://';
+ URLCursorPos := Length(CurrentURL);
+ URLBarFocused := False;
+End;
+
+{ Procedure pour definir une nouvelle URL }
+Procedure SetURL(NewURL: String);
+Begin
+ CurrentURL := NewURL;
+ URLCursorPos := Length(CurrentURL);
+ DrawURLBar;
+End;
+
+{ Fonction pour obtenir l'URL courante }
+Function GetURL: String;
+Begin
+ GetURL := CurrentURL;
+End;
 
 Procedure InitializeGraphics;
 Var
@@ -120,6 +260,26 @@ End;
  End;
 {$ENDIF}
 
+Var
+ Key: Char;
+
 BEGIN
  InitializeGraphics;
+ InitURLBar;
+ DrawURLBar;
+ { Boucle principale temporaire pour tester la barre d'URL }
+ URLBarFocused := True;
+ Repeat
+  If KeyPressed Then Begin
+   Key := ReadKey;
+   If Key = #0 Then Begin
+    { Touche speciale }
+    Key := ReadKey;
+    HandleURLSpecialKey(Ord(Key));
+   End
+    Else
+   HandleURLInput(Key);
+  End;
+ Until Key = #27;
+ CloseGraph;
 END.
