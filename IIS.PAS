@@ -61,7 +61,7 @@
 Program IIS;
 
 Uses {$IFDEF FPC}
-      Crt,PtcGraph,PtcCrt,PtcMouse
+      Crt,PtcGraph,PtcCrt,PtcMouse,Dos
      {$ELSE}
       Crt,Graph,Dos
      {$ENDIF};
@@ -339,6 +339,12 @@ Var
  OpenMenuIdx      : Integer;
  HoverMenuIdx     : Integer;
  HoverMenuItemIdx : Integer;
+ MenuBgBuf        : Pointer;    { buffer fond sauvegarde sous menu deroulant }
+ MenuBgX1         : Integer;    { rectangle sauvegarde }
+ MenuBgY1         : Integer;
+ MenuBgX2         : Integer;
+ MenuBgY2         : Integer;
+ MenuBgSaved      : Boolean;    { True si fond sauvegarde }
 
  { ================================================================
    Arborescence - TODO point 8
@@ -480,19 +486,6 @@ Var
  Begin
   { PtcMouse : masquage non necessaire en mode graphique }
  End;
-
- { GetMouseState via PtcMouse : appel direct PtcMouse.GetMouseState }
- Procedure GetMouseState(Var X, Y, Button: LongInt);
- Var
-  MB : LongInt;
- Begin
-  MB := 0;
-  PtcMouse.GetMouseState(X, Y, MB);
-  Button := 0;
-  If MB And 1 <> 0 Then Button := Button Or MOUSE_LEFT;
-  If MB And 2 <> 0 Then Button := Button Or MOUSE_RIGHT;
- End;
-
 {$ENDIF}
 
 { Procedure unifiee de poll souris - TODO point 1 }
@@ -928,10 +921,54 @@ Begin
  End;
 End;
 
+{ --- Calcule le rectangle occupe par le menu deroulant --- }
+Procedure GetMenuDropRect(MenuIdx: Integer; Var X1,Y1,X2,Y2: Integer);
+Var
+ I, H, W : Integer;
+Begin
+ X1 := MenuDropX(MenuIdx);
+ Y1 := MENUBAR_H;
+ W  := MenuDropW(MenuIdx);
+ H  := MENUBAR_H;
+ For I := 1 To MenuItemCount(MenuIdx) Do Begin
+  If IsSeparator(MenuIdx, I) Then Inc(H, 5)
+  Else Inc(H, MENU_ITEM_H);
+ End;
+ X2 := X1 + W;
+ Y2 := MENUBAR_H + H;
+End;
+
+{ --- Sauvegarder le fond avant d'afficher un menu deroulant --- }
+Procedure SaveMenuBackground(Idx: Integer);
+Var
+ BufSize : LongInt;
+Begin
+ GetMenuDropRect(Idx, MenuBgX1, MenuBgY1, MenuBgX2, MenuBgY2);
+ BufSize := ImageSize(MenuBgX1, MenuBgY1, MenuBgX2, MenuBgY2);
+ GetMem(MenuBgBuf, BufSize);
+ GetImage(MenuBgX1, MenuBgY1, MenuBgX2, MenuBgY2, MenuBgBuf^);
+ MenuBgSaved := True;
+End;
+
+{ --- Restaurer le fond (efface le menu deroulant de l'ecran) --- }
+Procedure RestoreMenuBackground;
+Var
+ BufSize : LongInt;
+Begin
+ If Not MenuBgSaved Then Exit;
+ PutImage(MenuBgX1, MenuBgY1, MenuBgBuf^, NormalPut);
+ BufSize := ImageSize(MenuBgX1, MenuBgY1, MenuBgX2, MenuBgY2);
+ FreeMem(MenuBgBuf, BufSize);
+ MenuBgBuf   := Nil;
+ MenuBgSaved := False;
+End;
+
 Procedure CloseMenu;
 Begin
+ RestoreMenuBackground;
  OpenMenuIdx      := MENU_NONE;
  HoverMenuItemIdx := 0;
+ DrawMenuBar;
 End;
 
 { Retourne l'index de l'item de menu sous (MX, MY), 0 si aucun }
@@ -1656,7 +1693,7 @@ Begin
  {$IFDEF UNIX}
   fpSystem(CmdLine);
  {$ELSE}
-  ExecuteProcess(ExePath, '');
+  Exec(ExePath, '');
  {$ENDIF}
  {$ELSE}
  { Turbo Pascal : Exec via COMSPEC }
@@ -1733,7 +1770,7 @@ Begin
   {$IFDEF UNIX}
    fpSystem(ExePath + ' &');
   {$ELSE}
-   ExecuteProcess(ExePath, '');
+   Exec(ExePath, '');
   {$ENDIF}
   {$ELSE}
   SwapVectors;
@@ -2073,6 +2110,8 @@ Begin
  OpenMenuIdx      := MENU_NONE;
  HoverMenuIdx     := MENU_NONE;
  HoverMenuItemIdx := 0;
+ MenuBgBuf        := Nil;
+ MenuBgSaved      := False;
  { Arborescence - TODO point 8 }
  RootExpanded     := True;
  PoolsExpanded    := True;
@@ -2158,14 +2197,20 @@ Begin
    End;
    If HMIdx <> HoverMenuIdx Then Begin
     HoverMenuIdx := HMIdx;
-    DrawMenuBar;
     If OpenMenuIdx <> MENU_NONE Then Begin
      If HMIdx <> 0 Then Begin
+      RestoreMenuBackground;
       OpenMenuIdx := HMIdx;
       HoverMenuItemIdx := 0;
+      DrawMenuBar;
+      SaveMenuBackground(OpenMenuIdx);
+      DrawOpenMenu;
+     End Else Begin
+      DrawMenuBar;
+      DrawOpenMenu;
      End;
-     DrawOpenMenu;
-    End;
+    End Else
+     DrawMenuBar;
    End;
   End Else If OpenMenuIdx <> MENU_NONE Then Begin
    { Survol dans menu deroulant }
@@ -2197,11 +2242,14 @@ Begin
     End;
     If HMIdx <> 0 Then Begin
      If OpenMenuIdx = HMIdx Then Begin
-      CloseMenu; DrawMenuBar;
+      CloseMenu; DrawMainLayout;
      End Else Begin
+      If MenuBgSaved Then RestoreMenuBackground;
       OpenMenuIdx := HMIdx;
       HoverMenuItemIdx := 0;
-      DrawMenuBar; DrawOpenMenu;
+      DrawMenuBar;
+      SaveMenuBackground(OpenMenuIdx);
+      DrawOpenMenu;
      End;
     End Else If OpenMenuIdx <> MENU_NONE Then Begin
      CloseMenu; DrawMainLayout;
@@ -2277,8 +2325,7 @@ Begin
     If FeatIdx > 0 Then Begin
      SelectedFeatureIdx := FeatIdx;
      ShowContextMenu(MouseX, MouseY, CTX_FEATURE, FeatIdx);
-     DrawFeatureIcons;
-     DrawContextMenu;
+     DrawMainLayout;
     End;
    End;
   End;
@@ -2315,7 +2362,9 @@ Begin
        #68 : Begin { F10 - ouvrir menu Fichier }
         OpenMenuIdx := MENU_FICHIER;
         HoverMenuItemIdx := 0;
-        DrawMenuBar; DrawOpenMenu;
+        DrawMenuBar;
+        SaveMenuBackground(OpenMenuIdx);
+        DrawOpenMenu;
        End;
       End;
      End;
