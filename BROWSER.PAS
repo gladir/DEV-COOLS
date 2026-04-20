@@ -30,7 +30,7 @@
   21. DONE: Implementer le decodeur et l'affichage des images BMP
   22. DONE: Implementer le decodeur et l'affichage des images GIF (y compris anime)
   23. DONE: Implementer le decodeur et l'affichage des images JPEG
-  24. TODO: Implementer le decodeur et l'affichage des images PNG
+  24. DONE: Implementer le decodeur et l'affichage des images PNG
   25. TODO: Implementer le parseur et le rendu des fichiers SVG (Scalable Vector Graphics)
 }
 
@@ -6593,12 +6593,13 @@ Var
  BMPImg: BMPImage;
  GIFImg: GIFImage;
  JPEGImg: JPEGImage;
+ PNGImg: PNGImage;
  CacheIdx: Integer;
  ImgWidth, ImgHeight: Integer;
  DrawWidth, DrawHeight: Integer;
  AltWidth: Integer;
  Code: Integer;
- IsBMP, IsGIF, IsJPEG: Boolean;
+ IsBMP, IsGIF, IsJPEG, IsPNG: Boolean;
 Begin
  If Node = Nil Then Exit;
  If Ctx.InHead Then Exit; { Pas d'affichage dans head }
@@ -6623,12 +6624,14 @@ Begin
  IsBMP := False;
  IsGIF := False;
  IsJPEG := False;
+ IsPNG := False;
  If Length(ImgPath) >= 4 Then Begin
   ImgExt := HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 3, 4));
   If ImgExt = '.bmp' Then IsBMP := True
   Else If ImgExt = '.gif' Then IsGIF := True
   Else If ImgExt = '.jpg' Then IsJPEG := True
-  Else If ImgExt = 'jpeg' Then IsJPEG := True;
+  Else If ImgExt = 'jpeg' Then IsJPEG := True
+  Else If ImgExt = '.png' Then IsPNG := True;
  End;
  { Verifier aussi .jpeg (5 caracteres) }
  If (Not IsJPEG) And (Length(ImgPath) >= 5) Then Begin
@@ -6637,7 +6640,7 @@ Begin
  End;
 
  { Si format non supporte, afficher le texte alternatif }
- If Not IsBMP And Not IsGIF And Not IsJPEG Then Begin
+ If Not IsBMP And Not IsGIF And Not IsJPEG And Not IsPNG Then Begin
   If Length(Alt) > 0 Then
    RenderText(Ctx, '[' + Alt + ']')
   Else
@@ -6784,6 +6787,54 @@ Begin
    JPEGDrawImage(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
   Else
    JPEGDrawImageScaled(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End
+
+ { Traitement des images PNG }
+ Else If IsPNG Then Begin
+  CacheIdx := PNGFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   PNGImg := PNGImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   If Not PNGLoadFromFile(ImgPath, PNGImg) Then Begin
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   PNGAddToCache(ImgPath, PNGImg);
+  End;
+
+  ImgWidth := PNGImg.Width;
+  ImgHeight := PNGImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+   PNGDrawImage(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+  Else
+   PNGDrawImageScaled(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
 
   Ctx.X := Ctx.X + DrawWidth;
   If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
@@ -8716,6 +8767,1089 @@ End;
 
 { =====================================================
   FIN DECODEUR IMAGES JPEG
+  ===================================================== }
+
+{ =====================================================
+  DECODEUR ET AFFICHAGE D'IMAGES PNG
+  ===================================================== }
+
+Const
+ { Signature PNG (8 octets) }
+ PNG_SIGNATURE: Array[0..7] Of Byte = ($89, $50, $4E, $47, $0D, $0A, $1A, $0A);
+
+ { Types de chunks PNG }
+ PNG_CHUNK_IHDR = 'IHDR';  { Image Header }
+ PNG_CHUNK_PLTE = 'PLTE';  { Palette }
+ PNG_CHUNK_IDAT = 'IDAT';  { Image Data }
+ PNG_CHUNK_IEND = 'IEND';  { Image End }
+ PNG_CHUNK_tRNS = 'tRNS';  { Transparency }
+
+ { Types de couleur PNG }
+ PNG_COLOR_GRAYSCALE = 0;
+ PNG_COLOR_RGB = 2;
+ PNG_COLOR_PALETTE = 3;
+ PNG_COLOR_GRAYSCALE_ALPHA = 4;
+ PNG_COLOR_RGBA = 6;
+
+ { Types de filtres PNG }
+ PNG_FILTER_NONE = 0;
+ PNG_FILTER_SUB = 1;
+ PNG_FILTER_UP = 2;
+ PNG_FILTER_AVERAGE = 3;
+ PNG_FILTER_PAETH = 4;
+
+ { Taille maximale d'image PNG supportee }
+ PNG_MAX_WIDTH = 800;
+ PNG_MAX_HEIGHT = 600;
+
+ { Constantes pour DEFLATE }
+ DEFLATE_MAX_BITS = 15;
+ DEFLATE_MAX_LIT_CODES = 286;
+ DEFLATE_MAX_DIST_CODES = 30;
+ DEFLATE_MAX_CODE_LENGTH = 19;
+
+Type
+ { En-tete IHDR PNG }
+ PNGHeader = Record
+  Width: LongInt;
+  Height: LongInt;
+  BitDepth: Byte;
+  ColorType: Byte;
+  Compression: Byte;
+  Filter: Byte;
+  Interlace: Byte;
+ End;
+
+ { Entree de palette PNG }
+ PNGPaletteEntry = Record
+  R, G, B: Byte;
+ End;
+
+ { Table Huffman pour DEFLATE }
+ DeflateHuffTable = Record
+  Counts: Array[0..DEFLATE_MAX_BITS] Of Word;
+  Symbols: Array[0..DEFLATE_MAX_LIT_CODES - 1] Of Word;
+  NumSymbols: Integer;
+  Valid: Boolean;
+ End;
+
+ { Structure d'image PNG en memoire }
+ PNGImage = Record
+  Width: Integer;
+  Height: Integer;
+  BitDepth: Byte;
+  ColorType: Byte;
+  HasAlpha: Boolean;
+  Palette: Array[0..255] Of PNGPaletteEntry;
+  PaletteSize: Integer;
+  TransparentIndex: Integer;  { Pour images palette avec transparence }
+  TransparentR, TransparentG, TransparentB: Word;  { Pour RGB transparent }
+  HasTransparent: Boolean;
+  Data: Pointer;         { Pointeur vers les donnees RGB }
+  AlphaData: Pointer;    { Pointeur vers les donnees alpha }
+  DataSize: LongInt;
+  Valid: Boolean;
+ End;
+
+ PNGImagePtr = ^PNGImage;
+
+Var
+ { Cache d'images PNG chargees }
+ PNGImageCache: Array[1..16] Of Record
+  URL: String[255];
+  Image: PNGImage;
+  Used: Boolean;
+ End;
+ PNGImageCacheCount: Integer;
+
+ { Buffer pour decompression DEFLATE }
+ DeflateInBuffer: Array[0..65535] Of Byte;
+ DeflateInPos: LongInt;
+ DeflateInLen: LongInt;
+ DeflateBitBuffer: LongInt;
+ DeflateBitsInBuffer: Integer;
+
+ { Buffer de sortie pour donnees decompressees }
+ DeflateOutBuffer: Array[0..65535] Of Byte;
+ DeflateOutPos: LongInt;
+ DeflateOutLen: LongInt;
+
+{ Initialiser le cache d'images PNG }
+Procedure PNGInitCache;
+Var
+ I: Integer;
+Begin
+ For I := 1 To 16 Do Begin
+  PNGImageCache[I].URL := '';
+  PNGImageCache[I].Used := False;
+  PNGImageCache[I].Image.Valid := False;
+  PNGImageCache[I].Image.Data := Nil;
+  PNGImageCache[I].Image.AlphaData := Nil;
+ End;
+ PNGImageCacheCount := 0;
+End;
+
+{ Convertir une couleur RGB en index de palette VGA }
+Function PNGRGBToVGAColor(R, G, B: Byte): Byte;
+Var
+ BestColor, BestDist, Dist: Integer;
+ I: Integer;
+Const
+ VGAPalette: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0),       { 0: Noir }
+  (0, 0, 170),     { 1: Bleu }
+  (0, 170, 0),     { 2: Vert }
+  (0, 170, 170),   { 3: Cyan }
+  (170, 0, 0),     { 4: Rouge }
+  (170, 0, 170),   { 5: Magenta }
+  (170, 85, 0),    { 6: Marron }
+  (170, 170, 170), { 7: Gris clair }
+  (85, 85, 85),    { 8: Gris fonce }
+  (85, 85, 255),   { 9: Bleu clair }
+  (85, 255, 85),   { 10: Vert clair }
+  (85, 255, 255),  { 11: Cyan clair }
+  (255, 85, 85),   { 12: Rouge clair }
+  (255, 85, 255),  { 13: Magenta clair }
+  (255, 255, 85),  { 14: Jaune }
+  (255, 255, 255)  { 15: Blanc }
+ );
+Begin
+ BestColor := 0;
+ BestDist := 256 * 256 * 3;
+
+ For I := 0 To 15 Do Begin
+  Dist := (Integer(R) - Integer(VGAPalette[I, 0])) *
+          (Integer(R) - Integer(VGAPalette[I, 0])) +
+          (Integer(G) - Integer(VGAPalette[I, 1])) *
+          (Integer(G) - Integer(VGAPalette[I, 1])) +
+          (Integer(B) - Integer(VGAPalette[I, 2])) *
+          (Integer(B) - Integer(VGAPalette[I, 2]));
+  If Dist < BestDist Then Begin
+   BestDist := Dist;
+   BestColor := I;
+  End;
+ End;
+
+ PNGRGBToVGAColor := BestColor;
+End;
+
+{ Liberer la memoire d'une image PNG }
+Procedure PNGFreeImage(Var Img: PNGImage);
+Begin
+ If Img.Data <> Nil Then Begin
+  FreeMem(Img.Data, Img.DataSize);
+  Img.Data := Nil;
+ End;
+ If Img.AlphaData <> Nil Then Begin
+  FreeMem(Img.AlphaData, LongInt(Img.Width) * LongInt(Img.Height));
+  Img.AlphaData := Nil;
+ End;
+ Img.Valid := False;
+ Img.DataSize := 0;
+End;
+
+{ Lire un mot 32 bits big-endian }
+Function PNGReadDWord(Var F: File): LongInt;
+Var
+ B: Array[0..3] Of Byte;
+ BytesRead: Word;
+Begin
+ BlockRead(F, B, 4, BytesRead);
+ PNGReadDWord := (LongInt(B[0]) Shl 24) Or (LongInt(B[1]) Shl 16) Or
+                 (LongInt(B[2]) Shl 8) Or LongInt(B[3]);
+End;
+
+{ Lire un mot 16 bits big-endian }
+Function PNGReadWord(Var F: File): Word;
+Var
+ B1, B2: Byte;
+ BytesRead: Word;
+Begin
+ BlockRead(F, B1, 1, BytesRead);
+ BlockRead(F, B2, 1, BytesRead);
+ PNGReadWord := (Word(B1) Shl 8) Or B2;
+End;
+
+{ Initialiser le buffer de bits pour DEFLATE }
+Procedure DeflateInitBitBuffer;
+Begin
+ DeflateBitBuffer := 0;
+ DeflateBitsInBuffer := 0;
+ DeflateInPos := 0;
+End;
+
+{ Lire N bits du flux DEFLATE }
+Function DeflateReadBits(NumBits: Integer): Integer;
+Var
+ Result: Integer;
+Begin
+ DeflateReadBits := -1;
+ 
+ While DeflateBitsInBuffer < NumBits Do Begin
+  If DeflateInPos >= DeflateInLen Then Exit;
+  DeflateBitBuffer := DeflateBitBuffer Or
+   (LongInt(DeflateInBuffer[DeflateInPos]) Shl DeflateBitsInBuffer);
+  Inc(DeflateInPos);
+  Inc(DeflateBitsInBuffer, 8);
+ End;
+ 
+ Result := DeflateBitBuffer And ((1 Shl NumBits) - 1);
+ DeflateBitBuffer := DeflateBitBuffer Shr NumBits;
+ Dec(DeflateBitsInBuffer, NumBits);
+ DeflateReadBits := Result;
+End;
+
+{ Tables de longueurs pour DEFLATE }
+Const
+ DeflateLengthBase: Array[257..285] Of Word = (
+  3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+  35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258
+ );
+ DeflateLengthExtra: Array[257..285] Of Byte = (
+  0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+  3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0
+ );
+ DeflateDistBase: Array[0..29] Of Word = (
+  1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
+  257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145,
+  8193, 12289, 16385, 24577
+ );
+ DeflateDistExtra: Array[0..29] Of Byte = (
+  0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
+  7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13
+ );
+ DeflateCodeLengthOrder: Array[0..18] Of Byte = (
+  16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+ );
+
+{ Construire une table Huffman }
+Procedure DeflateBuildHuffTable(Var Table: DeflateHuffTable;
+                                 Var Lengths: Array Of Byte;
+                                 NumCodes: Integer);
+Var
+ I, Code, Len: Integer;
+ NextCode: Array[0..DEFLATE_MAX_BITS] Of Integer;
+Begin
+ Table.Valid := False;
+ Table.NumSymbols := NumCodes;
+ 
+ { Compter les codes par longueur }
+ For I := 0 To DEFLATE_MAX_BITS Do Table.Counts[I] := 0;
+ For I := 0 To NumCodes - 1 Do
+  If Lengths[I] > 0 Then
+   Inc(Table.Counts[Lengths[I]]);
+ 
+ { Calculer les premiers codes par longueur }
+ Code := 0;
+ For I := 1 To DEFLATE_MAX_BITS Do Begin
+  Code := (Code + Table.Counts[I - 1]) Shl 1;
+  NextCode[I] := Code;
+ End;
+ 
+ { Assigner les symboles }
+ For I := 0 To NumCodes - 1 Do Begin
+  Len := Lengths[I];
+  If Len > 0 Then Begin
+   Table.Symbols[NextCode[Len]] := I;
+   Inc(NextCode[Len]);
+  End;
+ End;
+ 
+ Table.Valid := True;
+End;
+
+{ Decoder un symbole Huffman }
+Function DeflateDecodeSymbol(Var Table: DeflateHuffTable): Integer;
+Var
+ Code, Len, First, Index, Count: Integer;
+Begin
+ DeflateDecodeSymbol := -1;
+ If Not Table.Valid Then Exit;
+ 
+ Code := 0;
+ First := 0;
+ Index := 0;
+ 
+ For Len := 1 To DEFLATE_MAX_BITS Do Begin
+  Code := (Code Shl 1) Or DeflateReadBits(1);
+  If Code < 0 Then Exit;
+  
+  Count := Table.Counts[Len];
+  If Code - First < Count Then Begin
+   DeflateDecodeSymbol := Table.Symbols[Index + Code - First];
+   Exit;
+  End;
+  First := (First + Count) Shl 1;
+  Inc(Index, Count);
+ End;
+End;
+
+{ Decompresser un bloc DEFLATE }
+Function DeflateDecompressBlock(Var OutData: Array Of Byte;
+                                 Var OutLen: LongInt;
+                                 MaxOut: LongInt): Boolean;
+Var
+ BFinal, BType: Integer;
+ Len, NLen: Word;
+ I: Integer;
+ LitLenLengths: Array[0..DEFLATE_MAX_LIT_CODES - 1] Of Byte;
+ DistLengths: Array[0..DEFLATE_MAX_DIST_CODES - 1] Of Byte;
+ CodeLengths: Array[0..18] Of Byte;
+ LitLenTable, DistTable, CodeTable: DeflateHuffTable;
+ HLit, HDist, HCLen: Integer;
+ Symbol, Length, Distance: Integer;
+ Extra: Integer;
+ CopyPos: LongInt;
+Begin
+ DeflateDecompressBlock := False;
+ OutLen := 0;
+ 
+ DeflateInitBitBuffer;
+ 
+ Repeat
+  BFinal := DeflateReadBits(1);
+  If BFinal < 0 Then Exit;
+  
+  BType := DeflateReadBits(2);
+  If BType < 0 Then Exit;
+  
+  Case BType Of
+   0: Begin { Bloc non compresse }
+    { Aligner sur octet }
+    DeflateBitBuffer := 0;
+    DeflateBitsInBuffer := 0;
+    
+    If DeflateInPos + 4 > DeflateInLen Then Exit;
+    Len := DeflateInBuffer[DeflateInPos] Or
+           (Word(DeflateInBuffer[DeflateInPos + 1]) Shl 8);
+    NLen := DeflateInBuffer[DeflateInPos + 2] Or
+            (Word(DeflateInBuffer[DeflateInPos + 3]) Shl 8);
+    Inc(DeflateInPos, 4);
+    
+    If Len <> (NLen Xor $FFFF) Then Exit;
+    
+    If DeflateInPos + Len > DeflateInLen Then Exit;
+    If OutLen + Len > MaxOut Then Exit;
+    
+    For I := 0 To Len - 1 Do Begin
+     OutData[OutLen] := DeflateInBuffer[DeflateInPos];
+     Inc(OutLen);
+     Inc(DeflateInPos);
+    End;
+   End;
+   
+   1: Begin { Bloc avec codes Huffman fixes }
+    { Construire les tables Huffman fixes }
+    For I := 0 To 143 Do LitLenLengths[I] := 8;
+    For I := 144 To 255 Do LitLenLengths[I] := 9;
+    For I := 256 To 279 Do LitLenLengths[I] := 7;
+    For I := 280 To 287 Do LitLenLengths[I] := 8;
+    DeflateBuildHuffTable(LitLenTable, LitLenLengths, 288);
+    
+    For I := 0 To 31 Do DistLengths[I] := 5;
+    DeflateBuildHuffTable(DistTable, DistLengths, 32);
+    
+    { Decoder les symboles }
+    Repeat
+     Symbol := DeflateDecodeSymbol(LitLenTable);
+     If Symbol < 0 Then Exit;
+     
+     If Symbol < 256 Then Begin
+      { Litteral }
+      If OutLen >= MaxOut Then Exit;
+      OutData[OutLen] := Symbol;
+      Inc(OutLen);
+     End
+     Else If Symbol = 256 Then Begin
+      { Fin du bloc }
+      Break;
+     End
+     Else Begin
+      { Longueur + distance }
+      Length := DeflateLengthBase[Symbol];
+      If DeflateLengthExtra[Symbol] > 0 Then Begin
+       Extra := DeflateReadBits(DeflateLengthExtra[Symbol]);
+       If Extra < 0 Then Exit;
+       Inc(Length, Extra);
+      End;
+      
+      Symbol := DeflateDecodeSymbol(DistTable);
+      If Symbol < 0 Then Exit;
+      
+      Distance := DeflateDistBase[Symbol];
+      If DeflateDistExtra[Symbol] > 0 Then Begin
+       Extra := DeflateReadBits(DeflateDistExtra[Symbol]);
+       If Extra < 0 Then Exit;
+       Inc(Distance, Extra);
+      End;
+      
+      { Copier les octets }
+      CopyPos := OutLen - Distance;
+      If CopyPos < 0 Then Exit;
+      
+      For I := 0 To Length - 1 Do Begin
+       If OutLen >= MaxOut Then Exit;
+       OutData[OutLen] := OutData[CopyPos];
+       Inc(OutLen);
+       Inc(CopyPos);
+      End;
+     End;
+    Until False;
+   End;
+   
+   2: Begin { Bloc avec codes Huffman dynamiques }
+    HLit := DeflateReadBits(5) + 257;
+    HDist := DeflateReadBits(5) + 1;
+    HCLen := DeflateReadBits(4) + 4;
+    
+    If (HLit < 0) Or (HDist < 0) Or (HCLen < 0) Then Exit;
+    
+    { Lire les longueurs de codes }
+    For I := 0 To 18 Do CodeLengths[I] := 0;
+    For I := 0 To HCLen - 1 Do Begin
+     CodeLengths[DeflateCodeLengthOrder[I]] := DeflateReadBits(3);
+    End;
+    
+    DeflateBuildHuffTable(CodeTable, CodeLengths, 19);
+    
+    { Decoder les longueurs literal/length }
+    I := 0;
+    While I < HLit + HDist Do Begin
+     Symbol := DeflateDecodeSymbol(CodeTable);
+     If Symbol < 0 Then Exit;
+     
+     If Symbol < 16 Then Begin
+      If I < HLit Then LitLenLengths[I] := Symbol
+      Else DistLengths[I - HLit] := Symbol;
+      Inc(I);
+     End
+     Else If Symbol = 16 Then Begin
+      Extra := DeflateReadBits(2) + 3;
+      If Extra < 0 Then Exit;
+      While Extra > 0 Do Begin
+       If I < HLit Then
+        LitLenLengths[I] := LitLenLengths[I - 1]
+       Else
+        DistLengths[I - HLit] := DistLengths[I - HLit - 1];
+       Inc(I);
+       Dec(Extra);
+      End;
+     End
+     Else If Symbol = 17 Then Begin
+      Extra := DeflateReadBits(3) + 3;
+      If Extra < 0 Then Exit;
+      While Extra > 0 Do Begin
+       If I < HLit Then LitLenLengths[I] := 0
+       Else DistLengths[I - HLit] := 0;
+       Inc(I);
+       Dec(Extra);
+      End;
+     End
+     Else Begin { Symbol = 18 }
+      Extra := DeflateReadBits(7) + 11;
+      If Extra < 0 Then Exit;
+      While Extra > 0 Do Begin
+       If I < HLit Then LitLenLengths[I] := 0
+       Else DistLengths[I - HLit] := 0;
+       Inc(I);
+       Dec(Extra);
+      End;
+     End;
+    End;
+    
+    DeflateBuildHuffTable(LitLenTable, LitLenLengths, HLit);
+    DeflateBuildHuffTable(DistTable, DistLengths, HDist);
+    
+    { Decoder les symboles }
+    Repeat
+     Symbol := DeflateDecodeSymbol(LitLenTable);
+     If Symbol < 0 Then Exit;
+     
+     If Symbol < 256 Then Begin
+      If OutLen >= MaxOut Then Exit;
+      OutData[OutLen] := Symbol;
+      Inc(OutLen);
+     End
+     Else If Symbol = 256 Then Begin
+      Break;
+     End
+     Else Begin
+      Length := DeflateLengthBase[Symbol];
+      If DeflateLengthExtra[Symbol] > 0 Then Begin
+       Extra := DeflateReadBits(DeflateLengthExtra[Symbol]);
+       If Extra < 0 Then Exit;
+       Inc(Length, Extra);
+      End;
+      
+      Symbol := DeflateDecodeSymbol(DistTable);
+      If Symbol < 0 Then Exit;
+      
+      Distance := DeflateDistBase[Symbol];
+      If DeflateDistExtra[Symbol] > 0 Then Begin
+       Extra := DeflateReadBits(DeflateDistExtra[Symbol]);
+       If Extra < 0 Then Exit;
+       Inc(Distance, Extra);
+      End;
+      
+      CopyPos := OutLen - Distance;
+      If CopyPos < 0 Then Exit;
+      
+      For I := 0 To Length - 1 Do Begin
+       If OutLen >= MaxOut Then Exit;
+       OutData[OutLen] := OutData[CopyPos];
+       Inc(OutLen);
+       Inc(CopyPos);
+      End;
+     End;
+    Until False;
+   End;
+   
+   Else Exit; { Type invalide }
+  End;
+  
+ Until BFinal = 1;
+ 
+ DeflateDecompressBlock := True;
+End;
+
+{ Predicteur Paeth pour filtres PNG }
+Function PNGPaethPredictor(A, B, C: Integer): Integer;
+Var
+ P, PA, PB, PC: Integer;
+Begin
+ P := A + B - C;
+ PA := Abs(P - A);
+ PB := Abs(P - B);
+ PC := Abs(P - C);
+ 
+ If (PA <= PB) And (PA <= PC) Then
+  PNGPaethPredictor := A
+ Else If PB <= PC Then
+  PNGPaethPredictor := B
+ Else
+  PNGPaethPredictor := C;
+End;
+
+{ Appliquer les filtres PNG }
+Function PNGUnfilterRow(FilterType: Byte;
+                         Var CurrRow, PrevRow: Array Of Byte;
+                         RowLen, BytesPerPixel: Integer): Boolean;
+Var
+ I: Integer;
+ A, B, C, Raw: Integer;
+Begin
+ PNGUnfilterRow := False;
+ 
+ Case FilterType Of
+  PNG_FILTER_NONE: Begin
+   { Rien a faire }
+  End;
+  
+  PNG_FILTER_SUB: Begin
+   For I := BytesPerPixel To RowLen - 1 Do Begin
+    CurrRow[I] := (CurrRow[I] + CurrRow[I - BytesPerPixel]) And $FF;
+   End;
+  End;
+  
+  PNG_FILTER_UP: Begin
+   For I := 0 To RowLen - 1 Do Begin
+    CurrRow[I] := (CurrRow[I] + PrevRow[I]) And $FF;
+   End;
+  End;
+  
+  PNG_FILTER_AVERAGE: Begin
+   For I := 0 To RowLen - 1 Do Begin
+    If I < BytesPerPixel Then
+     A := 0
+    Else
+     A := CurrRow[I - BytesPerPixel];
+    B := PrevRow[I];
+    CurrRow[I] := (CurrRow[I] + (A + B) Div 2) And $FF;
+   End;
+  End;
+  
+  PNG_FILTER_PAETH: Begin
+   For I := 0 To RowLen - 1 Do Begin
+    If I < BytesPerPixel Then Begin
+     A := 0;
+     C := 0;
+    End
+    Else Begin
+     A := CurrRow[I - BytesPerPixel];
+     C := PrevRow[I - BytesPerPixel];
+    End;
+    B := PrevRow[I];
+    CurrRow[I] := (CurrRow[I] + PNGPaethPredictor(A, B, C)) And $FF;
+   End;
+  End;
+  
+  Else Exit; { Filtre inconnu }
+ End;
+ 
+ PNGUnfilterRow := True;
+End;
+
+{ Charger une image PNG depuis un fichier }
+Function PNGLoadFromFile(Const FileName: String; Var Img: PNGImage): Boolean;
+Var
+ F: File;
+ Signature: Array[0..7] Of Byte;
+ ChunkLen: LongInt;
+ ChunkType: Array[0..3] Of Char;
+ ChunkCRC: LongInt;
+ BytesRead: Word;
+ I, X, Y: Integer;
+ Header: PNGHeader;
+ CompDataLen: LongInt;
+ CompData: Array[0..65535] Of Byte;
+ CompDataPos: LongInt;
+ DecompData: Array[0..65535] Of Byte;
+ DecompLen: LongInt;
+ BytesPerPixel, RowBytes: Integer;
+ CurrRow, PrevRow: Array[0..4095] Of Byte;
+ FilterType: Byte;
+ DataPos: LongInt;
+ PixelOffset: LongInt;
+ DataPtr: ^Byte;
+ AlphaPtr: ^Byte;
+ R, G, B, A: Byte;
+ GrayVal: Byte;
+ PalIdx: Byte;
+Begin
+ PNGLoadFromFile := False;
+ Img.Valid := False;
+ Img.Data := Nil;
+ Img.AlphaData := Nil;
+ Img.HasTransparent := False;
+ Img.TransparentIndex := -1;
+ 
+ { Ouvrir le fichier }
+ {$I-}
+ Assign(F, FileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ 
+ { Verifier la signature PNG }
+ BlockRead(F, Signature, 8, BytesRead);
+ If BytesRead <> 8 Then Begin
+  Close(F);
+  Exit;
+ End;
+ 
+ For I := 0 To 7 Do Begin
+  If Signature[I] <> PNG_SIGNATURE[I] Then Begin
+   Close(F);
+   Exit;
+  End;
+ End;
+ 
+ CompDataLen := 0;
+ CompDataPos := 0;
+ Img.PaletteSize := 0;
+ 
+ { Parcourir les chunks }
+ While True Do Begin
+  ChunkLen := PNGReadDWord(F);
+  BlockRead(F, ChunkType, 4, BytesRead);
+  If BytesRead <> 4 Then Break;
+  
+  If ChunkType = PNG_CHUNK_IHDR Then Begin
+   { En-tete de l'image }
+   Header.Width := PNGReadDWord(F);
+   Header.Height := PNGReadDWord(F);
+   BlockRead(F, Header.BitDepth, 1, BytesRead);
+   BlockRead(F, Header.ColorType, 1, BytesRead);
+   BlockRead(F, Header.Compression, 1, BytesRead);
+   BlockRead(F, Header.Filter, 1, BytesRead);
+   BlockRead(F, Header.Interlace, 1, BytesRead);
+   
+   If (Header.Width > PNG_MAX_WIDTH) Or (Header.Height > PNG_MAX_HEIGHT) Then Begin
+    Close(F);
+    Exit;
+   End;
+   
+   Img.Width := Header.Width;
+   Img.Height := Header.Height;
+   Img.BitDepth := Header.BitDepth;
+   Img.ColorType := Header.ColorType;
+   Img.HasAlpha := (Header.ColorType = PNG_COLOR_GRAYSCALE_ALPHA) Or
+                   (Header.ColorType = PNG_COLOR_RGBA);
+   
+   { Lire le CRC }
+   ChunkCRC := PNGReadDWord(F);
+  End
+  
+  Else If ChunkType = PNG_CHUNK_PLTE Then Begin
+   { Palette }
+   Img.PaletteSize := ChunkLen Div 3;
+   For I := 0 To Img.PaletteSize - 1 Do Begin
+    BlockRead(F, Img.Palette[I].R, 1, BytesRead);
+    BlockRead(F, Img.Palette[I].G, 1, BytesRead);
+    BlockRead(F, Img.Palette[I].B, 1, BytesRead);
+   End;
+   ChunkCRC := PNGReadDWord(F);
+  End
+  
+  Else If ChunkType = PNG_CHUNK_tRNS Then Begin
+   { Transparence }
+   Img.HasTransparent := True;
+   If Img.ColorType = PNG_COLOR_PALETTE Then Begin
+    { Index transparent pour palette }
+    For I := 0 To ChunkLen - 1 Do Begin
+     BlockRead(F, A, 1, BytesRead);
+     If A = 0 Then Img.TransparentIndex := I;
+    End;
+   End
+   Else If Img.ColorType = PNG_COLOR_GRAYSCALE Then Begin
+    Img.TransparentG := PNGReadWord(F);
+   End
+   Else If Img.ColorType = PNG_COLOR_RGB Then Begin
+    Img.TransparentR := PNGReadWord(F);
+    Img.TransparentG := PNGReadWord(F);
+    Img.TransparentB := PNGReadWord(F);
+   End;
+   ChunkCRC := PNGReadDWord(F);
+  End
+  
+  Else If ChunkType = PNG_CHUNK_IDAT Then Begin
+   { Donnees compressees - accumuler }
+   If CompDataPos + ChunkLen <= 65536 Then Begin
+    BlockRead(F, CompData[CompDataPos], ChunkLen, BytesRead);
+    Inc(CompDataPos, ChunkLen);
+   End
+   Else Begin
+    { Trop de donnees - sauter }
+    For I := 1 To ChunkLen Do Begin
+     BlockRead(F, A, 1, BytesRead);
+    End;
+   End;
+   ChunkCRC := PNGReadDWord(F);
+  End
+  
+  Else If ChunkType = PNG_CHUNK_IEND Then Begin
+   { Fin de l'image }
+   ChunkCRC := PNGReadDWord(F);
+   Break;
+  End
+  
+  Else Begin
+   { Chunk inconnu - sauter }
+   For I := 1 To ChunkLen Do Begin
+    BlockRead(F, A, 1, BytesRead);
+   End;
+   ChunkCRC := PNGReadDWord(F);
+  End;
+ End;
+ 
+ Close(F);
+ 
+ { Decompresser les donnees (sauter l'en-tete zlib de 2 octets) }
+ If CompDataPos < 3 Then Exit;
+ 
+ Move(CompData[2], DeflateInBuffer, CompDataPos - 2);
+ DeflateInLen := CompDataPos - 2;
+ 
+ If Not DeflateDecompressBlock(DecompData, DecompLen, 65536) Then Exit;
+ 
+ { Calculer les octets par pixel }
+ Case Img.ColorType Of
+  PNG_COLOR_GRAYSCALE: BytesPerPixel := 1;
+  PNG_COLOR_RGB: BytesPerPixel := 3;
+  PNG_COLOR_PALETTE: BytesPerPixel := 1;
+  PNG_COLOR_GRAYSCALE_ALPHA: BytesPerPixel := 2;
+  PNG_COLOR_RGBA: BytesPerPixel := 4;
+  Else Exit;
+ End;
+ 
+ RowBytes := Img.Width * BytesPerPixel;
+ 
+ { Allouer la memoire pour les pixels RGB }
+ Img.DataSize := LongInt(Img.Width) * LongInt(Img.Height) * 3;
+ If Img.DataSize > 65520 Then Exit;
+ 
+ GetMem(Img.Data, Img.DataSize);
+ If Img.Data = Nil Then Exit;
+ 
+ { Allouer la memoire pour l'alpha si necessaire }
+ If Img.HasAlpha Then Begin
+  GetMem(Img.AlphaData, LongInt(Img.Width) * LongInt(Img.Height));
+  If Img.AlphaData = Nil Then Begin
+   FreeMem(Img.Data, Img.DataSize);
+   Img.Data := Nil;
+   Exit;
+  End;
+ End;
+ 
+ { Initialiser la ligne precedente a zero }
+ For I := 0 To RowBytes - 1 Do PrevRow[I] := 0;
+ 
+ { Decoder les lignes }
+ DataPos := 0;
+ For Y := 0 To Img.Height - 1 Do Begin
+  { Lire le type de filtre }
+  If DataPos >= DecompLen Then Break;
+  FilterType := DecompData[DataPos];
+  Inc(DataPos);
+  
+  { Lire les donnees de la ligne }
+  For I := 0 To RowBytes - 1 Do Begin
+   If DataPos >= DecompLen Then
+    CurrRow[I] := 0
+   Else Begin
+    CurrRow[I] := DecompData[DataPos];
+    Inc(DataPos);
+   End;
+  End;
+  
+  { Appliquer le filtre inverse }
+  If Not PNGUnfilterRow(FilterType, CurrRow, PrevRow, RowBytes, BytesPerPixel) Then Begin
+   PNGFreeImage(Img);
+   Exit;
+  End;
+  
+  { Convertir les pixels en RGB }
+  For X := 0 To Img.Width - 1 Do Begin
+   PixelOffset := (LongInt(Y) * LongInt(Img.Width) + LongInt(X)) * 3;
+   DataPtr := Img.Data;
+   Inc(DataPtr, PixelOffset);
+   
+   Case Img.ColorType Of
+    PNG_COLOR_GRAYSCALE: Begin
+     GrayVal := CurrRow[X];
+     DataPtr^ := GrayVal; Inc(DataPtr);
+     DataPtr^ := GrayVal; Inc(DataPtr);
+     DataPtr^ := GrayVal;
+    End;
+    
+    PNG_COLOR_RGB: Begin
+     DataPtr^ := CurrRow[X * 3]; Inc(DataPtr);
+     DataPtr^ := CurrRow[X * 3 + 1]; Inc(DataPtr);
+     DataPtr^ := CurrRow[X * 3 + 2];
+    End;
+    
+    PNG_COLOR_PALETTE: Begin
+     PalIdx := CurrRow[X];
+     If PalIdx < Img.PaletteSize Then Begin
+      DataPtr^ := Img.Palette[PalIdx].R; Inc(DataPtr);
+      DataPtr^ := Img.Palette[PalIdx].G; Inc(DataPtr);
+      DataPtr^ := Img.Palette[PalIdx].B;
+     End
+     Else Begin
+      DataPtr^ := 0; Inc(DataPtr);
+      DataPtr^ := 0; Inc(DataPtr);
+      DataPtr^ := 0;
+     End;
+    End;
+    
+    PNG_COLOR_GRAYSCALE_ALPHA: Begin
+     GrayVal := CurrRow[X * 2];
+     A := CurrRow[X * 2 + 1];
+     DataPtr^ := GrayVal; Inc(DataPtr);
+     DataPtr^ := GrayVal; Inc(DataPtr);
+     DataPtr^ := GrayVal;
+     If Img.AlphaData <> Nil Then Begin
+      AlphaPtr := Img.AlphaData;
+      Inc(AlphaPtr, LongInt(Y) * LongInt(Img.Width) + LongInt(X));
+      AlphaPtr^ := A;
+     End;
+    End;
+    
+    PNG_COLOR_RGBA: Begin
+     DataPtr^ := CurrRow[X * 4]; Inc(DataPtr);
+     DataPtr^ := CurrRow[X * 4 + 1]; Inc(DataPtr);
+     DataPtr^ := CurrRow[X * 4 + 2];
+     If Img.AlphaData <> Nil Then Begin
+      AlphaPtr := Img.AlphaData;
+      Inc(AlphaPtr, LongInt(Y) * LongInt(Img.Width) + LongInt(X));
+      AlphaPtr^ := CurrRow[X * 4 + 3];
+     End;
+    End;
+   End;
+  End;
+  
+  { Sauvegarder la ligne courante comme precedente }
+  Move(CurrRow, PrevRow, RowBytes);
+ End;
+ 
+ Img.Valid := True;
+ PNGLoadFromFile := True;
+End;
+
+{ Obtenir la couleur d'un pixel dans une image PNG }
+Function PNGGetPixel(Const Img: PNGImage; X, Y: Integer): Byte;
+Var
+ Offset: LongInt;
+ DataPtr: ^Byte;
+ R, G, B: Byte;
+Begin
+ PNGGetPixel := 0;
+ If Not Img.Valid Then Exit;
+ If (X < 0) Or (X >= Img.Width) Or (Y < 0) Or (Y >= Img.Height) Then Exit;
+ 
+ Offset := (LongInt(Y) * LongInt(Img.Width) + LongInt(X)) * 3;
+ DataPtr := Img.Data;
+ Inc(DataPtr, Offset);
+ R := DataPtr^;
+ Inc(DataPtr);
+ G := DataPtr^;
+ Inc(DataPtr);
+ B := DataPtr^;
+ 
+ PNGGetPixel := PNGRGBToVGAColor(R, G, B);
+End;
+
+{ Obtenir l'alpha d'un pixel dans une image PNG }
+Function PNGGetAlpha(Const Img: PNGImage; X, Y: Integer): Byte;
+Var
+ Offset: LongInt;
+ AlphaPtr: ^Byte;
+Begin
+ PNGGetAlpha := 255;  { Opaque par defaut }
+ If Not Img.Valid Then Exit;
+ If Not Img.HasAlpha Then Exit;
+ If Img.AlphaData = Nil Then Exit;
+ If (X < 0) Or (X >= Img.Width) Or (Y < 0) Or (Y >= Img.Height) Then Exit;
+ 
+ Offset := LongInt(Y) * LongInt(Img.Width) + LongInt(X);
+ AlphaPtr := Img.AlphaData;
+ Inc(AlphaPtr, Offset);
+ PNGGetAlpha := AlphaPtr^;
+End;
+
+{ Dessiner une image PNG a l'ecran }
+Procedure PNGDrawImage(Const Img: PNGImage; DestX, DestY: Integer;
+                        MaxWidth, MaxHeight: Integer);
+Var
+ X, Y: Integer;
+ DrawWidth, DrawHeight: Integer;
+ PixelColor: Byte;
+ Alpha: Byte;
+Begin
+ If Not Img.Valid Then Exit;
+ 
+ DrawWidth := Img.Width;
+ DrawHeight := Img.Height;
+ 
+ If DrawWidth > MaxWidth Then DrawWidth := MaxWidth;
+ If DrawHeight > MaxHeight Then DrawHeight := MaxHeight;
+ 
+ For Y := 0 To DrawHeight - 1 Do Begin
+  For X := 0 To DrawWidth - 1 Do Begin
+   If Img.HasAlpha Then Begin
+    Alpha := PNGGetAlpha(Img, X, Y);
+    If Alpha > 128 Then Begin
+     PixelColor := PNGGetPixel(Img, X, Y);
+     PutPixel(DestX + X, DestY + Y, PixelColor);
+    End;
+   End
+   Else Begin
+    PixelColor := PNGGetPixel(Img, X, Y);
+    PutPixel(DestX + X, DestY + Y, PixelColor);
+   End;
+  End;
+ End;
+End;
+
+{ Dessiner une image PNG avec mise a l'echelle }
+Procedure PNGDrawImageScaled(Const Img: PNGImage; DestX, DestY: Integer;
+                              DestWidth, DestHeight: Integer);
+Var
+ X, Y: Integer;
+ SrcX, SrcY: Integer;
+ PixelColor: Byte;
+ Alpha: Byte;
+Begin
+ If Not Img.Valid Then Exit;
+ If (DestWidth <= 0) Or (DestHeight <= 0) Then Exit;
+ 
+ For Y := 0 To DestHeight - 1 Do Begin
+  SrcY := (Y * Img.Height) Div DestHeight;
+  For X := 0 To DestWidth - 1 Do Begin
+   SrcX := (X * Img.Width) Div DestWidth;
+   If Img.HasAlpha Then Begin
+    Alpha := PNGGetAlpha(Img, SrcX, SrcY);
+    If Alpha > 128 Then Begin
+     PixelColor := PNGGetPixel(Img, SrcX, SrcY);
+     PutPixel(DestX + X, DestY + Y, PixelColor);
+    End;
+   End
+   Else Begin
+    PixelColor := PNGGetPixel(Img, SrcX, SrcY);
+    PutPixel(DestX + X, DestY + Y, PixelColor);
+   End;
+  End;
+ End;
+End;
+
+{ Chercher une image PNG dans le cache }
+Function PNGFindInCache(Const URL: String): Integer;
+Var
+ I: Integer;
+Begin
+ PNGFindInCache := 0;
+ For I := 1 To 16 Do Begin
+  If PNGImageCache[I].Used And (PNGImageCache[I].URL = URL) Then Begin
+   PNGFindInCache := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Ajouter une image PNG au cache }
+Function PNGAddToCache(Const URL: String; Const Img: PNGImage): Integer;
+Var
+ I: Integer;
+ Slot: Integer;
+Begin
+ PNGAddToCache := 0;
+ 
+ Slot := 0;
+ For I := 1 To 16 Do Begin
+  If Not PNGImageCache[I].Used Then Begin
+   Slot := I;
+   Break;
+  End;
+ End;
+ 
+ If Slot = 0 Then Begin
+  If PNGImageCache[1].Image.Valid Then
+   PNGFreeImage(PNGImageCache[1].Image);
+  Slot := 1;
+ End;
+ 
+ PNGImageCache[Slot].URL := URL;
+ PNGImageCache[Slot].Image := Img;
+ PNGImageCache[Slot].Used := True;
+ PNGAddToCache := Slot;
+End;
+
+{ Construire le chemin complet d'une image PNG }
+Function PNGBuildImagePath(Const Src: String): String;
+Var
+ BasePath: String;
+ I: Integer;
+Begin
+ If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
+     ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
+  PNGBuildImagePath := Src;
+  Exit;
+ End;
+ 
+ BasePath := CurrentURL;
+ 
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Break;
+  End;
+ End;
+ 
+ PNGBuildImagePath := BasePath + Src;
+End;
+
+{ =====================================================
+  FIN DECODEUR IMAGES PNG
   ===================================================== }
 
 { Variable globale pour activer/desactiver l'application CSS automatique }
