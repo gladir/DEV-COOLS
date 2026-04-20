@@ -10,7 +10,7 @@
   1.  DONE: Implementer la barre d'URL avec champ de saisie de texte editable
   2.  DONE: Creer le bouton "Precedent" pour naviguer vers la page precedente dans l'historique
   3.  DONE: Creer le bouton "Suivant" pour naviguer vers la page suivante dans l'historique
-  4.  TODO: Creer le bouton "Actualiser" pour recharger la page courante
+  4.  DONE: Creer le bouton "Actualiser" pour recharger la page courante
   5.  TODO: Creer le bouton "Favori" pour ajouter/gerer les marque-pages
   6.  TODO: Implementer la gestion de l'historique de navigation (pile de pages visitees)
   7.  TODO: Implementer le support de la souris pour Turbo Pascal via INT 33h
@@ -62,6 +62,12 @@ Const
  FORWARD_BTN_WIDTH = 30;
  FORWARD_BTN_HEIGHT = 20;
 
+ { Constantes pour le bouton Actualiser }
+ REFRESH_BTN_X = 585;
+ REFRESH_BTN_Y = 5;
+ REFRESH_BTN_WIDTH = 30;
+ REFRESH_BTN_HEIGHT = 20;
+
  { Couleurs de l'interface }
  COLOR_URL_BAR_BG = 15;       { Blanc }
  COLOR_URL_BAR_BORDER = 0;    { Noir }
@@ -83,6 +89,9 @@ Var
 
  { Variables pour le bouton Suivant }
  ForwardButtonEnabled: Boolean;
+
+ { Variables pour le bouton Actualiser }
+ RefreshButtonEnabled: Boolean;
 
 { Procedure pour dessiner la barre d'URL }
 Procedure DrawURLBar;
@@ -234,6 +243,66 @@ Procedure SetForwardButtonEnabled(Enabled: Boolean);
 Begin
  ForwardButtonEnabled := Enabled;
  DrawForwardButton;
+End;
+
+{ Procedure pour dessiner le bouton Actualiser }
+Procedure DrawRefreshButton;
+Var
+ CenterX, CenterY: Integer;
+ IconColor: Integer;
+Begin
+ { Dessiner le fond du bouton }
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(REFRESH_BTN_X, REFRESH_BTN_Y, REFRESH_BTN_X + REFRESH_BTN_WIDTH, REFRESH_BTN_Y + REFRESH_BTN_HEIGHT);
+
+ { Dessiner la bordure du bouton }
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(REFRESH_BTN_X, REFRESH_BTN_Y, REFRESH_BTN_X + REFRESH_BTN_WIDTH, REFRESH_BTN_Y + REFRESH_BTN_HEIGHT);
+
+ { Dessiner le symbole de rafraichissement (fleche circulaire) }
+ CenterX := REFRESH_BTN_X + (REFRESH_BTN_WIDTH Div 2);
+ CenterY := REFRESH_BTN_Y + (REFRESH_BTN_HEIGHT Div 2);
+
+ { Couleur de l'icone selon l'etat du bouton }
+ If RefreshButtonEnabled Then
+  IconColor := COLOR_BTN_TEXT
+ Else
+  IconColor := COLOR_BTN_DISABLED;
+
+ SetColor(IconColor);
+ { Dessiner un cercle partiel avec une fleche pour symboliser le rafraichissement }
+ Arc(CenterX, CenterY, 45, 315, 6);
+ { Dessiner la pointe de la fleche }
+ Line(CenterX + 4, CenterY - 6, CenterX + 6, CenterY - 2);
+ Line(CenterX + 4, CenterY - 6, CenterX + 8, CenterY - 6);
+End;
+
+{ Fonction pour verifier si un clic est dans le bouton Actualiser }
+Function IsClickInRefreshButton(X, Y: Integer): Boolean;
+Begin
+ IsClickInRefreshButton := (X >= REFRESH_BTN_X) And (X <= REFRESH_BTN_X + REFRESH_BTN_WIDTH) And
+                           (Y >= REFRESH_BTN_Y) And (Y <= REFRESH_BTN_Y + REFRESH_BTN_HEIGHT);
+End;
+
+{ Procedure pour gerer le clic sur le bouton Actualiser }
+Procedure HandleRefreshButtonClick;
+Begin
+ If Not RefreshButtonEnabled Then Exit;
+ { Recharger la page courante }
+ { La navigation sera implementee quand le chargement de pages sera disponible }
+End;
+
+{ Procedure pour initialiser le bouton Actualiser }
+Procedure InitRefreshButton;
+Begin
+ RefreshButtonEnabled := True; { Active par defaut car on peut toujours rafraichir }
+End;
+
+{ Procedure pour activer/desactiver le bouton Actualiser }
+Procedure SetRefreshButtonEnabled(Enabled: Boolean);
+Begin
+ RefreshButtonEnabled := Enabled;
+ DrawRefreshButton;
 End;
 
 { Procedure pour verifier si un clic est dans la barre d'URL }
@@ -408,9 +477,11 @@ BEGIN
  InitURLBar;
  InitBackButton;
  InitForwardButton;
+ InitRefreshButton;
  DrawURLBar;
  DrawBackButton;
  DrawForwardButton;
+ DrawRefreshButton;
  { Boucle principale temporaire pour tester la barre d'URL }
  URLBarFocused := True;
  Repeat
