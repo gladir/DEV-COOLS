@@ -11,7 +11,7 @@
   2.  DONE: Creer le bouton "Precedent" pour naviguer vers la page precedente dans l'historique
   3.  DONE: Creer le bouton "Suivant" pour naviguer vers la page suivante dans l'historique
   4.  DONE: Creer le bouton "Actualiser" pour recharger la page courante
-  5.  TODO: Creer le bouton "Favori" pour ajouter/gerer les marque-pages
+  5.  DONE: Creer le bouton "Favori" pour ajouter/gerer les marque-pages
   6.  TODO: Implementer la gestion de l'historique de navigation (pile de pages visitees)
   7.  TODO: Implementer le support de la souris pour Turbo Pascal via INT 33h
   8.  TODO: Implementer le support de la souris pour Free Pascal via PtcMouse
@@ -68,6 +68,15 @@ Const
  REFRESH_BTN_WIDTH = 30;
  REFRESH_BTN_HEIGHT = 20;
 
+ { Constantes pour le bouton Favori }
+ FAVORITE_BTN_X = 620;
+ FAVORITE_BTN_Y = 5;
+ FAVORITE_BTN_WIDTH = 30;
+ FAVORITE_BTN_HEIGHT = 20;
+
+ { Constantes pour les favoris }
+ MAX_FAVORITES = 100;
+
  { Couleurs de l'interface }
  COLOR_URL_BAR_BG = 15;       { Blanc }
  COLOR_URL_BAR_BORDER = 0;    { Noir }
@@ -92,6 +101,11 @@ Var
 
  { Variables pour le bouton Actualiser }
  RefreshButtonEnabled: Boolean;
+
+ { Variables pour le bouton Favori et les marque-pages }
+ FavoriteButtonEnabled: Boolean;
+ Favorites: Array[1..MAX_FAVORITES] Of String;
+ FavoriteCount: Integer;
 
 { Procedure pour dessiner la barre d'URL }
 Procedure DrawURLBar;
@@ -305,6 +319,129 @@ Begin
  DrawRefreshButton;
 End;
 
+{ Fonction pour verifier si l'URL courante est dans les favoris }
+Function IsFavorite(URL: String): Boolean;
+Var
+ I: Integer;
+Begin
+ IsFavorite := False;
+ For I := 1 To FavoriteCount Do Begin
+  If Favorites[I] = URL Then Begin
+   IsFavorite := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ Procedure pour ajouter l'URL courante aux favoris }
+Procedure AddFavorite(URL: String);
+Begin
+ If FavoriteCount < MAX_FAVORITES Then Begin
+  If Not IsFavorite(URL) Then Begin
+   Inc(FavoriteCount);
+   Favorites[FavoriteCount] := URL;
+  End;
+ End;
+End;
+
+{ Procedure pour retirer l'URL courante des favoris }
+Procedure RemoveFavorite(URL: String);
+Var
+ I, J: Integer;
+Begin
+ For I := 1 To FavoriteCount Do Begin
+  If Favorites[I] = URL Then Begin
+   { Decaler les elements suivants }
+   For J := I To FavoriteCount - 1 Do
+    Favorites[J] := Favorites[J + 1];
+   Dec(FavoriteCount);
+   Exit;
+  End;
+ End;
+End;
+
+{ Procedure pour dessiner le bouton Favori }
+Procedure DrawFavoriteButton;
+Var
+ CenterX, CenterY: Integer;
+ IconColor: Integer;
+ IsFav: Boolean;
+Begin
+ { Dessiner le fond du bouton }
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(FAVORITE_BTN_X, FAVORITE_BTN_Y, FAVORITE_BTN_X + FAVORITE_BTN_WIDTH, FAVORITE_BTN_Y + FAVORITE_BTN_HEIGHT);
+
+ { Dessiner la bordure du bouton }
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(FAVORITE_BTN_X, FAVORITE_BTN_Y, FAVORITE_BTN_X + FAVORITE_BTN_WIDTH, FAVORITE_BTN_Y + FAVORITE_BTN_HEIGHT);
+
+ { Dessiner le symbole etoile pour les favoris }
+ CenterX := FAVORITE_BTN_X + (FAVORITE_BTN_WIDTH Div 2);
+ CenterY := FAVORITE_BTN_Y + (FAVORITE_BTN_HEIGHT Div 2);
+
+ { Couleur de l'icone selon l'etat du bouton et si l'URL est en favori }
+ IsFav := IsFavorite(CurrentURL);
+ If FavoriteButtonEnabled Then Begin
+  If IsFav Then
+   IconColor := 14 { Jaune si favori }
+  Else
+   IconColor := COLOR_BTN_TEXT;
+ End
+  Else
+  IconColor := COLOR_BTN_DISABLED;
+
+ SetColor(IconColor);
+ { Dessiner une etoile a 5 branches }
+ { Branche superieure }
+ Line(CenterX, CenterY - 7, CenterX - 2, CenterY - 2);
+ Line(CenterX, CenterY - 7, CenterX + 2, CenterY - 2);
+ { Branche gauche superieure }
+ Line(CenterX - 7, CenterY - 2, CenterX - 2, CenterY - 2);
+ Line(CenterX - 7, CenterY - 2, CenterX - 3, CenterY + 2);
+ { Branche droite superieure }
+ Line(CenterX + 7, CenterY - 2, CenterX + 2, CenterY - 2);
+ Line(CenterX + 7, CenterY - 2, CenterX + 3, CenterY + 2);
+ { Branche gauche inferieure }
+ Line(CenterX - 5, CenterY + 6, CenterX - 3, CenterY + 2);
+ Line(CenterX - 5, CenterY + 6, CenterX, CenterY + 3);
+ { Branche droite inferieure }
+ Line(CenterX + 5, CenterY + 6, CenterX + 3, CenterY + 2);
+ Line(CenterX + 5, CenterY + 6, CenterX, CenterY + 3);
+End;
+
+{ Fonction pour verifier si un clic est dans le bouton Favori }
+Function IsClickInFavoriteButton(X, Y: Integer): Boolean;
+Begin
+ IsClickInFavoriteButton := (X >= FAVORITE_BTN_X) And (X <= FAVORITE_BTN_X + FAVORITE_BTN_WIDTH) And
+                            (Y >= FAVORITE_BTN_Y) And (Y <= FAVORITE_BTN_Y + FAVORITE_BTN_HEIGHT);
+End;
+
+{ Procedure pour gerer le clic sur le bouton Favori }
+Procedure HandleFavoriteButtonClick;
+Begin
+ If Not FavoriteButtonEnabled Then Exit;
+ { Basculer l'etat du favori pour l'URL courante }
+ If IsFavorite(CurrentURL) Then
+  RemoveFavorite(CurrentURL)
+ Else
+  AddFavorite(CurrentURL);
+ DrawFavoriteButton;
+End;
+
+{ Procedure pour initialiser le bouton Favori }
+Procedure InitFavoriteButton;
+Begin
+ FavoriteButtonEnabled := True; { Active par defaut }
+ FavoriteCount := 0;
+End;
+
+{ Procedure pour activer/desactiver le bouton Favori }
+Procedure SetFavoriteButtonEnabled(Enabled: Boolean);
+Begin
+ FavoriteButtonEnabled := Enabled;
+ DrawFavoriteButton;
+End;
+
 { Procedure pour verifier si un clic est dans la barre d'URL }
 Function IsClickInURLBar(X, Y: Integer): Boolean;
 Begin
@@ -478,10 +615,12 @@ BEGIN
  InitBackButton;
  InitForwardButton;
  InitRefreshButton;
+ InitFavoriteButton;
  DrawURLBar;
  DrawBackButton;
  DrawForwardButton;
  DrawRefreshButton;
+ DrawFavoriteButton;
  { Boucle principale temporaire pour tester la barre d'URL }
  URLBarFocused := True;
  Repeat
