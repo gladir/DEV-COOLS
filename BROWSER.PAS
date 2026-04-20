@@ -27,7 +27,7 @@
   18. DONE: Implementer le DOM (Document Object Model) pour la manipulation JavaScript
   19. DONE: Creer le parseur CSS pour le support des feuilles de style
   20. DONE: Implementer l'application des styles CSS aux elements HTML (cascade et heritage)
-  21. TODO: Implementer le decodeur et l'affichage des images BMP
+  21. DONE: Implementer le decodeur et l'affichage des images BMP
   22. TODO: Implementer le decodeur et l'affichage des images GIF (y compris anime)
   23. TODO: Implementer le decodeur et l'affichage des images JPEG
   24. TODO: Implementer le decodeur et l'affichage des images PNG
@@ -6098,6 +6098,604 @@ End;
   FIN RENDU SCRIPTS
   ===================================================== }
 
+{ =====================================================
+  DECODEUR ET AFFICHAGE D'IMAGES BMP
+  ===================================================== }
+
+Const
+ { Signature BMP }
+ BMP_SIGNATURE = $4D42; { 'BM' en little-endian }
+
+ { Types de compression BMP }
+ BMP_COMPRESS_NONE = 0;    { Pas de compression }
+ BMP_COMPRESS_RLE8 = 1;    { RLE 8-bit }
+ BMP_COMPRESS_RLE4 = 2;    { RLE 4-bit }
+ BMP_COMPRESS_BITFIELDS = 3; { Champs de bits }
+
+ { Taille maximale d'image supportee }
+ BMP_MAX_WIDTH = 800;
+ BMP_MAX_HEIGHT = 600;
+
+Type
+ { En-tete de fichier BMP (14 octets) }
+ BMPFileHeader = Record
+  Signature: Word;       { 'BM' = 0x4D42 }
+  FileSize: LongInt;     { Taille totale du fichier }
+  Reserved1: Word;       { Reserve (0) }
+  Reserved2: Word;       { Reserve (0) }
+  DataOffset: LongInt;   { Offset vers les donnees image }
+ End;
+
+ { En-tete d'information BMP (BITMAPINFOHEADER - 40 octets) }
+ BMPInfoHeader = Record
+  HeaderSize: LongInt;   { Taille de cet en-tete (40) }
+  Width: LongInt;        { Largeur en pixels }
+  Height: LongInt;       { Hauteur en pixels (negatif = top-down) }
+  Planes: Word;          { Nombre de plans (1) }
+  BitsPerPixel: Word;    { Bits par pixel (1, 4, 8, 16, 24, 32) }
+  Compression: LongInt;  { Type de compression }
+  ImageSize: LongInt;    { Taille des donnees image }
+  XPixelsPerMeter: LongInt; { Resolution horizontale }
+  YPixelsPerMeter: LongInt; { Resolution verticale }
+  ColorsUsed: LongInt;   { Nombre de couleurs utilisees }
+  ColorsImportant: LongInt; { Nombre de couleurs importantes }
+ End;
+
+ { Entree de palette BMP (4 octets) }
+ BMPPaletteEntry = Record
+  Blue: Byte;
+  Green: Byte;
+  Red: Byte;
+  Reserved: Byte;
+ End;
+
+ { Palette de couleurs BMP }
+ BMPPalette = Array[0..255] Of BMPPaletteEntry;
+
+ { Structure d'image BMP en memoire }
+ BMPImage = Record
+  Width: Integer;
+  Height: Integer;
+  BitsPerPixel: Integer;
+  TopDown: Boolean;      { True si les lignes sont stockees de haut en bas }
+  Palette: BMPPalette;
+  PaletteSize: Integer;
+  Data: Pointer;         { Pointeur vers les donnees de pixels }
+  DataSize: LongInt;
+  Valid: Boolean;
+ End;
+
+ BMPImagePtr = ^BMPImage;
+
+Var
+ { Cache d'images chargees }
+ BMPImageCache: Array[1..32] Of Record
+  URL: String[255];
+  Image: BMPImage;
+  Used: Boolean;
+ End;
+ BMPImageCacheCount: Integer;
+
+{ Initialiser le cache d'images }
+Procedure BMPInitCache;
+Var
+ I: Integer;
+Begin
+ For I := 1 To 32 Do Begin
+  BMPImageCache[I].URL := '';
+  BMPImageCache[I].Used := False;
+  BMPImageCache[I].Image.Valid := False;
+  BMPImageCache[I].Image.Data := Nil;
+ End;
+ BMPImageCacheCount := 0;
+End;
+
+{ Convertir une couleur RGB en index de palette VGA/EGA }
+Function BMPRGBToVGAColor(R, G, B: Byte): Byte;
+Var
+ BestColor, BestDist, Dist: Integer;
+ I: Integer;
+ { Palette EGA/VGA standard }
+Const
+ VGAPalette: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0),       { 0: Noir }
+  (0, 0, 170),     { 1: Bleu }
+  (0, 170, 0),     { 2: Vert }
+  (0, 170, 170),   { 3: Cyan }
+  (170, 0, 0),     { 4: Rouge }
+  (170, 0, 170),   { 5: Magenta }
+  (170, 85, 0),    { 6: Marron }
+  (170, 170, 170), { 7: Gris clair }
+  (85, 85, 85),    { 8: Gris fonce }
+  (85, 85, 255),   { 9: Bleu clair }
+  (85, 255, 85),   { 10: Vert clair }
+  (85, 255, 255),  { 11: Cyan clair }
+  (255, 85, 85),   { 12: Rouge clair }
+  (255, 85, 255),  { 13: Magenta clair }
+  (255, 255, 85),  { 14: Jaune }
+  (255, 255, 255)  { 15: Blanc }
+ );
+Begin
+ BestColor := 0;
+ BestDist := 256 * 256 * 3; { Distance maximale possible }
+
+ For I := 0 To 15 Do Begin
+  { Distance euclidienne au carre }
+  Dist := (Integer(R) - Integer(VGAPalette[I, 0])) *
+          (Integer(R) - Integer(VGAPalette[I, 0])) +
+          (Integer(G) - Integer(VGAPalette[I, 1])) *
+          (Integer(G) - Integer(VGAPalette[I, 1])) +
+          (Integer(B) - Integer(VGAPalette[I, 2])) *
+          (Integer(B) - Integer(VGAPalette[I, 2]));
+  If Dist < BestDist Then Begin
+   BestDist := Dist;
+   BestColor := I;
+  End;
+ End;
+
+ BMPRGBToVGAColor := BestColor;
+End;
+
+{ Liberer la memoire d'une image BMP }
+Procedure BMPFreeImage(Var Img: BMPImage);
+Begin
+ If Img.Data <> Nil Then Begin
+  FreeMem(Img.Data, Img.DataSize);
+  Img.Data := Nil;
+ End;
+ Img.Valid := False;
+ Img.DataSize := 0;
+End;
+
+{ Charger une image BMP depuis un fichier }
+Function BMPLoadFromFile(Const FileName: String; Var Img: BMPImage): Boolean;
+Var
+ F: File;
+ FileHdr: BMPFileHeader;
+ InfoHdr: BMPInfoHeader;
+ BytesRead: Word;
+ I: Integer;
+ RowSize: LongInt;
+ Padding: Integer;
+Begin
+ BMPLoadFromFile := False;
+ Img.Valid := False;
+ Img.Data := Nil;
+
+ { Ouvrir le fichier }
+ {$I-}
+ Assign(F, FileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+
+ { Lire l'en-tete de fichier }
+ BlockRead(F, FileHdr, SizeOf(BMPFileHeader), BytesRead);
+ If BytesRead <> SizeOf(BMPFileHeader) Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Verifier la signature BMP }
+ If FileHdr.Signature <> BMP_SIGNATURE Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Lire l'en-tete d'information }
+ BlockRead(F, InfoHdr, SizeOf(BMPInfoHeader), BytesRead);
+ If BytesRead <> SizeOf(BMPInfoHeader) Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Verifier les dimensions }
+ If (Abs(InfoHdr.Width) > BMP_MAX_WIDTH) Or
+    (Abs(InfoHdr.Height) > BMP_MAX_HEIGHT) Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Verifier la compression (seule BI_RGB est supportee) }
+ If InfoHdr.Compression <> BMP_COMPRESS_NONE Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Remplir la structure }
+ Img.Width := InfoHdr.Width;
+ If InfoHdr.Height < 0 Then Begin
+  Img.Height := -InfoHdr.Height;
+  Img.TopDown := True;
+ End
+ Else Begin
+  Img.Height := InfoHdr.Height;
+  Img.TopDown := False;
+ End;
+ Img.BitsPerPixel := InfoHdr.BitsPerPixel;
+
+ { Lire la palette si necessaire }
+ Img.PaletteSize := 0;
+ If Img.BitsPerPixel <= 8 Then Begin
+  If InfoHdr.ColorsUsed > 0 Then
+   Img.PaletteSize := InfoHdr.ColorsUsed
+  Else
+   Img.PaletteSize := 1 Shl Img.BitsPerPixel;
+
+  If Img.PaletteSize > 256 Then Img.PaletteSize := 256;
+
+  For I := 0 To Img.PaletteSize - 1 Do Begin
+   BlockRead(F, Img.Palette[I], SizeOf(BMPPaletteEntry), BytesRead);
+   If BytesRead <> SizeOf(BMPPaletteEntry) Then Begin
+    Close(F);
+    Exit;
+   End;
+  End;
+ End;
+
+ { Calculer la taille des donnees }
+ { Chaque ligne est alignee sur 4 octets }
+ RowSize := ((LongInt(Img.Width) * LongInt(Img.BitsPerPixel) + 31) Div 32) * 4;
+ Img.DataSize := RowSize * LongInt(Img.Height);
+
+ { Allouer la memoire pour les donnees }
+ If Img.DataSize > 65520 Then Begin
+  { Trop grand pour une allocation simple }
+  Close(F);
+  Exit;
+ End;
+
+ GetMem(Img.Data, Img.DataSize);
+ If Img.Data = Nil Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Se positionner au debut des donnees }
+ Seek(F, FileHdr.DataOffset);
+ If IOResult <> 0 Then Begin
+  BMPFreeImage(Img);
+  Close(F);
+  Exit;
+ End;
+
+ { Lire les donnees de l'image }
+ BlockRead(F, Img.Data^, Img.DataSize, BytesRead);
+ If LongInt(BytesRead) <> Img.DataSize Then Begin
+  BMPFreeImage(Img);
+  Close(F);
+  Exit;
+ End;
+
+ Close(F);
+ Img.Valid := True;
+ BMPLoadFromFile := True;
+End;
+
+{ Obtenir la couleur d'un pixel dans l'image BMP }
+Function BMPGetPixel(Const Img: BMPImage; X, Y: Integer): Byte;
+Var
+ RowSize: LongInt;
+ ByteOffset: LongInt;
+ BitOffset: Integer;
+ PixelData: Byte;
+ R, G, B: Byte;
+ RowPtr: ^Byte;
+ ActualY: Integer;
+Begin
+ BMPGetPixel := 0;
+ If Not Img.Valid Then Exit;
+ If (X < 0) Or (X >= Img.Width) Or (Y < 0) Or (Y >= Img.Height) Then Exit;
+
+ { Les BMP stockent les lignes du bas vers le haut (sauf TopDown) }
+ If Img.TopDown Then
+  ActualY := Y
+ Else
+  ActualY := Img.Height - 1 - Y;
+
+ { Calculer la taille d'une ligne (alignee sur 4 octets) }
+ RowSize := ((LongInt(Img.Width) * LongInt(Img.BitsPerPixel) + 31) Div 32) * 4;
+
+ Case Img.BitsPerPixel Of
+  1: Begin
+   ByteOffset := RowSize * LongInt(ActualY) + (X Div 8);
+   BitOffset := 7 - (X Mod 8);
+   RowPtr := Img.Data;
+   Inc(RowPtr, ByteOffset);
+   PixelData := (RowPtr^ Shr BitOffset) And 1;
+   { Convertir via la palette }
+   BMPGetPixel := BMPRGBToVGAColor(
+    Img.Palette[PixelData].Red,
+    Img.Palette[PixelData].Green,
+    Img.Palette[PixelData].Blue);
+  End;
+
+  4: Begin
+   ByteOffset := RowSize * LongInt(ActualY) + (X Div 2);
+   RowPtr := Img.Data;
+   Inc(RowPtr, ByteOffset);
+   If (X Mod 2) = 0 Then
+    PixelData := (RowPtr^ Shr 4) And $0F
+   Else
+    PixelData := RowPtr^ And $0F;
+   { Convertir via la palette }
+   BMPGetPixel := BMPRGBToVGAColor(
+    Img.Palette[PixelData].Red,
+    Img.Palette[PixelData].Green,
+    Img.Palette[PixelData].Blue);
+  End;
+
+  8: Begin
+   ByteOffset := RowSize * LongInt(ActualY) + LongInt(X);
+   RowPtr := Img.Data;
+   Inc(RowPtr, ByteOffset);
+   PixelData := RowPtr^;
+   { Convertir via la palette }
+   BMPGetPixel := BMPRGBToVGAColor(
+    Img.Palette[PixelData].Red,
+    Img.Palette[PixelData].Green,
+    Img.Palette[PixelData].Blue);
+  End;
+
+  24: Begin
+   ByteOffset := RowSize * LongInt(ActualY) + LongInt(X) * 3;
+   RowPtr := Img.Data;
+   Inc(RowPtr, ByteOffset);
+   B := RowPtr^;
+   Inc(RowPtr);
+   G := RowPtr^;
+   Inc(RowPtr);
+   R := RowPtr^;
+   BMPGetPixel := BMPRGBToVGAColor(R, G, B);
+  End;
+
+  32: Begin
+   ByteOffset := RowSize * LongInt(ActualY) + LongInt(X) * 4;
+   RowPtr := Img.Data;
+   Inc(RowPtr, ByteOffset);
+   B := RowPtr^;
+   Inc(RowPtr);
+   G := RowPtr^;
+   Inc(RowPtr);
+   R := RowPtr^;
+   { Ignorer l'alpha (4eme octet) }
+   BMPGetPixel := BMPRGBToVGAColor(R, G, B);
+  End;
+ End;
+End;
+
+{ Dessiner une image BMP a l'ecran }
+Procedure BMPDrawImage(Const Img: BMPImage; DestX, DestY: Integer;
+                        MaxWidth, MaxHeight: Integer);
+Var
+ X, Y: Integer;
+ DrawWidth, DrawHeight: Integer;
+ PixelColor: Byte;
+Begin
+ If Not Img.Valid Then Exit;
+
+ { Calculer les dimensions a dessiner }
+ DrawWidth := Img.Width;
+ DrawHeight := Img.Height;
+
+ { Limiter aux dimensions maximales }
+ If DrawWidth > MaxWidth Then DrawWidth := MaxWidth;
+ If DrawHeight > MaxHeight Then DrawHeight := MaxHeight;
+
+ { Dessiner pixel par pixel }
+ For Y := 0 To DrawHeight - 1 Do Begin
+  For X := 0 To DrawWidth - 1 Do Begin
+   PixelColor := BMPGetPixel(Img, X, Y);
+   PutPixel(DestX + X, DestY + Y, PixelColor);
+  End;
+ End;
+End;
+
+{ Dessiner une image BMP avec mise a l'echelle }
+Procedure BMPDrawImageScaled(Const Img: BMPImage; DestX, DestY: Integer;
+                              DestWidth, DestHeight: Integer);
+Var
+ X, Y: Integer;
+ SrcX, SrcY: Integer;
+ PixelColor: Byte;
+Begin
+ If Not Img.Valid Then Exit;
+ If (DestWidth <= 0) Or (DestHeight <= 0) Then Exit;
+
+ { Dessiner avec mise a l'echelle }
+ For Y := 0 To DestHeight - 1 Do Begin
+  SrcY := (Y * Img.Height) Div DestHeight;
+  For X := 0 To DestWidth - 1 Do Begin
+   SrcX := (X * Img.Width) Div DestWidth;
+   PixelColor := BMPGetPixel(Img, SrcX, SrcY);
+   PutPixel(DestX + X, DestY + Y, PixelColor);
+  End;
+ End;
+End;
+
+{ Chercher une image dans le cache }
+Function BMPFindInCache(Const URL: String): Integer;
+Var
+ I: Integer;
+Begin
+ BMPFindInCache := 0;
+ For I := 1 To 32 Do Begin
+  If BMPImageCache[I].Used And (BMPImageCache[I].URL = URL) Then Begin
+   BMPFindInCache := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Ajouter une image au cache }
+Function BMPAddToCache(Const URL: String; Const Img: BMPImage): Integer;
+Var
+ I: Integer;
+ Slot: Integer;
+Begin
+ BMPAddToCache := 0;
+
+ { Chercher un slot libre }
+ Slot := 0;
+ For I := 1 To 32 Do Begin
+  If Not BMPImageCache[I].Used Then Begin
+   Slot := I;
+   Break;
+  End;
+ End;
+
+ { Si pas de slot libre, utiliser le premier }
+ If Slot = 0 Then Begin
+  { Liberer la premiere image }
+  If BMPImageCache[1].Image.Valid Then
+   BMPFreeImage(BMPImageCache[1].Image);
+  Slot := 1;
+ End;
+
+ BMPImageCache[Slot].URL := URL;
+ BMPImageCache[Slot].Image := Img;
+ BMPImageCache[Slot].Used := True;
+ BMPAddToCache := Slot;
+End;
+
+{ Construire le chemin complet d'une image }
+Function BMPBuildImagePath(Const Src: String): String;
+Var
+ BasePath: String;
+ I: Integer;
+Begin
+ { Si c'est un chemin absolu, le retourner tel quel }
+ If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
+     ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
+  BMPBuildImagePath := Src;
+  Exit;
+ End;
+
+ { Sinon construire le chemin relatif a l'URL courante }
+ BasePath := CurrentURL;
+
+ { Retirer le nom de fichier de l'URL courante }
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Break;
+  End;
+ End;
+
+ BMPBuildImagePath := BasePath + Src;
+End;
+
+{ Procedure pour rendre la balise IMG }
+Procedure RenderTagImg(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Src, Alt, WidthAttr, HeightAttr: String;
+ ImgPath: String;
+ Img: BMPImage;
+ CacheIdx: Integer;
+ ImgWidth, ImgHeight: Integer;
+ DrawWidth, DrawHeight: Integer;
+ AltWidth: Integer;
+ Code: Integer;
+Begin
+ If Node = Nil Then Exit;
+ If Ctx.InHead Then Exit; { Pas d'affichage dans head }
+
+ { Obtenir les attributs }
+ Src := GetNodeAttribute(Node, 'src');
+ Alt := GetNodeAttribute(Node, 'alt');
+ WidthAttr := GetNodeAttribute(Node, 'width');
+ HeightAttr := GetNodeAttribute(Node, 'height');
+
+ { Si pas de source, afficher le texte alternatif }
+ If Length(Src) = 0 Then Begin
+  If Length(Alt) > 0 Then
+   RenderText(Ctx, '[' + Alt + ']');
+  Exit;
+ End;
+
+ { Construire le chemin complet de l'image }
+ ImgPath := BMPBuildImagePath(Src);
+
+ { Verifier si c'est une image BMP }
+ If (Length(ImgPath) < 4) Or
+    (HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 3, 4)) <> '.bmp') Then Begin
+  { Pas une image BMP, afficher le texte alternatif }
+  If Length(Alt) > 0 Then
+   RenderText(Ctx, '[' + Alt + ']')
+  Else
+   RenderText(Ctx, '[IMG]');
+  Exit;
+ End;
+
+ { Chercher dans le cache }
+ CacheIdx := BMPFindInCache(ImgPath);
+ If CacheIdx > 0 Then Begin
+  Img := BMPImageCache[CacheIdx].Image;
+ End
+ Else Begin
+  { Charger l'image }
+  If Not BMPLoadFromFile(ImgPath, Img) Then Begin
+   { Echec du chargement, afficher le texte alternatif }
+   If Length(Alt) > 0 Then
+    RenderText(Ctx, '[' + Alt + ']')
+   Else
+    RenderText(Ctx, '[IMG: ' + Src + ']');
+   Exit;
+  End;
+
+  { Ajouter au cache }
+  BMPAddToCache(ImgPath, Img);
+ End;
+
+ { Determiner les dimensions d'affichage }
+ ImgWidth := Img.Width;
+ ImgHeight := Img.Height;
+
+ { Utiliser les attributs width/height si specifies }
+ If Length(WidthAttr) > 0 Then Begin
+  Val(WidthAttr, DrawWidth, Code);
+  If Code <> 0 Then DrawWidth := ImgWidth;
+ End
+ Else
+  DrawWidth := ImgWidth;
+
+ If Length(HeightAttr) > 0 Then Begin
+  Val(HeightAttr, DrawHeight, Code);
+  If Code <> 0 Then DrawHeight := ImgHeight;
+ End
+ Else
+  DrawHeight := ImgHeight;
+
+ { Verifier si l'image tient sur la ligne }
+ If Ctx.X + DrawWidth > Ctx.MaxX Then Begin
+  { Passer a la ligne suivante }
+  RenderNewLine(Ctx);
+ End;
+
+ { Verifier si l'image tient dans la zone de rendu }
+ If DrawWidth > Ctx.MaxX - Ctx.X Then
+  DrawWidth := Ctx.MaxX - Ctx.X;
+ If DrawHeight > Ctx.MaxY - Ctx.Y Then
+  DrawHeight := Ctx.MaxY - Ctx.Y;
+
+ { Dessiner l'image }
+ If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+  BMPDrawImage(Img, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+ Else
+  BMPDrawImageScaled(Img, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+
+ { Mettre a jour la position }
+ Ctx.X := Ctx.X + DrawWidth;
+
+ { Mettre a jour la hauteur de ligne si necessaire }
+ If DrawHeight > Ctx.LineHeight Then
+  Ctx.LineHeight := DrawHeight;
+End;
+
+{ =====================================================
+  FIN DECODEUR IMAGES BMP
+  ===================================================== }
+
 { Variable globale pour activer/desactiver l'application CSS automatique }
 Var
  CSSAutoApply: Boolean;
@@ -6219,6 +6817,9 @@ Begin
 
     { Scripts JavaScript }
     TAG_SCRIPT:   RenderTagScript(Node, Ctx);
+
+    { Images }
+    TAG_IMG:      RenderTagImg(Node, Ctx);
 
     { NOSCRIPT - afficher le contenu si JavaScript est desactive }
     TAG_NOSCRIPT: Begin
