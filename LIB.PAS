@@ -90,6 +90,13 @@ Type
   Flags:Byte;
  End;
 
+ { Noeud de liste chainee pour les fichiers d'entree }
+ PInputFileNode=^TInputFileNode;
+ TInputFileNode=Record
+  Name:String;
+  Next:PInputFileNode;
+ End;
+
 Var
  { Options de la ligne de commande }
  OptOut:String;
@@ -106,7 +113,8 @@ Var
  OptNoLogo:Boolean;
 
  { Fichiers d'entrée }
- InputFiles:Array[1..256] of String;
+ InputFilesHead:PInputFileNode;
+ InputFilesTail:PInputFileNode;
  InputFileCount:Integer;
 
  { Liste des modules }
@@ -137,9 +145,9 @@ Var
 Procedure ShowBanner;
 Begin
  If Not OptNoLogo Then Begin
-  WriteLn('LIB - Gestionnaire de bibliothèques Microsoft(R) compatible');
+  WriteLn('LIB - Cette commande permet de lancer le gestionnaire de ',
+               'biblioth�ques compatible Microsoft.');
   WriteLn('Version ', VERSION, ' - Clone Turbo Pascal/Free Pascal');
-  WriteLn('(C) 2026 - gladir.com');
   WriteLn;
  End;
 End;
@@ -148,22 +156,22 @@ Procedure ShowHelp;
 Begin
  ShowBanner;
  WriteLn('Syntaxe:');
- WriteLn('  LIB [options] bibliothèque [objets]');
+ WriteLn('  LIB [options] biblioth�que [objets]');
  WriteLn('  LIB @fichier_réponse');
  WriteLn;
  WriteLn('Options:');
  WriteLn('  /OUT:nom       Nom du fichier .lib de sortie');
  WriteLn('  /REMOVE:nom    Supprimer un module');
  WriteLn('  /EXTRACT:nom   Extraire un module');
- WriteLn('  /LIST          Lister le contenu de la bibliothèque');
+ WriteLn('  /LIST          Lister le contenu de la biblioth�que');
  WriteLn('  /SYMBOLS       Afficher les symboles publics');
  WriteLn('  /INCLUDE:sym   Forcer l''inclusion d''un symbole');
  WriteLn('  /MACHINE:arch  Architecture cible (IX86, X64, ARM, etc.)');
- WriteLn('  /VERBOSE       Mode détaillé');
- WriteLn('  /NOLOGO        Supprimer la bannière');
+ WriteLn('  /VERBOSE       Mode d�taill�');
+ WriteLn('  /NOLOGO        Supprimer la banni�re');
  WriteLn('  /? ou /HELP    Afficher cette aide');
  WriteLn;
- WriteLn('Opérations:');
+ WriteLn('Op�rations:');
  WriteLn('  +module.obj    Ajouter un module');
  WriteLn('  -module        Supprimer un module');
  WriteLn('  *module        Extraire un module');
@@ -174,15 +182,63 @@ Begin
  WriteLn('  LIB /EXTRACT:module malib.lib');
 End;
 
-Procedure Error(S:String);
-Begin
+Procedure Error(S:String);Begin
  WriteLn('ERREUR: ', S);
  Halt(1);
 End;
 
-Procedure Warning(S:String);
-Begin
+Procedure Warning(S:String);Begin
  WriteLn('AVERTISSEMENT: ', S);
+End;
+
+Procedure AddInputFile(S:String);
+Var
+ Node:PInputFileNode;
+Begin
+ New(Node);
+ Node^.Name := S;
+ Node^.Next := Nil;
+ If InputFilesHead = Nil Then Begin
+  InputFilesHead := Node;
+  InputFilesTail := Node;
+ End
+ Else Begin
+  InputFilesTail^.Next := Node;
+  InputFilesTail := Node;
+ End;
+ Inc(InputFileCount);
+End;
+
+Function GetInputFileAt(Index:Integer):String;
+Var
+ Node:PInputFileNode;
+ I:Integer;
+Begin
+ GetInputFileAt := '';
+ If (Index < 1) Or (Index > InputFileCount) Then Exit;
+ Node := InputFilesHead;
+ I := 1;
+ While (Node <> Nil) And (I < Index) Do Begin
+  Node := Node^.Next;
+  Inc(I);
+ End;
+ If Node <> Nil Then
+  GetInputFileAt := Node^.Name;
+End;
+
+Procedure ClearInputFiles;
+Var
+ Node, NextNode:PInputFileNode;
+Begin
+ Node := InputFilesHead;
+ While Node <> Nil Do Begin
+  NextNode := Node^.Next;
+  Dispose(Node);
+  Node := NextNode;
+ End;
+ InputFilesHead := Nil;
+ InputFilesTail := Nil;
+ InputFileCount := 0;
 End;
 
 Function UpperCase(S:String):String;
@@ -422,8 +478,7 @@ Begin
    End;
 
    If Length(Token) > 0 Then Begin
-    Inc(InputFileCount);
-    InputFiles[InputFileCount] := Token;
+    AddInputFile(Token);
    End;
   End;
  End;
@@ -496,7 +551,7 @@ Begin
  OptMachine := 'IX86';
  OptVerbose := False;
  OptNoLogo := False;
- InputFileCount := 0;
+ ClearInputFiles;
 
  For I := 1 to ParamCount do Begin
   Arg := ParamStr(I);
@@ -550,8 +605,7 @@ Begin
   End
   { Opérations + - * }
   Else If Arg[1] = '+' Then Begin
-   Inc(InputFileCount);
-   InputFiles[InputFileCount] := Copy(Arg, 2, Length(Arg) - 1);
+   AddInputFile(Copy(Arg, 2, Length(Arg) - 1));
   End
   Else If Arg[1] = '-' Then Begin
    Inc(OptRemoveCount);
@@ -563,8 +617,7 @@ Begin
   End
   { Fichiers d'entrée }
   Else Begin
-   Inc(InputFileCount);
-   InputFiles[InputFileCount] := Arg;
+    AddInputFile(Arg);
   End;
  End;
 End;
@@ -923,7 +976,7 @@ Begin
  AlignToPage := ((Pos + PageSize - 1) div PageSize) * PageSize;
 End;
 
-{ Écriture des octets de bourrage pour l'alignement }
+{ �criture des octets de bourrage pour l'alignement }
 Procedure WritePadding(Var F:File; CurrentPos:LongInt; TargetPos:LongInt);
 Var
  PadByte:Byte;
@@ -931,11 +984,10 @@ Var
  NumWritten:Word;
 Begin
  PadByte := 0;
- For I := CurrentPos to TargetPos - 1 do
-  BlockWrite(F, PadByte, 1, NumWritten);
+ For I := CurrentPos to TargetPos - 1 do BlockWrite(F, PadByte, 1, NumWritten);
 End;
 
-{ Écriture de l'en-tête de bibliothèque }
+{ �criture de l'ent�te de biblioth�que }
 Procedure WriteLibHeader(Var F:File; PageSize:Word; DictOffset:LongInt; DictSize:Word);
 Var
  Header:Array[1..16] of Byte;
@@ -963,11 +1015,10 @@ Begin
  Header[10] := Lo(DictSize);
  Header[11] := Hi(DictSize);
  Header[12] := 0; { Flags }
-
  BlockWrite(F, Header, 12, NumWritten);
 End;
 
-{ Écriture du dictionnaire de la bibliothèque }
+{ �criture du dictionnaire de la biblioth�que }
 Procedure WriteLibDictionary(Var F:File);
 Var
  I, J, Bucket:Integer;
@@ -978,16 +1029,13 @@ Var
  DictPage:Array[1..512] of Byte;
  PageOffset:Integer;
 Begin
- { Créer un dictionnaire simple avec un seul bloc de 512 octets }
+ { Cr�er un dictionnaire simple avec un seul bloc de 512 octets }
  FillChar(DictPage, SizeOf(DictPage), 0);
  DictPage[1] := 37; { Nombre de buckets }
  DictPage[38] := $FF; { Index libre }
-
  PageOffset := 39;
-
  For I := 1 to SymbolCount do Begin
   If PageOffset + Length(Symbols[I].Name) + 4 > 512 Then Break;
-
   NameLen := Length(Symbols[I].Name);
   DictPage[PageOffset] := NameLen;
   Inc(PageOffset);
@@ -995,17 +1043,16 @@ Begin
    DictPage[PageOffset] := Ord(Symbols[I].Name[J]);
    Inc(PageOffset);
   End;
-  { Page number du module }
+   { Page number du module }
   DictPage[PageOffset] := Lo(Modules[Symbols[I].ModuleIndex].PageNum);
   Inc(PageOffset);
   DictPage[PageOffset] := Hi(Modules[Symbols[I].ModuleIndex].PageNum);
   Inc(PageOffset);
  End;
-
  BlockWrite(F, DictPage, 512, NumWritten);
 End;
 
-{ Écriture de l'enregistrement LIBEND }
+{ �criture de l'enregistrement LIBEND }
 Procedure WriteLibEnd(Var F:File);
 Var
  EndRec:Array[1..3] of Byte;
@@ -1017,11 +1064,13 @@ Begin
  BlockWrite(F, EndRec, 3, NumWritten);
 End;
 
-{ Création ou mise à jour d'une bibliothèque }
+{ Cr�ation ou mise � jour d'une biblioth�que }
 Procedure CreateLibrary(OutputName:String);
 Var
  OutF, InF:File;
  I:Integer;
+ InputNode:PInputFileNode;
+ InputName:String;
  Buffer:Array[1..4096] of Byte;
  ToRead, NumRead, NumWritten:Word;
  FileSize:LongInt;
@@ -1032,92 +1081,80 @@ Var
  TempName:String;
 Begin
  PageSize := 16; { Taille de page standard }
-
  TempName := OutputName + '.tmp';
-
  {$I-}
  Assign(OutF, TempName);
  Rewrite(OutF, 1);
  {$I+}
- If IOResult <> 0 Then
-  Error('Impossible de créer: ' + TempName);
-
- { Écrire un en-tête temporaire }
+ If IOResult <> 0 Then Error('Impossible de cr�er: ' + TempName);
+ { �crire un en-tête temporaire }
  WriteLibHeader(OutF, PageSize, 0, 0);
  WritePadding(OutF, FilePos(OutF), PageSize);
-
  CurrentPos := PageSize;
  ModuleCount := 0;
  SymbolCount := 0;
-
- { Traiter chaque fichier d'entrée }
- For I := 1 to InputFileCount do Begin
-  If UpperCase(Copy(InputFiles[I], Length(InputFiles[I]) - 3, 4)) = '.LIB' Then Begin
+  { Traiter chaque fichier d'entr�e }
+ InputNode := InputFilesHead;
+ While InputNode <> Nil Do Begin
+  InputName := InputNode^.Name;
+  If UpperCase(Copy(InputName, Length(InputName) - 3, 4)) = '.LIB' Then Begin
    { C'est une bibliothèque, lire ses modules }
-   ReadLibrary(InputFiles[I]);
+   ReadLibrary(InputName);
   End
-  Else Begin
+   Else
+  Begin
    { C'est un fichier .OBJ }
-   If ShouldRemoveModule(StripExtension(ExtractFileName(InputFiles[I]))) Then Begin
+   If ShouldRemoveModule(StripExtension(ExtractFileName(InputName))) Then Begin
     If OptVerbose Then
-     WriteLn('Module ignoré (supprimé): ', InputFiles[I]);
+     WriteLn('Module ignor� (supprim�): ', InputName);
+    InputNode := InputNode^.Next;
     Continue;
    End;
-
    { Lire les informations du module }
-   ReadObjFile(InputFiles[I]);
-
-   { Copier le fichier dans la bibliothèque }
+   ReadObjFile(InputName);
+   { Copier le fichier dans la biblioth�que }
    {$I-}
-   Assign(InF, InputFiles[I]);
+   Assign(InF, InputName);
    Reset(InF, 1);
    {$I+}
    If IOResult <> 0 Then Begin
-    Warning('Impossible d''ouvrir: ' + InputFiles[I]);
+    Warning('Impossible d''ouvrir: ' + InputName);
+    InputNode := InputNode^.Next;
     Continue;
    End;
-
    { Enregistrer l'offset du module }
    Modules[ModuleCount].FileOffset := CurrentPos;
    Modules[ModuleCount].PageNum := CurrentPos div PageSize;
-
    FileSize := System.FileSize(InF);
    While Not Eof(InF) do Begin
     BlockRead(InF, Buffer, SizeOf(Buffer), NumRead);
     BlockWrite(OutF, Buffer, NumRead, NumWritten);
    End;
    Close(InF);
-
    Modules[ModuleCount].Size := FileSize;
-
    { Aligner sur la prochaine page }
    CurrentPos := FilePos(OutF);
    AlignedPos := AlignToPage(CurrentPos, PageSize);
    WritePadding(OutF, CurrentPos, AlignedPos);
    CurrentPos := AlignedPos;
-
    If OptVerbose Then
-    WriteLn('Module ajouté: ', Modules[ModuleCount].Name);
+    WriteLn('Module ajout�: ', Modules[ModuleCount].Name);
   End;
+  InputNode := InputNode^.Next;
  End;
-
- { Écrire le dictionnaire }
+ { �crire le dictionnaire }
  DictOffset := FilePos(OutF);
  WriteLibDictionary(OutF);
-
- { Écrire LIBEND }
+ { �crire LIBEND }
  WriteLibEnd(OutF);
-
  Close(OutF);
-
- { Réécrire l'en-tête avec les bonnes informations }
+  { R��crire l'ent�te avec les bonnes informations }
  {$I-}
  Assign(OutF, TempName);
  Reset(OutF, 1);
  {$I+}
  WriteLibHeader(OutF, PageSize, DictOffset, 1);
  Close(OutF);
-
  { Renommer le fichier temporaire }
  {$I-}
  Assign(InF, OutputName);
@@ -1125,66 +1162,61 @@ Begin
  {$I+}
  { Ignorer le IOResult car le fichier peut ne pas exister }
  I := IOResult;
-
  {$I-}
  Assign(InF, TempName);
  Rename(InF, OutputName);
  {$I+}
- If IOResult <> 0 Then
-  Error('Impossible de renommer le fichier temporaire');
-
- WriteLn('Bibliothèque créée: ', OutputName);
+ If IOResult <> 0 Then Error('Impossible de renommer le fichier temporaire');
+ WriteLn('Biblioth�que cr��e: ', OutputName);
  WriteLn('  ', ModuleCount, ' module(s)');
  WriteLn('  ', SymbolCount, ' symbole(s)');
 End;
 
 { Programme principal }
 BEGIN
+ InputFilesHead := Nil;
+ InputFilesTail := Nil;
+ InputFileCount := 0;
  ParseCommandLine;
-
  If ParamCount = 0 Then Begin
+  ClearInputFiles;
   ShowHelp;
   Halt(0);
  End;
-
  ShowBanner;
-
  ModuleCount := 0;
  SymbolCount := 0;
-
- { Si /LIST ou /SYMBOLS sans fichier de sortie, afficher les informations }
+  { Si /LIST ou /SYMBOLS sans fichier de sortie, afficher les informations }
  If (OptList or OptSymbols) and (InputFileCount > 0) Then Begin
-  ReadLibrary(InputFiles[1]);
-
-  If OptList Then
-   ListModules;
-
-  If OptSymbols Then
-   ListSymbols;
+    ReadLibrary(GetInputFileAt(1));
+  If OptList Then ListModules;
+  If OptSymbols Then ListSymbols;
  End
  { Si /EXTRACT, extraire les modules }
  Else If OptExtractCount > 0 Then Begin
   If InputFileCount > 0 Then Begin
-   ReadLibrary(InputFiles[1]);
+     ReadLibrary(GetInputFileAt(1));
    For MainIdx := 1 to OptExtractCount do
-    ExtractModule(OptExtract[MainIdx], InputFiles[1]);
+      ExtractModule(OptExtract[MainIdx], GetInputFileAt(1));
   End
-  Else
-   Error('Aucune bibliothèque spécifiée pour l''extraction');
+   Else
+  Error('Aucune biblioth�que sp�cifi�e pour l''extraction');
  End
- { Sinon, créer ou mettre à jour une bibliothèque }
+ { Sinon, cr�er ou mettre à jour une bibliothèque }
  Else If InputFileCount > 0 Then Begin
   If OptOut = '' Then Begin
    { Utiliser le premier fichier .LIB comme sortie, sinon le premier .OBJ avec extension .LIB }
-   If UpperCase(Copy(InputFiles[1], Length(InputFiles[1]) - 3, 4)) = '.LIB' Then
-    OptOut := InputFiles[1]
+   If UpperCase(Copy(GetInputFileAt(1), Length(GetInputFileAt(1)) - 3, 4)) = '.LIB' Then
+    OptOut := GetInputFileAt(1)
    Else
-    OptOut := StripExtension(InputFiles[1]) + '.LIB';
+    OptOut := StripExtension(GetInputFileAt(1)) + '.LIB';
   End;
-
   CreateLibrary(OptOut);
  End
- Else Begin
-  Error('Aucun fichier spécifié');
+  Else
+ Begin
+  ClearInputFiles;
+  Error('Aucun fichier sp�cifi�');
  End;
+ ClearInputFiles;
 END.
