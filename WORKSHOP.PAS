@@ -767,6 +767,11 @@ Const
  CTRL_GROUPBOX     = 9;
  CTRL_ICON         = 10;
 
+Type
+ { Type pour le buffer de fichier RSC alloue sur le tas }
+ TRSCFileBuffer = Array[0..65535] Of Byte;
+ PRSCFileBuffer = ^TRSCFileBuffer;
+
 Var
  { Mode graphique }
  GrDriver, GrMode: Integer;
@@ -808,7 +813,7 @@ Var
 
  { Donnees GEM RSC importees }
  RSCData: TRSCData;
- RSCFileBuffer: Array[0..65535] Of Byte;
+ RSCFileBuffer: PRSCFileBuffer; { Alloue sur le tas avec GetMem/FreeMem }
 
  { Presse-papiers }
  Clipboard: TClipboard;
@@ -2806,7 +2811,7 @@ End;
 { Lecture d'un objet GEM depuis le fichier }
 Procedure ReadGEMObject(Var Obj: TGEMObject; Offset: Word);
 Begin
- Move(RSCFileBuffer[Offset], Obj, SizeOf(TGEMObject));
+ Move(RSCFileBuffer^[Offset], Obj, SizeOf(TGEMObject));
  { Conversion big endian -> little endian }
  Obj.ob_next := SmallInt(SwapWord(Word(Obj.ob_next)));
  Obj.ob_head := SmallInt(SwapWord(Word(Obj.ob_head)));
@@ -2824,7 +2829,7 @@ End;
 { Lecture d'un TEDINFO depuis le fichier }
 Procedure ReadGEMTedInfo(Var Ted: TGEMTedInfo; Offset: Word);
 Begin
- Move(RSCFileBuffer[Offset], Ted, SizeOf(TGEMTedInfo));
+ Move(RSCFileBuffer^[Offset], Ted, SizeOf(TGEMTedInfo));
  { Conversion big endian -> little endian }
  Ted.te_ptext := SwapLong(Ted.te_ptext);
  Ted.te_ptmplt := SwapLong(Ted.te_ptmplt);
@@ -2842,7 +2847,7 @@ End;
 { Lecture d'un ICONBLK depuis le fichier }
 Procedure ReadGEMIconBlk(Var Icon: TGEMIconBlk; Offset: Word);
 Begin
- Move(RSCFileBuffer[Offset], Icon, SizeOf(TGEMIconBlk));
+ Move(RSCFileBuffer^[Offset], Icon, SizeOf(TGEMIconBlk));
  { Conversion big endian -> little endian }
  Icon.ib_pmask := SwapLong(Icon.ib_pmask);
  Icon.ib_pdata := SwapLong(Icon.ib_pdata);
@@ -2863,7 +2868,7 @@ End;
 { Lecture d'un BITBLK depuis le fichier }
 Procedure ReadGEMBitBlk(Var Bit: TGEMBitBlk; Offset: Word);
 Begin
- Move(RSCFileBuffer[Offset], Bit, SizeOf(TGEMBitBlk));
+ Move(RSCFileBuffer^[Offset], Bit, SizeOf(TGEMBitBlk));
  { Conversion big endian -> little endian }
  Bit.bi_pdata := SwapLong(Bit.bi_pdata);
  Bit.bi_wb := SmallInt(SwapWord(Word(Bit.bi_wb)));
@@ -2883,8 +2888,8 @@ Begin
  S := '';
  I := 0;
  BufIdx := Offset;
- While (I < MAX_RSC_STRING_LEN) And (BufIdx < SizeOf(RSCFileBuffer)) And (RSCFileBuffer[BufIdx] <> 0) Do Begin
-  S := S + Chr(RSCFileBuffer[BufIdx]);
+ While (I < MAX_RSC_STRING_LEN) And (BufIdx < SizeOf(TRSCFileBuffer)) And (RSCFileBuffer^[BufIdx] <> 0) Do Begin
+  S := S + Chr(RSCFileBuffer^[BufIdx]);
   Inc(I);
   Inc(BufIdx);
  End;
@@ -2919,9 +2924,9 @@ Begin
    Ctrl.ClassName := 'STATIC';
    Ctrl.Style := $50000000; { WS_CHILD | WS_VISIBLE }
    { Lecture du texte depuis TEDINFO si present }
-   If (Obj.ob_spec > 0) And (Obj.ob_spec < SizeOf(RSCFileBuffer)) Then Begin
+   If (Obj.ob_spec > 0) And (Obj.ob_spec < SizeOf(TRSCFileBuffer)) Then Begin
     ReadGEMTedInfo(Ted, Word(Obj.ob_spec));
-    If (Ted.te_ptext > 0) And (Ted.te_ptext < SizeOf(RSCFileBuffer)) Then
+    If (Ted.te_ptext > 0) And (Ted.te_ptext < SizeOf(TRSCFileBuffer)) Then
      Ctrl.Text := ReadRSCString(Word(Ted.te_ptext));
    End;
   End;
@@ -2929,9 +2934,9 @@ Begin
    Ctrl.CtrlType := 1; { STATIC text dans boite }
    Ctrl.ClassName := 'STATIC';
    Ctrl.Style := $50000007; { WS_CHILD | WS_VISIBLE | SS_BLACKFRAME }
-   If (Obj.ob_spec > 0) And (Obj.ob_spec < SizeOf(RSCFileBuffer)) Then Begin
+   If (Obj.ob_spec > 0) And (Obj.ob_spec < SizeOf(TRSCFileBuffer)) Then Begin
     ReadGEMTedInfo(Ted, Word(Obj.ob_spec));
-    If (Ted.te_ptext > 0) And (Ted.te_ptext < SizeOf(RSCFileBuffer)) Then
+    If (Ted.te_ptext > 0) And (Ted.te_ptext < SizeOf(TRSCFileBuffer)) Then
      Ctrl.Text := ReadRSCString(Word(Ted.te_ptext));
    End;
   End;
@@ -2951,14 +2956,14 @@ Begin
     Ctrl.ClassName := 'BUTTON';
     Ctrl.Style := $50010000;
    End;
-   If (Obj.ob_spec > 0) And (Obj.ob_spec < SizeOf(RSCFileBuffer)) Then
+   If (Obj.ob_spec > 0) And (Obj.ob_spec < SizeOf(TRSCFileBuffer)) Then
     Ctrl.Text := ReadRSCString(Word(Obj.ob_spec));
   End;
   G_STRING, G_TITLE: Begin
    Ctrl.CtrlType := 1; { STATIC string }
    Ctrl.ClassName := 'STATIC';
    Ctrl.Style := $50000000;
-   If (Obj.ob_spec > 0) And (Obj.ob_spec < SizeOf(RSCFileBuffer)) Then
+   If (Obj.ob_spec > 0) And (Obj.ob_spec < SizeOf(TRSCFileBuffer)) Then
     Ctrl.Text := ReadRSCString(Word(Obj.ob_spec));
   End;
   G_IMAGE: Begin
@@ -2997,7 +3002,7 @@ Begin
  If TreeIndex >= RSCData.Header.ntree Then Exit;
 
  { Lecture de l'offset de l'arbre depuis la table d'index }
- Move(RSCFileBuffer[RSCData.Header.trindex + TreeIndex * TREE_INDEX_SIZE], TreeOffset, 2);
+ Move(RSCFileBuffer^[RSCData.Header.trindex + TreeIndex * TREE_INDEX_SIZE], TreeOffset, 2);
  TreeOffset := SwapWord(TreeOffset);
 
  { Lecture de l'objet racine }
@@ -3164,14 +3169,14 @@ Begin
  End;
 
  { Verifier la taille du fichier }
- If RSCData.Header.rssize > SizeOf(RSCFileBuffer) Then Begin
+ If RSCData.Header.rssize > SizeOf(TRSCFileBuffer) Then Begin
   Close(F);
   Exit;
  End;
 
  { Relire tout le fichier dans le buffer }
  Seek(F, 0);
- BlockRead(F, RSCFileBuffer, RSCData.Header.rssize, BytesRead);
+ BlockRead(F, RSCFileBuffer^, RSCData.Header.rssize, BytesRead);
  Close(F);
 
  If BytesRead < RSCData.Header.rssize Then Exit;
@@ -4753,6 +4758,8 @@ Procedure Initialize;
 Var
  I: Integer;
 Begin
+ { Allouer le buffer RSC sur le tas }
+ GetMem(RSCFileBuffer, SizeOf(TRSCFileBuffer));
  Running := True;
  NeedRedraw := True;
  WindowCount := 0;
@@ -4799,6 +4806,9 @@ Procedure Cleanup;
 Begin
  HideMouse;
  CloseGraphics;
+ { Liberer le buffer RSC du tas }
+ If RSCFileBuffer <> Nil Then
+  FreeMem(RSCFileBuffer, SizeOf(TRSCFileBuffer));
 End;
 
 Procedure MainLoop;
