@@ -834,6 +834,14 @@ Var
  StrEdCursorPos: Integer;     { Position du curseur dans le texte }
  StrEdTopRow: Integer;        { Premiere ligne visible (defilement) }
 
+ { Etat de l'editeur de menus }
+ MnuEdSelectedRow: Integer;  { Item selectionne, 0 = aucun }
+ MnuEdEditField: Integer;    { 0=aucun, 1=texte, 2=ID }
+ MnuEdText: String;           { Texte en cours d'edition }
+ MnuEdCursorPos: Integer;     { Position du curseur }
+ MnuEdTopRow: Integer;        { Premier item visible (defilement) }
+ MnuEdMenuIdx: Integer;       { Index dans ResMenus[] du menu en cours }
+
  { Boucle principale }
  Running: Boolean;
  NeedRedraw: Boolean;
@@ -3712,6 +3720,7 @@ Var
  Y, IndentX, MaxY: Integer;
  ItemText, IdStr: String;
  IsPopup, IsSep: Boolean;
+ TextX, IdX: Integer;
 Begin
  If (WndIndex < 1) Or (WndIndex > WindowCount) Then Exit;
  If Windows[WndIndex].WindowType <> 3 Then Exit;
@@ -3734,6 +3743,9 @@ Begin
    End;
   End;
  End;
+
+ { Mettre a jour l'index global }
+ MnuEdMenuIdx := MenuIdx;
 
  { En-tete }
  SetFillStyle(SolidFill, COLOR_BUTTON);
@@ -3758,6 +3770,9 @@ Begin
  SetFillStyle(SolidFill, COLOR_WINDOW);
  Bar(CX1 + 1, CY1 + 20, CX2 - 1, CY2 - 1);
 
+ { Colonne ID }
+ IdX := CX2 - 80;
+
  Y := CY1 + 22;
  MaxY := CY2 - 16;
 
@@ -3775,6 +3790,13 @@ Begin
 
   { Indentation selon le niveau }
   IndentX := CX1 + 8 + ResMenus[MenuIdx].Items[I].Level * 20;
+  TextX := IndentX + 16;
+
+  { Fond de selection }
+  If I = MnuEdSelectedRow Then Begin
+   SetFillStyle(SolidFill, COLOR_HIGHLIGHT);
+   Bar(CX1 + 2, Y - 1, CX2 - 2, Y + 14);
+  End;
 
   If IsSep And (Not IsPopup) Then Begin
    { Separateur }
@@ -3782,10 +3804,13 @@ Begin
    Line(IndentX, Y + 6, IndentX + 120, Y + 6);
    SetColor(COLOR_BORDER3D_LIGHT);
    Line(IndentX, Y + 7, IndentX + 120, Y + 7);
+   If I = MnuEdSelectedRow Then Begin
+    SetColor(COLOR_HIGHLIGHTTEXT);
+    OutTextXY(TextX, Y + 1, '--- S' + Chr(130) + 'parateur ---');
+   End;
   End Else Begin
    { Icone de type }
    If IsPopup Then Begin
-    { Dossier pour POPUP }
     SetFillStyle(SolidFill, 14);
     Bar(IndentX, Y + 1, IndentX + 12, Y + 11);
     SetColor(8);
@@ -3795,7 +3820,6 @@ Begin
     SetColor(8);
     Rectangle(IndentX, Y - 1, IndentX + 5, Y + 1);
    End Else Begin
-    { Feuille pour item normal }
     SetFillStyle(SolidFill, 15);
     Bar(IndentX, Y + 1, IndentX + 10, Y + 11);
     SetColor(8);
@@ -3804,23 +3828,181 @@ Begin
     Line(IndentX + 2, Y + 7, IndentX + 6, Y + 7);
    End;
 
-   { Texte de l'item }
-   SetColor(COLOR_WINDOWTEXT);
-   ItemText := ResMenus[MenuIdx].Items[I].Text;
-   OutTextXY(IndentX + 16, Y + 1, ItemText);
-
-   { ID pour les items non-popup }
-   If Not IsPopup Then Begin
-    IdStr := 'ID=' + IntToStr(ResMenus[MenuIdx].Items[I].ItemId);
-    SetColor(COLOR_GRAYTEXT);
-    OutTextXY(CX2 - 70, Y + 1, IdStr);
+   { Zone texte - soit edition, soit affichage }
+   If (I = MnuEdSelectedRow) And (MnuEdEditField = 1) Then Begin
+    { Champ d'edition du texte }
+    SetFillStyle(SolidFill, White);
+    Bar(TextX, Y - 1, IdX - 4, Y + 14);
+    Draw3DRect(TextX, Y - 1, IdX - 4, Y + 14, False);
+    SetColor(COLOR_WINDOWTEXT);
+    OutTextXY(TextX + 2, Y + 1, MnuEdText);
+    { Curseur }
+    SetColor(COLOR_WINDOWTEXT);
+    Line(TextX + 2 + MnuEdCursorPos * 8, Y, TextX + 2 + MnuEdCursorPos * 8, Y + 13);
    End Else Begin
-    SetColor(COLOR_GRAYTEXT);
-    OutTextXY(CX2 - 70, Y + 1, 'POPUP');
+    If I = MnuEdSelectedRow Then
+     SetColor(COLOR_HIGHLIGHTTEXT)
+    Else
+     SetColor(COLOR_WINDOWTEXT);
+    ItemText := ResMenus[MenuIdx].Items[I].Text;
+    OutTextXY(TextX, Y + 1, ItemText);
+   End;
+
+   { Zone ID - soit edition, soit affichage }
+   If Not IsPopup Then Begin
+    If (I = MnuEdSelectedRow) And (MnuEdEditField = 2) Then Begin
+     { Champ d'edition de l'ID }
+     SetFillStyle(SolidFill, White);
+     Bar(IdX, Y - 1, CX2 - 4, Y + 14);
+     Draw3DRect(IdX, Y - 1, CX2 - 4, Y + 14, False);
+     SetColor(COLOR_WINDOWTEXT);
+     OutTextXY(IdX + 2, Y + 1, MnuEdText);
+     SetColor(COLOR_WINDOWTEXT);
+     Line(IdX + 2 + MnuEdCursorPos * 8, Y, IdX + 2 + MnuEdCursorPos * 8, Y + 13);
+    End Else Begin
+     IdStr := 'ID=' + IntToStr(ResMenus[MenuIdx].Items[I].ItemId);
+     If I = MnuEdSelectedRow Then
+      SetColor(COLOR_HIGHLIGHTTEXT)
+     Else
+      SetColor(COLOR_GRAYTEXT);
+     OutTextXY(IdX, Y + 1, IdStr);
+    End;
+   End Else Begin
+    If I = MnuEdSelectedRow Then
+     SetColor(COLOR_HIGHLIGHTTEXT)
+    Else
+     SetColor(COLOR_GRAYTEXT);
+    OutTextXY(IdX, Y + 1, 'POPUP');
    End;
   End;
 
   Inc(Y, 16);
+ End;
+End;
+
+Function FindMenuDataIndex(WndIndex: Integer): Integer;
+Var
+ I, J, ResIdx: Integer;
+Begin
+ FindMenuDataIndex := 0;
+ If (WndIndex < 1) Or (WndIndex > WindowCount) Then Exit;
+ ResIdx := Windows[WndIndex].ResourceIndex;
+ J := 0;
+ For I := 1 To ResourceCount Do Begin
+  If Resources[I].ResType = RT_MENU Then Begin
+   Inc(J);
+   If I = ResIdx Then Begin
+    FindMenuDataIndex := J;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+Procedure CommitMenuEdit;
+Var
+ Val: Integer;
+ Code: Integer;
+Begin
+ If (MnuEdMenuIdx < 1) Or (MnuEdMenuIdx > MenuDataCount) Then Exit;
+ If (MnuEdSelectedRow < 1) Or (MnuEdSelectedRow > ResMenus[MnuEdMenuIdx].ItemCount) Then Exit;
+ If MnuEdEditField = 1 Then Begin
+  ResMenus[MnuEdMenuIdx].Items[MnuEdSelectedRow].Text := MnuEdText;
+  AppState.ProjectModified := True;
+ End Else If MnuEdEditField = 2 Then Begin
+  System.Val(MnuEdText, Val, Code);
+  If Code = 0 Then Begin
+   ResMenus[MnuEdMenuIdx].Items[MnuEdSelectedRow].ItemId := Val;
+   AppState.ProjectModified := True;
+  End;
+ End;
+ MnuEdEditField := 0;
+End;
+
+Procedure StartMenuEditText;
+Begin
+ If (MnuEdMenuIdx < 1) Or (MnuEdMenuIdx > MenuDataCount) Then Exit;
+ If (MnuEdSelectedRow < 1) Or (MnuEdSelectedRow > ResMenus[MnuEdMenuIdx].ItemCount) Then Exit;
+ MnuEdEditField := 1;
+ MnuEdText := ResMenus[MnuEdMenuIdx].Items[MnuEdSelectedRow].Text;
+ MnuEdCursorPos := Length(MnuEdText);
+End;
+
+Procedure StartMenuEditId;
+Begin
+ If (MnuEdMenuIdx < 1) Or (MnuEdMenuIdx > MenuDataCount) Then Exit;
+ If (MnuEdSelectedRow < 1) Or (MnuEdSelectedRow > ResMenus[MnuEdMenuIdx].ItemCount) Then Exit;
+ { Pas d'edition d'ID pour les POPUP }
+ If (ResMenus[MnuEdMenuIdx].Items[MnuEdSelectedRow].Flags And $10) <> 0 Then Exit;
+ MnuEdEditField := 2;
+ MnuEdText := IntToStr(ResMenus[MnuEdMenuIdx].Items[MnuEdSelectedRow].ItemId);
+ MnuEdCursorPos := Length(MnuEdText);
+End;
+
+Function HandleMenuEditorClick(WndIndex, MX, MY: Integer): Boolean;
+Var
+ CX1, CY1, CX2, CY2: Integer;
+ ClickedRow, MenuIdx: Integer;
+ IdX: Integer;
+Begin
+ HandleMenuEditorClick := False;
+ If (WndIndex < 1) Or (WndIndex > WindowCount) Then Exit;
+ If Windows[WndIndex].WindowType <> 3 Then Exit;
+
+ CX1 := Windows[WndIndex].ClientArea.X1;
+ CY1 := Windows[WndIndex].ClientArea.Y1;
+ CX2 := Windows[WndIndex].ClientArea.X2;
+ CY2 := Windows[WndIndex].ClientArea.Y2;
+ IdX := CX2 - 80;
+
+ MenuIdx := FindMenuDataIndex(WndIndex);
+ If (MenuIdx < 1) Or (MenuIdx > MenuDataCount) Then Exit;
+ MnuEdMenuIdx := MenuIdx;
+
+ { Verifier si le clic est dans la zone de donnees (sous l'en-tete) }
+ If MY < CY1 + 20 Then Exit;
+
+ { Trouver la ligne cliquee }
+ ClickedRow := (MY - CY1 - 22) Div 16 + 1;
+
+ If (ClickedRow >= 1) And (ClickedRow <= ResMenus[MenuIdx].ItemCount) Then Begin
+  If (ClickedRow = MnuEdSelectedRow) And (MnuEdEditField = 0) Then Begin
+   { Second clic sur la meme ligne : entrer en edition }
+   If MX >= IdX Then
+    StartMenuEditId
+   Else
+    StartMenuEditText;
+  End Else If (ClickedRow = MnuEdSelectedRow) And (MnuEdEditField > 0) Then Begin
+   { Clic sur la meme ligne en edition : repositionner curseur }
+   If (MnuEdEditField = 2) And (MX < IdX) Then Begin
+    CommitMenuEdit;
+    StartMenuEditText;
+   End Else If (MnuEdEditField = 1) And (MX >= IdX) Then Begin
+    CommitMenuEdit;
+    StartMenuEditId;
+   End Else Begin
+    { Repositionner le curseur dans le meme champ }
+    If MnuEdEditField = 1 Then Begin
+     MnuEdCursorPos := (MX - CX1 - 8 - ResMenus[MenuIdx].Items[ClickedRow].Level * 20 - 18) Div 8;
+    End Else Begin
+     MnuEdCursorPos := (MX - IdX - 2) Div 8;
+    End;
+    If MnuEdCursorPos < 0 Then MnuEdCursorPos := 0;
+    If MnuEdCursorPos > Length(MnuEdText) Then MnuEdCursorPos := Length(MnuEdText);
+   End;
+  End Else Begin
+   { Clic sur une autre ligne : valider l'edition en cours et selectionner }
+   If MnuEdEditField > 0 Then CommitMenuEdit;
+   MnuEdSelectedRow := ClickedRow;
+   MnuEdEditField := 0;
+  End;
+  HandleMenuEditorClick := True;
+ End Else Begin
+  { Clic en dehors : valider et deselectionner }
+  If MnuEdEditField > 0 Then CommitMenuEdit;
+  MnuEdSelectedRow := 0;
+  MnuEdEditField := 0;
+  HandleMenuEditorClick := True;
  End;
 End;
 
@@ -5263,6 +5445,38 @@ Begin
      #107: RequestQuit; { Alt+F4 }
     End;
    End
+   Else If MnuEdEditField > 0 Then Begin
+    { Mode edition menu : fleches gauche/droite }
+    Case Ch Of
+     #75: Begin { Fleche gauche }
+      If MnuEdCursorPos > 0 Then Begin
+       Dec(MnuEdCursorPos);
+       NeedRedraw := True;
+      End;
+     End;
+     #77: Begin { Fleche droite }
+      If MnuEdCursorPos < Length(MnuEdText) Then Begin
+       Inc(MnuEdCursorPos);
+       NeedRedraw := True;
+      End;
+     End;
+     #83: Begin { Delete }
+      If MnuEdCursorPos < Length(MnuEdText) Then Begin
+       Delete(MnuEdText, MnuEdCursorPos + 1, 1);
+       NeedRedraw := True;
+      End;
+     End;
+     #71: Begin { Home }
+      MnuEdCursorPos := 0;
+      NeedRedraw := True;
+     End;
+     #79: Begin { End }
+      MnuEdCursorPos := Length(MnuEdText);
+      NeedRedraw := True;
+     End;
+     #107: RequestQuit; { Alt+F4 }
+    End;
+   End
    Else If StrEdSelectedRow > 0 Then Begin
     { Ligne selectionnee sans edition : fleches haut/bas }
     Case Ch Of
@@ -5277,6 +5491,26 @@ Begin
       If StrEdSelectedRow < StringCount Then Begin
        Inc(StrEdSelectedRow);
        NeedRedraw := True;
+      End;
+     End;
+     #107: RequestQuit; { Alt+F4 }
+    End;
+   End
+   Else If MnuEdSelectedRow > 0 Then Begin
+    { Ligne menu selectionnee sans edition : fleches haut/bas }
+    Case Ch Of
+     #72: Begin { Fleche haut }
+      If MnuEdSelectedRow > 1 Then Begin
+       Dec(MnuEdSelectedRow);
+       NeedRedraw := True;
+      End;
+     End;
+     #80: Begin { Fleche bas }
+      If (MnuEdMenuIdx >= 1) And (MnuEdMenuIdx <= MenuDataCount) Then Begin
+       If MnuEdSelectedRow < ResMenus[MnuEdMenuIdx].ItemCount Then Begin
+        Inc(MnuEdSelectedRow);
+        NeedRedraw := True;
+       End;
       End;
      End;
      #107: RequestQuit; { Alt+F4 }
@@ -5339,6 +5573,53 @@ Begin
      End;
     End;
    End
+   Else If MnuEdEditField > 0 Then Begin
+    { Mode edition menu : caracteres }
+    Case Ch Of
+     #13: Begin { Enter - valider l'edition }
+      CommitMenuEdit;
+      NeedRedraw := True;
+     End;
+     #9: Begin { Tab - basculer entre texte et ID }
+      If MnuEdEditField = 1 Then Begin
+       CommitMenuEdit;
+       StartMenuEditId;
+      End Else Begin
+       CommitMenuEdit;
+       StartMenuEditText;
+      End;
+      NeedRedraw := True;
+     End;
+     #27: Begin { Escape - annuler l'edition }
+      MnuEdEditField := 0;
+      NeedRedraw := True;
+     End;
+     #8: Begin { Backspace }
+      If (Length(MnuEdText) > 0) And (MnuEdCursorPos > 0) Then Begin
+       Delete(MnuEdText, MnuEdCursorPos, 1);
+       Dec(MnuEdCursorPos);
+       NeedRedraw := True;
+      End;
+     End;
+     Else Begin { Caractere imprimable }
+      If MnuEdEditField = 2 Then Begin
+       { Mode ID : n'accepter que les chiffres }
+       If (Length(MnuEdText) < 10) And (Ch >= '0') And (Ch <= '9') Then Begin
+        Insert(Ch, MnuEdText, MnuEdCursorPos + 1);
+        Inc(MnuEdCursorPos);
+        NeedRedraw := True;
+       End;
+      End Else Begin
+       { Mode texte }
+       If (Length(MnuEdText) < 63) And (Ch >= ' ') Then Begin
+        Insert(Ch, MnuEdText, MnuEdCursorPos + 1);
+        Inc(MnuEdCursorPos);
+        NeedRedraw := True;
+       End;
+      End;
+     End;
+    End;
+   End
    Else If StrEdSelectedRow > 0 Then Begin
     { Ligne selectionnee sans edition : Enter pour editer, F2 aussi }
     Case Ch Of
@@ -5348,6 +5629,19 @@ Begin
      End;
      #27: Begin { Escape - deselectionner }
       StrEdSelectedRow := 0;
+      NeedRedraw := True;
+     End;
+    End;
+   End
+   Else If MnuEdSelectedRow > 0 Then Begin
+    { Ligne menu selectionnee sans edition }
+    Case Ch Of
+     #13: Begin { Enter - entrer en mode edition texte }
+      StartMenuEditText;
+      NeedRedraw := True;
+     End;
+     #27: Begin { Escape - deselectionner }
+      MnuEdSelectedRow := 0;
       NeedRedraw := True;
      End;
     End;
@@ -5397,6 +5691,10 @@ Begin
       End Else If Windows[I].WindowType = 2 Then Begin
        { Editeur de dialogue WYSIWYG }
        If HandleDialogEditorClick(I, MouseX, MouseY, MouseButton) Then
+        NeedRedraw := True;
+      End Else If Windows[I].WindowType = 3 Then Begin
+       { Editeur de menus }
+       If HandleMenuEditorClick(I, MouseX, MouseY) Then
         NeedRedraw := True;
       End Else If Windows[I].WindowType = 4 Then Begin
        { Editeur de tables de chaines }
@@ -5511,6 +5809,13 @@ Begin
  StrEdText := '';
  StrEdCursorPos := 0;
  StrEdTopRow := 1;
+ { Initialiser l'editeur de menus }
+ MnuEdSelectedRow := 0;
+ MnuEdEditField := 0;
+ MnuEdText := '';
+ MnuEdCursorPos := 0;
+ MnuEdTopRow := 1;
+ MnuEdMenuIdx := 0;
  InitializeGraphics;
  InitMouse;
  InitMenuBar;
