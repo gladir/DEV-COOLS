@@ -22,7 +22,7 @@
   13. DONE: Implementer le rendu des tableaux (table, tr, td, th, thead, tbody)
   14. DONE: Implementer le rendu des formulaires (form, input, button, select, textarea)
   15. DONE: Implementer la detection et le rendu des liens hypertexte (balise <a href>)
-  16. TODO: Implementer la navigation par clic sur les liens URL dans les pages
+  16. DONE: Implementer la navigation par clic sur les liens URL dans les pages
   17. TODO: Creer l'interpreteur JavaScript pour le support des scripts cote client
   18. TODO: Implementer le DOM (Document Object Model) pour la manipulation JavaScript
   19. TODO: Creer le parseur CSS pour le support des feuilles de style
@@ -3410,8 +3410,63 @@ Begin
  End;
 End;
 
+{ Fonction pour verifier si une position est dans la zone de rendu }
+Function IsInRenderArea(X, Y: Integer): Boolean;
+Begin
+ IsInRenderArea := (X >= RENDER_AREA_X) And
+                   (X <= RENDER_AREA_X + RENDER_AREA_WIDTH) And
+                   (Y >= RENDER_AREA_Y) And
+                   (Y <= RENDER_AREA_Y + RENDER_AREA_HEIGHT);
+End;
+
+{ Procedure pour gerer le clic sur un lien hypertexte }
+Procedure HandleLinkClick(LinkIndex: Integer);
+Var
+ TargetURL: String;
+Begin
+ If (LinkIndex < 1) Or (LinkIndex > LinkCount) Then Exit;
+ If Not LinkAreas[LinkIndex].Active Then Exit;
+
+ { Recuperer l'URL du lien }
+ TargetURL := LinkAreas[LinkIndex].Href;
+
+ { Verifier si l'URL est vide }
+ If TargetURL = '' Then Exit;
+
+ { Traiter les differents types d'URL }
+ If (Copy(TargetURL, 1, 7) = 'http://') Or
+    (Copy(TargetURL, 1, 8) = 'https://') Then Begin
+  { URL absolue - naviguer directement }
+  NavigateTo(TargetURL);
+ End
+ Else If Copy(TargetURL, 1, 1) = '/' Then Begin
+  { URL relative a la racine du site }
+  { Extraire le protocole et le domaine de l'URL courante }
+  { Pour l'instant, on utilise l'URL telle quelle }
+  NavigateTo(TargetURL);
+ End
+ Else If Copy(TargetURL, 1, 1) = '#' Then Begin
+  { Ancre dans la meme page - ne pas naviguer pour l'instant }
+  { TODO: Implementer le saut vers l'ancre }
+ End
+ Else If (Copy(TargetURL, 1, 7) = 'mailto:') Then Begin
+  { Lien email - ne pas naviguer }
+  { Afficher une notification? }
+ End
+ Else If (Copy(TargetURL, 1, 4) = 'tel:') Then Begin
+  { Lien telephone - ne pas naviguer }
+ End
+ Else Begin
+  { URL relative - combiner avec le chemin courant }
+  { Pour l'instant, on utilise l'URL telle quelle }
+  NavigateTo(TargetURL);
+ End;
+End;
+
 { Procedure pour gerer les clics de souris sur l'interface }
 Procedure HandleMouseClick(X, Y: Integer);
+Var
+ LinkIdx: Integer;
 Begin
  { Verifier si le clic est dans la barre d'URL }
  If IsClickInURLBar(X, Y) Then Begin
@@ -3448,6 +3503,14 @@ Begin
  { Verifier si le clic est dans le bouton Favori }
  If IsClickInFavoriteButton(X, Y) Then Begin
   HandleFavoriteButtonClick;
+ End;
+
+ { Verifier si le clic est sur un lien hypertexte dans la zone de rendu }
+ If IsInRenderArea(X, Y) Then Begin
+  LinkIdx := FindLinkAtPosition(X, Y);
+  If LinkIdx > 0 Then Begin
+   HandleLinkClick(LinkIdx);
+  End;
  End;
 End;
 
