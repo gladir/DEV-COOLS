@@ -1,0 +1,60 @@
+(* Racine carree entiere par la methode de Newton :
+   x_{n+1} = (x_n + N / x_n) DIV 2
+   Converge rapidement vers floor(sqrt(N)). *)
+MODULE Sqrt;
+IMPORT Out;
+
+VAR
+  n, x, xnew, i, done : INTEGER;
+
+BEGIN
+  Out.String("Racine carree entiere (Newton)"); Out.Ln;
+  Out.Ln;
+
+  FOR n := 1 TO 20 DO
+    x := n;
+    i := 0;
+    done := 0;
+    WHILE done = 0 DO
+      xnew := (x + n DIV x) DIV 2;
+      IF xnew >= x THEN
+        done := 1
+      ELSE
+        x := xnew
+      END;
+      INC(i);
+      IF i > 30 THEN done := 1 END
+    END;
+    WHILE x * x > n DO
+      DEC(x)
+    END;
+    Out.String("  floor(sqrt(");
+    IF n < 10 THEN Out.String(" ") END;
+    Out.Int(n, 0); Out.String(")) = ");
+    Out.Int(x, 0);
+    Out.String("    (reste "); Out.Int(n - x * x, 0); Out.String(")"); Out.Ln
+  END;
+  Out.Ln;
+
+  Out.String("Carres parfaits :"); Out.Ln;
+  FOR n := 1 TO 12 DO
+    x := n;
+    i := 0;
+    done := 0;
+    WHILE done = 0 DO
+      xnew := (x + (n * n) DIV x) DIV 2;
+      IF xnew >= x THEN
+        done := 1
+      ELSE
+        x := xnew
+      END;
+      INC(i);
+      IF i > 30 THEN done := 1 END
+    END;
+    WHILE x * x > n * n DO
+      DEC(x)
+    END;
+    Out.String("  sqrt("); Out.Int(n * n, 0); Out.String(") = ");
+    Out.Int(x, 0); Out.Ln
+  END
+END Sqrt.

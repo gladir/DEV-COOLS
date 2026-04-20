@@ -173,7 +173,7 @@ Begin
 End;
 
 Function StrToInt(Const S : String) : LongInt;
-Var V, E : Integer;
+Var V : LongInt; E : Integer;
 Begin
   Val(S, V, E);
   If E <> 0 Then V := 0;
@@ -1444,26 +1444,38 @@ End;
 
 Procedure GenPrintIntHelper;
 Var
-  LabZero, LabLoop, LabLoopEnd, LabWrite : String;
+  LabZero, LabLoop, LabPos, LabNoMinus, LabWrite : String;
 Begin
   DefineLabel('_printint');
 
-  { Preserve callee-save registers used (ebx, esi, edi) }
+  { Preserve callee-save registers used (ebx, esi, edi, ebp) }
   BinEmitByte($53);                        { push ebx }
   BinEmitByte($56);                        { push esi }
   BinEmitByte($57);                        { push edi }
+  BinEmitByte($55);                        { push ebp }
 
-  { eax = value from [esp + 16] (3 saved regs + ret addr) }
-  BinEmitByte($8B); BinEmitByte($44); BinEmitByte($24); BinEmitByte($10);
+  { eax = value from [esp + 20] (4 saved regs + ret addr) }
+  BinEmitByte($8B); BinEmitByte($44); BinEmitByte($24); BinEmitByte($14);
 
   LabZero    := GenLabel;
   LabLoop    := GenLabel;
-  LabLoopEnd := GenLabel;
+  LabPos     := GenLabel;
+  LabNoMinus := GenLabel;
   LabWrite   := GenLabel;
 
   { if (eax == 0) goto LabZero }
   EmitTestEAX;
   EmitJZ(LabZero);
+
+  { ebp := 0 (sign flag); if eax < 0 then neg eax; ebp := 1 }
+  BinEmitByte($31); BinEmitByte($ED);      { xor ebp, ebp }
+  EmitTestEAX;
+  BinEmitByte($0F); BinEmitByte($89);      { jns rel32 to LabPos }
+  AddFixup(FIX_CODE_REL, FindLabel(LabPos));
+  BinEmitDWord(0);
+  BinEmitByte($F7); BinEmitByte($D8);      { neg eax }
+  BinEmitByte($BD); BinEmitDWord(1);       { mov ebp, 1 }
+  DefineLabel(LabPos);
 
   { edi := IntBufAddr + 12 (write pointer, digits stored backwards) }
   BinEmitByte($BF);                        { mov edi, imm32 }
@@ -1481,6 +1493,13 @@ Begin
   BinEmitByte($88); BinEmitByte($17);      { mov [edi], dl }
   EmitTestEAX;
   EmitJNZ(LabLoop);
+
+  { if ebp == 0 goto LabNoMinus ; else prepend '-' }
+  BinEmitByte($85); BinEmitByte($ED);      { test ebp, ebp }
+  EmitJZ(LabNoMinus);
+  BinEmitByte($4F);                        { dec edi }
+  BinEmitByte($C6); BinEmitByte($07); BinEmitByte($2D);  { mov byte [edi], '-' }
+  DefineLabel(LabNoMinus);
 
   { esi := IntBufAddr + 12 ; esi -= edi  --> length }
   BinEmitByte($BE);                        { mov esi, imm32 }
@@ -1515,6 +1534,7 @@ Begin
 
   EmitCallIAT(FIX_IAT_WRITE);
 
+  BinEmitByte($5D);                        { pop ebp }
   BinEmitByte($5F);                        { pop edi }
   BinEmitByte($5E);                        { pop esi }
   BinEmitByte($5B);                        { pop ebx }

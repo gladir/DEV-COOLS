@@ -1,0 +1,47 @@
+(* Exponentiation rapide (x^n) par la methode "square-and-multiply".
+   Complexite O(log n) au lieu de O(n). *)
+MODULE Power;
+IMPORT Out;
+
+VAR
+  base, exp, result, b, e : INTEGER;
+
+BEGIN
+  Out.String("Exponentiation rapide : x^n"); Out.Ln;
+  Out.Ln;
+
+  (* Table des puissances de 2 *)
+  Out.String("Puissances de 2 :"); Out.Ln;
+  FOR exp := 0 TO 15 DO
+    b := 2;
+    e := exp;
+    result := 1;
+    WHILE e > 0 DO
+      IF e MOD 2 = 1 THEN
+        result := result * b
+      END;
+      b := b * b;
+      e := e DIV 2
+    END;
+    Out.String("  2^"); Out.Int(exp, 0);
+    Out.String(" = "); Out.Int(result, 0); Out.Ln
+  END;
+  Out.Ln;
+
+  (* Table des puissances de 3 *)
+  Out.String("Puissances de 3 :"); Out.Ln;
+  FOR exp := 0 TO 10 DO
+    b := 3;
+    e := exp;
+    result := 1;
+    WHILE e > 0 DO
+      IF e MOD 2 = 1 THEN
+        result := result * b
+      END;
+      b := b * b;
+      e := e DIV 2
+    END;
+    Out.String("  3^"); Out.Int(exp, 0);
+    Out.String(" = "); Out.Int(result, 0); Out.Ln
+  END
+END Power.
