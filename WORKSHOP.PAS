@@ -1415,6 +1415,7 @@ Begin
  Reset(ResFile, 1);
  {$I+}
  If IOResult <> 0 Then Begin
+  CloseGraphics;
   WriteLn('Erreur: Impossible d''ouvrir ', FName);
   Halt(1);
  End;
@@ -1439,8 +1440,12 @@ Begin
 End;
 
 Function ReadResWord: Word;
+Var
+ B1, B2: Byte;
 Begin
- ReadResWord := ReadResByte + ReadResByte * 256;
+ B1 := ReadResByte;
+ B2 := ReadResByte;
+ ReadResWord := B1 + Word(B2) * 256;
 End;
 
 Function ReadResDWord: LongInt;
@@ -1449,7 +1454,7 @@ Var
 Begin
  W1 := ReadResWord;
  W2 := ReadResWord;
- ReadResDWord := LongInt(W1) + LongInt(W2) * 65536;
+ ReadResDWord := LongInt(W1) Or (LongInt(W2) Shl 16);
 End;
 
 Function DetectResFormat: Integer;
@@ -1558,10 +1563,10 @@ End;
 Function SwapLong(L: LongInt): LongInt;
 Var
  B: Array[0..3] Of Byte Absolute L;
- T: Byte;
+ TempByte: Byte;
 Begin
- T := B[0]; B[0] := B[3]; B[3] := T;
- T := B[1]; B[1] := B[2]; B[2] := T;
+ TempByte := B[0]; B[0] := B[3]; B[3] := TempByte;
+ TempByte := B[1]; B[1] := B[2]; B[2] := TempByte;
  SwapLong := L;
 End;
 
@@ -1800,10 +1805,27 @@ Begin
  NeedRedraw := True;
 End;
 
+Function GetFileExt(Const FName: String): String;
+Var
+ I: Integer;
+Begin
+ GetFileExt := '';
+ For I := Length(FName) DownTo 1 Do Begin
+  If FName[I] = '.' Then Begin
+   GetFileExt := UpCaseStr(Copy(FName, I, Length(FName) - I + 1));
+   Exit;
+  End;
+  If (FName[I] = '\') Or (FName[I] = '/') Then Exit;
+ End;
+End;
+
 Procedure SaveProject;
+Var
+ Ext: String;
 Begin
  If AppState.ProjectFile = '' Then Exit;
- If UpCaseStr(Copy(AppState.ProjectFile, Length(AppState.ProjectFile) - 2, 3)) = '.RC' Then
+ Ext := GetFileExt(AppState.ProjectFile);
+ If Ext = '.RC' Then
   WriteRCFile(AppState.ProjectFile)
  Else
   SaveResFile(AppState.ProjectFile, AppState.Is32BitFormat);
