@@ -90,6 +90,13 @@ Type
   Flags:Byte;
  End;
 
+ { Noeud de liste chainee pour les modules }
+ PModuleNode=^TModuleNode;
+ TModuleNode=Record
+  Data:TModule;
+  Next:PModuleNode;
+ End;
+
  { Noeud de liste chainee pour les fichiers d'entree }
  PInputFileNode=^TInputFileNode;
  TInputFileNode=Record
@@ -118,7 +125,8 @@ Var
  InputFileCount:Integer;
 
  { Liste des modules }
- Modules:Array[1..MAX_MODULES] of TModule;
+ ModulesHead:PModuleNode;
+ ModulesTail:PModuleNode;
  ModuleCount:Integer;
 
  { Liste des symboles }
@@ -239,6 +247,58 @@ Begin
  InputFilesHead := Nil;
  InputFilesTail := Nil;
  InputFileCount := 0;
+End;
+
+Procedure AddModule(ModuleName:String; FileOffset, Size:LongInt; PageNum:Word);
+Var
+ Node:PModuleNode;
+Begin
+ New(Node);
+ Node^.Data.Name := ModuleName;
+ Node^.Data.FileOffset := FileOffset;
+ Node^.Data.Size := Size;
+ Node^.Data.PageNum := PageNum;
+ Node^.Next := Nil;
+ If ModulesHead = Nil Then Begin
+  ModulesHead := Node;
+  ModulesTail := Node;
+ End
+ Else Begin
+  ModulesTail^.Next := Node;
+  ModulesTail := Node;
+ End;
+ Inc(ModuleCount);
+End;
+
+Function GetModuleAt(Index:Integer):PModuleNode;
+Var
+ Node:PModuleNode;
+ I:Integer;
+Begin
+ GetModuleAt := Nil;
+ If (Index < 1) Or (Index > ModuleCount) Then Exit;
+ Node := ModulesHead;
+ I := 1;
+ While (Node <> Nil) And (I < Index) Do Begin
+  Node := Node^.Next;
+  Inc(I);
+ End;
+ GetModuleAt := Node;
+End;
+
+Procedure ClearModules;
+Var
+ Node, NextNode:PModuleNode;
+Begin
+ Node := ModulesHead;
+ While Node <> Nil Do Begin
+  NextNode := Node^.Next;
+  Dispose(Node);
+  Node := NextNode;
+ End;
+ ModulesHead := Nil;
+ ModulesTail := Nil;
+ ModuleCount := 0;
 End;
 
 Function UpperCase(S:String):String;
@@ -759,10 +819,7 @@ Begin
  Close(F);
 
  { Ajouter le module à la liste }
- Inc(ModuleCount);
- Modules[ModuleCount].Name := CurrentModuleName;
- Modules[ModuleCount].FileOffset := 0;
- Modules[ModuleCount].Size := GetFileSize(FileName);
+ AddModule(CurrentModuleName, 0, GetFileSize(FileName), 0);
 End;
 
 { Lecture de l'en-tête d'une bibliothèque OMF }
@@ -831,19 +888,13 @@ Begin
    InModule := True;
    ModuleStart := CurrentPos;
    ProcessTHEADR;
-   Inc(ModuleCount);
-   Modules[ModuleCount].Name := CurrentModuleName;
-   Modules[ModuleCount].FileOffset := ModuleStart;
-   Modules[ModuleCount].PageNum := ModuleStart div PageSize;
+    AddModule(CurrentModuleName, ModuleStart, 0, ModuleStart div PageSize);
   End
   Else If RecType = OMF_LHEADR Then Begin
    InModule := True;
    ModuleStart := CurrentPos;
    ProcessLHEADR;
-   Inc(ModuleCount);
-   Modules[ModuleCount].Name := CurrentModuleName;
-   Modules[ModuleCount].FileOffset := ModuleStart;
-   Modules[ModuleCount].PageNum := ModuleStart div PageSize;
+    AddModule(CurrentModuleName, ModuleStart, 0, ModuleStart div PageSize);
   End
   Else If (RecType = OMF_LNAMES) or (RecType = OMF_LLNAMES) Then ProcessLNAMES
   Else If RecType = OMF_PUBDEF Then ProcessPUBDEF(False)
@@ -851,7 +902,8 @@ Begin
   Else If (RecType = OMF_EXTDEF) or (RecType = OMF_LEXTDEF) Then ProcessEXTDEF
   Else If (RecType = OMF_MODEND) or (RecType = OMF_MODEND32) Then Begin
    CurrentPos := FilePos(F);
-   Modules[ModuleCount].Size := CurrentPos - ModuleStart;
+   If ModulesTail <> Nil Then
+    ModulesTail^.Data.Size := CurrentPos - ModuleStart;
    InModule := False;
    LNameCount := 0;
    { Aligner sur la prochaine page }
@@ -869,26 +921,36 @@ End;
 
 { Affichage de la liste des modules }
 Procedure ListModules;
-Var I:Integer;
+Var
+ I:Integer;
+ ModuleNode:PModuleNode;
 Begin
  WriteLn('Modules dans la bibliothèque:');
  WriteLn('-----------------------------');
- For I := 1 to ModuleCount do
-  WriteLn('  ', Modules[I].Name, ' (', Modules[I].Size, ' octets)');
+ For I := 1 to ModuleCount do Begin
+  ModuleNode := GetModuleAt(I);
+  If ModuleNode <> Nil Then
+   WriteLn('  ', ModuleNode^.Data.Name, ' (', ModuleNode^.Data.Size, ' octets)');
+ End;
  WriteLn;
  WriteLn('Total: ', ModuleCount, ' module(s)');
 End;
 
 { Affichage des symboles publics }
 Procedure ListSymbols;
-Var I:Integer;
+Var
+ I:Integer;
+ ModuleNode:PModuleNode;
 Begin
  WriteLn('Symboles publics:');
  WriteLn('-----------------');
  For I := 1 to SymbolCount do Begin
   Write('  ', Symbols[I].Name);
-  If Symbols[I].ModuleIndex <= ModuleCount Then
-   Write(' (', Modules[Symbols[I].ModuleIndex].Name, ')');
+  If Symbols[I].ModuleIndex <= ModuleCount Then Begin
+   ModuleNode := GetModuleAt(Symbols[I].ModuleIndex);
+   If ModuleNode <> Nil Then
+    Write(' (', ModuleNode^.Data.Name, ')');
+  End;
   WriteLn(' @ ', WordHex2Str(Symbols[I].Offset));
  End;
  WriteLn;
@@ -902,14 +964,16 @@ Var
  Header:TLibHeader;
  I:Integer;
  Found:Boolean;
+ ModuleNode:PModuleNode;
  Buffer:Array[1..4096] of Byte;
  ToRead, NumRead, NumWritten:Word;
  Remaining:LongInt;
  OutFileName:String;
 Begin
  Found := False;
- For I := 1 to ModuleCount do
-  If UpperCase(Modules[I].Name) = UpperCase(ModuleName) Then Begin
+ For I := 1 to ModuleCount do Begin
+  ModuleNode := GetModuleAt(I);
+  If (ModuleNode <> Nil) And (UpperCase(ModuleNode^.Data.Name) = UpperCase(ModuleName)) Then Begin
    Found := True;
 
    OutFileName := ModuleName;
@@ -935,8 +999,8 @@ Begin
     Exit;
    End;
 
-   Seek(F, Modules[I].FileOffset);
-   Remaining := Modules[I].Size;
+  Seek(F, ModuleNode^.Data.FileOffset);
+  Remaining := ModuleNode^.Data.Size;
 
    While Remaining > 0 do Begin
     If Remaining > SizeOf(Buffer) Then
@@ -953,6 +1017,7 @@ Begin
    WriteLn('Module extrait: ', OutFileName);
    Break;
   End;
+ End;
 
  If Not Found Then
   Warning('Module non trouvé: ' + ModuleName);
@@ -1022,6 +1087,7 @@ End;
 Procedure WriteLibDictionary(Var F:File);
 Var
  I, J, Bucket:Integer;
+ ModuleNode:PModuleNode;
  BucketData:Array[0..36] of Byte;
  NumBuckets:Word;
  NameLen:Byte;
@@ -1044,10 +1110,13 @@ Begin
    Inc(PageOffset);
   End;
    { Page number du module }
-  DictPage[PageOffset] := Lo(Modules[Symbols[I].ModuleIndex].PageNum);
-  Inc(PageOffset);
-  DictPage[PageOffset] := Hi(Modules[Symbols[I].ModuleIndex].PageNum);
-  Inc(PageOffset);
+  ModuleNode := GetModuleAt(Symbols[I].ModuleIndex);
+  If ModuleNode <> Nil Then Begin
+   DictPage[PageOffset] := Lo(ModuleNode^.Data.PageNum);
+   Inc(PageOffset);
+   DictPage[PageOffset] := Hi(ModuleNode^.Data.PageNum);
+   Inc(PageOffset);
+  End;
  End;
  BlockWrite(F, DictPage, 512, NumWritten);
 End;
@@ -1091,7 +1160,7 @@ Begin
  WriteLibHeader(OutF, PageSize, 0, 0);
  WritePadding(OutF, FilePos(OutF), PageSize);
  CurrentPos := PageSize;
- ModuleCount := 0;
+ ClearModules;
  SymbolCount := 0;
   { Traiter chaque fichier d'entr�e }
  InputNode := InputFilesHead;
@@ -1123,22 +1192,26 @@ Begin
     Continue;
    End;
    { Enregistrer l'offset du module }
-   Modules[ModuleCount].FileOffset := CurrentPos;
-   Modules[ModuleCount].PageNum := CurrentPos div PageSize;
+  If ModulesTail <> Nil Then Begin
+   ModulesTail^.Data.FileOffset := CurrentPos;
+   ModulesTail^.Data.PageNum := CurrentPos div PageSize;
+  End;
    FileSize := System.FileSize(InF);
    While Not Eof(InF) do Begin
     BlockRead(InF, Buffer, SizeOf(Buffer), NumRead);
     BlockWrite(OutF, Buffer, NumRead, NumWritten);
    End;
    Close(InF);
-   Modules[ModuleCount].Size := FileSize;
+  If ModulesTail <> Nil Then
+   ModulesTail^.Data.Size := FileSize;
    { Aligner sur la prochaine page }
    CurrentPos := FilePos(OutF);
    AlignedPos := AlignToPage(CurrentPos, PageSize);
    WritePadding(OutF, CurrentPos, AlignedPos);
    CurrentPos := AlignedPos;
    If OptVerbose Then
-    WriteLn('Module ajout�: ', Modules[ModuleCount].Name);
+    If ModulesTail <> Nil Then
+     WriteLn('Module ajout�: ', ModulesTail^.Data.Name);
   End;
   InputNode := InputNode^.Next;
  End;
@@ -1177,14 +1250,18 @@ BEGIN
  InputFilesHead := Nil;
  InputFilesTail := Nil;
  InputFileCount := 0;
+ ModulesHead := Nil;
+ ModulesTail := Nil;
+ ModuleCount := 0;
  ParseCommandLine;
  If ParamCount = 0 Then Begin
   ClearInputFiles;
+  ClearModules;
   ShowHelp;
   Halt(0);
  End;
  ShowBanner;
- ModuleCount := 0;
+ ClearModules;
  SymbolCount := 0;
   { Si /LIST ou /SYMBOLS sans fichier de sortie, afficher les informations }
  If (OptList or OptSymbols) and (InputFileCount > 0) Then Begin
@@ -1216,7 +1293,9 @@ BEGIN
   Else
  Begin
   ClearInputFiles;
+    ClearModules;
   Error('Aucun fichier sp�cifi�');
  End;
  ClearInputFiles;
+   ClearModules;
 END.
