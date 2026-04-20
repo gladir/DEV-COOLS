@@ -771,7 +771,7 @@ Const
 
 Type
  { Type pour le buffer de fichier RSC alloue sur le tas }
- TRSCFileBuffer = Array[0..65535] Of Byte;
+ TRSCFileBuffer = Array[0..65520] Of Byte;
  PRSCFileBuffer = ^TRSCFileBuffer;
 
 Var
@@ -1903,6 +1903,18 @@ Begin
    End;
   End;
  End;
+
+ { Ajouter a la liste des ressources }
+ If ResourceCount < MAX_RESOURCES Then Begin
+  Inc(ResourceCount);
+  Resources[ResourceCount].ResType := RT_STRING;
+  Resources[ResourceCount].ResId.IsNumeric := True;
+  Resources[ResourceCount].ResId.NumId := BundleId;
+  Resources[ResourceCount].ResId.StrId := '';
+  Resources[ResourceCount].DataSize := DataSize;
+  Resources[ResourceCount].DataOffset := StartPos;
+  Resources[ResourceCount].LangId := $0409;
+ End;
 End;
 
 { Chargement complet d'un fichier RES 32-bit }
@@ -1983,10 +1995,22 @@ Begin
     RT_DIALOG: ReadResDialog(DataSize, ResId);
     RT_MENU: ReadResMenu(DataSize, ResId);
     RT_STRING: ReadResStringTable(DataSize, ResId);
-   Else
-    { Sauter les donnees non supportees }
+   Else Begin
+    { Type non supporte : enregistrer quand meme dans la liste }
+    If (ResType <> 0) And (ResourceCount < MAX_RESOURCES) Then Begin
+     Inc(ResourceCount);
+     Resources[ResourceCount].ResType := ResType;
+     Resources[ResourceCount].ResId.IsNumeric := True;
+     Resources[ResourceCount].ResId.NumId := ResId;
+     Resources[ResourceCount].ResId.StrId := '';
+     Resources[ResourceCount].DataSize := DataSize;
+     Resources[ResourceCount].DataOffset := ResFilePos;
+     Resources[ResourceCount].LangId := LangId;
+    End;
+    { Sauter les donnees }
     Seek(ResFile, EndPos);
     ResFilePos := EndPos;
+   End;
    End;
 
    { S'assurer qu'on est a la bonne position }
@@ -4283,6 +4307,8 @@ Var
  EditText: String;
  CursorPos: Integer;
  Files: Array[1..MAX_FILES] Of String;
+ IsDir: Array[1..MAX_FILES] Of Boolean;
+ CurrentDir: String;
  FileCount: Integer;
  TopIndex: Integer;
  SelectedIndex: Integer;
@@ -4302,28 +4328,57 @@ Var
   Sr: SearchRec;
   I, J: Integer;
   TmpStr: String;
+  TmpBool: Boolean;
+  DirCount: Integer;
  Begin
   FileCount := 0;
+  { Ajouter le repertoire parent }
+  Inc(FileCount);
+  Files[FileCount] := '..';
+  IsDir[FileCount] := True;
+  { Chercher les sous-repertoires }
+  FindFirst('*.*', Directory, Sr);
+  While DosError = 0 Do Begin
+   If (Sr.Attr And Directory <> 0) And (Sr.Name <> '.') And (Sr.Name <> '..') Then Begin
+    If FileCount < MAX_FILES Then Begin
+     Inc(FileCount);
+     Files[FileCount] := Sr.Name;
+     IsDir[FileCount] := True;
+    End;
+   End;
+   FindNext(Sr);
+  End;
+  { Trier les repertoires par ordre alphabetique (index 2..FileCount, car 1 = ..) }
+  DirCount := FileCount;
+  For I := 2 To DirCount - 1 Do
+   For J := I + 1 To DirCount Do
+    If Files[I] > Files[J] Then Begin
+     TmpStr := Files[I];
+     Files[I] := Files[J];
+     Files[J] := TmpStr;
+    End;
   { Chercher les fichiers .RC }
-  FindFirst('*.RC', Archive, Sr);
+  FindFirst('*.RC', Archive Or ReadOnly, Sr);
   While DosError = 0 Do Begin
    If FileCount < MAX_FILES Then Begin
     Inc(FileCount);
     Files[FileCount] := Sr.Name;
+    IsDir[FileCount] := False;
    End;
    FindNext(Sr);
   End;
   { Chercher les fichiers .RES }
-  FindFirst('*.RES', Archive, Sr);
+  FindFirst('*.RES', Archive Or ReadOnly, Sr);
   While DosError = 0 Do Begin
    If FileCount < MAX_FILES Then Begin
     Inc(FileCount);
     Files[FileCount] := Sr.Name;
+    IsDir[FileCount] := False;
    End;
    FindNext(Sr);
   End;
-  { Trier les fichiers par ordre alphabetique }
-  For I := 1 To FileCount - 1 Do
+  { Trier les fichiers par ordre alphabetique (index DirCount+1..FileCount) }
+  For I := DirCount + 1 To FileCount - 1 Do
    For J := I + 1 To FileCount Do
     If Files[I] > Files[J] Then Begin
      TmpStr := Files[I];
@@ -4335,6 +4390,8 @@ Var
  Procedure DrawDialog;
  Var
   DisplayY, FileIdx, I: Integer;
+  DisplayStr: String;
+  TruncDir: String;
  Begin
   HideMouse;
   { Fond de la boite de dialogue }
@@ -4346,6 +4403,20 @@ Var
   Bar(X + 2, Y + 2, X + W - 2, Y + 18);
   SetColor(COLOR_TITLETEXT);
   OutTextXY(X + 4, Y + 4, 'Ouvrir un fichier');
+  { Repertoire courant }
+  SetColor(COLOR_WINDOWTEXT);
+  OutTextXY(X + 10, Y + 24, 'R' + Chr(130) + 'pertoire:');
+  SetFillStyle(SolidFill, White);
+  Bar(X + 80, Y + 22, X + W - 10, Y + 36);
+  Draw3DRect(X + 80, Y + 22, X + W - 10, Y + 36, False);
+  SetColor(COLOR_WINDOWTEXT);
+  TruncDir := CurrentDir;
+  If TextWidth(TruncDir) > W - 100 Then Begin
+   While (Length(TruncDir) > 3) And (TextWidth('...' + TruncDir) > W - 100) Do
+    Delete(TruncDir, 1, 1);
+   TruncDir := '...' + TruncDir;
+  End;
+  OutTextXY(X + 84, Y + 24, TruncDir);
   { Label "Nom du fichier:" }
   SetColor(COLOR_WINDOWTEXT);
   OutTextXY(X + 10, EditY - 16, 'Nom du fichier:');
@@ -4353,7 +4424,7 @@ Var
   SetFillStyle(SolidFill, White);
   Bar(EditX, EditY, EditX + EditW, EditY + 18);
   Draw3DRect(EditX, EditY, EditX + EditW, EditY + 18, False);
-  SetColor(Black);
+  SetColor(COLOR_WINDOWTEXT);
   OutTextXY(EditX + 4, EditY + 4, EditText);
   { Curseur }
   If CursorPos <= Length(EditText) Then
@@ -4365,7 +4436,6 @@ Var
   SetFillStyle(SolidFill, White);
   Bar(X + 10, ListY, X + W - 90, ListY + ListH);
   Draw3DRect(X + 10, ListY, X + W - 90, ListY + ListH, False);
-  SetColor(Black);
   DisplayY := ListY + 2;
   For I := TopIndex To TopIndex + LIST_HEIGHT - 1 Do Begin
    If I <= FileCount Then Begin
@@ -4375,9 +4445,13 @@ Var
      Bar(X + 11, DisplayY, X + W - 91, DisplayY + 14);
      SetColor(COLOR_HIGHLIGHTTEXT);
     End Else Begin
-     SetColor(Black);
+     SetColor(COLOR_WINDOWTEXT);
     End;
-    OutTextXY(X + 14, DisplayY + 2, Files[FileIdx]);
+    If IsDir[FileIdx] Then
+     DisplayStr := '[' + Files[FileIdx] + ']'
+    Else
+     DisplayStr := Files[FileIdx];
+    OutTextXY(X + 14, DisplayY + 2, DisplayStr);
     Inc(DisplayY, 14);
    End;
   End;
@@ -4403,13 +4477,13 @@ Var
 Begin
  ShowOpenFileDialog := '';
  W := 400;
- H := 300;
+ H := 320;
  X := (SCREEN_WIDTH - W) Div 2;
  Y := (SCREEN_HEIGHT - H) Div 2;
  EditX := X + 10;
- EditY := Y + 36;
+ EditY := Y + 52;
  EditW := W - 100;
- ListY := Y + 80;
+ ListY := Y + 96;
  ListH := LIST_HEIGHT * 14 + 4;
  BtnOkX := X + W - 160;
  BtnCancelX := X + W - 80;
@@ -4420,6 +4494,7 @@ Begin
  SelectedIndex := 0;
  Done := False;
  Result := False;
+ GetDir(0, CurrentDir);
  ScanFiles;
  DrawDialog;
 
@@ -4436,8 +4511,13 @@ Begin
       If SelectedIndex > 1 Then Begin
        Dec(SelectedIndex);
        If SelectedIndex < TopIndex Then TopIndex := SelectedIndex;
-       EditText := Files[SelectedIndex];
-       CursorPos := Length(EditText);
+       If Not IsDir[SelectedIndex] Then Begin
+        EditText := Files[SelectedIndex];
+        CursorPos := Length(EditText);
+       End Else Begin
+        EditText := '';
+        CursorPos := 0;
+       End;
        DrawDialog;
       End;
      End;
@@ -4445,8 +4525,13 @@ Begin
       If SelectedIndex < FileCount Then Begin
        Inc(SelectedIndex);
        If SelectedIndex > TopIndex + LIST_HEIGHT - 1 Then TopIndex := SelectedIndex - LIST_HEIGHT + 1;
-       EditText := Files[SelectedIndex];
-       CursorPos := Length(EditText);
+       If Not IsDir[SelectedIndex] Then Begin
+        EditText := Files[SelectedIndex];
+        CursorPos := Length(EditText);
+       End Else Begin
+        EditText := '';
+        CursorPos := 0;
+       End;
        DrawDialog;
       End;
      End;
@@ -4466,7 +4551,18 @@ Begin
    End Else Begin
     Case Ch Of
      #13: Begin { Entree }
-      If EditText <> '' Then Begin
+      If (SelectedIndex >= 1) And (SelectedIndex <= FileCount) And IsDir[SelectedIndex] Then Begin
+       { Changer de repertoire }
+       ChDir(Files[SelectedIndex]);
+       GetDir(0, CurrentDir);
+       EditText := '';
+       CursorPos := 0;
+       TopIndex := 1;
+       SelectedIndex := 0;
+       ScanFiles;
+       DrawDialog;
+      End
+      Else If EditText <> '' Then Begin
        Result := True;
        Done := True;
       End;
@@ -4499,10 +4595,23 @@ Begin
       (MouseY >= ListY) And (MouseY <= ListY + ListH) Then Begin
     ClickedItem := TopIndex + (MouseY - ListY) Div 14;
     If (ClickedItem >= 1) And (ClickedItem <= FileCount) Then Begin
-     SelectedIndex := ClickedItem;
-     EditText := Files[SelectedIndex];
-     CursorPos := Length(EditText);
-     DrawDialog;
+     If IsDir[ClickedItem] Then Begin
+      { Clic sur un repertoire : y entrer }
+      ChDir(Files[ClickedItem]);
+      GetDir(0, CurrentDir);
+      EditText := '';
+      CursorPos := 0;
+      TopIndex := 1;
+      SelectedIndex := 0;
+      ScanFiles;
+      DrawDialog;
+     End
+     Else Begin
+      SelectedIndex := ClickedItem;
+      EditText := Files[SelectedIndex];
+      CursorPos := Length(EditText);
+      DrawDialog;
+     End;
     End;
    End
    { Clic sur le champ d'edition }
@@ -4547,8 +4656,13 @@ Begin
   Delay(10);
  End;
 
- If Result Then
-  ShowOpenFileDialog := EditText
+ If Result Then Begin
+  If (CurrentDir <> '') And (CurrentDir[Length(CurrentDir)] <> '\') And
+     (CurrentDir[Length(CurrentDir)] <> '/') Then
+   ShowOpenFileDialog := CurrentDir + '\' + EditText
+  Else
+   ShowOpenFileDialog := CurrentDir + EditText;
+ End
  Else
   ShowOpenFileDialog := '';
  NeedRedraw := True;
