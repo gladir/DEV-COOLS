@@ -69,7 +69,40 @@ PE32 produits par :
 
   ./BINLINUX/OBERCW32 SAMPLES/OBERON/<nom>.obn -o /tmp/<nom>.exe
 
-pour les 18 exemples (arith, calendar, case, collatz, digits,
-factorial, fib, gcd, hello, keywords, loopexit, loops, mersenne,
-power, primes, primes200, pythagore, sqrt).  Tous produisent les
-resultats attendus sans erreur.
+pour les 20 exemples (arith, builtins, calendar, case, collatz,
+digits, factorial, fib, gcd, halt, hello, keywords, loopexit,
+loops, mersenne, power, primes, primes200, pythagore, sqrt).
+Tous produisent les resultats attendus sans erreur.
+
+Procedures built-in
+-------------------
+
+Pleinement supportees (voir SAMPLES/OBERON/builtins.obn et halt.obn) :
+
+  ABS(x)      Valeur absolue d'une expression entiere.
+  ODD(x)      Retourne 1 si x est impair, 0 sinon.
+  CHR(n)      Retourne le caractere de code n (identite 32 bits).
+  ORD(c)      Retourne le code entier de c (identite 32 bits).
+  CAP(c)      Convertit 'a'..'z' en 'A'..'Z', sinon inchange.
+  ASH(x, n)   Decalage binaire arithmetique (n constante litterale).
+              n > 0 : decalage vers la gauche ; n < 0 : vers la droite.
+  MAX(T)      Plus grande valeur du type T (INTEGER/CHAR/BOOLEAN).
+  MIN(T)      Plus petite valeur du type T.
+  SIZE(T)     Taille en octets du type T (INTEGER=4, CHAR=1, BOOLEAN=1).
+  INC(v)      Incremente v de 1.
+  INC(v, n)   Incremente v de n (n constante entiere).
+  DEC(v)      Decremente v de 1.
+  DEC(v, n)   Decremente v de n (n constante entiere).
+  HALT(n)     Termine le programme avec le code de sortie n.
+
+Non supportees par ce compilateur minimal (requierent des types
+que le compilateur ne gere pas encore) :
+
+  COPY        Copie d'une chaine dans un tableau (requiert ARRAY).
+  ENTIER      Partie entiere d'un reel (requiert REAL).
+  EXCL(s, x)  Retire x de l'ensemble s (requiert SET).
+  INCL(s, x)  Ajoute x a l'ensemble s (requiert SET).
+  LEN(a)      Longueur d'un tableau ou d'une chaine (requiert ARRAY).
+  MOVE        Copie memoire (non implemente).
+  NEW(p)      Allocation dynamique (requiert POINTER).
+

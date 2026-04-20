@@ -958,6 +958,73 @@ Begin
   BinEmitDWord(0);
 End;
 
+Procedure EmitJL(Target : String);
+Var Li : Integer;
+Begin
+  Li := FindLabel(Target);
+  BinEmitByte($0F);
+  BinEmitByte($8C);
+  AddFixup(FIX_CODE_REL, Li);
+  BinEmitDWord(0);
+End;
+
+Procedure EmitNegEAX;
+Begin
+  { neg eax  -->  F7 D8 }
+  BinEmitByte($F7);
+  BinEmitByte($D8);
+End;
+
+Procedure EmitAndEAXImm(Val : LongInt);
+Begin
+  If (Val >= -128) And (Val <= 127) Then
+  Begin
+    { and eax, imm8  -->  83 E0 ii }
+    BinEmitByte($83);
+    BinEmitByte($E0);
+    BinEmitByte(Val And $FF);
+  End
+  Else
+  Begin
+    { and eax, imm32  -->  25 ii ii ii ii }
+    BinEmitByte($25);
+    BinEmitDWord(Val);
+  End;
+End;
+
+Procedure EmitShlEAXImm8(N : Integer);
+Begin
+  { shl eax, n  -->  C1 E0 nn }
+  BinEmitByte($C1);
+  BinEmitByte($E0);
+  BinEmitByte(N And $FF);
+End;
+
+Procedure EmitSarEAXImm8(N : Integer);
+Begin
+  { sar eax, n  -->  C1 F8 nn }
+  BinEmitByte($C1);
+  BinEmitByte($F8);
+  BinEmitByte(N And $FF);
+End;
+
+Procedure EmitSubEAXImm(Val : LongInt);
+Begin
+  If (Val >= -128) And (Val <= 127) Then
+  Begin
+    { sub eax, imm8  -->  83 E8 ii }
+    BinEmitByte($83);
+    BinEmitByte($E8);
+    BinEmitByte(Val And $FF);
+  End
+  Else
+  Begin
+    { sub eax, imm32  -->  2D ii ii ii ii }
+    BinEmitByte($2D);
+    BinEmitDWord(Val);
+  End;
+End;
+
 Procedure Expect(Kw : Integer);
 Begin
   If (CurTok <> TOK_KEYWORD) Or (CurTokKw <> Kw) Then
@@ -1003,22 +1070,137 @@ End;
 Procedure GenExpression; Forward;
 
 Procedure GenFactor;
-Var Si, StrIdx : Integer;
+Var
+  Si, N : Integer;
+  Name : String;
+  TypeName : String;
+  Val : LongInt;
+  LabSkip : String;
 Begin
   If CurTok = TOK_IDENT Then
   Begin
-    Si := SymFind(CurTokStr);
-    If Si > 0 Then
+    Name := CurTokStr;
+    { Fonctions built-in Oberon.  Reconnues avant la recherche symbolique
+      pour qu'elles soient toujours disponibles meme sans declaration. }
+    If (Name = 'ABS') Or (Name = 'ODD') Or (Name = 'CHR') Or
+       (Name = 'ORD') Or (Name = 'CAP') Or (Name = 'ASH') Or
+       (Name = 'MAX') Or (Name = 'MIN') Or (Name = 'SIZE') Then
     Begin
-      SymTab[Si].Used := True;
-      EmitMovEAXMem32($400000 + $2000 + SymTab[Si].DataOffs);
-      BinCodeLen := BinCodeLen - 4;
-      AddFixup(FIX_VAR, Si);
-      BinCodeLen := BinCodeLen + 4;
+      LexNext;
+      ExpectOp('(');
+      If (Name = 'MAX') Or (Name = 'MIN') Or (Name = 'SIZE') Then
+      Begin
+        { Argument : nom d'un type de base, evalue a la compilation }
+        If CurTok = TOK_IDENT Then
+        Begin
+          TypeName := StrUpper(CurTokStr);
+          LexNext;
+        End
+        Else
+          TypeName := 'INTEGER';
+        If Name = 'SIZE' Then
+        Begin
+          If TypeName = 'INTEGER' Then Val := 4
+          Else If TypeName = 'BOOLEAN' Then Val := 1
+          Else If TypeName = 'CHAR' Then Val := 1
+          Else Val := 4;
+        End
+        Else If Name = 'MAX' Then
+        Begin
+          If TypeName = 'INTEGER' Then Val := 2147483647
+          Else If TypeName = 'BOOLEAN' Then Val := 1
+          Else If TypeName = 'CHAR' Then Val := 255
+          Else Val := 2147483647;
+        End
+        Else   { MIN }
+        Begin
+          If TypeName = 'INTEGER' Then Val := LongInt($80000000)
+          Else If TypeName = 'BOOLEAN' Then Val := 0
+          Else If TypeName = 'CHAR' Then Val := 0
+          Else Val := 0;
+        End;
+        EmitMovEAXImm32(Val);
+      End
+      Else If Name = 'ASH' Then
+      Begin
+        { ASH(x, n) : x est une expression, n doit etre une constante
+          entiere litterale (eventuellement signee) dans ce compilateur
+          minimal. }
+        GenExpression;
+        ExpectOp(',');
+        Si := 1;   { signe = +1 par defaut }
+        If (CurTok = TOK_OP) And (CurTokStr = '-') Then
+        Begin
+          Si := -1;
+          LexNext;
+        End
+        Else If (CurTok = TOK_OP) And (CurTokStr = '+') Then
+          LexNext;
+        If CurTok = TOK_INT Then
+        Begin
+          N := Si * CurTokNum;
+          LexNext;
+          If N > 0 Then
+            EmitShlEAXImm8(N And $1F)
+          Else If N < 0 Then
+            EmitSarEAXImm8((-N) And $1F);
+        End
+        Else
+          ErrorAt(LexLineNo, LexColNo,
+                  'ASH: le deuxieme argument doit etre une constante entiere');
+      End
+      Else
+      Begin
+        GenExpression;
+        If Name = 'ABS' Then
+        Begin
+          LabSkip := GenLabel;
+          { test eax, eax ; jge LabSkip ; neg eax ; LabSkip: }
+          EmitTestEAX;
+          BinEmitByte($0F); BinEmitByte($8D);
+          AddFixup(FIX_CODE_REL, FindLabel(LabSkip));
+          BinEmitDWord(0);
+          EmitNegEAX;
+          DefineLabel(LabSkip);
+        End
+        Else If Name = 'ODD' Then
+        Begin
+          EmitAndEAXImm(1);
+        End
+        Else If (Name = 'CHR') Or (Name = 'ORD') Then
+        Begin
+          { Identite : les caracteres et entiers partagent la meme
+            representation 32 bits dans ce compilateur. }
+        End
+        Else If Name = 'CAP' Then
+        Begin
+          { Si 'a' <= eax <= 'z' alors eax -= 32 ; sinon inchange }
+          LabSkip := GenLabel;
+          EmitCmpEAXImm(Ord('a'));
+          EmitJL(LabSkip);
+          EmitCmpEAXImm(Ord('z'));
+          EmitJG(LabSkip);
+          EmitSubEAXImm(32);
+          DefineLabel(LabSkip);
+        End;
+      End;
+      ExpectOp(')');
     End
     Else
-      ErrorAt(LexLineNo, LexColNo, 'Variable inconnue: ' + CurTokStr);
-    LexNext;
+    Begin
+      Si := SymFind(Name);
+      If Si > 0 Then
+      Begin
+        SymTab[Si].Used := True;
+        EmitMovEAXMem32($400000 + $2000 + SymTab[Si].DataOffs);
+        BinCodeLen := BinCodeLen - 4;
+        AddFixup(FIX_VAR, Si);
+        BinCodeLen := BinCodeLen + 4;
+      End
+      Else
+        ErrorAt(LexLineNo, LexColNo, 'Variable inconnue: ' + Name);
+      LexNext;
+    End;
   End
   Else If CurTok = TOK_INT Then
   Begin
@@ -1314,10 +1496,11 @@ Begin
             Begin
               If CurTok = TOK_INT Then
               Begin
-                EmitAddMem32Imm($400000 + $2000 + SymTab[Si].DataOffs, CurTokNum);
+                { add dword ptr [addr], imm  -->  83 05 addr imm8
+                                              ou 81 05 addr imm32 }
+                BinEmitByte($83);
+                BinEmitByte($05);
                 AddFixup(FIX_VAR, Si);
-                BinCodeLen := BinCodeLen - 6;
-                BinEmitByte(0);
                 BinEmitDWord(0);
                 BinEmitByte(CurTokNum And $FF);
                 LexNext;
@@ -1346,10 +1529,10 @@ Begin
             Begin
               If CurTok = TOK_INT Then
               Begin
-                EmitSubMem32Imm($400000 + $2000 + SymTab[Si].DataOffs, CurTokNum);
+                { sub dword ptr [addr], imm8  -->  83 2D addr imm8 }
+                BinEmitByte($83);
+                BinEmitByte($2D);
                 AddFixup(FIX_VAR, Si);
-                BinCodeLen := BinCodeLen - 6;
-                BinEmitByte(0);
                 BinEmitDWord(0);
                 BinEmitByte(CurTokNum And $FF);
                 LexNext;
@@ -1364,6 +1547,19 @@ Begin
             End;
           End;
         End;
+        ExpectOp(')');
+      End
+      Else If VarName = 'HALT' Then
+      Begin
+        { HALT(n) : appelle ExitProcess avec n comme code de sortie. }
+        If (CurTok = TOK_OP) And (CurTokStr = ')') Then
+          EmitPushImm32(0)
+        Else
+        Begin
+          GenExpression;
+          EmitPushEAX;
+        End;
+        EmitCallIAT(FIX_IAT_EXIT);
         ExpectOp(')');
       End;
     End;
