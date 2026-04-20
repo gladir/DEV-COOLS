@@ -14,7 +14,7 @@
   5.  DONE: Creer le bouton "Favori" pour ajouter/gerer les marque-pages
   6.  DONE: Implementer la gestion de l'historique de navigation (pile de pages visitees)
   7.  DONE: Implementer le support de la souris pour Turbo Pascal via INT 33h
-  8.  TODO: Implementer le support de la souris pour Free Pascal via PtcMouse
+  8.  DONE: Implementer le support de la souris pour Free Pascal via PtcMouse
   9.  TODO: Creer le parseur HTML supportant toutes les balises HTML (HTML 1.0 a HTML5)
   10. TODO: Implementer le rendu des balises de structure HTML (html, head, body, div, span)
   11. TODO: Implementer le rendu des balises de texte (p, h1-h6, strong, em, pre, code)
@@ -777,56 +777,124 @@ End;
   DeltaY := Regs.DX;
  End;
 {$ELSE}
+ { Implementation du support souris pour Free Pascal via PtcMouse }
+
+ Var
+  PtcMouseLastX, PtcMouseLastY: Integer;
+  PtcMouseLeftClickCount, PtcMouseRightClickCount: Integer;
+
  Function MouseDriverFound: Boolean;
  Begin
+  { PtcMouse est toujours disponible sous Free Pascal avec PtcGraph }
   MouseDriverFound := True;
  End;
 
  Procedure ShowMouse;
  Begin
-  { Pas d'implémentation pour Free Pascal }
+  { PtcMouse gere automatiquement l'affichage du curseur }
+  { Pas d'action necessaire }
  End;
 
  Procedure HideMouse;
  Begin
-  { Pas d'implémentation pour Free Pascal }
+  { PtcMouse gere automatiquement l'affichage du curseur }
+  { Pas d'action necessaire }
+ End;
+
+ Procedure GetMouseState(Var X, Y, Button: LongInt);
+ Var
+  Buttons: Word;
+ Begin
+  { Utiliser les fonctions de PtcMouse }
+  X := GetMouseX;
+  Y := GetMouseY;
+  Buttons := GetMouseButtons;
+  Button := 0;
+  { Convertir les boutons PtcMouse au format standard }
+  If (Buttons And MouseLeftButton) <> 0 Then
+   Button := Button Or MOUSE_LEFT_BUTTON;
+  If (Buttons And MouseRightButton) <> 0 Then
+   Button := Button Or MOUSE_RIGHT_BUTTON;
+  If (Buttons And MouseMiddleButton) <> 0 Then
+   Button := Button Or MOUSE_MIDDLE_BUTTON;
  End;
 
  Procedure SetMouseHorizontalBounds(MinX, MaxX: Integer);
  Begin
-  { Pas d'implementation pour Free Pascal - utilise PtcMouse }
+  { PtcMouse ne supporte pas les limites personnalisees }
+  { Le curseur est limite a la fenetre graphique automatiquement }
  End;
 
  Procedure SetMouseVerticalBounds(MinY, MaxY: Integer);
  Begin
-  { Pas d'implementation pour Free Pascal - utilise PtcMouse }
+  { PtcMouse ne supporte pas les limites personnalisees }
+  { Le curseur est limite a la fenetre graphique automatiquement }
  End;
 
  Procedure SetMousePosition(X, Y: Integer);
  Begin
-  { Pas d'implementation pour Free Pascal - utilise PtcMouse }
+  { PtcMouse ne supporte pas le positionnement direct du curseur }
+  { Sauvegarder la position pour reference }
+  PtcMouseLastX := X;
+  PtcMouseLastY := Y;
  End;
 
  Function GetMouseLeftClicks: Integer;
+ Var
+  Buttons: Word;
  Begin
+  { Detecter les clics via l'etat des boutons }
+  Buttons := GetMouseButtons;
+  If (Buttons And MouseLeftButton) <> 0 Then Begin
+   Inc(PtcMouseLeftClickCount);
+   GetMouseLeftClicks := PtcMouseLeftClickCount;
+  End
+   Else
   GetMouseLeftClicks := 0;
  End;
 
  Function GetMouseRightClicks: Integer;
+ Var
+  Buttons: Word;
  Begin
+  { Detecter les clics via l'etat des boutons }
+  Buttons := GetMouseButtons;
+  If (Buttons And MouseRightButton) <> 0 Then Begin
+   Inc(PtcMouseRightClickCount);
+   GetMouseRightClicks := PtcMouseRightClickCount;
+  End
+   Else
   GetMouseRightClicks := 0;
  End;
 
  Procedure GetMouseMotion(Var DeltaX, DeltaY: Integer);
+ Var
+  CurrentX, CurrentY: Integer;
  Begin
-  DeltaX := 0;
-  DeltaY := 0;
+  { Calculer le deplacement depuis la derniere position }
+  CurrentX := GetMouseX;
+  CurrentY := GetMouseY;
+  DeltaX := CurrentX - PtcMouseLastX;
+  DeltaY := CurrentY - PtcMouseLastY;
+  PtcMouseLastX := CurrentX;
+  PtcMouseLastY := CurrentY;
+ End;
+
+ Procedure InitPtcMouseVars;
+ Begin
+  PtcMouseLastX := 0;
+  PtcMouseLastY := 0;
+  PtcMouseLeftClickCount := 0;
+  PtcMouseRightClickCount := 0;
  End;
 {$ENDIF}
 
 { Procedure pour initialiser la souris }
 Procedure InitMouse;
 Begin
+ {$IFDEF FPC}
+ InitPtcMouseVars;
+ {$ENDIF}
  MouseAvailable := MouseDriverFound;
  If MouseAvailable Then Begin
   ShowMouse;
