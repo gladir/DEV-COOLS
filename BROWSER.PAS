@@ -29,7 +29,7 @@
   20. DONE: Implementer l'application des styles CSS aux elements HTML (cascade et heritage)
   21. DONE: Implementer le decodeur et l'affichage des images BMP
   22. DONE: Implementer le decodeur et l'affichage des images GIF (y compris anime)
-  23. TODO: Implementer le decodeur et l'affichage des images JPEG
+  23. DONE: Implementer le decodeur et l'affichage des images JPEG
   24. TODO: Implementer le decodeur et l'affichage des images PNG
   25. TODO: Implementer le parseur et le rendu des fichiers SVG (Scalable Vector Graphics)
 }
@@ -6592,12 +6592,13 @@ Var
  ImgPath, ImgExt: String;
  BMPImg: BMPImage;
  GIFImg: GIFImage;
+ JPEGImg: JPEGImage;
  CacheIdx: Integer;
  ImgWidth, ImgHeight: Integer;
  DrawWidth, DrawHeight: Integer;
  AltWidth: Integer;
  Code: Integer;
- IsBMP, IsGIF: Boolean;
+ IsBMP, IsGIF, IsJPEG: Boolean;
 Begin
  If Node = Nil Then Exit;
  If Ctx.InHead Then Exit; { Pas d'affichage dans head }
@@ -6621,14 +6622,22 @@ Begin
  { Determiner le type d'image }
  IsBMP := False;
  IsGIF := False;
+ IsJPEG := False;
  If Length(ImgPath) >= 4 Then Begin
   ImgExt := HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 3, 4));
   If ImgExt = '.bmp' Then IsBMP := True
-  Else If ImgExt = '.gif' Then IsGIF := True;
+  Else If ImgExt = '.gif' Then IsGIF := True
+  Else If ImgExt = '.jpg' Then IsJPEG := True
+  Else If ImgExt = 'jpeg' Then IsJPEG := True;
+ End;
+ { Verifier aussi .jpeg (5 caracteres) }
+ If (Not IsJPEG) And (Length(ImgPath) >= 5) Then Begin
+  ImgExt := HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 4, 5));
+  If ImgExt = '.jpeg' Then IsJPEG := True;
  End;
 
  { Si format non supporte, afficher le texte alternatif }
- If Not IsBMP And Not IsGIF Then Begin
+ If Not IsBMP And Not IsGIF And Not IsJPEG Then Begin
   If Length(Alt) > 0 Then
    RenderText(Ctx, '[' + Alt + ']')
   Else
@@ -6727,6 +6736,54 @@ Begin
    GIFDrawImage(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
   Else
    GIFDrawImageScaled(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End
+
+ { Traitement des images JPEG }
+ Else If IsJPEG Then Begin
+  CacheIdx := JPEGFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   JPEGImg := JPEGImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   If Not JPEGLoadFromFile(ImgPath, JPEGImg) Then Begin
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   JPEGAddToCache(ImgPath, JPEGImg);
+  End;
+
+  ImgWidth := JPEGImg.Width;
+  ImgHeight := JPEGImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+   JPEGDrawImage(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+  Else
+   JPEGDrawImageScaled(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
 
   Ctx.X := Ctx.X + DrawWidth;
   If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
@@ -7660,6 +7717,1005 @@ End;
 
 { =====================================================
   FIN DECODEUR IMAGES GIF
+  ===================================================== }
+
+{ =====================================================
+  DECODEUR ET AFFICHAGE D'IMAGES JPEG
+  ===================================================== }
+
+Const
+ { Marqueurs JPEG }
+ JPEG_SOI  = $FFD8;  { Start Of Image }
+ JPEG_EOI  = $FFD9;  { End Of Image }
+ JPEG_APP0 = $FFE0;  { Application Marker JFIF }
+ JPEG_APP1 = $FFE1;  { Application Marker EXIF }
+ JPEG_DQT  = $FFDB;  { Define Quantization Table }
+ JPEG_DHT  = $FFC4;  { Define Huffman Table }
+ JPEG_SOF0 = $FFC0;  { Start Of Frame (Baseline DCT) }
+ JPEG_SOF2 = $FFC2;  { Start Of Frame (Progressive DCT) }
+ JPEG_SOS  = $FFDA;  { Start Of Scan }
+ JPEG_DRI  = $FFDD;  { Define Restart Interval }
+ JPEG_RST0 = $FFD0;  { Restart Marker 0 }
+ JPEG_RST7 = $FFD7;  { Restart Marker 7 }
+ JPEG_COM  = $FFFE;  { Comment }
+
+ { Taille maximale d'image JPEG supportee }
+ JPEG_MAX_WIDTH = 800;
+ JPEG_MAX_HEIGHT = 600;
+
+ { Constantes DCT }
+ JPEG_BLOCK_SIZE = 8;  { Taille d'un bloc DCT }
+ JPEG_BLOCK_SIZE2 = 64; { 8x8 pixels par bloc }
+
+Type
+ { Table de quantification JPEG }
+ JPEGQuantTable = Array[0..63] Of Word;
+ JPEGQuantTablePtr = ^JPEGQuantTable;
+
+ { Table Huffman JPEG }
+ JPEGHuffmanTable = Record
+  Bits: Array[0..15] Of Byte;    { Nombre de codes par longueur }
+  Values: Array[0..255] Of Byte; { Valeurs des symboles }
+  MinCode: Array[0..15] Of Integer; { Code minimum par longueur }
+  MaxCode: Array[0..15] Of Integer; { Code maximum par longueur }
+  ValPtr: Array[0..15] Of Integer;  { Index dans Values }
+  NumCodes: Integer;
+  Valid: Boolean;
+ End;
+ JPEGHuffmanTablePtr = ^JPEGHuffmanTable;
+
+ { Composante d'image JPEG }
+ JPEGComponent = Record
+  Id: Byte;              { Identifiant de composante }
+  HSampling: Byte;       { Facteur d'echantillonnage horizontal }
+  VSampling: Byte;       { Facteur d'echantillonnage vertical }
+  QuantTableId: Byte;    { Table de quantification utilisee }
+  DCTableId: Byte;       { Table Huffman DC }
+  ACTableId: Byte;       { Table Huffman AC }
+  DCPred: Integer;       { Predicteur DC precedent }
+ End;
+
+ { Bloc de donnees 8x8 }
+ JPEGBlock = Array[0..63] Of Integer;
+ JPEGBlockPtr = ^JPEGBlock;
+
+ { Structure d'image JPEG en memoire }
+ JPEGImage = Record
+  Width: Integer;
+  Height: Integer;
+  NumComponents: Integer;
+  Components: Array[1..4] Of JPEGComponent;
+  QuantTables: Array[0..3] Of JPEGQuantTable;
+  QuantTableValid: Array[0..3] Of Boolean;
+  DCHuffTables: Array[0..3] Of JPEGHuffmanTable;
+  ACHuffTables: Array[0..3] Of JPEGHuffmanTable;
+  MaxHSampling: Byte;
+  MaxVSampling: Byte;
+  RestartInterval: Word;
+  Data: Pointer;         { Pointeur vers les donnees RGB }
+  DataSize: LongInt;
+  Valid: Boolean;
+ End;
+
+ JPEGImagePtr = ^JPEGImage;
+
+Var
+ { Cache d'images JPEG chargees }
+ JPEGImageCache: Array[1..16] Of Record
+  URL: String[255];
+  Image: JPEGImage;
+  Used: Boolean;
+ End;
+ JPEGImageCacheCount: Integer;
+
+ { Buffer de lecture de bits pour Huffman }
+ JPEGBitBuffer: LongInt;
+ JPEGBitsInBuffer: Integer;
+ JPEGFileHandle: File;
+ JPEGFilePos: LongInt;
+ JPEGDataBuffer: Array[0..4095] Of Byte;
+ JPEGDataPos: Integer;
+ JPEGDataLen: Integer;
+
+{ Ordre zigzag pour parcourir les coefficients DCT }
+Const
+ JPEGZigZag: Array[0..63] Of Byte = (
+   0,  1,  8, 16,  9,  2,  3, 10,
+  17, 24, 32, 25, 18, 11,  4,  5,
+  12, 19, 26, 33, 40, 48, 41, 34,
+  27, 20, 13,  6,  7, 14, 21, 28,
+  35, 42, 49, 56, 57, 50, 43, 36,
+  29, 22, 15, 23, 30, 37, 44, 51,
+  58, 59, 52, 45, 38, 31, 39, 46,
+  53, 60, 61, 54, 47, 55, 62, 63
+ );
+
+{ Initialiser le cache d'images JPEG }
+Procedure JPEGInitCache;
+Var
+ I: Integer;
+Begin
+ For I := 1 To 16 Do Begin
+  JPEGImageCache[I].URL := '';
+  JPEGImageCache[I].Used := False;
+  JPEGImageCache[I].Image.Valid := False;
+  JPEGImageCache[I].Image.Data := Nil;
+ End;
+ JPEGImageCacheCount := 0;
+End;
+
+{ Convertir une couleur RGB en index de palette VGA }
+Function JPEGRGBToVGAColor(R, G, B: Byte): Byte;
+Var
+ BestColor, BestDist, Dist: Integer;
+ I: Integer;
+Const
+ VGAPalette: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0),       { 0: Noir }
+  (0, 0, 170),     { 1: Bleu }
+  (0, 170, 0),     { 2: Vert }
+  (0, 170, 170),   { 3: Cyan }
+  (170, 0, 0),     { 4: Rouge }
+  (170, 0, 170),   { 5: Magenta }
+  (170, 85, 0),    { 6: Marron }
+  (170, 170, 170), { 7: Gris clair }
+  (85, 85, 85),    { 8: Gris fonce }
+  (85, 85, 255),   { 9: Bleu clair }
+  (85, 255, 85),   { 10: Vert clair }
+  (85, 255, 255),  { 11: Cyan clair }
+  (255, 85, 85),   { 12: Rouge clair }
+  (255, 85, 255),  { 13: Magenta clair }
+  (255, 255, 85),  { 14: Jaune }
+  (255, 255, 255)  { 15: Blanc }
+ );
+Begin
+ BestColor := 0;
+ BestDist := 256 * 256 * 3;
+
+ For I := 0 To 15 Do Begin
+  Dist := (Integer(R) - Integer(VGAPalette[I, 0])) *
+          (Integer(R) - Integer(VGAPalette[I, 0])) +
+          (Integer(G) - Integer(VGAPalette[I, 1])) *
+          (Integer(G) - Integer(VGAPalette[I, 1])) +
+          (Integer(B) - Integer(VGAPalette[I, 2])) *
+          (Integer(B) - Integer(VGAPalette[I, 2]));
+  If Dist < BestDist Then Begin
+   BestDist := Dist;
+   BestColor := I;
+  End;
+ End;
+
+ JPEGRGBToVGAColor := BestColor;
+End;
+
+{ Liberer la memoire d'une image JPEG }
+Procedure JPEGFreeImage(Var Img: JPEGImage);
+Begin
+ If Img.Data <> Nil Then Begin
+  FreeMem(Img.Data, Img.DataSize);
+  Img.Data := Nil;
+ End;
+ Img.Valid := False;
+ Img.DataSize := 0;
+End;
+
+{ Initialiser le buffer de lecture de bits }
+Procedure JPEGInitBitBuffer(Var F: File);
+Begin
+ JPEGBitBuffer := 0;
+ JPEGBitsInBuffer := 0;
+ JPEGFileHandle := F;
+ JPEGDataPos := 0;
+ JPEGDataLen := 0;
+End;
+
+{ Lire un octet du fichier JPEG (gere les marqueurs $FF00) }
+Function JPEGReadByte: Integer;
+Var
+ BytesRead: Word;
+ B: Byte;
+Begin
+ JPEGReadByte := -1;
+ 
+ { Remplir le buffer si necessaire }
+ If JPEGDataPos >= JPEGDataLen Then Begin
+  BlockRead(JPEGFileHandle, JPEGDataBuffer, SizeOf(JPEGDataBuffer), BytesRead);
+  If BytesRead = 0 Then Exit;
+  JPEGDataPos := 0;
+  JPEGDataLen := BytesRead;
+ End;
+ 
+ B := JPEGDataBuffer[JPEGDataPos];
+ Inc(JPEGDataPos);
+ 
+ { Gerer le byte stuffing: $FF00 devient $FF }
+ If B = $FF Then Begin
+  If JPEGDataPos >= JPEGDataLen Then Begin
+   BlockRead(JPEGFileHandle, JPEGDataBuffer, SizeOf(JPEGDataBuffer), BytesRead);
+   If BytesRead = 0 Then Exit;
+   JPEGDataPos := 0;
+   JPEGDataLen := BytesRead;
+  End;
+  
+  If JPEGDataBuffer[JPEGDataPos] = $00 Then Begin
+   Inc(JPEGDataPos); { Sauter le $00 de stuffing }
+  End
+  Else If (JPEGDataBuffer[JPEGDataPos] >= $D0) And
+          (JPEGDataBuffer[JPEGDataPos] <= $D7) Then Begin
+   { Marqueur RST - le sauter }
+   Inc(JPEGDataPos);
+   JPEGBitBuffer := 0;
+   JPEGBitsInBuffer := 0;
+   JPEGReadByte := JPEGReadByte; { Lire le prochain octet }
+   Exit;
+  End;
+ End;
+ 
+ JPEGReadByte := B;
+End;
+
+{ Lire N bits du flux }
+Function JPEGReadBits(NumBits: Integer): Integer;
+Var
+ B: Integer;
+Begin
+ JPEGReadBits := -1;
+ 
+ While JPEGBitsInBuffer < NumBits Do Begin
+  B := JPEGReadByte;
+  If B < 0 Then Exit;
+  JPEGBitBuffer := (JPEGBitBuffer Shl 8) Or B;
+  Inc(JPEGBitsInBuffer, 8);
+ End;
+ 
+ Dec(JPEGBitsInBuffer, NumBits);
+ JPEGReadBits := (JPEGBitBuffer Shr JPEGBitsInBuffer) And ((1 Shl NumBits) - 1);
+End;
+
+{ Decoder un symbole Huffman }
+Function JPEGDecodeHuffman(Var Table: JPEGHuffmanTable): Integer;
+Var
+ Code, BitLen: Integer;
+ Index: Integer;
+Begin
+ JPEGDecodeHuffman := -1;
+ If Not Table.Valid Then Exit;
+ 
+ Code := 0;
+ For BitLen := 1 To 16 Do Begin
+  Code := (Code Shl 1) Or JPEGReadBits(1);
+  If Code < 0 Then Exit;
+  
+  If (Code >= Table.MinCode[BitLen - 1]) And
+     (Code <= Table.MaxCode[BitLen - 1]) Then Begin
+   Index := Table.ValPtr[BitLen - 1] + Code - Table.MinCode[BitLen - 1];
+   If Index < Table.NumCodes Then
+    JPEGDecodeHuffman := Table.Values[Index];
+   Exit;
+  End;
+ End;
+End;
+
+{ Etendre la valeur decodee selon la categorie }
+Function JPEGExtendValue(Value, Category: Integer): Integer;
+Var
+ Threshold: Integer;
+Begin
+ If Category = 0 Then Begin
+  JPEGExtendValue := 0;
+  Exit;
+ End;
+ 
+ Threshold := 1 Shl (Category - 1);
+ If Value < Threshold Then
+  JPEGExtendValue := Value - (2 * Threshold - 1)
+ Else
+  JPEGExtendValue := Value;
+End;
+
+{ Construire les codes Huffman a partir des bits }
+Procedure JPEGBuildHuffmanCodes(Var Table: JPEGHuffmanTable);
+Var
+ Code, I, J: Integer;
+ Count: Integer;
+Begin
+ Code := 0;
+ Count := 0;
+ 
+ For I := 0 To 15 Do Begin
+  Table.MinCode[I] := Code;
+  Table.ValPtr[I] := Count;
+  
+  For J := 0 To Table.Bits[I] - 1 Do Begin
+   Inc(Code);
+   Inc(Count);
+  End;
+  
+  Table.MaxCode[I] := Code - 1;
+  Code := Code Shl 1;
+ End;
+ 
+ Table.NumCodes := Count;
+ Table.Valid := True;
+End;
+
+{ Coefficients IDCT precalcules (cosinus) }
+Const
+ JPEGIDCTScale: Array[0..7, 0..7] Of Integer = (
+  (362, 362, 362, 362, 362, 362, 362, 362),
+  (502, 425, 284, 100, -100, -284, -425, -502),
+  (473, 195, -195, -473, -473, -195, 195, 473),
+  (425, -100, -502, -284, 284, 502, 100, -425),
+  (362, -362, -362, 362, 362, -362, -362, 362),
+  (284, -502, 100, 425, -425, -100, 502, -284),
+  (195, -473, 473, -195, -195, 473, -473, 195),
+  (100, -284, 425, -502, 502, -425, 284, -100)
+ );
+
+{ Effectuer l'IDCT sur un bloc 8x8 }
+Procedure JPEGInverseIDCT(Var Block: JPEGBlock);
+Var
+ Temp: Array[0..63] Of LongInt;
+ I, J, K: Integer;
+ Sum: LongInt;
+Begin
+ { IDCT sur les colonnes }
+ For I := 0 To 7 Do Begin
+  For J := 0 To 7 Do Begin
+   Sum := 0;
+   For K := 0 To 7 Do Begin
+    Sum := Sum + LongInt(Block[K * 8 + I]) * LongInt(JPEGIDCTScale[K, J]);
+   End;
+   Temp[J * 8 + I] := Sum Div 256;
+  End;
+ End;
+ 
+ { IDCT sur les lignes }
+ For I := 0 To 7 Do Begin
+  For J := 0 To 7 Do Begin
+   Sum := 0;
+   For K := 0 To 7 Do Begin
+    Sum := Sum + Temp[I * 8 + K] * LongInt(JPEGIDCTScale[K, J]);
+   End;
+   Block[I * 8 + J] := Sum Div 256 + 128;
+   
+   { Clamping a 0-255 }
+   If Block[I * 8 + J] < 0 Then Block[I * 8 + J] := 0;
+   If Block[I * 8 + J] > 255 Then Block[I * 8 + J] := 255;
+  End;
+ End;
+End;
+
+{ Decoder un bloc 8x8 }
+Function JPEGDecodeBlock(Var Block: JPEGBlock;
+                          Var DCTable, ACTable: JPEGHuffmanTable;
+                          Var QuantTable: JPEGQuantTable;
+                          Var DCPred: Integer): Boolean;
+Var
+ I, Symbol, Category, Bits, Value: Integer;
+ Run, Size: Integer;
+ ZZIndex: Integer;
+Begin
+ JPEGDecodeBlock := False;
+ 
+ { Initialiser le bloc a zero }
+ For I := 0 To 63 Do Block[I] := 0;
+ 
+ { Decoder le coefficient DC }
+ Category := JPEGDecodeHuffman(DCTable);
+ If Category < 0 Then Exit;
+ 
+ If Category > 0 Then Begin
+  Bits := JPEGReadBits(Category);
+  If Bits < 0 Then Exit;
+  Value := JPEGExtendValue(Bits, Category);
+ End
+ Else
+  Value := 0;
+ 
+ DCPred := DCPred + Value;
+ Block[0] := DCPred * Integer(QuantTable[0]);
+ 
+ { Decoder les coefficients AC }
+ ZZIndex := 1;
+ While ZZIndex < 64 Do Begin
+  Symbol := JPEGDecodeHuffman(ACTable);
+  If Symbol < 0 Then Exit;
+  
+  If Symbol = 0 Then Begin
+   { EOB - End Of Block }
+   Break;
+  End;
+  
+  Run := (Symbol Shr 4) And $0F;   { Nombre de zeros }
+  Size := Symbol And $0F;          { Taille de la valeur }
+  
+  If Symbol = $F0 Then Begin
+   { ZRL - 16 zeros }
+   Inc(ZZIndex, 16);
+   Continue;
+  End;
+  
+  Inc(ZZIndex, Run);
+  If ZZIndex >= 64 Then Break;
+  
+  If Size > 0 Then Begin
+   Bits := JPEGReadBits(Size);
+   If Bits < 0 Then Exit;
+   Value := JPEGExtendValue(Bits, Size);
+   Block[JPEGZigZag[ZZIndex]] := Value * Integer(QuantTable[JPEGZigZag[ZZIndex]]);
+  End;
+  
+  Inc(ZZIndex);
+ End;
+ 
+ { Appliquer l'IDCT }
+ JPEGInverseIDCT(Block);
+ 
+ JPEGDecodeBlock := True;
+End;
+
+{ Convertir YCbCr vers RGB }
+Procedure JPEGYCbCrToRGB(Y, Cb, Cr: Integer; Var R, G, B: Byte);
+Var
+ Rv, Gv, Bv: Integer;
+Begin
+ { Formule standard ITU-R BT.601 }
+ Rv := Y + ((Cr - 128) * 359) Div 256;
+ Gv := Y - ((Cb - 128) * 88 + (Cr - 128) * 183) Div 256;
+ Bv := Y + ((Cb - 128) * 454) Div 256;
+ 
+ { Clamping a 0-255 }
+ If Rv < 0 Then Rv := 0 Else If Rv > 255 Then Rv := 255;
+ If Gv < 0 Then Gv := 0 Else If Gv > 255 Then Gv := 255;
+ If Bv < 0 Then Bv := 0 Else If Bv > 255 Then Bv := 255;
+ 
+ R := Rv;
+ G := Gv;
+ B := Bv;
+End;
+
+{ Lire un mot (16 bits big-endian) }
+Function JPEGReadWord(Var F: File): Word;
+Var
+ B1, B2: Byte;
+ BytesRead: Word;
+Begin
+ BlockRead(F, B1, 1, BytesRead);
+ BlockRead(F, B2, 1, BytesRead);
+ JPEGReadWord := (Word(B1) Shl 8) Or B2;
+End;
+
+{ Sauter N octets }
+Procedure JPEGSkipBytes(Var F: File; Count: Word);
+Var
+ I: Integer;
+ B: Byte;
+ BytesRead: Word;
+Begin
+ For I := 1 To Count Do
+  BlockRead(F, B, 1, BytesRead);
+End;
+
+{ Lire la table de quantification }
+Function JPEGReadQuantTable(Var F: File; Var Img: JPEGImage; Length: Word): Boolean;
+Var
+ Precision, TableId: Byte;
+ I: Integer;
+ B: Byte;
+ W: Word;
+ BytesRead: Word;
+ Remaining: Integer;
+Begin
+ JPEGReadQuantTable := False;
+ Remaining := Length - 2;
+ 
+ While Remaining > 0 Do Begin
+  BlockRead(F, B, 1, BytesRead);
+  Dec(Remaining);
+  
+  Precision := (B Shr 4) And $0F;
+  TableId := B And $0F;
+  
+  If TableId > 3 Then Exit;
+  
+  If Precision = 0 Then Begin
+   { Table 8 bits }
+   For I := 0 To 63 Do Begin
+    BlockRead(F, B, 1, BytesRead);
+    Dec(Remaining);
+    Img.QuantTables[TableId][JPEGZigZag[I]] := B;
+   End;
+  End
+  Else Begin
+   { Table 16 bits }
+   For I := 0 To 63 Do Begin
+    W := JPEGReadWord(F);
+    Dec(Remaining, 2);
+    Img.QuantTables[TableId][JPEGZigZag[I]] := W;
+   End;
+  End;
+  
+  Img.QuantTableValid[TableId] := True;
+ End;
+ 
+ JPEGReadQuantTable := True;
+End;
+
+{ Lire la table Huffman }
+Function JPEGReadHuffmanTable(Var F: File; Var Img: JPEGImage; Length: Word): Boolean;
+Var
+ TableClass, TableId: Byte;
+ B: Byte;
+ BytesRead: Word;
+ Remaining: Integer;
+ I, Count: Integer;
+ Table: ^JPEGHuffmanTable;
+Begin
+ JPEGReadHuffmanTable := False;
+ Remaining := Length - 2;
+ 
+ While Remaining > 0 Do Begin
+  BlockRead(F, B, 1, BytesRead);
+  Dec(Remaining);
+  
+  TableClass := (B Shr 4) And $0F; { 0 = DC, 1 = AC }
+  TableId := B And $0F;
+  
+  If TableId > 3 Then Exit;
+  
+  If TableClass = 0 Then
+   Table := @Img.DCHuffTables[TableId]
+  Else
+   Table := @Img.ACHuffTables[TableId];
+  
+  { Lire le nombre de codes par longueur }
+  Count := 0;
+  For I := 0 To 15 Do Begin
+   BlockRead(F, Table^.Bits[I], 1, BytesRead);
+   Dec(Remaining);
+   Inc(Count, Table^.Bits[I]);
+  End;
+  
+  { Lire les valeurs }
+  For I := 0 To Count - 1 Do Begin
+   BlockRead(F, Table^.Values[I], 1, BytesRead);
+   Dec(Remaining);
+  End;
+  
+  { Construire les codes }
+  JPEGBuildHuffmanCodes(Table^);
+ End;
+ 
+ JPEGReadHuffmanTable := True;
+End;
+
+{ Lire le SOF (Start Of Frame) }
+Function JPEGReadSOF(Var F: File; Var Img: JPEGImage; Length: Word): Boolean;
+Var
+ Precision: Byte;
+ BytesRead: Word;
+ I: Integer;
+ B: Byte;
+Begin
+ JPEGReadSOF := False;
+ 
+ BlockRead(F, Precision, 1, BytesRead);
+ Img.Height := JPEGReadWord(F);
+ Img.Width := JPEGReadWord(F);
+ BlockRead(F, B, 1, BytesRead);
+ Img.NumComponents := B;
+ 
+ If (Img.Width > JPEG_MAX_WIDTH) Or (Img.Height > JPEG_MAX_HEIGHT) Then Exit;
+ If (Img.NumComponents < 1) Or (Img.NumComponents > 4) Then Exit;
+ 
+ Img.MaxHSampling := 1;
+ Img.MaxVSampling := 1;
+ 
+ For I := 1 To Img.NumComponents Do Begin
+  BlockRead(F, Img.Components[I].Id, 1, BytesRead);
+  BlockRead(F, B, 1, BytesRead);
+  Img.Components[I].HSampling := (B Shr 4) And $0F;
+  Img.Components[I].VSampling := B And $0F;
+  BlockRead(F, Img.Components[I].QuantTableId, 1, BytesRead);
+  Img.Components[I].DCPred := 0;
+  
+  If Img.Components[I].HSampling > Img.MaxHSampling Then
+   Img.MaxHSampling := Img.Components[I].HSampling;
+  If Img.Components[I].VSampling > Img.MaxVSampling Then
+   Img.MaxVSampling := Img.Components[I].VSampling;
+ End;
+ 
+ JPEGReadSOF := True;
+End;
+
+{ Lire le SOS (Start Of Scan) }
+Function JPEGReadSOS(Var F: File; Var Img: JPEGImage): Boolean;
+Var
+ NumComponents: Byte;
+ BytesRead: Word;
+ I: Integer;
+ CompId, TableIds: Byte;
+ Ss, Se, AhAl: Byte;
+Begin
+ JPEGReadSOS := False;
+ 
+ BlockRead(F, NumComponents, 1, BytesRead);
+ If NumComponents <> Img.NumComponents Then Exit;
+ 
+ For I := 1 To NumComponents Do Begin
+  BlockRead(F, CompId, 1, BytesRead);
+  BlockRead(F, TableIds, 1, BytesRead);
+  Img.Components[I].DCTableId := (TableIds Shr 4) And $0F;
+  Img.Components[I].ACTableId := TableIds And $0F;
+ End;
+ 
+ { Lire les parametres de scan (ignores pour baseline) }
+ BlockRead(F, Ss, 1, BytesRead);
+ BlockRead(F, Se, 1, BytesRead);
+ BlockRead(F, AhAl, 1, BytesRead);
+ 
+ JPEGReadSOS := True;
+End;
+
+{ Charger une image JPEG depuis un fichier }
+Function JPEGLoadFromFile(Const FileName: String; Var Img: JPEGImage): Boolean;
+Var
+ F: File;
+ Marker, Length: Word;
+ BytesRead: Word;
+ I, J, X, Y: Integer;
+ MCUWidth, MCUHeight: Integer;
+ BlocksPerMCU: Integer;
+ YBlocks, CbBlocks, CrBlocks: Array[0..3] Of JPEGBlock;
+ R, G, B: Byte;
+ PixelOffset: LongInt;
+ DataPtr: ^Byte;
+ Yv, Cbv, Crv: Integer;
+ BlockX, BlockY: Integer;
+ PixelX, PixelY: Integer;
+Begin
+ JPEGLoadFromFile := False;
+ Img.Valid := False;
+ Img.Data := Nil;
+ 
+ For I := 0 To 3 Do Begin
+  Img.QuantTableValid[I] := False;
+  Img.DCHuffTables[I].Valid := False;
+  Img.ACHuffTables[I].Valid := False;
+ End;
+ 
+ { Ouvrir le fichier }
+ {$I-}
+ Assign(F, FileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ 
+ { Verifier la signature SOI }
+ Marker := JPEGReadWord(F);
+ If Marker <> JPEG_SOI Then Begin
+  Close(F);
+  Exit;
+ End;
+ 
+ { Parcourir les segments }
+ While True Do Begin
+  Marker := JPEGReadWord(F);
+  If (Marker And $FF00) <> $FF00 Then Break;
+  
+  Case Marker Of
+   JPEG_EOI: Break;
+   
+   JPEG_DQT: Begin
+    Length := JPEGReadWord(F);
+    If Not JPEGReadQuantTable(F, Img, Length) Then Begin
+     Close(F);
+     Exit;
+    End;
+   End;
+   
+   JPEG_DHT: Begin
+    Length := JPEGReadWord(F);
+    If Not JPEGReadHuffmanTable(F, Img, Length) Then Begin
+     Close(F);
+     Exit;
+    End;
+   End;
+   
+   JPEG_SOF0: Begin { Baseline DCT }
+    Length := JPEGReadWord(F);
+    If Not JPEGReadSOF(F, Img, Length) Then Begin
+     Close(F);
+     Exit;
+    End;
+   End;
+   
+   JPEG_SOS: Begin
+    Length := JPEGReadWord(F);
+    If Not JPEGReadSOS(F, Img) Then Begin
+     Close(F);
+     Exit;
+    End;
+    
+    { Allouer la memoire pour les pixels RGB }
+    Img.DataSize := LongInt(Img.Width) * LongInt(Img.Height) * 3;
+    If Img.DataSize > 65520 Then Begin
+     { Trop grand pour le mode reel }
+     Close(F);
+     Exit;
+    End;
+    
+    GetMem(Img.Data, Img.DataSize);
+    If Img.Data = Nil Then Begin
+     Close(F);
+     Exit;
+    End;
+    
+    { Initialiser le buffer de bits }
+    JPEGInitBitBuffer(F);
+    
+    { Reinitialiser les predicteurs DC }
+    For I := 1 To Img.NumComponents Do
+     Img.Components[I].DCPred := 0;
+    
+    { Taille d'un MCU en pixels }
+    MCUWidth := Img.MaxHSampling * 8;
+    MCUHeight := Img.MaxVSampling * 8;
+    
+    { Decoder les MCUs }
+    Y := 0;
+    While Y < Img.Height Do Begin
+     X := 0;
+     While X < Img.Width Do Begin
+      { Decoder les blocs Y (luminance) }
+      For I := 0 To Img.Components[1].VSampling * Img.Components[1].HSampling - 1 Do Begin
+       If Not JPEGDecodeBlock(YBlocks[I],
+         Img.DCHuffTables[Img.Components[1].DCTableId],
+         Img.ACHuffTables[Img.Components[1].ACTableId],
+         Img.QuantTables[Img.Components[1].QuantTableId],
+         Img.Components[1].DCPred) Then Begin
+        FreeMem(Img.Data, Img.DataSize);
+        Img.Data := Nil;
+        Close(F);
+        Exit;
+       End;
+      End;
+      
+      { Decoder les blocs Cb et Cr si image couleur }
+      If Img.NumComponents >= 3 Then Begin
+       If Not JPEGDecodeBlock(CbBlocks[0],
+         Img.DCHuffTables[Img.Components[2].DCTableId],
+         Img.ACHuffTables[Img.Components[2].ACTableId],
+         Img.QuantTables[Img.Components[2].QuantTableId],
+         Img.Components[2].DCPred) Then Begin
+        FreeMem(Img.Data, Img.DataSize);
+        Img.Data := Nil;
+        Close(F);
+        Exit;
+       End;
+       
+       If Not JPEGDecodeBlock(CrBlocks[0],
+         Img.DCHuffTables[Img.Components[3].DCTableId],
+         Img.ACHuffTables[Img.Components[3].ACTableId],
+         Img.QuantTables[Img.Components[3].QuantTableId],
+         Img.Components[3].DCPred) Then Begin
+        FreeMem(Img.Data, Img.DataSize);
+        Img.Data := Nil;
+        Close(F);
+        Exit;
+       End;
+      End;
+      
+      { Convertir et stocker les pixels }
+      For BlockY := 0 To MCUHeight - 1 Do Begin
+       For BlockX := 0 To MCUWidth - 1 Do Begin
+        PixelX := X + BlockX;
+        PixelY := Y + BlockY;
+        
+        If (PixelX < Img.Width) And (PixelY < Img.Height) Then Begin
+         { Obtenir la valeur Y du bloc approprie }
+         I := (BlockY Div 8) * Img.Components[1].HSampling + (BlockX Div 8);
+         If I > Img.Components[1].VSampling * Img.Components[1].HSampling - 1 Then
+          I := 0;
+         Yv := YBlocks[I][(BlockY Mod 8) * 8 + (BlockX Mod 8)];
+         
+         If Img.NumComponents >= 3 Then Begin
+          { Calculer la position dans les blocs Cb/Cr (sous-echantillonnes) }
+          J := (BlockY * Img.Components[2].VSampling Div Img.MaxVSampling) * 8 +
+               (BlockX * Img.Components[2].HSampling Div Img.MaxHSampling);
+          If J > 63 Then J := 63;
+          Cbv := CbBlocks[0][J];
+          Crv := CrBlocks[0][J];
+          
+          JPEGYCbCrToRGB(Yv, Cbv, Crv, R, G, B);
+         End
+         Else Begin
+          { Image en niveaux de gris }
+          R := Yv;
+          G := Yv;
+          B := Yv;
+         End;
+         
+         { Stocker le pixel }
+         PixelOffset := (LongInt(PixelY) * LongInt(Img.Width) + LongInt(PixelX)) * 3;
+         DataPtr := Img.Data;
+         Inc(DataPtr, PixelOffset);
+         DataPtr^ := R;
+         Inc(DataPtr);
+         DataPtr^ := G;
+         Inc(DataPtr);
+         DataPtr^ := B;
+        End;
+       End;
+      End;
+      
+      Inc(X, MCUWidth);
+     End;
+     Inc(Y, MCUHeight);
+    End;
+    
+    Break; { Fin du decodage }
+   End;
+   
+   JPEG_DRI: Begin
+    Length := JPEGReadWord(F);
+    Img.RestartInterval := JPEGReadWord(F);
+   End;
+   
+   Else Begin
+    { Sauter les segments inconnus }
+    Length := JPEGReadWord(F);
+    If Length > 2 Then
+     JPEGSkipBytes(F, Length - 2);
+   End;
+  End;
+ End;
+ 
+ Close(F);
+ 
+ If Img.Data <> Nil Then Begin
+  Img.Valid := True;
+  JPEGLoadFromFile := True;
+ End;
+End;
+
+{ Obtenir la couleur d'un pixel dans une image JPEG }
+Function JPEGGetPixel(Const Img: JPEGImage; X, Y: Integer): Byte;
+Var
+ Offset: LongInt;
+ DataPtr: ^Byte;
+ R, G, B: Byte;
+Begin
+ JPEGGetPixel := 0;
+ If Not Img.Valid Then Exit;
+ If (X < 0) Or (X >= Img.Width) Or (Y < 0) Or (Y >= Img.Height) Then Exit;
+ 
+ Offset := (LongInt(Y) * LongInt(Img.Width) + LongInt(X)) * 3;
+ DataPtr := Img.Data;
+ Inc(DataPtr, Offset);
+ R := DataPtr^;
+ Inc(DataPtr);
+ G := DataPtr^;
+ Inc(DataPtr);
+ B := DataPtr^;
+ 
+ JPEGGetPixel := JPEGRGBToVGAColor(R, G, B);
+End;
+
+{ Dessiner une image JPEG a l'ecran }
+Procedure JPEGDrawImage(Const Img: JPEGImage; DestX, DestY: Integer;
+                         MaxWidth, MaxHeight: Integer);
+Var
+ X, Y: Integer;
+ DrawWidth, DrawHeight: Integer;
+ PixelColor: Byte;
+Begin
+ If Not Img.Valid Then Exit;
+ 
+ DrawWidth := Img.Width;
+ DrawHeight := Img.Height;
+ 
+ If DrawWidth > MaxWidth Then DrawWidth := MaxWidth;
+ If DrawHeight > MaxHeight Then DrawHeight := MaxHeight;
+ 
+ For Y := 0 To DrawHeight - 1 Do Begin
+  For X := 0 To DrawWidth - 1 Do Begin
+   PixelColor := JPEGGetPixel(Img, X, Y);
+   PutPixel(DestX + X, DestY + Y, PixelColor);
+  End;
+ End;
+End;
+
+{ Dessiner une image JPEG avec mise a l'echelle }
+Procedure JPEGDrawImageScaled(Const Img: JPEGImage; DestX, DestY: Integer;
+                               DestWidth, DestHeight: Integer);
+Var
+ X, Y: Integer;
+ SrcX, SrcY: Integer;
+ PixelColor: Byte;
+Begin
+ If Not Img.Valid Then Exit;
+ If (DestWidth <= 0) Or (DestHeight <= 0) Then Exit;
+ 
+ For Y := 0 To DestHeight - 1 Do Begin
+  SrcY := (Y * Img.Height) Div DestHeight;
+  For X := 0 To DestWidth - 1 Do Begin
+   SrcX := (X * Img.Width) Div DestWidth;
+   PixelColor := JPEGGetPixel(Img, SrcX, SrcY);
+   PutPixel(DestX + X, DestY + Y, PixelColor);
+  End;
+ End;
+End;
+
+{ Chercher une image JPEG dans le cache }
+Function JPEGFindInCache(Const URL: String): Integer;
+Var
+ I: Integer;
+Begin
+ JPEGFindInCache := 0;
+ For I := 1 To 16 Do Begin
+  If JPEGImageCache[I].Used And (JPEGImageCache[I].URL = URL) Then Begin
+   JPEGFindInCache := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Ajouter une image JPEG au cache }
+Function JPEGAddToCache(Const URL: String; Const Img: JPEGImage): Integer;
+Var
+ I: Integer;
+ Slot: Integer;
+Begin
+ JPEGAddToCache := 0;
+ 
+ Slot := 0;
+ For I := 1 To 16 Do Begin
+  If Not JPEGImageCache[I].Used Then Begin
+   Slot := I;
+   Break;
+  End;
+ End;
+ 
+ If Slot = 0 Then Begin
+  If JPEGImageCache[1].Image.Valid Then
+   JPEGFreeImage(JPEGImageCache[1].Image);
+  Slot := 1;
+ End;
+ 
+ JPEGImageCache[Slot].URL := URL;
+ JPEGImageCache[Slot].Image := Img;
+ JPEGImageCache[Slot].Used := True;
+ JPEGAddToCache := Slot;
+End;
+
+{ Construire le chemin complet d'une image JPEG }
+Function JPEGBuildImagePath(Const Src: String): String;
+Var
+ BasePath: String;
+ I: Integer;
+Begin
+ If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
+     ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
+  JPEGBuildImagePath := Src;
+  Exit;
+ End;
+ 
+ BasePath := CurrentURL;
+ 
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Break;
+  End;
+ End;
+ 
+ JPEGBuildImagePath := BasePath + Src;
+End;
+
+{ =====================================================
+  FIN DECODEUR IMAGES JPEG
   ===================================================== }
 
 { Variable globale pour activer/desactiver l'application CSS automatique }
