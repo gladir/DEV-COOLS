@@ -97,6 +97,13 @@ Type
   Next:PModuleNode;
  End;
 
+ { Noeud de liste chainee pour les symboles }
+ PSymbolNode=^TSymbolNode;
+ TSymbolNode=Record
+  Data:TSymbolRec;
+  Next:PSymbolNode;
+ End;
+
  { Noeud de liste chainee pour les fichiers d'entree }
  PInputFileNode=^TInputFileNode;
  TInputFileNode=Record
@@ -130,7 +137,8 @@ Var
  ModuleCount:Integer;
 
  { Liste des symboles }
- Symbols:Array[1..MAX_SYMBOLS] of TSymbolRec;
+ SymbolsHead:PSymbolNode;
+ SymbolsTail:PSymbolNode;
  SymbolCount:Integer;
 
  { Tampon de lecture }
@@ -299,6 +307,59 @@ Begin
  ModulesHead := Nil;
  ModulesTail := Nil;
  ModuleCount := 0;
+End;
+
+Procedure AddSymbol(SymName:String; ModuleIndex, Segment, Offset, TypeIndex:Word);
+Var
+ Node:PSymbolNode;
+Begin
+ New(Node);
+ Node^.Data.Name := SymName;
+ Node^.Data.ModuleIndex := ModuleIndex;
+ Node^.Data.Segment := Segment;
+ Node^.Data.Offset := Offset;
+ Node^.Data.TypeIndex := TypeIndex;
+ Node^.Next := Nil;
+ If SymbolsHead = Nil Then Begin
+  SymbolsHead := Node;
+  SymbolsTail := Node;
+ End
+ Else Begin
+  SymbolsTail^.Next := Node;
+  SymbolsTail := Node;
+ End;
+ Inc(SymbolCount);
+End;
+
+Function GetSymbolAt(Index:Integer):PSymbolNode;
+Var
+ Node:PSymbolNode;
+ I:Integer;
+Begin
+ GetSymbolAt := Nil;
+ If (Index < 1) Or (Index > SymbolCount) Then Exit;
+ Node := SymbolsHead;
+ I := 1;
+ While (Node <> Nil) And (I < Index) Do Begin
+  Node := Node^.Next;
+  Inc(I);
+ End;
+ GetSymbolAt := Node;
+End;
+
+Procedure ClearSymbols;
+Var
+ Node, NextNode:PSymbolNode;
+Begin
+ Node := SymbolsHead;
+ While Node <> Nil Do Begin
+  NextNode := Node^.Next;
+  Dispose(Node);
+  Node := NextNode;
+ End;
+ SymbolsHead := Nil;
+ SymbolsTail := Nil;
+ SymbolCount := 0;
 End;
 
 Function UpperCase(S:String):String;
@@ -748,14 +809,7 @@ Begin
    SymOffset := GetWord;
   SymType := GetIndex;
 
-  Inc(SymbolCount);
-  If SymbolCount <= MAX_SYMBOLS Then Begin
-   Symbols[SymbolCount].Name := SymName;
-   Symbols[SymbolCount].ModuleIndex := ModuleCount;
-   Symbols[SymbolCount].Segment := SegIndex;
-   Symbols[SymbolCount].Offset := SymOffset;
-   Symbols[SymbolCount].TypeIndex := SymType;
-  End;
+  AddSymbol(SymName, ModuleCount, SegIndex, SymOffset, SymType);
 
   If OptVerbose Then
    WriteLn('    Public: ', SymName, ' @ ', WordHex2Str(SymOffset));
@@ -941,17 +995,20 @@ Procedure ListSymbols;
 Var
  I:Integer;
  ModuleNode:PModuleNode;
+ SymbolNode:PSymbolNode;
 Begin
  WriteLn('Symboles publics:');
  WriteLn('-----------------');
  For I := 1 to SymbolCount do Begin
-  Write('  ', Symbols[I].Name);
-  If Symbols[I].ModuleIndex <= ModuleCount Then Begin
-   ModuleNode := GetModuleAt(Symbols[I].ModuleIndex);
+  SymbolNode := GetSymbolAt(I);
+  If SymbolNode = Nil Then Continue;
+  Write('  ', SymbolNode^.Data.Name);
+  If SymbolNode^.Data.ModuleIndex <= ModuleCount Then Begin
+   ModuleNode := GetModuleAt(SymbolNode^.Data.ModuleIndex);
    If ModuleNode <> Nil Then
     Write(' (', ModuleNode^.Data.Name, ')');
   End;
-  WriteLn(' @ ', WordHex2Str(Symbols[I].Offset));
+  WriteLn(' @ ', WordHex2Str(SymbolNode^.Data.Offset));
  End;
  WriteLn;
  WriteLn('Total: ', SymbolCount, ' symbole(s)');
@@ -1088,6 +1145,7 @@ Procedure WriteLibDictionary(Var F:File);
 Var
  I, J, Bucket:Integer;
  ModuleNode:PModuleNode;
+ SymbolNode:PSymbolNode;
  BucketData:Array[0..36] of Byte;
  NumBuckets:Word;
  NameLen:Byte;
@@ -1101,16 +1159,18 @@ Begin
  DictPage[38] := $FF; { Index libre }
  PageOffset := 39;
  For I := 1 to SymbolCount do Begin
-  If PageOffset + Length(Symbols[I].Name) + 4 > 512 Then Break;
-  NameLen := Length(Symbols[I].Name);
+  SymbolNode := GetSymbolAt(I);
+  If SymbolNode = Nil Then Continue;
+  If PageOffset + Length(SymbolNode^.Data.Name) + 4 > 512 Then Break;
+  NameLen := Length(SymbolNode^.Data.Name);
   DictPage[PageOffset] := NameLen;
   Inc(PageOffset);
   For J := 1 to NameLen do Begin
-   DictPage[PageOffset] := Ord(Symbols[I].Name[J]);
+   DictPage[PageOffset] := Ord(SymbolNode^.Data.Name[J]);
    Inc(PageOffset);
   End;
    { Page number du module }
-  ModuleNode := GetModuleAt(Symbols[I].ModuleIndex);
+  ModuleNode := GetModuleAt(SymbolNode^.Data.ModuleIndex);
   If ModuleNode <> Nil Then Begin
    DictPage[PageOffset] := Lo(ModuleNode^.Data.PageNum);
    Inc(PageOffset);
@@ -1161,7 +1221,7 @@ Begin
  WritePadding(OutF, FilePos(OutF), PageSize);
  CurrentPos := PageSize;
  ClearModules;
- SymbolCount := 0;
+ ClearSymbols;
   { Traiter chaque fichier d'entr�e }
  InputNode := InputFilesHead;
  While InputNode <> Nil Do Begin
@@ -1253,16 +1313,20 @@ BEGIN
  ModulesHead := Nil;
  ModulesTail := Nil;
  ModuleCount := 0;
+ SymbolsHead := Nil;
+ SymbolsTail := Nil;
+ SymbolCount := 0;
  ParseCommandLine;
  If ParamCount = 0 Then Begin
   ClearInputFiles;
   ClearModules;
+  ClearSymbols;
   ShowHelp;
   Halt(0);
  End;
  ShowBanner;
  ClearModules;
- SymbolCount := 0;
+ ClearSymbols;
   { Si /LIST ou /SYMBOLS sans fichier de sortie, afficher les informations }
  If (OptList or OptSymbols) and (InputFileCount > 0) Then Begin
     ReadLibrary(GetInputFileAt(1));
@@ -1294,8 +1358,10 @@ BEGIN
  Begin
   ClearInputFiles;
     ClearModules;
+    ClearSymbols;
   Error('Aucun fichier sp�cifi�');
  End;
  ClearInputFiles;
    ClearModules;
+   ClearSymbols;
 END.
