@@ -2345,7 +2345,7 @@ Begin
  WriteLn('  /?         Affiche cette aide');
  WriteLn('  /stop      Arrete tous les sites Web');
  WriteLn('  /start     Demarre tous les sites Web');
- WriteLn('  /restart   Redémarre tous les sites Web');
+ WriteLn('  /restart   Redemarre tous les sites Web');
  WriteLn('');
  WriteLn('Commandes AppCmd :');
  WriteLn('  AppCmd list site');
@@ -2469,6 +2469,8 @@ Begin
  { /restart : redemarrer tous les sites }
  If Arg1 = '/RESTART' Then Begin
   For I := 1 To SiteCount Do Begin
+   { Simulation d'arret puis de demarrage du site dans la configuration.
+     Un vrai redemarrage necessite l'arret effectif du service HTTP. }
    Sites[I].Started := False;
    Sites[I].Started := True;
    WriteLn('Site "' + Sites[I].Name + '" redemarre.');
@@ -2553,6 +2555,8 @@ Begin
    If Idx = 0 Then
     WriteLn('Erreur : pool "' + Arg4 + '" introuvable.')
    Else Begin
+    { Simulation du recyclage du pool : arret puis demarrage dans la config.
+      Un vrai recyclage necessite le redemarrage du processus de travail HTTP. }
     Pools[Idx].Started := False;
     Pools[Idx].Started := True;
     WriteLn('Pool "' + Pools[Idx].Name + '" recycle.');
