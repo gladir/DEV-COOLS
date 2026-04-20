@@ -267,19 +267,21 @@ Const
  TOOLBAR_HEIGHT = 32;
 
  { Couleurs de l'interface }
+ { Note: SetBkColor(7) remape l'index 0 vers gris, donc ne jamais }
+ { utiliser la couleur 0 pour dessiner. Utiliser 8 comme noir. }
  COLOR_BACKGROUND = 7;
  COLOR_MENUBAR = 7;
- COLOR_MENUTEXT = 0;
+ COLOR_MENUTEXT = 8;
  COLOR_HIGHLIGHT = 1;
  COLOR_HIGHLIGHTTEXT = 15;
  COLOR_WINDOW = 15;
- COLOR_WINDOWTEXT = 0;
+ COLOR_WINDOWTEXT = 8;
  COLOR_BORDER3D_LIGHT = 15;
  COLOR_BORDER3D_DARK = 8;
  COLOR_TITLEBAR = 1;
  COLOR_TITLETEXT = 15;
  COLOR_BUTTON = 7;
- COLOR_BUTTONTEXT = 0;
+ COLOR_BUTTONTEXT = 8;
  COLOR_DISABLED = 8;
  COLOR_SCROLLBAR = 7;
  COLOR_GRAYTEXT = 8;
