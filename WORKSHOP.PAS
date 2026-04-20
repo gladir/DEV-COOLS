@@ -1643,14 +1643,334 @@ Begin
   DetectResFormat := 1;
 End;
 
+{ Lecture d'une chaine UTF-16LE terminee par null et conversion en ANSI }
+Function ReadResUnicodeString: String;
+Var
+ S: String;
+ W: Word;
+Begin
+ S := '';
+ Repeat
+  W := ReadResWord;
+  If (W <> 0) And (W < 256) And (Length(S) < 255) Then
+   S := S + Chr(W);
+ Until W = 0;
+ ReadResUnicodeString := S;
+End;
+
+{ Lecture d'une chaine UTF-16LE avec longueur prefixee }
+Function ReadResCountedString: String;
+Var
+ S: String;
+ Len: Word;
+ I: Integer;
+ W: Word;
+Begin
+ S := '';
+ Len := ReadResWord;
+ For I := 1 To Len Do Begin
+  W := ReadResWord;
+  If (W < 256) And (Length(S) < 255) Then
+   S := S + Chr(W);
+ End;
+ ReadResCountedString := S;
+End;
+
+{ Alignement sur DWORD lors de la lecture }
+Procedure AlignResDWord;
+Var
+ Padding: Integer;
+Begin
+ Padding := (4 - (ResFilePos Mod 4)) Mod 4;
+ If Padding > 0 Then Begin
+  Seek(ResFile, ResFilePos + Padding);
+  ResFilePos := ResFilePos + Padding;
+ End;
+End;
+
+{ Lecture d'un dialogue depuis le fichier RES 32-bit }
+Procedure ReadResDialog(DataSize: LongInt; ResId: Word);
+Var
+ StartPos: LongInt;
+ DlgIdx, I: Integer;
+ ControlCount: Word;
+ W: Word;
+Begin
+ If DialogCount >= 64 Then Exit;
+
+ StartPos := ResFilePos;
+ Inc(DialogCount);
+ DlgIdx := DialogCount;
+
+ { Initialiser le dialogue }
+ FillChar(Dialogs[DlgIdx], SizeOf(TDialogData), 0);
+
+ { DLGTEMPLATE }
+ Dialogs[DlgIdx].Style := ReadResDWord;
+ Dialogs[DlgIdx].ExStyle := ReadResDWord;
+ ControlCount := ReadResWord;
+ Dialogs[DlgIdx].X := ReadResWord;
+ Dialogs[DlgIdx].Y := ReadResWord;
+ Dialogs[DlgIdx].W := ReadResWord;
+ Dialogs[DlgIdx].H := ReadResWord;
+
+ { Menu (ignorer) }
+ W := ReadResWord;
+ If W = $FFFF Then
+  ReadResWord  { ID numerique }
+ Else If W <> 0 Then Begin
+  { Chaine Unicode - deja lu le premier caractere }
+  While ReadResWord <> 0 Do;
+ End;
+
+ { Classe de fenetre (ignorer) }
+ W := ReadResWord;
+ If W = $FFFF Then
+  ReadResWord
+ Else If W <> 0 Then Begin
+  While ReadResWord <> 0 Do;
+ End;
+
+ { Titre du dialogue }
+ Dialogs[DlgIdx].Caption := ReadResUnicodeString;
+
+ { Police (si DS_SETFONT = $40) }
+ If (Dialogs[DlgIdx].Style And $40) <> 0 Then Begin
+  Dialogs[DlgIdx].FontSize := ReadResWord;
+  Dialogs[DlgIdx].FontName := ReadResUnicodeString;
+ End;
+
+ { Lire les controles }
+ Dialogs[DlgIdx].ControlCount := 0;
+ For I := 1 To ControlCount Do Begin
+  If Dialogs[DlgIdx].ControlCount >= MAX_CONTROLS Then Break;
+
+  { Alignement DWORD }
+  AlignResDWord;
+
+  Inc(Dialogs[DlgIdx].ControlCount);
+
+  { DLGITEMTEMPLATE }
+  Dialogs[DlgIdx].Controls[I].Style := ReadResDWord;
+  Dialogs[DlgIdx].Controls[I].ExStyle := ReadResDWord;
+  Dialogs[DlgIdx].Controls[I].X := ReadResWord;
+  Dialogs[DlgIdx].Controls[I].Y := ReadResWord;
+  Dialogs[DlgIdx].Controls[I].W := ReadResWord;
+  Dialogs[DlgIdx].Controls[I].H := ReadResWord;
+  Dialogs[DlgIdx].Controls[I].CtrlId := ReadResWord;
+
+  { Classe du controle }
+  W := ReadResWord;
+  If W = $FFFF Then Begin
+   Dialogs[DlgIdx].Controls[I].CtrlType := ReadResWord - $80;
+  End Else Begin
+   Dialogs[DlgIdx].Controls[I].CtrlType := 0;
+   If W <> 0 Then
+    While ReadResWord <> 0 Do;
+  End;
+
+  { Texte du controle }
+  Dialogs[DlgIdx].Controls[I].Text := ReadResUnicodeString;
+
+  { Extra bytes }
+  W := ReadResWord;
+  If W > 0 Then Begin
+   Seek(ResFile, ResFilePos + W);
+   ResFilePos := ResFilePos + W;
+  End;
+ End;
+
+ { Ajouter a la liste des ressources }
+ If ResourceCount < MAX_RESOURCES Then Begin
+  Inc(ResourceCount);
+  Resources[ResourceCount].ResType := RT_DIALOG;
+  Resources[ResourceCount].ResId.IsNumeric := True;
+  Resources[ResourceCount].ResId.NumId := ResId;
+  Resources[ResourceCount].ResId.StrId := '';
+  Resources[ResourceCount].DataSize := DataSize;
+  Resources[ResourceCount].DataOffset := StartPos;
+  Resources[ResourceCount].LangId := $0409;
+ End;
+End;
+
+{ Lecture d'un menu depuis le fichier RES 32-bit }
+Procedure ReadResMenu(DataSize: LongInt; ResId: Word);
+Var
+ StartPos: LongInt;
+ MenuIdx: Integer;
+ Flags, ItemId: Word;
+ Level: Integer;
+Begin
+ If MenuDataCount >= 64 Then Exit;
+
+ StartPos := ResFilePos;
+ Inc(MenuDataCount);
+ MenuIdx := MenuDataCount;
+
+ { Initialiser le menu }
+ FillChar(ResMenus[MenuIdx], SizeOf(TMenuData), 0);
+
+ { MENUHEADER }
+ ReadResWord; { Version }
+ ReadResWord; { Offset }
+
+ { Lire les items }
+ Level := 0;
+ While (ResFilePos < StartPos + DataSize) And (ResMenus[MenuIdx].ItemCount < MAX_MENU_ITEMS_RES) Do Begin
+  Flags := ReadResWord;
+
+  If (Flags And $10) = 0 Then { Pas un POPUP }
+   ItemId := ReadResWord
+  Else
+   ItemId := 0;
+
+  Inc(ResMenus[MenuIdx].ItemCount);
+  ResMenus[MenuIdx].Items[ResMenus[MenuIdx].ItemCount].Flags := Flags;
+  ResMenus[MenuIdx].Items[ResMenus[MenuIdx].ItemCount].ItemId := ItemId;
+  ResMenus[MenuIdx].Items[ResMenus[MenuIdx].ItemCount].Text := ReadResUnicodeString;
+  ResMenus[MenuIdx].Items[ResMenus[MenuIdx].ItemCount].Level := Level;
+
+  If (Flags And $10) <> 0 Then { POPUP }
+   Inc(Level);
+  If (Flags And $80) <> 0 Then { MF_END }
+   Dec(Level);
+  If Level < 0 Then Level := 0;
+ End;
+
+ { Ajouter a la liste des ressources }
+ If ResourceCount < MAX_RESOURCES Then Begin
+  Inc(ResourceCount);
+  Resources[ResourceCount].ResType := RT_MENU;
+  Resources[ResourceCount].ResId.IsNumeric := True;
+  Resources[ResourceCount].ResId.NumId := ResId;
+  Resources[ResourceCount].ResId.StrId := '';
+  Resources[ResourceCount].DataSize := DataSize;
+  Resources[ResourceCount].DataOffset := StartPos;
+  Resources[ResourceCount].LangId := $0409;
+ End;
+End;
+
+{ Lecture d'une table de chaines depuis le fichier RES 32-bit }
+Procedure ReadResStringTable(DataSize: LongInt; BundleId: Word);
+Var
+ StartPos: LongInt;
+ I: Integer;
+ BaseId: Word;
+ S: String;
+Begin
+ StartPos := ResFilePos;
+ BaseId := (BundleId - 1) * 16;
+
+ { Lire les 16 chaines du bundle }
+ For I := 0 To 15 Do Begin
+  If ResFilePos >= StartPos + DataSize Then Break;
+  S := ReadResCountedString;
+  If Length(S) > 0 Then Begin
+   If StringCount < MAX_STRINGS Then Begin
+    Inc(StringCount);
+    StringEntries[StringCount].StringId := BaseId + I;
+    StringEntries[StringCount].Text := S;
+    StringEntries[StringCount].LangId := $0409;
+   End;
+  End;
+ End;
+End;
+
+{ Chargement complet d'un fichier RES 32-bit }
 Procedure LoadResFile(Const FileName: String);
 Var
  Format: Integer;
+ DataSize, HeaderSize: LongInt;
+ ResType, ResId: Word;
+ MemFlags, LangId: Word;
+ W: Word;
+ EndPos: LongInt;
 Begin
  If Not FileExists(FileName) Then Exit;
+
+ { Reinitialiser les donnees }
+ ResourceCount := 0;
+ DialogCount := 0;
+ MenuDataCount := 0;
+ StringCount := 0;
+
  OpenResFile(FileName);
  Format := DetectResFormat;
  AppState.Is32BitFormat := (Format = 2);
+
+ If Format = 2 Then Begin
+  { Sauter l'en-tete null }
+  ReadResDWord; { DataSize = 0 }
+  ReadResDWord; { HeaderSize = 32 }
+  ReadResDWord; { Type }
+  ReadResDWord; { Name }
+  ReadResDWord; { DataVersion }
+  ReadResWord;  { MemoryFlags }
+  ReadResWord;  { LanguageId }
+  ReadResDWord; { Version }
+  ReadResDWord; { Characteristics }
+
+  { Lire les ressources }
+  While ResFilePos < ResFileSize Do Begin
+   DataSize := ReadResDWord;
+   HeaderSize := ReadResDWord;
+
+   If (DataSize = 0) And (HeaderSize = 0) Then Break;
+
+   { Type de ressource }
+   W := ReadResWord;
+   If W = $FFFF Then
+    ResType := ReadResWord
+   Else Begin
+    ResType := 0;
+    If W <> 0 Then
+     While ReadResWord <> 0 Do;
+   End;
+
+   { ID de ressource }
+   W := ReadResWord;
+   If W = $FFFF Then
+    ResId := ReadResWord
+   Else Begin
+    ResId := 0;
+    If W <> 0 Then
+     While ReadResWord <> 0 Do;
+   End;
+
+   { Alignement DWORD }
+   AlignResDWord;
+
+   { Lire le reste de l'en-tete }
+   ReadResDWord;        { DataVersion }
+   MemFlags := ReadResWord;  { MemoryFlags }
+   LangId := ReadResWord;    { LanguageId }
+   ReadResDWord;        { Version }
+   ReadResDWord;        { Characteristics }
+
+   EndPos := ResFilePos + DataSize;
+
+   { Parser selon le type }
+   Case ResType Of
+    RT_DIALOG: ReadResDialog(DataSize, ResId);
+    RT_MENU: ReadResMenu(DataSize, ResId);
+    RT_STRING: ReadResStringTable(DataSize, ResId);
+   Else
+    { Sauter les donnees non supportees }
+    Seek(ResFile, EndPos);
+    ResFilePos := EndPos;
+   End;
+
+   { S'assurer qu'on est a la bonne position }
+   If ResFilePos < EndPos Then Begin
+    Seek(ResFile, EndPos);
+    ResFilePos := EndPos;
+   End;
+
+   { Alignement DWORD entre ressources }
+   AlignResDWord;
+  End;
+ End;
+
  CloseResFile;
 End;
 
