@@ -1865,12 +1865,15 @@ Function ReadRSCString(Offset: Word): String;
 Var
  S: String;
  I: Integer;
+ BufIdx: Word;
 Begin
  S := '';
  I := 0;
- While (I < MAX_RSC_STRING_LEN) And (Offset + I < SizeOf(RSCFileBuffer)) And (RSCFileBuffer[Offset + I] <> 0) Do Begin
-  S := S + Chr(RSCFileBuffer[Offset + I]);
+ BufIdx := Offset;
+ While (I < MAX_RSC_STRING_LEN) And (BufIdx < SizeOf(RSCFileBuffer)) And (RSCFileBuffer[BufIdx] <> 0) Do Begin
+  S := S + Chr(RSCFileBuffer[BufIdx]);
   Inc(I);
+  Inc(BufIdx);
  End;
  ReadRSCString := S;
 End;
@@ -2250,7 +2253,7 @@ Begin
    Bar(CX, CY, CX + CW - 1, CY + CH - 1);
    Draw3DRect(CX, CY, CX + CW - 1, CY + CH - 1, False);
    SetColor(COLOR_BUTTONTEXT);
-   OutTextXY(CX + (CW - Length(CtrlText) * 8) Div 2, CY + (CH - 8) Div 2, CtrlText);
+   OutTextXY(CX + (CW - TextWidth(CtrlText)) Div 2, CY + (CH - 8) Div 2, CtrlText);
    If Ctrl.CtrlType = CTRL_DEFPUSHBUTTON Then Begin
     SetColor(0);
     Rectangle(CX - 1, CY - 1, CX + CW, CY + CH);
@@ -2322,7 +2325,7 @@ Begin
    SetColor(COLOR_BORDER3D_DARK);
    Rectangle(CX, CY + 6, CX + CW - 1, CY + CH - 1);
    SetFillStyle(SolidFill, COLOR_BUTTON);
-   Bar(CX + 8, CY, CX + 8 + Length(CtrlText) * 8, CY + 12);
+   Bar(CX + 8, CY, CX + 8 + TextWidth(CtrlText), CY + 12);
    SetColor(COLOR_WINDOWTEXT);
    OutTextXY(CX + 8, CY, CtrlText);
   End;
