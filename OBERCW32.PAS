@@ -2,7 +2,7 @@
   @created: 2026-04-20
   @version: 2.0
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Compilateur Oberon vers Win32 PE executables natifs
   @license: MIT
 }
