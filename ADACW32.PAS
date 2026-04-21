@@ -4972,6 +4972,15 @@ Begin
               EmitI('MOV  EAX, ' + IntToStr_(J - 1));
               Exit;
             End;
+      { Fonction sans parametre : Argument_Count, Command_Name, ...     }
+      { En Ada, les fonctions parameterless s appellent sans `()`.      }
+      Sub := FindSub(Nm);
+      If (Sub > 0) And (SubTab[Sub].IsFunction) And
+         (SubTab[Sub].ParamCount = 0) Then
+      Begin
+        EmitI('CALL ' + SubTab[Sub].AsmLabel);
+        Exit;
+      End;
       Error('Identificateur inconnu : ' + Nm);
       EmitI('XOR  EAX, EAX');
     End;
@@ -5216,12 +5225,30 @@ End;
 Function IsStandardPackage(Const U : TString) : Boolean;
 Begin
   IsStandardPackage :=
-    (U = 'ADA.TEXT_IO')                       Or
-    (U = 'ADA.INTEGER_TEXT_IO')               Or
-    (U = 'ADA.FLOAT_TEXT_IO')                 Or
-    (U = 'ADA.NUMERICS')                      Or
-    (U = 'ADA.NUMERICS.ELEMENTARY_FUNCTIONS') Or
-    (U = 'SYSTEM')                            Or
+    (U = 'ADA')                                       Or
+    (U = 'STANDARD')                                  Or
+    (U = 'ADA.TEXT_IO')                               Or
+    (U = 'ADA.INTEGER_TEXT_IO')                       Or
+    (U = 'ADA.FLOAT_TEXT_IO')                         Or
+    (U = 'ADA.TEXT_IO.TEXT_STREAMS')                  Or
+    (U = 'ADA.NUMERICS')                              Or
+    (U = 'ADA.NUMERICS.ELEMENTARY_FUNCTIONS')         Or
+    (U = 'ADA.NUMERICS.GENERIC_ELEMENTARY_FUNCTIONS') Or
+    (U = 'ADA.CHARACTERS')                            Or
+    (U = 'ADA.CHARACTERS.HANDLING')                   Or
+    (U = 'ADA.CHARACTERS.LATIN_1')                    Or
+    (U = 'ADA.COMMAND_LINE')                          Or
+    (U = 'ADA.DIRECT_IO')                             Or
+    (U = 'ADA.SEQUENTIAL_IO')                         Or
+    (U = 'ADA.STORAGE_IO')                            Or
+    (U = 'ADA.STREAMS')                               Or
+    (U = 'ADA.STREAMS.STREAM_IO')                     Or
+    (U = 'ADA.STRINGS')                               Or
+    (U = 'ADA.STRINGS.MAPS')                          Or
+    (U = 'ADA.STRINGS.FIXED')                         Or
+    (U = 'ADA.STRINGS.BOUNDED')                       Or
+    (U = 'ADA.STRINGS.UNBOUNDED')                     Or
+    (U = 'SYSTEM')                                    Or
     (U = 'TEXT_IO');
 End;
 
@@ -9000,7 +9027,616 @@ Begin
   GenHyperbolicFn('TANH', 'TANH');
 End;
 
-{ ---- GenFloatTextIOStubs : generer les stubs Ada.Float_Text_IO --------- }
+{ ============================================================ }
+{ BUILT-IN : MODULES STANDARD ADA (Characters, Command_Line,   }
+{ Strings, Direct_IO, Sequential_IO, Storage_IO, Streams,      }
+{ Stream_IO, Text_Streams, Strings.Maps)                        }
+{ ============================================================ }
+
+{ ---- RegisterStdSub : helper pour creer/retrouver un sous-prog ---- }
+{ Enregistre un sous-programme standard (IsForward := False, deja     }
+{ resolu). Retourne l index dans SubTab.                               }
+Function RegisterStdSub(Const Name : TString;
+                        IsFunc   : Boolean;
+                        RetType  : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := FindSub(Name);
+  If Idx = 0 Then Idx := AddSub(Name, True, RetType);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].IsFunction := IsFunc;
+    SubTab[Idx].RetType    := RetType;
+    SubTab[Idx].ParamCount := 0;
+  End;
+  RegisterStdSub := Idx;
+End;
+
+{ ---- AddStdParam : ajouter un parametre IN a un sous-programme --- }
+Procedure AddStdParam(Idx : Integer;
+                      Const PName : TString;
+                      PType, PMode : Integer);
+Var N : Integer;
+Begin
+  If Idx <= 0 Then Exit;
+  N := SubTab[Idx].ParamCount + 1;
+  If N > MAX_PARAM Then Exit;
+  SubTab[Idx].ParamCount := N;
+  SubTab[Idx].ParamNames[N] := StrUpperCase(PName);
+  SubTab[Idx].ParamTypes[N] := PType;
+  SubTab[Idx].ParamModes[N] := PMode;
+End;
+
+{ ---- RegisterLatin1Constants : constantes Ada.Characters.Latin_1 - }
+{ Enregistre les ~55 noms de caracteres de controle et ponctuation    }
+{ Latin-1 comme constantes CHARACTER avec leur valeur ASCII/ISO-8859-1 }
+Procedure RegisterLatin1Constants;
+
+  Procedure AddChrConst(Const Name : TString; Value : Integer);
+  Var Idx : Integer;
+  Begin
+    If FindSym(Name) > 0 Then Exit;
+    Idx := AddSym(Name, TYPE_CHAR, STORE_CONST);
+    If Idx > 0 Then
+    Begin
+      SymTab[Idx].InitNum := Value;
+      SymTab[Idx].HasInit := True;
+      SymTab[Idx].IsConst := True;
+    End;
+  End;
+
+Begin
+  { Caracteres de controle ASCII 0..31 }
+  AddChrConst('NUL',    0);   AddChrConst('SOH',  1);
+  AddChrConst('STX',    2);   AddChrConst('ETX',  3);
+  AddChrConst('EOT',    4);   AddChrConst('ENQ',  5);
+  AddChrConst('ACK',    6);   AddChrConst('BEL',  7);
+  AddChrConst('BS',     8);   AddChrConst('HT',   9);
+  AddChrConst('LF',    10);   AddChrConst('VT',  11);
+  AddChrConst('FF',    12);   AddChrConst('CR',  13);
+  AddChrConst('SO',    14);   AddChrConst('SI',  15);
+  AddChrConst('DLE',   16);   AddChrConst('DC1', 17);
+  AddChrConst('DC2',   18);   AddChrConst('DC3', 19);
+  AddChrConst('DC4',   20);   AddChrConst('NAK', 21);
+  AddChrConst('SYN',   22);   AddChrConst('ETB', 23);
+  AddChrConst('CAN',   24);   AddChrConst('EM',  25);
+  AddChrConst('SUB',   26);   AddChrConst('ESC', 27);
+  AddChrConst('FS',    28);   AddChrConst('GS',  29);
+  AddChrConst('RS',    30);   AddChrConst('US',  31);
+  { Ponctuation et symboles ASCII imprimables }
+  AddChrConst('SPACE',                32);
+  AddChrConst('EXCLAMATION',          33);
+  AddChrConst('QUOTATION',            34);
+  AddChrConst('NUMBER_SIGN',          35);
+  AddChrConst('DOLLAR_SIGN',          36);
+  AddChrConst('PERCENT_SIGN',         37);
+  AddChrConst('AMPERSAND',            38);
+  AddChrConst('APOSTROPHE',           39);
+  AddChrConst('LEFT_PARENTHESIS',     40);
+  AddChrConst('RIGHT_PARENTHESIS',    41);
+  AddChrConst('ASTERISK',             42);
+  AddChrConst('PLUS_SIGN',            43);
+  AddChrConst('COMMA',                44);
+  AddChrConst('HYPHEN',               45);
+  AddChrConst('MINUS_SIGN',           45);
+  AddChrConst('FULL_STOP',            46);
+  AddChrConst('SOLIDUS',              47);
+  AddChrConst('COLON',                58);
+  AddChrConst('SEMICOLON',            59);
+  AddChrConst('LESS_THAN_SIGN',       60);
+  AddChrConst('EQUALS_SIGN',          61);
+  AddChrConst('GREATER_THAN_SIGN',    62);
+  AddChrConst('QUESTION',             63);
+  AddChrConst('COMMERCIAL_AT',        64);
+  AddChrConst('LEFT_SQUARE_BRACKET',  91);
+  AddChrConst('REVERSE_SOLIDUS',      92);
+  AddChrConst('RIGHT_SQUARE_BRACKET', 93);
+  AddChrConst('CIRCUMFLEX',           94);
+  AddChrConst('LOW_LINE',             95);
+  AddChrConst('GRAVE',                96);
+  AddChrConst('LEFT_CURLY_BRACKET',  123);
+  AddChrConst('VERTICAL_LINE',       124);
+  AddChrConst('RIGHT_CURLY_BRACKET', 125);
+  AddChrConst('TILDE',               126);
+  AddChrConst('DEL',                 127);
+End;
+
+{ ---- RegisterCharactersHandlingStubs : signatures Is_xxx/To_xxx ---- }
+{ Ada.Characters.Handling : fonctions de classification et conversion. }
+Procedure RegisterCharactersHandlingStubs;
+
+  Procedure RegIs(Const Nm : TString);
+  Var Idx : Integer;
+  Begin
+    Idx := RegisterStdSub(Nm, True, TYPE_BOOL);
+    AddStdParam(Idx, 'ITEM', TYPE_CHAR, PARAM_IN);
+  End;
+
+  Procedure RegTo(Const Nm : TString);
+  Var Idx : Integer;
+  Begin
+    Idx := RegisterStdSub(Nm, True, TYPE_CHAR);
+    AddStdParam(Idx, 'ITEM', TYPE_CHAR, PARAM_IN);
+  End;
+
+Begin
+  RegIs('IS_LETTER');
+  RegIs('IS_DIGIT');
+  RegIs('IS_ALPHANUMERIC');
+  RegIs('IS_UPPER');
+  RegIs('IS_LOWER');
+  RegIs('IS_CONTROL');
+  RegIs('IS_GRAPHIC');
+  RegIs('IS_SPECIAL');
+  RegIs('IS_HEXADECIMAL_DIGIT');
+  RegIs('IS_BASIC');
+  RegIs('IS_ISO_646');
+  RegTo('TO_UPPER');
+  RegTo('TO_LOWER');
+  RegTo('TO_BASIC');
+End;
+
+{ ---- GenCharHandlingFn : emet une fonction Character -> Boolean ---- }
+{ Cond est une expression booleenne x86 : paire de (LoBound, HiBound)  }
+{ encodee. Pour simplifier, on passe Lo/Hi et on genere               }
+{   MOV AL, BYTE PTR [EBP+8]                                           }
+{   CMP AL, Lo                                                          }
+{   JB  _false                                                           }
+{   CMP AL, Hi                                                           }
+{   JA  _false                                                           }
+{   MOV EAX, 1 ; JMP _end                                                }
+{ _false: XOR EAX, EAX                                                    }
+{ _end: POP EBP ; RET 4                                                   }
+Procedure GenCharRangeFn(Const Name : TString; Lo, Hi : Integer);
+Var
+  Idx : Integer;
+  LFalse, LEnd : TString;
+Begin
+  Idx := FindSub(Name);
+  If Idx = 0 Then Exit;
+  LFalse := NewLabel;
+  LEnd   := NewLabel;
+  EmitBlank;
+  EmitComment('--- Ada.Characters.Handling.' + Name + ' ---');
+  EmitLabel(SubTab[Idx].AsmLabel);
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('MOV  AL, BYTE PTR [EBP+8]');
+  EmitI('CMP  AL, ' + IntToStr_(Lo));
+  EmitI('JB   ' + LFalse);
+  EmitI('CMP  AL, ' + IntToStr_(Hi));
+  EmitI('JA   ' + LFalse);
+  EmitI('MOV  EAX, 1');
+  EmitI('JMP  ' + LEnd);
+  EmitLabel(LFalse);
+  EmitI('XOR  EAX, EAX');
+  EmitLabel(LEnd);
+  EmitI('POP  EBP');
+  EmitI('RET  4');
+End;
+
+{ ---- GenCharHandlingStubs : emettre les bodies de Handling --------- }
+{ Implementations directes (ASCII) pour Is_Upper, Is_Lower, Is_Digit,  }
+{ Is_Letter, Is_Alphanumeric, Is_Control, Is_Graphic, Is_Hex, To_Upper,}
+{ To_Lower, To_Basic.                                                   }
+Procedure GenCharHandlingStubs;
+
+  Procedure GenIsLetter;
+  Var Idx : Integer; L1, L2, LEnd : TString;
+  Begin
+    Idx := FindSub('IS_LETTER');
+    If Idx = 0 Then Exit;
+    L1   := NewLabel;
+    L2   := NewLabel;
+    LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Characters.Handling.Is_Letter ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOV  AL, BYTE PTR [EBP+8]');
+    { Test A..Z }
+    EmitI('CMP  AL, 65');
+    EmitI('JB   ' + L1);
+    EmitI('CMP  AL, 90');
+    EmitI('JBE  ' + L2);
+    EmitLabel(L1);
+    { Test a..z }
+    EmitI('CMP  AL, 97');
+    EmitI('JB   ' + LEnd + '_F');
+    EmitI('CMP  AL, 122');
+    EmitI('JA   ' + LEnd + '_F');
+    EmitLabel(L2);
+    EmitI('MOV  EAX, 1');
+    EmitI('JMP  ' + LEnd);
+    EmitLabel(LEnd + '_F');
+    EmitI('XOR  EAX, EAX');
+    EmitLabel(LEnd);
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+  Procedure GenIsAlphanumeric;
+  Var Idx : Integer; L1, L2, L3, LEnd : TString;
+  Begin
+    Idx := FindSub('IS_ALPHANUMERIC');
+    If Idx = 0 Then Exit;
+    L1 := NewLabel; L2 := NewLabel; L3 := NewLabel; LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Characters.Handling.Is_Alphanumeric ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOV  AL, BYTE PTR [EBP+8]');
+    EmitI('CMP  AL, 48');
+    EmitI('JB   ' + L1);
+    EmitI('CMP  AL, 57');
+    EmitI('JBE  ' + L3);
+    EmitLabel(L1);
+    EmitI('CMP  AL, 65');
+    EmitI('JB   ' + L2);
+    EmitI('CMP  AL, 90');
+    EmitI('JBE  ' + L3);
+    EmitLabel(L2);
+    EmitI('CMP  AL, 97');
+    EmitI('JB   ' + LEnd + '_F');
+    EmitI('CMP  AL, 122');
+    EmitI('JA   ' + LEnd + '_F');
+    EmitLabel(L3);
+    EmitI('MOV  EAX, 1');
+    EmitI('JMP  ' + LEnd);
+    EmitLabel(LEnd + '_F');
+    EmitI('XOR  EAX, EAX');
+    EmitLabel(LEnd);
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+  Procedure GenIsHex;
+  Var Idx : Integer; L1, L2, L3, LEnd : TString;
+  Begin
+    Idx := FindSub('IS_HEXADECIMAL_DIGIT');
+    If Idx = 0 Then Exit;
+    L1 := NewLabel; L2 := NewLabel; L3 := NewLabel; LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Characters.Handling.Is_Hexadecimal_Digit ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOV  AL, BYTE PTR [EBP+8]');
+    EmitI('CMP  AL, 48');
+    EmitI('JB   ' + L1);
+    EmitI('CMP  AL, 57');
+    EmitI('JBE  ' + L3);
+    EmitLabel(L1);
+    EmitI('CMP  AL, 65');
+    EmitI('JB   ' + L2);
+    EmitI('CMP  AL, 70');
+    EmitI('JBE  ' + L3);
+    EmitLabel(L2);
+    EmitI('CMP  AL, 97');
+    EmitI('JB   ' + LEnd + '_F');
+    EmitI('CMP  AL, 102');
+    EmitI('JA   ' + LEnd + '_F');
+    EmitLabel(L3);
+    EmitI('MOV  EAX, 1');
+    EmitI('JMP  ' + LEnd);
+    EmitLabel(LEnd + '_F');
+    EmitI('XOR  EAX, EAX');
+    EmitLabel(LEnd);
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+  Procedure GenToUpper;
+  Var Idx : Integer; LNo, LEnd : TString;
+  Begin
+    Idx := FindSub('TO_UPPER');
+    If Idx = 0 Then Exit;
+    LNo := NewLabel; LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Characters.Handling.To_Upper ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOVZX EAX, BYTE PTR [EBP+8]');
+    EmitI('CMP  AL, 97');
+    EmitI('JB   ' + LNo);
+    EmitI('CMP  AL, 122');
+    EmitI('JA   ' + LNo);
+    EmitI('SUB  AL, 32');
+    EmitLabel(LNo);
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+    EmitLabel(LEnd);
+  End;
+
+  Procedure GenToLower;
+  Var Idx : Integer; LNo, LEnd : TString;
+  Begin
+    Idx := FindSub('TO_LOWER');
+    If Idx = 0 Then Exit;
+    LNo := NewLabel; LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Characters.Handling.To_Lower ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOVZX EAX, BYTE PTR [EBP+8]');
+    EmitI('CMP  AL, 65');
+    EmitI('JB   ' + LNo);
+    EmitI('CMP  AL, 90');
+    EmitI('JA   ' + LNo);
+    EmitI('ADD  AL, 32');
+    EmitLabel(LNo);
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+    EmitLabel(LEnd);
+  End;
+
+  Procedure GenToBasic;
+  Var Idx : Integer;
+  Begin
+    Idx := FindSub('TO_BASIC');
+    If Idx = 0 Then Exit;
+    EmitBlank;
+    EmitComment('--- Ada.Characters.Handling.To_Basic ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOVZX EAX, BYTE PTR [EBP+8]');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+Begin
+  EmitBlank;
+  EmitComment('=== Ada.Characters.Handling (ASCII) ===');
+  { Is_Upper : 'A'..'Z' = 65..90 }
+  GenCharRangeFn('IS_UPPER',   65,  90);
+  { Is_Lower : 'a'..'z' = 97..122 }
+  GenCharRangeFn('IS_LOWER',   97, 122);
+  { Is_Digit : '0'..'9' = 48..57 }
+  GenCharRangeFn('IS_DIGIT',   48,  57);
+  { Is_Control : 0..31 ou 127..159 (simplifie a 0..31) }
+  GenCharRangeFn('IS_CONTROL',  0,  31);
+  { Is_Graphic : 32..126 (imprimables ASCII) }
+  GenCharRangeFn('IS_GRAPHIC', 32, 126);
+  { Is_Special = Is_Graphic AND NOT Is_Alphanumeric : stub = 0 }
+  GenCharRangeFn('IS_SPECIAL', 33,  47);  { approximatif : ponctuation }
+  { Is_Basic : caracteres ASCII 32..127 }
+  GenCharRangeFn('IS_BASIC',    0, 127);
+  { Is_ISO_646 : 0..127 }
+  GenCharRangeFn('IS_ISO_646',  0, 127);
+  GenIsLetter;
+  GenIsAlphanumeric;
+  GenIsHex;
+  GenToUpper;
+  GenToLower;
+  GenToBasic;
+End;
+
+{ ---- RegisterCommandLineStubs : Ada.Command_Line ------------------- }
+{ Argument_Count : return Natural (Integer)                             }
+{ Argument(N)    : return String                                        }
+{ Command_Name   : return String                                        }
+Procedure RegisterCommandLineStubs;
+Var Idx : Integer;
+Begin
+  Idx := RegisterStdSub('ARGUMENT_COUNT', True, TYPE_INT);
+  Idx := RegisterStdSub('ARGUMENT', True, TYPE_STR);
+  AddStdParam(Idx, 'NUMBER', TYPE_INT, PARAM_IN);
+  Idx := RegisterStdSub('COMMAND_NAME', True, TYPE_STR);
+End;
+
+{ ---- GenCommandLineStubs : emettre bodies Command_Line ------------- }
+{ Stubs non bloquants. Un futur TODO pourra brancher sur GetCommandLineA }
+Procedure GenCommandLineStubs;
+Var Idx : Integer;
+Begin
+  EmitBlank;
+  EmitComment('=== Ada.Command_Line (stubs) ===');
+  Idx := FindSub('ARGUMENT_COUNT');
+  If Idx > 0 Then
+  Begin
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('XOR  EAX, EAX');     { stub : 0 arguments }
+    EmitI('POP  EBP');
+    EmitI('RET');
+  End;
+  Idx := FindSub('ARGUMENT');
+  If Idx > 0 Then
+  Begin
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('XOR  EAX, EAX');     { stub : chaine vide }
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+  Idx := FindSub('COMMAND_NAME');
+  If Idx > 0 Then
+  Begin
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('XOR  EAX, EAX');     { stub : chaine vide }
+    EmitI('POP  EBP');
+    EmitI('RET');
+  End;
+End;
+
+{ ---- RegisterStringsStubs : Ada.Strings + Ada.Strings.Maps -------- }
+Procedure RegisterStringsStubs;
+Var Idx : Integer;
+Begin
+  { Ada.Strings : Index, Count, Head, Tail, Trim }
+  Idx := RegisterStdSub('INDEX', True, TYPE_INT);
+  AddStdParam(Idx, 'SOURCE',  TYPE_STR,  PARAM_IN);
+  AddStdParam(Idx, 'PATTERN', TYPE_STR,  PARAM_IN);
+  Idx := RegisterStdSub('COUNT', True, TYPE_INT);
+  AddStdParam(Idx, 'SOURCE',  TYPE_STR,  PARAM_IN);
+  AddStdParam(Idx, 'PATTERN', TYPE_STR,  PARAM_IN);
+  Idx := RegisterStdSub('HEAD', True, TYPE_STR);
+  AddStdParam(Idx, 'SOURCE', TYPE_STR, PARAM_IN);
+  AddStdParam(Idx, 'COUNT',  TYPE_INT, PARAM_IN);
+  Idx := RegisterStdSub('TAIL', True, TYPE_STR);
+  AddStdParam(Idx, 'SOURCE', TYPE_STR, PARAM_IN);
+  AddStdParam(Idx, 'COUNT',  TYPE_INT, PARAM_IN);
+  Idx := RegisterStdSub('TRIM', True, TYPE_STR);
+  AddStdParam(Idx, 'SOURCE', TYPE_STR, PARAM_IN);
+  AddStdParam(Idx, 'SIDE',   TYPE_INT, PARAM_IN);
+  { Ada.Strings.Maps : To_Mapping, Value, Is_In }
+  Idx := RegisterStdSub('TO_MAPPING', True, TYPE_STR);
+  AddStdParam(Idx, 'FROM', TYPE_STR, PARAM_IN);
+  AddStdParam(Idx, 'TO',   TYPE_STR, PARAM_IN);
+  Idx := RegisterStdSub('VALUE', True, TYPE_CHAR);
+  AddStdParam(Idx, 'MAP',     TYPE_STR,  PARAM_IN);
+  AddStdParam(Idx, 'ELEMENT', TYPE_CHAR, PARAM_IN);
+  Idx := RegisterStdSub('IS_IN', True, TYPE_BOOL);
+  AddStdParam(Idx, 'ELEMENT', TYPE_CHAR, PARAM_IN);
+  AddStdParam(Idx, 'SET',     TYPE_STR,  PARAM_IN);
+End;
+
+{ ---- GenStringsStubs : emettre bodies stubs Ada.Strings ------------ }
+{ Chaque fonction retourne 0 ou chaine vide (stub non bloquant).       }
+Procedure GenStringsStubs;
+
+  Procedure EmitStubRet(Const Name : TString; ArgBytes : Integer);
+  Var Idx : Integer;
+  Begin
+    Idx := FindSub(Name);
+    If Idx = 0 Then Exit;
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('XOR  EAX, EAX');
+    EmitI('POP  EBP');
+    If ArgBytes = 0 Then EmitI('RET')
+    Else EmitI('RET  ' + IntToStr_(ArgBytes));
+  End;
+
+Begin
+  EmitBlank;
+  EmitComment('=== Ada.Strings / Ada.Strings.Maps (stubs) ===');
+  EmitStubRet('INDEX',      8);
+  EmitStubRet('COUNT',      8);
+  EmitStubRet('HEAD',       8);
+  EmitStubRet('TAIL',       8);
+  EmitStubRet('TRIM',       8);
+  EmitStubRet('TO_MAPPING', 8);
+  EmitStubRet('VALUE',      8);
+  EmitStubRet('IS_IN',      8);
+End;
+
+{ ---- RegisterIOStubs : Direct_IO / Sequential_IO / Storage_IO / --- }
+{ Stream_IO / Text_Streams                                             }
+{ Enregistre les signatures Create/Open/Close/Read/Write/End_Of_File   }
+{ en un seul jeu commun (les I/O classiques Ada partagent cette API).  }
+Procedure RegisterIOStubs;
+Var Idx : Integer;
+Begin
+  { CREATE (F : out File_Type; Mode; Name : in String) - stub }
+  { Note : PUT/GET/OPEN/CLOSE de Text_IO sont deja enregistres          }
+  { ailleurs, on n ecrase pas leurs signatures. On ajoute uniquement    }
+  { les helpers manquants pour que les WITH des modules I/O compilent.  }
+
+  { READ : stub generique (File, Item : out Element_Type) }
+  Idx := FindSub('READ');
+  If Idx = 0 Then Idx := RegisterStdSub('READ', False, TYPE_VOID);
+  { WRITE : stub generique (File, Item : in Element_Type) }
+  Idx := FindSub('WRITE');
+  If Idx = 0 Then Idx := RegisterStdSub('WRITE', False, TYPE_VOID);
+  { END_OF_FILE : function (File) return Boolean - stub retourne True }
+  Idx := FindSub('END_OF_FILE');
+  If Idx = 0 Then
+  Begin
+    Idx := RegisterStdSub('END_OF_FILE', True, TYPE_BOOL);
+    AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
+  End;
+  { STREAM : function (File) return Stream_Access - stub retourne 0 }
+  Idx := FindSub('STREAM');
+  If Idx = 0 Then
+  Begin
+    Idx := RegisterStdSub('STREAM', True, TYPE_INT);
+    AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
+  End;
+  { RESET : procedure (File) - stub }
+  Idx := FindSub('RESET');
+  If Idx = 0 Then Idx := RegisterStdSub('RESET', False, TYPE_VOID);
+  { NAME : function (File) return String - stub }
+  Idx := FindSub('NAME');
+  If Idx = 0 Then
+  Begin
+    Idx := RegisterStdSub('NAME', True, TYPE_STR);
+    AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
+  End;
+  { MODE : function (File) return File_Mode - stub retourne Integer }
+  Idx := FindSub('MODE');
+  If Idx = 0 Then
+  Begin
+    Idx := RegisterStdSub('MODE', True, TYPE_INT);
+    AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
+  End;
+  { IS_OPEN : function (File) return Boolean - stub }
+  Idx := FindSub('IS_OPEN');
+  If Idx = 0 Then
+  Begin
+    Idx := RegisterStdSub('IS_OPEN', True, TYPE_BOOL);
+    AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
+  End;
+  { SIZE : function (File) return Count - stub (Storage_IO / Stream_IO) }
+  Idx := FindSub('SIZE');
+  If Idx = 0 Then
+  Begin
+    Idx := RegisterStdSub('SIZE', True, TYPE_INT);
+    AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
+  End;
+  { INDEX : positionnement Direct_IO / Stream_IO - deja reg. par Strings }
+  { SET_INDEX : procedure (File, To : Positive_Count) - stub }
+  Idx := FindSub('SET_INDEX');
+  If Idx = 0 Then Idx := RegisterStdSub('SET_INDEX', False, TYPE_VOID);
+End;
+
+{ ---- GenIOStubs : emettre bodies stubs Direct_IO / etc. ----------- }
+Procedure GenIOStubs;
+
+  Procedure EmitStubProc(Const Name : TString; ArgBytes : Integer);
+  Var Idx : Integer;
+  Begin
+    Idx := FindSub(Name);
+    If Idx = 0 Then Exit;
+    { Skip si deja emis (p.ex. OPEN/CLOSE par Text_IO stubs) }
+    If SubTab[Idx].IsForward Then Exit;
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('XOR  EAX, EAX');
+    EmitI('POP  EBP');
+    If ArgBytes = 0 Then EmitI('RET')
+    Else EmitI('RET  ' + IntToStr_(ArgBytes));
+  End;
+
+Begin
+  EmitBlank;
+  EmitComment('=== Ada.Direct_IO / Sequential_IO / Storage_IO /' +
+              ' Stream_IO / Text_Streams (stubs) ===');
+  EmitStubProc('READ',        0);
+  EmitStubProc('WRITE',       0);
+  EmitStubProc('END_OF_FILE', 4);
+  EmitStubProc('STREAM',      4);
+  EmitStubProc('RESET',       0);
+  EmitStubProc('NAME',        4);
+  EmitStubProc('MODE',        4);
+  EmitStubProc('IS_OPEN',     4);
+  EmitStubProc('SIZE',        4);
+  EmitStubProc('SET_INDEX',   0);
+End;
+
+
 { Enregistre Put(Float, Fore, Aft, Exp) comme stub non-bloquant.           }
 { Le support flottant reel n est pas encore implemente, le stub consomme   }
 { ses arguments et ne produit aucune sortie.                                }
@@ -9060,6 +9696,19 @@ Begin
   { Ada.Text_IO / Integer_Text_IO : enregistrer les signatures pour     }
   { que FindSub trouve Get/Get_Line/Put/... dans le code utilisateur.   }
   RegisterTextIOStubs;
+
+  { Modules standard Ada supplementaires (built-ins) :                  }
+  {   Ada.Characters.Latin_1    - constantes Character                  }
+  {   Ada.Characters.Handling   - Is_xxx / To_xxx                       }
+  {   Ada.Command_Line          - Argument_Count, Argument, etc.        }
+  {   Ada.Strings / .Maps       - Index, Count, Trim, To_Mapping, ...   }
+  {   Ada.Direct_IO, .Sequential_IO, .Storage_IO, .Streams.Stream_IO,   }
+  {   Ada.Text_IO.Text_Streams  - Create, Open, Close, Read, Write, ... }
+  RegisterLatin1Constants;
+  RegisterCharactersHandlingStubs;
+  RegisterCommandLineStubs;
+  RegisterStringsStubs;
+  RegisterIOStubs;
 End;
 
 { ---- ParsePackageSpec : analyser une specification de package -- }
@@ -11881,6 +12530,10 @@ Begin
     EmitEntryPoint;
     GenTextIOStubs;
     GenMathStubs;
+    GenCharHandlingStubs;
+    GenCommandLineStubs;
+    GenStringsStubs;
+    GenIOStubs;
     GenFloatTextIOStubs;
     EmitRuntimeHelpers;
 
