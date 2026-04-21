@@ -74,6 +74,7 @@ Const
   TYK_INTEGER   = 1;
   TYK_BOOLEAN   = 2;
   TYK_CHAR      = 3;
+  TYK_ARRCHAR   = 4;   { ARRAY N OF CHAR : taille stockee dans SymTab.ArrSize }
 
   FIX_IAT_GETSTD   = 1;
   FIX_IAT_WRITE    = 2;
@@ -115,6 +116,8 @@ Type
     TypeIdx  : Integer;
     DataOffs : Integer;
     Used     : Boolean;
+    ArrSize  : Integer;   { nombre d'octets reserves pour ARRAY OF CHAR,
+                            0 pour les autres types }
   End;
 
   TTypeEntry = Record
@@ -558,8 +561,33 @@ Begin
   SymTab[SymCount].TypeIdx := TypeIdx;
   SymTab[SymCount].DataOffs := DataOffset;
   SymTab[SymCount].Used := False;
+  SymTab[SymCount].ArrSize := 0;
   Inc(DataOffset, TypeByteSize(TypeIdx));
   SymEnter := SymCount;
+End;
+
+{ Enregistre un ARRAY OF CHAR de taille fixe (N octets, alignes sur 4). }
+Function SymEnterArr(Const Name : TString; N : Integer) : Integer;
+Var Aligned : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    ErrorMsg('Table des symboles pleine');
+    SymEnterArr := 0;
+    Exit;
+  End;
+  If N < 1 Then N := 1;
+  Aligned := N;
+  While (Aligned Mod 4) <> 0 Do
+    Inc(Aligned);
+  Inc(SymCount);
+  SymTab[SymCount].Name := Name;
+  SymTab[SymCount].TypeIdx := TYK_ARRCHAR;
+  SymTab[SymCount].DataOffs := DataOffset;
+  SymTab[SymCount].Used := False;
+  SymTab[SymCount].ArrSize := N;
+  Inc(DataOffset, Aligned);
+  SymEnterArr := SymCount;
 End;
 
 Function SymFind(Const Name : TString) : Integer;
@@ -1032,6 +1060,26 @@ Begin
   End;
 End;
 
+{ Charge l'adresse du symbole Si dans EAX : mov eax, imm32 (fixup FIX_VAR). }
+Procedure EmitLoadAddrEAX(Si : Integer);
+Begin
+  If Si > 0 Then
+    SymTab[Si].Used := True;
+  BinEmitByte($B8);
+  AddFixup(FIX_VAR, Si);
+  BinEmitDWord(0);
+End;
+
+{ Charge l'adresse du symbole Si dans ECX : mov ecx, imm32 (fixup FIX_VAR). }
+Procedure EmitLoadAddrECX(Si : Integer);
+Begin
+  If Si > 0 Then
+    SymTab[Si].Used := True;
+  BinEmitByte($B9);
+  AddFixup(FIX_VAR, Si);
+  BinEmitDWord(0);
+End;
+
 Procedure Expect(Kw : Integer);
 Begin
   If (CurTok <> TOK_KEYWORD) Or (CurTokKw <> Kw) Then
@@ -1355,7 +1403,31 @@ Begin
     Name := CurTokStr;
     { Fonctions built-in Oberon.  Reconnues avant la recherche symbolique
       pour qu'elles soient toujours disponibles meme sans declaration. }
-    If (Name = 'ABS') Or (Name = 'ODD') Or (Name = 'CHR') Or
+    If Name = 'LEN' Then
+    Begin
+      { LEN(s) : capacite compile-time d'un ARRAY OF CHAR declare. }
+      LexNext;
+      ExpectOp('(');
+      If CurTok = TOK_IDENT Then
+      Begin
+        Si := SymFind(CurTokStr);
+        If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+          EmitMovEAXImm32(SymTab[Si].ArrSize)
+        Else
+        Begin
+          ErrorAt(LexLineNo, LexColNo, 'LEN: identifiant ARRAY OF CHAR attendu');
+          EmitMovEAXImm32(0);
+        End;
+        LexNext;
+      End
+      Else
+      Begin
+        ErrorAt(LexLineNo, LexColNo, 'LEN: identifiant attendu');
+        EmitMovEAXImm32(0);
+      End;
+      ExpectOp(')');
+    End
+    Else If (Name = 'ABS') Or (Name = 'ODD') Or (Name = 'CHR') Or
        (Name = 'ORD') Or (Name = 'CAP') Or (Name = 'ASH') Or
        (Name = 'MAX') Or (Name = 'MIN') Or (Name = 'SIZE') Then
     Begin
@@ -1482,10 +1554,29 @@ Begin
         If Si > 0 Then
         Begin
           SymTab[Si].Used := True;
-          EmitMovEAXMem32($400000 + $2000 + SymTab[Si].DataOffs);
-          BinCodeLen := BinCodeLen - 4;
-          AddFixup(FIX_VAR, Si);
-          BinCodeLen := BinCodeLen + 4;
+          If (CurTok = TOK_OP) And (CurTokStr = '[') Then
+          Begin
+            { Indexation s[i] sur ARRAY OF CHAR : retourne l'octet indexe
+              en extension zero dans eax. }
+            LexNext;
+            GenExpression;                { eax := index }
+            EmitMovECXEAX;                { ecx := index }
+            ExpectOp(']');
+            If SymTab[Si].TypeIdx <> TYK_ARRCHAR Then
+              ErrorAt(LexLineNo, LexColNo,
+                      'Indexation impossible : ' + Name + ' n''est pas ARRAY OF CHAR');
+            EmitLoadAddrEAX(Si);          { eax := adresse de s }
+            EmitAddEAXECX;                { eax := &s[i] }
+            { movzx eax, byte [eax]  -->  0F B6 00 }
+            BinEmitByte($0F); BinEmitByte($B6); BinEmitByte($00);
+          End
+          Else
+          Begin
+            EmitMovEAXMem32($400000 + $2000 + SymTab[Si].DataOffs);
+            BinCodeLen := BinCodeLen - 4;
+            AddFixup(FIX_VAR, Si);
+            BinCodeLen := BinCodeLen + 4;
+          End;
         End
         Else
           ErrorAt(LexLineNo, LexColNo, 'Variable inconnue: ' + Name);
@@ -1660,6 +1751,48 @@ Begin
   EmitCallIAT(FIX_IAT_WRITE);
 End;
 
+{ --- Ecrit le contenu du tableau DstSi (ARRAY OF CHAR) sur le handle
+  specifie par HandleFixup (FIX_STDOUT ou FIX_STDERR), en s'arretant
+  au premier octet nul ou a ArrSize octets. --- }
+Procedure GenWriteArrSym(Si, HandleFixup : Integer);
+Var
+  LabLoop, LabDone : String;
+Begin
+  SymTab[Si].Used := True;
+  LabLoop := GenLabel;
+  LabDone := GenLabel;
+  { edi := addr(s) }
+  BinEmitByte($BF);
+  AddFixup(FIX_VAR, Si);
+  BinEmitDWord(0);
+  { xor ebx, ebx ; ecx := ArrSize }
+  BinEmitByte($31); BinEmitByte($DB);
+  BinEmitByte($B9); BinEmitDWord(SymTab[Si].ArrSize);
+  DefineLabel(LabLoop);
+  { cmp ebx, ecx ; je LabDone }
+  BinEmitByte($39); BinEmitByte($CB);
+  EmitJZ(LabDone);
+  { mov al, [edi+ebx] ; test al, al ; jz LabDone }
+  BinEmitByte($8A); BinEmitByte($04); BinEmitByte($1F);
+  BinEmitByte($84); BinEmitByte($C0);
+  EmitJZ(LabDone);
+  BinEmitByte($43);                          { inc ebx }
+  EmitJmp(LabLoop);
+  DefineLabel(LabDone);
+  { WriteFile(handle, edi, ebx, &bytes_written, 0) }
+  EmitPushImm32(0);
+  BinEmitByte($68);                          { push imm32 (bytes_written) }
+  AddFixup(FIX_BYTES_WRITTEN, 0);
+  BinEmitDWord(0);
+  BinEmitByte($53);                          { push ebx (len) }
+  BinEmitByte($57);                          { push edi (buf) }
+  { push [handle] }
+  BinEmitByte($FF); BinEmitByte($35);
+  AddFixup(HandleFixup, 0);
+  BinEmitDWord(0);
+  EmitCallIAT(FIX_IAT_WRITE);
+End;
+
 Procedure GenOutInt;
 Begin
   GenExpression;
@@ -1804,6 +1937,200 @@ Begin
   End;
 End;
 
+{ -------- Helpers COPY / APPEND pour ARRAY OF CHAR --------
+
+  Convention : tous ces helpers produisent du code inline qui copie
+  un nombre borne d'octets depuis la source vers la destination
+  (adresses statiques connues), respecte la terminaison nulle et
+  respecte la capacite de la destination (Dst.ArrSize).  Les registres
+  eax/ecx/edx/esi/edi sont clobberes.
+}
+
+{ Copie une chaine litterale S dans le tableau DstSi.
+  Ecrit au plus (DstSize-1) octets puis un nul de fin si possible. }
+Procedure GenCopyLiteralToArr(Const S : String; DstSi : Integer);
+Var
+  DstSize, N, I : Integer;
+  StrIdx : Integer;
+Begin
+  DstSize := SymTab[DstSi].ArrSize;
+  N := Length(S);
+  If N > DstSize - 1 Then
+    N := DstSize - 1;
+  If N < 0 Then N := 0;
+  StrIdx := AddStringLiteral(S);
+  { edi := dest ; esi := source ; rep movsb ; mov [edi], 0 }
+  { mov edi, imm32 (fixup var) }
+  BinEmitByte($BF);
+  SymTab[DstSi].Used := True;
+  AddFixup(FIX_VAR, DstSi);
+  BinEmitDWord(0);
+  { mov esi, imm32 (fixup string) }
+  BinEmitByte($BE);
+  AddFixup(FIX_STRING, StrIdx);
+  BinEmitDWord(0);
+  { mov ecx, N }
+  BinEmitByte($B9);
+  BinEmitDWord(N);
+  { cld ; rep movsb  -->  FC F3 A4 }
+  BinEmitByte($FC);
+  BinEmitByte($F3);
+  BinEmitByte($A4);
+  { mov byte [edi], 0  -->  C6 07 00 }
+  BinEmitByte($C6); BinEmitByte($07); BinEmitByte($00);
+  I := N; { unused warning suppression }
+End;
+
+{ Copie depuis ARRAY OF CHAR (SrcSi) vers ARRAY OF CHAR (DstSi), en
+  s'arretant au premier octet nul et en respectant DstSize-1. }
+Procedure GenCopyArrToArr(SrcSi, DstSi : Integer);
+Var
+  DstSize : Integer;
+  LabLoop, LabDone : String;
+Begin
+  DstSize := SymTab[DstSi].ArrSize;
+  { edi := &dst ; esi := &src ; ecx := DstSize-1 }
+  BinEmitByte($BF);
+  SymTab[DstSi].Used := True;
+  AddFixup(FIX_VAR, DstSi);
+  BinEmitDWord(0);
+  BinEmitByte($BE);
+  SymTab[SrcSi].Used := True;
+  AddFixup(FIX_VAR, SrcSi);
+  BinEmitDWord(0);
+  BinEmitByte($B9);
+  BinEmitDWord(DstSize - 1);
+  LabLoop := GenLabel;
+  LabDone := GenLabel;
+  DefineLabel(LabLoop);
+  { test ecx, ecx ; jz LabDone }
+  BinEmitByte($85); BinEmitByte($C9);
+  EmitJZ(LabDone);
+  { mov al, [esi]  -->  8A 06 }
+  BinEmitByte($8A); BinEmitByte($06);
+  { mov [edi], al  -->  88 07 }
+  BinEmitByte($88); BinEmitByte($07);
+  { test al, al ; jz LabDone (apres avoir copie le nul) }
+  BinEmitByte($84); BinEmitByte($C0);
+  EmitJZ(LabDone);
+  { inc esi ; inc edi ; dec ecx }
+  BinEmitByte($46); BinEmitByte($47); BinEmitByte($49);
+  EmitJmp(LabLoop);
+  DefineLabel(LabDone);
+  { mov byte [edi], 0 pour s'assurer de la terminaison. }
+  BinEmitByte($C6); BinEmitByte($07); BinEmitByte($00);
+End;
+
+{ Append d'une chaine litterale S a la fin du tableau DstSi (comme
+  Strings.Append).  Parcourt dst pour trouver le nul, puis copie au
+  plus (DstSize - longueur_courante - 1) octets. }
+Procedure GenAppendLiteralToArr(Const S : String; DstSi : Integer);
+Var
+  DstSize : Integer;
+  StrIdx : Integer;
+  LabSeek, LabSeekEnd, LabCopy, LabCopyEnd : String;
+Begin
+  DstSize := SymTab[DstSi].ArrSize;
+  StrIdx := AddStringLiteral(S);
+  { edi := &dst }
+  BinEmitByte($BF);
+  SymTab[DstSi].Used := True;
+  AddFixup(FIX_VAR, DstSi);
+  BinEmitDWord(0);
+  { ecx := DstSize }
+  BinEmitByte($B9);
+  BinEmitDWord(DstSize);
+  LabSeek    := GenLabel;
+  LabSeekEnd := GenLabel;
+  LabCopy    := GenLabel;
+  LabCopyEnd := GenLabel;
+  { Boucle de recherche du nul, avec garde sur ecx pour ne pas
+    deborder le tableau. }
+  DefineLabel(LabSeek);
+  { test ecx, ecx ; jz LabSeekEnd }
+  BinEmitByte($85); BinEmitByte($C9);
+  EmitJZ(LabSeekEnd);
+  { mov al, [edi] ; test al, al ; jz LabSeekEnd }
+  BinEmitByte($8A); BinEmitByte($07);
+  BinEmitByte($84); BinEmitByte($C0);
+  EmitJZ(LabSeekEnd);
+  BinEmitByte($47);                { inc edi }
+  BinEmitByte($49);                { dec ecx }
+  EmitJmp(LabSeek);
+  DefineLabel(LabSeekEnd);
+  { Ici ecx = DstSize - longueur_courante = capacite restante + 1 terminator.
+    Capacite utile = ecx - 1.  On garantit ecx > 0 avant de copier. }
+  { esi := source literal }
+  BinEmitByte($BE);
+  AddFixup(FIX_STRING, StrIdx);
+  BinEmitDWord(0);
+  { ebx := longueur du litteral }
+  BinEmitByte($BB);
+  BinEmitDWord(Length(S));
+  { Boucle copie : tant que ebx > 0 et ecx > 1, copie et avance. }
+  DefineLabel(LabCopy);
+  { test ebx, ebx ; jz LabCopyEnd }
+  BinEmitByte($85); BinEmitByte($DB);
+  EmitJZ(LabCopyEnd);
+  { cmp ecx, 1 ; jle LabCopyEnd }
+  BinEmitByte($83); BinEmitByte($F9); BinEmitByte($01);
+  EmitJLE(LabCopyEnd);
+  { mov al, [esi] ; mov [edi], al ; inc esi ; inc edi ; dec ebx ; dec ecx }
+  BinEmitByte($8A); BinEmitByte($06);
+  BinEmitByte($88); BinEmitByte($07);
+  BinEmitByte($46); BinEmitByte($47);
+  BinEmitByte($4B); BinEmitByte($49);
+  EmitJmp(LabCopy);
+  DefineLabel(LabCopyEnd);
+  { Terminator. }
+  BinEmitByte($C6); BinEmitByte($07); BinEmitByte($00);
+End;
+
+{ Append de SrcSi (ARRAY OF CHAR) a DstSi (ARRAY OF CHAR). }
+Procedure GenAppendArrToArr(SrcSi, DstSi : Integer);
+Var
+  DstSize : Integer;
+  LabSeek, LabSeekEnd, LabCopy, LabCopyEnd : String;
+Begin
+  DstSize := SymTab[DstSi].ArrSize;
+  BinEmitByte($BF);
+  SymTab[DstSi].Used := True;
+  AddFixup(FIX_VAR, DstSi);
+  BinEmitDWord(0);
+  BinEmitByte($B9);
+  BinEmitDWord(DstSize);
+  LabSeek := GenLabel; LabSeekEnd := GenLabel;
+  LabCopy := GenLabel; LabCopyEnd := GenLabel;
+  DefineLabel(LabSeek);
+  BinEmitByte($85); BinEmitByte($C9);
+  EmitJZ(LabSeekEnd);
+  BinEmitByte($8A); BinEmitByte($07);
+  BinEmitByte($84); BinEmitByte($C0);
+  EmitJZ(LabSeekEnd);
+  BinEmitByte($47);
+  BinEmitByte($49);
+  EmitJmp(LabSeek);
+  DefineLabel(LabSeekEnd);
+  { esi := &src }
+  BinEmitByte($BE);
+  SymTab[SrcSi].Used := True;
+  AddFixup(FIX_VAR, SrcSi);
+  BinEmitDWord(0);
+  DefineLabel(LabCopy);
+  { cmp ecx, 1 ; jle LabCopyEnd }
+  BinEmitByte($83); BinEmitByte($F9); BinEmitByte($01);
+  EmitJLE(LabCopyEnd);
+  BinEmitByte($8A); BinEmitByte($06);        { mov al, [esi] }
+  BinEmitByte($84); BinEmitByte($C0);        { test al, al }
+  EmitJZ(LabCopyEnd);
+  BinEmitByte($88); BinEmitByte($07);        { mov [edi], al }
+  BinEmitByte($46); BinEmitByte($47);        { inc esi ; inc edi }
+  BinEmitByte($49);                          { dec ecx }
+  EmitJmp(LabCopy);
+  DefineLabel(LabCopyEnd);
+  BinEmitByte($C6); BinEmitByte($07); BinEmitByte($00);
+End;
+
 Procedure GenStatement;
 Var 
   VarName : String;
@@ -1818,15 +2145,62 @@ Begin
     VarName := CurTokStr;
     Si := SymFind(VarName);
     LexNext;
-    If AcceptOp(':=') Then
+    If (CurTok = TOK_OP) And (CurTokStr = '[') Then
     Begin
-      GenExpression;
-      If Si > 0 Then
+      { Affectation indexee s[i] := expr sur ARRAY OF CHAR. }
+      LexNext;
+      GenExpression;                      { eax := index }
+      EmitPushEAX;
+      ExpectOp(']');
+      ExpectOp(':=');
+      GenExpression;                      { eax := valeur (byte dans al) }
+      EmitMovECXEAX;                      { ecx := valeur }
+      EmitPopEAX;                         { eax := index }
+      If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
       Begin
-        EmitMovMem32EAX($400000 + $2000 + SymTab[Si].DataOffs);
-        BinCodeLen := BinCodeLen - 4;
+        { eax := addr(s) + index  (addr dans edx pour ne pas ecraser eax) }
+        BinEmitByte($BA);                 { mov edx, imm32 }
+        SymTab[Si].Used := True;
         AddFixup(FIX_VAR, Si);
-        BinCodeLen := BinCodeLen + 4;
+        BinEmitDWord(0);
+        BinEmitByte($01); BinEmitByte($D0);      { add eax, edx }
+        { mov [eax], cl  -->  88 08 }
+        BinEmitByte($88); BinEmitByte($08);
+      End
+      Else If Si > 0 Then
+        ErrorAt(LexLineNo, LexColNo,
+                VarName + ' n''est pas ARRAY OF CHAR')
+      Else
+        ErrorAt(LexLineNo, LexColNo, 'Variable inconnue: ' + VarName);
+    End
+    Else If AcceptOp(':=') Then
+    Begin
+      { Cas 1 : cible ARRAY OF CHAR et source litterale string -> COPY. }
+      If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) And
+         (CurTok = TOK_STRING) Then
+      Begin
+        GenCopyLiteralToArr(CurTokStr, Si);
+        LexNext;
+      End
+      { Cas 2 : cible ARRAY OF CHAR et source = identifiant ARRAY OF CHAR. }
+      Else If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) And
+              (CurTok = TOK_IDENT) And
+              (SymFind(CurTokStr) > 0) And
+              (SymTab[SymFind(CurTokStr)].TypeIdx = TYK_ARRCHAR) Then
+      Begin
+        GenCopyArrToArr(SymFind(CurTokStr), Si);
+        LexNext;
+      End
+      Else
+      Begin
+        GenExpression;
+        If Si > 0 Then
+        Begin
+          EmitMovMem32EAX($400000 + $2000 + SymTab[Si].DataOffs);
+          BinCodeLen := BinCodeLen - 4;
+          AddFixup(FIX_VAR, Si);
+          BinCodeLen := BinCodeLen + 4;
+        End;
       End;
     End
     Else If AcceptOp('.') Then
@@ -1844,6 +2218,18 @@ Begin
           Begin
             GenOutString(CurTokStr);
             LexNext;
+          End
+          Else If CurTok = TOK_IDENT Then
+          Begin
+            Si := SymFind(CurTokStr);
+            If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+            Begin
+              GenWriteArrSym(Si, FIX_STDOUT);
+              LexNext;
+            End
+            Else
+              ErrorAt(LexLineNo, LexColNo,
+                      'Out.String : chaine litterale ou ARRAY OF CHAR attendu');
           End;
           ExpectOp(')');
         End;
@@ -1886,6 +2272,18 @@ Begin
           Begin
             GenErrString(CurTokStr);
             LexNext;
+          End
+          Else If CurTok = TOK_IDENT Then
+          Begin
+            Si := SymFind(CurTokStr);
+            If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+            Begin
+              GenWriteArrSym(Si, FIX_STDERR);
+              LexNext;
+            End
+            Else
+              ErrorAt(LexLineNo, LexColNo,
+                      'Err.String : chaine litterale ou ARRAY OF CHAR attendu');
           End;
           ExpectOp(')');
         End;
@@ -2045,6 +2443,50 @@ Begin
           EmitPushEAX;
         End;
         EmitCallIAT(FIX_IAT_EXIT);
+        ExpectOp(')');
+      End
+      Else If VarName = 'COPY' Then
+      Begin
+        { COPY(src, dst) : src est une chaine litterale ou un identifiant
+          ARRAY OF CHAR, dst est un identifiant ARRAY OF CHAR. }
+        If CurTok = TOK_STRING Then
+        Begin
+          VarName := CurTokStr;
+          LexNext;
+          ExpectOp(',');
+          If CurTok = TOK_IDENT Then
+          Begin
+            Si := SymFind(CurTokStr);
+            If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+              GenCopyLiteralToArr(VarName, Si)
+            Else
+              ErrorAt(LexLineNo, LexColNo, 'COPY: destination ARRAY OF CHAR attendue');
+            LexNext;
+          End
+          Else
+            ErrorAt(LexLineNo, LexColNo, 'COPY: destination attendue');
+        End
+        Else If CurTok = TOK_IDENT Then
+        Begin
+          LoopVarSi := SymFind(CurTokStr);
+          LexNext;
+          ExpectOp(',');
+          If CurTok = TOK_IDENT Then
+          Begin
+            Si := SymFind(CurTokStr);
+            If (LoopVarSi > 0) And (Si > 0) And
+               (SymTab[LoopVarSi].TypeIdx = TYK_ARRCHAR) And
+               (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+              GenCopyArrToArr(LoopVarSi, Si)
+            Else
+              ErrorAt(LexLineNo, LexColNo, 'COPY: ARRAY OF CHAR attendus');
+            LexNext;
+          End
+          Else
+            ErrorAt(LexLineNo, LexColNo, 'COPY: destination attendue');
+        End
+        Else
+          ErrorAt(LexLineNo, LexColNo, 'COPY: source attendue');
         ExpectOp(')');
       End;
     End;
@@ -2582,7 +3024,10 @@ Var
   VarCount : Integer;
   I, Depth : Integer;
   TypeName : String;
+  TypeNameU : String;
   TypeIdx : Integer;
+  ArrN : Integer;
+  IsCharArray : Boolean;
 Begin
   While (CurTok = TOK_IDENT) Do
   Begin
@@ -2601,6 +3046,8 @@ Begin
     End;
     ExpectOp(':');
     TypeIdx := 1;
+    ArrN := 0;
+    IsCharArray := False;
     If CurTok = TOK_IDENT Then
     Begin
       TypeName := StrUpper(CurTokStr);
@@ -2614,9 +3061,47 @@ Begin
         TypeIdx := 1;
       LexNext;
     End
+    Else If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_ARRAY) Then
+    Begin
+      LexNext;
+      If CurTok = TOK_INT Then
+      Begin
+        ArrN := CurTokNum;
+        LexNext;
+        If (CurTok = TOK_KEYWORD) And (CurTokKw = KW_OF) Then
+        Begin
+          LexNext;
+          If CurTok = TOK_IDENT Then
+          Begin
+            TypeNameU := StrUpper(CurTokStr);
+            If TypeNameU = 'CHAR' Then
+              IsCharArray := True;
+            LexNext;
+          End;
+        End;
+      End;
+      If Not IsCharArray Then
+      Begin
+        { Variante non supportee : on consomme jusqu'au ';' en equilibrant
+          les RECORD...END, on reserve 4 octets. }
+        Depth := 0;
+        While (CurTok <> TOK_EOF) And
+              (((CurTok <> TOK_OP) Or (CurTokStr <> ';')) Or (Depth > 0)) Do
+        Begin
+          If CurTok = TOK_KEYWORD Then
+          Begin
+            If CurTokKw = KW_RECORD Then
+              Inc(Depth)
+            Else If (CurTokKw = KW_END) And (Depth > 0) Then
+              Dec(Depth);
+          End;
+          LexNext;
+        End;
+        TypeIdx := 1;
+      End;
+    End
     Else If (CurTok = TOK_KEYWORD) And
-            ((CurTokKw = KW_ARRAY) Or (CurTokKw = KW_POINTER) Or
-             (CurTokKw = KW_RECORD)) Then
+            ((CurTokKw = KW_POINTER) Or (CurTokKw = KW_RECORD)) Then
     Begin
       { Type construit : non supporte semantiquement, on reserve 4 octets
         et on saute jusqu'au ';' en equilibrant les RECORD...END. }
@@ -2635,8 +3120,16 @@ Begin
       End;
       TypeIdx := 1;
     End;
-    For I := 1 To VarCount Do
-      SymEnter(VarNames[I], TypeIdx);
+    If IsCharArray Then
+    Begin
+      For I := 1 To VarCount Do
+        SymEnterArr(VarNames[I], ArrN);
+    End
+    Else
+    Begin
+      For I := 1 To VarCount Do
+        SymEnter(VarNames[I], TypeIdx);
+    End;
     ExpectOp(';');
   End;
 End;
@@ -2982,7 +3475,7 @@ Begin
 End;
 
 Procedure BuildDataSection;
-Var I, J : Integer;
+Var I, J, K : Integer;
 Begin
   BinDataLen := 0;
   
@@ -3047,10 +3540,24 @@ Begin
   
   For I := 1 To SymCount Do
   Begin
-    For J := 1 To TypeByteSize(SymTab[I].TypeIdx) Do
+    If SymTab[I].TypeIdx = TYK_ARRCHAR Then
     Begin
-      BinData[BinDataLen] := 0;
-      Inc(BinDataLen);
+      { Reserve N octets arrondis a 4. }
+      K := SymTab[I].ArrSize;
+      While (K Mod 4) <> 0 Do Inc(K);
+      For J := 1 To K Do
+      Begin
+        BinData[BinDataLen] := 0;
+        Inc(BinDataLen);
+      End;
+    End
+    Else
+    Begin
+      For J := 1 To TypeByteSize(SymTab[I].TypeIdx) Do
+      Begin
+        BinData[BinDataLen] := 0;
+        Inc(BinDataLen);
+      End;
     End;
   End;
   
