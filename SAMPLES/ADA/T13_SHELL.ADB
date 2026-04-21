@@ -1,27 +1,28 @@
--- T13_SHELL.ADB : tri Shell-Metzner (Shell sort avec sequence N/2)
+-- T13_SHELL.ADB : tri Shell-Metzner (Shell sort avec sequence N/2).
+-- Le tableau est initialise par assignation directe de chaque element
+-- (le sous-ensemble d'Ada supporte par ADACW32 n'inclut pas les
+-- aggregats de tableau).
 WITH Ada.Text_IO;
-WITH Ada.Integer_Text_IO;
 USE Ada.Text_IO;
-USE Ada.Integer_Text_IO;
 
 PROCEDURE T13_Shell IS
 
-   TYPE Int_Array IS ARRAY (Positive RANGE <>) OF Integer;
+   N : CONSTANT Integer := 12;
+
+   TYPE Int_Array IS ARRAY (1 .. 12) OF Integer;
 
    PROCEDURE Tri_Shell_Metzner (T : IN OUT Int_Array) IS
-      N      : CONSTANT Integer := T'Length;
-      Base   : CONSTANT Integer := T'First;
-      Ecart  : Integer;
-      I, J   : Integer;
-      Temp   : Integer;
+      Ecart : Integer;
+      I, J  : Integer;
+      Temp  : Integer;
    BEGIN
       Ecart := N / 2;
       WHILE Ecart > 0 LOOP
-         I := Base + Ecart;
-         WHILE I <= T'Last LOOP
+         I := 1 + Ecart;
+         WHILE I <= N LOOP
             Temp := T (I);
             J := I;
-            WHILE J >= Base + Ecart AND THEN T (J - Ecart) > Temp LOOP
+            WHILE J >= 1 + Ecart AND THEN T (J - Ecart) > Temp LOOP
                T (J) := T (J - Ecart);
                J := J - Ecart;
             END LOOP;
@@ -35,16 +36,29 @@ PROCEDURE T13_Shell IS
    PROCEDURE Afficher (Titre : String; T : Int_Array) IS
    BEGIN
       Put (Titre);
-      FOR I IN T'Range LOOP
-         Put (T (I), 5);
+      FOR I IN 1 .. N LOOP
+         Put (Integer'Image (T (I)));
       END LOOP;
       New_Line;
    END Afficher;
 
-   Donnees : Int_Array (1 .. 12) :=
-     (23, 1, 45, 12, 78, 3, 9, 67, 34, 56, 8, 21);
+   Donnees : Int_Array;
 BEGIN
-   Afficher ("Avant : ", Donnees);
+   -- Initialisation : 23, 1, 45, 12, 78, 3, 9, 67, 34, 56, 8, 21
+   Donnees (1)  := 23;
+   Donnees (2)  := 1;
+   Donnees (3)  := 45;
+   Donnees (4)  := 12;
+   Donnees (5)  := 78;
+   Donnees (6)  := 3;
+   Donnees (7)  := 9;
+   Donnees (8)  := 67;
+   Donnees (9)  := 34;
+   Donnees (10) := 56;
+   Donnees (11) := 8;
+   Donnees (12) := 21;
+
+   Afficher ("Avant :", Donnees);
    Tri_Shell_Metzner (Donnees);
-   Afficher ("Apres : ", Donnees);
+   Afficher ("Apres :", Donnees);
 END T13_Shell;

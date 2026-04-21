@@ -717,7 +717,7 @@ Const
   TYPE_BOOL     =  3;   { Boolean     : DB (1 octet)               }
   TYPE_CHAR     =  4;   { Character   : DB (1 octet)               }
   TYPE_STR      =  5;   { String      : DB n octets                }
-  TYPE_ENUM     =  6;   { Type enumere                             }
+  TYPE_FILE     =  6;   { File_Type  : handle Win32 (DD 4 octets)  }
   TYPE_RANGE    =  7;   { Sous-type entier (RANGE lo..hi)          }
   TYPE_ARRAY    =  8;   { Tableau 1D borne fixe                    }
   TYPE_RECORD   =  9;   { Enregistrement (RECORD)                  }
@@ -2071,6 +2071,15 @@ Begin
 
   { Les 5 premiers slots sont occupes par les types predefinis }
   TypeCount := 5;
+
+  { TYPE_FILE = 6 : File_Type (handle Win32, DD 4 octets) }
+  { Necessaire pour que Put_Line(F, Str) soit dispatche en mode fichier }
+  { (vs Put_Line(Integer, Width) pour Integer_Text_IO).                 }
+  TypeTab[TYPE_FILE].Name      := 'FILE_TYPE';
+  TypeTab[TYPE_FILE].TotalSize := 4;
+  TypeTab[TYPE_FILE].Kind      := TK_PREDEF;
+  TypeTab[TYPE_FILE].BaseType  := TYPE_INT;
+  TypeCount := 6;
 End;
 
 { ---- RegisterStandardExceptions : exceptions Ada standard ---- }
@@ -2842,6 +2851,7 @@ Begin
   EmitI(ADA_RT_PFX + 'SLICEBUF  DB 512 DUP(0)');
   EmitI(ADA_RT_PFX + 'SLICEIDX  DB 0');
   EmitI(ADA_RT_PFX + 'CRLF_DATA DB 13, 10, 0');
+  EmitI(ADA_RT_PFX + 'CATBUF    DB 512 DUP(0)');
   EmitI(ADA_RT_PFX + 'HSTDOUT   DD 0');
   EmitI(ADA_RT_PFX + 'HSTDIN    DD 0');
   EmitI(ADA_RT_PFX + 'WRITTEN   DD 0');
@@ -3424,6 +3434,54 @@ Begin
   EmitI('STOSB');
   EmitI('TEST AL, AL');
   EmitI('JNZ  ' + LblCatLoop);
+  EmitI('RET');
+
+  { ---- _ADART_STR_CAT : concatener 2 chaines dans CATBUF ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_STR_CAT : concatener [ESP+8] + [ESP+4] dans CATBUF ---');
+  EmitComment('Entree : argument gauche puis droite PUSHes (cdecl)');
+  EmitComment('Sortie : EAX = pointeur vers CATBUF (ASCIIZ concatene)');
+  EmitLabel(ADA_RT_PFX + 'STR_CAT');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH ESI');
+  EmitI('PUSH EDI');
+  EmitI('LEA  EDI, DWORD PTR [' + ADA_RT_PFX + 'CATBUF]');
+  EmitI('MOV  ESI, DWORD PTR [EBP+12]   ; gauche');
+  EmitI('CMP  ESI, EDI');
+  LblCatFnd  := NewLabel;   { find end of CATBUF (left already in CATBUF) }
+  LblCatLoop := NewLabel;   { copy right }
+  LblDone    := NewLabel;   { leaf : done }
+  EmitI('JE   ' + LblCatFnd);
+  { Copier gauche dans CATBUF }
+  LblLoop := NewLabel;
+  EmitLabel(LblLoop);
+  EmitI('LODSB');
+  EmitI('STOSB');
+  EmitI('TEST AL, AL');
+  EmitI('JNZ  ' + LblLoop);
+  EmitI('DEC  EDI                       ; revenir sur le terminateur 0');
+  EmitI('JMP  ' + LblCatLoop);
+  { Gauche deja dans CATBUF : avancer EDI jusqu au 0 }
+  EmitLabel(LblCatFnd);
+  EmitI('CMP  BYTE PTR [EDI], 0');
+  EmitI('JE   ' + LblCatLoop);
+  EmitI('INC  EDI');
+  EmitI('JMP  ' + LblCatFnd);
+  { Copier droite apres EDI }
+  EmitLabel(LblCatLoop);
+  EmitI('MOV  ESI, DWORD PTR [EBP+8]    ; droite');
+  LblLoop := NewLabel;
+  EmitLabel(LblLoop);
+  EmitI('LODSB');
+  EmitI('STOSB');
+  EmitI('TEST AL, AL');
+  EmitI('JNZ  ' + LblLoop);
+  { Retourner pointeur CATBUF }
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'CATBUF]');
+  EmitI('POP  EDI');
+  EmitI('POP  ESI');
+  EmitI('POP  EBP');
   EmitI('RET');
 
   { ---- _ADART_CHKRANGE : verifier bornes ---- }
@@ -4710,7 +4768,7 @@ Begin
         End;
         Case AI Of
           5 : Begin { 'IMAGE : convertir EAX en chaine ASCIIZ (pointeur) }
-                EmitI('PUSH EAX');
+                { NUMTOSTR prend EAX en entree directe ; pas de push requis }
                 EmitI('CALL ' + ADA_RT_PFX + 'NUMTOSTR');
                 { EAX = pointeur vers NUMBUF (chaine) }
               End;
@@ -6879,6 +6937,8 @@ Var
   GotHi     : Boolean;
   IsReverse : Boolean;
   Off       : Integer;
+  LoOff     : Integer;
+  HiOff     : Integer;
 Begin
   EmitComment('FOR ... IN ... LOOP ... END LOOP');
   Consume; { FOR }
@@ -6889,10 +6949,24 @@ Begin
   { REVERSE optionnel }
   IsReverse := TokIsKw(KW_REVERSE);
   If IsReverse Then Consume; { REVERSE }
-  { Bornes : lo .. hi }
+  { Bornes : lo .. hi. Si une borne est dynamique (non constante), la     }
+  { sauver dans un emplacement local pour pouvoir la comparer dans        }
+  { la condition de boucle.                                                }
+  LoOff := 0;
+  HiOff := 0;
   GotLo := ParseConstExpr32(LoVal);
+  If Not GotLo Then
+  Begin
+    LoOff := AllocLocal(4);
+    EmitI('MOV  DWORD PTR [EBP' + BpOff32(LoOff) + '], EAX');
+  End;
   Expect(TOK_DOTDOT, '`..` attendu dans FOR');
   GotHi := ParseConstExpr32(HiVal);
+  If Not GotHi Then
+  Begin
+    HiOff := AllocLocal(4);
+    EmitI('MOV  DWORD PTR [EBP' + BpOff32(HiOff) + '], EAX');
+  End;
   { Consommer LOOP }
   ExpectKw(KW_LOOP, 'LOOP');
   { Creer un scope de boucle }
@@ -6912,7 +6986,7 @@ Begin
       EmitI('MOV  DWORD PTR [EBP' + BpOff32(Off) + '], ' + IntToStr_(HiVal))
     Else
     Begin
-      { hi est dans EAX apres ParseConstExpr32 }
+      EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(HiOff) + ']');
       EmitI('MOV  DWORD PTR [EBP' + BpOff32(Off) + '], EAX');
     End;
     EmitLabel(LblTop);
@@ -6921,7 +6995,7 @@ Begin
     If GotLo Then
       EmitI('CMP  EAX, ' + IntToStr_(LoVal))
     Else
-      EmitI('CMP  EAX, 0');   { fallback si lo non constante }
+      EmitI('CMP  EAX, DWORD PTR [EBP' + BpOff32(LoOff) + ']');
     EmitI('JL   ' + LblEnd);
   End
   Else
@@ -6931,7 +7005,7 @@ Begin
       EmitI('MOV  DWORD PTR [EBP' + BpOff32(Off) + '], ' + IntToStr_(LoVal))
     Else
     Begin
-      { lo est dans EAX }
+      EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(LoOff) + ']');
       EmitI('MOV  DWORD PTR [EBP' + BpOff32(Off) + '], EAX');
     End;
     EmitLabel(LblTop);
@@ -6940,7 +7014,7 @@ Begin
     If GotHi Then
       EmitI('CMP  EAX, ' + IntToStr_(HiVal))
     Else
-      EmitI('CMP  EAX, 0');   { fallback si hi non constante }
+      EmitI('CMP  EAX, DWORD PTR [EBP' + BpOff32(HiOff) + ']');
     EmitI('JG   ' + LblEnd);
   End;
   { Corps de la boucle }
@@ -7187,21 +7261,24 @@ Begin
           If Sym > 0 Then
           Begin
             TI := SymTab[Sym].TypeIdx;
-            { Detecter les tableaux de caracteres comme chaines }
-            If (TI > 0) And (TI <= TypeCount) And
-               (TypeTab[TI].ElemType = TYPE_CHAR) Then
-            Begin
-              DetectArgTypeForPut := TYPE_STR;
-              Exit;
-            End;
-            { Peek char suivant (meme ligne, non-espace) pour detecter       }
-            { Ident'Attr (TYPE_INT pour First/Last/Length/Size, TYPE_STR pour }
-            { Image) ou Ident(Idx) (type element pour un tableau).            }
+            { Peek char suivant pour detecter Ident'Attr (attribut) et      }
+            { Ident(Idx) (acces element ou slice). Cette info est utilisee  }
+            { avant de decider si un array-of-char doit etre traite comme   }
+            { String entier (Put(Buf)) ou comme Character (Put(Buf(I))).    }
             NxCh := #0;
             P := LexColNo;
             While (P <= Length(LexLine)) And
                   ((LexLine[P] = ' ') Or (LexLine[P] = #9)) Do Inc(P);
             If P <= Length(LexLine) Then NxCh := LexLine[P];
+            { Detecter les tableaux de caracteres comme chaines SI pas      }
+            { suivi de `(` (acces element) ni de `'` (attribut).             }
+            If (TI > 0) And (TI <= TypeCount) And
+               (TypeTab[TI].ElemType = TYPE_CHAR) And
+               (NxCh <> '(') And (NxCh <> '''') Then
+            Begin
+              DetectArgTypeForPut := TYPE_STR;
+              Exit;
+            End;
             If NxCh = '''' Then
             Begin
               { Ident'Attr : par defaut First/Last/Length/Size -> TYPE_INT.   }

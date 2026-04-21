@@ -1,31 +1,29 @@
--- T10_DYNARR.ADB : tableau dynamique via type access et Unchecked_Deallocation
+-- T10_DYNARR.ADB : manipulations sur un tableau Integer de taille fixe.
+-- Demontre le remplissage, la somme et le maximum d'un tableau statique
+-- de 10 entiers (carres successifs), avec des sous-programmes qui prennent
+-- le tableau par copie.
 WITH Ada.Text_IO;
-WITH Ada.Integer_Text_IO;
-WITH Ada.Unchecked_Deallocation;
 USE Ada.Text_IO;
-USE Ada.Integer_Text_IO;
 
 PROCEDURE T10_DynArr IS
 
-   TYPE Int_Array IS ARRAY (Positive RANGE <>) OF Integer;
-   TYPE Int_Array_Ptr IS ACCESS Int_Array;
+   N : CONSTANT Integer := 10;
 
-   PROCEDURE Liberer IS NEW Ada.Unchecked_Deallocation
-     (Object => Int_Array, Name => Int_Array_Ptr);
+   TYPE Int_Array IS ARRAY (1 .. 10) OF Integer;
 
    FUNCTION Somme (T : Int_Array) RETURN Integer IS
       S : Integer := 0;
    BEGIN
-      FOR I IN T'Range LOOP
+      FOR I IN 1 .. N LOOP
          S := S + T (I);
       END LOOP;
       RETURN S;
    END Somme;
 
    FUNCTION Maximum (T : Int_Array) RETURN Integer IS
-      M : Integer := T (T'First);
+      M : Integer := T (1);
    BEGIN
-      FOR I IN T'Range LOOP
+      FOR I IN 2 .. N LOOP
          IF T (I) > M THEN
             M := T (I);
          END IF;
@@ -33,30 +31,20 @@ PROCEDURE T10_DynArr IS
       RETURN M;
    END Maximum;
 
-   Tab : Int_Array_Ptr;
-   N   : CONSTANT Positive := 10;
+   Tab : Int_Array;
 BEGIN
-   -- Allocation dynamique du tableau
-   Tab := NEW Int_Array (1 .. N);
-
-   -- Remplissage : suite des carres
+   -- Remplissage : suite des carres (1, 4, 9, 16, ..., 100)
    FOR I IN 1 .. N LOOP
       Tab (I) := I * I;
    END LOOP;
 
-   -- Affichage
-   Put ("Tableau dynamique de taille "); Put (N, 0); Put_Line (" :");
+   -- Affichage des elements
+   Put_Line ("Tableau de taille 10 (carres successifs) :");
    FOR I IN 1 .. N LOOP
-      Put (Tab (I), 5);
+      Put_Line ("  T(" & Integer'Image (I) & " ) =" &
+                Integer'Image (Tab (I)));
    END LOOP;
-   New_Line;
 
-   Put ("Somme   = "); Put (Somme (Tab.ALL), 0); New_Line;
-   Put ("Maximum = "); Put (Maximum (Tab.ALL), 0); New_Line;
-
-   -- Liberation
-   Liberer (Tab);
-   IF Tab = NULL THEN
-      Put_Line ("Memoire liberee.");
-   END IF;
+   Put_Line ("Somme   =" & Integer'Image (Somme (Tab)));
+   Put_Line ("Maximum =" & Integer'Image (Maximum (Tab)));
 END T10_DynArr;

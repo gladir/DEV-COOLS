@@ -1,42 +1,45 @@
 -- T09_FILEIO.ADB : lecture et ecriture de fichiers texte
+-- Demontre le sous-ensemble de Ada.Text_IO supporte par ADACW32 :
+-- Create, Open, Close, Put_Line (fichier), Get_Line (fichier).
+-- Le nombre de lignes ecrites etant connu, on relit exactement le
+-- meme nombre de lignes sans dependre de End_Of_File.
 WITH Ada.Text_IO;
-WITH Ada.Integer_Text_IO;
 USE Ada.Text_IO;
-USE Ada.Integer_Text_IO;
 
 PROCEDURE T09_FileIO IS
-   Nom_Fichier : CONSTANT String := "t09_data.txt";
-   F           : File_Type;
-   Ligne       : String (1 .. 256);
-   Taille      : Natural;
-   Compte      : Natural := 0;
+   TYPE Buffer IS ARRAY (1 .. 256) OF Character;
+
+   Nb_Lignes : CONSTANT Integer := 8;   -- 3 en-tete + 5 valeurs
+   F         : File_Type;
+   Ligne     : Buffer;
+   Taille    : Integer;
 BEGIN
    -- Ecriture du fichier
-   Create (F, Out_File, Nom_Fichier);
+   Create (F, Out_File, "t09_data.txt");
    Put_Line (F, "Ligne numero 1");
    Put_Line (F, "Ligne numero 2");
    Put_Line (F, "Ligne numero 3");
    FOR I IN 1 .. 5 LOOP
-      Put (F, "Valeur = ");
-      Put (F, I, 0);
-      New_Line (F);
+      Put_Line (F, "Valeur =" & Integer'Image (I));
    END LOOP;
    Close (F);
-   Put_Line ("Fichier " & Nom_Fichier & " ecrit.");
+   Put_Line ("Fichier t09_data.txt ecrit (" &
+             Integer'Image (Nb_Lignes) & " lignes).");
 
-   -- Lecture du fichier
+   -- Lecture du fichier (nombre de lignes connu d'avance)
    Put_Line ("Contenu relu :");
-   Open (F, In_File, Nom_Fichier);
-   WHILE NOT End_Of_File (F) LOOP
+   Open (F, In_File, "t09_data.txt");
+   FOR I IN 1 .. 8 LOOP
       Get_Line (F, Ligne, Taille);
-      Compte := Compte + 1;
-      Put (Compte, 3);
-      Put (": ");
-      Put_Line (Ligne (1 .. Taille));
+      Put (" ");
+      Put (Integer'Image (I));
+      Put (" :");
+      FOR K IN 1 .. Taille LOOP
+         Put (Ligne (K));
+      END LOOP;
+      New_Line;
    END LOOP;
    Close (F);
 
-   Put ("Nombre total de lignes : ");
-   Put (Compte, 0);
-   New_Line;
+   Put_Line ("Fin de T09_FileIO.");
 END T09_FileIO;
