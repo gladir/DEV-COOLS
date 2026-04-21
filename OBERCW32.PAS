@@ -1334,6 +1334,254 @@ End;
 Procedure GenExpression; Forward;
 Procedure GenFactor; Forward;
 
+{ --- Helper Palier 4 : pousse sur la pile l'adresse d'un argument chaine.
+      Accepte un litteral de chaine (stocke dans le StringPool, termine
+      par un nul) ou un identificateur ARRAY OF CHAR (dont l'adresse est
+      resolue par FIX_VAR).  ShFail est utilise dans le message d'erreur. --- }
+Procedure PushStrArg(Const FnName : String);
+Var
+  Si, Idx : Integer;
+Begin
+  If CurTok = TOK_STRING Then
+  Begin
+    Idx := AddStringLiteral(CurTokStr);
+    BinEmitByte($68);                   { push imm32 (addresse chaine litterale) }
+    AddFixup(FIX_STRING, Idx);
+    BinEmitDWord(0);
+    LexNext;
+  End
+  Else If CurTok = TOK_IDENT Then
+  Begin
+    Si := SymFind(CurTokStr);
+    If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+    Begin
+      SymTab[Si].Used := True;
+      BinEmitByte($68);                 { push imm32 (adresse variable) }
+      AddFixup(FIX_VAR, Si);
+      BinEmitDWord(0);
+      LexNext;
+    End
+    Else
+    Begin
+      ErrorAt(LexLineNo, LexColNo, FnName + ' : ARRAY OF CHAR ou litteral chaine attendu');
+      EmitPushImm32(0);
+      LexNext;
+    End;
+  End
+  Else
+  Begin
+    ErrorAt(LexLineNo, LexColNo, FnName + ' : litteral chaine ou identificateur attendu');
+    EmitPushImm32(0);
+  End;
+End;
+
+{ --- Helper Palier 4 : genere l'appel CreateFileA pour Files.Open.
+      Le mode est un litteral entier :
+        0 : GENERIC_READ | OPEN_EXISTING  (lecture seule)
+        1 : GENERIC_WRITE | CREATE_ALWAYS (ecriture, ecrase si existe)
+        2 : GENERIC_WRITE | OPEN_ALWAYS + seek a la fin (ajout)
+      Retourne le handle dans EAX. --- }
+Procedure GenFilesOpen;
+Var
+  Si : Integer;
+  NameKind : Integer;   { 0=litteral, 1=ARRCHAR ident }
+  NameIdx  : Integer;
+  ModeVal : LongInt;
+  Access, Share, Disp : LongInt;
+  IsAppend : Boolean;
+Begin
+  ExpectOp('(');
+  NameKind := -1;
+  NameIdx := 0;
+  If CurTok = TOK_STRING Then
+  Begin
+    NameIdx := AddStringLiteral(CurTokStr);
+    NameKind := 0;
+    LexNext;
+  End
+  Else If CurTok = TOK_IDENT Then
+  Begin
+    Si := SymFind(CurTokStr);
+    If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+    Begin
+      SymTab[Si].Used := True;
+      NameIdx := Si;
+      NameKind := 1;
+    End
+    Else
+      ErrorAt(LexLineNo, LexColNo, 'Files.Open : ARRAY OF CHAR attendu');
+    LexNext;
+  End
+  Else
+    ErrorAt(LexLineNo, LexColNo, 'Files.Open : litteral ou ident attendu');
+  ExpectOp(',');
+  { Mode : litteral entier (0, 1, 2). }
+  If CurTok = TOK_INT Then
+  Begin
+    ModeVal := CurTokNum;
+    LexNext;
+  End
+  Else
+  Begin
+    ErrorAt(LexLineNo, LexColNo, 'Files.Open : mode = entier litteral 0, 1 ou 2 attendu');
+    ModeVal := 0;
+  End;
+  Case ModeVal Of
+    0: Begin Access := $80000000; Share := 1; Disp := 3; IsAppend := False; End;
+    1: Begin Access := $40000000; Share := 0; Disp := 2; IsAppend := False; End;
+    2: Begin Access := $40000000; Share := 0; Disp := 4; IsAppend := True;  End;
+  Else
+    Begin
+      ErrorAt(LexLineNo, LexColNo, 'Files.Open : mode invalide (0, 1 ou 2)');
+      Access := $80000000; Share := 1; Disp := 3; IsAppend := False;
+    End;
+  End;
+  ExpectOp(')');
+
+  { Emission (stdcall, push right-to-left) :
+      push 0             ; hTemplateFile
+      push $80           ; FILE_ATTRIBUTE_NORMAL
+      push Disp          ; dwCreationDisposition
+      push 0             ; lpSecurityAttributes
+      push Share         ; dwShareMode
+      push Access        ; dwDesiredAccess
+      push name_addr     ; lpFileName
+      call [CreateFileA] }
+  EmitPushImm32(0);
+  EmitPushImm32($80);
+  EmitPushImm32(Disp);
+  EmitPushImm32(0);
+  EmitPushImm32(Share);
+  EmitPushImm32(Access);
+  If NameKind = 0 Then
+  Begin
+    BinEmitByte($68);
+    AddFixup(FIX_STRING, NameIdx);
+    BinEmitDWord(0);
+  End
+  Else If NameKind = 1 Then
+  Begin
+    BinEmitByte($68);
+    AddFixup(FIX_VAR, NameIdx);
+    BinEmitDWord(0);
+  End
+  Else
+    EmitPushImm32(0);
+  EmitCallIAT(FIX_IAT_CREATEFILE);        { eax = handle, stack nettoyee }
+
+  If IsAppend Then
+  Begin
+    { Apres l'open en ajout, positionner a la fin. }
+    BinEmitByte($89); BinEmitByte($C3);   { mov ebx, eax }
+    EmitPushImm32(2);                      { FILE_END }
+    EmitPushImm32(0);                      { lpDistanceToMoveHigh = NULL }
+    EmitPushImm32(0);                      { lDistanceToMove = 0 }
+    BinEmitByte($53);                      { push ebx (hFile) }
+    EmitCallIAT(FIX_IAT_SETFILEPTR);
+    BinEmitByte($89); BinEmitByte($D8);   { mov eax, ebx (restaure handle) }
+  End;
+End;
+
+{ --- Files.Read(h, buf, n) ou Files.Write(h, buf, n).  Retourne dans
+      EAX le nombre d'octets lus / ecrits.  Pour Read, &nBytesRead est
+      lu dans la zone BYTES_WRITTEN (reutilisee). --- }
+Procedure GenFilesReadWrite(IsRead : Boolean);
+Var
+  Si : Integer;
+Begin
+  ExpectOp('(');
+  GenExpression;                   { eax = h }
+  BinEmitByte($89); BinEmitByte($C3); { mov ebx, eax (sauve handle) }
+  ExpectOp(',');
+  { Argument buf : ARRAY OF CHAR. }
+  If CurTok = TOK_IDENT Then
+  Begin
+    Si := SymFind(CurTokStr);
+    If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+    Begin
+      SymTab[Si].Used := True;
+      BinEmitByte($BF);             { mov edi, imm32 (addr de buf) }
+      AddFixup(FIX_VAR, Si);
+      BinEmitDWord(0);
+      LexNext;
+    End
+    Else
+    Begin
+      ErrorAt(LexLineNo, LexColNo, 'Files : 2e argument ARRAY OF CHAR attendu');
+      BinEmitByte($BF); BinEmitDWord(0);
+      LexNext;
+    End;
+  End
+  Else
+    ErrorAt(LexLineNo, LexColNo, 'Files : identificateur attendu');
+  ExpectOp(',');
+  GenExpression;                   { eax = n, buf reste dans edi }
+
+  { Emission :
+      push 0                       ; lpOverlapped
+      push &bytes_written          ; lpNumberOfBytesRead
+      push eax                     ; nNumberOfBytesToRead
+      push edi                     ; lpBuffer
+      push ebx                     ; hFile
+      call [ReadFile|WriteFile] }
+  EmitPushImm32(0);
+  BinEmitByte($68);                { push imm32 &bytes_written }
+  AddFixup(FIX_BYTES_WRITTEN, 0);
+  BinEmitDWord(0);
+  EmitPushEAX;
+  BinEmitByte($57);                { push edi }
+  BinEmitByte($53);                { push ebx }
+  If IsRead Then
+    EmitCallIAT(FIX_IAT_READ)
+  Else
+    EmitCallIAT(FIX_IAT_WRITE);
+  { Apres appel : eax = BOOL success (ignore).  On recupere
+    bytes_written dans eax.  Si success=0, on renvoie -1. }
+  BinEmitByte($85); BinEmitByte($C0);   { test eax, eax }
+  BinEmitByte($75); BinEmitByte($07);   { jnz +7 (vers ok) }
+  BinEmitByte($B8); BinEmitDWord(-1);   { mov eax, -1 (erreur) }
+  BinEmitByte($EB); BinEmitByte($06);   { jmp +6 (vers done) }
+  { ok: mov eax, [bytes_written] }
+  BinEmitByte($A1);
+  AddFixup(FIX_BYTES_WRITTEN, 0);
+  BinEmitDWord(0);
+  ExpectOp(')');
+End;
+
+{ --- Files.Size(h) : retourne la taille du fichier via deux appels a
+      SetFilePointer : position courante, puis fin, puis on restore.  A
+      l'entree, EAX = handle. --- }
+Procedure GenFilesSize;
+Begin
+  BinEmitByte($89); BinEmitByte($C3);    { mov ebx, eax (handle) }
+  { Position courante. }
+  EmitPushImm32(1);                       { FILE_CURRENT }
+  EmitPushImm32(0);
+  EmitPushImm32(0);
+  BinEmitByte($53);                       { push ebx }
+  EmitCallIAT(FIX_IAT_SETFILEPTR);        { eax = cur }
+  { Sauve cur dans real_tmp (4 octets). }
+  BinEmitByte($A3);
+  AddFixup(FIX_REAL_TMP, 0);
+  BinEmitDWord(0);
+  { Seek FILE_END. }
+  EmitPushImm32(2);                       { FILE_END }
+  EmitPushImm32(0);
+  EmitPushImm32(0);
+  BinEmitByte($53);
+  EmitCallIAT(FIX_IAT_SETFILEPTR);        { eax = taille }
+  BinEmitByte($50);                       { push eax (sauve taille) }
+  { Restaure position originale. }
+  EmitPushImm32(0);                       { FILE_BEGIN }
+  EmitPushImm32(0);
+  BinEmitByte($FF); BinEmitByte($35);     { push dword [real_tmp] }
+  AddFixup(FIX_REAL_TMP, 0);
+  BinEmitDWord(0);
+  BinEmitByte($53);
+  EmitCallIAT(FIX_IAT_SETFILEPTR);        { eax = restaure (ignore) }
+  BinEmitByte($58);                       { pop eax (taille) }
+End;
+
 Procedure GenQualifiedFactor(Const QName : String);
 Var
   Si : Integer;
@@ -1673,6 +1921,78 @@ Begin
     BinEmitByte($A1);                    { mov eax, [InDone] }
     AddFixup(FIX_INDONE, 0);
     BinEmitDWord(0);
+  End
+
+  { ========= Palier 4 : Heap, Files, DynLink ========= }
+
+  { --- Heap.Alloc(n) : allocation dans le tas du processus avec
+        zero-fill.  Retourne l'adresse dans EAX (0 si echec). --- }
+  Else If QN = 'HEAP.ALLOC' Then
+  Begin
+    ExpectOp('(');
+    GenExpression;                     { eax = n }
+    EmitPushEAX;                       { arg3 = size }
+    EmitPushImm32(8);                  { arg2 = HEAP_ZERO_MEMORY }
+    EmitCallIAT(FIX_IAT_GETPROCHEAP);  { eax = hHeap }
+    EmitPushEAX;                       { arg1 = hHeap }
+    EmitCallIAT(FIX_IAT_HEAPALLOC);    { stdcall : nettoie 12 octets }
+    ExpectOp(')');
+  End
+
+  { --- DynLink.Load(name) : LoadLibraryA.  name = litteral chaine ou
+        identificateur ARRAY OF CHAR. --- }
+  Else If QN = 'DYNLINK.LOAD' Then
+  Begin
+    ExpectOp('(');
+    PushStrArg('DynLink.Load');
+    EmitCallIAT(FIX_IAT_LOADLIB);
+    ExpectOp(')');
+  End
+
+  { --- DynLink.GetProc(h, name) : GetProcAddress. --- }
+  Else If QN = 'DYNLINK.GETPROC' Then
+  Begin
+    ExpectOp('(');
+    GenExpression;               { eax = handle }
+    BinEmitByte($89); BinEmitByte($C3);  { mov ebx, eax (sauvegarde handle) }
+    ExpectOp(',');
+    PushStrArg('DynLink.GetProc');  { push name (arg2, droite) }
+    BinEmitByte($53);              { push ebx (arg1 hModule, gauche) }
+    EmitCallIAT(FIX_IAT_GETPROC);
+    ExpectOp(')');
+  End
+
+  { --- Files.Open(name, mode) : CreateFileA.
+        mode = litteral entier : 0 lecture, 1 ecriture/creation,
+        2 ajout (ouvre ou cree, puis positionne en fin de fichier).
+        Retourne le handle dans EAX (ou -1 = INVALID_HANDLE_VALUE). --- }
+  Else If QN = 'FILES.OPEN' Then
+  Begin
+    GenFilesOpen;
+  End
+
+  { --- Files.Read(h, buf, n) : lecture vers ARRAY OF CHAR.
+        Retourne le nombre d'octets effectivement lus (0 si EOF, -1 si
+        erreur). --- }
+  Else If QN = 'FILES.READ' Then
+  Begin
+    GenFilesReadWrite(True);
+  End
+
+  { --- Files.Write(h, buf, n) : ecriture depuis ARRAY OF CHAR.
+        Retourne le nombre d'octets ecrits. --- }
+  Else If QN = 'FILES.WRITE' Then
+  Begin
+    GenFilesReadWrite(False);
+  End
+
+  { --- Files.Size(h) : retourne la taille du fichier en octets. --- }
+  Else If QN = 'FILES.SIZE' Then
+  Begin
+    ExpectOp('(');
+    GenExpression;               { eax = handle }
+    GenFilesSize;
+    ExpectOp(')');
   End
 
   Else
@@ -3382,6 +3702,59 @@ Begin
           BinEmitByte($A3);
           AddFixup(FIX_RNDSEED, 0);
           BinEmitDWord(0);
+          ExpectOp(')');
+        End;
+      End
+
+      { --- Palier 4 : instructions Files/Heap/DynLink --- }
+      Else If VarName = 'Files.Close' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenExpression;         { eax = h }
+          EmitPushEAX;           { arg = hObject }
+          EmitCallIAT(FIX_IAT_CLOSEHANDLE);
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'Files.Seek' Then
+      Begin
+        { Files.Seek(h, pos) : positionne depuis le debut. }
+        If AcceptOp('(') Then
+        Begin
+          GenExpression;             { eax = h }
+          BinEmitByte($89); BinEmitByte($C3);  { mov ebx, eax }
+          ExpectOp(',');
+          GenExpression;             { eax = pos }
+          EmitPushImm32(0);          { FILE_BEGIN = 0 }
+          EmitPushImm32(0);          { lpDistanceToMoveHigh = NULL }
+          EmitPushEAX;               { lDistanceToMove = pos }
+          BinEmitByte($53);          { push ebx (hFile) }
+          EmitCallIAT(FIX_IAT_SETFILEPTR);
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'Heap.Free' Then
+      Begin
+        { Heap.Free(addr) -> HeapFree(GetProcessHeap(), 0, addr). }
+        If AcceptOp('(') Then
+        Begin
+          GenExpression;            { eax = addr }
+          EmitPushEAX;              { arg3 = lpMem }
+          EmitPushImm32(0);         { arg2 = dwFlags }
+          EmitCallIAT(FIX_IAT_GETPROCHEAP);
+          EmitPushEAX;              { arg1 = hHeap }
+          EmitCallIAT(FIX_IAT_HEAPFREE);
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'DynLink.Free' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenExpression;            { eax = hModule }
+          EmitPushEAX;
+          EmitCallIAT(FIX_IAT_FREELIB);
           ExpectOp(')');
         End;
       End
