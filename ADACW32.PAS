@@ -1173,6 +1173,22 @@ Begin
     LexPeek := LexLine[LexColNo + 1];
 End;
 
+{ Regarde le prochain caractere non blanc sur la ligne courante sans   }
+{ consommer. Retourne #0 si la ligne est epuisee. Ne franchit pas les  }
+{ sauts de ligne.                                                       }
+Function LexPeekNonWS : Char;
+Var K : Integer;
+Begin
+  K := LexColNo;
+  While (K <= Length(LexLine)) And
+        ((LexLine[K] = ' ') Or (LexLine[K] = #9)) Do
+    Inc(K);
+  If (K > Length(LexLine)) Or LexEOF Then
+    LexPeekNonWS := #0
+  Else
+    LexPeekNonWS := LexLine[K];
+End;
+
 Procedure LexAdvance;
 Begin
   Inc(LexColNo);
@@ -2823,6 +2839,8 @@ Begin
   EmitI(ADA_RT_PFX + 'INTBUF    DB 64 DUP(0)');
   EmitI(ADA_RT_PFX + 'STRBUF    DB 256 DUP(0)');
   EmitI(ADA_RT_PFX + 'INPUTBUF  DB 256 DUP(0)');
+  EmitI(ADA_RT_PFX + 'SLICEBUF  DB 512 DUP(0)');
+  EmitI(ADA_RT_PFX + 'SLICEIDX  DB 0');
   EmitI(ADA_RT_PFX + 'CRLF_DATA DB 13, 10, 0');
   EmitI(ADA_RT_PFX + 'HSTDOUT   DD 0');
   EmitI(ADA_RT_PFX + 'HSTDIN    DD 0');
@@ -2993,7 +3011,62 @@ Begin
   EmitI('POP  EBP');
   EmitI('RET  4');
 
-  { ---- _ADART_NUMTOSTR : EAX=entier -> ASCIIZ dans NUMBUF ---- }
+  { ---- _ADART_SLICE : copie tranche dans tampon rotatif ASCIIZ ---- }
+  { Entree : [ESP+4] = ptr source, [ESP+8] = longueur en octets.       }
+  { Sortie : EAX = pointeur ASCIIZ vers un slot de SLICEBUF (copie     }
+  {          tronquee a 127 octets + terminateur 0).                    }
+  { 4 slots de 128 octets tournent -> jusqu a 4 slices peuvent etre     }
+  { utilises simultanement dans une meme expression.                    }
+  EmitBlank;
+  EmitComment('--- _ADART_SLICE : extraction tranche (a..b) ---');
+  EmitLabel(ADA_RT_PFX + 'SLICE');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH ESI');
+  EmitI('PUSH EDI');
+  EmitI('PUSH EBX');
+  { Incrementer l index rotatif : idx = (idx + 1) mod 4 }
+  EmitI('MOVZX EAX, BYTE PTR [' + ADA_RT_PFX + 'SLICEIDX]');
+  EmitI('INC  EAX');
+  EmitI('CMP  EAX, 4');
+  LblLoop := NewLabel;
+  EmitI('JL   ' + LblLoop);
+  EmitI('XOR  EAX, EAX');
+  EmitLabel(LblLoop);
+  EmitI('MOV  BYTE PTR [' + ADA_RT_PFX + 'SLICEIDX], AL');
+  EmitI('IMUL EAX, EAX, 128');
+  EmitI('LEA  EDI, [' + ADA_RT_PFX + 'SLICEBUF]');
+  EmitI('ADD  EDI, EAX');
+  EmitI('MOV  EBX, EDI');                 { EBX = adresse retour }
+  EmitI('MOV  ESI, DWORD PTR [EBP+8]');   { ESI = source }
+  EmitI('MOV  ECX, DWORD PTR [EBP+12]');  { ECX = longueur }
+  { Clamp longueur a 127 (1 octet reserve pour le terminateur 0) }
+  EmitI('CMP  ECX, 127');
+  LblDone := NewLabel;
+  EmitI('JLE  ' + LblDone);
+  EmitI('MOV  ECX, 127');
+  EmitLabel(LblDone);
+  { Longueur <= 0 : rien a copier, juste terminateur }
+  EmitI('TEST ECX, ECX');
+  LblConv := NewLabel;
+  EmitI('JLE  ' + LblConv);
+  { Boucle de copie octet par octet }
+  LblNeg := NewLabel;
+  EmitLabel(LblNeg);
+  EmitI('MOVZX EAX, BYTE PTR [ESI]');
+  EmitI('MOV  BYTE PTR [EDI], AL');
+  EmitI('INC  ESI');
+  EmitI('INC  EDI');
+  EmitI('DEC  ECX');
+  EmitI('JNZ  ' + LblNeg);
+  EmitLabel(LblConv);
+  EmitI('MOV  BYTE PTR [EDI], 0');
+  EmitI('MOV  EAX, EBX');                 { EAX = ptr ASCIIZ resultat }
+  EmitI('POP  EBX');
+  EmitI('POP  EDI');
+  EmitI('POP  ESI');
+  EmitI('POP  EBP');
+  EmitI('RET  8');
   EmitBlank;
   EmitComment('--- _ADART_NUMTOSTR : entier -> ASCIIZ ---');
   EmitComment('Entree : EAX = entier signe 32 bits');
@@ -4254,6 +4327,91 @@ End;
 { entre parentheses -> forward necessaire.                      }
 Procedure ParseExpr; Forward;
 
+{ ---- GenSliceFromSym : generer le code d une tranche (a..b) --- }
+{ Appele apres ParseExpr pour la borne basse (EAX = lo), le token  }
+{ courant etant TOK_DOTDOT. Consomme `..` et ParseExpr pour la      }
+{ borne haute, puis appelle _ADART_SLICE pour obtenir un pointeur   }
+{ ASCIIZ vers une copie tronquee. Resultat dans EAX.                }
+Procedure GenSliceFromSym(SymIdx : Integer);
+Var
+  TI, SC, Off : Integer;
+  Lbl         : TString;
+  Lo          : LongInt;
+  IsStrPtr    : Boolean;
+Begin
+  TI  := SymTab[SymIdx].TypeIdx;
+  SC  := SymTab[SymIdx].StoreClass;
+  Off := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  Lo  := 1;
+  IsStrPtr  := False;
+  If TI = TYPE_STR Then
+  Begin
+    Lo := 1;
+    { Les variables String sont actuellement toujours representees par un  }
+    { pointeur 32 bits vers un litteral ASCIIZ (pas de buffer inline).     }
+    IsStrPtr := True;
+  End
+  Else If (TI > TYPE_STR) And (TI <= TypeCount) And
+          (TypeTab[TI].Kind = TK_ARRAY) And
+          (TypeTab[TI].ElemType = TYPE_CHAR) Then
+  Begin
+    Lo := TypeTab[TI].LoBound;
+  End
+  Else
+  Begin
+    Error('Slice non supporte sur ce type (seul les chaines et tableaux de caracteres)');
+    Consume; { .. }
+    ParseExpr;
+    EmitI('XOR  EAX, EAX');
+    Exit;
+  End;
+
+  EmitComment('slice ' + SymTab[SymIdx].Name + '(lo..hi)');
+  { EAX contient lo (deja parse) ; sauver sur pile }
+  EmitI('PUSH EAX');
+  Consume; { .. }
+  ParseExpr;                         { EAX = hi }
+  EmitI('MOV  ECX, EAX');
+  EmitI('POP  EDX');                  { EDX = lo }
+  EmitI('SUB  ECX, EDX');
+  EmitI('INC  ECX');                  { ECX = longueur (peut etre <= 0) }
+  { Ajuster lo relativement a LoBound du tableau }
+  If Lo <> 0 Then
+    EmitI('SUB  EDX, ' + IntToStr_(Lo));
+  { Charger adresse de base dans ESI }
+  Case SC Of
+    STORE_STATIC :
+    Begin
+      If IsStrPtr Then
+        EmitI('MOV  ESI, DWORD PTR [' + Lbl + ']')
+      Else
+        EmitI('LEA  ESI, [' + Lbl + ']');
+    End;
+    STORE_AUTO :
+    Begin
+      If IsStrPtr Then
+        EmitI('MOV  ESI, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  ESI, [EBP' + BpOff32(Off) + ']');
+    End;
+    STORE_PARAM :
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  ESI, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else If IsStrPtr Then
+        EmitI('MOV  ESI, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  ESI, [EBP' + BpOff32(Off) + ']');
+    End;
+  End;
+  EmitI('ADD  ESI, EDX');             { ESI = source[lo] }
+  { Appel _ADART_SLICE(src, len) -> EAX = ptr ASCIIZ }
+  EmitI('PUSH ECX');
+  EmitI('PUSH ESI');
+  EmitI('CALL ' + ADA_RT_PFX + 'SLICE');
+End;
+
 { ---- GenBinOp32 : operateur binaire arithmetique 32 bits ----- }
 { Pile : PUSH gauche. EAX = droite.                               }
 { Resultat dans EAX.                                              }
@@ -4564,11 +4722,8 @@ Begin
         { Detecter les slices : ident(a..b) }
         If CurTokType = TOK_DOTDOT Then
         Begin
-          Warning('Slices non supportes ; valeur ignoree');
-          Consume; { .. }
-          ParseExpr;       { skip borne haute }
+          GenSliceFromSym(Sym);    { EAX = ptr ASCIIZ copie }
           Expect(TOK_RPAREN, '`)` attendu apres slice');
-          EmitI('XOR  EAX, EAX');
           Exit;
         End;
         Expect(TOK_RPAREN, '`)` attendu apres index');
@@ -6937,7 +7092,31 @@ Begin
                (TI > 0) And (TI <= TypeCount) And
                (TypeTab[TI].Kind = TK_ARRAY) Then
             Begin
-              { Ident(Idx) : acces a un element, renvoyer son type. }
+              { Distinguer slice Ident(a..b) d un acces element Ident(i). }
+              { Chercher `..` entre la parenthese ouvrante et la fermante  }
+              { sur la meme ligne (cas usuel).                              }
+              Inc(P);   { passer le '(' }
+              NxCh := #0;
+              While (P < Length(LexLine)) Do
+              Begin
+                If LexLine[P] = ')' Then Break;
+                If (LexLine[P] = '.') And (LexLine[P + 1] = '.') Then
+                Begin
+                  NxCh := '.';
+                  Break;
+                End;
+                Inc(P);
+              End;
+              If NxCh = '.' Then
+              Begin
+                { Slice : renvoie une chaine (tableau de caracteres) }
+                If TypeTab[SymTab[Sym].TypeIdx].ElemType = TYPE_CHAR Then
+                  DetectArgTypeForPut := TYPE_STR
+                Else
+                  DetectArgTypeForPut := TYPE_STR;
+                Exit;
+              End;
+              { Acces a un element : renvoyer son type }
               TI := TypeTab[TI].ElemType;
               If TI <= 0 Then TI := TYPE_INT;
               DetectArgTypeForPut := TI;
@@ -6981,6 +7160,14 @@ Var
         If (VTI > 0) And (VTI <= TypeCount) And
            (TypeTab[VTI].ElemType = TYPE_CHAR) Then
         Begin
+          { Si suivi de `(`, il s agit d un slice ou acces element :      }
+          { laisser ParseExpr gerer (GenSliceFromSym retourne un pointeur }
+          { ASCIIZ directement dans EAX).                                  }
+          If LexPeekNonWS = '(' Then
+          Begin
+            ParseExpr;
+            Exit;
+          End;
           { Array de caracteres : utiliser adresse au lieu de valeur }
           GenLoadAddr(VSym);
           Consume;
