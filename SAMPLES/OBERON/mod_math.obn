@@ -1,0 +1,55 @@
+MODULE mod_math;
+(*
+  Demonstration du module Math (Palier 3).
+
+  Operations supportees : Math.Pi, Math.Sqrt, Math.Sin, Math.Cos,
+  Math.Ln, Math.Exp, Math.ArcTan, Math.Abs.
+
+  Le compilateur emet du code x87 FPU et affiche les valeurs en
+  fixe avec 6 decimales via Out.Real.
+*)
+IMPORT Out, Math;
+
+VAR
+  x, y, pi : REAL;
+
+BEGIN
+  Out.String("=== Math.Pi ==="); Out.Ln;
+  Out.String("  Math.Pi = "); Out.Real(Math.Pi); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Math.Sqrt ==="); Out.Ln;
+  Out.String("  Math.Sqrt(2.0)   = "); Out.Real(Math.Sqrt(2.0)); Out.Ln;
+  Out.String("  Math.Sqrt(9.0)   = "); Out.Real(Math.Sqrt(9.0)); Out.Ln;
+  Out.String("  Math.Sqrt(0.25)  = "); Out.Real(Math.Sqrt(0.25)); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Math.Sin / Math.Cos ==="); Out.Ln;
+  pi := Math.Pi;
+  Out.String("  Math.Sin(0.0)     = "); Out.Real(Math.Sin(0.0)); Out.Ln;
+  Out.String("  Math.Cos(0.0)     = "); Out.Real(Math.Cos(0.0)); Out.Ln;
+  Out.String("  Math.Sin(pi/2)    = "); Out.Real(Math.Sin(pi / 2.0)); Out.Ln;
+  Out.String("  Math.Cos(pi)      = "); Out.Real(Math.Cos(pi)); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Math.Ln / Math.Exp ==="); Out.Ln;
+  Out.String("  Math.Ln(1.0)      = "); Out.Real(Math.Ln(1.0)); Out.Ln;
+  Out.String("  Math.Exp(0.0)     = "); Out.Real(Math.Exp(0.0)); Out.Ln;
+  Out.String("  Math.Exp(1.0)     = "); Out.Real(Math.Exp(1.0)); Out.Ln;
+  Out.String("  Math.Ln(Math.Exp(2.5)) = "); Out.Real(Math.Ln(Math.Exp(2.5))); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Math.ArcTan / Math.Abs ==="); Out.Ln;
+  Out.String("  Math.ArcTan(1.0) * 4 = "); Out.Real(Math.ArcTan(1.0) * 4.0); Out.Ln;
+  Out.String("  Math.Abs(-3.5)       = "); Out.Real(Math.Abs(-3.5)); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Arithmetique REAL ==="); Out.Ln;
+  x := 2.0;
+  y := x * x + 1.0;
+  Out.String("  x = 2.0, x*x + 1.0    = "); Out.Real(y); Out.Ln;
+  y := 1.0 / 3.0;
+  Out.String("  1.0 / 3.0             = "); Out.Real(y); Out.Ln;
+  y := (1.0 + 2.0) * (3.0 - 0.5);
+  Out.String("  (1+2) * (3-0.5)       = "); Out.Real(y); Out.Ln
+END mod_math.

@@ -1,0 +1,38 @@
+MODULE mod_out_real;
+(*
+  Demonstration de Out.Real (Palier 3).
+
+  Out.Real(r) affiche le reel r avec signe, partie entiere puis 6
+  chiffres apres le point decimal.  Le second parametre (largeur),
+  s'il est fourni, est accepte mais ignore par le format courant.
+*)
+IMPORT Out;
+
+VAR
+  r : REAL;
+
+BEGIN
+  Out.String("=== Valeurs simples ==="); Out.Ln;
+  r := 0.0;
+  Out.String("  0.0      = "); Out.Real(r); Out.Ln;
+  r := 1.0;
+  Out.String("  1.0      = "); Out.Real(r); Out.Ln;
+  r := -1.0;
+  Out.String("  -1.0     = "); Out.Real(r); Out.Ln;
+  r := 3.14;
+  Out.String("  3.14     = "); Out.Real(r); Out.Ln;
+  r := -2.5;
+  Out.String("  -2.5     = "); Out.Real(r); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Notation scientifique ==="); Out.Ln;
+  r := 1.5E2;
+  Out.String("  1.5E2    = "); Out.Real(r); Out.Ln;
+  r := 1.25E-1;
+  Out.String("  1.25E-1  = "); Out.Real(r); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Parametre de largeur (ignore) ==="); Out.Ln;
+  r := 42.125;
+  Out.String("  Out.Real(42.125, 10) = "); Out.Real(r, 10); Out.Ln
+END mod_out_real.

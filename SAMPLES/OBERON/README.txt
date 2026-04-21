@@ -191,6 +191,46 @@ mod_strings.obn, mod_conv.obn et mod_in.obn.
     String(VAR s)     equivalent a Line ici.
 
 
+Palier 3 (implementes) : type REAL (IEEE 754 simple precision, 32 bits)
+et x87 FPU ; voir les exemples mod_math.obn, mod_out_real.obn et
+mod_random_real.obn.
+
+  Type REAL
+    * Litteraux decimaux (3.14, 0.5, 1.5E-2) reconnus par le lexeur et
+      stockes dans le pool de constantes REAL.
+    * Declarations VAR r : REAL (LONGREAL est accepte comme alias
+      simple precision dans cette iteration).
+    * Expressions : +, -, *, /, negation unaire, parentheses.
+      Les valeurs intermediaires circulent sur la pile x87 (st(0)).
+    * Conversion implicite : un litteral ou une variable INTEGER dans
+      un contexte REAL est automatiquement promu (fild).
+    * Assignation r := expr emet fstp dword [r].
+
+  Math       (mod_math.obn)
+    Math.Pi                  constante pi (chargee par fldpi).
+    Math.Sqrt(r)             racine carree (fsqrt).
+    Math.Abs(r)              valeur absolue (fabs).
+    Math.Sin(r)              sinus (fsin).
+    Math.Cos(r)              cosinus (fcos).
+    Math.Ln(r)               logarithme naturel (fldln2 + fyl2x).
+    Math.Exp(r)              exponentielle (fldl2e + sequence
+                             frndint/f2xm1/fscale).
+    Math.ArcTan(r)           arc tangente (fld1 + fpatan).
+
+  Out.Real   (mod_out_real.obn)
+    Out.Real(r)             imprime r au format fixe :
+                             signe optionnel + partie entiere + '.' +
+                             6 chiffres apres la virgule.
+    Out.Real(r, w)          le parametre de largeur w est accepte
+                             mais ignore par ce format.
+
+  Random.Real (mod_random_real.obn)
+    Random.Real()           tire un REAL uniformement reparti dans
+                            [0, 1) via le LCG existant
+                            (Random.Init / Random.Int restent valides
+                            pour semence et entiers).
+
+
 Modules Oberon "built-in" - hors perimetre de l'iteration courante
 ===================================================================
 
@@ -198,9 +238,10 @@ Les modules suivants sont mentionnes par les librairies Oberon de
 reference (Oakwood, ETH) mais ne sont pas implementes ici ; chacun
 requiert une evolution majeure du compilateur.
 
-  Math, MathL     (Palier 3) requierent le type REAL (32 bits) ou
-                  LONGREAL (64 bits) et un generateur x87 FPU.
-                  Random.Real depend aussi du Palier 3.
+  MathL           (Palier 3 etendu) requiert le type LONGREAL
+                  reellement 64 bits (double precision) et l'emission
+                  d'instructions x87 en precision double ; dans cette
+                  iteration LONGREAL est un simple alias de REAL.
   Files, GC,      (Palier 4) requierent POINTER, NEW, ainsi qu'un
   DynLink         runtime minimal (tas HeapAlloc/VirtualAlloc, tables
                   de chargement dynamique LoadLibraryA/GetProcAddress).
