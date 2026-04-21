@@ -1017,6 +1017,20 @@ Begin
   IntToStr_ := S;
 End;
 
+{ ---- FloatStrToIEEE754 : convertir "1.5", "0.5e2", etc. en ------- }
+{ representation IEEE-754 simple precision (32 bits).                 }
+{ Utilise le type Single de Pascal et un transfert binaire.            }
+Function FloatStrToIEEE754(Const S : TString) : LongInt;
+Var
+  F    : Single;
+  Err  : Integer;
+  Bits : LongInt Absolute F;
+Begin
+  Val(S, F, Err);
+  If Err <> 0 Then F := 0.0;
+  FloatStrToIEEE754 := Bits;
+End;
+
 Function StrUpperCase(Const S : TString) : TString;
 Var
   I   : Integer;
@@ -1815,7 +1829,7 @@ Function PrimTypeSize32(TypeId : Integer) : Integer;
 Begin
   Case TypeId Of
     TYPE_INT    : PrimTypeSize32 := 4;   { Integer   : DD (4 octets)  }
-    TYPE_FLOAT  : PrimTypeSize32 := 8;   { Float     : DQ (8 octets)  }
+    TYPE_FLOAT  : PrimTypeSize32 := 4;   { Float IEEE-754 simple : DD 4 octets }
     TYPE_BOOL   : PrimTypeSize32 := 1;   { Boolean   : DB (1 octet)   }
     TYPE_CHAR   : PrimTypeSize32 := 1;   { Character : DB (1 octet)   }
     TYPE_STR    : PrimTypeSize32 := 4;   { String    : pointeur DD    }
@@ -2000,9 +2014,9 @@ Begin
   TypeTab[TYPE_INT].Kind      := TK_RANGE;
   TypeTab[TYPE_INT].BaseType  := TYPE_INT;
 
-  { TYPE_FLOAT = 2 : Float 64 bits (DQ 8 octets, stub) }
+  { TYPE_FLOAT = 2 : Float IEEE-754 simple precision (DD 4 octets, FPU x87) }
   TypeTab[TYPE_FLOAT].Name      := 'FLOAT';
-  TypeTab[TYPE_FLOAT].TotalSize := 8;  { DQ 8 octets }
+  TypeTab[TYPE_FLOAT].TotalSize := 4;  { DD 4 octets (single precision) }
   TypeTab[TYPE_FLOAT].Kind      := TK_PREDEF;
 
   { TYPE_BOOL = 3 : Boolean (0=False, 1=True, DB 1 octet) }
@@ -2704,8 +2718,11 @@ Begin
       End
       Else If TI = TYPE_FLOAT Then
       Begin
-        { Float 64 bits : DQ 0 }
-        EmitI(Lbl + ' DQ 0');
+        { Float IEEE-754 simple precision : DD + bits initiaux }
+        If SymTab[I].HasInit Then
+          EmitI(Lbl + ' DD ' + IntToStr_(SymTab[I].InitNum))
+        Else
+          EmitI(Lbl + ' DD 0');
       End
       Else If (TI = TYPE_BOOL) Or (TI = TYPE_CHAR) Then
       Begin
@@ -2770,6 +2787,14 @@ Begin
   EmitComment('--- messages d''erreur runtime ---');
   EmitI(ADA_RT_PFX + 'ERR_RANGE DB ''Constraint_Error: valeur hors bornes'', 0');
   EmitI(ADA_RT_PFX + 'ERR_PROG  DB ''Program_Error: erreur programme'', 0');
+  EmitBlank;
+
+  { --- Constantes flottantes pour PRINTFLT (IEEE-754 simple precision) --- }
+  EmitComment('--- constantes flottantes FPU ---');
+  EmitI(ADA_RT_PFX + 'FLT_TEN6  DD 1232348160   ; 1000000.0 en IEEE-754');
+  EmitI(ADA_RT_PFX + 'FLT_HALF  DD 1056964608   ; 0.5 en IEEE-754');
+  EmitI(ADA_RT_PFX + 'FLT_TMP   DD 0');
+  EmitI(ADA_RT_PFX + 'FLT_TMPI  DD 0');
   EmitBlank;
 
   Emit('_DATA ENDS');
@@ -3460,6 +3485,107 @@ Begin
   EmitI('POP  EBP');
   EmitI('RET  8');
 
+  { ---- _ADART_PRINTFLT : afficher un float IEEE-754 simple precision ---- }
+  { Entree : [ESP+4] = bits IEEE-754 32 bits, [ESP+8] = nb decimales (Aft) }
+  { Format : [-]int_part . frac_digits (fixe, zero-padded a gauche)         }
+  { Frame local :                                                             }
+  {   [EBP-4]  = SCALE (10^Aft)                                                }
+  {   [EBP-8]  = ECX_SAV (nb chiffres restants)                               }
+  {   [EBP-12] = FRAC (partie fractionnaire courante)                         }
+  EmitBlank;
+  EmitComment('--- _ADART_PRINTFLT : afficher float IEEE-754 ---');
+  EmitComment('Entree : [ESP+4] = bits float 32, [ESP+8] = nb decimales');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('SUB  ESP, 16');
+  { Recuperer le nombre de decimales (par defaut 6, max 9) }
+  EmitI('MOV  ECX, DWORD PTR [EBP+12]   ; ECX = Aft (nb decimales)');
+  EmitI('CMP  ECX, 0');
+  EmitI('JG   ' + ADA_RT_PFX + 'PRINTFLT_OK');
+  EmitI('MOV  ECX, 6');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_OK');
+  EmitI('CMP  ECX, 9');
+  EmitI('JLE  ' + ADA_RT_PFX + 'PRINTFLT_L1');
+  EmitI('MOV  ECX, 9');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_L1');
+  EmitI('MOV  DWORD PTR [EBP-8], ECX    ; sauver nb decimales');
+  { Calculer 10^ECX dans EBX }
+  EmitI('MOV  EBX, 1');
+  EmitI('MOV  EDX, ECX');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_SC');
+  EmitI('TEST EDX, EDX');
+  EmitI('JZ   ' + ADA_RT_PFX + 'PRINTFLT_SCE');
+  EmitI('IMUL EBX, EBX, 10');
+  EmitI('DEC  EDX');
+  EmitI('JMP  ' + ADA_RT_PFX + 'PRINTFLT_SC');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_SCE');
+  EmitI('MOV  DWORD PTR [EBP-4], EBX    ; sauver scale 10^Aft');
+  { Gerer le signe via le bit 31 des bits IEEE-754 }
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]   ; EAX = bits IEEE-754');
+  EmitI('TEST EAX, EAX');
+  EmitI('JNS  ' + ADA_RT_PFX + 'PRINTFLT_POS');
+  EmitI('PUSH 45');
+  EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+  EmitI('AND  EAX, 2147483647          ; effacer bit signe');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_POS');
+  { Charger la valeur positive dans la FPU }
+  EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'FLT_TMP], EAX');
+  EmitI('FLD  DWORD PTR [' + ADA_RT_PFX + 'FLT_TMP]');
+  { Multiplier par 10^ECX (scale) }
+  EmitI('MOV  EBX, DWORD PTR [EBP-4]');
+  EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'FLT_TMPI], EBX');
+  EmitI('FILD DWORD PTR [' + ADA_RT_PFX + 'FLT_TMPI]');
+  EmitI('FMULP');
+  { Ajouter 0.5 pour arrondir }
+  EmitI('FLD  DWORD PTR [' + ADA_RT_PFX + 'FLT_HALF]');
+  EmitI('FADDP');
+  { Convertir en int32 et diviser }
+  EmitI('FISTP DWORD PTR [' + ADA_RT_PFX + 'FLT_TMP]');
+  EmitI('MOV  EAX, DWORD PTR [' + ADA_RT_PFX + 'FLT_TMP]');
+  EmitI('XOR  EDX, EDX');
+  EmitI('MOV  EBX, DWORD PTR [EBP-4]   ; EBX = scale');
+  EmitI('DIV  EBX                      ; EAX = int, EDX = frac');
+  EmitI('MOV  DWORD PTR [EBP-12], EDX  ; sauver frac');
+  { Imprimer la partie entiere }
+  EmitI('PUSH EAX');
+  EmitI('CALL ' + ADA_RT_PFX + 'PRINTINT');
+  { Imprimer '.' }
+  EmitI('PUSH 46');
+  EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+  { Boucle d impression des chiffres fractionnaires (toutes variables en memoire) }
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_FR');
+  EmitI('MOV  ECX, DWORD PTR [EBP-8]');
+  EmitI('TEST ECX, ECX');
+  EmitI('JZ   ' + ADA_RT_PFX + 'PRINTFLT_FE');
+  { Reduire scale : scale := scale / 10 }
+  EmitI('MOV  EAX, DWORD PTR [EBP-4]');
+  EmitI('XOR  EDX, EDX');
+  EmitI('MOV  EBX, 10');
+  EmitI('DIV  EBX');
+  EmitI('MOV  DWORD PTR [EBP-4], EAX   ; scale reduit');
+  EmitI('MOV  EBX, EAX');
+  { Extraire le chiffre : EAX = frac / scale, new_frac = frac mod scale }
+  EmitI('TEST EBX, EBX');
+  EmitI('JZ   ' + ADA_RT_PFX + 'PRINTFLT_FE');
+  EmitI('MOV  EAX, DWORD PTR [EBP-12]');
+  EmitI('XOR  EDX, EDX');
+  EmitI('DIV  EBX                      ; EAX = chiffre, EDX = new frac');
+  EmitI('MOV  DWORD PTR [EBP-12], EDX');
+  EmitI('ADD  EAX, 48');
+  EmitI('PUSH EAX');
+  EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+  { Decrementer le compteur et boucler }
+  EmitI('MOV  ECX, DWORD PTR [EBP-8]');
+  EmitI('DEC  ECX');
+  EmitI('MOV  DWORD PTR [EBP-8], ECX');
+  EmitI('JMP  ' + ADA_RT_PFX + 'PRINTFLT_FR');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_FE');
+  EmitI('MOV  ESP, EBP');
+  EmitI('POP  EBP');
+  EmitI('RET  8');
+
   EmitBlank;
 End;
 
@@ -4047,11 +4173,11 @@ Begin
     Exit;
   End;
 
-  { --- Litteral flottant (stub 32 bits) --- }
+  { --- Litteral flottant : emettre les bits IEEE-754 simple precision --- }
   If CurTokType = TOK_FLOAT Then
   Begin
-    EmitI('XOR  EAX, EAX');   { stub : float non encore supporte }
-    Warning('Litteraux flottants non encore pleinement supportes');
+    EmitI('MOV  EAX, ' + IntToStr_(FloatStrToIEEE754(CurTokStr)) +
+          '  ; float ' + CurTokStr);
     Consume;
     Exit;
   End;
@@ -5267,9 +5393,9 @@ Begin
   { Contenu selon le type }
   If TI = TYPE_FLOAT Then
   Begin
-    { 8 octets (DQ) - valeur flottante stub, on emet 0 }
+    { 4 octets (DD) - valeur flottante IEEE-754 simple precision }
     N := SymTab[SymIdx].InitNum;
-    EmitI('DQ 0');
+    EmitI('DD ' + IntToStr_(N));
   End
   Else If (TI = TYPE_CHAR) Or (TI = TYPE_BOOL) Then
   Begin
@@ -6601,6 +6727,13 @@ Begin
               EmitI('PUSH EAX');
               EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
             End;
+          TYPE_FLOAT :
+            Begin
+              { PRINTFLT(bits, aft) : par defaut 6 decimales }
+              EmitI('PUSH 6                         ; Aft par defaut');
+              EmitI('PUSH EAX');
+              EmitI('CALL ' + ADA_RT_PFX + 'PRINTFLT');
+            End;
         Else
           Begin
             EmitI('PUSH EAX');
@@ -6651,6 +6784,13 @@ Begin
           Begin
             EmitI('PUSH EAX');
             EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+          End;
+        TYPE_FLOAT :
+          Begin
+            { PRINTFLT(bits, aft) : par defaut 6 decimales }
+            EmitI('PUSH 6                         ; Aft par defaut');
+            EmitI('PUSH EAX');
+            EmitI('CALL ' + ADA_RT_PFX + 'PRINTFLT');
           End;
       Else
         Begin
@@ -7924,25 +8064,84 @@ Begin
   End;
 End;
 
-{ ---- GenMathStub : generer un stub de fonction mathematique 1 arg }
-{ Enregistre une fonction F(X : Float) RETURN Float dans SubTab et }
-{ genere un corps qui retourne 0 (support flottant non complet).    }
-Procedure GenMathStub(Const Name : TString);
+{ ---- GenMathStub : generer une fonction mathematique 1 arg (FPU x87) }
+{ Helper interne : emet la sequence Op comme une liste d instructions  }
+{ FPU separees par ';' (pour contourner l absence d heredoc).           }
+Procedure EmitFPUOps(Const Ops : TString);
+Var
+  I    : Integer;
+  Part : TString;
+Begin
+  Part := '';
+  For I := 1 To Length(Ops) Do
+  Begin
+    If Ops[I] = ';' Then
+    Begin
+      If Part <> '' Then EmitI(Part);
+      Part := '';
+    End
+    Else
+      Part := Part + Ops[I];
+  End;
+  If Part <> '' Then EmitI(Part);
+End;
+
+{ ---- GenMathStubOp : fonction mathematique 1 arg (FPU x87) ------- }
+{ Enregistre F(X : Float) RETURN Float dans SubTab et genere un corps  }
+{ qui utilise la FPU x87 pour calculer le resultat. L argument arrive    }
+{ sous forme IEEE-754 32 bits en [EBP+8] et le resultat est retourne    }
+{ sous la meme forme dans EAX.                                            }
+{ Ops est une sequence d instructions FPU separees par ';'.               }
+Procedure GenMathStubOp(Const Name : TString; Const Ops : TString);
 Var Idx : Integer;
 Begin
   Idx := FindSub(Name);
   If Idx = 0 Then
-    Idx := AddSub(Name, False, TYPE_FLOAT);
+    Idx := AddSub(Name, True, TYPE_FLOAT);
   If Idx > 0 Then
   Begin
     SubTab[Idx].IsForward  := False;
+    SubTab[Idx].IsFunction := True;
     SubTab[Idx].ParamCount := 1;
     SubTab[Idx].ParamNames[1] := 'X';
     SubTab[Idx].ParamTypes[1] := TYPE_FLOAT;
     SubTab[Idx].ParamModes[1] := PARAM_IN;
     EmitBlank;
     EmitComment('--- Ada.Numerics.Elementary_Functions.' + Name +
-                ' (stub float non implemente, retourne 0) ---');
+                ' (FPU x87) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('SUB  ESP, 4');
+    EmitI('FLD  DWORD PTR [EBP+8]');   { charger x sur la FPU }
+    EmitFPUOps(Ops);
+    EmitI('FSTP DWORD PTR [EBP-4]');   { stocker le resultat (float 32) }
+    EmitI('MOV  EAX, DWORD PTR [EBP-4]');
+    EmitI('MOV  ESP, EBP');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+End;
+
+{ ---- GenMathStub : stub non-implemente (retourne 0.0 = 0x00000000) --- }
+{ Utilise pour les fonctions sans implementation FPU directe.             }
+Procedure GenMathStub(Const Name : TString);
+Var Idx : Integer;
+Begin
+  Idx := FindSub(Name);
+  If Idx = 0 Then
+    Idx := AddSub(Name, True, TYPE_FLOAT);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].IsFunction := True;
+    SubTab[Idx].ParamCount := 1;
+    SubTab[Idx].ParamNames[1] := 'X';
+    SubTab[Idx].ParamTypes[1] := TYPE_FLOAT;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+    EmitBlank;
+    EmitComment('--- Ada.Numerics.Elementary_Functions.' + Name +
+                ' (stub - retourne 0.0) ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
@@ -7953,26 +8152,43 @@ Begin
 End;
 
 { ---- GenMathStubs : generer les stubs Ada.Numerics.Elementary_Functions }
-{ ATTENTION : les fonctions sont des stubs qui retournent 0 car le support }
-{ flottant complet (FPU x87, IEEE-754) n est pas encore implemente dans ce }
-{ compilateur. Tout programme utilisant Sqrt/Sin/Cos/... produira un       }
-{ resultat INCORRECT (0) a l execution. Ces stubs permettent cependant la  }
-{ compilation sans erreur de programmes qui utilisent ces fonctions.        }
+{ Implementation FPU x87 : utilise les instructions natives du coprocesseur }
+{ pour calculer Sqrt, Sin, Cos, etc. sur IEEE-754 simple precision (32 bits). }
+{ Les fonctions prennent un Float en argument (32 bits) et retournent un      }
+{ Float (32 bits dans EAX apres conversion FPU -> memoire -> EAX).             }
 Procedure GenMathStubs;
 Begin
   EmitBlank;
-  EmitComment('=== ATTENTION : Ada.Numerics.Elementary_Functions ===');
-  EmitComment('Ces fonctions sont des stubs qui retournent TOUJOURS 0.');
-  EmitComment('Le support flottant FPU x87 n est pas encore implemente.');
-  GenMathStub('SQRT');
-  GenMathStub('SIN');
-  GenMathStub('COS');
-  GenMathStub('TAN');
-  GenMathStub('ARCSIN');
-  GenMathStub('ARCCOS');
-  GenMathStub('ARCTAN');
-  GenMathStub('EXP');
-  GenMathStub('LOG');
+  EmitComment('=== Ada.Numerics.Elementary_Functions (FPU x87) ===');
+  { FSQRT : racine carree directe }
+  GenMathStubOp('SQRT', 'FSQRT');
+  { FSIN/FCOS : sinus et cosinus (argument en radians) }
+  GenMathStubOp('SIN', 'FSIN');
+  GenMathStubOp('COS', 'FCOS');
+  { Tangente : FPTAN laisse tan(x) et 1.0 sur la pile; FSTP ST(0) jette 1.0 }
+  GenMathStubOp('TAN', 'FPTAN;FSTP ST(0)');
+  { Arcsin(x) = arctan(x / sqrt(1 - x^2)) }
+  GenMathStubOp('ARCSIN',
+    'FLD ST(0);FMUL ST(0), ST(0);FLD1;FSUBRP ST(1), ST(0);' +
+    'FSQRT;FPATAN');
+  { Arccos(x) = arctan(sqrt(1 - x^2) / x) }
+  GenMathStubOp('ARCCOS',
+    'FLD ST(0);FMUL ST(0), ST(0);FLD1;FSUBRP ST(1), ST(0);' +
+    'FSQRT;FXCH ST(1);FPATAN');
+  { Arctan(x) = atan2(x, 1) : FLD1 puis FPATAN }
+  GenMathStubOp('ARCTAN', 'FLD1;FPATAN');
+  { Exp(x) = 2^(x * log2(e)). F2XM1 calcule 2^x - 1 pour |x| <= 1.0.     }
+  { Formule : exp(x) = 2^(x * LOG2E)                                      }
+  {         = 2^(int + frac) = 2^int * 2^frac                              }
+  GenMathStubOp('EXP',
+    'FLDL2E;FMULP ST(1), ST(0);' +              { ST = x * log2(e) }
+    'FLD ST(0);FRNDINT;' +                      { ST0=rnd, ST1=x*l2e }
+    'FXCH ST(1);FSUB ST(0), ST(1);' +           { ST0=frac, ST1=rnd }
+    'F2XM1;FLD1;FADDP ST(1), ST(0);' +          { ST0=2^frac, ST1=rnd }
+    'FSCALE;FSTP ST(1)');                       { ST = 2^frac * 2^rnd }
+  { Log(x) = log_e(x) = ln(2) * log2(x). FYL2X calcule ST1 * log2(ST0).    }
+  GenMathStubOp('LOG', 'FLDLN2;FXCH ST(1);FYL2X');
+  { Fonctions hyperboliques non triviales - laisses comme stubs 0 }
   GenMathStub('SINH');
   GenMathStub('COSH');
   GenMathStub('TANH');
@@ -8991,6 +9207,114 @@ Begin
   If Mnem = 'STOSB' Then Begin BinEmitByte($AA); Exit; End;
   If Mnem = 'MOVSB' Then Begin BinEmitByte($A4); Exit; End;
   If Mnem = 'CDQ' Then Begin BinEmitByte($99); Exit; End;
+
+  { ---- Instructions FPU x87 (sans operandes) ---- }
+  If Mnem = 'FSQRT'   Then Begin BinEmitByte($D9); BinEmitByte($FA); Exit; End;
+  If Mnem = 'FSIN'    Then Begin BinEmitByte($D9); BinEmitByte($FE); Exit; End;
+  If Mnem = 'FCOS'    Then Begin BinEmitByte($D9); BinEmitByte($FF); Exit; End;
+  If Mnem = 'FPTAN'   Then Begin BinEmitByte($D9); BinEmitByte($F2); Exit; End;
+  If Mnem = 'FPATAN'  Then Begin BinEmitByte($D9); BinEmitByte($F3); Exit; End;
+  If Mnem = 'FYL2X'   Then Begin BinEmitByte($D9); BinEmitByte($F1); Exit; End;
+  If Mnem = 'FLDL2E'  Then Begin BinEmitByte($D9); BinEmitByte($EA); Exit; End;
+  If Mnem = 'FLDLN2'  Then Begin BinEmitByte($D9); BinEmitByte($ED); Exit; End;
+  If Mnem = 'FLD1'    Then Begin BinEmitByte($D9); BinEmitByte($E8); Exit; End;
+  If Mnem = 'FLDZ'    Then Begin BinEmitByte($D9); BinEmitByte($EE); Exit; End;
+  If Mnem = 'F2XM1'   Then Begin BinEmitByte($D9); BinEmitByte($F0); Exit; End;
+  If Mnem = 'FSCALE'  Then Begin BinEmitByte($D9); BinEmitByte($FD); Exit; End;
+  If Mnem = 'FRNDINT' Then Begin BinEmitByte($D9); BinEmitByte($FC); Exit; End;
+  If Mnem = 'FABS'    Then Begin BinEmitByte($D9); BinEmitByte($E1); Exit; End;
+  If Mnem = 'FCHS'    Then Begin BinEmitByte($D9); BinEmitByte($E0); Exit; End;
+  If Mnem = 'FTST'    Then Begin BinEmitByte($D9); BinEmitByte($E4); Exit; End;
+  If Mnem = 'FSTSW'   Then
+  Begin
+    { FSTSW AX : DF E0 }
+    If StrUpperCase(Op1) = 'AX' Then
+    Begin BinEmitByte($DF); BinEmitByte($E0); Exit; End;
+  End;
+
+  { ---- FPU : FMULP / FADDP / FSUBRP / FDIVRP (sans operandes ou ST(1),ST(0)) ---- }
+  If Mnem = 'FMULP'   Then Begin BinEmitByte($DE); BinEmitByte($C9); Exit; End;
+  If Mnem = 'FADDP'   Then Begin BinEmitByte($DE); BinEmitByte($C1); Exit; End;
+  If Mnem = 'FSUBRP'  Then Begin BinEmitByte($DE); BinEmitByte($E9); Exit; End;
+  If Mnem = 'FSUBP'   Then Begin BinEmitByte($DE); BinEmitByte($E1); Exit; End;
+  If Mnem = 'FDIVRP'  Then Begin BinEmitByte($DE); BinEmitByte($F9); Exit; End;
+  If Mnem = 'FDIVP'   Then Begin BinEmitByte($DE); BinEmitByte($F1); Exit; End;
+
+  { ---- FPU : FXCH (sans operande = ST(1)) ---- }
+  If Mnem = 'FXCH' Then
+  Begin
+    { Par defaut ou avec ST(1) : D9 C9. Pas de support des autres ST(n) ici }
+    BinEmitByte($D9); BinEmitByte($C9);
+    Exit;
+  End;
+
+  { ---- FPU : FLD ST(0), FMUL ST(0) ST(0), FSTP ST(0) ---- }
+  If Mnem = 'FLD' Then
+  Begin
+    { FLD ST(0) : duplique le sommet -> D9 C0 }
+    If (StrUpperCase(Op1) = 'ST(0)') Or (StrUpperCase(Op1) = 'ST') Or
+       (StrUpperCase(Op1) = 'ST0') Then
+    Begin BinEmitByte($D9); BinEmitByte($C0); Exit; End;
+    { FLD DWORD PTR [mem] : D9 /0 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($D9);
+      AsmEncodeMemory(Bracket, 0);
+      Exit;
+    End;
+  End;
+  If Mnem = 'FSTP' Then
+  Begin
+    { FSTP ST(0) : DD D8  (jette le sommet) }
+    If (StrUpperCase(Op1) = 'ST(0)') Or (StrUpperCase(Op1) = 'ST') Or
+       (StrUpperCase(Op1) = 'ST0') Then
+    Begin BinEmitByte($DD); BinEmitByte($D8); Exit; End;
+    { FSTP DWORD PTR [mem] : D9 /3 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($D9);
+      AsmEncodeMemory(Bracket, 3);
+      Exit;
+    End;
+  End;
+  If Mnem = 'FILD' Then
+  Begin
+    { FILD DWORD PTR [mem] : DB /0 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($DB);
+      AsmEncodeMemory(Bracket, 0);
+      Exit;
+    End;
+  End;
+  If Mnem = 'FISTP' Then
+  Begin
+    { FISTP DWORD PTR [mem] : DB /3 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($DB);
+      AsmEncodeMemory(Bracket, 3);
+      Exit;
+    End;
+    { FISTP QWORD PTR [mem] : DF /7 }
+    If AsmStartsWith(Op1, 'QWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($DF);
+      AsmEncodeMemory(Bracket, 7);
+      Exit;
+    End;
+  End;
+  If Mnem = 'FMUL' Then
+  Begin
+    { FMUL ST(0), ST(0) : D8 C8 }
+    If (StrUpperCase(Op1) = 'ST(0)') And (StrUpperCase(Op2) = 'ST(0)') Then
+    Begin BinEmitByte($D8); BinEmitByte($C8); Exit; End;
+  End;
 
   { ---- PUSH ---- }
   If Mnem = 'PUSH' Then
