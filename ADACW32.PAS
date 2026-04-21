@@ -568,6 +568,7 @@ Program ADACW32;
 {$IFDEF FPC}
   {$MODE TP}
   {$H-}
+  {$R-}
 {$ENDIF}
 {$I-}
 
