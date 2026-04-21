@@ -766,8 +766,7 @@ End;
 Function DefineLabel(Const Name : TString) : Integer;
 Var I : Integer;
 Begin
-  For I := 1 To LabelCount Do
-    If Labels[I].Name = Name Then
+  For I := 1 To LabelCount Do    If Labels[I].Name = Name Then
     Begin
       Labels[I].Offset := BinCodeLen;
       Labels[I].Defined := True;
@@ -4678,9 +4677,7 @@ Begin
 
   BinEmitByte($49);                        { dec ecx }
   { jnz LabHexLoop en forme rel32 (0F 85 rel32) via fixup. }
-  BinEmitByte($0F); BinEmitByte($85);
-  AddFixup(FIX_CODE_REL, FindLabel(LabHexLoop));
-  BinEmitDWord(0);
+  EmitJNZ(LabHexLoop);
 
   { WriteFile(stdout, edi (=HexBuf), 8, &bytes_written, NULL) }
   BinEmitByte($6A); BinEmitByte($00);      { push 0 }
@@ -5263,6 +5260,16 @@ Begin
   LCopyLoop := GenLabel;
   LStoreNul := GenLabel;
   LEOS      := GenLabel;
+  LTogQ     := GenLabel;
+  LNotQ     := GenLabel;
+  LTokChk   := GenLabel;
+  LTokQuote := GenLabel;
+  LTokEnd   := GenLabel;
+  LCopyChk  := GenLabel;
+  LCopyQuote:= GenLabel;
+  LCopyNotQ := GenLabel;
+  LCopyPut  := GenLabel;
+  LCopyEnd  := GenLabel;
 
   { Boucle exterieure : skip espaces puis si ebp==0 copier, sinon consommer. }
   DefineLabel(LSkipWS);
@@ -5280,11 +5287,6 @@ Begin
   BinEmitDWord(0);
 
   { Consomme un token (respecte les guillemets). }
-  LTogQ    := GenLabel;
-  LNotQ    := GenLabel;
-  LTokChk  := GenLabel;
-  LTokQuote:= GenLabel;
-  LTokEnd  := GenLabel;
   BinEmitByte($31); BinEmitByte($C9);                            { xor ecx, ecx }
   DefineLabel(LScanTok);
   BinEmitByte($8A); BinEmitByte($06);                            { mov al, [esi] }
@@ -5308,11 +5310,6 @@ Begin
   EmitJmp(LSkipWS);
 
   { Boucle de copie. ebx = cap restante, ecx (=0/1) = in_quote, edi = dst. }
-  LCopyChk    := GenLabel;
-  LCopyQuote  := GenLabel;
-  LCopyNotQ   := GenLabel;
-  LCopyPut    := GenLabel;
-  LCopyEnd    := GenLabel;
   DefineLabel('_args_copy_entry');
   BinEmitByte($31); BinEmitByte($C9);                            { xor ecx, ecx }
   DefineLabel(LCopyLoop);
@@ -6679,8 +6676,7 @@ BEGIN
  GenStrCapHelper;
  GenIntToBufHelper;
  GenHexToBufHelper;
- GenStrToIntHelper;
- GenArgsGetHelper;
+ GenStrToIntHelper; GenArgsGetHelper;
  GenPrintRealHelper;
  GenCoroBodyHelper;
  LexClose;
