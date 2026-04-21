@@ -75,6 +75,7 @@ Const
   TYK_BOOLEAN   = 2;
   TYK_CHAR      = 3;
   TYK_ARRCHAR   = 4;   { ARRAY N OF CHAR : taille stockee dans SymTab.ArrSize }
+  TYK_REAL      = 5;   { REAL IEEE 754 simple precision (4 octets) }
 
   FIX_IAT_GETSTD   = 1;
   FIX_IAT_WRITE    = 2;
@@ -99,6 +100,10 @@ Const
   FIX_INBUF        = 21;     { tampon de lecture ligne (256 octets) }
   FIX_INLEN        = 22;     { zone INTEGER "bytes read" }
   FIX_INDONE       = 23;     { zone INTEGER booleen (1 = derniere lecture OK) }
+  FIX_REAL_CONST   = 24;     { litteral REAL (4 octets IEEE 754 simple) }
+  FIX_REAL_TMP     = 25;     { zone temporaire REAL (4 octets) pour helpers }
+  FIX_FPCW_TRUNC   = 26;     { mot de controle x87 mode troncature }
+  FIX_FPCW_SAVE    = 27;     { zone de sauvegarde du mot de controle courant }
 
   PE_MACHINE_I386 = $014C;
 
@@ -155,6 +160,7 @@ Var
   CurTok      : Integer;
   CurTokStr   : TString;
   CurTokNum   : LongInt;
+  CurTokReal  : LongInt;   { bits IEEE 754 simple precision du dernier TOK_REAL }
   CurTokKw    : Integer;
 
   SymTab      : Array[1..MAX_SYM] of TSymEntry;
@@ -168,6 +174,10 @@ Var
 
   StringPool  : Array[1..256] of String;
   StringCount : Integer;
+
+  { Pool de litteraux REAL : chaque entree = 4 octets IEEE 754 simple. }
+  RealPool    : Array[1..256] of LongInt;
+  RealCount   : Integer;
 
   Fixups      : Array[1..MAX_FIXUP] of TFixup;
   FixupCount  : Integer;
@@ -323,6 +333,43 @@ Begin
     LexAdvance;
 End;
 
+{ Convertit une chaine de type "3.14", "1.5E-2", "0.5E2" en bits IEEE 754
+  simple precision.  La chaine a deja ete validee par le lexeur. }
+Function LexParseReal(Const S : String) : LongInt;
+Var
+  Sng  : Single;
+  Bits : LongInt;
+  Code : Integer;
+Begin
+  Val(S, Sng, Code);
+  If Code <> 0 Then
+    Sng := 0.0;
+  Move(Sng, Bits, 4);
+  LexParseReal := Bits;
+End;
+
+{ Ajoute un litteral REAL (bits IEEE 754) au pool et retourne son index
+  (1-base).  Les doublons sont fusionnes.  Retourne 0 en cas de saturation. }
+Function AddRealLiteral(Bits : LongInt) : Integer;
+Var I : Integer;
+Begin
+  For I := 1 To RealCount Do
+    If RealPool[I] = Bits Then
+    Begin
+      AddRealLiteral := I;
+      Exit;
+    End;
+  If RealCount >= 256 Then
+  Begin
+    ErrorMsg('Pool de litteraux REAL plein');
+    AddRealLiteral := 0;
+    Exit;
+  End;
+  Inc(RealCount);
+  RealPool[RealCount] := Bits;
+  AddRealLiteral := RealCount;
+End;
+
 Function LexIsKeyword(Const S : String) : Integer;
 Var U : String;
 Begin
@@ -425,6 +472,39 @@ Begin
       Begin
         Tk := Tk + LexCurChar;
         LexAdvance;
+      End;
+      { Detection d'un litteral REAL :
+          - Partie decimale : '.' suivi d'au moins un chiffre ('.' seul ou
+            '..' sont rejetes pour ne pas consommer le sous-intervalle).
+          - Exposant optionnel : 'E'['+'|'-']chiffres. }
+      If (LexCurChar = '.') And (LexPeekChar(1) In ['0'..'9']) Then
+      Begin
+        Tk := Tk + '.';
+        LexAdvance;
+        While LexCurChar In ['0'..'9'] Do
+        Begin
+          Tk := Tk + LexCurChar;
+          LexAdvance;
+        End;
+        If (LexCurChar = 'E') Or (LexCurChar = 'e') Then
+        Begin
+          Tk := Tk + 'E';
+          LexAdvance;
+          If (LexCurChar = '+') Or (LexCurChar = '-') Then
+          Begin
+            Tk := Tk + LexCurChar;
+            LexAdvance;
+          End;
+          While LexCurChar In ['0'..'9'] Do
+          Begin
+            Tk := Tk + LexCurChar;
+            LexAdvance;
+          End;
+        End;
+        CurTok := TOK_REAL;
+        CurTokStr := Tk;
+        CurTokReal := LexParseReal(Tk);
+        Exit;
       End;
       CurTok := TOK_INT;
       CurTokNum := StrToInt(Tk);
@@ -844,6 +924,84 @@ Begin
   BinEmitByte($89);
   BinEmitByte($D0);
 End;
+
+{ --------------------- Palier 3 : emissions x87 FPU ------------------- }
+
+{ fld dword [addr]  -->  D9 05 <addr32> }
+Procedure EmitFLD_Real_At(FixKind, Target : Integer);
+Begin
+  BinEmitByte($D9); BinEmitByte($05);
+  AddFixup(FixKind, Target);
+  BinEmitDWord(0);
+End;
+
+{ fstp dword [addr]  -->  D9 1D <addr32> }
+Procedure EmitFSTP_Real_At(FixKind, Target : Integer);
+Begin
+  BinEmitByte($D9); BinEmitByte($1D);
+  AddFixup(FixKind, Target);
+  BinEmitDWord(0);
+End;
+
+{ fild dword [addr]  -->  DB 05 <addr32> }
+Procedure EmitFILD_At(FixKind, Target : Integer);
+Begin
+  BinEmitByte($DB); BinEmitByte($05);
+  AddFixup(FixKind, Target);
+  BinEmitDWord(0);
+End;
+
+{ fistp dword [addr]  -->  DB 1D <addr32> }
+Procedure EmitFISTP_At(FixKind, Target : Integer);
+Begin
+  BinEmitByte($DB); BinEmitByte($1D);
+  AddFixup(FixKind, Target);
+  BinEmitDWord(0);
+End;
+
+{ fnstcw word [addr]  -->  D9 3D <addr32> }
+Procedure EmitFNSTCW_At(FixKind, Target : Integer);
+Begin
+  BinEmitByte($D9); BinEmitByte($3D);
+  AddFixup(FixKind, Target);
+  BinEmitDWord(0);
+End;
+
+{ fldcw word [addr]  -->  D9 2D <addr32> }
+Procedure EmitFLDCW_At(FixKind, Target : Integer);
+Begin
+  BinEmitByte($D9); BinEmitByte($2D);
+  AddFixup(FixKind, Target);
+  BinEmitDWord(0);
+End;
+
+Procedure EmitFADDP;   Begin BinEmitByte($DE); BinEmitByte($C1); End;
+Procedure EmitFSUBP;   Begin BinEmitByte($DE); BinEmitByte($E9); End;
+Procedure EmitFMULP;   Begin BinEmitByte($DE); BinEmitByte($C9); End;
+Procedure EmitFDIVP;   Begin BinEmitByte($DE); BinEmitByte($F9); End;
+Procedure EmitFCHS;    Begin BinEmitByte($D9); BinEmitByte($E0); End;
+Procedure EmitFABS;    Begin BinEmitByte($D9); BinEmitByte($E1); End;
+Procedure EmitFSQRT;   Begin BinEmitByte($D9); BinEmitByte($FA); End;
+Procedure EmitFSIN;    Begin BinEmitByte($D9); BinEmitByte($FE); End;
+Procedure EmitFCOS;    Begin BinEmitByte($D9); BinEmitByte($FF); End;
+Procedure EmitF2XM1;   Begin BinEmitByte($D9); BinEmitByte($F0); End;
+Procedure EmitFYL2X;   Begin BinEmitByte($D9); BinEmitByte($F1); End;
+Procedure EmitFPATAN;  Begin BinEmitByte($D9); BinEmitByte($F3); End;
+Procedure EmitFSCALE;  Begin BinEmitByte($D9); BinEmitByte($FD); End;
+Procedure EmitFRNDINT; Begin BinEmitByte($D9); BinEmitByte($FC); End;
+Procedure EmitFXCH;    Begin BinEmitByte($D9); BinEmitByte($C9); End;
+Procedure EmitFSTP_ST0;Begin BinEmitByte($DD); BinEmitByte($D8); End; { fstp st(0) : pop }
+Procedure EmitFLD1;    Begin BinEmitByte($D9); BinEmitByte($E8); End;
+Procedure EmitFLDZ;    Begin BinEmitByte($D9); BinEmitByte($EE); End;
+Procedure EmitFLDPI;   Begin BinEmitByte($D9); BinEmitByte($EB); End;
+Procedure EmitFLDL2E;  Begin BinEmitByte($D9); BinEmitByte($EA); End;
+Procedure EmitFLDLN2;  Begin BinEmitByte($D9); BinEmitByte($ED); End;
+Procedure EmitFLD_ST1; Begin BinEmitByte($D9); BinEmitByte($C1); End; { fld st(1) - duplique }
+Procedure EmitFLD_ST0; Begin BinEmitByte($D9); BinEmitByte($C0); End; { fld st(0) - duplique }
+
+{ fcomip st, st(1)  -->  DF F1  (compare + pop, positionne EFLAGS) }
+Procedure EmitFCOMIP;  Begin BinEmitByte($DF); BinEmitByte($F1); End;
+
 
 Procedure EmitIncMem32(Addr : LongInt);
 Begin
@@ -1840,6 +1998,219 @@ Begin
 End;
 
 Procedure GenStatement; Forward;
+
+{ ============================================================
+  Palier 3 : generateur d'expressions REAL (FPU x87).
+
+  Conventions :
+   * Chaque appel a GenRealExpression / GenRealTerm / GenRealFactor
+     laisse le resultat sur le sommet de la pile FPU (st(0)).
+   * Le contexte appelant consomme ce resultat (typiquement par
+     fstp dword [var]).
+   * Les appels Math.* et Random.Real sont traites comme des facteurs.
+   * Un litteral INTEGER rencontre dans un contexte REAL est
+     automatiquement converti (cree un litteral REAL equivalent).
+  ============================================================ }
+Procedure GenRealExpression; Forward;
+
+Procedure GenRealFactor;
+Var
+  Ch, Name, QN, Tok : String;
+  Si, Idx : Integer;
+  Bits : LongInt;
+  Sng : Single;
+Begin
+  If CurTok = TOK_REAL Then
+  Begin
+    Idx := AddRealLiteral(CurTokReal);
+    EmitFLD_Real_At(FIX_REAL_CONST, Idx);
+    LexNext;
+  End
+  Else If CurTok = TOK_INT Then
+  Begin
+    Sng := CurTokNum;
+    Move(Sng, Bits, 4);
+    Idx := AddRealLiteral(Bits);
+    EmitFLD_Real_At(FIX_REAL_CONST, Idx);
+    LexNext;
+  End
+  Else If (CurTok = TOK_OP) And (CurTokStr = '(') Then
+  Begin
+    LexNext;
+    GenRealExpression;
+    ExpectOp(')');
+  End
+  Else If (CurTok = TOK_OP) And (CurTokStr = '-') Then
+  Begin
+    LexNext;
+    GenRealFactor;
+    EmitFCHS;
+  End
+  Else If (CurTok = TOK_OP) And (CurTokStr = '+') Then
+  Begin
+    LexNext;
+    GenRealFactor;
+  End
+  Else If CurTok = TOK_IDENT Then
+  Begin
+    Name := CurTokStr;
+    LexNext;
+    QN := Name;
+    If (CurTok = TOK_OP) And (CurTokStr = '.') Then
+    Begin
+      LexNext;
+      If CurTok = TOK_IDENT Then
+      Begin
+        QN := Name + '.' + CurTokStr;
+        LexNext;
+      End;
+    End;
+    { ----- Math.* ----- }
+    If QN = 'Math.Pi' Then
+    Begin
+      EmitFLDPI;
+    End
+    Else If QN = 'Math.Sqrt' Then
+    Begin
+      ExpectOp('('); GenRealExpression; ExpectOp(')');
+      EmitFSQRT;
+    End
+    Else If QN = 'Math.Abs' Then
+    Begin
+      ExpectOp('('); GenRealExpression; ExpectOp(')');
+      EmitFABS;
+    End
+    Else If QN = 'Math.Sin' Then
+    Begin
+      ExpectOp('('); GenRealExpression; ExpectOp(')');
+      EmitFSIN;
+    End
+    Else If QN = 'Math.Cos' Then
+    Begin
+      ExpectOp('('); GenRealExpression; ExpectOp(')');
+      EmitFCOS;
+    End
+    Else If QN = 'Math.ArcTan' Then
+    Begin
+      ExpectOp('('); GenRealExpression; ExpectOp(')');
+      { atan(x) : pousser 1 puis fpatan -> atan(st1/st0) = atan(x/1). }
+      EmitFLD1;
+      EmitFPATAN;
+    End
+    Else If QN = 'Math.Ln' Then
+    Begin
+      ExpectOp('('); GenRealExpression; ExpectOp(')');
+      { ln(x) = ln(2) * log2(x).  fldln2 ; fxch ; fyl2x. }
+      EmitFLDLN2;
+      EmitFXCH;
+      EmitFYL2X;
+    End
+    Else If QN = 'Math.Exp' Then
+    Begin
+      ExpectOp('('); GenRealExpression; ExpectOp(')');
+      { exp(x) = 2^(x*log2(e)).  Sequence standard x87. }
+      EmitFLDL2E;        { st0=log2(e), st1=x }
+      EmitFMULP;         { st0 = x*log2(e) }
+      EmitFLD_ST0;       { duplique }
+      EmitFRNDINT;       { st0 = round(y), st1 = y }
+      EmitFXCH;          { st0 = y, st1 = round(y) }
+      BinEmitByte($D8); BinEmitByte($E1);  { fsub st, st(1) : st0 = y - round(y) }
+      EmitF2XM1;         { st0 = 2^(y-round(y)) - 1 }
+      EmitFLD1;
+      EmitFADDP;         { st0 = 2^(y-round(y)), st1 = round(y) }
+      EmitFSCALE;        { st0 = st0 * 2^st1 = 2^y }
+      { Pop st(1) (l'exposant entier) en utilisant fstp st(1) : DD D9. }
+      BinEmitByte($DD); BinEmitByte($D9);
+    End
+    { ----- Random.Real ----- }
+    Else If QN = 'Random.Real' Then
+    Begin
+      If (CurTok = TOK_OP) And (CurTokStr = '(') Then
+      Begin
+        LexNext;
+        ExpectOp(')');
+      End;
+      { On reutilise le LCG INTEGER existant : Random.Int(MAXINT) puis
+        division par 2^31.  Inline : newseed = seed*1103515245+12345 ;
+        val = (newseed shr 1) ; x = val / 2147483648.0.  Stocke val
+        dans real_tmp comme INTEGER positif, fild, divise par 2^31. }
+      { eax := rndseed }
+      BinEmitByte($A1); AddFixup(FIX_RNDSEED, 0); BinEmitDWord(0); { mov eax, [rndseed] }
+      BinEmitByte($69); BinEmitByte($C0); BinEmitDWord(1103515245); { imul eax, eax, 1103515245 }
+      BinEmitByte($05); BinEmitDWord(12345);                       { add eax, 12345 }
+      { Sauvegarde la nouvelle seed. }
+      BinEmitByte($A3); AddFixup(FIX_RNDSEED, 0); BinEmitDWord(0); { mov [rndseed], eax }
+      { val = eax shr 1, dans real_tmp. }
+      BinEmitByte($D1); BinEmitByte($E8);                          { shr eax, 1 }
+      BinEmitByte($A3); AddFixup(FIX_REAL_TMP, 0); BinEmitDWord(0); { mov [real_tmp], eax }
+      EmitFILD_At(FIX_REAL_TMP, 0);
+      { Divise par 2147483648.0 = 0x4F000000. }
+      Bits := $4F000000;
+      Idx := AddRealLiteral(Bits);
+      EmitFLD_Real_At(FIX_REAL_CONST, Idx);
+      EmitFDIVP;
+    End
+    Else
+    Begin
+      { Variable reelle. }
+      Si := SymFind(Name);
+      If (Si > 0) And (SymTab[Si].TypeIdx = TYK_REAL) Then
+      Begin
+        SymTab[Si].Used := True;
+        EmitFLD_Real_At(FIX_VAR, Si);
+      End
+      Else If (Si > 0) And (SymTab[Si].TypeIdx = TYK_INTEGER) Then
+      Begin
+        { Variable INTEGER dans un contexte REAL : conversion implicite. }
+        SymTab[Si].Used := True;
+        { fild dword [var]. }
+        BinEmitByte($DB); BinEmitByte($05);
+        AddFixup(FIX_VAR, Si); BinEmitDWord(0);
+      End
+      Else
+        ErrorAt(LexLineNo, LexColNo,
+                'Facteur REAL attendu, inconnu : ' + QN);
+    End;
+  End
+  Else
+  Begin
+    Ch := CurTokStr;
+    Tok := Ch;
+    ErrorAt(LexLineNo, LexColNo, 'Facteur REAL attendu (vu: ' + Tok + ')');
+  End;
+End;
+
+Procedure GenRealTerm;
+Var Op : String;
+Begin
+  GenRealFactor;
+  While (CurTok = TOK_OP) And ((CurTokStr = '*') Or (CurTokStr = '/')) Do
+  Begin
+    Op := CurTokStr;
+    LexNext;
+    GenRealFactor;
+    If Op = '*' Then
+      EmitFMULP
+    Else
+      EmitFDIVP;
+  End;
+End;
+
+Procedure GenRealExpression;
+Var Op : String;
+Begin
+  GenRealTerm;
+  While (CurTok = TOK_OP) And ((CurTokStr = '+') Or (CurTokStr = '-')) Do
+  Begin
+    Op := CurTokStr;
+    LexNext;
+    GenRealTerm;
+    If Op = '+' Then
+      EmitFADDP
+    Else
+      EmitFSUBP;
+  End;
+End;
 
 Procedure GenStatSeq;
 Begin
@@ -2838,6 +3209,13 @@ Begin
         GenCopyArrToArr(SymFind(CurTokStr), Si);
         LexNext;
       End
+      { Cas 3 : cible REAL -> evaluation FPU puis fstp. }
+      Else If (Si > 0) And (SymTab[Si].TypeIdx = TYK_REAL) Then
+      Begin
+        GenRealExpression;
+        SymTab[Si].Used := True;
+        EmitFSTP_Real_At(FIX_VAR, Si);
+      End
       Else
       Begin
         GenExpression;
@@ -2908,6 +3286,23 @@ Begin
         If AcceptOp('(') Then
         Begin
           GenOutHex;
+          ExpectOp(')');
+        End;
+      End
+      Else If (VarName = 'Out.Real') Or (VarName = 'Out.LongReal') Then
+      Begin
+        { Out.Real(r) ou Out.Real(r, w). Le parametre de largeur w est
+          accepte mais ignore (le format est fixe : "%f" 6 decimales). }
+        If AcceptOp('(') Then
+        Begin
+          GenRealExpression;
+          { fstp dword [real_tmp] ; call _print_real }
+          EmitFSTP_Real_At(FIX_REAL_TMP, 0);
+          BinEmitByte($E8);
+          AddFixup(FIX_CODE_REL, FindLabel('_print_real'));
+          BinEmitDWord(0);
+          If AcceptOp(',') Then
+            GenExpression;   { largeur eventuellement ignoree }
           ExpectOp(')');
         End;
       End
@@ -4458,6 +4853,160 @@ Begin
   LCopyEnd := LCopyEnd; LNotQ := LNotQ; LTokEnd := LTokEnd;
 End;
 
+{ --- Palier 3 : helper _print_real -----------------------------------
+  Ecrit sur stdout la valeur REAL stockee en [real_tmp] avec le format
+  fixe "-?ddd...d.dddddd" (6 chiffres apres la virgule).  Le runtime
+  utilise _printint pour la partie entiere et les zones intbuf/real_tmp.
+  Le helper preserve ebx, esi, edi, ebp et n'utilise pas de parametres
+  pile (la valeur a imprimer doit etre pre-enregistree en [real_tmp]).
+----------------------------------------------------------------------- }
+Procedure GenPrintRealHelper;
+Var
+  LPos, LLoop : String;
+  Sng : Single;
+  Bits : LongInt;
+  Idx : Integer;
+Begin
+  { Inscrit le litteral REAL 1000000.0 dans le pool (servira au decalage
+    de la fraction vers l'integer pour impression). }
+  Sng := 1000000.0;
+  Move(Sng, Bits, 4);
+  Idx := AddRealLiteral(Bits);
+
+  DefineLabel('_print_real');
+  BinEmitByte($53); BinEmitByte($56);                { push ebx, esi }
+  BinEmitByte($57); BinEmitByte($55);                { push edi, ebp }
+
+  LPos  := GenLabel;
+  LLoop := GenLabel;
+
+  { eax := [real_tmp]. }
+  BinEmitByte($A1); AddFixup(FIX_REAL_TMP, 0); BinEmitDWord(0);
+  { test eax, 0x80000000 ; jz LPos }
+  BinEmitByte($A9); BinEmitDWord(LongInt($80000000));
+  BinEmitByte($0F); BinEmitByte($84);
+  AddFixup(FIX_CODE_REL, FindLabel(LPos)); BinEmitDWord(0);
+
+  { Valeur negative : force le bit de signe a 0 en memoire. }
+  { and dword [real_tmp], 0x7FFFFFFF : 81 25 imm32 imm32 }
+  BinEmitByte($81); BinEmitByte($25);
+  AddFixup(FIX_REAL_TMP, 0); BinEmitDWord(0);
+  BinEmitDWord($7FFFFFFF);
+
+  { Ecrit '-' : on reutilise intbuf (12 octets). Place '-' en intbuf[0]
+    puis WriteFile(stdout, intbuf, 1, &bytes_written, NULL). }
+  { mov byte [intbuf+0], '-' : C6 05 imm32 imm8 }
+  BinEmitByte($C6); BinEmitByte($05);
+  AddFixup(FIX_INTBUF, 0); BinEmitDWord(0);
+  BinEmitByte(Ord('-'));
+  BinEmitByte($6A); BinEmitByte($00);                  { push 0 }
+  BinEmitByte($68); AddFixup(FIX_BYTES_WRITTEN, 0); BinEmitDWord(0); { push &bw }
+  BinEmitByte($6A); BinEmitByte($01);                  { push 1 }
+  BinEmitByte($68); AddFixup(FIX_INTBUF, 0); BinEmitDWord(0);        { push &intbuf }
+  BinEmitByte($FF); BinEmitByte($35); AddFixup(FIX_STDOUT, 0); BinEmitDWord(0);
+  EmitCallIAT(FIX_IAT_WRITE);
+
+  DefineLabel(LPos);
+
+  { Decomposition partie entiere / fraction.
+    fnstcw [fpcw_save] ; fldcw [fpcw_trunc] : mode troncature. }
+  EmitFNSTCW_At(FIX_FPCW_SAVE, 0);
+  EmitFLDCW_At(FIX_FPCW_TRUNC, 0);
+
+  { fld dword [real_tmp] ; fld st(0) ; fistp dword [real_tmp+4] }
+  EmitFLD_Real_At(FIX_REAL_TMP, 0);
+  EmitFLD_ST0;
+  { fistp dword [real_tmp+4] : DB 1D <addr+4>.  On emet un fixup
+    FIX_REAL_TMP et on ajoute 4 a l'adresse via add apres resolution :
+    plus simple : on emet directement DB 1D puis une constante absolue
+    qui sera patchee.  On reutilise FIX_REAL_TMP avec un decalage
+    post-fixup code dans un nouveau kind... Simplification : on utilise
+    un fixup FIX_REAL_TMP puis on ecrit l'octet supplementaire via add.
+    Approche retenue : emettre le fixup FIX_REAL_TMP en [real_tmp], puis
+    ajouter +4 a l'immediat apres resolution par une relocation
+    distincte.  Pour eviter ce surcout, on se sert d'une astuce : on
+    emet "mov ebx, imm32(real_tmp)" ; "add ebx, 4" ; "fistp dword [ebx]"
+    -> fistp [ebx] = DB 1B. }
+  { mov ebx, imm32 (real_tmp) }
+  BinEmitByte($BB); AddFixup(FIX_REAL_TMP, 0); BinEmitDWord(0);
+  BinEmitByte($83); BinEmitByte($C3); BinEmitByte($04);    { add ebx, 4 }
+  BinEmitByte($DB); BinEmitByte($1B);                       { fistp dword [ebx] }
+
+  { fldcw [fpcw_save] : restaure mode arrondi. }
+  EmitFLDCW_At(FIX_FPCW_SAVE, 0);
+
+  { Push la partie entiere et appelle _printint. push dword [ebx]. }
+  BinEmitByte($FF); BinEmitByte($33);                       { push dword [ebx] }
+  BinEmitByte($E8);                                         { call rel32 _printint }
+  AddFixup(FIX_CODE_REL, FindLabel('_printint'));
+  BinEmitDWord(0);
+
+  { Ecrit '.'. }
+  BinEmitByte($C6); BinEmitByte($05);
+  AddFixup(FIX_INTBUF, 0); BinEmitDWord(0);
+  BinEmitByte(Ord('.'));
+  BinEmitByte($6A); BinEmitByte($00);
+  BinEmitByte($68); AddFixup(FIX_BYTES_WRITTEN, 0); BinEmitDWord(0);
+  BinEmitByte($6A); BinEmitByte($01);
+  BinEmitByte($68); AddFixup(FIX_INTBUF, 0); BinEmitDWord(0);
+  BinEmitByte($FF); BinEmitByte($35); AddFixup(FIX_STDOUT, 0); BinEmitDWord(0);
+  EmitCallIAT(FIX_IAT_WRITE);
+
+  { Calcul de la fraction.  Apres l'impression de la partie entiere, le
+    sommet de la pile FPU contient encore |x| (grace au fld st(0) avant
+    le fistp).  On pousse juste le int_part et on soustrait. }
+  BinEmitByte($BB); AddFixup(FIX_REAL_TMP, 0); BinEmitDWord(0);
+  BinEmitByte($83); BinEmitByte($C3); BinEmitByte($04);    { add ebx, 4 }
+  BinEmitByte($DB); BinEmitByte($03);                      { fild dword [ebx] }
+  EmitFSUBP;                               { st0 = |x| - int = frac >= 0 }
+
+  { Multiplie par 1e6. }
+  EmitFLD_Real_At(FIX_REAL_CONST, Idx);
+  EmitFMULP;
+
+  { Truncature -> int ; stocke dans [real_tmp+4]. }
+  EmitFNSTCW_At(FIX_FPCW_SAVE, 0);
+  EmitFLDCW_At(FIX_FPCW_TRUNC, 0);
+  BinEmitByte($BB); AddFixup(FIX_REAL_TMP, 0); BinEmitDWord(0);
+  BinEmitByte($83); BinEmitByte($C3); BinEmitByte($04);
+  BinEmitByte($DB); BinEmitByte($1B);                      { fistp dword [ebx] }
+  EmitFLDCW_At(FIX_FPCW_SAVE, 0);
+
+  { eax := [ebx] (frac_int). }
+  BinEmitByte($8B); BinEmitByte($03);                      { mov eax, [ebx] }
+
+  { Formate 6 chiffres avec zeros de tete dans intbuf[0..5]. }
+  { edi := &intbuf + 5 (on remplit du dernier chiffre au premier). }
+  BinEmitByte($BF); AddFixup(FIX_INTBUF, 0); BinEmitDWord(0);
+  BinEmitByte($83); BinEmitByte($C7); BinEmitByte($05);    { add edi, 5 }
+  BinEmitByte($BB); BinEmitDWord(10);                      { mov ebx, 10 }
+  BinEmitByte($BE); BinEmitDWord(6);                       { mov esi, 6 }
+
+  DefineLabel(LLoop);
+  BinEmitByte($31); BinEmitByte($D2);                      { xor edx, edx }
+  BinEmitByte($F7); BinEmitByte($F3);                      { div ebx }
+  BinEmitByte($80); BinEmitByte($C2); BinEmitByte($30);    { add dl, '0' }
+  BinEmitByte($88); BinEmitByte($17);                      { mov [edi], dl }
+  BinEmitByte($4F);                                        { dec edi }
+  BinEmitByte($4E);                                        { dec esi }
+  { jnz LLoop : 0F 85 rel32 }
+  BinEmitByte($0F); BinEmitByte($85);
+  AddFixup(FIX_CODE_REL, FindLabel(LLoop));
+  BinEmitDWord(0);
+
+  { WriteFile(stdout, intbuf, 6, &bw, NULL). }
+  BinEmitByte($6A); BinEmitByte($00);
+  BinEmitByte($68); AddFixup(FIX_BYTES_WRITTEN, 0); BinEmitDWord(0);
+  BinEmitByte($6A); BinEmitByte($06);
+  BinEmitByte($68); AddFixup(FIX_INTBUF, 0); BinEmitDWord(0);
+  BinEmitByte($FF); BinEmitByte($35); AddFixup(FIX_STDOUT, 0); BinEmitDWord(0);
+  EmitCallIAT(FIX_IAT_WRITE);
+
+  BinEmitByte($5D); BinEmitByte($5F);                      { pop ebp, edi }
+  BinEmitByte($5E); BinEmitByte($5B);                      { pop esi, ebx }
+  BinEmitByte($C3);                                         { ret }
+End;
+
 Procedure ParseVarDecl;
 Var
   VarNames : Array[1..32] of String;
@@ -4497,6 +5046,8 @@ Begin
         TypeIdx := 2
       Else If TypeName = 'CHAR' Then
         TypeIdx := 3
+      Else If (TypeName = 'REAL') Or (TypeName = 'LONGREAL') Then
+        TypeIdx := TYK_REAL
       Else
         TypeIdx := 1;
       LexNext;
@@ -4722,6 +5273,8 @@ Var
   IATGetStd, IATWrite, IATExit : LongInt;
   IATSleep, IATGetTick, IATGetCmd, IATRead : LongInt;
   VarBase, TotalStr : LongInt;
+  RealPoolBase : LongInt;
+  FPCWTruncAddr, FPCWSaveAddr, RealTmpAddr : LongInt;
 Begin
   ImageBase := $400000;
   StdoutAddr := ImageBase + DataRVA;
@@ -4741,11 +5294,19 @@ Begin
   TotalStr := 0;
   For Li := 1 To StringCount Do
     TotalStr := TotalStr + Length(StringPool[Li]) + 1;   { +1 pour le nul }
-  { Offset de base des variables utilisateur : taille du bloc fixe
-    0(stdout)+4(bytes)+12(intbuf)+2(crlf)+4(stderr)+4(rndseed)+8(hexbuf)
-    +4(stdin)+4(inlen)+4(indone)+256(inbuf) = 306 octets,
-    puis chaines litterales. }
-  VarBase := 306 + TotalStr;
+  { Offset de base des variables utilisateur :
+      306 octets du bloc fixe
+    + chaines litterales, alignees sur 4
+    + Palier 3 : pool de REAL (4 * RealCount octets)
+                 + fpcw_trunc (2) + fpcw_save (2) + real_tmp (8) = 12 octets
+    alignes sur 4. }
+  RealPoolBase := 306 + TotalStr;
+  While (RealPoolBase Mod 4) <> 0 Do
+    RealPoolBase := RealPoolBase + 1;
+  FPCWTruncAddr := ImageBase + DataRVA + RealPoolBase + RealCount * 4;
+  FPCWSaveAddr  := FPCWTruncAddr + 2;
+  RealTmpAddr   := FPCWSaveAddr + 2;
+  VarBase := RealPoolBase + RealCount * 4 + 12;
   While (VarBase Mod 4) <> 0 Do
     VarBase := VarBase + 1;
 
@@ -4966,6 +5527,43 @@ Begin
           BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
           BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
         End;
+      FIX_REAL_CONST:
+        Begin
+          { Target = indice 1-base dans le pool REAL. }
+          Si := Fixups[I].Target;
+          If (Si > 0) And (Si <= RealCount) Then
+          Begin
+            TargetAddr := ImageBase + DataRVA + RealPoolBase + (Si - 1) * 4;
+            BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+            BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+            BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+            BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+          End;
+        End;
+      FIX_REAL_TMP:
+        Begin
+          TargetAddr := RealTmpAddr;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_FPCW_TRUNC:
+        Begin
+          TargetAddr := FPCWTruncAddr;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_FPCW_SAVE:
+        Begin
+          TargetAddr := FPCWSaveAddr;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
     End;
   End;
 End;
@@ -5057,7 +5655,40 @@ Begin
     BinData[BinDataLen] := 0;
     Inc(BinDataLen);
   End;
-  
+
+  { Alignement sur 4 octets pour le pool de REAL qui suit. }
+  While (BinDataLen Mod 4) <> 0 Do
+  Begin
+    BinData[BinDataLen] := 0;
+    Inc(BinDataLen);
+  End;
+
+  { Palier 3 : pool des litteraux REAL (4 octets chacun, IEEE 754 simple). }
+  For I := 1 To RealCount Do
+  Begin
+    BinData[BinDataLen]     := RealPool[I] And $FF;
+    BinData[BinDataLen + 1] := (RealPool[I] Shr 8) And $FF;
+    BinData[BinDataLen + 2] := (RealPool[I] Shr 16) And $FF;
+    BinData[BinDataLen + 3] := (RealPool[I] Shr 24) And $FF;
+    Inc(BinDataLen, 4);
+  End;
+
+  { Palier 3 : mot de controle x87 mode troncature (0x0F7F = PC=64, RC=truncate,
+    masquer toutes les exceptions). }
+  BinData[BinDataLen]     := $7F;
+  BinData[BinDataLen + 1] := $0F;
+  Inc(BinDataLen, 2);
+  { Zone de sauvegarde du cw courant. }
+  BinData[BinDataLen]     := 0;
+  BinData[BinDataLen + 1] := 0;
+  Inc(BinDataLen, 2);
+  { Zone temporaire REAL (8 octets : aligne, utilisable pour qword fistp). }
+  For I := 1 To 8 Do
+  Begin
+    BinData[BinDataLen] := 0;
+    Inc(BinDataLen);
+  End;
+
   While (BinDataLen Mod 4) <> 0 Do
   Begin
     BinData[BinDataLen] := 0;
@@ -5522,6 +6153,7 @@ Begin
   Ti := TypeNew(TYK_INTEGER, 4);
   Ti := TypeNew(TYK_BOOLEAN, 1);
   Ti := TypeNew(TYK_CHAR, 1);
+  Ti := TypeNew(TYK_REAL, 4);
 End;
 
 Begin
@@ -5542,6 +6174,7 @@ Begin
   GenHexToBufHelper;
   GenStrToIntHelper;
   GenArgsGetHelper;
+  GenPrintRealHelper;
   
   LexClose;
 
