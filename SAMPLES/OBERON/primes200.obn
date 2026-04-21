@@ -1,0 +1,50 @@
+(* Crible d'Eratosthene "simule" sans tableau :
+   pour chaque candidat k de 2 a LIMIT, on teste divisibilite par
+   tout premier j deja connu (j * j <= k) ; si aucun, k est premier.
+   Plus efficace que la division d'essai par tous les entiers. *)
+MODULE Primes200;
+IMPORT Out;
+
+VAR
+  k, j, count, sum, maxp : INTEGER;
+  isprime : INTEGER;
+
+BEGIN
+  Out.String("Nombres premiers < 200 (division d'essai optimisee)"); Out.Ln;
+  Out.Ln;
+  Out.String("  ");
+
+  count := 0;
+  sum := 0;
+  maxp := 0;
+
+  FOR k := 2 TO 199 DO
+    isprime := 1;
+    j := 2;
+    WHILE j * j <= k DO
+      IF k MOD j = 0 THEN
+        isprime := 0
+      END;
+      INC(j)
+    END;
+    IF isprime = 1 THEN
+      IF count MOD 10 = 0 THEN
+        IF count > 0 THEN
+          Out.Ln; Out.String("  ")
+        END
+      END;
+      IF k < 10 THEN Out.String("  ")
+      ELSIF k < 100 THEN Out.String(" ")
+      END;
+      Out.Int(k, 0); Out.String(" ");
+      INC(count);
+      sum := sum + k;
+      maxp := k
+    END
+  END;
+  Out.Ln; Out.Ln;
+
+  Out.String("Total       : "); Out.Int(count, 0); Out.String(" nombres premiers"); Out.Ln;
+  Out.String("Somme       : "); Out.Int(sum, 0); Out.Ln;
+  Out.String("Le plus grand : "); Out.Int(maxp, 0); Out.Ln
+END Primes200.

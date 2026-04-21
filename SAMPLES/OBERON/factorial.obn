@@ -1,0 +1,41 @@
+(* Plus grande factorielle representable en INTEGER 32 bits.
+   12! = 479001600, 13! = 6227020800 (depasse 2^31 - 1 = 2147483647). *)
+MODULE Factorial;
+IMPORT Out;
+
+VAR
+  n, f, prev : INTEGER;
+
+BEGIN
+  Out.String("Factorielle jusqu'a depassement 32 bits"); Out.Ln;
+  Out.String("(INTEGER signe, borne = 2147483647)"); Out.Ln;
+  Out.Ln;
+
+  f := 1;
+  FOR n := 1 TO 12 DO
+    f := f * n;
+    Out.String("  ");
+    IF n < 10 THEN Out.String(" ") END;
+    Out.Int(n, 0); Out.String("! = ");
+    Out.Int(f, 0); Out.Ln
+  END;
+  Out.Ln;
+
+  (* Tentative 13! : l'overflow se detecte par (f DIV n) != prev_f *)
+  prev := f;
+  f := f * 13;
+  Out.String("13! calculee = "); Out.Int(f, 0); Out.Ln;
+  IF f DIV 13 # prev THEN
+    Out.String("(depassement detecte : 13! = 6227020800 > 2^31 - 1)"); Out.Ln
+  END;
+  Out.Ln;
+
+  (* Somme 1! + 2! + ... + 10! *)
+  f := 1;
+  prev := 0;
+  FOR n := 1 TO 10 DO
+    f := f * n;
+    prev := prev + f
+  END;
+  Out.String("Somme 1! + 2! + ... + 10! = "); Out.Int(prev, 0); Out.Ln
+END Factorial.

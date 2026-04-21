@@ -1,0 +1,125 @@
+(* Calendrier gregorien : congruence de Zeller pour le jour de la semaine,
+   detection des annees bissextiles, et tirage d'un mini calendrier mensuel.
+
+   Congruence de Zeller (calendrier gregorien) :
+     h = (q + floor(13*(m+1)/5) + K + floor(K/4) + floor(J/4) - 2*J) mod 7
+   avec m in {3..14}, janvier = 13 et fevrier = 14 de l'annee precedente.
+   Resultat : 0 = samedi, 1 = dimanche, ..., 6 = vendredi. *)
+MODULE Calendar;
+IMPORT Out;
+
+VAR
+  d, m, y, q, mm, yy, J, K, h, r : INTEGER;
+  k, dim, first, dow, day, col : INTEGER;
+
+BEGIN
+  Out.String("Calendrier gregorien"); Out.Ln;
+  Out.Ln;
+
+  (* 1. Annees bissextiles *)
+  Out.String("Annees bissextiles de 2000 a 2030 :"); Out.Ln;
+  Out.String("  ");
+  FOR y := 2000 TO 2030 DO
+    IF y MOD 400 = 0 THEN
+      Out.Int(y, 0); Out.String(" ")
+    ELSIF y MOD 100 = 0 THEN
+      (* pas bissextile *)
+    ELSIF y MOD 4 = 0 THEN
+      Out.Int(y, 0); Out.String(" ")
+    END
+  END;
+  Out.Ln; Out.Ln;
+
+  (* 2. Jours de la semaine pour quelques dates historiques *)
+  Out.String("Jour de la semaine (Zeller) :"); Out.Ln;
+  FOR k := 1 TO 6 DO
+    IF k = 1 THEN
+      d := 14; m := 7;  y := 1789     (* Prise de la Bastille *)
+    ELSIF k = 2 THEN
+      d := 20; m := 7;  y := 1969     (* Premiers pas sur la Lune *)
+    ELSIF k = 3 THEN
+      d := 1;  m := 1;  y := 2000     (* Debut du 3e millenaire *)
+    ELSIF k = 4 THEN
+      d := 29; m := 2;  y := 2000     (* 29 fevrier 2000 *)
+    ELSIF k = 5 THEN
+      d := 25; m := 12; y := 2025     (* Noel 2025 *)
+    ELSE
+      d := 1;  m := 1;  y := 2026     (* Jour de l'an 2026 *)
+    END;
+
+    (* Ajustement Zeller : janvier et fevrier comptent comme 13 et 14
+       de l'annee precedente *)
+    IF m < 3 THEN
+      mm := m + 12;
+      yy := y - 1
+    ELSE
+      mm := m;
+      yy := y
+    END;
+    q := d;
+    J := yy DIV 100;
+    K := yy MOD 100;
+    h := q + (13 * (mm + 1)) DIV 5 + K + K DIV 4 + J DIV 4 - 2 * J;
+    r := h MOD 7;
+    WHILE r < 0 DO r := r + 7 END;
+
+    Out.String("  ");
+    IF d < 10 THEN Out.String("0") END;
+    Out.Int(d, 0); Out.String("/");
+    IF m < 10 THEN Out.String("0") END;
+    Out.Int(m, 0); Out.String("/");
+    Out.Int(y, 0); Out.String(" : ");
+    IF r = 0 THEN Out.String("samedi")
+    ELSIF r = 1 THEN Out.String("dimanche")
+    ELSIF r = 2 THEN Out.String("lundi")
+    ELSIF r = 3 THEN Out.String("mardi")
+    ELSIF r = 4 THEN Out.String("mercredi")
+    ELSIF r = 5 THEN Out.String("jeudi")
+    ELSE Out.String("vendredi")
+    END;
+    Out.Ln
+  END;
+  Out.Ln;
+
+  (* 3. Mini calendrier d'un mois : janvier 2026 *)
+  y := 2026;
+  m := 1;
+  Out.String("Janvier 2026"); Out.Ln;
+  Out.String("Lu Ma Me Je Ve Sa Di"); Out.Ln;
+
+  (* Jour de la semaine du 1er janvier 2026, normalise en lundi=0..dimanche=6 *)
+  d := 1;
+  IF m < 3 THEN mm := m + 12; yy := y - 1
+  ELSE           mm := m;     yy := y
+  END;
+  J := yy DIV 100;
+  K := yy MOD 100;
+  h := d + (13 * (mm + 1)) DIV 5 + K + K DIV 4 + J DIV 4 - 2 * J;
+  r := h MOD 7;
+  WHILE r < 0 DO r := r + 7 END;
+  (* Zeller : 0 = samedi. Passage a lundi = 0 : dow = (r + 5) MOD 7 *)
+  first := (r + 5) MOD 7;
+
+  dim := 31;  (* janvier = 31 jours *)
+
+  (* Espaces de tete *)
+  col := 0;
+  WHILE col < first DO
+    Out.String("   ");
+    INC(col)
+  END;
+  dow := first;
+  day := 1;
+  WHILE day <= dim DO
+    IF day < 10 THEN Out.String(" ") END;
+    Out.Int(day, 0); Out.String(" ");
+    IF dow = 6 THEN
+      Out.Ln;
+      dow := 0
+    ELSE
+      INC(dow)
+    END;
+    INC(day)
+  END;
+  IF dow # 0 THEN Out.Ln END
+END Calendar.

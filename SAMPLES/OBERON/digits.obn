@@ -1,0 +1,56 @@
+(* Manipulation de chiffres decimaux d'un entier :
+   - Somme des chiffres
+   - Produit des chiffres
+   - Inversion (nombre ecrit a l'envers)
+   - Test de palindrome numerique *)
+MODULE Digits;
+IMPORT Out;
+
+VAR
+  n, m, sum, prod, rev, orig, k : INTEGER;
+
+BEGIN
+  Out.String("Manipulation de chiffres decimaux"); Out.Ln;
+  Out.Ln;
+
+  FOR k := 1 TO 8 DO
+    (* Choix de quelques nombres interessants *)
+    IF k = 1 THEN n := 12345
+    ELSIF k = 2 THEN n := 99999
+    ELSIF k = 3 THEN n := 12321
+    ELSIF k = 4 THEN n := 1001
+    ELSIF k = 5 THEN n := 12421
+    ELSIF k = 6 THEN n := 123
+    ELSIF k = 7 THEN n := 7
+    ELSE n := 987654
+    END;
+    orig := n;
+
+    (* Somme et produit des chiffres *)
+    m := n;
+    sum := 0;
+    prod := 1;
+    WHILE m > 0 DO
+      sum := sum + (m MOD 10);
+      prod := prod * (m MOD 10);
+      m := m DIV 10
+    END;
+
+    (* Inversion : lire les chiffres dans l'ordre inverse *)
+    m := n;
+    rev := 0;
+    WHILE m > 0 DO
+      rev := rev * 10 + (m MOD 10);
+      m := m DIV 10
+    END;
+
+    Out.String("n = "); Out.Int(orig, 0); Out.Ln;
+    Out.String("  somme des chiffres  = "); Out.Int(sum, 0); Out.Ln;
+    Out.String("  produit des chiffres = "); Out.Int(prod, 0); Out.Ln;
+    Out.String("  inverse              = "); Out.Int(rev, 0); Out.Ln;
+    IF rev = orig THEN
+      Out.String("  -> palindrome numerique"); Out.Ln
+    END;
+    Out.Ln
+  END
+END Digits.

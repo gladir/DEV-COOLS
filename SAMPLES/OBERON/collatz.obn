@@ -1,0 +1,58 @@
+(* Suite de Collatz (conjecture de Syracuse) :
+   u_{n+1} = u_n / 2     si u_n est pair
+   u_{n+1} = 3*u_n + 1   si u_n est impair
+   Pour chaque N de 1 a 20, afficher la longueur de la suite et son maximum. *)
+MODULE Collatz;
+IMPORT Out;
+
+VAR
+  n, u, length, max, gmax, garg, glen : INTEGER;
+
+BEGIN
+  Out.String("Suite de Collatz (Syracuse)"); Out.Ln;
+  Out.Ln;
+  Out.String("   n  longueur  maximum"); Out.Ln;
+  Out.String("  ----------------------"); Out.Ln;
+
+  gmax := 0;
+  glen := 0;
+  garg := 0;
+
+  FOR n := 1 TO 20 DO
+    u := n;
+    length := 0;
+    max := u;
+    WHILE u # 1 DO
+      IF u MOD 2 = 0 THEN
+        u := u DIV 2
+      ELSE
+        u := 3 * u + 1
+      END;
+      IF u > max THEN
+        max := u
+      END;
+      INC(length)
+    END;
+    Out.String("  ");
+    IF n < 10 THEN Out.String(" ") END;
+    Out.Int(n, 0);
+    Out.String("     ");
+    IF length < 10 THEN Out.String(" ") END;
+    IF length < 100 THEN Out.String(" ") END;
+    Out.Int(length, 0);
+    Out.String("     ");
+    Out.Int(max, 0); Out.Ln;
+
+    IF length > glen THEN
+      glen := length;
+      garg := n
+    END;
+    IF max > gmax THEN
+      gmax := max
+    END
+  END;
+  Out.Ln;
+  Out.String("Plus longue suite : N = "); Out.Int(garg, 0);
+  Out.String(" (longueur "); Out.Int(glen, 0); Out.String(")"); Out.Ln;
+  Out.String("Maximum global    : "); Out.Int(gmax, 0); Out.Ln
+END Collatz.

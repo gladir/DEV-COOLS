@@ -1,0 +1,30 @@
+(* Demonstration du pseudo-module SYSTEM : acces bas niveau
+   (conversion VAL, adresse ADR, lecture/ecriture memoire). *)
+
+MODULE ModSystem;
+IMPORT Out, SYSTEM;
+
+VAR
+  i    : INTEGER;
+  addr : INTEGER;
+  val  : INTEGER;
+
+BEGIN
+  i := 12345;
+  Out.String("i     = "); Out.Int(i, 0); Out.Ln;
+
+  (* VAL : identite sur tous les types 32 bits du compilateur minimal *)
+  Out.String("VAL(INTEGER, i) = "); Out.Int(SYSTEM.VAL(INTEGER, i), 0); Out.Ln;
+
+  (* ADR : adresse memoire de la variable *)
+  addr := SYSTEM.ADR(i);
+  Out.String("addr(i) en hex  = "); Out.Hex(addr); Out.Ln;
+
+  (* Relecture memoire : doit redonner 12345 *)
+  SYSTEM.GET(addr, val);
+  Out.String("GET(addr, val)  -> val = "); Out.Int(val, 0); Out.Ln;
+
+  (* Ecriture memoire : place 77 directement dans i via PUT *)
+  SYSTEM.PUT(addr, 77);
+  Out.String("apres PUT(addr, 77) : i = "); Out.Int(i, 0); Out.Ln
+END ModSystem.

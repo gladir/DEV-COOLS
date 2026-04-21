@@ -1,0 +1,61 @@
+(* Nombres premiers de Mersenne : M_p = 2^p - 1.
+   Pour chaque exposant p premier de 2 a 19, calculer M_p et
+   tester sa primalite par division d'essai. *)
+MODULE Mersenne;
+IMPORT Out;
+
+VAR
+  p, mp, q, pow, isprime, pprime, j : INTEGER;
+
+BEGIN
+  Out.String("Nombres de Mersenne M_p = 2^p - 1"); Out.Ln;
+  Out.Ln;
+  Out.String("   p    M_p    statut"); Out.Ln;
+  Out.String("  -----------------------"); Out.Ln;
+
+  FOR p := 2 TO 19 DO
+    (* p doit etre premier *)
+    pprime := 1;
+    IF p < 2 THEN pprime := 0 END;
+    j := 2;
+    WHILE j * j <= p DO
+      IF p MOD j = 0 THEN pprime := 0 END;
+      INC(j)
+    END;
+
+    IF pprime = 1 THEN
+      (* Calcul de 2^p *)
+      pow := 1;
+      j := 1;
+      WHILE j <= p DO
+        pow := pow * 2;
+        INC(j)
+      END;
+      mp := pow - 1;
+
+      (* Test de primalite de M_p par divisions d'essai *)
+      isprime := 1;
+      IF mp < 2 THEN isprime := 0 END;
+      q := 2;
+      WHILE q * q <= mp DO
+        IF mp MOD q = 0 THEN isprime := 0 END;
+        INC(q)
+      END;
+
+      Out.String("  ");
+      IF p < 10 THEN Out.String(" ") END;
+      Out.Int(p, 0);
+      Out.String("    ");
+      Out.Int(mp, 0);
+      IF isprime = 1 THEN
+        Out.String("   premier (M_"); Out.Int(p, 0); Out.String(")")
+      ELSE
+        Out.String("   compose")
+      END;
+      Out.Ln
+    END
+  END;
+  Out.Ln;
+  Out.String("M_2, M_3, M_5, M_7, M_13, M_17, M_19 sont premiers."); Out.Ln;
+  Out.String("M_11 = 2047 = 23 x 89 est compose."); Out.Ln
+END Mersenne.

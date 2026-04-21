@@ -1,0 +1,46 @@
+(* Triplets pythagoriciens primitifs : recherche exhaustive par
+   triple boucle imbriquee.  (a, b, c) tel que a^2 + b^2 = c^2
+   avec 1 <= a <= b <= c <= N. *)
+MODULE Pythagore;
+IMPORT Out;
+
+VAR
+  a, b, c, count : INTEGER;
+  aa, bb, cc, g, x, y, r : INTEGER;
+
+BEGIN
+  Out.String("Triplets pythagoriciens a^2 + b^2 = c^2 (30 max) :"); Out.Ln;
+  Out.Ln;
+
+  count := 0;
+  FOR a := 1 TO 30 DO
+    FOR b := a TO 30 DO
+      FOR c := b TO 30 DO
+        aa := a * a;
+        bb := b * b;
+        cc := c * c;
+        IF aa + bb = cc THEN
+          (* Test de primitivite : PGCD(a, b) = 1 *)
+          x := a; y := b;
+          WHILE y # 0 DO
+            r := x MOD y;
+            x := y;
+            y := r
+          END;
+          g := x;
+          Out.String("  ");
+          Out.Int(a, 0); Out.String(" ");
+          Out.Int(b, 0); Out.String(" ");
+          Out.Int(c, 0);
+          IF g = 1 THEN
+            Out.String("   (primitif)")
+          END;
+          Out.Ln;
+          INC(count)
+        END
+      END
+    END
+  END;
+  Out.Ln;
+  Out.String("Total : "); Out.Int(count, 0); Out.String(" triplets"); Out.Ln
+END Pythagore.

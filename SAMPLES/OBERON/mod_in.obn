@@ -1,0 +1,50 @@
+MODULE mod_in;
+(*
+  Demonstration du module In (Palier 2).
+
+  Operations supportees : In.Int, In.Char, In.Line, In.String
+  et la variable booleenne In.Done.
+
+  Exemple d'entree :
+      42
+      A
+      Hello world
+
+  Note : le mot reserve Oberon 'IN' (majuscules) est l'operateur de
+  test d'appartenance aux ensembles ; le nom du module 'In' (casse
+  mixte) est distinct et est traite comme un identificateur par le
+  compilateur.
+*)
+IMPORT Out, In;
+
+VAR
+  n    : INTEGER;
+  ch   : INTEGER;
+  ligne: ARRAY 80 OF CHAR;
+
+BEGIN
+  Out.String("Entrez un entier : ");
+  In.Int(n);
+  IF In.Done THEN
+    Out.String("Lu : "); Out.Int(n, 0); Out.Ln
+  ELSE
+    Out.String("Entree entier invalide."); Out.Ln
+  END;
+
+  Out.String("Entrez un caractere : ");
+  In.Char(ch);
+  IF In.Done THEN
+    Out.String("Lu (code ASCII) : "); Out.Int(ch, 0); Out.Ln
+  ELSE
+    Out.String("Pas de caractere lu."); Out.Ln
+  END;
+
+  Out.String("Entrez une ligne : ");
+  In.Line(ligne);
+  IF In.Done THEN
+    Out.String("Lu : ["); Out.String(ligne);
+    Out.String("]"); Out.Ln
+  ELSE
+    Out.String("Pas de ligne lue."); Out.Ln
+  END
+END mod_in.

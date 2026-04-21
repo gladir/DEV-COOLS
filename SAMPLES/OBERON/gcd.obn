@@ -1,0 +1,35 @@
+(* Calcul du PGCD (Plus Grand Commun Diviseur) par l'algorithme d'Euclide
+   et du PPCM (Plus Petit Commun Multiple). *)
+MODULE GCD;
+IMPORT Out;
+
+VAR
+  a, b, x, y, g, l : INTEGER;
+
+BEGIN
+  a := 252;
+  b := 105;
+  Out.String("Entrees : a = "); Out.Int(a, 0);
+  Out.String(", b = "); Out.Int(b, 0); Out.Ln;
+
+  (* PGCD : algorithme d'Euclide *)
+  x := a;
+  y := b;
+  WHILE y # 0 DO
+    g := x MOD y;
+    x := y;
+    y := g
+  END;
+  g := x;
+  Out.String("PGCD("); Out.Int(a, 0); Out.String(", "); Out.Int(b, 0);
+  Out.String(") = "); Out.Int(g, 0); Out.Ln;
+
+  (* PPCM = (a * b) DIV PGCD *)
+  l := (a DIV g) * b;
+  Out.String("PPCM("); Out.Int(a, 0); Out.String(", "); Out.Int(b, 0);
+  Out.String(") = "); Out.Int(l, 0); Out.Ln;
+
+  (* Verification : PGCD * PPCM = a * b *)
+  Out.String("Verif  : PGCD * PPCM = "); Out.Int(g * l, 0);
+  Out.String(" ; a * b = "); Out.Int(a * b, 0); Out.Ln
+END GCD.

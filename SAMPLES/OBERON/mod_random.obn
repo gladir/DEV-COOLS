@@ -1,0 +1,30 @@
+(* Demonstration du module Random : generateur pseudo-aleatoire
+   entier (LCG Numerical Recipes 32 bits). *)
+
+MODULE ModRandom;
+IMPORT Out, Random;
+
+VAR i : INTEGER;
+
+BEGIN
+  (* Graine fixe pour obtenir une sequence reproductible. *)
+  Random.Init(42);
+  Out.String("Sequence avec seed=42, bornes [0, 100) :"); Out.Ln;
+  FOR i := 1 TO 10 DO
+    Out.Int(Random.Int(100), 4)
+  END;
+  Out.Ln;
+
+  Random.Init(42);
+  Out.String("Memes valeurs apres re-init avec 42 :"); Out.Ln;
+  FOR i := 1 TO 10 DO
+    Out.Int(Random.Int(100), 4)
+  END;
+  Out.Ln;
+
+  Out.String("Lancers de de (1..6) :"); Out.Ln;
+  FOR i := 1 TO 20 DO
+    Out.Int(Random.Int(6) + 1, 3)
+  END;
+  Out.Ln
+END ModRandom.

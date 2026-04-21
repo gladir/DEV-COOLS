@@ -454,6 +454,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Oberon pour l'assembleur du microprocesseur 8086.</td>
 		</td>
 		<tr>
+			<td><b>OBERCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Oberon pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
+		<tr>
 			<td><b>PAS2HTML.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier de code source en syntaxe coloré HTML.</td>
 		</tr>

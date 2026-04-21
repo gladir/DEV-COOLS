@@ -1,0 +1,33 @@
+MODULE mod_random_real;
+(*
+  Demonstration de Random.Real (Palier 3).
+
+  Random.Real() produit un REAL uniformement distribue dans l'intervalle
+  [0, 1) derive du generateur congruentiel existant (seed initialisee
+  par GetTickCount au demarrage, ou par Random.Init).
+*)
+IMPORT Out, Random;
+
+VAR
+  i : INTEGER;
+  r, somme : REAL;
+
+BEGIN
+  Random.Init(1);
+
+  Out.String("=== Cinq tirages Random.Real() ==="); Out.Ln;
+  FOR i := 1 TO 5 DO
+    r := Random.Real();
+    Out.String("  r = "); Out.Real(r); Out.Ln
+  END;
+  Out.Ln;
+
+  Out.String("=== Moyenne sur 1000 tirages ==="); Out.Ln;
+  Random.Init(42);
+  somme := 0.0;
+  FOR i := 1 TO 1000 DO
+    somme := somme + Random.Real()
+  END;
+  Out.String("  moyenne = "); Out.Real(somme / 1000.0); Out.Ln;
+  Out.String("  (proche de 0.5 pour une distribution uniforme)"); Out.Ln
+END mod_random_real.

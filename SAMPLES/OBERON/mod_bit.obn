@@ -1,0 +1,24 @@
+(* Demonstration du module Bit : operateurs binaires sur 32 bits. *)
+
+MODULE ModBit;
+IMPORT Out, Bit;
+
+BEGIN
+  Out.String("=== Bit.And / Or / Xor / Not ==="); Out.Ln;
+  Out.String("  And(12, 10) = "); Out.Int(Bit.And(12, 10), 0); Out.Ln;
+  Out.String("  Or (12, 10) = "); Out.Int(Bit.Or(12, 10), 0); Out.Ln;
+  Out.String("  Xor(12, 10) = "); Out.Int(Bit.Xor(12, 10), 0); Out.Ln;
+  Out.String("  Not(0)  hex = "); Out.Hex(Bit.Not(0)); Out.Ln;
+  Out.String("  Not(255)hex = "); Out.Hex(Bit.Not(255)); Out.Ln;
+
+  Out.String("=== Bit.Shl / Shr ==="); Out.Ln;
+  Out.String("  Shl(1, 4)   = "); Out.Int(Bit.Shl(1, 4), 0); Out.Ln;
+  Out.String("  Shl(3, 8)   = "); Out.Int(Bit.Shl(3, 8), 0); Out.Ln;
+  Out.String("  Shr(256, 3) = "); Out.Int(Bit.Shr(256, 3), 0); Out.Ln;
+
+  Out.String("=== Bit.Test / Set / Clear ==="); Out.Ln;
+  Out.String("  Test(10, 1) = "); Out.Int(Bit.Test(10, 1), 0); Out.Ln;
+  Out.String("  Test(10, 0) = "); Out.Int(Bit.Test(10, 0), 0); Out.Ln;
+  Out.String("  Set (0,  5) = "); Out.Int(Bit.Set(0, 5), 0); Out.Ln;
+  Out.String("  Clear(255,3)= "); Out.Int(Bit.Clear(255, 3), 0); Out.Ln
+END ModBit.

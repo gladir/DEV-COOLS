@@ -1,0 +1,63 @@
+(* Demonstration des procedures built-in Oberon qui retournent une valeur.
+   Couvre : ABS, ODD, CHR, ORD, CAP, ASH, MAX, MIN, SIZE.
+   INC et DEC sont montres dans d'autres exemples (factorial.obn, etc.) *)
+
+MODULE Builtins;
+IMPORT Out;
+
+VAR
+  i : INTEGER;
+  c : INTEGER;   (* CHAR est represente comme INTEGER 32 bits *)
+
+BEGIN
+  (* ABS : valeur absolue *)
+  Out.String("ABS(-7)      = "); Out.Int(ABS(-7), 0); Out.Ln;
+  Out.String("ABS(0)       = "); Out.Int(ABS(0), 0); Out.Ln;
+  Out.String("ABS(42)      = "); Out.Int(ABS(42), 0); Out.Ln;
+
+  (* ODD : teste la parite (retourne 0 ou 1) *)
+  Out.String("ODD(3)       = "); Out.Int(ODD(3), 0); Out.Ln;
+  Out.String("ODD(4)       = "); Out.Int(ODD(4), 0); Out.Ln;
+  Out.String("ODD(-5)      = "); Out.Int(ODD(-5), 0); Out.Ln;
+
+  (* ORD / CHR : conversion char <-> code *)
+  Out.String("ORD('A')     = "); Out.Int(ORD(65), 0); Out.Ln;
+  Out.String("CHR(65)      = "); Out.Int(CHR(65), 0);
+  Out.String(" (code ASCII)"); Out.Ln;
+
+  (* CAP : majuscule d'une lettre ascii *)
+  Out.String("CAP('a')     = "); Out.Int(CAP(97), 0);
+  Out.String(" (= ORD('A') = 65)"); Out.Ln;
+  Out.String("CAP('z')     = "); Out.Int(CAP(122), 0);
+  Out.String(" (= ORD('Z') = 90)"); Out.Ln;
+  Out.String("CAP('M')     = "); Out.Int(CAP(77), 0);
+  Out.String(" (deja en majuscule)"); Out.Ln;
+  Out.String("CAP('5')     = "); Out.Int(CAP(53), 0);
+  Out.String(" (non-lettre inchangee)"); Out.Ln;
+
+  (* ASH : decalage binaire arithmetique *)
+  Out.String("ASH(1, 4)    = "); Out.Int(ASH(1, 4), 0);
+  Out.String(" (1 << 4 = 16)"); Out.Ln;
+  Out.String("ASH(256, -3) = "); Out.Int(ASH(256, -3), 0);
+  Out.String(" (256 >> 3 = 32)"); Out.Ln;
+  Out.String("ASH(-16, -2) = "); Out.Int(ASH(-16, -2), 0);
+  Out.String(" (decalage arithmetique signe)"); Out.Ln;
+
+  (* MAX / MIN / SIZE sur les types de base *)
+  Out.String("MAX(INTEGER) = "); Out.Int(MAX(INTEGER), 0); Out.Ln;
+  Out.String("MIN(INTEGER) = "); Out.Int(MIN(INTEGER), 0); Out.Ln;
+  Out.String("MAX(CHAR)    = "); Out.Int(MAX(CHAR), 0); Out.Ln;
+  Out.String("MIN(CHAR)    = "); Out.Int(MIN(CHAR), 0); Out.Ln;
+  Out.String("MAX(BOOLEAN) = "); Out.Int(MAX(BOOLEAN), 0); Out.Ln;
+  Out.String("MIN(BOOLEAN) = "); Out.Int(MIN(BOOLEAN), 0); Out.Ln;
+  Out.String("SIZE(INTEGER)= "); Out.Int(SIZE(INTEGER), 0); Out.Ln;
+  Out.String("SIZE(CHAR)   = "); Out.Int(SIZE(CHAR), 0); Out.Ln;
+  Out.String("SIZE(BOOLEAN)= "); Out.Int(SIZE(BOOLEAN), 0); Out.Ln;
+
+  (* Combinaison : INC / DEC rappel *)
+  i := 10;
+  INC(i);      Out.String("INC(i) depuis 10 -> "); Out.Int(i, 0); Out.Ln;
+  INC(i, 5);   Out.String("INC(i, 5)        -> "); Out.Int(i, 0); Out.Ln;
+  DEC(i);      Out.String("DEC(i)           -> "); Out.Int(i, 0); Out.Ln;
+  DEC(i, 10);  Out.String("DEC(i, 10)       -> "); Out.Int(i, 0); Out.Ln
+END Builtins.

@@ -1,0 +1,21 @@
+(* Demonstration du module Out etendu : Char, Hex en plus de
+   String, Int, Ln deja supportes. *)
+
+MODULE ModOut;
+IMPORT Out;
+
+BEGIN
+  Out.String("=== Out.Char ==="); Out.Ln;
+  Out.Char(72);  Out.Char(105);  Out.Char(33);  Out.Ln;
+
+  Out.String("=== Out.Hex ==="); Out.Ln;
+  Out.String("  Hex(0)          = "); Out.Hex(0); Out.Ln;
+  Out.String("  Hex(15)         = "); Out.Hex(15); Out.Ln;
+  Out.String("  Hex(255)        = "); Out.Hex(255); Out.Ln;
+  Out.String("  Hex(65535)      = "); Out.Hex(65535); Out.Ln;
+  Out.String("  Hex(4096 * 4096)= "); Out.Hex(4096 * 4096); Out.Ln;
+
+  Out.String("=== Out.Int ==="); Out.Ln;
+  Out.String("  Int(-42)        = "); Out.Int(-42, 0); Out.Ln;
+  Out.String("  Int(1000000)    = "); Out.Int(1000000, 0); Out.Ln
+END ModOut.

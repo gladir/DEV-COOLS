@@ -1,0 +1,9 @@
+(* Demonstration du module Args : compte d'arguments de la ligne de commande. *)
+
+MODULE ModArgs;
+IMPORT Out, Args;
+
+BEGIN
+  Out.String("Nombre d'arguments (inclus le nom du programme) : ");
+  Out.Int(Args.Count(), 0); Out.Ln
+END ModArgs.

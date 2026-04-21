@@ -1,0 +1,57 @@
+MODULE mod_conv;
+(*
+  Demonstration du module Conv (Palier 2).
+
+  Operations supportees : IntToString, HexToString, StringToInt.
+*)
+IMPORT Out, Conv;
+
+VAR
+  s  : ARRAY 32 OF CHAR;
+  n  : INTEGER;
+  ok : INTEGER;
+
+BEGIN
+  Out.String("=== Conv.IntToString ==="); Out.Ln;
+  Conv.IntToString(0, s);
+  Out.String("  IntToString(0)       = "); Out.String(s); Out.Ln;
+  Conv.IntToString(42, s);
+  Out.String("  IntToString(42)      = "); Out.String(s); Out.Ln;
+  Conv.IntToString(-1234, s);
+  Out.String("  IntToString(-1234)   = "); Out.String(s); Out.Ln;
+  Conv.IntToString(2147483647, s);
+  Out.String("  IntToString(MAXINT)  = "); Out.String(s); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Conv.HexToString (8 chiffres majuscules) ==="); Out.Ln;
+  Conv.HexToString(0, s);
+  Out.String("  HexToString(0)     = "); Out.String(s); Out.Ln;
+  Conv.HexToString(255, s);
+  Out.String("  HexToString(255)   = "); Out.String(s); Out.Ln;
+  Conv.HexToString(4096, s);
+  Out.String("  HexToString(4096)  = "); Out.String(s); Out.Ln;
+  Conv.HexToString(-1, s);
+  Out.String("  HexToString(-1)    = "); Out.String(s); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Conv.StringToInt ==="); Out.Ln;
+  COPY("   42", s);
+  Conv.StringToInt(s, n, ok);
+  Out.String("  '   42'     -> n = "); Out.Int(n, 0);
+  Out.String(", ok = "); Out.Int(ok, 0); Out.Ln;
+
+  COPY("-1234", s);
+  Conv.StringToInt(s, n, ok);
+  Out.String("  '-1234'     -> n = "); Out.Int(n, 0);
+  Out.String(", ok = "); Out.Int(ok, 0); Out.Ln;
+
+  COPY("+77", s);
+  Conv.StringToInt(s, n, ok);
+  Out.String("  '+77'       -> n = "); Out.Int(n, 0);
+  Out.String(", ok = "); Out.Int(ok, 0); Out.Ln;
+
+  COPY("abc", s);
+  Conv.StringToInt(s, n, ok);
+  Out.String("  'abc'       -> n = "); Out.Int(n, 0);
+  Out.String(", ok = "); Out.Int(ok, 0); Out.Ln
+END mod_conv.
