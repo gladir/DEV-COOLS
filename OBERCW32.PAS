@@ -94,6 +94,11 @@ Const
   FIX_RNDSEED      = 16;
   FIX_HEXBUF       = 17;
   FIX_HEXBUF_END   = 18;
+  FIX_IAT_READ     = 19;
+  FIX_STDIN        = 20;
+  FIX_INBUF        = 21;     { tampon de lecture ligne (256 octets) }
+  FIX_INLEN        = 22;     { zone INTEGER "bytes read" }
+  FIX_INDONE       = 23;     { zone INTEGER booleen (1 = derniere lecture OK) }
 
   PE_MACHINE_I386 = $014C;
 
@@ -1003,6 +1008,26 @@ Begin
   BinEmitDWord(0);
 End;
 
+Procedure EmitJGE(Target : String);
+Var Li : Integer;
+Begin
+  Li := FindLabel(Target);
+  BinEmitByte($0F);
+  BinEmitByte($8D);
+  AddFixup(FIX_CODE_REL, Li);
+  BinEmitDWord(0);
+End;
+
+Procedure EmitJNE(Target : String);
+Var Li : Integer;
+Begin
+  Li := FindLabel(Target);
+  BinEmitByte($0F);
+  BinEmitByte($85);
+  AddFixup(FIX_CODE_REL, Li);
+  BinEmitDWord(0);
+End;
+
 Procedure EmitNegEAX;
 Begin
   { neg eax  -->  F7 D8 }
@@ -1355,6 +1380,107 @@ Begin
     { eax = addr ; mov eax, [eax] }
     BinEmitByte($8B); BinEmitByte($00);
     ExpectOp(')');
+  End
+
+  { --- Strings.Length(s) : longueur de la chaine nul-terminee. --- }
+  Else If QN = 'STRINGS.LENGTH' Then
+  Begin
+    ExpectOp('(');
+    If CurTok = TOK_IDENT Then
+    Begin
+      Si := SymFind(CurTokStr);
+      If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+      Begin
+        SymTab[Si].Used := True;
+        BinEmitByte($B8);
+        AddFixup(FIX_VAR, Si);
+        BinEmitDWord(0);
+        BinEmitByte($E8);
+        AddFixup(FIX_CODE_REL, FindLabel('_strlen'));
+        BinEmitDWord(0);
+        LexNext;
+      End
+      Else
+      Begin
+        ErrorAt(LexLineNo, LexColNo, 'Strings.Length : ARRAY OF CHAR attendu');
+        EmitMovEAXImm32(0);
+      End;
+    End
+    Else
+      ErrorAt(LexLineNo, LexColNo, 'Strings.Length : identificateur attendu');
+    ExpectOp(')');
+  End
+
+  { --- Strings.Pos(pat, s, start) : recherche naive, retour -1 si absent. --- }
+  Else If QN = 'STRINGS.POS' Then
+  Begin
+    Si := SymFind('');  { reset for safety }
+    ExpectOp('(');
+    { Premier arg : pat (identifiant ARRCHAR ou litteral). }
+    { Simplification : on ne supporte que des identifiants ARRCHAR. }
+    If CurTok = TOK_IDENT Then
+    Begin
+      Si := SymFind(CurTokStr);
+      If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+      Begin
+        SymTab[Si].Used := True;
+        { eax := &pat ; push eax }
+        BinEmitByte($B8);
+        AddFixup(FIX_VAR, Si);
+        BinEmitDWord(0);
+        EmitPushEAX;
+        LexNext;
+      End
+      Else
+      Begin
+        ErrorAt(LexLineNo, LexColNo, 'Strings.Pos : premier arg ARRAY OF CHAR attendu');
+        EmitPushImm32(0);
+      End;
+    End
+    Else
+    Begin
+      ErrorAt(LexLineNo, LexColNo, 'Strings.Pos : identificateur attendu');
+      EmitPushImm32(0);
+    End;
+    ExpectOp(',');
+    If CurTok = TOK_IDENT Then
+    Begin
+      Si := SymFind(CurTokStr);
+      If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+      Begin
+        SymTab[Si].Used := True;
+        BinEmitByte($B8);
+        AddFixup(FIX_VAR, Si);
+        BinEmitDWord(0);
+        EmitPushEAX;
+        LexNext;
+      End
+      Else
+      Begin
+        ErrorAt(LexLineNo, LexColNo, 'Strings.Pos : deuxieme arg ARRAY OF CHAR attendu');
+        EmitPushImm32(0);
+      End;
+    End;
+    ExpectOp(',');
+    GenExpression;       { eax = start }
+    EmitPushEAX;
+    { Appel _str_pos(pat, s, start) -> eax }
+    BinEmitByte($E8);
+    AddFixup(FIX_CODE_REL, FindLabel('_str_pos'));
+    BinEmitDWord(0);
+    { Nettoie 3 args }
+    BinEmitByte($83); BinEmitByte($C4); BinEmitByte($0C);
+    ExpectOp(')');
+  End
+
+  { --- In.Done : etat de la derniere lecture (1=OK, 0=EOF). --- }
+  Else If QN = 'IN.DONE' Then
+  Begin
+    If AcceptOp('(') Then
+      ExpectOp(')');
+    BinEmitByte($A1);                    { mov eax, [InDone] }
+    AddFixup(FIX_INDONE, 0);
+    BinEmitDWord(0);
   End
 
   Else
@@ -2363,6 +2489,202 @@ Begin
           End;
           ExpectOp(')');
         End;
+      End
+
+      { -------- Strings.* -------- }
+      Else If (VarName = 'Strings.Copy') Or (VarName = 'Strings.COPY') Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          If CurTok = TOK_STRING Then
+          Begin
+            VarName := CurTokStr;
+            LexNext;
+            ExpectOp(',');
+            If CurTok = TOK_IDENT Then
+            Begin
+              Si := SymFind(CurTokStr);
+              If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+                GenCopyLiteralToArr(VarName, Si)
+              Else
+                ErrorAt(LexLineNo, LexColNo, 'Strings.Copy : destination ARRAY OF CHAR attendue');
+              LexNext;
+            End;
+          End
+          Else If CurTok = TOK_IDENT Then
+          Begin
+            LoopVarSi := SymFind(CurTokStr);
+            LexNext;
+            ExpectOp(',');
+            If CurTok = TOK_IDENT Then
+            Begin
+              Si := SymFind(CurTokStr);
+              If (LoopVarSi > 0) And (Si > 0) And
+                 (SymTab[LoopVarSi].TypeIdx = TYK_ARRCHAR) And
+                 (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+                GenCopyArrToArr(LoopVarSi, Si)
+              Else
+                ErrorAt(LexLineNo, LexColNo, 'Strings.Copy : ARRAY OF CHAR attendus');
+              LexNext;
+            End;
+          End;
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'Strings.Append' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          If CurTok = TOK_STRING Then
+          Begin
+            VarName := CurTokStr;
+            LexNext;
+            ExpectOp(',');
+            If CurTok = TOK_IDENT Then
+            Begin
+              Si := SymFind(CurTokStr);
+              If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+                GenAppendLiteralToArr(VarName, Si)
+              Else
+                ErrorAt(LexLineNo, LexColNo, 'Strings.Append : destination ARRAY OF CHAR attendue');
+              LexNext;
+            End;
+          End
+          Else If CurTok = TOK_IDENT Then
+          Begin
+            LoopVarSi := SymFind(CurTokStr);
+            LexNext;
+            ExpectOp(',');
+            If CurTok = TOK_IDENT Then
+            Begin
+              Si := SymFind(CurTokStr);
+              If (LoopVarSi > 0) And (Si > 0) And
+                 (SymTab[LoopVarSi].TypeIdx = TYK_ARRCHAR) And
+                 (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+                GenAppendArrToArr(LoopVarSi, Si)
+              Else
+                ErrorAt(LexLineNo, LexColNo, 'Strings.Append : ARRAY OF CHAR attendus');
+              LexNext;
+            End;
+          End;
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'Strings.Cap' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          If CurTok = TOK_IDENT Then
+          Begin
+            Si := SymFind(CurTokStr);
+            If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+            Begin
+              SymTab[Si].Used := True;
+              { eax := &s ; ecx := cap ; call _cap_helper }
+              BinEmitByte($B8);
+              AddFixup(FIX_VAR, Si);
+              BinEmitDWord(0);
+              BinEmitByte($B9); BinEmitDWord(SymTab[Si].ArrSize);
+              BinEmitByte($E8);
+              AddFixup(FIX_CODE_REL, FindLabel('_strcap'));
+              BinEmitDWord(0);
+              LexNext;
+            End
+            Else
+              ErrorAt(LexLineNo, LexColNo, 'Strings.Cap : ARRAY OF CHAR attendu');
+          End;
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'Strings.Insert' Then
+      Begin
+        { Strings.Insert(src, pos, dst) : src literal ou ARRCHAR,
+          pos entier, dst ARRCHAR. }
+        If AcceptOp('(') Then
+        Begin
+          GenStringsInsert;
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'Strings.Delete' Then
+      Begin
+        { Strings.Delete(s, pos, n) : supprime n chars a partir de pos. }
+        If AcceptOp('(') Then
+        Begin
+          GenStringsDelete;
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'Strings.Replace' Then
+      Begin
+        { Strings.Replace(src, pos, dst) : ecrit src dans dst a partir de pos. }
+        If AcceptOp('(') Then
+        Begin
+          GenStringsReplace;
+          ExpectOp(')');
+        End;
+      End
+
+      { -------- Conv.* -------- }
+      Else If VarName = 'Conv.IntToString' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenConvIntToString;
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'Conv.StringToInt' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenConvStringToInt;
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'Conv.HexToString' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenConvHexToString;
+          ExpectOp(')');
+        End;
+      End
+
+      { -------- In.* -------- }
+      Else If VarName = 'In.Line' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenInLine;
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'In.Int' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenInInt;
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'In.Char' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenInChar;
+          ExpectOp(')');
+        End;
+      End
+
+      { -------- Args.Get -------- }
+      Else If VarName = 'Args.Get' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenArgsGet;
+          ExpectOp(')');
+        End;
       End;
     End
     Else If AcceptOp('(') Then
@@ -3018,6 +3340,200 @@ Begin
   BinEmitByte($C3);                                          { ret }
 End;
 
+{ --- _readline : lit une ligne depuis stdin dans le tampon global InBuf
+   (256 octets).  Consomme les octets jusqu'a '\n' ou EOF en appelant
+   ReadFile 1 octet a la fois sur le handle stdin.  Ecrit la longueur
+   effective (sans CR/LF) dans InLen et 1/0 dans InDone.  Ne touche
+   pas a ebp ; preserve ebx, esi, edi. --- }
+Procedure GenReadLineHelper;
+Var
+  LabLoop, LabStoreStop, LabDone, LabCRLF, LabNoCR : String;
+Begin
+  DefineLabel('_readline');
+  BinEmitByte($53);                                { push ebx }
+  BinEmitByte($56);                                { push esi }
+  BinEmitByte($57);                                { push edi }
+
+  { edi := InBuf }
+  BinEmitByte($BF);
+  AddFixup(FIX_INBUF, 0);
+  BinEmitDWord(0);
+  { ebx := 0 (nombre d'octets stockes), esi := 0 (termine / EOF flag) }
+  BinEmitByte($31); BinEmitByte($DB);
+  BinEmitByte($31); BinEmitByte($F6);
+
+  LabLoop      := GenLabel;
+  LabStoreStop := GenLabel;
+  LabDone      := GenLabel;
+  LabCRLF      := GenLabel;
+  LabNoCR      := GenLabel;
+
+  DefineLabel(LabLoop);
+  { Limite : 255 octets max pour laisser place au nul. }
+  BinEmitByte($81); BinEmitByte($FB);              { cmp ebx, 255 }
+  BinEmitDWord(255);
+  EmitJGE(LabDone);
+
+  { ReadFile(stdin, InBuf+ebx, 1, &InLen, 0) }
+  EmitPushImm32(0);
+  BinEmitByte($68);
+  AddFixup(FIX_INLEN, 0);
+  BinEmitDWord(0);
+  EmitPushImm32(1);
+  { push (InBuf + ebx) -> lea eax, [edi+ebx] ; push eax }
+  BinEmitByte($8D); BinEmitByte($04); BinEmitByte($1F);
+  BinEmitByte($50);
+  BinEmitByte($FF); BinEmitByte($35);
+  AddFixup(FIX_STDIN, 0);
+  BinEmitDWord(0);
+  EmitCallIAT(FIX_IAT_READ);
+
+  { eax = 1 si succes, 0 si echec. Si echec -> EOF. }
+  EmitTestEAX;
+  EmitJZ(LabDone);
+  { Lire combien d'octets ont ete lus depuis InLen. }
+  BinEmitByte($A1);                                { mov eax, [InLen] }
+  AddFixup(FIX_INLEN, 0);
+  BinEmitDWord(0);
+  EmitTestEAX;
+  EmitJZ(LabDone);
+
+  { al := byte lu : test contre 0x0A (LF) }
+  BinEmitByte($8A); BinEmitByte($04); BinEmitByte($1F);  { mov al, [edi+ebx] }
+  BinEmitByte($3C); BinEmitByte($0A);              { cmp al, 0Ah }
+  EmitJE(LabCRLF);
+  { Sinon incremente ebx et boucle. }
+  BinEmitByte($43);                                { inc ebx }
+  EmitJmp(LabLoop);
+
+  DefineLabel(LabCRLF);
+  { Ligne terminee.  Si l'octet precedent etait CR (0x0D), le retirer. }
+  BinEmitByte($85); BinEmitByte($DB);              { test ebx, ebx }
+  EmitJZ(LabNoCR);
+  { mov al, [edi+ebx-1] }
+  BinEmitByte($8A); BinEmitByte($44); BinEmitByte($1F); BinEmitByte($FF);
+  BinEmitByte($3C); BinEmitByte($0D);              { cmp al, 0Dh }
+  EmitJNE(LabNoCR);
+  BinEmitByte($4B);                                { dec ebx }
+  DefineLabel(LabNoCR);
+  { esi := 1 (succes) }
+  BinEmitByte($BE); BinEmitDWord(1);
+  EmitJmp(LabStoreStop);
+
+  DefineLabel(LabDone);
+  { EOF ou buffer plein : on marque done en fonction de ebx.
+    (esi reste a 0 si on est arrive ici sans rien lire, sinon on le
+     laisse a 0 aussi par simplicite ; le caller peut tester InLen.)
+    On rebascule simplement la logique : si ebx > 0, on marque done. }
+  BinEmitByte($85); BinEmitByte($DB);              { test ebx, ebx }
+  EmitJZ(LabStoreStop);
+  BinEmitByte($BE); BinEmitDWord(1);               { mov esi, 1 }
+
+  DefineLabel(LabStoreStop);
+  { Nul terminator en fin : mov byte [edi+ebx], 0 }
+  BinEmitByte($C6); BinEmitByte($04); BinEmitByte($1F); BinEmitByte($00);
+  { InLen := ebx }
+  BinEmitByte($89); BinEmitByte($1D);              { mov [InLen], ebx }
+  AddFixup(FIX_INLEN, 0);
+  BinEmitDWord(0);
+  { InDone := esi }
+  BinEmitByte($89); BinEmitByte($35);              { mov [InDone], esi }
+  AddFixup(FIX_INDONE, 0);
+  BinEmitDWord(0);
+
+  BinEmitByte($5F);                                { pop edi }
+  BinEmitByte($5E);                                { pop esi }
+  BinEmitByte($5B);                                { pop ebx }
+  BinEmitByte($C3);                                { ret }
+End;
+
+{ --- _strlen : eax = addr(zstring) -> eax = longueur.  Stoppe au
+   premier octet nul.  Ne touche pas a ecx/edx. --- }
+Procedure GenStrLenHelper;
+Var
+  LabLoop, LabDone : String;
+Begin
+  DefineLabel('_strlen');
+  BinEmitByte($53);                        { push ebx }
+  BinEmitByte($89); BinEmitByte($C3);      { mov ebx, eax }
+  BinEmitByte($89); BinEmitByte($C2);      { mov edx, eax }
+  LabLoop := GenLabel;
+  LabDone := GenLabel;
+  DefineLabel(LabLoop);
+  { cmp byte [ebx], 0 ; je LabDone ; inc ebx ; jmp LabLoop }
+  BinEmitByte($80); BinEmitByte($3B); BinEmitByte($00);
+  EmitJE(LabDone);
+  BinEmitByte($43);
+  EmitJmp(LabLoop);
+  DefineLabel(LabDone);
+  { eax := ebx - edx }
+  BinEmitByte($89); BinEmitByte($D8);      { mov eax, ebx }
+  BinEmitByte($29); BinEmitByte($D0);      { sub eax, edx }
+  BinEmitByte($5B);                        { pop ebx }
+  BinEmitByte($C3);                        { ret }
+End;
+
+{ --- _str_pos(pat, s, start) -> eax : index de la premiere occurrence
+   de pat dans s a partir de start, ou -1 si absent.  Implementation
+   naive.  Arguments sur la pile (cdecl-like, nettoyes par l'appelant). --- }
+Procedure GenStrPosHelper;
+Var
+  LabOuter, LabInner, LabMatch, LabNext, LabFound, LabNotFound : String;
+Begin
+  DefineLabel('_str_pos');
+  { Prologue : preserve ebx, esi, edi ; ebp n'est pas utilise. }
+  BinEmitByte($53); BinEmitByte($56); BinEmitByte($57);
+  { Args : [esp+16]=pat, [esp+20]=s, [esp+24]=start }
+  BinEmitByte($8B); BinEmitByte($44); BinEmitByte($24); BinEmitByte($10);  { mov eax, [esp+16] pat }
+  BinEmitByte($89); BinEmitByte($C7);                            { mov edi, eax }
+  BinEmitByte($8B); BinEmitByte($44); BinEmitByte($24); BinEmitByte($14);  { mov eax, [esp+20] s }
+  BinEmitByte($89); BinEmitByte($C6);                            { mov esi, eax }
+  BinEmitByte($8B); BinEmitByte($44); BinEmitByte($24); BinEmitByte($18);  { mov eax, [esp+24] start }
+  BinEmitByte($01); BinEmitByte($C6);                            { add esi, eax }
+  BinEmitByte($89); BinEmitByte($C3);                            { mov ebx, eax  (position courante) }
+
+  LabOuter    := GenLabel;
+  LabInner    := GenLabel;
+  LabMatch    := GenLabel;
+  LabNext     := GenLabel;
+  LabFound    := GenLabel;
+  LabNotFound := GenLabel;
+
+  DefineLabel(LabOuter);
+  { Si s[esi]==0 et pat non vide -> absent. }
+  BinEmitByte($8A); BinEmitByte($06);                            { mov al, [esi] }
+  BinEmitByte($84); BinEmitByte($C0);                            { test al, al }
+  EmitJZ(LabNotFound);
+  { Compare char par char : ecx=0, loop tant que pat[ecx]!=0 et pat[ecx]==s[esi+ecx]. }
+  BinEmitByte($31); BinEmitByte($C9);                            { xor ecx, ecx }
+  DefineLabel(LabInner);
+  { al := pat[ecx] }
+  BinEmitByte($8A); BinEmitByte($04); BinEmitByte($0F);          { mov al, [edi+ecx] }
+  BinEmitByte($84); BinEmitByte($C0);                            { test al, al }
+  EmitJZ(LabFound);
+  { dl := s[esi+ecx] }
+  BinEmitByte($8A); BinEmitByte($14); BinEmitByte($0E);          { mov dl, [esi+ecx] }
+  BinEmitByte($38); BinEmitByte($D0);                            { cmp al, dl }
+  EmitJNE(LabNext);
+  BinEmitByte($41);                                              { inc ecx }
+  EmitJmp(LabInner);
+  DefineLabel(LabNext);
+  BinEmitByte($46);                                              { inc esi }
+  BinEmitByte($43);                                              { inc ebx }
+  EmitJmp(LabOuter);
+
+  DefineLabel(LabFound);
+  BinEmitByte($89); BinEmitByte($D8);                            { mov eax, ebx }
+  EmitJmp(LabMatch);
+
+  DefineLabel(LabNotFound);
+  BinEmitByte($B8); BinEmitDWord(-1);                            { mov eax, -1 }
+
+  DefineLabel(LabMatch);
+  BinEmitByte($5F); BinEmitByte($5E); BinEmitByte($5B);
+  BinEmitByte($C3);
+End;
+
 Procedure ParseVarDecl;
 Var
   VarNames : Array[1..32] of String;
@@ -3247,6 +3763,14 @@ Begin
   AddFixup(FIX_STDERR, 0);
   BinCodeLen := BinCodeLen + 4;
 
+  { Recupere le handle stdin (-10) }
+  EmitPushImm32(-10);
+  EmitCallIAT(FIX_IAT_GETSTD);
+  EmitMovMem32EAX($400000 + $2000);
+  BinCodeLen := BinCodeLen - 4;
+  AddFixup(FIX_STDIN, 0);
+  BinCodeLen := BinCodeLen + 4;
+
   { Initialise la seed du generateur aleatoire avec GetTickCount
     (ecrit eax dans rnd_seed). }
   EmitCallIAT(FIX_IAT_GETTICK);
@@ -3269,9 +3793,10 @@ Var
   ImageBase : LongInt;
   StdoutAddr, CRLFAddr, IntBufAddr, BytesWrittenAddr : LongInt;
   StderrAddr, RndSeedAddr, HexBufAddr : LongInt;
+  StdinAddr, InLenAddr, InDoneAddr, InBufAddr : LongInt;
   StrAddr : LongInt;
   IATGetStd, IATWrite, IATExit : LongInt;
-  IATSleep, IATGetTick, IATGetCmd : LongInt;
+  IATSleep, IATGetTick, IATGetCmd, IATRead : LongInt;
   VarBase, TotalStr : LongInt;
 Begin
   ImageBase := $400000;
@@ -3283,25 +3808,32 @@ Begin
   StderrAddr := CRLFAddr + 2;
   RndSeedAddr := StderrAddr + 4;
   HexBufAddr := RndSeedAddr + 4;
+  { Palier 2 : stdin handle + tampon lecture ligne. }
+  StdinAddr  := HexBufAddr + 8;
+  InLenAddr  := StdinAddr + 4;
+  InDoneAddr := InLenAddr + 4;
+  InBufAddr  := InDoneAddr + 4;
 
   TotalStr := 0;
   For Li := 1 To StringCount Do
     TotalStr := TotalStr + Length(StringPool[Li]);
   { Offset de base des variables utilisateur : taille du bloc fixe
     0(stdout)+4(bytes)+12(intbuf)+2(crlf)+4(stderr)+4(rndseed)+8(hexbuf)
-    = 38 octets, puis chaines litterales. }
-  VarBase := 38 + TotalStr;
+    +4(stdin)+4(inlen)+4(indone)+256(inbuf) = 306 octets,
+    puis chaines litterales. }
+  VarBase := 306 + TotalStr;
   While (VarBase Mod 4) <> 0 Do
     VarBase := VarBase + 1;
 
-  { IAT kernel32 en 6 entrees (7 DWord en comptant le terminateur nul).
-    Nouvelle disposition : ILT@40, IAT@72. }
-  IATGetStd  := ImageBase + IdataRVA + 72;
+  { IAT kernel32 en 7 entrees (8 DWord en comptant le terminateur nul).
+    Nouvelle disposition : ILT@40, IAT@76. }
+  IATGetStd  := ImageBase + IdataRVA + 76;
   IATWrite   := IATGetStd + 4;
   IATExit    := IATWrite  + 4;
   IATSleep   := IATExit   + 4;
   IATGetTick := IATSleep  + 4;
   IATGetCmd  := IATGetTick + 4;
+  IATRead    := IATGetCmd + 4;
   
   For I := 1 To FixupCount Do
   Begin
@@ -3333,8 +3865,8 @@ Begin
       FIX_STRING:
         Begin
           Si := Fixups[I].Target;
-          { Les chaines litterales viennent apres le bloc fixe de 34 octets. }
-          StrAddr := HexBufAddr + 8;
+          { Les chaines litterales viennent apres le bloc fixe de 306 octets. }
+          StrAddr := InBufAddr + 256;
           If Si > 0 Then
           Begin
             For Li := 1 To Si-1 Do
@@ -3470,6 +4002,46 @@ Begin
           BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
           BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
         End;
+      FIX_IAT_READ:
+        Begin
+          TargetAddr := IATRead;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_STDIN:
+        Begin
+          TargetAddr := StdinAddr;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_INBUF:
+        Begin
+          TargetAddr := InBufAddr;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_INLEN:
+        Begin
+          TargetAddr := InLenAddr;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
+      FIX_INDONE:
+        Begin
+          TargetAddr := InDoneAddr;
+          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        End;
     End;
   End;
 End;
@@ -3520,6 +4092,32 @@ Begin
   For I := 1 To 8 Do
   Begin
     BinData[BinDataLen] := Ord('0');
+    Inc(BinDataLen);
+  End;
+
+  { Palier 2 : zones lecture ligne. }
+  { Stdin handle : 4 octets. }
+  For I := 1 To 4 Do
+  Begin
+    BinData[BinDataLen] := 0;
+    Inc(BinDataLen);
+  End;
+  { InLen : 4 octets. }
+  For I := 1 To 4 Do
+  Begin
+    BinData[BinDataLen] := 0;
+    Inc(BinDataLen);
+  End;
+  { InDone : 4 octets. }
+  For I := 1 To 4 Do
+  Begin
+    BinData[BinDataLen] := 0;
+    Inc(BinDataLen);
+  End;
+  { InBuf : 256 octets. }
+  For I := 1 To 256 Do
+  Begin
+    BinData[BinDataLen] := 0;
     Inc(BinDataLen);
   End;
 
@@ -3667,96 +4265,106 @@ Begin
   IdataBuf[2] := (($3000 + 40) Shr 16) And $FF;
   IdataBuf[3] := (($3000 + 40) Shr 24) And $FF;
 
-  { Name = RVA $3000+100 ("KERNEL32.DLL") }
-  IdataBuf[12] := ($3000 + 100) And $FF;
-  IdataBuf[13] := (($3000 + 100) Shr 8) And $FF;
-  IdataBuf[14] := (($3000 + 100) Shr 16) And $FF;
-  IdataBuf[15] := (($3000 + 100) Shr 24) And $FF;
+  { Name = RVA $3000+108 ("KERNEL32.DLL") }
+  IdataBuf[12] := ($3000 + 108) And $FF;
+  IdataBuf[13] := (($3000 + 108) Shr 8) And $FF;
+  IdataBuf[14] := (($3000 + 108) Shr 16) And $FF;
+  IdataBuf[15] := (($3000 + 108) Shr 24) And $FF;
 
-  { FirstThunk (IAT) = RVA $3000+72 }
-  IdataBuf[16] := ($3000 + 72) And $FF;
-  IdataBuf[17] := (($3000 + 72) Shr 8) And $FF;
-  IdataBuf[18] := (($3000 + 72) Shr 16) And $FF;
-  IdataBuf[19] := (($3000 + 72) Shr 24) And $FF;
+  { FirstThunk (IAT) = RVA $3000+76 }
+  IdataBuf[16] := ($3000 + 76) And $FF;
+  IdataBuf[17] := (($3000 + 76) Shr 8) And $FF;
+  IdataBuf[18] := (($3000 + 76) Shr 16) And $FF;
+  IdataBuf[19] := (($3000 + 76) Shr 24) And $FF;
 
-  { --- ILT a offset 40 : 6 pointeurs vers Hint/Name + nul --- }
-  { 0 : GetStdHandle -> $3000+120 }
-  IdataBuf[40] := ($3000 + 120) And $FF;
-  IdataBuf[41] := (($3000 + 120) Shr 8) And $FF;
-  IdataBuf[42] := (($3000 + 120) Shr 16) And $FF;
-  IdataBuf[43] := (($3000 + 120) Shr 24) And $FF;
-  { 1 : WriteFile -> $3000+136 }
-  IdataBuf[44] := ($3000 + 136) And $FF;
-  IdataBuf[45] := (($3000 + 136) Shr 8) And $FF;
-  IdataBuf[46] := (($3000 + 136) Shr 16) And $FF;
-  IdataBuf[47] := (($3000 + 136) Shr 24) And $FF;
-  { 2 : ExitProcess -> $3000+148 }
-  IdataBuf[48] := ($3000 + 148) And $FF;
-  IdataBuf[49] := (($3000 + 148) Shr 8) And $FF;
-  IdataBuf[50] := (($3000 + 148) Shr 16) And $FF;
-  IdataBuf[51] := (($3000 + 148) Shr 24) And $FF;
-  { 3 : Sleep -> $3000+162 }
-  IdataBuf[52] := ($3000 + 162) And $FF;
-  IdataBuf[53] := (($3000 + 162) Shr 8) And $FF;
-  IdataBuf[54] := (($3000 + 162) Shr 16) And $FF;
-  IdataBuf[55] := (($3000 + 162) Shr 24) And $FF;
-  { 4 : GetTickCount -> $3000+170 }
-  IdataBuf[56] := ($3000 + 170) And $FF;
-  IdataBuf[57] := (($3000 + 170) Shr 8) And $FF;
-  IdataBuf[58] := (($3000 + 170) Shr 16) And $FF;
-  IdataBuf[59] := (($3000 + 170) Shr 24) And $FF;
-  { 5 : GetCommandLineA -> $3000+186 }
-  IdataBuf[60] := ($3000 + 186) And $FF;
-  IdataBuf[61] := (($3000 + 186) Shr 8) And $FF;
-  IdataBuf[62] := (($3000 + 186) Shr 16) And $FF;
-  IdataBuf[63] := (($3000 + 186) Shr 24) And $FF;
-  { ILT terminator (nul) a 64..67 ; deja a 0 via FillChar. }
+  { --- ILT a offset 40 : 7 pointeurs vers Hint/Name + nul --- }
+  { 0 : GetStdHandle -> $3000+124 }
+  IdataBuf[40] := ($3000 + 124) And $FF;
+  IdataBuf[41] := (($3000 + 124) Shr 8) And $FF;
+  IdataBuf[42] := (($3000 + 124) Shr 16) And $FF;
+  IdataBuf[43] := (($3000 + 124) Shr 24) And $FF;
+  { 1 : WriteFile -> $3000+140 }
+  IdataBuf[44] := ($3000 + 140) And $FF;
+  IdataBuf[45] := (($3000 + 140) Shr 8) And $FF;
+  IdataBuf[46] := (($3000 + 140) Shr 16) And $FF;
+  IdataBuf[47] := (($3000 + 140) Shr 24) And $FF;
+  { 2 : ExitProcess -> $3000+152 }
+  IdataBuf[48] := ($3000 + 152) And $FF;
+  IdataBuf[49] := (($3000 + 152) Shr 8) And $FF;
+  IdataBuf[50] := (($3000 + 152) Shr 16) And $FF;
+  IdataBuf[51] := (($3000 + 152) Shr 24) And $FF;
+  { 3 : Sleep -> $3000+166 }
+  IdataBuf[52] := ($3000 + 166) And $FF;
+  IdataBuf[53] := (($3000 + 166) Shr 8) And $FF;
+  IdataBuf[54] := (($3000 + 166) Shr 16) And $FF;
+  IdataBuf[55] := (($3000 + 166) Shr 24) And $FF;
+  { 4 : GetTickCount -> $3000+174 }
+  IdataBuf[56] := ($3000 + 174) And $FF;
+  IdataBuf[57] := (($3000 + 174) Shr 8) And $FF;
+  IdataBuf[58] := (($3000 + 174) Shr 16) And $FF;
+  IdataBuf[59] := (($3000 + 174) Shr 24) And $FF;
+  { 5 : GetCommandLineA -> $3000+190 }
+  IdataBuf[60] := ($3000 + 190) And $FF;
+  IdataBuf[61] := (($3000 + 190) Shr 8) And $FF;
+  IdataBuf[62] := (($3000 + 190) Shr 16) And $FF;
+  IdataBuf[63] := (($3000 + 190) Shr 24) And $FF;
+  { 6 : ReadFile -> $3000+208 }
+  IdataBuf[64] := ($3000 + 208) And $FF;
+  IdataBuf[65] := (($3000 + 208) Shr 8) And $FF;
+  IdataBuf[66] := (($3000 + 208) Shr 16) And $FF;
+  IdataBuf[67] := (($3000 + 208) Shr 24) And $FF;
+  { ILT terminator (nul) a 68..71 ; deja a 0 via FillChar. }
 
-  { --- IAT a offset 72 : copie initiale de ILT (loader remplace par
+  { --- IAT a offset 76 : copie initiale de ILT (loader remplace par
     les adresses reelles au chargement) --- }
-  IdataBuf[72] := ($3000 + 120) And $FF;
-  IdataBuf[73] := (($3000 + 120) Shr 8) And $FF;
-  IdataBuf[74] := (($3000 + 120) Shr 16) And $FF;
-  IdataBuf[75] := (($3000 + 120) Shr 24) And $FF;
-  IdataBuf[76] := ($3000 + 136) And $FF;
-  IdataBuf[77] := (($3000 + 136) Shr 8) And $FF;
-  IdataBuf[78] := (($3000 + 136) Shr 16) And $FF;
-  IdataBuf[79] := (($3000 + 136) Shr 24) And $FF;
-  IdataBuf[80] := ($3000 + 148) And $FF;
-  IdataBuf[81] := (($3000 + 148) Shr 8) And $FF;
-  IdataBuf[82] := (($3000 + 148) Shr 16) And $FF;
-  IdataBuf[83] := (($3000 + 148) Shr 24) And $FF;
-  IdataBuf[84] := ($3000 + 162) And $FF;
-  IdataBuf[85] := (($3000 + 162) Shr 8) And $FF;
-  IdataBuf[86] := (($3000 + 162) Shr 16) And $FF;
-  IdataBuf[87] := (($3000 + 162) Shr 24) And $FF;
-  IdataBuf[88] := ($3000 + 170) And $FF;
-  IdataBuf[89] := (($3000 + 170) Shr 8) And $FF;
-  IdataBuf[90] := (($3000 + 170) Shr 16) And $FF;
-  IdataBuf[91] := (($3000 + 170) Shr 24) And $FF;
-  IdataBuf[92] := ($3000 + 186) And $FF;
-  IdataBuf[93] := (($3000 + 186) Shr 8) And $FF;
-  IdataBuf[94] := (($3000 + 186) Shr 16) And $FF;
-  IdataBuf[95] := (($3000 + 186) Shr 24) And $FF;
-  { IAT terminator (nul) a 96..99 ; deja a 0. }
+  IdataBuf[76] := ($3000 + 124) And $FF;
+  IdataBuf[77] := (($3000 + 124) Shr 8) And $FF;
+  IdataBuf[78] := (($3000 + 124) Shr 16) And $FF;
+  IdataBuf[79] := (($3000 + 124) Shr 24) And $FF;
+  IdataBuf[80] := ($3000 + 140) And $FF;
+  IdataBuf[81] := (($3000 + 140) Shr 8) And $FF;
+  IdataBuf[82] := (($3000 + 140) Shr 16) And $FF;
+  IdataBuf[83] := (($3000 + 140) Shr 24) And $FF;
+  IdataBuf[84] := ($3000 + 152) And $FF;
+  IdataBuf[85] := (($3000 + 152) Shr 8) And $FF;
+  IdataBuf[86] := (($3000 + 152) Shr 16) And $FF;
+  IdataBuf[87] := (($3000 + 152) Shr 24) And $FF;
+  IdataBuf[88] := ($3000 + 166) And $FF;
+  IdataBuf[89] := (($3000 + 166) Shr 8) And $FF;
+  IdataBuf[90] := (($3000 + 166) Shr 16) And $FF;
+  IdataBuf[91] := (($3000 + 166) Shr 24) And $FF;
+  IdataBuf[92] := ($3000 + 174) And $FF;
+  IdataBuf[93] := (($3000 + 174) Shr 8) And $FF;
+  IdataBuf[94] := (($3000 + 174) Shr 16) And $FF;
+  IdataBuf[95] := (($3000 + 174) Shr 24) And $FF;
+  IdataBuf[96] := ($3000 + 190) And $FF;
+  IdataBuf[97] := (($3000 + 190) Shr 8) And $FF;
+  IdataBuf[98] := (($3000 + 190) Shr 16) And $FF;
+  IdataBuf[99] := (($3000 + 190) Shr 24) And $FF;
+  IdataBuf[100] := ($3000 + 208) And $FF;
+  IdataBuf[101] := (($3000 + 208) Shr 8) And $FF;
+  IdataBuf[102] := (($3000 + 208) Shr 16) And $FF;
+  IdataBuf[103] := (($3000 + 208) Shr 24) And $FF;
+  { IAT terminator (nul) a 104..107 ; deja a 0. }
 
   { --- Nom de la DLL et Hint/Name --- }
-  Move('KERNEL32.DLL'#0, IdataBuf[100], 13);
+  Move('KERNEL32.DLL'#0, IdataBuf[108], 13);
 
-  { Hint/Name : offset 120 .. 203.  Chaque entree = 2 octets hint (0)
-    puis nom termine par nul. }
-  IdataBuf[120] := 0; IdataBuf[121] := 0;
-  Move('GetStdHandle'#0, IdataBuf[122], 13);
-  IdataBuf[136] := 0; IdataBuf[137] := 0;
-  Move('WriteFile'#0, IdataBuf[138], 10);
-  IdataBuf[148] := 0; IdataBuf[149] := 0;
-  Move('ExitProcess'#0, IdataBuf[150], 12);
-  IdataBuf[162] := 0; IdataBuf[163] := 0;
-  Move('Sleep'#0, IdataBuf[164], 6);
-  IdataBuf[170] := 0; IdataBuf[171] := 0;
-  Move('GetTickCount'#0, IdataBuf[172], 13);
-  IdataBuf[186] := 0; IdataBuf[187] := 0;
-  Move('GetCommandLineA'#0, IdataBuf[188], 16);
+  { Hint/Name : 2 octets hint (0) puis nom termine par nul. }
+  IdataBuf[124] := 0; IdataBuf[125] := 0;
+  Move('GetStdHandle'#0, IdataBuf[126], 13);
+  IdataBuf[140] := 0; IdataBuf[141] := 0;
+  Move('WriteFile'#0, IdataBuf[142], 10);
+  IdataBuf[152] := 0; IdataBuf[153] := 0;
+  Move('ExitProcess'#0, IdataBuf[154], 12);
+  IdataBuf[166] := 0; IdataBuf[167] := 0;
+  Move('Sleep'#0, IdataBuf[168], 6);
+  IdataBuf[174] := 0; IdataBuf[175] := 0;
+  Move('GetTickCount'#0, IdataBuf[176], 13);
+  IdataBuf[190] := 0; IdataBuf[191] := 0;
+  Move('GetCommandLineA'#0, IdataBuf[192], 16);
+  IdataBuf[208] := 0; IdataBuf[209] := 0;
+  Move('ReadFile'#0, IdataBuf[210], 9);
 
   WriteBinByte(F, Ord('M'));
   WriteBinByte(F, Ord('Z'));
@@ -3998,6 +4606,9 @@ Begin
   EmitCodeEpilogue;
   GenPrintIntHelper;
   GenArgsCountHelper;
+  GenReadLineHelper;
+  GenStrLenHelper;
+  GenStrPosHelper;
   
   LexClose;
 
