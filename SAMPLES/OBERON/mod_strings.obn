@@ -1,0 +1,74 @@
+MODULE mod_strings;
+(*
+  Demonstration du module Strings (Palier 2).
+
+  Operations supportees : Length, Cap, Append, Pos, Delete, Insert,
+  Replace.  Tous operent sur des ARRAY OF CHAR terminees par un octet
+  nul (0X).
+*)
+IMPORT Out, Strings;
+
+VAR
+  s : ARRAY 64 OF CHAR;
+  t : ARRAY 32 OF CHAR;
+  p : INTEGER;
+
+BEGIN
+  Out.String("=== Strings.Length ==="); Out.Ln;
+  COPY("Hello", s);
+  Out.String("  s = "); Out.String(s); Out.Ln;
+  Out.String("  Strings.Length(s) = ");
+  Out.Int(Strings.Length(s), 0); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Strings.Cap ==="); Out.Ln;
+  COPY("HeLLo 123 World!", s);
+  Out.String("  avant : "); Out.String(s); Out.Ln;
+  Strings.Cap(s);
+  Out.String("  apres : "); Out.String(s); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Strings.Append ==="); Out.Ln;
+  COPY("Hello", s);
+  COPY(", World!", t);
+  Out.String("  s = ["); Out.String(s); Out.String("]"); Out.Ln;
+  Out.String("  t = ["); Out.String(t); Out.String("]"); Out.Ln;
+  Strings.Append(t, s);
+  Out.String("  Append(t, s) -> s = ["); Out.String(s);
+  Out.String("]"); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Strings.Pos ==="); Out.Ln;
+  COPY("Le compilateur Oberon", s);
+  Out.String("  s = "); Out.String(s); Out.Ln;
+  p := Strings.Pos("Oberon", s, 0);
+  Out.String("  Pos('Oberon', s, 0) = ");
+  Out.Int(p, 0); Out.Ln;
+  p := Strings.Pos("xyz", s, 0);
+  Out.String("  Pos('xyz', s, 0) = ");
+  Out.Int(p, 0); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Strings.Delete ==="); Out.Ln;
+  COPY("ABCDEFGHIJ", s);
+  Out.String("  avant : "); Out.String(s); Out.Ln;
+  Strings.Delete(s, 3, 4);
+  Out.String("  apres Delete(s, 3, 4) : ");
+  Out.String(s); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Strings.Insert ==="); Out.Ln;
+  COPY("ABCDEF", s);
+  Out.String("  avant : "); Out.String(s); Out.Ln;
+  Strings.Insert("---", 3, s);
+  Out.String("  apres Insert('---', 3, s) : ");
+  Out.String(s); Out.Ln;
+  Out.Ln;
+
+  Out.String("=== Strings.Replace ==="); Out.Ln;
+  COPY("Bonjour monde", s);
+  Out.String("  avant : "); Out.String(s); Out.Ln;
+  Strings.Replace("Salut", 0, s);
+  Out.String("  apres Replace('Salut', 0, s) : ");
+  Out.String(s); Out.Ln
+END mod_strings.

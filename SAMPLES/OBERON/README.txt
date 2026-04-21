@@ -143,9 +143,9 @@ les exemples mod_*.obn livres dans ce repertoire.
 
   Args       (mod_args.obn)
     Count()       nombre d'arguments de la ligne de commande
-                  (simple comptage de mots separes par des blancs,
-                  sans gestion des guillemets).
-                  Get(i, s) non supporte : requiert ARRAY OF CHAR.
+                  (respecte les guillemets "..").
+    Get(i, s)     copie le i-eme argument (i>=0) dans s :
+                  i = 0 donne le nom du programme.
 
   Random     (mod_random.obn)
     Init(seed)    fixe la graine (seed = INTEGER)
@@ -161,6 +161,36 @@ les exemples mod_*.obn livres dans ce repertoire.
                   Autres procedures SYSTEM.* hors perimetre.
 
 
+Palier 2 (implementes) : les modules qui necessitent les parametres
+VAR / ARRAY OF CHAR et les built-ins COPY / LEN ; voir les exemples
+mod_strings.obn, mod_conv.obn et mod_in.obn.
+
+  Strings    (mod_strings.obn)
+    Length(s)               longueur (jusqu'au premier 0X).
+    Cap(VAR s)              minuscules -> majuscules en place.
+    Append(src, VAR dst)    concatene src a la fin de dst.
+    Pos(pat, s, start)      position du motif >= start, -1 sinon.
+    Delete(VAR s, pos, n)   supprime n caracteres a partir de pos.
+    Insert(src, pos, VAR dst) insere src a la position pos.
+    Replace(src, pos, VAR dst) remplace en place a partir de pos
+                              sans changer la longueur.
+
+  Conv       (mod_conv.obn)
+    IntToString(n, VAR s)      n en decimal signe dans s.
+    HexToString(n, VAR s)      n en hexa 8 chiffres majuscules.
+    StringToInt(s, VAR n, VAR ok)  parse signe + chiffres ;
+                                   ok = 1 si au moins un chiffre lu.
+
+  In         (mod_in.obn)
+    In.Done           variable booleenne : 1 si la derniere
+                      operation a reussi, 0 sinon.
+    Int(VAR n)        lit espaces, signe optionnel, chiffres
+                      decimaux.
+    Char(VAR c)       lit un caractere depuis stdin (code ASCII).
+    Line(VAR s)       lit une ligne dans s (jusqu'au \n ou EOF).
+    String(VAR s)     equivalent a Line ici.
+
+
 Modules Oberon "built-in" - hors perimetre de l'iteration courante
 ===================================================================
 
@@ -168,8 +198,6 @@ Les modules suivants sont mentionnes par les librairies Oberon de
 reference (Oakwood, ETH) mais ne sont pas implementes ici ; chacun
 requiert une evolution majeure du compilateur.
 
-  Strings, Conv   (Palier 2) requierent ARRAY OF CHAR + parametres VAR
-                  + les built-ins COPY / LEN.
   Math, MathL     (Palier 3) requierent le type REAL (32 bits) ou
                   LONGREAL (64 bits) et un generateur x87 FPU.
                   Random.Real depend aussi du Palier 3.
@@ -179,9 +207,6 @@ requiert une evolution majeure du compilateur.
   Coroutines      (Palier 5) requierent un mecanisme de changement de
                   contexte (CreateFiber/SwitchToFiber ou switcher maison)
                   et une allocation de piles dediees.
-  In              Les formes VAR (In.Int(VAR n)) dependent des parametres
-                  VAR et donc du Palier 2 (voir Strings). Une future
-                  implementation lira stdin via ReadFile.
 
 Ces modules sont documentes ici afin que leur absence soit claire
 pour l'utilisateur et que l'ordre des paliers soit trace.

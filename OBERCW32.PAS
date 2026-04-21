@@ -4278,7 +4278,7 @@ End;
    Skip espaces de tete, signe +/- optionnel, suite de chiffres. --- }
 Procedure GenStrToIntHelper;
 Var
-  LabSkip, LabNoSign, LabLoop, LabDigitOk, LabDone, LabOk : String;
+  LabSkip, LabNoSign, LabLoop, LabDone, LabOk : String;
 Begin
   DefineLabel('_strtoint');
   BinEmitByte($53); BinEmitByte($57);                            { push ebx, edi }
@@ -4289,7 +4289,6 @@ Begin
   LabSkip    := GenLabel;
   LabNoSign  := GenLabel;
   LabLoop    := GenLabel;
-  LabDigitOk := GenLabel;
   LabDone    := GenLabel;
   LabOk      := GenLabel;
 
@@ -4302,10 +4301,17 @@ Begin
 
   DefineLabel(LabNoSign);
   BinEmitByte($80); BinEmitByte($FA); BinEmitByte($2D);          { cmp dl, '-' }
+  BinEmitByte($0F); BinEmitByte($85);                            { jne rel32 LabCheckPlus }
+  AddFixup(FIX_CODE_REL, FindLabel('_strtoint_chkplus'));
+  BinEmitDWord(0);
+  BinEmitByte($BB); BinEmitDWord(1);                             { mov ebx, 1 }
+  BinEmitByte($46);                                              { inc esi }
+  EmitJmp(LabLoop);
+  DefineLabel('_strtoint_chkplus');
+  BinEmitByte($80); BinEmitByte($FA); BinEmitByte($2B);          { cmp dl, '+' }
   BinEmitByte($0F); BinEmitByte($85);                            { jne rel32 LabLoop }
   AddFixup(FIX_CODE_REL, FindLabel(LabLoop));
   BinEmitDWord(0);
-  BinEmitByte($BB); BinEmitDWord(1);                             { mov ebx, 1 }
   BinEmitByte($46);                                              { inc esi }
   EmitJmp(LabLoop);
 
@@ -4341,7 +4347,6 @@ Begin
 
   BinEmitByte($5F); BinEmitByte($5B);                            { pop edi, ebx }
   BinEmitByte($C3);
-  LabDigitOk := LabDigitOk;   { evite un warning var non utilisee }
 End;
 
 { --- _args_get : eax=i (0-based), edi=dst, ecx=cap.
