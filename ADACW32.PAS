@@ -7953,10 +7953,17 @@ Begin
 End;
 
 { ---- GenMathStubs : generer les stubs Ada.Numerics.Elementary_Functions }
-{ Les fonctions sont des stubs qui retournent 0 car le support flottant   }
-{ complet (FPU x87) n est pas encore implemente dans ce compilateur.       }
+{ ATTENTION : les fonctions sont des stubs qui retournent 0 car le support }
+{ flottant complet (FPU x87, IEEE-754) n est pas encore implemente dans ce }
+{ compilateur. Tout programme utilisant Sqrt/Sin/Cos/... produira un       }
+{ resultat INCORRECT (0) a l execution. Ces stubs permettent cependant la  }
+{ compilation sans erreur de programmes qui utilisent ces fonctions.        }
 Procedure GenMathStubs;
 Begin
+  EmitBlank;
+  EmitComment('=== ATTENTION : Ada.Numerics.Elementary_Functions ===');
+  EmitComment('Ces fonctions sont des stubs qui retournent TOUJOURS 0.');
+  EmitComment('Le support flottant FPU x87 n est pas encore implemente.');
   GenMathStub('SQRT');
   GenMathStub('SIN');
   GenMathStub('COS');
