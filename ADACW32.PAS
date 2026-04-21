@@ -425,7 +425,7 @@
               T'FIRST  -> constante lo_bound
               T'LAST   -> constante hi_bound
               T'LENGTH -> hi_bound - lo_bound + 1
-            Slices : T(a..b) -> stub (avertissement)
+            Slices : T(a..b) -> helper runtime _ADART_SLICE (tampon rotatif)
 
   TODO 21 - PARSEUR : OPERATIONS SUR RECORDS (32 BITS) [IMPLEMENTE]
             Acces champ : var.champ -> adresse base + offset_champ
@@ -444,8 +444,8 @@
             Records imbrique : var.champ.sous_champ (recursif)
             Attribut record : T'SIZE -> somme des tailles
 
-  TODO 22 - STUBS ADA.TEXT_IO : SORTIE CONSOLE WIN32 [IMPLEMENTE]
-            Generer des stubs helpers Win32 pour les appels Text_IO :
+  TODO 22 - ADA.TEXT_IO : SORTIE CONSOLE WIN32 [IMPLEMENTE]
+            Generer des helpers Win32 pour les appels Text_IO :
             Put(item) : afficher entier, flottant, char ou chaine
               TYPE Integer -> CALL _ADART_PRINTINT
               TYPE String  -> PUSH OFFSET str + CALL _ADART_PRINT
@@ -454,7 +454,7 @@
             Get(var) : lire entier ou char depuis stdin (ReadFile)
             Get_Line(str, last) : lire chaine + retourner longueur
             New_Line [(n)] : emettre n CR+LF (defaut 1)
-            Set_Col(n) : stub (avertissement "non implemente")
+            Set_Col(n) : positionne curseur, pad espaces via _ADART_SETCOL
             Initialiser _ADART_HSTDOUT via GetStdHandle(-11)
             Initialiser _ADART_HSTDIN via GetStdHandle(-10)
 
@@ -7090,7 +7090,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 22 - STUBS ADA.TEXT_IO : SORTIE CONSOLE WIN32           }
+{ TODO 22 - ADA.TEXT_IO : SORTIE CONSOLE WIN32                  }
 { ============================================================ }
 
 { ---- DetectArgTypeForPut : detecter le type d argument ------- }
@@ -8647,9 +8647,10 @@ Var
   Idx : Integer;
 Begin
   { --- Put (S : String) --- }
-  { Note: Put et Put_Line sont maintenant geres inline par        }
-  { GenTextIOPutInline via ParseProcedureCall (TODO 22).          }
-  { Les stubs sont conserves pour compatibilite.                  }
+  { Note: Put et Put_Line sont majoritairement traites inline par        }
+  { GenTextIOPutInline via ParseProcedureCall (TODO 22). Les definitions }
+  { ci-dessous sont conservees pour les cas ou le nom est utilise        }
+  { comme sous-programme (passage en parametre, renommage, etc.).        }
   Idx := FindSub('PUT');
   If Idx = 0 Then
     Idx := AddSub('PUT', False, TYPE_VOID);
@@ -8661,7 +8662,7 @@ Begin
     SubTab[Idx].ParamTypes[1] := TYPE_STR;
     SubTab[Idx].ParamModes[1] := PARAM_IN;
     EmitBlank;
-    EmitComment('--- Ada.Text_IO.Put (stub) ---');
+    EmitComment('--- Ada.Text_IO.Put ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
@@ -8684,7 +8685,7 @@ Begin
     SubTab[Idx].ParamTypes[1] := TYPE_STR;
     SubTab[Idx].ParamModes[1] := PARAM_IN;
     EmitBlank;
-    EmitComment('--- Ada.Text_IO.Put_Line (stub) ---');
+    EmitComment('--- Ada.Text_IO.Put_Line ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
@@ -8708,7 +8709,7 @@ Begin
     SubTab[Idx].ParamTypes[1] := TYPE_CHAR;
     SubTab[Idx].ParamModes[1] := PARAM_OUT;
     EmitBlank;
-    EmitComment('--- Ada.Text_IO.Get (stub) ---');
+    EmitComment('--- Ada.Text_IO.Get ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
@@ -8734,7 +8735,7 @@ Begin
     SubTab[Idx].ParamTypes[2] := TYPE_INT;
     SubTab[Idx].ParamModes[2] := PARAM_OUT;
     EmitBlank;
-    EmitComment('--- Ada.Text_IO.Get_Line (stub) ---');
+    EmitComment('--- Ada.Text_IO.Get_Line ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
@@ -8756,7 +8757,7 @@ Begin
     SubTab[Idx].IsForward  := False;
     SubTab[Idx].ParamCount := 0;
     EmitBlank;
-    EmitComment('--- Ada.Text_IO.New_Line (stub) ---');
+    EmitComment('--- Ada.Text_IO.New_Line ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
@@ -8881,6 +8882,87 @@ End;
 { pour calculer Sqrt, Sin, Cos, etc. sur IEEE-754 simple precision (32 bits). }
 { Les fonctions prennent un Float en argument (32 bits) et retournent un      }
 { Float (32 bits dans EAX apres conversion FPU -> memoire -> EAX).             }
+{ ---- EmitFPUExp : emet la sequence FPU qui remplace ST(0) par exp(ST(0)) }
+{ Utilisee par EXP, SINH, COSH, TANH.                                       }
+{ Utilise au plus 3 niveaux de pile x87 au-dessus de l entree.              }
+Procedure EmitFPUExp;
+Begin
+  EmitI('FLDL2E');
+  EmitI('FMULP ST(1), ST(0)');          { ST0 = x * log2(e) }
+  EmitI('FLD ST(0)');
+  EmitI('FRNDINT');                      { ST0 = round, ST1 = x*l2e }
+  EmitI('FXCH ST(1)');
+  EmitI('FSUB ST(0), ST(1)');            { ST0 = frac, ST1 = round }
+  EmitI('F2XM1');
+  EmitI('FLD1');
+  EmitI('FADDP ST(1), ST(0)');           { ST0 = 2^frac, ST1 = round }
+  EmitI('FSCALE');                        { ST0 = 2^(x*log2(e)) = exp(x) }
+  EmitI('FSTP ST(1)');                   { pop : ST0 = exp(x) }
+End;
+
+{ ---- GenHyperbolicFn : emet Sinh/Cosh/Tanh (FPU x87) ------------------- }
+{ Flavour = 'SINH' | 'COSH' | 'TANH'. Enregistre la fonction dans SubTab.    }
+{ Evite le stockage d une sequence FPU trop longue dans une String[255] en  }
+{ emettant directement les instructions via EmitFPUExp.                      }
+Procedure GenHyperbolicFn(Const Name : TString; Const Flavour : TString);
+Var Idx : Integer;
+Begin
+  Idx := FindSub(Name);
+  If Idx = 0 Then
+    Idx := AddSub(Name, True, TYPE_FLOAT);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].IsFunction := True;
+    SubTab[Idx].ParamCount := 1;
+    SubTab[Idx].ParamNames[1] := 'X';
+    SubTab[Idx].ParamTypes[1] := TYPE_FLOAT;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+    EmitBlank;
+    EmitComment('--- Ada.Numerics.Elementary_Functions.' + Name +
+                ' (FPU x87) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('SUB  ESP, 4');
+    EmitI('FLD  DWORD PTR [EBP+8]');     { ST0 = x }
+    If Flavour = 'TANH' Then
+    Begin
+      { tanh(x) = (exp(2x) - 1) / (exp(2x) + 1) }
+      EmitI('FADD ST(0), ST(0)');         { ST0 = 2x }
+      EmitFPUExp;                          { ST0 = exp(2x) }
+      EmitI('FLD ST(0)');                 { ST0=e2x, ST1=e2x }
+      EmitI('FLD1');
+      EmitI('FSUBP ST(1), ST(0)');        { ST0 = e2x - 1, ST1 = e2x }
+      EmitI('FXCH ST(1)');                { ST0 = e2x, ST1 = e2x - 1 }
+      EmitI('FLD1');
+      EmitI('FADDP ST(1), ST(0)');        { ST0 = e2x + 1, ST1 = e2x - 1 }
+      EmitI('FDIVP ST(1), ST(0)');        { ST0 = (e2x - 1) / (e2x + 1) }
+    End
+    Else
+    Begin
+      { sinh/cosh : exp(x) +/- exp(-x), / 2 }
+      EmitI('FLD ST(0)');                 { ST0 = x, ST1 = x }
+      EmitFPUExp;                          { ST0 = exp(x), ST1 = x }
+      EmitI('FXCH ST(1)');                { ST0 = x, ST1 = exp(x) }
+      EmitI('FCHS');                       { ST0 = -x, ST1 = exp(x) }
+      EmitFPUExp;                          { ST0 = exp(-x), ST1 = exp(x) }
+      If Flavour = 'SINH' Then
+        EmitI('FSUBP ST(1), ST(0)')        { ST0 = exp(x) - exp(-x) }
+      Else
+        EmitI('FADDP ST(1), ST(0)');       { ST0 = exp(x) + exp(-x) }
+      EmitI('FLD1');
+      EmitI('FADD ST(0), ST(0)');          { ST0 = 2 }
+      EmitI('FDIVP ST(1), ST(0)');         { ST0 = diff / 2 }
+    End;
+    EmitI('FSTP DWORD PTR [EBP-4]');
+    EmitI('MOV  EAX, DWORD PTR [EBP-4]');
+    EmitI('MOV  ESP, EBP');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+End;
+
 Procedure GenMathStubs;
 Begin
   EmitBlank;
@@ -8902,21 +8984,20 @@ Begin
     'FSQRT;FXCH ST(1);FPATAN');
   { Arctan(x) = atan2(x, 1) : FLD1 puis FPATAN }
   GenMathStubOp('ARCTAN', 'FLD1;FPATAN');
-  { Exp(x) = 2^(x * log2(e)). F2XM1 calcule 2^x - 1 pour |x| <= 1.0.     }
-  { Formule : exp(x) = 2^(x * LOG2E)                                      }
-  {         = 2^(int + frac) = 2^int * 2^frac                              }
+  { Exp(x) = 2^(x * log2(e)). }
   GenMathStubOp('EXP',
-    'FLDL2E;FMULP ST(1), ST(0);' +              { ST = x * log2(e) }
-    'FLD ST(0);FRNDINT;' +                      { ST0=rnd, ST1=x*l2e }
-    'FXCH ST(1);FSUB ST(0), ST(1);' +           { ST0=frac, ST1=rnd }
-    'F2XM1;FLD1;FADDP ST(1), ST(0);' +          { ST0=2^frac, ST1=rnd }
-    'FSCALE;FSTP ST(1)');                       { ST = 2^frac * 2^rnd }
-  { Log(x) = log_e(x) = ln(2) * log2(x). FYL2X calcule ST1 * log2(ST0).    }
+    'FLDL2E;FMULP ST(1), ST(0);' +
+    'FLD ST(0);FRNDINT;' +
+    'FXCH ST(1);FSUB ST(0), ST(1);' +
+    'F2XM1;FLD1;FADDP ST(1), ST(0);' +
+    'FSCALE;FSTP ST(1)');
+  { Log(x) = ln(2) * log2(x). }
   GenMathStubOp('LOG', 'FLDLN2;FXCH ST(1);FYL2X');
-  { Fonctions hyperboliques non triviales - laisses comme stubs 0 }
-  GenMathStub('SINH');
-  GenMathStub('COSH');
-  GenMathStub('TANH');
+  { Fonctions hyperboliques : emises directement (trop longues pour la     }
+  { String[255] de GenMathStubOp).                                         }
+  GenHyperbolicFn('SINH', 'SINH');
+  GenHyperbolicFn('COSH', 'COSH');
+  GenHyperbolicFn('TANH', 'TANH');
 End;
 
 { ---- GenFloatTextIOStubs : generer les stubs Ada.Float_Text_IO --------- }
@@ -9962,12 +10043,17 @@ Begin
   End;
 
   { ---- FPU : FMULP / FADDP / FSUBRP / FDIVRP (sans operandes ou ST(1),ST(0)) ---- }
+  { Remarque : les encodages Intel sont :                                }
+  {   FSUBP  ST(i), ST(0) : DE E8+i   (ST(i) = ST(i) - ST(0), pop)         }
+  {   FSUBRP ST(i), ST(0) : DE E0+i   (ST(i) = ST(0) - ST(i), pop)         }
+  {   FDIVP  ST(i), ST(0) : DE F8+i   (ST(i) = ST(i) / ST(0), pop)         }
+  {   FDIVRP ST(i), ST(0) : DE F0+i   (ST(i) = ST(0) / ST(i), pop)         }
   If Mnem = 'FMULP'   Then Begin BinEmitByte($DE); BinEmitByte($C9); Exit; End;
   If Mnem = 'FADDP'   Then Begin BinEmitByte($DE); BinEmitByte($C1); Exit; End;
-  If Mnem = 'FSUBRP'  Then Begin BinEmitByte($DE); BinEmitByte($E9); Exit; End;
-  If Mnem = 'FSUBP'   Then Begin BinEmitByte($DE); BinEmitByte($E1); Exit; End;
-  If Mnem = 'FDIVRP'  Then Begin BinEmitByte($DE); BinEmitByte($F9); Exit; End;
-  If Mnem = 'FDIVP'   Then Begin BinEmitByte($DE); BinEmitByte($F1); Exit; End;
+  If Mnem = 'FSUBRP'  Then Begin BinEmitByte($DE); BinEmitByte($E1); Exit; End;
+  If Mnem = 'FSUBP'   Then Begin BinEmitByte($DE); BinEmitByte($E9); Exit; End;
+  If Mnem = 'FDIVRP'  Then Begin BinEmitByte($DE); BinEmitByte($F1); Exit; End;
+  If Mnem = 'FDIVP'   Then Begin BinEmitByte($DE); BinEmitByte($F9); Exit; End;
 
   { ---- FPU : FXCH (sans operande = ST(1)) ---- }
   If Mnem = 'FXCH' Then
@@ -9995,10 +10081,24 @@ Begin
   End;
   If Mnem = 'FSTP' Then
   Begin
-    { FSTP ST(0) : DD D8  (jette le sommet) }
+    { FSTP ST(i) : DD D8+i (jette ST(0) dans ST(i) avec pop) }
     If (StrUpperCase(Op1) = 'ST(0)') Or (StrUpperCase(Op1) = 'ST') Or
        (StrUpperCase(Op1) = 'ST0') Then
     Begin BinEmitByte($DD); BinEmitByte($D8); Exit; End;
+    If StrUpperCase(Op1) = 'ST(1)' Then
+    Begin BinEmitByte($DD); BinEmitByte($D9); Exit; End;
+    If StrUpperCase(Op1) = 'ST(2)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DA); Exit; End;
+    If StrUpperCase(Op1) = 'ST(3)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DB); Exit; End;
+    If StrUpperCase(Op1) = 'ST(4)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DC); Exit; End;
+    If StrUpperCase(Op1) = 'ST(5)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DD); Exit; End;
+    If StrUpperCase(Op1) = 'ST(6)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DE); Exit; End;
+    If StrUpperCase(Op1) = 'ST(7)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DF); Exit; End;
     { FSTP DWORD PTR [mem] : D9 /3 }
     If AsmStartsWith(Op1, 'DWORD PTR [') Then
     Begin
@@ -10038,11 +10138,42 @@ Begin
       Exit;
     End;
   End;
-  If Mnem = 'FMUL' Then
+  { ---- FPU : FADD/FSUB/FMUL/FDIV ST(0), ST(i) ---- }
+  { Encodage :                                                       }
+  {   FADD  ST(0), ST(i) : D8 C0+i     (ST0 = ST0 + ST(i))           }
+  {   FMUL  ST(0), ST(i) : D8 C8+i                                   }
+  {   FSUB  ST(0), ST(i) : D8 E0+i                                   }
+  {   FSUBR ST(0), ST(i) : D8 E8+i                                   }
+  {   FDIV  ST(0), ST(i) : D8 F0+i                                   }
+  {   FDIVR ST(0), ST(i) : D8 F8+i                                   }
+  If (Mnem = 'FADD') Or (Mnem = 'FMUL') Or (Mnem = 'FSUB') Or
+     (Mnem = 'FSUBR') Or (Mnem = 'FDIV') Or (Mnem = 'FDIVR') Then
   Begin
-    { FMUL ST(0), ST(0) : D8 C8 }
-    If (StrUpperCase(Op1) = 'ST(0)') And (StrUpperCase(Op2) = 'ST(0)') Then
-    Begin BinEmitByte($D8); BinEmitByte($C8); Exit; End;
+    { Identifier ST(i) dans Op2 si Op1 = ST(0) }
+    If (StrUpperCase(Op1) = 'ST(0)') Or (StrUpperCase(Op1) = 'ST') Or
+       (StrUpperCase(Op1) = 'ST0') Then
+    Begin
+      R2 := -1;
+      If StrUpperCase(Op2) = 'ST(0)' Then R2 := 0
+      Else If StrUpperCase(Op2) = 'ST(1)' Then R2 := 1
+      Else If StrUpperCase(Op2) = 'ST(2)' Then R2 := 2
+      Else If StrUpperCase(Op2) = 'ST(3)' Then R2 := 3
+      Else If StrUpperCase(Op2) = 'ST(4)' Then R2 := 4
+      Else If StrUpperCase(Op2) = 'ST(5)' Then R2 := 5
+      Else If StrUpperCase(Op2) = 'ST(6)' Then R2 := 6
+      Else If StrUpperCase(Op2) = 'ST(7)' Then R2 := 7;
+      If R2 >= 0 Then
+      Begin
+        BinEmitByte($D8);
+        If Mnem = 'FADD'  Then BinEmitByte($C0 + R2)
+        Else If Mnem = 'FMUL'  Then BinEmitByte($C8 + R2)
+        Else If Mnem = 'FSUB'  Then BinEmitByte($E0 + R2)
+        Else If Mnem = 'FSUBR' Then BinEmitByte($E8 + R2)
+        Else If Mnem = 'FDIV'  Then BinEmitByte($F0 + R2)
+        Else                       BinEmitByte($F8 + R2);
+        Exit;
+      End;
+    End;
   End;
 
   { ---- PUSH ---- }
