@@ -2846,6 +2846,7 @@ Begin
   EmitI(ADA_RT_PFX + 'HSTDIN    DD 0');
   EmitI(ADA_RT_PFX + 'WRITTEN   DD 0');
   EmitI(ADA_RT_PFX + 'READCNT   DD 0');
+  EmitI(ADA_RT_PFX + 'COL       DD 1');
   EmitI(ADA_RT_PFX + 'CUREXC    DD 0');
   EmitBlank;
 
@@ -2974,6 +2975,7 @@ Begin
   EmitI('PUSH EAX');
   EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDOUT]');
   EmitI('CALL _WriteFile@20');
+  EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'COL], 1');
   EmitI('MOV  ESP, EBP');
   EmitI('POP  EBP');
   EmitI('RET');
@@ -3006,12 +3008,34 @@ Begin
   EmitI('PUSH ESI');
   EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDOUT]');
   EmitI('CALL _WriteFile@20');
+  { Mettre a jour _ADART_COL : parcourir la chaine, LF -> COL=1, autres   }
+  { caracteres imprimables -> INC COL. (CR est ignore : la colonne ne     }
+  { bouge pas pour lui.)                                                   }
+  EmitI('MOV  ESI, DWORD PTR [EBP+8]');
+  EmitI('MOV  EAX, DWORD PTR [' + ADA_RT_PFX + 'COL]');
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+  EmitLabel(LblTop);
+  EmitI('MOVZX EDX, BYTE PTR [ESI]');
+  EmitI('TEST EDX, EDX');
+  EmitI('JE   ' + LblEnd);
+  EmitI('CMP  EDX, 10');         { LF }
+  EmitI('JNE  ' + LblTop + '_NLF');
+  EmitI('MOV  EAX, 1');
+  EmitI('JMP  ' + LblTop + '_NXT');
+  EmitLabel(LblTop + '_NLF');
+  EmitI('CMP  EDX, 13');         { CR -> pas d increment }
+  EmitI('JE   ' + LblTop + '_NXT');
+  EmitI('INC  EAX');
+  EmitLabel(LblTop + '_NXT');
+  EmitI('INC  ESI');
+  EmitI('JMP  ' + LblTop);
+  EmitLabel(LblEnd);
+  EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'COL], EAX');
   EmitI('POP  EDI');
   EmitI('POP  ESI');
   EmitI('POP  EBP');
   EmitI('RET  4');
-
-  { ---- _ADART_SLICE : copie tranche dans tampon rotatif ASCIIZ ---- }
   { Entree : [ESP+4] = ptr source, [ESP+8] = longueur en octets.       }
   { Sortie : EAX = pointeur ASCIIZ vers un slot de SLICEBUF (copie     }
   {          tronquee a 127 octets + terminateur 0).                    }
@@ -3165,11 +3189,60 @@ Begin
   EmitI('PUSH EAX');
   EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDOUT]');
   EmitI('CALL _WriteFile@20');
+  { Mettre a jour COL selon le caractere : LF -> 1, CR -> inchange, sinon +1 }
+  EmitI('MOVZX EAX, BYTE PTR [EBP-4]');
+  EmitI('CMP  EAX, 10');
+  LblLoop := NewLabel;
+  LblDone := NewLabel;
+  EmitI('JNE  ' + LblLoop);
+  EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'COL], 1');
+  EmitI('JMP  ' + LblDone);
+  EmitLabel(LblLoop);
+  EmitI('CMP  EAX, 13');
+  EmitI('JE   ' + LblDone);
+  EmitI('INC  DWORD PTR [' + ADA_RT_PFX + 'COL]');
+  EmitLabel(LblDone);
   EmitI('MOV  ESP, EBP');
   EmitI('POP  EBP');
   EmitI('RET  4');
 
-  { ---- _ADART_READINT : lire un entier depuis stdin ---- }
+  { ---- _ADART_SETCOL : positionner curseur a la colonne N ---- }
+  { Entree : [ESP+4] = colonne cible (1-based). Si la colonne courante   }
+  { est deja >= N, emet CRLF puis pad avec (N-1) espaces pour arriver a   }
+  { la colonne N de la ligne suivante. Sinon pad avec (N - COL) espaces.  }
+  EmitBlank;
+  EmitComment('--- _ADART_SETCOL : Ada.Text_IO.Set_Col ---');
+  EmitLabel(ADA_RT_PFX + 'SETCOL');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH EBX');
+  EmitI('MOV  EBX, DWORD PTR [EBP+8]');          { EBX = N cible }
+  EmitI('CMP  EBX, 1');
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+  EmitI('JGE  ' + LblTop);
+  EmitI('MOV  EBX, 1');
+  EmitLabel(LblTop);
+  { Si COL > N : aller a la ligne suivante }
+  EmitI('MOV  EAX, DWORD PTR [' + ADA_RT_PFX + 'COL]');
+  EmitI('CMP  EAX, EBX');
+  LblConv := NewLabel;
+  EmitI('JLE  ' + LblConv);
+  EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
+  EmitLabel(LblConv);
+  { Boucle : tant que COL < N, emettre un espace }
+  LblNeg := NewLabel;
+  EmitLabel(LblNeg);
+  EmitI('MOV  EAX, DWORD PTR [' + ADA_RT_PFX + 'COL]');
+  EmitI('CMP  EAX, EBX');
+  EmitI('JGE  ' + LblEnd);
+  EmitI('PUSH 32');                               { espace }
+  EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+  EmitI('JMP  ' + LblNeg);
+  EmitLabel(LblEnd);
+  EmitI('POP  EBX');
+  EmitI('POP  EBP');
+  EmitI('RET  4');
   EmitBlank;
   EmitComment('--- _ADART_READINT : lire entier depuis stdin ---');
   EmitComment('Sortie : EAX = entier lu');
@@ -7348,18 +7421,21 @@ Begin
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
-{ ---- GenTextIOSetColInline : Set_Col (stub warning) ---------- }
-{ Genere un avertissement : Set_Col non implemente.              }
+{ ---- GenTextIOSetColInline : Set_Col (positionnement colonne) - }
+{ Genere : PUSH <N> ; CALL _ADART_SETCOL                           }
 Procedure GenTextIOSetColInline;
 Begin
-  EmitComment('Ada.Text_IO.Set_Col (stub)');
-  Warning('Ada.Text_IO.Set_Col non implemente, appel ignore');
+  EmitComment('Ada.Text_IO.Set_Col');
   If CurTokType = TOK_LPAREN Then
   Begin
     Consume; { ( }
-    ParseExpr;  { skip l argument }
+    ParseExpr;  { EAX = colonne cible }
     Expect(TOK_RPAREN, '`)` attendu apres argument Set_Col');
-  End;
+    EmitI('PUSH EAX');
+    EmitI('CALL ' + ADA_RT_PFX + 'SETCOL');
+  End
+  Else
+    Warning('Set_Col appele sans argument, ignore');
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
@@ -8689,7 +8765,7 @@ Begin
     EmitI('RET');
   End;
 
-  { --- Set_Col (To : Positive_Count) --- (TODO 22 stub) }
+  { --- Set_Col (To : Positive_Count) --- (TODO 22) }
   Idx := FindSub('SET_COL');
   If Idx = 0 Then
     Idx := AddSub('SET_COL', False, TYPE_VOID);
@@ -8701,10 +8777,13 @@ Begin
     SubTab[Idx].ParamTypes[1] := TYPE_INT;
     SubTab[Idx].ParamModes[1] := PARAM_IN;
     EmitBlank;
-    EmitComment('--- Ada.Text_IO.Set_Col (stub - non implemente) ---');
+    EmitComment('--- Ada.Text_IO.Set_Col ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
+    EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+    EmitI('PUSH EAX');
+    EmitI('CALL ' + ADA_RT_PFX + 'SETCOL');
     EmitI('POP  EBP');
     EmitI('RET  4');
   End;
