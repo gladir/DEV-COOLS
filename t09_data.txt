@@ -1,8 +1,0 @@
-Ligne numero 1
-Ligne numero 2
-Ligne numero 3
-Valeur =1
-Valeur =2
-Valeur =3
-Valeur =4
-Valeur =5

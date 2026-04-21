@@ -11663,9 +11663,23 @@ Begin
     If R1 >= 0 Then
     Begin
       Imm := AsmParseImm(Op2);
-      BinEmitByte($83);
-      BinEmitByte($C0 Or R1);
-      BinEmitByte(Byte(Imm And $FF));
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        { ADD r32, imm8 (sign-extended) }
+        BinEmitByte($83);
+        BinEmitByte($C0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        { ADD r32, imm32 }
+        BinEmitByte($81);
+        BinEmitByte($C0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
       Exit;
     End;
     Exit;
@@ -11699,9 +11713,23 @@ Begin
     If R1 >= 0 Then
     Begin
       Imm := AsmParseImm(Op2);
-      BinEmitByte($83);
-      BinEmitByte($E8 Or R1);
-      BinEmitByte(Byte(Imm And $FF));
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        { SUB r32, imm8 (sign-extended) }
+        BinEmitByte($83);
+        BinEmitByte($E8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        { SUB r32, imm32 }
+        BinEmitByte($81);
+        BinEmitByte($E8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
       Exit;
     End;
     Exit;

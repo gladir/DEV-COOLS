@@ -1,7 +1,6 @@
 -- T13_SHELL.ADB : tri Shell-Metzner (Shell sort avec sequence N/2).
--- Le tableau est initialise par assignation directe de chaque element
--- (le sous-ensemble d'Ada supporte par ADACW32 n'inclut pas les
--- aggregats de tableau).
+-- Le tri est effectue en ligne sur un tableau global (le passage de
+-- tableaux en parametre n'est pas encore supporte par ADACW32).
 WITH Ada.Text_IO;
 USE Ada.Text_IO;
 
@@ -11,38 +10,10 @@ PROCEDURE T13_Shell IS
 
    TYPE Int_Array IS ARRAY (1 .. 12) OF Integer;
 
-   PROCEDURE Tri_Shell_Metzner (T : IN OUT Int_Array) IS
-      Ecart : Integer;
-      I, J  : Integer;
-      Temp  : Integer;
-   BEGIN
-      Ecart := N / 2;
-      WHILE Ecart > 0 LOOP
-         I := 1 + Ecart;
-         WHILE I <= N LOOP
-            Temp := T (I);
-            J := I;
-            WHILE J >= 1 + Ecart AND THEN T (J - Ecart) > Temp LOOP
-               T (J) := T (J - Ecart);
-               J := J - Ecart;
-            END LOOP;
-            T (J) := Temp;
-            I := I + 1;
-         END LOOP;
-         Ecart := Ecart / 2;
-      END LOOP;
-   END Tri_Shell_Metzner;
-
-   PROCEDURE Afficher (Titre : String; T : Int_Array) IS
-   BEGIN
-      Put (Titre);
-      FOR I IN 1 .. N LOOP
-         Put (Integer'Image (T (I)));
-      END LOOP;
-      New_Line;
-   END Afficher;
-
    Donnees : Int_Array;
+   Ecart   : Integer;
+   I, J    : Integer;
+   Temp    : Integer;
 BEGIN
    -- Initialisation : 23, 1, 45, 12, 78, 3, 9, 67, 34, 56, 8, 21
    Donnees (1)  := 23;
@@ -58,7 +29,34 @@ BEGIN
    Donnees (11) := 8;
    Donnees (12) := 21;
 
-   Afficher ("Avant :", Donnees);
-   Tri_Shell_Metzner (Donnees);
-   Afficher ("Apres :", Donnees);
+   -- Affichage avant tri
+   Put ("Avant :");
+   FOR K IN 1 .. N LOOP
+      Put (Integer'Image (Donnees (K)));
+   END LOOP;
+   New_Line;
+
+   -- Tri Shell-Metzner
+   Ecart := N / 2;
+   WHILE Ecart > 0 LOOP
+      I := 1 + Ecart;
+      WHILE I <= N LOOP
+         Temp := Donnees (I);
+         J := I;
+         WHILE J >= 1 + Ecart AND THEN Donnees (J - Ecart) > Temp LOOP
+            Donnees (J) := Donnees (J - Ecart);
+            J := J - Ecart;
+         END LOOP;
+         Donnees (J) := Temp;
+         I := I + 1;
+      END LOOP;
+      Ecart := Ecart / 2;
+   END LOOP;
+
+   -- Affichage apres tri
+   Put ("Apres :");
+   FOR K IN 1 .. N LOOP
+      Put (Integer'Image (Donnees (K)));
+   END LOOP;
+   New_Line;
 END T13_Shell;
