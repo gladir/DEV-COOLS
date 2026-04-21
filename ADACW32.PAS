@@ -109,7 +109,7 @@
             Function FindSymLocal : dans le scope courant uniquement
             AddSym : calcul automatique BpOffset pour STORE_AUTO
             Tailles 32 bits : Integer = DD (4 octets),
-              Float = DQ (8 octets stub), Boolean = DB (1 octet),
+              Float = DQ (8 octets), Boolean = DB (1 octet),
               Character = DB (1 octet), String = DB n
             Classes d entreposage : STORE_AUTO (pile EBP),
               STORE_STATIC (segment .DATA), STORE_CONST (immediate),
@@ -230,7 +230,7 @@
               (enum1, enum2, ...)         -> type enumere
               RANGE lo .. hi              -> sous-type entier
               ARRAY (lo .. hi) OF type   -> tableau 1D borne fixe
-              ARRAY (type RANGE <>) OF type -> non-contraint (stub)
+              ARRAY (type RANGE <>) OF type -> non-contraint
               RECORD champ : type; ... END RECORD -> enregistrement
               NEW type                    -> derivation simple (alias)
               ACCESS type                 -> pointeur (32 bits)
@@ -312,20 +312,20 @@
             PackageSpec : enregistrer exports dans SubTab / TypeTab
             PackageBody : generer les corps des sous-programmes
             Init body : generer _ADAP_nom_INIT appelee au demarrage
-            Packages Ada.Text_IO : generer stubs Put/Put_Line/Get/
+            Packages Ada.Text_IO : generer les bodies Put/Put_Line/Get/
               Get_Line en appelant les helpers runtime Win32
             Boucle PACKAGE dans Run
 
   TODO 15 - PARSEUR : DISPATCHER PRINCIPAL DES INSTRUCTIONS [IMPLEMENTE]
             Procedure ParseStatement
             Dispatcher selon le token courant :
-              Identifiant + ':=' -> ParseAssignment (stub skip -> TODO 16)
-              Identifiant + '(' ou sans -> ParseProcedureCall (stub skip -> TODO 16)
-              IF           -> ParseIf (stub skip -> TODO 17)
-              CASE         -> ParseCase (stub skip -> TODO 17)
-              LOOP         -> ParseLoop (stub skip -> TODO 18)
-              WHILE        -> ParseWhile (stub skip -> TODO 18)
-              FOR          -> ParseFor (stub skip -> TODO 18)
+              Identifiant + ':=' -> ParseAssignment (TODO 16)
+              Identifiant + '(' ou sans -> ParseProcedureCall (TODO 16)
+              IF           -> ParseIf (TODO 17)
+              CASE         -> ParseCase (TODO 17)
+              LOOP         -> ParseLoop (TODO 18)
+              WHILE        -> ParseWhile (TODO 18)
+              FOR          -> ParseFor (TODO 18)
               RETURN       -> ParseReturn (skip expr + ;)
               RAISE        -> ParseRaise (skip ident + ;)
               NULL         -> ParseNull (NULL + ;)
@@ -425,7 +425,7 @@
               T'FIRST  -> constante lo_bound
               T'LAST   -> constante hi_bound
               T'LENGTH -> hi_bound - lo_bound + 1
-            Slices : T(a..b) -> stub (avertissement)
+            Slices : T(a..b) -> helper runtime _ADART_SLICE (tampon rotatif)
 
   TODO 21 - PARSEUR : OPERATIONS SUR RECORDS (32 BITS) [IMPLEMENTE]
             Acces champ : var.champ -> adresse base + offset_champ
@@ -444,8 +444,8 @@
             Records imbrique : var.champ.sous_champ (recursif)
             Attribut record : T'SIZE -> somme des tailles
 
-  TODO 22 - STUBS ADA.TEXT_IO : SORTIE CONSOLE WIN32 [IMPLEMENTE]
-            Generer des stubs helpers Win32 pour les appels Text_IO :
+  TODO 22 - ADA.TEXT_IO : SORTIE CONSOLE WIN32 [IMPLEMENTE]
+            Generer des helpers Win32 pour les appels Text_IO :
             Put(item) : afficher entier, flottant, char ou chaine
               TYPE Integer -> CALL _ADART_PRINTINT
               TYPE String  -> PUSH OFFSET str + CALL _ADART_PRINT
@@ -454,7 +454,7 @@
             Get(var) : lire entier ou char depuis stdin (ReadFile)
             Get_Line(str, last) : lire chaine + retourner longueur
             New_Line [(n)] : emettre n CR+LF (defaut 1)
-            Set_Col(n) : stub (avertissement "non implemente")
+            Set_Col(n) : positionne curseur, pad espaces via _ADART_SETCOL
             Initialiser _ADART_HSTDOUT via GetStdHandle(-11)
             Initialiser _ADART_HSTDIN via GetStdHandle(-10)
 
@@ -625,6 +625,8 @@ Const
   TOK_POWER       = 27;   { **                                       }
   TOK_AMPERSAND   = 28;   { &  (concatenation)                       }
   TOK_TICK        = 29;   { '  (attribut : T'FIRST)                  }
+  TOK_LTLT        = 30;   { << (debut de label : <<name>>)           }
+  TOK_GTGT        = 31;   { >> (fin de label)                        }
   TOK_EOF         = 99;
 
   MAX_IDENT    = 48;   { longueur max d un identificateur Ada       }
@@ -711,11 +713,11 @@ Const
   { Types Ada internes }
   TYPE_UNKNOWN  =  0;
   TYPE_INT      =  1;   { Integer     : DD (4 octets)              }
-  TYPE_FLOAT    =  2;   { Float       : DQ (8 octets, stub)        }
+  TYPE_FLOAT    =  2;   { Float       : DQ (8 octets)              }
   TYPE_BOOL     =  3;   { Boolean     : DB (1 octet)               }
   TYPE_CHAR     =  4;   { Character   : DB (1 octet)               }
   TYPE_STR      =  5;   { String      : DB n octets                }
-  TYPE_ENUM     =  6;   { Type enumere                             }
+  TYPE_FILE     =  6;   { File_Type  : handle Win32 (DD 4 octets)  }
   TYPE_RANGE    =  7;   { Sous-type entier (RANGE lo..hi)          }
   TYPE_ARRAY    =  8;   { Tableau 1D borne fixe                    }
   TYPE_RECORD   =  9;   { Enregistrement (RECORD)                  }
@@ -840,6 +842,7 @@ Type
     InitNum     : LongInt;       { valeur initiale numerique         }
     InitStr     : String[64];    { valeur initiale chaine            }
     HasInit     : Boolean;       { True si initialisation specifiee  }
+    IsByRef     : Boolean;       { True si param OUT/IN OUT (pointeur)}
   End;
 
   { ---- Entree de la table des sous-programmes (TODO 05) ---- }
@@ -968,6 +971,7 @@ Var
 
   { TODO 24 : nom de la procedure principale Ada }
   MainProcName : TString;    { nom de la procedure de library unit   }
+  FirstUserSubIdx : Integer; { index du 1er sous-prog user (apres built-ins) }
 
 Const
 {$IFDEF FPC}
@@ -1004,6 +1008,9 @@ Procedure BinWriteObj; Forward;
 Procedure BinWriteExe; Forward;
 {$ENDIF}
 
+{ Forward pour appel depuis ParseWith (WITH Ada.Text_IO) }
+Procedure RegisterTextIOStubs; Forward;
+
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -1014,6 +1021,20 @@ Var S : TString;
 Begin
   Str(V, S);
   IntToStr_ := S;
+End;
+
+{ ---- FloatStrToIEEE754 : convertir "1.5", "0.5e2", etc. en ------- }
+{ representation IEEE-754 simple precision (32 bits).                 }
+{ Utilise le type Single de Pascal et un transfert binaire.            }
+Function FloatStrToIEEE754(Const S : TString) : LongInt;
+Var
+  F    : Single;
+  Err  : Integer;
+  Bits : LongInt Absolute F;
+Begin
+  Val(S, F, Err);
+  If Err <> 0 Then F := 0.0;
+  FloatStrToIEEE754 := Bits;
 End;
 
 Function StrUpperCase(Const S : TString) : TString;
@@ -1150,6 +1171,22 @@ Begin
     LexPeek := #0
   Else
     LexPeek := LexLine[LexColNo + 1];
+End;
+
+{ Regarde le prochain caractere non blanc sur la ligne courante sans   }
+{ consommer. Retourne #0 si la ligne est epuisee. Ne franchit pas les  }
+{ sauts de ligne.                                                       }
+Function LexPeekNonWS : Char;
+Var K : Integer;
+Begin
+  K := LexColNo;
+  While (K <= Length(LexLine)) And
+        ((LexLine[K] = ' ') Or (LexLine[K] = #9)) Do
+    Inc(K);
+  If (K > Length(LexLine)) Or LexEOF Then
+    LexPeekNonWS := #0
+  Else
+    LexPeekNonWS := LexLine[K];
 End;
 
 Procedure LexAdvance;
@@ -1615,11 +1652,15 @@ Begin
     '>': Begin
            If (LexColNo <= Length(LexLine)) And (LexCurChar = '=') Then
            Begin LexAdvance; CurTokType := TOK_GE; CurTokStr := '>='; End
+           Else If (LexColNo <= Length(LexLine)) And (LexCurChar = '>') Then
+           Begin LexAdvance; CurTokType := TOK_GTGT; CurTokStr := '>>'; End
            Else Begin CurTokType := TOK_GT; CurTokStr := '>'; End;
          End;
     '<': Begin
            If (LexColNo <= Length(LexLine)) And (LexCurChar = '=') Then
            Begin LexAdvance; CurTokType := TOK_LE; CurTokStr := '<='; End
+           Else If (LexColNo <= Length(LexLine)) And (LexCurChar = '<') Then
+           Begin LexAdvance; CurTokType := TOK_LTLT; CurTokStr := '<<'; End
            Else Begin CurTokType := TOK_LT; CurTokStr := '<'; End;
          End;
     '=': Begin
@@ -1809,18 +1850,18 @@ End;
 
 { ---- PrimTypeSize32 : taille de base d un type predefini ----- }
 { Retourne la taille en octets pour les types predefinis Ada.     }
-{ Pour les types utilisateur, retourne 4 par defaut (stub).       }
+{ Pour les types utilisateur, retourne 4 par defaut.              }
 Function PrimTypeSize32(TypeId : Integer) : Integer;
 Begin
   Case TypeId Of
     TYPE_INT    : PrimTypeSize32 := 4;   { Integer   : DD (4 octets)  }
-    TYPE_FLOAT  : PrimTypeSize32 := 8;   { Float     : DQ (8 octets)  }
+    TYPE_FLOAT  : PrimTypeSize32 := 4;   { Float IEEE-754 simple : DD 4 octets }
     TYPE_BOOL   : PrimTypeSize32 := 1;   { Boolean   : DB (1 octet)   }
     TYPE_CHAR   : PrimTypeSize32 := 1;   { Character : DB (1 octet)   }
     TYPE_STR    : PrimTypeSize32 := 4;   { String    : pointeur DD    }
     TYPE_ACCESS : PrimTypeSize32 := 4;   { Access    : pointeur DD    }
   Else
-    PrimTypeSize32 := 4;                 { types utilisateur : stub   }
+    PrimTypeSize32 := 4;                 { types utilisateur (defaut) }
   End;
 End;
 
@@ -1878,6 +1919,7 @@ Begin
     SymTab[I].InitNum    := 0;
     SymTab[I].InitStr    := '';
     SymTab[I].HasInit    := False;
+    SymTab[I].IsByRef    := False;
   End;
 End;
 
@@ -1942,6 +1984,7 @@ Begin
   SymTab[Idx].InitNum    := 0;
   SymTab[Idx].InitStr    := '';
   SymTab[Idx].HasInit    := False;
+  SymTab[Idx].IsByRef    := False;
   AddSym := Idx;
 End;
 
@@ -1999,9 +2042,9 @@ Begin
   TypeTab[TYPE_INT].Kind      := TK_RANGE;
   TypeTab[TYPE_INT].BaseType  := TYPE_INT;
 
-  { TYPE_FLOAT = 2 : Float 64 bits (DQ 8 octets, stub) }
+  { TYPE_FLOAT = 2 : Float IEEE-754 simple precision (DD 4 octets, FPU x87) }
   TypeTab[TYPE_FLOAT].Name      := 'FLOAT';
-  TypeTab[TYPE_FLOAT].TotalSize := 8;  { DQ 8 octets }
+  TypeTab[TYPE_FLOAT].TotalSize := 4;  { DD 4 octets (single precision) }
   TypeTab[TYPE_FLOAT].Kind      := TK_PREDEF;
 
   { TYPE_BOOL = 3 : Boolean (0=False, 1=True, DB 1 octet) }
@@ -2028,6 +2071,15 @@ Begin
 
   { Les 5 premiers slots sont occupes par les types predefinis }
   TypeCount := 5;
+
+  { TYPE_FILE = 6 : File_Type (handle Win32, DD 4 octets) }
+  { Necessaire pour que Put_Line(F, Str) soit dispatche en mode fichier }
+  { (vs Put_Line(Integer, Width) pour Integer_Text_IO).                 }
+  TypeTab[TYPE_FILE].Name      := 'FILE_TYPE';
+  TypeTab[TYPE_FILE].TotalSize := 4;
+  TypeTab[TYPE_FILE].Kind      := TK_PREDEF;
+  TypeTab[TYPE_FILE].BaseType  := TYPE_INT;
+  TypeCount := 6;
 End;
 
 { ---- RegisterStandardExceptions : exceptions Ada standard ---- }
@@ -2294,7 +2346,9 @@ Begin
   Inc(ScopeTop);
   ScopeStack[ScopeTop].Kind      := Kind;
   ScopeStack[ScopeTop].SubIdx    := SubIdx;
-  ScopeStack[ScopeTop].BpTop     := 0;  { compte en negatif pour AUTO }
+  ScopeStack[ScopeTop].BpTop     := 0;  { compte en negatif pour AUTO.      }
+  { Les blocs imbriques partagent le cadre du sous-programme englobant via }
+  { AllocLocal qui alloue directement sur le scope SK_PROC/SK_FUNC/SK_PKG. }
   ScopeStack[ScopeTop].SymStart  := SymCount + 1;
   ScopeStack[ScopeTop].LblExit   := '';
   ScopeStack[ScopeTop].LblCont   := '';
@@ -2378,14 +2432,22 @@ End;
 { Aligne sur 4 octets (pile 32 bits).                              }
 { Retourne l offset EBP negatif ou 0 si scope global.              }
 Function AllocLocal(Size : Integer) : Integer;
-Var Aligned : Integer;
+Var Aligned, Lev : Integer;
 Begin
   If ScopeTop <= 0 Then
   Begin AllocLocal := 0; Exit; End;
   Aligned := AlignDWord(Size);
-  ScopeStack[ScopeTop].BpTop :=
-    ScopeStack[ScopeTop].BpTop - Aligned;
-  AllocLocal := ScopeStack[ScopeTop].BpTop;
+  { Localiser le cadre de procedure/fonction englobant : les scopes        }
+  { imbriques (SK_BLOCK, SK_LOOP, SK_EXCEPT) ne possedent pas leur propre  }
+  { cadre de pile et partagent celui du sous-programme.                   }
+  Lev := ScopeTop;
+  While (Lev > 1) And
+        (ScopeStack[Lev].Kind <> SK_PROC) And
+        (ScopeStack[Lev].Kind <> SK_FUNC) And
+        (ScopeStack[Lev].Kind <> SK_PACKAGE) Do
+    Dec(Lev);
+  ScopeStack[Lev].BpTop := ScopeStack[Lev].BpTop - Aligned;
+  AllocLocal := ScopeStack[Lev].BpTop;
 End;
 
 { ---- Gestion des labels de boucle et de sortie --------------- }
@@ -2465,41 +2527,114 @@ Begin
   AsmOpened    := False;
 End;
 
+{ ---- Buffer d emission differee (pour initialisations locales) ---- }
+{ Pour supporter les initialisations non-constantes des variables     }
+{ locales (ex: X : Integer := Abs_Int(A);) sans perturber la mise en  }
+{ page du code (le label de la procedure n est emis qu apres la       }
+{ partie declarative), on redirige les emissions vers un buffer       }
+{ lorsque DeferEmit est vrai. Le buffer est rejoue apres le prologue. }
+{ Un second buffer (BodyBuf) contient le corps complet + epilogue ;   }
+{ il est flushe apres emission du prologue avec la taille definitive. }
+Const
+  MAX_DEFER_LINES = 2000;
+  MAX_BODY_LINES  = 20000;
+Var
+  DeferEmit       : Boolean;
+  DeferBufCount   : Integer;
+  DeferBuf        : Array[1..MAX_DEFER_LINES] Of TString;
+  BodyEmit        : Boolean;
+  BodyBufCount    : Integer;
+  BodyBuf         : Array[1..MAX_BODY_LINES] Of TString;
+
+Procedure ResetBodyBuf;
+Begin
+  BodyBufCount := 0;
+  BodyEmit     := False;
+End;
+
+Procedure BodyAdd(Const S : TString);
+Begin
+  If BodyBufCount >= MAX_BODY_LINES Then Exit;
+  Inc(BodyBufCount);
+  BodyBuf[BodyBufCount] := S;
+End;
+
+Procedure FlushBodyBuf;
+Var I : Integer;
+Begin
+  For I := 1 To BodyBufCount Do
+    WriteLn(OutF, BodyBuf[I]);
+  BodyBufCount := 0;
+End;
+
+Procedure ResetDeferBuf;
+Begin
+  DeferBufCount := 0;
+  DeferEmit     := False;
+End;
+
+Procedure DeferAdd(Const S : TString);
+Begin
+  If DeferBufCount >= MAX_DEFER_LINES Then Exit;
+  Inc(DeferBufCount);
+  DeferBuf[DeferBufCount] := S;
+End;
+
+{ Emet toutes les lignes bufferisees vers le fichier ASM (ou BodyBuf) }
+Procedure FlushDeferBuf;
+Var I : Integer;
+Begin
+  For I := 1 To DeferBufCount Do
+    If BodyEmit Then BodyAdd(DeferBuf[I])
+    Else WriteLn(OutF, DeferBuf[I]);
+  DeferBufCount := 0;
+End;
+
 { ---- Primitives d emission ASM ------------------------------- }
 
 { Emet une ligne brute dans le fichier de sortie }
 Procedure Emit(Const S : TString);
 Begin
   If Not GenEnabled Then Exit;
-  WriteLn(OutF, S);
+  If DeferEmit Then DeferAdd(S)
+  Else If BodyEmit Then BodyAdd(S)
+  Else WriteLn(OutF, S);
 End;
 
 { Emet une instruction indentee (tabulation) }
 Procedure EmitI(Const S : TString);
 Begin
   If Not GenEnabled Then Exit;
-  WriteLn(OutF, #9 + S);
+  If DeferEmit Then DeferAdd(#9 + S)
+  Else If BodyEmit Then BodyAdd(#9 + S)
+  Else WriteLn(OutF, #9 + S);
 End;
 
 { Emet un label suivi de ':' }
 Procedure EmitLabel(Const Lbl : TString);
 Begin
   If Not GenEnabled Then Exit;
-  WriteLn(OutF, Lbl + ':');
+  If DeferEmit Then DeferAdd(Lbl + ':')
+  Else If BodyEmit Then BodyAdd(Lbl + ':')
+  Else WriteLn(OutF, Lbl + ':');
 End;
 
 { Emet un commentaire ASM }
 Procedure EmitComment(Const S : TString);
 Begin
   If Not GenEnabled Then Exit;
-  WriteLn(OutF, '; ' + S);
+  If DeferEmit Then DeferAdd('; ' + S)
+  Else If BodyEmit Then BodyAdd('; ' + S)
+  Else WriteLn(OutF, '; ' + S);
 End;
 
 { Emet une ligne vide }
 Procedure EmitBlank;
 Begin
   If Not GenEnabled Then Exit;
-  WriteLn(OutF, '');
+  If DeferEmit Then DeferAdd('')
+  Else If BodyEmit Then BodyAdd('')
+  Else WriteLn(OutF, '');
 End;
 
 { ---- NewLabel : generer un label interne unique -------------- }
@@ -2663,8 +2798,11 @@ Begin
       End
       Else If TI = TYPE_FLOAT Then
       Begin
-        { Float 64 bits : DQ 0 }
-        EmitI(Lbl + ' DQ 0');
+        { Float IEEE-754 simple precision : DD + bits initiaux }
+        If SymTab[I].HasInit Then
+          EmitI(Lbl + ' DD ' + IntToStr_(SymTab[I].InitNum))
+        Else
+          EmitI(Lbl + ' DD 0');
       End
       Else If (TI = TYPE_BOOL) Or (TI = TYPE_CHAR) Then
       Begin
@@ -2707,13 +2845,18 @@ Begin
   { --- Tampons runtime --- }
   EmitComment('--- tampons et variables runtime ---');
   EmitI(ADA_RT_PFX + 'NUMBUF    DB 16 DUP(0)');
+  EmitI(ADA_RT_PFX + 'INTBUF    DB 64 DUP(0)');
   EmitI(ADA_RT_PFX + 'STRBUF    DB 256 DUP(0)');
   EmitI(ADA_RT_PFX + 'INPUTBUF  DB 256 DUP(0)');
+  EmitI(ADA_RT_PFX + 'SLICEBUF  DB 512 DUP(0)');
+  EmitI(ADA_RT_PFX + 'SLICEIDX  DB 0');
   EmitI(ADA_RT_PFX + 'CRLF_DATA DB 13, 10, 0');
+  EmitI(ADA_RT_PFX + 'CATBUF    DB 512 DUP(0)');
   EmitI(ADA_RT_PFX + 'HSTDOUT   DD 0');
   EmitI(ADA_RT_PFX + 'HSTDIN    DD 0');
   EmitI(ADA_RT_PFX + 'WRITTEN   DD 0');
   EmitI(ADA_RT_PFX + 'READCNT   DD 0');
+  EmitI(ADA_RT_PFX + 'COL       DD 1');
   EmitI(ADA_RT_PFX + 'CUREXC    DD 0');
   EmitBlank;
 
@@ -2729,6 +2872,16 @@ Begin
   EmitComment('--- messages d''erreur runtime ---');
   EmitI(ADA_RT_PFX + 'ERR_RANGE DB ''Constraint_Error: valeur hors bornes'', 0');
   EmitI(ADA_RT_PFX + 'ERR_PROG  DB ''Program_Error: erreur programme'', 0');
+  EmitBlank;
+
+  { --- Constantes flottantes pour PRINTFLT (IEEE-754 simple precision) --- }
+  EmitComment('--- constantes flottantes FPU ---');
+  EmitI(ADA_RT_PFX + 'FLT_TEN6  DD ' + IntToStr_(FloatStrToIEEE754('1000000.0')) +
+        '   ; 1000000.0 en IEEE-754');
+  EmitI(ADA_RT_PFX + 'FLT_HALF  DD ' + IntToStr_(FloatStrToIEEE754('0.5')) +
+        '   ; 0.5 en IEEE-754');
+  EmitI(ADA_RT_PFX + 'FLT_TMP   DD 0');
+  EmitI(ADA_RT_PFX + 'FLT_TMPI  DD 0');
   EmitBlank;
 
   Emit('_DATA ENDS');
@@ -2832,6 +2985,7 @@ Begin
   EmitI('PUSH EAX');
   EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDOUT]');
   EmitI('CALL _WriteFile@20');
+  EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'COL], 1');
   EmitI('MOV  ESP, EBP');
   EmitI('POP  EBP');
   EmitI('RET');
@@ -2864,12 +3018,89 @@ Begin
   EmitI('PUSH ESI');
   EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDOUT]');
   EmitI('CALL _WriteFile@20');
+  { Mettre a jour _ADART_COL : parcourir la chaine, LF -> COL=1, autres   }
+  { caracteres imprimables -> INC COL. (CR est ignore : la colonne ne     }
+  { bouge pas pour lui.)                                                   }
+  EmitI('MOV  ESI, DWORD PTR [EBP+8]');
+  EmitI('MOV  EAX, DWORD PTR [' + ADA_RT_PFX + 'COL]');
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+  EmitLabel(LblTop);
+  EmitI('MOVZX EDX, BYTE PTR [ESI]');
+  EmitI('TEST EDX, EDX');
+  EmitI('JE   ' + LblEnd);
+  EmitI('CMP  EDX, 10');         { LF }
+  EmitI('JNE  ' + LblTop + '_NLF');
+  EmitI('MOV  EAX, 1');
+  EmitI('JMP  ' + LblTop + '_NXT');
+  EmitLabel(LblTop + '_NLF');
+  EmitI('CMP  EDX, 13');         { CR -> pas d increment }
+  EmitI('JE   ' + LblTop + '_NXT');
+  EmitI('INC  EAX');
+  EmitLabel(LblTop + '_NXT');
+  EmitI('INC  ESI');
+  EmitI('JMP  ' + LblTop);
+  EmitLabel(LblEnd);
+  EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'COL], EAX');
   EmitI('POP  EDI');
   EmitI('POP  ESI');
   EmitI('POP  EBP');
   EmitI('RET  4');
-
-  { ---- _ADART_NUMTOSTR : EAX=entier -> ASCIIZ dans NUMBUF ---- }
+  { Entree : [ESP+4] = ptr source, [ESP+8] = longueur en octets.       }
+  { Sortie : EAX = pointeur ASCIIZ vers un slot de SLICEBUF (copie     }
+  {          tronquee a 127 octets + terminateur 0).                    }
+  { 4 slots de 128 octets tournent -> jusqu a 4 slices peuvent etre     }
+  { utilises simultanement dans une meme expression.                    }
+  EmitBlank;
+  EmitComment('--- _ADART_SLICE : extraction tranche (a..b) ---');
+  EmitLabel(ADA_RT_PFX + 'SLICE');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH ESI');
+  EmitI('PUSH EDI');
+  EmitI('PUSH EBX');
+  { Incrementer l index rotatif : idx = (idx + 1) mod 4 }
+  EmitI('MOVZX EAX, BYTE PTR [' + ADA_RT_PFX + 'SLICEIDX]');
+  EmitI('INC  EAX');
+  EmitI('CMP  EAX, 4');
+  LblLoop := NewLabel;
+  EmitI('JL   ' + LblLoop);
+  EmitI('XOR  EAX, EAX');
+  EmitLabel(LblLoop);
+  EmitI('MOV  BYTE PTR [' + ADA_RT_PFX + 'SLICEIDX], AL');
+  EmitI('IMUL EAX, EAX, 128');
+  EmitI('LEA  EDI, [' + ADA_RT_PFX + 'SLICEBUF]');
+  EmitI('ADD  EDI, EAX');
+  EmitI('MOV  EBX, EDI');                 { EBX = adresse retour }
+  EmitI('MOV  ESI, DWORD PTR [EBP+8]');   { ESI = source }
+  EmitI('MOV  ECX, DWORD PTR [EBP+12]');  { ECX = longueur }
+  { Clamp longueur a 127 (1 octet reserve pour le terminateur 0) }
+  EmitI('CMP  ECX, 127');
+  LblDone := NewLabel;
+  EmitI('JLE  ' + LblDone);
+  EmitI('MOV  ECX, 127');
+  EmitLabel(LblDone);
+  { Longueur <= 0 : rien a copier, juste terminateur }
+  EmitI('TEST ECX, ECX');
+  LblConv := NewLabel;
+  EmitI('JLE  ' + LblConv);
+  { Boucle de copie octet par octet }
+  LblNeg := NewLabel;
+  EmitLabel(LblNeg);
+  EmitI('MOVZX EAX, BYTE PTR [ESI]');
+  EmitI('MOV  BYTE PTR [EDI], AL');
+  EmitI('INC  ESI');
+  EmitI('INC  EDI');
+  EmitI('DEC  ECX');
+  EmitI('JNZ  ' + LblNeg);
+  EmitLabel(LblConv);
+  EmitI('MOV  BYTE PTR [EDI], 0');
+  EmitI('MOV  EAX, EBX');                 { EAX = ptr ASCIIZ resultat }
+  EmitI('POP  EBX');
+  EmitI('POP  EDI');
+  EmitI('POP  ESI');
+  EmitI('POP  EBP');
+  EmitI('RET  8');
   EmitBlank;
   EmitComment('--- _ADART_NUMTOSTR : entier -> ASCIIZ ---');
   EmitComment('Entree : EAX = entier signe 32 bits');
@@ -2968,11 +3199,60 @@ Begin
   EmitI('PUSH EAX');
   EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDOUT]');
   EmitI('CALL _WriteFile@20');
+  { Mettre a jour COL selon le caractere : LF -> 1, CR -> inchange, sinon +1 }
+  EmitI('MOVZX EAX, BYTE PTR [EBP-4]');
+  EmitI('CMP  EAX, 10');
+  LblLoop := NewLabel;
+  LblDone := NewLabel;
+  EmitI('JNE  ' + LblLoop);
+  EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'COL], 1');
+  EmitI('JMP  ' + LblDone);
+  EmitLabel(LblLoop);
+  EmitI('CMP  EAX, 13');
+  EmitI('JE   ' + LblDone);
+  EmitI('INC  DWORD PTR [' + ADA_RT_PFX + 'COL]');
+  EmitLabel(LblDone);
   EmitI('MOV  ESP, EBP');
   EmitI('POP  EBP');
   EmitI('RET  4');
 
-  { ---- _ADART_READINT : lire un entier depuis stdin ---- }
+  { ---- _ADART_SETCOL : positionner curseur a la colonne N ---- }
+  { Entree : [ESP+4] = colonne cible (1-based). Si la colonne courante   }
+  { est deja >= N, emet CRLF puis pad avec (N-1) espaces pour arriver a   }
+  { la colonne N de la ligne suivante. Sinon pad avec (N - COL) espaces.  }
+  EmitBlank;
+  EmitComment('--- _ADART_SETCOL : Ada.Text_IO.Set_Col ---');
+  EmitLabel(ADA_RT_PFX + 'SETCOL');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH EBX');
+  EmitI('MOV  EBX, DWORD PTR [EBP+8]');          { EBX = N cible }
+  EmitI('CMP  EBX, 1');
+  LblTop := NewLabel;
+  LblEnd := NewLabel;
+  EmitI('JGE  ' + LblTop);
+  EmitI('MOV  EBX, 1');
+  EmitLabel(LblTop);
+  { Si COL > N : aller a la ligne suivante }
+  EmitI('MOV  EAX, DWORD PTR [' + ADA_RT_PFX + 'COL]');
+  EmitI('CMP  EAX, EBX');
+  LblConv := NewLabel;
+  EmitI('JLE  ' + LblConv);
+  EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
+  EmitLabel(LblConv);
+  { Boucle : tant que COL < N, emettre un espace }
+  LblNeg := NewLabel;
+  EmitLabel(LblNeg);
+  EmitI('MOV  EAX, DWORD PTR [' + ADA_RT_PFX + 'COL]');
+  EmitI('CMP  EAX, EBX');
+  EmitI('JGE  ' + LblEnd);
+  EmitI('PUSH 32');                               { espace }
+  EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+  EmitI('JMP  ' + LblNeg);
+  EmitLabel(LblEnd);
+  EmitI('POP  EBX');
+  EmitI('POP  EBP');
+  EmitI('RET  4');
   EmitBlank;
   EmitComment('--- _ADART_READINT : lire entier depuis stdin ---');
   EmitComment('Sortie : EAX = entier lu');
@@ -3045,43 +3325,48 @@ Begin
   EmitI('RET');
 
   { ---- _ADART_READSTR : lire chaine depuis stdin ---- }
+  { Lit octet par octet jusqu a '\n' ou EOF pour ne pas consommer     }
+  { de caracteres au-dela de la fin de ligne (important pour que des   }
+  { appels Get successifs fonctionnent correctement sur un pipe).     }
   EmitBlank;
   EmitComment('--- _ADART_READSTR : lire chaine depuis stdin ---');
   EmitComment('Entree : EAX = pointeur vers buffer destination');
-  EmitComment('Sortie : chaine ASCIIZ dans le buffer');
+  EmitComment('Sortie : chaine ASCIIZ dans le buffer (sans CR/LF)');
   EmitLabel(ADA_RT_PFX + 'READSTR');
   EmitI('PUSH EBP');
   EmitI('MOV  EBP, ESP');
   EmitI('PUSH ESI');
   EmitI('PUSH EDI');
-  EmitI('MOV  EDI, EAX');           { EDI = buffer destination }
-  { ReadFile(hStdIn, @INPUTBUF, 255, @READCNT, 0) }
+  EmitI('MOV  EDI, EAX');              { EDI = buffer destination }
+  EmitI('MOV  ESI, 254');              { ESI = compteur max restant }
+  LblCopyLoop := NewLabel;
+  LblDone := NewLabel;
+  EmitLabel(LblCopyLoop);
+  EmitI('TEST ESI, ESI');
+  EmitI('JZ   ' + LblDone);
+  { ReadFile(hStdIn, @INPUTBUF, 1, @READCNT, 0) }
   EmitI('PUSH 0');
   EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'READCNT]');
   EmitI('PUSH EAX');
-  EmitI('PUSH 255');
+  EmitI('PUSH 1');
   EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'INPUTBUF]');
   EmitI('PUSH EAX');
   EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDIN]');
   EmitI('CALL _ReadFile@20');
-  { Copier INPUTBUF vers EDI, retirer CR/LF }
-  EmitI('LEA  ESI, DWORD PTR [' + ADA_RT_PFX + 'INPUTBUF]');
-  EmitI('MOV  ECX, DWORD PTR [' + ADA_RT_PFX + 'READCNT]');
-  LblCopyLoop := NewLabel;
-  LblDone := NewLabel;
-  EmitLabel(LblCopyLoop);
-  EmitI('TEST ECX, ECX');
-  EmitI('JZ   ' + LblDone);
-  EmitI('LODSB');                    { AL = [ESI], ESI++ }
-  EmitI('CMP  AL, 13');             { CR ? }
+  EmitI('MOV  EAX, DWORD PTR [' + ADA_RT_PFX + 'READCNT]');
+  EmitI('TEST EAX, EAX');
+  EmitI('JZ   ' + LblDone);           { EOF }
+  EmitI('MOVZX EAX, BYTE PTR [' + ADA_RT_PFX + 'INPUTBUF]');
+  EmitI('CMP  AL, 10');                { LF : fin de ligne }
   EmitI('JE   ' + LblDone);
-  EmitI('CMP  AL, 10');             { LF ? }
-  EmitI('JE   ' + LblDone);
-  EmitI('STOSB');                    { [EDI] = AL, EDI++ }
-  EmitI('DEC  ECX');
+  EmitI('CMP  AL, 13');                { CR : ignorer, continuer }
+  EmitI('JE   ' + LblCopyLoop);
+  EmitI('MOV  BYTE PTR [EDI], AL');
+  EmitI('INC  EDI');
+  EmitI('DEC  ESI');
   EmitI('JMP  ' + LblCopyLoop);
   EmitLabel(LblDone);
-  EmitI('MOV  BYTE PTR [EDI], 0');  { terminateur NUL }
+  EmitI('MOV  BYTE PTR [EDI], 0');     { terminateur NUL }
   EmitI('POP  EDI');
   EmitI('POP  ESI');
   EmitI('POP  EBP');
@@ -3151,6 +3436,54 @@ Begin
   EmitI('JNZ  ' + LblCatLoop);
   EmitI('RET');
 
+  { ---- _ADART_STR_CAT : concatener 2 chaines dans CATBUF ---- }
+  EmitBlank;
+  EmitComment('--- _ADART_STR_CAT : concatener [ESP+8] + [ESP+4] dans CATBUF ---');
+  EmitComment('Entree : argument gauche puis droite PUSHes (cdecl)');
+  EmitComment('Sortie : EAX = pointeur vers CATBUF (ASCIIZ concatene)');
+  EmitLabel(ADA_RT_PFX + 'STR_CAT');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH ESI');
+  EmitI('PUSH EDI');
+  EmitI('LEA  EDI, DWORD PTR [' + ADA_RT_PFX + 'CATBUF]');
+  EmitI('MOV  ESI, DWORD PTR [EBP+12]   ; gauche');
+  EmitI('CMP  ESI, EDI');
+  LblCatFnd  := NewLabel;   { find end of CATBUF (left already in CATBUF) }
+  LblCatLoop := NewLabel;   { copy right }
+  LblDone    := NewLabel;   { leaf : done }
+  EmitI('JE   ' + LblCatFnd);
+  { Copier gauche dans CATBUF }
+  LblLoop := NewLabel;
+  EmitLabel(LblLoop);
+  EmitI('LODSB');
+  EmitI('STOSB');
+  EmitI('TEST AL, AL');
+  EmitI('JNZ  ' + LblLoop);
+  EmitI('DEC  EDI                       ; revenir sur le terminateur 0');
+  EmitI('JMP  ' + LblCatLoop);
+  { Gauche deja dans CATBUF : avancer EDI jusqu au 0 }
+  EmitLabel(LblCatFnd);
+  EmitI('CMP  BYTE PTR [EDI], 0');
+  EmitI('JE   ' + LblCatLoop);
+  EmitI('INC  EDI');
+  EmitI('JMP  ' + LblCatFnd);
+  { Copier droite apres EDI }
+  EmitLabel(LblCatLoop);
+  EmitI('MOV  ESI, DWORD PTR [EBP+8]    ; droite');
+  LblLoop := NewLabel;
+  EmitLabel(LblLoop);
+  EmitI('LODSB');
+  EmitI('STOSB');
+  EmitI('TEST AL, AL');
+  EmitI('JNZ  ' + LblLoop);
+  { Retourner pointeur CATBUF }
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'CATBUF]');
+  EmitI('POP  EDI');
+  EmitI('POP  ESI');
+  EmitI('POP  EBP');
+  EmitI('RET');
+
   { ---- _ADART_CHKRANGE : verifier bornes ---- }
   EmitBlank;
   EmitComment('--- _ADART_CHKRANGE : verifier borne ---');
@@ -3184,6 +3517,9 @@ Begin
   EmitI('CALL _ExitProcess@4');
 
   { ---- _ADART_GET : lire un caractere depuis stdin ---- }
+  { Comportement Ada : lit une ligne complete et retourne son         }
+  { premier caractere (ou 0 si ligne vide). Ceci evite de laisser     }
+  { le '\n' dans la pile stdin entre appels successifs de Get/GetInt. }
   EmitBlank;
   EmitComment('--- _ADART_GET : lire un caractere ---');
   EmitComment('Entree : [ESP+4] = pointeur vers variable Character');
@@ -3192,16 +3528,10 @@ Begin
   EmitI('MOV  EBP, ESP');
   EmitI('PUSH EBX');
   EmitI('MOV  EBX, DWORD PTR [EBP+8]'); { EBX = ptr destination }
-  { ReadFile(hStdIn, @INPUTBUF, 1, @READCNT, 0) }
-  EmitI('PUSH 0');
-  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'READCNT]');
-  EmitI('PUSH EAX');
-  EmitI('PUSH 1');
-  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'INPUTBUF]');
-  EmitI('PUSH EAX');
-  EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDIN]');
-  EmitI('CALL _ReadFile@20');
-  EmitI('MOVZX EAX, BYTE PTR [' + ADA_RT_PFX + 'INPUTBUF]');
+  { READSTR dans INTBUF (buffer 64 octets dedie) }
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'INTBUF]');
+  EmitI('CALL ' + ADA_RT_PFX + 'READSTR');
+  EmitI('MOVZX EAX, BYTE PTR [' + ADA_RT_PFX + 'INTBUF]');
   EmitI('MOV  BYTE PTR [EBX], AL');
   EmitI('POP  EBX');
   EmitI('POP  EBP');
@@ -3222,6 +3552,78 @@ Begin
   EmitI('MOV  DWORD PTR [EBX], EAX');
   EmitI('POP  EBP');
   EmitI('RET  8');
+
+  { ---- _ADART_GETINT : lire un entier signe depuis stdin ---- }
+  { Entree : [ESP+4] = pointeur vers Integer destination         }
+  { Lit une ligne via READSTR puis la parse en decimal.           }
+  { En cas d erreur, stocke 0.                                    }
+  EmitBlank;
+  EmitComment('--- _ADART_GETINT : lire un entier ---');
+  EmitComment('Entree : [ESP+4] = pointeur vers Integer');
+  EmitLabel(ADA_RT_PFX + 'GETINT');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH EBX');
+  EmitI('PUSH ESI');
+  EmitI('PUSH EDI');
+  { Lire la ligne dans INTBUF (64 octets, READSTR tronque ensuite). }
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'INTBUF]');
+  EmitI('CALL ' + ADA_RT_PFX + 'READSTR');
+  EmitI('LEA  ESI, DWORD PTR [' + ADA_RT_PFX + 'INTBUF]');
+  { Sauter les espaces initiaux }
+  LblLoop := NewLabel;
+  LblDone := NewLabel;
+  EmitLabel(LblLoop);
+  EmitI('MOV  AL, BYTE PTR [ESI]');
+  EmitI('CMP  AL, 32');
+  EmitI('JE   ' + LblLoop + '_SK');
+  EmitI('CMP  AL, 9');
+  EmitI('JNE  ' + LblLoop + '_E');
+  EmitLabel(LblLoop + '_SK');
+  EmitI('INC  ESI');
+  EmitI('JMP  ' + LblLoop);
+  EmitLabel(LblLoop + '_E');
+  { Gestion du signe }
+  EmitI('XOR  EDI, EDI');        { EDI = flag negatif }
+  EmitI('CMP  AL, 45');          { - }
+  EmitI('JNE  ' + LblLoop + '_P');
+  EmitI('MOV  EDI, 1');
+  EmitI('INC  ESI');
+  EmitI('JMP  ' + LblLoop + '_D');
+  EmitLabel(LblLoop + '_P');
+  EmitI('CMP  AL, 43');          { + }
+  EmitI('JNE  ' + LblLoop + '_D');
+  EmitI('INC  ESI');
+  EmitLabel(LblLoop + '_D');
+  { Parser les chiffres }
+  EmitI('XOR  EAX, EAX');        { EAX = accumulateur }
+  EmitI('XOR  EBX, EBX');
+  LblLoop := NewLabel;
+  EmitLabel(LblLoop);
+  EmitI('MOV  BL, BYTE PTR [ESI]');
+  EmitI('CMP  BL, 48');
+  EmitI('JB   ' + LblDone);
+  EmitI('CMP  BL, 57');
+  EmitI('JA   ' + LblDone);
+  EmitI('IMUL EAX, 10');
+  EmitI('SUB  BL, 48');
+  EmitI('ADD  EAX, EBX');
+  EmitI('INC  ESI');
+  EmitI('JMP  ' + LblLoop);
+  EmitLabel(LblDone);
+  { Appliquer le signe }
+  EmitI('TEST EDI, EDI');
+  EmitI('JZ   ' + LblDone + '_S');
+  EmitI('NEG  EAX');
+  EmitLabel(LblDone + '_S');
+  { Stocker dans la destination }
+  EmitI('MOV  EBX, DWORD PTR [EBP+8]');
+  EmitI('MOV  DWORD PTR [EBX], EAX');
+  EmitI('POP  EDI');
+  EmitI('POP  ESI');
+  EmitI('POP  EBX');
+  EmitI('POP  EBP');
+  EmitI('RET  4');
 
   { ---- _ADART_FCREATE : creer un fichier en ecriture ---- }
   { Entree : [ESP+4] = pointeur vers nom de fichier ASCIIZ   }
@@ -3419,6 +3821,107 @@ Begin
   EmitI('POP  EBP');
   EmitI('RET  8');
 
+  { ---- _ADART_PRINTFLT : afficher un float IEEE-754 simple precision ---- }
+  { Entree : [ESP+4] = bits IEEE-754 32 bits, [ESP+8] = nb decimales (Aft) }
+  { Format : [-]int_part . frac_digits (fixe, zero-padded a gauche)         }
+  { Frame local :                                                             }
+  {   [EBP-4]  = SCALE (10^Aft)                                                }
+  {   [EBP-8]  = ECX_SAV (nb chiffres restants)                               }
+  {   [EBP-12] = FRAC (partie fractionnaire courante)                         }
+  EmitBlank;
+  EmitComment('--- _ADART_PRINTFLT : afficher float IEEE-754 ---');
+  EmitComment('Entree : [ESP+4] = bits float 32, [ESP+8] = nb decimales');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('SUB  ESP, 16');
+  { Recuperer le nombre de decimales (par defaut 6, max 9) }
+  EmitI('MOV  ECX, DWORD PTR [EBP+12]   ; ECX = Aft (nb decimales)');
+  EmitI('CMP  ECX, 0');
+  EmitI('JG   ' + ADA_RT_PFX + 'PRINTFLT_OK');
+  EmitI('MOV  ECX, 6');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_OK');
+  EmitI('CMP  ECX, 9');
+  EmitI('JLE  ' + ADA_RT_PFX + 'PRINTFLT_L1');
+  EmitI('MOV  ECX, 9');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_L1');
+  EmitI('MOV  DWORD PTR [EBP-8], ECX    ; sauver nb decimales');
+  { Calculer 10^ECX dans EBX }
+  EmitI('MOV  EBX, 1');
+  EmitI('MOV  EDX, ECX');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_SC');
+  EmitI('TEST EDX, EDX');
+  EmitI('JZ   ' + ADA_RT_PFX + 'PRINTFLT_SCE');
+  EmitI('IMUL EBX, EBX, 10');
+  EmitI('DEC  EDX');
+  EmitI('JMP  ' + ADA_RT_PFX + 'PRINTFLT_SC');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_SCE');
+  EmitI('MOV  DWORD PTR [EBP-4], EBX    ; sauver scale 10^Aft');
+  { Gerer le signe via le bit 31 des bits IEEE-754 }
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]   ; EAX = bits IEEE-754');
+  EmitI('TEST EAX, EAX');
+  EmitI('JNS  ' + ADA_RT_PFX + 'PRINTFLT_POS');
+  EmitI('PUSH 45');
+  EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+  EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+  EmitI('AND  EAX, 2147483647          ; effacer bit signe');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_POS');
+  { Charger la valeur positive dans la FPU }
+  EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'FLT_TMP], EAX');
+  EmitI('FLD  DWORD PTR [' + ADA_RT_PFX + 'FLT_TMP]');
+  { Multiplier par 10^ECX (scale) }
+  EmitI('MOV  EBX, DWORD PTR [EBP-4]');
+  EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'FLT_TMPI], EBX');
+  EmitI('FILD DWORD PTR [' + ADA_RT_PFX + 'FLT_TMPI]');
+  EmitI('FMULP');
+  { Ajouter 0.5 pour arrondir }
+  EmitI('FLD  DWORD PTR [' + ADA_RT_PFX + 'FLT_HALF]');
+  EmitI('FADDP');
+  { Convertir en int32 et diviser }
+  EmitI('FISTP DWORD PTR [' + ADA_RT_PFX + 'FLT_TMP]');
+  EmitI('MOV  EAX, DWORD PTR [' + ADA_RT_PFX + 'FLT_TMP]');
+  EmitI('XOR  EDX, EDX');
+  EmitI('MOV  EBX, DWORD PTR [EBP-4]   ; EBX = scale');
+  EmitI('DIV  EBX                      ; EAX = int, EDX = frac');
+  EmitI('MOV  DWORD PTR [EBP-12], EDX  ; sauver frac');
+  { Imprimer la partie entiere }
+  EmitI('PUSH EAX');
+  EmitI('CALL ' + ADA_RT_PFX + 'PRINTINT');
+  { Imprimer '.' }
+  EmitI('PUSH 46');
+  EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+  { Boucle d impression des chiffres fractionnaires (toutes variables en memoire) }
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_FR');
+  EmitI('MOV  ECX, DWORD PTR [EBP-8]');
+  EmitI('TEST ECX, ECX');
+  EmitI('JZ   ' + ADA_RT_PFX + 'PRINTFLT_FE');
+  { Reduire scale : scale := scale / 10 }
+  EmitI('MOV  EAX, DWORD PTR [EBP-4]');
+  EmitI('XOR  EDX, EDX');
+  EmitI('MOV  EBX, 10');
+  EmitI('DIV  EBX');
+  EmitI('MOV  DWORD PTR [EBP-4], EAX   ; scale reduit');
+  EmitI('MOV  EBX, EAX');
+  { Extraire le chiffre : EAX = frac / scale, new_frac = frac mod scale }
+  EmitI('TEST EBX, EBX');
+  EmitI('JZ   ' + ADA_RT_PFX + 'PRINTFLT_FE');
+  EmitI('MOV  EAX, DWORD PTR [EBP-12]');
+  EmitI('XOR  EDX, EDX');
+  EmitI('DIV  EBX                      ; EAX = chiffre, EDX = new frac');
+  EmitI('MOV  DWORD PTR [EBP-12], EDX');
+  EmitI('ADD  EAX, 48');
+  EmitI('PUSH EAX');
+  EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+  { Decrementer le compteur et boucler }
+  EmitI('MOV  ECX, DWORD PTR [EBP-8]');
+  EmitI('DEC  ECX');
+  EmitI('MOV  DWORD PTR [EBP-8], ECX');
+  EmitI('JMP  ' + ADA_RT_PFX + 'PRINTFLT_FR');
+  EmitLabel(ADA_RT_PFX + 'PRINTFLT_FE');
+  EmitI('MOV  ESP, EBP');
+  EmitI('POP  EBP');
+  EmitI('RET  8');
+
   EmitBlank;
 End;
 
@@ -3472,10 +3975,22 @@ Begin
     End;
     STORE_PARAM :
     Begin
-      If IsByte Then
-        EmitI('MOVZX EAX, BYTE PTR [EBP' + BpOff32(Off) + ']')
-      Else
+      If SymTab[SymIdx].IsByRef Then
+      Begin
+        { Parametre OUT/IN OUT : [EBP+off] contient un pointeur       }
         EmitI('MOV EAX, DWORD PTR [EBP' + BpOff32(Off) + ']');
+        If IsByte Then
+          EmitI('MOVZX EAX, BYTE PTR [EAX]')
+        Else
+          EmitI('MOV EAX, DWORD PTR [EAX]');
+      End
+      Else
+      Begin
+        If IsByte Then
+          EmitI('MOVZX EAX, BYTE PTR [EBP' + BpOff32(Off) + ']')
+        Else
+          EmitI('MOV EAX, DWORD PTR [EBP' + BpOff32(Off) + ']');
+      End;
     End;
     STORE_CONST :
       EmitI('MOV EAX, ' + IntToStr_(SymTab[SymIdx].InitNum));
@@ -3520,10 +4035,22 @@ Begin
     End;
     STORE_PARAM :
     Begin
-      If IsByte Then
-        EmitI('MOV BYTE PTR [EBP' + BpOff32(Off) + '], AL')
+      If SymTab[SymIdx].IsByRef Then
+      Begin
+        { Parametre OUT/IN OUT : [EBP+off] contient un pointeur       }
+        EmitI('MOV  EBX, DWORD PTR [EBP' + BpOff32(Off) + ']');
+        If IsByte Then
+          EmitI('MOV  BYTE PTR [EBX], AL')
+        Else
+          EmitI('MOV  DWORD PTR [EBX], EAX');
+      End
       Else
-        EmitI('MOV DWORD PTR [EBP' + BpOff32(Off) + '], EAX');
+      Begin
+        If IsByte Then
+          EmitI('MOV BYTE PTR [EBP' + BpOff32(Off) + '], AL')
+        Else
+          EmitI('MOV DWORD PTR [EBP' + BpOff32(Off) + '], EAX');
+      End;
     End;
   End;
 End;
@@ -3570,7 +4097,12 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    End;
   End;
   { EAX = base + offset -> charger element }
   If IsByte Then
@@ -3619,7 +4151,12 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    End;
   End;
   { Ecrire la valeur a l adresse base + offset }
   If IsByte Then
@@ -3679,7 +4216,12 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    End;
   End;
   { Charger le champ }
   If IsByte Then
@@ -3722,7 +4264,12 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  EBX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
+    End;
   End;
   { Ecrire la valeur dans le champ }
   If IsByte Then
@@ -3762,7 +4309,12 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    End;
   End;
   { Charger le sous-champ }
   If IsByte Then
@@ -3804,7 +4356,12 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  EBX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
+    End;
   End;
   { Ecrire la valeur dans le sous-champ }
   If IsByte Then
@@ -3829,6 +4386,34 @@ Begin
   EmitI('MOV  EBP, ESP');
   If FrameSize > 0 Then
     EmitI('SUB  ESP, ' + IntToStr_(FrameSize));
+End;
+
+{ ---- EmitLocalInits : emettre les initialisations des variables ---- }
+{ locales du scope courant. Pour chaque STORE_AUTO avec HasInit,        }
+{ emet MOV DWORD PTR [EBP+offset], InitNum.                              }
+{ Appele apres GenPrologue dans le corps d une procedure/fonction.       }
+Procedure EmitLocalInits;
+Var
+  I      : Integer;
+  IsByte : Boolean;
+  TI     : Integer;
+Begin
+  For I := 1 To SymCount Do
+  Begin
+    If (SymTab[I].ScopeLev = ScopeTop) And
+       (SymTab[I].StoreClass = STORE_AUTO) And
+       SymTab[I].HasInit Then
+    Begin
+      TI := SymTab[I].TypeIdx;
+      IsByte := (TI = TYPE_CHAR) Or (TI = TYPE_BOOL);
+      If IsByte Then
+        EmitI('MOV  BYTE PTR [EBP' + BpOff32(SymTab[I].BpOffset) + '], ' +
+              IntToStr_(SymTab[I].InitNum And $FF))
+      Else
+        EmitI('MOV  DWORD PTR [EBP' + BpOff32(SymTab[I].BpOffset) + '], ' +
+              IntToStr_(SymTab[I].InitNum));
+    End;
+  End;
 End;
 
 { ---- GenEpilogue : epilogue de sous-programme 32 bits --------- }
@@ -3872,6 +4457,91 @@ End;
 { ParsePrimary appelle ParseExpr pour les sous-expressions      }
 { entre parentheses -> forward necessaire.                      }
 Procedure ParseExpr; Forward;
+
+{ ---- GenSliceFromSym : generer le code d une tranche (a..b) --- }
+{ Appele apres ParseExpr pour la borne basse (EAX = lo), le token  }
+{ courant etant TOK_DOTDOT. Consomme `..` et ParseExpr pour la      }
+{ borne haute, puis appelle _ADART_SLICE pour obtenir un pointeur   }
+{ ASCIIZ vers une copie tronquee. Resultat dans EAX.                }
+Procedure GenSliceFromSym(SymIdx : Integer);
+Var
+  TI, SC, Off : Integer;
+  Lbl         : TString;
+  Lo          : LongInt;
+  IsStrPtr    : Boolean;
+Begin
+  TI  := SymTab[SymIdx].TypeIdx;
+  SC  := SymTab[SymIdx].StoreClass;
+  Off := SymTab[SymIdx].BpOffset;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  Lo  := 1;
+  IsStrPtr  := False;
+  If TI = TYPE_STR Then
+  Begin
+    Lo := 1;
+    { Les variables String sont actuellement toujours representees par un  }
+    { pointeur 32 bits vers un litteral ASCIIZ (pas de buffer inline).     }
+    IsStrPtr := True;
+  End
+  Else If (TI > TYPE_STR) And (TI <= TypeCount) And
+          (TypeTab[TI].Kind = TK_ARRAY) And
+          (TypeTab[TI].ElemType = TYPE_CHAR) Then
+  Begin
+    Lo := TypeTab[TI].LoBound;
+  End
+  Else
+  Begin
+    Error('Slice non supporte sur ce type (seul les chaines et tableaux de caracteres)');
+    Consume; { .. }
+    ParseExpr;
+    EmitI('XOR  EAX, EAX');
+    Exit;
+  End;
+
+  EmitComment('slice ' + SymTab[SymIdx].Name + '(lo..hi)');
+  { EAX contient lo (deja parse) ; sauver sur pile }
+  EmitI('PUSH EAX');
+  Consume; { .. }
+  ParseExpr;                         { EAX = hi }
+  EmitI('MOV  ECX, EAX');
+  EmitI('POP  EDX');                  { EDX = lo }
+  EmitI('SUB  ECX, EDX');
+  EmitI('INC  ECX');                  { ECX = longueur (peut etre <= 0) }
+  { Ajuster lo relativement a LoBound du tableau }
+  If Lo <> 0 Then
+    EmitI('SUB  EDX, ' + IntToStr_(Lo));
+  { Charger adresse de base dans ESI }
+  Case SC Of
+    STORE_STATIC :
+    Begin
+      If IsStrPtr Then
+        EmitI('MOV  ESI, DWORD PTR [' + Lbl + ']')
+      Else
+        EmitI('LEA  ESI, [' + Lbl + ']');
+    End;
+    STORE_AUTO :
+    Begin
+      If IsStrPtr Then
+        EmitI('MOV  ESI, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  ESI, [EBP' + BpOff32(Off) + ']');
+    End;
+    STORE_PARAM :
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  ESI, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else If IsStrPtr Then
+        EmitI('MOV  ESI, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  ESI, [EBP' + BpOff32(Off) + ']');
+    End;
+  End;
+  EmitI('ADD  ESI, EDX');             { ESI = source[lo] }
+  { Appel _ADART_SLICE(src, len) -> EAX = ptr ASCIIZ }
+  EmitI('PUSH ECX');
+  EmitI('PUSH ESI');
+  EmitI('CALL ' + ADA_RT_PFX + 'SLICE');
+End;
 
 { ---- GenBinOp32 : operateur binaire arithmetique 32 bits ----- }
 { Pile : PUSH gauche. EAX = droite.                               }
@@ -3933,7 +4603,7 @@ Begin
     End;
     TOK_AMPERSAND :
     Begin
-      { Concatenation chaines : stub -> appel helper runtime      }
+      { Concatenation chaines : appel du helper runtime _ADART_STR_CAT }
       EmitI('POP  EBX');
       EmitI('PUSH EBX');       { arg 1 = gauche                  }
       EmitI('PUSH EAX');       { arg 2 = droite                  }
@@ -3978,11 +4648,11 @@ Begin
     Exit;
   End;
 
-  { --- Litteral flottant (stub 32 bits) --- }
+  { --- Litteral flottant : emettre les bits IEEE-754 simple precision --- }
   If CurTokType = TOK_FLOAT Then
   Begin
-    EmitI('XOR  EAX, EAX');   { stub : float non encore supporte }
-    Warning('Litteraux flottants non encore pleinement supportes');
+    EmitI('MOV  EAX, ' + IntToStr_(FloatStrToIEEE754(CurTokStr)) +
+          '  ; float ' + CurTokStr);
     Consume;
     Exit;
   End;
@@ -4023,7 +4693,37 @@ Begin
     Nm := CurTokStr;
     Consume;
 
-    { Attribut : Nom'FIRST | LAST | LENGTH | SIZE }
+    { Argument nomme dans un appel : Nom => valeur                  }
+    { (ex: Put(X, Fore => 1, Aft => 6, Exp => 0))                    }
+    { On ignore le nom de parametre et on parse la valeur.            }
+    If CurTokType = TOK_ARROW Then
+    Begin
+      Consume; { consomme => }
+      ParseExpr;
+      Exit;
+    End;
+
+    { Conversion de type : NomType(expr) ou NomType est un type       }
+    { built-in entier (Integer, Long_Long_Integer, Natural, ...).      }
+    { Traite comme une identite (valeur inchangee, code verifie en Ada). }
+    { Si Nm est aussi enregistre comme fonction (ex. Ada.Strings.Count),}
+    { on laisse le dispatch de fonction prendre le relais.              }
+    If (CurTokType = TOK_LPAREN) And
+       ((Nm = 'INTEGER') Or (Nm = 'NATURAL') Or (Nm = 'POSITIVE') Or
+        (Nm = 'LONG_INTEGER') Or (Nm = 'LONG_LONG_INTEGER') Or
+        (Nm = 'SHORT_INTEGER') Or (Nm = 'SHORT_SHORT_INTEGER') Or
+        (Nm = 'COUNT') Or (Nm = 'POSITIVE_COUNT') Or (Nm = 'FIELD') Or
+        (Nm = 'FLOAT') Or (Nm = 'LONG_FLOAT') Or (Nm = 'LONG_LONG_FLOAT') Or
+        (Nm = 'SHORT_FLOAT') Or (Nm = 'BOOLEAN') Or (Nm = 'CHARACTER')) And
+       (FindSub(Nm) = 0) Then
+    Begin
+      Consume; { ( }
+      ParseExpr;
+      Expect(TOK_RPAREN, '`)` attendu apres conversion de type');
+      Exit;
+    End;
+
+    { Attribut : Nom'FIRST | LAST | LENGTH | SIZE | IMAGE | VAL | POS }
     If CurTokType = TOK_TICK Then
     Begin
       Consume;
@@ -4034,8 +4734,50 @@ Begin
         Else If CurTokStr = 'LAST'   Then AI := 2
         Else If CurTokStr = 'LENGTH' Then AI := 3
         Else If CurTokStr = 'SIZE'   Then AI := 4
+        Else If CurTokStr = 'IMAGE'  Then AI := 5
+        Else If CurTokStr = 'VAL'    Then AI := 6
+        Else If CurTokStr = 'POS'    Then AI := 7
+        Else If CurTokStr = 'SUCC'   Then AI := 8
+        Else If CurTokStr = 'PRED'   Then AI := 9
         Else Warning('Attribut Ada inconnu : ' + CurTokStr);
         Consume;
+      End;
+      { --- Attributs fonctionnels : 'IMAGE, 'VAL, 'POS, 'SUCC, 'PRED (T'Attr(X)) --- }
+      If (AI >= 5) And (AI <= 9) Then
+      Begin
+        TI := FindType(Nm);
+        { Si TI = 0, c'est une variable ou type built-in (Integer, Long_Long_Integer, ...) }
+        If CurTokType = TOK_LPAREN Then
+        Begin
+          Consume;
+          ParseExpr;       { EAX = valeur }
+          Expect(TOK_RPAREN, '`)` attendu apres argument d attribut');
+        End
+        Else
+        Begin
+          { Forme Var'Image : charger la variable comme valeur }
+          Sym := FindSym(Nm);
+          If Sym > 0 Then
+            GenLoadVar(Sym)
+          Else
+          Begin
+            { Nom = type built-in sans argument : impossible }
+            Error('Argument manquant pour attribut ' + Nm + '''Image');
+            EmitI('XOR  EAX, EAX');
+          End;
+        End;
+        Case AI Of
+          5 : Begin { 'IMAGE : convertir EAX en chaine ASCIIZ (pointeur) }
+                { NUMTOSTR prend EAX en entree directe ; pas de push requis }
+                EmitI('CALL ' + ADA_RT_PFX + 'NUMTOSTR');
+                { EAX = pointeur vers NUMBUF (chaine) }
+              End;
+          6 : ; { 'VAL(N) : identite (enum represente par int 0-based) }
+          7 : ; { 'POS(X) : identite                                     }
+          8 : EmitI('INC  EAX');  { 'SUCC(X) = X + 1 }
+          9 : EmitI('DEC  EAX');  { 'PRED(X) = X - 1 }
+        End;
+        Exit;
       End;
       TI := FindType(Nm);
       If TI > 0 Then
@@ -4114,11 +4856,8 @@ Begin
         { Detecter les slices : ident(a..b) }
         If CurTokType = TOK_DOTDOT Then
         Begin
-          Warning('Slices non supportes ; valeur ignoree');
-          Consume; { .. }
-          ParseExpr;       { skip borne haute }
+          GenSliceFromSym(Sym);    { EAX = ptr ASCIIZ copie }
           Expect(TOK_RPAREN, '`)` attendu apres slice');
-          EmitI('XOR  EAX, EAX');
           Exit;
         End;
         Expect(TOK_RPAREN, '`)` attendu apres index');
@@ -4294,6 +5033,15 @@ Begin
               EmitI('MOV  EAX, ' + IntToStr_(J - 1));
               Exit;
             End;
+      { Fonction sans parametre : Argument_Count, Command_Name, ...     }
+      { En Ada, les fonctions parameterless s appellent sans `()`.      }
+      Sub := FindSub(Nm);
+      If (Sub > 0) And (SubTab[Sub].IsFunction) And
+         (SubTab[Sub].ParamCount = 0) Then
+      Begin
+        EmitI('CALL ' + SubTab[Sub].AsmLabel);
+        Exit;
+      End;
       Error('Identificateur inconnu : ' + Nm);
       EmitI('XOR  EAX, EAX');
     End;
@@ -4425,35 +5173,68 @@ Begin
     ParseRelation;
 End;
 
-{ ---- ParseAnd : AND (bit ou logique) ------------------------- }
+{ ---- ParseAnd : AND / AND THEN (bit, logique, court-circuit) --- }
 Procedure ParseAnd;
+Var LblFalse : TString;
 Begin
   ParseNot;
   While (CurTokType = TOK_IDENT) And (CurTokKw = KW_AND) Do
   Begin
-    GenPushEAX;
     Consume;
-    ParseNot;
-    EmitI('POP  EBX');
-    EmitI('AND  EAX, EBX');
+    { Detecter AND THEN (court-circuit) }
+    If (CurTokType = TOK_IDENT) And (CurTokKw = KW_THEN) Then
+    Begin
+      Consume;
+      LblFalse := NewLabel;
+      EmitI('TEST EAX, EAX');
+      EmitI('JE   ' + LblFalse);
+      ParseNot;
+      EmitI('TEST EAX, EAX');
+      EmitI('JE   ' + LblFalse);
+      EmitI('MOV  EAX, 1');
+      EmitLabel(LblFalse);
+    End
+    Else
+    Begin
+      GenPushEAX;
+      ParseNot;
+      EmitI('POP  EBX');
+      EmitI('AND  EAX, EBX');
+    End;
   End;
 End;
 
-{ ---- ParseOr : OR et XOR (bit ou logique) -------------------- }
+{ ---- ParseOr : OR / OR ELSE / XOR (bit, logique, court-circuit) }
 Procedure ParseOr;
-Var IsXor : Boolean;
+Var IsXor : Boolean; LblTrue : TString;
 Begin
   ParseAnd;
   While (CurTokType = TOK_IDENT) And
         ((CurTokKw = KW_OR) Or (CurTokKw = KW_XOR)) Do
   Begin
-    GenPushEAX;
     IsXor := (CurTokKw = KW_XOR);
     Consume;
-    ParseAnd;
-    EmitI('POP  EBX');
-    If IsXor Then EmitI('XOR  EAX, EBX')
-    Else          EmitI('OR   EAX, EBX');
+    { Detecter OR ELSE (court-circuit) }
+    If (Not IsXor) And (CurTokType = TOK_IDENT) And (CurTokKw = KW_ELSE) Then
+    Begin
+      Consume;
+      LblTrue := NewLabel;
+      EmitI('TEST EAX, EAX');
+      EmitI('JNE  ' + LblTrue);
+      ParseAnd;
+      EmitI('TEST EAX, EAX');
+      EmitI('JE   ' + LblTrue);
+      EmitI('MOV  EAX, 1');
+      EmitLabel(LblTrue);
+    End
+    Else
+    Begin
+      GenPushEAX;
+      ParseAnd;
+      EmitI('POP  EBX');
+      If IsXor Then EmitI('XOR  EAX, EBX')
+      Else          EmitI('OR   EAX, EBX');
+    End;
   End;
 End;
 
@@ -4505,12 +5286,31 @@ End;
 Function IsStandardPackage(Const U : TString) : Boolean;
 Begin
   IsStandardPackage :=
-    (U = 'ADA.TEXT_IO')                       Or
-    (U = 'ADA.INTEGER_TEXT_IO')               Or
-    (U = 'ADA.FLOAT_TEXT_IO')                 Or
-    (U = 'ADA.NUMERICS')                      Or
-    (U = 'ADA.NUMERICS.ELEMENTARY_FUNCTIONS') Or
-    (U = 'SYSTEM')                            Or
+    (U = 'ADA')                                       Or
+    (U = 'STANDARD')                                  Or
+    (U = 'ADA.TEXT_IO')                               Or
+    (U = 'ADA.INTEGER_TEXT_IO')                       Or
+    (U = 'ADA.FLOAT_TEXT_IO')                         Or
+    (U = 'ADA.TEXT_IO.TEXT_STREAMS')                  Or
+    (U = 'ADA.NUMERICS')                              Or
+    (U = 'ADA.NUMERICS.ELEMENTARY_FUNCTIONS')         Or
+    (U = 'ADA.NUMERICS.GENERIC_ELEMENTARY_FUNCTIONS') Or
+    (U = 'ADA.CHARACTERS')                            Or
+    (U = 'ADA.CHARACTERS.HANDLING')                   Or
+    (U = 'ADA.CHARACTERS.LATIN_1')                    Or
+    (U = 'ADA.COMMAND_LINE')                          Or
+    (U = 'ADA.DIRECT_IO')                             Or
+    (U = 'ADA.SEQUENTIAL_IO')                         Or
+    (U = 'ADA.STORAGE_IO')                            Or
+    (U = 'ADA.STREAMS')                               Or
+    (U = 'ADA.STREAMS.STREAM_IO')                     Or
+    (U = 'ADA.STRINGS')                               Or
+    (U = 'ADA.STRINGS.MAPS')                          Or
+    (U = 'ADA.STRINGS.FIXED')                         Or
+    (U = 'ADA.STRINGS.BOUNDED')                       Or
+    (U = 'ADA.STRINGS.UNBOUNDED')                     Or
+    (U = 'SYSTEM')                                    Or
+    (U = 'SYSTEM.MACHINE_CODE')                       Or
     (U = 'TEXT_IO');
 End;
 
@@ -4610,6 +5410,9 @@ End;
 { ---- ParseTypeRef : resoudre un nom de type -> index --------- }
 { Gere les types predefinis (INTEGER, FLOAT, BOOLEAN, CHARACTER, }
 { STRING, NATURAL, POSITIVE) et les types utilisateur.           }
+{ Forward pour contraindre un tableau non-contraint a sa declaration. }
+Function ConstrainArrayType(BaseTi : Integer) : Integer; Forward;
+
 Function ParseTypeRef : Integer;
 Var
   Nm : TString;
@@ -4622,15 +5425,40 @@ Begin
   End;
   Nm := StrUpperCase(CurTokStr);
   Consume;
-  If Nm = 'INTEGER'   Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
-  If Nm = 'FLOAT'     Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
-  If Nm = 'BOOLEAN'   Then Begin ParseTypeRef := TYPE_BOOL;  Exit; End;
-  If Nm = 'CHARACTER' Then Begin ParseTypeRef := TYPE_CHAR;  Exit; End;
-  If Nm = 'STRING'    Then Begin ParseTypeRef := TYPE_STR;   Exit; End;
-  If Nm = 'NATURAL'   Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
-  If Nm = 'POSITIVE'  Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'INTEGER'           Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'FLOAT'             Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
+  If Nm = 'BOOLEAN'           Then Begin ParseTypeRef := TYPE_BOOL;  Exit; End;
+  If Nm = 'CHARACTER'         Then Begin ParseTypeRef := TYPE_CHAR;  Exit; End;
+  If Nm = 'STRING'            Then Begin ParseTypeRef := TYPE_STR;   Exit; End;
+  If Nm = 'NATURAL'           Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'POSITIVE'          Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  { Types entiers predefinis Ada 95 (built-in, alias sur INTEGER 32 bits) }
+  If Nm = 'LONG_INTEGER'      Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'LONG_LONG_INTEGER' Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'SHORT_INTEGER'     Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'SHORT_SHORT_INTEGER' Then Begin ParseTypeRef := TYPE_INT; Exit; End;
+  { Types flottants predefinis Ada 95 (built-in, alias sur FLOAT) }
+  If Nm = 'LONG_FLOAT'        Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
+  If Nm = 'LONG_LONG_FLOAT'   Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
+  If Nm = 'SHORT_FLOAT'       Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
+  If Nm = 'DURATION'          Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
+  { Sous-types Ada.Text_IO (Count, Positive_Count, Field) }
+  If Nm = 'COUNT'             Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'POSITIVE_COUNT'    Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'FIELD'             Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
   Ti := FindType(Nm);
-  If Ti > 0 Then Begin ParseTypeRef := Ti; Exit; End;
+  If Ti > 0 Then
+  Begin
+    { ---- Contrainte d index pour tableau non-contraint ----------- }
+    { Si le type resolu est un ARRAY non-contraint (Hi < Lo ou       }
+    { TotalSize = 0) et qu une parenthese suit, on parse (lo..hi)    }
+    { et on cree un sous-type contraint anonyme derive.              }
+    If (TypeTab[Ti].Kind = TK_ARRAY) And
+       (TypeTab[Ti].HiBound < TypeTab[Ti].LoBound) And
+       (CurTokType = TOK_LPAREN) Then
+      Ti := ConstrainArrayType(Ti);
+    ParseTypeRef := Ti; Exit;
+  End;
   Error('Type inconnu : ' + Nm);
   ParseTypeRef := TYPE_UNKNOWN;
 End;
@@ -4709,6 +5537,37 @@ End;
 Procedure ParseRangeBounds(Var Lo, Hi : LongInt);
 Begin
   ParseRangeBoundsEx(Lo, Hi, 0);
+End;
+
+{ ---- ConstrainArrayType : contrainte d index sur un ARRAY ---- }
+{ Prend un type ARRAY non-contraint (ex. type T is array          }
+{ (Integer range <>) of Integer;) et un `(lo..hi)` en cours de    }
+{ lecture, et produit un sous-type contraint anonyme herite des   }
+{ proprietes de BaseTi (ElemType, ElemSize) mais avec Lo/Hi fixes }
+{ et TotalSize = (Hi-Lo+1)*ElemSize.                              }
+Function ConstrainArrayType(BaseTi : Integer) : Integer;
+Var
+  Idx    : Integer;
+  Lo, Hi : LongInt;
+  Esz    : Integer;
+Begin
+  Expect(TOK_LPAREN, '`(` attendu pour contrainte d''index');
+  ParseRangeBounds(Lo, Hi);
+  Expect(TOK_RPAREN, '`)` attendu apres contrainte d''index');
+  Idx := AddType('', TK_ARRAY);
+  If Idx = 0 Then Begin ConstrainArrayType := BaseTi; Exit; End;
+  Esz := TypeTab[BaseTi].ElemSize;
+  If Esz <= 0 Then Esz := 4;
+  TypeTab[Idx].BaseType  := BaseTi;
+  TypeTab[Idx].LoBound   := Lo;
+  TypeTab[Idx].HiBound   := Hi;
+  TypeTab[Idx].ElemType  := TypeTab[BaseTi].ElemType;
+  TypeTab[Idx].ElemSize  := Esz;
+  If Hi >= Lo Then
+    TypeTab[Idx].TotalSize := (Hi - Lo + 1) * Esz
+  Else
+    TypeTab[Idx].TotalSize := 0;
+  ConstrainArrayType := Idx;
 End;
 
 { ---- ParseEnumType : ( lit1, lit2, ... ) -> TK_ENUM ---------- }
@@ -5082,9 +5941,9 @@ Begin
   { Contenu selon le type }
   If TI = TYPE_FLOAT Then
   Begin
-    { 8 octets (DQ) - valeur flottante stub, on emet 0 }
+    { 4 octets (DD) - valeur flottante IEEE-754 simple precision }
     N := SymTab[SymIdx].InitNum;
-    EmitI('DQ 0');
+    EmitI('DD ' + IntToStr_(N));
   End
   Else If (TI = TYPE_CHAR) Or (TI = TYPE_BOOL) Then
   Begin
@@ -5226,7 +6085,20 @@ Begin
   Begin
     Consume;
     HasInit_  := True;
+    { Si l init n est pas une expression constante, on redirige les   }
+    { emissions ASM vers un buffer differe (rejoue apres le prologue). }
+    { Les symboles des variables courantes ne sont crees qu en Etape 7, }
+    { donc pour un init complexe dependant d une seule variable, on     }
+    { bufferise le code puis on ajoute un MOV [local], EAX apres.        }
+    If ScopeTop > 0 Then  { local only - global uses .DATA init }
+      DeferEmit := True;
     GotConst  := ParseConstExpr32(InitVal);
+    If DeferEmit Then
+    Begin
+      DeferEmit := False;
+      { Si l init n etait pas constante, on a du code dans DeferBuf.    }
+      { On marquera les symboles pour re-emettre un MOV après prologue. }
+    End;
   End;
 
   { ===== Etape 7 : creer les symboles ===== }
@@ -5274,6 +6146,15 @@ Begin
     If SC = STORE_AUTO Then
     Begin
       SymTab[SymIdx].BpOffset := AllocLocal(Sz);
+      { Si init non-constante : code evalue est dans DeferBuf,          }
+      { ajouter un MOV [EBP+Off], EAX pour stocker la valeur.            }
+      If HasInit_ And (Not GotConst) And (I = 1) Then
+      Begin
+        DeferAdd(#9 + 'MOV  DWORD PTR [EBP' +
+                BpOff32(SymTab[SymIdx].BpOffset) + '], EAX');
+        { Desactiver l init constante sinon EmitLocalInits l ecraserait }
+        SymTab[SymIdx].HasInit := False;
+      End;
     End;
 
     { ===== Etape 10 : emettre .DATA pour variable globale ===== }
@@ -5354,7 +6235,7 @@ Begin
     If CurTokType = TOK_COLONASSIGN Then
     Begin
       Consume;
-      Warning('Valeur par defaut de parametre ignoree (stub)');
+      Warning('Valeur par defaut de parametre ignoree (non supporte)');
       { Sauter l expression : avancer jusqu a ; ou ) }
       While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_RPAREN) And
             (CurTokType <> TOK_EOF) Do
@@ -5447,22 +6328,42 @@ End;
 Procedure RegisterParams(SubIdx : Integer);
 Var
   I, Off, SymIdx, TI, Mode : Integer;
+  TotalBytes, ParamSize     : Integer;
 Begin
-  Off := 8;  { EBP+0 = old EBP, EBP+4 = ret addr, EBP+8 = 1st param }
+  { Le caller pousse les parametres dans l ordre source (gauche a      }
+  { droite). Apres PUSH EBP + MOV EBP,ESP, le dernier argument pousse  }
+  { est a [EBP+8] et le premier se trouve au plus haut offset.         }
+  { Calcul prealable : taille totale de la zone parametres.            }
+  TotalBytes := 0;
+  For I := 1 To SubTab[SubIdx].ParamCount Do
+  Begin
+    Mode := SubTab[SubIdx].ParamModes[I];
+    If (Mode = PARAM_OUT) Or (Mode = PARAM_INOUT) Then
+      Inc(TotalBytes, 4)
+    Else
+      Inc(TotalBytes, AlignDWord(GetTypeSize(SubTab[SubIdx].ParamTypes[I])));
+  End;
+
+  { EBP+8 pointe le dernier param pousse. Le premier param est au       }
+  { plus haut offset : EBP+8 + (TotalBytes - taille(param1)).            }
+  { On assigne les offsets en partant du premier param.                  }
+  Off := 8 + TotalBytes;  { pointe juste apres le dernier octet params }
   For I := 1 To SubTab[SubIdx].ParamCount Do
   Begin
     TI   := SubTab[SubIdx].ParamTypes[I];
     Mode := SubTab[SubIdx].ParamModes[I];
+    If (Mode = PARAM_OUT) Or (Mode = PARAM_INOUT) Then
+      ParamSize := 4
+    Else
+      ParamSize := AlignDWord(GetTypeSize(TI));
+    Dec(Off, ParamSize);
 
     SymIdx := AddSym(SubTab[SubIdx].ParamNames[I], TI, STORE_PARAM);
     If SymIdx > 0 Then
     Begin
       SymTab[SymIdx].BpOffset := Off;
-      { OUT / INOUT : le parametre est une adresse (pointeur 32 bits) }
       If (Mode = PARAM_OUT) Or (Mode = PARAM_INOUT) Then
-        Inc(Off, 4)
-      Else
-        Inc(Off, AlignDWord(GetTypeSize(TI)));
+        SymTab[SymIdx].IsByRef := True;
     End;
   End;
 End;
@@ -5687,14 +6588,58 @@ End;
 
 { ---- ParseGoto : instruction GOTO label ; -------------------- }
 Procedure ParseGoto;
+Var
+  LblName : TString;
 Begin
   Consume; { GOTO }
-  EmitComment('GOTO ...');
-  { Skip label name + ';' }
-  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
-        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
+  If CurTokType = TOK_IDENT Then
+  Begin
+    LblName := StrUpperCase(CurTokStr);
     Consume;
+    { Nom qualifie eventuel : pkg.lbl -> on prend le dernier segment }
+    While CurTokType = TOK_DOT Do
+    Begin
+      Consume;
+      If CurTokType = TOK_IDENT Then
+      Begin
+        LblName := StrUpperCase(CurTokStr);
+        Consume;
+      End;
+    End;
+    EmitComment('GOTO ' + LblName);
+    EmitI('JMP  _ADAU_' + AsmIdent(LblName));
+  End
+  Else
+  Begin
+    Error('Identificateur de label attendu apres GOTO');
+    { Resynchronisation : sauter jusqu au ; }
+    While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
+          (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
+      Consume;
+  End;
   If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- ParseLabelDecl : declaration d un label <<name>> --------- }
+{ Emet le label ASM _ADAU_<name> pour que GOTO <name> y saute.    }
+Procedure ParseLabelDecl;
+Var
+  LblName : TString;
+Begin
+  Consume; { << }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    LblName := StrUpperCase(CurTokStr);
+    Consume;
+    If CurTokType = TOK_GTGT Then
+      Consume
+    Else
+      Error('`>>` attendu apres nom de label');
+    EmitComment('<<' + LblName + '>>');
+    EmitLabel('_ADAU_' + AsmIdent(LblName));
+  End
+  Else
+    Error('Nom de label attendu apres `<<`');
 End;
 
 { ---- ParsePragma : instruction PRAGMA ident [(args)] ; ------- }
@@ -5791,9 +6736,10 @@ Var
   LblNext   : TString;
   LblMatch  : TString;
   LblEndCase: TString;
-  WVal      : LongInt;
-  GotConst  : Boolean;
+  WVal, HiVal : LongInt;
+  GotConst, GotHi : Boolean;
   HasOthers : Boolean;
+  Alt       : Integer;
 Begin
   EmitComment('CASE ... IS ... END CASE');
   Consume; { CASE }
@@ -5804,6 +6750,7 @@ Begin
   ExpectKw(KW_IS, 'IS');
   LblEndCase := NewLabel;
   HasOthers  := False;
+  Alt        := 0;
   { Boucle WHEN }
   While TokIsKw(KW_WHEN) Do
   Begin
@@ -5821,39 +6768,56 @@ Begin
     End
     Else
     Begin
-      { WHEN valeur [| valeur2] => stmts }
+      { WHEN valeur [| valeur2 | A..B] => stmts }
       LblMatch := NewLabel;
       LblNext  := NewLabel;
       EmitComment('WHEN ...');
-      { Premiere valeur }
-      GotConst := ParseConstExpr32(WVal);
-      If GotConst Then
-      Begin
-        EmitI('CMP  EDX, ' + IntToStr_(WVal));
-        EmitI('JE   ' + LblMatch);
-      End
-      Else
-      Begin
-        { Valeur dynamique dans EAX }
-        EmitI('CMP  EDX, EAX');
-        EmitI('JE   ' + LblMatch);
-      End;
-      { Valeurs alternatives separees par | }
-      While CurTokType = TOK_BAR Do
-      Begin
-        Consume; { | }
+      { Boucle sur les choix separes par | }
+      Repeat
         GotConst := ParseConstExpr32(WVal);
-        If GotConst Then
+        { Choix de type range : LoVal .. HiVal }
+        If CurTokType = TOK_DOTDOT Then
         Begin
-          EmitI('CMP  EDX, ' + IntToStr_(WVal));
-          EmitI('JE   ' + LblMatch);
+          Consume; { .. }
+          If GotConst Then
+          Begin
+            GotHi := ParseConstExpr32(HiVal);
+            If GotHi Then
+            Begin
+              { Match si WVal <= EDX <= HiVal }
+              EmitI('CMP  EDX, ' + IntToStr_(WVal));
+              EmitI('JL   ' + LblNext + '_' + IntToStr_(Alt));
+              EmitI('CMP  EDX, ' + IntToStr_(HiVal));
+              EmitI('JLE  ' + LblMatch);
+              EmitLabel(LblNext + '_' + IntToStr_(Alt));
+              Inc(Alt);
+            End
+            Else
+              Error('Borne superieure constante attendue dans WHEN range');
+          End
+          Else
+          Begin
+            Error('Borne inferieure constante attendue dans WHEN range');
+            If Not ParseConstExpr32(HiVal) Then ;
+          End;
         End
         Else
         Begin
-          EmitI('CMP  EDX, EAX');
-          EmitI('JE   ' + LblMatch);
+          { Valeur simple (constante ou dynamique) }
+          If GotConst Then
+          Begin
+            EmitI('CMP  EDX, ' + IntToStr_(WVal));
+            EmitI('JE   ' + LblMatch);
+          End
+          Else
+          Begin
+            EmitI('CMP  EDX, EAX');
+            EmitI('JE   ' + LblMatch);
+          End;
         End;
-      End;
+        If CurTokType = TOK_BAR Then Consume
+        Else Break;
+      Until False;
       { Si aucune valeur ne correspond, sauter au prochain WHEN }
       EmitI('JMP  ' + LblNext);
       EmitLabel(LblMatch);
@@ -5973,6 +6937,8 @@ Var
   GotHi     : Boolean;
   IsReverse : Boolean;
   Off       : Integer;
+  LoOff     : Integer;
+  HiOff     : Integer;
 Begin
   EmitComment('FOR ... IN ... LOOP ... END LOOP');
   Consume; { FOR }
@@ -5983,10 +6949,24 @@ Begin
   { REVERSE optionnel }
   IsReverse := TokIsKw(KW_REVERSE);
   If IsReverse Then Consume; { REVERSE }
-  { Bornes : lo .. hi }
+  { Bornes : lo .. hi. Si une borne est dynamique (non constante), la     }
+  { sauver dans un emplacement local pour pouvoir la comparer dans        }
+  { la condition de boucle.                                                }
+  LoOff := 0;
+  HiOff := 0;
   GotLo := ParseConstExpr32(LoVal);
+  If Not GotLo Then
+  Begin
+    LoOff := AllocLocal(4);
+    EmitI('MOV  DWORD PTR [EBP' + BpOff32(LoOff) + '], EAX');
+  End;
   Expect(TOK_DOTDOT, '`..` attendu dans FOR');
   GotHi := ParseConstExpr32(HiVal);
+  If Not GotHi Then
+  Begin
+    HiOff := AllocLocal(4);
+    EmitI('MOV  DWORD PTR [EBP' + BpOff32(HiOff) + '], EAX');
+  End;
   { Consommer LOOP }
   ExpectKw(KW_LOOP, 'LOOP');
   { Creer un scope de boucle }
@@ -6006,7 +6986,7 @@ Begin
       EmitI('MOV  DWORD PTR [EBP' + BpOff32(Off) + '], ' + IntToStr_(HiVal))
     Else
     Begin
-      { hi est dans EAX apres ParseConstExpr32 }
+      EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(HiOff) + ']');
       EmitI('MOV  DWORD PTR [EBP' + BpOff32(Off) + '], EAX');
     End;
     EmitLabel(LblTop);
@@ -6015,7 +6995,7 @@ Begin
     If GotLo Then
       EmitI('CMP  EAX, ' + IntToStr_(LoVal))
     Else
-      EmitI('CMP  EAX, 0');   { fallback si lo non constante }
+      EmitI('CMP  EAX, DWORD PTR [EBP' + BpOff32(LoOff) + ']');
     EmitI('JL   ' + LblEnd);
   End
   Else
@@ -6025,7 +7005,7 @@ Begin
       EmitI('MOV  DWORD PTR [EBP' + BpOff32(Off) + '], ' + IntToStr_(LoVal))
     Else
     Begin
-      { lo est dans EAX }
+      EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(LoOff) + ']');
       EmitI('MOV  DWORD PTR [EBP' + BpOff32(Off) + '], EAX');
     End;
     EmitLabel(LblTop);
@@ -6034,7 +7014,7 @@ Begin
     If GotHi Then
       EmitI('CMP  EAX, ' + IntToStr_(HiVal))
     Else
-      EmitI('CMP  EAX, 0');   { fallback si hi non constante }
+      EmitI('CMP  EAX, DWORD PTR [EBP' + BpOff32(HiOff) + ']');
     EmitI('JG   ' + LblEnd);
   End;
   { Corps de la boucle }
@@ -6059,75 +7039,37 @@ End;
 { ---- ParseBeginBlock : bloc BEGIN ... END ; ------------------- }
 { Bloc anonyme imbrique dans une sequence d instructions.         }
 Procedure ParseBeginBlock;
-Var Depth : Integer;
 Begin
   EmitComment('BEGIN block ...');
   Consume; { BEGIN }
-  Depth := 1;
-  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
-  Begin
-    If TokIsKw(KW_BEGIN) Or TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or
-       TokIsKw(KW_CASE) Or TokIsKw(KW_DECLARE) Or
-       TokIsKw(KW_SELECT) Then
-      Inc(Depth)
-    Else If TokIsKw(KW_END) Then
-    Begin
-      Dec(Depth);
-      If Depth <= 0 Then
-      Begin
-        Consume; { END }
-        { Skip optional name + ';' }
-        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
-          Consume;
-        If CurTokType = TOK_SEMI Then Consume;
-        Exit;
-      End;
-    End;
-    Consume;
-  End;
+  PushScope(SK_BLOCK, 0);
+  ParseSequenceOfStatements;
+  PopScope;
+  { END [name] ; }
+  ExpectKw(KW_END, 'END');
+  { Sauter le nom optionnel }
+  If CurTokType = TOK_IDENT Then Consume;
+  If CurTokType = TOK_SEMI Then Consume;
 End;
 
 { ---- ParseDeclareBlock : DECLARE ... BEGIN ... END ; ---------- }
 { Bloc avec partie declarative locale.                            }
-{ Structure : DECLARE decls BEGIN stmts END [name] ;              }
-{ Le BEGIN fait partie de la structure DECLARE et ne cree pas      }
-{ un niveau supplementaire.                                        }
 Procedure ParseDeclareBlock;
-Var
-  Depth    : Integer;
-  GotBegin : Boolean;
 Begin
   EmitComment('DECLARE block ...');
   Consume; { DECLARE }
-  Depth := 1;
-  GotBegin := False;
-  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
-  Begin
-    If TokIsKw(KW_BEGIN) And (Not GotBegin) Then
-    Begin
-      { Le BEGIN du DECLARE : ne pas incrementer depth }
-      GotBegin := True;
-      Consume;
-      Continue;
-    End
-    Else If TokIsKw(KW_BEGIN) Or TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or
-       TokIsKw(KW_CASE) Or TokIsKw(KW_DECLARE) Or
-       TokIsKw(KW_SELECT) Then
-      Inc(Depth)
-    Else If TokIsKw(KW_END) Then
-    Begin
-      Dec(Depth);
-      If Depth <= 0 Then
-      Begin
-        Consume; { END }
-        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
-          Consume;
-        If CurTokType = TOK_SEMI Then Consume;
-        Exit;
-      End;
-    End;
-    Consume;
-  End;
+  PushScope(SK_BLOCK, 0);
+  { Partie declarative locale }
+  ParseDeclarativePart;
+  ExpectKw(KW_BEGIN, 'BEGIN');
+  { Emettre les initialisations des variables locales declarees ici }
+  EmitLocalInits;
+  ParseSequenceOfStatements;
+  PopScope;
+  { END [name] ; }
+  ExpectKw(KW_END, 'END');
+  If CurTokType = TOK_IDENT Then Consume;
+  If CurTokType = TOK_SEMI Then Consume;
 End;
 
 { ============================================================ }
@@ -6150,7 +7092,13 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        { Le pointeur est deja l adresse : MOV et non LEA             }
+        EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    End;
   Else
     Error('Impossible d''obtenir l''adresse de : ' +
           SymTab[SymIdx].Name);
@@ -6247,7 +7195,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 22 - STUBS ADA.TEXT_IO : SORTIE CONSOLE WIN32           }
+{ TODO 22 - ADA.TEXT_IO : SORTIE CONSOLE WIN32                  }
 { ============================================================ }
 
 { ---- DetectArgTypeForPut : detecter le type d argument ------- }
@@ -6258,6 +7206,9 @@ Function DetectArgTypeForPut : Integer;
 Var
   Sym : Integer;
   TI  : Integer;
+  U   : TString;
+  P   : Integer;
+  NxCh: Char;
 Begin
   Case CurTokType Of
     TOK_INTEGER : DetectArgTypeForPut := TYPE_INT;
@@ -6269,19 +7220,129 @@ Begin
           DetectArgTypeForPut := TYPE_BOOL
         Else
         Begin
+          U := StrUpperCase(CurTokStr);
+          { Heuristique : si le nom est un type (built-in entier/enum),      }
+          { regarder l attribut qui suit : 'IMAGE -> TYPE_STR,                }
+          { 'FIRST/'LAST/'LENGTH/'SIZE/'POS/'VAL/'SUCC/'PRED -> TYPE_INT.     }
+          If (U = 'INTEGER') Or (U = 'LONG_INTEGER') Or
+             (U = 'LONG_LONG_INTEGER') Or (U = 'SHORT_INTEGER') Or
+             (U = 'NATURAL') Or (U = 'POSITIVE') Or
+             (U = 'SHORT_SHORT_INTEGER') Or
+             (U = 'FLOAT') Or (U = 'LONG_FLOAT') Or (U = 'LONG_LONG_FLOAT') Or
+             (U = 'SHORT_FLOAT') Or (U = 'BOOLEAN') Or (U = 'CHARACTER') Then
+          Begin
+            { Peek pour voir si c est 'Image ou un attribut numerique }
+            P := LexColNo;
+            While (P <= Length(LexLine)) And
+                  ((LexLine[P] = ' ') Or (LexLine[P] = #9)) Do Inc(P);
+            If (P <= Length(LexLine)) And (LexLine[P] = '''') Then
+            Begin
+              { lire le nom d attribut apres l apostrophe }
+              Inc(P);
+              NxCh := #0;
+              If (P <= Length(LexLine)) Then NxCh := LexLine[P];
+              { detecter "IMAGE" vs les autres : si 1ere lettre I/i, TYPE_STR }
+              If (NxCh = 'I') Or (NxCh = 'i') Then
+                DetectArgTypeForPut := TYPE_STR
+              Else
+                DetectArgTypeForPut := TYPE_INT;
+              Exit;
+            End;
+            DetectArgTypeForPut := TYPE_STR;
+            Exit;
+          End;
+          { Sinon, chercher un type utilisateur (enum, range, ...) }
+          If FindType(U) > 0 Then
+          Begin
+            DetectArgTypeForPut := TYPE_STR;
+            Exit;
+          End;
           Sym := FindSym(CurTokStr);
           If Sym > 0 Then
           Begin
             TI := SymTab[Sym].TypeIdx;
-            { Detecter les tableaux de caracteres comme chaines }
+            { Peek char suivant pour detecter Ident'Attr (attribut) et      }
+            { Ident(Idx) (acces element ou slice). Cette info est utilisee  }
+            { avant de decider si un array-of-char doit etre traite comme   }
+            { String entier (Put(Buf)) ou comme Character (Put(Buf(I))).    }
+            NxCh := #0;
+            P := LexColNo;
+            While (P <= Length(LexLine)) And
+                  ((LexLine[P] = ' ') Or (LexLine[P] = #9)) Do Inc(P);
+            If P <= Length(LexLine) Then NxCh := LexLine[P];
+            { Detecter les tableaux de caracteres comme chaines SI pas      }
+            { suivi de `(` (acces element) ni de `'` (attribut).             }
             If (TI > 0) And (TI <= TypeCount) And
-               (TypeTab[TI].ElemType = TYPE_CHAR) Then
-              DetectArgTypeForPut := TYPE_STR
-            Else
+               (TypeTab[TI].ElemType = TYPE_CHAR) And
+               (NxCh <> '(') And (NxCh <> '''') Then
+            Begin
+              DetectArgTypeForPut := TYPE_STR;
+              Exit;
+            End;
+            If NxCh = '''' Then
+            Begin
+              { Ident'Attr : par defaut First/Last/Length/Size -> TYPE_INT.   }
+              { (Image reste un cas minoritaire ; on privilegie la forme     }
+              {  numerique qui correspond a Put(Var'First, Width).)          }
+              DetectArgTypeForPut := TYPE_INT;
+              Exit;
+            End;
+            If (NxCh = '(') And
+               (TI > 0) And (TI <= TypeCount) And
+               (TypeTab[TI].Kind = TK_ARRAY) Then
+            Begin
+              { Distinguer slice Ident(a..b) d un acces element Ident(i). }
+              { Chercher `..` entre la parenthese ouvrante et la fermante  }
+              { sur la meme ligne (cas usuel).                              }
+              Inc(P);   { passer le '(' }
+              NxCh := #0;
+              While (P < Length(LexLine)) Do
+              Begin
+                If LexLine[P] = ')' Then Break;
+                If (LexLine[P] = '.') And (LexLine[P + 1] = '.') Then
+                Begin
+                  NxCh := '.';
+                  Break;
+                End;
+                Inc(P);
+              End;
+              If NxCh = '.' Then
+              Begin
+                { Slice : renvoie une chaine (tableau de caracteres) }
+                If TypeTab[SymTab[Sym].TypeIdx].ElemType = TYPE_CHAR Then
+                  DetectArgTypeForPut := TYPE_STR
+                Else
+                  DetectArgTypeForPut := TYPE_STR;
+                Exit;
+              End;
+              { Acces a un element : renvoyer son type }
+              TI := TypeTab[TI].ElemType;
+              If TI <= 0 Then TI := TYPE_INT;
               DetectArgTypeForPut := TI;
+              Exit;
+            End;
+            DetectArgTypeForPut := TI;
           End
           Else
-            DetectArgTypeForPut := TYPE_INT;
+          Begin
+            { Pas une variable : essayer comme fonction. Si c est une    }
+            { fonction connue (ex. To_Upper, To_Lower, Ada.Characters.    }
+            { Handling.xxx), on dispatche sur son type de retour. Cela    }
+            { permet a Put(To_Upper('a')) d imprimer 'A' au lieu de 65.   }
+            Sym := FindSub(U);
+            If (Sym > 0) And (SubTab[Sym].IsFunction) Then
+            Begin
+              TI := SubTab[Sym].RetType;
+              If (TI = TYPE_CHAR) Or (TI = TYPE_STR) Or
+                 (TI = TYPE_BOOL) Or (TI = TYPE_INT)  Or
+                 (TI = TYPE_FLOAT) Then
+                DetectArgTypeForPut := TI
+              Else
+                DetectArgTypeForPut := TYPE_INT;
+            End
+            Else
+              DetectArgTypeForPut := TYPE_INT;
+          End;
         End;
       End;
   Else
@@ -6316,6 +7377,14 @@ Var
         If (VTI > 0) And (VTI <= TypeCount) And
            (TypeTab[VTI].ElemType = TYPE_CHAR) Then
         Begin
+          { Si suivi de `(`, il s agit d un slice ou acces element :      }
+          { laisser ParseExpr gerer (GenSliceFromSym retourne un pointeur }
+          { ASCIIZ directement dans EAX).                                  }
+          If LexPeekNonWS = '(' Then
+          Begin
+            ParseExpr;
+            Exit;
+          End;
           { Array de caracteres : utiliser adresse au lieu de valeur }
           GenLoadAddr(VSym);
           Consume;
@@ -6342,6 +7411,56 @@ Begin
 
     If CurTokType = TOK_COMMA Then
     Begin
+      { Desambiguation : si le premier argument est un fichier (FILE_TYPE),   }
+      { c est Put(File, Value). Sinon, c est Put(Value, Width) d Integer_Text_IO }
+      { ou Float_Text_IO (ex: Put(42, 4)) et on doit lire et ignorer Width.     }
+      If (ArgTy = TYPE_INT) Or (ArgTy = TYPE_BOOL) Or (ArgTy = TYPE_CHAR) Or
+         (ArgTy = TYPE_STR) Or (ArgTy = TYPE_FLOAT) Then
+      Begin
+        { ---- Mode console Integer_Text_IO/Float_Text_IO : Put(Value, Width) ---- }
+        { EAX = valeur a afficher                                                   }
+        EmitI('PUSH EAX');   { Sauver la valeur }
+        Consume;             { Consommer la virgule }
+        { Lire Width (entier) et l ignorer pour la sortie console.                  }
+        { Les arguments nommes (Fore => n, Aft => n, ...) sont geres transparemment  }
+        { par ParseAtom qui les reconnait via TOK_ARROW.                             }
+        ParseExpr;
+        While CurTokType = TOK_COMMA Do
+        Begin
+          Consume;
+          ParseExpr;
+        End;
+        Expect(TOK_RPAREN, '`)` attendu apres arguments Put');
+        EmitI('POP  EAX');   { Recuperer la valeur }
+        Case ArgTy Of
+          TYPE_STR :
+            Begin
+              EmitI('PUSH EAX');
+              EmitI('CALL ' + ADA_RT_PFX + 'PRINT');
+            End;
+          TYPE_CHAR :
+            Begin
+              EmitI('PUSH EAX');
+              EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+            End;
+          TYPE_FLOAT :
+            Begin
+              { PRINTFLT(bits, aft) : par defaut 6 decimales }
+              EmitI('PUSH 6                         ; Aft par defaut');
+              EmitI('PUSH EAX');
+              EmitI('CALL ' + ADA_RT_PFX + 'PRINTFLT');
+            End;
+        Else
+          Begin
+            EmitI('PUSH EAX');
+            EmitI('CALL ' + ADA_RT_PFX + 'PRINTINT');
+          End;
+        End;
+        If IsLine Then
+          EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
+      End
+      Else
+      Begin
       { ---- Mode fichier : Put(F, Value) / Put_Line(F, Value) ---- }
       { EAX = handle du fichier                                      }
       EmitI('PUSH EAX');   { Sauver handle sur la pile }
@@ -6365,6 +7484,7 @@ Begin
           EmitI('CALL ' + ADA_RT_PFX + 'FPUT_INT');
         End;
       End;
+      End;
     End
     Else
     Begin
@@ -6380,6 +7500,13 @@ Begin
           Begin
             EmitI('PUSH EAX');
             EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+          End;
+        TYPE_FLOAT :
+          Begin
+            { PRINTFLT(bits, aft) : par defaut 6 decimales }
+            EmitI('PUSH 6                         ; Aft par defaut');
+            EmitI('PUSH EAX');
+            EmitI('CALL ' + ADA_RT_PFX + 'PRINTFLT');
           End;
       Else
         Begin
@@ -6438,18 +7565,21 @@ Begin
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
-{ ---- GenTextIOSetColInline : Set_Col (stub warning) ---------- }
-{ Genere un avertissement : Set_Col non implemente.              }
+{ ---- GenTextIOSetColInline : Set_Col (positionnement colonne) - }
+{ Genere : PUSH <N> ; CALL _ADART_SETCOL                           }
 Procedure GenTextIOSetColInline;
 Begin
-  EmitComment('Ada.Text_IO.Set_Col (stub)');
-  Warning('Ada.Text_IO.Set_Col non implemente, appel ignore');
+  EmitComment('Ada.Text_IO.Set_Col');
   If CurTokType = TOK_LPAREN Then
   Begin
     Consume; { ( }
-    ParseExpr;  { skip l argument }
+    ParseExpr;  { EAX = colonne cible }
     Expect(TOK_RPAREN, '`)` attendu apres argument Set_Col');
-  End;
+    EmitI('PUSH EAX');
+    EmitI('CALL ' + ADA_RT_PFX + 'SETCOL');
+  End
+  Else
+    Warning('Set_Col appele sans argument, ignore');
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
@@ -6598,6 +7728,62 @@ Begin
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
+{ ---- GenTextIOGetInline : Get (out X) type-dispatched -------- }
+{ Get(C : out Character) -> CALL _ADART_GET                      }
+{ Get(I : out Integer)   -> CALL _ADART_GETINT                   }
+Procedure GenTextIOGetInline;
+Var
+  VarName : TString;
+  Sym     : Integer;
+  TI      : Integer;
+  RtHelp  : TString;
+Begin
+  EmitComment('Ada.Text_IO.Get');
+  If CurTokType <> TOK_LPAREN Then
+  Begin
+    Error('`(` attendu apres Get');
+    Exit;
+  End;
+  Consume; { ( }
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    Error('Identifiant attendu pour Get');
+    ParseExpr;
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  VarName := CurTokStr;
+  Consume;
+  Sym := FindSym(VarName);
+  If Sym <= 0 Then
+  Begin
+    Error('Variable inconnue pour Get : ' + VarName);
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  Expect(TOK_RPAREN, '`)` attendu apres argument Get');
+
+  { Choisir le helper runtime selon le type }
+  TI := SymTab[Sym].TypeIdx;
+  If TI = TYPE_CHAR Then
+    RtHelp := ADA_RT_PFX + 'GET'
+  Else If (TI = TYPE_INT) Or (TI = TYPE_BOOL) Then
+    RtHelp := ADA_RT_PFX + 'GETINT'
+  Else
+  Begin
+    Warning('Ada.Text_IO.Get : type de variable non supporte, utilise Get caractere');
+    RtHelp := ADA_RT_PFX + 'GET';
+  End;
+
+  { Passer l adresse de la variable }
+  GenLoadAddr(Sym);
+  EmitI('PUSH EAX');
+  EmitI('CALL ' + RtHelp);
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
 { ---- GenTextIOGetLineInline : Get_Line (file or console) ----- }
 { Get_Line (Buf, Last)      -> console (stdin)                    }
 { Get_Line (F, Buf, Last)   -> fichier                            }
@@ -6728,7 +7914,7 @@ Begin
   { Nom court direct (si enregistre dans SubTab via GenTextIOStubs) }
   If (U = 'PUT') Or (U = 'PUT_LINE') Or (U = 'NEW_LINE') Or
      (U = 'SET_COL') Or (U = 'CREATE') Or (U = 'OPEN') Or
-     (U = 'CLOSE') Or (U = 'GET_LINE') Then
+     (U = 'CLOSE') Or (U = 'GET') Or (U = 'GET_LINE') Then
     IsTextIOProc := U;
 End;
 
@@ -6745,7 +7931,61 @@ Var
   ArgSym   : Integer;
   ArgName  : TString;
   TIOProc  : TString;
+  UName    : TString;
+  AsmLine  : TString;
+  AsmStart : Integer;
+  K        : Integer;
 Begin
+  { --- System.Machine_Code.Asm("instruction") : insertion inline ------ }
+  { Accepte les formes :                                                  }
+  {   Asm ("NOP");                                                        }
+  {   Machine_Code.Asm ("MOV EAX, 1");                                    }
+  {   System.Machine_Code.Asm ("XOR EAX, EAX");                           }
+  { La chaine peut contenir plusieurs instructions separees par ';' ou   }
+  { par une nouvelle ligne. Chaque instruction est emise brute via EmitI. }
+  UName := StrUpperCase(ProcName);
+  If (UName = 'ASM') Or
+     (UName = 'MACHINE_CODE.ASM') Or
+     (UName = 'SYSTEM.MACHINE_CODE.ASM') Then
+  Begin
+    EmitComment('inline asm : ' + ProcName);
+    If CurTokType <> TOK_LPAREN Then
+    Begin
+      Error('`(` attendu apres ' + ProcName);
+      If CurTokType = TOK_SEMI Then Consume;
+      Exit;
+    End;
+    Consume; { ( }
+    If CurTokType <> TOK_STRING Then
+    Begin
+      Error('Chaine attendue comme argument de ' + ProcName);
+      SkipToSemi;
+      Exit;
+    End;
+    AsmLine := CurTokStr;
+    Consume; { string literal }
+    { Eventuel argument supplementaire (options GNAT ignorees) : skip }
+    While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
+      Consume;
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    { Emettre l instruction. Support multi-lignes : separer sur ';',   }
+    { CR et LF. Chaque fragment non vide est emis tel quel.             }
+    AsmStart := 1;
+    For K := 1 To Length(AsmLine) Do
+    Begin
+      If (AsmLine[K] = ';') Or (AsmLine[K] = #10) Or (AsmLine[K] = #13) Then
+      Begin
+        If K > AsmStart Then
+          EmitI(Copy(AsmLine, AsmStart, K - AsmStart));
+        AsmStart := K + 1;
+      End;
+    End;
+    If AsmStart <= Length(AsmLine) Then
+      EmitI(Copy(AsmLine, AsmStart, Length(AsmLine) - AsmStart + 1));
+    Exit;
+  End;
+
   { TODO 22 : intercepter les appels Ada.Text_IO }
   TIOProc := IsTextIOProc(ProcName);
   If TIOProc <> '' Then
@@ -6766,7 +8006,8 @@ Begin
     Begin GenTextIOCloseInline; Exit; End;
     If TIOProc = 'GET_LINE' Then
     Begin GenTextIOGetLineInline; Exit; End;
-    { GET : passer au traitement normal (stubs existants) }
+    If TIOProc = 'GET' Then
+    Begin GenTextIOGetInline; Exit; End;
   End;
 
   Sub := FindSub(ProcName);
@@ -6987,7 +8228,9 @@ Var
   Sym           : Integer;
   I, J, AI, Sub : Integer;
 Begin
-  If TokIsKw(KW_NULL) Then
+  If CurTokType = TOK_LTLT Then
+    ParseLabelDecl
+  Else If TokIsKw(KW_NULL) Then
     ParseNull
   Else If TokIsKw(KW_RETURN) Then
     ParseReturn
@@ -7240,23 +8483,30 @@ Begin
   LblExit_ := NewLabel;
   SetExitLabel(LblExit_);
 
+  { Reinitialiser le buffer d emission differee pour les inits locaux }
+  ResetDeferBuf;
+
   { 3. Partie declarative (entre IS et BEGIN) }
   ParseDeclarativePart;
 
   { 4. Expect BEGIN }
   ExpectKw(KW_BEGIN, 'BEGIN');
 
-  { 5. Prologue ASM : PUSH EBP / MOV EBP, ESP / SUB ESP, frame }
-  { On emet le label de la procedure }
+  { 5. Label de la procedure + prologue differe                      }
+  { Le label est emis directement ; le corps + epilogue sont bufferes }
+  { dans BodyBuf pour pouvoir emettre le prologue (SUB ESP) avec la   }
+  { taille de frame definitive, une fois toutes les allocations       }
+  { locales (y compris FOR/DECLARE imbriques) connues.                 }
   EmitBlank;
   EmitComment('--- PROCEDURE ' + SubName + ' ---');
   EmitLabel(SubTab[SubIdx].AsmLabel);
 
-  { Le frame size sera connu apres PopScope, on emet un stub }
-  { On genere le prologue maintenant avec le FrameSize courant }
-  { NB : les variables locales ont deja ete allouees par ParseObjectDecl }
-  FrameSz := -ScopeStack[ScopeTop].BpTop;
-  GenPrologue(FrameSz);
+  ResetBodyBuf;
+  BodyEmit := True;
+  EmitLocalInits;
+  { Rejouer le code des initialisations non-constantes (apres les inits }
+  { constants, dans l ordre source).                                    }
+  FlushDeferBuf;
 
   { Preparer le label d exception si EXCEPTION sera present }
   LblExcept := NewExLabel;
@@ -7287,10 +8537,19 @@ Begin
     Consume;
   Expect(TOK_SEMI, '`;` attendu apres END');
 
-  { 9. Epilogue : label de sortie + MOV ESP, EBP / POP EBP / RET n }
+  { 9. Taille de frame definitive connue a ce stade }
+  FrameSz := -ScopeStack[ScopeTop].BpTop;
+
+  { Epilogue : label de sortie + MOV ESP, EBP / POP EBP / RET n      }
   EmitLabel(LblExit_);
   ParamSz := SubParamBytes32(SubIdx);
   GenEpilogue(FrameSz, ParamSz);
+
+  { Emettre le prologue avec la vraie taille de frame, puis flusher   }
+  { le corps bufferise.                                                }
+  BodyEmit := False;
+  GenPrologue(FrameSz);
+  FlushBodyBuf;
 
   { 10. Depiler le scope }
   FrameSz := PopScope;
@@ -7302,8 +8561,6 @@ End;
 {   - Le scope est SK_FUNC                                          }
 {   - Le resultat de la fonction doit etre dans EAX                 }
 {   - RETURN expr ; met la valeur dans EAX                          }
-{ Pour l instant (stub), le corps est traverse sans generer de     }
-{ code pour les instructions. La valeur par defaut est EAX = 0.    }
 Procedure ParseFunctionBody(SubIdx : Integer);
 Var
   FrameSz   : Integer;
@@ -7325,19 +8582,25 @@ Begin
   LblExit_ := NewLabel;
   SetExitLabel(LblExit_);
 
+  { Reinitialiser le buffer d emission differee }
+  ResetDeferBuf;
+
   { 3. Partie declarative (entre IS et BEGIN) }
   ParseDeclarativePart;
 
   { 4. Expect BEGIN }
   ExpectKw(KW_BEGIN, 'BEGIN');
 
-  { 5. Prologue ASM }
+  { 5. Label + prologue differe (voir ParseProcedureBody) }
   EmitBlank;
   EmitComment('--- FUNCTION ' + SubName + ' ---');
   EmitLabel(SubTab[SubIdx].AsmLabel);
 
-  FrameSz := -ScopeStack[ScopeTop].BpTop;
-  GenPrologue(FrameSz);
+  ResetBodyBuf;
+  BodyEmit := True;
+  EmitLocalInits;
+  { Rejouer le code des initialisations non-constantes }
+  FlushDeferBuf;
 
   { Valeur de retour par defaut : EAX = 0 }
   EmitI('XOR  EAX, EAX');
@@ -7370,10 +8633,18 @@ Begin
     Consume;
   Expect(TOK_SEMI, '`;` attendu apres END');
 
-  { 9. Epilogue }
+  { 9. Taille de frame definitive }
+  FrameSz := -ScopeStack[ScopeTop].BpTop;
+
+  { Epilogue }
   EmitLabel(LblExit_);
   ParamSz := SubParamBytes32(SubIdx);
   GenEpilogue(FrameSz, ParamSz);
+
+  { Emettre le prologue puis flusher le corps bufferise }
+  BodyEmit := False;
+  GenPrologue(FrameSz);
+  FlushBodyBuf;
 
   { 10. Depiler le scope }
   FrameSz := PopScope;
@@ -7490,7 +8761,77 @@ End;
 { TODO 14 - PARSEUR : PACKAGE SPEC ET BODY                      }
 { ============================================================ }
 
-{ ---- GenTextIOStubs : generer les stubs Ada.Text_IO ---------- }
+{ ---- RegisterTextIOStubs : enregistrer les subs Ada.Text_IO --- }
+{ Enregistre uniquement les signatures dans SubTab. Appele des la  }
+{ clause WITH pour que FindSub fonctionne lors de la compilation   }
+{ du programme utilisateur. Les bodies sont emis par                }
+{ GenTextIOStubs a la fin de la compilation.                        }
+Procedure RegisterTextIOStubs;
+Var Idx : Integer;
+Begin
+  Idx := FindSub('PUT');
+  If Idx = 0 Then Idx := AddSub('PUT', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward     := False;
+    SubTab[Idx].ParamCount    := 1;
+    SubTab[Idx].ParamNames[1] := 'ITEM';
+    SubTab[Idx].ParamTypes[1] := TYPE_STR;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+  End;
+  Idx := FindSub('PUT_LINE');
+  If Idx = 0 Then Idx := AddSub('PUT_LINE', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward     := False;
+    SubTab[Idx].ParamCount    := 1;
+    SubTab[Idx].ParamNames[1] := 'ITEM';
+    SubTab[Idx].ParamTypes[1] := TYPE_STR;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+  End;
+  Idx := FindSub('GET');
+  If Idx = 0 Then Idx := AddSub('GET', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward     := False;
+    SubTab[Idx].ParamCount    := 1;
+    SubTab[Idx].ParamNames[1] := 'ITEM';
+    SubTab[Idx].ParamTypes[1] := TYPE_CHAR;
+    SubTab[Idx].ParamModes[1] := PARAM_OUT;
+  End;
+  Idx := FindSub('GET_LINE');
+  If Idx = 0 Then Idx := AddSub('GET_LINE', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward     := False;
+    SubTab[Idx].ParamCount    := 2;
+    SubTab[Idx].ParamNames[1] := 'ITEM';
+    SubTab[Idx].ParamTypes[1] := TYPE_STR;
+    SubTab[Idx].ParamModes[1] := PARAM_OUT;
+    SubTab[Idx].ParamNames[2] := 'LAST';
+    SubTab[Idx].ParamTypes[2] := TYPE_INT;
+    SubTab[Idx].ParamModes[2] := PARAM_OUT;
+  End;
+  Idx := FindSub('NEW_LINE');
+  If Idx = 0 Then Idx := AddSub('NEW_LINE', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].ParamCount := 0;
+  End;
+  Idx := FindSub('SET_COL');
+  If Idx = 0 Then Idx := AddSub('SET_COL', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward     := False;
+    SubTab[Idx].ParamCount    := 1;
+    SubTab[Idx].ParamNames[1] := 'TO';
+    SubTab[Idx].ParamTypes[1] := TYPE_INT;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+  End;
+End;
+
+{ ---- GenTextIOStubs : generer les bodies des subs Ada.Text_IO ---------- }
 { Enregistre Put, Put_Line, Get, Get_Line, New_Line, Set_Col     }
 { dans SubTab en tant que procedures standards.                   }
 { Genere du code ASM appelant les helpers runtime Win32           }
@@ -7502,9 +8843,10 @@ Var
   Idx : Integer;
 Begin
   { --- Put (S : String) --- }
-  { Note: Put et Put_Line sont maintenant geres inline par        }
-  { GenTextIOPutInline via ParseProcedureCall (TODO 22).          }
-  { Les stubs sont conserves pour compatibilite.                  }
+  { Note: Put et Put_Line sont majoritairement traites inline par        }
+  { GenTextIOPutInline via ParseProcedureCall (TODO 22). Les definitions }
+  { ci-dessous sont conservees pour les cas ou le nom est utilise        }
+  { comme sous-programme (passage en parametre, renommage, etc.).        }
   Idx := FindSub('PUT');
   If Idx = 0 Then
     Idx := AddSub('PUT', False, TYPE_VOID);
@@ -7516,7 +8858,7 @@ Begin
     SubTab[Idx].ParamTypes[1] := TYPE_STR;
     SubTab[Idx].ParamModes[1] := PARAM_IN;
     EmitBlank;
-    EmitComment('--- Ada.Text_IO.Put (stub) ---');
+    EmitComment('--- Ada.Text_IO.Put ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
@@ -7539,7 +8881,7 @@ Begin
     SubTab[Idx].ParamTypes[1] := TYPE_STR;
     SubTab[Idx].ParamModes[1] := PARAM_IN;
     EmitBlank;
-    EmitComment('--- Ada.Text_IO.Put_Line (stub) ---');
+    EmitComment('--- Ada.Text_IO.Put_Line ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
@@ -7563,7 +8905,7 @@ Begin
     SubTab[Idx].ParamTypes[1] := TYPE_CHAR;
     SubTab[Idx].ParamModes[1] := PARAM_OUT;
     EmitBlank;
-    EmitComment('--- Ada.Text_IO.Get (stub) ---');
+    EmitComment('--- Ada.Text_IO.Get ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
@@ -7589,7 +8931,7 @@ Begin
     SubTab[Idx].ParamTypes[2] := TYPE_INT;
     SubTab[Idx].ParamModes[2] := PARAM_OUT;
     EmitBlank;
-    EmitComment('--- Ada.Text_IO.Get_Line (stub) ---');
+    EmitComment('--- Ada.Text_IO.Get_Line ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
@@ -7611,7 +8953,7 @@ Begin
     SubTab[Idx].IsForward  := False;
     SubTab[Idx].ParamCount := 0;
     EmitBlank;
-    EmitComment('--- Ada.Text_IO.New_Line (stub) ---');
+    EmitComment('--- Ada.Text_IO.New_Line ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
@@ -7620,7 +8962,7 @@ Begin
     EmitI('RET');
   End;
 
-  { --- Set_Col (To : Positive_Count) --- (TODO 22 stub) }
+  { --- Set_Col (To : Positive_Count) --- (TODO 22) }
   Idx := FindSub('SET_COL');
   If Idx = 0 Then
     Idx := AddSub('SET_COL', False, TYPE_VOID);
@@ -7632,13 +8974,1241 @@ Begin
     SubTab[Idx].ParamTypes[1] := TYPE_INT;
     SubTab[Idx].ParamModes[1] := PARAM_IN;
     EmitBlank;
-    EmitComment('--- Ada.Text_IO.Set_Col (stub - non implemente) ---');
+    EmitComment('--- Ada.Text_IO.Set_Col ---');
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
+    EmitI('MOV  EAX, DWORD PTR [EBP+8]');
+    EmitI('PUSH EAX');
+    EmitI('CALL ' + ADA_RT_PFX + 'SETCOL');
     EmitI('POP  EBP');
     EmitI('RET  4');
   End;
+End;
+
+{ ---- EmitFPUOps : emettre une sequence d instructions FPU ----------- }
+{ Helper interne : emet la sequence Ops comme une liste d instructions }
+{ FPU separees par ';' (pour contourner l absence d heredoc).           }
+Procedure EmitFPUOps(Const Ops : TString);
+Var
+  I    : Integer;
+  Part : TString;
+Begin
+  Part := '';
+  For I := 1 To Length(Ops) Do
+  Begin
+    If Ops[I] = ';' Then
+    Begin
+      If Part <> '' Then EmitI(Part);
+      Part := '';
+    End
+    Else
+      Part := Part + Ops[I];
+  End;
+  If Part <> '' Then EmitI(Part);
+End;
+
+{ ---- GenMathStubOp : fonction mathematique 1 arg (FPU x87) ------- }
+{ Enregistre F(X : Float) RETURN Float dans SubTab et genere un corps  }
+{ qui utilise la FPU x87 pour calculer le resultat. L argument arrive    }
+{ sous forme IEEE-754 32 bits en [EBP+8] et le resultat est retourne    }
+{ sous la meme forme dans EAX.                                            }
+{ Ops est une sequence d instructions FPU separees par ';'.               }
+Procedure GenMathStubOp(Const Name : TString; Const Ops : TString);
+Var Idx : Integer;
+Begin
+  Idx := FindSub(Name);
+  If Idx = 0 Then
+    Idx := AddSub(Name, True, TYPE_FLOAT);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].IsFunction := True;
+    SubTab[Idx].ParamCount := 1;
+    SubTab[Idx].ParamNames[1] := 'X';
+    SubTab[Idx].ParamTypes[1] := TYPE_FLOAT;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+    EmitBlank;
+    EmitComment('--- Ada.Numerics.Elementary_Functions.' + Name +
+                ' (FPU x87) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('SUB  ESP, 4');
+    EmitI('FLD  DWORD PTR [EBP+8]');   { charger x sur la FPU }
+    EmitFPUOps(Ops);
+    EmitI('FSTP DWORD PTR [EBP-4]');   { stocker le resultat (float 32) }
+    EmitI('MOV  EAX, DWORD PTR [EBP-4]');
+    EmitI('MOV  ESP, EBP');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+End;
+
+{ ---- GenMathStubs : generer les implementations FPU x87 de              }
+{ Ada.Numerics.Elementary_Functions                                        }
+{ Implementation FPU x87 : utilise les instructions natives du coprocesseur }
+{ pour calculer Sqrt, Sin, Cos, etc. sur IEEE-754 simple precision (32 bits). }
+{ Les fonctions prennent un Float en argument (32 bits) et retournent un      }
+{ Float (32 bits dans EAX apres conversion FPU -> memoire -> EAX).             }
+{ ---- EmitFPUExp : emet la sequence FPU qui remplace ST(0) par exp(ST(0)) }
+{ Utilisee par EXP, SINH, COSH, TANH.                                       }
+{ Utilise au plus 3 niveaux de pile x87 au-dessus de l entree.              }
+Procedure EmitFPUExp;
+Begin
+  EmitI('FLDL2E');
+  EmitI('FMULP ST(1), ST(0)');          { ST0 = x * log2(e) }
+  EmitI('FLD ST(0)');
+  EmitI('FRNDINT');                      { ST0 = round, ST1 = x*l2e }
+  EmitI('FXCH ST(1)');
+  EmitI('FSUB ST(0), ST(1)');            { ST0 = frac, ST1 = round }
+  EmitI('F2XM1');
+  EmitI('FLD1');
+  EmitI('FADDP ST(1), ST(0)');           { ST0 = 2^frac, ST1 = round }
+  EmitI('FSCALE');                        { ST0 = 2^(x*log2(e)) = exp(x) }
+  EmitI('FSTP ST(1)');                   { pop : ST0 = exp(x) }
+End;
+
+{ ---- GenHyperbolicFn : emet Sinh/Cosh/Tanh (FPU x87) ------------------- }
+{ Flavour = 'SINH' | 'COSH' | 'TANH'. Enregistre la fonction dans SubTab.    }
+{ Evite le stockage d une sequence FPU trop longue dans une String[255] en  }
+{ emettant directement les instructions via EmitFPUExp.                      }
+Procedure GenHyperbolicFn(Const Name : TString; Const Flavour : TString);
+Var Idx : Integer;
+Begin
+  Idx := FindSub(Name);
+  If Idx = 0 Then
+    Idx := AddSub(Name, True, TYPE_FLOAT);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].IsFunction := True;
+    SubTab[Idx].ParamCount := 1;
+    SubTab[Idx].ParamNames[1] := 'X';
+    SubTab[Idx].ParamTypes[1] := TYPE_FLOAT;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+    EmitBlank;
+    EmitComment('--- Ada.Numerics.Elementary_Functions.' + Name +
+                ' (FPU x87) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('SUB  ESP, 4');
+    EmitI('FLD  DWORD PTR [EBP+8]');     { ST0 = x }
+    If Flavour = 'TANH' Then
+    Begin
+      { tanh(x) = (exp(2x) - 1) / (exp(2x) + 1) }
+      EmitI('FADD ST(0), ST(0)');         { ST0 = 2x }
+      EmitFPUExp;                          { ST0 = exp(2x) }
+      EmitI('FLD ST(0)');                 { ST0=e2x, ST1=e2x }
+      EmitI('FLD1');
+      EmitI('FSUBP ST(1), ST(0)');        { ST0 = e2x - 1, ST1 = e2x }
+      EmitI('FXCH ST(1)');                { ST0 = e2x, ST1 = e2x - 1 }
+      EmitI('FLD1');
+      EmitI('FADDP ST(1), ST(0)');        { ST0 = e2x + 1, ST1 = e2x - 1 }
+      EmitI('FDIVP ST(1), ST(0)');        { ST0 = (e2x - 1) / (e2x + 1) }
+    End
+    Else
+    Begin
+      { sinh/cosh : exp(x) +/- exp(-x), / 2 }
+      EmitI('FLD ST(0)');                 { ST0 = x, ST1 = x }
+      EmitFPUExp;                          { ST0 = exp(x), ST1 = x }
+      EmitI('FXCH ST(1)');                { ST0 = x, ST1 = exp(x) }
+      EmitI('FCHS');                       { ST0 = -x, ST1 = exp(x) }
+      EmitFPUExp;                          { ST0 = exp(-x), ST1 = exp(x) }
+      If Flavour = 'SINH' Then
+        EmitI('FSUBP ST(1), ST(0)')        { ST0 = exp(x) - exp(-x) }
+      Else
+        EmitI('FADDP ST(1), ST(0)');       { ST0 = exp(x) + exp(-x) }
+      EmitI('FLD1');
+      EmitI('FADD ST(0), ST(0)');          { ST0 = 2 }
+      EmitI('FDIVP ST(1), ST(0)');         { ST0 = diff / 2 }
+    End;
+    EmitI('FSTP DWORD PTR [EBP-4]');
+    EmitI('MOV  EAX, DWORD PTR [EBP-4]');
+    EmitI('MOV  ESP, EBP');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+End;
+
+Procedure GenMathStubs;
+Begin
+  EmitBlank;
+  EmitComment('=== Ada.Numerics.Elementary_Functions (FPU x87) ===');
+  { FSQRT : racine carree directe }
+  GenMathStubOp('SQRT', 'FSQRT');
+  { FSIN/FCOS : sinus et cosinus (argument en radians) }
+  GenMathStubOp('SIN', 'FSIN');
+  GenMathStubOp('COS', 'FCOS');
+  { Tangente : FPTAN laisse tan(x) et 1.0 sur la pile; FSTP ST(0) jette 1.0 }
+  GenMathStubOp('TAN', 'FPTAN;FSTP ST(0)');
+  { Arcsin(x) = arctan(x / sqrt(1 - x^2)) }
+  GenMathStubOp('ARCSIN',
+    'FLD ST(0);FMUL ST(0), ST(0);FLD1;FSUBRP ST(1), ST(0);' +
+    'FSQRT;FPATAN');
+  { Arccos(x) = arctan(sqrt(1 - x^2) / x) }
+  GenMathStubOp('ARCCOS',
+    'FLD ST(0);FMUL ST(0), ST(0);FLD1;FSUBRP ST(1), ST(0);' +
+    'FSQRT;FXCH ST(1);FPATAN');
+  { Arctan(x) = atan2(x, 1) : FLD1 puis FPATAN }
+  GenMathStubOp('ARCTAN', 'FLD1;FPATAN');
+  { Exp(x) = 2^(x * log2(e)). }
+  GenMathStubOp('EXP',
+    'FLDL2E;FMULP ST(1), ST(0);' +
+    'FLD ST(0);FRNDINT;' +
+    'FXCH ST(1);FSUB ST(0), ST(1);' +
+    'F2XM1;FLD1;FADDP ST(1), ST(0);' +
+    'FSCALE;FSTP ST(1)');
+  { Log(x) = ln(2) * log2(x). }
+  GenMathStubOp('LOG', 'FLDLN2;FXCH ST(1);FYL2X');
+  { Fonctions hyperboliques : emises directement (trop longues pour la     }
+  { String[255] de GenMathStubOp).                                         }
+  GenHyperbolicFn('SINH', 'SINH');
+  GenHyperbolicFn('COSH', 'COSH');
+  GenHyperbolicFn('TANH', 'TANH');
+End;
+
+{ ============================================================ }
+{ BUILT-IN : MODULES STANDARD ADA (Characters, Command_Line,   }
+{ Strings, Direct_IO, Sequential_IO, Storage_IO, Streams,      }
+{ Stream_IO, Text_Streams, Strings.Maps)                        }
+{ ============================================================ }
+
+{ ---- RegisterStdSub : helper pour creer/retrouver un sous-prog ---- }
+{ Enregistre un sous-programme standard (IsForward := False, deja     }
+{ resolu). Retourne l index dans SubTab.                               }
+Function RegisterStdSub(Const Name : TString;
+                        IsFunc   : Boolean;
+                        RetType  : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := FindSub(Name);
+  If Idx = 0 Then Idx := AddSub(Name, True, RetType);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].IsFunction := IsFunc;
+    SubTab[Idx].RetType    := RetType;
+    SubTab[Idx].ParamCount := 0;
+  End;
+  RegisterStdSub := Idx;
+End;
+
+{ ---- AddStdParam : ajouter un parametre IN a un sous-programme --- }
+Procedure AddStdParam(Idx : Integer;
+                      Const PName : TString;
+                      PType, PMode : Integer);
+Var N : Integer;
+Begin
+  If Idx <= 0 Then Exit;
+  N := SubTab[Idx].ParamCount + 1;
+  If N > MAX_PARAM Then Exit;
+  SubTab[Idx].ParamCount := N;
+  SubTab[Idx].ParamNames[N] := StrUpperCase(PName);
+  SubTab[Idx].ParamTypes[N] := PType;
+  SubTab[Idx].ParamModes[N] := PMode;
+End;
+
+{ ---- RegisterLatin1Constants : constantes Ada.Characters.Latin_1 - }
+{ Enregistre les ~55 noms de caracteres de controle et ponctuation    }
+{ Latin-1 comme constantes CHARACTER avec leur valeur ASCII/ISO-8859-1 }
+Procedure RegisterLatin1Constants;
+
+  Procedure AddChrConst(Const Name : TString; Value : Integer);
+  Var Idx : Integer;
+  Begin
+    If FindSym(Name) > 0 Then Exit;
+    Idx := AddSym(Name, TYPE_CHAR, STORE_CONST);
+    If Idx > 0 Then
+    Begin
+      SymTab[Idx].InitNum := Value;
+      SymTab[Idx].HasInit := True;
+      SymTab[Idx].IsConst := True;
+    End;
+  End;
+
+Begin
+  { Caracteres de controle ASCII 0..31 }
+  AddChrConst('NUL',    0);   AddChrConst('SOH',  1);
+  AddChrConst('STX',    2);   AddChrConst('ETX',  3);
+  AddChrConst('EOT',    4);   AddChrConst('ENQ',  5);
+  AddChrConst('ACK',    6);   AddChrConst('BEL',  7);
+  AddChrConst('BS',     8);   AddChrConst('HT',   9);
+  AddChrConst('LF',    10);   AddChrConst('VT',  11);
+  AddChrConst('FF',    12);   AddChrConst('CR',  13);
+  AddChrConst('SO',    14);   AddChrConst('SI',  15);
+  AddChrConst('DLE',   16);   AddChrConst('DC1', 17);
+  AddChrConst('DC2',   18);   AddChrConst('DC3', 19);
+  AddChrConst('DC4',   20);   AddChrConst('NAK', 21);
+  AddChrConst('SYN',   22);   AddChrConst('ETB', 23);
+  AddChrConst('CAN',   24);   AddChrConst('EM',  25);
+  AddChrConst('SUB',   26);   AddChrConst('ESC', 27);
+  AddChrConst('FS',    28);   AddChrConst('GS',  29);
+  AddChrConst('RS',    30);   AddChrConst('US',  31);
+  { Ponctuation et symboles ASCII imprimables }
+  AddChrConst('SPACE',                32);
+  AddChrConst('EXCLAMATION',          33);
+  AddChrConst('QUOTATION',            34);
+  AddChrConst('NUMBER_SIGN',          35);
+  AddChrConst('DOLLAR_SIGN',          36);
+  AddChrConst('PERCENT_SIGN',         37);
+  AddChrConst('AMPERSAND',            38);
+  AddChrConst('APOSTROPHE',           39);
+  AddChrConst('LEFT_PARENTHESIS',     40);
+  AddChrConst('RIGHT_PARENTHESIS',    41);
+  AddChrConst('ASTERISK',             42);
+  AddChrConst('PLUS_SIGN',            43);
+  AddChrConst('COMMA',                44);
+  AddChrConst('HYPHEN',               45);
+  AddChrConst('MINUS_SIGN',           45);
+  AddChrConst('FULL_STOP',            46);
+  AddChrConst('SOLIDUS',              47);
+  AddChrConst('COLON',                58);
+  AddChrConst('SEMICOLON',            59);
+  AddChrConst('LESS_THAN_SIGN',       60);
+  AddChrConst('EQUALS_SIGN',          61);
+  AddChrConst('GREATER_THAN_SIGN',    62);
+  AddChrConst('QUESTION',             63);
+  AddChrConst('COMMERCIAL_AT',        64);
+  AddChrConst('LEFT_SQUARE_BRACKET',  91);
+  AddChrConst('REVERSE_SOLIDUS',      92);
+  AddChrConst('RIGHT_SQUARE_BRACKET', 93);
+  AddChrConst('CIRCUMFLEX',           94);
+  AddChrConst('LOW_LINE',             95);
+  AddChrConst('GRAVE',                96);
+  AddChrConst('LEFT_CURLY_BRACKET',  123);
+  AddChrConst('VERTICAL_LINE',       124);
+  AddChrConst('RIGHT_CURLY_BRACKET', 125);
+  AddChrConst('TILDE',               126);
+  AddChrConst('DEL',                 127);
+  { Lettres majuscules UC_A..UC_Z = codes 65..90 }
+  AddChrConst('UC_A', 65);  AddChrConst('UC_B', 66);  AddChrConst('UC_C', 67);
+  AddChrConst('UC_D', 68);  AddChrConst('UC_E', 69);  AddChrConst('UC_F', 70);
+  AddChrConst('UC_G', 71);  AddChrConst('UC_H', 72);  AddChrConst('UC_I', 73);
+  AddChrConst('UC_J', 74);  AddChrConst('UC_K', 75);  AddChrConst('UC_L', 76);
+  AddChrConst('UC_M', 77);  AddChrConst('UC_N', 78);  AddChrConst('UC_O', 79);
+  AddChrConst('UC_P', 80);  AddChrConst('UC_Q', 81);  AddChrConst('UC_R', 82);
+  AddChrConst('UC_S', 83);  AddChrConst('UC_T', 84);  AddChrConst('UC_U', 85);
+  AddChrConst('UC_V', 86);  AddChrConst('UC_W', 87);  AddChrConst('UC_X', 88);
+  AddChrConst('UC_Y', 89);  AddChrConst('UC_Z', 90);
+  { Lettres minuscules LC_A..LC_Z = codes 97..122 }
+  AddChrConst('LC_A', 97);  AddChrConst('LC_B', 98);  AddChrConst('LC_C', 99);
+  AddChrConst('LC_D', 100); AddChrConst('LC_E', 101); AddChrConst('LC_F', 102);
+  AddChrConst('LC_G', 103); AddChrConst('LC_H', 104); AddChrConst('LC_I', 105);
+  AddChrConst('LC_J', 106); AddChrConst('LC_K', 107); AddChrConst('LC_L', 108);
+  AddChrConst('LC_M', 109); AddChrConst('LC_N', 110); AddChrConst('LC_O', 111);
+  AddChrConst('LC_P', 112); AddChrConst('LC_Q', 113); AddChrConst('LC_R', 114);
+  AddChrConst('LC_S', 115); AddChrConst('LC_T', 116); AddChrConst('LC_U', 117);
+  AddChrConst('LC_V', 118); AddChrConst('LC_W', 119); AddChrConst('LC_X', 120);
+  AddChrConst('LC_Y', 121); AddChrConst('LC_Z', 122);
+End;
+
+{ ---- RegisterCharactersHandlingStubs : signatures Is_xxx/To_xxx ---- }
+{ Ada.Characters.Handling : fonctions de classification et conversion. }
+Procedure RegisterCharactersHandlingStubs;
+
+  Procedure RegIs(Const Nm : TString);
+  Var Idx : Integer;
+  Begin
+    Idx := RegisterStdSub(Nm, True, TYPE_BOOL);
+    AddStdParam(Idx, 'ITEM', TYPE_CHAR, PARAM_IN);
+  End;
+
+  Procedure RegTo(Const Nm : TString);
+  Var Idx : Integer;
+  Begin
+    Idx := RegisterStdSub(Nm, True, TYPE_CHAR);
+    AddStdParam(Idx, 'ITEM', TYPE_CHAR, PARAM_IN);
+  End;
+
+Begin
+  RegIs('IS_LETTER');
+  RegIs('IS_DIGIT');
+  RegIs('IS_ALPHANUMERIC');
+  RegIs('IS_UPPER');
+  RegIs('IS_LOWER');
+  RegIs('IS_CONTROL');
+  RegIs('IS_GRAPHIC');
+  RegIs('IS_SPECIAL');
+  RegIs('IS_HEXADECIMAL_DIGIT');
+  RegIs('IS_BASIC');
+  RegIs('IS_ISO_646');
+  RegTo('TO_UPPER');
+  RegTo('TO_LOWER');
+  RegTo('TO_BASIC');
+End;
+
+{ ---- GenCharHandlingFn : emet une fonction Character -> Boolean ---- }
+{ Cond est une expression booleenne x86 : paire de (LoBound, HiBound)  }
+{ encodee. Pour simplifier, on passe Lo/Hi et on genere               }
+{   MOV AL, BYTE PTR [EBP+8]                                           }
+{   CMP AL, Lo                                                          }
+{   JB  _false                                                           }
+{   CMP AL, Hi                                                           }
+{   JA  _false                                                           }
+{   MOV EAX, 1 ; JMP _end                                                }
+{ _false: XOR EAX, EAX                                                    }
+{ _end: POP EBP ; RET 4                                                   }
+Procedure GenCharRangeFn(Const Name : TString; Lo, Hi : Integer);
+Var
+  Idx : Integer;
+  LFalse, LEnd : TString;
+Begin
+  Idx := FindSub(Name);
+  If Idx = 0 Then Exit;
+  LFalse := NewLabel;
+  LEnd   := NewLabel;
+  EmitBlank;
+  EmitComment('--- Ada.Characters.Handling.' + Name + ' ---');
+  EmitLabel(SubTab[Idx].AsmLabel);
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('MOV  AL, BYTE PTR [EBP+8]');
+  EmitI('CMP  AL, ' + IntToStr_(Lo));
+  EmitI('JB   ' + LFalse);
+  EmitI('CMP  AL, ' + IntToStr_(Hi));
+  EmitI('JA   ' + LFalse);
+  EmitI('MOV  EAX, 1');
+  EmitI('JMP  ' + LEnd);
+  EmitLabel(LFalse);
+  EmitI('XOR  EAX, EAX');
+  EmitLabel(LEnd);
+  EmitI('POP  EBP');
+  EmitI('RET  4');
+End;
+
+{ ---- GenCharHandlingStubs : emettre les bodies de Handling --------- }
+{ Implementations directes (ASCII) pour Is_Upper, Is_Lower, Is_Digit,  }
+{ Is_Letter, Is_Alphanumeric, Is_Control, Is_Graphic, Is_Hex, To_Upper,}
+{ To_Lower, To_Basic.                                                   }
+Procedure GenCharHandlingStubs;
+
+  Procedure GenIsLetter;
+  Var Idx : Integer; L1, L2, LEnd : TString;
+  Begin
+    Idx := FindSub('IS_LETTER');
+    If Idx = 0 Then Exit;
+    L1   := NewLabel;
+    L2   := NewLabel;
+    LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Characters.Handling.Is_Letter ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOV  AL, BYTE PTR [EBP+8]');
+    { Test A..Z }
+    EmitI('CMP  AL, 65');
+    EmitI('JB   ' + L1);
+    EmitI('CMP  AL, 90');
+    EmitI('JBE  ' + L2);
+    EmitLabel(L1);
+    { Test a..z }
+    EmitI('CMP  AL, 97');
+    EmitI('JB   ' + LEnd + '_F');
+    EmitI('CMP  AL, 122');
+    EmitI('JA   ' + LEnd + '_F');
+    EmitLabel(L2);
+    EmitI('MOV  EAX, 1');
+    EmitI('JMP  ' + LEnd);
+    EmitLabel(LEnd + '_F');
+    EmitI('XOR  EAX, EAX');
+    EmitLabel(LEnd);
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+  Procedure GenIsAlphanumeric;
+  Var Idx : Integer; L1, L2, L3, LEnd : TString;
+  Begin
+    Idx := FindSub('IS_ALPHANUMERIC');
+    If Idx = 0 Then Exit;
+    L1 := NewLabel; L2 := NewLabel; L3 := NewLabel; LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Characters.Handling.Is_Alphanumeric ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOV  AL, BYTE PTR [EBP+8]');
+    EmitI('CMP  AL, 48');
+    EmitI('JB   ' + L1);
+    EmitI('CMP  AL, 57');
+    EmitI('JBE  ' + L3);
+    EmitLabel(L1);
+    EmitI('CMP  AL, 65');
+    EmitI('JB   ' + L2);
+    EmitI('CMP  AL, 90');
+    EmitI('JBE  ' + L3);
+    EmitLabel(L2);
+    EmitI('CMP  AL, 97');
+    EmitI('JB   ' + LEnd + '_F');
+    EmitI('CMP  AL, 122');
+    EmitI('JA   ' + LEnd + '_F');
+    EmitLabel(L3);
+    EmitI('MOV  EAX, 1');
+    EmitI('JMP  ' + LEnd);
+    EmitLabel(LEnd + '_F');
+    EmitI('XOR  EAX, EAX');
+    EmitLabel(LEnd);
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+  Procedure GenIsHex;
+  Var Idx : Integer; L1, L2, L3, LEnd : TString;
+  Begin
+    Idx := FindSub('IS_HEXADECIMAL_DIGIT');
+    If Idx = 0 Then Exit;
+    L1 := NewLabel; L2 := NewLabel; L3 := NewLabel; LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Characters.Handling.Is_Hexadecimal_Digit ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOV  AL, BYTE PTR [EBP+8]');
+    EmitI('CMP  AL, 48');
+    EmitI('JB   ' + L1);
+    EmitI('CMP  AL, 57');
+    EmitI('JBE  ' + L3);
+    EmitLabel(L1);
+    EmitI('CMP  AL, 65');
+    EmitI('JB   ' + L2);
+    EmitI('CMP  AL, 70');
+    EmitI('JBE  ' + L3);
+    EmitLabel(L2);
+    EmitI('CMP  AL, 97');
+    EmitI('JB   ' + LEnd + '_F');
+    EmitI('CMP  AL, 102');
+    EmitI('JA   ' + LEnd + '_F');
+    EmitLabel(L3);
+    EmitI('MOV  EAX, 1');
+    EmitI('JMP  ' + LEnd);
+    EmitLabel(LEnd + '_F');
+    EmitI('XOR  EAX, EAX');
+    EmitLabel(LEnd);
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+  Procedure GenToUpper;
+  Var Idx : Integer; LNo, LEnd : TString;
+  Begin
+    Idx := FindSub('TO_UPPER');
+    If Idx = 0 Then Exit;
+    LNo := NewLabel; LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Characters.Handling.To_Upper ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOVZX EAX, BYTE PTR [EBP+8]');
+    EmitI('CMP  AL, 97');
+    EmitI('JB   ' + LNo);
+    EmitI('CMP  AL, 122');
+    EmitI('JA   ' + LNo);
+    EmitI('SUB  AL, 32');
+    EmitLabel(LNo);
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+    EmitLabel(LEnd);
+  End;
+
+  Procedure GenToLower;
+  Var Idx : Integer; LNo, LEnd : TString;
+  Begin
+    Idx := FindSub('TO_LOWER');
+    If Idx = 0 Then Exit;
+    LNo := NewLabel; LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Characters.Handling.To_Lower ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOVZX EAX, BYTE PTR [EBP+8]');
+    EmitI('CMP  AL, 65');
+    EmitI('JB   ' + LNo);
+    EmitI('CMP  AL, 90');
+    EmitI('JA   ' + LNo);
+    EmitI('ADD  AL, 32');
+    EmitLabel(LNo);
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+    EmitLabel(LEnd);
+  End;
+
+  Procedure GenToBasic;
+  Var Idx : Integer;
+  Begin
+    Idx := FindSub('TO_BASIC');
+    If Idx = 0 Then Exit;
+    EmitBlank;
+    EmitComment('--- Ada.Characters.Handling.To_Basic ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOVZX EAX, BYTE PTR [EBP+8]');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+Begin
+  EmitBlank;
+  EmitComment('=== Ada.Characters.Handling (ASCII) ===');
+  { Is_Upper : 'A'..'Z' = 65..90 }
+  GenCharRangeFn('IS_UPPER',   65,  90);
+  { Is_Lower : 'a'..'z' = 97..122 }
+  GenCharRangeFn('IS_LOWER',   97, 122);
+  { Is_Digit : '0'..'9' = 48..57 }
+  GenCharRangeFn('IS_DIGIT',   48,  57);
+  { Is_Control : 0..31 ou 127..159 (simplifie a 0..31) }
+  GenCharRangeFn('IS_CONTROL',  0,  31);
+  { Is_Graphic : 32..126 (imprimables ASCII) }
+  GenCharRangeFn('IS_GRAPHIC', 32, 126);
+  { Is_Special : approximation = ponctuation ASCII 33..47 }
+  GenCharRangeFn('IS_SPECIAL', 33,  47);  { approximatif : ponctuation }
+  { Is_Basic : caracteres ASCII 32..127 }
+  GenCharRangeFn('IS_BASIC',    0, 127);
+  { Is_ISO_646 : 0..127 }
+  GenCharRangeFn('IS_ISO_646',  0, 127);
+  GenIsLetter;
+  GenIsAlphanumeric;
+  GenIsHex;
+  GenToUpper;
+  GenToLower;
+  GenToBasic;
+End;
+
+{ ---- RegisterCommandLineStubs : Ada.Command_Line ------------------- }
+{ Argument_Count : return Natural (Integer)                             }
+{ Argument(N)    : return String                                        }
+{ Command_Name   : return String                                        }
+Procedure RegisterCommandLineStubs;
+Var Idx : Integer;
+Begin
+  Idx := RegisterStdSub('ARGUMENT_COUNT', True, TYPE_INT);
+  Idx := RegisterStdSub('ARGUMENT', True, TYPE_STR);
+  AddStdParam(Idx, 'NUMBER', TYPE_INT, PARAM_IN);
+  Idx := RegisterStdSub('COMMAND_NAME', True, TYPE_STR);
+End;
+
+{ ---- GenCommandLineStubs : emettre bodies Command_Line ------------- }
+{ Implementations minimales (Argument_Count = 0, chaines vides) : un    }
+{ futur TODO pourra brancher sur GetCommandLineA pour un support reel.  }
+Procedure GenCommandLineStubs;
+Var Idx : Integer;
+Begin
+  EmitBlank;
+  EmitComment('=== Ada.Command_Line (implementation minimale) ===');
+  Idx := FindSub('ARGUMENT_COUNT');
+  If Idx > 0 Then
+  Begin
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('XOR  EAX, EAX');     { 0 arguments (non supporte) }
+    EmitI('POP  EBP');
+    EmitI('RET');
+  End;
+  Idx := FindSub('ARGUMENT');
+  If Idx > 0 Then
+  Begin
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('XOR  EAX, EAX');     { chaine vide (non supporte) }
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+  Idx := FindSub('COMMAND_NAME');
+  If Idx > 0 Then
+  Begin
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('XOR  EAX, EAX');     { chaine vide (non supporte) }
+    EmitI('POP  EBP');
+    EmitI('RET');
+  End;
+End;
+
+{ ---- RegisterStringsStubs : Ada.Strings + Ada.Strings.Maps -------- }
+Procedure RegisterStringsStubs;
+Var Idx : Integer;
+Begin
+  { Ada.Strings : Length, Index, Count, Head, Tail, Trim }
+  Idx := RegisterStdSub('LENGTH', True, TYPE_INT);
+  AddStdParam(Idx, 'SOURCE', TYPE_STR, PARAM_IN);
+  Idx := RegisterStdSub('INDEX', True, TYPE_INT);
+  AddStdParam(Idx, 'SOURCE',  TYPE_STR,  PARAM_IN);
+  AddStdParam(Idx, 'PATTERN', TYPE_STR,  PARAM_IN);
+  Idx := RegisterStdSub('COUNT', True, TYPE_INT);
+  AddStdParam(Idx, 'SOURCE',  TYPE_STR,  PARAM_IN);
+  AddStdParam(Idx, 'PATTERN', TYPE_STR,  PARAM_IN);
+  Idx := RegisterStdSub('HEAD', True, TYPE_STR);
+  AddStdParam(Idx, 'SOURCE', TYPE_STR, PARAM_IN);
+  AddStdParam(Idx, 'COUNT',  TYPE_INT, PARAM_IN);
+  Idx := RegisterStdSub('TAIL', True, TYPE_STR);
+  AddStdParam(Idx, 'SOURCE', TYPE_STR, PARAM_IN);
+  AddStdParam(Idx, 'COUNT',  TYPE_INT, PARAM_IN);
+  Idx := RegisterStdSub('TRIM', True, TYPE_STR);
+  AddStdParam(Idx, 'SOURCE', TYPE_STR, PARAM_IN);
+  AddStdParam(Idx, 'SIDE',   TYPE_INT, PARAM_IN);
+  { Ada.Strings.Maps : To_Mapping, Value, Is_In }
+  Idx := RegisterStdSub('TO_MAPPING', True, TYPE_STR);
+  AddStdParam(Idx, 'FROM', TYPE_STR, PARAM_IN);
+  AddStdParam(Idx, 'TO',   TYPE_STR, PARAM_IN);
+  Idx := RegisterStdSub('VALUE', True, TYPE_CHAR);
+  AddStdParam(Idx, 'MAP',     TYPE_STR,  PARAM_IN);
+  AddStdParam(Idx, 'ELEMENT', TYPE_CHAR, PARAM_IN);
+  Idx := RegisterStdSub('IS_IN', True, TYPE_BOOL);
+  AddStdParam(Idx, 'ELEMENT', TYPE_CHAR, PARAM_IN);
+  AddStdParam(Idx, 'SET',     TYPE_STR,  PARAM_IN);
+End;
+
+{ ---- GenStringsStubs : emettre bodies Ada.Strings -------------------- }
+{ Implementations reelles en x86 sur chaines ASCIIZ :                    }
+{   LENGTH(S)            -> appel _ADART_STRLEN                          }
+{   INDEX(S, P)          -> position 1-based de P dans S, ou 0           }
+{   COUNT(S, P)          -> nombre d occurrences non-chevauchantes de P  }
+{   HEAD(S, N)           -> copie des N premiers chars dans _ADART_STRBUF}
+{   TAIL(S, N)           -> copie des N derniers chars dans _ADART_STRBUF}
+{   TRIM(S, Side)        -> chaine sans espaces de tete/queue            }
+{   TO_MAPPING, VALUE, IS_IN : non supportes (retournent 0)              }
+Procedure GenStringsStubs;
+
+  Procedure EmitStubRet(Const Name : TString; ArgBytes : Integer);
+  Var Idx : Integer;
+  Begin
+    Idx := FindSub(Name);
+    If Idx = 0 Then Exit;
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('XOR  EAX, EAX');
+    EmitI('POP  EBP');
+    If ArgBytes = 0 Then EmitI('RET')
+    Else EmitI('RET  ' + IntToStr_(ArgBytes));
+  End;
+
+Var
+  Idx : Integer;
+  L1, L2, L3, LEnd : TString;
+Begin
+  EmitBlank;
+  EmitComment('=== Ada.Strings / Ada.Strings.Maps ===');
+
+  { ---- LENGTH(S : String) return Natural ---- }
+  Idx := FindSub('LENGTH');
+  If Idx > 0 Then
+  Begin
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Fixed.Length (STRLEN) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOV  EAX, DWORD PTR [EBP+8]');  { ptr source }
+    EmitI('CALL ' + ADA_RT_PFX + 'STRLEN');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+  { ---- INDEX(Source, Pattern) return Natural (1-based, 0 si absent) ---- }
+  Idx := FindSub('INDEX');
+  If Idx > 0 Then
+  Begin
+    L1   := NewLabel;  { boucle externe : pour chaque position i de S }
+    L2   := NewLabel;  { boucle interne : comparer octet par octet    }
+    L3   := NewLabel;  { match trouve                                  }
+    LEnd := NewLabel;  { fin / non trouve                              }
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Fixed.Index ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('PUSH ESI');
+    EmitI('PUSH EDI');
+    EmitI('PUSH EBX');
+    EmitI('MOV  ESI, DWORD PTR [EBP+12]'); { Source (1er arg) }
+    EmitI('MOV  EDI, DWORD PTR [EBP+8]');  { Pattern (2e arg) }
+    EmitI('XOR  EBX, EBX');                { i = 0 }
+    EmitLabel(L1);
+    EmitI('MOV  AL, BYTE PTR [ESI]');
+    EmitI('TEST AL, AL');
+    EmitI('JZ   ' + LEnd);                 { fin de Source -> non trouve }
+    { comparer ESI..ESI+k contre EDI..EDI+k }
+    EmitI('PUSH ESI');
+    EmitI('PUSH EDI');
+    EmitLabel(L2);
+    EmitI('MOV  AL, BYTE PTR [EDI]');
+    EmitI('TEST AL, AL');
+    EmitI('JZ   ' + L3);                   { fin de Pattern -> match }
+    EmitI('MOV  DL, BYTE PTR [ESI]');
+    EmitI('TEST DL, DL');
+    EmitI('JZ   ' + LEnd + '_R');          { Source trop courte }
+    EmitI('CMP  AL, DL');
+    EmitI('JNE  ' + LEnd + '_R');
+    EmitI('INC  ESI');
+    EmitI('INC  EDI');
+    EmitI('JMP  ' + L2);
+    EmitLabel(LEnd + '_R');                { restore et avancer }
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('INC  ESI');
+    EmitI('INC  EBX');
+    EmitI('JMP  ' + L1);
+    EmitLabel(L3);
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('MOV  EAX, EBX');
+    EmitI('INC  EAX');                     { 1-based }
+    EmitI('JMP  ' + LEnd + '_D');
+    EmitLabel(LEnd);
+    EmitI('XOR  EAX, EAX');                { 0 = non trouve }
+    EmitLabel(LEnd + '_D');
+    EmitI('POP  EBX');
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+
+  { ---- COUNT(Source, Pattern) return Natural ---- }
+  Idx := FindSub('COUNT');
+  If Idx > 0 Then
+  Begin
+    L1   := NewLabel;  { boucle externe }
+    L2   := NewLabel;  { boucle interne compare }
+    L3   := NewLabel;  { match trouve }
+    LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Fixed.Count ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('PUSH ESI');
+    EmitI('PUSH EDI');
+    EmitI('PUSH EBX');
+    EmitI('PUSH ECX');
+    EmitI('MOV  ESI, DWORD PTR [EBP+12]'); { Source (1er arg) }
+    EmitI('MOV  EBX, DWORD PTR [EBP+8]');  { Pattern (2e arg) }
+    EmitI('XOR  ECX, ECX');                { compteur }
+    EmitLabel(L1);
+    EmitI('MOV  AL, BYTE PTR [ESI]');
+    EmitI('TEST AL, AL');
+    EmitI('JZ   ' + LEnd);
+    EmitI('PUSH ESI');
+    EmitI('MOV  EDI, EBX');
+    EmitLabel(L2);
+    EmitI('MOV  AL, BYTE PTR [EDI]');
+    EmitI('TEST AL, AL');
+    EmitI('JZ   ' + L3);
+    EmitI('MOV  DL, BYTE PTR [ESI]');
+    EmitI('TEST DL, DL');
+    EmitI('JZ   ' + L1 + '_R');
+    EmitI('CMP  AL, DL');
+    EmitI('JNE  ' + L1 + '_R');
+    EmitI('INC  ESI');
+    EmitI('INC  EDI');
+    EmitI('JMP  ' + L2);
+    EmitLabel(L1 + '_R');
+    EmitI('POP  ESI');
+    EmitI('INC  ESI');
+    EmitI('JMP  ' + L1);
+    EmitLabel(L3);
+    EmitI('POP  EAX');                     { garde pas ESI avance interne }
+    EmitI('INC  ECX');
+    { ESI a avance a position apres pattern -> continuer depuis la }
+    EmitI('JMP  ' + L1);
+    EmitLabel(LEnd);
+    EmitI('MOV  EAX, ECX');
+    EmitI('POP  ECX');
+    EmitI('POP  EBX');
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+
+  { ---- HEAD(Source, Count) return String ---- }
+  { Copie min(Length, Count) premiers chars dans STRBUF.                }
+  { Pour simplicite, si Count > Length on retourne juste la source      }
+  { (sans padding). Suffisant pour la majorite des cas d usage.         }
+  Idx := FindSub('HEAD');
+  If Idx > 0 Then
+  Begin
+    L1   := NewLabel;
+    LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Fixed.Head ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('PUSH ESI');
+    EmitI('PUSH EDI');
+    EmitI('PUSH ECX');
+    EmitI('MOV  ESI, DWORD PTR [EBP+12]'); { Source }
+    EmitI('MOV  ECX, DWORD PTR [EBP+8]');  { Count }
+    EmitI('MOV  EDI, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    EmitI('CMP  ECX, 240');
+    EmitI('JBE  ' + L1);
+    EmitI('MOV  ECX, 240');
+    EmitLabel(L1);
+    EmitI('TEST ECX, ECX');
+    EmitI('JZ   ' + LEnd);
+    EmitI('MOV  AL, BYTE PTR [ESI]');
+    EmitI('TEST AL, AL');
+    EmitI('JZ   ' + LEnd);
+    EmitI('MOV  BYTE PTR [EDI], AL');
+    EmitI('INC  ESI');
+    EmitI('INC  EDI');
+    EmitI('DEC  ECX');
+    EmitI('JMP  ' + L1);
+    EmitLabel(LEnd);
+    EmitI('MOV  BYTE PTR [EDI], 0');        { NUL terminator }
+    EmitI('MOV  EAX, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    EmitI('POP  ECX');
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+
+  { ---- TAIL(Source, Count) return String ---- }
+  { Copie les Count derniers chars dans STRBUF (sans padding).           }
+  Idx := FindSub('TAIL');
+  If Idx > 0 Then
+  Begin
+    L1   := NewLabel;  { copie }
+    LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Fixed.Tail ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('PUSH ESI');
+    EmitI('PUSH EDI');
+    EmitI('PUSH EBX');
+    EmitI('PUSH ECX');
+    EmitI('MOV  ESI, DWORD PTR [EBP+12]'); { Source }
+    EmitI('MOV  ECX, DWORD PTR [EBP+8]');  { Count }
+    EmitI('CMP  ECX, 240');
+    EmitI('JBE  ' + L1 + '_OK');
+    EmitI('MOV  ECX, 240');
+    EmitLabel(L1 + '_OK');
+    EmitI('MOV  EAX, ESI');
+    EmitI('CALL ' + ADA_RT_PFX + 'STRLEN'); { EAX = length }
+    EmitI('MOV  EBX, EAX');                 { EBX = length }
+    EmitI('MOV  EDI, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    { Si Count >= Length, copier toute la source }
+    EmitI('CMP  ECX, EBX');
+    EmitI('JB   ' + L1);                    { Count < Length : skip full }
+    EmitI('MOV  ECX, EBX');                 { limiter Count a Length }
+    EmitI('JMP  ' + L1);
+    EmitLabel(L1);
+    { avancer ESI de (Length - Count) pour pointer aux Count derniers   }
+    EmitI('MOV  EAX, EBX');
+    EmitI('SUB  EAX, ECX');
+    EmitI('ADD  ESI, EAX');
+    EmitLabel(L1 + '_C');
+    EmitI('TEST ECX, ECX');
+    EmitI('JZ   ' + LEnd);
+    EmitI('MOV  DL, BYTE PTR [ESI]');
+    EmitI('TEST DL, DL');
+    EmitI('JZ   ' + LEnd);
+    EmitI('MOV  BYTE PTR [EDI], DL');
+    EmitI('INC  ESI');
+    EmitI('INC  EDI');
+    EmitI('DEC  ECX');
+    EmitI('JMP  ' + L1 + '_C');
+    EmitLabel(LEnd);
+    EmitI('MOV  BYTE PTR [EDI], 0');
+    EmitI('MOV  EAX, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    EmitI('POP  ECX');
+    EmitI('POP  EBX');
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+
+  { ---- TRIM(Source, Side) return String ---- }
+  { Side = 0 (Left), 1 (Right), 2 (Both). Enleve les espaces selon Side.}
+  Idx := FindSub('TRIM');
+  If Idx > 0 Then
+  Begin
+    L1   := NewLabel;  { skip leading spaces }
+    L2   := NewLabel;  { copy }
+    L3   := NewLabel;  { trim trailing }
+    LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Fixed.Trim ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('PUSH ESI');
+    EmitI('PUSH EDI');
+    EmitI('PUSH EBX');
+    EmitI('MOV  ESI, DWORD PTR [EBP+12]'); { Source (1er arg) }
+    EmitI('MOV  EBX, DWORD PTR [EBP+8]');  { Side (2e arg) 0=L,1=R,2=Both }
+    EmitI('MOV  EDI, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    { Skip leading spaces si Side = 0 (Left) ou 2 (Both) }
+    EmitI('CMP  EBX, 1');
+    EmitI('JE   ' + L2);                    { Right seul : pas de skip }
+    EmitLabel(L1);
+    EmitI('MOV  AL, BYTE PTR [ESI]');
+    EmitI('CMP  AL, 32');
+    EmitI('JNE  ' + L2);
+    EmitI('INC  ESI');
+    EmitI('JMP  ' + L1);
+    EmitLabel(L2);
+    { Copier tout le reste }
+    EmitI('MOV  AL, BYTE PTR [ESI]');
+    EmitI('TEST AL, AL');
+    EmitI('JZ   ' + L3);
+    EmitI('MOV  BYTE PTR [EDI], AL');
+    EmitI('INC  ESI');
+    EmitI('INC  EDI');
+    EmitI('JMP  ' + L2);
+    EmitLabel(L3);
+    { Trim trailing si Side = 1 ou 2 }
+    EmitI('CMP  EBX, 0');
+    EmitI('JE   ' + LEnd);
+    EmitLabel(L3 + '_T');
+    EmitI('MOV  EAX, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    EmitI('CMP  EDI, EAX');
+    EmitI('JBE  ' + LEnd);                  { buffer vide }
+    EmitI('MOV  AL, BYTE PTR [EDI-1]');
+    EmitI('CMP  AL, 32');
+    EmitI('JNE  ' + LEnd);
+    EmitI('DEC  EDI');
+    EmitI('JMP  ' + L3 + '_T');
+    EmitLabel(LEnd);
+    EmitI('MOV  BYTE PTR [EDI], 0');
+    EmitI('MOV  EAX, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    EmitI('POP  EBX');
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+
+  { ---- IS_IN(Elem, Set) return Boolean ---- }
+  { Set est un String : on cherche Elem dedans.                        }
+  Idx := FindSub('IS_IN');
+  If Idx > 0 Then
+  Begin
+    L1   := NewLabel;
+    LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Maps.Is_In ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('PUSH ESI');
+    EmitI('MOV  AL, BYTE PTR [EBP+12]');   { Elem (1er arg) }
+    EmitI('MOV  ESI, DWORD PTR [EBP+8]');  { Set (2e arg, ptr) }
+    EmitLabel(L1);
+    EmitI('MOV  DL, BYTE PTR [ESI]');
+    EmitI('TEST DL, DL');
+    EmitI('JZ   ' + LEnd + '_F');
+    EmitI('CMP  AL, DL');
+    EmitI('JE   ' + LEnd + '_T');
+    EmitI('INC  ESI');
+    EmitI('JMP  ' + L1);
+    EmitLabel(LEnd + '_T');
+    EmitI('MOV  EAX, 1');
+    EmitI('JMP  ' + LEnd);
+    EmitLabel(LEnd + '_F');
+    EmitI('XOR  EAX, EAX');
+    EmitLabel(LEnd);
+    EmitI('POP  ESI');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+
+  { ---- Fonctions non implementees : TO_MAPPING, VALUE ---- }
+  EmitStubRet('TO_MAPPING', 8);
+  EmitStubRet('VALUE',      8);
+End;
+
+{ ---- RegisterIOStubs : Direct_IO / Sequential_IO / Storage_IO / --- }
+{ Stream_IO / Text_Streams                                             }
+{ Enregistre les signatures Create/Open/Close/Read/Write/End_Of_File   }
+{ en un seul jeu commun (les I/O classiques Ada partagent cette API).  }
+Procedure RegisterIOStubs;
+Var Idx : Integer;
+Begin
+  { CREATE (F : out File_Type; Mode; Name : in String) }
+  { Note : PUT/GET/OPEN/CLOSE de Text_IO sont deja enregistres          }
+  { ailleurs, on n ecrase pas leurs signatures. On ajoute uniquement    }
+  { les helpers manquants pour que les WITH des modules I/O compilent.  }
+
+  { READ : generique (File, Item : out Element_Type) }
+  Idx := FindSub('READ');
+  If Idx = 0 Then Idx := RegisterStdSub('READ', False, TYPE_VOID);
+  { WRITE : generique (File, Item : in Element_Type) }
+  Idx := FindSub('WRITE');
+  If Idx = 0 Then Idx := RegisterStdSub('WRITE', False, TYPE_VOID);
+  { END_OF_FILE : function (File) return Boolean (retourne False) }
+  Idx := FindSub('END_OF_FILE');
+  If Idx = 0 Then
+  Begin
+    Idx := RegisterStdSub('END_OF_FILE', True, TYPE_BOOL);
+    AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
+  End;
+  { STREAM : function (File) return Stream_Access (retourne 0) }
+  Idx := FindSub('STREAM');
+  If Idx = 0 Then
+  Begin
+    Idx := RegisterStdSub('STREAM', True, TYPE_INT);
+    AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
+  End;
+  { RESET : procedure (File) }
+  Idx := FindSub('RESET');
+  If Idx = 0 Then Idx := RegisterStdSub('RESET', False, TYPE_VOID);
+  { NAME : function (File) return String }
+  Idx := FindSub('NAME');
+  If Idx = 0 Then
+  Begin
+    Idx := RegisterStdSub('NAME', True, TYPE_STR);
+    AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
+  End;
+  { MODE : function (File) return File_Mode (retourne Integer) }
+  Idx := FindSub('MODE');
+  If Idx = 0 Then
+  Begin
+    Idx := RegisterStdSub('MODE', True, TYPE_INT);
+    AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
+  End;
+  { IS_OPEN : function (File) return Boolean }
+  Idx := FindSub('IS_OPEN');
+  If Idx = 0 Then
+  Begin
+    Idx := RegisterStdSub('IS_OPEN', True, TYPE_BOOL);
+    AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
+  End;
+  { SIZE : function (File) return Count (Storage_IO / Stream_IO) }
+  Idx := FindSub('SIZE');
+  If Idx = 0 Then
+  Begin
+    Idx := RegisterStdSub('SIZE', True, TYPE_INT);
+    AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
+  End;
+  { INDEX : positionnement Direct_IO / Stream_IO - deja reg. par Strings }
+  { SET_INDEX : procedure (File, To : Positive_Count) }
+  Idx := FindSub('SET_INDEX');
+  If Idx = 0 Then Idx := RegisterStdSub('SET_INDEX', False, TYPE_VOID);
+End;
+
+{ ---- GenIOStubs : emettre bodies minimaux Direct_IO / etc. ----------- }
+Procedure GenIOStubs;
+
+  Procedure EmitStubProc(Const Name : TString; ArgBytes : Integer);
+  Var Idx : Integer;
+  Begin
+    Idx := FindSub(Name);
+    If Idx = 0 Then Exit;
+    { Skip si deja emis (p.ex. OPEN/CLOSE par Text_IO) }
+    If SubTab[Idx].IsForward Then Exit;
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('XOR  EAX, EAX');
+    EmitI('POP  EBP');
+    If ArgBytes = 0 Then EmitI('RET')
+    Else EmitI('RET  ' + IntToStr_(ArgBytes));
+  End;
+
+Begin
+  EmitBlank;
+  EmitComment('=== Ada.Direct_IO / Sequential_IO / Storage_IO /' +
+              ' Stream_IO / Text_Streams (implementation minimale) ===');
+  EmitStubProc('READ',        0);
+  EmitStubProc('WRITE',       0);
+  EmitStubProc('END_OF_FILE', 4);
+  EmitStubProc('STREAM',      4);
+  EmitStubProc('RESET',       0);
+  EmitStubProc('NAME',        4);
+  EmitStubProc('MODE',        4);
+  EmitStubProc('IS_OPEN',     4);
+  EmitStubProc('SIZE',        4);
+  EmitStubProc('SET_INDEX',   0);
+End;
+
+
+{ Enregistre Put(Float, Fore, Aft, Exp) comme symbole non-bloquant.       }
+{ Le support flottant reel n est pas encore implemente : ce body consomme }
+{ ses arguments et ne produit aucune sortie formatee.                      }
+Procedure GenFloatTextIOStubs;
+Var Idx : Integer;
+Begin
+  { Float_Text_IO.Put est deja intercepte par GenTextIOPutInline si le nom  }
+  { court PUT est utilise. On enregistre quand meme un symbole pour une     }
+  { eventuelle qualification explicite (Ada.Float_Text_IO.Put).              }
+  Idx := FindSub('FLOAT_TEXT_IO_PUT');
+  If Idx = 0 Then
+    Idx := AddSub('FLOAT_TEXT_IO_PUT', False, TYPE_VOID);
+End;
+
+{ ---- PreRegisterStdLib : pre-enregistrer les modules standard built-in ---- }
+{ Enregistre les sous-programmes standard Ada (Sqrt, Sin, Cos, ...) dans      }
+{ SubTab AVANT le parsing, de sorte que les appels puissent etre resolus      }
+{ par FindSub. Les corps sont emis plus tard (EmitRuntimeHelpers phase).      }
+{ Cette procedure rend les modules suivants "built-in" dans le compilateur :   }
+{   - Ada.Numerics.Elementary_Functions (Sqrt, Sin, Cos, Tan, ...)            }
+{   - Ada.Float_Text_IO (Put)                                                  }
+{ Les modules Ada.Text_IO et Ada.Integer_Text_IO sont geres par intercept      }
+{ de noms (IsTextIOProc) dans ParseProcedureCall.                              }
+Procedure PreRegisterStdLib;
+
+  Procedure PreRegFloatFn(Const Name : TString);
+  Var Idx : Integer;
+  Begin
+    If FindSub(Name) > 0 Then Exit;
+    Idx := AddSub(Name, True, TYPE_FLOAT);
+    If Idx > 0 Then
+    Begin
+      SubTab[Idx].IsForward  := False;
+      SubTab[Idx].IsFunction := True;
+      SubTab[Idx].ParamCount := 1;
+      SubTab[Idx].ParamNames[1] := 'X';
+      SubTab[Idx].ParamTypes[1] := TYPE_FLOAT;
+      SubTab[Idx].ParamModes[1] := PARAM_IN;
+    End;
+  End;
+
+Begin
+  { Ada.Numerics.Elementary_Functions - fonctions trigo/hyperboliques }
+  PreRegFloatFn('SQRT');
+  PreRegFloatFn('SIN');
+  PreRegFloatFn('COS');
+  PreRegFloatFn('TAN');
+  PreRegFloatFn('ARCSIN');
+  PreRegFloatFn('ARCCOS');
+  PreRegFloatFn('ARCTAN');
+  PreRegFloatFn('EXP');
+  PreRegFloatFn('LOG');
+  PreRegFloatFn('SINH');
+  PreRegFloatFn('COSH');
+  PreRegFloatFn('TANH');
+
+  { Ada.Text_IO / Integer_Text_IO : enregistrer les signatures pour     }
+  { que FindSub trouve Get/Get_Line/Put/... dans le code utilisateur.   }
+  RegisterTextIOStubs;
+
+  { Modules standard Ada supplementaires (built-ins) :                  }
+  {   Ada.Characters.Latin_1    - constantes Character                  }
+  {   Ada.Characters.Handling   - Is_xxx / To_xxx                       }
+  {   Ada.Command_Line          - Argument_Count, Argument, etc.        }
+  {   Ada.Strings / .Maps       - Index, Count, Trim, To_Mapping, ...   }
+  {   Ada.Direct_IO, .Sequential_IO, .Storage_IO, .Streams.Stream_IO,   }
+  {   Ada.Text_IO.Text_Streams  - Create, Open, Close, Read, Write, ... }
+  RegisterLatin1Constants;
+  RegisterCharactersHandlingStubs;
+  RegisterCommandLineStubs;
+  RegisterStringsStubs;
+  RegisterIOStubs;
 End;
 
 { ---- ParsePackageSpec : analyser une specification de package -- }
@@ -7727,7 +10297,7 @@ Begin
 
   PopScope;
 
-  { Pour Ada.Text_IO : generer stubs I/O }
+  { Pour Ada.Text_IO : generer les bodies I/O }
   If (UName = 'ADA.TEXT_IO') Or (UName = 'TEXT_IO') Then
     GenTextIOStubs;
 End;
@@ -7796,7 +10366,7 @@ Begin
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
 
-    { Parser les instructions d initialisation (stub : skip) }
+    { Parser les instructions d initialisation (actuellement ignorees) }
     SkipStatements;
 
     { EXCEPTION optionnel }
@@ -8597,6 +11167,164 @@ Begin
   If Mnem = 'MOVSB' Then Begin BinEmitByte($A4); Exit; End;
   If Mnem = 'CDQ' Then Begin BinEmitByte($99); Exit; End;
 
+  { ---- Instructions FPU x87 (sans operandes) ---- }
+  If Mnem = 'FSQRT'   Then Begin BinEmitByte($D9); BinEmitByte($FA); Exit; End;
+  If Mnem = 'FSIN'    Then Begin BinEmitByte($D9); BinEmitByte($FE); Exit; End;
+  If Mnem = 'FCOS'    Then Begin BinEmitByte($D9); BinEmitByte($FF); Exit; End;
+  If Mnem = 'FPTAN'   Then Begin BinEmitByte($D9); BinEmitByte($F2); Exit; End;
+  If Mnem = 'FPATAN'  Then Begin BinEmitByte($D9); BinEmitByte($F3); Exit; End;
+  If Mnem = 'FYL2X'   Then Begin BinEmitByte($D9); BinEmitByte($F1); Exit; End;
+  If Mnem = 'FLDL2E'  Then Begin BinEmitByte($D9); BinEmitByte($EA); Exit; End;
+  If Mnem = 'FLDLN2'  Then Begin BinEmitByte($D9); BinEmitByte($ED); Exit; End;
+  If Mnem = 'FLD1'    Then Begin BinEmitByte($D9); BinEmitByte($E8); Exit; End;
+  If Mnem = 'FLDZ'    Then Begin BinEmitByte($D9); BinEmitByte($EE); Exit; End;
+  If Mnem = 'F2XM1'   Then Begin BinEmitByte($D9); BinEmitByte($F0); Exit; End;
+  If Mnem = 'FSCALE'  Then Begin BinEmitByte($D9); BinEmitByte($FD); Exit; End;
+  If Mnem = 'FRNDINT' Then Begin BinEmitByte($D9); BinEmitByte($FC); Exit; End;
+  If Mnem = 'FABS'    Then Begin BinEmitByte($D9); BinEmitByte($E1); Exit; End;
+  If Mnem = 'FCHS'    Then Begin BinEmitByte($D9); BinEmitByte($E0); Exit; End;
+  If Mnem = 'FTST'    Then Begin BinEmitByte($D9); BinEmitByte($E4); Exit; End;
+  If Mnem = 'FSTSW'   Then
+  Begin
+    { FSTSW AX : DF E0 }
+    If StrUpperCase(Op1) = 'AX' Then
+    Begin BinEmitByte($DF); BinEmitByte($E0); Exit; End;
+  End;
+
+  { ---- FPU : FMULP / FADDP / FSUBRP / FDIVRP (sans operandes ou ST(1),ST(0)) ---- }
+  { Remarque : les encodages Intel sont :                                }
+  {   FSUBP  ST(i), ST(0) : DE E8+i   (ST(i) = ST(i) - ST(0), pop)         }
+  {   FSUBRP ST(i), ST(0) : DE E0+i   (ST(i) = ST(0) - ST(i), pop)         }
+  {   FDIVP  ST(i), ST(0) : DE F8+i   (ST(i) = ST(i) / ST(0), pop)         }
+  {   FDIVRP ST(i), ST(0) : DE F0+i   (ST(i) = ST(0) / ST(i), pop)         }
+  If Mnem = 'FMULP'   Then Begin BinEmitByte($DE); BinEmitByte($C9); Exit; End;
+  If Mnem = 'FADDP'   Then Begin BinEmitByte($DE); BinEmitByte($C1); Exit; End;
+  If Mnem = 'FSUBRP'  Then Begin BinEmitByte($DE); BinEmitByte($E1); Exit; End;
+  If Mnem = 'FSUBP'   Then Begin BinEmitByte($DE); BinEmitByte($E9); Exit; End;
+  If Mnem = 'FDIVRP'  Then Begin BinEmitByte($DE); BinEmitByte($F1); Exit; End;
+  If Mnem = 'FDIVP'   Then Begin BinEmitByte($DE); BinEmitByte($F9); Exit; End;
+
+  { ---- FPU : FXCH (sans operande = ST(1)) ---- }
+  If Mnem = 'FXCH' Then
+  Begin
+    { Par defaut ou avec ST(1) : D9 C9. Pas de support des autres ST(n) ici }
+    BinEmitByte($D9); BinEmitByte($C9);
+    Exit;
+  End;
+
+  { ---- FPU : FLD ST(0), FMUL ST(0) ST(0), FSTP ST(0) ---- }
+  If Mnem = 'FLD' Then
+  Begin
+    { FLD ST(0) : duplique le sommet -> D9 C0 }
+    If (StrUpperCase(Op1) = 'ST(0)') Or (StrUpperCase(Op1) = 'ST') Or
+       (StrUpperCase(Op1) = 'ST0') Then
+    Begin BinEmitByte($D9); BinEmitByte($C0); Exit; End;
+    { FLD DWORD PTR [mem] : D9 /0 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($D9);
+      AsmEncodeMemory(Bracket, 0);
+      Exit;
+    End;
+  End;
+  If Mnem = 'FSTP' Then
+  Begin
+    { FSTP ST(i) : DD D8+i (jette ST(0) dans ST(i) avec pop) }
+    If (StrUpperCase(Op1) = 'ST(0)') Or (StrUpperCase(Op1) = 'ST') Or
+       (StrUpperCase(Op1) = 'ST0') Then
+    Begin BinEmitByte($DD); BinEmitByte($D8); Exit; End;
+    If StrUpperCase(Op1) = 'ST(1)' Then
+    Begin BinEmitByte($DD); BinEmitByte($D9); Exit; End;
+    If StrUpperCase(Op1) = 'ST(2)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DA); Exit; End;
+    If StrUpperCase(Op1) = 'ST(3)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DB); Exit; End;
+    If StrUpperCase(Op1) = 'ST(4)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DC); Exit; End;
+    If StrUpperCase(Op1) = 'ST(5)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DD); Exit; End;
+    If StrUpperCase(Op1) = 'ST(6)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DE); Exit; End;
+    If StrUpperCase(Op1) = 'ST(7)' Then
+    Begin BinEmitByte($DD); BinEmitByte($DF); Exit; End;
+    { FSTP DWORD PTR [mem] : D9 /3 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($D9);
+      AsmEncodeMemory(Bracket, 3);
+      Exit;
+    End;
+  End;
+  If Mnem = 'FILD' Then
+  Begin
+    { FILD DWORD PTR [mem] : DB /0 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($DB);
+      AsmEncodeMemory(Bracket, 0);
+      Exit;
+    End;
+  End;
+  If Mnem = 'FISTP' Then
+  Begin
+    { FISTP DWORD PTR [mem] : DB /3 }
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($DB);
+      AsmEncodeMemory(Bracket, 3);
+      Exit;
+    End;
+    { FISTP QWORD PTR [mem] : DF /7 }
+    If AsmStartsWith(Op1, 'QWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      BinEmitByte($DF);
+      AsmEncodeMemory(Bracket, 7);
+      Exit;
+    End;
+  End;
+  { ---- FPU : FADD/FSUB/FMUL/FDIV ST(0), ST(i) ---- }
+  { Encodage :                                                       }
+  {   FADD  ST(0), ST(i) : D8 C0+i     (ST0 = ST0 + ST(i))           }
+  {   FMUL  ST(0), ST(i) : D8 C8+i                                   }
+  {   FSUB  ST(0), ST(i) : D8 E0+i                                   }
+  {   FSUBR ST(0), ST(i) : D8 E8+i                                   }
+  {   FDIV  ST(0), ST(i) : D8 F0+i                                   }
+  {   FDIVR ST(0), ST(i) : D8 F8+i                                   }
+  If (Mnem = 'FADD') Or (Mnem = 'FMUL') Or (Mnem = 'FSUB') Or
+     (Mnem = 'FSUBR') Or (Mnem = 'FDIV') Or (Mnem = 'FDIVR') Then
+  Begin
+    { Identifier ST(i) dans Op2 si Op1 = ST(0) }
+    If (StrUpperCase(Op1) = 'ST(0)') Or (StrUpperCase(Op1) = 'ST') Or
+       (StrUpperCase(Op1) = 'ST0') Then
+    Begin
+      R2 := -1;
+      If StrUpperCase(Op2) = 'ST(0)' Then R2 := 0
+      Else If StrUpperCase(Op2) = 'ST(1)' Then R2 := 1
+      Else If StrUpperCase(Op2) = 'ST(2)' Then R2 := 2
+      Else If StrUpperCase(Op2) = 'ST(3)' Then R2 := 3
+      Else If StrUpperCase(Op2) = 'ST(4)' Then R2 := 4
+      Else If StrUpperCase(Op2) = 'ST(5)' Then R2 := 5
+      Else If StrUpperCase(Op2) = 'ST(6)' Then R2 := 6
+      Else If StrUpperCase(Op2) = 'ST(7)' Then R2 := 7;
+      If R2 >= 0 Then
+      Begin
+        BinEmitByte($D8);
+        If Mnem = 'FADD'  Then BinEmitByte($C0 + R2)
+        Else If Mnem = 'FMUL'  Then BinEmitByte($C8 + R2)
+        Else If Mnem = 'FSUB'  Then BinEmitByte($E0 + R2)
+        Else If Mnem = 'FSUBR' Then BinEmitByte($E8 + R2)
+        Else If Mnem = 'FDIV'  Then BinEmitByte($F0 + R2)
+        Else                       BinEmitByte($F8 + R2);
+        Exit;
+      End;
+    End;
+  End;
+
   { ---- PUSH ---- }
   If Mnem = 'PUSH' Then
   Begin
@@ -8852,6 +11580,18 @@ Begin
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
+  If Mnem = 'JBE' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($86);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JAE' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($83);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
   If Mnem = 'JA' Then
   Begin
     BinEmitByte($0F); BinEmitByte($87);
@@ -8923,9 +11663,23 @@ Begin
     If R1 >= 0 Then
     Begin
       Imm := AsmParseImm(Op2);
-      BinEmitByte($83);
-      BinEmitByte($C0 Or R1);
-      BinEmitByte(Byte(Imm And $FF));
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        { ADD r32, imm8 (sign-extended) }
+        BinEmitByte($83);
+        BinEmitByte($C0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        { ADD r32, imm32 }
+        BinEmitByte($81);
+        BinEmitByte($C0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
       Exit;
     End;
     Exit;
@@ -8959,9 +11713,23 @@ Begin
     If R1 >= 0 Then
     Begin
       Imm := AsmParseImm(Op2);
-      BinEmitByte($83);
-      BinEmitByte($E8 Or R1);
-      BinEmitByte(Byte(Imm And $FF));
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        { SUB r32, imm8 (sign-extended) }
+        BinEmitByte($83);
+        BinEmitByte($E8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        { SUB r32, imm32 }
+        BinEmitByte($81);
+        BinEmitByte($E8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
       Exit;
     End;
     Exit;
@@ -8993,8 +11761,8 @@ Begin
       BinEmitByte(Byte(Imm And $FF));
       Exit;
     End;
-    { CMP AL, imm8 }
-    If Op1 = 'AL' Then
+    { CMP AL, imm8 (court) : uniquement si Op2 est un immediat   }
+    If (Op1 = 'AL') And (AsmRegIdx8(Op2) < 0) Then
     Begin
       BinEmitByte($3C);
       BinEmitByte(Byte(AsmParseImm(Op2) And $FF));
@@ -9188,11 +11956,31 @@ Begin
     End
     Else If Length(Op2) > 0 Then
     Begin
-      { IMUL reg, reg (2-operand form) : 0F AF /r }
       R2 := AsmRegIdx32(Op2);
-      BinEmitByte($0F);
-      BinEmitByte($AF);
-      BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R2);
+      If R2 < 0 Then
+      Begin
+        { IMUL reg, imm (2-operand raccourci) : equivalent a IMUL reg, reg, imm }
+        Imm := AsmParseImm(Op2);
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          BinEmitByte($6B);
+          BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R1);
+          BinEmitByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          BinEmitByte($69);
+          BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R1);
+          BinEmitDWord(Imm);
+        End;
+      End
+      Else
+      Begin
+        { IMUL reg, reg (2-operand form) : 0F AF /r }
+        BinEmitByte($0F);
+        BinEmitByte($AF);
+        BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R2);
+      End;
     End;
     Exit;
   End;
@@ -10183,6 +12971,7 @@ Begin
   InitScopeStack;
   InitStrTable;
   MainProcName := '';
+  FirstUserSubIdx := 1;
   LexInit;
   If Opts.DebugMode Then
   Begin
@@ -10202,6 +12991,11 @@ Begin
     AsmFile := ReplaceExt(Opts.SrcFile, '.asm');
     EmitOpen(AsmFile);
     EmitHeader;
+
+    { Pre-enregistrer les modules standard built-in (math, Float_Text_IO) }
+    { pour que les appels puissent etre resolus durant le parsing.         }
+    PreRegisterStdLib;
+    FirstUserSubIdx := SubCount + 1;
 
     ParseWithUseSection;
     { TODO 10 : boucle TYPE/SUBTYPE }
@@ -10238,8 +13032,11 @@ Begin
     End;
 
     { TODO 24 : determiner le nom de la procedure principale }
-    { La premiere procedure enregistree avec un body est la library unit }
-    If SubCount > 0 Then
+    { La premiere procedure USER (apres les built-ins pre-enregistres) }
+    { est la library unit.                                              }
+    If SubCount >= FirstUserSubIdx Then
+      MainProcName := SubTab[FirstUserSubIdx].Name
+    Else If SubCount > 0 Then
       MainProcName := SubTab[1].Name;
 
     { TODO 14 : boucle PACKAGE SPEC / PACKAGE BODY }
@@ -10252,7 +13049,8 @@ Begin
     Begin
       { Programme principal : BEGIN ... END [nom] ; }
       Consume; { BEGIN }
-      { Stub : skip les instructions du corps principal }
+      { Corps compilation-unit non-procedurale : les instructions sont }
+      { ignorees (programme principal = premiere PROCEDURE rencontree). }
       SkipStatements;
       If TokIsKw(KW_EXCEPTION) Then
       Begin
@@ -10272,6 +13070,12 @@ Begin
     { TODO 24 : emettre point d entree Win32 et helpers runtime }
     EmitEntryPoint;
     GenTextIOStubs;
+    GenMathStubs;
+    GenCharHandlingStubs;
+    GenCommandLineStubs;
+    GenStringsStubs;
+    GenIOStubs;
+    GenFloatTextIOStubs;
     EmitRuntimeHelpers;
 
     { TODO 23 : emettre segment .DATA et fermer le fichier }

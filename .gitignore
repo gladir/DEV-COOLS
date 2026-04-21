@@ -5,3 +5,7 @@
 *.o
 *.obj
 *.ppu
+# Executables Windows generes par ADACW32 (compilation test)
+SAMPLES/ADA/*.exe
+SAMPLES/ADA/*.asm
+SAMPLES/ADA/*.obj
