@@ -399,6 +399,11 @@ Begin
         LexAdvance;
       End;
       K := LexIsKeyword(Tk);
+      { Oberon standard : "IN" est un mot-cle seulement en majuscules.
+        "In" (casse mixte) doit rester un identificateur pour permettre
+        le module Oberon standard du meme nom. }
+      If (K = KW_IN) And (Tk <> 'IN') Then
+        K := 0;
       If K > 0 Then
       Begin
         CurTok := TOK_KEYWORD;
@@ -1155,6 +1160,7 @@ Var
   Si : Integer;
   SubTokStr : String;
   QN : String;
+  I : Integer;
 Begin
   QN := StrUpper(QName);
   { Tous ces constructeurs retournent une valeur dans EAX. }
@@ -1417,14 +1423,21 @@ Begin
     Si := SymFind('');  { reset for safety }
     ExpectOp('(');
     { Premier arg : pat (identifiant ARRCHAR ou litteral). }
-    { Simplification : on ne supporte que des identifiants ARRCHAR. }
-    If CurTok = TOK_IDENT Then
+    If CurTok = TOK_STRING Then
+    Begin
+      I := AddStringLiteral(CurTokStr);
+      BinEmitByte($B8);                 { mov eax, imm32 (&literal) }
+      AddFixup(FIX_STRING, I);
+      BinEmitDWord(0);
+      EmitPushEAX;
+      LexNext;
+    End
+    Else If CurTok = TOK_IDENT Then
     Begin
       Si := SymFind(CurTokStr);
       If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
       Begin
         SymTab[Si].Used := True;
-        { eax := &pat ; push eax }
         BinEmitByte($B8);
         AddFixup(FIX_VAR, Si);
         BinEmitDWord(0);
@@ -1433,13 +1446,13 @@ Begin
       End
       Else
       Begin
-        ErrorAt(LexLineNo, LexColNo, 'Strings.Pos : premier arg ARRAY OF CHAR attendu');
+        ErrorAt(LexLineNo, LexColNo, 'Strings.Pos : premier arg ARRAY OF CHAR ou litteral attendu');
         EmitPushImm32(0);
       End;
     End
     Else
     Begin
-      ErrorAt(LexLineNo, LexColNo, 'Strings.Pos : identificateur attendu');
+      ErrorAt(LexLineNo, LexColNo, 'Strings.Pos : identificateur ou litteral attendu');
       EmitPushImm32(0);
     End;
     ExpectOp(',');
@@ -2257,6 +2270,514 @@ Begin
   BinEmitByte($C6); BinEmitByte($07); BinEmitByte($00);
 End;
 
+{ ============================================================
+  Palier 2 : helpers de module (Strings, Conv, In, Args).
+
+  Conventions : 
+  * `(` a ete consomme par l'appelant, `)` sera consomme par l'appelant.
+  * Chaque procedure consomme ses arguments du flux de tokens et
+    emet le code qui realise l'action ; rien n'est retourne.
+  * Les arguments ARRAY OF CHAR doivent etre des identifiants globaux
+    (TYK_ARRCHAR).  Les expressions arbitraires produisant une adresse
+    ne sont pas supportees.
+  ============================================================ }
+
+{ Utilitaire : attend un identifiant ARRCHAR, retourne son Si ou -1. }
+Function ParseArrCharIdent(Const Ctx : String) : Integer;
+Var Si : Integer;
+Begin
+  ParseArrCharIdent := -1;
+  If CurTok = TOK_IDENT Then
+  Begin
+    Si := SymFind(CurTokStr);
+    If (Si > 0) And (SymTab[Si].TypeIdx = TYK_ARRCHAR) Then
+    Begin
+      SymTab[Si].Used := True;
+      LexNext;
+      ParseArrCharIdent := Si;
+    End
+    Else
+    Begin
+      ErrorAt(LexLineNo, LexColNo, Ctx + ' : ARRAY OF CHAR attendu');
+      LexNext;
+    End;
+  End
+  Else
+    ErrorAt(LexLineNo, LexColNo, Ctx + ' : identificateur attendu');
+End;
+
+{ Utilitaire : charge addr(Si) dans eax. }
+Procedure EmitLoadArrAddr(Si : Integer);
+Begin
+  BinEmitByte($B8);        { mov eax, imm32 }
+  AddFixup(FIX_VAR, Si);
+  BinEmitDWord(0);
+End;
+
+{ --- Strings.Replace(src, pos, dst) : ecrit src a partir de dst[pos],
+   sans decalage, borne par LEN(dst)-1.  src peut etre literal ou ARRCHAR. --- }
+Procedure GenStringsReplace;
+Var
+  SrcSi, DstSi, StrIdx : Integer;
+  SrcLit : String;
+  LabLoop, LabEnd : String;
+  IsLit : Boolean;
+Begin
+  IsLit := False;
+  SrcSi := -1;
+  SrcLit := '';
+  StrIdx := 0;
+  If CurTok = TOK_STRING Then
+  Begin
+    SrcLit := CurTokStr;
+    IsLit := True;
+    StrIdx := AddStringLiteral(SrcLit);
+    LexNext;
+  End
+  Else
+    SrcSi := ParseArrCharIdent('Strings.Replace (src)');
+  ExpectOp(',');
+  GenExpression;                         { eax = pos }
+  EmitPushEAX;
+  ExpectOp(',');
+  DstSi := ParseArrCharIdent('Strings.Replace (dst)');
+  If DstSi <= 0 Then Exit;
+  { edi := &dst + pos }
+  EmitLoadArrAddr(DstSi);
+  BinEmitByte($59);                      { pop ecx (pos) }
+  BinEmitByte($01); BinEmitByte($C8);    { add eax, ecx }
+  BinEmitByte($89); BinEmitByte($C7);    { mov edi, eax }
+  { esi := &src }
+  If IsLit Then
+  Begin
+    BinEmitByte($BE);                    { mov esi, imm32 }
+    AddFixup(FIX_STRING, StrIdx);
+    BinEmitDWord(0);
+  End
+  Else If SrcSi > 0 Then
+  Begin
+    BinEmitByte($BE);
+    AddFixup(FIX_VAR, SrcSi);
+    BinEmitDWord(0);
+  End;
+  { ecx := adresse limite = &dst + LEN(dst) - 1 }
+  BinEmitByte($B9);                      { mov ecx, imm32 &dst }
+  AddFixup(FIX_VAR, DstSi);
+  BinEmitDWord(0);
+  BinEmitByte($81); BinEmitByte($C1);    { add ecx, imm32 (cap-1) }
+  BinEmitDWord(SymTab[DstSi].ArrSize - 1);
+  { Boucle : tant que *esi != 0 et edi < ecx, copier. }
+  LabLoop := GenLabel;
+  LabEnd  := GenLabel;
+  DefineLabel(LabLoop);
+  { cmp edi, ecx ; jae LabEnd }
+  BinEmitByte($39); BinEmitByte($CF);
+  BinEmitByte($0F); BinEmitByte($83);    { jae rel32 }
+  AddFixup(FIX_CODE_REL, FindLabel(LabEnd));
+  BinEmitDWord(0);
+  BinEmitByte($8A); BinEmitByte($06);    { mov al, [esi] }
+  BinEmitByte($84); BinEmitByte($C0);    { test al, al }
+  EmitJZ(LabEnd);
+  BinEmitByte($88); BinEmitByte($07);    { mov [edi], al }
+  BinEmitByte($46); BinEmitByte($47);    { inc esi; inc edi }
+  EmitJmp(LabLoop);
+  DefineLabel(LabEnd);
+End;
+
+{ --- Strings.Delete(s, pos, n) : supprime n chars a partir de pos en
+   decalant la suite vers la gauche, puis tronque par nul. --- }
+Procedure GenStringsDelete;
+Var
+  DstSi : Integer;
+  LabLoop, LabEnd : String;
+Begin
+  DstSi := ParseArrCharIdent('Strings.Delete');
+  If DstSi <= 0 Then Exit;
+  ExpectOp(',');
+  GenExpression;                         { eax = pos }
+  EmitPushEAX;
+  ExpectOp(',');
+  GenExpression;                         { eax = n }
+  BinEmitByte($89); BinEmitByte($C1);    { mov ecx, eax  (n) }
+  BinEmitByte($5A);                      { pop edx       (pos) }
+  { edi := &s + pos, esi := &s + pos + n, ebx := LEN(s)-1-pos }
+  EmitLoadArrAddr(DstSi);
+  BinEmitByte($89); BinEmitByte($C7);    { mov edi, eax }
+  BinEmitByte($01); BinEmitByte($D7);    { add edi, edx }
+  BinEmitByte($89); BinEmitByte($FE);    { mov esi, edi }
+  BinEmitByte($01); BinEmitByte($CE);    { add esi, ecx }
+  BinEmitByte($BB);                      { mov ebx, imm32 (cap-1) }
+  BinEmitDWord(SymTab[DstSi].ArrSize - 1);
+  BinEmitByte($29); BinEmitByte($D3);    { sub ebx, edx (ebx = reste = cap-1-pos) }
+  LabLoop := GenLabel;
+  LabEnd  := GenLabel;
+  DefineLabel(LabLoop);
+  BinEmitByte($85); BinEmitByte($DB);    { test ebx, ebx }
+  EmitJZ(LabEnd);
+  BinEmitByte($8A); BinEmitByte($06);    { mov al, [esi] }
+  BinEmitByte($88); BinEmitByte($07);    { mov [edi], al }
+  BinEmitByte($84); BinEmitByte($C0);    { test al, al }
+  EmitJZ(LabEnd);
+  BinEmitByte($46); BinEmitByte($47);    { inc esi; inc edi }
+  BinEmitByte($4B);                      { dec ebx }
+  EmitJmp(LabLoop);
+  DefineLabel(LabEnd);
+  { Terminer par nul pour securite. }
+  BinEmitByte($C6); BinEmitByte($07); BinEmitByte($00);
+End;
+
+{ --- Strings.Insert(src, pos, dst) : insere src a la position pos
+   dans dst.  Decale d'abord la queue vers la droite, puis ecrit src. --- }
+Procedure GenStringsInsert;
+Var
+  SrcSi, DstSi, StrIdx : Integer;
+  SrcLit : String;
+  IsLit : Boolean;
+  LabShiftLoop, LabShiftEnd, LabWriteLoop, LabWriteEnd : String;
+Begin
+  IsLit := False;
+  SrcSi := -1;
+  SrcLit := '';
+  StrIdx := 0;
+  If CurTok = TOK_STRING Then
+  Begin
+    SrcLit := CurTokStr;
+    IsLit := True;
+    StrIdx := AddStringLiteral(SrcLit);
+    LexNext;
+  End
+  Else
+    SrcSi := ParseArrCharIdent('Strings.Insert (src)');
+  ExpectOp(',');
+  GenExpression;                         { eax = pos }
+  EmitPushEAX;                           { [esp] = pos }
+  ExpectOp(',');
+  DstSi := ParseArrCharIdent('Strings.Insert (dst)');
+  If DstSi <= 0 Then Exit;
+
+  { Calcule srclen d'abord dans ecx. }
+  If IsLit Then
+  Begin
+    BinEmitByte($B9);                    { mov ecx, imm32 (Length(SrcLit)) }
+    BinEmitDWord(Length(SrcLit));
+  End
+  Else
+  Begin
+    { eax := &src ; call _strlen ; ecx := eax }
+    EmitLoadArrAddr(SrcSi);
+    BinEmitByte($E8);
+    AddFixup(FIX_CODE_REL, FindLabel('_strlen'));
+    BinEmitDWord(0);
+    BinEmitByte($89); BinEmitByte($C1);  { mov ecx, eax }
+  End;
+
+  { Calcule dstlen dans edx. }
+  EmitLoadArrAddr(DstSi);
+  EmitPushEAX;                           { garde &dst sur pile }
+  BinEmitByte($E8);
+  AddFixup(FIX_CODE_REL, FindLabel('_strlen'));
+  BinEmitDWord(0);
+  BinEmitByte($89); BinEmitByte($C2);    { mov edx, eax (dstlen) }
+
+  { Maintenant [esp]=&dst, [esp+4]=pos, ecx=srclen, edx=dstlen. }
+  BinEmitByte($5B);                      { pop ebx (=&dst) }
+  BinEmitByte($58);                      { pop eax (=pos) }
+  { esi := &dst + dstlen (source de la copie arriere) }
+  BinEmitByte($89); BinEmitByte($DE);    { mov esi, ebx }
+  BinEmitByte($01); BinEmitByte($D6);    { add esi, edx }
+  { edi := esi + srclen (dest de la copie arriere) }
+  BinEmitByte($89); BinEmitByte($F7);    { mov edi, esi }
+  BinEmitByte($01); BinEmitByte($CF);    { add edi, ecx }
+  { Clamp edi a &dst + cap-1. }
+  BinEmitByte($BA);                      { mov edx, imm32 &dst }
+  AddFixup(FIX_VAR, DstSi);
+  BinEmitDWord(0);
+  BinEmitByte($81); BinEmitByte($C2);    { add edx, imm32 (cap-1) }
+  BinEmitDWord(SymTab[DstSi].ArrSize - 1);
+  BinEmitByte($39); BinEmitByte($D7);    { cmp edi, edx }
+  BinEmitByte($76); BinEmitByte($02);    { jbe +2 }
+  BinEmitByte($89); BinEmitByte($D7);    { mov edi, edx }
+
+  { edx := &dst + pos (limite inferieure de la copie arriere) }
+  BinEmitByte($89); BinEmitByte($DA);    { mov edx, ebx }
+  BinEmitByte($01); BinEmitByte($C2);    { add edx, eax }
+
+  LabShiftLoop := GenLabel;
+  LabShiftEnd  := GenLabel;
+  DefineLabel(LabShiftLoop);
+  { if esi < edx goto end }
+  BinEmitByte($39); BinEmitByte($D6);    { cmp esi, edx }
+  BinEmitByte($0F); BinEmitByte($82);    { jb LabShiftEnd }
+  AddFixup(FIX_CODE_REL, FindLabel(LabShiftEnd));
+  BinEmitDWord(0);
+  BinEmitByte($8A); BinEmitByte($06);    { mov al, [esi] }
+  BinEmitByte($88); BinEmitByte($07);    { mov [edi], al }
+  BinEmitByte($4E); BinEmitByte($4F);    { dec esi ; dec edi }
+  EmitJmp(LabShiftLoop);
+  DefineLabel(LabShiftEnd);
+
+  { Maintenant ecrit src a &dst+pos.  edi := &dst+pos, esi := &src. }
+  BinEmitByte($89); BinEmitByte($D7);    { mov edi, edx }
+  If IsLit Then
+  Begin
+    BinEmitByte($BE);
+    AddFixup(FIX_STRING, StrIdx);
+    BinEmitDWord(0);
+  End
+  Else If SrcSi > 0 Then
+  Begin
+    BinEmitByte($BE);
+    AddFixup(FIX_VAR, SrcSi);
+    BinEmitDWord(0);
+  End;
+  { edx := &dst + cap-1 (borne haute) ; ecx est deja srclen }
+  BinEmitByte($BA);
+  AddFixup(FIX_VAR, DstSi);
+  BinEmitDWord(0);
+  BinEmitByte($81); BinEmitByte($C2);
+  BinEmitDWord(SymTab[DstSi].ArrSize - 1);
+  LabWriteLoop := GenLabel;
+  LabWriteEnd  := GenLabel;
+  DefineLabel(LabWriteLoop);
+  BinEmitByte($85); BinEmitByte($C9);    { test ecx, ecx }
+  EmitJZ(LabWriteEnd);
+  BinEmitByte($39); BinEmitByte($D7);    { cmp edi, edx }
+  BinEmitByte($73); BinEmitByte($0C);    { jae +12 (vers LabWriteEnd via short jmp) }
+  BinEmitByte($8A); BinEmitByte($06);    { mov al, [esi] }
+  BinEmitByte($88); BinEmitByte($07);    { mov [edi], al }
+  BinEmitByte($46); BinEmitByte($47);    { inc esi ; inc edi }
+  BinEmitByte($49);                      { dec ecx }
+  EmitJmp(LabWriteLoop);
+  DefineLabel(LabWriteEnd);
+  { Termine toujours par un nul a &dst + cap-1 (securite). }
+  BinEmitByte($C6); BinEmitByte($02); BinEmitByte($00); { mov byte [edx], 0 }
+End;
+
+{ --- Conv.IntToString(n, s) : convertit n en decimal dans s. --- }
+Procedure GenConvIntToString;
+Var
+  DstSi : Integer;
+Begin
+  GenExpression;                         { eax = n }
+  EmitPushEAX;
+  ExpectOp(',');
+  DstSi := ParseArrCharIdent('Conv.IntToString');
+  If DstSi <= 0 Then Exit;
+  BinEmitByte($58);                      { pop eax (n) }
+  BinEmitByte($BF);                      { mov edi, &s }
+  AddFixup(FIX_VAR, DstSi);
+  BinEmitDWord(0);
+  BinEmitByte($B9);                      { mov ecx, cap }
+  BinEmitDWord(SymTab[DstSi].ArrSize);
+  BinEmitByte($E8);                      { call _inttobuf }
+  AddFixup(FIX_CODE_REL, FindLabel('_inttobuf'));
+  BinEmitDWord(0);
+End;
+
+{ --- Conv.HexToString(n, s) : convertit n en 8 chiffres hexa. --- }
+Procedure GenConvHexToString;
+Var
+  DstSi : Integer;
+Begin
+  GenExpression;                         { eax = n }
+  EmitPushEAX;
+  ExpectOp(',');
+  DstSi := ParseArrCharIdent('Conv.HexToString');
+  If DstSi <= 0 Then Exit;
+  BinEmitByte($58);                      { pop eax }
+  BinEmitByte($BF);
+  AddFixup(FIX_VAR, DstSi);
+  BinEmitDWord(0);
+  BinEmitByte($B9);
+  BinEmitDWord(SymTab[DstSi].ArrSize);
+  BinEmitByte($E8);
+  AddFixup(FIX_CODE_REL, FindLabel('_hextobuf'));
+  BinEmitDWord(0);
+End;
+
+{ --- Conv.StringToInt(s, n, done) : parse s comme decimal signe,
+   stocke la valeur dans n et 1/0 dans done. --- }
+Procedure GenConvStringToInt;
+Var
+  SrcSi, NSi, DoneSi : Integer;
+Begin
+  SrcSi := ParseArrCharIdent('Conv.StringToInt (s)');
+  If SrcSi <= 0 Then Exit;
+  ExpectOp(',');
+  NSi := -1; DoneSi := -1;
+  If CurTok = TOK_IDENT Then
+  Begin
+    NSi := SymFind(CurTokStr);
+    LexNext;
+  End
+  Else
+    ErrorAt(LexLineNo, LexColNo, 'Conv.StringToInt : identificateur n attendu');
+  ExpectOp(',');
+  If CurTok = TOK_IDENT Then
+  Begin
+    DoneSi := SymFind(CurTokStr);
+    LexNext;
+  End
+  Else
+    ErrorAt(LexLineNo, LexColNo, 'Conv.StringToInt : identificateur done attendu');
+  { esi := &s ; call _strtoint ; eax = val, edx = done }
+  BinEmitByte($BE);
+  AddFixup(FIX_VAR, SrcSi);
+  BinEmitDWord(0);
+  BinEmitByte($E8);
+  AddFixup(FIX_CODE_REL, FindLabel('_strtoint'));
+  BinEmitDWord(0);
+  If NSi > 0 Then
+  Begin
+    BinEmitByte($A3);                    { mov [n], eax }
+    AddFixup(FIX_VAR, NSi);
+    BinEmitDWord(0);
+  End;
+  If DoneSi > 0 Then
+  Begin
+    BinEmitByte($89); BinEmitByte($15);  { mov [done], edx }
+    AddFixup(FIX_VAR, DoneSi);
+    BinEmitDWord(0);
+  End;
+End;
+
+{ --- In.Line(s) : lit une ligne dans InBuf puis la copie dans s. --- }
+Procedure GenInLine;
+Var
+  DstSi : Integer;
+  LabLoop, LabEnd : String;
+Begin
+  DstSi := ParseArrCharIdent('In.Line');
+  If DstSi <= 0 Then Exit;
+  { call _readline }
+  BinEmitByte($E8);
+  AddFixup(FIX_CODE_REL, FindLabel('_readline'));
+  BinEmitDWord(0);
+  { Copie InBuf -> &s bornee par cap-1. }
+  BinEmitByte($BF);                      { mov edi, &s }
+  AddFixup(FIX_VAR, DstSi);
+  BinEmitDWord(0);
+  BinEmitByte($BE);                      { mov esi, InBuf }
+  AddFixup(FIX_INBUF, 0);
+  BinEmitDWord(0);
+  BinEmitByte($B9);                      { mov ecx, cap - 1 }
+  BinEmitDWord(SymTab[DstSi].ArrSize - 1);
+  LabLoop := GenLabel;
+  LabEnd  := GenLabel;
+  DefineLabel(LabLoop);
+  BinEmitByte($85); BinEmitByte($C9);    { test ecx, ecx }
+  EmitJZ(LabEnd);
+  BinEmitByte($8A); BinEmitByte($06);    { mov al, [esi] }
+  BinEmitByte($88); BinEmitByte($07);    { mov [edi], al }
+  BinEmitByte($84); BinEmitByte($C0);    { test al, al }
+  EmitJZ(LabEnd);
+  BinEmitByte($46); BinEmitByte($47);    { inc esi; inc edi }
+  BinEmitByte($49);
+  EmitJmp(LabLoop);
+  DefineLabel(LabEnd);
+  BinEmitByte($C6); BinEmitByte($07); BinEmitByte($00);
+End;
+
+{ --- In.Int(n) : lit une ligne et parse un entier. --- }
+Procedure GenInInt;
+Var
+  NSi : Integer;
+Begin
+  If CurTok = TOK_IDENT Then
+  Begin
+    NSi := SymFind(CurTokStr);
+    LexNext;
+    If NSi <= 0 Then
+    Begin
+      ErrorAt(LexLineNo, LexColNo, 'In.Int : variable inconnue');
+      Exit;
+    End;
+  End
+  Else
+  Begin
+    ErrorAt(LexLineNo, LexColNo, 'In.Int : identificateur attendu');
+    Exit;
+  End;
+  BinEmitByte($E8);                      { call _readline }
+  AddFixup(FIX_CODE_REL, FindLabel('_readline'));
+  BinEmitDWord(0);
+  BinEmitByte($BE);                      { mov esi, InBuf }
+  AddFixup(FIX_INBUF, 0);
+  BinEmitDWord(0);
+  BinEmitByte($E8);                      { call _strtoint }
+  AddFixup(FIX_CODE_REL, FindLabel('_strtoint'));
+  BinEmitDWord(0);
+  BinEmitByte($A3);                      { mov [n], eax }
+  AddFixup(FIX_VAR, NSi);
+  BinEmitDWord(0);
+  BinEmitByte($89); BinEmitByte($15);    { mov [InDone], edx }
+  AddFixup(FIX_INDONE, 0);
+  BinEmitDWord(0);
+End;
+
+{ --- In.Char(c) : lit 1 octet dans c (variable integer, seul al). --- }
+Procedure GenInChar;
+Var
+  CSi : Integer;
+Begin
+  If CurTok = TOK_IDENT Then
+  Begin
+    CSi := SymFind(CurTokStr);
+    LexNext;
+    If CSi <= 0 Then
+    Begin
+      ErrorAt(LexLineNo, LexColNo, 'In.Char : variable inconnue');
+      Exit;
+    End;
+  End
+  Else
+  Begin
+    ErrorAt(LexLineNo, LexColNo, 'In.Char : identificateur attendu');
+    Exit;
+  End;
+  { ReadFile(stdin, InBuf, 1, &InLen, 0) }
+  EmitPushImm32(0);
+  BinEmitByte($68); AddFixup(FIX_INLEN, 0); BinEmitDWord(0);
+  EmitPushImm32(1);
+  BinEmitByte($68); AddFixup(FIX_INBUF, 0); BinEmitDWord(0);
+  BinEmitByte($FF); BinEmitByte($35); AddFixup(FIX_STDIN, 0); BinEmitDWord(0);
+  EmitCallIAT(FIX_IAT_READ);
+  { InDone := eax (nombre lu vaut 1 sur succes) }
+  BinEmitByte($89); BinEmitByte($C2);    { mov edx, eax }
+  BinEmitByte($A1); AddFixup(FIX_INLEN, 0); BinEmitDWord(0); { eax := [InLen] }
+  BinEmitByte($85); BinEmitByte($C0);    { test eax, eax }
+  BinEmitByte($0F); BinEmitByte($95); BinEmitByte($C2);      { setne dl }
+  { non utilisable tel quel ; simplifions : [InDone] := 1 si InLen>0, sinon 0 }
+  BinEmitByte($0F); BinEmitByte($B6); BinEmitByte($D2);      { movzx edx, dl }
+  BinEmitByte($89); BinEmitByte($15); AddFixup(FIX_INDONE, 0); BinEmitDWord(0);
+  { Charge octet lu en al, stocke dans [c] (ecrit 4 octets : zero-extend) }
+  BinEmitByte($31); BinEmitByte($C0);    { xor eax, eax }
+  BinEmitByte($8A); BinEmitByte($05); AddFixup(FIX_INBUF, 0); BinEmitDWord(0); { mov al, [InBuf] }
+  BinEmitByte($A3); AddFixup(FIX_VAR, CSi); BinEmitDWord(0);
+End;
+
+{ --- Args.Get(i, s) : copie le i-eme argument de GetCommandLineA dans s.
+   L'arg 0 est le nom du programme.  Gere les guillemets ("...") simplement. --- }
+Procedure GenArgsGet;
+Var
+  DstSi : Integer;
+Begin
+  GenExpression;                         { eax = i }
+  EmitPushEAX;
+  ExpectOp(',');
+  DstSi := ParseArrCharIdent('Args.Get');
+  If DstSi <= 0 Then Exit;
+  BinEmitByte($58);                      { pop eax (i) }
+  BinEmitByte($BF);                      { mov edi, &s }
+  AddFixup(FIX_VAR, DstSi);
+  BinEmitDWord(0);
+  BinEmitByte($B9);                      { mov ecx, cap }
+  BinEmitDWord(SymTab[DstSi].ArrSize);
+  BinEmitByte($E8);
+  AddFixup(FIX_CODE_REL, FindLabel('_args_get'));
+  BinEmitDWord(0);
+End;
+
 Procedure GenStatement;
 Var 
   VarName : String;
@@ -2653,6 +3174,14 @@ Begin
 
       { -------- In.* -------- }
       Else If VarName = 'In.Line' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenInLine;
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'In.String' Then
       Begin
         If AcceptOp('(') Then
         Begin
@@ -3298,9 +3827,11 @@ Begin
   { esi := eax (pointeur courant) }
   BinEmitByte($89); BinEmitByte($C6);                { mov esi, eax }
 
-  { ecx := 0 (compteur d'arguments), edi := 1 (etat : 1=dans un blanc) }
+  { ecx := 0 (compteur d'arguments), edi := 1 (etat : 1=dans un blanc),
+    ebx := 0 (in_quote 0/nz). }
   BinEmitByte($31); BinEmitByte($C9);                { xor ecx, ecx }
   BinEmitByte($BF); BinEmitDWord(1);                 { mov edi, 1 }
+  BinEmitByte($31); BinEmitByte($DB);                { xor ebx, ebx }
 
   LabLoop     := GenLabel;
   LabChkEnd   := GenLabel;
@@ -3312,11 +3843,25 @@ Begin
   BinEmitByte($0F); BinEmitByte($B6); BinEmitByte($06);     { movzx eax, byte [esi] }
   BinEmitByte($85); BinEmitByte($C0);                        { test eax, eax }
   EmitJZ(LabDone);
+  { Toggle in_quote sur le caractere '"'. }
+  BinEmitByte($83); BinEmitByte($F8); BinEmitByte($22);      { cmp eax, '"' }
+  BinEmitByte($0F); BinEmitByte($85);                        { jne rel32 _args_count_nq }
+  AddFixup(FIX_CODE_REL, FindLabel('_args_count_nq'));
+  BinEmitDWord(0);
+  BinEmitByte($F7); BinEmitByte($D3);                        { not ebx }
+  EmitJmp(LabChkEnd);
+  DefineLabel('_args_count_nq');
+  { Si on est entre guillemets, on ne considere pas les blancs. }
+  BinEmitByte($85); BinEmitByte($DB);                        { test ebx, ebx }
+  BinEmitByte($0F); BinEmitByte($85);                        { jne rel32 _args_count_nw }
+  AddFixup(FIX_CODE_REL, FindLabel('_args_count_nw'));
+  BinEmitDWord(0);
   { Teste si al == ' ' ou '\t' }
   BinEmitByte($83); BinEmitByte($F8); BinEmitByte($20);      { cmp eax, ' ' }
   EmitJE(LabSpace);
   BinEmitByte($83); BinEmitByte($F8); BinEmitByte($09);      { cmp eax, 9 }
   EmitJE(LabSpace);
+  DefineLabel('_args_count_nw');
   { Non-blanc : si etat precedent etait blanc, nouveau mot. }
   BinEmitByte($85); BinEmitByte($FF);                        { test edi, edi }
   EmitJZ(LabChkEnd);
@@ -3483,12 +4028,13 @@ Begin
   DefineLabel('_str_pos');
   { Prologue : preserve ebx, esi, edi ; ebp n'est pas utilise. }
   BinEmitByte($53); BinEmitByte($56); BinEmitByte($57);
-  { Args : [esp+16]=pat, [esp+20]=s, [esp+24]=start }
-  BinEmitByte($8B); BinEmitByte($44); BinEmitByte($24); BinEmitByte($10);  { mov eax, [esp+16] pat }
+  { Ordre des push de l'appelant : pat, s, start (dernier pushe = start
+    a [esp+16]). }
+  BinEmitByte($8B); BinEmitByte($44); BinEmitByte($24); BinEmitByte($18);  { mov eax, [esp+24] pat }
   BinEmitByte($89); BinEmitByte($C7);                            { mov edi, eax }
   BinEmitByte($8B); BinEmitByte($44); BinEmitByte($24); BinEmitByte($14);  { mov eax, [esp+20] s }
   BinEmitByte($89); BinEmitByte($C6);                            { mov esi, eax }
-  BinEmitByte($8B); BinEmitByte($44); BinEmitByte($24); BinEmitByte($18);  { mov eax, [esp+24] start }
+  BinEmitByte($8B); BinEmitByte($44); BinEmitByte($24); BinEmitByte($10);  { mov eax, [esp+16] start }
   BinEmitByte($01); BinEmitByte($C6);                            { add esi, eax }
   BinEmitByte($89); BinEmitByte($C3);                            { mov ebx, eax  (position courante) }
 
@@ -3532,6 +4078,379 @@ Begin
   DefineLabel(LabMatch);
   BinEmitByte($5F); BinEmitByte($5E); BinEmitByte($5B);
   BinEmitByte($C3);
+End;
+
+{ --- _strcap : eax=addr, ecx=cap.  Uppercase ASCII a..z -> A..Z,
+   s'arrete au premier nul ou apres cap octets. --- }
+Procedure GenStrCapHelper;
+Var LabLoop, LabEnd, LabSkip : String;
+Begin
+  DefineLabel('_strcap');
+  BinEmitByte($89); BinEmitByte($C7);                            { mov edi, eax }
+  LabLoop := GenLabel;
+  LabEnd  := GenLabel;
+  LabSkip := GenLabel;
+  DefineLabel(LabLoop);
+  BinEmitByte($85); BinEmitByte($C9);                            { test ecx, ecx }
+  EmitJZ(LabEnd);
+  BinEmitByte($8A); BinEmitByte($07);                            { mov al, [edi] }
+  BinEmitByte($84); BinEmitByte($C0);                            { test al, al }
+  EmitJZ(LabEnd);
+  { si al < 'a' ou al > 'z' skip }
+  BinEmitByte($3C); BinEmitByte($61);                            { cmp al, 'a' }
+  BinEmitByte($72); BinEmitByte($08);                            { jb +8 }
+  BinEmitByte($3C); BinEmitByte($7A);                            { cmp al, 'z' }
+  BinEmitByte($77); BinEmitByte($04);                            { ja +4 }
+  BinEmitByte($2C); BinEmitByte($20);                            { sub al, 0x20 }
+  BinEmitByte($88); BinEmitByte($07);                            { mov [edi], al }
+  BinEmitByte($47);                                              { inc edi }
+  BinEmitByte($49);                                              { dec ecx }
+  EmitJmp(LabLoop);
+  DefineLabel(LabEnd);
+  BinEmitByte($C3);
+End;
+
+{ --- _inttobuf : eax = value, edi = dst, ecx = cap.
+   Ecrit la representation decimale signee suivie d'un nul, dans la
+   limite de cap octets.  Prefere tronquer les chiffres de tete pour
+   ne jamais ecrire au-dela de cap. --- }
+Procedure GenIntToBufHelper;
+Var
+  LabPos, LabLoop, LabPrependMinus, LabNoMinus, LabCopy, LabCopyLoop, LabCopyEnd, LabZero, LabDone : String;
+Begin
+  DefineLabel('_inttobuf');
+  BinEmitByte($53); BinEmitByte($56); BinEmitByte($57); BinEmitByte($55); { push ebx/esi/edi/ebp }
+
+  { Sauve cap dans ebp (restant dans dst), edi sera deplace. }
+  BinEmitByte($89); BinEmitByte($CD);                            { mov ebp, ecx }
+  { Si cap == 0 -> rien a ecrire. }
+  BinEmitByte($85); BinEmitByte($ED);
+  LabDone := GenLabel;
+  EmitJZ(LabDone);
+
+  { Utilise IntBufAddr comme scratch (12 octets).  esi := IntBufAddr+12. }
+  BinEmitByte($BE);
+  AddFixup(FIX_INTBUF_END, 0);
+  BinEmitDWord(0);
+  BinEmitByte($31); BinEmitByte($DB);                            { xor ebx, ebx (sign flag) }
+
+  LabPos := GenLabel;
+  EmitTestEAX;
+  BinEmitByte($0F); BinEmitByte($89);                            { jns LabPos }
+  AddFixup(FIX_CODE_REL, FindLabel(LabPos));
+  BinEmitDWord(0);
+  BinEmitByte($F7); BinEmitByte($D8);                            { neg eax }
+  BinEmitByte($BB); BinEmitDWord(1);                             { mov ebx, 1 }
+  DefineLabel(LabPos);
+
+  { Cas 0 special. }
+  LabZero := GenLabel;
+  LabLoop := GenLabel;
+  EmitTestEAX;
+  EmitJNZ(LabLoop);
+  BinEmitByte($4E);                                              { dec esi }
+  BinEmitByte($C6); BinEmitByte($06); BinEmitByte($30);          { mov byte [esi], '0' }
+  LabPrependMinus := GenLabel;
+  EmitJmp(LabPrependMinus);
+  DefineLabel(LabLoop);
+  BinEmitByte($B9); BinEmitDWord(10);                            { mov ecx, 10 }
+  BinEmitByte($31); BinEmitByte($D2);                            { xor edx, edx }
+  BinEmitByte($F7); BinEmitByte($F1);                            { div ecx }
+  BinEmitByte($80); BinEmitByte($C2); BinEmitByte($30);          { add dl, '0' }
+  BinEmitByte($4E);                                              { dec esi }
+  BinEmitByte($88); BinEmitByte($16);                            { mov [esi], dl }
+  EmitTestEAX;
+  EmitJNZ(LabLoop);
+
+  DefineLabel(LabPrependMinus);
+  BinEmitByte($85); BinEmitByte($DB);                            { test ebx, ebx }
+  LabNoMinus := GenLabel;
+  EmitJZ(LabNoMinus);
+  BinEmitByte($4E);                                              { dec esi }
+  BinEmitByte($C6); BinEmitByte($06); BinEmitByte($2D);          { mov byte [esi], '-' }
+  DefineLabel(LabNoMinus);
+
+  { Longueur = IntBufAddr+12 - esi ; dans ecx. }
+  BinEmitByte($B9);
+  AddFixup(FIX_INTBUF_END, 0);
+  BinEmitDWord(0);
+  BinEmitByte($29); BinEmitByte($F1);                            { sub ecx, esi }
+
+  { Tronque si ecx > ebp-1 (garde 1 pour nul). }
+  BinEmitByte($89); BinEmitByte($EA);                            { mov edx, ebp }
+  BinEmitByte($4A);                                              { dec edx }
+  BinEmitByte($85); BinEmitByte($D2);                            { test edx, edx }
+  BinEmitByte($0F); BinEmitByte($8D); BinEmitDWord(2);           { jge +2 (not taken when edx<0) }
+  BinEmitByte($31); BinEmitByte($D2);                            { xor edx, edx }
+  BinEmitByte($39); BinEmitByte($D1);                            { cmp ecx, edx }
+  BinEmitByte($76); BinEmitByte($02);                            { jbe +2 }
+  BinEmitByte($89); BinEmitByte($D1);                            { mov ecx, edx }
+
+  { Copie ecx octets de esi vers edi. }
+  LabCopyLoop := GenLabel;
+  LabCopyEnd := GenLabel;
+  DefineLabel(LabCopyLoop);
+  BinEmitByte($85); BinEmitByte($C9);                            { test ecx, ecx }
+  EmitJZ(LabCopyEnd);
+  BinEmitByte($8A); BinEmitByte($06);                            { mov al, [esi] }
+  BinEmitByte($88); BinEmitByte($07);                            { mov [edi], al }
+  BinEmitByte($46); BinEmitByte($47);                            { inc esi ; inc edi }
+  BinEmitByte($49);                                              { dec ecx }
+  EmitJmp(LabCopyLoop);
+  DefineLabel(LabCopyEnd);
+  BinEmitByte($C6); BinEmitByte($07); BinEmitByte($00);          { mov [edi], 0 }
+
+  DefineLabel(LabDone);
+  BinEmitByte($5D); BinEmitByte($5F); BinEmitByte($5E); BinEmitByte($5B);
+  BinEmitByte($C3);
+
+  { LabCopy etait declare mais jamais utilise ; no-op. }
+  LabCopy := LabCopyLoop;
+  If Length(LabCopy) < 0 Then ;
+End;
+
+{ --- _hextobuf : eax=value, edi=dst, ecx=cap.  Ecrit 8 chiffres hex
+   majuscules suivis d'un nul, si cap >= 9.  Sinon tronque a cap-1 chars. --- }
+Procedure GenHexToBufHelper;
+Var
+  LabLoop, LabSkip : String;
+  Hex : String;
+Begin
+  DefineLabel('_hextobuf');
+  BinEmitByte($53);                                              { push ebx }
+  { Si cap <= 1 -> juste ecrire nul (ou rien). }
+  BinEmitByte($83); BinEmitByte($F9); BinEmitByte($01);          { cmp ecx, 1 }
+  BinEmitByte($0F); BinEmitByte($8C); BinEmitDWord(0);           { jl rel32 (vers fin apres rev) }
+  { Decide combien de chiffres ecrire : min(8, cap-1) dans ebx. }
+  BinEmitByte($BB); BinEmitDWord(8);                             { mov ebx, 8 }
+  BinEmitByte($49);                                              { dec ecx (cap-1) }
+  BinEmitByte($39); BinEmitByte($CB);                            { cmp ebx, ecx }
+  BinEmitByte($76); BinEmitByte($02);                            { jbe +2 }
+  BinEmitByte($89); BinEmitByte($CB);                            { mov ebx, ecx }
+  { ecx := ebx (count) }
+  BinEmitByte($89); BinEmitByte($D9);                            { mov ecx, ebx }
+  { Decale eax pour ne garder que les ecx*4 bits bas en position haute. }
+  { Simplification : toujours extraire 8 hex puis prendre les (ecx) bas. }
+  { Approche : shift eax pour aligner le chiffre courant a gauche. }
+  { Utilise une boucle qui extrait les 4 bits hauts puis shift left. }
+  { Mais on veut les derniers ecx chiffres hexa du mot (bits bas) en ordre. }
+  { Strategie : on ajuste eax tel que le chiffre de tete a ecrire soit en bits 31..28.
+    Pour ecx chiffres, on shl eax de (8-ecx)*4 bits. }
+  BinEmitByte($BA); BinEmitDWord(8);                             { mov edx, 8 }
+  BinEmitByte($29); BinEmitByte($CA);                            { sub edx, ecx }
+  BinEmitByte($C1); BinEmitByte($E2); BinEmitByte($02);          { shl edx, 2  (mul par 4) }
+  { rep : shl eax, cl (nombre variable via ecx) : on doit mettre edx dans cl }
+  { Utilise push/pop pour swapper. }
+  BinEmitByte($51);                                              { push ecx }
+  BinEmitByte($89); BinEmitByte($D1);                            { mov ecx, edx }
+  BinEmitByte($D3); BinEmitByte($E0);                            { shl eax, cl }
+  BinEmitByte($59);                                              { pop ecx }
+
+  LabLoop := GenLabel;
+  LabSkip := GenLabel;
+  DefineLabel(LabLoop);
+  BinEmitByte($85); BinEmitByte($C9);                            { test ecx, ecx }
+  EmitJZ(LabSkip);
+  { dl := (eax >> 28) & 0xF }
+  BinEmitByte($89); BinEmitByte($C2);                            { mov edx, eax }
+  BinEmitByte($C1); BinEmitByte($EA); BinEmitByte($1C);          { shr edx, 28 }
+  BinEmitByte($83); BinEmitByte($E2); BinEmitByte($0F);          { and edx, 0x0F }
+  { if dl < 10 : + '0' ; else + 'A'-10 = 0x37 }
+  BinEmitByte($80); BinEmitByte($FA); BinEmitByte($0A);          { cmp dl, 10 }
+  BinEmitByte($72); BinEmitByte($05);                            { jb +5 }
+  BinEmitByte($80); BinEmitByte($C2); BinEmitByte($37);          { add dl, 0x37 }
+  BinEmitByte($EB); BinEmitByte($03);                            { jmp +3 }
+  BinEmitByte($80); BinEmitByte($C2); BinEmitByte($30);          { add dl, '0' }
+  BinEmitByte($88); BinEmitByte($17);                            { mov [edi], dl }
+  BinEmitByte($47);                                              { inc edi }
+  BinEmitByte($C1); BinEmitByte($E0); BinEmitByte($04);          { shl eax, 4 }
+  BinEmitByte($49);                                              { dec ecx }
+  EmitJmp(LabLoop);
+  DefineLabel(LabSkip);
+  BinEmitByte($C6); BinEmitByte($07); BinEmitByte($00);          { mov [edi], 0 }
+  BinEmitByte($5B);                                              { pop ebx }
+  BinEmitByte($C3);
+  Hex := ''; If Length(Hex) < 0 Then ;
+End;
+
+{ --- _strtoint : esi = src addr.  Retourne eax = valeur signee,
+   edx = 1 si succes (au moins un chiffre valide), 0 sinon.
+   Skip espaces de tete, signe +/- optionnel, suite de chiffres. --- }
+Procedure GenStrToIntHelper;
+Var
+  LabSkip, LabNoSign, LabLoop, LabDigitOk, LabDone, LabOk : String;
+Begin
+  DefineLabel('_strtoint');
+  BinEmitByte($53); BinEmitByte($57);                            { push ebx, edi }
+  BinEmitByte($31); BinEmitByte($C0);                            { xor eax, eax }
+  BinEmitByte($31); BinEmitByte($DB);                            { xor ebx, ebx  (sign: 0=+) }
+  BinEmitByte($31); BinEmitByte($FF);                            { xor edi, edi  (count) }
+
+  LabSkip    := GenLabel;
+  LabNoSign  := GenLabel;
+  LabLoop    := GenLabel;
+  LabDigitOk := GenLabel;
+  LabDone    := GenLabel;
+  LabOk      := GenLabel;
+
+  DefineLabel(LabSkip);
+  BinEmitByte($8A); BinEmitByte($16);                            { mov dl, [esi] }
+  BinEmitByte($80); BinEmitByte($FA); BinEmitByte($20);          { cmp dl, ' ' }
+  EmitJNE(LabNoSign);                                             { pas une espace -> sortir }
+  BinEmitByte($46);
+  EmitJmp(LabSkip);
+
+  DefineLabel(LabNoSign);
+  BinEmitByte($80); BinEmitByte($FA); BinEmitByte($2D);          { cmp dl, '-' }
+  BinEmitByte($0F); BinEmitByte($85);                            { jne rel32 LabLoop }
+  AddFixup(FIX_CODE_REL, FindLabel(LabLoop));
+  BinEmitDWord(0);
+  BinEmitByte($BB); BinEmitDWord(1);                             { mov ebx, 1 }
+  BinEmitByte($46);                                              { inc esi }
+  EmitJmp(LabLoop);
+
+  DefineLabel(LabLoop);
+  BinEmitByte($8A); BinEmitByte($16);                            { mov dl, [esi] }
+  BinEmitByte($80); BinEmitByte($FA); BinEmitByte($30);          { cmp dl, '0' }
+  BinEmitByte($0F); BinEmitByte($82);                            { jb rel32 LabDone }
+  AddFixup(FIX_CODE_REL, FindLabel(LabDone));
+  BinEmitDWord(0);
+  BinEmitByte($80); BinEmitByte($FA); BinEmitByte($39);          { cmp dl, '9' }
+  BinEmitByte($0F); BinEmitByte($87);                            { ja rel32 LabDone }
+  AddFixup(FIX_CODE_REL, FindLabel(LabDone));
+  BinEmitDWord(0);
+  BinEmitByte($80); BinEmitByte($EA); BinEmitByte($30);          { sub dl, '0' }
+  BinEmitByte($6B); BinEmitByte($C0); BinEmitByte($0A);          { imul eax, eax, 10 }
+  BinEmitByte($0F); BinEmitByte($B6); BinEmitByte($D2);          { movzx edx, dl }
+  BinEmitByte($01); BinEmitByte($D0);                            { add eax, edx }
+  BinEmitByte($46);                                              { inc esi }
+  BinEmitByte($47);                                              { inc edi }
+  EmitJmp(LabLoop);
+  DefineLabel(LabDone);
+
+  { Si ebx != 0 -> neg eax }
+  BinEmitByte($85); BinEmitByte($DB);                            { test ebx, ebx }
+  EmitJZ(LabOk);
+  BinEmitByte($F7); BinEmitByte($D8);                            { neg eax }
+  DefineLabel(LabOk);
+
+  { edx := (edi > 0) ? 1 : 0 }
+  BinEmitByte($85); BinEmitByte($FF);                            { test edi, edi }
+  BinEmitByte($0F); BinEmitByte($95); BinEmitByte($C2);          { setne dl }
+  BinEmitByte($0F); BinEmitByte($B6); BinEmitByte($D2);          { movzx edx, dl }
+
+  BinEmitByte($5F); BinEmitByte($5B);                            { pop edi, ebx }
+  BinEmitByte($C3);
+  LabDigitOk := LabDigitOk;   { evite un warning var non utilisee }
+End;
+
+{ --- _args_get : eax=i (0-based), edi=dst, ecx=cap.
+   Copie le i-eme argument de GetCommandLineA (forme ASCII) dans dst.
+   Gere les espaces separateurs et les guillemets ".." simplement.
+   Convention d'entree : ebp sauvegarde, esi courant dans la ligne de
+   commande, ebx = cap restante, ecx (=0/1) = in_quote. --- }
+Procedure GenArgsGetHelper;
+Var
+  LSkipWS, LScanTok, LOutTok, LCopyLoop, LStoreNul, LEOS : String;
+  LTogQ, LNotQ, LTokChk, LTokQuote, LTokEnd : String;
+  LCopyChk, LCopyQuote, LCopyNotQ, LCopyPut, LCopyEnd : String;
+Begin
+  DefineLabel('_args_get');
+  BinEmitByte($53); BinEmitByte($56); BinEmitByte($55);          { push ebx, esi, ebp }
+  BinEmitByte($89); BinEmitByte($C5);                            { mov ebp, eax  (i) }
+  BinEmitByte($89); BinEmitByte($CB);                            { mov ebx, ecx  (cap) }
+  EmitCallIAT(FIX_IAT_GETCMD);
+  BinEmitByte($89); BinEmitByte($C6);                            { mov esi, eax }
+
+  LSkipWS   := GenLabel;
+  LScanTok  := GenLabel;
+  LOutTok   := GenLabel;
+  LCopyLoop := GenLabel;
+  LStoreNul := GenLabel;
+  LEOS      := GenLabel;
+
+  { Boucle exterieure : skip espaces puis si ebp==0 copier, sinon consommer. }
+  DefineLabel(LSkipWS);
+  BinEmitByte($8A); BinEmitByte($06);                            { mov al, [esi] }
+  BinEmitByte($84); BinEmitByte($C0);                            { test al, al }
+  EmitJZ(LEOS);
+  BinEmitByte($3C); BinEmitByte($20);                            { cmp al, ' ' }
+  EmitJNE(LTokEnd);                                               { sortir si pas espace }
+  BinEmitByte($46);                                              { inc esi }
+  EmitJmp(LSkipWS);
+  DefineLabel(LTokEnd);
+  BinEmitByte($85); BinEmitByte($ED);                            { test ebp, ebp }
+  BinEmitByte($0F); BinEmitByte($84);                            { je rel32 LCopyEntry }
+  AddFixup(FIX_CODE_REL, FindLabel('_args_copy_entry'));
+  BinEmitDWord(0);
+
+  { Consomme un token (respecte les guillemets). }
+  LTogQ    := GenLabel;
+  LNotQ    := GenLabel;
+  LTokChk  := GenLabel;
+  LTokQuote:= GenLabel;
+  LTokEnd  := GenLabel;
+  BinEmitByte($31); BinEmitByte($C9);                            { xor ecx, ecx }
+  DefineLabel(LScanTok);
+  BinEmitByte($8A); BinEmitByte($06);                            { mov al, [esi] }
+  BinEmitByte($84); BinEmitByte($C0);
+  EmitJZ(LEOS);
+  BinEmitByte($3C); BinEmitByte($22);                            { cmp al, '"' }
+  EmitJNE(LTokChk);
+  BinEmitByte($F7); BinEmitByte($D1);                            { not ecx }
+  BinEmitByte($46);
+  EmitJmp(LScanTok);
+  DefineLabel(LTokChk);
+  BinEmitByte($85); BinEmitByte($C9);                            { test ecx, ecx }
+  EmitJNZ(LTokQuote);
+  BinEmitByte($3C); BinEmitByte($20);
+  EmitJE(LOutTok);
+  DefineLabel(LTokQuote);
+  BinEmitByte($46);
+  EmitJmp(LScanTok);
+  DefineLabel(LOutTok);
+  BinEmitByte($4D);                                              { dec ebp }
+  EmitJmp(LSkipWS);
+
+  { Boucle de copie. ebx = cap restante, ecx (=0/1) = in_quote, edi = dst. }
+  LCopyChk    := GenLabel;
+  LCopyQuote  := GenLabel;
+  LCopyNotQ   := GenLabel;
+  LCopyPut    := GenLabel;
+  LCopyEnd    := GenLabel;
+  DefineLabel('_args_copy_entry');
+  BinEmitByte($31); BinEmitByte($C9);                            { xor ecx, ecx }
+  DefineLabel(LCopyLoop);
+  BinEmitByte($83); BinEmitByte($FB); BinEmitByte($01);          { cmp ebx, 1 }
+  BinEmitByte($0F); BinEmitByte($8E);                            { jle rel32 LStoreNul }
+  AddFixup(FIX_CODE_REL, FindLabel(LStoreNul));
+  BinEmitDWord(0);
+  BinEmitByte($8A); BinEmitByte($06);                            { mov al, [esi] }
+  BinEmitByte($84); BinEmitByte($C0);
+  EmitJZ(LStoreNul);
+  BinEmitByte($3C); BinEmitByte($22);                            { cmp al, '"' }
+  EmitJNE(LCopyChk);
+  BinEmitByte($F7); BinEmitByte($D1);
+  BinEmitByte($46);
+  EmitJmp(LCopyLoop);
+  DefineLabel(LCopyChk);
+  BinEmitByte($85); BinEmitByte($C9);                            { test ecx, ecx }
+  EmitJNZ(LCopyPut);
+  BinEmitByte($3C); BinEmitByte($20);                            { cmp al, ' ' }
+  EmitJE(LStoreNul);
+  DefineLabel(LCopyPut);
+  BinEmitByte($88); BinEmitByte($07);                            { mov [edi], al }
+  BinEmitByte($47); BinEmitByte($46);                            { inc edi ; inc esi }
+  BinEmitByte($4B);                                              { dec ebx }
+  EmitJmp(LCopyLoop);
+
+  DefineLabel(LEOS);
+  DefineLabel(LStoreNul);
+  BinEmitByte($C6); BinEmitByte($07); BinEmitByte($00);          { mov [edi], 0 }
+  BinEmitByte($5D); BinEmitByte($5E); BinEmitByte($5B);
+  BinEmitByte($C3);
+  LCopyQuote := LCopyQuote; LCopyNotQ := LCopyNotQ;
+  LCopyEnd := LCopyEnd; LNotQ := LNotQ; LTokEnd := LTokEnd;
 End;
 
 Procedure ParseVarDecl;
@@ -3816,7 +4735,7 @@ Begin
 
   TotalStr := 0;
   For Li := 1 To StringCount Do
-    TotalStr := TotalStr + Length(StringPool[Li]);
+    TotalStr := TotalStr + Length(StringPool[Li]) + 1;   { +1 pour le nul }
   { Offset de base des variables utilisateur : taille du bloc fixe
     0(stdout)+4(bytes)+12(intbuf)+2(crlf)+4(stderr)+4(rndseed)+8(hexbuf)
     +4(stdin)+4(inlen)+4(indone)+256(inbuf) = 306 octets,
@@ -3870,7 +4789,7 @@ Begin
           If Si > 0 Then
           Begin
             For Li := 1 To Si-1 Do
-              StrAddr := StrAddr + Length(StringPool[Li]);
+              StrAddr := StrAddr + Length(StringPool[Li]) + 1;   { +1 pour le nul }
             TargetAddr := StrAddr;
             BinCode[Fixups[I].Offset] := TargetAddr And $FF;
             BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
@@ -4128,6 +5047,10 @@ Begin
       BinData[BinDataLen] := Ord(StringPool[I][J]);
       Inc(BinDataLen);
     End;
+    { Terminateur nul pour que les helpers runtime (_strlen, _str_pos, etc.)
+      puissent traiter les litteraux comme des C-strings. }
+    BinData[BinDataLen] := 0;
+    Inc(BinDataLen);
   End;
   
   While (BinDataLen Mod 4) <> 0 Do
@@ -4609,6 +5532,11 @@ Begin
   GenReadLineHelper;
   GenStrLenHelper;
   GenStrPosHelper;
+  GenStrCapHelper;
+  GenIntToBufHelper;
+  GenHexToBufHelper;
+  GenStrToIntHelper;
+  GenArgsGetHelper;
   
   LexClose;
 
