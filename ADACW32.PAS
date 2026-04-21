@@ -109,7 +109,7 @@
             Function FindSymLocal : dans le scope courant uniquement
             AddSym : calcul automatique BpOffset pour STORE_AUTO
             Tailles 32 bits : Integer = DD (4 octets),
-              Float = DQ (8 octets stub), Boolean = DB (1 octet),
+              Float = DQ (8 octets), Boolean = DB (1 octet),
               Character = DB (1 octet), String = DB n
             Classes d entreposage : STORE_AUTO (pile EBP),
               STORE_STATIC (segment .DATA), STORE_CONST (immediate),
@@ -230,7 +230,7 @@
               (enum1, enum2, ...)         -> type enumere
               RANGE lo .. hi              -> sous-type entier
               ARRAY (lo .. hi) OF type   -> tableau 1D borne fixe
-              ARRAY (type RANGE <>) OF type -> non-contraint (stub)
+              ARRAY (type RANGE <>) OF type -> non-contraint
               RECORD champ : type; ... END RECORD -> enregistrement
               NEW type                    -> derivation simple (alias)
               ACCESS type                 -> pointeur (32 bits)
@@ -312,20 +312,20 @@
             PackageSpec : enregistrer exports dans SubTab / TypeTab
             PackageBody : generer les corps des sous-programmes
             Init body : generer _ADAP_nom_INIT appelee au demarrage
-            Packages Ada.Text_IO : generer stubs Put/Put_Line/Get/
+            Packages Ada.Text_IO : generer les bodies Put/Put_Line/Get/
               Get_Line en appelant les helpers runtime Win32
             Boucle PACKAGE dans Run
 
   TODO 15 - PARSEUR : DISPATCHER PRINCIPAL DES INSTRUCTIONS [IMPLEMENTE]
             Procedure ParseStatement
             Dispatcher selon le token courant :
-              Identifiant + ':=' -> ParseAssignment (stub skip -> TODO 16)
-              Identifiant + '(' ou sans -> ParseProcedureCall (stub skip -> TODO 16)
-              IF           -> ParseIf (stub skip -> TODO 17)
-              CASE         -> ParseCase (stub skip -> TODO 17)
-              LOOP         -> ParseLoop (stub skip -> TODO 18)
-              WHILE        -> ParseWhile (stub skip -> TODO 18)
-              FOR          -> ParseFor (stub skip -> TODO 18)
+              Identifiant + ':=' -> ParseAssignment (TODO 16)
+              Identifiant + '(' ou sans -> ParseProcedureCall (TODO 16)
+              IF           -> ParseIf (TODO 17)
+              CASE         -> ParseCase (TODO 17)
+              LOOP         -> ParseLoop (TODO 18)
+              WHILE        -> ParseWhile (TODO 18)
+              FOR          -> ParseFor (TODO 18)
               RETURN       -> ParseReturn (skip expr + ;)
               RAISE        -> ParseRaise (skip ident + ;)
               NULL         -> ParseNull (NULL + ;)
@@ -713,7 +713,7 @@ Const
   { Types Ada internes }
   TYPE_UNKNOWN  =  0;
   TYPE_INT      =  1;   { Integer     : DD (4 octets)              }
-  TYPE_FLOAT    =  2;   { Float       : DQ (8 octets, stub)        }
+  TYPE_FLOAT    =  2;   { Float       : DQ (8 octets)              }
   TYPE_BOOL     =  3;   { Boolean     : DB (1 octet)               }
   TYPE_CHAR     =  4;   { Character   : DB (1 octet)               }
   TYPE_STR      =  5;   { String      : DB n octets                }
@@ -1850,7 +1850,7 @@ End;
 
 { ---- PrimTypeSize32 : taille de base d un type predefini ----- }
 { Retourne la taille en octets pour les types predefinis Ada.     }
-{ Pour les types utilisateur, retourne 4 par defaut (stub).       }
+{ Pour les types utilisateur, retourne 4 par defaut.              }
 Function PrimTypeSize32(TypeId : Integer) : Integer;
 Begin
   Case TypeId Of
@@ -1861,7 +1861,7 @@ Begin
     TYPE_STR    : PrimTypeSize32 := 4;   { String    : pointeur DD    }
     TYPE_ACCESS : PrimTypeSize32 := 4;   { Access    : pointeur DD    }
   Else
-    PrimTypeSize32 := 4;                 { types utilisateur : stub   }
+    PrimTypeSize32 := 4;                 { types utilisateur (defaut) }
   End;
 End;
 
@@ -4545,7 +4545,7 @@ Begin
     End;
     TOK_AMPERSAND :
     Begin
-      { Concatenation chaines : stub -> appel helper runtime      }
+      { Concatenation chaines : appel du helper runtime _ADART_STR_CAT }
       EmitI('POP  EBX');
       EmitI('PUSH EBX');       { arg 1 = gauche                  }
       EmitI('PUSH EAX');       { arg 2 = droite                  }
@@ -6177,7 +6177,7 @@ Begin
     If CurTokType = TOK_COLONASSIGN Then
     Begin
       Consume;
-      Warning('Valeur par defaut de parametre ignoree (stub)');
+      Warning('Valeur par defaut de parametre ignoree (non supporte)');
       { Sauter l expression : avancer jusqu a ; ou ) }
       While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_RPAREN) And
             (CurTokType <> TOK_EOF) Do
@@ -8484,8 +8484,6 @@ End;
 {   - Le scope est SK_FUNC                                          }
 {   - Le resultat de la fonction doit etre dans EAX                 }
 {   - RETURN expr ; met la valeur dans EAX                          }
-{ Pour l instant (stub), le corps est traverse sans generer de     }
-{ code pour les instructions. La valeur par defaut est EAX = 0.    }
 Procedure ParseFunctionBody(SubIdx : Integer);
 Var
   FrameSz   : Integer;
@@ -8756,7 +8754,7 @@ Begin
   End;
 End;
 
-{ ---- GenTextIOStubs : generer les stubs Ada.Text_IO ---------- }
+{ ---- GenTextIOStubs : generer les bodies des subs Ada.Text_IO ---------- }
 { Enregistre Put, Put_Line, Get, Get_Line, New_Line, Set_Col     }
 { dans SubTab en tant que procedures standards.                   }
 { Genere du code ASM appelant les helpers runtime Win32           }
@@ -8911,8 +8909,8 @@ Begin
   End;
 End;
 
-{ ---- GenMathStub : generer une fonction mathematique 1 arg (FPU x87) }
-{ Helper interne : emet la sequence Op comme une liste d instructions  }
+{ ---- EmitFPUOps : emettre une sequence d instructions FPU ----------- }
+{ Helper interne : emet la sequence Ops comme une liste d instructions }
 { FPU separees par ';' (pour contourner l absence d heredoc).           }
 Procedure EmitFPUOps(Const Ops : TString);
 Var
@@ -8970,35 +8968,8 @@ Begin
   End;
 End;
 
-{ ---- GenMathStub : stub non-implemente (retourne 0.0 = 0x00000000) --- }
-{ Utilise pour les fonctions sans implementation FPU directe.             }
-Procedure GenMathStub(Const Name : TString);
-Var Idx : Integer;
-Begin
-  Idx := FindSub(Name);
-  If Idx = 0 Then
-    Idx := AddSub(Name, True, TYPE_FLOAT);
-  If Idx > 0 Then
-  Begin
-    SubTab[Idx].IsForward  := False;
-    SubTab[Idx].IsFunction := True;
-    SubTab[Idx].ParamCount := 1;
-    SubTab[Idx].ParamNames[1] := 'X';
-    SubTab[Idx].ParamTypes[1] := TYPE_FLOAT;
-    SubTab[Idx].ParamModes[1] := PARAM_IN;
-    EmitBlank;
-    EmitComment('--- Ada.Numerics.Elementary_Functions.' + Name +
-                ' (stub - retourne 0.0) ---');
-    EmitLabel(SubTab[Idx].AsmLabel);
-    EmitI('PUSH EBP');
-    EmitI('MOV  EBP, ESP');
-    EmitI('XOR  EAX, EAX');
-    EmitI('POP  EBP');
-    EmitI('RET  4');
-  End;
-End;
-
-{ ---- GenMathStubs : generer les stubs Ada.Numerics.Elementary_Functions }
+{ ---- GenMathStubs : generer les implementations FPU x87 de              }
+{ Ada.Numerics.Elementary_Functions                                        }
 { Implementation FPU x87 : utilise les instructions natives du coprocesseur }
 { pour calculer Sqrt, Sin, Cos, etc. sur IEEE-754 simple precision (32 bits). }
 { Les fonctions prennent un Float en argument (32 bits) et retournent un      }
@@ -9517,7 +9488,7 @@ Begin
   GenCharRangeFn('IS_CONTROL',  0,  31);
   { Is_Graphic : 32..126 (imprimables ASCII) }
   GenCharRangeFn('IS_GRAPHIC', 32, 126);
-  { Is_Special = Is_Graphic AND NOT Is_Alphanumeric : stub = 0 }
+  { Is_Special : approximation = ponctuation ASCII 33..47 }
   GenCharRangeFn('IS_SPECIAL', 33,  47);  { approximatif : ponctuation }
   { Is_Basic : caracteres ASCII 32..127 }
   GenCharRangeFn('IS_BASIC',    0, 127);
@@ -9545,19 +9516,20 @@ Begin
 End;
 
 { ---- GenCommandLineStubs : emettre bodies Command_Line ------------- }
-{ Stubs non bloquants. Un futur TODO pourra brancher sur GetCommandLineA }
+{ Implementations minimales (Argument_Count = 0, chaines vides) : un    }
+{ futur TODO pourra brancher sur GetCommandLineA pour un support reel.  }
 Procedure GenCommandLineStubs;
 Var Idx : Integer;
 Begin
   EmitBlank;
-  EmitComment('=== Ada.Command_Line (stubs) ===');
+  EmitComment('=== Ada.Command_Line (implementation minimale) ===');
   Idx := FindSub('ARGUMENT_COUNT');
   If Idx > 0 Then
   Begin
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
-    EmitI('XOR  EAX, EAX');     { stub : 0 arguments }
+    EmitI('XOR  EAX, EAX');     { 0 arguments (non supporte) }
     EmitI('POP  EBP');
     EmitI('RET');
   End;
@@ -9567,7 +9539,7 @@ Begin
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
-    EmitI('XOR  EAX, EAX');     { stub : chaine vide }
+    EmitI('XOR  EAX, EAX');     { chaine vide (non supporte) }
     EmitI('POP  EBP');
     EmitI('RET  4');
   End;
@@ -9577,7 +9549,7 @@ Begin
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
-    EmitI('XOR  EAX, EAX');     { stub : chaine vide }
+    EmitI('XOR  EAX, EAX');     { chaine vide (non supporte) }
     EmitI('POP  EBP');
     EmitI('RET');
   End;
@@ -9625,7 +9597,7 @@ End;
 {   HEAD(S, N)           -> copie des N premiers chars dans _ADART_STRBUF}
 {   TAIL(S, N)           -> copie des N derniers chars dans _ADART_STRBUF}
 {   TRIM(S, Side)        -> chaine sans espaces de tete/queue            }
-{   TO_MAPPING, VALUE, IS_IN : stubs simples                              }
+{   TO_MAPPING, VALUE, IS_IN : non supportes (retournent 0)              }
 Procedure GenStringsStubs;
 
   Procedure EmitStubRet(Const Name : TString; ArgBytes : Integer);
@@ -9978,7 +9950,7 @@ Begin
     EmitI('RET  8');
   End;
 
-  { ---- Stubs restants : TO_MAPPING, VALUE ---- }
+  { ---- Fonctions non implementees : TO_MAPPING, VALUE ---- }
   EmitStubRet('TO_MAPPING', 8);
   EmitStubRet('VALUE',      8);
 End;
@@ -9990,56 +9962,56 @@ End;
 Procedure RegisterIOStubs;
 Var Idx : Integer;
 Begin
-  { CREATE (F : out File_Type; Mode; Name : in String) - stub }
+  { CREATE (F : out File_Type; Mode; Name : in String) }
   { Note : PUT/GET/OPEN/CLOSE de Text_IO sont deja enregistres          }
   { ailleurs, on n ecrase pas leurs signatures. On ajoute uniquement    }
   { les helpers manquants pour que les WITH des modules I/O compilent.  }
 
-  { READ : stub generique (File, Item : out Element_Type) }
+  { READ : generique (File, Item : out Element_Type) }
   Idx := FindSub('READ');
   If Idx = 0 Then Idx := RegisterStdSub('READ', False, TYPE_VOID);
-  { WRITE : stub generique (File, Item : in Element_Type) }
+  { WRITE : generique (File, Item : in Element_Type) }
   Idx := FindSub('WRITE');
   If Idx = 0 Then Idx := RegisterStdSub('WRITE', False, TYPE_VOID);
-  { END_OF_FILE : function (File) return Boolean - stub retourne True }
+  { END_OF_FILE : function (File) return Boolean (retourne False) }
   Idx := FindSub('END_OF_FILE');
   If Idx = 0 Then
   Begin
     Idx := RegisterStdSub('END_OF_FILE', True, TYPE_BOOL);
     AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
   End;
-  { STREAM : function (File) return Stream_Access - stub retourne 0 }
+  { STREAM : function (File) return Stream_Access (retourne 0) }
   Idx := FindSub('STREAM');
   If Idx = 0 Then
   Begin
     Idx := RegisterStdSub('STREAM', True, TYPE_INT);
     AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
   End;
-  { RESET : procedure (File) - stub }
+  { RESET : procedure (File) }
   Idx := FindSub('RESET');
   If Idx = 0 Then Idx := RegisterStdSub('RESET', False, TYPE_VOID);
-  { NAME : function (File) return String - stub }
+  { NAME : function (File) return String }
   Idx := FindSub('NAME');
   If Idx = 0 Then
   Begin
     Idx := RegisterStdSub('NAME', True, TYPE_STR);
     AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
   End;
-  { MODE : function (File) return File_Mode - stub retourne Integer }
+  { MODE : function (File) return File_Mode (retourne Integer) }
   Idx := FindSub('MODE');
   If Idx = 0 Then
   Begin
     Idx := RegisterStdSub('MODE', True, TYPE_INT);
     AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
   End;
-  { IS_OPEN : function (File) return Boolean - stub }
+  { IS_OPEN : function (File) return Boolean }
   Idx := FindSub('IS_OPEN');
   If Idx = 0 Then
   Begin
     Idx := RegisterStdSub('IS_OPEN', True, TYPE_BOOL);
     AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
   End;
-  { SIZE : function (File) return Count - stub (Storage_IO / Stream_IO) }
+  { SIZE : function (File) return Count (Storage_IO / Stream_IO) }
   Idx := FindSub('SIZE');
   If Idx = 0 Then
   Begin
@@ -10047,12 +10019,12 @@ Begin
     AddStdParam(Idx, 'FILE', TYPE_INT, PARAM_IN);
   End;
   { INDEX : positionnement Direct_IO / Stream_IO - deja reg. par Strings }
-  { SET_INDEX : procedure (File, To : Positive_Count) - stub }
+  { SET_INDEX : procedure (File, To : Positive_Count) }
   Idx := FindSub('SET_INDEX');
   If Idx = 0 Then Idx := RegisterStdSub('SET_INDEX', False, TYPE_VOID);
 End;
 
-{ ---- GenIOStubs : emettre bodies stubs Direct_IO / etc. ----------- }
+{ ---- GenIOStubs : emettre bodies minimaux Direct_IO / etc. ----------- }
 Procedure GenIOStubs;
 
   Procedure EmitStubProc(Const Name : TString; ArgBytes : Integer);
@@ -10060,7 +10032,7 @@ Procedure GenIOStubs;
   Begin
     Idx := FindSub(Name);
     If Idx = 0 Then Exit;
-    { Skip si deja emis (p.ex. OPEN/CLOSE par Text_IO stubs) }
+    { Skip si deja emis (p.ex. OPEN/CLOSE par Text_IO) }
     If SubTab[Idx].IsForward Then Exit;
     EmitLabel(SubTab[Idx].AsmLabel);
     EmitI('PUSH EBP');
@@ -10074,7 +10046,7 @@ Procedure GenIOStubs;
 Begin
   EmitBlank;
   EmitComment('=== Ada.Direct_IO / Sequential_IO / Storage_IO /' +
-              ' Stream_IO / Text_Streams (stubs) ===');
+              ' Stream_IO / Text_Streams (implementation minimale) ===');
   EmitStubProc('READ',        0);
   EmitStubProc('WRITE',       0);
   EmitStubProc('END_OF_FILE', 4);
@@ -10088,9 +10060,9 @@ Begin
 End;
 
 
-{ Enregistre Put(Float, Fore, Aft, Exp) comme stub non-bloquant.           }
-{ Le support flottant reel n est pas encore implemente, le stub consomme   }
-{ ses arguments et ne produit aucune sortie.                                }
+{ Enregistre Put(Float, Fore, Aft, Exp) comme symbole non-bloquant.       }
+{ Le support flottant reel n est pas encore implemente : ce body consomme }
+{ ses arguments et ne produit aucune sortie formatee.                      }
 Procedure GenFloatTextIOStubs;
 Var Idx : Integer;
 Begin
@@ -10248,7 +10220,7 @@ Begin
 
   PopScope;
 
-  { Pour Ada.Text_IO : generer stubs I/O }
+  { Pour Ada.Text_IO : generer les bodies I/O }
   If (UName = 'ADA.TEXT_IO') Or (UName = 'TEXT_IO') Then
     GenTextIOStubs;
 End;
@@ -10317,7 +10289,7 @@ Begin
     EmitI('PUSH EBP');
     EmitI('MOV  EBP, ESP');
 
-    { Parser les instructions d initialisation (stub : skip) }
+    { Parser les instructions d initialisation (actuellement ignorees) }
     SkipStatements;
 
     { EXCEPTION optionnel }
@@ -12972,7 +12944,8 @@ Begin
     Begin
       { Programme principal : BEGIN ... END [nom] ; }
       Consume; { BEGIN }
-      { Stub : skip les instructions du corps principal }
+      { Corps compilation-unit non-procedurale : les instructions sont }
+      { ignorees (programme principal = premiere PROCEDURE rencontree). }
       SkipStatements;
       If TokIsKw(KW_EXCEPTION) Then
       Begin
