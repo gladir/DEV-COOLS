@@ -99,7 +99,10 @@ Non supportees par ce compilateur minimal (requierent des types
 que le compilateur ne gere pas encore) :
 
   COPY        Copie d'une chaine dans un tableau (requiert ARRAY).
-  ENTIER      Partie entiere d'un reel (requiert REAL).
+  ENTIER      Partie entiere d'un reel : non encore implemente comme
+              built-in, meme si le type REAL existe (Palier 3).  Le
+              code genere pour fistp existe (voir Out.Real) mais la
+              procedure n'est pas encore exposee au langage.
   EXCL(s, x)  Retire x de l'ensemble s (requiert SET).
   INCL(s, x)  Ajoute x a l'ensemble s (requiert SET).
   LEN(a)      Longueur d'un tableau ou d'une chaine (requiert ARRAY).
@@ -147,11 +150,12 @@ les exemples mod_*.obn livres dans ce repertoire.
     Get(i, s)     copie le i-eme argument (i>=0) dans s :
                   i = 0 donne le nom du programme.
 
-  Random     (mod_random.obn)
+  Random     (mod_random.obn, mod_random_real.obn)
     Init(seed)    fixe la graine (seed = INTEGER)
     Int(bound)    prochaine valeur entiere >= 0 et < bound
                   (generateur LCG "Numerical Recipes" 32 bits).
-                  Real() non supporte : requiert REAL.
+    Real()        Palier 3 : prochaine valeur REAL dans [0, 1)
+                  derivee du meme LCG.
 
   SYSTEM     (mod_system.obn)
     VAL(T, x)     conversion de representation, identite en 32 bits
