@@ -4184,6 +4184,10 @@ Begin
   { Prologue Win32 STDCALL }
   EmitI('PUSH    EBP');
   EmitI('MOV     EBP, ESP');
+  { Reserver 512 octets pour variables locales (DATA: ... dans FORM).  }
+  { Sans SUB ESP, les PUSH d arguments de PERFORM ecrasent les locales  }
+  { lues juste apres (cause de recursions infinies / stack overflow).   }
+  EmitI('SUB     ESP, 512');
 
   { Entrer le scope FORM }
   EnterScope(SK_FORM, FIdx);
@@ -4244,15 +4248,61 @@ End;
 { a gauche, la FORM depile avec RET n.                            }
 { ============================================================ }
 Procedure ParsePerform;
+Type
+  TPerfArg = Record
+    Kind    : Integer;    { 0=ident, 1=number, 2=string }
+    StrVal  : TString;    { nom ident ou texte litteral }
+    NumVal  : LongInt;    { valeur si Kind=1 }
+  End;
 Var
   FormName : TString;
   FIdx     : Integer;
-  UNames   : Array[1..MAX_PARAM] of TString;
-  CNames   : Array[1..MAX_PARAM] of TString;
+  UArgs    : Array[1..MAX_PARAM] of TPerfArg;
+  CArgs    : Array[1..MAX_PARAM] of TPerfArg;
   UCount   : Integer;
   CCount   : Integer;
   I        : Integer;
   SymIdx   : Integer;
+
+  Procedure ReadArg(Var A : TPerfArg);
+  Begin
+    A.Kind   := 0;
+    A.StrVal := '';
+    A.NumVal := 0;
+    If CurTokType = TOK_NUMBER Then
+    Begin
+      A.Kind   := 1;
+      A.NumVal := CurTokNum;
+      A.StrVal := CurTokStr;
+      Consume;
+    End
+    Else If CurTokType = TOK_MINUS Then
+    Begin
+      Consume;
+      If CurTokType = TOK_NUMBER Then
+      Begin
+        A.Kind   := 1;
+        A.NumVal := -CurTokNum;
+        A.StrVal := '-' + CurTokStr;
+        Consume;
+      End;
+    End
+    Else If CurTokType = TOK_STRING Then
+    Begin
+      A.Kind   := 2;
+      A.StrVal := CurTokStr;
+      Consume;
+    End
+    Else If CurTokType = TOK_IDENT Then
+    Begin
+      A.Kind   := 0;
+      A.StrVal := CurTokStr;
+      Consume;
+    End
+    Else
+      Consume;   { token inattendu : le consommer pour eviter boucle }
+  End;
+
 Begin
   EmitComment('---- PERFORM ----');
 
@@ -4277,8 +4327,8 @@ Begin
           (Not TokIsKw(KW_CHANGING)) Do
     Begin
       Inc(UCount);
-      UNames[UCount] := CurTokStr;
-      Consume;
+      If UCount > MAX_PARAM Then Begin Consume; Continue; End;
+      ReadArg(UArgs[UCount]);
     End;
   End;
 
@@ -4289,8 +4339,8 @@ Begin
     While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) Do
     Begin
       Inc(CCount);
-      CNames[CCount] := CurTokStr;
-      Consume;
+      If CCount > MAX_PARAM Then Begin Consume; Continue; End;
+      ReadArg(CArgs[CCount]);
     End;
   End;
 
@@ -4298,33 +4348,53 @@ Begin
   { D abord CHANGING de droite a gauche }
   For I := CCount DownTo 1 Do
   Begin
-    SymIdx := FindSym(CNames[I]);
-    If SymIdx > 0 Then
+    If CArgs[I].Kind <> 0 Then
     Begin
-      GenLoadVarAddr32(SymIdx);
-      EmitI('PUSH    EAX');
+      EmitComment('CHANGING arg litteral non supporte (doit etre une variable): ' + CArgs[I].StrVal);
+      EmitI('PUSH    0');
     End
     Else
     Begin
-      EmitComment('CHANGING arg inconnu: ' + CNames[I]);
-      EmitI('PUSH    0');
+      SymIdx := FindSym(CArgs[I].StrVal);
+      If SymIdx > 0 Then
+      Begin
+        GenLoadVarAddr32(SymIdx);
+        EmitI('PUSH    EAX');
+      End
+      Else
+      Begin
+        EmitComment('CHANGING arg inconnu: ' + CArgs[I].StrVal);
+        EmitI('PUSH    0');
+      End;
     End;
   End;
 
   { Puis USING de droite a gauche }
   For I := UCount DownTo 1 Do
   Begin
-    SymIdx := FindSym(UNames[I]);
-    If SymIdx > 0 Then
+    If UArgs[I].Kind = 1 Then
     Begin
-      GenLoadVar32(SymIdx);
-      EmitI('PUSH    EAX');
+      { Litteral numerique : empiler la valeur immediate }
+      EmitI('PUSH    ' + IntToStr_(UArgs[I].NumVal));
+    End
+    Else If UArgs[I].Kind = 2 Then
+    Begin
+      { Litteral chaine : empiler l adresse du literal }
+      EmitI('PUSH    OFFSET ' + AddStringLit(UArgs[I].StrVal));
     End
     Else
     Begin
-      { Tenter un nombre literal }
-      EmitComment('USING arg: ' + UNames[I] + ' (comme literal)');
-      EmitI('PUSH    0');
+      SymIdx := FindSym(UArgs[I].StrVal);
+      If SymIdx > 0 Then
+      Begin
+        GenLoadVar32(SymIdx);
+        EmitI('PUSH    EAX');
+      End
+      Else
+      Begin
+        EmitComment('USING arg inconnu: ' + UArgs[I].StrVal);
+        EmitI('PUSH    0');
+      End;
     End;
   End;
 
