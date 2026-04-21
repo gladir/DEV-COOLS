@@ -1005,6 +1005,9 @@ Procedure BinWriteObj; Forward;
 Procedure BinWriteExe; Forward;
 {$ENDIF}
 
+{ Forward pour appel depuis ParseWith (WITH Ada.Text_IO) }
+Procedure RegisterTextIOStubs; Forward;
+
 
 { ============================================================ }
 { FONCTIONS UTILITAIRES                                        }
@@ -2808,6 +2811,7 @@ Begin
   { --- Tampons runtime --- }
   EmitComment('--- tampons et variables runtime ---');
   EmitI(ADA_RT_PFX + 'NUMBUF    DB 16 DUP(0)');
+  EmitI(ADA_RT_PFX + 'INTBUF    DB 64 DUP(0)');
   EmitI(ADA_RT_PFX + 'STRBUF    DB 256 DUP(0)');
   EmitI(ADA_RT_PFX + 'INPUTBUF  DB 256 DUP(0)');
   EmitI(ADA_RT_PFX + 'CRLF_DATA DB 13, 10, 0');
@@ -3156,43 +3160,48 @@ Begin
   EmitI('RET');
 
   { ---- _ADART_READSTR : lire chaine depuis stdin ---- }
+  { Lit octet par octet jusqu a '\n' ou EOF pour ne pas consommer     }
+  { de caracteres au-dela de la fin de ligne (important pour que des   }
+  { appels Get successifs fonctionnent correctement sur un pipe).     }
   EmitBlank;
   EmitComment('--- _ADART_READSTR : lire chaine depuis stdin ---');
   EmitComment('Entree : EAX = pointeur vers buffer destination');
-  EmitComment('Sortie : chaine ASCIIZ dans le buffer');
+  EmitComment('Sortie : chaine ASCIIZ dans le buffer (sans CR/LF)');
   EmitLabel(ADA_RT_PFX + 'READSTR');
   EmitI('PUSH EBP');
   EmitI('MOV  EBP, ESP');
   EmitI('PUSH ESI');
   EmitI('PUSH EDI');
-  EmitI('MOV  EDI, EAX');           { EDI = buffer destination }
-  { ReadFile(hStdIn, @INPUTBUF, 255, @READCNT, 0) }
+  EmitI('MOV  EDI, EAX');              { EDI = buffer destination }
+  EmitI('MOV  ESI, 254');              { ESI = compteur max restant }
+  LblCopyLoop := NewLabel;
+  LblDone := NewLabel;
+  EmitLabel(LblCopyLoop);
+  EmitI('TEST ESI, ESI');
+  EmitI('JZ   ' + LblDone);
+  { ReadFile(hStdIn, @INPUTBUF, 1, @READCNT, 0) }
   EmitI('PUSH 0');
   EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'READCNT]');
   EmitI('PUSH EAX');
-  EmitI('PUSH 255');
+  EmitI('PUSH 1');
   EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'INPUTBUF]');
   EmitI('PUSH EAX');
   EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDIN]');
   EmitI('CALL _ReadFile@20');
-  { Copier INPUTBUF vers EDI, retirer CR/LF }
-  EmitI('LEA  ESI, DWORD PTR [' + ADA_RT_PFX + 'INPUTBUF]');
-  EmitI('MOV  ECX, DWORD PTR [' + ADA_RT_PFX + 'READCNT]');
-  LblCopyLoop := NewLabel;
-  LblDone := NewLabel;
-  EmitLabel(LblCopyLoop);
-  EmitI('TEST ECX, ECX');
-  EmitI('JZ   ' + LblDone);
-  EmitI('LODSB');                    { AL = [ESI], ESI++ }
-  EmitI('CMP  AL, 13');             { CR ? }
+  EmitI('MOV  EAX, DWORD PTR [' + ADA_RT_PFX + 'READCNT]');
+  EmitI('TEST EAX, EAX');
+  EmitI('JZ   ' + LblDone);           { EOF }
+  EmitI('MOVZX EAX, BYTE PTR [' + ADA_RT_PFX + 'INPUTBUF]');
+  EmitI('CMP  AL, 10');                { LF : fin de ligne }
   EmitI('JE   ' + LblDone);
-  EmitI('CMP  AL, 10');             { LF ? }
-  EmitI('JE   ' + LblDone);
-  EmitI('STOSB');                    { [EDI] = AL, EDI++ }
-  EmitI('DEC  ECX');
+  EmitI('CMP  AL, 13');                { CR : ignorer, continuer }
+  EmitI('JE   ' + LblCopyLoop);
+  EmitI('MOV  BYTE PTR [EDI], AL');
+  EmitI('INC  EDI');
+  EmitI('DEC  ESI');
   EmitI('JMP  ' + LblCopyLoop);
   EmitLabel(LblDone);
-  EmitI('MOV  BYTE PTR [EDI], 0');  { terminateur NUL }
+  EmitI('MOV  BYTE PTR [EDI], 0');     { terminateur NUL }
   EmitI('POP  EDI');
   EmitI('POP  ESI');
   EmitI('POP  EBP');
@@ -3295,6 +3304,9 @@ Begin
   EmitI('CALL _ExitProcess@4');
 
   { ---- _ADART_GET : lire un caractere depuis stdin ---- }
+  { Comportement Ada : lit une ligne complete et retourne son         }
+  { premier caractere (ou 0 si ligne vide). Ceci evite de laisser     }
+  { le '\n' dans la pile stdin entre appels successifs de Get/GetInt. }
   EmitBlank;
   EmitComment('--- _ADART_GET : lire un caractere ---');
   EmitComment('Entree : [ESP+4] = pointeur vers variable Character');
@@ -3303,16 +3315,10 @@ Begin
   EmitI('MOV  EBP, ESP');
   EmitI('PUSH EBX');
   EmitI('MOV  EBX, DWORD PTR [EBP+8]'); { EBX = ptr destination }
-  { ReadFile(hStdIn, @INPUTBUF, 1, @READCNT, 0) }
-  EmitI('PUSH 0');
-  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'READCNT]');
-  EmitI('PUSH EAX');
-  EmitI('PUSH 1');
-  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'INPUTBUF]');
-  EmitI('PUSH EAX');
-  EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDIN]');
-  EmitI('CALL _ReadFile@20');
-  EmitI('MOVZX EAX, BYTE PTR [' + ADA_RT_PFX + 'INPUTBUF]');
+  { READSTR dans INTBUF (buffer 64 octets dedie) }
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'INTBUF]');
+  EmitI('CALL ' + ADA_RT_PFX + 'READSTR');
+  EmitI('MOVZX EAX, BYTE PTR [' + ADA_RT_PFX + 'INTBUF]');
   EmitI('MOV  BYTE PTR [EBX], AL');
   EmitI('POP  EBX');
   EmitI('POP  EBP');
@@ -3333,6 +3339,78 @@ Begin
   EmitI('MOV  DWORD PTR [EBX], EAX');
   EmitI('POP  EBP');
   EmitI('RET  8');
+
+  { ---- _ADART_GETINT : lire un entier signe depuis stdin ---- }
+  { Entree : [ESP+4] = pointeur vers Integer destination         }
+  { Lit une ligne via READSTR puis la parse en decimal.           }
+  { En cas d erreur, stocke 0.                                    }
+  EmitBlank;
+  EmitComment('--- _ADART_GETINT : lire un entier ---');
+  EmitComment('Entree : [ESP+4] = pointeur vers Integer');
+  EmitLabel(ADA_RT_PFX + 'GETINT');
+  EmitI('PUSH EBP');
+  EmitI('MOV  EBP, ESP');
+  EmitI('PUSH EBX');
+  EmitI('PUSH ESI');
+  EmitI('PUSH EDI');
+  { Lire la ligne dans INTBUF (64 octets, READSTR tronque ensuite). }
+  EmitI('LEA  EAX, DWORD PTR [' + ADA_RT_PFX + 'INTBUF]');
+  EmitI('CALL ' + ADA_RT_PFX + 'READSTR');
+  EmitI('LEA  ESI, DWORD PTR [' + ADA_RT_PFX + 'INTBUF]');
+  { Sauter les espaces initiaux }
+  LblLoop := NewLabel;
+  LblDone := NewLabel;
+  EmitLabel(LblLoop);
+  EmitI('MOV  AL, BYTE PTR [ESI]');
+  EmitI('CMP  AL, 32');
+  EmitI('JE   ' + LblLoop + '_SK');
+  EmitI('CMP  AL, 9');
+  EmitI('JNE  ' + LblLoop + '_E');
+  EmitLabel(LblLoop + '_SK');
+  EmitI('INC  ESI');
+  EmitI('JMP  ' + LblLoop);
+  EmitLabel(LblLoop + '_E');
+  { Gestion du signe }
+  EmitI('XOR  EDI, EDI');        { EDI = flag negatif }
+  EmitI('CMP  AL, 45');          { - }
+  EmitI('JNE  ' + LblLoop + '_P');
+  EmitI('MOV  EDI, 1');
+  EmitI('INC  ESI');
+  EmitI('JMP  ' + LblLoop + '_D');
+  EmitLabel(LblLoop + '_P');
+  EmitI('CMP  AL, 43');          { + }
+  EmitI('JNE  ' + LblLoop + '_D');
+  EmitI('INC  ESI');
+  EmitLabel(LblLoop + '_D');
+  { Parser les chiffres }
+  EmitI('XOR  EAX, EAX');        { EAX = accumulateur }
+  EmitI('XOR  EBX, EBX');
+  LblLoop := NewLabel;
+  EmitLabel(LblLoop);
+  EmitI('MOV  BL, BYTE PTR [ESI]');
+  EmitI('CMP  BL, 48');
+  EmitI('JB   ' + LblDone);
+  EmitI('CMP  BL, 57');
+  EmitI('JA   ' + LblDone);
+  EmitI('IMUL EAX, 10');
+  EmitI('SUB  BL, 48');
+  EmitI('ADD  EAX, EBX');
+  EmitI('INC  ESI');
+  EmitI('JMP  ' + LblLoop);
+  EmitLabel(LblDone);
+  { Appliquer le signe }
+  EmitI('TEST EDI, EDI');
+  EmitI('JZ   ' + LblDone + '_S');
+  EmitI('NEG  EAX');
+  EmitLabel(LblDone + '_S');
+  { Stocker dans la destination }
+  EmitI('MOV  EBX, DWORD PTR [EBP+8]');
+  EmitI('MOV  DWORD PTR [EBX], EAX');
+  EmitI('POP  EDI');
+  EmitI('POP  ESI');
+  EmitI('POP  EBX');
+  EmitI('POP  EBP');
+  EmitI('RET  4');
 
   { ---- _ADART_FCREATE : creer un fichier en ecriture ---- }
   { Entree : [ESP+4] = pointeur vers nom de fichier ASCIIZ   }
@@ -7129,6 +7207,62 @@ Begin
   If CurTokType = TOK_SEMI Then Consume;
 End;
 
+{ ---- GenTextIOGetInline : Get (out X) type-dispatched -------- }
+{ Get(C : out Character) -> CALL _ADART_GET                      }
+{ Get(I : out Integer)   -> CALL _ADART_GETINT                   }
+Procedure GenTextIOGetInline;
+Var
+  VarName : TString;
+  Sym     : Integer;
+  TI      : Integer;
+  RtHelp  : TString;
+Begin
+  EmitComment('Ada.Text_IO.Get');
+  If CurTokType <> TOK_LPAREN Then
+  Begin
+    Error('`(` attendu apres Get');
+    Exit;
+  End;
+  Consume; { ( }
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    Error('Identifiant attendu pour Get');
+    ParseExpr;
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  VarName := CurTokStr;
+  Consume;
+  Sym := FindSym(VarName);
+  If Sym <= 0 Then
+  Begin
+    Error('Variable inconnue pour Get : ' + VarName);
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    Exit;
+  End;
+  Expect(TOK_RPAREN, '`)` attendu apres argument Get');
+
+  { Choisir le helper runtime selon le type }
+  TI := SymTab[Sym].TypeIdx;
+  If TI = TYPE_CHAR Then
+    RtHelp := ADA_RT_PFX + 'GET'
+  Else If (TI = TYPE_INT) Or (TI = TYPE_BOOL) Then
+    RtHelp := ADA_RT_PFX + 'GETINT'
+  Else
+  Begin
+    Warning('Ada.Text_IO.Get : type de variable non supporte, utilise Get caractere');
+    RtHelp := ADA_RT_PFX + 'GET';
+  End;
+
+  { Passer l adresse de la variable }
+  GenLoadAddr(Sym);
+  EmitI('PUSH EAX');
+  EmitI('CALL ' + RtHelp);
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
 { ---- GenTextIOGetLineInline : Get_Line (file or console) ----- }
 { Get_Line (Buf, Last)      -> console (stdin)                    }
 { Get_Line (F, Buf, Last)   -> fichier                            }
@@ -7259,7 +7393,7 @@ Begin
   { Nom court direct (si enregistre dans SubTab via GenTextIOStubs) }
   If (U = 'PUT') Or (U = 'PUT_LINE') Or (U = 'NEW_LINE') Or
      (U = 'SET_COL') Or (U = 'CREATE') Or (U = 'OPEN') Or
-     (U = 'CLOSE') Or (U = 'GET_LINE') Then
+     (U = 'CLOSE') Or (U = 'GET') Or (U = 'GET_LINE') Then
     IsTextIOProc := U;
 End;
 
@@ -7297,7 +7431,8 @@ Begin
     Begin GenTextIOCloseInline; Exit; End;
     If TIOProc = 'GET_LINE' Then
     Begin GenTextIOGetLineInline; Exit; End;
-    { GET : passer au traitement normal (stubs existants) }
+    If TIOProc = 'GET' Then
+    Begin GenTextIOGetInline; Exit; End;
   End;
 
   Sub := FindSub(ProcName);
@@ -8051,6 +8186,76 @@ End;
 { TODO 14 - PARSEUR : PACKAGE SPEC ET BODY                      }
 { ============================================================ }
 
+{ ---- RegisterTextIOStubs : enregistrer les subs Ada.Text_IO --- }
+{ Enregistre uniquement les signatures dans SubTab. Appele des la  }
+{ clause WITH pour que FindSub fonctionne lors de la compilation   }
+{ du programme utilisateur. Les bodies sont emis par                }
+{ GenTextIOStubs a la fin de la compilation.                        }
+Procedure RegisterTextIOStubs;
+Var Idx : Integer;
+Begin
+  Idx := FindSub('PUT');
+  If Idx = 0 Then Idx := AddSub('PUT', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward     := False;
+    SubTab[Idx].ParamCount    := 1;
+    SubTab[Idx].ParamNames[1] := 'ITEM';
+    SubTab[Idx].ParamTypes[1] := TYPE_STR;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+  End;
+  Idx := FindSub('PUT_LINE');
+  If Idx = 0 Then Idx := AddSub('PUT_LINE', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward     := False;
+    SubTab[Idx].ParamCount    := 1;
+    SubTab[Idx].ParamNames[1] := 'ITEM';
+    SubTab[Idx].ParamTypes[1] := TYPE_STR;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+  End;
+  Idx := FindSub('GET');
+  If Idx = 0 Then Idx := AddSub('GET', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward     := False;
+    SubTab[Idx].ParamCount    := 1;
+    SubTab[Idx].ParamNames[1] := 'ITEM';
+    SubTab[Idx].ParamTypes[1] := TYPE_CHAR;
+    SubTab[Idx].ParamModes[1] := PARAM_OUT;
+  End;
+  Idx := FindSub('GET_LINE');
+  If Idx = 0 Then Idx := AddSub('GET_LINE', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward     := False;
+    SubTab[Idx].ParamCount    := 2;
+    SubTab[Idx].ParamNames[1] := 'ITEM';
+    SubTab[Idx].ParamTypes[1] := TYPE_STR;
+    SubTab[Idx].ParamModes[1] := PARAM_OUT;
+    SubTab[Idx].ParamNames[2] := 'LAST';
+    SubTab[Idx].ParamTypes[2] := TYPE_INT;
+    SubTab[Idx].ParamModes[2] := PARAM_OUT;
+  End;
+  Idx := FindSub('NEW_LINE');
+  If Idx = 0 Then Idx := AddSub('NEW_LINE', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].ParamCount := 0;
+  End;
+  Idx := FindSub('SET_COL');
+  If Idx = 0 Then Idx := AddSub('SET_COL', False, TYPE_VOID);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward     := False;
+    SubTab[Idx].ParamCount    := 1;
+    SubTab[Idx].ParamNames[1] := 'TO';
+    SubTab[Idx].ParamTypes[1] := TYPE_INT;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+  End;
+End;
+
 { ---- GenTextIOStubs : generer les stubs Ada.Text_IO ---------- }
 { Enregistre Put, Put_Line, Get, Get_Line, New_Line, Set_Col     }
 { dans SubTab en tant que procedures standards.                   }
@@ -8388,6 +8593,10 @@ Begin
   PreRegFloatFn('SINH');
   PreRegFloatFn('COSH');
   PreRegFloatFn('TANH');
+
+  { Ada.Text_IO / Integer_Text_IO : enregistrer les signatures pour     }
+  { que FindSub trouve Get/Get_Line/Put/... dans le code utilisateur.   }
+  RegisterTextIOStubs;
 End;
 
 { ---- ParsePackageSpec : analyser une specification de package -- }
