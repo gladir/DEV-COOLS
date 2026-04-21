@@ -968,6 +968,7 @@ Var
 
   { TODO 24 : nom de la procedure principale Ada }
   MainProcName : TString;    { nom de la procedure de library unit   }
+  FirstUserSubIdx : Integer; { index du 1er sous-prog user (apres built-ins) }
 
 Const
 {$IFDEF FPC}
@@ -2465,41 +2466,81 @@ Begin
   AsmOpened    := False;
 End;
 
+{ ---- Buffer d emission differee (pour initialisations locales) ---- }
+{ Pour supporter les initialisations non-constantes des variables     }
+{ locales (ex: X : Integer := Abs_Int(A);) sans perturber la mise en  }
+{ page du code (le label de la procedure n est emis qu apres la       }
+{ partie declarative), on redirige les emissions vers un buffer       }
+{ lorsque DeferEmit est vrai. Le buffer est rejoue apres le prologue. }
+Const
+  MAX_DEFER_LINES = 2000;
+Var
+  DeferEmit       : Boolean;
+  DeferBufCount   : Integer;
+  DeferBuf        : Array[1..MAX_DEFER_LINES] Of TString;
+
+Procedure ResetDeferBuf;
+Begin
+  DeferBufCount := 0;
+  DeferEmit     := False;
+End;
+
+Procedure DeferAdd(Const S : TString);
+Begin
+  If DeferBufCount >= MAX_DEFER_LINES Then Exit;
+  Inc(DeferBufCount);
+  DeferBuf[DeferBufCount] := S;
+End;
+
+{ Emet toutes les lignes bufferisees vers le fichier ASM }
+Procedure FlushDeferBuf;
+Var I : Integer;
+Begin
+  For I := 1 To DeferBufCount Do
+    WriteLn(OutF, DeferBuf[I]);
+  DeferBufCount := 0;
+End;
+
 { ---- Primitives d emission ASM ------------------------------- }
 
 { Emet une ligne brute dans le fichier de sortie }
 Procedure Emit(Const S : TString);
 Begin
   If Not GenEnabled Then Exit;
-  WriteLn(OutF, S);
+  If DeferEmit Then DeferAdd(S)
+  Else WriteLn(OutF, S);
 End;
 
 { Emet une instruction indentee (tabulation) }
 Procedure EmitI(Const S : TString);
 Begin
   If Not GenEnabled Then Exit;
-  WriteLn(OutF, #9 + S);
+  If DeferEmit Then DeferAdd(#9 + S)
+  Else WriteLn(OutF, #9 + S);
 End;
 
 { Emet un label suivi de ':' }
 Procedure EmitLabel(Const Lbl : TString);
 Begin
   If Not GenEnabled Then Exit;
-  WriteLn(OutF, Lbl + ':');
+  If DeferEmit Then DeferAdd(Lbl + ':')
+  Else WriteLn(OutF, Lbl + ':');
 End;
 
 { Emet un commentaire ASM }
 Procedure EmitComment(Const S : TString);
 Begin
   If Not GenEnabled Then Exit;
-  WriteLn(OutF, '; ' + S);
+  If DeferEmit Then DeferAdd('; ' + S)
+  Else WriteLn(OutF, '; ' + S);
 End;
 
 { Emet une ligne vide }
 Procedure EmitBlank;
 Begin
   If Not GenEnabled Then Exit;
-  WriteLn(OutF, '');
+  If DeferEmit Then DeferAdd('')
+  Else WriteLn(OutF, '');
 End;
 
 { ---- NewLabel : generer un label interne unique -------------- }
@@ -3831,6 +3872,34 @@ Begin
     EmitI('SUB  ESP, ' + IntToStr_(FrameSize));
 End;
 
+{ ---- EmitLocalInits : emettre les initialisations des variables ---- }
+{ locales du scope courant. Pour chaque STORE_AUTO avec HasInit,        }
+{ emet MOV DWORD PTR [EBP+offset], InitNum.                              }
+{ Appele apres GenPrologue dans le corps d une procedure/fonction.       }
+Procedure EmitLocalInits;
+Var
+  I      : Integer;
+  IsByte : Boolean;
+  TI     : Integer;
+Begin
+  For I := 1 To SymCount Do
+  Begin
+    If (SymTab[I].ScopeLev = ScopeTop) And
+       (SymTab[I].StoreClass = STORE_AUTO) And
+       SymTab[I].HasInit Then
+    Begin
+      TI := SymTab[I].TypeIdx;
+      IsByte := (TI = TYPE_CHAR) Or (TI = TYPE_BOOL);
+      If IsByte Then
+        EmitI('MOV  BYTE PTR [EBP' + BpOff32(SymTab[I].BpOffset) + '], ' +
+              IntToStr_(SymTab[I].InitNum And $FF))
+      Else
+        EmitI('MOV  DWORD PTR [EBP' + BpOff32(SymTab[I].BpOffset) + '], ' +
+              IntToStr_(SymTab[I].InitNum));
+    End;
+  End;
+End;
+
 { ---- GenEpilogue : epilogue de sous-programme 32 bits --------- }
 { MOV ESP, EBP / POP EBP / RET param_bytes (STDCALL callee-cleanup)}
 Procedure GenEpilogue(FrameSize : Integer; ParamBytes : Integer);
@@ -4023,7 +4092,34 @@ Begin
     Nm := CurTokStr;
     Consume;
 
-    { Attribut : Nom'FIRST | LAST | LENGTH | SIZE }
+    { Argument nomme dans un appel : Nom => valeur                  }
+    { (ex: Put(X, Fore => 1, Aft => 6, Exp => 0))                    }
+    { On ignore le nom de parametre et on parse la valeur.            }
+    If CurTokType = TOK_ARROW Then
+    Begin
+      Consume; { consomme => }
+      ParseExpr;
+      Exit;
+    End;
+
+    { Conversion de type : NomType(expr) ou NomType est un type       }
+    { built-in entier (Integer, Long_Long_Integer, Natural, ...).      }
+    { Traite comme une identite (valeur inchangee, code verifie en Ada). }
+    If (CurTokType = TOK_LPAREN) And
+       ((Nm = 'INTEGER') Or (Nm = 'NATURAL') Or (Nm = 'POSITIVE') Or
+        (Nm = 'LONG_INTEGER') Or (Nm = 'LONG_LONG_INTEGER') Or
+        (Nm = 'SHORT_INTEGER') Or (Nm = 'SHORT_SHORT_INTEGER') Or
+        (Nm = 'COUNT') Or (Nm = 'POSITIVE_COUNT') Or (Nm = 'FIELD') Or
+        (Nm = 'FLOAT') Or (Nm = 'LONG_FLOAT') Or (Nm = 'LONG_LONG_FLOAT') Or
+        (Nm = 'SHORT_FLOAT') Or (Nm = 'BOOLEAN') Or (Nm = 'CHARACTER')) Then
+    Begin
+      Consume; { ( }
+      ParseExpr;
+      Expect(TOK_RPAREN, '`)` attendu apres conversion de type');
+      Exit;
+    End;
+
+    { Attribut : Nom'FIRST | LAST | LENGTH | SIZE | IMAGE | VAL | POS }
     If CurTokType = TOK_TICK Then
     Begin
       Consume;
@@ -4034,8 +4130,50 @@ Begin
         Else If CurTokStr = 'LAST'   Then AI := 2
         Else If CurTokStr = 'LENGTH' Then AI := 3
         Else If CurTokStr = 'SIZE'   Then AI := 4
+        Else If CurTokStr = 'IMAGE'  Then AI := 5
+        Else If CurTokStr = 'VAL'    Then AI := 6
+        Else If CurTokStr = 'POS'    Then AI := 7
+        Else If CurTokStr = 'SUCC'   Then AI := 8
+        Else If CurTokStr = 'PRED'   Then AI := 9
         Else Warning('Attribut Ada inconnu : ' + CurTokStr);
         Consume;
+      End;
+      { --- Attributs fonctionnels : 'IMAGE, 'VAL, 'POS, 'SUCC, 'PRED (T'Attr(X)) --- }
+      If (AI >= 5) And (AI <= 9) Then
+      Begin
+        TI := FindType(Nm);
+        { Si TI = 0, c'est une variable ou type built-in (Integer, Long_Long_Integer, ...) }
+        If CurTokType = TOK_LPAREN Then
+        Begin
+          Consume;
+          ParseExpr;       { EAX = valeur }
+          Expect(TOK_RPAREN, '`)` attendu apres argument d attribut');
+        End
+        Else
+        Begin
+          { Forme Var'Image : charger la variable comme valeur }
+          Sym := FindSym(Nm);
+          If Sym > 0 Then
+            GenLoadVar(Sym)
+          Else
+          Begin
+            { Nom = type built-in sans argument : impossible }
+            Error('Argument manquant pour attribut ' + Nm + '''Image');
+            EmitI('XOR  EAX, EAX');
+          End;
+        End;
+        Case AI Of
+          5 : Begin { 'IMAGE : convertir EAX en chaine ASCIIZ (pointeur) }
+                EmitI('PUSH EAX');
+                EmitI('CALL ' + ADA_RT_PFX + 'NUMTOSTR');
+                { EAX = pointeur vers NUMBUF (chaine) }
+              End;
+          6 : ; { 'VAL(N) : identite (enum represente par int 0-based) }
+          7 : ; { 'POS(X) : identite                                     }
+          8 : EmitI('INC  EAX');  { 'SUCC(X) = X + 1 }
+          9 : EmitI('DEC  EAX');  { 'PRED(X) = X - 1 }
+        End;
+        Exit;
       End;
       TI := FindType(Nm);
       If TI > 0 Then
@@ -4425,35 +4563,68 @@ Begin
     ParseRelation;
 End;
 
-{ ---- ParseAnd : AND (bit ou logique) ------------------------- }
+{ ---- ParseAnd : AND / AND THEN (bit, logique, court-circuit) --- }
 Procedure ParseAnd;
+Var LblFalse : TString;
 Begin
   ParseNot;
   While (CurTokType = TOK_IDENT) And (CurTokKw = KW_AND) Do
   Begin
-    GenPushEAX;
     Consume;
-    ParseNot;
-    EmitI('POP  EBX');
-    EmitI('AND  EAX, EBX');
+    { Detecter AND THEN (court-circuit) }
+    If (CurTokType = TOK_IDENT) And (CurTokKw = KW_THEN) Then
+    Begin
+      Consume;
+      LblFalse := NewLabel;
+      EmitI('TEST EAX, EAX');
+      EmitI('JE   ' + LblFalse);
+      ParseNot;
+      EmitI('TEST EAX, EAX');
+      EmitI('JE   ' + LblFalse);
+      EmitI('MOV  EAX, 1');
+      EmitLabel(LblFalse);
+    End
+    Else
+    Begin
+      GenPushEAX;
+      ParseNot;
+      EmitI('POP  EBX');
+      EmitI('AND  EAX, EBX');
+    End;
   End;
 End;
 
-{ ---- ParseOr : OR et XOR (bit ou logique) -------------------- }
+{ ---- ParseOr : OR / OR ELSE / XOR (bit, logique, court-circuit) }
 Procedure ParseOr;
-Var IsXor : Boolean;
+Var IsXor : Boolean; LblTrue : TString;
 Begin
   ParseAnd;
   While (CurTokType = TOK_IDENT) And
         ((CurTokKw = KW_OR) Or (CurTokKw = KW_XOR)) Do
   Begin
-    GenPushEAX;
     IsXor := (CurTokKw = KW_XOR);
     Consume;
-    ParseAnd;
-    EmitI('POP  EBX');
-    If IsXor Then EmitI('XOR  EAX, EBX')
-    Else          EmitI('OR   EAX, EBX');
+    { Detecter OR ELSE (court-circuit) }
+    If (Not IsXor) And (CurTokType = TOK_IDENT) And (CurTokKw = KW_ELSE) Then
+    Begin
+      Consume;
+      LblTrue := NewLabel;
+      EmitI('TEST EAX, EAX');
+      EmitI('JNE  ' + LblTrue);
+      ParseAnd;
+      EmitI('TEST EAX, EAX');
+      EmitI('JE   ' + LblTrue);
+      EmitI('MOV  EAX, 1');
+      EmitLabel(LblTrue);
+    End
+    Else
+    Begin
+      GenPushEAX;
+      ParseAnd;
+      EmitI('POP  EBX');
+      If IsXor Then EmitI('XOR  EAX, EBX')
+      Else          EmitI('OR   EAX, EBX');
+    End;
   End;
 End;
 
@@ -4622,13 +4793,27 @@ Begin
   End;
   Nm := StrUpperCase(CurTokStr);
   Consume;
-  If Nm = 'INTEGER'   Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
-  If Nm = 'FLOAT'     Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
-  If Nm = 'BOOLEAN'   Then Begin ParseTypeRef := TYPE_BOOL;  Exit; End;
-  If Nm = 'CHARACTER' Then Begin ParseTypeRef := TYPE_CHAR;  Exit; End;
-  If Nm = 'STRING'    Then Begin ParseTypeRef := TYPE_STR;   Exit; End;
-  If Nm = 'NATURAL'   Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
-  If Nm = 'POSITIVE'  Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'INTEGER'           Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'FLOAT'             Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
+  If Nm = 'BOOLEAN'           Then Begin ParseTypeRef := TYPE_BOOL;  Exit; End;
+  If Nm = 'CHARACTER'         Then Begin ParseTypeRef := TYPE_CHAR;  Exit; End;
+  If Nm = 'STRING'            Then Begin ParseTypeRef := TYPE_STR;   Exit; End;
+  If Nm = 'NATURAL'           Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'POSITIVE'          Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  { Types entiers predefinis Ada 95 (built-in, alias sur INTEGER 32 bits) }
+  If Nm = 'LONG_INTEGER'      Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'LONG_LONG_INTEGER' Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'SHORT_INTEGER'     Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'SHORT_SHORT_INTEGER' Then Begin ParseTypeRef := TYPE_INT; Exit; End;
+  { Types flottants predefinis Ada 95 (built-in, alias sur FLOAT) }
+  If Nm = 'LONG_FLOAT'        Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
+  If Nm = 'LONG_LONG_FLOAT'   Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
+  If Nm = 'SHORT_FLOAT'       Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
+  If Nm = 'DURATION'          Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
+  { Sous-types Ada.Text_IO (Count, Positive_Count, Field) }
+  If Nm = 'COUNT'             Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'POSITIVE_COUNT'    Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+  If Nm = 'FIELD'             Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
   Ti := FindType(Nm);
   If Ti > 0 Then Begin ParseTypeRef := Ti; Exit; End;
   Error('Type inconnu : ' + Nm);
@@ -5226,7 +5411,20 @@ Begin
   Begin
     Consume;
     HasInit_  := True;
+    { Si l init n est pas une expression constante, on redirige les   }
+    { emissions ASM vers un buffer differe (rejoue apres le prologue). }
+    { Les symboles des variables courantes ne sont crees qu en Etape 7, }
+    { donc pour un init complexe dependant d une seule variable, on     }
+    { bufferise le code puis on ajoute un MOV [local], EAX apres.        }
+    If ScopeTop > 0 Then  { local only - global uses .DATA init }
+      DeferEmit := True;
     GotConst  := ParseConstExpr32(InitVal);
+    If DeferEmit Then
+    Begin
+      DeferEmit := False;
+      { Si l init n etait pas constante, on a du code dans DeferBuf.    }
+      { On marquera les symboles pour re-emettre un MOV après prologue. }
+    End;
   End;
 
   { ===== Etape 7 : creer les symboles ===== }
@@ -5274,6 +5472,15 @@ Begin
     If SC = STORE_AUTO Then
     Begin
       SymTab[SymIdx].BpOffset := AllocLocal(Sz);
+      { Si init non-constante : code evalue est dans DeferBuf,          }
+      { ajouter un MOV [EBP+Off], EAX pour stocker la valeur.            }
+      If HasInit_ And (Not GotConst) And (I = 1) Then
+      Begin
+        DeferAdd(#9 + 'MOV  DWORD PTR [EBP' +
+                BpOff32(SymTab[SymIdx].BpOffset) + '], EAX');
+        { Desactiver l init constante sinon EmitLocalInits l ecraserait }
+        SymTab[SymIdx].HasInit := False;
+      End;
     End;
 
     { ===== Etape 10 : emettre .DATA pour variable globale ===== }
@@ -6258,6 +6465,7 @@ Function DetectArgTypeForPut : Integer;
 Var
   Sym : Integer;
   TI  : Integer;
+  U   : TString;
 Begin
   Case CurTokType Of
     TOK_INTEGER : DetectArgTypeForPut := TYPE_INT;
@@ -6269,6 +6477,25 @@ Begin
           DetectArgTypeForPut := TYPE_BOOL
         Else
         Begin
+          U := StrUpperCase(CurTokStr);
+          { Heuristique : si le nom est un type (built-in entier/enum),      }
+          { probablement TypeName'Image(X) qui retourne une chaine.           }
+          If (U = 'INTEGER') Or (U = 'LONG_INTEGER') Or
+             (U = 'LONG_LONG_INTEGER') Or (U = 'SHORT_INTEGER') Or
+             (U = 'NATURAL') Or (U = 'POSITIVE') Or
+             (U = 'SHORT_SHORT_INTEGER') Or
+             (U = 'FLOAT') Or (U = 'LONG_FLOAT') Or (U = 'LONG_LONG_FLOAT') Or
+             (U = 'SHORT_FLOAT') Or (U = 'BOOLEAN') Or (U = 'CHARACTER') Then
+          Begin
+            DetectArgTypeForPut := TYPE_STR;
+            Exit;
+          End;
+          { Sinon, chercher un type utilisateur (enum, range, ...) }
+          If FindType(U) > 0 Then
+          Begin
+            DetectArgTypeForPut := TYPE_STR;
+            Exit;
+          End;
           Sym := FindSym(CurTokStr);
           If Sym > 0 Then
           Begin
@@ -6342,6 +6569,49 @@ Begin
 
     If CurTokType = TOK_COMMA Then
     Begin
+      { Desambiguation : si le premier argument est un fichier (FILE_TYPE),   }
+      { c est Put(File, Value). Sinon, c est Put(Value, Width) d Integer_Text_IO }
+      { ou Float_Text_IO (ex: Put(42, 4)) et on doit lire et ignorer Width.     }
+      If (ArgTy = TYPE_INT) Or (ArgTy = TYPE_BOOL) Or (ArgTy = TYPE_CHAR) Or
+         (ArgTy = TYPE_STR) Or (ArgTy = TYPE_FLOAT) Then
+      Begin
+        { ---- Mode console Integer_Text_IO/Float_Text_IO : Put(Value, Width) ---- }
+        { EAX = valeur a afficher                                                   }
+        EmitI('PUSH EAX');   { Sauver la valeur }
+        Consume;             { Consommer la virgule }
+        { Lire Width (entier) et l ignorer pour la sortie console.                  }
+        { Les arguments nommes (Fore => n, Aft => n, ...) sont geres transparemment  }
+        { par ParseAtom qui les reconnait via TOK_ARROW.                             }
+        ParseExpr;
+        While CurTokType = TOK_COMMA Do
+        Begin
+          Consume;
+          ParseExpr;
+        End;
+        Expect(TOK_RPAREN, '`)` attendu apres arguments Put');
+        EmitI('POP  EAX');   { Recuperer la valeur }
+        Case ArgTy Of
+          TYPE_STR :
+            Begin
+              EmitI('PUSH EAX');
+              EmitI('CALL ' + ADA_RT_PFX + 'PRINT');
+            End;
+          TYPE_CHAR :
+            Begin
+              EmitI('PUSH EAX');
+              EmitI('CALL ' + ADA_RT_PFX + 'PRINTCHR');
+            End;
+        Else
+          Begin
+            EmitI('PUSH EAX');
+            EmitI('CALL ' + ADA_RT_PFX + 'PRINTINT');
+          End;
+        End;
+        If IsLine Then
+          EmitI('CALL ' + ADA_RT_PFX + 'CRLF');
+      End
+      Else
+      Begin
       { ---- Mode fichier : Put(F, Value) / Put_Line(F, Value) ---- }
       { EAX = handle du fichier                                      }
       EmitI('PUSH EAX');   { Sauver handle sur la pile }
@@ -6364,6 +6634,7 @@ Begin
           EmitI('PUSH EAX');  { push valeur }
           EmitI('CALL ' + ADA_RT_PFX + 'FPUT_INT');
         End;
+      End;
       End;
     End
     Else
@@ -7240,6 +7511,9 @@ Begin
   LblExit_ := NewLabel;
   SetExitLabel(LblExit_);
 
+  { Reinitialiser le buffer d emission differee pour les inits locaux }
+  ResetDeferBuf;
+
   { 3. Partie declarative (entre IS et BEGIN) }
   ParseDeclarativePart;
 
@@ -7257,6 +7531,9 @@ Begin
   { NB : les variables locales ont deja ete allouees par ParseObjectDecl }
   FrameSz := -ScopeStack[ScopeTop].BpTop;
   GenPrologue(FrameSz);
+  EmitLocalInits;
+  { Rejouer le code des initialisations non-constantes }
+  FlushDeferBuf;
 
   { Preparer le label d exception si EXCEPTION sera present }
   LblExcept := NewExLabel;
@@ -7325,6 +7602,9 @@ Begin
   LblExit_ := NewLabel;
   SetExitLabel(LblExit_);
 
+  { Reinitialiser le buffer d emission differee }
+  ResetDeferBuf;
+
   { 3. Partie declarative (entre IS et BEGIN) }
   ParseDeclarativePart;
 
@@ -7338,6 +7618,9 @@ Begin
 
   FrameSz := -ScopeStack[ScopeTop].BpTop;
   GenPrologue(FrameSz);
+  EmitLocalInits;
+  { Rejouer le code des initialisations non-constantes }
+  FlushDeferBuf;
 
   { Valeur de retour par defaut : EAX = 0 }
   EmitI('XOR  EAX, EAX');
@@ -7639,6 +7922,111 @@ Begin
     EmitI('POP  EBP');
     EmitI('RET  4');
   End;
+End;
+
+{ ---- GenMathStub : generer un stub de fonction mathematique 1 arg }
+{ Enregistre une fonction F(X : Float) RETURN Float dans SubTab et }
+{ genere un corps qui retourne 0 (support flottant non complet).    }
+Procedure GenMathStub(Const Name : TString);
+Var Idx : Integer;
+Begin
+  Idx := FindSub(Name);
+  If Idx = 0 Then
+    Idx := AddSub(Name, False, TYPE_FLOAT);
+  If Idx > 0 Then
+  Begin
+    SubTab[Idx].IsForward  := False;
+    SubTab[Idx].ParamCount := 1;
+    SubTab[Idx].ParamNames[1] := 'X';
+    SubTab[Idx].ParamTypes[1] := TYPE_FLOAT;
+    SubTab[Idx].ParamModes[1] := PARAM_IN;
+    EmitBlank;
+    EmitComment('--- Ada.Numerics.Elementary_Functions.' + Name +
+                ' (stub float non implemente, retourne 0) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('XOR  EAX, EAX');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+End;
+
+{ ---- GenMathStubs : generer les stubs Ada.Numerics.Elementary_Functions }
+{ Les fonctions sont des stubs qui retournent 0 car le support flottant   }
+{ complet (FPU x87) n est pas encore implemente dans ce compilateur.       }
+Procedure GenMathStubs;
+Begin
+  GenMathStub('SQRT');
+  GenMathStub('SIN');
+  GenMathStub('COS');
+  GenMathStub('TAN');
+  GenMathStub('ARCSIN');
+  GenMathStub('ARCCOS');
+  GenMathStub('ARCTAN');
+  GenMathStub('EXP');
+  GenMathStub('LOG');
+  GenMathStub('SINH');
+  GenMathStub('COSH');
+  GenMathStub('TANH');
+End;
+
+{ ---- GenFloatTextIOStubs : generer les stubs Ada.Float_Text_IO --------- }
+{ Enregistre Put(Float, Fore, Aft, Exp) comme stub non-bloquant.           }
+{ Le support flottant reel n est pas encore implemente, le stub consomme   }
+{ ses arguments et ne produit aucune sortie.                                }
+Procedure GenFloatTextIOStubs;
+Var Idx : Integer;
+Begin
+  { Float_Text_IO.Put est deja intercepte par GenTextIOPutInline si le nom  }
+  { court PUT est utilise. On enregistre quand meme un symbole pour une     }
+  { eventuelle qualification explicite (Ada.Float_Text_IO.Put).              }
+  Idx := FindSub('FLOAT_TEXT_IO_PUT');
+  If Idx = 0 Then
+    Idx := AddSub('FLOAT_TEXT_IO_PUT', False, TYPE_VOID);
+End;
+
+{ ---- PreRegisterStdLib : pre-enregistrer les modules standard built-in ---- }
+{ Enregistre les sous-programmes standard Ada (Sqrt, Sin, Cos, ...) dans      }
+{ SubTab AVANT le parsing, de sorte que les appels puissent etre resolus      }
+{ par FindSub. Les corps sont emis plus tard (EmitRuntimeHelpers phase).      }
+{ Cette procedure rend les modules suivants "built-in" dans le compilateur :   }
+{   - Ada.Numerics.Elementary_Functions (Sqrt, Sin, Cos, Tan, ...)            }
+{   - Ada.Float_Text_IO (Put)                                                  }
+{ Les modules Ada.Text_IO et Ada.Integer_Text_IO sont geres par intercept      }
+{ de noms (IsTextIOProc) dans ParseProcedureCall.                              }
+Procedure PreRegisterStdLib;
+
+  Procedure PreRegFloatFn(Const Name : TString);
+  Var Idx : Integer;
+  Begin
+    If FindSub(Name) > 0 Then Exit;
+    Idx := AddSub(Name, True, TYPE_FLOAT);
+    If Idx > 0 Then
+    Begin
+      SubTab[Idx].IsForward  := False;
+      SubTab[Idx].IsFunction := True;
+      SubTab[Idx].ParamCount := 1;
+      SubTab[Idx].ParamNames[1] := 'X';
+      SubTab[Idx].ParamTypes[1] := TYPE_FLOAT;
+      SubTab[Idx].ParamModes[1] := PARAM_IN;
+    End;
+  End;
+
+Begin
+  { Ada.Numerics.Elementary_Functions - fonctions trigo/hyperboliques }
+  PreRegFloatFn('SQRT');
+  PreRegFloatFn('SIN');
+  PreRegFloatFn('COS');
+  PreRegFloatFn('TAN');
+  PreRegFloatFn('ARCSIN');
+  PreRegFloatFn('ARCCOS');
+  PreRegFloatFn('ARCTAN');
+  PreRegFloatFn('EXP');
+  PreRegFloatFn('LOG');
+  PreRegFloatFn('SINH');
+  PreRegFloatFn('COSH');
+  PreRegFloatFn('TANH');
 End;
 
 { ---- ParsePackageSpec : analyser une specification de package -- }
@@ -10183,6 +10571,7 @@ Begin
   InitScopeStack;
   InitStrTable;
   MainProcName := '';
+  FirstUserSubIdx := 1;
   LexInit;
   If Opts.DebugMode Then
   Begin
@@ -10202,6 +10591,11 @@ Begin
     AsmFile := ReplaceExt(Opts.SrcFile, '.asm');
     EmitOpen(AsmFile);
     EmitHeader;
+
+    { Pre-enregistrer les modules standard built-in (math, Float_Text_IO) }
+    { pour que les appels puissent etre resolus durant le parsing.         }
+    PreRegisterStdLib;
+    FirstUserSubIdx := SubCount + 1;
 
     ParseWithUseSection;
     { TODO 10 : boucle TYPE/SUBTYPE }
@@ -10238,8 +10632,11 @@ Begin
     End;
 
     { TODO 24 : determiner le nom de la procedure principale }
-    { La premiere procedure enregistree avec un body est la library unit }
-    If SubCount > 0 Then
+    { La premiere procedure USER (apres les built-ins pre-enregistres) }
+    { est la library unit.                                              }
+    If SubCount >= FirstUserSubIdx Then
+      MainProcName := SubTab[FirstUserSubIdx].Name
+    Else If SubCount > 0 Then
       MainProcName := SubTab[1].Name;
 
     { TODO 14 : boucle PACKAGE SPEC / PACKAGE BODY }
@@ -10272,6 +10669,8 @@ Begin
     { TODO 24 : emettre point d entree Win32 et helpers runtime }
     EmitEntryPoint;
     GenTextIOStubs;
+    GenMathStubs;
+    GenFloatTextIOStubs;
     EmitRuntimeHelpers;
 
     { TODO 23 : emettre segment .DATA et fermer le fichier }
