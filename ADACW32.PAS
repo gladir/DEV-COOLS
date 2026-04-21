@@ -2309,7 +2309,9 @@ Begin
   Inc(ScopeTop);
   ScopeStack[ScopeTop].Kind      := Kind;
   ScopeStack[ScopeTop].SubIdx    := SubIdx;
-  ScopeStack[ScopeTop].BpTop     := 0;  { compte en negatif pour AUTO }
+  ScopeStack[ScopeTop].BpTop     := 0;  { compte en negatif pour AUTO.      }
+  { Les blocs imbriques partagent le cadre du sous-programme englobant via }
+  { AllocLocal qui alloue directement sur le scope SK_PROC/SK_FUNC/SK_PKG. }
   ScopeStack[ScopeTop].SymStart  := SymCount + 1;
   ScopeStack[ScopeTop].LblExit   := '';
   ScopeStack[ScopeTop].LblCont   := '';
@@ -2393,14 +2395,22 @@ End;
 { Aligne sur 4 octets (pile 32 bits).                              }
 { Retourne l offset EBP negatif ou 0 si scope global.              }
 Function AllocLocal(Size : Integer) : Integer;
-Var Aligned : Integer;
+Var Aligned, Lev : Integer;
 Begin
   If ScopeTop <= 0 Then
   Begin AllocLocal := 0; Exit; End;
   Aligned := AlignDWord(Size);
-  ScopeStack[ScopeTop].BpTop :=
-    ScopeStack[ScopeTop].BpTop - Aligned;
-  AllocLocal := ScopeStack[ScopeTop].BpTop;
+  { Localiser le cadre de procedure/fonction englobant : les scopes        }
+  { imbriques (SK_BLOCK, SK_LOOP, SK_EXCEPT) ne possedent pas leur propre  }
+  { cadre de pile et partagent celui du sous-programme.                   }
+  Lev := ScopeTop;
+  While (Lev > 1) And
+        (ScopeStack[Lev].Kind <> SK_PROC) And
+        (ScopeStack[Lev].Kind <> SK_FUNC) And
+        (ScopeStack[Lev].Kind <> SK_PACKAGE) Do
+    Dec(Lev);
+  ScopeStack[Lev].BpTop := ScopeStack[Lev].BpTop - Aligned;
+  AllocLocal := ScopeStack[Lev].BpTop;
 End;
 
 { ---- Gestion des labels de boucle et de sortie --------------- }
@@ -2486,12 +2496,39 @@ End;
 { page du code (le label de la procedure n est emis qu apres la       }
 { partie declarative), on redirige les emissions vers un buffer       }
 { lorsque DeferEmit est vrai. Le buffer est rejoue apres le prologue. }
+{ Un second buffer (BodyBuf) contient le corps complet + epilogue ;   }
+{ il est flushe apres emission du prologue avec la taille definitive. }
 Const
   MAX_DEFER_LINES = 2000;
+  MAX_BODY_LINES  = 20000;
 Var
   DeferEmit       : Boolean;
   DeferBufCount   : Integer;
   DeferBuf        : Array[1..MAX_DEFER_LINES] Of TString;
+  BodyEmit        : Boolean;
+  BodyBufCount    : Integer;
+  BodyBuf         : Array[1..MAX_BODY_LINES] Of TString;
+
+Procedure ResetBodyBuf;
+Begin
+  BodyBufCount := 0;
+  BodyEmit     := False;
+End;
+
+Procedure BodyAdd(Const S : TString);
+Begin
+  If BodyBufCount >= MAX_BODY_LINES Then Exit;
+  Inc(BodyBufCount);
+  BodyBuf[BodyBufCount] := S;
+End;
+
+Procedure FlushBodyBuf;
+Var I : Integer;
+Begin
+  For I := 1 To BodyBufCount Do
+    WriteLn(OutF, BodyBuf[I]);
+  BodyBufCount := 0;
+End;
 
 Procedure ResetDeferBuf;
 Begin
@@ -2506,12 +2543,13 @@ Begin
   DeferBuf[DeferBufCount] := S;
 End;
 
-{ Emet toutes les lignes bufferisees vers le fichier ASM }
+{ Emet toutes les lignes bufferisees vers le fichier ASM (ou BodyBuf) }
 Procedure FlushDeferBuf;
 Var I : Integer;
 Begin
   For I := 1 To DeferBufCount Do
-    WriteLn(OutF, DeferBuf[I]);
+    If BodyEmit Then BodyAdd(DeferBuf[I])
+    Else WriteLn(OutF, DeferBuf[I]);
   DeferBufCount := 0;
 End;
 
@@ -2522,6 +2560,7 @@ Procedure Emit(Const S : TString);
 Begin
   If Not GenEnabled Then Exit;
   If DeferEmit Then DeferAdd(S)
+  Else If BodyEmit Then BodyAdd(S)
   Else WriteLn(OutF, S);
 End;
 
@@ -2530,6 +2569,7 @@ Procedure EmitI(Const S : TString);
 Begin
   If Not GenEnabled Then Exit;
   If DeferEmit Then DeferAdd(#9 + S)
+  Else If BodyEmit Then BodyAdd(#9 + S)
   Else WriteLn(OutF, #9 + S);
 End;
 
@@ -2538,6 +2578,7 @@ Procedure EmitLabel(Const Lbl : TString);
 Begin
   If Not GenEnabled Then Exit;
   If DeferEmit Then DeferAdd(Lbl + ':')
+  Else If BodyEmit Then BodyAdd(Lbl + ':')
   Else WriteLn(OutF, Lbl + ':');
 End;
 
@@ -2546,6 +2587,7 @@ Procedure EmitComment(Const S : TString);
 Begin
   If Not GenEnabled Then Exit;
   If DeferEmit Then DeferAdd('; ' + S)
+  Else If BodyEmit Then BodyAdd('; ' + S)
   Else WriteLn(OutF, '; ' + S);
 End;
 
@@ -2554,6 +2596,7 @@ Procedure EmitBlank;
 Begin
   If Not GenEnabled Then Exit;
   If DeferEmit Then DeferAdd('')
+  Else If BodyEmit Then BodyAdd('')
   Else WriteLn(OutF, '');
 End;
 
@@ -4909,6 +4952,9 @@ End;
 { ---- ParseTypeRef : resoudre un nom de type -> index --------- }
 { Gere les types predefinis (INTEGER, FLOAT, BOOLEAN, CHARACTER, }
 { STRING, NATURAL, POSITIVE) et les types utilisateur.           }
+{ Forward pour contraindre un tableau non-contraint a sa declaration. }
+Function ConstrainArrayType(BaseTi : Integer) : Integer; Forward;
+
 Function ParseTypeRef : Integer;
 Var
   Nm : TString;
@@ -4943,7 +4989,18 @@ Begin
   If Nm = 'POSITIVE_COUNT'    Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
   If Nm = 'FIELD'             Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
   Ti := FindType(Nm);
-  If Ti > 0 Then Begin ParseTypeRef := Ti; Exit; End;
+  If Ti > 0 Then
+  Begin
+    { ---- Contrainte d index pour tableau non-contraint ----------- }
+    { Si le type resolu est un ARRAY non-contraint (Hi < Lo ou       }
+    { TotalSize = 0) et qu une parenthese suit, on parse (lo..hi)    }
+    { et on cree un sous-type contraint anonyme derive.              }
+    If (TypeTab[Ti].Kind = TK_ARRAY) And
+       (TypeTab[Ti].HiBound < TypeTab[Ti].LoBound) And
+       (CurTokType = TOK_LPAREN) Then
+      Ti := ConstrainArrayType(Ti);
+    ParseTypeRef := Ti; Exit;
+  End;
   Error('Type inconnu : ' + Nm);
   ParseTypeRef := TYPE_UNKNOWN;
 End;
@@ -5022,6 +5079,37 @@ End;
 Procedure ParseRangeBounds(Var Lo, Hi : LongInt);
 Begin
   ParseRangeBoundsEx(Lo, Hi, 0);
+End;
+
+{ ---- ConstrainArrayType : contrainte d index sur un ARRAY ---- }
+{ Prend un type ARRAY non-contraint (ex. type T is array          }
+{ (Integer range <>) of Integer;) et un `(lo..hi)` en cours de    }
+{ lecture, et produit un sous-type contraint anonyme herite des   }
+{ proprietes de BaseTi (ElemType, ElemSize) mais avec Lo/Hi fixes }
+{ et TotalSize = (Hi-Lo+1)*ElemSize.                              }
+Function ConstrainArrayType(BaseTi : Integer) : Integer;
+Var
+  Idx    : Integer;
+  Lo, Hi : LongInt;
+  Esz    : Integer;
+Begin
+  Expect(TOK_LPAREN, '`(` attendu pour contrainte d''index');
+  ParseRangeBounds(Lo, Hi);
+  Expect(TOK_RPAREN, '`)` attendu apres contrainte d''index');
+  Idx := AddType('', TK_ARRAY);
+  If Idx = 0 Then Begin ConstrainArrayType := BaseTi; Exit; End;
+  Esz := TypeTab[BaseTi].ElemSize;
+  If Esz <= 0 Then Esz := 4;
+  TypeTab[Idx].BaseType  := BaseTi;
+  TypeTab[Idx].LoBound   := Lo;
+  TypeTab[Idx].HiBound   := Hi;
+  TypeTab[Idx].ElemType  := TypeTab[BaseTi].ElemType;
+  TypeTab[Idx].ElemSize  := Esz;
+  If Hi >= Lo Then
+    TypeTab[Idx].TotalSize := (Hi - Lo + 1) * Esz
+  Else
+    TypeTab[Idx].TotalSize := 0;
+  ConstrainArrayType := Idx;
 End;
 
 { ---- ParseEnumType : ( lit1, lit2, ... ) -> TK_ENUM ---------- }
@@ -6594,6 +6682,8 @@ Var
   Sym : Integer;
   TI  : Integer;
   U   : TString;
+  P   : Integer;
+  NxCh: Char;
 Begin
   Case CurTokType Of
     TOK_INTEGER : DetectArgTypeForPut := TYPE_INT;
@@ -6631,9 +6721,37 @@ Begin
             { Detecter les tableaux de caracteres comme chaines }
             If (TI > 0) And (TI <= TypeCount) And
                (TypeTab[TI].ElemType = TYPE_CHAR) Then
-              DetectArgTypeForPut := TYPE_STR
-            Else
+            Begin
+              DetectArgTypeForPut := TYPE_STR;
+              Exit;
+            End;
+            { Peek char suivant (meme ligne, non-espace) pour detecter       }
+            { Ident'Attr (TYPE_INT pour First/Last/Length/Size, TYPE_STR pour }
+            { Image) ou Ident(Idx) (type element pour un tableau).            }
+            NxCh := #0;
+            P := LexColNo;
+            While (P <= Length(LexLine)) And
+                  ((LexLine[P] = ' ') Or (LexLine[P] = #9)) Do Inc(P);
+            If P <= Length(LexLine) Then NxCh := LexLine[P];
+            If NxCh = '''' Then
+            Begin
+              { Ident'Attr : par defaut First/Last/Length/Size -> TYPE_INT.   }
+              { (Image reste un cas minoritaire ; on privilegie la forme     }
+              {  numerique qui correspond a Put(Var'First, Width).)          }
+              DetectArgTypeForPut := TYPE_INT;
+              Exit;
+            End;
+            If (NxCh = '(') And
+               (TI > 0) And (TI <= TypeCount) And
+               (TypeTab[TI].Kind = TK_ARRAY) Then
+            Begin
+              { Ident(Idx) : acces a un element, renvoyer son type. }
+              TI := TypeTab[TI].ElemType;
+              If TI <= 0 Then TI := TYPE_INT;
               DetectArgTypeForPut := TI;
+              Exit;
+            End;
+            DetectArgTypeForPut := TI;
           End
           Else
             DetectArgTypeForPut := TYPE_INT;
@@ -7662,19 +7780,20 @@ Begin
   { 4. Expect BEGIN }
   ExpectKw(KW_BEGIN, 'BEGIN');
 
-  { 5. Prologue ASM : PUSH EBP / MOV EBP, ESP / SUB ESP, frame }
-  { On emet le label de la procedure }
+  { 5. Label de la procedure + prologue differe                      }
+  { Le label est emis directement ; le corps + epilogue sont bufferes }
+  { dans BodyBuf pour pouvoir emettre le prologue (SUB ESP) avec la   }
+  { taille de frame definitive, une fois toutes les allocations       }
+  { locales (y compris FOR/DECLARE imbriques) connues.                 }
   EmitBlank;
   EmitComment('--- PROCEDURE ' + SubName + ' ---');
   EmitLabel(SubTab[SubIdx].AsmLabel);
 
-  { Le frame size sera connu apres PopScope, on emet un stub }
-  { On genere le prologue maintenant avec le FrameSize courant }
-  { NB : les variables locales ont deja ete allouees par ParseObjectDecl }
-  FrameSz := -ScopeStack[ScopeTop].BpTop;
-  GenPrologue(FrameSz);
+  ResetBodyBuf;
+  BodyEmit := True;
   EmitLocalInits;
-  { Rejouer le code des initialisations non-constantes }
+  { Rejouer le code des initialisations non-constantes (apres les inits }
+  { constants, dans l ordre source).                                    }
   FlushDeferBuf;
 
   { Preparer le label d exception si EXCEPTION sera present }
@@ -7706,10 +7825,19 @@ Begin
     Consume;
   Expect(TOK_SEMI, '`;` attendu apres END');
 
-  { 9. Epilogue : label de sortie + MOV ESP, EBP / POP EBP / RET n }
+  { 9. Taille de frame definitive connue a ce stade }
+  FrameSz := -ScopeStack[ScopeTop].BpTop;
+
+  { Epilogue : label de sortie + MOV ESP, EBP / POP EBP / RET n      }
   EmitLabel(LblExit_);
   ParamSz := SubParamBytes32(SubIdx);
   GenEpilogue(FrameSz, ParamSz);
+
+  { Emettre le prologue avec la vraie taille de frame, puis flusher   }
+  { le corps bufferise.                                                }
+  BodyEmit := False;
+  GenPrologue(FrameSz);
+  FlushBodyBuf;
 
   { 10. Depiler le scope }
   FrameSz := PopScope;
@@ -7753,13 +7881,13 @@ Begin
   { 4. Expect BEGIN }
   ExpectKw(KW_BEGIN, 'BEGIN');
 
-  { 5. Prologue ASM }
+  { 5. Label + prologue differe (voir ParseProcedureBody) }
   EmitBlank;
   EmitComment('--- FUNCTION ' + SubName + ' ---');
   EmitLabel(SubTab[SubIdx].AsmLabel);
 
-  FrameSz := -ScopeStack[ScopeTop].BpTop;
-  GenPrologue(FrameSz);
+  ResetBodyBuf;
+  BodyEmit := True;
   EmitLocalInits;
   { Rejouer le code des initialisations non-constantes }
   FlushDeferBuf;
@@ -7795,10 +7923,18 @@ Begin
     Consume;
   Expect(TOK_SEMI, '`;` attendu apres END');
 
-  { 9. Epilogue }
+  { 9. Taille de frame definitive }
+  FrameSz := -ScopeStack[ScopeTop].BpTop;
+
+  { Epilogue }
   EmitLabel(LblExit_);
   ParamSz := SubParamBytes32(SubIdx);
   GenEpilogue(FrameSz, ParamSz);
+
+  { Emettre le prologue puis flusher le corps bufferise }
+  BodyEmit := False;
+  GenPrologue(FrameSz);
+  FlushBodyBuf;
 
   { 10. Depiler le scope }
   FrameSz := PopScope;
@@ -9909,11 +10045,31 @@ Begin
     End
     Else If Length(Op2) > 0 Then
     Begin
-      { IMUL reg, reg (2-operand form) : 0F AF /r }
       R2 := AsmRegIdx32(Op2);
-      BinEmitByte($0F);
-      BinEmitByte($AF);
-      BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R2);
+      If R2 < 0 Then
+      Begin
+        { IMUL reg, imm (2-operand raccourci) : equivalent a IMUL reg, reg, imm }
+        Imm := AsmParseImm(Op2);
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          BinEmitByte($6B);
+          BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R1);
+          BinEmitByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          BinEmitByte($69);
+          BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R1);
+          BinEmitDWord(Imm);
+        End;
+      End
+      Else
+      Begin
+        { IMUL reg, reg (2-operand form) : 0F AF /r }
+        BinEmitByte($0F);
+        BinEmitByte($AF);
+        BinEmitByte((3 Shl 6) Or (R1 Shl 3) Or R2);
+      End;
     End;
     Exit;
   End;
