@@ -625,6 +625,8 @@ Const
   TOK_POWER       = 27;   { **                                       }
   TOK_AMPERSAND   = 28;   { &  (concatenation)                       }
   TOK_TICK        = 29;   { '  (attribut : T'FIRST)                  }
+  TOK_LTLT        = 30;   { << (debut de label : <<name>>)           }
+  TOK_GTGT        = 31;   { >> (fin de label)                        }
   TOK_EOF         = 99;
 
   MAX_IDENT    = 48;   { longueur max d un identificateur Ada       }
@@ -1634,11 +1636,15 @@ Begin
     '>': Begin
            If (LexColNo <= Length(LexLine)) And (LexCurChar = '=') Then
            Begin LexAdvance; CurTokType := TOK_GE; CurTokStr := '>='; End
+           Else If (LexColNo <= Length(LexLine)) And (LexCurChar = '>') Then
+           Begin LexAdvance; CurTokType := TOK_GTGT; CurTokStr := '>>'; End
            Else Begin CurTokType := TOK_GT; CurTokStr := '>'; End;
          End;
     '<': Begin
            If (LexColNo <= Length(LexLine)) And (LexCurChar = '=') Then
            Begin LexAdvance; CurTokType := TOK_LE; CurTokStr := '<='; End
+           Else If (LexColNo <= Length(LexLine)) And (LexCurChar = '<') Then
+           Begin LexAdvance; CurTokType := TOK_LTLT; CurTokStr := '<<'; End
            Else Begin CurTokType := TOK_LT; CurTokStr := '<'; End;
          End;
     '=': Begin
@@ -6265,14 +6271,58 @@ End;
 
 { ---- ParseGoto : instruction GOTO label ; -------------------- }
 Procedure ParseGoto;
+Var
+  LblName : TString;
 Begin
   Consume; { GOTO }
-  EmitComment('GOTO ...');
-  { Skip label name + ';' }
-  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
-        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
+  If CurTokType = TOK_IDENT Then
+  Begin
+    LblName := StrUpperCase(CurTokStr);
     Consume;
+    { Nom qualifie eventuel : pkg.lbl -> on prend le dernier segment }
+    While CurTokType = TOK_DOT Do
+    Begin
+      Consume;
+      If CurTokType = TOK_IDENT Then
+      Begin
+        LblName := StrUpperCase(CurTokStr);
+        Consume;
+      End;
+    End;
+    EmitComment('GOTO ' + LblName);
+    EmitI('JMP  _ADAU_' + AsmIdent(LblName));
+  End
+  Else
+  Begin
+    Error('Identificateur de label attendu apres GOTO');
+    { Resynchronisation : sauter jusqu au ; }
+    While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
+          (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
+      Consume;
+  End;
   If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- ParseLabelDecl : declaration d un label <<name>> --------- }
+{ Emet le label ASM _ADAU_<name> pour que GOTO <name> y saute.    }
+Procedure ParseLabelDecl;
+Var
+  LblName : TString;
+Begin
+  Consume; { << }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    LblName := StrUpperCase(CurTokStr);
+    Consume;
+    If CurTokType = TOK_GTGT Then
+      Consume
+    Else
+      Error('`>>` attendu apres nom de label');
+    EmitComment('<<' + LblName + '>>');
+    EmitLabel('_ADAU_' + AsmIdent(LblName));
+  End
+  Else
+    Error('Nom de label attendu apres `<<`');
 End;
 
 { ---- ParsePragma : instruction PRAGMA ident [(args)] ; ------- }
@@ -6369,9 +6419,10 @@ Var
   LblNext   : TString;
   LblMatch  : TString;
   LblEndCase: TString;
-  WVal      : LongInt;
-  GotConst  : Boolean;
+  WVal, HiVal : LongInt;
+  GotConst, GotHi : Boolean;
   HasOthers : Boolean;
+  Alt       : Integer;
 Begin
   EmitComment('CASE ... IS ... END CASE');
   Consume; { CASE }
@@ -6382,6 +6433,7 @@ Begin
   ExpectKw(KW_IS, 'IS');
   LblEndCase := NewLabel;
   HasOthers  := False;
+  Alt        := 0;
   { Boucle WHEN }
   While TokIsKw(KW_WHEN) Do
   Begin
@@ -6399,39 +6451,56 @@ Begin
     End
     Else
     Begin
-      { WHEN valeur [| valeur2] => stmts }
+      { WHEN valeur [| valeur2 | A..B] => stmts }
       LblMatch := NewLabel;
       LblNext  := NewLabel;
       EmitComment('WHEN ...');
-      { Premiere valeur }
-      GotConst := ParseConstExpr32(WVal);
-      If GotConst Then
-      Begin
-        EmitI('CMP  EDX, ' + IntToStr_(WVal));
-        EmitI('JE   ' + LblMatch);
-      End
-      Else
-      Begin
-        { Valeur dynamique dans EAX }
-        EmitI('CMP  EDX, EAX');
-        EmitI('JE   ' + LblMatch);
-      End;
-      { Valeurs alternatives separees par | }
-      While CurTokType = TOK_BAR Do
-      Begin
-        Consume; { | }
+      { Boucle sur les choix separes par | }
+      Repeat
         GotConst := ParseConstExpr32(WVal);
-        If GotConst Then
+        { Choix de type range : LoVal .. HiVal }
+        If CurTokType = TOK_DOTDOT Then
         Begin
-          EmitI('CMP  EDX, ' + IntToStr_(WVal));
-          EmitI('JE   ' + LblMatch);
+          Consume; { .. }
+          If GotConst Then
+          Begin
+            GotHi := ParseConstExpr32(HiVal);
+            If GotHi Then
+            Begin
+              { Match si WVal <= EDX <= HiVal }
+              EmitI('CMP  EDX, ' + IntToStr_(WVal));
+              EmitI('JL   ' + LblNext + '_' + IntToStr_(Alt));
+              EmitI('CMP  EDX, ' + IntToStr_(HiVal));
+              EmitI('JLE  ' + LblMatch);
+              EmitLabel(LblNext + '_' + IntToStr_(Alt));
+              Inc(Alt);
+            End
+            Else
+              Error('Borne superieure constante attendue dans WHEN range');
+          End
+          Else
+          Begin
+            Error('Borne inferieure constante attendue dans WHEN range');
+            If Not ParseConstExpr32(HiVal) Then ;
+          End;
         End
         Else
         Begin
-          EmitI('CMP  EDX, EAX');
-          EmitI('JE   ' + LblMatch);
+          { Valeur simple (constante ou dynamique) }
+          If GotConst Then
+          Begin
+            EmitI('CMP  EDX, ' + IntToStr_(WVal));
+            EmitI('JE   ' + LblMatch);
+          End
+          Else
+          Begin
+            EmitI('CMP  EDX, EAX');
+            EmitI('JE   ' + LblMatch);
+          End;
         End;
-      End;
+        If CurTokType = TOK_BAR Then Consume
+        Else Break;
+      Until False;
       { Si aucune valeur ne correspond, sauter au prochain WHEN }
       EmitI('JMP  ' + LblNext);
       EmitLabel(LblMatch);
@@ -6637,75 +6706,37 @@ End;
 { ---- ParseBeginBlock : bloc BEGIN ... END ; ------------------- }
 { Bloc anonyme imbrique dans une sequence d instructions.         }
 Procedure ParseBeginBlock;
-Var Depth : Integer;
 Begin
   EmitComment('BEGIN block ...');
   Consume; { BEGIN }
-  Depth := 1;
-  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
-  Begin
-    If TokIsKw(KW_BEGIN) Or TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or
-       TokIsKw(KW_CASE) Or TokIsKw(KW_DECLARE) Or
-       TokIsKw(KW_SELECT) Then
-      Inc(Depth)
-    Else If TokIsKw(KW_END) Then
-    Begin
-      Dec(Depth);
-      If Depth <= 0 Then
-      Begin
-        Consume; { END }
-        { Skip optional name + ';' }
-        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
-          Consume;
-        If CurTokType = TOK_SEMI Then Consume;
-        Exit;
-      End;
-    End;
-    Consume;
-  End;
+  PushScope(SK_BLOCK, 0);
+  ParseSequenceOfStatements;
+  PopScope;
+  { END [name] ; }
+  ExpectKw(KW_END, 'END');
+  { Sauter le nom optionnel }
+  If CurTokType = TOK_IDENT Then Consume;
+  If CurTokType = TOK_SEMI Then Consume;
 End;
 
 { ---- ParseDeclareBlock : DECLARE ... BEGIN ... END ; ---------- }
 { Bloc avec partie declarative locale.                            }
-{ Structure : DECLARE decls BEGIN stmts END [name] ;              }
-{ Le BEGIN fait partie de la structure DECLARE et ne cree pas      }
-{ un niveau supplementaire.                                        }
 Procedure ParseDeclareBlock;
-Var
-  Depth    : Integer;
-  GotBegin : Boolean;
 Begin
   EmitComment('DECLARE block ...');
   Consume; { DECLARE }
-  Depth := 1;
-  GotBegin := False;
-  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
-  Begin
-    If TokIsKw(KW_BEGIN) And (Not GotBegin) Then
-    Begin
-      { Le BEGIN du DECLARE : ne pas incrementer depth }
-      GotBegin := True;
-      Consume;
-      Continue;
-    End
-    Else If TokIsKw(KW_BEGIN) Or TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or
-       TokIsKw(KW_CASE) Or TokIsKw(KW_DECLARE) Or
-       TokIsKw(KW_SELECT) Then
-      Inc(Depth)
-    Else If TokIsKw(KW_END) Then
-    Begin
-      Dec(Depth);
-      If Depth <= 0 Then
-      Begin
-        Consume; { END }
-        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
-          Consume;
-        If CurTokType = TOK_SEMI Then Consume;
-        Exit;
-      End;
-    End;
-    Consume;
-  End;
+  PushScope(SK_BLOCK, 0);
+  { Partie declarative locale }
+  ParseDeclarativePart;
+  ExpectKw(KW_BEGIN, 'BEGIN');
+  { Emettre les initialisations des variables locales declarees ici }
+  EmitLocalInits;
+  ParseSequenceOfStatements;
+  PopScope;
+  { END [name] ; }
+  ExpectKw(KW_END, 'END');
+  If CurTokType = TOK_IDENT Then Consume;
+  If CurTokType = TOK_SEMI Then Consume;
 End;
 
 { ============================================================ }
@@ -7736,7 +7767,9 @@ Var
   Sym           : Integer;
   I, J, AI, Sub : Integer;
 Begin
-  If TokIsKw(KW_NULL) Then
+  If CurTokType = TOK_LTLT Then
+    ParseLabelDecl
+  Else If TokIsKw(KW_NULL) Then
     ParseNull
   Else If TokIsKw(KW_RETURN) Then
     ParseReturn
