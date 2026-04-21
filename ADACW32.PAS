@@ -5252,6 +5252,7 @@ Begin
     (U = 'ADA.STRINGS.BOUNDED')                       Or
     (U = 'ADA.STRINGS.UNBOUNDED')                     Or
     (U = 'SYSTEM')                                    Or
+    (U = 'SYSTEM.MACHINE_CODE')                       Or
     (U = 'TEXT_IO');
 End;
 
@@ -7853,7 +7854,61 @@ Var
   ArgSym   : Integer;
   ArgName  : TString;
   TIOProc  : TString;
+  UName    : TString;
+  AsmLine  : TString;
+  AsmStart : Integer;
+  K        : Integer;
 Begin
+  { --- System.Machine_Code.Asm("instruction") : insertion inline ------ }
+  { Accepte les formes :                                                  }
+  {   Asm ("NOP");                                                        }
+  {   Machine_Code.Asm ("MOV EAX, 1");                                    }
+  {   System.Machine_Code.Asm ("XOR EAX, EAX");                           }
+  { La chaine peut contenir plusieurs instructions separees par ';' ou   }
+  { par une nouvelle ligne. Chaque instruction est emise brute via EmitI. }
+  UName := StrUpperCase(ProcName);
+  If (UName = 'ASM') Or
+     (UName = 'MACHINE_CODE.ASM') Or
+     (UName = 'SYSTEM.MACHINE_CODE.ASM') Then
+  Begin
+    EmitComment('inline asm : ' + ProcName);
+    If CurTokType <> TOK_LPAREN Then
+    Begin
+      Error('`(` attendu apres ' + ProcName);
+      If CurTokType = TOK_SEMI Then Consume;
+      Exit;
+    End;
+    Consume; { ( }
+    If CurTokType <> TOK_STRING Then
+    Begin
+      Error('Chaine attendue comme argument de ' + ProcName);
+      SkipToSemi;
+      Exit;
+    End;
+    AsmLine := CurTokStr;
+    Consume; { string literal }
+    { Eventuel argument supplementaire (options GNAT ignorees) : skip }
+    While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
+      Consume;
+    If CurTokType = TOK_RPAREN Then Consume;
+    If CurTokType = TOK_SEMI Then Consume;
+    { Emettre l instruction. Support multi-lignes : separer sur ';',   }
+    { CR et LF. Chaque fragment non vide est emis tel quel.             }
+    AsmStart := 1;
+    For K := 1 To Length(AsmLine) Do
+    Begin
+      If (AsmLine[K] = ';') Or (AsmLine[K] = #10) Or (AsmLine[K] = #13) Then
+      Begin
+        If K > AsmStart Then
+          EmitI(Copy(AsmLine, AsmStart, K - AsmStart));
+        AsmStart := K + 1;
+      End;
+    End;
+    If AsmStart <= Length(AsmLine) Then
+      EmitI(Copy(AsmLine, AsmStart, Length(AsmLine) - AsmStart + 1));
+    Exit;
+  End;
+
   { TODO 22 : intercepter les appels Ada.Text_IO }
   TIOProc := IsTextIOProc(ProcName);
   If TIOProc <> '' Then

@@ -16,6 +16,7 @@ sous Wine.
 | `T33_STRINGS.ADB`   | `Ada.Strings`, `Ada.Strings.Fixed`, `Ada.Strings.Maps` | `Length`, `Index`, `Count`, `Head`, `Tail`, `Trim`, `Is_In` |
 | `T34_TEXTIO.ADB`    | `Ada.Text_IO`                              | `Put` (String/Integer/Boolean/Character), `Put_Line`, `New_Line`, `Set_Col` |
 | `T35_ALLMODS.ADB`   | Tous les modules ci-dessus                 | Combinaison multi-modules dans un seul programme |
+| `T36_ASMINLINE.ADB` | `System.Machine_Code`                      | `Asm ("...")` : insertion d.assembleur 80386 inline (3 formes d.appel : `Asm`, `Machine_Code.Asm`, `System.Machine_Code.Asm`), multi-instructions separees par `;`. |
 
 ## Compilation et execution
 
