@@ -2791,8 +2791,10 @@ Begin
 
   { --- Constantes flottantes pour PRINTFLT (IEEE-754 simple precision) --- }
   EmitComment('--- constantes flottantes FPU ---');
-  EmitI(ADA_RT_PFX + 'FLT_TEN6  DD 1232348160   ; 1000000.0 en IEEE-754');
-  EmitI(ADA_RT_PFX + 'FLT_HALF  DD 1056964608   ; 0.5 en IEEE-754');
+  EmitI(ADA_RT_PFX + 'FLT_TEN6  DD ' + IntToStr_(FloatStrToIEEE754('1000000.0')) +
+        '   ; 1000000.0 en IEEE-754');
+  EmitI(ADA_RT_PFX + 'FLT_HALF  DD ' + IntToStr_(FloatStrToIEEE754('0.5')) +
+        '   ; 0.5 en IEEE-754');
   EmitI(ADA_RT_PFX + 'FLT_TMP   DD 0');
   EmitI(ADA_RT_PFX + 'FLT_TMPI  DD 0');
   EmitBlank;
