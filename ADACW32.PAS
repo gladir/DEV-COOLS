@@ -840,6 +840,7 @@ Type
     InitNum     : LongInt;       { valeur initiale numerique         }
     InitStr     : String[64];    { valeur initiale chaine            }
     HasInit     : Boolean;       { True si initialisation specifiee  }
+    IsByRef     : Boolean;       { True si param OUT/IN OUT (pointeur)}
   End;
 
   { ---- Entree de la table des sous-programmes (TODO 05) ---- }
@@ -1896,6 +1897,7 @@ Begin
     SymTab[I].InitNum    := 0;
     SymTab[I].InitStr    := '';
     SymTab[I].HasInit    := False;
+    SymTab[I].IsByRef    := False;
   End;
 End;
 
@@ -1960,6 +1962,7 @@ Begin
   SymTab[Idx].InitNum    := 0;
   SymTab[Idx].InitStr    := '';
   SymTab[Idx].HasInit    := False;
+  SymTab[Idx].IsByRef    := False;
   AddSym := Idx;
 End;
 
@@ -3762,10 +3765,22 @@ Begin
     End;
     STORE_PARAM :
     Begin
-      If IsByte Then
-        EmitI('MOVZX EAX, BYTE PTR [EBP' + BpOff32(Off) + ']')
-      Else
+      If SymTab[SymIdx].IsByRef Then
+      Begin
+        { Parametre OUT/IN OUT : [EBP+off] contient un pointeur       }
         EmitI('MOV EAX, DWORD PTR [EBP' + BpOff32(Off) + ']');
+        If IsByte Then
+          EmitI('MOVZX EAX, BYTE PTR [EAX]')
+        Else
+          EmitI('MOV EAX, DWORD PTR [EAX]');
+      End
+      Else
+      Begin
+        If IsByte Then
+          EmitI('MOVZX EAX, BYTE PTR [EBP' + BpOff32(Off) + ']')
+        Else
+          EmitI('MOV EAX, DWORD PTR [EBP' + BpOff32(Off) + ']');
+      End;
     End;
     STORE_CONST :
       EmitI('MOV EAX, ' + IntToStr_(SymTab[SymIdx].InitNum));
@@ -3810,10 +3825,22 @@ Begin
     End;
     STORE_PARAM :
     Begin
-      If IsByte Then
-        EmitI('MOV BYTE PTR [EBP' + BpOff32(Off) + '], AL')
+      If SymTab[SymIdx].IsByRef Then
+      Begin
+        { Parametre OUT/IN OUT : [EBP+off] contient un pointeur       }
+        EmitI('MOV  EBX, DWORD PTR [EBP' + BpOff32(Off) + ']');
+        If IsByte Then
+          EmitI('MOV  BYTE PTR [EBX], AL')
+        Else
+          EmitI('MOV  DWORD PTR [EBX], EAX');
+      End
       Else
-        EmitI('MOV DWORD PTR [EBP' + BpOff32(Off) + '], EAX');
+      Begin
+        If IsByte Then
+          EmitI('MOV BYTE PTR [EBP' + BpOff32(Off) + '], AL')
+        Else
+          EmitI('MOV DWORD PTR [EBP' + BpOff32(Off) + '], EAX');
+      End;
     End;
   End;
 End;
@@ -3860,7 +3887,12 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    End;
   End;
   { EAX = base + offset -> charger element }
   If IsByte Then
@@ -3909,7 +3941,12 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    End;
   End;
   { Ecrire la valeur a l adresse base + offset }
   If IsByte Then
@@ -3969,7 +4006,12 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    End;
   End;
   { Charger le champ }
   If IsByte Then
@@ -4012,7 +4054,12 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  EBX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
+    End;
   End;
   { Ecrire la valeur dans le champ }
   If IsByte Then
@@ -4052,7 +4099,12 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    End;
   End;
   { Charger le sous-champ }
   If IsByte Then
@@ -4094,7 +4146,12 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        EmitI('MOV  EBX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EBX, [EBP' + BpOff32(Off) + ']');
+    End;
   End;
   { Ecrire la valeur dans le sous-champ }
   If IsByte Then
@@ -5948,22 +6005,42 @@ End;
 Procedure RegisterParams(SubIdx : Integer);
 Var
   I, Off, SymIdx, TI, Mode : Integer;
+  TotalBytes, ParamSize     : Integer;
 Begin
-  Off := 8;  { EBP+0 = old EBP, EBP+4 = ret addr, EBP+8 = 1st param }
+  { Le caller pousse les parametres dans l ordre source (gauche a      }
+  { droite). Apres PUSH EBP + MOV EBP,ESP, le dernier argument pousse  }
+  { est a [EBP+8] et le premier se trouve au plus haut offset.         }
+  { Calcul prealable : taille totale de la zone parametres.            }
+  TotalBytes := 0;
+  For I := 1 To SubTab[SubIdx].ParamCount Do
+  Begin
+    Mode := SubTab[SubIdx].ParamModes[I];
+    If (Mode = PARAM_OUT) Or (Mode = PARAM_INOUT) Then
+      Inc(TotalBytes, 4)
+    Else
+      Inc(TotalBytes, AlignDWord(GetTypeSize(SubTab[SubIdx].ParamTypes[I])));
+  End;
+
+  { EBP+8 pointe le dernier param pousse. Le premier param est au       }
+  { plus haut offset : EBP+8 + (TotalBytes - taille(param1)).            }
+  { On assigne les offsets en partant du premier param.                  }
+  Off := 8 + TotalBytes;  { pointe juste apres le dernier octet params }
   For I := 1 To SubTab[SubIdx].ParamCount Do
   Begin
     TI   := SubTab[SubIdx].ParamTypes[I];
     Mode := SubTab[SubIdx].ParamModes[I];
+    If (Mode = PARAM_OUT) Or (Mode = PARAM_INOUT) Then
+      ParamSize := 4
+    Else
+      ParamSize := AlignDWord(GetTypeSize(TI));
+    Dec(Off, ParamSize);
 
     SymIdx := AddSym(SubTab[SubIdx].ParamNames[I], TI, STORE_PARAM);
     If SymIdx > 0 Then
     Begin
       SymTab[SymIdx].BpOffset := Off;
-      { OUT / INOUT : le parametre est une adresse (pointeur 32 bits) }
       If (Mode = PARAM_OUT) Or (Mode = PARAM_INOUT) Then
-        Inc(Off, 4)
-      Else
-        Inc(Off, AlignDWord(GetTypeSize(TI)));
+        SymTab[SymIdx].IsByRef := True;
     End;
   End;
 End;
@@ -6651,7 +6728,13 @@ Begin
     STORE_AUTO :
       EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
     STORE_PARAM :
-      EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    Begin
+      If SymTab[SymIdx].IsByRef Then
+        { Le pointeur est deja l adresse : MOV et non LEA             }
+        EmitI('MOV  EAX, DWORD PTR [EBP' + BpOff32(Off) + ']')
+      Else
+        EmitI('LEA  EAX, [EBP' + BpOff32(Off) + ']');
+    End;
   Else
     Error('Impossible d''obtenir l''adresse de : ' +
           SymTab[SymIdx].Name);
