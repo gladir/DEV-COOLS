@@ -105,6 +105,20 @@ Const
   FIX_FPCW_TRUNC   = 26;     { mot de controle x87 mode troncature }
   FIX_FPCW_SAVE    = 27;     { zone de sauvegarde du mot de controle courant }
 
+  { Palier 4 : imports Win32 supplementaires. }
+  FIX_IAT_CREATEFILE = 28;   { KERNEL32!CreateFileA }
+  FIX_IAT_CLOSEHANDLE= 29;   { KERNEL32!CloseHandle }
+  FIX_IAT_SETFILEPTR = 30;   { KERNEL32!SetFilePointer }
+  FIX_IAT_GETPROCHEAP= 31;   { KERNEL32!GetProcessHeap }
+  FIX_IAT_HEAPALLOC  = 32;   { KERNEL32!HeapAlloc }
+  FIX_IAT_HEAPFREE   = 33;   { KERNEL32!HeapFree }
+  FIX_IAT_LOADLIB    = 34;   { KERNEL32!LoadLibraryA }
+  FIX_IAT_GETPROC    = 35;   { KERNEL32!GetProcAddress }
+  FIX_IAT_FREELIB    = 36;   { KERNEL32!FreeLibrary }
+
+  { Nombre total d'imports Win32 reconnus par le generateur .idata. }
+  IMPORT_COUNT       = 16;
+
   PE_MACHINE_I386 = $014C;
 
   MAX_BIN_CODE = 262144;
@@ -178,6 +192,13 @@ Var
   { Pool de litteraux REAL : chaque entree = 4 octets IEEE 754 simple. }
   RealPool    : Array[1..256] of LongInt;
   RealCount   : Integer;
+
+  { Palier 4 : table des imports Win32 (KERNEL32.DLL).  Chaque entree a un
+    nom ASCII et un fixup kind.  Les offsets dans .idata (IAT et Hint/Name)
+    sont calcules par BuildIdataSection, stockes ici et lus par ResolveFixups. }
+  ImportNames    : Array[1..IMPORT_COUNT] of String[32];
+  ImportFixKinds : Array[1..IMPORT_COUNT] of Integer;
+  ImportIATAddr  : Array[1..IMPORT_COUNT] of LongInt;  { adresse absolue IAT }
 
   Fixups      : Array[1..MAX_FIXUP] of TFixup;
   FixupCount  : Integer;
@@ -5263,18 +5284,18 @@ End;
 
 Procedure ResolveFixups(TextRVA, DataRVA, IdataRVA : LongInt);
 Var
-  I, Si, Li : Integer;
+  I, J, Si, Li : Integer;
   TargetAddr, CalleeAddr, RelAddr : LongInt;
   ImageBase : LongInt;
   StdoutAddr, CRLFAddr, IntBufAddr, BytesWrittenAddr : LongInt;
   StderrAddr, RndSeedAddr, HexBufAddr : LongInt;
   StdinAddr, InLenAddr, InDoneAddr, InBufAddr : LongInt;
   StrAddr : LongInt;
-  IATGetStd, IATWrite, IATExit : LongInt;
-  IATSleep, IATGetTick, IATGetCmd, IATRead : LongInt;
+  IATBase : LongInt;
   VarBase, TotalStr : LongInt;
   RealPoolBase : LongInt;
   FPCWTruncAddr, FPCWSaveAddr, RealTmpAddr : LongInt;
+  Handled : Boolean;
 Begin
   ImageBase := $400000;
   StdoutAddr := ImageBase + DataRVA;
@@ -5310,43 +5331,34 @@ Begin
   While (VarBase Mod 4) <> 0 Do
     VarBase := VarBase + 1;
 
-  { IAT kernel32 en 7 entrees (8 DWord en comptant le terminateur nul).
-    Nouvelle disposition : ILT@40, IAT@76. }
-  IATGetStd  := ImageBase + IdataRVA + 76;
-  IATWrite   := IATGetStd + 4;
-  IATExit    := IATWrite  + 4;
-  IATSleep   := IATExit   + 4;
-  IATGetTick := IATSleep  + 4;
-  IATGetCmd  := IATGetTick + 4;
-  IATRead    := IATGetCmd + 4;
-  
+  { Palier 4 : IAT pilotee par la table des imports.  Disposition :
+      ILT a offset 40, IMPORT_COUNT+1 entrees de 4 octets (terminateur null).
+      IAT immediatement apres, idem.  IATBase = 40 + (IMPORT_COUNT+1)*4. }
+  IATBase := 40 + (IMPORT_COUNT + 1) * 4;
+  For I := 1 To IMPORT_COUNT Do
+    ImportIATAddr[I] := ImageBase + IdataRVA + IATBase + (I - 1) * 4;
+
   For I := 1 To FixupCount Do
   Begin
+    { Resolution generique des fixups IAT via la table des imports. }
+    Handled := False;
+    For J := 1 To IMPORT_COUNT Do
+    Begin
+      If Fixups[I].Kind = ImportFixKinds[J] Then
+      Begin
+        TargetAddr := ImportIATAddr[J];
+        BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+        BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+        BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+        BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
+        Handled := True;
+        Break;
+      End;
+    End;
+    If Handled Then
+      Continue;
+
     Case Fixups[I].Kind Of
-      FIX_IAT_GETSTD:
-        Begin
-          TargetAddr := IATGetStd;
-          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
-          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
-          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
-          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
-        End;
-      FIX_IAT_WRITE:
-        Begin
-          TargetAddr := IATWrite;
-          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
-          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
-          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
-          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
-        End;
-      FIX_IAT_EXIT:
-        Begin
-          TargetAddr := IATExit;
-          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
-          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
-          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
-          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
-        End;
       FIX_STRING:
         Begin
           Si := Fixups[I].Target;
@@ -5431,30 +5443,6 @@ Begin
           BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
           BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
         End;
-      FIX_IAT_SLEEP:
-        Begin
-          TargetAddr := IATSleep;
-          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
-          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
-          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
-          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
-        End;
-      FIX_IAT_GETTICK:
-        Begin
-          TargetAddr := IATGetTick;
-          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
-          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
-          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
-          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
-        End;
-      FIX_IAT_GETCMD:
-        Begin
-          TargetAddr := IATGetCmd;
-          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
-          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
-          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
-          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
-        End;
       FIX_STDERR:
         Begin
           TargetAddr := StderrAddr;
@@ -5482,14 +5470,6 @@ Begin
       FIX_HEXBUF_END:
         Begin
           TargetAddr := HexBufAddr + 8;
-          BinCode[Fixups[I].Offset] := TargetAddr And $FF;
-          BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
-          BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
-          BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
-        End;
-      FIX_IAT_READ:
-        Begin
-          TargetAddr := IATRead;
           BinCode[Fixups[I].Offset] := TargetAddr And $FF;
           BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
           BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
@@ -5771,9 +5751,13 @@ Var
   ImageSize    : LongInt;
   EntryRVA     : LongInt;
   HdrSize      : LongInt;
-  I            : Integer;
+  I, J         : Integer;
   Pad          : LongInt;
   IdataBuf     : Array[0..1023] of Byte;
+  ILTBase, IATBase, DllNameBase, HNBase : Integer;
+  Ofs, TotalIdata : Integer;
+  Rva          : LongInt;
+  ImportHNOffs : Array[1..IMPORT_COUNT] of Integer;
 Begin
   ExeFile := Opts.OutFile;
   Assign(F, ExeFile);
@@ -5809,7 +5793,7 @@ Begin
   
   IdataFileOfs := DataFileOfs + DataSize;
   IdataSize := 512;
-  
+
   ImageSize := $4000;
   EntryRVA := $1000;
 
@@ -5817,113 +5801,86 @@ Begin
 
   FillChar(IdataBuf, SizeOf(IdataBuf), 0);
 
-  { --- Import Descriptor pour KERNEL32.DLL --- }
-  { OriginalFirstThunk (ILT) = RVA $3000+40 }
-  IdataBuf[0] := ($3000 + 40) And $FF;
-  IdataBuf[1] := (($3000 + 40) Shr 8) And $FF;
-  IdataBuf[2] := (($3000 + 40) Shr 16) And $FF;
-  IdataBuf[3] := (($3000 + 40) Shr 24) And $FF;
+  { ==========================================================
+    Construction .idata pilotee par la table ImportNames[] :
+      offset 0..19  : Import Descriptor KERNEL32 (20 octets).
+      offset 20..39 : Descriptor terminateur nul.
+      offset 40     : ILT, IMPORT_COUNT+1 entrees de 4 octets.
+      puis          : IAT, IMPORT_COUNT+1 entrees de 4 octets.
+      puis          : nom DLL "KERNEL32.DLL", aligne.
+      puis          : Hint/Name par import (2 octets hint + nom + nul,
+                      aligne sur 2).
+    ========================================================== }
+  Begin
+    { ILTBase / IATBase / NameBase sont des OFFSETS dans IdataBuf ; les
+      champs Import Descriptor stockent des RVA (IdataRVA + offset). }
+    ILTBase := 40;
+    IATBase := ILTBase + (IMPORT_COUNT + 1) * 4;
+    DllNameBase := IATBase + (IMPORT_COUNT + 1) * 4;
+    { Copie le nom de la DLL (13 octets y compris le nul). }
+    Move('KERNEL32.DLL'#0, IdataBuf[DllNameBase], 13);
+    { Hint/Name pour chaque import, aligne sur 2. }
+    HNBase := DllNameBase + 13;
+    While (HNBase And 1) <> 0 Do
+      HNBase := HNBase + 1;
+    Ofs := HNBase;
+    For I := 1 To IMPORT_COUNT Do
+    Begin
+      ImportHNOffs[I] := Ofs;
+      { 2 octets de hint (0) suivis du nom ASCII termine par un nul. }
+      IdataBuf[Ofs]   := 0;
+      IdataBuf[Ofs+1] := 0;
+      J := Length(ImportNames[I]);
+      Move(ImportNames[I][1], IdataBuf[Ofs + 2], J);
+      IdataBuf[Ofs + 2 + J] := 0;
+      Ofs := Ofs + 2 + J + 1;
+      If (Ofs And 1) <> 0 Then
+        Ofs := Ofs + 1;
+    End;
+    TotalIdata := Ofs;
 
-  { Name = RVA $3000+108 ("KERNEL32.DLL") }
-  IdataBuf[12] := ($3000 + 108) And $FF;
-  IdataBuf[13] := (($3000 + 108) Shr 8) And $FF;
-  IdataBuf[14] := (($3000 + 108) Shr 16) And $FF;
-  IdataBuf[15] := (($3000 + 108) Shr 24) And $FF;
+    { --- Import Descriptor pour KERNEL32.DLL (20 octets). --- }
+    Rva := IdataRVA + ILTBase;
+    IdataBuf[0] := Rva And $FF;
+    IdataBuf[1] := (Rva Shr 8) And $FF;
+    IdataBuf[2] := (Rva Shr 16) And $FF;
+    IdataBuf[3] := (Rva Shr 24) And $FF;
+    Rva := IdataRVA + DllNameBase;
+    IdataBuf[12] := Rva And $FF;
+    IdataBuf[13] := (Rva Shr 8) And $FF;
+    IdataBuf[14] := (Rva Shr 16) And $FF;
+    IdataBuf[15] := (Rva Shr 24) And $FF;
+    Rva := IdataRVA + IATBase;
+    IdataBuf[16] := Rva And $FF;
+    IdataBuf[17] := (Rva Shr 8) And $FF;
+    IdataBuf[18] := (Rva Shr 16) And $FF;
+    IdataBuf[19] := (Rva Shr 24) And $FF;
+    { Descriptor terminateur (zero) a 20..39, deja a 0 via FillChar. }
 
-  { FirstThunk (IAT) = RVA $3000+76 }
-  IdataBuf[16] := ($3000 + 76) And $FF;
-  IdataBuf[17] := (($3000 + 76) Shr 8) And $FF;
-  IdataBuf[18] := (($3000 + 76) Shr 16) And $FF;
-  IdataBuf[19] := (($3000 + 76) Shr 24) And $FF;
+    { --- ILT et IAT : chaque entree pointe sur son Hint/Name. --- }
+    For I := 1 To IMPORT_COUNT Do
+    Begin
+      Rva := IdataRVA + ImportHNOffs[I];
+      Ofs := ILTBase + (I - 1) * 4;
+      IdataBuf[Ofs]   := Rva And $FF;
+      IdataBuf[Ofs+1] := (Rva Shr 8) And $FF;
+      IdataBuf[Ofs+2] := (Rva Shr 16) And $FF;
+      IdataBuf[Ofs+3] := (Rva Shr 24) And $FF;
+      Ofs := IATBase + (I - 1) * 4;
+      IdataBuf[Ofs]   := Rva And $FF;
+      IdataBuf[Ofs+1] := (Rva Shr 8) And $FF;
+      IdataBuf[Ofs+2] := (Rva Shr 16) And $FF;
+      IdataBuf[Ofs+3] := (Rva Shr 24) And $FF;
+    End;
+    { Terminateurs nuls de l'ILT et de l'IAT sont deja a 0. }
 
-  { --- ILT a offset 40 : 7 pointeurs vers Hint/Name + nul --- }
-  { 0 : GetStdHandle -> $3000+124 }
-  IdataBuf[40] := ($3000 + 124) And $FF;
-  IdataBuf[41] := (($3000 + 124) Shr 8) And $FF;
-  IdataBuf[42] := (($3000 + 124) Shr 16) And $FF;
-  IdataBuf[43] := (($3000 + 124) Shr 24) And $FF;
-  { 1 : WriteFile -> $3000+140 }
-  IdataBuf[44] := ($3000 + 140) And $FF;
-  IdataBuf[45] := (($3000 + 140) Shr 8) And $FF;
-  IdataBuf[46] := (($3000 + 140) Shr 16) And $FF;
-  IdataBuf[47] := (($3000 + 140) Shr 24) And $FF;
-  { 2 : ExitProcess -> $3000+152 }
-  IdataBuf[48] := ($3000 + 152) And $FF;
-  IdataBuf[49] := (($3000 + 152) Shr 8) And $FF;
-  IdataBuf[50] := (($3000 + 152) Shr 16) And $FF;
-  IdataBuf[51] := (($3000 + 152) Shr 24) And $FF;
-  { 3 : Sleep -> $3000+166 }
-  IdataBuf[52] := ($3000 + 166) And $FF;
-  IdataBuf[53] := (($3000 + 166) Shr 8) And $FF;
-  IdataBuf[54] := (($3000 + 166) Shr 16) And $FF;
-  IdataBuf[55] := (($3000 + 166) Shr 24) And $FF;
-  { 4 : GetTickCount -> $3000+174 }
-  IdataBuf[56] := ($3000 + 174) And $FF;
-  IdataBuf[57] := (($3000 + 174) Shr 8) And $FF;
-  IdataBuf[58] := (($3000 + 174) Shr 16) And $FF;
-  IdataBuf[59] := (($3000 + 174) Shr 24) And $FF;
-  { 5 : GetCommandLineA -> $3000+190 }
-  IdataBuf[60] := ($3000 + 190) And $FF;
-  IdataBuf[61] := (($3000 + 190) Shr 8) And $FF;
-  IdataBuf[62] := (($3000 + 190) Shr 16) And $FF;
-  IdataBuf[63] := (($3000 + 190) Shr 24) And $FF;
-  { 6 : ReadFile -> $3000+208 }
-  IdataBuf[64] := ($3000 + 208) And $FF;
-  IdataBuf[65] := (($3000 + 208) Shr 8) And $FF;
-  IdataBuf[66] := (($3000 + 208) Shr 16) And $FF;
-  IdataBuf[67] := (($3000 + 208) Shr 24) And $FF;
-  { ILT terminator (nul) a 68..71 ; deja a 0 via FillChar. }
-
-  { --- IAT a offset 76 : copie initiale de ILT (loader remplace par
-    les adresses reelles au chargement) --- }
-  IdataBuf[76] := ($3000 + 124) And $FF;
-  IdataBuf[77] := (($3000 + 124) Shr 8) And $FF;
-  IdataBuf[78] := (($3000 + 124) Shr 16) And $FF;
-  IdataBuf[79] := (($3000 + 124) Shr 24) And $FF;
-  IdataBuf[80] := ($3000 + 140) And $FF;
-  IdataBuf[81] := (($3000 + 140) Shr 8) And $FF;
-  IdataBuf[82] := (($3000 + 140) Shr 16) And $FF;
-  IdataBuf[83] := (($3000 + 140) Shr 24) And $FF;
-  IdataBuf[84] := ($3000 + 152) And $FF;
-  IdataBuf[85] := (($3000 + 152) Shr 8) And $FF;
-  IdataBuf[86] := (($3000 + 152) Shr 16) And $FF;
-  IdataBuf[87] := (($3000 + 152) Shr 24) And $FF;
-  IdataBuf[88] := ($3000 + 166) And $FF;
-  IdataBuf[89] := (($3000 + 166) Shr 8) And $FF;
-  IdataBuf[90] := (($3000 + 166) Shr 16) And $FF;
-  IdataBuf[91] := (($3000 + 166) Shr 24) And $FF;
-  IdataBuf[92] := ($3000 + 174) And $FF;
-  IdataBuf[93] := (($3000 + 174) Shr 8) And $FF;
-  IdataBuf[94] := (($3000 + 174) Shr 16) And $FF;
-  IdataBuf[95] := (($3000 + 174) Shr 24) And $FF;
-  IdataBuf[96] := ($3000 + 190) And $FF;
-  IdataBuf[97] := (($3000 + 190) Shr 8) And $FF;
-  IdataBuf[98] := (($3000 + 190) Shr 16) And $FF;
-  IdataBuf[99] := (($3000 + 190) Shr 24) And $FF;
-  IdataBuf[100] := ($3000 + 208) And $FF;
-  IdataBuf[101] := (($3000 + 208) Shr 8) And $FF;
-  IdataBuf[102] := (($3000 + 208) Shr 16) And $FF;
-  IdataBuf[103] := (($3000 + 208) Shr 24) And $FF;
-  { IAT terminator (nul) a 104..107 ; deja a 0. }
-
-  { --- Nom de la DLL et Hint/Name --- }
-  Move('KERNEL32.DLL'#0, IdataBuf[108], 13);
-
-  { Hint/Name : 2 octets hint (0) puis nom termine par nul. }
-  IdataBuf[124] := 0; IdataBuf[125] := 0;
-  Move('GetStdHandle'#0, IdataBuf[126], 13);
-  IdataBuf[140] := 0; IdataBuf[141] := 0;
-  Move('WriteFile'#0, IdataBuf[142], 10);
-  IdataBuf[152] := 0; IdataBuf[153] := 0;
-  Move('ExitProcess'#0, IdataBuf[154], 12);
-  IdataBuf[166] := 0; IdataBuf[167] := 0;
-  Move('Sleep'#0, IdataBuf[168], 6);
-  IdataBuf[174] := 0; IdataBuf[175] := 0;
-  Move('GetTickCount'#0, IdataBuf[176], 13);
-  IdataBuf[190] := 0; IdataBuf[191] := 0;
-  Move('GetCommandLineA'#0, IdataBuf[192], 16);
-  IdataBuf[208] := 0; IdataBuf[209] := 0;
-  Move('ReadFile'#0, IdataBuf[210], 9);
+    { Taille de la section : arrondie sur 512 octets. }
+    If TotalIdata > IdataSize Then
+    Begin
+      While IdataSize < TotalIdata Do
+        IdataSize := IdataSize + 512;
+    End;
+  End;
 
   WriteBinByte(F, Ord('M'));
   WriteBinByte(F, Ord('Z'));
@@ -6149,11 +6106,31 @@ Begin
   BinDataLen := 0;
   DataOffset := 0;
   ExitLabelTop := 0;
+  RealCount := 0;
 
   Ti := TypeNew(TYK_INTEGER, 4);
   Ti := TypeNew(TYK_BOOLEAN, 1);
   Ti := TypeNew(TYK_CHAR, 1);
   Ti := TypeNew(TYK_REAL, 4);
+
+  { Table des imports KERNEL32.DLL.  L'ordre est arbitraire mais doit
+    rester stable car les offsets IAT sont calcules a partir de l'index. }
+  ImportNames[1]  := 'GetStdHandle';     ImportFixKinds[1]  := FIX_IAT_GETSTD;
+  ImportNames[2]  := 'WriteFile';        ImportFixKinds[2]  := FIX_IAT_WRITE;
+  ImportNames[3]  := 'ExitProcess';      ImportFixKinds[3]  := FIX_IAT_EXIT;
+  ImportNames[4]  := 'Sleep';            ImportFixKinds[4]  := FIX_IAT_SLEEP;
+  ImportNames[5]  := 'GetTickCount';     ImportFixKinds[5]  := FIX_IAT_GETTICK;
+  ImportNames[6]  := 'GetCommandLineA';  ImportFixKinds[6]  := FIX_IAT_GETCMD;
+  ImportNames[7]  := 'ReadFile';         ImportFixKinds[7]  := FIX_IAT_READ;
+  ImportNames[8]  := 'CreateFileA';      ImportFixKinds[8]  := FIX_IAT_CREATEFILE;
+  ImportNames[9]  := 'CloseHandle';      ImportFixKinds[9]  := FIX_IAT_CLOSEHANDLE;
+  ImportNames[10] := 'SetFilePointer';   ImportFixKinds[10] := FIX_IAT_SETFILEPTR;
+  ImportNames[11] := 'GetProcessHeap';   ImportFixKinds[11] := FIX_IAT_GETPROCHEAP;
+  ImportNames[12] := 'HeapAlloc';        ImportFixKinds[12] := FIX_IAT_HEAPALLOC;
+  ImportNames[13] := 'HeapFree';         ImportFixKinds[13] := FIX_IAT_HEAPFREE;
+  ImportNames[14] := 'LoadLibraryA';     ImportFixKinds[14] := FIX_IAT_LOADLIB;
+  ImportNames[15] := 'GetProcAddress';   ImportFixKinds[15] := FIX_IAT_GETPROC;
+  ImportNames[16] := 'FreeLibrary';      ImportFixKinds[16] := FIX_IAT_FREELIB;
 End;
 
 Begin
