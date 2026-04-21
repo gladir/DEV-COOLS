@@ -1,0 +1,17 @@
+(* Demonstration du module Timer : Sleep et Time. *)
+
+MODULE ModTimer;
+IMPORT Out, Timer;
+
+VAR
+  start, stop : INTEGER;
+
+BEGIN
+  Out.String("Timer.Time avant pause : "); Out.Int(Timer.Time(), 0); Out.Ln;
+  start := Timer.Time();
+  Out.String("Pause de 500 ms..."); Out.Ln;
+  Timer.Sleep(500);
+  stop := Timer.Time();
+  Out.String("Timer.Time apres pause : "); Out.Int(stop, 0); Out.Ln;
+  Out.String("Duree ecoulee (ms) : "); Out.Int(stop - start, 0); Out.Ln
+END ModTimer.

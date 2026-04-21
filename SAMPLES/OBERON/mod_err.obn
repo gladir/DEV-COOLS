@@ -1,0 +1,11 @@
+(* Demonstration du module Err : sortie sur le canal d'erreur stderr. *)
+
+MODULE ModErr;
+IMPORT Out, Err;
+
+BEGIN
+  Out.String("Ceci est sur stdout"); Out.Ln;
+  Err.String("Ceci est sur stderr"); Err.Ln;
+  Err.String("Code d'erreur : "); Err.Int(42); Err.Ln;
+  Out.String("stdout : apres les ecritures sur stderr"); Out.Ln
+END ModErr.
