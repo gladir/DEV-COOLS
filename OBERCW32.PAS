@@ -1438,13 +1438,30 @@ Begin
     ModeVal := 0;
   End;
   Case ModeVal Of
-    0: Begin Access := $80000000; Share := 1; Disp := 3; IsAppend := False; End;
-    1: Begin Access := $40000000; Share := 0; Disp := 2; IsAppend := False; End;
-    2: Begin Access := $40000000; Share := 0; Disp := 4; IsAppend := True;  End;
+    0: Begin
+     Access := LongInt($80000000);
+     Share := 1;
+     Disp := 3;
+     IsAppend := False;
+    End;
+    1: Begin
+     Access := $40000000;
+     Share := 0;
+     Disp := 2;
+     IsAppend := False;
+    End;
+    2: Begin
+     Access := $40000000;
+     Share := 0;
+     Disp := 4;
+     IsAppend := True;
+    End;
   Else
     Begin
       ErrorAt(LexLineNo, LexColNo, 'Files.Open : mode invalide (0, 1 ou 2)');
-      Access := $80000000; Share := 1; Disp := 3; IsAppend := False;
+      Access := LongInt($80000000);
+      Share := 1; Disp := 3;
+      IsAppend := False;
     End;
   End;
   ExpectOp(')');
@@ -2374,7 +2391,7 @@ Procedure GenExpression;
 Var Op : String;
 Begin
   GenSimpleExpression;
-  If (CurTok = TOK_OP) And ((CurTokStr = '=') Or (CurTokStr = '#') Or 
+  If (CurTok = TOK_OP) And ((CurTokStr = '=') Or (CurTokStr = '#') Or
      (CurTokStr = '<') Or (CurTokStr = '>') Or (CurTokStr = '<=') Or (CurTokStr = '>=')) Then
   Begin
     Op := CurTokStr;
@@ -3047,7 +3064,7 @@ End;
 { ============================================================
   Palier 2 : helpers de module (Strings, Conv, In, Args).
 
-  Conventions : 
+  Conventions :
   * `(` a ete consomme par l'appelant, `)` sera consomme par l'appelant.
   * Chaque procedure consomme ses arguments du flux de tokens et
     emet le code qui realise l'action ; rien n'est retourne.
@@ -3553,7 +3570,7 @@ Begin
 End;
 
 Procedure GenStatement;
-Var 
+Var
   VarName : String;
   Si : Integer;
   Lab1, Lab2, Lab3, Lab4 : String;
@@ -6056,25 +6073,25 @@ Procedure BuildDataSection;
 Var I, J, K : Integer;
 Begin
   BinDataLen := 0;
-  
+
   For I := 1 To 4 Do
   Begin
     BinData[BinDataLen] := 0;
     Inc(BinDataLen);
   End;
-  
+
   For I := 1 To 4 Do
   Begin
     BinData[BinDataLen] := 0;
     Inc(BinDataLen);
   End;
-  
+
   For I := 1 To 12 Do
   Begin
     BinData[BinDataLen] := Ord(' ');
     Inc(BinDataLen);
   End;
-  
+
   BinData[BinDataLen] := $0D;
   Inc(BinDataLen);
   BinData[BinDataLen] := $0A;
@@ -6178,7 +6195,7 @@ Begin
     BinData[BinDataLen] := 0;
     Inc(BinDataLen);
   End;
-  
+
   For I := 1 To SymCount Do
   Begin
     If SymTab[I].TypeIdx = TYK_ARRCHAR Then
@@ -6201,7 +6218,7 @@ Begin
       End;
     End;
   End;
-  
+
   While (BinDataLen Mod 512) <> 0 Do
   Begin
     BinData[BinDataLen] := 0;
@@ -6282,19 +6299,19 @@ Begin
 
   HdrSize := 1024;
   TextFileOfs := HdrSize;
-  
+
   While (BinCodeLen Mod 512) <> 0 Do
     BinEmitByte($90);
-  
+
   TextSize := BinCodeLen;
   If TextSize < 512 Then
     TextSize := 512;
-  
+
   DataFileOfs := TextFileOfs + TextSize;
   DataSize := BinDataLen;
   If DataSize < 512 Then
     DataSize := 512;
-  
+
   IdataFileOfs := DataFileOfs + DataSize;
   IdataSize := 512;
 
@@ -6471,7 +6488,7 @@ Begin
   WriteBinDWord(F, 0);
   WriteBinWord(F, 0);
   WriteBinWord(F, 0);
-  WriteBinDWord(F, $C0000040);
+  WriteBinDWord(F, LongInt($C0000040));
 
   WriteBinString(F, '.idata');
   Pad := 8 - (Length('.idata') + 1);
@@ -6484,7 +6501,7 @@ Begin
   WriteBinDWord(F, 0);
   WriteBinWord(F, 0);
   WriteBinWord(F, 0);
-  WriteBinDWord(F, $C0000040);
+  WriteBinDWord(F, LongInt($C0000040));
 
   While FilePos(F) < HdrSize Do
     WriteBinByte(F, 0);
@@ -6503,15 +6520,18 @@ Begin
   End;
 End;
 
-Procedure PrintUsage;
-Begin
-  WriteLn('OBERCW32 version ', OBERCW32_VERSION);
-  WriteLn('Usage: OBERCW32 <source.obn> [options]');
-  WriteLn('Options:');
-  WriteLn('  -o <fichier>  : specifier le nom du fichier de sortie');
-  WriteLn('  -v            : mode verbeux');
-  WriteLn('  -h, --help    : afficher cette aide');
-  WriteLn('  --version     : afficher la version');
+Procedure PrintUsage;Begin
+ WriteLn('OBERCW32 version ', OBERCW32_VERSION,' - Cette commande permet de ',
+         'lancer le compilateur Oberon pour l''assembleur du microprocesseur ',
+         '80386 pour Windows 32 bits.');
+ WriteLn;
+ WriteLn('Syntaxe : OBERCW32 <source.obn> [options]');
+ WriteLn;
+ WriteLn('Options :');
+ WriteLn('  -o <fichier>  : specifier le nom du fichier de sortie');
+ WriteLn('  -v            : mode verbeux');
+ WriteLn('  -h, --help    : afficher cette aide');
+ WriteLn('  --version     : afficher la version');
 End;
 
 Procedure ParseArgs;
@@ -6641,40 +6661,38 @@ Begin
   ImportNames[20] := 'DeleteFiber';      ImportFixKinds[20] := FIX_IAT_DELETEFIBER;
 End;
 
-Begin
-  ParseArgs;
-  InitTables;
-  LexOpen(Opts.SrcFile);
-  
-  EmitCodePrologue;
-  ParseModule;
-  EmitCodeEpilogue;
-  GenPrintIntHelper;
-  GenArgsCountHelper;
-  GenReadLineHelper;
-  GenStrLenHelper;
-  GenStrPosHelper;
-  GenStrCapHelper;
-  GenIntToBufHelper;
-  GenHexToBufHelper;
-  GenStrToIntHelper;
-  GenArgsGetHelper;
-  GenPrintRealHelper;
-  GenCoroBodyHelper;
-  
-  LexClose;
-
-  If ErrorCount > 0 Then
-  Begin
-    WriteLn('OBERCW32: ', ErrorCount, ' erreur(s), compilation abandonnee');
-    Halt(1);
-  End;
-
-  BuildDataSection;
-  BinWriteExe;
-
-  If Opts.Verbose Then
-  Begin
-    WriteLn('OBERCW32 v', OBERCW32_VERSION, ': compilation OK (', ErrorCount, ' erreur(s))');
-  End;
-End.
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  PrintUsage;
+  Halt;
+ End;
+ ParseArgs;
+ InitTables;
+ LexOpen(Opts.SrcFile);
+ EmitCodePrologue;
+ ParseModule;
+ EmitCodeEpilogue;
+ GenPrintIntHelper;
+ GenArgsCountHelper;
+ GenReadLineHelper;
+ GenStrLenHelper;
+ GenStrPosHelper;
+ GenStrCapHelper;
+ GenIntToBufHelper;
+ GenHexToBufHelper;
+ GenStrToIntHelper;
+ GenArgsGetHelper;
+ GenPrintRealHelper;
+ GenCoroBodyHelper;
+ LexClose;
+ If ErrorCount > 0 Then Begin
+  WriteLn('OBERCW32: ', ErrorCount, ' erreur(s), compilation abandonnee');
+  Halt(1);
+ End;
+ BuildDataSection;
+ BinWriteExe;
+ If Opts.Verbose Then Begin
+  WriteLn('OBERCW32 v', OBERCW32_VERSION, ': compilation OK (', ErrorCount, ' erreur(s))');
+ End;
+END.
