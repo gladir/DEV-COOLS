@@ -4648,13 +4648,16 @@ Begin
     { Conversion de type : NomType(expr) ou NomType est un type       }
     { built-in entier (Integer, Long_Long_Integer, Natural, ...).      }
     { Traite comme une identite (valeur inchangee, code verifie en Ada). }
+    { Si Nm est aussi enregistre comme fonction (ex. Ada.Strings.Count),}
+    { on laisse le dispatch de fonction prendre le relais.              }
     If (CurTokType = TOK_LPAREN) And
        ((Nm = 'INTEGER') Or (Nm = 'NATURAL') Or (Nm = 'POSITIVE') Or
         (Nm = 'LONG_INTEGER') Or (Nm = 'LONG_LONG_INTEGER') Or
         (Nm = 'SHORT_INTEGER') Or (Nm = 'SHORT_SHORT_INTEGER') Or
         (Nm = 'COUNT') Or (Nm = 'POSITIVE_COUNT') Or (Nm = 'FIELD') Or
         (Nm = 'FLOAT') Or (Nm = 'LONG_FLOAT') Or (Nm = 'LONG_LONG_FLOAT') Or
-        (Nm = 'SHORT_FLOAT') Or (Nm = 'BOOLEAN') Or (Nm = 'CHARACTER')) Then
+        (Nm = 'SHORT_FLOAT') Or (Nm = 'BOOLEAN') Or (Nm = 'CHARACTER')) And
+       (FindSub(Nm) = 0) Then
     Begin
       Consume; { ( }
       ParseExpr;
@@ -7144,7 +7147,8 @@ Begin
         Begin
           U := StrUpperCase(CurTokStr);
           { Heuristique : si le nom est un type (built-in entier/enum),      }
-          { probablement TypeName'Image(X) qui retourne une chaine.           }
+          { regarder l attribut qui suit : 'IMAGE -> TYPE_STR,                }
+          { 'FIRST/'LAST/'LENGTH/'SIZE/'POS/'VAL/'SUCC/'PRED -> TYPE_INT.     }
           If (U = 'INTEGER') Or (U = 'LONG_INTEGER') Or
              (U = 'LONG_LONG_INTEGER') Or (U = 'SHORT_INTEGER') Or
              (U = 'NATURAL') Or (U = 'POSITIVE') Or
@@ -7152,6 +7156,23 @@ Begin
              (U = 'FLOAT') Or (U = 'LONG_FLOAT') Or (U = 'LONG_LONG_FLOAT') Or
              (U = 'SHORT_FLOAT') Or (U = 'BOOLEAN') Or (U = 'CHARACTER') Then
           Begin
+            { Peek pour voir si c est 'Image ou un attribut numerique }
+            P := LexColNo;
+            While (P <= Length(LexLine)) And
+                  ((LexLine[P] = ' ') Or (LexLine[P] = #9)) Do Inc(P);
+            If (P <= Length(LexLine)) And (LexLine[P] = '''') Then
+            Begin
+              { lire le nom d attribut apres l apostrophe }
+              Inc(P);
+              NxCh := #0;
+              If (P <= Length(LexLine)) Then NxCh := LexLine[P];
+              { detecter "IMAGE" vs les autres : si 1ere lettre I/i, TYPE_STR }
+              If (NxCh = 'I') Or (NxCh = 'i') Then
+                DetectArgTypeForPut := TYPE_STR
+              Else
+                DetectArgTypeForPut := TYPE_INT;
+              Exit;
+            End;
             DetectArgTypeForPut := TYPE_STR;
             Exit;
           End;
@@ -7225,7 +7246,25 @@ Begin
             DetectArgTypeForPut := TI;
           End
           Else
-            DetectArgTypeForPut := TYPE_INT;
+          Begin
+            { Pas une variable : essayer comme fonction. Si c est une    }
+            { fonction connue (ex. To_Upper, To_Lower, Ada.Characters.    }
+            { Handling.xxx), on dispatche sur son type de retour. Cela    }
+            { permet a Put(To_Upper('a')) d imprimer 'A' au lieu de 65.   }
+            Sym := FindSub(U);
+            If (Sym > 0) And (SubTab[Sym].IsFunction) Then
+            Begin
+              TI := SubTab[Sym].RetType;
+              If (TI = TYPE_CHAR) Or (TI = TYPE_STR) Or
+                 (TI = TYPE_BOOL) Or (TI = TYPE_INT)  Or
+                 (TI = TYPE_FLOAT) Then
+                DetectArgTypeForPut := TI
+              Else
+                DetectArgTypeForPut := TYPE_INT;
+            End
+            Else
+              DetectArgTypeForPut := TYPE_INT;
+          End;
         End;
       End;
   Else
@@ -9140,6 +9179,26 @@ Begin
   AddChrConst('RIGHT_CURLY_BRACKET', 125);
   AddChrConst('TILDE',               126);
   AddChrConst('DEL',                 127);
+  { Lettres majuscules UC_A..UC_Z = codes 65..90 }
+  AddChrConst('UC_A', 65);  AddChrConst('UC_B', 66);  AddChrConst('UC_C', 67);
+  AddChrConst('UC_D', 68);  AddChrConst('UC_E', 69);  AddChrConst('UC_F', 70);
+  AddChrConst('UC_G', 71);  AddChrConst('UC_H', 72);  AddChrConst('UC_I', 73);
+  AddChrConst('UC_J', 74);  AddChrConst('UC_K', 75);  AddChrConst('UC_L', 76);
+  AddChrConst('UC_M', 77);  AddChrConst('UC_N', 78);  AddChrConst('UC_O', 79);
+  AddChrConst('UC_P', 80);  AddChrConst('UC_Q', 81);  AddChrConst('UC_R', 82);
+  AddChrConst('UC_S', 83);  AddChrConst('UC_T', 84);  AddChrConst('UC_U', 85);
+  AddChrConst('UC_V', 86);  AddChrConst('UC_W', 87);  AddChrConst('UC_X', 88);
+  AddChrConst('UC_Y', 89);  AddChrConst('UC_Z', 90);
+  { Lettres minuscules LC_A..LC_Z = codes 97..122 }
+  AddChrConst('LC_A', 97);  AddChrConst('LC_B', 98);  AddChrConst('LC_C', 99);
+  AddChrConst('LC_D', 100); AddChrConst('LC_E', 101); AddChrConst('LC_F', 102);
+  AddChrConst('LC_G', 103); AddChrConst('LC_H', 104); AddChrConst('LC_I', 105);
+  AddChrConst('LC_J', 106); AddChrConst('LC_K', 107); AddChrConst('LC_L', 108);
+  AddChrConst('LC_M', 109); AddChrConst('LC_N', 110); AddChrConst('LC_O', 111);
+  AddChrConst('LC_P', 112); AddChrConst('LC_Q', 113); AddChrConst('LC_R', 114);
+  AddChrConst('LC_S', 115); AddChrConst('LC_T', 116); AddChrConst('LC_U', 117);
+  AddChrConst('LC_V', 118); AddChrConst('LC_W', 119); AddChrConst('LC_X', 120);
+  AddChrConst('LC_Y', 121); AddChrConst('LC_Z', 122);
 End;
 
 { ---- RegisterCharactersHandlingStubs : signatures Is_xxx/To_xxx ---- }
@@ -9473,7 +9532,9 @@ End;
 Procedure RegisterStringsStubs;
 Var Idx : Integer;
 Begin
-  { Ada.Strings : Index, Count, Head, Tail, Trim }
+  { Ada.Strings : Length, Index, Count, Head, Tail, Trim }
+  Idx := RegisterStdSub('LENGTH', True, TYPE_INT);
+  AddStdParam(Idx, 'SOURCE', TYPE_STR, PARAM_IN);
   Idx := RegisterStdSub('INDEX', True, TYPE_INT);
   AddStdParam(Idx, 'SOURCE',  TYPE_STR,  PARAM_IN);
   AddStdParam(Idx, 'PATTERN', TYPE_STR,  PARAM_IN);
@@ -9501,8 +9562,15 @@ Begin
   AddStdParam(Idx, 'SET',     TYPE_STR,  PARAM_IN);
 End;
 
-{ ---- GenStringsStubs : emettre bodies stubs Ada.Strings ------------ }
-{ Chaque fonction retourne 0 ou chaine vide (stub non bloquant).       }
+{ ---- GenStringsStubs : emettre bodies Ada.Strings -------------------- }
+{ Implementations reelles en x86 sur chaines ASCIIZ :                    }
+{   LENGTH(S)            -> appel _ADART_STRLEN                          }
+{   INDEX(S, P)          -> position 1-based de P dans S, ou 0           }
+{   COUNT(S, P)          -> nombre d occurrences non-chevauchantes de P  }
+{   HEAD(S, N)           -> copie des N premiers chars dans _ADART_STRBUF}
+{   TAIL(S, N)           -> copie des N derniers chars dans _ADART_STRBUF}
+{   TRIM(S, Side)        -> chaine sans espaces de tete/queue            }
+{   TO_MAPPING, VALUE, IS_IN : stubs simples                              }
 Procedure GenStringsStubs;
 
   Procedure EmitStubRet(Const Name : TString; ArgBytes : Integer);
@@ -9519,17 +9587,345 @@ Procedure GenStringsStubs;
     Else EmitI('RET  ' + IntToStr_(ArgBytes));
   End;
 
+Var
+  Idx : Integer;
+  L1, L2, L3, LEnd : TString;
 Begin
   EmitBlank;
-  EmitComment('=== Ada.Strings / Ada.Strings.Maps (stubs) ===');
-  EmitStubRet('INDEX',      8);
-  EmitStubRet('COUNT',      8);
-  EmitStubRet('HEAD',       8);
-  EmitStubRet('TAIL',       8);
-  EmitStubRet('TRIM',       8);
+  EmitComment('=== Ada.Strings / Ada.Strings.Maps ===');
+
+  { ---- LENGTH(S : String) return Natural ---- }
+  Idx := FindSub('LENGTH');
+  If Idx > 0 Then
+  Begin
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Fixed.Length (STRLEN) ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('MOV  EAX, DWORD PTR [EBP+8]');  { ptr source }
+    EmitI('CALL ' + ADA_RT_PFX + 'STRLEN');
+    EmitI('POP  EBP');
+    EmitI('RET  4');
+  End;
+
+  { ---- INDEX(Source, Pattern) return Natural (1-based, 0 si absent) ---- }
+  Idx := FindSub('INDEX');
+  If Idx > 0 Then
+  Begin
+    L1   := NewLabel;  { boucle externe : pour chaque position i de S }
+    L2   := NewLabel;  { boucle interne : comparer octet par octet    }
+    L3   := NewLabel;  { match trouve                                  }
+    LEnd := NewLabel;  { fin / non trouve                              }
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Fixed.Index ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('PUSH ESI');
+    EmitI('PUSH EDI');
+    EmitI('PUSH EBX');
+    EmitI('MOV  ESI, DWORD PTR [EBP+12]'); { Source (1er arg) }
+    EmitI('MOV  EDI, DWORD PTR [EBP+8]');  { Pattern (2e arg) }
+    EmitI('XOR  EBX, EBX');                { i = 0 }
+    EmitLabel(L1);
+    EmitI('MOV  AL, BYTE PTR [ESI]');
+    EmitI('TEST AL, AL');
+    EmitI('JZ   ' + LEnd);                 { fin de Source -> non trouve }
+    { comparer ESI..ESI+k contre EDI..EDI+k }
+    EmitI('PUSH ESI');
+    EmitI('PUSH EDI');
+    EmitLabel(L2);
+    EmitI('MOV  AL, BYTE PTR [EDI]');
+    EmitI('TEST AL, AL');
+    EmitI('JZ   ' + L3);                   { fin de Pattern -> match }
+    EmitI('MOV  DL, BYTE PTR [ESI]');
+    EmitI('TEST DL, DL');
+    EmitI('JZ   ' + LEnd + '_R');          { Source trop courte }
+    EmitI('CMP  AL, DL');
+    EmitI('JNE  ' + LEnd + '_R');
+    EmitI('INC  ESI');
+    EmitI('INC  EDI');
+    EmitI('JMP  ' + L2);
+    EmitLabel(LEnd + '_R');                { restore et avancer }
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('INC  ESI');
+    EmitI('INC  EBX');
+    EmitI('JMP  ' + L1);
+    EmitLabel(L3);
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('MOV  EAX, EBX');
+    EmitI('INC  EAX');                     { 1-based }
+    EmitI('JMP  ' + LEnd + '_D');
+    EmitLabel(LEnd);
+    EmitI('XOR  EAX, EAX');                { 0 = non trouve }
+    EmitLabel(LEnd + '_D');
+    EmitI('POP  EBX');
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+
+  { ---- COUNT(Source, Pattern) return Natural ---- }
+  Idx := FindSub('COUNT');
+  If Idx > 0 Then
+  Begin
+    L1   := NewLabel;  { boucle externe }
+    L2   := NewLabel;  { boucle interne compare }
+    L3   := NewLabel;  { match trouve }
+    LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Fixed.Count ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('PUSH ESI');
+    EmitI('PUSH EDI');
+    EmitI('PUSH EBX');
+    EmitI('PUSH ECX');
+    EmitI('MOV  ESI, DWORD PTR [EBP+12]'); { Source (1er arg) }
+    EmitI('MOV  EBX, DWORD PTR [EBP+8]');  { Pattern (2e arg) }
+    EmitI('XOR  ECX, ECX');                { compteur }
+    EmitLabel(L1);
+    EmitI('MOV  AL, BYTE PTR [ESI]');
+    EmitI('TEST AL, AL');
+    EmitI('JZ   ' + LEnd);
+    EmitI('PUSH ESI');
+    EmitI('MOV  EDI, EBX');
+    EmitLabel(L2);
+    EmitI('MOV  AL, BYTE PTR [EDI]');
+    EmitI('TEST AL, AL');
+    EmitI('JZ   ' + L3);
+    EmitI('MOV  DL, BYTE PTR [ESI]');
+    EmitI('TEST DL, DL');
+    EmitI('JZ   ' + L1 + '_R');
+    EmitI('CMP  AL, DL');
+    EmitI('JNE  ' + L1 + '_R');
+    EmitI('INC  ESI');
+    EmitI('INC  EDI');
+    EmitI('JMP  ' + L2);
+    EmitLabel(L1 + '_R');
+    EmitI('POP  ESI');
+    EmitI('INC  ESI');
+    EmitI('JMP  ' + L1);
+    EmitLabel(L3);
+    EmitI('POP  EAX');                     { garde pas ESI avance interne }
+    EmitI('INC  ECX');
+    { ESI a avance a position apres pattern -> continuer depuis la }
+    EmitI('JMP  ' + L1);
+    EmitLabel(LEnd);
+    EmitI('MOV  EAX, ECX');
+    EmitI('POP  ECX');
+    EmitI('POP  EBX');
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+
+  { ---- HEAD(Source, Count) return String ---- }
+  { Copie min(Length, Count) premiers chars dans STRBUF.                }
+  { Pour simplicite, si Count > Length on retourne juste la source      }
+  { (sans padding). Suffisant pour la majorite des cas d usage.         }
+  Idx := FindSub('HEAD');
+  If Idx > 0 Then
+  Begin
+    L1   := NewLabel;
+    LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Fixed.Head ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('PUSH ESI');
+    EmitI('PUSH EDI');
+    EmitI('PUSH ECX');
+    EmitI('MOV  ESI, DWORD PTR [EBP+12]'); { Source }
+    EmitI('MOV  ECX, DWORD PTR [EBP+8]');  { Count }
+    EmitI('MOV  EDI, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    EmitI('CMP  ECX, 240');
+    EmitI('JBE  ' + L1);
+    EmitI('MOV  ECX, 240');
+    EmitLabel(L1);
+    EmitI('TEST ECX, ECX');
+    EmitI('JZ   ' + LEnd);
+    EmitI('MOV  AL, BYTE PTR [ESI]');
+    EmitI('TEST AL, AL');
+    EmitI('JZ   ' + LEnd);
+    EmitI('MOV  BYTE PTR [EDI], AL');
+    EmitI('INC  ESI');
+    EmitI('INC  EDI');
+    EmitI('DEC  ECX');
+    EmitI('JMP  ' + L1);
+    EmitLabel(LEnd);
+    EmitI('MOV  BYTE PTR [EDI], 0');        { NUL terminator }
+    EmitI('MOV  EAX, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    EmitI('POP  ECX');
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+
+  { ---- TAIL(Source, Count) return String ---- }
+  { Copie les Count derniers chars dans STRBUF (sans padding).           }
+  Idx := FindSub('TAIL');
+  If Idx > 0 Then
+  Begin
+    L1   := NewLabel;  { copie }
+    LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Fixed.Tail ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('PUSH ESI');
+    EmitI('PUSH EDI');
+    EmitI('PUSH EBX');
+    EmitI('PUSH ECX');
+    EmitI('MOV  ESI, DWORD PTR [EBP+12]'); { Source }
+    EmitI('MOV  ECX, DWORD PTR [EBP+8]');  { Count }
+    EmitI('CMP  ECX, 240');
+    EmitI('JBE  ' + L1 + '_OK');
+    EmitI('MOV  ECX, 240');
+    EmitLabel(L1 + '_OK');
+    EmitI('MOV  EAX, ESI');
+    EmitI('CALL ' + ADA_RT_PFX + 'STRLEN'); { EAX = length }
+    EmitI('MOV  EBX, EAX');                 { EBX = length }
+    EmitI('MOV  EDI, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    { Si Count >= Length, copier toute la source }
+    EmitI('CMP  ECX, EBX');
+    EmitI('JB   ' + L1);                    { Count < Length : skip full }
+    EmitI('MOV  ECX, EBX');                 { limiter Count a Length }
+    EmitI('JMP  ' + L1);
+    EmitLabel(L1);
+    { avancer ESI de (Length - Count) pour pointer aux Count derniers   }
+    EmitI('MOV  EAX, EBX');
+    EmitI('SUB  EAX, ECX');
+    EmitI('ADD  ESI, EAX');
+    EmitLabel(L1 + '_C');
+    EmitI('TEST ECX, ECX');
+    EmitI('JZ   ' + LEnd);
+    EmitI('MOV  DL, BYTE PTR [ESI]');
+    EmitI('TEST DL, DL');
+    EmitI('JZ   ' + LEnd);
+    EmitI('MOV  BYTE PTR [EDI], DL');
+    EmitI('INC  ESI');
+    EmitI('INC  EDI');
+    EmitI('DEC  ECX');
+    EmitI('JMP  ' + L1 + '_C');
+    EmitLabel(LEnd);
+    EmitI('MOV  BYTE PTR [EDI], 0');
+    EmitI('MOV  EAX, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    EmitI('POP  ECX');
+    EmitI('POP  EBX');
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+
+  { ---- TRIM(Source, Side) return String ---- }
+  { Side = 0 (Left), 1 (Right), 2 (Both). Enleve les espaces selon Side.}
+  Idx := FindSub('TRIM');
+  If Idx > 0 Then
+  Begin
+    L1   := NewLabel;  { skip leading spaces }
+    L2   := NewLabel;  { copy }
+    L3   := NewLabel;  { trim trailing }
+    LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Fixed.Trim ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('PUSH ESI');
+    EmitI('PUSH EDI');
+    EmitI('PUSH EBX');
+    EmitI('MOV  ESI, DWORD PTR [EBP+12]'); { Source (1er arg) }
+    EmitI('MOV  EBX, DWORD PTR [EBP+8]');  { Side (2e arg) 0=L,1=R,2=Both }
+    EmitI('MOV  EDI, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    { Skip leading spaces si Side = 0 (Left) ou 2 (Both) }
+    EmitI('CMP  EBX, 1');
+    EmitI('JE   ' + L2);                    { Right seul : pas de skip }
+    EmitLabel(L1);
+    EmitI('MOV  AL, BYTE PTR [ESI]');
+    EmitI('CMP  AL, 32');
+    EmitI('JNE  ' + L2);
+    EmitI('INC  ESI');
+    EmitI('JMP  ' + L1);
+    EmitLabel(L2);
+    { Copier tout le reste }
+    EmitI('MOV  AL, BYTE PTR [ESI]');
+    EmitI('TEST AL, AL');
+    EmitI('JZ   ' + L3);
+    EmitI('MOV  BYTE PTR [EDI], AL');
+    EmitI('INC  ESI');
+    EmitI('INC  EDI');
+    EmitI('JMP  ' + L2);
+    EmitLabel(L3);
+    { Trim trailing si Side = 1 ou 2 }
+    EmitI('CMP  EBX, 0');
+    EmitI('JE   ' + LEnd);
+    EmitLabel(L3 + '_T');
+    EmitI('MOV  EAX, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    EmitI('CMP  EDI, EAX');
+    EmitI('JBE  ' + LEnd);                  { buffer vide }
+    EmitI('MOV  AL, BYTE PTR [EDI-1]');
+    EmitI('CMP  AL, 32');
+    EmitI('JNE  ' + LEnd);
+    EmitI('DEC  EDI');
+    EmitI('JMP  ' + L3 + '_T');
+    EmitLabel(LEnd);
+    EmitI('MOV  BYTE PTR [EDI], 0');
+    EmitI('MOV  EAX, OFFSET ' + ADA_RT_PFX + 'STRBUF');
+    EmitI('POP  EBX');
+    EmitI('POP  EDI');
+    EmitI('POP  ESI');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+
+  { ---- IS_IN(Elem, Set) return Boolean ---- }
+  { Set est un String : on cherche Elem dedans.                        }
+  Idx := FindSub('IS_IN');
+  If Idx > 0 Then
+  Begin
+    L1   := NewLabel;
+    LEnd := NewLabel;
+    EmitBlank;
+    EmitComment('--- Ada.Strings.Maps.Is_In ---');
+    EmitLabel(SubTab[Idx].AsmLabel);
+    EmitI('PUSH EBP');
+    EmitI('MOV  EBP, ESP');
+    EmitI('PUSH ESI');
+    EmitI('MOV  AL, BYTE PTR [EBP+12]');   { Elem (1er arg) }
+    EmitI('MOV  ESI, DWORD PTR [EBP+8]');  { Set (2e arg, ptr) }
+    EmitLabel(L1);
+    EmitI('MOV  DL, BYTE PTR [ESI]');
+    EmitI('TEST DL, DL');
+    EmitI('JZ   ' + LEnd + '_F');
+    EmitI('CMP  AL, DL');
+    EmitI('JE   ' + LEnd + '_T');
+    EmitI('INC  ESI');
+    EmitI('JMP  ' + L1);
+    EmitLabel(LEnd + '_T');
+    EmitI('MOV  EAX, 1');
+    EmitI('JMP  ' + LEnd);
+    EmitLabel(LEnd + '_F');
+    EmitI('XOR  EAX, EAX');
+    EmitLabel(LEnd);
+    EmitI('POP  ESI');
+    EmitI('POP  EBP');
+    EmitI('RET  8');
+  End;
+
+  { ---- Stubs restants : TO_MAPPING, VALUE ---- }
   EmitStubRet('TO_MAPPING', 8);
   EmitStubRet('VALUE',      8);
-  EmitStubRet('IS_IN',      8);
 End;
 
 { ---- RegisterIOStubs : Direct_IO / Sequential_IO / Storage_IO / --- }
@@ -11080,6 +11476,18 @@ Begin
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
+  If Mnem = 'JBE' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($86);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JAE' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($83);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
   If Mnem = 'JA' Then
   Begin
     BinEmitByte($0F); BinEmitByte($87);
@@ -11221,8 +11629,8 @@ Begin
       BinEmitByte(Byte(Imm And $FF));
       Exit;
     End;
-    { CMP AL, imm8 }
-    If Op1 = 'AL' Then
+    { CMP AL, imm8 (court) : uniquement si Op2 est un immediat   }
+    If (Op1 = 'AL') And (AsmRegIdx8(Op2) < 0) Then
     Begin
       BinEmitByte($3C);
       BinEmitByte(Byte(AsmParseImm(Op2) And $FF));
