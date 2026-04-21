@@ -1,0 +1,60 @@
+MODULE mod_coroutines;
+(*
+  Demonstration du module Coroutines (Palier 5).
+
+  Le module Coroutines expose les fibers Win32 comme primitive de
+  changement de contexte cooperatif.  Les handles sont des INTEGER.
+
+    Coroutines.Init()           -> INTEGER
+        Convertit le thread courant en fiber (une seule fois par
+        thread) via ConvertThreadToFiber(NULL).  Retourne le handle
+        du fiber principal.
+
+    Coroutines.Body             -> INTEGER
+        Renvoie l'adresse d'un point d'entree generique "rendement
+        infini" utilisable comme argument d'entree de Coroutines.New.
+        Ce corps :
+            1) recupere le parametre (attendu : handle d'un autre
+               fiber) ;
+            2) appelle SwitchToFiber(param) en boucle.
+        Chaque appel a Coroutines.Switch(co) cede la main ; chaque
+        appel suivant reprend la boucle la ou elle avait yield.
+
+    Coroutines.New(entry, param) -> INTEGER
+        CreateFiber(64Ko, entry, param).  0 si echec.
+
+    Coroutines.Switch(h)        instruction : SwitchToFiber(h).
+    Coroutines.Delete(h)        instruction : DeleteFiber(h).
+
+  Tant que le compilateur ne supporte pas les procedures Oberon
+  definies par l'utilisateur, le corps d'un fiber doit etre soit
+  Coroutines.Body, soit une adresse externe obtenue via
+  DynLink.GetProc.
+*)
+IMPORT Out, Coroutines;
+
+VAR
+  main, co : INTEGER;
+
+BEGIN
+  main := Coroutines.Init();
+  Out.String("  main fiber = ");
+  Out.Int(main, 0); Out.Ln;
+
+  co := Coroutines.New(Coroutines.Body, main);
+  Out.String("  co fiber   = ");
+  Out.Int(co, 0); Out.Ln;
+
+  Out.String("  switching to co..."); Out.Ln;
+  Coroutines.Switch(co);
+  Out.String("  back in main (1)"); Out.Ln;
+
+  Coroutines.Switch(co);
+  Out.String("  back in main (2)"); Out.Ln;
+
+  Coroutines.Switch(co);
+  Out.String("  back in main (3)"); Out.Ln;
+
+  Coroutines.Delete(co);
+  Out.String("  done."); Out.Ln
+END mod_coroutines.

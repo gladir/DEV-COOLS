@@ -116,8 +116,19 @@ Const
   FIX_IAT_GETPROC    = 35;   { KERNEL32!GetProcAddress }
   FIX_IAT_FREELIB    = 36;   { KERNEL32!FreeLibrary }
 
+  { Palier 5 : imports Win32 fibers (coroutines). }
+  FIX_IAT_CVTFIBER   = 37;   { KERNEL32!ConvertThreadToFiber }
+  FIX_IAT_CREATEFIBER= 38;   { KERNEL32!CreateFiber }
+  FIX_IAT_SWITCHFIBER= 39;   { KERNEL32!SwitchToFiber }
+  FIX_IAT_DELETEFIBER= 40;   { KERNEL32!DeleteFiber }
+
+  { Adresse absolue d'un label de code (par opposition a FIX_CODE_REL qui
+    calcule un deplacement PC-relatif pour les instructions CALL/Jxx).
+    Utilise par Coroutines.Body pour exposer un pointeur d'entree. }
+  FIX_CODE_ABS       = 41;
+
   { Nombre total d'imports Win32 reconnus par le generateur .idata. }
-  IMPORT_COUNT       = 16;
+  IMPORT_COUNT       = 20;
 
   PE_MACHINE_I386 = $014C;
 
@@ -1995,6 +2006,57 @@ Begin
     ExpectOp(')');
   End
 
+  { ========= Palier 5 : Coroutines (Win32 fibers) ========= }
+
+  { --- Coroutines.Init() : ConvertThreadToFiber(NULL).  Doit etre
+        appele une fois par le thread principal avant d'utiliser les
+        autres primitives.  Retourne le handle du fiber principal. --- }
+  Else If QN = 'COROUTINES.INIT' Then
+  Begin
+    If AcceptOp('(') Then
+      ExpectOp(')');
+    EmitPushImm32(0);                      { lpParameter = NULL }
+    EmitCallIAT(FIX_IAT_CVTFIBER);
+  End
+
+  { --- Coroutines.Body : adresse du helper _coro_body (voir
+        GenCoroBodyHelper) utilisable comme entry pour Coroutines.New.
+        Emis comme une constante absolue (FIX_CODE_ABS). --- }
+  Else If QN = 'COROUTINES.BODY' Then
+  Begin
+    If AcceptOp('(') Then
+      ExpectOp(')');
+    BinEmitByte($B8);                      { mov eax, imm32 }
+    AddFixup(FIX_CODE_ABS, FindLabel('_coro_body'));
+    BinEmitDWord(0);
+  End
+
+  { --- Coroutines.New(entry, param) : CreateFiber(64K, entry, param).
+        Retourne le handle du nouveau fiber ou 0 si echec. --- }
+  Else If QN = 'COROUTINES.NEW' Then
+  Begin
+    ExpectOp('(');
+    GenExpression;                         { eax = entry }
+    EmitPushEAX;                           { a pousser en 2e (lpStartAddress) }
+    ExpectOp(',');
+    GenExpression;                         { eax = param }
+    { Reordre stdcall : push param (droite), puis entry, puis size. }
+    EmitPushEAX;                           { arg3 = lpParameter }
+    { arg2 = lpStartAddress deja sur la pile.  Mais ordre :
+      CreateFiber(dwStackSize, lpStartAddress, lpParameter), donc
+      stdcall push droite-a-gauche : lpParameter, lpStartAddress,
+      dwStackSize.  Or nous avons pousse entry en premier (sous param).
+      Il faut inverser les deux du haut : nous avons actuellement
+      [esp]=param, [esp+4]=entry.  Echange : }
+    BinEmitByte($58);                      { pop eax (param) }
+    BinEmitByte($5A);                      { pop edx (entry) }
+    BinEmitByte($50);                      { push eax (param) }
+    BinEmitByte($52);                      { push edx (entry) }
+    EmitPushImm32($10000);                 { arg1 = dwStackSize = 64K }
+    EmitCallIAT(FIX_IAT_CREATEFIBER);
+    ExpectOp(')');
+  End
+
   Else
   Begin
     { Qualificatif inconnu : on essaie la recherche symbolique
@@ -3758,6 +3820,28 @@ Begin
           ExpectOp(')');
         End;
       End
+
+      { --- Palier 5 : instructions Coroutines --- }
+      Else If VarName = 'Coroutines.Switch' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenExpression;            { eax = fiber }
+          EmitPushEAX;
+          EmitCallIAT(FIX_IAT_SWITCHFIBER);
+          ExpectOp(')');
+        End;
+      End
+      Else If VarName = 'Coroutines.Delete' Then
+      Begin
+        If AcceptOp('(') Then
+        Begin
+          GenExpression;            { eax = fiber }
+          EmitPushEAX;
+          EmitCallIAT(FIX_IAT_DELETEFIBER);
+          ExpectOp(')');
+        End;
+      End
       Else If VarName = 'SYSTEM.PUT' Then
       Begin
         If AcceptOp('(') Then
@@ -5401,6 +5485,36 @@ Begin
   BinEmitByte($C3);                                         { ret }
 End;
 
+{ --- Helper coroutine body (Palier 5).
+  Entree d'un fiber generique : lpParameter (conventionnellement le
+  handle du fiber principal) arrive sur la pile.  Le corps sauvegarde
+  ce handle dans EBX (callee-saved pour stdcall, donc preserve a
+  travers SwitchToFiber) puis re-yield en boucle : chaque appel a
+  Coroutines.Switch(co) cede la main au code principal, et tout appel
+  suivant a Switch(co) reprend l'execution dans la boucle ci-dessous.
+
+  Prototype Win32 du callback :
+      VOID CALLBACK FiberProc(LPVOID lpParameter);
+  stdcall a 1 argument, donc a l'entree :
+      [esp]   = adresse de retour (jamais utilisee)
+      [esp+4] = lpParameter (main fiber handle) --- }
+Procedure GenCoroBodyHelper;
+Var
+  LLoop : String;
+Begin
+  DefineLabel('_coro_body');
+  { mov ebx, [esp+4]  (8B 5C 24 04) }
+  BinEmitByte($8B); BinEmitByte($5C); BinEmitByte($24); BinEmitByte($04);
+  LLoop := GenLabel;
+  DefineLabel(LLoop);
+  { push ebx }
+  BinEmitByte($53);
+  { call [SwitchToFiber] }
+  EmitCallIAT(FIX_IAT_SWITCHFIBER);
+  { jmp LLoop }
+  EmitJmp(LLoop);
+End;
+
 Procedure ParseVarDecl;
 Var
   VarNames : Array[1..32] of String;
@@ -5773,6 +5887,23 @@ Begin
               BinCode[Fixups[I].Offset+1] := (RelAddr Shr 8) And $FF;
               BinCode[Fixups[I].Offset+2] := (RelAddr Shr 16) And $FF;
               BinCode[Fixups[I].Offset+3] := (RelAddr Shr 24) And $FF;
+            End;
+          End;
+        End;
+      FIX_CODE_ABS:
+        Begin
+          { Adresse absolue d'un label de code (utilise par Coroutines.Body
+            pour exposer l'entree du helper _coro_body). }
+          Li := Fixups[I].Target;
+          If (Li > 0) And (Li <= LabelCount) Then
+          Begin
+            If Labels[Li].Defined Then
+            Begin
+              TargetAddr := ImageBase + TextRVA + Labels[Li].Offset;
+              BinCode[Fixups[I].Offset] := TargetAddr And $FF;
+              BinCode[Fixups[I].Offset+1] := (TargetAddr Shr 8) And $FF;
+              BinCode[Fixups[I].Offset+2] := (TargetAddr Shr 16) And $FF;
+              BinCode[Fixups[I].Offset+3] := (TargetAddr Shr 24) And $FF;
             End;
           End;
         End;
@@ -6504,6 +6635,10 @@ Begin
   ImportNames[14] := 'LoadLibraryA';     ImportFixKinds[14] := FIX_IAT_LOADLIB;
   ImportNames[15] := 'GetProcAddress';   ImportFixKinds[15] := FIX_IAT_GETPROC;
   ImportNames[16] := 'FreeLibrary';      ImportFixKinds[16] := FIX_IAT_FREELIB;
+  ImportNames[17] := 'ConvertThreadToFiber'; ImportFixKinds[17] := FIX_IAT_CVTFIBER;
+  ImportNames[18] := 'CreateFiber';      ImportFixKinds[18] := FIX_IAT_CREATEFIBER;
+  ImportNames[19] := 'SwitchToFiber';    ImportFixKinds[19] := FIX_IAT_SWITCHFIBER;
+  ImportNames[20] := 'DeleteFiber';      ImportFixKinds[20] := FIX_IAT_DELETEFIBER;
 End;
 
 Begin
@@ -6525,6 +6660,7 @@ Begin
   GenStrToIntHelper;
   GenArgsGetHelper;
   GenPrintRealHelper;
+  GenCoroBodyHelper;
   
   LexClose;
 

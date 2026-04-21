@@ -281,6 +281,42 @@ mod_dynlink.obn.
     un type PROCEDURE variable (palier ulterieur).
 
 
+Palier 5 (implementes) : coroutines via les fibers Win32 (voir
+l'exemple mod_coroutines.obn).  Les handles sont exposes comme INTEGER.
+
+  Coroutines (mod_coroutines.obn)
+    Coroutines.Init()           convertit le thread courant en fiber
+                                (ConvertThreadToFiber(NULL)) et
+                                retourne le handle du fiber principal.
+                                Doit etre appele une fois, avant toute
+                                autre primitive.
+    Coroutines.Body             renvoie l'adresse d'un helper interne
+                                "_coro_body" : un point d'entree
+                                generique qui, a chaque reprise,
+                                re-yield en appelant SwitchToFiber sur
+                                le parametre passe a CreateFiber.
+                                Permet de construire des coroutines
+                                sans avoir besoin de procedures Oberon
+                                definies par l'utilisateur.
+    Coroutines.New(entry, param) CreateFiber(64Ko, entry, param).
+                                entry   : adresse d'entree (souvent
+                                          Coroutines.Body).
+                                param   : parametre passe a l'entree
+                                          (par convention : handle du
+                                          fiber principal a qui rendre
+                                          la main).
+                                Retourne 0 en cas d'echec.
+    Coroutines.Switch(h)        instruction : SwitchToFiber(h).
+    Coroutines.Delete(h)        instruction : DeleteFiber(h).
+
+  Sous le capot, le compilateur emet un helper "_coro_body" dans la
+  section .text (boucle push ebx ; call [SwitchToFiber] ; jmp loop)
+  et un nouveau type de fixup FIX_CODE_ABS qui resout un label de
+  code en une adresse absolue (necessaire pour CreateFiber, qui prend
+  un pointeur de fonction, par opposition aux appels CALL PC-relatifs
+  existants via FIX_CODE_REL).
+
+
 Modules Oberon "built-in" - hors perimetre de l'iteration courante
 ===================================================================
 
@@ -296,9 +332,11 @@ requiert une evolution majeure du compilateur.
   POINTER         allocateur type-safe avec metadonnees.  Le module
                   Heap du Palier 4 fournit deja HeapAlloc/HeapFree
                   bruts, a utiliser avec SYSTEM.GET / SYSTEM.PUT.
-  Coroutines      (Palier 5) requierent un mecanisme de changement de
-                  contexte (CreateFiber/SwitchToFiber ou switcher maison)
-                  et une allocation de piles dediees.
+  PROCEDURE       Les procedures Oberon definies par l'utilisateur
+                  ne sont pas encore supportees.  Tant que ce n'est
+                  pas le cas, les coroutines du Palier 5 doivent
+                  utiliser Coroutines.Body ou une adresse externe
+                  obtenue via DynLink.GetProc comme point d'entree.
 
 Ces modules sont documentes ici afin que leur absence soit claire
 pour l'utilisateur et que l'ordre des paliers soit trace.
