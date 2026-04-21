@@ -6293,10 +6293,6 @@ Begin
 
   NumSections := 3;
 
-  TextRVA := $1000;
-  DataRVA := $2000;
-  IdataRVA := $3000;
-
   HdrSize := 1024;
   TextFileOfs := HdrSize;
 
@@ -6315,8 +6311,14 @@ Begin
   IdataFileOfs := DataFileOfs + DataSize;
   IdataSize := 512;
 
-  ImageSize := $4000;
-  EntryRVA := $1000;
+  { RVA des sections, alignees sur SectionAlignment ($1000). Les tailles
+    virtuelles doivent etre arrondies au multiple de $1000 superieur pour
+    eviter le recouvrement quand une section depasse 4 Ko. }
+  TextRVA := $1000;
+  DataRVA := TextRVA + ((TextSize + $FFF) And LongInt($FFFFF000));
+  IdataRVA := DataRVA + ((DataSize + $FFF) And LongInt($FFFFF000));
+  ImageSize := IdataRVA + ((IdataSize + $FFF) And LongInt($FFFFF000));
+  EntryRVA := TextRVA;
 
   ResolveFixups(TextRVA, DataRVA, IdataRVA);
 
@@ -6538,7 +6540,6 @@ Procedure ParseArgs;
 Var
   I    : Integer;
   Arg  : String;
-  Base : String;
 Begin
   FillChar(Opts, SizeOf(Opts), 0);
   Opts.SrcFile := '';
@@ -6607,10 +6608,7 @@ Begin
   End;
 
   If Opts.OutFile = '' Then
-  Begin
-    Base := ExtractBase(Opts.SrcFile);
-    Opts.OutFile := Base + '.exe';
-  End;
+    Opts.OutFile := ChangeExtension(Opts.SrcFile, '.exe');
 
   AsmName := ChangeExtension(Opts.SrcFile, '.asm');
 End;
