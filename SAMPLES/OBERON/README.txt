@@ -235,6 +235,52 @@ mod_random_real.obn.
                             pour semence et entiers).
 
 
+Palier 4 (implementes) : E/S fichiers, tas et chargement dynamique via
+les API Win32.  Les handles et adresses sont exposes comme INTEGER
+(32 bits) ; le type POINTER et la primitive NEW restent hors perimetre
+pour ce palier.  Voir les exemples mod_files.obn, mod_heap.obn et
+mod_dynlink.obn.
+
+  Files      (mod_files.obn)
+    Files.Open(name, mode)  ouvre un fichier via CreateFileA.
+                            name = litteral chaine OU ARRAY OF CHAR.
+                            mode = litteral entier :
+                                   0 = lecture seule (OPEN_EXISTING)
+                                   1 = ecriture/creation (CREATE_ALWAYS)
+                                   2 = ajout (OPEN_ALWAYS + seek en fin)
+                            Retourne un handle INTEGER ou -1 en cas
+                            d'echec (INVALID_HANDLE_VALUE).
+    Files.Close(h)          ferme le handle (CloseHandle).
+    Files.Read(h, buf, n)   lit jusqu'a n octets dans buf (ARRAY OF
+                            CHAR).  Retourne le nombre d'octets lus,
+                            0 en fin de fichier, -1 en cas d'erreur.
+    Files.Write(h, buf, n)  ecrit n octets depuis buf.  Retourne le
+                            nombre d'octets ecrits, -1 en cas d'erreur.
+    Files.Seek(h, pos)      positionne le pointeur a pos octets depuis
+                            le debut (SetFilePointer / FILE_BEGIN).
+    Files.Size(h)           retourne la taille du fichier via
+                            SetFilePointer(FILE_END) et restaure la
+                            position courante.
+
+  Heap       (mod_heap.obn)
+    Heap.Alloc(n)           alloue n octets dans le tas du processus
+                            avec HEAP_ZERO_MEMORY.  Retourne l'adresse
+                            sous forme d'INTEGER (0 si echec).
+    Heap.Free(addr)         libere le bloc (HeapFree).
+    La manipulation des octets se fait via SYSTEM.GET / SYSTEM.PUT.
+    Heap est le substitut minimal de GC/NEW tant que le type POINTER
+    n'est pas implemente.
+
+  DynLink    (mod_dynlink.obn)
+    DynLink.Load(name)      LoadLibraryA.  Retourne un HMODULE INTEGER
+                            (0 si echec).
+    DynLink.GetProc(h, nm)  GetProcAddress.  Retourne l'adresse
+                            (INTEGER) ou 0 si le nom n'est pas exporte.
+    DynLink.Free(h)         FreeLibrary.
+    Invoquer reellement l'adresse retournee par GetProc necessitera
+    un type PROCEDURE variable (palier ulterieur).
+
+
 Modules Oberon "built-in" - hors perimetre de l'iteration courante
 ===================================================================
 
@@ -246,9 +292,10 @@ requiert une evolution majeure du compilateur.
                   reellement 64 bits (double precision) et l'emission
                   d'instructions x87 en precision double ; dans cette
                   iteration LONGREAL est un simple alias de REAL.
-  Files, GC,      (Palier 4) requierent POINTER, NEW, ainsi qu'un
-  DynLink         runtime minimal (tas HeapAlloc/VirtualAlloc, tables
-                  de chargement dynamique LoadLibraryA/GetProcAddress).
+  GC, NEW,        (Palier 4 etendu) requierent le type POINTER et un
+  POINTER         allocateur type-safe avec metadonnees.  Le module
+                  Heap du Palier 4 fournit deja HeapAlloc/HeapFree
+                  bruts, a utiliser avec SYSTEM.GET / SYSTEM.PUT.
   Coroutines      (Palier 5) requierent un mecanisme de changement de
                   contexte (CreateFiber/SwitchToFiber ou switcher maison)
                   et une allocation de piles dediees.

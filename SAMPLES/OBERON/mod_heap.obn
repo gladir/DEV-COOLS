@@ -1,0 +1,46 @@
+MODULE mod_heap;
+(*
+  Demonstration du module Heap (Palier 4).
+
+  Le module Heap expose un sous-ensemble minimal du tas Win32 :
+    Heap.Alloc(n)   -> INTEGER (adresse du bloc, 0 si echec)
+    Heap.Free(addr)
+
+  Le bloc est initialise a zero (HEAP_ZERO_MEMORY).  La manipulation
+  des octets se fait via SYSTEM.GET / SYSTEM.PUT tant que le type
+  POINTER n'est pas encore implemente (voir README.txt).
+*)
+IMPORT Out, Heap, SYSTEM;
+
+VAR
+  addr, v : INTEGER;
+
+BEGIN
+  Out.String("=== Heap.Alloc / Heap.Free ==="); Out.Ln;
+
+  addr := Heap.Alloc(1024);
+  Out.String("  Heap.Alloc(1024) = ");
+  Out.Int(addr, 0); Out.Ln;
+
+  IF addr # 0 THEN
+    (* Le bloc est pre-rempli a zero. *)
+    SYSTEM.GET(addr, v);
+    Out.String("  valeur initiale [addr]    = ");
+    Out.Int(v, 0); Out.Ln;
+
+    SYSTEM.PUT(addr, 42);
+    SYSTEM.GET(addr, v);
+    Out.String("  apres PUT(addr, 42)       = ");
+    Out.Int(v, 0); Out.Ln;
+
+    SYSTEM.PUT(addr + 4, 12345);
+    SYSTEM.GET(addr + 4, v);
+    Out.String("  apres PUT(addr+4, 12345)  = ");
+    Out.Int(v, 0); Out.Ln;
+
+    Heap.Free(addr);
+    Out.String("  Heap.Free(addr) : libere."); Out.Ln
+  ELSE
+    Out.String("  *** allocation impossible ***"); Out.Ln
+  END
+END mod_heap.

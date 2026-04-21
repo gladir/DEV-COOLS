@@ -1,0 +1,45 @@
+MODULE mod_dynlink;
+(*
+  Demonstration du module DynLink (Palier 4).
+
+  Le module DynLink expose les trois primitives de chargement
+  dynamique Win32 :
+
+    DynLink.Load(name)     -> INTEGER   (HMODULE ou 0 si echec)
+    DynLink.GetProc(h, nm) -> INTEGER   (adresse ou 0 si echec)
+    DynLink.Free(h)
+
+  Les handles et adresses sont des INTEGER (32 bits).  Pour invoquer
+  reellement l'adresse retournee par GetProc il faudra, dans un
+  palier ulterieur, un type PROCEDURE variable.
+*)
+IMPORT Out, DynLink;
+
+VAR
+  h, addr : INTEGER;
+
+BEGIN
+  Out.String("=== DynLink.Load(kernel32.dll) ==="); Out.Ln;
+  h := DynLink.Load("kernel32.dll");
+  Out.String("  handle = "); Out.Int(h, 0); Out.Ln;
+
+  IF h # 0 THEN
+    addr := DynLink.GetProc(h, "GetVersion");
+    Out.String("  GetProc(h, GetVersion)   = ");
+    Out.Int(addr, 0); Out.Ln;
+
+    addr := DynLink.GetProc(h, "GetTickCount");
+    Out.String("  GetProc(h, GetTickCount) = ");
+    Out.Int(addr, 0); Out.Ln;
+
+    addr := DynLink.GetProc(h, "Inexistant");
+    Out.String("  GetProc(h, Inexistant)   = ");
+    Out.Int(addr, 0);
+    Out.String("  (0 = non trouve)"); Out.Ln;
+
+    DynLink.Free(h);
+    Out.String("  DynLink.Free(h) : libere."); Out.Ln
+  ELSE
+    Out.String("  *** LoadLibrary echoue ***"); Out.Ln
+  END
+END mod_dynlink.

@@ -1,0 +1,54 @@
+MODULE mod_files;
+(*
+  Demonstration du module Files (Palier 4).
+
+  Le module Files expose un sous-ensemble minimal des E/S fichier
+  Win32.  Les "handles" sont retournes sous forme d'INTEGER :
+
+    Files.Open(name, mode) -> INTEGER
+        name : litteral chaine OU ARRAY OF CHAR deja renseignee.
+        mode : 0 = lecture seule (OPEN_EXISTING),
+               1 = ecriture/creation (CREATE_ALWAYS),
+               2 = ajout (OPEN_ALWAYS + seek a la fin).
+        Retourne -1 (INVALID_HANDLE_VALUE) en cas d'echec.
+
+    Files.Read(h, buf, n)  -> INTEGER (nombre d'octets lus)
+    Files.Write(h, buf, n) -> INTEGER (nombre d'octets ecrits)
+    Files.Size(h)          -> INTEGER (taille du fichier en octets)
+    Files.Seek(h, pos)
+    Files.Close(h)
+*)
+IMPORT Out, Files;
+
+VAR
+  h, n : INTEGER;
+  buf  : ARRAY 256 OF CHAR;
+
+BEGIN
+  Out.String("=== Files.Open / Write / Close ==="); Out.Ln;
+
+  COPY("Bonjour, Palier 4 !", buf);
+  h := Files.Open("palier4.txt", 1);
+  Out.String("  handle ecriture = "); Out.Int(h, 0); Out.Ln;
+  IF h # -1 THEN
+    n := Files.Write(h, buf, 19);
+    Out.String("  Files.Write(...) = ");
+    Out.Int(n, 0); Out.Ln;
+    Files.Close(h)
+  END;
+  Out.Ln;
+
+  Out.String("=== Files.Open / Size / Read / Close ==="); Out.Ln;
+  h := Files.Open("palier4.txt", 0);
+  Out.String("  handle lecture = "); Out.Int(h, 0); Out.Ln;
+  IF h # -1 THEN
+    Out.String("  Files.Size(h) = ");
+    Out.Int(Files.Size(h), 0); Out.Ln;
+    n := Files.Read(h, buf, 256);
+    Out.String("  Files.Read -> "); Out.Int(n, 0);
+    Out.String(" octets"); Out.Ln;
+    Out.String("  contenu : ["); Out.String(buf); Out.String("]");
+    Out.Ln;
+    Files.Close(h)
+  END
+END mod_files.
