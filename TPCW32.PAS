@@ -13646,13 +13646,35 @@ Begin
       Exit;
     End;
 
-    { _GETARCINFO(var SP, EP, FP) -> stub returns 0 }
+    { _GETARCINFO(var SP, EP, FP) -> aucune info d arc disponible,       }
+    { on remet a 0 les 3 enregistrements _XYCoord (x,y sur 4 octets) et  }
+    { on retourne FALSE (0) dans EAX.                                    }
     If Up = '_GETARCINFO' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(','); ParseExpr(PI);
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA,
+          DEST_DOSR, DEST_DOSP,
+          DEST_Z80, DEST_6502, DEST_6809:
+          Begin
+            ParseExpr(PI); EPMatch(',');
+            ParseExpr(PI); EPMatch(',');
+            ParseExpr(PI);
+          End;
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOV DWORD PTR [EAX],0');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('MOV DWORD PTR [EAX],0');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('MOV DWORD PTR [EAX],0');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       Case Opts.DestTarget Of
