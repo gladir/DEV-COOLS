@@ -1000,6 +1000,8 @@ Var
   { Evenements ABAP definis (TODO 24) }
   EventStartDefined : Boolean;
   EventEndDefined   : Boolean;
+  EventTopPageDefined : Boolean;
+  EventEndPageDefined : Boolean;
   TryCount          : Integer;
 
 Const
@@ -5208,8 +5210,13 @@ Begin
   { Consommer le point }
   If CurTokType = TOK_DOT Then Consume;
 
-  { START-OF-SELECTION et END-OF-SELECTION : label + bloc + RET }
-  If (EventKw = KW_START_OF_SEL) Or (EventKw = KW_END_OF_SEL) Then
+  { START-OF-SELECTION, END-OF-SELECTION, TOP-OF-PAGE, END-OF-PAGE : }
+  { tous ont la meme forme : label + bloc + RET, entoure d un JMP.   }
+  { Pour les autres evenements (LINE_SEL, USER_CMD...), emettre un   }
+  { simple stub label + RET protege par un JMP pour ne pas casser le }
+  { flux sequentiel du main.                                         }
+  If (EventKw = KW_START_OF_SEL) Or (EventKw = KW_END_OF_SEL) Or
+     (EventKw = KW_TOP_OF_PAGE)  Or (EventKw = KW_END_OF_PAGE) Then
   Begin
     SkipLbl := NewLabel;
     EmitBlank;
@@ -5219,8 +5226,12 @@ Begin
     { Marquer l evenement comme defini }
     If EventKw = KW_START_OF_SEL Then
       EventStartDefined := True
-    Else
-      EventEndDefined := True;
+    Else If EventKw = KW_END_OF_SEL Then
+      EventEndDefined := True
+    Else If EventKw = KW_TOP_OF_PAGE Then
+      EventTopPageDefined := True
+    Else If EventKw = KW_END_OF_PAGE Then
+      EventEndPageDefined := True;
     { Parser le corps : instructions jusqu au prochain evenement, }
     { FORM, FUNCTION ou fin de fichier                            }
     While (CurTokType <> TOK_EOF) And
@@ -5234,11 +5245,15 @@ Begin
   End
   Else
   Begin
-    { Autres evenements : stub vide (label seul) }
+    { Autres evenements (LINE-SELECTION, USER-COMMAND...) : stub }
+    { vide mais protege par un JMP pour ne pas casser le flux.    }
+    SkipLbl := NewLabel;
     EmitBlank;
     EmitComment('---- EVENT ' + LblName + ' (stub) ----');
+    EmitI('JMP     ' + SkipLbl);
     EmitLabel(LblName);
     EmitI('RET');
+    EmitLabel(SkipLbl);
   End;
 End;
 
@@ -10078,6 +10093,8 @@ Begin
   StrLitCount := 0;
   EventStartDefined := False;  { TODO 24 }
   EventEndDefined   := False;  { TODO 24 }
+  EventTopPageDefined := False;
+  EventEndPageDefined := False;
   TryCount          := 0;      { TODO 24 }
   LexInit;
   If Opts.DebugMode Then
@@ -10129,12 +10146,18 @@ Begin
     { Emettre la sortie du programme (TODO 19+24) }
     EmitBlank;
     EmitComment('--- Appel des evenements ABAP (TODO 24) ---');
+    { Appeler TOP-OF-PAGE avant START-OF-SELECTION (entete de page) }
+    If EventTopPageDefined Then
+      EmitI('CALL    _ABE_TOPPAGE');
     { Appeler START-OF-SELECTION si defini }
     If EventStartDefined Then
       EmitI('CALL    _ABE_START');
     { Appeler END-OF-SELECTION si defini }
     If EventEndDefined Then
       EmitI('CALL    _ABE_END');
+    { Appeler END-OF-PAGE apres END-OF-SELECTION (pied de page) }
+    If EventEndPageDefined Then
+      EmitI('CALL    _ABE_ENDPAGE');
     EmitComment('--- Sortie du programme ---');
     EmitI('PUSH    0');
     EmitI('CALL    _ExitProcess@4');
