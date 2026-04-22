@@ -882,6 +882,25 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ CsVersionMajor : extraire le numero de version majeure C#    }
+{   '1.0' -> 1, '9.0' -> 9, '10' -> 10, '14' -> 14             }
+{ ------------------------------------------------------------ }
+
+Function CsVersionMajor(Const V : TString) : Integer;
+Var
+  I, N : Integer;
+Begin
+  N := 0;
+  I := 1;
+  While (I <= Length(V)) And (V[I] >= '0') And (V[I] <= '9') Do
+  Begin
+    N := N * 10 + (Ord(V[I]) - Ord('0'));
+    Inc(I);
+  End;
+  CsVersionMajor := N;
+End;
+
+{ ------------------------------------------------------------ }
 { ShowHelp                                                     }
 { ------------------------------------------------------------ }
 
@@ -11015,16 +11034,29 @@ Begin
 
   { Verifier qu au moins une classe / un namespace / une methode a ete }
   { reconnu. Sans cela le binaire produit n a pas de point d entree    }
-  { utile (programme vide). Les top-level statements C# 9+ ne sont pas }
-  { supportes par ce compilateur.                                      }
+  { utile (programme vide). Les top-level statements sont permis a     }
+  { partir de C# 9.0 : on ne reclame donc Main que pour csver < 9.     }
+  { Les top-level statements ne sont pas encore implementes par ce     }
+  { compilateur : on emet seulement un avertissement en C# 9+.          }
   If (Not Opts.ObjOnly) And (MethodCount = 0) Then
   Begin
-    WriteLn('CSCW32: erreur: aucune methode ''Main'' trouvee dans ',
-            Opts.SrcFile);
-    If (ClassCount = 0) And (NsCount = 0) Then
-      WriteLn('CSCW32: note: aucun namespace ni classe declare ',
-              '(les top-level statements C# 9+ ne sont pas supportes).');
-    Inc(ErrorCount);
+    If CsVersionMajor(Opts.CsVersion) < 9 Then
+    Begin
+      WriteLn('CSCW32: erreur: aucune methode ''Main'' trouvee dans ',
+              Opts.SrcFile);
+      If (ClassCount = 0) And (NsCount = 0) Then
+        WriteLn('CSCW32: note: aucun namespace ni classe declare ',
+                '(utiliser -csver 9.0 ou superieur pour autoriser ',
+                'les top-level statements).');
+      Inc(ErrorCount);
+    End
+    Else If (ClassCount = 0) And (NsCount = 0) Then
+    Begin
+      WriteLn('CSCW32: warning: top-level statements C# 9+ detectes ',
+              'mais non supportes par ce compilateur - binaire ',
+              'fonctionnellement vide.');
+      Inc(WarnCount);
+    End;
   End;
 
   { Afficher bilan analyse }
