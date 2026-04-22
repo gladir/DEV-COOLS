@@ -533,6 +533,7 @@ Type
     ObjOnly    : Boolean;  { -obj : produire seulement un .OBJ    }
     NetVersion : TString;  { -netver : version du .NET Framework  }
     CsVersion  : TString;  { -csver  : version du langage C#      }
+    NoProj     : Boolean;  { -noproj : desactiver decouverte csproj}
   End;
 
 Var
@@ -859,6 +860,75 @@ Begin
   FindClose(SR);
 End;
 
+{ StrICompare : comparaison de chaines insensibles a la casse          }
+Function StrICompare(Const A, B : TString) : Boolean;
+Var
+  I : Integer;
+  CA, CB : Char;
+Begin
+  If Length(A) <> Length(B) Then
+  Begin
+    StrICompare := False;
+    Exit;
+  End;
+  For I := 1 To Length(A) Do
+  Begin
+    CA := A[I];
+    CB := B[I];
+    If (CA >= 'a') And (CA <= 'z') Then
+      CA := Chr(Ord(CA) - 32);
+    If (CB >= 'a') And (CB <= 'z') Then
+      CB := Chr(Ord(CB) - 32);
+    If CA <> CB Then
+    Begin
+      StrICompare := False;
+      Exit;
+    End;
+  End;
+  StrICompare := True;
+End;
+
+{ IsSkippedSubdir : True si le sous-repertoire doit etre ignore        }
+{ pendant l enumeration recursive (bin, obj, .vs, .git, etc.)          }
+{ On ignore aussi par defaut les repertoires qui contiennent du code   }
+{ utilisant des constructions C# avancees non supportees (Razor,       }
+{ migrations EF Core, etc.).                                           }
+Function IsSkippedSubdir(Const Name : TString) : Boolean;
+Begin
+  IsSkippedSubdir :=
+    (Name = '.') Or (Name = '..') Or
+    StrICompare(Name, 'bin')          Or
+    StrICompare(Name, 'obj')          Or
+    StrICompare(Name, '.vs')          Or
+    StrICompare(Name, '.git')         Or
+    StrICompare(Name, '.svn')         Or
+    StrICompare(Name, '.idea')        Or
+    StrICompare(Name, 'node_modules') Or
+    StrICompare(Name, 'packages')     Or
+    StrICompare(Name, 'Properties')   Or
+    StrICompare(Name, 'wwwroot')      Or
+    StrICompare(Name, 'Areas')        Or
+    StrICompare(Name, 'Views')        Or
+    StrICompare(Name, 'Migrations');
+End;
+
+{ IsSkippedCs : True si le fichier .cs doit etre ignore pendant        }
+{ l enumeration. On ignore les fichiers .cshtml.cs (Razor code-behind) }
+{ qui utilisent typiquement des constructions non supportees.           }
+Function IsSkippedCs(Const Name : TString) : Boolean;
+Var
+  L, P : Integer;
+Begin
+  IsSkippedCs := False;
+  L := Length(Name);
+  If L < 10 Then Exit;
+  { Verifier l extension .cshtml.cs (9 caracteres) }
+  P := L - 9;
+  If P < 1 Then Exit;
+  If StrICompare(Copy(Name, P + 1, 9), '.cshtml.cs') Then
+    IsSkippedCs := True;
+End;
+
 { ------------------------------------------------------------ }
 { FatalError / WarnMsg                                         }
 { ------------------------------------------------------------ }
@@ -896,6 +966,7 @@ Begin
   Opts.ObjOnly    := False;
   Opts.NetVersion := '4.8';   { .NET Framework 4.8 par defaut       }
   Opts.CsVersion  := '14';    { C# 14 par defaut                    }
+  Opts.NoProj     := False;   { decouverte csproj activee par defaut}
 End;
 
 { ------------------------------------------------------------ }
@@ -975,6 +1046,10 @@ Begin
   WriteLn('  -csver <ver>   Version du langage C# (defaut: 14)');
   WriteLn('                 Valeurs : 1.0, 2.0, 3.0, 4.0, 5.0, 6.0,');
   WriteLn('                           7.0, 8.0, 9.0, 10, 11, 12, 13, 14');
+  WriteLn('  -noproj        Desactive la decouverte automatique de ',
+          '*.csproj');
+  WriteLn('                 (compilation du seul fichier source ',
+          'indique)');
   WriteLn('  -h, --help, /? Afficher cette aide');
   WriteLn;
   WriteLn('Exemples :');
@@ -1037,6 +1112,8 @@ Begin
       If Not IsValidCsVersion(Opts.CsVersion) Then
         FatalError('Version C# invalide: ' + Opts.CsVersion);
     End
+    Else If Arg = '-noproj' Then
+      Opts.NoProj := True
     Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
       FatalError('Option inconnue: ' + Arg)
     Else
@@ -1207,6 +1284,16 @@ Var
   LexEOF      : Boolean;    { fin de fichier atteinte ?          }
   CurToken    : TToken;     { token courant                      }
   TokenCount  : LongInt;    { nombre de tokens produits          }
+  LexSrcName  : TString;    { nom du fichier source courant      }
+
+Const
+  MAX_SRCQ = 512;           { max fichiers dans la file d attente}
+
+Var
+  { File d attente de fichiers sources (compilation multi-fichiers) }
+  SrcQueue      : Array[0..MAX_SRCQ - 1] Of TString;
+  SrcQueueHead  : Integer;  { prochain a consommer               }
+  SrcQueueCount : Integer;  { nombre d elements en file          }
 
 { ------------------------------------------------------------ }
 { Fonctions de classification de caracteres                    }
@@ -1286,14 +1373,25 @@ End;
 { LexNextLine : lire la prochaine ligne du source               }
 { ------------------------------------------------------------ }
 
+Procedure LexOpenNextQueued; Forward;
+
 Procedure LexNextLine;
 Begin
   If LexEOF Then Exit;
   If EOF(LexSrcF) Then
   Begin
-    LexEOF   := True;
-    LexLine  := '';
-    LexColNo := 1;
+    { Tenter de passer au prochain fichier de la file d attente }
+    LexOpenNextQueued;
+    If LexEOF Then
+    Begin
+      LexLine  := '';
+      LexColNo := 1;
+    End
+    Else
+    Begin
+      { Le premier LexNextLine de la nouvelle source sera     }
+      { fait par LexOpenNextQueued.                            }
+    End;
   End
   Else
   Begin
@@ -1311,6 +1409,71 @@ Begin
     Inc(TotalLines);
     LexColNo := 1;
   End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexOpenNextQueued : ouvrir le prochain fichier en file        }
+{   Si la file est vide, positionne LexEOF = True.              }
+{ ------------------------------------------------------------ }
+
+Procedure LexOpenNextQueued;
+Begin
+  { Fermer le fichier courant }
+  If LexOpened Then
+  Begin
+    {$I-}
+    Close(LexSrcF);
+    {$I+}
+    If IOResult <> 0 Then ;
+    LexOpened := False;
+  End;
+
+  If SrcQueueCount <= 0 Then
+  Begin
+    LexEOF := True;
+    Exit;
+  End;
+
+  { Prendre le prochain fichier }
+  LexSrcName := SrcQueue[SrcQueueHead];
+  Inc(SrcQueueHead);
+  Dec(SrcQueueCount);
+
+  WriteLn('CSCW32: Compilation de ', LexSrcName, ' ...');
+
+  Assign(LexSrcF, LexSrcName);
+  {$I-}
+  Reset(LexSrcF);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('CSCW32: warning: impossible d''ouvrir ', LexSrcName);
+    Inc(WarnCount);
+    { Tenter le suivant }
+    LexOpenNextQueued;
+    Exit;
+  End;
+  LexOpened := True;
+  LexLineNo := 0;
+  LexColNo  := 1;
+  LexLine   := '';
+  { Lire la premiere ligne du nouveau fichier }
+  If EOF(LexSrcF) Then
+  Begin
+    LexNextLine;  { declenchera la boucle pour chercher le suivant }
+    Exit;
+  End;
+  {$I-}
+  ReadLn(LexSrcF, LexLine);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    LexEOF := True;
+    Exit;
+  End;
+  Inc(LexLineNo);
+  Inc(TotalLines);
+  LexColNo := 1;
 End;
 
 { ------------------------------------------------------------ }
@@ -10706,6 +10869,131 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ SrcQueueInit / SrcQueueAdd : gestion de la file des sources   }
+{ ------------------------------------------------------------ }
+
+Procedure SrcQueueInit;
+Begin
+  SrcQueueHead  := 0;
+  SrcQueueCount := 0;
+End;
+
+Function SrcQueueAdd(Const Path : TString) : Boolean;
+Begin
+  If (SrcQueueHead + SrcQueueCount) >= MAX_SRCQ Then
+  Begin
+    WarnMsg('file des sources pleine, ignore: ' + Path);
+    SrcQueueAdd := False;
+    Exit;
+  End;
+  SrcQueue[SrcQueueHead + SrcQueueCount] := Path;
+  Inc(SrcQueueCount);
+  SrcQueueAdd := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ PathsEqualIC : compare 2 chemins insensibles a la casse       }
+{   (comparaison approximative, normalise / et \).              }
+{ ------------------------------------------------------------ }
+
+Function PathsEqualIC(Const A, B : TString) : Boolean;
+Var
+  AA, BB : TString;
+  I : Integer;
+Begin
+  AA := A;
+  BB := B;
+  For I := 1 To Length(AA) Do
+    If AA[I] = '/' Then AA[I] := '\';
+  For I := 1 To Length(BB) Do
+    If BB[I] = '/' Then BB[I] := '\';
+  PathsEqualIC := StrICompare(AA, BB);
+End;
+
+{ ------------------------------------------------------------ }
+{ EnumerateProjectSources : parcourir recursivement le projet   }
+{   ProjectDir pour mettre en file tous les fichiers .cs sauf   }
+{   celui deja specifie comme source principal. Ignore les      }
+{   sous-repertoires bin/obj/.vs/.git/...                       }
+{ ------------------------------------------------------------ }
+
+Procedure EnumerateProjectSources;
+Const
+  MAX_DIRS = 128;
+Var
+  DirStack : Array[0..MAX_DIRS - 1] Of TString;
+  DirTop   : Integer;
+  CurDir   : TString;
+  Full     : TString;
+  SR       : SearchRec;
+  Added    : Integer;
+
+  Procedure PushDir(Const D : TString);
+  Begin
+    If DirTop < MAX_DIRS Then
+    Begin
+      DirStack[DirTop] := D;
+      Inc(DirTop);
+    End
+    Else
+      WarnMsg('pile de repertoires pleine, ignore: ' + D);
+  End;
+
+Begin
+  If (ProjectDir = '') Or Opts.NoProj Then Exit;
+
+  DirTop := 0;
+  PushDir(ProjectDir);
+  Added := 0;
+
+  While DirTop > 0 Do
+  Begin
+    Dec(DirTop);
+    CurDir := DirStack[DirTop];
+
+    { Enumerer les fichiers .cs dans CurDir }
+    {$I-}
+    FindFirst(CurDir + '*.cs', AnyFile And (Not Directory), SR);
+    {$I+}
+    While DosError = 0 Do
+    Begin
+      { Ignorer les entrees repertoires et fichiers caches }
+      If ((SR.Attr And Directory) = 0) And
+         (Not IsSkippedCs(SR.Name)) Then
+      Begin
+        Full := CurDir + SR.Name;
+        { Ne pas enfiler le fichier principal (deja en cours) }
+        If Not PathsEqualIC(Full, Opts.SrcFile) Then
+          If SrcQueueAdd(Full) Then Inc(Added);
+      End;
+      {$I-}
+      FindNext(SR);
+      {$I+}
+    End;
+    FindClose(SR);
+
+    { Enumerer les sous-repertoires }
+    {$I-}
+    FindFirst(CurDir + '*.*', Directory, SR);
+    {$I+}
+    While DosError = 0 Do
+    Begin
+      If ((SR.Attr And Directory) <> 0) And
+         (Not IsSkippedSubdir(SR.Name)) Then
+        PushDir(CurDir + SR.Name + '\');
+      {$I-}
+      FindNext(SR);
+      {$I+}
+    End;
+    FindClose(SR);
+  End;
+
+  If Added > 0 Then
+    WriteLn('CSCW32: ', Added,
+            ' fichier(s) supplementaire(s) a compiler avec le projet.');
+End;
+
+{ ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
 
@@ -10734,7 +11022,11 @@ Begin
   If Not FileExists(Opts.SrcFile) Then
     FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
 
+  { Initialiser la file d attente des sources }
+  SrcQueueInit;
+
   { Ouvrir le fichier source }
+  LexSrcName := Opts.SrcFile;
   Assign(LexSrcF, Opts.SrcFile);
   {$I-}
   Reset(LexSrcF);
@@ -10770,6 +11062,11 @@ Begin
     WriteLn('CSCW32: projet detecte : ', PjCsproj,
             ' (namespace racine : ', ProjectRootNs, ')');
   End;
+
+  { Enumerer les autres fichiers .cs du projet (mettre en file        }
+  { d attente). Desactive par -noproj. Les fichiers seront consommes  }
+  { par le lexer apres le fichier principal.                          }
+  EnumerateProjectSources;
 
   { Initialiser les tables de litteraux et constantes (TODO 04) }
   InitStrLitTable;
@@ -10944,6 +11241,19 @@ Begin
 
   While CurToken.Kind <> TK_EOF Do
   Begin
+    { Directive 'using' apparaissant au debut d un fichier            }
+    { enfile (compilation multi-fichiers). La ParseUsingSection       }
+    { initiale ne voit que les using du premier fichier ; ceux des    }
+    { fichiers suivants se presentent en plein milieu du flux de      }
+    { tokens. On les reconnait ici au niveau top-level (hors class,   }
+    { hors methode) pour les enregistrer correctement.                }
+    If TokIsKw('using') And (Not InClass) And (Not InMethod) And
+       (BraceDepth = 0) Then
+    Begin
+      ParseUsingDirective;
+      Continue;
+    End;
+
     { Reconnaitre les litteraux chaines pour la table .DATA }
     If CurToken.Kind = TK_STRING Then
     Begin
