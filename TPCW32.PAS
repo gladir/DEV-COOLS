@@ -19624,12 +19624,32 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { DOS 16 bits : INT 21h AH=31h (Terminate and Stay Resident)    }
+            { AL = code de sortie, DX = taille en paragraphes depuis le PSP  }
+            { DX = (SS - CS) + 40h (pile 1024o) + 10h (PSP) = SS - CS + 50h }
+            ParseExpr(PI);           { AX = code de sortie (16 bits)         }
+            EmitInstr('MOV BX,AX'); { BX = code de sortie (sauvegarde)      }
+            EmitInstr('MOV AX,SS');
+            EmitInstr('SUB AX,CS'); { AX = paragraphes du code              }
+            EmitInstr('ADD AX,50h'); { + 40h pile + 10h PSP                 }
+            EmitInstr('MOV DX,AX'); { DX = taille TSR en paragraphes        }
+            EmitInstr('MOV AH,31h');
+            EmitInstr('MOV AL,BL'); { AL = code de sortie                   }
+            EmitInstr('INT 21h');
+          End;
+          Else
+          Begin
+            { Sous Win32, Keep = ExitProcess }
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EmitInstr('CALL ExitProcess');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      { Sous Win32, Keep = ExitProcess }
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ExitProcess');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
