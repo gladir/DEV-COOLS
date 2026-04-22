@@ -1150,6 +1150,8 @@ Procedure ParseAppend; Forward;
 Procedure ParseReadTable; Forward;
 Procedure ParseSort; Forward;
 Procedure ParseDeleteTable; Forward;
+Procedure ParseInsertTable; Forward;
+Procedure ParseModifyTable; Forward;
 Procedure EmitTableRuntime; Forward;
 
 { ============================================================ }
@@ -3463,6 +3465,14 @@ Begin
   If TokIsKw(KW_DELETE) Then
   Begin Consume; ParseDeleteTable; Exit; End;
 
+  { INSERT wa INTO itab INDEX i (TODO 16) }
+  If TokIsKw(KW_INSERT) Then
+  Begin Consume; ParseInsertTable; Exit; End;
+
+  { MODIFY itab FROM wa INDEX i (TODO 16) }
+  If TokIsKw(KW_MODIFY) Then
+  Begin Consume; ParseModifyTable; Exit; End;
+
   { CONCATENATE s1 s2 ... INTO dest (TODO 17) }
   If TokIsKw(KW_CONCATENATE) Then
   Begin Consume; ParseConcatenate; Exit; End;
@@ -5669,10 +5679,15 @@ Begin
 End;
 
 { ---- ParseSort : SORT itab [BY champ] [ASCENDING|DESCENDING].- }
-{ Stub : emet un commentaire (tri non implemente en runtime).     }
+{ Implemente : tri a bulles sur les entiers 32 bits (DD).         }
+{ Generation : boucle externe i=0..CNT-2, boucle interne j, swap  }
+{ si ordre incorrect (ASCENDING par defaut, DESCENDING si option).}
 Procedure ParseSort;
-Var TabName : TString;
-    TabIdx  : Integer;
+Var TabName       : TString;
+    TabIdx        : Integer;
+    TabLbl        : TString;
+    Descending    : Boolean;
+    LblOuter, LblOuterEnd, LblInner, LblInnerEnd, LblNoSwap : TString;
 Begin
   EmitComment('SORT');
 
@@ -5682,21 +5697,260 @@ Begin
   TabIdx  := FindSym(TabName);
   Consume;
 
-  If TabIdx > 0 Then
-    EmitComment('SORT ' + TabName + ' (stub - tri non implemente)')
-  Else
-    EmitComment('SORT: table inconnue: ' + TabName);
-
   { Consommer les options BY / ASCENDING / DESCENDING }
   If TokIsKw(KW_BY) Then
   Begin
     Consume;
     If CurTokType = TOK_IDENT Then Consume;
   End;
+  Descending := False;
   If TokIsKw(KW_ASCENDING) Then Consume;
-  If TokIsKw(KW_DESCENDING) Then Consume;
+  If TokIsKw(KW_DESCENDING) Then Begin Consume; Descending := True; End;
 
   If CurTokType = TOK_DOT Then Consume;
+
+  If TabIdx = 0 Then
+  Begin
+    EmitComment('SORT: table inconnue: ' + TabName);
+    Exit;
+  End;
+  TabLbl := SymTab[TabIdx].AsmLabel;
+
+  LblOuter    := NewLabel + '_SO';
+  LblOuterEnd := NewLabel + '_SOE';
+  LblInner    := NewLabel + '_SI';
+  LblInnerEnd := NewLabel + '_SIE';
+  LblNoSwap   := NewLabel + '_SN';
+
+  { Tri a bulles sur les 32 bits : Contexte :                      }
+  {   ESI = i (boucle externe), EDI = j (boucle interne)           }
+  {   EBX = &_ABA_xxx_DATA                                         }
+  {   CNT = [TabLbl + '_CNT']                                      }
+  { Algo : For i:=0 To CNT-2 Do For j:=0 To CNT-2-i Do             }
+  {        If data[j] > data[j+1] Then swap (ASCENDING)            }
+  EmitI('LEA     EBX, [' + TabLbl + '_DATA]');
+  EmitI('XOR     ESI, ESI');                { i = 0 }
+EmitLabel(LblOuter);
+  EmitI('MOV     EAX, DWORD PTR [' + TabLbl + '_CNT]');
+  EmitI('DEC     EAX');                      { CNT-1 }
+  EmitI('CMP     ESI, EAX');
+  EmitI('JGE     ' + LblOuterEnd);          { i >= CNT-1 : fin }
+  EmitI('XOR     EDI, EDI');                { j = 0 }
+EmitLabel(LblInner);
+  EmitI('MOV     EAX, DWORD PTR [' + TabLbl + '_CNT]');
+  EmitI('DEC     EAX');
+  EmitI('SUB     EAX, ESI');                { CNT-1-i }
+  EmitI('CMP     EDI, EAX');
+  EmitI('JGE     ' + LblInnerEnd);          { j >= CNT-1-i : fin inner }
+  { Comparer data[j] avec data[j+1] }
+  EmitI('MOV     EAX, DWORD PTR [EBX + EDI*4]');
+  EmitI('MOV     ECX, DWORD PTR [EBX + EDI*4 + 4]');
+  EmitI('CMP     EAX, ECX');
+  If Descending Then
+    EmitI('JGE     ' + LblNoSwap)            { DESC: swap si EAX < ECX }
+  Else
+    EmitI('JLE     ' + LblNoSwap);           { ASC : swap si EAX > ECX }
+  { Swap : EAX<->ECX }
+  EmitI('MOV     DWORD PTR [EBX + EDI*4], ECX');
+  EmitI('MOV     DWORD PTR [EBX + EDI*4 + 4], EAX');
+EmitLabel(LblNoSwap);
+  EmitI('INC     EDI');
+  EmitI('JMP     ' + LblInner);
+EmitLabel(LblInnerEnd);
+  EmitI('INC     ESI');
+  EmitI('JMP     ' + LblOuter);
+EmitLabel(LblOuterEnd);
+End;
+
+{ ---- ParseInsertTable : INSERT wa INTO itab [INDEX i]. -------- }
+{ INSERT wa INTO itab INDEX i : insere wa a la position i (1-base)}
+{ Generation : decaler data[i..CNT-1] vers data[i+1..CNT],        }
+{   stocker wa dans data[i-1], incrementer CNT.                   }
+Procedure ParseInsertTable;
+Var TabName, WaName : TString;
+    TabIdx, WaIdx   : Integer;
+    TabLbl          : TString;
+    LblShift, LblShiftEnd : TString;
+    HasSource       : Boolean;
+Begin
+  EmitComment('INSERT');
+
+  HasSource := False;
+  WaIdx     := 0;
+  WaName    := '';
+  TabIdx    := 0;
+  TabName   := '';
+
+  { INSERT wa INTO itab [INDEX i]. ou INSERT itab INDEX i. }
+  If CurTokType <> TOK_IDENT Then
+  Begin LexError('Nom attendu apres INSERT'); SkipToDot; Exit; End;
+
+  { Premier identifiant : wa ou itab }
+  WaName := CurTokStr;
+  WaIdx  := FindSym(WaName);
+  Consume;
+
+  If TokIsKw(KW_INTO) Then
+  Begin
+    Consume;
+    HasSource := True;
+    If CurTokType <> TOK_IDENT Then
+    Begin LexError('Nom de table attendu apres INTO'); SkipToDot; Exit; End;
+    TabName := CurTokStr;
+    TabIdx  := FindSym(TabName);
+    Consume;
+  End
+  Else
+  Begin
+    { Forme INSERT itab INDEX i (insere 0) }
+    TabName := WaName;
+    TabIdx  := WaIdx;
+    WaIdx   := 0;
+    HasSource := False;
+  End;
+
+  { Sauvegarder la valeur source dans EDX avant de calculer l index }
+  If HasSource And (WaIdx > 0) Then
+  Begin
+    GenLoadVar32(WaIdx);
+    EmitI('PUSH    EAX');           { sauvegarder la valeur source }
+  End
+  Else
+    EmitI('PUSH    0');              { valeur par defaut = 0 }
+
+  { INDEX i : evalue l index 1-base (defaut = CNT+1 = append) }
+  If TokIsKw(KW_INDEX) Then
+  Begin
+    Consume;
+    ParseExpr;                       { EAX = index (1-base) }
+  End
+  Else
+  Begin
+    If TabIdx > 0 Then
+      EmitI('MOV     EAX, DWORD PTR [' + SymTab[TabIdx].AsmLabel + '_CNT]')
+    Else
+      EmitI('XOR     EAX, EAX');
+    EmitI('INC     EAX');            { index par defaut = CNT+1 }
+  End;
+
+  If CurTokType = TOK_DOT Then Consume;
+
+  If TabIdx = 0 Then
+  Begin
+    EmitComment('INSERT: table inconnue: ' + TabName);
+    EmitI('ADD     ESP, 4');          { nettoyer la valeur poussee }
+    Exit;
+  End;
+  TabLbl := SymTab[TabIdx].AsmLabel;
+
+  { ECX = index (1-base), POP EDX = valeur a inserer }
+  EmitI('MOV     ECX, EAX');
+  EmitI('POP     EDX');                { EDX = valeur source }
+
+  LblShift := NewLabel + '_II';
+  LblShiftEnd := NewLabel + '_IIE';
+
+  { Decaler les elements : pour k = CNT+1 downto index+1, data[k-1] := data[k-2] }
+  { Utilisation : ESI = 0-based write index, va de CNT down to index.             }
+  { data[ESI] := data[ESI-1]                                                       }
+  EmitI('MOV     ESI, DWORD PTR [' + TabLbl + '_CNT]');  { ESI = CNT (0-base write) }
+EmitLabel(LblShift);
+  { Condition : tant que ESI >= index (1-base), decaler data[ESI] := data[ESI-1] }
+  EmitI('CMP     ESI, ECX');
+  EmitI('JL      ' + LblShiftEnd);     { ESI < index : stop }
+  { data[ESI] := data[ESI-1] }
+  EmitI('LEA     EBX, [' + TabLbl + '_DATA]');
+  EmitI('LEA     EAX, [EBX + ESI*4]');       { &data[ESI] }
+  EmitI('MOV     EBX, DWORD PTR [EAX - 4]'); { data[ESI-1] }
+  EmitI('MOV     DWORD PTR [EAX], EBX');
+  EmitI('DEC     ESI');
+  EmitI('JMP     ' + LblShift);
+EmitLabel(LblShiftEnd);
+
+  { Stocker la valeur a la position index : data[ECX-1] (0-base) := EDX }
+  EmitI('LEA     EBX, [' + TabLbl + '_DATA]');
+  EmitI('DEC     ECX');                { index 0-base }
+  EmitI('LEA     EAX, [EBX + ECX*4]');  { &data[ECX] en 0-base }
+  EmitI('MOV     DWORD PTR [EAX], EDX');
+
+  { Incrementer CNT }
+  EmitI('INC     DWORD PTR [' + TabLbl + '_CNT]');
+End;
+
+{ ---- ParseModifyTable : MODIFY itab FROM wa INDEX i. ---------- }
+{ Remplace data[i-1] par la valeur de wa.                          }
+Procedure ParseModifyTable;
+Var TabName, WaName : TString;
+    TabIdx, WaIdx   : Integer;
+    TabLbl          : TString;
+    LblEnd          : TString;
+Begin
+  EmitComment('MODIFY');
+
+  If CurTokType <> TOK_IDENT Then
+  Begin LexError('Nom de table attendu apres MODIFY'); SkipToDot; Exit; End;
+  TabName := CurTokStr;
+  TabIdx  := FindSym(TabName);
+  Consume;
+
+  { FROM wa }
+  WaIdx := 0; WaName := '';
+  If TokIsKw(KW_FROM) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      WaName := CurTokStr;
+      WaIdx  := FindSym(WaName);
+      Consume;
+    End;
+  End;
+
+  { Charger la valeur source -> EDX }
+  If WaIdx > 0 Then
+  Begin
+    GenLoadVar32(WaIdx);
+    EmitI('MOV     EDX, EAX');
+  End
+  Else
+    EmitI('XOR     EDX, EDX');
+
+  { INDEX i }
+  If TokIsKw(KW_INDEX) Then
+  Begin
+    Consume;
+    EmitI('PUSH    EDX');
+    ParseExpr;                       { EAX = index }
+    EmitI('POP     EDX');
+  End
+  Else
+    EmitI('MOV     EAX, 1');          { defaut }
+
+  If CurTokType = TOK_DOT Then Consume;
+
+  If TabIdx = 0 Then
+  Begin
+    EmitComment('MODIFY: table inconnue: ' + TabName);
+    Exit;
+  End;
+  TabLbl := SymTab[TabIdx].AsmLabel;
+
+  LblEnd := NewLabel + '_ME';
+
+  { Verifier 1 <= index <= CNT }
+  EmitI('MOV     ECX, EAX');
+  EmitI('TEST    ECX, ECX');
+  EmitI('JLE     ' + LblEnd);
+  EmitI('CMP     ECX, DWORD PTR [' + TabLbl + '_CNT]');
+  EmitI('JG      ' + LblEnd);
+
+  { data[ECX-1] := EDX (0-base) }
+  EmitI('LEA     EBX, [' + TabLbl + '_DATA]');
+  EmitI('DEC     ECX');
+  EmitI('LEA     EAX, [EBX + ECX*4]');
+  EmitI('MOV     DWORD PTR [EAX], EDX');
+
+EmitLabel(LblEnd);
 End;
 
 { ---- ParseDeleteTable : DELETE itab [INDEX i]. --------------- }
@@ -7848,7 +8102,19 @@ Begin
   AsmSplitOps(Ops, Op1, Op2);
 
   { ---- Simple single-byte instructions ---- }
-  If Mnem = 'RET' Then Begin BinEmitByte($C3); Exit; End;
+  If Mnem = 'RET' Then
+  Begin
+    If Op1 = '' Then
+      BinEmitByte($C3)                    { RET }
+    Else
+    Begin                                  { RET imm16 (stdcall cleanup) }
+      Imm := AsmParseImm(Op1);
+      BinEmitByte($C2);
+      BinEmitByte(Byte(Imm And $FF));
+      BinEmitByte(Byte((Imm Shr 8) And $FF));
+    End;
+    Exit;
+  End;
   If Mnem = 'LODSB' Then Begin BinEmitByte($AC); Exit; End;
   If Mnem = 'STOSB' Then Begin BinEmitByte($AA); Exit; End;
   If Mnem = 'MOVSB' Then Begin BinEmitByte($A4); Exit; End;
@@ -8073,6 +8339,9 @@ Begin
   End;
 
   { ---- Jcc (conditional jumps) ---- }
+  { Signed and unsigned conditional jump encodings (0F 8x rel32). }
+  { IMPORTANT : si on ajoute un nouveau Jcc ici, veiller a utiliser }
+  { le bon opcode (signed vs unsigned).                             }
   If (Mnem = 'JZ') Or (Mnem = 'JE') Then
   Begin
     BinEmitByte($0F); BinEmitByte($84);
@@ -8085,27 +8354,87 @@ Begin
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
-  If Mnem = 'JB' Then
+  If (Mnem = 'JB') Or (Mnem = 'JNAE') Or (Mnem = 'JC') Then
   Begin
     BinEmitByte($0F); BinEmitByte($82);
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
-  If Mnem = 'JA' Then
+  If (Mnem = 'JNB') Or (Mnem = 'JAE') Or (Mnem = 'JNC') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($83);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JBE') Or (Mnem = 'JNA') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($86);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JA') Or (Mnem = 'JNBE') Then
   Begin
     BinEmitByte($0F); BinEmitByte($87);
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
-  If Mnem = 'JGE' Then
+  If Mnem = 'JS' Then
   Begin
-    BinEmitByte($0F); BinEmitByte($8D);
+    BinEmitByte($0F); BinEmitByte($88);
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
   If Mnem = 'JNS' Then
   Begin
     BinEmitByte($0F); BinEmitByte($89);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JL') Or (Mnem = 'JNGE') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8C);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JGE') Or (Mnem = 'JNL') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8D);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JLE') Or (Mnem = 'JNG') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8E);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JG') Or (Mnem = 'JNLE') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8F);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JP' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8A);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JNP' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8B);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JO' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($80);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JNO' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($81);
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
@@ -8138,9 +8467,23 @@ Begin
     If R1 >= 0 Then
     Begin
       Imm := AsmParseImm(Op2);
-      BinEmitByte($83);
-      BinEmitByte($C0 Or R1);
-      BinEmitByte(Byte(Imm And $FF));
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        { ADD reg32, imm8 (sign-extended) : 83 /0 ib }
+        BinEmitByte($83);
+        BinEmitByte($C0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        { ADD reg32, imm32 : 81 /0 id }
+        BinEmitByte($81);
+        BinEmitByte($C0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
       Exit;
     End;
     Exit;
@@ -8174,9 +8517,23 @@ Begin
     If R1 >= 0 Then
     Begin
       Imm := AsmParseImm(Op2);
-      BinEmitByte($83);
-      BinEmitByte($E8 Or R1);
-      BinEmitByte(Byte(Imm And $FF));
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        { SUB reg32, imm8 (sign-extended) : 83 /5 ib }
+        BinEmitByte($83);
+        BinEmitByte($E8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        { SUB reg32, imm32 : 81 /5 id }
+        BinEmitByte($81);
+        BinEmitByte($E8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
       Exit;
     End;
     Exit;
@@ -9273,7 +9630,7 @@ Begin
   WriteBinWord(F, PE_SUBSYS_CUI);         { Subsystem = CONSOLE }
   WriteBinWord(F, 0);                     { DllCharacteristics }
   WriteBinDWord(F, $100000);              { SizeOfStackReserve (1 MB) }
-  WriteBinDWord(F, $1000);                { SizeOfStackCommit (4 KB) }
+  WriteBinDWord(F, $10000);               { SizeOfStackCommit (64 KB) }
   WriteBinDWord(F, $100000);              { SizeOfHeapReserve (1 MB) }
   WriteBinDWord(F, $1000);                { SizeOfHeapCommit (4 KB) }
   WriteBinDWord(F, 0);                    { LoaderFlags }
