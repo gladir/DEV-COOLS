@@ -2508,6 +2508,16 @@ Begin
       If CurTokType = TOK_NUMBER Then Consume;
       If CurTokType = TOK_RPAREN Then Consume;
     End;
+    { TYPE C LENGTH n }
+    If TokIsKw(KW_LENGTH) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_NUMBER Then
+      Begin
+        SymTab[SymIdx].CharLen := CurTokNum;
+        Consume;
+      End;
+    End;
   End
   Else If StrUpperCase(CurTokStr) = 'N' Then
   Begin
@@ -2520,6 +2530,16 @@ Begin
       SymTab[SymIdx].CharLen := CurTokNum;
       If CurTokType = TOK_NUMBER Then Consume;
       If CurTokType = TOK_RPAREN Then Consume;
+    End;
+    { TYPE N LENGTH n }
+    If TokIsKw(KW_LENGTH) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_NUMBER Then
+      Begin
+        SymTab[SymIdx].CharLen := CurTokNum;
+        Consume;
+      End;
     End;
   End
   Else If StrUpperCase(CurTokStr) = 'D' Then
@@ -2899,6 +2919,32 @@ Begin
 End;
 
 { ---- GenStoreVar32 : stocker EAX dans une variable (TODO 09)- }
+{ ---- StrCapFor : capacite de copie (octets) pour un symbole C ---
+  Pour TYPE_C / TYPE_N : la longueur declaree (au moins 1).
+  Pour TYPE_D : 8 (YYYYMMDD), TYPE_T : 6 (HHMMSS).
+  Pour TYPE_STRING / XSTRING : valeur par defaut genereuse (255).
+  La valeur retournee est la limite passee dans ECX a STRCOPY, qui
+  s arrete aussi au NUL ; elle doit juste etre > 0 pour copier au
+  moins le NUL terminal.                                           }
+Function StrCapFor(SymIdx : Integer) : Integer;
+Var Cap : Integer;
+Begin
+  Case SymTab[SymIdx].DataType Of
+    TYPE_C, TYPE_N :
+    Begin
+      Cap := SymTab[SymIdx].CharLen;
+      If Cap < 1 Then Cap := 1;
+    End;
+    TYPE_D       : Cap := 8;
+    TYPE_T       : Cap := 6;
+    TYPE_STRING,
+    TYPE_XSTRING : Cap := 255;
+  Else
+    Cap := 255;
+  End;
+  StrCapFor := Cap;
+End;
+
 Procedure GenStoreVar32(SymIdx : Integer);
 Var SC, DT, BP : Integer; Lbl : TString;
 Begin
@@ -2915,16 +2961,18 @@ Begin
   Begin
     If SymTab[SymIdx].ParamKind = PARAM_CHANGING Then
     Begin
-      { CHANGING : ecrire a travers le pointeur }
-      EmitI('MOV     ECX, DWORD PTR [EBP+' + IntToStr_(BP) + ']');
       Case DT Of
         TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
         Begin
+          { CHANGING chaine : recuperer le pointeur, copier }
           EmitI('MOV     ESI, EAX');
-          EmitI('MOV     EDI, ECX');
+          EmitI('MOV     EDI, DWORD PTR [EBP+' + IntToStr_(BP) + ']');
+          EmitI('MOV     ECX, ' + IntToStr_(StrCapFor(SymIdx)));
           EmitI('CALL    ' + AB_RT_PFX + 'STRCOPY');
         End;
       Else
+        { CHANGING numerique : ecrire a travers le pointeur }
+        EmitI('MOV     ECX, DWORD PTR [EBP+' + IntToStr_(BP) + ']');
         EmitI('MOV     DWORD PTR [ECX], EAX');
       End;
     End
@@ -2936,6 +2984,7 @@ Begin
         Begin
           EmitI('MOV     ESI, EAX');
           EmitI('LEA     EDI, [EBP+' + IntToStr_(BP) + ']');
+          EmitI('MOV     ECX, ' + IntToStr_(StrCapFor(SymIdx)));
           EmitI('CALL    ' + AB_RT_PFX + 'STRCOPY');
         End;
       Else
@@ -2953,6 +3002,7 @@ Begin
         EmitI('LEA     EDI, [EBP' + IntToStr_(BP) + ']')
       Else
         EmitI('LEA     EDI, [' + Lbl + ']');
+      EmitI('MOV     ECX, ' + IntToStr_(StrCapFor(SymIdx)));
       EmitI('CALL    ' + AB_RT_PFX + 'STRCOPY');
     End;
   Else
