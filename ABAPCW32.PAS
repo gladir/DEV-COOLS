@@ -8552,6 +8552,78 @@ Begin
     Exit;
   End;
 
+  { ---- AND ---- }
+  If Mnem = 'AND' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      { AND r32, r32 : 21 /r }
+      BinEmitByte($21);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+      Exit;
+    End;
+    If R1 >= 0 Then
+    Begin
+      Imm := AsmParseImm(Op2);
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        { AND r32, imm8 : 83 /4 ib }
+        BinEmitByte($83);
+        BinEmitByte($E0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        { AND r32, imm32 : 81 /4 id }
+        BinEmitByte($81);
+        BinEmitByte($E0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- OR ---- }
+  If Mnem = 'OR' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      { OR r32, r32 : 09 /r }
+      BinEmitByte($09);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+      Exit;
+    End;
+    If R1 >= 0 Then
+    Begin
+      Imm := AsmParseImm(Op2);
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        { OR r32, imm8 : 83 /1 ib }
+        BinEmitByte($83);
+        BinEmitByte($C8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        { OR r32, imm32 : 81 /1 id }
+        BinEmitByte($81);
+        BinEmitByte($C8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
+    End;
+    Exit;
+  End;
+
   { ---- CMP ---- }
   If Mnem = 'CMP' Then
   Begin
@@ -8706,6 +8778,115 @@ Begin
     R1 := AsmRegIdx32(Op1);
     If R1 >= 0 Then
     Begin BinEmitByte($F7); BinEmitByte($D8 Or R1); End;
+    Exit;
+  End;
+
+  { ---- NOT ---- }
+  If Mnem = 'NOT' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin BinEmitByte($F7); BinEmitByte($D0 Or R1); End;
+    Exit;
+  End;
+
+  { ---- SHL / SAL (shift left logical/arithmetic) : C1 /4 ib -- }
+  If (Mnem = 'SHL') Or (Mnem = 'SAL') Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin
+      If Op2 = 'CL' Then
+      Begin
+        { SHL r32, CL : D3 /4 }
+        BinEmitByte($D3);
+        BinEmitByte($E0 Or R1);
+      End
+      Else
+      Begin
+        Imm := AsmParseImm(Op2);
+        If Imm = 1 Then
+        Begin
+          BinEmitByte($D1);
+          BinEmitByte($E0 Or R1);
+        End
+        Else
+        Begin
+          BinEmitByte($C1);
+          BinEmitByte($E0 Or R1);
+          BinEmitByte(Byte(Imm And $FF));
+        End;
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- SHR (shift right logical) : C1 /5 ib -------------------- }
+  If Mnem = 'SHR' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin
+      If Op2 = 'CL' Then
+      Begin
+        BinEmitByte($D3);
+        BinEmitByte($E8 Or R1);
+      End
+      Else
+      Begin
+        Imm := AsmParseImm(Op2);
+        If Imm = 1 Then
+        Begin
+          BinEmitByte($D1);
+          BinEmitByte($E8 Or R1);
+        End
+        Else
+        Begin
+          BinEmitByte($C1);
+          BinEmitByte($E8 Or R1);
+          BinEmitByte(Byte(Imm And $FF));
+        End;
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- SAR (shift right arithmetic) : C1 /7 ib ----------------- }
+  If Mnem = 'SAR' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin
+      If Op2 = 'CL' Then
+      Begin
+        BinEmitByte($D3);
+        BinEmitByte($F8 Or R1);
+      End
+      Else
+      Begin
+        Imm := AsmParseImm(Op2);
+        If Imm = 1 Then
+        Begin
+          BinEmitByte($D1);
+          BinEmitByte($F8 Or R1);
+        End
+        Else
+        Begin
+          BinEmitByte($C1);
+          BinEmitByte($F8 Or R1);
+          BinEmitByte(Byte(Imm And $FF));
+        End;
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- MUL (unsigned multiply) : F7 /4 ------------------------- }
+  If Mnem = 'MUL' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin BinEmitByte($F7); BinEmitByte($E0 Or R1); End;
     Exit;
   End;
 
