@@ -12264,6 +12264,314 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ TryAddRefDll                                                  }
+{   Ajoute un fichier .DLL a la liste des references si la      }
+{   limite n est pas atteinte et si le chemin n y est pas deja. }
+{   Retourne True en cas d ajout effectif.                       }
+{ ------------------------------------------------------------ }
+
+Function TryAddRefDll(Const Path : TString) : Boolean;
+Var I : Integer;
+Begin
+  TryAddRefDll := False;
+  If Path = '' Then Exit;
+  If RefDllNum >= MAX_REF_DLLS Then Exit;
+  For I := 0 To RefDllNum - 1 Do
+    If StrICompare(RefDllPath[I], Path) Then Exit;
+  RefDllPath[RefDllNum] := Path;
+  Inc(RefDllNum);
+  TryAddRefDll := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ ResolveAndAddRef                                              }
+{   Tente de localiser un fichier .DLL portant le nom donne     }
+{   ('System.Xml', 'Microsoft.AspNetCore.Identity', ...) dans   }
+{   une liste de repertoires candidats. HintPath, si non vide,  }
+{   est essaye en premier (interprete relativement a ProjDir).  }
+{   En cas de succes, ajoute le chemin via TryAddRefDll.         }
+{   Retourne True si une DLL a ete ajoutee.                      }
+{ ------------------------------------------------------------ }
+
+Function ResolveAndAddRef(Const ProjDir, RefName,
+                          HintPath, PkgVer : TString) : Boolean;
+Var
+  Candidate : TString;
+  HomeDir   : TString;
+  PkgDir    : TString;
+  Tfm       : TString;
+  TfmIdx    : Integer;
+  Tfms      : Array[0..7] Of String[20];
+  NumTfm    : Integer;
+  K         : Integer;
+  LcRef     : TString;
+  Ch        : Char;
+Begin
+  ResolveAndAddRef := False;
+
+  { 1. HintPath explicite }
+  If HintPath <> '' Then
+  Begin
+    If (Length(HintPath) >= 2) And (HintPath[2] = ':') Then
+      Candidate := HintPath
+    Else
+      Candidate := ProjDir + HintPath;
+    If FileExists(Candidate) Then
+    Begin
+      If TryAddRefDll(Candidate) Then ResolveAndAddRef := True;
+      Exit;
+    End;
+  End;
+
+  { 2. Repertoires candidats du projet }
+  If RefName <> '' Then
+  Begin
+    Candidate := ProjDir + RefName + '.dll';
+    If FileExists(Candidate) Then
+    Begin
+      If TryAddRefDll(Candidate) Then ResolveAndAddRef := True;
+      Exit;
+    End;
+    Candidate := ProjDir + 'bin\Debug\' + RefName + '.dll';
+    If FileExists(Candidate) Then
+    Begin
+      If TryAddRefDll(Candidate) Then ResolveAndAddRef := True;
+      Exit;
+    End;
+    Candidate := ProjDir + 'bin\Release\' + RefName + '.dll';
+    If FileExists(Candidate) Then
+    Begin
+      If TryAddRefDll(Candidate) Then ResolveAndAddRef := True;
+      Exit;
+    End;
+  End;
+
+  { 3. Cache NuGet utilisateur (PackageReference) :                  }
+  {    %USERPROFILE%\.nuget\packages\<id-lc>\<ver>\lib\<tfm>\<id>.dll}
+  If (PkgVer <> '') And (RefName <> '') Then
+  Begin
+    HomeDir := GetEnv('USERPROFILE');
+    If HomeDir = '' Then Exit;
+    LcRef := '';
+    For K := 1 To Length(RefName) Do
+    Begin
+      Ch := RefName[K];
+      If (Ch >= 'A') And (Ch <= 'Z') Then Ch := Chr(Ord(Ch) + 32);
+      LcRef := LcRef + Ch;
+    End;
+    PkgDir := HomeDir + '\.nuget\packages\' + LcRef + '\' +
+              PkgVer + '\lib\';
+    If Not DirExists(PkgDir) Then Exit;
+
+    Tfms[0] := 'net48';        Tfms[1] := 'net472';
+    Tfms[2] := 'net471';       Tfms[3] := 'net47';
+    Tfms[4] := 'net46';        Tfms[5] := 'netstandard2.0';
+    Tfms[6] := 'netstandard2.1'; Tfms[7] := 'net8.0';
+    NumTfm := 8;
+    For TfmIdx := 0 To NumTfm - 1 Do
+    Begin
+      Tfm := Tfms[TfmIdx];
+      Candidate := PkgDir + Tfm + '\' + RefName + '.dll';
+      If FileExists(Candidate) Then
+      Begin
+        If TryAddRefDll(Candidate) Then ResolveAndAddRef := True;
+        Exit;
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCsprojRefs                                               }
+{   Lit le fichier .csproj donne et y extrait les <Reference>   }
+{   et <PackageReference> pour les ajouter automatiquement aux  }
+{   DLL referencees lors de la generation du PE. Comportement   }
+{   silencieux si une DLL ne peut etre localisee : la reference }
+{   est tout simplement ignoree (la DLL n est probablement pas  }
+{   un PE32 i386 utilisable, ou correspond a un namespace deja  }
+{   built-in).                                                    }
+{ ------------------------------------------------------------ }
+
+{ Extraction d un attribut XML simple : retourne le contenu de  }
+{ AttrName="..." dans Line, ou '' si absent. Insensible a casse }
+{ sur le nom de l attribut.                                       }
+Function GetXmlAttr(Const Line, AttrName : TString) : TString;
+Var
+  I, K, L     : Integer;
+  Found       : Boolean;
+  Ca, Cb      : Char;
+  StartQuote  : Integer;
+  Q           : Char;
+Begin
+  GetXmlAttr := '';
+  L := Length(Line);
+  K := Length(AttrName);
+  I := 1;
+  While I <= L - K Do
+  Begin
+    Found := True;
+    For K := 1 To Length(AttrName) Do
+    Begin
+      Ca := Line[I + K - 1];
+      Cb := AttrName[K];
+      If (Ca >= 'A') And (Ca <= 'Z') Then Ca := Chr(Ord(Ca) + 32);
+      If (Cb >= 'A') And (Cb <= 'Z') Then Cb := Chr(Ord(Cb) + 32);
+      If Ca <> Cb Then Begin Found := False; Break; End;
+    End;
+    If Found Then
+    Begin
+      K := I + Length(AttrName);
+      { Sauter espaces puis '=' puis espaces }
+      While (K <= L) And (Line[K] = ' ') Do Inc(K);
+      If (K <= L) And (Line[K] = '=') Then
+      Begin
+        Inc(K);
+        While (K <= L) And (Line[K] = ' ') Do Inc(K);
+        If (K <= L) And ((Line[K] = '"') Or (Line[K] = '''')) Then
+        Begin
+          Q := Line[K];
+          Inc(K);
+          StartQuote := K;
+          While (K <= L) And (Line[K] <> Q) Do Inc(K);
+          GetXmlAttr := Copy(Line, StartQuote, K - StartQuote);
+          Exit;
+        End;
+      End;
+    End;
+    Inc(I);
+  End;
+End;
+
+Procedure ParseCsprojRefs(Const CsprojPath, ProjDir : TString);
+Var
+  T            : Text;
+  Line, Lc     : TString;
+  RefName      : TString;
+  Version      : TString;
+  HintPath     : TString;
+  InRef        : Boolean;
+  P, P2        : Integer;
+  Added        : Integer;
+
+  Function ContainsLC(Const Sub : TString) : Boolean;
+  Var
+    K, M, N, J : Integer;
+    Ok      : Boolean;
+    Ca, Cb  : Char;
+  Begin
+    ContainsLC := False;
+    M := Length(Sub);
+    N := Length(Lc);
+    If M = 0 Then Exit;
+    For K := 1 To N - M + 1 Do
+    Begin
+      Ok := True;
+      For J := 1 To M Do
+      Begin
+        Ca := Lc[K + J - 1];
+        Cb := Sub[J];
+        If (Ca >= 'A') And (Ca <= 'Z') Then Ca := Chr(Ord(Ca)+32);
+        If (Cb >= 'A') And (Cb <= 'Z') Then Cb := Chr(Ord(Cb)+32);
+        If Ca <> Cb Then Begin Ok := False; Break; End;
+      End;
+      If Ok Then Begin ContainsLC := True; Exit; End;
+    End;
+  End;
+
+Begin
+  Assign(T, CsprojPath);
+  {$I-}
+  Reset(T);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+
+  Added    := 0;
+  InRef    := False;
+  RefName  := '';
+  Version  := '';
+  HintPath := '';
+
+  While Not Eof(T) Do
+  Begin
+    {$I-}
+    ReadLn(T, Line);
+    {$I+}
+    If IOResult <> 0 Then Break;
+    Lc := Line;
+
+    { <PackageReference Include="X" Version="Y" ... /> ou ouverture }
+    If ContainsLC('<packagereference') Then
+    Begin
+      RefName  := GetXmlAttr(Line, 'Include');
+      Version  := GetXmlAttr(Line, 'Version');
+      HintPath := '';
+      If (RefName <> '') And
+         ResolveAndAddRef(ProjDir, RefName, '', Version) Then
+        Inc(Added);
+      RefName := ''; Version := '';
+    End
+    Else If ContainsLC('<reference') And
+       (Not ContainsLC('<projectreference')) And
+       (Not ContainsLC('<packagereference')) Then
+    Begin
+      RefName  := GetXmlAttr(Line, 'Include');
+      { Format court : 'System.Xml, Version=...' -> garder avant ',' }
+      P := Pos(',', RefName);
+      If P > 0 Then RefName := Copy(RefName, 1, P - 1);
+      P2 := Length(RefName);
+      While (P2 > 0) And (RefName[P2] = ' ') Do Dec(P2);
+      RefName := Copy(RefName, 1, P2);
+      HintPath := '';
+      Version  := '';
+      { Si <HintPath>...</HintPath> est sur la meme ligne, extraire }
+      If ContainsLC('<hintpath') Then
+      Begin
+        P  := Pos('>', Line);
+        If P > 0 Then
+        Begin
+          P2 := Pos('</', Copy(Line, P + 1, Length(Line) - P));
+          If P2 > 0 Then
+            HintPath := Copy(Line, P + 1, P2 - 1);
+        End;
+      End;
+      { Element auto-fermant ou ferme sur meme ligne ? }
+      If ContainsLC('/>') Or ContainsLC('</reference') Then
+      Begin
+        If (RefName <> '') And
+           ResolveAndAddRef(ProjDir, RefName, HintPath, '') Then
+          Inc(Added);
+        RefName := ''; HintPath := '';
+      End
+      Else
+        InRef := True;
+    End
+    Else If InRef And ContainsLC('<hintpath') Then
+    Begin
+      P  := Pos('>', Line);
+      P2 := Pos('</', Line);
+      If (P > 0) And (P2 > P) Then
+        HintPath := Copy(Line, P + 1, P2 - P - 1);
+    End
+    Else If InRef And ContainsLC('</reference') Then
+    Begin
+      If (RefName <> '') And
+         ResolveAndAddRef(ProjDir, RefName, HintPath, '') Then
+        Inc(Added);
+      InRef    := False;
+      RefName  := '';
+      HintPath := '';
+    End;
+  End;
+
+  Close(T);
+
+  If Added > 0 Then
+    WriteLn('CSCW32: ', Added,
+            ' reference(s) DLL ajoutee(s) automatiquement depuis ',
+            ExtractFileNameOnly(CsprojPath));
+End;
+
+{ ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
 
@@ -12331,6 +12639,10 @@ Begin
     ProjectDir    := PjSrcDir;
     WriteLn('CSCW32: projet detecte : ', PjCsproj,
             ' (namespace racine : ', ProjectRootNs, ')');
+    { Lecture des <Reference> et <PackageReference> du csproj :    }
+    { chaque DLL trouvee est ajoutee comme si elle avait ete passee}
+    { sur la ligne de commande via /reference:.                     }
+    ParseCsprojRefs(PjSrcDir + PjCsproj, PjSrcDir);
   End;
 
   { Enumerer les autres fichiers .cs du projet (mettre en file        }
