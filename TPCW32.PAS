@@ -13793,9 +13793,9 @@ Begin
             { Inline INT 10h : charger la police correspondante              }
             { Apres ParseExpr, AX contient le nombre de lignes demande       }
             ParseExpr(PI);
-            Lbl     := LabelGen;  { @str_4350 : 43 ou 50 lignes }
-            LblLoop := LabelGen;  { @str_25   : 25 lignes       }
-            LblDone := LabelGen;  { @str_done : fin             }
+            Lbl     := LabelGen;  { label pour la branche 43/50 lignes }
+            LblLoop := LabelGen;  { label pour la branche 25 lignes    }
+            LblDone := LabelGen;  { label de fin commun                }
             EmitInstr('PUSH AX');
             EmitInstr('CMP AX,25');
             EmitInstr('JE ' + LblLoop);
@@ -24724,7 +24724,7 @@ Begin
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');
   EmitInstr('CALL _SetConsoleWindowInfo@12');
   { Etape 2 : redimensionner le buffer a 80 x rows }
-  { COORD : rows dans les 16 bits hauts, 80 dans les 16 bits bas }
+  { COORD : 80 (colonnes) dans les 16 bits bas, rows dans les 16 bits hauts }
   EmitInstr('MOV EAX,EBX');
   EmitInstr('SHL EAX,16');
   EmitInstr('OR EAX,80');                        { COORD X=80 Y=rows }
