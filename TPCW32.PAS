@@ -13776,7 +13776,10 @@ Begin
       Exit;
     End;
 
-    { _SETTEXTROWS(rows) -> stub returns rows }
+    { _SETTEXTROWS(rows) -> renvoie rows (nombre de lignes effectif).   }
+    { ParseExpr laisse deja rows dans le registre de retour de la cible;}
+    { aucun forcage a 0 n'est necessaire. C'est le comportement du      }
+    { _settextrows original de QuickC (retour = nombre de lignes reel). }
     If Up = '_SETTEXTROWS' Then
     Begin
       Inc(EP);
