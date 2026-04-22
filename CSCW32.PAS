@@ -680,6 +680,58 @@ Var
   ClassCount  : Integer;        { nombre de classes enregistrees         }
   CurClassName: TString;        { nom de la classe en cours d analyse    }
 
+{ ============================================================ }
+{ Validation metadata (System.ComponentModel.DataAnnotations)   }
+{ ------------------------------------------------------------ }
+{ Tables liees par liste chainee (capacite illimitee) pour      }
+{ decrire chaque membre annote de chaque classe parsee.          }
+{ ============================================================ }
+
+Const
+  AK_REQUIRED = 1;    { [Required]                                    }
+  AK_STRLEN   = 2;    { [StringLength(max [, MinimumLength=n])]        }
+  AK_EMAIL    = 3;    { [EmailAddress]                                 }
+  AK_PHONE    = 4;    { [Phone]                                        }
+  AK_RANGE    = 5;    { [Range(min, max)]                              }
+  AK_REGEX    = 6;    { [RegularExpression("pattern")]                 }
+  AK_MINLEN   = 7;    { [MinLength(n)]                                 }
+  AK_MAXLEN   = 8;    { [MaxLength(n)]                                 }
+
+Type
+  PValAttr = ^TValAttr;
+  TValAttr = Record
+    Kind   : Integer;        { AK_*                                   }
+    Arg1   : LongInt;        { max length / min range / longueur exacte}
+    Arg2   : LongInt;        { min length / max range                 }
+    StrArg : TString;        { pattern regex, message custom, etc.    }
+    Line   : Integer;        { ligne source pour diagnostics          }
+    Next   : PValAttr;
+  End;
+
+  PValMember = ^TValMember;
+  TValMember = Record
+    ClassName  : TString;
+    MemberName : TString;
+    TypeName   : TString;    { 'string', 'int', 'int?', ... tel que parse}
+    IsNullable : Boolean;    { T? detecte                              }
+    Line       : Integer;    { ligne source de la declaration          }
+    AttrHead   : PValAttr;
+    AttrTail   : PValAttr;
+    AttrCount  : Integer;
+    Next       : PValMember;
+  End;
+
+Var
+  ValMemberHead    : PValMember;
+  ValMemberTail    : PValMember;
+  ValMemberCount   : Integer;
+  ValAttrTotal     : Integer;
+
+  { Attributs lus avant un membre, en attente d'etre rattaches }
+  PendingAttrHead  : PValAttr;
+  PendingAttrTail  : PValAttr;
+  PendingAttrCount : Integer;
+
 { Table des namespaces declares (TODO 18) }
 
 Const
@@ -1064,6 +1116,13 @@ Begin
   RefDllTail  := NIL;
   RefDllNum   := 0;
   RefApiNum   := 0;
+  ValMemberHead    := NIL;
+  ValMemberTail    := NIL;
+  ValMemberCount   := 0;
+  ValAttrTotal     := 0;
+  PendingAttrHead  := NIL;
+  PendingAttrTail  := NIL;
+  PendingAttrCount := 0;
 End;
 
 { ------------------------------------------------------------ }
@@ -2478,10 +2537,12 @@ Var
   PL : Integer;
 Begin
   { Namespaces reconnus en built-in par le compilateur }
-  If (S = 'System')                           Or
-     (S = 'System.Collections')               Or
-     (S = 'System.IO')                        Or
-     (S = 'Microsoft.AspNetCore.Identity')    Or
+  If (S = 'System')                                   Or
+     (S = 'System.Collections')                       Or
+     (S = 'System.IO')                                Or
+     (S = 'System.ComponentModel')                    Or
+     (S = 'System.ComponentModel.DataAnnotations')    Or
+     (S = 'Microsoft.AspNetCore.Identity')            Or
      (S = 'Microsoft.EntityFrameworkCore') Then
   Begin
     IsStandardNamespace := True;
@@ -7639,6 +7700,345 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Validation-attribute parsing helpers                           }
+{ ------------------------------------------------------------ }
+
+Procedure ClearPendingAttrs;
+Var P, N : PValAttr;
+Begin
+  P := PendingAttrHead;
+  While P <> NIL Do
+  Begin
+    N := P^.Next;
+    Dispose(P);
+    P := N;
+  End;
+  PendingAttrHead  := NIL;
+  PendingAttrTail  := NIL;
+  PendingAttrCount := 0;
+End;
+
+Procedure AddPendingAttr(Kind : Integer; Arg1, Arg2 : LongInt;
+                         Const StrArg : TString; Line : Integer);
+Var P : PValAttr;
+Begin
+  New(P);
+  P^.Kind   := Kind;
+  P^.Arg1   := Arg1;
+  P^.Arg2   := Arg2;
+  P^.StrArg := StrArg;
+  P^.Line   := Line;
+  P^.Next   := NIL;
+  If PendingAttrHead = NIL Then
+    PendingAttrHead := P
+  Else
+    PendingAttrTail^.Next := P;
+  PendingAttrTail := P;
+  Inc(PendingAttrCount);
+End;
+
+Function MapAttrName(Const N : TString) : Integer;
+Var
+  Bare : TString;
+  L    : Integer;
+Begin
+  Bare := N;
+  L := Length(Bare);
+  If (L > 9) And
+     (StrLowerCase(Copy(Bare, L - 8, 9)) = 'attribute') Then
+    Bare := Copy(Bare, 1, L - 9);
+  MapAttrName := 0;
+  If StrICompare(Bare, 'Required')          Then MapAttrName := AK_REQUIRED
+  Else If StrICompare(Bare, 'StringLength') Then MapAttrName := AK_STRLEN
+  Else If StrICompare(Bare, 'EmailAddress') Then MapAttrName := AK_EMAIL
+  Else If StrICompare(Bare, 'Phone')        Then MapAttrName := AK_PHONE
+  Else If StrICompare(Bare, 'Range')        Then MapAttrName := AK_RANGE
+  Else If StrICompare(Bare, 'RegularExpression') Then
+    MapAttrName := AK_REGEX
+  Else If StrICompare(Bare, 'MinLength')    Then MapAttrName := AK_MINLEN
+  Else If StrICompare(Bare, 'MaxLength')    Then MapAttrName := AK_MAXLEN;
+End;
+
+{ TryParseAttributeBlock : si le token courant est '[', lit un    }
+{   bloc d attributs complet '[A, B(x), C("s")]' et alimente la   }
+{   liste PendingAttr*. Retourne True si un bloc a ete consomme.  }
+
+Function TryParseAttributeBlock : Boolean;
+Var
+  AttrName : TString;
+  Kind     : Integer;
+  Arg1     : LongInt;
+  Arg2     : LongInt;
+  StrArg   : TString;
+  ALine    : Integer;
+Begin
+  TryParseAttributeBlock := False;
+  If Not TokIsPunct('[') Then Exit;
+  ALine := CurToken.Line;
+  Consume; { '[' }
+
+  While Not TokIsPunct(']') And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      Consume;
+      Continue;
+    End;
+    AttrName := CurToken.Val;
+    Consume;
+    While TokIsPunct('.') Do
+    Begin
+      Consume;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        AttrName := CurToken.Val; { ne garder que le nom final }
+        Consume;
+      End;
+    End;
+
+    Kind   := MapAttrName(AttrName);
+    Arg1   := 0;
+    Arg2   := 0;
+    StrArg := '';
+
+    If TokIsPunct('(') Then
+    Begin
+      Consume;
+      Case Kind Of
+        AK_STRLEN, AK_MINLEN, AK_MAXLEN :
+          Begin
+            If CurToken.Kind = TK_INTEGER Then
+            Begin
+              Arg1 := CurToken.IntVal;
+              Consume;
+            End;
+            If TokIsPunct(',') Then
+            Begin
+              Consume;
+              If CurToken.Kind = TK_IDENT Then
+              Begin
+                Consume;
+                If TokIsOp('=') Then Consume;
+              End;
+              If CurToken.Kind = TK_INTEGER Then
+              Begin
+                Arg2 := CurToken.IntVal;
+                Consume;
+              End;
+            End;
+          End;
+        AK_RANGE :
+          Begin
+            If CurToken.Kind = TK_INTEGER Then
+            Begin
+              Arg1 := CurToken.IntVal;
+              Consume;
+            End;
+            If TokIsPunct(',') Then Consume;
+            If CurToken.Kind = TK_INTEGER Then
+            Begin
+              Arg2 := CurToken.IntVal;
+              Consume;
+            End;
+          End;
+        AK_REGEX :
+          Begin
+            If CurToken.Kind = TK_STRING Then
+            Begin
+              StrArg := CurToken.Val;
+              Consume;
+            End;
+          End;
+      End;
+      While Not TokIsPunct(')') And (CurToken.Kind <> TK_EOF) Do
+        Consume;
+      If TokIsPunct(')') Then Consume;
+    End;
+
+    If Kind > 0 Then
+      AddPendingAttr(Kind, Arg1, Arg2, StrArg, ALine);
+
+    If TokIsPunct(',') Then Consume;
+  End;
+
+  If TokIsPunct(']') Then Consume;
+  TryParseAttributeBlock := True;
+End;
+
+Procedure AttachPendingAttrs(Const ClsN, MembN, TypeN : TString;
+                             Nullable : Boolean; Line : Integer);
+Var M : PValMember;
+Begin
+  If PendingAttrCount = 0 Then Exit;
+  New(M);
+  M^.ClassName  := ClsN;
+  M^.MemberName := MembN;
+  M^.TypeName   := TypeN;
+  M^.IsNullable := Nullable;
+  M^.Line       := Line;
+  M^.AttrHead   := PendingAttrHead;
+  M^.AttrTail   := PendingAttrTail;
+  M^.AttrCount  := PendingAttrCount;
+  M^.Next       := NIL;
+  If ValMemberHead = NIL Then
+    ValMemberHead := M
+  Else
+    ValMemberTail^.Next := M;
+  ValMemberTail := M;
+  Inc(ValMemberCount);
+  Inc(ValAttrTotal, PendingAttrCount);
+  PendingAttrHead  := NIL;
+  PendingAttrTail  := NIL;
+  PendingAttrCount := 0;
+End;
+
+{ SkipMemberAndAttach : appele quand des attributs sont en       }
+{   attente. Consomme la declaration complete du membre qui       }
+{   suit (champ ou propriete auto), eventuellement avec           }
+{   initialiseur, et rattache les attributs au membre.            }
+{   Pour une methode, skip aussi le corps.                        }
+
+Procedure SkipMemberAndAttach;
+Var
+  TypeN    : TString;
+  MemberN  : TString;
+  Nullable : Boolean;
+  Line     : Integer;
+  Depth    : Integer;
+Begin
+  { Visibilite eventuelle }
+  While TokIsKw('public') Or TokIsKw('private') Or
+        TokIsKw('protected') Or TokIsKw('internal') Or
+        TokIsKw('static') Or TokIsKw('readonly') Or
+        TokIsKw('virtual') Or TokIsKw('override') Or
+        TokIsKw('abstract') Or TokIsKw('sealed') Or
+        TokIsKw('new') Do
+    Consume;
+
+  { Type }
+  If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+  Begin
+    TypeN := CurToken.Val;
+    Consume;
+  End
+  Else
+  Begin
+    ClearPendingAttrs;
+    If CurToken.Kind <> TK_EOF Then Consume;
+    Exit;
+  End;
+
+  { Type qualifie : A.B.C }
+  While TokIsPunct('.') Do
+  Begin
+    Consume;
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      TypeN := TypeN + '.' + CurToken.Val;
+      Consume;
+    End;
+  End;
+
+  { Generiques <...> }
+  If TokIsOp('<') Then
+  Begin
+    Depth := 1;
+    Consume;
+    While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If TokIsOp('<') Then Inc(Depth)
+      Else If TokIsOp('>') Then Dec(Depth)
+      Else If TokIsOp('>>') Then Dec(Depth, 2);
+      Consume;
+    End;
+  End;
+
+  { Nullable ? }
+  Nullable := False;
+  If TokIsPunct('?') Then
+  Begin
+    Consume;
+    Nullable := True;
+  End;
+
+  { Tableau [] }
+  If TokIsPunct('[') Then
+  Begin
+    Consume;
+    While Not TokIsPunct(']') And (CurToken.Kind <> TK_EOF) Do
+      Consume;
+    If TokIsPunct(']') Then Consume;
+  End;
+
+  { Nom du membre }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    ClearPendingAttrs;
+    Exit;
+  End;
+  MemberN := CurToken.Val;
+  Line := CurToken.Line;
+  Consume;
+
+  AttachPendingAttrs(CurClassName, MemberN, TypeN, Nullable, Line);
+
+  { Reste de la declaration : propriete auto avec get/set        }
+  {   | = init;                                                   }
+  {   | ;                                                         }
+  {   | ( params ) corps                                          }
+  If TokIsPunct('{') Then
+  Begin
+    Depth := 1;
+    Consume;
+    While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If TokIsPunct('{') Then Inc(Depth)
+      Else If TokIsPunct('}') Then Dec(Depth);
+      If Depth > 0 Then Consume
+      Else Consume;
+    End;
+    { initialiseur optionnel : = expr ; }
+    If TokIsOp('=') Then
+    Begin
+      While Not TokIsPunct(';') And (CurToken.Kind <> TK_EOF) Do
+        Consume;
+      If TokIsPunct(';') Then Consume;
+    End;
+  End
+  Else If TokIsPunct('(') Then
+  Begin
+    Depth := 1;
+    Consume;
+    While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+    Begin
+      If TokIsPunct('(') Then Inc(Depth)
+      Else If TokIsPunct(')') Then Dec(Depth);
+      Consume;
+    End;
+    { corps entre accolades ou expression lambda =... ; }
+    If TokIsPunct('{') Then
+    Begin
+      Depth := 1;
+      Consume;
+      While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+      Begin
+        If TokIsPunct('{') Then Inc(Depth)
+        Else If TokIsPunct('}') Then Dec(Depth);
+        Consume;
+      End;
+    End
+    Else If TokIsPunct(';') Then
+      Consume;
+  End
+  Else
+  Begin
+    While Not TokIsPunct(';') And (CurToken.Kind <> TK_EOF) Do
+      Consume;
+    If TokIsPunct(';') Then Consume;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
 { ParseClassDecl : analyser une declaration de classe            }
 {   [visibilite] class Nom (accolade) membres (accolade)         }
 {   Le mot-cle 'class' a deja ete consomme par l appelant.       }
@@ -7687,6 +8087,23 @@ Begin
   { Analyser les membres de la classe }
   While InBody And (CurToken.Kind <> TK_EOF) Do
   Begin
+    { Detection de bloc d attributs [Required], [StringLength(...)]...}
+    { Peut y en avoir plusieurs consecutifs ; chaque [...] alimente   }
+    { PendingAttr* jusqu au prochain membre.                          }
+    If TokIsPunct('[') Then
+    Begin
+      If TryParseAttributeBlock Then Continue;
+    End;
+
+    { Si des attributs sont en attente, le prochain token decrit le   }
+    { membre : lire type + nom + body/initialiseur, rattacher les     }
+    { attributs et consommer la declaration.                           }
+    If PendingAttrCount > 0 Then
+    Begin
+      SkipMemberAndAttach;
+      Continue;
+    End;
+
     { Sauter les qualificateurs de visibilite }
     SkipVisibility;
 
@@ -8030,10 +8447,21 @@ Begin
   CurNsName  := NName;
   Inc(NsDepth);
 
-  { Attendre l accolade ouvrante }
+  { Attendre l accolade ouvrante OU le point-virgule (file-scoped) }
+  If TokIsPunct(';') Then
+  Begin
+    { namespace X; (C# 10+ file-scoped). Le namespace englobe le    }
+    { reste du fichier. On consomme simplement le ';' et on laisse  }
+    { le parseur top-level appeler ParseClassDecl pour les classes  }
+    { suivantes. Le namespace courant reste en place jusqu a EOF.   }
+    Consume;
+    { Ne pas decrementer NsDepth ni restaurer SaveNsName : le scope }
+    { reste ouvert jusqu a la fin du flux.                           }
+    Exit;
+  End;
   If Not TokIsPunct('{') Then
   Begin
-    FatalError('accolade ouvrante attendue apres le nom de namespace');
+    FatalError('accolade ouvrante ou ; attendu apres le nom de namespace');
     CurNsName := SaveNsName;
     Dec(NsDepth);
     Exit;
@@ -12243,6 +12671,10 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure ShowStats;
+Var
+  M  : PValMember;
+  A  : PValAttr;
+  KS : TString;
 Begin
   If Not Opts.Verbose Then Exit;
   WriteLn;
@@ -12266,8 +12698,54 @@ Begin
   WriteLn('Donnees .DATA    : ', DataCount);
   WriteLn('Taille pile loc  : ', LocalOffset);
   WriteLn('Labels generes   : ', LabelSeq);
+  WriteLn('Membres annotes  : ', ValMemberCount);
+  WriteLn('Attributs totaux : ', ValAttrTotal);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
+
+  If ValMemberCount > 0 Then
+  Begin
+    WriteLn;
+    WriteLn('--- Metadata validation (DataAnnotations) ---');
+    M := ValMemberHead;
+    While M <> NIL Do
+    Begin
+      Write('  ', M^.ClassName, '.', M^.MemberName,
+            ' : ', M^.TypeName);
+      If M^.IsNullable Then Write('?');
+      WriteLn(' (ligne ', M^.Line, ', ', M^.AttrCount, ' attr.)');
+      A := M^.AttrHead;
+      While A <> NIL Do
+      Begin
+        Case A^.Kind Of
+          AK_REQUIRED : KS := 'Required';
+          AK_STRLEN   : KS := 'StringLength';
+          AK_EMAIL    : KS := 'EmailAddress';
+          AK_PHONE    : KS := 'Phone';
+          AK_RANGE    : KS := 'Range';
+          AK_REGEX    : KS := 'RegularExpression';
+          AK_MINLEN   : KS := 'MinLength';
+          AK_MAXLEN   : KS := 'MaxLength';
+        Else KS := '?';
+        End;
+        Write('      [', KS);
+        Case A^.Kind Of
+          AK_STRLEN :
+            Begin
+              Write('(', A^.Arg1);
+              If A^.Arg2 > 0 Then Write(', MinimumLength=', A^.Arg2);
+              Write(')');
+            End;
+          AK_MINLEN, AK_MAXLEN : Write('(', A^.Arg1, ')');
+          AK_RANGE  : Write('(', A^.Arg1, ', ', A^.Arg2, ')');
+          AK_REGEX  : Write('("', A^.StrArg, '")');
+        End;
+        WriteLn(']');
+        A := A^.Next;
+      End;
+      M := M^.Next;
+    End;
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -12956,8 +13434,28 @@ Begin
     { Parser toutes les instructions jusqu a la fin du fichier. }
     { Les constructions non supportees sont tolerees (Consume   }
     { de secours dans ParseStatement).                          }
+    { On arrete le corps de Main si l on rencontre une          }
+    { declaration clairement top-level (namespace, class,       }
+    { [Attribute]) -- le reste sera traite par la boucle        }
+    { top-level qui suit.                                        }
     While CurToken.Kind <> TK_EOF Do
+    Begin
+      If TokIsKw('namespace') Or TokIsKw('class') Or
+         TokIsPunct('[') Then
+        Break;
+      If (TokIsKw('public') Or TokIsKw('private') Or
+          TokIsKw('protected') Or TokIsKw('internal')) Then
+      Begin
+        { Lookahead dur : visibilite suivie de class ? On ne    }
+        { peut pas peek sans consommer, donc on consomme et on  }
+        { remet en attente l info via un drapeau. Simple : on   }
+        { sort de Main des qu on voit une visibilite isolee au  }
+        { niveau top-level, les declarations seront reprises     }
+        { par la boucle suivante.                                }
+        Break;
+      End;
       ParseStatement;
+    End;
 
     EmitLabel(MethExitLbl);
     EmitInstr('PUSH', '0');
@@ -12990,6 +13488,20 @@ Begin
     Begin
       AddStrLit(CurToken.Val);
       Consume;
+    End
+    { Bloc d attributs au niveau top-level : [Required], etc.      }
+    { Ces attributs decoraient une classe ou un membre mais, hors  }
+    { d une classe, on les consomme et on les jette (avertissement).}
+    Else If TokIsPunct('[') Then
+    Begin
+      If TryParseAttributeBlock Then
+      Begin
+        { Attributs non rattaches (classe elle-meme ou espace      }
+        { non supporte). On les libere.                             }
+        ClearPendingAttrs;
+      End
+      Else
+        Consume;
     End
     { Reconnaitre les declarations const }
     Else If TokIsKw('const') Then
