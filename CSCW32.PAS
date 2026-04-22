@@ -522,13 +522,14 @@ Type
   End;
 
   TOptions = Record
-    SrcFile   : TString;   { fichier source (.cs)                 }
-    OutFile   : TString;   { fichier sortie (.exe, .obj)          }
-    Verbose   : Boolean;   { -v : banniere et statistiques        }
-    DebugMode : Boolean;   { -d : affichage de chaque token       }
-    Warnings  : Boolean;   { -w : afficher les avertissements     }
-    AsmOutput : Boolean;   { -asm : produire aussi un .ASM        }
-    ObjOnly   : Boolean;   { -obj : produire seulement un .OBJ    }
+    SrcFile    : TString;  { fichier source (.cs)                 }
+    OutFile    : TString;  { fichier sortie (.exe, .obj)          }
+    Verbose    : Boolean;  { -v : banniere et statistiques        }
+    DebugMode  : Boolean;  { -d : affichage de chaque token       }
+    Warnings   : Boolean;  { -w : afficher les avertissements     }
+    AsmOutput  : Boolean;  { -asm : produire aussi un .ASM        }
+    ObjOnly    : Boolean;  { -obj : produire seulement un .OBJ    }
+    NetVersion : TString;  { -netver : version du .NET Framework  }
   End;
 
 Var
@@ -840,13 +841,28 @@ End;
 
 Procedure InitOptions;
 Begin
-  Opts.SrcFile   := '';
-  Opts.OutFile   := '';
-  Opts.Verbose   := False;
-  Opts.DebugMode := False;
-  Opts.Warnings  := False;
-  Opts.AsmOutput := False;
-  Opts.ObjOnly   := False;
+  Opts.SrcFile    := '';
+  Opts.OutFile    := '';
+  Opts.Verbose    := False;
+  Opts.DebugMode  := False;
+  Opts.Warnings   := False;
+  Opts.AsmOutput  := False;
+  Opts.ObjOnly    := False;
+  Opts.NetVersion := '4.8';   { .NET Framework 4.8 par defaut       }
+End;
+
+{ ------------------------------------------------------------ }
+{ IsValidNetVersion : valide la version du .NET Framework      }
+{ ------------------------------------------------------------ }
+
+Function IsValidNetVersion(Const V : TString) : Boolean;
+Begin
+  IsValidNetVersion :=
+    (V = '2.0') Or (V = '3.0') Or (V = '3.5') Or
+    (V = '4.0') Or (V = '4.5') Or (V = '4.5.1') Or
+    (V = '4.5.2') Or (V = '4.6') Or (V = '4.6.1') Or
+    (V = '4.6.2') Or (V = '4.7') Or (V = '4.7.1') Or
+    (V = '4.7.2') Or (V = '4.8') Or (V = '4.8.1');
 End;
 
 { ------------------------------------------------------------ }
@@ -872,6 +888,10 @@ Begin
   WriteLn('  -v             Mode verbeux (banniere + statistiques)');
   WriteLn('  -d             Debug tokens (affiche chaque token)');
   WriteLn('  -w             Afficher les avertissements');
+  WriteLn('  -netver <ver>  Version du .NET Framework (defaut: 4.8)');
+  WriteLn('                 Valeurs : 2.0, 3.0, 3.5, 4.0, 4.5, 4.5.1,');
+  WriteLn('                           4.5.2, 4.6, 4.6.1, 4.6.2, 4.7,');
+  WriteLn('                           4.7.1, 4.7.2, 4.8, 4.8.1');
   WriteLn('  -h, --help, /? Afficher cette aide');
   WriteLn;
   WriteLn('Exemples :');
@@ -879,6 +899,7 @@ Begin
   WriteLn('  CSCW32 hello.cs hello.exe -v');
   WriteLn('  CSCW32 prog.cs -asm');
   WriteLn('  CSCW32 module.cs -obj');
+  WriteLn('  CSCW32 hello.cs -netver 4.7.2');
   Halt(EXIT_OK);
 End;
 
@@ -914,6 +935,15 @@ Begin
       Opts.AsmOutput := True
     Else If Arg = '-obj' Then
       Opts.ObjOnly := True
+    Else If Arg = '-netver' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('Option -netver : version manquante');
+      Opts.NetVersion := ParamStr(I);
+      If Not IsValidNetVersion(Opts.NetVersion) Then
+        FatalError('Version .NET Framework invalide: ' + Opts.NetVersion);
+    End
     Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
       FatalError('Option inconnue: ' + Arg)
     Else
@@ -963,6 +993,7 @@ Begin
           ') - Compilateur C# (C Sharp) -> 80386 PE Win32');
   WriteLn('Source   : ', Opts.SrcFile);
   WriteLn('Sortie   : ', Opts.OutFile);
+  WriteLn('.NET FW  : ', Opts.NetVersion);
   If Opts.AsmOutput Then
     WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
   WriteLn;
