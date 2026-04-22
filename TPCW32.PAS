@@ -13769,15 +13769,39 @@ Begin
       Exit;
     End;
 
-    { _SELECTPALETTE(n) -> renvoie n (palette selectionnee) en succes.  }
-    { ParseExpr laisse deja n dans le registre de retour de la cible ;  }
-    { aucun forcage a 0 n'est necessaire. C'est le comportement du      }
-    { _SELECTPALETTE original de QuickC/QuickPascal (retour = palette   }
-    { selectionnee), et correspond au modele de _SETTEXTROWS.           }
+    { _SELECTPALETTE(n) -> selectionne la palette CGA n et retourne l ancien  }
+    { numero de palette.                                                       }
+    { DOS 16 bits : INT 10h AH=0Bh BH=01h BL=n&3 (modes _MRes4Color,         }
+    {               _MResNoColor). La palette precedente est lue depuis        }
+    {               CGA_CURPAL et retournee dans AX.                           }
+    { Autres cibles : retourner n directement (comportement precedent).        }
     If Up = '_SELECTPALETTE' Then
     Begin
       Inc(EP);
-      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      If EPMatch('(') Then
+      Begin
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);           { AX = nouveau numero de palette          }
+            EmitInstr('MOV BL,AL');  { BL = nouveau n                          }
+            EmitInstr('AND BL,3');   { masquer a 0-3                           }
+            { Lire l ancienne palette (valeur de retour) depuis CGA_CURPAL     }
+            EmitInstr('MOV AL,BYTE PTR [CGA_CURPAL]');
+            EmitInstr('XOR AH,AH'); { AX = ancien palette (zero-etendu)        }
+            EmitInstr('PUSH AX');   { sauvegarder valeur de retour             }
+            { Mettre a jour CGA_CURPAL et appliquer via INT 10h AH=0Bh        }
+            EmitInstr('MOV BYTE PTR [CGA_CURPAL],BL');
+            EmitInstr('MOV AH,0Bh');
+            EmitInstr('MOV BH,01h'); { BH=01h = selection palette couleur CGA  }
+            EmitInstr('INT 10h');
+            EmitInstr('POP AX');    { retourner ancienne palette               }
+          End;
+          Else
+            ParseExpr(PI);           { retourner n directement (win32/autres)  }
+        End;
+        EPMatch(')');
+      End;
       Exit;
     End;
 
@@ -33828,6 +33852,7 @@ Begin
   EmitBlankLine;
   EmitRaw('NUMBUF   DB 16 DUP(0)');
   EmitRaw('INBUF    DB 128 DUP(0)');
+  EmitRaw('CGA_CURPAL DB 0');        { palette CGA courante (0-3) pour _SELECTPALETTE }
   EmitRaw('CRLF     DB 13,10,''$''');
   EmitRaw('STRTMP   DB 128 DUP(0)');
   EmitRaw('TRUE_STR DB ''TRUE'',''$''');
