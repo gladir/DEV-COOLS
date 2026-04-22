@@ -663,8 +663,22 @@ Var
 
 Const
   MAX_CLASSES = 64;             { nombre maximal de classes declarees    }
+  INST_FIELD_SIZE = 4;          { MVP : chaque champ d instance = 4 oct. }
 
 Type
+  PInstField = ^TInstField;
+  TInstField = Record
+    Name     : TString;         { nom C# du champ                        }
+    TypeName : TString;         { type C# (pour diagnostics)             }
+    TypeIdx  : Integer;         { indice dans la table des types         }
+    Offset   : Integer;         { offset en octets depuis le debut obj.  }
+    Size     : Integer;         { taille effective (4 pour MVP)          }
+    IsRef    : Boolean;         { True si string/objet (pointeur)        }
+    Nullable : Boolean;         { T? detecte                              }
+    Line     : Integer;
+    Next     : PInstField;
+  End;
+
   TClassEntry = Record
     Name        : TString;      { nom C# de la classe                   }
     MangledName : TString;      { nom ASM mangled (_CSCC_...)            }
@@ -673,6 +687,10 @@ Type
     MethCount   : Integer;      { nombre de methodes dans la classe      }
     FieldCount  : Integer;      { nombre de champs statiques             }
     HasMain     : Boolean;      { True si la classe contient Main()      }
+    InstHead    : PInstField;   { premier champ d instance               }
+    InstTail    : PInstField;   { dernier champ d instance               }
+    InstCount   : Integer;      { nombre de champs d instance            }
+    InstSize    : Integer;      { taille totale de l objet en octets     }
   End;
 
 Var
@@ -1476,6 +1494,8 @@ Procedure ParseMethodDecl(Const RetType, MName : TString); Forward;
 { Forward declarations for TODO 17 }
 Function  FindClass(Const N : TString) : Integer; Forward;
 Function  AddClass(Const N : TString; SIdx : Integer) : Integer; Forward;
+Function  FindInstField(CIdx : Integer;
+                        Const FldName : TString) : PInstField; Forward;
 Procedure ParseClassDecl; Forward;
 
 { Forward declarations for TODO 18 }
@@ -3205,6 +3225,7 @@ Type
     IsConst     : Boolean;      { True si constante                  }
     IsArray     : Boolean;      { True si variable tableau (TODO 19) }
     ArraySize   : Integer;      { nombre d elements (0 si inconnu)   }
+    ObjClassIdx : Integer;      { indice ClassTab si objet (-1 sinon) }
   End;
 
 Var
@@ -3339,6 +3360,7 @@ Begin
   SymTab[Idx].IsConst     := (Cat = SC_CONST);
   SymTab[Idx].IsArray     := False;
   SymTab[Idx].ArraySize   := 0;
+  SymTab[Idx].ObjClassIdx := -1;
 
   If Opts.DebugMode Then
     WriteLn('  SYM_ADD[', Idx, ']: ', Lw,
@@ -4763,8 +4785,13 @@ Var
   InitIsExpr : Boolean;        { True si init = expression generale }
   StrLbl   : TString;          { label ASM de la chaine (_CSCK_N)    }
   First    : Boolean;
+  ObjCls   : Integer;
 Begin
   TIdx := TypeFromKeyword(VarType);
+  { Type utilisateur : type TY_IDX_OBJECT + index de classe }
+  ObjCls := FindClass(VarType);
+  If (TIdx < 0) And (ObjCls >= 0) Then
+    TIdx := TY_IDX_OBJECT;
 
   First := True;
   Repeat
@@ -4908,6 +4935,7 @@ Begin
       Begin
         SymTab[SymIdx].IsStatic := True;
         SymTab[SymIdx].IsGlobal := True;
+        SymTab[SymIdx].ObjClassIdx := ObjCls;
         { Marquer comme tableau si declaration type[] (TODO 19) }
         If PendingIsArray Then
         Begin
@@ -4940,6 +4968,7 @@ Begin
       If SymIdx >= 0 Then
       Begin
         SymTab[SymIdx].Offset := Off;
+        SymTab[SymIdx].ObjClassIdx := ObjCls;
         { Marquer comme tableau si declaration type[] (TODO 19) }
         If PendingIsArray Then
         Begin
@@ -5289,6 +5318,8 @@ Var
   CastTypeIdx      : Integer;  { indice TY_IDX_* du cast (TODO 23)   }
   SzTypeIdx        : Integer;  { indice TY_IDX_* pour sizeof (TODO 23)}
   TofTypeName      : TString;  { nom du type pour typeof (TODO 23)   }
+  Depth            : Integer;  { profondeur de parentheses (new T()) }
+  Fld              : PInstField; { champ d instance trouve           }
 Begin
   { --- Literal entier --- }
   If CurToken.Kind = TK_INTEGER Then
@@ -5503,41 +5534,82 @@ Begin
       ParsePrimary;
     End;
   End
-  { --- new type[taille] : allocation de tableau --- }
+  { --- new type[taille] : allocation de tableau ---               }
+  { --- new ClassName(args) : allocation objet d instance ---      }
   Else If TokIsKw('new') Then
   Begin
     Consume;
-    { Lire le type de l element }
+    { Lire le type ; memoriser si c est une classe connue. }
+    SavedName := '';
     If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+    Begin
+      SavedName := CurToken.Val;
       Consume;
+    End;
     { Lire [taille] }
     LastNewArraySize := 0;
     If TokIsPunct('[') Then
     Begin
       Consume;
-      { Capturer la taille si c est un litteral entier (TODO 19) }
       If CurToken.Kind = TK_INTEGER Then
         LastNewArraySize := CurToken.IntVal;
-      ParseExpr;  { taille dans EAX }
+      ParseExpr;
       If TokIsPunct(']') Then Consume;
-      { Multiplier par sizeof(element) = 4 (DWORD par defaut) }
-      EmitInstr('SHL', 'EAX,2');  { *4 }
-      { Appeler HeapAlloc(hHeap, flags, size)  STDCALL }
-      { Arguments pushes en ordre inverse }
-      EmitInstr('PUSH', 'EAX');                   { dwBytes  }
-      EmitInstr('PUSH', '0');                      { dwFlags  }
+      EmitInstr('SHL', 'EAX,2');
+      EmitInstr('PUSH', 'EAX');
+      EmitInstr('PUSH', '0');
       EmitInstr('CALL', '_GetProcessHeap@0');
-      EmitInstr('PUSH', 'EAX');                   { hHeap    }
+      EmitInstr('PUSH', 'EAX');
       EmitInstr('CALL', '_HeapAlloc@12');
-      { Resultat : EAX = pointeur vers le bloc alloue }
-      CurExprType := TY_IDX_INT;  { pointeur (TODO 20) }
+      CurExprType := TY_IDX_INT;
+    End
+    Else If TokIsPunct('(') Then
+    Begin
+      { new ClassName(args) : allouer la taille de l objet et       }
+      { ignorer les arguments (pas de constructeur emis pour MVP).  }
+      Consume; { '(' }
+      { Ignorer les arguments -- pas de constructeur dans le MVP.   }
+      Depth := 1;
+      While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+      Begin
+        If TokIsPunct('(') Then Inc(Depth)
+        Else If TokIsPunct(')') Then Dec(Depth);
+        If Depth > 0 Then Consume
+        Else Consume;
+      End;
+      { Taille de l objet : classe utilisateur connue ou 4 par def. }
+      Idx := FindClass(SavedName);
+      If (Idx >= 0) And (ClassTab[Idx].InstSize > 0) Then
+      Begin
+        EmitComment('new ' + SavedName + ' ('
+                    + IntToStr_(ClassTab[Idx].InstSize) + ' octets)');
+        EmitInstr('MOV', 'EAX,' + IntToStr_(ClassTab[Idx].InstSize));
+      End
+      Else
+      Begin
+        EmitComment('new ' + SavedName + ' (taille inconnue, 4 oct.)');
+        EmitInstr('MOV', 'EAX,4');
+      End;
+      EmitInstr('CALL', '_CSCRT_MALLOC');
+      { Zero-initialiser le bloc (champs par defaut a 0/null).      }
+      If (Idx >= 0) And (ClassTab[Idx].InstSize > 0) Then
+      Begin
+        EmitInstr('PUSH', 'EAX');
+        EmitInstr('MOV', 'EDI,EAX');
+        EmitInstr('XOR', 'EAX,EAX');
+        EmitInstr('MOV', 'ECX,'
+                  + IntToStr_(ClassTab[Idx].InstSize Div 4));
+        EmitInstr('REP', 'STOSD');
+        EmitInstr('POP', 'EAX');
+      End;
+      CurExprType := TY_IDX_OBJECT;
     End
     Else
     Begin
-      { new Type() - simple allocation objet (squelette) }
-      EmitComment('new objet (squelette)');
+      { Cas inattendu : ni [ ni ( apres new Type }
+      EmitComment('new ' + SavedName + ' (forme non supportee)');
       EmitInstr('XOR', 'EAX,EAX');
-      CurExprType := TY_IDX_INT;  { TODO 20 }
+      CurExprType := TY_IDX_OBJECT;
     End;
   End
   { --- Identificateur --- }
@@ -5545,6 +5617,33 @@ Begin
   Begin
     SavedName := CurToken.Val;
     Consume;
+
+    { Acces a un champ d instance : obj.Field (MVP : un seul niveau) }
+    Idx := SymFind(SavedName);
+    If (Idx >= 0) And (SymTab[Idx].ObjClassIdx >= 0)
+       And TokIsPunct('.') Then
+    Begin
+      Consume; { '.' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        Fld := FindInstField(SymTab[Idx].ObjClassIdx, CurToken.Val);
+        If Fld <> NIL Then
+        Begin
+          Consume; { nom du champ }
+          GenLoadVar(Idx); { EAX = pointeur objet }
+          If Fld^.Offset = 0 Then
+            EmitInstr('MOV', 'EAX,DWORD PTR [EAX]')
+          Else
+            EmitInstr('MOV', 'EAX,DWORD PTR [EAX+'
+                      + IntToStr_(Fld^.Offset) + ']');
+          If Fld^.IsRef Then
+            CurExprType := TY_IDX_OBJECT
+          Else
+            CurExprType := TY_IDX_INT;
+          Exit;
+        End;
+      End;
+    End;
 
     { Construire un nom qualifie (ex: Console.WriteLine) }
     QualName := SavedName;
@@ -6331,8 +6430,57 @@ Var
   IsConsoleWrite   : Boolean;  { TODO 21 }
   IsConsoleWriteLn : Boolean;  { TODO 21 }
   ArgExprType      : Integer;  { TODO 21 }
+  Fld              : PInstField;
+  FldName          : TString;
 Begin
   QualName := TargetName;
+
+  { Acces/affectation a un champ d instance : obj.Field [= expr]  }
+  { MVP : un seul niveau de qualification.                         }
+  Idx := SymFind(TargetName);
+  If (Idx >= 0) And (SymTab[Idx].ObjClassIdx >= 0)
+     And TokIsPunct('.') Then
+  Begin
+    Consume; { '.' }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      FldName := CurToken.Val;
+      Fld := FindInstField(SymTab[Idx].ObjClassIdx, FldName);
+      If Fld <> NIL Then
+      Begin
+        Consume; { nom du champ }
+        If TokIsOp('=') Then
+        Begin
+          Consume;
+          ParseExpr; { EAX = valeur }
+          EmitInstr('PUSH', 'EAX');
+          GenLoadVar(Idx); { EAX = pointeur objet }
+          EmitInstr('MOV', 'EDX,EAX');
+          EmitInstr('POP', 'EAX');
+          If Fld^.Offset = 0 Then
+            EmitInstr('MOV', 'DWORD PTR [EDX],EAX')
+          Else
+            EmitInstr('MOV', 'DWORD PTR [EDX+'
+                      + IntToStr_(Fld^.Offset) + '],EAX');
+          If TokIsPunct(';') Then Consume;
+          Exit;
+        End
+        Else
+        Begin
+          { Lecture seule : emettre puis continuer (peu utile ici) }
+          GenLoadVar(Idx);
+          If Fld^.Offset = 0 Then
+            EmitInstr('MOV', 'EAX,DWORD PTR [EAX]')
+          Else
+            EmitInstr('MOV', 'EAX,DWORD PTR [EAX+'
+                      + IntToStr_(Fld^.Offset) + ']');
+          If TokIsPunct(';') Then Consume;
+          Exit;
+        End;
+      End;
+    End;
+  End;
+
   While TokIsPunct('.') Do
   Begin
     Consume;
@@ -6615,6 +6763,39 @@ Begin
       ParseVarDecl(VarType, False, '');
     If TokIsPunct(';') Then Consume;
     Exit;
+  End;
+
+  { Declaration de variable locale de type classe utilisateur :    }
+  { ClassName ident [= expr];                                      }
+  { Detecte quand le token courant est un identifiant qui est une  }
+  { classe enregistree, et la parse comme declaration de variable. }
+  If (CurToken.Kind = TK_IDENT) And (FindClass(CurToken.Val) >= 0) Then
+  Begin
+    VarType := CurToken.Val;
+    Consume;
+    PendingIsArray := False;
+    If TokIsPunct('[') Then
+    Begin
+      Consume;
+      If TokIsPunct(']') Then Consume;
+      PendingIsArray := True;
+      Inc(ArrayCount);
+    End;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      ParseVarDecl(VarType, False, '');
+      If TokIsPunct(';') Then Consume;
+      Exit;
+    End
+    Else
+    Begin
+      { Pas un identifiant apres : remettre dans le flux ordinaire. }
+      { Note : impossible de reculer, mais VarType etait seulement  }
+      { un acces statique (ex: ClassName.Method()). On traite comme }
+      { une affectation/appel.                                       }
+      ParseAssignment(VarType);
+      Exit;
+    End;
   End;
 
   { Pre-increment : ++ident; }
@@ -7669,6 +7850,10 @@ Begin
   ClassTab[CI].MethCount   := 0;
   ClassTab[CI].FieldCount  := 0;
   ClassTab[CI].HasMain     := False;
+  ClassTab[CI].InstHead    := NIL;
+  ClassTab[CI].InstTail    := NIL;
+  ClassTab[CI].InstCount   := 0;
+  ClassTab[CI].InstSize    := 0;
   AddClass := CI;
   Inc(ClassCount);
 End;
@@ -7702,6 +7887,80 @@ End;
 { ------------------------------------------------------------ }
 { Validation-attribute parsing helpers                           }
 { ------------------------------------------------------------ }
+
+{ IsRefTypeName : retourne True si le type C# est un type        }
+{   reference (pointeur en memoire) : string, object, ou une     }
+{   classe utilisateur. Les types valeur (int, bool, char, ...)  }
+{   retournent False.                                             }
+
+Function IsRefTypeName(Const TN : TString) : Boolean;
+Var L : TString;
+Begin
+  L := StrLowerCase(TN);
+  IsRefTypeName :=
+    (L = 'string') Or (L = 'object') Or
+    (L = 'datetime') Or (L = 'decimal') Or
+    (L = 'icollection') Or (L = 'ilist') Or (L = 'list') Or
+    (FindClass(TN) >= 0);
+End;
+
+{ AddInstField : ajouter un champ d instance a la classe courante}
+{   (CurClassName). Retourne le pointeur du nouveau champ ou NIL }
+{   si CurClassName n est pas enregistree. Met a jour InstSize.  }
+
+Function AddInstField(Const FldName, FldType : TString;
+                      Nullable : Boolean;
+                      Line : Integer) : PInstField;
+Var
+  CIdx : Integer;
+  P    : PInstField;
+Begin
+  AddInstField := NIL;
+  CIdx := FindClass(CurClassName);
+  If CIdx < 0 Then Exit;
+  New(P);
+  P^.Name     := FldName;
+  P^.TypeName := FldType;
+  P^.TypeIdx  := TypeFromKeyword(FldType);
+  P^.Offset   := ClassTab[CIdx].InstSize;
+  P^.Size     := INST_FIELD_SIZE;
+  P^.IsRef    := IsRefTypeName(FldType);
+  P^.Nullable := Nullable;
+  P^.Line     := Line;
+  P^.Next     := NIL;
+  If ClassTab[CIdx].InstHead = NIL Then
+    ClassTab[CIdx].InstHead := P
+  Else
+    ClassTab[CIdx].InstTail^.Next := P;
+  ClassTab[CIdx].InstTail := P;
+  Inc(ClassTab[CIdx].InstCount);
+  Inc(ClassTab[CIdx].InstSize, INST_FIELD_SIZE);
+  AddInstField := P;
+End;
+
+{ FindInstField : chercher un champ d instance par nom dans une  }
+{   classe donnee. Retourne NIL si non trouve.                    }
+
+Function FindInstField(CIdx : Integer;
+                       Const FldName : TString) : PInstField;
+Var
+  P  : PInstField;
+  LN : TString;
+Begin
+  FindInstField := NIL;
+  If (CIdx < 0) Or (CIdx >= ClassCount) Then Exit;
+  LN := StrLowerCase(FldName);
+  P := ClassTab[CIdx].InstHead;
+  While P <> NIL Do
+  Begin
+    If StrLowerCase(P^.Name) = LN Then
+    Begin
+      FindInstField := P;
+      Exit;
+    End;
+    P := P^.Next;
+  End;
+End;
 
 Procedure ClearPendingAttrs;
 Var P, N : PValAttr;
@@ -7979,6 +8238,11 @@ Begin
   MemberN := CurToken.Val;
   Line := CurToken.Line;
   Consume;
+
+  { Si suivi de '(' c est une methode -- on ne touche pas aux      }
+  { champs d instance. Pour un champ/propriete auto, on enregistre.}
+  If Not TokIsPunct('(') Then
+    AddInstField(MemberN, TypeN, Nullable, Line);
 
   AttachPendingAttrs(CurClassName, MemberN, TypeN, Nullable, Line);
 
@@ -8272,22 +8536,15 @@ Begin
     Begin
       Consume; { ignorer readonly, traite comme const implicite }
     End
-    { Declarations de type dans la classe (variables d instance ignorees) }
-    Else If IsTypeKeyword Then
+    { Declarations d instance (champs, auto-proprietes).           }
+    { Couvre : type nullable tableau ident avec init ou accesseurs }
+    { Note : les methodes d instance ne sont pas compilees pour le }
+    { moment -- seuls les champs sont enregistres pour le layout   }
+    { objet. SkipMemberAndAttach enregistre le champ et consomme   }
+    { la declaration.                                              }
+    Else If IsTypeKeyword Or (CurToken.Kind = TK_IDENT) Then
     Begin
-      VarType := CurToken.Val;
-      Consume;
-      { Sauter [] si tableau (TODO 19) }
-      PendingIsArray := False;
-      If TokIsPunct('[') Then
-      Begin
-        Consume;
-        If TokIsPunct(']') Then Consume;
-        PendingIsArray := True;
-        Inc(ArrayCount);
-      End;
-      If CurToken.Kind = TK_IDENT Then
-        ParseVarDecl(VarType, True, CurClassName);
+      SkipMemberAndAttach;
     End
     { Accolade fermante de la classe }
     Else If TokIsPunct('}') Then
@@ -12675,6 +12932,8 @@ Var
   M  : PValMember;
   A  : PValAttr;
   KS : TString;
+  I  : Integer;
+  IF_ : PInstField;
 Begin
   If Not Opts.Verbose Then Exit;
   WriteLn;
@@ -12702,6 +12961,28 @@ Begin
   WriteLn('Attributs totaux : ', ValAttrTotal);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
+
+  If ClassCount > 0 Then
+  Begin
+    WriteLn;
+    WriteLn('--- Layout des classes ---');
+    For I := 0 To ClassCount - 1 Do
+    Begin
+      WriteLn('  ', ClassTab[I].Name,
+              ' : ', ClassTab[I].InstCount, ' champ(s), taille ',
+              ClassTab[I].InstSize, ' octets');
+      IF_ := ClassTab[I].InstHead;
+      While IF_ <> NIL Do
+      Begin
+        Write('      +', IF_^.Offset:3, '  ',
+              IF_^.Name, ' : ', IF_^.TypeName);
+        If IF_^.Nullable Then Write('?');
+        If IF_^.IsRef Then Write(' [ref]');
+        WriteLn;
+        IF_ := IF_^.Next;
+      End;
+    End;
+  End;
 
   If ValMemberCount > 0 Then
   Begin
