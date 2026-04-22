@@ -4609,6 +4609,7 @@ Begin
   EmitComment('--- Imports Win32 pour emulation interruptions (TODO 23) ---');
   EmitComment('--- kernel32.dll ---');
   EmitRaw('EXTRN _SetConsoleScreenBufferSize@8:NEAR');
+  EmitRaw('EXTRN _SetConsoleWindowInfo@12:NEAR');
   EmitRaw('EXTRN _WriteConsoleOutputAttribute@20:NEAR');
   EmitComment('--- user32.dll ---');
   EmitRaw('EXTRN _GetCursorPos@4:NEAR');
@@ -13776,14 +13777,74 @@ Begin
       Exit;
     End;
 
-    { _SETTEXTROWS(rows) -> renvoie rows (nombre de lignes effectif).   }
-    { ParseExpr laisse deja rows dans le registre de retour de la cible;}
-    { aucun forcage a 0 n'est necessaire. C'est le comportement du      }
-    { _settextrows original de QuickC (retour = nombre de lignes reel). }
+    { _SETTEXTROWS(rows) -> change le nombre de lignes texte (25, 43 ou 50). }
+    { DOS 16 bits : INT 10h AH=11h inline (police 8x16 pour 25 lignes,      }
+    {               police 8x8 pour 43/50 lignes).                           }
+    { Win32       : appelle _TPRT_SETTEXTROWS via l API Windows.             }
+    { Retour : rows si succes, 0 si valeur non supportee.                    }
     If Up = '_SETTEXTROWS' Then
     Begin
       Inc(EP);
-      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      If EPMatch('(') Then
+      Begin
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { Inline INT 10h : charger la police correspondante              }
+            { Apres ParseExpr, AX contient le nombre de lignes demande       }
+            ParseExpr(PI);
+            Lbl     := LabelGen;  { @str_4350 : 43 ou 50 lignes }
+            LblLoop := LabelGen;  { @str_25   : 25 lignes       }
+            LblDone := LabelGen;  { @str_done : fin             }
+            EmitInstr('PUSH AX');
+            EmitInstr('CMP AX,25');
+            EmitInstr('JE ' + LblLoop);
+            EmitInstr('CMP AX,43');
+            EmitInstr('JE ' + Lbl);
+            EmitInstr('CMP AX,50');
+            EmitInstr('JE ' + Lbl);
+            { valeur non supportee : nettoyer la pile et retourner 0 }
+            EmitInstr('POP AX');
+            EmitInstr('XOR AX,AX');
+            EmitInstr('JMP ' + LblDone);
+            { --- 43/50 lignes : INT 10h AH=11h AL=12h BL=00h (police 8x8) --- }
+            EmitLabel(Lbl);
+            EmitInstr('MOV AH,11h');
+            EmitInstr('MOV AL,12h');
+            EmitInstr('XOR BL,BL');
+            EmitInstr('INT 10h');
+            EmitInstr('POP AX');
+            EmitInstr('JMP ' + LblDone);
+            { --- 25 lignes : INT 10h AH=11h AL=14h BL=00h (police 8x16) --- }
+            EmitLabel(LblLoop);
+            EmitInstr('MOV AH,11h');
+            EmitInstr('MOV AL,14h');
+            EmitInstr('XOR BL,BL');
+            EmitInstr('INT 10h');
+            EmitInstr('POP AX');
+            EmitLabel(LblDone);
+          End;
+          Else
+          Begin
+            { Win32 : appel runtime _TPRT_SETTEXTROWS([ESP+4]=rows -> EAX) }
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETTEXTROWS');
+            EmitInstr('ADD ESP,4');
+          End;
+        End; { Case }
+        EPMatch(')');
+      End
+      Else
+      Begin
+        { sans argument : retourner 0 }
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+            EmitInstr('XOR AX,AX');
+          Else
+            EmitInstr('XOR EAX,EAX');
+        End;
+      End;
       Exit;
     End;
 
@@ -24629,6 +24690,65 @@ Begin
   { Appeler ClrScr }
   EmitInstr('CALL ' + TP_RT_PFX + 'CLRSCR');
   EmitInstr('POP EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SETTEXTROWS : changer nb de lignes console (Win32) --- }
+  { Parametre : [ESP+4] = rows demandees (25, 43 ou 50)                 }
+  { Retour    : EAX = rows si succes, 0 si valeur non supportee         }
+  { Etape 1 : reduire la fenetre a 80x25 pour autoriser le resize du    }
+  {           buffer sans conflit avec la fenetre courante.             }
+  { Etape 2 : redimensionner le buffer console a 80 x rows.            }
+  { Etape 3 : agrandir la fenetre au nombre de lignes demande.          }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETTEXTROWS');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');     { EBX = rows demandees }
+  { Valider : accepter seulement 25, 43 ou 50 }
+  EmitInstr('CMP EBX,25');
+  EmitInstr('JE ' + TP_RT_PFX + 'SETR_OK');
+  EmitInstr('CMP EBX,43');
+  EmitInstr('JE ' + TP_RT_PFX + 'SETR_OK');
+  EmitInstr('CMP EBX,50');
+  EmitInstr('JNE ' + TP_RT_PFX + 'SETR_DN');  { valeur non supportee -> 0 }
+  EmitLabel(TP_RT_PFX + 'SETR_OK');
+  { Etape 1 : fenetre minimale 80x25 pour eviter conflit avec le resize }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+0],0');   { Left   = 0  }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+2],0');   { Top    = 0  }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+4],79');  { Right  = 79 }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+6],24');  { Bottom = 24 (25 lignes min) }
+  EmitInstr('PUSH OFFSET CRT_SCROLL');
+  EmitInstr('PUSH 1');                           { bAbsolute = TRUE }
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _SetConsoleWindowInfo@12');
+  { Etape 2 : redimensionner le buffer a 80 x rows }
+  { COORD : rows dans les 16 bits hauts, 80 dans les 16 bits bas }
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('SHL EAX,16');
+  EmitInstr('OR EAX,80');                        { COORD X=80 Y=rows }
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _SetConsoleScreenBufferSize@8');
+  { Etape 3 : agrandir la fenetre au nombre de lignes demande }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+0],0');   { Left   = 0        }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+2],0');   { Top    = 0        }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+4],79');  { Right  = 79       }
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('DEC EAX');
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+6],AX');  { Bottom = rows - 1 }
+  EmitInstr('PUSH OFFSET CRT_SCROLL');
+  EmitInstr('PUSH 1');                           { bAbsolute = TRUE }
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _SetConsoleWindowInfo@12');
+  EmitInstr('MOV EAX,EBX');                     { retourner rows }
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SETR_DN');
+  EmitInstr('XOR EAX,EAX');                     { retourner 0 : valeur invalide }
+  EmitInstr('POP EBX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
