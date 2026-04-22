@@ -13892,19 +13892,20 @@ Begin
           Begin
             { Apres ParseExpr, AX contient le toggle (0=cacher, autre=montrer) }
             ParseExpr(PI);
-            Lbl     := LabelGen;  { label branche "cacher" }
-            LblDone := LabelGen;  { label de fin           }
-            { Sauvegarder l etat precedent dans AX (retour) avant de modifier }
+            Lbl     := LabelGen;  { label branche "cacher"      }
+            LblDone := LabelGen;  { label apres calcul etat prev }
+            LblLoop := LabelGen;  { label sortie commune         }
             EmitInstr('PUSH AX');           { sauver toggle demande }
             { Lire l etat precedent du curseur via INT 10h AH=03h (CH bit 5) }
             EmitInstr('MOV AH,03h');
             EmitInstr('XOR BH,BH');
-            EmitInstr('INT 10h');           { DX=pos, CX=shape }
+            EmitInstr('INT 10h');           { CX=forme curseur (CH bit5=cache) }
+            EmitInstr('XOR AX,AX');        { AX = 0 : curseur cache par defaut }
             EmitInstr('TEST CH,20h');       { bit 5 de CH = curseur cache }
-            EmitInstr('JNZ ' + LblDone);   { CH bit5=1 -> etait cache -> retour 0 }
-            EmitInstr('MOV AX,-1');         { etait visible -> retour -1 }
+            EmitInstr('JNZ ' + LblDone);   { bit5=1 -> etait cache -> AX=0 }
+            EmitInstr('MOV AX,-1');         { bit5=0 -> etait visible -> AX=-1 }
             EmitLabel(LblDone);
-            EmitInstr('XCHG AX,[SP]');     { etat precedent sur la pile, toggle dans AX }
+            EmitInstr('XCHG AX,[SP]');     { AX=toggle, [SP]=etat precedent }
             { Brancher selon le toggle demande }
             EmitInstr('TEST AX,AX');
             EmitInstr('JZ ' + Lbl);        { toggle=0 -> cacher }
@@ -13912,14 +13913,14 @@ Begin
             EmitInstr('MOV CX,0607h');
             EmitInstr('MOV AH,01h');
             EmitInstr('INT 10h');
-            EmitInstr('JMP ' + LblLoop);
+            EmitInstr('JMP ' + LblLoop);   { sortie commune }
             EmitLabel(Lbl);
-            { Cacher le curseur : CH=20h (bit 5 = off) }
+            { Cacher le curseur : CH=20h (bit 5 = curseur invisible) }
             EmitInstr('MOV CX,2000h');
             EmitInstr('MOV AH,01h');
             EmitInstr('INT 10h');
-            EmitLabel(LblLoop);
-            EmitInstr('POP AX');           { AX = etat precedent }
+            EmitLabel(LblLoop);            { sortie commune }
+            EmitInstr('POP AX');           { AX = etat precedent (-1 ou 0) }
           End;
           Else
           Begin
