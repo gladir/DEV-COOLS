@@ -3019,6 +3019,112 @@ Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_INDEXOF';
     SymTab[Idx].IsStatic := False;
   End;
+
+  { ---- System.IO.StreamWriter (stub) ---- }
+  { Classe StreamWriter reconnue comme type (stub, pas d impl. runtime) }
+  Idx := SymAdd('StreamWriter', SC_CLASS, TY_IDX_OBJECT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_CLS_PFX + 'STREAMWRITER';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamWriter.Write(value) -> void (stub) }
+  Idx := SymAdd('StreamWriter.Write', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SW_WRITE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamWriter.WriteLine(value) -> void (stub) }
+  Idx := SymAdd('StreamWriter.WriteLine', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SW_WRITELINE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamWriter.Close() -> void (stub) }
+  Idx := SymAdd('StreamWriter.Close', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SW_CLOSE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamWriter.Flush() -> void (stub) }
+  Idx := SymAdd('StreamWriter.Flush', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SW_FLUSH';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamWriter.Dispose() -> void (stub, pour 'using') }
+  Idx := SymAdd('StreamWriter.Dispose', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SW_DISPOSE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ---- System.IO.StreamReader (stub) ---- }
+  { Classe StreamReader reconnue comme type (stub, pas d impl. runtime) }
+  Idx := SymAdd('StreamReader', SC_CLASS, TY_IDX_OBJECT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_CLS_PFX + 'STREAMREADER';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamReader.ReadLine() -> string (stub) }
+  Idx := SymAdd('StreamReader.ReadLine', SC_METHOD, TY_IDX_STRING);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SR_READLINE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamReader.ReadToEnd() -> string (stub) }
+  Idx := SymAdd('StreamReader.ReadToEnd', SC_METHOD, TY_IDX_STRING);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SR_READTOEND';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamReader.Read() -> int (stub, retourne code du caractere lu) }
+  Idx := SymAdd('StreamReader.Read', SC_METHOD, TY_IDX_INT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SR_READ';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamReader.EndOfStream -> bool (stub, propriete) }
+  Idx := SymAdd('StreamReader.EndOfStream', SC_METHOD, TY_IDX_BOOL);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SR_ENDOFSTREAM';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamReader.Close() -> void (stub) }
+  Idx := SymAdd('StreamReader.Close', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SR_CLOSE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamReader.Dispose() -> void (stub, pour 'using') }
+  Idx := SymAdd('StreamReader.Dispose', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SR_DISPOSE';
+    SymTab[Idx].IsStatic := False;
+  End;
 End;
 
 { ------------------------------------------------------------ }
