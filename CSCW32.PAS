@@ -10164,8 +10164,8 @@ Begin
   { ---- DOS stub (128 bytes) ---- }
   { MZ header (64 bytes) }
   WriteBinWord(F, PE_DOS_MAGIC);     { 0x00 e_magic      }
-  WriteBinWord(F, 128);              { 0x02 e_cblp        }
-  WriteBinWord(F, 1);                { 0x04 e_cp          }
+  WriteBinWord(F, $0090);            { 0x02 e_cblp        }
+  WriteBinWord(F, $0003);            { 0x04 e_cp          }
   WriteBinWord(F, 0);                { 0x06 e_crlc        }
   WriteBinWord(F, 4);                { 0x08 e_cparhdr     }
   WriteBinWord(F, 0);                { 0x0A e_minalloc    }
