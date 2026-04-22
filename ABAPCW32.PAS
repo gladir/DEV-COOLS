@@ -842,7 +842,7 @@ Const
   MAX_BIN_DATA    = 65536;       { 64 KB max data section             }
   MAX_BIN_LBL     = 4096;        { max labels                         }
   MAX_BIN_FIX     = 8192;        { max fixups                         }
-  PE_NUM_API      = 7;           { number of imported Win32 APIs      }
+  PE_NUM_API      = 9;           { number of imported Win32 APIs      }
   COFF_RELOC_DIR32  = 6;         { IMAGE_REL_I386_DIR32               }
   COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
 {$ENDIF}
@@ -1013,11 +1013,12 @@ Const
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
     '_ExitProcess@4', '_GetStdHandle@4', '_WriteFile@20',
     '_ReadFile@20', '_GetProcessHeap@0', '_HeapAlloc@12',
-    '_HeapFree@12'
+    '_HeapFree@12', '_LoadLibraryA@4', '_GetProcAddress@8'
   );
   BinAPIName : Array[0..PE_NUM_API - 1] Of String[20] = (
     'ExitProcess', 'GetStdHandle', 'WriteFile', 'ReadFile',
-    'GetProcessHeap', 'HeapAlloc', 'HeapFree'
+    'GetProcessHeap', 'HeapAlloc', 'HeapFree',
+    'LoadLibraryA', 'GetProcAddress'
   );
 {$ENDIF}
 
@@ -5380,6 +5381,7 @@ Procedure ParseCallFunction;
 Var FMName      : TString;
     SySubrcIdx  : Integer;
     FIdx        : Integer;
+    DllLbl, FnLbl, LblErr, LblEnd : TString;
 Begin
   { On attend FUNCTION apres CALL }
   If Not TokIsKw(KW_FUNCTION) Then
@@ -5467,13 +5469,53 @@ Begin
   End;
 
   { Si la FUNCTION est definie localement, emet un vrai CALL.      }
+  { Sinon, resoudre dynamiquement via LoadLibraryA + GetProcAddress }
+  { (pas de linker : le symbole externe n est pas connu a la        }
+  { compilation). Convention : la FM 'NOM' est exportee par        }
+  { 'NOM.DLL' sous le nom 'NOM' (cdecl ou stdcall sans arguments).  }
   If (FIdx > 0) And FormTab[FIdx].IsFunction And FormTab[FIdx].Defined Then
-    EmitI('CALL    ' + FormTab[FIdx].AsmLabel);
+    EmitI('CALL    ' + FormTab[FIdx].AsmLabel)
+  Else
+  Begin
+    { Chaines ASCIIZ pour LoadLibraryA / GetProcAddress }
+    DllLbl := AddStringLit(StrUpperCase(FMName) + '.DLL');
+    FnLbl  := AddStringLit(StrUpperCase(FMName));
+    LblErr := NewLabel;
+    LblEnd := NewLabel;
+    { hModule = LoadLibraryA(lpLibFileName) }
+    EmitI('PUSH    OFFSET ' + DllLbl);
+    EmitI('CALL    _LoadLibraryA@4');
+    EmitI('TEST    EAX, EAX');
+    EmitI('JZ      ' + LblErr);
+    { proc = GetProcAddress(hModule, lpProcName) }
+    EmitI('PUSH    OFFSET ' + FnLbl);
+    EmitI('PUSH    EAX');
+    EmitI('CALL    _GetProcAddress@8');
+    EmitI('TEST    EAX, EAX');
+    EmitI('JZ      ' + LblErr);
+    { Appel : stub sans arguments (marshalling EXPORTING/IMPORTING   }
+    { non encore implemente pour FM externes).                       }
+    EmitI('CALL    EAX');
+    { SY-SUBRC = 0 }
+    SySubrcIdx := FindSym('SY-SUBRC');
+    If SySubrcIdx > 0 Then
+      EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 0');
+    EmitI('JMP     ' + LblEnd);
+    EmitLabel(LblErr);
+    { Erreur de chargement/resolution : SY-SUBRC = 4 }
+    SySubrcIdx := FindSym('SY-SUBRC');
+    If SySubrcIdx > 0 Then
+      EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 4');
+    EmitLabel(LblEnd);
+  End;
 
-  { SY-SUBRC = 0 (appel reussi) }
-  SySubrcIdx := FindSym('SY-SUBRC');
-  If SySubrcIdx > 0 Then
-    EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 0');
+  { SY-SUBRC = 0 pour l appel local (l externe est deja pose) }
+  If (FIdx > 0) And FormTab[FIdx].IsFunction And FormTab[FIdx].Defined Then
+  Begin
+    SySubrcIdx := FindSym('SY-SUBRC');
+    If SySubrcIdx > 0 Then
+      EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 0');
+  End;
 
   { Consommer le point terminal }
   If CurTokType = TOK_DOT Then Consume;
@@ -7911,6 +7953,8 @@ Begin
   Emit('EXTRN   _GetProcessHeap@0    : PROC');
   Emit('EXTRN   _HeapAlloc@12        : PROC');
   Emit('EXTRN   _HeapFree@12         : PROC');
+  Emit('EXTRN   _LoadLibraryA@4      : PROC');
+  Emit('EXTRN   _GetProcAddress@8    : PROC');
   EmitBlank;
   Emit('.STACK ' + IntToStr_(STACK_SIZE));
   EmitBlank;
