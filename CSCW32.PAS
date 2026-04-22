@@ -470,6 +470,8 @@ Program CSCW32;
 {$ENDIF}
 {$I-}
 
+Uses Dos;
+
 { ============================================================ }
 { TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF      }
 {           [IMPLEMENTE]                                        }
@@ -541,6 +543,13 @@ Var
   ErrorCount : Integer;
   WarnCount  : Integer;
   TotalLines : LongInt;
+
+  { Projet .csproj detecte dans le repertoire source (TODO 03)    }
+  { ProjectRootNs = nom de base du .csproj (ex. 'CRM.Web').       }
+  { ProjectDir    = repertoire contenant le .csproj avec le       }
+  {                 separateur final (ex. 'C:\src\CRM\').         }
+  ProjectRootNs : TString;
+  ProjectDir    : TString;
 
   { Fichier de sortie interne (pour future emission) }
   OutF       : Text;
@@ -812,6 +821,42 @@ Begin
   End
   Else
     FileExists := False;
+End;
+
+{ Verifie si un repertoire existe }
+Function DirExists(Const Path : TString) : Boolean;
+Var
+  SR   : SearchRec;
+  Want : TString;
+Begin
+  Want := Path;
+  { Retirer le separateur final s il y en a un }
+  While (Length(Want) > 1) And
+        ((Want[Length(Want)] = '\') Or (Want[Length(Want)] = '/')) Do
+    SetLength(Want, Length(Want) - 1);
+  {$I-}
+  FindFirst(Want, Directory, SR);
+  {$I+}
+  If (DosError = 0) And ((SR.Attr And Directory) <> 0) Then
+    DirExists := True
+  Else
+    DirExists := False;
+  FindClose(SR);
+End;
+
+{ Retourne le nom du fichier .csproj trouve dans le repertoire Dir,    }
+{ ou la chaine vide si aucun.  Ne retourne que le nom de base (sans    }
+{ chemin), par ex. 'CRM.Web.csproj'.                                   }
+Function FindCsprojInDir(Const Dir : TString) : TString;
+Var SR : SearchRec;
+Begin
+  FindCsprojInDir := '';
+  {$I-}
+  FindFirst(Dir + '*.csproj', AnyFile And (Not Directory), SR);
+  {$I+}
+  If DosError = 0 Then
+    FindCsprojInDir := SR.Name;
+  FindClose(SR);
 End;
 
 { ------------------------------------------------------------ }
@@ -2062,11 +2107,41 @@ Var
 { ------------------------------------------------------------ }
 
 Function IsStandardNamespace(Const S : TString) : Boolean;
+Var
+  PL : Integer;
 Begin
-  IsStandardNamespace :=
-    (S = 'System')              Or
-    (S = 'System.Collections')  Or
-    (S = 'System.IO');
+  { Namespaces reconnus en built-in par le compilateur }
+  If (S = 'System')                           Or
+     (S = 'System.Collections')               Or
+     (S = 'System.IO')                        Or
+     (S = 'Microsoft.AspNetCore.Identity')    Or
+     (S = 'Microsoft.EntityFrameworkCore') Then
+  Begin
+    IsStandardNamespace := True;
+    Exit;
+  End;
+
+  { Namespaces du projet courant (detectes via *.csproj) :           }
+  { ProjectRootNs = 'CRM.Web' rend 'CRM.Web' et 'CRM.Web.Data' etc.  }
+  { reconnus comme namespaces projet (pas de warning).                }
+  If ProjectRootNs <> '' Then
+  Begin
+    If S = ProjectRootNs Then
+    Begin
+      IsStandardNamespace := True;
+      Exit;
+    End;
+    PL := Length(ProjectRootNs);
+    If (Length(S) > PL) And
+       (Copy(S, 1, PL) = ProjectRootNs) And
+       (S[PL + 1] = '.') Then
+    Begin
+      IsStandardNamespace := True;
+      Exit;
+    End;
+  End;
+
+  IsStandardNamespace := False;
 End;
 
 { ------------------------------------------------------------ }
@@ -10650,6 +10725,8 @@ Var
   BraceDepth : Integer;       { profondeur des accolades           }
   ClassDepth : Integer;       { profondeur a l entree de la classe }
   MethDepth  : Integer;       { profondeur a l entree de la methode }
+  PjSrcDir, PjCsproj, PjBase : TString;  { detection csproj           }
+  PjJ        : Integer;
 Begin
   WriteLn('CSCW32: Compilation de ', Opts.SrcFile, ' ...');
 
@@ -10671,6 +10748,28 @@ Begin
 
   { Initialiser la table des using }
   InitUsingTable;
+
+  { Detecter le fichier .csproj dans le repertoire du source (si un  }
+  { seul .csproj est present). Le nom de base (sans extension) est   }
+  { le namespace racine du projet, et sera considere comme reconnu   }
+  { par IsStandardNamespace via IsProjectNamespace.                   }
+  ProjectRootNs := '';
+  ProjectDir    := '';
+  PjSrcDir := ExtractDir(Opts.SrcFile);
+  If PjSrcDir = '' Then PjSrcDir := '.\';
+  PjCsproj := FindCsprojInDir(PjSrcDir);
+  If PjCsproj <> '' Then
+  Begin
+    PjBase := PjCsproj;
+    { Retirer l extension .csproj }
+    PjJ := Length(PjBase);
+    While (PjJ > 0) And (PjBase[PjJ] <> '.') Do Dec(PjJ);
+    If PjJ > 0 Then PjBase := Copy(PjBase, 1, PjJ - 1);
+    ProjectRootNs := PjBase;
+    ProjectDir    := PjSrcDir;
+    WriteLn('CSCW32: projet detecte : ', PjCsproj,
+            ' (namespace racine : ', ProjectRootNs, ')');
+  End;
 
   { Initialiser les tables de litteraux et constantes (TODO 04) }
   InitStrLitTable;
@@ -10776,6 +10875,72 @@ Begin
   EmitOpen;
   EmitHeader;
   EmitCodeSeg;
+
+  { ----------------------------------------------------------- }
+  { Top-level statements C# 9+ : si la version du langage est   }
+  { >= 9 et que le premier token apres les directives using     }
+  { n est pas une declaration de classe/namespace/methode, on   }
+  { synthetise une classe 'Program' implicite contenant une     }
+  { methode 'Main' qui englobe toutes les instructions au       }
+  { niveau du fichier, conformement aux top-level statements.   }
+  { ----------------------------------------------------------- }
+  If (CsVersionMajor(Opts.CsVersion) >= 9) And
+     (CurToken.Kind <> TK_EOF) And
+     (Not TokIsKw('namespace')) And
+     (Not TokIsKw('class')) And
+     (Not TokIsKw('static')) And
+     (Not TokIsKw('public')) And
+     (Not TokIsKw('private')) And
+     (Not TokIsKw('protected')) And
+     (Not TokIsKw('internal')) Then
+  Begin
+    { Synthese d une classe 'Program' implicite. }
+    ClsName := 'Program';
+    If FindClass(ClsName) < 0 Then
+    Begin
+      SymIdx := SymAdd(ClsName, SC_CLASS, 0);
+      AddClass(ClsName, SymIdx);
+    End;
+
+    { Synthese d une methode 'Main' implicite (void Main()).      }
+    { On enregistre dans SymTab + MethodTab et on emet le prolog. }
+    MethName    := 'Main';
+    MethRetType := 'void';
+    ResetLocals;
+    SymIdx := SymAdd(MethName, SC_METHOD, TypeFromKeyword(MethRetType));
+    If SymIdx >= 0 Then SymTab[SymIdx].IsStatic := True;
+    AddMethod(MethName, SymMangle(MethName, SC_METHOD),
+              MethRetType, 0, SymIdx);
+
+    InMethod   := True;
+    InClass    := True;
+    ClassDepth := 0;
+    MethDepth  := 0;
+    SymEnterScope;
+
+    EmitBlankLine;
+    EmitComment('--- method Main (top-level statements C# 9+) ---');
+    EmitLabel(SymMangle(MethName, SC_METHOD));
+    EmitProlog(METHOD_STACK_SIZE);
+    MethExitLbl := GenLabel;
+    ResetGotoLabels;
+
+    { Parser toutes les instructions jusqu a la fin du fichier. }
+    { Les constructions non supportees sont tolerees (Consume   }
+    { de secours dans ParseStatement).                          }
+    While CurToken.Kind <> TK_EOF Do
+      ParseStatement;
+
+    EmitLabel(MethExitLbl);
+    EmitInstr('PUSH', '0');
+    EmitInstr('CALL', '_ExitProcess@4');
+    EmitEpilog;
+
+    SymLeaveScope;
+    InMethod    := False;
+    InClass     := False;
+    MethExitLbl := '';
+  End;
 
   While CurToken.Kind <> TK_EOF Do
   Begin
