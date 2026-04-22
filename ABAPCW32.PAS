@@ -494,19 +494,19 @@
             Procedure ParseBlock(stop_kw: Integer)
               Appeler ParseStatement en boucle jusqu a stop_kw ou EOF
 
-  TODO 24 - PARSEUR : EVENEMENTS ABAP ET ECRAN DE SELECTION (STUBS) [IMPLEMENTE]
+  TODO 24 - PARSEUR : EVENEMENTS ABAP ET ECRAN DE SELECTION [IMPLEMENTE]
             Evenements ABAP de haut niveau :
               START-OF-SELECTION. -> label _ABE_START + ParseBlock
               END-OF-SELECTION.   -> label _ABE_END   + ParseBlock
-              TOP-OF-PAGE.        -> label _ABE_TOPPAGE (stub vide)
-              END-OF-PAGE.        -> label _ABE_ENDPAGE (stub vide)
-              AT LINE-SELECTION.  -> stub vide
-              AT USER-COMMAND.    -> stub vide
+              TOP-OF-PAGE.        -> label _ABE_TOPPAGE + ParseBlock
+              END-OF-PAGE.        -> label _ABE_ENDPAGE + ParseBlock
+              AT LINE-SELECTION.  -> label _ABE_LINESEL + ParseBlock
+              AT USER-COMMAND.    -> label _ABE_USERCMD + ParseBlock
             Ecran de selection :
               PARAMETERS p TYPE I DEFAULT 0.
-                -> generer variable globale DD + valeur par defaut
+                -> variable globale DD + MOV [lbl], DEFAULT au demarrage
               SELECT-OPTIONS s FOR var.
-                -> stub (deux variables LOW / HIGH en DD)
+                -> deux variables LOW / HIGH en DD (utilisables via IN)
             TRY / CATCH / CLEANUP / ENDTRY :
               TRY. -> sauvegarder contexte (stub)
               CATCH cx_nom. -> label _ABX_catch
@@ -3108,11 +3108,33 @@ Begin
   End
   Else If (BName = 'LINES') Or (BName = 'lines') Then
   Begin
-    { LINES( itab ) -> stub = 0 }
-    ParseExpr;
+    { LINES( itab ) -> charger le compteur _CNT de la table interne. }
+    { Si l argument n est pas un simple identifiant de table, on     }
+    { retombe sur ParseExpr et on renvoie 0.                          }
+    If CurTokType = TOK_IDENT Then
+    Begin
+      Lbl1 := CurTokStr;           { reutilise Lbl1 comme nom temp  }
+      Lbl2 := IntToStr_(FindSym(Lbl1));
+      If (Lbl2 <> '0') And
+         (SymTab[FindSym(Lbl1)].DataType = TYPE_TABLE) Then
+      Begin
+        EmitI('MOV     EAX, DWORD PTR [' +
+              SymTab[FindSym(Lbl1)].AsmLabel + '_CNT]');
+        Consume;
+      End
+      Else
+      Begin
+        ParseExpr;
+        EmitI('XOR     EAX, EAX');
+        EmitComment('LINES( ' + Lbl1 + ' ) : non-table -> 0');
+      End;
+    End
+    Else
+    Begin
+      ParseExpr;
+      EmitI('XOR     EAX, EAX');
+    End;
     If CurTokType = TOK_RPAREN Then Consume;
-    EmitI('XOR     EAX, EAX');
-    EmitComment('LINES( itab ) stub = 0');
   End
   Else
     GenBuiltIn32 := False;
@@ -3330,7 +3352,8 @@ Begin
     Else If TokIsKw(KW_BOUND) Then
     Begin
       Consume;
-      EmitComment('IS BOUND stub = vrai');
+      { Toutes les variables declarees dans ce compilo sont allouees }
+      { statiquement ou sur la pile : IS BOUND vaut donc toujours 1. }
       If IsNot Then EmitI('XOR     EAX, EAX')
       Else          EmitI('MOV     EAX, 1');
     End
@@ -3366,13 +3389,44 @@ Begin
     EmitI('XOR     EAX, EAX');
     EmitLabel(Lbl_E);
   End
-  { IN (stub) }
+  { IN sel : test var entre sel-LOW et sel-HIGH (SELECT-OPTIONS). }
+  { Si le nom donne apres IN n est pas une select-option connue,    }
+  { on retombe sur un test qui renvoie 0 (faux).                    }
   Else If TokIsKw(KW_IN) Then
   Begin
     Consume;
-    If CurTokType = TOK_IDENT Then Consume;
-    EmitComment('IN set stub = faux');
-    EmitI('XOR     EAX, EAX');
+    If CurTokType = TOK_IDENT Then
+    Begin
+      Lbl_F := CurTokStr;          { nom du select-option           }
+      Kw    := FindSym(Lbl_F + '-LOW');
+      Op    := FindSym(Lbl_F + '-HIGH');
+      Consume;
+      If (Kw > 0) And (Op > 0) Then
+      Begin
+        Lbl_E := NewLabel;
+        EmitI('MOV     EBX, DWORD PTR [' + SymTab[Kw].AsmLabel + ']');
+        EmitI('CMP     EAX, EBX');
+        EmitI('JL      ' + Lbl_E + '_F');
+        EmitI('MOV     EBX, DWORD PTR [' + SymTab[Op].AsmLabel + ']');
+        EmitI('CMP     EAX, EBX');
+        EmitI('JG      ' + Lbl_E + '_F');
+        EmitI('MOV     EAX, 1');
+        EmitI('JMP     ' + Lbl_E);
+        EmitLabel(Lbl_E + '_F');
+        EmitI('XOR     EAX, EAX');
+        EmitLabel(Lbl_E);
+      End
+      Else
+      Begin
+        EmitComment('IN ' + Lbl_F + ' : select-option inconnu -> faux');
+        EmitI('XOR     EAX, EAX');
+      End;
+    End
+    Else
+    Begin
+      If CurTokType = TOK_IDENT Then Consume;
+      EmitI('XOR     EAX, EAX');
+    End;
   End;
 End;
 
@@ -4984,15 +5038,17 @@ End;
 { ============================================================ }
 
 { ---- ParseCallFunction : CALL FUNCTION 'nom' ---------------  }
-{ Stub : pas d appel reel.                                       }
 {   - Parse les clauses EXPORTING / IMPORTING / TABLES /         }
-{     EXCEPTIONS.                                                }
-{   - Emet un commentaire de stub.                                }
-{   - Positionne SY-SUBRC = 0.                                   }
+{     EXCEPTIONS (les parametres sont actuellement ignores).     }
+{   - Si la FUNCTION est definie dans le meme fichier, emet un   }
+{     vrai CALL sur son label _ABF_FM_xxx (Win32 STDCALL).       }
+{   - Sinon (module externe), laisse un commentaire stub et      }
+{     positionne SY-SUBRC = 0.                                   }
 { ============================================================ }
 Procedure ParseCallFunction;
 Var FMName      : TString;
     SySubrcIdx  : Integer;
+    FIdx        : Integer;
 Begin
   { On attend FUNCTION apres CALL }
   If Not TokIsKw(KW_FUNCTION) Then
@@ -5013,7 +5069,11 @@ Begin
   End;
 
   EmitBlank;
-  EmitComment('---- CALL FUNCTION ' + FMName + ' (stub) ----');
+  FIdx := FindForm(FMName);
+  If (FIdx > 0) And FormTab[FIdx].IsFunction And FormTab[FIdx].Defined Then
+    EmitComment('---- CALL FUNCTION ' + FMName + ' ----')
+  Else
+    EmitComment('---- CALL FUNCTION ' + FMName + ' (stub externe) ----');
 
   { Parser les clauses optionnelles avant le point terminal }
   While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) Do
@@ -5075,7 +5135,11 @@ Begin
       Consume;
   End;
 
-  { SY-SUBRC = 0 (appel reussi en stub) }
+  { Si la FUNCTION est definie localement, emet un vrai CALL.      }
+  If (FIdx > 0) And FormTab[FIdx].IsFunction And FormTab[FIdx].Defined Then
+    EmitI('CALL    ' + FormTab[FIdx].AsmLabel);
+
+  { SY-SUBRC = 0 (appel reussi) }
   SySubrcIdx := FindSym('SY-SUBRC');
   If SySubrcIdx > 0 Then
     EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 0');
@@ -5093,6 +5157,7 @@ Var FuncName    : TString;
     AsmLbl      : TString;
     LblSkip     : TString;
     LblEpi      : TString;
+    FIdx        : Integer;
 Begin
   EmitComment('---- FUNCTION ----');
 
@@ -5103,6 +5168,16 @@ Begin
   Consume;
 
   AsmLbl := AB_FN_PFX + 'FM_' + AsmIdent(FuncName);
+
+  { Enregistrer la FUNCTION dans FormTab (avec le bon AsmLabel)    }
+  { pour que CALL FUNCTION puisse resoudre le symbole localement.  }
+  FIdx := AddForm(FuncName);
+  If FIdx > 0 Then
+  Begin
+    FormTab[FIdx].AsmLabel   := AsmLbl;
+    FormTab[FIdx].IsFunction := True;
+    FormTab[FIdx].Defined    := True;
+  End;
 
   { Consommer le point }
   If CurTokType = TOK_DOT Then Consume
@@ -5295,38 +5370,47 @@ Begin
   End
   Else
   Begin
-    { Autres evenements (LINE-SELECTION, USER-COMMAND...) : stub }
-    { vide mais protege par un JMP pour ne pas casser le flux.    }
+    { AT LINE-SELECTION / AT USER-COMMAND : meme traitement que les }
+    { autres evenements. Label + corps + RET, protege par un JMP    }
+    { pour ne pas casser le flux sequentiel du main.                }
     SkipLbl := NewLabel;
     EmitBlank;
-    EmitComment('---- EVENT ' + LblName + ' (stub) ----');
+    EmitComment('---- EVENT ' + LblName + ' ----');
     EmitI('JMP     ' + SkipLbl);
     EmitLabel(LblName);
+    While (CurTokType <> TOK_EOF) And
+          (Not IsEventKeyword) And
+          (Not TokIsKw(KW_FORM)) And
+          (Not TokIsKw(KW_FUNCTION)) Do
+      ParseStatement;
     EmitI('RET');
     EmitLabel(SkipLbl);
   End;
 End;
 
-{ ---- ParseSelScreen : PARAMETERS / SELECT-OPTIONS (stubs) --- }
+{ ---- ParseSelScreen : PARAMETERS / SELECT-OPTIONS ----------- }
 { PARAMETERS p TYPE I [DEFAULT val].                             }
-{   -> generer variable globale (DD) + valeur par defaut         }
+{   -> declarer la variable globale et lui affecter la valeur    }
+{      DEFAULT si une est donnee (via MOV runtime).              }
 { SELECT-OPTIONS s FOR var.                                      }
-{   -> stub : generer deux variables LOW / HIGH (DD)             }
+{   -> generer deux variables globales LOW / HIGH (DD).          }
 { ============================================================ }
 Procedure ParseSelScreen(IsParam : Boolean);
 Var ParName : TString;
     DefVal  : LongInt;
     Idx     : Integer;
+    HasDef  : Boolean;
 Begin
   If IsParam Then
   Begin
-    EmitComment('---- PARAMETERS (stub) ----');
+    EmitComment('---- PARAMETERS ----');
     { PARAMETERS p TYPE I [DEFAULT val]. }
     If CurTokType <> TOK_IDENT Then
     Begin LexError('Nom attendu apres PARAMETERS'); SkipToDot; Exit; End;
     ParName := CurTokStr;
     Consume;
     DefVal := 0;
+    HasDef := False;
     { Parser TYPE t optionnel }
     If TokIsKw(KW_TYPE) Then
     Begin
@@ -5346,6 +5430,7 @@ Begin
       If CurTokType = TOK_NUMBER Then
       Begin
         DefVal := CurTokNum;
+        HasDef := True;
         Consume;
       End
       Else If CurTokType = TOK_STRING Then
@@ -5360,6 +5445,10 @@ Begin
       Idx := AddSym(ParName, TYPE_I, STORE_STATIC);
       EmitComment('PARAM ' + ParName + ' = ' + IntToStr_(DefVal));
     End;
+    { Affecter la valeur DEFAULT au runtime (TYPE I seulement) }
+    If HasDef And (Idx > 0) Then
+      EmitI('MOV     DWORD PTR [' + SymTab[Idx].AsmLabel +
+            '], ' + IntToStr_(DefVal));
     { Consommer le point }
     If CurTokType = TOK_DOT Then Consume;
   End
