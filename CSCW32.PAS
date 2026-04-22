@@ -507,8 +507,6 @@ Const
   COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
   MAX_LINK_OBJS   = 16;          { max fichiers .OBJ a lier           }
   MAX_LINK_LIBS   = 16;          { max fichiers .LIB a lier           }
-  MAX_REF_DLLS    = 16;          { max DLL referencees (/reference)   }
-  MAX_REF_APIS    = 1024;        { max symboles cumules par les DLL   }
   MAX_OBJ_SIZE    = 1048576;     { taille max d un .OBJ lu (1 Mo)     }
   MAX_OBJ_SYMS    = 2048;        { nombre max de symboles par .OBJ    }
   MAX_OBJ_SECS    = 64;          { nombre max de sections par .OBJ    }
@@ -718,33 +716,44 @@ Var
   ObjBuf      : Array[0..MAX_OBJ_SIZE - 1] Of Byte;
   ObjLen      : LongInt;
 
-  { Table des DLL referencees via /reference: ou /r:.                 }
-  { Chaque DLL contribue ses noms exportes dans RefApiName, et le PE  }
-  { generera une entree d import descriptor distincte pour chacune.   }
-  RefDllPath  : Array[0..MAX_REF_DLLS - 1] Of TString;
-  RefDllName  : Array[0..MAX_REF_DLLS - 1] Of TString;
-  RefDllStart : Array[0..MAX_REF_DLLS - 1] Of Integer;
-  RefDllCount : Array[0..MAX_REF_DLLS - 1] Of Integer;
-  RefDllNum   : Integer;
+{ Liste chainee des DLL referencees via /reference: ou /r:.          }
+{ Chaque DLL contient sa propre liste chainee de TRefApi (les noms   }
+{ exportes), sans aucune limite predefinie sur le nombre total de    }
+{ DLL ni d APIs.                                                      }
+Type
+  PRefApi = ^TRefApi;
+  TRefApi = Record
+    Name       : String[63];   { nom exporte (sans decoration)        }
+    Used       : Boolean;      { reellement reference par le code     }
+    HintOfs    : LongInt;      { offset relatif dans la hint table    }
+    IATSlotOfs : LongInt;      { offset RVA-relatif au debut .idata   }
+    Next       : PRefApi;
+  End;
 
-  { APIs exportees par les DLL referencees, indexees globalement.     }
-  { L index global utilise par AsmFindAPI / les fixups IAT32 est :    }
-  {   0 .. PE_NUM_API - 1                : APIs kernel32 (cf. plus bas)}
-  {   PE_NUM_API .. PE_NUM_API + RefApiNum - 1 : APIs DLL referencees }
-  RefApiName  : Array[0..MAX_REF_APIS - 1] Of String[63];
-  RefApiNum   : Integer;
+  PRefDll = ^TRefDll;
+  TRefDll = Record
+    Path      : TString;       { chemin disque complet de la DLL      }
+    Name      : TString;       { nom de fichier nu (ex. user32.dll)   }
+    ApiHead   : PRefApi;       { tete de la liste des exports         }
+    ApiTail   : PRefApi;       { queue (insertion en O(1) en fin)     }
+    ApiCount  : Integer;       { nombre total d exports enregistres   }
+    UsedCount : Integer;       { nombre d exports reellement utilises }
+    Emit      : Boolean;       { vrai si UsedCount > 0                }
+    NameOfs   : LongInt;       { offset RVA-relatif du nom de la DLL  }
+    Next      : PRefDll;
+  End;
 
-  { Drapeau "API reellement utilisee" : remplie en scannant les       }
-  { fixups BFK_IAT32 produits par BinAssemble. Seules les APIs        }
-  { marquees seront emises dans le PE pour eviter de declarer des     }
-  { centaines d imports inutiles (et non resolvables via forwarders). }
-  RefApiUsed  : Array[0..MAX_REF_APIS - 1] Of Boolean;
+Var
+  RefDllHead : PRefDll;        { tete de la liste chainee des DLL    }
+  RefDllTail : PRefDll;        { queue (pour insertion en O(1))      }
+  RefDllNum  : Integer;        { compteur de DLL referencees         }
+  RefApiNum  : Integer;        { total cumule d APIs (info)          }
 
-  { Offsets (relatifs a IdataRVA) precalcules au moment du layout    }
-  { de la section .idata. ApiIATSlotOfs[i] = adresse de la cellule    }
-  { IAT correspondant a l API d index global i.                       }
-  ApiIATSlotOfs : Array[0..PE_NUM_API + MAX_REF_APIS - 1] Of LongInt;
-  ApiHintOfs    : Array[0..PE_NUM_API + MAX_REF_APIS - 1] Of LongInt;
+  { Offsets precalcules pour les APIs kernel32 (toujours emises).      }
+  { Pour les APIs des DLL referencees, ces valeurs sont stockees       }
+  { dans chaque noeud TRefApi (HintOfs et IATSlotOfs).                 }
+  ApiIATSlotOfs : Array[0..PE_NUM_API - 1] Of LongInt;
+  ApiHintOfs    : Array[0..PE_NUM_API - 1] Of LongInt;
 
 Const
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1051,9 +1060,10 @@ Begin
   Opts.NoProj     := False;   { decouverte csproj activee par defaut}
   Opts.LinkObjCount := 0;     { aucun .OBJ externe par defaut       }
   Opts.LinkLibCount := 0;     { aucun .LIB externe par defaut       }
+  RefDllHead  := NIL;
+  RefDllTail  := NIL;
   RefDllNum   := 0;
   RefApiNum   := 0;
-  FillChar(RefApiUsed, SizeOf(RefApiUsed), 0);
 End;
 
 { ------------------------------------------------------------ }
@@ -1150,8 +1160,7 @@ Begin
   WriteLn('                       fonctions exportees deviennent');
   WriteLn('                       importables et le PE inclura un');
   WriteLn('                       descripteur d''import pour la DLL.');
-  WriteLn('                       Repetable, jusqu''a ', MAX_REF_DLLS,
-          ' DLL.');
+  WriteLn('                       Repetable, sans limite.');
   WriteLn('  -h, --help, /? Afficher cette aide');
   WriteLn;
   WriteLn('Exemples :');
@@ -1199,13 +1208,37 @@ Var
   End;
 
   Procedure AddRef(Const FileName : TString);
+  Var
+    P, Q : PRefDll;
+    Dup  : Boolean;
   Begin
     If FileName = '' Then
       FatalError('Option /reference: nom de fichier .DLL manquant');
-    If RefDllNum >= MAX_REF_DLLS Then
-      FatalError('Trop de DLL referencees (max ' +
-                 IntToStr_(MAX_REF_DLLS) + ')');
-    RefDllPath[RefDllNum] := FileName;
+    { Eviter les doublons exacts (chemin identique, casse ignoree). }
+    Dup := False;
+    Q := RefDllHead;
+    While Q <> NIL Do
+    Begin
+      If StrICompare(Q^.Path, FileName) Then
+      Begin Dup := True; Break; End;
+      Q := Q^.Next;
+    End;
+    If Dup Then Exit;
+    New(P);
+    P^.Path      := FileName;
+    P^.Name      := '';
+    P^.ApiHead   := NIL;
+    P^.ApiTail   := NIL;
+    P^.ApiCount  := 0;
+    P^.UsedCount := 0;
+    P^.Emit      := False;
+    P^.NameOfs   := 0;
+    P^.Next      := NIL;
+    If RefDllHead = NIL Then
+      RefDllHead := P
+    Else
+      RefDllTail^.Next := P;
+    RefDllTail := P;
     Inc(RefDllNum);
   End;
 
@@ -9016,17 +9049,11 @@ Var
   I, At : Integer;
   Bare  : TString;
 Begin
-  { Passe 1 : recherche exacte dans les APIs kernel32 puis ref DLL }
+  { Passe 1 : recherche exacte dans les APIs kernel32 }
   For I := 0 To PE_NUM_API - 1 Do
     If BinAPIDecorated[I] = Decorated Then
     Begin
       AsmFindAPI := I;
-      Exit;
-    End;
-  For I := 0 To RefApiNum - 1 Do
-    If RefApiName[I] = Decorated Then
-    Begin
-      AsmFindAPI := PE_NUM_API + I;
       Exit;
     End;
 
@@ -9048,13 +9075,71 @@ Begin
       AsmFindAPI := I;
       Exit;
     End;
-  For I := 0 To RefApiNum - 1 Do
-    If RefApiName[I] = Bare Then
-    Begin
-      AsmFindAPI := PE_NUM_API + I;
-      Exit;
-    End;
   AsmFindAPI := -1;
+End;
+
+{ AsmFindRefAPI : recherche un nom dans les DLL referencees.       }
+{ Retourne le noeud TRefApi correspondant, ou NIL si introuvable.   }
+{ Effectue la meme normalisation (decoration kernel32) que AsmFindAPI.}
+Function AsmFindRefAPI(Const Decorated : TString) : PRefApi;
+Var
+  At     : Integer;
+  Bare   : TString;
+  Dll    : PRefDll;
+  Api    : PRefApi;
+Begin
+  { Passe 1 : recherche exacte }
+  Dll := RefDllHead;
+  While Dll <> NIL Do
+  Begin
+    Api := Dll^.ApiHead;
+    While Api <> NIL Do
+    Begin
+      If Api^.Name = Decorated Then
+      Begin
+        AsmFindRefAPI := Api;
+        Exit;
+      End;
+      Api := Api^.Next;
+    End;
+    Dll := Dll^.Next;
+  End;
+
+  { Passe 2 : nom 'bare' (sans _ initial ni @N stdcall) }
+  Bare := Decorated;
+  If (Length(Bare) > 0) And (Bare[1] = '_') Then
+    Delete(Bare, 1, 1);
+  At := Pos('@', Bare);
+  If At > 0 Then
+    Bare := Copy(Bare, 1, At - 1);
+  If Bare <> '' Then
+  Begin
+    Dll := RefDllHead;
+    While Dll <> NIL Do
+    Begin
+      Api := Dll^.ApiHead;
+      While Api <> NIL Do
+      Begin
+        If Api^.Name = Bare Then
+        Begin
+          AsmFindRefAPI := Api;
+          Exit;
+        End;
+        Api := Api^.Next;
+      End;
+      Dll := Dll^.Next;
+    End;
+  End;
+
+  AsmFindRefAPI := NIL;
+End;
+
+{ AsmIsKnownAPI : True si Decorated correspond a une API kernel32 }
+{ ou a une API exportee par une DLL referencee.                     }
+Function AsmIsKnownAPI(Const Decorated : TString) : Boolean;
+Begin
+  AsmIsKnownAPI := (AsmFindAPI(Decorated) >= 0) Or
+                   (AsmFindRefAPI(Decorated) <> NIL);
 End;
 
 Function AsmParseImm(Const S : TString) : LongInt;
@@ -9475,7 +9560,7 @@ Begin
       Exit;
     End;
     { CALL _api@n -> indirect call through IAT }
-    If AsmFindAPI(Ops) >= 0 Then
+    If AsmIsKnownAPI(Ops) Then
     Begin
       BinEmitByte($FF);
       BinEmitByte($15);
@@ -10515,6 +10600,7 @@ Var
   IsInCode     : Boolean;
   RelVal       : LongInt;
   Addend       : LongInt;
+  PRA          : PRefApi;
 
   Function ReadAddend : LongInt;
   Var A : LongInt;
@@ -10587,17 +10673,21 @@ Begin
 
       BFK_IAT32 :
       Begin
+        { kernel32 d abord (table fixe) }
         ApiIdx := AsmFindAPI(BinFixups[I].Target);
         If ApiIdx >= 0 Then
+          TargetVA := PE_IMG_BASE + IdataRVA + ApiIATSlotOfs[ApiIdx]
+        Else
         Begin
-          { Adresse de la cellule IAT pre-calculee dans            }
-          { ApiIATSlotOfs (multi-DLL : kernel32 + DLL referencees).}
-          TargetVA := PE_IMG_BASE + IdataRVA + ApiIATSlotOfs[ApiIdx];
-          BinCode[FixOfs]     := Byte(TargetVA And $FF);
-          BinCode[FixOfs + 1] := Byte((TargetVA Shr 8) And $FF);
-          BinCode[FixOfs + 2] := Byte((TargetVA Shr 16) And $FF);
-          BinCode[FixOfs + 3] := Byte((TargetVA Shr 24) And $FF);
+          { sinon, recherche dans les DLL referencees (liste chainee) }
+          PRA := AsmFindRefAPI(BinFixups[I].Target);
+          If PRA = NIL Then Continue;
+          TargetVA := PE_IMG_BASE + IdataRVA + PRA^.IATSlotOfs;
         End;
+        BinCode[FixOfs]     := Byte(TargetVA And $FF);
+        BinCode[FixOfs + 1] := Byte((TargetVA Shr 8) And $FF);
+        BinCode[FixOfs + 2] := Byte((TargetVA Shr 16) And $FF);
+        BinCode[FixOfs + 3] := Byte((TargetVA Shr 24) And $FF);
       End;
     End;
   End;
@@ -10607,13 +10697,13 @@ End;
 { LoadRefDll                                                    }
 {   Lit un fichier .DLL (PE32 i386), decoupe son repertoire     }
 {   d export et enregistre chaque nom de fonction exportee dans }
-{   RefApiName. Aucune relocation n est generee : le but est    }
-{   uniquement de declarer des symboles disponibles a la liaison}
-{   et d emettre dans le PE produit un descripteur d import     }
-{   pour cette DLL.                                              }
+{   la liste chainee Dll^.ApiHead. Aucune relocation n est      }
+{   generee : le but est uniquement de declarer des symboles    }
+{   disponibles a la liaison et d emettre dans le PE produit un }
+{   descripteur d import pour cette DLL.                        }
 { ------------------------------------------------------------ }
 
-Procedure LoadRefDll(Const Path : TString; DllIdx : Integer);
+Procedure LoadRefDll(Dll : PRefDll);
 Var
   F            : File;
   NRead        : LongInt;
@@ -10636,9 +10726,10 @@ Var
   SecRPtr      : LongInt;
   SecRSize     : LongInt;
   RVA          : LongInt;
-  StartCount   : Integer;
+  Path         : TString;
   ExportName   : TString;
   ByteVal      : Byte;
+  NewApi       : PRefApi;
 
   Function RvaToFileOfs(R : LongInt) : LongInt;
   Var
@@ -10689,11 +10780,13 @@ Var
   End;
 
 Begin
-  RefDllPath[DllIdx]  := Path;
-  RefDllName[DllIdx]  := ExtractFileNameOnly(Path);
-  RefDllStart[DllIdx] := RefApiNum;
-  RefDllCount[DllIdx] := 0;
-
+  Path := Dll^.Path;
+  Dll^.Name      := ExtractFileNameOnly(Path);
+  Dll^.ApiHead   := NIL;
+  Dll^.ApiTail   := NIL;
+  Dll^.ApiCount  := 0;
+  Dll^.UsedCount := 0;
+  Dll^.Emit      := False;
   If Not FileExists(Path) Then
   Begin
     WriteLn('CSCW32: erreur: DLL referencee introuvable : ', Path);
@@ -10804,17 +10897,8 @@ Begin
     Exit;
   End;
 
-  StartCount := RefApiNum;
-
   For I := 0 To NumNames - 1 Do
   Begin
-    If RefApiNum >= MAX_REF_APIS Then
-    Begin
-      WriteLn('CSCW32: warning: ', Path,
-              ' : limite globale de ', MAX_REF_APIS,
-              ' API atteinte, exports tronques');
-      Break;
-    End;
     RVA := RdD(NameTblFOfs + LongInt(I) * 4);
     If RVA = 0 Then Continue;
     K := RvaToFileOfs(RVA);
@@ -10828,14 +10912,23 @@ Begin
       Inc(K);
     End;
     If ExportName = '' Then Continue;
-    RefApiName[RefApiNum] := ExportName;
+    New(NewApi);
+    NewApi^.Name       := ExportName;
+    NewApi^.Used       := False;
+    NewApi^.HintOfs    := 0;
+    NewApi^.IATSlotOfs := 0;
+    NewApi^.Next       := NIL;
+    If Dll^.ApiHead = NIL Then
+      Dll^.ApiHead := NewApi
+    Else
+      Dll^.ApiTail^.Next := NewApi;
+    Dll^.ApiTail := NewApi;
+    Inc(Dll^.ApiCount);
     Inc(RefApiNum);
   End;
 
-  RefDllCount[DllIdx] := RefApiNum - StartCount;
-
-  WriteLn('CSCW32: ', RefDllName[DllIdx], ' : ',
-          RefDllCount[DllIdx], ' export(s) enregistre(s)');
+  WriteLn('CSCW32: ', Dll^.Name, ' : ',
+          Dll^.ApiCount, ' export(s) enregistre(s)');
 End;
 
 { ------------------------------------------------------------ }
@@ -10844,19 +10937,22 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure LoadAllRefDlls;
-Var I : Integer;
+Var Dll : PRefDll;
 Begin
-  For I := 0 To RefDllNum - 1 Do
-    LoadRefDll(RefDllPath[I], I);
+  Dll := RefDllHead;
+  While Dll <> NIL Do
+  Begin
+    LoadRefDll(Dll);
+    Dll := Dll^.Next;
+  End;
 End;
 
 { ------------------------------------------------------------ }
 { MarkUsedRefApis                                               }
 {   Scrute les fixups BFK_IAT32 generes par BinAssemble. Pour   }
-{   chaque cible, resout via AsmFindAPI ; si l index renvoye    }
-{   correspond a une API d une DLL referencee, marque cette API }
-{   comme reellement utilisee. BinWriteExe n emettra que les    }
-{   APIs marquees pour chaque DLL referencee, ce qui evite de   }
+{   chaque cible non resolue par kernel32, marque l API         }
+{   correspondante (dans une DLL referencee) comme utilisee.    }
+{   BinWriteExe n emettra que les APIs marquees pour eviter de  }
 {   declarer des centaines d imports inutiles (qui peuvent      }
 {   echouer a la resolution si la DLL contient des forwarders   }
 {   ou des exports privatifs).                                   }
@@ -10864,15 +10960,15 @@ End;
 
 Procedure MarkUsedRefApis;
 Var
-  I, ApiIdx : Integer;
+  I  : Integer;
+  PA : PRefApi;
 Begin
   For I := 0 To BinFixCount - 1 Do
     If BinFixups[I].Kind = BFK_IAT32 Then
     Begin
-      ApiIdx := AsmFindAPI(BinFixups[I].Target);
-      If (ApiIdx >= PE_NUM_API) And
-         (ApiIdx <  PE_NUM_API + RefApiNum) Then
-        RefApiUsed[ApiIdx - PE_NUM_API] := True;
+      If AsmFindAPI(BinFixups[I].Target) >= 0 Then Continue;
+      PA := AsmFindRefAPI(BinFixups[I].Target);
+      If PA <> NIL Then PA^.Used := True;
     End;
 End;
 
@@ -11216,8 +11312,8 @@ Begin
 
       FixAbs := SecInfo[I].Base + RelVA;
 
-      ApiIdx := AsmFindAPI(TargetName);
-      If (Not SymInfo[RelSym].IsDefined) And (ApiIdx >= 0) Then
+      If (Not SymInfo[RelSym].IsDefined) And
+         AsmIsKnownAPI(TargetName) Then
       Begin
         BinAddFixup(FixAbs, BFK_IAT32, TargetName,
                     SecInfo[I].IsCode);
@@ -11311,7 +11407,7 @@ Begin
   Begin
     If BinFixups[I].Kind = BFK_IAT32 Then Continue;
     If BinFindLabel(BinFixups[I].Target) >= 0 Then Continue;
-    If AsmFindAPI(BinFixups[I].Target) >= 0 Then Continue;
+    If AsmIsKnownAPI(BinFixups[I].Target) Then Continue;
     WriteLn('CSCW32: erreur: symbole externe non resolu : ''',
             BinFixups[I].Target, '''');
     Inc(ErrorCount);
@@ -11505,7 +11601,7 @@ Begin
   Begin
     If BinFixups[I].Kind = BFK_IAT32 Then Continue;
     If BinFindLabel(BinFixups[I].Target) >= 0 Then Continue;
-    If AsmFindAPI(BinFixups[I].Target) >= 0 Then Continue;
+    If AsmIsKnownAPI(BinFixups[I].Target) Then Continue;
     WriteLn('CSCW32: erreur: symbole externe non resolu : ''',
             BinFixups[I].Target, '''');
     Inc(ErrorCount);
@@ -11720,14 +11816,12 @@ Var
   ILTEntriesSz  : LongInt;
   AccHint       : LongInt;
   AccIATSlot    : LongInt;
-  DllStart      : Integer;
-  DllCnt        : Integer;
   UsedCnt       : Integer;
-  EmitDll       : Array[0..MAX_REF_DLLS - 1] Of Boolean;
-  RefDllUsed    : Array[0..MAX_REF_DLLS - 1] Of Integer;
-  DllNameOfsArr : Array[0..MAX_REF_DLLS] Of LongInt;
+  Dll           : PRefDll;
+  Api           : PRefApi;
+  KernelNameOfs : LongInt;
 
-  I, J, K       : Integer;
+  I             : Integer;
   Pad           : LongInt;
   DosMsg        : String;
   TmpName       : String[63];
@@ -11750,16 +11844,20 @@ Begin
   { Compter, par DLL referencee, le nombre d APIs reellement        }
   { utilisees (selon le marquage realise par MarkUsedRefApis).      }
   NumEmitDlls := 0;
-  For J := 0 To RefDllNum - 1 Do
+  Dll := RefDllHead;
+  While Dll <> NIL Do
   Begin
     UsedCnt := 0;
-    DllStart := RefDllStart[J];
-    DllCnt   := RefDllCount[J];
-    For I := 0 To DllCnt - 1 Do
-      If RefApiUsed[DllStart + I] Then Inc(UsedCnt);
-    RefDllUsed[J] := UsedCnt;
-    EmitDll[J] := UsedCnt > 0;
-    If EmitDll[J] Then Inc(NumEmitDlls);
+    Api := Dll^.ApiHead;
+    While Api <> NIL Do
+    Begin
+      If Api^.Used Then Inc(UsedCnt);
+      Api := Api^.Next;
+    End;
+    Dll^.UsedCount := UsedCnt;
+    Dll^.Emit      := UsedCnt > 0;
+    If Dll^.Emit Then Inc(NumEmitDlls);
+    Dll := Dll^.Next;
   End;
 
   { IDT: 1 (kernel32) + NumEmitDlls entrees + null terminator       }
@@ -11767,10 +11865,14 @@ Begin
 
   { ILT/IAT : kernel32 (PE_NUM_API+1) + chaque DLL emise (Used+1).  }
   ILTEntriesSz := LongInt(PE_NUM_API + 1) * 4;
-  For J := 0 To RefDllNum - 1 Do
-    If EmitDll[J] Then
+  Dll := RefDllHead;
+  While Dll <> NIL Do
+  Begin
+    If Dll^.Emit Then
       ILTEntriesSz := ILTEntriesSz +
-                      LongInt(RefDllUsed[J] + 1) * 4;
+                      LongInt(Dll^.UsedCount + 1) * 4;
+    Dll := Dll^.Next;
+  End;
   IATEntriesSz := ILTEntriesSz;
 
   ILTOfs := IDTSize;
@@ -11778,18 +11880,20 @@ Begin
   DllNameOfs := IATOfs + IATEntriesSz;
 
   { DLL names : 'kernel32.dll' + chaque DLL emise, padde a 2 oct.   }
-  DllNameOfsArr[0] := DllNameOfs;
+  KernelNameOfs := DllNameOfs;
   AccHint := DllNameOfs + LongInt(AlignUp(13, 2));
-  For J := 0 To RefDllNum - 1 Do
+  Dll := RefDllHead;
+  While Dll <> NIL Do
   Begin
-    If EmitDll[J] Then
+    If Dll^.Emit Then
     Begin
-      DllNameOfsArr[J + 1] := AccHint;
+      Dll^.NameOfs := AccHint;
       AccHint := AccHint +
-                 LongInt(AlignUp(Length(RefDllName[J]) + 1, 2));
+                 LongInt(AlignUp(Length(Dll^.Name) + 1, 2));
     End
     Else
-      DllNameOfsArr[J + 1] := 0;
+      Dll^.NameOfs := 0;
+    Dll := Dll^.Next;
   End;
   HintOfs := AccHint;
 
@@ -11807,22 +11911,27 @@ Begin
   End;
   AccIATSlot := AccIATSlot + 4; { null terminator du IAT kernel32 }
   { Ref DLL APIs (uniquement celles marquees utilisees)             }
-  For J := 0 To RefDllNum - 1 Do
+  Dll := RefDllHead;
+  While Dll <> NIL Do
   Begin
-    If Not EmitDll[J] Then Continue;
-    DllStart := RefDllStart[J];
-    DllCnt   := RefDllCount[J];
-    For I := 0 To DllCnt - 1 Do
+    If Dll^.Emit Then
     Begin
-      If Not RefApiUsed[DllStart + I] Then Continue;
-      ApiHintOfs[PE_NUM_API + DllStart + I] := AccHint;
-      ApiIATSlotOfs[PE_NUM_API + DllStart + I] := AccIATSlot;
-      TmpName := RefApiName[DllStart + I];
-      AccHint := AccHint +
-                 LongInt(AlignUp(2 + Length(TmpName) + 1, 2));
-      AccIATSlot := AccIATSlot + 4;
+      Api := Dll^.ApiHead;
+      While Api <> NIL Do
+      Begin
+        If Api^.Used Then
+        Begin
+          Api^.HintOfs    := AccHint;
+          Api^.IATSlotOfs := AccIATSlot;
+          AccHint := AccHint +
+                     LongInt(AlignUp(2 + Length(Api^.Name) + 1, 2));
+          AccIATSlot := AccIATSlot + 4;
+        End;
+        Api := Api^.Next;
+      End;
+      AccIATSlot := AccIATSlot + 4; { null terminator du IAT cette DLL }
     End;
-    AccIATSlot := AccIATSlot + 4; { null terminator du IAT cette DLL }
+    Dll := Dll^.Next;
   End;
 
   TotalIdata := HintOfs + AccHint;
@@ -12002,21 +12111,25 @@ Begin
   WriteBinDWord(F, IdataRVA + AccHint);            { ILT RVA       }
   WriteBinDWord(F, 0);                             { TimeDateStamp }
   WriteBinDWord(F, 0);                             { ForwarderChain}
-  WriteBinDWord(F, IdataRVA + DllNameOfsArr[0]);   { Name RVA      }
+  WriteBinDWord(F, IdataRVA + KernelNameOfs);      { Name RVA      }
   WriteBinDWord(F, IdataRVA + AccIATSlot);         { IAT RVA       }
   AccHint    := AccHint    + LongInt(PE_NUM_API + 1) * 4;
   AccIATSlot := AccIATSlot + LongInt(PE_NUM_API + 1) * 4;
   { Entrees pour chaque DLL referencee ayant au moins une API util.}
-  For J := 0 To RefDllNum - 1 Do
+  Dll := RefDllHead;
+  While Dll <> NIL Do
   Begin
-    If Not EmitDll[J] Then Continue;
-    WriteBinDWord(F, IdataRVA + AccHint);
-    WriteBinDWord(F, 0);
-    WriteBinDWord(F, 0);
-    WriteBinDWord(F, IdataRVA + DllNameOfsArr[J + 1]);
-    WriteBinDWord(F, IdataRVA + AccIATSlot);
-    AccHint    := AccHint    + LongInt(RefDllUsed[J] + 1) * 4;
-    AccIATSlot := AccIATSlot + LongInt(RefDllUsed[J] + 1) * 4;
+    If Dll^.Emit Then
+    Begin
+      WriteBinDWord(F, IdataRVA + AccHint);
+      WriteBinDWord(F, 0);
+      WriteBinDWord(F, 0);
+      WriteBinDWord(F, IdataRVA + Dll^.NameOfs);
+      WriteBinDWord(F, IdataRVA + AccIATSlot);
+      AccHint    := AccHint    + LongInt(Dll^.UsedCount + 1) * 4;
+      AccIATSlot := AccIATSlot + LongInt(Dll^.UsedCount + 1) * 4;
+    End;
+    Dll := Dll^.Next;
   End;
   { Null terminator }
   WriteBinZeros(F, 20);
@@ -12025,49 +12138,62 @@ Begin
   For I := 0 To PE_NUM_API - 1 Do
     WriteBinDWord(F, IdataRVA + HintOfs + ApiHintOfs[I]);
   WriteBinDWord(F, 0);
-  For J := 0 To RefDllNum - 1 Do
+  Dll := RefDllHead;
+  While Dll <> NIL Do
   Begin
-    If Not EmitDll[J] Then Continue;
-    DllStart := RefDllStart[J];
-    DllCnt   := RefDllCount[J];
-    For I := 0 To DllCnt - 1 Do
-      If RefApiUsed[DllStart + I] Then
-        WriteBinDWord(F, IdataRVA + HintOfs +
-                         ApiHintOfs[PE_NUM_API + DllStart + I]);
-    WriteBinDWord(F, 0);
+    If Dll^.Emit Then
+    Begin
+      Api := Dll^.ApiHead;
+      While Api <> NIL Do
+      Begin
+        If Api^.Used Then
+          WriteBinDWord(F, IdataRVA + HintOfs + Api^.HintOfs);
+        Api := Api^.Next;
+      End;
+      WriteBinDWord(F, 0);
+    End;
+    Dll := Dll^.Next;
   End;
 
   { IAT (Import Address Table) - identique au ILT a la creation    }
   For I := 0 To PE_NUM_API - 1 Do
     WriteBinDWord(F, IdataRVA + HintOfs + ApiHintOfs[I]);
   WriteBinDWord(F, 0);
-  For J := 0 To RefDllNum - 1 Do
+  Dll := RefDllHead;
+  While Dll <> NIL Do
   Begin
-    If Not EmitDll[J] Then Continue;
-    DllStart := RefDllStart[J];
-    DllCnt   := RefDllCount[J];
-    For I := 0 To DllCnt - 1 Do
-      If RefApiUsed[DllStart + I] Then
-        WriteBinDWord(F, IdataRVA + HintOfs +
-                         ApiHintOfs[PE_NUM_API + DllStart + I]);
-    WriteBinDWord(F, 0);
+    If Dll^.Emit Then
+    Begin
+      Api := Dll^.ApiHead;
+      While Api <> NIL Do
+      Begin
+        If Api^.Used Then
+          WriteBinDWord(F, IdataRVA + HintOfs + Api^.HintOfs);
+        Api := Api^.Next;
+      End;
+      WriteBinDWord(F, 0);
+    End;
+    Dll := Dll^.Next;
   End;
 
   { Noms de DLL : "kernel32.dll"#0 puis chaque DLL emise, padde 2  }
   WriteBinString(F, 'kernel32.dll');
   WriteBinByte(F, 0);
   If (13 Mod 2) <> 0 Then WriteBinByte(F, 0);
-  For J := 0 To RefDllNum - 1 Do
+  Dll := RefDllHead;
+  While Dll <> NIL Do
   Begin
-    If Not EmitDll[J] Then Continue;
-    WriteBinString(F, RefDllName[J]);
-    WriteBinByte(F, 0);
-    If ((Length(RefDllName[J]) + 1) Mod 2) <> 0 Then
+    If Dll^.Emit Then
+    Begin
+      WriteBinString(F, Dll^.Name);
       WriteBinByte(F, 0);
+      If ((Length(Dll^.Name) + 1) Mod 2) <> 0 Then
+        WriteBinByte(F, 0);
+    End;
+    Dll := Dll^.Next;
   End;
 
   { Hint/Name table : kernel32 puis APIs utilisees des DLLs        }
-  K := 0;
   For I := 0 To PE_NUM_API - 1 Do
   Begin
     WriteBinWord(F, Word(I));
@@ -12076,23 +12202,29 @@ Begin
     If ((2 + Length(BinAPIName[I]) + 1) Mod 2) <> 0 Then
       WriteBinByte(F, 0);
   End;
-  For J := 0 To RefDllNum - 1 Do
+  Dll := RefDllHead;
+  While Dll <> NIL Do
   Begin
-    If Not EmitDll[J] Then Continue;
-    DllStart := RefDllStart[J];
-    DllCnt   := RefDllCount[J];
-    K := 0;
-    For I := 0 To DllCnt - 1 Do
-      If RefApiUsed[DllStart + I] Then
+    If Dll^.Emit Then
+    Begin
+      UsedCnt := 0;
+      Api := Dll^.ApiHead;
+      While Api <> NIL Do
       Begin
-        TmpName := RefApiName[DllStart + I];
-        WriteBinWord(F, Word(K));
-        WriteBinString(F, TmpName);
-        WriteBinByte(F, 0);
-        If ((2 + Length(TmpName) + 1) Mod 2) <> 0 Then
+        If Api^.Used Then
+        Begin
+          TmpName := Api^.Name;
+          WriteBinWord(F, Word(UsedCnt));
+          WriteBinString(F, TmpName);
           WriteBinByte(F, 0);
-        Inc(K);
+          If ((2 + Length(TmpName) + 1) Mod 2) <> 0 Then
+            WriteBinByte(F, 0);
+          Inc(UsedCnt);
+        End;
+        Api := Api^.Next;
       End;
+    End;
+    Dll := Dll^.Next;
   End;
 
   { Pad .idata to file alignment }
@@ -12271,14 +12403,31 @@ End;
 { ------------------------------------------------------------ }
 
 Function TryAddRefDll(Const Path : TString) : Boolean;
-Var I : Integer;
+Var P, Q : PRefDll;
 Begin
   TryAddRefDll := False;
   If Path = '' Then Exit;
-  If RefDllNum >= MAX_REF_DLLS Then Exit;
-  For I := 0 To RefDllNum - 1 Do
-    If StrICompare(RefDllPath[I], Path) Then Exit;
-  RefDllPath[RefDllNum] := Path;
+  Q := RefDllHead;
+  While Q <> NIL Do
+  Begin
+    If StrICompare(Q^.Path, Path) Then Exit;
+    Q := Q^.Next;
+  End;
+  New(P);
+  P^.Path      := Path;
+  P^.Name      := '';
+  P^.ApiHead   := NIL;
+  P^.ApiTail   := NIL;
+  P^.ApiCount  := 0;
+  P^.UsedCount := 0;
+  P^.Emit      := False;
+  P^.NameOfs   := 0;
+  P^.Next      := NIL;
+  If RefDllHead = NIL Then
+    RefDllHead := P
+  Else
+    RefDllTail^.Next := P;
+  RefDllTail := P;
   Inc(RefDllNum);
   TryAddRefDll := True;
 End;
