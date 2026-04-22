@@ -13388,28 +13388,78 @@ Begin
       Exit;
     End;
 
-    { _GETPIXEL_W(wx,wy) -> stub, returns 0 }
+    { _GETPIXEL_W(wx,wy) -> same as GETPIXEL (fenetre non geree) }
     If Up = '_GETPIXEL_W' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
-      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
-      Case Opts.DestTarget Of
-        DEST_68000, DEST_ATARIST, DEST_AMIGA:
-          EmitInstr('MOVEQ #0,D0');
-        DEST_DOSR, DEST_DOSP:
-          EmitInstr('XOR AX,AX');
-        DEST_Z80:
-          EmitInstr('LD HL,0');
-        DEST_6502:
-          EmitInstr('LDA #0');
-        DEST_6809:
-        Begin
-          EmitInstr('CLRA');
-          EmitInstr('CLRB');
-        End;
-        Else
-          EmitInstr('XOR EAX,EAX');
+      Begin
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'GETPIXEL');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'GETPIXEL');
+            EmitInstr('ADD SP,4');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'GETPIXEL');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'GETPIXEL');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'GETPIXEL');
+            EmitInstr('LEAS 4,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EmitInstr('PUSH DWORD PTR [GR_HDC]');
+            EmitInstr('CALL ' + TP_RT_PFX + 'GETPIXEL');
+            EmitInstr('ADD ESP,12');
+          End;
+        End; { Case }
+        EPMatch(')');
       End;
       Exit;
     End;
