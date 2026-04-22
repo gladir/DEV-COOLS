@@ -5244,51 +5244,140 @@ Begin
 End;
 
 { ---- ParseTry : TRY. ... CATCH cx. ... [CLEANUP.] ENDTRY. -- }
-{ Stub : parser les blocs avec labels _ABX_catch/_ABX_cleanup   }
+{ Implantation reelle avec runtime d exceptions :               }
+{   - A TRY : empiler [handler_addr, EBP, prev_chain] et        }
+{     enregistrer [_AB_EXC_HANDLER] = ESP.                      }
+{   - A la fin du corps (pas d exception) : derouler la chaine  }
+{     et sauter au label _ABX_end_N.                            }
+{   - _ABX_disp_N : dispatcher, compare [_AB_EXC_TYPE] (ASCIIZ) }
+{     au nom de chaque CATCH via _ABRT_STRCMPI. Si aucun match, }
+{     execute CLEANUP puis re-raise.                            }
+{   - Un CATCH sans classe ou avec CX_ROOT capture tout.        }
 { ============================================================ }
 Procedure ParseTry;
 Var TryIdx  : Integer;
     TryLbl  : TString;
+    DispLbl : TString;
+    EndLbl  : TString;
+    NextLbl : TString;    { label de la prochaine alternative CATCH }
+    CatchIdx: Integer;
+    ClsName : TString;
+    ClsLbl  : TString;
+    HasCleanup : Boolean;
 Begin
   Inc(TryCount);
   TryIdx := TryCount;
   TryLbl := IntToStr_(TryIdx);
-  EmitComment('---- TRY #' + TryLbl + ' (stub) ----');
+  DispLbl := '_ABX_disp_' + TryLbl;
+  EndLbl  := '_ABX_end_'  + TryLbl;
+  EmitComment('---- TRY #' + TryLbl + ' ----');
 
   { Consommer le point apres TRY }
   If CurTokType = TOK_DOT Then Consume;
 
+  { Prologue : enregistrer un cadre de handler sur la pile.      }
+  { Layout (du haut vers le bas de la pile apres les 3 PUSH) :   }
+  {   [ESP+0] chain prev = ancien [_AB_EXC_HANDLER]              }
+  {   [ESP+4] EBP sauve                                          }
+  {   [ESP+8] adresse du dispatcher                              }
+  EmitI('PUSH    OFFSET ' + DispLbl);
+  EmitI('PUSH    EBP');
+  EmitI('PUSH    DWORD PTR [_AB_EXC_HANDLER]');
+  EmitI('MOV     DWORD PTR [_AB_EXC_HANDLER], ESP');
+
   { Corps du TRY : parser jusqu a CATCH, CLEANUP ou ENDTRY }
   ParseBlock(KW_CATCH, KW_CLEANUP, KW_ENDTRY);
 
-  { CATCH cx_name. ... (TODO 24: label _ABX_catch_N) }
+  { Sortie normale : derouler la chaine et sauter en fin de TRY. }
+  EmitI('MOV     ESP, DWORD PTR [_AB_EXC_HANDLER]');
+  EmitI('POP     DWORD PTR [_AB_EXC_HANDLER]');
+  EmitI('POP     EBP');
+  EmitI('ADD     ESP, 4');          { jeter l adresse du dispatcher }
+  EmitI('JMP     ' + EndLbl);
+
+  { ---- Dispatcher : entre via RET depuis _ABRT_RAISE ------- }
+  { A ce point [_AB_EXC_HANDLER] pointe deja sur le handler du }
+  { TRY englobant (restaure avant le RET par _ABRT_RAISE).     }
+  EmitBlank;
+  EmitLabel(DispLbl);
+
+  CatchIdx := 0;
+  NextLbl  := '';
+  { Parser toutes les clauses CATCH : chaque CATCH devient      }
+  {   <NextLbl>:  ; (sauf pour le premier qui est le disp label) }
+  {     CMP classe  (sauf si CATCH sans classe / CX_ROOT)        }
+  {     JNE <NextLbl_i+1>                                        }
+  {     <corps>                                                  }
+  {     JMP <EndLbl>                                             }
   While TokIsKw(KW_CATCH) Do
   Begin
-    EmitLabel('_ABX_catch_' + TryLbl);
-    EmitComment('CATCH (stub)');
+    If NextLbl <> '' Then
+      EmitLabel(NextLbl);
+    NextLbl := '_ABX_next_' + TryLbl + '_' + IntToStr_(CatchIdx);
+
     Consume; { CATCH }
-    { Nom de la classe exception : consommer }
-    If CurTokType = TOK_IDENT Then Consume;
-    { Possible INTO var }
+    { Nom de la classe exception (optionnel - defaut = catch-all) }
+    ClsName := '';
+    If CurTokType = TOK_IDENT Then
+    Begin
+      ClsName := StrUpperCase(CurTokStr);
+      Consume;
+    End;
+    { Possible INTO var : consommer (non implemente) }
     If TokIsKw(KW_INTO) Then
     Begin
       Consume;
       If CurTokType = TOK_IDENT Then Consume;
     End;
     If CurTokType = TOK_DOT Then Consume;
+
+    { Emission de la comparaison de type. CX_ROOT = catch-all.   }
+    EmitComment('CATCH ' + ClsName);
+    EmitLabel('_ABX_catch_' + TryLbl + '_' + IntToStr_(CatchIdx));
+    If (ClsName <> '') And (ClsName <> 'CX_ROOT') Then
+    Begin
+      ClsLbl := AddStringLit(ClsName);
+      EmitI('MOV     EDI, DWORD PTR [_AB_EXC_TYPE]');
+      EmitI('TEST    EDI, EDI');
+      EmitI('JZ      ' + NextLbl);    { type absent -> pas de match }
+      EmitI('LEA     ESI, [' + ClsLbl + ']');
+      EmitI('CALL    ' + AB_RT_PFX + 'STRCMPI');
+      EmitI('JNE     ' + NextLbl);
+    End;
+
     { Corps du CATCH }
     ParseBlock(KW_CATCH, KW_CLEANUP, KW_ENDTRY);
+
+    { Fin normale du CATCH -> aller a la fin du TRY }
+    EmitI('JMP     ' + EndLbl);
+    Inc(CatchIdx);
   End;
 
-  { CLEANUP. ... (TODO 24: label _ABX_cleanup_N) }
+  { Pas de CATCH correspondant : executer CLEANUP si present,    }
+  { puis propager l exception au TRY englobant.                  }
+  HasCleanup := False;
+  If NextLbl <> '' Then
+    EmitLabel(NextLbl)
+  Else
+  Begin
+    { TRY sans aucun CATCH : le dispatcher tombe directement ici  }
+    { -> CLEANUP + re-raise.                                      }
+  End;
+
   If TokIsKw(KW_CLEANUP) Then
   Begin
+    HasCleanup := True;
     EmitLabel('_ABX_cleanup_' + TryLbl);
-    EmitComment('CLEANUP (stub)');
+    EmitComment('CLEANUP');
     Consume;
     If CurTokType = TOK_DOT Then Consume;
     ParseBlock(KW_ENDTRY, KW_NONE, KW_NONE);
   End;
+
+  { Propagation (re-raise) vers le TRY englobant / handler ext.  }
+  EmitComment('---- re-raise TRY #' + TryLbl + ' ----');
+  EmitI('CALL    ' + AB_RT_PFX + 'RAISE');
+  If Not HasCleanup Then EmitBlank;
 
   { ENDTRY. }
   If TokIsKw(KW_ENDTRY) Then
@@ -5299,17 +5388,54 @@ Begin
   Else
     LexError('ENDTRY attendu');
 
-  EmitComment('---- FIN TRY #' + TryLbl + ' (stub) ----');
+  EmitLabel(EndLbl);
+  EmitComment('---- FIN TRY #' + TryLbl + ' ----');
 End;
 
 { ---- ParseRaise : RAISE [EXCEPTION [TYPE cx_name]]. --------- }
-{ Stub : consomme la ligne, emet un commentaire                  }
+{ Positionne [_AB_EXC_TYPE] puis appelle _ABRT_RAISE qui deroule }
+{ la pile et saute au dispatcher du TRY actif.                   }
 { ============================================================ }
 Procedure ParseRaise;
+Var ClsName : TString;
+    ClsLbl  : TString;
 Begin
-  EmitComment('---- RAISE (stub) ----');
-  { RAISE [EXCEPTION [TYPE cx_name [MESSAGE ...]]] }
-  { Consommer tout jusqu au point }
+  ClsName := '';
+
+  { RAISE EXCEPTION [TYPE cx_name [MESSAGE ...]] }
+  If TokIsKw(KW_EXCEPTION) Then
+  Begin
+    Consume;
+    If TokIsKw(KW_TYPE) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_IDENT Then
+      Begin
+        ClsName := StrUpperCase(CurTokStr);
+        Consume;
+      End;
+    End;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    { RAISE nom_exception. (forme FUNCTION : nom d exception legacy) }
+    ClsName := StrUpperCase(CurTokStr);
+    Consume;
+  End;
+
+  { Positionner [_AB_EXC_TYPE] = OFFSET nom ou 0 }
+  If ClsName <> '' Then
+  Begin
+    ClsLbl := AddStringLit(ClsName);
+    EmitI('MOV     DWORD PTR [_AB_EXC_TYPE], OFFSET ' + ClsLbl);
+  End
+  Else
+    EmitI('MOV     DWORD PTR [_AB_EXC_TYPE], 0');
+
+  EmitComment('---- RAISE ' + ClsName + ' ----');
+  EmitI('CALL    ' + AB_RT_PFX + 'RAISE');
+
+  { Consommer le reste jusqu au point (MESSAGE, WITH, etc.) }
   SkipToDot;
 End;
 
@@ -7454,6 +7580,15 @@ Begin
   Emit(AB_RT_PFX + 'INPUTBUF   DB 256 DUP(0)');
   EmitBlank;
 
+  { ---- Runtime exceptions (TRY/CATCH/RAISE) ---- }
+  EmitComment('--- Runtime exceptions ---');
+  Emit('_AB_EXC_HANDLER DD 0');
+  Emit('_AB_EXC_TYPE    DD 0');
+  Emit(AB_RT_PFX + 'EXC_MSG1 DB ' + #39 +
+       'Uncaught ABAP exception: ' + #39 + ',0');
+  Emit(AB_RT_PFX + 'EXC_MSG2 DB ' + #39 + '(untyped)' + #39 + ',0');
+  EmitBlank;
+
   { ---- Chaines litterales ---- }
   If StrLitCount > 0 Then
   Begin
@@ -7509,6 +7644,10 @@ Begin
   EmitI('PUSH    -10');
   EmitI('CALL    _GetStdHandle@4');
   EmitI('MOV     DWORD PTR [' + AB_RT_PFX + 'HSTDIN], EAX');
+  EmitBlank;
+  EmitComment('--- Initialiser le runtime d exceptions (TRY/CATCH) ---');
+  EmitI('MOV     DWORD PTR [_AB_EXC_HANDLER], 0');
+  EmitI('MOV     DWORD PTR [_AB_EXC_TYPE], 0');
   EmitBlank;
 End;
 
@@ -7723,6 +7862,74 @@ Begin
   EmitI('PUSH    1');
   EmitI('CALL    _ExitProcess@4');
   EmitI('RET');                  { ne sera jamais atteint }
+
+  { ---- _ABRT_STRCMPI : ESI vs EDI ASCIIZ, casse-insensible ---- }
+  { Sortie : ZF=1 si egales (apres CMP final), EAX/ECX modifies.  }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STRCMPI');
+  EmitI('PUSH    ESI');
+  EmitI('PUSH    EDI');
+  EmitLabel(AB_RT_PFX + 'SCI_LP');
+  EmitI('MOV     AL, BYTE PTR [ESI]');
+  EmitI('MOV     CL, BYTE PTR [EDI]');
+  { Uppercase AL }
+  EmitI('CMP     AL, 97');          { 'a' }
+  EmitI('JB      ' + AB_RT_PFX + 'SCI_A1');
+  EmitI('CMP     AL, 122');         { 'z' }
+  EmitI('JA      ' + AB_RT_PFX + 'SCI_A1');
+  EmitI('SUB     AL, 32');
+  EmitLabel(AB_RT_PFX + 'SCI_A1');
+  EmitI('CMP     CL, 97');
+  EmitI('JB      ' + AB_RT_PFX + 'SCI_A2');
+  EmitI('CMP     CL, 122');
+  EmitI('JA      ' + AB_RT_PFX + 'SCI_A2');
+  EmitI('SUB     CL, 32');
+  EmitLabel(AB_RT_PFX + 'SCI_A2');
+  EmitI('CMP     AL, CL');
+  EmitI('JNE     ' + AB_RT_PFX + 'SCI_DN');
+  EmitI('TEST    AL, AL');           { fin des deux chaines simultanement }
+  EmitI('JZ      ' + AB_RT_PFX + 'SCI_DN');
+  EmitI('INC     ESI');
+  EmitI('INC     EDI');
+  EmitI('JMP     ' + AB_RT_PFX + 'SCI_LP');
+  EmitLabel(AB_RT_PFX + 'SCI_DN');
+  EmitI('POP     EDI');
+  EmitI('POP     ESI');
+  EmitI('RET');                      { ZF refletera le dernier CMP AL, CL }
+
+  { ---- _ABRT_RAISE : declenche l exception courante ---------- }
+  { Prerequis : [_AB_EXC_TYPE] pointe vers le nom de la classe   }
+  { (ASCIIZ) ou 0 si exception sans type (RAISE nu).             }
+  { Si un TRY est actif, deroule la pile et saute au dispatcher. }
+  { Sinon, affiche un message et termine le processus.           }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'RAISE');
+  EmitI('MOV     EAX, DWORD PTR [_AB_EXC_HANDLER]');
+  EmitI('TEST    EAX, EAX');
+  EmitI('JZ      ' + AB_RT_PFX + 'EXC_UNHANDLED');
+  EmitI('MOV     ESP, EAX');                     { deroulement }
+  EmitI('POP     DWORD PTR [_AB_EXC_HANDLER]');  { chain prev }
+  EmitI('POP     EBP');                          { EBP sauve a TRY }
+  EmitI('RET');                                   { vers _ABX_disp_N }
+
+  { ---- _ABRT_EXC_UNHANDLED : exception non capturee ---------- }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'EXC_UNHANDLED');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'EXC_MSG1]');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitI('MOV     EAX, DWORD PTR [_AB_EXC_TYPE]');
+  EmitI('TEST    EAX, EAX');
+  EmitI('JZ      ' + AB_RT_PFX + 'EXC_UNH_NOT');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitI('JMP     ' + AB_RT_PFX + 'EXC_UNH_END');
+  EmitLabel(AB_RT_PFX + 'EXC_UNH_NOT');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'EXC_MSG2]');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitLabel(AB_RT_PFX + 'EXC_UNH_END');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'CRLF_DATA]');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitI('PUSH    1');
+  EmitI('CALL    _ExitProcess@4');
 End;
 
 { ============================================================ }
@@ -8293,6 +8500,14 @@ Begin
       End;
       Exit;
     End;
+    { PUSH OFFSET label : opcode 68 + fixup ABS32 }
+    If AsmStartsWith(Op1, 'OFFSET ') Then
+    Begin
+      BinEmitByte($68);
+      BinAddFixup(BinCodeLen, BFK_ABS32, Copy(Op1, 8, Length(Op1) - 7), True);
+      BinEmitDWord(0);
+      Exit;
+    End;
     R1 := AsmRegIdx32(Op1);
     If R1 >= 0 Then
     Begin BinEmitByte($50 + R1); Exit; End;
@@ -8313,6 +8528,23 @@ Begin
   { ---- POP ---- }
   If Mnem = 'POP' Then
   Begin
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      If AsmIsRegBased(Bracket) Then
+      Begin { POP [reg+...] : opcode 8F /0 + ModRM/SIB }
+        BinEmitByte($8F);
+        AsmEncodeMemory(Bracket, 0);
+      End
+      Else
+      Begin { POP [label] : opcode 8F /0 + disp32 }
+        BinEmitByte($8F);
+        BinEmitByte($05);
+        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+        BinEmitDWord(0);
+      End;
+      Exit;
+    End;
     R1 := AsmRegIdx32(Op1);
     If R1 >= 0 Then BinEmitByte($58 + R1);
     Exit;
@@ -8351,6 +8583,29 @@ Begin
       Else
       Begin
         { MOV DWORD PTR [mem], imm32 : opcode C7 /0 }
+        { Cas special : OFFSET label -> fixup ABS32 }
+        If AsmStartsWith(Op2, 'OFFSET ') Then
+        Begin
+          If AsmIsRegBased(Bracket) Then
+          Begin
+            BinEmitByte($C7);
+            AsmEncodeMemory(Bracket, 0);
+            BinAddFixup(BinCodeLen, BFK_ABS32,
+                        Copy(Op2, 8, Length(Op2) - 7), True);
+            BinEmitDWord(0);
+          End
+          Else
+          Begin
+            BinEmitByte($C7);
+            BinEmitByte($05);
+            BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+            BinEmitDWord(0);
+            BinAddFixup(BinCodeLen, BFK_ABS32,
+                        Copy(Op2, 8, Length(Op2) - 7), True);
+            BinEmitDWord(0);
+          End;
+          Exit;
+        End;
         Imm := AsmParseImm(Op2);
         If AsmIsRegBased(Bracket) Then
         Begin
@@ -8434,6 +8689,14 @@ Begin
     { MOV reg32, imm32 }
     If R1 >= 0 Then
     Begin
+      If AsmStartsWith(Op2, 'OFFSET ') Then
+      Begin
+        BinEmitByte($B8 + R1);
+        BinAddFixup(BinCodeLen, BFK_ABS32,
+                    Copy(Op2, 8, Length(Op2) - 7), True);
+        BinEmitDWord(0);
+        Exit;
+      End;
       Imm := AsmParseImm(Op2);
       BinEmitByte($B8 + R1);
       BinEmitDWord(Imm);
@@ -8791,7 +9054,7 @@ Begin
       Exit;
     End;
     { CMP AL, imm8 }
-    If Op1 = 'AL' Then
+    If (Op1 = 'AL') And (AsmRegIdx8(Op2) < 0) Then
     Begin
       BinEmitByte($3C);
       BinEmitByte(Byte(AsmParseImm(Op2) And $FF));
