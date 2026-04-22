@@ -494,19 +494,19 @@
             Procedure ParseBlock(stop_kw: Integer)
               Appeler ParseStatement en boucle jusqu a stop_kw ou EOF
 
-  TODO 24 - PARSEUR : EVENEMENTS ABAP ET ECRAN DE SELECTION (STUBS) [IMPLEMENTE]
+  TODO 24 - PARSEUR : EVENEMENTS ABAP ET ECRAN DE SELECTION [IMPLEMENTE]
             Evenements ABAP de haut niveau :
               START-OF-SELECTION. -> label _ABE_START + ParseBlock
               END-OF-SELECTION.   -> label _ABE_END   + ParseBlock
-              TOP-OF-PAGE.        -> label _ABE_TOPPAGE (stub vide)
-              END-OF-PAGE.        -> label _ABE_ENDPAGE (stub vide)
-              AT LINE-SELECTION.  -> stub vide
-              AT USER-COMMAND.    -> stub vide
+              TOP-OF-PAGE.        -> label _ABE_TOPPAGE + ParseBlock
+              END-OF-PAGE.        -> label _ABE_ENDPAGE + ParseBlock
+              AT LINE-SELECTION.  -> label _ABE_LINESEL + ParseBlock
+              AT USER-COMMAND.    -> label _ABE_USERCMD + ParseBlock
             Ecran de selection :
               PARAMETERS p TYPE I DEFAULT 0.
-                -> generer variable globale DD + valeur par defaut
+                -> variable globale DD + MOV [lbl], DEFAULT au demarrage
               SELECT-OPTIONS s FOR var.
-                -> stub (deux variables LOW / HIGH en DD)
+                -> deux variables LOW / HIGH en DD (utilisables via IN)
             TRY / CATCH / CLEANUP / ENDTRY :
               TRY. -> sauvegarder contexte (stub)
               CATCH cx_nom. -> label _ABX_catch
@@ -842,7 +842,7 @@ Const
   MAX_BIN_DATA    = 65536;       { 64 KB max data section             }
   MAX_BIN_LBL     = 4096;        { max labels                         }
   MAX_BIN_FIX     = 8192;        { max fixups                         }
-  PE_NUM_API      = 7;           { number of imported Win32 APIs      }
+  PE_NUM_API      = 9;           { number of imported Win32 APIs      }
   COFF_RELOC_DIR32  = 6;         { IMAGE_REL_I386_DIR32               }
   COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
 {$ENDIF}
@@ -956,8 +956,12 @@ Var
   LexEOF     : Boolean;    { fin de fichier atteinte ?             }
   CurTokType : Integer;    { type du token courant (TOK_xxx)       }
   CurTokStr  : TString;    { valeur textuelle du token courant     }
-  CurTokNum  : LongInt;    { valeur entiere (TOK_NUMBER)           }
+  CurTokNum  : LongInt;    { valeur entiere (TOK_NUMBER/FLOAT)     }
+  CurTokScale: Integer;    { nb chiffres decimaux (TOK_FLOAT)      }
   CurTokKw   : Integer;    { code mot-cle (KW_xxx) ou KW_NONE     }
+  { ---- Suivi scale (point-virgule fixe) pour expressions ---- }
+  CurExprScale : Integer;  { echelle decimale de EAX apres un    }
+                           { ParsePrimary/ParseExpr : 0 = entier }
 
 {$IFDEF FPC}
   { Variables binaires }
@@ -1000,6 +1004,8 @@ Var
   { Evenements ABAP definis (TODO 24) }
   EventStartDefined : Boolean;
   EventEndDefined   : Boolean;
+  EventTopPageDefined : Boolean;
+  EventEndPageDefined : Boolean;
   TryCount          : Integer;
 
 Const
@@ -1007,11 +1013,12 @@ Const
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
     '_ExitProcess@4', '_GetStdHandle@4', '_WriteFile@20',
     '_ReadFile@20', '_GetProcessHeap@0', '_HeapAlloc@12',
-    '_HeapFree@12'
+    '_HeapFree@12', '_LoadLibraryA@4', '_GetProcAddress@8'
   );
   BinAPIName : Array[0..PE_NUM_API - 1] Of String[20] = (
     'ExitProcess', 'GetStdHandle', 'WriteFile', 'ReadFile',
-    'GetProcessHeap', 'HeapAlloc', 'HeapFree'
+    'GetProcessHeap', 'HeapAlloc', 'HeapFree',
+    'LoadLibraryA', 'GetProcAddress'
   );
 {$ENDIF}
 
@@ -1094,6 +1101,7 @@ Function  ParseAndExpr : Integer; Forward;
 { ============================================================ }
 
 Procedure GenStoreVar32(SymIdx : Integer); Forward;
+Procedure GenRescaleReg(Const Reg : String; FromScale, ToScale : Integer); Forward;
 
 { ============================================================ }
 { DECLARATIONS FORWARD (IF / ELSEIF / ELSE / ENDIF TODO 10)    }
@@ -1150,6 +1158,8 @@ Procedure ParseAppend; Forward;
 Procedure ParseReadTable; Forward;
 Procedure ParseSort; Forward;
 Procedure ParseDeleteTable; Forward;
+Procedure ParseInsertTable; Forward;
+Procedure ParseModifyTable; Forward;
 Procedure EmitTableRuntime; Forward;
 
 { ============================================================ }
@@ -1612,6 +1622,7 @@ Begin
     N   := Ord(C) - 48;
     S   := C;
     Flt := False;
+    CurTokScale := 0;
     LexAdvance;
     { Partie entiere }
     While (LexColNo <= Length(LexLine)) And
@@ -1633,13 +1644,18 @@ Begin
         While (LexColNo <= Length(LexLine)) And
               (LexCurChar >= '0') And (LexCurChar <= '9') Do
         Begin
+          { Accumuler les chiffres fractionnaires dans N et       }
+          { suivre l echelle (nombre de chiffres apres le point). }
+          N := N * 10 + (Ord(LexCurChar) - 48);
+          Inc(CurTokScale);
           S := S + LexCurChar;
           LexAdvance;
         End;
       End;
       { Sinon le '.' est le terminateur d'instruction, on ne le consomme pas }
     End;
-    { Exposant E/e }
+    { Exposant E/e : conserve tel quel dans S, la valeur numerique  }
+    { reste l integer deja accumule (pas de support E dans codegen). }
     If (LexColNo <= Length(LexLine)) And
        ((LexCurChar = 'E') Or (LexCurChar = 'e')) Then
     Begin
@@ -2398,7 +2414,7 @@ Function SymByteSize(SymIdx : Integer) : Integer;
 Begin
   Case SymTab[SymIdx].DataType Of
     TYPE_I      : SymByteSize := 4;   { DD = 4 octets   }
-    TYPE_F      : SymByteSize := 8;   { DQ = 8 octets   }
+    TYPE_F      : SymByteSize := 4;   { fixed-point 32b (pas de FPU) }
     TYPE_C      : SymByteSize := SymTab[SymIdx].CharLen;
     TYPE_N      : SymByteSize := SymTab[SymIdx].CharLen;
     TYPE_D      : SymByteSize := 8;   { YYYYMMDD         }
@@ -2488,8 +2504,21 @@ Begin
   Else If StrUpperCase(CurTokStr) = 'F' Then
   Begin
     SymTab[SymIdx].DataType := TYPE_F;
-    SymTab[SymIdx].CharLen  := 8;
+    SymTab[SymIdx].CharLen  := 4;
+    { TYPE F = virgule fixe logicielle, 6 decimales par defaut }
+    If SymTab[SymIdx].DecScale <= 0 Then
+      SymTab[SymIdx].DecScale := 6;
     Consume;
+    { Accepter DECIMALS n egalement pour TYPE F (redefinit l echelle) }
+    If TokIsKw(KW_DECIMALS) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_NUMBER Then
+      Begin
+        SymTab[SymIdx].DecScale := CurTokNum;
+        Consume;
+      End;
+    End;
   End
   Else If StrUpperCase(CurTokStr) = 'C' Then
   Begin
@@ -2504,6 +2533,16 @@ Begin
       If CurTokType = TOK_NUMBER Then Consume;
       If CurTokType = TOK_RPAREN Then Consume;
     End;
+    { TYPE C LENGTH n }
+    If TokIsKw(KW_LENGTH) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_NUMBER Then
+      Begin
+        SymTab[SymIdx].CharLen := CurTokNum;
+        Consume;
+      End;
+    End;
   End
   Else If StrUpperCase(CurTokStr) = 'N' Then
   Begin
@@ -2516,6 +2555,16 @@ Begin
       SymTab[SymIdx].CharLen := CurTokNum;
       If CurTokType = TOK_NUMBER Then Consume;
       If CurTokType = TOK_RPAREN Then Consume;
+    End;
+    { TYPE N LENGTH n }
+    If TokIsKw(KW_LENGTH) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_NUMBER Then
+      Begin
+        SymTab[SymIdx].CharLen := CurTokNum;
+        Consume;
+      End;
     End;
   End
   Else If StrUpperCase(CurTokStr) = 'D' Then
@@ -2571,17 +2620,86 @@ Begin
   End;
 End;
 
+{ ---- ParseDecimalStr : convertir "sNNN.FFF" en entier scale ------
+  S : chaine ASCII (signe optionnel + entier + '.' + fractionnel)
+  Scale : nombre de decimales cible (10^Scale)
+  Retourne la valeur entiere signee representant S * 10^Scale.
+  Les chiffres fractionnaires au-dela de Scale sont tronques.
+  Les chiffres manquants sont completes par des zeros.              }
+Function ParseDecimalStr(Const S : TString; Scale : Integer) : LongInt;
+Var I, J, Len, DotPos, Frac : Integer;
+    Neg : Boolean;
+    IntPart, FracPart, Mul : LongInt;
+Begin
+  Neg := False; IntPart := 0; FracPart := 0;
+  Len := Length(S); I := 1;
+  While (I <= Len) And (S[I] = ' ') Do Inc(I);
+  If (I <= Len) And ((S[I] = '+') Or (S[I] = '-')) Then
+  Begin
+    If S[I] = '-' Then Neg := True;
+    Inc(I);
+  End;
+  DotPos := 0;
+  J := I;
+  While (J <= Len) And (DotPos = 0) Do
+  Begin
+    If S[J] = '.' Then DotPos := J;
+    Inc(J);
+  End;
+  { Partie entiere }
+  J := I;
+  While (J <= Len) And (S[J] >= '0') And (S[J] <= '9') Do
+  Begin
+    IntPart := IntPart * 10 + (Ord(S[J]) - 48);
+    Inc(J);
+  End;
+  { Partie fractionnaire }
+  Frac := 0;
+  If DotPos > 0 Then
+  Begin
+    J := DotPos + 1;
+    While (J <= Len) And (S[J] >= '0') And (S[J] <= '9') And (Frac < Scale) Do
+    Begin
+      FracPart := FracPart * 10 + (Ord(S[J]) - 48);
+      Inc(Frac);
+      Inc(J);
+    End;
+  End;
+  { Completer par des zeros si la partie fractionnaire est trop courte }
+  While Frac < Scale Do
+  Begin
+    FracPart := FracPart * 10;
+    Inc(Frac);
+  End;
+  { Multiplicateur 10^Scale pour la partie entiere }
+  Mul := 1;
+  For J := 1 To Scale Do Mul := Mul * 10;
+  IntPart := IntPart * Mul + FracPart;
+  If Neg Then IntPart := -IntPart;
+  ParseDecimalStr := IntPart;
+End;
+
 { ---- ParseValue : parser la clause VALUE d une declaration --- }
 { Syntaxes :
     VALUE 42
     VALUE 'texte'
+    VALUE '3.14'       (TYPE F / TYPE P : scale applique)
+    VALUE 3.14         (litteral flottant, idem)
     VALUE -5
     VALUE IS INITIAL                                               }
 Procedure ParseValue(SymIdx : Integer);
+Var IsScaled : Boolean;
+    Scale    : Integer;
+    Mul      : LongInt;
+    J        : Integer;
 Begin
   If Not TokIsKw(KW_VALUE) Then Exit;
   Consume;
   SymTab[SymIdx].HasInit := True;
+  Scale := SymTab[SymIdx].DecScale;
+  If Scale < 0 Then Scale := 0;
+  IsScaled := (SymTab[SymIdx].DataType = TYPE_F) Or
+              (SymTab[SymIdx].DataType = TYPE_P);
   { VALUE IS INITIAL -> valeur zero }
   If TokIsKw(KW_IS) Then
   Begin
@@ -2592,22 +2710,97 @@ Begin
   End;
   If CurTokType = TOK_NUMBER Then
   Begin
-    SymTab[SymIdx].InitNum := CurTokNum;
+    If IsScaled Then
+    Begin
+      { Entier -> scaler vers DecScale }
+      Mul := 1;
+      For J := 1 To Scale Do Mul := Mul * 10;
+      SymTab[SymIdx].InitNum := CurTokNum * Mul;
+    End
+    Else
+      SymTab[SymIdx].InitNum := CurTokNum;
     SymTab[SymIdx].InitStr := IntToStr_(CurTokNum);
+    Consume;
+  End
+  Else If CurTokType = TOK_FLOAT Then
+  Begin
+    { CurTokNum = valeur * 10^CurTokScale. Rescaler vers DecScale. }
+    If IsScaled Then
+    Begin
+      If CurTokScale <= Scale Then
+      Begin
+        Mul := 1;
+        For J := 1 To (Scale - CurTokScale) Do Mul := Mul * 10;
+        SymTab[SymIdx].InitNum := CurTokNum * Mul;
+      End
+      Else
+      Begin
+        Mul := 1;
+        For J := 1 To (CurTokScale - Scale) Do Mul := Mul * 10;
+        SymTab[SymIdx].InitNum := CurTokNum Div Mul;
+      End;
+    End
+    Else
+    Begin
+      { TYPE I : tronquer la partie fractionnaire }
+      Mul := 1;
+      For J := 1 To CurTokScale Do Mul := Mul * 10;
+      SymTab[SymIdx].InitNum := CurTokNum Div Mul;
+    End;
+    SymTab[SymIdx].InitStr := CurTokStr;
     Consume;
   End
   Else If CurTokType = TOK_STRING Then
   Begin
+    If IsScaled Then
+      SymTab[SymIdx].InitNum := ParseDecimalStr(CurTokStr, Scale)
+    Else
+      SymTab[SymIdx].InitNum := 0;
     SymTab[SymIdx].InitStr := CurTokStr;
-    SymTab[SymIdx].InitNum := 0;
     Consume;
   End
   Else If CurTokType = TOK_MINUS Then
   Begin
     Consume;
-    SymTab[SymIdx].InitNum := -CurTokNum;
-    SymTab[SymIdx].InitStr := '-' + IntToStr_(CurTokNum);
-    If CurTokType = TOK_NUMBER Then Consume;
+    If CurTokType = TOK_FLOAT Then
+    Begin
+      If IsScaled Then
+      Begin
+        If CurTokScale <= Scale Then
+        Begin
+          Mul := 1;
+          For J := 1 To (Scale - CurTokScale) Do Mul := Mul * 10;
+          SymTab[SymIdx].InitNum := -(CurTokNum * Mul);
+        End
+        Else
+        Begin
+          Mul := 1;
+          For J := 1 To (CurTokScale - Scale) Do Mul := Mul * 10;
+          SymTab[SymIdx].InitNum := -(CurTokNum Div Mul);
+        End;
+      End
+      Else
+      Begin
+        Mul := 1;
+        For J := 1 To CurTokScale Do Mul := Mul * 10;
+        SymTab[SymIdx].InitNum := -(CurTokNum Div Mul);
+      End;
+      SymTab[SymIdx].InitStr := '-' + CurTokStr;
+      Consume;
+    End
+    Else
+    Begin
+      If IsScaled Then
+      Begin
+        Mul := 1;
+        For J := 1 To Scale Do Mul := Mul * 10;
+        SymTab[SymIdx].InitNum := -(CurTokNum * Mul);
+      End
+      Else
+        SymTab[SymIdx].InitNum := -CurTokNum;
+      SymTab[SymIdx].InitStr := '-' + IntToStr_(CurTokNum);
+      If CurTokType = TOK_NUMBER Then Consume;
+    End;
   End
   Else
     WarnMsg('Valeur VALUE non reconnue dans declaration');
@@ -2895,6 +3088,32 @@ Begin
 End;
 
 { ---- GenStoreVar32 : stocker EAX dans une variable (TODO 09)- }
+{ ---- StrCapFor : capacite de copie (octets) pour un symbole C ---
+  Pour TYPE_C / TYPE_N : la longueur declaree (au moins 1).
+  Pour TYPE_D : 8 (YYYYMMDD), TYPE_T : 6 (HHMMSS).
+  Pour TYPE_STRING / XSTRING : valeur par defaut genereuse (255).
+  La valeur retournee est la limite passee dans ECX a STRCOPY, qui
+  s arrete aussi au NUL ; elle doit juste etre > 0 pour copier au
+  moins le NUL terminal.                                           }
+Function StrCapFor(SymIdx : Integer) : Integer;
+Var Cap : Integer;
+Begin
+  Case SymTab[SymIdx].DataType Of
+    TYPE_C, TYPE_N :
+    Begin
+      Cap := SymTab[SymIdx].CharLen;
+      If Cap < 1 Then Cap := 1;
+    End;
+    TYPE_D       : Cap := 8;
+    TYPE_T       : Cap := 6;
+    TYPE_STRING,
+    TYPE_XSTRING : Cap := 255;
+  Else
+    Cap := 255;
+  End;
+  StrCapFor := Cap;
+End;
+
 Procedure GenStoreVar32(SymIdx : Integer);
 Var SC, DT, BP : Integer; Lbl : TString;
 Begin
@@ -2906,21 +3125,31 @@ Begin
   Lbl := SymTab[SymIdx].AsmLabel;
   If SC = STORE_CONSTANT Then
   Begin WarnMsg('Affectation a une CONSTANT ignoree'); Exit; End;
+  { Rescaler EAX pour les types virgule fixe (TYPE F / P)         }
+  { si l expression n etait pas deja au bon facteur d echelle.   }
+  If ((DT = TYPE_F) Or (DT = TYPE_P)) And
+     (CurExprScale <> SymTab[SymIdx].DecScale) Then
+  Begin
+    GenRescaleReg('EAX', CurExprScale, SymTab[SymIdx].DecScale);
+    CurExprScale := SymTab[SymIdx].DecScale;
+  End;
   { STORE_PARAM : parametre de FORM (TODO 13) }
   If SC = STORE_PARAM Then
   Begin
     If SymTab[SymIdx].ParamKind = PARAM_CHANGING Then
     Begin
-      { CHANGING : ecrire a travers le pointeur }
-      EmitI('MOV     ECX, DWORD PTR [EBP+' + IntToStr_(BP) + ']');
       Case DT Of
         TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
         Begin
+          { CHANGING chaine : recuperer le pointeur, copier }
           EmitI('MOV     ESI, EAX');
-          EmitI('MOV     EDI, ECX');
+          EmitI('MOV     EDI, DWORD PTR [EBP+' + IntToStr_(BP) + ']');
+          EmitI('MOV     ECX, ' + IntToStr_(StrCapFor(SymIdx)));
           EmitI('CALL    ' + AB_RT_PFX + 'STRCOPY');
         End;
       Else
+        { CHANGING numerique : ecrire a travers le pointeur }
+        EmitI('MOV     ECX, DWORD PTR [EBP+' + IntToStr_(BP) + ']');
         EmitI('MOV     DWORD PTR [ECX], EAX');
       End;
     End
@@ -2932,6 +3161,7 @@ Begin
         Begin
           EmitI('MOV     ESI, EAX');
           EmitI('LEA     EDI, [EBP+' + IntToStr_(BP) + ']');
+          EmitI('MOV     ECX, ' + IntToStr_(StrCapFor(SymIdx)));
           EmitI('CALL    ' + AB_RT_PFX + 'STRCOPY');
         End;
       Else
@@ -2949,6 +3179,7 @@ Begin
         EmitI('LEA     EDI, [EBP' + IntToStr_(BP) + ']')
       Else
         EmitI('LEA     EDI, [' + Lbl + ']');
+      EmitI('MOV     ECX, ' + IntToStr_(StrCapFor(SymIdx)));
       EmitI('CALL    ' + AB_RT_PFX + 'STRCOPY');
     End;
   Else
@@ -2957,6 +3188,50 @@ Begin
       EmitI('MOV     DWORD PTR [EBP' + IntToStr_(BP) + '], EAX')
     Else
       EmitI('MOV     DWORD PTR [' + Lbl + '], EAX');
+  End;
+End;
+
+{ ---- Pow10 : 10^N pour N >= 0 (LongInt) --------------------- }
+Function Pow10(N : Integer) : LongInt;
+Var I : Integer; R : LongInt;
+Begin
+  R := 1;
+  For I := 1 To N Do R := R * 10;
+  Pow10 := R;
+End;
+
+{ ---- GenRescaleReg : rescaler un registre (EAX ou EBX) ------
+  Multiplie par 10^(ToScale - FromScale) si delta positif,
+  divise sinon. Utilise IMUL imm32 ou IDIV EDI selon le cas.
+  Preserve tous les registres sauf le registre cible (et EDX). }
+Procedure GenRescaleReg(Const Reg : String; FromScale, ToScale : Integer);
+Var Delta : Integer; Mul : LongInt;
+Begin
+  Delta := ToScale - FromScale;
+  If Delta = 0 Then Exit;
+  If Delta > 0 Then
+  Begin
+    { Multiplier par 10^Delta }
+    Mul := Pow10(Delta);
+    EmitI('IMUL    ' + Reg + ', ' + Reg + ', ' + IntToStr_(Mul));
+  End
+  Else
+  Begin
+    { Diviser par 10^(-Delta) via IDIV EDI. Requiert Reg = EAX. }
+    Mul := Pow10(-Delta);
+    If Reg <> 'EAX' Then
+    Begin
+      EmitI('PUSH    EAX');
+      EmitI('MOV     EAX, ' + Reg);
+    End;
+    EmitI('MOV     EDI, ' + IntToStr_(Mul));
+    EmitI('CDQ');
+    EmitI('IDIV    EDI');
+    If Reg <> 'EAX' Then
+    Begin
+      EmitI('MOV     ' + Reg + ', EAX');
+      EmitI('POP     EAX');
+    End;
   End;
 End;
 
@@ -3054,11 +3329,33 @@ Begin
   End
   Else If (BName = 'LINES') Or (BName = 'lines') Then
   Begin
-    { LINES( itab ) -> stub = 0 }
-    ParseExpr;
+    { LINES( itab ) -> charger le compteur _CNT de la table interne. }
+    { Si l argument n est pas un simple identifiant de table, on     }
+    { retombe sur ParseExpr et on renvoie 0.                          }
+    If CurTokType = TOK_IDENT Then
+    Begin
+      Lbl1 := CurTokStr;           { reutilise Lbl1 comme nom temp  }
+      Lbl2 := IntToStr_(FindSym(Lbl1));
+      If (Lbl2 <> '0') And
+         (SymTab[FindSym(Lbl1)].DataType = TYPE_TABLE) Then
+      Begin
+        EmitI('MOV     EAX, DWORD PTR [' +
+              SymTab[FindSym(Lbl1)].AsmLabel + '_CNT]');
+        Consume;
+      End
+      Else
+      Begin
+        ParseExpr;
+        EmitI('XOR     EAX, EAX');
+        EmitComment('LINES( ' + Lbl1 + ' ) : non-table -> 0');
+      End;
+    End
+    Else
+    Begin
+      ParseExpr;
+      EmitI('XOR     EAX, EAX');
+    End;
     If CurTokType = TOK_RPAREN Then Consume;
-    EmitI('XOR     EAX, EAX');
-    EmitComment('LINES( itab ) stub = 0');
   End
   Else
     GenBuiltIn32 := False;
@@ -3082,12 +3379,15 @@ Begin
     TOK_NUMBER:
     Begin
       EmitI('MOV     EAX, ' + IntToStr_(CurTokNum));
+      CurExprScale := 0;
       Consume;
     End;
-    { Constante flottante (stub : partie entiere seulement) }
+    { Constante flottante : valeur scalee a CurTokScale decimales. }
+    { Pas de FPU : on manipule une valeur entiere x 10^scale.       }
     TOK_FLOAT:
     Begin
-      EmitI('MOV     EAX, ' + IntToStr_(CurTokNum) + '  ; FLOAT stub');
+      EmitI('MOV     EAX, ' + IntToStr_(CurTokNum));
+      CurExprScale := CurTokScale;
       Consume;
     End;
     { Chaine litterale }
@@ -3163,11 +3463,18 @@ Begin
           Begin
             GenLoadVar32(SymIdx);
             ParsePrimaryExpr := SymTab[SymIdx].DataType;
+            { Suivre l echelle pour les types en virgule fixe }
+            If (SymTab[SymIdx].DataType = TYPE_F) Or
+               (SymTab[SymIdx].DataType = TYPE_P) Then
+              CurExprScale := SymTab[SymIdx].DecScale
+            Else
+              CurExprScale := 0;
           End
           Else
           Begin
             EmitComment('Variable inconnue: ' + S + ' (suppose 0)');
             EmitI('XOR     EAX, EAX');
+            CurExprScale := 0;
           End;
         End;
       End;
@@ -3182,7 +3489,9 @@ End;
 
 { ---- ParseMulExpr : multiplication / division / MOD / DIV --- }
 Function ParseMulExpr : Integer;
-Var Op : Integer; IsMod, IsDiv : Boolean;
+Var Op : Integer;
+    IsMod, IsDiv : Boolean;
+    LScale, RScale, MaxScale : Integer;
 Begin
   ParseMulExpr := ParsePrimaryExpr;
   While (CurTokType = TOK_STAR) Or (CurTokType = TOK_SLASH)
@@ -3191,32 +3500,131 @@ Begin
     IsMod := TokIsKw(KW_MOD);
     IsDiv := TokIsKw(KW_DIV);
     Op := CurTokType; Consume;
+    LScale := CurExprScale;
     EmitI('PUSH    EAX');
     ParseMulExpr := ParsePrimaryExpr;
+    RScale := CurExprScale;
     EmitI('MOV     EBX, EAX');
     EmitI('POP     EAX');
     If IsMod Then
-      GenModDiv32(False)
+    Begin
+      { Aligner les echelles avant MOD entier }
+      MaxScale := LScale; If RScale > MaxScale Then MaxScale := RScale;
+      GenRescaleReg('EAX', LScale, MaxScale);
+      GenRescaleReg('EBX', RScale, MaxScale);
+      GenModDiv32(False);
+      CurExprScale := MaxScale;
+    End
     Else If IsDiv Then
-      GenModDiv32(True)
+    Begin
+      MaxScale := LScale; If RScale > MaxScale Then MaxScale := RScale;
+      GenRescaleReg('EAX', LScale, MaxScale);
+      GenRescaleReg('EBX', RScale, MaxScale);
+      GenModDiv32(True);
+      { Division entiere : resultat entier (scale 0) }
+      CurExprScale := 0;
+    End
+    Else If Op = TOK_STAR Then
+    Begin
+      { Multiplication 64 bits : IMUL EBX -> EDX:EAX = EAX * EBX.  }
+      { On garde l echelle du LHS : division par 10^RScale ensuite. }
+      EmitI('IMUL    EBX');
+      If RScale > 0 Then
+      Begin
+        EmitI('MOV     ECX, ' + IntToStr_(Pow10(RScale)));
+        EmitI('IDIV    ECX');
+      End;
+      CurExprScale := LScale;
+    End
+    Else If Op = TOK_SLASH Then
+    Begin
+      { Division exacte : pre-multiplier LHS (sur 64 bits) par      }
+      { 10^RScale pour preserver l echelle de la source.            }
+      If RScale > 0 Then
+      Begin
+        EmitI('MOV     ECX, ' + IntToStr_(Pow10(RScale)));
+        EmitI('IMUL    ECX');              { EDX:EAX = LHS * 10^rs }
+      End
+      Else
+        EmitI('CDQ');
+      EmitI('IDIV    EBX');
+      CurExprScale := LScale;
+    End
     Else
       GenBinOp32(Op);
   End;
 End;
 
-{ ---- ParseAddExpr : addition / soustraction ----------------- }
+{ ---- GenStrConcatEAX : &&, LHS=STRBUF, RHS=EAX ---------------
+  Ajoute la chaine pointee par EAX a la fin de STRBUF et retourne
+  l adresse de STRBUF dans EAX.                                    }
+Procedure GenStrConcatEAX;
+Begin
+  EmitI('MOV     ESI, EAX');
+  EmitI('LEA     EDI, [' + AB_RT_PFX + 'STRBUF]');
+  EmitI('CALL    ' + AB_RT_PFX + 'STRCONCAT');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'STRBUF]');
+End;
+
+{ ---- GenStrCopyToBuf : copier la chaine pointee par EAX vers
+  STRBUF et retourner son adresse dans EAX.                       }
+Procedure GenStrCopyToBuf;
+Begin
+  EmitI('MOV     ESI, EAX');
+  EmitI('LEA     EDI, [' + AB_RT_PFX + 'STRBUF]');
+  EmitI('MOV     ECX, 512');
+  EmitI('CALL    ' + AB_RT_PFX + 'STRCOPY');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'STRBUF]');
+End;
+
+{ ---- ParseAddExpr : addition / soustraction / && -------------
+  &&  = concatenation de chaines via STRBUF.                      }
 Function ParseAddExpr : Integer;
 Var Op : Integer;
+    LScale, RScale, MaxScale : Integer;
+    InConcat : Boolean;
 Begin
   ParseAddExpr := ParseMulExpr;
-  While (CurTokType = TOK_PLUS) Or (CurTokType = TOK_MINUS) Do
+  InConcat := False;
+  While (CurTokType = TOK_PLUS) Or (CurTokType = TOK_MINUS)
+     Or (CurTokType = TOK_CONCAT) Do
   Begin
     Op := CurTokType; Consume;
-    EmitI('PUSH    EAX');
-    ParseAddExpr := ParseMulExpr;
-    EmitI('MOV     EBX, EAX');
-    EmitI('POP     EAX');
-    GenBinOp32(Op);
+    If Op = TOK_CONCAT Then
+    Begin
+      { && : copier LHS dans STRBUF au premier &&, puis concatener }
+      { le RHS. Les && suivants ajoutent simplement au STRBUF.      }
+      If Not InConcat Then
+      Begin
+        GenStrCopyToBuf;
+        InConcat := True;
+      End;
+      EmitI('PUSH    EAX');
+      ParseMulExpr;
+      EmitI('MOV     EBX, EAX');
+      EmitI('POP     EAX');
+      { EAX = &STRBUF (toujours), EBX = adresse RHS. Concat RHS.    }
+      EmitI('MOV     EAX, EBX');
+      GenStrConcatEAX;
+      ParseAddExpr := TYPE_C;
+      CurExprScale := 0;
+    End
+    Else
+    Begin
+      LScale := CurExprScale;
+      EmitI('PUSH    EAX');
+      ParseAddExpr := ParseMulExpr;
+      RScale := CurExprScale;
+      EmitI('MOV     EBX, EAX');
+      EmitI('POP     EAX');
+      { ADD/SUB : aligner les echelles. }
+      MaxScale := LScale; If RScale > MaxScale Then MaxScale := RScale;
+      If LScale <> MaxScale Then GenRescaleReg('EAX', LScale, MaxScale);
+      If RScale <> MaxScale Then GenRescaleReg('EBX', RScale, MaxScale);
+      GenBinOp32(Op);
+      CurExprScale := MaxScale;
+      InConcat := False;
+    End;
   End;
 End;
 
@@ -3276,7 +3684,8 @@ Begin
     Else If TokIsKw(KW_BOUND) Then
     Begin
       Consume;
-      EmitComment('IS BOUND stub = vrai');
+      { Toutes les variables declarees dans ce compilo sont allouees }
+      { statiquement ou sur la pile : IS BOUND vaut donc toujours 1. }
       If IsNot Then EmitI('XOR     EAX, EAX')
       Else          EmitI('MOV     EAX, 1');
     End
@@ -3312,13 +3721,44 @@ Begin
     EmitI('XOR     EAX, EAX');
     EmitLabel(Lbl_E);
   End
-  { IN (stub) }
+  { IN sel : test var entre sel-LOW et sel-HIGH (SELECT-OPTIONS). }
+  { Si le nom donne apres IN n est pas une select-option connue,    }
+  { on retombe sur un test qui renvoie 0 (faux).                    }
   Else If TokIsKw(KW_IN) Then
   Begin
     Consume;
-    If CurTokType = TOK_IDENT Then Consume;
-    EmitComment('IN set stub = faux');
-    EmitI('XOR     EAX, EAX');
+    If CurTokType = TOK_IDENT Then
+    Begin
+      Lbl_F := CurTokStr;          { nom du select-option           }
+      Kw    := FindSym(Lbl_F + '-LOW');
+      Op    := FindSym(Lbl_F + '-HIGH');
+      Consume;
+      If (Kw > 0) And (Op > 0) Then
+      Begin
+        Lbl_E := NewLabel;
+        EmitI('MOV     EBX, DWORD PTR [' + SymTab[Kw].AsmLabel + ']');
+        EmitI('CMP     EAX, EBX');
+        EmitI('JL      ' + Lbl_E + '_F');
+        EmitI('MOV     EBX, DWORD PTR [' + SymTab[Op].AsmLabel + ']');
+        EmitI('CMP     EAX, EBX');
+        EmitI('JG      ' + Lbl_E + '_F');
+        EmitI('MOV     EAX, 1');
+        EmitI('JMP     ' + Lbl_E);
+        EmitLabel(Lbl_E + '_F');
+        EmitI('XOR     EAX, EAX');
+        EmitLabel(Lbl_E);
+      End
+      Else
+      Begin
+        EmitComment('IN ' + Lbl_F + ' : select-option inconnu -> faux');
+        EmitI('XOR     EAX, EAX');
+      End;
+    End
+    Else
+    Begin
+      If CurTokType = TOK_IDENT Then Consume;
+      EmitI('XOR     EAX, EAX');
+    End;
   End;
 End;
 
@@ -3462,6 +3902,14 @@ Begin
   { DELETE itab (TODO 16) }
   If TokIsKw(KW_DELETE) Then
   Begin Consume; ParseDeleteTable; Exit; End;
+
+  { INSERT wa INTO itab INDEX i (TODO 16) }
+  If TokIsKw(KW_INSERT) Then
+  Begin Consume; ParseInsertTable; Exit; End;
+
+  { MODIFY itab FROM wa INDEX i (TODO 16) }
+  If TokIsKw(KW_MODIFY) Then
+  Begin Consume; ParseModifyTable; Exit; End;
 
   { CONCATENATE s1 s2 ... INTO dest (TODO 17) }
   If TokIsKw(KW_CONCATENATE) Then
@@ -4184,6 +4632,10 @@ Begin
   { Prologue Win32 STDCALL }
   EmitI('PUSH    EBP');
   EmitI('MOV     EBP, ESP');
+  { Reserver 512 octets pour variables locales (DATA: ... dans FORM).  }
+  { Sans SUB ESP, les PUSH d arguments de PERFORM ecrasent les locales  }
+  { lues juste apres (cause de recursions infinies / stack overflow).   }
+  EmitI('SUB     ESP, 512');
 
   { Entrer le scope FORM }
   EnterScope(SK_FORM, FIdx);
@@ -4244,15 +4696,61 @@ End;
 { a gauche, la FORM depile avec RET n.                            }
 { ============================================================ }
 Procedure ParsePerform;
+Type
+  TPerfArg = Record
+    Kind    : Integer;    { 0=ident, 1=number, 2=string }
+    StrVal  : TString;    { nom ident ou texte litteral }
+    NumVal  : LongInt;    { valeur si Kind=1 }
+  End;
 Var
   FormName : TString;
   FIdx     : Integer;
-  UNames   : Array[1..MAX_PARAM] of TString;
-  CNames   : Array[1..MAX_PARAM] of TString;
+  UArgs    : Array[1..MAX_PARAM] of TPerfArg;
+  CArgs    : Array[1..MAX_PARAM] of TPerfArg;
   UCount   : Integer;
   CCount   : Integer;
   I        : Integer;
   SymIdx   : Integer;
+
+  Procedure ReadArg(Var A : TPerfArg);
+  Begin
+    A.Kind   := 0;
+    A.StrVal := '';
+    A.NumVal := 0;
+    If CurTokType = TOK_NUMBER Then
+    Begin
+      A.Kind   := 1;
+      A.NumVal := CurTokNum;
+      A.StrVal := CurTokStr;
+      Consume;
+    End
+    Else If CurTokType = TOK_MINUS Then
+    Begin
+      Consume;
+      If CurTokType = TOK_NUMBER Then
+      Begin
+        A.Kind   := 1;
+        A.NumVal := -CurTokNum;
+        A.StrVal := '-' + CurTokStr;
+        Consume;
+      End;
+    End
+    Else If CurTokType = TOK_STRING Then
+    Begin
+      A.Kind   := 2;
+      A.StrVal := CurTokStr;
+      Consume;
+    End
+    Else If CurTokType = TOK_IDENT Then
+    Begin
+      A.Kind   := 0;
+      A.StrVal := CurTokStr;
+      Consume;
+    End
+    Else
+      Consume;   { token inattendu : le consommer pour eviter boucle }
+  End;
+
 Begin
   EmitComment('---- PERFORM ----');
 
@@ -4277,8 +4775,8 @@ Begin
           (Not TokIsKw(KW_CHANGING)) Do
     Begin
       Inc(UCount);
-      UNames[UCount] := CurTokStr;
-      Consume;
+      If UCount > MAX_PARAM Then Begin Consume; Continue; End;
+      ReadArg(UArgs[UCount]);
     End;
   End;
 
@@ -4289,8 +4787,8 @@ Begin
     While (CurTokType <> TOK_DOT) And (CurTokType <> TOK_EOF) Do
     Begin
       Inc(CCount);
-      CNames[CCount] := CurTokStr;
-      Consume;
+      If CCount > MAX_PARAM Then Begin Consume; Continue; End;
+      ReadArg(CArgs[CCount]);
     End;
   End;
 
@@ -4298,33 +4796,53 @@ Begin
   { D abord CHANGING de droite a gauche }
   For I := CCount DownTo 1 Do
   Begin
-    SymIdx := FindSym(CNames[I]);
-    If SymIdx > 0 Then
+    If CArgs[I].Kind <> 0 Then
     Begin
-      GenLoadVarAddr32(SymIdx);
-      EmitI('PUSH    EAX');
+      EmitComment('CHANGING arg litteral non supporte (doit etre une variable): ' + CArgs[I].StrVal);
+      EmitI('PUSH    0');
     End
     Else
     Begin
-      EmitComment('CHANGING arg inconnu: ' + CNames[I]);
-      EmitI('PUSH    0');
+      SymIdx := FindSym(CArgs[I].StrVal);
+      If SymIdx > 0 Then
+      Begin
+        GenLoadVarAddr32(SymIdx);
+        EmitI('PUSH    EAX');
+      End
+      Else
+      Begin
+        EmitComment('CHANGING arg inconnu: ' + CArgs[I].StrVal);
+        EmitI('PUSH    0');
+      End;
     End;
   End;
 
   { Puis USING de droite a gauche }
   For I := UCount DownTo 1 Do
   Begin
-    SymIdx := FindSym(UNames[I]);
-    If SymIdx > 0 Then
+    If UArgs[I].Kind = 1 Then
     Begin
-      GenLoadVar32(SymIdx);
-      EmitI('PUSH    EAX');
+      { Litteral numerique : empiler la valeur immediate }
+      EmitI('PUSH    ' + IntToStr_(UArgs[I].NumVal));
+    End
+    Else If UArgs[I].Kind = 2 Then
+    Begin
+      { Litteral chaine : empiler l adresse du literal }
+      EmitI('PUSH    OFFSET ' + AddStringLit(UArgs[I].StrVal));
     End
     Else
     Begin
-      { Tenter un nombre literal }
-      EmitComment('USING arg: ' + UNames[I] + ' (comme literal)');
-      EmitI('PUSH    0');
+      SymIdx := FindSym(UArgs[I].StrVal);
+      If SymIdx > 0 Then
+      Begin
+        GenLoadVar32(SymIdx);
+        EmitI('PUSH    EAX');
+      End
+      Else
+      Begin
+        EmitComment('USING arg inconnu: ' + UArgs[I].StrVal);
+        EmitI('PUSH    0');
+      End;
     End;
   End;
 
@@ -4852,15 +5370,27 @@ End;
 { ============================================================ }
 
 { ---- ParseCallFunction : CALL FUNCTION 'nom' ---------------  }
-{ Stub : pas d appel reel.                                       }
 {   - Parse les clauses EXPORTING / IMPORTING / TABLES /         }
-{     EXCEPTIONS.                                                }
-{   - Emet un commentaire de stub.                                }
-{   - Positionne SY-SUBRC = 0.                                   }
+{     EXCEPTIONS (les parametres sont actuellement ignores).     }
+{   - Si la FUNCTION est definie dans le meme fichier, emet un   }
+{     vrai CALL sur son label _ABF_FM_xxx (Win32 STDCALL).       }
+{   - Sinon (module externe), resolution dynamique sans linker : }
+{        LoadLibraryA("NOM_FM.DLL") puis                          }
+{        GetProcAddress(h, "NOM_FM").                             }
+{     Convention :                                                }
+{       - DLL attendue : <NOM_FM>.DLL (nom du FM en majuscules).  }
+{       - Export attendu : <NOM_FM> en ASCIIZ non decore         }
+{         (cdecl ou stdcall sans arguments pour l instant :      }
+{         le marshalling des EXPORTING/IMPORTING/TABLES vers     }
+{         la FM externe n est pas encore genere).                 }
+{       - SY-SUBRC = 0 si l appel a eu lieu, 4 sinon (DLL ou     }
+{         export introuvable).                                    }
 { ============================================================ }
 Procedure ParseCallFunction;
 Var FMName      : TString;
     SySubrcIdx  : Integer;
+    FIdx        : Integer;
+    DllLbl, FnLbl, LblErr, LblEnd : TString;
 Begin
   { On attend FUNCTION apres CALL }
   If Not TokIsKw(KW_FUNCTION) Then
@@ -4881,7 +5411,11 @@ Begin
   End;
 
   EmitBlank;
-  EmitComment('---- CALL FUNCTION ' + FMName + ' (stub) ----');
+  FIdx := FindForm(FMName);
+  If (FIdx > 0) And FormTab[FIdx].IsFunction And FormTab[FIdx].Defined Then
+    EmitComment('---- CALL FUNCTION ' + FMName + ' ----')
+  Else
+    EmitComment('---- CALL FUNCTION ' + FMName + ' (stub externe) ----');
 
   { Parser les clauses optionnelles avant le point terminal }
   While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) Do
@@ -4943,10 +5477,54 @@ Begin
       Consume;
   End;
 
-  { SY-SUBRC = 0 (appel reussi en stub) }
-  SySubrcIdx := FindSym('SY-SUBRC');
-  If SySubrcIdx > 0 Then
-    EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 0');
+  { Si la FUNCTION est definie localement, emet un vrai CALL.      }
+  { Sinon, resoudre dynamiquement via LoadLibraryA + GetProcAddress }
+  { (pas de linker : le symbole externe n est pas connu a la        }
+  { compilation). Convention : la FM 'NOM' est exportee par        }
+  { 'NOM.DLL' sous le nom 'NOM' (cdecl ou stdcall sans arguments).  }
+  If (FIdx > 0) And FormTab[FIdx].IsFunction And FormTab[FIdx].Defined Then
+    EmitI('CALL    ' + FormTab[FIdx].AsmLabel)
+  Else
+  Begin
+    { Chaines ASCIIZ pour LoadLibraryA / GetProcAddress }
+    DllLbl := AddStringLit(StrUpperCase(FMName) + '.DLL');
+    FnLbl  := AddStringLit(StrUpperCase(FMName));
+    LblErr := NewLabel;
+    LblEnd := NewLabel;
+    { hModule = LoadLibraryA(lpLibFileName) }
+    EmitI('PUSH    OFFSET ' + DllLbl);
+    EmitI('CALL    _LoadLibraryA@4');
+    EmitI('TEST    EAX, EAX');
+    EmitI('JZ      ' + LblErr);
+    { proc = GetProcAddress(hModule, lpProcName) }
+    EmitI('PUSH    OFFSET ' + FnLbl);
+    EmitI('PUSH    EAX');
+    EmitI('CALL    _GetProcAddress@8');
+    EmitI('TEST    EAX, EAX');
+    EmitI('JZ      ' + LblErr);
+    { Appel : stub sans arguments (marshalling EXPORTING/IMPORTING   }
+    { non encore implemente pour FM externes).                       }
+    EmitI('CALL    EAX');
+    { SY-SUBRC = 0 }
+    SySubrcIdx := FindSym('SY-SUBRC');
+    If SySubrcIdx > 0 Then
+      EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 0');
+    EmitI('JMP     ' + LblEnd);
+    EmitLabel(LblErr);
+    { Erreur de chargement/resolution : SY-SUBRC = 4 }
+    SySubrcIdx := FindSym('SY-SUBRC');
+    If SySubrcIdx > 0 Then
+      EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 4');
+    EmitLabel(LblEnd);
+  End;
+
+  { SY-SUBRC = 0 pour l appel local (l externe est deja pose) }
+  If (FIdx > 0) And FormTab[FIdx].IsFunction And FormTab[FIdx].Defined Then
+  Begin
+    SySubrcIdx := FindSym('SY-SUBRC');
+    If SySubrcIdx > 0 Then
+      EmitI('MOV     DWORD PTR [' + SymTab[SySubrcIdx].AsmLabel + '], 0');
+  End;
 
   { Consommer le point terminal }
   If CurTokType = TOK_DOT Then Consume;
@@ -4961,6 +5539,7 @@ Var FuncName    : TString;
     AsmLbl      : TString;
     LblSkip     : TString;
     LblEpi      : TString;
+    FIdx        : Integer;
 Begin
   EmitComment('---- FUNCTION ----');
 
@@ -4971,6 +5550,16 @@ Begin
   Consume;
 
   AsmLbl := AB_FN_PFX + 'FM_' + AsmIdent(FuncName);
+
+  { Enregistrer la FUNCTION dans FormTab (avec le bon AsmLabel)    }
+  { pour que CALL FUNCTION puisse resoudre le symbole localement.  }
+  FIdx := AddForm(FuncName);
+  If FIdx > 0 Then
+  Begin
+    FormTab[FIdx].AsmLabel   := AsmLbl;
+    FormTab[FIdx].IsFunction := True;
+    FormTab[FIdx].Defined    := True;
+  End;
 
   { Consommer le point }
   If CurTokType = TOK_DOT Then Consume
@@ -5037,51 +5626,140 @@ Begin
 End;
 
 { ---- ParseTry : TRY. ... CATCH cx. ... [CLEANUP.] ENDTRY. -- }
-{ Stub : parser les blocs avec labels _ABX_catch/_ABX_cleanup   }
+{ Implantation reelle avec runtime d exceptions :               }
+{   - A TRY : empiler [handler_addr, EBP, prev_chain] et        }
+{     enregistrer [_AB_EXC_HANDLER] = ESP.                      }
+{   - A la fin du corps (pas d exception) : derouler la chaine  }
+{     et sauter au label _ABX_end_N.                            }
+{   - _ABX_disp_N : dispatcher, compare [_AB_EXC_TYPE] (ASCIIZ) }
+{     au nom de chaque CATCH via _ABRT_STRCMPI. Si aucun match, }
+{     execute CLEANUP puis re-raise.                            }
+{   - Un CATCH sans classe ou avec CX_ROOT capture tout.        }
 { ============================================================ }
 Procedure ParseTry;
 Var TryIdx  : Integer;
     TryLbl  : TString;
+    DispLbl : TString;
+    EndLbl  : TString;
+    NextLbl : TString;    { label de la prochaine alternative CATCH }
+    CatchIdx: Integer;
+    ClsName : TString;
+    ClsLbl  : TString;
+    HasCleanup : Boolean;
 Begin
   Inc(TryCount);
   TryIdx := TryCount;
   TryLbl := IntToStr_(TryIdx);
-  EmitComment('---- TRY #' + TryLbl + ' (stub) ----');
+  DispLbl := '_ABX_disp_' + TryLbl;
+  EndLbl  := '_ABX_end_'  + TryLbl;
+  EmitComment('---- TRY #' + TryLbl + ' ----');
 
   { Consommer le point apres TRY }
   If CurTokType = TOK_DOT Then Consume;
 
+  { Prologue : enregistrer un cadre de handler sur la pile.      }
+  { Layout (du haut vers le bas de la pile apres les 3 PUSH) :   }
+  {   [ESP+0] chain prev = ancien [_AB_EXC_HANDLER]              }
+  {   [ESP+4] EBP sauve                                          }
+  {   [ESP+8] adresse du dispatcher                              }
+  EmitI('PUSH    OFFSET ' + DispLbl);
+  EmitI('PUSH    EBP');
+  EmitI('PUSH    DWORD PTR [_AB_EXC_HANDLER]');
+  EmitI('MOV     DWORD PTR [_AB_EXC_HANDLER], ESP');
+
   { Corps du TRY : parser jusqu a CATCH, CLEANUP ou ENDTRY }
   ParseBlock(KW_CATCH, KW_CLEANUP, KW_ENDTRY);
 
-  { CATCH cx_name. ... (TODO 24: label _ABX_catch_N) }
+  { Sortie normale : derouler la chaine et sauter en fin de TRY. }
+  EmitI('MOV     ESP, DWORD PTR [_AB_EXC_HANDLER]');
+  EmitI('POP     DWORD PTR [_AB_EXC_HANDLER]');
+  EmitI('POP     EBP');
+  EmitI('ADD     ESP, 4');          { jeter l adresse du dispatcher }
+  EmitI('JMP     ' + EndLbl);
+
+  { ---- Dispatcher : entre via RET depuis _ABRT_RAISE ------- }
+  { A ce point [_AB_EXC_HANDLER] pointe deja sur le handler du }
+  { TRY englobant (restaure avant le RET par _ABRT_RAISE).     }
+  EmitBlank;
+  EmitLabel(DispLbl);
+
+  CatchIdx := 0;
+  NextLbl  := '';
+  { Parser toutes les clauses CATCH : chaque CATCH devient      }
+  {   <NextLbl>:  ; (sauf pour le premier qui est le disp label) }
+  {     CMP classe  (sauf si CATCH sans classe / CX_ROOT)        }
+  {     JNE <NextLbl_i+1>                                        }
+  {     <corps>                                                  }
+  {     JMP <EndLbl>                                             }
   While TokIsKw(KW_CATCH) Do
   Begin
-    EmitLabel('_ABX_catch_' + TryLbl);
-    EmitComment('CATCH (stub)');
+    If NextLbl <> '' Then
+      EmitLabel(NextLbl);
+    NextLbl := '_ABX_next_' + TryLbl + '_' + IntToStr_(CatchIdx);
+
     Consume; { CATCH }
-    { Nom de la classe exception : consommer }
-    If CurTokType = TOK_IDENT Then Consume;
-    { Possible INTO var }
+    { Nom de la classe exception (optionnel - defaut = catch-all) }
+    ClsName := '';
+    If CurTokType = TOK_IDENT Then
+    Begin
+      ClsName := StrUpperCase(CurTokStr);
+      Consume;
+    End;
+    { Possible INTO var : consommer (non implemente) }
     If TokIsKw(KW_INTO) Then
     Begin
       Consume;
       If CurTokType = TOK_IDENT Then Consume;
     End;
     If CurTokType = TOK_DOT Then Consume;
+
+    { Emission de la comparaison de type. CX_ROOT = catch-all.   }
+    EmitComment('CATCH ' + ClsName);
+    EmitLabel('_ABX_catch_' + TryLbl + '_' + IntToStr_(CatchIdx));
+    If (ClsName <> '') And (ClsName <> 'CX_ROOT') Then
+    Begin
+      ClsLbl := AddStringLit(ClsName);
+      EmitI('MOV     EDI, DWORD PTR [_AB_EXC_TYPE]');
+      EmitI('TEST    EDI, EDI');
+      EmitI('JZ      ' + NextLbl);    { type absent -> pas de match }
+      EmitI('LEA     ESI, [' + ClsLbl + ']');
+      EmitI('CALL    ' + AB_RT_PFX + 'STRCMPI');
+      EmitI('JNE     ' + NextLbl);
+    End;
+
     { Corps du CATCH }
     ParseBlock(KW_CATCH, KW_CLEANUP, KW_ENDTRY);
+
+    { Fin normale du CATCH -> aller a la fin du TRY }
+    EmitI('JMP     ' + EndLbl);
+    Inc(CatchIdx);
   End;
 
-  { CLEANUP. ... (TODO 24: label _ABX_cleanup_N) }
+  { Pas de CATCH correspondant : executer CLEANUP si present,    }
+  { puis propager l exception au TRY englobant.                  }
+  HasCleanup := False;
+  If NextLbl <> '' Then
+    EmitLabel(NextLbl)
+  Else
+  Begin
+    { TRY sans aucun CATCH : le dispatcher tombe directement ici  }
+    { -> CLEANUP + re-raise.                                      }
+  End;
+
   If TokIsKw(KW_CLEANUP) Then
   Begin
+    HasCleanup := True;
     EmitLabel('_ABX_cleanup_' + TryLbl);
-    EmitComment('CLEANUP (stub)');
+    EmitComment('CLEANUP');
     Consume;
     If CurTokType = TOK_DOT Then Consume;
     ParseBlock(KW_ENDTRY, KW_NONE, KW_NONE);
   End;
+
+  { Propagation (re-raise) vers le TRY englobant / handler ext.  }
+  EmitComment('---- re-raise TRY #' + TryLbl + ' ----');
+  EmitI('CALL    ' + AB_RT_PFX + 'RAISE');
+  If Not HasCleanup Then EmitBlank;
 
   { ENDTRY. }
   If TokIsKw(KW_ENDTRY) Then
@@ -5092,17 +5770,54 @@ Begin
   Else
     LexError('ENDTRY attendu');
 
-  EmitComment('---- FIN TRY #' + TryLbl + ' (stub) ----');
+  EmitLabel(EndLbl);
+  EmitComment('---- FIN TRY #' + TryLbl + ' ----');
 End;
 
 { ---- ParseRaise : RAISE [EXCEPTION [TYPE cx_name]]. --------- }
-{ Stub : consomme la ligne, emet un commentaire                  }
+{ Positionne [_AB_EXC_TYPE] puis appelle _ABRT_RAISE qui deroule }
+{ la pile et saute au dispatcher du TRY actif.                   }
 { ============================================================ }
 Procedure ParseRaise;
+Var ClsName : TString;
+    ClsLbl  : TString;
 Begin
-  EmitComment('---- RAISE (stub) ----');
-  { RAISE [EXCEPTION [TYPE cx_name [MESSAGE ...]]] }
-  { Consommer tout jusqu au point }
+  ClsName := '';
+
+  { RAISE EXCEPTION [TYPE cx_name [MESSAGE ...]] }
+  If TokIsKw(KW_EXCEPTION) Then
+  Begin
+    Consume;
+    If TokIsKw(KW_TYPE) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_IDENT Then
+      Begin
+        ClsName := StrUpperCase(CurTokStr);
+        Consume;
+      End;
+    End;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    { RAISE nom_exception. (forme FUNCTION : nom d exception legacy) }
+    ClsName := StrUpperCase(CurTokStr);
+    Consume;
+  End;
+
+  { Positionner [_AB_EXC_TYPE] = OFFSET nom ou 0 }
+  If ClsName <> '' Then
+  Begin
+    ClsLbl := AddStringLit(ClsName);
+    EmitI('MOV     DWORD PTR [_AB_EXC_TYPE], OFFSET ' + ClsLbl);
+  End
+  Else
+    EmitI('MOV     DWORD PTR [_AB_EXC_TYPE], 0');
+
+  EmitComment('---- RAISE ' + ClsName + ' ----');
+  EmitI('CALL    ' + AB_RT_PFX + 'RAISE');
+
+  { Consommer le reste jusqu au point (MESSAGE, WITH, etc.) }
   SkipToDot;
 End;
 
@@ -5128,8 +5843,13 @@ Begin
   { Consommer le point }
   If CurTokType = TOK_DOT Then Consume;
 
-  { START-OF-SELECTION et END-OF-SELECTION : label + bloc + RET }
-  If (EventKw = KW_START_OF_SEL) Or (EventKw = KW_END_OF_SEL) Then
+  { START-OF-SELECTION, END-OF-SELECTION, TOP-OF-PAGE, END-OF-PAGE : }
+  { tous ont la meme forme : label + bloc + RET, entoure d un JMP.   }
+  { Pour les autres evenements (LINE_SEL, USER_CMD...), emettre un   }
+  { simple stub label + RET protege par un JMP pour ne pas casser le }
+  { flux sequentiel du main.                                         }
+  If (EventKw = KW_START_OF_SEL) Or (EventKw = KW_END_OF_SEL) Or
+     (EventKw = KW_TOP_OF_PAGE)  Or (EventKw = KW_END_OF_PAGE) Then
   Begin
     SkipLbl := NewLabel;
     EmitBlank;
@@ -5139,8 +5859,12 @@ Begin
     { Marquer l evenement comme defini }
     If EventKw = KW_START_OF_SEL Then
       EventStartDefined := True
-    Else
-      EventEndDefined := True;
+    Else If EventKw = KW_END_OF_SEL Then
+      EventEndDefined := True
+    Else If EventKw = KW_TOP_OF_PAGE Then
+      EventTopPageDefined := True
+    Else If EventKw = KW_END_OF_PAGE Then
+      EventEndPageDefined := True;
     { Parser le corps : instructions jusqu au prochain evenement, }
     { FORM, FUNCTION ou fin de fichier                            }
     While (CurTokType <> TOK_EOF) And
@@ -5154,34 +5878,47 @@ Begin
   End
   Else
   Begin
-    { Autres evenements : stub vide (label seul) }
+    { AT LINE-SELECTION / AT USER-COMMAND : meme traitement que les }
+    { autres evenements. Label + corps + RET, protege par un JMP    }
+    { pour ne pas casser le flux sequentiel du main.                }
+    SkipLbl := NewLabel;
     EmitBlank;
-    EmitComment('---- EVENT ' + LblName + ' (stub) ----');
+    EmitComment('---- EVENT ' + LblName + ' ----');
+    EmitI('JMP     ' + SkipLbl);
     EmitLabel(LblName);
+    While (CurTokType <> TOK_EOF) And
+          (Not IsEventKeyword) And
+          (Not TokIsKw(KW_FORM)) And
+          (Not TokIsKw(KW_FUNCTION)) Do
+      ParseStatement;
     EmitI('RET');
+    EmitLabel(SkipLbl);
   End;
 End;
 
-{ ---- ParseSelScreen : PARAMETERS / SELECT-OPTIONS (stubs) --- }
+{ ---- ParseSelScreen : PARAMETERS / SELECT-OPTIONS ----------- }
 { PARAMETERS p TYPE I [DEFAULT val].                             }
-{   -> generer variable globale (DD) + valeur par defaut         }
+{   -> declarer la variable globale et lui affecter la valeur    }
+{      DEFAULT si une est donnee (via MOV runtime).              }
 { SELECT-OPTIONS s FOR var.                                      }
-{   -> stub : generer deux variables LOW / HIGH (DD)             }
+{   -> generer deux variables globales LOW / HIGH (DD).          }
 { ============================================================ }
 Procedure ParseSelScreen(IsParam : Boolean);
 Var ParName : TString;
     DefVal  : LongInt;
     Idx     : Integer;
+    HasDef  : Boolean;
 Begin
   If IsParam Then
   Begin
-    EmitComment('---- PARAMETERS (stub) ----');
+    EmitComment('---- PARAMETERS ----');
     { PARAMETERS p TYPE I [DEFAULT val]. }
     If CurTokType <> TOK_IDENT Then
     Begin LexError('Nom attendu apres PARAMETERS'); SkipToDot; Exit; End;
     ParName := CurTokStr;
     Consume;
     DefVal := 0;
+    HasDef := False;
     { Parser TYPE t optionnel }
     If TokIsKw(KW_TYPE) Then
     Begin
@@ -5201,6 +5938,7 @@ Begin
       If CurTokType = TOK_NUMBER Then
       Begin
         DefVal := CurTokNum;
+        HasDef := True;
         Consume;
       End
       Else If CurTokType = TOK_STRING Then
@@ -5215,6 +5953,10 @@ Begin
       Idx := AddSym(ParName, TYPE_I, STORE_STATIC);
       EmitComment('PARAM ' + ParName + ' = ' + IntToStr_(DefVal));
     End;
+    { Affecter la valeur DEFAULT au runtime (TYPE I seulement) }
+    If HasDef And (Idx > 0) Then
+      EmitI('MOV     DWORD PTR [' + SymTab[Idx].AsmLabel +
+            '], ' + IntToStr_(DefVal));
     { Consommer le point }
     If CurTokType = TOK_DOT Then Consume;
   End
@@ -5599,10 +6341,15 @@ Begin
 End;
 
 { ---- ParseSort : SORT itab [BY champ] [ASCENDING|DESCENDING].- }
-{ Stub : emet un commentaire (tri non implemente en runtime).     }
+{ Implemente : tri a bulles sur les entiers 32 bits (DD).         }
+{ Generation : boucle externe i=0..CNT-2, boucle interne j, swap  }
+{ si ordre incorrect (ASCENDING par defaut, DESCENDING si option).}
 Procedure ParseSort;
-Var TabName : TString;
-    TabIdx  : Integer;
+Var TabName       : TString;
+    TabIdx        : Integer;
+    TabLbl        : TString;
+    Descending    : Boolean;
+    LblOuter, LblOuterEnd, LblInner, LblInnerEnd, LblNoSwap : TString;
 Begin
   EmitComment('SORT');
 
@@ -5612,21 +6359,260 @@ Begin
   TabIdx  := FindSym(TabName);
   Consume;
 
-  If TabIdx > 0 Then
-    EmitComment('SORT ' + TabName + ' (stub - tri non implemente)')
-  Else
-    EmitComment('SORT: table inconnue: ' + TabName);
-
   { Consommer les options BY / ASCENDING / DESCENDING }
   If TokIsKw(KW_BY) Then
   Begin
     Consume;
     If CurTokType = TOK_IDENT Then Consume;
   End;
+  Descending := False;
   If TokIsKw(KW_ASCENDING) Then Consume;
-  If TokIsKw(KW_DESCENDING) Then Consume;
+  If TokIsKw(KW_DESCENDING) Then Begin Consume; Descending := True; End;
 
   If CurTokType = TOK_DOT Then Consume;
+
+  If TabIdx = 0 Then
+  Begin
+    EmitComment('SORT: table inconnue: ' + TabName);
+    Exit;
+  End;
+  TabLbl := SymTab[TabIdx].AsmLabel;
+
+  LblOuter    := NewLabel + '_SO';
+  LblOuterEnd := NewLabel + '_SOE';
+  LblInner    := NewLabel + '_SI';
+  LblInnerEnd := NewLabel + '_SIE';
+  LblNoSwap   := NewLabel + '_SN';
+
+  { Tri a bulles sur les 32 bits : Contexte :                      }
+  {   ESI = i (boucle externe), EDI = j (boucle interne)           }
+  {   EBX = &_ABA_xxx_DATA                                         }
+  {   CNT = [TabLbl + '_CNT']                                      }
+  { Algo : For i:=0 To CNT-2 Do For j:=0 To CNT-2-i Do             }
+  {        If data[j] > data[j+1] Then swap (ASCENDING)            }
+  EmitI('LEA     EBX, [' + TabLbl + '_DATA]');
+  EmitI('XOR     ESI, ESI');                { i = 0 }
+EmitLabel(LblOuter);
+  EmitI('MOV     EAX, DWORD PTR [' + TabLbl + '_CNT]');
+  EmitI('DEC     EAX');                      { CNT-1 }
+  EmitI('CMP     ESI, EAX');
+  EmitI('JGE     ' + LblOuterEnd);          { i >= CNT-1 : fin }
+  EmitI('XOR     EDI, EDI');                { j = 0 }
+EmitLabel(LblInner);
+  EmitI('MOV     EAX, DWORD PTR [' + TabLbl + '_CNT]');
+  EmitI('DEC     EAX');
+  EmitI('SUB     EAX, ESI');                { CNT-1-i }
+  EmitI('CMP     EDI, EAX');
+  EmitI('JGE     ' + LblInnerEnd);          { j >= CNT-1-i : fin inner }
+  { Comparer data[j] avec data[j+1] }
+  EmitI('MOV     EAX, DWORD PTR [EBX + EDI*4]');
+  EmitI('MOV     ECX, DWORD PTR [EBX + EDI*4 + 4]');
+  EmitI('CMP     EAX, ECX');
+  If Descending Then
+    EmitI('JGE     ' + LblNoSwap)            { DESC: swap si EAX < ECX }
+  Else
+    EmitI('JLE     ' + LblNoSwap);           { ASC : swap si EAX > ECX }
+  { Swap : EAX<->ECX }
+  EmitI('MOV     DWORD PTR [EBX + EDI*4], ECX');
+  EmitI('MOV     DWORD PTR [EBX + EDI*4 + 4], EAX');
+EmitLabel(LblNoSwap);
+  EmitI('INC     EDI');
+  EmitI('JMP     ' + LblInner);
+EmitLabel(LblInnerEnd);
+  EmitI('INC     ESI');
+  EmitI('JMP     ' + LblOuter);
+EmitLabel(LblOuterEnd);
+End;
+
+{ ---- ParseInsertTable : INSERT wa INTO itab [INDEX i]. -------- }
+{ INSERT wa INTO itab INDEX i : insere wa a la position i (1-base)}
+{ Generation : decaler data[i..CNT-1] vers data[i+1..CNT],        }
+{   stocker wa dans data[i-1], incrementer CNT.                   }
+Procedure ParseInsertTable;
+Var TabName, WaName : TString;
+    TabIdx, WaIdx   : Integer;
+    TabLbl          : TString;
+    LblShift, LblShiftEnd : TString;
+    HasSource       : Boolean;
+Begin
+  EmitComment('INSERT');
+
+  HasSource := False;
+  WaIdx     := 0;
+  WaName    := '';
+  TabIdx    := 0;
+  TabName   := '';
+
+  { INSERT wa INTO itab [INDEX i]. ou INSERT itab INDEX i. }
+  If CurTokType <> TOK_IDENT Then
+  Begin LexError('Nom attendu apres INSERT'); SkipToDot; Exit; End;
+
+  { Premier identifiant : wa ou itab }
+  WaName := CurTokStr;
+  WaIdx  := FindSym(WaName);
+  Consume;
+
+  If TokIsKw(KW_INTO) Then
+  Begin
+    Consume;
+    HasSource := True;
+    If CurTokType <> TOK_IDENT Then
+    Begin LexError('Nom de table attendu apres INTO'); SkipToDot; Exit; End;
+    TabName := CurTokStr;
+    TabIdx  := FindSym(TabName);
+    Consume;
+  End
+  Else
+  Begin
+    { Forme INSERT itab INDEX i (insere 0) }
+    TabName := WaName;
+    TabIdx  := WaIdx;
+    WaIdx   := 0;
+    HasSource := False;
+  End;
+
+  { Sauvegarder la valeur source dans EDX avant de calculer l index }
+  If HasSource And (WaIdx > 0) Then
+  Begin
+    GenLoadVar32(WaIdx);
+    EmitI('PUSH    EAX');           { sauvegarder la valeur source }
+  End
+  Else
+    EmitI('PUSH    0');              { valeur par defaut = 0 }
+
+  { INDEX i : evalue l index 1-base (defaut = CNT+1 = append) }
+  If TokIsKw(KW_INDEX) Then
+  Begin
+    Consume;
+    ParseExpr;                       { EAX = index (1-base) }
+  End
+  Else
+  Begin
+    If TabIdx > 0 Then
+      EmitI('MOV     EAX, DWORD PTR [' + SymTab[TabIdx].AsmLabel + '_CNT]')
+    Else
+      EmitI('XOR     EAX, EAX');
+    EmitI('INC     EAX');            { index par defaut = CNT+1 }
+  End;
+
+  If CurTokType = TOK_DOT Then Consume;
+
+  If TabIdx = 0 Then
+  Begin
+    EmitComment('INSERT: table inconnue: ' + TabName);
+    EmitI('ADD     ESP, 4');          { nettoyer la valeur poussee }
+    Exit;
+  End;
+  TabLbl := SymTab[TabIdx].AsmLabel;
+
+  { ECX = index (1-base), POP EDX = valeur a inserer }
+  EmitI('MOV     ECX, EAX');
+  EmitI('POP     EDX');                { EDX = valeur source }
+
+  LblShift := NewLabel + '_II';
+  LblShiftEnd := NewLabel + '_IIE';
+
+  { Decaler les elements : pour k = CNT+1 downto index+1, data[k-1] := data[k-2] }
+  { Utilisation : ESI = 0-based write index, va de CNT down to index.             }
+  { data[ESI] := data[ESI-1]                                                       }
+  EmitI('MOV     ESI, DWORD PTR [' + TabLbl + '_CNT]');  { ESI = CNT (0-base write) }
+EmitLabel(LblShift);
+  { Condition : tant que ESI >= index (1-base), decaler data[ESI] := data[ESI-1] }
+  EmitI('CMP     ESI, ECX');
+  EmitI('JL      ' + LblShiftEnd);     { ESI < index : stop }
+  { data[ESI] := data[ESI-1] }
+  EmitI('LEA     EBX, [' + TabLbl + '_DATA]');
+  EmitI('LEA     EAX, [EBX + ESI*4]');       { &data[ESI] }
+  EmitI('MOV     EBX, DWORD PTR [EAX - 4]'); { data[ESI-1] }
+  EmitI('MOV     DWORD PTR [EAX], EBX');
+  EmitI('DEC     ESI');
+  EmitI('JMP     ' + LblShift);
+EmitLabel(LblShiftEnd);
+
+  { Stocker la valeur a la position index : data[ECX-1] (0-base) := EDX }
+  EmitI('LEA     EBX, [' + TabLbl + '_DATA]');
+  EmitI('DEC     ECX');                { index 0-base }
+  EmitI('LEA     EAX, [EBX + ECX*4]');  { &data[ECX] en 0-base }
+  EmitI('MOV     DWORD PTR [EAX], EDX');
+
+  { Incrementer CNT }
+  EmitI('INC     DWORD PTR [' + TabLbl + '_CNT]');
+End;
+
+{ ---- ParseModifyTable : MODIFY itab FROM wa INDEX i. ---------- }
+{ Remplace data[i-1] par la valeur de wa.                          }
+Procedure ParseModifyTable;
+Var TabName, WaName : TString;
+    TabIdx, WaIdx   : Integer;
+    TabLbl          : TString;
+    LblEnd          : TString;
+Begin
+  EmitComment('MODIFY');
+
+  If CurTokType <> TOK_IDENT Then
+  Begin LexError('Nom de table attendu apres MODIFY'); SkipToDot; Exit; End;
+  TabName := CurTokStr;
+  TabIdx  := FindSym(TabName);
+  Consume;
+
+  { FROM wa }
+  WaIdx := 0; WaName := '';
+  If TokIsKw(KW_FROM) Then
+  Begin
+    Consume;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      WaName := CurTokStr;
+      WaIdx  := FindSym(WaName);
+      Consume;
+    End;
+  End;
+
+  { Charger la valeur source -> EDX }
+  If WaIdx > 0 Then
+  Begin
+    GenLoadVar32(WaIdx);
+    EmitI('MOV     EDX, EAX');
+  End
+  Else
+    EmitI('XOR     EDX, EDX');
+
+  { INDEX i }
+  If TokIsKw(KW_INDEX) Then
+  Begin
+    Consume;
+    EmitI('PUSH    EDX');
+    ParseExpr;                       { EAX = index }
+    EmitI('POP     EDX');
+  End
+  Else
+    EmitI('MOV     EAX, 1');          { defaut }
+
+  If CurTokType = TOK_DOT Then Consume;
+
+  If TabIdx = 0 Then
+  Begin
+    EmitComment('MODIFY: table inconnue: ' + TabName);
+    Exit;
+  End;
+  TabLbl := SymTab[TabIdx].AsmLabel;
+
+  LblEnd := NewLabel + '_ME';
+
+  { Verifier 1 <= index <= CNT }
+  EmitI('MOV     ECX, EAX');
+  EmitI('TEST    ECX, ECX');
+  EmitI('JLE     ' + LblEnd);
+  EmitI('CMP     ECX, DWORD PTR [' + TabLbl + '_CNT]');
+  EmitI('JG      ' + LblEnd);
+
+  { data[ECX-1] := EDX (0-base) }
+  EmitI('LEA     EBX, [' + TabLbl + '_DATA]');
+  EmitI('DEC     ECX');
+  EmitI('LEA     EAX, [EBX + ECX*4]');
+  EmitI('MOV     DWORD PTR [EAX], EDX');
+
+EmitLabel(LblEnd);
 End;
 
 { ---- ParseDeleteTable : DELETE itab [INDEX i]. --------------- }
@@ -6484,6 +7470,10 @@ Begin
 
   { ---- _ABRT_STR_SHIFT_R : EAX=ptr, ECX=count -> shift right -- }
   { Pad with spaces on the left.                                   }
+  { Note: la boucle de copie octet-par-octet modifie AL et donc     }
+  { corrompt l octet bas de EAX. On sauvegarde donc le pointeur    }
+  { sur la pile avant la boucle et on le restaure dans EDI pour la }
+  { phase de padding.                                               }
   EmitBlank;
   EmitLabel(AB_RT_PFX + 'STR_SHIFT_R');
   EmitI('PUSH    ESI');
@@ -6495,13 +7485,15 @@ Begin
   EmitI('MOV     EDX, EAX');       { EDX = length }
   EmitI('POP     ECX');
   EmitI('POP     EAX');
-  { Move string right: copy from end to end+count }
+  { Sauvegarder le pointeur (EAX) : il sera corrompu par MOV AL,[..] }
+  EmitI('PUSH    EAX');
+  { Move string right: copy from end to end+count                 }
+  { La premiere iteration copie le '0' final en ptr+len+count,    }
+  { ce qui termine correctement la nouvelle chaine.               }
   EmitI('LEA     ESI, [EAX+EDX]');       { ESI = ptr+len (at null) }
-  { EDI = ptr+len+count = EAX+EDX+ECX (3 registres impossible en x86) }
   EmitI('LEA     EDI, [EAX+EDX]');
-  EmitI('ADD     EDI, ECX');
-  EmitI('MOV     BYTE PTR [EDI+1], 0');  { null terminate }
-  EmitI('INC     EDX');                  { include null }
+  EmitI('ADD     EDI, ECX');             { EDI = ptr+len+count    }
+  EmitI('INC     EDX');                  { include null           }
   EmitLabel(AB_RT_PFX + 'SSHR_LP');
   EmitI('MOV     AL, BYTE PTR [ESI]');
   EmitI('MOV     BYTE PTR [EDI], AL');
@@ -6509,15 +7501,8 @@ Begin
   EmitI('DEC     EDI');
   EmitI('DEC     EDX');
   EmitI('JNZ     ' + AB_RT_PFX + 'SSHR_LP');
-  { Fill left with spaces }
-  EmitI('POP     EDI');            { restore original EDI from stack }
-  EmitI('POP     ESI');
-  { Actually we need to fill. Reload EAX from stack. }
-  { Simpler: re-push and fill directly. }
-  EmitI('PUSH    ESI');
-  EmitI('PUSH    EDI');
-  { EAX still points to string start. ECX = count }
-  EmitI('MOV     EDI, EAX');
+  { Fill left with spaces : recuperer le ptr sauve dans EDI       }
+  EmitI('POP     EDI');                  { EDI = ptr original     }
   EmitLabel(AB_RT_PFX + 'SSHR_PAD');
   EmitI('TEST    ECX, ECX');
   EmitI('JZ      ' + AB_RT_PFX + 'SSHR_DN');
@@ -6526,8 +7511,8 @@ Begin
   EmitI('DEC     ECX');
   EmitI('JMP     ' + AB_RT_PFX + 'SSHR_PAD');
   EmitLabel(AB_RT_PFX + 'SSHR_DN');
-  EmitI('POP     EDI');
-  EmitI('POP     ESI');
+  EmitI('POP     EDI');                  { restore caller EDI     }
+  EmitI('POP     ESI');                  { restore caller ESI     }
   EmitI('RET');
 
   { ---- _ABRT_STR_FIND : ESI=pattern, EDI=string -> EAX=offset - }
@@ -6702,8 +7687,14 @@ Begin
     Begin
       GenLoadVar32(SIdx);
       Case SymTab[SIdx].DataType Of
-        TYPE_I, TYPE_P:
+        TYPE_I :
           EmitI('CALL    ' + AB_RT_PFX + 'PRINTINT');
+        TYPE_F, TYPE_P :
+        Begin
+          { Virgule fixe : PRINTFIX avec le nombre de decimales du type }
+          EmitI('MOV     ECX, ' + IntToStr_(SymTab[SIdx].DecScale));
+          EmitI('CALL    ' + AB_RT_PFX + 'PRINTFIX');
+        End;
       Else
         EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
       End;
@@ -6857,6 +7848,84 @@ Begin
   EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
   EmitI('RET');
 
+  { ---- _ABRT_PRINTFIX : EAX=valeur signee scalee, ECX=decimales }
+  { Affiche la valeur en notation decimale avec le point decimal.  }
+  { Si ECX = 0, equivaut a PRINTINT. Utilise FIXBUF (32 octets).   }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'PRINTFIX');
+  EmitI('PUSH    EBX');
+  EmitI('PUSH    ECX');
+  EmitI('PUSH    EDX');
+  EmitI('PUSH    EDI');
+  EmitI('PUSH    ESI');
+  EmitI('MOV     ESI, ECX');           { ESI = nb decimales }
+  EmitI('PUSH    EAX');                { sauvegarder valeur signee }
+  EmitI('LEA     EDI, [' + AB_RT_PFX + 'FIXBUF+31]');
+  EmitI('MOV     BYTE PTR [EDI], 0');  { terminaison ASCIIZ }
+  EmitI('TEST    EAX, EAX');
+  EmitI('JNS     ' + AB_RT_PFX + 'PFX_POS');
+  EmitI('NEG     EAX');
+  EmitLabel(AB_RT_PFX + 'PFX_POS');
+  EmitI('MOV     EBX, 10');
+  EmitI('XOR     ECX, ECX');           { ECX = nb chiffres ecrits }
+  EmitLabel(AB_RT_PFX + 'PFX_LP');
+  EmitI('XOR     EDX, EDX');
+  EmitI('DIV     EBX');
+  EmitI('ADD     DL, 48');
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], DL');
+  EmitI('INC     ECX');
+  { Inserer le point decimal apres ESI chiffres }
+  EmitI('CMP     ECX, ESI');
+  EmitI('JNE     ' + AB_RT_PFX + 'PFX_NODOT');
+  EmitI('TEST    ESI, ESI');
+  EmitI('JZ      ' + AB_RT_PFX + 'PFX_NODOT');
+  { On vient d ecrire le ESI-ieme chiffre fractionnaire : le '.' }
+  { doit apparaitre AVANT (a une adresse superieure) le '0' de  }
+  { tete. En memoire on ecrit d abord le '.' (DEC EDI), puis le }
+  { '0' leader (DEC EDI).                                         }
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 46');   { '.' }
+  EmitI('INC     ECX');
+  EmitI('TEST    EAX, EAX');
+  EmitI('JNZ     ' + AB_RT_PFX + 'PFX_NODOT');
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 48');   { '0' leader }
+  EmitI('INC     ECX');
+  EmitLabel(AB_RT_PFX + 'PFX_NODOT');
+  EmitI('TEST    EAX, EAX');
+  EmitI('JNZ     ' + AB_RT_PFX + 'PFX_LP');
+  { Si le nombre de chiffres total est <= ESI (scale) : il      }
+  { manque la partie fractionnaire. Completer par des zeros     }
+  { jusqu a atteindre ESI chiffres, puis prefixer "0.".          }
+  EmitI('CMP     ECX, ESI');
+  EmitI('JGE     ' + AB_RT_PFX + 'PFX_SIGN');
+  EmitLabel(AB_RT_PFX + 'PFX_PAD');
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 48');
+  EmitI('INC     ECX');
+  EmitI('CMP     ECX, ESI');
+  EmitI('JL      ' + AB_RT_PFX + 'PFX_PAD');
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 46');  { '.' }
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 48');  { '0' entier leader }
+  EmitLabel(AB_RT_PFX + 'PFX_SIGN');
+  EmitI('POP     EAX');                { recuperer valeur signee }
+  EmitI('TEST    EAX, EAX');
+  EmitI('JNS     ' + AB_RT_PFX + 'PFX_DN');
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 45');  { '-' }
+  EmitLabel(AB_RT_PFX + 'PFX_DN');
+  EmitI('MOV     EAX, EDI');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitI('POP     ESI');
+  EmitI('POP     EDI');
+  EmitI('POP     EDX');
+  EmitI('POP     ECX');
+  EmitI('POP     EBX');
+  EmitI('RET');
+
   { NOTE: Les donnees runtime (HSTDOUT, WRITTEN, NUMBUF, CRLF_DATA, }
   { SPACE_DATA, STRBUF, CATBUF, tables) sont emises dans la section }
   { _DATA par EmitDataSeg. Ne PAS les emettre ici dans _TEXT car    }
@@ -6893,6 +7962,8 @@ Begin
   Emit('EXTRN   _GetProcessHeap@0    : PROC');
   Emit('EXTRN   _HeapAlloc@12        : PROC');
   Emit('EXTRN   _HeapFree@12         : PROC');
+  Emit('EXTRN   _LoadLibraryA@4      : PROC');
+  Emit('EXTRN   _GetProcAddress@8    : PROC');
   EmitBlank;
   Emit('.STACK ' + IntToStr_(STACK_SIZE));
   EmitBlank;
@@ -6934,7 +8005,7 @@ Begin
        (SymTab[I].DataType <> TYPE_TABLE) Then
     Begin
       Case SymTab[I].DataType Of
-        TYPE_I, TYPE_P :
+        TYPE_I, TYPE_P, TYPE_F :
           Begin
             If SymTab[I].HasInit Then
               Emit(SymTab[I].AsmLabel + ' DD ' +
@@ -6942,8 +8013,6 @@ Begin
             Else
               Emit(SymTab[I].AsmLabel + ' DD 0');
           End;
-        TYPE_F :
-          Emit(SymTab[I].AsmLabel + ' DQ 0');
         TYPE_C, TYPE_N, TYPE_D, TYPE_T :
           Begin
             CharL := SymTab[I].CharLen;
@@ -6970,11 +8039,21 @@ Begin
   Emit(AB_RT_PFX + 'HSTDIN     DD 0');
   Emit(AB_RT_PFX + 'WRITTEN    DD 0');
   Emit(AB_RT_PFX + 'NUMBUF     DB 12 DUP(0)');
+  Emit(AB_RT_PFX + 'FIXBUF     DB 32 DUP(0)');
   Emit(AB_RT_PFX + 'CRLF_DATA  DB 13, 10, 0');
   Emit(AB_RT_PFX + 'SPACE_DATA DB 32, 0');
   Emit(AB_RT_PFX + 'STRBUF     DB 512 DUP(0)');
   Emit(AB_RT_PFX + 'CATBUF     DB 512 DUP(0)');
   Emit(AB_RT_PFX + 'INPUTBUF   DB 256 DUP(0)');
+  EmitBlank;
+
+  { ---- Runtime exceptions (TRY/CATCH/RAISE) ---- }
+  EmitComment('--- Runtime exceptions ---');
+  Emit('_AB_EXC_HANDLER DD 0');
+  Emit('_AB_EXC_TYPE    DD 0');
+  Emit(AB_RT_PFX + 'EXC_MSG1 DB ' + #39 +
+       'Uncaught ABAP exception: ' + #39 + ',0');
+  Emit(AB_RT_PFX + 'EXC_MSG2 DB ' + #39 + '(untyped)' + #39 + ',0');
   EmitBlank;
 
   { ---- Chaines litterales ---- }
@@ -7032,6 +8111,10 @@ Begin
   EmitI('PUSH    -10');
   EmitI('CALL    _GetStdHandle@4');
   EmitI('MOV     DWORD PTR [' + AB_RT_PFX + 'HSTDIN], EAX');
+  EmitBlank;
+  EmitComment('--- Initialiser le runtime d exceptions (TRY/CATCH) ---');
+  EmitI('MOV     DWORD PTR [_AB_EXC_HANDLER], 0');
+  EmitI('MOV     DWORD PTR [_AB_EXC_TYPE], 0');
   EmitBlank;
 End;
 
@@ -7246,6 +8329,74 @@ Begin
   EmitI('PUSH    1');
   EmitI('CALL    _ExitProcess@4');
   EmitI('RET');                  { ne sera jamais atteint }
+
+  { ---- _ABRT_STRCMPI : ESI vs EDI ASCIIZ, casse-insensible ---- }
+  { Sortie : ZF=1 si egales (apres CMP final), EAX/ECX modifies.  }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'STRCMPI');
+  EmitI('PUSH    ESI');
+  EmitI('PUSH    EDI');
+  EmitLabel(AB_RT_PFX + 'SCI_LP');
+  EmitI('MOV     AL, BYTE PTR [ESI]');
+  EmitI('MOV     CL, BYTE PTR [EDI]');
+  { Uppercase AL }
+  EmitI('CMP     AL, 97');          { 'a' }
+  EmitI('JB      ' + AB_RT_PFX + 'SCI_A1');
+  EmitI('CMP     AL, 122');         { 'z' }
+  EmitI('JA      ' + AB_RT_PFX + 'SCI_A1');
+  EmitI('SUB     AL, 32');
+  EmitLabel(AB_RT_PFX + 'SCI_A1');
+  EmitI('CMP     CL, 97');
+  EmitI('JB      ' + AB_RT_PFX + 'SCI_A2');
+  EmitI('CMP     CL, 122');
+  EmitI('JA      ' + AB_RT_PFX + 'SCI_A2');
+  EmitI('SUB     CL, 32');
+  EmitLabel(AB_RT_PFX + 'SCI_A2');
+  EmitI('CMP     AL, CL');
+  EmitI('JNE     ' + AB_RT_PFX + 'SCI_DN');
+  EmitI('TEST    AL, AL');           { fin des deux chaines simultanement }
+  EmitI('JZ      ' + AB_RT_PFX + 'SCI_DN');
+  EmitI('INC     ESI');
+  EmitI('INC     EDI');
+  EmitI('JMP     ' + AB_RT_PFX + 'SCI_LP');
+  EmitLabel(AB_RT_PFX + 'SCI_DN');
+  EmitI('POP     EDI');
+  EmitI('POP     ESI');
+  EmitI('RET');                      { ZF refletera le dernier CMP AL, CL }
+
+  { ---- _ABRT_RAISE : declenche l exception courante ---------- }
+  { Prerequis : [_AB_EXC_TYPE] pointe vers le nom de la classe   }
+  { (ASCIIZ) ou 0 si exception sans type (RAISE nu).             }
+  { Si un TRY est actif, deroule la pile et saute au dispatcher. }
+  { Sinon, affiche un message et termine le processus.           }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'RAISE');
+  EmitI('MOV     EAX, DWORD PTR [_AB_EXC_HANDLER]');
+  EmitI('TEST    EAX, EAX');
+  EmitI('JZ      ' + AB_RT_PFX + 'EXC_UNHANDLED');
+  EmitI('MOV     ESP, EAX');                     { deroulement }
+  EmitI('POP     DWORD PTR [_AB_EXC_HANDLER]');  { chain prev }
+  EmitI('POP     EBP');                          { EBP sauve a TRY }
+  EmitI('RET');                                   { vers _ABX_disp_N }
+
+  { ---- _ABRT_EXC_UNHANDLED : exception non capturee ---------- }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'EXC_UNHANDLED');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'EXC_MSG1]');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitI('MOV     EAX, DWORD PTR [_AB_EXC_TYPE]');
+  EmitI('TEST    EAX, EAX');
+  EmitI('JZ      ' + AB_RT_PFX + 'EXC_UNH_NOT');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitI('JMP     ' + AB_RT_PFX + 'EXC_UNH_END');
+  EmitLabel(AB_RT_PFX + 'EXC_UNH_NOT');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'EXC_MSG2]');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitLabel(AB_RT_PFX + 'EXC_UNH_END');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'CRLF_DATA]');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitI('PUSH    1');
+  EmitI('CALL    _ExitProcess@4');
 End;
 
 { ============================================================ }
@@ -7778,7 +8929,19 @@ Begin
   AsmSplitOps(Ops, Op1, Op2);
 
   { ---- Simple single-byte instructions ---- }
-  If Mnem = 'RET' Then Begin BinEmitByte($C3); Exit; End;
+  If Mnem = 'RET' Then
+  Begin
+    If Op1 = '' Then
+      BinEmitByte($C3)                    { RET }
+    Else
+    Begin                                  { RET imm16 (stdcall cleanup) }
+      Imm := AsmParseImm(Op1);
+      BinEmitByte($C2);
+      BinEmitByte(Byte(Imm And $FF));
+      BinEmitByte(Byte((Imm Shr 8) And $FF));
+    End;
+    Exit;
+  End;
   If Mnem = 'LODSB' Then Begin BinEmitByte($AC); Exit; End;
   If Mnem = 'STOSB' Then Begin BinEmitByte($AA); Exit; End;
   If Mnem = 'MOVSB' Then Begin BinEmitByte($A4); Exit; End;
@@ -7804,6 +8967,14 @@ Begin
       End;
       Exit;
     End;
+    { PUSH OFFSET label : opcode 68 + fixup ABS32 }
+    If AsmStartsWith(Op1, 'OFFSET ') Then
+    Begin
+      BinEmitByte($68);
+      BinAddFixup(BinCodeLen, BFK_ABS32, Copy(Op1, 8, Length(Op1) - 7), True);
+      BinEmitDWord(0);
+      Exit;
+    End;
     R1 := AsmRegIdx32(Op1);
     If R1 >= 0 Then
     Begin BinEmitByte($50 + R1); Exit; End;
@@ -7824,6 +8995,23 @@ Begin
   { ---- POP ---- }
   If Mnem = 'POP' Then
   Begin
+    If AsmStartsWith(Op1, 'DWORD PTR [') Then
+    Begin
+      Bracket := AsmExtractBracket(Op1);
+      If AsmIsRegBased(Bracket) Then
+      Begin { POP [reg+...] : opcode 8F /0 + ModRM/SIB }
+        BinEmitByte($8F);
+        AsmEncodeMemory(Bracket, 0);
+      End
+      Else
+      Begin { POP [label] : opcode 8F /0 + disp32 }
+        BinEmitByte($8F);
+        BinEmitByte($05);
+        BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+        BinEmitDWord(0);
+      End;
+      Exit;
+    End;
     R1 := AsmRegIdx32(Op1);
     If R1 >= 0 Then BinEmitByte($58 + R1);
     Exit;
@@ -7862,6 +9050,29 @@ Begin
       Else
       Begin
         { MOV DWORD PTR [mem], imm32 : opcode C7 /0 }
+        { Cas special : OFFSET label -> fixup ABS32 }
+        If AsmStartsWith(Op2, 'OFFSET ') Then
+        Begin
+          If AsmIsRegBased(Bracket) Then
+          Begin
+            BinEmitByte($C7);
+            AsmEncodeMemory(Bracket, 0);
+            BinAddFixup(BinCodeLen, BFK_ABS32,
+                        Copy(Op2, 8, Length(Op2) - 7), True);
+            BinEmitDWord(0);
+          End
+          Else
+          Begin
+            BinEmitByte($C7);
+            BinEmitByte($05);
+            BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+            BinEmitDWord(0);
+            BinAddFixup(BinCodeLen, BFK_ABS32,
+                        Copy(Op2, 8, Length(Op2) - 7), True);
+            BinEmitDWord(0);
+          End;
+          Exit;
+        End;
         Imm := AsmParseImm(Op2);
         If AsmIsRegBased(Bracket) Then
         Begin
@@ -7945,6 +9156,14 @@ Begin
     { MOV reg32, imm32 }
     If R1 >= 0 Then
     Begin
+      If AsmStartsWith(Op2, 'OFFSET ') Then
+      Begin
+        BinEmitByte($B8 + R1);
+        BinAddFixup(BinCodeLen, BFK_ABS32,
+                    Copy(Op2, 8, Length(Op2) - 7), True);
+        BinEmitDWord(0);
+        Exit;
+      End;
       Imm := AsmParseImm(Op2);
       BinEmitByte($B8 + R1);
       BinEmitDWord(Imm);
@@ -8003,6 +9222,9 @@ Begin
   End;
 
   { ---- Jcc (conditional jumps) ---- }
+  { Signed and unsigned conditional jump encodings (0F 8x rel32). }
+  { IMPORTANT : si on ajoute un nouveau Jcc ici, veiller a utiliser }
+  { le bon opcode (signed vs unsigned).                             }
   If (Mnem = 'JZ') Or (Mnem = 'JE') Then
   Begin
     BinEmitByte($0F); BinEmitByte($84);
@@ -8015,27 +9237,87 @@ Begin
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
-  If Mnem = 'JB' Then
+  If (Mnem = 'JB') Or (Mnem = 'JNAE') Or (Mnem = 'JC') Then
   Begin
     BinEmitByte($0F); BinEmitByte($82);
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
-  If Mnem = 'JA' Then
+  If (Mnem = 'JNB') Or (Mnem = 'JAE') Or (Mnem = 'JNC') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($83);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JBE') Or (Mnem = 'JNA') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($86);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JA') Or (Mnem = 'JNBE') Then
   Begin
     BinEmitByte($0F); BinEmitByte($87);
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
-  If Mnem = 'JGE' Then
+  If Mnem = 'JS' Then
   Begin
-    BinEmitByte($0F); BinEmitByte($8D);
+    BinEmitByte($0F); BinEmitByte($88);
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
   If Mnem = 'JNS' Then
   Begin
     BinEmitByte($0F); BinEmitByte($89);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JL') Or (Mnem = 'JNGE') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8C);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JGE') Or (Mnem = 'JNL') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8D);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JLE') Or (Mnem = 'JNG') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8E);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If (Mnem = 'JG') Or (Mnem = 'JNLE') Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8F);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JP' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8A);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JNP' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($8B);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JO' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($80);
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
+    BinEmitDWord(0); Exit;
+  End;
+  If Mnem = 'JNO' Then
+  Begin
+    BinEmitByte($0F); BinEmitByte($81);
     BinAddFixup(BinCodeLen, BFK_REL32, Op1, True);
     BinEmitDWord(0); Exit;
   End;
@@ -8068,9 +9350,23 @@ Begin
     If R1 >= 0 Then
     Begin
       Imm := AsmParseImm(Op2);
-      BinEmitByte($83);
-      BinEmitByte($C0 Or R1);
-      BinEmitByte(Byte(Imm And $FF));
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        { ADD reg32, imm8 (sign-extended) : 83 /0 ib }
+        BinEmitByte($83);
+        BinEmitByte($C0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        { ADD reg32, imm32 : 81 /0 id }
+        BinEmitByte($81);
+        BinEmitByte($C0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
       Exit;
     End;
     Exit;
@@ -8104,9 +9400,23 @@ Begin
     If R1 >= 0 Then
     Begin
       Imm := AsmParseImm(Op2);
-      BinEmitByte($83);
-      BinEmitByte($E8 Or R1);
-      BinEmitByte(Byte(Imm And $FF));
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        { SUB reg32, imm8 (sign-extended) : 83 /5 ib }
+        BinEmitByte($83);
+        BinEmitByte($E8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        { SUB reg32, imm32 : 81 /5 id }
+        BinEmitByte($81);
+        BinEmitByte($E8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
       Exit;
     End;
     Exit;
@@ -8125,6 +9435,78 @@ Begin
     Exit;
   End;
 
+  { ---- AND ---- }
+  If Mnem = 'AND' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      { AND r32, r32 : 21 /r }
+      BinEmitByte($21);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+      Exit;
+    End;
+    If R1 >= 0 Then
+    Begin
+      Imm := AsmParseImm(Op2);
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        { AND r32, imm8 : 83 /4 ib }
+        BinEmitByte($83);
+        BinEmitByte($E0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        { AND r32, imm32 : 81 /4 id }
+        BinEmitByte($81);
+        BinEmitByte($E0 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- OR ---- }
+  If Mnem = 'OR' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    R2 := AsmRegIdx32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      { OR r32, r32 : 09 /r }
+      BinEmitByte($09);
+      BinEmitByte((3 Shl 6) Or (R2 Shl 3) Or R1);
+      Exit;
+    End;
+    If R1 >= 0 Then
+    Begin
+      Imm := AsmParseImm(Op2);
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin
+        { OR r32, imm8 : 83 /1 ib }
+        BinEmitByte($83);
+        BinEmitByte($C8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        { OR r32, imm32 : 81 /1 id }
+        BinEmitByte($81);
+        BinEmitByte($C8 Or R1);
+        BinEmitByte(Byte(Imm And $FF));
+        BinEmitByte(Byte((Imm Shr 8) And $FF));
+        BinEmitByte(Byte((Imm Shr 16) And $FF));
+        BinEmitByte(Byte((Imm Shr 24) And $FF));
+      End;
+    End;
+    Exit;
+  End;
+
   { ---- CMP ---- }
   If Mnem = 'CMP' Then
   Begin
@@ -8139,7 +9521,7 @@ Begin
       Exit;
     End;
     { CMP AL, imm8 }
-    If Op1 = 'AL' Then
+    If (Op1 = 'AL') And (AsmRegIdx8(Op2) < 0) Then
     Begin
       BinEmitByte($3C);
       BinEmitByte(Byte(AsmParseImm(Op2) And $FF));
@@ -8282,6 +9664,115 @@ Begin
     Exit;
   End;
 
+  { ---- NOT ---- }
+  If Mnem = 'NOT' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin BinEmitByte($F7); BinEmitByte($D0 Or R1); End;
+    Exit;
+  End;
+
+  { ---- SHL / SAL (shift left logical/arithmetic) : C1 /4 ib -- }
+  If (Mnem = 'SHL') Or (Mnem = 'SAL') Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin
+      If Op2 = 'CL' Then
+      Begin
+        { SHL r32, CL : D3 /4 }
+        BinEmitByte($D3);
+        BinEmitByte($E0 Or R1);
+      End
+      Else
+      Begin
+        Imm := AsmParseImm(Op2);
+        If Imm = 1 Then
+        Begin
+          BinEmitByte($D1);
+          BinEmitByte($E0 Or R1);
+        End
+        Else
+        Begin
+          BinEmitByte($C1);
+          BinEmitByte($E0 Or R1);
+          BinEmitByte(Byte(Imm And $FF));
+        End;
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- SHR (shift right logical) : C1 /5 ib -------------------- }
+  If Mnem = 'SHR' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin
+      If Op2 = 'CL' Then
+      Begin
+        BinEmitByte($D3);
+        BinEmitByte($E8 Or R1);
+      End
+      Else
+      Begin
+        Imm := AsmParseImm(Op2);
+        If Imm = 1 Then
+        Begin
+          BinEmitByte($D1);
+          BinEmitByte($E8 Or R1);
+        End
+        Else
+        Begin
+          BinEmitByte($C1);
+          BinEmitByte($E8 Or R1);
+          BinEmitByte(Byte(Imm And $FF));
+        End;
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- SAR (shift right arithmetic) : C1 /7 ib ----------------- }
+  If Mnem = 'SAR' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin
+      If Op2 = 'CL' Then
+      Begin
+        BinEmitByte($D3);
+        BinEmitByte($F8 Or R1);
+      End
+      Else
+      Begin
+        Imm := AsmParseImm(Op2);
+        If Imm = 1 Then
+        Begin
+          BinEmitByte($D1);
+          BinEmitByte($F8 Or R1);
+        End
+        Else
+        Begin
+          BinEmitByte($C1);
+          BinEmitByte($F8 Or R1);
+          BinEmitByte(Byte(Imm And $FF));
+        End;
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- MUL (unsigned multiply) : F7 /4 ------------------------- }
+  If Mnem = 'MUL' Then
+  Begin
+    R1 := AsmRegIdx32(Op1);
+    If R1 >= 0 Then
+    Begin BinEmitByte($F7); BinEmitByte($E0 Or R1); End;
+    Exit;
+  End;
+
   { ---- DIV ---- }
   If Mnem = 'DIV' Then
   Begin
@@ -8307,6 +9798,13 @@ Begin
     CommaPos := 0;
     For I := 1 To Length(Op2) Do
       If Op2[I] = ',' Then Begin CommaPos := I; Break; End;
+    If (Length(Op2) = 0) Then
+    Begin
+      { IMUL r32 (1-operand) : F7 /5 -> EDX:EAX = EAX * r32 }
+      If R1 >= 0 Then
+      Begin BinEmitByte($F7); BinEmitByte($E8 Or R1); End;
+      Exit;
+    End;
     If CommaPos > 0 Then
     Begin
       { IMUL reg, reg, imm (3-operand form) }
@@ -9203,7 +10701,7 @@ Begin
   WriteBinWord(F, PE_SUBSYS_CUI);         { Subsystem = CONSOLE }
   WriteBinWord(F, 0);                     { DllCharacteristics }
   WriteBinDWord(F, $100000);              { SizeOfStackReserve (1 MB) }
-  WriteBinDWord(F, $1000);                { SizeOfStackCommit (4 KB) }
+  WriteBinDWord(F, $10000);               { SizeOfStackCommit (64 KB) }
   WriteBinDWord(F, $100000);              { SizeOfHeapReserve (1 MB) }
   WriteBinDWord(F, $1000);                { SizeOfHeapCommit (4 KB) }
   WriteBinDWord(F, 0);                    { LoaderFlags }
@@ -9470,6 +10968,8 @@ Begin
   StrLitCount := 0;
   EventStartDefined := False;  { TODO 24 }
   EventEndDefined   := False;  { TODO 24 }
+  EventTopPageDefined := False;
+  EventEndPageDefined := False;
   TryCount          := 0;      { TODO 24 }
   LexInit;
   If Opts.DebugMode Then
@@ -9521,12 +11021,18 @@ Begin
     { Emettre la sortie du programme (TODO 19+24) }
     EmitBlank;
     EmitComment('--- Appel des evenements ABAP (TODO 24) ---');
+    { Appeler TOP-OF-PAGE avant START-OF-SELECTION (entete de page) }
+    If EventTopPageDefined Then
+      EmitI('CALL    _ABE_TOPPAGE');
     { Appeler START-OF-SELECTION si defini }
     If EventStartDefined Then
       EmitI('CALL    _ABE_START');
     { Appeler END-OF-SELECTION si defini }
     If EventEndDefined Then
       EmitI('CALL    _ABE_END');
+    { Appeler END-OF-PAGE apres END-OF-SELECTION (pied de page) }
+    If EventEndPageDefined Then
+      EmitI('CALL    _ABE_ENDPAGE');
     EmitComment('--- Sortie du programme ---');
     EmitI('PUSH    0');
     EmitI('CALL    _ExitProcess@4');
