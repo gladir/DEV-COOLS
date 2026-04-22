@@ -2962,6 +2962,63 @@ Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'FDELETE';
     SymTab[Idx].IsStatic := True;
   End;
+
+  { ---- System.Collections.ArrayList (stub) ---- }
+  { Classe ArrayList reconnue comme type (stub, pas d impl. runtime) }
+  Idx := SymAdd('ArrayList', SC_CLASS, TY_IDX_OBJECT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_CLS_PFX + 'ARRAYLIST';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ArrayList.Add(object) -> int (stub) }
+  Idx := SymAdd('ArrayList.Add', SC_METHOD, TY_IDX_INT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_ADD';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ArrayList.Clear() -> void (stub) }
+  Idx := SymAdd('ArrayList.Clear', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_CLEAR';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ArrayList.Count -> int (stub, propriete exposee comme methode) }
+  Idx := SymAdd('ArrayList.Count', SC_METHOD, TY_IDX_INT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_COUNT';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ArrayList.Remove(object) -> void (stub) }
+  Idx := SymAdd('ArrayList.Remove', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_REMOVE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ArrayList.Contains(object) -> bool (stub) }
+  Idx := SymAdd('ArrayList.Contains', SC_METHOD, TY_IDX_BOOL);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_CONTAINS';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ArrayList.IndexOf(object) -> int (stub) }
+  Idx := SymAdd('ArrayList.IndexOf', SC_METHOD, TY_IDX_INT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_INDEXOF';
+    SymTab[Idx].IsStatic := False;
+  End;
 End;
 
 { ------------------------------------------------------------ }
