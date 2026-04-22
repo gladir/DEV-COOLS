@@ -530,6 +530,7 @@ Type
     AsmOutput  : Boolean;  { -asm : produire aussi un .ASM        }
     ObjOnly    : Boolean;  { -obj : produire seulement un .OBJ    }
     NetVersion : TString;  { -netver : version du .NET Framework  }
+    CsVersion  : TString;  { -csver  : version du langage C#      }
   End;
 
 Var
@@ -849,6 +850,7 @@ Begin
   Opts.AsmOutput  := False;
   Opts.ObjOnly    := False;
   Opts.NetVersion := '4.8';   { .NET Framework 4.8 par defaut       }
+  Opts.CsVersion  := '14';    { C# 14 par defaut                    }
 End;
 
 { ------------------------------------------------------------ }
@@ -863,6 +865,20 @@ Begin
     (V = '4.5.2') Or (V = '4.6') Or (V = '4.6.1') Or
     (V = '4.6.2') Or (V = '4.7') Or (V = '4.7.1') Or
     (V = '4.7.2') Or (V = '4.8') Or (V = '4.8.1');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsValidCsVersion : valide la version du langage C#           }
+{ ------------------------------------------------------------ }
+
+Function IsValidCsVersion(Const V : TString) : Boolean;
+Begin
+  IsValidCsVersion :=
+    (V = '1.0') Or (V = '2.0') Or (V = '3.0') Or
+    (V = '4.0') Or (V = '5.0') Or (V = '6.0') Or
+    (V = '7.0') Or (V = '8.0') Or (V = '9.0') Or
+    (V = '10')  Or (V = '11')  Or (V = '12')  Or
+    (V = '13')  Or (V = '14');
 End;
 
 { ------------------------------------------------------------ }
@@ -892,6 +908,9 @@ Begin
   WriteLn('                 Valeurs : 2.0, 3.0, 3.5, 4.0, 4.5, 4.5.1,');
   WriteLn('                           4.5.2, 4.6, 4.6.1, 4.6.2, 4.7,');
   WriteLn('                           4.7.1, 4.7.2, 4.8, 4.8.1');
+  WriteLn('  -csver <ver>   Version du langage C# (defaut: 14)');
+  WriteLn('                 Valeurs : 1.0, 2.0, 3.0, 4.0, 5.0, 6.0,');
+  WriteLn('                           7.0, 8.0, 9.0, 10, 11, 12, 13, 14');
   WriteLn('  -h, --help, /? Afficher cette aide');
   WriteLn;
   WriteLn('Exemples :');
@@ -900,6 +919,7 @@ Begin
   WriteLn('  CSCW32 prog.cs -asm');
   WriteLn('  CSCW32 module.cs -obj');
   WriteLn('  CSCW32 hello.cs -netver 4.7.2');
+  WriteLn('  CSCW32 hello.cs -csver 7.0');
   Halt(EXIT_OK);
 End;
 
@@ -943,6 +963,15 @@ Begin
       Opts.NetVersion := ParamStr(I);
       If Not IsValidNetVersion(Opts.NetVersion) Then
         FatalError('Version .NET Framework invalide: ' + Opts.NetVersion);
+    End
+    Else If Arg = '-csver' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('Option -csver : version manquante');
+      Opts.CsVersion := ParamStr(I);
+      If Not IsValidCsVersion(Opts.CsVersion) Then
+        FatalError('Version C# invalide: ' + Opts.CsVersion);
     End
     Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
       FatalError('Option inconnue: ' + Arg)
@@ -994,6 +1023,7 @@ Begin
   WriteLn('Source   : ', Opts.SrcFile);
   WriteLn('Sortie   : ', Opts.OutFile);
   WriteLn('.NET FW  : ', Opts.NetVersion);
+  WriteLn('C# ver   : ', Opts.CsVersion);
   If Opts.AsmOutput Then
     WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
   WriteLn;
@@ -2150,10 +2180,15 @@ Begin
   { Enregistrer le namespace }
   Idx := AddUsing(NsName, ULine);
 
-  { Avertissement pour namespaces non standards }
+  { Avertissement pour namespaces non standards : toujours affiche      }
+  { (non filtre par -w), car un using non reconnu signifie que les      }
+  { classes/types du namespace ne seront pas resolus par le compilateur.}
   If (Idx > 0) And (Not UsingTab[Idx].IsStd) Then
-    WarnMsg('namespace non reconnu (ignore) : ' + NsName +
-            ' (ligne ' + IntToStr_(ULine) + ')');
+  Begin
+    WriteLn('CSCW32: warning: namespace non reconnu (ignore) : ',
+            NsName, ' (ligne ', ULine, ')');
+    Inc(WarnCount);
+  End;
 
   { Attendre le ';' }
   If TokIsPunct(';') Then
@@ -10978,6 +11013,20 @@ Begin
   { Fermer le fichier source }
   LexClose;
 
+  { Verifier qu au moins une classe / un namespace / une methode a ete }
+  { reconnu. Sans cela le binaire produit n a pas de point d entree    }
+  { utile (programme vide). Les top-level statements C# 9+ ne sont pas }
+  { supportes par ce compilateur.                                      }
+  If (Not Opts.ObjOnly) And (MethodCount = 0) Then
+  Begin
+    WriteLn('CSCW32: erreur: aucune methode ''Main'' trouvee dans ',
+            Opts.SrcFile);
+    If (ClassCount = 0) And (NsCount = 0) Then
+      WriteLn('CSCW32: note: aucun namespace ni classe declare ',
+              '(les top-level statements C# 9+ ne sont pas supportes).');
+    Inc(ErrorCount);
+  End;
+
   { Afficher bilan analyse }
   WriteLn('CSCW32: Lexer OK (', TotalLines, ' lignes, ',
           TokenCount, ' tokens, ', UsingCount, ' using, ',
@@ -11001,6 +11050,22 @@ Begin
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
   WriteLn('CSCW32: Runtime: ', RuntimeHelpCount, ' routines emises.');
+
+  { Ne pas generer de binaire si des erreurs ont ete detectees }
+  If ErrorCount > 0 Then
+  Begin
+    WriteLn('CSCW32: ', ErrorCount, ' erreur(s) - binaire non genere.');
+    { Supprimer le fichier ASM temporaire si non demande }
+    If Not Opts.AsmOutput Then
+    Begin
+      Assign(OutF, AsmFileName);
+      {$I-}
+      Erase(OutF);
+      {$I+}
+      If IOResult <> 0 Then;
+    End;
+    Halt(EXIT_ERROR);
+  End;
 
   { Generation binaire (TODO 25) }
   BinAssemble;
