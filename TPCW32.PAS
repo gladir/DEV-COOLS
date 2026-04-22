@@ -13697,11 +13697,27 @@ Begin
       Exit;
     End;
 
-    { _GETFILLMASK(var mask) -> stub returns False (0) }
+    { _GETFILLMASK(var mask) -> aucun masque personnalise stocke, on    }
+    { remet a 0 les 8 octets du _FillMask et on retourne FALSE (0).     }
     If Up = '_GETFILLMASK' Then
     Begin
       Inc(EP);
-      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      If EPMatch('(') Then
+      Begin
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA,
+          DEST_DOSR, DEST_DOSP,
+          DEST_Z80, DEST_6502, DEST_6809:
+            ParseExpr(PI);
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOV DWORD PTR [EAX],0');
+            EmitInstr('MOV DWORD PTR [EAX+4],0');
+          End;
+        End; { Case }
+        EPMatch(')');
+      End;
       Case Opts.DestTarget Of
         DEST_68000, DEST_ATARIST, DEST_AMIGA:
           EmitInstr('MOVEQ #0,D0');
