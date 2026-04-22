@@ -77,8 +77,8 @@
               (pas de fichier externe necessaire) :
               System : Console, Math, String, Array, Object,
                 Convert, Environment, Int32, Boolean, Char.
-              System.Collections : ArrayList (stub).
-              System.IO : File, StreamReader, StreamWriter (stubs).
+              System.Collections : ArrayList (squelette).
+              System.IO : File, StreamReader, StreamWriter (squelettes).
             Le compilateur reconnait les using et enregistre
               les namespaces actifs pour la resolution de noms.
             Verification des using non utilises (avertissement).
@@ -119,11 +119,11 @@
 
   TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TKP_VOID, TKP_INT (32 bits signe),
-              TKP_UINT (32 bits non signe), TKP_LONG (64 bits stub),
-              TKP_BOOL (8 bits), TKP_CHAR (16 bits Unicode stub,
+              TKP_UINT (32 bits non signe), TKP_LONG (64 bits squelette),
+              TKP_BOOL (8 bits), TKP_CHAR (16 bits Unicode squelette,
               stocke 8 bits ASCII), TKP_BYTE (8 bits non signe),
-              TKP_SHORT (16 bits signe), TKP_FLOAT (stub entier),
-              TKP_DOUBLE (stub entier), TKP_DECIMAL (stub entier),
+              TKP_SHORT (16 bits signe), TKP_FLOAT (squelette entier),
+              TKP_DOUBLE (squelette entier), TKP_DECIMAL (squelette entier),
               TKP_STRING (pointeur 32 bits), TKP_OBJECT (pointeur),
               TKP_ARRAY, TKP_CLASS, TKP_ENUM.
             TypeTab, TypeInit : enregistrer types primitifs.
@@ -301,9 +301,9 @@
             Classe Program : classe contenant Main() (point d entree).
             Un seul niveau de classe (pas d heritage dans le
               sous-ensemble minimal).
-            Visibilite : public, private, internal (stub, non verifie
+            Visibilite : public, private, internal (squelette, non verifie
               dans le sous-ensemble minimal).
-            Constructeurs statiques (stub optionnel).
+            Constructeurs statiques (squelette optionnel).
             ClassTab : TClassEntry (Name/MangledName/SymIdx/MethStart/
               MethCount/FieldCount/HasMain).
             FindClass / AddClass : recherche / ajout.
@@ -395,7 +395,7 @@
               (char)i : troncature int -> char (AND 0xFF).
               (byte)i : troncature int -> byte (AND 0xFF).
               (bool)i : i != 0 -> true.
-            typeof(type) : retourne le nom du type (stub string).
+            typeof(type) : retourne le nom du type (squelette string).
             sizeof(type) : taille en octets.
               sizeof(int) -> 4, sizeof(char) -> 1,
               sizeof(bool) -> 1, sizeof(byte) -> 1.
@@ -2962,6 +2962,169 @@ Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'FDELETE';
     SymTab[Idx].IsStatic := True;
   End;
+
+  { ---- System.Collections.ArrayList (squelette) ---- }
+  { Classe ArrayList reconnue comme type (squelette, pas d impl. runtime) }
+  Idx := SymAdd('ArrayList', SC_CLASS, TY_IDX_OBJECT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_CLS_PFX + 'ARRAYLIST';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ArrayList.Add(object) -> int (squelette) }
+  Idx := SymAdd('ArrayList.Add', SC_METHOD, TY_IDX_INT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_ADD';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ArrayList.Clear() -> void (squelette) }
+  Idx := SymAdd('ArrayList.Clear', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_CLEAR';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ArrayList.Count -> int (squelette, propriete exposee comme methode) }
+  Idx := SymAdd('ArrayList.Count', SC_METHOD, TY_IDX_INT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_COUNT';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ArrayList.Remove(object) -> void (squelette) }
+  Idx := SymAdd('ArrayList.Remove', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_REMOVE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ArrayList.Contains(object) -> bool (squelette) }
+  Idx := SymAdd('ArrayList.Contains', SC_METHOD, TY_IDX_BOOL);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_CONTAINS';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ArrayList.IndexOf(object) -> int (squelette) }
+  Idx := SymAdd('ArrayList.IndexOf', SC_METHOD, TY_IDX_INT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'ARRLIST_INDEXOF';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ---- System.IO.StreamWriter (squelette) ---- }
+  { Classe StreamWriter reconnue comme type (squelette, pas d impl. runtime) }
+  Idx := SymAdd('StreamWriter', SC_CLASS, TY_IDX_OBJECT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_CLS_PFX + 'STREAMWRITER';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamWriter.Write(value) -> void (squelette) }
+  Idx := SymAdd('StreamWriter.Write', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SW_WRITE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamWriter.WriteLine(value) -> void (squelette) }
+  Idx := SymAdd('StreamWriter.WriteLine', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SW_WRITELINE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamWriter.Close() -> void (squelette) }
+  Idx := SymAdd('StreamWriter.Close', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SW_CLOSE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamWriter.Flush() -> void (squelette) }
+  Idx := SymAdd('StreamWriter.Flush', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SW_FLUSH';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamWriter.Dispose() -> void (squelette, pour 'using') }
+  Idx := SymAdd('StreamWriter.Dispose', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SW_DISPOSE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { ---- System.IO.StreamReader (squelette) ---- }
+  { Classe StreamReader reconnue comme type (squelette, pas d impl. runtime) }
+  Idx := SymAdd('StreamReader', SC_CLASS, TY_IDX_OBJECT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_CLS_PFX + 'STREAMREADER';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamReader.ReadLine() -> string (squelette) }
+  Idx := SymAdd('StreamReader.ReadLine', SC_METHOD, TY_IDX_STRING);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SR_READLINE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamReader.ReadToEnd() -> string (squelette) }
+  Idx := SymAdd('StreamReader.ReadToEnd', SC_METHOD, TY_IDX_STRING);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SR_READTOEND';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamReader.Read() -> int (squelette, retourne code du caractere lu) }
+  Idx := SymAdd('StreamReader.Read', SC_METHOD, TY_IDX_INT);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SR_READ';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamReader.EndOfStream -> bool (squelette, propriete) }
+  Idx := SymAdd('StreamReader.EndOfStream', SC_METHOD, TY_IDX_BOOL);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SR_ENDOFSTREAM';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamReader.Close() -> void (squelette) }
+  Idx := SymAdd('StreamReader.Close', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SR_CLOSE';
+    SymTab[Idx].IsStatic := False;
+  End;
+
+  { StreamReader.Dispose() -> void (squelette, pour 'using') }
+  Idx := SymAdd('StreamReader.Dispose', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'SR_DISPOSE';
+    SymTab[Idx].IsStatic := False;
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -2999,17 +3162,17 @@ Type
     TKP_VOID,        { void - pas de valeur                          }
     TKP_INT,         { int  - 32 bits signe                          }
     TKP_UINT,        { uint - 32 bits non signe                      }
-    TKP_LONG,        { long - 64 bits stub (tronque a 32 bits)       }
-    TKP_ULONG,       { ulong - 64 bits non signe stub (tronque 32)   }
+    TKP_LONG,        { long - 64 bits squelette (tronque a 32 bits)       }
+    TKP_ULONG,       { ulong - 64 bits non signe squelette (tronque 32)   }
     TKP_BOOL,        { bool - 8 bits (stocke comme DWORD)            }
-    TKP_CHAR,        { char - 16 bits Unicode stub (stocke 8 bits)   }
+    TKP_CHAR,        { char - 16 bits Unicode squelette (stocke 8 bits)   }
     TKP_BYTE,        { byte - 8 bits non signe                       }
     TKP_SBYTE,       { sbyte - 8 bits signe                          }
     TKP_SHORT,       { short - 16 bits signe                         }
     TKP_USHORT,      { ushort - 16 bits non signe                    }
-    TKP_FLOAT,       { float - 32 bits flottant (stub entier)        }
-    TKP_DOUBLE,      { double - 64 bits flottant (stub entier)       }
-    TKP_DECIMAL,     { decimal - 128 bits stub (stocke 64 bits)      }
+    TKP_FLOAT,       { float - 32 bits flottant (squelette entier)        }
+    TKP_DOUBLE,      { double - 64 bits flottant (squelette entier)       }
+    TKP_DECIMAL,     { decimal - 128 bits squelette (stocke 64 bits)      }
     TKP_STRING,      { string - pointeur 32 bits vers ASCIIZ         }
     TKP_OBJECT,      { object - pointeur 32 bits generique           }
     TKP_ARRAY,       { tableau                                       }
@@ -3073,13 +3236,13 @@ Begin
   TypeAdd('int',     TKP_INT,     4, True,  -1);
   { 2 : uint (System.UInt32) }
   TypeAdd('uint',    TKP_UINT,    4, False, -1);
-  { 3 : long (System.Int64) - stub tronque a 32 bits }
+  { 3 : long (System.Int64) - squelette tronque a 32 bits }
   TypeAdd('long',    TKP_LONG,    4, True,  -1);
-  { 4 : ulong (System.UInt64) - stub tronque a 32 bits }
+  { 4 : ulong (System.UInt64) - squelette tronque a 32 bits }
   TypeAdd('ulong',   TKP_ULONG,   4, False, -1);
   { 5 : bool (System.Boolean) }
   TypeAdd('bool',    TKP_BOOL,    1, False, -1);
-  { 6 : char (System.Char) - stub 8 bits ASCII }
+  { 6 : char (System.Char) - squelette 8 bits ASCII }
   TypeAdd('char',    TKP_CHAR,    1, False, -1);
   { 7 : byte (System.Byte) }
   TypeAdd('byte',    TKP_BYTE,    1, False, -1);
@@ -3089,11 +3252,11 @@ Begin
   TypeAdd('short',   TKP_SHORT,   2, True,  -1);
   { 10 : ushort (System.UInt16) }
   TypeAdd('ushort',  TKP_USHORT,  2, False, -1);
-  { 11 : float (System.Single) - stub entier }
+  { 11 : float (System.Single) - squelette entier }
   TypeAdd('float',   TKP_FLOAT,   4, True,  -1);
-  { 12 : double (System.Double) - stub entier }
+  { 12 : double (System.Double) - squelette entier }
   TypeAdd('double',  TKP_DOUBLE,  8, True,  -1);
-  { 13 : decimal (System.Decimal) - stub entier }
+  { 13 : decimal (System.Decimal) - squelette entier }
   TypeAdd('decimal', TKP_DECIMAL, 8, True,  -1);
   { 14 : string (System.String) }
   TypeAdd('string',  TKP_STRING,  4, False, -1);
@@ -4783,8 +4946,8 @@ Begin
     End
     Else
     Begin
-      { new Type() - simple allocation objet (stub) }
-      EmitComment('new objet (stub)');
+      { new Type() - simple allocation objet (squelette) }
+      EmitComment('new objet (squelette)');
       EmitInstr('XOR', 'EAX,EAX');
       CurExprType := TY_IDX_INT;  { TODO 20 }
     End;
@@ -5059,7 +5222,7 @@ Begin
       End;
     End;
   End
-  { --- Literal flottant (stub : tronque en entier) --- }
+  { --- Literal flottant (squelette : tronque en entier) --- }
   Else If CurToken.Kind = TK_FLOAT Then
   Begin
     GenLoadConst(CurToken.IntVal);
@@ -10164,8 +10327,8 @@ Begin
   { ---- DOS stub (128 bytes) ---- }
   { MZ header (64 bytes) }
   WriteBinWord(F, PE_DOS_MAGIC);     { 0x00 e_magic      }
-  WriteBinWord(F, 128);              { 0x02 e_cblp        }
-  WriteBinWord(F, 1);                { 0x04 e_cp          }
+  WriteBinWord(F, $0090);            { 0x02 e_cblp        }
+  WriteBinWord(F, $0003);            { 0x04 e_cp          }
   WriteBinWord(F, 0);                { 0x06 e_crlc        }
   WriteBinWord(F, 4);                { 0x08 e_cparhdr     }
   WriteBinWord(F, 0);                { 0x0A e_minalloc    }
