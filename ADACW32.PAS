@@ -3118,11 +3118,16 @@ Begin
   LblNeg := NewLabel;
   LblConv := NewLabel;
   EmitI('TEST EAX, EAX');
-  EmitI('JNS  ' + LblConv);
+  EmitI('JNS  ' + LblNeg);
   { Negatif : stocker '-' et negation }
   EmitI('MOV  BYTE PTR [EDI], 45');  { '-' = 45 }
   EmitI('INC  EDI');
   EmitI('NEG  EAX');
+  EmitI('JMP  ' + LblConv);
+  { Non-negatif : prefixer d'un espace (norme Ada pour 'Image). }
+  EmitLabel(LblNeg);
+  EmitI('MOV  BYTE PTR [EDI], 32');  { ' ' = 32 }
+  EmitI('INC  EDI');
   EmitLabel(LblConv);
   { Convertir EAX en digits decimaux (ordre inverse) }
   EmitI('XOR  ECX, ECX');           { compteur de digits }
