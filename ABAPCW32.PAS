@@ -956,8 +956,12 @@ Var
   LexEOF     : Boolean;    { fin de fichier atteinte ?             }
   CurTokType : Integer;    { type du token courant (TOK_xxx)       }
   CurTokStr  : TString;    { valeur textuelle du token courant     }
-  CurTokNum  : LongInt;    { valeur entiere (TOK_NUMBER)           }
+  CurTokNum  : LongInt;    { valeur entiere (TOK_NUMBER/FLOAT)     }
+  CurTokScale: Integer;    { nb chiffres decimaux (TOK_FLOAT)      }
   CurTokKw   : Integer;    { code mot-cle (KW_xxx) ou KW_NONE     }
+  { ---- Suivi scale (point-virgule fixe) pour expressions ---- }
+  CurExprScale : Integer;  { echelle decimale de EAX apres un    }
+                           { ParsePrimary/ParseExpr : 0 = entier }
 
 {$IFDEF FPC}
   { Variables binaires }
@@ -1096,6 +1100,7 @@ Function  ParseAndExpr : Integer; Forward;
 { ============================================================ }
 
 Procedure GenStoreVar32(SymIdx : Integer); Forward;
+Procedure GenRescaleReg(Const Reg : String; FromScale, ToScale : Integer); Forward;
 
 { ============================================================ }
 { DECLARATIONS FORWARD (IF / ELSEIF / ELSE / ENDIF TODO 10)    }
@@ -1616,6 +1621,7 @@ Begin
     N   := Ord(C) - 48;
     S   := C;
     Flt := False;
+    CurTokScale := 0;
     LexAdvance;
     { Partie entiere }
     While (LexColNo <= Length(LexLine)) And
@@ -1637,13 +1643,18 @@ Begin
         While (LexColNo <= Length(LexLine)) And
               (LexCurChar >= '0') And (LexCurChar <= '9') Do
         Begin
+          { Accumuler les chiffres fractionnaires dans N et       }
+          { suivre l echelle (nombre de chiffres apres le point). }
+          N := N * 10 + (Ord(LexCurChar) - 48);
+          Inc(CurTokScale);
           S := S + LexCurChar;
           LexAdvance;
         End;
       End;
       { Sinon le '.' est le terminateur d'instruction, on ne le consomme pas }
     End;
-    { Exposant E/e }
+    { Exposant E/e : conserve tel quel dans S, la valeur numerique  }
+    { reste l integer deja accumule (pas de support E dans codegen). }
     If (LexColNo <= Length(LexLine)) And
        ((LexCurChar = 'E') Or (LexCurChar = 'e')) Then
     Begin
@@ -2402,7 +2413,7 @@ Function SymByteSize(SymIdx : Integer) : Integer;
 Begin
   Case SymTab[SymIdx].DataType Of
     TYPE_I      : SymByteSize := 4;   { DD = 4 octets   }
-    TYPE_F      : SymByteSize := 8;   { DQ = 8 octets   }
+    TYPE_F      : SymByteSize := 4;   { fixed-point 32b (pas de FPU) }
     TYPE_C      : SymByteSize := SymTab[SymIdx].CharLen;
     TYPE_N      : SymByteSize := SymTab[SymIdx].CharLen;
     TYPE_D      : SymByteSize := 8;   { YYYYMMDD         }
@@ -2492,8 +2503,21 @@ Begin
   Else If StrUpperCase(CurTokStr) = 'F' Then
   Begin
     SymTab[SymIdx].DataType := TYPE_F;
-    SymTab[SymIdx].CharLen  := 8;
+    SymTab[SymIdx].CharLen  := 4;
+    { TYPE F = virgule fixe logicielle, 6 decimales par defaut }
+    If SymTab[SymIdx].DecScale <= 0 Then
+      SymTab[SymIdx].DecScale := 6;
     Consume;
+    { Accepter DECIMALS n egalement pour TYPE F (redefinit l echelle) }
+    If TokIsKw(KW_DECIMALS) Then
+    Begin
+      Consume;
+      If CurTokType = TOK_NUMBER Then
+      Begin
+        SymTab[SymIdx].DecScale := CurTokNum;
+        Consume;
+      End;
+    End;
   End
   Else If StrUpperCase(CurTokStr) = 'C' Then
   Begin
@@ -2595,17 +2619,86 @@ Begin
   End;
 End;
 
+{ ---- ParseDecimalStr : convertir "sNNN.FFF" en entier scale ------
+  S : chaine ASCII (signe optionnel + entier + '.' + fractionnel)
+  Scale : nombre de decimales cible (10^Scale)
+  Retourne la valeur entiere signee representant S * 10^Scale.
+  Les chiffres fractionnaires au-dela de Scale sont tronques.
+  Les chiffres manquants sont completes par des zeros.              }
+Function ParseDecimalStr(Const S : TString; Scale : Integer) : LongInt;
+Var I, J, Len, DotPos, Frac : Integer;
+    Neg : Boolean;
+    IntPart, FracPart, Mul : LongInt;
+Begin
+  Neg := False; IntPart := 0; FracPart := 0;
+  Len := Length(S); I := 1;
+  While (I <= Len) And (S[I] = ' ') Do Inc(I);
+  If (I <= Len) And ((S[I] = '+') Or (S[I] = '-')) Then
+  Begin
+    If S[I] = '-' Then Neg := True;
+    Inc(I);
+  End;
+  DotPos := 0;
+  J := I;
+  While (J <= Len) And (DotPos = 0) Do
+  Begin
+    If S[J] = '.' Then DotPos := J;
+    Inc(J);
+  End;
+  { Partie entiere }
+  J := I;
+  While (J <= Len) And (S[J] >= '0') And (S[J] <= '9') Do
+  Begin
+    IntPart := IntPart * 10 + (Ord(S[J]) - 48);
+    Inc(J);
+  End;
+  { Partie fractionnaire }
+  Frac := 0;
+  If DotPos > 0 Then
+  Begin
+    J := DotPos + 1;
+    While (J <= Len) And (S[J] >= '0') And (S[J] <= '9') And (Frac < Scale) Do
+    Begin
+      FracPart := FracPart * 10 + (Ord(S[J]) - 48);
+      Inc(Frac);
+      Inc(J);
+    End;
+  End;
+  { Completer par des zeros si la partie fractionnaire est trop courte }
+  While Frac < Scale Do
+  Begin
+    FracPart := FracPart * 10;
+    Inc(Frac);
+  End;
+  { Multiplicateur 10^Scale pour la partie entiere }
+  Mul := 1;
+  For J := 1 To Scale Do Mul := Mul * 10;
+  IntPart := IntPart * Mul + FracPart;
+  If Neg Then IntPart := -IntPart;
+  ParseDecimalStr := IntPart;
+End;
+
 { ---- ParseValue : parser la clause VALUE d une declaration --- }
 { Syntaxes :
     VALUE 42
     VALUE 'texte'
+    VALUE '3.14'       (TYPE F / TYPE P : scale applique)
+    VALUE 3.14         (litteral flottant, idem)
     VALUE -5
     VALUE IS INITIAL                                               }
 Procedure ParseValue(SymIdx : Integer);
+Var IsScaled : Boolean;
+    Scale    : Integer;
+    Mul      : LongInt;
+    J        : Integer;
 Begin
   If Not TokIsKw(KW_VALUE) Then Exit;
   Consume;
   SymTab[SymIdx].HasInit := True;
+  Scale := SymTab[SymIdx].DecScale;
+  If Scale < 0 Then Scale := 0;
+  IsScaled := (SymTab[SymIdx].DataType = TYPE_F) Or
+              (SymTab[SymIdx].DataType = TYPE_P);
   { VALUE IS INITIAL -> valeur zero }
   If TokIsKw(KW_IS) Then
   Begin
@@ -2616,22 +2709,97 @@ Begin
   End;
   If CurTokType = TOK_NUMBER Then
   Begin
-    SymTab[SymIdx].InitNum := CurTokNum;
+    If IsScaled Then
+    Begin
+      { Entier -> scaler vers DecScale }
+      Mul := 1;
+      For J := 1 To Scale Do Mul := Mul * 10;
+      SymTab[SymIdx].InitNum := CurTokNum * Mul;
+    End
+    Else
+      SymTab[SymIdx].InitNum := CurTokNum;
     SymTab[SymIdx].InitStr := IntToStr_(CurTokNum);
+    Consume;
+  End
+  Else If CurTokType = TOK_FLOAT Then
+  Begin
+    { CurTokNum = valeur * 10^CurTokScale. Rescaler vers DecScale. }
+    If IsScaled Then
+    Begin
+      If CurTokScale <= Scale Then
+      Begin
+        Mul := 1;
+        For J := 1 To (Scale - CurTokScale) Do Mul := Mul * 10;
+        SymTab[SymIdx].InitNum := CurTokNum * Mul;
+      End
+      Else
+      Begin
+        Mul := 1;
+        For J := 1 To (CurTokScale - Scale) Do Mul := Mul * 10;
+        SymTab[SymIdx].InitNum := CurTokNum Div Mul;
+      End;
+    End
+    Else
+    Begin
+      { TYPE I : tronquer la partie fractionnaire }
+      Mul := 1;
+      For J := 1 To CurTokScale Do Mul := Mul * 10;
+      SymTab[SymIdx].InitNum := CurTokNum Div Mul;
+    End;
+    SymTab[SymIdx].InitStr := CurTokStr;
     Consume;
   End
   Else If CurTokType = TOK_STRING Then
   Begin
+    If IsScaled Then
+      SymTab[SymIdx].InitNum := ParseDecimalStr(CurTokStr, Scale)
+    Else
+      SymTab[SymIdx].InitNum := 0;
     SymTab[SymIdx].InitStr := CurTokStr;
-    SymTab[SymIdx].InitNum := 0;
     Consume;
   End
   Else If CurTokType = TOK_MINUS Then
   Begin
     Consume;
-    SymTab[SymIdx].InitNum := -CurTokNum;
-    SymTab[SymIdx].InitStr := '-' + IntToStr_(CurTokNum);
-    If CurTokType = TOK_NUMBER Then Consume;
+    If CurTokType = TOK_FLOAT Then
+    Begin
+      If IsScaled Then
+      Begin
+        If CurTokScale <= Scale Then
+        Begin
+          Mul := 1;
+          For J := 1 To (Scale - CurTokScale) Do Mul := Mul * 10;
+          SymTab[SymIdx].InitNum := -(CurTokNum * Mul);
+        End
+        Else
+        Begin
+          Mul := 1;
+          For J := 1 To (CurTokScale - Scale) Do Mul := Mul * 10;
+          SymTab[SymIdx].InitNum := -(CurTokNum Div Mul);
+        End;
+      End
+      Else
+      Begin
+        Mul := 1;
+        For J := 1 To CurTokScale Do Mul := Mul * 10;
+        SymTab[SymIdx].InitNum := -(CurTokNum Div Mul);
+      End;
+      SymTab[SymIdx].InitStr := '-' + CurTokStr;
+      Consume;
+    End
+    Else
+    Begin
+      If IsScaled Then
+      Begin
+        Mul := 1;
+        For J := 1 To Scale Do Mul := Mul * 10;
+        SymTab[SymIdx].InitNum := -(CurTokNum * Mul);
+      End
+      Else
+        SymTab[SymIdx].InitNum := -CurTokNum;
+      SymTab[SymIdx].InitStr := '-' + IntToStr_(CurTokNum);
+      If CurTokType = TOK_NUMBER Then Consume;
+    End;
   End
   Else
     WarnMsg('Valeur VALUE non reconnue dans declaration');
@@ -2956,6 +3124,14 @@ Begin
   Lbl := SymTab[SymIdx].AsmLabel;
   If SC = STORE_CONSTANT Then
   Begin WarnMsg('Affectation a une CONSTANT ignoree'); Exit; End;
+  { Rescaler EAX pour les types virgule fixe (TYPE F / P)         }
+  { si l expression n etait pas deja au bon facteur d echelle.   }
+  If ((DT = TYPE_F) Or (DT = TYPE_P)) And
+     (CurExprScale <> SymTab[SymIdx].DecScale) Then
+  Begin
+    GenRescaleReg('EAX', CurExprScale, SymTab[SymIdx].DecScale);
+    CurExprScale := SymTab[SymIdx].DecScale;
+  End;
   { STORE_PARAM : parametre de FORM (TODO 13) }
   If SC = STORE_PARAM Then
   Begin
@@ -3011,6 +3187,50 @@ Begin
       EmitI('MOV     DWORD PTR [EBP' + IntToStr_(BP) + '], EAX')
     Else
       EmitI('MOV     DWORD PTR [' + Lbl + '], EAX');
+  End;
+End;
+
+{ ---- Pow10 : 10^N pour N >= 0 (LongInt) --------------------- }
+Function Pow10(N : Integer) : LongInt;
+Var I : Integer; R : LongInt;
+Begin
+  R := 1;
+  For I := 1 To N Do R := R * 10;
+  Pow10 := R;
+End;
+
+{ ---- GenRescaleReg : rescaler un registre (EAX ou EBX) ------
+  Multiplie par 10^(ToScale - FromScale) si delta positif,
+  divise sinon. Utilise IMUL imm32 ou IDIV EDI selon le cas.
+  Preserve tous les registres sauf le registre cible (et EDX). }
+Procedure GenRescaleReg(Const Reg : String; FromScale, ToScale : Integer);
+Var Delta : Integer; Mul : LongInt;
+Begin
+  Delta := ToScale - FromScale;
+  If Delta = 0 Then Exit;
+  If Delta > 0 Then
+  Begin
+    { Multiplier par 10^Delta }
+    Mul := Pow10(Delta);
+    EmitI('IMUL    ' + Reg + ', ' + Reg + ', ' + IntToStr_(Mul));
+  End
+  Else
+  Begin
+    { Diviser par 10^(-Delta) via IDIV EDI. Requiert Reg = EAX. }
+    Mul := Pow10(-Delta);
+    If Reg <> 'EAX' Then
+    Begin
+      EmitI('PUSH    EAX');
+      EmitI('MOV     EAX, ' + Reg);
+    End;
+    EmitI('MOV     EDI, ' + IntToStr_(Mul));
+    EmitI('CDQ');
+    EmitI('IDIV    EDI');
+    If Reg <> 'EAX' Then
+    Begin
+      EmitI('MOV     ' + Reg + ', EAX');
+      EmitI('POP     EAX');
+    End;
   End;
 End;
 
@@ -3158,12 +3378,15 @@ Begin
     TOK_NUMBER:
     Begin
       EmitI('MOV     EAX, ' + IntToStr_(CurTokNum));
+      CurExprScale := 0;
       Consume;
     End;
-    { Constante flottante (stub : partie entiere seulement) }
+    { Constante flottante : valeur scalee a CurTokScale decimales. }
+    { Pas de FPU : on manipule une valeur entiere x 10^scale.       }
     TOK_FLOAT:
     Begin
-      EmitI('MOV     EAX, ' + IntToStr_(CurTokNum) + '  ; FLOAT stub');
+      EmitI('MOV     EAX, ' + IntToStr_(CurTokNum));
+      CurExprScale := CurTokScale;
       Consume;
     End;
     { Chaine litterale }
@@ -3239,11 +3462,18 @@ Begin
           Begin
             GenLoadVar32(SymIdx);
             ParsePrimaryExpr := SymTab[SymIdx].DataType;
+            { Suivre l echelle pour les types en virgule fixe }
+            If (SymTab[SymIdx].DataType = TYPE_F) Or
+               (SymTab[SymIdx].DataType = TYPE_P) Then
+              CurExprScale := SymTab[SymIdx].DecScale
+            Else
+              CurExprScale := 0;
           End
           Else
           Begin
             EmitComment('Variable inconnue: ' + S + ' (suppose 0)');
             EmitI('XOR     EAX, EAX');
+            CurExprScale := 0;
           End;
         End;
       End;
@@ -3258,7 +3488,9 @@ End;
 
 { ---- ParseMulExpr : multiplication / division / MOD / DIV --- }
 Function ParseMulExpr : Integer;
-Var Op : Integer; IsMod, IsDiv : Boolean;
+Var Op : Integer;
+    IsMod, IsDiv : Boolean;
+    LScale, RScale, MaxScale : Integer;
 Begin
   ParseMulExpr := ParsePrimaryExpr;
   While (CurTokType = TOK_STAR) Or (CurTokType = TOK_SLASH)
@@ -3267,32 +3499,131 @@ Begin
     IsMod := TokIsKw(KW_MOD);
     IsDiv := TokIsKw(KW_DIV);
     Op := CurTokType; Consume;
+    LScale := CurExprScale;
     EmitI('PUSH    EAX');
     ParseMulExpr := ParsePrimaryExpr;
+    RScale := CurExprScale;
     EmitI('MOV     EBX, EAX');
     EmitI('POP     EAX');
     If IsMod Then
-      GenModDiv32(False)
+    Begin
+      { Aligner les echelles avant MOD entier }
+      MaxScale := LScale; If RScale > MaxScale Then MaxScale := RScale;
+      GenRescaleReg('EAX', LScale, MaxScale);
+      GenRescaleReg('EBX', RScale, MaxScale);
+      GenModDiv32(False);
+      CurExprScale := MaxScale;
+    End
     Else If IsDiv Then
-      GenModDiv32(True)
+    Begin
+      MaxScale := LScale; If RScale > MaxScale Then MaxScale := RScale;
+      GenRescaleReg('EAX', LScale, MaxScale);
+      GenRescaleReg('EBX', RScale, MaxScale);
+      GenModDiv32(True);
+      { Division entiere : resultat entier (scale 0) }
+      CurExprScale := 0;
+    End
+    Else If Op = TOK_STAR Then
+    Begin
+      { Multiplication 64 bits : IMUL EBX -> EDX:EAX = EAX * EBX.  }
+      { On garde l echelle du LHS : division par 10^RScale ensuite. }
+      EmitI('IMUL    EBX');
+      If RScale > 0 Then
+      Begin
+        EmitI('MOV     ECX, ' + IntToStr_(Pow10(RScale)));
+        EmitI('IDIV    ECX');
+      End;
+      CurExprScale := LScale;
+    End
+    Else If Op = TOK_SLASH Then
+    Begin
+      { Division exacte : pre-multiplier LHS (sur 64 bits) par      }
+      { 10^RScale pour preserver l echelle de la source.            }
+      If RScale > 0 Then
+      Begin
+        EmitI('MOV     ECX, ' + IntToStr_(Pow10(RScale)));
+        EmitI('IMUL    ECX');              { EDX:EAX = LHS * 10^rs }
+      End
+      Else
+        EmitI('CDQ');
+      EmitI('IDIV    EBX');
+      CurExprScale := LScale;
+    End
     Else
       GenBinOp32(Op);
   End;
 End;
 
-{ ---- ParseAddExpr : addition / soustraction ----------------- }
+{ ---- GenStrConcatEAX : &&, LHS=STRBUF, RHS=EAX ---------------
+  Ajoute la chaine pointee par EAX a la fin de STRBUF et retourne
+  l adresse de STRBUF dans EAX.                                    }
+Procedure GenStrConcatEAX;
+Begin
+  EmitI('MOV     ESI, EAX');
+  EmitI('LEA     EDI, [' + AB_RT_PFX + 'STRBUF]');
+  EmitI('CALL    ' + AB_RT_PFX + 'STRCONCAT');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'STRBUF]');
+End;
+
+{ ---- GenStrCopyToBuf : copier la chaine pointee par EAX vers
+  STRBUF et retourner son adresse dans EAX.                       }
+Procedure GenStrCopyToBuf;
+Begin
+  EmitI('MOV     ESI, EAX');
+  EmitI('LEA     EDI, [' + AB_RT_PFX + 'STRBUF]');
+  EmitI('MOV     ECX, 512');
+  EmitI('CALL    ' + AB_RT_PFX + 'STRCOPY');
+  EmitI('LEA     EAX, [' + AB_RT_PFX + 'STRBUF]');
+End;
+
+{ ---- ParseAddExpr : addition / soustraction / && -------------
+  &&  = concatenation de chaines via STRBUF.                      }
 Function ParseAddExpr : Integer;
 Var Op : Integer;
+    LScale, RScale, MaxScale : Integer;
+    InConcat : Boolean;
 Begin
   ParseAddExpr := ParseMulExpr;
-  While (CurTokType = TOK_PLUS) Or (CurTokType = TOK_MINUS) Do
+  InConcat := False;
+  While (CurTokType = TOK_PLUS) Or (CurTokType = TOK_MINUS)
+     Or (CurTokType = TOK_CONCAT) Do
   Begin
     Op := CurTokType; Consume;
-    EmitI('PUSH    EAX');
-    ParseAddExpr := ParseMulExpr;
-    EmitI('MOV     EBX, EAX');
-    EmitI('POP     EAX');
-    GenBinOp32(Op);
+    If Op = TOK_CONCAT Then
+    Begin
+      { && : copier LHS dans STRBUF au premier &&, puis concatener }
+      { le RHS. Les && suivants ajoutent simplement au STRBUF.      }
+      If Not InConcat Then
+      Begin
+        GenStrCopyToBuf;
+        InConcat := True;
+      End;
+      EmitI('PUSH    EAX');
+      ParseMulExpr;
+      EmitI('MOV     EBX, EAX');
+      EmitI('POP     EAX');
+      { EAX = &STRBUF (toujours), EBX = adresse RHS. Concat RHS.    }
+      EmitI('MOV     EAX, EBX');
+      GenStrConcatEAX;
+      ParseAddExpr := TYPE_C;
+      CurExprScale := 0;
+    End
+    Else
+    Begin
+      LScale := CurExprScale;
+      EmitI('PUSH    EAX');
+      ParseAddExpr := ParseMulExpr;
+      RScale := CurExprScale;
+      EmitI('MOV     EBX, EAX');
+      EmitI('POP     EAX');
+      { ADD/SUB : aligner les echelles. }
+      MaxScale := LScale; If RScale > MaxScale Then MaxScale := RScale;
+      If LScale <> MaxScale Then GenRescaleReg('EAX', LScale, MaxScale);
+      If RScale <> MaxScale Then GenRescaleReg('EBX', RScale, MaxScale);
+      GenBinOp32(Op);
+      CurExprScale := MaxScale;
+      InConcat := False;
+    End;
   End;
 End;
 
@@ -7305,8 +7636,14 @@ Begin
     Begin
       GenLoadVar32(SIdx);
       Case SymTab[SIdx].DataType Of
-        TYPE_I, TYPE_P:
+        TYPE_I :
           EmitI('CALL    ' + AB_RT_PFX + 'PRINTINT');
+        TYPE_F, TYPE_P :
+        Begin
+          { Virgule fixe : PRINTFIX avec le nombre de decimales du type }
+          EmitI('MOV     ECX, ' + IntToStr_(SymTab[SIdx].DecScale));
+          EmitI('CALL    ' + AB_RT_PFX + 'PRINTFIX');
+        End;
       Else
         EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
       End;
@@ -7460,6 +7797,84 @@ Begin
   EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
   EmitI('RET');
 
+  { ---- _ABRT_PRINTFIX : EAX=valeur signee scalee, ECX=decimales }
+  { Affiche la valeur en notation decimale avec le point decimal.  }
+  { Si ECX = 0, equivaut a PRINTINT. Utilise FIXBUF (32 octets).   }
+  EmitBlank;
+  EmitLabel(AB_RT_PFX + 'PRINTFIX');
+  EmitI('PUSH    EBX');
+  EmitI('PUSH    ECX');
+  EmitI('PUSH    EDX');
+  EmitI('PUSH    EDI');
+  EmitI('PUSH    ESI');
+  EmitI('MOV     ESI, ECX');           { ESI = nb decimales }
+  EmitI('PUSH    EAX');                { sauvegarder valeur signee }
+  EmitI('LEA     EDI, [' + AB_RT_PFX + 'FIXBUF+31]');
+  EmitI('MOV     BYTE PTR [EDI], 0');  { terminaison ASCIIZ }
+  EmitI('TEST    EAX, EAX');
+  EmitI('JNS     ' + AB_RT_PFX + 'PFX_POS');
+  EmitI('NEG     EAX');
+  EmitLabel(AB_RT_PFX + 'PFX_POS');
+  EmitI('MOV     EBX, 10');
+  EmitI('XOR     ECX, ECX');           { ECX = nb chiffres ecrits }
+  EmitLabel(AB_RT_PFX + 'PFX_LP');
+  EmitI('XOR     EDX, EDX');
+  EmitI('DIV     EBX');
+  EmitI('ADD     DL, 48');
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], DL');
+  EmitI('INC     ECX');
+  { Inserer le point decimal apres ESI chiffres }
+  EmitI('CMP     ECX, ESI');
+  EmitI('JNE     ' + AB_RT_PFX + 'PFX_NODOT');
+  EmitI('TEST    ESI, ESI');
+  EmitI('JZ      ' + AB_RT_PFX + 'PFX_NODOT');
+  { On vient d ecrire le ESI-ieme chiffre fractionnaire : le '.' }
+  { doit apparaitre AVANT (a une adresse superieure) le '0' de  }
+  { tete. En memoire on ecrit d abord le '.' (DEC EDI), puis le }
+  { '0' leader (DEC EDI).                                         }
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 46');   { '.' }
+  EmitI('INC     ECX');
+  EmitI('TEST    EAX, EAX');
+  EmitI('JNZ     ' + AB_RT_PFX + 'PFX_NODOT');
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 48');   { '0' leader }
+  EmitI('INC     ECX');
+  EmitLabel(AB_RT_PFX + 'PFX_NODOT');
+  EmitI('TEST    EAX, EAX');
+  EmitI('JNZ     ' + AB_RT_PFX + 'PFX_LP');
+  { Si le nombre de chiffres total est <= ESI (scale) : il      }
+  { manque la partie fractionnaire. Completer par des zeros     }
+  { jusqu a atteindre ESI chiffres, puis prefixer "0.".          }
+  EmitI('CMP     ECX, ESI');
+  EmitI('JGE     ' + AB_RT_PFX + 'PFX_SIGN');
+  EmitLabel(AB_RT_PFX + 'PFX_PAD');
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 48');
+  EmitI('INC     ECX');
+  EmitI('CMP     ECX, ESI');
+  EmitI('JL      ' + AB_RT_PFX + 'PFX_PAD');
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 46');  { '.' }
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 48');  { '0' entier leader }
+  EmitLabel(AB_RT_PFX + 'PFX_SIGN');
+  EmitI('POP     EAX');                { recuperer valeur signee }
+  EmitI('TEST    EAX, EAX');
+  EmitI('JNS     ' + AB_RT_PFX + 'PFX_DN');
+  EmitI('DEC     EDI');
+  EmitI('MOV     BYTE PTR [EDI], 45');  { '-' }
+  EmitLabel(AB_RT_PFX + 'PFX_DN');
+  EmitI('MOV     EAX, EDI');
+  EmitI('CALL    ' + AB_RT_PFX + 'PRINT');
+  EmitI('POP     ESI');
+  EmitI('POP     EDI');
+  EmitI('POP     EDX');
+  EmitI('POP     ECX');
+  EmitI('POP     EBX');
+  EmitI('RET');
+
   { NOTE: Les donnees runtime (HSTDOUT, WRITTEN, NUMBUF, CRLF_DATA, }
   { SPACE_DATA, STRBUF, CATBUF, tables) sont emises dans la section }
   { _DATA par EmitDataSeg. Ne PAS les emettre ici dans _TEXT car    }
@@ -7537,7 +7952,7 @@ Begin
        (SymTab[I].DataType <> TYPE_TABLE) Then
     Begin
       Case SymTab[I].DataType Of
-        TYPE_I, TYPE_P :
+        TYPE_I, TYPE_P, TYPE_F :
           Begin
             If SymTab[I].HasInit Then
               Emit(SymTab[I].AsmLabel + ' DD ' +
@@ -7545,8 +7960,6 @@ Begin
             Else
               Emit(SymTab[I].AsmLabel + ' DD 0');
           End;
-        TYPE_F :
-          Emit(SymTab[I].AsmLabel + ' DQ 0');
         TYPE_C, TYPE_N, TYPE_D, TYPE_T :
           Begin
             CharL := SymTab[I].CharLen;
@@ -7573,6 +7986,7 @@ Begin
   Emit(AB_RT_PFX + 'HSTDIN     DD 0');
   Emit(AB_RT_PFX + 'WRITTEN    DD 0');
   Emit(AB_RT_PFX + 'NUMBUF     DB 12 DUP(0)');
+  Emit(AB_RT_PFX + 'FIXBUF     DB 32 DUP(0)');
   Emit(AB_RT_PFX + 'CRLF_DATA  DB 13, 10, 0');
   Emit(AB_RT_PFX + 'SPACE_DATA DB 32, 0');
   Emit(AB_RT_PFX + 'STRBUF     DB 512 DUP(0)');
@@ -9331,6 +9745,13 @@ Begin
     CommaPos := 0;
     For I := 1 To Length(Op2) Do
       If Op2[I] = ',' Then Begin CommaPos := I; Break; End;
+    If (Length(Op2) = 0) Then
+    Begin
+      { IMUL r32 (1-operand) : F7 /5 -> EDX:EAX = EAX * r32 }
+      If R1 >= 0 Then
+      Begin BinEmitByte($F7); BinEmitByte($E8 Or R1); End;
+      Exit;
+    End;
     If CommaPos > 0 Then
     Begin
       { IMUL reg, reg, imm (3-operand form) }
