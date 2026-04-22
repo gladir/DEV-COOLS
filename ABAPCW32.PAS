@@ -5374,8 +5374,17 @@ End;
 {     EXCEPTIONS (les parametres sont actuellement ignores).     }
 {   - Si la FUNCTION est definie dans le meme fichier, emet un   }
 {     vrai CALL sur son label _ABF_FM_xxx (Win32 STDCALL).       }
-{   - Sinon (module externe), laisse un commentaire stub et      }
-{     positionne SY-SUBRC = 0.                                   }
+{   - Sinon (module externe), resolution dynamique sans linker : }
+{        LoadLibraryA("NOM_FM.DLL") puis                          }
+{        GetProcAddress(h, "NOM_FM").                             }
+{     Convention :                                                }
+{       - DLL attendue : <NOM_FM>.DLL (nom du FM en majuscules).  }
+{       - Export attendu : <NOM_FM> en ASCIIZ non decore         }
+{         (cdecl ou stdcall sans arguments pour l instant :      }
+{         le marshalling des EXPORTING/IMPORTING/TABLES vers     }
+{         la FM externe n est pas encore genere).                 }
+{       - SY-SUBRC = 0 si l appel a eu lieu, 4 sinon (DLL ou     }
+{         export introuvable).                                    }
 { ============================================================ }
 Procedure ParseCallFunction;
 Var FMName      : TString;
