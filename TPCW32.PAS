@@ -13764,28 +13764,15 @@ Begin
       Exit;
     End;
 
-    { _SELECTPALETTE(n) -> stub returns 0 }
+    { _SELECTPALETTE(n) -> renvoie n (palette selectionnee) en succes.  }
+    { ParseExpr laisse deja n dans le registre de retour de la cible ;  }
+    { aucun forcage a 0 n'est necessaire. C'est le comportement du      }
+    { _SELECTPALETTE original de QuickC/QuickPascal (retour = palette   }
+    { selectionnee), et correspond au modele de _SETTEXTROWS.           }
     If Up = '_SELECTPALETTE' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
-      Case Opts.DestTarget Of
-        DEST_68000, DEST_ATARIST, DEST_AMIGA:
-          EmitInstr('MOVEQ #0,D0');
-        DEST_DOSR, DEST_DOSP:
-          EmitInstr('XOR AX,AX');
-        DEST_Z80:
-          EmitInstr('LD HL,0');
-        DEST_6502:
-          EmitInstr('LDA #0');
-        DEST_6809:
-        Begin
-          EmitInstr('CLRA');
-          EmitInstr('CLRB');
-        End;
-        Else
-          EmitInstr('XOR EAX,EAX');
-      End;
       Exit;
     End;
 
