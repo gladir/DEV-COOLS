@@ -4611,6 +4611,7 @@ Begin
   EmitRaw('EXTRN _SetConsoleScreenBufferSize@8:NEAR');
   EmitRaw('EXTRN _SetConsoleWindowInfo@12:NEAR');
   EmitRaw('EXTRN _SetConsoleCursorInfo@8:NEAR');
+  EmitRaw('EXTRN _GetConsoleCursorInfo@8:NEAR');
   EmitRaw('EXTRN _WriteConsoleOutputAttribute@20:NEAR');
   EmitComment('--- user32.dll ---');
   EmitRaw('EXTRN _GetCursorPos@4:NEAR');
@@ -13946,15 +13947,27 @@ Begin
       Exit;
     End;
 
-    { _GETTEXTCURSOR -> stub returns 0 }
+    { _GETTEXTCURSOR -> retourne la forme du curseur texte courant.           }
+    { Retour (16 bits) : octet haut = scanline debut, octet bas = scanline fin }
+    { Bit 5 de l octet haut = 1 si curseur cache.                              }
+    { DOS 16 bits : INT 10h AH=03h inline, retourne CX dans AX.               }
+    { Win32       : appelle _TPRT_GETTEXTCURSOR.                               }
     If Up = '_GETTEXTCURSOR' Then
     Begin
       Inc(EP);
       Case Opts.DestTarget Of
+        DEST_DOSR, DEST_DOSP:
+        Begin
+          { INT 10h AH=03h : lit la forme et la position du curseur.  }
+          { DH=ligne, DL=col, CH=scanline debut, CL=scanline fin.      }
+          { Retourner CX (forme) dans AX.                              }
+          EmitInstr('MOV AH,03h');
+          EmitInstr('XOR BH,BH');
+          EmitInstr('INT 10h');
+          EmitInstr('MOV AX,CX');  { AX = forme curseur }
+        End;
         DEST_68000, DEST_ATARIST, DEST_AMIGA:
           EmitInstr('MOVEQ #0,D0');
-        DEST_DOSR, DEST_DOSP:
-          EmitInstr('XOR AX,AX');
         DEST_Z80:
           EmitInstr('LD HL,0');
         DEST_6502:
@@ -13965,7 +13978,10 @@ Begin
           EmitInstr('CLRB');
         End;
         Else
-          EmitInstr('XOR EAX,EAX');
+        Begin
+          { Win32 : appel runtime _TPRT_GETTEXTCURSOR -> EAX }
+          EmitInstr('CALL ' + TP_RT_PFX + 'GETTEXTCURSOR');
+        End;
       End;
       Exit;
     End;
@@ -24834,6 +24850,31 @@ Begin
   EmitInstr('CALL _SetConsoleCursorInfo@8');
   EmitInstr('MOV EAX,EBX');                     { retourner l etat precedent }
   EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_GETTEXTCURSOR : lire la forme du curseur texte (Win32) - }
+  { Retour : EAX = forme curseur compatible DOS-16 bits :                  }
+  {   octet haut = scanline debut (bit 5=1 si cache), octet bas = fin.     }
+  { Synthese depuis CRT_CURSVIS et CRT_CURINFO via GetConsoleCursorInfo.   }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'GETTEXTCURSOR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH OFFSET CRT_CURINFO');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _GetConsoleCursorInfo@8');     { met a jour CRT_CURINFO   }
+  { CRT_CURINFO+0 = dwSize (1..100), CRT_CURINFO+4 = bVisible (0 ou 1)    }
+  EmitInstr('MOV EAX,DWORD PTR [CRT_CURINFO+4]'); { EAX = bVisible          }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'GTC_HIDE');
+  { Curseur visible : forme standard DOS CH=06h, CL=07h -> AX=0607h        }
+  EmitInstr('MOV EAX,0607h');
+  EmitInstr('JMP ' + TP_RT_PFX + 'GTC_DONE');
+  EmitLabel(TP_RT_PFX + 'GTC_HIDE');
+  { Curseur cache : CH=20h (bit 5 set), CL=00h -> AX=2000h                 }
+  EmitInstr('MOV EAX,2000h');
+  EmitLabel(TP_RT_PFX + 'GTC_DONE');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
