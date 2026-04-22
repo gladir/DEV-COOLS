@@ -4610,6 +4610,7 @@ Begin
   EmitComment('--- kernel32.dll ---');
   EmitRaw('EXTRN _SetConsoleScreenBufferSize@8:NEAR');
   EmitRaw('EXTRN _SetConsoleWindowInfo@12:NEAR');
+  EmitRaw('EXTRN _SetConsoleCursorInfo@8:NEAR');
   EmitRaw('EXTRN _WriteConsoleOutputAttribute@20:NEAR');
   EmitComment('--- user32.dll ---');
   EmitRaw('EXTRN _GetCursorPos@4:NEAR');
@@ -4667,6 +4668,8 @@ Begin
   EmitRaw('CRT_NWRT  DD 0');           { nombre de cellules ecrites            }
   EmitRaw('CRT_SCROLL DB 16 DUP(0)');  { SMALL_RECT pour ScrollConsoleScreenBuffer }
   EmitRaw('CRT_FILL   DD 0,0');        { CHAR_INFO (char + attr) pour scroll fill  }
+  EmitRaw('CRT_CURSVIS DD 1');         { visibilite curseur texte (1=visible)       }
+  EmitRaw('CRT_CURINFO DD 25,1');      { CONSOLE_CURSOR_INFO: dwSize=25, bVisible=1 }
   EmitBlankLine;
 
   { Variables DOS (TODO 19) }
@@ -13873,27 +13876,71 @@ Begin
       Exit;
     End;
 
-    { _DISPLAYCURSOR(toggle) -> stub returns 0 }
+    { _DISPLAYCURSOR(toggle) -> affiche ou cache le curseur texte.            }
+    { toggle = 0 (_GCURSOROFF) : cache le curseur.                            }
+    { toggle != 0 (_GCURSORON) : affiche le curseur.                          }
+    { DOS 16 bits : INT 10h AH=01h inline (forme curseur).                    }
+    { Win32       : appelle _TPRT_DISPLAYCURSOR via SetConsoleCursorInfo.      }
+    { Retour : etat precedent (0=cache, -1=visible).                          }
     If Up = '_DISPLAYCURSOR' Then
     Begin
       Inc(EP);
-      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
-      Case Opts.DestTarget Of
-        DEST_68000, DEST_ATARIST, DEST_AMIGA:
-          EmitInstr('MOVEQ #0,D0');
-        DEST_DOSR, DEST_DOSP:
-          EmitInstr('XOR AX,AX');
-        DEST_Z80:
-          EmitInstr('LD HL,0');
-        DEST_6502:
-          EmitInstr('LDA #0');
-        DEST_6809:
-        Begin
-          EmitInstr('CLRA');
-          EmitInstr('CLRB');
+      If EPMatch('(') Then
+      Begin
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { Apres ParseExpr, AX contient le toggle (0=cacher, autre=montrer) }
+            ParseExpr(PI);
+            Lbl     := LabelGen;  { label branche "cacher" }
+            LblDone := LabelGen;  { label de fin           }
+            { Sauvegarder l etat precedent dans AX (retour) avant de modifier }
+            EmitInstr('PUSH AX');           { sauver toggle demande }
+            { Lire l etat precedent du curseur via INT 10h AH=03h (CH bit 5) }
+            EmitInstr('MOV AH,03h');
+            EmitInstr('XOR BH,BH');
+            EmitInstr('INT 10h');           { DX=pos, CX=shape }
+            EmitInstr('TEST CH,20h');       { bit 5 de CH = curseur cache }
+            EmitInstr('JNZ ' + LblDone);   { CH bit5=1 -> etait cache -> retour 0 }
+            EmitInstr('MOV AX,-1');         { etait visible -> retour -1 }
+            EmitLabel(LblDone);
+            EmitInstr('XCHG AX,[SP]');     { etat precedent sur la pile, toggle dans AX }
+            { Brancher selon le toggle demande }
+            EmitInstr('TEST AX,AX');
+            EmitInstr('JZ ' + Lbl);        { toggle=0 -> cacher }
+            { Montrer le curseur : CH=06h, CL=07h }
+            EmitInstr('MOV CX,0607h');
+            EmitInstr('MOV AH,01h');
+            EmitInstr('INT 10h');
+            EmitInstr('JMP ' + LblLoop);
+            EmitLabel(Lbl);
+            { Cacher le curseur : CH=20h (bit 5 = off) }
+            EmitInstr('MOV CX,2000h');
+            EmitInstr('MOV AH,01h');
+            EmitInstr('INT 10h');
+            EmitLabel(LblLoop);
+            EmitInstr('POP AX');           { AX = etat precedent }
+          End;
+          Else
+          Begin
+            { Win32 : appel runtime _TPRT_DISPLAYCURSOR([ESP+4]=toggle -> EAX) }
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'DISPLAYCURSOR');
+            EmitInstr('ADD ESP,4');
+          End;
+        End; { Case }
+        EPMatch(')');
+      End
+      Else
+      Begin
+        { sans argument : retourner 0 }
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+            EmitInstr('XOR AX,AX');
+          Else
+            EmitInstr('XOR EAX,EAX');
         End;
-        Else
-          EmitInstr('XOR EAX,EAX');
       End;
       Exit;
     End;
@@ -24748,6 +24795,43 @@ Begin
   EmitInstr('RET');
   EmitLabel(TP_RT_PFX + 'SETR_DN');
   EmitInstr('XOR EAX,EAX');                     { retourner 0 : valeur invalide }
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_DISPLAYCURSOR : afficher/cacher le curseur (Win32) -- }
+  { Parametre : [ESP+4] = toggle (0=cacher, autre=montrer)             }
+  { Retour    : EAX = etat precedent (0=cache, -1=visible)             }
+  { Utilise SetConsoleCursorInfo(HSTDOUT, &CRT_CURINFO)                }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'DISPLAYCURSOR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  { Lire l etat precedent depuis CRT_CURSVIS }
+  EmitInstr('MOV EBX,DWORD PTR [CRT_CURSVIS]');  { EBX = etat precedent (1=visible) }
+  { Calculer la valeur de retour : etat precedent -> -1 si visible, 0 si cache }
+  EmitInstr('TEST EBX,EBX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'DC_PREV0');
+  EmitInstr('MOV EBX,-1');                       { etait visible -> -1 }
+  EmitLabel(TP_RT_PFX + 'DC_PREV0');
+  { EBX = valeur de retour ; maintenant appliquer le nouveau toggle }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');        { EAX = toggle demande }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'DC_HIDE');
+  { Montrer le curseur : CRT_CURSVIS=1, CRT_CURINFO.bVisible=1 }
+  EmitInstr('MOV DWORD PTR [CRT_CURSVIS],1');
+  EmitInstr('MOV DWORD PTR [CRT_CURINFO+4],1'); { bVisible = TRUE }
+  EmitInstr('JMP ' + TP_RT_PFX + 'DC_CALL');
+  EmitLabel(TP_RT_PFX + 'DC_HIDE');
+  { Cacher le curseur : CRT_CURSVIS=0, CRT_CURINFO.bVisible=0 }
+  EmitInstr('MOV DWORD PTR [CRT_CURSVIS],0');
+  EmitInstr('MOV DWORD PTR [CRT_CURINFO+4],0'); { bVisible = FALSE }
+  EmitLabel(TP_RT_PFX + 'DC_CALL');
+  EmitInstr('PUSH OFFSET CRT_CURINFO');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _SetConsoleCursorInfo@8');
+  EmitInstr('MOV EAX,EBX');                     { retourner l etat precedent }
   EmitInstr('POP EBX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
