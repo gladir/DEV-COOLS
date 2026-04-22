@@ -6873,6 +6873,10 @@ Begin
 
   { ---- _ABRT_STR_SHIFT_R : EAX=ptr, ECX=count -> shift right -- }
   { Pad with spaces on the left.                                   }
+  { Note: la boucle de copie octet-par-octet modifie AL et donc     }
+  { corrompt l octet bas de EAX. On sauvegarde donc le pointeur    }
+  { sur la pile avant la boucle et on le restaure dans EDI pour la }
+  { phase de padding.                                               }
   EmitBlank;
   EmitLabel(AB_RT_PFX + 'STR_SHIFT_R');
   EmitI('PUSH    ESI');
@@ -6884,13 +6888,15 @@ Begin
   EmitI('MOV     EDX, EAX');       { EDX = length }
   EmitI('POP     ECX');
   EmitI('POP     EAX');
-  { Move string right: copy from end to end+count }
+  { Sauvegarder le pointeur (EAX) : il sera corrompu par MOV AL,[..] }
+  EmitI('PUSH    EAX');
+  { Move string right: copy from end to end+count                 }
+  { La premiere iteration copie le '0' final en ptr+len+count,    }
+  { ce qui termine correctement la nouvelle chaine.               }
   EmitI('LEA     ESI, [EAX+EDX]');       { ESI = ptr+len (at null) }
-  { EDI = ptr+len+count = EAX+EDX+ECX (3 registres impossible en x86) }
   EmitI('LEA     EDI, [EAX+EDX]');
-  EmitI('ADD     EDI, ECX');
-  EmitI('MOV     BYTE PTR [EDI+1], 0');  { null terminate }
-  EmitI('INC     EDX');                  { include null }
+  EmitI('ADD     EDI, ECX');             { EDI = ptr+len+count    }
+  EmitI('INC     EDX');                  { include null           }
   EmitLabel(AB_RT_PFX + 'SSHR_LP');
   EmitI('MOV     AL, BYTE PTR [ESI]');
   EmitI('MOV     BYTE PTR [EDI], AL');
@@ -6898,15 +6904,8 @@ Begin
   EmitI('DEC     EDI');
   EmitI('DEC     EDX');
   EmitI('JNZ     ' + AB_RT_PFX + 'SSHR_LP');
-  { Fill left with spaces }
-  EmitI('POP     EDI');            { restore original EDI from stack }
-  EmitI('POP     ESI');
-  { Actually we need to fill. Reload EAX from stack. }
-  { Simpler: re-push and fill directly. }
-  EmitI('PUSH    ESI');
-  EmitI('PUSH    EDI');
-  { EAX still points to string start. ECX = count }
-  EmitI('MOV     EDI, EAX');
+  { Fill left with spaces : recuperer le ptr sauve dans EDI       }
+  EmitI('POP     EDI');                  { EDI = ptr original     }
   EmitLabel(AB_RT_PFX + 'SSHR_PAD');
   EmitI('TEST    ECX, ECX');
   EmitI('JZ      ' + AB_RT_PFX + 'SSHR_DN');
@@ -6915,8 +6914,8 @@ Begin
   EmitI('DEC     ECX');
   EmitI('JMP     ' + AB_RT_PFX + 'SSHR_PAD');
   EmitLabel(AB_RT_PFX + 'SSHR_DN');
-  EmitI('POP     EDI');
-  EmitI('POP     ESI');
+  EmitI('POP     EDI');                  { restore caller EDI     }
+  EmitI('POP     ESI');                  { restore caller ESI     }
   EmitI('RET');
 
   { ---- _ABRT_STR_FIND : ESI=pattern, EDI=string -> EAX=offset - }
