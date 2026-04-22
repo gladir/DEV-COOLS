@@ -691,6 +691,8 @@ Type
     InstTail    : PInstField;   { dernier champ d instance               }
     InstCount   : Integer;      { nombre de champs d instance            }
     InstSize    : Integer;      { taille totale de l objet en octets     }
+    MetaLabel   : TString;      { label ASM de la table de metadata      }
+    MetaCount   : Integer;      { nb d entrees attrs dans la metadata    }
   End;
 
 Var
@@ -1496,6 +1498,7 @@ Function  FindClass(Const N : TString) : Integer; Forward;
 Function  AddClass(Const N : TString; SIdx : Integer) : Integer; Forward;
 Function  FindInstField(CIdx : Integer;
                         Const FldName : TString) : PInstField; Forward;
+Function  ClassHasValidation(CIdx : Integer) : Boolean; Forward;
 Procedure ParseClassDecl; Forward;
 
 { Forward declarations for TODO 18 }
@@ -4322,13 +4325,32 @@ End;
 {   Ecrire le segment .DATA depuis DataTab et StrLitTab         }
 { ------------------------------------------------------------ }
 
+Procedure EmitValMetadata; Forward;
+
 Procedure EmitDataSeg;
 Var
   I, J  : Integer;
   S     : TString;
   Ch    : Char;
   InStr : Boolean;
+  M     : PValMember;
+  A     : PValAttr;
 Begin
+  { Enregistrer tous les labels de strings necessaires a la metadata }
+  { avant d emettre le StrLitTab (sinon labels non definis).          }
+  M := ValMemberHead;
+  While M <> NIL Do
+  Begin
+    AddStrLit(M^.MemberName);
+    A := M^.AttrHead;
+    While A <> NIL Do
+    Begin
+      If A^.StrArg <> '' Then AddStrLit(A^.StrArg);
+      A := A^.Next;
+    End;
+    M := M^.Next;
+  End;
+
   EmitRaw('.DATA');
   EmitBlankLine;
 
@@ -4392,6 +4414,97 @@ Begin
     End;
   End;
   EmitBlankLine;
+
+  { Tables de metadata de validation (DataAnnotations). }
+  EmitValMetadata;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitValMetadata                                               }
+{   Pour chaque classe ayant des membres annotes, emettre une  }
+{   table de metadata dans .DATA :                             }
+{     _CSC_META_<ClassName>:                                    }
+{       DD kind, fieldOffset, arg1, arg2, strArgPtr, fieldName  }
+{       ... (une ligne par attribut)                            }
+{       DD 0, 0, 0, 0, 0, 0   (terminator)                      }
+{   Enregistre le label dans ClassTab[I].MetaLabel et           }
+{   met a jour MetaCount.                                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitValMetadata;
+Var
+  I       : Integer;
+  M       : PValMember;
+  A       : PValAttr;
+  Fld     : PInstField;
+  Lbl     : TString;
+  FldLbl  : TString;
+  StrLbl  : TString;
+  Count   : Integer;
+  FldOffs : Integer;
+Begin
+  For I := 0 To ClassCount - 1 Do
+  Begin
+    { Compter les attributs pour cette classe }
+    Count := 0;
+    M := ValMemberHead;
+    While M <> NIL Do
+    Begin
+      If StrLowerCase(M^.ClassName) = StrLowerCase(ClassTab[I].Name) Then
+        Count := Count + M^.AttrCount;
+      M := M^.Next;
+    End;
+
+    If Count = 0 Then Continue;
+
+    Lbl := '_CSC_META_' + ClassTab[I].Name;
+    ClassTab[I].MetaLabel := Lbl;
+    ClassTab[I].MetaCount := Count;
+
+    EmitBlankLine;
+    EmitComment('Metadata de validation pour ' + ClassTab[I].Name);
+    EmitRaw(Lbl + ':');
+
+    { Parcourir les membres annotes de cette classe }
+    M := ValMemberHead;
+    While M <> NIL Do
+    Begin
+      If StrLowerCase(M^.ClassName) = StrLowerCase(ClassTab[I].Name) Then
+      Begin
+        { Trouver l offset du champ (si existe) }
+        Fld := FindInstField(I, M^.MemberName);
+        If Fld <> NIL Then
+          FldOffs := Fld^.Offset
+        Else
+          FldOffs := -1;
+
+        { Label du nom de champ pour messages }
+        FldLbl := AddStrLit(M^.MemberName);
+
+        { Emettre une ligne par attribut }
+        A := M^.AttrHead;
+        While A <> NIL Do
+        Begin
+          If A^.StrArg <> '' Then
+            StrLbl := 'OFFSET ' + AddStrLit(A^.StrArg)
+          Else
+            StrLbl := '0';
+
+          EmitRaw('        DD ' + IntToStr_(A^.Kind)
+                  + ', ' + IntToStr_(FldOffs)
+                  + ', ' + IntToStr_(A^.Arg1)
+                  + ', ' + IntToStr_(A^.Arg2)
+                  + ', ' + StrLbl
+                  + ', OFFSET ' + FldLbl);
+          A := A^.Next;
+        End;
+      End;
+      M := M^.Next;
+    End;
+
+    { Terminator }
+    EmitRaw('        DD 0, 0, 0, 0, 0, 0');
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -4633,6 +4746,19 @@ Begin
 
   { Message d erreur pour PANIC (TODO 24) }
   DataAdd('_CSC_PANIC_MSG', DK_STR, 0, 'Runtime error: ');
+
+  { Messages pour la validation DataAnnotations }
+  DataAdd('_CSC_VMSG_SEP',   DK_STR, 0, ' : ');
+  DataAdd('_CSC_VMSG_REQ',   DK_STR, 0, 'champ requis');
+  DataAdd('_CSC_VMSG_SLEN',  DK_STR, 0, 'longueur invalide');
+  DataAdd('_CSC_VMSG_MAIL',  DK_STR, 0, 'email invalide');
+  DataAdd('_CSC_VMSG_PHONE', DK_STR, 0, 'telephone invalide');
+  DataAdd('_CSC_VMSG_RANGE', DK_STR, 0, 'valeur hors plage');
+  DataAdd('_CSC_VMSG_REGEX', DK_STR, 0, 'motif invalide');
+  DataAdd('_CSC_VMSG_MINLN', DK_STR, 0, 'trop court');
+  DataAdd('_CSC_VMSG_MAXLN', DK_STR, 0, 'trop long');
+  DataAdd('_CSC_VMSG_THROW', DK_STR, 0,
+          'ValidationException : objet invalide');
 
   { Ajouter les constantes chaines du StrLitTab existant }
   { (Elles seront peuplees pendant l analyse, puis emises }
@@ -5320,6 +5446,8 @@ Var
   TofTypeName      : TString;  { nom du type pour typeof (TODO 23)   }
   Depth            : Integer;  { profondeur de parentheses (new T()) }
   Fld              : PInstField; { champ d instance trouve           }
+  QLow             : TString;
+  ArgCls           : Integer;
 Begin
   { --- Literal entier --- }
   If CurToken.Kind = TK_INTEGER Then
@@ -5663,6 +5791,57 @@ Begin
       Idx := SymFind(QualName);
       Consume;  { consommer ( }
       ArgCount := 0;
+
+      { Detection Validator.ValidateObject / TryValidateObject       }
+      QLow := StrLowerCase(QualName);
+      If (QLow = 'validator.validateobject')
+         Or (QLow = 'validator.tryvalidateobject') Then
+      Begin
+        ArgCls := -1;
+        Idx    := -1;
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          Idx := SymFind(CurToken.Val);
+          If Idx >= 0 Then
+            ArgCls := SymTab[Idx].ObjClassIdx;
+          Consume;
+        End;
+        Depth := 1;
+        While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+        Begin
+          If TokIsPunct('(') Then Inc(Depth)
+          Else If TokIsPunct(')') Then Dec(Depth);
+          Consume;
+        End;
+        If (Idx >= 0) And (ArgCls >= 0)
+           And ClassHasValidation(ArgCls) Then
+        Begin
+          GenLoadVar(Idx);
+          EmitInstr('MOV', 'EDX,OFFSET _CSC_META_'
+                    + ClassTab[ArgCls].Name);
+          If QLow = 'validator.validateobject' Then
+            EmitInstr('MOV', 'ECX,1')
+          Else
+            EmitInstr('MOV', 'ECX,0');
+          EmitInstr('CALL', '_CSCRT_VALIDATE');
+          If QLow = 'validator.tryvalidateobject' Then
+          Begin
+            EmitInstr('TEST', 'EAX,EAX');
+            EmitInstr('SETZ', 'AL');
+            EmitInstr('MOVZX', 'EAX,AL');
+          End;
+        End
+        Else
+        Begin
+          EmitComment('Validator.*(...) : classe sans metadata');
+          If QLow = 'validator.tryvalidateobject' Then
+            EmitInstr('MOV', 'EAX,1')
+          Else
+            EmitInstr('XOR', 'EAX,EAX');
+        End;
+        CurExprType := TY_IDX_BOOL;
+        Exit;
+      End;
 
       { Detection des methodes Console (TODO 21) }
       IsConsoleWrite   := (StrLowerCase(QualName) = 'console.write');
@@ -6432,6 +6611,9 @@ Var
   ArgExprType      : Integer;  { TODO 21 }
   Fld              : PInstField;
   FldName          : TString;
+  QLow             : TString;
+  ArgCls           : Integer;
+  Depth            : Integer;
 Begin
   QualName := TargetName;
 
@@ -6497,6 +6679,62 @@ Begin
     Idx := SymFind(QualName);
     Consume;
     ArgCount := 0;
+
+    { Detection Validator.ValidateObject / TryValidateObject       }
+    { Attend premier arg = identifiant de variable objet.          }
+    QLow := StrLowerCase(QualName);
+    If (QLow = 'validator.validateobject')
+       Or (QLow = 'validator.tryvalidateobject') Then
+    Begin
+      ArgCls := -1;
+      Idx    := -1;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        Idx := SymFind(CurToken.Val);
+        If Idx >= 0 Then
+          ArgCls := SymTab[Idx].ObjClassIdx;
+        Consume;
+      End;
+      { Sauter les arguments restants }
+      Depth := 1;
+      While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+      Begin
+        If TokIsPunct('(') Then Inc(Depth)
+        Else If TokIsPunct(')') Then Dec(Depth);
+        Consume;
+      End;
+      { Emission }
+      If (Idx >= 0) And (ArgCls >= 0)
+         And ClassHasValidation(ArgCls) Then
+      Begin
+        GenLoadVar(Idx);
+        EmitInstr('MOV', 'EDX,OFFSET _CSC_META_'
+                  + ClassTab[ArgCls].Name);
+        If QLow = 'validator.validateobject' Then
+          EmitInstr('MOV', 'ECX,1')
+        Else
+          EmitInstr('MOV', 'ECX,0');
+        EmitInstr('CALL', '_CSCRT_VALIDATE');
+        If QLow = 'validator.tryvalidateobject' Then
+        Begin
+          EmitInstr('TEST', 'EAX,EAX');
+          EmitInstr('SETZ', 'AL');
+          EmitInstr('MOVZX', 'EAX,AL');
+          CurExprType := TY_IDX_BOOL;
+        End;
+      End
+      Else
+      Begin
+        EmitComment('Validator.*(...) : classe sans metadata');
+        If QLow = 'validator.tryvalidateobject' Then
+          EmitInstr('MOV', 'EAX,1')
+        Else
+          EmitInstr('XOR', 'EAX,EAX');
+        CurExprType := TY_IDX_BOOL;
+      End;
+      If TokIsPunct(';') Then Consume;
+      Exit;
+    End;
 
     { Detection des methodes Console (TODO 21) }
     IsConsoleWrite   := (StrLowerCase(QualName) = 'console.write');
@@ -7854,6 +8092,8 @@ Begin
   ClassTab[CI].InstTail    := NIL;
   ClassTab[CI].InstCount   := 0;
   ClassTab[CI].InstSize    := 0;
+  ClassTab[CI].MetaLabel   := '';
+  ClassTab[CI].MetaCount   := 0;
   AddClass := CI;
   Inc(ClassCount);
 End;
@@ -7959,6 +8199,26 @@ Begin
       Exit;
     End;
     P := P^.Next;
+  End;
+End;
+
+Function ClassHasValidation(CIdx : Integer) : Boolean;
+Var
+  M  : PValMember;
+  LN : TString;
+Begin
+  ClassHasValidation := False;
+  If (CIdx < 0) Or (CIdx >= ClassCount) Then Exit;
+  LN := StrLowerCase(ClassTab[CIdx].Name);
+  M := ValMemberHead;
+  While M <> NIL Do
+  Begin
+    If StrLowerCase(M^.ClassName) = LN Then
+    Begin
+      ClassHasValidation := True;
+      Exit;
+    End;
+    M := M^.Next;
   End;
 End;
 
@@ -9516,6 +9776,152 @@ Begin
   EmitBlankLine;
   Inc(RuntimeHelpCount);
 
+  { ---- _CSCRT_VALIDATE ---- }
+  { EAX = objPtr, EDX = metaPtr, ECX = mode (0=Try,1=Throw)       }
+  { Retour : EAX = nombre d erreurs.                              }
+  EmitComment(
+    '_CSCRT_VALIDATE : valider un objet (EAX=obj, EDX=meta, ECX=mode)');
+  EmitLabel('_CSCRT_VALIDATE');
+  EmitInstr('PUSH', 'EBP');
+  EmitInstr('MOV', 'EBP,ESP');
+  EmitInstr('SUB', 'ESP,16');
+  EmitInstr('MOV', 'DWORD PTR [EBP-4],EAX');
+  EmitInstr('MOV', 'DWORD PTR [EBP-8],EDX');
+  EmitInstr('MOV', 'DWORD PTR [EBP-12],0');
+  EmitInstr('MOV', 'DWORD PTR [EBP-16],ECX');
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('PUSH', 'EDI');
+  EmitInstr('MOV', 'EBX,EDX');
+
+  EmitLabel('_CSC_VAL_LOOP');
+  EmitInstr('MOV', 'EAX,DWORD PTR [EBX]');
+  EmitInstr('TEST', 'EAX,EAX');
+  EmitInstr('JZ', '_CSC_VAL_DONE');
+
+  EmitInstr('MOV', 'ECX,DWORD PTR [EBX+4]');
+  EmitInstr('MOV', 'EDX,DWORD PTR [EBP-4]');
+  EmitInstr('ADD', 'EDX,ECX');
+  EmitInstr('MOV', 'ESI,DWORD PTR [EDX]');
+
+  EmitInstr('CMP', 'EAX,1');
+  EmitInstr('JE', '_CSC_VAL_REQ');
+  EmitInstr('CMP', 'EAX,2');
+  EmitInstr('JE', '_CSC_VAL_SLEN');
+  EmitInstr('CMP', 'EAX,5');
+  EmitInstr('JE', '_CSC_VAL_RANGE');
+  EmitInstr('CMP', 'EAX,7');
+  EmitInstr('JE', '_CSC_VAL_MINLN');
+  EmitInstr('CMP', 'EAX,8');
+  EmitInstr('JE', '_CSC_VAL_MAXLN');
+  EmitInstr('JMP', '_CSC_VAL_NEXT');
+
+  EmitLabel('_CSC_VAL_REQ');
+  EmitInstr('TEST', 'ESI,ESI');
+  EmitInstr('JZ', '_CSC_VAL_ERR');
+  EmitInstr('CMP', 'BYTE PTR [ESI],0');
+  EmitInstr('JE', '_CSC_VAL_ERR');
+  EmitInstr('JMP', '_CSC_VAL_NEXT');
+
+  EmitLabel('_CSC_VAL_SLEN');
+  EmitInstr('TEST', 'ESI,ESI');
+  EmitInstr('JZ', '_CSC_VAL_NEXT');
+  EmitInstr('CALL', '_CSCRT_STRLEN');
+  EmitInstr('CMP', 'EAX,DWORD PTR [EBX+8]');
+  EmitInstr('JA', '_CSC_VAL_ERR');
+  EmitInstr('MOV', 'EDX,DWORD PTR [EBX+12]');
+  EmitInstr('TEST', 'EDX,EDX');
+  EmitInstr('JZ', '_CSC_VAL_NEXT');
+  EmitInstr('CMP', 'EAX,EDX');
+  EmitInstr('JB', '_CSC_VAL_ERR');
+  EmitInstr('JMP', '_CSC_VAL_NEXT');
+
+  EmitLabel('_CSC_VAL_RANGE');
+  EmitInstr('CMP', 'ESI,DWORD PTR [EBX+8]');
+  EmitInstr('JL', '_CSC_VAL_ERR');
+  EmitInstr('CMP', 'ESI,DWORD PTR [EBX+12]');
+  EmitInstr('JG', '_CSC_VAL_ERR');
+  EmitInstr('JMP', '_CSC_VAL_NEXT');
+
+  EmitLabel('_CSC_VAL_MINLN');
+  EmitInstr('TEST', 'ESI,ESI');
+  EmitInstr('JZ', '_CSC_VAL_NEXT');
+  EmitInstr('CALL', '_CSCRT_STRLEN');
+  EmitInstr('CMP', 'EAX,DWORD PTR [EBX+8]');
+  EmitInstr('JB', '_CSC_VAL_ERR');
+  EmitInstr('JMP', '_CSC_VAL_NEXT');
+
+  EmitLabel('_CSC_VAL_MAXLN');
+  EmitInstr('TEST', 'ESI,ESI');
+  EmitInstr('JZ', '_CSC_VAL_NEXT');
+  EmitInstr('CALL', '_CSCRT_STRLEN');
+  EmitInstr('CMP', 'EAX,DWORD PTR [EBX+8]');
+  EmitInstr('JA', '_CSC_VAL_ERR');
+  EmitInstr('JMP', '_CSC_VAL_NEXT');
+
+  EmitLabel('_CSC_VAL_ERR');
+  EmitInstr('INC', 'DWORD PTR [EBP-12]');
+  EmitInstr('MOV', 'ESI,DWORD PTR [EBX+20]');
+  EmitInstr('CALL', '_CSCRT_PRINTSTR');
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_VMSG_SEP');
+  EmitInstr('CALL', '_CSCRT_PRINTSTR');
+  EmitInstr('MOV', 'EAX,DWORD PTR [EBX]');
+  EmitInstr('CMP', 'EAX,1');
+  EmitInstr('JNE', '_CSC_VAL_M2');
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_VMSG_REQ');
+  EmitInstr('JMP', '_CSC_VAL_MPRT');
+  EmitLabel('_CSC_VAL_M2');
+  EmitInstr('CMP', 'EAX,2');
+  EmitInstr('JNE', '_CSC_VAL_M3');
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_VMSG_SLEN');
+  EmitInstr('JMP', '_CSC_VAL_MPRT');
+  EmitLabel('_CSC_VAL_M3');
+  EmitInstr('CMP', 'EAX,5');
+  EmitInstr('JNE', '_CSC_VAL_M4');
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_VMSG_RANGE');
+  EmitInstr('JMP', '_CSC_VAL_MPRT');
+  EmitLabel('_CSC_VAL_M4');
+  EmitInstr('CMP', 'EAX,7');
+  EmitInstr('JNE', '_CSC_VAL_M5');
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_VMSG_MINLN');
+  EmitInstr('JMP', '_CSC_VAL_MPRT');
+  EmitLabel('_CSC_VAL_M5');
+  EmitInstr('CMP', 'EAX,8');
+  EmitInstr('JNE', '_CSC_VAL_M6');
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_VMSG_MAXLN');
+  EmitInstr('JMP', '_CSC_VAL_MPRT');
+  EmitLabel('_CSC_VAL_M6');
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_VMSG_REGEX');
+  EmitLabel('_CSC_VAL_MPRT');
+  EmitInstr('CALL', '_CSCRT_PRINTSTR');
+  EmitInstr('CALL', '_CSCRT_PRINTCRLF');
+
+  EmitLabel('_CSC_VAL_NEXT');
+  EmitInstr('ADD', 'EBX,24');
+  EmitInstr('JMP', '_CSC_VAL_LOOP');
+
+  EmitLabel('_CSC_VAL_DONE');
+  EmitInstr('MOV', 'EAX,DWORD PTR [EBP-12]');
+  EmitInstr('TEST', 'EAX,EAX');
+  EmitInstr('JZ', '_CSC_VAL_RET');
+  EmitInstr('CMP', 'DWORD PTR [EBP-16],1');
+  EmitInstr('JNE', '_CSC_VAL_RET');
+  EmitInstr('MOV', 'ESI,OFFSET _CSC_VMSG_THROW');
+  EmitInstr('CALL', '_CSCRT_PRINTSTR');
+  EmitInstr('CALL', '_CSCRT_PRINTCRLF');
+  EmitInstr('PUSH', '1');
+  EmitInstr('CALL', '_ExitProcess@4');
+
+  EmitLabel('_CSC_VAL_RET');
+  EmitInstr('POP', 'EDI');
+  EmitInstr('POP', 'ESI');
+  EmitInstr('POP', 'EBX');
+  EmitInstr('MOV', 'ESP,EBP');
+  EmitInstr('POP', 'EBP');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
   { ---- _CSCRT_PANIC ---- }
   { ESI = message d erreur -> afficher et ExitProcess(1) }
   EmitComment('_CSCRT_PANIC : message d erreur + ExitProcess(1)');
@@ -10164,7 +10570,9 @@ Begin
     BinEmitByte($F3);
     Tmp := AsmTrimLine(Ops);
     If Tmp = 'MOVSB' Then BinEmitByte($A4)
-    Else If Tmp = 'STOSB' Then BinEmitByte($AA);
+    Else If Tmp = 'STOSB' Then BinEmitByte($AA)
+    Else If Tmp = 'STOSD' Then BinEmitByte($AB)
+    Else If Tmp = 'MOVSD' Then BinEmitByte($A5);
     Exit;
   End;
 
@@ -10604,6 +11012,47 @@ Begin
         BinEmitByte(Byte(Imm And $FF));
         Exit;
       End;
+      { ALU DWORD PTR [mem],imm : opcode 83 /n ib (sign-ext)
+        ou 81 /n id (full imm32). Supporte CMP/ADD/SUB/AND/OR/XOR. }
+      If AsmStartsWith(Op1, 'DWORD PTR [') Then
+      Begin
+        Bracket := AsmExtractBracket(Op1);
+        Imm := AsmParseImm(Op2);
+        If Mnem = 'CMP' Then R2 := 7
+        Else If Mnem = 'ADD' Then R2 := 0
+        Else If Mnem = 'SUB' Then R2 := 5
+        Else If Mnem = 'AND' Then R2 := 4
+        Else If Mnem = 'OR'  Then R2 := 1
+        Else If Mnem = 'XOR' Then R2 := 6
+        Else R2 := 7;
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          BinEmitByte($83);
+          If AsmIsRegBased(Bracket) Then
+            AsmEncodeMemory(Bracket, R2)
+          Else
+          Begin
+            BinEmitByte(Byte($05 Or (R2 Shl 3)));
+            BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+            BinEmitDWord(0);
+          End;
+          BinEmitByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          BinEmitByte($81);
+          If AsmIsRegBased(Bracket) Then
+            AsmEncodeMemory(Bracket, R2)
+          Else
+          Begin
+            BinEmitByte(Byte($05 Or (R2 Shl 3)));
+            BinAddFixup(BinCodeLen, BFK_ABS32, Bracket, True);
+            BinEmitDWord(0);
+          End;
+          BinEmitDWord(Imm);
+        End;
+        Exit;
+      End;
       Exit;
     End;
 
@@ -11035,6 +11484,18 @@ Begin
     { Simple numeric value }
     If Length(Token) > 0 Then
     Begin
+      { OFFSET label : emit 0 + fixup BFK_ABS32 dans .data }
+      If AsmStartsWith(Token, 'OFFSET ') Then
+      Begin
+        If IsDWord Then
+        Begin
+          BinAddFixup(BinDataLen, BFK_ABS32,
+                      AsmTrimLine(Copy(Token, 8, Length(Token) - 7)),
+                      False);
+          BinEmitDataDWord(0);
+        End;
+        Continue;
+      End;
       Num := AsmParseImm(Token);
       If IsDWord Then
         BinEmitDataDWord(Num)
@@ -11241,6 +11702,12 @@ Begin
     { Data section }
     If InData Then
     Begin
+      { Continuation DD/DB without a label (apres un label : seul) }
+      If AsmStartsWith(Line, 'DD ') Or AsmStartsWith(Line, 'DB ') Then
+      Begin
+        { Injecter un label vide devant pour que Pos(' DD ',...) marche }
+        Line := ' ' + Line;
+      End;
       { Data lines: LABEL DB/DD ... }
       If (Pos(' DB ', Line) > 0) Or (Pos(' DD ', Line) > 0) Then
       Begin
