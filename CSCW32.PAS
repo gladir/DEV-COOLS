@@ -2563,9 +2563,13 @@ Begin
   If (S = 'System')                                   Or
      (S = 'System.Collections')                       Or
      (S = 'System.IO')                                Or
+     (S = 'System.Diagnostics')                       Or
      (S = 'System.ComponentModel')                    Or
      (S = 'System.ComponentModel.DataAnnotations')    Or
      (S = 'Microsoft.AspNetCore.Identity')            Or
+     (S = 'Microsoft.AspNetCore.Identity.EntityFrameworkCore') Or
+     (S = 'Microsoft.AspNetCore.Mvc')                 Or
+     (S = 'Microsoft.AspNetCore.Authorization')       Or
      (S = 'Microsoft.EntityFrameworkCore') Then
   Begin
     IsStandardNamespace := True;
