@@ -789,7 +789,7 @@ Const
   MAX_BIN_DATA    = 65536;       { 64 KB max data section             }
   MAX_BIN_LBL     = 4096;        { max labels                         }
   MAX_BIN_FIX     = 8192;        { max fixups                         }
-  PE_NUM_API      = 9;           { number of imported Win32 APIs      }
+  PE_NUM_API      = 11;          { number of imported Win32 APIs      }
   COFF_RELOC_DIR32  = 6;         { IMAGE_REL_I386_DIR32               }
   COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
 {$ENDIF}
@@ -979,12 +979,14 @@ Const
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
     '_ExitProcess@4', '_GetStdHandle@4', '_WriteFile@20',
     '_ReadFile@20', '_GetProcessHeap@0', '_HeapAlloc@12',
-    '_HeapFree@12', '_CreateFileA@28', '_CloseHandle@4'
+    '_HeapFree@12', '_CreateFileA@28', '_CloseHandle@4',
+    '_GetConsoleMode@8', '_SetConsoleMode@8'
   );
   BinAPIName : Array[0..PE_NUM_API - 1] Of String[20] = (
     'ExitProcess', 'GetStdHandle', 'WriteFile', 'ReadFile',
     'GetProcessHeap', 'HeapAlloc', 'HeapFree',
-    'CreateFileA', 'CloseHandle'
+    'CreateFileA', 'CloseHandle',
+    'GetConsoleMode', 'SetConsoleMode'
   );
 {$ENDIF}
 
@@ -2924,6 +2926,14 @@ Begin
   EmitI('PUSH -10');
   EmitI('CALL _GetStdHandle@4');
   EmitI('MOV  DWORD PTR [' + ADA_RT_PFX + 'HSTDIN], EAX');
+  EmitBlank;
+  { Forcer le mode console ligne (ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT }
+  { | ENABLE_ECHO_INPUT = 0x0007) pour que ReadFile retourne apres Enter.   }
+  { Ignore les erreurs (ex: stdin redirige depuis un pipe).                 }
+  EmitComment('Forcer mode console ligne sur stdin (si c''est une console)');
+  EmitI('PUSH 7');
+  EmitI('PUSH DWORD PTR [' + ADA_RT_PFX + 'HSTDIN]');
+  EmitI('CALL _SetConsoleMode@8');
   EmitBlank;
   { Appeler la procedure principale Ada }
   If MainProcName <> '' Then
