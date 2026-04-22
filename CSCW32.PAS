@@ -505,6 +505,10 @@ Const
   PE_NUM_API      = 10;          { number of imported Win32 APIs      }
   COFF_RELOC_DIR32  = 6;         { IMAGE_REL_I386_DIR32               }
   COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
+  MAX_LINK_OBJS   = 16;          { max fichiers .OBJ a lier           }
+  MAX_OBJ_SIZE    = 1048576;     { taille max d un .OBJ lu (1 Mo)     }
+  MAX_OBJ_SYMS    = 2048;        { nombre max de symboles par .OBJ    }
+  MAX_OBJ_SECS    = 64;          { nombre max de sections par .OBJ    }
 
 Type
   TString = String;
@@ -534,6 +538,8 @@ Type
     NetVersion : TString;  { -netver : version du .NET Framework  }
     CsVersion  : TString;  { -csver  : version du langage C#      }
     NoProj     : Boolean;  { -noproj : desactiver decouverte csproj}
+    LinkObjCount : Integer;                        { -link : nb de .OBJ }
+    LinkObjs     : Array[0..MAX_LINK_OBJS-1] Of TString; { fichiers .OBJ }
   End;
 
 Var
@@ -702,6 +708,10 @@ Var
   BinFixups   : Array[0..MAX_BIN_FIX - 1] of TBinFixup;
   BinFixCount : Integer;
   BinInCode   : Boolean;
+
+  { Tampon pour la lecture des fichiers .OBJ COFF externes (-link) }
+  ObjBuf      : Array[0..MAX_OBJ_SIZE - 1] Of Byte;
+  ObjLen      : LongInt;
 
 Const
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -967,6 +977,7 @@ Begin
   Opts.NetVersion := '4.8';   { .NET Framework 4.8 par defaut       }
   Opts.CsVersion  := '14';    { C# 14 par defaut                    }
   Opts.NoProj     := False;   { decouverte csproj activee par defaut}
+  Opts.LinkObjCount := 0;     { aucun .OBJ externe par defaut       }
 End;
 
 { ------------------------------------------------------------ }
@@ -1050,6 +1061,10 @@ Begin
           '*.csproj');
   WriteLn('                 (compilation du seul fichier source ',
           'indique)');
+  WriteLn('  -link <fichier.obj>  Lier un fichier objet COFF (.OBJ)');
+  WriteLn('                       avec le code C# compile (peut etre');
+  WriteLn('                       repete, jusqu''a ', MAX_LINK_OBJS,
+          ' fichiers)');
   WriteLn('  -h, --help, /? Afficher cette aide');
   WriteLn;
   WriteLn('Exemples :');
@@ -1059,6 +1074,7 @@ Begin
   WriteLn('  CSCW32 module.cs -obj');
   WriteLn('  CSCW32 hello.cs -netver 4.7.2');
   WriteLn('  CSCW32 hello.cs -csver 7.0');
+  WriteLn('  CSCW32 hello.cs -link runtime.obj -link helpers.obj');
   Halt(EXIT_OK);
 End;
 
@@ -1114,6 +1130,17 @@ Begin
     End
     Else If Arg = '-noproj' Then
       Opts.NoProj := True
+    Else If Arg = '-link' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('Option -link : nom de fichier .OBJ manquant');
+      If Opts.LinkObjCount >= MAX_LINK_OBJS Then
+        FatalError('Trop de fichiers .OBJ a lier (max ' +
+                   IntToStr_(MAX_LINK_OBJS) + ')');
+      Opts.LinkObjs[Opts.LinkObjCount] := ParamStr(I);
+      Inc(Opts.LinkObjCount);
+    End
     Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
       FatalError('Option inconnue: ' + Arg)
     Else
@@ -10309,6 +10336,24 @@ Var
   ApiIdx       : Integer;
   IsInCode     : Boolean;
   RelVal       : LongInt;
+  Addend       : LongInt;
+
+  Function ReadAddend : LongInt;
+  Var A : LongInt;
+  Begin
+    If IsInCode Then
+      A := LongInt(BinCode[FixOfs])
+        Or (LongInt(BinCode[FixOfs + 1]) Shl 8)
+        Or (LongInt(BinCode[FixOfs + 2]) Shl 16)
+        Or (LongInt(BinCode[FixOfs + 3]) Shl 24)
+    Else
+      A := LongInt(BinData[FixOfs])
+        Or (LongInt(BinData[FixOfs + 1]) Shl 8)
+        Or (LongInt(BinData[FixOfs + 2]) Shl 16)
+        Or (LongInt(BinData[FixOfs + 3]) Shl 24);
+    ReadAddend := A;
+  End;
+
 Begin
   For I := 0 To BinFixCount - 1 Do
   Begin
@@ -10321,12 +10366,13 @@ Begin
         LblIdx := BinFindLabel(BinFixups[I].Target);
         If LblIdx >= 0 Then
         Begin
+          Addend := ReadAddend;
           If BinLabels[LblIdx].InCode Then
             TargetVA := PE_IMG_BASE + TextRVA +
-                        BinLabels[LblIdx].Offset
+                        BinLabels[LblIdx].Offset + Addend
           Else
             TargetVA := PE_IMG_BASE + DataRVA +
-                        BinLabels[LblIdx].Offset;
+                        BinLabels[LblIdx].Offset + Addend;
           { Patch in the correct buffer }
           If IsInCode Then
           Begin
@@ -10351,8 +10397,9 @@ Begin
         If LblIdx >= 0 Then
         Begin
           { REL32 is always code-to-code }
+          Addend := ReadAddend;
           TargetVA := BinLabels[LblIdx].Offset;
-          RelVal := TargetVA - (FixOfs + 4);
+          RelVal := TargetVA + Addend - (FixOfs + 4);
           BinCode[FixOfs]     := Byte(RelVal And $FF);
           BinCode[FixOfs + 1] := Byte((RelVal Shr 8) And $FF);
           BinCode[FixOfs + 2] := Byte((RelVal Shr 16) And $FF);
@@ -10374,6 +10421,450 @@ Begin
         End;
       End;
     End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ BinLinkObjs                                                   }
+{   Read each -link <file.obj> (COFF i386), merge its .text and }
+{   .data sections into BinCode/BinData, register its symbols   }
+{   as labels, and translate its relocations into fixups that   }
+{   BinResolveFixups will resolve at PE layout time.            }
+{ ------------------------------------------------------------ }
+
+Procedure BinLinkObjs;
+Type
+  TObjSec = Record
+    Name     : TString;
+    IsCode   : Boolean;
+    IsData   : Boolean;
+    Base     : LongInt;      { offset dans BinCode ou BinData          }
+    RawPtr   : LongInt;
+    RawSize  : LongInt;
+    VirtSize : LongInt;
+    RelocPtr : LongInt;
+    NReloc   : Integer;
+  End;
+  TObjSym = Record
+    Name        : TString;
+    RealName    : TString;  { nom utilise par les relocations         }
+    Value       : LongInt;
+    SectNum     : Integer;
+    Storage     : Integer;
+    IsDefined   : Boolean;
+  End;
+Var
+  F        : File;
+  FileIdx  : Integer;
+  FileName : TString;
+  NRead    : LongInt;
+  Machine  : Word;
+  NumSecs  : Integer;
+  SymPtr   : LongInt;
+  NumSyms  : LongInt;
+  StrTabPtr: LongInt;
+  I, J     : Integer;
+  OfsHdr   : LongInt;
+  SecInfo  : Array[0..MAX_OBJ_SECS - 1] Of TObjSec;
+  SymInfo  : Array[0..MAX_OBJ_SYMS - 1] Of TObjSym;
+  RelVA    : LongInt;
+  RelSym   : LongInt;
+  RelType  : Word;
+  FixAbs   : LongInt;
+  ApiIdx   : Integer;
+  DefCount : Integer;
+  FixCount : Integer;
+  TargetName : TString;
+  AuxCount : Integer;
+  FixStart : Integer;
+
+  Function RdWord(P : LongInt) : Word;
+  Begin
+    RdWord := Word(ObjBuf[P]) Or (Word(ObjBuf[P + 1]) Shl 8);
+  End;
+
+  Function RdDWord(P : LongInt) : LongInt;
+  Begin
+    RdDWord := LongInt(ObjBuf[P])
+            Or (LongInt(ObjBuf[P + 1]) Shl 8)
+            Or (LongInt(ObjBuf[P + 2]) Shl 16)
+            Or (LongInt(ObjBuf[P + 3]) Shl 24);
+  End;
+
+  Function RdShort(P : LongInt) : Integer;
+  Var W : Word;
+  Begin
+    W := RdWord(P);
+    If W >= $8000 Then
+      RdShort := Integer(LongInt(W) - $10000)
+    Else
+      RdShort := Integer(W);
+  End;
+
+  Function ReadStrTab(OfsRel : LongInt) : TString;
+  Var
+    R : TString;
+    P : LongInt;
+  Begin
+    R := '';
+    P := StrTabPtr + OfsRel;
+    While (P < ObjLen) And (ObjBuf[P] <> 0) Do
+    Begin
+      R := R + Chr(ObjBuf[P]);
+      Inc(P);
+    End;
+    ReadStrTab := R;
+  End;
+
+  Function ReadSymName(P : LongInt) : TString;
+  Var
+    R : TString;
+    K : Integer;
+  Begin
+    If RdDWord(P) = 0 Then
+      ReadSymName := ReadStrTab(RdDWord(P + 4))
+    Else
+    Begin
+      R := '';
+      For K := 0 To 7 Do
+      Begin
+        If ObjBuf[P + K] = 0 Then Break;
+        R := R + Chr(ObjBuf[P + K]);
+      End;
+      ReadSymName := R;
+    End;
+  End;
+
+  Function ReadSecName(P : LongInt) : TString;
+  Var
+    R : TString;
+    K, ErrCode : Integer;
+    N : LongInt;
+  Begin
+    If ObjBuf[P] = Ord('/') Then
+    Begin
+      R := '';
+      For K := 1 To 7 Do
+      Begin
+        If ObjBuf[P + K] = 0 Then Break;
+        R := R + Chr(ObjBuf[P + K]);
+      End;
+      Val(R, N, ErrCode);
+      If ErrCode = 0 Then
+        ReadSecName := ReadStrTab(N)
+      Else
+        ReadSecName := R;
+    End
+    Else
+    Begin
+      R := '';
+      For K := 0 To 7 Do
+      Begin
+        If ObjBuf[P + K] = 0 Then Break;
+        R := R + Chr(ObjBuf[P + K]);
+      End;
+      ReadSecName := R;
+    End;
+  End;
+
+  Function IsCodeSecName(Const N : TString) : Boolean;
+  Begin
+    IsCodeSecName := (Copy(N, 1, 5) = '.text') Or (N = 'CODE');
+  End;
+
+  Function IsDataSecName(Const N : TString) : Boolean;
+  Begin
+    IsDataSecName := (Copy(N, 1, 5) = '.data') Or
+                     (Copy(N, 1, 6) = '.rdata') Or
+                     (Copy(N, 1, 4) = '.bss')  Or
+                     (N = 'DATA');
+  End;
+
+Begin
+  If Opts.LinkObjCount = 0 Then Exit;
+
+  FixStart := BinFixCount;
+
+  For FileIdx := 0 To Opts.LinkObjCount - 1 Do
+  Begin
+    FileName := Opts.LinkObjs[FileIdx];
+    WriteLn('CSCW32: Liaison de ', FileName, ' ...');
+
+    If Not FileExists(FileName) Then
+    Begin
+      WriteLn('CSCW32: erreur: fichier .OBJ introuvable : ', FileName);
+      Inc(ErrorCount);
+      Continue;
+    End;
+
+    Assign(F, FileName);
+    {$I-}
+    Reset(F, 1);
+    {$I+}
+    If IOResult <> 0 Then
+    Begin
+      WriteLn('CSCW32: erreur: impossible d''ouvrir ', FileName);
+      Inc(ErrorCount);
+      Continue;
+    End;
+
+    {$I-}
+    BlockRead(F, ObjBuf, MAX_OBJ_SIZE, NRead);
+    {$I+}
+    If IOResult <> 0 Then NRead := 0;
+    ObjLen := NRead;
+    Close(F);
+
+    If ObjLen < 20 Then
+    Begin
+      WriteLn('CSCW32: erreur: ', FileName,
+              ' : fichier COFF trop court');
+      Inc(ErrorCount);
+      Continue;
+    End;
+
+    Machine := RdWord(0);
+    If Machine <> PE_MACHINE_I386 Then
+    Begin
+      WriteLn('CSCW32: erreur: ', FileName,
+              ' : architecture non supportee ',
+              '(attendu i386, lu ', Machine, ')');
+      Inc(ErrorCount);
+      Continue;
+    End;
+
+    NumSecs   := RdWord(2);
+    SymPtr    := RdDWord(8);
+    NumSyms   := RdDWord(12);
+    StrTabPtr := SymPtr + NumSyms * 18;
+
+    If NumSecs > MAX_OBJ_SECS Then
+    Begin
+      WriteLn('CSCW32: erreur: ', FileName,
+              ' : trop de sections (', NumSecs, '>', MAX_OBJ_SECS, ')');
+      Inc(ErrorCount);
+      Continue;
+    End;
+
+    If NumSyms > MAX_OBJ_SYMS Then
+    Begin
+      WriteLn('CSCW32: erreur: ', FileName,
+              ' : trop de symboles (', NumSyms, '>', MAX_OBJ_SYMS, ')');
+      Inc(ErrorCount);
+      Continue;
+    End;
+
+    { Etape 1 : lire les en-tetes de sections et fusionner les       }
+    { sections .text / .data / .rdata / .bss dans BinCode / BinData. }
+    For I := 0 To NumSecs - 1 Do
+    Begin
+      OfsHdr := 20 + LongInt(I) * 40;
+      SecInfo[I].Name     := ReadSecName(OfsHdr);
+      SecInfo[I].VirtSize := RdDWord(OfsHdr + 8);
+      SecInfo[I].RawSize  := RdDWord(OfsHdr + 16);
+      SecInfo[I].RawPtr   := RdDWord(OfsHdr + 20);
+      SecInfo[I].RelocPtr := RdDWord(OfsHdr + 24);
+      SecInfo[I].NReloc   := RdWord(OfsHdr + 32);
+      SecInfo[I].IsCode   := IsCodeSecName(SecInfo[I].Name);
+      SecInfo[I].IsData   := (Not SecInfo[I].IsCode) And
+                             IsDataSecName(SecInfo[I].Name);
+      SecInfo[I].Base     := 0;
+
+      If SecInfo[I].IsCode Then
+      Begin
+        SecInfo[I].Base := BinCodeLen;
+        If (SecInfo[I].RawPtr > 0) And (SecInfo[I].RawSize > 0) Then
+          For J := 0 To SecInfo[I].RawSize - 1 Do
+          Begin
+            If BinCodeLen >= MAX_BIN_CODE Then
+            Begin
+              WriteLn('CSCW32: erreur: ', FileName,
+                      ' : segment de code depasse ',
+                      MAX_BIN_CODE, ' octets');
+              Inc(ErrorCount);
+              Break;
+            End;
+            BinCode[BinCodeLen] := ObjBuf[SecInfo[I].RawPtr + J];
+            Inc(BinCodeLen);
+          End;
+      End
+      Else If SecInfo[I].IsData Then
+      Begin
+        SecInfo[I].Base := BinDataLen;
+        If (SecInfo[I].RawPtr > 0) And (SecInfo[I].RawSize > 0) Then
+        Begin
+          For J := 0 To SecInfo[I].RawSize - 1 Do
+          Begin
+            If BinDataLen >= MAX_BIN_DATA Then
+            Begin
+              WriteLn('CSCW32: erreur: ', FileName,
+                      ' : segment de donnees depasse ',
+                      MAX_BIN_DATA, ' octets');
+              Inc(ErrorCount);
+              Break;
+            End;
+            BinData[BinDataLen] := ObjBuf[SecInfo[I].RawPtr + J];
+            Inc(BinDataLen);
+          End;
+        End
+        Else If SecInfo[I].VirtSize > 0 Then
+        Begin
+          { Section BSS : remplir de zeros sur VirtSize octets }
+          For J := 0 To SecInfo[I].VirtSize - 1 Do
+          Begin
+            If BinDataLen >= MAX_BIN_DATA Then Break;
+            BinData[BinDataLen] := 0;
+            Inc(BinDataLen);
+          End;
+        End;
+      End;
+    End;
+
+    { Etape 2 : table des symboles. Pour chaque symbole defini dans  }
+    { une section acceptee, ajouter un label dont le nom reprend le  }
+    { symbole d origine et l offset = Base + Value. Les aux symbols  }
+    { (cf. storage class FILE, SECTION, FUNCTION) sont ignores.      }
+    DefCount := 0;
+    I := 0;
+    While I < NumSyms Do
+    Begin
+      OfsHdr := SymPtr + LongInt(I) * 18;
+      SymInfo[I].Name    := ReadSymName(OfsHdr);
+      SymInfo[I].Value   := RdDWord(OfsHdr + 8);
+      SymInfo[I].SectNum := RdShort(OfsHdr + 12);
+      SymInfo[I].Storage := ObjBuf[OfsHdr + 16];
+      AuxCount           := ObjBuf[OfsHdr + 17];
+      SymInfo[I].IsDefined := False;
+      SymInfo[I].RealName  := SymInfo[I].Name;
+
+      If (SymInfo[I].SectNum > 0) And
+         (SymInfo[I].SectNum <= NumSecs) Then
+      Begin
+        J := SymInfo[I].SectNum - 1;
+        If SecInfo[J].IsCode Or SecInfo[J].IsData Then
+        Begin
+          SymInfo[I].IsDefined := True;
+          { Nom d affichage dans les relocations : mangler les noms  }
+          { de section (commencant par '.') ou vides pour eviter les }
+          { collisions entre fichiers .OBJ lies.                      }
+          If (Length(SymInfo[I].Name) = 0) Or
+             (SymInfo[I].Name[1] = '.') Then
+            SymInfo[I].RealName :=
+              '_CSCW32_OBJ' + IntToStr_(FileIdx) +
+              '_SYM' + IntToStr_(I);
+          If BinFindLabel(SymInfo[I].RealName) >= 0 Then
+          Begin
+            { Un utilisateur peut placer dans son .OBJ un symbole   }
+            { portant un nom deja defini : erreur si ce n est pas   }
+            { un symbole de section que nous manglerions.            }
+            If (Length(SymInfo[I].Name) > 0) And
+               (SymInfo[I].Name[1] <> '.') Then
+            Begin
+              WriteLn('CSCW32: erreur: ', FileName,
+                      ' : symbole duplique ''',
+                      SymInfo[I].Name, '''');
+              Inc(ErrorCount);
+            End;
+          End
+          Else
+          Begin
+            BinInCode := SecInfo[J].IsCode;
+            BinAddLabel(SymInfo[I].RealName,
+                        SecInfo[J].Base + SymInfo[I].Value);
+            Inc(DefCount);
+          End;
+        End;
+      End;
+
+      { Marquer les entrees auxiliaires comme non definies }
+      For J := 1 To AuxCount Do
+      Begin
+        If I + J < NumSyms Then
+        Begin
+          SymInfo[I + J].Name      := '';
+          SymInfo[I + J].RealName  := '';
+          SymInfo[I + J].IsDefined := False;
+          SymInfo[I + J].SectNum   := 0;
+        End;
+      End;
+      Inc(I, 1 + AuxCount);
+    End;
+
+    { Etape 3 : relocations. Pour chaque section acceptee, creer un  }
+    { fixup pour chaque relocation DIR32 / REL32, cible = nom du     }
+    { symbole. Les references a une API Win32 connue sont traduites  }
+    { en fixups IAT32 vers la table d import.                         }
+    FixCount := 0;
+    For I := 0 To NumSecs - 1 Do
+    Begin
+      If (Not SecInfo[I].IsCode) And (Not SecInfo[I].IsData) Then
+        Continue;
+      If SecInfo[I].NReloc = 0 Then Continue;
+      For J := 0 To SecInfo[I].NReloc - 1 Do
+      Begin
+        OfsHdr  := SecInfo[I].RelocPtr + LongInt(J) * 10;
+        RelVA   := RdDWord(OfsHdr);
+        RelSym  := RdDWord(OfsHdr + 4);
+        RelType := RdWord(OfsHdr + 8);
+        If (RelSym < 0) Or (RelSym >= NumSyms) Then Continue;
+
+        TargetName := SymInfo[RelSym].RealName;
+        If TargetName = '' Then
+          TargetName := SymInfo[RelSym].Name;
+        If TargetName = '' Then Continue;
+
+        FixAbs := SecInfo[I].Base + RelVA;
+
+        { Symbole externe correspondant a une API Win32 connue       }
+        { -> fixup IAT32 vers la table d import.                      }
+        ApiIdx := AsmFindAPI(TargetName);
+        If (Not SymInfo[RelSym].IsDefined) And (ApiIdx >= 0) Then
+        Begin
+          BinAddFixup(FixAbs, BFK_IAT32, TargetName,
+                      SecInfo[I].IsCode);
+          Inc(FixCount);
+          Continue;
+        End;
+
+        Case RelType Of
+          COFF_RELOC_DIR32 :
+          Begin
+            BinAddFixup(FixAbs, BFK_ABS32, TargetName,
+                        SecInfo[I].IsCode);
+            Inc(FixCount);
+          End;
+          COFF_RELOC_REL32 :
+          Begin
+            BinAddFixup(FixAbs, BFK_REL32, TargetName,
+                        SecInfo[I].IsCode);
+            Inc(FixCount);
+          End;
+        Else
+          WriteLn('CSCW32: warning: ', FileName,
+                  ' : type de relocation non supporte (',
+                  RelType, ')');
+        End;
+      End;
+    End;
+
+    WriteLn('CSCW32: ', FileName, ' : ',
+            DefCount, ' symbole(s) defini(s), ',
+            FixCount, ' relocation(s) traitee(s)');
+  End;
+
+  { Verifier que les cibles de fixups ajoutees par la liaison sont  }
+  { resolvables : un label est present ou une API Win32 decoree est }
+  { connue. On ne verifie que les fixups ajoutes ici, pour ne pas   }
+  { signaler a tort les references du compilateur a des methodes    }
+  { externes non supportees (warnings deja emis plus tot).           }
+  For I := FixStart To BinFixCount - 1 Do
+  Begin
+    If BinFixups[I].Kind = BFK_IAT32 Then Continue;
+    If BinFindLabel(BinFixups[I].Target) >= 0 Then Continue;
+    If AsmFindAPI(BinFixups[I].Target) >= 0 Then Continue;
+    WriteLn('CSCW32: erreur: symbole externe non resolu : ''',
+            BinFixups[I].Target, '''');
+    Inc(ErrorCount);
   End;
 End;
 
@@ -11579,7 +12070,20 @@ Begin
   If Opts.ObjOnly Then
     BinWriteObj
   Else
+  Begin
+    { Lier les fichiers .OBJ externes (-link) avec le code C# }
+    If Opts.LinkObjCount > 0 Then
+    Begin
+      BinLinkObjs;
+      If ErrorCount > 0 Then
+      Begin
+        WriteLn('CSCW32: ', ErrorCount,
+                ' erreur(s) de liaison - binaire non genere.');
+        Halt(EXIT_ERROR);
+      End;
+    End;
     BinWriteExe;
+  End;
   { Supprimer le fichier ASM temporaire si non demande }
   If Not Opts.AsmOutput Then
   Begin
