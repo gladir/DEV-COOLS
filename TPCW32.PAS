@@ -19604,15 +19604,199 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);              { var T -> addr in EAX }
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);              { var P -> addr in EAX }
-        EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 (DOS 16 bits) : PUSH AX, CALL, ADD SP,4 --- }
+            ParseExpr(PI);              { var T -> adresse dans AX }
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);              { var P -> adresse dans AX }
+            EmitInstr('PUSH AX');
+          End;
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 : empiler adresses D0, BSR --- }
+            ParseExpr(PI);              { var T -> adresse dans D0 }
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);              { var P -> adresse dans D0 }
+            EmitInstr('MOVE.L D0,-(SP)');
+          End;
+          DEST_Z80:
+          Begin
+            { --- Zilog Z80 : code inline, IX = ptr DateTime, DE = ptr P --- }
+            ParseExpr(PI);              { var T -> adresse dans HL }
+            EmitInstr('PUSH HL');       { sauvegarder adresse de T }
+            EPMatch(',');
+            ParseExpr(PI);              { var P -> adresse dans HL }
+            EmitInstr('EX DE,HL');      { DE = adresse de P }
+            EmitInstr('POP HL');        { HL = adresse de T }
+            EmitInstr('PUSH IX');       { sauvegarder IX }
+            EmitInstr('PUSH HL');
+            EmitInstr('POP IX');        { IX = adresse de T }
+            { Octet 0 : (Sec/2) & 1Fh | (Min & 7) << 5 }
+            EmitInstr('LD A,(IX+10)');  { Sec octet bas (little-endian) }
+            EmitInstr('SRL A');         { A = Sec / 2 }
+            EmitInstr('AND 1Fh');
+            EmitInstr('LD B,A');        { B = Sec/2 & 1F }
+            EmitInstr('LD A,(IX+8)');   { Min octet bas }
+            EmitInstr('AND 7h');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');       { A = (Min & 7) << 5 }
+            EmitInstr('OR B');
+            EmitInstr('LD (DE),A');
+            EmitInstr('INC DE');
+            { Octet 1 : (Min >> 3) & 7 | (Hour & 1Fh) << 3 }
+            EmitInstr('LD A,(IX+8)');   { Min }
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('AND 7h');
+            EmitInstr('LD B,A');        { B = (Min >> 3) & 7 }
+            EmitInstr('LD A,(IX+6)');   { Hour octet bas }
+            EmitInstr('AND 1Fh');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');       { A = (Hour & 1F) << 3 }
+            EmitInstr('OR B');
+            EmitInstr('LD (DE),A');
+            EmitInstr('INC DE');
+            { Octet 2 : Day & 1Fh | (Month & 7) << 5 }
+            EmitInstr('LD A,(IX+4)');   { Day octet bas }
+            EmitInstr('AND 1Fh');
+            EmitInstr('LD B,A');        { B = Day & 1F }
+            EmitInstr('LD A,(IX+2)');   { Month octet bas }
+            EmitInstr('AND 7h');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');       { A = (Month & 7) << 5 }
+            EmitInstr('OR B');
+            EmitInstr('LD (DE),A');
+            EmitInstr('INC DE');
+            { Octet 3 : (Month >> 3) & 1 | ((Year-1980) & 7Fh) << 1 }
+            EmitInstr('LD L,(IX+0)');   { Year octet bas }
+            EmitInstr('LD H,(IX+1)');   { Year octet haut }
+            EmitInstr('LD BC,1980');
+            EmitInstr('XOR A');         { effacer retenue }
+            EmitInstr('SBC HL,BC');     { HL = Year - 1980 }
+            EmitInstr('LD A,L');
+            EmitInstr('AND 7Fh');
+            EmitInstr('ADD A,A');       { A = (Year-1980) & 7F, decale << 1 }
+            EmitInstr('LD B,A');        { B = (Year-1980)<<1 }
+            EmitInstr('LD A,(IX+2)');   { Month }
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('AND 1h');        { A = (Month >> 3) & 1 }
+            EmitInstr('OR B');
+            EmitInstr('LD (DE),A');     { Octet 3 }
+            EmitInstr('POP IX');        { restaurer IX }
+          End;
+          DEST_6502:
+          Begin
+            { --- MOS 6502 : stub (PACKTIME non supporte nativement) --- }
+            ParseExpr(PI);
+            EPMatch(',');
+            ParseExpr(PI);
+          End;
+          DEST_6809:
+          Begin
+            { --- Motorola 6809 : code inline, U = ptr DateTime, X = ptr P --- }
+            ParseExpr(PI);              { var T -> adresse dans D }
+            EmitInstr('PSHS D');        { empiler adresse de T }
+            EPMatch(',');
+            ParseExpr(PI);              { var P -> adresse dans D }
+            EmitInstr('TFR D,X');       { X = adresse de P }
+            EmitInstr('PULS U');        { U = adresse de T }
+            { Octet 0 : (Sec/2) & 1Fh | (Min & 7) << 5 }
+            EmitInstr('LDB 10,U');      { Sec octet bas }
+            EmitInstr('LSRB');          { B = Sec / 2 }
+            EmitInstr('ANDB #$1F');     { B &= 1F }
+            EmitInstr('LDA 8,U');       { Min octet bas }
+            EmitInstr('ANDA #$07');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');          { A = (Min & 7) << 5 }
+            EmitInstr('ABA');           { A = A + B (bits disjoints -> equivalent OR) }
+            EmitInstr('STA 0,X');
+            { Octet 1 : (Min >> 3) & 7 | (Hour & 1Fh) << 3 }
+            EmitInstr('LDA 8,U');       { Min }
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('ANDA #$07');     { A = (Min >> 3) & 7 }
+            EmitInstr('LDB 6,U');       { Hour octet bas }
+            EmitInstr('ANDB #$1F');
+            EmitInstr('LSLB');
+            EmitInstr('LSLB');
+            EmitInstr('LSLB');          { B = (Hour & 1F) << 3 }
+            EmitInstr('ABA');
+            EmitInstr('STA 1,X');
+            { Octet 2 : Day & 1Fh | (Month & 7) << 5 }
+            EmitInstr('LDA 2,U');       { Month octet bas }
+            EmitInstr('ANDA #$07');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');          { A = (Month & 7) << 5 }
+            EmitInstr('LDB 4,U');       { Day octet bas }
+            EmitInstr('ANDB #$1F');
+            EmitInstr('ABA');
+            EmitInstr('STA 2,X');
+            { Octet 3 : (Month >> 3) & 1 | ((Year-1980) & 7Fh) << 1 }
+            EmitInstr('LDD 0,U');       { D = Year (16 bits) }
+            EmitInstr('SUBD #1980');
+            EmitInstr('ANDB #$7F');     { B = (Year-1980) & 7F }
+            EmitInstr('LSLB');          { B = (Year-1980) << 1 }
+            EmitInstr('LDA 2,U');       { Month }
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('ANDA #$01');     { A = (Month >> 3) & 1 }
+            EmitInstr('ABA');
+            EmitInstr('STA 3,X');
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) par defaut : PUSH EAX, CALL, ADD ESP,8 --- }
+            ParseExpr(PI);              { var T -> adresse dans EAX }
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);              { var P -> adresse dans EAX }
+            EmitInstr('PUSH EAX');
+          End;
+        End; { Case }
+        EPMatch(')');
+        { Appel runtime pour les cibles basees sur CALL/BSR }
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            EmitInstr('CALL ' + TP_RT_PFX + 'PACKTIME');
+            EmitInstr('ADD SP,4');
+          End;
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            EmitInstr('BSR ' + TP_RT_PFX + 'PACKTIME');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_Z80, DEST_6502, DEST_6809:
+            ; { code inline, rien a ajouter }
+          Else
+          Begin
+            EmitInstr('CALL ' + TP_RT_PFX + 'PACKTIME');
+            EmitInstr('ADD ESP,8');
+          End;
+        End;
       End;
-      EPMatch(')');
-      EmitInstr('CALL ' + TP_RT_PFX + 'PACKTIME');
-      EmitInstr('ADD ESP,8');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -23711,6 +23895,57 @@ Begin
   EmitInstr('RET');
   EmitLabel(TP_RT_PFX + 'INSERT');
   EmitInstr('RET');
+
+  { ------ _TPRT_PACKTIME : empaqueter DateTime en LongInt DOS (8086) --- }
+  { [BP+6] = ptr DateTime T, [BP+4] = ptr LongInt P                      }
+  { Packed: mot bas  bits 0-4=Sec/2, 5-10=Min, 11-15=Hour               }
+  {         mot haut bits 0-4=Day,   5-8=Month, 9-15=Year-1980           }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PACKTIME');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('PUSH SI');
+  EmitInstr('PUSH DI');
+  EmitInstr('PUSH BX');
+  EmitInstr('PUSH CX');
+  EmitInstr('MOV SI,[BP+6]');      { SI = ptr DateTime T }
+  EmitInstr('MOV DI,[BP+4]');      { DI = ptr LongInt P }
+  { --- Mot bas : Hour<<11 | Min<<5 | Sec/2 --- }
+  EmitInstr('MOV AX,[SI+6]');      { Hour }
+  EmitInstr('AND AX,1Fh');
+  EmitInstr('MOV CL,11');
+  EmitInstr('SHL AX,CL');          { AX = Hour << 11 }
+  EmitInstr('MOV BX,[SI+8]');      { Min }
+  EmitInstr('AND BX,3Fh');
+  EmitInstr('MOV CL,5');
+  EmitInstr('SHL BX,CL');          { BX = Min << 5 }
+  EmitInstr('OR AX,BX');
+  EmitInstr('MOV BX,[SI+10]');     { Sec }
+  EmitInstr('SHR BX,1');
+  EmitInstr('AND BX,1Fh');         { BX = Sec/2 }
+  EmitInstr('OR AX,BX');
+  EmitInstr('MOV [DI],AX');        { mot bas -> [P] }
+  { --- Mot haut : (Year-1980)<<9 | Month<<5 | Day --- }
+  EmitInstr('MOV AX,[SI]');        { Year }
+  EmitInstr('SUB AX,1980');
+  EmitInstr('AND AX,7Fh');
+  EmitInstr('MOV CL,9');
+  EmitInstr('SHL AX,CL');          { AX = (Year-1980) << 9 }
+  EmitInstr('MOV BX,[SI+2]');      { Month }
+  EmitInstr('AND BX,0Fh');
+  EmitInstr('MOV CL,5');
+  EmitInstr('SHL BX,CL');          { BX = Month << 5 }
+  EmitInstr('OR AX,BX');
+  EmitInstr('MOV BX,[SI+4]');      { Day }
+  EmitInstr('AND BX,1Fh');
+  EmitInstr('OR AX,BX');
+  EmitInstr('MOV [DI+2],AX');      { mot haut -> [P+2] }
+  EmitInstr('POP CX');
+  EmitInstr('POP BX');
+  EmitInstr('POP DI');
+  EmitInstr('POP SI');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
 End;
 
 Procedure EmitRuntime;
@@ -26792,9 +27027,46 @@ Begin
   EmitInstr('MOVE.L D2,D1');
   EmitInstr('MOVEM.L (SP)+,D2-D3');
   EmitInstr('RTS');
-End;
 
-{ ---- EmitRuntimeAmiga : routines runtime AmigaDOS (dos.library) ---- }
+  { ------ _TPRT_PACKTIME : empaqueter DateTime en LongInt DOS (68000) -- }
+  { (SP+8) = ptr DateTime T, (SP+4) = ptr LongInt P (apres BSR)          }
+  { Apres MOVEM (6 regs * 4 = 24 octets) : T en (SP+32), P en (SP+28)    }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PACKTIME');
+  EmitInstr('MOVEM.L D0-D3/A0-A1,-(SP)');
+  EmitInstr('MOVEA.L 32(SP),A0');      { A0 = ptr DateTime T }
+  EmitInstr('MOVEA.L 28(SP),A1');      { A1 = ptr LongInt P }
+  { --- Mot bas : Hour<<11 | Min<<5 | Sec/2 --- }
+  EmitInstr('MOVE.W 6(A0),D0');        { Hour }
+  EmitInstr('AND.W #$001F,D0');
+  EmitInstr('LSL.W #8,D0');
+  EmitInstr('LSL.W #3,D0');            { D0 = Hour << 11 }
+  EmitInstr('MOVE.W 8(A0),D1');        { Min }
+  EmitInstr('AND.W #$003F,D1');
+  EmitInstr('LSL.W #5,D1');
+  EmitInstr('OR.W D1,D0');
+  EmitInstr('MOVE.W 10(A0),D1');       { Sec }
+  EmitInstr('LSR.W #1,D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('OR.W D1,D0');
+  EmitInstr('MOVE.W D0,(A1)');         { stocker mot bas }
+  { --- Mot haut : (Year-1980)<<9 | Month<<5 | Day --- }
+  EmitInstr('MOVE.W 0(A0),D2');        { Year }
+  EmitInstr('SUB.W #1980,D2');
+  EmitInstr('AND.W #$007F,D2');
+  EmitInstr('LSL.W #8,D2');
+  EmitInstr('LSL.W #1,D2');            { D2 = (Year-1980) << 9 }
+  EmitInstr('MOVE.W 2(A0),D1');        { Month }
+  EmitInstr('AND.W #$000F,D1');
+  EmitInstr('LSL.W #5,D1');
+  EmitInstr('OR.W D1,D2');
+  EmitInstr('MOVE.W 4(A0),D1');        { Day }
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('OR.W D1,D2');
+  EmitInstr('MOVE.W D2,2(A1)');        { stocker mot haut }
+  EmitInstr('MOVEM.L (SP)+,D0-D3/A0-A1');
+  EmitInstr('RTS');
+End;
 { Meme interface que EmitRuntime68000 mais utilise dos.library Write() }
 { au lieu de GEMDOS TRAP #1.                                           }
 Procedure EmitRuntimeAmiga;
@@ -26894,10 +27166,45 @@ Begin
   EmitInstr('MOVE.L D2,D1');
   EmitInstr('MOVEM.L (SP)+,D2-D3');
   EmitInstr('RTS');
-End;
 
-{ ============================================================ }
-{ TODO 20 - ROUTINES RUNTIME GRAPH             [IMPLEMENTE]    }
+  { ------ _TPRT_PACKTIME : empaqueter DateTime en LongInt DOS (68000 Amiga) }
+  { Meme logique que pour Atari ST                                             }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PACKTIME');
+  EmitInstr('MOVEM.L D0-D3/A0-A1,-(SP)');
+  EmitInstr('MOVEA.L 32(SP),A0');      { A0 = ptr DateTime T }
+  EmitInstr('MOVEA.L 28(SP),A1');      { A1 = ptr LongInt P }
+  { --- Mot bas : Hour<<11 | Min<<5 | Sec/2 --- }
+  EmitInstr('MOVE.W 6(A0),D0');        { Hour }
+  EmitInstr('AND.W #$001F,D0');
+  EmitInstr('LSL.W #8,D0');
+  EmitInstr('LSL.W #3,D0');            { D0 = Hour << 11 }
+  EmitInstr('MOVE.W 8(A0),D1');        { Min }
+  EmitInstr('AND.W #$003F,D1');
+  EmitInstr('LSL.W #5,D1');
+  EmitInstr('OR.W D1,D0');
+  EmitInstr('MOVE.W 10(A0),D1');       { Sec }
+  EmitInstr('LSR.W #1,D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('OR.W D1,D0');
+  EmitInstr('MOVE.W D0,(A1)');         { stocker mot bas }
+  { --- Mot haut : (Year-1980)<<9 | Month<<5 | Day --- }
+  EmitInstr('MOVE.W 0(A0),D2');        { Year }
+  EmitInstr('SUB.W #1980,D2');
+  EmitInstr('AND.W #$007F,D2');
+  EmitInstr('LSL.W #8,D2');
+  EmitInstr('LSL.W #1,D2');            { D2 = (Year-1980) << 9 }
+  EmitInstr('MOVE.W 2(A0),D1');        { Month }
+  EmitInstr('AND.W #$000F,D1');
+  EmitInstr('LSL.W #5,D1');
+  EmitInstr('OR.W D1,D2');
+  EmitInstr('MOVE.W 4(A0),D1');        { Day }
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('OR.W D1,D2');
+  EmitInstr('MOVE.W D2,2(A1)');        { stocker mot haut }
+  EmitInstr('MOVEM.L (SP)+,D0-D3/A0-A1');
+  EmitInstr('RTS');
+End;
 { ============================================================ }
 
 Procedure EmitGraphRuntime;
