@@ -24312,6 +24312,35 @@ Begin
   EmitInstr('INT 10h');
   EmitInstr('POP AX');
   EmitInstr('RET');
+
+  { ------ _TPRT_SETVIDEOMODE : changer le mode video (8086/DOS) ---------- }
+  { Convention : [BP+4] = mode (Integer)                                    }
+  { Si mode = -1 (_DefaultMode), restaurer le mode texte (appeler CLOSEGRAPH) }
+  { Sinon : INT 10h, AH=00h, AL=mode pour activer le mode                   }
+  { Retour : AX = 25 (nb lignes texte) si succes                            }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETVIDEOMODE');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('PUSH BX');
+  EmitInstr('MOV AX,[BP+4]');       { AX = mode }
+  { Si mode == -1 : restaurer le mode texte }
+  EmitInstr('CMP AX,-1');
+  EmitInstr('JNE ' + TP_RT_PFX + 'SVM_SET');
+  EmitInstr('CALL ' + TP_RT_PFX + 'CLOSEGRAPH');
+  EmitInstr('XOR AX,AX');           { retourner 0 }
+  EmitInstr('POP BX');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SVM_SET');
+  { Activer le mode video demande via INT 10h, AH=00h, AL=mode }
+  EmitInstr('MOV AH,00h');
+  EmitInstr('AND AL,0FFh');          { AL = mode (deja dans AX basse) }
+  EmitInstr('INT 10h');
+  EmitInstr('MOV AX,25');           { retourner 25 = nb lignes texte = succes }
+  EmitInstr('POP BX');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
 End;
 
 Procedure EmitRuntime;
