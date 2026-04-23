@@ -20073,31 +20073,65 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        { Gd : parametre var -> pousser l adresse }
-        If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
-        Begin
-          EmitInstr('LEA EAX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
-          Inc(EP);
-        End
-        Else
-          ParseExpr(PI);
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        { Gm : parametre var -> pousser l adresse }
-        If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
-        Begin
-          EmitInstr('LEA EAX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
-          Inc(EP);
-        End
-        Else
-          ParseExpr(PI);
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Path }
-        EPMatch(')');
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 DOS 16 bits : LEA AX, PUSH AX, CALL, ADD SP,6 --- }
+            { Gd : parametre var -> adresse dans AX }
+            If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+            Begin
+              EmitInstr('LEA AX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
+              Inc(EP);
+            End
+            Else
+              ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            { Gm : parametre var -> adresse dans AX }
+            If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+            Begin
+              EmitInstr('LEA AX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
+              Inc(EP);
+            End
+            Else
+              ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');  { Path }
+            EPMatch(')');
+            EmitInstr('CALL ' + TP_RT_PFX + 'INITGRAPH');
+            EmitInstr('ADD SP,6');
+          End;
+          Else
+          Begin
+            { --- Intel 80386 Win32 par defaut --- }
+            { Gd : parametre var -> pousser l adresse }
+            If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+            Begin
+              EmitInstr('LEA EAX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
+              Inc(EP);
+            End
+            Else
+              ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            { Gm : parametre var -> pousser l adresse }
+            If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+            Begin
+              EmitInstr('LEA EAX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
+              Inc(EP);
+            End
+            Else
+              ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');  { Path }
+            EPMatch(')');
+            EmitInstr('CALL ' + TP_RT_PFX + 'INITGRAPH');
+            EmitInstr('ADD ESP,12');
+          End;
+        End; { Case }
       End;
-      EmitInstr('CALL ' + TP_RT_PFX + 'INITGRAPH');
-      EmitInstr('ADD ESP,12');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -20119,16 +20153,35 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(')');
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 DOS 16 bits : adresses en AX/BX, MOV WORD PTR --- }
+            ParseExpr(PI);  EmitInstr('PUSH AX');  { Gd var addr }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');  { Gm var addr }
+            EPMatch(')');
+            EmitComment('DetectGraph -> VGA/VGAHi (DOS)');
+            EmitInstr('POP BX');                     { Gm var }
+            EmitInstr('MOV WORD PTR [BX],2');        { VGAHi = 2 }
+            EmitInstr('POP BX');                     { Gd var }
+            EmitInstr('MOV WORD PTR [BX],9');        { VGA = 9 }
+          End;
+          Else
+          Begin
+            { --- Intel 80386 Win32 par defaut --- }
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(')');
+            EmitComment('DetectGraph -> VGA/VGAHi');
+            EmitInstr('POP EDX');   { Gm var }
+            EmitInstr('MOV DWORD PTR [EDX],2');  { VGAHi = 2 }
+            EmitInstr('POP EDX');   { Gd var }
+            EmitInstr('MOV DWORD PTR [EDX],9');  { VGA = 9 }
+          End;
+        End; { Case }
       End;
-      EmitComment('DetectGraph -> VGA/VGAHi');
-      EmitInstr('POP EDX');   { Gm var }
-      EmitInstr('MOV DWORD PTR [EDX],2');  { VGAHi = 2 }
-      EmitInstr('POP EDX');   { Gd var }
-      EmitInstr('MOV DWORD PTR [EDX],9');  { VGA = 9 }
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -24225,6 +24278,39 @@ Begin
   EmitInstr('POP BX');
   EmitInstr('POP SI');
   EmitInstr('POP BP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_INITGRAPH : initialiser mode graphique VGA (8086/DOS) --- }
+  { Convention : [BP+4] = ptr Gd (Word), [BP+6] = ptr Gm (Word), [BP+8] = Path }
+  { Active le mode VGA 640x480 16 couleurs via INT 10h, AH=00h, AL=12h     }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'INITGRAPH');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('PUSH AX');
+  EmitInstr('PUSH BX');
+  { Activer le mode video VGA 640x480 16 couleurs (mode 12h) }
+  EmitInstr('MOV AX,0012h');        { AH=00h (Set Video Mode), AL=12h (VGA 640x480) }
+  EmitInstr('INT 10h');
+  { Retourner Gd = 9 (VGA) via le parametre var }
+  EmitInstr('MOV BX,[BP+4]');       { BX = adresse de Gd }
+  EmitInstr('MOV WORD PTR [BX],9'); { Gd = VGA }
+  { Retourner Gm = 2 (VGAHi) via le parametre var }
+  EmitInstr('MOV BX,[BP+6]');       { BX = adresse de Gm }
+  EmitInstr('MOV WORD PTR [BX],2'); { Gm = VGAHi }
+  EmitInstr('POP BX');
+  EmitInstr('POP AX');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_CLOSEGRAPH : restaurer le mode texte (8086/DOS) --------- }
+  { Restaure le mode texte 80x25 couleur via INT 10h, AH=00h, AL=03h       }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'CLOSEGRAPH');
+  EmitInstr('PUSH AX');
+  EmitInstr('MOV AX,0003h');        { AH=00h (Set Video Mode), AL=03h (texte 80x25) }
+  EmitInstr('INT 10h');
+  EmitInstr('POP AX');
   EmitInstr('RET');
 End;
 
