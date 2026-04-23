@@ -19584,15 +19584,241 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);              { packed time value in EAX }
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);              { var T -> addr in EAX }
-        EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 (DOS 16 bits) : pousser P (DX=haut, AX=bas) puis &T --- }
+            ParseExpr(PI);              { P LongInt : valeur bas dans AX, haut dans DX }
+            EmitInstr('PUSH DX');       { P mot haut }
+            EmitInstr('PUSH AX');       { P mot bas }
+            EPMatch(',');
+            ParseExpr(PI);              { var T -> adresse dans AX }
+            EmitInstr('PUSH AX');
+          End;
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 : empiler P (valeur 32 bits) puis &T --- }
+            ParseExpr(PI);              { P -> D0 (valeur 32 bits) }
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);              { var T -> D0 (adresse) }
+            EmitInstr('MOVE.L D0,-(SP)');
+          End;
+          DEST_Z80:
+          Begin
+            { --- Zilog Z80 : code inline ; HL = addr P, IX = addr T --- }
+            ParseExpr(PI);              { P -> HL (adresse de la variable P) }
+            EmitInstr('PUSH HL');       { sauvegarder adresse de P }
+            EPMatch(',');
+            ParseExpr(PI);              { var T -> HL (adresse de T) }
+            EmitInstr('POP DE');        { DE = adresse de P, HL = adresse de T }
+            EmitInstr('PUSH IX');       { sauvegarder IX }
+            EmitInstr('PUSH HL');
+            EmitInstr('POP IX');        { IX = adresse de T }
+            { Lire les 4 octets de P via DE (petit-boutiste) }
+            { Octet 0 : [7:5]=min[2:0]  [4:0]=sec/2 }
+            EmitInstr('LD A,(DE)');
+            EmitInstr('LD B,A');        { B = octet 0 }
+            { Sec = (A & 1Fh) * 2 }
+            EmitInstr('AND 1Fh');
+            EmitInstr('ADD A,A');
+            EmitInstr('LD (IX+10),A');
+            EmitInstr('XOR A');
+            EmitInstr('LD (IX+11),A');
+            { min bits 2:0 de l octet 0 }
+            EmitInstr('LD A,B');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('AND 7h');
+            EmitInstr('LD C,A');        { C = min bits 2:0 }
+            { Octet 1 : [7:3]=hour[4:0]  [2:0]=min[5:3] }
+            EmitInstr('INC DE');
+            EmitInstr('LD A,(DE)');
+            EmitInstr('LD B,A');        { B = octet 1 }
+            { min bits 5:3 de l octet 1 bits 2:0 }
+            EmitInstr('AND 7h');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');       { A = min_high3 << 3 }
+            EmitInstr('ADD A,C');       { A = Min complet }
+            EmitInstr('LD (IX+8),A');
+            EmitInstr('XOR A');
+            EmitInstr('LD (IX+9),A');
+            { Hour = octet1 >> 3 }
+            EmitInstr('LD A,B');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('AND 1Fh');
+            EmitInstr('LD (IX+6),A');
+            EmitInstr('XOR A');
+            EmitInstr('LD (IX+7),A');
+            { Octet 2 : [7:5]=month[2:0]  [4:0]=day }
+            EmitInstr('INC DE');
+            EmitInstr('LD A,(DE)');
+            EmitInstr('LD B,A');        { B = octet 2 }
+            { Day = A & 1Fh }
+            EmitInstr('AND 1Fh');
+            EmitInstr('LD (IX+4),A');
+            EmitInstr('XOR A');
+            EmitInstr('LD (IX+5),A');
+            { month bits 2:0 }
+            EmitInstr('LD A,B');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('AND 7h');
+            EmitInstr('LD C,A');        { C = month bits 2:0 }
+            { Octet 3 : [7:1]=(year-1980)[6:0]  [0]=month[3] }
+            EmitInstr('INC DE');
+            EmitInstr('LD A,(DE)');
+            EmitInstr('LD B,A');        { B = octet 3 }
+            { month bit 3 de l octet 3 bit 0 }
+            EmitInstr('AND 1h');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');       { A = month[3] << 3 }
+            EmitInstr('OR C');          { A = Month complet (4 bits) }
+            EmitInstr('LD (IX+2),A');
+            EmitInstr('XOR A');
+            EmitInstr('LD (IX+3),A');
+            { Year = (octet3 >> 1) + 1980 }
+            EmitInstr('LD A,B');
+            EmitInstr('SRL A');
+            EmitInstr('AND 7Fh');       { A = year-1980 }
+            EmitInstr('LD L,A');
+            EmitInstr('LD H,0');
+            EmitInstr('LD BC,1980');
+            EmitInstr('ADD HL,BC');     { HL = Year }
+            EmitInstr('LD (IX+0),L');
+            EmitInstr('LD (IX+1),H');
+            EmitInstr('POP IX');        { restaurer IX }
+          End;
+          DEST_6502:
+          Begin
+            { --- MOS 6502 : stub (UNPACKTIME non supporte nativement) --- }
+            ParseExpr(PI);
+            EPMatch(',');
+            ParseExpr(PI);
+          End;
+          DEST_6809:
+          Begin
+            { --- Motorola 6809 : code inline ; U = addr P, X = addr T --- }
+            ParseExpr(PI);              { P -> D (adresse de la variable P) }
+            EmitInstr('PSHS D');        { empiler adresse de P }
+            EPMatch(',');
+            ParseExpr(PI);              { var T -> D (adresse) }
+            EmitInstr('TFR D,X');       { X = adresse de T }
+            EmitInstr('PULS U');        { U = adresse de P }
+            { Octet 0 : [7:5]=min[2:0]  [4:0]=sec/2 }
+            EmitInstr('LDA 0,U');
+            { Sec = (A & 1Fh) * 2 }
+            EmitInstr('TFR A,B');
+            EmitInstr('ANDB #$1F');
+            EmitInstr('LSLB');
+            EmitInstr('STB 10,X');
+            EmitInstr('CLR 11,X');
+            { min bits 2:0 de l octet 0 }
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('ANDA #$07');
+            EmitInstr('PSHS A');        { sauvegarder min_bas3 }
+            { Octet 1 : [7:3]=hour[4:0]  [2:0]=min[5:3] }
+            EmitInstr('LDA 1,U');
+            EmitInstr('TFR A,B');
+            EmitInstr('ANDB #$07');
+            EmitInstr('LSLB');
+            EmitInstr('LSLB');
+            EmitInstr('LSLB');          { B = min_haut3 << 3 }
+            EmitInstr('PULS A');        { A = min_bas3 }
+            EmitInstr('ABA');           { A = Min complet }
+            EmitInstr('TFR A,B');
+            EmitInstr('STB 8,X');
+            EmitInstr('CLR 9,X');
+            { Hour = octet1 >> 3 }
+            EmitInstr('LDA 1,U');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('ANDA #$1F');
+            EmitInstr('STA 6,X');
+            EmitInstr('CLR 7,X');
+            { Octet 2 : [7:5]=month[2:0]  [4:0]=day }
+            EmitInstr('LDA 2,U');
+            EmitInstr('TFR A,B');
+            EmitInstr('ANDB #$1F');
+            EmitInstr('STB 4,X');
+            EmitInstr('CLR 5,X');
+            { month bits 2:0 }
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('ANDA #$07');
+            EmitInstr('PSHS A');        { sauvegarder month_bas3 }
+            { Octet 3 : [7:1]=(year-1980)[6:0]  [0]=month[3] }
+            EmitInstr('LDA 3,U');
+            EmitInstr('TFR A,B');
+            EmitInstr('ANDB #$01');
+            EmitInstr('LSLB');
+            EmitInstr('LSLB');
+            EmitInstr('LSLB');          { B = month[3] << 3 }
+            EmitInstr('PULS A');        { A = month_bas3 }
+            EmitInstr('ABA');           { A = Month complet (4 bits) }
+            EmitInstr('TFR A,B');
+            EmitInstr('STB 2,X');
+            EmitInstr('CLR 3,X');
+            { Year = (octet3 >> 1) + 1980 (petit-boutiste) }
+            EmitInstr('LDA 3,U');
+            EmitInstr('LSRA');
+            EmitInstr('ANDA #$7F');     { A = year-1980 }
+            EmitInstr('TFR A,B');
+            EmitInstr('CLRA');          { D = year-1980 (octet bas dans B) }
+            EmitInstr('ADDD #1980');    { D = Year }
+            EmitInstr('STB 0,X');       { Year octet bas (petit-boutiste) }
+            EmitInstr('STA 1,X');       { Year octet haut }
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) par defaut --- }
+            ParseExpr(PI);              { P valeur -> EAX }
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);              { var T -> adresse dans EAX }
+            EmitInstr('PUSH EAX');
+          End;
+        End; { Case }
+        EPMatch(')');
+        { Appel runtime pour les cibles basees sur CALL/BSR }
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            EmitInstr('CALL ' + TP_RT_PFX + 'UNPACKTIME');
+            EmitInstr('ADD SP,6');
+          End;
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            EmitInstr('BSR ' + TP_RT_PFX + 'UNPACKTIME');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_Z80, DEST_6502, DEST_6809:
+            ; { code inline, rien a ajouter }
+          Else
+          Begin
+            EmitInstr('CALL ' + TP_RT_PFX + 'UNPACKTIME');
+            EmitInstr('ADD ESP,8');
+          End;
+        End;
       End;
-      EPMatch(')');
-      EmitInstr('CALL ' + TP_RT_PFX + 'UNPACKTIME');
-      EmitInstr('ADD ESP,8');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -23946,6 +24172,60 @@ Begin
   EmitInstr('POP SI');
   EmitInstr('POP BP');
   EmitInstr('RET');
+
+  { ------ _TPRT_UNPACKTIME : decomposer LongInt en DateTime (8086) ----- }
+  { [BP+4] = ptr DateTime T, [BP+6] = P mot bas, [BP+8] = P mot haut     }
+  { Mot bas  bits 0-4=Sec/2, 5-10=Min, 11-15=Hour                        }
+  { Mot haut bits 0-4=Day,   5-8=Month, 9-15=Year-1980                   }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'UNPACKTIME');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('PUSH SI');
+  EmitInstr('PUSH BX');
+  EmitInstr('PUSH CX');
+  EmitInstr('MOV SI,[BP+4]');      { SI = ptr DateTime T }
+  EmitInstr('MOV AX,[BP+6]');      { AX = P mot bas (Hour|Min|Sec/2) }
+  { Sec = (AX & 1Fh) * 2 }
+  EmitInstr('MOV CX,AX');
+  EmitInstr('AND CX,1Fh');
+  EmitInstr('SHL CX,1');
+  EmitInstr('MOV [SI+10],CX');     { Sec }
+  { Min = (AX >> 5) & 3Fh }
+  EmitInstr('MOV CX,AX');
+  EmitInstr('MOV BL,5');
+  EmitInstr('MOV CL,5');
+  EmitInstr('SHR CX,CL');
+  EmitInstr('AND CX,3Fh');
+  EmitInstr('MOV [SI+8],CX');      { Min }
+  { Hour = (AX >> 11) & 1Fh }
+  EmitInstr('MOV CX,AX');
+  EmitInstr('MOV CL,11');
+  EmitInstr('SHR CX,CL');
+  EmitInstr('AND CX,1Fh');
+  EmitInstr('MOV [SI+6],CX');      { Hour }
+  EmitInstr('MOV AX,[BP+8]');      { AX = P mot haut (Year-1980|Month|Day) }
+  { Day = AX & 1Fh }
+  EmitInstr('MOV CX,AX');
+  EmitInstr('AND CX,1Fh');
+  EmitInstr('MOV [SI+4],CX');      { Day }
+  { Month = (AX >> 5) & 0Fh }
+  EmitInstr('MOV CX,AX');
+  EmitInstr('MOV CL,5');
+  EmitInstr('SHR CX,CL');
+  EmitInstr('AND CX,0Fh');
+  EmitInstr('MOV [SI+2],CX');      { Month }
+  { Year = ((AX >> 9) & 7Fh) + 1980 }
+  EmitInstr('MOV CL,9');
+  EmitInstr('SHR AX,CL');
+  EmitInstr('AND AX,7Fh');
+  EmitInstr('ADD AX,1980');
+  EmitInstr('MOV [SI],AX');        { Year }
+  EmitInstr('POP CX');
+  EmitInstr('POP BX');
+  EmitInstr('POP SI');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
 End;
 
 Procedure EmitRuntime;
@@ -27066,6 +27346,52 @@ Begin
   EmitInstr('MOVE.W D2,2(A1)');        { stocker mot haut }
   EmitInstr('MOVEM.L (SP)+,D0-D3/A0-A1');
   EmitInstr('RTS');
+
+  { ------ _TPRT_UNPACKTIME : decomposer LongInt en DateTime (68000) ------ }
+  { Apres MOVEM (6 regs * 4 = 24 octets) : P en (SP+32), &T en (SP+28)     }
+  { bits 4:0=sec/2, 10:5=min, 15:11=hour, 20:16=day, 24:21=month, 31:25=year-1980 }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'UNPACKTIME');
+  EmitInstr('MOVEM.L D0-D3/A0-A1,-(SP)');
+  EmitInstr('MOVE.L 32(SP),D0');       { D0 = P (LongInt packed) }
+  EmitInstr('MOVEA.L 28(SP),A0');      { A0 = ptr DateTime T }
+  { Sec = (bits 4:0) * 2 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('LSL.W #1,D1');
+  EmitInstr('MOVE.W D1,10(A0)');       { Sec }
+  { Min = (bits 10:5) }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('LSR.L #5,D1');
+  EmitInstr('AND.W #$003F,D1');
+  EmitInstr('MOVE.W D1,8(A0)');        { Min }
+  { Hour = (bits 15:11) = D0 >> 11 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('LSR.L #8,D1');
+  EmitInstr('LSR.L #3,D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('MOVE.W D1,6(A0)');        { Hour }
+  { Day = (bits 20:16) via SWAP }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('SWAP D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('MOVE.W D1,4(A0)');        { Day }
+  { Month = (bits 24:21) = D0 >> 21 = SWAP then >> 5 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('SWAP D1');
+  EmitInstr('LSR.W #5,D1');
+  EmitInstr('AND.W #$000F,D1');
+  EmitInstr('MOVE.W D1,2(A0)');        { Month }
+  { Year = (bits 31:25) + 1980 = SWAP >> 8 >> 1 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('SWAP D1');
+  EmitInstr('LSR.W #8,D1');
+  EmitInstr('LSR.W #1,D1');
+  EmitInstr('AND.W #$007F,D1');
+  EmitInstr('ADD.W #1980,D1');
+  EmitInstr('MOVE.W D1,(A0)');         { Year }
+  EmitInstr('MOVEM.L (SP)+,D0-D3/A0-A1');
+  EmitInstr('RTS');
 End;
 { Meme interface que EmitRuntime68000 mais utilise dos.library Write() }
 { au lieu de GEMDOS TRAP #1.                                           }
@@ -27202,6 +27528,51 @@ Begin
   EmitInstr('AND.W #$001F,D1');
   EmitInstr('OR.W D1,D2');
   EmitInstr('MOVE.W D2,2(A1)');        { stocker mot haut }
+  EmitInstr('MOVEM.L (SP)+,D0-D3/A0-A1');
+  EmitInstr('RTS');
+
+  { ------ _TPRT_UNPACKTIME : decomposer LongInt en DateTime (68000 Amiga) -- }
+  { Meme logique que pour Atari ST                                              }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'UNPACKTIME');
+  EmitInstr('MOVEM.L D0-D3/A0-A1,-(SP)');
+  EmitInstr('MOVE.L 32(SP),D0');       { D0 = P (LongInt packed) }
+  EmitInstr('MOVEA.L 28(SP),A0');      { A0 = ptr DateTime T }
+  { Sec = (bits 4:0) * 2 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('LSL.W #1,D1');
+  EmitInstr('MOVE.W D1,10(A0)');       { Sec }
+  { Min = (bits 10:5) }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('LSR.L #5,D1');
+  EmitInstr('AND.W #$003F,D1');
+  EmitInstr('MOVE.W D1,8(A0)');        { Min }
+  { Hour = (bits 15:11) = D0 >> 11 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('LSR.L #8,D1');
+  EmitInstr('LSR.L #3,D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('MOVE.W D1,6(A0)');        { Hour }
+  { Day = (bits 20:16) via SWAP }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('SWAP D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('MOVE.W D1,4(A0)');        { Day }
+  { Month = (bits 24:21) = D0 >> 21 = SWAP then >> 5 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('SWAP D1');
+  EmitInstr('LSR.W #5,D1');
+  EmitInstr('AND.W #$000F,D1');
+  EmitInstr('MOVE.W D1,2(A0)');        { Month }
+  { Year = (bits 31:25) + 1980 = SWAP >> 8 >> 1 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('SWAP D1');
+  EmitInstr('LSR.W #8,D1');
+  EmitInstr('LSR.W #1,D1');
+  EmitInstr('AND.W #$007F,D1');
+  EmitInstr('ADD.W #1980,D1');
+  EmitInstr('MOVE.W D1,(A0)');         { Year }
   EmitInstr('MOVEM.L (SP)+,D0-D3/A0-A1');
   EmitInstr('RTS');
 End;
