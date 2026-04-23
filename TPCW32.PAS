@@ -4609,6 +4609,9 @@ Begin
   EmitComment('--- Imports Win32 pour emulation interruptions (TODO 23) ---');
   EmitComment('--- kernel32.dll ---');
   EmitRaw('EXTRN _SetConsoleScreenBufferSize@8:NEAR');
+  EmitRaw('EXTRN _SetConsoleWindowInfo@12:NEAR');
+  EmitRaw('EXTRN _SetConsoleCursorInfo@8:NEAR');
+  EmitRaw('EXTRN _GetConsoleCursorInfo@8:NEAR');
   EmitRaw('EXTRN _WriteConsoleOutputAttribute@20:NEAR');
   EmitComment('--- user32.dll ---');
   EmitRaw('EXTRN _GetCursorPos@4:NEAR');
@@ -4666,6 +4669,8 @@ Begin
   EmitRaw('CRT_NWRT  DD 0');           { nombre de cellules ecrites            }
   EmitRaw('CRT_SCROLL DB 16 DUP(0)');  { SMALL_RECT pour ScrollConsoleScreenBuffer }
   EmitRaw('CRT_FILL   DD 0,0');        { CHAR_INFO (char + attr) pour scroll fill  }
+  EmitRaw('CRT_CURSVIS DD 1');         { visibilite curseur texte (1=visible)       }
+  EmitRaw('CRT_CURINFO DD 25,1');      { CONSOLE_CURSOR_INFO: dwSize=25, bVisible=1 }
   EmitBlankLine;
 
   { Variables DOS (TODO 19) }
@@ -13388,28 +13393,78 @@ Begin
       Exit;
     End;
 
-    { _GETPIXEL_W(wx,wy) -> stub, returns 0 }
+    { _GETPIXEL_W(wx,wy) -> same as GETPIXEL (fenetre non geree) }
     If Up = '_GETPIXEL_W' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
-      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
-      Case Opts.DestTarget Of
-        DEST_68000, DEST_ATARIST, DEST_AMIGA:
-          EmitInstr('MOVEQ #0,D0');
-        DEST_DOSR, DEST_DOSP:
-          EmitInstr('XOR AX,AX');
-        DEST_Z80:
-          EmitInstr('LD HL,0');
-        DEST_6502:
-          EmitInstr('LDA #0');
-        DEST_6809:
-        Begin
-          EmitInstr('CLRA');
-          EmitInstr('CLRB');
-        End;
-        Else
-          EmitInstr('XOR EAX,EAX');
+      Begin
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'GETPIXEL');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'GETPIXEL');
+            EmitInstr('ADD SP,4');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'GETPIXEL');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'GETPIXEL');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'GETPIXEL');
+            EmitInstr('LEAS 4,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EmitInstr('PUSH DWORD PTR [GR_HDC]');
+            EmitInstr('CALL ' + TP_RT_PFX + 'GETPIXEL');
+            EmitInstr('ADD ESP,12');
+          End;
+        End; { Case }
+        EPMatch(')');
       End;
       Exit;
     End;
@@ -13505,44 +13560,126 @@ Begin
       Exit;
     End;
 
-    { _IMAGESIZE_W / _IMAGESIZE_WXY -> stub returns 0 }
+    { _IMAGESIZE_W / _IMAGESIZE_WXY -> same as IMAGESIZE (fenetre non geree) }
     If (Up = '_IMAGESIZE_W') Or (Up = '_IMAGESIZE_WXY') Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);
-        While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
-        Begin EPMatch(','); ParseExpr(PI); End;
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'IMAGESIZE');
+            EmitInstr('LEA 16(SP),SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'IMAGESIZE');
+            EmitInstr('ADD SP,8');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'IMAGESIZE');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'IMAGESIZE');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'IMAGESIZE');
+            EmitInstr('LEAS 8,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'IMAGESIZE');
+            EmitInstr('ADD ESP,16');
+          End;
+        End; { Case }
         EPMatch(')');
-      End;
-      Case Opts.DestTarget Of
-        DEST_68000, DEST_ATARIST, DEST_AMIGA:
-          EmitInstr('MOVEQ #0,D0');
-        DEST_DOSR, DEST_DOSP:
-          EmitInstr('XOR AX,AX');
-        DEST_Z80:
-          EmitInstr('LD HL,0');
-        DEST_6502:
-          EmitInstr('LDA #0');
-        DEST_6809:
-        Begin
-          EmitInstr('CLRA');
-          EmitInstr('CLRB');
-        End;
-        Else
-          EmitInstr('XOR EAX,EAX');
       End;
       Exit;
     End;
 
-    { _GETARCINFO(var SP, EP, FP) -> stub returns 0 }
+    { _GETARCINFO(var SP, EP, FP) -> aucune info d arc disponible,       }
+    { on remet a 0 les 3 enregistrements _XYCoord (x,y sur 4 octets) et  }
+    { on retourne FALSE (0) dans EAX.                                    }
     If Up = '_GETARCINFO' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(','); ParseExpr(PI);
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA,
+          DEST_DOSR, DEST_DOSP,
+          DEST_Z80, DEST_6502, DEST_6809:
+          Begin
+            ParseExpr(PI); EPMatch(',');
+            ParseExpr(PI); EPMatch(',');
+            ParseExpr(PI);
+          End;
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOV DWORD PTR [EAX],0');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('MOV DWORD PTR [EAX],0');
+            EPMatch(',');
+            ParseExpr(PI);
+            EmitInstr('MOV DWORD PTR [EAX],0');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       Case Opts.DestTarget Of
@@ -13565,11 +13702,27 @@ Begin
       Exit;
     End;
 
-    { _GETFILLMASK(var mask) -> stub returns False (0) }
+    { _GETFILLMASK(var mask) -> aucun masque personnalise stocke, on    }
+    { remet a 0 les 8 octets du _FillMask et on retourne FALSE (0).     }
     If Up = '_GETFILLMASK' Then
     Begin
       Inc(EP);
-      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      If EPMatch('(') Then
+      Begin
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA,
+          DEST_DOSR, DEST_DOSP,
+          DEST_Z80, DEST_6502, DEST_6809:
+            ParseExpr(PI);
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOV DWORD PTR [EAX],0');
+            EmitInstr('MOV DWORD PTR [EAX+4],0');
+          End;
+        End; { Case }
+        EPMatch(')');
+      End;
       Case Opts.DestTarget Of
         DEST_68000, DEST_ATARIST, DEST_AMIGA:
           EmitInstr('MOVEQ #0,D0');
@@ -13616,36 +13769,110 @@ Begin
       Exit;
     End;
 
-    { _SELECTPALETTE(n) -> stub returns 0 }
+    { _SELECTPALETTE(n) -> selectionne la palette CGA n et retourne l ancien  }
+    { numero de palette.                                                       }
+    { DOS 16 bits : INT 10h AH=0Bh BH=01h BL=n&3 (modes _MRes4Color,         }
+    {               _MResNoColor). La palette precedente est lue depuis        }
+    {               CGA_CURPAL et retournee dans AX.                           }
+    { Autres cibles : retourner n directement (comportement precedent).        }
     If Up = '_SELECTPALETTE' Then
     Begin
       Inc(EP);
-      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
-      Case Opts.DestTarget Of
-        DEST_68000, DEST_ATARIST, DEST_AMIGA:
-          EmitInstr('MOVEQ #0,D0');
-        DEST_DOSR, DEST_DOSP:
-          EmitInstr('XOR AX,AX');
-        DEST_Z80:
-          EmitInstr('LD HL,0');
-        DEST_6502:
-          EmitInstr('LDA #0');
-        DEST_6809:
-        Begin
-          EmitInstr('CLRA');
-          EmitInstr('CLRB');
+      If EPMatch('(') Then
+      Begin
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);           { AX = nouveau numero de palette          }
+            EmitInstr('MOV BL,AL');  { BL = nouveau n                          }
+            EmitInstr('AND BL,3');   { masquer a 0-3                           }
+            { Lire l ancienne palette (valeur de retour) depuis CGA_CURPAL     }
+            EmitInstr('MOV AL,BYTE PTR [CGA_CURPAL]');
+            EmitInstr('XOR AH,AH'); { AX = ancien palette (zero-etendu)        }
+            EmitInstr('PUSH AX');   { sauvegarder valeur de retour             }
+            { Mettre a jour CGA_CURPAL et appliquer via INT 10h AH=0Bh        }
+            EmitInstr('MOV BYTE PTR [CGA_CURPAL],BL');
+            EmitInstr('MOV AH,0Bh');
+            EmitInstr('MOV BH,01h'); { BH=01h = selection palette couleur CGA  }
+            EmitInstr('INT 10h');
+            EmitInstr('POP AX');    { retourner ancienne palette               }
+          End;
+          Else
+            ParseExpr(PI);           { retourner n directement (win32/autres)  }
         End;
-        Else
-          EmitInstr('XOR EAX,EAX');
+        EPMatch(')');
       End;
       Exit;
     End;
 
-    { _SETTEXTROWS(rows) -> stub returns rows }
+    { _SETTEXTROWS(rows) -> change le nombre de lignes texte (25, 43 ou 50). }
+    { DOS 16 bits : INT 10h AH=11h inline (police 8x16 pour 25 lignes,      }
+    {               police 8x8 pour 43/50 lignes).                           }
+    { Win32       : appelle _TPRT_SETTEXTROWS via l API Windows.             }
+    { Retour : rows si succes, 0 si valeur non supportee.                    }
     If Up = '_SETTEXTROWS' Then
     Begin
       Inc(EP);
-      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      If EPMatch('(') Then
+      Begin
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { Inline INT 10h : charger la police correspondante              }
+            { Apres ParseExpr, AX contient le nombre de lignes demande       }
+            ParseExpr(PI);
+            Lbl     := LabelGen;  { label pour la branche 43/50 lignes }
+            LblLoop := LabelGen;  { label pour la branche 25 lignes    }
+            LblDone := LabelGen;  { label de fin commun                }
+            EmitInstr('PUSH AX');
+            EmitInstr('CMP AX,25');
+            EmitInstr('JE ' + LblLoop);
+            EmitInstr('CMP AX,43');
+            EmitInstr('JE ' + Lbl);
+            EmitInstr('CMP AX,50');
+            EmitInstr('JE ' + Lbl);
+            { valeur non supportee : nettoyer la pile et retourner 0 }
+            EmitInstr('POP AX');
+            EmitInstr('XOR AX,AX');
+            EmitInstr('JMP ' + LblDone);
+            { --- 43/50 lignes : INT 10h AH=11h AL=12h BL=00h (police 8x8) --- }
+            EmitLabel(Lbl);
+            EmitInstr('MOV AH,11h');
+            EmitInstr('MOV AL,12h');
+            EmitInstr('XOR BL,BL');
+            EmitInstr('INT 10h');
+            EmitInstr('POP AX');
+            EmitInstr('JMP ' + LblDone);
+            { --- 25 lignes : INT 10h AH=11h AL=14h BL=00h (police 8x16) --- }
+            EmitLabel(LblLoop);
+            EmitInstr('MOV AH,11h');
+            EmitInstr('MOV AL,14h');
+            EmitInstr('XOR BL,BL');
+            EmitInstr('INT 10h');
+            EmitInstr('POP AX');
+            EmitLabel(LblDone);
+          End;
+          Else
+          Begin
+            { Win32 : appel runtime _TPRT_SETTEXTROWS([ESP+4]=rows -> EAX) }
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETTEXTROWS');
+            EmitInstr('ADD ESP,4');
+          End;
+        End; { Case }
+        EPMatch(')');
+      End
+      Else
+      Begin
+        { sans argument : retourner 0 }
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+            EmitInstr('XOR AX,AX');
+          Else
+            EmitInstr('XOR EAX,EAX');
+        End;
+      End;
       Exit;
     End;
 
@@ -13674,40 +13901,97 @@ Begin
       Exit;
     End;
 
-    { _DISPLAYCURSOR(toggle) -> stub returns 0 }
+    { _DISPLAYCURSOR(toggle) -> affiche ou cache le curseur texte.            }
+    { toggle = 0 (_GCURSOROFF) : cache le curseur.                            }
+    { toggle != 0 (_GCURSORON) : affiche le curseur.                          }
+    { DOS 16 bits : INT 10h AH=01h inline (forme curseur).                    }
+    { Win32       : appelle _TPRT_DISPLAYCURSOR via SetConsoleCursorInfo.      }
+    { Retour : etat precedent (0=cache, -1=visible).                          }
     If Up = '_DISPLAYCURSOR' Then
     Begin
       Inc(EP);
-      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
-      Case Opts.DestTarget Of
-        DEST_68000, DEST_ATARIST, DEST_AMIGA:
-          EmitInstr('MOVEQ #0,D0');
-        DEST_DOSR, DEST_DOSP:
-          EmitInstr('XOR AX,AX');
-        DEST_Z80:
-          EmitInstr('LD HL,0');
-        DEST_6502:
-          EmitInstr('LDA #0');
-        DEST_6809:
-        Begin
-          EmitInstr('CLRA');
-          EmitInstr('CLRB');
+      If EPMatch('(') Then
+      Begin
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { Apres ParseExpr, AX contient le toggle (0=cacher, autre=montrer) }
+            ParseExpr(PI);
+            Lbl     := LabelGen;  { label branche "cacher"      }
+            LblDone := LabelGen;  { label apres calcul etat prev }
+            LblLoop := LabelGen;  { label sortie commune         }
+            EmitInstr('PUSH AX');           { sauver toggle demande }
+            { Lire l etat precedent du curseur via INT 10h AH=03h (CH bit 5) }
+            EmitInstr('MOV AH,03h');
+            EmitInstr('XOR BH,BH');
+            EmitInstr('INT 10h');           { CX=forme curseur (CH bit5=cache) }
+            EmitInstr('XOR AX,AX');        { AX = 0 : curseur cache par defaut }
+            EmitInstr('TEST CH,20h');       { bit 5 de CH = curseur cache }
+            EmitInstr('JNZ ' + LblDone);   { bit5=1 -> etait cache -> AX=0 }
+            EmitInstr('MOV AX,-1');         { bit5=0 -> etait visible -> AX=-1 }
+            EmitLabel(LblDone);
+            EmitInstr('XCHG AX,[SP]');     { AX=toggle, [SP]=etat precedent }
+            { Brancher selon le toggle demande }
+            EmitInstr('TEST AX,AX');
+            EmitInstr('JZ ' + Lbl);        { toggle=0 -> cacher }
+            { Montrer le curseur : CH=06h, CL=07h }
+            EmitInstr('MOV CX,0607h');
+            EmitInstr('MOV AH,01h');
+            EmitInstr('INT 10h');
+            EmitInstr('JMP ' + LblLoop);   { sortie commune }
+            EmitLabel(Lbl);
+            { Cacher le curseur : CH=20h (bit 5 = curseur invisible) }
+            EmitInstr('MOV CX,2000h');
+            EmitInstr('MOV AH,01h');
+            EmitInstr('INT 10h');
+            EmitLabel(LblLoop);            { sortie commune }
+            EmitInstr('POP AX');           { AX = etat precedent (-1 ou 0) }
+          End;
+          Else
+          Begin
+            { Win32 : appel runtime _TPRT_DISPLAYCURSOR([ESP+4]=toggle -> EAX) }
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'DISPLAYCURSOR');
+            EmitInstr('ADD ESP,4');
+          End;
+        End; { Case }
+        EPMatch(')');
+      End
+      Else
+      Begin
+        { sans argument : retourner 0 }
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+            EmitInstr('XOR AX,AX');
+          Else
+            EmitInstr('XOR EAX,EAX');
         End;
-        Else
-          EmitInstr('XOR EAX,EAX');
       End;
       Exit;
     End;
 
-    { _GETTEXTCURSOR -> stub returns 0 }
+    { _GETTEXTCURSOR -> retourne la forme du curseur texte courant.           }
+    { Retour (16 bits) : octet haut = scanline debut, octet bas = scanline fin }
+    { Bit 5 de l octet haut = 1 si curseur cache.                              }
+    { DOS 16 bits : INT 10h AH=03h inline, retourne CX dans AX.               }
+    { Win32       : appelle _TPRT_GETTEXTCURSOR.                               }
     If Up = '_GETTEXTCURSOR' Then
     Begin
       Inc(EP);
       Case Opts.DestTarget Of
+        DEST_DOSR, DEST_DOSP:
+        Begin
+          { INT 10h AH=03h : lit la forme et la position du curseur.  }
+          { DH=ligne, DL=col, CH=scanline debut, CL=scanline fin.      }
+          { Retourner CX (forme) dans AX.                              }
+          EmitInstr('MOV AH,03h');
+          EmitInstr('XOR BH,BH');
+          EmitInstr('INT 10h');
+          EmitInstr('MOV AX,CX');  { AX = forme curseur }
+        End;
         DEST_68000, DEST_ATARIST, DEST_AMIGA:
           EmitInstr('MOVEQ #0,D0');
-        DEST_DOSR, DEST_DOSP:
-          EmitInstr('XOR AX,AX');
         DEST_Z80:
           EmitInstr('LD HL,0');
         DEST_6502:
@@ -13718,7 +14002,10 @@ Begin
           EmitInstr('CLRB');
         End;
         Else
-          EmitInstr('XOR EAX,EAX');
+        Begin
+          { Win32 : appel runtime _TPRT_GETTEXTCURSOR -> EAX }
+          EmitInstr('CALL ' + TP_RT_PFX + 'GETTEXTCURSOR');
+        End;
       End;
       Exit;
     End;
@@ -19297,15 +19584,241 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);              { packed time value in EAX }
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);              { var T -> addr in EAX }
-        EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 (DOS 16 bits) : pousser P (DX=haut, AX=bas) puis &T --- }
+            ParseExpr(PI);              { P LongInt : valeur bas dans AX, haut dans DX }
+            EmitInstr('PUSH DX');       { P mot haut }
+            EmitInstr('PUSH AX');       { P mot bas }
+            EPMatch(',');
+            ParseExpr(PI);              { var T -> adresse dans AX }
+            EmitInstr('PUSH AX');
+          End;
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 : empiler P (valeur 32 bits) puis &T --- }
+            ParseExpr(PI);              { P -> D0 (valeur 32 bits) }
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);              { var T -> D0 (adresse) }
+            EmitInstr('MOVE.L D0,-(SP)');
+          End;
+          DEST_Z80:
+          Begin
+            { --- Zilog Z80 : code inline ; HL = addr P, IX = addr T --- }
+            ParseExpr(PI);              { P -> HL (adresse de la variable P) }
+            EmitInstr('PUSH HL');       { sauvegarder adresse de P }
+            EPMatch(',');
+            ParseExpr(PI);              { var T -> HL (adresse de T) }
+            EmitInstr('POP DE');        { DE = adresse de P, HL = adresse de T }
+            EmitInstr('PUSH IX');       { sauvegarder IX }
+            EmitInstr('PUSH HL');
+            EmitInstr('POP IX');        { IX = adresse de T }
+            { Lire les 4 octets de P via DE (petit-boutiste) }
+            { Octet 0 : [7:5]=min[2:0]  [4:0]=sec/2 }
+            EmitInstr('LD A,(DE)');
+            EmitInstr('LD B,A');        { B = octet 0 }
+            { Sec = (A & 1Fh) * 2 }
+            EmitInstr('AND 1Fh');
+            EmitInstr('ADD A,A');
+            EmitInstr('LD (IX+10),A');
+            EmitInstr('XOR A');
+            EmitInstr('LD (IX+11),A');
+            { min bits 2:0 de l octet 0 }
+            EmitInstr('LD A,B');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('AND 7h');
+            EmitInstr('LD C,A');        { C = min bits 2:0 }
+            { Octet 1 : [7:3]=hour[4:0]  [2:0]=min[5:3] }
+            EmitInstr('INC DE');
+            EmitInstr('LD A,(DE)');
+            EmitInstr('LD B,A');        { B = octet 1 }
+            { min bits 5:3 de l octet 1 bits 2:0 }
+            EmitInstr('AND 7h');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');       { A = min_high3 << 3 }
+            EmitInstr('ADD A,C');       { A = Min complet }
+            EmitInstr('LD (IX+8),A');
+            EmitInstr('XOR A');
+            EmitInstr('LD (IX+9),A');
+            { Hour = octet1 >> 3 }
+            EmitInstr('LD A,B');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('AND 1Fh');
+            EmitInstr('LD (IX+6),A');
+            EmitInstr('XOR A');
+            EmitInstr('LD (IX+7),A');
+            { Octet 2 : [7:5]=month[2:0]  [4:0]=day }
+            EmitInstr('INC DE');
+            EmitInstr('LD A,(DE)');
+            EmitInstr('LD B,A');        { B = octet 2 }
+            { Day = A & 1Fh }
+            EmitInstr('AND 1Fh');
+            EmitInstr('LD (IX+4),A');
+            EmitInstr('XOR A');
+            EmitInstr('LD (IX+5),A');
+            { month bits 2:0 }
+            EmitInstr('LD A,B');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('AND 7h');
+            EmitInstr('LD C,A');        { C = month bits 2:0 }
+            { Octet 3 : [7:1]=(year-1980)[6:0]  [0]=month[3] }
+            EmitInstr('INC DE');
+            EmitInstr('LD A,(DE)');
+            EmitInstr('LD B,A');        { B = octet 3 }
+            { month bit 3 de l octet 3 bit 0 }
+            EmitInstr('AND 1h');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');       { A = month[3] << 3 }
+            EmitInstr('OR C');          { A = Month complet (4 bits) }
+            EmitInstr('LD (IX+2),A');
+            EmitInstr('XOR A');
+            EmitInstr('LD (IX+3),A');
+            { Year = (octet3 >> 1) + 1980 }
+            EmitInstr('LD A,B');
+            EmitInstr('SRL A');
+            EmitInstr('AND 7Fh');       { A = year-1980 }
+            EmitInstr('LD L,A');
+            EmitInstr('LD H,0');
+            EmitInstr('LD BC,1980');
+            EmitInstr('ADD HL,BC');     { HL = Year }
+            EmitInstr('LD (IX+0),L');
+            EmitInstr('LD (IX+1),H');
+            EmitInstr('POP IX');        { restaurer IX }
+          End;
+          DEST_6502:
+          Begin
+            { --- MOS 6502 : stub (UNPACKTIME non supporte nativement) --- }
+            ParseExpr(PI);
+            EPMatch(',');
+            ParseExpr(PI);
+          End;
+          DEST_6809:
+          Begin
+            { --- Motorola 6809 : code inline ; U = addr P, X = addr T --- }
+            ParseExpr(PI);              { P -> D (adresse de la variable P) }
+            EmitInstr('PSHS D');        { empiler adresse de P }
+            EPMatch(',');
+            ParseExpr(PI);              { var T -> D (adresse) }
+            EmitInstr('TFR D,X');       { X = adresse de T }
+            EmitInstr('PULS U');        { U = adresse de P }
+            { Octet 0 : [7:5]=min[2:0]  [4:0]=sec/2 }
+            EmitInstr('LDA 0,U');
+            { Sec = (A & 1Fh) * 2 }
+            EmitInstr('TFR A,B');
+            EmitInstr('ANDB #$1F');
+            EmitInstr('LSLB');
+            EmitInstr('STB 10,X');
+            EmitInstr('CLR 11,X');
+            { min bits 2:0 de l octet 0 }
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('ANDA #$07');
+            EmitInstr('PSHS A');        { sauvegarder min_bas3 }
+            { Octet 1 : [7:3]=hour[4:0]  [2:0]=min[5:3] }
+            EmitInstr('LDA 1,U');
+            EmitInstr('TFR A,B');
+            EmitInstr('ANDB #$07');
+            EmitInstr('LSLB');
+            EmitInstr('LSLB');
+            EmitInstr('LSLB');          { B = min_haut3 << 3 }
+            EmitInstr('PULS A');        { A = min_bas3 }
+            EmitInstr('ABA');           { A = Min complet }
+            EmitInstr('TFR A,B');
+            EmitInstr('STB 8,X');
+            EmitInstr('CLR 9,X');
+            { Hour = octet1 >> 3 }
+            EmitInstr('LDA 1,U');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('ANDA #$1F');
+            EmitInstr('STA 6,X');
+            EmitInstr('CLR 7,X');
+            { Octet 2 : [7:5]=month[2:0]  [4:0]=day }
+            EmitInstr('LDA 2,U');
+            EmitInstr('TFR A,B');
+            EmitInstr('ANDB #$1F');
+            EmitInstr('STB 4,X');
+            EmitInstr('CLR 5,X');
+            { month bits 2:0 }
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('ANDA #$07');
+            EmitInstr('PSHS A');        { sauvegarder month_bas3 }
+            { Octet 3 : [7:1]=(year-1980)[6:0]  [0]=month[3] }
+            EmitInstr('LDA 3,U');
+            EmitInstr('TFR A,B');
+            EmitInstr('ANDB #$01');
+            EmitInstr('LSLB');
+            EmitInstr('LSLB');
+            EmitInstr('LSLB');          { B = month[3] << 3 }
+            EmitInstr('PULS A');        { A = month_bas3 }
+            EmitInstr('ABA');           { A = Month complet (4 bits) }
+            EmitInstr('TFR A,B');
+            EmitInstr('STB 2,X');
+            EmitInstr('CLR 3,X');
+            { Year = (octet3 >> 1) + 1980 (petit-boutiste) }
+            EmitInstr('LDA 3,U');
+            EmitInstr('LSRA');
+            EmitInstr('ANDA #$7F');     { A = year-1980 }
+            EmitInstr('TFR A,B');
+            EmitInstr('CLRA');          { D = year-1980 (octet bas dans B) }
+            EmitInstr('ADDD #1980');    { D = Year }
+            EmitInstr('STB 0,X');       { Year octet bas (petit-boutiste) }
+            EmitInstr('STA 1,X');       { Year octet haut }
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) par defaut --- }
+            ParseExpr(PI);              { P valeur -> EAX }
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);              { var T -> adresse dans EAX }
+            EmitInstr('PUSH EAX');
+          End;
+        End; { Case }
+        EPMatch(')');
+        { Appel runtime pour les cibles basees sur CALL/BSR }
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            EmitInstr('CALL ' + TP_RT_PFX + 'UNPACKTIME');
+            EmitInstr('ADD SP,6');
+          End;
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            EmitInstr('BSR ' + TP_RT_PFX + 'UNPACKTIME');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_Z80, DEST_6502, DEST_6809:
+            ; { code inline, rien a ajouter }
+          Else
+          Begin
+            EmitInstr('CALL ' + TP_RT_PFX + 'UNPACKTIME');
+            EmitInstr('ADD ESP,8');
+          End;
+        End;
       End;
-      EPMatch(')');
-      EmitInstr('CALL ' + TP_RT_PFX + 'UNPACKTIME');
-      EmitInstr('ADD ESP,8');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -19317,15 +19830,199 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);              { var T -> addr in EAX }
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);              { var P -> addr in EAX }
-        EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 (DOS 16 bits) : PUSH AX, CALL, ADD SP,4 --- }
+            ParseExpr(PI);              { var T -> adresse dans AX }
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);              { var P -> adresse dans AX }
+            EmitInstr('PUSH AX');
+          End;
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 : empiler adresses D0, BSR --- }
+            ParseExpr(PI);              { var T -> adresse dans D0 }
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);              { var P -> adresse dans D0 }
+            EmitInstr('MOVE.L D0,-(SP)');
+          End;
+          DEST_Z80:
+          Begin
+            { --- Zilog Z80 : code inline, IX = ptr DateTime, DE = ptr P --- }
+            ParseExpr(PI);              { var T -> adresse dans HL }
+            EmitInstr('PUSH HL');       { sauvegarder adresse de T }
+            EPMatch(',');
+            ParseExpr(PI);              { var P -> adresse dans HL }
+            EmitInstr('EX DE,HL');      { DE = adresse de P }
+            EmitInstr('POP HL');        { HL = adresse de T }
+            EmitInstr('PUSH IX');       { sauvegarder IX }
+            EmitInstr('PUSH HL');
+            EmitInstr('POP IX');        { IX = adresse de T }
+            { Octet 0 : (Sec/2) & 1Fh | (Min & 7) << 5 }
+            EmitInstr('LD A,(IX+10)');  { Sec octet bas (little-endian) }
+            EmitInstr('SRL A');         { A = Sec / 2 }
+            EmitInstr('AND 1Fh');
+            EmitInstr('LD B,A');        { B = Sec/2 & 1F }
+            EmitInstr('LD A,(IX+8)');   { Min octet bas }
+            EmitInstr('AND 7h');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');       { A = (Min & 7) << 5 }
+            EmitInstr('OR B');
+            EmitInstr('LD (DE),A');
+            EmitInstr('INC DE');
+            { Octet 1 : (Min >> 3) & 7 | (Hour & 1Fh) << 3 }
+            EmitInstr('LD A,(IX+8)');   { Min }
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('AND 7h');
+            EmitInstr('LD B,A');        { B = (Min >> 3) & 7 }
+            EmitInstr('LD A,(IX+6)');   { Hour octet bas }
+            EmitInstr('AND 1Fh');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');       { A = (Hour & 1F) << 3 }
+            EmitInstr('OR B');
+            EmitInstr('LD (DE),A');
+            EmitInstr('INC DE');
+            { Octet 2 : Day & 1Fh | (Month & 7) << 5 }
+            EmitInstr('LD A,(IX+4)');   { Day octet bas }
+            EmitInstr('AND 1Fh');
+            EmitInstr('LD B,A');        { B = Day & 1F }
+            EmitInstr('LD A,(IX+2)');   { Month octet bas }
+            EmitInstr('AND 7h');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');
+            EmitInstr('ADD A,A');       { A = (Month & 7) << 5 }
+            EmitInstr('OR B');
+            EmitInstr('LD (DE),A');
+            EmitInstr('INC DE');
+            { Octet 3 : (Month >> 3) & 1 | ((Year-1980) & 7Fh) << 1 }
+            EmitInstr('LD L,(IX+0)');   { Year octet bas }
+            EmitInstr('LD H,(IX+1)');   { Year octet haut }
+            EmitInstr('LD BC,1980');
+            EmitInstr('XOR A');         { effacer retenue }
+            EmitInstr('SBC HL,BC');     { HL = Year - 1980 }
+            EmitInstr('LD A,L');
+            EmitInstr('AND 7Fh');
+            EmitInstr('ADD A,A');       { A = (Year-1980) & 7F, decale << 1 }
+            EmitInstr('LD B,A');        { B = (Year-1980)<<1 }
+            EmitInstr('LD A,(IX+2)');   { Month }
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('AND 1h');        { A = (Month >> 3) & 1 }
+            EmitInstr('OR B');
+            EmitInstr('LD (DE),A');     { Octet 3 }
+            EmitInstr('POP IX');        { restaurer IX }
+          End;
+          DEST_6502:
+          Begin
+            { --- MOS 6502 : stub (PACKTIME non supporte nativement) --- }
+            ParseExpr(PI);
+            EPMatch(',');
+            ParseExpr(PI);
+          End;
+          DEST_6809:
+          Begin
+            { --- Motorola 6809 : code inline, U = ptr DateTime, X = ptr P --- }
+            ParseExpr(PI);              { var T -> adresse dans D }
+            EmitInstr('PSHS D');        { empiler adresse de T }
+            EPMatch(',');
+            ParseExpr(PI);              { var P -> adresse dans D }
+            EmitInstr('TFR D,X');       { X = adresse de P }
+            EmitInstr('PULS U');        { U = adresse de T }
+            { Octet 0 : (Sec/2) & 1Fh | (Min & 7) << 5 }
+            EmitInstr('LDB 10,U');      { Sec octet bas }
+            EmitInstr('LSRB');          { B = Sec / 2 }
+            EmitInstr('ANDB #$1F');     { B &= 1F }
+            EmitInstr('LDA 8,U');       { Min octet bas }
+            EmitInstr('ANDA #$07');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');          { A = (Min & 7) << 5 }
+            EmitInstr('ABA');           { A = A + B (bits disjoints -> equivalent OR) }
+            EmitInstr('STA 0,X');
+            { Octet 1 : (Min >> 3) & 7 | (Hour & 1Fh) << 3 }
+            EmitInstr('LDA 8,U');       { Min }
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('ANDA #$07');     { A = (Min >> 3) & 7 }
+            EmitInstr('LDB 6,U');       { Hour octet bas }
+            EmitInstr('ANDB #$1F');
+            EmitInstr('LSLB');
+            EmitInstr('LSLB');
+            EmitInstr('LSLB');          { B = (Hour & 1F) << 3 }
+            EmitInstr('ABA');
+            EmitInstr('STA 1,X');
+            { Octet 2 : Day & 1Fh | (Month & 7) << 5 }
+            EmitInstr('LDA 2,U');       { Month octet bas }
+            EmitInstr('ANDA #$07');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');
+            EmitInstr('LSLA');          { A = (Month & 7) << 5 }
+            EmitInstr('LDB 4,U');       { Day octet bas }
+            EmitInstr('ANDB #$1F');
+            EmitInstr('ABA');
+            EmitInstr('STA 2,X');
+            { Octet 3 : (Month >> 3) & 1 | ((Year-1980) & 7Fh) << 1 }
+            EmitInstr('LDD 0,U');       { D = Year (16 bits) }
+            EmitInstr('SUBD #1980');
+            EmitInstr('ANDB #$7F');     { B = (Year-1980) & 7F }
+            EmitInstr('LSLB');          { B = (Year-1980) << 1 }
+            EmitInstr('LDA 2,U');       { Month }
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('LSRA');
+            EmitInstr('ANDA #$01');     { A = (Month >> 3) & 1 }
+            EmitInstr('ABA');
+            EmitInstr('STA 3,X');
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) par defaut : PUSH EAX, CALL, ADD ESP,8 --- }
+            ParseExpr(PI);              { var T -> adresse dans EAX }
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);              { var P -> adresse dans EAX }
+            EmitInstr('PUSH EAX');
+          End;
+        End; { Case }
+        EPMatch(')');
+        { Appel runtime pour les cibles basees sur CALL/BSR }
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            EmitInstr('CALL ' + TP_RT_PFX + 'PACKTIME');
+            EmitInstr('ADD SP,4');
+          End;
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            EmitInstr('BSR ' + TP_RT_PFX + 'PACKTIME');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_Z80, DEST_6502, DEST_6809:
+            ; { code inline, rien a ajouter }
+          Else
+          Begin
+            EmitInstr('CALL ' + TP_RT_PFX + 'PACKTIME');
+            EmitInstr('ADD ESP,8');
+          End;
+        End;
       End;
-      EPMatch(')');
-      EmitInstr('CALL ' + TP_RT_PFX + 'PACKTIME');
-      EmitInstr('ADD ESP,8');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -19337,12 +20034,32 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { DOS 16 bits : INT 21h AH=31h (Terminate and Stay Resident)    }
+            { AL = code de sortie, DX = taille en paragraphes depuis le PSP  }
+            { DX = (SS - CS) + 40h (pile 1024o) + 10h (PSP) = SS - CS + 50h }
+            ParseExpr(PI);           { AX = code de sortie (16 bits)         }
+            EmitInstr('MOV BX,AX'); { BX = code de sortie (sauvegarde)      }
+            EmitInstr('MOV AX,SS');
+            EmitInstr('SUB AX,CS'); { AX = paragraphes du code              }
+            EmitInstr('ADD AX,50h'); { + 40h pile + 10h PSP                 }
+            EmitInstr('MOV DX,AX'); { DX = taille TSR en paragraphes        }
+            EmitInstr('MOV AH,31h');
+            EmitInstr('MOV AL,BL'); { AL = code de sortie                   }
+            EmitInstr('INT 21h');
+          End;
+          Else
+          Begin
+            { Sous Win32, Keep = ExitProcess }
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EmitInstr('CALL ExitProcess');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      { Sous Win32, Keep = ExitProcess }
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ExitProcess');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -19356,31 +20073,65 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        { Gd : parametre var -> pousser l adresse }
-        If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
-        Begin
-          EmitInstr('LEA EAX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
-          Inc(EP);
-        End
-        Else
-          ParseExpr(PI);
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        { Gm : parametre var -> pousser l adresse }
-        If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
-        Begin
-          EmitInstr('LEA EAX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
-          Inc(EP);
-        End
-        Else
-          ParseExpr(PI);
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Path }
-        EPMatch(')');
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 DOS 16 bits : LEA AX, PUSH AX, CALL, ADD SP,6 --- }
+            { Gd : parametre var -> adresse dans AX }
+            If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+            Begin
+              EmitInstr('LEA AX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
+              Inc(EP);
+            End
+            Else
+              ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            { Gm : parametre var -> adresse dans AX }
+            If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+            Begin
+              EmitInstr('LEA AX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
+              Inc(EP);
+            End
+            Else
+              ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');  { Path }
+            EPMatch(')');
+            EmitInstr('CALL ' + TP_RT_PFX + 'INITGRAPH');
+            EmitInstr('ADD SP,6');
+          End;
+          Else
+          Begin
+            { --- Intel 80386 Win32 par defaut --- }
+            { Gd : parametre var -> pousser l adresse }
+            If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+            Begin
+              EmitInstr('LEA EAX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
+              Inc(EP);
+            End
+            Else
+              ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            { Gm : parametre var -> pousser l adresse }
+            If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+            Begin
+              EmitInstr('LEA EAX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
+              Inc(EP);
+            End
+            Else
+              ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');  { Path }
+            EPMatch(')');
+            EmitInstr('CALL ' + TP_RT_PFX + 'INITGRAPH');
+            EmitInstr('ADD ESP,12');
+          End;
+        End; { Case }
       End;
-      EmitInstr('CALL ' + TP_RT_PFX + 'INITGRAPH');
-      EmitInstr('ADD ESP,12');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -19402,16 +20153,35 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(')');
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 DOS 16 bits : adresses en AX/BX, MOV WORD PTR --- }
+            ParseExpr(PI);  EmitInstr('PUSH AX');  { Gd var addr }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');  { Gm var addr }
+            EPMatch(')');
+            EmitComment('DetectGraph -> VGA/VGAHi (DOS)');
+            EmitInstr('POP BX');                     { Gm var }
+            EmitInstr('MOV WORD PTR [BX],2');        { VGAHi = 2 }
+            EmitInstr('POP BX');                     { Gd var }
+            EmitInstr('MOV WORD PTR [BX],9');        { VGA = 9 }
+          End;
+          Else
+          Begin
+            { --- Intel 80386 Win32 par defaut --- }
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(')');
+            EmitComment('DetectGraph -> VGA/VGAHi');
+            EmitInstr('POP EDX');   { Gm var }
+            EmitInstr('MOV DWORD PTR [EDX],2');  { VGAHi = 2 }
+            EmitInstr('POP EDX');   { Gd var }
+            EmitInstr('MOV DWORD PTR [EDX],9');  { VGA = 9 }
+          End;
+        End; { Case }
       End;
-      EmitComment('DetectGraph -> VGA/VGAHi');
-      EmitInstr('POP EDX');   { Gm var }
-      EmitInstr('MOV DWORD PTR [EDX],2');  { VGAHi = 2 }
-      EmitInstr('POP EDX');   { Gd var }
-      EmitInstr('MOV DWORD PTR [EDX],9');  { VGA = 9 }
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -19423,15 +20193,31 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { X }
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Y }
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Color }
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { X }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { Y }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { Color }
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');  { X }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');  { Y }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');  { Color }
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'PUTPIXEL');
-      EmitInstr('ADD ESP,12');
+      Case Opts.DestTarget Of
+        DEST_DOSR, DEST_DOSP: EmitInstr('ADD SP,6');
+        Else                  EmitInstr('ADD ESP,12');
+      End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -23404,6 +24190,223 @@ Begin
   EmitInstr('RET');
   EmitLabel(TP_RT_PFX + 'INSERT');
   EmitInstr('RET');
+
+  { ------ _TPRT_PACKTIME : empaqueter DateTime en LongInt DOS (8086) --- }
+  { [BP+6] = ptr DateTime T, [BP+4] = ptr LongInt P                      }
+  { Packed: mot bas  bits 0-4=Sec/2, 5-10=Min, 11-15=Hour               }
+  {         mot haut bits 0-4=Day,   5-8=Month, 9-15=Year-1980           }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PACKTIME');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('PUSH SI');
+  EmitInstr('PUSH DI');
+  EmitInstr('PUSH BX');
+  EmitInstr('PUSH CX');
+  EmitInstr('MOV SI,[BP+6]');      { SI = ptr DateTime T }
+  EmitInstr('MOV DI,[BP+4]');      { DI = ptr LongInt P }
+  { --- Mot bas : Hour<<11 | Min<<5 | Sec/2 --- }
+  EmitInstr('MOV AX,[SI+6]');      { Hour }
+  EmitInstr('AND AX,1Fh');
+  EmitInstr('MOV CL,11');
+  EmitInstr('SHL AX,CL');          { AX = Hour << 11 }
+  EmitInstr('MOV BX,[SI+8]');      { Min }
+  EmitInstr('AND BX,3Fh');
+  EmitInstr('MOV CL,5');
+  EmitInstr('SHL BX,CL');          { BX = Min << 5 }
+  EmitInstr('OR AX,BX');
+  EmitInstr('MOV BX,[SI+10]');     { Sec }
+  EmitInstr('SHR BX,1');
+  EmitInstr('AND BX,1Fh');         { BX = Sec/2 }
+  EmitInstr('OR AX,BX');
+  EmitInstr('MOV [DI],AX');        { mot bas -> [P] }
+  { --- Mot haut : (Year-1980)<<9 | Month<<5 | Day --- }
+  EmitInstr('MOV AX,[SI]');        { Year }
+  EmitInstr('SUB AX,1980');
+  EmitInstr('AND AX,7Fh');
+  EmitInstr('MOV CL,9');
+  EmitInstr('SHL AX,CL');          { AX = (Year-1980) << 9 }
+  EmitInstr('MOV BX,[SI+2]');      { Month }
+  EmitInstr('AND BX,0Fh');
+  EmitInstr('MOV CL,5');
+  EmitInstr('SHL BX,CL');          { BX = Month << 5 }
+  EmitInstr('OR AX,BX');
+  EmitInstr('MOV BX,[SI+4]');      { Day }
+  EmitInstr('AND BX,1Fh');
+  EmitInstr('OR AX,BX');
+  EmitInstr('MOV [DI+2],AX');      { mot haut -> [P+2] }
+  EmitInstr('POP CX');
+  EmitInstr('POP BX');
+  EmitInstr('POP DI');
+  EmitInstr('POP SI');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_UNPACKTIME : decomposer LongInt en DateTime (8086) ----- }
+  { [BP+4] = ptr DateTime T, [BP+6] = P mot bas, [BP+8] = P mot haut     }
+  { Mot bas  bits 0-4=Sec/2, 5-10=Min, 11-15=Hour                        }
+  { Mot haut bits 0-4=Day,   5-8=Month, 9-15=Year-1980                   }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'UNPACKTIME');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('PUSH SI');
+  EmitInstr('PUSH BX');
+  EmitInstr('PUSH CX');
+  EmitInstr('MOV SI,[BP+4]');      { SI = ptr DateTime T }
+  EmitInstr('MOV AX,[BP+6]');      { AX = P mot bas (Hour|Min|Sec/2) }
+  { Sec = (AX & 1Fh) * 2 }
+  EmitInstr('MOV CX,AX');
+  EmitInstr('AND CX,1Fh');
+  EmitInstr('SHL CX,1');
+  EmitInstr('MOV [SI+10],CX');     { Sec }
+  { Min = (AX >> 5) & 3Fh }
+  EmitInstr('MOV CX,AX');
+  EmitInstr('MOV BL,5');
+  EmitInstr('MOV CL,5');
+  EmitInstr('SHR CX,CL');
+  EmitInstr('AND CX,3Fh');
+  EmitInstr('MOV [SI+8],CX');      { Min }
+  { Hour = (AX >> 11) & 1Fh }
+  EmitInstr('MOV CX,AX');
+  EmitInstr('MOV CL,11');
+  EmitInstr('SHR CX,CL');
+  EmitInstr('AND CX,1Fh');
+  EmitInstr('MOV [SI+6],CX');      { Hour }
+  EmitInstr('MOV AX,[BP+8]');      { AX = P mot haut (Year-1980|Month|Day) }
+  { Day = AX & 1Fh }
+  EmitInstr('MOV CX,AX');
+  EmitInstr('AND CX,1Fh');
+  EmitInstr('MOV [SI+4],CX');      { Day }
+  { Month = (AX >> 5) & 0Fh }
+  EmitInstr('MOV CX,AX');
+  EmitInstr('MOV CL,5');
+  EmitInstr('SHR CX,CL');
+  EmitInstr('AND CX,0Fh');
+  EmitInstr('MOV [SI+2],CX');      { Month }
+  { Year = ((AX >> 9) & 7Fh) + 1980 }
+  EmitInstr('MOV CL,9');
+  EmitInstr('SHR AX,CL');
+  EmitInstr('AND AX,7Fh');
+  EmitInstr('ADD AX,1980');
+  EmitInstr('MOV [SI],AX');        { Year }
+  EmitInstr('POP CX');
+  EmitInstr('POP BX');
+  EmitInstr('POP SI');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_INITGRAPH : initialiser mode graphique VGA (8086/DOS) --- }
+  { Convention : [BP+4] = ptr Gd (Word), [BP+6] = ptr Gm (Word), [BP+8] = Path }
+  { Active le mode VGA 640x480 16 couleurs via INT 10h, AH=00h, AL=12h     }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'INITGRAPH');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('PUSH AX');
+  EmitInstr('PUSH BX');
+  { Activer le mode video VGA 640x480 16 couleurs (mode 12h) }
+  EmitInstr('MOV AX,0012h');        { AH=00h (Set Video Mode), AL=12h (VGA 640x480) }
+  EmitInstr('INT 10h');
+  { Retourner Gd = 9 (VGA) via le parametre var }
+  EmitInstr('MOV BX,[BP+4]');       { BX = adresse de Gd }
+  EmitInstr('MOV WORD PTR [BX],9'); { Gd = VGA }
+  { Retourner Gm = 2 (VGAHi) via le parametre var }
+  EmitInstr('MOV BX,[BP+6]');       { BX = adresse de Gm }
+  EmitInstr('MOV WORD PTR [BX],2'); { Gm = VGAHi }
+  EmitInstr('POP BX');
+  EmitInstr('POP AX');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_CLOSEGRAPH : restaurer le mode texte (8086/DOS) --------- }
+  { Restaure le mode texte 80x25 couleur via INT 10h, AH=00h, AL=03h       }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'CLOSEGRAPH');
+  EmitInstr('PUSH AX');
+  EmitInstr('MOV AX,0003h');        { AH=00h (Set Video Mode), AL=03h (texte 80x25) }
+  EmitInstr('INT 10h');
+  EmitInstr('POP AX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SETVIDEOMODE : changer le mode video (8086/DOS) ---------- }
+  { Convention : [BP+4] = mode (Integer)                                    }
+  { Si mode = -1 (_DefaultMode), restaurer le mode texte (appeler CLOSEGRAPH) }
+  { Sinon : INT 10h, AH=00h, AL=mode pour activer le mode                   }
+  { Retour : AX = 25 (nb lignes texte) si succes                            }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETVIDEOMODE');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('PUSH BX');
+  EmitInstr('MOV AX,[BP+4]');       { AX = mode }
+  { Si mode == -1 : restaurer le mode texte }
+  EmitInstr('CMP AX,-1');
+  EmitInstr('JNE ' + TP_RT_PFX + 'SVM_SET');
+  EmitInstr('CALL ' + TP_RT_PFX + 'CLOSEGRAPH');
+  EmitInstr('XOR AX,AX');           { retourner 0 }
+  EmitInstr('POP BX');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SVM_SET');
+  { Activer le mode video demande via INT 10h, AH=00h, AL=mode }
+  EmitInstr('MOV AH,00h');
+  EmitInstr('AND AL,0FFh');          { AL = mode (deja dans AX basse) }
+  EmitInstr('INT 10h');
+  EmitInstr('MOV AX,25');           { retourner 25 = nb lignes texte = succes }
+  EmitInstr('POP BX');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_PUTPIXEL : dessiner un pixel (8086/DOS) ------------------- }
+  { Convention : [BP+4]=X (Word), [BP+6]=Y (Word), [BP+8]=Color (Word)       }
+  { Dispatch selon le mode video BIOS courant (INT 10h AH=0Fh) :             }
+  {   Mode $13 (320x200 256c)  -> ecriture lineaire directe au segment $A000 }
+  {   Modes $0D..$12 (EGA/VGA) -> INT 10h AH=0Ch (acces planaire $A000)      }
+  {   Modes 4,5,6 (CGA)        -> INT 10h AH=0Ch (segment $B800)             }
+  {   Modes 7,8 (mono)         -> INT 10h AH=0Ch (segment $B000)             }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PUTPIXEL');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('PUSH AX');
+  EmitInstr('PUSH BX');
+  EmitInstr('PUSH CX');
+  EmitInstr('PUSH DX');
+  EmitInstr('PUSH ES');
+  { Obtenir le mode video courant via INT 10h AH=0Fh }
+  EmitInstr('MOV AH,0Fh');
+  EmitInstr('INT 10h');              { AL = mode video courant }
+  { Mode $13 : 320x200 256 couleurs, ecriture lineaire directe $A000 }
+  EmitInstr('CMP AL,13h');
+  EmitInstr('JNE ' + TP_RT_PFX + 'PP_INT10');
+  EmitInstr('MOV AX,0A000h');
+  EmitInstr('MOV ES,AX');
+  EmitInstr('MOV AX,[BP+6]');        { Y }
+  EmitInstr('MOV BX,320');
+  EmitInstr('MUL BX');               { AX = Y * 320 }
+  EmitInstr('ADD AX,[BP+4]');        { AX = Y*320 + X }
+  EmitInstr('MOV BX,AX');
+  EmitInstr('MOV AL,BYTE PTR [BP+8]'); { Color }
+  EmitInstr('MOV BYTE PTR ES:[BX],AL');
+  EmitInstr('JMP ' + TP_RT_PFX + 'PP_DONE');
+  { Autres modes ($0D-$12 EGA/VGA $A000, 4/5/6 CGA $B800, 7/8 $B000) }
+  { Utiliser INT 10h AH=0Ch (Write Graphics Pixel) }
+  EmitLabel(TP_RT_PFX + 'PP_INT10');
+  EmitInstr('MOV AH,0Ch');           { AH=0Ch : Write Graphics Pixel }
+  EmitInstr('MOV AL,BYTE PTR [BP+8]'); { AL = couleur }
+  EmitInstr('MOV BH,0');             { BH = page 0 }
+  EmitInstr('MOV CX,[BP+4]');        { CX = X }
+  EmitInstr('MOV DX,[BP+6]');        { DX = Y }
+  EmitInstr('INT 10h');
+  EmitLabel(TP_RT_PFX + 'PP_DONE');
+  EmitInstr('POP ES');
+  EmitInstr('POP DX');
+  EmitInstr('POP CX');
+  EmitInstr('POP BX');
+  EmitInstr('POP AX');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
 End;
 
 Procedure EmitRuntime;
@@ -24491,6 +25494,127 @@ Begin
   { Appeler ClrScr }
   EmitInstr('CALL ' + TP_RT_PFX + 'CLRSCR');
   EmitInstr('POP EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SETTEXTROWS : changer nb de lignes console (Win32) --- }
+  { Parametre : [ESP+4] = rows demandees (25, 43 ou 50)                 }
+  { Retour    : EAX = rows si succes, 0 si valeur non supportee         }
+  { Etape 1 : reduire la fenetre a 80x25 pour autoriser le resize du    }
+  {           buffer sans conflit avec la fenetre courante.             }
+  { Etape 2 : redimensionner le buffer console a 80 x rows.            }
+  { Etape 3 : agrandir la fenetre au nombre de lignes demande.          }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETTEXTROWS');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');     { EBX = rows demandees }
+  { Valider : accepter seulement 25, 43 ou 50 }
+  EmitInstr('CMP EBX,25');
+  EmitInstr('JE ' + TP_RT_PFX + 'SETR_OK');
+  EmitInstr('CMP EBX,43');
+  EmitInstr('JE ' + TP_RT_PFX + 'SETR_OK');
+  EmitInstr('CMP EBX,50');
+  EmitInstr('JNE ' + TP_RT_PFX + 'SETR_DN');  { valeur non supportee -> 0 }
+  EmitLabel(TP_RT_PFX + 'SETR_OK');
+  { Etape 1 : fenetre minimale 80x25 pour eviter conflit avec le resize }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+0],0');   { Left   = 0  }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+2],0');   { Top    = 0  }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+4],79');  { Right  = 79 }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+6],24');  { Bottom = 24 (25 lignes min) }
+  EmitInstr('PUSH OFFSET CRT_SCROLL');
+  EmitInstr('PUSH 1');                           { bAbsolute = TRUE }
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _SetConsoleWindowInfo@12');
+  { Etape 2 : redimensionner le buffer a 80 x rows }
+  { COORD : 80 (colonnes) dans les 16 bits bas, rows dans les 16 bits hauts }
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('SHL EAX,16');
+  EmitInstr('OR EAX,80');                        { COORD X=80 Y=rows }
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _SetConsoleScreenBufferSize@8');
+  { Etape 3 : agrandir la fenetre au nombre de lignes demande }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+0],0');   { Left   = 0        }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+2],0');   { Top    = 0        }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+4],79');  { Right  = 79       }
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('DEC EAX');
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+6],AX');  { Bottom = rows - 1 }
+  EmitInstr('PUSH OFFSET CRT_SCROLL');
+  EmitInstr('PUSH 1');                           { bAbsolute = TRUE }
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _SetConsoleWindowInfo@12');
+  EmitInstr('MOV EAX,EBX');                     { retourner rows }
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SETR_DN');
+  EmitInstr('XOR EAX,EAX');                     { retourner 0 : valeur invalide }
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_DISPLAYCURSOR : afficher/cacher le curseur (Win32) -- }
+  { Parametre : [ESP+4] = toggle (0=cacher, autre=montrer)             }
+  { Retour    : EAX = etat precedent (0=cache, -1=visible)             }
+  { Utilise SetConsoleCursorInfo(HSTDOUT, &CRT_CURINFO)                }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'DISPLAYCURSOR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  { Lire l etat precedent depuis CRT_CURSVIS }
+  EmitInstr('MOV EBX,DWORD PTR [CRT_CURSVIS]');  { EBX = etat precedent (1=visible) }
+  { Calculer la valeur de retour : etat precedent -> -1 si visible, 0 si cache }
+  EmitInstr('TEST EBX,EBX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'DC_PREV0');
+  EmitInstr('MOV EBX,-1');                       { etait visible -> -1 }
+  EmitLabel(TP_RT_PFX + 'DC_PREV0');
+  { EBX = valeur de retour ; maintenant appliquer le nouveau toggle }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');        { EAX = toggle demande }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'DC_HIDE');
+  { Montrer le curseur : CRT_CURSVIS=1, CRT_CURINFO.bVisible=1 }
+  EmitInstr('MOV DWORD PTR [CRT_CURSVIS],1');
+  EmitInstr('MOV DWORD PTR [CRT_CURINFO+4],1'); { bVisible = TRUE }
+  EmitInstr('JMP ' + TP_RT_PFX + 'DC_CALL');
+  EmitLabel(TP_RT_PFX + 'DC_HIDE');
+  { Cacher le curseur : CRT_CURSVIS=0, CRT_CURINFO.bVisible=0 }
+  EmitInstr('MOV DWORD PTR [CRT_CURSVIS],0');
+  EmitInstr('MOV DWORD PTR [CRT_CURINFO+4],0'); { bVisible = FALSE }
+  EmitLabel(TP_RT_PFX + 'DC_CALL');
+  EmitInstr('PUSH OFFSET CRT_CURINFO');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _SetConsoleCursorInfo@8');
+  EmitInstr('MOV EAX,EBX');                     { retourner l etat precedent }
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_GETTEXTCURSOR : lire la forme du curseur texte (Win32) - }
+  { Retour : EAX = forme curseur compatible DOS-16 bits :                  }
+  {   octet haut = scanline debut (bit 5=1 si cache), octet bas = fin.     }
+  { Synthese depuis CRT_CURSVIS et CRT_CURINFO via GetConsoleCursorInfo.   }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'GETTEXTCURSOR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH OFFSET CRT_CURINFO');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL _GetConsoleCursorInfo@8');     { met a jour CRT_CURINFO   }
+  { CRT_CURINFO+0 = dwSize (1..100), CRT_CURINFO+4 = bVisible (0 ou 1)    }
+  EmitInstr('MOV EAX,DWORD PTR [CRT_CURINFO+4]'); { EAX = bVisible          }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'GTC_HIDE');
+  { Curseur visible : forme standard DOS CH=06h, CL=07h -> AX=0607h        }
+  EmitInstr('MOV EAX,0607h');
+  EmitInstr('JMP ' + TP_RT_PFX + 'GTC_DONE');
+  EmitLabel(TP_RT_PFX + 'GTC_HIDE');
+  { Curseur cache : CH=20h (bit 5 set), CL=00h -> AX=2000h                 }
+  EmitInstr('MOV EAX,2000h');
+  EmitLabel(TP_RT_PFX + 'GTC_DONE');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
@@ -26364,9 +27488,92 @@ Begin
   EmitInstr('MOVE.L D2,D1');
   EmitInstr('MOVEM.L (SP)+,D2-D3');
   EmitInstr('RTS');
-End;
 
-{ ---- EmitRuntimeAmiga : routines runtime AmigaDOS (dos.library) ---- }
+  { ------ _TPRT_PACKTIME : empaqueter DateTime en LongInt DOS (68000) -- }
+  { (SP+8) = ptr DateTime T, (SP+4) = ptr LongInt P (apres BSR)          }
+  { Apres MOVEM (6 regs * 4 = 24 octets) : T en (SP+32), P en (SP+28)    }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PACKTIME');
+  EmitInstr('MOVEM.L D0-D3/A0-A1,-(SP)');
+  EmitInstr('MOVEA.L 32(SP),A0');      { A0 = ptr DateTime T }
+  EmitInstr('MOVEA.L 28(SP),A1');      { A1 = ptr LongInt P }
+  { --- Mot bas : Hour<<11 | Min<<5 | Sec/2 --- }
+  EmitInstr('MOVE.W 6(A0),D0');        { Hour }
+  EmitInstr('AND.W #$001F,D0');
+  EmitInstr('LSL.W #8,D0');
+  EmitInstr('LSL.W #3,D0');            { D0 = Hour << 11 }
+  EmitInstr('MOVE.W 8(A0),D1');        { Min }
+  EmitInstr('AND.W #$003F,D1');
+  EmitInstr('LSL.W #5,D1');
+  EmitInstr('OR.W D1,D0');
+  EmitInstr('MOVE.W 10(A0),D1');       { Sec }
+  EmitInstr('LSR.W #1,D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('OR.W D1,D0');
+  EmitInstr('MOVE.W D0,(A1)');         { stocker mot bas }
+  { --- Mot haut : (Year-1980)<<9 | Month<<5 | Day --- }
+  EmitInstr('MOVE.W 0(A0),D2');        { Year }
+  EmitInstr('SUB.W #1980,D2');
+  EmitInstr('AND.W #$007F,D2');
+  EmitInstr('LSL.W #8,D2');
+  EmitInstr('LSL.W #1,D2');            { D2 = (Year-1980) << 9 }
+  EmitInstr('MOVE.W 2(A0),D1');        { Month }
+  EmitInstr('AND.W #$000F,D1');
+  EmitInstr('LSL.W #5,D1');
+  EmitInstr('OR.W D1,D2');
+  EmitInstr('MOVE.W 4(A0),D1');        { Day }
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('OR.W D1,D2');
+  EmitInstr('MOVE.W D2,2(A1)');        { stocker mot haut }
+  EmitInstr('MOVEM.L (SP)+,D0-D3/A0-A1');
+  EmitInstr('RTS');
+
+  { ------ _TPRT_UNPACKTIME : decomposer LongInt en DateTime (68000) ------ }
+  { Apres MOVEM (6 regs * 4 = 24 octets) : P en (SP+32), &T en (SP+28)     }
+  { bits 4:0=sec/2, 10:5=min, 15:11=hour, 20:16=day, 24:21=month, 31:25=year-1980 }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'UNPACKTIME');
+  EmitInstr('MOVEM.L D0-D3/A0-A1,-(SP)');
+  EmitInstr('MOVE.L 32(SP),D0');       { D0 = P (LongInt packed) }
+  EmitInstr('MOVEA.L 28(SP),A0');      { A0 = ptr DateTime T }
+  { Sec = (bits 4:0) * 2 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('LSL.W #1,D1');
+  EmitInstr('MOVE.W D1,10(A0)');       { Sec }
+  { Min = (bits 10:5) }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('LSR.L #5,D1');
+  EmitInstr('AND.W #$003F,D1');
+  EmitInstr('MOVE.W D1,8(A0)');        { Min }
+  { Hour = (bits 15:11) = D0 >> 11 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('LSR.L #8,D1');
+  EmitInstr('LSR.L #3,D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('MOVE.W D1,6(A0)');        { Hour }
+  { Day = (bits 20:16) via SWAP }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('SWAP D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('MOVE.W D1,4(A0)');        { Day }
+  { Month = (bits 24:21) = D0 >> 21 = SWAP then >> 5 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('SWAP D1');
+  EmitInstr('LSR.W #5,D1');
+  EmitInstr('AND.W #$000F,D1');
+  EmitInstr('MOVE.W D1,2(A0)');        { Month }
+  { Year = (bits 31:25) + 1980 = SWAP >> 8 >> 1 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('SWAP D1');
+  EmitInstr('LSR.W #8,D1');
+  EmitInstr('LSR.W #1,D1');
+  EmitInstr('AND.W #$007F,D1');
+  EmitInstr('ADD.W #1980,D1');
+  EmitInstr('MOVE.W D1,(A0)');         { Year }
+  EmitInstr('MOVEM.L (SP)+,D0-D3/A0-A1');
+  EmitInstr('RTS');
+End;
 { Meme interface que EmitRuntime68000 mais utilise dos.library Write() }
 { au lieu de GEMDOS TRAP #1.                                           }
 Procedure EmitRuntimeAmiga;
@@ -26466,10 +27673,90 @@ Begin
   EmitInstr('MOVE.L D2,D1');
   EmitInstr('MOVEM.L (SP)+,D2-D3');
   EmitInstr('RTS');
-End;
 
-{ ============================================================ }
-{ TODO 20 - ROUTINES RUNTIME GRAPH             [IMPLEMENTE]    }
+  { ------ _TPRT_PACKTIME : empaqueter DateTime en LongInt DOS (68000 Amiga) }
+  { Meme logique que pour Atari ST                                             }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PACKTIME');
+  EmitInstr('MOVEM.L D0-D3/A0-A1,-(SP)');
+  EmitInstr('MOVEA.L 32(SP),A0');      { A0 = ptr DateTime T }
+  EmitInstr('MOVEA.L 28(SP),A1');      { A1 = ptr LongInt P }
+  { --- Mot bas : Hour<<11 | Min<<5 | Sec/2 --- }
+  EmitInstr('MOVE.W 6(A0),D0');        { Hour }
+  EmitInstr('AND.W #$001F,D0');
+  EmitInstr('LSL.W #8,D0');
+  EmitInstr('LSL.W #3,D0');            { D0 = Hour << 11 }
+  EmitInstr('MOVE.W 8(A0),D1');        { Min }
+  EmitInstr('AND.W #$003F,D1');
+  EmitInstr('LSL.W #5,D1');
+  EmitInstr('OR.W D1,D0');
+  EmitInstr('MOVE.W 10(A0),D1');       { Sec }
+  EmitInstr('LSR.W #1,D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('OR.W D1,D0');
+  EmitInstr('MOVE.W D0,(A1)');         { stocker mot bas }
+  { --- Mot haut : (Year-1980)<<9 | Month<<5 | Day --- }
+  EmitInstr('MOVE.W 0(A0),D2');        { Year }
+  EmitInstr('SUB.W #1980,D2');
+  EmitInstr('AND.W #$007F,D2');
+  EmitInstr('LSL.W #8,D2');
+  EmitInstr('LSL.W #1,D2');            { D2 = (Year-1980) << 9 }
+  EmitInstr('MOVE.W 2(A0),D1');        { Month }
+  EmitInstr('AND.W #$000F,D1');
+  EmitInstr('LSL.W #5,D1');
+  EmitInstr('OR.W D1,D2');
+  EmitInstr('MOVE.W 4(A0),D1');        { Day }
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('OR.W D1,D2');
+  EmitInstr('MOVE.W D2,2(A1)');        { stocker mot haut }
+  EmitInstr('MOVEM.L (SP)+,D0-D3/A0-A1');
+  EmitInstr('RTS');
+
+  { ------ _TPRT_UNPACKTIME : decomposer LongInt en DateTime (68000 Amiga) -- }
+  { Meme logique que pour Atari ST                                              }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'UNPACKTIME');
+  EmitInstr('MOVEM.L D0-D3/A0-A1,-(SP)');
+  EmitInstr('MOVE.L 32(SP),D0');       { D0 = P (LongInt packed) }
+  EmitInstr('MOVEA.L 28(SP),A0');      { A0 = ptr DateTime T }
+  { Sec = (bits 4:0) * 2 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('LSL.W #1,D1');
+  EmitInstr('MOVE.W D1,10(A0)');       { Sec }
+  { Min = (bits 10:5) }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('LSR.L #5,D1');
+  EmitInstr('AND.W #$003F,D1');
+  EmitInstr('MOVE.W D1,8(A0)');        { Min }
+  { Hour = (bits 15:11) = D0 >> 11 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('LSR.L #8,D1');
+  EmitInstr('LSR.L #3,D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('MOVE.W D1,6(A0)');        { Hour }
+  { Day = (bits 20:16) via SWAP }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('SWAP D1');
+  EmitInstr('AND.W #$001F,D1');
+  EmitInstr('MOVE.W D1,4(A0)');        { Day }
+  { Month = (bits 24:21) = D0 >> 21 = SWAP then >> 5 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('SWAP D1');
+  EmitInstr('LSR.W #5,D1');
+  EmitInstr('AND.W #$000F,D1');
+  EmitInstr('MOVE.W D1,2(A0)');        { Month }
+  { Year = (bits 31:25) + 1980 = SWAP >> 8 >> 1 }
+  EmitInstr('MOVE.L D0,D1');
+  EmitInstr('SWAP D1');
+  EmitInstr('LSR.W #8,D1');
+  EmitInstr('LSR.W #1,D1');
+  EmitInstr('AND.W #$007F,D1');
+  EmitInstr('ADD.W #1980,D1');
+  EmitInstr('MOVE.W D1,(A0)');         { Year }
+  EmitInstr('MOVEM.L (SP)+,D0-D3/A0-A1');
+  EmitInstr('RTS');
+End;
 { ============================================================ }
 
 Procedure EmitGraphRuntime;
@@ -33444,6 +34731,7 @@ Begin
   EmitBlankLine;
   EmitRaw('NUMBUF   DB 16 DUP(0)');
   EmitRaw('INBUF    DB 128 DUP(0)');
+  EmitRaw('CGA_CURPAL DB 0');        { palette CGA courante (0-3) pour _SELECTPALETTE }
   EmitRaw('CRLF     DB 13,10,''$''');
   EmitRaw('STRTMP   DB 128 DUP(0)');
   EmitRaw('TRUE_STR DB ''TRUE'',''$''');
