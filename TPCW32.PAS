@@ -20193,15 +20193,31 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { X }
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Y }
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Color }
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { X }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { Y }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { Color }
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');  { X }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');  { Y }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');  { Color }
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'PUTPIXEL');
-      EmitInstr('ADD ESP,12');
+      Case Opts.DestTarget Of
+        DEST_DOSR, DEST_DOSP: EmitInstr('ADD SP,6');
+        Else                  EmitInstr('ADD ESP,12');
+      End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -24339,6 +24355,56 @@ Begin
   EmitInstr('INT 10h');
   EmitInstr('MOV AX,25');           { retourner 25 = nb lignes texte = succes }
   EmitInstr('POP BX');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_PUTPIXEL : dessiner un pixel (8086/DOS) ------------------- }
+  { Convention : [BP+4]=X (Word), [BP+6]=Y (Word), [BP+8]=Color (Word)       }
+  { Dispatch selon le mode video BIOS courant (INT 10h AH=0Fh) :             }
+  {   Mode $13 (320x200 256c)  -> ecriture lineaire directe au segment $A000 }
+  {   Modes $0D..$12 (EGA/VGA) -> INT 10h AH=0Ch (acces planaire $A000)      }
+  {   Modes 4,5,6 (CGA)        -> INT 10h AH=0Ch (segment $B800)             }
+  {   Modes 7,8 (mono)         -> INT 10h AH=0Ch (segment $B000)             }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PUTPIXEL');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('PUSH AX');
+  EmitInstr('PUSH BX');
+  EmitInstr('PUSH CX');
+  EmitInstr('PUSH DX');
+  EmitInstr('PUSH ES');
+  { Obtenir le mode video courant via INT 10h AH=0Fh }
+  EmitInstr('MOV AH,0Fh');
+  EmitInstr('INT 10h');              { AL = mode video courant }
+  { Mode $13 : 320x200 256 couleurs, ecriture lineaire directe $A000 }
+  EmitInstr('CMP AL,13h');
+  EmitInstr('JNE ' + TP_RT_PFX + 'PP_INT10');
+  EmitInstr('MOV AX,0A000h');
+  EmitInstr('MOV ES,AX');
+  EmitInstr('MOV AX,[BP+6]');        { Y }
+  EmitInstr('MOV BX,320');
+  EmitInstr('MUL BX');               { AX = Y * 320 }
+  EmitInstr('ADD AX,[BP+4]');        { AX = Y*320 + X }
+  EmitInstr('MOV BX,AX');
+  EmitInstr('MOV AL,BYTE PTR [BP+8]'); { Color }
+  EmitInstr('MOV BYTE PTR ES:[BX],AL');
+  EmitInstr('JMP ' + TP_RT_PFX + 'PP_DONE');
+  { Autres modes ($0D-$12 EGA/VGA $A000, 4/5/6 CGA $B800, 7/8 $B000) }
+  { Utiliser INT 10h AH=0Ch (Write Graphics Pixel) }
+  EmitLabel(TP_RT_PFX + 'PP_INT10');
+  EmitInstr('MOV AH,0Ch');           { AH=0Ch : Write Graphics Pixel }
+  EmitInstr('MOV AL,BYTE PTR [BP+8]'); { AL = couleur }
+  EmitInstr('MOV BH,0');             { BH = page 0 }
+  EmitInstr('MOV CX,[BP+4]');        { CX = X }
+  EmitInstr('MOV DX,[BP+6]');        { DX = Y }
+  EmitInstr('INT 10h');
+  EmitLabel(TP_RT_PFX + 'PP_DONE');
+  EmitInstr('POP ES');
+  EmitInstr('POP DX');
+  EmitInstr('POP CX');
+  EmitInstr('POP BX');
+  EmitInstr('POP AX');
   EmitInstr('POP BP');
   EmitInstr('RET');
 End;
