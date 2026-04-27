@@ -3,13 +3,13 @@
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
-  @description: Transpilateur Turbo Pascal vers Modula-2 (.mod)
+  @description: Transpilateur Turbo Pascal vers Modula-3 (.m3)
 }
 
 (* ============================================================
-   PAS2MOD2.PAS - Transpilateur Turbo Pascal vers Modula-2
+   PAS2MOD3.PAS - Transpilateur Turbo Pascal vers Modula-3
    Turbo Pascal / Free Pascal (-Mtp)
-   Cible : code source Modula-2 (.mod)
+   Cible : code source Modula-3 (.m3)
 
    Couvre les constructions courantes :
      PROGRAM/UNIT, USES, CONST, TYPE, VAR,
@@ -18,10 +18,10 @@
      WHILE..DO, REPEAT..UNTIL, FOR..TO/DOWNTO..DO,
      CASE..OF (avec separateur |),
      Write/WriteLn -> InOut.WriteString/WriteInt/WriteReal/WriteLn,
-     Read/ReadLn  -> InOut.ReadInt/Read,
-     operateurs Pascal vers Modula-2 (<> #, AND/OR/NOT mots-cles).
+     Read/ReadLn  -> Scan.Int(Rd.GetLine(Stdio.stdin)) / Rd.GetChar,
+     operateurs Pascal vers Modula-3 (<> #, AND/OR/NOT mots-cles).
 
-   Limitations connues (signalees en commentaires Modula-2 dans la
+   Limitations connues (signalees en commentaires Modula-3 dans la
    sortie quand applicable) :
      - assignations multiples au nom de fonction sont toutes
        traduites en RETURN (semantique de Pascal non preservee
@@ -31,7 +31,7 @@
      - les unites utilisateurs sont importees telles quelles.
    ============================================================ *)
 
-Program PAS2MOD2;
+Program PAS2MOD3;
 
 {$IFDEF FPC}
   {$MODE TP}
@@ -43,8 +43,8 @@ Program PAS2MOD2;
   CONSTANTES
   ============================================================ }
 Const
-  PAS2MOD2_VERSION = '1.0';
-  PAS2MOD2_DATE    = '2026-04-27';
+  PAS2MOD3_VERSION = '1.0';
+  PAS2MOD3_DATE    = '2026-04-27';
 
   MAX_STR     = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_TOKEN   = {$IFDEF FPC}32000{$ELSE}4000{$ENDIF};
@@ -83,7 +83,7 @@ Type
 
   TFuncRec = Record
     Name      : TString;     { nom de la fonction Pascal               }
-    RetType   : TString;     { type de retour Modula-2                   }
+    RetType   : TString;     { type de retour Modula-3                   }
     IsFunc    : Boolean;     { true si FUNCTION, false si PROCEDURE    }
   End;
 
@@ -218,7 +218,7 @@ End;
 Procedure AddToken(K:TTokenKind; V:TString);
 Begin
   If TokCount>=MAX_TOKEN Then Begin
-    WriteLn('PAS2MOD2 : trop de tokens (>',MAX_TOKEN,')');
+    WriteLn('PAS2MOD3 : trop de tokens (>',MAX_TOKEN,')');
     Halt(EXIT_ERROR);
   End;
   Inc(TokCount);
@@ -283,7 +283,7 @@ Begin
   Repeat
     Ch:=NextCh;
     If (Ch=#0)or(Ch=#10) Then Begin
-      WriteLn('PAS2MOD2 : chaine non terminee ligne ',SrcLineNo);
+      WriteLn('PAS2MOD3 : chaine non terminee ligne ',SrcLineNo);
       Inc(ErrorCount);
       Break;
     End;
@@ -493,7 +493,7 @@ Begin
   If U='EXTENDED' Then MapPascalType:='LONGREAL' Else
   If U='BOOLEAN' Then MapPascalType:='BOOLEAN' Else
   If U='CHAR' Then MapPascalType:='CHAR' Else
-  If U='STRING' Then MapPascalType:='ARRAY [0..255] OF CHAR' Else
+  If U='STRING' Then MapPascalType:='TEXT' Else
   If U='POINTER' Then MapPascalType:='POINTER TO BYTE' Else
   MapPascalType:=T;       { type utilisateur : conserver tel quel  }
 End;
@@ -628,11 +628,9 @@ Begin
   EmitRaw(#10);
 End;
 
-{ Conversion d'une chaine Pascal 'abc''def' en chaine Modula-2 "abc'def".
-  Si la chaine contient un guillemet double, on tente de la decouper
-  en concatenation, mais Modula-2 ne supporte pas la concatenation
-  litterale -> on remplace " par ' avec un commentaire d'avertissement. }
-Function PasStringToModula2(S:TString):TString;
+{ Conversion d'une chaine Pascal 'abc''def' en chaine Modula-3 "abc'def".
+  En Modula-3, les chaines sont entre " " avec \" et \\ comme echappements. }
+Function PasStringToM3(S:TString):TString;
 Var
   I:Integer;
   R:TString;
@@ -641,26 +639,27 @@ Begin
   I:=2;                       { sauter le guillemet d'ouverture     }
   While I<Length(S) do Begin
     If (S[I]='''')and(I<Length(S))and(S[I+1]='''') Then Begin
-      R:=R+'''';
-      Inc(I,2);
+      R:=R+''''; Inc(I,2);
     End Else
     If S[I]='"' Then Begin
-      R:=R+''''; Inc(I);     { remplacer " par ' (alternative)     }
+      R:=R+'\"'; Inc(I);
+    End Else
+    If S[I]='\' Then Begin
+      R:=R+'\\'; Inc(I);
     End Else Begin
-      R:=R+S[I];
-      Inc(I);
+      R:=R+S[I]; Inc(I);
     End;
   End;
-  PasStringToModula2:='"'+R+'"';
+  PasStringToM3:='"'+R+'"';
 End;
 
-{ Conversion d'un litteral caractere Pascal #N en Modula-2 NX. }
-Function PasCharToModula2(S:TString):TString;
+{ Conversion d'un litteral caractere Pascal #N en Modula-3.
+  Si N est imprimable ASCII, utiliser 'X' ; sinon VAL(N, CHAR). }
+Function PasCharToM3(S:TString):TString;
 Var
   V:LongInt;
   Code:Integer;
-  Body,Hex:TString;
-  N:LongInt;
+  Body,Num:TString;
 Begin
   Body:=Copy(S,2,Length(S)-1);     { retirer le # }
   If (Length(Body)>0)and(Body[1]='$') Then Begin
@@ -668,20 +667,11 @@ Begin
   End Else
     Val(Body,V,Code);
   If Code<>0 Then V:=0;
-  { Convertir V en hexa (au moins 2 chiffres) }
-  Hex:='';
-  If V=0 Then Hex:='0' Else Begin
-    N:=V;
-    While N>0 do Begin
-      Case (N and 15) of
-        0..9 : Hex:=Chr(Ord('0')+(N and 15))+Hex;
-        10..15: Hex:=Chr(Ord('A')+(N and 15)-10)+Hex;
-      End;
-      N:=N shr 4;
-    End;
-  End;
-  If (Length(Hex)>0)and(Hex[1] in ['A'..'F']) Then Hex:='0'+Hex;
-  PasCharToModula2:=Hex+'X';
+  Str(V,Num);
+  If (V>=32) and (V<=126) and (V<>Ord('''')) and (V<>Ord('\')) Then
+    PasCharToM3:=''''+Chr(V)+''''
+  Else
+    PasCharToM3:='VAL('+Num+', CHAR)';
 End;
 
 Function MapOperator(Op:TString):TString;
@@ -698,9 +688,9 @@ Begin
   If K='NOT' Then MapKeyword:='NOT' Else
   If K='DIV' Then MapKeyword:='DIV' Else
   If K='MOD' Then MapKeyword:='MOD' Else
-  If K='SHL' Then MapKeyword:='(* SHL : utiliser SYSTEM.SHIFT *) *' Else
-  If K='SHR' Then MapKeyword:='(* SHR : utiliser SYSTEM.SHIFT *) DIV' Else
-  If K='XOR' Then MapKeyword:='(* XOR : utiliser BITWORD.XOR *)' Else
+  If K='SHL' Then MapKeyword:='(* SHL : utiliser Word.LeftShift *) *' Else
+  If K='SHR' Then MapKeyword:='(* SHR : utiliser Word.RightShift *) DIV' Else
+  If K='XOR' Then MapKeyword:='(* XOR : utiliser Word.Xor *)' Else
                   MapKeyword:=K;
 End;
 
@@ -779,35 +769,35 @@ Begin
   Kind:=Tokens[I].Kind;
   Val :=Tokens[I].Val;
 
-  { Choisir la procedure InOut.* (Modula-2) }
+  { Choisir la procedure Wr.* (Modula-3) }
   If IsString Then Begin
-    EmitRaw('InOut.WriteString('+PasStringToModula2(Val)+')');
+    EmitRaw('Wr.PutText('+PasStringToM3(Val)+')');
     I:=J;
   End Else
   If IsChar then Begin
-    EmitRaw('InOut.Write('+PasCharToModula2(Val)+')');
+    EmitRaw('Wr.PutChar('+PasCharToM3(Val)+')');
     I:=J;
   End Else
   If IsReal Then Begin
-    EmitRaw('InOut.WriteReal('+Val+', 15)');
+    EmitRaw('Wr.PutText(Fmt.Real('+Val+'))');
     I:=J;
   End Else Begin
     { expression entiere par defaut }
-    EmitRaw('InOut.WriteInt(');
+    EmitRaw('Wr.PutInt(');
     { reemettre l'expression source }
     StartI:=I;
     While StartI<J do Begin
       Case Tokens[StartI].Kind of
         TK_OP    : EmitRaw(MapOperator(Tokens[StartI].Val));
         TK_KEYWORD:EmitRaw(MapKeyword(Tokens[StartI].Val));
-        TK_STRING:EmitRaw(PasStringToModula2(Tokens[StartI].Val));
-        TK_CHAR  : EmitRaw(PasCharToModula2(Tokens[StartI].Val));
+        TK_STRING:EmitRaw(PasStringToM3(Tokens[StartI].Val));
+        TK_CHAR  : EmitRaw(PasCharToM3(Tokens[StartI].Val));
       Else
         EmitRaw(Tokens[StartI].Val);
       End;
       Inc(StartI);
     End;
-    EmitRaw(', 0)');
+    EmitRaw(')');
     I:=J;
   End;
 
@@ -850,7 +840,7 @@ Begin
   End;
   If IsLn Then Begin
     If HasArgs Then EmitRaw('; ');
-    EmitRaw('InOut.WriteLn');
+    EmitRaw('Wr.Nl()');
   End Else Begin
     If Not HasArgs Then EmitRaw('(* Write sans arguments *)');
   End;
@@ -874,8 +864,7 @@ Begin
         First:=False;
       End Else Begin
         If First or (Length(OutLine)=0) Then Begin
-          EmitRaw('InOut.ReadInt(');
-          { lire jusqu'a , ou ) au niveau 0 }
+          { collecter le nom de variable puis emettre l'assignation Modula-3 }
           While (I<=TokCount) and Not((Depth=0)and(Tokens[I].Kind=TK_PUNCT)and
                 ((Tokens[I].Val=',')or(Tokens[I].Val=')'))) do Begin
             If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Inc(Depth) Else
@@ -884,11 +873,10 @@ Begin
             EmitRaw(Tokens[I].Val);
             Inc(I);
           End;
-          EmitRaw(')');
+          EmitRaw(' := Scan.Int(Rd.GetLine(Stdio.stdin))');
           First:=False;
         End Else
         If (OutLine[Length(OutLine)]=';') or (OutLine[Length(OutLine)]=' ') Then Begin
-          EmitRaw('InOut.ReadInt(');
           While (I<=TokCount) and Not((Depth=0)and(Tokens[I].Kind=TK_PUNCT)and
                 ((Tokens[I].Val=',')or(Tokens[I].Val=')'))) do Begin
             If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Inc(Depth) Else
@@ -897,7 +885,7 @@ Begin
             EmitRaw(Tokens[I].Val);
             Inc(I);
           End;
-          EmitRaw(')');
+          EmitRaw(' := Scan.Int(Rd.GetLine(Stdio.stdin))');
           First:=False;
         End Else
           Inc(I);
@@ -905,7 +893,7 @@ Begin
     End;
     If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')') Then Inc(I);
   End;
-  { ReadLn sans arguments en Pascal = attendre une ligne ; en Modula-2
+  { ReadLn sans arguments en Pascal = attendre une ligne ; en Modula-3
     InOut, equivalent approximatif : InOut.Read d'un caractere ignore. }
 End;
 
@@ -984,7 +972,7 @@ Begin
       Case Tokens[I].Kind of
         TK_KEYWORD:Begin
           If Tokens[I].Val='VAR' Then EmitRaw('VAR ') Else
-          If Tokens[I].Val='CONST' Then EmitRaw('') Else  { CONST param non standard en Modula-2, ignorer }
+          If Tokens[I].Val='CONST' Then EmitRaw('') Else  { CONST param non standard en Modula-3, ignorer }
           If Tokens[I].Val='OUT' Then EmitRaw('VAR ') Else
             EmitRaw(MapKeyword(Tokens[I].Val));
         End;
@@ -1018,7 +1006,7 @@ Begin
   End;
   { saut du ';' final }
   If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
-  EmitRaw(';');
+  EmitRaw(' =');
   EmitLn;
 End;
 
@@ -1044,7 +1032,7 @@ Begin
         If K='OF' Then EmitRaw(' OF ') Else
         If K='RECORD' Then Begin EmitLn; EmitRaw('RECORD'); EmitLn; Inc(Indent); End Else
         If K='END' Then Begin Dec(Indent); EmitRaw('END'); End Else
-        If K='STRING' Then EmitRaw('ARRAY [0..255] OF CHAR') Else
+        If K='STRING' Then EmitRaw('TEXT') Else
         If K='PACKED' Then { ignorer } Else
         If K='SET' Then EmitRaw('SET') Else
         If K='FILE' Then EmitRaw('(* FILE *)') Else
@@ -1053,8 +1041,8 @@ Begin
       TK_IDENT:EmitRaw(MapPascalType(Tokens[I].Val));
       TK_OP:EmitRaw(MapOperator(Tokens[I].Val));
       TK_INTEGER,TK_REAL:EmitRaw(Tokens[I].Val);
-      TK_STRING:EmitRaw(PasStringToModula2(Tokens[I].Val));
-      TK_CHAR  :EmitRaw(PasCharToModula2(Tokens[I].Val));
+      TK_STRING:EmitRaw(PasStringToM3(Tokens[I].Val));
+      TK_CHAR  :EmitRaw(PasCharToM3(Tokens[I].Val));
       TK_PUNCT :Begin
         If Tokens[I].Val=';' Then Begin
           EmitRaw(';');
@@ -1123,7 +1111,7 @@ Begin
         If K='IN' Then EmitRaw(' IN ') Else
         If K='SHL' Then EmitRaw(' (* SHL *) * 2 *') Else { approximation cassee }
         If K='SHR' Then EmitRaw(' (* SHR *) DIV 2 DIV ') Else
-        If K='XOR' Then EmitRaw(' (* XOR : non standard Modula-2 *) ') Else
+        If K='XOR' Then EmitRaw(' (* XOR : non standard Modula-3 *) ') Else
         If K='NIL' Then EmitRaw('NIL') Else
         If K='TRUE' Then EmitRaw('TRUE') Else
         If K='FALSE' Then EmitRaw('FALSE') Else
@@ -1138,13 +1126,13 @@ Begin
       End;
       TK_INTEGER:Begin
         If (Length(Tokens[I].Val)>0)and(Tokens[I].Val[1]='$') Then
-          EmitRaw(Copy(Tokens[I].Val,2,Length(Tokens[I].Val)-1)+'H')
+          EmitRaw('16_'+Copy(Tokens[I].Val,2,Length(Tokens[I].Val)-1))
         Else
           EmitRaw(Tokens[I].Val);
       End;
       TK_REAL:EmitRaw(Tokens[I].Val);
-      TK_STRING:EmitRaw(PasStringToModula2(Tokens[I].Val));
-      TK_CHAR  :EmitRaw(PasCharToModula2(Tokens[I].Val));
+      TK_STRING:EmitRaw(PasStringToM3(Tokens[I].Val));
+      TK_CHAR  :EmitRaw(PasCharToM3(Tokens[I].Val));
       TK_PUNCT :Begin
         If Tokens[I].Val='(' Then Begin Inc(Depth); EmitRaw('('); End Else
         If Tokens[I].Val=')' Then Begin Dec(Depth); EmitRaw(')'); End Else
@@ -1297,14 +1285,14 @@ Begin
       Break;
     End;
     If Not First Then Begin
-      EmitRaw(' |');
       EmitLn;
     End;
     First:=False;
+    EmitRaw('| ');
     { liste de selecteurs jusqu'a ':' au niveau 0 }
     EmitExpr(I);
     If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=':') Then Begin
-      EmitRaw(': ');
+      EmitRaw(' => ');
       Inc(I);
     End;
     { instruction unique du label (ou bloc BEGIN..END) }
@@ -1351,15 +1339,15 @@ Begin
         Inc(I);
       End Else
       If K='BREAK' Then Begin
-        EmitRaw('EXIT');                      { rapprochement Modula-2 LOOP   }
+        EmitRaw('EXIT');                      { rapprochement Modula-3 LOOP   }
         Inc(I);
       End Else
       If K='CONTINUE' Then Begin
-        EmitRaw('(* CONTINUE non supporte en Modula-2 *)');
+        EmitRaw('(* CONTINUE non supporte en Modula-3 *)');
         Inc(I);
       End Else
       If K='WITH' Then Begin
-        EmitRaw('(* WITH non supporte en Modula-2 ; expansion manuelle requise *)');
+        EmitRaw('(* WITH non supporte en Modula-3 ; expansion manuelle requise *)');
         EmitLn;
         { sauter jusqu'au DO }
         While (I<=TokCount) and Not((Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DO')) do
@@ -1537,8 +1525,8 @@ Begin
   CurFunc:=PrevFunc;
 End;
 
-{ Emet la clause USES Pascal en Modula-2 IMPORT.
-  Mappe les unites courantes a des modules Modula-2 proches. }
+{ Emet la clause USES Pascal en Modula-3 IMPORT.
+  Mappe les unites courantes a des modules Modula-3 proches. }
 Procedure EmitUses(Var I:Integer);
 Var
   Name,U:TString;
@@ -1566,19 +1554,24 @@ Begin
       Name:=Tokens[I].Val;
       U:=StrUpper(Name);
       Found:=False;
-      If U='CRT' Then Begin AddImport('InOut'); Found:=True; End Else
+      If U='CRT' Then Begin AddImport('Wr'); Found:=True; End Else
       If U='DOS' Then Begin AddImport('(* DOS non disponible *)'); Found:=True; End Else
-      If U='SYSUTILS' Then Begin AddImport('Strings'); Found:=True; End Else
-      If U='STRINGS' Then Begin AddImport('Strings'); Found:=True; End Else
-      If U='MATH' Then Begin AddImport('MathLib0'); Found:=True; End Else
-      If U='SYSTEM' Then Begin AddImport('SYSTEM'); Found:=True; End;
+      If U='SYSUTILS' Then Begin AddImport('Text'); Found:=True; End Else
+      If U='STRINGS' Then Begin AddImport('Text'); Found:=True; End Else
+      If U='MATH' Then Begin AddImport('Math'); Found:=True; End Else
+      If U='SYSTEM' Then Begin AddImport('Word'); Found:=True; End;
       If Not Found Then AddImport(Name);
     End;
     Inc(I);
   End;
   If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
-  { ajouter InOut si Write/Read sont utilises }
-  If UsesOut or UsesIn Then AddImport('InOut');
+  { ajouter Wr/Rd selon Write/Read utilises }
+  If UsesOut Then AddImport('Wr');
+  If UsesIn  Then Begin
+    AddImport('Rd');
+    AddImport('Stdio');
+    AddImport('Scan');
+  End;
   If ICount>0 Then Begin
     EmitRaw('IMPORT ');
     First:=True;
@@ -1625,7 +1618,11 @@ Begin
     EmitUses(I);
   End;
   If (Not HasUses) and (UsesOut or UsesIn) Then Begin
-    EmitRaw('IMPORT InOut;');
+    EmitRaw('IMPORT ');
+    If UsesOut Then EmitRaw('Wr');
+    If UsesOut and UsesIn Then EmitRaw(', ');
+    If UsesIn  Then EmitRaw('Rd, Stdio, Scan');
+    EmitRaw(';');
     EmitLn;
     EmitLn;
   End;
@@ -1636,16 +1633,16 @@ End;
   ============================================================ }
 Procedure ShowUsage;
 Begin
-  WriteLn('PAS2MOD2 ',PAS2MOD2_VERSION,' - Transpilateur Pascal vers Modula-2');
+  WriteLn('PAS2MOD3 ',PAS2MOD3_VERSION,' - Transpilateur Pascal vers Modula-3');
   WriteLn;
-  WriteLn('Syntaxe : PAS2MOD2 [-v] source.pas [destination.mod]');
+  WriteLn('Syntaxe : PAS2MOD3 [-v] source.pas [destination.m3]');
   WriteLn;
   WriteLn('  source.pas      Fichier source Pascal (Turbo Pascal/FPC).');
-  WriteLn('  destination.mod Fichier Modula-2 a generer (defaut : source.mod).');
+  WriteLn('  destination.m3 Fichier Modula-3 a generer (defaut : source.m3).');
   WriteLn('  -v / --verbose  Afficher des messages de progression.');
   WriteLn('  -h / --help     Afficher cette aide.');
   WriteLn;
-  WriteLn('Exemple : PAS2MOD2 hello.pas hello.mod');
+  WriteLn('Exemple : PAS2MOD3 hello.pas hello.m3');
 End;
 
 Procedure ParseArgs;
@@ -1677,8 +1674,8 @@ Begin
     A:=SrcName;
     I:=Length(A);
     While (I>0)and(A[I]<>'.')and(A[I]<>'\')and(A[I]<>'/') do Dec(I);
-    If (I>0)and(A[I]='.') Then DstName:=Copy(A,1,I-1)+'.mod'
-                          Else DstName:=A+'.mod';
+    If (I>0)and(A[I]='.') Then DstName:=Copy(A,1,I-1)+'.m3'
+                          Else DstName:=A+'.m3';
   End;
 End;
 
@@ -1687,14 +1684,14 @@ Begin
   Assign(SrcFile,SrcName);
   {$I-} Reset(SrcFile); {$I+}
   If IOResult<>0 Then Begin
-    WriteLn('PAS2MOD2 : impossible d''ouvrir ',SrcName);
+    WriteLn('PAS2MOD3 : impossible d''ouvrir ',SrcName);
     Halt(EXIT_ERROR);
   End;
   Assign(DstFile,DstName);
   {$I-} Rewrite(DstFile); {$I+}
   If IOResult<>0 Then Begin
     Close(SrcFile);
-    WriteLn('PAS2MOD2 : impossible de creer ',DstName);
+    WriteLn('PAS2MOD3 : impossible de creer ',DstName);
     Halt(EXIT_ERROR);
   End;
 End;
@@ -1712,23 +1709,23 @@ Var
 BEGIN
   ErrorCount:=0;
   ParseArgs;
-  If Verbose Then WriteLn('PAS2MOD2 : tokenisation de ',SrcName,'...');
+  If Verbose Then WriteLn('PAS2MOD3 : tokenisation de ',SrcName,'...');
   OpenFiles;
   Tokenize;
   Close(SrcFile);
-  If Verbose Then WriteLn('PAS2MOD2 : ',TokCount,' tokens lus.');
+  If Verbose Then WriteLn('PAS2MOD3 : ',TokCount,' tokens lus.');
   Analyze;
   If Verbose Then Begin
-    WriteLn('PAS2MOD2 : programme = ',ProgName);
-    WriteLn('PAS2MOD2 : ',FuncCount,' procedure(s)/fonction(s).');
-    If UsesOut Then WriteLn('PAS2MOD2 : Out detecte.');
-    If UsesIn  Then WriteLn('PAS2MOD2 : In detecte.');
+    WriteLn('PAS2MOD3 : programme = ',ProgName);
+    WriteLn('PAS2MOD3 : ',FuncCount,' procedure(s)/fonction(s).');
+    If UsesOut Then WriteLn('PAS2MOD3 : Out detecte.');
+    If UsesIn  Then WriteLn('PAS2MOD3 : In detecte.');
   End;
 
   Assign(DstFile,DstName);
   {$I-} Rewrite(DstFile); {$I+}
   If IOResult<>0 Then Begin
-    WriteLn('PAS2MOD2 : impossible de creer ',DstName);
+    WriteLn('PAS2MOD3 : impossible de creer ',DstName);
     Halt(EXIT_ERROR);
   End;
 
@@ -1738,8 +1735,8 @@ BEGIN
   CurFunc:=0;
   FuncSP:=0;
   IPos:=1;
-  EmitRaw('(* Genere par PAS2MOD2 ');
-  EmitRaw(PAS2MOD2_VERSION);
+  EmitRaw('(* Genere par PAS2MOD3 ');
+  EmitRaw(PAS2MOD3_VERSION);
   EmitRaw(' a partir de ');
   EmitRaw(SrcName);
   EmitRaw(' *)');
@@ -1748,7 +1745,7 @@ BEGIN
   EmitBlock(IPos,True);
   If OutLine<>'' Then FlushLine;
   Close(DstFile);
-  If Verbose Then WriteLn('PAS2MOD2 : sortie ecrite dans ',DstName);
+  If Verbose Then WriteLn('PAS2MOD3 : sortie ecrite dans ',DstName);
   If ErrorCount>0 Then Halt(EXIT_ERROR);
   Halt(EXIT_OK);
 END.
