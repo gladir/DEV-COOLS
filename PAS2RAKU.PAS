@@ -119,7 +119,7 @@ Begin
  StrEqualCI:=StrUpper(A)=StrUpper(B);
 End;
 
-{ Enregistre Name comme variable PHP (a prefixer par '$'). }
+{ Enregistre Name comme variable Raku (a prefixer par '$'). }
 Procedure RegisterVar(Name:TString);
 Var I:Integer;
 Begin
@@ -768,7 +768,7 @@ Begin
    { Si '(' juste emis, l'argument 1 commence apres }
    If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') and
       (CallTop>0)and(CallDepth[CallTop]=Depth) Then ArgStart:=CallMask[CallTop]<>'';
-   { PHP : les parametres VAR sont declares avec '&' dans la signature de
+   { Raku : les parametres VAR sont declares 'is rw' dans la signature de
      la fonction, donc rien a emettre cote appelant. }
    If ArgStart and (CallTop>0) Then ArgStart:=False;
    { Espace apres operateur ou apres , ; }
