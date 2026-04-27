@@ -1,45 +1,45 @@
-{
+(*
   @author: Gladir.com (Sylvain Maltais)
-  @description: Transpilateur Turbo Pascal/Free Pascal vers le langage Python (.py).
+  @description: Transpilateur Turbo Pascal/Free Pascal vers le langage Raku (.raku).
 
   Sources : Turbo Pascal / Free Pascal (mode TP).
-  Cible   : code source Python 3 (compatible Python 3.6+).
+  Cible   : code source Raku (anciennement Perl 6).
 
   Sous-ensemble pris en charge :
     PROGRAM/UNIT, USES (ignore),
-    CONST (-> NAME = valeur), TYPE (en commentaire),
-    VAR (-> initialisation simple), PROCEDURE/FUNCTION (-> def),
-    BEGIN..END (-> indentation),
-    IF/THEN/ELSE (-> if/elif/else), WHILE..DO (-> while),
-    REPEAT..UNTIL (-> while True + break),
-    FOR..TO/DOWNTO..DO (-> for ... in range(...)),
-    CASE..OF (-> if/elif/else), Exit (-> return).
+    CONST (-> constant $NAME = valeur), TYPE (en commentaire),
+    VAR (-> my $name;), PROCEDURE/FUNCTION (-> sub),
+    BEGIN..END (-> accolades),
+    IF/THEN/ELSE (-> if/elsif/else), WHILE..DO (-> while),
+    REPEAT..UNTIL (-> loop avec last if cond),
+    FOR..TO/DOWNTO..DO (-> for low..high -> $i),
+    CASE..OF (-> given/when), Exit (-> return).
 
   Mappages d'entrees/sorties :
-    Write/WriteLn  -> print(..., end='') / print(...)
-    Read/ReadLn    -> input()/int(input())/float(input())
+    Write/WriteLn  -> print(...) / say(...)
+    Read/ReadLn    -> $x = get; (chaine), $x = +get; (numerique)
 
-  Particularites Python :
-    - Indentation 4 espaces (pas d'accolades ni de point-virgules).
-    - Concatenation de chaines avec '+' (comme Pascal). Les melanges
-      nombre/chaine peuvent necessiter str(...) en post-traitement.
-    - Operateurs : := -> =, = -> ==, <> -> !=, AND -> and, OR -> or,
-      NOT -> not, DIV -> //, MOD -> %, XOR -> ^.
-    - true/false/nil -> True/False/None.
-    - Les parametres VAR sont marques par un commentaire ; Python ne
-      supporte pas la reference simple sur les types primitifs : utiliser
-      un retour de tuple ou des objets mutables pour conserver la
-      semantique.
+  Particularites Raku :
+    - Sigils : variables scalaires prefixees par dollar.
+    - Chaines : concatenation avec tilde (et non plus).
+    - Operateurs : := -> =, = -> ==, <> -> !=, AND -> &&, OR -> ||,
+      NOT -> !, DIV -> div, MOD -> mod, XOR -> +^, SHL -> +<, SHR -> +>.
+    - True/False/Nil -> True/False/Nil.
+    - Parametres VAR : marques 'is rw' dans la signature.
 
   Limitations :
     - WITH, ensembles (sets) : commentes en sortie.
-    - Pointeurs Pascal non mappes (^ ignore).
-    - Le typage statique est perdu (Python est dynamique).
+    - Pointeurs Pascal non mappes (chapeau ignore).
+    - Le typage statique est perdu (Raku est dynamique mais a des contraintes
+      optionnelles non emises ici).
+    - L'operateur plus Pascal sur des chaines ne devient pas tilde
+      automatiquement (ambiguite numerique/chaine) ; les Write/WriteLn
+      utilisent deja tilde.
 
-  Compilation : fpc -Mtp PAS2PY.PAS
-  Usage       : PAS2PY source.pas [destination.py]
-}
-Program PAS2PY;
+  Compilation : fpc -Mtp PAS2RAKU.PAS
+  Usage       : PAS2RAKU source.pas [destination.raku]
+*)
+Program PAS2RAKU;
 
 Const
  VERSION = '1.0';
@@ -558,8 +558,9 @@ End;
 Procedure EmitLn;
 Begin EmitRaw(#10); End;
 
-{ Conversion d'une chaine Pascal 'abc''def' en chaine C "abc'def" avec
-  echappements C standards. }
+{ Conversion d'une chaine Pascal 'abc''def' en chaine Raku 'abc\'def'.
+  On utilise les guillemets simples Raku qui n'interpretent pas les
+  variables ($foo) ni les sequences d'echappement (sauf \' et \\). }
 Function PasStringToC(S:TString):TString;
 Var
  I:Integer;
@@ -568,18 +569,14 @@ Begin
  R:='';
  I:=2;
  While I<Length(S) do Begin
-   If (S[I]='''')and(I<Length(S))and(S[I+1]='''') Then Begin R:=R+''''; Inc(I,2); End
-   Else If S[I]='"' Then Begin R:=R+'\"'; Inc(I); End
+   If (S[I]='''')and(I<Length(S))and(S[I+1]='''') Then Begin R:=R+'\'''; Inc(I,2); End
    Else If S[I]='\' Then Begin R:=R+'\\'; Inc(I); End
-   Else If S[I]=#10 Then Begin R:=R+'\n'; Inc(I); End
-   Else If S[I]=#13 Then Begin R:=R+'\r'; Inc(I); End
-   Else If S[I]=#9  Then Begin R:=R+'\t'; Inc(I); End
    Else Begin R:=R+S[I]; Inc(I); End;
  End;
- PasStringToC:='"'+R+'"';
+ PasStringToC:=''''+R+'''';
 End;
 
-{ Conversion d'un litteral Pascal #N en C : 'A' ou (char)N. }
+{ Conversion d'un litteral Pascal #N en Raku : 'A' (string mono-char) ou chr(N). }
 Function PasCharToC(S:TString):TString;
 Var
  V:LongInt;
@@ -594,10 +591,10 @@ Begin
  If (V>=32)and(V<=126)and(V<>Ord(''''))and(V<>Ord('\')) Then
    PasCharToC:=''''+Chr(V)+''''
  Else
-   PasCharToC:='(char)'+Num;
+   PasCharToC:='chr('+Num+')';
 End;
 
-{ Mappage d'un operateur Pascal vers C. ContextEq=True => '=' represente
+{ Mappage d'un operateur Pascal vers Raku. ContextEq=True => '=' represente
   une egalite (en expression), sinon affectation. }
 Function MapOp(Op:TString; ContextEq:Boolean):TString;
 Begin
@@ -609,18 +606,18 @@ End;
 
 Function MapKw(K:TString):TString;
 Begin
- If K='AND' Then MapKw:='and' Else
- If K='OR'  Then MapKw:='or' Else
- If K='NOT' Then MapKw:='not' Else
- If K='DIV' Then MapKw:='//' Else
- If K='MOD' Then MapKw:='%' Else
- If K='SHL' Then MapKw:='<<' Else
- If K='SHR' Then MapKw:='>>' Else
- If K='XOR' Then MapKw:='^' Else
+ If K='AND' Then MapKw:='&&' Else
+ If K='OR'  Then MapKw:='||' Else
+ If K='NOT' Then MapKw:='!' Else
+ If K='DIV' Then MapKw:='div' Else
+ If K='MOD' Then MapKw:='mod' Else
+ If K='SHL' Then MapKw:='+<' Else
+ If K='SHR' Then MapKw:='+>' Else
+ If K='XOR' Then MapKw:='+^' Else
  If K='TRUE' Then MapKw:='True' Else
  If K='FALSE' Then MapKw:='False' Else
- If K='NIL' Then MapKw:='None' Else
- If K='IN' Then MapKw:='in' Else
+ If K='NIL' Then MapKw:='Nil' Else
+ If K='IN' Then MapKw:='(elem)' Else
                  MapKw:=StrLower(K);
 End;
 
@@ -656,11 +653,24 @@ End;
 
 { Emet un seul token au sein d'une expression. }
 Procedure EmitOneExprTok(I:Integer);
-Var V,Name:TString; IsCall:Boolean;
+Var V,Name,Op:TString; IsCall:Boolean; PrevK,NextK:TTokenKind;
 Begin
  Case Tokens[I].Kind of
    TK_KEYWORD: EmitRaw(MapKw(Tokens[I].Val));
-   TK_OP     : EmitRaw(MapOp(Tokens[I].Val,True));
+   TK_OP     : Begin
+     Op:=Tokens[I].Val;
+     { '+' adjacent a une chaine litterale : utiliser '~' (concatenation Raku). }
+     If Op='+' Then Begin
+       PrevK:=TK_NONE; NextK:=TK_NONE;
+       If I>1 Then PrevK:=Tokens[I-1].Kind;
+       If I<TokCount Then NextK:=Tokens[I+1].Kind;
+       If (PrevK=TK_STRING)or(PrevK=TK_CHAR)or(NextK=TK_STRING)or(NextK=TK_CHAR) Then
+         EmitRaw('~')
+       Else
+         EmitRaw(MapOp(Op,True));
+     End
+     Else EmitRaw(MapOp(Op,True));
+   End;
    TK_STRING : EmitRaw(PasStringToC(Tokens[I].Val));
    TK_CHAR   : EmitRaw(PasCharToC(Tokens[I].Val));
    TK_INT    : Begin
@@ -671,14 +681,15 @@ Begin
    TK_REAL   : EmitRaw(Tokens[I].Val);
    TK_IDENT  : Begin
      Name:=Tokens[I].Val;
-     { En Python, pas de prefixe '$' pour les variables. On emet
-       simplement le nom tel quel. La distinction var/fonction/constante
-       n'est pas necessaire syntaxiquement. }
-     If False Then If IsCall Then ; { silence }
      IsCall:=False;
      If (I<TokCount) and (Tokens[I+1].Kind=TK_PUNCT) and (Tokens[I+1].Val='(') Then
        IsCall:=True;
-     EmitRaw(Name);
+     { En Raku, prefixer les variables scalaires par '$'. Les noms de
+       fonctions/procedures restent sans sigil. On utilise IsCall (suivi
+       de '(') et la table IsVarName/IsConstName pour decider. }
+     If IsCall Then EmitRaw(Name)
+     Else If IsVarName(Name) or IsConstName(Name) Then EmitRaw('$'+Name)
+     Else EmitRaw('$'+Name);
    End;
    TK_PUNCT  : Begin
      If Tokens[I].Val='^' Then EmitRaw('')
@@ -781,20 +792,20 @@ Begin EmitExprUntil(I,''); End;
 { ============================================================
   WRITE / READ
   ============================================================ }
-{ Emet WriteLn(...)/Write(...) sous forme d'un seul appel print(...) Python.
-  I positionne sur le mot-cle. Tous les arguments sont concatenes via la
-  separation par defaut '' (sep=''). }
+{ Emet WriteLn(...)/Write(...) sous forme d'un appel say(...) ou print(...) Raku.
+  Les arguments sont concatenes via '~' (concat Raku). Les eventuelles
+  specifications de format Pascal (:width[:prec]) sont ignorees. }
 Procedure EmitWriteCall(Var I:Integer; IsLn:Boolean);
 Var First:Boolean; K:Integer;
 Begin
  Inc(I);                     { sauter Write/WriteLn                         }
- EmitRaw('print(');
+ If IsLn Then EmitRaw('say(') Else EmitRaw('print(');
  First:=True;
  If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Begin
    Inc(I);
    While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')')) do Begin
-     If Not First Then EmitRaw(', ');
-     K:=I; EmitExprUntil(K,',)'); I:=K;
+     If Not First Then EmitRaw(' ~ ');
+     EmitRaw('('); K:=I; EmitExprUntil(K,',)'); I:=K; EmitRaw(')');
      First:=False;
      { Sauter une eventuelle specification de format :width[:prec] }
      If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=':') Then Begin
@@ -811,9 +822,7 @@ Begin
    End;
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')') Then Inc(I);
  End;
- If Not First Then EmitRaw(', ');
- EmitRaw('sep=''''');
- If Not IsLn Then EmitRaw(', end=''''');
+ If First Then EmitRaw('''''');   { say sans argument -> ligne vide }
  EmitRaw(')');
 End;
 
@@ -825,7 +834,7 @@ Begin
  K:=I; EmitExprUntil(K,',)'); I:=K;
 End;
 
-{ Emet ReadLn(x) / Read(x) sous forme d'appels input() Python. }
+{ Emet ReadLn(x) / Read(x) sous forme d'appels Raku 'get'. }
 Procedure EmitReadCall(Var I:Integer; IsLn:Boolean);
 Var First:Boolean; J:Integer; LhsBuf:TString; SaveOut:TString;
 Begin
@@ -834,14 +843,14 @@ Begin
  If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Begin
    Inc(I);
    While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')')) do Begin
-     If Not First Then Begin EmitLn; WriteIndent; End;
+     If Not First Then Begin EmitRaw(';'); EmitLn; WriteIndent; End;
      SaveOut:=OutLine;
      OutLine:='';
      J:=I; EmitExprUntil(J,',)'); I:=J;
      LhsBuf:=OutLine;
      OutLine:=SaveOut;
      EmitRaw(LhsBuf);
-     EmitRaw(' = input()');
+     EmitRaw(' = get');
      First:=False;
      If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=',') Then Inc(I);
    End;
@@ -849,7 +858,7 @@ Begin
  End;
  If IsLn and First Then Begin
    { ReadLn sans argument : consommer une ligne }
-   EmitRaw('input()');
+   EmitRaw('get');
  End;
 End;
 
@@ -857,7 +866,7 @@ End;
   INSTRUCTIONS DE CONTROLE
   ============================================================ }
 { Si I pointe sur un appel de la fonction courante en partie gauche
-  (FuncName := ...), emettre '_result_ = ...;' et avancer. }
+  (FuncName := ...), emettre '$_result_ = ...' et avancer. }
 Function MaybeEmitFuncReturn(Var I:Integer):Boolean;
 Var
  J:Integer;
@@ -872,7 +881,7 @@ Begin
  If (J<=TokCount)and(Tokens[J].Kind=TK_OP)and(Tokens[J].Val=':=') Then Begin
    If StrEqualCI(Name,Funcs[CurFunc].Name) or StrEqualCI(Name,'RESULT') Then Begin
      Inc(I,2);                { sauter Name :=                              }
-     EmitRaw('_result_ = ');
+     EmitRaw('$_result_ = ');
      EmitExpr(I);
      MaybeEmitFuncReturn:=True;
    End;
@@ -892,58 +901,68 @@ Begin
  End;
 End;
 
-{ Emet un bloc enfant Python : ':' newline + indent + corps + dedent.
-  Pas de marqueur de fermeture (l'indentation suffit). }
+{ Emet un bloc enfant Raku : accolade ouvrante newline + indent + corps + dedent + accolade fermante. }
 Procedure EmitBlockBody(Var I:Integer);
 Begin
- EmitRaw(':'); EmitLn;
+ EmitRaw(' {'); EmitLn;
  Inc(Indent);
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='BEGIN') Then Begin
    Inc(I);
    EmitStatementList(I);
    If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
  End Else Begin
-   { Une seule instruction. Si le corps est vide (cas degenere), emettre 'pass'. }
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Begin
-     WriteIndent; EmitRaw('pass'); EmitLn;
      Inc(I);
    End Else Begin
-     WriteIndent; EmitStmt(I); EmitLn;
+     WriteIndent; EmitStmt(I); EmitRaw(';'); EmitLn;
      If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
    End;
  End;
  Dec(Indent);
+ WriteIndent; EmitRaw('}');
 End;
 
 Procedure EmitIfStatement(Var I:Integer);
+Var Done:Boolean;
 Begin
  Inc(I);                     { sauter IF                                    }
- EmitRaw('if ');
+ EmitRaw('if (');
  EmitExpr(I);
+ EmitRaw(')');
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='THEN') Then Inc(I);
  EmitBlockBody(I);
- { Sauter un eventuel ';' avant ELSE }
- If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Begin
-   If (I+1<=TokCount)and(Tokens[I+1].Kind=TK_KEYWORD)and(Tokens[I+1].Val='ELSE') Then Inc(I);
- End;
- If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='ELSE') Then Begin
-   Inc(I);
-   { else if ... -> elif ... }
-   If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='IF') Then Begin
-     WriteIndent; EmitRaw('el');
-     EmitIfStatement(I);
-     Exit;
+ Done:=False;
+ While Not Done do Begin
+   { Sauter un eventuel ';' avant ELSE }
+   If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Begin
+     If (I+1<=TokCount)and(Tokens[I+1].Kind=TK_KEYWORD)and(Tokens[I+1].Val='ELSE') Then Inc(I);
    End;
-   WriteIndent; EmitRaw('else');
-   EmitBlockBody(I);
+   If Not((I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='ELSE')) Then Begin
+     Done:=True; Break;
+   End;
+   Inc(I);
+   If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='IF') Then Begin
+     Inc(I);
+     EmitRaw(' elsif (');
+     EmitExpr(I);
+     EmitRaw(')');
+     If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='THEN') Then Inc(I);
+     EmitBlockBody(I);
+     { boucler pour traiter d'eventuels else/else if suivants }
+   End Else Begin
+     EmitRaw(' else');
+     EmitBlockBody(I);
+     Done:=True;
+   End;
  End;
 End;
 
 Procedure EmitWhileStatement(Var I:Integer);
 Begin
  Inc(I);                     { sauter WHILE                                 }
- EmitRaw('while ');
+ EmitRaw('while (');
  EmitExpr(I);
+ EmitRaw(')');
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DO') Then Inc(I);
  EmitBlockBody(I);
 End;
@@ -960,7 +979,6 @@ Begin
  If (I<=TokCount)and(Tokens[I].Kind=TK_IDENT) Then Begin IdxName:=Tokens[I].Val; Inc(I); End;
  RegisterVar(IdxName);
  If (I<=TokCount)and(Tokens[I].Kind=TK_OP)and(Tokens[I].Val=':=') Then Inc(I);
- { Capturer l'expression de borne basse dans un buffer }
  SaveOut:=OutLine; OutLine:='';
  EmitExprUntil(I,'');         { jusqu'a TO/DOWNTO                           }
  LowExpr:=OutLine;
@@ -974,46 +992,39 @@ Begin
  EmitExprUntil(I,'');         { jusqu'a DO                                  }
  HighExpr:=OutLine;
  OutLine:=SaveOut;
- EmitRaw('for '); EmitRaw(IdxName); EmitRaw(' in range(');
  If Down Then Begin
-   EmitRaw(LowExpr); EmitRaw(', (');
-   EmitRaw(HighExpr); EmitRaw(') - 1, -1');
+   EmitRaw('for ('); EmitRaw(LowExpr); EmitRaw(' ... '); EmitRaw(HighExpr);
+   EmitRaw(') -> $'); EmitRaw(IdxName);
  End Else Begin
-   EmitRaw(LowExpr); EmitRaw(', (');
-   EmitRaw(HighExpr); EmitRaw(') + 1');
+   EmitRaw('for ('); EmitRaw(LowExpr); EmitRaw(' .. '); EmitRaw(HighExpr);
+   EmitRaw(') -> $'); EmitRaw(IdxName);
  End;
- EmitRaw(')');
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DO') Then Inc(I);
  EmitBlockBody(I);
 End;
 
-{ Pascal REPEAT body UNTIL cond  ->
-   while True:
-       body
-       if cond:
-           break                                                             }
+{ Pascal REPEAT body UNTIL cond  ->  loop avec last if (cond) }
 Procedure EmitRepeatStatement(Var I:Integer);
 Begin
  Inc(I);                     { sauter REPEAT                                }
- EmitRaw('while True:'); EmitLn;
+ EmitRaw('loop {'); EmitLn;
  Inc(Indent);
  EmitStatementList(I);
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='UNTIL') Then Inc(I);
- WriteIndent; EmitRaw('if ');
+ WriteIndent; EmitRaw('last if (');
  EmitExpr(I);
- EmitRaw(':'); EmitLn;
- Inc(Indent);
- WriteIndent; EmitRaw('break'); EmitLn;
+ EmitRaw(');'); EmitLn;
  Dec(Indent);
- Dec(Indent);
+ WriteIndent; EmitRaw('}');
 End;
 
-{ Lit une etiquette de CASE et la transforme en condition Python.
-  Le selecteur du switch est en parametre (SelExpr).
-  Construit une expression genre :
-    selector == val1 or selector == val2 or low <= selector <= high
-  Resultat ecrit dans OutLine via EmitRaw. }
-Procedure EmitCaseLabels(Var I:Integer; Const SelExpr:TString);
+{ Lit une etiquette de CASE et la transforme en condition Raku.
+  En Raku 'when', on peut utiliser :
+    when val               -> egalite avec smartmatch
+    when val1|val2         -> alternative
+    when low..high         -> intervalle
+  Construit l'expression de match dans OutLine via EmitRaw. }
+Procedure EmitCaseLabels(Var I:Integer);
 Var
  First:Boolean;
  LowS,HighS:TString;
@@ -1028,7 +1039,7 @@ Var
        TK_INT  : LowS:=LowS+Tokens[J].Val;
        TK_CHAR : LowS:=LowS+PasCharToC(Tokens[J].Val);
        TK_STRING:LowS:=LowS+PasStringToC(Tokens[J].Val);
-       TK_IDENT: LowS:=LowS+Tokens[J].Val;
+       TK_IDENT: LowS:=LowS+'$'+Tokens[J].Val;
        TK_KEYWORD:LowS:=LowS+MapKw(Tokens[J].Val);
      Else
        LowS:=LowS+Tokens[J].Val;
@@ -1044,17 +1055,17 @@ Var
          TK_INT  : HighS:=HighS+Tokens[K].Val;
          TK_CHAR : HighS:=HighS+PasCharToC(Tokens[K].Val);
          TK_STRING:HighS:=HighS+PasStringToC(Tokens[K].Val);
-         TK_IDENT: HighS:=HighS+Tokens[K].Val;
+         TK_IDENT: HighS:=HighS+'$'+Tokens[K].Val;
          TK_KEYWORD:HighS:=HighS+MapKw(Tokens[K].Val);
        Else
          HighS:=HighS+Tokens[K].Val;
        End;
        Inc(K);
      End;
-     EmitRaw('('+LowS+' <= '+SelExpr+' <= '+HighS+')');
+     EmitRaw(LowS+'..'+HighS);
      I:=K;
    End Else Begin
-     EmitRaw(SelExpr+' == '+LowS);
+     EmitRaw(LowS);
      I:=J;
    End;
  End;
@@ -1063,73 +1074,63 @@ Begin
  First:=True;
  While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=':')) do Begin
    If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=',') Then Begin Inc(I); Continue; End;
-   If Not First Then EmitRaw(' or ');
+   If Not First Then EmitRaw(' | ');
    First:=False;
    EmitOne;
  End;
  If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=':') Then Inc(I);
 End;
 
-{ Pascal CASE Sel OF ... END  ->  if Sel == ... : ...  elif ... : ...  else: }
+{ Pascal CASE Sel OF ... END  ->  given $sel avec when ... et default ... }
 Procedure EmitCaseStatement(Var I:Integer);
 Var
  SelExpr,SaveOut:TString;
- First:Boolean;
 Begin
  Inc(I);                     { sauter CASE                                  }
  SaveOut:=OutLine; OutLine:='';
  EmitExpr(I);
  SelExpr:=OutLine;
  OutLine:=SaveOut;
+ EmitRaw('given ('); EmitRaw(SelExpr); EmitRaw(') {'); EmitLn;
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='OF') Then Inc(I);
- First:=True;
+ Inc(Indent);
  While I<=TokCount do Begin
    If (Tokens[I].Kind=TK_KEYWORD) and
       ((Tokens[I].Val='END')or(Tokens[I].Val='ELSE')or(Tokens[I].Val='OTHERWISE')) Then Begin
      If (Tokens[I].Val='ELSE')or(Tokens[I].Val='OTHERWISE') Then Begin
        Inc(I);
-       If First Then Begin
-         { Pas de label avant else : utiliser if True: pass; else: ... }
-         EmitRaw('if False:'); EmitLn;
-         Inc(Indent); WriteIndent; EmitRaw('pass'); EmitLn; Dec(Indent);
-       End;
-       WriteIndent; EmitRaw('else:'); EmitLn;
+       WriteIndent; EmitRaw('default {'); EmitLn;
        Inc(Indent);
        While (I<=TokCount) and Not((Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END')) do Begin
          WriteIndent;
-         EmitStmt(I);
+         EmitStmt(I); EmitRaw(';'); EmitLn;
          If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
-         EmitLn;
        End;
        Dec(Indent);
+       WriteIndent; EmitRaw('}'); EmitLn;
      End;
      Break;
    End;
-   If First Then Begin
-     EmitRaw('if ');
-     First:=False;
-   End Else Begin
-     WriteIndent; EmitRaw('elif ');
-   End;
-   EmitCaseLabels(I,SelExpr);
-   EmitRaw(':'); EmitLn;
+   WriteIndent;
+   EmitRaw('when ');
+   EmitCaseLabels(I);
+   EmitRaw(' {'); EmitLn;
    Inc(Indent);
    WriteIndent;
    If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='BEGIN') Then Begin
      Inc(I);
      EmitStatementList(I);
      If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
-   End Else
-     EmitStmt(I);
-   EmitLn;
+   End Else Begin
+     EmitStmt(I); EmitRaw(';'); EmitLn;
+   End;
    Dec(Indent);
+   WriteIndent; EmitRaw('}'); EmitLn;
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
  End;
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
- If First Then Begin
-   { Aucun cas n'a ete emis }
-   EmitRaw('pass');
- End;
+ Dec(Indent);
+ WriteIndent; EmitRaw('}');
 End;
 
 { Emet une instruction unique. Avance I sur le ';' suivant si present. }
@@ -1144,9 +1145,13 @@ Begin
    TK_KEYWORD:Begin
      K:=Tokens[I].Val;
      If K='BEGIN' Then Begin
+       EmitRaw('{'); EmitLn;
+       Inc(Indent);
        Inc(I);
        EmitStatementList(I);
        If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
+       Dec(Indent);
+       WriteIndent; EmitRaw('}');
      End Else
      If K='IF' Then EmitIfStatement(I) Else
      If K='WHILE' Then EmitWhileStatement(I) Else
@@ -1155,11 +1160,11 @@ Begin
      If K='CASE' Then EmitCaseStatement(I) Else
      If K='EXIT' Then Begin
        Inc(I);
-       If (CurFunc>0) and (Funcs[CurFunc].IsFunc) Then EmitRaw('return _result_')
+       If (CurFunc>0) and (Funcs[CurFunc].IsFunc) Then EmitRaw('return $_result_')
        Else EmitRaw('return');
      End Else
-     If K='BREAK' Then Begin Inc(I); EmitRaw('break'); End Else
-     If K='CONTINUE' Then Begin Inc(I); EmitRaw('continue'); End Else
+     If K='BREAK' Then Begin Inc(I); EmitRaw('last'); End Else
+     If K='CONTINUE' Then Begin Inc(I); EmitRaw('next'); End Else
      If K='WITH' Then Begin
        EmitRaw('# WITH non supporte ; expansion manuelle requise');
        While (I<=TokCount) and Not((Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DO')) do Inc(I);
@@ -1183,7 +1188,7 @@ Begin
        EmitReadCall(I, Name='READLN')
      Else If (Name='HALT') Then Begin
        Inc(I);
-       EmitRaw('sys.exit(');
+       EmitRaw('exit(');
        If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Begin
          Inc(I); EmitExpr(I);
          If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')') Then Inc(I);
@@ -1209,7 +1214,8 @@ Begin
  End;
 End;
 
-{ Emet une suite d'instructions jusqu'a END/UNTIL/ELSE/OTHERWISE/EOF. }
+{ Emet une suite d'instructions jusqu'a END/UNTIL/ELSE/OTHERWISE/EOF.
+  Chaque instruction est terminee par ';'. }
 Procedure EmitStatementList(Var I:Integer);
 Begin
  While I<=TokCount do Begin
@@ -1217,6 +1223,7 @@ Begin
    If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Begin Inc(I); Continue; End;
    WriteIndent;
    EmitStmt(I);
+   EmitRaw(';');
    EmitLn;
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
  End;
@@ -1225,8 +1232,8 @@ End;
 { ============================================================
   DECLARATIONS (CONST / VAR / TYPE)
   ============================================================ }
-{ Emet des declarations VAR : 'var x, y: integer;' -> 'static int x, y;'.
-  Pour les tableaux : 'int[] x = new int[N];'.
+{ Emet des declarations VAR : 'var x, y: integer;' -> 'my $x = 0; my $y = 0;'.
+  Pour les tableaux : 'my @x;'.
   S'arrete sur un mot-cle de section ou BEGIN/PROCEDURE/FUNCTION. }
 Procedure EmitVarSection(Var I:Integer; AsStatic:Boolean);
 Var
@@ -1241,7 +1248,6 @@ Var
  NameOne:TString;
 Begin
  Inc(I);                     { sauter VAR                                   }
- { PHP n'a pas de notion 'static' au niveau global ; AsStatic est ignore. }
  If False Then If AsStatic Then ;
  While I<=TokCount do Begin
    If Tokens[I].Kind=TK_KEYWORD Then Begin
@@ -1296,7 +1302,8 @@ Begin
        TypeS:=MapPascalType(Tokens[I].Val); Inc(I);
      End;
    End;
-   { Emission : pour chaque nom, emettre 'name = valeur_initiale  # type'. }
+   If False Then If (Lo<>'')or(Hi<>'') Then ; { silence }
+   { Emission : pour chaque nom, emettre 'my $name = valeur_initiale;'. }
    J:=1; LenN:=Length(Names);
    While J<=LenN do Begin
      Pos1:=J;
@@ -1305,13 +1312,17 @@ Begin
      While (Length(NameOne)>0) and (NameOne[1]=' ') do NameOne:=Copy(NameOne,2,Length(NameOne)-1);
      RegisterVar(NameOne);
      WriteIndent;
-     EmitRaw(NameOne); EmitRaw(' = ');
-     If IsArr Then EmitRaw('[]')
-     Else If TypeS='string' Then EmitRaw('""')
-     Else If TypeS='bool' Then EmitRaw('False')
-     Else If (TypeS='int') Then EmitRaw('0')
-     Else If (TypeS='float') Then EmitRaw('0.0')
-     Else EmitRaw('None');
+     If IsArr Then Begin
+       EmitRaw('my @'); EmitRaw(NameOne); EmitRaw(';');
+     End Else Begin
+       EmitRaw('my $'); EmitRaw(NameOne); EmitRaw(' = ');
+       If TypeS='string' Then EmitRaw('''''')
+       Else If TypeS='bool' Then EmitRaw('False')
+       Else If TypeS='int' Then EmitRaw('0')
+       Else If TypeS='float' Then EmitRaw('0.0')
+       Else EmitRaw('Nil');
+       EmitRaw(';');
+     End;
      EmitRaw('  # '); EmitRaw(TypeS);
      If IsArr Then EmitRaw('[]');
      EmitLn;
@@ -1322,12 +1333,12 @@ Begin
  End;
 End;
 
-{ Emet une declaration CONST : 'const Pi = 3.14;' -> 'static double Pi = 3.14;'.
-  Si AsStatic est faux (locaux), emet 'const ...' (constante locale C#). }
+{ Emet une declaration CONST : 'const Pi = 3.14;' -> 'constant $Pi = 3.14;'. }
 Procedure EmitConstSection(Var I:Integer; AsStatic:Boolean);
-Var K,Name,TypeS,Prefix:TString; J,Save:Integer; FirstTok:Integer;
+Var K,Name,TypeS:TString; J,Save:Integer; FirstTok:Integer;
 Begin
  Inc(I);                     { sauter CONST                                 }
+ If False Then If AsStatic Then ;
  While I<=TokCount do Begin
    If Tokens[I].Kind=TK_KEYWORD Then Begin
      K:=Tokens[I].Val;
@@ -1344,7 +1355,7 @@ Begin
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=':') Then Begin
      Inc(I);
      If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='STRING') Then Begin
-       TypeS:='String'; Inc(I);
+       TypeS:='Str'; Inc(I);
      End Else If I<=TokCount Then Begin
        TypeS:=MapPascalType(Tokens[I].Val); Inc(I);
      End;
@@ -1354,14 +1365,13 @@ Begin
    { si pas de type explicite, deduire d'apres le 1er token de l'expression }
    If TypeS='' Then Begin
      FirstTok:=I;
-     { sauter un signe unaire eventuel }
      If (FirstTok<=TokCount)and(Tokens[FirstTok].Kind=TK_OP)and
         ((Tokens[FirstTok].Val='-')or(Tokens[FirstTok].Val='+')) Then Inc(FirstTok);
      If FirstTok<=TokCount Then Begin
        Case Tokens[FirstTok].Kind of
          TK_INT   : TypeS:='int';
          TK_REAL  : TypeS:='double';
-         TK_STRING: TypeS:='String';
+         TK_STRING: TypeS:='Str';
          TK_CHAR  : TypeS:='char';
          TK_KEYWORD:
            If (Tokens[FirstTok].Val='TRUE')or(Tokens[FirstTok].Val='FALSE') Then TypeS:='boolean'
@@ -1372,19 +1382,17 @@ Begin
      End Else TypeS:='int';
    End;
    WriteIndent;
-   { Python : pas de mot-cle 'const' ; on emet juste NAME = expr.
-     Convention : nom enregistre comme constante (pas de prefixe). }
-   If False Then If AsStatic and (Prefix='') and (TypeS='') Then ; { silence }
    RegisterConst(Name);
-   EmitRaw(Name); EmitRaw(' = ');
+   EmitRaw('constant $'); EmitRaw(Name); EmitRaw(' = ');
    J:=I; Save:=I; EmitExprUntil(J,''); I:=J;
    If I=Save Then EmitRaw('0');
+   EmitRaw(';');
    EmitLn;
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
  End;
 End;
 
-{ Emet une declaration TYPE : 'type T = integer;' -> commentaire (Python est dynamique). }
+{ Emet une declaration TYPE : 'type T = integer;' -> commentaire (Raku est dynamique). }
 Procedure EmitTypeSection(Var I:Integer);
 Var Name,K:TString; J:Integer;
 Begin
@@ -1418,15 +1426,14 @@ End;
 { ============================================================
   PROCEDURES / FONCTIONS
   ============================================================ }
-{ Emet la liste de parametres Python : '(a, b: integer; var c: real)'
-  -> '(a, b, c)'. Les VAR/OUT sont signales par un commentaire prefixe.
+{ Emet la liste de parametres Raku : '(a, b: integer; var c: real)'
+  -> '($a, $b, $c is rw)'. Les VAR/OUT sont marques 'is rw'.
   Enregistre aussi les noms comme variables connues. }
 Procedure EmitProcParams(Var I:Integer);
 Var
  IsVar:Boolean;
  Names:TString;
  First:Boolean;
- HasVar:Boolean;
  K:TString;
  J:Integer;
  T,N:TString;
@@ -1437,11 +1444,10 @@ Begin
  End;
  Inc(I);
  First:=True;
- HasVar:=False;
  While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')')) do Begin
    IsVar:=False;
    If (Tokens[I].Kind=TK_KEYWORD)and((Tokens[I].Val='VAR')or(Tokens[I].Val='OUT')) Then Begin
-     IsVar:=True; HasVar:=True; Inc(I);
+     IsVar:=True; Inc(I);
    End Else
    If (Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='CONST') Then Inc(I);
    If Tokens[I].Kind<>TK_IDENT Then Begin Inc(I); Continue; End;
@@ -1453,7 +1459,7 @@ Begin
      End;
    End;
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=':') Then Inc(I);
-   { sauter le type Pascal (Python est dynamique) }
+   { sauter le type Pascal (Raku est dynamique) }
    If I<=TokCount Then Begin
      If (Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='STRING') Then Begin
        Inc(I);
@@ -1467,14 +1473,15 @@ Begin
        Inc(I);
      End;
    End;
-   { Pour chaque nom dans Names, l'emettre comme parametre Python. }
+   { Pour chaque nom dans Names, l'emettre avec sigil '$'. }
    T:=''; J:=1; N:='';
    While J<=Length(Names)+1 do Begin
      If (J>Length(Names)) or (Names[J]=',') Then Begin
        If N<>'' Then Begin
          RegisterVar(N);
          If Not First Then T:=T+', ';
-         T:=T+N;
+         T:=T+'$'+N;
+         If IsVar Then T:=T+' is rw';
          First:=False;
        End;
        N:=''; Inc(J);
@@ -1484,16 +1491,14 @@ Begin
      End;
    End;
    EmitRaw(T);
-   If False Then If IsVar Then ; { IsVar deja signalisee via HasVar }
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
  End;
  If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')') Then Inc(I);
  EmitRaw(')');
- If HasVar Then EmitRaw('  # NOTE: parametres VAR/OUT non geres en Python');
 End;
 
-{ Emet l'en-tete et le corps d'une PROCEDURE/FUNCTION PHP :
-   function name(...) -accolade- corps -accolade-                          }
+{ Emet l'en-tete et le corps d'une PROCEDURE/FUNCTION Raku.
+  Forme : sub nom(parametres) suivi du corps entre accolades. }
 Procedure EmitProcedure(Var I:Integer);
 Var
  IsFunc:Boolean;
@@ -1501,8 +1506,6 @@ Var
  PrevFunc:Integer;
  SavedIndent:Integer;
  SavedVarCount:Integer;
- G:Integer;
- GlobalsLine:TString;
 Begin
  IsFunc:=Tokens[I].Val='FUNCTION';
  Inc(I);
@@ -1514,14 +1517,8 @@ Begin
  If IsFunc and (CurFunc>0) and (Funcs[CurFunc].RetType<>'') Then RetT:=Funcs[CurFunc].RetType;
  SavedIndent:=Indent;
  SavedVarCount:=VarCount;
- { Pre-construire la liste des noms globaux pour 'global x, y' Python. }
- GlobalsLine:='';
- For G:=1 to SavedVarCount do Begin
-   If GlobalsLine<>'' Then GlobalsLine:=GlobalsLine+', ';
-   GlobalsLine:=GlobalsLine+VarNames[G];
- End;
  WriteIndent;
- EmitRaw('def '); EmitRaw(Name);
+ EmitRaw('sub '); EmitRaw(Name);
  If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then EmitProcParams(I)
  Else EmitRaw('()');
  { sauter ': type' de fonction }
@@ -1533,22 +1530,15 @@ Begin
  { directive forward / external ? }
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and
     ((Tokens[I].Val='FORWARD')or(Tokens[I].Val='EXTERNAL')) Then Begin
-   EmitRaw(':'); EmitLn;
-   Inc(Indent); WriteIndent; EmitRaw('pass  # forward / external'); EmitLn;
-   Dec(Indent); EmitLn;
+   EmitRaw(' { ... } # forward / external'); EmitLn; EmitLn;
    Inc(I);
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
    CurFunc:=PrevFunc;
    VarCount:=SavedVarCount;
    Exit;
  End;
- EmitRaw(':'); EmitLn;
+ EmitRaw(' {'); EmitLn;
  Inc(Indent);
- { Importer les vars globales pour permettre l'acces aux variables Pascal
-   declarees au niveau programme. }
- If GlobalsLine<>'' Then Begin
-   WriteIndent; EmitRaw('global '); EmitRaw(GlobalsLine); EmitLn;
- End;
  { declarations locales }
  While I<=TokCount do Begin
    If (Tokens[I].Kind=TK_KEYWORD) Then Begin
@@ -1565,13 +1555,13 @@ Begin
  { reservation pour Result/EXIT }
  If IsFunc Then Begin
    RegisterVar('_result_');
-   WriteIndent; EmitRaw('_result_ = ');
-   If (RetT='string') Then EmitRaw('""')
+   WriteIndent; EmitRaw('my $_result_ = ');
+   If (RetT='string') Then EmitRaw('''''')
    Else If (RetT='bool') Then EmitRaw('False')
    Else If (RetT='float') Then EmitRaw('0.0')
    Else If (RetT='int') Then EmitRaw('0')
-   Else EmitRaw('None');
-   EmitLn;
+   Else EmitRaw('Nil');
+   EmitRaw(';'); EmitLn;
  End;
  { corps }
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='BEGIN') Then Begin
@@ -1580,11 +1570,11 @@ Begin
    If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
  End;
  If IsFunc Then Begin
-   WriteIndent; EmitRaw('return _result_'); EmitLn;
+   WriteIndent; EmitRaw('return $_result_;'); EmitLn;
  End;
  Dec(Indent);
  If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
- EmitLn;
+ WriteIndent; EmitRaw('}'); EmitLn; EmitLn;
  CurFunc:=PrevFunc;
  Indent:=SavedIndent;
  VarCount:=SavedVarCount;
@@ -1595,11 +1585,10 @@ End;
   ============================================================ }
 Procedure EmitFileHeader;
 Begin
- EmitRaw('#!/usr/bin/env python3'); EmitLn;
- EmitRaw('# -*- coding: utf-8 -*-'); EmitLn;
- EmitRaw('# Genere par PAS2PY '+VERSION+' a partir de '+SrcName); EmitLn;
+ EmitRaw('#!/usr/bin/env raku'); EmitLn;
+ EmitRaw('# Genere par PAS2RAKU '+VERSION+' a partir de '+SrcName); EmitLn;
  EmitRaw('# Programme : '+ProgName); EmitLn;
- EmitRaw('import sys'); EmitLn;
+ EmitRaw('use v6;'); EmitLn;
  EmitLn;
 End;
 
@@ -1692,11 +1681,11 @@ End;
   ============================================================ }
 Procedure ShowUsage;
 Begin
- WriteLn('PAS2PY ',VERSION,' - Transpilateur Pascal vers Python');
+ WriteLn('PAS2RAKU ',VERSION,' - Transpilateur Pascal vers Raku');
  WriteLn('(C) Gladir.com');
  WriteLn;
- WriteLn('Usage : PAS2PY source.pas [destination.py]');
- WriteLn('Exemple : PAS2PY hello.pas hello.py');
+ WriteLn('Usage : PAS2RAKU source.pas [destination.raku]');
+ WriteLn('Exemple : PAS2RAKU hello.pas hello.raku');
 End;
 
 Procedure ParseArgs;
@@ -1711,8 +1700,8 @@ Begin
    A:=SrcName;
    I:=Length(A);
    While (I>0)and(A[I]<>'.') do Dec(I);
-   If I>0 Then DstName:=Copy(A,1,I-1)+'.py'
-          Else DstName:=A+'.py';
+   If I>0 Then DstName:=Copy(A,1,I-1)+'.raku'
+          Else DstName:=A+'.raku';
  End;
 End;
 
@@ -1749,6 +1738,6 @@ Begin
  EmitFileFooter;
  FlushLine;
  Close(OutFile);
- WriteLn('PAS2PY : ',SrcName,' -> ',DstName,' (',TokCount,' tokens, ',
+ WriteLn('PAS2RAKU : ',SrcName,' -> ',DstName,' (',TokCount,' tokens, ',
          FuncCount,' procs/funcs).');
 End.
