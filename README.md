@@ -462,6 +462,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Ada (.adb).</td>
 		</tr>
 		<tr>
+			<td><b>PAS2MOD2.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Modula-2 (.mod).</td>
+		</tr>
+		<tr>
 			<td><b>PAS2HTML.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier de code source en syntaxe coloré HTML.</td>
 		</tr>

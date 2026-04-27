@@ -3,13 +3,13 @@
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
-  @description: Transpilateur Turbo Pascal vers Oberon (.obn)
+  @description: Transpilateur Turbo Pascal vers Modula-2 (.mod)
 }
 
 (* ============================================================
-   PAS2OBER.PAS - Transpilateur Turbo Pascal vers Oberon
+   PAS2MOD2.PAS - Transpilateur Turbo Pascal vers Modula-2
    Turbo Pascal / Free Pascal (-Mtp)
-   Cible : code source Oberon-07 (.obn)
+   Cible : code source Modula-2 (.mod)
 
    Couvre les constructions courantes :
      PROGRAM/UNIT, USES, CONST, TYPE, VAR,
@@ -17,21 +17,21 @@
      BEGIN..END, IF..THEN..ELSE (ELSE IF -> ELSIF),
      WHILE..DO, REPEAT..UNTIL, FOR..TO/DOWNTO..DO,
      CASE..OF (avec separateur |),
-     Write/WriteLn -> Out.String/Out.Int/Out.Real/Out.Ln,
-     Read/ReadLn  -> In.Open/In.Int/In.Char,
-     operateurs Pascal vers Oberon (<> #, AND &, NOT ~).
+     Write/WriteLn -> InOut.WriteString/WriteInt/WriteReal/WriteLn,
+     Read/ReadLn  -> InOut.ReadInt/Read,
+     operateurs Pascal vers Modula-2 (<> #, AND/OR/NOT mots-cles).
 
-   Limitations connues (signalees en commentaires Oberon dans la
+   Limitations connues (signalees en commentaires Modula-2 dans la
    sortie quand applicable) :
      - assignations multiples au nom de fonction sont toutes
        traduites en RETURN (semantique de Pascal non preservee
        pour les fonctions complexes).
      - les types String[N] et certains types Pascal sans
-       equivalent direct sont approximes (ARRAY 256 OF CHAR).
+       equivalent direct sont approximes (ARRAY [0..255] OF CHAR).
      - les unites utilisateurs sont importees telles quelles.
    ============================================================ *)
 
-Program PAS2OBER;
+Program PAS2MOD2;
 
 {$IFDEF FPC}
   {$MODE TP}
@@ -43,8 +43,8 @@ Program PAS2OBER;
   CONSTANTES
   ============================================================ }
 Const
-  PAS2OBER_VERSION = '1.0';
-  PAS2OBER_DATE    = '2026-04-27';
+  PAS2MOD2_VERSION = '1.0';
+  PAS2MOD2_DATE    = '2026-04-27';
 
   MAX_STR     = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_TOKEN   = {$IFDEF FPC}32000{$ELSE}4000{$ENDIF};
@@ -83,7 +83,7 @@ Type
 
   TFuncRec = Record
     Name      : TString;     { nom de la fonction Pascal               }
-    RetType   : TString;     { type de retour Oberon                   }
+    RetType   : TString;     { type de retour Modula-2                   }
     IsFunc    : Boolean;     { true si FUNCTION, false si PROCEDURE    }
   End;
 
@@ -218,7 +218,7 @@ End;
 Procedure AddToken(K:TTokenKind; V:TString);
 Begin
   If TokCount>=MAX_TOKEN Then Begin
-    WriteLn('PAS2OBER : trop de tokens (>',MAX_TOKEN,')');
+    WriteLn('PAS2MOD2 : trop de tokens (>',MAX_TOKEN,')');
     Halt(EXIT_ERROR);
   End;
   Inc(TokCount);
@@ -283,7 +283,7 @@ Begin
   Repeat
     Ch:=NextCh;
     If (Ch=#0)or(Ch=#10) Then Begin
-      WriteLn('PAS2OBER : chaine non terminee ligne ',SrcLineNo);
+      WriteLn('PAS2MOD2 : chaine non terminee ligne ',SrcLineNo);
       Inc(ErrorCount);
       Break;
     End;
@@ -493,7 +493,7 @@ Begin
   If U='EXTENDED' Then MapPascalType:='LONGREAL' Else
   If U='BOOLEAN' Then MapPascalType:='BOOLEAN' Else
   If U='CHAR' Then MapPascalType:='CHAR' Else
-  If U='STRING' Then MapPascalType:='ARRAY 256 OF CHAR' Else
+  If U='STRING' Then MapPascalType:='ARRAY [0..255] OF CHAR' Else
   If U='POINTER' Then MapPascalType:='POINTER TO BYTE' Else
   MapPascalType:=T;       { type utilisateur : conserver tel quel  }
 End;
@@ -628,11 +628,11 @@ Begin
   EmitRaw(#10);
 End;
 
-{ Conversion d'une chaine Pascal 'abc''def' en chaine Oberon "abc'def".
+{ Conversion d'une chaine Pascal 'abc''def' en chaine Modula-2 "abc'def".
   Si la chaine contient un guillemet double, on tente de la decouper
-  en concatenation, mais Oberon-07 ne supporte pas la concatenation
+  en concatenation, mais Modula-2 ne supporte pas la concatenation
   litterale -> on remplace " par ' avec un commentaire d'avertissement. }
-Function PasStringToOberon(S:TString):TString;
+Function PasStringToModula2(S:TString):TString;
 Var
   I:Integer;
   R:TString;
@@ -651,11 +651,11 @@ Begin
       Inc(I);
     End;
   End;
-  PasStringToOberon:='"'+R+'"';
+  PasStringToModula2:='"'+R+'"';
 End;
 
-{ Conversion d'un litteral caractere Pascal #N en Oberon NX. }
-Function PasCharToOberon(S:TString):TString;
+{ Conversion d'un litteral caractere Pascal #N en Modula-2 NX. }
+Function PasCharToModula2(S:TString):TString;
 Var
   V:LongInt;
   Code:Integer;
@@ -681,7 +681,7 @@ Begin
     End;
   End;
   If (Length(Hex)>0)and(Hex[1] in ['A'..'F']) Then Hex:='0'+Hex;
-  PasCharToOberon:=Hex+'X';
+  PasCharToModula2:=Hex+'X';
 End;
 
 Function MapOperator(Op:TString):TString;
@@ -693,11 +693,14 @@ End;
 
 Function MapKeyword(K:TString):TString;
 Begin
-  If K='AND' Then MapKeyword:='&' Else
-  If K='NOT' Then MapKeyword:='~' Else
-  If K='SHL' Then MapKeyword:='LSL' Else { approximation }
-  If K='SHR' Then MapKeyword:='ASR' Else
-  If K='XOR' Then MapKeyword:='(* XOR *)' Else
+  If K='AND' Then MapKeyword:='AND' Else
+  If K='OR'  Then MapKeyword:='OR' Else
+  If K='NOT' Then MapKeyword:='NOT' Else
+  If K='DIV' Then MapKeyword:='DIV' Else
+  If K='MOD' Then MapKeyword:='MOD' Else
+  If K='SHL' Then MapKeyword:='(* SHL : utiliser SYSTEM.SHIFT *) *' Else
+  If K='SHR' Then MapKeyword:='(* SHR : utiliser SYSTEM.SHIFT *) DIV' Else
+  If K='XOR' Then MapKeyword:='(* XOR : utiliser BITWORD.XOR *)' Else
                   MapKeyword:=K;
 End;
 
@@ -776,29 +779,29 @@ Begin
   Kind:=Tokens[I].Kind;
   Val :=Tokens[I].Val;
 
-  { Choisir le proc Out.* }
+  { Choisir la procedure InOut.* (Modula-2) }
   If IsString Then Begin
-    EmitRaw('Out.String('+PasStringToOberon(Val)+')');
+    EmitRaw('InOut.WriteString('+PasStringToModula2(Val)+')');
     I:=J;
   End Else
   If IsChar then Begin
-    EmitRaw('Out.Char('+PasCharToOberon(Val)+')');
+    EmitRaw('InOut.Write('+PasCharToModula2(Val)+')');
     I:=J;
   End Else
   If IsReal Then Begin
-    EmitRaw('Out.Real('+Val+', 15)');
+    EmitRaw('InOut.WriteReal('+Val+', 15)');
     I:=J;
   End Else Begin
     { expression entiere par defaut }
-    EmitRaw('Out.Int(');
+    EmitRaw('InOut.WriteInt(');
     { reemettre l'expression source }
     StartI:=I;
     While StartI<J do Begin
       Case Tokens[StartI].Kind of
         TK_OP    : EmitRaw(MapOperator(Tokens[StartI].Val));
         TK_KEYWORD:EmitRaw(MapKeyword(Tokens[StartI].Val));
-        TK_STRING:EmitRaw(PasStringToOberon(Tokens[StartI].Val));
-        TK_CHAR  : EmitRaw(PasCharToOberon(Tokens[StartI].Val));
+        TK_STRING:EmitRaw(PasStringToModula2(Tokens[StartI].Val));
+        TK_CHAR  : EmitRaw(PasCharToModula2(Tokens[StartI].Val));
       Else
         EmitRaw(Tokens[StartI].Val);
       End;
@@ -847,7 +850,7 @@ Begin
   End;
   If IsLn Then Begin
     If HasArgs Then EmitRaw('; ');
-    EmitRaw('Out.Ln');
+    EmitRaw('InOut.WriteLn');
   End Else Begin
     If Not HasArgs Then EmitRaw('(* Write sans arguments *)');
   End;
@@ -861,7 +864,6 @@ Begin
   First:=True;
   If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Begin
     Inc(I);
-    EmitRaw('In.Open; ');
     Depth:=0;
     While (I<=TokCount) and Not((Depth=0)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')')) do Begin
       If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Inc(Depth) Else
@@ -871,8 +873,8 @@ Begin
         Inc(I);
         First:=False;
       End Else Begin
-        If First or (OutLine[Length(OutLine)]=';') or (OutLine[Length(OutLine)]=' ') Then Begin
-          EmitRaw('In.Int(');
+        If First or (Length(OutLine)=0) or (OutLine[Length(OutLine)]=';') or (OutLine[Length(OutLine)]=' ') Then Begin
+          EmitRaw('InOut.ReadInt(');
           { lire jusqu'a , ou ) au niveau 0 }
           While (I<=TokCount) and Not((Depth=0)and(Tokens[I].Kind=TK_PUNCT)and
                 ((Tokens[I].Val=',')or(Tokens[I].Val=')'))) do Begin
@@ -889,11 +891,9 @@ Begin
       End;
     End;
     If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')') Then Inc(I);
-  End Else Begin
-    EmitRaw('In.Open');
   End;
-  { ReadLn sans arguments en Pascal = attendre une ligne ; en Oberon
-    avec In, ce concept n'existe pas, donc rien a emettre de plus. }
+  { ReadLn sans arguments en Pascal = attendre une ligne ; en Modula-2
+    InOut, equivalent approximatif : InOut.Read d'un caractere ignore. }
 End;
 
 { Emet la sequence VAR/CONST/TYPE qui suit jusqu'au prochain
@@ -971,7 +971,7 @@ Begin
       Case Tokens[I].Kind of
         TK_KEYWORD:Begin
           If Tokens[I].Val='VAR' Then EmitRaw('VAR ') Else
-          If Tokens[I].Val='CONST' Then EmitRaw('') Else  { CONST param non standard en Oberon, ignorer }
+          If Tokens[I].Val='CONST' Then EmitRaw('') Else  { CONST param non standard en Modula-2, ignorer }
           If Tokens[I].Val='OUT' Then EmitRaw('VAR ') Else
             EmitRaw(MapKeyword(Tokens[I].Val));
         End;
@@ -1031,7 +1031,7 @@ Begin
         If K='OF' Then EmitRaw(' OF ') Else
         If K='RECORD' Then Begin EmitLn; EmitRaw('RECORD'); EmitLn; Inc(Indent); End Else
         If K='END' Then Begin Dec(Indent); EmitRaw('END'); End Else
-        If K='STRING' Then EmitRaw('ARRAY 256 OF CHAR') Else
+        If K='STRING' Then EmitRaw('ARRAY [0..255] OF CHAR') Else
         If K='PACKED' Then { ignorer } Else
         If K='SET' Then EmitRaw('SET') Else
         If K='FILE' Then EmitRaw('(* FILE *)') Else
@@ -1040,8 +1040,8 @@ Begin
       TK_IDENT:EmitRaw(MapPascalType(Tokens[I].Val));
       TK_OP:EmitRaw(MapOperator(Tokens[I].Val));
       TK_INTEGER,TK_REAL:EmitRaw(Tokens[I].Val);
-      TK_STRING:EmitRaw(PasStringToOberon(Tokens[I].Val));
-      TK_CHAR  :EmitRaw(PasCharToOberon(Tokens[I].Val));
+      TK_STRING:EmitRaw(PasStringToModula2(Tokens[I].Val));
+      TK_CHAR  :EmitRaw(PasCharToModula2(Tokens[I].Val));
       TK_PUNCT :Begin
         If Tokens[I].Val=';' Then Begin
           EmitRaw(';');
@@ -1102,15 +1102,15 @@ Begin
       End;
       TK_KEYWORD:Begin
         K:=Tokens[I].Val;
-        If K='AND' Then EmitRaw(' & ') Else
+        If K='AND' Then EmitRaw(' AND ') Else
         If K='OR' Then EmitRaw(' OR ') Else
-        If K='NOT' Then EmitRaw('~') Else
+        If K='NOT' Then EmitRaw(' NOT ') Else
         If K='DIV' Then EmitRaw(' DIV ') Else
         If K='MOD' Then EmitRaw(' MOD ') Else
         If K='IN' Then EmitRaw(' IN ') Else
         If K='SHL' Then EmitRaw(' (* SHL *) * 2 *') Else { approximation cassee }
         If K='SHR' Then EmitRaw(' (* SHR *) DIV 2 DIV ') Else
-        If K='XOR' Then EmitRaw(' (* XOR : utiliser # pour BOOLEAN, SYSTEM.* pour INTEGER *) ') Else
+        If K='XOR' Then EmitRaw(' (* XOR : non standard Modula-2 *) ') Else
         If K='NIL' Then EmitRaw('NIL') Else
         If K='TRUE' Then EmitRaw('TRUE') Else
         If K='FALSE' Then EmitRaw('FALSE') Else
@@ -1130,8 +1130,8 @@ Begin
           EmitRaw(Tokens[I].Val);
       End;
       TK_REAL:EmitRaw(Tokens[I].Val);
-      TK_STRING:EmitRaw(PasStringToOberon(Tokens[I].Val));
-      TK_CHAR  :EmitRaw(PasCharToOberon(Tokens[I].Val));
+      TK_STRING:EmitRaw(PasStringToModula2(Tokens[I].Val));
+      TK_CHAR  :EmitRaw(PasCharToModula2(Tokens[I].Val));
       TK_PUNCT :Begin
         If Tokens[I].Val='(' Then Begin Inc(Depth); EmitRaw('('); End Else
         If Tokens[I].Val=')' Then Begin Dec(Depth); EmitRaw(')'); End Else
@@ -1338,15 +1338,15 @@ Begin
         Inc(I);
       End Else
       If K='BREAK' Then Begin
-        EmitRaw('EXIT');                      { rapprochement Oberon LOOP   }
+        EmitRaw('EXIT');                      { rapprochement Modula-2 LOOP   }
         Inc(I);
       End Else
       If K='CONTINUE' Then Begin
-        EmitRaw('(* CONTINUE non supporte en Oberon *)');
+        EmitRaw('(* CONTINUE non supporte en Modula-2 *)');
         Inc(I);
       End Else
       If K='WITH' Then Begin
-        EmitRaw('(* WITH non supporte en Oberon ; expansion manuelle requise *)');
+        EmitRaw('(* WITH non supporte en Modula-2 ; expansion manuelle requise *)');
         EmitLn;
         { sauter jusqu'au DO }
         While (I<=TokCount) and Not((Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DO')) do
@@ -1524,8 +1524,8 @@ Begin
   CurFunc:=PrevFunc;
 End;
 
-{ Emet la clause USES Pascal en Oberon IMPORT.
-  Mappe les unites courantes a des modules Oberon proches. }
+{ Emet la clause USES Pascal en Modula-2 IMPORT.
+  Mappe les unites courantes a des modules Modula-2 proches. }
 Procedure EmitUses(Var I:Integer);
 Var
   Name,U:TString;
@@ -1553,19 +1553,19 @@ Begin
       Name:=Tokens[I].Val;
       U:=StrUpper(Name);
       Found:=False;
-      If U='CRT' Then Begin AddImport('Out'); AddImport('In'); Found:=True; End Else
+      If U='CRT' Then Begin AddImport('InOut'); Found:=True; End Else
       If U='DOS' Then Begin AddImport('(* DOS non disponible *)'); Found:=True; End Else
       If U='SYSUTILS' Then Begin AddImport('Strings'); Found:=True; End Else
       If U='STRINGS' Then Begin AddImport('Strings'); Found:=True; End Else
-      If U='MATH' Then Begin AddImport('Math'); Found:=True; End;
+      If U='MATH' Then Begin AddImport('MathLib0'); Found:=True; End Else
+      If U='SYSTEM' Then Begin AddImport('SYSTEM'); Found:=True; End;
       If Not Found Then AddImport(Name);
     End;
     Inc(I);
   End;
   If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
-  { ajouter Out/In si necessaire }
-  If UsesOut Then AddImport('Out');
-  If UsesIn Then AddImport('In');
+  { ajouter InOut si Write/Read sont utilises }
+  If UsesOut or UsesIn Then AddImport('InOut');
   If ICount>0 Then Begin
     EmitRaw('IMPORT ');
     First:=True;
@@ -1612,11 +1612,7 @@ Begin
     EmitUses(I);
   End;
   If (Not HasUses) and (UsesOut or UsesIn) Then Begin
-    EmitRaw('IMPORT ');
-    If UsesOut Then EmitRaw('Out');
-    If UsesOut and UsesIn Then EmitRaw(', ');
-    If UsesIn  Then EmitRaw('In');
-    EmitRaw(';');
+    EmitRaw('IMPORT InOut;');
     EmitLn;
     EmitLn;
   End;
@@ -1627,16 +1623,16 @@ End;
   ============================================================ }
 Procedure ShowUsage;
 Begin
-  WriteLn('PAS2OBER ',PAS2OBER_VERSION,' - Transpilateur Pascal vers Oberon');
+  WriteLn('PAS2MOD2 ',PAS2MOD2_VERSION,' - Transpilateur Pascal vers Modula-2');
   WriteLn;
-  WriteLn('Syntaxe : PAS2OBER [-v] source.pas [destination.obn]');
+  WriteLn('Syntaxe : PAS2MOD2 [-v] source.pas [destination.mod]');
   WriteLn;
   WriteLn('  source.pas      Fichier source Pascal (Turbo Pascal/FPC).');
-  WriteLn('  destination.obn Fichier Oberon a generer (defaut : source.obn).');
+  WriteLn('  destination.mod Fichier Modula-2 a generer (defaut : source.mod).');
   WriteLn('  -v / --verbose  Afficher des messages de progression.');
   WriteLn('  -h / --help     Afficher cette aide.');
   WriteLn;
-  WriteLn('Exemple : PAS2OBER hello.pas hello.obn');
+  WriteLn('Exemple : PAS2MOD2 hello.pas hello.mod');
 End;
 
 Procedure ParseArgs;
@@ -1668,8 +1664,8 @@ Begin
     A:=SrcName;
     I:=Length(A);
     While (I>0)and(A[I]<>'.')and(A[I]<>'\')and(A[I]<>'/') do Dec(I);
-    If (I>0)and(A[I]='.') Then DstName:=Copy(A,1,I-1)+'.obn'
-                          Else DstName:=A+'.obn';
+    If (I>0)and(A[I]='.') Then DstName:=Copy(A,1,I-1)+'.mod'
+                          Else DstName:=A+'.mod';
   End;
 End;
 
@@ -1678,14 +1674,14 @@ Begin
   Assign(SrcFile,SrcName);
   {$I-} Reset(SrcFile); {$I+}
   If IOResult<>0 Then Begin
-    WriteLn('PAS2OBER : impossible d''ouvrir ',SrcName);
+    WriteLn('PAS2MOD2 : impossible d''ouvrir ',SrcName);
     Halt(EXIT_ERROR);
   End;
   Assign(DstFile,DstName);
   {$I-} Rewrite(DstFile); {$I+}
   If IOResult<>0 Then Begin
     Close(SrcFile);
-    WriteLn('PAS2OBER : impossible de creer ',DstName);
+    WriteLn('PAS2MOD2 : impossible de creer ',DstName);
     Halt(EXIT_ERROR);
   End;
 End;
@@ -1703,23 +1699,23 @@ Var
 BEGIN
   ErrorCount:=0;
   ParseArgs;
-  If Verbose Then WriteLn('PAS2OBER : tokenisation de ',SrcName,'...');
+  If Verbose Then WriteLn('PAS2MOD2 : tokenisation de ',SrcName,'...');
   OpenFiles;
   Tokenize;
   Close(SrcFile);
-  If Verbose Then WriteLn('PAS2OBER : ',TokCount,' tokens lus.');
+  If Verbose Then WriteLn('PAS2MOD2 : ',TokCount,' tokens lus.');
   Analyze;
   If Verbose Then Begin
-    WriteLn('PAS2OBER : programme = ',ProgName);
-    WriteLn('PAS2OBER : ',FuncCount,' procedure(s)/fonction(s).');
-    If UsesOut Then WriteLn('PAS2OBER : Out detecte.');
-    If UsesIn  Then WriteLn('PAS2OBER : In detecte.');
+    WriteLn('PAS2MOD2 : programme = ',ProgName);
+    WriteLn('PAS2MOD2 : ',FuncCount,' procedure(s)/fonction(s).');
+    If UsesOut Then WriteLn('PAS2MOD2 : Out detecte.');
+    If UsesIn  Then WriteLn('PAS2MOD2 : In detecte.');
   End;
 
   Assign(DstFile,DstName);
   {$I-} Rewrite(DstFile); {$I+}
   If IOResult<>0 Then Begin
-    WriteLn('PAS2OBER : impossible de creer ',DstName);
+    WriteLn('PAS2MOD2 : impossible de creer ',DstName);
     Halt(EXIT_ERROR);
   End;
 
@@ -1729,8 +1725,8 @@ BEGIN
   CurFunc:=0;
   FuncSP:=0;
   IPos:=1;
-  EmitRaw('(* Genere par PAS2OBER ');
-  EmitRaw(PAS2OBER_VERSION);
+  EmitRaw('(* Genere par PAS2MOD2 ');
+  EmitRaw(PAS2MOD2_VERSION);
   EmitRaw(' a partir de ');
   EmitRaw(SrcName);
   EmitRaw(' *)');
@@ -1739,7 +1735,7 @@ BEGIN
   EmitBlock(IPos,True);
   If OutLine<>'' Then FlushLine;
   Close(DstFile);
-  If Verbose Then WriteLn('PAS2OBER : sortie ecrite dans ',DstName);
+  If Verbose Then WriteLn('PAS2MOD2 : sortie ecrite dans ',DstName);
   If ErrorCount>0 Then Halt(EXIT_ERROR);
   Halt(EXIT_OK);
 END.
