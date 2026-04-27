@@ -874,9 +874,22 @@ Begin
         Inc(I);
         First:=False;
       End Else Begin
-        If First or (Length(OutLine)=0) or (OutLine[Length(OutLine)]=';') or (OutLine[Length(OutLine)]=' ') Then Begin
+        If First or (Length(OutLine)=0) Then Begin
           EmitRaw('Get(');
           { lire jusqu'a , ou ) au niveau 0 }
+          While (I<=TokCount) and Not((Depth=0)and(Tokens[I].Kind=TK_PUNCT)and
+                ((Tokens[I].Val=',')or(Tokens[I].Val=')'))) do Begin
+            If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Inc(Depth) Else
+            If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')') Then Dec(Depth);
+            If (Depth=0)and(Tokens[I].Kind=TK_PUNCT)and((Tokens[I].Val=',')or(Tokens[I].Val=')')) Then Break;
+            EmitRaw(Tokens[I].Val);
+            Inc(I);
+          End;
+          EmitRaw(')');
+          First:=False;
+        End Else
+        If (OutLine[Length(OutLine)]=';') or (OutLine[Length(OutLine)]=' ') Then Begin
+          EmitRaw('Get(');
           While (I<=TokCount) and Not((Depth=0)and(Tokens[I].Kind=TK_PUNCT)and
                 ((Tokens[I].Val=',')or(Tokens[I].Val=')'))) do Begin
             If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Inc(Depth) Else
