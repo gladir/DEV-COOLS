@@ -893,8 +893,7 @@ Begin
     EmitRaw('In.Open');
   End;
   { ReadLn sans arguments en Pascal = attendre une ligne ; en Oberon
-    avec In, ce concept n'existe pas. On l'emet en commentaire. }
-  If IsLn and (Not Assigned(@First)) Then ;       { no-op, evite warning }
+    avec In, ce concept n'existe pas, donc rien a emettre de plus. }
 End;
 
 { Emet la sequence VAR/CONST/TYPE qui suit jusqu'au prochain
@@ -1261,7 +1260,6 @@ End;
 Procedure EmitCaseStatement(Var I:Integer);
 Var
   First:Boolean;
-  HasElse:Boolean;
 Begin
   EmitRaw('CASE ');
   Inc(I);                                  { sauter CASE                  }
@@ -1271,7 +1269,6 @@ Begin
   Inc(Indent);
   If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='OF') Then Inc(I);
   First:=True;
-  HasElse:=False;
   While (I<=TokCount) do Begin
     If (Tokens[I].Kind=TK_KEYWORD) and
        ((Tokens[I].Val='END')or(Tokens[I].Val='ELSE')or(Tokens[I].Val='OTHERWISE')) Then Begin
@@ -1282,7 +1279,6 @@ Begin
         EmitLn;
         Inc(Indent);
         Inc(I);
-        HasElse:=True;
         EmitStatementList(I,'END');
       End;
       Break;
@@ -1312,7 +1308,6 @@ Begin
   If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
   EmitLn;
   EmitRaw('END');
-  If HasElse Then ;       { compatibilite                                  }
 End;
 
 Procedure EmitBeginEnd(Var I:Integer);
