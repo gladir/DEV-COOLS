@@ -462,6 +462,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir un fichier de code source en syntaxe coloré HTML.</td>
 		</tr>
 		<tr>
+			<td><b>PAS2OBER.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Oberon (.obn).</td>
+		</tr>
+		<tr>
 			<td><b>PAS2RSJ.PAS</b></td>
 			<td>Cette commande permet de convertir des constantes Pascal en fichier de ressource RSJ.</td>
 		</tr>
