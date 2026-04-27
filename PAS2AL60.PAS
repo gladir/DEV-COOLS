@@ -1,31 +1,33 @@
 {
   @author: Gladir.com (Sylvain Maltais)
-  @description: Transpilateur Turbo Pascal/Free Pascal vers Algol 58 (.a58).
+  @description: Transpilateur Turbo Pascal/Free Pascal vers Algol 60 (.a60).
 
   Sources : Turbo Pascal / Free Pascal (mode TP).
-  Cible   : code source Algol 58 (variante de la suite SAMPLES/ALGOL58
-            du projet DEV-COOLS, utilisant les operateurs ASCII : !=, ^,
-            and, or, not, imp, eqv, mod, div, step/until/while).
+  Cible   : code source Algol 60 (variante de la suite SAMPLES/ALGOL60
+            du projet DEV-COOLS, utilisant les mots-cles MAJUSCULES,
+            les chaines entre backticks `...` et les procedures
+            d'E/S outstring/outinteger/outreal/outboolean,
+            ininteger/inreal sur le canal 1).
 
   Sous-ensemble pris en charge :
     PROGRAM/UNIT, USES (ignore), CONST, TYPE (alias simples),
-    VAR, PROCEDURE, FUNCTION, parametres VAR (=> mode 'name'),
+    VAR, PROCEDURE, FUNCTION, parametres VAR (=> sans VALUE),
     BEGIN..END, IF/THEN/ELSE, WHILE..DO (=> for ... while ... do),
     REPEAT..UNTIL (=> emule par un goto/label),
-    FOR..TO/DOWNTO..DO (=> for v := a step +-1 until b do),
-    CASE..OF (=> cascade de if/else if),
+    FOR..TO/DOWNTO..DO (=> FOR v := a STEP +-1 UNTIL b DO),
+    CASE..OF (=> cascade de IF/ELSE IF),
     Exit (=> goto sur etiquette de sortie de routine),
-    Write/WriteLn (=> writeln en cascade), Read/ReadLn (=> readln).
+    Write/WriteLn (=> out* en cascade), Read/ReadLn (=> in*).
 
   Limitations :
     - WITH, ensembles (sets), pointeurs : commentes en sortie.
     - Les chaines de caracteres ne sont supportees que comme litteraux
-      passes a writeln (Algol 58 n'a pas de type chaine portable).
+      passes a outstring (Algol 60 n'a pas de type chaine portable).
 
-  Compilation : fpc -Mtp PAS2AL58.PAS
-  Usage       : PAS2AL58 source.pas [destination.a58]
+  Compilation : fpc -Mtp PAS2AL60.PAS
+  Usage       : PAS2AL60 source.pas [destination.a60]
 }
-Program PAS2AL58;
+Program PAS2AL60;
 
 Const
  VERSION = '1.0';
@@ -42,7 +44,7 @@ Type
  End;
  TFuncRec = Record
    Name    : TString;       { nom Pascal d'origine                         }
-   RetType : TString;       { type Algol 58 (' ' si procedure)             }
+   RetType : TString;       { type Algol 60 (' ' si procedure)             }
    IsFunc  : Boolean;
    ExitLab : TString;       { etiquette pour Exit                          }
    NeedExit: Boolean;       { fonction utilise-t-elle Exit ?               }
@@ -317,21 +319,21 @@ Function MapPascalType(T:TString):TString;
 Var U:TString;
 Begin
  U:=StrUpper(T);
- If U='INTEGER'   Then MapPascalType:='integer' Else
- If U='LONGINT'   Then MapPascalType:='integer' Else
- If U='SHORTINT'  Then MapPascalType:='integer' Else
- If U='SMALLINT'  Then MapPascalType:='integer' Else
- If U='WORD'      Then MapPascalType:='integer' Else
- If U='BYTE'      Then MapPascalType:='integer' Else
- If U='CARDINAL'  Then MapPascalType:='integer' Else
- If U='REAL'      Then MapPascalType:='real' Else
- If U='SINGLE'    Then MapPascalType:='real' Else
- If U='DOUBLE'    Then MapPascalType:='real' Else
- If U='EXTENDED'  Then MapPascalType:='real' Else
- If U='CHAR'      Then MapPascalType:='integer' Else
- If U='BOOLEAN'   Then MapPascalType:='Boolean' Else
- If U='STRING'    Then MapPascalType:='integer'  { non gere : place-holder } Else
-                       MapPascalType:=StrLower(T);
+ If U='INTEGER'   Then MapPascalType:='INTEGER' Else
+ If U='LONGINT'   Then MapPascalType:='INTEGER' Else
+ If U='SHORTINT'  Then MapPascalType:='INTEGER' Else
+ If U='SMALLINT'  Then MapPascalType:='INTEGER' Else
+ If U='WORD'      Then MapPascalType:='INTEGER' Else
+ If U='BYTE'      Then MapPascalType:='INTEGER' Else
+ If U='CARDINAL'  Then MapPascalType:='INTEGER' Else
+ If U='REAL'      Then MapPascalType:='REAL' Else
+ If U='SINGLE'    Then MapPascalType:='REAL' Else
+ If U='DOUBLE'    Then MapPascalType:='REAL' Else
+ If U='EXTENDED'  Then MapPascalType:='REAL' Else
+ If U='CHAR'      Then MapPascalType:='INTEGER' Else
+ If U='BOOLEAN'   Then MapPascalType:='BOOLEAN' Else
+ If U='STRING'    Then MapPascalType:='INTEGER'  { non gere : place-holder } Else
+                       MapPascalType:=StrUpper(T);
 End;
 
 Procedure RegisterFunc(Name,RetType:TString; IsFunc:Boolean);
@@ -467,9 +469,9 @@ End;
 Procedure EmitLn;
 Begin EmitRaw(#10); End;
 
-{ Conversion d'une chaine Pascal 'abc''def' en chaine Algol 58
-  "abc""def"  (les doubles guillemets sont l'echappement). }
-Function PasStringToA58(S:TString):TString;
+{ Conversion d'une chaine Pascal 'abc''def' en chaine Algol 60
+  `abc'def`  (les backticks delimitent en Algol 60). }
+Function PasStringToA60(S:TString):TString;
 Var
  I:Integer;
  R:TString;
@@ -478,14 +480,13 @@ Begin
  I:=2;
  While I<Length(S) do Begin
    If (S[I]='''')and(I<Length(S))and(S[I+1]='''') Then Begin R:=R+''''; Inc(I,2); End
-   Else If S[I]='"' Then Begin R:=R+'""'; Inc(I); End
    Else Begin R:=R+S[I]; Inc(I); End;
  End;
- PasStringToA58:='"'+R+'"';
+ PasStringToA60:='`'+R+'`';
 End;
 
-{ Conversion d'un litteral Pascal #N en valeur entiere Algol 58. }
-Function PasCharToA58(S:TString):TString;
+{ Conversion d'un litteral Pascal #N en valeur entiere Algol 60. }
+Function PasCharToA60(S:TString):TString;
 Var
  V:LongInt;
  Code:Integer;
@@ -496,10 +497,10 @@ Begin
  Else Val(Body,V,Code);
  If Code<>0 Then V:=0;
  Str(V,Num);
- PasCharToA58:=Num;
+ PasCharToA60:=Num;
 End;
 
-{ Mappage d'un operateur Pascal vers Algol 58. ContextEq=True =>
+{ Mappage d'un operateur Pascal vers Algol 60. ContextEq=True =>
   '=' represente une egalite (en expression), sinon affectation. }
 Function MapOp(Op:TString; ContextEq:Boolean):TString;
 Begin
@@ -511,19 +512,19 @@ End;
 
 Function MapKw(K:TString):TString;
 Begin
- If K='AND' Then MapKw:='and' Else
- If K='OR'  Then MapKw:='or' Else
- If K='NOT' Then MapKw:='not' Else
- If K='DIV' Then MapKw:='div' Else
- If K='MOD' Then MapKw:='mod' Else
+ If K='AND' Then MapKw:='AND' Else
+ If K='OR'  Then MapKw:='OR' Else
+ If K='NOT' Then MapKw:='NOT' Else
+ If K='DIV' Then MapKw:='DIV' Else
+ If K='MOD' Then MapKw:='MOD' Else
  If K='SHL' Then MapKw:='shl' Else
  If K='SHR' Then MapKw:='shr' Else
  If K='XOR' Then MapKw:='xor' Else
- If K='TRUE' Then MapKw:='true' Else
- If K='FALSE' Then MapKw:='false' Else
+ If K='TRUE' Then MapKw:='TRUE' Else
+ If K='FALSE' Then MapKw:='FALSE' Else
  If K='NIL' Then MapKw:='0' Else
- If K='IN' Then MapKw:='/* IN non supporte */' Else
-                 MapKw:=StrLower(K);
+ If K='IN' Then MapKw:='comment IN non supporte ;' Else
+                 MapKw:=StrUpper(K);
 End;
 
 { ============================================================
@@ -561,8 +562,8 @@ Begin
  Case Tokens[I].Kind of
    TK_KEYWORD: EmitRaw(MapKw(Tokens[I].Val));
    TK_OP     : EmitRaw(MapOp(Tokens[I].Val,True));
-   TK_STRING : EmitRaw(PasStringToA58(Tokens[I].Val));
-   TK_CHAR   : EmitRaw(PasCharToA58(Tokens[I].Val));
+   TK_STRING : EmitRaw(PasStringToA60(Tokens[I].Val));
+   TK_CHAR   : EmitRaw(PasCharToA60(Tokens[I].Val));
    TK_INT    : Begin
      V:=Tokens[I].Val;
      If (Length(V)>0)and(V[1]='$') Then Begin
@@ -573,7 +574,7 @@ Begin
    TK_REAL   : EmitRaw(Tokens[I].Val);
    TK_IDENT  : EmitRaw(Tokens[I].Val);
    TK_PUNCT  : Begin
-     If Tokens[I].Val='^' Then EmitRaw('^') { puissance Algol 58           }
+     If Tokens[I].Val='^' Then EmitRaw('^') { puissance Algol 60           }
      Else If Tokens[I].Val='@' Then EmitRaw('/* @ non supporte */')
      Else EmitRaw(Tokens[I].Val);
    End;
@@ -620,10 +621,44 @@ Begin EmitExprUntil(I,''); End;
 { ============================================================
   WRITE / READ
   ============================================================ }
-{ Emet un seul argument de Write/WriteLn sous forme writeln(arg).
+{ Determine la procedure de sortie Algol 60 a utiliser pour
+  l'argument compris entre les tokens [I0..I1-1] (I1 exclus).
+  Heuristique :
+    - TK_STRING => outstring
+    - TK_REAL ou expression contenant un TK_REAL => outreal
+    - TRUE/FALSE/NOT/AND/OR/comparaison => outboolean
+    - sinon => outinteger }
+Function PickOutProc(I0,I1:Integer):TString;
+Var
+ J:Integer;
+ HasReal,HasBool,HasString:Boolean;
+ V:TString;
+Begin
+ HasReal:=False; HasBool:=False; HasString:=False;
+ For J:=I0 to I1-1 do Begin
+   Case Tokens[J].Kind of
+     TK_STRING : HasString:=True;
+     TK_REAL   : HasReal:=True;
+     TK_KEYWORD: Begin
+       V:=Tokens[J].Val;
+       If (V='TRUE')or(V='FALSE')or(V='NOT')or(V='AND')or(V='OR') Then HasBool:=True;
+     End;
+     TK_OP: Begin
+       V:=Tokens[J].Val;
+       If (V='<')or(V='>')or(V='<=')or(V='>=')or(V='<>') Then HasBool:=True;
+     End;
+   End;
+ End;
+ If HasString and (I1-I0=1) Then PickOutProc:='outstring' Else
+ If HasBool Then PickOutProc:='outboolean' Else
+ If HasReal Then PickOutProc:='outreal' Else
+                 PickOutProc:='outinteger';
+End;
+
+{ Emet un seul argument de Write/WriteLn.
   J pointe apres l'argument a la sortie. }
 Procedure EmitWriteArg(Var I:Integer; UseLn:Boolean);
-Var J,K,Depth:Integer;
+Var J,K,Depth:Integer; Proc:TString;
 Begin
  J:=I; Depth:=0;
  While J<=TokCount do Begin
@@ -632,7 +667,8 @@ Begin
    Else If (Tokens[J].Kind=TK_PUNCT)and((Tokens[J].Val=')')or(Tokens[J].Val=']')) Then Dec(Depth);
    Inc(J);
  End;
- If UseLn Then EmitRaw('writeln(') Else EmitRaw('write(');
+ Proc:=PickOutProc(I,J);
+ EmitRaw(Proc); EmitRaw('(1, ');
  K:=I; EmitExprUntil(K,',)'); J:=K;
  EmitRaw(')');
  I:=J;
@@ -647,40 +683,94 @@ Begin
            ((Tokens[I].Val=',')or(Tokens[I].Val=')'))) do Inc(I);
    End;
  End;
+ If UseLn Then ;             { evite avertissement parametre non utilise   }
 End;
 
 { Emet WriteLn(...)/Write(...). I positionne sur l'identifiant.
-  Strategie : un writeln/write par argument, separes par '; '.
-  Pour WriteLn final, on ajoute writeln() vide pour le saut de ligne. }
+  Strategie : un appel out* par argument, separes par '; '.
+  Pour WriteLn final, on ajoute newline(1) pour le saut de ligne.
+  Si plus d'une instruction est generee, on encadre par BEGIN..END
+  pour que l'appel reste une instruction unique (utilisable comme
+  corps de IF/WHILE/FOR sans BEGIN). }
 Procedure EmitWriteCall(Var I:Integer; IsLn:Boolean);
-Var First:Boolean; HadAny:Boolean;
+Var
+ First:Boolean; HadAny:Boolean;
+ ArgCount:Integer;
+ SaveI,J,Depth:Integer;
+ NeedBlock:Boolean;
 Begin
+ { Premiere passe : compter les arguments pour decider de BEGIN..END }
+ SaveI:=I;
+ Inc(SaveI);                 { sauter Write/WriteLn                        }
+ ArgCount:=0;
+ If (SaveI<=TokCount)and(Tokens[SaveI].Kind=TK_PUNCT)and(Tokens[SaveI].Val='(') Then Begin
+   Inc(SaveI); Depth:=0;
+   J:=SaveI;
+   If Not((J<=TokCount)and(Tokens[J].Kind=TK_PUNCT)and(Tokens[J].Val=')')) Then Begin
+     ArgCount:=1;
+     While J<=TokCount do Begin
+       If (Depth=0) and (Tokens[J].Kind=TK_PUNCT) and (Tokens[J].Val=')') Then Break;
+       If (Tokens[J].Kind=TK_PUNCT)and((Tokens[J].Val='(')or(Tokens[J].Val='[')) Then Inc(Depth)
+       Else If (Tokens[J].Kind=TK_PUNCT)and((Tokens[J].Val=')')or(Tokens[J].Val=']')) Then Dec(Depth);
+       If (Depth=0) and (Tokens[J].Kind=TK_PUNCT) and (Tokens[J].Val=',') Then Inc(ArgCount);
+       Inc(J);
+     End;
+   End;
+ End;
+ NeedBlock:=False;
+ If IsLn Then NeedBlock:=ArgCount>=1
+ Else NeedBlock:=ArgCount>=2;
+ If NeedBlock Then Begin EmitRaw('BEGIN '); End;
+
  Inc(I);                     { sauter Write/WriteLn                        }
  First:=True; HadAny:=False;
  If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Begin
    Inc(I);
    While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')')) do Begin
-     If Not First Then Begin EmitRaw(' ;'); EmitLn; WriteIndent; End;
+     If Not First Then Begin EmitRaw('; '); End;
      EmitWriteArg(I, IsLn);
      First:=False; HadAny:=True;
      If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=',') Then Inc(I);
    End;
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')') Then Inc(I);
  End;
- If IsLn and Not HadAny Then EmitRaw('writeln()');
+ If IsLn Then Begin
+   If HadAny Then EmitRaw('; ');
+   EmitRaw('newline(1)');
+ End;
+ If NeedBlock Then EmitRaw(' END');
 End;
 
-{ Emet ReadLn(x) / Read(x) sous forme de readln(var). }
+{ Emet ReadLn(x) / Read(x) sous forme de ininteger(1, var). }
 Procedure EmitReadCall(Var I:Integer; IsLn:Boolean);
-Var First:Boolean; J:Integer;
+Var
+ First:Boolean; J,SaveI,Depth,ArgCount:Integer;
+ NeedBlock:Boolean;
 Begin
+ SaveI:=I; Inc(SaveI); ArgCount:=0;
+ If (SaveI<=TokCount)and(Tokens[SaveI].Kind=TK_PUNCT)and(Tokens[SaveI].Val='(') Then Begin
+   Inc(SaveI); Depth:=0;
+   If Not((SaveI<=TokCount)and(Tokens[SaveI].Kind=TK_PUNCT)and(Tokens[SaveI].Val=')')) Then Begin
+     ArgCount:=1;
+     J:=SaveI;
+     While J<=TokCount do Begin
+       If (Depth=0)and(Tokens[J].Kind=TK_PUNCT)and(Tokens[J].Val=')') Then Break;
+       If (Tokens[J].Kind=TK_PUNCT)and((Tokens[J].Val='(')or(Tokens[J].Val='[')) Then Inc(Depth)
+       Else If (Tokens[J].Kind=TK_PUNCT)and((Tokens[J].Val=')')or(Tokens[J].Val=']')) Then Dec(Depth);
+       If (Depth=0) and (Tokens[J].Kind=TK_PUNCT) and (Tokens[J].Val=',') Then Inc(ArgCount);
+       Inc(J);
+     End;
+   End;
+ End;
+ NeedBlock:=ArgCount>=2;
+ If NeedBlock Then EmitRaw('BEGIN ');
  Inc(I);
  First:=True;
  If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Begin
    Inc(I);
    While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')')) do Begin
-     If Not First Then Begin EmitRaw(' ;'); EmitLn; WriteIndent; End;
-     If IsLn Then EmitRaw('readln(') Else EmitRaw('read(');
+     If Not First Then EmitRaw('; ');
+     EmitRaw('ininteger(1, ');
      J:=I; EmitExprUntil(J,',)'); I:=J;
      EmitRaw(')');
      First:=False;
@@ -688,14 +778,15 @@ Begin
    End;
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')') Then Inc(I);
  End;
- If IsLn and First Then EmitRaw('readln()');
+ If NeedBlock Then EmitRaw(' END');
+ If IsLn Then ;              { saut de ligne implicite en lecture           }
 End;
 
 { ============================================================
   INSTRUCTIONS DE CONTROLE
   ============================================================ }
 { Si I pointe sur une affectation au nom de la fonction courante,
-  emettre 'FuncName := ...' (Algol 58 utilise le meme idiome que Pascal). }
+  emettre 'FuncName := ...' (Algol 60 utilise le meme idiome que Pascal). }
 Function MaybeEmitFuncReturn(Var I:Integer):Boolean;
 Var J:Integer; Name:TString;
 Begin
@@ -732,13 +823,13 @@ Procedure EmitBlockBody(Var I:Integer);
 Begin
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='BEGIN') Then Begin
    EmitLn;
-   WriteIndent; EmitRaw('begin'); EmitLn;
+   WriteIndent; EmitRaw('BEGIN'); EmitLn;
    Inc(Indent);
    Inc(I);
    EmitStatementList(I);
    If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
    Dec(Indent);
-   WriteIndent; EmitRaw('end');
+   WriteIndent; EmitRaw('END');
  End Else Begin
    EmitLn;
    Inc(Indent);
@@ -752,9 +843,9 @@ End;
 Procedure EmitIfStatement(Var I:Integer);
 Begin
  Inc(I);                     { sauter IF                                   }
- EmitRaw('if ');
+ EmitRaw('IF ');
  EmitExpr(I);
- EmitRaw(' then');
+ EmitRaw(' THEN');
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='THEN') Then Inc(I);
  EmitBlockBody(I);
  If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Begin
@@ -763,7 +854,7 @@ Begin
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='ELSE') Then Begin
    Inc(I);
    EmitLn;
-   WriteIndent; EmitRaw('else');
+   WriteIndent; EmitRaw('ELSE');
    If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='IF') Then Begin
      EmitRaw(' ');
      EmitIfStatement(I);
@@ -773,33 +864,42 @@ Begin
  End;
 End;
 
-{ While Pascal traduit en : for v := v while c do  s
-  ou v est une variable existante. On choisit d'emettre une etiquette
-  goto, ce qui est plus general. }
+{ While Pascal traduit en :
+  BEGIN
+    LABEL Lstart, Lend;
+    Lstart: IF NOT (c) THEN GOTO Lend;
+    s;
+    GOTO Lstart;
+    Lend:
+  END }
 Procedure EmitWhileStatement(Var I:Integer);
 Var Lstart,Lend:TString;
 Begin
  Inc(I);                     { sauter WHILE                                }
- Lstart:=NewLabel('while_'); Lend:=NewLabel('endwh_');
- EmitRaw(Lstart); EmitRaw(':'); EmitLn;
- WriteIndent; EmitRaw('if not (');
+ Lstart:=NewLabel('Lwhile_'); Lend:=NewLabel('Lendwh_');
+ EmitRaw('BEGIN'); EmitLn;
+ Inc(Indent);
+ WriteIndent; EmitRaw('LABEL '); EmitRaw(Lstart); EmitRaw(', '); EmitRaw(Lend); EmitRaw(';'); EmitLn;
+ WriteIndent; EmitRaw(Lstart); EmitRaw(': IF NOT (');
  EmitExpr(I);
- EmitRaw(') then goto '); EmitRaw(Lend); EmitRaw(' ;');
+ EmitRaw(') THEN GOTO '); EmitRaw(Lend); EmitRaw(';');
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DO') Then Inc(I);
  EmitLn;
  WriteIndent;
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='BEGIN') Then Begin
-   EmitRaw('begin'); EmitLn;
+   EmitRaw('BEGIN'); EmitLn;
    Inc(Indent); Inc(I);
    EmitStatementList(I);
    If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
    Dec(Indent);
-   WriteIndent; EmitRaw('end');
+   WriteIndent; EmitRaw('END');
  End Else
    EmitStmt(I);
- EmitRaw(' ;'); EmitLn;
- WriteIndent; EmitRaw('goto '); EmitRaw(Lstart); EmitRaw(' ;'); EmitLn;
- WriteIndent; EmitRaw(Lend); EmitRaw(':');
+ EmitRaw(';'); EmitLn;
+ WriteIndent; EmitRaw('GOTO '); EmitRaw(Lstart); EmitRaw(';'); EmitLn;
+ WriteIndent; EmitRaw(Lend); EmitRaw(': COMMENT fin while ;'); EmitLn;
+ Dec(Indent);
+ WriteIndent; EmitRaw('END');
 End;
 
 Procedure EmitForStatement(Var I:Integer);
@@ -808,7 +908,7 @@ Begin
  Inc(I);                     { sauter FOR                                  }
  IdxName:='';
  If (I<=TokCount)and(Tokens[I].Kind=TK_IDENT) Then Begin IdxName:=Tokens[I].Val; Inc(I); End;
- EmitRaw('for '); EmitRaw(IdxName); EmitRaw(' := ');
+ EmitRaw('FOR '); EmitRaw(IdxName); EmitRaw(' := ');
  If (I<=TokCount)and(Tokens[I].Kind=TK_OP)and(Tokens[I].Val=':=') Then Inc(I);
  EmitExprUntil(I,'');
  Down:=False;
@@ -816,29 +916,34 @@ Begin
    Down:=True; Inc(I);
  End Else
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='TO') Then Inc(I);
- If Down Then EmitRaw(' step -1 until ') Else EmitRaw(' step 1 until ');
+ If Down Then EmitRaw(' STEP -1 UNTIL ') Else EmitRaw(' STEP 1 UNTIL ');
  EmitExprUntil(I,'');
- EmitRaw(' do');
+ EmitRaw(' DO');
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DO') Then Inc(I);
  EmitBlockBody(I);
 End;
 
-{ repeat S until C  ->  L: S ; if not (C) then goto L           }
+{ repeat S until C  ->
+  BEGIN LABEL L; L: BEGIN S END; IF NOT (C) THEN GOTO L END  }
 Procedure EmitRepeatStatement(Var I:Integer);
 Var L:TString;
 Begin
  Inc(I);                     { sauter REPEAT                               }
- L:=NewLabel('rep_');
- EmitRaw(L); EmitRaw(':'); EmitLn;
- WriteIndent; EmitRaw('begin'); EmitLn;
+ L:=NewLabel('Lrep_');
+ EmitRaw('BEGIN'); EmitLn;
+ Inc(Indent);
+ WriteIndent; EmitRaw('LABEL '); EmitRaw(L); EmitRaw(';'); EmitLn;
+ WriteIndent; EmitRaw(L); EmitRaw(': BEGIN'); EmitLn;
  Inc(Indent);
  EmitStatementList(I);
  Dec(Indent);
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='UNTIL') Then Inc(I);
- WriteIndent; EmitRaw('end ;'); EmitLn;
- WriteIndent; EmitRaw('if not (');
+ WriteIndent; EmitRaw('END;'); EmitLn;
+ WriteIndent; EmitRaw('IF NOT (');
  EmitExpr(I);
- EmitRaw(') then goto '); EmitRaw(L);
+ EmitRaw(') THEN GOTO '); EmitRaw(L); EmitLn;
+ Dec(Indent);
+ WriteIndent; EmitRaw('END');
 End;
 
 { Recolte les valeurs d'une etiquette de CASE jusqu'a ':'.
@@ -850,7 +955,7 @@ Begin
  EmitRaw('(');
  While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=':')) do Begin
    If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=',') Then Begin Inc(I); Continue; End;
-   If Not First Then EmitRaw(' or ');
+   If Not First Then EmitRaw(' OR ');
    First:=False;
    J:=I; LowS:='';
    While (J<=TokCount) and Not((Tokens[J].Kind=TK_PUNCT)and((Tokens[J].Val=',')or(Tokens[J].Val=':'))) do Begin
@@ -858,7 +963,7 @@ Begin
         (Tokens[J+1].Kind=TK_PUNCT)and(Tokens[J+1].Val='.') Then Break;
      Case Tokens[J].Kind of
        TK_INT  : LowS:=LowS+Tokens[J].Val;
-       TK_CHAR : LowS:=LowS+PasCharToA58(Tokens[J].Val);
+       TK_CHAR : LowS:=LowS+PasCharToA60(Tokens[J].Val);
        TK_IDENT: LowS:=LowS+Tokens[J].Val;
        TK_KEYWORD:LowS:=LowS+MapKw(Tokens[J].Val);
      Else
@@ -872,7 +977,7 @@ Begin
      While (J<=TokCount) and Not((Tokens[J].Kind=TK_PUNCT)and((Tokens[J].Val=',')or(Tokens[J].Val=':'))) do Begin
        Case Tokens[J].Kind of
          TK_INT  : HighS:=HighS+Tokens[J].Val;
-         TK_CHAR : HighS:=HighS+PasCharToA58(Tokens[J].Val);
+         TK_CHAR : HighS:=HighS+PasCharToA60(Tokens[J].Val);
          TK_IDENT: HighS:=HighS+Tokens[J].Val;
          TK_KEYWORD:HighS:=HighS+MapKw(Tokens[J].Val);
        Else
@@ -881,7 +986,7 @@ Begin
        Inc(J);
      End;
      EmitRaw('('); EmitRaw(SelExpr); EmitRaw(' >= '); EmitRaw(LowS);
-     EmitRaw(' and '); EmitRaw(SelExpr); EmitRaw(' <= '); EmitRaw(HighS); EmitRaw(')');
+     EmitRaw(' AND '); EmitRaw(SelExpr); EmitRaw(' <= '); EmitRaw(HighS); EmitRaw(')');
    End Else Begin
      EmitRaw('('); EmitRaw(SelExpr); EmitRaw(' = '); EmitRaw(LowS); EmitRaw(')');
    End;
@@ -901,9 +1006,9 @@ Begin
  Inc(I);                     { sauter CASE                                 }
  SelTmp:=NewLabel('case_');
  { On stocke le selecteur dans une variable temporaire integer }
- EmitRaw('begin'); EmitLn;
+ EmitRaw('BEGIN'); EmitLn;
  Inc(Indent);
- WriteIndent; EmitRaw('integer '); EmitRaw(SelTmp); EmitRaw(' ;'); EmitLn;
+ WriteIndent; EmitRaw('INTEGER '); EmitRaw(SelTmp); EmitRaw(' ;'); EmitLn;
  WriteIndent; EmitRaw(SelTmp); EmitRaw(' := ');
  EmitExpr(I);
  EmitRaw(' ;'); EmitLn;
@@ -914,15 +1019,15 @@ Begin
       ((Tokens[I].Val='END')or(Tokens[I].Val='ELSE')or(Tokens[I].Val='OTHERWISE')) Then Begin
      If (Tokens[I].Val='ELSE')or(Tokens[I].Val='OTHERWISE') Then Begin
        Inc(I);
-       WriteIndent; EmitRaw('else'); EmitLn;
+       WriteIndent; EmitRaw('ELSE'); EmitLn;
        Inc(Indent);
        WriteIndent;
        If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='BEGIN') Then Begin
-         EmitRaw('begin'); EmitLn; Inc(Indent); Inc(I);
+         EmitRaw('BEGIN'); EmitLn; Inc(Indent); Inc(I);
          EmitStatementList(I);
          If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
          Dec(Indent);
-         WriteIndent; EmitRaw('end');
+         WriteIndent; EmitRaw('END');
        End Else
          EmitStmt(I);
        Dec(Indent);
@@ -932,19 +1037,19 @@ Begin
      Break;
    End;
    WriteIndent;
-   If First Then EmitRaw('if ') Else EmitRaw('else if ');
+   If First Then EmitRaw('IF ') Else EmitRaw('ELSE IF ');
    First:=False;
    EmitCaseLabelExpr(I, SelTmp);
-   EmitRaw(' then');
+   EmitRaw(' THEN');
    EmitLn;
    Inc(Indent);
    WriteIndent;
    If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='BEGIN') Then Begin
-     EmitRaw('begin'); EmitLn; Inc(Indent); Inc(I);
+     EmitRaw('BEGIN'); EmitLn; Inc(Indent); Inc(I);
      EmitStatementList(I);
      If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
      Dec(Indent);
-     WriteIndent; EmitRaw('end');
+     WriteIndent; EmitRaw('END');
    End Else
      EmitStmt(I);
    EmitLn;
@@ -953,7 +1058,7 @@ Begin
  End;
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
  Dec(Indent);
- WriteIndent; EmitRaw('end');
+ WriteIndent; EmitRaw('END');
 End;
 
 { Emet une instruction unique. }
@@ -966,12 +1071,12 @@ Begin
    TK_KEYWORD:Begin
      K:=Tokens[I].Val;
      If K='BEGIN' Then Begin
-       EmitRaw('begin'); EmitLn;
+       EmitRaw('BEGIN'); EmitLn;
        Inc(Indent); Inc(I);
        EmitStatementList(I);
        If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
        Dec(Indent);
-       WriteIndent; EmitRaw('end');
+       WriteIndent; EmitRaw('END');
      End Else
      If K='IF' Then EmitIfStatement(I) Else
      If K='WHILE' Then EmitWhileStatement(I) Else
@@ -981,23 +1086,23 @@ Begin
      If K='EXIT' Then Begin
        Inc(I);
        If (CurFunc>0) and (Funcs[CurFunc].ExitLab<>'') Then Begin
-         EmitRaw('goto '); EmitRaw(Funcs[CurFunc].ExitLab);
+         EmitRaw('GOTO '); EmitRaw(Funcs[CurFunc].ExitLab);
        End Else
-         EmitRaw('comment EXIT non gere ');
+         EmitRaw('COMMENT EXIT non gere ;');
      End Else
-     If K='BREAK' Then Begin Inc(I); EmitRaw('comment BREAK non supporte '); End Else
-     If K='CONTINUE' Then Begin Inc(I); EmitRaw('comment CONTINUE non supporte '); End Else
+     If K='BREAK' Then Begin Inc(I); EmitRaw('COMMENT BREAK non supporte ;'); End Else
+     If K='CONTINUE' Then Begin Inc(I); EmitRaw('COMMENT CONTINUE non supporte ;'); End Else
      If K='WITH' Then Begin
-       EmitRaw('comment WITH non supporte ; ');
+       EmitRaw('COMMENT WITH non supporte ; ');
        While (I<=TokCount) and Not((Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DO')) do Inc(I);
        If (I<=TokCount) Then Inc(I);
        EmitLn; WriteIndent; EmitStmt(I);
      End Else
      If K='GOTO' Then Begin
-       EmitRaw('goto '); Inc(I);
+       EmitRaw('GOTO '); Inc(I);
        If (I<=TokCount) Then Begin EmitRaw(Tokens[I].Val); Inc(I); End;
      End Else Begin
-       EmitRaw('comment mot-cle non gere : '); EmitRaw(K); EmitRaw(' ');
+       EmitRaw('COMMENT mot-cle non gere : '); EmitRaw(K); EmitRaw(' ');
        Inc(I);
      End;
    End;
@@ -1032,7 +1137,7 @@ Begin
  End;
 End;
 
-{ Liste d'instructions Algol 58 : separees par ' ;' (le dernier
+{ Liste d'instructions Algol 60 : separees par ' ;' (le dernier
   n'a pas de point-virgule, conformement au style Algol). }
 Procedure EmitStatementList(Var I:Integer);
 Var First:Boolean;
@@ -1105,10 +1210,10 @@ Begin
      End;
      If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='OF') Then Inc(I);
    End;
-   TypeS:='integer';
+   TypeS:='INTEGER';
    If I<=TokCount Then Begin
      If (Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='STRING') Then Begin
-       TypeS:='integer'; Inc(I);
+       TypeS:='INTEGER'; Inc(I);
        If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='[') Then Begin
          While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=']')) do Inc(I);
          If I<=TokCount Then Inc(I);
@@ -1123,7 +1228,7 @@ Begin
    End;
    WriteIndent;
    If IsArr Then Begin
-     EmitRaw(TypeS); EmitRaw(' array ');
+     EmitRaw(TypeS); EmitRaw(' ARRAY ');
      EmitRaw(Names);
      EmitRaw('['); EmitRaw(ArrLow); EmitRaw(':'); EmitRaw(ArrHigh); EmitRaw(']');
    End Else Begin
@@ -1166,7 +1271,7 @@ Begin
      Inc(J);
    End;
    WriteIndent;
-   If IsReal Then EmitRaw('real ') Else EmitRaw('integer ');
+   If IsReal Then EmitRaw('REAL ') Else EmitRaw('INTEGER ');
    EmitRaw(Name); EmitRaw(' ;'); EmitLn;
    WriteIndent;
    EmitRaw(Name); EmitRaw(' := ');
@@ -1192,7 +1297,7 @@ Begin
    Name:=Tokens[I].Val; Inc(I);
    If (I<=TokCount)and(Tokens[I].Kind=TK_OP)and(Tokens[I].Val='=') Then Inc(I);
    WriteIndent;
-   EmitRaw('comment type '); EmitRaw(Name); EmitRaw(' = ');
+   EmitRaw('COMMENT type '); EmitRaw(Name); EmitRaw(' = ');
    If (I<=TokCount)and(Tokens[I].Kind=TK_IDENT) Then Begin
      EmitRaw(MapPascalType(Tokens[I].Val)); Inc(I);
    End;
@@ -1208,7 +1313,7 @@ End;
   PROCEDURES / FONCTIONS
   ============================================================ }
 { Recolte les listes de parametres (noms et types) pour les emettre au
-  format Algol 58 :
+  format Algol 60 :
      procedure F(a, b) ; value a, b ; integer a, b ;
   Les parametres VAR Pascal -> mode 'name' (ne pas inclure dans value).
 }
@@ -1241,10 +1346,10 @@ Begin
      End;
    End;
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=':') Then Inc(I);
-   TypeS:='integer';
+   TypeS:='INTEGER';
    If I<=TokCount Then Begin
      If (Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='STRING') Then Begin
-       TypeS:='integer'; Inc(I);
+       TypeS:='INTEGER'; Inc(I);
        If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='[') Then Begin
          While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=']')) do Inc(I);
          If I<=TokCount Then Inc(I);
@@ -1328,8 +1433,8 @@ Begin
     ((Tokens[I].Val='FORWARD')or(Tokens[I].Val='EXTERNAL')) Then Begin
    WriteIndent;
    If IsFunc Then Begin EmitRaw(RetT); EmitRaw(' '); End;
-   EmitRaw('procedure '); EmitRaw(Name); EmitRaw('('); EmitRaw(NameList); EmitRaw(') ;'); EmitLn;
-   WriteIndent; EmitRaw('comment forward '); EmitRaw(Name); EmitRaw(' ;'); EmitLn;
+   EmitRaw('PROCEDURE '); EmitRaw(Name); EmitRaw('('); EmitRaw(NameList); EmitRaw(') ;'); EmitLn;
+   WriteIndent; EmitRaw('COMMENT forward '); EmitRaw(Name); EmitRaw(' ;'); EmitLn;
    Inc(I);
    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
    CurFunc:=PrevFunc;
@@ -1339,8 +1444,8 @@ Begin
  { En-tete }
  WriteIndent;
  If IsFunc Then Begin EmitRaw(RetT); EmitRaw(' '); End;
- EmitRaw('procedure '); EmitRaw(Name); EmitRaw('('); EmitRaw(NameList); EmitRaw(') ;'); EmitLn;
- If ValueList<>'' Then Begin WriteIndent; EmitRaw('value '); EmitRaw(ValueList); EmitRaw(' ;'); EmitLn; End;
+ EmitRaw('PROCEDURE '); EmitRaw(Name); EmitRaw('('); EmitRaw(NameList); EmitRaw(') ;'); EmitLn;
+ If ValueList<>'' Then Begin WriteIndent; EmitRaw('VALUE '); EmitRaw(ValueList); EmitRaw(' ;'); EmitLn; End;
  EmitDeclLines(DeclLines);
 
  { Etiquette de sortie pour Exit (uniquement si utilisee) }
@@ -1350,8 +1455,12 @@ Begin
    Funcs[CurFunc].ExitLab:=ExitLab;
  End;
 
- WriteIndent; EmitRaw('begin'); EmitLn;
+ WriteIndent; EmitRaw('BEGIN'); EmitLn;
  Inc(Indent);
+ { Declaration de l'etiquette de sortie si utilisee }
+ If ExitLab<>'' Then Begin
+   WriteIndent; EmitRaw('LABEL '); EmitRaw(ExitLab); EmitRaw(';'); EmitLn;
+ End;
  { declarations locales }
  While I<=TokCount do Begin
    If (Tokens[I].Kind=TK_KEYWORD) Then Begin
@@ -1375,10 +1484,10 @@ Begin
  { etiquette de sortie }
  If ExitLab<>'' Then Begin
    WriteIndent; EmitRaw(' ;'); EmitLn;
-   WriteIndent; EmitRaw(ExitLab); EmitRaw(': comment fin '); EmitRaw(Name); EmitRaw(' ;'); EmitLn;
+   WriteIndent; EmitRaw(ExitLab); EmitRaw(': COMMENT fin '); EmitRaw(Name); EmitRaw(' ;'); EmitLn;
  End;
  Dec(Indent);
- WriteIndent; EmitRaw('end ;'); EmitLn; EmitLn;
+ WriteIndent; EmitRaw('END ;'); EmitLn; EmitLn;
  If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
  CurFunc:=PrevFunc;
 End;
@@ -1388,15 +1497,15 @@ End;
   ============================================================ }
 Procedure EmitFileHeader;
 Begin
- EmitRaw('comment Genere par PAS2AL58 '+VERSION+' a partir de '+SrcName+' ;'); EmitLn;
- EmitRaw('comment Programme original : '+ProgName+' ;'); EmitLn;
+ EmitRaw('COMMENT Genere par PAS2AL60 '+VERSION+' a partir de '+SrcName+' ;'); EmitLn;
+ EmitRaw('COMMENT Programme original : '+ProgName+' ;'); EmitLn;
  EmitLn;
 End;
 
 Procedure EmitUsesA58(Var I:Integer);
 Begin
  Inc(I);
- EmitRaw('comment uses : ');
+ EmitRaw('COMMENT uses : ');
  While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';')) do Begin
    If Tokens[I].Kind=TK_IDENT Then Begin EmitRaw(Tokens[I].Val); EmitRaw(' '); End;
    Inc(I);
@@ -1429,9 +1538,13 @@ Begin
  If IsUnit and (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='INTERFACE') Then Inc(I);
 
  { Niveau global : un grand begin..end englobant tout le programme. }
- EmitRaw('begin'); EmitLn;
+ EmitRaw('BEGIN'); EmitLn;
  Inc(Indent);
  InMainBlock:=False; MainStarted:=False;
+ { Declaration de l'etiquette _halt_ utilisee par les Halt(...). }
+ If HaltUsed Then Begin
+   WriteIndent; EmitRaw('LABEL _halt_;'); EmitLn;
+ End;
 
  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='USES') Then EmitUsesA58(I);
 
@@ -1440,7 +1553,7 @@ Begin
      K:=Tokens[I].Val;
      If K='IMPLEMENTATION' Then Begin Inc(I); Continue; End;
      If (K='INITIALIZATION')or(K='FINALIZATION') Then Begin
-       WriteIndent; EmitRaw('comment Section '); EmitRaw(K); EmitRaw(' non supportee ;'); EmitLn;
+       WriteIndent; EmitRaw('COMMENT Section '); EmitRaw(K); EmitRaw(' non supportee ;'); EmitLn;
        Inc(I);
        Continue;
      End;
@@ -1472,14 +1585,14 @@ Begin
    End;
    Inc(I);
  End;
- If Not MainStarted Then Begin WriteIndent; EmitRaw('comment unite sans corps principal ;'); EmitLn; End;
+ If Not MainStarted Then Begin WriteIndent; EmitRaw('COMMENT unite sans corps principal ;'); EmitLn; End;
  { Etiquette pour Halt (uniquement si Halt est utilise) }
  If HaltUsed Then Begin
    WriteIndent; EmitRaw(' ;'); EmitLn;
-   WriteIndent; EmitRaw('_halt_: comment fin du programme ;'); EmitLn;
+   WriteIndent; EmitRaw('_halt_: COMMENT fin du programme ;'); EmitLn;
  End;
  Dec(Indent);
- EmitRaw('end'); EmitLn;
+ EmitRaw('END.'); EmitLn;
  If InMainBlock Then ;        { simple no-op pour eviter avertissement     }
 End;
 
@@ -1488,11 +1601,11 @@ End;
   ============================================================ }
 Procedure ShowUsage;
 Begin
- WriteLn('PAS2AL58 ',VERSION,' - Transpilateur Pascal vers Algol 58');
+ WriteLn('PAS2AL60 ',VERSION,' - Transpilateur Pascal vers Algol 60');
  WriteLn('(C) Gladir.com');
  WriteLn;
- WriteLn('Usage : PAS2AL58 source.pas [destination.a58]');
- WriteLn('Exemple : PAS2AL58 hello.pas hello.a58');
+ WriteLn('Usage : PAS2AL60 source.pas [destination.a60]');
+ WriteLn('Exemple : PAS2AL60 hello.pas hello.a60');
 End;
 
 Procedure ParseArgs;
@@ -1507,8 +1620,8 @@ Begin
    A:=SrcName;
    I:=Length(A);
    While (I>0)and(A[I]<>'.') do Dec(I);
-   If I>0 Then DstName:=Copy(A,1,I-1)+'.a58'
-          Else DstName:=A+'.a58';
+   If I>0 Then DstName:=Copy(A,1,I-1)+'.a60'
+          Else DstName:=A+'.a60';
  End;
 End;
 
@@ -1543,6 +1656,6 @@ Begin
  EmitFileHeader;
  EmitTopLevel;
  CloseFiles;
- WriteLn('PAS2AL58 : ',SrcName,' -> ',DstName,' (',TokCount,' tokens, ',
+ WriteLn('PAS2AL60 : ',SrcName,' -> ',DstName,' (',TokCount,' tokens, ',
          FuncCount,' procs/funcs).');
 End.
