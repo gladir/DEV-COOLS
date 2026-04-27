@@ -478,6 +478,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Algol 68 (.a68).</td>
 		</tr>
 		<tr>
+			<td><b>PAS2BCPL.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage BCPL (.b).</td>
+		</tr>
+		<tr>
 			<td><b>PAS2C.PAS</b></td>
 			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage C (.c).</td>
 		</tr>
