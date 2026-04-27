@@ -466,6 +466,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Modula-2 (.mod).</td>
 		</tr>
 		<tr>
+			<td><b>PAS2C.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage C (.c).</td>
+		</tr>
+		<tr>
 			<td><b>PAS2MOD3.PAS</b></td>
 			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Modula-3 (.m3).</td>
 		</tr>
