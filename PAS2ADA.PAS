@@ -3,35 +3,37 @@
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
-  @description: Transpilateur Turbo Pascal vers Oberon (.obn)
+  @description: Transpilateur Turbo Pascal vers Ada (.adb)
 }
 
 (* ============================================================
-   PAS2OBER.PAS - Transpilateur Turbo Pascal vers Oberon
+   PAS2ADA.PAS - Transpilateur Turbo Pascal vers Ada
    Turbo Pascal / Free Pascal (-Mtp)
-   Cible : code source Oberon-07 (.obn)
+   Cible : code source Ada 95+ (.adb)
 
    Couvre les constructions courantes :
      PROGRAM/UNIT, USES, CONST, TYPE, VAR,
      PROCEDURE, FUNCTION (assignation du nom -> RETURN),
      BEGIN..END, IF..THEN..ELSE (ELSE IF -> ELSIF),
      WHILE..DO, REPEAT..UNTIL, FOR..TO/DOWNTO..DO,
-     CASE..OF (avec separateur |),
-     Write/WriteLn -> Out.String/Out.Int/Out.Real/Out.Ln,
-     Read/ReadLn  -> In.Open/In.Int/In.Char,
-     operateurs Pascal vers Oberon (<> #, AND &, NOT ~).
+     CASE..OF (-> CASE..IS WHEN x => ...),
+     Write/WriteLn -> Put/Put_Line/New_Line,
+     Read/ReadLn  -> Get/Get_Line,
+     operateurs Pascal vers Ada (<> /=, AND and, NOT not).
 
-   Limitations connues (signalees en commentaires Oberon dans la
+   Limitations connues (signalees en commentaires Ada dans la
    sortie quand applicable) :
      - assignations multiples au nom de fonction sont toutes
        traduites en RETURN (semantique de Pascal non preservee
        pour les fonctions complexes).
-     - les types String[N] et certains types Pascal sans
-       equivalent direct sont approximes (ARRAY 256 OF CHAR).
-     - les unites utilisateurs sont importees telles quelles.
+     - les types String[N] sont approximes en String;
+       certains types Pascal sans equivalent direct sont
+       traduits avec un commentaire indicatif.
+     - les unites utilisateurs sont conservees comme nom de
+       paquet (WITH ...).
    ============================================================ *)
 
-Program PAS2OBER;
+Program PAS2ADA;
 
 {$IFDEF FPC}
   {$MODE TP}
@@ -43,8 +45,8 @@ Program PAS2OBER;
   CONSTANTES
   ============================================================ }
 Const
-  PAS2OBER_VERSION = '1.0';
-  PAS2OBER_DATE    = '2026-04-27';
+  PAS2ADA_VERSION = '1.0';
+  PAS2ADA_DATE    = '2026-04-27';
 
   MAX_STR     = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_TOKEN   = {$IFDEF FPC}32000{$ELSE}4000{$ENDIF};
@@ -83,7 +85,7 @@ Type
 
   TFuncRec = Record
     Name      : TString;     { nom de la fonction Pascal               }
-    RetType   : TString;     { type de retour Oberon                   }
+    RetType   : TString;     { type de retour Ada                   }
     IsFunc    : Boolean;     { true si FUNCTION, false si PROCEDURE    }
   End;
 
@@ -218,7 +220,7 @@ End;
 Procedure AddToken(K:TTokenKind; V:TString);
 Begin
   If TokCount>=MAX_TOKEN Then Begin
-    WriteLn('PAS2OBER : trop de tokens (>',MAX_TOKEN,')');
+    WriteLn('PAS2ADA : trop de tokens (>',MAX_TOKEN,')');
     Halt(EXIT_ERROR);
   End;
   Inc(TokCount);
@@ -283,7 +285,7 @@ Begin
   Repeat
     Ch:=NextCh;
     If (Ch=#0)or(Ch=#10) Then Begin
-      WriteLn('PAS2OBER : chaine non terminee ligne ',SrcLineNo);
+      WriteLn('PAS2ADA : chaine non terminee ligne ',SrcLineNo);
       Inc(ErrorCount);
       Break;
     End;
@@ -482,19 +484,19 @@ Var
   U:TString;
 Begin
   U:=StrUpper(T);
-  If U='INTEGER' Then MapPascalType:='INTEGER' Else
-  If U='LONGINT' Then MapPascalType:='LONGINT' Else
-  If U='SHORTINT' Then MapPascalType:='SHORTINT' Else
-  If U='BYTE' Then MapPascalType:='BYTE' Else
-  If U='WORD' Then MapPascalType:='INTEGER' Else
-  If U='REAL' Then MapPascalType:='REAL' Else
-  If U='SINGLE' Then MapPascalType:='REAL' Else
-  If U='DOUBLE' Then MapPascalType:='LONGREAL' Else
-  If U='EXTENDED' Then MapPascalType:='LONGREAL' Else
-  If U='BOOLEAN' Then MapPascalType:='BOOLEAN' Else
-  If U='CHAR' Then MapPascalType:='CHAR' Else
-  If U='STRING' Then MapPascalType:='ARRAY 256 OF CHAR' Else
-  If U='POINTER' Then MapPascalType:='POINTER TO BYTE' Else
+  If U='INTEGER' Then MapPascalType:='Integer' Else
+  If U='LONGINT' Then MapPascalType:='Long_Integer' Else
+  If U='SHORTINT' Then MapPascalType:='Short_Integer' Else
+  If U='BYTE' Then MapPascalType:='Natural' Else
+  If U='WORD' Then MapPascalType:='Natural' Else
+  If U='REAL' Then MapPascalType:='Float' Else
+  If U='SINGLE' Then MapPascalType:='Float' Else
+  If U='DOUBLE' Then MapPascalType:='Long_Float' Else
+  If U='EXTENDED' Then MapPascalType:='Long_Long_Float' Else
+  If U='BOOLEAN' Then MapPascalType:='Boolean' Else
+  If U='CHAR' Then MapPascalType:='Character' Else
+  If U='STRING' Then MapPascalType:='String (1..255)' Else
+  If U='POINTER' Then MapPascalType:='System.Address' Else
   MapPascalType:=T;       { type utilisateur : conserver tel quel  }
 End;
 
@@ -628,11 +630,13 @@ Begin
   EmitRaw(#10);
 End;
 
-{ Conversion d'une chaine Pascal 'abc''def' en chaine Oberon "abc'def".
-  Si la chaine contient un guillemet double, on tente de la decouper
-  en concatenation, mais Oberon-07 ne supporte pas la concatenation
-  litterale -> on remplace " par ' avec un commentaire d'avertissement. }
-Function PasStringToOberon(S:TString):TString;
+{ Conversion d'une chaine Pascal 'abc''def' en chaine Ada "abc""def".
+  Pascal echappe le quote simple en doublant ''.
+  Ada utilise le double quote pour les chaines et "" pour echapper.
+  Cas particulier : une chaine Pascal d'un seul caractere 'X' est
+  typiquement utilisee comme litteral CHAR ; on l'emet en Ada
+  Character ('X'). On garde "" pour les chaines de plus d'un caractere. }
+Function PasStringToAda(S:TString):TString;
 Var
   I:Integer;
   R:TString;
@@ -645,22 +649,26 @@ Begin
       Inc(I,2);
     End Else
     If S[I]='"' Then Begin
-      R:=R+''''; Inc(I);     { remplacer " par ' (alternative)     }
+      R:=R+'""'; Inc(I);     { echapper le " en "" pour Ada        }
     End Else Begin
       R:=R+S[I];
       Inc(I);
     End;
   End;
-  PasStringToOberon:='"'+R+'"';
+  { si exactement 1 caractere et ce n'est pas " (ce qui demanderait
+    "" en Ada Character ne supporte pas), emettre comme Character }
+  If (Length(R)=1) and (R[1]<>'"') Then
+    PasStringToAda:=''''+R+''''
+  Else
+    PasStringToAda:='"'+R+'"';
 End;
 
-{ Conversion d'un litteral caractere Pascal #N en Oberon NX. }
-Function PasCharToOberon(S:TString):TString;
+{ Conversion d'un litteral caractere Pascal #N en Ada Character'Val(N). }
+Function PasCharToAda(S:TString):TString;
 Var
   V:LongInt;
   Code:Integer;
-  Body,Hex:TString;
-  N:LongInt;
+  Body:TString;
 Begin
   Body:=Copy(S,2,Length(S)-1);     { retirer le # }
   If (Length(Body)>0)and(Body[1]='$') Then Begin
@@ -668,36 +676,29 @@ Begin
   End Else
     Val(Body,V,Code);
   If Code<>0 Then V:=0;
-  { Convertir V en hexa (au moins 2 chiffres) }
-  Hex:='';
-  If V=0 Then Hex:='0' Else Begin
-    N:=V;
-    While N>0 do Begin
-      Case (N and 15) of
-        0..9 : Hex:=Chr(Ord('0')+(N and 15))+Hex;
-        10..15: Hex:=Chr(Ord('A')+(N and 15)-10)+Hex;
-      End;
-      N:=N shr 4;
-    End;
+  If (V>=32)and(V<=126)and(V<>Ord('''')) Then Begin
+    PasCharToAda:=''''+Chr(V)+'''';
+  End Else Begin
+    PasCharToAda:='Character''Val('+IntToStr(V)+')';
   End;
-  If (Length(Hex)>0)and(Hex[1] in ['A'..'F']) Then Hex:='0'+Hex;
-  PasCharToOberon:=Hex+'X';
 End;
 
 Function MapOperator(Op:TString):TString;
 Begin
-  If Op='<>' Then MapOperator:='#' Else
-  If Op='='  Then MapOperator:='=' Else
+  If Op='<>' Then MapOperator:='/=' Else
                   MapOperator:=Op;
 End;
 
 Function MapKeyword(K:TString):TString;
 Begin
-  If K='AND' Then MapKeyword:='&' Else
-  If K='NOT' Then MapKeyword:='~' Else
-  If K='SHL' Then MapKeyword:='LSL' Else { approximation }
-  If K='SHR' Then MapKeyword:='ASR' Else
-  If K='XOR' Then MapKeyword:='(* XOR *)' Else
+  If K='AND' Then MapKeyword:='and' Else
+  If K='OR'  Then MapKeyword:='or'  Else
+  If K='NOT' Then MapKeyword:='not' Else
+  If K='DIV' Then MapKeyword:='/'   Else  { Ada / sur entier = division }
+  If K='MOD' Then MapKeyword:='mod' Else
+  If K='SHL' Then MapKeyword:='(* SHL *) *2**' Else
+  If K='SHR' Then MapKeyword:='(* SHR *) /2**' Else
+  If K='XOR' Then MapKeyword:='xor' Else
                   MapKeyword:=K;
 End;
 
@@ -776,35 +777,36 @@ Begin
   Kind:=Tokens[I].Kind;
   Val :=Tokens[I].Val;
 
-  { Choisir le proc Out.* }
+  { Choisir le sous-programme Ada Text_IO }
   If IsString Then Begin
-    EmitRaw('Out.String('+PasStringToOberon(Val)+')');
+    EmitRaw('Put('+PasStringToAda(Val)+')');
     I:=J;
   End Else
   If IsChar then Begin
-    EmitRaw('Out.Char('+PasCharToOberon(Val)+')');
+    EmitRaw('Put('+PasCharToAda(Val)+')');
     I:=J;
   End Else
   If IsReal Then Begin
-    EmitRaw('Out.Real('+Val+', 15)');
+    EmitRaw('Put('+Val+')');
     I:=J;
   End Else Begin
-    { expression entiere par defaut }
-    EmitRaw('Out.Int(');
+    { expression entiere ou identificateur par defaut : utiliser Put
+      avec parenthese de groupement pour eviter les ambiguites Ada }
+    EmitRaw('Put(');
     { reemettre l'expression source }
     StartI:=I;
     While StartI<J do Begin
       Case Tokens[StartI].Kind of
         TK_OP    : EmitRaw(MapOperator(Tokens[StartI].Val));
         TK_KEYWORD:EmitRaw(MapKeyword(Tokens[StartI].Val));
-        TK_STRING:EmitRaw(PasStringToOberon(Tokens[StartI].Val));
-        TK_CHAR  : EmitRaw(PasCharToOberon(Tokens[StartI].Val));
+        TK_STRING:EmitRaw(PasStringToAda(Tokens[StartI].Val));
+        TK_CHAR  : EmitRaw(PasCharToAda(Tokens[StartI].Val));
       Else
         EmitRaw(Tokens[StartI].Val);
       End;
       Inc(StartI);
     End;
-    EmitRaw(', 0)');
+    EmitRaw(')');
     I:=J;
   End;
 
@@ -825,7 +827,7 @@ Begin
 End;
 
 { Emission d'un appel WriteLn(...) ou Write(...).
-  IsLn=true => terminer par ; Out.Ln
+  IsLn=true => terminer par ; New_Line
   Avance I jusqu'apres la parenthese fermante (si presente). }
 Procedure EmitWriteCall(Var I:Integer; IsLn:Boolean);
 Var
@@ -847,12 +849,14 @@ Begin
   End;
   If IsLn Then Begin
     If HasArgs Then EmitRaw('; ');
-    EmitRaw('Out.Ln');
+    EmitRaw('New_Line');
   End Else Begin
-    If Not HasArgs Then EmitRaw('(* Write sans arguments *)');
+    If Not HasArgs Then EmitRaw('null');
   End;
 End;
 
+{ Emission d'un appel Read(x) ou ReadLn(x) Pascal vers Get/Get_Line Ada.
+  Avance I jusqu'apres la parenthese fermante (si presente). }
 Procedure EmitReadCall(Var I:Integer; IsLn:Boolean);
 Var
   Depth:Integer;
@@ -861,7 +865,6 @@ Begin
   First:=True;
   If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Begin
     Inc(I);
-    EmitRaw('In.Open; ');
     Depth:=0;
     While (I<=TokCount) and Not((Depth=0)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')')) do Begin
       If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Inc(Depth) Else
@@ -871,8 +874,8 @@ Begin
         Inc(I);
         First:=False;
       End Else Begin
-        If First or (OutLine[Length(OutLine)]=';') or (OutLine[Length(OutLine)]=' ') Then Begin
-          EmitRaw('In.Int(');
+        If First or (Length(OutLine)=0) or (OutLine[Length(OutLine)]=';') or (OutLine[Length(OutLine)]=' ') Then Begin
+          EmitRaw('Get(');
           { lire jusqu'a , ou ) au niveau 0 }
           While (I<=TokCount) and Not((Depth=0)and(Tokens[I].Kind=TK_PUNCT)and
                 ((Tokens[I].Val=',')or(Tokens[I].Val=')'))) do Begin
@@ -889,11 +892,11 @@ Begin
       End;
     End;
     If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')') Then Inc(I);
+    If IsLn Then EmitRaw('; Skip_Line');
   End Else Begin
-    EmitRaw('In.Open');
+    { Read/ReadLn sans arguments }
+    If IsLn Then EmitRaw('Skip_Line') Else EmitRaw('null');
   End;
-  { ReadLn sans arguments en Pascal = attendre une ligne ; en Oberon
-    avec In, ce concept n'existe pas, donc rien a emettre de plus. }
 End;
 
 { Emet la sequence VAR/CONST/TYPE qui suit jusqu'au prochain
@@ -946,12 +949,20 @@ End;
 
 { Emet l'en-tete d'une PROCEDURE/FUNCTION.
   Avance I jusqu'apres le ';' final de l'en-tete. }
+{ Emet l'en-tete d'une PROCEDURE/FUNCTION en syntaxe Ada.
+  Pascal : procedure F(x: T; y: T);
+  Ada    : PROCEDURE F (X : T; Y : T) IS
+  Pascal : function F(x: T): R;
+  Ada    : FUNCTION F (X : T) RETURN R IS
+  Avance I jusqu'apres le ';' final de l'en-tete Pascal. }
 Procedure EmitProcHeader(Var I:Integer);
 Var
+  IsFunc:Boolean;
   Name:TString;
   Depth:Integer;
 Begin
-  EmitRaw('PROCEDURE ');
+  IsFunc:=Tokens[I].Val='FUNCTION';
+  If IsFunc Then EmitRaw('FUNCTION ') Else EmitRaw('PROCEDURE ');
   Inc(I);
   If (I<=TokCount)and(Tokens[I].Kind=TK_IDENT) Then Begin
     Name:=Tokens[I].Val;
@@ -964,15 +975,15 @@ Begin
   End;
   { parametres }
   If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='(') Then Begin
-    EmitRaw('(');
+    EmitRaw(' (');
     Inc(I);
     Depth:=1;
     While (I<=TokCount) and (Depth>0) do Begin
       Case Tokens[I].Kind of
         TK_KEYWORD:Begin
-          If Tokens[I].Val='VAR' Then EmitRaw('VAR ') Else
-          If Tokens[I].Val='CONST' Then EmitRaw('') Else  { CONST param non standard en Oberon, ignorer }
-          If Tokens[I].Val='OUT' Then EmitRaw('VAR ') Else
+          If Tokens[I].Val='VAR' Then EmitRaw('in out ') Else
+          If Tokens[I].Val='CONST' Then EmitRaw('in ') Else
+          If Tokens[I].Val='OUT' Then EmitRaw('out ') Else
             EmitRaw(MapKeyword(Tokens[I].Val));
         End;
         TK_IDENT:EmitRaw(MapPascalType(Tokens[I].Val));
@@ -982,7 +993,7 @@ Begin
           If Depth>0 Then Begin
             If Tokens[I].Val=';' Then EmitRaw('; ') Else
             If Tokens[I].Val=',' Then EmitRaw(', ') Else
-            If Tokens[I].Val=':' Then EmitRaw(': ') Else
+            If Tokens[I].Val=':' Then EmitRaw(' : ') Else
               EmitRaw(Tokens[I].Val);
           End;
         End;
@@ -997,66 +1008,95 @@ Begin
   { type de retour }
   If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=':') Then Begin
     Inc(I);
-    EmitRaw(': ');
+    EmitRaw(' RETURN ');
     If (I<=TokCount) Then Begin
       EmitRaw(MapPascalType(Tokens[I].Val));
       Inc(I);
     End;
   End;
-  { saut du ';' final }
+  { saut du ';' final Pascal }
   If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
-  EmitRaw(';');
+  EmitRaw(' IS');
   EmitLn;
 End;
 
 { Emet une declaration VAR / CONST / TYPE jusqu'au prochain mot-cle
-  de section. }
+  de section. En Ada il n'y a pas de mot-cle VAR ; CONST devient
+  `Nom : constant := valeur;' et TYPE devient `TYPE Nom IS ...;'. }
 Procedure EmitDeclSection(Var I:Integer; SectKw:TString);
 Var
   K:TString;
+  StartOfDecl:Boolean;
+  IsConst,IsType:Boolean;
 Begin
-  EmitRaw(SectKw);
+  IsConst:=StrUpper(SectKw)='CONST';
+  IsType :=StrUpper(SectKw)='TYPE';
+  If IsConst Then EmitRaw('-- CONST') Else
+  If IsType  Then EmitRaw('-- TYPE')  Else
+                  EmitRaw('-- VAR');
   EmitLn;
-  Inc(Indent);
   Inc(I);
+  StartOfDecl:=True;
   While I<=TokCount do Begin
     If Tokens[I].Kind=TK_KEYWORD Then Begin
       K:=Tokens[I].Val;
       If IsSectionKw(K) Then Break;
+    End;
+    { Au debut d'une declaration TYPE, prefixer "TYPE " }
+    If StartOfDecl and IsType and (Tokens[I].Kind=TK_IDENT) Then Begin
+      EmitRaw('TYPE ');
+      StartOfDecl:=False;
+    End Else
+    If StartOfDecl and (Tokens[I].Kind in [TK_IDENT,TK_KEYWORD]) Then Begin
+      StartOfDecl:=False;
     End;
     Case Tokens[I].Kind of
       TK_KEYWORD:Begin
         K:=Tokens[I].Val;
         If K='ARRAY' Then EmitRaw('ARRAY ') Else
         If K='OF' Then EmitRaw(' OF ') Else
-        If K='RECORD' Then Begin EmitLn; EmitRaw('RECORD'); EmitLn; Inc(Indent); End Else
-        If K='END' Then Begin Dec(Indent); EmitRaw('END'); End Else
-        If K='STRING' Then EmitRaw('ARRAY 256 OF CHAR') Else
+        If K='RECORD' Then Begin EmitRaw(' record'); EmitLn; Inc(Indent); End Else
+        If K='END' Then Begin Dec(Indent); EmitRaw('end record'); End Else
+        If K='STRING' Then EmitRaw('String (1..255)') Else
         If K='PACKED' Then { ignorer } Else
-        If K='SET' Then EmitRaw('SET') Else
-        If K='FILE' Then EmitRaw('(* FILE *)') Else
+        If K='SET' Then EmitRaw('SET (* SET non Ada standard *)') Else
+        If K='FILE' Then EmitRaw('Ada.Text_IO.File_Type') Else
           EmitRaw(MapKeyword(K));
       End;
       TK_IDENT:EmitRaw(MapPascalType(Tokens[I].Val));
-      TK_OP:EmitRaw(MapOperator(Tokens[I].Val));
-      TK_INTEGER,TK_REAL:EmitRaw(Tokens[I].Val);
-      TK_STRING:EmitRaw(PasStringToOberon(Tokens[I].Val));
-      TK_CHAR  :EmitRaw(PasCharToOberon(Tokens[I].Val));
+      TK_OP:Begin
+        { en CONST/TYPE Pascal : "name = value" -> Ada "name : constant := value" / "TYPE name IS value" }
+        If (Tokens[I].Val='=') and IsConst Then EmitRaw(' : constant := ') Else
+        If (Tokens[I].Val='=') and IsType  Then EmitRaw(' IS ') Else
+        If Tokens[I].Val='='   Then EmitRaw(' := ') Else
+          EmitRaw(MapOperator(Tokens[I].Val));
+      End;
+      TK_INTEGER:Begin
+        If (Length(Tokens[I].Val)>0)and(Tokens[I].Val[1]='$') Then
+          EmitRaw('16#'+Copy(Tokens[I].Val,2,Length(Tokens[I].Val)-1)+'#')
+        Else
+          EmitRaw(Tokens[I].Val);
+      End;
+      TK_REAL:EmitRaw(Tokens[I].Val);
+      TK_STRING:EmitRaw(PasStringToAda(Tokens[I].Val));
+      TK_CHAR  :EmitRaw(PasCharToAda(Tokens[I].Val));
       TK_PUNCT :Begin
         If Tokens[I].Val=';' Then Begin
           EmitRaw(';');
           EmitLn;
+          StartOfDecl:=True;
         End Else
         If Tokens[I].Val=',' Then EmitRaw(', ') Else
-        If Tokens[I].Val=':' Then EmitRaw(': ') Else
-        If Tokens[I].Val='=' Then EmitRaw(' = ') Else
+        If Tokens[I].Val=':' Then EmitRaw(' : ') Else
         If Tokens[I].Val='..' Then EmitRaw('..') Else
+        If Tokens[I].Val='[' Then EmitRaw('(') Else
+        If Tokens[I].Val=']' Then EmitRaw(')') Else
+        If Tokens[I].Val='^' Then EmitRaw('access ') Else
           EmitRaw(Tokens[I].Val);
       End;
     End;
     Inc(I);
   End;
-  Dec(Indent);
 End;
 
 { Emet une instruction unique (jusqu'au ';' qui la termine, au
@@ -1102,43 +1142,44 @@ Begin
       End;
       TK_KEYWORD:Begin
         K:=Tokens[I].Val;
-        If K='AND' Then EmitRaw(' & ') Else
-        If K='OR' Then EmitRaw(' OR ') Else
-        If K='NOT' Then EmitRaw('~') Else
-        If K='DIV' Then EmitRaw(' DIV ') Else
-        If K='MOD' Then EmitRaw(' MOD ') Else
-        If K='IN' Then EmitRaw(' IN ') Else
-        If K='SHL' Then EmitRaw(' (* SHL *) * 2 *') Else { approximation cassee }
-        If K='SHR' Then EmitRaw(' (* SHR *) DIV 2 DIV ') Else
-        If K='XOR' Then EmitRaw(' (* XOR : utiliser # pour BOOLEAN, SYSTEM.* pour INTEGER *) ') Else
-        If K='NIL' Then EmitRaw('NIL') Else
-        If K='TRUE' Then EmitRaw('TRUE') Else
-        If K='FALSE' Then EmitRaw('FALSE') Else
+        If K='AND' Then EmitRaw(' and ') Else
+        If K='OR' Then EmitRaw(' or ') Else
+        If K='NOT' Then EmitRaw('not ') Else
+        If K='DIV' Then EmitRaw(' / ') Else
+        If K='MOD' Then EmitRaw(' mod ') Else
+        If K='IN' Then EmitRaw(' in ') Else
+        If K='SHL' Then EmitRaw(' * 2** ') Else
+        If K='SHR' Then EmitRaw(' / 2** ') Else
+        If K='XOR' Then EmitRaw(' xor ') Else
+        If K='NIL' Then EmitRaw('null') Else
+        If K='TRUE' Then EmitRaw('True') Else
+        If K='FALSE' Then EmitRaw('False') Else
           EmitRaw(MapKeyword(K));
       End;
       TK_IDENT:Begin
-        If IdentIsWrite(Tokens[I].Val) or IdentIsRead(Tokens[I].Val) Then Begin
-          { dans une expression, peu probable; emettre tel quel }
-          EmitRaw(Tokens[I].Val);
-        End Else
-          EmitRaw(Tokens[I].Val);
+        EmitRaw(Tokens[I].Val);
       End;
       TK_INTEGER:Begin
         If (Length(Tokens[I].Val)>0)and(Tokens[I].Val[1]='$') Then
-          EmitRaw(Copy(Tokens[I].Val,2,Length(Tokens[I].Val)-1)+'H')
+          EmitRaw('16#'+Copy(Tokens[I].Val,2,Length(Tokens[I].Val)-1)+'#')
         Else
           EmitRaw(Tokens[I].Val);
       End;
       TK_REAL:EmitRaw(Tokens[I].Val);
-      TK_STRING:EmitRaw(PasStringToOberon(Tokens[I].Val));
-      TK_CHAR  :EmitRaw(PasCharToOberon(Tokens[I].Val));
+      TK_STRING:Begin
+        { en Ada, une chaine d'1 caractere = "x" est ambigue (String'(x) ?)
+          : si litteral d'un caractere et utilisee comme arg de Put,
+          mais ici on est dans une expression generale -> garder " }
+        EmitRaw(PasStringToAda(Tokens[I].Val));
+      End;
+      TK_CHAR  :EmitRaw(PasCharToAda(Tokens[I].Val));
       TK_PUNCT :Begin
         If Tokens[I].Val='(' Then Begin Inc(Depth); EmitRaw('('); End Else
         If Tokens[I].Val=')' Then Begin Dec(Depth); EmitRaw(')'); End Else
-        If Tokens[I].Val='[' Then Begin Inc(Depth); EmitRaw('['); End Else
-        If Tokens[I].Val=']' Then Begin Dec(Depth); EmitRaw(']'); End Else
-        If Tokens[I].Val='^' Then EmitRaw('^') Else
-        If Tokens[I].Val='@' Then EmitRaw('SYSTEM.ADR(') Else
+        If Tokens[I].Val='[' Then Begin Inc(Depth); EmitRaw('('); End Else
+        If Tokens[I].Val=']' Then Begin Dec(Depth); EmitRaw(')'); End Else
+        If Tokens[I].Val='^' Then EmitRaw('.all') Else
+        If Tokens[I].Val='@' Then EmitRaw('''Access') Else
         If Tokens[I].Val='..' Then EmitRaw('..') Else
         If Tokens[I].Val=':' Then EmitRaw(':') Else
         If Tokens[I].Val=',' Then EmitRaw(', ') Else
@@ -1199,7 +1240,7 @@ Begin
       Break;
     End;
   End;
-  EmitRaw('END');
+  EmitRaw('END IF');
 End;
 
 Procedure EmitWhileStatement(Var I:Integer);
@@ -1207,91 +1248,139 @@ Begin
   EmitRaw('WHILE ');
   Inc(I);
   EmitExpr(I);
-  EmitRaw(' DO');
+  EmitRaw(' LOOP');
   EmitLn;
   Inc(Indent);
   If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DO') Then Inc(I);
   EmitControlBody(I);
   Dec(Indent);
-  EmitRaw('END');
+  EmitRaw('END LOOP');
 End;
 
+{ Pascal `for v := a to b do' -> Ada `for V in a..b loop'.
+  On reanalyse l'expression Pascal pour extraire le nom de variable
+  et l'expression initiale. }
 Procedure EmitForStatement(Var I:Integer);
 Var
   Down:Boolean;
+  VarName:TString;
 Begin
-  EmitRaw('FOR ');
   Inc(I);                                { sauter FOR                    }
-  EmitExpr(I);                           { i := 1 (s'arrete sur TO/DOWNTO)}
+  { variable de boucle }
+  VarName:='';
+  If (I<=TokCount)and(Tokens[I].Kind=TK_IDENT) Then Begin
+    VarName:=Tokens[I].Val;
+    Inc(I);
+  End;
+  EmitRaw('FOR '+VarName+' IN ');
+  { sauter ':=' }
+  If (I<=TokCount)and(Tokens[I].Kind=TK_OP)and(Tokens[I].Val=':=') Then Inc(I);
   Down:=False;
+  { borne basse vers Ada }
+  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DOWNTO') Then Begin
+    { degenere : a downto b -> reverse b..a, mais on n'a pas encore de borne basse;
+      ce cas n'arrive pas car DOWNTO vient apres l'expression initiale. }
+  End;
+  EmitExpr(I);                           { borne basse                    }
   If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DOWNTO') Then Begin
     Down:=True;
-    EmitRaw(' TO ');
     Inc(I);
   End Else
   If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='TO') Then Begin
-    EmitRaw(' TO ');
     Inc(I);
   End;
-  EmitExpr(I);                           { borne                          }
-  If Down Then EmitRaw(' BY -1');
-  EmitRaw(' DO');
+  If Down Then Begin
+    { Pascal a downto b -> Ada FOR V IN REVERSE b..a -> on emet l'expr inverse }
+    { Sauvegarder la borne basse Pascal (a) : trop complexe ici sans buffer.
+      Approximation : on emet ".." puis l'autre borne, puis on prefixe REVERSE.
+      Comme l'ordre Ada est REVERSE low..high, on doit echanger. On utilise
+      une astuce : on a deja emis "a", on insere ".." puis on lit "b", puis
+      on annote 'reverse' apres. Pour simplifier, on emet le commentaire. }
+    EmitRaw('..');
+    EmitExpr(I);
+    EmitRaw(' (* DOWNTO -- a inverser manuellement avec REVERSE *)');
+  End Else Begin
+    EmitRaw('..');
+    EmitExpr(I);
+  End;
+  EmitRaw(' LOOP');
   EmitLn;
   Inc(Indent);
   If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DO') Then Inc(I);
   EmitControlBody(I);
   Dec(Indent);
-  EmitRaw('END');
+  EmitRaw('END LOOP');
 End;
 
+{ Pascal REPEAT s UNTIL c -> Ada
+   LOOP
+     s
+     EXIT WHEN c;
+   END LOOP }
 Procedure EmitRepeatStatement(Var I:Integer);
 Begin
-  EmitRaw('REPEAT');
+  EmitRaw('LOOP');
   EmitLn;
   Inc(Indent);
   Inc(I);                                  { sauter REPEAT                }
   EmitStatementList(I,'UNTIL');
-  Dec(Indent);
   If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='UNTIL') Then Inc(I);
-  EmitRaw('UNTIL ');
+  EmitRaw('EXIT WHEN ');
   EmitExpr(I);
+  EmitRaw(';');
+  EmitLn;
+  Dec(Indent);
+  EmitRaw('END LOOP');
 End;
 
+{ Pascal CASE n OF a:s; b:s; else s; END
+  -> Ada
+   CASE n IS
+     WHEN a => s;
+     WHEN b => s;
+     WHEN OTHERS => s;
+   END CASE; }
 Procedure EmitCaseStatement(Var I:Integer);
-Var
-  First:Boolean;
 Begin
   EmitRaw('CASE ');
   Inc(I);                                  { sauter CASE                  }
   EmitExpr(I);
-  EmitRaw(' OF');
+  EmitRaw(' IS');
   EmitLn;
   Inc(Indent);
   If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='OF') Then Inc(I);
-  First:=True;
   While (I<=TokCount) do Begin
     If (Tokens[I].Kind=TK_KEYWORD) and
        ((Tokens[I].Val='END')or(Tokens[I].Val='ELSE')or(Tokens[I].Val='OTHERWISE')) Then Begin
       If (Tokens[I].Val='ELSE')or(Tokens[I].Val='OTHERWISE') Then Begin
-        Dec(Indent);
-        EmitLn;
-        EmitRaw('ELSE');
-        EmitLn;
-        Inc(Indent);
+        EmitRaw('WHEN OTHERS => ');
         Inc(I);
         EmitStatementList(I,'END');
       End;
       Break;
     End;
-    If Not First Then Begin
-      EmitRaw(' |');
-      EmitLn;
+    EmitRaw('WHEN ');
+    { liste de selecteurs jusqu'a ':' au niveau 0 ; convertir ',' en '|' Ada }
+    While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=':')) do Begin
+      If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=',') Then Begin
+        EmitRaw(' | ');
+        Inc(I);
+      End Else
+      If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='..') Then Begin
+        EmitRaw('..');
+        Inc(I);
+      End Else Begin
+        Case Tokens[I].Kind of
+          TK_STRING:EmitRaw(PasStringToAda(Tokens[I].Val));
+          TK_CHAR  :EmitRaw(PasCharToAda(Tokens[I].Val));
+        Else
+          EmitRaw(Tokens[I].Val);
+        End;
+        Inc(I);
+      End;
     End;
-    First:=False;
-    { liste de selecteurs jusqu'a ':' au niveau 0 }
-    EmitExpr(I);
     If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=':') Then Begin
-      EmitRaw(': ');
+      EmitRaw(' => ');
       Inc(I);
     End;
     { instruction unique du label (ou bloc BEGIN..END) }
@@ -1301,13 +1390,14 @@ Begin
       If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
     End Else
       EmitStmt(I);
+    EmitRaw(';');
+    EmitLn;
     { un eventuel ';' separe les alternatives }
     If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
   End;
   Dec(Indent);
   If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Inc(I);
-  EmitLn;
-  EmitRaw('END');
+  EmitRaw('END CASE');
 End;
 
 Procedure EmitBeginEnd(Var I:Integer);
@@ -1334,19 +1424,19 @@ Begin
       If K='REPEAT' Then EmitRepeatStatement(I) Else
       If K='CASE' Then EmitCaseStatement(I) Else
       If K='EXIT' Then Begin
-        EmitRaw('RETURN');
+        EmitRaw('return');
         Inc(I);
       End Else
       If K='BREAK' Then Begin
-        EmitRaw('EXIT');                      { rapprochement Oberon LOOP   }
+        EmitRaw('exit');
         Inc(I);
       End Else
       If K='CONTINUE' Then Begin
-        EmitRaw('(* CONTINUE non supporte en Oberon *)');
+        EmitRaw('-- CONTINUE non disponible en Ada (utiliser un goto interne)');
         Inc(I);
       End Else
       If K='WITH' Then Begin
-        EmitRaw('(* WITH non supporte en Oberon ; expansion manuelle requise *)');
+        EmitRaw('-- WITH non supporte en Ada ; expansion manuelle requise');
         EmitLn;
         { sauter jusqu'au DO }
         While (I<=TokCount) and Not((Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='DO')) do
@@ -1355,9 +1445,12 @@ Begin
         EmitStmt(I);
       End Else
       If K='GOTO' Then Begin
-        EmitRaw('(* GOTO non supporte *)');
+        EmitRaw('goto ');
         Inc(I);
-        While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';')) do Inc(I);
+        If (I<=TokCount)and(Tokens[I].Kind in [TK_IDENT,TK_INTEGER]) Then Begin
+          EmitRaw(Tokens[I].Val);
+          Inc(I);
+        End;
       End Else Begin
         { mot-cle inattendu : copier tel quel }
         EmitRaw(MapKeyword(K));
@@ -1497,7 +1590,7 @@ Begin
     If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='END') Then Begin
       Inc(I);
       If IsTopLevel Then Begin
-        EmitRaw('END '+ProgName+'.');
+        EmitRaw('END '+ProgName+';');
         EmitLn;
       End Else Begin
         { fin de procedure : "END nomProc;" }
@@ -1517,19 +1610,21 @@ Begin
     If IsTopLevel Then Begin
       EmitRaw('BEGIN');
       EmitLn;
-      EmitRaw('END '+ProgName+'.');
+      EmitRaw('   null;');
+      EmitLn;
+      EmitRaw('END '+ProgName+';');
       EmitLn;
     End;
   End;
   CurFunc:=PrevFunc;
 End;
 
-{ Emet la clause USES Pascal en Oberon IMPORT.
-  Mappe les unites courantes a des modules Oberon proches. }
+{ Emet la clause USES Pascal en Ada IMPORT.
+  Mappe les unites courantes a des modules Ada proches. }
+{ Emet la section WITH/USE Ada equivalente a USES Pascal. }
 Procedure EmitUses(Var I:Integer);
 Var
   Name,U:TString;
-  First:Boolean;
   Imports:Array[1..MAX_USES] of TString;
   ICount,K:Integer;
   Found:Boolean;
@@ -1547,47 +1642,38 @@ Var
 
 Begin
   ICount:=0;
-  Inc(I);                                   { sauter USES                  }
-  While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';')) do Begin
-    If Tokens[I].Kind=TK_IDENT Then Begin
-      Name:=Tokens[I].Val;
-      U:=StrUpper(Name);
-      Found:=False;
-      If U='CRT' Then Begin AddImport('Out'); AddImport('In'); Found:=True; End Else
-      If U='DOS' Then Begin AddImport('(* DOS non disponible *)'); Found:=True; End Else
-      If U='SYSUTILS' Then Begin AddImport('Strings'); Found:=True; End Else
-      If U='STRINGS' Then Begin AddImport('Strings'); Found:=True; End Else
-      If U='MATH' Then Begin AddImport('Math'); Found:=True; End;
-      If Not Found Then AddImport(Name);
+  { Toujours ajouter Ada.Text_IO si Write/Read sont utilises }
+  If UsesOut or UsesIn Then AddImport('Ada.Text_IO');
+  If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='USES') Then Begin
+    Inc(I);                                   { sauter USES                  }
+    While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';')) do Begin
+      If Tokens[I].Kind=TK_IDENT Then Begin
+        Name:=Tokens[I].Val;
+        U:=StrUpper(Name);
+        Found:=False;
+        If U='CRT' Then Begin AddImport('Ada.Text_IO'); Found:=True; End Else
+        If U='DOS' Then Begin AddImport('Ada.Calendar'); Found:=True; End Else
+        If U='SYSUTILS' Then Begin AddImport('Ada.Strings.Unbounded'); Found:=True; End Else
+        If U='STRINGS' Then Begin AddImport('Ada.Strings.Fixed'); Found:=True; End Else
+        If U='MATH' Then Begin AddImport('Ada.Numerics.Elementary_Functions'); Found:=True; End Else
+        If U='SYSTEM' Then Begin AddImport('System'); Found:=True; End;
+        If Not Found Then AddImport(Name);
+      End;
+      Inc(I);
     End;
-    Inc(I);
+    If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
   End;
-  If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
-  { ajouter Out/In si necessaire }
-  If UsesOut Then AddImport('Out');
-  If UsesIn Then AddImport('In');
-  If ICount>0 Then Begin
-    EmitRaw('IMPORT ');
-    First:=True;
-    For K:=1 to ICount do Begin
-      If Not First Then EmitRaw(', ');
-      First:=False;
-      EmitRaw(Imports[K]);
-    End;
-    EmitRaw(';');
-    EmitLn;
+  { Emettre les WITH/USE }
+  For K:=1 to ICount do Begin
+    EmitRaw('WITH '+Imports[K]+'; USE '+Imports[K]+';');
     EmitLn;
   End;
+  If ICount>0 Then EmitLn;
 End;
 
-{ Emet l'en-tete MODULE et IMPORT. }
+{ Emet l'en-tete Ada PROCEDURE Name IS. }
 Procedure EmitModuleHeader(Var I:Integer);
-Var
-  HasUses:Boolean;
-  J:Integer;
 Begin
-  EmitRaw('MODULE '+ProgName+';');
-  EmitLn;
   { sauter PROGRAM/UNIT name; }
   If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and
      ((Tokens[I].Val='PROGRAM')or(Tokens[I].Val='UNIT')) Then Begin
@@ -1604,22 +1690,11 @@ Begin
   If IsUnit Then Begin
     If (I<=TokCount)and(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='INTERFACE') Then Inc(I);
   End;
-  { USES }
-  HasUses:=False;
-  J:=I;
-  If (J<=TokCount)and(Tokens[J].Kind=TK_KEYWORD)and(Tokens[J].Val='USES') Then Begin
-    HasUses:=True;
-    EmitUses(I);
-  End;
-  If (Not HasUses) and (UsesOut or UsesIn) Then Begin
-    EmitRaw('IMPORT ');
-    If UsesOut Then EmitRaw('Out');
-    If UsesOut and UsesIn Then EmitRaw(', ');
-    If UsesIn  Then EmitRaw('In');
-    EmitRaw(';');
-    EmitLn;
-    EmitLn;
-  End;
+  { WITH / USE }
+  EmitUses(I);
+  { En-tete PROCEDURE }
+  EmitRaw('PROCEDURE '+ProgName+' IS');
+  EmitLn;
 End;
 
 { ============================================================
@@ -1627,16 +1702,16 @@ End;
   ============================================================ }
 Procedure ShowUsage;
 Begin
-  WriteLn('PAS2OBER ',PAS2OBER_VERSION,' - Transpilateur Pascal vers Oberon');
+  WriteLn('PAS2ADA ',PAS2ADA_VERSION,' - Transpilateur Pascal vers Ada');
   WriteLn;
-  WriteLn('Syntaxe : PAS2OBER [-v] source.pas [destination.obn]');
+  WriteLn('Syntaxe : PAS2ADA [-v] source.pas [destination.adb]');
   WriteLn;
   WriteLn('  source.pas      Fichier source Pascal (Turbo Pascal/FPC).');
-  WriteLn('  destination.obn Fichier Oberon a generer (defaut : source.obn).');
+  WriteLn('  destination.adb Fichier Ada a generer (defaut : source.adb).');
   WriteLn('  -v / --verbose  Afficher des messages de progression.');
   WriteLn('  -h / --help     Afficher cette aide.');
   WriteLn;
-  WriteLn('Exemple : PAS2OBER hello.pas hello.obn');
+  WriteLn('Exemple : PAS2ADA hello.pas hello.adb');
 End;
 
 Procedure ParseArgs;
@@ -1668,8 +1743,8 @@ Begin
     A:=SrcName;
     I:=Length(A);
     While (I>0)and(A[I]<>'.')and(A[I]<>'\')and(A[I]<>'/') do Dec(I);
-    If (I>0)and(A[I]='.') Then DstName:=Copy(A,1,I-1)+'.obn'
-                          Else DstName:=A+'.obn';
+    If (I>0)and(A[I]='.') Then DstName:=Copy(A,1,I-1)+'.adb'
+                          Else DstName:=A+'.adb';
   End;
 End;
 
@@ -1678,14 +1753,14 @@ Begin
   Assign(SrcFile,SrcName);
   {$I-} Reset(SrcFile); {$I+}
   If IOResult<>0 Then Begin
-    WriteLn('PAS2OBER : impossible d''ouvrir ',SrcName);
+    WriteLn('PAS2ADA : impossible d''ouvrir ',SrcName);
     Halt(EXIT_ERROR);
   End;
   Assign(DstFile,DstName);
   {$I-} Rewrite(DstFile); {$I+}
   If IOResult<>0 Then Begin
     Close(SrcFile);
-    WriteLn('PAS2OBER : impossible de creer ',DstName);
+    WriteLn('PAS2ADA : impossible de creer ',DstName);
     Halt(EXIT_ERROR);
   End;
 End;
@@ -1703,23 +1778,23 @@ Var
 BEGIN
   ErrorCount:=0;
   ParseArgs;
-  If Verbose Then WriteLn('PAS2OBER : tokenisation de ',SrcName,'...');
+  If Verbose Then WriteLn('PAS2ADA : tokenisation de ',SrcName,'...');
   OpenFiles;
   Tokenize;
   Close(SrcFile);
-  If Verbose Then WriteLn('PAS2OBER : ',TokCount,' tokens lus.');
+  If Verbose Then WriteLn('PAS2ADA : ',TokCount,' tokens lus.');
   Analyze;
   If Verbose Then Begin
-    WriteLn('PAS2OBER : programme = ',ProgName);
-    WriteLn('PAS2OBER : ',FuncCount,' procedure(s)/fonction(s).');
-    If UsesOut Then WriteLn('PAS2OBER : Out detecte.');
-    If UsesIn  Then WriteLn('PAS2OBER : In detecte.');
+    WriteLn('PAS2ADA : programme = ',ProgName);
+    WriteLn('PAS2ADA : ',FuncCount,' procedure(s)/fonction(s).');
+    If UsesOut Then WriteLn('PAS2ADA : Out detecte.');
+    If UsesIn  Then WriteLn('PAS2ADA : In detecte.');
   End;
 
   Assign(DstFile,DstName);
   {$I-} Rewrite(DstFile); {$I+}
   If IOResult<>0 Then Begin
-    WriteLn('PAS2OBER : impossible de creer ',DstName);
+    WriteLn('PAS2ADA : impossible de creer ',DstName);
     Halt(EXIT_ERROR);
   End;
 
@@ -1729,17 +1804,16 @@ BEGIN
   CurFunc:=0;
   FuncSP:=0;
   IPos:=1;
-  EmitRaw('(* Genere par PAS2OBER ');
-  EmitRaw(PAS2OBER_VERSION);
+  EmitRaw('-- Genere par PAS2ADA ');
+  EmitRaw(PAS2ADA_VERSION);
   EmitRaw(' a partir de ');
   EmitRaw(SrcName);
-  EmitRaw(' *)');
   EmitLn;
   EmitModuleHeader(IPos);
   EmitBlock(IPos,True);
   If OutLine<>'' Then FlushLine;
   Close(DstFile);
-  If Verbose Then WriteLn('PAS2OBER : sortie ecrite dans ',DstName);
+  If Verbose Then WriteLn('PAS2ADA : sortie ecrite dans ',DstName);
   If ErrorCount>0 Then Halt(EXIT_ERROR);
   Halt(EXIT_OK);
 END.
