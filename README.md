@@ -458,8 +458,52 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Oberon pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
 		<tr>
+			<td><b>PAS2ADA.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Ada (.adb).</td>
+		</tr>
+		<tr>
+			<td><b>PAS2MOD2.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Modula-2 (.mod).</td>
+		</tr>
+		<tr>
+			<td><b>PAS2AL58.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Algol 58 (.a58).</td>
+		</tr>
+		<tr>
+			<td><b>PAS2AL60.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Algol 60 (.a60).</td>
+		</tr>
+		<tr>
+			<td><b>PAS2AL68.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Algol 68 (.a68).</td>
+		</tr>
+		<tr>
+			<td><b>PAS2BCPL.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage BCPL (.b).</td>
+		</tr>
+		<tr>
+			<td><b>PAS2C.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage C (.c).</td>
+		</tr>
+		<tr>
+			<td><b>PAS2CS.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage C# (.cs).</td>
+		</tr>
+		<tr>
+			<td><b>PAS2MOD3.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Modula-3 (.m3).</td>
+		</tr>
+		<tr>
 			<td><b>PAS2HTML.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier de code source en syntaxe coloré HTML.</td>
+		</tr>
+		<tr>
+			<td><b>PAS2JAVA.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Java (.java).</td>
+		</tr>
+		<tr>
+			<td><b>PAS2OBER.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Turbo Pascal/Free Pascal vers le langage Oberon (.obn).</td>
 		</tr>
 		<tr>
 			<td><b>PAS2RSJ.PAS</b></td>
