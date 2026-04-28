@@ -258,6 +258,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer un interpréteur de langage de programmation C.</td>
 		</tr>
 		<tr>
+			<td><b>C2DELPHI.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier «.C» en «.DPR» (Delphi).</td>
+		</tr>
+		<tr>
 			<td><b>C2PAS.PAS</b></td>
 			<td>Cette commande permet de transpiler un fichier «.C» en «.PAS».</td>
 		</tr>	
