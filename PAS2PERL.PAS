@@ -1439,7 +1439,7 @@ End;
   PROCEDURES / FONCTIONS
   ============================================================ }
 { Emet la liste de parametres Perl. En Perl, la signature est vide ;
-  on emet '{' puis 'my ($a, $b) = @_;' dans le corps. Cette procedure
+  on emet accolade ouvrante puis 'my ($a, $b) = @_;' dans le corps. Cette procedure
   enregistre les noms et accumule la chaine '$a, $b' dans une variable
   globale ProcParamsBuf qui sera utilisee par EmitProcedure. }
 Procedure EmitProcParams(Var I:Integer);
