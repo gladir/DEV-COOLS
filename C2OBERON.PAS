@@ -2931,6 +2931,10 @@ Var
  TPath:PathStr;D:DirStr;
  N:NameStr;E:ExtStr;
  Err:Integer;
+ BlockKeyword:String;
+ BlockParenLevel:Integer;
+ TmpI:Byte;
+ Lookahead:String;
 
  Procedure ExtractLine;Begin
   FillChar(Q.Line,SizeOf(Q.Line),0);
@@ -3305,6 +3309,8 @@ Begin
  Q.NameC:=FileName;
  Q.Mode:=_None_;Q.PathHeader:=PathHeader;
  InProc:=False;
+ BlockKeyword:='';
+ BlockParenLevel:=0;
  Assign(Q.HandleC,Q.NameC);
  Reset(Q.HandleC);
  If IOResult<>0Then Begin
@@ -3472,8 +3478,104 @@ Begin
      If FuncVar('CHAR','CHAR')Then Q.Mode:={_Func_}_None_ Else
      If UWordC='PRINTF'Then Write(Q.HandlePas,'Out.String')
       Else
+     If UWordC='IF'Then Begin
+      If(SkipBeg)Then Begin
+       WriteLn(Q.HandlePas,'BEGIN');
+       SkipBeg:=False;
+      End;
+      Write(Q.HandlePas,'IF');
+      BlockKeyword:='THEN';
+      BlockParenLevel:=0;
+     End
+      Else
+     If UWordC='ELSE'Then Begin
+      TmpI:=Q.I;
+      While(TmpI<=Length(Q.Line))and(Q.Line[TmpI]in[' ',#9])do Inc(TmpI);
+      Lookahead:='';
+      If(TmpI<=Length(Q.Line))and(Q.Line[TmpI]in Coder1DefLetter)Then
+       Lookahead:=StrUp(XtrkWord(TmpI,Q.Line));
+      If Lookahead='IF'Then Begin
+       Write(Q.HandlePas,' ELSIF');
+       Q.I:=TmpI;
+       BlockKeyword:='THEN';
+       BlockParenLevel:=0;
+      End
+       Else
+       Write(Q.HandlePas,' ELSE ');
+     End
+      Else
+     If UWordC='WHILE'Then Begin
+      If(SkipBeg)Then Begin
+       WriteLn(Q.HandlePas,'BEGIN');
+       SkipBeg:=False;
+      End;
+      Write(Q.HandlePas,'WHILE');
+      BlockKeyword:='DO';
+      BlockParenLevel:=0;
+     End
+      Else
+     If UWordC='FOR'Then Begin
+      If(SkipBeg)Then Begin
+       WriteLn(Q.HandlePas,'BEGIN');
+       SkipBeg:=False;
+      End;
+      Write(Q.HandlePas,'(* FOR *) WHILE');
+      BlockKeyword:='DO';
+      BlockParenLevel:=0;
+     End
+      Else
+     If UWordC='DO'Then Begin
+      If(SkipBeg)Then Begin
+       WriteLn(Q.HandlePas,'BEGIN');
+       SkipBeg:=False;
+      End;
+      Write(Q.HandlePas,'REPEAT ');
+     End
+      Else
+     If UWordC='BREAK'Then Begin
+      If(SkipBeg)Then Begin
+       WriteLn(Q.HandlePas,'BEGIN');
+       SkipBeg:=False;
+      End;
+      Write(Q.HandlePas,'EXIT');
+     End
+      Else
+     If UWordC='CONTINUE'Then Begin
+      If(SkipBeg)Then Begin
+       WriteLn(Q.HandlePas,'BEGIN');
+       SkipBeg:=False;
+      End;
+      Write(Q.HandlePas,'(* CONTINUE *)');
+     End
+      Else
+     If UWordC='SWITCH'Then Begin
+      If(SkipBeg)Then Begin
+       WriteLn(Q.HandlePas,'BEGIN');
+       SkipBeg:=False;
+      End;
+      Write(Q.HandlePas,'CASE');
+      BlockKeyword:='OF';
+      BlockParenLevel:=0;
+     End
+      Else
+     If UWordC='CASE'Then Begin
+      If(SkipBeg)Then Begin
+       WriteLn(Q.HandlePas,'BEGIN');
+       SkipBeg:=False;
+      End;
+      Write(Q.HandlePas,'| ');
+     End
+      Else
+     If UWordC='DEFAULT'Then Begin
+      If(SkipBeg)Then Begin
+       WriteLn(Q.HandlePas,'BEGIN');
+       SkipBeg:=False;
+      End;
+      Write(Q.HandlePas,'ELSE');
+     End
+      Else
      Begin
-      Error(Q,UnknownIdentifier); { Unknown identifier. }
+      Warning(Q,'Identificateur inconnu: '+WordC); { Oberon: non fatal, on continue } { Unknown identifier. }
       If(SkipBeg)Then Begin
        WriteLn(Q.HandlePas,'BEGIN');
        SkipBeg:=False;
@@ -3571,8 +3673,8 @@ Begin
       Else*)
      Begin
       SkipBeg:=False;
-      If Q.Beg>0Then Write(Q.HandlePas,'BEGIN ')
-                Else SkipBeg:=True;
+      If Q.Beg=0Then SkipBeg:=True;
+      { Oberon: pas de BEGIN pour les blocs internes }
       Inc(Q.I,Length(#123));
       Inc(Q.Beg);
      End;
@@ -3599,6 +3701,26 @@ Begin
 	Inc(Q.I);
        End;
        Else Write(Q.HandlePas,'-');
+      End;
+     End;
+    End;
+    {* * * * * * * * * * * * * * * * * * * * * *}
+    {*       Parentheses (suivi pour IF/WHILE) *}
+    {* * * * * * * * * * * * * * * * * * * * * *}
+    '(':Begin
+     Write(Q.HandlePAS,'(');
+     If BlockKeyword<>''Then Inc(BlockParenLevel);
+     Inc(Q.I);
+    End;
+    ')':Begin
+     Write(Q.HandlePAS,')');
+     Inc(Q.I);
+     If BlockKeyword<>''Then Begin
+      Dec(BlockParenLevel);
+      If BlockParenLevel<=0Then Begin
+       Write(Q.HandlePAS,' ',BlockKeyword,' ');
+       BlockKeyword:='';
+       BlockParenLevel:=0;
       End;
      End;
     End;
