@@ -262,6 +262,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de transpiler un fichier «.C» en «.DPR» (Delphi).</td>
 		</tr>
 		<tr>
+			<td><b>C2OBERON.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier «.C» en «.Mod» (Oberon).</td>
+		</tr>
+		<tr>
 			<td><b>C2PAS.PAS</b></td>
 			<td>Cette commande permet de transpiler un fichier «.C» en «.PAS».</td>
 		</tr>	
