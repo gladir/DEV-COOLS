@@ -108,6 +108,8 @@ Var
   ArrayTypes   : TNameList;        { noms de types qui sont des Array }
   ArrayVars    : TNameList;        { variables typees Array         }
   Labels       : TNameList;        { etiquettes vues (<<lab>>)      }
+  ForVars      : TNameList;        { variables de boucle FOR        }
+  DeclaredVars : TNameList;        { vars deja declarees (objets)   }
   HasPower     : Boolean;          { true si ** rencontre           }
 
   { Pile de fonctions pour traduire RETURN expr -> nom := expr ; Exit }
@@ -860,6 +862,9 @@ Begin
   If NameInList(ArrayTypes,TypeStr) Then
     For K:=1 to NCount do AddName(ArrayVars,Names[K]);
 
+  { Inscrire toutes les variables/constantes declarees }
+  For K:=1 to NCount do AddName(DeclaredVars,Names[K]);
+
   { Initialiseur ? }
   If IsOp(I,':=') Then Begin
     Inc(I);
@@ -1207,6 +1212,10 @@ Procedure EmitForStmt(Var I:Integer);
 Var
   VarName : TString;
   Reverse : Boolean;
+  StartA  : Integer;
+  DDotPos : Integer;
+  EndPos  : Integer;
+  Save    : Integer;
 Begin
   Inc(I); { FOR }
   Reverse:=False;
@@ -1216,23 +1225,27 @@ Begin
   If IsKw(I,'REVERSE') Then Begin Reverse:=True; Inc(I); End;
   WriteIndent;
   If Reverse Then Begin
-    { Pour For Reverse, swapping bornes }
+    { Localiser bornes A..B }
+    StartA:=I;
+    DDotPos:=I;
+    While (TKind(DDotPos)<>TK_EOF) and not IsOp(DDotPos,'..')
+                                   and not IsKw(DDotPos,'LOOP') do
+      Inc(DDotPos);
+    EndPos:=DDotPos+1;
+    While (TKind(EndPos)<>TK_EOF) and not IsKw(EndPos,'LOOP') do Inc(EndPos);
     Write(DstFile,'For ',VarName,':=');
-    { Capturer A puis B et inverser : on doit lire les deux, mais
-      EmitExpr ecrit directement. Solution : lire A en premier,
-      l'enregistrer dans un buffer, lire B, emettre B,DownTo,A. }
-    { Pour rester simple, on lit les deux expressions vers fichier
-      temporaire en utilisant un tampon de tokens : on copie les
-      indices, puis emet B, ' DownTo ', A, ' Do '. }
-    Write(DstFile,'{ rev_lo: ');
-    EmitExpr(I, ST_DDOT or ST_LOOP);
-    Write(DstFile,' } ');
-    If IsOp(I,'..') Then Begin
-      Inc(I);
-      EmitExpr(I, ST_LOOP);
+    { Emettre B en premier }
+    If IsOp(DDotPos,'..') Then Begin
+      Save:=DDotPos+1;
+      EmitExpr(Save, ST_LOOP);
       Write(DstFile,' DownTo ');
-      Write(DstFile,'{ rev_lo bornes inversees - manuel }');
+      { Puis A }
+      Save:=StartA;
+      EmitExpr(Save, ST_DDOT or ST_LOOP);
+    End Else Begin
+      EmitExpr(I, ST_LOOP);
     End;
+    I:=EndPos;
     WriteLn(DstFile,' Do Begin');
   End Else Begin
     Write(DstFile,'For ',VarName,':=');
@@ -1290,14 +1303,12 @@ Begin
     End Else Begin
       WriteIndent;
       { Liste de valeurs avec | et ranges A..B }
-      Repeat
+      EmitExpr(I, ST_ARROW or ST_PIPE);
+      While IsPunct(I,'|') do Begin
+        Write(DstFile,', ');
+        Inc(I);
         EmitExpr(I, ST_ARROW or ST_PIPE);
-        If IsPunct(I,'|') Then Begin
-          Write(DstFile,', ');
-          Inc(I);
-        End;
-      Until not IsPunct(I,'|') and not(false);
-      { Note: EmitExpr s'arrete sur '|' deja, on a deja ecrit ', ' }
+      End;
       Write(DstFile,': Begin ');
       If IsOp(I,'=>') Then Inc(I);
       WriteLn(DstFile);
@@ -1380,25 +1391,55 @@ Begin
 End;
 
 Procedure EmitDeclareBlock(Var I:Integer);
-Var Dummy:TString;
+Var
+  Names    : Array[1..16] of TString;
+  Inits    : Array[1..16] of Integer; { token index of := expr ; or 0 }
+  EndsAt   : Array[1..16] of Integer; { token index of ; }
+  NCount,K : Integer;
+  Save     : Integer;
 Begin
   Inc(I); { DECLARE }
-  WriteIndent; WriteLn(DstFile,'{ DECLARE: declarations locales remontees }');
-  Dummy:='';
+  NCount:=0;
+  WriteIndent; WriteLn(DstFile,'{ DECLARE: declarations locales }');
   While not IsKw(I,'BEGIN') and (TKind(I)<>TK_EOF) do Begin
-    { Pour la simplicite, on emet les declarations comme commentaires
-      car Pascal n'autorise pas Var dans un bloc d'instructions. }
-    WriteIndent; Write(DstFile,'{ ');
-    While not IsPunct(I,';') and (TKind(I)<>TK_EOF) and not IsKw(I,'BEGIN') do Begin
-      Write(DstFile,TVal(I),' ');
+    If IsPunct(I,';') Then Begin Inc(I); Continue; End;
+    { Lire un nom : type [:= expr]; }
+    If TKind(I)=TK_IDENT Then Begin
+      Inc(NCount);
+      If NCount<=16 Then Names[NCount]:=TVal(I);
       Inc(I);
-    End;
-    If IsPunct(I,';') Then Begin Write(DstFile,';'); Inc(I); End;
-    WriteLn(DstFile,' }');
+      { sauter eventuel ", autre" pour cette version simple }
+      While IsPunct(I,',') and (TKind(I+1)=TK_IDENT) do Inc(I,2);
+      If IsPunct(I,':') Then Inc(I);
+      { sauter le type }
+      While (TKind(I)<>TK_EOF) and not IsOp(I,':=') and not IsPunct(I,';') do
+        Inc(I);
+      If NCount<=16 Then Begin
+        If IsOp(I,':=') Then Inits[NCount]:=I+1
+                         Else Inits[NCount]:=0;
+      End;
+      { trouver le ; }
+      While (TKind(I)<>TK_EOF) and not IsPunct(I,';') do Inc(I);
+      If NCount<=16 Then EndsAt[NCount]:=I;
+      If IsPunct(I,';') Then Inc(I);
+    End Else
+      Inc(I);
   End;
+  { Promouvoir les vars vers la liste globale ForVars (Integer) }
+  For K:=1 to NCount do AddName(ForVars,Names[K]);
   If IsKw(I,'BEGIN') Then Inc(I);
   WriteIndent; WriteLn(DstFile,'Begin');
   Indent:=Indent+2;
+  { Emettre les initialisations en debut de bloc }
+  For K:=1 to NCount do Begin
+    If Inits[K]>0 Then Begin
+      WriteIndent;
+      Write(DstFile,Names[K],':=');
+      Save:=Inits[K];
+      EmitExpr(Save, ST_SEMI);
+      WriteLn(DstFile,';');
+    End;
+  End;
   EmitStmtBlock(I,'END');
   Indent:=Indent-2;
   WriteIndent; WriteLn(DstFile,'End;');
@@ -1502,6 +1543,7 @@ Begin
     For K:=1 to NCount do Begin
       If K>1 Then Write(DstFile,',');
       Write(DstFile,Names[K]);
+      AddName(DeclaredVars,Names[K]);
     End;
     Write(DstFile,':',TypeStr);
     If IsPunct(I,';') Then Inc(I);
@@ -1641,6 +1683,73 @@ Begin
   End;
 End;
 
+Procedure ScanForVars;
+Var I:Integer;
+Begin
+  For I:=1 to TokCount-2 do Begin
+    If IsKw(I,'FOR') and (TKind(I+1)=TK_IDENT) and IsKw(I+2,'IN') Then
+      AddName(ForVars,TVal(I+1));
+  End;
+End;
+
+Procedure ScanDeclareVars;
+Var I:Integer;
+Begin
+  I:=1;
+  While I<=TokCount do Begin
+    If IsKw(I,'DECLARE') Then Begin
+      Inc(I);
+      While (TKind(I)<>TK_EOF) and not IsKw(I,'BEGIN') do Begin
+        If (TKind(I)=TK_IDENT) and IsPunct(I+1,':') Then Begin
+          AddName(ForVars,TVal(I));
+          While (TKind(I)<>TK_EOF) and not IsPunct(I,';') do Inc(I);
+        End Else
+          Inc(I);
+      End;
+    End Else
+      Inc(I);
+  End;
+End;
+
+Procedure ScanLabels;
+Var I:Integer;
+Begin
+  For I:=1 to TokCount-2 do Begin
+    If IsOp(I,'<<') and (TKind(I+1)=TK_IDENT) and IsOp(I+2,'>>') Then
+      AddName(Labels,TVal(I+1));
+  End;
+End;
+
+Procedure EmitLabelsDecl;
+Var I:Integer;
+Begin
+  If Labels.Count=0 Then Exit;
+  Write(DstFile,'Label ');
+  For I:=1 to Labels.Count do Begin
+    If I>1 Then Write(DstFile,',');
+    Write(DstFile,Labels.Items[I]);
+  End;
+  WriteLn(DstFile,';');
+End;
+
+Procedure EmitForVarsDecl;
+Var I:Integer; First:Boolean;
+Begin
+  First:=True;
+  For I:=1 to ForVars.Count do Begin
+    If not NameInList(DeclaredVars,ForVars.Items[I]) Then Begin
+      If First Then Begin
+        SwitchSection('V');
+        Indent:=Indent+2;
+        First:=False;
+      End;
+      WriteIndent;
+      WriteLn(DstFile,ForVars.Items[I],':Integer; { boucle FOR }');
+    End;
+  End;
+  If not First Then Indent:=Indent-2;
+End;
+
 { ============================================================
   PROGRAMME PRINCIPAL DU TRANSPILEUR
   ============================================================ }
@@ -1745,6 +1854,8 @@ BEGIN
   InitNameList(ArrayTypes);
   InitNameList(ArrayVars);
   InitNameList(Labels);
+  InitNameList(ForVars);
+  InitNameList(DeclaredVars);
 
   ParseArgs;
   If Verbose Then WriteLn('ADA2PAS : tokenisation de ',SrcName,'...');
@@ -1753,6 +1864,10 @@ BEGIN
   Tokenize;
   Close(SrcFile);
   If Verbose Then WriteLn('ADA2PAS : ',TokCount,' tokens lus.');
+
+  ScanForVars;
+  ScanDeclareVars;
+  ScanLabels;
 
   { On a besoin de connaitre l'usage de ** avant la sortie de l'entete.
     Pre-scan pour HasPower et collecte preliminaire. }
@@ -1765,10 +1880,13 @@ BEGIN
   WriteLn(DstFile);
   EmitHelpers;
   WriteLn(DstFile);
+  EmitLabelsDecl;
 
   { Section declarations + corps }
   Indent:=0;
   EmitDecls(IPos);
+  CurSection:=' ';
+  EmitForVarsDecl;
   CurSection:=' ';
 
   { BEGIN principal }
