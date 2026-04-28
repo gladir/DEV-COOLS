@@ -2725,7 +2725,7 @@ Function CommentC2Pascal(Var Info:SwitchC2Pascal;Put:Boolean):Boolean;Begin
  If Info.I<=Length(Info.Line)Then Begin
   Case Info.Line[Info.I]of
    '/':Begin
-    If(Put)Then Write(Info.HandlePAS,#123,Copy(Info.Line,Info.I+1,255),#125);
+    If(Put)Then Write(Info.HandlePAS,'(*',Copy(Info.Line,Info.I+1,255),'*)');
     Info.I:=Length(Info.Line)+1;
    End;
    '*':Begin
@@ -3294,7 +3294,7 @@ Var
    End;
   End
    Else
-  Write(Q.HandlePas,WordC,'<');
+  Write(Q.HandlePas,WordC,'>');
  End;
 
  Procedure TypeEnum;Begin
@@ -3447,7 +3447,7 @@ Begin
      If UWordC='RETURN'Then Begin
       If(InProc)Then Begin
        Q.Mode:={_Func_}_None_;
-       Write(Q.HandlePas,PPGetLastProcName(Proc),' := ');
+       Write(Q.HandlePas,'RETURN ');
       End
        Else
       HaltMsg(Q,'Retour de fonction ind‚sirable.');
@@ -3472,9 +3472,9 @@ Begin
      {*                  Local                  *}
      {* * * * * * * * * * * * * * * * * * * * * *}
       Else
-     If UWordC='LOCAL'Then Write(Q.HandlePAS,'{ * * LOCAL * * }')Else
+     If UWordC='LOCAL'Then Write(Q.HandlePAS,'(* * * LOCAL * * *)')Else
      If FuncVar('INT','INTEGER')Then Q.Mode:={_Func_}_None_ Else
-     If UWordC='GLOBAL'Then Write(Q.HandlePAS,'{ * * GLOBAL * * }')Else
+     If UWordC='GLOBAL'Then Write(Q.HandlePAS,'(* * * GLOBAL * * *)')Else
      If FuncVar('CHAR','CHAR')Then Q.Mode:={_Func_}_None_ Else
      If UWordC='PRINTF'Then Write(Q.HandlePas,'Out.String')
       Else
@@ -3683,11 +3683,25 @@ Begin
     {*                    End                  *}
     {* * * * * * * * * * * * * * * * * * * * * *}
     #125:Begin
-     Write(Q.HandlePas,'END;');
      Inc(Q.I,Length(#125));
      If Q.Beg=0Then Error(Q,MisplacedEndSymbol);
      Dec(Q.Beg);
-     If Q.Beg=0Then InProc:=False;
+     { Lookahead pour else / else if : on partage le END en Oberon. }
+     TmpI:=Q.I;
+     While(TmpI<=Length(Q.Line))and(Q.Line[TmpI]in[' ',#9])do Inc(TmpI);
+     Lookahead:='';
+     If(TmpI<=Length(Q.Line))and(Q.Line[TmpI]in Coder1DefLetter)Then
+      Lookahead:=StrUp(XtrkWord(TmpI,Q.Line));
+     If Lookahead='ELSE'Then Begin
+      { Ne pas emettre END; il sera fourni par le else final. }
+     End
+      Else
+     If Q.Beg=0Then Begin
+      { Fin de procedure -> END ProcName; }
+      WriteLn(Q.HandlePas,'END ',PPGetLastProcName(Proc),';');
+      InProc:=False;
+     End
+      Else Write(Q.HandlePas,'END;');
     End;
     {* * * * * * * * * * * * * * * * * * * * * *}
     {*             Symbole Record/-            *}
@@ -3772,13 +3786,15 @@ BEGIN
  End;
  {$I-}Assign(Q.HandlePas,NamePas);
  Rewrite(Q.HandlePas);{$I+}
+ WriteLn(Q.HandlePas,'MODULE ',N,';');
  If(Q.Rem)Then Begin
-  WriteLn(Q.HandlePas,#123+DuplicateString('.',60)+#125);
-  WriteLn(Q.HandlePas,#123+':                    Fichier Oberon (.Mod)                 :}');
-  WriteLn(Q.HandlePas,#123+':'+DuplicateString('.',58)+':}');
+  WriteLn(Q.HandlePas,'(*'+DuplicateString('.',60)+'*)');
+  WriteLn(Q.HandlePas,'(*:                    Fichier Oberon (.Mod)                 :*)');
+  WriteLn(Q.HandlePas,'(*:'+DuplicateString('.',58)+':*)');
  End;
  WriteLn(Q.HandlePas);
  ConvFile(Q,MainName);
+ WriteLn(Q.HandlePas,'END ',N,'.');
  Close(Q.HandlePas);
  If(Q.WarningMsg)Then System.WriteLn('*** ',WarnNum,' attention(s) ***');
  WriteLn;
