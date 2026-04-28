@@ -143,15 +143,6 @@ Begin
   LowerStr:=R;
 End;
 
-Function ProperCase(const S:TString):TString;
-Var I:Integer; R:TString;
-Begin
-  R:=LowerStr(S);
-  If Length(R)>0 Then
-    If (R[1]>='a')and(R[1]<='z') Then R[1]:=Chr(Ord(R[1])-32);
-  ProperCase:=R;
-End;
-
 Procedure InitNameList(Var L:TNameList);
 Begin L.Count:=0; End;
 
@@ -497,7 +488,6 @@ Var
   K          : TTokenKind;
   Prev       : TString;
   PrevK      : TTokenKind;
-  J          : Integer;
   Bracket    : Char;
 Begin
   ParenDepth:=0;
@@ -627,7 +617,6 @@ Begin
     PrevK:=K;
     { Si V est un mot-cle qu'on a transforme, neutraliser PrevK }
     If K=TK_KEYWORD Then PrevK:=TK_KEYWORD;
-    J:=I; { silence unused warning }
   End;
 End;
 
@@ -704,7 +693,6 @@ End;
 
 { Forward }
 Procedure EmitProcOrFunc(Var I:Integer); Forward;
-Procedure EmitStatements(Var I:Integer; const EndName:TString); Forward;
 
 { Emet une declaration de type complete.
   I pointe sur 'TYPE' ou 'SUBTYPE'. }
@@ -842,9 +830,6 @@ Var
   IsConst  : Boolean;
   TypeStr  : TString;
   K        : Integer;
-  StartE   : Integer;
-  ExprStart: Integer;
-  C        : Char;
 Begin
   NCount:=0;
   While TKind(I)=TK_IDENT do Begin
@@ -927,8 +912,6 @@ Begin
     End;
   End;
   If IsPunct(I,';') Then Inc(I);
-  C:=#0; StartE:=0; ExprStart:=0; { silence }
-  If False Then Begin C:=' '; StartE:=0; ExprStart:=0; End;
 End;
 
 { Boucle de declarations. Renvoie I sur 'BEGIN'. }
@@ -967,7 +950,7 @@ End;
   ============================================================ }
 
 { Forward }
-Procedure EmitOneStmt(Var I:Integer; Const EndName:TString); Forward;
+Procedure EmitOneStmt(Var I:Integer); Forward;
 
 Procedure EmitStmtBlock(Var I:Integer; const StopKw:TString);
 Begin
@@ -975,34 +958,20 @@ Begin
     If IsKw(I,'END') or IsKw(I,'ELSIF') or IsKw(I,'ELSE')
        or IsKw(I,'WHEN') or IsKw(I,'EXCEPTION') Then Exit;
     If IsPunct(I,';') Then Begin Inc(I); Continue; End;
-    EmitOneStmt(I,'');
+    EmitOneStmt(I);
   End;
 End;
 
-Procedure EmitStatements(Var I:Integer; const EndName:TString);
-Begin
-  EmitStmtBlock(I,'END');
-End;
 
 { Emet un appel a Put/Put_Line/Get/etc. en traduisant. }
 Procedure EmitIOCall(Var I:Integer; const Name:TString);
 Var
   U      : TString;
-  Args   : Array[1..8] of TString;
-  ArgCnt : Integer;
   Depth  : Integer;
-  Buf    : TString;
-  K      : Integer;
   Found  : Boolean;
-  IO_OUT : TString;
-  S      : TString;
-  TmpFile: Text;
-  TmpName: TString;
-  Has    : Boolean;
   J      : Integer;
 Begin
   U:=UpperStr(Name);
-  ArgCnt:=0;
   { Pas de () suivant -> appel sans argument }
   If not IsPunct(I,'(') Then Begin
     If U='NEW_LINE' Then EmitLn('WriteLn;')
@@ -1014,12 +983,6 @@ Begin
     End;
     Exit;
   End;
-  { Lire les arguments en les capturant comme chaines Pascal pour les
-    reordonner si necessaire. On utilise un tampon en memoire en
-    redirigeant vers une fonction qui retourne la traduction. Comme
-    notre EmitExpr ecrit directement dans DstFile, on adopte une
-    approche plus simple : pour les IO standards, on emet directement
-    la traduction equivalente. }
   Inc(I); { ( }
   WriteIndent;
   If U='PUT_LINE' Then Write(DstFile,'WriteLn(')
@@ -1030,16 +993,9 @@ Begin
   Else If U='SKIP_LINE' Then Write(DstFile,'ReadLn(')
   Else Write(DstFile,Name,'(');
 
-  { Emettre les arguments en convertissant , en , ; ignore les nommes
-    (Fore=>1, Aft=>6, Exp=>0) }
+  { Emettre les arguments. Les parametres nommes Ada (Fore=>1, etc.)
+    sont ignores car Pascal ne les supporte pas. }
   Depth:=1;
-  ArgCnt:=0;
-  Has:=False;
-  S:='';
-  IO_OUT:='';
-  TmpName:='';
-  K:=0; Buf:=''; Found:=False; J:=0;
-  If False Then Begin K:=0; Buf:=''; Found:=False; J:=0; S:=''; IO_OUT:=''; TmpName:=''; End;
   While (Depth>0)and(TKind(I)<>TK_EOF) do Begin
     If IsPunct(I,'(') Then Begin
       Inc(Depth); Write(DstFile,'('); Inc(I);
@@ -1113,7 +1069,6 @@ End;
 { Emet une instruction simple : assignation ou appel. }
 Procedure EmitSimpleStmt(Var I:Integer);
 Var
-  StartI : Integer;
   Lookahead:Integer;
   IsAssign:Boolean;
   Depth   :Integer;
@@ -1123,7 +1078,6 @@ Begin
 
   { Determiner si c'est une assignation : chercher ':=' avant ';' au
     niveau 0 de parentheses. }
-  StartI:=I;
   IsAssign:=False;
   Depth:=0;
   Lookahead:=I;
@@ -1281,7 +1235,6 @@ Begin
 End;
 
 Procedure EmitCaseStmt(Var I:Integer);
-Var First:Boolean;
 Begin
   Inc(I); { CASE }
   WriteIndent; Write(DstFile,'Case ');
@@ -1289,7 +1242,6 @@ Begin
   WriteLn(DstFile,' Of');
   If IsKw(I,'IS') Then Inc(I);
   Indent:=Indent+2;
-  First:=True;
   While IsKw(I,'WHEN') do Begin
     Inc(I);
     If IsKw(I,'OTHERS') Then Begin
@@ -1317,14 +1269,12 @@ Begin
       Indent:=Indent-2;
       WriteIndent; WriteLn(DstFile,'End;');
     End;
-    First:=False;
   End;
   Indent:=Indent-2;
   WriteIndent; WriteLn(DstFile,'End;');
   If IsKw(I,'END') Then Inc(I);
   If IsKw(I,'CASE') Then Inc(I);
   If IsPunct(I,';') Then Inc(I);
-  If False Then First:=False; { silence }
 End;
 
 Procedure EmitReturnStmt(Var I:Integer);
@@ -1394,7 +1344,6 @@ Procedure EmitDeclareBlock(Var I:Integer);
 Var
   Names    : Array[1..16] of TString;
   Inits    : Array[1..16] of Integer; { token index of := expr ; or 0 }
-  EndsAt   : Array[1..16] of Integer; { token index of ; }
   NCount,K : Integer;
   Save     : Integer;
 Begin
@@ -1420,7 +1369,6 @@ Begin
       End;
       { trouver le ; }
       While (TKind(I)<>TK_EOF) and not IsPunct(I,';') do Inc(I);
-      If NCount<=16 Then EndsAt[NCount]:=I;
       If IsPunct(I,';') Then Inc(I);
     End Else
       Inc(I);
@@ -1459,7 +1407,7 @@ Begin
   If IsPunct(I,';') Then Inc(I);
 End;
 
-Procedure EmitOneStmt(Var I:Integer; const EndName:TString);
+Procedure EmitOneStmt(Var I:Integer);
 Begin
   If IsKw(I,'IF')      Then Begin EmitIfStmt(I);     Exit; End;
   If IsKw(I,'WHILE')   Then Begin EmitWhileStmt(I);  Exit; End;
@@ -1497,7 +1445,6 @@ Begin
     Exit;
   End;
   EmitSimpleStmt(I);
-  If False Then If EndName='' Then; { silence }
 End;
 
 { ============================================================
@@ -1557,7 +1504,6 @@ Var
   IsFunc  : Boolean;
   Name    : TString;
   RetType : TString;
-  Dummy   : TString;
 Begin
   IsFunc := IsKw(I,'FUNCTION');
   Inc(I); { PROCEDURE / FUNCTION }
@@ -1602,7 +1548,6 @@ Begin
 
   { Declarations puis body }
   Indent:=Indent+2;
-  Dummy:='';
   CurSection:=' ';
   EmitDecls(I);
   CurSection:=' ';
