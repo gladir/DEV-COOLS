@@ -30,6 +30,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage Modula-2 (.mod).</td>
 		</tr>
 		<tr>
+			<td><b>ADA2MOD3.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage Modula-3 (.m3).</td>
+		</tr>
+		<tr>
 			<td><b>ADA2PAS.PAS</b></td>
 			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage Turbo Pascal/Free Pascal.</td>
 		</tr>
