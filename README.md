@@ -458,6 +458,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le transpilateur Node.js (JavaScript) vers C#.</td>
 		</tr>
 		<tr>
+			<td><b>NJS2JAVA.PAS</b></td>
+			<td>Cette commande permet de lancer le transpilateur Node.js (JavaScript) vers Java.</td>
+		</tr>
+		<tr>
 			<td><b>OBERON86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Oberon pour l'assembleur du microprocesseur 8086.</td>
 		</td>
