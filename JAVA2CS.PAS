@@ -1201,11 +1201,16 @@ End;
   ============================================================ }
 Procedure ShowUsage;
 Begin
- WriteLn('JAVA2CS ',VERSION,' - Transpilateur Java vers C#');
- WriteLn('(C) Gladir.com');
+ WriteLn('JAVA2CS ',VERSION,' - Cette commande permet de lancer le transpilateur Java vers C#.');
  WriteLn;
- WriteLn('Usage : JAVA2CS source.java [destination.cs]');
- WriteLn('Exemple : JAVA2CS Hello.java Hello.cs');
+ WriteLn('Syntaxe : JAVA2CS source.java [destination.cs]');
+ WriteLn;
+ WriteLn(' source.java     Indique le fichier … convertir');
+ WriteLn(' destination.cs  Indique le fichier destinataire en C# (C Sharp)');
+ WriteLn;
+ WriteLn('Exemple : ');
+ WriteLn;
+ WriteLn('JAVA2CS Hello.java Hello.cs');
 End;
 
 Procedure ParseArgs;
@@ -1244,6 +1249,11 @@ Begin
 End;
 
 BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowUsage;
+  Halt(0);
+ End;
  ParseArgs;
  OpenFiles;
  TokInit;
