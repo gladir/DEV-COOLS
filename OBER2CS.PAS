@@ -49,6 +49,7 @@ Type
    Name    : TString;
    RetType : TString;       { type C# de retour ('' si void) }
    IsFunc  : Boolean;
+   VarMask : TString;       { '1' = param VAR (ref), '0' = par valeur }
  End;
  TTypeRec = Record
    Name : TString;          { nom Oberon }
@@ -306,13 +307,14 @@ Begin
                        MapOberonType:=T;
 End;
 
-Procedure RegisterFunc(Name,RetType:TString; IsFunc:Boolean);
+Procedure RegisterFunc(Name,RetType:TString; IsFunc:Boolean; VarMask:TString);
 Begin
  If FuncCount>=MAX_FNS Then Exit;
  Inc(FuncCount);
  Funcs[FuncCount].Name:=Name;
  Funcs[FuncCount].RetType:=RetType;
  Funcs[FuncCount].IsFunc:=IsFunc;
+ Funcs[FuncCount].VarMask:=VarMask;
 End;
 
 Function FindFunc(Name:TString):Integer;
@@ -341,8 +343,9 @@ Procedure Analyze;
 Var
  I,J:Integer;
  K:TString;
- Name,Ret:TString;
- Depth:Integer;
+ Name,Ret,Mask:TString;
+ Depth,GrpCount,PI:Integer;
+ IsVarGrp,InGroup:Boolean;
 Begin
  FuncCount:=0;
  CurFunc:=0;
@@ -375,13 +378,58 @@ Begin
      K:=Tokens[I].Val;
      If K='PROCEDURE' Then Begin
        J:=I+1;
-       Name:=''; Ret:='';
+       Name:=''; Ret:=''; Mask:='';
        If(J<=TokCount)and(Tokens[J].Kind=TK_IDENT)Then Begin Name:=Tokens[J].Val; Inc(J); End;
        If(J<=TokCount)and(Tokens[J].Kind=TK_PUNCT)and(Tokens[J].Val='(')Then Begin
          Depth:=1; Inc(J);
+         IsVarGrp:=False;
+         GrpCount:=0;
+         InGroup:=False;
          While(J<=TokCount)and(Depth>0)do Begin
-           If(Tokens[J].Kind=TK_PUNCT)and(Tokens[J].Val='(')Then Inc(Depth)
-           Else If(Tokens[J].Kind=TK_PUNCT)and(Tokens[J].Val=')')Then Dec(Depth);
+           If(Tokens[J].Kind=TK_PUNCT)and(Tokens[J].Val='(')Then Begin
+             Inc(Depth); Inc(J); Continue;
+           End;
+           If(Tokens[J].Kind=TK_PUNCT)and(Tokens[J].Val=')')Then Begin
+             Dec(Depth);
+             If Depth=0 Then Begin
+               { Fin de groupe : ajouter GrpCount caracteres. }
+               For PI:=1 to GrpCount do Begin
+                 If IsVarGrp Then Mask:=Mask+'1' Else Mask:=Mask+'0';
+               End;
+               Inc(J); Break;
+             End;
+             Inc(J); Continue;
+           End;
+           If Depth>1 Then Begin Inc(J); Continue; End;
+           { Au niveau 1 (parametres). }
+           If(Tokens[J].Kind=TK_PUNCT)and(Tokens[J].Val=';')Then Begin
+             For PI:=1 to GrpCount do Begin
+               If IsVarGrp Then Mask:=Mask+'1' Else Mask:=Mask+'0';
+             End;
+             IsVarGrp:=False; GrpCount:=0; InGroup:=False;
+             Inc(J); Continue;
+           End;
+           If Not InGroup Then Begin
+             InGroup:=True; IsVarGrp:=False; GrpCount:=0;
+             If(Tokens[J].Kind=TK_KEYWORD)and(Tokens[J].Val='VAR')Then Begin
+               IsVarGrp:=True; Inc(J); Continue;
+             End;
+           End;
+           If(Tokens[J].Kind=TK_PUNCT)and(Tokens[J].Val=':')Then Begin
+             { Sauter type jusqu'a `;` ou `)`. }
+             Inc(J);
+             While(J<=TokCount)and(Depth>0)and
+               Not((Tokens[J].Kind=TK_PUNCT)and((Tokens[J].Val=';')or(Tokens[J].Val=')')))do Begin
+               If(Tokens[J].Kind=TK_PUNCT)and(Tokens[J].Val='(')Then Inc(Depth)
+               Else If(Tokens[J].Kind=TK_PUNCT)and(Tokens[J].Val=')')Then Begin
+                 If Depth>1 Then Dec(Depth)
+                 Else Break;
+               End;
+               Inc(J);
+             End;
+             Continue;
+           End;
+           If Tokens[J].Kind=TK_IDENT Then Inc(GrpCount);
            Inc(J);
          End;
        End;
@@ -389,7 +437,7 @@ Begin
          Inc(J);
          If J<=TokCount Then Begin Ret:=MapOberonType(Tokens[J].Val); Inc(J); End;
        End;
-       If Name<>'' Then RegisterFunc(Name,Ret,Ret<>'');
+       If Name<>'' Then RegisterFunc(Name,Ret,Ret<>'',Mask);
      End;
    End;
    Inc(I);
@@ -569,12 +617,51 @@ Var
  Depth:Integer;
  NeedSpaceBefore:Boolean;
  IsOpish:Boolean;
+ FIdx,ArgIdx,ArgDepth:Integer;
 Begin
  Depth:=0;
  NeedSpaceBefore:=False;
  While I<=TokCount do Begin
    If(Depth=0)and IsExprStop(I)Then Break;
    If(Depth=0)and(Tokens[I].Kind=TK_PUNCT)and(Pos(Tokens[I].Val,StopPunct)>0)Then Break;
+   { Detection appel `IDENT (` avec parametres VAR connus. }
+   If(Tokens[I].Kind=TK_IDENT)and(I+1<=TokCount)and
+     (Tokens[I+1].Kind=TK_PUNCT)and(Tokens[I+1].Val='(')Then Begin
+     FIdx:=FindFunc(Tokens[I].Val);
+     If(FIdx>0)and(Length(Funcs[FIdx].VarMask)>0)Then Begin
+       EmitRaw(Tokens[I].Val); EmitRaw('(');
+       Inc(I,2);              { passer IDENT et '(' }
+       ArgIdx:=1; ArgDepth:=1;
+       { Si appel sans argument (immediat ')'). }
+       If(I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')')Then Begin
+         EmitRaw(')'); Inc(I); Continue;
+       End;
+       { Premier argument. }
+       If(ArgIdx<=Length(Funcs[FIdx].VarMask))and
+         (Funcs[FIdx].VarMask[ArgIdx]='1')Then EmitRaw('ref ');
+       While(I<=TokCount)and(ArgDepth>0)do Begin
+         If(Tokens[I].Kind=TK_PUNCT)and((Tokens[I].Val='(')or(Tokens[I].Val='['))Then
+           Inc(ArgDepth)
+         Else If(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=']')Then
+           Dec(ArgDepth)
+         Else If(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=')')Then Begin
+           Dec(ArgDepth);
+           If ArgDepth=0 Then Begin EmitRaw(')'); Inc(I); Break; End;
+         End
+         Else If(ArgDepth=1)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=',')Then Begin
+           EmitRaw(', ');
+           Inc(ArgIdx);
+           If(ArgIdx<=Length(Funcs[FIdx].VarMask))and
+             (Funcs[FIdx].VarMask[ArgIdx]='1')Then EmitRaw('ref ');
+           Inc(I); Continue;
+         End;
+         EmitOneExprTok(I);
+         Inc(I);
+       End;
+       NeedSpaceBefore:=False;
+       Continue;
+     End;
+   End;
    If(Tokens[I].Kind=TK_PUNCT)and((Tokens[I].Val='(')or(Tokens[I].Val='['))Then Inc(Depth)
    Else If(Tokens[I].Kind=TK_PUNCT)and((Tokens[I].Val=')')or(Tokens[I].Val=']'))Then Dec(Depth);
    IsOpish:=False;
@@ -626,8 +713,7 @@ Begin
  EmitRaw('Console.Write(');
  If(M='STRING')or(M='CHAR')or(M='INT')or(M='HEX')or(M='REAL')or(M='LONGREAL')Then Begin
    EmitExprUntil(I,',)');
-   { Largeur de champ optionnelle : on l'emet en chaine de format
-     C# style "{0,width}" via ToString -- on la met en commentaire. }
+   { Largeur de champ optionnelle : on la met en commentaire. }
    If(I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=',')Then Begin
      Inc(I);
      EmitRaw(' /* width=');
@@ -922,6 +1008,17 @@ Var
  Name,U:TString;
 Begin
  If I>TokCount Then Exit;
+ { Cas special : `In.X(...)` ou `Out.X(...)` ou tout autre usage
+   d'un mot-cle Oberon comme prefixe de module. Le tokenizer marque
+   IN comme keyword, donc on l'intercepte ici. }
+ If(Tokens[I].Kind=TK_KEYWORD)and(Tokens[I].Val='IN')and
+   (I+2<=TokCount)and(Tokens[I+1].Kind=TK_PUNCT)and(Tokens[I+1].Val='.')and
+   (Tokens[I+2].Kind=TK_IDENT)Then Begin
+   Inc(I,2);
+   Name:=Tokens[I].Val; Inc(I);
+   EmitInCall(I,Name);
+   Exit;
+ End;
  Case Tokens[I].Kind of
    TK_KEYWORD:Begin
      K:=Tokens[I].Val;
@@ -1104,7 +1201,7 @@ Begin
  End;
 End;
 
-{ Emet un RECORD nomme : `struct Name { ... }`. Suppose I sur RECORD. }
+{ Emet un RECORD nomme : struct Name avec accolades. Suppose I sur RECORD. }
 Procedure EmitRecordDecl(Var I:Integer; Const TypeName:TString);
 Var
  FieldType,Names,Sz:TString;
