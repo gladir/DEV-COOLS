@@ -26,6 +26,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		    <td>Cette commande permet de convertir un code source assembleur de microprocesseur 8080 en code source Z80.</td>
 		</tr>	
 		<tr>
+			<td><b>ADA2BCPL.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage BCPL (.b).</td>
+		</tr>
+		<tr>
 			<td><b>ADA2DELP.PAS</b></td>
 			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage Delphi (.pas).</td>
 		</tr>
