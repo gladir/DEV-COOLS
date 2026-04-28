@@ -27,8 +27,11 @@
      Put / Put_Line / New_Line / Get / Get_Line / Skip_Line.
 
    Limitations connues :
-     - les genericites, taches et exceptions Ada ne sont pas
-       traduites (signalees en commentaire dans la sortie).
+     - les genericites et taches Ada ne sont pas traduites
+       (signalees en commentaire dans la sortie).
+     - les clauses 'exception ... when ... =>' Ada sont traduites
+       en blocs try ... except Delphi (avec mapping des exceptions
+       predefinies vers les classes SysUtils).
      - les blocs DECLARE sont aplatis : leurs declarations
        locales sont remontees au scope englobant.
      - les types FLOAT digits / fixed point sont approximes
@@ -400,6 +403,29 @@ Begin
   Else If U='STRING'  Then MapType:='string'
   Else If U='WIDE_STRING' Then MapType:='WideString'
   Else MapType:=T;
+End;
+
+{ Mappe un nom d'exception Ada vers la classe d'exception Delphi
+  correspondante (de l'unite SysUtils). Pour les exceptions
+  utilisateur (non predefinies), conserve le nom d'origine. }
+Function MapExceptionName(const N:TString):TString;
+Var U:TString;
+Begin
+  U:=UpperStr(N);
+  If U='CONSTRAINT_ERROR' Then MapExceptionName:='ERangeError'
+  Else If U='NUMERIC_ERROR' Then MapExceptionName:='EMathError'
+  Else If U='STORAGE_ERROR' Then MapExceptionName:='EOutOfMemory'
+  Else If U='PROGRAM_ERROR' Then MapExceptionName:='Exception'
+  Else If U='TASKING_ERROR' Then MapExceptionName:='Exception'
+  Else If U='DATA_ERROR' Then MapExceptionName:='EConvertError'
+  Else If U='END_ERROR' Then MapExceptionName:='EInOutError'
+  Else If U='NAME_ERROR' Then MapExceptionName:='EInOutError'
+  Else If U='USE_ERROR' Then MapExceptionName:='EInOutError'
+  Else If U='STATUS_ERROR' Then MapExceptionName:='EInOutError'
+  Else If U='DEVICE_ERROR' Then MapExceptionName:='EInOutError'
+  Else If U='MODE_ERROR' Then MapExceptionName:='EInOutError'
+  Else If U='LAYOUT_ERROR' Then MapExceptionName:='EInOutError'
+  Else MapExceptionName:=N;
 End;
 
 Function MapIdentInExpr(const N:TString):TString;
@@ -964,6 +990,169 @@ Begin
   End;
 End;
 
+{ Determine si le body courant (a partir de StartI, juste apres son
+  BEGIN d'ouverture) possede une clause EXCEPTION au meme niveau.
+  Suit une pile des constructions imbriquees pour ne pas confondre
+  avec une exception interne a un sous-bloc. }
+Function BlockHasException(StartI:Integer):Boolean;
+Const MAX_EXC_STACK = 64;
+Var
+  I, Top : Integer;
+  Stk    : Array[1..MAX_EXC_STACK] of TString;
+
+  Procedure SPush(const S:TString);
+  Begin
+    If Top<MAX_EXC_STACK Then Begin Inc(Top); Stk[Top]:=S; End;
+  End;
+
+  Procedure SPop;
+  Begin If Top>0 Then Dec(Top); End;
+
+Begin
+  BlockHasException:=False;
+  I:=StartI;
+  Top:=0;
+  While (TKind(I)<>TK_EOF) do Begin
+    If IsKw(I,'BEGIN') Then Begin
+      If (Top>0) and (Stk[Top]='DECLARE') Then Stk[Top]:='BLOCK'
+      Else SPush('BLOCK');
+      Inc(I);
+    End Else If IsKw(I,'DECLARE') Then Begin
+      SPush('DECLARE'); Inc(I);
+    End Else If IsKw(I,'IF') Then Begin
+      SPush('IF'); Inc(I);
+    End Else If IsKw(I,'LOOP') Then Begin
+      SPush('LOOP'); Inc(I);
+    End Else If IsKw(I,'CASE') Then Begin
+      SPush('CASE'); Inc(I);
+    End Else If IsKw(I,'RECORD') Then Begin
+      SPush('RECORD'); Inc(I);
+    End Else If IsKw(I,'SELECT') Then Begin
+      SPush('SELECT'); Inc(I);
+    End Else If IsKw(I,'EXCEPTION') Then Begin
+      If Top=0 Then Begin BlockHasException:=True; Exit; End;
+      Inc(I);
+    End Else If IsKw(I,'END') Then Begin
+      If Top=0 Then Exit;  { END qui ferme notre body }
+      Inc(I);
+      { Sauter le mot-cle ou nom apres END (IF/LOOP/CASE/RECORD/
+        SELECT ou nom de subprog/block). }
+      If (TKind(I)=TK_KEYWORD) or (TKind(I)=TK_IDENT) Then Inc(I);
+      SPop;
+    End Else Inc(I);
+  End;
+End;
+
+{ Emet les handlers Delphi pour une clause exception Ada.
+  I doit pointer sur le mot-cle EXCEPTION en entree. En sortie I
+  pointe sur le END qui clot le body englobant. }
+Procedure EmitExceptionHandlers(Var I:Integer);
+Var
+  Names    : Array[1..16] of TString;
+  NCount,K,K2 : Integer;
+  IsOthers : Boolean;
+  Mapped   : TString;
+  BodyStart, TmpI, LastEnd : Integer;
+  EmittedCount : Integer;
+  AlreadyDone  : Boolean;
+Begin
+  If IsKw(I,'EXCEPTION') Then Inc(I);
+  While IsKw(I,'WHEN') do Begin
+    Inc(I);
+    NCount:=0;
+    IsOthers:=False;
+    { Lire les noms d'exception jusqu'au '=>'.
+      Forme acceptee : [Choice : ] Name1 [| Name2 ...] => stmts
+      ou               others => stmts }
+    While not IsOp(I,'=>') and (TKind(I)<>TK_EOF) do Begin
+      If IsKw(I,'OTHERS') Then Begin
+        IsOthers:=True; Inc(I);
+      End Else If TKind(I)=TK_IDENT Then Begin
+        { Ignorer la forme nommee 'Choice : Type' }
+        If IsPunct(I+1,':') and (TKind(I+2)=TK_IDENT) Then Inc(I,2);
+        If TKind(I)=TK_IDENT Then Begin
+          Inc(NCount);
+          If NCount<=16 Then Names[NCount]:=TVal(I);
+          Inc(I);
+          { Permettre les noms qualifies type Ada.IO.Data_Error }
+          While IsPunct(I,'.') and (TKind(I+1)=TK_IDENT) do Begin
+            If NCount<=16 Then Names[NCount]:=TVal(I+1);
+            Inc(I,2);
+          End;
+        End;
+      End Else If IsOp(I,'|') Then Inc(I)
+      Else Inc(I);
+    End;
+    If IsOp(I,'=>') Then Inc(I);
+
+    If IsOthers Then Begin
+      WriteIndent; WriteLn(DstFile,'on E: Exception do Begin');
+      Indent:=Indent+2;
+      EmitStmtBlock(I,'END');
+      Indent:=Indent-2;
+      WriteIndent; WriteLn(DstFile,'End;');
+    End Else If NCount=1 Then Begin
+      Mapped:=MapExceptionName(Names[1]);
+      WriteIndent; Write(DstFile,'on E: ',Mapped,' do Begin');
+      WriteLn(DstFile);
+      Indent:=Indent+2;
+      EmitStmtBlock(I,'END');
+      Indent:=Indent-2;
+      WriteIndent; WriteLn(DstFile,'End;');
+    End Else If NCount>1 Then Begin
+      { Plusieurs exceptions partagent le meme handler. Delphi ne
+        supporte pas la liste de classes dans 'on', donc on emet
+        une clause 'on' par nom (avec deduplication par classe
+        Delphi). Le corps est replaye en repositionnant l'index
+        de tokens avant chaque emission. }
+      BodyStart:=I;
+      LastEnd:=I;
+      EmittedCount:=0;
+      For K:=1 to NCount do Begin
+        Mapped:=MapExceptionName(Names[K]);
+        AlreadyDone:=False;
+        For K2:=1 to K-1 do
+          If MapExceptionName(Names[K2])=Mapped Then AlreadyDone:=True;
+        If AlreadyDone Then Continue;
+        WriteIndent; Write(DstFile,'on E: ',Mapped,' do Begin');
+        WriteLn(DstFile);
+        Indent:=Indent+2;
+        TmpI:=BodyStart;
+        EmitStmtBlock(TmpI,'END');
+        Indent:=Indent-2;
+        WriteIndent; WriteLn(DstFile,'End;');
+        LastEnd:=TmpI;
+        Inc(EmittedCount);
+      End;
+      I:=LastEnd;
+    End Else Begin
+      { Aucun nom (parse error) : sauter les statements }
+      EmitStmtBlock(I,'END');
+    End;
+  End;
+End;
+
+{ Emet le contenu d'un body : statements + clause exception
+  optionnelle. Le 'Begin' d'ouverture et le 'End' de fermeture sont
+  emis par l'appelant. Si une clause EXCEPTION est presente, le
+  contenu est entoure d'un try ... except ... end Delphi. }
+Procedure EmitBodyContent(Var I:Integer);
+Begin
+  If BlockHasException(I) Then Begin
+    WriteIndent; WriteLn(DstFile,'try');
+    Indent:=Indent+2;
+    EmitStmtBlock(I,'END');
+    Indent:=Indent-2;
+    WriteIndent; WriteLn(DstFile,'except');
+    Indent:=Indent+2;
+    EmitExceptionHandlers(I);
+    Indent:=Indent-2;
+    WriteIndent; WriteLn(DstFile,'end;');
+  End Else Begin
+    EmitStmtBlock(I,'END');
+  End;
+End;
+
 
 { Emet un appel a Put/Put_Line/Get/etc. en traduisant. }
 Procedure EmitIOCall(Var I:Integer; const Name:TString);
@@ -1390,7 +1579,7 @@ Begin
       WriteLn(DstFile,';');
     End;
   End;
-  EmitStmtBlock(I,'END');
+  EmitBodyContent(I);
   Indent:=Indent-2;
   WriteIndent; WriteLn(DstFile,'End;');
   If IsKw(I,'END') Then Inc(I);
@@ -1402,7 +1591,7 @@ Begin
   Inc(I); { BEGIN }
   WriteIndent; WriteLn(DstFile,'Begin');
   Indent:=Indent+2;
-  EmitStmtBlock(I,'END');
+  EmitBodyContent(I);
   Indent:=Indent-2;
   WriteIndent; WriteLn(DstFile,'End;');
   If IsKw(I,'END') Then Inc(I);
@@ -1437,12 +1626,25 @@ Begin
   End;
   If IsOp(I,'<<') Then Begin EmitLabel(I); Exit; End;
   If IsKw(I,'RAISE') Then Begin
-    WriteIndent; Write(DstFile,'{ raise');
     Inc(I);
-    While not IsPunct(I,';') and (TKind(I)<>TK_EOF) do Begin
-      Write(DstFile,' ',TVal(I)); Inc(I);
+    { 'raise;' (re-raise dans un handler) ou 'raise Name [with msg];' }
+    If IsPunct(I,';') or (TKind(I)=TK_EOF) Then Begin
+      WriteIndent; WriteLn(DstFile,'raise;');
+    End Else If TKind(I)=TK_IDENT Then Begin
+      WriteIndent;
+      Write(DstFile,'raise ',MapExceptionName(TVal(I)),
+            '.Create(''',TVal(I),''');');
+      WriteLn(DstFile);
+      { Sauter le nom et tout 'with msg' optionnel jusqu'au ; }
+      While not IsPunct(I,';') and (TKind(I)<>TK_EOF) do Inc(I);
+    End Else Begin
+      { Forme inattendue : commenter pour ne pas casser la sortie }
+      WriteIndent; Write(DstFile,'{ raise');
+      While not IsPunct(I,';') and (TKind(I)<>TK_EOF) do Begin
+        Write(DstFile,' ',TVal(I)); Inc(I);
+      End;
+      WriteLn(DstFile,' }');
     End;
-    WriteLn(DstFile,' }');
     If IsPunct(I,';') Then Inc(I);
     Exit;
   End;
@@ -1556,7 +1758,7 @@ Begin
   If IsKw(I,'BEGIN') Then Inc(I);
   WriteIndent; WriteLn(DstFile,'Begin');
   Indent:=Indent+2;
-  EmitStmtBlock(I,'END');
+  EmitBodyContent(I);
   Indent:=Indent-2;
   WriteIndent; WriteLn(DstFile,'End;');
   Indent:=Indent-2;
@@ -1838,7 +2040,7 @@ BEGIN
   If IsKw(IPos,'BEGIN') Then Inc(IPos);
   WriteLn(DstFile,'begin');
   Indent:=2;
-  EmitStmtBlock(IPos,'END');
+  EmitBodyContent(IPos);
   Indent:=0;
   WriteLn(DstFile,'end.');
 
