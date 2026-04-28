@@ -46,6 +46,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage Turbo Pascal/Free Pascal.</td>
 		</tr>
 		<tr>
+			<td><b>ADA2PSP.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage PSP - Pascal Server Pages (.psp).</td>
+		</tr>
+		<tr>
 			<td><b>ADA86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Ada 83/95 pour de l'assembleur du microprocesseur 8086.</td>
 		</tr>

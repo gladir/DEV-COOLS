@@ -1988,6 +1988,9 @@ Begin
   End;
   If HasPower Then Begin
     WriteLn(DstFile);
+    { Power_ : exponentiation entiere. PSP86 ne supporte pas Int64,
+      donc on utilise Integer. Attention au depassement pour de
+      grandes valeurs. }
     WriteLn(DstFile,'function Power_(B:Integer; E:Integer):Integer;');
     WriteLn(DstFile,'var R:Integer;');
     WriteLn(DstFile,'begin');
