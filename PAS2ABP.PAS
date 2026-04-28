@@ -2012,6 +2012,8 @@ Begin
     If Tokens[I].Kind=TK_EOF Then Stop:=True;
     If Stop Then Break;
     EmitStmt(I);
+    { Ajouter '.' final si manquant (terminateur d'instruction ABAP) }
+    If (Length(OutLine)>0)and(OutLine[Length(OutLine)]<>'.') Then EmitRaw('.');
     EmitLn;
     { ';' separateur Pascal : juste l'avaler }
     If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val=';') Then Inc(I);
