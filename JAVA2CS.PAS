@@ -1,5 +1,4 @@
-{
-  @author: Gladir.com (Sylvain Maltais)
+{ @author: Gladir.com (Sylvain Maltais)
   @description: Transpilateur Turbo Pascal/Free Pascal du langage Java vers
                 le langage C# (.cs).
 
@@ -70,6 +69,7 @@
   Compilation : fpc -Mtp JAVA2CS.PAS
   Usage       : JAVA2CS source.java [destination.cs]
 }
+
 Program JAVA2CS;
 
 Const
@@ -681,7 +681,7 @@ End;
 
 { Determine si le 'final' situe a l'indice I (avec TopBrace='C') decrit un
   champ (true) ou une methode/constructeur (false). Heuristique : on cherche
-  '(' (=> methode) ou ';'/'='/etc. (=> champ) avant un '{'.                 }
+  '(' (=> methode) ou ';'/'='/etc. (=> champ) avant une accolade ouvrante.  }
 Function FinalIsField(I:Integer):Boolean;
 Var J,Depth:Integer;
 Begin
@@ -1243,7 +1243,7 @@ Begin
  Close(OutFile);
 End;
 
-Begin
+BEGIN
  ParseArgs;
  OpenFiles;
  TokInit;
@@ -1258,4 +1258,4 @@ Begin
  CloseFiles;
  WriteLn('JAVA2CS : ',SrcName,' -> ',DstName,' (',TokCount,' tokens, ',
          UseCount,' usings).');
-End.
+END.
