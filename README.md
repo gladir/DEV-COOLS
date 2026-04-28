@@ -30,6 +30,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage BCPL (.b).</td>
 		</tr>
 		<tr>
+			<td><b>ADA2C.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage C ANSI/C99 (.c).</td>
+		</tr>
+		<tr>
 			<td><b>ADA2DELP.PAS</b></td>
 			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage Delphi (.pas).</td>
 		</tr>

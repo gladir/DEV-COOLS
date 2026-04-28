@@ -3,26 +3,32 @@
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
-  @description: Transpilateur Ada (.adb) vers Oberon (.Mod)
+  @description: Transpilateur Ada (.adb) vers C (.c)
 }
 
 (* ============================================================
-   ADA2C.PAS - Transpilateur Ada vers Oberon
+   ADA2C.PAS - Transpilateur Ada vers C ANSI/C99
    Turbo Pascal / Free Pascal (-Mtp)
-   Cible : code source Oberon (.Mod) utilisant les
-           bibliotheques standard Out et In.
+   Cible : code source C ANSI/C99 portable, utilisant
+           <stdio.h>, <stdlib.h>, <string.h> et <math.h>
+           selon les besoins du code Ada source.
 
    Couvre les constructions courantes :
-     WITH / USE  (les paquets Ada.* sont ignores),
-     PROCEDURE Nom IS ... END Nom; au sommet  -> MODULE Nom;
-     PROCEDURE / FUNCTION imbriquees,
+     WITH / USE  (les paquets Ada.* sont ignores ;
+                  les autres deviennent des commentaires
+                  /* with: pkg */ ),
+     PROCEDURE Nom IS ... END Nom; au sommet
+       -> int main(void) { ... return 0; }
+     PROCEDURE / FUNCTION imbriquees -> fonctions C globales,
      declarations CONSTANT / TYPE / SUBTYPE / VAR,
      TYPE ... IS RECORD / ARRAY / (enum) / RANGE A..B,
-     IF / ELSIF / ELSE / END IF,
-     WHILE / FOR (REVERSE) / LOOP / EXIT [WHEN] / RETURN,
-     CASE ... IS / WHEN x | y | a..b / OTHERS / END CASE,
+     IF / ELSIF / ELSE / END IF        -> if / else if / else,
+     WHILE / FOR (REVERSE) / LOOP      -> while / for / for(;;),
+     EXIT [WHEN] / RETURN              -> break / return,
+     CASE ... IS / WHEN x | y / OTHERS -> switch / case / default,
      blocs DECLARE et BEGIN anonymes (aplatis),
-     Put / Put_Line / New_Line / Get / Get_Line / Skip_Line.
+     Put / Put_Line / New_Line / Get / Get_Line / Skip_Line
+       -> printf / puts / scanf / fgets.
 
    Limitations connues :
      - les genericites, taches et exceptions Ada ne sont pas
@@ -30,18 +36,17 @@
      - les blocs DECLARE sont aplatis : leurs declarations
        locales sont remontees au scope englobant.
      - les types FLOAT digits / fixed point sont approximes
-       par REAL.
-     - operateur ** est traduit via une fonction Power_ helper.
+       par double.
+     - operateur ** est traduit via la fonction pow() de
+       <math.h> (ajout automatique).
      - les attributs Ada 'First / 'Last / 'Range ne sont pas
        generalement supportes.
      - GOTO/<<labels>> Ada deviennent un commentaire car
-       Oberon ne fournit pas d'instruction GOTO.
+       le code emis evite goto par defaut.
      - les enumerations Ada sont rendues sous forme de
-       constantes INTEGER puisque Oberon classique ne possede
-       pas de type enumere.
-     - l'initialiseur de variable Ada (Var := expr) est emis
-       en commentaire ; Oberon n'autorise pas d'initialiseur
-       dans une declaration VAR.
+       enum C anonyme.
+     - String Ada -> char[256] par defaut.
+     - C n'a pas de RANGE : ces clauses sont commentees.
    ============================================================ *)
 
 Program ADA2C;
@@ -120,6 +125,10 @@ Var
   DeclaredVars : TNameList;        { vars deja declarees (objets)   }
   HasPower     : Boolean;          { true si ** rencontre           }
   UsesOut    : Boolean;          { true si Put/Get/etc. rencontre }
+  UsesStdio  : Boolean;          { #include <stdio.h>             }
+  UsesStdlib : Boolean;          { #include <stdlib.h>            }
+  UsesString : Boolean;          { #include <string.h>            }
+  UsesMath   : Boolean;          { #include <math.h>              }
 
   { Pile de fonctions pour traduire RETURN expr -> nom := expr ; Exit }
   FuncStack : Array[1..MAX_FSTACK] of TString;
@@ -378,25 +387,22 @@ End;
   TRADUCTION DE CHAINES ADA -> MODULA-2
   ============================================================ }
 Function AdaStrToC(const S:TString):TString;
-Var I:Integer; R:TString;
+Var I:Integer; R:TString; Ch:Char;
 Begin
-  { Oberon accepte "..." si la chaine ne contient pas '"',
-    sinon '...'. On choisit "..." par defaut et on bascule sur
-    '...' si la chaine contient un guillemet double. }
-  R:='';
-  For I:=1 to Length(S) do
-    If S[I]='"' Then Begin R:=''; Break; End;
-  If Length(R)=0 Then Begin
-    R:='"';
-    For I:=1 to Length(S) do R:=R+S[I];
-    R:=R+'"';
-  End Else Begin
-    R:='''';
-    For I:=1 to Length(S) do
-      If S[I]='''' Then R:=R+'?'  { caractere problematique }
-                    Else R:=R+S[I];
-    R:=R+'''';
+  R:='"';
+  For I:=1 to Length(S) do Begin
+    Ch:=S[I];
+    Case Ch of
+      '\':  R:=R+'\\';
+      '"':  R:=R+'\"';
+      #10:  R:=R+'\n';
+      #13:  R:=R+'\r';
+      #9:   R:=R+'\t';
+    Else
+      R:=R+Ch;
+    End;
   End;
+  R:=R+'"';
   AdaStrToC:=R;
 End;
 
@@ -404,19 +410,20 @@ Function MapType(const T:TString):TString;
 Var U:TString;
 Begin
   U:=UpperStr(T);
-  If U='INTEGER'      Then MapType:='INTEGER'
-  Else If U='NATURAL' Then MapType:='CARDINAL'
-  Else If U='POSITIVE'Then MapType:='CARDINAL'
-  Else If U='LONG_INTEGER' Then MapType:='LONGINT'
-  Else If U='SHORT_INTEGER' Then MapType:='SHORTINT'
-  Else If U='FLOAT'   Then MapType:='REAL'
-  Else If U='LONG_FLOAT' Then MapType:='LONGREAL'
-  Else If U='SHORT_FLOAT' Then MapType:='REAL'
-  Else If U='BOOLEAN' Then MapType:='BOOLEAN'
-  Else If U='CHARACTER' Then MapType:='CHAR'
-  Else If U='WIDE_CHARACTER' Then MapType:='CHAR'
-  Else If U='STRING'  Then MapType:='ARRAY [0..255] OF CHAR'
-  Else If U='WIDE_STRING' Then MapType:='ARRAY [0..255] OF CHAR'
+  If U='INTEGER'      Then MapType:='int'
+  Else If U='NATURAL' Then MapType:='unsigned int'
+  Else If U='POSITIVE'Then MapType:='unsigned int'
+  Else If U='LONG_INTEGER' Then MapType:='long'
+  Else If U='SHORT_INTEGER' Then MapType:='short'
+  Else If U='LONG_LONG_INTEGER' Then MapType:='long long'
+  Else If U='FLOAT'   Then MapType:='double'
+  Else If U='LONG_FLOAT' Then MapType:='double'
+  Else If U='SHORT_FLOAT' Then MapType:='float'
+  Else If U='BOOLEAN' Then MapType:='int'
+  Else If U='CHARACTER' Then MapType:='char'
+  Else If U='WIDE_CHARACTER' Then MapType:='wchar_t'
+  Else If U='STRING'  Then MapType:='char'    { tableau gere ailleurs }
+  Else If U='WIDE_STRING' Then MapType:='wchar_t'
   Else MapType:=T;
 End;
 
@@ -424,8 +431,8 @@ Function MapIdentInExpr(const N:TString):TString;
 Var U:TString;
 Begin
   U:=UpperStr(N);
-  If U='TRUE'  Then MapIdentInExpr:='TRUE'
-  Else If U='FALSE' Then MapIdentInExpr:='FALSE'
+  If U='TRUE'  Then MapIdentInExpr:='1'
+  Else If U='FALSE' Then MapIdentInExpr:='0'
   Else MapIdentInExpr:=N;
 End;
 
@@ -529,65 +536,69 @@ Begin
       TK_KEYWORD: Begin
         U:=V;
         If (U='AND') Then Begin
-          { AND THEN -> AND }
+          { AND THEN -> && (court-circuit C) }
           If IsKw(I+1,'THEN') Then Begin
-            Write(DstFile,' AND '); Inc(I,2);
+            Write(DstFile,' && '); Inc(I,2);
           End Else Begin
-            Write(DstFile,' AND '); Inc(I);
+            Write(DstFile,' && '); Inc(I);
           End;
         End Else If (U='OR') Then Begin
           If IsKw(I+1,'ELSE') Then Begin
-            Write(DstFile,' OR '); Inc(I,2);
+            Write(DstFile,' || '); Inc(I,2);
           End Else Begin
-            Write(DstFile,' OR '); Inc(I);
+            Write(DstFile,' || '); Inc(I);
           End;
         End Else If U='NOT' Then Begin
-          Write(DstFile,'NOT '); Inc(I);
+          Write(DstFile,'!'); Inc(I);
         End Else If U='XOR' Then Begin
-          { Oberon standard : pas de XOR; on emet un commentaire }
-          Write(DstFile,' (* XOR *) '); Inc(I);
+          { C : XOR booleen -> != ; pour bits, ^ }
+          Write(DstFile,' ^ '); Inc(I);
         End Else If U='MOD' Then Begin
-          Write(DstFile,' MOD '); Inc(I);
+          Write(DstFile,' % '); Inc(I);
         End Else If U='REM' Then Begin
-          Write(DstFile,' MOD '); Inc(I);
+          Write(DstFile,' % '); Inc(I);
         End Else If U='ABS' Then Begin
-          Write(DstFile,'ABS'); Inc(I);
+          { abs() de stdlib.h pour les int ; fabs pour double }
+          UsesStdlib:=True;
+          Write(DstFile,'abs'); Inc(I);
         End Else If U='IN' Then Begin
-          Write(DstFile,' IN '); Inc(I);
+          { IN n'a pas d'equivalent C direct }
+          Write(DstFile,' /* in */ '); Inc(I);
         End Else If U='NULL' Then Begin
-          Write(DstFile,'NIL'); Inc(I);
+          Write(DstFile,'NULL'); Inc(I);
         End Else If U='NEW' Then Begin
-          Write(DstFile,'(* NEW *)'); Inc(I);
+          Write(DstFile,'/* NEW */'); Inc(I);
         End Else If U='OTHERS' Then Begin
-          Write(DstFile,'(* others *)'); Inc(I);
+          Write(DstFile,'/* others */'); Inc(I);
         End Else If U='RANGE' Then Begin
-          Write(DstFile,' (* range *) '); Inc(I);
+          Write(DstFile,' /* range */ '); Inc(I);
         End Else Begin
-          { Mot-cle Ada non gere dans une expression : emettre en clair }
+          { Mot-cle Ada non gere dans une expression : emettre tel quel }
           Write(DstFile,LowerStr(U)); Inc(I);
         End;
       End;
       TK_OP: Begin
-        If V='/=' Then Write(DstFile,'#')
-        Else If V='&' Then Write(DstFile,'+')
+        If V='/=' Then Write(DstFile,'!=')
+        Else If V='=' Then Write(DstFile,'==')
+        Else If V='&' Then Write(DstFile,'+') { concatenation : approximation }
         Else If V='**' Then Begin
           HasPower:=True;
-          { On insere une marque pour signaler un appel a Power_;
-            le code emis reste approximatif. }
-          Write(DstFile,' (* ** *) *');
+          { Marque approximative ; pour une vraie exponentiation,
+            utiliser pow() de <math.h>. }
+          Write(DstFile,' /* ** */ *');
         End
         Else If V='..' Then Write(DstFile,'..')
-        Else If V=':=' Then Write(DstFile,':=')
+        Else If V=':=' Then Write(DstFile,'=')
         Else If V='''' Then Write(DstFile,V)  { attribut, emet brut }
         Else Write(DstFile,V);
         Inc(I);
       End;
       TK_PUNCT: Begin
         If V='(' Then Begin
-          { Verifier si c'est un appel sur une variable tableau }
           Inc(ParenDepth);
           If ParenDepth<=63 Then IsArrayCall[ParenDepth]:=False;
           If (PrevK=TK_IDENT)and NameInList(ArrayVars,Prev) Then Begin
+            { Acces tableau Ada T(i) -> T[i] en C }
             Bracket:='[';
             If ParenDepth<=63 Then IsArrayCall[ParenDepth]:=True;
             Write(DstFile,Bracket);
@@ -603,9 +614,7 @@ Begin
           If ParenDepth>0 Then Dec(ParenDepth);
           Inc(I);
         End Else If V='|' Then Begin
-          { Dans une expression simple : '|' est un OR-pattern (CASE).
-            Si on n'est pas dans un parametre, on devrait s'arreter
-            mais Stop le gere; sinon emit ', ' separator. }
+          { Pas employe dans une expression simple en C : separateur }
           Write(DstFile,', ');
           Inc(I);
         End Else Begin
@@ -622,13 +631,18 @@ Begin
         Inc(I);
       End;
       TK_CHAR: Begin
-        { Emettre 'X' Oberon (utiliser "..." si X est un apostrophe) }
-        If V='''' Then Write(DstFile,'"','''','"')
-        Else Begin
-          Write(DstFile,'''');
+        { Caractere C : 'X', avec escapes C si necessaire }
+        Write(DstFile,'''');
+        Case V[1] of
+          '\':  Write(DstFile,'\\');
+          '''': Write(DstFile,'\''');
+          #10:  Write(DstFile,'\n');
+          #13:  Write(DstFile,'\r');
+          #9:   Write(DstFile,'\t');
+        Else
           Write(DstFile,V);
-          Write(DstFile,'''');
         End;
+        Write(DstFile,'''');
         Inc(I);
       End;
       TK_IDENT: Begin
@@ -707,147 +721,158 @@ Var
 
 Procedure SwitchSection(NewSec:Char);
 Begin
+  { C n'a pas de sections CONST/TYPE/VAR distinctes :
+    chaque declaration utilise sa propre forme. }
   If NewSec=CurSection Then Exit;
   CurSection:=NewSec;
-  Case NewSec of
-    'C': EmitLn('CONST');
-    'T': EmitLn('TYPE');
-    'V': EmitLn('VAR');
-  End;
 End;
 
 { Forward }
 Procedure EmitProcOrFunc(Var I:Integer); Forward;
 
 { Emet une declaration de type complete.
-  I pointe sur 'TYPE' ou 'SUBTYPE'. }
+  I pointe sur 'TYPE' ou 'SUBTYPE'. En C, on tente d'emettre
+  un typedef pour les RECORD, ARRAY et enums ; les autres
+  declarations Ada deviennent des commentaires. }
 Procedure EmitTypeDecl(Var I:Integer);
 Var
   Name : TString;
-  IsSub: Boolean;
   Base : TString;
   V    : TString;
+  IsSub: Boolean;
+  Lo,Hi: TString;
+  ArrSz: TString;
+  Save : Integer;
 Begin
   IsSub := IsKw(I,'SUBTYPE');
   Inc(I); { TYPE / SUBTYPE }
-  SwitchSection('T');
-  Indent:=Indent+2;
-  WriteIndent;
+  Name:='';
   If TKind(I)=TK_IDENT Then Begin
     Name:=TVal(I);
-    Write(DstFile,Name,'=');
-    Inc(I);
-  End Else Begin
     Inc(I);
   End;
-  { 'IS' attendu }
   If IsKw(I,'IS') Then Inc(I);
 
   If IsSub Then Begin
-    { SUBTYPE Name IS Base [RANGE A..B]; -> Name = [A..B]; ou = Base; }
+    { SUBTYPE Name IS Base [RANGE A..B]; -> typedef Base Name; }
     Base:=ReadAdaType(I);
     If IsKw(I,'RANGE') Then Begin
       Inc(I);
-      Write(DstFile,'[');
+      { Sauter A..B en commentaire }
+      Write(DstFile,'typedef ',Base,' ',Name,'; /* range ');
       EmitExpr(I, ST_DDOT or ST_SEMI);
       If IsOp(I,'..') Then Begin
-        Write(DstFile,'..');
-        Inc(I);
+        Write(DstFile,'..'); Inc(I);
         EmitExpr(I, ST_SEMI);
       End;
-      Write(DstFile,']');
+      WriteLn(DstFile,' */');
     End Else Begin
-      Write(DstFile,Base);
+      WriteLn(DstFile,'typedef ',Base,' ',Name,';');
     End;
   End Else
   If IsKw(I,'RECORD') Then Begin
-    { TYPE Name IS RECORD ... END RECORD; -> Name = RECORD ... END; }
+    (* TYPE Name IS RECORD ... END RECORD; -> typedef struct {...} Name; *)
     Inc(I);
-    Write(DstFile,'RECORD');
-    WriteLn(DstFile);
+    WriteLn(DstFile,'typedef struct {');
     While (TKind(I)<>TK_EOF) and not (IsKw(I,'END') and IsKw(I+1,'RECORD')) do Begin
       If IsPunct(I,';') Then Begin Inc(I); Continue; End;
-      { champ : Name [, Name...] : Type [:= expr]; }
-      WriteIndent; Write(DstFile,'  ');
+      Write(DstFile,'  ');
+      { Lire les noms des champs }
+      Save:=I;
+      While TKind(I)=TK_IDENT do Begin
+        Inc(I);
+        If IsPunct(I,',') Then Inc(I) Else Break;
+      End;
+      If IsPunct(I,':') Then Inc(I);
+      V:=ReadAdaType(I);
+      Write(DstFile,V,' ');
+      { Reemettre les noms apres le type C }
+      I:=Save;
       While TKind(I)=TK_IDENT do Begin
         Write(DstFile,TVal(I));
         Inc(I);
-        If IsPunct(I,',') Then Begin Write(DstFile,','); Inc(I); End
+        If IsPunct(I,',') Then Begin Write(DstFile,', '); Inc(I); End
         Else Break;
       End;
-      If IsPunct(I,':') Then Begin Write(DstFile,':'); Inc(I); End;
+      If IsPunct(I,':') Then Inc(I);
       V:=ReadAdaType(I);
-      Write(DstFile,V);
       { ignorer eventuel := default }
       If IsOp(I,':=') Then Begin
         Inc(I);
         While not IsPunct(I,';') and (TKind(I)<>TK_EOF) do Inc(I);
       End;
-      Write(DstFile,';');
-      WriteLn(DstFile);
+      WriteLn(DstFile,';');
       If IsPunct(I,';') Then Inc(I);
     End;
-    WriteIndent;
-    Write(DstFile,'END');
+    WriteLn(DstFile,'} ',Name,';');
     If IsKw(I,'END') Then Inc(I);
     If IsKw(I,'RECORD') Then Inc(I);
   End Else
   If IsKw(I,'ARRAY') Then Begin
     Inc(I);
-    Write(DstFile,'ARRAY ');
-    EmitInsideParen(I);
+    { ARRAY (lo..hi) OF Base -> typedef Base Name[hi-lo+1]; ou
+      taille MAX_ARR si non determinable. }
+    ArrSz:='256';
+    If IsPunct(I,'(') Then Begin
+      Inc(I);
+      Lo:=''; Hi:='';
+      While (TKind(I)<>TK_EOF) and not IsOp(I,'..') and not IsPunct(I,')') do Begin
+        Lo:=Lo+TVal(I);
+        Inc(I);
+      End;
+      If IsOp(I,'..') Then Begin
+        Inc(I);
+        While (TKind(I)<>TK_EOF) and not IsPunct(I,')') do Begin
+          Hi:=Hi+TVal(I);
+          Inc(I);
+        End;
+      End;
+      If IsPunct(I,')') Then Inc(I);
+      If (Hi<>'') and (Lo<>'') Then
+        ArrSz:='('+Hi+')-('+Lo+')+1';
+    End;
     If IsKw(I,'OF') Then Begin
-      Write(DstFile,' OF ');
       Inc(I);
       Base:=ReadAdaType(I);
-      Write(DstFile,Base);
-    End;
+    End Else
+      Base:='int';
+    WriteLn(DstFile,'typedef ',Base,' ',Name,'[',ArrSz,'];');
     If Length(Name)>0 Then AddName(ArrayTypes,Name);
   End Else
   If IsPunct(I,'(') Then Begin
-    { Type enum: TYPE Name IS (a,b,c); }
-    Write(DstFile,'(');
+    (* Type enum Ada (a,b,c) -> typedef enum {...} Name; *)
+    Write(DstFile,'typedef enum { ');
     Inc(I);
     While (TKind(I)<>TK_EOF) and not IsPunct(I,')') do Begin
       If TKind(I)=TK_IDENT Then Write(DstFile,TVal(I));
       Inc(I);
       If IsPunct(I,',') Then Begin Write(DstFile,', '); Inc(I); End;
     End;
-    If IsPunct(I,')') Then Begin Write(DstFile,')'); Inc(I); End;
+    If IsPunct(I,')') Then Inc(I);
+    WriteLn(DstFile,' } ',Name,';');
   End Else
   If IsKw(I,'NEW') Then Begin
     Inc(I);
-    { TYPE X IS NEW Base [RANGE ...]; -> juste copier Base }
     Base:=ReadAdaType(I);
-    Write(DstFile,Base);
+    WriteLn(DstFile,'typedef ',Base,' ',Name,';');
     If IsKw(I,'RANGE') Then Begin
       Inc(I);
-      Write(DstFile,' (* range ');
-      EmitExpr(I, ST_DDOT or ST_SEMI);
-      If IsOp(I,'..') Then Begin
-        Write(DstFile,'..'); Inc(I);
-        EmitExpr(I, ST_SEMI);
-      End;
-      Write(DstFile,' *)');
+      While (TKind(I)<>TK_EOF) and not IsPunct(I,';') do Inc(I);
     End;
   End Else
   If IsKw(I,'RANGE') Then Begin
     Inc(I);
-    Write(DstFile,'[');
+    Write(DstFile,'typedef int ',Name,'; /* range ');
     EmitExpr(I, ST_DDOT or ST_SEMI);
     If IsOp(I,'..') Then Begin
       Write(DstFile,'..'); Inc(I);
       EmitExpr(I, ST_SEMI);
     End;
-    Write(DstFile,']');
+    WriteLn(DstFile,' */');
   End Else Begin
-    { Inconnu : juste reproduire jusqu'a ; }
     Base:=ReadAdaType(I);
-    Write(DstFile,Base);
+    WriteLn(DstFile,'typedef ',Base,' ',Name,';');
   End;
-  Write(DstFile,';');
-  WriteLn(DstFile);
-  Indent:=Indent-2;
   If IsPunct(I,';') Then Inc(I);
 End;
 
@@ -860,6 +885,8 @@ Var
   NCount   : Integer;
   IsConst  : Boolean;
   TypeStr  : TString;
+  RawType  : TString;
+  IsString : Boolean;
   K        : Integer;
 Begin
   NCount:=0;
@@ -872,10 +899,15 @@ Begin
   If IsPunct(I,':') Then Inc(I);
   IsConst:=False;
   If IsKw(I,'CONSTANT') Then Begin IsConst:=True; Inc(I); End;
+  RawType:='';
+  If TKind(I)=TK_IDENT Then RawType:=TVal(I);
   TypeStr:=ReadAdaType(I);
+  IsString:=(UpperStr(RawType)='STRING')or(UpperStr(RawType)='WIDE_STRING');
 
   { Inscrire les variables de type tableau }
-  If NameInList(ArrayTypes,TypeStr) Then
+  If NameInList(ArrayTypes,RawType) or NameInList(ArrayTypes,TypeStr) Then
+    For K:=1 to NCount do AddName(ArrayVars,Names[K]);
+  If IsString Then
     For K:=1 to NCount do AddName(ArrayVars,Names[K]);
 
   { Inscrire toutes les variables/constantes declarees }
@@ -885,52 +917,45 @@ Begin
   If IsOp(I,':=') Then Begin
     Inc(I);
     If IsConst Then Begin
-      { Const Oberon : Name = expr;  (sans type) }
-      SwitchSection('C');
-      Indent:=Indent+2;
+      { CONSTANT C : static const Type Name = expr; }
       WriteIndent;
-      Write(DstFile,Names[1],' = ');
+      Write(DstFile,'static const ',TypeStr,' ',Names[1],' = ');
       EmitExpr(I, ST_SEMI);
-      Write(DstFile,';  (* type Ada: ',TypeStr,' *)');
-      WriteLn(DstFile);
-      Indent:=Indent-2;
+      WriteLn(DstFile,';');
     End Else Begin
-      { Var Oberon : pas d'initialiseur direct ; on declare la var
-        et on emet l'init en commentaire (a appliquer manuellement
-        ou en debut de BEGIN). }
-      SwitchSection('V');
-      Indent:=Indent+2;
       For K:=1 to NCount do Begin
         WriteIndent;
-        Write(DstFile,Names[K],' : ',TypeStr,';');
-        WriteLn(DstFile);
+        If IsString Then Begin
+          If K=1 Then Begin
+            Write(DstFile,'char ',Names[K],'[256] = ');
+            EmitExpr(I, ST_SEMI);
+            WriteLn(DstFile,';');
+          End Else
+            WriteLn(DstFile,'char ',Names[K],'[256] = {0};');
+        End Else Begin
+          Write(DstFile,TypeStr,' ',Names[K],' = ');
+          If K=1 Then EmitExpr(I, ST_SEMI)
+          Else Write(DstFile,'0');
+          WriteLn(DstFile,';');
+        End;
       End;
-      WriteIndent;
-      Write(DstFile,'  (* init: ',Names[1],' := ');
-      EmitExpr(I, ST_SEMI);
-      WriteLn(DstFile,'; *)');
-      Indent:=Indent-2;
     End;
   End Else Begin
     If IsConst Then Begin
-      { CONSTANT sans valeur : exceptionnel, traiter en Var }
-      SwitchSection('V');
-      Indent:=Indent+2;
       For K:=1 to NCount do Begin
         WriteIndent;
-        Write(DstFile,Names[K],' : ',TypeStr,';');
-        WriteLn(DstFile);
+        WriteLn(DstFile,'static const ',TypeStr,' ',Names[K],' = 0;');
       End;
-      Indent:=Indent-2;
     End Else Begin
-      SwitchSection('V');
-      Indent:=Indent+2;
       For K:=1 to NCount do Begin
         WriteIndent;
-        Write(DstFile,Names[K],' : ',TypeStr,';');
-        WriteLn(DstFile);
+        If IsString Then
+          WriteLn(DstFile,'char ',Names[K],'[256] = {0};')
+        Else If NameInList(ArrayVars,Names[K]) Then
+          WriteLn(DstFile,TypeStr,' ',Names[K],';')
+        Else
+          WriteLn(DstFile,TypeStr,' ',Names[K],' = 0;');
       End;
-      Indent:=Indent-2;
     End;
   End;
   If IsPunct(I,';') Then Inc(I);
@@ -985,7 +1010,8 @@ Begin
 End;
 
 
-{ Emet un appel a Put/Put_Line/Get/etc. en traduisant vers Out.* }
+{ Emet un appel a Put/Put_Line/Get/etc. en traduisant vers
+  printf / puts / scanf / fgets de stdio.h.                }
 Procedure EmitIOCall(Var I:Integer; const Name:TString);
 Var
   U        : TString;
@@ -993,34 +1019,34 @@ Var
   Found    : Boolean;
   J        : Integer;
   ArgKind  : TTokenKind;
-  EmitProc : TString;
+  Fmt      : TString;
   IsPutLn  : Boolean;
   IsGet    : Boolean;
   HasArg   : Boolean;
 Begin
   U:=UpperStr(Name);
   UsesOut:=True;
+  UsesStdio:=True;
   IsPutLn:=(U='PUT_LINE');
   IsGet:=(U='GET')or(U='GET_LINE');
 
   { Pas de () suivant -> appel sans argument }
   If not IsPunct(I,'(') Then Begin
-    If U='NEW_LINE' Then EmitLn('Out.Ln;')
-    Else If U='SKIP_LINE' Then EmitLn('(* skip_line *)')
-    Else If U='PUT_LINE' Then EmitLn('Out.Ln;')
+    If U='NEW_LINE' Then EmitLn('printf("\n");')
+    Else If U='SKIP_LINE' Then EmitLn('/* skip_line */')
+    Else If U='PUT_LINE' Then EmitLn('printf("\n");')
     Else If U='PUT' Then  { rien a faire }
     Else Begin
-      WriteIndent; Write(DstFile,Name,';'); WriteLn(DstFile);
+      WriteIndent; Write(DstFile,Name,'();'); WriteLn(DstFile);
     End;
     Exit;
   End;
   Inc(I); { ( }
 
-  { Cas particuliers : Skip_Line(N) -> (* skip_line N *) ;
-                       New_Line(N)   -> boucle de WriteLn         }
+  { Cas particuliers : Skip_Line(N) -> /* skip_line N */ }
   If U='SKIP_LINE' Then Begin
     WriteIndent;
-    Write(DstFile,'(* skip_line ');
+    Write(DstFile,'/* skip_line ');
     Depth:=1;
     While (Depth>0)and(TKind(I)<>TK_EOF) do Begin
       If IsPunct(I,'(') Then Inc(Depth)
@@ -1028,7 +1054,7 @@ Begin
       Write(DstFile,TVal(I)); Inc(I);
     End;
     If IsPunct(I,')') Then Inc(I);
-    WriteLn(DstFile,' *)');
+    WriteLn(DstFile,' */');
     Exit;
   End;
 
@@ -1059,33 +1085,52 @@ Begin
 
     HasArg:=True;
     ArgKind:=TKind(I);
-    { Determiner la procedure Out/In a appeler }
+
     If IsGet Then Begin
-      If U='GET_LINE' Then EmitProc:='In.Line'
-      Else EmitProc:='In.Int';
-    End Else Begin
-      Case ArgKind of
-        TK_STRING : EmitProc:='Out.String';
-        TK_INT    : EmitProc:='Out.Int';
-        TK_REAL   : EmitProc:='Out.Real';
-        TK_CHAR   : EmitProc:='Out.Char';
-      Else
-        EmitProc:='Out.Int';  { defaut : entier }
+      { scanf : besoin de & sur l'identifiant. Pour Get_Line on
+        utilise fgets sur un buffer (suppose char[]). }
+      WriteIndent;
+      If U='GET_LINE' Then Begin
+        Write(DstFile,'fgets(');
+        EmitExpr(I, ST_RPAR or ST_COMMA);
+        WriteLn(DstFile,', 256, stdin);');
+      End Else Begin
+        Write(DstFile,'scanf("%d", &');
+        EmitExpr(I, ST_RPAR or ST_COMMA);
+        WriteLn(DstFile,');');
       End;
+    End Else Begin
+      { Determiner le format printf selon le type d'argument }
+      Case ArgKind of
+        TK_STRING : Begin
+          { Chaine litterale : printf("...") sans format }
+          WriteIndent;
+          Write(DstFile,'printf(');
+          EmitExpr(I, ST_RPAR or ST_COMMA);
+          WriteLn(DstFile,');');
+          Continue;
+        End;
+        TK_INT    : Fmt:='"%d"';
+        TK_REAL   : Fmt:='"%g"';
+        TK_CHAR   : Fmt:='"%c"';
+      Else
+        { Identifiant : on ne connait pas le type ; on suppose int.
+          Pour les chaines (variables), printf("%s", x) }
+        If (ArgKind=TK_IDENT) and NameInList(ArrayVars,TVal(I)) Then
+          Fmt:='"%s"'
+        Else
+          Fmt:='"%d"';
+      End;
+      WriteIndent;
+      Write(DstFile,'printf(',Fmt,', ');
+      EmitExpr(I, ST_RPAR or ST_COMMA);
+      WriteLn(DstFile,');');
     End;
-    WriteIndent;
-    Write(DstFile,EmitProc,'(');
-    EmitExpr(I, ST_RPAR or ST_COMMA);
-    { Largeur pour WriteInt/WriteReal/WriteCard }
-    If (not IsGet) and ((EmitProc='Out.Int')or
-                        (EmitProc='Out.Real')) Then
-      Write(DstFile,', 0');
-    WriteLn(DstFile,');');
   End;
 
-  { New_Line tout court ou Put_Line : ajouter WriteLn }
+  { Put_Line / New_Line : ajouter le retour ligne final }
   If IsPutLn or (U='NEW_LINE') Then
-    EmitLn('Out.Ln;');
+    EmitLn('printf("\n");');
   If (not HasArg) and (U='PUT') Then ; { rien }
 End;
 
@@ -1134,10 +1179,9 @@ Begin
 
   WriteIndent;
   If IsAssign Then Begin
-    { LHS jusqu'a ':=', puis RHS jusqu'a ';' }
     EmitExpr(I, ST_ASSIGN or ST_SEMI);
     If IsOp(I,':=') Then Begin
-      Write(DstFile,':=');
+      Write(DstFile,' = ');
       Inc(I);
       EmitExpr(I, ST_SEMI);
     End;
@@ -1155,31 +1199,34 @@ Procedure EmitIfStmt(Var I:Integer);
 Begin
   { I sur 'IF' }
   Inc(I);
-  WriteIndent; Write(DstFile,'IF ');
+  WriteIndent; Write(DstFile,'if (');
   EmitExpr(I, ST_THEN);
-  WriteLn(DstFile,' THEN');
+  WriteLn(DstFile,') {');
   If IsKw(I,'THEN') Then Inc(I);
   Indent:=Indent+2;
   EmitStmtBlock(I,'END');
   Indent:=Indent-2;
+  WriteIndent; Write(DstFile,'}');
   While IsKw(I,'ELSIF') do Begin
-    WriteIndent; Write(DstFile,'ELSIF ');
+    Write(DstFile,' else if (');
     Inc(I);
     EmitExpr(I, ST_THEN);
-    WriteLn(DstFile,' THEN');
+    WriteLn(DstFile,') {');
     If IsKw(I,'THEN') Then Inc(I);
     Indent:=Indent+2;
     EmitStmtBlock(I,'END');
     Indent:=Indent-2;
+    WriteIndent; Write(DstFile,'}');
   End;
   If IsKw(I,'ELSE') Then Begin
-    WriteIndent; WriteLn(DstFile,'ELSE');
+    WriteLn(DstFile,' else {');
     Inc(I);
     Indent:=Indent+2;
     EmitStmtBlock(I,'END');
     Indent:=Indent-2;
-  End;
-  WriteIndent; WriteLn(DstFile,'END;');
+    WriteIndent; WriteLn(DstFile,'}');
+  End Else
+    WriteLn(DstFile);
   { END IF; }
   If IsKw(I,'END') Then Inc(I);
   If IsKw(I,'IF') Then Inc(I);
@@ -1189,14 +1236,14 @@ End;
 Procedure EmitWhileStmt(Var I:Integer);
 Begin
   Inc(I); { WHILE }
-  WriteIndent; Write(DstFile,'WHILE ');
+  WriteIndent; Write(DstFile,'while (');
   EmitExpr(I, ST_LOOP);
-  WriteLn(DstFile,' DO');
+  WriteLn(DstFile,') {');
   If IsKw(I,'LOOP') Then Inc(I);
   Indent:=Indent+2;
   EmitStmtBlock(I,'END');
   Indent:=Indent-2;
-  WriteIndent; WriteLn(DstFile,'END;');
+  WriteIndent; WriteLn(DstFile,'}');
   If IsKw(I,'END') Then Inc(I);
   If IsKw(I,'LOOP') Then Inc(I);
   If IsPunct(I,';') Then Inc(I);
@@ -1219,7 +1266,6 @@ Begin
   If IsKw(I,'REVERSE') Then Begin Reverse:=True; Inc(I); End;
   WriteIndent;
   If Reverse Then Begin
-    { Localiser bornes A..B }
     StartA:=I;
     DDotPos:=I;
     While (TKind(DDotPos)<>TK_EOF) and not IsOp(DDotPos,'..')
@@ -1227,36 +1273,36 @@ Begin
       Inc(DDotPos);
     EndPos:=DDotPos+1;
     While (TKind(EndPos)<>TK_EOF) and not IsKw(EndPos,'LOOP') do Inc(EndPos);
-    Write(DstFile,'FOR ',VarName,' := ');
-    { Emettre B en premier (borne haute) }
+    Write(DstFile,'for (',VarName,' = ');
     If IsOp(DDotPos,'..') Then Begin
+      { Borne haute en premier (decompte) }
       Save:=DDotPos+1;
       EmitExpr(Save, ST_LOOP);
-      Write(DstFile,' TO ');
-      { Puis A }
+      Write(DstFile,'; ',VarName,' >= ');
       Save:=StartA;
       EmitExpr(Save, ST_DDOT or ST_LOOP);
-      Write(DstFile,' BY -1');
+      Write(DstFile,'; ',VarName,'--');
     End Else Begin
       EmitExpr(I, ST_LOOP);
     End;
     I:=EndPos;
-    WriteLn(DstFile,' DO');
+    WriteLn(DstFile,') {');
   End Else Begin
-    Write(DstFile,'FOR ',VarName,' := ');
+    Write(DstFile,'for (',VarName,' = ');
     EmitExpr(I, ST_DDOT or ST_LOOP);
     If IsOp(I,'..') Then Begin
-      Write(DstFile,' TO ');
+      Write(DstFile,'; ',VarName,' <= ');
       Inc(I);
       EmitExpr(I, ST_LOOP);
+      Write(DstFile,'; ',VarName,'++');
     End;
-    WriteLn(DstFile,' DO');
+    WriteLn(DstFile,') {');
   End;
   If IsKw(I,'LOOP') Then Inc(I);
   Indent:=Indent+2;
   EmitStmtBlock(I,'END');
   Indent:=Indent-2;
-  WriteIndent; WriteLn(DstFile,'END;');
+  WriteIndent; WriteLn(DstFile,'}');
   If IsKw(I,'END') Then Inc(I);
   If IsKw(I,'LOOP') Then Inc(I);
   If IsPunct(I,';') Then Inc(I);
@@ -1265,56 +1311,77 @@ End;
 Procedure EmitLoopStmt(Var I:Integer);
 Begin
   Inc(I); { LOOP }
-  WriteIndent; WriteLn(DstFile,'LOOP');
+  WriteIndent; WriteLn(DstFile,'for (;;) {');
   Indent:=Indent+2;
   EmitStmtBlock(I,'END');
   Indent:=Indent-2;
-  WriteIndent; WriteLn(DstFile,'END;');
+  WriteIndent; WriteLn(DstFile,'}');
   If IsKw(I,'END') Then Inc(I);
   If IsKw(I,'LOOP') Then Inc(I);
   If IsPunct(I,';') Then Inc(I);
 End;
 
 Procedure EmitCaseStmt(Var I:Integer);
-Var FirstBranch:Boolean;
+Var
+  LoVal,HiVal : Integer;
+  K : Integer;
+  ECode : Integer;
 Begin
   Inc(I); { CASE }
-  WriteIndent; Write(DstFile,'CASE ');
+  WriteIndent; Write(DstFile,'switch (');
   EmitExpr(I, ST_IS);
-  WriteLn(DstFile,' OF');
+  WriteLn(DstFile,') {');
   If IsKw(I,'IS') Then Inc(I);
   Indent:=Indent+2;
-  FirstBranch:=True;
   While IsKw(I,'WHEN') do Begin
     Inc(I);
     If IsKw(I,'OTHERS') Then Begin
       Inc(I);
       If IsOp(I,'=>') Then Inc(I);
-      Indent:=Indent-2;
-      WriteIndent; WriteLn(DstFile,'ELSE');
+      WriteIndent; WriteLn(DstFile,'default:');
       Indent:=Indent+2;
       EmitStmtBlock(I,'WHEN');
+      WriteIndent; WriteLn(DstFile,'break;');
+      Indent:=Indent-2;
     End Else Begin
-      WriteIndent;
-      If FirstBranch Then Write(DstFile,'  ')
-                     Else Write(DstFile,'| ');
-      FirstBranch:=False;
-      { Liste de valeurs avec | et ranges A..B }
-      EmitExpr(I, ST_ARROW or ST_PIPE);
-      While IsPunct(I,'|') do Begin
-        Write(DstFile,', ');
-        Inc(I);
+      { Premiere alternative }
+      If (TKind(I)=TK_INT) and IsOp(I+1,'..') and (TKind(I+2)=TK_INT) Then Begin
+        { Plage entiere literale : developper en case lo: ... case hi: }
+        Val(TVal(I),LoVal,ECode);
+        Val(TVal(I+2),HiVal,ECode);
+        For K:=LoVal to HiVal do Begin
+          WriteIndent; WriteLn(DstFile,'case ',K,':');
+        End;
+        Inc(I,3);
+      End Else Begin
+        WriteIndent; Write(DstFile,'case ');
         EmitExpr(I, ST_ARROW or ST_PIPE);
+        WriteLn(DstFile,':');
       End;
-      WriteLn(DstFile,' :');
+      While IsPunct(I,'|') do Begin
+        Inc(I);
+        If (TKind(I)=TK_INT) and IsOp(I+1,'..') and (TKind(I+2)=TK_INT) Then Begin
+          Val(TVal(I),LoVal,ECode);
+          Val(TVal(I+2),HiVal,ECode);
+          For K:=LoVal to HiVal do Begin
+            WriteIndent; WriteLn(DstFile,'case ',K,':');
+          End;
+          Inc(I,3);
+        End Else Begin
+          WriteIndent; Write(DstFile,'case ');
+          EmitExpr(I, ST_ARROW or ST_PIPE);
+          WriteLn(DstFile,':');
+        End;
+      End;
       If IsOp(I,'=>') Then Inc(I);
       Indent:=Indent+2;
       EmitStmtBlock(I,'WHEN');
+      WriteIndent; WriteLn(DstFile,'break;');
       Indent:=Indent-2;
     End;
   End;
   Indent:=Indent-2;
-  WriteIndent; WriteLn(DstFile,'END;');
+  WriteIndent; WriteLn(DstFile,'}');
   If IsKw(I,'END') Then Inc(I);
   If IsKw(I,'CASE') Then Inc(I);
   If IsPunct(I,';') Then Inc(I);
@@ -1324,12 +1391,12 @@ Procedure EmitReturnStmt(Var I:Integer);
 Begin
   Inc(I); { RETURN }
   If IsPunct(I,';') Then Begin
-    EmitLn('RETURN;');
+    EmitLn('return;');
     Inc(I);
     Exit;
   End;
   WriteIndent;
-  Write(DstFile,'RETURN ');
+  Write(DstFile,'return ');
   EmitExpr(I, ST_SEMI);
   WriteLn(DstFile,';');
   If IsPunct(I,';') Then Inc(I);
@@ -1340,11 +1407,11 @@ Begin
   Inc(I); { EXIT }
   If IsKw(I,'WHEN') Then Begin
     Inc(I);
-    WriteIndent; Write(DstFile,'IF ');
+    WriteIndent; Write(DstFile,'if (');
     EmitExpr(I, ST_SEMI);
-    WriteLn(DstFile,' THEN EXIT END;');
+    WriteLn(DstFile,') break;');
   End Else Begin
-    EmitLn('EXIT;');
+    EmitLn('break;');
   End;
   If IsPunct(I,';') Then Inc(I);
 End;
@@ -1356,7 +1423,7 @@ Begin
   If TKind(I)=TK_IDENT Then Begin
     Lab:=TVal(I);
     AddName(Labels,Lab);
-    WriteIndent; WriteLn(DstFile,'(* GOTO ',Lab,' - non supporte en Oberon *)');
+    WriteIndent; WriteLn(DstFile,'goto ',Lab,';');
     Inc(I);
   End;
   If IsPunct(I,';') Then Inc(I);
@@ -1369,7 +1436,7 @@ Begin
   If TKind(I)=TK_IDENT Then Begin
     Lab:=TVal(I);
     AddName(Labels,Lab);
-    WriteIndent; WriteLn(DstFile,'(* label ',Lab,' *)');
+    WriteIndent; WriteLn(DstFile,Lab,': ;');
     Inc(I);
   End;
   If IsOp(I,'>>') Then Inc(I);
@@ -1378,52 +1445,62 @@ End;
 Procedure EmitDeclareBlock(Var I:Integer);
 Var
   Names    : Array[1..16] of TString;
-  Inits    : Array[1..16] of Integer; { token index of := expr ; or 0 }
+  Inits    : Array[1..16] of Integer;
+  Types    : Array[1..16] of TString;
   NCount,K : Integer;
   Save     : Integer;
+  TName    : TString;
 Begin
   Inc(I); { DECLARE }
   NCount:=0;
-  WriteIndent; WriteLn(DstFile,'(* DECLARE: declarations locales *)');
+  WriteIndent; WriteLn(DstFile,'{ /* declare */');
+  Indent:=Indent+2;
   While not IsKw(I,'BEGIN') and (TKind(I)<>TK_EOF) do Begin
     If IsPunct(I,';') Then Begin Inc(I); Continue; End;
-    { Lire un nom : type [:= expr]; }
     If TKind(I)=TK_IDENT Then Begin
       Inc(NCount);
-      If NCount<=16 Then Names[NCount]:=TVal(I);
+      If NCount<=16 Then Begin
+        Names[NCount]:=TVal(I);
+        Types[NCount]:='int';
+      End;
       Inc(I);
-      { sauter eventuel ", autre" pour cette version simple }
       While IsPunct(I,',') and (TKind(I+1)=TK_IDENT) do Inc(I,2);
       If IsPunct(I,':') Then Inc(I);
-      { sauter le type }
+      If IsKw(I,'CONSTANT') Then Inc(I);
+      If TKind(I)=TK_IDENT Then Begin
+        TName:=ReadAdaType(I);
+        If NCount<=16 Then Types[NCount]:=TName;
+      End;
       While (TKind(I)<>TK_EOF) and not IsOp(I,':=') and not IsPunct(I,';') do
         Inc(I);
       If NCount<=16 Then Begin
         If IsOp(I,':=') Then Inits[NCount]:=I+1
                          Else Inits[NCount]:=0;
       End;
-      { trouver le ; }
       While (TKind(I)<>TK_EOF) and not IsPunct(I,';') do Inc(I);
       If IsPunct(I,';') Then Inc(I);
     End Else
       Inc(I);
   End;
-  { Promouvoir les vars vers la liste globale ForVars (Integer) }
-  For K:=1 to NCount do AddName(ForVars,Names[K]);
+  { Emettre les declarations C locales }
+  For K:=1 to NCount do Begin
+    AddName(DeclaredVars,Names[K]);
+    WriteIndent;
+    WriteLn(DstFile,Types[K],' ',Names[K],' = 0;');
+  End;
   If IsKw(I,'BEGIN') Then Inc(I);
-  { Oberon n'autorise pas un bloc BEGIN..END anonyme imbrique;
-    on emet directement les statements sans bloc separe. }
-  { Emettre les initialisations }
   For K:=1 to NCount do Begin
     If Inits[K]>0 Then Begin
       WriteIndent;
-      Write(DstFile,Names[K],' := ');
+      Write(DstFile,Names[K],' = ');
       Save:=Inits[K];
       EmitExpr(Save, ST_SEMI);
       WriteLn(DstFile,';');
     End;
   End;
   EmitStmtBlock(I,'END');
+  Indent:=Indent-2;
+  WriteIndent; WriteLn(DstFile,'}');
   If IsKw(I,'END') Then Inc(I);
   If IsPunct(I,';') Then Inc(I);
 End;
@@ -1431,10 +1508,11 @@ End;
 Procedure EmitBeginBlock(Var I:Integer);
 Begin
   Inc(I); { BEGIN }
-  { Oberon n'autorise pas un bloc BEGIN..END anonyme imbrique;
-    on emet les statements directement. }
-  WriteIndent; WriteLn(DstFile,'(* begin block *)');
+  WriteIndent; WriteLn(DstFile,'{');
+  Indent:=Indent+2;
   EmitStmtBlock(I,'END');
+  Indent:=Indent-2;
+  WriteIndent; WriteLn(DstFile,'}');
   If IsKw(I,'END') Then Inc(I);
   If IsPunct(I,';') Then Inc(I);
 End;
@@ -1453,26 +1531,28 @@ Begin
   If IsKw(I,'BEGIN')   Then Begin EmitBeginBlock(I); Exit; End;
   If IsKw(I,'NULL') Then Begin
     Inc(I); If IsPunct(I,';') Then Inc(I);
-    EmitLn('(* null *)');
+    EmitLn('/* null */');
     Exit;
   End;
   If IsKw(I,'PRAGMA') Then Begin
-    WriteIndent; Write(DstFile,'(* pragma');
+    WriteIndent; Write(DstFile,'/* pragma');
     While not IsPunct(I,';') and (TKind(I)<>TK_EOF) do Begin
       Write(DstFile,' ',TVal(I)); Inc(I);
     End;
-    WriteLn(DstFile,' *)');
+    WriteLn(DstFile,' */');
     If IsPunct(I,';') Then Inc(I);
     Exit;
   End;
   If IsOp(I,'<<') Then Begin EmitLabel(I); Exit; End;
   If IsKw(I,'RAISE') Then Begin
-    WriteIndent; Write(DstFile,'(* raise');
+    WriteIndent; Write(DstFile,'/* raise');
     Inc(I);
     While not IsPunct(I,';') and (TKind(I)<>TK_EOF) do Begin
       Write(DstFile,' ',TVal(I)); Inc(I);
     End;
-    WriteLn(DstFile,' *)');
+    WriteLn(DstFile,' */');
+    UsesStdlib:=True;
+    EmitLn('exit(1);');
     If IsPunct(I,';') Then Inc(I);
     Exit;
   End;
@@ -1486,16 +1566,21 @@ Procedure EmitParamList(Var I:Integer);
 Var
   Names    : Array[1..16] of TString;
   NCount,K : Integer;
-  Mode     : TString;
+  IsOut    : Boolean;
   TypeStr  : TString;
+  RawType  : TString;
+  IsString : Boolean;
   First    : Boolean;
 Begin
-  If not IsPunct(I,'(') Then Exit;
+  If not IsPunct(I,'(') Then Begin
+    Write(DstFile,'(void)');
+    Exit;
+  End;
   Inc(I);
   Write(DstFile,'(');
   First:=True;
   While not IsPunct(I,')') and (TKind(I)<>TK_EOF) do Begin
-    Mode:='';
+    IsOut:=False;
     NCount:=0;
     While TKind(I)=TK_IDENT do Begin
       Inc(NCount);
@@ -1504,27 +1589,33 @@ Begin
       If IsPunct(I,',') Then Inc(I) Else Break;
     End;
     If IsPunct(I,':') Then Inc(I);
+    { mode : IN (default, valeur), OUT/IN OUT/ACCESS -> pointeur }
     If IsKw(I,'IN') Then Begin
       Inc(I);
-      If IsKw(I,'OUT') Then Begin Mode:='VAR'; Inc(I); End;
-    End Else If IsKw(I,'OUT') Then Begin Mode:='VAR'; Inc(I); End
-    Else If IsKw(I,'ACCESS') Then Begin Mode:='VAR'; Inc(I); End;
+      If IsKw(I,'OUT') Then Begin IsOut:=True; Inc(I); End;
+    End Else If IsKw(I,'OUT') Then Begin IsOut:=True; Inc(I); End
+    Else If IsKw(I,'ACCESS') Then Begin IsOut:=True; Inc(I); End;
+    RawType:='';
+    If TKind(I)=TK_IDENT Then RawType:=TVal(I);
     TypeStr:=ReadAdaType(I);
-    { Default value Ada := expr -> ignorer en Oberon }
+    IsString:=(UpperStr(RawType)='STRING')or(UpperStr(RawType)='WIDE_STRING');
     If IsOp(I,':=') Then Begin
       Inc(I);
       While (TKind(I)<>TK_EOF) and not IsPunct(I,';') and not IsPunct(I,')') do
         Inc(I);
     End;
-    If not First Then Write(DstFile,'; ');
-    First:=False;
-    If Mode<>'' Then Write(DstFile,Mode,' ');
     For K:=1 to NCount do Begin
-      If K>1 Then Write(DstFile,',');
-      Write(DstFile,Names[K]);
+      If not First Then Write(DstFile,', ');
+      First:=False;
+      If IsString Then Begin
+        Write(DstFile,'char *',Names[K]);
+        AddName(ArrayVars,Names[K]);
+      End Else If IsOut Then
+        Write(DstFile,TypeStr,' *',Names[K])
+      Else
+        Write(DstFile,TypeStr,' ',Names[K]);
       AddName(DeclaredVars,Names[K]);
     End;
-    Write(DstFile,' : ',TypeStr);
     If IsPunct(I,';') Then Inc(I);
   End;
   If IsPunct(I,')') Then Inc(I);
@@ -1536,6 +1627,10 @@ Var
   IsFunc  : Boolean;
   Name    : TString;
   RetType : TString;
+  SaveI   : Integer;
+  EndSig  : Integer;
+  Depth   : Integer;
+  J       : Integer;
 Begin
   IsFunc := IsKw(I,'FUNCTION');
   Inc(I); { PROCEDURE / FUNCTION }
@@ -1547,50 +1642,62 @@ Begin
     Name:='unknown';
 
   WriteIndent;
-  Write(DstFile,'PROCEDURE ',Name);
 
-  If IsPunct(I,'(') Then EmitParamList(I);
-
+  RetType:='void';
   If IsFunc Then Begin
-    If IsKw(I,'RETURN') Then Begin
-      Inc(I);
-      RetType:=ReadAdaType(I);
-      Write(DstFile,' : ',RetType);
+    { Pre-scan : trouver 'RETURN T' apres la liste de params,
+      pour pouvoir emettre la signature C "T name(...)". }
+    SaveI:=I;
+    Depth:=0;
+    EndSig:=I;
+    While (TKind(EndSig)<>TK_EOF) and not IsKw(EndSig,'IS') do Begin
+      If IsPunct(EndSig,'(') Then Inc(Depth);
+      If IsPunct(EndSig,')') Then Dec(Depth);
+      If (Depth=0) and IsKw(EndSig,'RETURN') Then Begin
+        J:=EndSig+1;
+        RetType:=ReadAdaType(J);
+        Break;
+      End;
+      Inc(EndSig);
     End;
+    I:=SaveI;
+  End;
+
+  Write(DstFile,RetType,' ',Name);
+  EmitParamList(I);
+
+  { Sauter 'RETURN type' eventuel pour avancer I }
+  If IsFunc and IsKw(I,'RETURN') Then Begin
+    Inc(I);
+    RetType:=ReadAdaType(I);
+    If RetType='' Then ;
   End;
 
   If IsKw(I,'IS') Then Inc(I);
 
-  { Forward declaration ? Si on a 'IS SEPARATE' ou directement ';' }
   If IsKw(I,'SEPARATE') Then Begin
-    WriteLn(DstFile,'; (* FORWARD - non standard *)');
+    WriteLn(DstFile,'; /* FORWARD */');
     While not IsPunct(I,';') and (TKind(I)<>TK_EOF) do Inc(I);
     If IsPunct(I,';') Then Inc(I);
     Exit;
   End;
 
-  WriteLn(DstFile,';');
+  WriteLn(DstFile,' {');
 
-  { Empiler nom (informatif) }
   If IsFunc then Begin
     Inc(FuncSP);
     If FuncSP<=MAX_FSTACK Then FuncStack[FuncSP]:=Name;
   End;
 
-  { Declarations puis body }
   Indent:=Indent+2;
   CurSection:=' ';
   EmitDecls(I);
   CurSection:=' ';
   If IsKw(I,'BEGIN') Then Inc(I);
-  Indent:=Indent-2;
-  WriteIndent; WriteLn(DstFile,'BEGIN');
-  Indent:=Indent+2;
   EmitStmtBlock(I,'END');
   Indent:=Indent-2;
-  WriteIndent; WriteLn(DstFile,'END ',Name,';');
+  WriteIndent; WriteLn(DstFile,'}');
 
-  { Sauter END Name; }
   If IsKw(I,'END') Then Inc(I);
   If TKind(I)=TK_IDENT Then Inc(I);
   If IsPunct(I,';') Then Inc(I);
@@ -1705,6 +1812,7 @@ Begin
       If (U='PUT')or(U='PUT_LINE')or(U='NEW_LINE')
        or(U='GET')or(U='GET_LINE')or(U='SKIP_LINE') Then Begin
         UsesOut:=True;
+        UsesStdio:=True;
         Exit;
       End;
     End;
@@ -1715,15 +1823,12 @@ Procedure ScanPower;
 Var I:Integer;
 Begin
   For I:=1 to TokCount do
-    If IsOp(I,'**') Then Begin HasPower:=True; Exit; End;
+    If IsOp(I,'**') Then Begin HasPower:=True; UsesMath:=True; Exit; End;
 End;
 
 Procedure EmitLabelsDecl;
 Begin
-  { Oberon standard ne fournit pas de Label/GoTo. On ne genere
-    plus de declaration de label. }
-  If Labels.Count=0 Then Exit;
-  WriteLn(DstFile,'(* Etiquettes Ada presentes mais ignorees en Oberon *)');
+  { En C, les labels sont definis a l'usage (label:). }
 End;
 
 Procedure EmitForVarsDecl;
@@ -1733,15 +1838,12 @@ Begin
   For I:=1 to ForVars.Count do Begin
     If not NameInList(DeclaredVars,ForVars.Items[I]) Then Begin
       If First Then Begin
-        SwitchSection('V');
-        Indent:=Indent+2;
         First:=False;
       End;
       WriteIndent;
-      WriteLn(DstFile,ForVars.Items[I],' : INTEGER; (* boucle FOR *)');
+      WriteLn(DstFile,'int ',ForVars.Items[I],' = 0; /* boucle FOR */');
     End;
   End;
-  If not First Then Indent:=Indent-2;
 End;
 
 { ============================================================
@@ -1749,16 +1851,16 @@ End;
   ============================================================ }
 Procedure ShowUsage;
 Begin
-  WriteLn('ADA2C ',ADA2C_VERSION,' - Transpilateur Ada vers Oberon');
+  WriteLn('ADA2C ',ADA2C_VERSION,' - Transpilateur Ada vers C');
   WriteLn;
-  WriteLn('Syntaxe : ADA2C [-v] source.adb [destination.Mod]');
+  WriteLn('Syntaxe : ADA2C [-v] source.adb [destination.c]');
   WriteLn;
-  WriteLn('  source.adb      Fichier source Ada (corps de procedure).');
-  WriteLn('  destination.Mod Fichier Oberon a generer (defaut : source.Mod).');
-  WriteLn('  -v / --verbose  Afficher des messages de progression.');
-  WriteLn('  -h / --help     Afficher cette aide.');
+  WriteLn('  source.adb     Fichier source Ada (corps de procedure).');
+  WriteLn('  destination.c  Fichier C a generer (defaut : source.c).');
+  WriteLn('  -v / --verbose Afficher des messages de progression.');
+  WriteLn('  -h / --help    Afficher cette aide.');
   WriteLn;
-  WriteLn('Exemple : ADA2C hello.adb hello.Mod');
+  WriteLn('Exemple : ADA2C hello.adb hello.c');
 End;
 
 Procedure ParseArgs;
@@ -1789,8 +1891,8 @@ Begin
     A:=SrcName;
     I:=Length(A);
     While (I>0)and(A[I]<>'.')and(A[I]<>'\')and(A[I]<>'/') do Dec(I);
-    If (I>0)and(A[I]='.') Then DstName:=Copy(A,1,I-1)+'.Mod'
-                          Else DstName:=A+'.Mod';
+    If (I>0)and(A[I]='.') Then DstName:=Copy(A,1,I-1)+'.c'
+                          Else DstName:=A+'.c';
   End;
 End;
 
@@ -1812,33 +1914,20 @@ Begin
 End;
 
 Procedure EmitHelpers;
-Var I:Integer; First:Boolean;
 Begin
-  WriteLn(DstFile,'(* Helpers generes par ADA2C *)');
-  { Imports : Out / In si on a fait des E/S, plus tout paquet
-    explicitement utilise par WITH (filtre des Ada.* prealable). }
-  If UsesOut Then Begin
-    WriteLn(DstFile,'IMPORT Out, In;');
-  End;
-  If UsesList.Count>0 Then Begin
-    First:=True;
-    Write(DstFile,'IMPORT ');
-    For I:=1 to UsesList.Count do Begin
-      If not First Then Write(DstFile,', ');
-      Write(DstFile,UsesList.Items[I]);
-      First:=False;
-    End;
-    WriteLn(DstFile,';');
-  End;
+  WriteLn(DstFile,'/* Genere par ADA2C ',ADA2C_VERSION,' */');
+  If UsesStdio  Then WriteLn(DstFile,'#include <stdio.h>');
+  If UsesStdlib Then WriteLn(DstFile,'#include <stdlib.h>');
+  If UsesString Then WriteLn(DstFile,'#include <string.h>');
+  If UsesMath   Then WriteLn(DstFile,'#include <math.h>');
+  WriteLn(DstFile);
   If HasPower Then Begin
+    WriteLn(DstFile,'static double Power_(double b, int e) {');
+    WriteLn(DstFile,'  double r = 1.0;');
+    WriteLn(DstFile,'  while (e > 0) { r *= b; e--; }');
+    WriteLn(DstFile,'  return r;');
+    WriteLn(DstFile,'}');
     WriteLn(DstFile);
-    WriteLn(DstFile,'PROCEDURE Power_(B : INTEGER; E : INTEGER) : INTEGER;');
-    WriteLn(DstFile,'VAR R : INTEGER;');
-    WriteLn(DstFile,'BEGIN');
-    WriteLn(DstFile,'  R := 1;');
-    WriteLn(DstFile,'  WHILE E > 0 DO R := R * B; DEC(E); END;');
-    WriteLn(DstFile,'  RETURN R;');
-    WriteLn(DstFile,'END Power_;');
   End;
 End;
 
@@ -1849,6 +1938,10 @@ BEGIN
   ErrorCount:=0;
   HasPower:=False;
   UsesOut:=False;
+  UsesStdio:=False;
+  UsesStdlib:=False;
+  UsesString:=False;
+  UsesMath:=False;
   CurSection:=' ';
   Indent:=0;
   FuncSP:=0;
@@ -1873,33 +1966,28 @@ BEGIN
   ScanIO;
   ScanPower;
 
-  { Pre-scan pour collecter le nom du programme et les WITH/USE }
   CollectUsesAndProgName(IPos);
-  If Verbose Then WriteLn('ADA2C : module = ',ProgName);
+  If Verbose Then WriteLn('ADA2C : programme = ',ProgName);
 
-  { Entete Oberon }
-  WriteLn(DstFile,'(* Genere par ADA2C ',ADA2C_VERSION,
-                  ' a partir de ',SrcName,' *)');
-  WriteLn(DstFile,'MODULE ',ProgName,';');
-  WriteLn(DstFile);
   EmitHelpers;
-  WriteLn(DstFile);
   EmitLabelsDecl;
 
-  { Section declarations + corps }
+  { Declarations globales (types, variables, procedures imbriquees) }
   Indent:=0;
   EmitDecls(IPos);
   CurSection:=' ';
+
+  { Programme principal Ada -> int main(void) }
+  WriteLn(DstFile);
+  WriteLn(DstFile,'int main(void) {');
+  Indent:=2;
   EmitForVarsDecl;
   CurSection:=' ';
-
-  { BEGIN principal }
   If IsKw(IPos,'BEGIN') Then Inc(IPos);
-  WriteLn(DstFile,'BEGIN');
-  Indent:=2;
   EmitStmtBlock(IPos,'END');
+  WriteIndent; WriteLn(DstFile,'return 0;');
   Indent:=0;
-  WriteLn(DstFile,'END ',ProgName,'.');
+  WriteLn(DstFile,'}');
 
   Close(DstFile);
   If Verbose Then WriteLn('ADA2C : sortie ecrite dans ',DstName);
