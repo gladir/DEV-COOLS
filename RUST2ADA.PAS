@@ -71,13 +71,13 @@ Type
     TK_EOF,
     TK_INTEGER,    { 42  0xFF  0b10  0o77  + suffixe i32     }
     TK_REAL,       { 3.14  1.0e2  + suffixe f64              }
-    TK_STRING,     { "hello"  r"raw"  r#"raw#"#              }
-    TK_CHAR,       { 'a' '\n' '\u{1F600}'                    }
+    TK_STRING,     { chaine litterale Rust                   }
+    TK_CHAR,       { caractere litteral Rust                 }
     TK_IDENT,      { identificateur ordinaire                }
     TK_KEYWORD,    { mot-cle Rust                            }
-    TK_OP,         { = == != + - * / % < > <= >= && || ! &   }
-                   { | ^ << >> += -= ..   ..=  =>  -> ::     }
-    TK_PUNCT       { ; , ( ) [ ] { } : .                     }
+    TK_OP,         { operateurs Rust                         }
+                   { suite operateurs Rust                   }
+    TK_PUNCT       { ponctuation Rust                        }
   );
 
   TToken = Record
@@ -376,7 +376,7 @@ Begin
   AddToken(TK_STRING,S);
 End;
 
-{ Lit un litteral char 'x' ou '\n' ou '\u{...}' }
+{ Lit un litteral char Rust avec sequences d echappement }
 Procedure ScanCharLit;
 Var
   S:TString;
@@ -563,7 +563,7 @@ Begin
       End;
       '''':ScanCharLit;
       '0'..'9':ScanNumber(Ch);
-      'A'..'Z','a'..'z','_':ScanIdent(Ch);
+      'A'..'Z','a','c'..'q','s'..'z','_':ScanIdent(Ch);
       ':':Begin
         Ch2:=PeekCh;
         If Ch2=':' Then Begin NextCh; AddToken(TK_OP,'::'); End
@@ -960,9 +960,9 @@ Procedure EmitBlock(Var I:Integer); Forward;
 Procedure EmitExpr(Var I:Integer); Forward;
 Procedure EmitFnHeaderAndBody(Var I:Integer; AsNested:Boolean); Forward;
 
-{ Emet une expression jusqu'a un separateur de niveau 0 (; , ) ] } => ).
-  Convertit operateurs, identificateurs (PascalCase pour appels de
-  fonction reconnus), litteraux. Ne descend pas dans les blocs. }
+{ Emet une expression jusqu au prochain separateur de niveau 0.
+  Convertit operateurs, identificateurs, litteraux. Ne descend
+  pas dans les blocs. }
 Procedure EmitExpr(Var I:Integer);
 Var
   Depth,BrDepth,BrcDepth:Integer;
@@ -1047,13 +1047,10 @@ Begin
   End;
 End;
 
-{ Emet l'argument format de println!/print!/eprintln!.
-  Convertit "fmt", arg1, arg2, ... en "fmt"-with-replacements ou
-  concatenation Ada. Pour simplifier : si pas d'arg, emet la
-  chaine telle quelle ; si des args, on emet
-   <fmt-converti> & Type'Image(arg1) & ...
-  ou plus simplement on remplace chaque {} par & X'Image(...) &.
-  Implementation simple : on emet les parties brutes en concat. }
+{ Emet l argument format de println!/print!/eprintln!.
+  Implementation simple : si pas d arg, emet la chaine telle
+  quelle ; sinon, on remplace chaque accolade vide par une
+  concatenation Ada avec X Img. }
 Procedure EmitFormatArgs(Var I:Integer);
 Var
   Fmt,Cur:TString;
@@ -1103,8 +1100,8 @@ Begin
     Exit;
   End;
 
-  { Decoupage de Fmt sur "{}" : on emet "<segment>" puis chaque arg
-    converti via Image, en concatenation Ada. }
+  { Decoupage de Fmt sur les accolades vides : on emet le
+    segment puis chaque arg converti via Image, en concatenation. }
   S:=Copy(Fmt,2,Length(Fmt)-2); { sans guillemets }
   ArgIdx:=0;
   Cur:='';
@@ -1378,9 +1375,9 @@ Begin
   EmitLn;
 End;
 
-{ for x in a..b { ... } -> for X in A..B-1 loop ... end loop;
-  for x in a..=b { ... } -> for X in A..B loop ... end loop;
-  for x in (a..b).rev() -> for X in reverse A..B-1 loop }
+{ for x in a..b devient for X in A..B-1 loop ... end loop;
+  for x in a..=b devient for X in A..B loop ... end loop;
+  for x in (a..b).rev() devient for X in reverse A..B-1 loop. }
 Procedure EmitFor(Var I:Integer);
 Var
   VName:TString;
@@ -1462,8 +1459,7 @@ Begin
   EmitLn;
 End;
 
-{ match x { p1 => expr1, p2 | p3 => expr2, _ => exprN }
-  -> case X is when P1 => Expr1; when P2 | P3 => Expr2; when others => ExprN; end case; }
+{ match Rust devient case Ada avec when ... when others. }
 Procedure EmitMatch(Var I:Integer);
 Var
   Depth:Integer;
@@ -1523,8 +1519,7 @@ Begin
   EmitLn;
 End;
 
-{ Determine si un bloc { ... } contient des `let` au niveau 1
-  (pour decider declare vs simple begin). }
+{ Determine si un bloc Rust contient des let au niveau 1. }
 Function BlockHasLet(Start:Integer):Boolean;
 Var
   Depth,J:Integer;
@@ -1616,9 +1611,10 @@ Begin
   End;
 End;
 
-{ Emet le contenu d'un bloc { ... }. I pointe sur '{'.
-  Si le bloc contient des `let`, on emet un declare avec les declarations
-  hoissees, puis begin ... end;. Sinon, juste les statements. }
+{ Emet le contenu d un bloc Rust. I pointe sur l accolade
+  ouvrante. Si le bloc contient des let, on emet un declare
+  avec les declarations hoissees, puis begin ... end. Sinon,
+  juste les instructions. }
 Procedure EmitBlock(Var I:Integer);
 Var
   StartI,Depth,J:Integer;
@@ -1813,6 +1809,8 @@ Procedure EmitProgram;
 Var
   I,MainTok:Integer;
   K:TString;
+  EnumDepth:Integer;
+  MainBodyDepth:Integer;
 Begin
   EmitRaw('-- Genere par RUST2ADA '+RUST2ADA_VERSION+' a partir de '+SrcName);
   EmitLn;
@@ -1914,11 +1912,10 @@ Begin
               { sauter eventuelles donnees du variant }
               If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and((Tokens[I].Val='(')or(Tokens[I].Val='{')) Then Begin
                 Inc(I);
-                Var Depth:Integer;
-                Depth:=1;
-                While (I<=TokCount)and(Depth>0) do Begin
-                  If (Tokens[I].Kind=TK_PUNCT)and((Tokens[I].Val='(')or(Tokens[I].Val='{')) Then Inc(Depth) Else
-                  If (Tokens[I].Kind=TK_PUNCT)and((Tokens[I].Val=')')or(Tokens[I].Val='}')) Then Dec(Depth);
+                EnumDepth:=1;
+                While (I<=TokCount)and(EnumDepth>0) do Begin
+                  If (Tokens[I].Kind=TK_PUNCT)and((Tokens[I].Val='(')or(Tokens[I].Val='{')) Then Inc(EnumDepth) Else
+                  If (Tokens[I].Kind=TK_PUNCT)and((Tokens[I].Val=')')or(Tokens[I].Val='}')) Then Dec(EnumDepth);
                   Inc(I);
                 End;
               End;
@@ -1938,11 +1935,10 @@ Begin
         Inc(I);
         While (I<=TokCount) and Not((Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='{')) do Inc(I);
         If (I<=TokCount)and(Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='{') Then Begin
-          Var D:Integer;
-          D:=1; Inc(I);
-          While (I<=TokCount)and(D>0) do Begin
-            If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='{') Then Inc(D) Else
-            If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='}') Then Dec(D);
+          MainBodyDepth:=1; Inc(I);
+          While (I<=TokCount)and(MainBodyDepth>0) do Begin
+            If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='{') Then Inc(MainBodyDepth) Else
+            If (Tokens[I].Kind=TK_PUNCT)and(Tokens[I].Val='}') Then Dec(MainBodyDepth);
             Inc(I);
           End;
         End;
