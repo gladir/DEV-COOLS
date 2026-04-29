@@ -1,4 +1,4 @@
-{ @author: Gladir.com (Sylvain Maltais)
+{ @author: Sylvain Maltais (support@gladir.com)
   @description: Transpilateur Turbo Pascal/Free Pascal du langage Node.js
                 (JavaScript) vers le langage C# (.cs).
 
@@ -246,9 +246,9 @@ Begin
  AddToken(TK_STRING,V);
 End;
 
-(* Lit un template literal `...${...}...` et le convertit en chaine
+(* Lit un template literal `...$ accollade...accollade...` et le convertit en chaine
    interpolee C# $"..." . Les expressions sont copiees telles quelles ; les
-   caracteres { } sont doubles dans les parties litterales pour les
+   caracteres accolade sont doubles dans les parties litterales pour les
    echapper en C#.                                                         *)
 Procedure ScanTemplate;
 Var C:Char; V:TString; Depth:Integer;
@@ -268,7 +268,7 @@ Begin
    If C='}' Then Begin V:=V+'}}'; Continue; End;
    If C='$' Then Begin
      If PeekCh='{' Then Begin
-       C:=NextCh;             { consomme '{' }
+       C:=NextCh;             { consomme ouvre accolade }
        V:=V+'{';
        Depth:=1;
        While Not SrcEOF and (Depth>0) do Begin
@@ -1227,7 +1227,7 @@ Begin
        If V=':' Then Begin EmitRaw(':'); Inc(I); Continue; End;
        If V='[' Then Begin
          { Detection litteral de tableau : '[' apparait apres un '=', ',',
-           '(', '?', ':', ';', '[', '{', '=>', 'return' ; sinon c'est un
+           '(', '?', ':', ';', '[', ouvre accolade, '=>', 'return' ; sinon c'est un
            operateur d'indexation.                                          }
          If (I=1) or
             ((Tokens[I-1].Kind=TK_OP)and
