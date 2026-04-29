@@ -20229,17 +20229,35 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { X1 }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { Y1 }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { X2 }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { Y2 }
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'LINE');
-      EmitInstr('ADD ESP,16');
+      Case Opts.DestTarget Of
+        DEST_DOSR, DEST_DOSP: EmitInstr('ADD SP,8');
+        Else                  EmitInstr('ADD ESP,16');
+      End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -20251,13 +20269,27 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { X }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { Y }
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'LINETO');
-      EmitInstr('ADD ESP,8');
+      Case Opts.DestTarget Of
+        DEST_DOSR, DEST_DOSP: EmitInstr('ADD SP,4');
+        Else                  EmitInstr('ADD ESP,8');
+      End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -20269,13 +20301,27 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { Dx }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');   { Dy }
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'LINEREL');
-      EmitInstr('ADD ESP,8');
+      Case Opts.DestTarget Of
+        DEST_DOSR, DEST_DOSP: EmitInstr('ADD SP,4');
+        Else                  EmitInstr('ADD ESP,8');
+      End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -20566,9 +20612,15 @@ Begin
         ParseExpr(PI);
         EPMatch(')');
       End;
-      EmitInstr('PUSH EAX');
+      Case Opts.DestTarget Of
+        DEST_DOSR, DEST_DOSP: EmitInstr('PUSH AX');
+        Else                  EmitInstr('PUSH EAX');
+      End;
       EmitInstr('CALL ' + TP_RT_PFX + 'SETCOLOR');
-      EmitInstr('ADD ESP,4');
+      Case Opts.DestTarget Of
+        DEST_DOSR, DEST_DOSP: EmitInstr('ADD SP,2');
+        Else                  EmitInstr('ADD ESP,4');
+      End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -24405,6 +24457,195 @@ Begin
   EmitInstr('POP CX');
   EmitInstr('POP BX');
   EmitInstr('POP AX');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SETCOLOR : changer la couleur de dessin (8086/DOS) --------- }
+  { Convention : [BP+4]=Color (Word)                                           }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETCOLOR');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('MOV AX,[BP+4]');              { Color }
+  EmitInstr('MOV WORD PTR [GR_COLOR],AX'); { mise a jour couleur courante }
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_LINE : tracer une ligne - algorithme Bresenham (8086/DOS) -- }
+  { Convention : [BP+10]=X1 [BP+8]=Y1 [BP+6]=X2 [BP+4]=Y2                   }
+  { Locaux (5 mots) : dx[BP-2], dy[BP-4], sx[BP-6], sy[BP-8], err[BP-10]     }
+  { Mode $13 (320x200 256c) : acces direct segment $A000                      }
+  { Modes $0D..$12 EGA/VGA ($A000), modes 4-6 CGA ($B800), 7-8 MDA ($B000) : }
+  {   utilise INT 10h AH=0Ch (Write Graphics Pixel) comme repli universel     }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'LINE');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('SUB SP,10');   { 5 locaux : dx[BP-2] dy[BP-4] sx[BP-6] sy[BP-8] err[BP-10] }
+  EmitInstr('PUSH SI');     { sauvegarde SI = x courant }
+  EmitInstr('PUSH DI');     { sauvegarde DI = y courant }
+  { Initialiser SI=X1, DI=Y1 }
+  EmitInstr('MOV SI,[BP+10]');
+  EmitInstr('MOV DI,[BP+8]');
+  { dx = abs(X2-X1), sx = signe(X2-X1) }
+  EmitInstr('MOV AX,[BP+6]');           { X2 }
+  EmitInstr('SUB AX,SI');               { AX = X2-X1 }
+  EmitInstr('MOV CX,1');                { sx defaut = +1 }
+  EmitInstr('JGE ' + TP_RT_PFX + 'LN16_SX1');
+  EmitInstr('NEG AX');                  { |X2-X1| }
+  EmitInstr('MOV CX,-1');               { sx = -1 }
+  EmitLabel(TP_RT_PFX + 'LN16_SX1');
+  EmitInstr('MOV [BP-2],AX');           { dx }
+  EmitInstr('MOV [BP-6],CX');           { sx }
+  { dy = abs(Y2-Y1), sy = signe(Y2-Y1) }
+  EmitInstr('MOV AX,[BP+4]');           { Y2 }
+  EmitInstr('SUB AX,DI');               { AX = Y2-Y1 }
+  EmitInstr('MOV CX,1');                { sy defaut = +1 }
+  EmitInstr('JGE ' + TP_RT_PFX + 'LN16_SY1');
+  EmitInstr('NEG AX');                  { |Y2-Y1| }
+  EmitInstr('MOV CX,-1');               { sy = -1 }
+  EmitLabel(TP_RT_PFX + 'LN16_SY1');
+  EmitInstr('MOV [BP-4],AX');           { dy }
+  EmitInstr('MOV [BP-8],CX');           { sy }
+  { err = dx - dy }
+  EmitInstr('MOV AX,[BP-2]');
+  EmitInstr('SUB AX,[BP-4]');
+  EmitInstr('MOV [BP-10],AX');          { err }
+  { Determiner le mode video courant }
+  EmitInstr('MOV AH,0Fh');
+  EmitInstr('INT 10h');                 { AL = mode video courant }
+  EmitInstr('CMP AL,13h');
+  EmitInstr('JNE ' + TP_RT_PFX + 'LN16_LGN'); { autre mode -> repli INT 10h }
+  { --- Chemin rapide mode $13 : acces direct segment $A000 (lineaire) --- }
+  EmitInstr('MOV AX,0A000h');
+  EmitInstr('MOV ES,AX');
+  EmitLabel(TP_RT_PFX + 'LN16_L13');   { debut boucle mode $13 }
+  { Ecrire pixel a (SI, DI) : ES:[DI*320+SI] = GR_COLOR }
+  EmitInstr('MOV AX,DI');
+  EmitInstr('MOV BX,320');
+  EmitInstr('MUL BX');                  { DX:AX = DI*320 }
+  EmitInstr('ADD AX,SI');               { AX = DI*320+SI }
+  EmitInstr('MOV BX,AX');              { BX = offset }
+  EmitInstr('MOV AL,BYTE PTR [GR_COLOR]');
+  EmitInstr('MOV BYTE PTR ES:[BX],AL');
+  { Test fin : SI=X2 et DI=Y2 ? }
+  EmitInstr('CMP SI,[BP+6]');
+  EmitInstr('JNE ' + TP_RT_PFX + 'LN16_C13');
+  EmitInstr('CMP DI,[BP+4]');
+  EmitInstr('JE ' + TP_RT_PFX + 'LN16_END');
+  EmitLabel(TP_RT_PFX + 'LN16_C13');
+  { e2 = 2*err }
+  EmitInstr('MOV AX,[BP-10]');
+  EmitInstr('SAL AX,1');                { e2 = 2*err }
+  { if e2 > -dy : err -= dy ; x += sx }
+  EmitInstr('MOV CX,[BP-4]');
+  EmitInstr('NEG CX');                  { CX = -dy }
+  EmitInstr('CMP AX,CX');
+  EmitInstr('JLE ' + TP_RT_PFX + 'LN16_X13');
+  EmitInstr('MOV CX,[BP-4]');
+  EmitInstr('SUB [BP-10],CX');          { err -= dy }
+  EmitInstr('ADD SI,[BP-6]');           { x += sx }
+  EmitLabel(TP_RT_PFX + 'LN16_X13');
+  { if e2 < dx : err += dx ; y += sy }
+  EmitInstr('MOV CX,[BP-2]');           { CX = dx }
+  EmitInstr('CMP AX,CX');
+  EmitInstr('JGE ' + TP_RT_PFX + 'LN16_Y13');
+  EmitInstr('ADD [BP-10],CX');          { err += dx }
+  EmitInstr('ADD DI,[BP-8]');           { y += sy }
+  EmitLabel(TP_RT_PFX + 'LN16_Y13');
+  EmitInstr('JMP ' + TP_RT_PFX + 'LN16_L13');
+  { --- Repli generique : INT 10h AH=0Ch par pixel ($A000/$B800/$B000 via BIOS) --- }
+  EmitLabel(TP_RT_PFX + 'LN16_LGN');   { debut boucle generique }
+  EmitInstr('MOV AH,0Ch');              { Write Graphics Pixel }
+  EmitInstr('MOV AL,BYTE PTR [GR_COLOR]');
+  EmitInstr('MOV BH,0');               { page 0 }
+  EmitInstr('MOV CX,SI');              { CX = X }
+  EmitInstr('MOV DX,DI');              { DX = Y }
+  EmitInstr('INT 10h');
+  { Test fin : SI=X2 et DI=Y2 ? }
+  EmitInstr('CMP SI,[BP+6]');
+  EmitInstr('JNE ' + TP_RT_PFX + 'LN16_CGN');
+  EmitInstr('CMP DI,[BP+4]');
+  EmitInstr('JE ' + TP_RT_PFX + 'LN16_END');
+  EmitLabel(TP_RT_PFX + 'LN16_CGN');
+  { e2 = 2*err }
+  EmitInstr('MOV AX,[BP-10]');
+  EmitInstr('SAL AX,1');                { e2 = 2*err }
+  { if e2 > -dy : err -= dy ; x += sx }
+  EmitInstr('MOV CX,[BP-4]');
+  EmitInstr('NEG CX');                  { CX = -dy }
+  EmitInstr('CMP AX,CX');
+  EmitInstr('JLE ' + TP_RT_PFX + 'LN16_XGN');
+  EmitInstr('MOV CX,[BP-4]');
+  EmitInstr('SUB [BP-10],CX');          { err -= dy }
+  EmitInstr('ADD SI,[BP-6]');           { x += sx }
+  EmitLabel(TP_RT_PFX + 'LN16_XGN');
+  { if e2 < dx : err += dx ; y += sy }
+  EmitInstr('MOV CX,[BP-2]');           { CX = dx }
+  EmitInstr('CMP AX,CX');
+  EmitInstr('JGE ' + TP_RT_PFX + 'LN16_YGN');
+  EmitInstr('ADD [BP-10],CX');          { err += dx }
+  EmitInstr('ADD DI,[BP-8]');           { y += sy }
+  EmitLabel(TP_RT_PFX + 'LN16_YGN');
+  EmitInstr('JMP ' + TP_RT_PFX + 'LN16_LGN');
+  { --- Epilogue commun --- }
+  EmitLabel(TP_RT_PFX + 'LN16_END');
+  EmitInstr('POP DI');
+  EmitInstr('POP SI');
+  EmitInstr('MOV SP,BP');               { libere les locaux }
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_LINETO : ligne depuis position courante (8086/DOS) ---------- }
+  { Convention : [BP+6]=X (Word), [BP+4]=Y (Word)                             }
+  { Trace de (GR_CPX,GR_CPY) vers (X,Y) puis met a jour la position courante  }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'LINETO');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  { Empiler les 4 parametres pour LINE : X1=GR_CPX, Y1=GR_CPY, X2=[BP+6], Y2=[BP+4] }
+  EmitInstr('PUSH WORD PTR [GR_CPX]');  { X1 }
+  EmitInstr('PUSH WORD PTR [GR_CPY]');  { Y1 }
+  EmitInstr('PUSH WORD PTR [BP+6]');    { X2 }
+  EmitInstr('PUSH WORD PTR [BP+4]');    { Y2 }
+  EmitInstr('CALL ' + TP_RT_PFX + 'LINE');
+  EmitInstr('ADD SP,8');                { nettoyer les 4 words }
+  { Mettre a jour la position courante }
+  EmitInstr('MOV AX,[BP+6]');
+  EmitInstr('MOV WORD PTR [GR_CPX],AX');
+  EmitInstr('MOV AX,[BP+4]');
+  EmitInstr('MOV WORD PTR [GR_CPY],AX');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_LINEREL : ligne relative depuis position courante (8086/DOS) }
+  { Convention : [BP+6]=Dx (Word), [BP+4]=Dy (Word)                          }
+  { Trace de (GR_CPX,GR_CPY) vers (GR_CPX+Dx,GR_CPY+Dy)                     }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'LINEREL');
+  EmitInstr('PUSH BP');
+  EmitInstr('MOV BP,SP');
+  EmitInstr('PUSH BX');                 { sauvegarde BX }
+  { Calculer X2 = GR_CPX+Dx, Y2 = GR_CPY+Dy }
+  EmitInstr('MOV AX,WORD PTR [GR_CPX]');
+  EmitInstr('ADD AX,[BP+6]');           { AX = X2 }
+  EmitInstr('MOV BX,WORD PTR [GR_CPY]');
+  EmitInstr('ADD BX,[BP+4]');           { BX = Y2 }
+  { Empiler les 4 parametres pour LINE : X1=GR_CPX, Y1=GR_CPY, X2=AX, Y2=BX }
+  EmitInstr('PUSH WORD PTR [GR_CPX]');  { X1 }
+  EmitInstr('PUSH WORD PTR [GR_CPY]');  { Y1 }
+  EmitInstr('PUSH AX');                 { X2 }
+  EmitInstr('PUSH BX');                 { Y2 }
+  EmitInstr('CALL ' + TP_RT_PFX + 'LINE');
+  EmitInstr('ADD SP,8');                { nettoyer les 4 words }
+  { Mettre a jour la position courante avec X2 et Y2 }
+  EmitInstr('MOV AX,WORD PTR [GR_CPX]');
+  EmitInstr('ADD AX,[BP+6]');           { X2 = GR_CPX+Dx }
+  EmitInstr('MOV WORD PTR [GR_CPX],AX');
+  EmitInstr('MOV AX,WORD PTR [GR_CPY]');
+  EmitInstr('ADD AX,[BP+4]');           { Y2 = GR_CPY+Dy }
+  EmitInstr('MOV WORD PTR [GR_CPY],AX');
+  EmitInstr('POP BX');
   EmitInstr('POP BP');
   EmitInstr('RET');
 End;
