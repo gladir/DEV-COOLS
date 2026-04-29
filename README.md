@@ -26,6 +26,42 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		    <td>Cette commande permet de convertir un code source assembleur de microprocesseur 8080 en code source Z80.</td>
 		</tr>	
 		<tr>
+			<td><b>ADA2BCPL.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage BCPL (.b).</td>
+		</tr>
+		<tr>
+			<td><b>ADA2C.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage C ANSI/C99 (.c).</td>
+		</tr>
+		<tr>
+			<td><b>ADA2DELP.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage Delphi (.pas).</td>
+		</tr>
+		<tr>
+			<td><b>ADA2MOD2.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage Modula-2 (.mod).</td>
+		</tr>
+		<tr>
+			<td><b>ADA2MOD3.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage Modula-3 (.m3).</td>
+		</tr>
+		<tr>
+			<td><b>ADA2OBER.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage Oberon (.Mod).</td>
+		</tr>
+		<tr>
+			<td><b>ADA2PAS.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage Turbo Pascal/Free Pascal.</td>
+		</tr>
+		<tr>
+			<td><b>ADA2PSP.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage PSP - Pascal Server Pages (.psp).</td>
+		</tr>
+		<tr>
+			<td><b>ADA2RUST.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier source Ada (.adb) vers le langage Rust (.rs).</td>
+		</tr>
+		<tr>
 			<td><b>ADA86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Ada 83/95 pour de l'assembleur du microprocesseur 8086.</td>
 		</tr>
@@ -224,6 +260,14 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		<tr>
 			<td><b>C.PAS</b></td>
 			<td>Cette commande permet de lancer un interpréteur de langage de programmation C.</td>
+		</tr>
+		<tr>
+			<td><b>C2DELPHI.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier «.C» en «.DPR» (Delphi).</td>
+		</tr>
+		<tr>
+			<td><b>C2OBERON.PAS</b></td>
+			<td>Cette commande permet de transpiler un fichier «.C» en «.Mod» (Oberon).</td>
 		</tr>
 		<tr>
 			<td><b>C2PAS.PAS</b></td>
