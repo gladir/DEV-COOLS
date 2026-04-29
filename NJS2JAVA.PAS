@@ -137,7 +137,7 @@ Var
  InClassHdr : Boolean;
  SeenColonHdr:Boolean;
  AtMemberStart:Boolean;
- InStaticHdr : Boolean;     { la prochaine '{' entre dans un static method body }
+ InStaticHdr : Boolean;     { la prochaine ouvrir accolade entre dans un static method body }
  InGlobalFunc : Boolean;    { vrai pendant l'emission des parametres d'une fonction globale }
 
  { Pile des noms de classes courantes (pour 'constructor' -> nom de classe). }
@@ -262,8 +262,8 @@ Begin
  AddToken(TK_STRING,V);
 End;
 
-(* Lit un template literal `...${...}...` et le convertit en concatenation
-   Java "..." + (expr) + "...". Le contenu de chaque ${...} est copie tel
+(* Lit un template literal `...$accolade...accolade...` et le convertit en concatenation
+   Java "..." + (expr) + "...". Le contenu de chaque $accolade...accolade est copie tel
    quel et entoure de parentheses pour preserver la priorite des operateurs. *)
 Procedure ScanTemplate;
 Var C:Char; V,Buf:TString; Depth:Integer; InLit:Boolean;
@@ -283,7 +283,7 @@ Begin
    If C='"' Then Begin V:=V+'\"'; Continue; End;
    If C='$' Then Begin
      If PeekCh='{' Then Begin
-       C:=NextCh;             { consomme '{' }
+       C:=NextCh;             { consomme ouvrir accolade }
        { Cloturer la partie litterale courante. }
        V:=V+'"';
        If Buf='' Then Buf:=V Else Buf:=Buf+' + '+V;
@@ -1256,7 +1256,7 @@ Begin
        If V=':' Then Begin EmitRaw(':'); Inc(I); Continue; End;
        If V='[' Then Begin
          { Detection litteral de tableau : '[' apparait apres un '=', ',',
-           '(', '?', ':', ';', '[', '{', '=>', 'return' ; sinon c'est un
+           '(', '?', ':', ';', '[', accolade, '=>', 'return' ; sinon c'est un
            operateur d'indexation.                                          }
          If (I=1) or
             ((Tokens[I-1].Kind=TK_OP)and
