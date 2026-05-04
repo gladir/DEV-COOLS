@@ -100,6 +100,7 @@ Const
   DEST_MSX    = 17; { -CMSX : MSX (Z80, MSX-DOS) }
   DEST_NES    = 18; { -CNES : Nintendo Entertainment System (6502/Ricoh 2A03) }
   DEST_ATARI2600 = 19; { -CATARI2600 : Atari 2600 VCS (6507) }
+  DEST_ADAM   = 20; { -CADAM : Coleco Adam (Z80, CP/M 2.2) }
 
 Type
   TString = String;
@@ -135,7 +136,7 @@ Type
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
     ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
     Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
-    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3/-CTRS80/-CATARI400/-CATARI800/-CMSX/-CNES/-CATARI2600 : destination }
+    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3/-CTRS80/-CATARI400/-CATARI800/-CMSX/-CNES/-CATARI2600/-CADAM : destination }
     AppleII     : Boolean;   { True si la plateforme est Apple II (CPU = 6502) }
     C64         : Boolean;   { True si la plateforme est Commodore 64 (CPU = 6510 ~ 6502) }
     CoCo3       : Boolean;   { True si la plateforme est Tandy CoCo 3 (CPU = 6809) }
@@ -145,6 +146,7 @@ Type
     MSX         : Boolean;   { True si la plateforme est MSX (CPU = Z80) }
     NES         : Boolean;   { True si la plateforme est NES (CPU = Ricoh 2A03 ~ 6502) }
     Atari2600   : Boolean;   { True si la plateforme est Atari 2600 VCS (CPU = 6507 ~ 6502) }
+    Adam        : Boolean;   { True si la plateforme est Coleco Adam (CPU = Z80, CP/M 2.2) }
   End;
 
 Var
@@ -330,6 +332,7 @@ Begin
   Opts.MSX := False;
   Opts.NES := False;
   Opts.Atari2600 := False;
+  Opts.Adam := False;
   Opts.ObjOnly   := False;
   Opts.Dos16Mode := False;
   Opts.TPVersion := TP_VER_DEFAULT;
@@ -410,6 +413,7 @@ Begin
   WriteLn('  -CMSX          Destination MSX (Z80, MSX-DOS)');
   WriteLn('  -CNES          Destination Nintendo Entertainment System (6502/Ricoh 2A03)');
   WriteLn('  -CATARI2600    Destination Atari 2600 VCS (6507)');
+  WriteLn('  -CADAM         Destination Coleco Adam (Z80, CP/M 2.2)');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -575,6 +579,11 @@ Begin
       Opts.DestTarget := DEST_6502;
       Opts.Atari2600 := True;
     End
+    Else If (UA = '-CADAM') Then
+    Begin
+      Opts.DestTarget := DEST_Z80;
+      Opts.Adam := True;
+    End
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
@@ -687,6 +696,8 @@ Begin
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.nes')
     Else If Opts.Atari2600 Then
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.a26')
+    Else If Opts.Adam Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.com')
     Else
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
   End;
@@ -36523,6 +36534,12 @@ Begin
       WriteAtari2600RomFile(Opts.OutFile);
       If Opts.Verbose Then
         WriteLn('  Atari 2600 VCS ROM genere : ', Opts.OutFile);
+    End
+    Else If Opts.Adam Then
+    Begin
+      WriteMsxComFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  Coleco Adam CP/M COM genere : ', Opts.OutFile);
     End
     Else
     Begin
