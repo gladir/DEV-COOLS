@@ -101,6 +101,7 @@ Const
   DEST_NES    = 18; { -CNES : Nintendo Entertainment System (6502/Ricoh 2A03) }
   DEST_ATARI2600 = 19; { -CATARI2600 : Atari 2600 VCS (6507) }
   DEST_ADAM   = 20; { -CADAM : Coleco Adam (Z80, CP/M 2.2) }
+  DEST_CRAY1  = 21; { -CCRAY1 : Cray-1 (Cray Research, COS) - emballage symbolique }
 
 Type
   TString = String;
@@ -136,7 +137,7 @@ Type
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
     ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
     Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
-    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3/-CTRS80/-CATARI400/-CATARI800/-CMSX/-CNES/-CATARI2600/-CADAM : destination }
+    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3/-CTRS80/-CATARI400/-CATARI800/-CMSX/-CNES/-CATARI2600/-CADAM/-CCRAY1 : destination }
     AppleII     : Boolean;   { True si la plateforme est Apple II (CPU = 6502) }
     C64         : Boolean;   { True si la plateforme est Commodore 64 (CPU = 6510 ~ 6502) }
     CoCo3       : Boolean;   { True si la plateforme est Tandy CoCo 3 (CPU = 6809) }
@@ -147,6 +148,7 @@ Type
     NES         : Boolean;   { True si la plateforme est NES (CPU = Ricoh 2A03 ~ 6502) }
     Atari2600   : Boolean;   { True si la plateforme est Atari 2600 VCS (CPU = 6507 ~ 6502) }
     Adam        : Boolean;   { True si la plateforme est Coleco Adam (CPU = Z80, CP/M 2.2) }
+    Cray1       : Boolean;   { True si la plateforme est Cray-1 (COS Absolute Binary, emballage symbolique) }
   End;
 
 Var
@@ -333,6 +335,7 @@ Begin
   Opts.NES := False;
   Opts.Atari2600 := False;
   Opts.Adam := False;
+  Opts.Cray1 := False;
   Opts.ObjOnly   := False;
   Opts.Dos16Mode := False;
   Opts.TPVersion := TP_VER_DEFAULT;
@@ -414,6 +417,7 @@ Begin
   WriteLn('  -CNES          Destination Nintendo Entertainment System (6502/Ricoh 2A03)');
   WriteLn('  -CATARI2600    Destination Atari 2600 VCS (6507)');
   WriteLn('  -CADAM         Destination Coleco Adam (Z80, CP/M 2.2)');
+  WriteLn('  -CCRAY1        Destination Cray-1 (COS Absolute Binary, emballage symbolique)');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -584,6 +588,15 @@ Begin
       Opts.DestTarget := DEST_Z80;
       Opts.Adam := True;
     End
+    Else If (UA = '-CCRAY1') Then
+    Begin
+      { Cray-1 : backend natif (Phase 2). DestTarget = DEST_CRAY1 pour      }
+      { dispatcher EmitInstr vers BcAssembleCray1. Les sites de codegen non }
+      { encore portes emettent du texte x86 que BcAssembleCray1 ignore      }
+      { silencieusement.                                                    }
+      Opts.DestTarget := DEST_CRAY1;
+      Opts.Cray1 := True;
+    End
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
@@ -698,6 +711,8 @@ Begin
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.a26')
     Else If Opts.Adam Then
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.com')
+    Else If Opts.Cray1 Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.abs')
     Else
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
   End;
@@ -4491,6 +4506,8 @@ Procedure BcAssembleZ80(Const S: TString); Forward;
 Procedure BcAssemble6502(Const S: TString); Forward;
 Procedure BcAssemble6809(Const S: TString); Forward;
 Procedure BcAssemble68000(Const S: TString); Forward;
+Procedure BcAssembleCray1(Const S: TString); Forward;
+Procedure CrayDefineLabel(Const Name: TString); Forward;
 
 { ------------------------------------------------------------ }
 { Is68kTarget : True si la cible est Motorola 68000            }
@@ -4522,7 +4539,12 @@ Begin
   If OutFOpen Then
     WriteLn(OutF, Lbl, ':');
   If BcActive Then
-    BcDefineLabel(Lbl);
+  Begin
+    If Opts.DestTarget = DEST_CRAY1 Then
+      CrayDefineLabel(Lbl)
+    Else
+      BcDefineLabel(Lbl);
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -4545,6 +4567,8 @@ Begin
             (Opts.DestTarget = DEST_ATARIST) Or
             (Opts.DestTarget = DEST_AMIGA) Then
       BcAssemble68000(S)
+    Else If Opts.DestTarget = DEST_CRAY1 Then
+      BcAssembleCray1(S)
     Else If (Opts.DestTarget = DEST_DOSR) Or
             (Opts.DestTarget = DEST_DOSP) Then
       BcAssemble8086(S)
@@ -8266,7 +8290,9 @@ Begin
           LastExprIsPascalStr := True;
         Exit;
       End;
-      If TypeSizeofIdx(SymTab[SI].TypeIdx) = 1 Then
+      If Opts.DestTarget = DEST_CRAY1 Then
+        EmitInstr('LDS S1,' + Ref)
+      Else If TypeSizeofIdx(SymTab[SI].TypeIdx) = 1 Then
         EmitInstr('MOVZX EAX,BYTE PTR [' + Ref + ']')
       Else
         EmitInstr('MOV EAX,DWORD PTR [' + Ref + ']');
@@ -8292,6 +8318,8 @@ Begin
     If TypeTab[LastVarTypeIdx].Kind = TYK_STRING Then
       LastExprIsPascalStr := True;
   End
+  Else If Opts.DestTarget = DEST_CRAY1 Then
+    EmitInstr('LDS S1,' + TP_VAR_PFX + Up)
   Else
     EmitInstr('MOV EAX,DWORD PTR [' + TP_VAR_PFX + Up + ']');
 End;
@@ -8395,7 +8423,9 @@ Begin
         EmitInstr('REP MOVSB');
         Exit;
       End;
-      If TypeSizeofIdx(VarTI) = 1 Then
+      If Opts.DestTarget = DEST_CRAY1 Then
+        EmitInstr('STS S1,' + Ref)
+      Else If TypeSizeofIdx(VarTI) = 1 Then
         EmitInstr('MOV BYTE PTR [' + Ref + '],AL')
       Else
         EmitInstr('MOV DWORD PTR [' + Ref + '],EAX');
@@ -8420,6 +8450,8 @@ Begin
     EmitInstr('MOV ECX,' + IntToStr_(TypeTab[VarTI].Size));
     EmitInstr('REP MOVSB');
   End
+  Else If Opts.DestTarget = DEST_CRAY1 Then
+    EmitInstr('STS S1,' + TP_VAR_PFX + Up)
   Else
     EmitInstr('MOV DWORD PTR [' + TP_VAR_PFX + Up + '],EAX');
 End;
@@ -8639,6 +8671,8 @@ Begin
   Begin
     If Is68kTarget Then
       EmitInstr('MOVE.L #' + IntToStr_(TokenPool[EP].IntVal) + ',D0')
+    Else If Opts.DestTarget = DEST_CRAY1 Then
+      EmitInstr('LDIMM S1,' + IntToStr_(TokenPool[EP].IntVal))
     Else
       EmitInstr('MOV EAX,' + IntToStr_(TokenPool[EP].IntVal));
     Inc(EP);
@@ -8650,6 +8684,8 @@ Begin
   Begin
     If Is68kTarget Then
       EmitInstr('MOVE.L #' + IntToStr_(TokenPool[EP].IntVal) + ',D0')
+    Else If Opts.DestTarget = DEST_CRAY1 Then
+      EmitInstr('LDIMM S1,' + IntToStr_(TokenPool[EP].IntVal))
     Else
       EmitInstr('MOV EAX,' + IntToStr_(TokenPool[EP].IntVal));
     Inc(EP);
@@ -16630,14 +16666,42 @@ Begin
 
     { --- Operateurs binaires normaux --- }
     { Sauver la valeur gauche (EAX) sur la pile }
-    EmitInstr('PUSH EAX');
+    If Opts.DestTarget = DEST_CRAY1 Then
+      EmitInstr('CRSAVE')
+    Else
+      EmitInstr('PUSH EAX');
 
     ParseExprPrec(PI, Prec + 1);
 
-    { EAX = droite, pile = gauche }
-    EmitInstr('MOV EBX,EAX');
-    EmitInstr('POP EAX');
-    EmitBinOp(Op);
+    If Opts.DestTarget = DEST_CRAY1 Then
+    Begin
+      { Cray-1 : pile registre, gauche = sommet, droite = S1 }
+      If Op = '+' Then EmitInstr('CRADD')
+      Else If Op = '-' Then EmitInstr('CRSUB')
+      Else If Op = 'AND' Then EmitInstr('CRAND')
+      Else If Op = 'OR'  Then EmitInstr('CROR')
+      Else If Op = 'XOR' Then EmitInstr('CRXOR')
+      Else If Op = '='   Then EmitInstr('CRCMPEQ')
+      Else If Op = '<>'  Then EmitInstr('CRCMPNE')
+      Else If Op = '<'   Then EmitInstr('CRCMPLT')
+      Else If Op = '<='  Then EmitInstr('CRCMPLE')
+      Else If Op = '>'   Then EmitInstr('CRCMPGT')
+      Else If Op = '>='  Then EmitInstr('CRCMPGE')
+      Else
+      Begin
+        EmitComment('CRAY: operateur ' + Op + ' non supporte (Phase 2h)');
+        EmitInstr('CRDISC');
+        { Forcer 0 dans S1 pour eviter pollution par valeur droite. }
+        EmitInstr('LDIMM S1,0');
+      End;
+    End
+    Else
+    Begin
+      { EAX = droite, pile = gauche }
+      EmitInstr('MOV EBX,EAX');
+      EmitInstr('POP EAX');
+      EmitBinOp(Op);
+    End;
   End;
 End;
 
@@ -24121,6 +24185,11 @@ Begin
       { Mode 68000 / Atari ST : pas d initialisation speciale }
       EmitComment('Entree programme 68000');
     End
+    Else If Opts.DestTarget = DEST_CRAY1 Then
+    Begin
+      { Mode Cray-1 : pas de prologue (pas de pile materielle, pas d OS) }
+      EmitComment('Entree programme Cray-1 (P-register = $200)');
+    End
     Else
     Begin
       EmitProlog(0);
@@ -24171,6 +24240,12 @@ Begin
       EmitComment('GEMDOS Pterm0 (fin du programme)');
       EmitInstr('CLR.W -(SP)');
       EmitInstr('TRAP #1');
+    End
+    Else If Opts.DestTarget = DEST_CRAY1 Then
+    Begin
+      { Sortie Cray-1 : ERR (Error Exit) arrete le CPU. }
+      EmitComment('Cray-1 ERR (halt CPU)');
+      EmitInstr('ERR');
     End
     Else
     Begin
@@ -34268,6 +34343,965 @@ End;
 {   $FFFC/D : RESET vector -> $F000 (entry point)                          }
 {   $FFFE/F : IRQ/BRK vector -> $F000                                      }
 { La 2600 n'a pas de NMI vector (le 6507 n'a pas de broche NMI).           }
+{ ============================================================ }
+{ Backend Cray-1 : encodeur de parcels 16/32 bits               }
+{ Source : CRAY-1 Computer Systems Hardware Reference Manual    }
+{          Publication 2240004, Cray Research, Sept. 1977       }
+{ ============================================================ }
+{                                                               }
+{ Format des instructions Cray-1 :                              }
+{   Une instruction = 1 ou 2 parcels de 16 bits, big-endian.    }
+{                                                               }
+{ Format 1 (1 parcel = 16 bits) :                               }
+{   bits 15..9 : g.h  (opcode 7 bits)                           }
+{   bits  8..6 : i    (registre destination 3 bits)             }
+{   bits  5..3 : j    (registre source 3 bits)                  }
+{   bits  2..0 : k    (registre source 3 bits)                  }
+{                                                               }
+{ Format 2 (2 parcels = 32 bits) :                              }
+{   parcel 0 : g.h.i.j.k (comme Format 1, k souvent ignore)     }
+{   parcel 1 : jkm = 16 bits supplementaires (immediat / addr)  }
+{   pour des branches le champ effectif est jkm 22 bits         }
+{   (3+3+16) reparti sur les deux parcels.                      }
+{                                                               }
+{ Opcodes Cray-1 utilises (octal, gh sur 7 bits) :              }
+{   001000 : ERR     - Error exit (halt CPU) - manuel p.3-7    }
+{   005jkm : J jkm   - Branch unconditionnel - manuel p.3-9    }
+{   011jkm : JSZ jkm - Branch si S0=0       - manuel p.3-11    }
+{   040ijk : Si Sj   - Move Sj a Si         - manuel p.3-23    }
+{   060ijk : Si Sj+Sk - Add scalaire 64bit  - manuel p.3-29    }
+{   061ijk : Si Sj-Sk - Sub scalaire 64bit  - manuel p.3-29    }
+{   064ijk : Si Sj&Sk - AND logique 64bit   - manuel p.3-31    }
+{   065ijk : Si Sj\Sk - XOR logique 64bit   - manuel p.3-31    }
+{   066ijk : Si Sj!Sk - OR  logique 64bit   - manuel p.3-31    }
+{   100ijk : Si exp,Aj - Load memoire       - manuel p.3-43    }
+{   110ijk : exp,Aj Si - Store memoire      - manuel p.3-44    }
+{   140i00 : Si jkm   - Load immediat 22bit - manuel p.3-25    }
+{                                                               }
+
+Const
+  { Opcodes Cray-1 (gh sur 7 bits). Le manuel les note en octal,    }
+  { ici convertis en hexadecimal pour le bit-packing.               }
+  CRAY_OP_ERR     = $01;   { 001 octal - Error exit       }
+  CRAY_OP_EX      = $04;   { 004 octal - Exchange (COS trap, Phase 2i) }
+  CRAY_OP_J       = $05;   { 005 octal - Jump unconditionnel }
+  CRAY_OP_JSZ     = $09;   { 011 octal - Jump si S0=0    }
+  CRAY_OP_JSN     = $0A;   { 012 octal - Jump si S0<>0   }
+  CRAY_OP_JSP     = $0B;   { 013 octal - Jump si Si>=0   }
+  CRAY_OP_JSM     = $0C;   { 014 octal - Jump si Si<0    }
+  CRAY_OP_MOVS    = $20;   { 040 octal - Si <- Sj        }
+  CRAY_OP_ADDS    = $30;   { 060 octal - Si <- Sj+Sk     }
+  CRAY_OP_SUBS    = $31;   { 061 octal - Si <- Sj-Sk     }
+  CRAY_OP_ANDS    = $34;   { 064 octal - Si <- Sj AND Sk }
+  CRAY_OP_XORS    = $35;   { 065 octal - Si <- Sj XOR Sk }
+  CRAY_OP_ORS     = $36;   { 066 octal - Si <- Sj OR  Sk }
+  CRAY_OP_LDS     = $40;   { 100 octal - Si <- M(Aj+exp) }
+  CRAY_OP_STS     = $48;   { 110 octal - M(Aj+exp) <- Si }
+  CRAY_OP_LDIMM   = $60;   { 140 octal - Si <- imm22     }
+
+  CRAY_MAX_PARCELS = 32768;
+
+Type
+  TCrayParcel = Word;
+
+Var
+  CrayCode     : Array[0..CRAY_MAX_PARCELS-1] Of TCrayParcel;
+  CrayCodeLen  : LongInt;  { nombre de parcels emis }
+  CraySaveDepth: Integer;  { profondeur pile registre S2..S6 (Phase 2e) }
+
+{ Reinitialise le buffer code Cray-1. }
+Procedure CrayCodeInit;
+Begin
+  CrayCodeLen := 0;
+  CraySaveDepth := 0;
+End;
+
+{ Emet un parcel 16 bits dans le buffer code. }
+Procedure CrayEmitParcel(Parcel: TCrayParcel);
+Begin
+  If CrayCodeLen >= CRAY_MAX_PARCELS Then
+  Begin
+    WriteLn('Erreur Cray-1 : buffer code parcels sature.');
+    Halt(1);
+  End;
+  CrayCode[CrayCodeLen] := Parcel;
+  Inc(CrayCodeLen);
+End;
+
+{ Encode un parcel Format 1 a partir des champs g.h.i.j.k.       }
+{ gh : opcode 7 bits, ijk : 3 bits chacun.                       }
+Function CrayEncFmt1(Gh: Byte; I, J, K: Byte): TCrayParcel;
+Begin
+  CrayEncFmt1 := TCrayParcel(
+    ((Gh And $7F) Shl 9) Or
+    ((I  And $07) Shl 6) Or
+    ((J  And $07) Shl 3) Or
+     (K  And $07));
+End;
+
+{ Emet une instruction Format 1 (1 parcel). }
+Procedure CrayEmitFmt1(Gh, I, J, K: Byte);
+Begin
+  CrayEmitParcel(CrayEncFmt1(Gh, I, J, K));
+End;
+
+{ Emet une instruction Format 2 (2 parcels) avec jkm 22 bits.    }
+{ Le champ jkm est reparti : i,j,k de la 1ere parcel encodent    }
+{ les 6 bits de poids fort, la 2eme parcel les 16 bits restants. }
+Procedure CrayEmitFmt2Imm22(Gh, RegI: Byte; Jkm22: LongInt);
+Var
+  HighBits, LowBits: LongInt;
+Begin
+  HighBits := (Jkm22 Shr 16) And $3F;          { 6 bits hauts dans j.k }
+  LowBits  := Jkm22 And $FFFF;                 { 16 bits bas dans parcel 2 }
+  { Pour load immediat, RegI est la destination, j,k portent les bits hauts. }
+  CrayEmitParcel(CrayEncFmt1(Gh, RegI,
+                              (HighBits Shr 3) And $07,
+                               HighBits And $07));
+  CrayEmitParcel(TCrayParcel(LowBits And $FFFF));
+End;
+
+{ Helpers haut niveau pour les operations courantes. }
+
+{ Si <- imm22 (sign-extended sur 64 bits par le materiel) }
+Procedure CrayLoadImmS(Si: Byte; Imm22: LongInt);
+Begin
+  CrayEmitFmt2Imm22(CRAY_OP_LDIMM, Si, Imm22 And $3FFFFF);
+End;
+
+{ Si <- Sj + Sk (entier 64 bits) }
+Procedure CrayAddS(Si, Sj, Sk: Byte);
+Begin
+  CrayEmitFmt1(CRAY_OP_ADDS, Si, Sj, Sk);
+End;
+
+{ Si <- Sj - Sk (entier 64 bits) }
+Procedure CraySubS(Si, Sj, Sk: Byte);
+Begin
+  CrayEmitFmt1(CRAY_OP_SUBS, Si, Sj, Sk);
+End;
+
+{ Si <- Sj AND Sk }
+Procedure CrayAndS(Si, Sj, Sk: Byte);
+Begin
+  CrayEmitFmt1(CRAY_OP_ANDS, Si, Sj, Sk);
+End;
+
+{ Si <- Sj OR Sk }
+Procedure CrayOrS(Si, Sj, Sk: Byte);
+Begin
+  CrayEmitFmt1(CRAY_OP_ORS, Si, Sj, Sk);
+End;
+
+{ Si <- Sj XOR Sk }
+Procedure CrayXorS(Si, Sj, Sk: Byte);
+Begin
+  CrayEmitFmt1(CRAY_OP_XORS, Si, Sj, Sk);
+End;
+
+{ Si <- Sj (move) - encode comme OR avec S0 (toujours zero). }
+Procedure CrayMovS(Si, Sj: Byte);
+Begin
+  CrayEmitFmt1(CRAY_OP_MOVS, Si, Sj, 0);
+End;
+
+{ Saut unconditionnel a l'adresse parcel jkm. }
+Procedure CrayJumpAbs(Jkm22: LongInt);
+Begin
+  CrayEmitFmt2Imm22(CRAY_OP_J, 0, Jkm22 And $3FFFFF);
+End;
+
+{ Error exit (halt CPU). }
+Procedure CrayErrorExit;
+Begin
+  CrayEmitFmt1(CRAY_OP_ERR, 0, 0, 0);
+End;
+
+{ ============================================================ }
+{ Cray-1 : registre des variables globales (Phase 2d).         }
+{ Chaque variable Pascal globale recoit une adresse parcel     }
+{ unique, sequentielle a partir de CRAY_VAR_BASE. Les helpers  }
+{ LDS/STS y referent par adresse 22-bit (jkm).                 }
+{ ============================================================ }
+Const
+  CRAY_VAR_BASE = $1000;        { adresse parcel des donnees }
+  CRAY_MAX_VARS = 256;
+
+Var
+  CrayVarName : Array[0..CRAY_MAX_VARS-1] Of TString;
+  CrayVarAddr : Array[0..CRAY_MAX_VARS-1] Of LongInt;
+  CrayVarCount: Integer;
+
+Procedure CrayVarInit;
+Begin
+  CrayVarCount := 0;
+End;
+
+{ Retourne l'adresse parcel d'une variable globale, l'enregistre }
+{ au premier usage. Allocation en mots 64 bits = 4 parcels.      }
+Function CrayLookupVarAddr(Const Name: TString): LongInt;
+Var
+  J: Integer;
+  Up: TString;
+Begin
+  Up := StrUpperCase(Name);
+  For J := 0 To CrayVarCount - 1 Do
+    If CrayVarName[J] = Up Then
+    Begin
+      CrayLookupVarAddr := CrayVarAddr[J];
+      Exit;
+    End;
+  If CrayVarCount >= CRAY_MAX_VARS Then
+  Begin
+    CrayLookupVarAddr := CRAY_VAR_BASE;  { saturation : reutilise base }
+    Exit;
+  End;
+  CrayVarName[CrayVarCount] := Up;
+  { 4 parcels par var (1 mot 64 bits). }
+  CrayVarAddr[CrayVarCount] := CRAY_VAR_BASE + LongInt(CrayVarCount) * 4;
+  CrayLookupVarAddr := CrayVarAddr[CrayVarCount];
+  Inc(CrayVarCount);
+End;
+
+{ Si <- M(addr) - load Si depuis adresse parcel absolue (Ah=0). }
+Procedure CrayLoadAbs(Si: Byte; Addr22: LongInt);
+Begin
+  CrayEmitFmt2Imm22(CRAY_OP_LDS, Si, Addr22 And $3FFFFF);
+End;
+
+{ M(addr) <- Si - store Si a adresse parcel absolue (Ah=0). }
+Procedure CrayStoreAbs(Si: Byte; Addr22: LongInt);
+Begin
+  CrayEmitFmt2Imm22(CRAY_OP_STS, Si, Addr22 And $3FFFFF);
+End;
+
+{ ============================================================ }
+{ Cray-1 : labels et fixups pour sauts (Phase 2f).             }
+{ Les jumps J/JSZ utilisent le format 2 imm22. Quand le label  }
+{ cible n'est pas encore defini, on emet 2 parcels avec        }
+{ adresse 0 et on enregistre un fixup. CrayResolveFixups       }
+{ patche les parcels apres assemblage complet.                 }
+{ ============================================================ }
+Const
+  CRAY_MAX_LABELS = 1024;
+  CRAY_MAX_FIXUPS = 2048;
+
+Var
+  CrayLblName  : Array[0..CRAY_MAX_LABELS-1] Of TString;
+  CrayLblPos   : Array[0..CRAY_MAX_LABELS-1] Of LongInt;
+  CrayLblCount : Integer;
+  CrayFxParcel : Array[0..CRAY_MAX_FIXUPS-1] Of LongInt;  { pos parcel0 du jump }
+  CrayFxName   : Array[0..CRAY_MAX_FIXUPS-1] Of TString;
+  CrayFxCount  : Integer;
+
+Procedure CrayLabelInit;
+Begin
+  CrayLblCount := 0;
+  CrayFxCount  := 0;
+End;
+
+Procedure CrayDefineLabel(Const Name: TString);
+Begin
+  If CrayLblCount >= CRAY_MAX_LABELS Then Exit;
+  CrayLblName[CrayLblCount] := Name;
+  CrayLblPos [CrayLblCount] := CrayCodeLen;
+  Inc(CrayLblCount);
+End;
+
+Function CrayFindLabel(Const Name: TString): LongInt;
+Var J: Integer;
+Begin
+  For J := 0 To CrayLblCount - 1 Do
+    If CrayLblName[J] = Name Then
+    Begin CrayFindLabel := CrayLblPos[J]; Exit; End;
+  CrayFindLabel := -1;
+End;
+
+Procedure CrayAddJumpFixup(Const Name: TString);
+Begin
+  If CrayFxCount >= CRAY_MAX_FIXUPS Then Exit;
+  CrayFxParcel[CrayFxCount] := CrayCodeLen;  { pos du parcel0 a venir }
+  CrayFxName  [CrayFxCount] := Name;
+  Inc(CrayFxCount);
+End;
+
+{ Patch un fixup une fois la cible connue : OR-in les bits dans  }
+{ les 2 parcels (parcel0 j,k = bits 21..16 ; parcel1 = bits 15..0).}
+Procedure CrayPatchJump(P0: LongInt; Target: LongInt);
+Var HighBits, LowBits: LongInt;
+Begin
+  If (P0 < 0) Or (P0 + 1 >= CrayCodeLen) Then Exit;
+  HighBits := (Target Shr 16) And $3F;
+  LowBits  := Target And $FFFF;
+  { parcel0 : conserver gh,i ; ecrire j,k = HighBits[5..3],HighBits[2..0]. }
+  CrayCode[P0]   := TCrayParcel(
+    (Word(CrayCode[P0]) And $FFC0) Or
+    (((HighBits Shr 3) And $07) Shl 3) Or
+    (HighBits And $07));
+  CrayCode[P0+1] := TCrayParcel(LowBits And $FFFF);
+End;
+
+Procedure CrayResolveFixups;
+Var J: Integer; Tgt: LongInt;
+Begin
+  For J := 0 To CrayFxCount - 1 Do
+  Begin
+    Tgt := CrayFindLabel(CrayFxName[J]);
+    If Tgt >= 0 Then
+      CrayPatchJump(CrayFxParcel[J], Tgt);
+    { Sinon : label inconnu, patch laisse a 0 (fall-through). }
+  End;
+End;
+
+{ Emet J <label> (saut absolu) avec fixup. }
+Procedure CrayJumpAbsLabel(Const Name: TString);
+Begin
+  CrayAddJumpFixup(Name);
+  CrayEmitFmt2Imm22(CRAY_OP_J, 0, 0);
+End;
+
+{ Emet JSZ S1,<label> (saut si S1 = 0) avec fixup. }
+Procedure CrayJumpZeroS1Label(Const Name: TString);
+Begin
+  CrayAddJumpFixup(Name);
+  CrayEmitFmt2Imm22(CRAY_OP_JSZ, 1, 0);
+End;
+
+{ Emet JSN S1,<label> (saut si S1 <> 0) avec fixup. }
+Procedure CrayJumpNonZeroS1Label(Const Name: TString);
+Begin
+  CrayAddJumpFixup(Name);
+  CrayEmitFmt2Imm22(CRAY_OP_JSN, 1, 0);
+End;
+
+{ Emet JSP S1,<label> (saut si S1 >= 0) avec fixup. }
+Procedure CrayJumpPosS1Label(Const Name: TString);
+Begin
+  CrayAddJumpFixup(Name);
+  CrayEmitFmt2Imm22(CRAY_OP_JSP, 1, 0);
+End;
+
+{ Emet JSM S1,<label> (saut si S1 < 0) avec fixup. }
+Procedure CrayJumpNegS1Label(Const Name: TString);
+Begin
+  CrayAddJumpFixup(Name);
+  CrayEmitFmt2Imm22(CRAY_OP_JSM, 1, 0);
+End;
+
+{ Compteur pour les labels internes generes par les comparaisons. }
+Var
+  CrayCmpLabelCount: LongInt;
+
+Function CrayMakeCmpLabel: TString;
+Var S: TString;
+Begin
+  Str(CrayCmpLabelCount, S);
+  CrayMakeCmpLabel := '_TPCRC_' + S;
+  Inc(CrayCmpLabelCount);
+End;
+
+{ ============================================================ }
+{ Cray-1 : COS trap + data label fixups (Phase 2i).            }
+{ Convention COS (inventee pour notre backend) :               }
+{   EX i,j,k  ; service code = (j shl 3) or k (6 bits)         }
+{ Services : 0=printchr S1   1=printint S1                     }
+{            2=newline       3=printstr (S1=parcel addr)       }
+{ ============================================================ }
+Const
+  CRAY_COS_PRINTCHR = 0;
+  CRAY_COS_PRINTINT = 1;
+  CRAY_COS_NEWLINE  = 2;
+  CRAY_COS_PRINTSTR = 3;
+  CRAY_MAX_DFXUPS   = 1024;
+
+Var
+  CrayDFxParcel : Array[0..CRAY_MAX_DFXUPS-1] Of LongInt;
+  CrayDFxName   : Array[0..CRAY_MAX_DFXUPS-1] Of TString;
+  CrayDFxCount  : Integer;
+  CrayPrintMode : Integer;  { 0=str  1=newline  2=int already printed }
+
+Procedure CrayDFxInit;
+Begin
+  CrayDFxCount := 0;
+  CrayPrintMode := 0;
+End;
+
+Procedure CrayAddDataFixup(Const Name: TString);
+Begin
+  If CrayDFxCount >= CRAY_MAX_DFXUPS Then Exit;
+  CrayDFxParcel[CrayDFxCount] := CrayCodeLen;
+  CrayDFxName  [CrayDFxCount] := Name;
+  Inc(CrayDFxCount);
+End;
+
+{ Patche un LDIMM Si,X (2 parcels) avec une adresse parcel concrete. }
+Procedure CrayPatchLdimmAddr(P0: LongInt; Target: LongInt);
+Var HighBits, LowBits: LongInt;
+Begin
+  If (P0 < 0) Or (P0 + 1 >= CrayCodeLen) Then Exit;
+  HighBits := (Target Shr 16) And $3F;
+  LowBits  := Target And $FFFF;
+  CrayCode[P0]   := TCrayParcel(
+    (Word(CrayCode[P0]) And $FFC0) Or
+    (((HighBits Shr 3) And $07) Shl 3) Or
+    (HighBits And $07));
+  CrayCode[P0+1] := TCrayParcel(LowBits And $FFFF);
+End;
+
+{ Emet une instruction EX i,j,k (trap COS). Service code 6-bit dans j,k. }
+Procedure CrayEmitTrap(Service: Integer);
+Begin
+  CrayEmitFmt1(CRAY_OP_EX, 0,
+               (Service Shr 3) And $07,
+               Service And $07);
+End;
+
+{ LDIMM S1, <data label> avec data fixup. La cible sera resolue }
+{ apres calcul de la longueur du code segment.                  }
+Procedure CrayLoadDataAddrS1(Const Name: TString);
+Begin
+  CrayAddDataFixup(Name);
+  CrayEmitFmt2Imm22(CRAY_OP_LDIMM, 1, 0);
+End;
+
+{ Genere un programme Cray-1 minimal de demonstration :           }
+{   S1 <- 42                                                      }
+{   S2 <- 100                                                     }
+{   S3 <- S1 + S2          (= 142)                                }
+{   ERR (halt)                                                    }
+{ Sera remplace en Phase 2 par la generation depuis le code Pascal.}
+Procedure CrayEmitDemoStub;
+Begin
+  CrayCodeInit;
+  CrayLoadImmS(1, 42);          { S1 := 42       (2 parcels) }
+  CrayLoadImmS(2, 100);         { S2 := 100      (2 parcels) }
+  CrayAddS(3, 1, 2);            { S3 := S1 + S2  (1 parcel)  }
+  CrayMovS(4, 3);               { S4 := S3       (1 parcel)  }
+  CrayErrorExit;                { ERR            (1 parcel)  }
+End;
+
+{ ============================================================ }
+{ BcAssembleCray1 : parser CAL (Cray Assembly Language) text   }
+{ et emettre les parcels correspondants dans CrayCode[].       }
+{ Mnemoniques reconnus (Phase 2) :                             }
+{   LDIMM Si,imm22         charge constante 22-bit dans Si     }
+{   LDS   Si,operand       Si <- M(addr) ; operand=imm ou nom  }
+{   STS   Si,operand       M(addr) <- Si ; operand=imm ou nom  }
+{   MOVS  Si,Sj            Si <- Sj                            }
+{   ADDS  Si,Sj,Sk         Si <- Sj + Sk                       }
+{   SUBS  Si,Sj,Sk         Si <- Sj - Sk                       }
+{   ANDS  Si,Sj,Sk         Si <- Sj AND Sk                     }
+{   ORS   Si,Sj,Sk         Si <- Sj OR  Sk                     }
+{   XORS  Si,Sj,Sk         Si <- Sj XOR Sk                     }
+{   ERR                    halt CPU                            }
+{ ============================================================ }
+
+Function CrayParseSReg(Const S: TString): Integer;
+{ Parse un registre 'Si' (i = 0..7) ou retourne -1 si invalide. }
+Var
+  T: TString;
+  N: Integer;
+Begin
+  T := S;
+  While (Length(T) > 0) And (T[1] = ' ') Do Delete(T, 1, 1);
+  While (Length(T) > 0) And (T[Length(T)] = ' ') Do Delete(T, Length(T), 1);
+  If (Length(T) <> 2) Or ((T[1] <> 'S') And (T[1] <> 's')) Or
+     (T[2] < '0') Or (T[2] > '7') Then
+  Begin
+    CrayParseSReg := -1;
+    Exit;
+  End;
+  N := Ord(T[2]) - Ord('0');
+  CrayParseSReg := N;
+End;
+
+Function CrayParseImm(Const S: TString): LongInt;
+{ Parse un entier signe (decimal). Pas de support hex en Phase 2. }
+Var
+  T: TString;
+  Neg: Boolean;
+  V: LongInt;
+  J: Integer;
+Begin
+  T := S;
+  While (Length(T) > 0) And (T[1] = ' ') Do Delete(T, 1, 1);
+  Neg := False;
+  If (Length(T) > 0) And (T[1] = '-') Then
+  Begin Neg := True; Delete(T, 1, 1); End
+  Else If (Length(T) > 0) And (T[1] = '+') Then
+    Delete(T, 1, 1);
+  V := 0;
+  J := 1;
+  While J <= Length(T) Do
+  Begin
+    If (T[J] >= '0') And (T[J] <= '9') Then
+      V := V * 10 + (Ord(T[J]) - Ord('0'));
+    Inc(J);
+  End;
+  If Neg Then V := -V;
+  CrayParseImm := V;
+End;
+
+Procedure BcAssembleCray1(Const S: TString);
+Var
+  Line, Mnem, Tmp: TString;
+  Parts: Array[0..3] Of TString;
+  NParts, P, J: Integer;
+  Si, Sj, Sk: Integer;
+  Imm: LongInt;
+  Declare_LblTrue, Declare_LblEnd: TString;
+Begin
+  Line := S;
+  While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
+  While (Length(Line) > 0) And (Line[Length(Line)] = ' ') Do
+    Delete(Line, Length(Line), 1);
+  If Line = '' Then Exit;
+  If Line[1] = ';' Then Exit;  { commentaire CAL }
+
+  { Extraire le mnemonique. }
+  P := Pos(' ', Line);
+  If P > 0 Then
+  Begin
+    Mnem := StrUpperCase(Copy(Line, 1, P - 1));
+    Tmp := Copy(Line, P + 1, Length(Line) - P);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+  End
+  Else
+  Begin
+    Mnem := StrUpperCase(Line);
+    Tmp := '';
+  End;
+
+  { Decouper les operandes par virgule (max 4). }
+  For J := 0 To 3 Do Parts[J] := '';
+  NParts := 0;
+  J := 1;
+  Parts[0] := '';
+  While (J <= Length(Tmp)) And (NParts < 4) Do
+  Begin
+    If Tmp[J] = ',' Then
+    Begin
+      Inc(NParts);
+      If NParts <= 3 Then Parts[NParts] := '';
+    End
+    Else
+      Parts[NParts] := Parts[NParts] + Tmp[J];
+    Inc(J);
+  End;
+  If Length(Tmp) > 0 Then Inc(NParts);  { au moins 1 part si Tmp non vide }
+
+  { ---- ERR ---- }
+  If Mnem = 'ERR' Then Begin CrayErrorExit; Exit; End;
+
+  { ---- TEST EAX,EAX : no-op sur Cray (S1 deja teste par JSZ/JSN) ---- }
+  If Mnem = 'TEST' Then Exit;
+
+  { ---- CALL / RET : non supportes sur Cray (pas de pile) ---- }
+  { Phase 2h : ignores silencieusement. Phase 2i : reconnaitre  }
+  { les helpers d'I/O et emettre des traps COS.                 }
+  If Mnem = 'RET' Then Exit;
+  If Mnem = 'CALL' Then
+  Begin
+    If NParts < 1 Then Exit;
+    Tmp := StrUpperCase(Parts[0]);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+    While (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ' ') Do
+      Delete(Tmp, Length(Tmp), 1);
+    If (Tmp = '_TPRT_PRINTSTR') Or (Tmp = '_TPRT_FPRINTSTR') Then
+    Begin
+      If CrayPrintMode = 1 Then       { CRLF capture par LEA precedente }
+        CrayEmitTrap(CRAY_COS_NEWLINE)
+      Else If CrayPrintMode = 2 Then  { entier deja imprime via NUMTOSTR }
+        { rien : suppression du print de NUMBUF }
+      Else
+        CrayEmitTrap(CRAY_COS_PRINTSTR);
+      CrayPrintMode := 0;
+      Exit;
+    End;
+    If Tmp = '_TPRT_NUMTOSTR' Then
+    Begin
+      CrayEmitTrap(CRAY_COS_PRINTINT);
+      CrayPrintMode := 2;
+      Exit;
+    End;
+    If Tmp = '_TPRT_PRINTCHAR' Then
+    Begin
+      CrayEmitTrap(CRAY_COS_PRINTCHR);
+      CrayPrintMode := 0;
+      Exit;
+    End;
+    { Autres CALL : ignores }
+    Exit;
+  End;
+
+  { ---- LEA EAX,[lbl] / LEA ESI,[lbl] (Phase 2i) ---- }
+  If (Mnem = 'LEA') And (NParts = 2) Then
+  Begin
+    Tmp := StrUpperCase(Parts[0]);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+    While (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ' ') Do
+      Delete(Tmp, Length(Tmp), 1);
+    { Extraire le nom du label entre crochets. }
+    While (Length(Parts[1]) > 0) And (Parts[1][1] In [' ', '[']) Do
+      Delete(Parts[1], 1, 1);
+    While (Length(Parts[1]) > 0) And
+          (Parts[1][Length(Parts[1])] In [' ', ']']) Do
+      Delete(Parts[1], Length(Parts[1]), 1);
+    If (Tmp = 'EAX') Or (Tmp = 'ESI') Then
+    Begin
+      If StrUpperCase(Parts[1]) = 'CRLF' Then
+      Begin
+        CrayPrintMode := 1;
+        Exit;
+      End;
+      If StrUpperCase(Parts[1]) = 'NUMBUF' Then
+      Begin
+        CrayPrintMode := 2;  { suite a NUMTOSTR : print deja fait }
+        Exit;
+      End;
+      { Charger l'adresse data du label dans S1. }
+      CrayLoadDataAddrS1(Parts[1]);
+      CrayPrintMode := 0;
+      Exit;
+    End;
+    Exit;
+  End;
+
+  { ---- INC ESI : no-op sur Cray (saut octet de longueur Pascal) ---- }
+  If Mnem = 'INC' Then Exit;
+
+  { ---- MOV EAX,<n> : matierialiser constante dans S1 ---- }
+  { Utilise par le court-circuit AND/OR Pascal (Phase 2h).        }
+  If (Mnem = 'MOV') And (NParts = 2) Then
+  Begin
+    Tmp := StrUpperCase(Parts[0]);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+    While (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ' ') Do
+      Delete(Tmp, Length(Tmp), 1);
+    If Tmp = 'EAX' Then
+    Begin
+      While (Length(Parts[1]) > 0) And (Parts[1][1] = ' ') Do
+        Delete(Parts[1], 1, 1);
+      If (Length(Parts[1]) > 0) And
+         (Parts[1][1] In ['0'..'9', '-', '+']) Then
+      Begin
+        Imm := CrayParseImm(Parts[1]);
+        CrayLoadImmS(1, Imm);
+        Exit;
+      End;
+    End;
+    { Autres formes MOV (registre, memoire) : ignorees. }
+    Exit;
+  End;
+
+  { ---- XOR EAX,EAX : zerolage (Phase 2h) ---- }
+  If (Mnem = 'XOR') And (NParts = 2) Then
+  Begin
+    Tmp := StrUpperCase(Parts[0]);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+    While (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ' ') Do
+      Delete(Tmp, Length(Tmp), 1);
+    If Tmp = 'EAX' Then CrayLoadImmS(1, 0);
+    Exit;
+  End;
+
+  { ---- JZ <label> : map vers JSZ S1,<label> (Phase 2f) ---- }
+  If Mnem = 'JZ' Then
+  Begin
+    If NParts < 1 Then Exit;
+    While (Length(Parts[0]) > 0) And (Parts[0][1] = ' ') Do
+      Delete(Parts[0], 1, 1);
+    While (Length(Parts[0]) > 0) And
+          (Parts[0][Length(Parts[0])] = ' ') Do
+      Delete(Parts[0], Length(Parts[0]), 1);
+    If Length(Parts[0]) > 0 Then
+      CrayJumpZeroS1Label(Parts[0]);
+    Exit;
+  End;
+
+  { ---- JNZ <label> : map vers JSN S1,<label> (Phase 2f) ---- }
+  If Mnem = 'JNZ' Then
+  Begin
+    If NParts < 1 Then Exit;
+    While (Length(Parts[0]) > 0) And (Parts[0][1] = ' ') Do
+      Delete(Parts[0], 1, 1);
+    While (Length(Parts[0]) > 0) And
+          (Parts[0][Length(Parts[0])] = ' ') Do
+      Delete(Parts[0], Length(Parts[0]), 1);
+    If Length(Parts[0]) > 0 Then
+      CrayJumpNonZeroS1Label(Parts[0]);
+    Exit;
+  End;
+
+  { ---- JMP <label> : saut absolu (Phase 2f) ---- }
+  If Mnem = 'JMP' Then
+  Begin
+    If NParts < 1 Then Exit;
+    While (Length(Parts[0]) > 0) And (Parts[0][1] = ' ') Do
+      Delete(Parts[0], 1, 1);
+    While (Length(Parts[0]) > 0) And
+          (Parts[0][Length(Parts[0])] = ' ') Do
+      Delete(Parts[0], Length(Parts[0]), 1);
+    If Length(Parts[0]) > 0 Then
+      CrayJumpAbsLabel(Parts[0]);
+    Exit;
+  End;
+
+  { ---- LDIMM Si,imm ---- }
+  If Mnem = 'LDIMM' Then
+  Begin
+    If NParts < 2 Then Exit;
+    Si := CrayParseSReg(Parts[0]);
+    If Si < 0 Then Exit;
+    Imm := CrayParseImm(Parts[1]);
+    CrayLoadImmS(Si, Imm);
+    Exit;
+  End;
+
+  { ---- LDS / STS Si,operand ---- }
+  { operand = entier (immediat) OU nom symbolique de variable }
+  If (Mnem = 'LDS') Or (Mnem = 'STS') Then
+  Begin
+    If NParts < 2 Then Exit;
+    Si := CrayParseSReg(Parts[0]);
+    If Si < 0 Then Exit;
+    { Trim Parts[1]. }
+    While (Length(Parts[1]) > 0) And (Parts[1][1] = ' ') Do
+      Delete(Parts[1], 1, 1);
+    While (Length(Parts[1]) > 0) And
+          (Parts[1][Length(Parts[1])] = ' ') Do
+      Delete(Parts[1], Length(Parts[1]), 1);
+    If Length(Parts[1]) = 0 Then Exit;
+    { Detecter immediat numerique vs nom symbolique. }
+    If (Parts[1][1] In ['0'..'9', '-', '+']) Then
+      Imm := CrayParseImm(Parts[1])
+    Else
+      Imm := CrayLookupVarAddr(Parts[1]);
+    If Mnem = 'LDS' Then CrayLoadAbs(Si, Imm)
+    Else                 CrayStoreAbs(Si, Imm);
+    Exit;
+  End;
+
+  { ---- MOVS Si,Sj ---- }
+  If Mnem = 'MOVS' Then
+  Begin
+    If NParts < 2 Then Exit;
+    Si := CrayParseSReg(Parts[0]);
+    Sj := CrayParseSReg(Parts[1]);
+    If (Si < 0) Or (Sj < 0) Then Exit;
+    CrayMovS(Si, Sj);
+    Exit;
+  End;
+
+  { ---- ADDS / SUBS / ANDS / ORS / XORS Si,Sj,Sk ---- }
+  If (Mnem = 'ADDS') Or (Mnem = 'SUBS') Or (Mnem = 'ANDS') Or
+     (Mnem = 'ORS')  Or (Mnem = 'XORS') Then
+  Begin
+    If NParts < 3 Then Exit;
+    Si := CrayParseSReg(Parts[0]);
+    Sj := CrayParseSReg(Parts[1]);
+    Sk := CrayParseSReg(Parts[2]);
+    If (Si < 0) Or (Sj < 0) Or (Sk < 0) Then Exit;
+    If Mnem = 'ADDS' Then CrayAddS(Si, Sj, Sk)
+    Else If Mnem = 'SUBS' Then CraySubS(Si, Sj, Sk)
+    Else If Mnem = 'ANDS' Then CrayAndS(Si, Sj, Sk)
+    Else If Mnem = 'ORS'  Then CrayOrS (Si, Sj, Sk)
+    Else                      CrayXorS(Si, Sj, Sk);
+    Exit;
+  End;
+
+  { ---- CRSAVE : sauver S1 sur la pile registre (Phase 2e) ---- }
+  { Emet MOVS S(2+depth),S1 et incremente la profondeur.         }
+  { Profondeur max = 5 (S2..S6). Au-dela, ignore (perte).        }
+  If Mnem = 'CRSAVE' Then
+  Begin
+    If CraySaveDepth < 5 Then
+      CrayMovS(2 + CraySaveDepth, 1);
+    Inc(CraySaveDepth);
+    Exit;
+  End;
+
+  { ---- CRDISC : depiler sans operer (Phase 2e) ---- }
+  If Mnem = 'CRDISC' Then
+  Begin
+    If CraySaveDepth > 0 Then Dec(CraySaveDepth);
+    Exit;
+  End;
+
+  { ---- CRADD/CRSUB/CRAND/CROR/CRXOR : binop avec sommet pile ---- }
+  { Convention : sommet = gauche, S1 = droite ; resultat dans S1.  }
+  If (Mnem = 'CRADD') Or (Mnem = 'CRSUB') Or (Mnem = 'CRAND') Or
+     (Mnem = 'CROR')  Or (Mnem = 'CRXOR') Then
+  Begin
+    If CraySaveDepth = 0 Then Exit;  { sous-flux : pas d'op }
+    Dec(CraySaveDepth);
+    If CraySaveDepth >= 5 Then Exit; { la valeur a ete perdue plus tot }
+    Sj := 2 + CraySaveDepth;          { Sj = gauche }
+    If Mnem = 'CRADD' Then CrayAddS(1, Sj, 1)
+    Else If Mnem = 'CRSUB' Then CraySubS(1, Sj, 1)
+    Else If Mnem = 'CRAND' Then CrayAndS(1, Sj, 1)
+    Else If Mnem = 'CROR'  Then CrayOrS (1, Sj, 1)
+    Else                       CrayXorS(1, Sj, 1);
+    Exit;
+  End;
+
+  { ---- CRCMPEQ/NE/LT/LE/GT/GE : comparaisons (Phase 2g) ---- }
+  { Convention : gauche = sommet pile ; droite = S1 ; resultat   }
+  { 0 ou 1 dans S1.                                              }
+  If (Mnem = 'CRCMPEQ') Or (Mnem = 'CRCMPNE') Or
+     (Mnem = 'CRCMPLT') Or (Mnem = 'CRCMPGE') Or
+     (Mnem = 'CRCMPGT') Or (Mnem = 'CRCMPLE') Then
+  Begin
+    If CraySaveDepth = 0 Then Exit;
+    Dec(CraySaveDepth);
+    If CraySaveDepth >= 5 Then
+    Begin
+      { gauche perdue : forcer 0 par defaut. }
+      CrayLoadImmS(1, 0);
+      Exit;
+    End;
+    Sj := 2 + CraySaveDepth;
+    Declare_LblTrue := CrayMakeCmpLabel;
+    Declare_LblEnd  := CrayMakeCmpLabel;
+    { GT/LE : SUBS S1,S1,Sj   (S1 = droite - gauche)             }
+    { autres: SUBS S1,Sj,S1   (S1 = gauche - droite)             }
+    If (Mnem = 'CRCMPGT') Or (Mnem = 'CRCMPLE') Then
+      CraySubS(1, 1, Sj)
+    Else
+      CraySubS(1, Sj, 1);
+    { Branchement vers _LblTrue selon le mnemonique. }
+    If Mnem = 'CRCMPEQ' Then CrayJumpZeroS1Label(Declare_LblTrue)
+    Else If Mnem = 'CRCMPNE' Then CrayJumpNonZeroS1Label(Declare_LblTrue)
+    Else If Mnem = 'CRCMPLT' Then CrayJumpNegS1Label(Declare_LblTrue)
+    Else If Mnem = 'CRCMPGE' Then CrayJumpPosS1Label(Declare_LblTrue)
+    Else If Mnem = 'CRCMPGT' Then CrayJumpNegS1Label(Declare_LblTrue)
+    Else                          CrayJumpPosS1Label(Declare_LblTrue);
+    { Chemin faux : S1 := 0 puis saut vers fin. }
+    CrayLoadImmS(1, 0);
+    CrayAddJumpFixup(Declare_LblEnd);
+    CrayEmitFmt2Imm22(CRAY_OP_J, 0, 0);
+    { Chemin vrai : S1 := 1. }
+    CrayDefineLabel(Declare_LblTrue);
+    CrayLoadImmS(1, 1);
+    CrayDefineLabel(Declare_LblEnd);
+    Exit;
+  End;
+
+  { Mnemonique non reconnu en Phase 2 : ignore silencieusement   }
+  { (les sites de codegen non encore portes a Cray emettent du   }
+  { texte x86 que nous n'avons pas encore traduit).              }
+End;
+
+{ --- WriteCray1AbsFile : COS Absolute Binary pour Cray-1                  }
+{ AVERTISSEMENT : Phase 1 du backend Cray-1.                                }
+{ Le compilateur emet un programme stub Cray-1 reel (parcels 16/32 bits    }
+{ valides selon CRAY-1 Hardware Reference Manual 2240004) au lieu du       }
+{ bytecode Z80 placeholder. La generation depuis le code Pascal viendra    }
+{ en Phase 2 (integration au codegen via DEST_CRAY1).                      }
+{                                                                          }
+{ Format COS Absolute Binary (simplifie) :                                  }
+{   Mot 0 (8 octets BE) : signature 'CRAY-1\0\0'                            }
+{   Mot 1 (8 octets BE) : longueur du segment code en mots de 64 bits      }
+{   Mot 2 (8 octets BE) : longueur du segment data en mots de 64 bits      }
+{   Mot 3 (8 octets BE) : adresse d'entree (P-register, en parcels)        }
+{   Donnees code (parcels 16-bit big-endian, padded a 4 parcels par mot)   }
+{   Donnees data (alignees a 8 octets)                                     }
+Procedure WriteCray1AbsFile(FileName: TString);
+Const
+  CRAY_ENTRY = $200;  { adresse d'entree en parcels (au-dessus zone OS) }
+Var
+  F: File;
+  CodeBytes, DataLen: LongInt;
+  CodeWords, DataWords: LongInt;
+  PadLen, I: LongInt;
+  PadByte: Byte;
+  Sig: Array[0..7] Of Byte;
+  W: Array[0..7] Of Byte;
+  PB: Array[0..1] Of Byte;
+  P: TCrayParcel;
+
+  Procedure WriteWord64BE(Value: LongInt);
+  Var J: Integer;
+  Begin
+    For J := 0 To 7 Do W[J] := 0;
+    W[7] := Value And $FF;
+    W[6] := (Value Shr 8) And $FF;
+    W[5] := (Value Shr 16) And $FF;
+    W[4] := (Value Shr 24) And $FF;
+    BlockWrite(F, W, 8);
+  End;
+
+Begin
+  { Si le codegen Pascal n'a rien emis (ou seulement quelques mnemoniques  }
+  { non encore portes), on retombe sur le stub de demonstration. Sinon on  }
+  { utilise le code que BcAssembleCray1 a produit.                         }
+  If CrayCodeLen = 0 Then
+    CrayEmitDemoStub;
+
+  { Resoudre les sauts vers labels (Phase 2f). }
+  CrayResolveFixups;
+
+  { 4 parcels = 1 mot Cray-1 de 64 bits. Aligner code a 4 parcels. }
+  While (CrayCodeLen Mod 4) <> 0 Do
+    CrayEmitParcel(0);
+
+  CodeBytes := CrayCodeLen * 2;          { taille code en octets }
+  CodeWords := CodeBytes Div 8;          { mots 64 bits }
+
+  { Phase 2i : resoudre les data fixups (LDIMM S1,<label>).      }
+  { Chaque octet de BcData devient 1 parcel apres le code.       }
+  { Adresse parcel d'un label = CrayCodeLen + byte_offset.       }
+  For I := 0 To CrayDFxCount - 1 Do
+  Begin
+    DataLen := BcFindDataLabel(CrayDFxName[I]);
+    If DataLen >= 0 Then
+      CrayPatchLdimmAddr(CrayDFxParcel[I], CrayCodeLen + DataLen);
+    { Sinon : label inconnu, addr = 0 (sera rejete par le trap). }
+  End;
+
+  { Phase 2i : ajouter les donnees comme parcels (1 octet par parcel). }
+  For I := 0 To BcDataLen - 1 Do
+    CrayEmitParcel(TCrayParcel(BcData[I]));
+
+  { Aligner segment data a 4 parcels. }
+  While (CrayCodeLen Mod 4) <> 0 Do
+    CrayEmitParcel(0);
+
+  DataLen   := (CrayCodeLen * 2) - CodeBytes;  { taille data en octets }
+  DataWords := DataLen Div 8;
+
+  Assign(F, FileName);
+  Rewrite(F, 1);
+
+  { Signature 'CRAY-1\0\0' (8 octets) }
+  Sig[0] := Ord('C'); Sig[1] := Ord('R'); Sig[2] := Ord('A'); Sig[3] := Ord('Y');
+  Sig[4] := Ord('-'); Sig[5] := Ord('1'); Sig[6] := 0; Sig[7] := 0;
+  BlockWrite(F, Sig, 8);
+
+  { 3 mots big-endian : code words, data words, entry address (en parcels). }
+  WriteWord64BE(CodeWords);
+  WriteWord64BE(DataWords);
+  WriteWord64BE(CRAY_ENTRY);
+
+  { Code + data segments fusionnes : tous les parcels en big-endian. }
+  For I := 0 To CrayCodeLen - 1 Do
+  Begin
+    P := CrayCode[I];
+    PB[0] := (P Shr 8) And $FF;          { octet poids fort }
+    PB[1] := P And $FF;                  { octet poids faible }
+    BlockWrite(F, PB, 2);
+  End;
+
+  { (Plus de segment data x86 separe : BcData a ete embarque dans   }
+  {  les parcels Cray ci-dessus.)                                   }
+  PadByte := 0; { conserve pour compat structure originale }
+  PadLen := 0;
+  While PadLen > 0 Do
+  Begin BlockWrite(F, PadByte, 1); Dec(PadLen); End;
+
+  Close(F);
+End;
+
 Procedure WriteAtari2600RomFile(FileName: TString);
 Const
   ROM_SIZE   = 4096;     { 4 KB cartouche standard }
@@ -36540,6 +37574,12 @@ Begin
       WriteMsxComFile(Opts.OutFile);
       If Opts.Verbose Then
         WriteLn('  Coleco Adam CP/M COM genere : ', Opts.OutFile);
+    End
+    Else If Opts.Cray1 Then
+    Begin
+      WriteCray1AbsFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  Cray-1 COS Absolute Binary genere : ', Opts.OutFile);
     End
     Else
     Begin
