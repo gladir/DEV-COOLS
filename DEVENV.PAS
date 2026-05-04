@@ -27390,6 +27390,8 @@ Begin
   DrawNewProjectDialog(NewProjDlg);
  If FileDlg.Base.Visible Then
   DrawFileDialog(FileDlg);
+ If ProjPropDlg.Base.Visible Then
+  DrawProjectPropertiesDialog(ProjPropDlg);
 End;
 
 { --- Traiter un evenement global --- }
@@ -27422,6 +27424,11 @@ Begin
       If (CtxMenu.NodeIdx >= 0) And
          (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then
        OpenExplorerFileNode(SolExplorer, CtxMenu.NodeIdx);
+     End;
+     399: Begin { Proprietes du projet }
+      InitProjectPropertiesDialog(ProjPropDlg);
+      LoadProjectProperties(ProjPropDlg, CurrentProject);
+      ShowProjectPropertiesDialog(ProjPropDlg);
      End;
      521: Begin { Supprimer fichier/reference }
       If (CtxMenu.NodeIdx >= 0) And
