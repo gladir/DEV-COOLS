@@ -20452,6 +20452,11 @@ End;
 
 { --- Dessiner l onglet Application --- }
 
+Function ProjPropCursorVisible: Boolean;
+Begin
+ ProjPropCursorVisible := (GetTimestamp Div 500) Mod 2 = 0;
+End;
+
 Procedure DrawProjPropApplication(Var Dlg: TProjectPropertiesDialog);
 Var
  FX, FY, FW, BaseY: Integer;
@@ -20468,7 +20473,7 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.AssemblyName, CLR_WINDOWTEXT);
- If Dlg.FocusField = 0 Then
+ If (Dlg.FocusField = 0) And ProjPropCursorVisible Then
   DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
    Length(Dlg.AssemblyName) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Espace de noms racine }
@@ -20480,7 +20485,7 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.RootNamespace, CLR_WINDOWTEXT);
- If Dlg.FocusField = 1 Then
+ If (Dlg.FocusField = 1) And ProjPropCursorVisible Then
   DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
    Length(Dlg.RootNamespace) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Type de sortie }
@@ -20494,7 +20499,7 @@ Begin
   CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   OutputTypeIdxToStr(Dlg.OutputTypeIdx), CLR_WINDOWTEXT);
- If Dlg.FocusField = 2 Then
+ If (Dlg.FocusField = 2) And ProjPropCursorVisible Then
   DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
    Length(OutputTypeIdxToStr(Dlg.OutputTypeIdx)) * 8,
    BaseY, '_', CLR_WINDOWTEXT);
@@ -20519,7 +20524,7 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.DefineConstants, CLR_WINDOWTEXT);
- If Dlg.FocusField = 0 Then
+ If (Dlg.FocusField = 0) And ProjPropCursorVisible Then
   DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
    Length(Dlg.DefineConstants) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Chemin de sortie }
@@ -20531,7 +20536,7 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.OutputPath, CLR_WINDOWTEXT);
- If Dlg.FocusField = 1 Then
+ If (Dlg.FocusField = 1) And ProjPropCursorVisible Then
   DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
    Length(Dlg.OutputPath) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Niveau d avertissement }
@@ -20546,7 +20551,7 @@ Begin
   BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY, S,
   CLR_WINDOWTEXT);
- If Dlg.FocusField = 2 Then
+ If (Dlg.FocusField = 2) And ProjPropCursorVisible Then
   DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
    Length(S) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Case a cocher : traiter avertissements comme erreurs }
@@ -20577,7 +20582,7 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.PreBuildEvent, CLR_WINDOWTEXT);
- If Dlg.FocusField = 0 Then
+ If (Dlg.FocusField = 0) And ProjPropCursorVisible Then
   DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
    Length(Dlg.PreBuildEvent) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Commande post-build }
@@ -20589,7 +20594,7 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.PostBuildEvent, CLR_WINDOWTEXT);
- If Dlg.FocusField = 1 Then
+ If (Dlg.FocusField = 1) And ProjPropCursorVisible Then
   DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
    Length(Dlg.PostBuildEvent) * 8, BaseY, '_', CLR_WINDOWTEXT);
 End;
@@ -20612,7 +20617,7 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.DebugArgs, CLR_WINDOWTEXT);
- If Dlg.FocusField = 0 Then
+ If (Dlg.FocusField = 0) And ProjPropCursorVisible Then
   DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
    Length(Dlg.DebugArgs) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Repertoire de travail }
@@ -20624,7 +20629,7 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.WorkingDir, CLR_WINDOWTEXT);
- If Dlg.FocusField = 1 Then
+ If (Dlg.FocusField = 1) And ProjPropCursorVisible Then
   DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
    Length(Dlg.WorkingDir) * 8, BaseY, '_', CLR_WINDOWTEXT);
 End;
@@ -27801,8 +27806,11 @@ End;
 Procedure MainLoop;
 Var
  Ev: TEvent;
+ LastBlink: LongInt;
+ Now: LongInt;
 Begin
  QuitRequested := False;
+ LastBlink := GetTimestamp;
  While Not QuitRequested Do Begin
   PollEvents(Ev);
   If Ev.Kind <> EV_NONE Then Begin
@@ -27816,10 +27824,19 @@ Begin
     DrawAllWidgets;
     DrawContextMenu(CtxMenu);
    End;
+   LastBlink := GetTimestamp;
   End Else Begin
    { Meme sans evenement utilisateur, redessiner si le terminal a change }
    If TermVisible And TermPanels[ActiveShell].NeedRepaint Then
     DrawTerminalPanel(TermPanels[ActiveShell]);
+   { Faire clignoter le curseur du dialogue Proprietes du projet }
+   If ProjPropDlg.Base.Visible Then Begin
+    Now := GetTimestamp;
+    If (Now - LastBlink) >= 500 Then Begin
+     DrawProjectPropertiesDialog(ProjPropDlg);
+     LastBlink := Now;
+    End;
+   End;
   End;
  End;
 End;
