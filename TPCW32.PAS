@@ -91,6 +91,7 @@ Const
   DEST_68000 = 8;   { -C68000 : Motorola 68000    }
   DEST_ATARIST = 9; { -CATARIST : Atari ST (68000) }
   DEST_AMIGA = 10;  { -CAMIGA : Amiga (68000)      }
+  DEST_APPLEII = 11; { -CAPPLEII : Apple II (6502) }
 
 Type
   TString = String;
@@ -126,7 +127,8 @@ Type
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
     ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
     Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
-    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA : destination }
+    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII : destination }
+    AppleII     : Boolean;   { True si la plateforme est Apple II (CPU = 6502) }
   End;
 
 Var
@@ -303,6 +305,7 @@ Begin
   Opts.DebugMode := False;
   Opts.Warnings  := False;
   Opts.AsmOutput := False;
+  Opts.AppleII := False;
   Opts.ObjOnly   := False;
   Opts.Dos16Mode := False;
   Opts.TPVersion := TP_VER_DEFAULT;
@@ -374,6 +377,7 @@ Begin
   WriteLn('  -C68000        Destination Motorola 68000');
   WriteLn('  -CATARIST      Destination Atari ST (68000)');
   WriteLn('  -CAMIGA        Destination Amiga (68000)');
+  WriteLn('  -CAPPLEII      Destination Apple II (6502)');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -494,6 +498,11 @@ Begin
       Opts.DestTarget := DEST_ATARIST
     Else If (UA = '-CAMIGA') Then
       Opts.DestTarget := DEST_AMIGA
+    Else If (UA = '-CAPPLEII') Then
+    Begin
+      Opts.DestTarget := DEST_6502;
+      Opts.AppleII := True;
+    End
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
@@ -588,6 +597,8 @@ Begin
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.prg')
     Else If Opts.DestTarget = DEST_AMIGA Then
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe')
+    Else If Opts.AppleII Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.bin')
     Else
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
   End;
@@ -4394,6 +4405,16 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Is6502Target : True si la cible utilise le CPU MOS 6502      }
+{ (-C6502 ou -CAPPLEII)                                        }
+{ ------------------------------------------------------------ }
+
+Function Is6502Target : Boolean;
+Begin
+  Is6502Target := (Opts.DestTarget = DEST_6502);
+End;
+
+{ ------------------------------------------------------------ }
 { EmitLabel : ecrire un label suivi de ':'                     }
 { ------------------------------------------------------------ }
 
@@ -4417,7 +4438,7 @@ Begin
   Begin
     If Opts.DestTarget = DEST_Z80 Then
       BcAssembleZ80(S)
-    Else If Opts.DestTarget = DEST_6502 Then
+    Else If Is6502Target Then
       BcAssemble6502(S)
     Else If Opts.DestTarget = DEST_6809 Then
       BcAssemble6809(S)
@@ -34028,6 +34049,43 @@ End;
 {   S9 : termination (entry point 16 bits + checksum)                       }
 { Layout memoire : code en 0..TextLen-1, data juste apres aligne sur 4 .    }
 { Limitation : adresses 16 bits, donc max 64 Ko de code+data combines.      }
+{ --- WriteAppleBinFile : binaire Apple II (DOS 3.3 / ProDOS BIN)          }
+{ Format : 2 octets load address LE + 2 octets length LE + bytes brut.     }
+{ Adresse de chargement par defaut : $0803 (zone DOS 3.3 BLOAD).           }
+Procedure WriteAppleBinFile(FileName: TString);
+Const
+  APPLE_LOAD_ADDR = $0803;
+Var
+  F: File;
+  TextLen, DataLen, TotalLen, DataBase: LongInt;
+  PadLen: LongInt;
+  PadByte: Byte;
+  Hdr: Array[0..3] Of Byte;
+Begin
+  TextLen := BcCodeLen;
+  DataLen := BcDataLen;
+  DataBase := (TextLen + 3) And Not 3;
+  TotalLen := DataBase + DataLen;
+
+  Hdr[0] := APPLE_LOAD_ADDR And $FF;
+  Hdr[1] := (APPLE_LOAD_ADDR Shr 8) And $FF;
+  Hdr[2] := TotalLen And $FF;
+  Hdr[3] := (TotalLen Shr 8) And $FF;
+
+  Assign(F, FileName);
+  Rewrite(F, 1);
+  BlockWrite(F, Hdr, 4);
+  If TextLen > 0 Then
+    BlockWrite(F, BcCode[0], TextLen);
+  PadByte := 0;
+  PadLen := DataBase - TextLen;
+  While PadLen > 0 Do
+  Begin BlockWrite(F, PadByte, 1); Dec(PadLen); End;
+  If DataLen > 0 Then
+    BlockWrite(F, BcData[0], DataLen);
+  Close(F);
+End;
+
 Procedure WriteSRecordFile(FileName: TString);
 Var
   F: Text;
@@ -35944,6 +36002,12 @@ Begin
       If Opts.Verbose Then
         WriteLn('  S-Record genere  : ',
           ReplaceExt(Opts.OutFile, '.s19'));
+    End
+    Else If Opts.AppleII Then
+    Begin
+      WriteAppleBinFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  Apple II BIN genere : ', Opts.OutFile);
     End
     Else
     Begin
