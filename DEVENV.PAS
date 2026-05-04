@@ -1,4 +1,4 @@
-{ @author: Sylvain Maltais (support@gladir.com)
+﻿{ @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @version: 1.00
   @website(https://www.gladir.com/dev-cools)
@@ -3101,6 +3101,15 @@ Var
  Z80_Cycles : LongInt;
  Z80_Panel  : ^TEmulatorPanel;
  Z80_Variant: Integer;        { 0=TRS-80 1=MSX 2=Adam }
+ { --- Etat emulateur Motorola 6809 (CoCo3, Dragon, Thomson) --- }
+ M6809_Mem    : Array[0..$FFFF] Of Byte;
+ M6809_A, M6809_B, M6809_DP, M6809_CC : Byte;
+ M6809_X, M6809_Y, M6809_U, M6809_S, M6809_PC : Word;
+ M6809_Halted : Boolean;
+ M6809_ExitCode: Integer;
+ M6809_Cycles : LongInt;
+ M6809_Panel  : ^TEmulatorPanel;
+ M6809_Variant: Integer;     { 0=CoCo3 1=Dragon32 2=Dragon64 3=TO7 4=TO8 5=MO5 }
  { Indicateur de sortie }
  QuitRequested  : Boolean;
  { Drapeau nettoyage ecran transition page de demarrage -> IDE }
@@ -19734,7 +19743,7 @@ End;
 
 Function TargetCPUCount: Integer;
 Begin
- TargetCPUCount := 21;
+ TargetCPUCount := 26;
 End;
 
 Function TargetCPUFlag(Idx: Integer): String;
@@ -19761,6 +19770,11 @@ Begin
   18: TargetCPUFlag := '-CATARI2600';
   19: TargetCPUFlag := '-CADAM';
   20: TargetCPUFlag := '-CCRAY1';
+  21: TargetCPUFlag := '-CDRAGON32';
+  22: TargetCPUFlag := '-CDRAGON64';
+  23: TargetCPUFlag := '-CTO7';
+  24: TargetCPUFlag := '-CTO8';
+  25: TargetCPUFlag := '-CMO5';
  Else
   TargetCPUFlag := '-CW32';
  End;
@@ -19790,6 +19804,11 @@ Begin
   18: TargetCPULabel := 'Atari 2600 VCS 6507 (-CATARI2600)';
   19: TargetCPULabel := 'Coleco Adam Z80 CP/M (-CADAM)';
   20: TargetCPULabel := 'Cray-1 COS Absolute (-CCRAY1)';
+  21: TargetCPULabel := 'Dragon 32 6809 (-CDRAGON32)';
+  22: TargetCPULabel := 'Dragon 64 6809 (-CDRAGON64)';
+  23: TargetCPULabel := 'Thomson TO7 6809 (-CTO7)';
+  24: TargetCPULabel := 'Thomson TO8 6809 (-CTO8)';
+  25: TargetCPULabel := 'Thomson MO5 6809 (-CMO5)';
  Else
   TargetCPULabel := 'Inconnu';
  End;
@@ -28122,6 +28141,1012 @@ Begin
   Z80_Mem[$FFFF] := $00;
 End;
 
+{ ========================================================================== }
+{ EMULATEUR Motorola 6809 INTEGRE                                            }
+{ Couvre Tandy CoCo 3 (-CCOCO3), Dragon 32/64 (-CDRAGON32/-CDRAGON64),       }
+{ Thomson TO7 (-CTO7), TO8 (-CTO8) et MO5 (-CMO5).                            }
+{ Sous-ensemble couvrant la majorite des opcodes : page 1 complete (LD/ST/   }
+{ ADD/SUB/CMP/AND/OR/EOR/BIT/INC/DEC/NEG/COM/CLR/TST/ASL/ASR/LSR/ROL/ROR/    }
+{ JMP/JSR/RTS/RTI/BRA/Bcc/LBRA/LBcc/PSH/PUL/TFR/EXG/SWI/NOP/ABX/SEX/MUL),    }
+{ pages 2 et 3 (LDY/STY/CMPY/CMPS/CMPU/CMPD/LBcc).                          }
+{ Modes d adressage : immediat (8/16), direct (DP+offset 8b), etendu (16b), }
+{ indexe simple (sans offset, offset 5/8/16, A/B/D offset, +/-/++/--, PC).   }
+{ Drapeaux CC : EFHINZVC ($80,$40,$20,$10,$08,$04,$02,$01).                  }
+{ Traps de sortie :                                                          }
+{   JSR $A002 (CoCo3 BASIC CHROUT)  : imprime A                              }
+{   JSR $BB5A (Dragon CHROUT)       : imprime A                              }
+{   JSR $E803 (Thomson PUTC)        : imprime A                              }
+{ ========================================================================== }
+
+Function M6809_Rd(A: Word): Byte;
+Begin M6809_Rd := M6809_Mem[A]; End;
+Procedure M6809_Wr(A: Word; V: Byte);
+Begin M6809_Mem[A] := V; End;
+Function M6809_Rd16(A: Word): Word;
+Begin M6809_Rd16 := (Word(M6809_Mem[A]) Shl 8) Or
+                    M6809_Mem[Word(A + 1)]; End;
+Procedure M6809_Wr16(A: Word; V: Word);
+Begin
+  M6809_Mem[A] := (V Shr 8) And $FF;
+  M6809_Mem[Word(A + 1)] := V And $FF;
+End;
+
+Function M6809_GetD: Word;
+Begin M6809_GetD := (Word(M6809_A) Shl 8) Or M6809_B; End;
+Procedure M6809_SetD(V: Word);
+Begin M6809_A := (V Shr 8) And $FF; M6809_B := V And $FF; End;
+
+Function M6809_FetchByte: Byte;
+Begin
+  M6809_FetchByte := M6809_Mem[M6809_PC];
+  M6809_PC := (M6809_PC + 1) And $FFFF;
+End;
+
+Function M6809_FetchWord: Word;
+Var Hi, Lo: Byte;
+Begin
+  Hi := M6809_FetchByte;
+  Lo := M6809_FetchByte;
+  M6809_FetchWord := (Word(Hi) Shl 8) Or Lo;
+End;
+
+{ Drapeaux CC : E=$80 F=$40 H=$20 I=$10 N=$08 Z=$04 V=$02 C=$01 }
+Procedure M6809_SetNZ8(V: Byte);
+Begin
+  M6809_CC := M6809_CC And Not $0C;
+  If V = 0 Then M6809_CC := M6809_CC Or $04;
+  If (V And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+End;
+
+Procedure M6809_SetNZ16(V: Word);
+Begin
+  M6809_CC := M6809_CC And Not $0C;
+  If V = 0 Then M6809_CC := M6809_CC Or $04;
+  If (V And $8000) <> 0 Then M6809_CC := M6809_CC Or $08;
+End;
+
+Procedure M6809_Push8S(V: Byte);
+Begin M6809_S := (M6809_S - 1) And $FFFF; M6809_Wr(M6809_S, V); End;
+Function M6809_Pop8S: Byte;
+Begin M6809_Pop8S := M6809_Rd(M6809_S); M6809_S := (M6809_S + 1) And $FFFF; End;
+Procedure M6809_Push16S(V: Word);
+Begin M6809_Push8S(V And $FF); M6809_Push8S((V Shr 8) And $FF); End;
+Function M6809_Pop16S: Word;
+Var Hi: Byte;
+Begin Hi := M6809_Pop8S;
+  M6809_Pop16S := (Word(Hi) Shl 8) Or M6809_Pop8S; End;
+Procedure M6809_Push8U(V: Byte);
+Begin M6809_U := (M6809_U - 1) And $FFFF; M6809_Wr(M6809_U, V); End;
+Function M6809_Pop8U: Byte;
+Begin M6809_Pop8U := M6809_Rd(M6809_U); M6809_U := (M6809_U + 1) And $FFFF; End;
+
+{ Resoudre une adresse en mode indexe (post-byte) }
+Function M6809_GetIdxReg(N: Integer): Word;
+Begin
+  Case N Of
+    0: M6809_GetIdxReg := M6809_X;
+    1: M6809_GetIdxReg := M6809_Y;
+    2: M6809_GetIdxReg := M6809_U;
+    3: M6809_GetIdxReg := M6809_S;
+  Else M6809_GetIdxReg := 0;
+  End;
+End;
+
+Procedure M6809_SetIdxReg(N: Integer; V: Word);
+Begin
+  Case N Of
+    0: M6809_X := V;
+    1: M6809_Y := V;
+    2: M6809_U := V;
+    3: M6809_S := V;
+  End;
+End;
+
+Function M6809_AmIndexed: Word;
+Var
+  PB: Byte;
+  RR: Integer;
+  Off: Integer;
+  Off16: Word;
+  Base: Word;
+  Indirect: Boolean;
+  Lo: Byte;
+Begin
+  PB := M6809_FetchByte;
+  RR := (PB Shr 5) And $03;
+  Indirect := False;
+  M6809_AmIndexed := 0;
+  If (PB And $80) = 0 Then
+  Begin
+    { 5-bit signed offset, R }
+    Off := PB And $1F;
+    If (Off And $10) <> 0 Then Off := Off Or Not $1F;
+    M6809_AmIndexed := (M6809_GetIdxReg(RR) + Off) And $FFFF;
+    Exit;
+  End;
+  Indirect := (PB And $10) <> 0;
+  Case PB And $0F Of
+    $0: { ,R+ }
+       Begin
+         Base := M6809_GetIdxReg(RR);
+         M6809_SetIdxReg(RR, (Base + 1) And $FFFF);
+       End;
+    $1: { ,R++ }
+       Begin
+         Base := M6809_GetIdxReg(RR);
+         M6809_SetIdxReg(RR, (Base + 2) And $FFFF);
+       End;
+    $2: { ,-R }
+       Begin
+         M6809_SetIdxReg(RR, (M6809_GetIdxReg(RR) - 1) And $FFFF);
+         Base := M6809_GetIdxReg(RR);
+       End;
+    $3: { ,--R }
+       Begin
+         M6809_SetIdxReg(RR, (M6809_GetIdxReg(RR) - 2) And $FFFF);
+         Base := M6809_GetIdxReg(RR);
+       End;
+    $4: Base := M6809_GetIdxReg(RR);                  { ,R }
+    $5: Begin                                          { B,R }
+          Off := ShortInt(M6809_B);
+          Base := (M6809_GetIdxReg(RR) + Off) And $FFFF;
+        End;
+    $6: Begin                                          { A,R }
+          Off := ShortInt(M6809_A);
+          Base := (M6809_GetIdxReg(RR) + Off) And $FFFF;
+        End;
+    $8: Begin                                          { n8,R }
+          Off := ShortInt(M6809_FetchByte);
+          Base := (M6809_GetIdxReg(RR) + Off) And $FFFF;
+        End;
+    $9: Begin                                          { n16,R }
+          Off16 := M6809_FetchWord;
+          Base := (M6809_GetIdxReg(RR) + Off16) And $FFFF;
+        End;
+    $B: Begin                                          { D,R }
+          Base := (M6809_GetIdxReg(RR) + M6809_GetD) And $FFFF;
+        End;
+    $C: Begin                                          { n8,PC }
+          Off := ShortInt(M6809_FetchByte);
+          Base := (M6809_PC + Off) And $FFFF;
+        End;
+    $D: Begin                                          { n16,PC }
+          Off16 := M6809_FetchWord;
+          Base := (M6809_PC + Off16) And $FFFF;
+        End;
+    $F: Begin                                          { [n16] }
+          Base := M6809_FetchWord;
+        End;
+  Else
+    Base := M6809_GetIdxReg(RR);
+  End;
+  If Indirect Then
+  Begin
+    Lo := M6809_Mem[Word(Base + 1)];
+    M6809_AmIndexed := (Word(M6809_Mem[Base]) Shl 8) Or Lo;
+  End
+  Else
+    M6809_AmIndexed := Base;
+End;
+
+Function M6809_AmDirect: Word;
+Begin
+  M6809_AmDirect := (Word(M6809_DP) Shl 8) Or M6809_FetchByte;
+End;
+
+Function M6809_AmExtended: Word;
+Begin M6809_AmExtended := M6809_FetchWord; End;
+
+{ Resolution d adresse selon nibble haut $1x..$Bx d un opcode 8-bit memoire }
+{ NN = 0 direct, 1 indexed, 2 extended }
+Function M6809_GetEA(NN: Integer): Word;
+Begin
+  Case NN Of
+    0: M6809_GetEA := M6809_AmDirect;
+    1: M6809_GetEA := M6809_AmIndexed;
+    2: M6809_GetEA := M6809_AmExtended;
+  Else M6809_GetEA := 0;
+  End;
+End;
+
+{ Operations memoire : INC/DEC/NEG/COM/CLR/TST/ASL/ASR/LSR/ROL/ROR }
+Function M6809_DoMemOp(SubOp: Byte; V: Byte): Byte;
+Var R: Byte; Cy: Byte;
+Begin
+  R := V;
+  Case SubOp Of
+    $0: Begin { NEG } R := (-V) And $FF;
+              M6809_CC := M6809_CC And Not $0F;
+              If V = $80 Then M6809_CC := M6809_CC Or $02;
+              If V <> 0  Then M6809_CC := M6809_CC Or $01;
+              If (R And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+              If R = 0 Then M6809_CC := M6809_CC Or $04; End;
+    $3: Begin { COM } R := V Xor $FF;
+              M6809_CC := (M6809_CC And Not $0E) Or $01;
+              If (R And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+              If R = 0 Then M6809_CC := M6809_CC Or $04; End;
+    $4: Begin { LSR } Cy := V And 1; R := V Shr 1;
+              M6809_CC := M6809_CC And Not $0F;
+              If Cy <> 0 Then M6809_CC := M6809_CC Or $01;
+              If R = 0 Then M6809_CC := M6809_CC Or $04; End;
+    $6: Begin { ROR } Cy := V And 1;
+              R := (V Shr 1) Or ((M6809_CC And 1) Shl 7);
+              M6809_CC := M6809_CC And Not $0F;
+              If Cy <> 0 Then M6809_CC := M6809_CC Or $01;
+              If (R And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+              If R = 0 Then M6809_CC := M6809_CC Or $04; End;
+    $7: Begin { ASR } Cy := V And 1;
+              R := (V Shr 1) Or (V And $80);
+              M6809_CC := M6809_CC And Not $0D;
+              If Cy <> 0 Then M6809_CC := M6809_CC Or $01;
+              If (R And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+              If R = 0 Then M6809_CC := M6809_CC Or $04; End;
+    $8: Begin { ASL/LSL } Cy := (V Shr 7) And 1;
+              R := (V Shl 1) And $FF;
+              M6809_CC := M6809_CC And Not $0F;
+              If Cy <> 0 Then M6809_CC := M6809_CC Or $01;
+              If (R And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+              If R = 0 Then M6809_CC := M6809_CC Or $04; End;
+    $9: Begin { ROL } Cy := (V Shr 7) And 1;
+              R := ((V Shl 1) Or (M6809_CC And 1)) And $FF;
+              M6809_CC := M6809_CC And Not $0F;
+              If Cy <> 0 Then M6809_CC := M6809_CC Or $01;
+              If (R And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+              If R = 0 Then M6809_CC := M6809_CC Or $04; End;
+    $A: Begin { DEC } R := (V - 1) And $FF;
+              M6809_CC := M6809_CC And Not $0E;
+              If V = $80 Then M6809_CC := M6809_CC Or $02;
+              If (R And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+              If R = 0 Then M6809_CC := M6809_CC Or $04; End;
+    $C: Begin { INC } R := (V + 1) And $FF;
+              M6809_CC := M6809_CC And Not $0E;
+              If V = $7F Then M6809_CC := M6809_CC Or $02;
+              If (R And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+              If R = 0 Then M6809_CC := M6809_CC Or $04; End;
+    $D: Begin { TST } R := V;
+              M6809_CC := M6809_CC And Not $0E;
+              If (V And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+              If V = 0 Then M6809_CC := M6809_CC Or $04; End;
+    $F: Begin { CLR } R := 0;
+              M6809_CC := (M6809_CC And Not $0B) Or $04; End;
+  End;
+  M6809_DoMemOp := R;
+End;
+
+{ Operations ALU 8 bits sur A/B }
+Procedure M6809_DoAdd8(Var Reg: Byte; V: Byte);
+Var R: Word; H: Byte;
+Begin
+  R := Reg + V;
+  H := ((Reg And $0F) + (V And $0F)) And $10;
+  M6809_CC := M6809_CC And Not $2F;
+  If H <> 0 Then M6809_CC := M6809_CC Or $20;
+  If R > $FF Then M6809_CC := M6809_CC Or $01;
+  If (((Reg Xor V) And $80) = 0) And
+     (((Reg Xor (R And $FF)) And $80) <> 0) Then
+    M6809_CC := M6809_CC Or $02;
+  Reg := R And $FF;
+  If (Reg And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+  If Reg = 0 Then M6809_CC := M6809_CC Or $04;
+End;
+
+Procedure M6809_DoAdc8(Var Reg: Byte; V: Byte);
+Var Cy: Byte; R: Word;
+Begin
+  If (M6809_CC And 1) <> 0 Then Cy := 1 Else Cy := 0;
+  R := Reg + V + Cy;
+  M6809_CC := M6809_CC And Not $2F;
+  If R > $FF Then M6809_CC := M6809_CC Or $01;
+  Reg := R And $FF;
+  If (Reg And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+  If Reg = 0 Then M6809_CC := M6809_CC Or $04;
+End;
+
+Procedure M6809_DoSub8(Var Reg: Byte; V: Byte);
+Var R: Integer;
+Begin
+  R := Integer(Reg) - Integer(V);
+  M6809_CC := M6809_CC And Not $0F;
+  If R < 0 Then M6809_CC := M6809_CC Or $01;
+  If (((Reg Xor V) And $80) <> 0) And
+     (((Reg Xor (R And $FF)) And $80) <> 0) Then
+    M6809_CC := M6809_CC Or $02;
+  Reg := R And $FF;
+  If (Reg And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+  If Reg = 0 Then M6809_CC := M6809_CC Or $04;
+End;
+
+Procedure M6809_DoSbc8(Var Reg: Byte; V: Byte);
+Var Cy: Byte; R: Integer;
+Begin
+  If (M6809_CC And 1) <> 0 Then Cy := 1 Else Cy := 0;
+  R := Integer(Reg) - Integer(V) - Cy;
+  M6809_CC := M6809_CC And Not $0F;
+  If R < 0 Then M6809_CC := M6809_CC Or $01;
+  Reg := R And $FF;
+  If (Reg And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+  If Reg = 0 Then M6809_CC := M6809_CC Or $04;
+End;
+
+Procedure M6809_DoCmp8(Reg, V: Byte);
+Var T: Byte;
+Begin T := Reg; M6809_DoSub8(T, V); End;
+
+Procedure M6809_DoAnd8(Var Reg: Byte; V: Byte);
+Begin Reg := Reg And V; M6809_CC := M6809_CC And Not $0E;
+  If (Reg And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+  If Reg = 0 Then M6809_CC := M6809_CC Or $04; End;
+
+Procedure M6809_DoOr8(Var Reg: Byte; V: Byte);
+Begin Reg := Reg Or V; M6809_CC := M6809_CC And Not $0E;
+  If (Reg And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+  If Reg = 0 Then M6809_CC := M6809_CC Or $04; End;
+
+Procedure M6809_DoEor8(Var Reg: Byte; V: Byte);
+Begin Reg := Reg Xor V; M6809_CC := M6809_CC And Not $0E;
+  If (Reg And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+  If Reg = 0 Then M6809_CC := M6809_CC Or $04; End;
+
+Procedure M6809_DoBit8(Reg, V: Byte);
+Var T: Byte;
+Begin T := Reg And V; M6809_CC := M6809_CC And Not $0E;
+  If (T And $80) <> 0 Then M6809_CC := M6809_CC Or $08;
+  If T = 0 Then M6809_CC := M6809_CC Or $04; End;
+
+Procedure M6809_DoAdd16(Var Reg: Word; V: Word);
+Var R: LongInt;
+Begin R := LongInt(Reg) + V;
+  M6809_CC := M6809_CC And Not $0F;
+  If R > $FFFF Then M6809_CC := M6809_CC Or $01;
+  Reg := R And $FFFF;
+  If (Reg And $8000) <> 0 Then M6809_CC := M6809_CC Or $08;
+  If Reg = 0 Then M6809_CC := M6809_CC Or $04; End;
+
+Procedure M6809_DoSub16(Var Reg: Word; V: Word);
+Var R: LongInt;
+Begin R := LongInt(Reg) - V;
+  M6809_CC := M6809_CC And Not $0F;
+  If R < 0 Then M6809_CC := M6809_CC Or $01;
+  Reg := R And $FFFF;
+  If (Reg And $8000) <> 0 Then M6809_CC := M6809_CC Or $08;
+  If Reg = 0 Then M6809_CC := M6809_CC Or $04; End;
+
+Procedure M6809_DoCmp16(Reg, V: Word);
+Var T: Word;
+Begin T := Reg; M6809_DoSub16(T, V); End;
+
+{ Branchements : evaluation condition selon nibble bas }
+Function M6809_BranchCond(N: Integer): Boolean;
+Var
+  N_, Z_, V_, C_: Boolean;
+Begin
+  N_ := (M6809_CC And $08) <> 0;
+  Z_ := (M6809_CC And $04) <> 0;
+  V_ := (M6809_CC And $02) <> 0;
+  C_ := (M6809_CC And $01) <> 0;
+  Case N Of
+    $0: M6809_BranchCond := True;       { BRA }
+    $1: M6809_BranchCond := False;      { BRN }
+    $2: M6809_BranchCond := (Not C_) And (Not Z_);  { BHI }
+    $3: M6809_BranchCond := C_ Or Z_;   { BLS }
+    $4: M6809_BranchCond := Not C_;     { BCC/BHS }
+    $5: M6809_BranchCond := C_;         { BCS/BLO }
+    $6: M6809_BranchCond := Not Z_;     { BNE }
+    $7: M6809_BranchCond := Z_;         { BEQ }
+    $8: M6809_BranchCond := Not V_;     { BVC }
+    $9: M6809_BranchCond := V_;         { BVS }
+    $A: M6809_BranchCond := Not N_;     { BPL }
+    $B: M6809_BranchCond := N_;         { BMI }
+    $C: M6809_BranchCond := (N_ = V_);                          { BGE }
+    $D: M6809_BranchCond := (N_ <> V_);                         { BLT }
+    $E: M6809_BranchCond := (Not Z_) And (N_ = V_);             { BGT }
+    $F: M6809_BranchCond := Z_ Or (N_ <> V_);                   { BLE }
+  Else M6809_BranchCond := False;
+  End;
+End;
+
+{ Trap OS : si JSR vers une adresse magique connue, executer le service }
+Function M6809_TryTrap(Target: Word): Boolean;
+Var Ch: Byte;
+Begin
+  M6809_TryTrap := False;
+  If (Target = $A002) Or { CoCo3 BASIC CHROUT }
+     (Target = $BB5A) Or { Dragon CHROUT }
+     (Target = $BB26) Or { Dragon variante }
+     (Target = $E803) Then { Thomson PUTC }
+  Begin
+    Ch := M6809_A;
+    If (Ch = $0D) Or (Ch = $0A) Then Begin
+      EmuVScr_PutChar(M6809_Panel^, #13);
+      EmuVScr_PutChar(M6809_Panel^, #10);
+    End Else If (Ch >= 32) And (Ch < 128) Then
+      EmuVScr_PutChar(M6809_Panel^, Chr(Ch));
+    M6809_TryTrap := True;
+  End;
+End;
+
+{ Push/Pop selon registre destinataire pour PSHS/PULS/PSHU/PULU }
+Procedure M6809_DoPshS(Mask: Byte);
+Begin
+  If (Mask And $80) <> 0 Then M6809_Push16S(M6809_PC);
+  If (Mask And $40) <> 0 Then M6809_Push16S(M6809_U);
+  If (Mask And $20) <> 0 Then M6809_Push16S(M6809_Y);
+  If (Mask And $10) <> 0 Then M6809_Push16S(M6809_X);
+  If (Mask And $08) <> 0 Then M6809_Push8S(M6809_DP);
+  If (Mask And $04) <> 0 Then M6809_Push8S(M6809_B);
+  If (Mask And $02) <> 0 Then M6809_Push8S(M6809_A);
+  If (Mask And $01) <> 0 Then M6809_Push8S(M6809_CC);
+End;
+
+Procedure M6809_DoPulS(Mask: Byte);
+Begin
+  If (Mask And $01) <> 0 Then M6809_CC := M6809_Pop8S;
+  If (Mask And $02) <> 0 Then M6809_A := M6809_Pop8S;
+  If (Mask And $04) <> 0 Then M6809_B := M6809_Pop8S;
+  If (Mask And $08) <> 0 Then M6809_DP := M6809_Pop8S;
+  If (Mask And $10) <> 0 Then M6809_X := M6809_Pop16S;
+  If (Mask And $20) <> 0 Then M6809_Y := M6809_Pop16S;
+  If (Mask And $40) <> 0 Then M6809_U := M6809_Pop16S;
+  If (Mask And $80) <> 0 Then M6809_PC := M6809_Pop16S;
+End;
+
+{ TFR/EXG : encodage registres post-byte                                    }
+{ 0=D 1=X 2=Y 3=U 4=S 5=PC 8=A 9=B 10=CC 11=DP                              }
+Function M6809_GetReg(N: Integer): Word;
+Begin
+  Case N Of
+    0: M6809_GetReg := M6809_GetD;
+    1: M6809_GetReg := M6809_X;
+    2: M6809_GetReg := M6809_Y;
+    3: M6809_GetReg := M6809_U;
+    4: M6809_GetReg := M6809_S;
+    5: M6809_GetReg := M6809_PC;
+    8: M6809_GetReg := M6809_A;
+    9: M6809_GetReg := M6809_B;
+   10: M6809_GetReg := M6809_CC;
+   11: M6809_GetReg := M6809_DP;
+  Else M6809_GetReg := 0;
+  End;
+End;
+
+Procedure M6809_PutReg(N: Integer; V: Word);
+Begin
+  Case N Of
+    0: M6809_SetD(V);
+    1: M6809_X := V;
+    2: M6809_Y := V;
+    3: M6809_U := V;
+    4: M6809_S := V;
+    5: M6809_PC := V;
+    8: M6809_A := V And $FF;
+    9: M6809_B := V And $FF;
+   10: M6809_CC := V And $FF;
+   11: M6809_DP := V And $FF;
+  End;
+End;
+
+{ Page 2 ($10) : LBcc, CMPD/CMPY, LDY/STY, LDS/STS, SWI2 }
+Procedure M6809_StepPage2;
+Var
+  Op, PB: Byte;
+  W: Word;
+  Off16: Word;
+  EA: Word;
+Begin
+  Op := M6809_FetchByte;
+  Case Op Of
+    $21..$2F: { LBcc }
+       Begin
+         Off16 := M6809_FetchWord;
+         If M6809_BranchCond(Op And $0F) Then
+           M6809_PC := (M6809_PC + Off16) And $FFFF;
+       End;
+    $83: Begin W := M6809_FetchWord; M6809_DoCmp16(M6809_GetD, W); End;
+    $93: Begin EA := M6809_AmDirect; M6809_DoCmp16(M6809_GetD, M6809_Rd16(EA)); End;
+    $A3: Begin EA := M6809_AmIndexed; M6809_DoCmp16(M6809_GetD, M6809_Rd16(EA)); End;
+    $B3: Begin EA := M6809_AmExtended; M6809_DoCmp16(M6809_GetD, M6809_Rd16(EA)); End;
+    $8C: Begin W := M6809_FetchWord; M6809_DoCmp16(M6809_Y, W); End;
+    $9C: Begin EA := M6809_AmDirect; M6809_DoCmp16(M6809_Y, M6809_Rd16(EA)); End;
+    $AC: Begin EA := M6809_AmIndexed; M6809_DoCmp16(M6809_Y, M6809_Rd16(EA)); End;
+    $BC: Begin EA := M6809_AmExtended; M6809_DoCmp16(M6809_Y, M6809_Rd16(EA)); End;
+    $8E: Begin M6809_Y := M6809_FetchWord; M6809_SetNZ16(M6809_Y); End;
+    $9E: Begin EA := M6809_AmDirect; M6809_Y := M6809_Rd16(EA); M6809_SetNZ16(M6809_Y); End;
+    $AE: Begin EA := M6809_AmIndexed; M6809_Y := M6809_Rd16(EA); M6809_SetNZ16(M6809_Y); End;
+    $BE: Begin EA := M6809_AmExtended; M6809_Y := M6809_Rd16(EA); M6809_SetNZ16(M6809_Y); End;
+    $9F: Begin EA := M6809_AmDirect; M6809_Wr16(EA, M6809_Y); M6809_SetNZ16(M6809_Y); End;
+    $AF: Begin EA := M6809_AmIndexed; M6809_Wr16(EA, M6809_Y); M6809_SetNZ16(M6809_Y); End;
+    $BF: Begin EA := M6809_AmExtended; M6809_Wr16(EA, M6809_Y); M6809_SetNZ16(M6809_Y); End;
+    $CE: Begin M6809_S := M6809_FetchWord; M6809_SetNZ16(M6809_S); End;
+    $DE: Begin EA := M6809_AmDirect; M6809_S := M6809_Rd16(EA); M6809_SetNZ16(M6809_S); End;
+    $EE: Begin EA := M6809_AmIndexed; M6809_S := M6809_Rd16(EA); M6809_SetNZ16(M6809_S); End;
+    $FE: Begin EA := M6809_AmExtended; M6809_S := M6809_Rd16(EA); M6809_SetNZ16(M6809_S); End;
+    $DF: Begin EA := M6809_AmDirect; M6809_Wr16(EA, M6809_S); M6809_SetNZ16(M6809_S); End;
+    $EF: Begin EA := M6809_AmIndexed; M6809_Wr16(EA, M6809_S); M6809_SetNZ16(M6809_S); End;
+    $FF: Begin EA := M6809_AmExtended; M6809_Wr16(EA, M6809_S); M6809_SetNZ16(M6809_S); End;
+    $3F: Begin { SWI2 } M6809_Halted := True; M6809_ExitCode := 0; End;
+  End;
+End;
+
+{ Page 3 ($11) : CMPU, CMPS, SWI3 }
+Procedure M6809_StepPage3;
+Var
+  Op: Byte;
+  W: Word;
+  EA: Word;
+Begin
+  Op := M6809_FetchByte;
+  Case Op Of
+    $83: Begin W := M6809_FetchWord; M6809_DoCmp16(M6809_U, W); End;
+    $93: Begin EA := M6809_AmDirect; M6809_DoCmp16(M6809_U, M6809_Rd16(EA)); End;
+    $A3: Begin EA := M6809_AmIndexed; M6809_DoCmp16(M6809_U, M6809_Rd16(EA)); End;
+    $B3: Begin EA := M6809_AmExtended; M6809_DoCmp16(M6809_U, M6809_Rd16(EA)); End;
+    $8C: Begin W := M6809_FetchWord; M6809_DoCmp16(M6809_S, W); End;
+    $9C: Begin EA := M6809_AmDirect; M6809_DoCmp16(M6809_S, M6809_Rd16(EA)); End;
+    $AC: Begin EA := M6809_AmIndexed; M6809_DoCmp16(M6809_S, M6809_Rd16(EA)); End;
+    $BC: Begin EA := M6809_AmExtended; M6809_DoCmp16(M6809_S, M6809_Rd16(EA)); End;
+    $3F: Begin { SWI3 } M6809_Halted := True; M6809_ExitCode := 0; End;
+  End;
+End;
+
+Procedure M6809_Step;
+Var
+  Op, PB, V: Byte;
+  W, EA, Tgt: Word;
+  Off: ShortInt;
+  Off16: Word;
+  Hi, Lo: Integer;
+  R32: LongInt;
+  Tmp: Word;
+Begin
+  Op := M6809_FetchByte;
+  Case Op Of
+    $00, $03, $04, $06, $07, $08, $09, $0A, $0C, $0D, $0F: { direct mem-op }
+      Begin
+        EA := M6809_AmDirect;
+        V := M6809_DoMemOp(Op And $0F, M6809_Rd(EA));
+        If (Op And $0F) <> $D Then M6809_Wr(EA, V);
+      End;
+    $40, $43, $44, $46, $47, $48, $49, $4A, $4C, $4D, $4F: { A reg }
+      M6809_A := M6809_DoMemOp(Op And $0F, M6809_A);
+    $50, $53, $54, $56, $57, $58, $59, $5A, $5C, $5D, $5F: { B reg }
+      M6809_B := M6809_DoMemOp(Op And $0F, M6809_B);
+    $60, $63, $64, $66, $67, $68, $69, $6A, $6C, $6D, $6F: { indexed mem-op }
+      Begin
+        EA := M6809_AmIndexed;
+        V := M6809_DoMemOp(Op And $0F, M6809_Rd(EA));
+        If (Op And $0F) <> $D Then M6809_Wr(EA, V);
+      End;
+    $70, $73, $74, $76, $77, $78, $79, $7A, $7C, $7D, $7F: { extended mem-op }
+      Begin
+        EA := M6809_AmExtended;
+        V := M6809_DoMemOp(Op And $0F, M6809_Rd(EA));
+        If (Op And $0F) <> $D Then M6809_Wr(EA, V);
+      End;
+    { NOP/SYNC/etc }
+    $12: ; { NOP }
+    $13: ; { SYNC -> NOP }
+    $19: { DAA }
+       Begin
+         Tmp := M6809_A;
+         { Approximation : non utilise par codeur Pascal }
+         M6809_A := Tmp And $FF;
+         M6809_SetNZ8(M6809_A);
+       End;
+    $1A: M6809_CC := M6809_CC Or M6809_FetchByte;        { ORCC #i }
+    $1C: M6809_CC := M6809_CC And M6809_FetchByte;       { ANDCC #i }
+    $1D: { SEX : sign-extend B vers A }
+         Begin
+           If (M6809_B And $80) <> 0 Then M6809_A := $FF
+           Else M6809_A := $00;
+           M6809_SetNZ16(M6809_GetD);
+         End;
+    $1E: { EXG }
+       Begin
+         PB := M6809_FetchByte;
+         Hi := (PB Shr 4) And $0F; Lo := PB And $0F;
+         Tmp := M6809_GetReg(Hi);
+         M6809_PutReg(Hi, M6809_GetReg(Lo));
+         M6809_PutReg(Lo, Tmp);
+       End;
+    $1F: { TFR }
+       Begin
+         PB := M6809_FetchByte;
+         Hi := (PB Shr 4) And $0F; Lo := PB And $0F;
+         M6809_PutReg(Lo, M6809_GetReg(Hi));
+       End;
+    { Branchements courts }
+    $20..$2F:
+       Begin
+         Off := ShortInt(M6809_FetchByte);
+         If M6809_BranchCond(Op And $0F) Then
+           M6809_PC := (M6809_PC + Off) And $FFFF;
+       End;
+    { Long branches Page 1 (BRA long et BSR long) }
+    $16: Begin Off16 := M6809_FetchWord;
+              M6809_PC := (M6809_PC + Off16) And $FFFF; End; { LBRA }
+    $17: Begin Off16 := M6809_FetchWord;
+              Tgt := (M6809_PC + Off16) And $FFFF;
+              If Not M6809_TryTrap(Tgt) Then Begin
+                M6809_Push16S(M6809_PC); M6809_PC := Tgt;
+              End; End;                                       { LBSR }
+    $39: Begin { RTS }
+           If (M6809_S = $FFFE) Or (M6809_S >= $FFFE) Then Begin
+             M6809_Halted := True; M6809_ExitCode := 0;
+           End Else M6809_PC := M6809_Pop16S;
+         End;
+    $3B: { RTI }
+       Begin
+         M6809_CC := M6809_Pop8S;
+         If (M6809_CC And $80) <> 0 Then Begin
+           M6809_A := M6809_Pop8S; M6809_B := M6809_Pop8S;
+           M6809_DP := M6809_Pop8S;
+           M6809_X := M6809_Pop16S; M6809_Y := M6809_Pop16S;
+           M6809_U := M6809_Pop16S;
+         End;
+         M6809_PC := M6809_Pop16S;
+       End;
+    $3D: { MUL : D = A * B }
+       Begin
+         Tmp := M6809_A * M6809_B;
+         M6809_SetD(Tmp);
+         M6809_CC := M6809_CC And Not $05;
+         If Tmp = 0 Then M6809_CC := M6809_CC Or $04;
+         If (M6809_B And $80) <> 0 Then M6809_CC := M6809_CC Or $01;
+       End;
+    $3F: Begin { SWI } M6809_Halted := True; M6809_ExitCode := 0; End;
+    $32: M6809_S := M6809_AmIndexed;                     { LEAS }
+    $33: M6809_U := M6809_AmIndexed;                     { LEAU }
+    $30: Begin M6809_X := M6809_AmIndexed;
+              M6809_CC := M6809_CC And Not $04;
+              If M6809_X = 0 Then M6809_CC := M6809_CC Or $04; End; { LEAX }
+    $31: Begin M6809_Y := M6809_AmIndexed;
+              M6809_CC := M6809_CC And Not $04;
+              If M6809_Y = 0 Then M6809_CC := M6809_CC Or $04; End; { LEAY }
+    $34: M6809_DoPshS(M6809_FetchByte);                  { PSHS }
+    $35: M6809_DoPulS(M6809_FetchByte);                  { PULS }
+    $36: { PSHU } Begin PB := M6809_FetchByte;
+              If (PB And $80) <> 0 Then Begin
+                M6809_Push8U(M6809_PC And $FF); M6809_Push8U((M6809_PC Shr 8) And $FF); End;
+              If (PB And $40) <> 0 Then Begin
+                M6809_Push8U(M6809_S And $FF); M6809_Push8U((M6809_S Shr 8) And $FF); End;
+              If (PB And $20) <> 0 Then Begin
+                M6809_Push8U(M6809_Y And $FF); M6809_Push8U((M6809_Y Shr 8) And $FF); End;
+              If (PB And $10) <> 0 Then Begin
+                M6809_Push8U(M6809_X And $FF); M6809_Push8U((M6809_X Shr 8) And $FF); End;
+              If (PB And $08) <> 0 Then M6809_Push8U(M6809_DP);
+              If (PB And $04) <> 0 Then M6809_Push8U(M6809_B);
+              If (PB And $02) <> 0 Then M6809_Push8U(M6809_A);
+              If (PB And $01) <> 0 Then M6809_Push8U(M6809_CC);
+            End;
+    $37: { PULU } Begin PB := M6809_FetchByte;
+              If (PB And $01) <> 0 Then M6809_CC := M6809_Pop8U;
+              If (PB And $02) <> 0 Then M6809_A := M6809_Pop8U;
+              If (PB And $04) <> 0 Then M6809_B := M6809_Pop8U;
+              If (PB And $08) <> 0 Then M6809_DP := M6809_Pop8U;
+              If (PB And $10) <> 0 Then Begin
+                Hi := M6809_Pop8U; Lo := M6809_Pop8U;
+                M6809_X := (Word(Hi) Shl 8) Or Lo; End;
+              If (PB And $20) <> 0 Then Begin
+                Hi := M6809_Pop8U; Lo := M6809_Pop8U;
+                M6809_Y := (Word(Hi) Shl 8) Or Lo; End;
+              If (PB And $40) <> 0 Then Begin
+                Hi := M6809_Pop8U; Lo := M6809_Pop8U;
+                M6809_S := (Word(Hi) Shl 8) Or Lo; End;
+              If (PB And $80) <> 0 Then Begin
+                Hi := M6809_Pop8U; Lo := M6809_Pop8U;
+                M6809_PC := (Word(Hi) Shl 8) Or Lo; End;
+            End;
+    $3A: M6809_X := (M6809_X + M6809_B) And $FFFF;       { ABX }
+    { ALU 8 bits sur A : ADDA, ADCA, SUBA, SBCA, CMPA, ANDA, ORA, EORA, BITA, LDA, STA }
+    $80: Begin V := M6809_FetchByte; M6809_DoSub8(M6809_A, V); End; { SUBA imm }
+    $81: Begin V := M6809_FetchByte; M6809_DoCmp8(M6809_A, V); End; { CMPA imm }
+    $82: Begin V := M6809_FetchByte; M6809_DoSbc8(M6809_A, V); End; { SBCA imm }
+    $84: Begin V := M6809_FetchByte; M6809_DoAnd8(M6809_A, V); End;
+    $85: Begin V := M6809_FetchByte; M6809_DoBit8(M6809_A, V); End;
+    $86: Begin M6809_A := M6809_FetchByte; M6809_SetNZ8(M6809_A); End;
+    $88: Begin V := M6809_FetchByte; M6809_DoEor8(M6809_A, V); End;
+    $89: Begin V := M6809_FetchByte; M6809_DoAdc8(M6809_A, V); End;
+    $8A: Begin V := M6809_FetchByte; M6809_DoOr8(M6809_A, V); End;
+    $8B: Begin V := M6809_FetchByte; M6809_DoAdd8(M6809_A, V); End;
+    { ADDD/SUBD/CMPX/LDX/JSR/LDD/STD imm/dir/idx/ext }
+    $83: Begin W := M6809_FetchWord; Tmp := M6809_GetD; M6809_DoSub16(Tmp, W);
+              M6809_SetD(Tmp); End;                       { SUBD imm }
+    $8C: Begin W := M6809_FetchWord; M6809_DoCmp16(M6809_X, W); End; { CMPX imm }
+    $8D: Begin Off := ShortInt(M6809_FetchByte);
+              Tgt := (M6809_PC + Off) And $FFFF;
+              If Not M6809_TryTrap(Tgt) Then Begin
+                M6809_Push16S(M6809_PC); M6809_PC := Tgt;
+              End; End;                                   { BSR }
+    $8E: Begin M6809_X := M6809_FetchWord; M6809_SetNZ16(M6809_X); End;
+    $8F: ; { reserved }
+    { Direct page (90-9F) }
+    $90: Begin EA := M6809_AmDirect; M6809_DoSub8(M6809_A, M6809_Rd(EA)); End;
+    $91: Begin EA := M6809_AmDirect; M6809_DoCmp8(M6809_A, M6809_Rd(EA)); End;
+    $92: Begin EA := M6809_AmDirect; M6809_DoSbc8(M6809_A, M6809_Rd(EA)); End;
+    $93: Begin EA := M6809_AmDirect; Tmp := M6809_GetD;
+              M6809_DoSub16(Tmp, M6809_Rd16(EA)); M6809_SetD(Tmp); End;
+    $94: Begin EA := M6809_AmDirect; M6809_DoAnd8(M6809_A, M6809_Rd(EA)); End;
+    $95: Begin EA := M6809_AmDirect; M6809_DoBit8(M6809_A, M6809_Rd(EA)); End;
+    $96: Begin EA := M6809_AmDirect; M6809_A := M6809_Rd(EA); M6809_SetNZ8(M6809_A); End;
+    $97: Begin EA := M6809_AmDirect; M6809_Wr(EA, M6809_A); M6809_SetNZ8(M6809_A); End;
+    $98: Begin EA := M6809_AmDirect; M6809_DoEor8(M6809_A, M6809_Rd(EA)); End;
+    $99: Begin EA := M6809_AmDirect; M6809_DoAdc8(M6809_A, M6809_Rd(EA)); End;
+    $9A: Begin EA := M6809_AmDirect; M6809_DoOr8(M6809_A, M6809_Rd(EA)); End;
+    $9B: Begin EA := M6809_AmDirect; M6809_DoAdd8(M6809_A, M6809_Rd(EA)); End;
+    $9C: Begin EA := M6809_AmDirect; M6809_DoCmp16(M6809_X, M6809_Rd16(EA)); End;
+    $9D: Begin EA := M6809_AmDirect;
+              If Not M6809_TryTrap(EA) Then Begin
+                M6809_Push16S(M6809_PC); M6809_PC := EA;
+              End; End;                                   { JSR direct }
+    $9E: Begin EA := M6809_AmDirect; M6809_X := M6809_Rd16(EA); M6809_SetNZ16(M6809_X); End;
+    $9F: Begin EA := M6809_AmDirect; M6809_Wr16(EA, M6809_X); M6809_SetNZ16(M6809_X); End;
+    { Indexed (A0-AF) }
+    $A0: Begin EA := M6809_AmIndexed; M6809_DoSub8(M6809_A, M6809_Rd(EA)); End;
+    $A1: Begin EA := M6809_AmIndexed; M6809_DoCmp8(M6809_A, M6809_Rd(EA)); End;
+    $A2: Begin EA := M6809_AmIndexed; M6809_DoSbc8(M6809_A, M6809_Rd(EA)); End;
+    $A3: Begin EA := M6809_AmIndexed; Tmp := M6809_GetD;
+              M6809_DoSub16(Tmp, M6809_Rd16(EA)); M6809_SetD(Tmp); End;
+    $A4: Begin EA := M6809_AmIndexed; M6809_DoAnd8(M6809_A, M6809_Rd(EA)); End;
+    $A5: Begin EA := M6809_AmIndexed; M6809_DoBit8(M6809_A, M6809_Rd(EA)); End;
+    $A6: Begin EA := M6809_AmIndexed; M6809_A := M6809_Rd(EA); M6809_SetNZ8(M6809_A); End;
+    $A7: Begin EA := M6809_AmIndexed; M6809_Wr(EA, M6809_A); M6809_SetNZ8(M6809_A); End;
+    $A8: Begin EA := M6809_AmIndexed; M6809_DoEor8(M6809_A, M6809_Rd(EA)); End;
+    $A9: Begin EA := M6809_AmIndexed; M6809_DoAdc8(M6809_A, M6809_Rd(EA)); End;
+    $AA: Begin EA := M6809_AmIndexed; M6809_DoOr8(M6809_A, M6809_Rd(EA)); End;
+    $AB: Begin EA := M6809_AmIndexed; M6809_DoAdd8(M6809_A, M6809_Rd(EA)); End;
+    $AC: Begin EA := M6809_AmIndexed; M6809_DoCmp16(M6809_X, M6809_Rd16(EA)); End;
+    $AD: Begin EA := M6809_AmIndexed;
+              If Not M6809_TryTrap(EA) Then Begin
+                M6809_Push16S(M6809_PC); M6809_PC := EA;
+              End; End;                                   { JSR indexed }
+    $AE: Begin EA := M6809_AmIndexed; M6809_X := M6809_Rd16(EA); M6809_SetNZ16(M6809_X); End;
+    $AF: Begin EA := M6809_AmIndexed; M6809_Wr16(EA, M6809_X); M6809_SetNZ16(M6809_X); End;
+    { Extended (B0-BF) }
+    $B0: Begin EA := M6809_AmExtended; M6809_DoSub8(M6809_A, M6809_Rd(EA)); End;
+    $B1: Begin EA := M6809_AmExtended; M6809_DoCmp8(M6809_A, M6809_Rd(EA)); End;
+    $B2: Begin EA := M6809_AmExtended; M6809_DoSbc8(M6809_A, M6809_Rd(EA)); End;
+    $B3: Begin EA := M6809_AmExtended; Tmp := M6809_GetD;
+              M6809_DoSub16(Tmp, M6809_Rd16(EA)); M6809_SetD(Tmp); End;
+    $B4: Begin EA := M6809_AmExtended; M6809_DoAnd8(M6809_A, M6809_Rd(EA)); End;
+    $B5: Begin EA := M6809_AmExtended; M6809_DoBit8(M6809_A, M6809_Rd(EA)); End;
+    $B6: Begin EA := M6809_AmExtended; M6809_A := M6809_Rd(EA); M6809_SetNZ8(M6809_A); End;
+    $B7: Begin EA := M6809_AmExtended; M6809_Wr(EA, M6809_A); M6809_SetNZ8(M6809_A); End;
+    $B8: Begin EA := M6809_AmExtended; M6809_DoEor8(M6809_A, M6809_Rd(EA)); End;
+    $B9: Begin EA := M6809_AmExtended; M6809_DoAdc8(M6809_A, M6809_Rd(EA)); End;
+    $BA: Begin EA := M6809_AmExtended; M6809_DoOr8(M6809_A, M6809_Rd(EA)); End;
+    $BB: Begin EA := M6809_AmExtended; M6809_DoAdd8(M6809_A, M6809_Rd(EA)); End;
+    $BC: Begin EA := M6809_AmExtended; M6809_DoCmp16(M6809_X, M6809_Rd16(EA)); End;
+    $BD: Begin EA := M6809_AmExtended;
+              If Not M6809_TryTrap(EA) Then Begin
+                M6809_Push16S(M6809_PC); M6809_PC := EA;
+              End; End;                                   { JSR extended }
+    $BE: Begin EA := M6809_AmExtended; M6809_X := M6809_Rd16(EA); M6809_SetNZ16(M6809_X); End;
+    $BF: Begin EA := M6809_AmExtended; M6809_Wr16(EA, M6809_X); M6809_SetNZ16(M6809_X); End;
+    { ALU 8 bits sur B : SUBB, CMPB, SBCB, ADDD, ANDB, BITB, LDB, STB, EORB, ADCB, ORB, ADDB }
+    $C0: Begin V := M6809_FetchByte; M6809_DoSub8(M6809_B, V); End;
+    $C1: Begin V := M6809_FetchByte; M6809_DoCmp8(M6809_B, V); End;
+    $C2: Begin V := M6809_FetchByte; M6809_DoSbc8(M6809_B, V); End;
+    $C3: Begin W := M6809_FetchWord; Tmp := M6809_GetD; M6809_DoAdd16(Tmp, W); M6809_SetD(Tmp); End;
+    $C4: Begin V := M6809_FetchByte; M6809_DoAnd8(M6809_B, V); End;
+    $C5: Begin V := M6809_FetchByte; M6809_DoBit8(M6809_B, V); End;
+    $C6: Begin M6809_B := M6809_FetchByte; M6809_SetNZ8(M6809_B); End;
+    $C8: Begin V := M6809_FetchByte; M6809_DoEor8(M6809_B, V); End;
+    $C9: Begin V := M6809_FetchByte; M6809_DoAdc8(M6809_B, V); End;
+    $CA: Begin V := M6809_FetchByte; M6809_DoOr8(M6809_B, V); End;
+    $CB: Begin V := M6809_FetchByte; M6809_DoAdd8(M6809_B, V); End;
+    $CC: Begin Tmp := M6809_FetchWord; M6809_SetD(Tmp); M6809_SetNZ16(Tmp); End; { LDD imm }
+    $CE: Begin M6809_U := M6809_FetchWord; M6809_SetNZ16(M6809_U); End; { LDU imm }
+    $D0: Begin EA := M6809_AmDirect; M6809_DoSub8(M6809_B, M6809_Rd(EA)); End;
+    $D1: Begin EA := M6809_AmDirect; M6809_DoCmp8(M6809_B, M6809_Rd(EA)); End;
+    $D2: Begin EA := M6809_AmDirect; M6809_DoSbc8(M6809_B, M6809_Rd(EA)); End;
+    $D3: Begin EA := M6809_AmDirect; Tmp := M6809_GetD;
+              M6809_DoAdd16(Tmp, M6809_Rd16(EA)); M6809_SetD(Tmp); End;
+    $D4: Begin EA := M6809_AmDirect; M6809_DoAnd8(M6809_B, M6809_Rd(EA)); End;
+    $D5: Begin EA := M6809_AmDirect; M6809_DoBit8(M6809_B, M6809_Rd(EA)); End;
+    $D6: Begin EA := M6809_AmDirect; M6809_B := M6809_Rd(EA); M6809_SetNZ8(M6809_B); End;
+    $D7: Begin EA := M6809_AmDirect; M6809_Wr(EA, M6809_B); M6809_SetNZ8(M6809_B); End;
+    $D8: Begin EA := M6809_AmDirect; M6809_DoEor8(M6809_B, M6809_Rd(EA)); End;
+    $D9: Begin EA := M6809_AmDirect; M6809_DoAdc8(M6809_B, M6809_Rd(EA)); End;
+    $DA: Begin EA := M6809_AmDirect; M6809_DoOr8(M6809_B, M6809_Rd(EA)); End;
+    $DB: Begin EA := M6809_AmDirect; M6809_DoAdd8(M6809_B, M6809_Rd(EA)); End;
+    $DC: Begin EA := M6809_AmDirect; Tmp := M6809_Rd16(EA); M6809_SetD(Tmp); M6809_SetNZ16(Tmp); End;
+    $DD: Begin EA := M6809_AmDirect; M6809_Wr16(EA, M6809_GetD); M6809_SetNZ16(M6809_GetD); End;
+    $DE: Begin EA := M6809_AmDirect; M6809_U := M6809_Rd16(EA); M6809_SetNZ16(M6809_U); End;
+    $DF: Begin EA := M6809_AmDirect; M6809_Wr16(EA, M6809_U); M6809_SetNZ16(M6809_U); End;
+    $E0: Begin EA := M6809_AmIndexed; M6809_DoSub8(M6809_B, M6809_Rd(EA)); End;
+    $E1: Begin EA := M6809_AmIndexed; M6809_DoCmp8(M6809_B, M6809_Rd(EA)); End;
+    $E2: Begin EA := M6809_AmIndexed; M6809_DoSbc8(M6809_B, M6809_Rd(EA)); End;
+    $E3: Begin EA := M6809_AmIndexed; Tmp := M6809_GetD;
+              M6809_DoAdd16(Tmp, M6809_Rd16(EA)); M6809_SetD(Tmp); End;
+    $E4: Begin EA := M6809_AmIndexed; M6809_DoAnd8(M6809_B, M6809_Rd(EA)); End;
+    $E5: Begin EA := M6809_AmIndexed; M6809_DoBit8(M6809_B, M6809_Rd(EA)); End;
+    $E6: Begin EA := M6809_AmIndexed; M6809_B := M6809_Rd(EA); M6809_SetNZ8(M6809_B); End;
+    $E7: Begin EA := M6809_AmIndexed; M6809_Wr(EA, M6809_B); M6809_SetNZ8(M6809_B); End;
+    $E8: Begin EA := M6809_AmIndexed; M6809_DoEor8(M6809_B, M6809_Rd(EA)); End;
+    $E9: Begin EA := M6809_AmIndexed; M6809_DoAdc8(M6809_B, M6809_Rd(EA)); End;
+    $EA: Begin EA := M6809_AmIndexed; M6809_DoOr8(M6809_B, M6809_Rd(EA)); End;
+    $EB: Begin EA := M6809_AmIndexed; M6809_DoAdd8(M6809_B, M6809_Rd(EA)); End;
+    $EC: Begin EA := M6809_AmIndexed; Tmp := M6809_Rd16(EA); M6809_SetD(Tmp); M6809_SetNZ16(Tmp); End;
+    $ED: Begin EA := M6809_AmIndexed; M6809_Wr16(EA, M6809_GetD); M6809_SetNZ16(M6809_GetD); End;
+    $EE: Begin EA := M6809_AmIndexed; M6809_U := M6809_Rd16(EA); M6809_SetNZ16(M6809_U); End;
+    $EF: Begin EA := M6809_AmIndexed; M6809_Wr16(EA, M6809_U); M6809_SetNZ16(M6809_U); End;
+    $F0: Begin EA := M6809_AmExtended; M6809_DoSub8(M6809_B, M6809_Rd(EA)); End;
+    $F1: Begin EA := M6809_AmExtended; M6809_DoCmp8(M6809_B, M6809_Rd(EA)); End;
+    $F2: Begin EA := M6809_AmExtended; M6809_DoSbc8(M6809_B, M6809_Rd(EA)); End;
+    $F3: Begin EA := M6809_AmExtended; Tmp := M6809_GetD;
+              M6809_DoAdd16(Tmp, M6809_Rd16(EA)); M6809_SetD(Tmp); End;
+    $F4: Begin EA := M6809_AmExtended; M6809_DoAnd8(M6809_B, M6809_Rd(EA)); End;
+    $F5: Begin EA := M6809_AmExtended; M6809_DoBit8(M6809_B, M6809_Rd(EA)); End;
+    $F6: Begin EA := M6809_AmExtended; M6809_B := M6809_Rd(EA); M6809_SetNZ8(M6809_B); End;
+    $F7: Begin EA := M6809_AmExtended; M6809_Wr(EA, M6809_B); M6809_SetNZ8(M6809_B); End;
+    $F8: Begin EA := M6809_AmExtended; M6809_DoEor8(M6809_B, M6809_Rd(EA)); End;
+    $F9: Begin EA := M6809_AmExtended; M6809_DoAdc8(M6809_B, M6809_Rd(EA)); End;
+    $FA: Begin EA := M6809_AmExtended; M6809_DoOr8(M6809_B, M6809_Rd(EA)); End;
+    $FB: Begin EA := M6809_AmExtended; M6809_DoAdd8(M6809_B, M6809_Rd(EA)); End;
+    $FC: Begin EA := M6809_AmExtended; Tmp := M6809_Rd16(EA); M6809_SetD(Tmp); M6809_SetNZ16(Tmp); End;
+    $FD: Begin EA := M6809_AmExtended; M6809_Wr16(EA, M6809_GetD); M6809_SetNZ16(M6809_GetD); End;
+    $FE: Begin EA := M6809_AmExtended; M6809_U := M6809_Rd16(EA); M6809_SetNZ16(M6809_U); End;
+    $FF: Begin EA := M6809_AmExtended; M6809_Wr16(EA, M6809_U); M6809_SetNZ16(M6809_U); End;
+    { JMP }
+    $0E: M6809_PC := M6809_AmDirect;
+    $6E: M6809_PC := M6809_AmIndexed;
+    $7E: M6809_PC := M6809_AmExtended;
+    { Prefixes pages 2 et 3 }
+    $10: M6809_StepPage2;
+    $11: M6809_StepPage3;
+  Else
+    EmuVScr_WriteStr(M6809_Panel^,
+     '[opcode 6809 inconnu $' + M68K_HexN(Op, 2) +
+     ' au PC $' + M68K_HexN(Word(M6809_PC - 1), 4) + ']');
+    M6809_Halted := True;
+    M6809_ExitCode := 1;
+  End;
+End;
+
+{ Charger un binaire DECB (CoCo, Dragon) : preambule(1=$00 data, $FF EOF)   }
+{ + len(2BE) + addr(2BE) + data. Sur EOF : data = exec addr.                }
+Function M6809_LoadDECB(Const FileName: String;
+                        Var EntryAddr: Word): Boolean;
+Var
+  F: File;
+  Hdr: Array[0..4] Of Byte;
+  Tag: Byte;
+  Len, Addr: Word;
+  I: LongInt;
+  B: Byte;
+  GotData: Boolean;
+Begin
+  M6809_LoadDECB := False;
+  Assign(F, FileName);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  GotData := False;
+  EntryAddr := $4000;
+  While Not Eof(F) Do
+  Begin
+    BlockRead(F, Tag, 1);
+    If Eof(F) Then Break;
+    BlockRead(F, Hdr, 4);
+    Len := (Word(Hdr[0]) Shl 8) Or Hdr[1];
+    Addr := (Word(Hdr[2]) Shl 8) Or Hdr[3];
+    If Tag = $00 Then
+    Begin
+      For I := 0 To Len - 1 Do
+      Begin
+        If Eof(F) Then Break;
+        BlockRead(F, B, 1);
+        If (Addr + I) <= $FFFF Then M6809_Mem[Addr + I] := B;
+      End;
+      GotData := True;
+    End
+    Else If Tag = $FF Then
+    Begin
+      EntryAddr := Addr;
+      Break;
+    End
+    Else
+      Break;
+  End;
+  Close(F);
+  If Not GotData Then
+  Begin
+    { Fallback : raw a $4000 }
+    Assign(F, FileName);
+    {$I-} Reset(F, 1); {$I+}
+    If IOResult <> 0 Then Exit;
+    I := 0;
+    While Not Eof(F) Do
+    Begin
+      BlockRead(F, B, 1);
+      If ($4000 + I) <= $FFFF Then M6809_Mem[$4000 + I] := B;
+      Inc(I);
+    End;
+    Close(F);
+    EntryAddr := $4000;
+  End;
+  M6809_LoadDECB := True;
+End;
+
+{ Charger un binaire Thomson .bin : signature $5B + len(2BE) + addr(2BE)   }
+{ + data, terminateur $5A. Sur echec : raw a $6100 (zone utilisateur).     }
+Function M6809_LoadThomsonBin(Const FileName: String;
+                              Var EntryAddr: Word): Boolean;
+Var
+  F: File;
+  Tag: Byte;
+  Hdr: Array[0..3] Of Byte;
+  Len, Addr: Word;
+  I: LongInt;
+  B: Byte;
+  GotData: Boolean;
+Begin
+  M6809_LoadThomsonBin := False;
+  Assign(F, FileName);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  GotData := False;
+  EntryAddr := $6100;
+  While Not Eof(F) Do
+  Begin
+    BlockRead(F, Tag, 1);
+    If Eof(F) Then Break;
+    If Tag = $5B Then
+    Begin
+      BlockRead(F, Hdr, 4);
+      Len := (Word(Hdr[0]) Shl 8) Or Hdr[1];
+      Addr := (Word(Hdr[2]) Shl 8) Or Hdr[3];
+      For I := 0 To Len - 1 Do
+      Begin
+        If Eof(F) Then Break;
+        BlockRead(F, B, 1);
+        If (Addr + I) <= $FFFF Then M6809_Mem[Addr + I] := B;
+      End;
+      GotData := True;
+    End
+    Else If Tag = $5A Then
+    Begin
+      BlockRead(F, Hdr, 4);
+      Addr := (Word(Hdr[2]) Shl 8) Or Hdr[3];
+      EntryAddr := Addr;
+      Break;
+    End
+    Else Break;
+  End;
+  Close(F);
+  If Not GotData Then
+  Begin
+    { Fallback : raw a $6100 }
+    Assign(F, FileName);
+    {$I-} Reset(F, 1); {$I+}
+    If IOResult <> 0 Then Exit;
+    I := 0;
+    While Not Eof(F) Do
+    Begin
+      BlockRead(F, B, 1);
+      If ($6100 + I) <= $FFFF Then M6809_Mem[$6100 + I] := B;
+      Inc(I);
+    End;
+    Close(F);
+    EntryAddr := $6100;
+  End;
+  M6809_LoadThomsonBin := True;
+End;
+
+Procedure M6809_Reset(EntryAddr: Word);
+Begin
+  M6809_A := 0; M6809_B := 0;
+  M6809_DP := 0; M6809_CC := $50; { I=1, F=1 }
+  M6809_X := 0; M6809_Y := 0;
+  M6809_U := $FFFE; M6809_S := $FFFE;
+  M6809_PC := EntryAddr;
+  M6809_Halted := False;
+  M6809_ExitCode := 0;
+  M6809_Cycles := 0;
+  { Sentinelle de fin }
+  M6809_Mem[$FFFE] := $00;
+  M6809_Mem[$FFFF] := $00;
+End;
+
 Function Emu_FaultText(F: Integer): String;
 Begin
  Case F Of
@@ -28152,6 +29177,7 @@ Var
  IsCray: Boolean;
  Is6502: Boolean;
  IsZ80: Boolean;
+ Is6809: Boolean;
  CPUName: String;
  EntryAddr: LongInt;
  EntryAddr16: Word;
@@ -28172,6 +29198,9 @@ Begin
            (TargetCPU = '-CNES') Or (TargetCPU = '-CATARI2600');
  IsZ80 := (TargetCPU = '-CTRS80') Or (TargetCPU = '-CMSX') Or
           (TargetCPU = '-CADAM');
+ Is6809 := (TargetCPU = '-CCOCO3') Or (TargetCPU = '-CDRAGON32') Or
+           (TargetCPU = '-CDRAGON64') Or (TargetCPU = '-CTO7') Or
+           (TargetCPU = '-CTO8') Or (TargetCPU = '-CMO5');
  If TargetCPU = '-CZ80'    Then CPUName := 'Zilog Z80'
  Else If TargetCPU = '-C6502'   Then CPUName := 'MOS 6502'
  Else If TargetCPU = '-C6809'   Then CPUName := 'Motorola 6809'
@@ -28190,6 +29219,12 @@ Begin
  Else If TargetCPU = '-CTRS80'  Then CPUName := 'TRS-80 (Z80)'
  Else If TargetCPU = '-CMSX'    Then CPUName := 'MSX (Z80)'
  Else If TargetCPU = '-CADAM'   Then CPUName := 'Coleco Adam (Z80)'
+ Else If TargetCPU = '-CCOCO3'   Then CPUName := 'Tandy CoCo 3 (6809)'
+ Else If TargetCPU = '-CDRAGON32'Then CPUName := 'Dragon 32 (6809)'
+ Else If TargetCPU = '-CDRAGON64'Then CPUName := 'Dragon 64 (6809)'
+ Else If TargetCPU = '-CTO7'     Then CPUName := 'Thomson TO7 (6809)'
+ Else If TargetCPU = '-CTO8'     Then CPUName := 'Thomson TO8 (6809)'
+ Else If TargetCPU = '-CMO5'     Then CPUName := 'Thomson MO5 (6809)'
  Else CPUName := TargetCPU;
  OldFg := P.CurFg; OldBg := P.CurBg;
  P.CurFg := 14; P.CurBg := 1;
@@ -28487,6 +29522,86 @@ Begin
   P.Running := False;
   P.Fault := sfEndProgram;
   P.StatusMsg := 'Emulateur Z80 : ' + IntToStr(Steps) + ' instr.';
+  Exit;
+ End;
+ If Is6809 Then Begin
+  { ----- Emulateur 6809 (CoCo3, Dragon, Thomson) ----- }
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 14;
+  EmuVScr_WriteStr(P, 'Chargement du binaire ' + CPUName + '...');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 7;
+  FillChar(M6809_Mem, SizeOf(M6809_Mem), 0);
+  M6809_Panel := @P;
+  EntryAddr16 := $4000;
+  Loaded := False;
+  If TargetCPU = '-CCOCO3' Then Begin
+   M6809_Variant := 0;
+   Loaded := M6809_LoadDECB(BinaryPath, EntryAddr16);
+  End
+  Else If TargetCPU = '-CDRAGON32' Then Begin
+   M6809_Variant := 1;
+   Loaded := M6809_LoadDECB(BinaryPath, EntryAddr16);
+  End
+  Else If TargetCPU = '-CDRAGON64' Then Begin
+   M6809_Variant := 2;
+   Loaded := M6809_LoadDECB(BinaryPath, EntryAddr16);
+  End
+  Else If TargetCPU = '-CTO7' Then Begin
+   M6809_Variant := 3;
+   Loaded := M6809_LoadThomsonBin(BinaryPath, EntryAddr16);
+  End
+  Else If TargetCPU = '-CTO8' Then Begin
+   M6809_Variant := 4;
+   Loaded := M6809_LoadThomsonBin(BinaryPath, EntryAddr16);
+  End
+  Else If TargetCPU = '-CMO5' Then Begin
+   M6809_Variant := 5;
+   Loaded := M6809_LoadThomsonBin(BinaryPath, EntryAddr16);
+  End;
+  If Not Loaded Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P,
+    'Erreur : impossible de charger ' + BinaryPath);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := OldFg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec chargement binaire 6809';
+   Exit;
+  End;
+  M6809_Reset(EntryAddr16);
+  P.CurFg := 10;
+  EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
+   M68K_HexN(M6809_PC, 4) + ')');
+  P.CurFg := 7;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  Steps := 0;
+  While (Not M6809_Halted) And (Steps < 1000000) Do Begin
+   M6809_Step;
+   Inc(Steps);
+   If M6809_PC = 0 Then Begin
+    M6809_Halted := True;
+    M6809_ExitCode := 0;
+   End;
+  End;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 11;
+  If M6809_Halted Then
+   EmuVScr_WriteStr(P, '[Fin 6809 : ' +
+    IntToStr(Steps) + ' instructions, code=' +
+    IntToStr(M6809_ExitCode) + ']')
+  Else
+   EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
+  P.CurFg := OldFg;
+  P.CurBg := OldBg;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+  P.Running := False;
+  P.Fault := sfEndProgram;
+  P.StatusMsg := 'Emulateur 6809 : ' + IntToStr(Steps) + ' instr.';
   Exit;
  End;
  If Not IsX86 Then Begin
@@ -34271,6 +35386,13 @@ Begin
    If CurrentProject.Info.TargetCPU = '-CATARI2600' Then
     ExeName := SrcDir + BaseName + '.a26';
    If CurrentProject.Info.TargetCPU = '-CCOCO3' Then
+    ExeName := SrcDir + BaseName + '.bin';
+   If (CurrentProject.Info.TargetCPU = '-CDRAGON32') Or
+      (CurrentProject.Info.TargetCPU = '-CDRAGON64') Then
+    ExeName := SrcDir + BaseName + '.bin';
+   If (CurrentProject.Info.TargetCPU = '-CTO7') Or
+      (CurrentProject.Info.TargetCPU = '-CTO8') Or
+      (CurrentProject.Info.TargetCPU = '-CMO5') Then
     ExeName := SrcDir + BaseName + '.bin';
    If CurrentProject.Info.TargetCPU = '-CTRS80' Then
     ExeName := SrcDir + BaseName + '.cmd';
