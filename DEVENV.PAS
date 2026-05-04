@@ -1117,7 +1117,7 @@ Const
  DLG_PADDING           = 10;      { marge interne du dialogue       }
  DLG_INPUT_HEIGHT      = 20;      { hauteur champ de saisie         }
  DLG_LIST_ROW_HEIGHT   = 18;      { hauteur ligne dans liste        }
- DLG_FILTER_HEIGHT     = 20;      { hauteur du sÃ©lecteur de filtre  }
+ DLG_FILTER_HEIGHT     = 20;      { hauteur du sélecteur de filtre  }
  DLG_ICON_SIZE         = 32;      { taille icone message box        }
  MAX_DLG_FILES         = 512;     { nombre max fichiers liste       }
  MAX_DLG_FILTERS       = 10;      { nombre max filtres              }
@@ -1168,6 +1168,8 @@ Const
  PROJPROP_LABEL_WIDTH  = 160;     { largeur etiquette propriete     }
  PROJPROP_FIELD_HEIGHT = 22;      { hauteur champ de saisie         }
  PROJPROP_ROW_SPACING  = 28;      { espacement vertical entre champs}
+ PROJPROP_TGT_VISIBLE  = 10;      { lignes visibles dropdown cible  }
+ PROJPROP_SBAR_WIDTH   = 14;      { largeur scrollbar dropdown cible}
 
  { Boite de dialogue des options de l IDE }
  OPT_DLG_WIDTH        = 620;     { largeur dialogue options         }
@@ -2319,6 +2321,7 @@ Type
   OutputTypeOpen : Boolean;             { dropdown type sortie ouvert}
   TargetCPUIdx   : Integer;             { index plateforme cible     }
   TargetCPUOpen  : Boolean;             { dropdown plateforme ouvert }
+  TargetCPUTop   : Integer;             { 1ere ligne visible (scroll)}
   Confirmed      : Boolean;             { True si valide par OK      }
  End;
 
@@ -19697,22 +19700,33 @@ End;
 
 Function TargetCPUCount: Integer;
 Begin
- TargetCPUCount := 10;
+ TargetCPUCount := 21;
 End;
 
 Function TargetCPUFlag(Idx: Integer): String;
 Begin
  Case Idx Of
-  0: TargetCPUFlag := '-CW32';
-  1: TargetCPUFlag := '-CW';
-  2: TargetCPUFlag := '-CP';
-  3: TargetCPUFlag := '-CD';
-  4: TargetCPUFlag := '-CZ80';
-  5: TargetCPUFlag := '-C6502';
-  6: TargetCPUFlag := '-C6809';
-  7: TargetCPUFlag := '-C68000';
-  8: TargetCPUFlag := '-CATARIST';
-  9: TargetCPUFlag := '-CAMIGA';
+  0:  TargetCPUFlag := '-CW32';
+  1:  TargetCPUFlag := '-CW';
+  2:  TargetCPUFlag := '-CP';
+  3:  TargetCPUFlag := '-CD';
+  4:  TargetCPUFlag := '-CZ80';
+  5:  TargetCPUFlag := '-C6502';
+  6:  TargetCPUFlag := '-C6809';
+  7:  TargetCPUFlag := '-C68000';
+  8:  TargetCPUFlag := '-CATARIST';
+  9:  TargetCPUFlag := '-CAMIGA';
+  10: TargetCPUFlag := '-CAPPLEII';
+  11: TargetCPUFlag := '-CC64';
+  12: TargetCPUFlag := '-CCOCO3';
+  13: TargetCPUFlag := '-CTRS80';
+  14: TargetCPUFlag := '-CATARI400';
+  15: TargetCPUFlag := '-CATARI800';
+  16: TargetCPUFlag := '-CMSX';
+  17: TargetCPUFlag := '-CNES';
+  18: TargetCPUFlag := '-CATARI2600';
+  19: TargetCPUFlag := '-CADAM';
+  20: TargetCPUFlag := '-CCRAY1';
  Else
   TargetCPUFlag := '-CW32';
  End;
@@ -19721,16 +19735,27 @@ End;
 Function TargetCPULabel(Idx: Integer): String;
 Begin
  Case Idx Of
-  0: TargetCPULabel := 'Windows 32 bits (-CW32)';
-  1: TargetCPULabel := 'Windows 3.0 (-CW)';
-  2: TargetCPULabel := 'DOS mode protege (-CP)';
-  3: TargetCPULabel := 'DOS mode reel (-CD)';
-  4: TargetCPULabel := 'Zilog Z80 (-CZ80)';
-  5: TargetCPULabel := 'MOS 6502 (-C6502)';
-  6: TargetCPULabel := 'Motorola 6809 (-C6809)';
-  7: TargetCPULabel := 'Motorola 68000 (-C68000)';
-  8: TargetCPULabel := 'Atari ST 68000 (-CATARIST)';
-  9: TargetCPULabel := 'Amiga 68000 (-CAMIGA)';
+  0:  TargetCPULabel := 'Windows 32 bits (-CW32)';
+  1:  TargetCPULabel := 'Windows 3.0 (-CW)';
+  2:  TargetCPULabel := 'DOS mode protege (-CP)';
+  3:  TargetCPULabel := 'DOS mode reel (-CD)';
+  4:  TargetCPULabel := 'Zilog Z80 (-CZ80)';
+  5:  TargetCPULabel := 'MOS 6502 (-C6502)';
+  6:  TargetCPULabel := 'Motorola 6809 (-C6809)';
+  7:  TargetCPULabel := 'Motorola 68000 (-C68000)';
+  8:  TargetCPULabel := 'Atari ST 68000 (-CATARIST)';
+  9:  TargetCPULabel := 'Amiga 68000 (-CAMIGA)';
+  10: TargetCPULabel := 'Apple II 6502 (-CAPPLEII)';
+  11: TargetCPULabel := 'Commodore 64 6510 (-CC64)';
+  12: TargetCPULabel := 'Tandy CoCo 3 6809 (-CCOCO3)';
+  13: TargetCPULabel := 'Tandy TRS-80 Model I Z80 (-CTRS80)';
+  14: TargetCPULabel := 'Atari 400 6502 (-CATARI400)';
+  15: TargetCPULabel := 'Atari 800 6502 (-CATARI800)';
+  16: TargetCPULabel := 'MSX Z80 MSX-DOS (-CMSX)';
+  17: TargetCPULabel := 'Nintendo NES 2A03 (-CNES)';
+  18: TargetCPULabel := 'Atari 2600 VCS 6507 (-CATARI2600)';
+  19: TargetCPULabel := 'Coleco Adam Z80 CP/M (-CADAM)';
+  20: TargetCPULabel := 'Cray-1 COS Absolute (-CCRAY1)';
  Else
   TargetCPULabel := 'Inconnu';
  End;
@@ -20624,6 +20649,7 @@ Begin
  Dlg.OutputTypeOpen := False;
  Dlg.TargetCPUIdx := 0;
  Dlg.TargetCPUOpen := False;
+ Dlg.TargetCPUTop := 0;
  Dlg.Confirmed := False;
 End;
 
@@ -21049,36 +21075,96 @@ End;
 Procedure DrawProjPropTargetCPUDropdown(
  Var Dlg: TProjectPropertiesDialog);
 Var
- FX, FW, BaseY, DY, I, N: Integer;
+ FX, FW, BaseY, DY, I, N, Vis: Integer;
+ ListLeft, ListRight, ListTop, ListBottom: Integer;
+ SbLeft, SbTop, SbBottom, SbUpY, SbDnY: Integer;
+ ThumbY, ThumbH, TrackH, MaxTop: Integer;
  BgClr: LongInt;
+ RowIdx: Integer;
 Begin
  If Not Dlg.TargetCPUOpen Then Exit;
  If Dlg.ActiveTab <> PPT_BUILD Then Exit;
  N := TargetCPUCount;
+ Vis := PROJPROP_TGT_VISIBLE;
+ If Vis > N Then Vis := N;
+ { Borner Top dans [0..N-Vis] }
+ MaxTop := N - Vis;
+ If MaxTop < 0 Then MaxTop := 0;
+ If Dlg.TargetCPUTop > MaxTop Then Dlg.TargetCPUTop := MaxTop;
+ If Dlg.TargetCPUTop < 0 Then Dlg.TargetCPUTop := 0;
+
  FX := Dlg.Base.X + DLG_PADDING;
  FW := Dlg.Base.Width - DLG_PADDING * 2;
  BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
   TAB_HEIGHT + DLG_PADDING + PROJPROP_ROW_SPACING * 3;
  DY := BaseY + PROJPROP_FIELD_HEIGHT;
- DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, DY,
-  FX + FW, DY + N * PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
- DrawRect(FX + PROJPROP_LABEL_WIDTH, DY,
-  FX + FW, DY + N * PROJPROP_FIELD_HEIGHT, CLR_BORDER);
- For I := 0 To N - 1 Do
+ ListLeft := FX + PROJPROP_LABEL_WIDTH;
+ ListRight := FX + FW;
+ ListTop := DY;
+ ListBottom := DY + Vis * PROJPROP_FIELD_HEIGHT;
+
+ { Cadre + fond global }
+ DrawFilledRect(ListLeft, ListTop, ListRight, ListBottom,
+  CLR_WINDOW);
+ DrawRect(ListLeft, ListTop, ListRight, ListBottom, CLR_BORDER);
+
+ { Lignes visibles }
+ For I := 0 To Vis - 1 Do
  Begin
-  If I = Dlg.TargetCPUIdx Then
+  RowIdx := Dlg.TargetCPUTop + I;
+  If RowIdx >= N Then Break;
+  If RowIdx = Dlg.TargetCPUIdx Then
    BgClr := CLR_TITLEBAR_ACTIVE
   Else
    BgClr := CLR_WINDOW;
-  DrawFilledRect(FX + PROJPROP_LABEL_WIDTH + 1,
+  DrawFilledRect(ListLeft + 1,
    DY + I * PROJPROP_FIELD_HEIGHT + 1,
-   FX + FW - 1,
+   ListRight - 1 - PROJPROP_SBAR_WIDTH,
    DY + (I + 1) * PROJPROP_FIELD_HEIGHT, BgClr);
-  DrawText(FX + PROJPROP_LABEL_WIDTH + 4,
+  DrawText(ListLeft + 4,
    DY + I * PROJPROP_FIELD_HEIGHT + 3,
-   TargetCPULabel(I), CLR_WINDOWTEXT);
+   TargetCPULabel(RowIdx), CLR_WINDOWTEXT);
+ End;
+
+ { Scrollbar a droite }
+ SbLeft := ListRight - PROJPROP_SBAR_WIDTH;
+ SbTop := ListTop;
+ SbBottom := ListBottom;
+ DrawFilledRect(SbLeft, SbTop, ListRight, SbBottom,
+  CLR_SCROLLBAR);
+ { Bouton haut }
+ SbUpY := SbTop;
+ DrawFilledRect(SbLeft, SbUpY, ListRight,
+  SbUpY + PROJPROP_SBAR_WIDTH, CLR_BTNFACE);
+ DrawRect(SbLeft, SbUpY, ListRight,
+  SbUpY + PROJPROP_SBAR_WIDTH, CLR_BORDER);
+ DrawText(SbLeft + 4, SbUpY + 3, '^', CLR_WINDOWTEXT);
+ { Bouton bas }
+ SbDnY := SbBottom - PROJPROP_SBAR_WIDTH;
+ DrawFilledRect(SbLeft, SbDnY, ListRight, SbBottom,
+  CLR_BTNFACE);
+ DrawRect(SbLeft, SbDnY, ListRight, SbBottom, CLR_BORDER);
+ DrawText(SbLeft + 4, SbDnY + 3, 'v', CLR_WINDOWTEXT);
+ { Thumb }
+ TrackH := (SbDnY - (SbUpY + PROJPROP_SBAR_WIDTH));
+ If TrackH < 8 Then TrackH := 8;
+ If N > Vis Then
+ Begin
+  ThumbH := (TrackH * Vis) Div N;
+  If ThumbH < 12 Then ThumbH := 12;
+  If ThumbH > TrackH Then ThumbH := TrackH;
+  If MaxTop > 0 Then
+   ThumbY := SbUpY + PROJPROP_SBAR_WIDTH +
+    ((TrackH - ThumbH) * Dlg.TargetCPUTop) Div MaxTop
+  Else
+   ThumbY := SbUpY + PROJPROP_SBAR_WIDTH;
+  DrawFilledRect(SbLeft + 2, ThumbY, ListRight - 2,
+   ThumbY + ThumbH, CLR_BTNFACE);
+  DrawRect(SbLeft + 2, ThumbY, ListRight - 2,
+   ThumbY + ThumbH, CLR_BORDER);
  End;
 End;
+
 
 { --- Dessiner le dialogue Proprietes du projet --- }
 
@@ -21347,6 +21433,7 @@ Procedure HandleProjectPropertiesDialogEvent(
 Var
  TabIdx, BtnR, FldIdx: Integer;
  FX, FW, BaseY, DY, ItemIdx: Integer;
+ SbL, SbR, SbTop2, SbBot2, SbUpYM, SbDnYM, MaxTopM, VisM: Integer;
 Begin
  If Not Dlg.Base.Visible Then Exit;
  Case Ev.Kind Of
@@ -21394,12 +21481,55 @@ Begin
     End;
     If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $48) Then Begin
      If Dlg.TargetCPUIdx > 0 Then Dec(Dlg.TargetCPUIdx);
+     If Dlg.TargetCPUIdx < Dlg.TargetCPUTop Then
+      Dlg.TargetCPUTop := Dlg.TargetCPUIdx;
      DrawProjectPropertiesDialog(Dlg);
      Exit;
     End;
     If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $50) Then Begin
      If Dlg.TargetCPUIdx < TargetCPUCount - 1 Then
       Inc(Dlg.TargetCPUIdx);
+     If Dlg.TargetCPUIdx >=
+        Dlg.TargetCPUTop + PROJPROP_TGT_VISIBLE Then
+      Dlg.TargetCPUTop :=
+       Dlg.TargetCPUIdx - PROJPROP_TGT_VISIBLE + 1;
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    { PgUp = $49 }
+    If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $49) Then Begin
+     Dlg.TargetCPUIdx := Dlg.TargetCPUIdx - PROJPROP_TGT_VISIBLE;
+     If Dlg.TargetCPUIdx < 0 Then Dlg.TargetCPUIdx := 0;
+     Dlg.TargetCPUTop := Dlg.TargetCPUTop - PROJPROP_TGT_VISIBLE;
+     If Dlg.TargetCPUTop < 0 Then Dlg.TargetCPUTop := 0;
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    { PgDn = $51 }
+    If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $51) Then Begin
+     Dlg.TargetCPUIdx := Dlg.TargetCPUIdx + PROJPROP_TGT_VISIBLE;
+     If Dlg.TargetCPUIdx > TargetCPUCount - 1 Then
+      Dlg.TargetCPUIdx := TargetCPUCount - 1;
+     If Dlg.TargetCPUIdx >=
+        Dlg.TargetCPUTop + PROJPROP_TGT_VISIBLE Then
+      Dlg.TargetCPUTop :=
+       Dlg.TargetCPUIdx - PROJPROP_TGT_VISIBLE + 1;
+     If Dlg.TargetCPUTop < 0 Then Dlg.TargetCPUTop := 0;
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    { Home = $47 }
+    If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $47) Then Begin
+     Dlg.TargetCPUIdx := 0;
+     Dlg.TargetCPUTop := 0;
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    { End = $4F }
+    If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $4F) Then Begin
+     Dlg.TargetCPUIdx := TargetCPUCount - 1;
+     Dlg.TargetCPUTop := TargetCPUCount - PROJPROP_TGT_VISIBLE;
+     If Dlg.TargetCPUTop < 0 Then Dlg.TargetCPUTop := 0;
      DrawProjectPropertiesDialog(Dlg);
      Exit;
     End;
@@ -21428,11 +21558,21 @@ Begin
    Begin
     If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = ' ') Then Begin
      Dlg.TargetCPUOpen := True;
+     If Dlg.TargetCPUIdx >= PROJPROP_TGT_VISIBLE Then
+      Dlg.TargetCPUTop :=
+       Dlg.TargetCPUIdx - PROJPROP_TGT_VISIBLE + 1
+     Else
+      Dlg.TargetCPUTop := 0;
      DrawProjectPropertiesDialog(Dlg);
      Exit;
     End;
     If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $50) Then Begin
      Dlg.TargetCPUOpen := True;
+     If Dlg.TargetCPUIdx >= PROJPROP_TGT_VISIBLE Then
+      Dlg.TargetCPUTop :=
+       Dlg.TargetCPUIdx - PROJPROP_TGT_VISIBLE + 1
+     Else
+      Dlg.TargetCPUTop := 0;
      DrawProjectPropertiesDialog(Dlg);
      Exit;
     End;
@@ -21470,15 +21610,65 @@ Begin
     BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
      TAB_HEIGHT + DLG_PADDING + PROJPROP_ROW_SPACING * 3;
     DY := BaseY + PROJPROP_FIELD_HEIGHT;
-    If (Ev.MouseX >= FX + PROJPROP_LABEL_WIDTH) And
-       (Ev.MouseX <= FX + FW) And
-       (Ev.MouseY >= DY) And
-       (Ev.MouseY <= DY + TargetCPUCount * PROJPROP_FIELD_HEIGHT)
-    Then Begin
-     ItemIdx := (Ev.MouseY - DY) Div PROJPROP_FIELD_HEIGHT;
-     If (ItemIdx >= 0) And (ItemIdx < TargetCPUCount) Then
-      Dlg.TargetCPUIdx := ItemIdx;
+    { Geometrie scrollbar }
+    Begin
+     VisM := PROJPROP_TGT_VISIBLE;
+     If VisM > TargetCPUCount Then VisM := TargetCPUCount;
+     MaxTopM := TargetCPUCount - VisM;
+     If MaxTopM < 0 Then MaxTopM := 0;
+     SbR := FX + FW;
+     SbL := SbR - PROJPROP_SBAR_WIDTH;
+     SbTop2 := DY;
+     SbBot2 := DY + VisM * PROJPROP_FIELD_HEIGHT;
+     SbUpYM := SbTop2;
+     SbDnYM := SbBot2 - PROJPROP_SBAR_WIDTH;
+     { Clic dans la zone scrollbar : ne ferme pas le dropdown }
+     If (Ev.MouseX >= SbL) And (Ev.MouseX <= SbR) And
+        (Ev.MouseY >= SbTop2) And (Ev.MouseY <= SbBot2) Then
+     Begin
+      { Bouton haut }
+      If Ev.MouseY < SbUpYM + PROJPROP_SBAR_WIDTH Then
+      Begin
+       If Dlg.TargetCPUTop > 0 Then Dec(Dlg.TargetCPUTop);
+      End
+      Else If Ev.MouseY >= SbDnYM Then
+      Begin
+       If Dlg.TargetCPUTop < MaxTopM Then Inc(Dlg.TargetCPUTop);
+      End
+      Else
+      Begin
+       { Track : page up/down }
+       If Ev.MouseY < (SbTop2 + SbBot2) Div 2 Then
+       Begin
+        Dlg.TargetCPUTop := Dlg.TargetCPUTop - VisM;
+        If Dlg.TargetCPUTop < 0 Then Dlg.TargetCPUTop := 0;
+       End
+       Else
+       Begin
+        Dlg.TargetCPUTop := Dlg.TargetCPUTop + VisM;
+        If Dlg.TargetCPUTop > MaxTopM Then
+         Dlg.TargetCPUTop := MaxTopM;
+       End;
+      End;
+      DrawProjectPropertiesDialog(Dlg);
+      Exit;
+     End;
+     { Clic dans la zone des items (hors scrollbar) }
+     If (Ev.MouseX >= FX + PROJPROP_LABEL_WIDTH) And
+        (Ev.MouseX < SbL) And
+        (Ev.MouseY >= DY) And
+        (Ev.MouseY <= SbBot2) Then
+     Begin
+      ItemIdx := (Ev.MouseY - DY) Div PROJPROP_FIELD_HEIGHT
+       + Dlg.TargetCPUTop;
+      If (ItemIdx >= 0) And (ItemIdx < TargetCPUCount) Then
+       Dlg.TargetCPUIdx := ItemIdx;
+      Dlg.TargetCPUOpen := False;
+      DrawProjectPropertiesDialog(Dlg);
+      Exit;
+     End;
     End;
+    { Clic en dehors : fermer dropdown }
     Dlg.TargetCPUOpen := False;
     DrawProjectPropertiesDialog(Dlg);
     Exit;
@@ -21512,7 +21702,14 @@ Begin
      Dlg.OutputTypeOpen := True;
     { Sur le champ Plateforme cible, ouvrir le dropdown }
     If (Dlg.ActiveTab = PPT_BUILD) And (FldIdx = 3) Then
+    Begin
      Dlg.TargetCPUOpen := True;
+     If Dlg.TargetCPUIdx >= PROJPROP_TGT_VISIBLE Then
+      Dlg.TargetCPUTop :=
+       Dlg.TargetCPUIdx - PROJPROP_TGT_VISIBLE + 1
+     Else
+      Dlg.TargetCPUTop := 0;
+    End;
     DrawProjectPropertiesDialog(Dlg);
     Exit;
    End;
