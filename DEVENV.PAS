@@ -2875,6 +2875,8 @@ Var
  NewFileDlg     : TNewFileDialog;
  { Dialogue ouvrir fichier }
  FileDlg        : TFileDialog;
+ { Dialogue proprietes du projet }
+ ProjPropDlg    : TProjectPropertiesDialog;
  { Indicateur de sortie }
  QuitRequested  : Boolean;
  { Drapeau nettoyage ecran transition page de demarrage -> IDE }
@@ -4500,6 +4502,20 @@ Procedure HandleNewFileDialogEvent(Var Dlg: TNewFileDialog;
  Var Ev: TEvent); Forward;
 Procedure DrawNewFileDialog(Var Dlg: TNewFileDialog); Forward;
 
+{ Declarations anticipees pour dialogue proprietes du projet }
+Procedure InitProjectPropertiesDialog(
+ Var Dlg: TProjectPropertiesDialog); Forward;
+Procedure LoadProjectProperties(Var Dlg: TProjectPropertiesDialog;
+ Var Proj: TProject); Forward;
+Procedure SaveProjectProperties(Var Dlg: TProjectPropertiesDialog;
+ Var Proj: TProject); Forward;
+Procedure ShowProjectPropertiesDialog(
+ Var Dlg: TProjectPropertiesDialog); Forward;
+Procedure DrawProjectPropertiesDialog(
+ Var Dlg: TProjectPropertiesDialog); Forward;
+Procedure HandleProjectPropertiesDialogEvent(
+ Var Dlg: TProjectPropertiesDialog; Var Ev: TEvent); Forward;
+
 { Declarations anticipees pour sauvegarde }
 Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
 Procedure HandleSaveCurrentFile; Forward;
@@ -4761,6 +4777,11 @@ Begin
   220: Begin { Selectionner tout (Ctrl+A) }
         If EditorReady Then
          SelectAll(ActiveEditor, EditorSel);
+       End;
+  410: Begin { Proprietes du projet }
+        InitProjectPropertiesDialog(ProjPropDlg);
+        LoadProjectProperties(ProjPropDlg, CurrentProject);
+        ShowProjectPropertiesDialog(ProjPropDlg);
        End;
   500: HandleStartDebugging; { Generer la solution (F6) }
   600: HandleStartDebugging; { Demarrer le debogage (F5) }
@@ -27534,6 +27555,18 @@ Begin
   DrawNewProjectDialog(NewProjDlg);
   Exit;
  End;
+ If ProjPropDlg.Base.Visible Then Begin
+  HandleProjectPropertiesDialogEvent(ProjPropDlg, Ev);
+  If Not ProjPropDlg.Base.Visible Then Begin
+   If ProjPropDlg.Confirmed Then Begin
+    SaveProjectProperties(ProjPropDlg, CurrentProject);
+    SolutionModified := True;
+   End;
+   FullRepaintNeeded := True;
+  End Else
+   DrawProjectPropertiesDialog(ProjPropDlg);
+  Exit;
+ End;
  If GoToLineDlg.Base.Visible Then Begin
   HandleGoToLineEvent(GoToLineDlg,
    Ord(Ev.Kind), Ev.KeyChar, Ev.MouseX, Ev.MouseY);
@@ -28043,6 +28076,8 @@ BEGIN
  NewProjDlg.Base.Visible := False;
  InitFileDialog(FileDlg, False);
  FileDlg.Base.Visible := False;
+ InitProjectPropertiesDialog(ProjPropDlg);
+ ProjPropDlg.Base.Visible := False;
  InitCSCContext(CSCContext);
  InitVBCContext(VBCContext);
  InitTPCContext(TPCContext);
