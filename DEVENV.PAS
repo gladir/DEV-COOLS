@@ -20468,6 +20468,9 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.AssemblyName, CLR_WINDOWTEXT);
+ If Dlg.FocusField = 0 Then
+  DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
+   Length(Dlg.AssemblyName) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Espace de noms racine }
  BaseY := BaseY + PROJPROP_ROW_SPACING;
  DrawText(FX, BaseY, 'Namespace racine :', CLR_WINDOWTEXT);
@@ -20477,15 +20480,24 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.RootNamespace, CLR_WINDOWTEXT);
+ If Dlg.FocusField = 1 Then
+  DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
+   Length(Dlg.RootNamespace) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Type de sortie }
  BaseY := BaseY + PROJPROP_ROW_SPACING;
  DrawText(FX, BaseY, 'Type de sortie :', CLR_WINDOWTEXT);
  DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
-  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT,
+  CLR_WINDOW);
  DrawRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
-  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT,
+  CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   OutputTypeIdxToStr(Dlg.OutputTypeIdx), CLR_WINDOWTEXT);
+ If Dlg.FocusField = 2 Then
+  DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
+   Length(OutputTypeIdxToStr(Dlg.OutputTypeIdx)) * 8,
+   BaseY, '_', CLR_WINDOWTEXT);
 End;
 
 { --- Dessiner l onglet Build --- }
@@ -20507,6 +20519,9 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.DefineConstants, CLR_WINDOWTEXT);
+ If Dlg.FocusField = 0 Then
+  DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
+   Length(Dlg.DefineConstants) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Chemin de sortie }
  BaseY := BaseY + PROJPROP_ROW_SPACING;
  DrawText(FX, BaseY, 'Chemin sortie :', CLR_WINDOWTEXT);
@@ -20516,6 +20531,9 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.OutputPath, CLR_WINDOWTEXT);
+ If Dlg.FocusField = 1 Then
+  DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
+   Length(Dlg.OutputPath) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Niveau d avertissement }
  BaseY := BaseY + PROJPROP_ROW_SPACING;
  Str(Dlg.WarningLevel, S);
@@ -20528,6 +20546,9 @@ Begin
   BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY, S,
   CLR_WINDOWTEXT);
+ If Dlg.FocusField = 2 Then
+  DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
+   Length(S) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Case a cocher : traiter avertissements comme erreurs }
  BaseY := BaseY + PROJPROP_ROW_SPACING;
  DrawRect(FX, BaseY, FX + 12, BaseY + 12, CLR_BORDER);
@@ -20556,6 +20577,9 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.PreBuildEvent, CLR_WINDOWTEXT);
+ If Dlg.FocusField = 0 Then
+  DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
+   Length(Dlg.PreBuildEvent) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Commande post-build }
  BaseY := BaseY + PROJPROP_ROW_SPACING;
  DrawText(FX, BaseY, 'Post-build :', CLR_WINDOWTEXT);
@@ -20565,6 +20589,9 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.PostBuildEvent, CLR_WINDOWTEXT);
+ If Dlg.FocusField = 1 Then
+  DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
+   Length(Dlg.PostBuildEvent) * 8, BaseY, '_', CLR_WINDOWTEXT);
 End;
 
 { --- Dessiner l onglet Debug --- }
@@ -20585,6 +20612,9 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.DebugArgs, CLR_WINDOWTEXT);
+ If Dlg.FocusField = 0 Then
+  DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
+   Length(Dlg.DebugArgs) * 8, BaseY, '_', CLR_WINDOWTEXT);
  { Repertoire de travail }
  BaseY := BaseY + PROJPROP_ROW_SPACING;
  DrawText(FX, BaseY, 'Rep. travail :', CLR_WINDOWTEXT);
@@ -20594,6 +20624,9 @@ Begin
   FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   Dlg.WorkingDir, CLR_WINDOWTEXT);
+ If Dlg.FocusField = 1 Then
+  DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
+   Length(Dlg.WorkingDir) * 8, BaseY, '_', CLR_WINDOWTEXT);
 End;
 
 { --- Dessiner le contenu de l onglet actif --- }
@@ -20668,6 +20701,39 @@ Begin
  ProjPropWarningCheckHitTest :=
   (MX >= FX) And (MX <= FX + 12) And
   (MY >= BaseY) And (MY <= BaseY + 12);
+End;
+
+{ --- Test de clic sur les champs de saisie --- }
+
+Function ProjPropFieldHitTest(
+ Var Dlg: TProjectPropertiesDialog;
+ MX, MY: Integer): Integer;
+Var
+ FX, FW, BaseY, NbFields, I, RowY: Integer;
+Begin
+ ProjPropFieldHitTest := -1;
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  TAB_HEIGHT + DLG_PADDING;
+ Case Dlg.ActiveTab Of
+  PPT_APPLICATION:  NbFields := 3;
+  PPT_BUILD:        NbFields := 3;
+  PPT_BUILD_EVENTS: NbFields := 2;
+  PPT_DEBUG:        NbFields := 2;
+ Else
+  NbFields := 0;
+ End;
+ If (MX < FX + PROJPROP_LABEL_WIDTH) Or (MX > FX + FW) Then Exit;
+ For I := 0 To NbFields - 1 Do
+ Begin
+  RowY := BaseY + I * PROJPROP_ROW_SPACING;
+  If (MY >= RowY - 2) And (MY <= RowY + PROJPROP_FIELD_HEIGHT) Then
+  Begin
+   ProjPropFieldHitTest := I;
+   Exit;
+  End;
+ End;
 End;
 
 { --- Gestion des touches du dialogue Proprietes du projet --- }
@@ -20846,7 +20912,7 @@ End;
 Procedure HandleProjectPropertiesDialogEvent(
  Var Dlg: TProjectPropertiesDialog; Var Ev: TEvent);
 Var
- TabIdx, BtnR: Integer;
+ TabIdx, BtnR, FldIdx: Integer;
 Begin
  If Not Dlg.Base.Visible Then Exit;
  Case Ev.Kind Of
@@ -20874,6 +20940,16 @@ Begin
    Begin
     Dlg.TreatWarningsAsErrors :=
      Not Dlg.TreatWarningsAsErrors;
+    DrawProjectPropertiesDialog(Dlg);
+    Exit;
+   End;
+   FldIdx := ProjPropFieldHitTest(Dlg, Ev.MouseX, Ev.MouseY);
+   If FldIdx >= 0 Then
+   Begin
+    Dlg.FocusField := FldIdx;
+    { Sur le champ Type de sortie, le clic le fait defiler }
+    If (Dlg.ActiveTab = PPT_APPLICATION) And (FldIdx = 2) Then
+     Dlg.OutputTypeIdx := (Dlg.OutputTypeIdx + 1) Mod 3;
     DrawProjectPropertiesDialog(Dlg);
     Exit;
    End;
