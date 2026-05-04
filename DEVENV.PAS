@@ -1374,6 +1374,17 @@ Const
  CLR_BTNFACE           = 7;    { gris clair : face de bouton          }
  CLR_GRAYTEXT          = 8;    { gris fonce : texte desactive         }
 
+ { Codes de fin d execution de l emulateur 8086 (sf = stop fault) }
+ sfNone        = 0;
+ sfInvalidCode = 1;
+ sfHLT         = 2;
+ sfHotBoot     = 3;
+ sfColdBoot    = 4;
+ sfInvalidIntr = 5;
+ sfEndProgram  = 6;
+ sfBreakPoint  = 7;
+ sfDivision0   = 8;
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -2310,6 +2321,104 @@ Type
   Bg  : Byte;             { couleur de fond (0..15)               }
  End;
 
+ { Structure d entete d un fichier .EXE (MZ) }
+ TEmuHeaderEXE = Record
+  Sign        : Array[0..1] Of Char;
+  LenN511     : Word;
+  LenShr9     : Word;
+  NmSeg       : Word;
+  SizeOfHeader: Word;
+  MinParagraph: Word;
+  MaxParagraph: Word;
+  OfsLoadStack: Word;
+  SizeOfStack : Word;
+  CheckSum    : Word;
+  IP          : Word;
+  OfsLoad     : Word;
+  AdrExeTable : Word;
+  NmOvr       : Word;
+ End;
+
+ { Structure du PSP (Program Segment Prefix) DOS }
+ TEmuPSPRecord = Record Case Byte Of
+  0:(Buffer:Array[0..255] Of Byte);
+  1:(Int20h        : Word;
+     EndSegPrg     : Word;
+     ReservedA     : Byte;
+     CallDOS       : Array[0..4] Of Byte;
+     Int22h        : Pointer;
+     Int23h        : Pointer;
+     Int24h        : Pointer;
+     ParentSeg     : Word;
+     Handle        : Array[0..19] Of Byte;
+     EnvSeg        : Word;
+     ReservedB     : LongInt;
+     LenHandle     : Word;
+     HandlePtrOfs  : Word;
+     HandlePtrSeg  : Word;
+     ReservedC     : Array[0..22] Of Byte;
+     Int21h        : Word;
+     RetF          : Byte);
+ End;
+
+ TEmuLongRec = Record
+  Lo, Hi : Word;
+ End;
+
+ { Drapeaux du 8086 (registre FLAGS) }
+ TEmuFlag = (
+  EFG_CF, EFG_BIT1, EFG_PF, EFG_BIT3, EFG_AF, EFG_BIT5, EFG_ZF,
+  EFG_SF, EFG_TF, EFG_IF, EFG_DF, EFG_OF
+ );
+ TEmuFlagSet = Set Of TEmuFlag;
+
+ TEmuFlags = Record Case Byte Of
+  0:(s    : TEmuFlagSet);
+  2:(Base : Word);
+  3:(Abs  : LongInt);
+  4:(Data : Byte);
+ End;
+
+ { Registres generaux 8086 }
+ TEmuRegs = Record Case Byte Of
+  0:(EAX,ECX,EDX,EBX,ESP,EBP,ESI,EDI : LongInt);
+  1:(AX,EAH,CX,ECH,DX,EDH,BX,EBH,
+     SP,SPH,BP,BPH,SI,SIH,DI,DIH    : Word);
+  2:(AL,AH,HAL,HAH,CL,CH,HCL,HCH,
+     DL,DH,HDL,HDH,BL,BH,HBL,HBH    : Byte);
+ End;
+
+ { Registres de segments 8086 }
+ TEmuSegs = Record Case Byte Of
+  0:(ES,CS,SS,DS : Word);
+  1:(Abs        : Array[0..3] Of Word);
+ End;
+
+ { Etat complet du CPU emule }
+ TEmuCPU = Record
+  Memory       : File;                { fichier de swap memoire 1Mo }
+  MemReady     : Boolean;             { fichier ouvert ?            }
+  Regs         : TEmuRegs;
+  Segs         : TEmuSegs;
+  Flags        : TEmuFlags;
+  OldFlags     : TEmuFlags;
+  IP, FS, GS   : Word;
+  CPU          : Word;                { type de CPU (cpu8086...)    }
+  Fault        : Word;                { code de fin (sf*)           }
+  NextRawKey   : Byte;
+  CmosPos      : Byte;
+  CurrSeg      : Byte;
+  OldCSeg      : Word;
+  CodeBrk      : Integer;
+  PSP          : Word;
+  ParityTable  : Array[0..255] Of Boolean;
+  ModelComputer: Word;
+  CPUVendor    : Byte;
+  ReadOnly     : Boolean;
+  Verbose      : Boolean;
+  DebugMode    : Boolean;
+ End;
+
  { Etat de l emulateur 8086 + ecran virtuel + clavier }
  TEmulatorPanel = Record
   Base       : TDialog;          { dialogue de base                }
@@ -2318,6 +2427,7 @@ Type
   Fault      : Integer;          { code de fin (sf*)               }
   BinaryPath : String[127];      { chemin du binaire DOS charge    }
   TargetCPU  : String[16];       { drapeau cible (-CD ou -CP)      }
+  CPU        : TEmuCPU;          { etat complet du processeur 8086 }
   { Ecran virtuel 80 colonnes x 25 lignes }
   VRAM       : Array[0..24, 0..79] Of TEmuCell;
   CursorX    : Byte;             { colonne curseur (0..79)         }
@@ -21900,12 +22010,574 @@ Begin
  P.NeedRepaint := False;
 End;
 
-{ --- Charger un binaire DOS et lancer l execution (Phase 1 stub) --- }
+{ ============================================================
+  EMULATEUR 8086 - PHASE 2 (1) : etat CPU, memoire et chargeurs
+  ----------------------------------------------------------
+  Constantes :
+    sfNone=0, sfInvalidCode=1, sfHLT=2, sfHotBoot=3, sfColdBoot=4,
+    sfInvalidIntr=5, sfEndProgram=6, sfBreakPoint=7, sfDivision0=8
+  ============================================================ }
+
+{ --- Convertir un seg:ofs en adresse lineaire 20 bits --- }
+
+Function Emu_Addr(Seg, Ofs: Word): LongInt;
+Begin
+ Emu_Addr := (LongInt(Seg) Shl 4) + Ofs;
+End;
+
+{ --- Lire un bloc absolu depuis la memoire emulee --- }
+
+Procedure Emu_ReadAbsBlock(Var C: TEmuCPU; Addr: LongInt;
+ Var Buffer; SizeBytes: Word);
+Var
+ ByteReaded: Word;
+Begin
+ If Not C.MemReady Then Exit;
+ Seek(C.Memory, Addr);
+ BlockRead(C.Memory, Buffer, SizeBytes, ByteReaded);
+End;
+
+{ --- Lire un bloc seg:ofs --- }
+
+Procedure Emu_ReadBlock(Var C: TEmuCPU; Seg, Ofs: Word;
+ Var Buffer; SizeBytes: Word);
+Begin
+ Emu_ReadAbsBlock(C, Emu_Addr(Seg, Ofs), Buffer, SizeBytes);
+End;
+
+{ --- Lire un octet seg:ofs --- }
+
+Function Emu_ReadByte(Var C: TEmuCPU; Seg, Ofs: Word): Byte;
+Var
+ B: Byte;
+Begin
+ Emu_ReadBlock(C, Seg, Ofs, B, 1);
+ Emu_ReadByte := B;
+End;
+
+{ --- Lire un mot seg:ofs --- }
+
+Function Emu_ReadWord(Var C: TEmuCPU; Seg, Ofs: Word): Word;
+Var
+ W: Word;
+Begin
+ Emu_ReadBlock(C, Seg, Ofs, W, 2);
+ Emu_ReadWord := W;
+End;
+
+{ --- Ecrire un bloc absolu --- }
+
+Procedure Emu_WriteAbsBlock(Var C: TEmuCPU; Addr: LongInt;
+ Var Buffer; SizeBytes: Word);
+Var
+ ByteWrited: Word;
+Begin
+ If Not C.MemReady Then Exit;
+ Seek(C.Memory, Addr);
+ BlockWrite(C.Memory, Buffer, SizeBytes, ByteWrited);
+End;
+
+{ --- Ecrire un bloc seg:ofs --- }
+
+Procedure Emu_WriteBlock(Var C: TEmuCPU; Seg, Ofs: Word;
+ Var Buffer; SizeBytes: Word);
+Begin
+ Emu_WriteAbsBlock(C, Emu_Addr(Seg, Ofs), Buffer, SizeBytes);
+End;
+
+{ --- Ecrire un octet seg:ofs --- }
+
+Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte);
+Begin
+ Emu_WriteBlock(C, Seg, Ofs, X, 1);
+End;
+
+{ --- Ecrire un mot seg:ofs --- }
+
+Procedure Emu_WriteWord(Var C: TEmuCPU; Seg, Ofs, X: Word);
+Begin
+ Emu_WriteBlock(C, Seg, Ofs, X, 2);
+End;
+
+{ --- Construire les adresses statiques d interruptions --- }
+
+Procedure Emu_MakeIntrAddr(Var C: TEmuCPU);
+Var
+ I: Byte;
+ ByteWrited: Word;
+ Tbl: Array[0..255] Of LongInt;
+Begin
+ If Not C.MemReady Then Exit;
+ For I := 0 To 255 Do
+  Tbl[I] := I + 1;
+ Seek(C.Memory, 0);
+ BlockWrite(C.Memory, Tbl, SizeOf(Tbl), ByteWrited);
+End;
+
+{ --- Drapeaux : ZF/SF/PF a partir d un octet/mot --- }
+
+Procedure Emu_SetZFB(Var C: TEmuCPU; X: Byte);
+Begin
+ If X = 0 Then Include(C.Flags.s, EFG_ZF)
+          Else Exclude(C.Flags.s, EFG_ZF);
+End;
+
+Procedure Emu_SetZFW(Var C: TEmuCPU; X: Word);
+Begin
+ If X = 0 Then Include(C.Flags.s, EFG_ZF)
+          Else Exclude(C.Flags.s, EFG_ZF);
+End;
+
+Procedure Emu_SetSFB(Var C: TEmuCPU; X: Byte);
+Begin
+ If (X And $80) <> 0 Then Include(C.Flags.s, EFG_SF)
+                     Else Exclude(C.Flags.s, EFG_SF);
+End;
+
+Procedure Emu_SetSFW(Var C: TEmuCPU; X: Word);
+Begin
+ If (X And $8000) <> 0 Then Include(C.Flags.s, EFG_SF)
+                       Else Exclude(C.Flags.s, EFG_SF);
+End;
+
+Procedure Emu_SetPF(Var C: TEmuCPU; X: Byte);
+Begin
+ If C.ParityTable[X] Then Include(C.Flags.s, EFG_PF)
+                     Else Exclude(C.Flags.s, EFG_PF);
+End;
+
+{ --- Acces aux registres 8 bits par numero --- }
+
+Procedure Emu_SetReg8(Var C: TEmuCPU; Num, Value: Byte);
+Begin
+ Case Num And 7 Of
+  0: C.Regs.AL := Value;
+  1: C.Regs.CL := Value;
+  2: C.Regs.DL := Value;
+  3: C.Regs.BL := Value;
+  4: C.Regs.AH := Value;
+  5: C.Regs.CH := Value;
+  6: C.Regs.DH := Value;
+  7: C.Regs.BH := Value;
+ End;
+End;
+
+Function Emu_GetReg8(Var C: TEmuCPU; Num: Byte): Byte;
+Begin
+ Case Num And 7 Of
+  0: Emu_GetReg8 := C.Regs.AL;
+  1: Emu_GetReg8 := C.Regs.CL;
+  2: Emu_GetReg8 := C.Regs.DL;
+  3: Emu_GetReg8 := C.Regs.BL;
+  4: Emu_GetReg8 := C.Regs.AH;
+  5: Emu_GetReg8 := C.Regs.CH;
+  6: Emu_GetReg8 := C.Regs.DH;
+  7: Emu_GetReg8 := C.Regs.BH;
+ End;
+End;
+
+{ --- Pile : push/pop word --- }
+
+Procedure Emu_PushWord(Var C: TEmuCPU; Value: Word);
+Begin
+ C.Regs.SP := C.Regs.SP - 2;
+ Emu_WriteWord(C, C.Segs.SS, C.Regs.SP, Value);
+End;
+
+Function Emu_PopWord(Var C: TEmuCPU): Word;
+Begin
+ Emu_PopWord := Emu_ReadWord(C, C.Segs.SS, C.Regs.SP);
+ C.Regs.SP := C.Regs.SP + 2;
+End;
+
+{ --- Initialiser l ordinateur emule (memoire + table d interruption) --- }
+
+Procedure Emu_InitComputer(Var C: TEmuCPU);
+Const
+ EMU_SWAP_FILE = 'EMU8086.$$$';
+Var
+ J: Word;
+ ByteWrited: Word;
+ ClrBuffer: Array[0..1023] Of Byte;
+ I: Integer;
+Begin
+ C.CodeBrk := -1;
+ FillChar(C.ParityTable, SizeOf(C.ParityTable), 0);
+ { Pre-calcul de la table de parite : un octet a parite paire si
+   son nombre de bits a 1 est pair. Implementation simple. }
+ For I := 0 To 255 Do Begin
+  J := 0;
+  ByteWrited := I;
+  While ByteWrited <> 0 Do Begin
+   J := J + (ByteWrited And 1);
+   ByteWrited := ByteWrited Shr 1;
+  End;
+  C.ParityTable[I] := (J And 1) = 0;
+ End;
+ { Initialiser le fichier de swap pour la memoire emulee (1Mo) }
+ {$I-}
+ Assign(C.Memory, EMU_SWAP_FILE);
+ Rewrite(C.Memory, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  C.MemReady := False;
+  Exit;
+ End;
+ C.MemReady := True;
+ { Effacer 1Mo (1024 blocs de 1024 octets) }
+ FillChar(ClrBuffer, SizeOf(ClrBuffer), 0);
+ For J := 0 To 1023 Do Begin
+  Seek(C.Memory, LongInt(J) Shl 10);
+  BlockWrite(C.Memory, ClrBuffer, SizeOf(ClrBuffer), ByteWrited);
+ End;
+ { Taille memoire conventionnelle : 640 Ko a l offset 0040:0013 }
+ Emu_WriteWord(C, 0, $0413, 640);
+ Emu_MakeIntrAddr(C);
+ { Reinitialisation des registres }
+ FillChar(C.Regs, SizeOf(C.Regs), 0);
+ FillChar(C.Segs, SizeOf(C.Segs), 0);
+ FillChar(C.Flags, SizeOf(C.Flags), 0);
+ C.IP := 0;
+ C.Fault := 0;
+End;
+
+{ --- Liberer le fichier de swap memoire --- }
+
+Procedure Emu_Done(Var C: TEmuCPU);
+Begin
+ If C.MemReady Then Begin
+  Close(C.Memory);
+  {$I-}
+  Assign(C.Memory, 'EMU8086.$$$');
+  Erase(C.Memory);
+  {$I+}
+  If IOResult <> 0 Then ;
+  C.MemReady := False;
+ End;
+End;
+
+{ --- Charger un fichier .COM dans la memoire emulee --- }
+
+Function Emu_LoadCom(Var C: TEmuCPU; Const FileName: String): Boolean;
+Var
+ PSP: TEmuPSPRecord;
+ Buffer: Array[0..511] Of Byte;
+ Handle: File;
+ Size: LongInt;
+ ByteReaded: Word;
+ ToRead: Word;
+ Addr: LongInt;
+Begin
+ Emu_LoadCom := False;
+ {$I-}
+ Assign(Handle, FileName);
+ Reset(Handle, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ { Configurer les segments pour un .COM (tous au meme PSP) }
+ C.Segs.CS := $0060;
+ C.Segs.DS := C.Segs.CS;
+ C.Segs.ES := C.Segs.CS;
+ C.Segs.SS := C.Segs.CS;
+ C.Regs.SP := $FFFE;
+ C.Regs.BP := $091C;
+ C.IP := $100;
+ { Construire un PSP minimal }
+ FillChar(PSP, SizeOf(PSP), 0);
+ PSP.Int20h := $20CD;
+ PSP.EndSegPrg := $9FFF;
+ PSP.ParentSeg := $52;
+ PSP.EnvSeg := $51;
+ PSP.LenHandle := 20;
+ PSP.HandlePtrOfs := $18;
+ PSP.HandlePtrSeg := C.Segs.CS;
+ PSP.Int21h := $21CD;
+ PSP.RETF := $CB;
+ Emu_WriteBlock(C, C.Segs.CS, 0, PSP.Buffer, $100);
+ { Charger le code apres le PSP, par blocs de 512 octets }
+ Size := FileSize(Handle);
+ Addr := Emu_Addr(C.Segs.CS, $100);
+ Seek(Handle, 0);
+ While Size > 0 Do Begin
+  If Size > SizeOf(Buffer) Then ToRead := SizeOf(Buffer)
+                           Else ToRead := Word(Size);
+  BlockRead(Handle, Buffer, ToRead, ByteReaded);
+  Emu_WriteAbsBlock(C, Addr, Buffer, ByteReaded);
+  Addr := Addr + ByteReaded;
+  Size := Size - ByteReaded;
+  If ByteReaded < ToRead Then Break;
+ End;
+ Close(Handle);
+ Emu_LoadCom := True;
+End;
+
+{ --- Charger un fichier .EXE dans la memoire emulee --- }
+
+Function Emu_LoadExe(Var C: TEmuCPU; Const FileName: String): Boolean;
+Var
+ HeadSize, Addr, RPos: LongInt;
+ N: LongInt;
+ I: LongInt;
+ LoadSeg: LongInt;
+ PSPSeg, ROff, RSeg: Word;
+ PSP: TEmuPSPRecord;
+ Handle: File;
+ ByteReaded: Word;
+ Exe: TEmuHeaderEXE;
+ Buffer: Array[0..255] Of Byte;
+ Reloc: Array[0..1] Of Word;
+Begin
+ Emu_LoadExe := False;
+ {$I-}
+ Assign(Handle, FileName);
+ Reset(Handle, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ Seek(Handle, 0);
+ BlockRead(Handle, Exe, SizeOf(Exe), ByteReaded);
+ If Not ((Exe.Sign[0] = 'M') And (Exe.Sign[1] = 'Z')) Then Begin
+  Close(Handle);
+  Exit;
+ End;
+ HeadSize := Exe.SizeOfHeader * 16;
+ PSPSeg := $0060;
+ LoadSeg := PSPSeg + 17;
+ C.IP := Exe.IP;
+ C.Segs.CS := Word(LoadSeg + Exe.OfsLoad);
+ C.Segs.DS := PSPSeg + 1;
+ C.Segs.ES := PSPSeg + 1;
+ C.Segs.SS := Word(LoadSeg + Exe.OfsLoadStack);
+ C.Regs.SP := Exe.SizeOfStack;
+ C.Regs.BP := $091C;
+ { PSP }
+ FillChar(PSP, SizeOf(PSP), 0);
+ PSP.Int20h := $20CD;
+ PSP.EndSegPrg := $9FFF;
+ PSP.ParentSeg := $52;
+ PSP.EnvSeg := $51;
+ PSP.LenHandle := 20;
+ PSP.HandlePtrOfs := $18;
+ PSP.HandlePtrSeg := C.Segs.CS;
+ PSP.Int21h := $21CD;
+ PSP.RETF := $CB;
+ Emu_WriteBlock(C, PSPSeg, 0, PSP.Buffer, $100);
+ { Charger l image executable }
+ Addr := (LongInt(C.Segs.CS) Shl 4) + Exe.IP;
+ Seek(Handle, HeadSize + Exe.IP);
+ While Not Eof(Handle) Do Begin
+  BlockRead(Handle, Buffer, SizeOf(Buffer), ByteReaded);
+  Emu_WriteAbsBlock(C, Addr, Buffer, ByteReaded);
+  Addr := Addr + ByteReaded;
+  If ByteReaded < SizeOf(Buffer) Then Break;
+ End;
+ { Relogement (relocation table) }
+ Seek(Handle, Exe.AdrExeTable);
+ For I := 1 To Exe.NmSeg Do Begin
+  BlockRead(Handle, Reloc, SizeOf(Reloc), ByteReaded);
+  If ByteReaded <> SizeOf(Reloc) Then Break;
+  ROff := Reloc[0];
+  RSeg := Word(LoadSeg + Reloc[1]);
+  RPos := LongInt(ROff) + 16 * LongInt(RSeg);
+  Emu_ReadAbsBlock(C, RPos, N, 2);
+  N := N + LoadSeg;
+  Emu_WriteAbsBlock(C, RPos, N, 2);
+ End;
+ Close(Handle);
+ Emu_LoadExe := True;
+End;
+
+{ --- Charger un binaire DOS (auto-detection .COM / .EXE) --- }
+
+Function Emu_LoadProgram(Var C: TEmuCPU; FileName: String): Boolean;
+Var
+ Ext: String;
+ I: Integer;
+Begin
+ Ext := '';
+ For I := Length(FileName) DownTo 1 Do
+  If FileName[I] = '.' Then Begin
+   Ext := Copy(FileName, I, Length(FileName) - I + 1);
+   Break;
+  End;
+ { Comparaison insensible a la casse }
+ For I := 1 To Length(Ext) Do
+  If Ext[I] In ['a'..'z'] Then
+   Ext[I] := Chr(Ord(Ext[I]) - 32);
+ If Ext = '.EXE' Then
+  Emu_LoadProgram := Emu_LoadExe(C, FileName)
+ Else
+  Emu_LoadProgram := Emu_LoadCom(C, FileName);
+End;
+
+{ ============================================================
+  EMULATEUR 8086 - PHASE 2 (1) : moteur d execution minimal
+  ----------------------------------------------------------
+  Sous-ensemble d instructions supporte dans cette livraison :
+    NOP (90), HLT (F4), INT imm8 (CD), IRET (CF), RET (C3, CB)
+    MOV r8,imm8 (B0..B7), MOV r16,imm16 (B8..BF)
+  Interruptions DOS (INT 21h) supportees :
+    AH=$02 (afficher car DL), AH=$06 (E/S directe console DL),
+    AH=$09 (afficher chaine $-terminee a DS:DX),
+    AH=$4C (terminer programme avec code AL)
+  Tout autre opcode/interruption met Fault := sfInvalidCode/Intr.
+  ============================================================ }
+
+{ --- Lire l octet code courant a CS:IP --- }
+
+Function Emu_FetchByte(Var C: TEmuCPU; Step: Integer): Byte;
+Begin
+ Emu_FetchByte := Emu_ReadByte(C, C.Segs.CS, C.IP + Step);
+End;
+
+Function Emu_FetchWord(Var C: TEmuCPU; Step: Integer): Word;
+Begin
+ Emu_FetchWord := Emu_ReadWord(C, C.Segs.CS, C.IP + Step);
+End;
+
+{ --- Executer une interruption DOS (INT 21h) --- }
+
+Procedure Emu_DoInt21(Var P: TEmulatorPanel);
+Var
+ I: Integer;
+ Ofs: Word;
+ B: Byte;
+ ExitCode: Byte;
+Begin
+ Case P.CPU.Regs.AH Of
+  $00:
+   P.CPU.Fault := sfEndProgram;
+  $02:
+   { Afficher le caractere DL }
+   EmuVScr_PutChar(P, Chr(P.CPU.Regs.DL));
+  $06:
+   { Direct console I/O. DL=$FF = lire, autre = ecrire }
+   If P.CPU.Regs.DL = $FF Then Begin
+    If EmuVScr_HasKey(P) Then Begin
+     P.CPU.Regs.AL := EmuVScr_PopKey(P);
+     Exclude(P.CPU.Flags.s, EFG_ZF);
+    End Else Begin
+     P.CPU.Regs.AL := 0;
+     Include(P.CPU.Flags.s, EFG_ZF);
+    End;
+   End Else
+    EmuVScr_PutChar(P, Chr(P.CPU.Regs.DL));
+  $09:
+   Begin
+    { Afficher la chaine $-terminee a DS:DX, max 4096 caracteres }
+    Ofs := P.CPU.Regs.DX;
+    For I := 0 To 4095 Do Begin
+     B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I);
+     If Chr(B) = '$' Then Break;
+     EmuVScr_PutChar(P, Chr(B));
+    End;
+   End;
+  $4C:
+   Begin
+    ExitCode := P.CPU.Regs.AL;
+    P.CPU.Fault := sfEndProgram;
+    P.StatusMsg := 'Programme termine (code ' + IntToStr(ExitCode) + ')';
+   End;
+  Else
+   { Fonction DOS non supportee dans cette livraison : on ignore }
+   ;
+ End;
+End;
+
+{ --- Executer une interruption logicielle --- }
+
+Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte);
+Begin
+ Case Num Of
+  $20: P.CPU.Fault := sfEndProgram;
+  $21: Emu_DoInt21(P);
+  Else
+   P.CPU.Fault := sfInvalidIntr;
+ End;
+End;
+
+{ --- Executer une instruction 8086 --- }
+
+Procedure Emu_StepOne(Var P: TEmulatorPanel);
+Var
+ OpCode: Byte;
+ Imm8: Byte;
+ Imm16: Word;
+Begin
+ If P.CPU.Fault <> sfNone Then Exit;
+ OpCode := Emu_FetchByte(P.CPU, 0);
+ Case OpCode Of
+  $90: { NOP }
+   Inc(P.CPU.IP);
+  $F4: { HLT }
+   Begin
+    P.CPU.Fault := sfHLT;
+    Inc(P.CPU.IP);
+   End;
+  $CD: { INT imm8 }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    Inc(P.CPU.IP, 2);
+    Emu_DoInt(P, Imm8);
+   End;
+  $C3, $CB: { RET near / RET far }
+   Begin
+    P.CPU.IP := Emu_PopWord(P.CPU);
+    If OpCode = $CB Then
+     P.CPU.Segs.CS := Emu_PopWord(P.CPU);
+   End;
+  $B0..$B7: { MOV r8,imm8 }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    Emu_SetReg8(P.CPU, OpCode And 7, Imm8);
+    Inc(P.CPU.IP, 2);
+   End;
+  $B8..$BF: { MOV r16,imm16 }
+   Begin
+    Imm16 := Emu_FetchWord(P.CPU, 1);
+    Case OpCode And 7 Of
+     0: P.CPU.Regs.AX := Imm16;
+     1: P.CPU.Regs.CX := Imm16;
+     2: P.CPU.Regs.DX := Imm16;
+     3: P.CPU.Regs.BX := Imm16;
+     4: P.CPU.Regs.SP := Imm16;
+     5: P.CPU.Regs.BP := Imm16;
+     6: P.CPU.Regs.SI := Imm16;
+     7: P.CPU.Regs.DI := Imm16;
+    End;
+    Inc(P.CPU.IP, 3);
+   End;
+  Else
+   { Opcode non supporte dans cette livraison }
+   P.CPU.Fault := sfInvalidCode;
+ End;
+End;
+
+{ --- Texte descriptif d un code de fin --- }
+
+Function Emu_FaultText(F: Integer): String;
+Begin
+ Case F Of
+  sfNone        : Emu_FaultText := 'aucune erreur';
+  sfInvalidCode : Emu_FaultText := 'opcode non supporte';
+  sfHLT         : Emu_FaultText := 'instruction HLT';
+  sfHotBoot     : Emu_FaultText := 'redemarrage a chaud';
+  sfColdBoot    : Emu_FaultText := 'redemarrage a froid';
+  sfInvalidIntr : Emu_FaultText := 'interruption invalide';
+  sfEndProgram  : Emu_FaultText := 'fin de programme';
+  sfBreakPoint  : Emu_FaultText := 'point d arret';
+  sfDivision0   : Emu_FaultText := 'division par zero';
+  Else            Emu_FaultText := 'code ' + IntToStr(F);
+ End;
+End;
+
+{ --- Charger un binaire DOS et lancer l execution --- }
 
 Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
  BinaryPath, TargetCPU: String);
 Var
  OldFg, OldBg: Byte;
+ Loaded: Boolean;
+ Steps: LongInt;
 Begin
  InitEmulatorPanel(P);
  P.BinaryPath := BinaryPath;
@@ -21914,43 +22586,78 @@ Begin
  P.Visible := True;
  P.Running := True;
  P.Fault := 0;
- { Banniere de Phase 1 : montre que la bascule fonctionne }
  OldFg := P.CurFg; OldBg := P.CurBg;
  P.CurFg := 14; P.CurBg := 1;
  EmuVScr_WriteStr(P,
   ' Emulateur 8086 integre - DEVENV ' + DEVENV_VERSION + '          ');
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- P.CurFg := OldFg; P.CurBg := OldBg;
+ P.CurFg := 7; P.CurBg := 0;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- EmuVScr_WriteStr(P, 'Cible: ' + TargetCPU);
+ EmuVScr_WriteStr(P, 'Cible    : ' + TargetCPU);
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- EmuVScr_WriteStr(P, 'Binaire: ' + BinaryPath);
+ EmuVScr_WriteStr(P, 'Binaire  : ' + BinaryPath);
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ { Initialiser le CPU et la memoire emulee 1Mo }
+ Emu_InitComputer(P.CPU);
+ If Not P.CPU.MemReady Then Begin
+  P.CurFg := 12;
+  EmuVScr_WriteStr(P, 'Erreur : impossible de creer le swap memoire.');
+  P.CurFg := OldFg;
+  P.Running := False;
+  P.StatusMsg := 'Memoire emulee indisponible';
+  Exit;
+ End;
+ { Charger le programme }
+ Loaded := Emu_LoadProgram(P.CPU, BinaryPath);
+ If Not Loaded Then Begin
+  P.CurFg := 12;
+  EmuVScr_WriteStr(P,
+   'Erreur : impossible de charger le binaire DOS.');
+  P.CurFg := OldFg;
+  P.Running := False;
+  P.StatusMsg := 'Echec de chargement';
+  Emu_Done(P.CPU);
+  Exit;
+ End;
+ P.CurFg := 10;
+ EmuVScr_WriteStr(P, 'Programme charge en memoire (CS:IP=');
+ EmuVScr_WriteStr(P, IntToStr(P.CPU.Segs.CS) + ':' +
+  IntToStr(P.CPU.IP) + ')');
+ P.CurFg := 7;
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ { Executer un nombre maximum d instructions (limite de surete) }
+ P.CPU.Fault := sfNone;
+ Steps := 0;
+ While (P.CPU.Fault = sfNone) And (Steps < 1000000) Do Begin
+  Emu_StepOne(P);
+  Inc(Steps);
+ End;
+ P.Fault := P.CPU.Fault;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  P.CurFg := 11;
- EmuVScr_WriteStr(P,
-  '[Phase 1] Infrastructure de l emulateur en place.');
- EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- EmuVScr_WriteStr(P,
-  '[Phase 2] Le coeur d emulation 8086 (TESTS/EMU8086.PAS)');
- EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- EmuVScr_WriteStr(P,
-  '          sera integre prochainement.');
+ EmuVScr_WriteStr(P, '[Fin d execution : ' +
+  Emu_FaultText(P.Fault) + ' apres ' + IntToStr(Steps) +
+  ' instructions]');
  P.CurFg := OldFg;
+ P.CurBg := OldBg;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
- P.StatusMsg := 'Phase 1 - infrastructure prete';
+ If P.StatusMsg = '' Then
+  P.StatusMsg := 'Phase 2 (1) : ' + Emu_FaultText(P.Fault);
  P.Running := False;
- P.Fault := 0;
+ Emu_Done(P.CPU);
 End;
 
-{ --- Stub d execution (Phase 1) --- }
+{ --- Stub d execution pas a pas (pour usage futur depuis MainLoop) --- }
 
 Procedure StepEmulator(Var P: TEmulatorPanel);
 Begin
- { Phase 2 : appellera Emu_Run / Emu_Step ici. }
- P.Running := False;
+ If P.Running And (P.CPU.Fault = sfNone) Then
+  Emu_StepOne(P);
+ If P.CPU.Fault <> sfNone Then
+  P.Running := False;
 End;
 
 { --- Traiter un evenement du panneau emulateur --- }
