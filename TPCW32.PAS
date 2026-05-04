@@ -99,6 +99,7 @@ Const
   DEST_ATARI800 = 16; { -CATARI800 : Atari 800 (6502) }
   DEST_MSX    = 17; { -CMSX : MSX (Z80, MSX-DOS) }
   DEST_NES    = 18; { -CNES : Nintendo Entertainment System (6502/Ricoh 2A03) }
+  DEST_ATARI2600 = 19; { -CATARI2600 : Atari 2600 VCS (6507) }
 
 Type
   TString = String;
@@ -134,7 +135,7 @@ Type
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
     ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
     Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
-    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3/-CTRS80/-CATARI400/-CATARI800/-CMSX/-CNES : destination }
+    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3/-CTRS80/-CATARI400/-CATARI800/-CMSX/-CNES/-CATARI2600 : destination }
     AppleII     : Boolean;   { True si la plateforme est Apple II (CPU = 6502) }
     C64         : Boolean;   { True si la plateforme est Commodore 64 (CPU = 6510 ~ 6502) }
     CoCo3       : Boolean;   { True si la plateforme est Tandy CoCo 3 (CPU = 6809) }
@@ -143,6 +144,7 @@ Type
     Atari800    : Boolean;   { True si la plateforme est Atari 800 (CPU = 6502) }
     MSX         : Boolean;   { True si la plateforme est MSX (CPU = Z80) }
     NES         : Boolean;   { True si la plateforme est NES (CPU = Ricoh 2A03 ~ 6502) }
+    Atari2600   : Boolean;   { True si la plateforme est Atari 2600 VCS (CPU = 6507 ~ 6502) }
   End;
 
 Var
@@ -327,6 +329,7 @@ Begin
   Opts.Atari800 := False;
   Opts.MSX := False;
   Opts.NES := False;
+  Opts.Atari2600 := False;
   Opts.ObjOnly   := False;
   Opts.Dos16Mode := False;
   Opts.TPVersion := TP_VER_DEFAULT;
@@ -406,6 +409,7 @@ Begin
   WriteLn('  -CATARI800     Destination Atari 800 (6502)');
   WriteLn('  -CMSX          Destination MSX (Z80, MSX-DOS)');
   WriteLn('  -CNES          Destination Nintendo Entertainment System (6502/Ricoh 2A03)');
+  WriteLn('  -CATARI2600    Destination Atari 2600 VCS (6507)');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -566,6 +570,11 @@ Begin
       Opts.DestTarget := DEST_6502;
       Opts.NES := True;
     End
+    Else If (UA = '-CATARI2600') Then
+    Begin
+      Opts.DestTarget := DEST_6502;
+      Opts.Atari2600 := True;
+    End
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
@@ -676,6 +685,8 @@ Begin
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.com')
     Else If Opts.NES Then
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.nes')
+    Else If Opts.Atari2600 Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.a26')
     Else
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
   End;
@@ -34238,6 +34249,54 @@ End;
 {     $FFFA/B : NMI vector  -> $8000                                       }
 {     $FFFC/D : RESET vector -> $8000 (entry point)                        }
 {     $FFFE/F : IRQ vector  -> $8000                                       }
+{ --- WriteAtari2600RomFile : ROM Atari 2600 VCS (.A26, cartouche 4K)      }
+{ Le 6507 a un bus d'adresses 13 bits. La cartouche est mappee en          }
+{ $F000-$FFFF (4 KB) ou en $1000-$1FFF (mirroir).                          }
+{ Format : raw bytes, taille fixe 2 KB ou 4 KB.                            }
+{ Vecteurs ($FFFC..$FFFF) ecrasent la fin :                                }
+{   $FFFC/D : RESET vector -> $F000 (entry point)                          }
+{   $FFFE/F : IRQ/BRK vector -> $F000                                      }
+{ La 2600 n'a pas de NMI vector (le 6507 n'a pas de broche NMI).           }
+Procedure WriteAtari2600RomFile(FileName: TString);
+Const
+  ROM_SIZE   = 4096;     { 4 KB cartouche standard }
+  ENTRY_ADDR = $F000;
+Var
+  F: File;
+  TextLen, DataLen, DataBase, Payload: LongInt;
+  I: LongInt;
+  Rom: Array Of Byte;
+Begin
+  TextLen := BcCodeLen;
+  DataLen := BcDataLen;
+  DataBase := (TextLen + 3) And Not 3;
+  Payload := DataBase + DataLen;
+  If Payload < TextLen Then Payload := TextLen;
+
+  If Payload > (ROM_SIZE - 4) Then
+  Begin
+    WriteLn('Erreur: code+data (', Payload,
+            ' octets) depasse la taille de la cartouche 4K Atari 2600.');
+    Halt(1);
+  End;
+
+  SetLength(Rom, ROM_SIZE);
+  For I := 0 To ROM_SIZE - 1 Do Rom[I] := $FF;
+  For I := 0 To TextLen - 1 Do Rom[I] := BcCode[I];
+  For I := 0 To DataLen - 1 Do Rom[DataBase + I] := BcData[I];
+
+  { Vecteurs RESET ($FFFC) et IRQ ($FFFE) -> $F000 }
+  Rom[ROM_SIZE - 4] := ENTRY_ADDR And $FF;          { RESET lo }
+  Rom[ROM_SIZE - 3] := (ENTRY_ADDR Shr 8) And $FF;  { RESET hi }
+  Rom[ROM_SIZE - 2] := ENTRY_ADDR And $FF;          { IRQ lo }
+  Rom[ROM_SIZE - 1] := (ENTRY_ADDR Shr 8) And $FF;  { IRQ hi }
+
+  Assign(F, FileName);
+  Rewrite(F, 1);
+  BlockWrite(F, Rom[0], ROM_SIZE);
+  Close(F);
+End;
+
 Procedure WriteNesRomFile(FileName: TString);
 Const
   PRG_BLOCK_SIZE = 16384; { 16 KB }
@@ -36458,6 +36517,12 @@ Begin
       WriteNesRomFile(Opts.OutFile);
       If Opts.Verbose Then
         WriteLn('  NES ROM (iNES) genere : ', Opts.OutFile);
+    End
+    Else If Opts.Atari2600 Then
+    Begin
+      WriteAtari2600RomFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  Atari 2600 VCS ROM genere : ', Opts.OutFile);
     End
     Else
     Begin
