@@ -2417,6 +2417,20 @@ Type
   ReadOnly     : Boolean;
   Verbose      : Boolean;
   DebugMode    : Boolean;
+  LastBadOp    : Byte;
+  LastBadCS    : Word;
+  LastBadIP    : Word;
+  HasSegOvr    : Boolean;
+  SegOvr       : Word;
+ End;
+
+ { Operande decode a partir d un octet ModR/M }
+ TEmuOperand = Record
+  IsReg : Boolean;
+  RegNum: Byte;
+  Seg   : Word;
+  Ofs   : Word;
+  Len   : Integer;       { octets consommes (ModRM + deplacement)  }
  End;
 
  { Etat de l emulateur 8086 + ecran virtuel + clavier }
@@ -22434,6 +22448,417 @@ Begin
  Emu_FetchWord := Emu_ReadWord(C, C.Segs.CS, C.IP + Step);
 End;
 
+{ --- Acces aux registres 16 bits par numero --- }
+
+Function Emu_GetReg16(Var C: TEmuCPU; Num: Byte): Word;
+Begin
+ Case Num And 7 Of
+  0: Emu_GetReg16 := C.Regs.AX;
+  1: Emu_GetReg16 := C.Regs.CX;
+  2: Emu_GetReg16 := C.Regs.DX;
+  3: Emu_GetReg16 := C.Regs.BX;
+  4: Emu_GetReg16 := C.Regs.SP;
+  5: Emu_GetReg16 := C.Regs.BP;
+  6: Emu_GetReg16 := C.Regs.SI;
+  7: Emu_GetReg16 := C.Regs.DI;
+ End;
+End;
+
+Procedure Emu_SetReg16(Var C: TEmuCPU; Num: Byte; Value: Word);
+Begin
+ Case Num And 7 Of
+  0: C.Regs.AX := Value;
+  1: C.Regs.CX := Value;
+  2: C.Regs.DX := Value;
+  3: C.Regs.BX := Value;
+  4: C.Regs.SP := Value;
+  5: C.Regs.BP := Value;
+  6: C.Regs.SI := Value;
+  7: C.Regs.DI := Value;
+ End;
+End;
+
+{ --- Acces aux registres de segment par numero (0=ES,1=CS,2=SS,3=DS) --- }
+
+Function Emu_GetSReg(Var C: TEmuCPU; Num: Byte): Word;
+Begin
+ Case Num And 3 Of
+  0: Emu_GetSReg := C.Segs.ES;
+  1: Emu_GetSReg := C.Segs.CS;
+  2: Emu_GetSReg := C.Segs.SS;
+  3: Emu_GetSReg := C.Segs.DS;
+ End;
+End;
+
+Procedure Emu_SetSReg(Var C: TEmuCPU; Num: Byte; Value: Word);
+Begin
+ Case Num And 3 Of
+  0: C.Segs.ES := Value;
+  1: C.Segs.CS := Value;
+  2: C.Segs.SS := Value;
+  3: C.Segs.DS := Value;
+ End;
+End;
+
+{ Segment de donnees a utiliser pour les operations string (DS sauf override) }
+Function Emu_DataSeg(Var C: TEmuCPU): Word;
+Begin
+ If C.HasSegOvr Then Emu_DataSeg := C.SegOvr
+                Else Emu_DataSeg := C.Segs.DS;
+End;
+
+{ --- Decoder un octet ModR/M en operande
+       (cas mod=11 : registre, sinon : adresse memoire) --- }
+
+Procedure Emu_DecodeModRM(Var C: TEmuCPU; ModRM: Byte;
+ Var Op: TEmuOperand);
+Var
+ Mode, RM: Byte;
+ Disp: Word;
+ DefSeg: Word;
+Begin
+ Op.IsReg := False;
+ Op.RegNum := 0;
+ Op.Seg := C.Segs.DS;
+ Op.Ofs := 0;
+ Op.Len := 1;            { ModRM byte }
+ Mode := (ModRM Shr 6) And 3;
+ RM := ModRM And 7;
+ If Mode = 3 Then Begin
+  Op.IsReg := True;
+  Op.RegNum := RM;
+  Exit;
+ End;
+ { Adresse effective : segment par defaut DS, sauf si BP est utilise }
+ DefSeg := C.Segs.DS;
+ Case RM Of
+  0: Op.Ofs := Word(C.Regs.BX + C.Regs.SI);
+  1: Op.Ofs := Word(C.Regs.BX + C.Regs.DI);
+  2: Begin
+      Op.Ofs := Word(C.Regs.BP + C.Regs.SI);
+      DefSeg := C.Segs.SS;
+     End;
+  3: Begin
+      Op.Ofs := Word(C.Regs.BP + C.Regs.DI);
+      DefSeg := C.Segs.SS;
+     End;
+  4: Op.Ofs := C.Regs.SI;
+  5: Op.Ofs := C.Regs.DI;
+  6: Begin
+      If Mode = 0 Then Begin
+       { [disp16] }
+       Op.Ofs := Emu_FetchWord(C, 2);
+       Op.Len := 3;
+      End Else Begin
+       Op.Ofs := C.Regs.BP;
+       DefSeg := C.Segs.SS;
+      End;
+     End;
+  7: Op.Ofs := C.Regs.BX;
+ End;
+ { Ajouter le deplacement si mode <> 0, sauf rm=6 mode=0 deja traite }
+ Case Mode Of
+  1: Begin
+      { Disp8 signe }
+      Disp := Emu_FetchByte(C, 2);
+      If (Disp And $80) <> 0 Then
+       Disp := Disp Or $FF00;
+      Op.Ofs := Word(Op.Ofs + Disp);
+      Op.Len := 2;
+     End;
+  2: Begin
+      Disp := Emu_FetchWord(C, 2);
+      Op.Ofs := Word(Op.Ofs + Disp);
+      Op.Len := 3;
+     End;
+ End;
+ Op.Seg := DefSeg;
+ If C.HasSegOvr Then Op.Seg := C.SegOvr;
+End;
+
+{ --- Lire/ecrire un operande octet ou mot --- }
+
+Function Emu_GetOpByte(Var C: TEmuCPU; Var Op: TEmuOperand): Byte;
+Begin
+ If Op.IsReg Then
+  Emu_GetOpByte := Emu_GetReg8(C, Op.RegNum)
+ Else
+  Emu_GetOpByte := Emu_ReadByte(C, Op.Seg, Op.Ofs);
+End;
+
+Procedure Emu_PutOpByte(Var C: TEmuCPU; Var Op: TEmuOperand; V: Byte);
+Begin
+ If Op.IsReg Then
+  Emu_SetReg8(C, Op.RegNum, V)
+ Else
+  Emu_WriteByte(C, Op.Seg, Op.Ofs, V);
+End;
+
+Function Emu_GetOpWord(Var C: TEmuCPU; Var Op: TEmuOperand): Word;
+Begin
+ If Op.IsReg Then
+  Emu_GetOpWord := Emu_GetReg16(C, Op.RegNum)
+ Else
+  Emu_GetOpWord := Emu_ReadWord(C, Op.Seg, Op.Ofs);
+End;
+
+Procedure Emu_PutOpWord(Var C: TEmuCPU; Var Op: TEmuOperand; V: Word);
+Begin
+ If Op.IsReg Then
+  Emu_SetReg16(C, Op.RegNum, V)
+ Else
+  Emu_WriteWord(C, Op.Seg, Op.Ofs, V);
+End;
+
+{ --- ALU 8 bits : Op=0:ADD 1:OR 2:ADC 3:SBB 4:AND 5:SUB 6:XOR 7:CMP --- }
+
+Function Emu_AluByte(Var C: TEmuCPU; AluOp, A, B: Byte): Byte;
+Var
+ R: LongInt;
+ R8: Byte;
+ OldCF: Byte;
+Begin
+ OldCF := 0;
+ If EFG_CF In C.Flags.s Then OldCF := 1;
+ Case AluOp Of
+  0: Begin { ADD }
+      R := LongInt(A) + B;
+      R8 := Byte(R);
+      If (R And $100) <> 0 Then Include(C.Flags.s, EFG_CF)
+                            Else Exclude(C.Flags.s, EFG_CF);
+      If ((A Xor R8) And (B Xor R8) And $80) <> 0
+       Then Include(C.Flags.s, EFG_OF)
+       Else Exclude(C.Flags.s, EFG_OF);
+     End;
+  1: Begin { OR }
+      R8 := A Or B;
+      Exclude(C.Flags.s, EFG_CF);
+      Exclude(C.Flags.s, EFG_OF);
+     End;
+  2: Begin { ADC }
+      R := LongInt(A) + B + OldCF;
+      R8 := Byte(R);
+      If (R And $100) <> 0 Then Include(C.Flags.s, EFG_CF)
+                            Else Exclude(C.Flags.s, EFG_CF);
+      If ((A Xor R8) And (B Xor R8) And $80) <> 0
+       Then Include(C.Flags.s, EFG_OF)
+       Else Exclude(C.Flags.s, EFG_OF);
+     End;
+  3: Begin { SBB }
+      R := LongInt(A) - B - OldCF;
+      R8 := Byte(R);
+      If (R And $100) <> 0 Then Include(C.Flags.s, EFG_CF)
+                            Else Exclude(C.Flags.s, EFG_CF);
+      If ((A Xor B) And (A Xor R8) And $80) <> 0
+       Then Include(C.Flags.s, EFG_OF)
+       Else Exclude(C.Flags.s, EFG_OF);
+     End;
+  4: Begin { AND }
+      R8 := A And B;
+      Exclude(C.Flags.s, EFG_CF);
+      Exclude(C.Flags.s, EFG_OF);
+     End;
+  5, 7: Begin { SUB / CMP }
+      R := LongInt(A) - B;
+      R8 := Byte(R);
+      If (R And $100) <> 0 Then Include(C.Flags.s, EFG_CF)
+                            Else Exclude(C.Flags.s, EFG_CF);
+      If ((A Xor B) And (A Xor R8) And $80) <> 0
+       Then Include(C.Flags.s, EFG_OF)
+       Else Exclude(C.Flags.s, EFG_OF);
+     End;
+  6: Begin { XOR }
+      R8 := A Xor B;
+      Exclude(C.Flags.s, EFG_CF);
+      Exclude(C.Flags.s, EFG_OF);
+     End;
+  Else
+   R8 := 0;
+ End;
+ Emu_SetSFB(C, R8);
+ Emu_SetZFB(C, R8);
+ Emu_SetPF(C, R8);
+ Emu_AluByte := R8;
+End;
+
+{ --- ALU 16 bits --- }
+
+Function Emu_AluWord(Var C: TEmuCPU; AluOp: Byte; A, B: Word): Word;
+Var
+ R: LongInt;
+ R16: Word;
+ OldCF: Word;
+Begin
+ OldCF := 0;
+ If EFG_CF In C.Flags.s Then OldCF := 1;
+ Case AluOp Of
+  0: Begin { ADD }
+      R := LongInt(A) + B;
+      R16 := Word(R);
+      If (R And $10000) <> 0 Then Include(C.Flags.s, EFG_CF)
+                              Else Exclude(C.Flags.s, EFG_CF);
+      If ((A Xor R16) And (B Xor R16) And $8000) <> 0
+       Then Include(C.Flags.s, EFG_OF)
+       Else Exclude(C.Flags.s, EFG_OF);
+     End;
+  1: Begin
+      R16 := A Or B;
+      Exclude(C.Flags.s, EFG_CF);
+      Exclude(C.Flags.s, EFG_OF);
+     End;
+  2: Begin { ADC }
+      R := LongInt(A) + B + OldCF;
+      R16 := Word(R);
+      If (R And $10000) <> 0 Then Include(C.Flags.s, EFG_CF)
+                              Else Exclude(C.Flags.s, EFG_CF);
+      If ((A Xor R16) And (B Xor R16) And $8000) <> 0
+       Then Include(C.Flags.s, EFG_OF)
+       Else Exclude(C.Flags.s, EFG_OF);
+     End;
+  3: Begin { SBB }
+      R := LongInt(A) - B - OldCF;
+      R16 := Word(R);
+      If (R And $10000) <> 0 Then Include(C.Flags.s, EFG_CF)
+                              Else Exclude(C.Flags.s, EFG_CF);
+      If ((A Xor B) And (A Xor R16) And $8000) <> 0
+       Then Include(C.Flags.s, EFG_OF)
+       Else Exclude(C.Flags.s, EFG_OF);
+     End;
+  4: Begin
+      R16 := A And B;
+      Exclude(C.Flags.s, EFG_CF);
+      Exclude(C.Flags.s, EFG_OF);
+     End;
+  5, 7: Begin { SUB / CMP }
+      R := LongInt(A) - B;
+      R16 := Word(R);
+      If (R And $10000) <> 0 Then Include(C.Flags.s, EFG_CF)
+                              Else Exclude(C.Flags.s, EFG_CF);
+      If ((A Xor B) And (A Xor R16) And $8000) <> 0
+       Then Include(C.Flags.s, EFG_OF)
+       Else Exclude(C.Flags.s, EFG_OF);
+     End;
+  6: Begin
+      R16 := A Xor B;
+      Exclude(C.Flags.s, EFG_CF);
+      Exclude(C.Flags.s, EFG_OF);
+     End;
+  Else
+   R16 := 0;
+ End;
+ Emu_SetSFW(C, R16);
+ Emu_SetZFW(C, R16);
+ Emu_SetPF(C, Byte(R16));
+ Emu_AluWord := R16;
+End;
+
+{ --- Tester une condition de saut conditionnel (cc = bits 3..0 de OpCode) --- }
+
+Function Emu_TestCond(Var C: TEmuCPU; CC: Byte): Boolean;
+Var
+ Res: Boolean;
+Begin
+ Res := False;
+ Case CC And $E Of
+  $0: Res := EFG_OF In C.Flags.s;          { O   }
+  $2: Res := EFG_CF In C.Flags.s;          { B/C }
+  $4: Res := EFG_ZF In C.Flags.s;          { Z   }
+  $6: Res := (EFG_CF In C.Flags.s)
+          Or (EFG_ZF In C.Flags.s);        { BE  }
+  $8: Res := EFG_SF In C.Flags.s;          { S   }
+  $A: Res := EFG_PF In C.Flags.s;          { P   }
+  $C: Res := (EFG_SF In C.Flags.s)
+         <> (EFG_OF In C.Flags.s);         { L   }
+  $E: Res := ((EFG_SF In C.Flags.s)
+         <> (EFG_OF In C.Flags.s))
+          Or (EFG_ZF In C.Flags.s);        { LE  }
+ End;
+ If (CC And 1) <> 0 Then Res := Not Res;
+ Emu_TestCond := Res;
+End;
+
+{ --- INT 10h : services video (BIOS) --- }
+
+Procedure Emu_DoInt10(Var P: TEmulatorPanel);
+Var
+ I: Integer;
+Begin
+ Case P.CPU.Regs.AH Of
+  $00: { Mode video : on simule mode 3 (80x25 couleur) }
+   Begin
+    EmuVScr_Clear(P);
+   End;
+  $02: { Positionner curseur DH=row, DL=col }
+   EmuVScr_GotoXY(P, P.CPU.Regs.DL, P.CPU.Regs.DH);
+  $03: { Lire position curseur }
+   Begin
+    P.CPU.Regs.DL := P.CursorX;
+    P.CPU.Regs.DH := P.CursorY;
+    P.CPU.Regs.CX := $0607;     { taille du curseur }
+   End;
+  $06, $07: { Defilement fenetre - implementation simple }
+   Begin
+    For I := 0 To P.CPU.Regs.AL Do
+     EmuVScr_Scroll(P);
+    If P.CPU.Regs.AL = 0 Then
+     EmuVScr_Clear(P);
+   End;
+  $09, $0A: { Ecrire char + attribut a la position curseur, CX fois }
+   Begin
+    P.CurFg := P.CPU.Regs.BL And $F;
+    P.CurBg := (P.CPU.Regs.BL Shr 4) And $7;
+    For I := 1 To P.CPU.Regs.CX Do
+     EmuVScr_PutChar(P, Chr(P.CPU.Regs.AL));
+   End;
+  $0E: { TTY write char (color en BL) }
+   Begin
+    P.CurFg := P.CPU.Regs.BL And $F;
+    EmuVScr_PutChar(P, Chr(P.CPU.Regs.AL));
+   End;
+  $0F: { Lire mode video courant }
+   Begin
+    P.CPU.Regs.AL := 3;        { mode 3 = texte 80x25 16 couleurs }
+    P.CPU.Regs.AH := 80;       { nb colonnes }
+    P.CPU.Regs.BH := 0;        { page courante }
+   End;
+ End;
+End;
+
+{ --- INT 16h : services clavier (BIOS) --- }
+
+Procedure Emu_DoInt16(Var P: TEmulatorPanel);
+Var
+ K: Byte;
+Begin
+ Case P.CPU.Regs.AH Of
+  $00, $10: { Lire une touche (bloquant) }
+   Begin
+    If EmuVScr_HasKey(P) Then Begin
+     K := EmuVScr_PopKey(P);
+     P.CPU.Regs.AL := K;
+     P.CPU.Regs.AH := K;        { scancode = ASCII en simplification }
+    End Else Begin
+     { Aucune touche : on rend la main pour eviter le gel.
+       Le code retentera la lecture au prochain pas. }
+     P.CPU.Regs.AL := 0;
+     P.CPU.Regs.AH := 0;
+    End;
+   End;
+  $01, $11: { Tester sans bloquer : ZF = pas de touche }
+   Begin
+    If EmuVScr_HasKey(P) Then Begin
+     K := P.KeyBuf[P.KeyTail];
+     P.CPU.Regs.AL := K;
+     P.CPU.Regs.AH := K;
+     Exclude(P.CPU.Flags.s, EFG_ZF);
+    End Else
+     Include(P.CPU.Flags.s, EFG_ZF);
+   End;
+  $02: { Etat des touches modificateurs : on retourne 0 }
+   P.CPU.Regs.AL := 0;
+ End;
+End;
+
 { --- Executer une interruption DOS (INT 21h) --- }
 
 Procedure Emu_DoInt21(Var P: TEmulatorPanel);
@@ -22488,10 +22913,13 @@ End;
 Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte);
 Begin
  Case Num Of
+  $10: Emu_DoInt10(P);
+  $16: Emu_DoInt16(P);
   $20: P.CPU.Fault := sfEndProgram;
   $21: Emu_DoInt21(P);
   Else
-   P.CPU.Fault := sfInvalidIntr;
+   { Interruptions vectorees ignorees ici (pas d ISR) }
+   ;
  End;
 End;
 
@@ -22499,12 +22927,103 @@ End;
 
 Procedure Emu_StepOne(Var P: TEmulatorPanel);
 Var
- OpCode: Byte;
+ OpCode, ModRM, AluOp: Byte;
  Imm8: Byte;
  Imm16: Word;
+ Op: TEmuOperand;
+ V8, R8, S8: Byte;
+ V16, R16, S16: Word;
+ Disp8: ShortInt;
+ Disp16: Integer;
+ NewIP, NewCS: Word;
+ SubOp: Byte;
+ RepPrefix: Byte;
+ Cnt: Word;
+ Inc16: Integer;
+ ResetSegOvr: Boolean;
 Begin
  If P.CPU.Fault <> sfNone Then Exit;
- OpCode := Emu_FetchByte(P.CPU, 0);
+ RepPrefix := 0;
+ ResetSegOvr := False;
+ { Boucle pour absorber prefixes de segment et REP/REPNE en serie }
+ Repeat
+  OpCode := Emu_FetchByte(P.CPU, 0);
+  Case OpCode Of
+   $26: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.ES;
+              ResetSegOvr := True; Inc(P.CPU.IP); End;
+   $2E: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.CS;
+              ResetSegOvr := True; Inc(P.CPU.IP); End;
+   $36: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.SS;
+              ResetSegOvr := True; Inc(P.CPU.IP); End;
+   $3E: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.DS;
+              ResetSegOvr := True; Inc(P.CPU.IP); End;
+   $F2: Begin RepPrefix := $F2; Inc(P.CPU.IP); End;
+   $F3: Begin RepPrefix := $F3; Inc(P.CPU.IP); End;
+   Else
+    Break;
+  End;
+ Until False;
+ { ALU r/m,r ; r,r/m ; AL/AX,imm : opcodes 00..3D par groupes de 8.
+   Dans chaque groupe de 8 (0x00..0x07, 0x08..0x0F, ...), seuls les
+   indices 0..5 sont des operations ALU ; les indices 6 et 7 sont
+   reserves aux instructions de segment (PUSH/POP ES/CS/SS/DS) ou
+   aux prefixes de segment et ajustements decimaux. }
+ If (OpCode <= $3D) And ((OpCode And 6) <> 6) Then Begin
+  AluOp := (OpCode Shr 3) And 7;
+  Case OpCode And 7 Of
+   0: Begin { ALU rm8, r8 }
+       ModRM := Emu_FetchByte(P.CPU, 1);
+       Emu_DecodeModRM(P.CPU, ModRM, Op);
+       V8 := Emu_GetOpByte(P.CPU, Op);
+       S8 := Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7);
+       R8 := Emu_AluByte(P.CPU, AluOp, V8, S8);
+       If AluOp <> 7 Then Emu_PutOpByte(P.CPU, Op, R8);
+       Inc(P.CPU.IP, 1 + Op.Len);
+      End;
+   1: Begin { ALU rm16, r16 }
+       ModRM := Emu_FetchByte(P.CPU, 1);
+       Emu_DecodeModRM(P.CPU, ModRM, Op);
+       V16 := Emu_GetOpWord(P.CPU, Op);
+       S16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
+       R16 := Emu_AluWord(P.CPU, AluOp, V16, S16);
+       If AluOp <> 7 Then Emu_PutOpWord(P.CPU, Op, R16);
+       Inc(P.CPU.IP, 1 + Op.Len);
+      End;
+   2: Begin { ALU r8, rm8 }
+       ModRM := Emu_FetchByte(P.CPU, 1);
+       Emu_DecodeModRM(P.CPU, ModRM, Op);
+       S8 := Emu_GetOpByte(P.CPU, Op);
+       V8 := Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7);
+       R8 := Emu_AluByte(P.CPU, AluOp, V8, S8);
+       If AluOp <> 7 Then
+        Emu_SetReg8(P.CPU, (ModRM Shr 3) And 7, R8);
+       Inc(P.CPU.IP, 1 + Op.Len);
+      End;
+   3: Begin { ALU r16, rm16 }
+       ModRM := Emu_FetchByte(P.CPU, 1);
+       Emu_DecodeModRM(P.CPU, ModRM, Op);
+       S16 := Emu_GetOpWord(P.CPU, Op);
+       V16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
+       R16 := Emu_AluWord(P.CPU, AluOp, V16, S16);
+       If AluOp <> 7 Then
+        Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, R16);
+       Inc(P.CPU.IP, 1 + Op.Len);
+      End;
+   4: Begin { ALU AL, imm8 }
+       Imm8 := Emu_FetchByte(P.CPU, 1);
+       R8 := Emu_AluByte(P.CPU, AluOp, P.CPU.Regs.AL, Imm8);
+       If AluOp <> 7 Then P.CPU.Regs.AL := R8;
+       Inc(P.CPU.IP, 2);
+      End;
+   5: Begin { ALU AX, imm16 }
+       Imm16 := Emu_FetchWord(P.CPU, 1);
+       R16 := Emu_AluWord(P.CPU, AluOp, P.CPU.Regs.AX, Imm16);
+       If AluOp <> 7 Then P.CPU.Regs.AX := R16;
+       Inc(P.CPU.IP, 3);
+      End;
+  End;
+  Exit;
+ End;
  Case OpCode Of
   $90: { NOP }
    Inc(P.CPU.IP);
@@ -22519,11 +23038,25 @@ Begin
     Inc(P.CPU.IP, 2);
     Emu_DoInt(P, Imm8);
    End;
-  $C3, $CB: { RET near / RET far }
+  $C3: { RET near }
+   P.CPU.IP := Emu_PopWord(P.CPU);
+  $CB: { RET far }
    Begin
     P.CPU.IP := Emu_PopWord(P.CPU);
-    If OpCode = $CB Then
-     P.CPU.Segs.CS := Emu_PopWord(P.CPU);
+    P.CPU.Segs.CS := Emu_PopWord(P.CPU);
+   End;
+  $C2: { RET near + pop imm16 }
+   Begin
+    Imm16 := Emu_FetchWord(P.CPU, 1);
+    P.CPU.IP := Emu_PopWord(P.CPU);
+    P.CPU.Regs.SP := P.CPU.Regs.SP + Imm16;
+   End;
+  $CA: { RET far + pop imm16 }
+   Begin
+    Imm16 := Emu_FetchWord(P.CPU, 1);
+    P.CPU.IP := Emu_PopWord(P.CPU);
+    P.CPU.Segs.CS := Emu_PopWord(P.CPU);
+    P.CPU.Regs.SP := P.CPU.Regs.SP + Imm16;
    End;
   $B0..$B7: { MOV r8,imm8 }
    Begin
@@ -22534,31 +23067,744 @@ Begin
   $B8..$BF: { MOV r16,imm16 }
    Begin
     Imm16 := Emu_FetchWord(P.CPU, 1);
-    Case OpCode And 7 Of
-     0: P.CPU.Regs.AX := Imm16;
-     1: P.CPU.Regs.CX := Imm16;
-     2: P.CPU.Regs.DX := Imm16;
-     3: P.CPU.Regs.BX := Imm16;
-     4: P.CPU.Regs.SP := Imm16;
-     5: P.CPU.Regs.BP := Imm16;
-     6: P.CPU.Regs.SI := Imm16;
-     7: P.CPU.Regs.DI := Imm16;
-    End;
+    Emu_SetReg16(P.CPU, OpCode And 7, Imm16);
     Inc(P.CPU.IP, 3);
    End;
+  $50..$57: { PUSH r16 }
+   Begin
+    Emu_PushWord(P.CPU, Emu_GetReg16(P.CPU, OpCode And 7));
+    Inc(P.CPU.IP);
+   End;
+  $58..$5F: { POP r16 }
+   Begin
+    Emu_SetReg16(P.CPU, OpCode And 7, Emu_PopWord(P.CPU));
+    Inc(P.CPU.IP);
+   End;
+  $06: { PUSH ES }
+   Begin Emu_PushWord(P.CPU, P.CPU.Segs.ES); Inc(P.CPU.IP); End;
+  $07: { POP  ES }
+   Begin P.CPU.Segs.ES := Emu_PopWord(P.CPU); Inc(P.CPU.IP); End;
+  $0E: { PUSH CS }
+   Begin Emu_PushWord(P.CPU, P.CPU.Segs.CS); Inc(P.CPU.IP); End;
+  $16: { PUSH SS }
+   Begin Emu_PushWord(P.CPU, P.CPU.Segs.SS); Inc(P.CPU.IP); End;
+  $17: { POP  SS }
+   Begin P.CPU.Segs.SS := Emu_PopWord(P.CPU); Inc(P.CPU.IP); End;
+  $1E: { PUSH DS }
+   Begin Emu_PushWord(P.CPU, P.CPU.Segs.DS); Inc(P.CPU.IP); End;
+  $1F: { POP  DS }
+   Begin P.CPU.Segs.DS := Emu_PopWord(P.CPU); Inc(P.CPU.IP); End;
+  $9C: { PUSHF }
+   Begin Emu_PushWord(P.CPU, P.CPU.Flags.Base); Inc(P.CPU.IP); End;
+  $9D: { POPF }
+   Begin P.CPU.Flags.Base := Emu_PopWord(P.CPU); Inc(P.CPU.IP); End;
+  $40..$47: { INC r16 }
+   Begin
+    SubOp := OpCode And 7;
+    V16 := Emu_GetReg16(P.CPU, SubOp);
+    R16 := Emu_AluWord(P.CPU, 0, V16, 1);
+    Emu_SetReg16(P.CPU, SubOp, R16);
+    Inc(P.CPU.IP);
+   End;
+  $48..$4F: { DEC r16 }
+   Begin
+    SubOp := OpCode And 7;
+    V16 := Emu_GetReg16(P.CPU, SubOp);
+    R16 := Emu_AluWord(P.CPU, 5, V16, 1);
+    Emu_SetReg16(P.CPU, SubOp, R16);
+    Inc(P.CPU.IP);
+   End;
+  $70..$7F: { Jcc rel8 }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    Disp8 := ShortInt(Imm8);
+    Inc(P.CPU.IP, 2);
+    If Emu_TestCond(P.CPU, OpCode And $F) Then
+     P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+   End;
+  $E8: { CALL near rel16 }
+   Begin
+    Imm16 := Emu_FetchWord(P.CPU, 1);
+    Disp16 := SmallInt(Imm16);
+    Inc(P.CPU.IP, 3);
+    Emu_PushWord(P.CPU, P.CPU.IP);
+    P.CPU.IP := Word(Integer(P.CPU.IP) + Disp16);
+   End;
+  $E9: { JMP near rel16 }
+   Begin
+    Imm16 := Emu_FetchWord(P.CPU, 1);
+    Disp16 := SmallInt(Imm16);
+    Inc(P.CPU.IP, 3);
+    P.CPU.IP := Word(Integer(P.CPU.IP) + Disp16);
+   End;
+  $EB: { JMP short rel8 }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    Disp8 := ShortInt(Imm8);
+    Inc(P.CPU.IP, 2);
+    P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+   End;
+  $EA: { JMP far ptr16:16 }
+   Begin
+    NewIP := Emu_FetchWord(P.CPU, 1);
+    NewCS := Emu_FetchWord(P.CPU, 3);
+    P.CPU.IP := NewIP;
+    P.CPU.Segs.CS := NewCS;
+   End;
+  $9A: { CALL far ptr16:16 }
+   Begin
+    NewIP := Emu_FetchWord(P.CPU, 1);
+    NewCS := Emu_FetchWord(P.CPU, 3);
+    Inc(P.CPU.IP, 5);
+    Emu_PushWord(P.CPU, P.CPU.Segs.CS);
+    Emu_PushWord(P.CPU, P.CPU.IP);
+    P.CPU.IP := NewIP;
+    P.CPU.Segs.CS := NewCS;
+   End;
+  $E2: { LOOP rel8 }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    Disp8 := ShortInt(Imm8);
+    Inc(P.CPU.IP, 2);
+    P.CPU.Regs.CX := P.CPU.Regs.CX - 1;
+    If P.CPU.Regs.CX <> 0 Then
+     P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+   End;
+  $E1: { LOOPE rel8 }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    Disp8 := ShortInt(Imm8);
+    Inc(P.CPU.IP, 2);
+    P.CPU.Regs.CX := P.CPU.Regs.CX - 1;
+    If (P.CPU.Regs.CX <> 0) And (EFG_ZF In P.CPU.Flags.s) Then
+     P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+   End;
+  $E0: { LOOPNE rel8 }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    Disp8 := ShortInt(Imm8);
+    Inc(P.CPU.IP, 2);
+    P.CPU.Regs.CX := P.CPU.Regs.CX - 1;
+    If (P.CPU.Regs.CX <> 0) And Not (EFG_ZF In P.CPU.Flags.s) Then
+     P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+   End;
+  $E3: { JCXZ rel8 }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    Disp8 := ShortInt(Imm8);
+    Inc(P.CPU.IP, 2);
+    If P.CPU.Regs.CX = 0 Then
+     P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+   End;
+  $F8: { CLC } Begin Exclude(P.CPU.Flags.s, EFG_CF); Inc(P.CPU.IP); End;
+  $F9: { STC } Begin Include(P.CPU.Flags.s, EFG_CF); Inc(P.CPU.IP); End;
+  $FA: { CLI } Begin Exclude(P.CPU.Flags.s, EFG_IF); Inc(P.CPU.IP); End;
+  $FB: { STI } Begin Include(P.CPU.Flags.s, EFG_IF); Inc(P.CPU.IP); End;
+  $FC: { CLD } Begin Exclude(P.CPU.Flags.s, EFG_DF); Inc(P.CPU.IP); End;
+  $FD: { STD } Begin Include(P.CPU.Flags.s, EFG_DF); Inc(P.CPU.IP); End;
+  $F5: { CMC }
+   Begin
+    If EFG_CF In P.CPU.Flags.s Then Exclude(P.CPU.Flags.s, EFG_CF)
+                               Else Include(P.CPU.Flags.s, EFG_CF);
+    Inc(P.CPU.IP);
+   End;
+  $88: { MOV rm8, r8 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Emu_PutOpByte(P.CPU, Op,
+     Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7));
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $89: { MOV rm16, r16 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Emu_PutOpWord(P.CPU, Op,
+     Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7));
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $8A: { MOV r8, rm8 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Emu_SetReg8(P.CPU, (ModRM Shr 3) And 7,
+     Emu_GetOpByte(P.CPU, Op));
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $8B: { MOV r16, rm16 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7,
+     Emu_GetOpWord(P.CPU, Op));
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $8C: { MOV rm16, Sreg }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Emu_PutOpWord(P.CPU, Op,
+     Emu_GetSReg(P.CPU, (ModRM Shr 3) And 3));
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $8E: { MOV Sreg, rm16 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Emu_SetSReg(P.CPU, (ModRM Shr 3) And 3,
+     Emu_GetOpWord(P.CPU, Op));
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $8D: { LEA r16, m }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, Op.Ofs);
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $C5: { LDS r16, m32 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7,
+     Emu_ReadWord(P.CPU, Op.Seg, Op.Ofs));
+    P.CPU.Segs.DS :=
+     Emu_ReadWord(P.CPU, Op.Seg, Op.Ofs + 2);
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $C4: { LES r16, m32 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7,
+     Emu_ReadWord(P.CPU, Op.Seg, Op.Ofs));
+    P.CPU.Segs.ES :=
+     Emu_ReadWord(P.CPU, Op.Seg, Op.Ofs + 2);
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $86: { XCHG rm8, r8 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    V8 := Emu_GetOpByte(P.CPU, Op);
+    R8 := Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7);
+    Emu_PutOpByte(P.CPU, Op, R8);
+    Emu_SetReg8(P.CPU, (ModRM Shr 3) And 7, V8);
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $87: { XCHG rm16, r16 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    V16 := Emu_GetOpWord(P.CPU, Op);
+    R16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
+    Emu_PutOpWord(P.CPU, Op, R16);
+    Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, V16);
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $91..$97: { XCHG AX, r16 }
+   Begin
+    V16 := P.CPU.Regs.AX;
+    P.CPU.Regs.AX := Emu_GetReg16(P.CPU, OpCode And 7);
+    Emu_SetReg16(P.CPU, OpCode And 7, V16);
+    Inc(P.CPU.IP);
+   End;
+  $84: { TEST rm8, r8 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    V8 := Emu_GetOpByte(P.CPU, Op);
+    S8 := Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7);
+    R8 := Emu_AluByte(P.CPU, 4, V8, S8);  { AND, drapeaux seuls }
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $85: { TEST rm16, r16 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    V16 := Emu_GetOpWord(P.CPU, Op);
+    S16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
+    R16 := Emu_AluWord(P.CPU, 4, V16, S16);
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $A8: { TEST AL, imm8 }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    R8 := Emu_AluByte(P.CPU, 4, P.CPU.Regs.AL, Imm8);
+    Inc(P.CPU.IP, 2);
+   End;
+  $A9: { TEST AX, imm16 }
+   Begin
+    Imm16 := Emu_FetchWord(P.CPU, 1);
+    R16 := Emu_AluWord(P.CPU, 4, P.CPU.Regs.AX, Imm16);
+    Inc(P.CPU.IP, 3);
+   End;
+  $98: { CBW : AL -> AX (extension de signe) }
+   Begin
+    If (P.CPU.Regs.AL And $80) <> 0 Then
+     P.CPU.Regs.AH := $FF
+    Else
+     P.CPU.Regs.AH := 0;
+    Inc(P.CPU.IP);
+   End;
+  $99: { CWD : AX -> DX:AX }
+   Begin
+    If (P.CPU.Regs.AX And $8000) <> 0 Then
+     P.CPU.Regs.DX := $FFFF
+    Else
+     P.CPU.Regs.DX := 0;
+    Inc(P.CPU.IP);
+   End;
+  $A4, $A5, $AA, $AB, $AC, $AD, $AE, $AF, $A6, $A7:
+   { Operations sur chaines : MOVSB/W, STOSB/W, LODSB/W, SCASB/W, CMPSB/W }
+   Begin
+    If EFG_DF In P.CPU.Flags.s Then Inc16 := -1 Else Inc16 := 1;
+    If RepPrefix <> 0 Then Cnt := P.CPU.Regs.CX Else Cnt := 1;
+    While Cnt > 0 Do Begin
+     Case OpCode Of
+      $A4: Begin { MOVSB }
+            Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI,
+             Emu_ReadByte(P.CPU, Emu_DataSeg(P.CPU), P.CPU.Regs.SI));
+            P.CPU.Regs.SI := Word(P.CPU.Regs.SI + Inc16);
+            P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16);
+           End;
+      $A5: Begin { MOVSW }
+            Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI,
+             Emu_ReadWord(P.CPU, Emu_DataSeg(P.CPU), P.CPU.Regs.SI));
+            P.CPU.Regs.SI := Word(P.CPU.Regs.SI + Inc16 * 2);
+            P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16 * 2);
+           End;
+      $AA: Begin { STOSB }
+            Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI,
+             P.CPU.Regs.AL);
+            P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16);
+           End;
+      $AB: Begin { STOSW }
+            Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI,
+             P.CPU.Regs.AX);
+            P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16 * 2);
+           End;
+      $AC: Begin { LODSB }
+            P.CPU.Regs.AL := Emu_ReadByte(P.CPU,
+             Emu_DataSeg(P.CPU), P.CPU.Regs.SI);
+            P.CPU.Regs.SI := Word(P.CPU.Regs.SI + Inc16);
+           End;
+      $AD: Begin { LODSW }
+            P.CPU.Regs.AX := Emu_ReadWord(P.CPU,
+             Emu_DataSeg(P.CPU), P.CPU.Regs.SI);
+            P.CPU.Regs.SI := Word(P.CPU.Regs.SI + Inc16 * 2);
+           End;
+      $AE: Begin { SCASB }
+            V8 := Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI);
+            R8 := Emu_AluByte(P.CPU, 7, P.CPU.Regs.AL, V8);
+            P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16);
+           End;
+      $AF: Begin { SCASW }
+            V16 := Emu_ReadWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI);
+            R16 := Emu_AluWord(P.CPU, 7, P.CPU.Regs.AX, V16);
+            P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16 * 2);
+           End;
+      $A6: Begin { CMPSB }
+            V8 := Emu_ReadByte(P.CPU,
+             Emu_DataSeg(P.CPU), P.CPU.Regs.SI);
+            S8 := Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI);
+            R8 := Emu_AluByte(P.CPU, 7, V8, S8);
+            P.CPU.Regs.SI := Word(P.CPU.Regs.SI + Inc16);
+            P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16);
+           End;
+      $A7: Begin { CMPSW }
+            V16 := Emu_ReadWord(P.CPU,
+             Emu_DataSeg(P.CPU), P.CPU.Regs.SI);
+            S16 := Emu_ReadWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI);
+            R16 := Emu_AluWord(P.CPU, 7, V16, S16);
+            P.CPU.Regs.SI := Word(P.CPU.Regs.SI + Inc16 * 2);
+            P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16 * 2);
+           End;
+     End;
+     Dec(Cnt);
+     If RepPrefix <> 0 Then Begin
+      P.CPU.Regs.CX := P.CPU.Regs.CX - 1;
+      { REPE/REPNE pour SCAS et CMPS verifient ZF }
+      If OpCode In [$A6, $A7, $AE, $AF] Then Begin
+       If (RepPrefix = $F3) And Not (EFG_ZF In P.CPU.Flags.s) Then
+        Cnt := 0;
+       If (RepPrefix = $F2) And (EFG_ZF In P.CPU.Flags.s) Then
+        Cnt := 0;
+      End;
+     End;
+    End;
+    Inc(P.CPU.IP);
+   End;
+  $80, $82: { ALU rm8, imm8 (op dans bits 5..3 du ModRM) }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Imm8 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
+     P.CPU.IP + 1 + Op.Len);
+    AluOp := (ModRM Shr 3) And 7;
+    V8 := Emu_GetOpByte(P.CPU, Op);
+    R8 := Emu_AluByte(P.CPU, AluOp, V8, Imm8);
+    If AluOp <> 7 Then Emu_PutOpByte(P.CPU, Op, R8);
+    Inc(P.CPU.IP, 2 + Op.Len);
+   End;
+  $81: { ALU rm16, imm16 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Imm16 := Emu_ReadWord(P.CPU, P.CPU.Segs.CS,
+     P.CPU.IP + 1 + Op.Len);
+    AluOp := (ModRM Shr 3) And 7;
+    V16 := Emu_GetOpWord(P.CPU, Op);
+    R16 := Emu_AluWord(P.CPU, AluOp, V16, Imm16);
+    If AluOp <> 7 Then Emu_PutOpWord(P.CPU, Op, R16);
+    Inc(P.CPU.IP, 3 + Op.Len);
+   End;
+  $83: { ALU rm16, imm8 (signe etendu) }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Imm8 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
+     P.CPU.IP + 1 + Op.Len);
+    Imm16 := Imm8;
+    If (Imm8 And $80) <> 0 Then Imm16 := Imm16 Or $FF00;
+    AluOp := (ModRM Shr 3) And 7;
+    V16 := Emu_GetOpWord(P.CPU, Op);
+    R16 := Emu_AluWord(P.CPU, AluOp, V16, Imm16);
+    If AluOp <> 7 Then Emu_PutOpWord(P.CPU, Op, R16);
+    Inc(P.CPU.IP, 2 + Op.Len);
+   End;
+  $A0: { MOV AL, [disp16] }
+   Begin
+    Imm16 := Emu_FetchWord(P.CPU, 1);
+    P.CPU.Regs.AL := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Imm16);
+    Inc(P.CPU.IP, 3);
+   End;
+  $A1: { MOV AX, [disp16] }
+   Begin
+    Imm16 := Emu_FetchWord(P.CPU, 1);
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.DS, Imm16);
+    Inc(P.CPU.IP, 3);
+   End;
+  $A2: { MOV [disp16], AL }
+   Begin
+    Imm16 := Emu_FetchWord(P.CPU, 1);
+    Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Imm16, P.CPU.Regs.AL);
+    Inc(P.CPU.IP, 3);
+   End;
+  $A3: { MOV [disp16], AX }
+   Begin
+    Imm16 := Emu_FetchWord(P.CPU, 1);
+    Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Imm16, P.CPU.Regs.AX);
+    Inc(P.CPU.IP, 3);
+   End;
+  $C6: { MOV rm8, imm8 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Imm8 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
+     P.CPU.IP + 1 + Op.Len);
+    Emu_PutOpByte(P.CPU, Op, Imm8);
+    Inc(P.CPU.IP, 2 + Op.Len);
+   End;
+  $C7: { MOV rm16, imm16 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Imm16 := Emu_ReadWord(P.CPU, P.CPU.Segs.CS,
+     P.CPU.IP + 1 + Op.Len);
+    Emu_PutOpWord(P.CPU, Op, Imm16);
+    Inc(P.CPU.IP, 3 + Op.Len);
+   End;
+  $FE: { INC/DEC rm8 (group 4) }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    SubOp := (ModRM Shr 3) And 7;
+    V8 := Emu_GetOpByte(P.CPU, Op);
+    Case SubOp Of
+     0: R8 := Emu_AluByte(P.CPU, 0, V8, 1);   { INC }
+     1: R8 := Emu_AluByte(P.CPU, 5, V8, 1);   { DEC }
+     Else R8 := V8;
+    End;
+    Emu_PutOpByte(P.CPU, Op, R8);
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $FF: { Group 5 : INC/DEC/CALL/JMP/PUSH rm16 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    SubOp := (ModRM Shr 3) And 7;
+    V16 := Emu_GetOpWord(P.CPU, Op);
+    Case SubOp Of
+     0: Emu_PutOpWord(P.CPU, Op,
+         Emu_AluWord(P.CPU, 0, V16, 1));        { INC rm16 }
+     1: Emu_PutOpWord(P.CPU, Op,
+         Emu_AluWord(P.CPU, 5, V16, 1));        { DEC rm16 }
+     2: Begin                                   { CALL near rm16 }
+         Inc(P.CPU.IP, 1 + Op.Len);
+         Emu_PushWord(P.CPU, P.CPU.IP);
+         P.CPU.IP := V16;
+         Exit;
+        End;
+     4: Begin                                   { JMP near rm16 }
+         P.CPU.IP := V16;
+         Exit;
+        End;
+     6: Emu_PushWord(P.CPU, V16);              { PUSH rm16 }
+     Else
+      ;
+    End;
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $D0, $D1, $D2, $D3:
+   { Group 2 : ROL/ROR/RCL/RCR/SHL/SHR/SAL/SAR }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    SubOp := (ModRM Shr 3) And 7;
+    If (OpCode And 2) <> 0 Then Cnt := P.CPU.Regs.CL Else Cnt := 1;
+    Cnt := Cnt And $1F;
+    If (OpCode And 1) = 0 Then Begin
+     V8 := Emu_GetOpByte(P.CPU, Op);
+     R8 := V8;
+     While Cnt > 0 Do Begin
+      Case SubOp Of
+       0: Begin { ROL }
+           If (R8 And $80) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                 Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R8 := (R8 Shl 1) Or (R8 Shr 7);
+          End;
+       1: Begin { ROR }
+           If (R8 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                               Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R8 := (R8 Shr 1) Or ((R8 And 1) Shl 7);
+          End;
+       4, 6: Begin { SHL/SAL }
+              If (R8 And $80) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                    Else Exclude(P.CPU.Flags.s, EFG_CF);
+              R8 := Byte(R8 Shl 1);
+             End;
+       5: Begin { SHR }
+           If (R8 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                               Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R8 := R8 Shr 1;
+          End;
+       7: Begin { SAR }
+           If (R8 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                               Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R8 := Byte((ShortInt(R8)) Div 2);
+          End;
+      End;
+      Dec(Cnt);
+     End;
+     Emu_SetSFB(P.CPU, R8); Emu_SetZFB(P.CPU, R8); Emu_SetPF(P.CPU, R8);
+     Emu_PutOpByte(P.CPU, Op, R8);
+    End Else Begin
+     V16 := Emu_GetOpWord(P.CPU, Op);
+     R16 := V16;
+     While Cnt > 0 Do Begin
+      Case SubOp Of
+       0: Begin
+           If (R16 And $8000) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                    Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R16 := (R16 Shl 1) Or (R16 Shr 15);
+          End;
+       1: Begin
+           If (R16 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R16 := (R16 Shr 1) Or ((R16 And 1) Shl 15);
+          End;
+       4, 6: Begin
+              If (R16 And $8000) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                       Else Exclude(P.CPU.Flags.s, EFG_CF);
+              R16 := Word(R16 Shl 1);
+             End;
+       5: Begin
+           If (R16 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R16 := R16 Shr 1;
+          End;
+       7: Begin
+           If (R16 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R16 := Word(SmallInt(R16) Div 2);
+          End;
+      End;
+      Dec(Cnt);
+     End;
+     Emu_SetSFW(P.CPU, R16); Emu_SetZFW(P.CPU, R16); Emu_SetPF(P.CPU, Byte(R16));
+     Emu_PutOpWord(P.CPU, Op, R16);
+    End;
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $F6: { Group 3 byte : TEST/NOT/NEG/MUL/IMUL/DIV/IDIV rm8 }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    SubOp := (ModRM Shr 3) And 7;
+    V8 := Emu_GetOpByte(P.CPU, Op);
+    Case SubOp Of
+     0, 1: Begin { TEST rm8, imm8 }
+            Imm8 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
+             P.CPU.IP + 1 + Op.Len);
+            R8 := Emu_AluByte(P.CPU, 4, V8, Imm8);
+            Inc(P.CPU.IP, 2 + Op.Len);
+            Exit;
+           End;
+     2: Begin { NOT }
+         Emu_PutOpByte(P.CPU, Op, Not V8);
+        End;
+     3: Begin { NEG }
+         R8 := Emu_AluByte(P.CPU, 5, 0, V8);
+         Emu_PutOpByte(P.CPU, Op, R8);
+        End;
+     4: Begin { MUL : AX = AL * rm8 }
+         P.CPU.Regs.AX := P.CPU.Regs.AL * V8;
+         If P.CPU.Regs.AH <> 0 Then Begin
+          Include(P.CPU.Flags.s, EFG_CF);
+          Include(P.CPU.Flags.s, EFG_OF);
+         End Else Begin
+          Exclude(P.CPU.Flags.s, EFG_CF);
+          Exclude(P.CPU.Flags.s, EFG_OF);
+         End;
+        End;
+     5: Begin { IMUL }
+         P.CPU.Regs.AX :=
+          Word(SmallInt(ShortInt(P.CPU.Regs.AL)) * SmallInt(ShortInt(V8)));
+         If (P.CPU.Regs.AH = 0) Or (P.CPU.Regs.AH = $FF) Then Begin
+          Exclude(P.CPU.Flags.s, EFG_CF);
+          Exclude(P.CPU.Flags.s, EFG_OF);
+         End Else Begin
+          Include(P.CPU.Flags.s, EFG_CF);
+          Include(P.CPU.Flags.s, EFG_OF);
+         End;
+        End;
+     6: Begin { DIV }
+         If V8 = 0 Then P.CPU.Fault := sfDivision0
+         Else Begin
+          Cnt := P.CPU.Regs.AX Div V8;
+          If Cnt > $FF Then P.CPU.Fault := sfDivision0
+          Else Begin
+           P.CPU.Regs.AH := P.CPU.Regs.AX Mod V8;
+           P.CPU.Regs.AL := Byte(Cnt);
+          End;
+         End;
+        End;
+     7: Begin { IDIV }
+         If V8 = 0 Then P.CPU.Fault := sfDivision0
+         Else Begin
+          Disp16 := SmallInt(P.CPU.Regs.AX) Div ShortInt(V8);
+          If (Disp16 > 127) Or (Disp16 < -128)
+           Then P.CPU.Fault := sfDivision0
+          Else Begin
+           P.CPU.Regs.AH := Byte(SmallInt(P.CPU.Regs.AX) Mod ShortInt(V8));
+           P.CPU.Regs.AL := Byte(Disp16);
+          End;
+         End;
+        End;
+    End;
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $F7: { Group 3 word }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    SubOp := (ModRM Shr 3) And 7;
+    V16 := Emu_GetOpWord(P.CPU, Op);
+    Case SubOp Of
+     0, 1: Begin { TEST rm16, imm16 }
+            Imm16 := Emu_ReadWord(P.CPU, P.CPU.Segs.CS,
+             P.CPU.IP + 1 + Op.Len);
+            R16 := Emu_AluWord(P.CPU, 4, V16, Imm16);
+            Inc(P.CPU.IP, 3 + Op.Len);
+            Exit;
+           End;
+     2: Emu_PutOpWord(P.CPU, Op, Not V16);
+     3: Begin
+         R16 := Emu_AluWord(P.CPU, 5, 0, V16);
+         Emu_PutOpWord(P.CPU, Op, R16);
+        End;
+     4: Begin { MUL : DX:AX = AX * rm16 }
+         Disp16 := LongInt(P.CPU.Regs.AX) * V16;
+         P.CPU.Regs.AX := Word(Disp16);
+         P.CPU.Regs.DX := Word(LongInt(Disp16) Shr 16);
+         If P.CPU.Regs.DX <> 0 Then Begin
+          Include(P.CPU.Flags.s, EFG_CF);
+          Include(P.CPU.Flags.s, EFG_OF);
+         End Else Begin
+          Exclude(P.CPU.Flags.s, EFG_CF);
+          Exclude(P.CPU.Flags.s, EFG_OF);
+         End;
+        End;
+     5: Begin { IMUL }
+         Disp16 := LongInt(SmallInt(P.CPU.Regs.AX))
+                 * SmallInt(V16);
+         P.CPU.Regs.AX := Word(Disp16);
+         P.CPU.Regs.DX := Word(LongInt(Disp16) Shr 16);
+         If (P.CPU.Regs.DX = 0) Or (P.CPU.Regs.DX = $FFFF) Then Begin
+          Exclude(P.CPU.Flags.s, EFG_CF);
+          Exclude(P.CPU.Flags.s, EFG_OF);
+         End Else Begin
+          Include(P.CPU.Flags.s, EFG_CF);
+          Include(P.CPU.Flags.s, EFG_OF);
+         End;
+        End;
+     6: Begin { DIV : DX:AX / rm16 }
+         If V16 = 0 Then P.CPU.Fault := sfDivision0
+         Else Begin
+          Disp16 := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
+          If LongInt(Disp16) Div V16 > $FFFF
+           Then P.CPU.Fault := sfDivision0
+          Else Begin
+           P.CPU.Regs.AX := Word(LongInt(Disp16) Div V16);
+           P.CPU.Regs.DX := Word(LongInt(Disp16) Mod V16);
+          End;
+         End;
+        End;
+     7: Begin { IDIV }
+         If V16 = 0 Then P.CPU.Fault := sfDivision0
+         Else Begin
+          Disp16 := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
+          P.CPU.Regs.AX := Word(LongInt(Disp16) Div SmallInt(V16));
+          P.CPU.Regs.DX := Word(LongInt(Disp16) Mod SmallInt(V16));
+         End;
+        End;
+    End;
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
   Else
-   { Opcode non supporte dans cette livraison }
-   P.CPU.Fault := sfInvalidCode;
+   Begin
+    { Opcode non supporte dans cette livraison : memoriser le contexte }
+    P.CPU.LastBadOp := OpCode;
+    P.CPU.LastBadCS := P.CPU.Segs.CS;
+    P.CPU.LastBadIP := P.CPU.IP;
+    P.CPU.Fault := sfInvalidCode;
+   End;
  End;
+ If ResetSegOvr Then P.CPU.HasSegOvr := False;
 End;
 
 { --- Texte descriptif d un code de fin --- }
+
+Function Emu_HexByte(B: Byte): String;
+Const Hx: Array[0..15] Of Char =
+ ('0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F');
+Begin
+ Emu_HexByte := Hx[(B Shr 4) And $F] + Hx[B And $F];
+End;
+
+Function Emu_HexWord(W: Word): String;
+Begin
+ Emu_HexWord := Emu_HexByte(Hi(W)) + Emu_HexByte(Lo(W));
+End;
 
 Function Emu_FaultText(F: Integer): String;
 Begin
  Case F Of
   sfNone        : Emu_FaultText := 'aucune erreur';
   sfInvalidCode : Emu_FaultText := 'opcode non supporte';
+  { la chaine completed est composee plus loin avec l opcode et l adresse }
   sfHLT         : Emu_FaultText := 'instruction HLT';
   sfHotBoot     : Emu_FaultText := 'redemarrage a chaud';
   sfColdBoot    : Emu_FaultText := 'redemarrage a froid';
@@ -22639,6 +23885,13 @@ Begin
  EmuVScr_WriteStr(P, '[Fin d execution : ' +
   Emu_FaultText(P.Fault) + ' apres ' + IntToStr(Steps) +
   ' instructions]');
+ If P.Fault = sfInvalidCode Then Begin
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, '  opcode = ' +
+   Emu_HexByte(P.CPU.LastBadOp) + ' a ' +
+   Emu_HexWord(P.CPU.LastBadCS) + ':' +
+   Emu_HexWord(P.CPU.LastBadIP));
+ End;
  P.CurFg := OldFg;
  P.CurBg := OldBg;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
