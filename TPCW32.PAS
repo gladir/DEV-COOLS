@@ -542,6 +542,7 @@ Begin
     Begin
       Opts.DestTarget := DEST_6502;
       Opts.AppleII := True;
+      Opts.ApplePascal := True;
     End
     Else If (UA = '-CC64') Then
     Begin
@@ -5691,6 +5692,10 @@ Begin
 
           { Trouver le type dans TypeTab }
           TIdx := TypeFindByName(TName);
+
+          { Type inconnu : erreur fatale (ex: ByteStream sans --applepascal) }
+          If TIdx < 0 Then
+            FatalError('Type non declare: ' + TName);
 
           { Verifier si c'est une declaration ABSOLUTE (TODO 28) }
           { Syntaxe : var X : Type absolute $Seg:$Ofs;           }
