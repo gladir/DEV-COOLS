@@ -27204,6 +27204,11 @@ Begin
     Inc(I);
   End;
   Close(F);
+  { Si l image charge a $0801 et que les premiers octets ressemblent a un  }
+  { stub BASIC SYS (link non nul, ligne 10, token $9E), sauter le stub et  }
+  { entrer directement au JMP suivant ($080D = 2061). Sinon entree = Load. }
+  If (Load = $0801) And (CPU6502_Mem[$0805] = $9E) Then
+    EntryAddr := $080D;
   CPU6502_LoadC64Prg := True;
 End;
 

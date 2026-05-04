@@ -5153,11 +5153,22 @@ Begin
   EmitComment('--- Segment de code ---');
   EmitRaw('.CODE');
   EmitBlankLine;
-  { Pour les cibles 6502 : reserver 3 octets au debut pour un JMP _TPF_Main }
-  { Le patching final est fait dans WriteAppleBinFile / autres writers.    }
+  { Pour les cibles 6502 : reserver des octets au debut.                  }
+  { Le patching final est fait dans les writers (.bin / .prg / .xex...). }
   If BcActive And Is6502Target Then
   Begin
-    BcEmitB($EA); BcEmitB($EA); BcEmitB($EA); { NOP NOP NOP, sera patche }
+    If Opts.C64 Then
+    Begin
+      { C64 : reserver 15 octets = stub BASIC SYS 2061 (12) + JMP (3).    }
+      BcEmitB($00); BcEmitB($00); BcEmitB($00); BcEmitB($00);
+      BcEmitB($00); BcEmitB($00); BcEmitB($00); BcEmitB($00);
+      BcEmitB($00); BcEmitB($00); BcEmitB($00); BcEmitB($00);
+      BcEmitB($EA); BcEmitB($EA); BcEmitB($EA); { JMP, sera patche }
+    End
+    Else
+    Begin
+      BcEmitB($EA); BcEmitB($EA); BcEmitB($EA); { NOP NOP NOP, sera patche }
+    End;
   End;
 End;
 
@@ -35733,10 +35744,44 @@ Var
   PadLen: LongInt;
   PadByte: Byte;
   Hdr: Array[0..1] Of Byte;
+  EntryOfs: LongInt;
+  EntryAddr: LongInt;
 Begin
+  { Patcher le stub BASIC + JMP _TPF_Main au debut. La sequence reserve   }
+  { 15 octets par EmitCodeSeg quand Opts.C64 est actif.                   }
+  If BcCodeLen >= 15 Then
+  Begin
+    { 0801: 0B 08    -> link vers $080B (fin de programme)              }
+    BcCode[0] := $0B; BcCode[1] := $08;
+    { 0803: 0A 00    -> ligne 10                                          }
+    BcCode[2] := $0A; BcCode[3] := $00;
+    { 0805: 9E       -> token SYS                                         }
+    BcCode[4] := $9E;
+    { 0806..0809: '2061' = $080D (entree apres stub)                      }
+    BcCode[5] := Ord('2'); BcCode[6] := Ord('0');
+    BcCode[7] := Ord('6'); BcCode[8] := Ord('1');
+    { 080A: 00       -> fin d instruction                                 }
+    BcCode[9] := $00;
+    { 080B..080C: 00 00 -> fin de programme BASIC                         }
+    BcCode[10] := $00; BcCode[11] := $00;
+
+    { 080D..080F: JMP _TPF_Main                                           }
+    EntryOfs := BcFindLabel('_TPF_Main');
+    If EntryOfs > 0 Then
+    Begin
+      EntryAddr := C64_LOAD_ADDR + EntryOfs;
+      BcCode[12] := $4C; { JMP abs }
+      BcCode[13] := Byte(EntryAddr);
+      BcCode[14] := Byte(EntryAddr Shr 8);
+    End;
+  End;
+
   TextLen := BcCodeLen;
   DataLen := BcDataLen;
   DataBase := (TextLen + 3) And Not 3;
+
+  { Resoudre les fixups 6502 maintenant que le layout est fige }
+  BcResolveFixups6502(C64_LOAD_ADDR, DataBase);
 
   Hdr[0] := C64_LOAD_ADDR And $FF;
   Hdr[1] := (C64_LOAD_ADDR Shr 8) And $FF;
