@@ -1860,6 +1860,7 @@ Type
   AssemblyName   : String[63];        { nom de l assembly           }
   OutputType     : TOutputType;       { type de sortie              }
   TargetFramework: String[40];        { framework cible             }
+  TargetCPU      : String[16];        { plateforme cible (-CW32...) }
   OutputPath     : String[255];       { chemin de sortie            }
   DefineConstants: String[255];       { constantes de compilation   }
   ProjectType    : TProjectType;      { type de projet              }
@@ -2295,6 +2296,9 @@ Type
   PostBuildCursor: Integer;             { curseur post-build         }
   DebugArgsCursor: Integer;             { curseur arguments debug    }
   WorkDirCursor  : Integer;             { curseur repertoire travail }
+  OutputTypeOpen : Boolean;             { dropdown type sortie ouvert}
+  TargetCPUIdx   : Integer;             { index plateforme cible     }
+  TargetCPUOpen  : Boolean;             { dropdown plateforme ouvert }
   Confirmed      : Boolean;             { True si valide par OK      }
  End;
 
@@ -2482,6 +2486,7 @@ Type
   UseDebugSymbols: Boolean;        { inclure symboles de debogage    }
   UseVerbose     : Boolean;        { mode verbeux                    }
   UseWarnings    : Boolean;        { afficher avertissements         }
+  TargetCPU      : String[16];     { drapeau plateforme cible        }
  End;
 
  { Contexte du compilateur C }
@@ -12324,6 +12329,7 @@ Begin
  Info.AssemblyName := '';
  Info.OutputType := OT_EXE;
  Info.TargetFramework := 'v4.8';
+ Info.TargetCPU := '-CW32';
  Info.OutputPath := 'bin\Debug\';
  Info.DefineConstants := '';
  Info.ProjectType := PT_CSHARP;
@@ -19484,6 +19490,61 @@ Begin
  End;
 End;
 
+{ --- Liste des plateformes cibles supportees par TPCW32 --- }
+
+Function TargetCPUCount: Integer;
+Begin
+ TargetCPUCount := 10;
+End;
+
+Function TargetCPUFlag(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: TargetCPUFlag := '-CW32';
+  1: TargetCPUFlag := '-CW';
+  2: TargetCPUFlag := '-CP';
+  3: TargetCPUFlag := '-CD';
+  4: TargetCPUFlag := '-CZ80';
+  5: TargetCPUFlag := '-C6502';
+  6: TargetCPUFlag := '-C6809';
+  7: TargetCPUFlag := '-C68000';
+  8: TargetCPUFlag := '-CATARIST';
+  9: TargetCPUFlag := '-CAMIGA';
+ Else
+  TargetCPUFlag := '-CW32';
+ End;
+End;
+
+Function TargetCPULabel(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: TargetCPULabel := 'Windows 32 bits (-CW32)';
+  1: TargetCPULabel := 'Windows 3.0 (-CW)';
+  2: TargetCPULabel := 'DOS mode protege (-CP)';
+  3: TargetCPULabel := 'DOS mode reel (-CD)';
+  4: TargetCPULabel := 'Zilog Z80 (-CZ80)';
+  5: TargetCPULabel := 'MOS 6502 (-C6502)';
+  6: TargetCPULabel := 'Motorola 6809 (-C6809)';
+  7: TargetCPULabel := 'Motorola 68000 (-C68000)';
+  8: TargetCPULabel := 'Atari ST 68000 (-CATARIST)';
+  9: TargetCPULabel := 'Amiga 68000 (-CAMIGA)';
+ Else
+  TargetCPULabel := 'Inconnu';
+ End;
+End;
+
+Function TargetCPUFlagToIdx(Flag: String): Integer;
+Var
+ I: Integer;
+Begin
+ For I := 0 To TargetCPUCount - 1 Do
+  If TargetCPUFlag(I) = Flag Then Begin
+   TargetCPUFlagToIdx := I;
+   Exit;
+  End;
+ TargetCPUFlagToIdx := 0;
+End;
+
 { --- Initialiser le dialogue Nouveau projet --- }
 
 Procedure InitNewProjectDialog(Var Dlg: TNewProjectDialog);
@@ -20357,6 +20418,9 @@ Begin
  Dlg.PostBuildCursor := 0;
  Dlg.DebugArgsCursor := 0;
  Dlg.WorkDirCursor := 0;
+ Dlg.OutputTypeOpen := False;
+ Dlg.TargetCPUIdx := 0;
+ Dlg.TargetCPUOpen := False;
  Dlg.Confirmed := False;
 End;
 
@@ -20376,6 +20440,7 @@ Begin
  End;
  Dlg.DefineConstants := Proj.Info.DefineConstants;
  Dlg.OutputPath := Proj.Info.OutputPath;
+ Dlg.TargetCPUIdx := TargetCPUFlagToIdx(Proj.Info.TargetCPU);
  Dlg.AsmNameCursor := Length(Dlg.AssemblyName);
  Dlg.NsCursor := Length(Dlg.RootNamespace);
  Dlg.DefCursor := Length(Dlg.DefineConstants);
@@ -20396,6 +20461,7 @@ Begin
  End;
  Proj.Info.DefineConstants := Dlg.DefineConstants;
  Proj.Info.OutputPath := Dlg.OutputPath;
+ Proj.Info.TargetCPU := TargetCPUFlag(Dlg.TargetCPUIdx);
 End;
 
 { --- Dessiner les onglets du dialogue proprietes --- }
@@ -20463,7 +20529,6 @@ Procedure GetProjPropCursorPos(Var Dlg: TProjectPropertiesDialog;
  Var CX, CY: Integer);
 Var
  FX, BaseY, TextLen: Integer;
- OType: String;
  S: String;
 Begin
  CX := -1;
@@ -20476,10 +20541,6 @@ Begin
    Case Dlg.FocusField Of
     0: TextLen := Length(Dlg.AssemblyName);
     1: TextLen := Length(Dlg.RootNamespace);
-    2: Begin
-        OType := OutputTypeIdxToStr(Dlg.OutputTypeIdx);
-        TextLen := Length(OType);
-       End;
    Else TextLen := -1;
    End;
   PPT_BUILD:
@@ -20569,10 +20630,14 @@ Begin
   CLR_BORDER);
  DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
   OutputTypeIdxToStr(Dlg.OutputTypeIdx), CLR_WINDOWTEXT);
- If (Dlg.FocusField = 2) And ProjPropCursorVisible Then
-  DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
-   Length(OutputTypeIdxToStr(Dlg.OutputTypeIdx)) * 8,
-   BaseY, '_', CLR_WINDOWTEXT);
+ { Bouton fleche du dropdown a droite du champ }
+ DrawFilledRect(FX + FW - 18, BaseY - 1,
+  FX + FW - 1, BaseY + PROJPROP_FIELD_HEIGHT - 1,
+  CLR_BACKGROUND);
+ DrawRect(FX + FW - 18, BaseY - 1,
+  FX + FW - 1, BaseY + PROJPROP_FIELD_HEIGHT - 1,
+  CLR_BORDER);
+ DrawText(FX + FW - 14, BaseY, 'v', CLR_WINDOWTEXT);
 End;
 
 { --- Dessiner l onglet Build --- }
@@ -20624,6 +20689,23 @@ Begin
  If (Dlg.FocusField = 2) And ProjPropCursorVisible Then
   DrawText(FX + PROJPROP_LABEL_WIDTH + 4 +
    Length(S) * 8, BaseY, '_', CLR_WINDOWTEXT);
+ { Plateforme cible (TPCW32) }
+ BaseY := BaseY + PROJPROP_ROW_SPACING;
+ DrawText(FX, BaseY, 'Plateforme cible :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
+  TargetCPULabel(Dlg.TargetCPUIdx), CLR_WINDOWTEXT);
+ { Bouton fleche du dropdown a droite du champ }
+ DrawFilledRect(FX + FW - 18, BaseY - 1,
+  FX + FW - 1, BaseY + PROJPROP_FIELD_HEIGHT - 1,
+  CLR_BACKGROUND);
+ DrawRect(FX + FW - 18, BaseY - 1,
+  FX + FW - 1, BaseY + PROJPROP_FIELD_HEIGHT - 1,
+  CLR_BORDER);
+ DrawText(FX + FW - 14, BaseY, 'v', CLR_WINDOWTEXT);
  { Case a cocher : traiter avertissements comme erreurs }
  BaseY := BaseY + PROJPROP_ROW_SPACING;
  DrawRect(FX, BaseY, FX + 12, BaseY + 12, CLR_BORDER);
@@ -20724,6 +20806,77 @@ Begin
  End;
 End;
 
+{ --- Dessiner la liste deroulee du Type de sortie --- }
+
+Procedure DrawProjPropOutputTypeDropdown(
+ Var Dlg: TProjectPropertiesDialog);
+Var
+ FX, FW, BaseY, DY, I: Integer;
+ BgClr: LongInt;
+Begin
+ If Not Dlg.OutputTypeOpen Then Exit;
+ If Dlg.ActiveTab <> PPT_APPLICATION Then Exit;
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  TAB_HEIGHT + DLG_PADDING + PROJPROP_ROW_SPACING * 2;
+ DY := BaseY + PROJPROP_FIELD_HEIGHT;
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, DY,
+  FX + FW, DY + 3 * PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, DY,
+  FX + FW, DY + 3 * PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ For I := 0 To 2 Do
+ Begin
+  If I = Dlg.OutputTypeIdx Then
+   BgClr := CLR_TITLEBAR_ACTIVE
+  Else
+   BgClr := CLR_WINDOW;
+  DrawFilledRect(FX + PROJPROP_LABEL_WIDTH + 1,
+   DY + I * PROJPROP_FIELD_HEIGHT + 1,
+   FX + FW - 1,
+   DY + (I + 1) * PROJPROP_FIELD_HEIGHT, BgClr);
+  DrawText(FX + PROJPROP_LABEL_WIDTH + 4,
+   DY + I * PROJPROP_FIELD_HEIGHT + 3,
+   OutputTypeIdxToStr(I), CLR_WINDOWTEXT);
+ End;
+End;
+
+{ --- Dessiner la liste deroulee de la Plateforme cible --- }
+
+Procedure DrawProjPropTargetCPUDropdown(
+ Var Dlg: TProjectPropertiesDialog);
+Var
+ FX, FW, BaseY, DY, I, N: Integer;
+ BgClr: LongInt;
+Begin
+ If Not Dlg.TargetCPUOpen Then Exit;
+ If Dlg.ActiveTab <> PPT_BUILD Then Exit;
+ N := TargetCPUCount;
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  TAB_HEIGHT + DLG_PADDING + PROJPROP_ROW_SPACING * 3;
+ DY := BaseY + PROJPROP_FIELD_HEIGHT;
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, DY,
+  FX + FW, DY + N * PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, DY,
+  FX + FW, DY + N * PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ For I := 0 To N - 1 Do
+ Begin
+  If I = Dlg.TargetCPUIdx Then
+   BgClr := CLR_TITLEBAR_ACTIVE
+  Else
+   BgClr := CLR_WINDOW;
+  DrawFilledRect(FX + PROJPROP_LABEL_WIDTH + 1,
+   DY + I * PROJPROP_FIELD_HEIGHT + 1,
+   FX + FW - 1,
+   DY + (I + 1) * PROJPROP_FIELD_HEIGHT, BgClr);
+  DrawText(FX + PROJPROP_LABEL_WIDTH + 4,
+   DY + I * PROJPROP_FIELD_HEIGHT + 3,
+   TargetCPULabel(I), CLR_WINDOWTEXT);
+ End;
+End;
+
 { --- Dessiner le dialogue Proprietes du projet --- }
 
 Procedure DrawProjectPropertiesDialog(
@@ -20734,6 +20887,8 @@ Begin
  DrawProjPropTabs(Dlg);
  DrawProjPropContent(Dlg);
  DrawDialogButtons(Dlg.Base);
+ DrawProjPropOutputTypeDropdown(Dlg);
+ DrawProjPropTargetCPUDropdown(Dlg);
 End;
 
 { --- Test de clic sur les onglets de proprietes projet --- }
@@ -20772,7 +20927,7 @@ Begin
  If Dlg.ActiveTab <> PPT_BUILD Then Exit;
  FX := Dlg.Base.X + DLG_PADDING;
  BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
-  TAB_HEIGHT + DLG_PADDING + PROJPROP_ROW_SPACING * 3;
+  TAB_HEIGHT + DLG_PADDING + PROJPROP_ROW_SPACING * 4;
  ProjPropWarningCheckHitTest :=
   (MX >= FX) And (MX <= FX + 12) And
   (MY >= BaseY) And (MY <= BaseY + 12);
@@ -20793,7 +20948,7 @@ Begin
   TAB_HEIGHT + DLG_PADDING;
  Case Dlg.ActiveTab Of
   PPT_APPLICATION:  NbFields := 3;
-  PPT_BUILD:        NbFields := 3;
+  PPT_BUILD:        NbFields := 4;
   PPT_BUILD_EVENTS: NbFields := 2;
   PPT_DEBUG:        NbFields := 2;
  Else
@@ -20836,7 +20991,7 @@ Begin
    PPT_APPLICATION:
     If Dlg.FocusField > 2 Then Dlg.FocusField := 0;
    PPT_BUILD:
-    If Dlg.FocusField > 2 Then Dlg.FocusField := 0;
+    If Dlg.FocusField > 3 Then Dlg.FocusField := 0;
    PPT_BUILD_EVENTS:
     If Dlg.FocusField > 1 Then Dlg.FocusField := 0;
    PPT_DEBUG:
@@ -20988,16 +21143,143 @@ Procedure HandleProjectPropertiesDialogEvent(
  Var Dlg: TProjectPropertiesDialog; Var Ev: TEvent);
 Var
  TabIdx, BtnR, FldIdx: Integer;
+ FX, FW, BaseY, DY, ItemIdx: Integer;
 Begin
  If Not Dlg.Base.Visible Then Exit;
  Case Ev.Kind Of
   EV_KEY_DOWN, EV_KEY_CHAR:
   Begin
+   If Dlg.OutputTypeOpen Then
+   Begin
+    { Echap ferme la liste sans changer la valeur }
+    If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #27) Then Begin
+     Dlg.OutputTypeOpen := False;
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    { Entree valide la selection }
+    If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #13) Then Begin
+     Dlg.OutputTypeOpen := False;
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    { Fleches haut/bas pour naviguer }
+    If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $48) Then Begin
+     If Dlg.OutputTypeIdx > 0 Then Dec(Dlg.OutputTypeIdx);
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $50) Then Begin
+     If Dlg.OutputTypeIdx < 2 Then Inc(Dlg.OutputTypeIdx);
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    { Toute autre touche est avalee }
+    Exit;
+   End;
+   If Dlg.TargetCPUOpen Then
+   Begin
+    If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #27) Then Begin
+     Dlg.TargetCPUOpen := False;
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #13) Then Begin
+     Dlg.TargetCPUOpen := False;
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $48) Then Begin
+     If Dlg.TargetCPUIdx > 0 Then Dec(Dlg.TargetCPUIdx);
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $50) Then Begin
+     If Dlg.TargetCPUIdx < TargetCPUCount - 1 Then
+      Inc(Dlg.TargetCPUIdx);
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    Exit;
+   End;
+   { Sur le champ Type de sortie ferme : Espace ou fleche bas
+     ouvrent le dropdown }
+   If (Dlg.ActiveTab = PPT_APPLICATION) And
+      (Dlg.FocusField = 2) Then
+   Begin
+    If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = ' ') Then Begin
+     Dlg.OutputTypeOpen := True;
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $50) Then Begin
+     Dlg.OutputTypeOpen := True;
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+   End;
+   { Sur le champ Plateforme cible ferme : Espace ou fleche bas
+     ouvrent le dropdown }
+   If (Dlg.ActiveTab = PPT_BUILD) And
+      (Dlg.FocusField = 3) Then
+   Begin
+    If (Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = ' ') Then Begin
+     Dlg.TargetCPUOpen := True;
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+    If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $50) Then Begin
+     Dlg.TargetCPUOpen := True;
+     DrawProjectPropertiesDialog(Dlg);
+     Exit;
+    End;
+   End;
    HandleProjectPropertiesDialogKey(Dlg, Ev.KeyCode, Ev.KeyChar);
    DrawProjectPropertiesDialog(Dlg);
   End;
   EV_MOUSE_DOWN:
   Begin
+   { Si le dropdown est ouvert, gerer en priorite }
+   If Dlg.OutputTypeOpen Then
+   Begin
+    FX := Dlg.Base.X + DLG_PADDING;
+    FW := Dlg.Base.Width - DLG_PADDING * 2;
+    BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+     TAB_HEIGHT + DLG_PADDING + PROJPROP_ROW_SPACING * 2;
+    DY := BaseY + PROJPROP_FIELD_HEIGHT;
+    If (Ev.MouseX >= FX + PROJPROP_LABEL_WIDTH) And
+       (Ev.MouseX <= FX + FW) And
+       (Ev.MouseY >= DY) And
+       (Ev.MouseY <= DY + 3 * PROJPROP_FIELD_HEIGHT) Then
+    Begin
+     ItemIdx := (Ev.MouseY - DY) Div PROJPROP_FIELD_HEIGHT;
+     If (ItemIdx >= 0) And (ItemIdx <= 2) Then
+      Dlg.OutputTypeIdx := ItemIdx;
+    End;
+    Dlg.OutputTypeOpen := False;
+    DrawProjectPropertiesDialog(Dlg);
+    Exit;
+   End;
+   If Dlg.TargetCPUOpen Then
+   Begin
+    FX := Dlg.Base.X + DLG_PADDING;
+    FW := Dlg.Base.Width - DLG_PADDING * 2;
+    BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+     TAB_HEIGHT + DLG_PADDING + PROJPROP_ROW_SPACING * 3;
+    DY := BaseY + PROJPROP_FIELD_HEIGHT;
+    If (Ev.MouseX >= FX + PROJPROP_LABEL_WIDTH) And
+       (Ev.MouseX <= FX + FW) And
+       (Ev.MouseY >= DY) And
+       (Ev.MouseY <= DY + TargetCPUCount * PROJPROP_FIELD_HEIGHT)
+    Then Begin
+     ItemIdx := (Ev.MouseY - DY) Div PROJPROP_FIELD_HEIGHT;
+     If (ItemIdx >= 0) And (ItemIdx < TargetCPUCount) Then
+      Dlg.TargetCPUIdx := ItemIdx;
+    End;
+    Dlg.TargetCPUOpen := False;
+    DrawProjectPropertiesDialog(Dlg);
+    Exit;
+   End;
    TabIdx := ProjPropTabHitTest(Dlg, Ev.MouseX, Ev.MouseY);
    If TabIdx >= 0 Then
    Begin
@@ -21022,9 +21304,12 @@ Begin
    If FldIdx >= 0 Then
    Begin
     Dlg.FocusField := FldIdx;
-    { Sur le champ Type de sortie, le clic le fait defiler }
+    { Sur le champ Type de sortie, ouvrir le dropdown }
     If (Dlg.ActiveTab = PPT_APPLICATION) And (FldIdx = 2) Then
-     Dlg.OutputTypeIdx := (Dlg.OutputTypeIdx + 1) Mod 3;
+     Dlg.OutputTypeOpen := True;
+    { Sur le champ Plateforme cible, ouvrir le dropdown }
+    If (Dlg.ActiveTab = PPT_BUILD) And (FldIdx = 3) Then
+     Dlg.TargetCPUOpen := True;
     DrawProjectPropertiesDialog(Dlg);
     Exit;
    End;
@@ -24527,6 +24812,7 @@ Begin
  Ctx.UseDebugSymbols := False;
  Ctx.UseVerbose := False;
  Ctx.UseWarnings := True;
+ Ctx.TargetCPU := '';
 End;
 
 { --- Detecter le compilateur Pascal disponible --- }
@@ -24599,6 +24885,8 @@ Begin
  Cmd := Ctx.CompilerPath + ' ' + SourceFile;
  If OutputFile <> '' Then
   Cmd := Cmd + ' ' + TPC_FLAG_OUTPUT + ' ' + OutputFile;
+ If Ctx.TargetCPU <> '' Then
+  Cmd := Cmd + ' ' + Ctx.TargetCPU;
  If Ctx.UseVerbose Then
   Cmd := Cmd + ' ' + TPC_FLAG_VERBOSE;
  If Ctx.UseDebugSymbols Then
@@ -24745,6 +25033,7 @@ Begin
  Ctx.ErrorCount := 0;
  Ctx.WarningCount := 0;
  Ctx.FilesCompiled := 0;
+ Ctx.TargetCPU := Proj.Info.TargetCPU;
  ProjName := Proj.Info.ProjectName;
  { Effacer les sorties precedentes }
  ClearOutput(OP, Ord(OTK_BUILD));
@@ -26881,6 +27170,9 @@ Begin
   DetectTPCCompiler(TPCContext);
   If TPCContext.CompilerFound Then Begin
    CmdLine := TPCContext.CompilerPath + ' ' + SourceFile;
+   { Si un projet est charge, utiliser sa plateforme cible }
+   If SolutionLoaded And (CurrentProject.Info.TargetCPU <> '') Then
+    CmdLine := CmdLine + ' ' + CurrentProject.Info.TargetCPU;
    AppendOutput(OutputPanel,
     '------ Build started: ' + SourceFile + ' ------',
     Ord(OTK_BUILD));
