@@ -12821,6 +12821,8 @@ Begin
    If ExtractTagContent(Trimmed, 'TargetFrameworkVersion') <> '' Then
     Proj.Info.TargetFramework := ExtractTagContent(
       Trimmed, 'TargetFrameworkVersion');
+   If ExtractTagContent(Trimmed, 'TargetCPU') <> '' Then
+    Proj.Info.TargetCPU := ExtractTagContent(Trimmed, 'TargetCPU');
    If ExtractTagContent(Trimmed, 'ProjectGuid') <> '' Then
     Proj.Info.ProjectGUID := ExtractTagContent(Trimmed, 'ProjectGuid');
    If CfgIdx >= 0 Then Begin
@@ -12968,6 +12970,9 @@ Begin
  If Proj.Info.TargetFramework <> '' Then
   WriteLn(F, '    <TargetFrameworkVersion>' +
     Proj.Info.TargetFramework + '</TargetFrameworkVersion>');
+ If Proj.Info.TargetCPU <> '' Then
+  WriteLn(F, '    <TargetCPU>' + Proj.Info.TargetCPU +
+    '</TargetCPU>');
  WriteLn(F, '  </PropertyGroup>');
  { PropertyGroups de configuration }
  For I := 0 To Proj.CfgCount - 1 Do Begin
