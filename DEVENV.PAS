@@ -2302,6 +2302,42 @@ Type
   Confirmed      : Boolean;             { True si valide par OK      }
  End;
 
+ { ---- Emulateur 8086 integre ---- }
+ { Cellule de l ecran virtuel 80x25 }
+ TEmuCell = Record
+  Ch  : Char;             { caractere ASCII                       }
+  Fg  : Byte;             { couleur de premier plan (0..15)       }
+  Bg  : Byte;             { couleur de fond (0..15)               }
+ End;
+
+ { Etat de l emulateur 8086 + ecran virtuel + clavier }
+ TEmulatorPanel = Record
+  Base       : TDialog;          { dialogue de base                }
+  Visible    : Boolean;          { panneau visible                 }
+  Running    : Boolean;          { execution en cours              }
+  Fault      : Integer;          { code de fin (sf*)               }
+  BinaryPath : String[127];      { chemin du binaire DOS charge    }
+  TargetCPU  : String[16];       { drapeau cible (-CD ou -CP)      }
+  { Ecran virtuel 80 colonnes x 25 lignes }
+  VRAM       : Array[0..24, 0..79] Of TEmuCell;
+  CursorX    : Byte;             { colonne curseur (0..79)         }
+  CursorY    : Byte;             { ligne curseur (0..24)           }
+  CurFg      : Byte;             { couleur courante FG             }
+  CurBg      : Byte;             { couleur courante BG             }
+  CursorOn   : Boolean;          { curseur visible (clignotant)    }
+  { File d attente clavier (ring buffer) }
+  KeyBuf     : Array[0..63] Of Byte;
+  KeyHead    : Byte;
+  KeyTail    : Byte;
+  { Geometrie du panneau }
+  PanelX     : Integer;
+  PanelY     : Integer;
+  CharW      : Integer;          { largeur d un caractere (px)     }
+  CharH      : Integer;          { hauteur d un caractere (px)     }
+  NeedRepaint: Boolean;          { redessin complet requis         }
+  StatusMsg  : String[127];      { message d etat affiche en bas   }
+ End;
+
  { Categories des options de l IDE }
  TOptionCategory = (
   OC_ENV_GENERAL,        { Environnement > General            }
@@ -2882,6 +2918,8 @@ Var
  FileDlg        : TFileDialog;
  { Dialogue proprietes du projet }
  ProjPropDlg    : TProjectPropertiesDialog;
+ { Panneau de l emulateur 8086 integre }
+ EmuPanel       : TEmulatorPanel;
  { Indicateur de sortie }
  QuitRequested  : Boolean;
  { Drapeau nettoyage ecran transition page de demarrage -> IDE }
@@ -4520,6 +4558,22 @@ Procedure DrawProjectPropertiesDialog(
  Var Dlg: TProjectPropertiesDialog); Forward;
 Procedure HandleProjectPropertiesDialogEvent(
  Var Dlg: TProjectPropertiesDialog; Var Ev: TEvent); Forward;
+
+{ Declarations anticipees pour l emulateur 8086 integre }
+Procedure InitEmulatorPanel(Var P: TEmulatorPanel); Forward;
+Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
+ BinaryPath, TargetCPU: String); Forward;
+Procedure DrawEmulatorPanel(Var P: TEmulatorPanel); Forward;
+Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
+ Var Ev: TEvent); Forward;
+Procedure StepEmulator(Var P: TEmulatorPanel); Forward;
+Procedure EmuVScr_Clear(Var P: TEmulatorPanel); Forward;
+Procedure EmuVScr_PutChar(Var P: TEmulatorPanel; C: Char); Forward;
+Procedure EmuVScr_WriteStr(Var P: TEmulatorPanel; S: String); Forward;
+Procedure EmuVScr_GotoXY(Var P: TEmulatorPanel; X, Y: Byte); Forward;
+Procedure EmuVScr_PushKey(Var P: TEmulatorPanel; K: Byte); Forward;
+Function EmuVScr_HasKey(Var P: TEmulatorPanel): Boolean; Forward;
+Function EmuVScr_PopKey(Var P: TEmulatorPanel): Byte; Forward;
 
 { Declarations anticipees pour sauvegarde }
 Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
@@ -21587,6 +21641,350 @@ Begin
 End;
 
 { ============================================================
+  EMULATEUR 8086 INTEGRE - Phase 1 : infrastructure et UI
+  ----------------------------------------------------------
+  Le code complet de TESTS/EMU8086.PAS sera porte en Phase 2.
+  Phase 1 fournit :
+    - un ecran texte virtuel 80x25 avec attributs couleur
+    - une file d attente clavier
+    - un panneau modal couvrant la zone editeur
+    - le routage F5 vers le panneau quand la cible est DOS
+  ============================================================ }
+
+{ --- Initialisation du panneau de l emulateur --- }
+
+Procedure InitEmulatorPanel(Var P: TEmulatorPanel);
+Var
+ X, Y: Integer;
+Begin
+ P.Base.Visible := False;
+ P.Visible := False;
+ P.Running := False;
+ P.Fault := 0;
+ P.BinaryPath := '';
+ P.TargetCPU := '';
+ P.CursorX := 0;
+ P.CursorY := 0;
+ P.CurFg := 7;   { gris clair par defaut }
+ P.CurBg := 0;   { fond noir }
+ P.CursorOn := True;
+ P.KeyHead := 0;
+ P.KeyTail := 0;
+ P.CharW := 8;
+ P.CharH := 14;
+ P.PanelX := 0;
+ P.PanelY := 0;
+ P.NeedRepaint := True;
+ P.StatusMsg := '';
+ For Y := 0 To 24 Do
+  For X := 0 To 79 Do Begin
+   P.VRAM[Y, X].Ch := ' ';
+   P.VRAM[Y, X].Fg := 7;
+   P.VRAM[Y, X].Bg := 0;
+  End;
+End;
+
+{ --- Effacer l ecran virtuel --- }
+
+Procedure EmuVScr_Clear(Var P: TEmulatorPanel);
+Var
+ X, Y: Integer;
+Begin
+ For Y := 0 To 24 Do
+  For X := 0 To 79 Do Begin
+   P.VRAM[Y, X].Ch := ' ';
+   P.VRAM[Y, X].Fg := P.CurFg;
+   P.VRAM[Y, X].Bg := P.CurBg;
+  End;
+ P.CursorX := 0;
+ P.CursorY := 0;
+ P.NeedRepaint := True;
+End;
+
+{ --- Faire defiler l ecran d une ligne vers le haut --- }
+
+Procedure EmuVScr_Scroll(Var P: TEmulatorPanel);
+Var
+ X, Y: Integer;
+Begin
+ For Y := 0 To 23 Do
+  For X := 0 To 79 Do
+   P.VRAM[Y, X] := P.VRAM[Y + 1, X];
+ For X := 0 To 79 Do Begin
+  P.VRAM[24, X].Ch := ' ';
+  P.VRAM[24, X].Fg := P.CurFg;
+  P.VRAM[24, X].Bg := P.CurBg;
+ End;
+ P.NeedRepaint := True;
+End;
+
+{ --- Positionner le curseur (coordonnees 0..79, 0..24) --- }
+
+Procedure EmuVScr_GotoXY(Var P: TEmulatorPanel; X, Y: Byte);
+Begin
+ If X > 79 Then X := 79;
+ If Y > 24 Then Y := 24;
+ P.CursorX := X;
+ P.CursorY := Y;
+ P.NeedRepaint := True;
+End;
+
+{ --- Afficher un caractere a la position courante --- }
+
+Procedure EmuVScr_PutChar(Var P: TEmulatorPanel; C: Char);
+Begin
+ Case C Of
+  #8: { Backspace }
+   If P.CursorX > 0 Then
+    Dec(P.CursorX);
+  #9: { Tab : prochain multiple de 8 }
+   Begin
+    P.CursorX := (P.CursorX Or 7) + 1;
+    If P.CursorX > 79 Then P.CursorX := 79;
+   End;
+  #10: { LF }
+   Begin
+    Inc(P.CursorY);
+    If P.CursorY > 24 Then Begin
+     EmuVScr_Scroll(P);
+     P.CursorY := 24;
+    End;
+   End;
+  #13: { CR }
+   P.CursorX := 0;
+  Else Begin
+   P.VRAM[P.CursorY, P.CursorX].Ch := C;
+   P.VRAM[P.CursorY, P.CursorX].Fg := P.CurFg;
+   P.VRAM[P.CursorY, P.CursorX].Bg := P.CurBg;
+   Inc(P.CursorX);
+   If P.CursorX > 79 Then Begin
+    P.CursorX := 0;
+    Inc(P.CursorY);
+    If P.CursorY > 24 Then Begin
+     EmuVScr_Scroll(P);
+     P.CursorY := 24;
+    End;
+   End;
+  End;
+ End;
+ P.NeedRepaint := True;
+End;
+
+{ --- Afficher une chaine sur l ecran virtuel --- }
+
+Procedure EmuVScr_WriteStr(Var P: TEmulatorPanel; S: String);
+Var
+ I: Integer;
+Begin
+ For I := 1 To Length(S) Do
+  EmuVScr_PutChar(P, S[I]);
+End;
+
+{ --- Empiler une touche dans la file (ring buffer 64 octets) --- }
+
+Procedure EmuVScr_PushKey(Var P: TEmulatorPanel; K: Byte);
+Var
+ NextHead: Byte;
+Begin
+ NextHead := (P.KeyHead + 1) And $3F;
+ If NextHead <> P.KeyTail Then Begin
+  P.KeyBuf[P.KeyHead] := K;
+  P.KeyHead := NextHead;
+ End;
+End;
+
+{ --- Tester si une touche est disponible --- }
+
+Function EmuVScr_HasKey(Var P: TEmulatorPanel): Boolean;
+Begin
+ EmuVScr_HasKey := P.KeyHead <> P.KeyTail;
+End;
+
+{ --- Retirer une touche de la file --- }
+
+Function EmuVScr_PopKey(Var P: TEmulatorPanel): Byte;
+Begin
+ If P.KeyHead = P.KeyTail Then
+  EmuVScr_PopKey := 0
+ Else Begin
+  EmuVScr_PopKey := P.KeyBuf[P.KeyTail];
+  P.KeyTail := (P.KeyTail + 1) And $3F;
+ End;
+End;
+
+{ --- Couleur BGI a partir d un code attribut DOS (0..15) --- }
+
+Function EmuColor(C: Byte): LongInt;
+Begin
+ { Mapping direct vers la palette VGA 16 couleurs }
+ EmuColor := C And $F;
+End;
+
+{ --- Dessiner le panneau de l emulateur --- }
+
+Procedure DrawEmulatorPanel(Var P: TEmulatorPanel);
+Var
+ GridX, GridY: Integer;
+ X, Y: Integer;
+ PixX, PixY: Integer;
+ ScrW, ScrH: Integer;
+ GridW, GridH: Integer;
+ Title: String;
+ Cell: TEmuCell;
+ S: String;
+Begin
+ ScrW := GetScreenWidth;
+ ScrH := GetScreenHeight;
+ { Le panneau couvre toute la zone editeur (sous le menu/toolbar,
+   au dessus de la barre d etat). Pour simplicite, on le centre. }
+ GridW := 80 * P.CharW;          { 640 px }
+ GridH := 25 * P.CharH;          { 350 px }
+ P.PanelX := (ScrW - GridW) Div 2;
+ P.PanelY := 80;                 { sous menu+toolbar }
+ If P.PanelY + GridH + 60 > ScrH Then
+  P.PanelY := 60;
+ GridX := P.PanelX;
+ GridY := P.PanelY + 24;          { 24 px de barre de titre }
+ { Bordure et barre de titre }
+ DrawFilledRect(P.PanelX - 2, P.PanelY - 2,
+  P.PanelX + GridW + 2, P.PanelY + GridH + 48,
+  CLR_BACKGROUND);
+ DrawFilledRect(P.PanelX, P.PanelY,
+  P.PanelX + GridW, P.PanelY + 22,
+  CLR_TITLEBAR_ACTIVE);
+ Title := 'Emulateur 8086 - ' + P.BinaryPath;
+ If Length(Title) > 76 Then
+  Title := Copy(Title, 1, 73) + '...';
+ DrawText(P.PanelX + 6, P.PanelY + 6, Title, CLR_HIGHLIGHTTEXT);
+ DrawText(P.PanelX + GridW - 100, P.PanelY + 6,
+  '[Esc] Fermer', CLR_HIGHLIGHTTEXT);
+ { Fond noir de l ecran emule }
+ DrawFilledRect(GridX, GridY, GridX + GridW, GridY + GridH, 0);
+ { Cellules : dessiner chaque caractere avec son attribut }
+ For Y := 0 To 24 Do Begin
+  PixY := GridY + Y * P.CharH;
+  For X := 0 To 79 Do Begin
+   Cell := P.VRAM[Y, X];
+   PixX := GridX + X * P.CharW;
+   { Fond si non noir }
+   If Cell.Bg <> 0 Then
+    DrawFilledRect(PixX, PixY, PixX + P.CharW - 1,
+     PixY + P.CharH - 1, EmuColor(Cell.Bg));
+   { Caractere si non espace ou si attribut visible }
+   If Cell.Ch <> ' ' Then Begin
+    S := Cell.Ch;
+    DrawText(PixX, PixY + 2, S, EmuColor(Cell.Fg));
+   End;
+  End;
+ End;
+ { Curseur clignotant : trait souligne }
+ If P.CursorOn And (((GetTimestamp Div 500) Mod 2) = 0) Then Begin
+  PixX := GridX + P.CursorX * P.CharW;
+  PixY := GridY + P.CursorY * P.CharH;
+  DrawFilledRect(PixX, PixY + P.CharH - 2,
+   PixX + P.CharW - 1, PixY + P.CharH - 1, 15);
+ End;
+ { Barre d etat sous l ecran emule }
+ DrawFilledRect(GridX, GridY + GridH + 2,
+  GridX + GridW, GridY + GridH + 22, CLR_TITLEBAR);
+ If P.StatusMsg <> '' Then
+  DrawText(GridX + 6, GridY + GridH + 6, P.StatusMsg,
+   CLR_HIGHLIGHTTEXT)
+ Else If P.Running Then
+  DrawText(GridX + 6, GridY + GridH + 6,
+   'En cours d execution...', CLR_HIGHLIGHTTEXT)
+ Else
+  DrawText(GridX + 6, GridY + GridH + 6,
+   'Arrete (code de fin: ' + IntToStr(P.Fault) + ')',
+   CLR_HIGHLIGHTTEXT);
+ P.NeedRepaint := False;
+End;
+
+{ --- Charger un binaire DOS et lancer l execution (Phase 1 stub) --- }
+
+Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
+ BinaryPath, TargetCPU: String);
+Var
+ OldFg, OldBg: Byte;
+Begin
+ InitEmulatorPanel(P);
+ P.BinaryPath := BinaryPath;
+ P.TargetCPU := TargetCPU;
+ P.Base.Visible := True;
+ P.Visible := True;
+ P.Running := True;
+ P.Fault := 0;
+ { Banniere de Phase 1 : montre que la bascule fonctionne }
+ OldFg := P.CurFg; OldBg := P.CurBg;
+ P.CurFg := 14; P.CurBg := 1;
+ EmuVScr_WriteStr(P,
+  ' Emulateur 8086 integre - DEVENV ' + DEVENV_VERSION + '          ');
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ P.CurFg := OldFg; P.CurBg := OldBg;
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ EmuVScr_WriteStr(P, 'Cible: ' + TargetCPU);
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ EmuVScr_WriteStr(P, 'Binaire: ' + BinaryPath);
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ P.CurFg := 11;
+ EmuVScr_WriteStr(P,
+  '[Phase 1] Infrastructure de l emulateur en place.');
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ EmuVScr_WriteStr(P,
+  '[Phase 2] Le coeur d emulation 8086 (TESTS/EMU8086.PAS)');
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ EmuVScr_WriteStr(P,
+  '          sera integre prochainement.');
+ P.CurFg := OldFg;
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+ P.StatusMsg := 'Phase 1 - infrastructure prete';
+ P.Running := False;
+ P.Fault := 0;
+End;
+
+{ --- Stub d execution (Phase 1) --- }
+
+Procedure StepEmulator(Var P: TEmulatorPanel);
+Begin
+ { Phase 2 : appellera Emu_Run / Emu_Step ici. }
+ P.Running := False;
+End;
+
+{ --- Traiter un evenement du panneau emulateur --- }
+
+Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
+ Var Ev: TEvent);
+Var
+ K: Byte;
+Begin
+ Case Ev.Kind Of
+  EV_KEY_CHAR:
+   Begin
+    If Ev.KeyChar = #27 Then Begin
+     P.Base.Visible := False;
+     P.Visible := False;
+     Exit;
+    End;
+    { Toute autre frappe est empilee dans la file clavier }
+    EmuVScr_PushKey(P, Byte(Ev.KeyChar));
+   End;
+  EV_KEY_DOWN:
+   Begin
+    K := Ev.KeyCode And $FF;
+    If K = $1B Then Begin
+     P.Base.Visible := False;
+     P.Visible := False;
+     Exit;
+    End;
+    EmuVScr_PushKey(P, K);
+   End;
+ End;
+End;
+
+{ ============================================================
   TODO 23 - BOITES DE DIALOGUE : OPTIONS DE L IDE [IMPLEMENTE]
   ============================================================ }
 
@@ -27193,6 +27591,22 @@ Begin
    ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
    CleanupTempFile(TempFile);
   End;
+  { Si la cible est DOS (-CD ou -CP), lancer l emulateur 8086 }
+  If SolutionLoaded And
+     ((CurrentProject.Info.TargetCPU = '-CD') Or
+      (CurrentProject.Info.TargetCPU = '-CP')) Then
+   ShowEmulatorPanel(EmuPanel, ExeName,
+    CurrentProject.Info.TargetCPU)
+  Else If SolutionLoaded And
+          (CurrentProject.Info.TargetCPU <> '') And
+          (CurrentProject.Info.TargetCPU <> '-CW32') And
+          (CurrentProject.Info.TargetCPU <> '-CW') Then Begin
+   { Cible non-Windows mais sans emulateur disponible }
+   AppendOutput(OutputPanel,
+    'Note: la cible ' + CurrentProject.Info.TargetCPU +
+    ' n a pas d emulateur integre dans DEVENV.',
+    Ord(OTK_BUILD));
+  End;
  End
  Else If (Ext = '.cs') Then Begin
   { Compilation C# }
@@ -27835,6 +28249,8 @@ Begin
   DrawFileDialog(FileDlg);
  If ProjPropDlg.Base.Visible Then
   DrawProjectPropertiesDialog(ProjPropDlg);
+ If EmuPanel.Base.Visible Then
+  DrawEmulatorPanel(EmuPanel);
 End;
 
 { --- Traiter un evenement global --- }
@@ -28015,6 +28431,14 @@ Begin
    FullRepaintNeeded := True;
   End Else
    DrawProjectPropertiesDialog(ProjPropDlg);
+  Exit;
+ End;
+ If EmuPanel.Base.Visible Then Begin
+  HandleEmulatorPanelEvent(EmuPanel, Ev);
+  If Not EmuPanel.Base.Visible Then
+   FullRepaintNeeded := True
+  Else
+   DrawEmulatorPanel(EmuPanel);
   Exit;
  End;
  If GoToLineDlg.Base.Visible Then Begin
@@ -28541,6 +28965,8 @@ BEGIN
  FileDlg.Base.Visible := False;
  InitProjectPropertiesDialog(ProjPropDlg);
  ProjPropDlg.Base.Visible := False;
+ InitEmulatorPanel(EmuPanel);
+ EmuPanel.Base.Visible := False;
  InitCSCContext(CSCContext);
  InitVBCContext(VBCContext);
  InitTPCContext(TPCContext);
