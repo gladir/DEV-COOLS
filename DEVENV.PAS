@@ -20457,6 +20457,76 @@ Begin
  ProjPropCursorVisible := (GetTimestamp Div 500) Mod 2 = 0;
 End;
 
+{ --- Calculer la position (X,Y) du curseur dans le champ actif --- }
+
+Procedure GetProjPropCursorPos(Var Dlg: TProjectPropertiesDialog;
+ Var CX, CY: Integer);
+Var
+ FX, BaseY, TextLen: Integer;
+ OType: String;
+ S: String;
+Begin
+ CX := -1;
+ CY := -1;
+ FX := Dlg.Base.X + DLG_PADDING;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  TAB_HEIGHT + DLG_PADDING;
+ Case Dlg.ActiveTab Of
+  PPT_APPLICATION:
+   Case Dlg.FocusField Of
+    0: TextLen := Length(Dlg.AssemblyName);
+    1: TextLen := Length(Dlg.RootNamespace);
+    2: Begin
+        OType := OutputTypeIdxToStr(Dlg.OutputTypeIdx);
+        TextLen := Length(OType);
+       End;
+   Else TextLen := -1;
+   End;
+  PPT_BUILD:
+   Case Dlg.FocusField Of
+    0: TextLen := Length(Dlg.DefineConstants);
+    1: TextLen := Length(Dlg.OutputPath);
+    2: Begin
+        Str(Dlg.WarningLevel, S);
+        TextLen := Length(S);
+       End;
+   Else TextLen := -1;
+   End;
+  PPT_BUILD_EVENTS:
+   Case Dlg.FocusField Of
+    0: TextLen := Length(Dlg.PreBuildEvent);
+    1: TextLen := Length(Dlg.PostBuildEvent);
+   Else TextLen := -1;
+   End;
+  PPT_DEBUG:
+   Case Dlg.FocusField Of
+    0: TextLen := Length(Dlg.DebugArgs);
+    1: TextLen := Length(Dlg.WorkingDir);
+   Else TextLen := -1;
+   End;
+ Else
+  TextLen := -1;
+ End;
+ If TextLen < 0 Then Exit;
+ CX := FX + PROJPROP_LABEL_WIDTH + 4 + TextLen * 8;
+ CY := BaseY + Dlg.FocusField * PROJPROP_ROW_SPACING;
+End;
+
+{ --- Dessiner ou effacer le curseur seul (sans flicker) --- }
+
+Procedure UpdateProjPropCursor(Var Dlg: TProjectPropertiesDialog);
+Var
+ CX, CY: Integer;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ GetProjPropCursorPos(Dlg, CX, CY);
+ If CX < 0 Then Exit;
+ { Effacer la zone du curseur (8x16) puis le redessiner si visible }
+ DrawFilledRect(CX, CY, CX + 8, CY + 14, CLR_WINDOW);
+ If ProjPropCursorVisible Then
+  DrawText(CX, CY, '_', CLR_WINDOWTEXT);
+End;
+
 Procedure DrawProjPropApplication(Var Dlg: TProjectPropertiesDialog);
 Var
  FX, FY, FW, BaseY: Integer;
@@ -27806,11 +27876,11 @@ End;
 Procedure MainLoop;
 Var
  Ev: TEvent;
- LastBlink: LongInt;
- Now: LongInt;
+ LastBlinkState: Boolean;
+ CurBlinkState: Boolean;
 Begin
  QuitRequested := False;
- LastBlink := GetTimestamp;
+ LastBlinkState := ProjPropCursorVisible;
  While Not QuitRequested Do Begin
   PollEvents(Ev);
   If Ev.Kind <> EV_NONE Then Begin
@@ -27824,17 +27894,18 @@ Begin
     DrawAllWidgets;
     DrawContextMenu(CtxMenu);
    End;
-   LastBlink := GetTimestamp;
+   LastBlinkState := ProjPropCursorVisible;
   End Else Begin
    { Meme sans evenement utilisateur, redessiner si le terminal a change }
    If TermVisible And TermPanels[ActiveShell].NeedRepaint Then
     DrawTerminalPanel(TermPanels[ActiveShell]);
-   { Faire clignoter le curseur du dialogue Proprietes du projet }
+   { Faire clignoter le curseur du dialogue Proprietes du projet :
+     ne redessiner que lorsque l etat de clignotement change }
    If ProjPropDlg.Base.Visible Then Begin
-    Now := GetTimestamp;
-    If (Now - LastBlink) >= 500 Then Begin
-     DrawProjectPropertiesDialog(ProjPropDlg);
-     LastBlink := Now;
+    CurBlinkState := ProjPropCursorVisible;
+    If CurBlinkState <> LastBlinkState Then Begin
+     UpdateProjPropCursor(ProjPropDlg);
+     LastBlinkState := CurBlinkState;
     End;
    End;
   End;
