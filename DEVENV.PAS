@@ -3067,6 +3067,14 @@ Var
  M68K_Verbose   : Boolean;
  M68K_Cycles    : LongInt;
  M68K_Panel     : ^TEmulatorPanel;
+ { Etat de l emulateur Cray-1 integre (parcels 16 bits) }
+ CRAY1_Mem      : Array[0..65535] Of Word;
+ CRAY1_Reg      : Array[0..7] Of LongInt;
+ CRAY1_PC       : LongInt;
+ CRAY1_Halted   : Boolean;
+ CRAY1_ExitCode : Integer;
+ CRAY1_Cycles   : LongInt;
+ CRAY1_Panel    : ^TEmulatorPanel;
  { Indicateur de sortie }
  QuitRequested  : Boolean;
  { Drapeau nettoyage ecran transition page de demarrage -> IDE }
@@ -26340,6 +26348,221 @@ Begin
 End;
 
 
+{ ========================================================================== }
+{ EMULATEUR CRAY-1 INTEGRE                                                   }
+{ Sous-ensemble execute correspondant aux instructions emises par le         }
+{ backend DEST_CRAY1 de TPCW32 (Phases 2c..2i). Voir CRAYRUN.PAS pour la     }
+{ version standalone. Format binaire : COS Absolute Binary (signature        }
+{ 'CRAY-1\0\0', 3 mots 64 bits BE : code/data/entry, parcels BE).            }
+{ Opcodes : ERR=$01, EX=$04 (trap COS), J=$05, JSZ=$09, JSN=$0A, JSP=$0B,    }
+{ JSM=$0C, MOVS=$20, ADDS=$30, SUBS=$31, ANDS=$34, XORS=$35, ORS=$36,        }
+{ LDS=$40, STS=$48, LDIMM=$60.                                                }
+{ Services EX (j<<3|k) : 0 print char S1, 1 print int S1, 2 newline,         }
+{ 3 print string (S1=adresse parcel, octet par parcel jusqu a 0), 7 halt.    }
+{ ========================================================================== }
+
+Function CRAY1_SignExt22(V: LongInt): LongInt;
+Begin
+  V := V And $3FFFFF;
+  If (V And $200000) <> 0 Then
+    CRAY1_SignExt22 := V Or LongInt($FFC00000)
+  Else
+    CRAY1_SignExt22 := V;
+End;
+
+Function CRAY1_LoadAbs(Const FileName: String;
+                       Var EntryAddr: LongInt): Boolean;
+Var
+  F: File;
+  Sig: Array[0..7] Of Byte;
+  W: Array[0..7] Of Byte;
+  PB: Array[0..1] Of Byte;
+  CodeWords, DataWords: LongInt;
+  Total, I: LongInt;
+Begin
+  CRAY1_LoadAbs := False;
+  EntryAddr := 0;
+  Assign(F, FileName);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  BlockRead(F, Sig, 8);
+  If (Sig[0] <> Ord('C')) Or (Sig[1] <> Ord('R')) Or
+     (Sig[2] <> Ord('A')) Or (Sig[3] <> Ord('Y')) Or
+     (Sig[4] <> Ord('-')) Or (Sig[5] <> Ord('1')) Then
+  Begin
+    Close(F);
+    Exit;
+  End;
+  BlockRead(F, W, 8);
+  CodeWords := (LongInt(W[4]) Shl 24) Or (LongInt(W[5]) Shl 16) Or
+               (LongInt(W[6]) Shl 8) Or W[7];
+  BlockRead(F, W, 8);
+  DataWords := (LongInt(W[4]) Shl 24) Or (LongInt(W[5]) Shl 16) Or
+               (LongInt(W[6]) Shl 8) Or W[7];
+  BlockRead(F, W, 8);
+  EntryAddr := (LongInt(W[4]) Shl 24) Or (LongInt(W[5]) Shl 16) Or
+               (LongInt(W[6]) Shl 8) Or W[7];
+  Total := (CodeWords + DataWords) * 4;
+  If (Total < 0) Or (Total > 65536) Then
+  Begin Close(F); Exit; End;
+  For I := 0 To 65535 Do CRAY1_Mem[I] := 0;
+  For I := 0 To Total - 1 Do
+  Begin
+    BlockRead(F, PB, 2);
+    CRAY1_Mem[I] := (Word(PB[0]) Shl 8) Or Word(PB[1]);
+  End;
+  Close(F);
+  CRAY1_LoadAbs := True;
+End;
+
+Procedure CRAY1_Trap(Service: Integer);
+Var
+  Addr, V: LongInt;
+  C: Byte;
+  S: String;
+Begin
+  Case Service Of
+    0: { print char S1 }
+       EmuVScr_PutChar(CRAY1_Panel^, Chr(CRAY1_Reg[1] And $FF));
+    1: { print int S1 }
+       Begin
+         V := CRAY1_Reg[1];
+         Str(V, S);
+         EmuVScr_WriteStr(CRAY1_Panel^, S);
+       End;
+    2: { newline }
+       Begin
+         EmuVScr_PutChar(CRAY1_Panel^, #13);
+         EmuVScr_PutChar(CRAY1_Panel^, #10);
+       End;
+    3: { print string : S1 = adresse parcel, octet/parcel jusqu a 0 }
+       Begin
+         Addr := CRAY1_Reg[1] And $FFFF;
+         While (Addr >= 0) And (Addr < 65536) Do
+         Begin
+           C := CRAY1_Mem[Addr] And $FF;
+           If C = 0 Then Break;
+           EmuVScr_PutChar(CRAY1_Panel^, Chr(C));
+           Inc(Addr);
+         End;
+       End;
+    7: { halt normal }
+       Begin
+         CRAY1_Halted := True;
+         CRAY1_ExitCode := 0;
+       End;
+  Else
+    EmuVScr_WriteStr(CRAY1_Panel^,
+     '[trap COS service ' + IntToStr(Service) + ' inconnu]');
+  End;
+End;
+
+Procedure CRAY1_Step;
+Var
+  P0, P1: Word;
+  Op, I, J, K: Integer;
+  Imm22: LongInt;
+  Service: Integer;
+Begin
+  If (CRAY1_PC < 0) Or (CRAY1_PC >= 65536) Then
+  Begin
+    CRAY1_Halted := True;
+    CRAY1_ExitCode := 1;
+    Exit;
+  End;
+  P0 := CRAY1_Mem[CRAY1_PC];
+  Op := (P0 Shr 9) And $7F;
+  I  := (P0 Shr 6) And $07;
+  J  := (P0 Shr 3) And $07;
+  K  := P0 And $07;
+  Case Op Of
+    $01: { ERR }
+      Begin CRAY1_Halted := True; CRAY1_ExitCode := 1; End;
+    $04: { EX trap }
+      Begin
+        Service := (J Shl 3) Or K;
+        CRAY1_Trap(Service);
+        Inc(CRAY1_PC);
+      End;
+    $05, $09, $0A, $0B, $0C: { jumps Format2 imm22 }
+      Begin
+        P1 := CRAY1_Mem[CRAY1_PC + 1];
+        Imm22 := ((LongInt(J) Shl 19) Or (LongInt(K) Shl 16) Or P1)
+                 And $3FFFFF;
+        Case Op Of
+          $05: CRAY1_PC := Imm22;
+          $09: If CRAY1_Reg[I] = 0 Then CRAY1_PC := Imm22
+               Else CRAY1_PC := CRAY1_PC + 2;
+          $0A: If CRAY1_Reg[I] <> 0 Then CRAY1_PC := Imm22
+               Else CRAY1_PC := CRAY1_PC + 2;
+          $0B: If CRAY1_Reg[I] >= 0 Then CRAY1_PC := Imm22
+               Else CRAY1_PC := CRAY1_PC + 2;
+          $0C: If CRAY1_Reg[I] < 0 Then CRAY1_PC := Imm22
+               Else CRAY1_PC := CRAY1_PC + 2;
+        End;
+      End;
+    $20: { MOVS Si <- Sj }
+      Begin CRAY1_Reg[I] := CRAY1_Reg[J];
+            If I = 0 Then CRAY1_Reg[0] := 0;
+            Inc(CRAY1_PC); End;
+    $30:
+      Begin CRAY1_Reg[I] := CRAY1_Reg[J] + CRAY1_Reg[K];
+            If I = 0 Then CRAY1_Reg[0] := 0;
+            Inc(CRAY1_PC); End;
+    $31:
+      Begin CRAY1_Reg[I] := CRAY1_Reg[J] - CRAY1_Reg[K];
+            If I = 0 Then CRAY1_Reg[0] := 0;
+            Inc(CRAY1_PC); End;
+    $34:
+      Begin CRAY1_Reg[I] := CRAY1_Reg[J] And CRAY1_Reg[K];
+            If I = 0 Then CRAY1_Reg[0] := 0;
+            Inc(CRAY1_PC); End;
+    $35:
+      Begin CRAY1_Reg[I] := CRAY1_Reg[J] Xor CRAY1_Reg[K];
+            If I = 0 Then CRAY1_Reg[0] := 0;
+            Inc(CRAY1_PC); End;
+    $36:
+      Begin CRAY1_Reg[I] := CRAY1_Reg[J] Or CRAY1_Reg[K];
+            If I = 0 Then CRAY1_Reg[0] := 0;
+            Inc(CRAY1_PC); End;
+    $40: { LDS Si <- M(imm22), 16-bit signe }
+      Begin
+        P1 := CRAY1_Mem[CRAY1_PC + 1];
+        Imm22 := ((LongInt(J) Shl 19) Or (LongInt(K) Shl 16) Or P1)
+                 And $3FFFFF;
+        If (Imm22 >= 0) And (Imm22 < 65536) Then
+          CRAY1_Reg[I] := SmallInt(CRAY1_Mem[Imm22])
+        Else
+          CRAY1_Reg[I] := 0;
+        If I = 0 Then CRAY1_Reg[0] := 0;
+        CRAY1_PC := CRAY1_PC + 2;
+      End;
+    $48: { STS M(imm22) <- Si }
+      Begin
+        P1 := CRAY1_Mem[CRAY1_PC + 1];
+        Imm22 := ((LongInt(J) Shl 19) Or (LongInt(K) Shl 16) Or P1)
+                 And $3FFFFF;
+        If (Imm22 >= 0) And (Imm22 < 65536) Then
+          CRAY1_Mem[Imm22] := CRAY1_Reg[I] And $FFFF;
+        CRAY1_PC := CRAY1_PC + 2;
+      End;
+    $60: { LDIMM Si <- imm22 sign-extend }
+      Begin
+        P1 := CRAY1_Mem[CRAY1_PC + 1];
+        Imm22 := (LongInt(J) Shl 19) Or (LongInt(K) Shl 16) Or P1;
+        CRAY1_Reg[I] := CRAY1_SignExt22(Imm22);
+        If I = 0 Then CRAY1_Reg[0] := 0;
+        CRAY1_PC := CRAY1_PC + 2;
+      End;
+  Else
+    EmuVScr_WriteStr(CRAY1_Panel^,
+     '[opcode Cray-1 inconnu $' + M68K_HexN(Op, 2) +
+     ' au PC $' + M68K_HexN(CRAY1_PC, 4) + ']');
+    CRAY1_Halted := True;
+    CRAY1_ExitCode := 1;
+  End;
+End;
+
 Function Emu_FaultText(F: Integer): String;
 Begin
  Case F Of
@@ -26367,6 +26590,7 @@ Var
  Steps: LongInt;
  IsX86: Boolean;
  IsM68K: Boolean;
+ IsCray: Boolean;
  CPUName: String;
  EntryAddr: LongInt;
 Begin
@@ -26380,6 +26604,7 @@ Begin
  IsX86 := (TargetCPU = '-CD') Or (TargetCPU = '-CP');
  IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
            (TargetCPU = '-CAMIGA');
+ IsCray := (TargetCPU = '-CCRAY1');
  If TargetCPU = '-CZ80'    Then CPUName := 'Zilog Z80'
  Else If TargetCPU = '-C6502'   Then CPUName := 'MOS 6502'
  Else If TargetCPU = '-C6809'   Then CPUName := 'Motorola 6809'
@@ -26388,6 +26613,7 @@ Begin
  Else If TargetCPU = '-CAMIGA'  Then CPUName := 'Amiga 68000'
  Else If TargetCPU = '-CD'      Then CPUName := 'Intel 8086 mode reel'
  Else If TargetCPU = '-CP'      Then CPUName := 'Intel 8086 mode protege'
+ Else If TargetCPU = '-CCRAY1'  Then CPUName := 'Cray-1 (COS)'
  Else CPUName := TargetCPU;
  OldFg := P.CurFg; OldBg := P.CurBg;
  P.CurFg := 14; P.CurBg := 1;
@@ -26475,6 +26701,67 @@ Begin
   P.Running := False;
   P.Fault := sfEndProgram;
   P.StatusMsg := 'Emulateur 68000 : ' + IntToStr(Steps) + ' instr.';
+  Exit;
+ End;
+ If IsCray Then Begin
+  { ----- Emulateur Cray-1 ----- }
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 14;
+  EmuVScr_WriteStr(P, 'Chargement du binaire Cray-1 (COS Absolute)...');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 7;
+  For Steps := 0 To 7 Do CRAY1_Reg[Steps] := 0;
+  CRAY1_PC := 0;
+  CRAY1_Halted := False;
+  CRAY1_ExitCode := 0;
+  CRAY1_Cycles := 0;
+  CRAY1_Panel := @P;
+  EntryAddr := 0;
+  Loaded := CRAY1_LoadAbs(BinaryPath, EntryAddr);
+  If Not Loaded Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P,
+    'Erreur : impossible de charger ' + BinaryPath);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P,
+    '(format attendu : COS Absolute Binary, signature CRAY-1)');
+   P.CurFg := OldFg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec chargement binaire Cray-1';
+   Exit;
+  End;
+  { Le backend TPCW32 place le code utilisateur a parcel 0,         }
+  { l entree COS pointe ailleurs ($0200 typiquement). On execute    }
+  { directement le code utilisateur.                                }
+  CRAY1_PC := 0;
+  P.CurFg := 10;
+  EmuVScr_WriteStr(P, 'Programme charge (entree COS=$' +
+   M68K_HexN(EntryAddr, 4) + ', execution depuis $0000)');
+  P.CurFg := 7;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  Steps := 0;
+  While (Not CRAY1_Halted) And (Steps < 1000000) Do Begin
+   CRAY1_Step;
+   Inc(Steps);
+  End;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 11;
+  If CRAY1_Halted Then
+   EmuVScr_WriteStr(P, '[Fin Cray-1 : ' +
+    IntToStr(Steps) + ' instructions, code=' +
+    IntToStr(CRAY1_ExitCode) + ']')
+  Else
+   EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
+  P.CurFg := OldFg;
+  P.CurBg := OldBg;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+  P.Running := False;
+  P.Fault := sfEndProgram;
+  P.StatusMsg := 'Emulateur Cray-1 : ' + IntToStr(Steps) + ' instr.';
   Exit;
  End;
  If Not IsX86 Then Begin
