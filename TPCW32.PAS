@@ -34021,6 +34021,88 @@ Begin
   End;
 End;
 
+{ --- WriteSRecordFile : generation d un fichier S-Record Motorola (.s19)  }
+{ Format Motorola S-Record :                                                }
+{   S0 : header                                                              }
+{   S1 : data record (adresse 16 bits + donnees + checksum)                 }
+{   S9 : termination (entry point 16 bits + checksum)                       }
+{ Layout memoire : code en 0..TextLen-1, data juste apres aligne sur 4 .    }
+{ Limitation : adresses 16 bits, donc max 64 Ko de code+data combines.      }
+Procedure WriteSRecordFile(FileName: TString);
+Var
+  F: Text;
+  TextLen, DataLen, TotalLen, DataBase, Addr, RemBytes, Chunk, K: LongInt;
+  Sum: Word;
+  Line: TString;
+
+  Function SRHexB(B: Byte): TString;
+  Const Hex: Array[0..15] Of Char =
+    ('0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F');
+  Begin
+    SRHexB := Hex[B Shr 4] + Hex[B And $F];
+  End;
+
+  Function SRHexW(W: Word): TString;
+  Begin
+    SRHexW := SRHexB(Hi(W)) + SRHexB(Lo(W));
+  End;
+
+  Function GetByte(Ofs: LongInt): Byte;
+  Begin
+    If Ofs < 0 Then
+      GetByte := 0
+    Else If Ofs < TextLen Then
+      GetByte := BcCode[Ofs]
+    Else If (Ofs >= DataBase) And ((Ofs - DataBase) < DataLen) Then
+      GetByte := BcData[Ofs - DataBase]
+    Else
+      GetByte := 0;
+  End;
+
+Begin
+  TextLen := BcCodeLen;
+  DataLen := BcDataLen;
+  DataBase := (TextLen + 3) And Not 3;
+  TotalLen := DataBase + DataLen;
+
+  { Resoudre les fixups : code en 0, data en DataBase }
+  BcResolveFixups68k(0, DataBase);
+
+  Assign(F, FileName);
+  Rewrite(F);
+
+  { S0 : header minimal }
+  Sum := $03 + 0 + 0;
+  Line := 'S0' + SRHexB($03) + SRHexW(0) + SRHexB(Byte(Not Byte(Sum)));
+  WriteLn(F, Line);
+
+  { S1 records : max 32 octets de donnees par ligne }
+  Addr := 0;
+  RemBytes := TotalLen;
+  While RemBytes > 0 Do
+  Begin
+    If RemBytes > 32 Then Chunk := 32 Else Chunk := RemBytes;
+    Sum := (Chunk + 3) + ((Addr Shr 8) And $FF) + (Addr And $FF);
+    Line := 'S1' + SRHexB(Byte(Chunk + 3)) + SRHexW(Word(Addr));
+    For K := 0 To Chunk - 1 Do
+    Begin
+      Line := Line + SRHexB(GetByte(Addr + K));
+      Sum := Sum + GetByte(Addr + K);
+    End;
+    Line := Line + SRHexB(Byte(Not Byte(Sum)));
+    WriteLn(F, Line);
+    Addr := Addr + Chunk;
+    RemBytes := RemBytes - Chunk;
+  End;
+
+  { S9 : termination avec entry point a 0 }
+  Sum := $03 + 0 + 0;
+  Line := 'S9' + SRHexB($03) + SRHexW(0) + SRHexB(Byte(Not Byte(Sum)));
+  WriteLn(F, Line);
+
+  Close(F);
+End;
+
 { --- WritePRGFile : generation d un executable Atari ST (.PRG) --- }
 Procedure WritePRGFile(FileName: TString);
 Var
@@ -35846,12 +35928,22 @@ Begin
       WriteAmigaHunkFile(Opts.OutFile);
       If Opts.Verbose Then
         WriteLn('  Amiga Hunk genere : ', Opts.OutFile);
+      { Generer egalement un .s19 (S-Record Motorola) pour les emulateurs }
+      WriteSRecordFile(ReplaceExt(Opts.OutFile, '.s19'));
+      If Opts.Verbose Then
+        WriteLn('  S-Record genere  : ',
+          ReplaceExt(Opts.OutFile, '.s19'));
     End
     Else If Is68kTarget Then
     Begin
       WritePRGFile(Opts.OutFile);
       If Opts.Verbose Then
         WriteLn('  Atari ST PRG genere : ', Opts.OutFile);
+      { Generer egalement un .s19 (S-Record Motorola) pour les emulateurs }
+      WriteSRecordFile(ReplaceExt(Opts.OutFile, '.s19'));
+      If Opts.Verbose Then
+        WriteLn('  S-Record genere  : ',
+          ReplaceExt(Opts.OutFile, '.s19'));
     End
     Else
     Begin
