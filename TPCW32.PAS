@@ -95,6 +95,10 @@ Const
   DEST_C64    = 12; { -CC64 : Commodore 64 (6502/6510) }
   DEST_COCO3  = 13; { -CCOCO3 : Tandy CoCo 3 (6809) }
   DEST_TRS80  = 14; { -CTRS80 : Tandy TRS-80 Model I (Z80) }
+  DEST_ATARI400 = 15; { -CATARI400 : Atari 400 (6502) }
+  DEST_ATARI800 = 16; { -CATARI800 : Atari 800 (6502) }
+  DEST_MSX    = 17; { -CMSX : MSX (Z80, MSX-DOS) }
+  DEST_NES    = 18; { -CNES : Nintendo Entertainment System (6502/Ricoh 2A03) }
 
 Type
   TString = String;
@@ -130,11 +134,15 @@ Type
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
     ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
     Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
-    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3/-CTRS80 : destination }
+    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3/-CTRS80/-CATARI400/-CATARI800/-CMSX/-CNES : destination }
     AppleII     : Boolean;   { True si la plateforme est Apple II (CPU = 6502) }
     C64         : Boolean;   { True si la plateforme est Commodore 64 (CPU = 6510 ~ 6502) }
     CoCo3       : Boolean;   { True si la plateforme est Tandy CoCo 3 (CPU = 6809) }
     TRS80       : Boolean;   { True si la plateforme est Tandy TRS-80 Model I (CPU = Z80) }
+    Atari400    : Boolean;   { True si la plateforme est Atari 400 (CPU = 6502) }
+    Atari800    : Boolean;   { True si la plateforme est Atari 800 (CPU = 6502) }
+    MSX         : Boolean;   { True si la plateforme est MSX (CPU = Z80) }
+    NES         : Boolean;   { True si la plateforme est NES (CPU = Ricoh 2A03 ~ 6502) }
   End;
 
 Var
@@ -315,6 +323,10 @@ Begin
   Opts.C64 := False;
   Opts.CoCo3 := False;
   Opts.TRS80 := False;
+  Opts.Atari400 := False;
+  Opts.Atari800 := False;
+  Opts.MSX := False;
+  Opts.NES := False;
   Opts.ObjOnly   := False;
   Opts.Dos16Mode := False;
   Opts.TPVersion := TP_VER_DEFAULT;
@@ -390,6 +402,10 @@ Begin
   WriteLn('  -CC64          Destination Commodore 64 (6502/6510)');
   WriteLn('  -CCOCO3        Destination Tandy CoCo 3 (6809)');
   WriteLn('  -CTRS80        Destination Tandy TRS-80 Model I (Z80)');
+  WriteLn('  -CATARI400     Destination Atari 400 (6502)');
+  WriteLn('  -CATARI800     Destination Atari 800 (6502)');
+  WriteLn('  -CMSX          Destination MSX (Z80, MSX-DOS)');
+  WriteLn('  -CNES          Destination Nintendo Entertainment System (6502/Ricoh 2A03)');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -530,6 +546,26 @@ Begin
       Opts.DestTarget := DEST_Z80;
       Opts.TRS80 := True;
     End
+    Else If (UA = '-CATARI400') Then
+    Begin
+      Opts.DestTarget := DEST_6502;
+      Opts.Atari400 := True;
+    End
+    Else If (UA = '-CATARI800') Then
+    Begin
+      Opts.DestTarget := DEST_6502;
+      Opts.Atari800 := True;
+    End
+    Else If (UA = '-CMSX') Then
+    Begin
+      Opts.DestTarget := DEST_Z80;
+      Opts.MSX := True;
+    End
+    Else If (UA = '-CNES') Then
+    Begin
+      Opts.DestTarget := DEST_6502;
+      Opts.NES := True;
+    End
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
@@ -632,6 +668,14 @@ Begin
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.bin')
     Else If Opts.TRS80 Then
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.cmd')
+    Else If Opts.Atari400 Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.xex')
+    Else If Opts.Atari800 Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.xex')
+    Else If Opts.MSX Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.com')
+    Else If Opts.NES Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.nes')
     Else
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
   End;
@@ -34167,6 +34211,176 @@ End;
 {   Terminateur: $02 $02 aaaa (entry point LE)                             }
 { Adresse de chargement et entree par defaut : $5200 (au-dessus DOS).      }
 { Charge sur TRS-80 Model I via TRSDOS/LDOS : commande nom_fichier <ENTER> }
+{ --- WriteAtari400XexFile : binaire Atari 400/800 (.XEX format DOS 2)     }
+{ Format XEX :                                                             }
+{   Header   : $FF $FF (magic obligatoire pour le 1er segment)             }
+{   Segment  : start(2 LE) + end(2 LE) + bytes (end-start+1 octets)        }
+{   Optionnel: segment INIT $02E2/$02E3 ou RUN $02E0/$02E1 (entry vector)  }
+{ Adresse de chargement par defaut : $2000 (zone usager Atari 400/800).    }
+{ Le segment RUN ($02E0/$02E1) pointe sur l'entry pour exec automatique.   }
+{ --- WriteMsxComFile : binaire MSX-DOS (.COM, format CP/M)                }
+{ Format COM : raw bytes charges a $0100 (TPA), execution commence a $0100.}
+{ MSX-DOS est compatible CP/M-80, donc le format est identique au .COM     }
+{ CP/M : pas d'entete, juste les octets bruts.                             }
+{ Sur MSX, lance via MSX-DOS : A:>NOM <ENTER>                              }
+{ --- WriteNesRomFile : ROM Nintendo Entertainment System (.NES, iNES)     }
+{ Format iNES :                                                            }
+{   Header (16 octets) :                                                   }
+{     0..3  : magic 'NES' + $1A                                            }
+{     4     : taille PRG-ROM en blocs de 16 KB                             }
+{     5     : taille CHR-ROM en blocs de 8  KB (0 = CHR-RAM)               }
+{     6     : flags 6  (mapper bas + mirroring) -> $00 (NROM, horizontal)  }
+{     7     : flags 7  (mapper haut)             -> $00                    }
+{     8..15 : reserve (zero)                                               }
+{   PRG-ROM : code+data, padding a 16 KB. Mappee en $8000 (NROM-128 mirror }
+{             vers $C000).                                                 }
+{   Vecteurs ($FFFA..$FFFF) ecrasent la fin du dernier bloc PRG :          }
+{     $FFFA/B : NMI vector  -> $8000                                       }
+{     $FFFC/D : RESET vector -> $8000 (entry point)                        }
+{     $FFFE/F : IRQ vector  -> $8000                                       }
+Procedure WriteNesRomFile(FileName: TString);
+Const
+  PRG_BLOCK_SIZE = 16384; { 16 KB }
+  ENTRY_ADDR     = $8000;
+Var
+  F: File;
+  TextLen, DataLen, DataBase, Payload, PrgSize: LongInt;
+  PadLen, I: LongInt;
+  PadByte: Byte;
+  Header: Array[0..15] Of Byte;
+  Prg: Array Of Byte;
+  PrgBlocks: Byte;
+Begin
+  TextLen := BcCodeLen;
+  DataLen := BcDataLen;
+  DataBase := (TextLen + 3) And Not 3;
+  Payload := DataBase + DataLen;
+  If Payload < TextLen Then Payload := TextLen;
+  If Payload < 1 Then Payload := 1;
+
+  { Calcule le nombre de blocs 16 KB necessaires (au moins 1) }
+  PrgBlocks := 1;
+  While (LongInt(PrgBlocks) * PRG_BLOCK_SIZE) < (Payload + 6) Do
+    Inc(PrgBlocks);
+  PrgSize := LongInt(PrgBlocks) * PRG_BLOCK_SIZE;
+
+  { Construit le PRG-ROM }
+  SetLength(Prg, PrgSize);
+  For I := 0 To PrgSize - 1 Do Prg[I] := $FF;
+  For I := 0 To TextLen - 1 Do Prg[I] := BcCode[I];
+  For I := 0 To DataLen - 1 Do Prg[DataBase + I] := BcData[I];
+
+  { Vecteurs NMI/RESET/IRQ a la fin du dernier bloc (offset PrgSize-6..-1) }
+  Prg[PrgSize - 6] := ENTRY_ADDR And $FF;          { NMI lo }
+  Prg[PrgSize - 5] := (ENTRY_ADDR Shr 8) And $FF;  { NMI hi }
+  Prg[PrgSize - 4] := ENTRY_ADDR And $FF;          { RESET lo }
+  Prg[PrgSize - 3] := (ENTRY_ADDR Shr 8) And $FF;  { RESET hi }
+  Prg[PrgSize - 2] := ENTRY_ADDR And $FF;          { IRQ lo }
+  Prg[PrgSize - 1] := (ENTRY_ADDR Shr 8) And $FF;  { IRQ hi }
+
+  { Header iNES }
+  FillChar(Header, 16, 0);
+  Header[0] := Ord('N');
+  Header[1] := Ord('E');
+  Header[2] := Ord('S');
+  Header[3] := $1A;
+  Header[4] := PrgBlocks;  { PRG en blocs 16 KB }
+  Header[5] := 0;          { CHR-RAM }
+  Header[6] := $00;        { mapper 0 (NROM), mirroring horizontal }
+  Header[7] := $00;
+
+  Assign(F, FileName);
+  Rewrite(F, 1);
+  BlockWrite(F, Header, 16);
+  BlockWrite(F, Prg[0], PrgSize);
+  Close(F);
+
+  { Eviter warnings unused }
+  PadByte := 0; PadLen := 0;
+  If PadByte = PadLen Then;
+End;
+
+Procedure WriteMsxComFile(FileName: TString);
+Var
+  F: File;
+  TextLen, DataLen, DataBase: LongInt;
+  PadLen: LongInt;
+  PadByte: Byte;
+Begin
+  TextLen := BcCodeLen;
+  DataLen := BcDataLen;
+  DataBase := (TextLen + 3) And Not 3;
+
+  Assign(F, FileName);
+  Rewrite(F, 1);
+  If TextLen > 0 Then
+    BlockWrite(F, BcCode[0], TextLen);
+  PadByte := 0;
+  PadLen := DataBase - TextLen;
+  While PadLen > 0 Do
+  Begin BlockWrite(F, PadByte, 1); Dec(PadLen); End;
+  If DataLen > 0 Then
+    BlockWrite(F, BcData[0], DataLen);
+  Close(F);
+End;
+
+Procedure WriteAtari400XexFile(FileName: TString);
+Const
+  ATARI_LOAD_ADDR = $2000;
+  ATARI_RUN_VEC   = $02E0;
+Var
+  F: File;
+  TextLen, DataLen, DataBase, TotalLen: LongInt;
+  PadLen: LongInt;
+  PadByte: Byte;
+  EndAddr: Word;
+  Magic: Array[0..1] Of Byte;
+  SegHdr: Array[0..3] Of Byte;
+  RunSeg: Array[0..5] Of Byte;
+Begin
+  TextLen := BcCodeLen;
+  DataLen := BcDataLen;
+  DataBase := (TextLen + 3) And Not 3;
+  TotalLen := DataBase + DataLen;
+  If TotalLen < TextLen Then TotalLen := TextLen;
+  If TotalLen < 1 Then TotalLen := 1;
+
+  EndAddr := (ATARI_LOAD_ADDR + TotalLen - 1) And $FFFF;
+
+  { Magic $FF $FF }
+  Magic[0] := $FF;
+  Magic[1] := $FF;
+
+  { Segment principal : start LE + end LE }
+  SegHdr[0] := ATARI_LOAD_ADDR And $FF;
+  SegHdr[1] := (ATARI_LOAD_ADDR Shr 8) And $FF;
+  SegHdr[2] := EndAddr And $FF;
+  SegHdr[3] := (EndAddr Shr 8) And $FF;
+
+  { Segment RUN : $02E0 $02E1 + entry LE }
+  RunSeg[0] := ATARI_RUN_VEC And $FF;
+  RunSeg[1] := (ATARI_RUN_VEC Shr 8) And $FF;
+  RunSeg[2] := (ATARI_RUN_VEC + 1) And $FF;
+  RunSeg[3] := ((ATARI_RUN_VEC + 1) Shr 8) And $FF;
+  RunSeg[4] := ATARI_LOAD_ADDR And $FF;
+  RunSeg[5] := (ATARI_LOAD_ADDR Shr 8) And $FF;
+
+  Assign(F, FileName);
+  Rewrite(F, 1);
+  BlockWrite(F, Magic, 2);
+  BlockWrite(F, SegHdr, 4);
+  If TextLen > 0 Then
+    BlockWrite(F, BcCode[0], TextLen);
+  PadByte := 0;
+  PadLen := DataBase - TextLen;
+  While PadLen > 0 Do
+  Begin BlockWrite(F, PadByte, 1); Dec(PadLen); End;
+  If DataLen > 0 Then
+    BlockWrite(F, BcData[0], DataLen);
+  BlockWrite(F, RunSeg, 6);
+  Close(F);
+End;
+
 Procedure WriteTRS80CmdFile(FileName: TString);
 Const
   TRS80_LOAD_ADDR = $5200;
@@ -36220,6 +36434,30 @@ Begin
       WriteTRS80CmdFile(Opts.OutFile);
       If Opts.Verbose Then
         WriteLn('  TRS-80 Model I CMD genere : ', Opts.OutFile);
+    End
+    Else If Opts.Atari400 Then
+    Begin
+      WriteAtari400XexFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  Atari 400 XEX genere : ', Opts.OutFile);
+    End
+    Else If Opts.Atari800 Then
+    Begin
+      WriteAtari400XexFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  Atari 800 XEX genere : ', Opts.OutFile);
+    End
+    Else If Opts.MSX Then
+    Begin
+      WriteMsxComFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  MSX-DOS COM genere : ', Opts.OutFile);
+    End
+    Else If Opts.NES Then
+    Begin
+      WriteNesRomFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  NES ROM (iNES) genere : ', Opts.OutFile);
     End
     Else
     Begin
