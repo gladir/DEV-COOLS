@@ -94,6 +94,7 @@ Const
   DEST_APPLEII = 11; { -CAPPLEII : Apple II (6502) }
   DEST_C64    = 12; { -CC64 : Commodore 64 (6502/6510) }
   DEST_COCO3  = 13; { -CCOCO3 : Tandy CoCo 3 (6809) }
+  DEST_TRS80  = 14; { -CTRS80 : Tandy TRS-80 Model I (Z80) }
 
 Type
   TString = String;
@@ -129,10 +130,11 @@ Type
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
     ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
     Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
-    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3 : destination }
+    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3/-CTRS80 : destination }
     AppleII     : Boolean;   { True si la plateforme est Apple II (CPU = 6502) }
     C64         : Boolean;   { True si la plateforme est Commodore 64 (CPU = 6510 ~ 6502) }
     CoCo3       : Boolean;   { True si la plateforme est Tandy CoCo 3 (CPU = 6809) }
+    TRS80       : Boolean;   { True si la plateforme est Tandy TRS-80 Model I (CPU = Z80) }
   End;
 
 Var
@@ -312,6 +314,7 @@ Begin
   Opts.AppleII := False;
   Opts.C64 := False;
   Opts.CoCo3 := False;
+  Opts.TRS80 := False;
   Opts.ObjOnly   := False;
   Opts.Dos16Mode := False;
   Opts.TPVersion := TP_VER_DEFAULT;
@@ -386,6 +389,7 @@ Begin
   WriteLn('  -CAPPLEII      Destination Apple II (6502)');
   WriteLn('  -CC64          Destination Commodore 64 (6502/6510)');
   WriteLn('  -CCOCO3        Destination Tandy CoCo 3 (6809)');
+  WriteLn('  -CTRS80        Destination Tandy TRS-80 Model I (Z80)');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -521,6 +525,11 @@ Begin
       Opts.DestTarget := DEST_6809;
       Opts.CoCo3 := True;
     End
+    Else If (UA = '-CTRS80') Then
+    Begin
+      Opts.DestTarget := DEST_Z80;
+      Opts.TRS80 := True;
+    End
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
@@ -621,6 +630,8 @@ Begin
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.prg')
     Else If Opts.CoCo3 Then
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.bin')
+    Else If Opts.TRS80 Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.cmd')
     Else
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
   End;
@@ -34148,6 +34159,81 @@ End;
 {   Postamble: $FF + $00 $00 + entry addr(2 BE)                            }
 { Adresse de chargement et entree par defaut : $2000 (zone usager CoCo 3). }
 { Charge sur CoCo 3 via : LOADM"PROG":EXEC                                 }
+{ --- WriteTRS80CmdFile : binaire TRS-80 Model I (.CMD format TRSDOS/LDOS) }
+{ Format /CMD :                                                            }
+{   Bloc data : $01 LL aaaa data... (LL = (count+2) mod 256, 0 => 256)     }
+{                LL inclut les 2 octets d'adresse, donc payload = LL-2     }
+{                Si LL=2 -> payload = 256 octets                           }
+{   Terminateur: $02 $02 aaaa (entry point LE)                             }
+{ Adresse de chargement et entree par defaut : $5200 (au-dessus DOS).      }
+{ Charge sur TRS-80 Model I via TRSDOS/LDOS : commande nom_fichier <ENTER> }
+Procedure WriteTRS80CmdFile(FileName: TString);
+Const
+  TRS80_LOAD_ADDR = $5200;
+Var
+  F: File;
+  TextLen, DataLen, DataBase, TotalLen: LongInt;
+  PadLen, Remaining, ChunkLen, Pos: LongInt;
+  PadByte: Byte;
+  CurAddr: Word;
+  Header: Array[0..3] Of Byte;
+  Tail: Array[0..3] Of Byte;
+  Buf: Array[0..255] Of Byte;
+  I: LongInt;
+Begin
+  TextLen := BcCodeLen;
+  DataLen := BcDataLen;
+  DataBase := (TextLen + 3) And Not 3;
+  TotalLen := DataBase + DataLen;
+  If TotalLen < TextLen Then TotalLen := TextLen;
+
+  Assign(F, FileName);
+  Rewrite(F, 1);
+
+  CurAddr := TRS80_LOAD_ADDR;
+  Pos := 0;
+  Remaining := TotalLen;
+  While Remaining > 0 Do
+  Begin
+    If Remaining > 256 Then ChunkLen := 256 Else ChunkLen := Remaining;
+    { Construire le chunk en lisant code, padding, data }
+    For I := 0 To ChunkLen - 1 Do
+    Begin
+      If (Pos + I) < TextLen Then
+        Buf[I] := BcCode[Pos + I]
+      Else If (Pos + I) < DataBase Then
+        Buf[I] := 0
+      Else
+        Buf[I] := BcData[(Pos + I) - DataBase];
+    End;
+    Header[0] := $01;
+    If ChunkLen = 256 Then
+      Header[1] := 2
+    Else
+      Header[1] := (ChunkLen + 2) And $FF;
+    Header[2] := CurAddr And $FF;
+    Header[3] := (CurAddr Shr 8) And $FF;
+    BlockWrite(F, Header, 4);
+    BlockWrite(F, Buf, ChunkLen);
+    Inc(CurAddr, ChunkLen);
+    Inc(Pos, ChunkLen);
+    Dec(Remaining, ChunkLen);
+  End;
+
+  { Terminateur : $02 $02 entry(LE) }
+  Tail[0] := $02;
+  Tail[1] := $02;
+  Tail[2] := TRS80_LOAD_ADDR And $FF;
+  Tail[3] := (TRS80_LOAD_ADDR Shr 8) And $FF;
+  BlockWrite(F, Tail, 4);
+
+  { Eviter warnings unused }
+  PadByte := 0; PadLen := 0;
+  If PadByte = PadLen Then;
+
+  Close(F);
+End;
+
 Procedure WriteCoCo3BinFile(FileName: TString);
 Const
   COCO3_LOAD_ADDR = $2000;
@@ -36128,6 +36214,12 @@ Begin
       WriteCoCo3BinFile(Opts.OutFile);
       If Opts.Verbose Then
         WriteLn('  CoCo 3 BIN genere : ', Opts.OutFile);
+    End
+    Else If Opts.TRS80 Then
+    Begin
+      WriteTRS80CmdFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  TRS-80 Model I CMD genere : ', Opts.OutFile);
     End
     Else
     Begin
