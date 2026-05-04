@@ -2470,6 +2470,8 @@ Type
   PanelY     : Integer;
   CharW      : Integer;          { largeur d un caractere (px)     }
   CharH      : Integer;          { hauteur d un caractere (px)     }
+  Cols       : Integer;          { colonnes effectives (40 ou 80)  }
+  Rows       : Integer;          { lignes effectives (typ. 25)     }
   NeedRepaint: Boolean;          { redessin complet requis         }
   StatusMsg  : String[127];      { message d etat affiche en bas   }
  End;
@@ -22071,6 +22073,8 @@ Begin
  P.KeyTail := 0;
  P.CharW := 8;
  P.CharH := 14;
+ P.Cols := 80;
+ P.Rows := 25;
  P.PanelX := 0;
  P.PanelY := 0;
  P.NeedRepaint := True;
@@ -22121,8 +22125,8 @@ End;
 
 Procedure EmuVScr_GotoXY(Var P: TEmulatorPanel; X, Y: Byte);
 Begin
- If X > 79 Then X := 79;
- If Y > 24 Then Y := 24;
+ If X > P.Cols - 1 Then X := P.Cols - 1;
+ If Y > P.Rows - 1 Then Y := P.Rows - 1;
  P.CursorX := X;
  P.CursorY := Y;
  P.NeedRepaint := True;
@@ -22139,14 +22143,14 @@ Begin
   #9: { Tab : prochain multiple de 8 }
    Begin
     P.CursorX := (P.CursorX Or 7) + 1;
-    If P.CursorX > 79 Then P.CursorX := 79;
+    If P.CursorX > P.Cols - 1 Then P.CursorX := P.Cols - 1;
    End;
   #10: { LF }
    Begin
     Inc(P.CursorY);
-    If P.CursorY > 24 Then Begin
+    If P.CursorY > P.Rows - 1 Then Begin
      EmuVScr_Scroll(P);
-     P.CursorY := 24;
+     P.CursorY := P.Rows - 1;
     End;
    End;
   #13: { CR }
@@ -22156,12 +22160,12 @@ Begin
    P.VRAM[P.CursorY, P.CursorX].Fg := P.CurFg;
    P.VRAM[P.CursorY, P.CursorX].Bg := P.CurBg;
    Inc(P.CursorX);
-   If P.CursorX > 79 Then Begin
+   If P.CursorX > P.Cols - 1 Then Begin
     P.CursorX := 0;
     Inc(P.CursorY);
-    If P.CursorY > 24 Then Begin
+    If P.CursorY > P.Rows - 1 Then Begin
      EmuVScr_Scroll(P);
-     P.CursorY := 24;
+     P.CursorY := P.Rows - 1;
     End;
    End;
   End;
@@ -22291,8 +22295,8 @@ Begin
  ScrH := GetScreenHeight;
  { Le panneau couvre toute la zone editeur (sous le menu/toolbar,
    au dessus de la barre d etat). Pour simplicite, on le centre. }
- GridW := 80 * P.CharW;          { 640 px }
- GridH := 25 * P.CharH;          { 350 px }
+ GridW := P.Cols * P.CharW;
+ GridH := P.Rows * P.CharH;
  P.PanelX := (ScrW - GridW) Div 2;
  P.PanelY := 80;                 { sous menu+toolbar }
  If P.PanelY + GridH + 60 > ScrH Then
@@ -22312,16 +22316,15 @@ Begin
  DrawText(P.PanelX + 6, P.PanelY + 6, Title, CLR_HIGHLIGHTTEXT);
  DrawText(P.PanelX + GridW - 100, P.PanelY + 6,
   '[Esc] Fermer', CLR_HIGHLIGHTTEXT);
- { Fond noir de l ecran emule (palette 8 = gris fonce, pas 0
-   pour eviter le remapping global de SetBkColor) }
- DrawFilledRect(GridX, GridY, GridX + GridW, GridY + GridH, EmuColor(0));
+ { Fond de l ecran emule }
+ DrawFilledRect(GridX, GridY, GridX + GridW, GridY + GridH, EmuColor(P.CurBg));
  { Cellules : dessiner chaque caractere avec son attribut.
    On peint TOUJOURS le fond (meme noir) afin que les glyphes
    d OutTextXY (qui utilisent SetBkColor) n affichent pas le
    gris du bureau a la place du fond demande. }
- For Y := 0 To 24 Do Begin
+ For Y := 0 To P.Rows - 1 Do Begin
   PixY := GridY + Y * P.CharH;
-  For X := 0 To 79 Do Begin
+  For X := 0 To P.Cols - 1 Do Begin
    Cell := P.VRAM[Y, X];
    PixX := GridX + X * P.CharW;
    { Toujours dessiner le fond de la cellule }
@@ -29243,6 +29246,23 @@ Begin
  P.Visible := True;
  P.Running := True;
  P.Fault := 0;
+ { Geometrie et couleurs specifiques C64 : 40 colonnes, fond bleu, texte cyan }
+ If TargetCPU = '-CC64' Then
+ Begin
+  P.Cols := 40;
+  P.Rows := 25;
+  P.CurFg := 11;  { cyan clair }
+  P.CurBg := 1;   { bleu       }
+  EmuVScr_Clear(P);
+ End
+ Else If TargetCPU = '-CMSX' Then
+ Begin
+  P.Cols := 40;
+  P.Rows := 25;
+  P.CurFg := 15;  { blanc      }
+  P.CurBg := 9;   { bleu clair }
+  EmuVScr_Clear(P);
+ End;
  IsX86 := (TargetCPU = '-CD') Or (TargetCPU = '-CP');
  IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
            (TargetCPU = '-CAMIGA');
@@ -29281,9 +29301,9 @@ Begin
  Else If TargetCPU = '-CMO5'     Then CPUName := 'Thomson MO5 (6809)'
  Else CPUName := TargetCPU;
  OldFg := P.CurFg; OldBg := P.CurBg;
- P.CurFg := 14; P.CurBg := 1;
+ P.CurFg := 14; P.CurBg := OldBg;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- P.CurFg := 7; P.CurBg := 0;
+ P.CurFg := OldFg; P.CurBg := OldBg;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  EmuVScr_WriteStr(P, 'Cible    : ' + TargetCPU + ' (' + CPUName + ')');
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
