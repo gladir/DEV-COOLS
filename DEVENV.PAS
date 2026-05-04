@@ -22227,6 +22227,55 @@ End;
 
 { --- Dessiner le panneau de l emulateur --- }
 
+{ Titre du panneau emulateur en fonction de la cible. }
+Function EmuPanelTitleFor(Const TargetCPU: String): String;
+Begin
+ If (TargetCPU = '-CD') Or (TargetCPU = '-CP') Then
+  EmuPanelTitleFor := 'Emulateur 8086'
+ Else If TargetCPU = '-CZ80' Then
+  EmuPanelTitleFor := 'Emulateur Z80'
+ Else If TargetCPU = '-CTRS80' Then
+  EmuPanelTitleFor := 'Emulateur TRS-80 (Z80)'
+ Else If TargetCPU = '-CMSX' Then
+  EmuPanelTitleFor := 'Emulateur MSX (Z80)'
+ Else If TargetCPU = '-CADAM' Then
+  EmuPanelTitleFor := 'Emulateur Coleco Adam (Z80)'
+ Else If TargetCPU = '-C68000' Then
+  EmuPanelTitleFor := 'Emulateur 68000'
+ Else If TargetCPU = '-CATARIST' Then
+  EmuPanelTitleFor := 'Emulateur Atari ST (68000)'
+ Else If TargetCPU = '-CAMIGA' Then
+  EmuPanelTitleFor := 'Emulateur Amiga (68000)'
+ Else If TargetCPU = '-CCRAY1' Then
+  EmuPanelTitleFor := 'Emulateur Cray-1'
+ Else If TargetCPU = '-CAPPLEII' Then
+  EmuPanelTitleFor := 'Emulateur Apple II (6502)'
+ Else If TargetCPU = '-CC64' Then
+  EmuPanelTitleFor := 'Emulateur Commodore 64 (6510)'
+ Else If TargetCPU = '-CATARI400' Then
+  EmuPanelTitleFor := 'Emulateur Atari 400 (6502)'
+ Else If TargetCPU = '-CATARI800' Then
+  EmuPanelTitleFor := 'Emulateur Atari 800 (6502)'
+ Else If TargetCPU = '-CNES' Then
+  EmuPanelTitleFor := 'Emulateur NES (2A03)'
+ Else If TargetCPU = '-CATARI2600' Then
+  EmuPanelTitleFor := 'Emulateur Atari 2600 (6507)'
+ Else If TargetCPU = '-CCOCO3' Then
+  EmuPanelTitleFor := 'Emulateur CoCo 3 (6809)'
+ Else If TargetCPU = '-CDRAGON32' Then
+  EmuPanelTitleFor := 'Emulateur Dragon 32 (6809)'
+ Else If TargetCPU = '-CDRAGON64' Then
+  EmuPanelTitleFor := 'Emulateur Dragon 64 (6809)'
+ Else If TargetCPU = '-CTO7' Then
+  EmuPanelTitleFor := 'Emulateur Thomson TO7 (6809)'
+ Else If TargetCPU = '-CTO8' Then
+  EmuPanelTitleFor := 'Emulateur Thomson TO8 (6809)'
+ Else If TargetCPU = '-CMO5' Then
+  EmuPanelTitleFor := 'Emulateur Thomson MO5 (6809)'
+ Else
+  EmuPanelTitleFor := 'Emulateur';
+End;
+
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel);
 Var
  GridX, GridY: Integer;
@@ -22257,7 +22306,7 @@ Begin
  DrawFilledRect(P.PanelX, P.PanelY,
   P.PanelX + GridW, P.PanelY + 22,
   CLR_TITLEBAR_ACTIVE);
- Title := 'Emulateur 8086 - ' + P.BinaryPath;
+ Title := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath;
  If Length(Title) > 76 Then
   Title := Copy(Title, 1, 73) + '...';
  DrawText(P.PanelX + 6, P.PanelY + 6, Title, CLR_HIGHLIGHTTEXT);
@@ -29233,12 +29282,6 @@ Begin
  Else CPUName := TargetCPU;
  OldFg := P.CurFg; OldBg := P.CurBg;
  P.CurFg := 14; P.CurBg := 1;
- If IsX86 Then
-  EmuVScr_WriteStr(P,
-   ' Emulateur 8086 integre - DEVENV ' + DEVENV_VERSION + '          ')
- Else
-  EmuVScr_WriteStr(P,
-   ' Emulateur ' + CPUName + ' - DEVENV ' + DEVENV_VERSION + '          ');
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  P.CurFg := 7; P.CurBg := 0;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
