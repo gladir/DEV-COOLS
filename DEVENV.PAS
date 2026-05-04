@@ -32530,6 +32530,9 @@ Begin
       (CurrentProject.Info.TargetCPU = '-C68000') Then
     ExeName := SrcDir + BaseName + '.prg';
    { Pour AMIGA, l extension par defaut est deja .exe -> conserver ExeName. }
+   { Cible Cray-1 : TPCW32 produit un binaire COS Absolute .abs. }
+   If CurrentProject.Info.TargetCPU = '-CCRAY1' Then
+    ExeName := SrcDir + BaseName + '.abs';
    ShowEmulatorPanel(EmuPanel, ExeName,
     CurrentProject.Info.TargetCPU);
   End;
