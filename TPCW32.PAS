@@ -17459,10 +17459,19 @@ Begin
   If IsCh Then
   Begin
     Ch := V And $FF;
-    If (Ch = 13) Or (Ch = 10) Then Ch := $8D
-    Else Ch := Ch Or $80;
-    EmitInstr('LDA #' + IntToStr_(Ch));
-    EmitInstr('JSR $FDED');
+    If Opts.C64 Then
+    Begin
+      If (Ch = 13) Or (Ch = 10) Then Ch := $0D;
+      EmitInstr('LDA #' + IntToStr_(Ch));
+      EmitInstr('JSR $FFD2');
+    End
+    Else
+    Begin
+      If (Ch = 13) Or (Ch = 10) Then Ch := $8D
+      Else Ch := Ch Or $80;
+      EmitInstr('LDA #' + IntToStr_(Ch));
+      EmitInstr('JSR $FDED');
+    End;
   End
   Else
   Begin
@@ -17488,15 +17497,26 @@ Var
   Ch : LongInt;
   Done : Boolean;
 Begin
-  EmitComment('writeln (Apple II)');
+  If Opts.C64 Then
+    EmitComment('writeln (C64)')
+  Else
+    EmitComment('writeln (Apple II)');
   { WriteLn sans arguments ou Write sans parenthese : juste CR LF si LN }
   If EPAtEnd Or
      Not ((TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '(')) Then
   Begin
     If IsWriteLn Then
     Begin
-      EmitInstr('LDA #$8D');
-      EmitInstr('JSR $FDED');
+      If Opts.C64 Then
+      Begin
+        EmitInstr('LDA #$0D');
+        EmitInstr('JSR $FFD2');
+      End
+      Else
+      Begin
+        EmitInstr('LDA #$8D');
+        EmitInstr('JSR $FDED');
+      End;
     End;
     Exit;
   End;
@@ -17576,11 +17596,19 @@ Begin
      (TokenPool[EP].Val = ')') Then
     Inc(EP);
 
-  { WriteLn : ajouter CR ($8D = $0D | $80 pour Apple II) }
+  { WriteLn : ajouter CR }
   If IsWriteLn Then
   Begin
-    EmitInstr('LDA #$8D');
-    EmitInstr('JSR $FDED');
+    If Opts.C64 Then
+    Begin
+      EmitInstr('LDA #$0D');
+      EmitInstr('JSR $FFD2');
+    End
+    Else
+    Begin
+      EmitInstr('LDA #$8D');
+      EmitInstr('JSR $FDED');
+    End;
   End;
 End;
 
@@ -17923,8 +17951,8 @@ Var
   Up          : TString;
   LI, SI      : Integer;
 Begin
-  { Branche specialisee Apple II : code 6502 natif }
-  If Opts.AppleII Then
+  { Branche specialisee 6502 (Apple II / C64) : code natif }
+  If Opts.AppleII Or Opts.C64 Then
   Begin
     ParseWriteStmtAppleII(IsWriteLn);
     Exit;
@@ -18665,8 +18693,8 @@ Var
 Begin
   EmitComment('while');
 
-  { Apple II : interpretation a la compilation }
-  If Opts.AppleII Then
+  { 6502 (Apple II / C64) : interpretation a la compilation }
+  If Opts.AppleII Or Opts.C64 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18727,8 +18755,8 @@ Var
 Begin
   EmitComment('repeat');
 
-  { Apple II : interpretation a la compilation }
-  If Opts.AppleII Then
+  { 6502 (Apple II / C64) : interpretation a la compilation }
+  If Opts.AppleII Or Opts.C64 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18798,11 +18826,11 @@ Begin
 
   Inc(EP);  { consommer FOR }
 
-  { Cible Apple II : utiliser l interpreteur CT pour derouler la boucle. }
+  { Cible 6502 (Apple II / C64) : utiliser l interpreteur CT pour derouler. }
   { ParseStmtAppleII attend que EP pointe sur le mot-cle FOR ; or nous     }
   { l avons deja consomme. Reculer EP d un cran pour qu il y pointe a     }
   { nouveau, puis deleguer.                                                }
-  If Opts.AppleII Then
+  If Opts.AppleII Or Opts.C64 Then
   Begin
     Dec(EP);
     ParseStmtAppleII;
@@ -18954,8 +18982,8 @@ Var
 Begin
   If EPAtEnd Then Exit;
 
-  { Cible Apple II : interpretation a la compilation pour tout le bloc }
-  If Opts.AppleII Then
+  { Cible 6502 (Apple II / C64) : interpretation pour tout le bloc }
+  If Opts.AppleII Or Opts.C64 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -25185,10 +25213,10 @@ Begin
       EmitInstr('MOV AX,4C00H');
       EmitInstr('INT 21H');
     End
-    Else If Opts.AppleII Then
+    Else If Opts.AppleII Or Opts.C64 Then
     Begin
-      { Sortie Apple II : retour au moniteur via RTS }
-      EmitComment('Apple II : retour au moniteur');
+      { Sortie 6502 (Apple II / C64) : retour via RTS }
+      EmitComment('6502 : retour via RTS');
       EmitInstr('RTS');
     End
     Else If Opts.DestTarget = DEST_AMIGA Then
@@ -25825,6 +25853,23 @@ End;
 Procedure EmitRuntimeAppleII;
 Begin
   EmitBlankLine;
+  If Opts.C64 Then
+  Begin
+    EmitComment('--- Runtime C64 (6510/6502) ---');
+    EmitLabel('_TPRT_AII_PRSTR');
+    EmitInstr('STA $06');
+    EmitInstr('STY $07');
+    EmitInstr('LDY #0');
+    EmitLabel('_TPRT_AII_PRSTR_L');
+    EmitInstr('LDA ($06),Y');
+    EmitInstr('BEQ _TPRT_AII_PRSTR_E');
+    EmitInstr('JSR $FFD2');
+    EmitInstr('INY');
+    EmitInstr('BNE _TPRT_AII_PRSTR_L');
+    EmitLabel('_TPRT_AII_PRSTR_E');
+    EmitInstr('RTS');
+    Exit;
+  End;
   EmitComment('--- Runtime Apple II (6502) ---');
   EmitLabel('_TPRT_AII_PRSTR');
   EmitInstr('STA $06');
@@ -38844,8 +38889,8 @@ Begin
     If Not IsUnitSource Then
       EmitMainBlock;
 
-    { Emettre les donnees ajoutees tardivement (cible Apple II) }
-    If Opts.AppleII Then
+    { Emettre les donnees ajoutees tardivement (cible 6502 Apple II / C64) }
+    If Opts.AppleII Or Opts.C64 Then
       EmitDataSegLate;
 
     { Emettre les routines runtime (TODO 12) }
@@ -38855,7 +38900,7 @@ Begin
       EmitRuntimeAmiga
     Else If Is68kTarget Then
       EmitRuntime68000
-    Else If Opts.AppleII Then
+    Else If Opts.AppleII Or Opts.C64 Then
       EmitRuntimeAppleII
     Else
       EmitRuntime;
