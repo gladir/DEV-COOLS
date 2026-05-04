@@ -17210,6 +17210,19 @@ Begin
     TK_KEYWORD, TK_IDENT:
     Begin
       Up := StrUpperCase(TokenPool[EP].Val);
+      { TRUE / FALSE -> booleen }
+      If Up = 'TRUE' Then
+      Begin
+        V := 1; IsCh := False; Inc(EP);
+        AIICTEvalPrimary := True;
+        Exit;
+      End;
+      If Up = 'FALSE' Then
+      Begin
+        V := 0; IsCh := False; Inc(EP);
+        AIICTEvalPrimary := True;
+        Exit;
+      End;
       { Chr(expr) -> char }
       If (Up = 'CHR') Then
       Begin
@@ -17339,6 +17352,102 @@ Begin
     IsCh := False;
   End;
   AIICTEvalExpr := True;
+End;
+
+{ Evaluation comparaison : expr [op_rel expr] }
+Function AIICTEvalCmp(Var V: LongInt): Boolean;
+Var
+  V1, V2 : LongInt; IsCh1, IsCh2 : Boolean; Op : TString;
+Begin
+  AIICTEvalCmp := False;
+  If Not AIICTEvalExpr(V1, IsCh1) Then Exit;
+  Op := '';
+  If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) Then
+  Begin
+    If (TokenPool[EP].Val = '<') Or (TokenPool[EP].Val = '>') Or
+       (TokenPool[EP].Val = '=') Or (TokenPool[EP].Val = '<=') Or
+       (TokenPool[EP].Val = '>=') Or (TokenPool[EP].Val = '<>') Then
+      Op := TokenPool[EP].Val;
+  End;
+  If Op = '' Then
+  Begin
+    V := V1;
+    AIICTEvalCmp := True;
+    Exit;
+  End;
+  Inc(EP);
+  If Not AIICTEvalExpr(V2, IsCh2) Then Exit;
+  If Op = '<' Then Begin If V1 <  V2 Then V := 1 Else V := 0; End
+  Else If Op = '>'  Then Begin If V1 >  V2 Then V := 1 Else V := 0; End
+  Else If Op = '='  Then Begin If V1 =  V2 Then V := 1 Else V := 0; End
+  Else If Op = '<=' Then Begin If V1 <= V2 Then V := 1 Else V := 0; End
+  Else If Op = '>=' Then Begin If V1 >= V2 Then V := 1 Else V := 0; End
+  Else If Op = '<>' Then Begin If V1 <> V2 Then V := 1 Else V := 0; End;
+  AIICTEvalCmp := True;
+End;
+
+{ Evaluation condition : cmp ((AND|OR) cmp)* }
+Function AIICTEvalCond(Var V: LongInt): Boolean;
+Var
+  V2 : LongInt; Up : TString;
+Begin
+  AIICTEvalCond := False;
+  If Not AIICTEvalCmp(V) Then Exit;
+  While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_KEYWORD) Do
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+    If (Up <> 'AND') And (Up <> 'OR') Then Break;
+    Inc(EP);
+    If Not AIICTEvalCmp(V2) Then Exit;
+    If Up = 'AND' Then
+      Begin If (V <> 0) And (V2 <> 0) Then V := 1 Else V := 0; End
+    Else
+      Begin If (V <> 0) Or  (V2 <> 0) Then V := 1 Else V := 0; End;
+  End;
+  AIICTEvalCond := True;
+End;
+
+{ Avancer EP au-dela d une instruction (BEGIN..END ou single stmt). }
+Procedure AIISkipStmt;
+Var
+  D : Integer;
+  Up : TString;
+Begin
+  If EPAtEnd Then Exit;
+  D := 0;
+  If (TokenPool[EP].Kind = TK_KEYWORD) And
+     (StrUpperCase(TokenPool[EP].Val) = 'BEGIN') Then
+  Begin
+    D := 1; Inc(EP);
+    While (Not EPAtEnd) And (D > 0) Do
+    Begin
+      If TokenPool[EP].Kind = TK_KEYWORD Then
+      Begin
+        Up := StrUpperCase(TokenPool[EP].Val);
+        If (Up = 'BEGIN') Or (Up = 'CASE') Or (Up = 'RECORD') Then Inc(D)
+        Else If Up = 'END' Then Dec(D);
+      End;
+      Inc(EP);
+    End;
+  End
+  Else
+  Begin
+    While Not EPAtEnd Do
+    Begin
+      If TokenPool[EP].Kind = TK_PUNCT Then
+      Begin
+        If (TokenPool[EP].Val = '(') Or (TokenPool[EP].Val = '[') Then Inc(D)
+        Else If (TokenPool[EP].Val = ')') Or (TokenPool[EP].Val = ']') Then Dec(D)
+        Else If (D = 0) And (TokenPool[EP].Val = ';') Then Break;
+      End
+      Else If (D = 0) And (TokenPool[EP].Kind = TK_KEYWORD) Then
+      Begin
+        Up := StrUpperCase(TokenPool[EP].Val);
+        If (Up = 'END') Or (Up = 'ELSE') Or (Up = 'UNTIL') Then Break;
+      End;
+      Inc(EP);
+    End;
+  End;
 End;
 
 { Emission AII pour une valeur evaluee : char direct ou int via PRSTR }
@@ -17539,6 +17648,93 @@ Begin
     Begin
       Inc(EP);
       ParseWriteStmtAppleII(Up = 'WRITELN');
+      Exit;
+    End;
+
+    If Up = 'IF' Then
+    Begin
+      Inc(EP); { consommer IF }
+      If Not AIICTEvalCond(LoopFrom) Then Exit;
+      If EPAtEnd Or (TokenPool[EP].Kind <> TK_KEYWORD) Or
+         (StrUpperCase(TokenPool[EP].Val) <> 'THEN') Then Exit;
+      Inc(EP); { consommer THEN }
+      If LoopFrom <> 0 Then
+      Begin
+        ParseStmtAppleII;
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
+           (StrUpperCase(TokenPool[EP].Val) = 'ELSE') Then
+        Begin
+          Inc(EP);
+          AIISkipStmt;
+        End;
+      End
+      Else
+      Begin
+        AIISkipStmt;
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
+           (StrUpperCase(TokenPool[EP].Val) = 'ELSE') Then
+        Begin
+          Inc(EP);
+          ParseStmtAppleII;
+        End;
+      End;
+      Exit;
+    End;
+
+    If Up = 'WHILE' Then
+    Begin
+      Inc(EP); { consommer WHILE }
+      BodyEP := EP; { CondEP : EP au debut de la condition }
+      { Premiere passe : evaluer cond, lire DO, memoriser BodyEP }
+      If Not AIICTEvalCond(LoopFrom) Then Exit;
+      If EPAtEnd Or (TokenPool[EP].Kind <> TK_KEYWORD) Or
+         (StrUpperCase(TokenPool[EP].Val) <> 'DO') Then Exit;
+      Inc(EP); { consommer DO }
+      StartEP := EP; { BodyEP }
+      LoopI := 0;
+      While (LoopFrom <> 0) And (LoopI < 100000) Do
+      Begin
+        EP := StartEP;
+        ParseStmtAppleII;
+        EP := BodyEP;
+        If Not AIICTEvalCond(LoopFrom) Then Break;
+        If EPAtEnd Or (TokenPool[EP].Kind <> TK_KEYWORD) Or
+           (StrUpperCase(TokenPool[EP].Val) <> 'DO') Then Break;
+        Inc(EP);
+        Inc(LoopI);
+      End;
+      { Avancer EP apres le corps }
+      EP := StartEP;
+      AIISkipStmt;
+      Exit;
+    End;
+
+    If Up = 'REPEAT' Then
+    Begin
+      Inc(EP); { consommer REPEAT }
+      BodyEP := EP;
+      LoopI := 0;
+      LoopFrom := 0;
+      While LoopI < 100000 Do
+      Begin
+        EP := BodyEP;
+        { Parser stmts jusqu a UNTIL }
+        While Not EPAtEnd Do
+        Begin
+          If (TokenPool[EP].Kind = TK_KEYWORD) And
+             (StrUpperCase(TokenPool[EP].Val) = 'UNTIL') Then Break;
+          StartEP := EP;
+          ParseStmtAppleII;
+          If EP = StartEP Then Inc(EP);
+          While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+                (TokenPool[EP].Val = ';') Do Inc(EP);
+        End;
+        If EPAtEnd Then Exit;
+        Inc(EP); { consommer UNTIL }
+        If Not AIICTEvalCond(LoopFrom) Then Exit;
+        Inc(LoopI);
+        If LoopFrom <> 0 Then Break;
+      End;
       Exit;
     End;
 
@@ -18469,6 +18665,13 @@ Var
 Begin
   EmitComment('while');
 
+  { Apple II : interpretation a la compilation }
+  If Opts.AppleII Then
+  Begin
+    ParseStmtAppleII;
+    Exit;
+  End;
+
   Inc(EP);  { consommer WHILE }
 
   LblTest := LabelGen;
@@ -18523,6 +18726,13 @@ Var
   LblEnd : TString;
 Begin
   EmitComment('repeat');
+
+  { Apple II : interpretation a la compilation }
+  If Opts.AppleII Then
+  Begin
+    ParseStmtAppleII;
+    Exit;
+  End;
 
   Inc(EP);  { consommer REPEAT }
 
@@ -18743,6 +18953,13 @@ Var
   WI      : Integer;
 Begin
   If EPAtEnd Then Exit;
+
+  { Cible Apple II : interpretation a la compilation pour tout le bloc }
+  If Opts.AppleII Then
+  Begin
+    ParseStmtAppleII;
+    Exit;
+  End;
 
   { Point-virgule seul : instruction vide }
   If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
