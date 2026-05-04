@@ -1,4 +1,4 @@
-{ @author: Sylvain Maltais (support@gladir.com)
+﻿{ @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @version: 1.00
   @website(https://www.gladir.com/dev-cools)
@@ -1117,7 +1117,7 @@ Const
  DLG_PADDING           = 10;      { marge interne du dialogue       }
  DLG_INPUT_HEIGHT      = 20;      { hauteur champ de saisie         }
  DLG_LIST_ROW_HEIGHT   = 18;      { hauteur ligne dans liste        }
- DLG_FILTER_HEIGHT     = 20;      { hauteur du sélecteur de filtre  }
+ DLG_FILTER_HEIGHT     = 20;      { hauteur du sÃ©lecteur de filtre  }
  DLG_ICON_SIZE         = 32;      { taille icone message box        }
  MAX_DLG_FILES         = 512;     { nombre max fichiers liste       }
  MAX_DLG_FILTERS       = 10;      { nombre max filtres              }
@@ -1384,6 +1384,15 @@ Const
  sfEndProgram  = 6;
  sfBreakPoint  = 7;
  sfDivision0   = 8;
+
+ { Constantes pour l emulateur Motorola 68000 integre }
+ MEM_SIZE      = $100000;   { 1 Mo de RAM emulee 68k }
+ MAX_CYCLES    = 100000;    { limite de surete 68k }
+ CCR_C         = 1;
+ CCR_V         = 2;
+ CCR_Z         = 4;
+ CCR_N         = 8;
+ CCR_X         = $10;
 
 { ============================================================
   TYPES
@@ -3044,6 +3053,17 @@ Var
  ProjPropDlg    : TProjectPropertiesDialog;
  { Panneau de l emulateur 8086 integre }
  EmuPanel       : TEmulatorPanel;
+ { Etat de l emulateur Motorola 68000 integre }
+ M68K_D         : Array[0..7] Of LongInt;
+ M68K_A         : Array[0..7] Of LongInt;
+ M68K_PC        : LongInt;
+ M68K_SR        : Word;
+ M68K_Mem       : Array[0..$FFFFF] Of Byte;
+ M68K_Halted    : Boolean;
+ M68K_ExitCode  : Integer;
+ M68K_Verbose   : Boolean;
+ M68K_Cycles    : LongInt;
+ M68K_Panel     : ^TEmulatorPanel;
  { Indicateur de sortie }
  QuitRequested  : Boolean;
  { Drapeau nettoyage ecran transition page de demarrage -> IDE }
@@ -23816,6 +23836,2212 @@ Begin
  Emu_HexWord := Emu_HexByte(Hi(W)) + Emu_HexByte(Lo(W));
 End;
 
+{ ============================================================
+  EMULATEUR MOTOROLA 68000 INTEGRE (port de TESTS\M68K_EMU.PAS)
+  ============================================================ }
+
+{ ========================================================================== }
+{  Utilitaires 32 bits                                                       }
+{ ========================================================================== }
+
+Function M68K_And32(a, b: LongInt): LongInt;
+Begin
+  M68K_And32 := a And b;
+End;
+
+Function M68K_Or32(a, b: LongInt): LongInt;
+Begin
+  M68K_Or32 := a Or b;
+End;
+
+Function M68K_Xor32(a, b: LongInt): LongInt;
+Begin
+  M68K_Xor32 := a Xor b;
+End;
+
+Function M68K_Not32(a: LongInt): LongInt;
+Begin
+  M68K_Not32 := Not a;
+End;
+
+Function M68K_Shl32(a: LongInt; n: Integer): LongInt;
+Begin
+  If n >= 32 Then
+    M68K_Shl32 := 0
+  Else If n = 0 Then
+    M68K_Shl32 := a
+  Else
+    M68K_Shl32 := LongInt(a Shl n);
+End;
+
+Function M68K_Shr32(a: LongInt; n: Integer): LongInt;
+Begin
+  If n >= 32 Then
+    M68K_Shr32 := 0
+  Else If n = 0 Then
+    M68K_Shr32 := a
+  Else
+    { Logical shift right - cast to unsigned-like behavior }
+    M68K_Shr32 := LongInt((a Shr 1) And $7FFFFFFF) Shr (n - 1);
+End;
+
+{ Mask to N bits (unsigned) }
+Function M68K_Mask32(v: LongInt): LongInt;
+Begin
+  M68K_Mask32 := v; { LongInt is already 32-bit; wraps naturally }
+End;
+
+{ ========================================================================== }
+{  Acces memoire (big-endian, adresses sur 20 bits)                          }
+{ ========================================================================== }
+
+Function M68K_Read8(addr: LongInt): Byte;
+Begin
+  addr := addr And LongInt(MEM_SIZE - 1);
+  M68K_Read8 := M68K_Mem[addr];
+End;
+
+Function M68K_Read16(addr: LongInt): Word;
+Begin
+  addr := addr And LongInt(MEM_SIZE - 1);
+  M68K_Read16 := Word(M68K_Mem[addr]) Shl 8 Or M68K_Mem[addr + 1];
+End;
+
+Function M68K_Read32(addr: LongInt): LongInt;
+Begin
+  addr := addr And LongInt(MEM_SIZE - 1);
+  M68K_Read32 := LongInt(M68K_Mem[addr]) Shl 24 Or
+            LongInt(M68K_Mem[addr + 1]) Shl 16 Or
+            LongInt(M68K_Mem[addr + 2]) Shl 8 Or
+            LongInt(M68K_Mem[addr + 3]);
+End;
+
+Procedure M68K_Write8(addr: LongInt; val: Byte);
+Begin
+  addr := addr And LongInt(MEM_SIZE - 1);
+  M68K_Mem[addr] := val And $FF;
+End;
+
+Procedure M68K_Write16(addr: LongInt; val: Word);
+Begin
+  addr := addr And LongInt(MEM_SIZE - 1);
+  M68K_Mem[addr]     := Byte(val Shr 8);
+  M68K_Mem[addr + 1] := Byte(val And $FF);
+End;
+
+Procedure M68K_Write32(addr, val: LongInt);
+Var
+  a: LongInt;
+Begin
+  a := addr And LongInt(MEM_SIZE - 1);
+  M68K_Mem[a]     := Byte(M68K_Shr32(val, 24) And $FF);
+  M68K_Mem[a + 1] := Byte(M68K_Shr32(val, 16) And $FF);
+  M68K_Mem[a + 2] := Byte(M68K_Shr32(val, 8) And $FF);
+  M68K_Mem[a + 3] := Byte(val And $FF);
+End;
+
+{ ========================================================================== }
+{  Registres avec masquage                                                   }
+{ ========================================================================== }
+
+Function M68K_GetD(n, size: Integer): LongInt;
+Begin
+  Case size Of
+    1: M68K_GetD := M68K_D[n] And $FF;
+    2: M68K_GetD := M68K_D[n] And $FFFF;
+  Else
+    M68K_GetD := M68K_D[n];
+  End;
+End;
+
+Procedure M68K_SetD(n: Integer; val: LongInt; size: Integer);
+Begin
+  Case size Of
+    1: M68K_D[n] := (M68K_D[n] And LongInt($FFFFFF00)) Or (val And $FF);
+    2: M68K_D[n] := (M68K_D[n] And LongInt($FFFF0000)) Or (val And $FFFF);
+  Else
+    M68K_D[n] := val;
+  End;
+End;
+
+Function M68K_SignExtend(val: LongInt; size: Integer): LongInt;
+Begin
+  Case size Of
+    1: Begin
+         val := val And $FF;
+         If val And $80 <> 0 Then
+           M68K_SignExtend := val Or LongInt($FFFFFF00)
+         Else
+           M68K_SignExtend := val;
+       End;
+    2: Begin
+         val := val And $FFFF;
+         If val And $8000 <> 0 Then
+           M68K_SignExtend := val Or LongInt($FFFF0000)
+         Else
+           M68K_SignExtend := val;
+       End;
+  Else
+    M68K_SignExtend := val;
+  End;
+End;
+
+Function M68K_ToSigned(val: LongInt; size: Integer): LongInt;
+Begin
+  Case size Of
+    1: Begin
+         val := val And $FF;
+         If val And $80 <> 0 Then
+           M68K_ToSigned := val - $100
+         Else
+           M68K_ToSigned := val;
+       End;
+    2: Begin
+         val := val And $FFFF;
+         If val And $8000 <> 0 Then
+           M68K_ToSigned := val - $10000
+         Else
+           M68K_ToSigned := val;
+       End;
+  Else
+    M68K_ToSigned := val; { Already signed 32-bit }
+  End;
+End;
+
+Function M68K_SizeMask(size: Integer): LongInt;
+Begin
+  Case size Of
+    1: M68K_SizeMask := $FF;
+    2: M68K_SizeMask := $FFFF;
+  Else
+    M68K_SizeMask := LongInt($FFFFFFFF);
+  End;
+End;
+
+Function M68K_SignBit(size: Integer): LongInt;
+Begin
+  Case size Of
+    1: M68K_SignBit := $80;
+    2: M68K_SignBit := $8000;
+  Else
+    M68K_SignBit := LongInt($80000000);
+  End;
+End;
+
+{ ========================================================================== }
+{  CCR (Condition Code Register)                                             }
+{ ========================================================================== }
+
+Procedure M68K_SetFlagsNZ(val: LongInt; size: Integer);
+Var
+  msk, sgn: LongInt;
+  v: LongInt;
+Begin
+  msk := M68K_SizeMask(size);
+  sgn := M68K_SignBit(size);
+  v := val And msk;
+  M68K_SR := M68K_SR And (Not (CCR_N Or CCR_Z));
+  If v = 0 Then
+    M68K_SR := M68K_SR Or CCR_Z;
+  If v And sgn <> 0 Then
+    M68K_SR := M68K_SR Or CCR_N;
+End;
+
+Procedure M68K_SetFlagsNZVC(result: LongInt; size: Integer; carry, overflow: Boolean);
+Begin
+  M68K_SetFlagsNZ(result, size);
+  M68K_SR := M68K_SR And (Not (CCR_V Or CCR_C));
+  If carry Then
+    M68K_SR := M68K_SR Or CCR_C;
+  If overflow Then
+    M68K_SR := M68K_SR Or CCR_V;
+End;
+
+{ ========================================================================== }
+{  Lecture instruction                                                        }
+{ ========================================================================== }
+
+Function M68K_Fetch16: Word;
+Var
+  v: Word;
+Begin
+  v := M68K_Read16(M68K_PC);
+  M68K_PC := M68K_PC + 2;
+  M68K_Fetch16 := v;
+End;
+
+{ ========================================================================== }
+{  Taille par champ de bits                                                   }
+{ ========================================================================== }
+
+Function M68K_OpSize(bits: Integer): Integer;
+Begin
+  Case bits Of
+    0: M68K_OpSize := 1;
+    1: M68K_OpSize := 2;
+    2: M68K_OpSize := 4;
+  Else
+    M68K_OpSize := 2; { fallback }
+  End;
+End;
+
+{ ========================================================================== }
+{  Evaluation des conditions                                                  }
+{ ========================================================================== }
+
+Function M68K_TestCC(cc: Integer): Boolean;
+Var
+  C, V, Z, N: Boolean;
+Begin
+  C := (M68K_SR And CCR_C) <> 0;
+  V := (M68K_SR And CCR_V) <> 0;
+  Z := (M68K_SR And CCR_Z) <> 0;
+  N := (M68K_SR And CCR_N) <> 0;
+  Case cc Of
+     0: M68K_TestCC := True;
+     1: M68K_TestCC := False;
+     2: M68K_TestCC := (Not C) And (Not Z);
+     3: M68K_TestCC := C Or Z;
+     4: M68K_TestCC := Not C;
+     5: M68K_TestCC := C;
+     6: M68K_TestCC := Not Z;
+     7: M68K_TestCC := Z;
+     8: M68K_TestCC := Not V;
+     9: M68K_TestCC := V;
+    10: M68K_TestCC := Not N;
+    11: M68K_TestCC := N;
+    12: M68K_TestCC := N = V;
+    13: M68K_TestCC := N <> V;
+    14: M68K_TestCC := (Not Z) And (N = V);
+    15: M68K_TestCC := Z Or (N <> V);
+  Else
+    M68K_TestCC := False;
+  End;
+End;
+
+{ ========================================================================== }
+{  Lecture/Ecriture EA (Effective Address)                                    }
+{ ========================================================================== }
+
+{ M68K_ReadMem helper for a given size }
+Function M68K_ReadMem(addr: LongInt; size: Integer): LongInt;
+Begin
+  Case size Of
+    1: M68K_ReadMem := M68K_Read8(addr);
+    2: M68K_ReadMem := M68K_Read16(addr);
+  Else
+    M68K_ReadMem := M68K_Read32(addr);
+  End;
+End;
+
+Procedure M68K_WriteMem(addr, val: LongInt; size: Integer);
+Begin
+  Case size Of
+    1: M68K_Write8(addr, Byte(val And $FF));
+    2: M68K_Write16(addr, Word(val And $FFFF));
+  Else
+    M68K_Write32(addr, val);
+  End;
+End;
+
+Function M68K_ReadEA(mode, reg, size: Integer; Var addr: LongInt): LongInt;
+Var
+  inc_, dec_: Integer;
+  disp: LongInt;
+  ext: Word;
+  idx_reg: Integer;
+  idx_is_a, idx_long: Boolean;
+  idx_val: LongInt;
+  pc_save: LongInt;
+  hi, lo: Word;
+Begin
+  addr := -1; { default: register mode }
+  Case mode Of
+    0: { Dn }
+      M68K_ReadEA := M68K_GetD(reg, size);
+    1: { An }
+      M68K_ReadEA := M68K_A[reg];
+    2: Begin { (An) }
+         addr := M68K_A[reg];
+         M68K_ReadEA := M68K_ReadMem(addr, size);
+       End;
+    3: Begin { (An)+ }
+         addr := M68K_A[reg];
+         M68K_ReadEA := M68K_ReadMem(addr, size);
+         If size = 1 Then Begin
+           If reg = 7 Then inc_ := 2 Else inc_ := 1;
+         End Else If size = 2 Then
+           inc_ := 2
+         Else
+           inc_ := 4;
+         M68K_A[reg] := M68K_A[reg] + inc_;
+       End;
+    4: Begin { -(An) }
+         If size = 1 Then Begin
+           If reg = 7 Then dec_ := 2 Else dec_ := 1;
+         End Else If size = 2 Then
+           dec_ := 2
+         Else
+           dec_ := 4;
+         M68K_A[reg] := M68K_A[reg] - dec_;
+         addr := M68K_A[reg];
+         M68K_ReadEA := M68K_ReadMem(addr, size);
+       End;
+    5: Begin { d16(An) }
+         disp := M68K_SignExtend(M68K_Fetch16, 2);
+         addr := M68K_A[reg] + disp;
+         M68K_ReadEA := M68K_ReadMem(addr, size);
+       End;
+    6: Begin { d8(An,Xn) }
+         ext := M68K_Fetch16;
+         disp := M68K_SignExtend(ext And $FF, 1);
+         idx_reg := (ext Shr 12) And 7;
+         idx_is_a := (ext And $8000) <> 0;
+         idx_long := (ext And $0800) <> 0;
+         If idx_is_a Then
+           idx_val := M68K_A[idx_reg]
+         Else
+           idx_val := M68K_D[idx_reg];
+         If Not idx_long Then
+           idx_val := M68K_SignExtend(idx_val And $FFFF, 2);
+         addr := M68K_A[reg] + disp + idx_val;
+         M68K_ReadEA := M68K_ReadMem(addr, size);
+       End;
+    7: Begin { Special modes }
+         Case reg Of
+           0: Begin { xxx.W }
+                addr := M68K_SignExtend(M68K_Fetch16, 2);
+                M68K_ReadEA := M68K_ReadMem(addr, size);
+              End;
+           1: Begin { xxx.L }
+                hi := M68K_Fetch16;
+                lo := M68K_Fetch16;
+                addr := LongInt(hi) Shl 16 Or lo;
+                M68K_ReadEA := M68K_ReadMem(addr, size);
+              End;
+           2: Begin { d16(M68K_PC) }
+                pc_save := M68K_PC;
+                disp := M68K_SignExtend(M68K_Fetch16, 2);
+                addr := pc_save + disp;
+                M68K_ReadEA := M68K_ReadMem(addr, size);
+              End;
+           3: Begin { d8(M68K_PC,Xn) }
+                pc_save := M68K_PC;
+                ext := M68K_Fetch16;
+                disp := M68K_SignExtend(ext And $FF, 1);
+                idx_reg := (ext Shr 12) And 7;
+                idx_is_a := (ext And $8000) <> 0;
+                idx_long := (ext And $0800) <> 0;
+                If idx_is_a Then
+                  idx_val := M68K_A[idx_reg]
+                Else
+                  idx_val := M68K_D[idx_reg];
+                If Not idx_long Then
+                  idx_val := M68K_SignExtend(idx_val And $FFFF, 2);
+                addr := pc_save + disp + idx_val;
+                M68K_ReadEA := M68K_ReadMem(addr, size);
+              End;
+           4: Begin { #imm }
+                If size = 1 Then
+                  M68K_ReadEA := M68K_Fetch16 And $FF
+                Else If size = 2 Then
+                  M68K_ReadEA := M68K_Fetch16
+                Else Begin
+                  hi := M68K_Fetch16;
+                  lo := M68K_Fetch16;
+                  M68K_ReadEA := LongInt(hi) Shl 16 Or lo;
+                End;
+              End;
+         Else
+           M68K_ReadEA := 0;
+         End;
+       End;
+  Else
+    M68K_ReadEA := 0;
+  End;
+End;
+
+Procedure M68K_WriteEA(mode, reg: Integer; val: LongInt; size: Integer);
+Var
+  inc_, dec_: Integer;
+  disp: LongInt;
+  addr: LongInt;
+  hi, lo: Word;
+Begin
+  Case mode Of
+    0: M68K_SetD(reg, val, size);
+    1: M68K_A[reg] := val;
+    2: M68K_WriteMem(M68K_A[reg], val, size);
+    3: Begin { (An)+ }
+         M68K_WriteMem(M68K_A[reg], val, size);
+         If size = 1 Then Begin
+           If reg = 7 Then inc_ := 2 Else inc_ := 1;
+         End Else If size = 2 Then
+           inc_ := 2
+         Else
+           inc_ := 4;
+         M68K_A[reg] := M68K_A[reg] + inc_;
+       End;
+    4: Begin { -(An) }
+         If size = 1 Then Begin
+           If reg = 7 Then dec_ := 2 Else dec_ := 1;
+         End Else If size = 2 Then
+           dec_ := 2
+         Else
+           dec_ := 4;
+         M68K_A[reg] := M68K_A[reg] - dec_;
+         M68K_WriteMem(M68K_A[reg], val, size);
+       End;
+    5: Begin { d16(An) }
+         disp := M68K_SignExtend(M68K_Fetch16, 2);
+         addr := M68K_A[reg] + disp;
+         M68K_WriteMem(addr, val, size);
+       End;
+    7: Begin
+         Case reg Of
+           0: Begin { xxx.W }
+                addr := M68K_SignExtend(M68K_Fetch16, 2);
+                M68K_WriteMem(addr, val, size);
+              End;
+           1: Begin { xxx.L }
+                hi := M68K_Fetch16;
+                lo := M68K_Fetch16;
+                addr := LongInt(hi) Shl 16 Or lo;
+                M68K_WriteMem(addr, val, size);
+              End;
+         End;
+       End;
+  End;
+End;
+
+Function M68K_CalcEAAddr(mode, reg: Integer): LongInt;
+Var
+  disp: LongInt;
+  ext: Word;
+  idx_reg: Integer;
+  idx_is_a, idx_long: Boolean;
+  idx_val: LongInt;
+  pc_save: LongInt;
+  hi, lo: Word;
+Begin
+  Case mode Of
+    2: M68K_CalcEAAddr := M68K_A[reg];
+    5: Begin
+         disp := M68K_SignExtend(M68K_Fetch16, 2);
+         M68K_CalcEAAddr := M68K_A[reg] + disp;
+       End;
+    6: Begin
+         ext := M68K_Fetch16;
+         disp := M68K_SignExtend(ext And $FF, 1);
+         idx_reg := (ext Shr 12) And 7;
+         idx_is_a := (ext And $8000) <> 0;
+         idx_long := (ext And $0800) <> 0;
+         If idx_is_a Then
+           idx_val := M68K_A[idx_reg]
+         Else
+           idx_val := M68K_D[idx_reg];
+         If Not idx_long Then
+           idx_val := M68K_SignExtend(idx_val And $FFFF, 2);
+         M68K_CalcEAAddr := M68K_A[reg] + disp + idx_val;
+       End;
+    7: Begin
+         Case reg Of
+           0: M68K_CalcEAAddr := M68K_SignExtend(M68K_Fetch16, 2);
+           1: Begin
+                hi := M68K_Fetch16;
+                lo := M68K_Fetch16;
+                M68K_CalcEAAddr := LongInt(hi) Shl 16 Or lo;
+              End;
+           2: Begin
+                pc_save := M68K_PC;
+                disp := M68K_SignExtend(M68K_Fetch16, 2);
+                M68K_CalcEAAddr := pc_save + disp;
+              End;
+           3: Begin
+                pc_save := M68K_PC;
+                ext := M68K_Fetch16;
+                disp := M68K_SignExtend(ext And $FF, 1);
+                idx_reg := (ext Shr 12) And 7;
+                idx_is_a := (ext And $8000) <> 0;
+                idx_long := (ext And $0800) <> 0;
+                If idx_is_a Then
+                  idx_val := M68K_A[idx_reg]
+                Else
+                  idx_val := M68K_D[idx_reg];
+                If Not idx_long Then
+                  idx_val := M68K_SignExtend(idx_val And $FFFF, 2);
+                M68K_CalcEAAddr := pc_save + disp + idx_val;
+              End;
+         Else
+           M68K_CalcEAAddr := 0;
+         End;
+       End;
+  Else
+    M68K_CalcEAAddr := 0;
+  End;
+End;
+
+{ ========================================================================== }
+{  Convertit un LongInt en chaine hexadecimale de N chiffres                 }
+{ ========================================================================== }
+
+Function M68K_HexN(v: LongInt; n: Integer): String;
+Const
+  Digits: String = '0123456789ABCDEF';
+Var
+  s: String;
+  i: Integer;
+Begin
+  s := '';
+  For i := 1 To n Do Begin
+    s := Digits[(v And $F) + 1] + s;
+    v := M68K_Shr32(v, 4);
+  End;
+  M68K_HexN := s;
+End;
+
+Function M68K_LongToStr(v: LongInt): String;
+Var
+  s: String;
+Begin
+  Str(v, s);
+  M68K_LongToStr := s;
+End;
+
+{ ========================================================================== }
+{  TRAP #15 handler (convention Easy68k)                                     }
+{ ========================================================================== }
+
+Function M68K_DoTrap(vector: Integer): Boolean;
+Var
+  func: Integer;
+  adr: LongInt;
+  c: Byte;
+  i: Integer;
+  val: LongInt;
+Begin
+  M68K_DoTrap := True;
+  If vector = 15 Then Begin
+    func := M68K_D[0] And $FF;
+    Case func Of
+      9: Begin { Halt program }
+           If M68K_Verbose Then
+             WriteLn('  TRAP #15: Fin du programme');
+           M68K_Halted := True;
+           M68K_ExitCode := 0;
+         End;
+      14: Begin { Print ASCIZ string at A1 }
+            adr := M68K_A[1];
+            For i := 0 To 4095 Do Begin
+              c := M68K_Read8(adr + i);
+              If c = 0 Then Break;
+              EmuVScr_PutChar(M68K_Panel^, Chr(c));
+            End;
+          End;
+      13: Begin { Print D1 as decimal }
+            val := M68K_ToSigned(M68K_D[1], 4);
+            EmuVScr_WriteStr(M68K_Panel^, IntToStr(val));
+          End;
+    End;
+  End;
+End;
+
+{ ========================================================================== }
+{  MOVEM                                                                      }
+{ ========================================================================== }
+
+Procedure M68K_ExecMovem(direction, size, ea_mode, ea_reg: Integer; mask: Word);
+Var
+  i: Integer;
+  val: LongInt;
+  addr: LongInt;
+Begin
+  If direction = 0 Then Begin { Register to memory }
+    If ea_mode = 4 Then Begin { -(An) predecrement }
+      For i := 15 DownTo 0 Do Begin
+        If mask And (1 Shl (15 - i)) <> 0 Then Begin
+          If i < 8 Then
+            val := M68K_D[i]
+          Else
+            val := M68K_A[i - 8];
+          M68K_A[ea_reg] := M68K_A[ea_reg] - size;
+          If size = 2 Then
+            M68K_Write16(M68K_A[ea_reg], Word(val And $FFFF))
+          Else
+            M68K_Write32(M68K_A[ea_reg], val);
+        End;
+      End;
+    End Else Begin
+      addr := M68K_CalcEAAddr(ea_mode, ea_reg);
+      For i := 0 To 15 Do Begin
+        If mask And (1 Shl i) <> 0 Then Begin
+          If i < 8 Then
+            val := M68K_D[i]
+          Else
+            val := M68K_A[i - 8];
+          If size = 2 Then
+            M68K_Write16(addr, Word(val And $FFFF))
+          Else
+            M68K_Write32(addr, val);
+          addr := addr + size;
+        End;
+      End;
+    End;
+  End Else Begin { Memory to register }
+    If ea_mode = 3 Then Begin { (An)+ postincrement }
+      addr := M68K_A[ea_reg];
+      For i := 0 To 15 Do Begin
+        If mask And (1 Shl i) <> 0 Then Begin
+          If size = 2 Then
+            val := M68K_SignExtend(M68K_Read16(addr), 2)
+          Else
+            val := M68K_Read32(addr);
+          If i < 8 Then
+            M68K_D[i] := val
+          Else
+            M68K_A[i - 8] := val;
+          addr := addr + size;
+        End;
+      End;
+      M68K_A[ea_reg] := addr;
+    End Else Begin
+      addr := M68K_CalcEAAddr(ea_mode, ea_reg);
+      For i := 0 To 15 Do Begin
+        If mask And (1 Shl i) <> 0 Then Begin
+          If size = 2 Then
+            val := M68K_SignExtend(M68K_Read16(addr), 2)
+          Else
+            val := M68K_Read32(addr);
+          If i < 8 Then
+            M68K_D[i] := val
+          Else
+            M68K_A[i - 8] := val;
+          addr := addr + size;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ ========================================================================== }
+{  MOVE (top4 = 1,2,3)                                                       }
+{ ========================================================================== }
+
+Function M68K_ExecMove(opcode: Word): Boolean;
+Var
+  top4: Integer;
+  size: Integer;
+  src_mode, src_reg, dst_mode, dst_reg: Integer;
+  val: LongInt;
+  addr: LongInt;
+Begin
+  M68K_ExecMove := True;
+  top4 := (opcode Shr 12) And $F;
+  Case top4 Of
+    1: size := 1;  { MOVE.B }
+    3: size := 2;  { MOVE.W }
+    2: size := 4;  { MOVE.L }
+  Else
+    size := 2;
+  End;
+
+  src_mode := (opcode Shr 3) And 7;
+  src_reg  := opcode And 7;
+  dst_reg  := (opcode Shr 9) And 7;
+  dst_mode := (opcode Shr 6) And 7;
+
+  val := M68K_ReadEA(src_mode, src_reg, size, addr);
+
+  If dst_mode = 1 Then Begin { MOVEA }
+    If size = 2 Then
+      val := M68K_SignExtend(val, 2);
+    M68K_A[dst_reg] := val;
+  End Else Begin
+    M68K_WriteEA(dst_mode, dst_reg, val, size);
+    M68K_SetFlagsNZVC(val, size, False, False);
+  End;
+End;
+
+{ ========================================================================== }
+{  Misc 0100                                                                  }
+{ ========================================================================== }
+
+Function M68K_Exec0100(opcode: Word): Boolean;
+Var
+  reg, ea_mode, ea_reg: Integer;
+  sz_bits, size: Integer;
+  val, result_: LongInt;
+  addr: LongInt;
+  msk: LongInt;
+  x: Integer;
+  carry: Boolean;
+  v: LongInt;
+  disp: LongInt;
+  direction, sz_bit: Integer;
+  regmask: Word;
+Begin
+  M68K_Exec0100 := True;
+
+  { LEA: 0100 rrr 111 EEE EEE }
+  If (opcode And $F1C0) = $41C0 Then Begin
+    reg := (opcode Shr 9) And 7;
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    M68K_A[reg] := M68K_CalcEAAddr(ea_mode, ea_reg);
+    Exit;
+  End;
+
+  { SWAP: 0100 1000 0100 0 rrr }
+  If (opcode And $FFF8) = $4840 Then Begin
+    reg := opcode And 7;
+    v := M68K_D[reg];
+    M68K_D[reg] := ((v And $FFFF) Shl 16) Or (M68K_Shr32(v, 16) And $FFFF);
+    M68K_SetFlagsNZVC(M68K_D[reg], 4, False, False);
+    Exit;
+  End;
+
+  { PEA: 0100 1000 01 EEE EEE }
+  If (opcode And $FFC0) = $4840 Then Begin
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    addr := M68K_CalcEAAddr(ea_mode, ea_reg);
+    M68K_A[7] := M68K_A[7] - 4;
+    M68K_Write32(M68K_A[7], addr);
+    Exit;
+  End;
+
+  { NBCD: 0100 1000 00 EEE EEE }
+  If (opcode And $FFC0) = $4800 Then Begin
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    val := M68K_ReadEA(ea_mode, ea_reg, 1, addr);
+    If M68K_SR And CCR_X <> 0 Then x := 1 Else x := 0;
+    v := (0 - (val And $0F) - x) And $FF;
+    If v > 9 Then
+      v := (v - 6) And $FF;
+    result_ := v;
+    v := (0 - ((val Shr 4) And $0F)) And $FF;
+    If result_ > $0F Then
+      v := (v - 1) And $FF;
+    If v > 9 Then
+      v := (v - 6) And $FF;
+    result_ := ((v And $0F) Shl 4) Or (result_ And $0F);
+    carry := (val <> 0) Or (x <> 0);
+    M68K_WriteEA(ea_mode, ea_reg, result_, 1);
+    If result_ <> 0 Then
+      M68K_SR := M68K_SR And (Not CCR_Z);
+    If carry Then
+      M68K_SR := M68K_SR Or (CCR_C Or CCR_X)
+    Else
+      M68K_SR := M68K_SR And (Not (CCR_C Or CCR_X));
+    Exit;
+  End;
+
+  { NEGX: 0100 0000 ss EEE EEE (ss != 11) }
+  If ((opcode And $FF00) = $4000) And (((opcode Shr 6) And 3) < 3) Then Begin
+    sz_bits := (opcode Shr 6) And 3;
+    size := M68K_OpSize(sz_bits);
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    If M68K_SR And CCR_X <> 0 Then x := 1 Else x := 0;
+    msk := M68K_SizeMask(size);
+    result_ := (0 - val - x) And msk;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    carry := (val <> 0) Or (x <> 0);
+    M68K_SetFlagsNZVC(result_, size, carry, False);
+    If carry Then
+      M68K_SR := M68K_SR Or CCR_X;
+    If result_ <> 0 Then
+      M68K_SR := M68K_SR And (Not CCR_Z);
+    Exit;
+  End;
+
+  { MOVE from CCR: 0100 0010 11 EEE EEE }
+  If (opcode And $FFC0) = $42C0 Then Begin
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    M68K_WriteEA(ea_mode, ea_reg, M68K_SR And $FF, 2);
+    Exit;
+  End;
+
+  { CLR: 0100 0010 ss EEE EEE (ss != 11) }
+  If ((opcode And $FF00) = $4200) And (((opcode Shr 6) And 3) < 3) Then Begin
+    sz_bits := (opcode Shr 6) And 3;
+    size := M68K_OpSize(sz_bits);
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    M68K_WriteEA(ea_mode, ea_reg, 0, size);
+    M68K_SR := (M68K_SR And (Not (CCR_N Or CCR_V Or CCR_C))) Or CCR_Z;
+    Exit;
+  End;
+
+  { NEG: 0100 0100 ss EEE EEE (ss != 11) }
+  If ((opcode And $FF00) = $4400) And (((opcode Shr 6) And 3) < 3) Then Begin
+    sz_bits := (opcode Shr 6) And 3;
+    size := M68K_OpSize(sz_bits);
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    msk := M68K_SizeMask(size);
+    result_ := (0 - M68K_ToSigned(val, size)) And msk;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, result_ <> 0, False);
+    Exit;
+  End;
+
+  { NOT: 0100 0110 ss EEE EEE (ss != 11) }
+  If ((opcode And $FF00) = $4600) And (((opcode Shr 6) And 3) < 3) Then Begin
+    sz_bits := (opcode Shr 6) And 3;
+    size := M68K_OpSize(sz_bits);
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    msk := M68K_SizeMask(size);
+    result_ := (Not val) And msk;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  { TAS: 0100 1010 11 EEE EEE }
+  If (opcode And $FFC0) = $4AC0 Then Begin
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    val := M68K_ReadEA(ea_mode, ea_reg, 1, addr);
+    M68K_SetFlagsNZVC(val, 1, False, False);
+    result_ := val Or $80;
+    M68K_WriteEA(ea_mode, ea_reg, result_, 1);
+    Exit;
+  End;
+
+  { TST: 0100 1010 ss EEE EEE (ss != 11) }
+  If ((opcode And $FF00) = $4A00) And (((opcode Shr 6) And 3) < 3) Then Begin
+    sz_bits := (opcode Shr 6) And 3;
+    size := M68K_OpSize(sz_bits);
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    M68K_SetFlagsNZVC(val, size, False, False);
+    Exit;
+  End;
+
+  { EXT.W: 0100 1000 1000 0 rrr }
+  If (opcode And $FFF8) = $4880 Then Begin
+    reg := opcode And 7;
+    v := M68K_D[reg] And $FF;
+    If v And $80 <> 0 Then
+      v := v Or $FF00;
+    M68K_D[reg] := (M68K_D[reg] And LongInt($FFFF0000)) Or (v And $FFFF);
+    M68K_SetFlagsNZVC(v, 2, False, False);
+    Exit;
+  End;
+
+  { EXT.L: 0100 1000 1100 0 rrr }
+  If (opcode And $FFF8) = $48C0 Then Begin
+    reg := opcode And 7;
+    v := M68K_D[reg] And $FFFF;
+    If v And $8000 <> 0 Then
+      v := v Or LongInt($FFFF0000);
+    M68K_D[reg] := v;
+    M68K_SetFlagsNZVC(v, 4, False, False);
+    Exit;
+  End;
+
+  { LINK: 0100 1110 0101 0 rrr }
+  If (opcode And $FFF8) = $4E50 Then Begin
+    reg := opcode And 7;
+    disp := M68K_SignExtend(M68K_Fetch16, 2);
+    M68K_A[7] := M68K_A[7] - 4;
+    M68K_Write32(M68K_A[7], M68K_A[reg]);
+    M68K_A[reg] := M68K_A[7];
+    M68K_A[7] := M68K_A[7] + disp;
+    Exit;
+  End;
+
+  { UNLK: 0100 1110 0101 1 rrr }
+  If (opcode And $FFF8) = $4E58 Then Begin
+    reg := opcode And 7;
+    M68K_A[7] := M68K_A[reg];
+    M68K_A[reg] := M68K_Read32(M68K_A[7]);
+    M68K_A[7] := M68K_A[7] + 4;
+    Exit;
+  End;
+
+  { JMP: 0100 1110 11 EEE EEE }
+  If (opcode And $FFC0) = $4EC0 Then Begin
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    M68K_PC := M68K_CalcEAAddr(ea_mode, ea_reg);
+    Exit;
+  End;
+
+  { JSR: 0100 1110 10 EEE EEE }
+  If (opcode And $FFC0) = $4E80 Then Begin
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    addr := M68K_CalcEAAddr(ea_mode, ea_reg);
+    M68K_A[7] := M68K_A[7] - 4;
+    M68K_Write32(M68K_A[7], M68K_PC);
+    M68K_PC := addr;
+    Exit;
+  End;
+
+  { MOVEM: 0100 1x00 1s EEE EEE }
+  If (opcode And $FB80) = $4880 Then Begin
+    direction := (opcode Shr 10) And 1;
+    sz_bit := (opcode Shr 6) And 1;
+    If sz_bit <> 0 Then size := 4 Else size := 2;
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    regmask := M68K_Fetch16;
+    M68K_ExecMovem(direction, size, ea_mode, ea_reg, regmask);
+    Exit;
+  End;
+
+  { MOVE from M68K_SR: 0100 0000 11 EEE EEE }
+  If (opcode And $FFC0) = $40C0 Then Begin
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    M68K_WriteEA(ea_mode, ea_reg, M68K_SR, 2);
+    Exit;
+  End;
+
+  { MOVE to CCR: 0100 0100 11 EEE EEE }
+  If (opcode And $FFC0) = $44C0 Then Begin
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    val := M68K_ReadEA(ea_mode, ea_reg, 2, addr);
+    M68K_SR := (M68K_SR And $FF00) Or Word(val And $FF);
+    Exit;
+  End;
+
+  { MOVE to M68K_SR: 0100 0110 11 EEE EEE }
+  If (opcode And $FFC0) = $46C0 Then Begin
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    val := M68K_ReadEA(ea_mode, ea_reg, 2, addr);
+    M68K_SR := Word(val And $FFFF);
+    Exit;
+  End;
+
+  { CHK: 0100 rrr 110 EEE EEE }
+  If (opcode And $F1C0) = $4180 Then Begin
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    val := M68K_ReadEA(ea_mode, ea_reg, 2, addr); { consume ext words }
+    Exit;
+  End;
+
+  { RESET: 0100 1110 0111 0000 }
+  If opcode = $4E70 Then
+    Exit;
+
+  { STOP: 0100 1110 0111 0010 }
+  If opcode = $4E72 Then Begin
+    M68K_SR := M68K_Fetch16;
+    M68K_Halted := True;
+    M68K_ExitCode := 0;
+    Exit;
+  End;
+
+  { MOVE USP: 0100 1110 0110 x rrr }
+  If (opcode And $FFF0) = $4E60 Then
+    Exit;
+
+  { Unimplemented }
+  WriteLn('Erreur: Instruction 0100 non implementee: $', M68K_HexN(opcode, 4));
+  M68K_Halted := True;
+  M68K_ExitCode := 1;
+  M68K_Exec0100 := False;
+End;
+
+{ ========================================================================== }
+{  ADDQ/SUBQ/Scc/DBcc (top4=5)                                               }
+{ ========================================================================== }
+
+Function M68K_Exec0101(opcode: Word): Boolean;
+Var
+  sz_bits, size, cc: Integer;
+  data3: Integer;
+  is_sub: Boolean;
+  ea_mode, ea_reg: Integer;
+  val, result_: LongInt;
+  msk: LongInt;
+  disp: LongInt;
+  dn: LongInt;
+  addr: LongInt;
+Begin
+  M68K_Exec0101 := True;
+  sz_bits := (opcode Shr 6) And 3;
+
+  { Scc / DBcc: sz_bits = 3 }
+  If sz_bits = 3 Then Begin
+    cc := (opcode Shr 8) And $F;
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    If ea_mode = 1 Then Begin { DBcc }
+      disp := M68K_SignExtend(M68K_Fetch16, 2);
+      If Not M68K_TestCC(cc) Then Begin
+        dn := (M68K_D[ea_reg] And $FFFF) - 1;
+        M68K_D[ea_reg] := (M68K_D[ea_reg] And LongInt($FFFF0000)) Or (dn And $FFFF);
+        If (dn And $FFFF) <> $FFFF Then
+          M68K_PC := M68K_PC - 2 + disp;
+      End;
+    End Else Begin { Scc }
+      If M68K_TestCC(cc) Then
+        M68K_WriteEA(ea_mode, ea_reg, $FF, 1)
+      Else
+        M68K_WriteEA(ea_mode, ea_reg, $00, 1);
+    End;
+    Exit;
+  End;
+
+  size := M68K_OpSize(sz_bits);
+  data3 := (opcode Shr 9) And 7;
+  If data3 = 0 Then data3 := 8;
+  is_sub := ((opcode Shr 8) And 1) <> 0;
+  ea_mode := (opcode Shr 3) And 7;
+  ea_reg  := opcode And 7;
+
+  If ea_mode = 1 Then Begin { ADDQ/SUBQ to An }
+    If is_sub Then
+      M68K_A[ea_reg] := M68K_A[ea_reg] - data3
+    Else
+      M68K_A[ea_reg] := M68K_A[ea_reg] + data3;
+    Exit;
+  End;
+
+  val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+  msk := M68K_SizeMask(size);
+  If is_sub Then
+    result_ := (val - data3) And msk
+  Else
+    result_ := (val + data3) And msk;
+  M68K_WriteEA(ea_mode, ea_reg, result_, size);
+  M68K_SetFlagsNZVC(result_, size, False, False);
+End;
+
+{ ========================================================================== }
+{  Bcc/BRA/BSR (top4=6)                                                      }
+{ ========================================================================== }
+
+Function M68K_ExecBcc(opcode: Word): Boolean;
+Var
+  cc: Integer;
+  disp8: Integer;
+  disp: LongInt;
+Begin
+  M68K_ExecBcc := True;
+  cc := (opcode Shr 8) And $F;
+  disp8 := opcode And $FF;
+
+  If disp8 = 0 Then
+    disp := M68K_SignExtend(M68K_Fetch16, 2)
+  Else If disp8 = $FF Then Begin
+    WriteLn('Erreur: BCC long displacement non supporte');
+    M68K_Halted := True;
+    M68K_ExitCode := 1;
+    M68K_ExecBcc := False;
+    Exit;
+  End Else
+    disp := M68K_SignExtend(disp8, 1);
+
+  If cc = 1 Then Begin { BSR }
+    M68K_A[7] := M68K_A[7] - 4;
+    M68K_Write32(M68K_A[7], M68K_PC);
+    If disp8 = 0 Then
+      M68K_PC := M68K_PC - 2 + disp
+    Else
+      M68K_PC := M68K_PC + disp;
+    Exit;
+  End;
+
+  If M68K_TestCC(cc) Then Begin
+    If disp8 = 0 Then
+      M68K_PC := M68K_PC - 2 + disp
+    Else
+      M68K_PC := M68K_PC + disp;
+  End;
+End;
+
+{ ========================================================================== }
+{  OR/DIV/SBCD (top4=8)                                                       }
+{ ========================================================================== }
+
+Function M68K_Exec1000(opcode: Word): Boolean;
+Var
+  reg, opmode, ea_mode, ea_reg: Integer;
+  val, result_: LongInt;
+  addr: LongInt;
+  msk: LongInt;
+  size: Integer;
+  dividend_u: LongInt;
+  quotient_u, remainder_u: LongInt;
+  dividend_s, divisor_s: LongInt;
+  quotient_s, remainder_s: LongInt;
+Begin
+  M68K_Exec1000 := True;
+  reg := (opcode Shr 9) And 7;
+  opmode := (opcode Shr 6) And 7;
+  ea_mode := (opcode Shr 3) And 7;
+  ea_reg  := opcode And 7;
+
+  { SBCD: simplified }
+  If (opcode And $F1F0) = $8100 Then
+    Exit;
+
+  { DIVU: opmode=3 }
+  If opmode = 3 Then Begin
+    val := M68K_ReadEA(ea_mode, ea_reg, 2, addr) And $FFFF;
+    If val = 0 Then Begin
+      WriteLn('Erreur: Division par zero (DIVU)');
+      M68K_Halted := True;
+      M68K_ExitCode := 1;
+      M68K_Exec1000 := False;
+      Exit;
+    End;
+    { Unsigned division: M68K_D[reg] is treated as unsigned 32-bit }
+    { Use careful unsigned division with LongInt }
+    dividend_u := M68K_D[reg];
+    { For unsigned 32-bit div by 16-bit, handle sign bit }
+    If dividend_u >= 0 Then Begin
+      quotient_u := dividend_u Div val;
+      remainder_u := dividend_u Mod val;
+    End Else Begin
+      { dividend_u is negative as LongInt but represents large unsigned }
+      { Use: (dividend_u + 2^32) div val }
+      { = (dividend_u div val) + correction }
+      { Easier: split into two halves }
+      quotient_u := (M68K_Shr32(dividend_u, 1) Div val) * 2;
+      remainder_u := dividend_u - quotient_u * val;
+      If remainder_u < 0 Then Begin
+        remainder_u := remainder_u + val;
+        Dec(quotient_u);
+      End;
+      While remainder_u >= val Do Begin
+        remainder_u := remainder_u - val;
+        Inc(quotient_u);
+      End;
+    End;
+    If quotient_u > $FFFF Then
+      M68K_SR := M68K_SR Or CCR_V
+    Else Begin
+      M68K_D[reg] := ((remainder_u And $FFFF) Shl 16) Or (quotient_u And $FFFF);
+      M68K_SetFlagsNZVC(quotient_u, 2, False, False);
+    End;
+    Exit;
+  End;
+
+  { DIVS: opmode=7 }
+  If opmode = 7 Then Begin
+    val := M68K_ReadEA(ea_mode, ea_reg, 2, addr);
+    divisor_s := M68K_ToSigned(val, 2);
+    If divisor_s = 0 Then Begin
+      WriteLn('Erreur: Division par zero (DIVS)');
+      M68K_Halted := True;
+      M68K_ExitCode := 1;
+      M68K_Exec1000 := False;
+      Exit;
+    End;
+    dividend_s := M68K_ToSigned(M68K_D[reg], 4);
+    quotient_s := dividend_s Div divisor_s;
+    { Pascal truncates toward zero, which is what we want }
+    remainder_s := dividend_s - quotient_s * divisor_s;
+    If (quotient_s < -32768) Or (quotient_s > 32767) Then
+      M68K_SR := M68K_SR Or CCR_V
+    Else Begin
+      M68K_D[reg] := ((remainder_s And $FFFF) Shl 16) Or (quotient_s And $FFFF);
+      M68K_SetFlagsNZVC(quotient_s And $FFFF, 2, False, False);
+    End;
+    Exit;
+  End;
+
+  { OR <ea>,Dn (opmode 0,1,2) }
+  If opmode In [0, 1, 2] Then Begin
+    size := M68K_OpSize(opmode);
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    msk := M68K_SizeMask(size);
+    result_ := (M68K_GetD(reg, size) Or val) And msk;
+    M68K_SetD(reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  { OR Dn,<ea> (opmode 4,5,6) }
+  If opmode In [4, 5, 6] Then Begin
+    size := M68K_OpSize(opmode - 4);
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    msk := M68K_SizeMask(size);
+    result_ := (M68K_GetD(reg, size) Or val) And msk;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  WriteLn('Erreur: OR/DIV non implemente: $', M68K_HexN(opcode, 4));
+  M68K_Halted := True;
+  M68K_ExitCode := 1;
+  M68K_Exec1000 := False;
+End;
+
+{ ========================================================================== }
+{  ADD/SUB (top4=9/D)                                                         }
+{ ========================================================================== }
+
+Function M68K_ExecAddSub(opcode: Word; is_add: Boolean): Boolean;
+Var
+  reg, opmode, ea_mode, ea_reg: Integer;
+  size: Integer;
+  val, dn, result_: LongInt;
+  msk: LongInt;
+  x: Integer;
+  rm: Integer;
+  src_val, dst_val: LongInt;
+  dec_: Integer;
+  addr: LongInt;
+Begin
+  M68K_ExecAddSub := True;
+  reg := (opcode Shr 9) And 7;
+  opmode := (opcode Shr 6) And 7;
+  ea_mode := (opcode Shr 3) And 7;
+  ea_reg  := opcode And 7;
+
+  { ADDA/SUBA: opmode 3 (word) or 7 (long) }
+  If (opmode = 3) Or (opmode = 7) Then Begin
+    If opmode = 3 Then size := 2 Else size := 4;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    If size = 2 Then
+      val := M68K_SignExtend(val, 2);
+    If is_add Then
+      M68K_A[reg] := M68K_A[reg] + val
+    Else
+      M68K_A[reg] := M68K_A[reg] - val;
+    Exit;
+  End;
+
+  { ADD/SUB <ea>,Dn (opmode 0,1,2) }
+  If opmode In [0, 1, 2] Then Begin
+    size := M68K_OpSize(opmode);
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    dn := M68K_GetD(reg, size);
+    msk := M68K_SizeMask(size);
+    If is_add Then
+      result_ := (dn + val) And msk
+    Else
+      result_ := (dn - val) And msk;
+    M68K_SetD(reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  { ADDX/SUBX: opmode 4,5,6 with bits 5-4=00 }
+  If (opmode In [4, 5, 6]) And ((opcode And $0030) = $0000) Then Begin
+    size := M68K_OpSize(opmode - 4);
+    msk := M68K_SizeMask(size);
+    rm := (opcode Shr 3) And 1;
+    If M68K_SR And CCR_X <> 0 Then x := 1 Else x := 0;
+    If rm = 0 Then Begin
+      src_val := M68K_GetD(ea_reg, size);
+      dst_val := M68K_GetD(reg, size);
+      If is_add Then
+        result_ := (dst_val + src_val + x) And msk
+      Else
+        result_ := (dst_val - src_val - x) And msk;
+      M68K_SetD(reg, result_, size);
+    End Else Begin
+      dec_ := size;
+      If (ea_reg = 7) And (size = 1) Then dec_ := 2;
+      M68K_A[ea_reg] := M68K_A[ea_reg] - dec_;
+      dec_ := size;
+      If (reg = 7) And (size = 1) Then dec_ := 2;
+      M68K_A[reg] := M68K_A[reg] - dec_;
+      src_val := M68K_ReadMem(M68K_A[ea_reg], size);
+      dst_val := M68K_ReadMem(M68K_A[reg], size);
+      If is_add Then
+        result_ := (dst_val + src_val + x) And msk
+      Else
+        result_ := (dst_val - src_val - x) And msk;
+      M68K_WriteMem(M68K_A[reg], result_, size);
+    End;
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    If result_ <> 0 Then
+      M68K_SR := M68K_SR And (Not CCR_Z);
+    Exit;
+  End;
+
+  { ADD/SUB Dn,<ea> (opmode 4,5,6) }
+  If opmode In [4, 5, 6] Then Begin
+    size := M68K_OpSize(opmode - 4);
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    dn := M68K_GetD(reg, size);
+    msk := M68K_SizeMask(size);
+    If is_add Then
+      result_ := (val + dn) And msk
+    Else
+      result_ := (val - dn) And msk;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  WriteLn('Erreur: ADD/SUB non implemente: opmode=', opmode);
+  M68K_Halted := True;
+  M68K_ExitCode := 1;
+  M68K_ExecAddSub := False;
+End;
+
+{ ========================================================================== }
+{  CMP/EOR (top4=$B)                                                          }
+{ ========================================================================== }
+
+Function M68K_Exec1011(opcode: Word): Boolean;
+Var
+  reg, opmode, ea_mode, ea_reg: Integer;
+  size: Integer;
+  val, dn, result_: LongInt;
+  msk: LongInt;
+  addr: LongInt;
+Begin
+  M68K_Exec1011 := True;
+  reg := (opcode Shr 9) And 7;
+  opmode := (opcode Shr 6) And 7;
+  ea_mode := (opcode Shr 3) And 7;
+  ea_reg  := opcode And 7;
+
+  { CMPA: opmode 3 (word) or 7 (long) }
+  If (opmode = 3) Or (opmode = 7) Then Begin
+    If opmode = 3 Then size := 2 Else size := 4;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    If size = 2 Then
+      val := M68K_SignExtend(val, 2);
+    result_ := M68K_A[reg] - val;
+    M68K_SetFlagsNZVC(result_, 4, False, False);
+    Exit;
+  End;
+
+  { CMP: opmode 0,1,2 }
+  If opmode In [0, 1, 2] Then Begin
+    size := M68K_OpSize(opmode);
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    dn := M68K_GetD(reg, size);
+    msk := M68K_SizeMask(size);
+    result_ := (dn - val) And msk;
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  { EOR: opmode 4,5,6 }
+  If opmode In [4, 5, 6] Then Begin
+    size := M68K_OpSize(opmode - 4);
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    dn := M68K_GetD(reg, size);
+    msk := M68K_SizeMask(size);
+    result_ := (dn Xor val) And msk;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  WriteLn('Erreur: CMP/EOR non implemente: opmode=', opmode);
+  M68K_Halted := True;
+  M68K_ExitCode := 1;
+  M68K_Exec1011 := False;
+End;
+
+{ ========================================================================== }
+{  AND/MUL/ABCD/EXG (top4=$C)                                                }
+{ ========================================================================== }
+
+Function M68K_Exec1100(opcode: Word): Boolean;
+Var
+  reg, opmode, ea_mode, ea_reg: Integer;
+  size: Integer;
+  val, result_: LongInt;
+  msk: LongInt;
+  exg_mode: Integer;
+  tmp: LongInt;
+  a_s, b_s: LongInt;
+  addr: LongInt;
+Begin
+  M68K_Exec1100 := True;
+  reg := (opcode Shr 9) And 7;
+  opmode := (opcode Shr 6) And 7;
+  ea_mode := (opcode Shr 3) And 7;
+  ea_reg  := opcode And 7;
+
+  { EXG: 1100 xxx 1 ooooo yyy }
+  If (opcode And $F130) = $C100 Then Begin
+    exg_mode := (opcode Shr 3) And $1F;
+    Case exg_mode Of
+      $08: Begin { Dx,Dy }
+             tmp := M68K_D[reg];
+             M68K_D[reg] := M68K_D[ea_reg];
+             M68K_D[ea_reg] := tmp;
+           End;
+      $09: Begin { Ax,Ay }
+             tmp := M68K_A[reg];
+             M68K_A[reg] := M68K_A[ea_reg];
+             M68K_A[ea_reg] := tmp;
+           End;
+      $11: Begin { Dx,Ay }
+             tmp := M68K_D[reg];
+             M68K_D[reg] := M68K_A[ea_reg];
+             M68K_A[ea_reg] := tmp;
+           End;
+    End;
+    Exit;
+  End;
+
+  { ABCD: simplified }
+  If (opcode And $F1F0) = $C100 Then
+    Exit;
+
+  { MULU: opmode=3 }
+  If opmode = 3 Then Begin
+    val := M68K_ReadEA(ea_mode, ea_reg, 2, addr) And $FFFF;
+    result_ := (M68K_D[reg] And $FFFF) * val;
+    M68K_D[reg] := result_;
+    M68K_SetFlagsNZVC(result_, 4, False, False);
+    Exit;
+  End;
+
+  { MULS: opmode=7 }
+  If opmode = 7 Then Begin
+    val := M68K_ReadEA(ea_mode, ea_reg, 2, addr);
+    a_s := M68K_ToSigned(M68K_D[reg] And $FFFF, 2);
+    b_s := M68K_ToSigned(val And $FFFF, 2);
+    result_ := a_s * b_s;
+    M68K_D[reg] := result_;
+    M68K_SetFlagsNZVC(result_, 4, False, False);
+    Exit;
+  End;
+
+  { AND <ea>,Dn (opmode 0,1,2) }
+  If opmode In [0, 1, 2] Then Begin
+    size := M68K_OpSize(opmode);
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    msk := M68K_SizeMask(size);
+    result_ := (M68K_GetD(reg, size) And val) And msk;
+    M68K_SetD(reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  { AND Dn,<ea> (opmode 4,5,6) }
+  If opmode In [4, 5, 6] Then Begin
+    size := M68K_OpSize(opmode - 4);
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    msk := M68K_SizeMask(size);
+    result_ := (M68K_GetD(reg, size) And val) And msk;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  WriteLn('Erreur: AND/MUL non implemente: $', M68K_HexN(opcode, 4));
+  M68K_Halted := True;
+  M68K_ExitCode := 1;
+  M68K_Exec1100 := False;
+End;
+
+{ ========================================================================== }
+{  Shift/Rotate (top4=$E)                                                     }
+{ ========================================================================== }
+
+Function M68K_ExecShift(opcode: Word): Boolean;
+Var
+  direction, stype: Integer;
+  ea_mode, ea_reg: Integer;
+  val: LongInt;
+  carry_bit: Boolean;
+  result_: LongInt;
+  x_bit: Integer;
+  count_reg_flag: Boolean;
+  sz_bits, size, reg, creg: Integer;
+  count: Integer;
+  msk, sgn: LongInt;
+  c: Integer;
+  addr: LongInt;
+  i: Integer;
+Begin
+  M68K_ExecShift := True;
+
+  { Memory shift (1 bit) }
+  If ((opcode Shr 6) And 3) = 3 Then Begin
+    direction := (opcode Shr 8) And 1; { 0=right, 1=left }
+    stype := (opcode Shr 9) And 3;
+    ea_mode := (opcode Shr 3) And 7;
+    ea_reg  := opcode And 7;
+    val := M68K_ReadEA(ea_mode, ea_reg, 2, addr);
+
+    If direction = 0 Then Begin { Right }
+      carry_bit := (val And 1) <> 0;
+      Case stype Of
+        0: result_ := (val Shr 1) Or (val And $8000); { ASR }
+        1: result_ := val Shr 1;                       { LSR }
+        2: Begin { ROXR }
+             If M68K_SR And CCR_X <> 0 Then x_bit := 1 Else x_bit := 0;
+             result_ := (val Shr 1) Or (x_bit Shl 15);
+           End;
+        3: result_ := (val Shr 1) Or ((val And 1) Shl 15); { ROR }
+      Else
+        result_ := val;
+      End;
+    End Else Begin { Left }
+      carry_bit := ((val Shr 15) And 1) <> 0;
+      Case stype Of
+        0: result_ := (val Shl 1) And $FFFF; { ASL }
+        1: result_ := (val Shl 1) And $FFFF; { LSL }
+        2: Begin { ROXL }
+             If M68K_SR And CCR_X <> 0 Then x_bit := 1 Else x_bit := 0;
+             result_ := ((val Shl 1) Or x_bit) And $FFFF;
+           End;
+        3: Begin { ROL }
+             c := (val Shr 15) And 1;
+             result_ := ((val Shl 1) Or c) And $FFFF;
+           End;
+      Else
+        result_ := val;
+      End;
+    End;
+
+    M68K_WriteEA(ea_mode, ea_reg, result_, 2);
+    M68K_SetFlagsNZVC(result_, 2, carry_bit, False);
+    Exit;
+  End;
+
+  { Register shift }
+  count_reg_flag := ((opcode Shr 5) And 1) <> 0;
+  direction := (opcode Shr 8) And 1;
+  stype := (opcode Shr 3) And 3;
+  sz_bits := (opcode Shr 6) And 3;
+  size := M68K_OpSize(sz_bits);
+  reg := opcode And 7;
+  creg := (opcode Shr 9) And 7;
+
+  If count_reg_flag Then
+    count := M68K_D[creg] And 63
+  Else Begin
+    count := creg;
+    If count = 0 Then count := 8;
+  End;
+
+  msk := M68K_SizeMask(size);
+  sgn := M68K_SignBit(size);
+  val := M68K_GetD(reg, size);
+  carry_bit := False;
+
+  For i := 1 To count Do Begin
+    If direction = 0 Then Begin { Right }
+      carry_bit := (val And 1) <> 0;
+      Case stype Of
+        0: val := (val Shr 1) Or (val And sgn); { ASR }
+        1: val := val Shr 1;                     { LSR }
+        2: Begin { ROXR }
+             If M68K_SR And CCR_X <> 0 Then x_bit := 1 Else x_bit := 0;
+             c := val And 1;
+             val := (val Shr 1) Or (x_bit * sgn);
+             carry_bit := c <> 0;
+           End;
+        3: Begin { ROR }
+             c := val And 1;
+             val := (val Shr 1) Or (c * sgn);
+             carry_bit := c <> 0;
+           End;
+      End;
+    End Else Begin { Left }
+      carry_bit := (val And sgn) <> 0;
+      Case stype Of
+        0: val := (val Shl 1) And msk; { ASL }
+        1: val := (val Shl 1) And msk; { LSL }
+        2: Begin { ROXL }
+             If M68K_SR And CCR_X <> 0 Then x_bit := 1 Else x_bit := 0;
+             carry_bit := (val And sgn) <> 0;
+             val := ((val Shl 1) Or x_bit) And msk;
+           End;
+        3: Begin { ROL }
+             If (val And sgn) <> 0 Then c := 1 Else c := 0;
+             val := ((val Shl 1) Or c) And msk;
+             carry_bit := c <> 0;
+           End;
+      End;
+    End;
+  End;
+
+  M68K_SetD(reg, val, size);
+  M68K_SetFlagsNZVC(val, size, carry_bit, False);
+End;
+
+{ ========================================================================== }
+{  Immediate / Bit manip (top4=0)                                             }
+{ ========================================================================== }
+
+Function M68K_Exec0000(opcode: Word): Boolean;
+Var
+  ea_mode, ea_reg: Integer;
+  sz_bits, size: Integer;
+  imm, val, result_: LongInt;
+  msk: LongInt;
+  bit_: LongInt;
+  mask_bit: LongInt;
+  dreg: Integer;
+  addr: LongInt;
+  hi, lo: Word;
+Begin
+  M68K_Exec0000 := True;
+  ea_mode := (opcode Shr 3) And 7;
+  ea_reg  := opcode And 7;
+
+  { ORI: 0000 0000 ss EEE EEE }
+  If (opcode And $FF00) = $0000 Then Begin
+    sz_bits := (opcode Shr 6) And 3;
+    { ORI to CCR }
+    If opcode = $003C Then Begin
+      imm := M68K_Fetch16 And $FF;
+      M68K_SR := (M68K_SR And $FF00) Or ((M68K_SR Or imm) And $FF);
+      Exit;
+    End;
+    { ORI to M68K_SR }
+    If opcode = $007C Then Begin
+      imm := M68K_Fetch16;
+      M68K_SR := M68K_SR Or imm;
+      Exit;
+    End;
+    size := M68K_OpSize(sz_bits);
+    If size <= 2 Then Begin
+      imm := M68K_Fetch16;
+      If size = 1 Then imm := imm And $FF;
+    End Else Begin
+      hi := M68K_Fetch16; lo := M68K_Fetch16;
+      imm := LongInt(hi) Shl 16 Or lo;
+    End;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    msk := M68K_SizeMask(size);
+    result_ := (val Or imm) And msk;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  { ANDI: 0000 0010 ss EEE EEE }
+  If (opcode And $FF00) = $0200 Then Begin
+    sz_bits := (opcode Shr 6) And 3;
+    If opcode = $023C Then Begin { ANDI to CCR }
+      imm := M68K_Fetch16 And $FF;
+      M68K_SR := (M68K_SR And $FF00) Or ((M68K_SR And imm) And $FF);
+      Exit;
+    End;
+    If opcode = $027C Then Begin { ANDI to M68K_SR }
+      imm := M68K_Fetch16;
+      M68K_SR := M68K_SR And imm;
+      Exit;
+    End;
+    size := M68K_OpSize(sz_bits);
+    If size <= 2 Then Begin
+      imm := M68K_Fetch16;
+      If size = 1 Then imm := imm And $FF;
+    End Else Begin
+      hi := M68K_Fetch16; lo := M68K_Fetch16;
+      imm := LongInt(hi) Shl 16 Or lo;
+    End;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    msk := M68K_SizeMask(size);
+    result_ := (val And imm) And msk;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  { SUBI: 0000 0100 ss EEE EEE }
+  If (opcode And $FF00) = $0400 Then Begin
+    sz_bits := (opcode Shr 6) And 3;
+    size := M68K_OpSize(sz_bits);
+    If size <= 2 Then Begin
+      imm := M68K_Fetch16;
+      If size = 1 Then imm := imm And $FF;
+    End Else Begin
+      hi := M68K_Fetch16; lo := M68K_Fetch16;
+      imm := LongInt(hi) Shl 16 Or lo;
+    End;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    msk := M68K_SizeMask(size);
+    result_ := (val - imm) And msk;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  { ADDI: 0000 0110 ss EEE EEE }
+  If (opcode And $FF00) = $0600 Then Begin
+    sz_bits := (opcode Shr 6) And 3;
+    size := M68K_OpSize(sz_bits);
+    If size <= 2 Then Begin
+      imm := M68K_Fetch16;
+      If size = 1 Then imm := imm And $FF;
+    End Else Begin
+      hi := M68K_Fetch16; lo := M68K_Fetch16;
+      imm := LongInt(hi) Shl 16 Or lo;
+    End;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    msk := M68K_SizeMask(size);
+    result_ := (val + imm) And msk;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  { EORI: 0000 1010 ss EEE EEE }
+  If (opcode And $FF00) = $0A00 Then Begin
+    sz_bits := (opcode Shr 6) And 3;
+    If opcode = $0A3C Then Begin { EORI to CCR }
+      imm := M68K_Fetch16 And $FF;
+      M68K_SR := (M68K_SR And $FF00) Or ((M68K_SR Xor imm) And $FF);
+      Exit;
+    End;
+    size := M68K_OpSize(sz_bits);
+    If size <= 2 Then Begin
+      imm := M68K_Fetch16;
+      If size = 1 Then imm := imm And $FF;
+    End Else Begin
+      hi := M68K_Fetch16; lo := M68K_Fetch16;
+      imm := LongInt(hi) Shl 16 Or lo;
+    End;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    msk := M68K_SizeMask(size);
+    result_ := (val Xor imm) And msk;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  { CMPI: 0000 1100 ss EEE EEE }
+  If (opcode And $FF00) = $0C00 Then Begin
+    sz_bits := (opcode Shr 6) And 3;
+    size := M68K_OpSize(sz_bits);
+    If size <= 2 Then Begin
+      imm := M68K_Fetch16;
+      If size = 1 Then imm := imm And $FF;
+    End Else Begin
+      hi := M68K_Fetch16; lo := M68K_Fetch16;
+      imm := LongInt(hi) Shl 16 Or lo;
+    End;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    msk := M68K_SizeMask(size);
+    result_ := (val - imm) And msk;
+    M68K_SetFlagsNZVC(result_, size, False, False);
+    Exit;
+  End;
+
+  { BTST #imm: 0000 1000 00 EEE EEE }
+  If (opcode And $FFC0) = $0800 Then Begin
+    bit_ := M68K_Fetch16 And $FF;
+    If ea_mode = 0 Then size := 4 Else size := 1;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    If ea_mode = 0 Then
+      mask_bit := LongInt(1) Shl (bit_ And 31)
+    Else
+      mask_bit := LongInt(1) Shl (bit_ And 7);
+    If val And mask_bit <> 0 Then
+      M68K_SR := M68K_SR And (Not CCR_Z)
+    Else
+      M68K_SR := M68K_SR Or CCR_Z;
+    Exit;
+  End;
+
+  { BCHG #imm: 0000 1000 01 EEE EEE }
+  If (opcode And $FFC0) = $0840 Then Begin
+    bit_ := M68K_Fetch16 And $FF;
+    If ea_mode = 0 Then size := 4 Else size := 1;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    If ea_mode = 0 Then
+      mask_bit := LongInt(1) Shl (bit_ And 31)
+    Else
+      mask_bit := LongInt(1) Shl (bit_ And 7);
+    If val And mask_bit <> 0 Then
+      M68K_SR := M68K_SR And (Not CCR_Z)
+    Else
+      M68K_SR := M68K_SR Or CCR_Z;
+    result_ := val Xor mask_bit;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    Exit;
+  End;
+
+  { BCLR #imm: 0000 1000 10 EEE EEE }
+  If (opcode And $FFC0) = $0880 Then Begin
+    bit_ := M68K_Fetch16 And $FF;
+    If ea_mode = 0 Then size := 4 Else size := 1;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    If ea_mode = 0 Then
+      mask_bit := LongInt(1) Shl (bit_ And 31)
+    Else
+      mask_bit := LongInt(1) Shl (bit_ And 7);
+    If val And mask_bit <> 0 Then
+      M68K_SR := M68K_SR And (Not CCR_Z)
+    Else
+      M68K_SR := M68K_SR Or CCR_Z;
+    result_ := val And (Not mask_bit);
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    Exit;
+  End;
+
+  { BSET #imm: 0000 1000 11 EEE EEE }
+  If (opcode And $FFC0) = $08C0 Then Begin
+    bit_ := M68K_Fetch16 And $FF;
+    If ea_mode = 0 Then size := 4 Else size := 1;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    If ea_mode = 0 Then
+      mask_bit := LongInt(1) Shl (bit_ And 31)
+    Else
+      mask_bit := LongInt(1) Shl (bit_ And 7);
+    If val And mask_bit <> 0 Then
+      M68K_SR := M68K_SR And (Not CCR_Z)
+    Else
+      M68K_SR := M68K_SR Or CCR_Z;
+    result_ := val Or mask_bit;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    Exit;
+  End;
+
+  { BTST Dn: 0000 rrr 100 EEE EEE }
+  If (opcode And $F1C0) = $0100 Then Begin
+    dreg := (opcode Shr 9) And 7;
+    bit_ := M68K_D[dreg];
+    If ea_mode = 0 Then size := 4 Else size := 1;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    If ea_mode = 0 Then
+      mask_bit := LongInt(1) Shl (bit_ And 31)
+    Else
+      mask_bit := LongInt(1) Shl (bit_ And 7);
+    If val And mask_bit <> 0 Then
+      M68K_SR := M68K_SR And (Not CCR_Z)
+    Else
+      M68K_SR := M68K_SR Or CCR_Z;
+    Exit;
+  End;
+
+  { BCHG Dn: 0000 rrr 101 EEE EEE }
+  If (opcode And $F1C0) = $0140 Then Begin
+    dreg := (opcode Shr 9) And 7;
+    bit_ := M68K_D[dreg];
+    If ea_mode = 0 Then size := 4 Else size := 1;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    If ea_mode = 0 Then
+      mask_bit := LongInt(1) Shl (bit_ And 31)
+    Else
+      mask_bit := LongInt(1) Shl (bit_ And 7);
+    If val And mask_bit <> 0 Then
+      M68K_SR := M68K_SR And (Not CCR_Z)
+    Else
+      M68K_SR := M68K_SR Or CCR_Z;
+    result_ := val Xor mask_bit;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    Exit;
+  End;
+
+  { BCLR Dn: 0000 rrr 110 EEE EEE }
+  If (opcode And $F1C0) = $0180 Then Begin
+    dreg := (opcode Shr 9) And 7;
+    bit_ := M68K_D[dreg];
+    If ea_mode = 0 Then size := 4 Else size := 1;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    If ea_mode = 0 Then
+      mask_bit := LongInt(1) Shl (bit_ And 31)
+    Else
+      mask_bit := LongInt(1) Shl (bit_ And 7);
+    If val And mask_bit <> 0 Then
+      M68K_SR := M68K_SR And (Not CCR_Z)
+    Else
+      M68K_SR := M68K_SR Or CCR_Z;
+    result_ := val And (Not mask_bit);
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    Exit;
+  End;
+
+  { BSET Dn: 0000 rrr 111 EEE EEE }
+  If (opcode And $F1C0) = $01C0 Then Begin
+    dreg := (opcode Shr 9) And 7;
+    bit_ := M68K_D[dreg];
+    If ea_mode = 0 Then size := 4 Else size := 1;
+    val := M68K_ReadEA(ea_mode, ea_reg, size, addr);
+    If ea_mode = 0 Then
+      mask_bit := LongInt(1) Shl (bit_ And 31)
+    Else
+      mask_bit := LongInt(1) Shl (bit_ And 7);
+    If val And mask_bit <> 0 Then
+      M68K_SR := M68K_SR And (Not CCR_Z)
+    Else
+      M68K_SR := M68K_SR Or CCR_Z;
+    result_ := val Or mask_bit;
+    M68K_WriteEA(ea_mode, ea_reg, result_, size);
+    Exit;
+  End;
+
+  { MOVEP: 0000 rrr 1xx 001 rrr }
+  If (opcode And $F138) = $0108 Then Begin
+    imm := M68K_Fetch16; { consume displacement }
+    Exit;
+  End;
+
+  WriteLn('Erreur: Instruction 0000 non implementee: $', M68K_HexN(opcode, 4));
+  M68K_Halted := True;
+  M68K_ExitCode := 1;
+  M68K_Exec0000 := False;
+End;
+
+{ ========================================================================== }
+{  Execution d'une instruction                                                }
+{ ========================================================================== }
+
+Function M68K_Step: Boolean;
+Var
+  opcode: Word;
+  top4: Integer;
+  pc_before: LongInt;
+  reg: Integer;
+  data: LongInt;
+  sr_low: Word;
+Begin
+  M68K_Step := True;
+  If M68K_Halted Then Begin
+    M68K_Step := False;
+    Exit;
+  End;
+  Inc(M68K_Cycles);
+  pc_before := M68K_PC;
+  opcode := M68K_Fetch16;
+
+  If M68K_Verbose Then
+    WriteLn('  M68K_PC=$', M68K_HexN(pc_before, 6),
+            ' op=$', M68K_HexN(opcode, 4),
+            ' D0=$', M68K_HexN(M68K_D[0], 8),
+            ' D1=$', M68K_HexN(M68K_D[1], 8),
+            ' A7=$', M68K_HexN(M68K_A[7], 8),
+            ' M68K_SR=$', M68K_HexN(M68K_SR, 4));
+
+  top4 := (opcode Shr 12) And $F;
+
+  { Special opcodes }
+  If opcode = $4E71 Then Exit; { NOP }
+
+  If opcode = $4E75 Then Begin { RTS }
+    M68K_PC := M68K_Read32(M68K_A[7]);
+    M68K_A[7] := M68K_A[7] + 4;
+    Exit;
+  End;
+
+  If opcode = $4E76 Then Begin { TRAPV }
+    If M68K_SR And CCR_V <> 0 Then Begin
+      WriteLn('Erreur: TRAPV: overflow trap');
+      M68K_Halted := True;
+      M68K_ExitCode := 1;
+      M68K_Step := False;
+    End;
+    Exit;
+  End;
+
+  If opcode = $4E77 Then Begin { RTR }
+    sr_low := M68K_Read16(M68K_A[7]);
+    M68K_A[7] := M68K_A[7] + 2;
+    M68K_SR := (M68K_SR And $FF00) Or (sr_low And $FF);
+    M68K_PC := M68K_Read32(M68K_A[7]);
+    M68K_A[7] := M68K_A[7] + 4;
+    Exit;
+  End;
+
+  If opcode = $4AFC Then Begin { ILLEGAL }
+    WriteLn('Erreur: Instruction ILLEGAL executee');
+    M68K_Halted := True;
+    M68K_ExitCode := 1;
+    M68K_Step := False;
+    Exit;
+  End;
+
+  { TRAP #vector }
+  If (opcode And $FFF0) = $4E40 Then Begin
+    M68K_Step := M68K_DoTrap(opcode And $F);
+    Exit;
+  End;
+
+  { MOVE (top4 = 1,2,3) }
+  If (top4 = 1) Or (top4 = 2) Or (top4 = 3) Then Begin
+    M68K_Step := M68K_ExecMove(opcode);
+    Exit;
+  End;
+
+  { Misc 0100 }
+  If top4 = 4 Then Begin
+    M68K_Step := M68K_Exec0100(opcode);
+    Exit;
+  End;
+
+  { ADDQ/SUBQ/Scc/DBcc }
+  If top4 = 5 Then Begin
+    M68K_Step := M68K_Exec0101(opcode);
+    Exit;
+  End;
+
+  { Bcc/BRA/BSR }
+  If top4 = 6 Then Begin
+    M68K_Step := M68K_ExecBcc(opcode);
+    Exit;
+  End;
+
+  { MOVEQ }
+  If top4 = 7 Then Begin
+    reg := (opcode Shr 9) And 7;
+    data := opcode And $FF;
+    If data And $80 <> 0 Then
+      data := data Or LongInt($FFFFFF00);
+    M68K_D[reg] := data;
+    M68K_SetFlagsNZVC(M68K_D[reg], 4, False, False);
+    Exit;
+  End;
+
+  { OR/DIV/SBCD }
+  If top4 = 8 Then Begin
+    M68K_Step := M68K_Exec1000(opcode);
+    Exit;
+  End;
+
+  { SUB/SUBA }
+  If top4 = 9 Then Begin
+    M68K_Step := M68K_ExecAddSub(opcode, False);
+    Exit;
+  End;
+
+  { A-line }
+  If top4 = $A Then Begin
+    WriteLn('Erreur: Instruction A-line non supportee: $', M68K_HexN(opcode, 4));
+    M68K_Halted := True;
+    M68K_ExitCode := 1;
+    M68K_Step := False;
+    Exit;
+  End;
+
+  { CMP/EOR }
+  If top4 = $B Then Begin
+    M68K_Step := M68K_Exec1011(opcode);
+    Exit;
+  End;
+
+  { AND/MUL/ABCD/EXG }
+  If top4 = $C Then Begin
+    M68K_Step := M68K_Exec1100(opcode);
+    Exit;
+  End;
+
+  { ADD/ADDA }
+  If top4 = $D Then Begin
+    M68K_Step := M68K_ExecAddSub(opcode, True);
+    Exit;
+  End;
+
+  { Shift/Rotate }
+  If top4 = $E Then Begin
+    M68K_Step := M68K_ExecShift(opcode);
+    Exit;
+  End;
+
+  { Bit manip / Immediate }
+  If top4 = 0 Then Begin
+    M68K_Step := M68K_Exec0000(opcode);
+    Exit;
+  End;
+
+  WriteLn('Erreur: Instruction non implementee: $', M68K_HexN(opcode, 4),
+          ' a M68K_PC=$', M68K_HexN(pc_before, 6));
+  M68K_Halted := True;
+  M68K_ExitCode := 1;
+  M68K_Step := False;
+End;
+
+{ ========================================================================== }
+{  Boucle d'execution                                                         }
+{ ========================================================================== }
+
+Function M68K_Run(max_cyc: LongInt): Integer;
+Begin
+  While (Not M68K_Halted) And (M68K_Cycles < max_cyc) Do Begin
+    If Not M68K_Step Then
+      Break;
+  End;
+  If (Not M68K_Halted) And (M68K_Cycles >= max_cyc) Then Begin
+    WriteLn('Erreur: limite de ', max_cyc, ' cycles atteinte (boucle infinie?)');
+    M68K_ExitCode := 1;
+  End;
+  M68K_Run := M68K_ExitCode;
+End;
+
+{ ========================================================================== }
+{  Chargement S-Record                                                        }
+{ ========================================================================== }
+
+Function M68K_HexVal(c: Char): Byte;
+Begin
+  Case c Of
+    '0'..'9': M68K_HexVal := Ord(c) - Ord('0');
+    'A'..'F': M68K_HexVal := Ord(c) - Ord('A') + 10;
+    'a'..'f': M68K_HexVal := Ord(c) - Ord('a') + 10;
+  Else
+    M68K_HexVal := 0;
+  End;
+End;
+
+Function M68K_HexByte(Var s: String; pos: Integer): Byte;
+Begin
+  M68K_HexByte := M68K_HexVal(s[pos]) Shl 4 Or M68K_HexVal(s[pos + 1]);
+End;
+
+Function M68K_HexWord(Var s: String; pos: Integer): Word;
+Begin
+  M68K_HexWord := Word(M68K_HexByte(s, pos)) Shl 8 Or M68K_HexByte(s, pos + 2);
+End;
+
+Function M68K_LoadSRecord(Const filename: String; Var entryAddr: LongInt): Boolean;
+Var
+  f: Text;
+  line: String;
+  count: Integer;
+  addr: Word;
+  i: Integer;
+  b: Byte;
+Begin
+  M68K_LoadSRecord := False;
+  entryAddr := -1;
+  Assign(f, filename);
+  Reset(f);
+  If IOResult <> 0 Then Begin
+    WriteLn('Erreur: impossible d''ouvrir ', filename);
+    Exit;
+  End;
+  While Not Eof(f) Do Begin
+    ReadLn(f, line);
+    If Length(line) < 2 Then Continue;
+    If (line[1] = 'S') And (line[2] = '0') Then
+      Continue; { Header }
+    If (line[1] = 'S') And (line[2] = '5') Then
+      Continue; { Record count }
+    If (line[1] = 'S') And (line[2] = '1') Then Begin
+      count := M68K_HexByte(line, 3);
+      addr := M68K_HexWord(line, 5);
+      { data bytes: count - 3 (2 addr + 1 checksum) }
+      For i := 0 To count - 4 Do Begin
+        b := M68K_HexByte(line, 9 + i * 2);
+        M68K_Mem[addr + i] := b;
+      End;
+    End;
+    If (line[1] = 'S') And (line[2] = '9') Then Begin
+      entryAddr := M68K_HexWord(line, 5);
+      M68K_LoadSRecord := True;
+    End;
+  End;
+  Close(f);
+  If entryAddr >= 0 Then
+    M68K_LoadSRecord := True;
+End;
+
+
 Function Emu_FaultText(F: Integer): String;
 Begin
  Case F Of
@@ -23841,6 +26067,10 @@ Var
  OldFg, OldBg: Byte;
  Loaded: Boolean;
  Steps: LongInt;
+ IsX86: Boolean;
+ IsM68K: Boolean;
+ CPUName: String;
+ EntryAddr: LongInt;
 Begin
  InitEmulatorPanel(P);
  P.BinaryPath := BinaryPath;
@@ -23849,17 +26079,142 @@ Begin
  P.Visible := True;
  P.Running := True;
  P.Fault := 0;
+ IsX86 := (TargetCPU = '-CD') Or (TargetCPU = '-CP');
+ IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
+           (TargetCPU = '-CAMIGA');
+ If TargetCPU = '-CZ80'    Then CPUName := 'Zilog Z80'
+ Else If TargetCPU = '-C6502'   Then CPUName := 'MOS 6502'
+ Else If TargetCPU = '-C6809'   Then CPUName := 'Motorola 6809'
+ Else If TargetCPU = '-C68000'  Then CPUName := 'Motorola 68000'
+ Else If TargetCPU = '-CATARIST'Then CPUName := 'Atari ST 68000'
+ Else If TargetCPU = '-CAMIGA'  Then CPUName := 'Amiga 68000'
+ Else If TargetCPU = '-CD'      Then CPUName := 'Intel 8086 mode reel'
+ Else If TargetCPU = '-CP'      Then CPUName := 'Intel 8086 mode protege'
+ Else CPUName := TargetCPU;
  OldFg := P.CurFg; OldBg := P.CurBg;
  P.CurFg := 14; P.CurBg := 1;
- EmuVScr_WriteStr(P,
-  ' Emulateur 8086 integre - DEVENV ' + DEVENV_VERSION + '          ');
+ If IsX86 Then
+  EmuVScr_WriteStr(P,
+   ' Emulateur 8086 integre - DEVENV ' + DEVENV_VERSION + '          ')
+ Else
+  EmuVScr_WriteStr(P,
+   ' Emulateur ' + CPUName + ' - DEVENV ' + DEVENV_VERSION + '          ');
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  P.CurFg := 7; P.CurBg := 0;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- EmuVScr_WriteStr(P, 'Cible    : ' + TargetCPU);
+ EmuVScr_WriteStr(P, 'Cible    : ' + TargetCPU + ' (' + CPUName + ')');
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  EmuVScr_WriteStr(P, 'Binaire  : ' + BinaryPath);
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ If IsM68K Then Begin
+  { ----- Emulateur Motorola 68000 ----- }
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 14;
+  EmuVScr_WriteStr(P, 'Chargement du fichier S-Record (.s19)...');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 7;
+  { Initialisation des registres et de la memoire }
+  FillChar(M68K_Mem, SizeOf(M68K_Mem), 0);
+  For Steps := 0 To 7 Do Begin
+   M68K_D[Steps] := 0;
+   M68K_A[Steps] := 0;
+  End;
+  M68K_PC := 0;
+  M68K_SR := $2000;
+  M68K_Halted := False;
+  M68K_ExitCode := 0;
+  M68K_Verbose := False;
+  M68K_Cycles := 0;
+  M68K_Panel := @P;
+  Loaded := False;
+  EntryAddr := -1;
+  Loaded := M68K_LoadSRecord(BinaryPath, EntryAddr);
+  If Not Loaded Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P,
+    'Erreur : impossible de charger le fichier S-Record.');
+   P.CurFg := OldFg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec chargement S-Record';
+   Exit;
+  End;
+  If EntryAddr >= 0 Then
+   M68K_PC := EntryAddr;
+  M68K_A[7] := MEM_SIZE - 4;
+  P.CurFg := 10;
+  EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
+   M68K_HexN(M68K_PC, 6) + ')');
+  P.CurFg := 7;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  { Boucle d execution }
+  Steps := 0;
+  While (Not M68K_Halted) And (Steps < MAX_CYCLES) Do Begin
+   M68K_Step;
+   Inc(Steps);
+  End;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 11;
+  If M68K_Halted Then
+   EmuVScr_WriteStr(P, '[Fin d execution : TRAP #15 termine apres ' +
+    IntToStr(Steps) + ' instructions, code=' +
+    IntToStr(M68K_ExitCode) + ']')
+  Else
+   EmuVScr_WriteStr(P, '[Limite de ' + IntToStr(MAX_CYCLES) +
+    ' cycles atteinte (boucle infinie ?)]');
+  P.CurFg := OldFg;
+  P.CurBg := OldBg;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+  P.Running := False;
+  P.Fault := sfEndProgram;
+  P.StatusMsg := 'Emulateur 68000 : ' + IntToStr(Steps) + ' instr.';
+  Exit;
+ End;
+ If Not IsX86 Then Begin
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 14;
+  EmuVScr_WriteStr(P,
+   'Emulateur ' + CPUName + ' non encore disponible dans DEVENV.');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 7;
+  EmuVScr_WriteStr(P,
+   'Le binaire a ete genere mais ne peut etre execute ici.');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P,
+   'Seul l emulateur Intel 8086 (-CD/-CP) est implemente pour');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P,
+   'le moment. Pour tester, utilisez un emulateur externe :');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 11;
+  If TargetCPU = '-CAMIGA' Then
+   EmuVScr_WriteStr(P, '  - WinUAE / FS-UAE (Amiga)')
+  Else If TargetCPU = '-CATARIST' Then
+   EmuVScr_WriteStr(P, '  - Hatari / STeem (Atari ST)')
+  Else If TargetCPU = '-C68000' Then
+   EmuVScr_WriteStr(P, '  - Easy68K / Musashi (Motorola 68000)')
+  Else If TargetCPU = '-CZ80' Then
+   EmuVScr_WriteStr(P, '  - z80sim / CP/M Player (Zilog Z80)')
+  Else If TargetCPU = '-C6502' Then
+   EmuVScr_WriteStr(P, '  - py65 / Easy6502 (MOS 6502)')
+  Else If TargetCPU = '-C6809' Then
+   EmuVScr_WriteStr(P, '  - mame -m6809 (Motorola 6809)');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 7;
+  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+  P.CurFg := OldFg;
+  P.CurBg := OldBg;
+  P.Running := False;
+  P.Fault := sfEndProgram;
+  P.StatusMsg :=
+   'Emulateur ' + CPUName + ' non encore implemente';
+  Exit;
+ End;
  { Initialiser le CPU et la memoire emulee 1Mo }
  Emu_InitComputer(P.CPU);
  If Not P.CPU.MemReady Then Begin
@@ -29568,21 +31923,28 @@ Begin
    ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
    CleanupTempFile(TempFile);
   End;
-  { Si la cible est DOS (-CD ou -CP), lancer l emulateur 8086 }
+  { Pour toute cible non-Windows, lancer le panneau emulateur :
+    pour 8086 (-CD/-CP) il execute reellement le binaire,
+    pour les autres il affiche un panneau d information. }
   If SolutionLoaded And
-     ((CurrentProject.Info.TargetCPU = '-CD') Or
-      (CurrentProject.Info.TargetCPU = '-CP')) Then
+     (CurrentProject.Info.TargetCPU <> '') And
+     (CurrentProject.Info.TargetCPU <> '-CW32') And
+     (CurrentProject.Info.TargetCPU <> '-CW') Then Begin
+   { Pour les cibles 68000, lancer la chaine TPCW32 -> ASM68 -> .s19 }
+   If (CurrentProject.Info.TargetCPU = '-C68000') Or
+      (CurrentProject.Info.TargetCPU = '-CATARIST') Or
+      (CurrentProject.Info.TargetCPU = '-CAMIGA') Then Begin
+    { TPCW32 a genere un .asm a partir du .pas. Le passer a ASM68. }
+    CmdLine := 'ASM68 ' + SrcDir + BaseName + '.asm';
+    AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+    ExitCode := ExecuteCompiler(CmdLine, TempFile);
+    ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+    CleanupTempFile(TempFile);
+    { ExeName pointe maintenant vers le .s19 produit par ASM68 }
+    ExeName := SrcDir + BaseName + '.s19';
+   End;
    ShowEmulatorPanel(EmuPanel, ExeName,
-    CurrentProject.Info.TargetCPU)
-  Else If SolutionLoaded And
-          (CurrentProject.Info.TargetCPU <> '') And
-          (CurrentProject.Info.TargetCPU <> '-CW32') And
-          (CurrentProject.Info.TargetCPU <> '-CW') Then Begin
-   { Cible non-Windows mais sans emulateur disponible }
-   AppendOutput(OutputPanel,
-    'Note: la cible ' + CurrentProject.Info.TargetCPU +
-    ' n a pas d emulateur integre dans DEVENV.',
-    Ord(OTK_BUILD));
+    CurrentProject.Info.TargetCPU);
   End;
  End
  Else If (Ext = '.cs') Then Begin
