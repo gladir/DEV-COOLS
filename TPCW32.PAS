@@ -5084,6 +5084,67 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ EmitDataSegLate : emettre les entrees du DataTab ajoutees    }
+{ apres EmitDataSeg (typiquement par interpretation a la       }
+{ compilation pour la cible Apple II).                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitDataSegLate;
+Var
+  I, J : Integer;
+  S    : TString;
+  C    : Char;
+Begin
+  If DataEmittedCount >= DataCount Then Exit;
+  EmitBlankLine;
+  EmitComment('--- Donnees ajoutees tardivement ---');
+  For I := DataEmittedCount To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_STR:
+      Begin
+        S := '';
+        J := 1;
+        While J <= Length(DataTab[I].StrVal) Do
+        Begin
+          C := DataTab[I].StrVal[J];
+          If (Ord(C) >= 32) And (Ord(C) < 127) And (C <> '''') Then
+          Begin
+            If S <> '' Then S := S + ',';
+            S := S + '''';
+            While J <= Length(DataTab[I].StrVal) Do
+            Begin
+              C := DataTab[I].StrVal[J];
+              If (Ord(C) >= 32) And (Ord(C) < 127) And (C <> '''') Then
+              Begin
+                S := S + C;
+                Inc(J);
+              End
+              Else Break;
+            End;
+            S := S + '''';
+          End
+          Else
+          Begin
+            If S <> '' Then S := S + ',';
+            S := S + IntToStr_(Ord(C));
+            Inc(J);
+          End;
+        End;
+        If S = '' Then S := '0' Else S := S + ',0';
+        EmitRaw(DataTab[I].LblName + '  DB ' + S);
+      End;
+      DK_DWORD:
+        EmitRaw(DataTab[I].LblName + '  DD ' + IntToStr_(DataTab[I].IntVal));
+      DK_BYTE:
+        EmitRaw(DataTab[I].LblName + '  DB ' + IntToStr_(DataTab[I].IntVal));
+    End;
+  End;
+  EmitBlankLine;
+  DataEmittedCount := DataCount;
+End;
+
+{ ------------------------------------------------------------ }
 { EmitCodeSeg : emettre le debut du segment .CODE              }
 { ------------------------------------------------------------ }
 
@@ -17004,6 +17065,306 @@ End;
 { Gere le formatage :width (ignore pour l instant).            }
 { ------------------------------------------------------------ }
 
+{ ============================================================== }
+{ Apple II : etat d evaluation en temps de compilation pour      }
+{ derouler les boucles For (cible 6502) avec corps minimal.      }
+{ ============================================================== }
+Const
+  AII_CT_MAX_VARS  = 16;
+  AII_CT_MAX_ARRS  = 16;
+  AII_CT_MAX_ELEMS = 256;
+Var
+  AIICTVarCnt  : Integer;
+  AIICTVarName : Array[0..AII_CT_MAX_VARS - 1] Of TString;
+  AIICTVarVal  : Array[0..AII_CT_MAX_VARS - 1] Of LongInt;
+  AIICTArrCnt  : Integer;
+  AIICTArrName : Array[0..AII_CT_MAX_ARRS - 1] Of TString;
+  AIICTArrIsCh : Array[0..AII_CT_MAX_ARRS - 1] Of Boolean;
+  AIICTArrVal  : Array[0..AII_CT_MAX_ARRS - 1, 0..AII_CT_MAX_ELEMS - 1]
+                 Of LongInt;
+
+Function AIICTFindVar(Const N: TString): Integer;
+Var I: Integer; U: TString;
+Begin
+  U := StrUpperCase(N);
+  AIICTFindVar := -1;
+  For I := 0 To AIICTVarCnt - 1 Do
+    If AIICTVarName[I] = U Then Begin AIICTFindVar := I; Exit; End;
+End;
+
+Procedure AIICTSetVar(Const N: TString; V: LongInt);
+Var I: Integer; U: TString;
+Begin
+  U := StrUpperCase(N);
+  I := AIICTFindVar(U);
+  If I < 0 Then
+  Begin
+    If AIICTVarCnt >= AII_CT_MAX_VARS Then Exit;
+    I := AIICTVarCnt; Inc(AIICTVarCnt);
+    AIICTVarName[I] := U;
+  End;
+  AIICTVarVal[I] := V;
+End;
+
+Function AIICTFindArr(Const N: TString): Integer;
+Var I: Integer; U: TString;
+Begin
+  U := StrUpperCase(N);
+  AIICTFindArr := -1;
+  For I := 0 To AIICTArrCnt - 1 Do
+    If AIICTArrName[I] = U Then Begin AIICTFindArr := I; Exit; End;
+End;
+
+Function AIICTFindOrAddArr(Const N: TString; IsCh: Boolean): Integer;
+Var I: Integer;
+Begin
+  I := AIICTFindArr(N);
+  If I < 0 Then
+  Begin
+    If AIICTArrCnt >= AII_CT_MAX_ARRS Then
+    Begin AIICTFindOrAddArr := -1; Exit; End;
+    I := AIICTArrCnt; Inc(AIICTArrCnt);
+    AIICTArrName[I] := StrUpperCase(N);
+    AIICTArrIsCh[I] := IsCh;
+  End;
+  AIICTFindOrAddArr := I;
+End;
+
+{ Forward declarations pour evaluation/parsing CT Apple II }
+Function AIICTEvalExpr(Var V: LongInt; Var IsCh: Boolean): Boolean; Forward;
+Procedure ParseStmtAppleII; Forward;
+
+{ Verifier si l identifiant est un BYTESTREAM (char) declare dans SymTab }
+Function AIIIsByteStreamSym(Const N: TString): Boolean;
+Var SI, TI: Integer;
+Begin
+  AIIIsByteStreamSym := False;
+  SI := SymFind(StrUpperCase(N));
+  If SI < 0 Then Exit;
+  TI := SymTab[SI].TypeIdx;
+  If (TI < 0) Or (TI >= TypeCount) Then Exit;
+  If TypeTab[TI].Kind <> TYK_ARRAY Then Exit;
+  AIIIsByteStreamSym := (StrUpperCase(TypeTab[TI].Name) = 'BYTESTREAM');
+End;
+
+Function AIIIsWordStreamSym(Const N: TString): Boolean;
+Var SI, TI: Integer;
+Begin
+  AIIIsWordStreamSym := False;
+  SI := SymFind(StrUpperCase(N));
+  If SI < 0 Then Exit;
+  TI := SymTab[SI].TypeIdx;
+  If (TI < 0) Or (TI >= TypeCount) Then Exit;
+  If TypeTab[TI].Kind <> TYK_ARRAY Then Exit;
+  AIIIsWordStreamSym := (StrUpperCase(TypeTab[TI].Name) = 'WORDSTREAM');
+End;
+
+{ Evaluation primaire : litteraux, identifiants, indexation, parens, Chr/Ord }
+Function AIICTEvalPrimary(Var V: LongInt; Var IsCh: Boolean): Boolean;
+Var
+  Up : TString;
+  K  : Integer;
+  IdxV : LongInt;
+  IdxCh : Boolean;
+  ArrI : Integer;
+Begin
+  AIICTEvalPrimary := False;
+  IsCh := False; V := 0;
+  If EPAtEnd Then Exit;
+
+  { Unaire +/- }
+  If (TokenPool[EP].Kind = TK_OP) And
+     ((TokenPool[EP].Val = '+') Or (TokenPool[EP].Val = '-')) Then
+  Begin
+    Up := TokenPool[EP].Val; Inc(EP);
+    If Not AIICTEvalPrimary(V, IsCh) Then Exit;
+    If Up = '-' Then V := -V;
+    IsCh := False;
+    AIICTEvalPrimary := True;
+    Exit;
+  End;
+
+  { Parens }
+  If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '(') Then
+  Begin
+    Inc(EP);
+    If Not AIICTEvalExpr(V, IsCh) Then Exit;
+    If EPAtEnd Or (TokenPool[EP].Kind <> TK_PUNCT) Or
+       (TokenPool[EP].Val <> ')') Then Exit;
+    Inc(EP);
+    AIICTEvalPrimary := True;
+    Exit;
+  End;
+
+  Case TokenPool[EP].Kind Of
+    TK_INTEGER:
+    Begin
+      V := TokenPool[EP].IntVal; IsCh := False; Inc(EP);
+      AIICTEvalPrimary := True;
+    End;
+    TK_CHAR:
+    Begin
+      V := TokenPool[EP].IntVal And $FF; IsCh := True; Inc(EP);
+      AIICTEvalPrimary := True;
+    End;
+    TK_KEYWORD, TK_IDENT:
+    Begin
+      Up := StrUpperCase(TokenPool[EP].Val);
+      { Chr(expr) -> char }
+      If (Up = 'CHR') Then
+      Begin
+        Inc(EP);
+        If EPAtEnd Or (TokenPool[EP].Kind <> TK_PUNCT) Or
+           (TokenPool[EP].Val <> '(') Then Exit;
+        Inc(EP);
+        If Not AIICTEvalExpr(V, IsCh) Then Exit;
+        IsCh := True;
+        If EPAtEnd Or (TokenPool[EP].Kind <> TK_PUNCT) Or
+           (TokenPool[EP].Val <> ')') Then Exit;
+        Inc(EP);
+        AIICTEvalPrimary := True;
+        Exit;
+      End;
+      If (Up = 'ORD') Then
+      Begin
+        Inc(EP);
+        If EPAtEnd Or (TokenPool[EP].Kind <> TK_PUNCT) Or
+           (TokenPool[EP].Val <> '(') Then Exit;
+        Inc(EP);
+        If Not AIICTEvalExpr(V, IsCh) Then Exit;
+        IsCh := False;
+        If EPAtEnd Or (TokenPool[EP].Kind <> TK_PUNCT) Or
+           (TokenPool[EP].Val <> ')') Then Exit;
+        Inc(EP);
+        AIICTEvalPrimary := True;
+        Exit;
+      End;
+
+      { Identifiant : variable CT ou tableau CT indexe }
+      Inc(EP); { consommer ident }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '[') Then
+      Begin
+        Inc(EP);
+        If Not AIICTEvalExpr(IdxV, IdxCh) Then Exit;
+        If EPAtEnd Or (TokenPool[EP].Kind <> TK_PUNCT) Or
+           (TokenPool[EP].Val <> ']') Then Exit;
+        Inc(EP);
+        ArrI := AIICTFindArr(Up);
+        If ArrI < 0 Then
+        Begin
+          { Tableau non encore vu : creer selon type declare }
+          If AIIIsByteStreamSym(Up) Then
+            ArrI := AIICTFindOrAddArr(Up, True)
+          Else If AIIIsWordStreamSym(Up) Then
+            ArrI := AIICTFindOrAddArr(Up, False)
+          Else
+            ArrI := AIICTFindOrAddArr(Up, False);
+        End;
+        If (ArrI < 0) Or (IdxV < 0) Or (IdxV >= AII_CT_MAX_ELEMS) Then Exit;
+        V := AIICTArrVal[ArrI, IdxV];
+        IsCh := AIICTArrIsCh[ArrI];
+        AIICTEvalPrimary := True;
+        Exit;
+      End;
+
+      K := AIICTFindVar(Up);
+      If K >= 0 Then
+      Begin
+        V := AIICTVarVal[K]; IsCh := False;
+        AIICTEvalPrimary := True;
+      End;
+    End;
+  End;
+End;
+
+{ Terme : primaire ((* | div | mod) primaire)* }
+Function AIICTEvalTerm(Var V: LongInt; Var IsCh: Boolean): Boolean;
+Var
+  V2 : LongInt; IsCh2 : Boolean; Op : TString; Up : TString;
+Begin
+  AIICTEvalTerm := False;
+  If Not AIICTEvalPrimary(V, IsCh) Then Exit;
+  While Not EPAtEnd Do
+  Begin
+    Op := '';
+    If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '*') Then
+      Op := '*'
+    Else If TokenPool[EP].Kind = TK_KEYWORD Then
+    Begin
+      Up := StrUpperCase(TokenPool[EP].Val);
+      If (Up = 'DIV') Or (Up = 'MOD') Or (Up = 'AND') Or (Up = 'SHL') Or
+         (Up = 'SHR') Then Op := Up;
+    End;
+    If Op = '' Then Break;
+    Inc(EP);
+    If Not AIICTEvalPrimary(V2, IsCh2) Then Exit;
+    If Op = '*' Then V := V * V2
+    Else If Op = 'DIV' Then Begin If V2 = 0 Then Exit; V := V Div V2; End
+    Else If Op = 'MOD' Then Begin If V2 = 0 Then Exit; V := V Mod V2; End
+    Else If Op = 'AND' Then V := V And V2
+    Else If Op = 'SHL' Then V := V Shl V2
+    Else If Op = 'SHR' Then V := V Shr V2;
+    IsCh := False;
+  End;
+  AIICTEvalTerm := True;
+End;
+
+{ Expression : terme ((+ | -) terme)* }
+Function AIICTEvalExpr(Var V: LongInt; Var IsCh: Boolean): Boolean;
+Var
+  V2 : LongInt; IsCh2 : Boolean; Op : TString; Up : TString;
+Begin
+  AIICTEvalExpr := False;
+  If Not AIICTEvalTerm(V, IsCh) Then Exit;
+  While Not EPAtEnd Do
+  Begin
+    Op := '';
+    If TokenPool[EP].Kind = TK_OP Then
+    Begin
+      If (TokenPool[EP].Val = '+') Or (TokenPool[EP].Val = '-') Then
+        Op := TokenPool[EP].Val;
+    End
+    Else If TokenPool[EP].Kind = TK_KEYWORD Then
+    Begin
+      Up := StrUpperCase(TokenPool[EP].Val);
+      If Up = 'OR' Then Op := 'OR';
+    End;
+    If Op = '' Then Break;
+    Inc(EP);
+    If Not AIICTEvalTerm(V2, IsCh2) Then Exit;
+    If Op = '+' Then V := V + V2
+    Else If Op = '-' Then V := V - V2
+    Else If Op = 'OR' Then V := V Or V2;
+    IsCh := False;
+  End;
+  AIICTEvalExpr := True;
+End;
+
+{ Emission AII pour une valeur evaluee : char direct ou int via PRSTR }
+Procedure AIIEmitWriteValue(V: LongInt; IsCh: Boolean);
+Var
+  Lbl, S : TString;
+  Ch : Integer;
+Begin
+  If IsCh Then
+  Begin
+    Ch := V And $FF;
+    If (Ch = 13) Or (Ch = 10) Then Ch := $8D
+    Else Ch := Ch Or $80;
+    EmitInstr('LDA #' + IntToStr_(Ch));
+    EmitInstr('JSR $FDED');
+  End
+  Else
+  Begin
+    S := IntToStr_(V);
+    Lbl := DataGetOrAddStr(S);
+    EmitInstr('LDA #<' + Lbl);
+    EmitInstr('LDY #>' + Lbl);
+    EmitInstr('JSR _TPRT_AII_PRSTR');
+  End;
+End;
+
 { -------------------------------------------------------------- }
 { ParseWriteStmtAppleII : version specialisee Apple II.          }
 { Emet du code 6502 natif pour Write/WriteLn avec arguments      }
@@ -17015,7 +17376,7 @@ Procedure ParseWriteStmtAppleII(IsWriteLn : Boolean);
 Var
   Lbl, S : TString;
   Depth, I : Integer;
-  Ch : Integer;
+  Ch : LongInt;
   Done : Boolean;
 Begin
   EmitComment('writeln (Apple II)');
@@ -17047,44 +17408,35 @@ Begin
       EmitInstr('JSR _TPRT_AII_PRSTR');
       Inc(EP);
     End
-    Else If TokenPool[EP].Kind = TK_CHAR Then
-    Begin
-      Ch := TokenPool[EP].IntVal And $FF;
-      If Ch = 13 Then Ch := $8D
-      Else If Ch = 10 Then Ch := $8D
-      Else Ch := Ch Or $80;
-      EmitInstr('LDA #' + IntToStr_(Ch));
-      EmitInstr('JSR $FDED');
-      Inc(EP);
-    End
-    Else If TokenPool[EP].Kind = TK_INTEGER Then
-    Begin
-      S := IntToStr_(TokenPool[EP].IntVal);
-      Lbl := DataGetOrAddStr(S);
-      EmitInstr('LDA #<' + Lbl);
-      EmitInstr('LDY #>' + Lbl);
-      EmitInstr('JSR _TPRT_AII_PRSTR');
-      Inc(EP);
-    End
     Else
     Begin
-      { Expression non supportee : la sauter en respectant les parens }
-      Depth := 0;
-      Done := False;
-      While (Not EPAtEnd) And (Not Done) Do
+      { Tenter une evaluation en temps de compilation (CT) }
+      I := EP;  { sauvegarde }
+      If AIICTEvalExpr(Ch, Done) Then
       Begin
-        If TokenPool[EP].Kind = TK_PUNCT Then
+        AIIEmitWriteValue(Ch, Done);
+      End
+      Else
+      Begin
+        { Echec : restaurer EP et sauter l expression en respectant les parens }
+        EP := I;
+        Depth := 0;
+        Done := False;
+        While (Not EPAtEnd) And (Not Done) Do
         Begin
-          If TokenPool[EP].Val = '(' Then Inc(Depth)
-          Else If TokenPool[EP].Val = ')' Then
+          If TokenPool[EP].Kind = TK_PUNCT Then
           Begin
-            If Depth = 0 Then Begin Done := True; Continue; End;
-            Dec(Depth);
-          End
-          Else If (Depth = 0) And (TokenPool[EP].Val = ',') Then
-          Begin Done := True; Continue; End;
+            If TokenPool[EP].Val = '(' Then Inc(Depth)
+            Else If TokenPool[EP].Val = ')' Then
+            Begin
+              If Depth = 0 Then Begin Done := True; Continue; End;
+              Dec(Depth);
+            End
+            Else If (Depth = 0) And (TokenPool[EP].Val = ',') Then
+            Begin Done := True; Continue; End;
+          End;
+          Inc(EP);
         End;
-        Inc(EP);
       End;
     End;
 
@@ -17121,6 +17473,249 @@ Begin
     EmitInstr('LDA #$8D');
     EmitInstr('JSR $FDED');
   End;
+End;
+
+{ ============================================================== }
+{ ParseStmtAppleII : mini-interpreteur en temps de compilation   }
+{ pour le corps des boucles For deroulees (cible Apple II 6502). }
+{ Reconnait :                                                     }
+{   - BEGIN..END                                                  }
+{   - Var := expr                  (assignation CT)               }
+{   - Var[expr] := expr            (assignation indexee CT)       }
+{   - Write/WriteLn(args)          (emission AII)                 }
+{   - For Var := expr To/DOWNTO expr Do stmt  (deroulage CT)      }
+{   - ; (separateur)                                              }
+{ Toute autre construction est sautee silencieusement.            }
+{ ============================================================== }
+Procedure ParseStmtAppleII;
+Var
+  Up, IdName : TString;
+  IdxV, RhsV : LongInt;
+  IdxCh, RhsCh : Boolean;
+  ArrI, AIIDepth : Integer;
+  StartEP : Integer;
+  LoopFrom, LoopTo, LoopI : LongInt;
+  LoopCh : Boolean;
+  IsDownTo : Boolean;
+  BodyEP : Integer;
+  SaveVal : LongInt;
+  HadVar : Boolean;
+  VIdx : Integer;
+Begin
+  If EPAtEnd Then Exit;
+
+  { Sauter ; en tete }
+  While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+        (TokenPool[EP].Val = ';') Do Inc(EP);
+  If EPAtEnd Then Exit;
+
+  { Mots-cles }
+  If TokenPool[EP].Kind = TK_KEYWORD Then
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+
+    If Up = 'END' Then Exit;
+    If Up = 'UNTIL' Then Exit;
+    If Up = 'ELSE' Then Exit;
+
+    If Up = 'BEGIN' Then
+    Begin
+      Inc(EP);
+      While Not EPAtEnd Do
+      Begin
+        If (TokenPool[EP].Kind = TK_KEYWORD) And
+           (StrUpperCase(TokenPool[EP].Val) = 'END') Then
+        Begin Inc(EP); Exit; End;
+        StartEP := EP;
+        ParseStmtAppleII;
+        If EP = StartEP Then Inc(EP); { securite anti-boucle }
+        While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+              (TokenPool[EP].Val = ';') Do Inc(EP);
+      End;
+      Exit;
+    End;
+
+    If (Up = 'WRITE') Or (Up = 'WRITELN') Then
+    Begin
+      Inc(EP);
+      ParseWriteStmtAppleII(Up = 'WRITELN');
+      Exit;
+    End;
+
+    If Up = 'FOR' Then
+    Begin
+      Inc(EP); { consommer FOR }
+      If EPAtEnd Or (TokenPool[EP].Kind <> TK_IDENT) Then Exit;
+      IdName := StrUpperCase(TokenPool[EP].Val);
+      Inc(EP);
+      If EPAtEnd Or (TokenPool[EP].Kind <> TK_OP) Or
+         (TokenPool[EP].Val <> ':=') Then Exit;
+      Inc(EP);
+      If Not AIICTEvalExpr(LoopFrom, LoopCh) Then Exit;
+
+      IsDownTo := False;
+      If EPAtEnd Or (TokenPool[EP].Kind <> TK_KEYWORD) Then Exit;
+      Up := StrUpperCase(TokenPool[EP].Val);
+      If Up = 'TO' Then Inc(EP)
+      Else If Up = 'DOWNTO' Then Begin IsDownTo := True; Inc(EP); End
+      Else Exit;
+
+      If Not AIICTEvalExpr(LoopTo, LoopCh) Then Exit;
+
+      If EPAtEnd Or (TokenPool[EP].Kind <> TK_KEYWORD) Or
+         (StrUpperCase(TokenPool[EP].Val) <> 'DO') Then Exit;
+      Inc(EP); { consommer DO }
+
+      BodyEP := EP;
+
+      { Sauvegarder valeur precedente eventuelle }
+      VIdx := AIICTFindVar(IdName);
+      HadVar := VIdx >= 0;
+      If HadVar Then SaveVal := AIICTVarVal[VIdx];
+
+      LoopI := LoopFrom;
+      If IsDownTo Then
+      Begin
+        While LoopI >= LoopTo Do
+        Begin
+          AIICTSetVar(IdName, LoopI);
+          EP := BodyEP;
+          ParseStmtAppleII;
+          Dec(LoopI);
+        End;
+      End
+      Else
+      Begin
+        While LoopI <= LoopTo Do
+        Begin
+          AIICTSetVar(IdName, LoopI);
+          EP := BodyEP;
+          ParseStmtAppleII;
+          Inc(LoopI);
+        End;
+      End;
+
+      { EP doit etre apres le corps : reparser une derniere fois pour avancer }
+      EP := BodyEP;
+      AIIDepth := 0;
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
+         (StrUpperCase(TokenPool[EP].Val) = 'BEGIN') Then
+      Begin
+        AIIDepth := 1; Inc(EP);
+        While (Not EPAtEnd) And (AIIDepth > 0) Do
+        Begin
+          If TokenPool[EP].Kind = TK_KEYWORD Then
+          Begin
+            Up := StrUpperCase(TokenPool[EP].Val);
+            If (Up = 'BEGIN') Or (Up = 'CASE') Or (Up = 'RECORD') Then
+              Inc(AIIDepth)
+            Else If Up = 'END' Then Dec(AIIDepth);
+          End;
+          Inc(EP);
+        End;
+      End
+      Else
+      Begin
+        While Not EPAtEnd Do
+        Begin
+          If TokenPool[EP].Kind = TK_PUNCT Then
+          Begin
+            If (TokenPool[EP].Val = '(') Or (TokenPool[EP].Val = '[') Then
+              Inc(AIIDepth)
+            Else If (TokenPool[EP].Val = ')') Or (TokenPool[EP].Val = ']') Then
+              Dec(AIIDepth)
+            Else If (AIIDepth = 0) And (TokenPool[EP].Val = ';') Then Break;
+          End
+          Else If (AIIDepth = 0) And (TokenPool[EP].Kind = TK_KEYWORD) Then
+          Begin
+            Up := StrUpperCase(TokenPool[EP].Val);
+            If (Up = 'END') Or (Up = 'ELSE') Or (Up = 'UNTIL') Then Break;
+          End;
+          Inc(EP);
+        End;
+      End;
+
+      { Restaurer var loop precedente }
+      If HadVar Then
+      Begin
+        VIdx := AIICTFindVar(IdName);
+        If VIdx >= 0 Then AIICTVarVal[VIdx] := SaveVal;
+      End;
+      Exit;
+    End;
+
+    { Mot-cle non reconnu : sauter jusqu au ; }
+    While (Not EPAtEnd) And
+          Not ((TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';')) Do
+      Inc(EP);
+    Exit;
+  End;
+
+  { Identifiant : assignation simple ou indexee, ou Write/WriteLn }
+  If TokenPool[EP].Kind = TK_IDENT Then
+  Begin
+    IdName := StrUpperCase(TokenPool[EP].Val);
+
+    { Write / WriteLn (enregistres comme TK_IDENT via RegProc) }
+    If (IdName = 'WRITE') Or (IdName = 'WRITELN') Then
+    Begin
+      Inc(EP);
+      ParseWriteStmtAppleII(IdName = 'WRITELN');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    Inc(EP);
+
+    { Indexation [expr] ? }
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+       (TokenPool[EP].Val = '[') Then
+    Begin
+      Inc(EP);
+      If Not AIICTEvalExpr(IdxV, IdxCh) Then Exit;
+      If EPAtEnd Or (TokenPool[EP].Kind <> TK_PUNCT) Or
+         (TokenPool[EP].Val <> ']') Then Exit;
+      Inc(EP);
+      If EPAtEnd Or (TokenPool[EP].Kind <> TK_OP) Or
+         (TokenPool[EP].Val <> ':=') Then Exit;
+      Inc(EP);
+      If Not AIICTEvalExpr(RhsV, RhsCh) Then Exit;
+      If AIIIsByteStreamSym(IdName) Then
+        ArrI := AIICTFindOrAddArr(IdName, True)
+      Else If AIIIsWordStreamSym(IdName) Then
+        ArrI := AIICTFindOrAddArr(IdName, False)
+      Else
+        ArrI := AIICTFindOrAddArr(IdName, RhsCh);
+      If (ArrI >= 0) And (IdxV >= 0) And (IdxV < AII_CT_MAX_ELEMS) Then
+        AIICTArrVal[ArrI, IdxV] := RhsV;
+      { Sauter ; }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { Assignation simple Var := expr }
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+       (TokenPool[EP].Val = ':=') Then
+    Begin
+      Inc(EP);
+      If Not AIICTEvalExpr(RhsV, RhsCh) Then Exit;
+      AIICTSetVar(IdName, RhsV);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { Identifiant non reconnu : sauter jusqu au ; }
+    While (Not EPAtEnd) And
+          Not ((TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';')) Do
+      Inc(EP);
+    Exit;
+  End;
+
+  { Sinon : avancer pour eviter une boucle infinie }
+  Inc(EP);
 End;
 
 Procedure ParseWriteStmt(PI : Integer; IsWriteLn : Boolean);
@@ -17986,10 +18581,23 @@ Var
   LblEnd   : TString;
   LblCont  : TString;
   IsDownTo : Boolean;
+  AIIDepth : Integer;
+  AIIUp    : TString;
 Begin
   EmitComment('for');
 
   Inc(EP);  { consommer FOR }
+
+  { Cible Apple II : utiliser l interpreteur CT pour derouler la boucle. }
+  { ParseStmtAppleII attend que EP pointe sur le mot-cle FOR ; or nous     }
+  { l avons deja consomme. Reculer EP d un cran pour qu il y pointe a     }
+  { nouveau, puis deleguer.                                                }
+  If Opts.AppleII Then
+  Begin
+    Dec(EP);
+    ParseStmtAppleII;
+    Exit;
+  End;
 
   { Lire la variable de boucle }
   If EPAtEnd Or (TokenPool[EP].Kind <> TK_IDENT) Then Exit;
@@ -38018,6 +38626,10 @@ Begin
     { Emettre le bloc principal (TODO 09) - seulement pour les programmes }
     If Not IsUnitSource Then
       EmitMainBlock;
+
+    { Emettre les donnees ajoutees tardivement (cible Apple II) }
+    If Opts.AppleII Then
+      EmitDataSegLate;
 
     { Emettre les routines runtime (TODO 12) }
     If (Opts.DestTarget = DEST_DOSR) Or (Opts.DestTarget = DEST_DOSP) Then
