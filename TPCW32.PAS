@@ -4510,7 +4510,7 @@ Procedure BcAssemble68000(Const S: TString); Forward;
 Procedure BcAssembleCray1(Const S: TString); Forward;
 Procedure CrayDefineLabel(Const Name: TString); Forward;
 Procedure BcEmitB(B: Byte); Forward;
-
+Function  BcParseNum6502(Const S: TString): LongInt; Forward;
 { ------------------------------------------------------------ }
 { Is68kTarget : True si la cible est Motorola 68000            }
 { ------------------------------------------------------------ }
@@ -4560,6 +4560,10 @@ Begin
   If BcActive Then
   Begin
     If Opts.DestTarget = DEST_Z80 Then
+      BcAssembleZ80(S)
+    Else If (Opts.DestTarget = DEST_MSX) Or
+            (Opts.DestTarget = DEST_TRS80) Or
+            (Opts.DestTarget = DEST_ADAM) Then
       BcAssembleZ80(S)
     Else If Is6502Target Then
       BcAssemble6502(S)
@@ -5170,6 +5174,10 @@ Begin
       BcEmitB($EA); BcEmitB($EA); BcEmitB($EA); { NOP NOP NOP, sera patche }
     End;
   End;
+  { Pour MSX-DOS (.COM CP/M) : sauter directement vers _TPF_Main         }
+  { L entree CP/M est a $0100 = debut du binaire.                         }
+  If BcActive And Opts.MSX Then
+    EmitInstr('JP _TPF_Main');
 End;
 
 { ------------------------------------------------------------ }
@@ -17470,7 +17478,13 @@ Begin
   If IsCh Then
   Begin
     Ch := V And $FF;
-    If Opts.C64 Then
+    If Opts.MSX Then
+    Begin
+      If (Ch = 13) Or (Ch = 10) Then Ch := $0D;
+      EmitInstr('LD A,' + IntToStr_(Ch));
+      EmitInstr('CALL $00A2');
+    End
+    Else If Opts.C64 Then
     Begin
       If (Ch = 13) Or (Ch = 10) Then Ch := $0D;
       EmitInstr('LDA #' + IntToStr_(Ch));
@@ -17488,9 +17502,17 @@ Begin
   Begin
     S := IntToStr_(V);
     Lbl := DataGetOrAddStr(S);
-    EmitInstr('LDA #<' + Lbl);
-    EmitInstr('LDY #>' + Lbl);
-    EmitInstr('JSR _TPRT_AII_PRSTR');
+    If Opts.MSX Then
+    Begin
+      EmitInstr('LD HL,' + Lbl);
+      EmitInstr('CALL _TPRT_MSX_PRSTR');
+    End
+    Else
+    Begin
+      EmitInstr('LDA #<' + Lbl);
+      EmitInstr('LDY #>' + Lbl);
+      EmitInstr('JSR _TPRT_AII_PRSTR');
+    End;
   End;
 End;
 
@@ -17510,6 +17532,8 @@ Var
 Begin
   If Opts.C64 Then
     EmitComment('writeln (C64)')
+  Else If Opts.MSX Then
+    EmitComment('writeln (MSX)')
   Else
     EmitComment('writeln (Apple II)');
   { WriteLn sans arguments ou Write sans parenthese : juste CR LF si LN }
@@ -17522,6 +17546,13 @@ Begin
       Begin
         EmitInstr('LDA #$0D');
         EmitInstr('JSR $FFD2');
+      End
+      Else If Opts.MSX Then
+      Begin
+        EmitInstr('LD A,13');
+        EmitInstr('CALL $00A2');
+        EmitInstr('LD A,10');
+        EmitInstr('CALL $00A2');
       End
       Else
       Begin
@@ -17543,9 +17574,17 @@ Begin
     If TokenPool[EP].Kind = TK_STRING Then
     Begin
       Lbl := DataGetOrAddStr(TokenPool[EP].Val);
-      EmitInstr('LDA #<' + Lbl);
-      EmitInstr('LDY #>' + Lbl);
-      EmitInstr('JSR _TPRT_AII_PRSTR');
+      If Opts.MSX Then
+      Begin
+        EmitInstr('LD HL,' + Lbl);
+        EmitInstr('CALL _TPRT_MSX_PRSTR');
+      End
+      Else
+      Begin
+        EmitInstr('LDA #<' + Lbl);
+        EmitInstr('LDY #>' + Lbl);
+        EmitInstr('JSR _TPRT_AII_PRSTR');
+      End;
       Inc(EP);
     End
     Else
@@ -17614,6 +17653,13 @@ Begin
     Begin
       EmitInstr('LDA #$0D');
       EmitInstr('JSR $FFD2');
+    End
+    Else If Opts.MSX Then
+    Begin
+      EmitInstr('LD A,13');
+      EmitInstr('CALL $00A2');
+      EmitInstr('LD A,10');
+      EmitInstr('CALL $00A2');
     End
     Else
     Begin
@@ -17963,7 +18009,7 @@ Var
   LI, SI      : Integer;
 Begin
   { Branche specialisee 6502 (Apple II / C64) : code natif }
-  If Opts.AppleII Or Opts.C64 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
   Begin
     ParseWriteStmtAppleII(IsWriteLn);
     Exit;
@@ -18705,7 +18751,7 @@ Begin
   EmitComment('while');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18767,7 +18813,7 @@ Begin
   EmitComment('repeat');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18841,7 +18887,7 @@ Begin
   { ParseStmtAppleII attend que EP pointe sur le mot-cle FOR ; or nous     }
   { l avons deja consomme. Reculer EP d un cran pour qu il y pointe a     }
   { nouveau, puis deleguer.                                                }
-  If Opts.AppleII Or Opts.C64 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
   Begin
     Dec(EP);
     ParseStmtAppleII;
@@ -18994,7 +19040,7 @@ Begin
   If EPAtEnd Then Exit;
 
   { Cible 6502 (Apple II / C64) : interpretation pour tout le bloc }
-  If Opts.AppleII Or Opts.C64 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -25192,6 +25238,11 @@ Begin
       { Mode Cray-1 : pas de prologue (pas de pile materielle, pas d OS) }
       EmitComment('Entree programme Cray-1 (P-register = $200)');
     End
+    Else If Opts.MSX Then
+    Begin
+      { Mode MSX-DOS : pas d initialisation, entree directe (CP/M) }
+      EmitComment('Entree programme MSX (CP/M @ $0100)');
+    End
     Else
     Begin
       EmitProlog(0);
@@ -25229,6 +25280,12 @@ Begin
       { Sortie 6502 (Apple II / C64) : retour via RTS }
       EmitComment('6502 : retour via RTS');
       EmitInstr('RTS');
+    End
+    Else If Opts.MSX Then
+    Begin
+      { Sortie MSX-DOS (CP/M) : retour via RET vers MSX-DOS }
+      EmitComment('MSX-DOS : retour via RET');
+      EmitInstr('RET');
     End
     Else If Opts.DestTarget = DEST_AMIGA Then
     Begin
@@ -25864,6 +25921,20 @@ End;
 Procedure EmitRuntimeAppleII;
 Begin
   EmitBlankLine;
+  If Opts.MSX Then
+  Begin
+    EmitComment('--- Runtime MSX (Z80, BIOS CHPUT $00A2) ---');
+    { _TPRT_MSX_PRSTR : HL = pointeur ASCIIZ ; sortie via CHPUT          }
+    {   loop: LD A,(HL) ; OR A ; RET Z ; CALL $00A2 ; INC HL ; JP loop  }
+    EmitLabel('_TPRT_MSX_PRSTR');
+    EmitInstr('LD A,(HL)');
+    EmitInstr('OR A');
+    EmitInstr('RET Z');
+    EmitInstr('CALL $00A2');
+    EmitInstr('INC HL');
+    EmitInstr('JP _TPRT_MSX_PRSTR');
+    Exit;
+  End;
   If Opts.C64 Then
   Begin
     EmitComment('--- Runtime C64 (6510/6502) ---');
@@ -33812,7 +33883,7 @@ End;
 Procedure BcAssembleZ80(Const S: TString);
 Var
   Line, Mnem, Tmp, Op1, Op2: TString;
-  P: Integer;
+  P: LongInt;
 
   Procedure SplitOpsZ80(Const Rest: TString);
   Var J: Integer;
@@ -33944,7 +34015,133 @@ Begin { BcAssembleZ80 }
   If Mnem = 'LDIR' Then Begin BcEmitB($ED); BcEmitB($B0); Exit; End;
   If Mnem = 'LDDR' Then Begin BcEmitB($ED); BcEmitB($B8); Exit; End;
 
+  { ---- LD A,n / LD A,$nn (immediat 8 bits) ---- }
+  If (Mnem = 'LD') And (StrUpperCase(Op1) = 'A') Then
+  Begin
+    BcEmitB($3E);
+    BcEmitB(Byte(BcParseNum6502(Op2)));
+    Exit;
+  End;
+
+  { ---- LD HL,$nnnn / LD HL,Lbl (immediat 16 bits ou label data) ---- }
+  If (Mnem = 'LD') And (StrUpperCase(Op1) = 'HL') Then
+  Begin
+    If (Length(Op2) > 0) And (Op2[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op2);
+      BcEmitB($21); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8));
+    End
+    Else
+    Begin
+      BcEmitB($21);
+      BcAddFixup(BC_FIX_ABS16_DATA_6502, Op2, 0);
+      BcEmitB(0); BcEmitB(0);
+    End;
+    Exit;
+  End;
+
+  { ---- LD DE,$nnnn / LD DE,Lbl ---- }
+  If (Mnem = 'LD') And (StrUpperCase(Op1) = 'DE') Then
+  Begin
+    If (Length(Op2) > 0) And (Op2[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op2);
+      BcEmitB($11); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8));
+    End
+    Else
+    Begin
+      BcEmitB($11);
+      BcAddFixup(BC_FIX_ABS16_DATA_6502, Op2, 0);
+      BcEmitB(0); BcEmitB(0);
+    End;
+    Exit;
+  End;
+
+  { ---- LD BC,$nnnn ---- }
+  If (Mnem = 'LD') And (StrUpperCase(Op1) = 'BC') Then
+  Begin
+    If (Length(Op2) > 0) And (Op2[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op2);
+      BcEmitB($01); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8));
+    End
+    Else
+    Begin
+      BcEmitB($01);
+      BcAddFixup(BC_FIX_ABS16_DATA_6502, Op2, 0);
+      BcEmitB(0); BcEmitB(0);
+    End;
+    Exit;
+  End;
+
+  { ---- LD A,(HL) / LD (HL),A / OR A ---- }
+  If (Mnem = 'LD') And (StrUpperCase(Op1) = 'A') And
+     (StrUpperCase(Op2) = '(HL)') Then
+  Begin BcEmitB($7E); Exit; End;
+  If (Mnem = 'LD') And (StrUpperCase(Op1) = '(HL)') And
+     (StrUpperCase(Op2) = 'A') Then
+  Begin BcEmitB($77); Exit; End;
+  If (Mnem = 'OR') And (StrUpperCase(Op1) = 'A') Then
+  Begin BcEmitB($B7); Exit; End;
+
+  { ---- RET Z / RET NZ / RET C / RET NC ---- }
+  If (Mnem = 'RET') And (StrUpperCase(Op1) = 'Z') Then
+  Begin BcEmitB($C8); Exit; End;
+  If (Mnem = 'RET') And (StrUpperCase(Op1) = 'NZ') Then
+  Begin BcEmitB($C0); Exit; End;
+  If (Mnem = 'RET') And (StrUpperCase(Op1) = 'C') Then
+  Begin BcEmitB($D8); Exit; End;
+  If (Mnem = 'RET') And (StrUpperCase(Op1) = 'NC') Then
+  Begin BcEmitB($D0); Exit; End;
+
+  { ---- CALL $nnnn / CALL Lbl ---- }
+  If Mnem = 'CALL' Then
+  Begin
+    If (Length(Op1) > 0) And (Op1[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op1);
+      BcEmitB($CD); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8));
+    End
+    Else
+    Begin
+      BcEmitB($CD);
+      BcAddFixup(BC_FIX_ABS16_CODE_6502, Op1, 0);
+      BcEmitB(0); BcEmitB(0);
+    End;
+    Exit;
+  End;
+
+  { ---- JP $nnnn / JP Lbl ---- }
+  If Mnem = 'JP' Then
+  Begin
+    If (Length(Op1) > 0) And (Op1[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op1);
+      BcEmitB($C3); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8));
+    End
+    Else
+    Begin
+      BcEmitB($C3);
+      BcAddFixup(BC_FIX_ABS16_CODE_6502, Op1, 0);
+      BcEmitB(0); BcEmitB(0);
+    End;
+    Exit;
+  End;
+
   { ---- RST ---- }
+  If Mnem = 'RST' Then
+  Begin
+    If Op1 = '00H' Then Begin BcEmitB($C7); Exit; End;
+    If Op1 = '08H' Then Begin BcEmitB($CF); Exit; End;
+    If Op1 = '10H' Then Begin BcEmitB($D7); Exit; End;
+    If Op1 = '18H' Then Begin BcEmitB($DF); Exit; End;
+    If Op1 = '20H' Then Begin BcEmitB($E7); Exit; End;
+    If Op1 = '28H' Then Begin BcEmitB($EF); Exit; End;
+    If Op1 = '30H' Then Begin BcEmitB($F7); Exit; End;
+    If Op1 = '38H' Then Begin BcEmitB($FF); Exit; End;
+  End;
+
+  { Instruction non reconnue (stub) }
   If Mnem = 'RST' Then
   Begin
     If Op1 = '00H' Then Begin BcEmitB($C7); Exit; End;
@@ -36911,6 +37108,8 @@ Begin
 End;
 
 Procedure WriteMsxComFile(FileName: TString);
+Const
+  MSX_LOAD_ADDR = $0100;
 Var
   F: File;
   TextLen, DataLen, DataBase: LongInt;
@@ -36920,6 +37119,9 @@ Begin
   TextLen := BcCodeLen;
   DataLen := BcDataLen;
   DataBase := (TextLen + 3) And Not 3;
+
+  { Resoudre les fixups Z80 (memes encodages 16 bits LE que 6502) }
+  BcResolveFixups6502(MSX_LOAD_ADDR, DataBase);
 
   Assign(F, FileName);
   Rewrite(F, 1);
@@ -38934,8 +39136,8 @@ Begin
     If Not IsUnitSource Then
       EmitMainBlock;
 
-    { Emettre les donnees ajoutees tardivement (cible 6502 Apple II / C64) }
-    If Opts.AppleII Or Opts.C64 Then
+    { Emettre les donnees ajoutees tardivement (cible 6502 Apple II / C64 / MSX) }
+    If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
       EmitDataSegLate;
 
     { Emettre les routines runtime (TODO 12) }
@@ -38945,14 +39147,15 @@ Begin
       EmitRuntimeAmiga
     Else If Is68kTarget Then
       EmitRuntime68000
-    Else If Opts.AppleII Or Opts.C64 Then
+    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
       EmitRuntimeAppleII
     Else
       EmitRuntime;
 
     { Emettre les routines runtime supplementaires (pas en mode DOS ni 68000) }
     If (Opts.DestTarget <> DEST_DOSR) And (Opts.DestTarget <> DEST_DOSP) And
-       (Not Is68kTarget) Then
+       (Not Is68kTarget) And (Not Opts.AppleII) And (Not Opts.C64) And
+       (Not Opts.MSX) Then
     Begin
       { Emettre les routines runtime Graph (TODO 20) }
       EmitGraphRuntime;
