@@ -21940,8 +21940,14 @@ End;
 
 Function EmuColor(C: Byte): LongInt;
 Begin
- { Mapping direct vers la palette VGA 16 couleurs }
- EmuColor := C And $F;
+ { Mapping vers la palette VGA 16 couleurs.
+   ATTENTION : l index 0 est globalement remappe par SetBkColor
+   sur le fond du bureau (gris). On le redirige vers 8 (gris fonce)
+   pour conserver un veritable noir lisible dans la console emulee. }
+ If (C And $F) = 0 Then
+  EmuColor := 8
+ Else
+  EmuColor := C And $F;
 End;
 
 { --- Dessiner le panneau de l emulateur --- }
@@ -21982,25 +21988,31 @@ Begin
  DrawText(P.PanelX + 6, P.PanelY + 6, Title, CLR_HIGHLIGHTTEXT);
  DrawText(P.PanelX + GridW - 100, P.PanelY + 6,
   '[Esc] Fermer', CLR_HIGHLIGHTTEXT);
- { Fond noir de l ecran emule }
- DrawFilledRect(GridX, GridY, GridX + GridW, GridY + GridH, 0);
- { Cellules : dessiner chaque caractere avec son attribut }
+ { Fond noir de l ecran emule (palette 8 = gris fonce, pas 0
+   pour eviter le remapping global de SetBkColor) }
+ DrawFilledRect(GridX, GridY, GridX + GridW, GridY + GridH, EmuColor(0));
+ { Cellules : dessiner chaque caractere avec son attribut.
+   On peint TOUJOURS le fond (meme noir) afin que les glyphes
+   d OutTextXY (qui utilisent SetBkColor) n affichent pas le
+   gris du bureau a la place du fond demande. }
  For Y := 0 To 24 Do Begin
   PixY := GridY + Y * P.CharH;
   For X := 0 To 79 Do Begin
    Cell := P.VRAM[Y, X];
    PixX := GridX + X * P.CharW;
-   { Fond si non noir }
-   If Cell.Bg <> 0 Then
-    DrawFilledRect(PixX, PixY, PixX + P.CharW - 1,
-     PixY + P.CharH - 1, EmuColor(Cell.Bg));
-   { Caractere si non espace ou si attribut visible }
+   { Toujours dessiner le fond de la cellule }
+   DrawFilledRect(PixX, PixY, PixX + P.CharW - 1,
+    PixY + P.CharH - 1, EmuColor(Cell.Bg));
+   { Caractere }
    If Cell.Ch <> ' ' Then Begin
+    SetBkColor(EmuColor(Cell.Bg));
     S := Cell.Ch;
     DrawText(PixX, PixY + 2, S, EmuColor(Cell.Fg));
    End;
   End;
  End;
+ { Restaurer la couleur de fond du desktop }
+ SetBkColor(CLR_BACKGROUND);
  { Curseur clignotant : trait souligne }
  If P.CursorOn And (((GetTimestamp Div 500) Mod 2) = 0) Then Begin
   PixX := GridX + P.CursorX * P.CharW;
@@ -29759,14 +29771,26 @@ Begin
   AppendOutput(OutputPanel,
    '========== Build: 1 succeeded, 0 failed ==========',
    Ord(OTK_BUILD));
-  { Lancer l executable }
-  AppendOutput(OutputPanel, 'Execution de ' + ExeName + '...',
-   Ord(OTK_BUILD));
-  {$IFDEF WINDOWS}
-  Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
-  {$ELSE}
-  Exec('/bin/sh', '-c ./' + ExeName);
-  {$ENDIF}
+  { Pour les cibles non-Windows, l emulateur integre s en charge :
+    on n essaie PAS d executer le binaire DOS/68k/6502/... avec
+    Exec() sous Windows, ce qui afficherait un popup d erreur. }
+  If SolutionLoaded And (CurrentProject.Info.TargetCPU <> '')
+     And (CurrentProject.Info.TargetCPU <> '-CW32')
+     And (CurrentProject.Info.TargetCPU <> '-CW') Then Begin
+   AppendOutput(OutputPanel,
+    'Cible ' + CurrentProject.Info.TargetCPU +
+    ' : execution via emulateur integre (pas d exec systeme).',
+    Ord(OTK_BUILD));
+  End Else Begin
+   { Lancer l executable }
+   AppendOutput(OutputPanel, 'Execution de ' + ExeName + '...',
+    Ord(OTK_BUILD));
+   {$IFDEF WINDOWS}
+   Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+   {$ELSE}
+   Exec('/bin/sh', '-c ./' + ExeName);
+   {$ENDIF}
+  End;
  End Else Begin
   AppendOutput(OutputPanel,
    '========== Build: 0 succeeded, 1 failed ==========',
