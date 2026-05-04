@@ -25998,6 +25998,108 @@ Begin
   M68K_HexWord := Word(M68K_HexByte(s, pos)) Shl 8 Or M68K_HexByte(s, pos + 2);
 End;
 
+{ ------------------------------------------------------------------------- }
+{ Chargeur Amiga Hunk : decode un .exe genere par TPCW32 -CAMIGA            }
+{ Charge le hunk CODE en M68K_Mem a partir de 0, le hunk DATA juste apres,  }
+{ applique les RELOC32, retourne entryAddr=0 (debut du code).               }
+{ ------------------------------------------------------------------------- }
+Function M68K_LoadAmigaHunk(Const filename: String;
+ Var entryAddr: LongInt): Boolean;
+Const
+ HUNK_HEADER  = $000003F3;
+ HUNK_CODE    = $000003E9;
+ HUNK_DATA    = $000003EA;
+ HUNK_RELOC32 = $000003EC;
+ HUNK_END     = $000003F2;
+Var
+ f: File;
+ typ, sz, n, i, target, ofs, codeBase, dataBase, val: LongInt;
+ br: Integer;
+ b: Array[0..3] Of Byte;
+
+ Function ReadLW: LongInt;
+ Begin
+  BlockRead(f, b, 4, br);
+  If br < 4 Then Begin ReadLW := -1; Exit; End;
+  ReadLW := (LongInt(b[0]) Shl 24) Or (LongInt(b[1]) Shl 16) Or
+   (LongInt(b[2]) Shl 8) Or LongInt(b[3]);
+ End;
+
+ Procedure WriteLW32BE(Addr, V: LongInt);
+ Begin
+  M68K_Mem[Addr] := Byte((V Shr 24) And $FF);
+  M68K_Mem[Addr + 1] := Byte((V Shr 16) And $FF);
+  M68K_Mem[Addr + 2] := Byte((V Shr 8) And $FF);
+  M68K_Mem[Addr + 3] := Byte(V And $FF);
+ End;
+
+ Function ReadLW32BE(Addr: LongInt): LongInt;
+ Begin
+  ReadLW32BE :=
+   (LongInt(M68K_Mem[Addr]) Shl 24) Or
+   (LongInt(M68K_Mem[Addr + 1]) Shl 16) Or
+   (LongInt(M68K_Mem[Addr + 2]) Shl 8) Or
+   LongInt(M68K_Mem[Addr + 3]);
+ End;
+
+Begin
+ M68K_LoadAmigaHunk := False;
+ entryAddr := -1;
+ codeBase := 0;
+ dataBase := 0;
+ Assign(f, filename);
+ {$I-} Reset(f, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ typ := ReadLW;
+ If typ <> HUNK_HEADER Then Begin Close(f); Exit; End;
+ { Sauter les noms de bibliotheques residentes : LW jusqu a 0 }
+ Repeat sz := ReadLW Until (sz <= 0);
+ sz := ReadLW;  { table_size }
+ ReadLW;        { first_hunk }
+ ReadLW;        { last_hunk }
+ For i := 0 To sz - 1 Do ReadLW;
+ { Lire les blocs jusqu a EOF }
+ While Not Eof(f) Do Begin
+  typ := ReadLW;
+  If typ < 0 Then Break;
+  Case typ Of
+   HUNK_CODE: Begin
+    n := ReadLW;
+    If n > 0 Then BlockRead(f, M68K_Mem[codeBase], n * 4, br);
+    dataBase := codeBase + n * 4;
+   End;
+   HUNK_DATA: Begin
+    n := ReadLW;
+    If n > 0 Then BlockRead(f, M68K_Mem[dataBase], n * 4, br);
+   End;
+   HUNK_RELOC32: Begin
+    Repeat
+     n := ReadLW;
+     If n <= 0 Then Break;
+     target := ReadLW;
+     For i := 0 To n - 1 Do Begin
+      ofs := ReadLW;
+      val := ReadLW32BE(codeBase + ofs);
+      If target = 0 Then val := val + codeBase
+      Else If target = 1 Then val := val + dataBase;
+      WriteLW32BE(codeBase + ofs, val);
+     End;
+    Until False;
+   End;
+   HUNK_END: ;
+   Else Begin
+    n := ReadLW;
+    If n > 0 Then
+     For i := 1 To n * 4 Do
+      If Not Eof(f) Then BlockRead(f, b[0], 1, br);
+   End;
+  End;
+ End;
+ Close(f);
+ entryAddr := codeBase;
+ M68K_LoadAmigaHunk := True;
+End;
+
 Function M68K_LoadSRecord(Const filename: String; Var entryAddr: LongInt): Boolean;
 Var
   f: Text;
@@ -26010,9 +26112,8 @@ Begin
   M68K_LoadSRecord := False;
   entryAddr := -1;
   Assign(f, filename);
-  Reset(f);
+  {$I-} Reset(f); {$I+}
   If IOResult <> 0 Then Begin
-    WriteLn('Erreur: impossible d''ouvrir ', filename);
     Exit;
   End;
   While Not Eof(f) Do Begin
@@ -26110,7 +26211,7 @@ Begin
   { ----- Emulateur Motorola 68000 ----- }
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   P.CurFg := 14;
-  EmuVScr_WriteStr(P, 'Chargement du fichier S-Record (.s19)...');
+  EmuVScr_WriteStr(P, 'Chargement du binaire 68000 (Amiga Hunk)...');
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   P.CurFg := 7;
   { Initialisation des registres et de la memoire }
@@ -26128,15 +26229,21 @@ Begin
   M68K_Panel := @P;
   Loaded := False;
   EntryAddr := -1;
-  Loaded := M68K_LoadSRecord(BinaryPath, EntryAddr);
+  Loaded := M68K_LoadAmigaHunk(BinaryPath, EntryAddr);
+  { Si le format Amiga Hunk a echoue, essayer S-Record en repli }
+  If Not Loaded Then
+   Loaded := M68K_LoadSRecord(BinaryPath, EntryAddr);
   If Not Loaded Then Begin
    P.CurFg := 12;
    EmuVScr_WriteStr(P,
-    'Erreur : impossible de charger le fichier S-Record.');
+    'Erreur : impossible de charger ' + BinaryPath);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P,
+    '(formats supportes : Amiga Hunk .exe, S-Record .s19)');
    P.CurFg := OldFg;
    P.Running := False;
    P.Fault := sfEndProgram;
-   P.StatusMsg := 'Echec chargement S-Record';
+   P.StatusMsg := 'Echec chargement binaire 68000';
    Exit;
   End;
   If EntryAddr >= 0 Then
@@ -31903,6 +32010,7 @@ Begin
    { Si un projet est charge, utiliser sa plateforme cible }
    If SolutionLoaded And (CurrentProject.Info.TargetCPU <> '') Then
     CmdLine := CmdLine + ' ' + CurrentProject.Info.TargetCPU;
+
    AppendOutput(OutputPanel,
     '------ Build started: ' + SourceFile + ' ------',
     Ord(OTK_BUILD));
@@ -31930,19 +32038,14 @@ Begin
      (CurrentProject.Info.TargetCPU <> '') And
      (CurrentProject.Info.TargetCPU <> '-CW32') And
      (CurrentProject.Info.TargetCPU <> '-CW') Then Begin
-   { Pour les cibles 68000, lancer la chaine TPCW32 -> ASM68 -> .s19 }
-   If (CurrentProject.Info.TargetCPU = '-C68000') Or
-      (CurrentProject.Info.TargetCPU = '-CATARIST') Or
-      (CurrentProject.Info.TargetCPU = '-CAMIGA') Then Begin
-    { TPCW32 a genere un .asm a partir du .pas. Le passer a ASM68. }
-    CmdLine := 'ASM68 ' + SrcDir + BaseName + '.asm';
-    AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
-    ExitCode := ExecuteCompiler(CmdLine, TempFile);
-    ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
-    CleanupTempFile(TempFile);
-    { ExeName pointe maintenant vers le .s19 produit par ASM68 }
-    ExeName := SrcDir + BaseName + '.s19';
-   End;
+   { Pour les cibles 68000, TPCW32 produit directement un binaire :
+     -CAMIGA   -> .exe (Amiga Hunk)
+     -CATARIST -> .prg (Atari ST)
+     -C68000   -> .prg }
+   If (CurrentProject.Info.TargetCPU = '-CATARIST') Or
+      (CurrentProject.Info.TargetCPU = '-C68000') Then
+    ExeName := SrcDir + BaseName + '.prg';
+   { Pour AMIGA, l extension par defaut est deja .exe -> conserver ExeName. }
    ShowEmulatorPanel(EmuPanel, ExeName,
     CurrentProject.Info.TargetCPU);
   End;
