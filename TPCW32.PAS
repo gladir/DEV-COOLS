@@ -92,6 +92,8 @@ Const
   DEST_ATARIST = 9; { -CATARIST : Atari ST (68000) }
   DEST_AMIGA = 10;  { -CAMIGA : Amiga (68000)      }
   DEST_APPLEII = 11; { -CAPPLEII : Apple II (6502) }
+  DEST_C64    = 12; { -CC64 : Commodore 64 (6502/6510) }
+  DEST_COCO3  = 13; { -CCOCO3 : Tandy CoCo 3 (6809) }
 
 Type
   TString = String;
@@ -127,8 +129,10 @@ Type
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
     ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
     Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
-    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII : destination }
+    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3 : destination }
     AppleII     : Boolean;   { True si la plateforme est Apple II (CPU = 6502) }
+    C64         : Boolean;   { True si la plateforme est Commodore 64 (CPU = 6510 ~ 6502) }
+    CoCo3       : Boolean;   { True si la plateforme est Tandy CoCo 3 (CPU = 6809) }
   End;
 
 Var
@@ -306,6 +310,8 @@ Begin
   Opts.Warnings  := False;
   Opts.AsmOutput := False;
   Opts.AppleII := False;
+  Opts.C64 := False;
+  Opts.CoCo3 := False;
   Opts.ObjOnly   := False;
   Opts.Dos16Mode := False;
   Opts.TPVersion := TP_VER_DEFAULT;
@@ -378,6 +384,8 @@ Begin
   WriteLn('  -CATARIST      Destination Atari ST (68000)');
   WriteLn('  -CAMIGA        Destination Amiga (68000)');
   WriteLn('  -CAPPLEII      Destination Apple II (6502)');
+  WriteLn('  -CC64          Destination Commodore 64 (6502/6510)');
+  WriteLn('  -CCOCO3        Destination Tandy CoCo 3 (6809)');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -503,6 +511,16 @@ Begin
       Opts.DestTarget := DEST_6502;
       Opts.AppleII := True;
     End
+    Else If (UA = '-CC64') Then
+    Begin
+      Opts.DestTarget := DEST_6502;
+      Opts.C64 := True;
+    End
+    Else If (UA = '-CCOCO3') Then
+    Begin
+      Opts.DestTarget := DEST_6809;
+      Opts.CoCo3 := True;
+    End
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
@@ -598,6 +616,10 @@ Begin
     Else If Opts.DestTarget = DEST_AMIGA Then
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe')
     Else If Opts.AppleII Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.bin')
+    Else If Opts.C64 Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.prg')
+    Else If Opts.CoCo3 Then
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.bin')
     Else
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
@@ -34086,6 +34108,92 @@ Begin
   Close(F);
 End;
 
+{ --- WriteC64PrgFile : binaire Commodore 64 (.PRG)                        }
+{ Format : 2 octets load address LE + bytes brut.                          }
+{ Adresse de chargement par defaut : $0801 (BASIC start sur C64).          }
+Procedure WriteC64PrgFile(FileName: TString);
+Const
+  C64_LOAD_ADDR = $0801;
+Var
+  F: File;
+  TextLen, DataLen, DataBase: LongInt;
+  PadLen: LongInt;
+  PadByte: Byte;
+  Hdr: Array[0..1] Of Byte;
+Begin
+  TextLen := BcCodeLen;
+  DataLen := BcDataLen;
+  DataBase := (TextLen + 3) And Not 3;
+
+  Hdr[0] := C64_LOAD_ADDR And $FF;
+  Hdr[1] := (C64_LOAD_ADDR Shr 8) And $FF;
+
+  Assign(F, FileName);
+  Rewrite(F, 1);
+  BlockWrite(F, Hdr, 2);
+  If TextLen > 0 Then
+    BlockWrite(F, BcCode[0], TextLen);
+  PadByte := 0;
+  PadLen := DataBase - TextLen;
+  While PadLen > 0 Do
+  Begin BlockWrite(F, PadByte, 1); Dec(PadLen); End;
+  If DataLen > 0 Then
+    BlockWrite(F, BcData[0], DataLen);
+  Close(F);
+End;
+
+{ --- WriteCoCo3BinFile : binaire Tandy CoCo 3 (.BIN format DECB)         }
+{ Format Disk Extended Color BASIC :                                       }
+{   Preamble : $00 + length(2 BE) + load addr(2 BE) + data                 }
+{   Postamble: $FF + $00 $00 + entry addr(2 BE)                            }
+{ Adresse de chargement et entree par defaut : $2000 (zone usager CoCo 3). }
+{ Charge sur CoCo 3 via : LOADM"PROG":EXEC                                 }
+Procedure WriteCoCo3BinFile(FileName: TString);
+Const
+  COCO3_LOAD_ADDR = $2000;
+Var
+  F: File;
+  TextLen, DataLen, DataBase, TotalLen: LongInt;
+  PadLen: LongInt;
+  PadByte: Byte;
+  Preamble: Array[0..4] Of Byte;
+  Postamble: Array[0..4] Of Byte;
+Begin
+  TextLen := BcCodeLen;
+  DataLen := BcDataLen;
+  DataBase := (TextLen + 3) And Not 3;
+  TotalLen := DataBase + DataLen;
+  If TotalLen < TextLen Then TotalLen := TextLen;
+
+  { Preamble : $00 length(BE) load(BE) }
+  Preamble[0] := $00;
+  Preamble[1] := (TotalLen Shr 8) And $FF;
+  Preamble[2] := TotalLen And $FF;
+  Preamble[3] := (COCO3_LOAD_ADDR Shr 8) And $FF;
+  Preamble[4] := COCO3_LOAD_ADDR And $FF;
+
+  { Postamble : $FF $00 $00 entry(BE) }
+  Postamble[0] := $FF;
+  Postamble[1] := $00;
+  Postamble[2] := $00;
+  Postamble[3] := (COCO3_LOAD_ADDR Shr 8) And $FF;
+  Postamble[4] := COCO3_LOAD_ADDR And $FF;
+
+  Assign(F, FileName);
+  Rewrite(F, 1);
+  BlockWrite(F, Preamble, 5);
+  If TextLen > 0 Then
+    BlockWrite(F, BcCode[0], TextLen);
+  PadByte := 0;
+  PadLen := DataBase - TextLen;
+  While PadLen > 0 Do
+  Begin BlockWrite(F, PadByte, 1); Dec(PadLen); End;
+  If DataLen > 0 Then
+    BlockWrite(F, BcData[0], DataLen);
+  BlockWrite(F, Postamble, 5);
+  Close(F);
+End;
+
 Procedure WriteSRecordFile(FileName: TString);
 Var
   F: Text;
@@ -36008,6 +36116,18 @@ Begin
       WriteAppleBinFile(Opts.OutFile);
       If Opts.Verbose Then
         WriteLn('  Apple II BIN genere : ', Opts.OutFile);
+    End
+    Else If Opts.C64 Then
+    Begin
+      WriteC64PrgFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  Commodore 64 PRG genere : ', Opts.OutFile);
+    End
+    Else If Opts.CoCo3 Then
+    Begin
+      WriteCoCo3BinFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  CoCo 3 BIN genere : ', Opts.OutFile);
     End
     Else
     Begin
