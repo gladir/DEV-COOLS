@@ -4508,6 +4508,7 @@ Procedure BcAssemble6809(Const S: TString); Forward;
 Procedure BcAssemble68000(Const S: TString); Forward;
 Procedure BcAssembleCray1(Const S: TString); Forward;
 Procedure CrayDefineLabel(Const Name: TString); Forward;
+Procedure BcEmitB(B: Byte); Forward;
 
 { ------------------------------------------------------------ }
 { Is68kTarget : True si la cible est Motorola 68000            }
@@ -5090,6 +5091,12 @@ Begin
   EmitComment('--- Segment de code ---');
   EmitRaw('.CODE');
   EmitBlankLine;
+  { Pour les cibles 6502 : reserver 3 octets au debut pour un JMP _TPF_Main }
+  { Le patching final est fait dans WriteAppleBinFile / autres writers.    }
+  If BcActive And Is6502Target Then
+  Begin
+    BcEmitB($EA); BcEmitB($EA); BcEmitB($EA); { NOP NOP NOP, sera patche }
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -16992,6 +16999,125 @@ End;
 { Gere le formatage :width (ignore pour l instant).            }
 { ------------------------------------------------------------ }
 
+{ -------------------------------------------------------------- }
+{ ParseWriteStmtAppleII : version specialisee Apple II.          }
+{ Emet du code 6502 natif pour Write/WriteLn avec arguments      }
+{ litteraux : chaine, char, entier. Les expressions complexes    }
+{ (variables, indexation tableau) sont sautees silencieusement.  }
+{ Utilise le runtime _TPRT_AII_PRSTR (impression chaine ASCIIZ). }
+{ -------------------------------------------------------------- }
+Procedure ParseWriteStmtAppleII(IsWriteLn : Boolean);
+Var
+  Lbl, S : TString;
+  Depth, I : Integer;
+  Ch : Integer;
+  Done : Boolean;
+Begin
+  EmitComment('writeln (Apple II)');
+  { WriteLn sans arguments ou Write sans parenthese : juste CR LF si LN }
+  If EPAtEnd Or
+     Not ((TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '(')) Then
+  Begin
+    If IsWriteLn Then
+    Begin
+      EmitInstr('LDA #$8D');
+      EmitInstr('JSR $FDED');
+    End;
+    Exit;
+  End;
+
+  Inc(EP); { consommer ( }
+
+  { Boucler sur les arguments }
+  While Not EPAtEnd Do
+  Begin
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ')') Then Break;
+
+    { Argument litteral chaine ? }
+    If TokenPool[EP].Kind = TK_STRING Then
+    Begin
+      Lbl := DataGetOrAddStr(TokenPool[EP].Val);
+      EmitInstr('LDA #<' + Lbl);
+      EmitInstr('LDY #>' + Lbl);
+      EmitInstr('JSR _TPRT_AII_PRSTR');
+      Inc(EP);
+    End
+    Else If TokenPool[EP].Kind = TK_CHAR Then
+    Begin
+      Ch := TokenPool[EP].IntVal And $FF;
+      If Ch = 13 Then Ch := $8D
+      Else If Ch = 10 Then Ch := $8D
+      Else Ch := Ch Or $80;
+      EmitInstr('LDA #' + IntToStr_(Ch));
+      EmitInstr('JSR $FDED');
+      Inc(EP);
+    End
+    Else If TokenPool[EP].Kind = TK_INTEGER Then
+    Begin
+      S := IntToStr_(TokenPool[EP].IntVal);
+      Lbl := DataGetOrAddStr(S);
+      EmitInstr('LDA #<' + Lbl);
+      EmitInstr('LDY #>' + Lbl);
+      EmitInstr('JSR _TPRT_AII_PRSTR');
+      Inc(EP);
+    End
+    Else
+    Begin
+      { Expression non supportee : la sauter en respectant les parens }
+      Depth := 0;
+      Done := False;
+      While (Not EPAtEnd) And (Not Done) Do
+      Begin
+        If TokenPool[EP].Kind = TK_PUNCT Then
+        Begin
+          If TokenPool[EP].Val = '(' Then Inc(Depth)
+          Else If TokenPool[EP].Val = ')' Then
+          Begin
+            If Depth = 0 Then Begin Done := True; Continue; End;
+            Dec(Depth);
+          End
+          Else If (Depth = 0) And (TokenPool[EP].Val = ',') Then
+          Begin Done := True; Continue; End;
+        End;
+        Inc(EP);
+      End;
+    End;
+
+    { Sauter format :width / :width:dec eventuel }
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+       (TokenPool[EP].Val = ':') Then
+    Begin
+      Inc(EP);
+      For I := 1 To 2 Do
+      Begin
+        If EPAtEnd Then Break;
+        If TokenPool[EP].Kind = TK_INTEGER Then Inc(EP);
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ':') Then Inc(EP)
+        Else Break;
+      End;
+    End;
+
+    { Virgule entre arguments }
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+       (TokenPool[EP].Val = ',') Then
+      Inc(EP)
+    Else Break;
+  End;
+
+  { Consommer ) }
+  If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ')') Then
+    Inc(EP);
+
+  { WriteLn : ajouter CR ($8D = $0D | $80 pour Apple II) }
+  If IsWriteLn Then
+  Begin
+    EmitInstr('LDA #$8D');
+    EmitInstr('JSR $FDED');
+  End;
+End;
+
 Procedure ParseWriteStmt(PI : Integer; IsWriteLn : Boolean);
 Var
   TIdx : Integer;
@@ -17001,6 +17127,13 @@ Var
   Up          : TString;
   LI, SI      : Integer;
 Begin
+  { Branche specialisee Apple II : code 6502 natif }
+  If Opts.AppleII Then
+  Begin
+    ParseWriteStmtAppleII(IsWriteLn);
+    Exit;
+  End;
+
   If IsWriteLn Then
     EmitComment('writeln')
   Else
@@ -24222,6 +24355,12 @@ Begin
       EmitInstr('MOV AX,4C00H');
       EmitInstr('INT 21H');
     End
+    Else If Opts.AppleII Then
+    Begin
+      { Sortie Apple II : retour au moniteur via RTS }
+      EmitComment('Apple II : retour au moniteur');
+      EmitInstr('RTS');
+    End
     Else If Opts.DestTarget = DEST_AMIGA Then
     Begin
       { Sortie Amiga : fermer dos.library et retourner }
@@ -24843,6 +24982,33 @@ Begin
   EmitInstr('POP BX');
   EmitInstr('POP BP');
   EmitInstr('RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRuntimeAppleII : runtime minimal Apple II 6502.          }
+{ Une seule routine : _TPRT_AII_PRSTR                          }
+{   Entree : A = lo octet pointeur ASCIIZ, Y = hi octet         }
+{   Imprime via JSR $FDED (COUT) en forcant bit 7 (convention   }
+{   ROM Apple II) jusqu'au premier octet 0.                     }
+{ Utilise la zero-page $06/$07 comme pointeur.                  }
+{ ------------------------------------------------------------ }
+Procedure EmitRuntimeAppleII;
+Begin
+  EmitBlankLine;
+  EmitComment('--- Runtime Apple II (6502) ---');
+  EmitLabel('_TPRT_AII_PRSTR');
+  EmitInstr('STA $06');
+  EmitInstr('STY $07');
+  EmitInstr('LDY #0');
+  EmitLabel('_TPRT_AII_PRSTR_L');
+  EmitInstr('LDA ($06),Y');
+  EmitInstr('BEQ _TPRT_AII_PRSTR_E');
+  EmitInstr('ORA #$80');
+  EmitInstr('JSR $FDED');
+  EmitInstr('INY');
+  EmitInstr('BNE _TPRT_AII_PRSTR_L');
+  EmitLabel('_TPRT_AII_PRSTR_E');
+  EmitInstr('RTS');
 End;
 
 Procedure EmitRuntime;
@@ -30791,6 +30957,13 @@ Const
   BC_FIX_ABS16_DATA = 5;   { offset 16 bits dans segment data (DOS) }
   BC_FIX_REL16_BE   = 6;   { BSR/BRA rel16 big-endian (68000) }
   BC_FIX_ABS32_DATA_BE = 7;{ adresse absolue big-endian vers data (68000) }
+  BC_FIX_ABS16_CODE_6502 = 8;  { 6502 : 16 bits LE vers label code    }
+  BC_FIX_ABS16_DATA_6502 = 9;  { 6502 : 16 bits LE vers label data    }
+  BC_FIX_LO_DATA_6502    = 10; { 6502 : 1 octet, lo de label data     }
+  BC_FIX_HI_DATA_6502    = 11; { 6502 : 1 octet, hi de label data     }
+  BC_FIX_LO_CODE_6502    = 12; { 6502 : 1 octet, lo de label code     }
+  BC_FIX_HI_CODE_6502    = 13; { 6502 : 1 octet, hi de label code     }
+  BC_FIX_REL8_6502       = 14; { 6502 : 1 octet rel8 (branches)       }
 
   { Index de registres x86-32 }
   R_EAX = 0; R_ECX = 1; R_EDX = 2; R_EBX = 3;
@@ -32906,10 +33079,50 @@ End;
 { BcAssemble6502 - Mini-assembleur MOS 6502                    }
 { ============================================================ }
 
+{ Parser un nombre 6502 : decimal ou hex ($FF). }
+Function BcParseNum6502(Const S: TString): LongInt;
+Var
+  T: TString;
+  I: Integer;
+  Neg: Boolean;
+  V: LongInt;
+  C: Char;
+Begin
+  T := S;
+  While (Length(T) > 0) And (T[1] = ' ') Do Delete(T, 1, 1);
+  While (Length(T) > 0) And (T[Length(T)] = ' ') Do Delete(T, Length(T), 1);
+  Neg := False;
+  If (Length(T) > 0) And (T[1] = '-') Then
+  Begin Neg := True; Delete(T, 1, 1); End;
+  V := 0;
+  If (Length(T) > 0) And (T[1] = '$') Then
+  Begin
+    For I := 2 To Length(T) Do
+    Begin
+      C := T[I];
+      If (C >= '0') And (C <= '9') Then V := V * 16 + (Ord(C) - Ord('0'))
+      Else If (C >= 'A') And (C <= 'F') Then V := V * 16 + (Ord(C) - Ord('A') + 10)
+      Else If (C >= 'a') And (C <= 'f') Then V := V * 16 + (Ord(C) - Ord('a') + 10)
+      Else Break;
+    End;
+  End
+  Else
+  Begin
+    For I := 1 To Length(T) Do
+    Begin
+      C := T[I];
+      If (C >= '0') And (C <= '9') Then V := V * 10 + (Ord(C) - Ord('0'))
+      Else Break;
+    End;
+  End;
+  If Neg Then V := -V;
+  BcParseNum6502 := V;
+End;
+
 Procedure BcAssemble6502(Const S: TString);
 Var
   Line, Mnem, Tmp, Op1, Op2: TString;
-  P: Integer;
+  P: LongInt;
 
   Procedure SplitOps6502(Const Rest: TString);
   Var J: Integer;
@@ -33003,6 +33216,279 @@ Begin { BcAssemble6502 }
   Begin BcEmitB($4A); Exit; End;
   If (Mnem = 'ROR') And (StrUpperCase(Op1) = 'A') Then
   Begin BcEmitB($6A); Exit; End;
+
+  { ====================================================== }
+  { Operandes etendus : immediat, absolu, page zero, label  }
+  { ====================================================== }
+  Begin
+    { Variables locales pour parser un operande }
+  End;
+  { Helper : analyser Op1 et emettre l octet/2 octets approprie }
+  { OpKind : 1=#imm, 2=#<lbl, 3=#>lbl, 4=$abs(>=$100), 5=$zp,    }
+  {          6=label code, 7=label data, 0=erreur                 }
+  { Pour simplifier on inline le parsing.                          }
+
+  { ---- LDA #imm / LDA #<LBL / LDA #>LBL / LDA $zp / LDA $abs / LDA LBL ---- }
+  If Mnem = 'LDA' Then
+  Begin
+    If (Length(Op1) > 0) And (Op1[1] = '#') Then
+    Begin
+      Tmp := Copy(Op1, 2, Length(Op1) - 1);
+      If (Length(Tmp) > 0) And (Tmp[1] = '<') Then
+      Begin
+        BcEmitB($A9);
+        BcAddFixup(BC_FIX_LO_DATA_6502, Copy(Tmp, 2, Length(Tmp) - 1), 0);
+        BcEmitB(0);
+      End
+      Else If (Length(Tmp) > 0) And (Tmp[1] = '>') Then
+      Begin
+        BcEmitB($A9);
+        BcAddFixup(BC_FIX_HI_DATA_6502, Copy(Tmp, 2, Length(Tmp) - 1), 0);
+        BcEmitB(0);
+      End
+      Else
+      Begin
+        BcEmitB($A9);
+        BcEmitB(Byte(BcParseNum6502(Tmp)));
+      End;
+      Exit;
+    End
+    Else If (Length(Op1) > 0) And (Op1[1] = '(') Then
+    Begin
+      { LDA ($zp),Y }
+      Tmp := Copy(Op1, 2, Length(Op1) - 1);
+      P := Pos(')', Tmp);
+      If P > 0 Then Tmp := Copy(Tmp, 1, P - 1);
+      BcEmitB($B1); BcEmitB(Byte(BcParseNum6502(Tmp)));
+      Exit;
+    End
+    Else If (Length(Op1) > 0) And (Op1[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op1);
+      If P < $100 Then Begin BcEmitB($A5); BcEmitB(Byte(P)); End
+      Else Begin BcEmitB($AD); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8)); End;
+      Exit;
+    End
+    Else If (Length(Op1) > 0) And (Op1[1] In ['0'..'9']) Then
+    Begin
+      P := BcParseNum6502(Op1);
+      If P < $100 Then Begin BcEmitB($A5); BcEmitB(Byte(P)); End
+      Else Begin BcEmitB($AD); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8)); End;
+      Exit;
+    End
+    Else
+    Begin
+      { Label : LDA en mode absolu (suppose label data) }
+      BcEmitB($AD);
+      BcAddFixup(BC_FIX_ABS16_DATA_6502, Op1, 0);
+      BcEmitB(0); BcEmitB(0);
+      Exit;
+    End;
+  End;
+
+  { ---- LDX #imm / LDX $zp / LDX $abs ---- }
+  If Mnem = 'LDX' Then
+  Begin
+    If (Length(Op1) > 0) And (Op1[1] = '#') Then
+    Begin
+      Tmp := Copy(Op1, 2, Length(Op1) - 1);
+      If (Length(Tmp) > 0) And (Tmp[1] = '<') Then
+      Begin
+        BcEmitB($A2);
+        BcAddFixup(BC_FIX_LO_DATA_6502, Copy(Tmp, 2, Length(Tmp) - 1), 0);
+        BcEmitB(0);
+      End
+      Else If (Length(Tmp) > 0) And (Tmp[1] = '>') Then
+      Begin
+        BcEmitB($A2);
+        BcAddFixup(BC_FIX_HI_DATA_6502, Copy(Tmp, 2, Length(Tmp) - 1), 0);
+        BcEmitB(0);
+      End
+      Else
+      Begin BcEmitB($A2); BcEmitB(Byte(BcParseNum6502(Tmp))); End;
+      Exit;
+    End
+    Else If (Length(Op1) > 0) And (Op1[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op1);
+      If P < $100 Then Begin BcEmitB($A6); BcEmitB(Byte(P)); End
+      Else Begin BcEmitB($AE); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8)); End;
+      Exit;
+    End;
+  End;
+
+  { ---- LDY #imm / LDY $zp / LDY $abs ---- }
+  If Mnem = 'LDY' Then
+  Begin
+    If (Length(Op1) > 0) And (Op1[1] = '#') Then
+    Begin
+      Tmp := Copy(Op1, 2, Length(Op1) - 1);
+      If (Length(Tmp) > 0) And (Tmp[1] = '<') Then
+      Begin
+        BcEmitB($A0);
+        BcAddFixup(BC_FIX_LO_DATA_6502, Copy(Tmp, 2, Length(Tmp) - 1), 0);
+        BcEmitB(0);
+      End
+      Else If (Length(Tmp) > 0) And (Tmp[1] = '>') Then
+      Begin
+        BcEmitB($A0);
+        BcAddFixup(BC_FIX_HI_DATA_6502, Copy(Tmp, 2, Length(Tmp) - 1), 0);
+        BcEmitB(0);
+      End
+      Else
+      Begin BcEmitB($A0); BcEmitB(Byte(BcParseNum6502(Tmp))); End;
+      Exit;
+    End
+    Else If (Length(Op1) > 0) And (Op1[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op1);
+      If P < $100 Then Begin BcEmitB($A4); BcEmitB(Byte(P)); End
+      Else Begin BcEmitB($AC); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8)); End;
+      Exit;
+    End;
+  End;
+
+  { ---- STA $zp / STA $abs / STA LBL / STA ($zp),Y ---- }
+  If Mnem = 'STA' Then
+  Begin
+    If (Length(Op1) > 0) And (Op1[1] = '(') Then
+    Begin
+      { STA ($zp),Y : extraire $zp entre parentheses }
+      Tmp := Copy(Op1, 2, Length(Op1) - 1);
+      P := Pos(')', Tmp);
+      If P > 0 Then Tmp := Copy(Tmp, 1, P - 1);
+      BcEmitB($91); BcEmitB(Byte(BcParseNum6502(Tmp)));
+      Exit;
+    End
+    Else If (Length(Op1) > 0) And (Op1[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op1);
+      If P < $100 Then Begin BcEmitB($85); BcEmitB(Byte(P)); End
+      Else Begin BcEmitB($8D); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8)); End;
+      Exit;
+    End;
+  End;
+
+  { ---- STX, STY (page zero) ---- }
+  If (Mnem = 'STX') And (Length(Op1) > 0) And (Op1[1] = '$') Then
+  Begin
+    P := BcParseNum6502(Op1);
+    If P < $100 Then Begin BcEmitB($86); BcEmitB(Byte(P)); End
+    Else Begin BcEmitB($8E); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8)); End;
+    Exit;
+  End;
+  If (Mnem = 'STY') And (Length(Op1) > 0) And (Op1[1] = '$') Then
+  Begin
+    P := BcParseNum6502(Op1);
+    If P < $100 Then Begin BcEmitB($84); BcEmitB(Byte(P)); End
+    Else Begin BcEmitB($8C); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8)); End;
+    Exit;
+  End;
+
+  { ---- JSR / JMP : absolu ($abs) ou label code ---- }
+  If Mnem = 'JSR' Then
+  Begin
+    If (Length(Op1) > 0) And (Op1[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op1);
+      BcEmitB($20); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8));
+    End
+    Else
+    Begin
+      BcEmitB($20);
+      BcAddFixup(BC_FIX_ABS16_CODE_6502, Op1, 0);
+      BcEmitB(0); BcEmitB(0);
+    End;
+    Exit;
+  End;
+  If Mnem = 'JMP' Then
+  Begin
+    If (Length(Op1) > 0) And (Op1[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op1);
+      BcEmitB($4C); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8));
+    End
+    Else
+    Begin
+      BcEmitB($4C);
+      BcAddFixup(BC_FIX_ABS16_CODE_6502, Op1, 0);
+      BcEmitB(0); BcEmitB(0);
+    End;
+    Exit;
+  End;
+
+  { ---- CMP / ADC / SBC / AND / ORA / EOR : immediat et page zero ---- }
+  If (Mnem = 'CMP') And (Length(Op1) > 0) And (Op1[1] = '#') Then
+  Begin BcEmitB($C9); BcEmitB(Byte(BcParseNum6502(Copy(Op1,2,Length(Op1)-1)))); Exit; End;
+  If (Mnem = 'CMP') And (Length(Op1) > 0) And (Op1[1] = '$') Then
+  Begin
+    P := BcParseNum6502(Op1);
+    If P < $100 Then Begin BcEmitB($C5); BcEmitB(Byte(P)); End
+    Else Begin BcEmitB($CD); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8)); End;
+    Exit;
+  End;
+  If (Mnem = 'CPX') And (Length(Op1) > 0) And (Op1[1] = '#') Then
+  Begin BcEmitB($E0); BcEmitB(Byte(BcParseNum6502(Copy(Op1,2,Length(Op1)-1)))); Exit; End;
+  If (Mnem = 'CPY') And (Length(Op1) > 0) And (Op1[1] = '#') Then
+  Begin BcEmitB($C0); BcEmitB(Byte(BcParseNum6502(Copy(Op1,2,Length(Op1)-1)))); Exit; End;
+  If (Mnem = 'ADC') And (Length(Op1) > 0) And (Op1[1] = '#') Then
+  Begin BcEmitB($69); BcEmitB(Byte(BcParseNum6502(Copy(Op1,2,Length(Op1)-1)))); Exit; End;
+  If (Mnem = 'ADC') And (Length(Op1) > 0) And (Op1[1] = '$') Then
+  Begin
+    P := BcParseNum6502(Op1);
+    If P < $100 Then Begin BcEmitB($65); BcEmitB(Byte(P)); End
+    Else Begin BcEmitB($6D); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8)); End;
+    Exit;
+  End;
+  If (Mnem = 'SBC') And (Length(Op1) > 0) And (Op1[1] = '#') Then
+  Begin BcEmitB($E9); BcEmitB(Byte(BcParseNum6502(Copy(Op1,2,Length(Op1)-1)))); Exit; End;
+  If (Mnem = 'SBC') And (Length(Op1) > 0) And (Op1[1] = '$') Then
+  Begin
+    P := BcParseNum6502(Op1);
+    If P < $100 Then Begin BcEmitB($E5); BcEmitB(Byte(P)); End
+    Else Begin BcEmitB($ED); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8)); End;
+    Exit;
+  End;
+  If (Mnem = 'AND') And (Length(Op1) > 0) And (Op1[1] = '#') Then
+  Begin BcEmitB($29); BcEmitB(Byte(BcParseNum6502(Copy(Op1,2,Length(Op1)-1)))); Exit; End;
+  If (Mnem = 'ORA') And (Length(Op1) > 0) And (Op1[1] = '#') Then
+  Begin BcEmitB($09); BcEmitB(Byte(BcParseNum6502(Copy(Op1,2,Length(Op1)-1)))); Exit; End;
+  If (Mnem = 'EOR') And (Length(Op1) > 0) And (Op1[1] = '#') Then
+  Begin BcEmitB($49); BcEmitB(Byte(BcParseNum6502(Copy(Op1,2,Length(Op1)-1)))); Exit; End;
+
+  { ---- INC / DEC page zero ---- }
+  If (Mnem = 'INC') And (Length(Op1) > 0) And (Op1[1] = '$') Then
+  Begin
+    P := BcParseNum6502(Op1);
+    If P < $100 Then Begin BcEmitB($E6); BcEmitB(Byte(P)); End
+    Else Begin BcEmitB($EE); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8)); End;
+    Exit;
+  End;
+  If (Mnem = 'DEC') And (Length(Op1) > 0) And (Op1[1] = '$') Then
+  Begin
+    P := BcParseNum6502(Op1);
+    If P < $100 Then Begin BcEmitB($C6); BcEmitB(Byte(P)); End
+    Else Begin BcEmitB($CE); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8)); End;
+    Exit;
+  End;
+
+  { ---- Branches relatives 8 bits vers label code ---- }
+  If Mnem = 'BNE' Then
+  Begin BcEmitB($D0); BcAddFixup(BC_FIX_REL8_6502, Op1, 0); BcEmitB(0); Exit; End;
+  If Mnem = 'BEQ' Then
+  Begin BcEmitB($F0); BcAddFixup(BC_FIX_REL8_6502, Op1, 0); BcEmitB(0); Exit; End;
+  If Mnem = 'BCC' Then
+  Begin BcEmitB($90); BcAddFixup(BC_FIX_REL8_6502, Op1, 0); BcEmitB(0); Exit; End;
+  If Mnem = 'BCS' Then
+  Begin BcEmitB($B0); BcAddFixup(BC_FIX_REL8_6502, Op1, 0); BcEmitB(0); Exit; End;
+  If Mnem = 'BPL' Then
+  Begin BcEmitB($10); BcAddFixup(BC_FIX_REL8_6502, Op1, 0); BcEmitB(0); Exit; End;
+  If Mnem = 'BMI' Then
+  Begin BcEmitB($30); BcAddFixup(BC_FIX_REL8_6502, Op1, 0); BcEmitB(0); Exit; End;
+  If Mnem = 'BVC' Then
+  Begin BcEmitB($50); BcAddFixup(BC_FIX_REL8_6502, Op1, 0); BcEmitB(0); Exit; End;
+  If Mnem = 'BVS' Then
+  Begin BcEmitB($70); BcAddFixup(BC_FIX_REL8_6502, Op1, 0); BcEmitB(0); Exit; End;
 
   { Instruction non reconnue (stub) }
   { WriteLn('BcAssemble6502: non reconnu: [', S, ']'); }
@@ -34155,6 +34641,89 @@ Begin
   End;
 End;
 
+{ --- BcResolveFixups6502 : resoudre les fixups pour cibles 6502 (LE) --- }
+{ CodeBase = adresse de chargement (ex $0803 sur Apple II)               }
+{ DataBase = offset des donnees dans le binaire (apres le code aligne)   }
+Procedure BcResolveFixups6502(CodeBase, DataBase: LongInt);
+Var
+  I: LongInt;
+  TargetOfs, FixOfs: LongInt;
+  Val: LongInt;
+  Rel: LongInt;
+Begin
+  For I := 0 To BcFixupCnt - 1 Do
+  Begin
+    FixOfs := BcFixups[I].CodeOfs;
+    If FixOfs >= BcCodeLen Then Continue;
+    Case BcFixups[I].Kind Of
+      BC_FIX_ABS16_CODE_6502:
+      Begin
+        If FixOfs + 1 >= BcCodeLen Then Continue;
+        TargetOfs := BcFindLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+          Val := CodeBase + TargetOfs + BcFixups[I].Addend
+        Else
+          Val := 0;
+        BcCode[FixOfs] := Byte(Val);
+        BcCode[FixOfs + 1] := Byte(Val Shr 8);
+      End;
+      BC_FIX_ABS16_DATA_6502:
+      Begin
+        If FixOfs + 1 >= BcCodeLen Then Continue;
+        TargetOfs := BcFindDataLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+          Val := CodeBase + DataBase + TargetOfs + BcFixups[I].Addend
+        Else
+          Val := 0;
+        BcCode[FixOfs] := Byte(Val);
+        BcCode[FixOfs + 1] := Byte(Val Shr 8);
+      End;
+      BC_FIX_LO_DATA_6502:
+      Begin
+        TargetOfs := BcFindDataLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+          Val := CodeBase + DataBase + TargetOfs + BcFixups[I].Addend
+        Else Val := 0;
+        BcCode[FixOfs] := Byte(Val);
+      End;
+      BC_FIX_HI_DATA_6502:
+      Begin
+        TargetOfs := BcFindDataLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+          Val := CodeBase + DataBase + TargetOfs + BcFixups[I].Addend
+        Else Val := 0;
+        BcCode[FixOfs] := Byte(Val Shr 8);
+      End;
+      BC_FIX_LO_CODE_6502:
+      Begin
+        TargetOfs := BcFindLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+          Val := CodeBase + TargetOfs + BcFixups[I].Addend
+        Else Val := 0;
+        BcCode[FixOfs] := Byte(Val);
+      End;
+      BC_FIX_HI_CODE_6502:
+      Begin
+        TargetOfs := BcFindLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+          Val := CodeBase + TargetOfs + BcFixups[I].Addend
+        Else Val := 0;
+        BcCode[FixOfs] := Byte(Val Shr 8);
+      End;
+      BC_FIX_REL8_6502:
+      Begin
+        TargetOfs := BcFindLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+        Begin
+          Rel := TargetOfs - (FixOfs + 1);
+          If (Rel < -128) Or (Rel > 127) Then Rel := 0;
+          BcCode[FixOfs] := Byte(Rel);
+        End;
+      End;
+    End;
+  End;
+End;
+
 { Patch les fixups IAT avec les adresses reelles }
 Procedure BcPatchIATFixups(IatVA: LongInt);
 Var I: LongInt; FixOfs, Slot: LongInt; Val: LongInt;
@@ -34235,11 +34804,28 @@ Var
   PadLen: LongInt;
   PadByte: Byte;
   Hdr: Array[0..3] Of Byte;
+  EntryOfs: LongInt;
+  EntryAddr: LongInt;
 Begin
+  { Inserer un JMP _TPF_Main au tout debut, en patchant les 3 octets       }
+  { reserves par EmitCodeSeg (voir EmitCodeSeg pour les cibles 6502).     }
+  { Si _TPF_Main n est pas trouve, le code reste tel quel.                 }
+  EntryOfs := BcFindLabel('_TPF_Main');
+  If (EntryOfs > 0) And (BcCodeLen >= 3) Then
+  Begin
+    EntryAddr := APPLE_LOAD_ADDR + EntryOfs;
+    BcCode[0] := $4C; { JMP abs }
+    BcCode[1] := Byte(EntryAddr);
+    BcCode[2] := Byte(EntryAddr Shr 8);
+  End;
+
   TextLen := BcCodeLen;
   DataLen := BcDataLen;
   DataBase := (TextLen + 3) And Not 3;
   TotalLen := DataBase + DataLen;
+
+  { Resoudre les fixups 6502 maintenant que le layout est fige }
+  BcResolveFixups6502(APPLE_LOAD_ADDR, DataBase);
 
   Hdr[0] := APPLE_LOAD_ADDR And $FF;
   Hdr[1] := (APPLE_LOAD_ADDR Shr 8) And $FF;
@@ -37435,6 +38021,8 @@ Begin
       EmitRuntimeAmiga
     Else If Is68kTarget Then
       EmitRuntime68000
+    Else If Opts.AppleII Then
+      EmitRuntimeAppleII
     Else
       EmitRuntime;
 
