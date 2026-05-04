@@ -1,8 +1,8 @@
-﻿{ @author: Sylvain Maltais (support@gladir.com)
+{ @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @version: 1.00
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Clone de l'application Visual Studio en mode graphique.
                 IDE multi-fenetre avec menus deroulants, editeur de texte
                 avec coloration syntaxique, explorateur de solution,
@@ -3075,6 +3075,32 @@ Var
  CRAY1_ExitCode : Integer;
  CRAY1_Cycles   : LongInt;
  CRAY1_Panel    : ^TEmulatorPanel;
+ { Etat de l emulateur 6502 (Apple II, C64, Atari 8-bit, NES, Atari 2600) }
+ CPU6502_Mem    : Array[0..$FFFF] Of Byte;
+ CPU6502_A      : Byte;
+ CPU6502_X      : Byte;
+ CPU6502_Y      : Byte;
+ CPU6502_P      : Byte;       { NV-BDIZC }
+ CPU6502_S      : Byte;       { stack pointer }
+ CPU6502_PC     : Word;
+ CPU6502_Halted : Boolean;
+ CPU6502_ExitCode: Integer;
+ CPU6502_Cycles : LongInt;
+ CPU6502_Panel  : ^TEmulatorPanel;
+ CPU6502_Variant: Integer;    { 0=AppleII 1=C64 2=Atari 3=NES 4=A2600 }
+ { --- Etat emulateur Z80 (TRS-80, MSX, Adam) --- }
+ Z80_Mem    : Array[0..$FFFF] Of Byte;
+ Z80_A, Z80_F, Z80_B, Z80_C, Z80_D, Z80_E, Z80_H, Z80_L : Byte;
+ Z80_AA, Z80_FF, Z80_BB, Z80_CC, Z80_DD, Z80_EE, Z80_HH, Z80_LL : Byte;
+ Z80_IX, Z80_IY, Z80_SP, Z80_PC : Word;
+ Z80_I, Z80_R : Byte;
+ Z80_IFF1, Z80_IFF2 : Boolean;
+ Z80_IM     : Byte;
+ Z80_Halted : Boolean;
+ Z80_ExitCode: Integer;
+ Z80_Cycles : LongInt;
+ Z80_Panel  : ^TEmulatorPanel;
+ Z80_Variant: Integer;        { 0=TRS-80 1=MSX 2=Adam }
  { Indicateur de sortie }
  QuitRequested  : Boolean;
  { Drapeau nettoyage ecran transition page de demarrage -> IDE }
@@ -26563,6 +26589,1539 @@ Begin
   End;
 End;
 
+{ ========================================================================== }
+{ EMULATEUR 6502 INTEGRE                                                     }
+{ Couvre Apple II (-CAPPLEII), Commodore 64 (-CC64), Atari 400/800           }
+{ (-CATARI400/-CATARI800), NES (-CNES) et Atari 2600 (-CATARI2600).          }
+{ Implementation : 151 opcodes officiels MOS 6502, traps OS pour sortie     }
+{ caractere :                                                                }
+{   Apple II  : JSR $FDED (COUT) imprime A en ASCII                          }
+{   C64       : JSR $FFD2 (CHROUT) imprime A (PETSCII -> ASCII partiel)     }
+{   Atari 8b  : JSR $E456 (CIO putchar) imprime A en ATASCII -> ASCII       }
+{ Halt sur RTS hors-pile, BRK ($00) ou limite d instructions.                }
+{ ========================================================================== }
+
+Function CPU6502_Read(Addr: Word): Byte;
+Begin
+  CPU6502_Read := CPU6502_Mem[Addr];
+End;
+
+Procedure CPU6502_Write(Addr: Word; V: Byte);
+Begin
+  CPU6502_Mem[Addr] := V;
+End;
+
+Function CPU6502_Read16(Addr: Word): Word;
+Begin
+  CPU6502_Read16 := CPU6502_Mem[Addr] Or
+                    (Word(CPU6502_Mem[Word(Addr + 1)]) Shl 8);
+End;
+
+{ Lecture 16 bits avec bug 6502 page-boundary (utilise par JMP indirect) }
+Function CPU6502_Read16Bug(Addr: Word): Word;
+Var
+  Hi: Word;
+Begin
+  Hi := (Addr And $FF00) Or ((Addr + 1) And $FF);
+  CPU6502_Read16Bug := CPU6502_Mem[Addr] Or
+                       (Word(CPU6502_Mem[Hi]) Shl 8);
+End;
+
+Procedure CPU6502_Push(V: Byte);
+Begin
+  CPU6502_Mem[$0100 Or CPU6502_S] := V;
+  Dec(CPU6502_S);
+End;
+
+Function CPU6502_Pop: Byte;
+Begin
+  Inc(CPU6502_S);
+  CPU6502_Pop := CPU6502_Mem[$0100 Or CPU6502_S];
+End;
+
+Procedure CPU6502_Push16(V: Word);
+Begin
+  CPU6502_Push((V Shr 8) And $FF);
+  CPU6502_Push(V And $FF);
+End;
+
+Function CPU6502_Pop16: Word;
+Var
+  Lo, Hi: Byte;
+Begin
+  Lo := CPU6502_Pop;
+  Hi := CPU6502_Pop;
+  CPU6502_Pop16 := Lo Or (Word(Hi) Shl 8);
+End;
+
+{ Drapeaux : N=$80 V=$40 -=$20 B=$10 D=$08 I=$04 Z=$02 C=$01 }
+Procedure CPU6502_SetNZ(V: Byte);
+Begin
+  CPU6502_P := CPU6502_P And Not $82;
+  If V = 0 Then CPU6502_P := CPU6502_P Or $02;
+  If (V And $80) <> 0 Then CPU6502_P := CPU6502_P Or $80;
+End;
+
+Function CPU6502_GetC: Byte;
+Begin
+  If (CPU6502_P And $01) <> 0 Then CPU6502_GetC := 1 Else CPU6502_GetC := 0;
+End;
+
+Procedure CPU6502_SetC(B: Boolean);
+Begin
+  If B Then CPU6502_P := CPU6502_P Or $01
+       Else CPU6502_P := CPU6502_P And Not $01;
+End;
+
+Procedure CPU6502_SetZ(B: Boolean);
+Begin
+  If B Then CPU6502_P := CPU6502_P Or $02
+       Else CPU6502_P := CPU6502_P And Not $02;
+End;
+
+Procedure CPU6502_SetV(B: Boolean);
+Begin
+  If B Then CPU6502_P := CPU6502_P Or $40
+       Else CPU6502_P := CPU6502_P And Not $40;
+End;
+
+Procedure CPU6502_SetN(B: Boolean);
+Begin
+  If B Then CPU6502_P := CPU6502_P Or $80
+       Else CPU6502_P := CPU6502_P And Not $80;
+End;
+
+{ Modes d adressage - retournent l adresse effective et avancent PC }
+Function CPU6502_AmIMM: Word;
+Begin
+  CPU6502_AmIMM := CPU6502_PC; Inc(CPU6502_PC);
+End;
+
+Function CPU6502_AmZP: Word;
+Begin
+  CPU6502_AmZP := CPU6502_Mem[CPU6502_PC]; Inc(CPU6502_PC);
+End;
+
+Function CPU6502_AmZPX: Word;
+Begin
+  CPU6502_AmZPX := (CPU6502_Mem[CPU6502_PC] + CPU6502_X) And $FF;
+  Inc(CPU6502_PC);
+End;
+
+Function CPU6502_AmZPY: Word;
+Begin
+  CPU6502_AmZPY := (CPU6502_Mem[CPU6502_PC] + CPU6502_Y) And $FF;
+  Inc(CPU6502_PC);
+End;
+
+Function CPU6502_AmABS: Word;
+Begin
+  CPU6502_AmABS := CPU6502_Read16(CPU6502_PC);
+  CPU6502_PC := CPU6502_PC + 2;
+End;
+
+Function CPU6502_AmABX: Word;
+Begin
+  CPU6502_AmABX := CPU6502_Read16(CPU6502_PC) + CPU6502_X;
+  CPU6502_PC := CPU6502_PC + 2;
+End;
+
+Function CPU6502_AmABY: Word;
+Begin
+  CPU6502_AmABY := CPU6502_Read16(CPU6502_PC) + CPU6502_Y;
+  CPU6502_PC := CPU6502_PC + 2;
+End;
+
+Function CPU6502_AmIZX: Word; { (zp,X) }
+Var Z: Byte;
+Begin
+  Z := (CPU6502_Mem[CPU6502_PC] + CPU6502_X) And $FF;
+  Inc(CPU6502_PC);
+  CPU6502_AmIZX := CPU6502_Mem[Z] Or
+                   (Word(CPU6502_Mem[(Z + 1) And $FF]) Shl 8);
+End;
+
+Function CPU6502_AmIZY: Word; { (zp),Y }
+Var Z: Byte;
+Begin
+  Z := CPU6502_Mem[CPU6502_PC];
+  Inc(CPU6502_PC);
+  CPU6502_AmIZY := (CPU6502_Mem[Z] Or
+                    (Word(CPU6502_Mem[(Z + 1) And $FF]) Shl 8))
+                   + CPU6502_Y;
+End;
+
+{ Branchement relatif signe }
+Procedure CPU6502_Branch(Cond: Boolean);
+Var
+  Off: ShortInt;
+Begin
+  Off := ShortInt(CPU6502_Mem[CPU6502_PC]);
+  Inc(CPU6502_PC);
+  If Cond Then CPU6502_PC := CPU6502_PC + Off;
+End;
+
+{ Operations arithmetiques/logiques }
+Procedure CPU6502_DoADC(M: Byte);
+Var
+  R: Word;
+  A: Byte;
+Begin
+  A := CPU6502_A;
+  R := A + M + CPU6502_GetC;
+  CPU6502_SetC(R > $FF);
+  CPU6502_SetV(((A Xor M) And $80 = 0) And
+               ((A Xor (R And $FF)) And $80 <> 0));
+  CPU6502_A := R And $FF;
+  CPU6502_SetNZ(CPU6502_A);
+End;
+
+Procedure CPU6502_DoSBC(M: Byte);
+Begin
+  CPU6502_DoADC(M Xor $FF);
+End;
+
+Procedure CPU6502_DoCMP(R, M: Byte);
+Var
+  D: Integer;
+Begin
+  D := Integer(R) - Integer(M);
+  CPU6502_SetC(R >= M);
+  CPU6502_SetNZ(Byte(D));
+End;
+
+Function CPU6502_DoASL(M: Byte): Byte;
+Begin
+  CPU6502_SetC((M And $80) <> 0);
+  M := (M Shl 1) And $FF;
+  CPU6502_SetNZ(M);
+  CPU6502_DoASL := M;
+End;
+
+Function CPU6502_DoLSR(M: Byte): Byte;
+Begin
+  CPU6502_SetC((M And $01) <> 0);
+  M := M Shr 1;
+  CPU6502_SetNZ(M);
+  CPU6502_DoLSR := M;
+End;
+
+Function CPU6502_DoROL(M: Byte): Byte;
+Var Cin: Byte;
+Begin
+  Cin := CPU6502_GetC;
+  CPU6502_SetC((M And $80) <> 0);
+  M := ((M Shl 1) Or Cin) And $FF;
+  CPU6502_SetNZ(M);
+  CPU6502_DoROL := M;
+End;
+
+Function CPU6502_DoROR(M: Byte): Byte;
+Var Cin: Byte;
+Begin
+  Cin := CPU6502_GetC;
+  CPU6502_SetC((M And $01) <> 0);
+  M := (M Shr 1) Or (Cin Shl 7);
+  CPU6502_SetNZ(M);
+  CPU6502_DoROR := M;
+End;
+
+{ Trap OS : si PC pointe vers une adresse magique connue, emit char en A     }
+{ et execute un RTS implicite. Retourne True si trap traite.                 }
+Function CPU6502_TryTrap: Boolean;
+Var
+  Ch: Byte;
+Begin
+  CPU6502_TryTrap := False;
+  Ch := CPU6502_A;
+  Case CPU6502_Variant Of
+    0: { Apple II : COUT $FDED }
+       If CPU6502_PC = $FDED Then
+       Begin
+         { ASCII Apple II : caracteres avec bit 7 mis }
+         Ch := Ch And $7F;
+         If Ch = $0D Then Begin
+           EmuVScr_PutChar(CPU6502_Panel^, #13);
+           EmuVScr_PutChar(CPU6502_Panel^, #10);
+         End Else If Ch >= 32 Then
+           EmuVScr_PutChar(CPU6502_Panel^, Chr(Ch));
+         CPU6502_PC := CPU6502_Pop16 + 1;
+         CPU6502_TryTrap := True;
+       End;
+    1: { C64 : CHROUT $FFD2 }
+       If CPU6502_PC = $FFD2 Then
+       Begin
+         If Ch = $0D Then Begin
+           EmuVScr_PutChar(CPU6502_Panel^, #13);
+           EmuVScr_PutChar(CPU6502_Panel^, #10);
+         End Else If (Ch >= 32) And (Ch < 128) Then
+           EmuVScr_PutChar(CPU6502_Panel^, Chr(Ch));
+         CPU6502_PC := CPU6502_Pop16 + 1;
+         CPU6502_TryTrap := True;
+       End;
+    2: { Atari 8-bit : CIO Put $E456 (mappable, voir aussi $E459) }
+       If (CPU6502_PC = $E456) Or (CPU6502_PC = $E459) Then
+       Begin
+         If Ch = $9B Then Begin { ATASCII EOL }
+           EmuVScr_PutChar(CPU6502_Panel^, #13);
+           EmuVScr_PutChar(CPU6502_Panel^, #10);
+         End Else If (Ch >= 32) And (Ch < 128) Then
+           EmuVScr_PutChar(CPU6502_Panel^, Chr(Ch));
+         CPU6502_PC := CPU6502_Pop16 + 1;
+         CPU6502_TryTrap := True;
+       End;
+  End;
+End;
+
+Procedure CPU6502_Step;
+Var
+  Op, M, R: Byte;
+  EA: Word;
+  T: Word;
+Begin
+  { Trap OS avant d executer }
+  If CPU6502_TryTrap Then Exit;
+
+  Op := CPU6502_Mem[CPU6502_PC];
+  Inc(CPU6502_PC);
+  Case Op Of
+    { ----- LDA ----- }
+    $A9: Begin EA := CPU6502_AmIMM; CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $A5: Begin EA := CPU6502_AmZP;  CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $B5: Begin EA := CPU6502_AmZPX; CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $AD: Begin EA := CPU6502_AmABS; CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $BD: Begin EA := CPU6502_AmABX; CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $B9: Begin EA := CPU6502_AmABY; CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $A1: Begin EA := CPU6502_AmIZX; CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $B1: Begin EA := CPU6502_AmIZY; CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    { ----- LDX ----- }
+    $A2: Begin EA := CPU6502_AmIMM; CPU6502_X := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_X); End;
+    $A6: Begin EA := CPU6502_AmZP;  CPU6502_X := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_X); End;
+    $B6: Begin EA := CPU6502_AmZPY; CPU6502_X := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_X); End;
+    $AE: Begin EA := CPU6502_AmABS; CPU6502_X := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_X); End;
+    $BE: Begin EA := CPU6502_AmABY; CPU6502_X := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_X); End;
+    { ----- LDY ----- }
+    $A0: Begin EA := CPU6502_AmIMM; CPU6502_Y := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_Y); End;
+    $A4: Begin EA := CPU6502_AmZP;  CPU6502_Y := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_Y); End;
+    $B4: Begin EA := CPU6502_AmZPX; CPU6502_Y := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_Y); End;
+    $AC: Begin EA := CPU6502_AmABS; CPU6502_Y := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_Y); End;
+    $BC: Begin EA := CPU6502_AmABX; CPU6502_Y := CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_Y); End;
+    { ----- STA ----- }
+    $85: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_A; End;
+    $95: Begin EA := CPU6502_AmZPX; CPU6502_Mem[EA] := CPU6502_A; End;
+    $8D: Begin EA := CPU6502_AmABS; CPU6502_Mem[EA] := CPU6502_A; End;
+    $9D: Begin EA := CPU6502_AmABX; CPU6502_Mem[EA] := CPU6502_A; End;
+    $99: Begin EA := CPU6502_AmABY; CPU6502_Mem[EA] := CPU6502_A; End;
+    $81: Begin EA := CPU6502_AmIZX; CPU6502_Mem[EA] := CPU6502_A; End;
+    $91: Begin EA := CPU6502_AmIZY; CPU6502_Mem[EA] := CPU6502_A; End;
+    { ----- STX ----- }
+    $86: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_X; End;
+    $96: Begin EA := CPU6502_AmZPY; CPU6502_Mem[EA] := CPU6502_X; End;
+    $8E: Begin EA := CPU6502_AmABS; CPU6502_Mem[EA] := CPU6502_X; End;
+    { ----- STY ----- }
+    $84: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_Y; End;
+    $94: Begin EA := CPU6502_AmZPX; CPU6502_Mem[EA] := CPU6502_Y; End;
+    $8C: Begin EA := CPU6502_AmABS; CPU6502_Mem[EA] := CPU6502_Y; End;
+    { ----- Transferts ----- }
+    $AA: Begin CPU6502_X := CPU6502_A; CPU6502_SetNZ(CPU6502_X); End; { TAX }
+    $A8: Begin CPU6502_Y := CPU6502_A; CPU6502_SetNZ(CPU6502_Y); End; { TAY }
+    $8A: Begin CPU6502_A := CPU6502_X; CPU6502_SetNZ(CPU6502_A); End; { TXA }
+    $98: Begin CPU6502_A := CPU6502_Y; CPU6502_SetNZ(CPU6502_A); End; { TYA }
+    $9A: CPU6502_S := CPU6502_X;                                      { TXS }
+    $BA: Begin CPU6502_X := CPU6502_S; CPU6502_SetNZ(CPU6502_X); End; { TSX }
+    { ----- Pile ----- }
+    $48: CPU6502_Push(CPU6502_A);                                     { PHA }
+    $68: Begin CPU6502_A := CPU6502_Pop; CPU6502_SetNZ(CPU6502_A); End; { PLA }
+    $08: CPU6502_Push(CPU6502_P Or $30);                              { PHP }
+    $28: CPU6502_P := (CPU6502_Pop And $CF) Or $20;                   { PLP }
+    { ----- Drapeaux ----- }
+    $18: CPU6502_SetC(False);  { CLC }
+    $38: CPU6502_SetC(True);   { SEC }
+    $58: CPU6502_P := CPU6502_P And Not $04;  { CLI }
+    $78: CPU6502_P := CPU6502_P Or $04;       { SEI }
+    $B8: CPU6502_SetV(False);  { CLV }
+    $D8: CPU6502_P := CPU6502_P And Not $08;  { CLD }
+    $F8: CPU6502_P := CPU6502_P Or $08;       { SED }
+    { ----- INC/DEC memoire ----- }
+    $E6: Begin EA := CPU6502_AmZP;  M := (CPU6502_Mem[EA] + 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_SetNZ(M); End;
+    $F6: Begin EA := CPU6502_AmZPX; M := (CPU6502_Mem[EA] + 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_SetNZ(M); End;
+    $EE: Begin EA := CPU6502_AmABS; M := (CPU6502_Mem[EA] + 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_SetNZ(M); End;
+    $FE: Begin EA := CPU6502_AmABX; M := (CPU6502_Mem[EA] + 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_SetNZ(M); End;
+    $C6: Begin EA := CPU6502_AmZP;  M := (CPU6502_Mem[EA] - 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_SetNZ(M); End;
+    $D6: Begin EA := CPU6502_AmZPX; M := (CPU6502_Mem[EA] - 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_SetNZ(M); End;
+    $CE: Begin EA := CPU6502_AmABS; M := (CPU6502_Mem[EA] - 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_SetNZ(M); End;
+    $DE: Begin EA := CPU6502_AmABX; M := (CPU6502_Mem[EA] - 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_SetNZ(M); End;
+    { ----- INX/INY/DEX/DEY ----- }
+    $E8: Begin CPU6502_X := (CPU6502_X + 1) And $FF;
+               CPU6502_SetNZ(CPU6502_X); End;
+    $C8: Begin CPU6502_Y := (CPU6502_Y + 1) And $FF;
+               CPU6502_SetNZ(CPU6502_Y); End;
+    $CA: Begin CPU6502_X := (CPU6502_X - 1) And $FF;
+               CPU6502_SetNZ(CPU6502_X); End;
+    $88: Begin CPU6502_Y := (CPU6502_Y - 1) And $FF;
+               CPU6502_SetNZ(CPU6502_Y); End;
+    { ----- ADC ----- }
+    $69: Begin EA := CPU6502_AmIMM; CPU6502_DoADC(CPU6502_Mem[EA]); End;
+    $65: Begin EA := CPU6502_AmZP;  CPU6502_DoADC(CPU6502_Mem[EA]); End;
+    $75: Begin EA := CPU6502_AmZPX; CPU6502_DoADC(CPU6502_Mem[EA]); End;
+    $6D: Begin EA := CPU6502_AmABS; CPU6502_DoADC(CPU6502_Mem[EA]); End;
+    $7D: Begin EA := CPU6502_AmABX; CPU6502_DoADC(CPU6502_Mem[EA]); End;
+    $79: Begin EA := CPU6502_AmABY; CPU6502_DoADC(CPU6502_Mem[EA]); End;
+    $61: Begin EA := CPU6502_AmIZX; CPU6502_DoADC(CPU6502_Mem[EA]); End;
+    $71: Begin EA := CPU6502_AmIZY; CPU6502_DoADC(CPU6502_Mem[EA]); End;
+    { ----- SBC ----- }
+    $E9: Begin EA := CPU6502_AmIMM; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
+    $E5: Begin EA := CPU6502_AmZP;  CPU6502_DoSBC(CPU6502_Mem[EA]); End;
+    $F5: Begin EA := CPU6502_AmZPX; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
+    $ED: Begin EA := CPU6502_AmABS; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
+    $FD: Begin EA := CPU6502_AmABX; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
+    $F9: Begin EA := CPU6502_AmABY; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
+    $E1: Begin EA := CPU6502_AmIZX; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
+    $F1: Begin EA := CPU6502_AmIZY; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
+    { ----- AND/ORA/EOR ----- }
+    $29: Begin EA := CPU6502_AmIMM; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $25: Begin EA := CPU6502_AmZP;  CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $35: Begin EA := CPU6502_AmZPX; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $2D: Begin EA := CPU6502_AmABS; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $3D: Begin EA := CPU6502_AmABX; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $39: Begin EA := CPU6502_AmABY; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $21: Begin EA := CPU6502_AmIZX; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $31: Begin EA := CPU6502_AmIZY; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $09: Begin EA := CPU6502_AmIMM; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $05: Begin EA := CPU6502_AmZP;  CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $15: Begin EA := CPU6502_AmZPX; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $0D: Begin EA := CPU6502_AmABS; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $1D: Begin EA := CPU6502_AmABX; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $19: Begin EA := CPU6502_AmABY; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $01: Begin EA := CPU6502_AmIZX; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $11: Begin EA := CPU6502_AmIZY; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $49: Begin EA := CPU6502_AmIMM; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $45: Begin EA := CPU6502_AmZP;  CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $55: Begin EA := CPU6502_AmZPX; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $4D: Begin EA := CPU6502_AmABS; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $5D: Begin EA := CPU6502_AmABX; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $59: Begin EA := CPU6502_AmABY; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $41: Begin EA := CPU6502_AmIZX; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    $51: Begin EA := CPU6502_AmIZY; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
+    { ----- CMP/CPX/CPY ----- }
+    $C9: Begin EA := CPU6502_AmIMM; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
+    $C5: Begin EA := CPU6502_AmZP;  CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
+    $D5: Begin EA := CPU6502_AmZPX; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
+    $CD: Begin EA := CPU6502_AmABS; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
+    $DD: Begin EA := CPU6502_AmABX; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
+    $D9: Begin EA := CPU6502_AmABY; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
+    $C1: Begin EA := CPU6502_AmIZX; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
+    $D1: Begin EA := CPU6502_AmIZY; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
+    $E0: Begin EA := CPU6502_AmIMM; CPU6502_DoCMP(CPU6502_X, CPU6502_Mem[EA]); End;
+    $E4: Begin EA := CPU6502_AmZP;  CPU6502_DoCMP(CPU6502_X, CPU6502_Mem[EA]); End;
+    $EC: Begin EA := CPU6502_AmABS; CPU6502_DoCMP(CPU6502_X, CPU6502_Mem[EA]); End;
+    $C0: Begin EA := CPU6502_AmIMM; CPU6502_DoCMP(CPU6502_Y, CPU6502_Mem[EA]); End;
+    $C4: Begin EA := CPU6502_AmZP;  CPU6502_DoCMP(CPU6502_Y, CPU6502_Mem[EA]); End;
+    $CC: Begin EA := CPU6502_AmABS; CPU6502_DoCMP(CPU6502_Y, CPU6502_Mem[EA]); End;
+    { ----- BIT ----- }
+    $24: Begin EA := CPU6502_AmZP;  M := CPU6502_Mem[EA];
+               CPU6502_SetZ((M And CPU6502_A) = 0);
+               CPU6502_SetN((M And $80) <> 0);
+               CPU6502_SetV((M And $40) <> 0); End;
+    $2C: Begin EA := CPU6502_AmABS; M := CPU6502_Mem[EA];
+               CPU6502_SetZ((M And CPU6502_A) = 0);
+               CPU6502_SetN((M And $80) <> 0);
+               CPU6502_SetV((M And $40) <> 0); End;
+    { ----- ASL/LSR/ROL/ROR ----- }
+    $0A: CPU6502_A := CPU6502_DoASL(CPU6502_A);
+    $06: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_DoASL(CPU6502_Mem[EA]); End;
+    $16: Begin EA := CPU6502_AmZPX; CPU6502_Mem[EA] := CPU6502_DoASL(CPU6502_Mem[EA]); End;
+    $0E: Begin EA := CPU6502_AmABS; CPU6502_Mem[EA] := CPU6502_DoASL(CPU6502_Mem[EA]); End;
+    $1E: Begin EA := CPU6502_AmABX; CPU6502_Mem[EA] := CPU6502_DoASL(CPU6502_Mem[EA]); End;
+    $4A: CPU6502_A := CPU6502_DoLSR(CPU6502_A);
+    $46: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_DoLSR(CPU6502_Mem[EA]); End;
+    $56: Begin EA := CPU6502_AmZPX; CPU6502_Mem[EA] := CPU6502_DoLSR(CPU6502_Mem[EA]); End;
+    $4E: Begin EA := CPU6502_AmABS; CPU6502_Mem[EA] := CPU6502_DoLSR(CPU6502_Mem[EA]); End;
+    $5E: Begin EA := CPU6502_AmABX; CPU6502_Mem[EA] := CPU6502_DoLSR(CPU6502_Mem[EA]); End;
+    $2A: CPU6502_A := CPU6502_DoROL(CPU6502_A);
+    $26: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_DoROL(CPU6502_Mem[EA]); End;
+    $36: Begin EA := CPU6502_AmZPX; CPU6502_Mem[EA] := CPU6502_DoROL(CPU6502_Mem[EA]); End;
+    $2E: Begin EA := CPU6502_AmABS; CPU6502_Mem[EA] := CPU6502_DoROL(CPU6502_Mem[EA]); End;
+    $3E: Begin EA := CPU6502_AmABX; CPU6502_Mem[EA] := CPU6502_DoROL(CPU6502_Mem[EA]); End;
+    $6A: CPU6502_A := CPU6502_DoROR(CPU6502_A);
+    $66: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_DoROR(CPU6502_Mem[EA]); End;
+    $76: Begin EA := CPU6502_AmZPX; CPU6502_Mem[EA] := CPU6502_DoROR(CPU6502_Mem[EA]); End;
+    $6E: Begin EA := CPU6502_AmABS; CPU6502_Mem[EA] := CPU6502_DoROR(CPU6502_Mem[EA]); End;
+    $7E: Begin EA := CPU6502_AmABX; CPU6502_Mem[EA] := CPU6502_DoROR(CPU6502_Mem[EA]); End;
+    { ----- Branchements ----- }
+    $10: CPU6502_Branch((CPU6502_P And $80) = 0); { BPL }
+    $30: CPU6502_Branch((CPU6502_P And $80) <> 0); { BMI }
+    $50: CPU6502_Branch((CPU6502_P And $40) = 0); { BVC }
+    $70: CPU6502_Branch((CPU6502_P And $40) <> 0); { BVS }
+    $90: CPU6502_Branch((CPU6502_P And $01) = 0); { BCC }
+    $B0: CPU6502_Branch((CPU6502_P And $01) <> 0); { BCS }
+    $D0: CPU6502_Branch((CPU6502_P And $02) = 0); { BNE }
+    $F0: CPU6502_Branch((CPU6502_P And $02) <> 0); { BEQ }
+    { ----- JMP/JSR/RTS/RTI ----- }
+    $4C: CPU6502_PC := CPU6502_AmABS;                  { JMP abs }
+    $6C: Begin T := CPU6502_AmABS;
+               CPU6502_PC := CPU6502_Read16Bug(T); End; { JMP (abs) }
+    $20: Begin T := CPU6502_AmABS;
+               CPU6502_Push16(CPU6502_PC - 1);
+               CPU6502_PC := T; End;                    { JSR }
+    $60: Begin T := CPU6502_Pop16; CPU6502_PC := T + 1; End; { RTS }
+    $40: Begin CPU6502_P := (CPU6502_Pop And $CF) Or $20;
+               CPU6502_PC := CPU6502_Pop16; End;        { RTI }
+    { ----- BRK/NOP ----- }
+    $00: Begin                                          { BRK -> halt }
+           CPU6502_Halted := True;
+           CPU6502_ExitCode := 0;
+         End;
+    $EA: ;                                              { NOP }
+  Else
+    EmuVScr_WriteStr(CPU6502_Panel^,
+     '[opcode 6502 inconnu $' + M68K_HexN(Op, 2) +
+     ' au PC $' + M68K_HexN(CPU6502_PC - 1, 4) + ']');
+    CPU6502_Halted := True;
+    CPU6502_ExitCode := 1;
+  End;
+End;
+
+{ Charger un binaire AppleII (.bin) : 4 octets header (load_lo load_hi    }
+{ len_lo len_hi) + payload                                                 }
+Function CPU6502_LoadAppleBin(Const FileName: String;
+                              Var EntryAddr: Word): Boolean;
+Var
+  F: File;
+  Hdr: Array[0..3] Of Byte;
+  Load: Word;
+  Len, I: LongInt;
+  B: Byte;
+Begin
+  CPU6502_LoadAppleBin := False;
+  Assign(F, FileName);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  BlockRead(F, Hdr, 4);
+  Load := Hdr[0] Or (Word(Hdr[1]) Shl 8);
+  Len  := Hdr[2] Or (LongInt(Hdr[3]) Shl 8);
+  EntryAddr := Load;
+  For I := 0 To Len - 1 Do
+  Begin
+    BlockRead(F, B, 1);
+    If (Load + I) <= $FFFF Then CPU6502_Mem[Load + I] := B;
+  End;
+  Close(F);
+  CPU6502_LoadAppleBin := True;
+End;
+
+{ Charger un PRG C64 : 2 octets load addr LE + payload }
+Function CPU6502_LoadC64Prg(Const FileName: String;
+                            Var EntryAddr: Word): Boolean;
+Var
+  F: File;
+  Hdr: Array[0..1] Of Byte;
+  Load: Word;
+  I: LongInt;
+  B: Byte;
+Begin
+  CPU6502_LoadC64Prg := False;
+  Assign(F, FileName);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  BlockRead(F, Hdr, 2);
+  Load := Hdr[0] Or (Word(Hdr[1]) Shl 8);
+  EntryAddr := Load;
+  I := 0;
+  While Not Eof(F) Do
+  Begin
+    BlockRead(F, B, 1);
+    If (Load + I) <= $FFFF Then CPU6502_Mem[Load + I] := B;
+    Inc(I);
+  End;
+  Close(F);
+  CPU6502_LoadC64Prg := True;
+End;
+
+{ Charger Atari .xex : suite de segments [FF FF] start_lo start_hi          }
+{ end_lo end_hi data...                                                     }
+Function CPU6502_LoadAtariXex(Const FileName: String;
+                              Var EntryAddr: Word): Boolean;
+Var
+  F: File;
+  B: Byte;
+  Hdr: Array[0..3] Of Byte;
+  Magic: Word;
+  StartA, EndA: Word;
+  I: LongInt;
+  First: Boolean;
+Begin
+  CPU6502_LoadAtariXex := False;
+  EntryAddr := 0;
+  Assign(F, FileName);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  First := True;
+  While Not Eof(F) Do
+  Begin
+    { Lire un en-tete de segment FF FF puis 4 octets }
+    BlockRead(F, B, 1); If Eof(F) Then Break;
+    Magic := B;
+    BlockRead(F, B, 1); Magic := Magic Or (Word(B) Shl 8);
+    If Magic <> $FFFF Then
+    Begin
+      { Pas un segment FF FF : essayer de continuer apres alignement }
+      Continue;
+    End;
+    BlockRead(F, Hdr, 4);
+    StartA := Hdr[0] Or (Word(Hdr[1]) Shl 8);
+    EndA   := Hdr[2] Or (Word(Hdr[3]) Shl 8);
+    If First Then Begin EntryAddr := StartA; First := False; End;
+    For I := 0 To EndA - StartA Do
+    Begin
+      BlockRead(F, B, 1);
+      If (StartA + I) <= $FFFF Then CPU6502_Mem[StartA + I] := B;
+    End;
+  End;
+  Close(F);
+  CPU6502_LoadAtariXex := True;
+End;
+
+{ Charger un fichier brut (NES, A2600) }
+Function CPU6502_LoadRaw(Const FileName: String;
+                         LoadAddr: Word; SkipHeader: Integer): Boolean;
+Var
+  F: File;
+  B: Byte;
+  I: LongInt;
+Begin
+  CPU6502_LoadRaw := False;
+  Assign(F, FileName);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  For I := 1 To SkipHeader Do BlockRead(F, B, 1);
+  I := 0;
+  While Not Eof(F) Do
+  Begin
+    BlockRead(F, B, 1);
+    If (LoadAddr + I) <= $FFFF Then CPU6502_Mem[LoadAddr + I] := B;
+    Inc(I);
+  End;
+  Close(F);
+  CPU6502_LoadRaw := True;
+End;
+
+Procedure CPU6502_Reset(EntryAddr: Word);
+Var I: LongInt;
+Begin
+  CPU6502_A := 0;
+  CPU6502_X := 0;
+  CPU6502_Y := 0;
+  CPU6502_P := $24;        { I=1, U=1 }
+  CPU6502_S := $FD;
+  CPU6502_PC := EntryAddr;
+  CPU6502_Halted := False;
+  CPU6502_ExitCode := 0;
+  CPU6502_Cycles := 0;
+  { Sentinelle de fin : push d une adresse de halt sur la pile }
+  CPU6502_Mem[$FFFE] := $00;
+  CPU6502_Mem[$FFFF] := $00;
+End;
+
+{ ========================================================================== }
+{ EMULATEUR Z80 INTEGRE                                                      }
+{ Couvre TRS-80 (-CTRS80), MSX (-CMSX) et Coleco Adam (-CADAM).               }
+{ Sous-ensemble couvrant : page principale (NOP/LD/INC/DEC/ADD/SUB/AND/OR/    }
+{ XOR/CP/JP/JR/CALL/RET/PUSH/POP/EX/HALT/RST), prefixe CB (BIT/RES/SET/RLC/   }
+{ RRC/RL/RR/SLA/SRA/SRL), prefixe ED (LDIR/LDDR/IN/OUT/IM).                   }
+{ Traps de sortie :                                                           }
+{   CALL $0005 (BDOS CP/M)  : C=2 -> imprime E ; C=9 -> imprime $-string DE   }
+{   CALL $00A2 (MSX BIOS CHPUT) : imprime A                                   }
+{   CALL $0033 (TRS-80 PUTCH)   : imprime A                                   }
+{ Drapeaux F : SZ-H-PNC (S=$80 Z=$40 H=$10 P/V=$04 N=$02 C=$01).             }
+{ ========================================================================== }
+
+{ Acces 16-bit registres-paires }
+Function Z80_GetBC: Word;
+Begin Z80_GetBC := (Word(Z80_B) Shl 8) Or Z80_C; End;
+Function Z80_GetDE: Word;
+Begin Z80_GetDE := (Word(Z80_D) Shl 8) Or Z80_E; End;
+Function Z80_GetHL: Word;
+Begin Z80_GetHL := (Word(Z80_H) Shl 8) Or Z80_L; End;
+Function Z80_GetAF: Word;
+Begin Z80_GetAF := (Word(Z80_A) Shl 8) Or Z80_F; End;
+
+Procedure Z80_SetBC(V: Word);
+Begin Z80_B := (V Shr 8) And $FF; Z80_C := V And $FF; End;
+Procedure Z80_SetDE(V: Word);
+Begin Z80_D := (V Shr 8) And $FF; Z80_E := V And $FF; End;
+Procedure Z80_SetHL(V: Word);
+Begin Z80_H := (V Shr 8) And $FF; Z80_L := V And $FF; End;
+Procedure Z80_SetAF(V: Word);
+Begin Z80_A := (V Shr 8) And $FF; Z80_F := V And $FF; End;
+
+Function Z80_Rd(A: Word): Byte;
+Begin Z80_Rd := Z80_Mem[A]; End;
+Procedure Z80_Wr(A: Word; V: Byte);
+Begin Z80_Mem[A] := V; End;
+
+Function Z80_Rd16(A: Word): Word;
+Begin Z80_Rd16 := Z80_Mem[A] Or (Word(Z80_Mem[Word(A + 1)]) Shl 8); End;
+Procedure Z80_Wr16(A: Word; V: Word);
+Begin
+  Z80_Mem[A] := V And $FF;
+  Z80_Mem[Word(A + 1)] := (V Shr 8) And $FF;
+End;
+
+Procedure Z80_Push(V: Word);
+Begin
+  Z80_SP := Z80_SP - 2;
+  Z80_Wr16(Z80_SP, V);
+End;
+
+Function Z80_Pop: Word;
+Begin
+  Z80_Pop := Z80_Rd16(Z80_SP);
+  Z80_SP := Z80_SP + 2;
+End;
+
+Function Z80_FetchByte: Byte;
+Begin
+  Z80_FetchByte := Z80_Mem[Z80_PC];
+  Z80_PC := (Z80_PC + 1) And $FFFF;
+End;
+
+Function Z80_FetchWord: Word;
+Var Lo, Hi: Byte;
+Begin
+  Lo := Z80_FetchByte;
+  Hi := Z80_FetchByte;
+  Z80_FetchWord := Lo Or (Word(Hi) Shl 8);
+End;
+
+{ Drapeau parite paire }
+Function Z80_Parity(V: Byte): Boolean;
+Var C, I: Integer;
+Begin
+  C := 0;
+  For I := 0 To 7 Do
+    If (V And (1 Shl I)) <> 0 Then Inc(C);
+  Z80_Parity := (C And 1) = 0;
+End;
+
+{ Met S et Z d apres V }
+Procedure Z80_SetSZ(V: Byte);
+Begin
+  Z80_F := Z80_F And Not $C0;
+  If V = 0 Then Z80_F := Z80_F Or $40;
+  If (V And $80) <> 0 Then Z80_F := Z80_F Or $80;
+End;
+
+Procedure Z80_DoAdd(V: Byte);
+Var
+  R: Word;
+  H: Byte;
+Begin
+  R := Z80_A + V;
+  H := ((Z80_A And $0F) + (V And $0F)) And $10;
+  Z80_F := 0;
+  If (R And $FF) = 0 Then Z80_F := Z80_F Or $40;
+  If (R And $80) <> 0 Then Z80_F := Z80_F Or $80;
+  If H <> 0 Then Z80_F := Z80_F Or $10;
+  If R > $FF Then Z80_F := Z80_F Or $01;
+  If (((Z80_A Xor V) And $80) = 0) And
+     (((Z80_A Xor (R And $FF)) And $80) <> 0) Then
+    Z80_F := Z80_F Or $04;
+  Z80_A := R And $FF;
+End;
+
+Procedure Z80_DoAdc(V: Byte);
+Var
+  Cy: Byte;
+  R: Word;
+  H: Byte;
+Begin
+  If (Z80_F And $01) <> 0 Then Cy := 1 Else Cy := 0;
+  R := Z80_A + V + Cy;
+  H := ((Z80_A And $0F) + (V And $0F) + Cy) And $10;
+  Z80_F := 0;
+  If (R And $FF) = 0 Then Z80_F := Z80_F Or $40;
+  If (R And $80) <> 0 Then Z80_F := Z80_F Or $80;
+  If H <> 0 Then Z80_F := Z80_F Or $10;
+  If R > $FF Then Z80_F := Z80_F Or $01;
+  If (((Z80_A Xor V) And $80) = 0) And
+     (((Z80_A Xor (R And $FF)) And $80) <> 0) Then
+    Z80_F := Z80_F Or $04;
+  Z80_A := R And $FF;
+End;
+
+Procedure Z80_DoSub(V: Byte);
+Var
+  R: Integer;
+  H: Byte;
+Begin
+  R := Z80_A - V;
+  H := ((Z80_A And $0F) - (V And $0F)) And $10;
+  Z80_F := $02; { N=1 }
+  If (R And $FF) = 0 Then Z80_F := Z80_F Or $40;
+  If (R And $80) <> 0 Then Z80_F := Z80_F Or $80;
+  If H <> 0 Then Z80_F := Z80_F Or $10;
+  If R < 0 Then Z80_F := Z80_F Or $01;
+  If (((Z80_A Xor V) And $80) <> 0) And
+     (((Z80_A Xor (R And $FF)) And $80) <> 0) Then
+    Z80_F := Z80_F Or $04;
+  Z80_A := R And $FF;
+End;
+
+Procedure Z80_DoSbc(V: Byte);
+Var
+  Cy: Byte;
+  R: Integer;
+  H: Byte;
+Begin
+  If (Z80_F And $01) <> 0 Then Cy := 1 Else Cy := 0;
+  R := Z80_A - V - Cy;
+  H := ((Z80_A And $0F) - (V And $0F) - Cy) And $10;
+  Z80_F := $02;
+  If (R And $FF) = 0 Then Z80_F := Z80_F Or $40;
+  If (R And $80) <> 0 Then Z80_F := Z80_F Or $80;
+  If H <> 0 Then Z80_F := Z80_F Or $10;
+  If R < 0 Then Z80_F := Z80_F Or $01;
+  Z80_A := R And $FF;
+End;
+
+Procedure Z80_DoCp(V: Byte);
+Var
+  Sav: Byte;
+Begin
+  Sav := Z80_A;
+  Z80_DoSub(V);
+  Z80_A := Sav;
+End;
+
+Procedure Z80_DoAnd(V: Byte);
+Begin
+  Z80_A := Z80_A And V;
+  Z80_F := $10;
+  If Z80_A = 0 Then Z80_F := Z80_F Or $40;
+  If (Z80_A And $80) <> 0 Then Z80_F := Z80_F Or $80;
+  If Z80_Parity(Z80_A) Then Z80_F := Z80_F Or $04;
+End;
+
+Procedure Z80_DoOr(V: Byte);
+Begin
+  Z80_A := Z80_A Or V;
+  Z80_F := 0;
+  If Z80_A = 0 Then Z80_F := Z80_F Or $40;
+  If (Z80_A And $80) <> 0 Then Z80_F := Z80_F Or $80;
+  If Z80_Parity(Z80_A) Then Z80_F := Z80_F Or $04;
+End;
+
+Procedure Z80_DoXor(V: Byte);
+Begin
+  Z80_A := Z80_A Xor V;
+  Z80_F := 0;
+  If Z80_A = 0 Then Z80_F := Z80_F Or $40;
+  If (Z80_A And $80) <> 0 Then Z80_F := Z80_F Or $80;
+  If Z80_Parity(Z80_A) Then Z80_F := Z80_F Or $04;
+End;
+
+Function Z80_DoInc8(V: Byte): Byte;
+Begin
+  V := (V + 1) And $FF;
+  Z80_F := Z80_F And $01; { conserve C }
+  If V = 0 Then Z80_F := Z80_F Or $40;
+  If (V And $80) <> 0 Then Z80_F := Z80_F Or $80;
+  If (V And $0F) = 0 Then Z80_F := Z80_F Or $10;
+  If V = $80 Then Z80_F := Z80_F Or $04;
+  Z80_DoInc8 := V;
+End;
+
+Function Z80_DoDec8(V: Byte): Byte;
+Begin
+  V := (V - 1) And $FF;
+  Z80_F := (Z80_F And $01) Or $02; { conserve C, N=1 }
+  If V = 0 Then Z80_F := Z80_F Or $40;
+  If (V And $80) <> 0 Then Z80_F := Z80_F Or $80;
+  If (V And $0F) = $0F Then Z80_F := Z80_F Or $10;
+  If V = $7F Then Z80_F := Z80_F Or $04;
+  Z80_DoDec8 := V;
+End;
+
+{ Lit/ecrit registre 8-bit selon code 0..7 (B C D E H L (HL) A) }
+Function Z80_GetR8(N: Integer): Byte;
+Begin
+  Case N Of
+    0: Z80_GetR8 := Z80_B;
+    1: Z80_GetR8 := Z80_C;
+    2: Z80_GetR8 := Z80_D;
+    3: Z80_GetR8 := Z80_E;
+    4: Z80_GetR8 := Z80_H;
+    5: Z80_GetR8 := Z80_L;
+    6: Z80_GetR8 := Z80_Rd(Z80_GetHL);
+    7: Z80_GetR8 := Z80_A;
+  Else Z80_GetR8 := 0;
+  End;
+End;
+
+Procedure Z80_SetR8(N: Integer; V: Byte);
+Begin
+  Case N Of
+    0: Z80_B := V;
+    1: Z80_C := V;
+    2: Z80_D := V;
+    3: Z80_E := V;
+    4: Z80_H := V;
+    5: Z80_L := V;
+    6: Z80_Wr(Z80_GetHL, V);
+    7: Z80_A := V;
+  End;
+End;
+
+{ Trap : si CALL vers une adresse magique connue, executer service et      }
+{ retourner. Retourne True si le CALL a ete intercepte.                    }
+Function Z80_TryTrap(Target: Word): Boolean;
+Var
+  Ch: Byte;
+  Addr: Word;
+Begin
+  Z80_TryTrap := False;
+  { BDOS CP/M : $0005 - utilise par MSX-DOS et Adam EOS/CP/M }
+  If Target = $0005 Then
+  Begin
+    Case Z80_C Of
+      2: Begin { Conout : print E }
+           Ch := Z80_E;
+           If Ch = $0D Then Begin
+             EmuVScr_PutChar(Z80_Panel^, #13);
+             EmuVScr_PutChar(Z80_Panel^, #10);
+           End Else If Ch = $0A Then
+             { ignore : LF souvent suit CR }
+           Else If Ch >= 32 Then
+             EmuVScr_PutChar(Z80_Panel^, Chr(Ch));
+         End;
+      9: Begin { Print $-string at DE }
+           Addr := Z80_GetDE;
+           While (Addr <= $FFFF) And (Z80_Mem[Addr] <> Ord('$')) Do
+           Begin
+             Ch := Z80_Mem[Addr];
+             If Ch = $0D Then Begin
+               EmuVScr_PutChar(Z80_Panel^, #13);
+               EmuVScr_PutChar(Z80_Panel^, #10);
+             End Else If Ch >= 32 Then
+               EmuVScr_PutChar(Z80_Panel^, Chr(Ch));
+             Inc(Addr);
+           End;
+         End;
+      0: Begin { System reset / exit }
+           Z80_Halted := True;
+           Z80_ExitCode := 0;
+         End;
+    End;
+    Z80_TryTrap := True;
+    Exit;
+  End;
+  { MSX BIOS CHPUT : $00A2 - imprime A }
+  If Target = $00A2 Then
+  Begin
+    Ch := Z80_A;
+    If Ch = $0D Then Begin
+      EmuVScr_PutChar(Z80_Panel^, #13);
+      EmuVScr_PutChar(Z80_Panel^, #10);
+    End Else If (Ch >= 32) And (Ch < 128) Then
+      EmuVScr_PutChar(Z80_Panel^, Chr(Ch));
+    Z80_TryTrap := True;
+    Exit;
+  End;
+  { TRS-80 ROM PUTCH : $0033 - imprime A }
+  If Target = $0033 Then
+  Begin
+    Ch := Z80_A;
+    If Ch = $0D Then Begin
+      EmuVScr_PutChar(Z80_Panel^, #13);
+      EmuVScr_PutChar(Z80_Panel^, #10);
+    End Else If (Ch >= 32) And (Ch < 128) Then
+      EmuVScr_PutChar(Z80_Panel^, Chr(Ch));
+    Z80_TryTrap := True;
+    Exit;
+  End;
+End;
+
+{ Prefixe CB - rotations, decalages, BIT/SET/RES }
+Procedure Z80_StepCB;
+Var
+  Op, V, R: Byte;
+  Bit: Integer;
+  RegN: Integer;
+  C0: Byte;
+Begin
+  Op := Z80_FetchByte;
+  RegN := Op And $07;
+  V := Z80_GetR8(RegN);
+  Case Op And $C0 Of
+    $00: { rotations/decalages }
+      Begin
+        Case (Op Shr 3) And $07 Of
+          0: Begin { RLC }
+               C0 := (V Shr 7) And 1;
+               R := ((V Shl 1) Or C0) And $FF;
+               Z80_F := 0;
+               If C0 <> 0 Then Z80_F := Z80_F Or $01;
+             End;
+          1: Begin { RRC }
+               C0 := V And 1;
+               R := ((V Shr 1) Or (C0 Shl 7)) And $FF;
+               Z80_F := 0;
+               If C0 <> 0 Then Z80_F := Z80_F Or $01;
+             End;
+          2: Begin { RL }
+               C0 := (V Shr 7) And 1;
+               R := ((V Shl 1) Or (Z80_F And $01)) And $FF;
+               Z80_F := 0;
+               If C0 <> 0 Then Z80_F := Z80_F Or $01;
+             End;
+          3: Begin { RR }
+               C0 := V And 1;
+               R := ((V Shr 1) Or ((Z80_F And $01) Shl 7)) And $FF;
+               Z80_F := 0;
+               If C0 <> 0 Then Z80_F := Z80_F Or $01;
+             End;
+          4: Begin { SLA }
+               C0 := (V Shr 7) And 1;
+               R := (V Shl 1) And $FF;
+               Z80_F := 0;
+               If C0 <> 0 Then Z80_F := Z80_F Or $01;
+             End;
+          5: Begin { SRA }
+               C0 := V And 1;
+               R := ((V Shr 1) Or (V And $80)) And $FF;
+               Z80_F := 0;
+               If C0 <> 0 Then Z80_F := Z80_F Or $01;
+             End;
+          6: Begin { SLL (non documente) }
+               C0 := (V Shr 7) And 1;
+               R := ((V Shl 1) Or 1) And $FF;
+               Z80_F := 0;
+               If C0 <> 0 Then Z80_F := Z80_F Or $01;
+             End;
+          7: Begin { SRL }
+               C0 := V And 1;
+               R := (V Shr 1) And $FF;
+               Z80_F := 0;
+               If C0 <> 0 Then Z80_F := Z80_F Or $01;
+             End;
+        Else R := V;
+        End;
+        If R = 0 Then Z80_F := Z80_F Or $40;
+        If (R And $80) <> 0 Then Z80_F := Z80_F Or $80;
+        If Z80_Parity(R) Then Z80_F := Z80_F Or $04;
+        Z80_SetR8(RegN, R);
+      End;
+    $40: { BIT n,r }
+      Begin
+        Bit := (Op Shr 3) And $07;
+        Z80_F := (Z80_F And $01) Or $10;
+        If (V And (1 Shl Bit)) = 0 Then Z80_F := Z80_F Or $44;
+      End;
+    $80: { RES n,r }
+      Begin
+        Bit := (Op Shr 3) And $07;
+        Z80_SetR8(RegN, V And Not (1 Shl Bit));
+      End;
+    $C0: { SET n,r }
+      Begin
+        Bit := (Op Shr 3) And $07;
+        Z80_SetR8(RegN, V Or (1 Shl Bit));
+      End;
+  End;
+End;
+
+{ Prefixe ED - LDIR/LDDR/IN/OUT/extensions }
+Procedure Z80_StepED;
+Var
+  Op: Byte;
+  Addr: Word;
+Begin
+  Op := Z80_FetchByte;
+  Case Op Of
+    $46, $66: Z80_IM := 0;
+    $56, $76: Z80_IM := 1;
+    $5E, $7E: Z80_IM := 2;
+    $47: Z80_I := Z80_A;
+    $4F: Z80_R := Z80_A;
+    $57: Begin Z80_A := Z80_I; Z80_SetSZ(Z80_A); End;
+    $5F: Begin Z80_A := Z80_R; Z80_SetSZ(Z80_A); End;
+    $43: Begin Addr := Z80_FetchWord; Z80_Wr16(Addr, Z80_GetBC); End;
+    $4B: Begin Addr := Z80_FetchWord; Z80_SetBC(Z80_Rd16(Addr)); End;
+    $53: Begin Addr := Z80_FetchWord; Z80_Wr16(Addr, Z80_GetDE); End;
+    $5B: Begin Addr := Z80_FetchWord; Z80_SetDE(Z80_Rd16(Addr)); End;
+    $63: Begin Addr := Z80_FetchWord; Z80_Wr16(Addr, Z80_GetHL); End;
+    $6B: Begin Addr := Z80_FetchWord; Z80_SetHL(Z80_Rd16(Addr)); End;
+    $73: Begin Addr := Z80_FetchWord; Z80_Wr16(Addr, Z80_SP); End;
+    $7B: Begin Addr := Z80_FetchWord; Z80_SP := Z80_Rd16(Addr); End;
+    $A0: Begin { LDI }
+           Z80_Wr(Z80_GetDE, Z80_Rd(Z80_GetHL));
+           Z80_SetHL(Z80_GetHL + 1); Z80_SetDE(Z80_GetDE + 1);
+           Z80_SetBC(Z80_GetBC - 1);
+           Z80_F := Z80_F And $C1;
+           If Z80_GetBC <> 0 Then Z80_F := Z80_F Or $04;
+         End;
+    $A8: Begin { LDD }
+           Z80_Wr(Z80_GetDE, Z80_Rd(Z80_GetHL));
+           Z80_SetHL(Z80_GetHL - 1); Z80_SetDE(Z80_GetDE - 1);
+           Z80_SetBC(Z80_GetBC - 1);
+           Z80_F := Z80_F And $C1;
+           If Z80_GetBC <> 0 Then Z80_F := Z80_F Or $04;
+         End;
+    $B0: Begin { LDIR }
+           While Z80_GetBC <> 0 Do
+           Begin
+             Z80_Wr(Z80_GetDE, Z80_Rd(Z80_GetHL));
+             Z80_SetHL(Z80_GetHL + 1); Z80_SetDE(Z80_GetDE + 1);
+             Z80_SetBC(Z80_GetBC - 1);
+           End;
+           Z80_F := Z80_F And $C1;
+         End;
+    $B8: Begin { LDDR }
+           While Z80_GetBC <> 0 Do
+           Begin
+             Z80_Wr(Z80_GetDE, Z80_Rd(Z80_GetHL));
+             Z80_SetHL(Z80_GetHL - 1); Z80_SetDE(Z80_GetDE - 1);
+             Z80_SetBC(Z80_GetBC - 1);
+           End;
+           Z80_F := Z80_F And $C1;
+         End;
+  End; { autres opcodes ED ignores }
+End;
+
+Procedure Z80_Step;
+Var
+  Op, V, R: Byte;
+  W, Addr: Word;
+  Cond: Boolean;
+  Off: ShortInt;
+  Tmp: Byte;
+  Tmp16: Word;
+  Sum: LongInt;
+Begin
+  Op := Z80_FetchByte;
+  Case Op Of
+    $00: ; { NOP }
+    $76: Begin Z80_Halted := True; Z80_ExitCode := 0; End; { HALT }
+    { LD r,r' (groupe $40-$7F sauf $76) }
+    $40..$45, $47, $48..$4D, $4F,
+    $50..$55, $57, $58..$5D, $5F,
+    $60..$65, $67, $68..$6D, $6F,
+    $70..$75, $77, $78..$7D, $7F:
+      Z80_SetR8((Op Shr 3) And $07, Z80_GetR8(Op And $07));
+    { LD r,n }
+    $06, $0E, $16, $1E, $26, $2E, $36, $3E:
+      Z80_SetR8((Op Shr 3) And $07, Z80_FetchByte);
+    { LD BC,nn / DE,nn / HL,nn / SP,nn }
+    $01: Z80_SetBC(Z80_FetchWord);
+    $11: Z80_SetDE(Z80_FetchWord);
+    $21: Z80_SetHL(Z80_FetchWord);
+    $31: Z80_SP := Z80_FetchWord;
+    { LD (BC),A / LD (DE),A / LD A,(BC) / LD A,(DE) }
+    $02: Z80_Wr(Z80_GetBC, Z80_A);
+    $12: Z80_Wr(Z80_GetDE, Z80_A);
+    $0A: Z80_A := Z80_Rd(Z80_GetBC);
+    $1A: Z80_A := Z80_Rd(Z80_GetDE);
+    { LD (nn),HL / LD HL,(nn) / LD (nn),A / LD A,(nn) }
+    $22: Begin Addr := Z80_FetchWord; Z80_Wr16(Addr, Z80_GetHL); End;
+    $2A: Begin Addr := Z80_FetchWord; Z80_SetHL(Z80_Rd16(Addr)); End;
+    $32: Begin Addr := Z80_FetchWord; Z80_Wr(Addr, Z80_A); End;
+    $3A: Begin Addr := Z80_FetchWord; Z80_A := Z80_Rd(Addr); End;
+    { INC/DEC rr }
+    $03: Z80_SetBC(Z80_GetBC + 1);
+    $0B: Z80_SetBC(Z80_GetBC - 1);
+    $13: Z80_SetDE(Z80_GetDE + 1);
+    $1B: Z80_SetDE(Z80_GetDE - 1);
+    $23: Z80_SetHL(Z80_GetHL + 1);
+    $2B: Z80_SetHL(Z80_GetHL - 1);
+    $33: Z80_SP := Z80_SP + 1;
+    $3B: Z80_SP := Z80_SP - 1;
+    { INC r / DEC r }
+    $04: Z80_B := Z80_DoInc8(Z80_B);
+    $05: Z80_B := Z80_DoDec8(Z80_B);
+    $0C: Z80_C := Z80_DoInc8(Z80_C);
+    $0D: Z80_C := Z80_DoDec8(Z80_C);
+    $14: Z80_D := Z80_DoInc8(Z80_D);
+    $15: Z80_D := Z80_DoDec8(Z80_D);
+    $1C: Z80_E := Z80_DoInc8(Z80_E);
+    $1D: Z80_E := Z80_DoDec8(Z80_E);
+    $24: Z80_H := Z80_DoInc8(Z80_H);
+    $25: Z80_H := Z80_DoDec8(Z80_H);
+    $2C: Z80_L := Z80_DoInc8(Z80_L);
+    $2D: Z80_L := Z80_DoDec8(Z80_L);
+    $34: Begin V := Z80_DoInc8(Z80_Rd(Z80_GetHL));
+              Z80_Wr(Z80_GetHL, V); End;
+    $35: Begin V := Z80_DoDec8(Z80_Rd(Z80_GetHL));
+              Z80_Wr(Z80_GetHL, V); End;
+    $3C: Z80_A := Z80_DoInc8(Z80_A);
+    $3D: Z80_A := Z80_DoDec8(Z80_A);
+    { ADD HL,rr }
+    $09: Begin Sum := Z80_GetHL + Z80_GetBC;
+              Z80_F := Z80_F And $C4;
+              If Sum > $FFFF Then Z80_F := Z80_F Or $01;
+              Z80_SetHL(Sum And $FFFF); End;
+    $19: Begin Sum := Z80_GetHL + Z80_GetDE;
+              Z80_F := Z80_F And $C4;
+              If Sum > $FFFF Then Z80_F := Z80_F Or $01;
+              Z80_SetHL(Sum And $FFFF); End;
+    $29: Begin Sum := Z80_GetHL + Z80_GetHL;
+              Z80_F := Z80_F And $C4;
+              If Sum > $FFFF Then Z80_F := Z80_F Or $01;
+              Z80_SetHL(Sum And $FFFF); End;
+    $39: Begin Sum := LongInt(Z80_GetHL) + Z80_SP;
+              Z80_F := Z80_F And $C4;
+              If Sum > $FFFF Then Z80_F := Z80_F Or $01;
+              Z80_SetHL(Sum And $FFFF); End;
+    { ADD/ADC/SUB/SBC/AND/XOR/OR/CP A,r }
+    $80..$87: Z80_DoAdd(Z80_GetR8(Op And 7));
+    $88..$8F: Z80_DoAdc(Z80_GetR8(Op And 7));
+    $90..$97: Z80_DoSub(Z80_GetR8(Op And 7));
+    $98..$9F: Z80_DoSbc(Z80_GetR8(Op And 7));
+    $A0..$A7: Z80_DoAnd(Z80_GetR8(Op And 7));
+    $A8..$AF: Z80_DoXor(Z80_GetR8(Op And 7));
+    $B0..$B7: Z80_DoOr(Z80_GetR8(Op And 7));
+    $B8..$BF: Z80_DoCp(Z80_GetR8(Op And 7));
+    { ADD/ADC/SUB/SBC/AND/XOR/OR/CP A,n }
+    $C6: Z80_DoAdd(Z80_FetchByte);
+    $CE: Z80_DoAdc(Z80_FetchByte);
+    $D6: Z80_DoSub(Z80_FetchByte);
+    $DE: Z80_DoSbc(Z80_FetchByte);
+    $E6: Z80_DoAnd(Z80_FetchByte);
+    $EE: Z80_DoXor(Z80_FetchByte);
+    $F6: Z80_DoOr(Z80_FetchByte);
+    $FE: Z80_DoCp(Z80_FetchByte);
+    { Rotations sur A }
+    $07: Begin { RLCA } Tmp := (Z80_A Shr 7) And 1;
+              Z80_A := ((Z80_A Shl 1) Or Tmp) And $FF;
+              Z80_F := (Z80_F And $C4) Or Tmp; End;
+    $0F: Begin { RRCA } Tmp := Z80_A And 1;
+              Z80_A := ((Z80_A Shr 1) Or (Tmp Shl 7)) And $FF;
+              Z80_F := (Z80_F And $C4) Or Tmp; End;
+    $17: Begin { RLA } Tmp := (Z80_A Shr 7) And 1;
+              Z80_A := ((Z80_A Shl 1) Or (Z80_F And 1)) And $FF;
+              Z80_F := (Z80_F And $C4) Or Tmp; End;
+    $1F: Begin { RRA } Tmp := Z80_A And 1;
+              Z80_A := ((Z80_A Shr 1) Or ((Z80_F And 1) Shl 7)) And $FF;
+              Z80_F := (Z80_F And $C4) Or Tmp; End;
+    { CPL / SCF / CCF }
+    $2F: Begin Z80_A := Z80_A Xor $FF;
+              Z80_F := Z80_F Or $12; End;
+    $37: Z80_F := (Z80_F And $C4) Or $01;
+    $3F: Z80_F := (Z80_F And $C4) Xor $01;
+    { JP nn / JP cc,nn }
+    $C3: Z80_PC := Z80_FetchWord;
+    $C2: Begin W := Z80_FetchWord;
+              If (Z80_F And $40) = 0 Then Z80_PC := W; End; { NZ }
+    $CA: Begin W := Z80_FetchWord;
+              If (Z80_F And $40) <> 0 Then Z80_PC := W; End; { Z }
+    $D2: Begin W := Z80_FetchWord;
+              If (Z80_F And $01) = 0 Then Z80_PC := W; End; { NC }
+    $DA: Begin W := Z80_FetchWord;
+              If (Z80_F And $01) <> 0 Then Z80_PC := W; End; { C }
+    $E2: Begin W := Z80_FetchWord;
+              If (Z80_F And $04) = 0 Then Z80_PC := W; End; { PO }
+    $EA: Begin W := Z80_FetchWord;
+              If (Z80_F And $04) <> 0 Then Z80_PC := W; End; { PE }
+    $F2: Begin W := Z80_FetchWord;
+              If (Z80_F And $80) = 0 Then Z80_PC := W; End; { P }
+    $FA: Begin W := Z80_FetchWord;
+              If (Z80_F And $80) <> 0 Then Z80_PC := W; End; { M }
+    { JR e / JR cc,e }
+    $18: Begin Off := ShortInt(Z80_FetchByte);
+              Z80_PC := Z80_PC + Off; End;
+    $20: Begin Off := ShortInt(Z80_FetchByte);
+              If (Z80_F And $40) = 0 Then Z80_PC := Z80_PC + Off; End;
+    $28: Begin Off := ShortInt(Z80_FetchByte);
+              If (Z80_F And $40) <> 0 Then Z80_PC := Z80_PC + Off; End;
+    $30: Begin Off := ShortInt(Z80_FetchByte);
+              If (Z80_F And $01) = 0 Then Z80_PC := Z80_PC + Off; End;
+    $38: Begin Off := ShortInt(Z80_FetchByte);
+              If (Z80_F And $01) <> 0 Then Z80_PC := Z80_PC + Off; End;
+    { DJNZ }
+    $10: Begin Off := ShortInt(Z80_FetchByte);
+              Z80_B := (Z80_B - 1) And $FF;
+              If Z80_B <> 0 Then Z80_PC := Z80_PC + Off; End;
+    { JP (HL) }
+    $E9: Z80_PC := Z80_GetHL;
+    { CALL nn / CALL cc,nn }
+    $CD: Begin W := Z80_FetchWord;
+              If Z80_TryTrap(W) Then
+                { trap : ne pas faire le call reel }
+              Else Begin
+                Z80_Push(Z80_PC);
+                Z80_PC := W;
+              End;
+            End;
+    $C4, $CC, $D4, $DC, $E4, $EC, $F4, $FC:
+      Begin
+        W := Z80_FetchWord;
+        Case (Op Shr 3) And $07 Of
+          0: Cond := (Z80_F And $40) = 0;
+          1: Cond := (Z80_F And $40) <> 0;
+          2: Cond := (Z80_F And $01) = 0;
+          3: Cond := (Z80_F And $01) <> 0;
+          4: Cond := (Z80_F And $04) = 0;
+          5: Cond := (Z80_F And $04) <> 0;
+          6: Cond := (Z80_F And $80) = 0;
+        Else Cond := (Z80_F And $80) <> 0;
+        End;
+        If Cond Then
+        Begin
+          If Z80_TryTrap(W) Then
+          Else Begin Z80_Push(Z80_PC); Z80_PC := W; End;
+        End;
+      End;
+    { RET / RET cc }
+    $C9: Begin
+           If Z80_SP >= $FFFE Then Begin
+             Z80_Halted := True; Z80_ExitCode := 0;
+           End Else Z80_PC := Z80_Pop;
+         End;
+    $C0, $C8, $D0, $D8, $E0, $E8, $F0, $F8:
+      Begin
+        Case (Op Shr 3) And $07 Of
+          0: Cond := (Z80_F And $40) = 0;
+          1: Cond := (Z80_F And $40) <> 0;
+          2: Cond := (Z80_F And $01) = 0;
+          3: Cond := (Z80_F And $01) <> 0;
+          4: Cond := (Z80_F And $04) = 0;
+          5: Cond := (Z80_F And $04) <> 0;
+          6: Cond := (Z80_F And $80) = 0;
+        Else Cond := (Z80_F And $80) <> 0;
+        End;
+        If Cond Then Z80_PC := Z80_Pop;
+      End;
+    { RST n }
+    $C7, $CF, $D7, $DF, $E7, $EF, $F7, $FF:
+      Begin
+        W := Op And $38;
+        If Z80_TryTrap(W) Then
+        Else Begin Z80_Push(Z80_PC); Z80_PC := W; End;
+      End;
+    { PUSH/POP }
+    $C5: Z80_Push(Z80_GetBC);
+    $D5: Z80_Push(Z80_GetDE);
+    $E5: Z80_Push(Z80_GetHL);
+    $F5: Z80_Push(Z80_GetAF);
+    $C1: Z80_SetBC(Z80_Pop);
+    $D1: Z80_SetDE(Z80_Pop);
+    $E1: Z80_SetHL(Z80_Pop);
+    $F1: Z80_SetAF(Z80_Pop);
+    { EX }
+    $EB: Begin Tmp16 := Z80_GetDE;
+              Z80_SetDE(Z80_GetHL); Z80_SetHL(Tmp16); End;
+    $E3: Begin Tmp16 := Z80_Rd16(Z80_SP);
+              Z80_Wr16(Z80_SP, Z80_GetHL); Z80_SetHL(Tmp16); End;
+    $08: Begin Tmp16 := Z80_GetAF;
+              Z80_SetAF((Word(Z80_AA) Shl 8) Or Z80_FF);
+              Z80_AA := (Tmp16 Shr 8) And $FF;
+              Z80_FF := Tmp16 And $FF; End;
+    $D9: Begin { EXX }
+              Tmp := Z80_B; Z80_B := Z80_BB; Z80_BB := Tmp;
+              Tmp := Z80_C; Z80_C := Z80_CC; Z80_CC := Tmp;
+              Tmp := Z80_D; Z80_D := Z80_DD; Z80_DD := Tmp;
+              Tmp := Z80_E; Z80_E := Z80_EE; Z80_EE := Tmp;
+              Tmp := Z80_H; Z80_H := Z80_HH; Z80_HH := Tmp;
+              Tmp := Z80_L; Z80_L := Z80_LL; Z80_LL := Tmp;
+            End;
+    { Interruptions }
+    $F3: Begin Z80_IFF1 := False; Z80_IFF2 := False; End;
+    $FB: Begin Z80_IFF1 := True;  Z80_IFF2 := True;  End;
+    { Prefixes }
+    $CB: Z80_StepCB;
+    $ED: Z80_StepED;
+    { I/O - traite comme NOP avec lecture/ecriture port factice }
+    $D3: V := Z80_FetchByte; { OUT (n),A }
+    $DB: Begin V := Z80_FetchByte; Z80_A := 0; End; { IN A,(n) }
+    { DD/FD : prefixes IX/IY non implementes - les sauter }
+    $DD, $FD:
+      Begin
+        { Avancer d un opcode supplementaire pour la majorite des cas. }
+        V := Z80_FetchByte;
+      End;
+  Else
+    EmuVScr_WriteStr(Z80_Panel^,
+     '[opcode Z80 inconnu $' + M68K_HexN(Op, 2) +
+     ' au PC $' + M68K_HexN(Word(Z80_PC - 1), 4) + ']');
+    Z80_Halted := True;
+    Z80_ExitCode := 1;
+  End;
+End;
+
+{ Charger un binaire CP/M COM (MSX-DOS, Adam EOS) : raw a $0100 }
+Function Z80_LoadCom(Const FileName: String;
+                     Var EntryAddr: Word): Boolean;
+Var
+  F: File;
+  B: Byte;
+  I: LongInt;
+Begin
+  Z80_LoadCom := False;
+  Assign(F, FileName);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  EntryAddr := $0100;
+  I := 0;
+  While Not Eof(F) Do
+  Begin
+    BlockRead(F, B, 1);
+    If ($0100 + I) <= $FFFF Then Z80_Mem[$0100 + I] := B;
+    Inc(I);
+  End;
+  Close(F);
+  Z80_LoadCom := True;
+End;
+
+{ Charger un binaire TRS-80 .cmd : segments avec headers                   }
+{ Format : type(1) len(1) [addr(2)] data(len-2) ; type=01 data, 02 entry,  }
+{ autres : ignore. Si echec, fallback : raw a $5200.                       }
+Function Z80_LoadCmd(Const FileName: String;
+                     Var EntryAddr: Word): Boolean;
+Var
+  F: File;
+  B, T, L: Byte;
+  Addr: Word;
+  I: LongInt;
+  HasEntry: Boolean;
+  GotData: Boolean;
+Begin
+  Z80_LoadCmd := False;
+  Assign(F, FileName);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  HasEntry := False;
+  GotData := False;
+  EntryAddr := $5200;
+  While Not Eof(F) Do
+  Begin
+    BlockRead(F, T, 1);
+    If Eof(F) Then Break;
+    BlockRead(F, L, 1);
+    Case T Of
+      $01: Begin { Load block }
+             BlockRead(F, B, 1); Addr := B;
+             BlockRead(F, B, 1); Addr := Addr Or (Word(B) Shl 8);
+             { Longueur reelle = L-2 (mais 0 signifie 256) }
+             If L = 0 Then I := 254
+             Else If L = 1 Then I := 255
+             Else I := L - 2;
+             While I > 0 Do
+             Begin
+               If Eof(F) Then Break;
+               BlockRead(F, B, 1);
+               Z80_Mem[Addr] := B;
+               Addr := (Addr + 1) And $FFFF;
+               Dec(I);
+             End;
+             GotData := True;
+           End;
+      $02: Begin { Entry }
+             BlockRead(F, B, 1); Addr := B;
+             BlockRead(F, B, 1); Addr := Addr Or (Word(B) Shl 8);
+             EntryAddr := Addr;
+             HasEntry := True;
+           End;
+    Else
+      { Sauter L octets }
+      For I := 1 To L Do
+        If Not Eof(F) Then BlockRead(F, B, 1);
+    End;
+  End;
+  Close(F);
+  If Not GotData Then
+  Begin
+    { Fallback : recharger en raw a $5200 }
+    Assign(F, FileName);
+    {$I-} Reset(F, 1); {$I+}
+    If IOResult <> 0 Then Exit;
+    I := 0;
+    While Not Eof(F) Do
+    Begin
+      BlockRead(F, B, 1);
+      If ($5200 + I) <= $FFFF Then Z80_Mem[$5200 + I] := B;
+      Inc(I);
+    End;
+    Close(F);
+    EntryAddr := $5200;
+  End;
+  If Not HasEntry Then EntryAddr := $5200;
+  Z80_LoadCmd := True;
+End;
+
+Procedure Z80_Reset(EntryAddr: Word);
+Begin
+  Z80_A := 0; Z80_F := 0;
+  Z80_B := 0; Z80_C := 0;
+  Z80_D := 0; Z80_E := 0;
+  Z80_H := 0; Z80_L := 0;
+  Z80_AA := 0; Z80_FF := 0;
+  Z80_BB := 0; Z80_CC := 0;
+  Z80_DD := 0; Z80_EE := 0;
+  Z80_HH := 0; Z80_LL := 0;
+  Z80_IX := 0; Z80_IY := 0;
+  Z80_I := 0; Z80_R := 0;
+  Z80_IFF1 := False; Z80_IFF2 := False;
+  Z80_IM := 0;
+  Z80_SP := $FFFE;
+  Z80_PC := EntryAddr;
+  Z80_Halted := False;
+  Z80_ExitCode := 0;
+  Z80_Cycles := 0;
+  { Sentinelle : si le programme fait RET au sommet, atterrit ici. }
+  Z80_Mem[$FFFE] := $00;
+  Z80_Mem[$FFFF] := $00;
+End;
+
 Function Emu_FaultText(F: Integer): String;
 Begin
  Case F Of
@@ -26591,8 +28150,11 @@ Var
  IsX86: Boolean;
  IsM68K: Boolean;
  IsCray: Boolean;
+ Is6502: Boolean;
+ IsZ80: Boolean;
  CPUName: String;
  EntryAddr: LongInt;
+ EntryAddr16: Word;
 Begin
  InitEmulatorPanel(P);
  P.BinaryPath := BinaryPath;
@@ -26605,6 +28167,11 @@ Begin
  IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
            (TargetCPU = '-CAMIGA');
  IsCray := (TargetCPU = '-CCRAY1');
+ Is6502 := (TargetCPU = '-CAPPLEII') Or (TargetCPU = '-CC64') Or
+           (TargetCPU = '-CATARI400') Or (TargetCPU = '-CATARI800') Or
+           (TargetCPU = '-CNES') Or (TargetCPU = '-CATARI2600');
+ IsZ80 := (TargetCPU = '-CTRS80') Or (TargetCPU = '-CMSX') Or
+          (TargetCPU = '-CADAM');
  If TargetCPU = '-CZ80'    Then CPUName := 'Zilog Z80'
  Else If TargetCPU = '-C6502'   Then CPUName := 'MOS 6502'
  Else If TargetCPU = '-C6809'   Then CPUName := 'Motorola 6809'
@@ -26614,6 +28181,15 @@ Begin
  Else If TargetCPU = '-CD'      Then CPUName := 'Intel 8086 mode reel'
  Else If TargetCPU = '-CP'      Then CPUName := 'Intel 8086 mode protege'
  Else If TargetCPU = '-CCRAY1'  Then CPUName := 'Cray-1 (COS)'
+ Else If TargetCPU = '-CAPPLEII'Then CPUName := 'Apple II (6502)'
+ Else If TargetCPU = '-CC64'    Then CPUName := 'Commodore 64 (6510)'
+ Else If TargetCPU = '-CATARI400'Then CPUName := 'Atari 400 (6502)'
+ Else If TargetCPU = '-CATARI800'Then CPUName := 'Atari 800 (6502)'
+ Else If TargetCPU = '-CNES'    Then CPUName := 'NES (Ricoh 2A03)'
+ Else If TargetCPU = '-CATARI2600' Then CPUName := 'Atari 2600 (6507)'
+ Else If TargetCPU = '-CTRS80'  Then CPUName := 'TRS-80 (Z80)'
+ Else If TargetCPU = '-CMSX'    Then CPUName := 'MSX (Z80)'
+ Else If TargetCPU = '-CADAM'   Then CPUName := 'Coleco Adam (Z80)'
  Else CPUName := TargetCPU;
  OldFg := P.CurFg; OldBg := P.CurBg;
  P.CurFg := 14; P.CurBg := 1;
@@ -26762,6 +28338,155 @@ Begin
   P.Running := False;
   P.Fault := sfEndProgram;
   P.StatusMsg := 'Emulateur Cray-1 : ' + IntToStr(Steps) + ' instr.';
+  Exit;
+ End;
+ If Is6502 Then Begin
+  { ----- Emulateur 6502 (Apple II / C64 / Atari 8b / NES / A2600) ----- }
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 14;
+  EmuVScr_WriteStr(P, 'Chargement du binaire ' + CPUName + '...');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 7;
+  FillChar(CPU6502_Mem, SizeOf(CPU6502_Mem), 0);
+  CPU6502_Panel := @P;
+  EntryAddr16 := 0;
+  Loaded := False;
+  If TargetCPU = '-CAPPLEII' Then Begin
+   CPU6502_Variant := 0;
+   Loaded := CPU6502_LoadAppleBin(BinaryPath, EntryAddr16);
+  End
+  Else If TargetCPU = '-CC64' Then Begin
+   CPU6502_Variant := 1;
+   Loaded := CPU6502_LoadC64Prg(BinaryPath, EntryAddr16);
+  End
+  Else If (TargetCPU = '-CATARI400') Or (TargetCPU = '-CATARI800') Then Begin
+   CPU6502_Variant := 2;
+   Loaded := CPU6502_LoadAtariXex(BinaryPath, EntryAddr16);
+  End
+  Else If TargetCPU = '-CNES' Then Begin
+   CPU6502_Variant := 3;
+   { iNES : 16 octets header, PRG-ROM 16 KiB charge a $8000 et miroir $C000 }
+   Loaded := CPU6502_LoadRaw(BinaryPath, $8000, 16);
+   { Miroir $C000 = $8000 pour ROM 16 KiB }
+   For Steps := 0 To $3FFF Do
+    CPU6502_Mem[$C000 + Steps] := CPU6502_Mem[$8000 + Steps];
+   { Vecteur RESET en $FFFC/$FFFD }
+   EntryAddr16 := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
+  End
+  Else If TargetCPU = '-CATARI2600' Then Begin
+   CPU6502_Variant := 4;
+   { 4 KiB ROM mappee a $F000 sur 6507 }
+   Loaded := CPU6502_LoadRaw(BinaryPath, $F000, 0);
+   EntryAddr16 := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
+  End;
+  If Not Loaded Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P,
+    'Erreur : impossible de charger ' + BinaryPath);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := OldFg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec chargement binaire 6502';
+   Exit;
+  End;
+  CPU6502_Reset(EntryAddr16);
+  P.CurFg := 10;
+  EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
+   M68K_HexN(CPU6502_PC, 4) + ')');
+  P.CurFg := 7;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  Steps := 0;
+  While (Not CPU6502_Halted) And (Steps < 1000000) Do Begin
+   CPU6502_Step;
+   Inc(Steps);
+  End;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 11;
+  If CPU6502_Halted Then
+   EmuVScr_WriteStr(P, '[Fin 6502 : ' +
+    IntToStr(Steps) + ' instructions, code=' +
+    IntToStr(CPU6502_ExitCode) + ']')
+  Else
+   EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
+  P.CurFg := OldFg;
+  P.CurBg := OldBg;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+  P.Running := False;
+  P.Fault := sfEndProgram;
+  P.StatusMsg := 'Emulateur 6502 : ' + IntToStr(Steps) + ' instr.';
+  Exit;
+ End;
+ If IsZ80 Then Begin
+  { ----- Emulateur Z80 (TRS-80, MSX, Adam) ----- }
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 14;
+  EmuVScr_WriteStr(P, 'Chargement du binaire ' + CPUName + '...');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 7;
+  FillChar(Z80_Mem, SizeOf(Z80_Mem), 0);
+  Z80_Panel := @P;
+  EntryAddr16 := $0100;
+  Loaded := False;
+  If TargetCPU = '-CTRS80' Then Begin
+   Z80_Variant := 0;
+   Loaded := Z80_LoadCmd(BinaryPath, EntryAddr16);
+  End
+  Else If TargetCPU = '-CMSX' Then Begin
+   Z80_Variant := 1;
+   Loaded := Z80_LoadCom(BinaryPath, EntryAddr16);
+  End
+  Else If TargetCPU = '-CADAM' Then Begin
+   Z80_Variant := 2;
+   Loaded := Z80_LoadCom(BinaryPath, EntryAddr16);
+  End;
+  If Not Loaded Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P,
+    'Erreur : impossible de charger ' + BinaryPath);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := OldFg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec chargement binaire Z80';
+   Exit;
+  End;
+  Z80_Reset(EntryAddr16);
+  P.CurFg := 10;
+  EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
+   M68K_HexN(Z80_PC, 4) + ')');
+  P.CurFg := 7;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  Steps := 0;
+  While (Not Z80_Halted) And (Steps < 1000000) Do Begin
+   Z80_Step;
+   Inc(Steps);
+   { Si PC retombe sur la sentinelle de fin -> stopper }
+   If Z80_PC = 0 Then Begin
+    Z80_Halted := True;
+    Z80_ExitCode := 0;
+   End;
+  End;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 11;
+  If Z80_Halted Then
+   EmuVScr_WriteStr(P, '[Fin Z80 : ' +
+    IntToStr(Steps) + ' instructions, code=' +
+    IntToStr(Z80_ExitCode) + ']')
+  Else
+   EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
+  P.CurFg := OldFg;
+  P.CurBg := OldBg;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+  P.Running := False;
+  P.Fault := sfEndProgram;
+  P.StatusMsg := 'Emulateur Z80 : ' + IntToStr(Steps) + ' instr.';
   Exit;
  End;
  If Not IsX86 Then Begin
@@ -32533,6 +34258,26 @@ Begin
    { Cible Cray-1 : TPCW32 produit un binaire COS Absolute .abs. }
    If CurrentProject.Info.TargetCPU = '-CCRAY1' Then
     ExeName := SrcDir + BaseName + '.abs';
+   { Cibles 6502 retro : extension specifique au format }
+   If CurrentProject.Info.TargetCPU = '-CAPPLEII' Then
+    ExeName := SrcDir + BaseName + '.bin';
+   If CurrentProject.Info.TargetCPU = '-CC64' Then
+    ExeName := SrcDir + BaseName + '.prg';
+   If (CurrentProject.Info.TargetCPU = '-CATARI400') Or
+      (CurrentProject.Info.TargetCPU = '-CATARI800') Then
+    ExeName := SrcDir + BaseName + '.xex';
+   If CurrentProject.Info.TargetCPU = '-CNES' Then
+    ExeName := SrcDir + BaseName + '.nes';
+   If CurrentProject.Info.TargetCPU = '-CATARI2600' Then
+    ExeName := SrcDir + BaseName + '.a26';
+   If CurrentProject.Info.TargetCPU = '-CCOCO3' Then
+    ExeName := SrcDir + BaseName + '.bin';
+   If CurrentProject.Info.TargetCPU = '-CTRS80' Then
+    ExeName := SrcDir + BaseName + '.cmd';
+   If CurrentProject.Info.TargetCPU = '-CMSX' Then
+    ExeName := SrcDir + BaseName + '.com';
+   If CurrentProject.Info.TargetCPU = '-CADAM' Then
+    ExeName := SrcDir + BaseName + '.com';
    ShowEmulatorPanel(EmuPanel, ExeName,
     CurrentProject.Info.TargetCPU);
   End;
@@ -33764,7 +35509,7 @@ Begin
  { Construire le chemin du repertoire de la solution }
  SolDir := CurrentSolution.Info.SolutionPath;
  If Length(SolDir) = 0 Then
-  SolDir := '.\' 
+  SolDir := '.\'
  Else If SolDir[Length(SolDir)] <> '\' Then
   SolDir := SolDir + '\';
  { Creer le repertoire de la solution si necessaire }
