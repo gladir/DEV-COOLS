@@ -35368,8 +35368,8 @@ Begin { BcAssemble68000 }
     End;
     If (ParseDn(Op1) >= 0) And (ParseAn(Op2) >= 0) Then
     Begin
-      { MOVE.L Dn,An : $2040 + ... }
-      EmitW_BE($2000 Or (Word(ParseAn(Op2) + 8) Shl 9) Or Word(ParseDn(Op1)));
+      { MOVEA.L Dn,An : $2040 | (An<<9) | Dn }
+      EmitW_BE($2040 Or (Word(ParseAn(Op2)) Shl 9) Or Word(ParseDn(Op1)));
       Exit;
     End;
     If (ParseAn(Op1) >= 0) And (ParseDn(Op2) >= 0) Then
@@ -38074,8 +38074,10 @@ Begin
   { Calculer l adresse de base de la section DATA apres le code }
   DataBase := TextLen;
 
-  { Resoudre les fixups avec base TEXT = 0, DATA = TextLen }
-  BcResolveFixups68k(0, DataBase);
+  { Resoudre les fixups avec DATA = 0 : le code stocke seulement       }
+  { l offset relatif au debut du hunk DATA. Le chargeur Amiga ajoutera }
+  { lui-meme l adresse de base du hunk DATA via HUNK_RELOC32.           }
+  BcResolveFixups68k(0, 0);
 
   { Collecter les offsets de relocalisation (fixups ABS32 dans le code) }
   RelocCount := 0;

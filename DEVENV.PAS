@@ -26193,6 +26193,14 @@ Begin
     M68K_Step := False;
     Exit;
   End;
+  { Sentinelle de fin de programme : si PC atteint $FFFFFE,         }
+  { c'est que le RTS final a depile l'adresse de retour artificielle }
+  { placee par M68K_RunBinary. On termine proprement.                }
+  If (M68K_PC And $00FFFFFF) = $00FFFFFE Then Begin
+    M68K_Halted := True;
+    M68K_ExitCode := 0;
+    Exit;
+  End;
   Inc(M68K_Cycles);
   pc_before := M68K_PC;
   opcode := M68K_Fetch16;
@@ -29517,6 +29525,11 @@ Begin
   If EntryAddr >= 0 Then
    M68K_PC := EntryAddr;
   M68K_A[7] := MEM_SIZE - 4;
+  { Empiler une adresse de retour sentinelle : quand le programme    }
+  { Amiga/AtariST executera son RTS final, PC sautera a $00FFFFFE,   }
+  { ce qui sera detecte par M68K_Step pour arreter proprement.       }
+  M68K_A[7] := M68K_A[7] - 4;
+  M68K_Write32(M68K_A[7], $00FFFFFE);
   P.CurFg := 10;
   EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
    M68K_HexN(M68K_PC, 6) + ')');
