@@ -5178,6 +5178,10 @@ Begin
   { L entree CP/M est a $0100 = debut du binaire.                         }
   If BcActive And Opts.MSX Then
     EmitInstr('JP _TPF_Main');
+  { Pour CoCo 3 (.BIN DECB) : sauter directement vers _TPF_Main          }
+  { L entree par defaut est $2000 = debut du binaire charge.              }
+  If BcActive And Opts.CoCo3 Then
+    EmitInstr('JMP _TPF_Main');
 End;
 
 { ------------------------------------------------------------ }
@@ -17484,6 +17488,12 @@ Begin
       EmitInstr('LD A,' + IntToStr_(Ch));
       EmitInstr('CALL $00A2');
     End
+    Else If Opts.CoCo3 Then
+    Begin
+      If (Ch = 13) Or (Ch = 10) Then Ch := $0D;
+      EmitInstr('LDA #' + IntToStr_(Ch));
+      EmitInstr('JSR $A002');
+    End
     Else If Opts.C64 Then
     Begin
       If (Ch = 13) Or (Ch = 10) Then Ch := $0D;
@@ -17506,6 +17516,11 @@ Begin
     Begin
       EmitInstr('LD HL,' + Lbl);
       EmitInstr('CALL _TPRT_MSX_PRSTR');
+    End
+    Else If Opts.CoCo3 Then
+    Begin
+      EmitInstr('LDX #' + Lbl);
+      EmitInstr('JSR _TPRT_COCO3_PRSTR');
     End
     Else
     Begin
@@ -17534,6 +17549,8 @@ Begin
     EmitComment('writeln (C64)')
   Else If Opts.MSX Then
     EmitComment('writeln (MSX)')
+  Else If Opts.CoCo3 Then
+    EmitComment('writeln (CoCo 3)')
   Else
     EmitComment('writeln (Apple II)');
   { WriteLn sans arguments ou Write sans parenthese : juste CR LF si LN }
@@ -17553,6 +17570,11 @@ Begin
         EmitInstr('CALL $00A2');
         EmitInstr('LD A,10');
         EmitInstr('CALL $00A2');
+      End
+      Else If Opts.CoCo3 Then
+      Begin
+        EmitInstr('LDA #$0D');
+        EmitInstr('JSR $A002');
       End
       Else
       Begin
@@ -17578,6 +17600,11 @@ Begin
       Begin
         EmitInstr('LD HL,' + Lbl);
         EmitInstr('CALL _TPRT_MSX_PRSTR');
+      End
+      Else If Opts.CoCo3 Then
+      Begin
+        EmitInstr('LDX #' + Lbl);
+        EmitInstr('JSR _TPRT_COCO3_PRSTR');
       End
       Else
       Begin
@@ -17660,6 +17687,11 @@ Begin
       EmitInstr('CALL $00A2');
       EmitInstr('LD A,10');
       EmitInstr('CALL $00A2');
+    End
+    Else If Opts.CoCo3 Then
+    Begin
+      EmitInstr('LDA #$0D');
+      EmitInstr('JSR $A002');
     End
     Else
     Begin
@@ -18009,7 +18041,7 @@ Var
   LI, SI      : Integer;
 Begin
   { Branche specialisee 6502 (Apple II / C64) : code natif }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
   Begin
     ParseWriteStmtAppleII(IsWriteLn);
     Exit;
@@ -18751,7 +18783,7 @@ Begin
   EmitComment('while');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18813,7 +18845,7 @@ Begin
   EmitComment('repeat');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18887,7 +18919,7 @@ Begin
   { ParseStmtAppleII attend que EP pointe sur le mot-cle FOR ; or nous     }
   { l avons deja consomme. Reculer EP d un cran pour qu il y pointe a     }
   { nouveau, puis deleguer.                                                }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
   Begin
     Dec(EP);
     ParseStmtAppleII;
@@ -19040,7 +19072,7 @@ Begin
   If EPAtEnd Then Exit;
 
   { Cible 6502 (Apple II / C64) : interpretation pour tout le bloc }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -25243,6 +25275,11 @@ Begin
       { Mode MSX-DOS : pas d initialisation, entree directe (CP/M) }
       EmitComment('Entree programme MSX (CP/M @ $0100)');
     End
+    Else If Opts.CoCo3 Then
+    Begin
+      { Mode CoCo 3 : pas d initialisation, entree directe (DECB @ $2000) }
+      EmitComment('Entree programme CoCo 3 (DECB @ $2000)');
+    End
     Else
     Begin
       EmitProlog(0);
@@ -25286,6 +25323,12 @@ Begin
       { Sortie MSX-DOS (CP/M) : retour via RET vers MSX-DOS }
       EmitComment('MSX-DOS : retour via RET');
       EmitInstr('RET');
+    End
+    Else If Opts.CoCo3 Then
+    Begin
+      { Sortie CoCo 3 : retour via RTS vers le moniteur DECB }
+      EmitComment('CoCo 3 : retour via RTS');
+      EmitInstr('RTS');
     End
     Else If Opts.DestTarget = DEST_AMIGA Then
     Begin
@@ -25933,6 +25976,20 @@ Begin
     EmitInstr('CALL $00A2');
     EmitInstr('INC HL');
     EmitInstr('JP _TPRT_MSX_PRSTR');
+    Exit;
+  End;
+  If Opts.CoCo3 Then
+  Begin
+    EmitComment('--- Runtime CoCo 3 (6809, BASIC CHROUT $A002) ---');
+    { _TPRT_COCO3_PRSTR : X = pointeur ASCIIZ ; sortie via CHROUT       }
+    {   loop: LDA ,X+ ; BEQ end ; JSR $A002 ; BRA loop ; end: RTS      }
+    EmitLabel('_TPRT_COCO3_PRSTR');
+    EmitInstr('LDA ,X+');
+    EmitInstr('BEQ _TPRT_COCO3_PRSTR_E');
+    EmitInstr('JSR $A002');
+    EmitInstr('BRA _TPRT_COCO3_PRSTR');
+    EmitLabel('_TPRT_COCO3_PRSTR_E');
+    EmitInstr('RTS');
     Exit;
   End;
   If Opts.C64 Then
@@ -31921,6 +31978,9 @@ Const
   BC_FIX_LO_CODE_6502    = 12; { 6502 : 1 octet, lo de label code     }
   BC_FIX_HI_CODE_6502    = 13; { 6502 : 1 octet, hi de label code     }
   BC_FIX_REL8_6502       = 14; { 6502 : 1 octet rel8 (branches)       }
+  BC_FIX_ABS16_CODE_6809 = 15; { 6809 : 16 bits BE vers label code    }
+  BC_FIX_ABS16_DATA_6809 = 16; { 6809 : 16 bits BE vers label data    }
+  BC_FIX_REL8_6809       = 17; { 6809 : 1 octet rel8 (BRA/BEQ/BNE)    }
 
   { Index de registres x86-32 }
   R_EAX = 0; R_ECX = 1; R_EDX = 2; R_EBX = 3;
@@ -34586,7 +34646,7 @@ End;
 Procedure BcAssemble6809(Const S: TString);
 Var
   Line, Mnem, Tmp, Op1, Op2: TString;
-  P: Integer;
+  P: LongInt;
 
   Procedure SplitOps6809(Const Rest: TString);
   Var J: Integer;
@@ -34672,6 +34732,97 @@ Begin { BcAssemble6809 }
 
   { ---- Instructions page 3 (prefixe $11) ---- }
   If Mnem = 'SWI3' Then Begin BcEmitB($11); BcEmitB($3F); Exit; End;
+
+  { ---- LDA #imm8 / LDA #'X' ---- }
+  If (Mnem = 'LDA') And (Length(Op1) > 0) And (Op1[1] = '#') Then
+  Begin
+    Tmp := Copy(Op1, 2, Length(Op1) - 1);
+    P := BcParseNum6502(Tmp);
+    BcEmitB($86); BcEmitB(Byte(P And $FF));
+    Exit;
+  End;
+
+  { ---- LDA ,X+ ---- (post-incrementation indexee) }
+  If (Mnem = 'LDA') And (Op1 = '') And (Op2 = 'X+') Then
+  Begin
+    BcEmitB($A6); BcEmitB($80);
+    Exit;
+  End;
+
+  { ---- LDX #imm16 / LDX #Lbl ---- }
+  If (Mnem = 'LDX') And (Length(Op1) > 0) And (Op1[1] = '#') Then
+  Begin
+    Tmp := Copy(Op1, 2, Length(Op1) - 1);
+    BcEmitB($8E);
+    If (Length(Tmp) > 0) And (Tmp[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Tmp);
+      BcEmitB(Byte((P Shr 8) And $FF)); BcEmitB(Byte(P And $FF));
+    End
+    Else
+    Begin
+      BcAddFixup(BC_FIX_ABS16_DATA_6809, Tmp, 0);
+      BcEmitB(0); BcEmitB(0);
+    End;
+    Exit;
+  End;
+
+  { ---- JMP $nnnn / JMP Lbl (mode etendu, $7E hi lo) ---- }
+  If Mnem = 'JMP' Then
+  Begin
+    BcEmitB($7E);
+    If (Length(Op1) > 0) And (Op1[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op1);
+      BcEmitB(Byte((P Shr 8) And $FF)); BcEmitB(Byte(P And $FF));
+    End
+    Else
+    Begin
+      BcAddFixup(BC_FIX_ABS16_CODE_6809, Op1, 0);
+      BcEmitB(0); BcEmitB(0);
+    End;
+    Exit;
+  End;
+
+  { ---- JSR $nnnn / JSR Lbl (mode etendu, $BD hi lo) ---- }
+  If Mnem = 'JSR' Then
+  Begin
+    BcEmitB($BD);
+    If (Length(Op1) > 0) And (Op1[1] = '$') Then
+    Begin
+      P := BcParseNum6502(Op1);
+      BcEmitB(Byte((P Shr 8) And $FF)); BcEmitB(Byte(P And $FF));
+    End
+    Else
+    Begin
+      BcAddFixup(BC_FIX_ABS16_CODE_6809, Op1, 0);
+      BcEmitB(0); BcEmitB(0);
+    End;
+    Exit;
+  End;
+
+  { ---- Branches courtes BRA / BEQ / BNE / BCC / BCS ---- }
+  If Mnem = 'BRA' Then
+  Begin
+    BcEmitB($20);
+    BcAddFixup(BC_FIX_REL8_6809, Op1, 0);
+    BcEmitB(0);
+    Exit;
+  End;
+  If Mnem = 'BEQ' Then
+  Begin
+    BcEmitB($27);
+    BcAddFixup(BC_FIX_REL8_6809, Op1, 0);
+    BcEmitB(0);
+    Exit;
+  End;
+  If Mnem = 'BNE' Then
+  Begin
+    BcEmitB($26);
+    BcAddFixup(BC_FIX_REL8_6809, Op1, 0);
+    BcEmitB(0);
+    Exit;
+  End;
 
   { Instruction non reconnue (stub) }
   { WriteLn('BcAssemble6809: non reconnu: [', S, ']'); }
@@ -35840,6 +35991,57 @@ Begin
           Rel := TargetOfs - (FixOfs + 1);
           If (Rel < -128) Or (Rel > 127) Then Rel := 0;
           BcCode[FixOfs] := Byte(Rel);
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- BcResolveFixups6809 : resoudre les fixups pour cibles 6809 (BE) --- }
+{ CodeBase = adresse de chargement (ex $2000 sur CoCo 3)                 }
+{ DataBase = offset des donnees dans le binaire (apres le code aligne)   }
+Procedure BcResolveFixups6809(CodeBase, DataBase: LongInt);
+Var
+  I: LongInt;
+  TargetOfs, FixOfs: LongInt;
+  Val: LongInt;
+  Rel: LongInt;
+Begin
+  For I := 0 To BcFixupCnt - 1 Do
+  Begin
+    FixOfs := BcFixups[I].CodeOfs;
+    If FixOfs >= BcCodeLen Then Continue;
+    Case BcFixups[I].Kind Of
+      BC_FIX_ABS16_CODE_6809:
+      Begin
+        If FixOfs + 1 >= BcCodeLen Then Continue;
+        TargetOfs := BcFindLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+          Val := CodeBase + TargetOfs + BcFixups[I].Addend
+        Else
+          Val := 0;
+        BcCode[FixOfs]     := Byte((Val Shr 8) And $FF);
+        BcCode[FixOfs + 1] := Byte(Val And $FF);
+      End;
+      BC_FIX_ABS16_DATA_6809:
+      Begin
+        If FixOfs + 1 >= BcCodeLen Then Continue;
+        TargetOfs := BcFindDataLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+          Val := CodeBase + DataBase + TargetOfs + BcFixups[I].Addend
+        Else
+          Val := 0;
+        BcCode[FixOfs]     := Byte((Val Shr 8) And $FF);
+        BcCode[FixOfs + 1] := Byte(Val And $FF);
+      End;
+      BC_FIX_REL8_6809:
+      Begin
+        TargetOfs := BcFindLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+        Begin
+          Rel := TargetOfs - (FixOfs + 1);
+          If (Rel < -128) Or (Rel > 127) Then Rel := 0;
+          BcCode[FixOfs] := Byte(Rel And $FF);
         End;
       End;
     End;
@@ -37315,6 +37517,9 @@ Begin
   DataBase := (TextLen + 3) And Not 3;
   TotalLen := DataBase + DataLen;
   If TotalLen < TextLen Then TotalLen := TextLen;
+
+  { Resoudre les fixups vers les adresses absolues (BE) }
+  BcResolveFixups6809(COCO3_LOAD_ADDR, DataBase);
 
   { Preamble : $00 length(BE) load(BE) }
   Preamble[0] := $00;
@@ -39176,7 +39381,7 @@ Begin
       EmitMainBlock;
 
     { Emettre les donnees ajoutees tardivement (cible 6502 Apple II / C64 / MSX) }
-    If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
+    If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
       EmitDataSegLate;
 
     { Emettre les routines runtime (TODO 12) }
@@ -39186,7 +39391,7 @@ Begin
       EmitRuntimeAmiga
     Else If Is68kTarget Then
       EmitRuntime68000
-    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Then
+    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
       EmitRuntimeAppleII
     Else
       EmitRuntime;
@@ -39194,7 +39399,7 @@ Begin
     { Emettre les routines runtime supplementaires (pas en mode DOS ni 68000) }
     If (Opts.DestTarget <> DEST_DOSR) And (Opts.DestTarget <> DEST_DOSP) And
        (Not Is68kTarget) And (Not Opts.AppleII) And (Not Opts.C64) And
-       (Not Opts.MSX) Then
+       (Not Opts.MSX) And (Not Opts.CoCo3) Then
     Begin
       { Emettre les routines runtime Graph (TODO 20) }
       EmitGraphRuntime;
