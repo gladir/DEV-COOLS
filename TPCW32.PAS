@@ -35174,6 +35174,9 @@ Var
     IsLabel := False;
     If Length(S) = 0 Then Exit;
     If (S[1] = '#') Or (S[1] = '(') Or (S[1] = '-') Then Exit;
+    { Un label ne commence pas par un chiffre (sinon "4.W" serait pris }
+    { pour un label, alors qu'il s'agit d'une adresse absolue courte). }
+    If (S[1] >= '0') And (S[1] <= '9') Then Exit;
     For I := 1 To Length(S) Do
       If Not ((S[I] >= 'A') And (S[I] <= 'Z') Or
               (S[I] >= 'a') And (S[I] <= 'z') Or

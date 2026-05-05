@@ -25124,6 +25124,48 @@ Begin
   If (opcode And $FFC0) = $4E80 Then Begin
     ea_mode := (opcode Shr 3) And 7;
     ea_reg  := opcode And 7;
+    { Hook AmigaDOS : JSR d16(A6) avec offsets connus.                    }
+    { Au lieu d'effectuer le JSR, on simule l'appel de bibliotheque puis  }
+    { on saute directement a l'adresse de retour (RTS implicite).         }
+    If (ea_mode = 5) And (ea_reg = 6) Then Begin
+      val := M68K_SignExtend(M68K_Read16(M68K_PC), 2);
+      Case val Of
+        -552: Begin
+                { exec OpenLibrary(libName=A1, version=D0)                  }
+                { Retour : base de bibliotheque dans D0 (non-nul = succes). }
+                M68K_D[0] := $000FFF00;
+                M68K_PC := M68K_PC + 2;
+                Exit;
+              End;
+        -60:  Begin
+                { dos.library Output() : retour = handle stdout dans D0.    }
+                M68K_D[0] := $00000001;
+                M68K_PC := M68K_PC + 2;
+                Exit;
+              End;
+        -48:  Begin
+                { dos.library Write(D1=fh, D2=buf, D3=length) -> D0=count   }
+                addr := M68K_D[2];
+                disp := M68K_D[3];
+                If disp < 0 Then disp := 0;
+                If disp > 65535 Then disp := 65535;
+                While disp > 0 Do Begin
+                  EmuVScr_PutChar(M68K_Panel^,
+                    Chr(M68K_Read8(addr)));
+                  addr := addr + 1;
+                  Dec(disp);
+                End;
+                M68K_D[0] := M68K_D[3];
+                M68K_PC := M68K_PC + 2;
+                Exit;
+              End;
+        -414: Begin
+                { exec CloseLibrary(A1=base) : pas d'effet visible.         }
+                M68K_PC := M68K_PC + 2;
+                Exit;
+              End;
+      End;
+    End;
     addr := M68K_CalcEAAddr(ea_mode, ea_reg);
     M68K_A[7] := M68K_A[7] - 4;
     M68K_Write32(M68K_A[7], M68K_PC);
