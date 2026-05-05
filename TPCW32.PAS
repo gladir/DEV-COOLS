@@ -17542,6 +17542,12 @@ Begin
       EmitInstr('LDA #' + IntToStr_(Ch));
       EmitInstr('JSR $FFD2');
     End
+    Else If Opts.Atari400 Or Opts.Atari800 Then
+    Begin
+      If (Ch = 13) Or (Ch = 10) Then Ch := $9B; { ATASCII EOL }
+      EmitInstr('LDA #' + IntToStr_(Ch));
+      EmitInstr('JSR _TPRT_ATARI_PUTC');
+    End
     Else
     Begin
       If (Ch = 13) Or (Ch = 10) Then Ch := $8D
@@ -17657,6 +17663,11 @@ Begin
       Begin
         EmitInstr('LDA #$0D');
         EmitInstr('JSR $E803');
+      End
+      Else If Opts.Atari400 Or Opts.Atari800 Then
+      Begin
+        EmitInstr('LDA #$9B');
+        EmitInstr('JSR _TPRT_ATARI_PUTC');
       End
       Else
       Begin
@@ -17808,6 +17819,11 @@ Begin
     Begin
       EmitInstr('LDA #$0D');
       EmitInstr('JSR $E803');
+    End
+    Else If Opts.Atari400 Or Opts.Atari800 Then
+    Begin
+      EmitInstr('LDA #$9B');
+      EmitInstr('JSR _TPRT_ATARI_PUTC');
     End
     Else
     Begin
@@ -18157,7 +18173,7 @@ Var
   LI, SI      : Integer;
 Begin
   { Branche specialisee 6502 (Apple II / C64) : code natif }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
   Begin
     ParseWriteStmtAppleII(IsWriteLn);
     Exit;
@@ -18899,7 +18915,7 @@ Begin
   EmitComment('while');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18961,7 +18977,7 @@ Begin
   EmitComment('repeat');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -19035,7 +19051,7 @@ Begin
   { ParseStmtAppleII attend que EP pointe sur le mot-cle FOR ; or nous     }
   { l avons deja consomme. Reculer EP d un cran pour qu il y pointe a     }
   { nouveau, puis deleguer.                                                }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
   Begin
     Dec(EP);
     ParseStmtAppleII;
@@ -19188,7 +19204,7 @@ Begin
   If EPAtEnd Then Exit;
 
   { Cible 6502 (Apple II / C64) : interpretation pour tout le bloc }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -25443,7 +25459,7 @@ Begin
       EmitInstr('MOV AX,4C00H');
       EmitInstr('INT 21H');
     End
-    Else If Opts.AppleII Or Opts.C64 Then
+    Else If Opts.AppleII Or Opts.C64 Or Opts.Atari400 Or Opts.Atari800 Then
     Begin
       { Sortie 6502 (Apple II / C64) : retour via RTS }
       EmitComment('6502 : retour via RTS');
@@ -26200,6 +26216,40 @@ Begin
     EmitInstr('LDA ($06),Y');
     EmitInstr('BEQ _TPRT_AII_PRSTR_E');
     EmitInstr('JSR $FFD2');
+    EmitInstr('INY');
+    EmitInstr('BNE _TPRT_AII_PRSTR_L');
+    EmitLabel('_TPRT_AII_PRSTR_E');
+    EmitInstr('RTS');
+    Exit;
+  End;
+  If Opts.Atari400 Or Opts.Atari800 Then
+  Begin
+    EmitComment('--- Runtime Atari 400/800 (6502, OS CIO via IOCB 0) ---');
+    { _TPRT_ATARI_PUTC : A = octet ATASCII a imprimer (preserve Y).      }
+    EmitLabel('_TPRT_ATARI_PUTC');
+    EmitInstr('STA $0E');
+    EmitInstr('STY $0F');
+    EmitInstr('LDA #$0B');
+    EmitInstr('STA $0342');
+    EmitInstr('LDA #$00');
+    EmitInstr('STA $0348');
+    EmitInstr('STA $0349');
+    EmitInstr('LDX #$00');
+    EmitInstr('LDA $0E');
+    EmitInstr('JSR $E456');
+    EmitInstr('LDY $0F');
+    EmitInstr('RTS');
+    { _TPRT_AII_PRSTR : A = lo, Y = hi pointeur ASCIIZ                  }
+    EmitLabel('_TPRT_AII_PRSTR');
+    EmitInstr('STA $06');
+    EmitInstr('STY $07');
+    EmitInstr('LDY #0');
+    EmitLabel('_TPRT_AII_PRSTR_L');
+    EmitInstr('LDA ($06),Y');
+    EmitInstr('BEQ _TPRT_AII_PRSTR_E');
+    EmitInstr('STY $08');
+    EmitInstr('JSR _TPRT_ATARI_PUTC');
+    EmitInstr('LDY $08');
     EmitInstr('INY');
     EmitInstr('BNE _TPRT_AII_PRSTR_L');
     EmitLabel('_TPRT_AII_PRSTR_E');
@@ -37616,16 +37666,32 @@ Var
   PadLen: LongInt;
   PadByte: Byte;
   EndAddr: Word;
+  EntryOfs: LongInt;
+  EntryAddr: LongInt;
   Magic: Array[0..1] Of Byte;
   SegHdr: Array[0..3] Of Byte;
   RunSeg: Array[0..5] Of Byte;
 Begin
+  { Patcher le JMP _TPF_Main au tout debut (3 octets reserves par   }
+  { EmitCodeSeg pour les cibles 6502).                              }
+  EntryOfs := BcFindLabel('_TPF_Main');
+  If (EntryOfs > 0) And (BcCodeLen >= 3) Then
+  Begin
+    EntryAddr := ATARI_LOAD_ADDR + EntryOfs;
+    BcCode[0] := $4C; { JMP abs }
+    BcCode[1] := Byte(EntryAddr);
+    BcCode[2] := Byte(EntryAddr Shr 8);
+  End;
+
   TextLen := BcCodeLen;
   DataLen := BcDataLen;
   DataBase := (TextLen + 3) And Not 3;
   TotalLen := DataBase + DataLen;
   If TotalLen < TextLen Then TotalLen := TextLen;
   If TotalLen < 1 Then TotalLen := 1;
+
+  { Resoudre les fixups 6502 maintenant que le layout est fige }
+  BcResolveFixups6502(ATARI_LOAD_ADDR, DataBase);
 
   EndAddr := (ATARI_LOAD_ADDR + TotalLen - 1) And $FFFF;
 
@@ -39668,7 +39734,7 @@ Begin
       EmitMainBlock;
 
     { Emettre les donnees ajoutees tardivement (cible 6502 Apple II / C64 / MSX) }
-    If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
+    If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
       EmitDataSegLate;
 
     { Emettre les routines runtime (TODO 12) }
@@ -39678,7 +39744,7 @@ Begin
       EmitRuntimeAmiga
     Else If Is68kTarget Then
       EmitRuntime68000
-    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
+    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
       EmitRuntimeAppleII
     Else
       EmitRuntime;
@@ -39686,7 +39752,8 @@ Begin
     { Emettre les routines runtime supplementaires (pas en mode DOS ni 68000) }
     If (Opts.DestTarget <> DEST_DOSR) And (Opts.DestTarget <> DEST_DOSP) And
        (Not Is68kTarget) And (Not Opts.AppleII) And (Not Opts.C64) And
-       (Not Opts.MSX) And (Not Opts.CoCo3) And (Not Opts.TO7) And (Not Opts.Adam) And (Not Opts.TRS80) Then
+       (Not Opts.MSX) And (Not Opts.CoCo3) And (Not Opts.TO7) And (Not Opts.Adam) And (Not Opts.TRS80) And
+       (Not Opts.Atari400) And (Not Opts.Atari800) Then
     Begin
       { Emettre les routines runtime Graph (TODO 20) }
       EmitGraphRuntime;
