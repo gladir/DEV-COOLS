@@ -3079,8 +3079,20 @@ Var
  { Panneau de l emulateur 8086 integre }
  EmuPanel       : TEmulatorPanel;
  EmuStartCmdLine: String;       { ligne de commande a injecter dans le PSP du programme emule }
- EmuTraceBuf    : Array[0..8191] Of Record CS, IP: Word; Op: Byte; End;
+ EmuTraceBuf    : Array[0..8191] Of Record
+   CS, IP: Word; Op: Byte;
+   ES, DI, CX, AX: Word;
+  End;
  EmuTraceIdx    : Integer;
+ EmuRunaway     : Integer;
+ EmuRunawayCS   : Word;
+ EmuRunawayIP   : Word;
+ EmuRunawayStep : LongInt;
+ EmuRwAX, EmuRwCX, EmuRwDX, EmuRwBX: Word;
+ EmuRwSP, EmuRwBP, EmuRwSI, EmuRwDI: Word;
+ EmuRwES, EmuRwDS, EmuRwSS: Word;
+ EmuDumpF: Text;
+ EmuDumpI: Word;
  { Etat de l emulateur Motorola 68000 integre }
  M68K_D         : Array[0..7] Of LongInt;
  M68K_A         : Array[0..7] Of LongInt;
@@ -30725,10 +30737,18 @@ Begin
  {$I+}
  If IOResult <> 0 Then Exit;
  WriteLn(F, '8192 dernieres instructions executees (boucle suspectee) :');
+ WriteLn(F, 'Premier passage en zone 0x20 (espaces) : ',
+  HexWord(EmuRunawayCS), ':', HexWord(EmuRunawayIP),
+  '  step=', EmuRunawayStep);
+ WriteLn(F, '');
  For I := 0 To 8191 Do Begin
   K := (EmuTraceIdx + I) And $1FFF;
   WriteLn(F, HexWord(EmuTraceBuf[K].CS), ':', HexWord(EmuTraceBuf[K].IP),
-   '  opcode=', HexByte(EmuTraceBuf[K].Op));
+   '  opcode=', HexByte(EmuTraceBuf[K].Op),
+   '  ES=', HexWord(EmuTraceBuf[K].ES),
+   '  DI=', HexWord(EmuTraceBuf[K].DI),
+   '  CX=', HexWord(EmuTraceBuf[K].CX),
+   '  AX=', HexWord(EmuTraceBuf[K].AX));
  End;
  Close(F);
 End;
@@ -31429,24 +31449,72 @@ Begin
  P.CurFg := 7;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ { Dumper les bytes bruts du segment de code AVANT execution }
+ {$I-} Assign(EmuDumpF, 'EMUCODE.LOG'); Rewrite(EmuDumpF); {$I+}
+ If IOResult = 0 Then Begin
+  WriteLn(EmuDumpF, 'Bytes bruts initiaux CS=', Emu_HexWord(P.CPU.Segs.CS),
+   ' offsets 0x0000..0x07FF :');
+  For EmuDumpI := $0000 To $07FF Do Begin
+   If (EmuDumpI And 15) = 0 Then Begin
+    WriteLn(EmuDumpF);
+    Write(EmuDumpF, Emu_HexWord(EmuDumpI), ': ');
+   End;
+   Write(EmuDumpF, Emu_HexByte(
+    Emu_ReadByte(P.CPU, P.CPU.Segs.CS, EmuDumpI)), ' ');
+  End;
+  WriteLn(EmuDumpF);
+  WriteLn(EmuDumpF);
+  WriteLn(EmuDumpF, 'Bytes bruts CS=0EB7 (runtime TP) offsets 0x0760..0x07AF :');
+  For EmuDumpI := $0760 To $07AF Do Begin
+   If (EmuDumpI And 15) = 0 Then Begin
+    WriteLn(EmuDumpF);
+    Write(EmuDumpF, Emu_HexWord(EmuDumpI), ': ');
+   End;
+   Write(EmuDumpF, Emu_HexByte(
+    Emu_ReadByte(P.CPU, $0EB7, EmuDumpI)), ' ');
+  End;
+  WriteLn(EmuDumpF);
+  Close(EmuDumpF);
+ End;
  { Executer un nombre maximum d instructions (limite de surete) }
  P.CPU.Fault := sfNone;
  Steps := 0;
- { Trace circulaire des 256 dernieres instructions executees pour
+ { Trace circulaire des 8192 dernieres instructions executees pour
    diagnostiquer les boucles infinies }
  FillChar(EmuTraceBuf, SizeOf(EmuTraceBuf), 0);
  EmuTraceIdx := 0;
+ EmuRunaway := 0;
  While (P.CPU.Fault = sfNone) And (Steps < 1000000) Do Begin
   EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
   EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
   EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
+  EmuTraceBuf[EmuTraceIdx].ES := P.CPU.Segs.ES;
+  EmuTraceBuf[EmuTraceIdx].DI := P.CPU.Regs.DI;
+  EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
+  EmuTraceBuf[EmuTraceIdx].AX := P.CPU.Regs.AX;
+  { Detection : capturer le point d entree dans une zone de 0x20 (espaces).
+    Si on voit le 1er 0x20 apres autre chose, memoriser la position. }
+  If EmuTraceBuf[EmuTraceIdx].Op = $20 Then Begin
+   If EmuRunaway = 0 Then Begin
+    EmuRunawayCS := P.CPU.Segs.CS;
+    EmuRunawayIP := P.CPU.IP;
+    EmuRunawayStep := Steps;
+   End;
+   Inc(EmuRunaway);
+  End Else
+   EmuRunaway := 0;
+  { Stopper immediatement apres 32 espaces consecutifs pour
+    preserver le trace pre-runaway dans le buffer circulaire }
+  If EmuRunaway >= 32 Then Begin
+   P.CPU.Fault := sfBreakPoint;
+   Break;
+  End;
   EmuTraceIdx := (EmuTraceIdx + 1) And $1FFF;
   Emu_StepOne(P);
   Inc(Steps);
  End;
- { Si on est sorti par limite (boucle infinie), dumper le trace dans EMUTRACE.LOG }
- If (P.CPU.Fault = sfNone) And (Steps >= 1000000) Then
-  Emu_DumpTrace;
+ { Toujours dumper le trace pour le diagnostic }
+ Emu_DumpTrace;
  P.Fault := P.CPU.Fault;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  P.CurFg := 11;
