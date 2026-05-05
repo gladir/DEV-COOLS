@@ -961,6 +961,8 @@ Uses DOS,
 {$IFDEF WINDOWS}
 Function GetAsyncKeyState(vKey: LongInt): SmallInt;
          StdCall; External 'user32.dll' Name 'GetAsyncKeyState';
+Procedure WinSleep(MilliSec: LongInt);
+         StdCall; External 'kernel32.dll' Name 'Sleep';
 {$ENDIF}
 
 { ============================================================
@@ -969,6 +971,17 @@ Function GetAsyncKeyState(vKey: LongInt): SmallInt;
 Const
  DEVENV_VERSION = '1.0';
  DEVENV_DATE    = '2026-04-03';
+
+ { Palette NES 64 couleurs -> palette EGA 16 couleurs (mappage approche). }
+ NesPalToEga: Array[0..63] Of Byte = (
+    {00} 8,  1, 1, 5, 5,12, 4, 6,
+    {08} 6,  2, 2,10, 3, 0, 0, 0,
+    {10} 7,  9, 9,13,13,12,12, 6,
+    {18} 6, 14, 2,10,11, 8, 0, 0,
+    {20} 15, 9, 9,13,13,13,12,14,
+    {28} 14,10,10,10,11,15, 7, 0,
+    {30} 15,15, 9,15,13,13, 6,14,
+    {38} 14,11,10,11,11,15, 7, 7);
 
  { Limites des fenetres et onglets }
  MAX_WINDOWS           = 32;
@@ -3093,14 +3106,54 @@ Var
  CPU6502_Cycles : LongInt;
  CPU6502_Panel  : ^TEmulatorPanel;
  CPU6502_Variant: Integer;    { 0=AppleII 1=C64 2=Atari 3=NES 4=A2600 }
- { --- Etat PPU NES minimaliste (variant=3) --- }
- { Suit les ecritures sur les registres PPU $2000-$2007 pour reconstituer }
- { la nametable. Quand le programme active le rendu BG (bit 3 de $2001), }
- { on affiche le contenu de la nametable dans le panneau emulateur.       }
- { Astuce : la convention TPCW32 mappe le tile $XX au caractere ASCII $XX,}
- { donc l octet de la nametable EST directement le code ASCII du glyphe. }
+ { --- Etat NES complet (variant=3) ----------------------------------- }
+ { PPU : pattern tables (CHR-ROM 8K), 2 nametables physiques (2K),      }
+ { palette (32 octets), OAM (256 octets) et framebuffer 256x240 indexe  }
+ { sur la palette NES de 64 couleurs.                                   }
+ NesActive       : Boolean;     { True = mode NES (variant=3 + ROM iNES)    }
+ NesChr          : Array[0..$1FFF] Of Byte;  { CHR-ROM (pattern tables)     }
+ NesNT           : Array[0..$7FF] Of Byte;   { 2 nametables phys (2x1K)     }
+ NesPal          : Array[0..$1F] Of Byte;    { palette PPU 32 octets        }
+ NesOam          : Array[0..$FF] Of Byte;    { OAM sprite table 64x4        }
+ NesFB           : Array[0..239, 0..255] Of Byte; { framebuffer pal idx     }
+ NesFBPrev       : Array[0..239, 0..255] Of Byte; { trame precedente (diff) }
+ NesFBFirst      : Boolean;     { force premier rendu complet               }
+ NesPpuCtrl      : Byte;        { $2000 }
+ NesPpuMask      : Byte;        { $2001 }
+ NesPpuStatus    : Byte;        { $2002 (bit7 vblank, bit6 sp0hit, bit5 ovf)}
+ NesOamAddr      : Byte;        { $2003 }
+ NesScrollX      : Byte;        { $2005 (1ere ecriture)                     }
+ NesScrollY      : Byte;        { $2005 (2e ecriture)                       }
+ NesPpuLatch     : Boolean;     { False = prochaine ecriture est high       }
+ NesPpuAddr      : Word;        { adresse VRAM courante (15 bits)           }
+ NesPpuBuf       : Byte;        { tampon de lecture PPUDATA                 }
+ NesMirror       : Byte;        { 0=horizontal 1=vertical 2=4-screen 3=1scr }
+ NesPad1, NesPad2 : Byte;       { etat instantane des manettes              }
+ NesPad1Sh, NesPad2Sh : Byte;   { registres a decalage de lecture           }
+ NesPadStrobe    : Byte;        { dernier bit ecrit en $4016                }
+ NesNmiPending   : Boolean;     { NMI a declencher avant prochain step      }
+ NesFrameDone    : Boolean;     { trame complete -> rendre framebuffer      }
+ NesFrameNo      : LongInt;     { compteur de trames                        }
+ { --- Etat mapper NES (mapper 0/1/2/4 supportes) --- }
+ NesPrgRom       : Array[0..$7FFFF] Of Byte;  { PRG-ROM totale (512 KiB max) }
+ NesChrRom       : Array[0..$3FFFF] Of Byte;  { CHR-ROM totale (256 KiB max) }
+ NesPrgBlocksTotal : Integer;    { nb blocs 16K dans NesPrgRom              }
+ NesChrBlocksTotal : Integer;    { nb blocs 8K dans NesChrRom               }
+ NesMapper         : Integer;    { numero de mapper iNES                    }
+ NesUseChrRam      : Boolean;    { CHR=0 -> 8K CHR-RAM dans NesChr          }
+ { MMC1 (mapper 1) }
+ NesM1Shift     : Byte;
+ NesM1ShiftCount: Byte;
+ NesM1Ctrl      : Byte;
+ NesM1Chr0      : Byte;
+ NesM1Chr1      : Byte;
+ NesM1Prg       : Byte;
+ { MMC3 (mapper 4) }
+ NesM3BankSelect: Byte;
+ NesM3Banks     : Array[0..7] Of Byte;
+ { Compatibilite ancienne (non utilises desormais) }
  NesPpu_Addr     : Word;
- NesPpu_Latch    : Boolean;     { False = prochaine ecriture $2006 = high byte }
+ NesPpu_Latch    : Boolean;
  NesPpu_NameTable: Array[0..$3FF] Of Byte;
  NesPpu_Rendered : Boolean;
  { --- Etat emulateur Z80 (TRS-80, MSX, Adam) --- }
@@ -22360,9 +22413,56 @@ Var
  Title: String;
  Cell: TEmuCell;
  S: String;
+ NesScale: Integer;
+ Sx, Sy: Integer;
 Begin
  ScrW := GetScreenWidth;
  ScrH := GetScreenHeight;
+ { Mode NES : rendu pixel du framebuffer 256x240 ----------------------- }
+ If NesActive And (P.TargetCPU = '-CNES') Then Begin
+  NesScale := 2;
+  GridW := 256 * NesScale;
+  GridH := 240 * NesScale;
+  P.PanelX := (ScrW - GridW) Div 2;
+  P.PanelY := 16;
+  GridX := P.PanelX;
+  GridY := P.PanelY + 22;
+  If NesFBFirst Then Begin
+   { Premier rendu : bordure + barre titre + fond complet }
+   DrawFilledRect(P.PanelX - 2, P.PanelY - 2,
+    P.PanelX + GridW + 2, P.PanelY + 22 + GridH + 2, CLR_BACKGROUND);
+  End;
+  { Barre de titre redessinee a chaque trame avec etat CPU/PPU (debug) }
+  DrawFilledRect(P.PanelX, P.PanelY,
+   P.PanelX + GridW, P.PanelY + 20, CLR_TITLEBAR_ACTIVE);
+  Title := 'NES PC=' + IntToStr(CPU6502_PC) +
+           ' A=' + IntToStr(CPU6502_A) +
+           ' S=' + IntToStr(CPU6502_S) +
+           ' MASK=' + IntToStr(NesPpuMask) +
+           ' CTRL=' + IntToStr(NesPpuCtrl) +
+           ' MAP=' + IntToStr(NesMapper) +
+           ' F=' + IntToStr(NesFrameNo);
+  DrawText(P.PanelX + 6, P.PanelY + 4, Title, CLR_HIGHLIGHTTEXT);
+  DrawText(P.PanelX + GridW - 60, P.PanelY + 4,
+   '[Esc]', CLR_HIGHLIGHTTEXT);
+  { Rendu pixel : differentiel par rapport a la trame precedente }
+  For Sy := 0 To 239 Do
+   For Sx := 0 To 255 Do Begin
+    If NesFBFirst Or (NesFB[Sy, Sx] <> NesFBPrev[Sy, Sx]) Then Begin
+     Cell.Bg := NesPalToEga[NesFB[Sy, Sx] And $3F];
+     PixX := GridX + Sx * NesScale;
+     PixY := GridY + Sy * NesScale;
+     If NesScale = 1 Then
+      PutPixel(PixX, PixY, Cell.Bg)
+     Else
+      DrawFilledRect(PixX, PixY,
+       PixX + NesScale - 1, PixY + NesScale - 1, Cell.Bg);
+     NesFBPrev[Sy, Sx] := NesFB[Sy, Sx];
+    End;
+   End;
+  NesFBFirst := False;
+  Exit;
+ End;
  { Le panneau couvre toute la zone editeur (sous le menu/toolbar,
    au dessus de la barre d etat). Pour simplicite, on le centre. }
  GridW := P.Cols * P.CharW;
@@ -26921,12 +27021,16 @@ End;
 Procedure CPU6502_Push(V: Byte);
 Begin
   CPU6502_Mem[$0100 Or CPU6502_S] := V;
-  Dec(CPU6502_S);
+{$PUSH}{$R-}{$Q-}
+  CPU6502_S := (CPU6502_S - 1) And $FF;
+{$POP}
 End;
 
 Function CPU6502_Pop: Byte;
 Begin
-  Inc(CPU6502_S);
+{$PUSH}{$R-}{$Q-}
+  CPU6502_S := (CPU6502_S + 1) And $FF;
+{$POP}
   CPU6502_Pop := CPU6502_Mem[$0100 Or CPU6502_S];
 End;
 
@@ -27164,82 +27268,632 @@ Begin
   End;
 End;
 
-{ --- Emulation PPU NES minimaliste --------------------------------- }
-{ Reconstitue la nametable depuis les ecritures PPU et l affiche      }
-{ quand le programme active le rendu BG.                              }
-Procedure NesPpu_DoRender;
-Var
-  Row, Col, K: Integer;
-  B: Byte;
-  Line: String;
+{ --- Emulation NES complete ----------------------------------------- }
+{ Couvre PPU (BG+sprites), OAM DMA $4014, manettes $4016/$4017,        }
+{ APU silencieuse, NMI vblank. Rendu pixel framebuffer 256x240.        }
+
+{ Palette NES -> EGA : voir constante globale NesPalToEga (debut fichier). }
+
+{ Mappage adresse VRAM -> index nametable physique (2K) avec mirroring. }
+Function NesPpu_NtAddr(A: Word): Word;
+Var Page: Word;
 Begin
-  If NesPpu_Rendered Then Exit;
-  NesPpu_Rendered := True;
-  For Row := 0 To 29 Do
-  Begin
-    Line := '';
-    For Col := 0 To 31 Do
-    Begin
-      B := NesPpu_NameTable[Row * 32 + Col];
-      If (B >= 32) And (B < 128) Then Line := Line + Chr(B)
-      Else Line := Line + ' ';
-    End;
-    { Trim trailing spaces pour la lisibilite }
-    K := Length(Line);
-    While (K > 0) And (Line[K] = ' ') Do Dec(K);
-    Line := Copy(Line, 1, K);
-    If Line <> '' Then EmuVScr_WriteStr(CPU6502_Panel^, Line);
-    EmuVScr_PutChar(CPU6502_Panel^, #13);
-    EmuVScr_PutChar(CPU6502_Panel^, #10);
+  A := A And $0FFF;
+  Page := A Shr 10;     { 0..3 }
+  Case NesMirror Of
+    0: { horizontal : NT0=NT1, NT2=NT3 -> bits 11 -> bit 10 }
+       NesPpu_NtAddr := ((Page Shr 1) And 1) Shl 10 Or (A And $3FF);
+    1: { vertical : NT0=NT2, NT1=NT3 -> bit 10 conserve, bit 11 ignore }
+       NesPpu_NtAddr := (Page And 1) Shl 10 Or (A And $3FF);
+    2: { 4-screen (rare, traite comme V) }
+       NesPpu_NtAddr := (Page And 1) Shl 10 Or (A And $3FF);
+  Else
+    NesPpu_NtAddr := A And $3FF;
   End;
+End;
+
+{ Lecture VRAM PPU ($0000-$3FFF) avec gestion CHR/NT/Palette }
+Function NesPpu_VRamRead(A: Word): Byte;
+Var Idx: Byte;
+Begin
+  A := A And $3FFF;
+  If A < $2000 Then
+    NesPpu_VRamRead := NesChr[A]
+  Else If A < $3F00 Then
+    NesPpu_VRamRead := NesNT[NesPpu_NtAddr(A)]
+  Else Begin
+    Idx := A And $1F;
+    { miroirs $3F10/$14/$18/$1C -> $3F00/$04/$08/$0C }
+    If (Idx And $13) = $10 Then Idx := Idx And $0F;
+    NesPpu_VRamRead := NesPal[Idx];
+  End;
+End;
+
+Procedure NesPpu_VRamWrite(A: Word; V: Byte);
+Var Idx: Byte;
+Begin
+  A := A And $3FFF;
+  If A < $2000 Then
+    NesChr[A] := V
+  Else If A < $3F00 Then
+    NesNT[NesPpu_NtAddr(A)] := V
+  Else Begin
+    Idx := A And $1F;
+    If (Idx And $13) = $10 Then Idx := Idx And $0F;
+    NesPal[Idx] := V And $3F;
+  End;
+End;
+
+Procedure NesPpu_Reset;
+Var I: Integer;
+Begin
+  NesPpuCtrl   := 0;
+  NesPpuMask   := 0;
+  NesPpuStatus := 0;
+  NesOamAddr   := 0;
+  NesScrollX   := 0;
+  NesScrollY   := 0;
+  NesPpuLatch  := False;
+  NesPpuAddr   := 0;
+  NesPpuBuf    := 0;
+  NesNmiPending := False;
+  NesFrameDone := False;
+  NesFrameNo   := 0;
+  NesPad1 := 0; NesPad2 := 0;
+  NesPad1Sh := 0; NesPad2Sh := 0;
+  NesPadStrobe := 0;
+  For I := 0 To $7FF Do NesNT[I] := 0;
+  For I := 0 To $1F  Do NesPal[I] := 0;
+  For I := 0 To $FF  Do NesOam[I] := 0;
 End;
 
 Procedure NesPpu_RegWrite(Reg: Byte; V: Byte);
 Begin
   Case Reg Of
-    $00: ; { PPUCTRL }
-    $01: { PPUMASK : si bit 3 (show BG) actif, render }
-      If (V And $08) <> 0 Then NesPpu_DoRender;
-    $03: ; { OAMADDR }
-    $04: ; { OAMDATA }
-    $05: NesPpu_Latch := Not NesPpu_Latch; { PPUSCROLL }
-    $06: { PPUADDR : 1ere ecriture = high, 2e = low }
+    $00: NesPpuCtrl := V;
+    $01: NesPpuMask := V;
+    $03: NesOamAddr := V;
+    $04: Begin
+           NesOam[NesOamAddr] := V;
+           NesOamAddr := (NesOamAddr + 1) And $FF;
+         End;
+    $05: { PPUSCROLL : 1ere = X, 2e = Y }
       Begin
-        If Not NesPpu_Latch Then
-          NesPpu_Addr := (NesPpu_Addr And $00FF) Or
-                         ((Word(V) And $3F) Shl 8)
-        Else
-          NesPpu_Addr := (NesPpu_Addr And $FF00) Or V;
-        NesPpu_Latch := Not NesPpu_Latch;
+        If Not NesPpuLatch Then NesScrollX := V
+                           Else NesScrollY := V;
+        NesPpuLatch := Not NesPpuLatch;
       End;
-    $07: { PPUDATA : ecrit a NesPpu_Addr puis incremente }
+    $06: { PPUADDR : 1ere = high 6 bits, 2e = low }
       Begin
-        If (NesPpu_Addr >= $2000) And (NesPpu_Addr < $2400) Then
-          NesPpu_NameTable[NesPpu_Addr - $2000] := V;
-        NesPpu_Addr := NesPpu_Addr + 1;
+        If Not NesPpuLatch Then
+          NesPpuAddr := (NesPpuAddr And $00FF) Or
+                        ((Word(V) And $3F) Shl 8)
+        Else
+          NesPpuAddr := (NesPpuAddr And $FF00) Or V;
+        NesPpuLatch := Not NesPpuLatch;
+      End;
+    $07: { PPUDATA }
+      Begin
+        NesPpu_VRamWrite(NesPpuAddr, V);
+        If (NesPpuCtrl And $04) <> 0 Then
+          NesPpuAddr := (NesPpuAddr + 32) And $3FFF
+        Else
+          NesPpuAddr := (NesPpuAddr + 1) And $3FFF;
       End;
   End;
 End;
 
 Function NesPpu_RegRead(Reg: Byte): Byte;
+Var V: Byte;
 Begin
+  NesPpu_RegRead := 0;
   Case Reg Of
-    $02: { PPUSTATUS : bit 7 = vblank toujours leve, reset latch }
+    $02: { PPUSTATUS }
       Begin
-        NesPpu_Latch := False;
-        NesPpu_RegRead := $80;
+        NesPpu_RegRead := NesPpuStatus;
+        NesPpuStatus := NesPpuStatus And $7F; { clear vblank }
+        NesPpuLatch := False;
       End;
-  Else
-    NesPpu_RegRead := 0;
+    $04: NesPpu_RegRead := NesOam[NesOamAddr];
+    $07: { PPUDATA : lecture differee sauf palette }
+      Begin
+        If NesPpuAddr >= $3F00 Then Begin
+          NesPpu_RegRead := NesPpu_VRamRead(NesPpuAddr);
+          { tampon recoit la nametable mirroree dessous }
+          NesPpuBuf := NesPpu_VRamRead(NesPpuAddr - $1000);
+        End Else Begin
+          V := NesPpuBuf;
+          NesPpuBuf := NesPpu_VRamRead(NesPpuAddr);
+          NesPpu_RegRead := V;
+        End;
+        If (NesPpuCtrl And $04) <> 0 Then
+          NesPpuAddr := (NesPpuAddr + 32) And $3FFF
+        Else
+          NesPpuAddr := (NesPpuAddr + 1) And $3FFF;
+      End;
   End;
 End;
 
+{ OAM DMA : copie 256 octets de la page CPU $XX00..$XXFF vers OAM. }
+Procedure NesPpu_DmaOam(Page: Byte);
+Var I: Integer; Base: Word;
+Begin
+  Base := Word(Page) Shl 8;
+  For I := 0 To $FF Do
+    NesOam[(NesOamAddr + I) And $FF] := CPU6502_Mem[Base + I];
+End;
+
+{ Sondage clavier -> etat manette 1 (Windows uniquement). }
+{ Bits : 0=A 1=B 2=Sel 3=Start 4=Up 5=Down 6=Left 7=Right }
+Procedure NesPollInput;
+Var V: Byte;
+Begin
+  V := 0;
+  {$IFDEF WINDOWS}
+  If GetAsyncKeyState($5A) < 0 Then V := V Or $01; { Z = A     }
+  If GetAsyncKeyState($58) < 0 Then V := V Or $02; { X = B     }
+  If GetAsyncKeyState($A1) < 0 Then V := V Or $04; { RShift=Sel}
+  If GetAsyncKeyState($0D) < 0 Then V := V Or $08; { Enter=Start}
+  If GetAsyncKeyState($26) < 0 Then V := V Or $10; { Up        }
+  If GetAsyncKeyState($28) < 0 Then V := V Or $20; { Down      }
+  If GetAsyncKeyState($25) < 0 Then V := V Or $40; { Left      }
+  If GetAsyncKeyState($27) < 0 Then V := V Or $80; { Right     }
+  {$ENDIF}
+  NesPad1 := V;
+End;
+
+{ Strobe manettes ($4016 ecriture). Latch l etat actuel quand strobe=1. }
+Procedure NesPad_Write(V: Byte);
+Begin
+  NesPadStrobe := V And 1;
+  If NesPadStrobe = 1 Then Begin
+    NesPad1Sh := NesPad1;
+    NesPad2Sh := NesPad2;
+  End;
+End;
+
+{ Lecture manettes ($4016/$4017). Renvoie le bit courant puis decale. }
+Function NesPad_Read(Port: Byte): Byte;
+Var Bit: Byte;
+Begin
+  If NesPadStrobe = 1 Then Begin
+    NesPad1Sh := NesPad1;
+    NesPad2Sh := NesPad2;
+  End;
+  If Port = 0 Then Begin
+    Bit := NesPad1Sh And 1;
+    NesPad1Sh := (NesPad1Sh Shr 1) Or $80;
+  End Else Begin
+    Bit := NesPad2Sh And 1;
+    NesPad2Sh := (NesPad2Sh Shr 1) Or $80;
+  End;
+  NesPad_Read := Bit Or $40; { bits 6-7 open bus typiques }
+End;
+
+{ Rend une trame complete (BG + sprites) dans le framebuffer NesFB. }
+{ Approche : par tile pour le BG, par sprite OAM pour les sprites,    }
+{ priorite simplifiee (sprites devant BG sauf si bit 5 attribut).     }
+Procedure NesPpu_RenderFrame;
+Var
+  Sx, Sy, Tx, Ty, Px, Py, FineX, FineY: Integer;
+  NtBase, AtBase, BgPatBase, SpPatBase, NtIdx, AtByte: Word;
+  TileNo, AtBits, PalIdx, ColorIdx, P0, P1: Byte;
+  Bit, ScrX, ScrY, NtSel: Integer;
+  AtX, AtY, Quad: Integer;
+  S, SpriteY, SpriteTile, SpriteAttr, SpriteX: Integer;
+  SpRow, SpCol, FlipH, FlipV, Behind, SpY: Integer;
+  SpPat, BgPat: Word;
+  ShowBg, ShowSp: Boolean;
+  PixBg, PixSp: Byte;
+  SpHeight: Integer;
+Begin
+  ShowBg := (NesPpuMask And $08) <> 0;
+  ShowSp := (NesPpuMask And $10) <> 0;
+  { Couleur de fond universelle }
+  ColorIdx := NesPal[0] And $3F;
+  For Py := 0 To 239 Do
+    For Px := 0 To 255 Do NesFB[Py, Px] := ColorIdx;
+  If Not (ShowBg Or ShowSp) Then Exit;
+  { --- Background ---------------------------------------------------- }
+  If ShowBg Then Begin
+    BgPatBase := 0;
+    If (NesPpuCtrl And $10) <> 0 Then BgPatBase := $1000;
+    NtSel := NesPpuCtrl And $03;
+    For Py := 0 To 239 Do Begin
+      Sy := Py + NesScrollY;
+      Ty := Sy Shr 3;     FineY := Sy And 7;
+      For Px := 0 To 255 Do Begin
+        Sx := Px + NesScrollX;
+        Tx := Sx Shr 3;   FineX := Sx And 7;
+        ScrY := Ty;       ScrX := Tx;
+        { Determine quel nametable a partir du selecteur + scroll wrap }
+        NtIdx := NtSel;
+        If ScrX >= 32 Then Begin ScrX := ScrX - 32; NtIdx := NtIdx Xor 1; End;
+        If ScrY >= 30 Then Begin ScrY := ScrY - 30; NtIdx := NtIdx Xor 2; End;
+        NtBase := $2000 + (NtIdx * $400);
+        AtBase := NtBase + $3C0;
+        TileNo := NesPpu_VRamRead(NtBase + ScrY * 32 + ScrX);
+        BgPat := BgPatBase + (Word(TileNo) Shl 4) + Word(FineY);
+        P0 := NesPpu_VRamRead(BgPat);
+        P1 := NesPpu_VRamRead(BgPat + 8);
+        Bit := 7 - FineX;
+        PixBg := ((P0 Shr Bit) And 1) Or (((P1 Shr Bit) And 1) Shl 1);
+        If PixBg = 0 Then Begin
+          NesFB[Py, Px] := NesPal[0] And $3F;
+        End Else Begin
+          AtX := ScrX Shr 2; AtY := ScrY Shr 2;
+          AtByte := NesPpu_VRamRead(AtBase + AtY * 8 + AtX);
+          Quad := ((ScrY And 2) Shl 1) Or (ScrX And 2);
+          AtBits := (AtByte Shr Quad) And 3;
+          PalIdx := (AtBits Shl 2) Or PixBg;
+          NesFB[Py, Px] := NesPal[PalIdx And $1F] And $3F;
+        End;
+      End;
+    End;
+  End;
+  { --- Sprites ------------------------------------------------------- }
+  If ShowSp Then Begin
+    SpPatBase := 0;
+    If (NesPpuCtrl And $08) <> 0 Then SpPatBase := $1000;
+    SpHeight := 8;
+    If (NesPpuCtrl And $20) <> 0 Then SpHeight := 16;
+    { Parcourt en sens inverse pour priorite OAM (sprite 0 dessine en dernier) }
+    For S := 63 Downto 0 Do Begin
+      SpriteY    := NesOam[S * 4    ];
+      SpriteTile := NesOam[S * 4 + 1];
+      SpriteAttr := NesOam[S * 4 + 2];
+      SpriteX    := NesOam[S * 4 + 3];
+      SpY := SpriteY + 1; { sprite affiche 1 ligne sous Y }
+      If SpY >= 240 Then Continue;
+      FlipH := SpriteAttr And $40;
+      FlipV := SpriteAttr And $80;
+      Behind := SpriteAttr And $20;
+      For SpRow := 0 To SpHeight - 1 Do Begin
+        Py := SpY + SpRow;
+        If (Py < 0) Or (Py >= 240) Then Continue;
+        FineY := SpRow;
+        If FlipV <> 0 Then FineY := SpHeight - 1 - SpRow;
+        If SpHeight = 8 Then
+          SpPat := SpPatBase + (Word(SpriteTile) Shl 4) + Word(FineY)
+        Else Begin
+          { 8x16 : bit 0 du tile choisit la pattern table }
+          If (SpriteTile And 1) <> 0 Then SpPat := $1000
+                                     Else SpPat := 0;
+          SpPat := SpPat + (Word(SpriteTile And $FE) Shl 4);
+          If FineY >= 8 Then SpPat := SpPat + 16 + Word(FineY - 8)
+                        Else SpPat := SpPat + Word(FineY);
+        End;
+        P0 := NesPpu_VRamRead(SpPat);
+        P1 := NesPpu_VRamRead(SpPat + 8);
+        For SpCol := 0 To 7 Do Begin
+          Px := SpriteX + SpCol;
+          If (Px < 0) Or (Px >= 256) Then Continue;
+          If FlipH <> 0 Then Bit := SpCol Else Bit := 7 - SpCol;
+          PixSp := ((P0 Shr Bit) And 1) Or
+                   (((P1 Shr Bit) And 1) Shl 1);
+          If PixSp = 0 Then Continue;
+          { Sprite 0 hit : pixel sp non-trans + pixel BG non-trans }
+          If (S = 0) And ShowBg And ((NesPpuStatus And $40) = 0) Then Begin
+            { test BG opaque : recompare framebuffer != couleur fond }
+            If NesFB[Py, Px] <> (NesPal[0] And $3F) Then
+              NesPpuStatus := NesPpuStatus Or $40;
+          End;
+          { priorite }
+          If (Behind <> 0) And ShowBg And
+             (NesFB[Py, Px] <> (NesPal[0] And $3F)) Then Continue;
+          PalIdx := $10 Or ((SpriteAttr And 3) Shl 2) Or PixSp;
+          NesFB[Py, Px] := NesPal[PalIdx And $1F] And $3F;
+        End;
+      End;
+    End;
+  End;
+  NesFrameDone := True;
+End;
+
+{ Compatibilite : ancien rendu texte (utilise par TPCW32 -CNES sortie texte) }
+Procedure NesPpu_DoRender;
+Begin
+  NesPpu_RenderFrame;
+End;
+
+{ NMI 6502 : pousse PC et P, set I, charge vecteur $FFFA/$FFFB. }
+Procedure CPU6502_NMI;
+{$PUSH}{$R-}{$Q-}
+Begin
+  CPU6502_Push((CPU6502_PC Shr 8) And $FF);
+  CPU6502_Push(CPU6502_PC And $FF);
+  CPU6502_Push((CPU6502_P And $EF) Or $20); { B=0, U=1 }
+  CPU6502_P := CPU6502_P Or $04;            { I=1 }
+  CPU6502_PC := CPU6502_Mem[$FFFA] Or
+                (Word(CPU6502_Mem[$FFFB]) Shl 8);
+End;
+{$POP}
+
+{ --- Mappers NES ---------------------------------------------------- }
+{ Approche : copie 16K (ou 8K/4K/1K) depuis NesPrgRom vers CPU6502_Mem  }
+{ ($8000..$FFFF) et depuis NesChrRom vers NesChr ($0000..$1FFF). Les   }
+{ banks sont normalises modulo le nombre total disponible.             }
+
+Procedure Nes_PrgMap16(SlotAddr: Word; Bank: Integer);
+Var I: Integer; BaseRom: LongInt;
+Begin
+  If NesPrgBlocksTotal <= 0 Then Exit;
+  Bank := Bank Mod NesPrgBlocksTotal;
+  If Bank < 0 Then Bank := Bank + NesPrgBlocksTotal;
+  BaseRom := LongInt(Bank) * 16384;
+  For I := 0 To 16383 Do
+    CPU6502_Mem[SlotAddr + I] := NesPrgRom[BaseRom + I];
+End;
+
+Procedure Nes_PrgMap8(SlotAddr: Word; Bank: Integer);
+Var I: Integer; BaseRom: LongInt; BanksTotal: Integer;
+Begin
+  BanksTotal := NesPrgBlocksTotal * 2;
+  If BanksTotal <= 0 Then Exit;
+  Bank := Bank Mod BanksTotal;
+  If Bank < 0 Then Bank := Bank + BanksTotal;
+  BaseRom := LongInt(Bank) * 8192;
+  For I := 0 To 8191 Do
+    CPU6502_Mem[SlotAddr + I] := NesPrgRom[BaseRom + I];
+End;
+
+Procedure Nes_ChrMap4(SlotAddr: Word; Bank: Integer);
+Var I: Integer; BaseRom: LongInt; BanksTotal: Integer;
+Begin
+  If NesUseChrRam Then Exit;
+  BanksTotal := NesChrBlocksTotal * 2;
+  If BanksTotal <= 0 Then Exit;
+  Bank := Bank Mod BanksTotal;
+  If Bank < 0 Then Bank := Bank + BanksTotal;
+  BaseRom := LongInt(Bank) * 4096;
+  For I := 0 To 4095 Do
+    NesChr[SlotAddr + I] := NesChrRom[BaseRom + I];
+End;
+
+Procedure Nes_ChrMap1k(SlotAddr: Word; Bank: Integer);
+Var I: Integer; BaseRom: LongInt; BanksTotal: Integer;
+Begin
+  If NesUseChrRam Then Exit;
+  BanksTotal := NesChrBlocksTotal * 8;
+  If BanksTotal <= 0 Then Exit;
+  Bank := Bank Mod BanksTotal;
+  If Bank < 0 Then Bank := Bank + BanksTotal;
+  BaseRom := LongInt(Bank) * 1024;
+  For I := 0 To 1023 Do
+    NesChr[SlotAddr + I] := NesChrRom[BaseRom + I];
+End;
+
+{ --- MMC1 (mapper 1) -------------------------------------------------- }
+Procedure Nes_M1ApplyBanks;
+Var Mode: Byte; PrgLast: Integer;
+Begin
+  { Mirroring }
+  Case NesM1Ctrl And 3 Of
+    0, 1: NesMirror := 3; { 1-screen (traite comme V simplifie) }
+    2: NesMirror := 1;
+    3: NesMirror := 0;
+  End;
+  { CHR }
+  If (NesM1Ctrl And $10) <> 0 Then Begin
+    Nes_ChrMap4($0000, NesM1Chr0 And $1F);
+    Nes_ChrMap4($1000, NesM1Chr1 And $1F);
+  End Else Begin
+    Nes_ChrMap4($0000, NesM1Chr0 And $1E);
+    Nes_ChrMap4($1000, (NesM1Chr0 And $1E) Or 1);
+  End;
+  { PRG }
+  Mode := (NesM1Ctrl Shr 2) And 3;
+  PrgLast := NesPrgBlocksTotal - 1;
+  Case Mode Of
+    0, 1: Begin
+      Nes_PrgMap16($8000, NesM1Prg And $0E);
+      Nes_PrgMap16($C000, (NesM1Prg And $0E) Or 1);
+    End;
+    2: Begin
+      Nes_PrgMap16($8000, 0);
+      Nes_PrgMap16($C000, NesM1Prg And $0F);
+    End;
+    3: Begin
+      Nes_PrgMap16($8000, NesM1Prg And $0F);
+      Nes_PrgMap16($C000, PrgLast);
+    End;
+  End;
+End;
+
+Procedure Nes_M1Write(EA: Word; V: Byte);
+Var Reg: Byte;
+Begin
+  If (V And $80) <> 0 Then Begin
+    NesM1Shift := 0;
+    NesM1ShiftCount := 0;
+    NesM1Ctrl := NesM1Ctrl Or $0C;
+    Nes_M1ApplyBanks;
+    Exit;
+  End;
+  NesM1Shift := (NesM1Shift Shr 1) Or ((V And 1) Shl 4);
+  Inc(NesM1ShiftCount);
+  If NesM1ShiftCount >= 5 Then Begin
+    Reg := (EA Shr 13) And 3;
+    Case Reg Of
+      0: NesM1Ctrl := NesM1Shift And $1F;
+      1: NesM1Chr0 := NesM1Shift And $1F;
+      2: NesM1Chr1 := NesM1Shift And $1F;
+      3: NesM1Prg  := NesM1Shift And $1F;
+    End;
+    NesM1Shift := 0;
+    NesM1ShiftCount := 0;
+    Nes_M1ApplyBanks;
+  End;
+End;
+
+{ --- UxROM (mapper 2) ------------------------------------------------- }
+Procedure Nes_M2Write(EA: Word; V: Byte);
+Begin
+  Nes_PrgMap16($8000, V And $0F);
+End;
+
+{ --- MMC3 (mapper 4, IRQ scanline non emulee) ------------------------ }
+Procedure Nes_M3ApplyBanks;
+Var ChrInv, PrgMode: Byte; LastBank: Integer;
+Begin
+  ChrInv  := NesM3BankSelect And $80;
+  PrgMode := NesM3BankSelect And $40;
+  LastBank := NesPrgBlocksTotal * 2 - 1;
+  If PrgMode = 0 Then Begin
+    Nes_PrgMap8($8000, NesM3Banks[6]);
+    Nes_PrgMap8($A000, NesM3Banks[7]);
+    Nes_PrgMap8($C000, LastBank - 1);
+    Nes_PrgMap8($E000, LastBank);
+  End Else Begin
+    Nes_PrgMap8($8000, LastBank - 1);
+    Nes_PrgMap8($A000, NesM3Banks[7]);
+    Nes_PrgMap8($C000, NesM3Banks[6]);
+    Nes_PrgMap8($E000, LastBank);
+  End;
+  If ChrInv = 0 Then Begin
+    Nes_ChrMap1k($0000, NesM3Banks[0] And $FE);
+    Nes_ChrMap1k($0400, NesM3Banks[0] Or 1);
+    Nes_ChrMap1k($0800, NesM3Banks[1] And $FE);
+    Nes_ChrMap1k($0C00, NesM3Banks[1] Or 1);
+    Nes_ChrMap1k($1000, NesM3Banks[2]);
+    Nes_ChrMap1k($1400, NesM3Banks[3]);
+    Nes_ChrMap1k($1800, NesM3Banks[4]);
+    Nes_ChrMap1k($1C00, NesM3Banks[5]);
+  End Else Begin
+    Nes_ChrMap1k($0000, NesM3Banks[2]);
+    Nes_ChrMap1k($0400, NesM3Banks[3]);
+    Nes_ChrMap1k($0800, NesM3Banks[4]);
+    Nes_ChrMap1k($0C00, NesM3Banks[5]);
+    Nes_ChrMap1k($1000, NesM3Banks[0] And $FE);
+    Nes_ChrMap1k($1400, NesM3Banks[0] Or 1);
+    Nes_ChrMap1k($1800, NesM3Banks[1] And $FE);
+    Nes_ChrMap1k($1C00, NesM3Banks[1] Or 1);
+  End;
+End;
+
+Procedure Nes_M3Write(EA: Word; V: Byte);
+Var Even: Boolean; Region: Byte;
+Begin
+  Even := (EA And 1) = 0;
+  Region := (EA Shr 13) And 3;
+  Case Region Of
+    0: Begin
+         If Even Then NesM3BankSelect := V
+         Else Begin
+           NesM3Banks[NesM3BankSelect And 7] := V;
+         End;
+         Nes_M3ApplyBanks;
+       End;
+    1: If Even Then Begin
+         If (V And 1) <> 0 Then NesMirror := 0 { horizontal }
+                           Else NesMirror := 1; { vertical }
+       End;
+    2, 3: ; { IRQ scanline non emulee }
+  End;
+End;
+
+{ Dispatch ecriture mapper. EA est dans $8000-$FFFF. }
+Procedure Nes_MapperWrite(EA: Word; V: Byte);
+Begin
+  Case NesMapper Of
+    0: ; { NROM : ignorer }
+    1: Nes_M1Write(EA, V);
+    2: Nes_M2Write(EA, V);
+    4: Nes_M3Write(EA, V);
+  End;
+End;
+
+{ Initialisation banks selon mapper apres chargement PRG/CHR. }
+Procedure Nes_MapperInit;
+Var I: Integer;
+Begin
+  Case NesMapper Of
+    0: { NROM : copie deja faite, rien a faire (loader le fait) }
+       ;
+    1: Begin
+         NesM1Shift := 0;
+         NesM1ShiftCount := 0;
+         NesM1Ctrl := $0C;  { mode PRG=3 par defaut }
+         NesM1Chr0 := 0;
+         NesM1Chr1 := 0;
+         NesM1Prg  := 0;
+         Nes_M1ApplyBanks;
+       End;
+    2: Begin
+         Nes_PrgMap16($8000, 0);
+         Nes_PrgMap16($C000, NesPrgBlocksTotal - 1);
+         { CHR-RAM }
+       End;
+    4: Begin
+         For I := 0 To 7 Do NesM3Banks[I] := 0;
+         NesM3BankSelect := 0;
+         Nes_M3ApplyBanks;
+       End;
+  End;
+End;
+
+{ Bus NES : lecture MMIO $2000-$401F. Renvoie True si l adresse est }
+{ geree par le bus NES (le caller doit alors utiliser ResultByte).   }
+Function NesBus_Read(EA: Word; Var ResultByte: Byte): Boolean;
+Begin
+  NesBus_Read := False;
+  If CPU6502_Variant <> 3 Then Exit;
+  If (EA >= $2000) And (EA < $4000) Then Begin
+    ResultByte := NesPpu_RegRead(Byte(EA And $07));
+    NesBus_Read := True;
+  End Else If EA = $4014 Then Begin
+    ResultByte := 0; NesBus_Read := True;
+  End Else If EA = $4015 Then Begin
+    ResultByte := 0; NesBus_Read := True; { APU status }
+  End Else If EA = $4016 Then Begin
+    ResultByte := NesPad_Read(0); NesBus_Read := True;
+  End Else If EA = $4017 Then Begin
+    ResultByte := NesPad_Read(1); NesBus_Read := True;
+  End Else If (EA >= $4000) And (EA <= $4013) Then Begin
+    ResultByte := 0; NesBus_Read := True;
+  End;
+End;
+
+{ Bus NES : ecriture MMIO. Renvoie True si l adresse est geree par le bus. }
+Function NesBus_Write(EA: Word; V: Byte): Boolean;
+Begin
+  NesBus_Write := False;
+  If CPU6502_Variant <> 3 Then Exit;
+  If EA >= $8000 Then Begin
+    Nes_MapperWrite(EA, V);
+    NesBus_Write := True;
+    Exit;
+  End;
+  If (EA >= $2000) And (EA < $4000) Then Begin
+    NesPpu_RegWrite(Byte(EA And $07), V);
+    NesBus_Write := True;
+  End Else If EA = $4014 Then Begin
+    NesPpu_DmaOam(V);
+    NesBus_Write := True;
+  End Else If EA = $4016 Then Begin
+    NesPad_Write(V);
+    NesBus_Write := True;
+  End Else If (EA >= $4000) And (EA <= $4017) Then Begin
+    { APU silencieuse : on ignore }
+    NesBus_Write := True;
+  End;
+End;
+
+{$PUSH}{$R-}{$Q-}
 Procedure CPU6502_Step;
 Var
   Op, M, R: Byte;
   EA: Word;
   T: Word;
+  Tmp: Byte;
+  TmpW: Word;
 Begin
+  { NMI vblank pour cible NES }
+  If (CPU6502_Variant = 3) And NesNmiPending Then Begin
+    NesNmiPending := False;
+    CPU6502_NMI;
+  End;
+
   { Trap OS avant d executer }
   If CPU6502_TryTrap Then Exit;
 
@@ -27254,8 +27908,8 @@ Begin
     $B5: Begin EA := CPU6502_AmZPX; CPU6502_A := CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_A); End;
     $AD: Begin EA := CPU6502_AmABS;
-               If (CPU6502_Variant = 3) And (EA >= $2000) And (EA < $2008) Then
-                 CPU6502_A := NesPpu_RegRead(Byte(EA - $2000))
+               If NesBus_Read(EA, Tmp) Then
+                 CPU6502_A := Tmp
                Else
                  CPU6502_A := CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_A); End;
@@ -27293,23 +27947,29 @@ Begin
     $85: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_A; End;
     $95: Begin EA := CPU6502_AmZPX; CPU6502_Mem[EA] := CPU6502_A; End;
     $8D: Begin EA := CPU6502_AmABS;
-               If (CPU6502_Variant = 3) And (EA >= $2000) And (EA < $2008) Then
-                 NesPpu_RegWrite(Byte(EA - $2000), CPU6502_A)
-               Else
+               If Not NesBus_Write(EA, CPU6502_A) Then
                  CPU6502_Mem[EA] := CPU6502_A;
          End;
-    $9D: Begin EA := CPU6502_AmABX; CPU6502_Mem[EA] := CPU6502_A; End;
-    $99: Begin EA := CPU6502_AmABY; CPU6502_Mem[EA] := CPU6502_A; End;
+    $9D: Begin EA := CPU6502_AmABX;
+               If Not NesBus_Write(EA, CPU6502_A) Then
+                 CPU6502_Mem[EA] := CPU6502_A; End;
+    $99: Begin EA := CPU6502_AmABY;
+               If Not NesBus_Write(EA, CPU6502_A) Then
+                 CPU6502_Mem[EA] := CPU6502_A; End;
     $81: Begin EA := CPU6502_AmIZX; CPU6502_Mem[EA] := CPU6502_A; End;
     $91: Begin EA := CPU6502_AmIZY; CPU6502_Mem[EA] := CPU6502_A; End;
     { ----- STX ----- }
     $86: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_X; End;
     $96: Begin EA := CPU6502_AmZPY; CPU6502_Mem[EA] := CPU6502_X; End;
-    $8E: Begin EA := CPU6502_AmABS; CPU6502_Mem[EA] := CPU6502_X; End;
+    $8E: Begin EA := CPU6502_AmABS;
+               If Not NesBus_Write(EA, CPU6502_X) Then
+                 CPU6502_Mem[EA] := CPU6502_X; End;
     { ----- STY ----- }
     $84: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_Y; End;
     $94: Begin EA := CPU6502_AmZPX; CPU6502_Mem[EA] := CPU6502_Y; End;
-    $8C: Begin EA := CPU6502_AmABS; CPU6502_Mem[EA] := CPU6502_Y; End;
+    $8C: Begin EA := CPU6502_AmABS;
+               If Not NesBus_Write(EA, CPU6502_Y) Then
+                 CPU6502_Mem[EA] := CPU6502_Y; End;
     { ----- Transferts ----- }
     $AA: Begin CPU6502_X := CPU6502_A; CPU6502_SetNZ(CPU6502_X); End; { TAX }
     $A8: Begin CPU6502_Y := CPU6502_A; CPU6502_SetNZ(CPU6502_Y); End; { TAY }
@@ -27489,10 +28149,183 @@ Begin
                CPU6502_PC := CPU6502_Pop16; End;        { RTI }
     { ----- BRK/NOP ----- }
     $00: Begin                                          { BRK -> halt }
-           CPU6502_Halted := True;
-           CPU6502_ExitCode := 0;
+           If CPU6502_Variant = 3 Then Begin
+             { NES : BRK = IRQ logiciel }
+             Inc(CPU6502_PC);
+             CPU6502_Push((CPU6502_PC Shr 8) And $FF);
+             CPU6502_Push(CPU6502_PC And $FF);
+             CPU6502_Push(CPU6502_P Or $30);
+             CPU6502_P := CPU6502_P Or $04;
+             CPU6502_PC := CPU6502_Mem[$FFFE] Or
+                           (Word(CPU6502_Mem[$FFFF]) Shl 8);
+           End Else Begin
+             CPU6502_Halted := True;
+             CPU6502_ExitCode := 0;
+           End;
          End;
     $EA: ;                                              { NOP }
+    { ----- Opcodes indocumentes (jeux NES) ----- }
+    { NOPs implicites 1-octet }
+    $1A, $3A, $5A, $7A, $DA, $FA: ;
+    { DOP imm (NOP + 1 octet) }
+    $80, $82, $89, $C2, $E2: Inc(CPU6502_PC);
+    { DOP zp / zpx }
+    $04, $44, $64: Inc(CPU6502_PC);
+    $14, $34, $54, $74, $D4, $F4: Inc(CPU6502_PC);
+    { TOP abs / abs,X (lit 2 octets) }
+    $0C: Inc(CPU6502_PC, 2);
+    $1C, $3C, $5C, $7C, $DC, $FC: Inc(CPU6502_PC, 2);
+    { LAX : LDA + LDX }
+    $A3: Begin EA := CPU6502_AmIZX; CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_X := CPU6502_A; CPU6502_SetNZ(CPU6502_A); End;
+    $A7: Begin EA := CPU6502_AmZP;  CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_X := CPU6502_A; CPU6502_SetNZ(CPU6502_A); End;
+    $AF: Begin EA := CPU6502_AmABS; CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_X := CPU6502_A; CPU6502_SetNZ(CPU6502_A); End;
+    $B3: Begin EA := CPU6502_AmIZY; CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_X := CPU6502_A; CPU6502_SetNZ(CPU6502_A); End;
+    $B7: Begin EA := CPU6502_AmZPY; CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_X := CPU6502_A; CPU6502_SetNZ(CPU6502_A); End;
+    $BF: Begin EA := CPU6502_AmABY; CPU6502_A := CPU6502_Mem[EA];
+               CPU6502_X := CPU6502_A; CPU6502_SetNZ(CPU6502_A); End;
+    { SAX : store A AND X }
+    $83: Begin EA := CPU6502_AmIZX; CPU6502_Mem[EA] := CPU6502_A And CPU6502_X; End;
+    $87: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_A And CPU6502_X; End;
+    $8F: Begin EA := CPU6502_AmABS; CPU6502_Mem[EA] := CPU6502_A And CPU6502_X; End;
+    $97: Begin EA := CPU6502_AmZPY; CPU6502_Mem[EA] := CPU6502_A And CPU6502_X; End;
+    { DCP : DEC + CMP }
+    $C3: Begin EA := CPU6502_AmIZX; M := (CPU6502_Mem[EA] - 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoCMP(CPU6502_A, M); End;
+    $C7: Begin EA := CPU6502_AmZP;  M := (CPU6502_Mem[EA] - 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoCMP(CPU6502_A, M); End;
+    $CF: Begin EA := CPU6502_AmABS; M := (CPU6502_Mem[EA] - 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoCMP(CPU6502_A, M); End;
+    $D3: Begin EA := CPU6502_AmIZY; M := (CPU6502_Mem[EA] - 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoCMP(CPU6502_A, M); End;
+    $D7: Begin EA := CPU6502_AmZPX; M := (CPU6502_Mem[EA] - 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoCMP(CPU6502_A, M); End;
+    $DB: Begin EA := CPU6502_AmABY; M := (CPU6502_Mem[EA] - 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoCMP(CPU6502_A, M); End;
+    $DF: Begin EA := CPU6502_AmABX; M := (CPU6502_Mem[EA] - 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoCMP(CPU6502_A, M); End;
+    { ISC (ISB) : INC + SBC }
+    $E3: Begin EA := CPU6502_AmIZX; M := (CPU6502_Mem[EA] + 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoSBC(M); End;
+    $E7: Begin EA := CPU6502_AmZP;  M := (CPU6502_Mem[EA] + 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoSBC(M); End;
+    $EF: Begin EA := CPU6502_AmABS; M := (CPU6502_Mem[EA] + 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoSBC(M); End;
+    $F3: Begin EA := CPU6502_AmIZY; M := (CPU6502_Mem[EA] + 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoSBC(M); End;
+    $F7: Begin EA := CPU6502_AmZPX; M := (CPU6502_Mem[EA] + 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoSBC(M); End;
+    $FB: Begin EA := CPU6502_AmABY; M := (CPU6502_Mem[EA] + 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoSBC(M); End;
+    $FF: Begin EA := CPU6502_AmABX; M := (CPU6502_Mem[EA] + 1) And $FF;
+               CPU6502_Mem[EA] := M; CPU6502_DoSBC(M); End;
+    { SLO : ASL + ORA }
+    $03: Begin EA := CPU6502_AmIZX; M := CPU6502_DoASL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Or M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $07: Begin EA := CPU6502_AmZP;  M := CPU6502_DoASL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Or M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $0F: Begin EA := CPU6502_AmABS; M := CPU6502_DoASL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Or M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $13: Begin EA := CPU6502_AmIZY; M := CPU6502_DoASL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Or M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $17: Begin EA := CPU6502_AmZPX; M := CPU6502_DoASL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Or M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $1B: Begin EA := CPU6502_AmABY; M := CPU6502_DoASL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Or M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $1F: Begin EA := CPU6502_AmABX; M := CPU6502_DoASL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Or M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    { RLA : ROL + AND }
+    $23: Begin EA := CPU6502_AmIZX; M := CPU6502_DoROL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A And M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $27: Begin EA := CPU6502_AmZP;  M := CPU6502_DoROL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A And M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $2F: Begin EA := CPU6502_AmABS; M := CPU6502_DoROL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A And M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $33: Begin EA := CPU6502_AmIZY; M := CPU6502_DoROL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A And M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $37: Begin EA := CPU6502_AmZPX; M := CPU6502_DoROL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A And M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $3B: Begin EA := CPU6502_AmABY; M := CPU6502_DoROL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A And M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $3F: Begin EA := CPU6502_AmABX; M := CPU6502_DoROL(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A And M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    { SRE : LSR + EOR }
+    $43: Begin EA := CPU6502_AmIZX; M := CPU6502_DoLSR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Xor M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $47: Begin EA := CPU6502_AmZP;  M := CPU6502_DoLSR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Xor M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $4F: Begin EA := CPU6502_AmABS; M := CPU6502_DoLSR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Xor M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $53: Begin EA := CPU6502_AmIZY; M := CPU6502_DoLSR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Xor M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $57: Begin EA := CPU6502_AmZPX; M := CPU6502_DoLSR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Xor M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $5B: Begin EA := CPU6502_AmABY; M := CPU6502_DoLSR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Xor M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    $5F: Begin EA := CPU6502_AmABX; M := CPU6502_DoLSR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_A := CPU6502_A Xor M;
+               CPU6502_SetNZ(CPU6502_A); End;
+    { RRA : ROR + ADC }
+    $63: Begin EA := CPU6502_AmIZX; M := CPU6502_DoROR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_DoADC(M); End;
+    $67: Begin EA := CPU6502_AmZP;  M := CPU6502_DoROR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_DoADC(M); End;
+    $6F: Begin EA := CPU6502_AmABS; M := CPU6502_DoROR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_DoADC(M); End;
+    $73: Begin EA := CPU6502_AmIZY; M := CPU6502_DoROR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_DoADC(M); End;
+    $77: Begin EA := CPU6502_AmZPX; M := CPU6502_DoROR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_DoADC(M); End;
+    $7B: Begin EA := CPU6502_AmABY; M := CPU6502_DoROR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_DoADC(M); End;
+    $7F: Begin EA := CPU6502_AmABX; M := CPU6502_DoROR(CPU6502_Mem[EA]);
+               CPU6502_Mem[EA] := M; CPU6502_DoADC(M); End;
+    { ANC : AND + carry copie de bit 7 }
+    $0B, $2B: Begin EA := CPU6502_AmIMM;
+                    CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+                    CPU6502_SetNZ(CPU6502_A);
+                    CPU6502_SetC((CPU6502_A And $80) <> 0); End;
+    { ALR : AND + LSR }
+    $4B: Begin EA := CPU6502_AmIMM;
+               CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+               CPU6502_A := CPU6502_DoLSR(CPU6502_A); End;
+    { ARR : AND + ROR (simplifie, drapeaux V/C non exacts) }
+    $6B: Begin EA := CPU6502_AmIMM;
+               CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+               CPU6502_A := CPU6502_DoROR(CPU6502_A); End;
+    { AXS : (A AND X) - imm -> X }
+    $CB: Begin EA := CPU6502_AmIMM;
+               TmpW := (Word(CPU6502_A And CPU6502_X) -
+                        Word(CPU6502_Mem[EA])) And $1FF;
+               CPU6502_X := TmpW And $FF;
+               CPU6502_SetC(TmpW < $100);
+               CPU6502_SetNZ(CPU6502_X); End;
+    { SBC alias }
+    $EB: Begin EA := CPU6502_AmIMM; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
   Else
     EmuVScr_WriteStr(CPU6502_Panel^,
      '[opcode 6502 inconnu $' + M68K_HexN(Op, 2) +
@@ -27606,6 +28439,7 @@ Begin
   Close(F);
   CPU6502_LoadAtariXex := True;
 End;
+{$POP}
 
 { Charger un fichier brut (NES, A2600) }
 Function CPU6502_LoadRaw(Const FileName: String;
@@ -27643,9 +28477,12 @@ Begin
   CPU6502_Halted := False;
   CPU6502_ExitCode := 0;
   CPU6502_Cycles := 0;
-  { Sentinelle de fin : push d une adresse de halt sur la pile }
-  CPU6502_Mem[$FFFE] := $00;
-  CPU6502_Mem[$FFFF] := $00;
+  { Sentinelle de fin : push d une adresse de halt sur la pile.       }
+  { En mode NES, $FFFE/$FFFF est le vecteur IRQ/BRK : ne pas ecraser. }
+  If CPU6502_Variant <> 3 Then Begin
+    CPU6502_Mem[$FFFE] := $00;
+    CPU6502_Mem[$FFFF] := $00;
+  End;
 End;
 
 { ========================================================================== }
@@ -29546,11 +30383,17 @@ Var
  NesHdr: Array[0..15] Of Byte;
  NesBR: Word;
  NesPrgBlocks: Byte;
+ NesChrBlocks: Byte;
+ NesPrgSize: LongInt;
+ NesChrSize: LongInt;
+ NesFrameLimit: LongInt;
+ NesInstrPerFrame: LongInt;
+ NesKeyEsc: Boolean;
 Begin
+ NesActive := False;
  InitEmulatorPanel(P);
  P.BinaryPath := BinaryPath;
- P.TargetCPU := TargetCPU;
- P.Base.Visible := True;
+ P.TargetCPU := TargetCPU; P.Base.Visible := True;
  P.Visible := True;
  P.Running := True;
  P.Fault := 0;
@@ -29800,31 +30643,85 @@ Begin
   End
   Else If TargetCPU = '-CNES' Then Begin
    CPU6502_Variant := 3;
-   { Reset etat PPU }
+   { Compat ancien moteur texte }
    NesPpu_Addr := 0;
    NesPpu_Latch := False;
    NesPpu_Rendered := False;
    FillChar(NesPpu_NameTable, SizeOf(NesPpu_NameTable), $20);
-   { Lire l entete iNES pour determiner la taille PRG (1 ou 2 blocs).      }
-   { NROM-128 (1 bloc, 16 KiB) : miroir $8000 -> $C000.                    }
-   { NROM-256 (2 blocs, 32 KiB) : aucun miroir, charge directement a $8000.}
+   { Reset etat PPU complet }
+   NesPpu_Reset;
+   FillChar(NesChr, SizeOf(NesChr), 0);
+   FillChar(NesPrgRom, SizeOf(NesPrgRom), 0);
+   FillChar(NesChrRom, SizeOf(NesChrRom), 0);
+   NesMapper := 0;
+   NesUseChrRam := False;
+   NesPrgBlocksTotal := 0;
+   NesChrBlocksTotal := 0;
+   { Lecture entete iNES + extraction PRG/CHR/mirroring/mapper }
    NesPrgBlocks := 1;
+   NesChrBlocks := 0;
+   NesMirror := 0;
+   Loaded := False;
    Assign(NesFH, BinaryPath);
    {$I-} Reset(NesFH, 1); {$I+}
    If IOResult = 0 Then Begin
     BlockRead(NesFH, NesHdr, 16, NesBR);
-    Close(NesFH);
     If (NesBR = 16) And (NesHdr[0] = $4E) And (NesHdr[1] = $45) And
-       (NesHdr[2] = $53) And (NesHdr[3] = $1A) Then
+       (NesHdr[2] = $53) And (NesHdr[3] = $1A) Then Begin
      NesPrgBlocks := NesHdr[4];
+     NesChrBlocks := NesHdr[5];
+     NesPrgBlocksTotal := NesPrgBlocks;
+     NesChrBlocksTotal := NesChrBlocks;
+     If NesChrBlocks = 0 Then NesUseChrRam := True;
+     If (NesHdr[6] And $01) <> 0 Then NesMirror := 1
+                                  Else NesMirror := 0;
+     If (NesHdr[6] And $08) <> 0 Then NesMirror := 2;
+     NesMapper := ((NesHdr[6] Shr 4) And $0F) Or (NesHdr[7] And $F0);
+     { Heuristique "DiskDude!" : si bytes 12-15 non nuls, le byte 7   }
+     { contient des donnees garbage (vieux iNES) ; ignorer byte 7.    }
+     If (NesHdr[12] <> 0) Or (NesHdr[13] <> 0) Or
+        (NesHdr[14] <> 0) Or (NesHdr[15] <> 0) Then
+      NesMapper := (NesHdr[6] Shr 4) And $0F;
+     { Skip trainer si bit 2 du flag6 }
+     If (NesHdr[6] And $04) <> 0 Then
+      Seek(NesFH, 16 + 512)
+     Else
+      Seek(NesFH, 16);
+     { Charger PRG-ROM complete dans NesPrgRom }
+     NesPrgSize := LongInt(NesPrgBlocks) * 16384;
+     If NesPrgSize > SizeOf(NesPrgRom) Then NesPrgSize := SizeOf(NesPrgRom);
+     If NesPrgSize > 0 Then
+      BlockRead(NesFH, NesPrgRom, NesPrgSize, NesBR);
+     { Charger CHR-ROM complete dans NesChrRom }
+     NesChrSize := LongInt(NesChrBlocks) * 8192;
+     If NesChrSize > SizeOf(NesChrRom) Then NesChrSize := SizeOf(NesChrRom);
+     If NesChrSize > 0 Then
+      BlockRead(NesFH, NesChrRom, NesChrSize, NesBR);
+     Loaded := True;
+    End;
+    Close(NesFH);
    End;
-   { iNES : 16 octets header, PRG-ROM (16 ou 32 KiB) charge a $8000 }
-   Loaded := CPU6502_LoadRaw(BinaryPath, $8000, 16);
-   If NesPrgBlocks <= 1 Then
-    For Steps := 0 To $3FFF Do
-     CPU6502_Mem[$C000 + Steps] := CPU6502_Mem[$8000 + Steps];
-   { Vecteur RESET en $FFFC/$FFFD }
-   EntryAddr16 := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
+   If Loaded Then Begin
+    { Mapping initial mapper 0 (NROM) : copie directe ; sinon delegue }
+    If NesMapper = 0 Then Begin
+     { NROM : copier PRG en $8000, mirroir si NROM-128 }
+     For Steps := 0 To 16383 Do
+      CPU6502_Mem[$8000 + Steps] := NesPrgRom[Steps];
+     If NesPrgBlocksTotal >= 2 Then
+      For Steps := 0 To 16383 Do
+       CPU6502_Mem[$C000 + Steps] := NesPrgRom[16384 + Steps]
+     Else
+      For Steps := 0 To 16383 Do
+       CPU6502_Mem[$C000 + Steps] := NesPrgRom[Steps];
+     { CHR -> NesChr }
+     If NesChrBlocksTotal >= 1 Then
+      For Steps := 0 To 8191 Do
+       NesChr[Steps] := NesChrRom[Steps];
+    End Else
+     Nes_MapperInit;
+    EntryAddr16 := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
+   End;
+   NesActive := Loaded;
   End
   Else If TargetCPU = '-CATARI2600' Then Begin
    CPU6502_Variant := 4;
@@ -29851,9 +30748,58 @@ Begin
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   Steps := 0;
-  While (Not CPU6502_Halted) And (Steps < 1000000) Do Begin
-   CPU6502_Step;
-   Inc(Steps);
+  If NesActive And (TargetCPU = '-CNES') Then Begin
+   { ----- Boucle NES par trame (60 Hz approx.) ----- }
+   NesFrameLimit    := 36000;  { 10 minutes a 60 Hz }
+   NesInstrPerFrame := 7460;   { ~29780 cycles / 4 cy/instr moyenne }
+   NesFrameNo := 0;
+   NesKeyEsc := False;
+   NesFBFirst := True;
+   FillChar(NesFBPrev, SizeOf(NesFBPrev), $FF);
+   { Premier rendu pour afficher le panneau }
+   DrawEmulatorPanel(P);
+   EntryAddr := GetTimestamp;
+   While (Not CPU6502_Halted) And (NesFrameNo < NesFrameLimit) And
+         (Not NesKeyEsc) Do Begin
+    { Drainer tampon clavier (gestion ESC + activation focus) }
+    While KeyPressed Do Begin
+     NesChrSize := Ord(ReadKey);
+     If NesChrSize = 27 Then NesKeyEsc := True;
+     If NesChrSize = 0 Then If KeyPressed Then ReadKey;
+    End;
+    If NesKeyEsc Then Break;
+    { Lire etat manette pour cette trame }
+    NesPollInput;
+    { Executer une trame d instructions CPU }
+    For NesPrgSize := 0 To NesInstrPerFrame - 1 Do Begin
+     If CPU6502_Halted Then Break;
+     CPU6502_Step;
+     Inc(Steps);
+    End;
+    { Declencher vblank + NMI si active }
+    NesPpuStatus := NesPpuStatus Or $80;
+    If (NesPpuCtrl And $80) <> 0 Then NesNmiPending := True;
+    { Rendre la trame }
+    NesPpu_RenderFrame;
+    { Afficher }
+    DrawEmulatorPanel(P);
+    Inc(NesFrameNo);
+    { Effacer vblank pour la trame suivante (debut prerender) }
+    NesPpuStatus := NesPpuStatus And $7F;
+    NesPpuStatus := NesPpuStatus And $BF; { reset sprite 0 hit }
+    { Pacing 60 Hz : attendre la fin du quantum 16 ms }
+    {$IFDEF WINDOWS}
+    NesChrSize := GetTimestamp - EntryAddr;
+    If NesChrSize < 16 Then WinSleep(16 - NesChrSize);
+    EntryAddr := GetTimestamp;
+    {$ENDIF}
+   End;
+   NesActive := False;
+  End Else Begin
+   While (Not CPU6502_Halted) And (Steps < 1000000) Do Begin
+    CPU6502_Step;
+    Inc(Steps);
+   End;
   End;
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   P.CurFg := 11;
@@ -29861,6 +30807,9 @@ Begin
    EmuVScr_WriteStr(P, '[Fin 6502 : ' +
     IntToStr(Steps) + ' instructions, code=' +
     IntToStr(CPU6502_ExitCode) + ']')
+  Else If TargetCPU = '-CNES' Then
+   EmuVScr_WriteStr(P, '[Emulation NES arretee : ' +
+    IntToStr(Steps) + ' instr / ' + IntToStr(NesFrameNo) + ' trames]')
   Else
    EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
   P.CurFg := OldFg;
