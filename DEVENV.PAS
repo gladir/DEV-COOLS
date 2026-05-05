@@ -29267,6 +29267,14 @@ Begin
   P.CurFg := 15;  { blanc      }
   P.CurBg := 9;   { bleu clair }
   EmuVScr_Clear(P);
+ End
+ Else If TargetCPU = '-CCOCO3' Then
+ Begin
+  P.Cols := 32;   { CoCo 3 ecran texte 32 colonnes }
+  P.Rows := 16;
+  P.CurFg := 0;   { noir       }
+  P.CurBg := 10;  { vert clair }
+  EmuVScr_Clear(P);
  End;
  IsX86 := (TargetCPU = '-CD') Or (TargetCPU = '-CP');
  IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
