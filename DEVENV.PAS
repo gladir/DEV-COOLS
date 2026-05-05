@@ -3197,6 +3197,54 @@ Var
  M6809_Cycles : LongInt;
  M6809_Panel  : ^TEmulatorPanel;
  M6809_Variant: Integer;     { 0=CoCo3 1=Dragon32 2=Dragon64 3=TO7 4=TO8 5=MO5 }
+ { --- Etat emulateur CoCo 3 (jalon 1 : VDG alpha 32x16) --- }
+ Coco3_Active   : Boolean;
+ Coco3_FB       : Array[0..199, 0..255] Of Byte;  { framebuffer 256x200 idx couleur EGA }
+ Coco3_FBPrev   : Array[0..199, 0..255] Of Byte;
+ Coco3_FBFirst  : Boolean;
+ Coco3_FrameNo  : LongInt;
+ { --- Jalon 2 : RAM physique 512K + MMU 8 segments + registres GIME --- }
+ { 64 banks * 8K = 512K. PAK image conservee dans son propre buffer pour
+   pouvoir etre mappee a la demande. }
+ Coco3_PhysMem  : Array[0..$7FFFF] Of Byte;
+ Coco3_PakRom   : Array[0..$3FFF] Of Byte;  { 16K cart ROM image }
+ Coco3_PakSize  : LongInt;
+ { MMU : 2 taches (0/1) x 8 segments de 8K. Chaque entree = numero de bank
+   (0..63) du buffer PhysMem ; valeur >= $80 = ROM cartouche (offset *8K). }
+ Coco3_MMU      : Array[0..1, 0..7] Of Byte;
+ Coco3_MMUTask  : Byte;        { bit 0 de $FF91 : tache active }
+ Coco3_MMUEnable: Boolean;     { bit 6 de $FF90 : MMU activee  }
+ { Registres GIME ($FF90..$FFDF, 80 octets) }
+ Coco3_GimeReg  : Array[$90..$DF] Of Byte;
+ { --- Jalon 5 : etat IRQ/timer/PIA CoCo 3 --- }
+ Coco3_TimerInit  : Word;     { valeur init timer ($FF94/$FF95) }
+ Coco3_TimerCount : Word;     { compteur timer courant          }
+ Coco3_PIA0_DDRA  : Byte;     { PIA0 $FF00 data dir A           }
+ Coco3_PIA0_CRA   : Byte;     { PIA0 $FF01 control A            }
+ Coco3_PIA0_DDRB  : Byte;     { PIA0 $FF02 data dir B           }
+ Coco3_PIA0_CRB   : Byte;     { PIA0 $FF03 control B            }
+ Coco3_PIA0_PortB : Byte;     { dernier PB scan                 }
+ Coco3_VsyncCount : LongInt;  { nb VSYNC IRQ tirees             }
+ { --- Jalon 6 : compatibilite VDG/SAM legacy CoCo 1/2 --- }
+ Coco3_PIA1_PB    : Byte;     { $FF22 mode VDG (bits 7..3)      }
+ Coco3_SAM        : Word;     { 16 bits assembles depuis FFC0-FFDF }
+ Coco3_SamVidBase : Word;     { adresse video VDG (F0..F6 << 9) }
+ { --- Jalon 7 : ROMMAP + dual ROM/RAM --- }
+ Coco3_RomImg     : Array[0..$7FFF] Of Byte;  { ROM interne 32K }
+ Coco3_RomLoaded  : Boolean;
+ Coco3_RomMode    : Byte;     { $FF90 bits 1..0 (MC1, MC0)     }
+ Coco3_SegIsRom   : Array[0..7] Of Boolean;
+ { --- Jalon 8 : matrice clavier 7x8 (lignes PA0..PA6 x cols PB0..PB7) --- }
+ Coco3_KbdMatrix  : Array[0..6] Of Byte;  { 1 = relachee, 0 = pressee }
+ Coco3_KbdHold    : Integer;              { trames restantes touche pressee }
+ { Jalon 11 : diagnostics }
+ Coco3_DbgUnknown : LongInt;              { compteur d opcodes inconnus }
+ Coco3_DbgLastBad : Word;                 { dernier PC d opcode inconnu }
+ Coco3_DbgFF22Wr  : LongInt;              { ecritures sur PIA1 PB }
+ Coco3_DbgSamWr   : LongInt;              { ecritures registres SAM }
+ { Sauvegarde : pour chaque segment visible (0..7), bank physique source.
+   Permet de re-ecrire dans PhysMem avant un changement de bank. }
+ Coco3_LiveBank : Array[0..7] Of Byte;
  { Indicateur de sortie }
  QuitRequested  : Boolean;
  { Drapeau nettoyage ecran transition page de demarrage -> IDE }
@@ -22497,6 +22545,48 @@ Begin
   NesFBFirst := False;
   Exit;
  End;
+ { Mode CoCo 3 : rendu pixel du framebuffer 256x200 ------------------- }
+ If Coco3_Active And (P.TargetCPU = '-CCOCO3') Then Begin
+  NesScale := 2;
+  GridW := 256 * NesScale;
+  GridH := 200 * NesScale;
+  P.PanelX := (ScrW - GridW) Div 2;
+  P.PanelY := 16;
+  GridX := P.PanelX;
+  GridY := P.PanelY + 22;
+  If Coco3_FBFirst Then Begin
+   DrawFilledRect(P.PanelX - 2, P.PanelY - 2,
+    P.PanelX + GridW + 2, P.PanelY + 22 + GridH + 2, CLR_BACKGROUND);
+  End;
+  DrawFilledRect(P.PanelX, P.PanelY,
+   P.PanelX + GridW, P.PanelY + 20, CLR_TITLEBAR_ACTIVE);
+  Title := 'CoCo3 PC=$' + HexWord(M6809_PC) +
+           ' F=' + IntToStr(Coco3_FrameNo) +
+           ' P22=' + HexByte(Coco3_PIA1_PB) +
+           ' SAM=' + HexWord(Coco3_SamVidBase) +
+           ' MMU=' + HexByte(Coco3_MMU[Coco3_MMUTask, 6]) +
+                     HexByte(Coco3_MMU[Coco3_MMUTask, 7]) +
+           ' UNK=' + IntToStr(Coco3_DbgUnknown) +
+           ' LB=$' + HexWord(Coco3_DbgLastBad) +
+           ' SW=' + IntToStr(Coco3_DbgSamWr) +
+           ' P22W=' + IntToStr(Coco3_DbgFF22Wr);
+  DrawText(P.PanelX + 6, P.PanelY + 4, Title, CLR_HIGHLIGHTTEXT);
+  DrawText(P.PanelX + GridW - 60, P.PanelY + 4,
+   '[Esc]', CLR_HIGHLIGHTTEXT);
+  For Sy := 0 To 199 Do
+   For Sx := 0 To 255 Do Begin
+    If Coco3_FBFirst Or (Coco3_FB[Sy, Sx] <> Coco3_FBPrev[Sy, Sx]) Then Begin
+     Cell.Bg := Coco3_FB[Sy, Sx];
+     PixX := GridX + Sx * NesScale;
+     PixY := GridY + Sy * NesScale;
+     DrawFilledRect(PixX, PixY,
+      PixX + NesScale - 1, PixY + NesScale - 1, Cell.Bg);
+     Coco3_FBPrev[Sy, Sx] := Coco3_FB[Sy, Sx];
+    End;
+   End;
+  Coco3_FBFirst := False;
+  Exit;
+ End;
  { Le panneau couvre toute la zone editeur (sous le menu/toolbar,
    au dessus de la barre d etat). Pour simplicite, on le centre. }
  GridW := P.Cols * P.CharW;
@@ -29715,17 +29805,31 @@ End;
 {   JSR $E803 (Thomson PUTC)        : imprime A                              }
 { ========================================================================== }
 
+{ Forward : trappes I/O CoCo 3 (definition plus loin avec les autres
+  routines Coco3_*) }
+Function  Coco3_IoWrite(Addr: Word; V: Byte): Boolean; Forward;
+Function  Coco3_IoRead(Addr: Word): Byte;             Forward;
+
 Function M6809_Rd(A: Word): Byte;
-Begin M6809_Rd := M6809_Mem[A]; End;
+Begin
+  If Coco3_Active And (A >= $FF00) Then
+    M6809_Rd := Coco3_IoRead(A)
+  Else
+    M6809_Rd := M6809_Mem[A];
+End;
 Procedure M6809_Wr(A: Word; V: Byte);
-Begin M6809_Mem[A] := V; End;
+Begin
+  If Coco3_Active And (A >= $FF00) Then
+    If Coco3_IoWrite(A, V) Then Exit;
+  M6809_Mem[A] := V;
+End;
 Function M6809_Rd16(A: Word): Word;
-Begin M6809_Rd16 := (Word(M6809_Mem[A]) Shl 8) Or
-                    M6809_Mem[Word(A + 1)]; End;
+Begin M6809_Rd16 := (Word(M6809_Rd(A)) Shl 8) Or
+                    M6809_Rd(Word(A + 1)); End;
 Procedure M6809_Wr16(A: Word; V: Word);
 Begin
-  M6809_Mem[A] := (V Shr 8) And $FF;
-  M6809_Mem[Word(A + 1)] := V And $FF;
+  M6809_Wr(A, (V Shr 8) And $FF);
+  M6809_Wr(Word(A + 1), V And $FF);
 End;
 
 Function M6809_GetD: Word;
@@ -30327,7 +30431,8 @@ Begin
                 M6809_Push16S(M6809_PC); M6809_PC := Tgt;
               End; End;                                       { LBSR }
     $39: Begin { RTS }
-           If (M6809_S = $FFFE) Or (M6809_S >= $FFFE) Then Begin
+           If ((M6809_S = $FFFE) Or (M6809_S >= $FFFE))
+              And (Not Coco3_Active) Then Begin
              M6809_Halted := True; M6809_ExitCode := 0;
            End Else M6809_PC := M6809_Pop16S;
          End;
@@ -30552,11 +30657,17 @@ Begin
     $10: M6809_StepPage2;
     $11: M6809_StepPage3;
   Else
-    EmuVScr_WriteStr(M6809_Panel^,
-     '[opcode 6809 inconnu $' + M68K_HexN(Op, 2) +
-     ' au PC $' + M68K_HexN(Word(M6809_PC - 1), 4) + ']');
-    M6809_Halted := True;
-    M6809_ExitCode := 1;
+    If Coco3_Active Then Begin
+      { Pour CoCo 3 : tolerer les opcodes non implementes (NOP silencieux) }
+      Inc(Coco3_DbgUnknown);
+      Coco3_DbgLastBad := Word(M6809_PC - 1);
+    End Else Begin
+      EmuVScr_WriteStr(M6809_Panel^,
+       '[opcode 6809 inconnu $' + M68K_HexN(Op, 2) +
+       ' au PC $' + M68K_HexN(Word(M6809_PC - 1), 4) + ']');
+      M6809_Halted := True;
+      M6809_ExitCode := 1;
+    End;
   End;
 End;
 
@@ -30624,7 +30735,959 @@ Begin
   M6809_LoadDECB := True;
 End;
 
-{ Charger un binaire Thomson .bin : format Motorola standard               }
+{ ============================================================
+  Emulateur Tandy CoCo 3 - Jalon 1 :
+  - Chargement cartouche .PAK (raw, charge a $C000, 16K max)
+  - Reset CoCo 3 (PC = $C000, S = $7FFE)
+  - Rendu VDG alpha mode (32 colonnes x 16 lignes a $0400-$05FF)
+  - Carte memoire simplifiee : flat 64K via M6809_Mem
+  ============================================================ }
+
+{ Charger une cartouche / ROM CoCo brute. Pour les fichiers <= 16K on
+  charge a $C000 (cartouche standard). Pour les fichiers > 16K (ROM
+  BASIC 32K), on charge a $8000 et le point d entree est lu dans le
+  vecteur RESET en $FFFE/$FFFF. }
+Function Coco3_LoadPAK(Const FileName: String;
+                       Var EntryAddr: Word): Boolean;
+Var
+  F: File;
+  B: Byte;
+  I: LongInt;
+  LoadAddr: Word;
+  FileSize: LongInt;
+  Buf: Array[0..$7FFF] Of Byte;
+  IsSystemROM: Boolean;
+  HdrSkip: LongInt;
+  EffSize: LongInt;
+Begin
+  Coco3_LoadPAK := False;
+  Assign(F, FileName);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  FileSize := System.FileSize(F);
+  If FileSize > $8000 Then FileSize := $8000;
+  I := 0;
+  FillChar(Coco3_PakRom, SizeOf(Coco3_PakRom), $FF);
+  FillChar(Buf, SizeOf(Buf), $FF);
+  While (Not Eof(F)) And (I < FileSize) Do Begin
+    BlockRead(F, B, 1);
+    Buf[I] := B;
+    Inc(I);
+  End;
+  Close(F);
+  { Jalon 10 : detection en-tete .PAK desactivee (les .PAK CoCo standard
+    sont du code brut a $C000, le $FF initial peut etre une instruction
+    STU extended valide). On garde HdrSkip = 0 pour les .PAK ; les vrais
+    PAK Multi-Pak avec header sont rares. }
+  HdrSkip := 0;
+  EffSize := FileSize - HdrSkip;
+  If EffSize < 0 Then EffSize := 0;
+  { Jalon 10 : .PAK = toujours cartouche (16K max a $C000). Les fichiers
+    >16K sont des carts a bank-switching (gere via $FF40 plus tard) ;
+    on ne charge que le premier banc. Les ROM systeme CoCo 3 viennent
+    via .ROM uniquement. }
+  IsSystemROM := (Pos('.ROM', UpCaseStr(FileName)) > 0) And
+                 (FileSize > $4000);
+  If IsSystemROM Then LoadAddr := $8000
+                 Else LoadAddr := $C000;
+  Coco3_PakSize := EffSize;
+  If IsSystemROM Then Begin
+    { Jalon 7 : ROM systeme 16K-32K -> Coco3_RomImg, retenue meme apres
+      ecritures MMU. }
+    FillChar(Coco3_RomImg, SizeOf(Coco3_RomImg), $FF);
+    For I := 0 To EffSize - 1 Do
+      Coco3_RomImg[I] := Buf[I];
+    Coco3_RomLoaded := True;
+    Coco3_RomMode := 2;  { 32K ROM interne par defaut }
+    For I := 0 To EffSize - 1 Do
+      If (LongInt(LoadAddr) + I) <= $FFFF Then
+        M6809_Mem[LoadAddr + I] := Buf[I];
+    EntryAddr := (Word(M6809_Mem[$FFFE]) Shl 8) Or M6809_Mem[$FFFF];
+  End Else Begin
+    { Cartouche standard <=16K (apres saut d en-tete) : copie dans
+      PakRom + miroir a $C000. }
+    If EffSize > $4000 Then EffSize := $4000;
+    For I := 0 To EffSize - 1 Do
+      If I < SizeOf(Coco3_PakRom) Then
+        Coco3_PakRom[I] := Buf[HdrSkip + I];
+    For I := 0 To EffSize - 1 Do
+      If (LongInt(LoadAddr) + I) <= $FFFF Then
+        M6809_Mem[LoadAddr + I] := Buf[HdrSkip + I];
+    EntryAddr := $C000;
+  End;
+  If EntryAddr = 0 Then EntryAddr := LoadAddr;
+  Coco3_LoadPAK := True;
+End;
+
+{ --- Jalon 2 : MMU CoCo 3 ---------------------------------------- }
+{ Numerotation banks :
+   $00..$3F  : 64 banks de 8K dans Coco3_PhysMem (512K total)
+   $80..$87  : 8 banks de 8K de la ROM cartouche (16K seulement = 2 banks
+              utilises, les autres sont copies miroir / $FF)            }
+
+{ Renvoie l offset physique pour un bank donne dans PhysMem (lecture seule
+  pour la ROM cart). }
+Function Coco3_BankBaseAddr(Bank: Byte): LongInt;
+Begin
+  If Bank < $40 Then
+    Coco3_BankBaseAddr := LongInt(Bank) Shl 13   { bank * 8192 }
+  Else
+    Coco3_BankBaseAddr := -1;  { ROM : pas dans PhysMem }
+End;
+
+{ Vide les donnees ecrites par le CPU (M6809_Mem) vers PhysMem pour le bank
+  RAM en cours sur le segment specifie. Sans effet pour la ROM cart ou
+  un segment shadow ROM. }
+Procedure Coco3_FlushSegment(Seg: Byte);
+Var
+  Bank: Byte;
+  Base: LongInt;
+  I: Integer;
+Begin
+  If Coco3_SegIsRom[Seg And 7] Then Exit;
+  Bank := Coco3_LiveBank[Seg And 7];
+  Base := Coco3_BankBaseAddr(Bank);
+  If Base < 0 Then Exit;
+  For I := 0 To $1FFF Do
+    Coco3_PhysMem[Base + I] := M6809_Mem[(LongInt(Seg And 7) Shl 13) + I];
+End;
+
+{ --- Jalon 7 : test si la ROM interne couvre ce segment ---
+  La ROM interne est visible aux segments 4..7 ($8000-$FFFF) sauf en
+  mode "all RAM" (RomMode=3) ou si aucune ROM n est chargee.            }
+Function Coco3_RomVisibleAt(Seg: Byte): Boolean;
+Begin
+  Coco3_RomVisibleAt := False;
+  If Not Coco3_RomLoaded Then Exit;
+  If (Seg And 7) < 4 Then Exit;
+  If Coco3_RomMode = 3 Then Exit;
+  Coco3_RomVisibleAt := True;
+End;
+
+{ Remplit la fenetre 8K du segment depuis l image ROM interne ou cart. }
+Procedure Coco3_LoadSegmentROM(Seg: Byte);
+Var
+  Dst: LongInt;
+  I: Integer;
+  PakOfs: LongInt;
+  RomOfs: LongInt;
+Begin
+  Dst := LongInt(Seg And 7) Shl 13;
+  Case Coco3_RomMode Of
+    0, 1: Begin
+      { 16K interne $8000-$BFFF (segs 4-5) + 16K cart $C000-$FFFF (6-7) }
+      If (Seg And 7) <= 5 Then Begin
+        RomOfs := LongInt((Seg And 7) - 4) Shl 13;
+        For I := 0 To $1FFF Do
+          M6809_Mem[Dst + I] := Coco3_RomImg[RomOfs + I];
+      End Else Begin
+        PakOfs := LongInt((Seg And 7) - 6) Shl 13;
+        For I := 0 To $1FFF Do
+          If (PakOfs + I) < Coco3_PakSize Then
+            M6809_Mem[Dst + I] := Coco3_PakRom[PakOfs + I]
+          Else
+            M6809_Mem[Dst + I] := $FF;
+      End;
+    End;
+  Else
+    { Mode 2 ou autre : 32K ROM interne $8000-$FFFF }
+    RomOfs := LongInt((Seg And 7) - 4) Shl 13;
+    For I := 0 To $1FFF Do
+      M6809_Mem[Dst + I] := Coco3_RomImg[RomOfs + I];
+  End;
+  Coco3_SegIsRom[Seg And 7] := True;
+End;
+
+{ Charge le contenu d un bank vers la fenetre 8K du segment specifie. }
+Procedure Coco3_LoadSegment(Seg: Byte; Bank: Byte);
+Var
+  Base: LongInt;
+  I: Integer;
+  PakOfs: LongInt;
+Begin
+  { Jalon 7 : si la ROM doit etre visible a ce segment, l overlay
+    s applique quel que soit le bank programme dans la MMU. }
+  If Coco3_RomVisibleAt(Seg) Then Begin
+    Coco3_LoadSegmentROM(Seg);
+    Coco3_LiveBank[Seg And 7] := Bank;
+    Exit;
+  End;
+  Coco3_SegIsRom[Seg And 7] := False;
+  Base := Coco3_BankBaseAddr(Bank);
+  If Base >= 0 Then Begin
+    For I := 0 To $1FFF Do
+      M6809_Mem[(LongInt(Seg And 7) Shl 13) + I] :=
+        Coco3_PhysMem[Base + I];
+  End Else Begin
+    { ROM cart : Bank $80..$87 = pages 0..7 de PakRom (16K = 2 pages) }
+    PakOfs := LongInt(Bank And $07) Shl 13;
+    For I := 0 To $1FFF Do
+      If (PakOfs + I) < Coco3_PakSize Then
+        M6809_Mem[(LongInt(Seg And 7) Shl 13) + I] :=
+          Coco3_PakRom[PakOfs + I]
+      Else
+        M6809_Mem[(LongInt(Seg And 7) Shl 13) + I] := $FF;
+  End;
+  Coco3_LiveBank[Seg And 7] := Bank;
+End;
+
+{ Rafraichit les segments 4..7 apres un changement de mode ROM. }
+Procedure Coco3_RefreshRomSegments;
+Var
+  Seg: Byte;
+Begin
+  For Seg := 4 To 7 Do Begin
+    If Coco3_RomVisibleAt(Seg) Then
+      Coco3_LoadSegmentROM(Seg)
+    Else If Coco3_SegIsRom[Seg] Then Begin
+      { ROM etait visible, plus maintenant : recharger depuis MMU/RAM }
+      Coco3_SegIsRom[Seg] := False;
+      If Coco3_MMUEnable Then
+        Coco3_LoadSegment(Seg, Coco3_MMU[Coco3_MMUTask, Seg])
+      Else
+        Coco3_LoadSegment(Seg, $38 + Seg);
+    End;
+  End;
+End;
+
+{ Reprogramme un segment de la MMU (FFA0..FFA7 ou FFA8..FFAF). }
+Procedure Coco3_SetMMU(RegOfs: Byte; NewBank: Byte);
+Var
+  Task, Seg: Byte;
+Begin
+  If RegOfs < $A8 Then Begin
+    Task := 0; Seg := RegOfs - $A0;
+  End Else Begin
+    Task := 1; Seg := RegOfs - $A8;
+  End;
+  Coco3_MMU[Task, Seg] := NewBank And $7F;
+  { N appliquer que si la tache courante = celle qu on modifie ET MMU
+    activee }
+  If Coco3_MMUEnable And (Task = Coco3_MMUTask) Then Begin
+    If Coco3_LiveBank[Seg] <> (NewBank And $7F) Then Begin
+      Coco3_FlushSegment(Seg);
+      Coco3_LoadSegment(Seg, NewBank And $7F);
+    End;
+  End;
+End;
+
+{ Bascule la tache active (bit 0 de $FF91). Resynchronise les 8 segments. }
+Procedure Coco3_SetTask(NewTask: Byte);
+Var
+  Seg: Byte;
+Begin
+  NewTask := NewTask And 1;
+  If NewTask = Coco3_MMUTask Then Exit;
+  { Sauvegarder les 8 segments actuels }
+  For Seg := 0 To 7 Do Coco3_FlushSegment(Seg);
+  Coco3_MMUTask := NewTask;
+  { Charger les 8 segments de la nouvelle tache }
+  For Seg := 0 To 7 Do
+    Coco3_LoadSegment(Seg, Coco3_MMU[Coco3_MMUTask, Seg]);
+End;
+
+{ Active ou desactive la MMU (bit 6 de $FF90). Quand desactivee, la map
+  par defaut $38..$3F (banks 56..63 = haut 64K de PhysMem) est utilisee. }
+Procedure Coco3_SetMMUEnable(Enable: Boolean);
+Var
+  Seg: Byte;
+Begin
+  If Enable = Coco3_MMUEnable Then Exit;
+  { Sauvegarder l etat actuel }
+  For Seg := 0 To 7 Do Coco3_FlushSegment(Seg);
+  Coco3_MMUEnable := Enable;
+  If Enable Then
+    For Seg := 0 To 7 Do
+      Coco3_LoadSegment(Seg, Coco3_MMU[Coco3_MMUTask, Seg])
+  Else
+    For Seg := 0 To 7 Do
+      Coco3_LoadSegment(Seg, $38 + Seg);
+End;
+
+{ Trappe d ecriture I/O ($FF00-$FFFF) pour le CoCo 3.
+  Renvoie True si l ecriture est consommee (ne pas stocker dans M6809_Mem). }
+Function Coco3_IoWrite(Addr: Word; V: Byte): Boolean;
+Var
+  Bit, Pair: Byte;
+Begin
+  Coco3_IoWrite := False;
+  { PIA0 $FF00..$FF03 : clavier/joystick }
+  Case Addr Of
+    $FF00: Begin Coco3_PIA0_PortB := V; Coco3_IoWrite := True; Exit; End;
+    $FF01: Begin Coco3_PIA0_CRA := V;   Coco3_IoWrite := True; Exit; End;
+    $FF02: Begin Coco3_PIA0_DDRB := V;  Coco3_IoWrite := True; Exit; End;
+    $FF03: Begin Coco3_PIA0_CRB := V;   Coco3_IoWrite := True; Exit; End;
+    $FF22: Begin
+             Coco3_PIA1_PB := V;
+             Inc(Coco3_DbgFF22Wr);
+             Coco3_IoWrite := True; Exit;
+           End;
+  End;
+  { Registres SAM $FFC0..$FFDF : 16 paires set/clear pour 16 bits.
+    Adresses paires (FFC0, FFC2, ..., FFDE) = clear bit ;
+    adresses impaires = set bit. }
+  If (Addr >= $FFC0) And (Addr <= $FFDF) Then Begin
+    Bit := (Addr - $FFC0) Shr 1;  { 0..15 }
+    Pair := (Addr - $FFC0) And 1;
+    Inc(Coco3_DbgSamWr);
+    If Pair = 1 Then
+      Coco3_SAM := Coco3_SAM Or (Word(1) Shl Bit)
+    Else
+      Coco3_SAM := Coco3_SAM And (Not (Word(1) Shl Bit));
+    { Bits F0..F6 = bits 3..9 du SAM (offset video / 512). }
+    Coco3_SamVidBase := ((Coco3_SAM Shr 3) And $7F) Shl 9;
+    Coco3_IoWrite := True;
+    Exit;
+  End;
+  If (Addr >= $FF90) And (Addr <= $FFDF) Then Begin
+    Coco3_GimeReg[Addr And $FF] := V;
+    Case Addr Of
+      $FF90: Begin
+               Coco3_RomMode := V And 3;
+               Coco3_SetMMUEnable((V And $40) <> 0);
+               Coco3_RefreshRomSegments;
+             End;
+      $FF91: Coco3_SetTask(V And 1);
+      $FF94: Begin
+               Coco3_TimerInit :=
+                 (Coco3_TimerInit And $00FF) Or (Word(V And $0F) Shl 8);
+               Coco3_TimerCount := Coco3_TimerInit;
+             End;
+      $FF95: Begin
+               Coco3_TimerInit :=
+                 (Coco3_TimerInit And $0F00) Or V;
+               Coco3_TimerCount := Coco3_TimerInit;
+             End;
+    End;
+    Coco3_IoWrite := True;
+    Exit;
+  End;
+  If (Addr >= $FFA0) And (Addr <= $FFAF) Then Begin
+    Coco3_SetMMU(Addr And $FF, V);
+    Coco3_IoWrite := True;
+    Exit;
+  End;
+End;
+
+{ Trappe de lecture I/O ($FF00-$FFFF). Renvoie la valeur si interceptee,
+  sinon renvoie M6809_Mem[Addr]. }
+Function Coco3_IoRead(Addr: Word): Byte;
+Var
+  Sense, ColMask, Row: Byte;
+  KbdRet: Byte;
+Begin
+  { PIA0 clavier : pas de touche -> $7F (toutes lignes hautes), accuse
+    sur les bits de PB. Pour le jalon 5 on reporte simplement $FF. }
+  Case Addr Of
+    $FF00: Begin
+             { Jalon 8 : scan PIA0. PB (output) selectionne les colonnes
+               (bit=0 = active). On retourne PA = AND des lignes pour
+               les colonnes actives (bit=0 si une touche de cette
+               ligne est pressee dans une colonne active). }
+             ColMask := Coco3_PIA0_PortB;  { bit=0 -> colonne active }
+             Sense := $7F;
+             For Row := 0 To 6 Do Begin
+               KbdRet := Coco3_KbdMatrix[Row] Or ColMask;
+               If KbdRet <> $FF Then
+                 Sense := Sense And (Not (Byte(1) Shl Row));
+             End;
+             { Lecture de PA acquitte CA1 (HSYNC flag) }
+             Coco3_PIA0_CRA := Coco3_PIA0_CRA And $7F;
+             Coco3_IoRead := Sense;
+             Exit;
+           End;
+    $FF01: Begin Coco3_IoRead := Coco3_PIA0_CRA;  Exit; End;
+    $FF02: Begin
+             { Lecture de PB acquitte CB1 (VSYNC flag) }
+             Coco3_PIA0_CRB := Coco3_PIA0_CRB And $7F;
+             Coco3_IoRead := Coco3_PIA0_PortB; Exit;
+           End;
+    $FF03: Begin Coco3_IoRead := Coco3_PIA0_CRB;  Exit; End;
+    $FF22: Begin Coco3_IoRead := Coco3_PIA1_PB; Exit; End;
+    { Vecteurs CPU $FFF0-$FFFF : sur CoCo 3 ils sont fournis par le
+      segment 7 (mappe par MMU). Comme M6809_Mem refletera deja le bon
+      contenu via LoadSegment, on tombe sur le path par defaut. }
+  End;
+  If (Addr >= $FFC0) And (Addr <= $FFDF) Then Begin
+    Coco3_IoRead := $FF;  { lecture sans effet, retourne floating }
+    Exit;
+  End;
+  If (Addr >= $FF90) And (Addr <= $FFDF) Then
+    Coco3_IoRead := Coco3_GimeReg[Addr And $FF]
+  Else If (Addr >= $FFA0) And (Addr <= $FFA7) Then
+    Coco3_IoRead := Coco3_MMU[0, (Addr - $FFA0) And 7]
+  Else If (Addr >= $FFA8) And (Addr <= $FFAF) Then
+    Coco3_IoRead := Coco3_MMU[1, (Addr - $FFA8) And 7]
+  Else
+    Coco3_IoRead := M6809_Mem[Addr];
+End;
+
+{ --- Jalon 5 : injection d interruption IRQ/FIRQ -------------- }
+{ Pousse l etat complet (E=1 dans CC) et saute via le vecteur 16 bits
+  loge a VecAddr ($FFF8 pour IRQ, $FFF6 pour FIRQ).
+  Verifie le masque CC.I/F. Aucun effet si masquee. }
+Procedure Coco3_FireIrq(VecAddr: Word; FastIrq: Boolean);
+Var
+  Vec: Word;
+Begin
+  If FastIrq Then Begin
+    If (M6809_CC And $40) <> 0 Then Exit;  { F=1 : masquee }
+    { FIRQ : push PC + CC seulement, E=0 }
+    M6809_CC := M6809_CC And $7F;
+    M6809_Push16S(M6809_PC);
+    M6809_Push8S(M6809_CC);
+    M6809_CC := M6809_CC Or $50;  { I=1, F=1 }
+  End Else Begin
+    If (M6809_CC And $10) <> 0 Then Exit;  { I=1 : masquee }
+    { IRQ : push tout, E=1 }
+    M6809_CC := M6809_CC Or $80;
+    M6809_Push16S(M6809_PC);
+    M6809_Push16S(M6809_U);
+    M6809_Push16S(M6809_Y);
+    M6809_Push16S(M6809_X);
+    M6809_Push8S(M6809_DP);
+    M6809_Push8S(M6809_B);
+    M6809_Push8S(M6809_A);
+    M6809_Push8S(M6809_CC);
+    M6809_CC := M6809_CC Or $10;  { I=1 (F inchangee) }
+  End;
+  Vec := (Word(M6809_Rd(VecAddr)) Shl 8) Or M6809_Rd(VecAddr + 1);
+  M6809_PC := Vec;
+End;
+
+{ --- Jalon 8 : clavier matriciel CoCo --------------------------- }
+{ Mapper un caractere ASCII vers (ligne, colonne) dans la matrice 7x8.
+  Renvoie False si pas de correspondance. }
+Function Coco3_KeyToMatrix(Ch: Char; Var Row, Col: Integer): Boolean;
+Var
+  C: Byte;
+Begin
+  Coco3_KeyToMatrix := True;
+  C := Ord(UpCase(Ch));
+  If (C >= Ord('@')) And (C <= Ord('G')) Then Begin
+    Row := 0; Col := C - Ord('@'); Exit;
+  End;
+  If (C >= Ord('H')) And (C <= Ord('O')) Then Begin
+    Row := 1; Col := C - Ord('H'); Exit;
+  End;
+  If (C >= Ord('P')) And (C <= Ord('W')) Then Begin
+    Row := 2; Col := C - Ord('P'); Exit;
+  End;
+  If (C >= Ord('X')) And (C <= Ord('Z')) Then Begin
+    Row := 3; Col := C - Ord('X'); Exit;
+  End;
+  If (C >= Ord('0')) And (C <= Ord('7')) Then Begin
+    Row := 4; Col := C - Ord('0'); Exit;
+  End;
+  If (C >= Ord('8')) And (C <= Ord('9')) Then Begin
+    Row := 5; Col := C - Ord('8'); Exit;
+  End;
+  Case C Of
+    Ord(' '): Begin Row := 3; Col := 7; End;
+    Ord(':'): Begin Row := 5; Col := 2; End;
+    Ord(';'): Begin Row := 5; Col := 3; End;
+    Ord(','): Begin Row := 5; Col := 4; End;
+    Ord('-'): Begin Row := 5; Col := 5; End;
+    Ord('.'): Begin Row := 5; Col := 6; End;
+    Ord('/'): Begin Row := 5; Col := 7; End;
+    13:       Begin Row := 6; Col := 0; End;  { ENTER }
+    8:        Begin Row := 3; Col := 5; End;  { BACKSPACE -> LEFT  }
+  Else
+    Coco3_KeyToMatrix := False;
+  End;
+End;
+
+{ Pousser une touche dans la matrice clavier pour quelques trames. }
+Procedure Coco3_PressKey(Ch: Char);
+Var
+  Row, Col: Integer;
+Begin
+  If Coco3_KeyToMatrix(Ch, Row, Col) Then Begin
+    Coco3_KbdMatrix[Row] := Coco3_KbdMatrix[Row] And
+                            (Not (Byte(1) Shl Col));
+    Coco3_KbdHold := 4;
+  End;
+End;
+
+{ Liberer toutes les touches apres l intervalle de hold. }
+Procedure Coco3_KbdTick;
+Var
+  I: Integer;
+Begin
+  If Coco3_KbdHold > 0 Then Begin
+    Dec(Coco3_KbdHold);
+    If Coco3_KbdHold = 0 Then
+      For I := 0 To 6 Do Coco3_KbdMatrix[I] := $FF;
+  End;
+End;
+
+{ Jalon 9 : HSYNC IRQ (CA1 PIA0). Appelee 262 fois par trame.
+  Met a jour le flag CRA bit 7 et tire IRQ si CRA bit 0 enable. }
+Procedure Coco3_HsyncIrq;
+Begin
+  Coco3_PIA0_CRA := Coco3_PIA0_CRA Or $80;
+  If (Coco3_PIA0_CRA And $01) <> 0 Then
+    Coco3_FireIrq($FFF8, False);
+End;
+
+{ Tirer une VSYNC IRQ a la fin de chaque trame, si autorisee.
+  GIME $FF92 bit 3 = enable VSYNC IRQ.
+  GIME $FF93 bit 3 = enable VSYNC FIRQ.
+  GIME $FF92 (lecture)/ FF92 ack : on positionne le flag dans GimeReg. }
+Procedure Coco3_VsyncIrq;
+Begin
+  Inc(Coco3_VsyncCount);
+  Coco3_KbdTick;
+  { Jalon 9 : flag CB1 PIA0 + IRQ legacy }
+  Coco3_PIA0_CRB := Coco3_PIA0_CRB Or $80;
+  If (Coco3_PIA0_CRB And $01) <> 0 Then
+    Coco3_FireIrq($FFF8, False);
+  { Avancer le timer GIME : decremente d une unite par trame en mode
+    "60 Hz" simplifie (vrai timer = 14 us / 63.7 us selon mode). }
+  If Coco3_TimerCount > 0 Then Begin
+    Dec(Coco3_TimerCount);
+    If Coco3_TimerCount = 0 Then Begin
+      { Timer expire : recharge + IRQ TIMR }
+      Coco3_TimerCount := Coco3_TimerInit;
+      If (Coco3_GimeReg[$92] And $20) <> 0 Then
+        Coco3_FireIrq($FFF8, False);
+      If (Coco3_GimeReg[$93] And $20) <> 0 Then
+        Coco3_FireIrq($FFF6, True);
+    End;
+  End;
+  { VSYNC IRQ }
+  If (Coco3_GimeReg[$92] And $08) <> 0 Then
+    Coco3_FireIrq($FFF8, False);
+  If (Coco3_GimeReg[$93] And $08) <> 0 Then
+    Coco3_FireIrq($FFF6, True);
+End;
+
+{ Initialiser l'etat CoCo 3 et la zone ecran VDG alpha par defaut }
+Procedure Coco3_InitState;
+Var
+  I: Integer;
+  Seg: Byte;
+Begin
+  Coco3_Active := True;
+  Coco3_FBFirst := True;
+  Coco3_FrameNo := 0;
+  FillChar(Coco3_FB, SizeOf(Coco3_FB), 0);
+  FillChar(Coco3_FBPrev, SizeOf(Coco3_FBPrev), $FF);
+  { --- Jalon 2 : init MMU + GIME --- }
+  { --- Jalon 2 : init MMU + GIME --- }
+  FillChar(Coco3_GimeReg, SizeOf(Coco3_GimeReg), 0);
+  { --- Jalon 5 : init IRQ/timer/PIA --- }
+  Coco3_TimerInit  := 0;
+  Coco3_TimerCount := 0;
+  Coco3_PIA0_DDRA  := 0; Coco3_PIA0_CRA := 0;
+  Coco3_PIA0_DDRB  := 0; Coco3_PIA0_CRB := 0;
+  Coco3_PIA0_PortB := $FF;
+  Coco3_VsyncCount := 0;
+  { --- Jalon 6 : init VDG/SAM legacy --- }
+  Coco3_PIA1_PB    := 0;       { mode alpha au boot }
+  Coco3_SAM        := 0;
+  Coco3_SamVidBase := $0400;   { ecran texte standard CoCo }
+  { --- Jalon 7 : marquer les segments 4..7 comme ROM si chargee --- }
+  For Seg := 0 To 3 Do Coco3_SegIsRom[Seg] := False;
+  If Coco3_RomLoaded Then Begin
+    For Seg := 4 To 7 Do Coco3_SegIsRom[Seg] := True;
+  End Else
+    For Seg := 4 To 7 Do Coco3_SegIsRom[Seg] := False;
+  { --- Jalon 8 : matrice clavier (toutes touches relachees) --- }
+  For Seg := 0 To 6 Do Coco3_KbdMatrix[Seg] := $FF;
+  Coco3_KbdHold := 0;
+  { --- Jalon 11 : reset diagnostics --- }
+  Coco3_DbgUnknown := 0;
+  Coco3_DbgLastBad := 0;
+  Coco3_DbgFF22Wr  := 0;
+  Coco3_DbgSamWr   := 0;
+  { Etat par defaut : MMU desactivee, tache 0, mapping fixe banks $38..$3F.
+    Coco3_MMUEnable demarre a True pour forcer SetMMUEnable(False) a
+    appliquer le mapping par defaut sans flush. }
+  Coco3_MMUEnable := True;
+  Coco3_MMUTask  := 0;
+  For Seg := 0 To 7 Do Begin
+    Coco3_MMU[0, Seg] := $38 + Seg;
+    Coco3_MMU[1, Seg] := $38 + Seg;
+    Coco3_LiveBank[Seg] := $38 + Seg;
+  End;
+  { Le passage a False applique simplement le mapping fixe, donc on saute
+    le flush en pre-positionnant LiveBank. }
+  Coco3_MMUEnable := False;
+  { Remplir la zone ecran VDG alpha avec espaces (0x60 = espace inverse, 0x20 = espace) }
+  For I := $0400 To $05FF Do
+    M6809_Mem[I] := $60;  { espace, vert sur noir par defaut }
+End;
+
+{ Palette CoCo VDG alpha - 8 couleurs (semi-graphiques utilisent ces teintes) }
+{ Indices EGA : 0=noir, 2=vert, 6=jaune, 1=bleu, 4=rouge, 11=cyan, 5=magenta, 9=orange (approx) }
+Function Coco3_VdgColorToEga(Idx: Byte): Byte;
+Begin
+  Case Idx And 7 Of
+    0: Coco3_VdgColorToEga := 2;   { vert }
+    1: Coco3_VdgColorToEga := 14;  { jaune }
+    2: Coco3_VdgColorToEga := 1;   { bleu }
+    3: Coco3_VdgColorToEga := 4;   { rouge }
+    4: Coco3_VdgColorToEga := 15;  { buff/blanc }
+    5: Coco3_VdgColorToEga := 3;   { cyan }
+    6: Coco3_VdgColorToEga := 5;   { magenta }
+    7: Coco3_VdgColorToEga := 12;  { orange }
+  Else
+    Coco3_VdgColorToEga := 7;
+  End;
+End;
+
+{ Rendu d'un caractere ASCII 5x7 dans le framebuffer Coco3_FB. }
+{ Fonte simple : on reutilise le rendu textuel en remplissant des blocs 8x8 }
+{ Pour le jalon 1, on dessine chaque case 8x8 en couleur unie selon le byte VRAM }
+Procedure Coco3_DrawCell(Col, Row: Integer; B: Byte);
+Var
+  PxX, PxY: Integer;
+  Fg, Bg: Byte;
+  Ch: Byte;
+  IsAlpha: Boolean;
+  IsSemi4: Boolean;
+  Bx, By: Integer;
+  PatternByte: Byte;
+  I, J: Integer;
+  { Mini-fonte 5x7 integree (caracteres ASCII basiques) }
+  { Pour le jalon 1, on simplifie : chaque cellule 8x8 est dessinee }
+  { en mode "carre uni colore" si semi-graphique, ou comme un point lumineux }
+  { + un marqueur de caractere ASCII en mode alpha. }
+Begin
+  IsAlpha := (B And $80) = 0;       { bit 7 = 0 : alphanumerique }
+  IsSemi4 := (B And $80) <> 0;      { bit 7 = 1 : semi-graphique 4 }
+  PxX := Col * 8;
+  PxY := Row * 12;  { 200 lignes / 16 = 12.5 => on prend 12 pour avoir 192 lignes utiles }
+  If (PxX < 0) Or (PxY < 0) Or (PxX + 7 >= 256) Or (PxY + 11 >= 200) Then Exit;
+  If IsAlpha Then Begin
+    Ch := B And $3F;          { 6 bits ASCII }
+    { Couleurs : alpha standard = vert sur noir, ou inverse si bit 6 set }
+    If (B And $40) <> 0 Then Begin
+      Fg := 0; Bg := Coco3_VdgColorToEga(0);  { inverse }
+    End Else Begin
+      Fg := Coco3_VdgColorToEga(0); Bg := 0;
+    End;
+    { Convertir code VDG (0-63) en ASCII : 0..31 = @A..Z[\]^_, 32..63 = espace, !, "...? }
+    If Ch < 32 Then Ch := Ch + 64
+    Else Ch := Ch;
+    { Dessiner le rectangle de fond }
+    For By := 0 To 11 Do
+      For Bx := 0 To 7 Do
+        Coco3_FB[PxY + By, PxX + Bx] := Bg;
+    { Tracer une representation simplifiee du caractere :
+      pour le jalon 1, on dessine un point en couleur Fg pour chaque caractere
+      non-espace, en utilisant un pattern derive du code }
+    If Ch <> 32 Then Begin
+      { Pattern pseudo-aleatoire base sur Ch pour distinguer les caracteres }
+      For I := 1 To 10 Do Begin
+        PatternByte := Byte(Ch Xor I);
+        For J := 1 To 6 Do
+          If (PatternByte And (1 Shl (J And 7))) <> 0 Then
+            Coco3_FB[PxY + I, PxX + J] := Fg;
+      End;
+    End;
+  End Else If IsSemi4 Then Begin
+    { Semi-graphique 4 : 2x2 blocs colores
+      bits 7..4 = couleur (bit 7 = 1 indique mode SG4)
+      bits 3..0 = 4 demi-cases on/off }
+    Fg := Coco3_VdgColorToEga((B Shr 4) And 7);
+    { Quadrant TL = bit 3, TR = bit 2, BL = bit 1, BR = bit 0 }
+    For By := 0 To 5 Do
+      For Bx := 0 To 3 Do
+        If (B And $08) <> 0 Then
+          Coco3_FB[PxY + By, PxX + Bx] := Fg
+        Else
+          Coco3_FB[PxY + By, PxX + Bx] := 0;
+    For By := 0 To 5 Do
+      For Bx := 4 To 7 Do
+        If (B And $04) <> 0 Then
+          Coco3_FB[PxY + By, PxX + Bx] := Fg
+        Else
+          Coco3_FB[PxY + By, PxX + Bx] := 0;
+    For By := 6 To 11 Do
+      For Bx := 0 To 3 Do
+        If (B And $02) <> 0 Then
+          Coco3_FB[PxY + By, PxX + Bx] := Fg
+        Else
+          Coco3_FB[PxY + By, PxX + Bx] := 0;
+    For By := 6 To 11 Do
+      For Bx := 4 To 7 Do
+        If (B And $01) <> 0 Then
+          Coco3_FB[PxY + By, PxX + Bx] := Fg
+        Else
+          Coco3_FB[PxY + By, PxX + Bx] := 0;
+  End;
+End;
+
+{ Render full frame : VDG alpha 32x16 a partir de M6809_Mem[base..base+512] }
+Procedure Coco3_RenderAlpha;
+Var
+  Col, Row: Integer;
+  B: Byte;
+  Base: Word;
+Begin
+  Base := Coco3_SamVidBase;
+  If Base = 0 Then Base := $0400;
+  For Row := 0 To 15 Do
+    For Col := 0 To 31 Do Begin
+      B := M6809_Mem[(Base + Row * 32 + Col) And $FFFF];
+      Coco3_DrawCell(Col, Row, B);
+    End;
+End;
+
+{ --- Jalon 6 : rendu VDG graphique (PMODE 0..4) ------------------- }
+{ Couleurs VDG (CG modes, 4 couleurs) :
+  CSS=0 : 0=vert, 1=jaune, 2=bleu, 3=rouge
+  CSS=1 : 0=buff, 1=cyan, 2=magenta, 3=orange
+  Mode RG (2 couleurs) : CSS=0 -> noir/vert ; CSS=1 -> noir/buff. }
+Function Coco3_VdgCgColor(C, CSS: Byte): Byte;
+Begin
+  If CSS = 0 Then
+    Case C And 3 Of
+      0: Coco3_VdgCgColor := 2;   { vert  -> EGA 2 }
+      1: Coco3_VdgCgColor := 14;  { jaune -> EGA 14 }
+      2: Coco3_VdgCgColor := 1;   { bleu  -> EGA 1 }
+      3: Coco3_VdgCgColor := 4;   { rouge -> EGA 4 }
+    Else Coco3_VdgCgColor := 0;
+    End
+  Else
+    Case C And 3 Of
+      0: Coco3_VdgCgColor := 15;  { buff  -> EGA blanc }
+      1: Coco3_VdgCgColor := 3;   { cyan  -> EGA 3 }
+      2: Coco3_VdgCgColor := 5;   { magenta -> EGA 5 }
+      3: Coco3_VdgCgColor := 12;  { orange -> EGA 12 }
+    Else Coco3_VdgCgColor := 0;
+    End;
+End;
+
+Function Coco3_VdgRgColor(Bit, CSS: Byte): Byte;
+Begin
+  If Bit = 0 Then
+    Coco3_VdgRgColor := 0  { noir }
+  Else If CSS = 0 Then
+    Coco3_VdgRgColor := 2  { vert }
+  Else
+    Coco3_VdgRgColor := 15; { buff/blanc }
+End;
+
+{ Decoder le mode VDG depuis PIA $FF22 et restituer dans Coco3_FB.
+  Renvoie False si on est en mode alpha (caller appelle RenderAlpha).
+  Si pas en mode CoCo 3 GIME ($FF98 bit 7 = 0). }
+Function Coco3_RenderVdg: Boolean;
+Var
+  V, GM, CSS: Byte;
+  W, H, BPL: Integer;
+  Base: Word;
+  X, Y, FbX, FbY: Integer;
+  Bx: Integer;
+  ByteOfs: Integer;
+  ByteVal: Byte;
+  Pix, ColorVal: Byte;
+  IsCG: Boolean;
+Begin
+  Coco3_RenderVdg := False;
+  V := Coco3_PIA1_PB;
+  If (V And $80) = 0 Then Exit;  { mode alpha }
+  GM := (V Shr 4) And 7;
+  CSS := (V Shr 3) And 1;
+  Base := Coco3_SamVidBase;
+  If Base = 0 Then Base := $0E00;  { defaut PMODE classique }
+  { Table : (W, H, BPL, IsCG) selon GM }
+  Case GM Of
+    0: Begin W :=  64; H := 64;  BPL := 16; IsCG := True;  End; { CG1 64x64x4 }
+    1: Begin W := 128; H := 64;  BPL := 16; IsCG := False; End; { RG1 128x64x2 }
+    2: Begin W := 128; H := 64;  BPL := 32; IsCG := True;  End; { CG2 128x64x4 }
+    3: Begin W := 128; H := 96;  BPL := 16; IsCG := False; End; { RG2 128x96x2 }
+    4: Begin W := 128; H := 96;  BPL := 32; IsCG := True;  End; { CG3 128x96x4 }
+    5: Begin W := 128; H := 192; BPL := 16; IsCG := False; End; { RG3 128x192x2 }
+    6: Begin W := 128; H := 192; BPL := 32; IsCG := True;  End; { CG6 128x192x4 }
+    7: Begin W := 256; H := 192; BPL := 32; IsCG := False; End; { RG6 256x192x2 }
+  Else
+    Exit;
+  End;
+  For FbY := 0 To 199 Do Begin
+    Y := (FbY * H) Div 200;
+    If Y >= H Then Y := H - 1;
+    For FbX := 0 To 255 Do Begin
+      X := (FbX * W) Div 256;
+      If X >= W Then X := W - 1;
+      If IsCG Then Begin
+        { 4 couleurs : 2 bits/pixel, 4 pixels/octet }
+        ByteOfs := Y * BPL + (X Shr 2);
+        ByteVal := M6809_Mem[(Base + ByteOfs) And $FFFF];
+        Bx := (3 - (X And 3)) Shl 1;
+        Pix := (ByteVal Shr Bx) And 3;
+        ColorVal := Coco3_VdgCgColor(Pix, CSS);
+      End Else Begin
+        { 2 couleurs : 1 bit/pixel, 8 pixels/octet }
+        ByteOfs := Y * BPL + (X Shr 3);
+        ByteVal := M6809_Mem[(Base + ByteOfs) And $FFFF];
+        Bx := 7 - (X And 7);
+        Pix := (ByteVal Shr Bx) And 1;
+        ColorVal := Coco3_VdgRgColor(Pix, CSS);
+      End;
+      Coco3_FB[FbY, FbX] := ColorVal;
+    End;
+  End;
+  Coco3_RenderVdg := True;
+End;
+
+{ --- Jalon 3 : modes graphiques GIME ----------------------------- }
+{ Adresse physique de base de la video (19 bits).
+  $FF9D = bits 18..11, $FF9E = bits 10..3 (les 3 bits LSB sont 0).         }
+Function Coco3_VideoBase: LongInt;
+Begin
+  Coco3_VideoBase :=
+    (LongInt(Coco3_GimeReg[$9D]) Shl 11) Or
+    (LongInt(Coco3_GimeReg[$9E]) Shl 3);
+End;
+
+{ Decoder les parametres video GIME en mode graphique.
+  Renvoie largeur (px), hauteur (px), bits/pixel, octets/ligne. }
+Procedure Coco3_GetGfxParams(Var W, H: Integer;
+                             Var BPP, BytesPerLine: Integer);
+Var
+  HRES, CRES, LPF: Byte;
+Begin
+  HRES := (Coco3_GimeReg[$99] Shr 2) And 7;
+  CRES :=  Coco3_GimeReg[$99]        And 3;
+  LPF  := (Coco3_GimeReg[$99] Shr 5) And 3;
+  Case CRES Of
+    0: BPP := 1;
+    1: BPP := 2;
+    2: BPP := 4;
+  Else
+    BPP := 4;
+  End;
+  Case HRES Of
+    0: BytesPerLine := 16;
+    1: BytesPerLine := 20;
+    2: BytesPerLine := 32;
+    3: BytesPerLine := 40;
+    4: BytesPerLine := 64;
+    5: BytesPerLine := 80;
+    6: BytesPerLine := 64;
+    7: BytesPerLine := 80;
+  End;
+  W := (BytesPerLine * 8) Div BPP;
+  Case LPF Of
+    0: H := 192;
+    1: H := 200;
+    3: H := 225;
+  Else
+    H := 192;
+  End;
+End;
+
+{ Mapper une entree de palette GIME (6 bits RGB) vers couleur EGA.
+  Format CoCo 3 RGB : bits = r'g'b' r g b (haut..bas).
+  Chaque composant fait 2 bits : MSB depuis bits 5/4/3, LSB depuis 2/1/0.
+  On reduit chaque composant 0..3 a 1 bit RGB + un bit "intensite" pour
+  produire un index EGA 0..15. Le mode CMP (composite) est traite comme
+  RGB faute d emulation NTSC ; les jeux fonctionnent generalement bien. }
+Function Coco3_PaletteToEga(PalIdx: Byte): Byte;
+Var
+  V: Byte;
+  R, G, B: Byte;
+  Bit, Intensity, Sum: Byte;
+Begin
+  V := Coco3_GimeReg[$B0 + (PalIdx And $0F)] And $3F;
+  R := (((V Shr 5) And 1) Shl 1) Or ((V Shr 2) And 1);
+  G := (((V Shr 4) And 1) Shl 1) Or ((V Shr 1) And 1);
+  B := (((V Shr 3) And 1) Shl 1) Or  (V        And 1);
+  { Construire RGBI : R/G/B : 1 si composant >= 2, intensite si somme >=4 }
+  Bit := 0;
+  If R >= 2 Then Bit := Bit Or 4;
+  If G >= 2 Then Bit := Bit Or 2;
+  If B >= 2 Then Bit := Bit Or 1;
+  Sum := R + G + B;
+  If Sum >= 4 Then Intensity := 8 Else Intensity := 0;
+  { Cas special : EGA index 6 (marron) au lieu de jaune fonce.
+    On corrige en promotant vers index 14 (jaune) quand R=G eleves et B=0. }
+  If (Bit = 6) And (Intensity = 0) And (R + G >= 3) Then
+    Coco3_PaletteToEga := 14
+  Else
+    Coco3_PaletteToEga := Intensity Or Bit;
+End;
+
+{ Lire un pixel BPP-bits depuis PhysMem. }
+Function Coco3_ReadPixel(BaseAddr: LongInt; Y, X, BPP,
+                         BytesPerLine: Integer): Byte;
+Var
+  Ofs: LongInt;
+  B: Byte;
+  Sub: Integer;
+Begin
+  Ofs := BaseAddr + LongInt(Y) * BytesPerLine;
+  Coco3_ReadPixel := 0;
+  Case BPP Of
+    1: Begin
+         Ofs := Ofs + (X Shr 3);
+         B := Coco3_PhysMem[Ofs And $7FFFF];
+         Sub := 7 - (X And 7);
+         Coco3_ReadPixel := (B Shr Sub) And 1;
+       End;
+    2: Begin
+         Ofs := Ofs + (X Shr 2);
+         B := Coco3_PhysMem[Ofs And $7FFFF];
+         Sub := (3 - (X And 3)) Shl 1;
+         Coco3_ReadPixel := (B Shr Sub) And 3;
+       End;
+    4: Begin
+         Ofs := Ofs + (X Shr 1);
+         B := Coco3_PhysMem[Ofs And $7FFFF];
+         If (X And 1) = 0 Then
+           Coco3_ReadPixel := (B Shr 4) And $0F
+         Else
+           Coco3_ReadPixel := B And $0F;
+       End;
+  End;
+End;
+
+{ Rendu graphique GIME : ecrit dans Coco3_FB[200, 256] avec downsample. }
+Procedure Coco3_RenderGfx;
+Var
+  W, H, BPP, BPL: Integer;
+  Base: LongInt;
+  Y, X, FbX, FbY: Integer;
+  Pix: Byte;
+  Seg: Byte;
+Begin
+  { Sync : recopie l etat CPU (M6809_Mem) vers PhysMem pour les 8
+    segments mappes. Le controleur video GIME lit toujours en RAM
+    physique, independamment de l etat MMU. }
+  For Seg := 0 To 7 Do Coco3_FlushSegment(Seg);
+  Coco3_GetGfxParams(W, H, BPP, BPL);
+  Base := Coco3_VideoBase;
+  If (W <= 0) Or (H <= 0) Then Exit;
+  For FbY := 0 To 199 Do Begin
+    Y := (FbY * H) Div 200;
+    If Y >= H Then Y := H - 1;
+    For FbX := 0 To 255 Do Begin
+      X := (FbX * W) Div 256;
+      If X >= W Then X := W - 1;
+      Pix := Coco3_ReadPixel(Base, Y, X, BPP, BPL);
+      Coco3_FB[FbY, FbX] := Coco3_PaletteToEga(Pix);
+    End;
+  End;
+End;
+
+{ Dispatch : GIME (jalons 3-4) si $FF98 actif, sinon VDG legacy
+  graphique (jalon 6) si PIA $FF22 bit 7=1, sinon VDG alpha. }
+Procedure Coco3_RenderFrame;
+Begin
+  If (Coco3_GimeReg[$98] And $80) <> 0 Then
+    Coco3_RenderGfx
+  Else If (Coco3_PIA1_PB And $80) <> 0 Then Begin
+    If Not Coco3_RenderVdg Then
+      Coco3_RenderAlpha;
+  End Else
+    Coco3_RenderAlpha;
+  Inc(Coco3_FrameNo);
+End;
+
+
 {   $00 len(2BE) addr(2BE) data...   (chunk de donnees)                    }
 {   $FF $00 $00 entry(2BE)           (terminateur avec point d entree)     }
 { Variante historique acceptee : $5B/$5A.                                  }
@@ -30702,9 +31765,11 @@ Begin
   M6809_Halted := False;
   M6809_ExitCode := 0;
   M6809_Cycles := 0;
-  { Sentinelle de fin }
-  M6809_Mem[$FFFE] := $00;
-  M6809_Mem[$FFFF] := $00;
+  { Sentinelle de fin (sauf en mode CoCo 3 ou les vecteurs sont reels) }
+  If Not Coco3_Active Then Begin
+    M6809_Mem[$FFFE] := $00;
+    M6809_Mem[$FFFF] := $00;
+  End;
 End;
 
 Function Emu_FaultText(F: Integer): String;
@@ -30780,6 +31845,8 @@ Var
  NesFrameLimit: LongInt;
  NesInstrPerFrame: LongInt;
  NesKeyEsc: Boolean;
+ Coco3InstrIdx: LongInt;
+ Coco3FrameElapsed: LongInt;
 Begin
  NesActive := False;
  InitEmulatorPanel(P);
@@ -31311,7 +32378,15 @@ Begin
   Loaded := False;
   If TargetCPU = '-CCOCO3' Then Begin
    M6809_Variant := 0;
-   Loaded := M6809_LoadDECB(BinaryPath, EntryAddr16);
+   { Reset etat ROM avant chargement }
+   Coco3_RomLoaded := False;
+   Coco3_RomMode := 0;
+   { Detection : .PAK = cartouche brute, sinon DECB }
+   If (Pos('.PAK', UpCaseStr(BinaryPath)) > 0) Or
+      (Pos('.ROM', UpCaseStr(BinaryPath)) > 0) Then
+    Loaded := Coco3_LoadPAK(BinaryPath, EntryAddr16)
+   Else
+    Loaded := M6809_LoadDECB(BinaryPath, EntryAddr16);
   End
   Else If TargetCPU = '-CDRAGON32' Then Begin
    M6809_Variant := 1;
@@ -31344,6 +32419,15 @@ Begin
    P.StatusMsg := 'Echec chargement binaire 6809';
    Exit;
   End;
+  { Activer Coco3 AVANT M6809_Reset pour eviter l ecrasement des
+    vecteurs $FFFE/$FFFF par la sentinelle.
+    Mode hardware uniquement pour les cartouches .PAK et ROMs .ROM ;
+    les programmes Pascal/ASM compiles utilisent l emulateur 6809
+    textuel comme avant. }
+  If (TargetCPU = '-CCOCO3') And
+     ((Pos('.PAK', UpCaseStr(BinaryPath)) > 0) Or
+      (Pos('.ROM', UpCaseStr(BinaryPath)) > 0)) Then
+    Coco3_Active := True;
   M6809_Reset(EntryAddr16);
   P.CurFg := 10;
   EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
@@ -31352,12 +32436,56 @@ Begin
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   Steps := 0;
-  While (Not M6809_Halted) And (Steps < 1000000) Do Begin
-   M6809_Step;
-   Inc(Steps);
-   If M6809_PC = 0 Then Begin
-    M6809_Halted := True;
-    M6809_ExitCode := 0;
+  If (TargetCPU = '-CCOCO3') And Coco3_Active Then Coco3_InitState;
+  If (TargetCPU = '-CCOCO3') And Coco3_Active Then Begin
+   { ----- Boucle CoCo 3 par trame (60 Hz) ----- }
+   Coco3_FrameNo := 0;
+   Coco3_FBFirst := True;
+   FillChar(Coco3_FBPrev, SizeOf(Coco3_FBPrev), $FF);
+   { Premier rendu pour afficher le panneau }
+   DrawEmulatorPanel(P);
+   EntryAddr := GetTimestamp;
+   NesKeyEsc := False;
+   While (Not NesKeyEsc) And (Coco3_FrameNo < 36000) Do Begin
+    { Drainer tampon clavier (gestion ESC + injection matrice) }
+    While KeyPressed Do Begin
+     EntryAddr16 := Ord(ReadKey);
+     If EntryAddr16 = 27 Then NesKeyEsc := True
+     Else Coco3_PressKey(Chr(EntryAddr16 And $FF));
+    End;
+    If NesKeyEsc Then Break;
+    { Si CPU halte, on continue d afficher l ecran fige (l utilisateur
+      presse ESC pour quitter). }
+    If Not M6809_Halted Then
+     For Coco3InstrIdx := 0 To 4999 Do Begin
+      If M6809_Halted Then Break;
+      M6809_Step;
+      Inc(Steps);
+      { Jalon 9 : HSYNC toutes les ~19 instructions (262 lignes/trame) }
+      If (Coco3InstrIdx Mod 19) = 18 Then Coco3_HsyncIrq;
+      { Note : pas d auto-halt sur PC=0 pour CoCo 3 (les cartouches
+        peuvent legitimement utiliser cette zone via banking) }
+     End;
+    { Rendre la trame }
+    Coco3_RenderFrame;
+    DrawEmulatorPanel(P);
+    { Injecter VSYNC IRQ pour la trame suivante }
+    Coco3_VsyncIrq;
+    {$IFDEF WINDOWS}
+    Coco3FrameElapsed := GetTimestamp - EntryAddr;
+    If Coco3FrameElapsed < 16 Then WinSleep(16 - Coco3FrameElapsed);
+    EntryAddr := GetTimestamp;
+    {$ENDIF}
+   End;
+   Coco3_Active := False;
+  End Else Begin
+   While (Not M6809_Halted) And (Steps < 1000000) Do Begin
+    M6809_Step;
+    Inc(Steps);
+    If M6809_PC = 0 Then Begin
+     M6809_Halted := True;
+     M6809_ExitCode := 0;
+    End;
    End;
   End;
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
