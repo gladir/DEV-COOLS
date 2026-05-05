@@ -102,6 +102,7 @@ Const
   DEST_ATARI2600 = 19; { -CATARI2600 : Atari 2600 VCS (6507) }
   DEST_ADAM   = 20; { -CADAM : Coleco Adam (Z80, CP/M 2.2) }
   DEST_CRAY1  = 21; { -CCRAY1 : Cray-1 (Cray Research, COS) - emballage symbolique }
+  DEST_TO7    = 22; { -CTO7 : Thomson TO7 (6809) }
 
 Type
   TString = String;
@@ -137,7 +138,7 @@ Type
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
     ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
     Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
-    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3/-CTRS80/-CATARI400/-CATARI800/-CMSX/-CNES/-CATARI2600/-CADAM/-CCRAY1 : destination }
+    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA/-CAPPLEII/-CC64/-CCOCO3/-CTRS80/-CATARI400/-CATARI800/-CMSX/-CNES/-CATARI2600/-CADAM/-CCRAY1/-CTO7 : destination }
     AppleII     : Boolean;   { True si la plateforme est Apple II (CPU = 6502) }
     C64         : Boolean;   { True si la plateforme est Commodore 64 (CPU = 6510 ~ 6502) }
     CoCo3       : Boolean;   { True si la plateforme est Tandy CoCo 3 (CPU = 6809) }
@@ -149,6 +150,7 @@ Type
     Atari2600   : Boolean;   { True si la plateforme est Atari 2600 VCS (CPU = 6507 ~ 6502) }
     Adam        : Boolean;   { True si la plateforme est Coleco Adam (CPU = Z80, CP/M 2.2) }
     Cray1       : Boolean;   { True si la plateforme est Cray-1 (COS Absolute Binary, emballage symbolique) }
+    TO7         : Boolean;   { True si la plateforme est Thomson TO7 (CPU = 6809) }
   End;
 
 Var
@@ -336,6 +338,7 @@ Begin
   Opts.Atari2600 := False;
   Opts.Adam := False;
   Opts.Cray1 := False;
+  Opts.TO7 := False;
   Opts.ObjOnly   := False;
   Opts.Dos16Mode := False;
   Opts.TPVersion := TP_VER_DEFAULT;
@@ -418,6 +421,7 @@ Begin
   WriteLn('  -CATARI2600    Destination Atari 2600 VCS (6507)');
   WriteLn('  -CADAM         Destination Coleco Adam (Z80, CP/M 2.2)');
   WriteLn('  -CCRAY1        Destination Cray-1 (COS Absolute Binary, emballage symbolique)');
+  WriteLn('  -CTO7          Destination Thomson TO7 (6809)');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -598,6 +602,11 @@ Begin
       Opts.DestTarget := DEST_CRAY1;
       Opts.Cray1 := True;
     End
+    Else If (UA = '-CTO7') Then
+    Begin
+      Opts.DestTarget := DEST_6809;
+      Opts.TO7 := True;
+    End
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
@@ -714,6 +723,8 @@ Begin
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.com')
     Else If Opts.Cray1 Then
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.abs')
+    Else If Opts.TO7 Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.bin')
     Else
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
   End;
@@ -5181,6 +5192,10 @@ Begin
   { Pour CoCo 3 (.BIN DECB) : sauter directement vers _TPF_Main          }
   { L entree par defaut est $2000 = debut du binaire charge.              }
   If BcActive And Opts.CoCo3 Then
+    EmitInstr('JMP _TPF_Main');
+  { Pour Thomson TO7 (.BIN format Motorola) : sauter vers _TPF_Main      }
+  { L entree par defaut est $6100 = zone utilisateur RAM TO7.             }
+  If BcActive And Opts.TO7 Then
     EmitInstr('JMP _TPF_Main');
 End;
 
@@ -17494,6 +17509,12 @@ Begin
       EmitInstr('LDA #' + IntToStr_(Ch));
       EmitInstr('JSR $A002');
     End
+    Else If Opts.TO7 Then
+    Begin
+      If (Ch = 13) Or (Ch = 10) Then Ch := $0D;
+      EmitInstr('LDA #' + IntToStr_(Ch));
+      EmitInstr('JSR $E803');
+    End
     Else If Opts.C64 Then
     Begin
       If (Ch = 13) Or (Ch = 10) Then Ch := $0D;
@@ -17521,6 +17542,11 @@ Begin
     Begin
       EmitInstr('LDX #' + Lbl);
       EmitInstr('JSR _TPRT_COCO3_PRSTR');
+    End
+    Else If Opts.TO7 Then
+    Begin
+      EmitInstr('LDX #' + Lbl);
+      EmitInstr('JSR _TPRT_TO7_PRSTR');
     End
     Else
     Begin
@@ -17551,6 +17577,8 @@ Begin
     EmitComment('writeln (MSX)')
   Else If Opts.CoCo3 Then
     EmitComment('writeln (CoCo 3)')
+  Else If Opts.TO7 Then
+    EmitComment('writeln (Thomson TO7)')
   Else
     EmitComment('writeln (Apple II)');
   { WriteLn sans arguments ou Write sans parenthese : juste CR LF si LN }
@@ -17575,6 +17603,11 @@ Begin
       Begin
         EmitInstr('LDA #$0D');
         EmitInstr('JSR $A002');
+      End
+      Else If Opts.TO7 Then
+      Begin
+        EmitInstr('LDA #$0D');
+        EmitInstr('JSR $E803');
       End
       Else
       Begin
@@ -17605,6 +17638,11 @@ Begin
       Begin
         EmitInstr('LDX #' + Lbl);
         EmitInstr('JSR _TPRT_COCO3_PRSTR');
+      End
+      Else If Opts.TO7 Then
+      Begin
+        EmitInstr('LDX #' + Lbl);
+        EmitInstr('JSR _TPRT_TO7_PRSTR');
       End
       Else
       Begin
@@ -17692,6 +17730,11 @@ Begin
     Begin
       EmitInstr('LDA #$0D');
       EmitInstr('JSR $A002');
+    End
+    Else If Opts.TO7 Then
+    Begin
+      EmitInstr('LDA #$0D');
+      EmitInstr('JSR $E803');
     End
     Else
     Begin
@@ -18041,7 +18084,7 @@ Var
   LI, SI      : Integer;
 Begin
   { Branche specialisee 6502 (Apple II / C64) : code natif }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
   Begin
     ParseWriteStmtAppleII(IsWriteLn);
     Exit;
@@ -18783,7 +18826,7 @@ Begin
   EmitComment('while');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18845,7 +18888,7 @@ Begin
   EmitComment('repeat');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18919,7 +18962,7 @@ Begin
   { ParseStmtAppleII attend que EP pointe sur le mot-cle FOR ; or nous     }
   { l avons deja consomme. Reculer EP d un cran pour qu il y pointe a     }
   { nouveau, puis deleguer.                                                }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
   Begin
     Dec(EP);
     ParseStmtAppleII;
@@ -19072,7 +19115,7 @@ Begin
   If EPAtEnd Then Exit;
 
   { Cible 6502 (Apple II / C64) : interpretation pour tout le bloc }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -25280,6 +25323,11 @@ Begin
       { Mode CoCo 3 : pas d initialisation, entree directe (DECB @ $2000) }
       EmitComment('Entree programme CoCo 3 (DECB @ $2000)');
     End
+    Else If Opts.TO7 Then
+    Begin
+      { Mode Thomson TO7 : pas d initialisation, entree directe (@ $6100) }
+      EmitComment('Entree programme Thomson TO7 (@ $6100)');
+    End
     Else
     Begin
       EmitProlog(0);
@@ -25328,6 +25376,12 @@ Begin
     Begin
       { Sortie CoCo 3 : retour via RTS vers le moniteur DECB }
       EmitComment('CoCo 3 : retour via RTS');
+      EmitInstr('RTS');
+    End
+    Else If Opts.TO7 Then
+    Begin
+      { Sortie Thomson TO7 : retour via RTS vers le moniteur BASIC }
+      EmitComment('Thomson TO7 : retour via RTS');
       EmitInstr('RTS');
     End
     Else If Opts.DestTarget = DEST_AMIGA Then
@@ -25989,6 +26043,20 @@ Begin
     EmitInstr('JSR $A002');
     EmitInstr('BRA _TPRT_COCO3_PRSTR');
     EmitLabel('_TPRT_COCO3_PRSTR_E');
+    EmitInstr('RTS');
+    Exit;
+  End;
+  If Opts.TO7 Then
+  Begin
+    EmitComment('--- Runtime Thomson TO7 (6809, BIOS PUTC $E803) ---');
+    { _TPRT_TO7_PRSTR : X = pointeur ASCIIZ ; sortie via PUTC          }
+    {   loop: LDA ,X+ ; BEQ end ; JSR $E803 ; BRA loop ; end: RTS      }
+    EmitLabel('_TPRT_TO7_PRSTR');
+    EmitInstr('LDA ,X+');
+    EmitInstr('BEQ _TPRT_TO7_PRSTR_E');
+    EmitInstr('JSR $E803');
+    EmitInstr('BRA _TPRT_TO7_PRSTR');
+    EmitLabel('_TPRT_TO7_PRSTR_E');
     EmitInstr('RTS');
     Exit;
   End;
@@ -37550,6 +37618,58 @@ Begin
   Close(F);
 End;
 
+{ --- WriteTO7BinFile : binaire Thomson TO7 (.BIN format Motorola)        }
+{ Meme structure que CoCo 3 (preamble $00 LL HH HH + ... + postamble      }
+{ $FF $00 $00 EE EE) reutilise BcResolveFixups6809.                       }
+Procedure WriteTO7BinFile(FileName: TString);
+Const
+  TO7_LOAD_ADDR = $6100;
+Var
+  F: File;
+  TextLen, DataLen, DataBase, TotalLen: LongInt;
+  PadLen: LongInt;
+  PadByte: Byte;
+  Preamble: Array[0..4] Of Byte;
+  Postamble: Array[0..4] Of Byte;
+Begin
+  TextLen := BcCodeLen;
+  DataLen := BcDataLen;
+  DataBase := (TextLen + 3) And Not 3;
+  TotalLen := DataBase + DataLen;
+  If TotalLen < TextLen Then TotalLen := TextLen;
+
+  { Resoudre les fixups vers les adresses absolues (BE) }
+  BcResolveFixups6809(TO7_LOAD_ADDR, DataBase);
+
+  { Preamble : $00 length(BE) load(BE) }
+  Preamble[0] := $00;
+  Preamble[1] := (TotalLen Shr 8) And $FF;
+  Preamble[2] := TotalLen And $FF;
+  Preamble[3] := (TO7_LOAD_ADDR Shr 8) And $FF;
+  Preamble[4] := TO7_LOAD_ADDR And $FF;
+
+  { Postamble : $FF $00 $00 entry(BE) }
+  Postamble[0] := $FF;
+  Postamble[1] := $00;
+  Postamble[2] := $00;
+  Postamble[3] := (TO7_LOAD_ADDR Shr 8) And $FF;
+  Postamble[4] := TO7_LOAD_ADDR And $FF;
+
+  Assign(F, FileName);
+  Rewrite(F, 1);
+  BlockWrite(F, Preamble, 5);
+  If TextLen > 0 Then
+    BlockWrite(F, BcCode[0], TextLen);
+  PadByte := 0;
+  PadLen := DataBase - TextLen;
+  While PadLen > 0 Do
+  Begin BlockWrite(F, PadByte, 1); Dec(PadLen); End;
+  If DataLen > 0 Then
+    BlockWrite(F, BcData[0], DataLen);
+  BlockWrite(F, Postamble, 5);
+  Close(F);
+End;
+
 Procedure WriteSRecordFile(FileName: TString);
 Var
   F: Text;
@@ -39381,7 +39501,7 @@ Begin
       EmitMainBlock;
 
     { Emettre les donnees ajoutees tardivement (cible 6502 Apple II / C64 / MSX) }
-    If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
+    If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
       EmitDataSegLate;
 
     { Emettre les routines runtime (TODO 12) }
@@ -39391,7 +39511,7 @@ Begin
       EmitRuntimeAmiga
     Else If Is68kTarget Then
       EmitRuntime68000
-    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Then
+    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
       EmitRuntimeAppleII
     Else
       EmitRuntime;
@@ -39399,7 +39519,7 @@ Begin
     { Emettre les routines runtime supplementaires (pas en mode DOS ni 68000) }
     If (Opts.DestTarget <> DEST_DOSR) And (Opts.DestTarget <> DEST_DOSP) And
        (Not Is68kTarget) And (Not Opts.AppleII) And (Not Opts.C64) And
-       (Not Opts.MSX) And (Not Opts.CoCo3) Then
+       (Not Opts.MSX) And (Not Opts.CoCo3) And (Not Opts.TO7) Then
     Begin
       { Emettre les routines runtime Graph (TODO 20) }
       EmitGraphRuntime;
@@ -39491,6 +39611,12 @@ Begin
       WriteCoCo3BinFile(Opts.OutFile);
       If Opts.Verbose Then
         WriteLn('  CoCo 3 BIN genere : ', Opts.OutFile);
+    End
+    Else If Opts.TO7 Then
+    Begin
+      WriteTO7BinFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  Thomson TO7 BIN genere : ', Opts.OutFile);
     End
     Else If Opts.TRS80 Then
     Begin
