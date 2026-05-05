@@ -1433,6 +1433,7 @@ Type
   EmuMode         : Boolean;   { -emu:XXX,fichier : lancer emulateur}
   EmuTarget       : TString;   { ex: '-CNES', '-CAMIGA', '-CC64'    }
   EmuFile         : TString;   { chemin du binaire a charger        }
+  EmuArgs         : TString;   { arguments passes au programme emule}
  End;
 
  { Types d evenements }
@@ -2424,9 +2425,11 @@ Type
  End;
 
  { Etat complet du CPU emule }
+ TEmuMemBuf = Array[0..$FFFFF] Of Byte;
+ PEmuMemBuf = ^TEmuMemBuf;
  TEmuCPU = Record
-  Memory       : File;                { fichier de swap memoire 1Mo }
-  MemReady     : Boolean;             { fichier ouvert ?            }
+  Memory       : PEmuMemBuf;          { 1 Mo de memoire RAM emulee  }
+  MemReady     : Boolean;             { buffer alloue ?             }
   Regs         : TEmuRegs;
   Segs         : TEmuSegs;
   Flags        : TEmuFlags;
@@ -3075,6 +3078,9 @@ Var
  ProjPropDlg    : TProjectPropertiesDialog;
  { Panneau de l emulateur 8086 integre }
  EmuPanel       : TEmulatorPanel;
+ EmuStartCmdLine: String;       { ligne de commande a injecter dans le PSP du programme emule }
+ EmuTraceBuf    : Array[0..8191] Of Record CS, IP: Word; Op: Byte; End;
+ EmuTraceIdx    : Integer;
  { Etat de l emulateur Motorola 68000 integre }
  M68K_D         : Array[0..7] Of LongInt;
  M68K_A         : Array[0..7] Of LongInt;
@@ -3485,6 +3491,7 @@ Begin
  Opts.EmuMode         := False;
  Opts.EmuTarget       := '';
  Opts.EmuFile         := '';
+ Opts.EmuArgs         := '';
 End;
 
 { --- Analyse de la ligne de commande --- }
@@ -3506,13 +3513,22 @@ Begin
   Else If (Length(Arg) >= 5) And
           ((Copy(Arg, 1, 5) = '-emu:') Or (Copy(Arg, 1, 5) = '-EMU:') Or
            (Copy(Arg, 1, 5) = '-Emu:')) Then Begin
-   { -emu:XXX,fichier : split sur la virgule }
+   { -emu:XXX,fichier[,arg1[,arg2...]] : split sur les virgules }
    EmuArg := Copy(Arg, 6, Length(Arg) - 5);
    K := Pos(',', EmuArg);
    If K <= 0 Then
     FatalError('Syntaxe -emu attendue : -emu:XXX,fichier (ex: -emu:NES,prog.nes)');
    EmuName := Copy(EmuArg, 1, K - 1);
    EmuFn   := Copy(EmuArg, K + 1, Length(EmuArg) - K);
+   { Extraire les arguments supplementaires apres la deuxieme virgule }
+   K := Pos(',', EmuFn);
+   If K > 0 Then Begin
+    Opts.EmuArgs := Copy(EmuFn, K + 1, Length(EmuFn) - K);
+    EmuFn := Copy(EmuFn, 1, K - 1);
+    { Remplacer les virgules restantes par des espaces dans la cmdline }
+    For K := 1 To Length(Opts.EmuArgs) Do
+     If Opts.EmuArgs[K] = ',' Then Opts.EmuArgs[K] := ' ';
+   End;
    If (EmuName = '') Or (EmuFn = '') Then
     FatalError('Syntaxe -emu invalide : ' + Arg);
    EmuUp := UpCaseStr(EmuName);
@@ -22558,12 +22574,12 @@ End;
 
 Procedure Emu_ReadAbsBlock(Var C: TEmuCPU; Addr: LongInt;
  Var Buffer; SizeBytes: Word);
-Var
- ByteReaded: Word;
 Begin
  If Not C.MemReady Then Exit;
- Seek(C.Memory, Addr);
- BlockRead(C.Memory, Buffer, SizeBytes, ByteReaded);
+ If (Addr < 0) Or (Addr >= $100000) Then Exit;
+ If Addr + LongInt(SizeBytes) > $100000 Then
+  SizeBytes := Word($100000 - Addr);
+ Move(C.Memory^[Addr], Buffer, SizeBytes);
 End;
 
 { --- Lire un bloc seg:ofs --- }
@@ -22598,12 +22614,12 @@ End;
 
 Procedure Emu_WriteAbsBlock(Var C: TEmuCPU; Addr: LongInt;
  Var Buffer; SizeBytes: Word);
-Var
- ByteWrited: Word;
 Begin
  If Not C.MemReady Then Exit;
- Seek(C.Memory, Addr);
- BlockWrite(C.Memory, Buffer, SizeBytes, ByteWrited);
+ If (Addr < 0) Or (Addr >= $100000) Then Exit;
+ If Addr + LongInt(SizeBytes) > $100000 Then
+  SizeBytes := Word($100000 - Addr);
+ Move(Buffer, C.Memory^[Addr], SizeBytes);
 End;
 
 { --- Ecrire un bloc seg:ofs --- }
@@ -22674,15 +22690,13 @@ End;
 
 Procedure Emu_MakeIntrAddr(Var C: TEmuCPU);
 Var
- I: Byte;
- ByteWrited: Word;
+ I: Integer;
  Tbl: Array[0..255] Of LongInt;
 Begin
  If Not C.MemReady Then Exit;
  For I := 0 To 255 Do
   Tbl[I] := I + 1;
- Seek(C.Memory, 0);
- BlockWrite(C.Memory, Tbl, SizeOf(Tbl), ByteWrited);
+ Move(Tbl, C.Memory^[0], SizeOf(Tbl));
 End;
 
 { --- Drapeaux : ZF/SF/PF a partir d un octet/mot --- }
@@ -22764,12 +22778,8 @@ End;
 { --- Initialiser l ordinateur emule (memoire + table d interruption) --- }
 
 Procedure Emu_InitComputer(Var C: TEmuCPU);
-Const
- EMU_SWAP_FILE = 'EMU8086.$$$';
 Var
- J: Word;
- ByteWrited: Word;
- ClrBuffer: Array[0..1023] Of Byte;
+ J: LongInt;
  I: Integer;
 Begin
  C.CodeBrk := -1;
@@ -22778,29 +22788,21 @@ Begin
    son nombre de bits a 1 est pair. Implementation simple. }
  For I := 0 To 255 Do Begin
   J := 0;
-  ByteWrited := I;
-  While ByteWrited <> 0 Do Begin
-   J := J + (ByteWrited And 1);
-   ByteWrited := ByteWrited Shr 1;
+  J := I;
+  While J <> 0 Do Begin
+   C.ParityTable[I] := Not C.ParityTable[I];
+   J := J And (J - 1);
   End;
-  C.ParityTable[I] := (J And 1) = 0;
+  C.ParityTable[I] := Not C.ParityTable[I];
  End;
- { Initialiser le fichier de swap pour la memoire emulee (1Mo) }
- {$I-}
- Assign(C.Memory, EMU_SWAP_FILE);
- Rewrite(C.Memory, 1);
- {$I+}
- If IOResult <> 0 Then Begin
+ { Allouer 1 Mo en RAM pour la memoire emulee }
+ New(C.Memory);
+ If C.Memory = Nil Then Begin
   C.MemReady := False;
   Exit;
  End;
  C.MemReady := True;
- { Effacer 1Mo (1024 blocs de 1024 octets) }
- FillChar(ClrBuffer, SizeOf(ClrBuffer), 0);
- For J := 0 To 1023 Do Begin
-  Seek(C.Memory, LongInt(J) Shl 10);
-  BlockWrite(C.Memory, ClrBuffer, SizeOf(ClrBuffer), ByteWrited);
- End;
+ FillChar(C.Memory^, SizeOf(TEmuMemBuf), 0);
  { Taille memoire conventionnelle : 640 Ko a l offset 0040:0013 }
  Emu_WriteWord(C, 0, $0413, 640);
  Emu_MakeIntrAddr(C);
@@ -22812,17 +22814,13 @@ Begin
  C.Fault := 0;
 End;
 
-{ --- Liberer le fichier de swap memoire --- }
+{ --- Liberer la memoire emulee --- }
 
 Procedure Emu_Done(Var C: TEmuCPU);
 Begin
  If C.MemReady Then Begin
-  Close(C.Memory);
-  {$I-}
-  Assign(C.Memory, 'EMU8086.$$$');
-  Erase(C.Memory);
-  {$I+}
-  If IOResult <> 0 Then ;
+  Dispose(C.Memory);
+  C.Memory := Nil;
   C.MemReady := False;
  End;
 End;
@@ -22931,6 +22929,19 @@ Begin
  PSP.HandlePtrSeg := C.Segs.CS;
  PSP.Int21h := $21CD;
  PSP.RETF := $CB;
+ { Injecter la ligne de commande dans le PSP : offset $80 = longueur,
+   $81..$FE = cmdline (max 126 octets), terminee par $0D ($FF reserve). }
+ If Length(EmuStartCmdLine) > 0 Then Begin
+  N := Length(EmuStartCmdLine);
+  If N > 126 Then N := 126;
+  PSP.Buffer[$80] := Byte(N);
+  For I := 1 To N Do
+   PSP.Buffer[$80 + I] := Byte(EmuStartCmdLine[I]);
+  PSP.Buffer[$81 + N] := $0D;
+ End Else Begin
+  PSP.Buffer[$80] := 0;
+  PSP.Buffer[$81] := $0D;
+ End;
  Emu_WriteBlock(C, PSPSeg, 0, PSP.Buffer, $100);
  { Charger l image executable a LoadSeg:0000 (toute l image, pas a CS:IP) }
  Addr := LongInt(LoadSeg) Shl 4;
@@ -23477,6 +23488,13 @@ Begin
     P.CPU.Fault := sfEndProgram;
     P.StatusMsg := 'Programme termine (code ' + IntToStr(ExitCode) + ')';
    End;
+  $31:
+   Begin
+    { AH=31h : Terminate-and-Stay-Resident - traite comme terminaison }
+    ExitCode := P.CPU.Regs.AL;
+    P.CPU.Fault := sfEndProgram;
+    P.StatusMsg := 'Programme termine TSR (code ' + IntToStr(ExitCode) + ')';
+   End;
   $40:
    Begin
     { AH=40h : write CX bytes from DS:DX to handle BX (1=stdout, 2=stderr) }
@@ -23597,6 +23615,7 @@ Begin
   $10: Emu_DoInt10(P);
   $16: Emu_DoInt16(P);
   $20: P.CPU.Fault := sfEndProgram;
+  $27: P.CPU.Fault := sfEndProgram;  { Terminate-and-Stay-Resident }
   $21: Emu_DoInt21(P);
   Else
    { Interruptions vectorees ignorees ici (pas d ISR) }
@@ -30693,6 +30712,27 @@ Begin
  End;
 End;
 
+{ --- Vidage du trace circulaire CS:IP/opcode dans EMUTRACE.LOG --- }
+
+Procedure Emu_DumpTrace;
+Var
+ F: Text;
+ I, K: Integer;
+Begin
+ {$I-}
+ Assign(F, 'EMUTRACE.LOG');
+ Rewrite(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ WriteLn(F, '8192 dernieres instructions executees (boucle suspectee) :');
+ For I := 0 To 8191 Do Begin
+  K := (EmuTraceIdx + I) And $1FFF;
+  WriteLn(F, HexWord(EmuTraceBuf[K].CS), ':', HexWord(EmuTraceBuf[K].IP),
+   '  opcode=', HexByte(EmuTraceBuf[K].Op));
+ End;
+ Close(F);
+End;
+
 { --- Charger un binaire DOS et lancer l execution --- }
 
 Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
@@ -31392,10 +31432,21 @@ Begin
  { Executer un nombre maximum d instructions (limite de surete) }
  P.CPU.Fault := sfNone;
  Steps := 0;
+ { Trace circulaire des 256 dernieres instructions executees pour
+   diagnostiquer les boucles infinies }
+ FillChar(EmuTraceBuf, SizeOf(EmuTraceBuf), 0);
+ EmuTraceIdx := 0;
  While (P.CPU.Fault = sfNone) And (Steps < 1000000) Do Begin
+  EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
+  EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
+  EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
+  EmuTraceIdx := (EmuTraceIdx + 1) And $1FFF;
   Emu_StepOne(P);
   Inc(Steps);
  End;
+ { Si on est sorti par limite (boucle infinie), dumper le trace dans EMUTRACE.LOG }
+ If (P.CPU.Fault = sfNone) And (Steps >= 1000000) Then
+  Emu_DumpTrace;
  P.Fault := P.CPU.Fault;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  P.CurFg := 11;
@@ -38173,6 +38224,7 @@ Begin
  Else If Opts.EmuMode Then Begin
   StartPage.Visible := False;
   FullRepaintNeeded := True;
+  EmuStartCmdLine := Opts.EmuArgs;
   ShowEmulatorPanel(EmuPanel, Opts.EmuFile, Opts.EmuTarget);
  End
  { Si un fichier source a ete passe en argument, ouvrir directement l editeur }
