@@ -19797,7 +19797,7 @@ Begin
   9:  TargetCPULabel := 'Amiga 68000 (-CAMIGA)';
   10: TargetCPULabel := 'Apple II 6502 (-CAPPLEII)';
   11: TargetCPULabel := 'Commodore 64 6510 (-CC64)';
-  12: TargetCPULabel := 'Tandy CoCo 3 6809 (-CCOCO3)';
+  12: TargetCPULabel := 'CoCo 3 (Color Computer 3) 6809 (-CCOCO3)';
   13: TargetCPULabel := 'Tandy TRS-80 Model I Z80 (-CTRS80)';
   14: TargetCPULabel := 'Atari 400 6502 (-CATARI400)';
   15: TargetCPULabel := 'Atari 800 6502 (-CATARI800)';
