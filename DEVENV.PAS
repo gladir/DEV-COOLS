@@ -22441,11 +22441,11 @@ Begin
            ' MASK=' + IntToStr(NesPpuMask) +
            ' CTRL=' + IntToStr(NesPpuCtrl) +
            ' MAP=' + IntToStr(NesMapper) +
+           ' PAD=' + IntToStr(NesPad1) +
            ' F=' + IntToStr(NesFrameNo);
   DrawText(P.PanelX + 6, P.PanelY + 4, Title, CLR_HIGHLIGHTTEXT);
   DrawText(P.PanelX + GridW - 60, P.PanelY + 4,
    '[Esc]', CLR_HIGHLIGHTTEXT);
-  { Rendu pixel : differentiel par rapport a la trame precedente }
   For Sy := 0 To 239 Do
    For Sx := 0 To 255 Do Begin
     If NesFBFirst Or (NesFB[Sy, Sx] <> NesFBPrev[Sy, Sx]) Then Begin
@@ -27430,14 +27430,18 @@ Var V: Byte;
 Begin
   V := 0;
   {$IFDEF WINDOWS}
-  If GetAsyncKeyState($5A) < 0 Then V := V Or $01; { Z = A     }
-  If GetAsyncKeyState($58) < 0 Then V := V Or $02; { X = B     }
-  If GetAsyncKeyState($A1) < 0 Then V := V Or $04; { RShift=Sel}
-  If GetAsyncKeyState($0D) < 0 Then V := V Or $08; { Enter=Start}
-  If GetAsyncKeyState($26) < 0 Then V := V Or $10; { Up        }
-  If GetAsyncKeyState($28) < 0 Then V := V Or $20; { Down      }
-  If GetAsyncKeyState($25) < 0 Then V := V Or $40; { Left      }
-  If GetAsyncKeyState($27) < 0 Then V := V Or $80; { Right     }
+  If GetAsyncKeyState($5A) < 0 Then V := V Or $01; { Z = A          }
+  If GetAsyncKeyState($58) < 0 Then V := V Or $02; { X = B          }
+  If GetAsyncKeyState($41) < 0 Then V := V Or $01; { A = A (alt)    }
+  If GetAsyncKeyState($53) < 0 Then V := V Or $02; { S = B (alt)    }
+  If GetAsyncKeyState($A1) < 0 Then V := V Or $04; { RShift = Select}
+  If GetAsyncKeyState($09) < 0 Then V := V Or $04; { Tab    = Select}
+  If GetAsyncKeyState($0D) < 0 Then V := V Or $08; { Enter  = Start }
+  If GetAsyncKeyState($20) < 0 Then V := V Or $08; { Espace = Start }
+  If GetAsyncKeyState($26) < 0 Then V := V Or $10; { Up             }
+  If GetAsyncKeyState($28) < 0 Then V := V Or $20; { Down           }
+  If GetAsyncKeyState($25) < 0 Then V := V Or $40; { Left           }
+  If GetAsyncKeyState($27) < 0 Then V := V Or $80; { Right          }
   {$ENDIF}
   NesPad1 := V;
 End;
@@ -27879,6 +27883,31 @@ Begin
   End;
 End;
 
+{ Helpers d acces memoire CPU6502 qui passent automatiquement par le }
+{ bus NES quand l adresse est dans la plage MMIO. Pour les autres    }
+{ adresses, acces direct au tableau CPU6502_Mem.                     }
+Function NesMemRead(EA: Word): Byte;
+Var Tmp: Byte;
+Begin
+  If (CPU6502_Variant = 3) And
+     (((EA >= $2000) And (EA <= $4017)) Or (EA >= $8000)) Then Begin
+    If NesBus_Read(EA, Tmp) Then Begin
+      NesMemRead := Tmp;
+      Exit;
+    End;
+  End;
+  NesMemRead := CPU6502_Mem[EA];
+End;
+
+Procedure NesMemWrite(EA: Word; V: Byte);
+Begin
+  If (CPU6502_Variant = 3) And
+     (((EA >= $2000) And (EA <= $4017)) Or (EA >= $8000)) Then Begin
+    If NesBus_Write(EA, V) Then Exit;
+  End;
+  CPU6502_Mem[EA] := V;
+End;
+
 {$PUSH}{$R-}{$Q-}
 Procedure CPU6502_Step;
 Var
@@ -27907,19 +27936,15 @@ Begin
                CPU6502_SetNZ(CPU6502_A); End;
     $B5: Begin EA := CPU6502_AmZPX; CPU6502_A := CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_A); End;
-    $AD: Begin EA := CPU6502_AmABS;
-               If NesBus_Read(EA, Tmp) Then
-                 CPU6502_A := Tmp
-               Else
-                 CPU6502_A := CPU6502_Mem[EA];
+    $AD: Begin EA := CPU6502_AmABS; CPU6502_A := NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $BD: Begin EA := CPU6502_AmABX; CPU6502_A := CPU6502_Mem[EA];
+    $BD: Begin EA := CPU6502_AmABX; CPU6502_A := NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $B9: Begin EA := CPU6502_AmABY; CPU6502_A := CPU6502_Mem[EA];
+    $B9: Begin EA := CPU6502_AmABY; CPU6502_A := NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $A1: Begin EA := CPU6502_AmIZX; CPU6502_A := CPU6502_Mem[EA];
+    $A1: Begin EA := CPU6502_AmIZX; CPU6502_A := NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $B1: Begin EA := CPU6502_AmIZY; CPU6502_A := CPU6502_Mem[EA];
+    $B1: Begin EA := CPU6502_AmIZY; CPU6502_A := NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
     { ----- LDX ----- }
     $A2: Begin EA := CPU6502_AmIMM; CPU6502_X := CPU6502_Mem[EA];
@@ -27928,9 +27953,9 @@ Begin
                CPU6502_SetNZ(CPU6502_X); End;
     $B6: Begin EA := CPU6502_AmZPY; CPU6502_X := CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_X); End;
-    $AE: Begin EA := CPU6502_AmABS; CPU6502_X := CPU6502_Mem[EA];
+    $AE: Begin EA := CPU6502_AmABS; CPU6502_X := NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_X); End;
-    $BE: Begin EA := CPU6502_AmABY; CPU6502_X := CPU6502_Mem[EA];
+    $BE: Begin EA := CPU6502_AmABY; CPU6502_X := NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_X); End;
     { ----- LDY ----- }
     $A0: Begin EA := CPU6502_AmIMM; CPU6502_Y := CPU6502_Mem[EA];
@@ -27939,9 +27964,9 @@ Begin
                CPU6502_SetNZ(CPU6502_Y); End;
     $B4: Begin EA := CPU6502_AmZPX; CPU6502_Y := CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_Y); End;
-    $AC: Begin EA := CPU6502_AmABS; CPU6502_Y := CPU6502_Mem[EA];
+    $AC: Begin EA := CPU6502_AmABS; CPU6502_Y := NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_Y); End;
-    $BC: Begin EA := CPU6502_AmABX; CPU6502_Y := CPU6502_Mem[EA];
+    $BC: Begin EA := CPU6502_AmABX; CPU6502_Y := NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_Y); End;
     { ----- STA ----- }
     $85: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_A; End;
@@ -27956,8 +27981,8 @@ Begin
     $99: Begin EA := CPU6502_AmABY;
                If Not NesBus_Write(EA, CPU6502_A) Then
                  CPU6502_Mem[EA] := CPU6502_A; End;
-    $81: Begin EA := CPU6502_AmIZX; CPU6502_Mem[EA] := CPU6502_A; End;
-    $91: Begin EA := CPU6502_AmIZY; CPU6502_Mem[EA] := CPU6502_A; End;
+    $81: Begin EA := CPU6502_AmIZX; NesMemWrite(EA, CPU6502_A); End;
+    $91: Begin EA := CPU6502_AmIZY; NesMemWrite(EA, CPU6502_A); End;
     { ----- STX ----- }
     $86: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_X; End;
     $96: Begin EA := CPU6502_AmZPY; CPU6502_Mem[EA] := CPU6502_X; End;
@@ -30770,23 +30795,30 @@ Begin
     If NesKeyEsc Then Break;
     { Lire etat manette pour cette trame }
     NesPollInput;
-    { Executer une trame d instructions CPU }
-    For NesPrgSize := 0 To NesInstrPerFrame - 1 Do Begin
+    { Effacer vblank/sprite0 hit au debut du prerender (scanline 261) }
+    NesPpuStatus := NesPpuStatus And $7F;
+    NesPpuStatus := NesPpuStatus And $BF;
+    { Phase visible : ~80% des instructions (scanlines 0..239) }
+    For NesPrgSize := 0 To (NesInstrPerFrame * 4 Div 5) - 1 Do Begin
      If CPU6502_Halted Then Break;
      CPU6502_Step;
      Inc(Steps);
     End;
-    { Declencher vblank + NMI si active }
+    { Rendre la trame avant le declenchement de vblank pour que    }
+    { le NMI handler voit l ecran deja construit                    }
+    NesPpu_RenderFrame;
+    { Declencher vblank + NMI si active (scanline 241) }
     NesPpuStatus := NesPpuStatus Or $80;
     If (NesPpuCtrl And $80) <> 0 Then NesNmiPending := True;
-    { Rendre la trame }
-    NesPpu_RenderFrame;
+    { Phase vblank : ~20% des instructions restantes }
+    For NesPrgSize := 0 To (NesInstrPerFrame Div 5) - 1 Do Begin
+     If CPU6502_Halted Then Break;
+     CPU6502_Step;
+     Inc(Steps);
+    End;
     { Afficher }
     DrawEmulatorPanel(P);
     Inc(NesFrameNo);
-    { Effacer vblank pour la trame suivante (debut prerender) }
-    NesPpuStatus := NesPpuStatus And $7F;
-    NesPpuStatus := NesPpuStatus And $BF; { reset sprite 0 hit }
     { Pacing 60 Hz : attendre la fin du quantum 16 ms }
     {$IFDEF WINDOWS}
     NesChrSize := GetTimestamp - EntryAddr;
