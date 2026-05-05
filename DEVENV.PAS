@@ -3090,6 +3090,16 @@ Var
  CPU6502_Cycles : LongInt;
  CPU6502_Panel  : ^TEmulatorPanel;
  CPU6502_Variant: Integer;    { 0=AppleII 1=C64 2=Atari 3=NES 4=A2600 }
+ { --- Etat PPU NES minimaliste (variant=3) --- }
+ { Suit les ecritures sur les registres PPU $2000-$2007 pour reconstituer }
+ { la nametable. Quand le programme active le rendu BG (bit 3 de $2001), }
+ { on affiche le contenu de la nametable dans le panneau emulateur.       }
+ { Astuce : la convention TPCW32 mappe le tile $XX au caractere ASCII $XX,}
+ { donc l octet de la nametable EST directement le code ASCII du glyphe. }
+ NesPpu_Addr     : Word;
+ NesPpu_Latch    : Boolean;     { False = prochaine ecriture $2006 = high byte }
+ NesPpu_NameTable: Array[0..$3FF] Of Byte;
+ NesPpu_Rendered : Boolean;
  { --- Etat emulateur Z80 (TRS-80, MSX, Adam) --- }
  Z80_Mem    : Array[0..$FFFF] Of Byte;
  Z80_A, Z80_F, Z80_B, Z80_C, Z80_D, Z80_E, Z80_H, Z80_L : Byte;
@@ -27094,6 +27104,76 @@ Begin
   End;
 End;
 
+{ --- Emulation PPU NES minimaliste --------------------------------- }
+{ Reconstitue la nametable depuis les ecritures PPU et l affiche      }
+{ quand le programme active le rendu BG.                              }
+Procedure NesPpu_DoRender;
+Var
+  Row, Col, K: Integer;
+  B: Byte;
+  Line: String;
+Begin
+  If NesPpu_Rendered Then Exit;
+  NesPpu_Rendered := True;
+  For Row := 0 To 29 Do
+  Begin
+    Line := '';
+    For Col := 0 To 31 Do
+    Begin
+      B := NesPpu_NameTable[Row * 32 + Col];
+      If (B >= 32) And (B < 128) Then Line := Line + Chr(B)
+      Else Line := Line + ' ';
+    End;
+    { Trim trailing spaces pour la lisibilite }
+    K := Length(Line);
+    While (K > 0) And (Line[K] = ' ') Do Dec(K);
+    Line := Copy(Line, 1, K);
+    If Line <> '' Then EmuVScr_WriteStr(CPU6502_Panel^, Line);
+    EmuVScr_PutChar(CPU6502_Panel^, #13);
+    EmuVScr_PutChar(CPU6502_Panel^, #10);
+  End;
+End;
+
+Procedure NesPpu_RegWrite(Reg: Byte; V: Byte);
+Begin
+  Case Reg Of
+    $00: ; { PPUCTRL }
+    $01: { PPUMASK : si bit 3 (show BG) actif, render }
+      If (V And $08) <> 0 Then NesPpu_DoRender;
+    $03: ; { OAMADDR }
+    $04: ; { OAMDATA }
+    $05: NesPpu_Latch := Not NesPpu_Latch; { PPUSCROLL }
+    $06: { PPUADDR : 1ere ecriture = high, 2e = low }
+      Begin
+        If Not NesPpu_Latch Then
+          NesPpu_Addr := (NesPpu_Addr And $00FF) Or
+                         ((Word(V) And $3F) Shl 8)
+        Else
+          NesPpu_Addr := (NesPpu_Addr And $FF00) Or V;
+        NesPpu_Latch := Not NesPpu_Latch;
+      End;
+    $07: { PPUDATA : ecrit a NesPpu_Addr puis incremente }
+      Begin
+        If (NesPpu_Addr >= $2000) And (NesPpu_Addr < $2400) Then
+          NesPpu_NameTable[NesPpu_Addr - $2000] := V;
+        NesPpu_Addr := NesPpu_Addr + 1;
+      End;
+  End;
+End;
+
+Function NesPpu_RegRead(Reg: Byte): Byte;
+Begin
+  Case Reg Of
+    $02: { PPUSTATUS : bit 7 = vblank toujours leve, reset latch }
+      Begin
+        NesPpu_Latch := False;
+        NesPpu_RegRead := $80;
+      End;
+  Else
+    NesPpu_RegRead := 0;
+  End;
+End;
+
 Procedure CPU6502_Step;
 Var
   Op, M, R: Byte;
@@ -27113,7 +27193,11 @@ Begin
                CPU6502_SetNZ(CPU6502_A); End;
     $B5: Begin EA := CPU6502_AmZPX; CPU6502_A := CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_A); End;
-    $AD: Begin EA := CPU6502_AmABS; CPU6502_A := CPU6502_Mem[EA];
+    $AD: Begin EA := CPU6502_AmABS;
+               If (CPU6502_Variant = 3) And (EA >= $2000) And (EA < $2008) Then
+                 CPU6502_A := NesPpu_RegRead(Byte(EA - $2000))
+               Else
+                 CPU6502_A := CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_A); End;
     $BD: Begin EA := CPU6502_AmABX; CPU6502_A := CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_A); End;
@@ -27148,7 +27232,12 @@ Begin
     { ----- STA ----- }
     $85: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_A; End;
     $95: Begin EA := CPU6502_AmZPX; CPU6502_Mem[EA] := CPU6502_A; End;
-    $8D: Begin EA := CPU6502_AmABS; CPU6502_Mem[EA] := CPU6502_A; End;
+    $8D: Begin EA := CPU6502_AmABS;
+               If (CPU6502_Variant = 3) And (EA >= $2000) And (EA < $2008) Then
+                 NesPpu_RegWrite(Byte(EA - $2000), CPU6502_A)
+               Else
+                 CPU6502_Mem[EA] := CPU6502_A;
+         End;
     $9D: Begin EA := CPU6502_AmABX; CPU6502_Mem[EA] := CPU6502_A; End;
     $99: Begin EA := CPU6502_AmABY; CPU6502_Mem[EA] := CPU6502_A; End;
     $81: Begin EA := CPU6502_AmIZX; CPU6502_Mem[EA] := CPU6502_A; End;
@@ -29647,6 +29736,11 @@ Begin
   End
   Else If TargetCPU = '-CNES' Then Begin
    CPU6502_Variant := 3;
+   { Reset etat PPU }
+   NesPpu_Addr := 0;
+   NesPpu_Latch := False;
+   NesPpu_Rendered := False;
+   FillChar(NesPpu_NameTable, SizeOf(NesPpu_NameTable), $20);
    { iNES : 16 octets header, PRG-ROM 16 KiB charge a $8000 et miroir $C000 }
    Loaded := CPU6502_LoadRaw(BinaryPath, $8000, 16);
    { Miroir $C000 = $8000 pour ROM 16 KiB }

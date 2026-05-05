@@ -17548,6 +17548,12 @@ Begin
       EmitInstr('LDA #' + IntToStr_(Ch));
       EmitInstr('JSR _TPRT_ATARI_PUTC');
     End
+    Else If Opts.NES Then
+    Begin
+      If (Ch = 13) Or (Ch = 10) Then Ch := $0D;
+      EmitInstr('LDA #' + IntToStr_(Ch));
+      EmitInstr('JSR _TPRT_NES_PUTC');
+    End
     Else
     Begin
       If (Ch = 13) Or (Ch = 10) Then Ch := $8D
@@ -17668,6 +17674,11 @@ Begin
       Begin
         EmitInstr('LDA #$9B');
         EmitInstr('JSR _TPRT_ATARI_PUTC');
+      End
+      Else If Opts.NES Then
+      Begin
+        EmitInstr('LDA #$0D');
+        EmitInstr('JSR _TPRT_NES_PUTC');
       End
       Else
       Begin
@@ -17824,6 +17835,11 @@ Begin
     Begin
       EmitInstr('LDA #$9B');
       EmitInstr('JSR _TPRT_ATARI_PUTC');
+    End
+    Else If Opts.NES Then
+    Begin
+      EmitInstr('LDA #$0D');
+      EmitInstr('JSR _TPRT_NES_PUTC');
     End
     Else
     Begin
@@ -18173,7 +18189,7 @@ Var
   LI, SI      : Integer;
 Begin
   { Branche specialisee 6502 (Apple II / C64) : code natif }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Or Opts.NES Then
   Begin
     ParseWriteStmtAppleII(IsWriteLn);
     Exit;
@@ -18915,7 +18931,7 @@ Begin
   EmitComment('while');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Or Opts.NES Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18977,7 +18993,7 @@ Begin
   EmitComment('repeat');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Or Opts.NES Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -19051,7 +19067,7 @@ Begin
   { ParseStmtAppleII attend que EP pointe sur le mot-cle FOR ; or nous     }
   { l avons deja consomme. Reculer EP d un cran pour qu il y pointe a     }
   { nouveau, puis deleguer.                                                }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Or Opts.NES Then
   Begin
     Dec(EP);
     ParseStmtAppleII;
@@ -19204,7 +19220,7 @@ Begin
   If EPAtEnd Then Exit;
 
   { Cible 6502 (Apple II / C64) : interpretation pour tout le bloc }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Or Opts.NES Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -25465,6 +25481,12 @@ Begin
       EmitComment('6502 : retour via RTS');
       EmitInstr('RTS');
     End
+    Else If Opts.NES Then
+    Begin
+      { Sortie NES : retour via RTS vers _TPRT_NES_INIT (boucle infinie) }
+      EmitComment('NES : retour vers _TPRT_NES_INIT');
+      EmitInstr('RTS');
+    End
     Else If Opts.MSX Then
     Begin
       { Sortie MSX-DOS (CP/M) : retour via RET vers MSX-DOS }
@@ -26216,6 +26238,153 @@ Begin
     EmitInstr('LDA ($06),Y');
     EmitInstr('BEQ _TPRT_AII_PRSTR_E');
     EmitInstr('JSR $FFD2');
+    EmitInstr('INY');
+    EmitInstr('BNE _TPRT_AII_PRSTR_L');
+    EmitLabel('_TPRT_AII_PRSTR_E');
+    EmitInstr('RTS');
+    Exit;
+  End;
+  If Opts.NES Then
+  Begin
+    EmitComment('--- Runtime NES (6502/2A03, sortie via PPU 32x30) ---');
+    { Conventions zero-page NES :                                      }
+    {   $0A = cursor_x (0..31)                                          }
+    {   $0B = cursor_y (0..29)                                          }
+    {   $0C = sauvegarde Y dans _TPRT_NES_PUTC                          }
+    {   $06,$07 = pointeur ASCIIZ pour _TPRT_AII_PRSTR                  }
+    { Convention CHR-ROM : tile $XX correspond au caractere ASCII $XX  }
+    { donc l octet ecrit dans la nametable EST le code ASCII du glyphe.}
+
+    { _TPRT_NES_INIT : point d entree (vecteur RESET pointe ici).       }
+    {   1) Init CPU + PPU                                               }
+    {   2) Attente 2 vblanks pour que la PPU soit stable                }
+    {   3) Init palette + nametable                                     }
+    {   4) JSR _TPF_Main (programme utilisateur)                        }
+    {   5) Active rendu BG, boucle infinie                              }
+    EmitLabel('_TPRT_NES_INIT');
+    EmitInstr('SEI');
+    EmitInstr('CLD');
+    EmitInstr('LDX #$FF');
+    EmitInstr('TXS');
+    EmitInstr('LDA #0');
+    EmitInstr('STA $2000');     { PPUCTRL = 0 (NMI off) }
+    EmitInstr('STA $2001');     { PPUMASK = 0 (rendu off) }
+    EmitInstr('STA $4010');     { APU DMC off }
+    { Attente premier vblank (bit 7 de $2002) }
+    EmitLabel('_TPRT_NES_INIT_W1');
+    EmitInstr('LDA $2002');
+    EmitInstr('BPL _TPRT_NES_INIT_W1');
+    { Init curseur }
+    EmitInstr('LDA #0');
+    EmitInstr('STA $0A');
+    EmitInstr('STA $0B');
+    { Attente second vblank }
+    EmitLabel('_TPRT_NES_INIT_W2');
+    EmitInstr('LDA $2002');
+    EmitInstr('BPL _TPRT_NES_INIT_W2');
+    { Palette : adresse PPU $3F00 }
+    EmitInstr('LDA #$3F');
+    EmitInstr('STA $2006');
+    EmitInstr('LDA #$00');
+    EmitInstr('STA $2006');
+    EmitInstr('LDA #$0F');      { fond noir }
+    EmitInstr('STA $2007');
+    EmitInstr('LDA #$30');      { couleur 1 = blanc }
+    EmitInstr('STA $2007');
+    EmitInstr('STA $2007');
+    EmitInstr('STA $2007');
+    { Nametable + attributs : remplir 1024 octets a $2000 avec ' ' }
+    EmitInstr('LDA #$20');
+    EmitInstr('STA $2006');
+    EmitInstr('LDA #$00');
+    EmitInstr('STA $2006');
+    EmitInstr('LDX #4');        { 4 pages }
+    EmitInstr('LDY #0');
+    EmitLabel('_TPRT_NES_INIT_C');
+    EmitInstr('LDA #$20');      { tile espace = ASCII 32 }
+    EmitInstr('STA $2007');
+    EmitInstr('INY');
+    EmitInstr('BNE _TPRT_NES_INIT_C');
+    EmitInstr('DEX');
+    EmitInstr('BNE _TPRT_NES_INIT_C');
+    { Programme utilisateur }
+    EmitInstr('JSR _TPF_Main');
+    { Active le rendu BG, scroll a 0 }
+    EmitInstr('LDA #0');
+    EmitInstr('STA $2005');
+    EmitInstr('STA $2005');
+    EmitInstr('LDA #$08');      { show BG }
+    EmitInstr('STA $2001');
+    EmitInstr('LDA #0');
+    EmitInstr('STA $2000');
+    { Boucle infinie }
+    EmitLabel('_TPRT_NES_HALT');
+    EmitInstr('JMP _TPRT_NES_HALT');
+
+    { _TPRT_NES_PUTC : A = caractere ASCII a imprimer.                 }
+    { Preserve Y. CR ($0D) = nouvelle ligne.                            }
+    EmitLabel('_TPRT_NES_PUTC');
+    EmitInstr('STY $0C');
+    EmitInstr('CMP #$0D');
+    EmitInstr('BNE _TPRT_NES_PUTC_NCR');
+    { CR : x=0, y++, wrap si y>=30 }
+    EmitInstr('LDA #0');
+    EmitInstr('STA $0A');
+    EmitInstr('INC $0B');
+    EmitInstr('LDA $0B');
+    EmitInstr('CMP #30');
+    EmitInstr('BCC _TPRT_NES_PUTC_END');
+    EmitInstr('LDA #0');
+    EmitInstr('STA $0B');
+    EmitInstr('JMP _TPRT_NES_PUTC_END');
+    EmitLabel('_TPRT_NES_PUTC_NCR');
+    EmitInstr('PHA');
+    { addr_hi = $20 + (cursor_y >> 3) }
+    EmitInstr('LDA $0B');
+    EmitInstr('LSR A');
+    EmitInstr('LSR A');
+    EmitInstr('LSR A');
+    EmitInstr('CLC');
+    EmitInstr('ADC #$20');
+    EmitInstr('STA $2006');
+    { addr_lo = ((cursor_y & 7) << 5) + cursor_x }
+    EmitInstr('LDA $0B');
+    EmitInstr('AND #$07');
+    EmitInstr('ASL A');
+    EmitInstr('ASL A');
+    EmitInstr('ASL A');
+    EmitInstr('ASL A');
+    EmitInstr('ASL A');
+    EmitInstr('CLC');
+    EmitInstr('ADC $0A');
+    EmitInstr('STA $2006');
+    EmitInstr('PLA');
+    EmitInstr('STA $2007');     { ecriture du tile = code ASCII }
+    EmitInstr('INC $0A');
+    EmitInstr('LDA $0A');
+    EmitInstr('CMP #32');
+    EmitInstr('BCC _TPRT_NES_PUTC_END');
+    EmitInstr('LDA #0');
+    EmitInstr('STA $0A');
+    EmitInstr('INC $0B');
+    EmitInstr('LDA $0B');
+    EmitInstr('CMP #30');
+    EmitInstr('BCC _TPRT_NES_PUTC_END');
+    EmitInstr('LDA #0');
+    EmitInstr('STA $0B');
+    EmitLabel('_TPRT_NES_PUTC_END');
+    EmitInstr('LDY $0C');
+    EmitInstr('RTS');
+
+    { _TPRT_AII_PRSTR : A = lo, Y = hi pointeur ASCIIZ                 }
+    EmitLabel('_TPRT_AII_PRSTR');
+    EmitInstr('STA $06');
+    EmitInstr('STY $07');
+    EmitInstr('LDY #0');
+    EmitLabel('_TPRT_AII_PRSTR_L');
+    EmitInstr('LDA ($06),Y');
+    EmitInstr('BEQ _TPRT_AII_PRSTR_E');
+    EmitInstr('JSR _TPRT_NES_PUTC');
     EmitInstr('INY');
     EmitInstr('BNE _TPRT_AII_PRSTR_L');
     EmitLabel('_TPRT_AII_PRSTR_E');
@@ -37565,25 +37734,149 @@ Begin
   Close(F);
 End;
 
+{ --- Police 8x8 ASCII pour CHR-ROM NES ($20..$7F = 96 caracteres) ----- }
+{ Chaque tile occupe 16 octets dans la CHR-ROM : 8 octets de plan 0      }
+{ (le bitmap) suivis de 8 octets de plan 1 (zero pour monochrome).       }
+{ Index 0 = caractere 32 = ' '. Bit 7 = pixel le plus a gauche.          }
+Const
+  NesFontTiles: Array[0..95, 0..7] Of Byte = (
+    ($00,$00,$00,$00,$00,$00,$00,$00), { ' '  }
+    ($18,$18,$18,$18,$18,$00,$18,$00), { '!'  }
+    ($6C,$6C,$6C,$00,$00,$00,$00,$00), { '"'  }
+    ($36,$36,$7F,$36,$7F,$36,$36,$00), { '#'  }
+    ($0C,$3F,$68,$3E,$0B,$7E,$18,$00), { '$'  }
+    ($60,$66,$0C,$18,$30,$66,$06,$00), { '%'  }
+    ($38,$6C,$38,$76,$DC,$CC,$76,$00), { '&'  }
+    ($18,$18,$30,$00,$00,$00,$00,$00), { '\'' }
+    ($0C,$18,$30,$30,$30,$18,$0C,$00), { '('  }
+    ($30,$18,$0C,$0C,$0C,$18,$30,$00), { ')'  }
+    ($00,$66,$3C,$FF,$3C,$66,$00,$00), { '*'  }
+    ($00,$18,$18,$7E,$18,$18,$00,$00), { '+'  }
+    ($00,$00,$00,$00,$00,$18,$18,$30), { ','  }
+    ($00,$00,$00,$7E,$00,$00,$00,$00), { '-'  }
+    ($00,$00,$00,$00,$00,$18,$18,$00), { '.'  }
+    ($06,$0C,$18,$30,$60,$C0,$80,$00), { '/'  }
+    ($3C,$66,$6E,$76,$66,$66,$3C,$00), { '0'  }
+    ($18,$38,$18,$18,$18,$18,$7E,$00), { '1'  }
+    ($3C,$66,$06,$0C,$30,$60,$7E,$00), { '2'  }
+    ($3E,$06,$0C,$1C,$06,$66,$3C,$00), { '3'  }
+    ($0C,$1C,$3C,$6C,$FE,$0C,$0C,$00), { '4'  }
+    ($7E,$60,$7C,$06,$06,$66,$3C,$00), { '5'  }
+    ($1C,$30,$60,$7C,$66,$66,$3C,$00), { '6'  }
+    ($7E,$06,$0C,$18,$30,$30,$30,$00), { '7'  }
+    ($3C,$66,$66,$3C,$66,$66,$3C,$00), { '8'  }
+    ($3C,$66,$66,$3E,$06,$0C,$38,$00), { '9'  }
+    ($00,$18,$18,$00,$00,$18,$18,$00), { ':'  }
+    ($00,$18,$18,$00,$00,$18,$18,$30), { ';'  }
+    ($0C,$18,$30,$60,$30,$18,$0C,$00), { '<'  }
+    ($00,$00,$7E,$00,$7E,$00,$00,$00), { '='  }
+    ($60,$30,$18,$0C,$18,$30,$60,$00), { '>'  }
+    ($3C,$66,$06,$0C,$18,$00,$18,$00), { '?'  }
+    ($3C,$66,$6E,$6E,$60,$62,$3C,$00), { '@'  }
+    ($18,$3C,$66,$7E,$66,$66,$66,$00), { 'A'  }
+    ($7C,$66,$66,$7C,$66,$66,$7C,$00), { 'B'  }
+    ($3C,$66,$60,$60,$60,$66,$3C,$00), { 'C'  }
+    ($78,$6C,$66,$66,$66,$6C,$78,$00), { 'D'  }
+    ($7E,$60,$60,$78,$60,$60,$7E,$00), { 'E'  }
+    ($7E,$60,$60,$78,$60,$60,$60,$00), { 'F'  }
+    ($3C,$66,$60,$6E,$66,$66,$3C,$00), { 'G'  }
+    ($66,$66,$66,$7E,$66,$66,$66,$00), { 'H'  }
+    ($3C,$18,$18,$18,$18,$18,$3C,$00), { 'I'  }
+    ($1E,$0C,$0C,$0C,$0C,$6C,$38,$00), { 'J'  }
+    ($66,$6C,$78,$70,$78,$6C,$66,$00), { 'K'  }
+    ($60,$60,$60,$60,$60,$60,$7E,$00), { 'L'  }
+    ($63,$77,$7F,$6B,$63,$63,$63,$00), { 'M'  }
+    ($66,$76,$7E,$7E,$6E,$66,$66,$00), { 'N'  }
+    ($3C,$66,$66,$66,$66,$66,$3C,$00), { 'O'  }
+    ($7C,$66,$66,$7C,$60,$60,$60,$00), { 'P'  }
+    ($3C,$66,$66,$66,$6A,$6C,$36,$00), { 'Q'  }
+    ($7C,$66,$66,$7C,$78,$6C,$66,$00), { 'R'  }
+    ($3C,$66,$60,$3C,$06,$66,$3C,$00), { 'S'  }
+    ($7E,$18,$18,$18,$18,$18,$18,$00), { 'T'  }
+    ($66,$66,$66,$66,$66,$66,$3C,$00), { 'U'  }
+    ($66,$66,$66,$66,$66,$3C,$18,$00), { 'V'  }
+    ($63,$63,$63,$6B,$7F,$77,$63,$00), { 'W'  }
+    ($66,$66,$3C,$18,$3C,$66,$66,$00), { 'X'  }
+    ($66,$66,$66,$3C,$18,$18,$18,$00), { 'Y'  }
+    ($7E,$06,$0C,$18,$30,$60,$7E,$00), { 'Z'  }
+    ($3C,$30,$30,$30,$30,$30,$3C,$00), { '['  }
+    ($C0,$60,$30,$18,$0C,$06,$02,$00), { '\'  }
+    ($3C,$0C,$0C,$0C,$0C,$0C,$3C,$00), { ']'  }
+    ($18,$3C,$66,$00,$00,$00,$00,$00), { '^'  }
+    ($00,$00,$00,$00,$00,$00,$00,$FF), { '_'  }
+    ($30,$18,$0C,$00,$00,$00,$00,$00), { '`'  }
+    ($00,$00,$3C,$06,$3E,$66,$3E,$00), { 'a'  }
+    ($60,$60,$7C,$66,$66,$66,$7C,$00), { 'b'  }
+    ($00,$00,$3C,$60,$60,$60,$3C,$00), { 'c'  }
+    ($06,$06,$3E,$66,$66,$66,$3E,$00), { 'd'  }
+    ($00,$00,$3C,$66,$7E,$60,$3C,$00), { 'e'  }
+    ($1C,$30,$7C,$30,$30,$30,$30,$00), { 'f'  }
+    ($00,$00,$3E,$66,$66,$3E,$06,$7C), { 'g'  }
+    ($60,$60,$7C,$66,$66,$66,$66,$00), { 'h'  }
+    ($18,$00,$18,$18,$18,$18,$3C,$00), { 'i'  }
+    ($0C,$00,$0C,$0C,$0C,$0C,$6C,$38), { 'j'  }
+    ($60,$60,$6C,$78,$78,$6C,$66,$00), { 'k'  }
+    ($18,$18,$18,$18,$18,$18,$3C,$00), { 'l'  }
+    ($00,$00,$36,$7F,$6B,$6B,$6B,$00), { 'm'  }
+    ($00,$00,$7C,$66,$66,$66,$66,$00), { 'n'  }
+    ($00,$00,$3C,$66,$66,$66,$3C,$00), { 'o'  }
+    ($00,$00,$7C,$66,$66,$7C,$60,$60), { 'p'  }
+    ($00,$00,$3E,$66,$66,$3E,$06,$06), { 'q'  }
+    ($00,$00,$7C,$66,$60,$60,$60,$00), { 'r'  }
+    ($00,$00,$3E,$60,$3C,$06,$7C,$00), { 's'  }
+    ($30,$30,$7C,$30,$30,$30,$1C,$00), { 't'  }
+    ($00,$00,$66,$66,$66,$66,$3E,$00), { 'u'  }
+    ($00,$00,$66,$66,$66,$3C,$18,$00), { 'v'  }
+    ($00,$00,$63,$6B,$6B,$6B,$36,$00), { 'w'  }
+    ($00,$00,$66,$3C,$18,$3C,$66,$00), { 'x'  }
+    ($00,$00,$66,$66,$66,$3E,$06,$7C), { 'y'  }
+    ($00,$00,$7E,$0C,$18,$30,$7E,$00), { 'z'  }
+    ($0C,$18,$18,$70,$18,$18,$0C,$00), { left brace   }
+    ($18,$18,$18,$18,$18,$18,$18,$00), { '|'  }
+    ($30,$18,$18,$0E,$18,$18,$30,$00), { right brace  }
+    ($00,$00,$76,$DC,$00,$00,$00,$00), { '~'  }
+    ($00,$00,$00,$00,$00,$00,$00,$00)  { DEL  }
+  );
+
 Procedure WriteNesRomFile(FileName: TString);
 Const
   PRG_BLOCK_SIZE = 16384; { 16 KB }
+  CHR_BLOCK_SIZE = 8192;  {  8 KB }
   ENTRY_ADDR     = $8000;
 Var
   F: File;
   TextLen, DataLen, DataBase, Payload, PrgSize: LongInt;
-  PadLen, I: LongInt;
-  PadByte: Byte;
   Header: Array[0..15] Of Byte;
   Prg: Array Of Byte;
+  ChrRom: Array[0..8191] Of Byte;
   PrgBlocks: Byte;
+  EntryOfs: LongInt;
+  EntryAddr: LongInt;
+  I, ChIdx, Row: LongInt;
 Begin
+  { Patcher le JMP au tout debut (3 octets reserves par EmitCodeSeg).   }
+  { Cible = _TPRT_NES_INIT (init PPU + appel _TPF_Main + halt).         }
+  { Si absent (programme custom), retomber sur _TPF_Main.                }
+  EntryOfs := BcFindLabel('_TPRT_NES_INIT');
+  If EntryOfs < 0 Then EntryOfs := BcFindLabel('_TPF_Main');
+  If (EntryOfs > 0) And (BcCodeLen >= 3) Then
+  Begin
+    EntryAddr := ENTRY_ADDR + EntryOfs;
+    BcCode[0] := $4C; { JMP abs }
+    BcCode[1] := Byte(EntryAddr);
+    BcCode[2] := Byte(EntryAddr Shr 8);
+  End;
+
   TextLen := BcCodeLen;
   DataLen := BcDataLen;
   DataBase := (TextLen + 3) And Not 3;
   Payload := DataBase + DataLen;
   If Payload < TextLen Then Payload := TextLen;
   If Payload < 1 Then Payload := 1;
+
+  { Resoudre les fixups 6502 maintenant que le layout est fige.        }
+  { Code et data sont concatenes a partir de $8000 dans la PRG-ROM.    }
+  BcResolveFixups6502(ENTRY_ADDR, DataBase);
 
   { Calcule le nombre de blocs 16 KB necessaires (au moins 1) }
   PrgBlocks := 1;
@@ -37597,13 +37890,22 @@ Begin
   For I := 0 To TextLen - 1 Do Prg[I] := BcCode[I];
   For I := 0 To DataLen - 1 Do Prg[DataBase + I] := BcData[I];
 
-  { Vecteurs NMI/RESET/IRQ a la fin du dernier bloc (offset PrgSize-6..-1) }
-  Prg[PrgSize - 6] := ENTRY_ADDR And $FF;          { NMI lo }
-  Prg[PrgSize - 5] := (ENTRY_ADDR Shr 8) And $FF;  { NMI hi }
-  Prg[PrgSize - 4] := ENTRY_ADDR And $FF;          { RESET lo }
-  Prg[PrgSize - 3] := (ENTRY_ADDR Shr 8) And $FF;  { RESET hi }
-  Prg[PrgSize - 2] := ENTRY_ADDR And $FF;          { IRQ lo }
-  Prg[PrgSize - 1] := (ENTRY_ADDR Shr 8) And $FF;  { IRQ hi }
+  { Vecteurs NMI/RESET/IRQ a la fin du dernier bloc }
+  Prg[PrgSize - 6] := ENTRY_ADDR And $FF;
+  Prg[PrgSize - 5] := (ENTRY_ADDR Shr 8) And $FF;
+  Prg[PrgSize - 4] := ENTRY_ADDR And $FF;
+  Prg[PrgSize - 3] := (ENTRY_ADDR Shr 8) And $FF;
+  Prg[PrgSize - 2] := ENTRY_ADDR And $FF;
+  Prg[PrgSize - 1] := (ENTRY_ADDR Shr 8) And $FF;
+
+  { Construit la CHR-ROM 8 KB. Chaque tile = 16 octets (8 plan 0 + 8   }
+  { plan 1). On place le glyphe ASCII C a l offset C*16 dans le plan 0,}
+  { plan 1 a zero (monochrome). Resultat : la valeur ecrite dans la   }
+  { nametable EST le code ASCII du caractere a afficher.               }
+  FillChar(ChrRom, 8192, 0);
+  For ChIdx := 32 To 127 Do
+    For Row := 0 To 7 Do
+      ChrRom[ChIdx * 16 + Row] := NesFontTiles[ChIdx - 32, Row];
 
   { Header iNES }
   FillChar(Header, 16, 0);
@@ -37612,7 +37914,7 @@ Begin
   Header[2] := Ord('S');
   Header[3] := $1A;
   Header[4] := PrgBlocks;  { PRG en blocs 16 KB }
-  Header[5] := 0;          { CHR-RAM }
+  Header[5] := 1;          { 1 bloc CHR-ROM (8 KB) }
   Header[6] := $00;        { mapper 0 (NROM), mirroring horizontal }
   Header[7] := $00;
 
@@ -37620,11 +37922,8 @@ Begin
   Rewrite(F, 1);
   BlockWrite(F, Header, 16);
   BlockWrite(F, Prg[0], PrgSize);
+  BlockWrite(F, ChrRom, 8192);
   Close(F);
-
-  { Eviter warnings unused }
-  PadByte := 0; PadLen := 0;
-  If PadByte = PadLen Then;
 End;
 
 Procedure WriteMsxComFile(FileName: TString);
@@ -39734,7 +40033,7 @@ Begin
       EmitMainBlock;
 
     { Emettre les donnees ajoutees tardivement (cible 6502 Apple II / C64 / MSX) }
-    If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
+    If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Or Opts.NES Then
       EmitDataSegLate;
 
     { Emettre les routines runtime (TODO 12) }
@@ -39744,7 +40043,7 @@ Begin
       EmitRuntimeAmiga
     Else If Is68kTarget Then
       EmitRuntime68000
-    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Then
+    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Or Opts.NES Then
       EmitRuntimeAppleII
     Else
       EmitRuntime;
