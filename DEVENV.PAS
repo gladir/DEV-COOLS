@@ -29542,6 +29542,10 @@ Var
  CPUName: String;
  EntryAddr: LongInt;
  EntryAddr16: Word;
+ NesFH: File;
+ NesHdr: Array[0..15] Of Byte;
+ NesBR: Word;
+ NesPrgBlocks: Byte;
 Begin
  InitEmulatorPanel(P);
  P.BinaryPath := BinaryPath;
@@ -29801,11 +29805,24 @@ Begin
    NesPpu_Latch := False;
    NesPpu_Rendered := False;
    FillChar(NesPpu_NameTable, SizeOf(NesPpu_NameTable), $20);
-   { iNES : 16 octets header, PRG-ROM 16 KiB charge a $8000 et miroir $C000 }
+   { Lire l entete iNES pour determiner la taille PRG (1 ou 2 blocs).      }
+   { NROM-128 (1 bloc, 16 KiB) : miroir $8000 -> $C000.                    }
+   { NROM-256 (2 blocs, 32 KiB) : aucun miroir, charge directement a $8000.}
+   NesPrgBlocks := 1;
+   Assign(NesFH, BinaryPath);
+   {$I-} Reset(NesFH, 1); {$I+}
+   If IOResult = 0 Then Begin
+    BlockRead(NesFH, NesHdr, 16, NesBR);
+    Close(NesFH);
+    If (NesBR = 16) And (NesHdr[0] = $4E) And (NesHdr[1] = $45) And
+       (NesHdr[2] = $53) And (NesHdr[3] = $1A) Then
+     NesPrgBlocks := NesHdr[4];
+   End;
+   { iNES : 16 octets header, PRG-ROM (16 ou 32 KiB) charge a $8000 }
    Loaded := CPU6502_LoadRaw(BinaryPath, $8000, 16);
-   { Miroir $C000 = $8000 pour ROM 16 KiB }
-   For Steps := 0 To $3FFF Do
-    CPU6502_Mem[$C000 + Steps] := CPU6502_Mem[$8000 + Steps];
+   If NesPrgBlocks <= 1 Then
+    For Steps := 0 To $3FFF Do
+     CPU6502_Mem[$C000 + Steps] := CPU6502_Mem[$8000 + Steps];
    { Vecteur RESET en $FFFC/$FFFD }
    EntryAddr16 := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
   End
