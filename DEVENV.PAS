@@ -24721,6 +24721,7 @@ Var
   c: Byte;
   i: Integer;
   val: LongInt;
+  charcount: LongInt;
 Begin
   M68K_DoTrap := True;
   If vector = 15 Then Begin
@@ -24744,6 +24745,47 @@ Begin
             val := M68K_ToSigned(M68K_D[1], 4);
             EmuVScr_WriteStr(M68K_Panel^, IntToStr(val));
           End;
+    End;
+  End
+  Else If vector = 1 Then Begin
+    { GEMDOS TRAP #1 - Atari ST.                                          }
+    { Convention : function code en mot a [A7], arguments suivants.       }
+    { L'appelant retire les arguments avec ADDQ.L #n,A7 apres TRAP.       }
+    func := M68K_Read16(M68K_A[7]);
+    Case func Of
+      $00: Begin { Pterm0 - terminer le programme, code retour 0 }
+             M68K_Halted := True;
+             M68K_ExitCode := 0;
+           End;
+      $01: Begin { Cconin - lecture clavier (non implemente : retourne 0) }
+             M68K_D[0] := 0;
+           End;
+      $02: Begin { Cconout - afficher un caractere (mot a [A7+2]) }
+             c := M68K_Read16(M68K_A[7] + 2) And $FF;
+             EmuVScr_PutChar(M68K_Panel^, Chr(c));
+             M68K_D[0] := 0;
+           End;
+      $09: Begin { Cconws - afficher chaine ASCIZ (long pointer a [A7+2]) }
+             adr := M68K_Read32(M68K_A[7] + 2);
+             charcount := 0;
+             charcount := 0;
+             i := 0;
+             While i < 32760 Do Begin
+               c := M68K_Read8(adr + i);
+               If c = 0 Then Break;
+               EmuVScr_PutChar(M68K_Panel^, Chr(c));
+               Inc(charcount);
+               Inc(i);
+             End;
+             M68K_D[0] := charcount;
+           End;
+      $4C: Begin { Pterm - terminer avec code retour (mot a [A7+2]) }
+             M68K_Halted := True;
+             M68K_ExitCode := M68K_Read16(M68K_A[7] + 2);
+           End;
+    Else
+      { Fonction GEMDOS non implementee : retourne 0 dans D0 }
+      M68K_D[0] := 0;
     End;
   End;
 End;
@@ -26400,6 +26442,64 @@ Begin
  Close(f);
  entryAddr := codeBase;
  M68K_LoadAmigaHunk := True;
+End;
+
+{ ------------------------------------------------------------------------- }
+{ Chargeur PRG Atari ST (GEMDOS) : decode un .prg genere par TPCW32 -CATARIST}
+{ Header 28 octets BE :                                                      }
+{   $00..$01 : magic $601A                                                   }
+{   $02..$05 : ph_tlen (taille TEXT)                                         }
+{   $06..$09 : ph_dlen (taille DATA)                                         }
+{   $0A..$0D : ph_blen (taille BSS)                                          }
+{   $0E..$11 : ph_slen (taille table symboles)                               }
+{   $12..$15 : reserve                                                       }
+{   $16..$19 : ph_prgflags                                                   }
+{   $1A..$1B : ph_absflag (0 = relocalisable)                                }
+{ Suivi de TEXT, DATA, table symboles, table de relocations.                 }
+{ On charge a la base 0 (les fixups TPCW32 sont deja 0-relatifs), donc       }
+{ aucune relocation a appliquer.                                             }
+{ ------------------------------------------------------------------------- }
+Function M68K_LoadPRG(Const filename: String;
+ Var entryAddr: LongInt): Boolean;
+Var
+ f: File;
+ br: Integer;
+ hdr: Array[0..27] Of Byte;
+ magic, tlen, dlen, slen, absflag: LongInt;
+ base: LongInt;
+ b: Byte;
+ i: LongInt;
+Begin
+ M68K_LoadPRG := False;
+ entryAddr := -1;
+ Assign(f, filename);
+ {$I-} Reset(f, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ { Lire l'en-tete 28 octets }
+ BlockRead(f, hdr, 28, br);
+ If br < 28 Then Begin Close(f); Exit; End;
+ magic := (LongInt(hdr[0]) Shl 8) Or hdr[1];
+ If magic <> $601A Then Begin Close(f); Exit; End;
+ tlen := (LongInt(hdr[2]) Shl 24) Or (LongInt(hdr[3]) Shl 16) Or
+         (LongInt(hdr[4]) Shl 8)  Or  LongInt(hdr[5]);
+ dlen := (LongInt(hdr[6]) Shl 24) Or (LongInt(hdr[7]) Shl 16) Or
+         (LongInt(hdr[8]) Shl 8)  Or  LongInt(hdr[9]);
+ slen := (LongInt(hdr[14]) Shl 24) Or (LongInt(hdr[15]) Shl 16) Or
+         (LongInt(hdr[16]) Shl 8)  Or  LongInt(hdr[17]);
+ absflag := (LongInt(hdr[26]) Shl 8) Or hdr[27];
+ { On charge a la base 0 : les fixups TPCW32 sont deja 0-relatifs.        }
+ base := 0;
+ If tlen > 0 Then BlockRead(f, M68K_Mem[base], tlen, br);
+ If dlen > 0 Then BlockRead(f, M68K_Mem[base + tlen], dlen, br);
+ { Sauter la table de symboles }
+ For i := 1 To slen Do
+  If Not Eof(f) Then BlockRead(f, b, 1, br);
+ { Si absflag = 0 et base <> 0, il faudrait appliquer la table de         }
+ { relocations. Comme base=0, aucune action n'est requise.                }
+ If absflag = absflag Then ;  { eviter warning unused }
+ Close(f);
+ entryAddr := base;
+ M68K_LoadPRG := True;
 End;
 
 Function M68K_LoadSRecord(Const filename: String; Var entryAddr: LongInt): Boolean;
@@ -29326,7 +29426,10 @@ Begin
   { ----- Emulateur Motorola 68000 ----- }
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   P.CurFg := 14;
-  EmuVScr_WriteStr(P, 'Chargement du binaire 68000 (Amiga Hunk)...');
+  If TargetCPU = '-CATARIST' Then
+   EmuVScr_WriteStr(P, 'Chargement du binaire 68000 (Atari ST PRG)...')
+  Else
+   EmuVScr_WriteStr(P, 'Chargement du binaire 68000 (Amiga Hunk)...');
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   P.CurFg := 7;
   { Initialisation des registres et de la memoire }
@@ -29344,8 +29447,16 @@ Begin
   M68K_Panel := @P;
   Loaded := False;
   EntryAddr := -1;
-  Loaded := M68K_LoadAmigaHunk(BinaryPath, EntryAddr);
-  { Si le format Amiga Hunk a echoue, essayer S-Record en repli }
+  { Pour Atari ST, essayer le format PRG GEMDOS en premier }
+  If TargetCPU = '-CATARIST' Then
+   Loaded := M68K_LoadPRG(BinaryPath, EntryAddr);
+  { Sinon (ou si echec), essayer le format Amiga Hunk }
+  If Not Loaded Then
+   Loaded := M68K_LoadAmigaHunk(BinaryPath, EntryAddr);
+  { Si Amiga Hunk a echoue aussi, essayer PRG (au cas ou) }
+  If (Not Loaded) And (TargetCPU <> '-CATARIST') Then
+   Loaded := M68K_LoadPRG(BinaryPath, EntryAddr);
+  { En dernier recours, essayer S-Record }
   If Not Loaded Then
    Loaded := M68K_LoadSRecord(BinaryPath, EntryAddr);
   If Not Loaded Then Begin
@@ -29354,7 +29465,7 @@ Begin
     'Erreur : impossible de charger ' + BinaryPath);
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    EmuVScr_WriteStr(P,
-    '(formats supportes : Amiga Hunk .exe, S-Record .s19)');
+    '(formats supportes : Atari PRG .prg, Amiga Hunk .exe, S-Record .s19)');
    P.CurFg := OldFg;
    P.Running := False;
    P.Fault := sfEndProgram;
