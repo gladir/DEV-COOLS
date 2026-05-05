@@ -3082,6 +3082,11 @@ Var
  EmuTraceBuf    : Array[0..8191] Of Record
    CS, IP: Word; Op: Byte;
    ES, DI, CX, AX: Word;
+   BX, BP, DS, SS, SP, SI: Word;
+   { Snapshot des 16 octets pointes par DS:BX (structure suspectee
+     d etre lue par LES SI, [BX+...] dans le runtime TP). Utile pour
+     diagnostiquer la corruption d une structure ou un BX errone. }
+   MemDsBx: Array[0..15] Of Byte;
   End;
  EmuTraceIdx    : Integer;
  EmuRunaway     : Integer;
@@ -30729,7 +30734,7 @@ End;
 Procedure Emu_DumpTrace;
 Var
  F: Text;
- I, K: Integer;
+ I, J, K: Integer;
 Begin
  {$I-}
  Assign(F, 'EMUTRACE.LOG');
@@ -30744,11 +30749,26 @@ Begin
  For I := 0 To 8191 Do Begin
   K := (EmuTraceIdx + I) And $1FFF;
   WriteLn(F, HexWord(EmuTraceBuf[K].CS), ':', HexWord(EmuTraceBuf[K].IP),
-   '  opcode=', HexByte(EmuTraceBuf[K].Op),
-   '  ES=', HexWord(EmuTraceBuf[K].ES),
-   '  DI=', HexWord(EmuTraceBuf[K].DI),
-   '  CX=', HexWord(EmuTraceBuf[K].CX),
-   '  AX=', HexWord(EmuTraceBuf[K].AX));
+   '  op=', HexByte(EmuTraceBuf[K].Op),
+   '  AX=', HexWord(EmuTraceBuf[K].AX),
+   ' BX=', HexWord(EmuTraceBuf[K].BX),
+   ' CX=', HexWord(EmuTraceBuf[K].CX),
+   ' SI=', HexWord(EmuTraceBuf[K].SI),
+   ' DI=', HexWord(EmuTraceBuf[K].DI),
+   ' BP=', HexWord(EmuTraceBuf[K].BP),
+   ' SP=', HexWord(EmuTraceBuf[K].SP),
+   ' DS=', HexWord(EmuTraceBuf[K].DS),
+   ' ES=', HexWord(EmuTraceBuf[K].ES),
+   ' SS=', HexWord(EmuTraceBuf[K].SS));
+  { Pour LES (C4) et LDS (C5), dumper la structure pointee a DS:BX
+    juste avant l execution. C est la cible suspectee de corruption
+    dans le runtime TP de ABAP86. }
+  If (EmuTraceBuf[K].Op = $C4) Or (EmuTraceBuf[K].Op = $C5) Then Begin
+   Write(F, '   [DS:BX..BX+15] =');
+   For J := 0 To 15 Do
+    Write(F, ' ', HexByte(EmuTraceBuf[K].MemDsBx[J]));
+   WriteLn(F);
+  End;
  End;
  Close(F);
 End;
@@ -30780,6 +30800,7 @@ Var
  NesFrameLimit: LongInt;
  NesInstrPerFrame: LongInt;
  NesKeyEsc: Boolean;
+ EmuTrcJ: Integer;
 Begin
  NesActive := False;
  InitEmulatorPanel(P);
@@ -31492,6 +31513,19 @@ Begin
   EmuTraceBuf[EmuTraceIdx].DI := P.CPU.Regs.DI;
   EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
   EmuTraceBuf[EmuTraceIdx].AX := P.CPU.Regs.AX;
+  EmuTraceBuf[EmuTraceIdx].BX := P.CPU.Regs.BX;
+  EmuTraceBuf[EmuTraceIdx].BP := P.CPU.Regs.BP;
+  EmuTraceBuf[EmuTraceIdx].DS := P.CPU.Segs.DS;
+  EmuTraceBuf[EmuTraceIdx].SS := P.CPU.Segs.SS;
+  EmuTraceBuf[EmuTraceIdx].SP := P.CPU.Regs.SP;
+  EmuTraceBuf[EmuTraceIdx].SI := P.CPU.Regs.SI;
+  { Capturer 16 octets a DS:BX : structure typiquement lue par
+    LES SI, [BX+...] dans le runtime TP, utile pour detecter une
+    corruption de cette structure ou un BX errone. }
+  For EmuTrcJ := 0 To 15 Do
+   EmuTraceBuf[EmuTraceIdx].MemDsBx[EmuTrcJ] :=
+    Emu_ReadByte(P.CPU, P.CPU.Segs.DS,
+     Word(P.CPU.Regs.BX + EmuTrcJ));
   { Detection : capturer le point d entree dans une zone de 0x20 (espaces).
     Si on voit le 1er 0x20 apres autre chose, memoriser la position. }
   If EmuTraceBuf[EmuTraceIdx].Op = $20 Then Begin
