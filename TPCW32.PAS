@@ -37692,7 +37692,10 @@ Begin
   Remaining := TotalLen;
   While Remaining > 0 Do
   Begin
-    If Remaining > 256 Then ChunkLen := 256 Else ChunkLen := Remaining;
+    { Limite a 254 octets de data par chunk : LL = data + 2 (adresse) }
+    { reste dans la plage 3..255, evitant l'ambiguite LL=0/1/2 des     }
+    { loaders TRSDOS/LDOS.                                             }
+    If Remaining > 254 Then ChunkLen := 254 Else ChunkLen := Remaining;
     { Construire le chunk en lisant code, padding, data }
     For I := 0 To ChunkLen - 1 Do
     Begin
@@ -37704,10 +37707,7 @@ Begin
         Buf[I] := BcData[(Pos + I) - DataBase];
     End;
     Header[0] := $01;
-    If ChunkLen = 256 Then
-      Header[1] := 2
-    Else
-      Header[1] := (ChunkLen + 2) And $FF;
+    Header[1] := (ChunkLen + 2) And $FF;
     Header[2] := CurAddr And $FF;
     Header[3] := (CurAddr Shr 8) And $FF;
     BlockWrite(F, Header, 4);
