@@ -5189,6 +5189,10 @@ Begin
   { L entree CP/M est a $0100 = debut du binaire.                         }
   If BcActive And Opts.MSX Then
     EmitInstr('JP _TPF_Main');
+  { Pour Coleco Adam (.COM CP/M 2.2) : sauter directement vers _TPF_Main }
+  { L entree CP/M est a $0100 = debut du binaire.                         }
+  If BcActive And Opts.Adam Then
+    EmitInstr('JP _TPF_Main');
   { Pour CoCo 3 (.BIN DECB) : sauter directement vers _TPF_Main          }
   { L entree par defaut est $2000 = debut du binaire charge.              }
   If BcActive And Opts.CoCo3 Then
@@ -17503,6 +17507,13 @@ Begin
       EmitInstr('LD A,' + IntToStr_(Ch));
       EmitInstr('CALL $00A2');
     End
+    Else If Opts.Adam Then
+    Begin
+      If (Ch = 13) Or (Ch = 10) Then Ch := $0D;
+      EmitInstr('LD E,' + IntToStr_(Ch));
+      EmitInstr('LD C,2');
+      EmitInstr('CALL 5');
+    End
     Else If Opts.CoCo3 Then
     Begin
       If (Ch = 13) Or (Ch = 10) Then Ch := $0D;
@@ -17537,6 +17548,11 @@ Begin
     Begin
       EmitInstr('LD HL,' + Lbl);
       EmitInstr('CALL _TPRT_MSX_PRSTR');
+    End
+    Else If Opts.Adam Then
+    Begin
+      EmitInstr('LD HL,' + Lbl);
+      EmitInstr('CALL _TPRT_ADAM_PRSTR');
     End
     Else If Opts.CoCo3 Then
     Begin
@@ -17575,6 +17591,8 @@ Begin
     EmitComment('writeln (C64)')
   Else If Opts.MSX Then
     EmitComment('writeln (MSX)')
+  Else If Opts.Adam Then
+    EmitComment('writeln (Coleco Adam)')
   Else If Opts.CoCo3 Then
     EmitComment('writeln (CoCo 3)')
   Else If Opts.TO7 Then
@@ -17598,6 +17616,15 @@ Begin
         EmitInstr('CALL $00A2');
         EmitInstr('LD A,10');
         EmitInstr('CALL $00A2');
+      End
+      Else If Opts.Adam Then
+      Begin
+        EmitInstr('LD E,13');
+        EmitInstr('LD C,2');
+        EmitInstr('CALL 5');
+        EmitInstr('LD E,10');
+        EmitInstr('LD C,2');
+        EmitInstr('CALL 5');
       End
       Else If Opts.CoCo3 Then
       Begin
@@ -17633,6 +17660,11 @@ Begin
       Begin
         EmitInstr('LD HL,' + Lbl);
         EmitInstr('CALL _TPRT_MSX_PRSTR');
+      End
+      Else If Opts.Adam Then
+      Begin
+        EmitInstr('LD HL,' + Lbl);
+        EmitInstr('CALL _TPRT_ADAM_PRSTR');
       End
       Else If Opts.CoCo3 Then
       Begin
@@ -17725,6 +17757,15 @@ Begin
       EmitInstr('CALL $00A2');
       EmitInstr('LD A,10');
       EmitInstr('CALL $00A2');
+    End
+    Else If Opts.Adam Then
+    Begin
+      EmitInstr('LD E,13');
+      EmitInstr('LD C,2');
+      EmitInstr('CALL 5');
+      EmitInstr('LD E,10');
+      EmitInstr('LD C,2');
+      EmitInstr('CALL 5');
     End
     Else If Opts.CoCo3 Then
     Begin
@@ -18084,7 +18125,7 @@ Var
   LI, SI      : Integer;
 Begin
   { Branche specialisee 6502 (Apple II / C64) : code natif }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
   Begin
     ParseWriteStmtAppleII(IsWriteLn);
     Exit;
@@ -18826,7 +18867,7 @@ Begin
   EmitComment('while');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18888,7 +18929,7 @@ Begin
   EmitComment('repeat');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18962,7 +19003,7 @@ Begin
   { ParseStmtAppleII attend que EP pointe sur le mot-cle FOR ; or nous     }
   { l avons deja consomme. Reculer EP d un cran pour qu il y pointe a     }
   { nouveau, puis deleguer.                                                }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
   Begin
     Dec(EP);
     ParseStmtAppleII;
@@ -19115,7 +19156,7 @@ Begin
   If EPAtEnd Then Exit;
 
   { Cible 6502 (Apple II / C64) : interpretation pour tout le bloc }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -25318,6 +25359,11 @@ Begin
       { Mode MSX-DOS : pas d initialisation, entree directe (CP/M) }
       EmitComment('Entree programme MSX (CP/M @ $0100)');
     End
+    Else If Opts.Adam Then
+    Begin
+      { Mode Coleco Adam (CP/M 2.2) : pas d initialisation, entree @ $0100 }
+      EmitComment('Entree programme Coleco Adam (CP/M 2.2 @ $0100)');
+    End
     Else If Opts.CoCo3 Then
     Begin
       { Mode CoCo 3 : pas d initialisation, entree directe (DECB @ $2000) }
@@ -25370,6 +25416,12 @@ Begin
     Begin
       { Sortie MSX-DOS (CP/M) : retour via RET vers MSX-DOS }
       EmitComment('MSX-DOS : retour via RET');
+      EmitInstr('RET');
+    End
+    Else If Opts.Adam Then
+    Begin
+      { Sortie Coleco Adam (CP/M 2.2) : retour via RET }
+      EmitComment('Coleco Adam : retour via RET');
       EmitInstr('RET');
     End
     Else If Opts.CoCo3 Then
@@ -26030,6 +26082,26 @@ Begin
     EmitInstr('CALL $00A2');
     EmitInstr('INC HL');
     EmitInstr('JP _TPRT_MSX_PRSTR');
+    Exit;
+  End;
+  If Opts.Adam Then
+  Begin
+    EmitComment('--- Runtime Coleco Adam (Z80, CP/M 2.2 BDOS @ 5) ---');
+    { _TPRT_ADAM_PRSTR : HL = pointeur ASCIIZ ; sortie via BDOS fn 2     }
+    {   loop: LD A,(HL) ; OR A ; RET Z ;                                 }
+    {         PUSH HL ; LD E,A ; LD C,2 ; CALL 5 ; POP HL ;              }
+    {         INC HL ; JP loop                                           }
+    EmitLabel('_TPRT_ADAM_PRSTR');
+    EmitInstr('LD A,(HL)');
+    EmitInstr('OR A');
+    EmitInstr('RET Z');
+    EmitInstr('PUSH HL');
+    EmitInstr('LD E,A');
+    EmitInstr('LD C,2');
+    EmitInstr('CALL 5');
+    EmitInstr('POP HL');
+    EmitInstr('INC HL');
+    EmitInstr('JP _TPRT_ADAM_PRSTR');
     Exit;
   End;
   If Opts.CoCo3 Then
@@ -34151,6 +34223,33 @@ Begin { BcAssembleZ80 }
      (StrUpperCase(Op2) = 'A') Then
   Begin BcEmitB($77); Exit; End;
 
+  { ---- LD r,A (registres 8 bits depuis A) ---- }
+  If (Mnem = 'LD') And (StrUpperCase(Op2) = 'A') Then
+  Begin
+    If StrUpperCase(Op1) = 'B' Then Begin BcEmitB($47); Exit; End;
+    If StrUpperCase(Op1) = 'C' Then Begin BcEmitB($4F); Exit; End;
+    If StrUpperCase(Op1) = 'D' Then Begin BcEmitB($57); Exit; End;
+    If StrUpperCase(Op1) = 'E' Then Begin BcEmitB($5F); Exit; End;
+    If StrUpperCase(Op1) = 'H' Then Begin BcEmitB($67); Exit; End;
+    If StrUpperCase(Op1) = 'L' Then Begin BcEmitB($6F); Exit; End;
+  End;
+
+  { ---- LD r,n (immediat 8 bits vers registre) ---- }
+  If (Mnem = 'LD') And
+     ((StrUpperCase(Op1) = 'B') Or (StrUpperCase(Op1) = 'C') Or
+      (StrUpperCase(Op1) = 'D') Or (StrUpperCase(Op1) = 'E') Or
+      (StrUpperCase(Op1) = 'H') Or (StrUpperCase(Op1) = 'L')) Then
+  Begin
+    If StrUpperCase(Op1) = 'B' Then BcEmitB($06)
+    Else If StrUpperCase(Op1) = 'C' Then BcEmitB($0E)
+    Else If StrUpperCase(Op1) = 'D' Then BcEmitB($16)
+    Else If StrUpperCase(Op1) = 'E' Then BcEmitB($1E)
+    Else If StrUpperCase(Op1) = 'H' Then BcEmitB($26)
+    Else BcEmitB($2E);
+    BcEmitB(Byte(BcParseNum6502(Op2) And $FF));
+    Exit;
+  End;
+
   { ---- LD A,n / LD A,$nn (immediat 8 bits) ---- }
   If (Mnem = 'LD') And (StrUpperCase(Op1) = 'A') Then
   Begin
@@ -34224,10 +34323,11 @@ Begin { BcAssembleZ80 }
   If (Mnem = 'RET') And (StrUpperCase(Op1) = 'NC') Then
   Begin BcEmitB($D0); Exit; End;
 
-  { ---- CALL $nnnn / CALL Lbl ---- }
+  { ---- CALL $nnnn / CALL nnnn / CALL Lbl ---- }
   If Mnem = 'CALL' Then
   Begin
-    If (Length(Op1) > 0) And (Op1[1] = '$') Then
+    If (Length(Op1) > 0) And ((Op1[1] = '$') Or
+       ((Op1[1] >= '0') And (Op1[1] <= '9'))) Then
     Begin
       P := BcParseNum6502(Op1);
       BcEmitB($CD); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8));
@@ -34241,10 +34341,11 @@ Begin { BcAssembleZ80 }
     Exit;
   End;
 
-  { ---- JP $nnnn / JP Lbl ---- }
+  { ---- JP $nnnn / JP nnnn / JP Lbl ---- }
   If Mnem = 'JP' Then
   Begin
-    If (Length(Op1) > 0) And (Op1[1] = '$') Then
+    If (Length(Op1) > 0) And ((Op1[1] = '$') Or
+       ((Op1[1] >= '0') And (Op1[1] <= '9'))) Then
     Begin
       P := BcParseNum6502(Op1);
       BcEmitB($C3); BcEmitB(Byte(P)); BcEmitB(Byte(P Shr 8));
@@ -39501,7 +39602,7 @@ Begin
       EmitMainBlock;
 
     { Emettre les donnees ajoutees tardivement (cible 6502 Apple II / C64 / MSX) }
-    If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
+    If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
       EmitDataSegLate;
 
     { Emettre les routines runtime (TODO 12) }
@@ -39511,7 +39612,7 @@ Begin
       EmitRuntimeAmiga
     Else If Is68kTarget Then
       EmitRuntime68000
-    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Then
+    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
       EmitRuntimeAppleII
     Else
       EmitRuntime;
@@ -39519,7 +39620,7 @@ Begin
     { Emettre les routines runtime supplementaires (pas en mode DOS ni 68000) }
     If (Opts.DestTarget <> DEST_DOSR) And (Opts.DestTarget <> DEST_DOSP) And
        (Not Is68kTarget) And (Not Opts.AppleII) And (Not Opts.C64) And
-       (Not Opts.MSX) And (Not Opts.CoCo3) And (Not Opts.TO7) Then
+       (Not Opts.MSX) And (Not Opts.CoCo3) And (Not Opts.TO7) And (Not Opts.Adam) Then
     Begin
       { Emettre les routines runtime Graph (TODO 20) }
       EmitGraphRuntime;
