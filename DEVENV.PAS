@@ -949,6 +949,7 @@ Program DEVENV;
 {$IFDEF FPC}
  {$MODE TP}
  {$H-}
+ {$R-}
 {$ENDIF}
 
 Uses DOS,
@@ -3537,6 +3538,11 @@ Begin
    Else If EmuUp = 'CRAY1'     Then Opts.EmuTarget := '-CCRAY1'
    Else If EmuUp = 'D'         Then Opts.EmuTarget := '-CD'
    Else If EmuUp = 'P'         Then Opts.EmuTarget := '-CP'
+   Else If (EmuUp = 'DOS') Or (EmuUp = 'DOS16') Or
+           (EmuUp = 'MSDOS') Or (EmuUp = 'PCDOS') Or
+           (EmuUp = '8086') Then Opts.EmuTarget := '-CD'
+   Else If (EmuUp = 'DOSP') Or (EmuUp = 'DOS286') Or
+           (EmuUp = '80286') Then Opts.EmuTarget := '-CP'
    Else If (Length(EmuName) > 0) And (EmuName[1] = '-') Then
     Opts.EmuTarget := EmuName  { deja un flag complet }
    Else
@@ -23589,6 +23595,127 @@ Begin
     Emu_SetReg16(P.CPU, OpCode And 7, Emu_PopWord(P.CPU));
     Inc(P.CPU.IP);
    End;
+  $60: { PUSHA (80186+) : push AX,CX,DX,BX,SP,BP,SI,DI }
+   Begin
+    V16 := P.CPU.Regs.SP;
+    Emu_PushWord(P.CPU, P.CPU.Regs.AX);
+    Emu_PushWord(P.CPU, P.CPU.Regs.CX);
+    Emu_PushWord(P.CPU, P.CPU.Regs.DX);
+    Emu_PushWord(P.CPU, P.CPU.Regs.BX);
+    Emu_PushWord(P.CPU, V16);
+    Emu_PushWord(P.CPU, P.CPU.Regs.BP);
+    Emu_PushWord(P.CPU, P.CPU.Regs.SI);
+    Emu_PushWord(P.CPU, P.CPU.Regs.DI);
+    Inc(P.CPU.IP);
+   End;
+  $61: { POPA (80186+) : pop DI,SI,BP,(SP ignore),BX,DX,CX,AX }
+   Begin
+    P.CPU.Regs.DI := Emu_PopWord(P.CPU);
+    P.CPU.Regs.SI := Emu_PopWord(P.CPU);
+    P.CPU.Regs.BP := Emu_PopWord(P.CPU);
+    V16 := Emu_PopWord(P.CPU); { SP ignore }
+    P.CPU.Regs.BX := Emu_PopWord(P.CPU);
+    P.CPU.Regs.DX := Emu_PopWord(P.CPU);
+    P.CPU.Regs.CX := Emu_PopWord(P.CPU);
+    P.CPU.Regs.AX := Emu_PopWord(P.CPU);
+    Inc(P.CPU.IP);
+   End;
+  $68: { PUSH imm16 (80186+) }
+   Begin
+    Imm16 := Emu_FetchWord(P.CPU, 1);
+    Emu_PushWord(P.CPU, Imm16);
+    Inc(P.CPU.IP, 3);
+   End;
+  $6A: { PUSH imm8 (sign-extended) (80186+) }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    Disp16 := ShortInt(Imm8);
+    Emu_PushWord(P.CPU, Word(Disp16));
+    Inc(P.CPU.IP, 2);
+   End;
+  $C8: { ENTER imm16, imm8 (80186+) - forme simple level=0 }
+   Begin
+    Imm16 := Emu_FetchWord(P.CPU, 1);
+    Imm8  := Emu_FetchByte(P.CPU, 3);
+    Emu_PushWord(P.CPU, P.CPU.Regs.BP);
+    P.CPU.Regs.BP := P.CPU.Regs.SP;
+    P.CPU.Regs.SP := P.CPU.Regs.SP - Imm16;
+    Inc(P.CPU.IP, 4);
+   End;
+  $C9: { LEAVE (80186+) }
+   Begin
+    P.CPU.Regs.SP := P.CPU.Regs.BP;
+    P.CPU.Regs.BP := Emu_PopWord(P.CPU);
+    Inc(P.CPU.IP);
+   End;
+  $62: { BOUND r16, m16&16 (80186+) - en mode reel : verifie ou ignore }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Inc(P.CPU.IP, 1 + Op.Len);  { ignore (no exception emitted) }
+   End;
+  $63: { ARPL r/m16, r16 (286 prot) ou MOVSXD (64-bit) - traite comme NOP }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
+  $69: { IMUL r16, r/m16, imm16 (80186+) }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    V16 := Emu_GetOpWord(P.CPU, Op);
+    Imm16 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
+              P.CPU.IP + 2 + Op.Len) Or
+             (Word(Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
+              P.CPU.IP + 3 + Op.Len)) Shl 8);
+    Disp16 := Integer(SmallInt(V16)) * Integer(SmallInt(Imm16));
+    R16 := Word(Disp16);
+    If (Disp16 < -32768) Or (Disp16 > 32767) Then Begin
+     Include(P.CPU.Flags.s, EFG_CF);
+     Include(P.CPU.Flags.s, EFG_OF);
+    End Else Begin
+     Exclude(P.CPU.Flags.s, EFG_CF);
+     Exclude(P.CPU.Flags.s, EFG_OF);
+    End;
+    Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, R16);
+    Inc(P.CPU.IP, 4 + Op.Len);
+   End;
+  $6B: { IMUL r16, r/m16, imm8 sign-extended (80186+) }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    V16 := Emu_GetOpWord(P.CPU, Op);
+    Imm8 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
+              P.CPU.IP + 2 + Op.Len);
+    Disp16 := Integer(SmallInt(V16)) * Integer(ShortInt(Imm8));
+    R16 := Word(Disp16);
+    If (Disp16 < -32768) Or (Disp16 > 32767) Then Begin
+     Include(P.CPU.Flags.s, EFG_CF);
+     Include(P.CPU.Flags.s, EFG_OF);
+    End Else Begin
+     Exclude(P.CPU.Flags.s, EFG_CF);
+     Exclude(P.CPU.Flags.s, EFG_OF);
+    End;
+    Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, R16);
+    Inc(P.CPU.IP, 3 + Op.Len);
+   End;
+  $6C, $6D, $6E, $6F: { INSB/INSW/OUTSB/OUTSW (80186+) - ignore (pas d'I/O port) }
+   Inc(P.CPU.IP);
+  $0F: { Prefixe 286+ : LGDT/LIDT/LMSW/SMSW/etc. - ignore (mode reel) }
+   Begin
+    { Lit le 2eme octet et un eventuel ModRM ; on saute l instruction. }
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    Case Imm8 Of
+     $00, $01: Begin
+                ModRM := Emu_FetchByte(P.CPU, 2);
+                Emu_DecodeModRM(P.CPU, ModRM, Op);
+                Inc(P.CPU.IP, 2 + Op.Len);
+               End;
+     Else
+      Inc(P.CPU.IP, 2);
+    End;
+   End;
   $06: { PUSH ES }
    Begin Emu_PushWord(P.CPU, P.CPU.Segs.ES); Inc(P.CPU.IP); End;
   $07: { POP  ES }
@@ -24066,13 +24193,18 @@ Begin
     End;
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $D0, $D1, $D2, $D3:
-   { Group 2 : ROL/ROR/RCL/RCR/SHL/SHR/SAL/SAR }
+  $D0, $D1, $D2, $D3, $C0, $C1:
+   { Group 2 : ROL/ROR/RCL/RCR/SHL/SHR/SAL/SAR
+     $D0/$D1 : count=1 ; $D2/$D3 : count=CL ; $C0/$C1 : count=imm8 (80186+) }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
     SubOp := (ModRM Shr 3) And 7;
-    If (OpCode And 2) <> 0 Then Cnt := P.CPU.Regs.CL Else Cnt := 1;
+    If (OpCode = $C0) Or (OpCode = $C1) Then
+     Cnt := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
+            P.CPU.IP + 2 + Op.Len)
+    Else If (OpCode And 2) <> 0 Then Cnt := P.CPU.Regs.CL
+    Else Cnt := 1;
     Cnt := Cnt And $1F;
     If (OpCode And 1) = 0 Then Begin
      V8 := Emu_GetOpByte(P.CPU, Op);
@@ -24145,7 +24277,10 @@ Begin
      Emu_SetSFW(P.CPU, R16); Emu_SetZFW(P.CPU, R16); Emu_SetPF(P.CPU, Byte(R16));
      Emu_PutOpWord(P.CPU, Op, R16);
     End;
-    Inc(P.CPU.IP, 1 + Op.Len);
+    If (OpCode = $C0) Or (OpCode = $C1) Then
+     Inc(P.CPU.IP, 2 + Op.Len)
+    Else
+     Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $F6: { Group 3 byte : TEST/NOT/NEG/MUL/IMUL/DIV/IDIV rm8 }
    Begin
