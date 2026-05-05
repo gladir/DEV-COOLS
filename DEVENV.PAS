@@ -22610,14 +22610,56 @@ End;
 
 Procedure Emu_WriteBlock(Var C: TEmuCPU; Seg, Ofs: Word;
  Var Buffer; SizeBytes: Word);
+Var
+ BPtr: ^Byte;
+ I: Word;
+ Row, Col: Integer;
+ B: Byte;
 Begin
+ { Redirection vers VRAM virtuelle pour memoire video texte $B800/$B000 }
+ If (((Seg And $F800) = $B800) Or ((Seg And $F800) = $B000)) And
+    (SizeBytes > 0) Then Begin
+  BPtr := @Buffer;
+  For I := 0 To SizeBytes - 1 Do Begin
+   B := BPtr^;
+   Row := ((Ofs + I) Shr 1) Div 80;
+   Col := ((Ofs + I) Shr 1) Mod 80;
+   If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 79) Then Begin
+    If ((Ofs + I) And 1) = 0 Then
+     EmuPanel.VRAM[Row, Col].Ch := Chr(B)
+    Else Begin
+     EmuPanel.VRAM[Row, Col].Fg := B And $0F;
+     EmuPanel.VRAM[Row, Col].Bg := (B Shr 4) And $07;
+    End;
+   End;
+   Inc(BPtr);
+  End;
+  EmuPanel.NeedRepaint := True;
+  Exit;
+ End;
  Emu_WriteAbsBlock(C, Emu_Addr(Seg, Ofs), Buffer, SizeBytes);
 End;
 
 { --- Ecrire un octet seg:ofs --- }
 
 Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte);
+Var Row, Col: Integer;
 Begin
+ { Redirection vers VRAM virtuelle si ecriture en memoire video texte $B800/$B000 }
+ If ((Seg And $F800) = $B800) Or ((Seg And $F800) = $B000) Then Begin
+  Row := (Ofs Shr 1) Div 80;
+  Col := (Ofs Shr 1) Mod 80;
+  If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 79) Then Begin
+   If (Ofs And 1) = 0 Then Begin
+    EmuPanel.VRAM[Row, Col].Ch := Chr(X);
+   End Else Begin
+    EmuPanel.VRAM[Row, Col].Fg := X And $0F;
+    EmuPanel.VRAM[Row, Col].Bg := (X Shr 4) And $07;
+   End;
+   EmuPanel.NeedRepaint := True;
+  End;
+  Exit;
+ End;
  Emu_WriteBlock(C, Seg, Ofs, X, 1);
 End;
 
@@ -22870,11 +22912,11 @@ Begin
  End;
  HeadSize := Exe.SizeOfHeader * 16;
  PSPSeg := $0060;
- LoadSeg := PSPSeg + 17;
+ LoadSeg := PSPSeg + 16;     { convention DOS : programme charge a PSP+16 }
  C.IP := Exe.IP;
  C.Segs.CS := Word(LoadSeg + Exe.OfsLoad);
- C.Segs.DS := PSPSeg + 1;
- C.Segs.ES := PSPSeg + 1;
+ C.Segs.DS := PSPSeg;        { au demarrage DS = ES = PSPSeg }
+ C.Segs.ES := PSPSeg;
  C.Segs.SS := Word(LoadSeg + Exe.OfsLoadStack);
  C.Regs.SP := Exe.SizeOfStack;
  C.Regs.BP := $091C;
@@ -22890,9 +22932,9 @@ Begin
  PSP.Int21h := $21CD;
  PSP.RETF := $CB;
  Emu_WriteBlock(C, PSPSeg, 0, PSP.Buffer, $100);
- { Charger l image executable }
- Addr := (LongInt(C.Segs.CS) Shl 4) + Exe.IP;
- Seek(Handle, HeadSize + Exe.IP);
+ { Charger l image executable a LoadSeg:0000 (toute l image, pas a CS:IP) }
+ Addr := LongInt(LoadSeg) Shl 4;
+ Seek(Handle, HeadSize);
  While Not Eof(Handle) Do Begin
   BlockRead(Handle, Buffer, SizeOf(Buffer), ByteReaded);
   Emu_WriteAbsBlock(C, Addr, Buffer, ByteReaded);
@@ -23382,7 +23424,25 @@ Var
  Ofs: Word;
  B: Byte;
  ExitCode: Byte;
+ LogF: Text;
 Begin
+ { TRACE diagnostic : ecrire chaque INT21h dans EMU21.LOG }
+ {$I-}
+ Assign(LogF, 'EMU21.LOG');
+ Append(LogF);
+ If IOResult <> 0 Then Begin
+  Assign(LogF, 'EMU21.LOG');
+  Rewrite(LogF);
+ End;
+ WriteLn(LogF, 'INT21h AH=', HexByte(P.CPU.Regs.AH),
+   ' AL=', HexByte(P.CPU.Regs.AL),
+   ' BX=', HexWord(P.CPU.Regs.BX),
+   ' CX=', HexWord(P.CPU.Regs.CX),
+   ' DX=', HexWord(P.CPU.Regs.DX),
+   ' DS=', HexWord(P.CPU.Segs.DS));
+ Close(LogF);
+ {$I+}
+ If IOResult <> 0 Then ;
  Case P.CPU.Regs.AH Of
   $00:
    P.CPU.Fault := sfEndProgram;
@@ -23417,6 +23477,104 @@ Begin
     P.CPU.Fault := sfEndProgram;
     P.StatusMsg := 'Programme termine (code ' + IntToStr(ExitCode) + ')';
    End;
+  $40:
+   Begin
+    { AH=40h : write CX bytes from DS:DX to handle BX (1=stdout, 2=stderr) }
+    Ofs := P.CPU.Regs.DX;
+    If (P.CPU.Regs.BX = 1) Or (P.CPU.Regs.BX = 2) Then Begin
+     For I := 0 To P.CPU.Regs.CX - 1 Do Begin
+      B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I);
+      EmuVScr_PutChar(P, Chr(B));
+     End;
+    End;
+    P.CPU.Regs.AX := P.CPU.Regs.CX;  { bytes effectivement ecrits }
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  $3F:
+   Begin
+    { AH=3Fh : read CX bytes from handle BX into DS:DX (0=stdin) }
+    Ofs := P.CPU.Regs.DX;
+    I := 0;
+    If P.CPU.Regs.BX = 0 Then Begin
+     While (I < P.CPU.Regs.CX) And EmuVScr_HasKey(P) Do Begin
+      B := EmuVScr_PopKey(P);
+      Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + I, B);
+      Inc(I);
+      If B = 13 Then Begin
+       If I < P.CPU.Regs.CX Then Begin
+        Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + I, 10);
+        Inc(I);
+       End;
+       Break;
+      End;
+     End;
+    End;
+    P.CPU.Regs.AX := Word(I);
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  $30:
+   Begin
+    { AH=30h : DOS version. Renvoyer 6.22 (AL=6 AH=22h) }
+    P.CPU.Regs.AL := 6;
+    P.CPU.Regs.AH := 22;
+    P.CPU.Regs.BX := 0;
+    P.CPU.Regs.CX := 0;
+   End;
+  $19:
+   { AH=19h : current default drive. C: = 2 }
+   P.CPU.Regs.AL := 2;
+  $25, $35:
+   { AH=25h set IV / AH=35h get IV : ignore (no IVT manipulation) }
+   ;
+  $3D:
+   Begin
+    { AH=3Dh : open file - echec simule (fichier non trouve) }
+    Include(P.CPU.Flags.s, EFG_CF);
+    P.CPU.Regs.AX := 2;
+   End;
+  $3E:
+   { AH=3Eh : close file - succes }
+   Exclude(P.CPU.Flags.s, EFG_CF);
+  $42:
+   Begin
+    { AH=42h LSEEK : retourner la position demandee.
+      AL=00 (depuis debut) ou AL=01 (depuis pos courante) : DX:AX = CX:DX argument.
+      AL=02 (depuis fin) : on retourne 0:0 (taille zero pour peripherique). }
+    Exclude(P.CPU.Flags.s, EFG_CF);
+    If P.CPU.Regs.AL = $02 Then Begin
+     P.CPU.Regs.AX := 0;
+     P.CPU.Regs.DX := 0;
+    End Else Begin
+     P.CPU.Regs.AX := P.CPU.Regs.DX;
+     P.CPU.Regs.DX := P.CPU.Regs.CX;
+    End;
+   End;
+  $44:
+   Begin
+    { AH=44h IOCTL : detection peripherique caractere vs fichier }
+    Case P.CPU.Regs.AL Of
+     $00:
+      Begin
+       { Get Device Information : DX = info. Bit 7 = char device. }
+       If P.CPU.Regs.BX <= 4 Then
+        P.CPU.Regs.DX := $80D3
+       Else
+        P.CPU.Regs.DX := $0000;
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     Else
+      Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
+   End;
+  $48, $49, $4A:
+   { AH=48h alloc / 49h free / 4Ah resize memory : succes simule }
+   Begin
+    Exclude(P.CPU.Flags.s, EFG_CF);
+    P.CPU.Regs.AX := P.CPU.Segs.DS;
+   End;
+  $62:
+   { AH=62h : get PSP segment }
+   P.CPU.Regs.BX := P.CPU.Segs.DS - 1;
   Else
    { Fonction DOS non supportee dans cette livraison : on ignore }
    ;
@@ -23426,7 +23584,15 @@ End;
 { --- Executer une interruption logicielle --- }
 
 Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte);
+Var LogF: Text;
 Begin
+ {$I-}
+ Assign(LogF, 'EMU21.LOG'); Append(LogF);
+ If IOResult <> 0 Then Begin Assign(LogF,'EMU21.LOG'); Rewrite(LogF); End;
+ WriteLn(LogF, '  >> INT ', HexByte(Num), ' AH=', HexByte(P.CPU.Regs.AH),
+   ' CS:IP=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
+ Close(LogF);
+ {$I+} If IOResult <> 0 Then ;
  Case Num Of
   $10: Emu_DoInt10(P);
   $16: Emu_DoInt16(P);
@@ -23472,6 +23638,11 @@ Begin
               ResetSegOvr := True; Inc(P.CPU.IP); End;
    $3E: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.DS;
               ResetSegOvr := True; Inc(P.CPU.IP); End;
+   $64: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.DS;
+              ResetSegOvr := True; Inc(P.CPU.IP); End; { FS -> traite comme DS }
+   $65: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.DS;
+              ResetSegOvr := True; Inc(P.CPU.IP); End; { GS -> traite comme DS }
+   $66, $67: Inc(P.CPU.IP); { prefixes operand/address-size 386+ ignores }
    $F2: Begin RepPrefix := $F2; Inc(P.CPU.IP); End;
    $F3: Begin RepPrefix := $F3; Inc(P.CPU.IP); End;
    Else
@@ -30580,6 +30751,15 @@ Begin
   P.Rows := 16;
   P.CurFg := 0;   { noir       }
   P.CurBg := 10;  { vert clair }
+  EmuVScr_Clear(P);
+ End
+ Else If (TargetCPU = '-CD') Or (TargetCPU = '-CP') Then
+ Begin
+  { Emulateur DOS : 80x25, fond noir, texte gris (attribut DOS standard 07h) }
+  P.Cols := 80;
+  P.Rows := 25;
+  P.CurFg := 7;   { gris clair }
+  P.CurBg := 0;   { noir       }
   EmuVScr_Clear(P);
  End;
  IsX86 := (TargetCPU = '-CD') Or (TargetCPU = '-CP');
