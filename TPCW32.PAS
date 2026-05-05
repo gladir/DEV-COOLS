@@ -33933,8 +33933,8 @@ Begin { BcAssembleZ80 }
   { ---- HALT ---- }
   If Mnem = 'HALT' Then Begin BcEmitB($76); Exit; End;
 
-  { ---- RET ---- }
-  If Mnem = 'RET' Then Begin BcEmitB($C9); Exit; End;
+  { ---- RET (sans condition seulement) ---- }
+  If (Mnem = 'RET') And (Op1 = '') Then Begin BcEmitB($C9); Exit; End;
 
   { ---- DI / EI ---- }
   If Mnem = 'DI' Then Begin BcEmitB($F3); Exit; End;
@@ -34015,6 +34015,14 @@ Begin { BcAssembleZ80 }
   If Mnem = 'LDIR' Then Begin BcEmitB($ED); BcEmitB($B0); Exit; End;
   If Mnem = 'LDDR' Then Begin BcEmitB($ED); BcEmitB($B8); Exit; End;
 
+  { ---- LD A,(HL) / LD (HL),A : doivent etre verifies AVANT LD A,n ---- }
+  If (Mnem = 'LD') And (StrUpperCase(Op1) = 'A') And
+     (StrUpperCase(Op2) = '(HL)') Then
+  Begin BcEmitB($7E); Exit; End;
+  If (Mnem = 'LD') And (StrUpperCase(Op1) = '(HL)') And
+     (StrUpperCase(Op2) = 'A') Then
+  Begin BcEmitB($77); Exit; End;
+
   { ---- LD A,n / LD A,$nn (immediat 8 bits) ---- }
   If (Mnem = 'LD') And (StrUpperCase(Op1) = 'A') Then
   Begin
@@ -34075,12 +34083,6 @@ Begin { BcAssembleZ80 }
   End;
 
   { ---- LD A,(HL) / LD (HL),A / OR A ---- }
-  If (Mnem = 'LD') And (StrUpperCase(Op1) = 'A') And
-     (StrUpperCase(Op2) = '(HL)') Then
-  Begin BcEmitB($7E); Exit; End;
-  If (Mnem = 'LD') And (StrUpperCase(Op1) = '(HL)') And
-     (StrUpperCase(Op2) = 'A') Then
-  Begin BcEmitB($77); Exit; End;
   If (Mnem = 'OR') And (StrUpperCase(Op1) = 'A') Then
   Begin BcEmitB($B7); Exit; End;
 
@@ -35454,6 +35456,43 @@ Begin
         DK_ZERO:
           If DataTab[I].IntVal > 0 Then BcDataZeros(DataTab[I].IntVal)
           Else BcDataZeros(4);
+      End;
+    End;
+    Exit;
+  End;
+
+  { Cibles 8 bits (MSX, AppleII, C64, Z80, 6502, 6809) :              }
+  { ne PAS emettre les variables runtime Win32. Seulement les chaines }
+  { utilisateur du DataTab.                                           }
+  If Opts.MSX Or Opts.ApplePascal Or Opts.C64 Or
+     (Opts.DestTarget = DEST_Z80) Or
+     (Opts.DestTarget = DEST_6502) Or
+     (Opts.DestTarget = DEST_6809) Or
+     (Opts.DestTarget = DEST_MSX) Or
+     (Opts.DestTarget = DEST_TRS80) Or
+     (Opts.DestTarget = DEST_ADAM) Then
+  Begin
+    For I := 0 To DataCount - 1 Do
+    Begin
+      BcDefineDataLabel(DataTab[I].LblName);
+      Case DataTab[I].Kind Of
+        DK_STR:
+        Begin
+          For J := 1 To Length(DataTab[I].StrVal) Do
+            BcDataB(Byte(DataTab[I].StrVal[J]));
+          BcDataB(0);
+        End;
+        DK_DWORD: BcDataD(DataTab[I].IntVal);
+        DK_BYTE:  BcDataB(Byte(DataTab[I].IntVal));
+        DK_ARRAY: BcDataZeros(LongInt(DataTab[I].ElemCount) *
+                              LongInt(DataTab[I].ElemSize));
+        DK_RES:   BcDataZeros(DataTab[I].IntVal);
+        DK_STRUCT:
+          If DataTab[I].IntVal > 0 Then BcDataZeros(DataTab[I].IntVal)
+          Else BcDataD(0);
+        DK_ZERO:
+          If DataTab[I].IntVal > 0 Then BcDataZeros(DataTab[I].IntVal)
+          Else BcDataD(0);
       End;
     End;
     Exit;
