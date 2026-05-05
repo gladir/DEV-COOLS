@@ -29126,8 +29126,11 @@ Begin
   M6809_LoadDECB := True;
 End;
 
-{ Charger un binaire Thomson .bin : signature $5B + len(2BE) + addr(2BE)   }
-{ + data, terminateur $5A. Sur echec : raw a $6100 (zone utilisateur).     }
+{ Charger un binaire Thomson .bin : format Motorola standard               }
+{   $00 len(2BE) addr(2BE) data...   (chunk de donnees)                    }
+{   $FF $00 $00 entry(2BE)           (terminateur avec point d entree)     }
+{ Variante historique acceptee : $5B/$5A.                                  }
+{ Sur echec : raw a $6100 (zone utilisateur).                              }
 Function M6809_LoadThomsonBin(Const FileName: String;
                               Var EntryAddr: Word): Boolean;
 Var
@@ -29149,7 +29152,7 @@ Begin
   Begin
     BlockRead(F, Tag, 1);
     If Eof(F) Then Break;
-    If Tag = $5B Then
+    If (Tag = $5B) Or (Tag = $00) Then
     Begin
       BlockRead(F, Hdr, 4);
       Len := (Word(Hdr[0]) Shl 8) Or Hdr[1];
@@ -29162,7 +29165,7 @@ Begin
       End;
       GotData := True;
     End
-    Else If Tag = $5A Then
+    Else If (Tag = $5A) Or (Tag = $FF) Then
     Begin
       BlockRead(F, Hdr, 4);
       Addr := (Word(Hdr[2]) Shl 8) Or Hdr[3];
