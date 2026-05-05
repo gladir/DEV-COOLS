@@ -1416,6 +1416,9 @@ Type
   WordWrap        : Boolean;   { retour a la ligne automatique      }
   AutoIndent      : Boolean;   { indentation automatique            }
   ShowWhitespace  : Boolean;   { afficher les espaces et tabs       }
+  EmuMode         : Boolean;   { -emu:XXX,fichier : lancer emulateur}
+  EmuTarget       : TString;   { ex: '-CNES', '-CAMIGA', '-CC64'    }
+  EmuFile         : TString;   { chemin du binaire a charger        }
  End;
 
  { Types d evenements }
@@ -3253,7 +3256,12 @@ Function FileExists(FileName: String): Boolean;
 Var
  F: File;
  OldIO: Integer;
+ SavedMode: Byte;
 Begin
+ { Sauver FileMode et passer en lecture seule pour autoriser les }
+ { fichiers read-only (sinon Reset echoue avec FileMode=2 par defaut) }
+ SavedMode := FileMode;
+ FileMode := 0;
  Assign(F, FileName);
  {$I-}
  Reset(F, 1);
@@ -3265,6 +3273,7 @@ Begin
   FileExists := True;
  End Else
   FileExists := False;
+ FileMode := SavedMode;
 End;
 
 Function DirectoryExists(DirName: String): Boolean;
@@ -3386,6 +3395,10 @@ Begin
  WriteLn('  solution.sln   Ouvrir une solution existante au demarrage');
  WriteLn('  -v             Mode verbeux (afficher details de demarrage)');
  WriteLn('  -d             Mode debogage interne de l IDE');
+ WriteLn('  -emu:XXX,fich  Lancer directement l emulateur XXX avec fich');
+ WriteLn('                 XXX = NES, AMIGA, ATARIST, C64, APPLEII,');
+ WriteLn('                       ATARI400, ATARI800, ATARI2600, MSX,');
+ WriteLn('                       TRS80, ADAM, COCO3, TO7, CRAY1, ...');
  WriteLn('  -h             Afficher cette aide');
  WriteLn('  --help         Afficher cette aide');
  WriteLn;
@@ -3415,14 +3428,17 @@ Begin
  Opts.WordWrap        := False;
  Opts.AutoIndent      := True;
  Opts.ShowWhitespace  := False;
+ Opts.EmuMode         := False;
+ Opts.EmuTarget       := '';
+ Opts.EmuFile         := '';
 End;
 
 { --- Analyse de la ligne de commande --- }
 
 Procedure ParseCommandLine(Var Opts: TDevEnvOptions);
 Var
- I: Integer;
- Arg, Ext: String;
+ I, K: Integer;
+ Arg, Ext, EmuArg, EmuName, EmuFn, EmuUp: String;
 Begin
  For I := 1 To ParamCount Do Begin
   Arg := ParamStr(I);
@@ -3433,6 +3449,50 @@ Begin
    Opts.Verbose := True
   Else If (Arg = '-d') Or (Arg = '-D') Then
    Opts.DebugMode := True
+  Else If (Length(Arg) >= 5) And
+          ((Copy(Arg, 1, 5) = '-emu:') Or (Copy(Arg, 1, 5) = '-EMU:') Or
+           (Copy(Arg, 1, 5) = '-Emu:')) Then Begin
+   { -emu:XXX,fichier : split sur la virgule }
+   EmuArg := Copy(Arg, 6, Length(Arg) - 5);
+   K := Pos(',', EmuArg);
+   If K <= 0 Then
+    FatalError('Syntaxe -emu attendue : -emu:XXX,fichier (ex: -emu:NES,prog.nes)');
+   EmuName := Copy(EmuArg, 1, K - 1);
+   EmuFn   := Copy(EmuArg, K + 1, Length(EmuArg) - K);
+   If (EmuName = '') Or (EmuFn = '') Then
+    FatalError('Syntaxe -emu invalide : ' + Arg);
+   EmuUp := UpCaseStr(EmuName);
+   { Mapper le nom court vers le flag TargetCPU attendu par ShowEmulatorPanel }
+   If      EmuUp = 'NES'       Then Opts.EmuTarget := '-CNES'
+   Else If EmuUp = 'AMIGA'     Then Opts.EmuTarget := '-CAMIGA'
+   Else If EmuUp = 'ATARIST'   Then Opts.EmuTarget := '-CATARIST'
+   Else If EmuUp = '68000'     Then Opts.EmuTarget := '-C68000'
+   Else If EmuUp = 'C64'       Then Opts.EmuTarget := '-CC64'
+   Else If EmuUp = 'APPLEII'   Then Opts.EmuTarget := '-CAPPLEII'
+   Else If EmuUp = 'ATARI400'  Then Opts.EmuTarget := '-CATARI400'
+   Else If EmuUp = 'ATARI800'  Then Opts.EmuTarget := '-CATARI800'
+   Else If EmuUp = 'ATARI2600' Then Opts.EmuTarget := '-CATARI2600'
+   Else If EmuUp = 'MSX'       Then Opts.EmuTarget := '-CMSX'
+   Else If EmuUp = 'TRS80'     Then Opts.EmuTarget := '-CTRS80'
+   Else If EmuUp = 'ADAM'      Then Opts.EmuTarget := '-CADAM'
+   Else If EmuUp = 'COCO3'     Then Opts.EmuTarget := '-CCOCO3'
+   Else If EmuUp = 'DRAGON32'  Then Opts.EmuTarget := '-CDRAGON32'
+   Else If EmuUp = 'DRAGON64'  Then Opts.EmuTarget := '-CDRAGON64'
+   Else If EmuUp = 'TO7'       Then Opts.EmuTarget := '-CTO7'
+   Else If EmuUp = 'TO8'       Then Opts.EmuTarget := '-CTO8'
+   Else If EmuUp = 'MO5'       Then Opts.EmuTarget := '-CMO5'
+   Else If EmuUp = 'CRAY1'     Then Opts.EmuTarget := '-CCRAY1'
+   Else If EmuUp = 'D'         Then Opts.EmuTarget := '-CD'
+   Else If EmuUp = 'P'         Then Opts.EmuTarget := '-CP'
+   Else If (Length(EmuName) > 0) And (EmuName[1] = '-') Then
+    Opts.EmuTarget := EmuName  { deja un flag complet }
+   Else
+    FatalError('Cible emulateur inconnue : ' + EmuName);
+   If Not FileExists(EmuFn) Then
+    FatalError('Fichier introuvable: ' + EmuFn);
+   Opts.EmuFile := EmuFn;
+   Opts.EmuMode := True;
+  End
   Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
    FatalError('Option inconnue: ' + Arg)
   Else Begin
@@ -36796,6 +36856,12 @@ Begin
   FullRepaintNeeded := True;
   OpenSolutionFile(Opts.SolutionFile);
  End
+ { Mode -emu:XXX,fichier : lancer immediatement l emulateur }
+ Else If Opts.EmuMode Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+  ShowEmulatorPanel(EmuPanel, Opts.EmuFile, Opts.EmuTarget);
+ End
  { Si un fichier source a ete passe en argument, ouvrir directement l editeur }
  Else If Opts.SourceFile <> '' Then Begin
   StartPage.Visible := False;
@@ -37067,6 +37133,9 @@ End;
 
 
 BEGIN
+ { Permettre l ouverture de fichiers en lecture seule via Reset(F, 1). }
+ { FileMode = 0 = lecture seule (defaut TP est 2 = read/write).        }
+ FileMode := 0;
  InitOptions(Opts);
  ParseCommandLine(Opts);
  If Opts.Verbose Then
