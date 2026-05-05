@@ -5193,6 +5193,10 @@ Begin
   { L entree CP/M est a $0100 = debut du binaire.                         }
   If BcActive And Opts.Adam Then
     EmitInstr('JP _TPF_Main');
+  { Pour TRS-80 Model I (.CMD TRSDOS) : sauter directement vers _TPF_Main}
+  { L entree par defaut est $5200 = zone utilisateur RAM TRS-80.          }
+  If BcActive And Opts.TRS80 Then
+    EmitInstr('JP _TPF_Main');
   { Pour CoCo 3 (.BIN DECB) : sauter directement vers _TPF_Main          }
   { L entree par defaut est $2000 = debut du binaire charge.              }
   If BcActive And Opts.CoCo3 Then
@@ -17514,6 +17518,12 @@ Begin
       EmitInstr('LD C,2');
       EmitInstr('CALL 5');
     End
+    Else If Opts.TRS80 Then
+    Begin
+      If (Ch = 13) Or (Ch = 10) Then Ch := $0D;
+      EmitInstr('LD A,' + IntToStr_(Ch));
+      EmitInstr('CALL $0033');
+    End
     Else If Opts.CoCo3 Then
     Begin
       If (Ch = 13) Or (Ch = 10) Then Ch := $0D;
@@ -17554,6 +17564,11 @@ Begin
       EmitInstr('LD HL,' + Lbl);
       EmitInstr('CALL _TPRT_ADAM_PRSTR');
     End
+    Else If Opts.TRS80 Then
+    Begin
+      EmitInstr('LD HL,' + Lbl);
+      EmitInstr('CALL _TPRT_TRS80_PRSTR');
+    End
     Else If Opts.CoCo3 Then
     Begin
       EmitInstr('LDX #' + Lbl);
@@ -17593,6 +17608,8 @@ Begin
     EmitComment('writeln (MSX)')
   Else If Opts.Adam Then
     EmitComment('writeln (Coleco Adam)')
+  Else If Opts.TRS80 Then
+    EmitComment('writeln (TRS-80 Model I)')
   Else If Opts.CoCo3 Then
     EmitComment('writeln (CoCo 3)')
   Else If Opts.TO7 Then
@@ -17625,6 +17642,11 @@ Begin
         EmitInstr('LD E,10');
         EmitInstr('LD C,2');
         EmitInstr('CALL 5');
+      End
+      Else If Opts.TRS80 Then
+      Begin
+        EmitInstr('LD A,13');
+        EmitInstr('CALL $0033');
       End
       Else If Opts.CoCo3 Then
       Begin
@@ -17665,6 +17687,11 @@ Begin
       Begin
         EmitInstr('LD HL,' + Lbl);
         EmitInstr('CALL _TPRT_ADAM_PRSTR');
+      End
+      Else If Opts.TRS80 Then
+      Begin
+        EmitInstr('LD HL,' + Lbl);
+        EmitInstr('CALL _TPRT_TRS80_PRSTR');
       End
       Else If Opts.CoCo3 Then
       Begin
@@ -17766,6 +17793,11 @@ Begin
       EmitInstr('LD E,10');
       EmitInstr('LD C,2');
       EmitInstr('CALL 5');
+    End
+    Else If Opts.TRS80 Then
+    Begin
+      EmitInstr('LD A,13');
+      EmitInstr('CALL $0033');
     End
     Else If Opts.CoCo3 Then
     Begin
@@ -18125,7 +18157,7 @@ Var
   LI, SI      : Integer;
 Begin
   { Branche specialisee 6502 (Apple II / C64) : code natif }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
   Begin
     ParseWriteStmtAppleII(IsWriteLn);
     Exit;
@@ -18867,7 +18899,7 @@ Begin
   EmitComment('while');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -18929,7 +18961,7 @@ Begin
   EmitComment('repeat');
 
   { 6502 (Apple II / C64) : interpretation a la compilation }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -19003,7 +19035,7 @@ Begin
   { ParseStmtAppleII attend que EP pointe sur le mot-cle FOR ; or nous     }
   { l avons deja consomme. Reculer EP d un cran pour qu il y pointe a     }
   { nouveau, puis deleguer.                                                }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
   Begin
     Dec(EP);
     ParseStmtAppleII;
@@ -19156,7 +19188,7 @@ Begin
   If EPAtEnd Then Exit;
 
   { Cible 6502 (Apple II / C64) : interpretation pour tout le bloc }
-  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
+  If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
   Begin
     ParseStmtAppleII;
     Exit;
@@ -25364,6 +25396,11 @@ Begin
       { Mode Coleco Adam (CP/M 2.2) : pas d initialisation, entree @ $0100 }
       EmitComment('Entree programme Coleco Adam (CP/M 2.2 @ $0100)');
     End
+    Else If Opts.TRS80 Then
+    Begin
+      { Mode TRS-80 Model I : pas d initialisation, entree directe @ $5200 }
+      EmitComment('Entree programme TRS-80 Model I (TRSDOS @ $5200)');
+    End
     Else If Opts.CoCo3 Then
     Begin
       { Mode CoCo 3 : pas d initialisation, entree directe (DECB @ $2000) }
@@ -25422,6 +25459,12 @@ Begin
     Begin
       { Sortie Coleco Adam (CP/M 2.2) : retour via RET }
       EmitComment('Coleco Adam : retour via RET');
+      EmitInstr('RET');
+    End
+    Else If Opts.TRS80 Then
+    Begin
+      { Sortie TRS-80 Model I : retour via RET vers TRSDOS }
+      EmitComment('TRS-80 Model I : retour via RET');
       EmitInstr('RET');
     End
     Else If Opts.CoCo3 Then
@@ -26102,6 +26145,20 @@ Begin
     EmitInstr('POP HL');
     EmitInstr('INC HL');
     EmitInstr('JP _TPRT_ADAM_PRSTR');
+    Exit;
+  End;
+  If Opts.TRS80 Then
+  Begin
+    EmitComment('--- Runtime TRS-80 Model I (Z80, ROM VDCHAR $0033) ---');
+    { _TPRT_TRS80_PRSTR : HL = pointeur ASCIIZ ; sortie via VDCHAR ROM   }
+    {   loop: LD A,(HL) ; OR A ; RET Z ; CALL $0033 ; INC HL ; JP loop  }
+    EmitLabel('_TPRT_TRS80_PRSTR');
+    EmitInstr('LD A,(HL)');
+    EmitInstr('OR A');
+    EmitInstr('RET Z');
+    EmitInstr('CALL $0033');
+    EmitInstr('INC HL');
+    EmitInstr('JP _TPRT_TRS80_PRSTR');
     Exit;
   End;
   If Opts.CoCo3 Then
@@ -37623,6 +37680,10 @@ Begin
   TotalLen := DataBase + DataLen;
   If TotalLen < TextLen Then TotalLen := TextLen;
 
+  { Resoudre les fixups Z80 (little-endian, code et data sont charges }
+  { contigus a TRS80_LOAD_ADDR via les chunks $01).                   }
+  BcResolveFixups6502(TRS80_LOAD_ADDR, DataBase);
+
   Assign(F, FileName);
   Rewrite(F, 1);
 
@@ -39602,7 +39663,7 @@ Begin
       EmitMainBlock;
 
     { Emettre les donnees ajoutees tardivement (cible 6502 Apple II / C64 / MSX) }
-    If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
+    If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
       EmitDataSegLate;
 
     { Emettre les routines runtime (TODO 12) }
@@ -39612,7 +39673,7 @@ Begin
       EmitRuntimeAmiga
     Else If Is68kTarget Then
       EmitRuntime68000
-    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Then
+    Else If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Then
       EmitRuntimeAppleII
     Else
       EmitRuntime;
@@ -39620,7 +39681,7 @@ Begin
     { Emettre les routines runtime supplementaires (pas en mode DOS ni 68000) }
     If (Opts.DestTarget <> DEST_DOSR) And (Opts.DestTarget <> DEST_DOSP) And
        (Not Is68kTarget) And (Not Opts.AppleII) And (Not Opts.C64) And
-       (Not Opts.MSX) And (Not Opts.CoCo3) And (Not Opts.TO7) And (Not Opts.Adam) Then
+       (Not Opts.MSX) And (Not Opts.CoCo3) And (Not Opts.TO7) And (Not Opts.Adam) And (Not Opts.TRS80) Then
     Begin
       { Emettre les routines runtime Graph (TODO 20) }
       EmitGraphRuntime;
