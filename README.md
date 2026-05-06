@@ -10,7 +10,7 @@ Il possède également des IDE, comme DEVENV :
 <ul>	
 	<li>Lequel supporte, les langages de programmations comme ABAP/4, Ada, C, C#, Java, Pascal, Python,...</li>
 	<li>Lequel supporte les terminals (CMD, PowerShell, Bash) en built-in).</li>
-	<li>Le DEVENV possède un émulateur 8086, Amiga, Cray 1, Apple II, Commodore 64, MSX, CoCo 3,... intégré pour les cibles n'étant pas Windows.</li>
+	<li>Le DEVENV possède un émulateur 8086, NES, Amiga, Cray 1, Apple II, Commodore 64, MSX, CoCo 3,... intégré pour les cibles n'étant pas Windows.</li>
 	<li>Support de la souris et du clavier</li>
 </ul>
 
