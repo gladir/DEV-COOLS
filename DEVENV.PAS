@@ -3082,6 +3082,8 @@ Var
  { --- Phase DOS+ : gestion fichiers reels (handles 5..31) --- }
  EmuFileH       : Array[5..31] Of File;
  EmuFileOpen    : Array[5..31] Of Boolean;
+ EmuFileFirstRd : Array[5..31] Of Boolean; { diag : log 1ere lecture }
+ EmuIoBuf       : Array[0..2047] Of Byte; { buffer global pour AH=3F/40 (eviter stack overflow) }
  EmuFileName    : Array[5..31] Of String;
  EmuFileMode    : Array[5..31] Of Byte;  { 0=read 1=write 2=rw }
  EmuDtaSeg      : Word;
@@ -22710,7 +22712,34 @@ End;
 
 Procedure Emu_ReadBlock(Var C: TEmuCPU; Seg, Ofs: Word;
  Var Buffer; SizeBytes: Word);
+Var
+ BPtr: ^Byte;
+ I: Word;
+ Row, Col: Integer;
+ B: Byte;
 Begin
+ { Redirection depuis la VRAM virtuelle pour la memoire video texte
+   $B800/$B000 : la lecture doit retourner ce qui a ete vu/ecrit
+   precedemment (BIOS scroll, sauvegarde d ecran, etc.). }
+ If (((Seg And $F800) = $B800) Or ((Seg And $F800) = $B000)) And
+    (SizeBytes > 0) Then Begin
+  BPtr := @Buffer;
+  For I := 0 To SizeBytes - 1 Do Begin
+   Row := ((Ofs + I) Shr 1) Div 80;
+   Col := ((Ofs + I) Shr 1) Mod 80;
+   B := 0;
+   If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 79) Then Begin
+    If ((Ofs + I) And 1) = 0 Then
+     B := Byte(Ord(EmuPanel.VRAM[Row, Col].Ch))
+    Else
+     B := (EmuPanel.VRAM[Row, Col].Fg And $0F) Or
+          ((EmuPanel.VRAM[Row, Col].Bg And $07) Shl 4);
+   End;
+   BPtr^ := B;
+   Inc(BPtr);
+  End;
+  Exit;
+ End;
  Emu_ReadAbsBlock(C, Emu_Addr(Seg, Ofs), Buffer, SizeBytes);
 End;
 
@@ -23714,6 +23743,9 @@ Var
   I: Integer;
 Begin
   S := DosName;
+  { Retirer espaces et NUL en queue (champ FCB DOS souvent paddee) }
+  While (Length(S) > 0) And ((S[Length(S)] = ' ') Or (S[Length(S)] = #0)) Do
+    S := Copy(S, 1, Length(S) - 1);
   { Convertir / en \ d abord }
   For I := 1 To Length(S) Do
     If S[I] = '/' Then S[I] := '\';
@@ -23739,6 +23771,16 @@ Begin
   If (Length(S) >= 2) And (S[2] = ':') Then S := Copy(S, 3, Length(S) - 2);
   { Retirer prefixe '\' (chemin absolu DOS -> relatif hote) si present }
   If (Length(S) >= 1) And (S[1] = '\') Then S := Copy(S, 2, Length(S) - 1);
+  { Fallback : chemin relatif introuvable dans le repertoire courant
+    (celui de DEVENV.exe) -> tenter le repertoire de l EXE charge.
+    Indispensable pour TP4/TP5/TP6/QP qui cherchent TURBO.TPL,
+    TURBO.HLP, QPL.COM, etc. au repertoire courant. }
+  If (Length(EmuExeDir) > 0) And (Not FileExists(S)) Then Begin
+    If FileExists(EmuExeDir + '\' + S) Then Begin
+      Emu_HostPath := EmuExeDir + '\' + S;
+      Exit;
+    End;
+  End;
   Emu_HostPath := S;
 End;
 
@@ -23747,7 +23789,7 @@ Var
  I, J: Integer;
  Ofs: Word;
  B: Byte;
- ExitCode: Byte;
+ ExitCode: Word;
  LogF: Text;
  H: Integer;
  K: LongInt;
@@ -23756,6 +23798,7 @@ Var
  IORes: Word;
  BytesIO: Word;
  SeekPos: LongInt;
+ IoI, IoJ: LongInt;        { compteurs 32-bit pour AH=3F/40 (fichiers > 32K) }
  Buffer: Array[0..2047] Of Byte;
  OpenMode: Byte;
  Yr, Mo, Dy, Wd: Word;
@@ -23797,6 +23840,22 @@ Begin
     End;
    End Else
     EmuVScr_PutChar(P, Chr(P.CPU.Regs.DL));
+  $01, $07, $08:
+   { AH=01/07/08 : lecture clavier bloquante DOS. Lit BIOS d abord
+     puis EmuVScr ; si vide, retro-deplacer IP pour re-executer
+     l INT 21 (la boucle principale continue a pomper l hote). }
+   Begin
+    If Emu_BiosHasKey(P) Then Begin
+     P.CPU.Regs.AL := Byte(Emu_BiosPopKey(P) And $FF);
+     If P.CPU.Regs.AH = $01 Then
+      EmuVScr_PutChar(P, Chr(P.CPU.Regs.AL));
+    End Else If EmuVScr_HasKey(P) Then Begin
+     P.CPU.Regs.AL := EmuVScr_PopKey(P);
+     If P.CPU.Regs.AH = $01 Then
+      EmuVScr_PutChar(P, Chr(P.CPU.Regs.AL));
+    End Else
+     Dec(P.CPU.IP, 2);
+   End;
   $09:
    Begin
     { Afficher la chaine $-terminee a DS:DX, max 4096 caracteres }
@@ -23833,19 +23892,20 @@ Begin
      P.CPU.Regs.AX := P.CPU.Regs.CX;
      Exclude(P.CPU.Flags.s, EFG_CF);
     End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
-     I := 0;
+     IoI := 0;
      BytesIO := 0;
-     While I < P.CPU.Regs.CX Do Begin
-      J := P.CPU.Regs.CX - I;
-      If J > SizeOf(Buffer) Then J := SizeOf(Buffer);
-      For ExitCode := 0 To J - 1 Do
-       Buffer[ExitCode] := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I + ExitCode);
-      {$I-} BlockWrite(EmuFileH[H], Buffer, J, BytesIO); {$I+}
+     While IoI < P.CPU.Regs.CX Do Begin
+      IoJ := LongInt(P.CPU.Regs.CX) - IoI;
+      If IoJ > SizeOf(EmuIoBuf) Then IoJ := SizeOf(EmuIoBuf);
+      For ExitCode := 0 To IoJ - 1 Do
+       EmuIoBuf[ExitCode] := Emu_ReadByte(P.CPU, P.CPU.Segs.DS,
+         Word(Ofs + Word(IoI) + ExitCode));
+      {$I-} BlockWrite(EmuFileH[H], EmuIoBuf, IoJ, BytesIO); {$I+}
       If IOResult <> 0 Then Break;
-      Inc(I, BytesIO);
-      If BytesIO < J Then Break;
+      Inc(IoI, BytesIO);
+      If BytesIO < IoJ Then Break;
      End;
-     P.CPU.Regs.AX := Word(I);
+     P.CPU.Regs.AX := Word(IoI);
      Exclude(P.CPU.Flags.s, EFG_CF);
     End Else Begin
      Include(P.CPU.Flags.s, EFG_CF);
@@ -23912,18 +23972,37 @@ Begin
      Exclude(P.CPU.Flags.s, EFG_CF);
     End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
      BytesIO := 0;
-     While I < P.CPU.Regs.CX Do Begin
-      J := P.CPU.Regs.CX - I;
-      If J > SizeOf(Buffer) Then J := SizeOf(Buffer);
-      {$I-} BlockRead(EmuFileH[H], Buffer, J, BytesIO); {$I+}
-      If IOResult <> 0 Then Break;
+     IORes := 0;
+     IoI := 0;
+     While IoI < P.CPU.Regs.CX Do Begin
+      IoJ := LongInt(P.CPU.Regs.CX) - IoI;
+      If IoJ > SizeOf(EmuIoBuf) Then IoJ := SizeOf(EmuIoBuf);
+      {$I-} BlockRead(EmuFileH[H], EmuIoBuf, IoJ, BytesIO); {$I+}
+      IORes := IOResult;
+      If IORes <> 0 Then Break;
       For ExitCode := 0 To BytesIO - 1 Do
-       Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + I + ExitCode, Buffer[ExitCode]);
-      Inc(I, BytesIO);
-      If BytesIO < J Then Break;
+       Emu_WriteByte(P.CPU, P.CPU.Segs.DS,
+         Word(Ofs + Word(IoI) + ExitCode), EmuIoBuf[ExitCode]);
+      Inc(IoI, BytesIO);
+      If BytesIO < IoJ Then Break;
      End;
-     P.CPU.Regs.AX := Word(I);
+     P.CPU.Regs.AX := Word(IoI);
      Exclude(P.CPU.Flags.s, EFG_CF);
+     If EmuFileFirstRd[H] Then Begin
+      EmuFileFirstRd[H] := False;
+      {$I-} Assign(LogF,'EMU21.LOG'); Append(LogF);
+      If IOResult <> 0 Then Begin Assign(LogF,'EMU21.LOG'); Rewrite(LogF); End;
+      Write(LogF, '  3F FIRST READ h=', H, ' name="', EmuFileName[H],
+       '" req=', P.CPU.Regs.CX, ' got=', IoI, ' iores=', IORes,
+       ' fpos=', FilePos(EmuFileH[H]),
+       ' fsize=', FileSize(EmuFileH[H]),
+       ' bytes=');
+      For ExitCode := 0 To 15 Do
+       If ExitCode < IoI Then
+        Write(LogF, HexByte(Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + ExitCode)),' ');
+      WriteLn(LogF);
+      Close(LogF); {$I+} If IOResult <> 0 Then ;
+     End;
     End Else Begin
      Include(P.CPU.Flags.s, EFG_CF);
      P.CPU.Regs.AX := 6;
@@ -24084,6 +24163,7 @@ Begin
         EmuFileOpen[H] := True;
         EmuFileName[H] := HPath;
         EmuFileMode[H] := OpenMode;
+        EmuFileFirstRd[H] := True;
         Exclude(P.CPU.Flags.s, EFG_CF);
         P.CPU.Regs.AX := H;
       End;
@@ -32671,8 +32751,12 @@ Var
  NesKeyEsc: Boolean;
  Coco3InstrIdx: LongInt;
  Coco3FrameElapsed: LongInt;
-Begin
- NesActive := False;
+ EmuPumpEv: TEvent;
+ EmuPumpCnt: LongInt;
+ EmuPumpNow: LongInt;
+ EmuLastDraw: LongInt;
+ EmuKeyLogF: Text;
+Begin NesActive := False;
  InitEmulatorPanel(P);
  P.BinaryPath := BinaryPath;
  P.TargetCPU := TargetCPU; P.Base.Visible := True;
@@ -33448,7 +33532,13 @@ Begin
  EmuTraceIdx := 0;
  EmuRunaway := 0;
  Emu_InitBDA(P);
- While (P.CPU.Fault = sfNone) And (Steps < 1000000) Do Begin
+ EmuPumpCnt := 0;
+ { Premier rendu : afficher le panneau (banniere + ecran emule) avant
+   d entrer dans la boucle d execution. Sinon le panneau peut rester
+   invisible plusieurs secondes selon la charge. }
+ DrawEmulatorPanel(P);
+ EmuLastDraw := GetTimestamp;
+ While (P.CPU.Fault = sfNone) And (Steps < 50000000) Do Begin
   EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
   EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
   EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
@@ -33490,6 +33580,45 @@ Begin
     End;
   End;
   Emu_ServiceIrqs(P);
+  { --- Pompage des evenements hote pour preserver l interactivite ---
+    Toutes les ~5000 instructions on interroge le clavier de DEVENV
+    et on redessine le panneau. ESC arrete l emulation. }
+  Inc(EmuPumpCnt);
+  If EmuPumpCnt >= 5000 Then Begin
+    EmuPumpCnt := 0;
+    PollEvents(EmuPumpEv);
+    Case EmuPumpEv.Kind Of
+     EV_KEY_CHAR:
+      Begin
+       If EmuPumpEv.KeyChar = #27 Then Begin
+        P.CPU.Fault := sfEndProgram;
+        P.StatusMsg := 'Emulation interrompue par utilisateur';
+        Break;
+       End;
+       EmuVScr_PushKey(P, Byte(EmuPumpEv.KeyChar));
+       P.NeedRepaint := True;
+      End;
+     EV_KEY_DOWN:
+      Begin
+       If (EmuPumpEv.KeyCode And $FF) = $1B Then Begin
+        P.CPU.Fault := sfEndProgram;
+        P.StatusMsg := 'Emulation interrompue par utilisateur';
+        Break;
+       End;
+       EmuVScr_PushKey(P, Byte(EmuPumpEv.KeyCode And $FF));
+       P.NeedRepaint := True;
+      End;
+    End;
+    { Redessiner au plus une fois toutes les 80 ms pour eviter le
+      scintillement (un repaint complet est couteux et provoquerait
+      un flash si appele a chaque pompage). }
+    EmuPumpNow := GetTimestamp;
+    If (EmuPumpNow - EmuLastDraw) >= 80 Then Begin
+      DrawEmulatorPanel(P);
+      EmuLastDraw := EmuPumpNow;
+      P.NeedRepaint := False;
+    End;
+  End;
  End;
  { Toujours dumper le trace pour le diagnostic }
  Emu_DumpTrace;
