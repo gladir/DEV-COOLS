@@ -1131,7 +1131,7 @@ Const
  DLG_PADDING           = 10;      { marge interne du dialogue       }
  DLG_INPUT_HEIGHT      = 20;      { hauteur champ de saisie         }
  DLG_LIST_ROW_HEIGHT   = 18;      { hauteur ligne dans liste        }
- DLG_FILTER_HEIGHT     = 20;      { hauteur du sélecteur de filtre  }
+ DLG_FILTER_HEIGHT     = 20;      { hauteur du s?lecteur de filtre  }
  DLG_ICON_SIZE         = 32;      { taille icone message box        }
  MAX_DLG_FILES         = 512;     { nombre max fichiers liste       }
  MAX_DLG_FILTERS       = 10;      { nombre max filtres              }
@@ -3192,7 +3192,7 @@ Var
  EmuBreakFlag   : Byte;     { AH=33h, 0=off 1=on }
  EmuAllocStrat  : Word;     { AH=58h, 0=first fit }
  EmuSwitchChar  : Byte;     { AH=37h, '/' par defaut }
- { --- IRQ matérielles --- }
+ { --- IRQ mat?rielles --- }
  EmuTickCounter : LongInt;       { compteur de ticks (~18.2 Hz) }
  EmuStepsPerTick: LongInt;       { nb instructions entre deux ticks }
  EmuStepsToTick : LongInt;       { decompte avant prochain tick }
@@ -24475,7 +24475,7 @@ Begin
 End;
 
 { --- Forward / dispatcher I/O global pour IN AL,DX et OUT DX,AL.
-      Les ports non gerés retournent 0. --- }
+      Les ports non ger?s retournent 0. --- }
 Function Emu_PortRead(Var P: TEmulatorPanel; Port: Word): Byte;
 Begin
  Emu_PortRead := 0;
@@ -24505,7 +24505,7 @@ End;
 { ============================================================
   INT 10h : services video BIOS.
   Implementation complete couvrant CGA/EGA/VGA en mode texte.
-  Mode graphique non emulé - DEV-COOLS travaille uniquement en
+  Mode graphique non emul? - DEV-COOLS travaille uniquement en
   texte 80x25 ; les fonctions graphiques sont stubbed.
   ============================================================ }
 
@@ -24587,6 +24587,11 @@ Begin
     Emu_WriteWord(P.CPU, $40, $4E, 0);
     Emu_WriteByte(P.CPU, $40, $84, EmuVideo.TextRows - 1);
     Emu_WriteByte(P.CPU, $40, $85, 16);
+    { Reinitialiser les positions de curseur des 8 pages dans la BDA. }
+    For I := 0 To 7 Do Begin
+     Emu_WriteByte(P.CPU, $40, $50 + I * 2, 0);
+     Emu_WriteByte(P.CPU, $40, $51 + I * 2, 0);
+    End;
    End;
   $01:
    { Set cursor type. CH=start scan (bit 5 = hide), CL=end scan. }
@@ -24597,7 +24602,15 @@ Begin
    End;
   $02:
    { Set cursor pos. BH=page, DH=row, DL=col. }
-   EmuVScr_GotoXY(P, P.CPU.Regs.DL, P.CPU.Regs.DH);
+   Begin
+    EmuVScr_GotoXY(P, P.CPU.Regs.DL, P.CPU.Regs.DH);
+    { Mettre a jour la BDA 0040:0050+page*2 (CRT FPC/TP lit
+      directement la BDA pour calculer l adresse VRAM). }
+    Emu_WriteByte(P.CPU, $40, $50 + (P.CPU.Regs.BH And 7) * 2,
+                  P.CPU.Regs.DL);
+    Emu_WriteByte(P.CPU, $40, $51 + (P.CPU.Regs.BH And 7) * 2,
+                  P.CPU.Regs.DH);
+   End;
   $03:
    { Get cursor pos+type. CH:CL = scan lines, DH:DL = row:col. }
    Begin
@@ -26496,7 +26509,7 @@ End;
 { Forcer le CPU a passer dans la routine d interruption Num via l IVT.
   Pousse FLAGS, CS, IP et saute a IVT[Num].
   Si IVT[Num] = 0:0 (vecteur vide), on traite comme INT logiciel
-  via Emu_DoInt directement (compatibilité avec le mode stub). }
+  via Emu_DoInt directement (compatibilit? avec le mode stub). }
 Procedure Emu_FireHwInt(Var P: TEmulatorPanel; Num: Byte); Forward;
 
 { --- INT 33h : pilote souris (Microsoft Mouse API) ---
@@ -26752,7 +26765,7 @@ Begin
 End;
 
 { Pousse FLAGS+CS+IP, charge IVT[Num] dans CS:IP, masque IF.
-  Utilise pour les vraies IRQ matérielles et redirection INT vers ISR. }
+  Utilise pour les vraies IRQ mat?rielles et redirection INT vers ISR. }
 Procedure Emu_FireHwInt(Var P: TEmulatorPanel; Num: Byte);
 Var
  NewIP, NewCS: Word;
@@ -26916,7 +26929,7 @@ Begin
  If P.CPU.Fault <> sfNone Then Exit;
  RepPrefix := 0;
  ResetSegOvr := False;
- { Diagnostic ciblé : dump instruction + DS:[offset teste] a 0EB7:01B7
+ { Diagnostic cibl? : dump instruction + DS:[offset teste] a 0EB7:01B7
    pour identifier la variable RTM TP4 testee a 0 (cause Halt(1)). }
  If (P.CPU.Segs.CS = $0EB7) And (P.CPU.IP = $01B7) And (Not EmuOvrDumped) Then Begin
   EmuOvrDumped := True;
@@ -36190,11 +36203,9 @@ Begin NesActive := False;
  {$I+} If IOResult <> 0 Then ;
  { Activer le watch sur la zone 0AAC:8740..87FF pour identifier le code
    qui ecrase le code TP4 (corruption observee dans la trace). }
- EmuWatchEnabled := True;
- { Surveiller la zone physique correspondant a 0AAC:8740..87FF
-   = 0xAAC0+0x8740..0xAAC0+0x87FF = 0x13200..0x132BF }
- EmuWatchPhysLo := LongInt($0AAC) * 16 + $8740;
- EmuWatchPhysHi := LongInt($0AAC) * 16 + $87FF;
+ EmuWatchEnabled := False;
+ EmuWatchPhysLo := 0;
+ EmuWatchPhysHi := 0;
  EmuWatchHits := 0;
  EmuDiv0Caught := False;
  EmuFpuLogged := 0;
@@ -36285,7 +36296,7 @@ Begin NesActive := False;
   EmuTraceIdx := (EmuTraceIdx + 1) And $1FFF;
   Emu_StepOne(P);
   Inc(Steps);
-  { --- IRQ matérielles --- }
+  { --- IRQ mat?rielles --- }
   Dec(EmuStepsToTick);
   If EmuStepsToTick <= 0 Then Begin
     EmuStepsToTick := EmuStepsPerTick;
