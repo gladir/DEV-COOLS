@@ -3090,6 +3090,7 @@ Var
  EmuNextFreeSeg : Word;     { segment libre pour AH=48 (alloc) }
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuOvrDumped   : Boolean;  { dump overlay diagnostic une seule fois }
+ EmuExeDir      : String;   { repertoire de l EXE charge (fallback fichiers) }
  EmuFindMask    : String;
  EmuFindAttr    : Byte;
  EmuFindResults : Array[0..63] Of String;
@@ -23039,6 +23040,15 @@ Begin
  PSPSeg := $0060;
  LoadSeg := PSPSeg + 16;     { convention DOS : programme charge a PSP+16 }
  EmuPspSeg := PSPSeg;
+ { Memoriser le repertoire de l EXE pour le fallback de recherche
+   de fichiers (QP cherche QPL.COM via PATH ; sans PATH defini il
+   tombe sur la racine. On essayera donc aussi le dossier de l EXE.) }
+ EmuExeDir := '';
+ For I := Length(FileName) DownTo 1 Do
+  If (FileName[I] = '\') Or (FileName[I] = '/') Then Begin
+   EmuExeDir := Copy(FileName, 1, I - 1);
+   Break;
+  End;
  C.IP := Exe.IP;
  C.Segs.CS := Word(LoadSeg + Exe.OfsLoad);
  C.Segs.DS := PSPSeg;        { au demarrage DS = ES = PSPSeg }
@@ -23709,6 +23719,19 @@ Begin
     If S[I] = '/' Then S[I] := '\';
   { Si chemin absolu avec drive (X:\...), le passer tel quel }
   If (Length(S) >= 3) And (S[2] = ':') And (S[3] = '\') Then Begin
+    { Fallback : si le fichier n existe pas a la racine indiquee
+      mais existe dans le dossier de l EXE, utiliser ce dernier.
+      Cela permet a QP de trouver QPL.COM, QP.HLP, etc. quand il
+      les cherche sur "C:\" sans PATH defini. }
+    If (Length(EmuExeDir) > 0) And (Not FileExists(S)) Then Begin
+      I := Length(S);
+      While (I > 0) And (S[I] <> '\') Do Dec(I);
+      If (I > 0) And (I = 3) Then Begin
+        { Le fichier est a la racine du drive, ex: C:\QPL.COM }
+        Emu_HostPath := EmuExeDir + '\' + Copy(S, 4, Length(S) - 3);
+        Exit;
+      End;
+    End;
     Emu_HostPath := S;
     Exit;
   End;
@@ -25189,25 +25212,25 @@ Begin
   $A0: { MOV AL, [disp16] }
    Begin
     Imm16 := Emu_FetchWord(P.CPU, 1);
-    P.CPU.Regs.AL := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Imm16);
+    P.CPU.Regs.AL := Emu_ReadByte(P.CPU, Emu_DataSeg(P.CPU), Imm16);
     Inc(P.CPU.IP, 3);
    End;
   $A1: { MOV AX, [disp16] }
    Begin
     Imm16 := Emu_FetchWord(P.CPU, 1);
-    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.DS, Imm16);
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, Emu_DataSeg(P.CPU), Imm16);
     Inc(P.CPU.IP, 3);
    End;
   $A2: { MOV [disp16], AL }
    Begin
     Imm16 := Emu_FetchWord(P.CPU, 1);
-    Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Imm16, P.CPU.Regs.AL);
+    Emu_WriteByte(P.CPU, Emu_DataSeg(P.CPU), Imm16, P.CPU.Regs.AL);
     Inc(P.CPU.IP, 3);
    End;
   $A3: { MOV [disp16], AX }
    Begin
     Imm16 := Emu_FetchWord(P.CPU, 1);
-    Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Imm16, P.CPU.Regs.AX);
+    Emu_WriteWord(P.CPU, Emu_DataSeg(P.CPU), Imm16, P.CPU.Regs.AX);
     Inc(P.CPU.IP, 3);
    End;
   $C6: { MOV rm8, imm8 }
