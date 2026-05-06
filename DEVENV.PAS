@@ -2535,8 +2535,9 @@ Type
   CurFg      : Byte;             { couleur courante FG             }
   CurBg      : Byte;             { couleur courante BG             }
   CursorOn   : Boolean;          { curseur visible (clignotant)    }
-  { File d attente clavier (ring buffer) }
-  KeyBuf     : Array[0..63] Of Byte;
+  { File d attente clavier (ring buffer 64 entrees Word :
+    octet bas = ASCII, octet haut = scancode BIOS) }
+  KeyBuf     : Array[0..63] Of Word;
   KeyHead    : Byte;
   KeyTail    : Byte;
   { Geometrie du panneau }
@@ -5082,7 +5083,7 @@ Procedure EmuVScr_Clear(Var P: TEmulatorPanel); Forward;
 Procedure EmuVScr_PutChar(Var P: TEmulatorPanel; C: Char); Forward;
 Procedure EmuVScr_WriteStr(Var P: TEmulatorPanel; S: String); Forward;
 Procedure EmuVScr_GotoXY(Var P: TEmulatorPanel; X, Y: Byte); Forward;
-Procedure EmuVScr_PushKey(Var P: TEmulatorPanel; K: Byte); Forward;
+Procedure EmuVScr_PushKey(Var P: TEmulatorPanel; K: Word); Forward;
 { --- Forward pour la carte video unifiee CGA/EGA/VGA --- }
 Procedure Emu_VidInit; Forward;
 Procedure Emu_VidSetMode(NewMode: Byte; Var P: TEmulatorPanel); Forward;
@@ -5093,7 +5094,7 @@ Function  Emu_VidGetPixel(X, Y: Integer): Byte; Forward;
 Function  Emu_VidPortRead(Port: Word): Byte; Forward;
 Procedure Emu_VidPortWrite(Port: Word; Value: Byte); Forward;
 Function EmuVScr_HasKey(Var P: TEmulatorPanel): Boolean; Forward;
-Function EmuVScr_PopKey(Var P: TEmulatorPanel): Byte; Forward;
+Function EmuVScr_PopKey(Var P: TEmulatorPanel): Word; Forward;
 
 { Declarations anticipees pour sauvegarde }
 Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
@@ -22515,7 +22516,7 @@ End;
 
 { --- Empiler une touche dans la file (ring buffer 64 octets) --- }
 
-Procedure EmuVScr_PushKey(Var P: TEmulatorPanel; K: Byte);
+Procedure EmuVScr_PushKey(Var P: TEmulatorPanel; K: Word);
 Var
  NextHead: Byte;
 Begin
@@ -22533,15 +22534,66 @@ Begin
  EmuVScr_HasKey := P.KeyHead <> P.KeyTail;
 End;
 
-{ --- Retirer une touche de la file --- }
+{ --- Retirer une touche de la file (Word complet) --- }
 
-Function EmuVScr_PopKey(Var P: TEmulatorPanel): Byte;
+Function EmuVScr_PopKey(Var P: TEmulatorPanel): Word;
 Begin
  If P.KeyHead = P.KeyTail Then
   EmuVScr_PopKey := 0
  Else Begin
   EmuVScr_PopKey := P.KeyBuf[P.KeyTail];
   P.KeyTail := (P.KeyTail + 1) And $3F;
+ End;
+End;
+
+{ --- Mapper un caractere ASCII vers son scancode BIOS standard.
+      Suffisant pour la plupart des jeux. --- }
+Function EmuKey_AsciiToScan(C: Char): Byte;
+Begin
+ Case C Of
+  #13: EmuKey_AsciiToScan := $1C;       { Enter }
+  #8 : EmuKey_AsciiToScan := $0E;       { Backspace }
+  #9 : EmuKey_AsciiToScan := $0F;       { Tab }
+  #27: EmuKey_AsciiToScan := $01;       { ESC }
+  ' ': EmuKey_AsciiToScan := $39;
+  'a','A': EmuKey_AsciiToScan := $1E;
+  'b','B': EmuKey_AsciiToScan := $30;
+  'c','C': EmuKey_AsciiToScan := $2E;
+  'd','D': EmuKey_AsciiToScan := $20;
+  'e','E': EmuKey_AsciiToScan := $12;
+  'f','F': EmuKey_AsciiToScan := $21;
+  'g','G': EmuKey_AsciiToScan := $22;
+  'h','H': EmuKey_AsciiToScan := $23;
+  'i','I': EmuKey_AsciiToScan := $17;
+  'j','J': EmuKey_AsciiToScan := $24;
+  'k','K': EmuKey_AsciiToScan := $25;
+  'l','L': EmuKey_AsciiToScan := $26;
+  'm','M': EmuKey_AsciiToScan := $32;
+  'n','N': EmuKey_AsciiToScan := $31;
+  'o','O': EmuKey_AsciiToScan := $18;
+  'p','P': EmuKey_AsciiToScan := $19;
+  'q','Q': EmuKey_AsciiToScan := $10;
+  'r','R': EmuKey_AsciiToScan := $13;
+  's','S': EmuKey_AsciiToScan := $1F;
+  't','T': EmuKey_AsciiToScan := $14;
+  'u','U': EmuKey_AsciiToScan := $16;
+  'v','V': EmuKey_AsciiToScan := $2F;
+  'w','W': EmuKey_AsciiToScan := $11;
+  'x','X': EmuKey_AsciiToScan := $2D;
+  'y','Y': EmuKey_AsciiToScan := $15;
+  'z','Z': EmuKey_AsciiToScan := $2C;
+  '0',')': EmuKey_AsciiToScan := $0B;
+  '1','!': EmuKey_AsciiToScan := $02;
+  '2','@': EmuKey_AsciiToScan := $03;
+  '3','#': EmuKey_AsciiToScan := $04;
+  '4','$': EmuKey_AsciiToScan := $05;
+  '5','%': EmuKey_AsciiToScan := $06;
+  '6','^': EmuKey_AsciiToScan := $07;
+  '7','&': EmuKey_AsciiToScan := $08;
+  '8','*': EmuKey_AsciiToScan := $09;
+  '9','(': EmuKey_AsciiToScan := $0A;
+ Else
+  EmuKey_AsciiToScan := 0;
  End;
 End;
 
@@ -35973,7 +36025,9 @@ Begin NesActive := False;
     { Drainer le clavier hote vers buffer BIOS + IRQ 9 }
     While EmuVScr_HasKey(P) Do Begin
       EntryAddr16 := EmuVScr_PopKey(P);
-      Emu_PushBiosKey(P, Byte(EntryAddr16), Byte(EntryAddr16));
+      { Le mot est encode (scancode<<8) Or ASCII. Pour les fleches
+        et touches speciales, ASCII=0 et scancode est valide. }
+      Emu_PushBiosKey(P, Hi(EntryAddr16), Lo(EntryAddr16));
       EmuIrqPending := EmuIrqPending Or $02;
       If Emu_ReadWord(P.CPU, $40, $1C) = Emu_ReadWord(P.CPU, $40, $1A) Then Break;
     End;
@@ -35994,7 +36048,9 @@ Begin NesActive := False;
         P.StatusMsg := 'Emulation interrompue par utilisateur';
         Break;
        End;
-       EmuVScr_PushKey(P, Byte(EmuPumpEv.KeyChar));
+       EmuVScr_PushKey(P,
+         (Word(EmuKey_AsciiToScan(EmuPumpEv.KeyChar)) Shl 8) Or
+          Byte(EmuPumpEv.KeyChar));
        P.NeedRepaint := True;
       End;
      EV_KEY_DOWN:
@@ -36004,7 +36060,9 @@ Begin NesActive := False;
         P.StatusMsg := 'Emulation interrompue par utilisateur';
         Break;
        End;
-       EmuVScr_PushKey(P, Byte(EmuPumpEv.KeyCode And $FF));
+       { Touche etendue (fleche, F1..F12, etc.) : ASCII = 0,
+         scancode = code etendu retourne par ReadKey. }
+       EmuVScr_PushKey(P, Word(EmuPumpEv.KeyCode And $FF) Shl 8);
        P.NeedRepaint := True;
       End;
     End;
