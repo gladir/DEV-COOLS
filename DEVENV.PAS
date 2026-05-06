@@ -24362,6 +24362,7 @@ Var
  V16, R16, S16: Word;
  Disp8: ShortInt;
  Disp16: Integer;
+ MulRes: LongInt;
  NewIP, NewCS: Word;
  SubOp: Byte;
  RepPrefix: Byte;
@@ -24593,9 +24594,9 @@ Begin
               P.CPU.IP + 2 + Op.Len) Or
              (Word(Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
               P.CPU.IP + 3 + Op.Len)) Shl 8);
-    Disp16 := Integer(SmallInt(V16)) * Integer(SmallInt(Imm16));
-    R16 := Word(Disp16);
-    If (Disp16 < -32768) Or (Disp16 > 32767) Then Begin
+    MulRes := LongInt(SmallInt(V16)) * LongInt(SmallInt(Imm16));
+    R16 := Word(MulRes);
+    If (MulRes < -32768) Or (MulRes > 32767) Then Begin
      Include(P.CPU.Flags.s, EFG_CF);
      Include(P.CPU.Flags.s, EFG_OF);
     End Else Begin
@@ -24612,9 +24613,9 @@ Begin
     V16 := Emu_GetOpWord(P.CPU, Op);
     Imm8 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
               P.CPU.IP + 2 + Op.Len);
-    Disp16 := Integer(SmallInt(V16)) * Integer(ShortInt(Imm8));
-    R16 := Word(Disp16);
-    If (Disp16 < -32768) Or (Disp16 > 32767) Then Begin
+    MulRes := LongInt(SmallInt(V16)) * LongInt(ShortInt(Imm8));
+    R16 := Word(MulRes);
+    If (MulRes < -32768) Or (MulRes > 32767) Then Begin
      Include(P.CPU.Flags.s, EFG_CF);
      Include(P.CPU.Flags.s, EFG_OF);
     End Else Begin
@@ -25345,9 +25346,9 @@ Begin
          Emu_PutOpWord(P.CPU, Op, R16);
         End;
      4: Begin { MUL : DX:AX = AX * rm16 }
-         Disp16 := LongInt(P.CPU.Regs.AX) * V16;
-         P.CPU.Regs.AX := Word(Disp16);
-         P.CPU.Regs.DX := Word(LongInt(Disp16) Shr 16);
+         MulRes := LongInt(P.CPU.Regs.AX) * LongInt(V16);
+         P.CPU.Regs.AX := Word(MulRes);
+         P.CPU.Regs.DX := Word(MulRes Shr 16);
          If P.CPU.Regs.DX <> 0 Then Begin
           Include(P.CPU.Flags.s, EFG_CF);
           Include(P.CPU.Flags.s, EFG_OF);
@@ -25357,10 +25358,10 @@ Begin
          End;
         End;
      5: Begin { IMUL }
-         Disp16 := LongInt(SmallInt(P.CPU.Regs.AX))
-                 * SmallInt(V16);
-         P.CPU.Regs.AX := Word(Disp16);
-         P.CPU.Regs.DX := Word(LongInt(Disp16) Shr 16);
+         MulRes := LongInt(SmallInt(P.CPU.Regs.AX))
+                 * LongInt(SmallInt(V16));
+         P.CPU.Regs.AX := Word(MulRes);
+         P.CPU.Regs.DX := Word(MulRes Shr 16);
          If (P.CPU.Regs.DX = 0) Or (P.CPU.Regs.DX = $FFFF) Then Begin
           Exclude(P.CPU.Flags.s, EFG_CF);
           Exclude(P.CPU.Flags.s, EFG_OF);
@@ -25372,21 +25373,21 @@ Begin
      6: Begin { DIV : DX:AX / rm16 }
          If V16 = 0 Then P.CPU.Fault := sfDivision0
          Else Begin
-          Disp16 := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
-          If LongInt(Disp16) Div V16 > $FFFF
+          MulRes := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
+          If MulRes Div LongInt(V16) > $FFFF
            Then P.CPU.Fault := sfDivision0
           Else Begin
-           P.CPU.Regs.AX := Word(LongInt(Disp16) Div V16);
-           P.CPU.Regs.DX := Word(LongInt(Disp16) Mod V16);
+           P.CPU.Regs.AX := Word(MulRes Div LongInt(V16));
+           P.CPU.Regs.DX := Word(MulRes Mod LongInt(V16));
           End;
          End;
         End;
      7: Begin { IDIV }
          If V16 = 0 Then P.CPU.Fault := sfDivision0
          Else Begin
-          Disp16 := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
-          P.CPU.Regs.AX := Word(LongInt(Disp16) Div SmallInt(V16));
-          P.CPU.Regs.DX := Word(LongInt(Disp16) Mod SmallInt(V16));
+          MulRes := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
+          P.CPU.Regs.AX := Word(MulRes Div LongInt(SmallInt(V16)));
+          P.CPU.Regs.DX := Word(MulRes Mod LongInt(SmallInt(V16)));
          End;
         End;
     End;
