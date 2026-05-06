@@ -24968,6 +24968,13 @@ Begin
     Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, Op.Ofs);
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
+  $8F: { POP rm16 (groupe : seul subop 0 defini) }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Emu_PutOpWord(P.CPU, Op, Emu_PopWord(P.CPU));
+    Inc(P.CPU.IP, 1 + Op.Len);
+   End;
   $C5: { LDS r16, m32 }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
