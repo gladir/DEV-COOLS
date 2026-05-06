@@ -2465,6 +2465,60 @@ Type
   Len   : Integer;       { octets consommes (ModRM + deplacement)  }
  End;
 
+ { ========================================================
+   PHASE 0 : Etat unifie de la carte video CGA / EGA / VGA.
+   --------------------------------------------------------
+   La memoire video est 256 Ko ($00000-$3FFFF) car les modes
+   EGA/VGA planar ont 4 plans de 64 Ko chacun a $A000.
+   En mode texte, on duplique aussi le contenu vers la VRAM
+   80x25 du panneau pour le rendu rapide.
+   ======================================================== }
+ TEmuVideoMem = Array[0..262143] Of Byte;  { 4 plans x 64K }
+ PEmuVideoMem = ^TEmuVideoMem;
+
+ TEmuVideoState = Record
+  Mode       : Byte;    { 0..13h, 7Fh inconnu               }
+  Width      : Word;    { largeur en pixels                  }
+  Height     : Word;    { hauteur en pixels                  }
+  TextCols   : Byte;    { 40 ou 80                          }
+  TextRows   : Byte;    { 25 typique                         }
+  BitsPerPix : Byte;    { 0=texte, 1, 2, 4, 8                }
+  IsGraphic  : Boolean; { mode graphique vs texte            }
+  IsPlanar   : Boolean; { EGA/VGA planar vs lineaire         }
+  ChainFour  : Boolean; { mode 13h = chain-4 lineaire        }
+  PageBase   : LongInt; { offset dans VideoMem               }
+  Mem        : PEmuVideoMem;{ buffer 256 Ko alloue            }
+  MemReady   : Boolean;
+  { --- DAC (registres VGA $3C7-$3C9) --- }
+  DAC        : Array[0..767] Of Byte; { 256 RGB, 6 bits     }
+  DACWriteIdx: Word;    { index octet courant ecriture       }
+  DACReadIdx : Word;    { index octet courant lecture        }
+  DACMask    : Byte;    { masque pixel ($3C6)                }
+  DACState   : Byte;    { etat $3C7 : 0=write, 3=read        }
+  { --- Sequencer ($3C4 / $3C5) --- }
+  SeqIdx     : Byte;
+  SeqReg     : Array[0..7] Of Byte;
+  { --- Graphics Controller ($3CE / $3CF) --- }
+  GCIdx      : Byte;
+  GCReg      : Array[0..15] Of Byte;
+  { --- Attribute Controller ($3C0 / $3C1) --- }
+  ACFlipFlop : Boolean; { 0=index, 1=data                    }
+  ACIdx      : Byte;
+  ACReg      : Array[0..31] Of Byte;
+  { --- CRT Controller ($3D4 / $3D5) --- }
+  CRTCIdx    : Byte;
+  CRTCReg    : Array[0..31] Of Byte;
+  { --- 4 latches plan (lus par MOV reg,[mem] en mode planar) --- }
+  Latch      : Array[0..3] Of Byte;
+  { --- CGA registers ($3D8 / $3D9) --- }
+  CGAMode    : Byte;    { Mode Control Register $3D8         }
+  CGAColor   : Byte;    { Color Select Register $3D9         }
+  { --- Status (lecture de $3DA) --- }
+  StatusRetrace : Byte; { bit 0 = HRetrace, bit 3 = VRetrace }
+  { --- Dirty flag pour le rendu graphique --- }
+  GfxDirty   : Boolean;
+ End;
+
  { Etat de l emulateur 8086 + ecran virtuel + clavier }
  TEmulatorPanel = Record
   Base       : TDialog;          { dialogue de base                }
@@ -3096,12 +3150,42 @@ Var
  EmuWatchPhysLo : LongInt;  { adresse physique min surveillee }
  EmuWatchPhysHi : LongInt;  { adresse physique max surveillee }
  EmuWatchHits   : Integer;  { nb hits cumules }
+ EmuDiv0Caught  : Boolean;  { capture du 1er DIV/0 (diag) }
+ EmuDiv0CS      : Word;
+ EmuDiv0IP      : Word;
+ EmuDiv0Op      : Byte;     { F6 ou F7 }
+ EmuDiv0SubOp   : Byte;     { 6=DIV, 7=IDIV }
+ EmuDiv0Div     : LongInt;  { divisor }
+ EmuDiv0AX      : Word;
+ EmuDiv0DX      : Word;
+ EmuDiv0BX      : Word;
+ EmuDiv0CX      : Word;
+ EmuDiv0SI      : Word;
+ EmuDiv0DI      : Word;
+ EmuDiv0BP      : Word;
+ EmuDiv0DS      : Word;
+ EmuDiv0ES      : Word;
+ EmuDiv0SS      : Word;
+ EmuDiv0SP      : Word;
+ EmuFpuTrap     : Boolean;  { si True, ESC declenche INT 7 (mode 286+/EM=1). }
+ EmuFpuLogged   : Integer;  { compteur d ESC opcodes deja loggues }
+ EmuOpCount     : Array[0..255] Of LongInt;  { stat opcodes execute }
  EmuExeDir      : String;   { repertoire de l EXE charge (fallback fichiers) }
  EmuFindMask    : String;
  EmuFindAttr    : Byte;
  EmuFindResults : Array[0..63] Of String;
  EmuFindCount   : Integer;
  EmuFindIndex   : Integer;
+ EmuExitCode    : Word;     { dernier code retour AH=4Ch (AH=4Dh) }
+ EmuExitType    : Byte;     { 0=normal 1=Ctrl-C 2=critique 3=TSR }
+ EmuExtErr      : Word;     { dernier code erreur DOS (AH=59h) }
+ EmuExtErrCls   : Byte;
+ EmuExtErrAct   : Byte;
+ EmuExtErrLoc   : Byte;
+ EmuVerifyFlag  : Byte;     { AH=2E/54h }
+ EmuBreakFlag   : Byte;     { AH=33h, 0=off 1=on }
+ EmuAllocStrat  : Word;     { AH=58h, 0=first fit }
+ EmuSwitchChar  : Byte;     { AH=37h, '/' par defaut }
  { --- IRQ matérielles --- }
  EmuTickCounter : LongInt;       { compteur de ticks (~18.2 Hz) }
  EmuStepsPerTick: LongInt;       { nb instructions entre deux ticks }
@@ -3121,6 +3205,8 @@ Var
  EmuRwES, EmuRwDS, EmuRwSS: Word;
  EmuDumpF: Text;
  EmuDumpI: Word;
+ { --- Etat unifie de la carte video CGA/EGA/VGA --- }
+ EmuVideo       : TEmuVideoState;
  { Etat de l emulateur Motorola 68000 integre }
  M68K_D         : Array[0..7] Of LongInt;
  M68K_A         : Array[0..7] Of LongInt;
@@ -4997,6 +5083,15 @@ Procedure EmuVScr_PutChar(Var P: TEmulatorPanel; C: Char); Forward;
 Procedure EmuVScr_WriteStr(Var P: TEmulatorPanel; S: String); Forward;
 Procedure EmuVScr_GotoXY(Var P: TEmulatorPanel; X, Y: Byte); Forward;
 Procedure EmuVScr_PushKey(Var P: TEmulatorPanel; K: Byte); Forward;
+{ --- Forward pour la carte video unifiee CGA/EGA/VGA --- }
+Procedure Emu_VidInit; Forward;
+Procedure Emu_VidSetMode(NewMode: Byte; Var P: TEmulatorPanel); Forward;
+Function  Emu_VidReadByte(MemOfs: LongInt): Byte; Forward;
+Procedure Emu_VidWriteByte(MemOfs: LongInt; Value: Byte); Forward;
+Procedure Emu_VidSetPixel(X, Y: Integer; Color: Byte); Forward;
+Function  Emu_VidGetPixel(X, Y: Integer): Byte; Forward;
+Function  Emu_VidPortRead(Port: Word): Byte; Forward;
+Procedure Emu_VidPortWrite(Port: Word; Value: Byte); Forward;
 Function EmuVScr_HasKey(Var P: TEmulatorPanel): Boolean; Forward;
 Function EmuVScr_PopKey(Var P: TEmulatorPanel): Byte; Forward;
 
@@ -22318,6 +22413,8 @@ Begin
    P.VRAM[Y, X].Fg := 7;
    P.VRAM[Y, X].Bg := 0;
   End;
+ { Initialisation de la carte video CGA/EGA/VGA. }
+ Emu_VidInit;
 End;
 
 { --- Effacer l ecran virtuel --- }
@@ -22462,6 +22559,59 @@ Begin
   EmuColor := C And $F;
 End;
 
+{ --- Mapper RGB 6 bits (0..63) vers la palette BGI 16 couleurs.
+      Approximation par seuil. C est utilise par le rendu graphique
+      mode 13h / EGA / VGA en panneau emulateur.                     --- }
+Function Emu_VidApprox16(R, G, B: Byte): Byte;
+Var Bright, Rb, Gb, Bb: Byte;
+    MaxC: Byte;
+    Result: Byte;
+Begin
+ MaxC := R; If G > MaxC Then MaxC := G; If B > MaxC Then MaxC := B;
+ If MaxC >= 42 Then Bright := 8 Else Bright := 0;
+ If R >= 22 Then Rb := 4 Else Rb := 0;
+ If G >= 22 Then Gb := 2 Else Gb := 0;
+ If B >= 22 Then Bb := 1 Else Bb := 0;
+ Result := Bright Or Rb Or Gb Or Bb;
+ { Cas particulier : couleur EGA 6 = brun (R fort, G mid, B faible). }
+ If (Result = 6) And (G < 32) And (B < 8) Then Result := 6;
+ { Cas brillant pur : eviter de retourner 0 si rien n etait force. }
+ If (Result = 0) And ((R Or G Or B) > 0) Then Result := 8;
+ Emu_VidApprox16 := Result;
+End;
+
+{ --- Couleur BGI a partir d un pixel logique (0..255) selon le mode. --- }
+Function Emu_VidPixelToBGI(C: Byte): Byte;
+Var Idx: Word;
+    R, G, Bv: Byte;
+Begin
+ If EmuVideo.Mode = $13 Then
+  Idx := C
+ Else If EmuVideo.IsPlanar Then Begin
+  { Mode planar : C = 0..15 -> ACReg[C] -> entree DAC }
+  If (C < 16) And (EmuVideo.ACReg[C] < 64) Then
+   Idx := EmuVideo.ACReg[C]
+  Else
+   Idx := C And $0F;
+ End
+ Else If (EmuVideo.Mode = $04) Or (EmuVideo.Mode = $05) Then Begin
+  { CGA 4 couleurs : palette selon CGAColor bit 5 + bit 4. }
+  Case C And 3 Of
+   0: Idx := EmuVideo.CGAColor And $0F;
+   1: If (EmuVideo.CGAColor And $20) <> 0 Then Idx := 11 Else Idx := 10;
+   2: If (EmuVideo.CGAColor And $20) <> 0 Then Idx := 13 Else Idx := 12;
+   3: If (EmuVideo.CGAColor And $20) <> 0 Then Idx := 15 Else Idx := 14;
+  End;
+ End
+ Else
+  Idx := C And $0F;
+ If Idx >= 256 Then Idx := 15;
+ R := EmuVideo.DAC[Idx*3 + 0];
+ G := EmuVideo.DAC[Idx*3 + 1];
+ Bv := EmuVideo.DAC[Idx*3 + 2];
+ Emu_VidPixelToBGI := Emu_VidApprox16(R, G, Bv);
+End;
+
 { --- Dessiner le panneau de l emulateur --- }
 
 { Titre du panneau emulateur en fonction de la cible. }
@@ -22525,6 +22675,10 @@ Var
  S: String;
  NesScale: Integer;
  Sx, Sy: Integer;
+ GfxW, GfxH, Scale: Integer;
+ ScY: Integer;
+ ColorByte, BgiC: Byte;
+ PrevC, RunStart: Integer;
 Begin
  ScrW := GetScreenWidth;
  ScrH := GetScreenHeight;
@@ -22625,6 +22779,80 @@ Begin
   P.PanelY := 60;
  GridX := P.PanelX;
  GridY := P.PanelY + 24;          { 24 px de barre de titre }
+ { ============================================================
+   Rendu graphique CGA / EGA / VGA pour modes 04/05/06/0D/0E/10/12/13.
+   On rend pixel par pixel via PutPixel BGI. Le scale est calcule
+   pour fitter dans la zone editeur disponible.
+   ============================================================ }
+ If ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP')) And
+    EmuVideo.IsGraphic Then Begin
+  GfxW := EmuVideo.Width;
+  GfxH := EmuVideo.Height;
+  Scale := 1;
+  If GfxW <= 320 Then Scale := 2;
+  If GfxW <= 160 Then Scale := 4;
+  If 80 + GfxH * Scale + 60 > ScrH Then Begin
+   Scale := (ScrH - 140) Div GfxH;
+   If Scale < 1 Then Scale := 1;
+  End;
+  GridW := GfxW * Scale;
+  GridH := GfxH * Scale;
+  P.PanelX := (ScrW - GridW) Div 2;
+  If P.PanelX < 4 Then P.PanelX := 4;
+  P.PanelY := 80;
+  If P.PanelY + GridH + 60 > ScrH Then P.PanelY := 60;
+  GridX := P.PanelX;
+  GridY := P.PanelY + 24;
+  { Bordure et barre de titre }
+  DrawFilledRect(P.PanelX - 2, P.PanelY - 2,
+   P.PanelX + GridW + 2, P.PanelY + GridH + 48,
+   CLR_BACKGROUND);
+  DrawFilledRect(P.PanelX, P.PanelY,
+   P.PanelX + GridW, P.PanelY + 22,
+   CLR_TITLEBAR_ACTIVE);
+  Title := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath +
+           ' [mode ' + IntToStr(EmuVideo.Mode) + 'h ' +
+           IntToStr(GfxW) + 'x' + IntToStr(GfxH) + ']';
+  If Length(Title) > 90 Then Title := Copy(Title, 1, 87) + '...';
+  DrawText(P.PanelX + 6, P.PanelY + 6, Title, CLR_HIGHLIGHTTEXT);
+  DrawText(P.PanelX + GridW - 100, P.PanelY + 6,
+   '[Esc] Fermer', CLR_HIGHLIGHTTEXT);
+  { Fond noir }
+  DrawFilledRect(GridX, GridY, GridX + GridW, GridY + GridH, 0);
+  { Rendu pixel : RLE par ligne pour limiter le nombre de
+    primitives de dessin. }
+  For Sy := 0 To GfxH - 1 Do Begin
+   PrevC := -1; RunStart := 0;
+   ScY := GridY + Sy * Scale;
+   For Sx := 0 To GfxW - 1 Do Begin
+    ColorByte := Emu_VidGetPixel(Sx, Sy);
+    BgiC := Emu_VidPixelToBGI(ColorByte);
+    If BgiC <> PrevC Then Begin
+     If (PrevC > 0) Then
+      DrawFilledRect(GridX + RunStart * Scale, ScY,
+       GridX + Sx * Scale - 1, ScY + Scale - 1, PrevC);
+     PrevC := BgiC; RunStart := Sx;
+    End;
+   End;
+   If PrevC > 0 Then
+    DrawFilledRect(GridX + RunStart * Scale, ScY,
+     GridX + GfxW * Scale - 1, ScY + Scale - 1, PrevC);
+  End;
+  { Barre d etat }
+  DrawFilledRect(GridX, GridY + GridH + 2,
+   GridX + GridW, GridY + GridH + 22, CLR_TITLEBAR);
+  If P.StatusMsg <> '' Then
+   DrawText(GridX + 6, GridY + GridH + 6, P.StatusMsg, CLR_HIGHLIGHTTEXT)
+  Else If P.Running Then
+   DrawText(GridX + 6, GridY + GridH + 6,
+    'En cours d execution (mode graphique)...', CLR_HIGHLIGHTTEXT)
+  Else
+   DrawText(GridX + 6, GridY + GridH + 6,
+    'Arrete (code de fin: ' + IntToStr(P.Fault) + ')', CLR_HIGHLIGHTTEXT);
+  P.NeedRepaint := False;
+  EmuVideo.GfxDirty := False;
+  Exit;
+ End;
  { Bordure et barre de titre }
  DrawFilledRect(P.PanelX - 2, P.PanelY - 2,
   P.PanelX + GridW + 2, P.PanelY + GridH + 48,
@@ -22868,6 +23096,12 @@ Begin
  End;
  { Redirection vers VRAM virtuelle si ecriture en memoire video texte $B800/$B000 }
  If ((Seg And $F800) = $B800) Or ((Seg And $F800) = $B000) Then Begin
+  { En mode graphique CGA (4/5/6), rediriger vers la VRAM unifiee. }
+  If EmuVideo.IsGraphic And ((Seg And $F800) = $B800) Then Begin
+   Emu_VidWriteByte($20000 + ((LongInt(Seg) Shl 4) + Ofs - $B8000) And $7FFF, X);
+   Emu_WriteAbsBlock(C, Emu_Addr(Seg, Ofs), X, 1);  { copie aussi en RAM }
+   Exit;
+  End;
   Row := (Ofs Shr 1) Div 80;
   Col := (Ofs Shr 1) Mod 80;
   If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 79) Then Begin
@@ -22879,6 +23113,16 @@ Begin
    End;
    EmuPanel.NeedRepaint := True;
   End;
+  Exit;
+ End;
+ { Redirection planar EGA/VGA pour ecritures dans $A0000..$AFFFF. }
+ If EmuVideo.IsGraphic And ((Seg And $F000) = $A000) Then Begin
+  { Pre-charger latches via lecture du mot a la meme adresse. }
+  EmuVideo.Latch[0] := EmuVideo.Mem^[(LongInt(Seg) Shl 4) + Ofs - $A0000];
+  EmuVideo.Latch[1] := EmuVideo.Mem^[$10000 + ((LongInt(Seg) Shl 4) + Ofs - $A0000)];
+  EmuVideo.Latch[2] := EmuVideo.Mem^[$20000 + ((LongInt(Seg) Shl 4) + Ofs - $A0000)];
+  EmuVideo.Latch[3] := EmuVideo.Mem^[$30000 + ((LongInt(Seg) Shl 4) + Ofs - $A0000)];
+  Emu_VidWriteByte((LongInt(Seg) Shl 4) + Ofs - $A0000, X);
   Exit;
  End;
  Emu_WriteBlock(C, Seg, Ofs, X, 1);
@@ -23243,6 +23487,16 @@ Begin
  EmuDtaOfs := $0080;     { DTA par defaut = PSP+80h }
  EmuFindCount := 0;
  EmuFindIndex := 0;
+ EmuExitCode := 0;
+ EmuExitType := 0;
+ EmuExtErr := 0;
+ EmuExtErrCls := 0;
+ EmuExtErrAct := 0;
+ EmuExtErrLoc := 0;
+ EmuVerifyFlag := 0;
+ EmuBreakFlag := 0;
+ EmuAllocStrat := 0;
+ EmuSwitchChar := Ord('/');
  Ext := '';
  For I := Length(FileName) DownTo 1 Do
   If FileName[I] = '.' Then Begin
@@ -23617,142 +23871,991 @@ End;
 Function Emu_BiosHasKey(Var P: TEmulatorPanel): Boolean; Forward;
 Function Emu_BiosPopKey(Var P: TEmulatorPanel): Word; Forward;
 
+{ ============================================================
+  PHASE 0..2 : Carte video unifiee CGA / EGA / VGA.
+  ------------------------------------------------------------
+  Allocation 256 Ko, palette DAC VGA par defaut, registres
+  Sequencer / GC / AC / CRTC / DAC / CGA tous expose via I/O.
+  ============================================================ }
+
+{ --- Initialiser la palette DAC VGA standard (256 entrees) --- }
+Procedure Emu_VidInitDefaultDAC;
+Var I: Integer;
+    R, G, B: Byte;
+    EgaToVga: Array[0..15] Of Byte;
+Begin
+ { Palette EGA 16 couleurs aux indices 0..15 (6 bits par composante) }
+ EgaToVga[0] := 0;  EgaToVga[1] := 1;  EgaToVga[2] := 2;  EgaToVga[3] := 3;
+ EgaToVga[4] := 4;  EgaToVga[5] := 5;  EgaToVga[6] := 20; EgaToVga[7] := 7;
+ EgaToVga[8] := 56; EgaToVga[9] := 57; EgaToVga[10]:= 58; EgaToVga[11]:= 59;
+ EgaToVga[12]:= 60; EgaToVga[13]:= 61; EgaToVga[14]:= 62; EgaToVga[15]:= 63;
+ { Premier remplissage : 16 couleurs IBM standard }
+ For I := 0 To 15 Do Begin
+  R := 0; G := 0; B := 0;
+  If (I And 4) <> 0 Then R := 42;
+  If (I And 2) <> 0 Then G := 42;
+  If (I And 1) <> 0 Then B := 42;
+  If (I And 8) <> 0 Then Begin
+   R := R + 21; G := G + 21; B := B + 21;
+  End;
+  { Cas particulier : 6 = brun (R=42, G=21, B=0) }
+  If I = 6 Then Begin R := 42; G := 21; B := 0; End;
+  EmuVideo.DAC[I*3 + 0] := R;
+  EmuVideo.DAC[I*3 + 1] := G;
+  EmuVideo.DAC[I*3 + 2] := B;
+ End;
+ { Indices 16..31 : niveaux de gris }
+ For I := 0 To 15 Do Begin
+  R := (I * 63) Div 15;
+  EmuVideo.DAC[(16+I)*3 + 0] := R;
+  EmuVideo.DAC[(16+I)*3 + 1] := R;
+  EmuVideo.DAC[(16+I)*3 + 2] := R;
+ End;
+ { Indices 32..255 : remplissage RGB pseudo regulier (suffisant pour
+   la plupart des programmes qui chargent leur propre palette). }
+ For I := 32 To 255 Do Begin
+  R := ((I Shr 5) And 7) * 9;
+  G := ((I Shr 2) And 7) * 9;
+  B := (I And 3) * 21;
+  EmuVideo.DAC[I*3 + 0] := R;
+  EmuVideo.DAC[I*3 + 1] := G;
+  EmuVideo.DAC[I*3 + 2] := B;
+ End;
+End;
+
+{ --- Allouer la memoire video et initialiser l etat --- }
+Procedure Emu_VidInit;
+Begin
+ If Not EmuVideo.MemReady Then Begin
+  New(EmuVideo.Mem);
+  FillChar(EmuVideo.Mem^, SizeOf(EmuVideo.Mem^), 0);
+  EmuVideo.MemReady := True;
+ End;
+ EmuVideo.Mode := $03;
+ EmuVideo.Width := 720; EmuVideo.Height := 400;
+ EmuVideo.TextCols := 80; EmuVideo.TextRows := 25;
+ EmuVideo.BitsPerPix := 0;
+ EmuVideo.IsGraphic := False;
+ EmuVideo.IsPlanar := False;
+ EmuVideo.ChainFour := False;
+ EmuVideo.PageBase := 0;
+ EmuVideo.DACWriteIdx := 0;
+ EmuVideo.DACReadIdx := 0;
+ EmuVideo.DACMask := $FF;
+ EmuVideo.DACState := 0;
+ EmuVideo.SeqIdx := 0;
+ FillChar(EmuVideo.SeqReg, SizeOf(EmuVideo.SeqReg), 0);
+ EmuVideo.SeqReg[2] := $0F;   { plane mask 1111 }
+ EmuVideo.GCIdx := 0;
+ FillChar(EmuVideo.GCReg, SizeOf(EmuVideo.GCReg), 0);
+ EmuVideo.GCReg[6] := $0E;    { mem map = $A000-$AFFF, alpha disable }
+ EmuVideo.GCReg[8] := $FF;    { bit mask = tous les bits }
+ EmuVideo.ACFlipFlop := False;
+ EmuVideo.ACIdx := 0;
+ FillChar(EmuVideo.ACReg, SizeOf(EmuVideo.ACReg), 0);
+ EmuVideo.CRTCIdx := 0;
+ FillChar(EmuVideo.CRTCReg, SizeOf(EmuVideo.CRTCReg), 0);
+ FillChar(EmuVideo.Latch, SizeOf(EmuVideo.Latch), 0);
+ EmuVideo.CGAMode := 0;
+ EmuVideo.CGAColor := 0;
+ EmuVideo.StatusRetrace := 0;
+ EmuVideo.GfxDirty := True;
+ Emu_VidInitDefaultDAC;
+End;
+
+{ --- Tester si une adresse appartient a la fenetre video. --- }
+Function Emu_VidIsVidAddr(Seg, Ofs: Word; Var Plane0Ofs: LongInt): Boolean;
+Var Lin: LongInt;
+Begin
+ Lin := (LongInt(Seg) Shl 4) + Ofs;
+ Emu_VidIsVidAddr := False;
+ If (Lin >= $A0000) And (Lin < $B0000) Then Begin
+  Plane0Ofs := Lin - $A0000;          { 0..$FFFF dans plan 0 }
+  Emu_VidIsVidAddr := EmuVideo.IsGraphic Or (EmuVideo.Mode = 7);
+  Exit;
+ End;
+ If (Lin >= $B8000) And (Lin < $C0000) Then Begin
+  Plane0Ofs := Lin - $B8000 + $20000; { plage 'CGA' separee }
+  Emu_VidIsVidAddr := True;
+  Exit;
+ End;
+ If (Lin >= $B0000) And (Lin < $B8000) Then Begin
+  Plane0Ofs := Lin - $B0000 + $30000; { plage 'MDA/Hercules' }
+  Emu_VidIsVidAddr := True;
+  Exit;
+ End;
+End;
+
+{ --- Lire un octet depuis la VRAM unifiee (mode read 0 ou 1).
+      MemAddr est l offset 0..$FFFF dans le plan 0 quand IsPlanar.
+      Met a jour les 4 latches (read mode 0).                   --- }
+Function Emu_VidReadByte(MemOfs: LongInt): Byte;
+Var I, ReadPlane, ReadMode: Byte;
+    V, Match, NotCare: Byte;
+Begin
+ Emu_VidReadByte := 0;
+ If Not EmuVideo.MemReady Then Exit;
+ { Plages CGA et MDA = lineaires simples }
+ If (MemOfs >= $20000) And (MemOfs < $40000) Then Begin
+  Emu_VidReadByte := EmuVideo.Mem^[MemOfs];
+  Exit;
+ End;
+ If MemOfs < 0 Then Exit;
+ If MemOfs >= $10000 Then Exit;
+ If EmuVideo.IsPlanar Then Begin
+  { Charger les 4 latches a chaque lecture }
+  For I := 0 To 3 Do
+   EmuVideo.Latch[I] := EmuVideo.Mem^[I * $10000 + MemOfs];
+  ReadMode := (EmuVideo.GCReg[5] Shr 3) And 1;
+  ReadPlane := EmuVideo.GCReg[4] And 3;
+  If ReadMode = 0 Then
+   Emu_VidReadByte := EmuVideo.Latch[ReadPlane]
+  Else Begin
+   { Read mode 1 : color compare }
+   V := $FF;
+   Match := EmuVideo.GCReg[2] And $0F;
+   NotCare := EmuVideo.GCReg[7] And $0F;
+   For I := 0 To 3 Do Begin
+    If (NotCare And (1 Shl I)) <> 0 Then Continue;
+    If (Match And (1 Shl I)) <> 0 Then
+     V := V And EmuVideo.Latch[I]
+    Else
+     V := V And (Not EmuVideo.Latch[I]);
+   End;
+   Emu_VidReadByte := V;
+  End;
+ End Else If EmuVideo.ChainFour Then Begin
+  { Mode 13h : chain-4 sur plan 0..3 entrelace }
+  Emu_VidReadByte := EmuVideo.Mem^[(MemOfs And $FFFC) +
+                                    ((MemOfs And 3) * $10000) Shr 2];
+  { Implementation simple : on stocke lineaire dans plan 0 }
+  Emu_VidReadByte := EmuVideo.Mem^[MemOfs];
+ End Else Begin
+  Emu_VidReadByte := EmuVideo.Mem^[MemOfs];
+ End;
+End;
+
+{ --- Operation logique GC : V op Latch (rotation deja appliquee). --- }
+Function Emu_VidLogicOp(Op: Byte; V, L: Byte): Byte;
+Begin
+ Case Op And 3 Of
+  0: Emu_VidLogicOp := V;
+  1: Emu_VidLogicOp := V And L;
+  2: Emu_VidLogicOp := V Or L;
+  3: Emu_VidLogicOp := V Xor L;
+ End;
+End;
+
+{ --- Ecrire un octet dans la VRAM unifiee (write modes 0/1/2/3). --- }
+Procedure Emu_VidWriteByte(MemOfs: LongInt; Value: Byte);
+Var WriteMode, Plane, PlaneMask, Rot, BitMask: Byte;
+    SetReset, EnableSR, LogicOp: Byte;
+    I, NewVal, Src: Byte;
+Begin
+ If Not EmuVideo.MemReady Then Exit;
+ If (MemOfs >= $20000) And (MemOfs < $40000) Then Begin
+  EmuVideo.Mem^[MemOfs] := Value;
+  EmuVideo.GfxDirty := True;
+  Exit;
+ End;
+ If MemOfs < 0 Then Exit;
+ If MemOfs >= $10000 Then Exit;
+ If Not EmuVideo.IsPlanar Then Begin
+  { Mode lineaire (mode 13h ou non-graphique) }
+  EmuVideo.Mem^[MemOfs] := Value;
+  EmuVideo.GfxDirty := True;
+  Exit;
+ End;
+ { --- Ecriture planar EGA/VGA --- }
+ WriteMode := EmuVideo.GCReg[5] And 3;
+ PlaneMask := EmuVideo.SeqReg[2] And $0F;
+ Rot := EmuVideo.GCReg[3] And 7;
+ LogicOp := (EmuVideo.GCReg[3] Shr 3) And 3;
+ BitMask := EmuVideo.GCReg[8];
+ SetReset := EmuVideo.GCReg[0] And $0F;
+ EnableSR := EmuVideo.GCReg[1] And $0F;
+ { Rotation a droite }
+ If Rot <> 0 Then
+  Value := ((Value Shr Rot) Or (Value Shl (8 - Rot))) And $FF;
+ Case WriteMode Of
+  0: Begin
+   For Plane := 0 To 3 Do Begin
+    If (PlaneMask And (1 Shl Plane)) = 0 Then Continue;
+    If (EnableSR And (1 Shl Plane)) <> 0 Then Begin
+     If (SetReset And (1 Shl Plane)) <> 0 Then Src := $FF
+     Else Src := 0;
+    End Else Src := Value;
+    Src := Emu_VidLogicOp(LogicOp, Src, EmuVideo.Latch[Plane]);
+    NewVal := (Src And BitMask) Or (EmuVideo.Latch[Plane] And (Not BitMask));
+    EmuVideo.Mem^[Plane * $10000 + MemOfs] := NewVal;
+   End;
+  End;
+  1: Begin
+   { Recopie des latches, ignore Value }
+   For Plane := 0 To 3 Do Begin
+    If (PlaneMask And (1 Shl Plane)) = 0 Then Continue;
+    EmuVideo.Mem^[Plane * $10000 + MemOfs] := EmuVideo.Latch[Plane];
+   End;
+  End;
+  2: Begin
+   For Plane := 0 To 3 Do Begin
+    If (PlaneMask And (1 Shl Plane)) = 0 Then Continue;
+    If (Value And (1 Shl Plane)) <> 0 Then Src := $FF
+    Else Src := 0;
+    Src := Emu_VidLogicOp(LogicOp, Src, EmuVideo.Latch[Plane]);
+    NewVal := (Src And BitMask) Or (EmuVideo.Latch[Plane] And (Not BitMask));
+    EmuVideo.Mem^[Plane * $10000 + MemOfs] := NewVal;
+   End;
+  End;
+  3: Begin
+   { Bit mask AND avec Value, set/reset utilise comme valeur }
+   For Plane := 0 To 3 Do Begin
+    If (PlaneMask And (1 Shl Plane)) = 0 Then Continue;
+    If (SetReset And (1 Shl Plane)) <> 0 Then Src := $FF
+    Else Src := 0;
+    NewVal := (Src And (Value And BitMask)) Or
+              (EmuVideo.Latch[Plane] And (Not (Value And BitMask)));
+    EmuVideo.Mem^[Plane * $10000 + MemOfs] := NewVal;
+   End;
+  End;
+ End;
+ EmuVideo.GfxDirty := True;
+End;
+
+{ --- Set/Get pixel d apres le mode video courant. --- }
+Procedure Emu_VidSetPixel(X, Y: Integer; Color: Byte);
+Var Lin: LongInt;
+    Plane, BitPos, Mask: Byte;
+    OldByte: Byte;
+    I: Byte;
+    BankOfs: LongInt;
+Begin
+ If Not EmuVideo.MemReady Then Exit;
+ If Not EmuVideo.IsGraphic Then Exit;
+ If (X < 0) Or (Y < 0) Or
+    (X >= EmuVideo.Width) Or (Y >= EmuVideo.Height) Then Exit;
+ Case EmuVideo.Mode Of
+  $04, $05: Begin
+   { CGA 320x200x4 : 2 bits par pixel, 80 octets par ligne,
+     banque paire = lignes paires a $B8000, impaire a $BA000 }
+   If (Y And 1) = 0 Then BankOfs := $20000
+   Else BankOfs := $20000 + $2000;
+   Lin := BankOfs + (Y Shr 1) * 80 + (X Shr 2);
+   BitPos := (3 - (X And 3)) * 2;
+   OldByte := EmuVideo.Mem^[Lin];
+   Mask := 3 Shl BitPos;
+   OldByte := (OldByte And (Not Mask)) Or ((Color And 3) Shl BitPos);
+   EmuVideo.Mem^[Lin] := OldByte;
+  End;
+  $06: Begin
+   { CGA 640x200x2 : 1 bit par pixel, 80 octets par ligne }
+   If (Y And 1) = 0 Then BankOfs := $20000
+   Else BankOfs := $20000 + $2000;
+   Lin := BankOfs + (Y Shr 1) * 80 + (X Shr 3);
+   BitPos := 7 - (X And 7);
+   Mask := 1 Shl BitPos;
+   OldByte := EmuVideo.Mem^[Lin];
+   If (Color And 1) <> 0 Then OldByte := OldByte Or Mask
+   Else OldByte := OldByte And (Not Mask);
+   EmuVideo.Mem^[Lin] := OldByte;
+  End;
+  $0D, $0E, $10, $12: Begin
+   { EGA/VGA planar 16 couleurs - une ecriture par plan }
+   Lin := Y * (EmuVideo.Width Shr 3) + (X Shr 3);
+   BitPos := 7 - (X And 7);
+   Mask := 1 Shl BitPos;
+   For Plane := 0 To 3 Do Begin
+    OldByte := EmuVideo.Mem^[Plane * $10000 + Lin];
+    If (Color And (1 Shl Plane)) <> 0 Then
+     OldByte := OldByte Or Mask
+    Else
+     OldByte := OldByte And (Not Mask);
+    EmuVideo.Mem^[Plane * $10000 + Lin] := OldByte;
+   End;
+  End;
+  $13: Begin
+   { VGA 320x200x256 : 1 octet par pixel, lineaire }
+   Lin := Y * 320 + X;
+   If Lin < $10000 Then
+    EmuVideo.Mem^[Lin] := Color;
+  End;
+ End;
+ EmuVideo.GfxDirty := True;
+End;
+
+Function Emu_VidGetPixel(X, Y: Integer): Byte;
+Var Lin: LongInt;
+    Plane, BitPos: Byte;
+    Color: Byte;
+    BankOfs: LongInt;
+Begin
+ Emu_VidGetPixel := 0;
+ If Not EmuVideo.MemReady Then Exit;
+ If Not EmuVideo.IsGraphic Then Exit;
+ If (X < 0) Or (Y < 0) Or
+    (X >= EmuVideo.Width) Or (Y >= EmuVideo.Height) Then Exit;
+ Case EmuVideo.Mode Of
+  $04, $05: Begin
+   If (Y And 1) = 0 Then BankOfs := $20000
+   Else BankOfs := $20000 + $2000;
+   Lin := BankOfs + (Y Shr 1) * 80 + (X Shr 2);
+   BitPos := (3 - (X And 3)) * 2;
+   Emu_VidGetPixel := (EmuVideo.Mem^[Lin] Shr BitPos) And 3;
+  End;
+  $06: Begin
+   If (Y And 1) = 0 Then BankOfs := $20000
+   Else BankOfs := $20000 + $2000;
+   Lin := BankOfs + (Y Shr 1) * 80 + (X Shr 3);
+   BitPos := 7 - (X And 7);
+   Emu_VidGetPixel := (EmuVideo.Mem^[Lin] Shr BitPos) And 1;
+  End;
+  $0D, $0E, $10, $12: Begin
+   Lin := Y * (EmuVideo.Width Shr 3) + (X Shr 3);
+   BitPos := 7 - (X And 7);
+   Color := 0;
+   For Plane := 0 To 3 Do Begin
+    If ((EmuVideo.Mem^[Plane * $10000 + Lin] Shr BitPos) And 1) <> 0 Then
+     Color := Color Or (1 Shl Plane);
+   End;
+   Emu_VidGetPixel := Color;
+  End;
+  $13: Begin
+   Lin := Y * 320 + X;
+   If Lin < $10000 Then
+    Emu_VidGetPixel := EmuVideo.Mem^[Lin];
+  End;
+ End;
+End;
+
+{ --- Definir le mode video courant --- }
+Procedure Emu_VidSetMode(NewMode: Byte; Var P: TEmulatorPanel);
+Begin
+ If Not EmuVideo.MemReady Then Emu_VidInit;
+ EmuVideo.Mode := NewMode And $7F;
+ { Reinitialiser registres de base }
+ EmuVideo.IsGraphic := False;
+ EmuVideo.IsPlanar := False;
+ EmuVideo.ChainFour := False;
+ EmuVideo.BitsPerPix := 0;
+ EmuVideo.GfxDirty := True;
+ Case EmuVideo.Mode Of
+  $00, $01: Begin { texte 40x25 16 couleurs }
+   EmuVideo.TextCols := 40; EmuVideo.TextRows := 25;
+   EmuVideo.Width := 320; EmuVideo.Height := 200;
+   P.Cols := 40; P.Rows := 25;
+  End;
+  $02, $03: Begin { texte 80x25 16 couleurs }
+   EmuVideo.TextCols := 80; EmuVideo.TextRows := 25;
+   EmuVideo.Width := 720; EmuVideo.Height := 400;
+   P.Cols := 80; P.Rows := 25;
+  End;
+  $04, $05: Begin { CGA 320x200x4 }
+   EmuVideo.IsGraphic := True; EmuVideo.BitsPerPix := 2;
+   EmuVideo.Width := 320; EmuVideo.Height := 200;
+  End;
+  $06: Begin { CGA 640x200x2 }
+   EmuVideo.IsGraphic := True; EmuVideo.BitsPerPix := 1;
+   EmuVideo.Width := 640; EmuVideo.Height := 200;
+  End;
+  $07: Begin { MDA 80x25 monochrome }
+   EmuVideo.TextCols := 80; EmuVideo.TextRows := 25;
+   EmuVideo.Width := 720; EmuVideo.Height := 350;
+   P.Cols := 80; P.Rows := 25;
+  End;
+  $0D: Begin { EGA 320x200x16 planar }
+   EmuVideo.IsGraphic := True; EmuVideo.IsPlanar := True;
+   EmuVideo.BitsPerPix := 4;
+   EmuVideo.Width := 320; EmuVideo.Height := 200;
+  End;
+  $0E: Begin { EGA 640x200x16 planar }
+   EmuVideo.IsGraphic := True; EmuVideo.IsPlanar := True;
+   EmuVideo.BitsPerPix := 4;
+   EmuVideo.Width := 640; EmuVideo.Height := 200;
+  End;
+  $0F: Begin { EGA 640x350 mono planar }
+   EmuVideo.IsGraphic := True; EmuVideo.IsPlanar := True;
+   EmuVideo.BitsPerPix := 1;
+   EmuVideo.Width := 640; EmuVideo.Height := 350;
+  End;
+  $10: Begin { EGA 640x350x16 planar }
+   EmuVideo.IsGraphic := True; EmuVideo.IsPlanar := True;
+   EmuVideo.BitsPerPix := 4;
+   EmuVideo.Width := 640; EmuVideo.Height := 350;
+  End;
+  $11: Begin { VGA 640x480x2 planar }
+   EmuVideo.IsGraphic := True; EmuVideo.IsPlanar := True;
+   EmuVideo.BitsPerPix := 1;
+   EmuVideo.Width := 640; EmuVideo.Height := 480;
+  End;
+  $12: Begin { VGA 640x480x16 planar }
+   EmuVideo.IsGraphic := True; EmuVideo.IsPlanar := True;
+   EmuVideo.BitsPerPix := 4;
+   EmuVideo.Width := 640; EmuVideo.Height := 480;
+  End;
+  $13: Begin { VGA 320x200x256 chain-4 }
+   EmuVideo.IsGraphic := True; EmuVideo.ChainFour := True;
+   EmuVideo.BitsPerPix := 8;
+   EmuVideo.Width := 320; EmuVideo.Height := 200;
+  End;
+ Else
+  EmuVideo.TextCols := 80; EmuVideo.TextRows := 25;
+  EmuVideo.Width := 720; EmuVideo.Height := 400;
+ End;
+ { Effacer la memoire video sur changement de mode (sauf bit 7 = no clear) }
+ If (NewMode And $80) = 0 Then Begin
+  FillChar(EmuVideo.Mem^, SizeOf(EmuVideo.Mem^), 0);
+  { Effacer aussi la VRAM texte si on revient en mode texte }
+  If Not EmuVideo.IsGraphic Then EmuVScr_Clear(P);
+ End;
+End;
+
+{ --- Acces aux ports I/O video --- }
+Function Emu_VidPortRead(Port: Word): Byte;
+Var V: Byte;
+Begin
+ Emu_VidPortRead := 0;
+ Case Port Of
+  $3C0: Emu_VidPortRead := EmuVideo.ACIdx;
+  $3C1: If EmuVideo.ACIdx < 32 Then Emu_VidPortRead := EmuVideo.ACReg[EmuVideo.ACIdx];
+  $3C4: Emu_VidPortRead := EmuVideo.SeqIdx;
+  $3C5: If EmuVideo.SeqIdx < 8 Then Emu_VidPortRead := EmuVideo.SeqReg[EmuVideo.SeqIdx];
+  $3C6: Emu_VidPortRead := EmuVideo.DACMask;
+  $3C7: Emu_VidPortRead := EmuVideo.DACState;
+  $3C8: Emu_VidPortRead := EmuVideo.DACWriteIdx Div 3;
+  $3C9: Begin
+   V := EmuVideo.DAC[EmuVideo.DACReadIdx];
+   EmuVideo.DACReadIdx := (EmuVideo.DACReadIdx + 1) Mod 768;
+   Emu_VidPortRead := V;
+  End;
+  $3CC: Emu_VidPortRead := $C7; { Misc Output : couleur, 480, sync }
+  $3CE: Emu_VidPortRead := EmuVideo.GCIdx;
+  $3CF: If EmuVideo.GCIdx < 16 Then Emu_VidPortRead := EmuVideo.GCReg[EmuVideo.GCIdx];
+  $3D4, $3B4: Emu_VidPortRead := EmuVideo.CRTCIdx;
+  $3D5, $3B5:
+   If EmuVideo.CRTCIdx < 32 Then
+    Emu_VidPortRead := EmuVideo.CRTCReg[EmuVideo.CRTCIdx];
+  $3D8: Emu_VidPortRead := EmuVideo.CGAMode;
+  $3D9: Emu_VidPortRead := EmuVideo.CGAColor;
+  $3BA, $3DA: Begin
+   { Status register : alterner pour simuler un retrace.
+     Tous les programmes regardent ces bits pour synchroniser. }
+   EmuVideo.ACFlipFlop := False;  { reset l'AC flip-flop sur lecture }
+   EmuVideo.StatusRetrace := EmuVideo.StatusRetrace Xor 9;
+   Emu_VidPortRead := EmuVideo.StatusRetrace Or $06;
+  End;
+ End;
+End;
+
+Procedure Emu_VidPortWrite(Port: Word; Value: Byte);
+Begin
+ Case Port Of
+  $3C0: Begin
+   { AC : flip-flop alterne entre index et data }
+   If Not EmuVideo.ACFlipFlop Then
+    EmuVideo.ACIdx := Value And $1F
+   Else If EmuVideo.ACIdx < 32 Then
+    EmuVideo.ACReg[EmuVideo.ACIdx] := Value;
+   EmuVideo.ACFlipFlop := Not EmuVideo.ACFlipFlop;
+  End;
+  $3C2: ; { Misc Output, ignore }
+  $3C4: EmuVideo.SeqIdx := Value And 7;
+  $3C5: If EmuVideo.SeqIdx < 8 Then EmuVideo.SeqReg[EmuVideo.SeqIdx] := Value;
+  $3C6: EmuVideo.DACMask := Value;
+  $3C7: Begin
+   EmuVideo.DACReadIdx := (Value And $FF) * 3;
+   EmuVideo.DACState := 3;
+  End;
+  $3C8: Begin
+   EmuVideo.DACWriteIdx := (Value And $FF) * 3;
+   EmuVideo.DACState := 0;
+  End;
+  $3C9: Begin
+   EmuVideo.DAC[EmuVideo.DACWriteIdx] := Value And $3F;
+   EmuVideo.DACWriteIdx := (EmuVideo.DACWriteIdx + 1) Mod 768;
+  End;
+  $3CE: EmuVideo.GCIdx := Value And $0F;
+  $3CF: If EmuVideo.GCIdx < 16 Then EmuVideo.GCReg[EmuVideo.GCIdx] := Value;
+  $3D4, $3B4: EmuVideo.CRTCIdx := Value And $1F;
+  $3D5, $3B5:
+   If EmuVideo.CRTCIdx < 32 Then
+    EmuVideo.CRTCReg[EmuVideo.CRTCIdx] := Value;
+  $3D8: EmuVideo.CGAMode := Value;
+  $3D9: EmuVideo.CGAColor := Value;
+ End;
+End;
+
+{ --- Forward / dispatcher I/O global pour IN AL,DX et OUT DX,AL.
+      Les ports non gerés retournent 0. --- }
+Function Emu_PortRead(Var P: TEmulatorPanel; Port: Word): Byte;
+Begin
+ Emu_PortRead := 0;
+ Case Port Of
+  $40, $41, $42: Begin
+   { PIT 8253 - lecture de compteur. Retourne un compteur libre. }
+   Inc(EmuTickCounter);
+   Emu_PortRead := Byte(EmuTickCounter);
+  End;
+  $43: Emu_PortRead := 0;
+  $60: Emu_PortRead := P.CPU.NextRawKey;
+  $61: Emu_PortRead := EmuVideo.StatusRetrace Xor $30;
+  $70, $71: Emu_PortRead := 0;
+  $3B4..$3DF: Emu_PortRead := Emu_VidPortRead(Port);
+ End;
+End;
+
+Procedure Emu_PortWrite(Var P: TEmulatorPanel; Port: Word; Value: Byte);
+Begin
+ Case Port Of
+  $3B4..$3DF: Emu_VidPortWrite(Port, Value);
+ End;
+End;
+
 { --- INT 10h : services video (BIOS) --- }
+
+{ ============================================================
+  INT 10h : services video BIOS.
+  Implementation complete couvrant CGA/EGA/VGA en mode texte.
+  Mode graphique non emulé - DEV-COOLS travaille uniquement en
+  texte 80x25 ; les fonctions graphiques sont stubbed.
+  ============================================================ }
+
+{ Defilement / effacement d un rectangle de la VRAM.
+  AL = nb de lignes (0 = clear toute la fenetre).
+  Top, Left, Bot, Right = coordonnees inclusives.
+  Attr = attribut de remplissage (FG bas, BG haut).
+  Up = True = scroll vers haut (AH=06), False = vers bas (AH=07). }
+Procedure Emu_VideoScrollRect(Var P: TEmulatorPanel;
+                              AL, Top, Left, Bot, Right, Attr: Byte;
+                              Up: Boolean);
+Var
+ X, Y, N: Integer;
+ BlankCh: Char;
+Begin
+ If Top > 24 Then Top := 24;
+ If Bot > 24 Then Bot := 24;
+ If Left > 79 Then Left := 79;
+ If Right > 79 Then Right := 79;
+ If Top > Bot Then Exit;
+ If Left > Right Then Exit;
+ N := AL;
+ BlankCh := ' ';
+ If (N = 0) Or (N > Bot - Top + 1) Then Begin
+  { Effacer tout le rectangle. }
+  For Y := Top To Bot Do
+   For X := Left To Right Do Begin
+    P.VRAM[Y, X].Ch := BlankCh;
+    P.VRAM[Y, X].Fg := Attr And $0F;
+    P.VRAM[Y, X].Bg := (Attr Shr 4) And $07;
+   End;
+  P.NeedRepaint := True;
+  Exit;
+ End;
+ If Up Then Begin
+  { Lignes [Top+N..Bot] -> [Top..Bot-N], puis blanchir [Bot-N+1..Bot]. }
+  For Y := Top To Bot - N Do
+   For X := Left To Right Do
+    P.VRAM[Y, X] := P.VRAM[Y + N, X];
+  For Y := Bot - N + 1 To Bot Do
+   For X := Left To Right Do Begin
+    P.VRAM[Y, X].Ch := BlankCh;
+    P.VRAM[Y, X].Fg := Attr And $0F;
+    P.VRAM[Y, X].Bg := (Attr Shr 4) And $07;
+   End;
+ End Else Begin
+  { Lignes [Top..Bot-N] -> [Top+N..Bot], blanchir [Top..Top+N-1]. }
+  For Y := Bot DownTo Top + N Do
+   For X := Left To Right Do
+    P.VRAM[Y, X] := P.VRAM[Y - N, X];
+  For Y := Top To Top + N - 1 Do
+   For X := Left To Right Do Begin
+    P.VRAM[Y, X].Ch := BlankCh;
+    P.VRAM[Y, X].Fg := Attr And $0F;
+    P.VRAM[Y, X].Bg := (Attr Shr 4) And $07;
+   End;
+ End;
+ P.NeedRepaint := True;
+End;
 
 Procedure Emu_DoInt10(Var P: TEmulatorPanel);
 Var
  I: Integer;
  B: Byte;
+ Mode: Byte;
 Begin
  Case P.CPU.Regs.AH Of
-  $00: { Mode video : on simule mode 3 (80x25 couleur) }
+  $00:
+   { Set video mode. AL = mode. On enregistre dans 0040:0049 et
+     on efface l ecran si mode texte. Bit 7 d AL = ne pas effacer. }
    Begin
-    EmuVScr_Clear(P);
+    Mode := P.CPU.Regs.AL And $7F;
+    Emu_VidSetMode(P.CPU.Regs.AL, P);
+    Emu_WriteByte(P.CPU, $40, $49, Mode);
+    Emu_WriteWord(P.CPU, $40, $4A, EmuVideo.TextCols);
+    Emu_WriteWord(P.CPU, $40, $4C,
+      LongInt(EmuVideo.TextCols) * EmuVideo.TextRows * 2);
+    Emu_WriteWord(P.CPU, $40, $4E, 0);
+    Emu_WriteByte(P.CPU, $40, $84, EmuVideo.TextRows - 1);
+    Emu_WriteByte(P.CPU, $40, $85, 16);
    End;
-  $02: { Positionner curseur DH=row, DL=col }
+  $01:
+   { Set cursor type. CH=start scan (bit 5 = hide), CL=end scan. }
+   Begin
+    Emu_WriteByte(P.CPU, $40, $60, P.CPU.Regs.CL);
+    Emu_WriteByte(P.CPU, $40, $61, P.CPU.Regs.CH);
+    P.CursorOn := (P.CPU.Regs.CH And $20) = 0;
+   End;
+  $02:
+   { Set cursor pos. BH=page, DH=row, DL=col. }
    EmuVScr_GotoXY(P, P.CPU.Regs.DL, P.CPU.Regs.DH);
-  $03: { Lire position curseur }
+  $03:
+   { Get cursor pos+type. CH:CL = scan lines, DH:DL = row:col. }
    Begin
     P.CPU.Regs.DL := P.CursorX;
     P.CPU.Regs.DH := P.CursorY;
-    P.CPU.Regs.CX := $0607;     { taille du curseur }
+    P.CPU.Regs.CL := Emu_ReadByte(P.CPU, $40, $60);
+    P.CPU.Regs.CH := Emu_ReadByte(P.CPU, $40, $61);
+    If (P.CPU.Regs.CL = 0) And (P.CPU.Regs.CH = 0) Then
+     P.CPU.Regs.CX := $0607;
    End;
-  $06, $07: { Defilement fenetre - implementation simple }
+  $04:
+   { Read light pen. Pas de stylo : AH=0. }
+   P.CPU.Regs.AH := 0;
+  $05:
+   { Set active page. On ignore (page 0 unique). }
+   Emu_WriteByte(P.CPU, $40, $62, P.CPU.Regs.AL);
+  $06:
+   { Scroll up. AL=lignes, BH=attr, CH/CL=top-left, DH/DL=bot-right. }
+   Emu_VideoScrollRect(P, P.CPU.Regs.AL, P.CPU.Regs.CH,
+     P.CPU.Regs.CL, P.CPU.Regs.DH, P.CPU.Regs.DL, P.CPU.Regs.BH, True);
+  $07:
+   { Scroll down. Memes parametres. }
+   Emu_VideoScrollRect(P, P.CPU.Regs.AL, P.CPU.Regs.CH,
+     P.CPU.Regs.CL, P.CPU.Regs.DH, P.CPU.Regs.DL, P.CPU.Regs.BH, False);
+  $08:
+   { Read char & attr at cursor. AL=char, AH=attr. }
    Begin
-    For I := 0 To P.CPU.Regs.AL Do
-     EmuVScr_Scroll(P);
-    If P.CPU.Regs.AL = 0 Then
-     EmuVScr_Clear(P);
+    If (P.CursorY <= 24) And (P.CursorX <= 79) Then Begin
+     P.CPU.Regs.AL := Byte(P.VRAM[P.CursorY, P.CursorX].Ch);
+     P.CPU.Regs.AH := (P.VRAM[P.CursorY, P.CursorX].Fg And $0F) Or
+                      ((P.VRAM[P.CursorY, P.CursorX].Bg And $07) Shl 4);
+    End Else Begin
+     P.CPU.Regs.AL := 32;
+     P.CPU.Regs.AH := $07;
+    End;
    End;
-  $09, $0A: { Ecrire char + attribut a la position curseur, CX fois }
+  $09:
+   { Write char+attr at cursor, CX fois (sans avancer le curseur). }
    Begin
-    P.CurFg := P.CPU.Regs.BL And $F;
-    P.CurBg := (P.CPU.Regs.BL Shr 4) And $7;
-    For I := 1 To P.CPU.Regs.CX Do
-     EmuVScr_PutChar(P, Chr(P.CPU.Regs.AL));
+    For I := 0 To P.CPU.Regs.CX - 1 Do Begin
+     If (P.CursorX + I) <= 79 Then Begin
+      P.VRAM[P.CursorY, P.CursorX + I].Ch := Chr(P.CPU.Regs.AL);
+      P.VRAM[P.CursorY, P.CursorX + I].Fg := P.CPU.Regs.BL And $0F;
+      P.VRAM[P.CursorY, P.CursorX + I].Bg := (P.CPU.Regs.BL Shr 4) And $07;
+     End;
+    End;
+    P.NeedRepaint := True;
    End;
-  $0E: { TTY write char (color en BL) }
+  $0A:
+   { Write char only at cursor, CX fois. }
    Begin
-    P.CurFg := P.CPU.Regs.BL And $F;
+    For I := 0 To P.CPU.Regs.CX - 1 Do
+     If (P.CursorX + I) <= 79 Then
+      P.VRAM[P.CursorY, P.CursorX + I].Ch := Chr(P.CPU.Regs.AL);
+    P.NeedRepaint := True;
+   End;
+  $0B:
+   { Set palette / border color. BH=0 set border (CGA), BH=1 set palette.
+     On peut stocker dans CGAColor : bits 0..3 border, bit 5 = palette. }
+   Begin
+    If P.CPU.Regs.BH = 0 Then
+     EmuVideo.CGAColor := (EmuVideo.CGAColor And $E0) Or (P.CPU.Regs.BL And $1F)
+    Else If P.CPU.Regs.BH = 1 Then Begin
+     EmuVideo.CGAColor := EmuVideo.CGAColor And $DF;
+     If (P.CPU.Regs.BL And 1) <> 0 Then
+      EmuVideo.CGAColor := EmuVideo.CGAColor Or $20;
+    End;
+   End;
+  $0C:
+   { Write graphics pixel. AL=color, CX=col, DX=row.
+     Bit 7 d AL = XOR avec pixel existant. }
+   Begin
+    If (P.CPU.Regs.AL And $80) <> 0 Then
+     Emu_VidSetPixel(P.CPU.Regs.CX, P.CPU.Regs.DX,
+       Emu_VidGetPixel(P.CPU.Regs.CX, P.CPU.Regs.DX) Xor (P.CPU.Regs.AL And $7F))
+    Else
+     Emu_VidSetPixel(P.CPU.Regs.CX, P.CPU.Regs.DX, P.CPU.Regs.AL);
+   End;
+  $0D:
+   { Read graphics pixel. CX=col, DX=row, retourne AL. }
+   P.CPU.Regs.AL := Emu_VidGetPixel(P.CPU.Regs.CX, P.CPU.Regs.DX);
+  $0E:
+   { TTY write char. AL=char, BL=color (mode graph seulement). }
+   Begin
+    P.CurFg := P.CPU.Regs.BL And $0F;
     EmuVScr_PutChar(P, Chr(P.CPU.Regs.AL));
    End;
-  $0F: { Lire mode video courant }
+  $0F:
+   { Get current video mode. AL=mode, AH=cols, BH=page. }
    Begin
-    P.CPU.Regs.AL := 3;        { mode 3 = texte 80x25 16 couleurs }
-    P.CPU.Regs.AH := 80;       { nb colonnes }
-    P.CPU.Regs.BH := 0;        { page courante }
+    P.CPU.Regs.AL := Emu_ReadByte(P.CPU, $40, $49);
+    If P.CPU.Regs.AL = 0 Then P.CPU.Regs.AL := 3;
+    P.CPU.Regs.AH := 80;
+    P.CPU.Regs.BH := Emu_ReadByte(P.CPU, $40, $62);
    End;
-  $01:
-   { AH=01 : set cursor type (CH=start scan, CL=end). On ignore. }
-   ;
-  $05:
-   { AH=05 : set active page. On ignore (page 0 unique). }
-   ;
-  $08:
+  $10:
+   { Set palette registers. Sous-fonctions diverses, on les ignore
+     toutes (la palette EGA/VGA n est pas emulee en mode texte). }
    Begin
-    { AH=08 : read char & attr at cursor. AL=char, AH=attr. }
-    P.CPU.Regs.AL := 32;       { espace par defaut }
-    P.CPU.Regs.AH := $07;
+    Case P.CPU.Regs.AL Of
+     $00: { Set EGA palette register : BL=index, BH=value }
+       If P.CPU.Regs.BL < 32 Then
+        EmuVideo.ACReg[P.CPU.Regs.BL] := P.CPU.Regs.BH;
+     $01: EmuVideo.ACReg[$11] := P.CPU.Regs.BH;  { set border color }
+     $02: { Set all 16 palette + border : ES:DX = 17 octets }
+      Begin
+       For I := 0 To 16 Do
+        EmuVideo.ACReg[I] := Emu_ReadByte(P.CPU, P.CPU.Segs.ES,
+                                          P.CPU.Regs.DX + I);
+      End;
+     $03: { Toggle intensity / blink bit }
+       If (P.CPU.Regs.BL And 1) <> 0 Then
+        EmuVideo.ACReg[$10] := EmuVideo.ACReg[$10] Or $08
+       Else
+        EmuVideo.ACReg[$10] := EmuVideo.ACReg[$10] And $F7;
+     $07: { Read EGA palette register : BL = index, retour BH=value }
+       If P.CPU.Regs.BL < 32 Then
+        P.CPU.Regs.BH := EmuVideo.ACReg[P.CPU.Regs.BL];
+     $08: P.CPU.Regs.BH := EmuVideo.ACReg[$11];  { read border }
+     $09: { Read all palette : ES:DX = 17 octets }
+      Begin
+       For I := 0 To 16 Do
+        Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DX + I,
+                      EmuVideo.ACReg[I]);
+      End;
+     $10: Begin   { Set DAC entry : BX=index, DH=R, CH=G, CL=B }
+       If P.CPU.Regs.BX < 256 Then Begin
+        EmuVideo.DAC[P.CPU.Regs.BX * 3 + 0] := P.CPU.Regs.DH And $3F;
+        EmuVideo.DAC[P.CPU.Regs.BX * 3 + 1] := P.CPU.Regs.CH And $3F;
+        EmuVideo.DAC[P.CPU.Regs.BX * 3 + 2] := P.CPU.Regs.CL And $3F;
+        EmuVideo.GfxDirty := True;
+       End;
+      End;
+     $12: Begin   { Set DAC block : BX=start, CX=count, ES:DX=triplets }
+       For I := 0 To P.CPU.Regs.CX - 1 Do
+        If (P.CPU.Regs.BX + I) < 256 Then Begin
+         EmuVideo.DAC[(P.CPU.Regs.BX + I) * 3 + 0] :=
+           Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DX + I*3) And $3F;
+         EmuVideo.DAC[(P.CPU.Regs.BX + I) * 3 + 1] :=
+           Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DX + I*3 + 1) And $3F;
+         EmuVideo.DAC[(P.CPU.Regs.BX + I) * 3 + 2] :=
+           Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DX + I*3 + 2) And $3F;
+        End;
+       EmuVideo.GfxDirty := True;
+      End;
+     $15: Begin   { Read DAC entry : BX=index, retour DH=R, CH=G, CL=B }
+       If P.CPU.Regs.BX < 256 Then Begin
+        P.CPU.Regs.DH := EmuVideo.DAC[P.CPU.Regs.BX * 3 + 0];
+        P.CPU.Regs.CH := EmuVideo.DAC[P.CPU.Regs.BX * 3 + 1];
+        P.CPU.Regs.CL := EmuVideo.DAC[P.CPU.Regs.BX * 3 + 2];
+       End;
+      End;
+     $17: Begin   { Read DAC block : BX=start, CX=count, ES:DX=dest }
+       For I := 0 To P.CPU.Regs.CX - 1 Do
+        If (P.CPU.Regs.BX + I) < 256 Then Begin
+         Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DX + I*3,
+           EmuVideo.DAC[(P.CPU.Regs.BX + I) * 3 + 0]);
+         Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DX + I*3 + 1,
+           EmuVideo.DAC[(P.CPU.Regs.BX + I) * 3 + 1]);
+         Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DX + I*3 + 2,
+           EmuVideo.DAC[(P.CPU.Regs.BX + I) * 3 + 2]);
+        End;
+      End;
+     $1A: Begin   { Read combination : BH=color, BL=palette page }
+           P.CPU.Regs.BX := $0008;
+          End;
+    End;
    End;
   $11:
-   { AH=11h : character generator (font). On ignore. }
-   ;
-  $12:
+   { Character generator. Sous-fonctions :
+     $30 get font info -> ES:BP = adresse fonte, CX=hauteur, DL=lignes-1. }
    Begin
-    { AH=12h : video subsystem config. BL=10 -> BH=0 color, BL=2 256K. }
-    If P.CPU.Regs.BL = $10 Then Begin
-     P.CPU.Regs.BH := 0;
-     P.CPU.Regs.BL := 3;
-     P.CPU.Regs.CH := 0;
-     P.CPU.Regs.CL := 9;
+    If P.CPU.Regs.AL = $30 Then Begin
+     P.CPU.Segs.ES := $C000;
+     P.CPU.Regs.BP := 0;
+     P.CPU.Regs.CX := 16;
+     P.CPU.Regs.DL := 24;
+    End;
+   End;
+  $12:
+   { Video subsystem config. BL=10 -> EGA info. BL=20 alt PrtSc.
+     BL=30 select scan lines. BL=32 video CPU access. }
+   Begin
+    Case P.CPU.Regs.BL Of
+     $10: Begin
+           P.CPU.Regs.BH := 0;       { color }
+           P.CPU.Regs.BL := 3;       { 256K EGA }
+           P.CPU.Regs.CH := 0;       { feature bits }
+           P.CPU.Regs.CL := 9;       { switch settings }
+          End;
+     $20: ;                          { alt PrtSc : ignore }
+     $30: P.CPU.Regs.AL := $12;      { scan lines OK }
+     $32: P.CPU.Regs.AL := $12;      { CPU access toggled }
+     $33: P.CPU.Regs.AL := $12;      { gray scale }
+     $34: P.CPU.Regs.AL := $12;      { cursor emul }
+     $36: P.CPU.Regs.AL := $12;      { video screen on/off }
     End;
    End;
   $13:
+   { Write string. ES:BP=string, CX=length, DH/DL=row/col, BH=page.
+     AL bit 0 : update cursor a la fin. AL bit 1 : chars+attrs entrelaces. }
    Begin
-    { AH=13h : write string. ES:BP = string, CX = length,
-      DH/DL = row/col. AL bit 0 = update cursor. AL bit 1 = chars+attrs. }
     EmuVScr_GotoXY(P, P.CPU.Regs.DL, P.CPU.Regs.DH);
-    P.CurFg := P.CPU.Regs.BL And $F;
-    P.CurBg := (P.CPU.Regs.BL Shr 4) And $7;
+    If (P.CPU.Regs.AL And 2) = 0 Then Begin
+     P.CurFg := P.CPU.Regs.BL And $0F;
+     P.CurBg := (P.CPU.Regs.BL Shr 4) And $07;
+    End;
     For I := 0 To P.CPU.Regs.CX - 1 Do Begin
-     If (P.CPU.Regs.AL And 2) <> 0 Then
-      B := Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BP + I * 2)
-     Else
+     If (P.CPU.Regs.AL And 2) <> 0 Then Begin
+      B := Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BP + I * 2);
+      Mode := Emu_ReadByte(P.CPU, P.CPU.Segs.ES,
+                           P.CPU.Regs.BP + I * 2 + 1);
+      P.CurFg := Mode And $0F;
+      P.CurBg := (Mode Shr 4) And $07;
+     End Else
       B := Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BP + I);
      EmuVScr_PutChar(P, Chr(B));
     End;
+    If (P.CPU.Regs.AL And 1) = 0 Then
+     EmuVScr_GotoXY(P, P.CPU.Regs.DL, P.CPU.Regs.DH);
    End;
   $1A:
+   { Display combination. AL=$1A si supporte, BL=combinaison active,
+     BH=combinaison alternative. }
    Begin
-    { AH=1Ah : video display combination. AL=1Ah (code valid),
-      BL=08 (VGA color). }
     P.CPU.Regs.AL := $1A;
-    P.CPU.Regs.BL := 8;
+    P.CPU.Regs.BL := 8;     { VGA color }
     P.CPU.Regs.BH := 0;
    End;
   $1B:
-   { AH=1Bh : functionality info. On ignore. }
+   { Functionality info. ES:DI -> bloc 64 octets. }
+   Begin
+    For I := 0 To 63 Do
+     Emu_WriteByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.DI + I), 0);
+    Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 4,
+                  Emu_ReadByte(P.CPU, $40, $49));
+    Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 5, 80);
+    Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 7, 0);
+    Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + $22, 25);
+    Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + $23, 16);
+    P.CPU.Regs.AL := $1B;
+   End;
+  $1C:
+   { Save/restore video state. AL=00 query size, AL=01 save, AL=02 restore. }
+   Begin
+    P.CPU.Regs.AL := $1C;
+    P.CPU.Regs.BX := 64;
+   End;
+  $4F:
+   { VESA SuperVGA BIOS. Non supporte : retourner AH=01 (echec). }
+   P.CPU.Regs.AX := $0100;
+  $FE, $FF:
+   { Topview/DESQview. Stub. }
+   ;
+  Else
    ;
  End;
 End;
 
 { --- INT 16h : services clavier (BIOS) --- }
 
+{ ============================================================
+  INT 16h : services clavier BIOS.
+  Implementation complete couvrant clavier standard et etendu.
+  La file de touches BIOS est a 0040:001E..003D (16 mots),
+  head a 0040:001A, tail a 0040:001C. Les touches non-IBM
+  presentes uniquement dans EmuVScr sont fournies en complement.
+  ============================================================ }
 Procedure Emu_DoInt16(Var P: TEmulatorPanel);
 Var
- K: Byte;
+ KW: Word;
+ Head: Word;
 Begin
  Case P.CPU.Regs.AH Of
-  $00, $10: { Lire une touche (bloquant) }
+  $00, $10:
+   { Lire la prochaine touche (bloquant). AH=scan, AL=ASCII.
+     Retire la touche du buffer. AH=10h gere les touches etendues
+     (F11/F12, touches grises) - meme comportement chez nous. }
+   Begin
+    If Emu_BiosHasKey(P) Then
+     P.CPU.Regs.AX := Emu_BiosPopKey(P)
+    Else If EmuVScr_HasKey(P) Then Begin
+     KW := EmuVScr_PopKey(P);
+     P.CPU.Regs.AL := Byte(KW And $FF);
+     P.CPU.Regs.AH := Byte((KW Shr 8) And $FF);
+     If P.CPU.Regs.AH = 0 Then P.CPU.Regs.AH := P.CPU.Regs.AL;
+    End Else
+     { Pas de touche : retro-IP de 2 octets pour reexecuter
+       INT 16h au prochain step (l hote pompe entre les iterations). }
+     Dec(P.CPU.IP, 2);
+   End;
+  $01, $11:
+   { Tester sans bloquer ni retirer. ZF=1 si pas de touche.
+     AH=11h supporte F11/F12 (memes valeurs chez nous). }
    Begin
     If Emu_BiosHasKey(P) Then Begin
-     P.CPU.Regs.AX := Emu_BiosPopKey(P);
+     Head := Emu_ReadWord(P.CPU, $40, $1A);
+     P.CPU.Regs.AX := Emu_ReadWord(P.CPU, $40, Head);
+     Exclude(P.CPU.Flags.s, EFG_ZF);
     End Else If EmuVScr_HasKey(P) Then Begin
-     K := EmuVScr_PopKey(P);
-     P.CPU.Regs.AL := K;
-     P.CPU.Regs.AH := K;
-    End Else Begin
-     P.CPU.Regs.AL := 0;
-     P.CPU.Regs.AH := 0;
-    End;
-   End;
-  $01, $11: { Tester sans bloquer : ZF = pas de touche }
-   Begin
-    If Emu_BiosHasKey(P) Or EmuVScr_HasKey(P) Then Begin
-     If Emu_BiosHasKey(P) Then
-       P.CPU.Regs.AX := Emu_ReadWord(P.CPU, $40,
-                                     Emu_ReadWord(P.CPU, $40, $1A))
-     Else Begin
-       K := P.KeyBuf[P.KeyTail];
-       P.CPU.Regs.AL := K;
-       P.CPU.Regs.AH := K;
-     End;
+     KW := P.KeyBuf[P.KeyTail];
+     P.CPU.Regs.AL := Byte(KW And $FF);
+     P.CPU.Regs.AH := Byte((KW Shr 8) And $FF);
+     If P.CPU.Regs.AH = 0 Then P.CPU.Regs.AH := P.CPU.Regs.AL;
      Exclude(P.CPU.Flags.s, EFG_ZF);
     End Else
      Include(P.CPU.Flags.s, EFG_ZF);
    End;
-  $02: { Etat des touches modificateurs : on retourne 0 }
+  $02:
+   { Etat des touches modificatrices (lit 0040:0017). }
+   P.CPU.Regs.AL := Emu_ReadByte(P.CPU, $40, $17);
+  $03:
+   { AH=03 : set typematic rate. AL=05 = set rate (BL=delay,
+     BH=rate). On l ignore (pas de typematic dans l emul). }
+   ;
+  $05:
+   { AH=05 : keyboard write. CX = scan:ascii a inserer dans
+     le buffer BIOS. AL=00 succes, AL=01 buffer plein. }
+   Begin
+    Head := Emu_ReadWord(P.CPU, $40, $1C);  { tail }
+    KW := Head + 2;
+    If KW >= $3E Then KW := $1E;
+    If KW = Emu_ReadWord(P.CPU, $40, $1A) Then
+     P.CPU.Regs.AL := 1   { buffer plein }
+    Else Begin
+     Emu_WriteWord(P.CPU, $40, Head, P.CPU.Regs.CX);
+     Emu_WriteWord(P.CPU, $40, $1C, KW);
+     P.CPU.Regs.AL := 0;
+    End;
+   End;
+  $09:
+   { AH=09 : get keyboard functionality (PS/2). AL = bitmask. }
+   P.CPU.Regs.AL := $0F;
+  $0A:
+   { AH=0A : keyboard ID. BX = ID. $AB41 = 101-key MF II. }
+   P.CPU.Regs.BX := $AB41;
+  $12:
+   { AH=12 : extended shift status. AL = 0040:0017 (comme AH=02),
+     AH = 0040:0018 (etat etendu). }
+   Begin
+    P.CPU.Regs.AL := Emu_ReadByte(P.CPU, $40, $17);
+    P.CPU.Regs.AH := Emu_ReadByte(P.CPU, $40, $18);
+   End;
+  $55:
+   { AH=55 : AAS internal (utilise par certains drivers). Ignore. }
    P.CPU.Regs.AL := 0;
+  Else
+   { Sous-fonction non geree : succes silencieux. }
+   ;
  End;
 End;
 
@@ -23836,7 +24939,12 @@ Begin
   Emu_HostPath := S;
 End;
 
-Procedure Emu_DoInt21(Var P: TEmulatorPanel);
+(* ===== ANCIENNE IMPLEMENTATION INT 21h - DESACTIVEE =====
+   Conservee comme reference historique, neutralisee par
+   commentaire bloc FreePascal. Remplacee par Emu_DoInt21
+   propre situee plus bas dans le source.
+
+Procedure Emu_DoInt21_Legacy(Var P: TEmulatorPanel);
 Var
  I, J: Integer;
  Ofs: Word;
@@ -23941,6 +25049,18 @@ Begin
       B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I);
       EmuVScr_PutChar(P, Chr(B));
      End;
+     {$I-}
+     Assign(LogF, 'EMU21.LOG'); Append(LogF);
+     If IOResult <> 0 Then Begin Assign(LogF,'EMU21.LOG'); Rewrite(LogF); End;
+     Write(LogF, '   AH=40 h=', H, ' msg="');
+     For I := 0 To P.CPU.Regs.CX - 1 Do Begin
+      B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I);
+      If (B >= 32) And (B < 127) Then Write(LogF, Chr(B))
+      Else Write(LogF, '\x', HexByte(B));
+     End;
+     WriteLn(LogF, '"');
+     Close(LogF);
+     {$I+} If IOResult <> 0 Then ;
      P.CPU.Regs.AX := P.CPU.Regs.CX;
      Exclude(P.CPU.Flags.s, EFG_CF);
     End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
@@ -24065,9 +25185,12 @@ Begin
    End;
   $30:
    Begin
-    { AH=30h : DOS version. Renvoyer 6.22 (AL=6 AH=22h) }
-    P.CPU.Regs.AL := 6;
-    P.CPU.Regs.AH := 22;
+    { AH=30h : DOS version. Renvoyer 3.30 (AL=3 AH=1Eh = 30 dec).
+      TP4 (1987) cible DOS 2.x/3.x ; renvoyer 6.22 fait croire a TP4
+      qu il tourne sur un DOS futur, ce qui peut perturber certains
+      checks internes. }
+    P.CPU.Regs.AL := 3;
+    P.CPU.Regs.AH := 30;  { decimal 30 = $1E (DOS 3.30) }
     P.CPU.Regs.BX := 0;
     P.CPU.Regs.CX := 0;
    End;
@@ -24459,6 +25582,818 @@ Begin
    ;
  End;
 End;
+*)
+
+{ ============================================================
+  Implementation propre et complete de INT 21h (DOS API).
+  Couvre les fonctions DOS handle-based jusqu a la version 5.0.
+  Les fonctions FCB sont des stubs qui renvoient AL=$FF (echec)
+  car DEV-COOLS utilise exclusivement les handles.
+  ============================================================ }
+
+{ Helpers DOS internes. }
+
+Function Emu_PackDate(Y, M, D: Word): Word;
+Begin
+ If Y >= 1980 Then Y := Y - 1980 Else Y := 0;
+ Emu_PackDate := (Y Shl 9) Or (M Shl 5) Or D;
+End;
+
+Function Emu_PackTime(H, M, S: Word): Word;
+Begin
+ Emu_PackTime := (H Shl 11) Or (M Shl 5) Or (S Shr 1);
+End;
+
+Procedure Emu_SetDosErr(Var P: TEmulatorPanel; Code: Word);
+Begin
+ EmuExtErr := Code;
+ EmuExtErrCls := $0B;
+ EmuExtErrAct := $07;
+ EmuExtErrLoc := $03;
+ Include(P.CPU.Flags.s, EFG_CF);
+ P.CPU.Regs.AX := Code;
+End;
+
+Procedure Emu_DoInt21(Var P: TEmulatorPanel);
+Var
+ I: Integer;
+ Ofs, Ofs2: Word;
+ B: Byte;
+ H, H2: Integer;
+ K: LongInt;
+ FName, HPath: String;
+ IORes: Word;
+ BytesIO: Word;
+ SeekPos: LongInt;
+ IoI, IoJ: LongInt;
+ OpenMode: Byte;
+ Yr, Mo, Dy, Wd: Word;
+ Hr, Mn, Sc, Cs: Word;
+ W: Word;
+ SR: SearchRec;
+ KW: Word;
+Begin
+ Case P.CPU.Regs.AH Of
+  $00:
+   Begin
+    EmuExitCode := 0;
+    EmuExitType := 0;
+    P.CPU.Fault := sfEndProgram;
+   End;
+  $01:
+   Begin
+    If Emu_BiosHasKey(P) Then KW := Emu_BiosPopKey(P)
+    Else If EmuVScr_HasKey(P) Then KW := EmuVScr_PopKey(P)
+    Else Begin Dec(P.CPU.IP, 2); Exit; End;
+    P.CPU.Regs.AL := Byte(KW And $FF);
+    EmuVScr_PutChar(P, Chr(P.CPU.Regs.AL));
+   End;
+  $02:
+   EmuVScr_PutChar(P, Chr(P.CPU.Regs.DL));
+  $03:
+   P.CPU.Regs.AL := 0;
+  $04:
+   ;
+  $05:
+   ;
+  $06:
+   Begin
+    If P.CPU.Regs.DL = $FF Then Begin
+     If Emu_BiosHasKey(P) Then Begin
+      KW := Emu_BiosPopKey(P);
+      P.CPU.Regs.AL := Byte(KW And $FF);
+      Exclude(P.CPU.Flags.s, EFG_ZF);
+     End Else If EmuVScr_HasKey(P) Then Begin
+      P.CPU.Regs.AL := EmuVScr_PopKey(P);
+      Exclude(P.CPU.Flags.s, EFG_ZF);
+     End Else Begin
+      P.CPU.Regs.AL := 0;
+      Include(P.CPU.Flags.s, EFG_ZF);
+     End;
+    End Else
+     EmuVScr_PutChar(P, Chr(P.CPU.Regs.DL));
+   End;
+  $07, $08:
+   Begin
+    If Emu_BiosHasKey(P) Then P.CPU.Regs.AL := Byte(Emu_BiosPopKey(P) And $FF)
+    Else If EmuVScr_HasKey(P) Then P.CPU.Regs.AL := EmuVScr_PopKey(P)
+    Else Dec(P.CPU.IP, 2);
+   End;
+  $09:
+   Begin
+    Ofs := P.CPU.Regs.DX;
+    For I := 0 To 8191 Do Begin
+     B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I);
+     If Chr(B) = '$' Then Break;
+     EmuVScr_PutChar(P, Chr(B));
+    End;
+    P.CPU.Regs.AL := Ord('$');
+   End;
+  $0A:
+   Begin
+    Ofs := P.CPU.Regs.DX;
+    H := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs);
+    If H = 0 Then Begin
+     Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + 1, 0);
+     Exit;
+    End;
+    I := 0;
+    Repeat
+     If Emu_BiosHasKey(P) Then KW := Emu_BiosPopKey(P)
+     Else If EmuVScr_HasKey(P) Then KW := EmuVScr_PopKey(P)
+     Else Begin Dec(P.CPU.IP, 2); Exit; End;
+     B := Byte(KW And $FF);
+     If B = 13 Then Begin
+      Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + 2 + I, 13);
+      EmuVScr_PutChar(P, #13);
+      EmuVScr_PutChar(P, #10);
+      Break;
+     End;
+     If B = 8 Then Begin
+      If I > 0 Then Begin
+       Dec(I);
+       EmuVScr_PutChar(P, #8);
+       EmuVScr_PutChar(P, ' ');
+       EmuVScr_PutChar(P, #8);
+      End;
+     End Else If (B >= 32) And (I < H - 1) Then Begin
+      Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + 2 + I, B);
+      Inc(I);
+      EmuVScr_PutChar(P, Chr(B));
+     End;
+    Until False;
+    Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + 1, Byte(I));
+   End;
+  $0B:
+   Begin
+    If Emu_BiosHasKey(P) Or EmuVScr_HasKey(P) Then P.CPU.Regs.AL := $FF
+    Else P.CPU.Regs.AL := $00;
+   End;
+  $0C:
+   Begin
+    While Emu_BiosHasKey(P) Do Emu_BiosPopKey(P);
+    While EmuVScr_HasKey(P) Do EmuVScr_PopKey(P);
+    Case P.CPU.Regs.AL Of
+     $01, $06, $07, $08, $0A:
+      Begin
+       P.CPU.Regs.AH := P.CPU.Regs.AL;
+       Emu_DoInt21(P);
+      End;
+    End;
+   End;
+  $0D:
+   ;
+  $0E:
+   P.CPU.Regs.AL := 4;
+  $0F, $10, $11, $12, $13, $14, $15, $16, $17,
+  $21, $22, $23, $24, $27, $28, $29:
+   { Fonctions FCB non implementees : echec. }
+   P.CPU.Regs.AL := $FF;
+  $19:
+   P.CPU.Regs.AL := 2;
+  $1A:
+   Begin
+    EmuDtaSeg := P.CPU.Segs.DS;
+    EmuDtaOfs := P.CPU.Regs.DX;
+   End;
+  $1B, $1C:
+   Begin
+    P.CPU.Regs.AL := 8;
+    P.CPU.Regs.CX := 512;
+    P.CPU.Regs.DX := 32768;
+    P.CPU.Segs.DS := $40;
+    P.CPU.Regs.BX := $0;
+    Emu_WriteByte(P.CPU, $40, $0, $F8);
+   End;
+  $25:
+   Begin
+    Ofs := Word(P.CPU.Regs.AL) * 4;
+    Emu_WriteWord(P.CPU, 0, Ofs,     P.CPU.Regs.DX);
+    Emu_WriteWord(P.CPU, 0, Ofs + 2, P.CPU.Segs.DS);
+   End;
+  $26:
+   Begin
+    For I := 0 To 255 Do
+     Emu_WriteByte(P.CPU, P.CPU.Regs.DX, Word(I),
+       Emu_ReadByte(P.CPU, EmuPspSeg, Word(I)));
+   End;
+  $2A:
+   Begin
+    GetDate(Yr, Mo, Dy, Wd);
+    P.CPU.Regs.CX := Yr;
+    P.CPU.Regs.DH := Byte(Mo);
+    P.CPU.Regs.DL := Byte(Dy);
+    P.CPU.Regs.AL := Byte(Wd);
+   End;
+  $2B:
+   P.CPU.Regs.AL := 0;
+  $2C:
+   Begin
+    GetTime(Hr, Mn, Sc, Cs);
+    P.CPU.Regs.CH := Byte(Hr);
+    P.CPU.Regs.CL := Byte(Mn);
+    P.CPU.Regs.DH := Byte(Sc);
+    P.CPU.Regs.DL := Byte(Cs);
+   End;
+  $2D:
+   P.CPU.Regs.AL := 0;
+  $2E:
+   EmuVerifyFlag := P.CPU.Regs.AL;
+  $2F:
+   Begin
+    P.CPU.Segs.ES := EmuDtaSeg;
+    P.CPU.Regs.BX := EmuDtaOfs;
+   End;
+  $30:
+   { Renvoyer DOS 5.00 par defaut (compatible TP4..TP7, QP, etc). }
+   Begin
+    P.CPU.Regs.AL := 5;
+    P.CPU.Regs.AH := 0;
+    P.CPU.Regs.BH := $FF;
+    P.CPU.Regs.BL := 0;
+    P.CPU.Regs.CX := 0;
+   End;
+  $31:
+   Begin
+    EmuExitCode := P.CPU.Regs.AL;
+    EmuExitType := 3;
+    P.CPU.Fault := sfEndProgram;
+    P.StatusMsg := 'Programme termine TSR (code ' + IntToStr(EmuExitCode) + ')';
+   End;
+  $33:
+   Begin
+    Case P.CPU.Regs.AL Of
+     0: P.CPU.Regs.DL := EmuBreakFlag;
+     1: EmuBreakFlag := P.CPU.Regs.DL;
+     2: Begin
+         B := EmuBreakFlag;
+         EmuBreakFlag := P.CPU.Regs.DL;
+         P.CPU.Regs.DL := B;
+        End;
+     5: P.CPU.Regs.DL := 3;
+    End;
+   End;
+  $34:
+   Begin
+    P.CPU.Segs.ES := $40;
+    P.CPU.Regs.BX := $F0;
+    Emu_WriteByte(P.CPU, $40, $F0, 0);
+   End;
+  $35:
+   Begin
+    Ofs := Word(P.CPU.Regs.AL) * 4;
+    P.CPU.Regs.BX := Emu_ReadWord(P.CPU, 0, Ofs);
+    P.CPU.Segs.ES := Emu_ReadWord(P.CPU, 0, Ofs + 2);
+   End;
+  $36:
+   Begin
+    P.CPU.Regs.AX := 8;
+    P.CPU.Regs.BX := 16384;
+    P.CPU.Regs.CX := 512;
+    P.CPU.Regs.DX := 32768;
+   End;
+  $37:
+   Begin
+    Case P.CPU.Regs.AL Of
+     0: P.CPU.Regs.DL := EmuSwitchChar;
+     1: EmuSwitchChar := P.CPU.Regs.DL;
+    End;
+    P.CPU.Regs.AL := 0;
+   End;
+  $38:
+   Begin
+    Exclude(P.CPU.Flags.s, EFG_CF);
+    P.CPU.Regs.BX := 1;
+    If P.CPU.Regs.AL = 0 Then Begin
+     P.CPU.Segs.ES := $40;
+     P.CPU.Regs.DX := $E0;
+     For I := 0 To 33 Do Emu_WriteByte(P.CPU, $40, Word($E0 + I), 0);
+     Emu_WriteWord(P.CPU, $40, $E2, 1);
+     Emu_WriteByte(P.CPU, $40, $E4, Ord('$'));
+     Emu_WriteByte(P.CPU, $40, $E9, Ord(','));
+     Emu_WriteByte(P.CPU, $40, $EB, Ord('.'));
+    End;
+   End;
+  $39:
+   Begin
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    {$I-} MkDir(HPath); {$I+}
+    If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+    Else Emu_SetDosErr(P, 3);
+   End;
+  $3A:
+   Begin
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    {$I-} RmDir(HPath); {$I+}
+    If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+    Else Emu_SetDosErr(P, 3);
+   End;
+  $3B:
+   Begin
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    {$I-} ChDir(HPath); {$I+}
+    If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+    Else Emu_SetDosErr(P, 3);
+   End;
+  $3C:
+   Begin
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    H := Emu_AllocHandle;
+    If (H = 0) Or (Length(HPath) = 0) Then Emu_SetDosErr(P, 4)
+    Else Begin
+     Assign(EmuFileH[H], HPath);
+     {$I-} Rewrite(EmuFileH[H], 1); {$I+}
+     If IOResult <> 0 Then Emu_SetDosErr(P, 5)
+     Else Begin
+      EmuFileOpen[H] := True;
+      EmuFileName[H] := HPath;
+      EmuFileMode[H] := 2;
+      EmuFileFirstRd[H] := True;
+      Exclude(P.CPU.Flags.s, EFG_CF);
+      P.CPU.Regs.AX := H;
+     End;
+    End;
+   End;
+  $3D:
+   Begin
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    H := Emu_AllocHandle;
+    If (H = 0) Or (Length(HPath) = 0) Then Emu_SetDosErr(P, 4)
+    Else Begin
+     Assign(EmuFileH[H], HPath);
+     OpenMode := P.CPU.Regs.AL And 3;
+     If OpenMode = 0 Then FileMode := 0 Else FileMode := 2;
+     {$I-} Reset(EmuFileH[H], 1); {$I+}
+     If IOResult <> 0 Then Emu_SetDosErr(P, 2)
+     Else Begin
+      EmuFileOpen[H] := True;
+      EmuFileName[H] := HPath;
+      EmuFileMode[H] := OpenMode;
+      EmuFileFirstRd[H] := True;
+      Exclude(P.CPU.Flags.s, EFG_CF);
+      P.CPU.Regs.AX := H;
+     End;
+    End;
+   End;
+  $3E:
+   Begin
+    H := P.CPU.Regs.BX;
+    If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+     {$I-} Close(EmuFileH[H]); {$I+}
+     If IOResult <> 0 Then ;
+     EmuFileOpen[H] := False;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else If (H >= 0) And (H <= 4) Then
+     Exclude(P.CPU.Flags.s, EFG_CF)
+    Else Emu_SetDosErr(P, 6);
+   End;
+  $3F:
+   Begin
+    Ofs := P.CPU.Regs.DX;
+    H := P.CPU.Regs.BX;
+    If H = 0 Then Begin
+     I := 0;
+     While (I < P.CPU.Regs.CX) And EmuVScr_HasKey(P) Do Begin
+      B := EmuVScr_PopKey(P);
+      Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + I, B);
+      Inc(I);
+      If B = 13 Then Begin
+       If I < P.CPU.Regs.CX Then Begin
+        Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + I, 10);
+        Inc(I);
+       End;
+       Break;
+      End;
+     End;
+     P.CPU.Regs.AX := Word(I);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+     IoI := 0;
+     BytesIO := 0;
+     While IoI < P.CPU.Regs.CX Do Begin
+      IoJ := LongInt(P.CPU.Regs.CX) - IoI;
+      If IoJ > SizeOf(EmuIoBuf) Then IoJ := SizeOf(EmuIoBuf);
+      {$I-} BlockRead(EmuFileH[H], EmuIoBuf, IoJ, BytesIO); {$I+}
+      If IOResult <> 0 Then Break;
+      If BytesIO > 0 Then
+       For W := 0 To BytesIO - 1 Do
+        Emu_WriteByte(P.CPU, P.CPU.Segs.DS,
+          Word(Ofs + Word(IoI) + W), EmuIoBuf[W]);
+      Inc(IoI, BytesIO);
+      If BytesIO < IoJ Then Break;
+     End;
+     P.CPU.Regs.AX := Word(IoI);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Emu_SetDosErr(P, 6);
+   End;
+  $40:
+   Begin
+    Ofs := P.CPU.Regs.DX;
+    H := P.CPU.Regs.BX;
+    If (H = 1) Or (H = 2) Then Begin
+     For I := 0 To P.CPU.Regs.CX - 1 Do Begin
+      B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I);
+      EmuVScr_PutChar(P, Chr(B));
+     End;
+     P.CPU.Regs.AX := P.CPU.Regs.CX;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else If (H = 3) Or (H = 4) Then Begin
+     P.CPU.Regs.AX := P.CPU.Regs.CX;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+     IoI := 0;
+     BytesIO := 0;
+     While IoI < P.CPU.Regs.CX Do Begin
+      IoJ := LongInt(P.CPU.Regs.CX) - IoI;
+      If IoJ > SizeOf(EmuIoBuf) Then IoJ := SizeOf(EmuIoBuf);
+      For W := 0 To IoJ - 1 Do
+       EmuIoBuf[W] := Emu_ReadByte(P.CPU, P.CPU.Segs.DS,
+         Word(Ofs + Word(IoI) + W));
+      {$I-} BlockWrite(EmuFileH[H], EmuIoBuf, IoJ, BytesIO); {$I+}
+      If IOResult <> 0 Then Break;
+      Inc(IoI, BytesIO);
+      If BytesIO < IoJ Then Break;
+     End;
+     P.CPU.Regs.AX := Word(IoI);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Emu_SetDosErr(P, 6);
+   End;
+  $41:
+   Begin
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    {$I-} Assign(EmuFileH[5], HPath); Erase(EmuFileH[5]); {$I+}
+    If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+    Else Emu_SetDosErr(P, 2);
+   End;
+  $42:
+   Begin
+    H := P.CPU.Regs.BX;
+    SeekPos := (LongInt(P.CPU.Regs.CX) Shl 16) Or P.CPU.Regs.DX;
+    If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+     Case P.CPU.Regs.AL Of
+      0: ;
+      1: SeekPos := SeekPos + FilePos(EmuFileH[H]);
+      2: SeekPos := SeekPos + FileSize(EmuFileH[H]);
+     End;
+     If SeekPos < 0 Then SeekPos := 0;
+     {$I-} Seek(EmuFileH[H], SeekPos); {$I+}
+     If IOResult <> 0 Then ;
+     P.CPU.Regs.AX := Word(SeekPos And $FFFF);
+     P.CPU.Regs.DX := Word((SeekPos Shr 16) And $FFFF);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Emu_SetDosErr(P, 6);
+   End;
+  $43:
+   Begin
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    Case P.CPU.Regs.AL Of
+     0: Begin
+         {$I-}
+         FindFirst(HPath, AnyFile, SR);
+         IORes := DosError;
+         FindClose(SR);
+         {$I+}
+         If IOResult <> 0 Then ;
+         If IORes = 0 Then Begin
+          P.CPU.Regs.CX := SR.Attr And $3F;
+          Exclude(P.CPU.Flags.s, EFG_CF);
+         End Else Emu_SetDosErr(P, 2);
+        End;
+     1: Begin
+         {$I-}
+         FindFirst(HPath, AnyFile, SR);
+         IORes := DosError;
+         FindClose(SR);
+         {$I+}
+         If IOResult <> 0 Then ;
+         If IORes = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+         Else Emu_SetDosErr(P, 2);
+        End;
+     Else Emu_SetDosErr(P, 1);
+    End;
+   End;
+  $44:
+   Begin
+    Case P.CPU.Regs.AL Of
+     $00:
+      Begin
+       H := P.CPU.Regs.BX;
+       If H <= 4 Then P.CPU.Regs.DX := $80D3
+       Else P.CPU.Regs.DX := $0000;
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     $01:
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     $06:
+      Begin
+       H := P.CPU.Regs.BX;
+       If H = 0 Then Begin
+        If Emu_BiosHasKey(P) Or EmuVScr_HasKey(P) Then P.CPU.Regs.AL := $FF
+        Else P.CPU.Regs.AL := 0;
+       End Else P.CPU.Regs.AL := $FF;
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     $07:
+      Begin
+       P.CPU.Regs.AL := $FF;
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     $08:
+      Begin
+       P.CPU.Regs.AX := 1;
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     $0B:
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     Else
+      Begin
+       Exclude(P.CPU.Flags.s, EFG_CF);
+       P.CPU.Regs.AX := 0;
+      End;
+    End;
+   End;
+  $45:
+   Begin
+    H := P.CPU.Regs.BX;
+    If (H >= 0) And (H <= 4) Then Begin
+     P.CPU.Regs.AX := H;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+     H2 := Emu_AllocHandle;
+     If H2 = 0 Then Emu_SetDosErr(P, 4)
+     Else Begin
+      Assign(EmuFileH[H2], EmuFileName[H]);
+      {$I-} Reset(EmuFileH[H2], 1);
+      Seek(EmuFileH[H2], FilePos(EmuFileH[H])); {$I+}
+      If IOResult <> 0 Then ;
+      EmuFileOpen[H2] := True;
+      EmuFileName[H2] := EmuFileName[H];
+      EmuFileMode[H2] := EmuFileMode[H];
+      EmuFileFirstRd[H2] := False;
+      P.CPU.Regs.AX := H2;
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+    End Else Emu_SetDosErr(P, 6);
+   End;
+  $46:
+   Begin
+    H := P.CPU.Regs.BX;
+    H2 := P.CPU.Regs.CX;
+    If (H2 >= 5) And (H2 <= 31) And EmuFileOpen[H2] Then Begin
+     {$I-} Close(EmuFileH[H2]); {$I+}
+     If IOResult <> 0 Then ;
+     EmuFileOpen[H2] := False;
+    End;
+    If (H >= 0) And (H <= 4) Then
+     Exclude(P.CPU.Flags.s, EFG_CF)
+    Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] And
+            (H2 >= 5) And (H2 <= 31) Then Begin
+     Assign(EmuFileH[H2], EmuFileName[H]);
+     {$I-} Reset(EmuFileH[H2], 1);
+     Seek(EmuFileH[H2], FilePos(EmuFileH[H])); {$I+}
+     If IOResult <> 0 Then ;
+     EmuFileOpen[H2] := True;
+     EmuFileName[H2] := EmuFileName[H];
+     EmuFileMode[H2] := EmuFileMode[H];
+     EmuFileFirstRd[H2] := False;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Emu_SetDosErr(P, 6);
+   End;
+  $47:
+   Begin
+    Emu_WriteByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI, 0);
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  $48:
+   Begin
+    If EmuNextFreeSeg = 0 Then EmuNextFreeSeg := $2000;
+    If EmuNextFreeSeg >= $9F00 Then K := 0
+    Else K := LongInt($9F00) - LongInt(EmuNextFreeSeg);
+    If LongInt(P.CPU.Regs.BX) > K Then Begin
+     Include(P.CPU.Flags.s, EFG_CF);
+     P.CPU.Regs.AX := 8;
+     P.CPU.Regs.BX := Word(K);
+     EmuExtErr := 8;
+    End Else Begin
+     P.CPU.Regs.AX := EmuNextFreeSeg;
+     EmuNextFreeSeg := EmuNextFreeSeg + P.CPU.Regs.BX;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
+   End;
+  $49:
+   Exclude(P.CPU.Flags.s, EFG_CF);
+  $4A:
+   Begin
+    If LongInt(P.CPU.Segs.ES) + LongInt(P.CPU.Regs.BX) > LongInt($A000) Then Begin
+     Include(P.CPU.Flags.s, EFG_CF);
+     P.CPU.Regs.BX := Word($A000 - P.CPU.Segs.ES);
+     P.CPU.Regs.AX := 8;
+     EmuExtErr := 8;
+    End Else
+     Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  $4B:
+   Emu_SetDosErr(P, 5);
+  $4C:
+   Begin
+    EmuExitCode := P.CPU.Regs.AL;
+    EmuExitType := 0;
+    P.CPU.Fault := sfEndProgram;
+    P.StatusMsg := 'Programme termine (code ' + IntToStr(EmuExitCode) + ')';
+   End;
+  $4D:
+   Begin
+    P.CPU.Regs.AL := Byte(EmuExitCode);
+    P.CPU.Regs.AH := EmuExitType;
+   End;
+  $4E:
+   { FindFirst : DS:DX = pattern, CX = attr.
+     Place infos au DTA et stocke nom dans EmuFindResults pour
+     les FindNext suivants. }
+   Begin
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    EmuFindMask := HPath;
+    EmuFindAttr := Byte(P.CPU.Regs.CX);
+    EmuFindCount := 0;
+    EmuFindIndex := 0;
+    {$I-}
+    FindFirst(HPath, EmuFindAttr, SR);
+    While (DosError = 0) And (EmuFindCount < 64) Do Begin
+     EmuFindResults[EmuFindCount] := SR.Name;
+     Inc(EmuFindCount);
+     FindNext(SR);
+    End;
+    FindClose(SR);
+    {$I+} If IOResult <> 0 Then ;
+    If EmuFindCount = 0 Then Emu_SetDosErr(P, 18)
+    Else Begin
+     Ofs := EmuDtaOfs;
+     Ofs2 := EmuDtaSeg;
+     For I := 0 To 20 Do Emu_WriteByte(P.CPU, Ofs2, Ofs + I, 0);
+     Emu_WriteByte(P.CPU, Ofs2, Ofs, $FF);
+     Emu_WriteByte(P.CPU, Ofs2, Ofs + 21, EmuFindAttr);
+     {$I-}
+     FindFirst(EmuFindMask, EmuFindAttr, SR);
+     If DosError = 0 Then Begin
+      For I := 1 To 12 Do
+       If I <= Length(SR.Name) Then
+        Emu_WriteByte(P.CPU, Ofs2, Ofs + 30 + I - 1, Byte(SR.Name[I]));
+      Emu_WriteByte(P.CPU, Ofs2, Ofs + 30 + Length(SR.Name), 0);
+      Emu_WriteWord(P.CPU, Ofs2, Ofs + 22, Word(SR.Time And $FFFF));
+      Emu_WriteWord(P.CPU, Ofs2, Ofs + 24, Word((SR.Time Shr 16) And $FFFF));
+      Emu_WriteWord(P.CPU, Ofs2, Ofs + 26, Word(SR.Size And $FFFF));
+      Emu_WriteWord(P.CPU, Ofs2, Ofs + 28, Word((SR.Size Shr 16) And $FFFF));
+     End;
+     FindClose(SR);
+     {$I+} If IOResult <> 0 Then ;
+     EmuFindIndex := 1;
+     P.CPU.Regs.AX := 0;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
+   End;
+  $4F:
+   Begin
+    If (EmuFindIndex >= EmuFindCount) Or (EmuFindCount = 0) Then
+     Emu_SetDosErr(P, 18)
+    Else Begin
+     Ofs := EmuDtaOfs;
+     Ofs2 := EmuDtaSeg;
+     FName := EmuFindResults[EmuFindIndex];
+     For I := 1 To 12 Do
+      If I <= Length(FName) Then
+       Emu_WriteByte(P.CPU, Ofs2, Ofs + 30 + I - 1, Byte(FName[I]));
+     Emu_WriteByte(P.CPU, Ofs2, Ofs + 30 + Length(FName), 0);
+     Inc(EmuFindIndex);
+     P.CPU.Regs.AX := 0;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
+   End;
+  $50:
+   EmuPspSeg := P.CPU.Regs.BX;
+  $51, $62:
+   P.CPU.Regs.BX := EmuPspSeg;
+  $52:
+   Begin
+    P.CPU.Segs.ES := $40;
+    P.CPU.Regs.BX := $100;
+   End;
+  $54:
+   P.CPU.Regs.AL := EmuVerifyFlag;
+  $56:
+   Begin
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI);
+    FName := Emu_HostPath(FName);
+    HPath := Emu_HostPath(HPath);
+    {$I-} Assign(EmuFileH[5], FName); Rename(EmuFileH[5], HPath); {$I+}
+    If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+    Else Emu_SetDosErr(P, 2);
+   End;
+  $57:
+   Begin
+    H := P.CPU.Regs.BX;
+    If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+     Case P.CPU.Regs.AL Of
+      0: Begin
+          {$I-}
+          FindFirst(EmuFileName[H], AnyFile, SR);
+          {$I+}
+          If DosError = 0 Then Begin
+           P.CPU.Regs.CX := Word(SR.Time And $FFFF);
+           P.CPU.Regs.DX := Word((SR.Time Shr 16) And $FFFF);
+           Exclude(P.CPU.Flags.s, EFG_CF);
+          End Else Emu_SetDosErr(P, 2);
+          {$I-} FindClose(SR); {$I+}
+          If IOResult <> 0 Then ;
+         End;
+      1: Exclude(P.CPU.Flags.s, EFG_CF);
+      Else Emu_SetDosErr(P, 1);
+     End;
+    End Else Emu_SetDosErr(P, 6);
+   End;
+  $58:
+   Begin
+    Case P.CPU.Regs.AL Of
+     0: P.CPU.Regs.AX := EmuAllocStrat;
+     1: EmuAllocStrat := P.CPU.Regs.BX;
+    End;
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  $59:
+   Begin
+    P.CPU.Regs.AX := EmuExtErr;
+    P.CPU.Regs.BH := EmuExtErrCls;
+    P.CPU.Regs.BL := EmuExtErrAct;
+    P.CPU.Regs.CH := EmuExtErrLoc;
+    P.CPU.Regs.CL := 0;
+   End;
+  $5A:
+   Begin
+    Ofs := P.CPU.Regs.DX;
+    I := 0;
+    While (I < 64) And (Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I) <> 0) Do Inc(I);
+    GetTime(Hr, Mn, Sc, Cs);
+    FName := 'TMP' + IntToStr(LongInt(Hr) * 3600 + LongInt(Mn) * 60 + Sc) + '.TMP';
+    For Wd := 1 To Length(FName) Do
+     Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + I + Wd - 1, Byte(FName[Wd]));
+    Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + I + Length(FName), 0);
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, Ofs);
+    HPath := Emu_HostPath(FName);
+    H := Emu_AllocHandle;
+    If H = 0 Then Emu_SetDosErr(P, 4)
+    Else Begin
+     Assign(EmuFileH[H], HPath);
+     {$I-} Rewrite(EmuFileH[H], 1); {$I+}
+     If IOResult <> 0 Then Emu_SetDosErr(P, 5)
+     Else Begin
+      EmuFileOpen[H] := True;
+      EmuFileName[H] := HPath;
+      EmuFileMode[H] := 2;
+      EmuFileFirstRd[H] := True;
+      P.CPU.Regs.AX := H;
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+    End;
+   End;
+  $5B:
+   Begin
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    If FileExists(HPath) Then Emu_SetDosErr(P, 80)
+    Else Begin
+     H := Emu_AllocHandle;
+     If H = 0 Then Emu_SetDosErr(P, 4)
+     Else Begin
+      Assign(EmuFileH[H], HPath);
+      {$I-} Rewrite(EmuFileH[H], 1); {$I+}
+      If IOResult <> 0 Then Emu_SetDosErr(P, 5)
+      Else Begin
+       EmuFileOpen[H] := True;
+       EmuFileName[H] := HPath;
+       EmuFileMode[H] := 2;
+       EmuFileFirstRd[H] := True;
+       P.CPU.Regs.AX := H;
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     End;
+    End;
+   End;
+  $5C:
+   Exclude(P.CPU.Flags.s, EFG_CF);
+  $63, $65, $66, $67, $68:
+   Exclude(P.CPU.Flags.s, EFG_CF);
+  Else
+   Emu_SetDosErr(P, 1);
+ End;
+End;
 
 { --- Executer une interruption logicielle --- }
 
@@ -24482,6 +26417,15 @@ Begin
  { Services BIOS/DOS de base toujours geres par stubs internes. }
  Case Num Of
   $10: Emu_DoInt10(P);
+  $11:
+   { AH=00 (et autres) : equipment list dans AX.
+     Bit 0 = floppy installe, bits 5-4 = video initial (11b=80x25 color),
+     bits 7-6 = nb FDD-1, bits 9-8 = nb serial. Valeur PC standard
+     1 FDD + 80x25 color = $0021. }
+   P.CPU.Regs.AX := $0021;
+  $12:
+   { Memory size en KB (640). }
+   P.CPU.Regs.AX := 640;
   $16: Emu_DoInt16(P);
   $20: P.CPU.Fault := sfEndProgram;
   $27: P.CPU.Fault := sfEndProgram;
@@ -24527,6 +26471,22 @@ Begin
  VecCS := Emu_ReadWord(P.CPU, 0, 0 * 4 + 2); { IVT[0] segment }
  If VecCS <> 0 Then Emu_FireHwInt(P, 0)
  Else P.CPU.Fault := sfDivision0;
+End;
+
+{ Capture du tout premier DIV/0 pour diagnostic. NoOp si deja fait. }
+Procedure Emu_Div0Snapshot(Var P: TEmulatorPanel; OpByte, SubOp: Byte;
+ Divisor: LongInt; PreIP: Word);
+Begin
+ If EmuDiv0Caught Then Exit;
+ EmuDiv0Caught := True;
+ EmuDiv0CS := P.CPU.Segs.CS; EmuDiv0IP := PreIP;
+ EmuDiv0Op := OpByte; EmuDiv0SubOp := SubOp; EmuDiv0Div := Divisor;
+ EmuDiv0AX := P.CPU.Regs.AX; EmuDiv0DX := P.CPU.Regs.DX;
+ EmuDiv0BX := P.CPU.Regs.BX; EmuDiv0CX := P.CPU.Regs.CX;
+ EmuDiv0SI := P.CPU.Regs.SI; EmuDiv0DI := P.CPU.Regs.DI;
+ EmuDiv0BP := P.CPU.Regs.BP;
+ EmuDiv0DS := P.CPU.Segs.DS; EmuDiv0ES := P.CPU.Segs.ES;
+ EmuDiv0SS := P.CPU.Segs.SS; EmuDiv0SP := P.CPU.Regs.SP;
 End;
 
 { Initialiser la BIOS Data Area minimale a 0040:0000. }
@@ -24883,11 +26843,55 @@ Begin
     Inc(P.CPU.IP, 2);
    End;
   $D8, $D9, $DA, $DB, $DC, $DD, $DE, $DF:
-   { Instructions FPU 80x87 : pas de coprocesseur emule, on les
-     ignore en consommant l opcode + ModR/M (et son deplacement). }
+   { Instructions FPU 80x87. Strategie : on simule un 8086 SANS 8087.
+     Sur ce CPU, les ESC sont des NOP (le bus laisse pendre). Sur 286+
+     avec EM=1, ESC declenche INT 7 (Coprocessor Not Available). On
+     dispatche INT 7 uniquement si EmuFpuTrap est actif ET que l app
+     a installe un handler (IVT[7] segment != 0). Sinon NOP strict :
+     pas d ecriture memoire, pas de modif registre. Cela laisse le
+     test FPU classique (FSTCW [mem] avec mem precharge a une signature)
+     conclure correctement "pas de FPU". }
    Begin
+    SubOp := OpCode;  { recuperer pour log }
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
+    { Diagnostic : loguer les 50 premiers ESC opcodes vus. }
+    If EmuFpuLogged < 50 Then Begin
+     Inc(EmuFpuLogged);
+     {$I-}
+     Assign(LogF_Dbg, 'EMUFPU.LOG'); Append(LogF_Dbg);
+     If IOResult <> 0 Then Begin Assign(LogF_Dbg,'EMUFPU.LOG'); Rewrite(LogF_Dbg); End;
+     Write(LogF_Dbg, '#', EmuFpuLogged, ' at ',
+      HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP),
+      ' op=', HexByte(SubOp), ' modrm=', HexByte(ModRM));
+     { Identifier les instructions cles. }
+     Case SubOp Of
+      $DB: If ModRM = $E3 Then Write(LogF_Dbg, ' (FNINIT)');
+      $DF: If ModRM = $E0 Then Write(LogF_Dbg, ' (FNSTSW AX)');
+      $DD: If (ModRM Shr 6) <> 3 Then Begin
+            Case (ModRM Shr 3) And 7 Of
+             7: Write(LogF_Dbg, ' (FNSTSW mem)');
+            End;
+           End;
+      $D9: If (ModRM Shr 6) <> 3 Then Begin
+            Case (ModRM Shr 3) And 7 Of
+             5: Write(LogF_Dbg, ' (FLDCW mem)');
+             7: Write(LogF_Dbg, ' (FNSTCW mem)');
+            End;
+           End;
+     End;
+     WriteLn(LogF_Dbg);
+     Close(LogF_Dbg);
+     {$I+} If IOResult <> 0 Then ;
+    End;
+    { INT 7 dispatch optionnel (mode 286+ EM=1). Off par defaut car
+      les programmes 8086 (TP4 1987) n ont pas de handler INT 7. }
+    If EmuFpuTrap Then Begin
+     If Emu_ReadWord(P.CPU, 0, 7 * 4 + 2) <> 0 Then Begin
+      Emu_FireHwInt(P, 7);
+      Exit;  { IP a deja ete mis a jour par FireHwInt }
+     End;
+    End;
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $CD: { INT imm8 }
@@ -25142,34 +27146,54 @@ Begin
     P.CPU.Regs.AL := Emu_ReadByte(P.CPU, Emu_DataSeg(P.CPU),
                                   P.CPU.Regs.BX + P.CPU.Regs.AL);
    End;
-  $E4: { IN AL, imm8 - aucun port emule, retourne 0 }
+  $E4: { IN AL, imm8 }
    Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
     Inc(P.CPU.IP, 2);
-    P.CPU.Regs.AL := 0;
+    P.CPU.Regs.AL := Emu_PortRead(P, Imm8);
    End;
   $E5: { IN AX, imm8 }
    Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
     Inc(P.CPU.IP, 2);
-    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.AL := Emu_PortRead(P, Imm8);
+    P.CPU.Regs.AH := Emu_PortRead(P, Imm8 + 1);
    End;
-  $E6: { OUT imm8, AL - ignore }
-   Inc(P.CPU.IP, 2);
-  $E7: { OUT imm8, AX - ignore }
-   Inc(P.CPU.IP, 2);
+  $E6: { OUT imm8, AL }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    Inc(P.CPU.IP, 2);
+    Emu_PortWrite(P, Imm8, P.CPU.Regs.AL);
+   End;
+  $E7: { OUT imm8, AX }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    Inc(P.CPU.IP, 2);
+    Emu_PortWrite(P, Imm8, P.CPU.Regs.AL);
+    Emu_PortWrite(P, Imm8 + 1, P.CPU.Regs.AH);
+   End;
   $EC: { IN AL, DX }
    Begin
     Inc(P.CPU.IP, 1);
-    P.CPU.Regs.AL := 0;
+    P.CPU.Regs.AL := Emu_PortRead(P, P.CPU.Regs.DX);
    End;
   $ED: { IN AX, DX }
    Begin
     Inc(P.CPU.IP, 1);
-    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.AL := Emu_PortRead(P, P.CPU.Regs.DX);
+    P.CPU.Regs.AH := Emu_PortRead(P, P.CPU.Regs.DX + 1);
    End;
-  $EE: { OUT DX, AL - ignore }
-   Inc(P.CPU.IP, 1);
-  $EF: { OUT DX, AX - ignore }
-   Inc(P.CPU.IP, 1);
+  $EE: { OUT DX, AL }
+   Begin
+    Inc(P.CPU.IP, 1);
+    Emu_PortWrite(P, P.CPU.Regs.DX, P.CPU.Regs.AL);
+   End;
+  $EF: { OUT DX, AX }
+   Begin
+    Inc(P.CPU.IP, 1);
+    Emu_PortWrite(P, P.CPU.Regs.DX, P.CPU.Regs.AL);
+    Emu_PortWrite(P, P.CPU.Regs.DX + 1, P.CPU.Regs.AH);
+   End;
   $9A: { CALL far ptr16:16 }
    Begin
     NewIP := Emu_FetchWord(P.CPU, 1);
@@ -25613,6 +27637,7 @@ Begin
     Else If (OpCode And 2) <> 0 Then Cnt := P.CPU.Regs.CL
     Else Cnt := 1;
     Cnt := Cnt And $1F;
+    Disp16 := Cnt;  { count d origine pour OF flag }
     If (OpCode And 1) = 0 Then Begin
      V8 := Emu_GetOpByte(P.CPU, Op);
      R8 := V8;
@@ -25657,6 +27682,31 @@ Begin
           End;
       End;
       Dec(Cnt);
+     End;
+     { OF flag : defini uniquement pour count d origine = 1 (Intel). }
+     If Disp16 = 1 Then Begin
+      Case SubOp Of
+       0, 2, 4, 6: { ROL/RCL/SHL/SAL : OF = MSB(R) XOR CF }
+        Begin
+         If (((R8 Shr 7) And 1) Xor (Ord(EFG_CF In P.CPU.Flags.s))) <> 0
+          Then Include(P.CPU.Flags.s, EFG_OF)
+          Else Exclude(P.CPU.Flags.s, EFG_OF);
+        End;
+       1, 3: { ROR/RCR : OF = MSB(R) XOR bit(MSB-1, R) }
+        Begin
+         If (((R8 Shr 7) And 1) Xor ((R8 Shr 6) And 1)) <> 0
+          Then Include(P.CPU.Flags.s, EFG_OF)
+          Else Exclude(P.CPU.Flags.s, EFG_OF);
+        End;
+       5: { SHR : OF = MSB(operand original) }
+        Begin
+         If (V8 And $80) <> 0
+          Then Include(P.CPU.Flags.s, EFG_OF)
+          Else Exclude(P.CPU.Flags.s, EFG_OF);
+        End;
+       7: { SAR : OF = 0 }
+        Exclude(P.CPU.Flags.s, EFG_OF);
+      End;
      End;
      Emu_SetSFB(P.CPU, R8); Emu_SetZFB(P.CPU, R8); Emu_SetPF(P.CPU, R8);
      Emu_PutOpByte(P.CPU, Op, R8);
@@ -25704,6 +27754,31 @@ Begin
           End;
       End;
       Dec(Cnt);
+     End;
+     { OF flag : defini uniquement pour count d origine = 1 (Intel). }
+     If Disp16 = 1 Then Begin
+      Case SubOp Of
+       0, 2, 4, 6: { ROL/RCL/SHL/SAL : OF = MSB(R) XOR CF }
+        Begin
+         If (((R16 Shr 15) And 1) Xor (Ord(EFG_CF In P.CPU.Flags.s))) <> 0
+          Then Include(P.CPU.Flags.s, EFG_OF)
+          Else Exclude(P.CPU.Flags.s, EFG_OF);
+        End;
+       1, 3: { ROR/RCR : OF = MSB(R) XOR bit(MSB-1, R) }
+        Begin
+         If (((R16 Shr 15) And 1) Xor ((R16 Shr 14) And 1)) <> 0
+          Then Include(P.CPU.Flags.s, EFG_OF)
+          Else Exclude(P.CPU.Flags.s, EFG_OF);
+        End;
+       5: { SHR : OF = MSB(operand original) }
+        Begin
+         If (V16 And $8000) <> 0
+          Then Include(P.CPU.Flags.s, EFG_OF)
+          Else Exclude(P.CPU.Flags.s, EFG_OF);
+        End;
+       7: { SAR : OF = 0 }
+        Exclude(P.CPU.Flags.s, EFG_OF);
+      End;
      End;
      Emu_SetSFW(P.CPU, R16); Emu_SetZFW(P.CPU, R16); Emu_SetPF(P.CPU, Byte(R16));
      Emu_PutOpWord(P.CPU, Op, R16);
@@ -25756,10 +27831,16 @@ Begin
          End;
         End;
      6: Begin { DIV }
-         If V8 = 0 Then P.CPU.Fault := sfDivision0
+         If V8 = 0 Then Begin
+          Emu_Div0Snapshot(P, $F6, 6, V8, P.CPU.IP);
+          P.CPU.Fault := sfDivision0;
+         End
          Else Begin
           Cnt := P.CPU.Regs.AX Div V8;
-          If Cnt > $FF Then P.CPU.Fault := sfDivision0
+          If Cnt > $FF Then Begin
+           Emu_Div0Snapshot(P, $F6, 6, V8, P.CPU.IP);
+           P.CPU.Fault := sfDivision0;
+          End
           Else Begin
            P.CPU.Regs.AH := P.CPU.Regs.AX Mod V8;
            P.CPU.Regs.AL := Byte(Cnt);
@@ -25767,11 +27848,17 @@ Begin
          End;
         End;
      7: Begin { IDIV }
-         If V8 = 0 Then P.CPU.Fault := sfDivision0
+         If V8 = 0 Then Begin
+          Emu_Div0Snapshot(P, $F6, 7, V8, P.CPU.IP);
+          P.CPU.Fault := sfDivision0;
+         End
          Else Begin
           Disp16 := SmallInt(P.CPU.Regs.AX) Div ShortInt(V8);
           If (Disp16 > 127) Or (Disp16 < -128)
-           Then P.CPU.Fault := sfDivision0
+           Then Begin
+            Emu_Div0Snapshot(P, $F6, 7, V8, P.CPU.IP);
+            P.CPU.Fault := sfDivision0;
+           End
           Else Begin
            P.CPU.Regs.AH := Byte(SmallInt(P.CPU.Regs.AX) Mod ShortInt(V8));
            P.CPU.Regs.AL := Byte(Disp16);
@@ -25830,11 +27917,17 @@ Begin
          End;
         End;
      6: Begin { DIV : DX:AX / rm16 }
-         If V16 = 0 Then P.CPU.Fault := sfDivision0
+         If V16 = 0 Then Begin
+          Emu_Div0Snapshot(P, $F7, 6, V16, P.CPU.IP);
+          P.CPU.Fault := sfDivision0;
+         End
          Else Begin
           MulRes := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
           If MulRes Div LongInt(V16) > $FFFF
-           Then P.CPU.Fault := sfDivision0
+           Then Begin
+            Emu_Div0Snapshot(P, $F7, 6, V16, P.CPU.IP);
+            P.CPU.Fault := sfDivision0;
+           End
           Else Begin
            P.CPU.Regs.AX := Word(MulRes Div LongInt(V16));
            P.CPU.Regs.DX := Word(MulRes Mod LongInt(V16));
@@ -25842,7 +27935,10 @@ Begin
          End;
         End;
      7: Begin { IDIV }
-         If V16 = 0 Then P.CPU.Fault := sfDivision0
+         If V16 = 0 Then Begin
+          Emu_Div0Snapshot(P, $F7, 7, V16, P.CPU.IP);
+          P.CPU.Fault := sfDivision0;
+         End
          Else Begin
           MulRes := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
           P.CPU.Regs.AX := Word(MulRes Div LongInt(SmallInt(V16)));
@@ -33791,6 +35887,13 @@ Begin NesActive := False;
  EmuWatchPhysLo := LongInt($0AAC) * 16 + $8740;
  EmuWatchPhysHi := LongInt($0AAC) * 16 + $87FF;
  EmuWatchHits := 0;
+ EmuDiv0Caught := False;
+ EmuFpuLogged := 0;
+ EmuFpuTrap := False;
+ FillChar(EmuOpCount, SizeOf(EmuOpCount), 0);
+ {$I-} Assign(LogF_R, 'EMUFPU.LOG'); Rewrite(LogF_R);
+ If IOResult = 0 Then Close(LogF_R);
+ {$I+} If IOResult <> 0 Then ;
  {$I-} Assign(LogF_R, 'EMUWATCH.LOG'); Rewrite(LogF_R);
  If IOResult = 0 Then Begin
   WriteLn(LogF_R, 'Watch enabled : phys=', HexLong(EmuWatchPhysLo),
@@ -33813,6 +35916,7 @@ Begin NesActive := False;
   EmuTraceBuf[EmuTraceIdx].DI := P.CPU.Regs.DI;
   EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
   EmuTraceBuf[EmuTraceIdx].AX := P.CPU.Regs.AX;
+  Inc(EmuOpCount[EmuTraceBuf[EmuTraceIdx].Op]);
   { Detection one-shot : 1ere fois que CS:IP passe a 0000:0000 }
   If (P.CPU.Segs.CS = 0) And (P.CPU.IP < $0010) And (Not EmuOvrDumped) Then Begin
    EmuOvrDumped := True;
@@ -33926,6 +36030,48 @@ Begin NesActive := False;
    HexWord(P.CPU.IP), ' SS:SP=', HexWord(P.CPU.Segs.SS), ':',
    HexWord(P.CPU.Regs.SP), ' BP=', HexWord(P.CPU.Regs.BP),
    ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES));
+  WriteLn(LogF_R, 'Opcodes 80186 / shifts executes :');
+  WriteLn(LogF_R, '  PUSHA(60)=', EmuOpCount[$60],
+                  ' POPA(61)=', EmuOpCount[$61],
+                  ' BOUND(62)=', EmuOpCount[$62],
+                  ' PUSHimm16(68)=', EmuOpCount[$68],
+                  ' IMUL69=', EmuOpCount[$69],
+                  ' PUSHimm8(6A)=', EmuOpCount[$6A],
+                  ' IMUL6B=', EmuOpCount[$6B]);
+  WriteLn(LogF_R, '  INS/OUTS(6C-6F)=', EmuOpCount[$6C]+EmuOpCount[$6D]+
+                                          EmuOpCount[$6E]+EmuOpCount[$6F],
+                  ' ENTER(C8)=', EmuOpCount[$C8],
+                  ' LEAVE(C9)=', EmuOpCount[$C9],
+                  ' SHIFTimm(C0/C1)=', EmuOpCount[$C0]+EmuOpCount[$C1]);
+  WriteLn(LogF_R, '  SHIFT1(D0/D1)=', EmuOpCount[$D0]+EmuOpCount[$D1],
+                  ' SHIFTcl(D2/D3)=', EmuOpCount[$D2]+EmuOpCount[$D3],
+                  ' DIV/IDIV(F6/F7)=', EmuOpCount[$F6]+EmuOpCount[$F7],
+                  ' INT(CD)=', EmuOpCount[$CD]);
+  If EmuDiv0Caught Then Begin
+   WriteLn(LogF_R, 'DIV0 SNAPSHOT (1er fault) :');
+   WriteLn(LogF_R, '  at ', HexWord(EmuDiv0CS), ':', HexWord(EmuDiv0IP),
+    ' op=', HexByte(EmuDiv0Op), ' /', EmuDiv0SubOp,
+    ' divisor=', EmuDiv0Div);
+   WriteLn(LogF_R, '  AX=', HexWord(EmuDiv0AX), ' BX=', HexWord(EmuDiv0BX),
+    ' CX=', HexWord(EmuDiv0CX), ' DX=', HexWord(EmuDiv0DX),
+    ' SI=', HexWord(EmuDiv0SI), ' DI=', HexWord(EmuDiv0DI),
+    ' BP=', HexWord(EmuDiv0BP));
+   WriteLn(LogF_R, '  DS=', HexWord(EmuDiv0DS), ' ES=', HexWord(EmuDiv0ES),
+    ' SS=', HexWord(EmuDiv0SS), ' SP=', HexWord(EmuDiv0SP));
+   WriteLn(LogF_R, '  Bytes au DIV (', HexWord(EmuDiv0CS), ':',
+    HexWord(EmuDiv0IP), '..+1F) :');
+   Write(LogF_R, '   ');
+   For Idx_R := 0 To $1F Do
+    Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, EmuDiv0CS,
+     Word(EmuDiv0IP + Idx_R))), ' ');
+   WriteLn(LogF_R);
+   WriteLn(LogF_R, '  Bytes -10..+10 autour du DIV :');
+   Write(LogF_R, '   ');
+   For Idx_R := -16 To 15 Do
+    Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, EmuDiv0CS,
+     Word(EmuDiv0IP + Idx_R))), ' ');
+   WriteLn(LogF_R);
+  End;
   WriteLn(LogF_R, 'Bytes a 0AAC:8740..876F :');
   For Idx_R := 0 To $2F Do Begin
    If (Idx_R And 15) = 0 Then Begin
