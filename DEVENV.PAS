@@ -3092,6 +3092,10 @@ Var
  EmuNextFreeSeg : Word;     { segment libre pour AH=48 (alloc) }
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuOvrDumped   : Boolean;  { dump overlay diagnostic une seule fois }
+ EmuWatchEnabled: Boolean;  { actif quand on veut tracer les ecritures }
+ EmuWatchPhysLo : LongInt;  { adresse physique min surveillee }
+ EmuWatchPhysHi : LongInt;  { adresse physique max surveillee }
+ EmuWatchHits   : Integer;  { nb hits cumules }
  EmuExeDir      : String;   { repertoire de l EXE charge (fallback fichiers) }
  EmuFindMask    : String;
  EmuFindAttr    : Byte;
@@ -22784,7 +22788,31 @@ Var
  I: Word;
  Row, Col: Integer;
  B: Byte;
+ WLog: Text; WIO: Integer;
 Begin
+ { Watch : log de toute ecriture dans la zone surveillee. }
+ If EmuWatchEnabled And (SizeBytes > 0) And
+    (LongInt(Seg)*16 + Ofs <= EmuWatchPhysHi) And
+    (LongInt(Seg)*16 + Ofs + SizeBytes - 1 >= EmuWatchPhysLo) And
+    (EmuWatchHits < 200) Then Begin
+  Inc(EmuWatchHits);
+  {$I-} Assign(WLog, 'EMUWATCH.LOG'); Append(WLog);
+  WIO := IOResult;
+  If WIO <> 0 Then Begin Assign(WLog,'EMUWATCH.LOG'); Rewrite(WLog); End;
+  WriteLn(WLog, '#', EmuWatchHits, ' WBLK ',
+    HexWord(Seg), ':', HexWord(Ofs),
+    ' (phys=', HexLong(LongInt(Seg)*16+Ofs), ')',
+    ' size=', SizeBytes,
+    '   from CS:IP=', HexWord(EmuPanel.CPU.Segs.CS), ':',
+    HexWord(EmuPanel.CPU.IP),
+    ' AX=', HexWord(EmuPanel.CPU.Regs.AX),
+    ' DS=', HexWord(EmuPanel.CPU.Segs.DS),
+    ' ES=', HexWord(EmuPanel.CPU.Segs.ES),
+    ' DI=', HexWord(EmuPanel.CPU.Regs.DI),
+    ' SI=', HexWord(EmuPanel.CPU.Regs.SI));
+  Close(WLog);
+  {$I+} If IOResult <> 0 Then ;
+ End;
  { Redirection vers VRAM virtuelle pour memoire video texte $B800/$B000 }
  If (((Seg And $F800) = $B800) Or ((Seg And $F800) = $B000)) And
     (SizeBytes > 0) Then Begin
@@ -22813,7 +22841,31 @@ End;
 
 Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte);
 Var Row, Col: Integer;
+    WLog: Text; WIO: Integer;
 Begin
+ { Watch : log de toute ecriture dans la zone surveillee. }
+ If EmuWatchEnabled And
+    (LongInt(Seg) * 16 + Ofs >= EmuWatchPhysLo) And
+    (LongInt(Seg) * 16 + Ofs <= EmuWatchPhysHi) And
+    (EmuWatchHits < 200) Then Begin
+  Inc(EmuWatchHits);
+  {$I-} Assign(WLog, 'EMUWATCH.LOG'); Append(WLog);
+  WIO := IOResult;
+  If WIO <> 0 Then Begin Assign(WLog,'EMUWATCH.LOG'); Rewrite(WLog); End;
+  WriteLn(WLog, '#', EmuWatchHits, ' WB ',
+    HexWord(Seg), ':', HexWord(Ofs),
+    ' (phys=', HexLong(LongInt(Seg)*16+Ofs), ')',
+    ' <- ', HexByte(X),
+    '   from CS:IP=', HexWord(EmuPanel.CPU.Segs.CS), ':',
+    HexWord(EmuPanel.CPU.IP),
+    ' AX=', HexWord(EmuPanel.CPU.Regs.AX),
+    ' DS=', HexWord(EmuPanel.CPU.Segs.DS),
+    ' ES=', HexWord(EmuPanel.CPU.Segs.ES),
+    ' DI=', HexWord(EmuPanel.CPU.Regs.DI),
+    ' SI=', HexWord(EmuPanel.CPU.Regs.SI));
+  Close(WLog);
+  {$I+} If IOResult <> 0 Then ;
+ End;
  { Redirection vers VRAM virtuelle si ecriture en memoire video texte $B800/$B000 }
  If ((Seg And $F800) = $B800) Or ((Seg And $F800) = $B000) Then Begin
   Row := (Ofs Shr 1) Div 80;
@@ -23980,9 +24032,12 @@ Begin
       {$I-} BlockRead(EmuFileH[H], EmuIoBuf, IoJ, BytesIO); {$I+}
       IORes := IOResult;
       If IORes <> 0 Then Break;
-      For ExitCode := 0 To BytesIO - 1 Do
-       Emu_WriteByte(P.CPU, P.CPU.Segs.DS,
-         Word(Ofs + Word(IoI) + ExitCode), EmuIoBuf[ExitCode]);
+      { BUG FIX : si BytesIO=0 (EOF), ne PAS entrer dans For 0 To BytesIO-1
+        car BytesIO-1 wrap a $FFFF (Word) -> 65536 ecritures de garbage. }
+      If BytesIO > 0 Then
+       For ExitCode := 0 To BytesIO - 1 Do
+        Emu_WriteByte(P.CPU, P.CPU.Segs.DS,
+          Word(Ofs + Word(IoI) + ExitCode), EmuIoBuf[ExitCode]);
       Inc(IoI, BytesIO);
       If BytesIO < IoJ Then Break;
      End;
@@ -24572,10 +24627,61 @@ Var
  Cnt: Word;
  Inc16: Integer;
  ResetSegOvr: Boolean;
+ LogF_Dbg: Text;
+ Imm8_Dbg: Byte;
+ Imm16_Dbg, V16_Dbg, Ofs_Dbg: Word;
+ I_Dbg: Integer;
 Begin
  If P.CPU.Fault <> sfNone Then Exit;
  RepPrefix := 0;
  ResetSegOvr := False;
+ { Diagnostic ciblé : dump instruction + DS:[offset teste] a 0EB7:01B7
+   pour identifier la variable RTM TP4 testee a 0 (cause Halt(1)). }
+ If (P.CPU.Segs.CS = $0EB7) And (P.CPU.IP = $01B7) And (Not EmuOvrDumped) Then Begin
+  EmuOvrDumped := True;
+  {$I-} Assign(LogF_Dbg, 'EMUDIAG.LOG'); Rewrite(LogF_Dbg);
+  If IOResult = 0 Then Begin
+   WriteLn(LogF_Dbg, 'HALT-DIAG @0EB7:01B7  DS=', HexWord(P.CPU.Segs.DS),
+     ' SS:SP=', HexWord(P.CPU.Segs.SS), ':', HexWord(P.CPU.Regs.SP),
+     ' BP=', HexWord(P.CPU.Regs.BP));
+   { Decoder l instruction A1 ww ww : MOV AX, [DS:imm16] }
+   Imm8_Dbg := Emu_ReadByte(P.CPU, $0EB7, $01B7);
+   Imm16_Dbg := Emu_ReadWord(P.CPU, $0EB7, $01B8);
+   WriteLn(LogF_Dbg, 'Opcode=', HexByte(Imm8_Dbg), ' ofs16=', HexWord(Imm16_Dbg));
+   If Imm8_Dbg = $A1 Then Begin
+    V16_Dbg := Emu_ReadWord(P.CPU, P.CPU.Segs.DS, Imm16_Dbg);
+    WriteLn(LogF_Dbg, 'MOV AX, [DS:', HexWord(Imm16_Dbg), ']  -> ',
+      HexWord(V16_Dbg));
+   End;
+   { Dumper bytes de l instruction et qq voisines }
+   Write(LogF_Dbg, '0EB7:01B0..01F0 :');
+   For I_Dbg := 0 To $40 Do Begin
+    If (I_Dbg And 15) = 0 Then Begin
+     WriteLn(LogF_Dbg);
+     Write(LogF_Dbg, ' ', HexWord(Word($01B0 + I_Dbg)), ': ');
+    End;
+    Write(LogF_Dbg, HexByte(Emu_ReadByte(P.CPU, $0EB7, Word($01B0 + I_Dbg))), ' ');
+   End;
+   WriteLn(LogF_Dbg);
+   { Dumper bytes du DGROUP autour de l offset teste }
+   If Imm8_Dbg = $A1 Then Begin
+    Ofs_Dbg := Word(Imm16_Dbg And $FFF0);
+    WriteLn(LogF_Dbg, 'DS=', HexWord(P.CPU.Segs.DS), ' offset zone ',
+      HexWord(Ofs_Dbg), '..', HexWord(Word(Ofs_Dbg + $3F)), ':');
+    For I_Dbg := 0 To $3F Do Begin
+     If (I_Dbg And 15) = 0 Then Begin
+      WriteLn(LogF_Dbg);
+      Write(LogF_Dbg, ' ', HexWord(Word(Ofs_Dbg + I_Dbg)), ': ');
+     End;
+     Write(LogF_Dbg, HexByte(Emu_ReadByte(P.CPU, P.CPU.Segs.DS,
+       Word(Ofs_Dbg + I_Dbg))), ' ');
+    End;
+    WriteLn(LogF_Dbg);
+   End;
+   Close(LogF_Dbg);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
  { Boucle pour absorber prefixes de segment et REP/REPNE en serie }
  Repeat
   OpCode := Emu_FetchByte(P.CPU, 0);
@@ -24671,6 +24777,99 @@ Begin
    End;
   $9B: { FWAIT/WAIT : ignore }
    Inc(P.CPU.IP);
+  $27: { DAA - Decimal Adjust after Addition }
+   Begin
+    V8 := P.CPU.Regs.AL;
+    R16 := 0; { reutilise comme drapeau old_CF }
+    If EFG_CF In P.CPU.Flags.s Then R16 := 1;
+    If ((V8 And $0F) > 9) Or (EFG_AF In P.CPU.Flags.s) Then Begin
+     If (Word(V8) + 6) > $FF Then Include(P.CPU.Flags.s, EFG_CF);
+     V8 := Byte(V8 + 6);
+     Include(P.CPU.Flags.s, EFG_AF);
+    End Else
+     Exclude(P.CPU.Flags.s, EFG_AF);
+    If (V8 > $9F) Or (R16 = 1) Then Begin
+     V8 := Byte(V8 + $60);
+     Include(P.CPU.Flags.s, EFG_CF);
+    End Else
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    P.CPU.Regs.AL := V8;
+    Emu_SetSFB(P.CPU, V8); Emu_SetZFB(P.CPU, V8); Emu_SetPF(P.CPU, V8);
+    Inc(P.CPU.IP);
+   End;
+  $2F: { DAS - Decimal Adjust after Subtraction }
+   Begin
+    V8 := P.CPU.Regs.AL;
+    R16 := 0;
+    If EFG_CF In P.CPU.Flags.s Then R16 := 1;
+    If ((V8 And $0F) > 9) Or (EFG_AF In P.CPU.Flags.s) Then Begin
+     If V8 < 6 Then Include(P.CPU.Flags.s, EFG_CF);
+     V8 := Byte(V8 - 6);
+     Include(P.CPU.Flags.s, EFG_AF);
+    End Else
+     Exclude(P.CPU.Flags.s, EFG_AF);
+    If (V8 > $9F) Or (R16 = 1) Then Begin
+     V8 := Byte(V8 - $60);
+     Include(P.CPU.Flags.s, EFG_CF);
+    End;
+    P.CPU.Regs.AL := V8;
+    Emu_SetSFB(P.CPU, V8); Emu_SetZFB(P.CPU, V8); Emu_SetPF(P.CPU, V8);
+    Inc(P.CPU.IP);
+   End;
+  $37: { AAA - ASCII Adjust after Addition }
+   Begin
+    If ((P.CPU.Regs.AL And $0F) > 9) Or (EFG_AF In P.CPU.Flags.s) Then Begin
+     P.CPU.Regs.AL := Byte(P.CPU.Regs.AL + 6);
+     P.CPU.Regs.AH := Byte(P.CPU.Regs.AH + 1);
+     Include(P.CPU.Flags.s, EFG_AF);
+     Include(P.CPU.Flags.s, EFG_CF);
+    End Else Begin
+     Exclude(P.CPU.Flags.s, EFG_AF);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
+    P.CPU.Regs.AL := P.CPU.Regs.AL And $0F;
+    Inc(P.CPU.IP);
+   End;
+  $3F: { AAS - ASCII Adjust after Subtraction }
+   Begin
+    If ((P.CPU.Regs.AL And $0F) > 9) Or (EFG_AF In P.CPU.Flags.s) Then Begin
+     P.CPU.Regs.AL := Byte(P.CPU.Regs.AL - 6);
+     P.CPU.Regs.AH := Byte(P.CPU.Regs.AH - 1);
+     Include(P.CPU.Flags.s, EFG_AF);
+     Include(P.CPU.Flags.s, EFG_CF);
+    End Else Begin
+     Exclude(P.CPU.Flags.s, EFG_AF);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
+    P.CPU.Regs.AL := P.CPU.Regs.AL And $0F;
+    Inc(P.CPU.IP);
+   End;
+  $D4: { AAM - ASCII Adjust after Multiply ; imm8 = base (typiquement 10) }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    If Imm8 = 0 Then Begin
+     { #DE divide error : signaler en faute }
+     P.CPU.Fault := sfInvalidCode;
+     Inc(P.CPU.IP, 2);
+    End Else Begin
+     P.CPU.Regs.AH := P.CPU.Regs.AL Div Imm8;
+     P.CPU.Regs.AL := P.CPU.Regs.AL Mod Imm8;
+     Emu_SetSFB(P.CPU, P.CPU.Regs.AL);
+     Emu_SetZFB(P.CPU, P.CPU.Regs.AL);
+     Emu_SetPF(P.CPU, P.CPU.Regs.AL);
+     Inc(P.CPU.IP, 2);
+    End;
+   End;
+  $D5: { AAD - ASCII Adjust before Division ; imm8 = base }
+   Begin
+    Imm8 := Emu_FetchByte(P.CPU, 1);
+    P.CPU.Regs.AL := Byte(P.CPU.Regs.AL + (P.CPU.Regs.AH * Imm8));
+    P.CPU.Regs.AH := 0;
+    Emu_SetSFB(P.CPU, P.CPU.Regs.AL);
+    Emu_SetZFB(P.CPU, P.CPU.Regs.AL);
+    Emu_SetPF(P.CPU, P.CPU.Regs.AL);
+    Inc(P.CPU.IP, 2);
+   End;
   $D8, $D9, $DA, $DB, $DC, $DD, $DE, $DF:
    { Instructions FPU 80x87 : pas de coprocesseur emule, on les
      ignore en consommant l opcode + ModR/M (et son deplacement). }
@@ -25417,6 +25616,18 @@ Begin
                                Else Exclude(P.CPU.Flags.s, EFG_CF);
            R8 := (R8 Shr 1) Or ((R8 And 1) Shl 7);
           End;
+       2: Begin { RCL : rotation 9 bits a travers CF }
+           If EFG_CF In P.CPU.Flags.s Then V16 := 1 Else V16 := 0;
+           If (R8 And $80) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                 Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R8 := Byte((R8 Shl 1) Or V16);
+          End;
+       3: Begin { RCR : rotation 9 bits a travers CF (droite) }
+           If EFG_CF In P.CPU.Flags.s Then V16 := 1 Else V16 := 0;
+           If (R8 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                               Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R8 := Byte((R8 Shr 1) Or (V16 Shl 7));
+          End;
        4, 6: Begin { SHL/SAL }
               If (R8 And $80) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
                                     Else Exclude(P.CPU.Flags.s, EFG_CF);
@@ -25451,6 +25662,18 @@ Begin
            If (R16 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
                                 Else Exclude(P.CPU.Flags.s, EFG_CF);
            R16 := (R16 Shr 1) Or ((R16 And 1) Shl 15);
+          End;
+       2: Begin { RCL 16 }
+           If EFG_CF In P.CPU.Flags.s Then V8 := 1 Else V8 := 0;
+           If (R16 And $8000) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                    Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R16 := Word((R16 Shl 1) Or V8);
+          End;
+       3: Begin { RCR 16 }
+           If EFG_CF In P.CPU.Flags.s Then V8 := 1 Else V8 := 0;
+           If (R16 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R16 := Word((R16 Shr 1) Or (Word(V8) Shl 15));
           End;
        4, 6: Begin
               If (R16 And $8000) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
@@ -32756,6 +32979,8 @@ Var
  EmuPumpNow: LongInt;
  EmuLastDraw: LongInt;
  EmuKeyLogF: Text;
+ LogF_R: Text;
+ Idx_R, KK_R: Integer;
 Begin NesActive := False;
  InitEmulatorPanel(P);
  P.BinaryPath := BinaryPath;
@@ -33531,6 +33756,28 @@ Begin NesActive := False;
  FillChar(EmuTraceBuf, SizeOf(EmuTraceBuf), 0);
  EmuTraceIdx := 0;
  EmuRunaway := 0;
+ EmuOvrDumped := False;
+ {$I-} Assign(LogF_R, 'EMUDIAGSTART.LOG'); Rewrite(LogF_R);
+ If IOResult = 0 Then Begin
+  WriteLn(LogF_R, 'Run loop starting CS:IP=', HexWord(P.CPU.Segs.CS), ':',
+   HexWord(P.CPU.IP)); Close(LogF_R);
+ End;
+ {$I+} If IOResult <> 0 Then ;
+ { Activer le watch sur la zone 0AAC:8740..87FF pour identifier le code
+   qui ecrase le code TP4 (corruption observee dans la trace). }
+ EmuWatchEnabled := True;
+ { Surveiller la zone physique correspondant a 0AAC:8740..87FF
+   = 0xAAC0+0x8740..0xAAC0+0x87FF = 0x13200..0x132BF }
+ EmuWatchPhysLo := LongInt($0AAC) * 16 + $8740;
+ EmuWatchPhysHi := LongInt($0AAC) * 16 + $87FF;
+ EmuWatchHits := 0;
+ {$I-} Assign(LogF_R, 'EMUWATCH.LOG'); Rewrite(LogF_R);
+ If IOResult = 0 Then Begin
+  WriteLn(LogF_R, 'Watch enabled : phys=', HexLong(EmuWatchPhysLo),
+   '..', HexLong(EmuWatchPhysHi));
+  Close(LogF_R);
+ End;
+ {$I+} If IOResult <> 0 Then ;
  Emu_InitBDA(P);
  EmuPumpCnt := 0;
  { Premier rendu : afficher le panneau (banniere + ecran emule) avant
@@ -33546,9 +33793,37 @@ Begin NesActive := False;
   EmuTraceBuf[EmuTraceIdx].DI := P.CPU.Regs.DI;
   EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
   EmuTraceBuf[EmuTraceIdx].AX := P.CPU.Regs.AX;
+  { Detection one-shot : 1ere fois que CS:IP passe a 0000:0000 }
+  If (P.CPU.Segs.CS = 0) And (P.CPU.IP < $0010) And (Not EmuOvrDumped) Then Begin
+   EmuOvrDumped := True;
+   {$I-} Assign(LogF_R, 'EMUDIAG.LOG'); Rewrite(LogF_R);
+   If IOResult = 0 Then Begin
+    WriteLn(LogF_R, 'CS:IP = 0000:', HexWord(P.CPU.IP),
+      ' (saut vers IVT/null) Steps=', Steps);
+    WriteLn(LogF_R, 'SS:SP=', HexWord(P.CPU.Segs.SS), ':',
+      HexWord(P.CPU.Regs.SP), ' BP=', HexWord(P.CPU.Regs.BP),
+      ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES));
+    WriteLn(LogF_R, 'Pile (16 mots a partir de SS:SP) :');
+    For Idx_R := 0 To 15 Do
+     Write(LogF_R, ' ', HexWord(Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+       Word(P.CPU.Regs.SP + Idx_R * 2))));
+    WriteLn(LogF_R);
+    WriteLn(LogF_R, 'Trace circulaire (last 64) :');
+    For Idx_R := -64 To -1 Do Begin
+     KK_R := (EmuTraceIdx + Idx_R + 8192) And $1FFF;
+     WriteLn(LogF_R, '  ', HexWord(EmuTraceBuf[KK_R].CS), ':',
+      HexWord(EmuTraceBuf[KK_R].IP), ' op=',
+      HexByte(EmuTraceBuf[KK_R].Op), ' AX=',
+      HexWord(EmuTraceBuf[KK_R].AX));
+    End;
+    Close(LogF_R);
+   End;
+   {$I+} If IOResult <> 0 Then ;
+  End;
   { Detection : capturer le point d entree dans une zone de 0x20 (espaces).
     Si on voit le 1er 0x20 apres autre chose, memoriser la position. }
-  If EmuTraceBuf[EmuTraceIdx].Op = $20 Then Begin
+  If (EmuTraceBuf[EmuTraceIdx].Op = $20) Or
+     (EmuTraceBuf[EmuTraceIdx].Op = $00) Then Begin
    If EmuRunaway = 0 Then Begin
     EmuRunawayCS := P.CPU.Segs.CS;
     EmuRunawayIP := P.CPU.IP;
@@ -33623,6 +33898,46 @@ Begin NesActive := False;
  { Toujours dumper le trace pour le diagnostic }
  Emu_DumpTrace;
  P.Fault := P.CPU.Fault;
+ {$I-} Assign(LogF_R, 'EMUDIAG.LOG'); Rewrite(LogF_R);
+ If IOResult = 0 Then Begin
+  WriteLn(LogF_R, 'Sortie de boucle. Steps=', Steps,
+   ' Fault=', P.CPU.Fault, ' (', Emu_FaultText(P.CPU.Fault), ')');
+  WriteLn(LogF_R, 'Final CS:IP=', HexWord(P.CPU.Segs.CS), ':',
+   HexWord(P.CPU.IP), ' SS:SP=', HexWord(P.CPU.Segs.SS), ':',
+   HexWord(P.CPU.Regs.SP), ' BP=', HexWord(P.CPU.Regs.BP),
+   ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES));
+  WriteLn(LogF_R, 'Bytes a 0AAC:8740..876F :');
+  For Idx_R := 0 To $2F Do Begin
+   If (Idx_R And 15) = 0 Then Begin
+    WriteLn(LogF_R);
+    Write(LogF_R, ' ', HexWord(Word($8740 + Idx_R)), ': ');
+   End;
+   Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, $0AAC, Word($8740 + Idx_R))), ' ');
+  End;
+  WriteLn(LogF_R);
+  WriteLn(LogF_R, 'Bytes a 0AAC:0070..00AF :');
+  For Idx_R := 0 To $3F Do Begin
+   If (Idx_R And 15) = 0 Then Begin
+    WriteLn(LogF_R);
+    Write(LogF_R, ' ', HexWord(Word($0070 + Idx_R)), ': ');
+   End;
+   Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, $0AAC, Word($0070 + Idx_R))), ' ');
+  End;
+  WriteLn(LogF_R);
+  WriteLn(LogF_R, 'Last 200 trace entries (newest at bottom):');
+  For Idx_R := -200 To -1 Do Begin
+   KK_R := (EmuTraceIdx + Idx_R + 8192) And $1FFF;
+   WriteLn(LogF_R, '  ', HexWord(EmuTraceBuf[KK_R].CS), ':',
+    HexWord(EmuTraceBuf[KK_R].IP), ' op=',
+    HexByte(EmuTraceBuf[KK_R].Op),
+    ' AX=', HexWord(EmuTraceBuf[KK_R].AX),
+    ' ES=', HexWord(EmuTraceBuf[KK_R].ES),
+    ' DI=', HexWord(EmuTraceBuf[KK_R].DI),
+    ' CX=', HexWord(EmuTraceBuf[KK_R].CX));
+  End;
+  Close(LogF_R);
+ End;
+ {$I+} If IOResult <> 0 Then ;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  P.CurFg := 11;
  EmuVScr_WriteStr(P, '[Fin d execution : ' +
