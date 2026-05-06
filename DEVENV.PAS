@@ -2370,7 +2370,7 @@ Type
  End;
 
  { Structure du PSP (Program Segment Prefix) DOS }
- TEmuPSPRecord = Record Case Byte Of
+ TEmuPSPRecord = Packed Record Case Byte Of
   0:(Buffer:Array[0..255] Of Byte);
   1:(Int20h        : Word;
      EndSegPrg     : Word;
@@ -3087,6 +3087,7 @@ Var
  EmuDtaSeg      : Word;
  EmuDtaOfs      : Word;
  EmuPspSeg      : Word;     { segment du PSP du programme courant }
+ EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuFindMask    : String;
  EmuFindAttr    : Byte;
  EmuFindResults : Array[0..63] Of String;
@@ -23698,6 +23699,7 @@ Var
  ExitCode: Byte;
  LogF: Text;
  H: Integer;
+ K: LongInt;
  FName: String;
  HPath: String;
  IORes: Word;
@@ -23871,6 +23873,112 @@ Begin
     { AH=3Dh : open existing file. DS:DX -> ASCIIZ name. AL = mode. }
     FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
     HPath := Emu_HostPath(FName);
+    {$I-}
+    Assign(LogF, 'EMU21.LOG'); Append(LogF);
+    WriteLn(LogF, '  3D OPEN dos="', FName, '" host="', HPath, '"');
+    { Tracer la chaine d appels : remonter les BP pour identifier les
+      callers TP (chaque frame = saved BP + ret IP + ret CS). }
+    Ofs := P.CPU.Regs.BP;
+    For I := 0 To 6 Do Begin
+     Write(LogF, '     frame[', I, '] BP=', HexWord(Ofs),
+       ' ret=', HexWord(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(Ofs + 4))),
+       ':', HexWord(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(Ofs + 2))));
+     WriteLn(LogF);
+     Ofs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Ofs);
+     If (Ofs = 0) Or (Ofs > $FF00) Then Break;
+    End;
+    Close(LogF);
+    {$I+} If IOResult <> 0 Then ;
+    { Dump une seule fois du caller pour analyse offline }
+    If Not EmuCallDumped Then Begin
+    EmuCallDumped := True;
+    {$I-}
+    Assign(LogF, 'EMUCALL.LOG'); Append(LogF);
+    If IOResult <> 0 Then Begin
+     Assign(LogF, 'EMUCALL.LOG'); Rewrite(LogF);
+    End;
+    WriteLn(LogF, 'Caller code at 00E6:0000..00FF :');
+    For I := 0 To 255 Do Begin
+     If (I And 15) = 0 Then Begin
+      WriteLn(LogF);
+      Write(LogF, HexWord(I), ': ');
+     End;
+     Write(LogF, HexByte(Emu_ReadByte(P.CPU, $00E6, Word(I))), ' ');
+    End;
+    WriteLn(LogF);
+    WriteLn(LogF, 'Stack frame data 0F9F:A100..A2A0 :');
+    K := $A100;
+    While K <= $A2A0 Do Begin
+     If (K And 15) = 0 Then Begin
+      WriteLn(LogF);
+      Write(LogF, HexWord(Word(K)), ': ');
+     End;
+     Write(LogF, HexByte(Emu_ReadByte(P.CPU, $0F9F, Word(K))), ' ');
+     Inc(K);
+    End;
+    WriteLn(LogF);
+    WriteLn(LogF, 'Local buffers 0F9F:9FD0..A0E0 :');
+    K := $9FD0;
+    While K <= $A0E0 Do Begin
+     If (K And 15) = 0 Then Begin
+      WriteLn(LogF);
+      Write(LogF, HexWord(Word(K)), ': ');
+     End;
+     Write(LogF, HexByte(Emu_ReadByte(P.CPU, $0F9F, Word(K))), ' ');
+     Inc(K);
+    End;
+    WriteLn(LogF);
+    WriteLn(LogF, 'Sub at 0EB5:0890..097F :');
+    K := $0890;
+    While K <= $097F Do Begin
+     If (K And 15) = 0 Then Begin
+      WriteLn(LogF);
+      Write(LogF, HexWord(Word(K)), ': ');
+     End;
+     Write(LogF, HexByte(Emu_ReadByte(P.CPU, $0EB5, Word(K))), ' ');
+     Inc(K);
+    End;
+    WriteLn(LogF);
+    WriteLn(LogF, 'Sub at 0B98:0040..00FF :');
+    K := $0040;
+    While K <= $00FF Do Begin
+     If (K And 15) = 0 Then Begin
+      WriteLn(LogF);
+      Write(LogF, HexWord(Word(K)), ': ');
+     End;
+     Write(LogF, HexByte(Emu_ReadByte(P.CPU, $0B98, Word(K))), ' ');
+     Inc(K);
+    End;
+    WriteLn(LogF);
+    WriteLn(LogF, 'TP runtime PSP word at 0F9F:[4756] = ',
+      HexWord(Emu_ReadWord(P.CPU, $0F9F, $4756)));
+    WriteLn(LogF, 'Env block at 0051:0000..003F :');
+    K := 0;
+    While K <= $003F Do Begin
+     If (K And 15) = 0 Then Begin
+      WriteLn(LogF);
+      Write(LogF, HexWord(Word(K)), ': ');
+     End;
+     Write(LogF, HexByte(Emu_ReadByte(P.CPU, $0051, Word(K))), ' ');
+     Inc(K);
+    End;
+    WriteLn(LogF);
+    WriteLn(LogF, 'PSP at 0060:002C (env seg) = ',
+      HexWord(Emu_ReadWord(P.CPU, $0060, $002C)));
+    WriteLn(LogF, 'PSP block at 0060:0000..003F :');
+    K := 0;
+    While K <= $003F Do Begin
+     If (K And 15) = 0 Then Begin
+      WriteLn(LogF);
+      Write(LogF, HexWord(Word(K)), ': ');
+     End;
+     Write(LogF, HexByte(Emu_ReadByte(P.CPU, $0060, Word(K))), ' ');
+     Inc(K);
+    End;
+    WriteLn(LogF);
+    Close(LogF);
+    {$I+} If IOResult <> 0 Then ;
+    End;
     H := Emu_AllocHandle;
     If (H = 0) Or (Length(HPath) = 0) Then Begin
       Include(P.CPU.Flags.s, EFG_CF);
@@ -24346,6 +24454,7 @@ Begin
        Inc(P.CPU.IP, 3);
       End;
   End;
+  If ResetSegOvr Then P.CPU.HasSegOvr := False;
   Exit;
  End;
  Case OpCode Of
