@@ -24086,22 +24086,22 @@ Begin
    ' CS:IP=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
  Close(LogF);
  {$I+} If IOResult <> 0 Then ;
- { Si l application a installe son propre ISR via INT 21h AH=25h,
-   sauter via l IVT. Sinon stub interne. }
- IvtOfs := Emu_ReadWord(P.CPU, 0, Word(Num) * 4);
- IvtSeg := Emu_ReadWord(P.CPU, 0, Word(Num) * 4 + 2);
- If IvtSeg <> 0 Then Begin
-   Emu_FireHwInt(P, Num);
-   Exit;
- End;
+ { Services BIOS/DOS de base toujours geres par stubs internes. }
  Case Num Of
   $10: Emu_DoInt10(P);
   $16: Emu_DoInt16(P);
   $20: P.CPU.Fault := sfEndProgram;
   $27: P.CPU.Fault := sfEndProgram;
   $21: Emu_DoInt21(P);
-  Else
-   ;
+  Else Begin
+   { Pour les autres INT, si l application a installe un ISR
+     via INT 21h AH=25h, on saute dedans. Sinon on ignore. }
+   IvtOfs := Emu_ReadWord(P.CPU, 0, Word(Num) * 4);
+   IvtSeg := Emu_ReadWord(P.CPU, 0, Word(Num) * 4 + 2);
+   If IvtSeg <> 0 Then Emu_FireHwInt(P, Num);
+   { Compatibilite : si IvtSeg=0, on ignore silencieusement. }
+   If IvtOfs = IvtOfs Then ;  { dummy pour eviter warning hint }
+  End;
  End;
 End;
 
@@ -25005,8 +25005,25 @@ Begin
          P.CPU.IP := V16;
          Exit;
         End;
+     3: Begin                                   { CALL FAR m16:16 }
+         Inc(P.CPU.IP, 1 + Op.Len);
+         Emu_PushWord(P.CPU, P.CPU.Segs.CS);
+         Emu_PushWord(P.CPU, P.CPU.IP);
+         NewIP := Emu_ReadWord(P.CPU, Op.Seg, Op.Ofs);
+         NewCS := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+         P.CPU.IP := NewIP;
+         P.CPU.Segs.CS := NewCS;
+         Exit;
+        End;
      4: Begin                                   { JMP near rm16 }
          P.CPU.IP := V16;
+         Exit;
+        End;
+     5: Begin                                   { JMP FAR m16:16 }
+         NewIP := Emu_ReadWord(P.CPU, Op.Seg, Op.Ofs);
+         NewCS := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+         P.CPU.IP := NewIP;
+         P.CPU.Segs.CS := NewCS;
          Exit;
         End;
      6: Emu_PushWord(P.CPU, V16);              { PUSH rm16 }
@@ -33130,6 +33147,28 @@ Begin
    End;
    Write(EmuDumpF, Emu_HexByte(
     Emu_ReadByte(P.CPU, $0EB7, EmuDumpI)), ' ');
+  End;
+  WriteLn(EmuDumpF);
+  WriteLn(EmuDumpF);
+  WriteLn(EmuDumpF, 'Bytes bruts CS=0EB5 0x0620..0x06CF :');
+  For EmuDumpI := $0620 To $06CF Do Begin
+   If (EmuDumpI And 15) = 0 Then Begin
+    WriteLn(EmuDumpF);
+    Write(EmuDumpF, Emu_HexWord(EmuDumpI), ': ');
+   End;
+   Write(EmuDumpF, Emu_HexByte(
+    Emu_ReadByte(P.CPU, $0EB5, EmuDumpI)), ' ');
+  End;
+  WriteLn(EmuDumpF);
+  WriteLn(EmuDumpF);
+  WriteLn(EmuDumpF, 'Bytes bruts CS=0EB5 0x0620..0x06CF :');
+  For EmuDumpI := $0620 To $06CF Do Begin
+   If (EmuDumpI And 15) = 0 Then Begin
+    WriteLn(EmuDumpF);
+    Write(EmuDumpF, Emu_HexWord(EmuDumpI), ': ');
+   End;
+   Write(EmuDumpF, Emu_HexByte(
+    Emu_ReadByte(P.CPU, $0EB5, EmuDumpI)), ' ');
   End;
   WriteLn(EmuDumpF);
   Close(EmuDumpF);
