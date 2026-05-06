@@ -3089,6 +3089,7 @@ Var
  EmuPspSeg      : Word;     { segment du PSP du programme courant }
  EmuNextFreeSeg : Word;     { segment libre pour AH=48 (alloc) }
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
+ EmuOvrDumped   : Boolean;  { dump overlay diagnostic une seule fois }
  EmuFindMask    : String;
  EmuFindAttr    : Byte;
  EmuFindResults : Array[0..63] Of String;
@@ -23737,6 +23738,7 @@ Var
  OpenMode: Byte;
  Yr, Mo, Dy, Wd: Word;
  Hr, Mn, Sc, Cs: Word;
+ RSeg, ROff: Word;
 Begin
  { TRACE diagnostic : ecrire chaque INT21h dans EMU21.LOG }
  {$I-}
@@ -23834,21 +23836,42 @@ Begin
     Ofs := P.CPU.Regs.DX;
     H := P.CPU.Regs.BX;
     I := 0;
-    { Patch overlay TP : si DS<$100, ES pointe sur stub CD 3F et
-      le champ seg de la struct (+10) est zero, allouer un segment
-      libre et le patcher. Permet aux overlays TP de se charger
-      correctement. }
-    If (H >= 5) And (P.CPU.Segs.DS < $0100)
-       And (P.CPU.Segs.ES <> 0)
-       And (Emu_ReadByte(P.CPU, P.CPU.Segs.ES, 0) = $CD)
-       And (Emu_ReadByte(P.CPU, P.CPU.Segs.ES, 1) = $3F)
-       And (Emu_ReadWord(P.CPU, P.CPU.Segs.ES, $10) = 0) Then Begin
-     If EmuNextFreeSeg < $2000 Then EmuNextFreeSeg := $2000;
-     Emu_WriteByte(P.CPU, P.CPU.Segs.ES, $10, Lo(EmuNextFreeSeg));
-     Emu_WriteByte(P.CPU, P.CPU.Segs.ES, $11, Hi(EmuNextFreeSeg));
-     P.CPU.Segs.DS := EmuNextFreeSeg;
-     EmuNextFreeSeg := EmuNextFreeSeg + $1000;
-     If LongInt(EmuNextFreeSeg) > LongInt($9000) Then EmuNextFreeSeg := $2000;
+    { Diagnostic overlay : si DS<$100 (lecture vers IVT/PSP, donc
+      buffer overlay TP non alloue), dumper le DGROUP de TP pour
+      identifier les variables runtime (HeapPtr, FreePtr, OvrHeapOrg,
+      OvrCodeStart...). Le DGROUP est le segment dans lequel on a
+      vu DS=$0F9F lors des appels DOS precedents. }
+    If (H >= 5) And (P.CPU.Segs.DS < $0100) And (Not EmuOvrDumped) Then Begin
+     EmuOvrDumped := True;
+     {$I-}
+     Assign(LogF, 'EMU21.LOG'); Append(LogF);
+     If IOResult <> 0 Then Begin Assign(LogF,'EMU21.LOG'); Rewrite(LogF); End;
+     WriteLn(LogF, '  ## OVR DIAG: DS:DX=', HexWord(P.CPU.Segs.DS),
+       ':', HexWord(Word(Ofs)), ' CX=', HexWord(P.CPU.Regs.CX),
+       ' ES:DI=', HexWord(P.CPU.Segs.ES), ':', HexWord(P.CPU.Regs.DI),
+       ' SS:SP=', HexWord(P.CPU.Segs.SS), ':', HexWord(P.CPU.Regs.SP));
+     { Dump du DGROUP suppose (0F9F) : 256 octets en debut + zone HEAP }
+     Write(LogF, '  DGROUP@0F9F:0000..00FF :');
+     For J := 0 To $FF Do Begin
+      If (J And 15) = 0 Then Begin
+       WriteLn(LogF);
+       Write(LogF, '    ', HexWord(Word(J)), ': ');
+      End;
+      Write(LogF, HexByte(Emu_ReadByte(P.CPU, $0F9F, Word(J))), ' ');
+     End;
+     WriteLn(LogF);
+     { Variables RTM TP7 typiques (offsets approximatifs) :
+       HeapOrg, HeapPtr, FreePtr, FreeMin, OvrHeapOrg, OvrHeapPtr,
+       OvrHeapEnd, OvrLoadList, OvrFileHandle. }
+     WriteLn(LogF, '  TP RTM probable vars (32-bit pointers little-endian):');
+     For J := 0 To 31 Do Begin
+      RSeg := Emu_ReadWord(P.CPU, $0F9F, Word(J*4 + 2));
+      ROff := Emu_ReadWord(P.CPU, $0F9F, Word(J*4));
+      WriteLn(LogF, '    [+', HexWord(Word(J*4)), '] = ',
+        HexWord(RSeg), ':', HexWord(ROff));
+     End;
+     Close(LogF);
+     {$I+} If IOResult <> 0 Then ;
     End;
     If H = 0 Then Begin
      While (I < P.CPU.Regs.CX) And EmuVScr_HasKey(P) Do Begin
@@ -24173,16 +24196,24 @@ Begin
    End;
   $48:
    { AH=48h : allocate memory. BX = paragraphes demandes.
-     Retour : AX = segment alloue. }
+     Retour : si succes AX=segment, CF=0. Si echec CF=1, AX=8,
+     BX=plus grand bloc disponible (pratique : TP appelle d abord
+     avec BX=$FFFF pour interroger la taille maximum). }
    Begin
     If EmuNextFreeSeg = 0 Then EmuNextFreeSeg := $2000;
-    P.CPU.Regs.AX := EmuNextFreeSeg;
-    { Avancer le pointeur, plafonne a $9000 (UMB). }
-    If LongInt(EmuNextFreeSeg) + LongInt(P.CPU.Regs.BX) > LongInt($9000) Then
-     EmuNextFreeSeg := $9000
-    Else
+    { Calculer les paragraphes disponibles jusqu a $9F00. }
+    If EmuNextFreeSeg >= $9F00 Then K := 0
+    Else K := LongInt($9F00) - LongInt(EmuNextFreeSeg);
+    If LongInt(P.CPU.Regs.BX) > K Then Begin
+     { Echec : pas assez de memoire }
+     Include(P.CPU.Flags.s, EFG_CF);
+     P.CPU.Regs.AX := 8;
+     P.CPU.Regs.BX := Word(K);
+    End Else Begin
+     P.CPU.Regs.AX := EmuNextFreeSeg;
      EmuNextFreeSeg := EmuNextFreeSeg + P.CPU.Regs.BX;
-    Exclude(P.CPU.Flags.s, EFG_CF);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
    End;  $49:
    { AH=49h free memory : succes simule }
    Begin
