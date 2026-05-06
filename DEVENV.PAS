@@ -3086,6 +3086,7 @@ Var
  EmuFileMode    : Array[5..31] Of Byte;  { 0=read 1=write 2=rw }
  EmuDtaSeg      : Word;
  EmuDtaOfs      : Word;
+ EmuPspSeg      : Word;     { segment du PSP du programme courant }
  EmuFindMask    : String;
  EmuFindAttr    : Byte;
  EmuFindResults : Array[0..63] Of String;
@@ -22970,6 +22971,7 @@ Begin
  C.Regs.SP := $FFFE;
  C.Regs.BP := $091C;
  C.IP := $100;
+ EmuPspSeg := C.Segs.CS;
  { Construire un PSP minimal }
  FillChar(PSP, SizeOf(PSP), 0);
  PSP.Int20h := $20CD;
@@ -23014,6 +23016,8 @@ Var
  Exe: TEmuHeaderEXE;
  Buffer: Array[0..255] Of Byte;
  Reloc: Array[0..1] Of Word;
+ EnvOfs: Word;
+ EnvName: String;
 Begin
  Emu_LoadExe := False;
  {$I-}
@@ -23030,6 +23034,7 @@ Begin
  HeadSize := Exe.SizeOfHeader * 16;
  PSPSeg := $0060;
  LoadSeg := PSPSeg + 16;     { convention DOS : programme charge a PSP+16 }
+ EmuPspSeg := PSPSeg;
  C.IP := Exe.IP;
  C.Segs.CS := Word(LoadSeg + Exe.OfsLoad);
  C.Segs.DS := PSPSeg;        { au demarrage DS = ES = PSPSeg }
@@ -23062,6 +23067,24 @@ Begin
   PSP.Buffer[$81] := $0D;
  End;
  Emu_WriteBlock(C, PSPSeg, 0, PSP.Buffer, $100);
+ { Construire un bloc d environnement minimal a 0051:0000 contenant
+   la chaine "PATH=" puis terminateur 00 00, suivi de count 01 00 puis
+   ASCIIZ avec le path complet de l EXE. TP7 / DOS apps utilisent ce
+   nom pour OvrInit, GetEnv, ParamStr(0). }
+ EnvOfs := 0;
+ EnvName := 'PATH=';
+ For I := 1 To Length(EnvName) Do Begin
+  Emu_WriteByte(C, $0051, EnvOfs, Byte(EnvName[I])); Inc(EnvOfs);
+ End;
+ Emu_WriteByte(C, $0051, EnvOfs, 0); Inc(EnvOfs);  { fin "PATH=" }
+ Emu_WriteByte(C, $0051, EnvOfs, 0); Inc(EnvOfs);  { fin liste env }
+ Emu_WriteByte(C, $0051, EnvOfs, 1); Inc(EnvOfs);  { count = 1 }
+ Emu_WriteByte(C, $0051, EnvOfs, 0); Inc(EnvOfs);
+ EnvName := FileName;
+ For I := 1 To Length(EnvName) Do Begin
+  Emu_WriteByte(C, $0051, EnvOfs, Byte(EnvName[I])); Inc(EnvOfs);
+ End;
+ Emu_WriteByte(C, $0051, EnvOfs, 0);  { ASCIIZ terminator }
  { Charger l image executable a LoadSeg:0000 (toute l image, pas a CS:IP) }
  Addr := LongInt(LoadSeg) Shl 4;
  Seek(Handle, HeadSize);
@@ -23643,22 +23666,27 @@ Begin
   Emu_ReadAsciiz := S;
 End;
 
-{ Convertir nom DOS en nom hote (juste prendre le nom + extension,
-  sans drive/path pour simplifier). Retourne le path absolu. }
+{ Convertir nom DOS en nom hote. Si chemin absolu avec drive (X:\...),
+  le passer tel quel a FreePascal Windows (qui le supporte). Sinon
+  conversion / -> \, drop des prefixes pour relatif. }
 Function Emu_HostPath(Const DosName: String): String;
 Var
   S: String;
   I: Integer;
 Begin
   S := DosName;
-  { Retirer eventuellement le prefixe drive 'X:' }
-  If (Length(S) >= 2) And (S[2] = ':') Then S := Copy(S, 3, Length(S) - 2);
-  { Retirer prefixe '\' (chemin absolu DOS -> relatif hote) si present
-    et qu il n y a pas de second '\' }
-  If (Length(S) >= 1) And (S[1] = '\') Then S := Copy(S, 2, Length(S) - 1);
-  { Convertir / en \ }
+  { Convertir / en \ d abord }
   For I := 1 To Length(S) Do
     If S[I] = '/' Then S[I] := '\';
+  { Si chemin absolu avec drive (X:\...), le passer tel quel }
+  If (Length(S) >= 3) And (S[2] = ':') And (S[3] = '\') Then Begin
+    Emu_HostPath := S;
+    Exit;
+  End;
+  { Retirer eventuellement le prefixe drive 'X:' }
+  If (Length(S) >= 2) And (S[2] = ':') Then S := Copy(S, 3, Length(S) - 2);
+  { Retirer prefixe '\' (chemin absolu DOS -> relatif hote) si present }
+  If (Length(S) >= 1) And (S[1] = '\') Then S := Copy(S, 2, Length(S) - 1);
   Emu_HostPath := S;
 End;
 
@@ -23863,8 +23891,7 @@ Begin
         P.CPU.Regs.AX := H;
       End;
     End;
-   End;
-  $3E:
+   End;  $3E:
    Begin
     { AH=3Eh : close handle BX }
     H := P.CPU.Regs.BX;
@@ -23999,7 +24026,7 @@ Begin
    End;
   $62:
    { AH=62h : get PSP segment }
-   P.CPU.Regs.BX := P.CPU.Segs.DS - 1;
+   P.CPU.Regs.BX := EmuPspSeg;
   $1A:
    Begin
     { AH=1Ah : set DTA = DS:DX }
@@ -24049,7 +24076,7 @@ Begin
    ;
   $51:
    { AH=51h : get current PSP -> BX }
-   P.CPU.Regs.BX := $0060;
+   P.CPU.Regs.BX := EmuPspSeg;
   $33:
    Begin
     { AH=33h : Ctrl-Break check. AL=00 get -> DL=state ; AL=01 set ignored. }
@@ -33147,17 +33174,6 @@ Begin
    End;
    Write(EmuDumpF, Emu_HexByte(
     Emu_ReadByte(P.CPU, $0EB7, EmuDumpI)), ' ');
-  End;
-  WriteLn(EmuDumpF);
-  WriteLn(EmuDumpF);
-  WriteLn(EmuDumpF, 'Bytes bruts CS=0EB5 0x0620..0x06CF :');
-  For EmuDumpI := $0620 To $06CF Do Begin
-   If (EmuDumpI And 15) = 0 Then Begin
-    WriteLn(EmuDumpF);
-    Write(EmuDumpF, Emu_HexWord(EmuDumpI), ': ');
-   End;
-   Write(EmuDumpF, Emu_HexByte(
-    Emu_ReadByte(P.CPU, $0EB5, EmuDumpI)), ' ');
   End;
   WriteLn(EmuDumpF);
   WriteLn(EmuDumpF);
