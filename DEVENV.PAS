@@ -3087,6 +3087,7 @@ Var
  EmuDtaSeg      : Word;
  EmuDtaOfs      : Word;
  EmuPspSeg      : Word;     { segment du PSP du programme courant }
+ EmuNextFreeSeg : Word;     { segment libre pour AH=48 (alloc) }
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuFindMask    : String;
  EmuFindAttr    : Byte;
@@ -23019,6 +23020,7 @@ Var
  Reloc: Array[0..1] Of Word;
  EnvOfs: Word;
  EnvName: String;
+ LogF: Text;
 Begin
  Emu_LoadExe := False;
  {$I-}
@@ -23068,6 +23070,18 @@ Begin
   PSP.Buffer[$81] := $0D;
  End;
  Emu_WriteBlock(C, PSPSeg, 0, PSP.Buffer, $100);
+ { Installer un MCB (Memory Control Block) DOS a PSPSeg-1 = $005F
+   pour que le runtime TP/DOS voie la memoire disponible. Format MCB :
+   offset 0 : byte 'M' (continue) ou 'Z' (dernier)
+   offset 1 : Word owner segment (= PSP du proprietaire)
+   offset 3 : Word size en paragraphes (sans le MCB lui-meme)
+   offset 5..7 : reserve 3 octets
+   offset 8..15 : nom proprietaire (8 octets) }
+ Emu_WriteByte(C, $005F, 0, $5A);     { 'Z' bloc final }
+ Emu_WriteByte(C, $005F, 1, Lo(PSPSeg));
+ Emu_WriteByte(C, $005F, 2, Hi(PSPSeg));
+ Emu_WriteByte(C, $005F, 3, Lo($9F9F));
+ Emu_WriteByte(C, $005F, 4, Hi($9F9F));
  { Construire un bloc d environnement minimal a 0051:0000 contenant
    la chaine "PATH=" puis terminateur 00 00, suivi de count 01 00 puis
    ASCIIZ avec le path complet de l EXE. TP7 / DOS apps utilisent ce
@@ -23086,16 +23100,23 @@ Begin
   Emu_WriteByte(C, $0051, EnvOfs, Byte(EnvName[I])); Inc(EnvOfs);
  End;
  Emu_WriteByte(C, $0051, EnvOfs, 0);  { ASCIIZ terminator }
- { Charger l image executable a LoadSeg:0000 (toute l image, pas a CS:IP) }
+ { Charger l image executable a LoadSeg:0000 (toute l image, pas a CS:IP).
+   Calculer la taille reelle de l image : (PagesInFile-1)*512 + BytesInLastPage
+   - SizeOfHeader (en octets). Le reste du fichier (overlays, donnees) n est
+   PAS charge en memoire ; c est l overlay manager qui le lira a la demande. }
+ N := (LongInt(Exe.LenShr9) - 1) * 512 + LongInt(Exe.LenN511) - HeadSize;
+ If N < 0 Then N := 0;
  Addr := LongInt(LoadSeg) Shl 4;
  Seek(Handle, HeadSize);
- While Not Eof(Handle) Do Begin
-  BlockRead(Handle, Buffer, SizeOf(Buffer), ByteReaded);
+ While (Not Eof(Handle)) And (N > 0) Do Begin
+  I := SizeOf(Buffer);
+  If LongInt(I) > N Then I := N;
+  BlockRead(Handle, Buffer, I, ByteReaded);
   Emu_WriteAbsBlock(C, Addr, Buffer, ByteReaded);
   Addr := Addr + ByteReaded;
-  If ByteReaded < SizeOf(Buffer) Then Break;
- End;
- { Relogement (relocation table) }
+  N := N - ByteReaded;
+  If ByteReaded < I Then Break;
+ End; { Relogement (relocation table) }
  Seek(Handle, Exe.AdrExeTable);
  For I := 1 To Exe.NmSeg Do Begin
   BlockRead(Handle, Reloc, SizeOf(Reloc), ByteReaded);
@@ -23108,6 +23129,13 @@ Begin
   Emu_WriteAbsBlock(C, RPos, N, 2);
  End;
  Close(Handle);
+ { Initialiser pointeur de segment libre pour AH=48 (allocation memoire).
+   Place juste apres l image chargee + MinParagraph (heap reserve). }
+ If ((Addr + 15) Shr 4) + LongInt(Exe.MinParagraph) > 36864 Then
+  EmuNextFreeSeg := $9000
+ Else
+  EmuNextFreeSeg := Word((Addr + 15) Shr 4) + Exe.MinParagraph;
+ If EmuNextFreeSeg < $2000 Then EmuNextFreeSeg := $2000;
  Emu_LoadExe := True;
 End;
 
@@ -23806,6 +23834,22 @@ Begin
     Ofs := P.CPU.Regs.DX;
     H := P.CPU.Regs.BX;
     I := 0;
+    { Patch overlay TP : si DS<$100, ES pointe sur stub CD 3F et
+      le champ seg de la struct (+10) est zero, allouer un segment
+      libre et le patcher. Permet aux overlays TP de se charger
+      correctement. }
+    If (H >= 5) And (P.CPU.Segs.DS < $0100)
+       And (P.CPU.Segs.ES <> 0)
+       And (Emu_ReadByte(P.CPU, P.CPU.Segs.ES, 0) = $CD)
+       And (Emu_ReadByte(P.CPU, P.CPU.Segs.ES, 1) = $3F)
+       And (Emu_ReadWord(P.CPU, P.CPU.Segs.ES, $10) = 0) Then Begin
+     If EmuNextFreeSeg < $2000 Then EmuNextFreeSeg := $2000;
+     Emu_WriteByte(P.CPU, P.CPU.Segs.ES, $10, Lo(EmuNextFreeSeg));
+     Emu_WriteByte(P.CPU, P.CPU.Segs.ES, $11, Hi(EmuNextFreeSeg));
+     P.CPU.Segs.DS := EmuNextFreeSeg;
+     EmuNextFreeSeg := EmuNextFreeSeg + $1000;
+     If LongInt(EmuNextFreeSeg) > LongInt($9000) Then EmuNextFreeSeg := $2000;
+    End;
     If H = 0 Then Begin
      While (I < P.CPU.Regs.CX) And EmuVScr_HasKey(P) Do Begin
       B := EmuVScr_PopKey(P);
@@ -24072,13 +24116,14 @@ Begin
     { AH=41h : delete file DS:DX }
     FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
     HPath := Emu_HostPath(FName);
-    Assign(EmuFileH[5], HPath);
-    {$I-} Erase(EmuFileH[5]); {$I+}
-    If IOResult <> 0 Then Begin
-      Include(P.CPU.Flags.s, EFG_CF);
-      P.CPU.Regs.AX := 2;
-    End Else
-      Exclude(P.CPU.Flags.s, EFG_CF);
+    {$I-}
+    Assign(LogF, 'EMU21.LOG'); Append(LogF);
+    WriteLn(LogF, '  41 DELETE dos="', FName, '" host="', HPath, '" -- IGNORE');
+    Close(LogF);
+    {$I+} If IOResult <> 0 Then ;
+    { Securite : NE PAS supprimer reellement les fichiers, simuler succes. }
+    Exclude(P.CPU.Flags.s, EFG_CF);
+    P.CPU.Regs.AX := 0;
    End;
   $42:
    Begin
@@ -24126,11 +24171,36 @@ Begin
       Exclude(P.CPU.Flags.s, EFG_CF);
     End;
    End;
-  $48, $49, $4A:
-   { AH=48h alloc / 49h free / 4Ah resize memory : succes simule }
+  $48:
+   { AH=48h : allocate memory. BX = paragraphes demandes.
+     Retour : AX = segment alloue. }
+   Begin
+    If EmuNextFreeSeg = 0 Then EmuNextFreeSeg := $2000;
+    P.CPU.Regs.AX := EmuNextFreeSeg;
+    { Avancer le pointeur, plafonne a $9000 (UMB). }
+    If LongInt(EmuNextFreeSeg) + LongInt(P.CPU.Regs.BX) > LongInt($9000) Then
+     EmuNextFreeSeg := $9000
+    Else
+     EmuNextFreeSeg := EmuNextFreeSeg + P.CPU.Regs.BX;
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;  $49:
+   { AH=49h free memory : succes simule }
    Begin
     Exclude(P.CPU.Flags.s, EFG_CF);
-    P.CPU.Regs.AX := P.CPU.Segs.DS;
+   End;
+  $4A:
+   { AH=4Ah : resize memory block ES = AL = result.
+     Si BX > paragraphes disponibles depuis ES jusqu a $9FFF inclus,
+     retourner CF=1 + BX = max disponible (TP s en sert pour decouvrir
+     la taille de son bloc memoire au demarrage). }
+   Begin
+    If LongInt(P.CPU.Segs.ES) + LongInt(P.CPU.Regs.BX) > LongInt($A000) Then Begin
+     Include(P.CPU.Flags.s, EFG_CF);
+     P.CPU.Regs.BX := Word($A000 - P.CPU.Segs.ES);
+     P.CPU.Regs.AX := 8;     { code erreur : insufficient memory }
+    End Else Begin
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
    End;
   $62:
    { AH=62h : get PSP segment }
