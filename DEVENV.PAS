@@ -23083,19 +23083,18 @@ Begin
  Emu_WriteByte(C, $005F, 2, Hi(PSPSeg));
  Emu_WriteByte(C, $005F, 3, Lo($9F9F));
  Emu_WriteByte(C, $005F, 4, Hi($9F9F));
- { Construire un bloc d environnement minimal a 0051:0000 contenant
-   la chaine "PATH=" puis terminateur 00 00, suivi de count 01 00 puis
-   ASCIIZ avec le path complet de l EXE. TP7 / DOS apps utilisent ce
-   nom pour OvrInit, GetEnv, ParamStr(0). }
+ { Construire un bloc d environnement standard a 0051:0000.
+   Format DOS :
+     [chaines "VAR=val\0" successives]
+     \0                   (terminateur final de la liste)
+     WORD count = 1
+     ASCIIZ chemin complet de l executable
+   Pour eviter tout probleme de scan, on ne met aucune variable :
+   le bloc commence directement par le \0 final de la liste vide. }
  EnvOfs := 0;
- EnvName := 'PATH=';
- For I := 1 To Length(EnvName) Do Begin
-  Emu_WriteByte(C, $0051, EnvOfs, Byte(EnvName[I])); Inc(EnvOfs);
- End;
- Emu_WriteByte(C, $0051, EnvOfs, 0); Inc(EnvOfs);  { fin "PATH=" }
- Emu_WriteByte(C, $0051, EnvOfs, 0); Inc(EnvOfs);  { fin liste env }
- Emu_WriteByte(C, $0051, EnvOfs, 1); Inc(EnvOfs);  { count = 1 }
- Emu_WriteByte(C, $0051, EnvOfs, 0); Inc(EnvOfs);
+ Emu_WriteByte(C, $0051, EnvOfs, 0); Inc(EnvOfs);  { fin liste vide }
+ Emu_WriteByte(C, $0051, EnvOfs, 1); Inc(EnvOfs);  { count = 1 (Lo) }
+ Emu_WriteByte(C, $0051, EnvOfs, 0); Inc(EnvOfs);  { count = 1 (Hi) }
  EnvName := FileName;
  For I := 1 To Length(EnvName) Do Begin
   Emu_WriteByte(C, $0051, EnvOfs, Byte(EnvName[I])); Inc(EnvOfs);
@@ -24566,6 +24565,16 @@ Begin
    Begin
     P.CPU.Fault := sfHLT;
     Inc(P.CPU.IP);
+   End;
+  $9B: { FWAIT/WAIT : ignore }
+   Inc(P.CPU.IP);
+  $D8, $D9, $DA, $DB, $DC, $DD, $DE, $DF:
+   { Instructions FPU 80x87 : pas de coprocesseur emule, on les
+     ignore en consommant l opcode + ModR/M (et son deplacement). }
+   Begin
+    ModRM := Emu_FetchByte(P.CPU, 1);
+    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $CD: { INT imm8 }
    Begin
