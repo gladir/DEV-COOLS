@@ -24517,6 +24517,18 @@ Begin
  P.CPU.IP := NewIP;
 End;
 
+{ Tentative de trap divide-by-zero via INT 0. Si l application a installe
+  un handler (TP4 le fait pour afficher "Runtime error 200"), on dispatche.
+  Sinon on signale une faute pour arreter l emulation proprement.
+  Le caller doit avoir DEJA avance IP au-dela du DIV. }
+Procedure Emu_Div0Trap(Var P: TEmulatorPanel);
+Var VecCS: Word;
+Begin
+ VecCS := Emu_ReadWord(P.CPU, 0, 0 * 4 + 2); { IVT[0] segment }
+ If VecCS <> 0 Then Emu_FireHwInt(P, 0)
+ Else P.CPU.Fault := sfDivision0;
+End;
+
 { Initialiser la BIOS Data Area minimale a 0040:0000. }
 Procedure Emu_InitBDA(Var P: TEmulatorPanel);
 Var I: Integer;
@@ -25768,6 +25780,10 @@ Begin
         End;
     End;
     Inc(P.CPU.IP, 1 + Op.Len);
+    If P.CPU.Fault = sfDivision0 Then Begin
+     P.CPU.Fault := sfNone;
+     Emu_Div0Trap(P);
+    End;
    End;
   $F7: { Group 3 word }
    Begin
@@ -25835,6 +25851,10 @@ Begin
         End;
     End;
     Inc(P.CPU.IP, 1 + Op.Len);
+    If P.CPU.Fault = sfDivision0 Then Begin
+     P.CPU.Fault := sfNone;
+     Emu_Div0Trap(P);
+    End;
    End;
   Else
    Begin
