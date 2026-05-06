@@ -3213,6 +3213,29 @@ Var
  EmuDumpI: Word;
  { --- Etat unifie de la carte video CGA/EGA/VGA --- }
  EmuVideo       : TEmuVideoState;
+ { --- Etat de la souris emulee (INT 33h) --- }
+ EmuMouseInst   : Boolean;       { driver "installe" }
+ EmuMouseVis    : Integer;       { compteur visible (>=0 visible) }
+ EmuMouseX      : Integer;       { position X en pixels logiques }
+ EmuMouseY      : Integer;       { position Y en pixels logiques }
+ EmuMouseBtns   : Byte;          { bit0=L bit1=R bit2=M }
+ EmuMouseXMin   : Integer;
+ EmuMouseXMax   : Integer;
+ EmuMouseYMin   : Integer;
+ EmuMouseYMax   : Integer;
+ EmuMouseHRatio : Word;          { mickeys/8pix horiz (def 8) }
+ EmuMouseVRatio : Word;          { mickeys/8pix vert  (def 16) }
+ EmuMouseMickX  : Integer;       { compteur mickeys delta X }
+ EmuMouseMickY  : Integer;       { compteur mickeys delta Y }
+ EmuMousePressCnt   : Array[0..2] Of Word;
+ EmuMousePressX     : Array[0..2] Of Integer;
+ EmuMousePressY     : Array[0..2] Of Integer;
+ EmuMouseRelCnt     : Array[0..2] Of Word;
+ EmuMouseRelX       : Array[0..2] Of Integer;
+ EmuMouseRelY       : Array[0..2] Of Integer;
+ EmuMouseHandlerSeg : Word;
+ EmuMouseHandlerOfs : Word;
+ EmuMouseHandlerMsk : Word;
  { Etat de l emulateur Motorola 68000 integre }
  M68K_D         : Array[0..7] Of LongInt;
  M68K_A         : Array[0..7] Of LongInt;
@@ -25075,12 +25098,17 @@ Begin
    Begin
     If Emu_BiosHasKey(P) Then Begin
      P.CPU.Regs.AL := Byte(Emu_BiosPopKey(P) And $FF);
-     If P.CPU.Regs.AH = $01 Then
+     If P.CPU.Regs.AH = $01 Then Begin
       EmuVScr_PutChar(P, Chr(P.CPU.Regs.AL));
+      { DOS ajoute LF automatiquement apres CR pour fonction 01. }
+      If P.CPU.Regs.AL = 13 Then EmuVScr_PutChar(P, #10);
+     End;
     End Else If EmuVScr_HasKey(P) Then Begin
      P.CPU.Regs.AL := EmuVScr_PopKey(P);
-     If P.CPU.Regs.AH = $01 Then
+     If P.CPU.Regs.AH = $01 Then Begin
       EmuVScr_PutChar(P, Chr(P.CPU.Regs.AL));
+      If P.CPU.Regs.AL = 13 Then EmuVScr_PutChar(P, #10);
+     End;
     End Else
      Dec(P.CPU.IP, 2);
    End;
@@ -26471,6 +26499,218 @@ End;
   via Emu_DoInt directement (compatibilité avec le mode stub). }
 Procedure Emu_FireHwInt(Var P: TEmulatorPanel; Num: Byte); Forward;
 
+{ --- INT 33h : pilote souris (Microsoft Mouse API) ---
+  Implementation des sous-fonctions les plus utilisees par les
+  programmes DOS Pascal/C. La souris hote est traduite vers les
+  coordonnees logiques de l ecran emule par EmuMouse_UpdateFromHost.
+  Les coordonnees rendues sont en PIXELS pour les modes graphiques
+  et en COLONNES DE 8 PIXELS pour les modes texte (convention IBM). }
+Procedure Emu_DoInt33(Var P: TEmulatorPanel);
+Var
+ BIdx: Integer;
+Begin
+ EmuMouseInst := True;
+ Case P.CPU.Regs.AX Of
+  $0000: Begin   { Reset / detect driver }
+   P.CPU.Regs.AX := $FFFF;     { driver present }
+   P.CPU.Regs.BX := 3;         { 3 boutons }
+   EmuMouseVis := -1;
+   EmuMouseBtns := 0;
+   EmuMouseHRatio := 8; EmuMouseVRatio := 16;
+   EmuMouseMickX := 0; EmuMouseMickY := 0;
+   EmuMouseHandlerMsk := 0;
+   EmuMouseHandlerSeg := 0; EmuMouseHandlerOfs := 0;
+   For BIdx := 0 To 2 Do Begin
+    EmuMousePressCnt[BIdx] := 0; EmuMouseRelCnt[BIdx] := 0;
+    EmuMousePressX[BIdx] := 0;   EmuMousePressY[BIdx] := 0;
+    EmuMouseRelX[BIdx]   := 0;   EmuMouseRelY[BIdx]   := 0;
+   End;
+   { Plages selon le mode video courant }
+   EmuMouseXMin := 0; EmuMouseYMin := 0;
+   If EmuVideo.IsGraphic Then Begin
+    EmuMouseXMax := EmuVideo.Width  - 1;
+    EmuMouseYMax := EmuVideo.Height - 1;
+   End Else Begin
+    EmuMouseXMax := EmuVideo.TextCols * 8 - 1;
+    EmuMouseYMax := EmuVideo.TextRows * 8 - 1;
+   End;
+  End;
+  $0001: { Show cursor }
+   If EmuMouseVis < 0 Then Inc(EmuMouseVis);
+  $0002: { Hide cursor }
+   Dec(EmuMouseVis);
+  $0003: Begin   { Get position+buttons }
+   P.CPU.Regs.BX := EmuMouseBtns;
+   P.CPU.Regs.CX := Word(EmuMouseX);
+   P.CPU.Regs.DX := Word(EmuMouseY);
+  End;
+  $0004: Begin   { Set position }
+   EmuMouseX := P.CPU.Regs.CX;
+   EmuMouseY := P.CPU.Regs.DX;
+   If EmuMouseX < EmuMouseXMin Then EmuMouseX := EmuMouseXMin;
+   If EmuMouseX > EmuMouseXMax Then EmuMouseX := EmuMouseXMax;
+   If EmuMouseY < EmuMouseYMin Then EmuMouseY := EmuMouseYMin;
+   If EmuMouseY > EmuMouseYMax Then EmuMouseY := EmuMouseYMax;
+  End;
+  $0005: Begin   { Get button press info. BX=button (0=L 1=R 2=M) }
+   BIdx := P.CPU.Regs.BX And 3;
+   If BIdx > 2 Then BIdx := 2;
+   P.CPU.Regs.AX := EmuMouseBtns;
+   P.CPU.Regs.BX := EmuMousePressCnt[BIdx];
+   P.CPU.Regs.CX := Word(EmuMousePressX[BIdx]);
+   P.CPU.Regs.DX := Word(EmuMousePressY[BIdx]);
+   EmuMousePressCnt[BIdx] := 0;
+  End;
+  $0006: Begin   { Get button release info }
+   BIdx := P.CPU.Regs.BX And 3;
+   If BIdx > 2 Then BIdx := 2;
+   P.CPU.Regs.AX := EmuMouseBtns;
+   P.CPU.Regs.BX := EmuMouseRelCnt[BIdx];
+   P.CPU.Regs.CX := Word(EmuMouseRelX[BIdx]);
+   P.CPU.Regs.DX := Word(EmuMouseRelY[BIdx]);
+   EmuMouseRelCnt[BIdx] := 0;
+  End;
+  $0007: Begin   { Set X range. CX=min DX=max }
+   EmuMouseXMin := P.CPU.Regs.CX;
+   EmuMouseXMax := P.CPU.Regs.DX;
+   If EmuMouseXMin > EmuMouseXMax Then Begin
+    BIdx := EmuMouseXMin;
+    EmuMouseXMin := EmuMouseXMax;
+    EmuMouseXMax := BIdx;
+   End;
+   If EmuMouseX < EmuMouseXMin Then EmuMouseX := EmuMouseXMin;
+   If EmuMouseX > EmuMouseXMax Then EmuMouseX := EmuMouseXMax;
+  End;
+  $0008: Begin   { Set Y range }
+   EmuMouseYMin := P.CPU.Regs.CX;
+   EmuMouseYMax := P.CPU.Regs.DX;
+   If EmuMouseYMin > EmuMouseYMax Then Begin
+    BIdx := EmuMouseYMin;
+    EmuMouseYMin := EmuMouseYMax;
+    EmuMouseYMax := BIdx;
+   End;
+   If EmuMouseY < EmuMouseYMin Then EmuMouseY := EmuMouseYMin;
+   If EmuMouseY > EmuMouseYMax Then EmuMouseY := EmuMouseYMax;
+  End;
+  $0009: ; { Set graphics cursor (ignore) }
+  $000A: ; { Set text cursor (ignore) }
+  $000B: Begin   { Read motion counters }
+   P.CPU.Regs.CX := Word(EmuMouseMickX);
+   P.CPU.Regs.DX := Word(EmuMouseMickY);
+   EmuMouseMickX := 0; EmuMouseMickY := 0;
+  End;
+  $000C: Begin   { Set user handler }
+   EmuMouseHandlerMsk := P.CPU.Regs.CX;
+   EmuMouseHandlerSeg := P.CPU.Segs.ES;
+   EmuMouseHandlerOfs := P.CPU.Regs.DX;
+  End;
+  $000D, $000E: ; { Light pen on/off (ignore) }
+  $000F: Begin   { Set mickey/pixel ratio. CX=horiz DX=vert }
+   If P.CPU.Regs.CX > 0 Then EmuMouseHRatio := P.CPU.Regs.CX;
+   If P.CPU.Regs.DX > 0 Then EmuMouseVRatio := P.CPU.Regs.DX;
+  End;
+  $0010: ; { Conditional off (ignore) }
+  $0013: ; { Set max mickey speed (ignore) }
+  $0014: Begin   { Swap interrupt subroutine }
+   P.CPU.Regs.CX := EmuMouseHandlerMsk;
+   P.CPU.Segs.ES := EmuMouseHandlerSeg;
+   P.CPU.Regs.DX := EmuMouseHandlerOfs;
+   EmuMouseHandlerMsk := P.CPU.Regs.CX;
+  End;
+  $0015: Begin   { Get save state buffer size }
+   P.CPU.Regs.BX := 64;
+  End;
+  $0016, $0017: ; { Save / restore driver state (stubs) }
+  $001A: ; { Set sensitivity }
+  $001B: Begin   { Get sensitivity }
+   P.CPU.Regs.BX := EmuMouseHRatio;
+   P.CPU.Regs.CX := EmuMouseVRatio;
+   P.CPU.Regs.DX := 50;
+  End;
+  $0020: ; { Enable mouse driver }
+  $0021: Begin   { Software reset }
+   P.CPU.Regs.AX := $FFFF;
+   P.CPU.Regs.BX := 3;
+  End;
+  $0024: Begin   { Get driver version / mouse type / IRQ }
+   P.CPU.Regs.BX := $0800;     { v8.00 }
+   P.CPU.Regs.CH := 4;         { PS/2 }
+   P.CPU.Regs.CL := 0;
+  End;
+  $0025: ; { Get general driver info }
+  $0026: Begin   { Get max virtual coords }
+   P.CPU.Regs.BX := 0;         { mouse enabled }
+   P.CPU.Regs.CX := EmuMouseXMax;
+   P.CPU.Regs.DX := EmuMouseYMax;
+  End;
+ Else
+  ;
+ End;
+End;
+
+{ Mettre a jour la position de la souris emulee a partir d un
+  evenement hote (PollEvents). Convertit les coords ecran de DEVENV
+  vers les coords logiques de l ecran emule (pixel pour graphique,
+  ColonneDe8 pour texte). PressMask/ReleaseMask = bits L/R/M qui
+  changent. }
+Procedure EmuMouse_UpdateFromHost(Var P: TEmulatorPanel;
+                                  HostX, HostY: Integer;
+                                  NewBtns: Byte);
+Var
+ LX, LY: Integer;
+ GfxW, GfxH, Scale, GridX, GridY: Integer;
+ Changed: Byte;
+ BIdx: Integer;
+Begin
+ If Not EmuMouseInst Then Exit;
+ { Recalculer offsets/scale comme DrawEmulatorPanel }
+ If EmuVideo.IsGraphic Then Begin
+  GfxW := EmuVideo.Width;
+  GfxH := EmuVideo.Height;
+  Scale := 1;
+  If GfxW <= 320 Then Scale := 2;
+  If GfxW <= 160 Then Scale := 4;
+  GridX := P.PanelX;
+  GridY := P.PanelY + 24;
+  LX := (HostX - GridX) Div Scale;
+  LY := (HostY - GridY) Div Scale;
+ End Else Begin
+  GridX := P.PanelX;
+  GridY := P.PanelY + 24;
+  If P.CharW <= 0 Then P.CharW := 8;
+  If P.CharH <= 0 Then P.CharH := 16;
+  { Coords texte : INT 33h utilise des pixels (col*8, row*8) }
+  LX := ((HostX - GridX) * 8) Div P.CharW;
+  LY := ((HostY - GridY) * 8) Div P.CharH;
+ End;
+ { Mettre a jour les compteurs mickeys avant de cliper }
+ EmuMouseMickX := EmuMouseMickX + (LX - EmuMouseX);
+ EmuMouseMickY := EmuMouseMickY + (LY - EmuMouseY);
+ { Cliper aux plages courantes }
+ If LX < EmuMouseXMin Then LX := EmuMouseXMin;
+ If LX > EmuMouseXMax Then LX := EmuMouseXMax;
+ If LY < EmuMouseYMin Then LY := EmuMouseYMin;
+ If LY > EmuMouseYMax Then LY := EmuMouseYMax;
+ EmuMouseX := LX;
+ EmuMouseY := LY;
+ { Detecter changements de boutons (press / release) }
+ Changed := EmuMouseBtns Xor NewBtns;
+ For BIdx := 0 To 2 Do Begin
+  If (Changed And (1 Shl BIdx)) <> 0 Then Begin
+   If (NewBtns And (1 Shl BIdx)) <> 0 Then Begin
+    Inc(EmuMousePressCnt[BIdx]);
+    EmuMousePressX[BIdx] := LX;
+    EmuMousePressY[BIdx] := LY;
+   End Else Begin
+    Inc(EmuMouseRelCnt[BIdx]);
+    EmuMouseRelX[BIdx] := LX;
+    EmuMouseRelY[BIdx] := LY;
+   End;
+  End;
+ End;
+ EmuMouseBtns := NewBtns And $07;
+End;
+
 Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte);
 Var LogF: Text;
  IvtSeg, IvtOfs: Word;
@@ -26498,6 +26738,7 @@ Begin
   $20: P.CPU.Fault := sfEndProgram;
   $27: P.CPU.Fault := sfEndProgram;
   $21: Emu_DoInt21(P);
+  $33: Emu_DoInt33(P);
   Else Begin
    { Pour les autres INT, si l application a installe un ISR
      via INT 21h AH=25h, on saute dedans. Sinon on ignore. }
@@ -35971,6 +36212,17 @@ Begin NesActive := False;
  {$I+} If IOResult <> 0 Then ;
  Emu_InitBDA(P);
  EmuPumpCnt := 0;
+ { Initialiser etat souris emulee. }
+ EmuMouseInst := True;
+ EmuMouseVis := -1;
+ EmuMouseX := 0; EmuMouseY := 0;
+ EmuMouseBtns := 0;
+ EmuMouseXMin := 0; EmuMouseYMin := 0;
+ EmuMouseXMax := 639; EmuMouseYMax := 199;
+ EmuMouseHRatio := 8; EmuMouseVRatio := 16;
+ EmuMouseMickX := 0; EmuMouseMickY := 0;
+ EmuMouseHandlerMsk := 0;
+ EmuMouseHandlerSeg := 0; EmuMouseHandlerOfs := 0;
  { Premier rendu : afficher le panneau (banniere + ecran emule) avant
    d entrer dans la boucle d execution. Sinon le panneau peut rester
    invisible plusieurs secondes selon la charge. }
@@ -36080,6 +36332,31 @@ Begin NesActive := False;
          scancode = code etendu retourne par ReadKey. }
        EmuVScr_PushKey(P, Word(EmuPumpEv.KeyCode And $FF) Shl 8);
        P.NeedRepaint := True;
+      End;
+     EV_MOUSE_MOVE:
+      EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX, EmuPumpEv.MouseY,
+        EmuMouseBtns);
+     EV_MOUSE_DOWN:
+      Begin
+       Case EmuPumpEv.MouseBtn Of
+        MB_LEFT  : EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX,
+                     EmuPumpEv.MouseY, EmuMouseBtns Or 1);
+        MB_RIGHT : EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX,
+                     EmuPumpEv.MouseY, EmuMouseBtns Or 2);
+        MB_MIDDLE: EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX,
+                     EmuPumpEv.MouseY, EmuMouseBtns Or 4);
+       End;
+      End;
+     EV_MOUSE_UP:
+      Begin
+       Case EmuPumpEv.MouseBtn Of
+        MB_LEFT  : EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX,
+                     EmuPumpEv.MouseY, EmuMouseBtns And $FE);
+        MB_RIGHT : EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX,
+                     EmuPumpEv.MouseY, EmuMouseBtns And $FD);
+        MB_MIDDLE: EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX,
+                     EmuPumpEv.MouseY, EmuMouseBtns And $FB);
+       End;
       End;
     End;
     { Redessiner au plus une fois toutes les 80 ms pour eviter le
