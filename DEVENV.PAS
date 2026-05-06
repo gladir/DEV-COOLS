@@ -3171,6 +3171,11 @@ Var
  EmuFpuTrap     : Boolean;  { si True, ESC declenche INT 7 (mode 286+/EM=1). }
  EmuFpuLogged   : Integer;  { compteur d ESC opcodes deja loggues }
  EmuOpCount     : Array[0..255] Of LongInt;  { stat opcodes execute }
+ EmuDiag_Int10Cnt : LongInt;
+ EmuDiag_VidWrCnt : LongInt;
+ EmuDiag_PixWrCnt : LongInt;
+ EmuDiag_LastMode : Byte;
+ EmuDiag_DrawCnt  : LongInt;
  EmuExeDir      : String;   { repertoire de l EXE charge (fallback fichiers) }
  EmuFindMask    : String;
  EmuFindAttr    : Byte;
@@ -22838,6 +22843,7 @@ Begin
    ============================================================ }
  If ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP')) And
     EmuVideo.IsGraphic Then Begin
+  Inc(EmuDiag_DrawCnt);
   GfxW := EmuVideo.Width;
   GfxH := EmuVideo.Height;
   Scale := 1;
@@ -22862,9 +22868,15 @@ Begin
   DrawFilledRect(P.PanelX, P.PanelY,
    P.PanelX + GridW, P.PanelY + 22,
    CLR_TITLEBAR_ACTIVE);
+  { Compter les pixels non-noirs pour diagnostic. }
+  RunStart := 0;
+  For Sy := 0 To GfxH - 1 Do
+   For Sx := 0 To GfxW - 1 Do
+    If Emu_VidGetPixel(Sx, Sy) <> 0 Then Inc(RunStart);
   Title := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath +
-           ' [mode ' + IntToStr(EmuVideo.Mode) + 'h ' +
-           IntToStr(GfxW) + 'x' + IntToStr(GfxH) + ']';
+           ' [mode $' + HexByte(EmuVideo.Mode) + ' ' +
+           IntToStr(GfxW) + 'x' + IntToStr(GfxH) +
+           ' px<>0=' + IntToStr(RunStart) + ']';
   If Length(Title) > 90 Then Title := Copy(Title, 1, 87) + '...';
   DrawText(P.PanelX + 6, P.PanelY + 6, Title, CLR_HIGHLIGHTTEXT);
   DrawText(P.PanelX + GridW - 100, P.PanelY + 6,
@@ -24105,6 +24117,7 @@ Var WriteMode, Plane, PlaneMask, Rot, BitMask: Byte;
     I, NewVal, Src: Byte;
 Begin
  If Not EmuVideo.MemReady Then Exit;
+ Inc(EmuDiag_VidWrCnt);
  If (MemOfs >= $20000) And (MemOfs < $40000) Then Begin
   EmuVideo.Mem^[MemOfs] := Value;
   EmuVideo.GfxDirty := True;
@@ -24186,6 +24199,7 @@ Begin
  If Not EmuVideo.IsGraphic Then Exit;
  If (X < 0) Or (Y < 0) Or
     (X >= EmuVideo.Width) Or (Y >= EmuVideo.Height) Then Exit;
+ Inc(EmuDiag_PixWrCnt);
  Case EmuVideo.Mode Of
   $04, $05: Begin
    { CGA 320x200x4 : 2 bits par pixel, 80 octets par ligne,
@@ -24284,6 +24298,7 @@ Procedure Emu_VidSetMode(NewMode: Byte; Var P: TEmulatorPanel);
 Begin
  If Not EmuVideo.MemReady Then Emu_VidInit;
  EmuVideo.Mode := NewMode And $7F;
+ EmuDiag_LastMode := EmuVideo.Mode;
  { Reinitialiser registres de base }
  EmuVideo.IsGraphic := False;
  EmuVideo.IsPlanar := False;
@@ -24534,6 +24549,7 @@ Var
  B: Byte;
  Mode: Byte;
 Begin
+ Inc(EmuDiag_Int10Cnt);
  Case P.CPU.Regs.AH Of
   $00:
    { Set video mode. AL = mode. On enregistre dans 0040:0049 et
@@ -35960,7 +35976,9 @@ Begin NesActive := False;
    invisible plusieurs secondes selon la charge. }
  DrawEmulatorPanel(P);
  EmuLastDraw := GetTimestamp;
- While (P.CPU.Fault = sfNone) And (Steps < 50000000) Do Begin
+ { Boucle infinie : seuls ESC, une faute (opcode invalide, etc.) ou
+   sfEndProgram (INT 21h AH=4Ch) terminent l emulation. }
+ While P.CPU.Fault = sfNone Do Begin
   EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
   EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
   EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
@@ -36008,12 +36026,10 @@ Begin NesActive := False;
    Inc(EmuRunaway);
   End Else
    EmuRunaway := 0;
-  { Stopper immediatement apres 32 espaces consecutifs pour
-    preserver le trace pre-runaway dans le buffer circulaire }
-  If EmuRunaway >= 32 Then Begin
-   P.CPU.Fault := sfBreakPoint;
-   Break;
-  End;
+  { Detecteur runaway desactive : il declenchait des faux positifs
+    sur du code legitime contenant de longues sequences d octets
+    0x00/0x20 (donnees ou instructions ADD/AND repetees).
+    L emulateur s arrete uniquement sur ESC, faute CPU ou INT 21h AH=4Ch. }
   EmuTraceIdx := (EmuTraceIdx + 1) And $1FFF;
   Emu_StepOne(P);
   Inc(Steps);
@@ -36088,6 +36104,14 @@ Begin NesActive := False;
    HexWord(P.CPU.IP), ' SS:SP=', HexWord(P.CPU.Segs.SS), ':',
    HexWord(P.CPU.Regs.SP), ' BP=', HexWord(P.CPU.Regs.BP),
    ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES));
+  WriteLn(LogF_R, 'VIDEO: Int10=', EmuDiag_Int10Cnt,
+                  ' VidWr=', EmuDiag_VidWrCnt,
+                  ' PixWr=', EmuDiag_PixWrCnt,
+                  ' Mode=$', HexByte(EmuDiag_LastMode),
+                  ' IsGfx=', EmuVideo.IsGraphic,
+                  ' Planar=', EmuVideo.IsPlanar,
+                  ' Draws=', EmuDiag_DrawCnt,
+                  ' WxH=', EmuVideo.Width, 'x', EmuVideo.Height);
   WriteLn(LogF_R, 'Opcodes 80186 / shifts executes :');
   WriteLn(LogF_R, '  PUSHA(60)=', EmuOpCount[$60],
                   ' POPA(61)=', EmuOpCount[$61],
