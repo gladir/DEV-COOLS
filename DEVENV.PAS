@@ -3079,6 +3079,23 @@ Var
  { Panneau de l emulateur 8086 integre }
  EmuPanel       : TEmulatorPanel;
  EmuStartCmdLine: String;       { ligne de commande a injecter dans le PSP du programme emule }
+ { --- Phase DOS+ : gestion fichiers reels (handles 5..31) --- }
+ EmuFileH       : Array[5..31] Of File;
+ EmuFileOpen    : Array[5..31] Of Boolean;
+ EmuFileName    : Array[5..31] Of String;
+ EmuFileMode    : Array[5..31] Of Byte;  { 0=read 1=write 2=rw }
+ EmuDtaSeg      : Word;
+ EmuDtaOfs      : Word;
+ EmuFindMask    : String;
+ EmuFindAttr    : Byte;
+ EmuFindResults : Array[0..63] Of String;
+ EmuFindCount   : Integer;
+ EmuFindIndex   : Integer;
+ { --- IRQ matérielles --- }
+ EmuTickCounter : LongInt;       { compteur de ticks (~18.2 Hz) }
+ EmuStepsPerTick: LongInt;       { nb instructions entre deux ticks }
+ EmuStepsToTick : LongInt;       { decompte avant prochain tick }
+ EmuIrqPending  : Byte;          { bitmask IRQ en attente (bit n = IRQ n) }
  EmuTraceBuf    : Array[0..8191] Of Record
    CS, IP: Word; Op: Byte;
    ES, DI, CX, AX: Word;
@@ -23077,6 +23094,12 @@ Var
  Ext: String;
  I: Integer;
 Begin
+ { Reset des handles et DTA a chaque chargement }
+ For I := 5 To 31 Do EmuFileOpen[I] := False;
+ EmuDtaSeg := $0060;
+ EmuDtaOfs := $0080;     { DTA par defaut = PSP+80h }
+ EmuFindCount := 0;
+ EmuFindIndex := 0;
  Ext := '';
  For I := Length(FileName) DownTo 1 Do
   If FileName[I] = '.' Then Begin
@@ -23447,11 +23470,16 @@ Begin
  Emu_TestCond := Res;
 End;
 
+{ Forward pour buffer clavier BIOS, defini plus loin avec les IRQ. }
+Function Emu_BiosHasKey(Var P: TEmulatorPanel): Boolean; Forward;
+Function Emu_BiosPopKey(Var P: TEmulatorPanel): Word; Forward;
+
 { --- INT 10h : services video (BIOS) --- }
 
 Procedure Emu_DoInt10(Var P: TEmulatorPanel);
 Var
  I: Integer;
+ B: Byte;
 Begin
  Case P.CPU.Regs.AH Of
   $00: { Mode video : on simule mode 3 (80x25 couleur) }
@@ -23491,6 +23519,57 @@ Begin
     P.CPU.Regs.AH := 80;       { nb colonnes }
     P.CPU.Regs.BH := 0;        { page courante }
    End;
+  $01:
+   { AH=01 : set cursor type (CH=start scan, CL=end). On ignore. }
+   ;
+  $05:
+   { AH=05 : set active page. On ignore (page 0 unique). }
+   ;
+  $08:
+   Begin
+    { AH=08 : read char & attr at cursor. AL=char, AH=attr. }
+    P.CPU.Regs.AL := 32;       { espace par defaut }
+    P.CPU.Regs.AH := $07;
+   End;
+  $11:
+   { AH=11h : character generator (font). On ignore. }
+   ;
+  $12:
+   Begin
+    { AH=12h : video subsystem config. BL=10 -> BH=0 color, BL=2 256K. }
+    If P.CPU.Regs.BL = $10 Then Begin
+     P.CPU.Regs.BH := 0;
+     P.CPU.Regs.BL := 3;
+     P.CPU.Regs.CH := 0;
+     P.CPU.Regs.CL := 9;
+    End;
+   End;
+  $13:
+   Begin
+    { AH=13h : write string. ES:BP = string, CX = length,
+      DH/DL = row/col. AL bit 0 = update cursor. AL bit 1 = chars+attrs. }
+    EmuVScr_GotoXY(P, P.CPU.Regs.DL, P.CPU.Regs.DH);
+    P.CurFg := P.CPU.Regs.BL And $F;
+    P.CurBg := (P.CPU.Regs.BL Shr 4) And $7;
+    For I := 0 To P.CPU.Regs.CX - 1 Do Begin
+     If (P.CPU.Regs.AL And 2) <> 0 Then
+      B := Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BP + I * 2)
+     Else
+      B := Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BP + I);
+     EmuVScr_PutChar(P, Chr(B));
+    End;
+   End;
+  $1A:
+   Begin
+    { AH=1Ah : video display combination. AL=1Ah (code valid),
+      BL=08 (VGA color). }
+    P.CPU.Regs.AL := $1A;
+    P.CPU.Regs.BL := 8;
+    P.CPU.Regs.BH := 0;
+   End;
+  $1B:
+   { AH=1Bh : functionality info. On ignore. }
+   ;
  End;
 End;
 
@@ -23503,23 +23582,28 @@ Begin
  Case P.CPU.Regs.AH Of
   $00, $10: { Lire une touche (bloquant) }
    Begin
-    If EmuVScr_HasKey(P) Then Begin
+    If Emu_BiosHasKey(P) Then Begin
+     P.CPU.Regs.AX := Emu_BiosPopKey(P);
+    End Else If EmuVScr_HasKey(P) Then Begin
      K := EmuVScr_PopKey(P);
      P.CPU.Regs.AL := K;
-     P.CPU.Regs.AH := K;        { scancode = ASCII en simplification }
+     P.CPU.Regs.AH := K;
     End Else Begin
-     { Aucune touche : on rend la main pour eviter le gel.
-       Le code retentera la lecture au prochain pas. }
      P.CPU.Regs.AL := 0;
      P.CPU.Regs.AH := 0;
     End;
    End;
   $01, $11: { Tester sans bloquer : ZF = pas de touche }
    Begin
-    If EmuVScr_HasKey(P) Then Begin
-     K := P.KeyBuf[P.KeyTail];
-     P.CPU.Regs.AL := K;
-     P.CPU.Regs.AH := K;
+    If Emu_BiosHasKey(P) Or EmuVScr_HasKey(P) Then Begin
+     If Emu_BiosHasKey(P) Then
+       P.CPU.Regs.AX := Emu_ReadWord(P.CPU, $40,
+                                     Emu_ReadWord(P.CPU, $40, $1A))
+     Else Begin
+       K := P.KeyBuf[P.KeyTail];
+       P.CPU.Regs.AL := K;
+       P.CPU.Regs.AH := K;
+     End;
      Exclude(P.CPU.Flags.s, EFG_ZF);
     End Else
      Include(P.CPU.Flags.s, EFG_ZF);
@@ -23531,13 +23615,70 @@ End;
 
 { --- Executer une interruption DOS (INT 21h) --- }
 
+{ Trouver un handle libre (5..31). Retourne 0 si aucun. }
+Function Emu_AllocHandle: Integer;
+Var I: Integer;
+Begin
+  Emu_AllocHandle := 0;
+  For I := 5 To 31 Do
+    If Not EmuFileOpen[I] Then Begin
+      Emu_AllocHandle := I;
+      Exit;
+    End;
+End;
+
+{ Lire la chaine ASCIIZ a Seg:Ofs (max 79 octets). }
+Function Emu_ReadAsciiz(Var C: TEmuCPU; Seg, Ofs: Word): String;
+Var
+  S: String;
+  I: Integer;
+  B: Byte;
+Begin
+  S := '';
+  For I := 0 To 79 Do Begin
+    B := Emu_ReadByte(C, Seg, Ofs + I);
+    If B = 0 Then Break;
+    S := S + Chr(B);
+  End;
+  Emu_ReadAsciiz := S;
+End;
+
+{ Convertir nom DOS en nom hote (juste prendre le nom + extension,
+  sans drive/path pour simplifier). Retourne le path absolu. }
+Function Emu_HostPath(Const DosName: String): String;
+Var
+  S: String;
+  I: Integer;
+Begin
+  S := DosName;
+  { Retirer eventuellement le prefixe drive 'X:' }
+  If (Length(S) >= 2) And (S[2] = ':') Then S := Copy(S, 3, Length(S) - 2);
+  { Retirer prefixe '\' (chemin absolu DOS -> relatif hote) si present
+    et qu il n y a pas de second '\' }
+  If (Length(S) >= 1) And (S[1] = '\') Then S := Copy(S, 2, Length(S) - 1);
+  { Convertir / en \ }
+  For I := 1 To Length(S) Do
+    If S[I] = '/' Then S[I] := '\';
+  Emu_HostPath := S;
+End;
+
 Procedure Emu_DoInt21(Var P: TEmulatorPanel);
 Var
- I: Integer;
+ I, J: Integer;
  Ofs: Word;
  B: Byte;
  ExitCode: Byte;
  LogF: Text;
+ H: Integer;
+ FName: String;
+ HPath: String;
+ IORes: Word;
+ BytesIO: Word;
+ SeekPos: LongInt;
+ Buffer: Array[0..2047] Of Byte;
+ OpenMode: Byte;
+ Yr, Mo, Dy, Wd: Word;
+ Hr, Mn, Sc, Cs: Word;
 Begin
  { TRACE diagnostic : ecrire chaque INT21h dans EMU21.LOG }
  {$I-}
@@ -23599,23 +23740,43 @@ Begin
    End;
   $40:
    Begin
-    { AH=40h : write CX bytes from DS:DX to handle BX (1=stdout, 2=stderr) }
+    { AH=40h : write CX bytes from DS:DX to handle BX }
     Ofs := P.CPU.Regs.DX;
-    If (P.CPU.Regs.BX = 1) Or (P.CPU.Regs.BX = 2) Then Begin
+    H := P.CPU.Regs.BX;
+    If (H = 1) Or (H = 2) Then Begin
      For I := 0 To P.CPU.Regs.CX - 1 Do Begin
       B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I);
       EmuVScr_PutChar(P, Chr(B));
      End;
+     P.CPU.Regs.AX := P.CPU.Regs.CX;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+     I := 0;
+     BytesIO := 0;
+     While I < P.CPU.Regs.CX Do Begin
+      J := P.CPU.Regs.CX - I;
+      If J > SizeOf(Buffer) Then J := SizeOf(Buffer);
+      For ExitCode := 0 To J - 1 Do
+       Buffer[ExitCode] := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I + ExitCode);
+      {$I-} BlockWrite(EmuFileH[H], Buffer, J, BytesIO); {$I+}
+      If IOResult <> 0 Then Break;
+      Inc(I, BytesIO);
+      If BytesIO < J Then Break;
+     End;
+     P.CPU.Regs.AX := Word(I);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Begin
+     Include(P.CPU.Flags.s, EFG_CF);
+     P.CPU.Regs.AX := 6;  { invalid handle }
     End;
-    P.CPU.Regs.AX := P.CPU.Regs.CX;  { bytes effectivement ecrits }
-    Exclude(P.CPU.Flags.s, EFG_CF);
    End;
   $3F:
    Begin
     { AH=3Fh : read CX bytes from handle BX into DS:DX (0=stdin) }
     Ofs := P.CPU.Regs.DX;
+    H := P.CPU.Regs.BX;
     I := 0;
-    If P.CPU.Regs.BX = 0 Then Begin
+    If H = 0 Then Begin
      While (I < P.CPU.Regs.CX) And EmuVScr_HasKey(P) Do Begin
       B := EmuVScr_PopKey(P);
       Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + I, B);
@@ -23628,9 +23789,26 @@ Begin
        Break;
       End;
      End;
+     P.CPU.Regs.AX := Word(I);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+     BytesIO := 0;
+     While I < P.CPU.Regs.CX Do Begin
+      J := P.CPU.Regs.CX - I;
+      If J > SizeOf(Buffer) Then J := SizeOf(Buffer);
+      {$I-} BlockRead(EmuFileH[H], Buffer, J, BytesIO); {$I+}
+      If IOResult <> 0 Then Break;
+      For ExitCode := 0 To BytesIO - 1 Do
+       Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + I + ExitCode, Buffer[ExitCode]);
+      Inc(I, BytesIO);
+      If BytesIO < J Then Break;
+     End;
+     P.CPU.Regs.AX := Word(I);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Begin
+     Include(P.CPU.Flags.s, EFG_CF);
+     P.CPU.Regs.AX := 6;
     End;
-    P.CPU.Regs.AX := Word(I);
-    Exclude(P.CPU.Flags.s, EFG_CF);
    End;
   $30:
    Begin
@@ -23643,30 +23821,157 @@ Begin
   $19:
    { AH=19h : current default drive. C: = 2 }
    P.CPU.Regs.AL := 2;
-  $25, $35:
-   { AH=25h set IV / AH=35h get IV : ignore (no IVT manipulation) }
-   ;
+  $25:
+   Begin
+    { AH=25h : set interrupt vector AL = DS:DX. Ecrit dans l IVT
+      a l adresse physique 0000:AL*4 (offset puis segment). }
+    Ofs := Word(P.CPU.Regs.AL) * 4;
+    Emu_WriteByte(P.CPU, 0, Ofs,     Byte(P.CPU.Regs.DX And $FF));
+    Emu_WriteByte(P.CPU, 0, Ofs + 1, Byte(P.CPU.Regs.DX Shr 8));
+    Emu_WriteByte(P.CPU, 0, Ofs + 2, Byte(P.CPU.Segs.DS And $FF));
+    Emu_WriteByte(P.CPU, 0, Ofs + 3, Byte(P.CPU.Segs.DS Shr 8));
+   End;
+  $35:
+   Begin
+    { AH=35h : get interrupt vector AL -> ES:BX. Lit l IVT a 0000:AL*4. }
+    Ofs := Word(P.CPU.Regs.AL) * 4;
+    P.CPU.Regs.BX := Emu_ReadWord(P.CPU, 0, Ofs);
+    P.CPU.Segs.ES := Emu_ReadWord(P.CPU, 0, Ofs + 2);
+   End;
   $3D:
    Begin
-    { AH=3Dh : open file - echec simule (fichier non trouve) }
-    Include(P.CPU.Flags.s, EFG_CF);
-    P.CPU.Regs.AX := 2;
+    { AH=3Dh : open existing file. DS:DX -> ASCIIZ name. AL = mode. }
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    H := Emu_AllocHandle;
+    If (H = 0) Or (Length(HPath) = 0) Then Begin
+      Include(P.CPU.Flags.s, EFG_CF);
+      P.CPU.Regs.AX := 4;  { too many open files }
+    End Else Begin
+      Assign(EmuFileH[H], HPath);
+      OpenMode := P.CPU.Regs.AL And 3;
+      {$I-} Reset(EmuFileH[H], 1); {$I+}
+      IORes := IOResult;
+      If IORes <> 0 Then Begin
+        Include(P.CPU.Flags.s, EFG_CF);
+        P.CPU.Regs.AX := 2;  { file not found }
+      End Else Begin
+        EmuFileOpen[H] := True;
+        EmuFileName[H] := HPath;
+        EmuFileMode[H] := OpenMode;
+        Exclude(P.CPU.Flags.s, EFG_CF);
+        P.CPU.Regs.AX := H;
+      End;
+    End;
    End;
   $3E:
-   { AH=3Eh : close file - succes }
-   Exclude(P.CPU.Flags.s, EFG_CF);
+   Begin
+    { AH=3Eh : close handle BX }
+    H := P.CPU.Regs.BX;
+    If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+      {$I-} Close(EmuFileH[H]); {$I+}
+      If IOResult <> 0 Then ;
+      EmuFileOpen[H] := False;
+    End;
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  $3C:
+   Begin
+    { AH=3Ch : create or truncate file. DS:DX = ASCIIZ, CX = attributes. }
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    H := Emu_AllocHandle;
+    If (H = 0) Or (Length(HPath) = 0) Then Begin
+      Include(P.CPU.Flags.s, EFG_CF);
+      P.CPU.Regs.AX := 4;
+    End Else Begin
+      Assign(EmuFileH[H], HPath);
+      {$I-} Rewrite(EmuFileH[H], 1); {$I+}
+      IORes := IOResult;
+      If IORes <> 0 Then Begin
+        Include(P.CPU.Flags.s, EFG_CF);
+        P.CPU.Regs.AX := 5;  { access denied }
+      End Else Begin
+        EmuFileOpen[H] := True;
+        EmuFileName[H] := HPath;
+        EmuFileMode[H] := 2;
+        Exclude(P.CPU.Flags.s, EFG_CF);
+        P.CPU.Regs.AX := H;
+      End;
+    End;
+   End;
+  $5B:
+   Begin
+    { AH=5Bh : create new file (fail if exists). DS:DX = ASCIIZ. }
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    Assign(EmuFileH[5], HPath);
+    {$I-} Reset(EmuFileH[5], 1); {$I+}
+    If IOResult = 0 Then Begin
+      Close(EmuFileH[5]);
+      Include(P.CPU.Flags.s, EFG_CF);
+      P.CPU.Regs.AX := 80;  { file exists }
+    End Else Begin
+      H := Emu_AllocHandle;
+      If H = 0 Then Begin
+        Include(P.CPU.Flags.s, EFG_CF);
+        P.CPU.Regs.AX := 4;
+      End Else Begin
+        Assign(EmuFileH[H], HPath);
+        {$I-} Rewrite(EmuFileH[H], 1); {$I+}
+        If IOResult <> 0 Then Begin
+          Include(P.CPU.Flags.s, EFG_CF);
+          P.CPU.Regs.AX := 5;
+        End Else Begin
+          EmuFileOpen[H] := True;
+          EmuFileName[H] := HPath;
+          EmuFileMode[H] := 2;
+          Exclude(P.CPU.Flags.s, EFG_CF);
+          P.CPU.Regs.AX := H;
+        End;
+      End;
+    End;
+   End;
+  $41:
+   Begin
+    { AH=41h : delete file DS:DX }
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+    HPath := Emu_HostPath(FName);
+    Assign(EmuFileH[5], HPath);
+    {$I-} Erase(EmuFileH[5]); {$I+}
+    If IOResult <> 0 Then Begin
+      Include(P.CPU.Flags.s, EFG_CF);
+      P.CPU.Regs.AX := 2;
+    End Else
+      Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
   $42:
    Begin
-    { AH=42h LSEEK : retourner la position demandee.
-      AL=00 (depuis debut) ou AL=01 (depuis pos courante) : DX:AX = CX:DX argument.
-      AL=02 (depuis fin) : on retourne 0:0 (taille zero pour peripherique). }
-    Exclude(P.CPU.Flags.s, EFG_CF);
-    If P.CPU.Regs.AL = $02 Then Begin
-     P.CPU.Regs.AX := 0;
-     P.CPU.Regs.DX := 0;
+    { AH=42h LSEEK : DX:AX = position resultante.
+      AL=00 from start, AL=01 from current, AL=02 from end. }
+    H := P.CPU.Regs.BX;
+    SeekPos := (LongInt(P.CPU.Regs.CX) Shl 16) Or P.CPU.Regs.DX;
+    If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+     Case P.CPU.Regs.AL Of
+      $00: ;
+      $01: SeekPos := SeekPos + FilePos(EmuFileH[H]);
+      $02: SeekPos := SeekPos + FileSize(EmuFileH[H]);
+     End;
+     If SeekPos < 0 Then SeekPos := 0;
+     {$I-} Seek(EmuFileH[H], SeekPos); {$I+}
+     If IOResult <> 0 Then ;
+     P.CPU.Regs.AX := Word(SeekPos And $FFFF);
+     P.CPU.Regs.DX := Word((SeekPos Shr 16) And $FFFF);
+     Exclude(P.CPU.Flags.s, EFG_CF);
     End Else Begin
-     P.CPU.Regs.AX := P.CPU.Regs.DX;
-     P.CPU.Regs.DX := P.CPU.Regs.CX;
+     { stdin/stdout : pas reellement seekable }
+     Exclude(P.CPU.Flags.s, EFG_CF);
+     If P.CPU.Regs.AL = $02 Then Begin
+      P.CPU.Regs.AX := 0; P.CPU.Regs.DX := 0;
+     End Else Begin
+      P.CPU.Regs.AX := P.CPU.Regs.DX;
+      P.CPU.Regs.DX := P.CPU.Regs.CX;
+     End;
     End;
    End;
   $44:
@@ -23695,6 +24000,67 @@ Begin
   $62:
    { AH=62h : get PSP segment }
    P.CPU.Regs.BX := P.CPU.Segs.DS - 1;
+  $1A:
+   Begin
+    { AH=1Ah : set DTA = DS:DX }
+    EmuDtaSeg := P.CPU.Segs.DS;
+    EmuDtaOfs := P.CPU.Regs.DX;
+   End;
+  $2F:
+   Begin
+    { AH=2Fh : get DTA -> ES:BX }
+    P.CPU.Segs.ES := EmuDtaSeg;
+    P.CPU.Regs.BX := EmuDtaOfs;
+   End;
+  $2A:
+   Begin
+    { AH=2Ah : get system date }
+    GetDate(Yr, Mo, Dy, Wd);
+    P.CPU.Regs.CX := Yr;
+    P.CPU.Regs.DH := Byte(Mo);
+    P.CPU.Regs.DL := Byte(Dy);
+    P.CPU.Regs.AL := Byte(Wd);
+   End;
+  $2C:
+   Begin
+    { AH=2Ch : get system time }
+    GetTime(Hr, Mn, Sc, Cs);
+    P.CPU.Regs.CH := Byte(Hr);
+    P.CPU.Regs.CL := Byte(Mn);
+    P.CPU.Regs.DH := Byte(Sc);
+    P.CPU.Regs.DL := Byte(Cs);
+   End;
+  $36:
+   Begin
+    { AH=36h : get free disk space. Renvoyer 64Mo libres. }
+    P.CPU.Regs.AX := 8;        { sectors per cluster }
+    P.CPU.Regs.BX := 16384;    { available clusters }
+    P.CPU.Regs.CX := 512;      { bytes per sector }
+    P.CPU.Regs.DX := 32768;    { total clusters }
+   End;
+  $47:
+   Begin
+    { AH=47h : get current dir into DS:SI (max 64). DL = drive (0=current). }
+    Emu_WriteByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI, 0);
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  $50:
+   { AH=50h : set PSP segment (BX) - on l ignore }
+   ;
+  $51:
+   { AH=51h : get current PSP -> BX }
+   P.CPU.Regs.BX := $0060;
+  $33:
+   Begin
+    { AH=33h : Ctrl-Break check. AL=00 get -> DL=state ; AL=01 set ignored. }
+    If P.CPU.Regs.AL = 0 Then P.CPU.Regs.DL := 0;
+   End;
+  $38:
+   Begin
+    { AH=38h : country info. Renvoyer DL=0 (US) et CF=0. }
+    Exclude(P.CPU.Flags.s, EFG_CF);
+    P.CPU.Regs.AX := 1;        { US country code }
+   End;
   Else
    { Fonction DOS non supportee dans cette livraison : on ignore }
    ;
@@ -23703,8 +24069,15 @@ End;
 
 { --- Executer une interruption logicielle --- }
 
+{ Forcer le CPU a passer dans la routine d interruption Num via l IVT.
+  Pousse FLAGS, CS, IP et saute a IVT[Num].
+  Si IVT[Num] = 0:0 (vecteur vide), on traite comme INT logiciel
+  via Emu_DoInt directement (compatibilité avec le mode stub). }
+Procedure Emu_FireHwInt(Var P: TEmulatorPanel; Num: Byte); Forward;
+
 Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte);
 Var LogF: Text;
+ IvtSeg, IvtOfs: Word;
 Begin
  {$I-}
  Assign(LogF, 'EMU21.LOG'); Append(LogF);
@@ -23713,15 +24086,132 @@ Begin
    ' CS:IP=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
  Close(LogF);
  {$I+} If IOResult <> 0 Then ;
+ { Si l application a installe son propre ISR via INT 21h AH=25h,
+   sauter via l IVT. Sinon stub interne. }
+ IvtOfs := Emu_ReadWord(P.CPU, 0, Word(Num) * 4);
+ IvtSeg := Emu_ReadWord(P.CPU, 0, Word(Num) * 4 + 2);
+ If IvtSeg <> 0 Then Begin
+   Emu_FireHwInt(P, Num);
+   Exit;
+ End;
  Case Num Of
   $10: Emu_DoInt10(P);
   $16: Emu_DoInt16(P);
   $20: P.CPU.Fault := sfEndProgram;
-  $27: P.CPU.Fault := sfEndProgram;  { Terminate-and-Stay-Resident }
+  $27: P.CPU.Fault := sfEndProgram;
   $21: Emu_DoInt21(P);
   Else
-   { Interruptions vectorees ignorees ici (pas d ISR) }
    ;
+ End;
+End;
+
+{ Pousse FLAGS+CS+IP, charge IVT[Num] dans CS:IP, masque IF.
+  Utilise pour les vraies IRQ matérielles et redirection INT vers ISR. }
+Procedure Emu_FireHwInt(Var P: TEmulatorPanel; Num: Byte);
+Var
+ NewIP, NewCS: Word;
+Begin
+ NewIP := Emu_ReadWord(P.CPU, 0, Word(Num) * 4);
+ NewCS := Emu_ReadWord(P.CPU, 0, Word(Num) * 4 + 2);
+ { Vecteur invalide : segment 0 (zone IVT/PSP) ou tout-zero. }
+ If NewCS = 0 Then Exit;
+ Emu_PushWord(P.CPU, P.CPU.Flags.Base);
+ Emu_PushWord(P.CPU, P.CPU.Segs.CS);
+ Emu_PushWord(P.CPU, P.CPU.IP);
+ Exclude(P.CPU.Flags.s, EFG_IF);
+ Exclude(P.CPU.Flags.s, EFG_TF);
+ P.CPU.Segs.CS := NewCS;
+ P.CPU.IP := NewIP;
+End;
+
+{ Initialiser la BIOS Data Area minimale a 0040:0000. }
+Procedure Emu_InitBDA(Var P: TEmulatorPanel);
+Var I: Integer;
+Begin
+ For I := 0 To $FF Do Emu_WriteByte(P.CPU, $40, I, 0);
+ Emu_WriteByte(P.CPU, $40, $10, $21);
+ Emu_WriteByte(P.CPU, $40, $13, $80);
+ Emu_WriteByte(P.CPU, $40, $14, $02);
+ Emu_WriteByte(P.CPU, $40, $1A, $1E);
+ Emu_WriteByte(P.CPU, $40, $1B, $00);
+ Emu_WriteByte(P.CPU, $40, $1C, $1E);
+ Emu_WriteByte(P.CPU, $40, $1D, $00);
+ Emu_WriteByte(P.CPU, $40, $49, $03);
+ Emu_WriteByte(P.CPU, $40, $4A, $50);
+ Emu_WriteByte(P.CPU, $40, $84, $18);
+ EmuTickCounter  := 0;
+ EmuStepsPerTick := 5000;
+ EmuStepsToTick  := EmuStepsPerTick;
+ EmuIrqPending   := 0;
+ { DOS demarre l application avec IF=1 (interruptions activees). }
+ Include(P.CPU.Flags.s, EFG_IF);
+End;
+
+{ Pousse une touche dans le buffer clavier BIOS 0040:001E. }
+Procedure Emu_PushBiosKey(Var P: TEmulatorPanel; ScanCode, AsciiCh: Byte);
+Var
+ Tail, Head, NewTail: Word;
+Begin
+ Tail := Emu_ReadWord(P.CPU, $40, $1C);
+ Head := Emu_ReadWord(P.CPU, $40, $1A);
+ NewTail := Tail + 2;
+ If NewTail >= $3E Then NewTail := $1E;
+ If NewTail = Head Then Exit;
+ Emu_WriteByte(P.CPU, $40, Tail, AsciiCh);
+ Emu_WriteByte(P.CPU, $40, Tail + 1, ScanCode);
+ Emu_WriteWord(P.CPU, $40, $1C, NewTail);
+End;
+
+Function Emu_BiosHasKey(Var P: TEmulatorPanel): Boolean;
+Begin
+ Emu_BiosHasKey := Emu_ReadWord(P.CPU, $40, $1A) <>
+                   Emu_ReadWord(P.CPU, $40, $1C);
+End;
+
+Function Emu_BiosPopKey(Var P: TEmulatorPanel): Word;
+Var
+ Head, NewHead: Word;
+ W: Word;
+Begin
+ Head := Emu_ReadWord(P.CPU, $40, $1A);
+ W := Emu_ReadWord(P.CPU, $40, Head);
+ NewHead := Head + 2;
+ If NewHead >= $3E Then NewHead := $1E;
+ Emu_WriteWord(P.CPU, $40, $1A, NewHead);
+ Emu_BiosPopKey := W;
+End;
+
+{ Tick d horloge 18.2 Hz : incremente compteur 0040:006C-006F et
+  arme l IRQ 0 (timer). Appelee tous les EmuStepsPerTick instructions. }
+Procedure Emu_TimerTick(Var P: TEmulatorPanel);
+Var
+ Counter: LongInt;
+ Lo, Hi: Word;
+Begin
+ Inc(EmuTickCounter);
+ Lo := Emu_ReadWord(P.CPU, $40, $6C);
+ Hi := Emu_ReadWord(P.CPU, $40, $6E);
+ Counter := (LongInt(Hi) Shl 16) Or Lo;
+ Inc(Counter);
+ Emu_WriteWord(P.CPU, $40, $6C, Word(Counter And $FFFF));
+ Emu_WriteWord(P.CPU, $40, $6E, Word((Counter Shr 16) And $FFFF));
+ EmuIrqPending := EmuIrqPending Or $01;
+End;
+
+{ Verifier les IRQ en attente et tirer la plus prioritaire si IF=1. }
+Procedure Emu_ServiceIrqs(Var P: TEmulatorPanel);
+Begin
+ If Not (EFG_IF In P.CPU.Flags.s) Then Exit;
+ If EmuIrqPending = 0 Then Exit;
+ If (EmuIrqPending And $01) <> 0 Then Begin
+   EmuIrqPending := EmuIrqPending And Not Byte($01);
+   Emu_FireHwInt(P, $08);
+   Exit;
+ End;
+ If (EmuIrqPending And $02) <> 0 Then Begin
+   EmuIrqPending := EmuIrqPending And Not Byte($02);
+   Emu_FireHwInt(P, $09);
+   Exit;
  End;
 End;
 
@@ -23864,6 +24354,12 @@ Begin
     P.CPU.IP := Emu_PopWord(P.CPU);
     P.CPU.Segs.CS := Emu_PopWord(P.CPU);
     P.CPU.Regs.SP := P.CPU.Regs.SP + Imm16;
+   End;
+  $CF: { IRET : pop IP, CS, FLAGS }
+   Begin
+    P.CPU.IP := Emu_PopWord(P.CPU);
+    P.CPU.Segs.CS := Emu_PopWord(P.CPU);
+    P.CPU.Flags.Base := Emu_PopWord(P.CPU);
    End;
   $B0..$B7: { MOV r8,imm8 }
    Begin
@@ -24079,6 +24575,40 @@ Begin
     P.CPU.IP := NewIP;
     P.CPU.Segs.CS := NewCS;
    End;
+  $D7: { XLAT - AL = DS:[BX+AL] }
+   Begin
+    Inc(P.CPU.IP, 1);
+    P.CPU.Regs.AL := Emu_ReadByte(P.CPU, Emu_DataSeg(P.CPU),
+                                  P.CPU.Regs.BX + P.CPU.Regs.AL);
+   End;
+  $E4: { IN AL, imm8 - aucun port emule, retourne 0 }
+   Begin
+    Inc(P.CPU.IP, 2);
+    P.CPU.Regs.AL := 0;
+   End;
+  $E5: { IN AX, imm8 }
+   Begin
+    Inc(P.CPU.IP, 2);
+    P.CPU.Regs.AX := 0;
+   End;
+  $E6: { OUT imm8, AL - ignore }
+   Inc(P.CPU.IP, 2);
+  $E7: { OUT imm8, AX - ignore }
+   Inc(P.CPU.IP, 2);
+  $EC: { IN AL, DX }
+   Begin
+    Inc(P.CPU.IP, 1);
+    P.CPU.Regs.AL := 0;
+   End;
+  $ED: { IN AX, DX }
+   Begin
+    Inc(P.CPU.IP, 1);
+    P.CPU.Regs.AX := 0;
+   End;
+  $EE: { OUT DX, AL - ignore }
+   Inc(P.CPU.IP, 1);
+  $EF: { OUT DX, AX - ignore }
+   Inc(P.CPU.IP, 1);
   $9A: { CALL far ptr16:16 }
    Begin
     NewIP := Emu_FetchWord(P.CPU, 1);
@@ -32612,6 +33142,7 @@ Begin
  FillChar(EmuTraceBuf, SizeOf(EmuTraceBuf), 0);
  EmuTraceIdx := 0;
  EmuRunaway := 0;
+ Emu_InitBDA(P);
  While (P.CPU.Fault = sfNone) And (Steps < 1000000) Do Begin
   EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
   EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
@@ -32640,6 +33171,20 @@ Begin
   EmuTraceIdx := (EmuTraceIdx + 1) And $1FFF;
   Emu_StepOne(P);
   Inc(Steps);
+  { --- IRQ matérielles --- }
+  Dec(EmuStepsToTick);
+  If EmuStepsToTick <= 0 Then Begin
+    EmuStepsToTick := EmuStepsPerTick;
+    Emu_TimerTick(P);
+    { Drainer le clavier hote vers buffer BIOS + IRQ 9 }
+    While EmuVScr_HasKey(P) Do Begin
+      EntryAddr16 := EmuVScr_PopKey(P);
+      Emu_PushBiosKey(P, Byte(EntryAddr16), Byte(EntryAddr16));
+      EmuIrqPending := EmuIrqPending Or $02;
+      If Emu_ReadWord(P.CPU, $40, $1C) = Emu_ReadWord(P.CPU, $40, $1A) Then Break;
+    End;
+  End;
+  Emu_ServiceIrqs(P);
  End;
  { Toujours dumper le trace pour le diagnostic }
  Emu_DumpTrace;
