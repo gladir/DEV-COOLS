@@ -5073,6 +5073,8 @@ Procedure ShowReplaceDialog(Var Dlg: TFindReplaceDialog); Forward;
 Procedure ShowGoToLineDialog(Var Ed: TEditor); Forward;
 Procedure TransformSelection(Var Ed: TEditor;
  Var Sel: TSelection; ToUpper: Boolean); Forward;
+Function ShowMessageBox(Title, Text: String;
+ Buttons: TMessageButtons; Icon: TMessageIcon): Integer; Forward;
 Procedure DrawExplorer(Var Exp: TSolutionExplorer); Forward;
 Procedure ShowExplorerContextMenu(Var Exp: TSolutionExplorer;
  Var CM: TContextMenu; NodeIdx, MX, MY: Integer); Forward;
@@ -5503,6 +5505,30 @@ Begin
         ShowProjectPropertiesDialog(ProjPropDlg);
        End;
   500: HandleStartDebugging; { Generer la solution (F6) }
+  530: Begin { Gestionnaire de configuration }
+        If BuildMgr.ActiveConfig = '' Then
+         BuildMgr.ActiveConfig := 'Debug';
+        If UpCaseStr(BuildMgr.ActiveConfig) = 'DEBUG' Then Begin
+         If ShowMessageBox('Gestionnaire de configuration',
+          'Configuration active : Debug.' + #10 +
+          'Basculer en Release ?',
+          MB_YESNO, MI_INFO) = DR_OK Then Begin
+          BuildMgr.ActiveConfig := 'Release';
+          AppendOutput(OutputPanel,
+           'Configuration active : Release.', 0);
+         End;
+        End Else Begin
+         If ShowMessageBox('Gestionnaire de configuration',
+          'Configuration active : ' + BuildMgr.ActiveConfig + '.' +
+          #10 + 'Basculer en Debug ?',
+          MB_YESNO, MI_INFO) = DR_OK Then Begin
+          BuildMgr.ActiveConfig := 'Debug';
+          AppendOutput(OutputPanel,
+           'Configuration active : Debug.', 0);
+         End;
+        End;
+        FullRepaintNeeded := True;
+       End;
   600: HandleStartDebugging; { Demarrer le debogage (F5) }
   303: Begin { Terminal }
         TermVisible := Not TermVisible;
