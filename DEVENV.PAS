@@ -5346,6 +5346,13 @@ Begin
         NewProjDlg.Base.Visible := True;
         DrawNewProjectDialog(NewProjDlg);
        End;
+  110: Begin { Ouvrir projet/solution (Ctrl+Maj+O) }
+        InitFileDialog(FileDlg, False);
+        LoadDirectoryFiles(FileDlg);
+        FileDlg.Base.Title := 'Ouvrir projet/solution';
+        FileDlg.Base.Visible := True;
+        DrawFileDialog(FileDlg);
+       End;
   111: Begin { Ouvrir fichier (Ctrl+O) }
         InitFileDialog(FileDlg, False);
         LoadDirectoryFiles(FileDlg);
@@ -7352,6 +7359,12 @@ Procedure HighlightPythonLine(Var HL: TPythonHighlighter;
                               Line: String;
                               Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightXMLLine --- }
+
+Procedure HighlightXMLLine(Var HL: TXMLHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte); Forward;
+
 { --- Declarations anticipees pour la selection --- }
 
 Procedure StartSelection(Var Sel: TSelection; Line, Col: LongInt); Forward;
@@ -7380,6 +7393,7 @@ Var
  IsPSP: Boolean;
  IsJava: Boolean;
  IsPython: Boolean;
+ IsXML: Boolean;
  Ext: String;
 Begin
  { Detecter si le fichier est du Pascal }
@@ -7391,6 +7405,13 @@ Begin
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  IsAWK := (Ext = '.AWK');
+ IsXML := (Ext = '.XML')     Or (Ext = '.XAML')   Or
+          (Ext = '.HTM')     Or (Ext = '.HTML')   Or
+          (Ext = '.CSPROJ')  Or (Ext = '.VBPROJ') Or
+          (Ext = '.DPPROJ')  Or (Ext = '.ADAPROJ')Or
+          (Ext = '.FSPROJ')  Or (Ext = '.PROJ')   Or
+          (Ext = '.CONFIG')  Or (Ext = '.RESX')   Or
+          (Ext = '.SVG')     Or (Ext = '.PLIST');
  IsPSP := (Ext = '.PSP');
  IsJava := (Ext = '.JAVA');
  IsPython := (Ext = '.PY');
@@ -7441,7 +7462,10 @@ Begin
     HighlightJavaLine(JavaHL, FullLine, Colors)
    Else If IsPython And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
-    HighlightPythonLine(PythonHL, FullLine, Colors);
+    HighlightPythonLine(PythonHL, FullLine, Colors)
+   Else If IsXML And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightXMLLine(XMLHL, FullLine, Colors);
    { Extraire la partie visible }
    If Ed.ScrollCol <= Length(FullLine) Then Begin
     Len := Length(FullLine) - Ed.ScrollCol + 1;
