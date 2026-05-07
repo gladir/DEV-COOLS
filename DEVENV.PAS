@@ -2658,6 +2658,7 @@ Type
   IsReplaceMode: Boolean;      { True=remplacer, False=chercher }
   SearchCursor: Integer;       { position curseur recherche     }
   ReplaceCursor: Integer;      { position curseur remplacement  }
+  FocusField  : Integer;       { 0=Search, 1=Replace            }
   FoundCount  : Integer;       { nombre d occurrences trouvees  }
   LastFoundLine: LongInt;      { ligne derniere occurrence      }
   LastFoundCol : LongInt;      { colonne derniere occurrence    }
@@ -38846,15 +38847,20 @@ Begin
  SetFillStyle(SolidFill, CLR_EDITOR_BG);
  Bar(FX, CurY, FX + FIND_FIELD_WIDTH - 1,
   CurY + FIND_FIELD_HEIGHT - 1);
- SetColor(CLR_BORDER);
+ If Dlg.FocusField = 0 Then
+  SetColor(CLR_TITLEBAR_ACTIVE)
+ Else
+  SetColor(CLR_BORDER);
  Rectangle(FX, CurY, FX + FIND_FIELD_WIDTH - 1,
   CurY + FIND_FIELD_HEIGHT - 1);
  SetColor(CLR_EDITOR_TEXT);
  OutTextXY(FX + 4, CurY + 4, Dlg.SearchText);
  { Curseur dans le champ recherche }
- SetColor(CLR_EDITOR_TEXT);
- Line(FX + 4 + Dlg.SearchCursor * 8, CurY + 2,
-  FX + 4 + Dlg.SearchCursor * 8, CurY + FIND_FIELD_HEIGHT - 3);
+ If Dlg.FocusField = 0 Then Begin
+  SetColor(CLR_EDITOR_TEXT);
+  Line(FX + 4 + Dlg.SearchCursor * 8, CurY + 2,
+   FX + 4 + Dlg.SearchCursor * 8, CurY + FIND_FIELD_HEIGHT - 3);
+ End;
  CurY := CurY + FIND_FIELD_HEIGHT + FIND_PADDING;
  { Etiquette et champ Remplacer (si mode remplacement) }
  If Dlg.IsReplaceMode Then Begin
@@ -38863,15 +38869,20 @@ Begin
   SetFillStyle(SolidFill, CLR_EDITOR_BG);
   Bar(FX, CurY, FX + FIND_FIELD_WIDTH - 1,
    CurY + FIND_FIELD_HEIGHT - 1);
-  SetColor(CLR_BORDER);
+  If Dlg.FocusField = 1 Then
+   SetColor(CLR_TITLEBAR_ACTIVE)
+  Else
+   SetColor(CLR_BORDER);
   Rectangle(FX, CurY, FX + FIND_FIELD_WIDTH - 1,
    CurY + FIND_FIELD_HEIGHT - 1);
   SetColor(CLR_EDITOR_TEXT);
   OutTextXY(FX + 4, CurY + 4, Dlg.ReplaceText);
   { Curseur dans le champ remplacer }
-  SetColor(CLR_EDITOR_TEXT);
-  Line(FX + 4 + Dlg.ReplaceCursor * 8, CurY + 2,
-   FX + 4 + Dlg.ReplaceCursor * 8, CurY + FIND_FIELD_HEIGHT - 3);
+  If Dlg.FocusField = 1 Then Begin
+   SetColor(CLR_EDITOR_TEXT);
+   Line(FX + 4 + Dlg.ReplaceCursor * 8, CurY + 2,
+    FX + 4 + Dlg.ReplaceCursor * 8, CurY + FIND_FIELD_HEIGHT - 3);
+  End;
   CurY := CurY + FIND_FIELD_HEIGHT + FIND_PADDING;
  End;
  { Options : cases a cocher }
@@ -39406,30 +39417,24 @@ Begin
   CloseDialog(Dlg.Base);
  End Else If Key = #9 Then Begin
   { Tab : basculer entre champ recherche et remplacement }
-  If Dlg.IsReplaceMode Then Begin
-   { Basculer le focus (simplifie via curseur) }
-   If Dlg.SearchCursor > 0 Then Begin
-    Dlg.SearchCursor := 0;
-    Dlg.ReplaceCursor := Length(Dlg.ReplaceText);
-   End Else Begin
-    Dlg.ReplaceCursor := 0;
-    Dlg.SearchCursor := Length(Dlg.SearchText);
-   End;
-  End;
+  If Dlg.IsReplaceMode Then
+   Dlg.FocusField := 1 - Dlg.FocusField;
  End Else If Key = #8 Then Begin
   { Retour arriere }
-  If (Dlg.ReplaceCursor > 0) And Dlg.IsReplaceMode And
-     (Dlg.SearchCursor = 0) Then Begin
-   Delete(Dlg.ReplaceText, Dlg.ReplaceCursor, 1);
-   Dec(Dlg.ReplaceCursor);
-  End Else If (Dlg.SearchCursor > 0) Then Begin
-   Delete(Dlg.SearchText, Dlg.SearchCursor, 1);
-   Dec(Dlg.SearchCursor);
+  If Dlg.IsReplaceMode And (Dlg.FocusField = 1) Then Begin
+   If Dlg.ReplaceCursor > 0 Then Begin
+    Delete(Dlg.ReplaceText, Dlg.ReplaceCursor, 1);
+    Dec(Dlg.ReplaceCursor);
+   End;
+  End Else Begin
+   If Dlg.SearchCursor > 0 Then Begin
+    Delete(Dlg.SearchText, Dlg.SearchCursor, 1);
+    Dec(Dlg.SearchCursor);
+   End;
   End;
  End Else If (Key >= ' ') And (Key <= '~') Then Begin
   { Caractere imprimable }
-  If (Dlg.ReplaceCursor > 0) And Dlg.IsReplaceMode And
-     (Dlg.SearchCursor = 0) Then Begin
+  If Dlg.IsReplaceMode And (Dlg.FocusField = 1) Then Begin
    If Length(Dlg.ReplaceText) < 127 Then Begin
     Inc(Dlg.ReplaceCursor);
     Insert(Key, Dlg.ReplaceText, Dlg.ReplaceCursor);
@@ -39478,6 +39483,22 @@ Begin
    FIND_FIELD_HEIGHT + FIND_PADDING;
   If Dlg.IsReplaceMode Then
    ChkY := ChkY + FIND_FIELD_HEIGHT + FIND_PADDING;
+  { Clic sur le champ recherche : focus }
+  If (MX >= X1 + FIND_LABEL_WIDTH) And
+     (MX <= X1 + FIND_LABEL_WIDTH + FIND_FIELD_WIDTH) And
+     (MY >= Dlg.Base.Y + DLG_TITLE_HEIGHT + FIND_PADDING) And
+     (MY <= Dlg.Base.Y + DLG_TITLE_HEIGHT + FIND_PADDING +
+      FIND_FIELD_HEIGHT) Then
+   Dlg.FocusField := 0;
+  { Clic sur le champ remplacer : focus }
+  If Dlg.IsReplaceMode And
+     (MX >= X1 + FIND_LABEL_WIDTH) And
+     (MX <= X1 + FIND_LABEL_WIDTH + FIND_FIELD_WIDTH) And
+     (MY >= Dlg.Base.Y + DLG_TITLE_HEIGHT + FIND_PADDING +
+      FIND_FIELD_HEIGHT + FIND_PADDING) And
+     (MY <= Dlg.Base.Y + DLG_TITLE_HEIGHT + FIND_PADDING +
+      FIND_FIELD_HEIGHT + FIND_PADDING + FIND_FIELD_HEIGHT) Then
+   Dlg.FocusField := 1;
   { Clic sur case Respecter la casse }
   If (MX >= X1) And (MX <= X1 + FIND_CHECK_SIZE) And
      (MY >= ChkY) And (MY <= ChkY + FIND_CHECK_SIZE) Then
@@ -39547,6 +39568,7 @@ Begin
   FIND_DLG_HEIGHT);
  Dlg.Base.HasCancel := True;
  Dlg.SearchCursor := Length(Dlg.SearchText);
+ Dlg.FocusField := 0;
  Dlg.FoundCount := 0;
  Dlg.Base.Visible := True;
  DrawFindReplaceDialog(Dlg);
@@ -39562,6 +39584,7 @@ Begin
  Dlg.Base.HasCancel := True;
  Dlg.SearchCursor := Length(Dlg.SearchText);
  Dlg.ReplaceCursor := Length(Dlg.ReplaceText);
+ Dlg.FocusField := 0;
  Dlg.FoundCount := 0;
  Dlg.Base.Visible := True;
  DrawFindReplaceDialog(Dlg);
