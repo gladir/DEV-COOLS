@@ -5132,6 +5132,10 @@ Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
 Procedure HandleSaveCurrentFile; Forward;
 Procedure HandleSaveAll; Forward;
 Procedure TryQuit; Forward;
+Procedure CloseEditorWindow(Index: Integer); Forward;
+Procedure ClearExplorer(Var Exp: TSolutionExplorer); Forward;
+Procedure AppendOutput(Var OP: TOutputPanel;
+ AText: String; Tab: Integer); Forward;
 
 { Declarations anticipees pour dialogue fichier }
 Procedure InitFileDialog(Var FD: TFileDialog;
@@ -5369,6 +5373,24 @@ Begin
         FileDlg.Base.Title := 'Ouvrir dossier...';
         FileDlg.Base.Visible := True;
         DrawFileDialog(FileDlg);
+       End;
+  120: Begin { Fermer (Ctrl+W) : fermer l onglet actif }
+        If (WinMgr.ActiveIdx >= 0) And
+           (WinMgr.ActiveIdx < WinMgr.WinCount) Then Begin
+         CloseEditorWindow(WinMgr.ActiveIdx);
+         FullRepaintNeeded := True;
+        End;
+       End;
+  121: Begin { Fermer la solution }
+        While WinMgr.WinCount > 0 Do
+         CloseEditorWindow(WinMgr.WinCount - 1);
+        ClearExplorer(SolExplorer);
+        SolutionLoaded := False;
+        SolutionModified := False;
+        SolExplorer.NeedRepaint := True;
+        FullRepaintNeeded := True;
+        AppendOutput(OutputPanel,
+         'Solution fermee.', Ord(OTK_BUILD));
        End;
   130: HandleSaveCurrentFile;  { Enregistrer (Ctrl+S) }
   132: HandleSaveAll;          { Enregistrer tout (Ctrl+Maj+S) }
