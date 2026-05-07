@@ -7376,6 +7376,11 @@ Procedure HighlightJSONLine(Line: String;
 Procedure HighlightYAMLLine(Line: String;
                             Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightSQLLine --- }
+
+Procedure HighlightSQLLine(Line: String;
+                           Var Colors: Array Of Byte); Forward;
+
 { --- Declarations anticipees pour la selection --- }
 
 Procedure StartSelection(Var Sel: TSelection; Line, Col: LongInt); Forward;
@@ -7407,6 +7412,7 @@ Var
  IsXML: Boolean;
  IsJSON: Boolean;
  IsYAML: Boolean;
+ IsSQL: Boolean;
  Ext: String;
 Begin
  { Detecter si le fichier est du Pascal }
@@ -7428,6 +7434,7 @@ Begin
  IsJSON := (Ext = '.JSON') Or (Ext = '.JSONC') Or
            (Ext = '.JSON5');
  IsYAML := (Ext = '.YML') Or (Ext = '.YAML');
+ IsSQL := (Ext = '.SQL') Or (Ext = '.DDL') Or (Ext = '.DML');
  IsPSP := (Ext = '.PSP');
  IsJava := (Ext = '.JAVA');
  IsPython := (Ext = '.PY');
@@ -7487,7 +7494,10 @@ Begin
     HighlightJSONLine(FullLine, Colors)
    Else If IsYAML And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
-    HighlightYAMLLine(FullLine, Colors);
+    HighlightYAMLLine(FullLine, Colors)
+   Else If IsSQL And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightSQLLine(FullLine, Colors);
    { Extraire la partie visible }
    If Ed.ScrollCol <= Length(FullLine) Then Begin
     Len := Length(FullLine) - Ed.ScrollCol + 1;
@@ -12651,6 +12661,207 @@ Begin
       (LowerCaseStr(Word) = 'on')    Or (LowerCaseStr(Word) = 'off') Then
     For I := Start To Pos - 1 Do
      Colors[I - 1] := ClrKw;
+   Continue;
+  End;
+  Inc(Pos);
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE SQL
+  ============================================================ }
+
+{ Verifier si Word (deja en majuscules) est un mot-cle SQL. }
+
+Function IsSQLKeyword(Word: String): Boolean;
+Begin
+ IsSQLKeyword :=
+  (Word = 'SELECT')   Or (Word = 'FROM')      Or (Word = 'WHERE')   Or
+  (Word = 'INSERT')   Or (Word = 'UPDATE')    Or (Word = 'DELETE')  Or
+  (Word = 'CREATE')   Or (Word = 'TABLE')     Or (Word = 'DROP')    Or
+  (Word = 'ALTER')    Or (Word = 'INDEX')     Or (Word = 'VIEW')    Or
+  (Word = 'JOIN')     Or (Word = 'LEFT')      Or (Word = 'RIGHT')   Or
+  (Word = 'INNER')    Or (Word = 'OUTER')     Or (Word = 'CROSS')   Or
+  (Word = 'FULL')     Or (Word = 'ON')        Or (Word = 'AS')      Or
+  (Word = 'AND')      Or (Word = 'OR')        Or (Word = 'NOT')     Or
+  (Word = 'NULL')     Or (Word = 'IS')        Or (Word = 'IN')      Or
+  (Word = 'LIKE')     Or (Word = 'BETWEEN')   Or (Word = 'EXISTS')  Or
+  (Word = 'ORDER')    Or (Word = 'BY')        Or (Word = 'GROUP')   Or
+  (Word = 'HAVING')   Or (Word = 'UNION')     Or (Word = 'ALL')     Or
+  (Word = 'DISTINCT') Or (Word = 'INTO')      Or (Word = 'VALUES')  Or
+  (Word = 'SET')      Or (Word = 'PRIMARY')   Or (Word = 'KEY')     Or
+  (Word = 'FOREIGN')  Or (Word = 'REFERENCES')Or (Word = 'CONSTRAINT') Or
+  (Word = 'DEFAULT')  Or (Word = 'CHECK')     Or (Word = 'UNIQUE')  Or
+  (Word = 'CASE')     Or (Word = 'WHEN')      Or (Word = 'THEN')    Or
+  (Word = 'ELSE')     Or (Word = 'END')       Or (Word = 'IF')      Or
+  (Word = 'BEGIN')    Or (Word = 'COMMIT')    Or (Word = 'ROLLBACK')Or
+  (Word = 'TRANSACTION') Or (Word = 'GRANT')  Or (Word = 'REVOKE')  Or
+  (Word = 'TRUE')     Or (Word = 'FALSE')     Or (Word = 'ASC')     Or
+  (Word = 'DESC')     Or (Word = 'LIMIT')     Or (Word = 'OFFSET')  Or
+  (Word = 'TOP')      Or (Word = 'WITH')      Or (Word = 'RECURSIVE') Or
+  (Word = 'EXEC')     Or (Word = 'EXECUTE')   Or (Word = 'PROCEDURE') Or
+  (Word = 'FUNCTION') Or (Word = 'TRIGGER')   Or (Word = 'RETURNS') Or
+  (Word = 'RETURN')   Or (Word = 'DECLARE')   Or (Word = 'CURSOR')  Or
+  (Word = 'FETCH')    Or (Word = 'OPEN')      Or (Word = 'CLOSE')   Or
+  (Word = 'WHILE')    Or (Word = 'FOR')       Or (Word = 'LOOP')    Or
+  (Word = 'AUTO_INCREMENT') Or (Word = 'IDENTITY') Or (Word = 'TEMP') Or
+  (Word = 'TEMPORARY')Or (Word = 'DATABASE')  Or (Word = 'SCHEMA')  Or
+  (Word = 'USE')      Or (Word = 'SHOW')      Or (Word = 'DESCRIBE')Or
+  (Word = 'TRUNCATE') Or (Word = 'RENAME')    Or (Word = 'ADD')     Or
+  (Word = 'COLUMN')   Or (Word = 'MODIFY')    Or (Word = 'CASCADE') Or
+  (Word = 'RESTRICT') Or (Word = 'NO')        Or (Word = 'ACTION');
+End;
+
+{ Verifier si Word (deja en majuscules) est un type SQL. }
+
+Function IsSQLType(Word: String): Boolean;
+Begin
+ IsSQLType :=
+  (Word = 'INT')      Or (Word = 'INTEGER')  Or (Word = 'SMALLINT') Or
+  (Word = 'BIGINT')   Or (Word = 'TINYINT')  Or (Word = 'BIT')      Or
+  (Word = 'BOOLEAN')  Or (Word = 'BOOL')     Or (Word = 'VARCHAR')  Or
+  (Word = 'CHAR')     Or (Word = 'NVARCHAR') Or (Word = 'NCHAR')    Or
+  (Word = 'TEXT')     Or (Word = 'NTEXT')    Or (Word = 'CLOB')     Or
+  (Word = 'BLOB')     Or (Word = 'BINARY')   Or (Word = 'VARBINARY')Or
+  (Word = 'DATE')     Or (Word = 'TIME')     Or (Word = 'TIMESTAMP')Or
+  (Word = 'DATETIME') Or (Word = 'INTERVAL') Or (Word = 'YEAR')     Or
+  (Word = 'DECIMAL')  Or (Word = 'NUMERIC')  Or (Word = 'FLOAT')    Or
+  (Word = 'REAL')     Or (Word = 'DOUBLE')   Or (Word = 'MONEY')    Or
+  (Word = 'SERIAL')   Or (Word = 'UUID')     Or (Word = 'JSON')     Or
+  (Word = 'XML');
+End;
+
+{ --- Colorier une ligne SQL --- }
+
+Procedure HighlightSQLLine(Line: String; Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ ClrNorm, ClrStr, ClrNum, ClrKw, ClrCmt, ClrType: Byte;
+ Ch: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ ClrNorm := Byte(TokenClassToColor(TC_NORMAL));
+ ClrStr  := Byte(TokenClassToColor(TC_STRING));
+ ClrNum  := Byte(TokenClassToColor(TC_NUMBER));
+ ClrKw   := Byte(TokenClassToColor(TC_KEYWORD));
+ ClrCmt  := Byte(TokenClassToColor(TC_COMMENT));
+ ClrType := Byte(TokenClassToColor(TC_DIRECTIVE));
+ For I := 0 To Len - 1 Do
+  Colors[I] := ClrNorm;
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Ch := Line[Pos];
+  { Commentaire ligne -- ... }
+  If (Ch = '-') And (Pos + 1 <= Len) And (Line[Pos + 1] = '-') Then
+  Begin
+   For I := Pos To Len Do
+    Colors[I - 1] := ClrCmt;
+   Exit;
+  End;
+  { Commentaire bloc /* ... */ (sur la ligne, ferme ou non). }
+  If (Ch = '/') And (Pos + 1 <= Len) And (Line[Pos + 1] = '*') Then
+  Begin
+   Start := Pos;
+   Inc(Pos, 2);
+   While (Pos + 1 <= Len) And
+         Not ((Line[Pos] = '*') And (Line[Pos + 1] = '/')) Do
+    Inc(Pos);
+   If (Pos + 1 <= Len) And (Line[Pos] = '*') And
+      (Line[Pos + 1] = '/') Then
+    Inc(Pos, 2)
+   Else
+    Pos := Len + 1;
+   For I := Start To Pos - 1 Do
+    If I - 1 < Len Then Colors[I - 1] := ClrCmt;
+   Continue;
+  End;
+  { Chaine 'xxx' (avec '' comme echappement). }
+  If Ch = '''' Then
+  Begin
+   Start := Pos;
+   Inc(Pos);
+   While Pos <= Len Do
+   Begin
+    If (Line[Pos] = '''') And (Pos + 1 <= Len) And
+       (Line[Pos + 1] = '''') Then
+     Inc(Pos, 2)
+    Else If Line[Pos] = '''' Then
+    Begin
+     Inc(Pos);
+     Break;
+    End
+    Else
+     Inc(Pos);
+   End;
+   For I := Start To Pos - 1 Do
+    Colors[I - 1] := ClrStr;
+   Continue;
+  End;
+  { Identifiant entre "..." ou `...` ou [...]. }
+  If (Ch = '"') Or (Ch = '`') Or (Ch = '[') Then
+  Begin
+   Start := Pos;
+   Inc(Pos);
+   While Pos <= Len Do
+   Begin
+    If (Ch = '[') And (Line[Pos] = ']') Then
+    Begin
+     Inc(Pos);
+     Break;
+    End
+    Else If (Ch <> '[') And (Line[Pos] = Ch) Then
+    Begin
+     Inc(Pos);
+     Break;
+    End
+    Else
+     Inc(Pos);
+   End;
+   For I := Start To Pos - 1 Do
+    Colors[I - 1] := ClrStr;
+   Continue;
+  End;
+  { Nombre. }
+  If (Ch In ['0'..'9']) Then
+  Begin
+   Start := Pos;
+   While (Pos <= Len) And (Line[Pos] In ['0'..'9']) Do Inc(Pos);
+   If (Pos <= Len) And (Line[Pos] = '.') Then
+   Begin
+    Inc(Pos);
+    While (Pos <= Len) And (Line[Pos] In ['0'..'9']) Do Inc(Pos);
+   End;
+   If (Pos <= Len) And ((Line[Pos] = 'e') Or (Line[Pos] = 'E')) Then
+   Begin
+    Inc(Pos);
+    If (Pos <= Len) And
+       ((Line[Pos] = '+') Or (Line[Pos] = '-')) Then Inc(Pos);
+    While (Pos <= Len) And (Line[Pos] In ['0'..'9']) Do Inc(Pos);
+   End;
+   For I := Start To Pos - 1 Do
+    Colors[I - 1] := ClrNum;
+   Continue;
+  End;
+  { Mot -> mot-cle, type ou identifiant. }
+  If (Ch In ['a'..'z']) Or (Ch In ['A'..'Z']) Or (Ch = '_') Then
+  Begin
+   Start := Pos;
+   Word := '';
+   While (Pos <= Len) And
+         ((Line[Pos] In ['a'..'z']) Or (Line[Pos] In ['A'..'Z']) Or
+          (Line[Pos] In ['0'..'9']) Or (Line[Pos] = '_')) Do
+   Begin
+    Word := Word + Line[Pos];
+    Inc(Pos);
+   End;
+   Word := UpCaseStr(Word);
+   If IsSQLKeyword(Word) Then
+    For I := Start To Pos - 1 Do Colors[I - 1] := ClrKw
+   Else If IsSQLType(Word) Then
+    For I := Start To Pos - 1 Do Colors[I - 1] := ClrType;
    Continue;
   End;
   Inc(Pos);
