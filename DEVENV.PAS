@@ -5067,6 +5067,9 @@ Procedure InitContextMenu(Var CM: TContextMenu); Forward;
 Procedure AddContextItem(Var CM: TContextMenu; ACaption: String;
  ATag: LongInt); Forward;
 Procedure DrawContextMenu(Var CM: TContextMenu); Forward;
+Procedure ShowFindDialog(Var Dlg: TFindReplaceDialog); Forward;
+Procedure ShowReplaceDialog(Var Dlg: TFindReplaceDialog); Forward;
+Procedure ShowGoToLineDialog(Var Ed: TEditor); Forward;
 Procedure DrawExplorer(Var Exp: TSolutionExplorer); Forward;
 Procedure ShowExplorerContextMenu(Var Exp: TSolutionExplorer;
  Var CM: TContextMenu; NodeIdx, MX, MY: Integer); Forward;
@@ -5476,6 +5479,12 @@ Begin
   220: Begin { Selectionner tout (Ctrl+A) }
         If EditorReady Then
          SelectAll(ActiveEditor, EditorSel);
+       End;
+  230: ShowFindDialog(FindReplaceDlg); { Rechercher (Ctrl+F) }
+  231: ShowReplaceDialog(FindReplaceDlg); { Remplacer (Ctrl+H) }
+  232: Begin { Aller a la ligne (Ctrl+G) }
+        If EditorReady Then
+         ShowGoToLineDialog(ActiveEditor);
        End;
   410: Begin { Proprietes du projet }
         InitProjectPropertiesDialog(ProjPropDlg);
@@ -38842,6 +38851,10 @@ Begin
   CurY + FIND_FIELD_HEIGHT - 1);
  SetColor(CLR_EDITOR_TEXT);
  OutTextXY(FX + 4, CurY + 4, Dlg.SearchText);
+ { Curseur dans le champ recherche }
+ SetColor(CLR_EDITOR_TEXT);
+ Line(FX + 4 + Dlg.SearchCursor * 8, CurY + 2,
+  FX + 4 + Dlg.SearchCursor * 8, CurY + FIND_FIELD_HEIGHT - 3);
  CurY := CurY + FIND_FIELD_HEIGHT + FIND_PADDING;
  { Etiquette et champ Remplacer (si mode remplacement) }
  If Dlg.IsReplaceMode Then Begin
@@ -38855,6 +38868,10 @@ Begin
    CurY + FIND_FIELD_HEIGHT - 1);
   SetColor(CLR_EDITOR_TEXT);
   OutTextXY(FX + 4, CurY + 4, Dlg.ReplaceText);
+  { Curseur dans le champ remplacer }
+  SetColor(CLR_EDITOR_TEXT);
+  Line(FX + 4 + Dlg.ReplaceCursor * 8, CurY + 2,
+   FX + 4 + Dlg.ReplaceCursor * 8, CurY + FIND_FIELD_HEIGHT - 3);
   CurY := CurY + FIND_FIELD_HEIGHT + FIND_PADDING;
  End;
  { Options : cases a cocher }
@@ -39386,6 +39403,7 @@ Begin
  End Else If Key = #13 Then Begin
   { Entree : valider (lancer la recherche) }
   Dlg.Base.Result := DR_OK;
+  CloseDialog(Dlg.Base);
  End Else If Key = #9 Then Begin
   { Tab : basculer entre champ recherche et remplacement }
   If Dlg.IsReplaceMode Then Begin
@@ -39434,12 +39452,27 @@ Var
  X1: Integer;
 Begin
  If Not Dlg.Base.Visible Then Exit;
- If EvtType = 1 Then Begin
+ If (EvtType = Ord(EV_KEY_CHAR)) Or
+    (EvtType = Ord(EV_KEY_DOWN)) Then Begin
   { Evenement clavier }
   HandleFindDialogKey(Dlg, Key);
-  DrawFindReplaceDialog(Dlg);
- End Else If EvtType = 2 Then Begin
+  If Dlg.Base.Visible Then
+   DrawFindReplaceDialog(Dlg);
+ End Else If EvtType = Ord(EV_MOUSE_DOWN) Then Begin
   { Evenement souris (clic) }
+  { Test des boutons OK / Annuler }
+  Case DialogButtonHitTest(Dlg.Base, MX, MY) Of
+   0: Begin
+       Dlg.Base.Result := DR_OK;
+       CloseDialog(Dlg.Base);
+       Exit;
+      End;
+   1: Begin
+       Dlg.Base.Result := DR_CANCEL;
+       CloseDialog(Dlg.Base);
+       Exit;
+      End;
+  End;
   X1 := Dlg.Base.X + FIND_PADDING;
   ChkY := Dlg.Base.Y + DLG_TITLE_HEIGHT + FIND_PADDING +
    FIND_FIELD_HEIGHT + FIND_PADDING;
@@ -43841,6 +43874,10 @@ Begin
   DrawProjectPropertiesDialog(ProjPropDlg);
  If EmuPanel.Base.Visible Then
   DrawEmulatorPanel(EmuPanel);
+ If FindReplaceDlg.Base.Visible Then
+  DrawFindReplaceDialog(FindReplaceDlg);
+ If GoToLineDlg.Base.Visible Then
+  DrawGoToLineDialog(GoToLineDlg);
 End;
 
 { --- Traiter un evenement global --- }
@@ -43990,6 +44027,18 @@ Begin
  If FindReplaceDlg.Base.Visible Then Begin
   HandleFindDialogEvent(FindReplaceDlg,
    Ord(Ev.Kind), Ev.KeyChar, Ev.MouseX, Ev.MouseY);
+  If Not FindReplaceDlg.Base.Visible Then Begin
+   If (FindReplaceDlg.Base.Result = DR_OK) And EditorReady Then Begin
+    If FindReplaceDlg.IsReplaceMode Then
+     ReplaceNext(ActiveEditor, FindReplaceDlg.SearchText,
+      FindReplaceDlg.ReplaceText, FindReplaceDlg.Options)
+    Else
+     FindNext(ActiveEditor, FindReplaceDlg.SearchText,
+      FindReplaceDlg.Options);
+    EnsureCursorVisible(ActiveEditor);
+   End;
+   FullRepaintNeeded := True;
+  End;
   Exit;
  End;
  If FileDlg.Base.Visible Then Begin
