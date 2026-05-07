@@ -3123,6 +3123,9 @@ Var
  StatusBar      : TStatusBar;
  { Liste des fichiers recents }
  MRUList        : TMRUList;
+ { Tampon de chemins pour le popup MRU }
+ MRUPopupPaths  : Array[0..MRU_MAX_ENTRIES - 1] Of String[255];
+ MRUPopupCount  : Integer;
  { Page de demarrage }
  StartPage      : TStartPage;
  { Dialogue nouveau projet / nouvelle solution }
@@ -5061,6 +5064,9 @@ Procedure HandleStartDebugging; Forward;
 
 { Declarations anticipees pour le menu contextuel }
 Procedure InitContextMenu(Var CM: TContextMenu); Forward;
+Procedure AddContextItem(Var CM: TContextMenu; ACaption: String;
+ ATag: LongInt); Forward;
+Procedure DrawContextMenu(Var CM: TContextMenu); Forward;
 Procedure DrawExplorer(Var Exp: TSolutionExplorer); Forward;
 Procedure ShowExplorerContextMenu(Var Exp: TSolutionExplorer;
  Var CM: TContextMenu; NodeIdx, MX, MY: Integer); Forward;
@@ -5338,6 +5344,8 @@ End;
 { --- Execution d un element de menu --- }
 
 Procedure ExecuteMenuItem(Var Item: TMenuItem);
+Var
+ I: Integer;
 Begin
  CloseMenu;
  Case Item.Tag Of
@@ -5394,6 +5402,48 @@ Begin
        End;
   130: HandleSaveCurrentFile;  { Enregistrer (Ctrl+S) }
   132: HandleSaveAll;          { Enregistrer tout (Ctrl+Maj+S) }
+  150: Begin { Fichiers recents : popup }
+        InitContextMenu(CtxMenu);
+        CtxMenu.Width := 400;
+        MRUPopupCount := 0;
+        For I := 0 To MRUList.Count - 1 Do
+         If MRUPopupCount < MRU_MAX_ENTRIES Then Begin
+          MRUPopupPaths[MRUPopupCount] :=
+           MRUList.Entries[I].FilePath;
+          AddContextItem(CtxMenu,
+           MRUList.Entries[I].FilePath,
+           5000 + MRUPopupCount);
+          Inc(MRUPopupCount);
+         End;
+        If MRUPopupCount = 0 Then
+         AddContextItem(CtxMenu, '(aucun fichier recent)', 0);
+        CtxMenu.X := 8;
+        CtxMenu.Y := MainMenuBar.Y + MainMenuBar.Height;
+        CtxMenu.Visible := True;
+        DrawContextMenu(CtxMenu);
+       End;
+  151: Begin { Projets recents : popup .sln seulement }
+        InitContextMenu(CtxMenu);
+        CtxMenu.Width := 400;
+        MRUPopupCount := 0;
+        For I := 0 To MRUList.Count - 1 Do
+         If (MRUPopupCount < MRU_MAX_ENTRIES) And
+            (UpCaseStr(ExtractFileExt(
+             MRUList.Entries[I].FilePath)) = '.SLN') Then Begin
+          MRUPopupPaths[MRUPopupCount] :=
+           MRUList.Entries[I].FilePath;
+          AddContextItem(CtxMenu,
+           MRUList.Entries[I].FilePath,
+           5100 + MRUPopupCount);
+          Inc(MRUPopupCount);
+         End;
+        If MRUPopupCount = 0 Then
+         AddContextItem(CtxMenu, '(aucun projet recent)', 0);
+        CtxMenu.X := 8;
+        CtxMenu.Y := MainMenuBar.Y + MainMenuBar.Height;
+        CtxMenu.Visible := True;
+        DrawContextMenu(CtxMenu);
+       End;
   199: Begin { Quitter }
         TryQuit;
        End;
@@ -43808,6 +43858,17 @@ Begin
    FullRepaintNeeded := True;
    { Traiter la commande selectionnee }
    If CtxTag > 0 Then Begin
+    { Plage MRU : 5000-5099 = fichier recent, 5100-5199 = projet recent }
+    If (CtxTag >= 5000) And
+       (CtxTag < 5000 + MRU_MAX_ENTRIES * 2) Then Begin
+     I := CtxTag Mod 100;
+     If (I >= 0) And (I < MRUPopupCount) Then Begin
+      FileDlg.SelectedFile := MRUPopupPaths[I];
+      HandleOpenFileConfirmed;
+      FullRepaintNeeded := True;
+     End;
+     Exit;
+    End;
     Case CtxTag Of
      311, 411: Begin { Ajouter un fichier }
       InitFileDialog(FileDlg, False);
