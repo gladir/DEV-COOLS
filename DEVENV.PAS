@@ -5071,6 +5071,8 @@ Procedure DrawContextMenu(Var CM: TContextMenu); Forward;
 Procedure ShowFindDialog(Var Dlg: TFindReplaceDialog); Forward;
 Procedure ShowReplaceDialog(Var Dlg: TFindReplaceDialog); Forward;
 Procedure ShowGoToLineDialog(Var Ed: TEditor); Forward;
+Procedure TransformSelection(Var Ed: TEditor;
+ Var Sel: TSelection; ToUpper: Boolean); Forward;
 Procedure DrawExplorer(Var Exp: TSolutionExplorer); Forward;
 Procedure ShowExplorerContextMenu(Var Exp: TSolutionExplorer;
  Var CM: TContextMenu; NodeIdx, MX, MY: Integer); Forward;
@@ -5486,6 +5488,14 @@ Begin
   232: Begin { Aller a la ligne (Ctrl+G) }
         If EditorReady Then
          ShowGoToLineDialog(ActiveEditor);
+       End;
+  242: Begin { Mettre en majuscules }
+        If EditorReady Then
+         TransformSelection(ActiveEditor, EditorSel, True);
+       End;
+  243: Begin { Mettre en minuscules }
+        If EditorReady Then
+         TransformSelection(ActiveEditor, EditorSel, False);
        End;
   410: Begin { Proprietes du projet }
         InitProjectPropertiesDialog(ProjPropDlg);
@@ -8220,6 +8230,53 @@ Begin
  ClearSelection(Sel);
 End;
 
+{ --- Transformer la selection en majuscules ou minuscules --- }
+
+Procedure TransformSelection(Var Ed: TEditor; Var Sel: TSelection;
+ ToUpper: Boolean);
+Var
+ SL, SC, EL, EC: LongInt;
+ I: LongInt;
+ Line, Sub, Head, Tail: String;
+Begin
+ If Not Sel.Active Then Exit;
+ GetOrderedSelection(Sel, SL, SC, EL, EC);
+ If SL = EL Then Begin
+  Line := GetLine(Ed.Buffer, SL);
+  If EC > Length(Line) + 1 Then EC := Length(Line) + 1;
+  If SC < 1 Then SC := 1;
+  Head := Copy(Line, 1, SC - 1);
+  Sub := Copy(Line, SC, EC - SC);
+  Tail := Copy(Line, EC, Length(Line) - EC + 1);
+  If ToUpper Then
+   Sub := UpCaseStr(Sub)
+  Else
+   Sub := LowerCaseStr(Sub);
+  SetLine(Ed.Buffer, SL, Head + Sub + Tail);
+ End Else Begin
+  { Premiere ligne : depuis SC jusqu a la fin }
+  Line := GetLine(Ed.Buffer, SL);
+  Head := Copy(Line, 1, SC - 1);
+  Sub := Copy(Line, SC, Length(Line) - SC + 1);
+  If ToUpper Then Sub := UpCaseStr(Sub)
+  Else Sub := LowerCaseStr(Sub);
+  SetLine(Ed.Buffer, SL, Head + Sub);
+  { Lignes intermediaires : ligne entiere }
+  For I := SL + 1 To EL - 1 Do Begin
+   Line := GetLine(Ed.Buffer, I);
+   If ToUpper Then SetLine(Ed.Buffer, I, UpCaseStr(Line))
+   Else SetLine(Ed.Buffer, I, LowerCaseStr(Line));
+  End;
+  { Derniere ligne : depuis le debut jusqu a EC }
+  Line := GetLine(Ed.Buffer, EL);
+  Sub := Copy(Line, 1, EC - 1);
+  Tail := Copy(Line, EC, Length(Line) - EC + 1);
+  If ToUpper Then Sub := UpCaseStr(Sub)
+  Else Sub := LowerCaseStr(Sub);
+  SetLine(Ed.Buffer, EL, Sub + Tail);
+ End;
+ Ed.Buffer.Modified := True;
+End;
 { --- Selectionner tout --- }
 
 Procedure SelectAll(Var Ed: TEditor; Var Sel: TSelection);
