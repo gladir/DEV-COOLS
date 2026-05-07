@@ -7370,6 +7370,11 @@ Procedure HighlightXMLLine(Var HL: TXMLHighlighter;
 Procedure HighlightJSONLine(Line: String;
                             Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightYAMLLine --- }
+
+Procedure HighlightYAMLLine(Line: String;
+                            Var Colors: Array Of Byte); Forward;
+
 { --- Declarations anticipees pour la selection --- }
 
 Procedure StartSelection(Var Sel: TSelection; Line, Col: LongInt); Forward;
@@ -7400,6 +7405,7 @@ Var
  IsPython: Boolean;
  IsXML: Boolean;
  IsJSON: Boolean;
+ IsYAML: Boolean;
  Ext: String;
 Begin
  { Detecter si le fichier est du Pascal }
@@ -7420,6 +7426,7 @@ Begin
           (Ext = '.SVG')     Or (Ext = '.PLIST');
  IsJSON := (Ext = '.JSON') Or (Ext = '.JSONC') Or
            (Ext = '.JSON5');
+ IsYAML := (Ext = '.YML') Or (Ext = '.YAML');
  IsPSP := (Ext = '.PSP');
  IsJava := (Ext = '.JAVA');
  IsPython := (Ext = '.PY');
@@ -7476,7 +7483,10 @@ Begin
     HighlightXMLLine(XMLHL, FullLine, Colors)
    Else If IsJSON And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
-    HighlightJSONLine(FullLine, Colors);
+    HighlightJSONLine(FullLine, Colors)
+   Else If IsYAML And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightYAMLLine(FullLine, Colors);
    { Extraire la partie visible }
    If Ed.ScrollCol <= Length(FullLine) Then Begin
     Len := Length(FullLine) - Ed.ScrollCol + 1;
@@ -12442,6 +12452,202 @@ Begin
     Inc(Pos);
    End;
    If (Word = 'true') Or (Word = 'false') Or (Word = 'null') Then
+    For I := Start To Pos - 1 Do
+     Colors[I - 1] := ClrKw;
+   Continue;
+  End;
+  Inc(Pos);
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE YAML / YML
+  ============================================================ }
+
+{ --- Colorier une ligne YAML ---
+  Tokens reconnus :
+    - Commentaires # ...                          -> TC_COMMENT
+    - Cle suivie de ':' (debut de ligne ou tiret) -> TC_KEYWORD
+    - Chaines '...' et "..."                      -> TC_STRING
+    - Nombres (entiers, flottants, exposants)     -> TC_NUMBER
+    - Mots-cles true/false/null/yes/no/on/off/~   -> TC_KEYWORD
+    - Tiret de liste '- ', ancres &/*, tags !     -> TC_DIRECTIVE
+    - Ponctuation et reste                        -> TC_NORMAL  }
+
+Procedure HighlightYAMLLine(Line: String; Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len, KeyEnd, FirstNonBlank: Integer;
+ ClrNorm, ClrStr, ClrNum, ClrKw, ClrCmt, ClrDir: Byte;
+ Ch, Quote: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ ClrNorm := Byte(TokenClassToColor(TC_NORMAL));
+ ClrStr  := Byte(TokenClassToColor(TC_STRING));
+ ClrNum  := Byte(TokenClassToColor(TC_NUMBER));
+ ClrKw   := Byte(TokenClassToColor(TC_KEYWORD));
+ ClrCmt  := Byte(TokenClassToColor(TC_COMMENT));
+ ClrDir  := Byte(TokenClassToColor(TC_DIRECTIVE));
+ For I := 0 To Len - 1 Do
+  Colors[I] := ClrNorm;
+
+ { Reperer le premier caractere non blanc. }
+ FirstNonBlank := 0;
+ Pos := 1;
+ While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+  Inc(Pos);
+ FirstNonBlank := Pos;
+
+ { Directive YAML en debut de ligne (--- , ... , %YAML ...). }
+ If (FirstNonBlank <= Len) And
+    (((FirstNonBlank + 2 <= Len) And
+      (Line[FirstNonBlank] = '-') And
+      (Line[FirstNonBlank + 1] = '-') And
+      (Line[FirstNonBlank + 2] = '-')) Or
+     ((FirstNonBlank + 2 <= Len) And
+      (Line[FirstNonBlank] = '.') And
+      (Line[FirstNonBlank + 1] = '.') And
+      (Line[FirstNonBlank + 2] = '.')) Or
+     (Line[FirstNonBlank] = '%')) Then
+ Begin
+  For I := FirstNonBlank To Len Do
+   Colors[I - 1] := ClrDir;
+  Exit;
+ End;
+
+ { Tiret de liste '- ' au debut. }
+ If (FirstNonBlank <= Len) And (Line[FirstNonBlank] = '-') And
+    ((FirstNonBlank = Len) Or (Line[FirstNonBlank + 1] = ' ')) Then
+ Begin
+  Colors[FirstNonBlank - 1] := ClrDir;
+  Pos := FirstNonBlank + 1;
+ End
+ Else
+  Pos := FirstNonBlank;
+
+ { Cle: tout ce qui precede ':' (suivi d'espace/fin) avant un # ou une chaine. }
+ Start := Pos;
+ KeyEnd := -1;
+ I := Pos;
+ While I <= Len Do
+ Begin
+  Ch := Line[I];
+  If (Ch = '#') Or (Ch = '"') Or (Ch = '''') Then Break;
+  If Ch = ':' Then
+  Begin
+   If (I = Len) Or (Line[I + 1] = ' ') Or (Line[I + 1] = #9) Then
+   Begin
+    KeyEnd := I - 1;
+    Break;
+   End;
+  End;
+  Inc(I);
+ End;
+ If (KeyEnd >= Start) Then
+ Begin
+  For I := Start To KeyEnd Do
+   Colors[I - 1] := ClrKw;
+  Pos := KeyEnd + 1;
+ End;
+
+ { Tokeniser le reste : commentaires, chaines, nombres, mots-cles. }
+ While Pos <= Len Do
+ Begin
+  Ch := Line[Pos];
+  { Commentaire #... (precede d'un espace ou debut). }
+  If (Ch = '#') And ((Pos = 1) Or (Line[Pos - 1] = ' ') Or
+                     (Line[Pos - 1] = #9)) Then
+  Begin
+   For I := Pos To Len Do
+    Colors[I - 1] := ClrCmt;
+   Exit;
+  End;
+  { Chaine entre quotes simples ou doubles. }
+  If (Ch = '"') Or (Ch = '''') Then
+  Begin
+   Quote := Ch;
+   Start := Pos;
+   Inc(Pos);
+   While Pos <= Len Do
+   Begin
+    If (Quote = '"') And (Line[Pos] = '\') Then
+    Begin
+     Inc(Pos);
+     If Pos <= Len Then Inc(Pos);
+    End
+    Else If Line[Pos] = Quote Then
+    Begin
+     Inc(Pos);
+     Break;
+    End
+    Else
+     Inc(Pos);
+   End;
+   For I := Start To Pos - 1 Do
+    Colors[I - 1] := ClrStr;
+   Continue;
+  End;
+  { Ancre &name ou alias *name ou tag !name. }
+  If ((Ch = '&') Or (Ch = '*') Or (Ch = '!')) And
+     (Pos + 1 <= Len) And
+     ((Line[Pos + 1] In ['a'..'z']) Or (Line[Pos + 1] In ['A'..'Z']) Or
+      (Line[Pos + 1] = '_')) Then
+  Begin
+   Start := Pos;
+   Inc(Pos);
+   While (Pos <= Len) And
+         ((Line[Pos] In ['a'..'z']) Or (Line[Pos] In ['A'..'Z']) Or
+          (Line[Pos] In ['0'..'9']) Or (Line[Pos] = '_') Or
+          (Line[Pos] = '-')) Do
+    Inc(Pos);
+   For I := Start To Pos - 1 Do
+    Colors[I - 1] := ClrDir;
+   Continue;
+  End;
+  { Nombre. }
+  If (Ch In ['0'..'9']) Or
+     ((Ch = '-') And (Pos + 1 <= Len) And (Line[Pos + 1] In ['0'..'9'])) Then
+  Begin
+   Start := Pos;
+   If Ch = '-' Then Inc(Pos);
+   While (Pos <= Len) And (Line[Pos] In ['0'..'9']) Do Inc(Pos);
+   If (Pos <= Len) And (Line[Pos] = '.') Then
+   Begin
+    Inc(Pos);
+    While (Pos <= Len) And (Line[Pos] In ['0'..'9']) Do Inc(Pos);
+   End;
+   If (Pos <= Len) And ((Line[Pos] = 'e') Or (Line[Pos] = 'E')) Then
+   Begin
+    Inc(Pos);
+    If (Pos <= Len) And ((Line[Pos] = '+') Or (Line[Pos] = '-')) Then
+     Inc(Pos);
+    While (Pos <= Len) And (Line[Pos] In ['0'..'9']) Do Inc(Pos);
+   End;
+   For I := Start To Pos - 1 Do
+    Colors[I - 1] := ClrNum;
+   Continue;
+  End;
+  { Mot -> mots-cles YAML. }
+  If (Ch In ['a'..'z']) Or (Ch In ['A'..'Z']) Or (Ch = '~') Then
+  Begin
+   Start := Pos;
+   Word := '';
+   If Ch = '~' Then
+   Begin
+    Word := '~';
+    Inc(Pos);
+   End
+   Else
+    While (Pos <= Len) And
+          ((Line[Pos] In ['a'..'z']) Or (Line[Pos] In ['A'..'Z'])) Do
+    Begin
+     Word := Word + Line[Pos];
+     Inc(Pos);
+    End;
+   If (LowerCaseStr(Word) = 'true')  Or (LowerCaseStr(Word) = 'false') Or
+      (LowerCaseStr(Word) = 'null')  Or (Word = '~') Or
+      (LowerCaseStr(Word) = 'yes')   Or (LowerCaseStr(Word) = 'no') Or
+      (LowerCaseStr(Word) = 'on')    Or (LowerCaseStr(Word) = 'off') Then
     For I := Start To Pos - 1 Do
      Colors[I - 1] := ClrKw;
    Continue;
