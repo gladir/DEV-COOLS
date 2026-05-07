@@ -38934,6 +38934,10 @@ Begin
  Rectangle(FX, CurY, FX + 120, CurY + FIND_FIELD_HEIGHT - 1);
  SetColor(CLR_EDITOR_TEXT);
  OutTextXY(FX + 4, CurY + 4, Dlg.InputText);
+ { Curseur }
+ SetColor(CLR_EDITOR_TEXT);
+ Line(FX + 4 + Dlg.InputCursor * 8, CurY + 2,
+  FX + 4 + Dlg.InputCursor * 8, CurY + FIND_FIELD_HEIGHT - 3);
  CurY := CurY + FIND_FIELD_HEIGHT + FIND_PADDING;
  { Information }
  Info := 'Nombre de lignes : ' + IntToStr(Dlg.MaxLine);
@@ -39553,9 +39557,22 @@ Procedure HandleGoToLineEvent(Var Dlg: TGoToLineDialog;
  EvtType: Integer; Key: Char; MX, MY: Integer);
 Begin
  If Not Dlg.Base.Visible Then Exit;
- If EvtType = 1 Then Begin
+ If (EvtType = Ord(EV_KEY_CHAR)) Or
+    (EvtType = Ord(EV_KEY_DOWN)) Then Begin
   HandleGoToLineKey(Dlg, Key);
-  DrawGoToLineDialog(Dlg);
+  If Dlg.Base.Visible Then
+   DrawGoToLineDialog(Dlg);
+ End Else If EvtType = Ord(EV_MOUSE_DOWN) Then Begin
+  Case DialogButtonHitTest(Dlg.Base, MX, MY) Of
+   0: Begin
+       HandleGoToLineKey(Dlg, #13);
+      End;
+   1: Begin
+       Dlg.Confirmed := False;
+       Dlg.Base.Result := DR_CANCEL;
+       CloseDialog(Dlg.Base);
+      End;
+  End;
  End;
 End;
 
@@ -44125,6 +44142,14 @@ Begin
  If GoToLineDlg.Base.Visible Then Begin
   HandleGoToLineEvent(GoToLineDlg,
    Ord(Ev.Kind), Ev.KeyChar, Ev.MouseX, Ev.MouseY);
+  If Not GoToLineDlg.Base.Visible Then Begin
+   If GoToLineDlg.Confirmed And EditorReady Then Begin
+    ActiveEditor.CursorLine := GoToLineDlg.LineNumber - 1;
+    ActiveEditor.CursorCol := 1;
+    EnsureCursorVisible(ActiveEditor);
+   End;
+   FullRepaintNeeded := True;
+  End;
   Exit;
  End;
  If DbgPanel.Visible Then Begin
