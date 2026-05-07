@@ -44058,6 +44058,20 @@ Begin
    DrawFileDialog(FileDlg);
    Exit;
   End;
+  If Ev.KeyChar = #6 Then Begin { Ctrl+F : rechercher }
+   ShowFindDialog(FindReplaceDlg);
+   Exit;
+  End;
+  If (Ev.KeyChar = #8) And ((Ev.ShiftState And 2) <> 0) Then Begin
+   { Ctrl+H : remplacer (distinguer de Backspace via ShiftState) }
+   ShowReplaceDialog(FindReplaceDlg);
+   Exit;
+  End;
+  If Ev.KeyChar = #7 Then Begin { Ctrl+G : aller a la ligne }
+   If EditorReady Then
+    ShowGoToLineDialog(ActiveEditor);
+   Exit;
+  End;
  End;
  { Distribuer aux panneaux dans l ordre de priorite }
  If MenuActive Then Begin
