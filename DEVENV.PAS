@@ -3092,6 +3092,8 @@ Var
  FindReplaceDlg : TFindReplaceDialog;
  { Dialogue aller a la ligne }
  GoToLineDlg    : TGoToLineDialog;
+ { Dialogue des options de l IDE }
+ OptionsDlg     : TOptionsDialog;
  { Contexte compilateur C# }
  CSCContext     : TCSCCompilerContext;
  { Contexte compilateur VB.NET }
@@ -5075,6 +5077,7 @@ Procedure TransformSelection(Var Ed: TEditor;
  Var Sel: TSelection; ToUpper: Boolean); Forward;
 Function ShowMessageBox(Title, Text: String;
  Buttons: TMessageButtons; Icon: TMessageIcon): Integer; Forward;
+Procedure ShowOptionsDialog(Var Dlg: TOptionsDialog); Forward;
 Procedure DrawExplorer(Var Exp: TSolutionExplorer); Forward;
 Procedure ShowExplorerContextMenu(Var Exp: TSolutionExplorer;
  Var CM: TContextMenu; NodeIdx, MX, MY: Integer); Forward;
@@ -5530,6 +5533,10 @@ Begin
         FullRepaintNeeded := True;
        End;
   600: HandleStartDebugging; { Demarrer le debogage (F5) }
+  700: Begin { Options... }
+        ShowOptionsDialog(OptionsDlg);
+        FullRepaintNeeded := True;
+       End;
   303: Begin { Terminal }
         TermVisible := Not TermVisible;
         If TermVisible Then Begin
@@ -44001,6 +44008,8 @@ Begin
   DrawFindReplaceDialog(FindReplaceDlg);
  If GoToLineDlg.Base.Visible Then
   DrawGoToLineDialog(GoToLineDlg);
+ If OptionsDlg.Base.Visible Then
+  DrawOptionsDialog(OptionsDlg);
 End;
 
 { --- Traiter un evenement global --- }
@@ -44244,6 +44253,21 @@ Begin
     ActiveEditor.CursorLine := GoToLineDlg.LineNumber - 1;
     ActiveEditor.CursorCol := 1;
     EnsureCursorVisible(ActiveEditor);
+   End;
+   FullRepaintNeeded := True;
+  End;
+  Exit;
+ End;
+ If OptionsDlg.Base.Visible Then Begin
+  HandleOptionsEvent(OptionsDlg, Ev);
+  If Not OptionsDlg.Base.Visible Then Begin
+   If OptionsDlg.Confirmed And EditorReady Then Begin
+    ActiveEditor.TabSize         := OptionsDlg.Data.TabSize;
+    ActiveEditor.AutoIndent      := OptionsDlg.Data.AutoIndent;
+    ActiveEditor.ShowLineNumbers := OptionsDlg.Data.ShowLineNumbers;
+    ActiveEditor.ShowWhitespace  := OptionsDlg.Data.ShowWhitespace;
+    AppendOutput(OutputPanel,
+     'Options appliquees a l editeur courant.', 0);
    End;
    FullRepaintNeeded := True;
   End;
