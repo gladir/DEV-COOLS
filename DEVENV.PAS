@@ -7365,6 +7365,11 @@ Procedure HighlightXMLLine(Var HL: TXMLHighlighter;
                            Line: String;
                            Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightJSONLine --- }
+
+Procedure HighlightJSONLine(Line: String;
+                            Var Colors: Array Of Byte); Forward;
+
 { --- Declarations anticipees pour la selection --- }
 
 Procedure StartSelection(Var Sel: TSelection; Line, Col: LongInt); Forward;
@@ -7394,6 +7399,7 @@ Var
  IsJava: Boolean;
  IsPython: Boolean;
  IsXML: Boolean;
+ IsJSON: Boolean;
  Ext: String;
 Begin
  { Detecter si le fichier est du Pascal }
@@ -7412,6 +7418,8 @@ Begin
           (Ext = '.FSPROJ')  Or (Ext = '.PROJ')   Or
           (Ext = '.CONFIG')  Or (Ext = '.RESX')   Or
           (Ext = '.SVG')     Or (Ext = '.PLIST');
+ IsJSON := (Ext = '.JSON') Or (Ext = '.JSONC') Or
+           (Ext = '.JSON5');
  IsPSP := (Ext = '.PSP');
  IsJava := (Ext = '.JAVA');
  IsPython := (Ext = '.PY');
@@ -7465,7 +7473,10 @@ Begin
     HighlightPythonLine(PythonHL, FullLine, Colors)
    Else If IsXML And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
-    HighlightXMLLine(XMLHL, FullLine, Colors);
+    HighlightXMLLine(XMLHL, FullLine, Colors)
+   Else If IsJSON And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightJSONLine(FullLine, Colors);
    { Extraire la partie visible }
    If Ed.ScrollCol <= Length(FullLine) Then Begin
     Len := Length(FullLine) - Ed.ScrollCol + 1;
@@ -12329,6 +12340,113 @@ Begin
    If (I >= 1) And (I <= Len) Then
     Colors[I - 1] := Clr;
   End;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE JSON
+  ============================================================ }
+
+{ --- Colorier une ligne JSON ---
+  Tokens reconnus :
+    - Chaines entre guillemets (avec echappements) -> TC_STRING
+    - Nombres (entiers, flottants, exposants)      -> TC_NUMBER
+    - Mots-cles true / false / null                -> TC_KEYWORD
+    - Commentaires de ligne (extension JSONC)      -> TC_COMMENT
+    - Ponctuation et autres caracteres             -> TC_NORMAL  }
+
+Procedure HighlightJSONLine(Line: String; Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ ClrNorm, ClrStr, ClrNum, ClrKw, ClrCmt: Byte;
+ Ch: Char;
+ Word: String;
+Begin
+ Len := Length(Line);
+ ClrNorm := Byte(TokenClassToColor(TC_NORMAL));
+ ClrStr  := Byte(TokenClassToColor(TC_STRING));
+ ClrNum  := Byte(TokenClassToColor(TC_NUMBER));
+ ClrKw   := Byte(TokenClassToColor(TC_KEYWORD));
+ ClrCmt  := Byte(TokenClassToColor(TC_COMMENT));
+ For I := 0 To Len - 1 Do
+  Colors[I] := ClrNorm;
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Ch := Line[Pos];
+  { Commentaire de ligne // ... (JSONC) }
+  If (Ch = '/') And (Pos + 1 <= Len) And (Line[Pos + 1] = '/') Then
+  Begin
+   For I := Pos To Len Do
+    Colors[I - 1] := ClrCmt;
+   Exit;
+  End;
+  { Chaine "..." }
+  If Ch = '"' Then
+  Begin
+   Start := Pos;
+   Inc(Pos);
+   While Pos <= Len Do
+   Begin
+    If Line[Pos] = '\' Then
+    Begin
+     Inc(Pos);
+     If Pos <= Len Then Inc(Pos);
+    End
+    Else If Line[Pos] = '"' Then
+    Begin
+     Inc(Pos);
+     Break;
+    End
+    Else
+     Inc(Pos);
+   End;
+   For I := Start To Pos - 1 Do
+    If (I >= 1) And (I <= Len) Then
+     Colors[I - 1] := ClrStr;
+   Continue;
+  End;
+  { Nombre : -? digits (.digits)? ([eE][+-]?digits)? }
+  If (Ch In ['0'..'9']) Or
+     ((Ch = '-') And (Pos + 1 <= Len) And (Line[Pos + 1] In ['0'..'9'])) Then
+  Begin
+   Start := Pos;
+   If Ch = '-' Then Inc(Pos);
+   While (Pos <= Len) And (Line[Pos] In ['0'..'9']) Do Inc(Pos);
+   If (Pos <= Len) And (Line[Pos] = '.') Then
+   Begin
+    Inc(Pos);
+    While (Pos <= Len) And (Line[Pos] In ['0'..'9']) Do Inc(Pos);
+   End;
+   If (Pos <= Len) And ((Line[Pos] = 'e') Or (Line[Pos] = 'E')) Then
+   Begin
+    Inc(Pos);
+    If (Pos <= Len) And ((Line[Pos] = '+') Or (Line[Pos] = '-')) Then
+     Inc(Pos);
+    While (Pos <= Len) And (Line[Pos] In ['0'..'9']) Do Inc(Pos);
+   End;
+   For I := Start To Pos - 1 Do
+    Colors[I - 1] := ClrNum;
+   Continue;
+  End;
+  { Identifiant -> verifier true / false / null }
+  If (Ch In ['a'..'z']) Or (Ch In ['A'..'Z']) Then
+  Begin
+   Start := Pos;
+   Word := '';
+   While (Pos <= Len) And
+         ((Line[Pos] In ['a'..'z']) Or (Line[Pos] In ['A'..'Z'])) Do
+   Begin
+    Word := Word + Line[Pos];
+    Inc(Pos);
+   End;
+   If (Word = 'true') Or (Word = 'false') Or (Word = 'null') Then
+    For I := Start To Pos - 1 Do
+     Colors[I - 1] := ClrKw;
+   Continue;
+  End;
+  Inc(Pos);
  End;
 End;
 
