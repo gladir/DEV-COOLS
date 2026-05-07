@@ -3075,6 +3075,7 @@ Var
  TermPanels   : Array[TShellKind] Of TTerminalPanel;
  ActiveShell  : TShellKind;        { shell actuellement affiche      }
  TerminalHasFocus : Boolean;       { le terminal a le focus clavier }
+ ExplorerHasFocus : Boolean;       { l'explorateur a le focus clavier}
  TermVisible  : Boolean;           { le panneau terminal est visible }
  TermSelectOpen : Boolean;         { le selectbox deroulant est ouvert}
  TermSelectIdx  : Integer;         { index surbrillance clavier 0..2 }
@@ -14000,7 +14001,8 @@ Begin
  Exp.X := GetScreenWidth - EXPLORER_WIDTH;
  Exp.Y := TOOLBTN_HEIGHT + TAB_HEIGHT + 2;
  Exp.Width := EXPLORER_WIDTH;
- Exp.Height := GetScreenHeight - Exp.Y - 20;
+ Exp.Height := GetScreenHeight - Exp.Y - 20
+  - PROPS_PANEL_HEIGHT - PROPS_SPLITTER_HEIGHT;
  Exp.SplitterX := Exp.X - SPLITTER_WIDTH;
  Exp.Dragging := False;
  Exp.NeedRepaint := True;
@@ -14307,7 +14309,10 @@ Begin
  Bar(Exp.X, Exp.Y, Exp.X + Exp.Width - 1,
   Exp.Y + Exp.Height - 1);
  { Titre }
- SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
+ If ExplorerHasFocus Then
+  SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
+ Else
+  SetFillStyle(SolidFill, CLR_TITLEBAR);
  Bar(Exp.X, Exp.Y, Exp.X + Exp.Width - 1,
   Exp.Y + EXPLORER_NODE_HEIGHT - 1);
  SetColor(CLR_EDITOR_BG);
@@ -14332,25 +14337,85 @@ Begin
   DrawY := DrawY + EXPLORER_NODE_HEIGHT;
   Inc(VisCount);
  End;
- { Barre de defilement si necessaire }
+ { Barre de defilement (toujours visible). Inclut deux boutons fleches
+   en haut et en bas, et un curseur (thumb) proportionnel au centre.
+   Si l'arbre tient en entier dans la zone visible, le thumb prend
+   toute la hauteur du couloir. }
  VisTot := GetVisibleNodeCount(Exp);
  MaxVis := (Exp.Height - EXPLORER_NODE_HEIGHT) Div
   EXPLORER_NODE_HEIGHT;
- If VisTot > MaxVis Then Begin
-  SetFillStyle(SolidFill, CLR_SCROLLBAR);
-  Bar(Exp.X + Exp.Width - 12, Exp.Y + EXPLORER_NODE_HEIGHT,
-   Exp.X + Exp.Width - 1, Exp.Y + Exp.Height - 1);
-  SetFillStyle(SolidFill, CLR_BORDER);
-  If VisTot > 0 Then
-   Bar(Exp.X + Exp.Width - 11,
-    Exp.Y + EXPLORER_NODE_HEIGHT + 2 +
-    (Exp.ScrollTop * (Exp.Height - EXPLORER_NODE_HEIGHT - 20)
-     Div VisTot),
-    Exp.X + Exp.Width - 2,
-    Exp.Y + EXPLORER_NODE_HEIGHT + 22 +
-    (Exp.ScrollTop * (Exp.Height - EXPLORER_NODE_HEIGHT - 20)
-     Div VisTot));
- End;
+ If MaxVis < 1 Then MaxVis := 1;
+ Begin
+   { Couloir de la scrollbar (14 px de large). }
+   SetFillStyle(SolidFill, CLR_SCROLLBAR);
+   Bar(Exp.X + Exp.Width - 14, Exp.Y + EXPLORER_NODE_HEIGHT,
+    Exp.X + Exp.Width - 1, Exp.Y + Exp.Height - 1);
+   { Bouton fleche haut (14x14 sous le titre). }
+   SetFillStyle(SolidFill, CLR_BORDER);
+   Bar(Exp.X + Exp.Width - 14, Exp.Y + EXPLORER_NODE_HEIGHT,
+    Exp.X + Exp.Width - 1,
+    Exp.Y + EXPLORER_NODE_HEIGHT + 13);
+   SetColor(CLR_EDITOR_BG);
+   Rectangle(Exp.X + Exp.Width - 14, Exp.Y + EXPLORER_NODE_HEIGHT,
+    Exp.X + Exp.Width - 1,
+    Exp.Y + EXPLORER_NODE_HEIGHT + 13);
+   { Triangle haut. }
+   SetFillStyle(SolidFill, CLR_EDITOR_BG);
+   Bar(Exp.X + Exp.Width - 8, Exp.Y + EXPLORER_NODE_HEIGHT + 4,
+    Exp.X + Exp.Width - 7, Exp.Y + EXPLORER_NODE_HEIGHT + 4);
+   Bar(Exp.X + Exp.Width - 9, Exp.Y + EXPLORER_NODE_HEIGHT + 5,
+    Exp.X + Exp.Width - 6, Exp.Y + EXPLORER_NODE_HEIGHT + 5);
+   Bar(Exp.X + Exp.Width - 10, Exp.Y + EXPLORER_NODE_HEIGHT + 6,
+    Exp.X + Exp.Width - 5, Exp.Y + EXPLORER_NODE_HEIGHT + 6);
+   Bar(Exp.X + Exp.Width - 11, Exp.Y + EXPLORER_NODE_HEIGHT + 7,
+    Exp.X + Exp.Width - 4, Exp.Y + EXPLORER_NODE_HEIGHT + 7);
+   { Bouton fleche bas (14x14 en bas). }
+   SetFillStyle(SolidFill, CLR_BORDER);
+   Bar(Exp.X + Exp.Width - 14, Exp.Y + Exp.Height - 14,
+    Exp.X + Exp.Width - 1, Exp.Y + Exp.Height - 1);
+   SetColor(CLR_EDITOR_BG);
+   Rectangle(Exp.X + Exp.Width - 14, Exp.Y + Exp.Height - 14,
+    Exp.X + Exp.Width - 1, Exp.Y + Exp.Height - 1);
+   { Triangle bas. }
+   SetFillStyle(SolidFill, CLR_EDITOR_BG);
+   Bar(Exp.X + Exp.Width - 11, Exp.Y + Exp.Height - 11,
+    Exp.X + Exp.Width - 4, Exp.Y + Exp.Height - 11);
+   Bar(Exp.X + Exp.Width - 10, Exp.Y + Exp.Height - 10,
+    Exp.X + Exp.Width - 5, Exp.Y + Exp.Height - 10);
+   Bar(Exp.X + Exp.Width - 9, Exp.Y + Exp.Height - 9,
+    Exp.X + Exp.Width - 6, Exp.Y + Exp.Height - 9);
+   Bar(Exp.X + Exp.Width - 8, Exp.Y + Exp.Height - 8,
+    Exp.X + Exp.Width - 7, Exp.Y + Exp.Height - 8);
+   { Curseur (thumb) proportionnel a la taille visible. }
+   Begin
+    VisCount := Exp.Y + EXPLORER_NODE_HEIGHT + 14;  { y debut couloir }
+    DrawY := Exp.Y + Exp.Height - 14;               { y fin couloir   }
+    I := DrawY - VisCount;                          { hauteur couloir }
+    If I < 12 Then I := 12;
+    { Hauteur du thumb proportionnelle. }
+    If VisTot <= MaxVis Then
+     MaxVis := I            { l'arbre tient en entier : thumb plein }
+    Else
+     MaxVis := (I * MaxVis) Div VisTot;
+    If MaxVis < 12 Then MaxVis := 12;
+    If MaxVis > I Then MaxVis := I;
+    { Position du thumb. }
+    If VisTot - ((Exp.Height - EXPLORER_NODE_HEIGHT) Div
+                  EXPLORER_NODE_HEIGHT) > 0 Then
+     DrawY := VisCount +
+      (Exp.ScrollTop * (I - MaxVis)) Div
+      (VisTot - ((Exp.Height - EXPLORER_NODE_HEIGHT) Div
+                 EXPLORER_NODE_HEIGHT))
+    Else
+     DrawY := VisCount;
+    SetFillStyle(SolidFill, CLR_BORDER);
+    Bar(Exp.X + Exp.Width - 13, DrawY,
+     Exp.X + Exp.Width - 2, DrawY + MaxVis);
+    SetColor(CLR_EDITOR_BG);
+    Rectangle(Exp.X + Exp.Width - 13, DrawY,
+     Exp.X + Exp.Width - 2, DrawY + MaxVis);
+   End;
+  End;
  { Bordure }
  SetColor(CLR_BORDER);
  Rectangle(Exp.X, Exp.Y, Exp.X + Exp.Width - 1,
@@ -14367,6 +14432,8 @@ Var
 Begin
  ExplorerNodeHitTest := -1;
  If (MX < Exp.X) Or (MX >= Exp.X + Exp.Width) Then Exit;
+ { Exclure la zone de la barre de defilement (14 px a droite). }
+ If MX >= Exp.X + Exp.Width - 14 Then Exit;
  If (MY < Exp.Y + EXPLORER_NODE_HEIGHT) Or
     (MY >= Exp.Y + Exp.Height) Then Exit;
  DrawY := Exp.Y + EXPLORER_NODE_HEIGHT + 2;
@@ -14575,6 +14642,36 @@ Begin
    Exp.Dragging := True;
    Exit;
   End;
+  { Verifier le clic dans la barre de defilement (14 px de large
+    sur le bord droit du panneau, sous la barre de titre).
+    Bouton fleche haut : 14 px hauts ; bouton fleche bas : 14 px bas ;
+    couloir entre les deux : page-scroll. }
+  If (Ev.MouseX >= Exp.X + Exp.Width - 14) And
+     (Ev.MouseX < Exp.X + Exp.Width) And
+     (Ev.MouseY >= Exp.Y + EXPLORER_NODE_HEIGHT) And
+     (Ev.MouseY < Exp.Y + Exp.Height) Then Begin
+   MaxScroll := (Exp.Height - EXPLORER_NODE_HEIGHT) Div
+    EXPLORER_NODE_HEIGHT;
+   If MaxScroll < 1 Then MaxScroll := 1;
+   { Bouton haut. }
+   If Ev.MouseY < Exp.Y + EXPLORER_NODE_HEIGHT + 14 Then
+    Dec(Exp.ScrollTop)
+   { Bouton bas. }
+   Else If Ev.MouseY >= Exp.Y + Exp.Height - 14 Then
+    Inc(Exp.ScrollTop)
+   { Page haut/bas selon position dans le couloir. }
+   Else If Ev.MouseY < Exp.Y + EXPLORER_NODE_HEIGHT + 14 +
+                       ((Exp.Height - EXPLORER_NODE_HEIGHT - 28) Div 2) Then
+    Dec(Exp.ScrollTop, MaxScroll)
+   Else
+    Inc(Exp.ScrollTop, MaxScroll);
+   If Exp.ScrollTop < 0 Then Exp.ScrollTop := 0;
+   HitIdx := GetVisibleNodeCount(Exp) - MaxScroll;
+   If HitIdx < 0 Then HitIdx := 0;
+   If Exp.ScrollTop > HitIdx Then Exp.ScrollTop := HitIdx;
+   Exp.NeedRepaint := True;
+   Exit;
+  End;
   { Trouver le noeud clique }
   HitIdx := ExplorerNodeHitTest(Exp, Ev.MouseX, Ev.MouseY);
   If HitIdx >= 0 Then Begin
@@ -14611,24 +14708,30 @@ Begin
   Case Ev.KeyCode Of
    72: Begin { Fleche haut }
     If Exp.SelectedIdx > 0 Then Begin
-     Exp.Nodes[Exp.SelectedIdx].Selected := False;
-     Dec(Exp.SelectedIdx);
-     While (Exp.SelectedIdx > 0) And
-      (Not Exp.Nodes[Exp.SelectedIdx].Visible) Do
-      Dec(Exp.SelectedIdx);
-     Exp.Nodes[Exp.SelectedIdx].Selected := True;
-     Exp.NeedRepaint := True;
+     HitIdx := Exp.SelectedIdx - 1;
+     While (HitIdx > 0) And
+      (Not Exp.Nodes[HitIdx].Visible) Do
+      Dec(HitIdx);
+     If (HitIdx >= 0) And Exp.Nodes[HitIdx].Visible Then Begin
+      Exp.Nodes[Exp.SelectedIdx].Selected := False;
+      Exp.SelectedIdx := HitIdx;
+      Exp.Nodes[Exp.SelectedIdx].Selected := True;
+      Exp.NeedRepaint := True;
+     End;
     End;
    End;
    80: Begin { Fleche bas }
     If Exp.SelectedIdx < Exp.NodeCount - 1 Then Begin
-     Exp.Nodes[Exp.SelectedIdx].Selected := False;
-     Inc(Exp.SelectedIdx);
-     While (Exp.SelectedIdx < Exp.NodeCount - 1) And
-      (Not Exp.Nodes[Exp.SelectedIdx].Visible) Do
-      Inc(Exp.SelectedIdx);
-     Exp.Nodes[Exp.SelectedIdx].Selected := True;
-     Exp.NeedRepaint := True;
+     HitIdx := Exp.SelectedIdx + 1;
+     While (HitIdx < Exp.NodeCount - 1) And
+      (Not Exp.Nodes[HitIdx].Visible) Do
+      Inc(HitIdx);
+     If (HitIdx < Exp.NodeCount) And Exp.Nodes[HitIdx].Visible Then Begin
+      Exp.Nodes[Exp.SelectedIdx].Selected := False;
+      Exp.SelectedIdx := HitIdx;
+      Exp.Nodes[Exp.SelectedIdx].Selected := True;
+      Exp.NeedRepaint := True;
+     End;
     End;
    End;
    75: Begin { Fleche gauche : replier }
@@ -14663,6 +14766,74 @@ Begin
       ToggleNode(Exp, Exp.SelectedIdx);
     End;
    End;
+   73, 81: Begin { PgUp (73), PgDn (81) }
+    Begin
+     If Exp.SelectedIdx >= 0 Then
+      Exp.Nodes[Exp.SelectedIdx].Selected := False;
+     MaxScroll := (Exp.Height - EXPLORER_NODE_HEIGHT) Div
+      EXPLORER_NODE_HEIGHT;
+     If MaxScroll < 1 Then MaxScroll := 1;
+     If Ev.KeyCode = 73 Then Begin
+      Dec(Exp.SelectedIdx, MaxScroll);
+      If Exp.SelectedIdx < 0 Then Exp.SelectedIdx := 0;
+     End Else Begin
+      Inc(Exp.SelectedIdx, MaxScroll);
+      If Exp.SelectedIdx >= Exp.NodeCount Then
+       Exp.SelectedIdx := Exp.NodeCount - 1;
+     End;
+     While (Exp.SelectedIdx >= 0) And
+           (Exp.SelectedIdx < Exp.NodeCount) And
+           (Not Exp.Nodes[Exp.SelectedIdx].Visible) Do
+      If Ev.KeyCode = 73 Then Dec(Exp.SelectedIdx)
+      Else Inc(Exp.SelectedIdx);
+     If (Exp.SelectedIdx >= 0) And
+        (Exp.SelectedIdx < Exp.NodeCount) Then
+      Exp.Nodes[Exp.SelectedIdx].Selected := True;
+     Exp.NeedRepaint := True;
+    End;
+   End;
+   71: Begin { Home : premier noeud visible }
+    If Exp.SelectedIdx >= 0 Then
+     Exp.Nodes[Exp.SelectedIdx].Selected := False;
+    Exp.SelectedIdx := 0;
+    While (Exp.SelectedIdx < Exp.NodeCount) And
+          (Not Exp.Nodes[Exp.SelectedIdx].Visible) Do
+     Inc(Exp.SelectedIdx);
+    If Exp.SelectedIdx < Exp.NodeCount Then
+     Exp.Nodes[Exp.SelectedIdx].Selected := True;
+    Exp.ScrollTop := 0;
+    Exp.NeedRepaint := True;
+   End;
+   79: Begin { End : dernier noeud visible }
+    If Exp.SelectedIdx >= 0 Then
+     Exp.Nodes[Exp.SelectedIdx].Selected := False;
+    Exp.SelectedIdx := Exp.NodeCount - 1;
+    While (Exp.SelectedIdx > 0) And
+          (Not Exp.Nodes[Exp.SelectedIdx].Visible) Do
+     Dec(Exp.SelectedIdx);
+    If (Exp.SelectedIdx >= 0) And
+       (Exp.SelectedIdx < Exp.NodeCount) Then
+     Exp.Nodes[Exp.SelectedIdx].Selected := True;
+    Exp.NeedRepaint := True;
+   End;
+  End;
+ End;
+ { Ajuster le defilement pour garder le noeud selectionne visible. }
+ If (Exp.SelectedIdx >= 0) And (Exp.SelectedIdx < Exp.NodeCount) And
+    Exp.Nodes[Exp.SelectedIdx].Visible Then Begin
+  HitIdx := 0;  { reutilise comme compteur d'index visible }
+  For MaxScroll := 0 To Exp.SelectedIdx - 1 Do
+   If Exp.Nodes[MaxScroll].Visible Then Inc(HitIdx);
+  MaxScroll := (Exp.Height - EXPLORER_NODE_HEIGHT) Div
+   EXPLORER_NODE_HEIGHT;
+  If MaxScroll < 1 Then MaxScroll := 1;
+  If HitIdx < Exp.ScrollTop Then Begin
+   Exp.ScrollTop := HitIdx;
+   Exp.NeedRepaint := True;
+  End
+  Else If HitIdx >= Exp.ScrollTop + MaxScroll Then Begin
+   Exp.ScrollTop := HitIdx - MaxScroll + 1;
+   Exp.NeedRepaint := True;
   End;
  End;
  { Ajuster le defilement }
@@ -17457,6 +17628,7 @@ Begin
  TermSelectIdx := 1;
  TerminalOnTop := True;
  TerminalHasFocus := False;
+ ExplorerHasFocus := False;
  ActiveShell := SK_POWERSHELL;
  InitTerminalPanel(TermPanels[SK_CMD], SK_CMD);
  InitTerminalPanel(TermPanels[SK_POWERSHELL], SK_POWERSHELL);
@@ -43569,6 +43741,26 @@ Begin
     FullRepaintNeeded := True;
    End;
   End;
+ End;
+ { Suivi du focus de l explorateur de solutions : un clic dans son
+   panneau lui donne le focus clavier (fleches, PgUp/PgDn, Entree).
+   Tout autre clic le retire. }
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  If (Ev.MouseX >= SolExplorer.X) And
+     (Ev.MouseX < SolExplorer.X + SolExplorer.Width) And
+     (Ev.MouseY >= SolExplorer.Y) And
+     (Ev.MouseY < SolExplorer.Y + SolExplorer.Height) Then
+   ExplorerHasFocus := True
+  Else
+   ExplorerHasFocus := False;
+ End;
+ { Si l explorateur a le focus, lui envoyer les touches de navigation. }
+ If ExplorerHasFocus And
+    ((Ev.Kind = EV_KEY_DOWN) Or (Ev.Kind = EV_KEY_CHAR)) Then Begin
+  HandleExplorerEvent(SolExplorer, Ev);
+  If SolExplorer.NeedRepaint Then
+   DrawExplorer(SolExplorer);
+  Exit;
  End;
  { Si le terminal a le focus, lui envoyer les evenements clavier }
  If TermVisible And TerminalHasFocus Then Begin
