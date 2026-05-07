@@ -2195,6 +2195,7 @@ Type
   InputText: String[127];           { champ de saisie nom fichier    }
   InputCursor: Integer;             { position curseur saisie        }
   IsSaveMode: Boolean;              { True = enregistrer, False = ouvrir }
+  FolderMode: Boolean;              { True = selection de dossier   }
  End;
 
  { Boite de dialogue dossier }
@@ -5140,6 +5141,7 @@ Procedure DrawFileDialog(Var FD: TFileDialog); Forward;
 Procedure HandleFileDialogEvent(Var FD: TFileDialog;
  Var Ev: TEvent); Forward;
 Procedure HandleOpenFileConfirmed; Forward;
+Procedure HandleOpenFolderConfirmed; Forward;
 Procedure OpenSolutionFile(FileName: String); Forward;
 Procedure SaveCurrentSolution; Forward;
 
@@ -5357,6 +5359,14 @@ Begin
   111: Begin { Ouvrir fichier (Ctrl+O) }
         InitFileDialog(FileDlg, False);
         LoadDirectoryFiles(FileDlg);
+        FileDlg.Base.Visible := True;
+        DrawFileDialog(FileDlg);
+       End;
+  112: Begin { Ouvrir dossier... }
+        InitFileDialog(FileDlg, False);
+        FileDlg.FolderMode := True;
+        LoadDirectoryFiles(FileDlg);
+        FileDlg.Base.Title := 'Ouvrir dossier...';
         FileDlg.Base.Visible := True;
         DrawFileDialog(FileDlg);
        End;
@@ -19579,6 +19589,7 @@ Begin
  FD.SelIndex := -1;
  FD.InputText := '';
  FD.InputCursor := 0;
+ FD.FolderMode := False;
  For I := 0 To MAX_DLG_FILES - 1 Do
   InitFileListEntry(FD.FileList[I]);
 End;
@@ -19771,6 +19782,11 @@ Begin
    FD.SelectedFile := FD.CurrentPath + FD.InputText;
    FD.Base.Result := DR_OK;
    CloseDialog(FD.Base);
+  End Else If FD.FolderMode Then Begin
+   { Mode dossier : valider le repertoire courant. }
+   FD.SelectedFile := FD.CurrentPath;
+   FD.Base.Result := DR_OK;
+   CloseDialog(FD.Base);
   End;
  End Else If Key = #27 Then Begin
   { Echap : annuler }
@@ -19823,6 +19839,11 @@ Begin
    { Bouton OK }
    If Length(FD.InputText) > 0 Then Begin
     FD.SelectedFile := FD.CurrentPath + FD.InputText;
+    FD.Base.Result := DR_OK;
+    CloseDialog(FD.Base);
+   End Else If FD.FolderMode Then Begin
+    { Mode dossier : valider le repertoire courant. }
+    FD.SelectedFile := FD.CurrentPath;
     FD.Base.Result := DR_OK;
     CloseDialog(FD.Base);
    End;
@@ -43352,6 +43373,80 @@ Begin
   'Solution ouverte : ' + FileName, Ord(OTK_BUILD));
 End;
 
+{ --- Traitement de l ouverture d un dossier --- }
+
+Procedure HandleOpenFolderConfirmed;
+Var
+ Folder: String;
+ SR: SearchRec;
+ RootIdx: Integer;
+ FolderName: String;
+ LastSlash, I: Integer;
+Begin
+ Folder := FileDlg.CurrentPath;
+ If Folder = '' Then Exit;
+ { Normaliser le separateur final. }
+ If (Folder[Length(Folder)] <> '\') And
+    (Folder[Length(Folder)] <> '/') Then
+  Folder := Folder + '\';
+ { Extraire le nom du dossier (dernier segment). }
+ FolderName := Folder;
+ If (Length(FolderName) > 0) And
+    ((FolderName[Length(FolderName)] = '\') Or
+     (FolderName[Length(FolderName)] = '/')) Then
+  Dec(FolderName[0]);
+ LastSlash := 0;
+ For I := 1 To Length(FolderName) Do
+  If (FolderName[I] = '\') Or (FolderName[I] = '/') Then
+   LastSlash := I;
+ If LastSlash > 0 Then
+  FolderName := Copy(FolderName, LastSlash + 1,
+   Length(FolderName) - LastSlash);
+ If FolderName = '' Then FolderName := Folder;
+ { Masquer la page de demarrage. }
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ { Reinitialiser l explorateur avec un noeud racine 'dossier'. }
+ ClearExplorer(SolExplorer);
+ SolutionLoaded := False;
+ SolutionModified := False;
+ RootIdx := AddExplorerNode(SolExplorer, FolderName,
+  ENK_FOLDER, -1);
+ If RootIdx >= 0 Then Begin
+  SolExplorer.Nodes[RootIdx].Expanded := True;
+  { Lister sous-dossiers en premier. }
+  FindFirst(Folder + '*.*', Directory, SR);
+  While DosError = 0 Do Begin
+   If ((SR.Attr And Directory) <> 0) And
+      (SR.Name <> '.') And (SR.Name <> '..') And
+      (SR.Name[1] <> '.') Then
+    AddExplorerNode(SolExplorer, SR.Name, ENK_FOLDER, RootIdx);
+   Dos.FindNext(SR);
+  End;
+  FindClose(SR);
+  { Lister fichiers. }
+  FindFirst(Folder + '*.*', AnyFile, SR);
+  While DosError = 0 Do Begin
+   If ((SR.Attr And Directory) = 0) And
+      (SR.Name <> '.') And (SR.Name <> '..') Then
+    AddExplorerNode(SolExplorer, SR.Name,
+     NodeKindFromExtension(SR.Name), RootIdx);
+   Dos.FindNext(SR);
+  End;
+  FindClose(SR);
+  SolExplorer.Nodes[RootIdx].HasChildren :=
+   SolExplorer.NodeCount > 1;
+  SolExplorer.SelectedIdx := RootIdx;
+  SolExplorer.Nodes[RootIdx].Selected := True;
+ End;
+ SolExplorer.NeedRepaint := True;
+ FullRepaintNeeded := True;
+ AppendOutput(OutputPanel,
+  'Dossier ouvert : ' + Folder, Ord(OTK_BUILD));
+End;
+
 { --- Traitement de l ouverture d un fichier --- }
 
 Procedure HandleOpenFileConfirmed;
@@ -43817,8 +43912,13 @@ Begin
  If FileDlg.Base.Visible Then Begin
   HandleFileDialogEvent(FileDlg, Ev);
   If Not FileDlg.Base.Visible Then Begin
-   If FileDlg.Base.Result = DR_OK Then
-    HandleOpenFileConfirmed;
+   If FileDlg.Base.Result = DR_OK Then Begin
+    If FileDlg.FolderMode Then
+     HandleOpenFolderConfirmed
+    Else
+     HandleOpenFileConfirmed;
+   End;
+   FileDlg.FolderMode := False;
    FullRepaintNeeded := True;
   End;
   DrawFileDialog(FileDlg);
