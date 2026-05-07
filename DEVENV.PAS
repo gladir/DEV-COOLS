@@ -3202,6 +3202,7 @@ Var
    ES, DI, CX, AX: Word;
   End;
  EmuTraceIdx    : Integer;
+ EmuTraceCnt    : Integer;
  EmuRunaway     : Integer;
  EmuRunawayCS   : Word;
  EmuRunawayIP   : Word;
@@ -24883,6 +24884,7 @@ Procedure Emu_DoInt16(Var P: TEmulatorPanel);
 Var
  KW: Word;
  Head: Word;
+ LogF_R: Text;
 Begin
  Case P.CPU.Regs.AH Of
   $00, $10:
@@ -24890,9 +24892,14 @@ Begin
      Retire la touche du buffer. AH=10h gere les touches etendues
      (F11/F12, touches grises) - meme comportement chez nous. }
    Begin
-    If Emu_BiosHasKey(P) Then
-     P.CPU.Regs.AX := Emu_BiosPopKey(P)
-    Else If EmuVScr_HasKey(P) Then Begin
+    If Emu_BiosHasKey(P) Then Begin
+     P.CPU.Regs.AX := Emu_BiosPopKey(P);
+     {$I-} Assign(LogF_R, 'EMUKEY.LOG'); Append(LogF_R);
+     If IOResult <> 0 Then Begin Assign(LogF_R,'EMUKEY.LOG'); Rewrite(LogF_R); End;
+     WriteLn(LogF_R, 'INT16-Pop AX=', HexWord(P.CPU.Regs.AX));
+     Close(LogF_R); {$I+} If IOResult <> 0 Then ;
+     If P.CPU.Regs.AL = $0D Then EmuTraceCnt := 400;
+    End Else If EmuVScr_HasKey(P) Then Begin
      KW := EmuVScr_PopKey(P);
      P.CPU.Regs.AL := Byte(KW And $FF);
      P.CPU.Regs.AH := Byte((KW Shr 8) And $FF);
@@ -25237,17 +25244,32 @@ Begin
      {$I+} If IOResult <> 0 Then ;
     End;
     If H = 0 Then Begin
-     While (I < P.CPU.Regs.CX) And EmuVScr_HasKey(P) Do Begin
-      B := EmuVScr_PopKey(P);
+     { Lecture stdin : drainer BIOS d abord, puis EmuVScr.
+       Si rien et CX>0, retro-IP de 2 pour bloquer en attendant
+       une touche (DOS standard). }
+     While I < P.CPU.Regs.CX Do Begin
+      If Emu_BiosHasKey(P) Then
+       B := Byte(Emu_BiosPopKey(P) And $FF)
+      Else If EmuVScr_HasKey(P) Then
+       B := Byte(EmuVScr_PopKey(P) And $FF)
+      Else Break;
       Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + I, B);
       Inc(I);
+      EmuVScr_PutChar(P, Chr(B));
       If B = 13 Then Begin
+       EmuVScr_PutChar(P, #10);
        If I < P.CPU.Regs.CX Then Begin
         Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Ofs + I, 10);
         Inc(I);
        End;
        Break;
       End;
+     End;
+     If (I = 0) And (P.CPU.Regs.CX > 0) Then Begin
+      { Aucune touche : retro-IP de 2 pour reexecuter l INT 21
+        au prochain step. La boucle principale pompe le clavier. }
+      Dec(P.CPU.IP, 2);
+      Exit;
      End;
      P.CPU.Regs.AX := Word(I);
      Exclude(P.CPU.Flags.s, EFG_CF);
@@ -26838,7 +26860,15 @@ End;
 Procedure Emu_PushBiosKey(Var P: TEmulatorPanel; ScanCode, AsciiCh: Byte);
 Var
  Tail, Head, NewTail: Word;
+ LogF: Text;
 Begin
+ {$I-}
+ Assign(LogF, 'EMUKEY.LOG'); Append(LogF);
+ If IOResult <> 0 Then Begin Assign(LogF,'EMUKEY.LOG'); Rewrite(LogF); End;
+ WriteLn(LogF, 'PushBiosKey scan=', HexByte(ScanCode), ' ascii=',
+   HexByte(AsciiCh));
+ Close(LogF);
+ {$I+} If IOResult <> 0 Then ;
  Tail := Emu_ReadWord(P.CPU, $40, $1C);
  Head := Emu_ReadWord(P.CPU, $40, $1A);
  NewTail := Tail + 2;
@@ -26902,6 +26932,35 @@ Begin
  End;
 End;
 
+{ Workaround emulateur DOS : reparer une TextRec d'Input dont l'init
+  RTL n'a pas ete executee correctement (BufPtr.seg=0, BufSize=0/2).
+  Detecte a l'entree d'un Crt_Read (FAR proc): l'argument 1 sur la pile
+  pointe vers la TextRec. Si BufPtr.seg = 0, on initialise un buffer de
+  128 octets pointant sur le buffer inline (TextRec[+128]). }
+Procedure Emu_FixupInputTextRec(Var P: TEmulatorPanel);
+Var
+ ArgOfs, ArgSeg: Word;
+ BufPtrSeg, ModeW: Word;
+Begin
+ { Lire l'argument 1 (FAR ptr vers TextRec) sur la pile a SS:[SP+2..5]. }
+ ArgOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, P.CPU.Regs.SP + 2);
+ ArgSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, P.CPU.Regs.SP + 4);
+ If ArgSeg = 0 Then Exit;
+ { Verifier que la cible ressemble a une TextRec : Mode @+2 dans
+   $D7B0..$D7B3 (fmClosed/Input/Output/InOut). }
+ ModeW := Emu_ReadWord(P.CPU, ArgSeg, ArgOfs + 2);
+ If (ModeW < $D7B0) Or (ModeW > $D7B3) Then Exit;
+ BufPtrSeg := Emu_ReadWord(P.CPU, ArgSeg, ArgOfs + 14);
+ If BufPtrSeg <> 0 Then Exit;
+ { TextRec semble non initialisee : poser BufPtr -> @TextRec.Buffer (offset
+   +128 dans la TextRec), BufSize=128, vider BufPos/BufEnd. }
+ Emu_WriteWord(P.CPU, ArgSeg, ArgOfs + 4,  128);             { BufSize  }
+ Emu_WriteWord(P.CPU, ArgSeg, ArgOfs + 8,  0);               { BufPos   }
+ Emu_WriteWord(P.CPU, ArgSeg, ArgOfs + 10, 0);               { BufEnd   }
+ Emu_WriteWord(P.CPU, ArgSeg, ArgOfs + 12, ArgOfs + 128);    { BufPtr.O }
+ Emu_WriteWord(P.CPU, ArgSeg, ArgOfs + 14, ArgSeg);          { BufPtr.S }
+End;
+
 { --- Executer une instruction 8086 --- }
 
 Procedure Emu_StepOne(Var P: TEmulatorPanel);
@@ -26928,6 +26987,30 @@ Var
 Begin
  If P.CPU.Fault <> sfNone Then Exit;
  RepPrefix := 0;
+ { Workaround : a l'entree de Crt_Read, reparer la TextRec d'Input si elle
+   n'a pas ete initialisee par le RTL (BufPtr.seg=0). Cas BOWLING.EXE. }
+ If (P.CPU.Segs.CS = $017D) And (P.CPU.IP = $039F) Then
+  Emu_FixupInputTextRec(P);
+ If (P.CPU.Segs.CS = $017D) And (P.CPU.IP = $039F) And (EmuTraceCnt = 0) Then
+  EmuTraceCnt := 50000;
+ If EmuTraceCnt > 0 Then Begin
+  Dec(EmuTraceCnt);
+  { Ne pas tracer le retro-IP sur INT 16h vide pour eviter
+    de remplir le log avec la meme ligne. }
+  If Not ((P.CPU.Segs.CS = $017D) And (P.CPU.IP = $0328)) Then Begin
+   {$I-} Assign(LogF_Dbg, 'EMUSTEP.LOG'); Append(LogF_Dbg);
+   If IOResult <> 0 Then Begin Assign(LogF_Dbg,'EMUSTEP.LOG'); Rewrite(LogF_Dbg); End;
+   WriteLn(LogF_Dbg, HexWord(P.CPU.Segs.CS),':',HexWord(P.CPU.IP),
+     ' Op=', HexByte(Emu_FetchByte(P.CPU, 0)),
+     ' AX=', HexWord(P.CPU.Regs.AX),
+     ' SP=', HexWord(P.CPU.Regs.SP),
+     ' BX=', HexWord(P.CPU.Regs.BX),
+     ' DI=', HexWord(P.CPU.Regs.DI),
+     ' ES=', HexWord(P.CPU.Segs.ES),
+     ' FL=', HexWord(P.CPU.Flags.Base));
+   Close(LogF_Dbg); {$I+} If IOResult <> 0 Then ;
+  End;
+ End;
  ResetSegOvr := False;
  { Diagnostic cibl? : dump instruction + DS:[offset teste] a 0EB7:01B7
    pour identifier la variable RTM TP4 testee a 0 (cause Halt(1)). }
@@ -35414,6 +35497,7 @@ Var
  Coco3FrameElapsed: LongInt;
  EmuPumpEv: TEvent;
  EmuPumpCnt: LongInt;
+ EmuPumpDrainI: Integer;
  EmuPumpNow: LongInt;
  EmuLastDraw: LongInt;
  EmuKeyLogF: Text;
@@ -36313,12 +36397,16 @@ Begin NesActive := False;
   End;
   Emu_ServiceIrqs(P);
   { --- Pompage des evenements hote pour preserver l interactivite ---
-    Toutes les ~5000 instructions on interroge le clavier de DEVENV
+    Toutes les ~500 instructions on interroge le clavier de DEVENV
     et on redessine le panneau. ESC arrete l emulation. }
   Inc(EmuPumpCnt);
-  If EmuPumpCnt >= 5000 Then Begin
+  If EmuPumpCnt >= 500 Then Begin
     EmuPumpCnt := 0;
-    PollEvents(EmuPumpEv);
+    { Drainer tous les evenements hote en attente (jusqu a 32 par tour)
+      pour ne jamais laisser de touche en file d attente cote hote. }
+    For EmuPumpDrainI := 0 To 31 Do Begin
+     PollEvents(EmuPumpEv);
+     If EmuPumpEv.Kind = EV_NONE Then Break;
     Case EmuPumpEv.Kind Of
      EV_KEY_CHAR:
       Begin
@@ -36327,9 +36415,11 @@ Begin NesActive := False;
         P.StatusMsg := 'Emulation interrompue par utilisateur';
         Break;
        End;
-       EmuVScr_PushKey(P,
-         (Word(EmuKey_AsciiToScan(EmuPumpEv.KeyChar)) Shl 8) Or
-          Byte(EmuPumpEv.KeyChar));
+       { Pousser directement dans le buffer BIOS pour minimiser
+         la latence. INT 16h y lit en priorite. }
+       Emu_PushBiosKey(P, EmuKey_AsciiToScan(EmuPumpEv.KeyChar),
+         Byte(EmuPumpEv.KeyChar));
+       EmuIrqPending := EmuIrqPending Or $02;
        P.NeedRepaint := True;
       End;
      EV_KEY_DOWN:
@@ -36341,7 +36431,8 @@ Begin NesActive := False;
        End;
        { Touche etendue (fleche, F1..F12, etc.) : ASCII = 0,
          scancode = code etendu retourne par ReadKey. }
-       EmuVScr_PushKey(P, Word(EmuPumpEv.KeyCode And $FF) Shl 8);
+       Emu_PushBiosKey(P, Byte(EmuPumpEv.KeyCode And $FF), 0);
+       EmuIrqPending := EmuIrqPending Or $02;
        P.NeedRepaint := True;
       End;
      EV_MOUSE_MOVE:
@@ -36370,6 +36461,8 @@ Begin NesActive := False;
        End;
       End;
     End;
+    End;
+    If P.CPU.Fault <> sfNone Then Break;
     { Redessiner au plus une fois toutes les 80 ms pour eviter le
       scintillement (un repaint complet est couteux et provoquerait
       un flash si appele a chaque pompage). }
