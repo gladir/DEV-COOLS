@@ -44052,10 +44052,13 @@ Begin
    Ord(Ev.Kind), Ev.KeyChar, Ev.MouseX, Ev.MouseY);
   If Not FindReplaceDlg.Base.Visible Then Begin
    If (FindReplaceDlg.Base.Result = DR_OK) And EditorReady Then Begin
-    If FindReplaceDlg.IsReplaceMode Then
-     ReplaceNext(ActiveEditor, FindReplaceDlg.SearchText,
-      FindReplaceDlg.ReplaceText, FindReplaceDlg.Options)
-    Else
+    If FindReplaceDlg.IsReplaceMode Then Begin
+     I := ReplaceAll(ActiveEditor, FindReplaceDlg.SearchText,
+      FindReplaceDlg.ReplaceText, FindReplaceDlg.Options);
+     AppendOutput(OutputPanel,
+      'Remplacement : ' + IntToStr(I) +
+      ' occurrence(s) remplacee(s).', 0);
+    End Else
      FindNext(ActiveEditor, FindReplaceDlg.SearchText,
       FindReplaceDlg.Options);
     EnsureCursorVisible(ActiveEditor);
