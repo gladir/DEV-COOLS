@@ -5537,6 +5537,14 @@ Begin
         ShowOptionsDialog(OptionsDlg);
         FullRepaintNeeded := True;
        End;
+  701: Begin { Personnaliser... }
+        ShowMessageBox('Personnaliser',
+         'La personnalisation des barres d outils et des menus' +
+         #10 + 'n est pas encore disponible dans cette version.' +
+         #10 + 'Utilisez Outils > Options pour configurer l IDE.',
+         MB_OK, MI_INFO);
+        FullRepaintNeeded := True;
+       End;
   303: Begin { Terminal }
         TermVisible := Not TermVisible;
         If TermVisible Then Begin
@@ -44029,7 +44037,7 @@ Begin
    If CtxTag > 0 Then Begin
     { Plage MRU : 5000-5099 = fichier recent, 5100-5199 = projet recent }
     If (CtxTag >= 5000) And
-       (CtxTag < 5000 + MRU_MAX_ENTRIES * 2) Then Begin
+       (CtxTag < 5200) Then Begin
      I := CtxTag Mod 100;
      If (I >= 0) And (I < MRUPopupCount) Then Begin
       FileDlg.SelectedFile := MRUPopupPaths[I];
