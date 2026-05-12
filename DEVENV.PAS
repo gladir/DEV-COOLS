@@ -3402,6 +3402,18 @@ Var
  A2600_P1X      : Integer;
  A2600_M0X, A2600_M1X, A2600_BLX : Integer;
  A2600_HMP0, A2600_HMP1, A2600_HMM0, A2600_HMM1, A2600_HMBL : ShortInt;
+ { Double-buffer GRP0/GRP1/ENABL pour VDELP0/VDELP1/VDELBL (2-line kernels) }
+ A2600_GRP0_New, A2600_GRP0_Old : Byte;
+ A2600_GRP1_New, A2600_GRP1_Old : Byte;
+ A2600_ENABL_New, A2600_ENABL_Old: Byte;
+ A2600_VDELP0, A2600_VDELP1, A2600_VDELBL : Boolean;
+ { RESMP0/RESMP1 : verrouillage missile sur centre du joueur }
+ A2600_RESMP0, A2600_RESMP1 : Boolean;
+ { HMOVE comb : barre noire 0..7 sur ligne courante apres HMOVE strobe }
+ A2600_HMOVEComb: Boolean;
+ { Rendu cycle-accurate intra-scanline : dernier X rendu (-1 = aucun) }
+ A2600_LastX    : Integer;
+ A2600_CurY     : Integer;     { ligne visible en cours de rendu }
  A2600_KeyEsc   : Boolean;
  A2600_KeyJoy   : Byte;        { bits : 0=haut 1=bas 2=gauche 3=droite   }
  A2600_KeyFire  : Boolean;
@@ -3413,6 +3425,22 @@ Var
  A2600_BankCnt  : Integer;     { 1 / 2 / 4 / 8                           }
  A2600_CurBank  : Integer;
  A2600_HotLo    : Byte;        { $F8 (F8), $F6 (F6), $F4 (F4)            }
+ { Schema de bankswitching :                                              }
+ { 0=plain (2K/4K), 1=F8, 2=F6, 3=F4, 4=F8SC, 5=F6SC, 6=F4SC,             }
+ { 7=FA (12K+256RAM), 8=FE (8K, $01FE/$01FF), 9=E0 (8K Parker, 4 slots), }
+ { 10=3F Tigervision, 11=E7 M-Network.                                   }
+ A2600_Scheme   : Byte;
+ A2600_CartRAM  : Array[0..255] Of Byte;  { RAM cartouche (F*SC=128, FA=256) }
+ A2600_TigerBank: Integer;                { banque courante 3F dans slot bas }
+ A2600_E0Slot   : Array[0..2] Of Integer; { E0 : 3 slots commutables (slot 3 fixe a 7) }
+ { E7 M-Network : 16K ROM (8 banques 2K) + 1K RAM + 4x256 octets RAM       }
+ A2600_E7_RAM1K   : Array[0..1023] Of Byte;
+ A2600_E7_RAM256  : Array[0..3, 0..255] Of Byte;
+ A2600_E7_LowerRAM: Boolean;              { lower 2K = 1K RAM (vs ROM bank) }
+ A2600_E7_R256Bank: Integer;              { banque 256B active (0..3) }
+ A2600_E7_LowerROM: Integer;              { banque ROM lower (0..6) }
+ A2600_SWACNT, A2600_SWBCNT : Byte;       { directions RIOT (1=output) }
+ A2600_SWACHA_Out, A2600_SWCHB_Out : Byte; { donnees output RIOT }
  { Timer RIOT 6532 : valeur courante, intervalle (1/8/64/1024 cycles)   }
  { et compteur de cycles restant avant le prochain decrement.           }
  A2600_TimerVal     : Integer;
@@ -34426,6 +34454,12 @@ End;
 Procedure A2600_BusWrite(EA: Word; V: Byte); Forward;
 Function A2600_BusRead(EA: Word; Var Handled: Boolean): Byte; Forward;
 Procedure A2600_CheckHotspot(EA: Word); Forward;
+Procedure A2600_RenderRange(Y: Integer; X0, X1: Integer); Forward;
+Procedure A2600_AdvanceTo(NewX: Integer); Forward;
+Procedure A2600_E0RebuildSlot(SlotIdx, BankIdx: Integer); Forward;
+Procedure A2600_TigerSwitch(NewBank: Integer); Forward;
+Procedure A2600_E7_RebuildLower; Forward;
+Procedure A2600_E7_RebuildUpper; Forward;
 Function NesBus_Write(EA: Word; V: Byte): Boolean; Forward;
 
 Function CPU6502_Read(Addr: Word): Byte;
@@ -35418,24 +35452,133 @@ Begin
   End;
 End;
 
+{ E0 Parker Bros (8K) : 4 slots de 1K dans $1000/$1400/$1800/$1C00.    }
+{ Hotspots $1FE0..$1FE7 = slot 0, $1FE8..$1FEF = slot 1, etc.          }
+{ Slot 3 ($1C00-$1FFF) fixe a la derniere banque (7).                  }
+Procedure A2600_E0RebuildSlot(SlotIdx, BankIdx: Integer);
+Var I, Alias: LongInt; Off: LongInt; B: Byte;
+Begin
+  If (SlotIdx < 0) Or (SlotIdx > 3) Then Exit;
+  If (BankIdx < 0) Or (BankIdx > 7) Then Exit;
+  Off := LongInt(BankIdx) * 1024;
+  For I := 0 To 1023 Do Begin
+    B := A2600_ROM[Off + I];
+    For Alias := 0 To 7 Do
+      CPU6502_Mem[(Alias * $2000) + $1000 + (SlotIdx * 1024) + I] := B;
+  End;
+End;
+
+{ E7 M-Network (16K + RAM) : 8 banques ROM 2K dans $1000-$17FF,        }
+{ 1K RAM optionnelle ($1000-$13FF write / $1400-$17FF read) selectee   }
+{ par $FE7. Upper 2K ($1800-$1FFF) fixe a la derniere banque, sauf     }
+{ $1800-$19FF qui shadow 4x256 octets RAM (write $1800-$18FF, read     }
+{ $1900-$19FF) avec banque selectee par $FE8-$FEB.                     }
+Procedure A2600_E7_RebuildLower;
+Var I, Alias: LongInt; Off: LongInt; B: Byte;
+Begin
+  If A2600_E7_LowerRAM Then Begin
+    For I := 0 To 2047 Do Begin
+      B := A2600_E7_RAM1K[I And $3FF];
+      For Alias := 0 To 7 Do
+        CPU6502_Mem[(Alias * $2000) + $1000 + I] := B;
+    End;
+  End Else Begin
+    Off := LongInt(A2600_E7_LowerROM) * 2048;
+    For I := 0 To 2047 Do Begin
+      B := A2600_ROM[Off + I];
+      For Alias := 0 To 7 Do
+        CPU6502_Mem[(Alias * $2000) + $1000 + I] := B;
+    End;
+  End;
+End;
+
+Procedure A2600_E7_RebuildUpper;
+Var I, Alias: LongInt; B: Byte;
+Begin
+  For I := 0 To 2047 Do Begin
+    B := A2600_ROM[7 * 2048 + I];
+    For Alias := 0 To 7 Do
+      CPU6502_Mem[(Alias * $2000) + $1800 + I] := B;
+  End;
+End;
+
+{ 3F Tigervision (8K) : banque 0..2 dans $1000-$17FF, derniere banque  }
+{ ($1800-$1FFF) fixe. Commute sur ecriture a $0000-$003F.              }
+Procedure A2600_TigerSwitch(NewBank: Integer);
+Var I, Alias: LongInt; Off: LongInt; B: Byte;
+Begin
+  If A2600_BankCnt < 2 Then Exit;
+  NewBank := NewBank And (A2600_BankCnt - 1);
+  A2600_TigerBank := NewBank;
+  Off := LongInt(NewBank) * 2048;
+  For I := 0 To 2047 Do Begin
+    B := A2600_ROM[Off + I];
+    For Alias := 0 To 7 Do
+      CPU6502_Mem[(Alias * $2000) + $1000 + I] := B;
+  End;
+End;
+
 { Verifie un acces (R/W) sur un hotspot et commute la banque. }
 Procedure A2600_CheckHotspot(EA: Word);
 Var Lo: Word;
 Begin
-  If A2600_BankCnt <= 1 Then Exit;
   Lo := EA And $0FFF;
-  Case A2600_BankCnt Of
-    2: Begin { F8 }
+  Case A2600_Scheme Of
+    1, 4: Begin { F8 / F8SC : 2 banques, $FFF8/$FFF9 }
       If Lo = $FF8 Then A2600_BankSwitch(0)
       Else If Lo = $FF9 Then A2600_BankSwitch(1);
     End;
-    4: Begin { F6 }
+    2, 5: Begin { F6 / F6SC : 4 banques }
       If (Lo >= $FF6) And (Lo <= $FF9) Then
         A2600_BankSwitch(Lo - $FF6);
     End;
-    8: Begin { F4 }
+    3, 6: Begin { F4 / F4SC }
       If (Lo >= $FF4) And (Lo <= $FFB) Then
         A2600_BankSwitch(Lo - $FF4);
+    End;
+    7: Begin { FA CBS RAM Plus : 12K, 3 banques, $FFF8..$FFFA }
+      If (Lo >= $FF8) And (Lo <= $FFA) Then
+        A2600_BankSwitch(Lo - $FF8);
+    End;
+    8: Begin { FE Decathlon : 2 banques, declenche par valeur sur la pile }
+      { Approximation : on commute sur lecture $01FE/$01FF du flux JSR }
+      If (EA = $01FE) Or (EA = $01FF) Then
+        A2600_BankSwitch(CPU6502_Mem[$01FE] Shr 5);
+    End;
+    9: Begin { E0 Parker : hotspots $FE0..$FF7 }
+      If (Lo >= $FE0) And (Lo <= $FE7) Then Begin
+        A2600_E0Slot[0] := Lo - $FE0;
+        A2600_E0RebuildSlot(0, A2600_E0Slot[0]);
+      End Else If (Lo >= $FE8) And (Lo <= $FEF) Then Begin
+        A2600_E0Slot[1] := Lo - $FE8;
+        A2600_E0RebuildSlot(1, A2600_E0Slot[1]);
+      End Else If (Lo >= $FF0) And (Lo <= $FF7) Then Begin
+        A2600_E0Slot[2] := Lo - $FF0;
+        A2600_E0RebuildSlot(2, A2600_E0Slot[2]);
+      End;
+    End;
+    11: Begin { E7 M-Network }
+      If (Lo >= $FE0) And (Lo <= $FE6) Then Begin
+        A2600_E7_LowerRAM := False;
+        A2600_E7_LowerROM := Lo - $FE0;
+        A2600_E7_RebuildLower;
+      End Else If Lo = $FE7 Then Begin
+        A2600_E7_LowerRAM := True;
+        A2600_E7_RebuildLower;
+      End Else If (Lo >= $FE8) And (Lo <= $FEB) Then Begin
+        A2600_E7_R256Bank := Lo - $FE8;
+      End;
+    End;
+  End;
+  If (A2600_Scheme = 0) And (A2600_BankCnt > 1) Then Begin
+    { Repli sur taille (legacy auto-detection) }
+    Case A2600_BankCnt Of
+      2: If Lo = $FF8 Then A2600_BankSwitch(0)
+         Else If Lo = $FF9 Then A2600_BankSwitch(1);
+      4: If (Lo >= $FF6) And (Lo <= $FF9) Then
+           A2600_BankSwitch(Lo - $FF6);
+      8: If (Lo >= $FF4) And (Lo <= $FFB) Then
+           A2600_BankSwitch(Lo - $FF4);
     End;
   End;
 End;
@@ -35443,20 +35586,51 @@ End;
 Procedure A2600_BusWrite(EA: Word; V: Byte);
 Var
   R: Byte;
-  CurX: Integer;
+  CurX, BeamX: Integer;
+  Lo: Word;
 Begin
   { Le 6507 a un bus 13 bits. ROM = bit12 set ($1000-$1FFF, miroir   }
   { en haut). TIA = bit12=0 et bit7=0 ($0000-$007F + miroirs).       }
   { RIOT RAM = bit12=0 et bit7=1, bit9=0 ($0080-$00FF).              }
   { RIOT I/O/timer = bit12=0 et bit9=1 ($0280-$029F).                }
   If (EA And $1000) <> 0 Then Begin
-    { Hotspots de bankswitching sur acces (lecture ou ecriture) }
+    Lo := EA And $0FFF;
+    { RAM cartouche F8SC/F6SC/F4SC : $1000-$107F write, $1080-$10FF read }
+    If ((A2600_Scheme = 4) Or (A2600_Scheme = 5) Or (A2600_Scheme = 6))
+       And (Lo <= $7F) Then Begin
+      A2600_CartRAM[Lo] := V;
+      Exit;
+    End;
+    { FA CBS RAM Plus : $1000-$10FF write, $1100-$11FF read (256 octets) }
+    If (A2600_Scheme = 7) And (Lo <= $FF) Then Begin
+      A2600_CartRAM[Lo] := V;
+      Exit;
+    End;
+    { E7 M-Network : RAM 1K en lower si LowerRAM ($1000-$13FF write) }
+    If (A2600_Scheme = 11) And A2600_E7_LowerRAM And (Lo <= $3FF) Then Begin
+      A2600_E7_RAM1K[Lo] := V;
+      Exit;
+    End;
+    { E7 M-Network : RAM 256B en $1800-$18FF write }
+    If (A2600_Scheme = 11) And (Lo >= $800) And (Lo <= $8FF) Then Begin
+      A2600_E7_RAM256[A2600_E7_R256Bank, Lo And $FF] := V;
+      Exit;
+    End;
     A2600_CheckHotspot(EA);
     Exit;
+  End;
+  { 3F Tigervision : ecriture a $00-$3F commute la banque basse }
+  If (A2600_Scheme = 10) And (EA <= $3F) Then Begin
+    A2600_TigerSwitch(V);
+    { Continue : ces adresses sont aussi TIA, on laisse tomber dans TIA }
   End;
   If (EA And $0080) = 0 Then Begin
     { TIA write }
     R := EA And $7F;
+    { Rendu cycle-accurate : avancer le faisceau avant cette ecriture. }
+    { Le beam X = (LineCyc*3) - 68 (HBLANK = 68 color clocks).         }
+    BeamX := (A2600_LineCyc * 3) - 68;
+    A2600_AdvanceTo(BeamX);
     A2600_TIA[R] := V;
     Case R Of
       $00: { VSYNC : bit 1 demarre une nouvelle trame }
@@ -35465,6 +35639,8 @@ Begin
           A2600_VSYNCAct := True;
           A2600_ScanLine := 0;
           A2600_VisLine := 0;
+          A2600_CurY := 0;
+          A2600_LastX := -1;
         End Else A2600_VSYNCAct := False;
        End;
       $01: A2600_VBLANKAct := (V And $02) <> 0;     { VBLANK }
@@ -35474,31 +35650,36 @@ Begin
       { puis le TIA ajoute un delai de 5 color-clocks. HBLANK = 68.    }
       { Position = (LineCyc+3)*3 + 5 - 68 = LineCyc*3 - 54.            }
       $10: Begin                                    { RESP0 }
-        CurX := (A2600_LineCyc * 3) - 54;
+        If A2600_LineCyc * 3 < 68 Then CurX := 3   { HBLANK -> X=3 }
+        Else CurX := (A2600_LineCyc * 3) - 54;
         If CurX < 0 Then CurX := 0;
         If CurX > 159 Then CurX := 159;
         A2600_P0X := CurX;
        End;
       $11: Begin                                    { RESP1 }
-        CurX := (A2600_LineCyc * 3) - 54;
+        If A2600_LineCyc * 3 < 68 Then CurX := 3
+        Else CurX := (A2600_LineCyc * 3) - 54;
         If CurX < 0 Then CurX := 0;
         If CurX > 159 Then CurX := 159;
         A2600_P1X := CurX;
        End;
       $12: Begin                                    { RESM0 }
-        CurX := (A2600_LineCyc * 3) - 54;
+        If A2600_LineCyc * 3 < 68 Then CurX := 2
+        Else CurX := (A2600_LineCyc * 3) - 54;
         If CurX < 0 Then CurX := 0;
         If CurX > 159 Then CurX := 159;
         A2600_M0X := CurX;
        End;
       $13: Begin                                    { RESM1 }
-        CurX := (A2600_LineCyc * 3) - 54;
+        If A2600_LineCyc * 3 < 68 Then CurX := 2
+        Else CurX := (A2600_LineCyc * 3) - 54;
         If CurX < 0 Then CurX := 0;
         If CurX > 159 Then CurX := 159;
         A2600_M1X := CurX;
        End;
       $14: Begin                                    { RESBL }
-        CurX := (A2600_LineCyc * 3) - 54;
+        If A2600_LineCyc * 3 < 68 Then CurX := 2
+        Else CurX := (A2600_LineCyc * 3) - 54;
         If CurX < 0 Then CurX := 0;
         If CurX > 159 Then CurX := 159;
         A2600_BLX := CurX;
@@ -35508,22 +35689,47 @@ Begin
       $22: A2600_HMM0 := ShortInt(V) Div 16;
       $23: A2600_HMM1 := ShortInt(V) Div 16;
       $24: A2600_HMBL := ShortInt(V) Div 16;
+      { GRP0 ecrit verrouille le buffer "old" de GRP1 (VDELP1 utilise old). }
+      $1B: Begin
+        A2600_GRP0_New := V;
+        A2600_GRP1_Old := A2600_GRP1_New;
+       End;
+      { GRP1 ecrit verrouille les buffers "old" de GRP0 et ENABL. }
+      $1C: Begin
+        A2600_GRP1_New := V;
+        A2600_GRP0_Old := A2600_GRP0_New;
+        A2600_ENABL_Old := A2600_ENABL_New;
+       End;
+      $1F: A2600_ENABL_New := V;                    { ENABL }
+      $25: A2600_VDELP0 := (V And $01) <> 0;        { VDELP0 }
+      $26: A2600_VDELP1 := (V And $01) <> 0;        { VDELP1 }
+      $27: A2600_VDELBL := (V And $01) <> 0;        { VDELBL }
+      $28: A2600_RESMP0 := (V And $02) <> 0;        { RESMP0 }
+      $29: A2600_RESMP1 := (V And $02) <> 0;        { RESMP1 }
       $2A: Begin                                    { HMOVE }
-        A2600_P0X := A2600_P0X - A2600_HMP0;
-        A2600_P1X := A2600_P1X - A2600_HMP1;
-        A2600_M0X := A2600_M0X - A2600_HMM0;
-        A2600_M1X := A2600_M1X - A2600_HMM1;
-        A2600_BLX := A2600_BLX - A2600_HMBL;
-        If A2600_P0X < 0 Then A2600_P0X := A2600_P0X + 160;
-        If A2600_P0X > 159 Then A2600_P0X := A2600_P0X - 160;
-        If A2600_P1X < 0 Then A2600_P1X := A2600_P1X + 160;
-        If A2600_P1X > 159 Then A2600_P1X := A2600_P1X - 160;
-        If A2600_M0X < 0 Then A2600_M0X := A2600_M0X + 160;
-        If A2600_M0X > 159 Then A2600_M0X := A2600_M0X - 160;
-        If A2600_M1X < 0 Then A2600_M1X := A2600_M1X + 160;
-        If A2600_M1X > 159 Then A2600_M1X := A2600_M1X - 160;
-        If A2600_BLX < 0 Then A2600_BLX := A2600_BLX + 160;
-        If A2600_BLX > 159 Then A2600_BLX := A2600_BLX - 160;
+        { HMOVE doit etre strobe dans les 24 premiers cycles CPU du }
+        { scanline (avant que HBLANK se termine, cycle 23/24 ~= 68  }
+        { color clocks). Sinon, mouvement non applique.             }
+        If A2600_LineCyc < 24 Then Begin
+          A2600_HMOVEComb := True;                  { comb pixels 0..7 }
+          { Early HMOVE clock : strobe pendant HBLANK donne 8 clocks }
+          { de mouvement supplementaire (deplacement -8 de plus).    }
+          A2600_P0X := A2600_P0X - A2600_HMP0;
+          A2600_P1X := A2600_P1X - A2600_HMP1;
+          A2600_M0X := A2600_M0X - A2600_HMM0;
+          A2600_M1X := A2600_M1X - A2600_HMM1;
+          A2600_BLX := A2600_BLX - A2600_HMBL;
+          If A2600_P0X < 0 Then A2600_P0X := A2600_P0X + 160;
+          If A2600_P0X > 159 Then A2600_P0X := A2600_P0X - 160;
+          If A2600_P1X < 0 Then A2600_P1X := A2600_P1X + 160;
+          If A2600_P1X > 159 Then A2600_P1X := A2600_P1X - 160;
+          If A2600_M0X < 0 Then A2600_M0X := A2600_M0X + 160;
+          If A2600_M0X > 159 Then A2600_M0X := A2600_M0X - 160;
+          If A2600_M1X < 0 Then A2600_M1X := A2600_M1X + 160;
+          If A2600_M1X > 159 Then A2600_M1X := A2600_M1X - 160;
+          If A2600_BLX < 0 Then A2600_BLX := A2600_BLX + 160;
+          If A2600_BLX > 159 Then A2600_BLX := A2600_BLX - 160;
+        End;
        End;
       $2B: Begin                                    { HMCLR }
         A2600_HMP0 := 0; A2600_HMP1 := 0;
@@ -35555,6 +35761,10 @@ Begin
   { les N cycles ; quand elle passe sous 0, decrement par 1 par cycle  }
   { et bit 7 d'INSTAT a 1.                                              }
   Case EA And $1F Of
+    $00: A2600_SWACHA_Out := V;          { SWCHA output latch }
+    $01: A2600_SWACNT := V;              { SWACNT - direction port A }
+    $02: A2600_SWCHB_Out := V;           { SWCHB output latch }
+    $03: A2600_SWBCNT := V;              { SWBCNT - direction port B }
     $14: Begin A2600_TimerVal := V; A2600_TimerInterval := 1;
                A2600_TimerCyc := 1; A2600_TimerExpired := False; End;
     $15: Begin A2600_TimerVal := V; A2600_TimerInterval := 8;
@@ -35569,15 +35779,46 @@ End;
 { Lecture cote 2600 : pour les TIA reads ($30-$3D), on retourne 0    }
 { (collisions non implementees). Pour RIOT, on retourne joystick.    }
 Function A2600_BusRead(EA: Word; Var Handled: Boolean): Byte;
-Var Joy: Byte;
+Var Joy: Byte; Lo: Word;
 Begin
   Handled := False;
   A2600_BusRead := 0;
-  If (EA And $1000) <> 0 Then Exit;            { ROM passe }
+  If (EA And $1000) <> 0 Then Begin
+    Lo := EA And $0FFF;
+    { RAM cartouche F8SC/F6SC/F4SC : $1080-$10FF read (256 octets - 128) }
+    If ((A2600_Scheme = 4) Or (A2600_Scheme = 5) Or (A2600_Scheme = 6))
+       And (Lo >= $80) And (Lo <= $FF) Then Begin
+      Handled := True;
+      A2600_BusRead := A2600_CartRAM[Lo And $7F];
+      Exit;
+    End;
+    { FA CBS RAM Plus : $1100-$11FF read }
+    If (A2600_Scheme = 7) And (Lo >= $100) And (Lo <= $1FF) Then Begin
+      Handled := True;
+      A2600_BusRead := A2600_CartRAM[Lo - $100];
+      Exit;
+    End;
+    { E7 M-Network : RAM 1K read en $1400-$17FF si LowerRAM }
+    If (A2600_Scheme = 11) And A2600_E7_LowerRAM And (Lo >= $400) And (Lo <= $7FF) Then Begin
+      Handled := True;
+      A2600_BusRead := A2600_E7_RAM1K[Lo - $400];
+      Exit;
+    End;
+    { E7 M-Network : RAM 256B read en $1900-$19FF }
+    If (A2600_Scheme = 11) And (Lo >= $900) And (Lo <= $9FF) Then Begin
+      Handled := True;
+      A2600_BusRead := A2600_E7_RAM256[A2600_E7_R256Bank, Lo And $FF];
+      Exit;
+    End;
+    { FE Decathlon : lecture $01FE/$01FF (pile JSR) declenche commutation }
+    A2600_CheckHotspot(EA);
+    Exit;
+  End;
+  { FE peut declencher sur acces pile $01FE/$01FF }
+  If (A2600_Scheme = 8) And ((EA = $01FE) Or (EA = $01FF)) Then
+    A2600_CheckHotspot(EA);
   If (EA And $0080) = 0 Then Begin             { TIA read }
     Handled := True;
-    { Collisions $30-$37, INPT0-INPT5 $38-$3D. On retourne 0 par   }
-    { defaut sauf si on a marque une collision dans A2600_TIA.    }
     Case EA And $0F Of
       $00..$07: A2600_BusRead := A2600_TIA[$30 + (EA And $07)];
       $0C, $0D: A2600_BusRead := $80;          { INPT4/5 (gere ailleurs) }
@@ -35595,25 +35836,41 @@ Begin
   Case EA And $1F Of
     $00: Begin                                  { SWCHA - joysticks }
       Handled := True;
-      { Bits actifs bas : P0 haut/bas/gauche/droite = bits 4-7        }
       Joy := $FF;
       If (A2600_KeyJoy And 1) <> 0 Then Joy := Joy And Not $10;
       If (A2600_KeyJoy And 2) <> 0 Then Joy := Joy And Not $20;
       If (A2600_KeyJoy And 4) <> 0 Then Joy := Joy And Not $40;
       If (A2600_KeyJoy And 8) <> 0 Then Joy := Joy And Not $80;
+      { Combiner avec output bits selon DDR : bits output = SWACHA_Out }
+      Joy := (Joy And Not A2600_SWACNT) Or (A2600_SWACHA_Out And A2600_SWACNT);
       A2600_BusRead := Joy;
     End;
-    $02: Begin Handled := True; A2600_BusRead := $3F; End; { SWCHB }
+    $01: Begin Handled := True; A2600_BusRead := A2600_SWACNT; End; { SWACNT }
+    $02: Begin                                  { SWCHB - console switches }
+      Handled := True;
+      A2600_BusRead := ($3F And Not A2600_SWBCNT) Or (A2600_SWCHB_Out And A2600_SWBCNT);
+    End;
+    $03: Begin Handled := True; A2600_BusRead := A2600_SWBCNT; End; { SWBCNT }
+    $04, $06: Begin                             { INTIM }
+      Handled := True;
+      A2600_BusRead := Byte(A2600_TimerVal And $FF);
+      A2600_TimerExpired := False;              { lecture INTIM clear INSTAT bit 7 }
+    End;
+    $05, $07: Begin                             { INSTAT }
+      Handled := True;
+      If A2600_TimerExpired Then A2600_BusRead := $80 Else A2600_BusRead := 0;
+    End;
     $0C: Begin                                  { INPT4 - fire P0 }
       Handled := True;
       If A2600_KeyFire Then A2600_BusRead := 0 Else A2600_BusRead := $80;
     End;
+    $0D: Begin Handled := True; A2600_BusRead := $80; End; { INPT5 - fire P1 }
   End;
 End;
 
 { Rendu d un scanline visible (0..191) dans A2600_FB. Le scanline 0 }
 { correspond a la premiere ligne apres VBLANK off (approxime).      }
-Procedure A2600_RenderScanline(Y: Integer);
+Procedure A2600_RenderRange(Y: Integer; X0, X1: Integer);
 Var
   X, PfBit, HalfX: Integer;
   PF0, PF1, PF2, CTRLPF: Byte;
@@ -35630,6 +35887,7 @@ Var
   Tmp, K, Dx: Integer;
   P0Cnt, P1Cnt: Integer;
   P0Off, P1Off: Array[0..2] Of Integer;
+  M0RX, M1RX: Integer;
 
   Function PlayerPixel(GR, REF: Byte; Stretch: Integer; Dx: Integer): Boolean;
   Var Bit: Integer;
@@ -35645,6 +35903,9 @@ Var
 
 Begin
   If (Y < 0) Or (Y > 191) Then Exit;
+  If X0 < 0 Then X0 := 0;
+  If X1 > 159 Then X1 := 159;
+  If X0 > X1 Then Exit;
   COLUBK := A2600_TIA[$09];
   COLUPF := A2600_TIA[$08];
   COLUP0 := A2600_TIA[$06];
@@ -35653,13 +35914,14 @@ Begin
   PF1    := A2600_TIA[$0E];
   PF2    := A2600_TIA[$0F];
   CTRLPF := A2600_TIA[$0A];
-  GRP0   := A2600_TIA[$1B];
-  GRP1   := A2600_TIA[$1C];
+  { VDELPx/VDELBL : selection buffer ancien/nouveau pour kernels 2-line }
+  If A2600_VDELP0 Then GRP0 := A2600_GRP0_Old Else GRP0 := A2600_GRP0_New;
+  If A2600_VDELP1 Then GRP1 := A2600_GRP1_Old Else GRP1 := A2600_GRP1_New;
+  If A2600_VDELBL Then ENABL := A2600_ENABL_Old Else ENABL := A2600_ENABL_New;
   REFP0  := A2600_TIA[$0B];
   REFP1  := A2600_TIA[$0C];
   ENAM0  := A2600_TIA[$1D];
   ENAM1  := A2600_TIA[$1E];
-  ENABL  := A2600_TIA[$1F];
   NUSIZ0 := A2600_TIA[$04];
   NUSIZ1 := A2600_TIA[$05];
   Reflect  := (CTRLPF And $01) <> 0;
@@ -35691,8 +35953,17 @@ Begin
     6: Begin P1Cnt := 3; P1Off[1] := 32; P1Off[2] := 64; End;
     7: P1Stretch := 4;
   End;
+  { RESMPx : missile centre sur le joueur correspondant }
+  If A2600_RESMP0 Then M0RX := A2600_P0X + (P0Stretch * 4) - (M0Size Div 2)
+  Else M0RX := A2600_M0X;
+  If A2600_RESMP1 Then M1RX := A2600_P1X + (P1Stretch * 4) - (M1Size Div 2)
+  Else M1RX := A2600_M1X;
+  If M0RX < 0 Then M0RX := M0RX + 160;
+  If M0RX > 159 Then M0RX := M0RX - 160;
+  If M1RX < 0 Then M1RX := M1RX + 160;
+  If M1RX > 159 Then M1RX := M1RX - 160;
 
-  For X := 0 To 159 Do Begin
+  For X := X0 To X1 Do Begin
     Pix := COLUBK;
     { Playfield : 20 pixels chacun de 4 hardware-pixels. Cote gauche }
     { puis cote droit (eventuellement reflete).                      }
@@ -35711,37 +35982,29 @@ Begin
         If X < 80 Then PfPix := COLUP0 Else PfPix := COLUP1;
       End Else PfPix := COLUPF;
     End;
-    { Joueurs avec NUSIZ : iterer sur les copies. }
+    { Joueurs avec NUSIZ : iterer sur toutes les copies (OR matériel). }
     P0Pix := 0;
     For K := 0 To P0Cnt - 1 Do Begin
       Dx := X - (A2600_P0X + P0Off[K]);
-      If PlayerPixel(GRP0, REFP0, P0Stretch, Dx) Then Begin
-        P0Pix := COLUP0; Break;
-      End;
+      If PlayerPixel(GRP0, REFP0, P0Stretch, Dx) Then P0Pix := COLUP0;
     End;
     P1Pix := 0;
     For K := 0 To P1Cnt - 1 Do Begin
       Dx := X - (A2600_P1X + P1Off[K]);
-      If PlayerPixel(GRP1, REFP1, P1Stretch, Dx) Then Begin
-        P1Pix := COLUP1; Break;
-      End;
+      If PlayerPixel(GRP1, REFP1, P1Stretch, Dx) Then P1Pix := COLUP1;
     End;
     { Missiles (taille NUSIZx bits 4-5, copies aux memes positions). }
     M0Pix := 0;
     If (ENAM0 And $02) <> 0 Then
       For K := 0 To P0Cnt - 1 Do Begin
-        Dx := X - (A2600_M0X + P0Off[K]);
-        If (Dx >= 0) And (Dx < M0Size) Then Begin
-          M0Pix := COLUP0; Break;
-        End;
+        Dx := X - (M0RX + P0Off[K]);
+        If (Dx >= 0) And (Dx < M0Size) Then M0Pix := COLUP0;
       End;
     M1Pix := 0;
     If (ENAM1 And $02) <> 0 Then
       For K := 0 To P1Cnt - 1 Do Begin
-        Dx := X - (A2600_M1X + P1Off[K]);
-        If (Dx >= 0) And (Dx < M1Size) Then Begin
-          M1Pix := COLUP1; Break;
-        End;
+        Dx := X - (M1RX + P1Off[K]);
+        If (Dx >= 0) And (Dx < M1Size) Then M1Pix := COLUP1;
       End;
     { Balle (taille variable, pas de copies). }
     BLPix := 0;
@@ -35799,11 +36062,30 @@ Begin
     If (M0Pix <> 0) And (M1Pix <> 0) Then
       A2600_TIA[$37] := A2600_TIA[$37] Or $40;            { CXPPMM : M0/M1 }
     If A2600_VBLANKAct Then Pix := 0;
+    { HMOVE comb : barre noire pixels 0..7 si HMOVE strobe sur cette ligne }
+    If A2600_HMOVEComb And (X < 8) Then Pix := 0;
     A2600_FB[Y, X] := Pix;
   End;
 End;
 
-{ Avancer d une instruction au sens scanline (apres CPU6502_Step).  }
+{ Wrapper de compatibilite : rendre toute la scanline d un coup. }
+Procedure A2600_RenderScanline(Y: Integer);
+Begin
+  A2600_RenderRange(Y, 0, 159);
+End;
+
+{ Avancer le faisceau jusqu a NewX en rendant les pixels deja "passes". }
+{ Appelee avant chaque ecriture TIA pour rendu cycle-accurate.         }
+Procedure A2600_AdvanceTo(NewX: Integer);
+Begin
+  If NewX < 0 Then NewX := 0;
+  If NewX > 160 Then NewX := 160;
+  If (A2600_CurY >= 0) And (A2600_CurY <= 191)
+     And (Not A2600_VBLANKAct) And (Not A2600_VSYNCAct) Then
+    If NewX - 1 >= A2600_LastX + 1 Then
+      A2600_RenderRange(A2600_CurY, A2600_LastX + 1, NewX - 1);
+  If NewX - 1 > A2600_LastX Then A2600_LastX := NewX - 1;
+End;
 { Approxime 3 cycles par instruction (moyenne 6507). 76 cycles par  }
 { scanline. WSYNC : termine immediatement le scanline courant.      }
 Procedure A2600_AfterInstr;
@@ -35837,12 +36119,16 @@ Begin
     A2600_WSYNCWait := False;
     If (Not A2600_VBLANKAct) And (Not A2600_VSYNCAct) Then Begin
       If (A2600_VisLine >= 0) And (A2600_VisLine <= 191) Then
-        A2600_RenderScanline(A2600_VisLine);
+        A2600_AdvanceTo(160);                        { rendre fin de ligne }
       Inc(A2600_VisLine);
     End;
     Inc(A2600_ScanLine);
     A2600_LineCyc := 0;
     A2600_LineInstr := 0;
+    { Nouvelle scanline : reset etat de rendu intra-ligne. }
+    A2600_LastX := -1;
+    A2600_HMOVEComb := False;
+    A2600_CurY := A2600_VisLine;
   End;
 End;
 
@@ -35863,6 +36149,24 @@ Begin
   A2600_M0X := 0; A2600_M1X := 0; A2600_BLX := 0;
   A2600_HMP0 := 0; A2600_HMP1 := 0;
   A2600_HMM0 := 0; A2600_HMM1 := 0; A2600_HMBL := 0;
+  A2600_GRP0_New := 0; A2600_GRP0_Old := 0;
+  A2600_GRP1_New := 0; A2600_GRP1_Old := 0;
+  A2600_ENABL_New := 0; A2600_ENABL_Old := 0;
+  A2600_VDELP0 := False; A2600_VDELP1 := False; A2600_VDELBL := False;
+  A2600_RESMP0 := False; A2600_RESMP1 := False;
+  A2600_HMOVEComb := False;
+  A2600_LastX := -1;
+  A2600_CurY := 0;
+  A2600_SWACNT := 0;
+  A2600_SWBCNT := 0;
+  A2600_SWACHA_Out := $FF;
+  A2600_SWCHB_Out := $3F;
+  FillChar(A2600_CartRAM, SizeOf(A2600_CartRAM), 0);
+  FillChar(A2600_E7_RAM1K, SizeOf(A2600_E7_RAM1K), 0);
+  FillChar(A2600_E7_RAM256, SizeOf(A2600_E7_RAM256), 0);
+  A2600_E7_LowerRAM := False;
+  A2600_E7_LowerROM := 0;
+  A2600_E7_R256Bank := 0;
   A2600_KeyEsc := False;
   A2600_KeyJoy := 0;
   A2600_KeyFire := False;
@@ -39761,8 +40065,39 @@ Begin NesActive := False;
       8192:  A2600_BankCnt := 2;   { F8 }
       16384: A2600_BankCnt := 4;   { F6 }
       32768: A2600_BankCnt := 8;   { F4 }
+      12288: A2600_BankCnt := 3;   { FA (12K) }
     Else
       A2600_BankCnt := 1;
+    End;
+    { Detection scheme : heuristique simple sur taille puis contenu.   }
+    { F8SC/F6SC/F4SC : empreinte typique sur octets de RAM init.       }
+    { On scanne les hotspots dans la ROM pour distinguer F8 vs E0/FE.  }
+    A2600_Scheme := 0;
+    Case A2600_ROMSize Of
+      8192: Begin
+        A2600_Scheme := 1;                          { F8 par defaut }
+        { Detection FE : recherche du pattern LDA ($xx,X) + bit 5 }
+        { Detection E0 : presence d'acces $1FE0 dans la ROM       }
+        For Steps := 0 To 8190 Do
+          If (A2600_ROM[Steps] = $8D) And
+             (A2600_ROM[Steps + 1] = $E0) And
+             (A2600_ROM[Steps + 2] = $1F) Then Begin
+            A2600_Scheme := 9;                      { E0 Parker }
+            Break;
+          End;
+      End;
+      16384: Begin
+        A2600_Scheme := 2;                          { F6 par defaut }
+        { Detection E7 : presence d'acces $1FE7 (hotspot RAM 1K) }
+        For Steps := 0 To 16382 Do
+          If (A2600_ROM[Steps] = $E7) And
+             (A2600_ROM[Steps + 1] = $1F) Then Begin
+            A2600_Scheme := 11;                     { E7 M-Network }
+            Break;
+          End;
+      End;
+      32768: A2600_Scheme := 3;                     { F4 par defaut }
+      12288: A2600_Scheme := 7;                     { FA }
     End;
     { Mapper la derniere banque a $F000-$FFFF (les ROMs bankswitchees     }
     { placent typiquement leur vecteur reset dans la derniere banque).   }
@@ -39772,8 +40107,28 @@ Begin NesActive := False;
      For Steps := 0 To 2047 Do
       A2600_ROM[2048 + Steps] := A2600_ROM[Steps];
     End;
-    { Mirrorer la banque active dans les 8 alias de bus 13 bits :  }
-    { $1xxx, $3xxx, $5xxx, $7xxx, $9xxx, $Bxxx, $Dxxx, $Fxxx.       }
+    { E0 : initialiser les 3 slots commutables sur la derniere banque, }
+    { slot 3 fixe a la banque 7 (1K * 7..8K).                           }
+    If A2600_Scheme = 9 Then Begin
+     A2600_E0Slot[0] := 4;
+     A2600_E0Slot[1] := 5;
+     A2600_E0Slot[2] := 6;
+     A2600_E0RebuildSlot(0, 4);
+     A2600_E0RebuildSlot(1, 5);
+     A2600_E0RebuildSlot(2, 6);
+     { Slot 3 (= $1C00-$1FFF) fixe a banque 7 }
+     For NesPrgSize := 0 To 1023 Do
+      For NesPrgBlocks := 0 To 7 Do
+       CPU6502_Mem[(NesPrgBlocks * $2000) + $1C00 + NesPrgSize] :=
+        A2600_ROM[7 * 1024 + NesPrgSize];
+    End Else If A2600_Scheme = 11 Then Begin
+     { E7 : lower 2K = banque 0, upper 2K = banque 7 fixe }
+     A2600_E7_LowerRAM := False;
+     A2600_E7_LowerROM := 0;
+     A2600_E7_R256Bank := 0;
+     A2600_E7_RebuildLower;
+     A2600_E7_RebuildUpper;
+    End Else Begin
     For NesPrgSize := 0 To 4095 Do Begin
      CPU6502_Mem[$1000 + NesPrgSize] := A2600_ROM[(A2600_CurBank * 4096) + NesPrgSize];
      CPU6502_Mem[$3000 + NesPrgSize] := CPU6502_Mem[$1000 + NesPrgSize];
@@ -39783,6 +40138,7 @@ Begin NesActive := False;
      CPU6502_Mem[$B000 + NesPrgSize] := CPU6502_Mem[$1000 + NesPrgSize];
      CPU6502_Mem[$D000 + NesPrgSize] := CPU6502_Mem[$1000 + NesPrgSize];
      CPU6502_Mem[$F000 + NesPrgSize] := CPU6502_Mem[$1000 + NesPrgSize];
+    End;
     End;
    End;
    EntryAddr16 := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
@@ -39918,6 +40274,9 @@ Begin NesActive := False;
     { Executer une trame : 262 scanlines * ~25 instr = ~6550 instr }
     A2600_ScanLine := 0;
     A2600_VisLine := 0;
+    A2600_CurY := 0;
+    A2600_LastX := -1;
+    A2600_HMOVEComb := False;
     For NesPrgSize := 0 To 7000 Do Begin
      If CPU6502_Halted Then Break;
      If A2600_ScanLine >= 262 Then Break;
