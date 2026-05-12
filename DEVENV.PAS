@@ -35469,32 +35469,36 @@ Begin
        End;
       $01: A2600_VBLANKAct := (V And $02) <> 0;     { VBLANK }
       $02: A2600_WSYNCWait := True;                 { WSYNC }
+      { RESPx/RESMx/RESBL : le faisceau au moment du verrouillage est }
+      { a (LineCyc+3)*3 color-clocks (3 cycles CPU pendant STA zp),    }
+      { puis le TIA ajoute un delai de 5 color-clocks. HBLANK = 68.    }
+      { Position = (LineCyc+3)*3 + 5 - 68 = LineCyc*3 - 54.            }
       $10: Begin                                    { RESP0 }
-        CurX := (A2600_LineCyc * 3) - 68;
+        CurX := (A2600_LineCyc * 3) - 54;
         If CurX < 0 Then CurX := 0;
         If CurX > 159 Then CurX := 159;
         A2600_P0X := CurX;
        End;
       $11: Begin                                    { RESP1 }
-        CurX := (A2600_LineCyc * 3) - 68;
+        CurX := (A2600_LineCyc * 3) - 54;
         If CurX < 0 Then CurX := 0;
         If CurX > 159 Then CurX := 159;
         A2600_P1X := CurX;
        End;
       $12: Begin                                    { RESM0 }
-        CurX := (A2600_LineCyc * 3) - 68;
+        CurX := (A2600_LineCyc * 3) - 54;
         If CurX < 0 Then CurX := 0;
         If CurX > 159 Then CurX := 159;
         A2600_M0X := CurX;
        End;
       $13: Begin                                    { RESM1 }
-        CurX := (A2600_LineCyc * 3) - 68;
+        CurX := (A2600_LineCyc * 3) - 54;
         If CurX < 0 Then CurX := 0;
         If CurX > 159 Then CurX := 159;
         A2600_M1X := CurX;
        End;
       $14: Begin                                    { RESBL }
-        CurX := (A2600_LineCyc * 3) - 68;
+        CurX := (A2600_LineCyc * 3) - 54;
         If CurX < 0 Then CurX := 0;
         If CurX > 159 Then CurX := 159;
         A2600_BLX := CurX;
@@ -35525,6 +35529,12 @@ Begin
         A2600_HMP0 := 0; A2600_HMP1 := 0;
         A2600_HMM0 := 0; A2600_HMM1 := 0;
         A2600_HMBL := 0;
+       End;
+      $2C: Begin                                    { CXCLR }
+        A2600_TIA[$30] := 0; A2600_TIA[$31] := 0;
+        A2600_TIA[$32] := 0; A2600_TIA[$33] := 0;
+        A2600_TIA[$34] := 0; A2600_TIA[$35] := 0;
+        A2600_TIA[$36] := 0; A2600_TIA[$37] := 0;
        End;
     End;
     Exit;
@@ -35566,7 +35576,14 @@ Begin
   If (EA And $1000) <> 0 Then Exit;            { ROM passe }
   If (EA And $0080) = 0 Then Begin             { TIA read }
     Handled := True;
-    A2600_BusRead := 0;
+    { Collisions $30-$37, INPT0-INPT5 $38-$3D. On retourne 0 par   }
+    { defaut sauf si on a marque une collision dans A2600_TIA.    }
+    Case EA And $0F Of
+      $00..$07: A2600_BusRead := A2600_TIA[$30 + (EA And $07)];
+      $0C, $0D: A2600_BusRead := $80;          { INPT4/5 (gere ailleurs) }
+    Else
+      A2600_BusRead := 0;
+    End;
     Exit;
   End;
   If (EA And $0200) = 0 Then Begin             { RIOT RAM }
@@ -35604,11 +35621,28 @@ Var
   GRP0, GRP1: Byte;
   REFP0, REFP1: Byte;
   ENAM0, ENAM1, ENABL: Byte;
+  NUSIZ0, NUSIZ1: Byte;
   Pix, PfPix, P0Pix, P1Pix, M0Pix, M1Pix, BLPix: Byte;
   PfIdx, PfBits: Integer;
   Reflect, Score, Priority: Boolean;
-  BSize: Integer;
-  Tmp: Integer;
+  BSize, M0Size, M1Size: Integer;
+  P0Stretch, P1Stretch: Integer;
+  Tmp, K, Dx: Integer;
+  P0Cnt, P1Cnt: Integer;
+  P0Off, P1Off: Array[0..2] Of Integer;
+
+  Function PlayerPixel(GR, REF: Byte; Stretch: Integer; Dx: Integer): Boolean;
+  Var Bit: Integer;
+  Begin
+    PlayerPixel := False;
+    If GR = 0 Then Exit;
+    If (Dx < 0) Or (Dx >= 8 * Stretch) Then Exit;
+    Bit := Dx Div Stretch;
+    If (REF And $08) <> 0 Then Bit := Bit
+    Else Bit := 7 - Bit;
+    PlayerPixel := ((GR Shr Bit) And 1) <> 0;
+  End;
+
 Begin
   If (Y < 0) Or (Y > 191) Then Exit;
   COLUBK := A2600_TIA[$09];
@@ -35626,10 +35660,38 @@ Begin
   ENAM0  := A2600_TIA[$1D];
   ENAM1  := A2600_TIA[$1E];
   ENABL  := A2600_TIA[$1F];
+  NUSIZ0 := A2600_TIA[$04];
+  NUSIZ1 := A2600_TIA[$05];
   Reflect  := (CTRLPF And $01) <> 0;
   Score    := (CTRLPF And $02) <> 0;
   Priority := (CTRLPF And $04) <> 0;
   BSize := 1 Shl ((CTRLPF Shr 4) And $03);
+  M0Size := 1 Shl ((NUSIZ0 Shr 4) And $03);
+  M1Size := 1 Shl ((NUSIZ1 Shr 4) And $03);
+  { NUSIZ player : 0=1x1, 1=2 copies close (gap 16), 2=2 medium (32), }
+  { 3=3 copies close, 4=2 wide (64), 5=1 double (2x), 6=3 medium,    }
+  { 7=1 quad (4x).                                                   }
+  P0Stretch := 1; P0Cnt := 1; P0Off[0] := 0;
+  Case NUSIZ0 And $07 Of
+    1: Begin P0Cnt := 2; P0Off[1] := 16; End;
+    2: Begin P0Cnt := 2; P0Off[1] := 32; End;
+    3: Begin P0Cnt := 3; P0Off[1] := 16; P0Off[2] := 32; End;
+    4: Begin P0Cnt := 2; P0Off[1] := 64; End;
+    5: P0Stretch := 2;
+    6: Begin P0Cnt := 3; P0Off[1] := 32; P0Off[2] := 64; End;
+    7: P0Stretch := 4;
+  End;
+  P1Stretch := 1; P1Cnt := 1; P1Off[0] := 0;
+  Case NUSIZ1 And $07 Of
+    1: Begin P1Cnt := 2; P1Off[1] := 16; End;
+    2: Begin P1Cnt := 2; P1Off[1] := 32; End;
+    3: Begin P1Cnt := 3; P1Off[1] := 16; P1Off[2] := 32; End;
+    4: Begin P1Cnt := 2; P1Off[1] := 64; End;
+    5: P1Stretch := 2;
+    6: Begin P1Cnt := 3; P1Off[1] := 32; P1Off[2] := 64; End;
+    7: P1Stretch := 4;
+  End;
+
   For X := 0 To 159 Do Begin
     Pix := COLUBK;
     { Playfield : 20 pixels chacun de 4 hardware-pixels. Cote gauche }
@@ -35648,50 +35710,94 @@ Begin
       If Score Then Begin
         If X < 80 Then PfPix := COLUP0 Else PfPix := COLUP1;
       End Else PfPix := COLUPF;
-      Pix := PfPix;
     End;
-    { Joueurs (sans nusiz : un seul exemplaire 8 px). }
+    { Joueurs avec NUSIZ : iterer sur les copies. }
     P0Pix := 0;
-    Tmp := X - A2600_P0X;
-    If (Tmp >= 0) And (Tmp < 8) And (GRP0 <> 0) Then Begin
-      If (REFP0 And $08) <> 0 Then PfBits := (GRP0 Shr Tmp) And 1
-      Else PfBits := (GRP0 Shr (7 - Tmp)) And 1;
-      If PfBits <> 0 Then P0Pix := COLUP0;
+    For K := 0 To P0Cnt - 1 Do Begin
+      Dx := X - (A2600_P0X + P0Off[K]);
+      If PlayerPixel(GRP0, REFP0, P0Stretch, Dx) Then Begin
+        P0Pix := COLUP0; Break;
+      End;
     End;
     P1Pix := 0;
-    Tmp := X - A2600_P1X;
-    If (Tmp >= 0) And (Tmp < 8) And (GRP1 <> 0) Then Begin
-      If (REFP1 And $08) <> 0 Then PfBits := (GRP1 Shr Tmp) And 1
-      Else PfBits := (GRP1 Shr (7 - Tmp)) And 1;
-      If PfBits <> 0 Then P1Pix := COLUP1;
+    For K := 0 To P1Cnt - 1 Do Begin
+      Dx := X - (A2600_P1X + P1Off[K]);
+      If PlayerPixel(GRP1, REFP1, P1Stretch, Dx) Then Begin
+        P1Pix := COLUP1; Break;
+      End;
     End;
-    { Missiles (1 pixel chacun, taille NUSIZ ignoree) }
+    { Missiles (taille NUSIZx bits 4-5, copies aux memes positions). }
     M0Pix := 0;
-    If ((ENAM0 And $02) <> 0) And (X = A2600_M0X) Then M0Pix := COLUP0;
+    If (ENAM0 And $02) <> 0 Then
+      For K := 0 To P0Cnt - 1 Do Begin
+        Dx := X - (A2600_M0X + P0Off[K]);
+        If (Dx >= 0) And (Dx < M0Size) Then Begin
+          M0Pix := COLUP0; Break;
+        End;
+      End;
     M1Pix := 0;
-    If ((ENAM1 And $02) <> 0) And (X = A2600_M1X) Then M1Pix := COLUP1;
-    { Balle (taille variable) }
+    If (ENAM1 And $02) <> 0 Then
+      For K := 0 To P1Cnt - 1 Do Begin
+        Dx := X - (A2600_M1X + P1Off[K]);
+        If (Dx >= 0) And (Dx < M1Size) Then Begin
+          M1Pix := COLUP1; Break;
+        End;
+      End;
+    { Balle (taille variable, pas de copies). }
     BLPix := 0;
     Tmp := X - A2600_BLX;
     If ((ENABL And $02) <> 0) And (Tmp >= 0) And (Tmp < BSize) Then
       BLPix := COLUPF;
-    { Priorite : par defaut joueurs > playfield > fond.              }
-    { Si Priority alors playfield/balle au-dessus des joueurs.       }
+    { Priorite TIA (du plus faible au plus eleve, dernier ecrit gagne). }
+    { Defaut    : BK < PF/BL < P1/M1 < P0/M0                            }
+    { Priorite  : BK < P1/M1 < P0/M0 < PF/BL                            }
     If Priority Then Begin
-      If P0Pix <> 0 Then Pix := P0Pix;
-      If M0Pix <> 0 Then Pix := M0Pix;
       If P1Pix <> 0 Then Pix := P1Pix;
       If M1Pix <> 0 Then Pix := M1Pix;
+      If P0Pix <> 0 Then Pix := P0Pix;
+      If M0Pix <> 0 Then Pix := M0Pix;
       If PfPix <> 0 Then Pix := PfPix;
       If BLPix <> 0 Then Pix := BLPix;
     End Else Begin
       If PfPix <> 0 Then Pix := PfPix;
       If BLPix <> 0 Then Pix := BLPix;
-      If P0Pix <> 0 Then Pix := P0Pix;
-      If M0Pix <> 0 Then Pix := M0Pix;
       If P1Pix <> 0 Then Pix := P1Pix;
       If M1Pix <> 0 Then Pix := M1Pix;
+      If P0Pix <> 0 Then Pix := P0Pix;
+      If M0Pix <> 0 Then Pix := M0Pix;
     End;
+    { Collisions : MAJ des registres TIA $30-$3D si overlap. Bits   }
+    { CXMP/CXBLPF/CXPPMM stockent collisions (bit 7=premier objet). }
+    If (P0Pix <> 0) And (M1Pix <> 0) Then
+      A2600_TIA[$30] := A2600_TIA[$30] Or $80;            { CXM0P : M0/P1 }
+    If (M0Pix <> 0) And (P1Pix <> 0) Then
+      A2600_TIA[$30] := A2600_TIA[$30] Or $40;            { CXM0P : M0/P0 }
+    If (M1Pix <> 0) And (P0Pix <> 0) Then
+      A2600_TIA[$31] := A2600_TIA[$31] Or $80;            { CXM1P : M1/P0 }
+    If (M1Pix <> 0) And (P1Pix <> 0) Then
+      A2600_TIA[$31] := A2600_TIA[$31] Or $40;
+    If (P0Pix <> 0) And (PfPix <> 0) Then
+      A2600_TIA[$32] := A2600_TIA[$32] Or $80;            { CXP0FB : P0/PF }
+    If (P0Pix <> 0) And (BLPix <> 0) Then
+      A2600_TIA[$32] := A2600_TIA[$32] Or $40;
+    If (P1Pix <> 0) And (PfPix <> 0) Then
+      A2600_TIA[$33] := A2600_TIA[$33] Or $80;            { CXP1FB : P1/PF }
+    If (P1Pix <> 0) And (BLPix <> 0) Then
+      A2600_TIA[$33] := A2600_TIA[$33] Or $40;
+    If (M0Pix <> 0) And (PfPix <> 0) Then
+      A2600_TIA[$34] := A2600_TIA[$34] Or $80;            { CXM0FB }
+    If (M0Pix <> 0) And (BLPix <> 0) Then
+      A2600_TIA[$34] := A2600_TIA[$34] Or $40;
+    If (M1Pix <> 0) And (PfPix <> 0) Then
+      A2600_TIA[$35] := A2600_TIA[$35] Or $80;
+    If (M1Pix <> 0) And (BLPix <> 0) Then
+      A2600_TIA[$35] := A2600_TIA[$35] Or $40;
+    If (BLPix <> 0) And (PfPix <> 0) Then
+      A2600_TIA[$36] := A2600_TIA[$36] Or $80;            { CXBLPF }
+    If (P0Pix <> 0) And (P1Pix <> 0) Then
+      A2600_TIA[$37] := A2600_TIA[$37] Or $80;            { CXPPMM : P0/P1 }
+    If (M0Pix <> 0) And (M1Pix <> 0) Then
+      A2600_TIA[$37] := A2600_TIA[$37] Or $40;            { CXPPMM : M0/M1 }
     If A2600_VBLANKAct Then Pix := 0;
     A2600_FB[Y, X] := Pix;
   End;
