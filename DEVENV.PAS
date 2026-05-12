@@ -3330,6 +3330,7 @@ Var
  CPU6502_Cycles : LongInt;
  CPU6502_LastCyc: Integer;    { cycles de la derniere instruction       }
  CPU6502_DataBus: Byte;       { dernier octet sur le data bus (open-bus)}
+ CPU6502_PageCrossed: Boolean;{ AmABX/AmABY/AmIZY a traverse une page   }
  CPU6502_Panel  : ^TEmulatorPanel;
  CPU6502_Variant: Integer;    { 0=AppleII 1=C64 2=Atari 3=NES 4=A2600 }
  { --- Etat NES complet (variant=3) ----------------------------------- }
@@ -34697,21 +34698,25 @@ Begin
 End;
 
 Function CPU6502_AmABX: Word;
-Var W: Word;
+Var W, Base: Word;
 Begin
-  W := CPU6502_Read16(CPU6502_PC) + CPU6502_X;
+  Base := CPU6502_Read16(CPU6502_PC);
+  W := Base + CPU6502_X;
   CPU6502_AmABX := W;
   CPU6502_PC := CPU6502_PC + 2;
+  If (W And $FF00) <> (Base And $FF00) Then CPU6502_PageCrossed := True;
   If (CPU6502_Variant = 4) And ((W And $1000) <> 0) Then
     A2600_CheckHotspot(W);
 End;
 
 Function CPU6502_AmABY: Word;
-Var W: Word;
+Var W, Base: Word;
 Begin
-  W := CPU6502_Read16(CPU6502_PC) + CPU6502_Y;
+  Base := CPU6502_Read16(CPU6502_PC);
+  W := Base + CPU6502_Y;
   CPU6502_AmABY := W;
   CPU6502_PC := CPU6502_PC + 2;
+  If (W And $FF00) <> (Base And $FF00) Then CPU6502_PageCrossed := True;
   If (CPU6502_Variant = 4) And ((W And $1000) <> 0) Then
     A2600_CheckHotspot(W);
 End;
@@ -34726,13 +34731,15 @@ Begin
 End;
 
 Function CPU6502_AmIZY: Word; { (zp),Y }
-Var Z: Byte;
+Var Z: Byte; Base: Word;
 Begin
   Z := CPU6502_Mem[CPU6502_PC];
   Inc(CPU6502_PC);
-  CPU6502_AmIZY := (CPU6502_Mem[Z] Or
-                    (Word(CPU6502_Mem[(Z + 1) And $FF]) Shl 8))
-                   + CPU6502_Y;
+  Base := CPU6502_Mem[Z] Or
+          (Word(CPU6502_Mem[(Z + 1) And $FF]) Shl 8);
+  CPU6502_AmIZY := Word(Base + CPU6502_Y);
+  If ((Base + CPU6502_Y) And $FF00) <> (Base And $FF00) Then
+    CPU6502_PageCrossed := True;
 End;
 
 { Branchement relatif signe }
@@ -36826,6 +36833,29 @@ Const
   {E0:} 2, 6, 2, 8, 3, 3, 5, 5, 2, 2, 2, 2, 4, 4, 6, 6,
   {F0:} 2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7);
 
+{ +1 cycle si l adressage indexe abs,X / abs,Y / (zp),Y traverse une   }
+{ page sur un opcode LECTURE pure. STA/RMW/illegales-RMW : pas de      }
+{ penalite (le dummy read fixe deja le compte au max).                  }
+Const
+  CPU6502_PageCrossTab: Array[0..255] Of Byte = (
+  {     0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F }
+  {00:} 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  {10:} 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0,
+  {20:} 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  {30:} 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0,
+  {40:} 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  {50:} 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0,
+  {60:} 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  {70:} 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0,
+  {80:} 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  {90:} 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  {A0:} 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  {B0:} 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1,
+  {C0:} 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  {D0:} 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0,
+  {E0:} 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  {F0:} 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0);
+
 Procedure CPU6502_Step;
 Var
   Op, M, R: Byte;
@@ -36845,6 +36875,7 @@ Begin
 
   Op := CPU6502_Mem[CPU6502_PC];
   CPU6502_LastCyc := CPU6502_CycTab[Op];
+  CPU6502_PageCrossed := False;
   Inc(CPU6502_PC);
   Case Op Of
     { ----- LDA ----- }
@@ -37286,6 +37317,10 @@ Begin
     CPU6502_Halted := True;
     CPU6502_ExitCode := 1;
   End;
+  { Penalite page-cross : +1 cycle pour les opcodes LECTURE en abs,X /  }
+  { abs,Y / (zp),Y quand l indexation traverse une frontiere de page.  }
+  If CPU6502_PageCrossed And (CPU6502_PageCrossTab[Op] <> 0) Then
+    Inc(CPU6502_LastCyc);
 End;
 
 { Charger un binaire AppleII (.bin) : 4 octets header (load_lo load_hi    }
