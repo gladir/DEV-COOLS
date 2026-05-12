@@ -3486,7 +3486,8 @@ Var
  { Schema de bankswitching :                                              }
  { 0=plain (2K/4K), 1=F8, 2=F6, 3=F4, 4=F8SC, 5=F6SC, 6=F4SC,             }
  { 7=FA (12K+256RAM), 8=FE (8K, $01FE/$01FF), 9=E0 (8K Parker, 4 slots), }
- { 10=3F Tigervision, 11=E7 M-Network.                                   }
+ { 10=3F Tigervision, 11=E7 M-Network, 12=3E (Andrew Davie ROM/RAM).     }
+ { 13=3E+ (TJentzsch, 4 slots 1K commutables individuellement).          }
  A2600_Scheme   : Byte;
  A2600_CartRAM  : Array[0..255] Of Byte;  { RAM cartouche (F*SC=128, FA=256) }
  A2600_TigerBank: Integer;                { banque courante 3F dans slot bas }
@@ -3497,6 +3498,21 @@ Var
  A2600_E7_LowerRAM: Boolean;              { lower 2K = 1K RAM (vs ROM bank) }
  A2600_E7_R256Bank: Integer;              { banque 256B active (0..3) }
  A2600_E7_LowerROM: Integer;              { banque ROM lower (0..6) }
+ { 3E Andrew Davie/Tjentzsch : ROM 8/16/32K + jusqu a 32K RAM en 1K banks. }
+ { Hotspots : $003E val = selectionne banque RAM val dans slot bas.        }
+ {            $003F val = selectionne banque ROM val dans slot bas.        }
+ { Slot bas ($1000-$17FF) : 2K ROM OU 1K RAM (read $1000-$13FF / write     }
+ { $1400-$17FF). Slot haut ($1800-$1FFF) : derniere banque ROM fixe.       }
+ A2600_3E_RAM     : Array[0..32767] Of Byte;
+ A2600_3E_RAMMode : Boolean;              { True = RAM en slot bas }
+ A2600_3E_LowerROM: Integer;              { banque ROM courante (0..15) }
+ A2600_3E_LowerRAM: Integer;              { banque RAM courante (0..31) }
+ { 3E+ (TJentzsch) : 4 slots de 1K commutables individuellement.          }
+ { $003F val : slot=val And 3, banque ROM=(val Shr 2) -> ROM 1K dans slot.}
+ { $003E val : slot=val And 3, banque RAM=(val Shr 2) -> RAM 512B dans   }
+ { slot (read = moitie basse, write = moitie haute).                     }
+ A2600_3EP_SlotIsRAM : Array[0..3] Of Boolean;
+ A2600_3EP_SlotBank  : Array[0..3] Of Integer;
  A2600_SWACNT, A2600_SWBCNT : Byte;       { directions RIOT (1=output) }
  A2600_SWACHA_Out, A2600_SWCHB_Out : Byte; { donnees output RIOT }
  { Timer RIOT 6532 : valeur courante, intervalle (1/8/64/1024 cycles)   }
@@ -34518,6 +34534,9 @@ Procedure A2600_E0RebuildSlot(SlotIdx, BankIdx: Integer); Forward;
 Procedure A2600_TigerSwitch(NewBank: Integer); Forward;
 Procedure A2600_E7_RebuildLower; Forward;
 Procedure A2600_E7_RebuildUpper; Forward;
+Procedure A2600_3E_RebuildLower; Forward;
+Procedure A2600_3E_RebuildUpper; Forward;
+Procedure A2600_3EP_RebuildSlot(SlotIdx: Integer); Forward;
 Procedure A2600_ResetScanlineLatches; Forward;
 Procedure A2600_LatchPlayer(Which: Integer; BeamX: Integer); Forward;
 Procedure A2600_LatchMissile(Which: Integer; BeamX: Integer); Forward;
@@ -35614,6 +35633,87 @@ Begin
   End;
 End;
 
+{ 3E (Andrew Davie) : slot bas $1000-$17FF = 2K ROM ou 1K RAM.            }
+{ En mode RAM, $1000-$13FF est la fenetre de lecture, $1400-$17FF est la }
+{ fenetre d ecriture (meme bloc 1K). Hotspots $003E (RAM) et $003F (ROM).}
+Procedure A2600_3E_RebuildLower;
+Var I, Alias: LongInt; Off: LongInt; B: Byte;
+Begin
+  If A2600_3E_RAMMode Then Begin
+    Off := LongInt(A2600_3E_LowerRAM) * 1024;
+    { Read window $1000-$13FF : 1K RAM. }
+    For I := 0 To 1023 Do Begin
+      B := A2600_3E_RAM[(Off + I) And $7FFF];
+      For Alias := 0 To 7 Do
+        CPU6502_Mem[(Alias * $2000) + $1000 + I] := B;
+    End;
+    { Write window $1400-$17FF : intercepte par BusWrite, mais on mappe   }
+    { la meme RAM pour les lectures eventuelles (Stella renvoie souvent  }
+    { la valeur RAM, pas du garbage).                                     }
+    For I := 0 To 1023 Do Begin
+      B := A2600_3E_RAM[(Off + I) And $7FFF];
+      For Alias := 0 To 7 Do
+        CPU6502_Mem[(Alias * $2000) + $1400 + I] := B;
+    End;
+  End Else Begin
+    Off := LongInt(A2600_3E_LowerROM) * 2048;
+    For I := 0 To 2047 Do Begin
+      If (Off + I) < A2600_ROMSize Then B := A2600_ROM[Off + I]
+      Else B := $FF;
+      For Alias := 0 To 7 Do
+        CPU6502_Mem[(Alias * $2000) + $1000 + I] := B;
+    End;
+  End;
+End;
+
+Procedure A2600_3E_RebuildUpper;
+Var I, Alias: LongInt; Off: LongInt; B: Byte;
+Begin
+  { Slot haut $1800-$1FFF : derniere banque 2K ROM fixe. }
+  If A2600_BankCnt < 1 Then Exit;
+  Off := LongInt(A2600_BankCnt - 1) * 2048;
+  For I := 0 To 2047 Do Begin
+    If (Off + I) < A2600_ROMSize Then B := A2600_ROM[Off + I]
+    Else B := $FF;
+    For Alias := 0 To 7 Do
+      CPU6502_Mem[(Alias * $2000) + $1800 + I] := B;
+  End;
+End;
+
+{ 3E+ : reconstruit le slot SlotIdx (0..3) selon son etat ROM/RAM.       }
+{ Slot s couvre $1000 + s*$400 .. $1000 + s*$400 + $3FF (1024 octets).   }
+{ Banques ROM : 1024 octets. Banques RAM : 512 octets (read = moitie     }
+{ basse $400 du slot, write = moitie haute $200..$3FF).                  }
+Procedure A2600_3EP_RebuildSlot(SlotIdx: Integer);
+Var I, Alias: LongInt; Off: LongInt; B: Byte; Base: LongInt;
+Begin
+  If (SlotIdx < 0) Or (SlotIdx > 3) Then Exit;
+  Base := $1000 + LongInt(SlotIdx) * $0400;
+  If A2600_3EP_SlotIsRAM[SlotIdx] Then Begin
+    Off := LongInt(A2600_3EP_SlotBank[SlotIdx]) * 512;
+    { Read window : moitie basse du slot (512 octets). }
+    For I := 0 To 511 Do Begin
+      B := A2600_3E_RAM[(Off + I) And $7FFF];
+      For Alias := 0 To 7 Do
+        CPU6502_Mem[(Alias * $2000) + Base + I] := B;
+    End;
+    { Write window : moitie haute, miroir RAM cote shadow. }
+    For I := 0 To 511 Do Begin
+      B := A2600_3E_RAM[(Off + I) And $7FFF];
+      For Alias := 0 To 7 Do
+        CPU6502_Mem[(Alias * $2000) + Base + 512 + I] := B;
+    End;
+  End Else Begin
+    Off := LongInt(A2600_3EP_SlotBank[SlotIdx]) * 1024;
+    For I := 0 To 1023 Do Begin
+      If (Off + I) < A2600_ROMSize Then B := A2600_ROM[Off + I]
+      Else B := $FF;
+      For Alias := 0 To 7 Do
+        CPU6502_Mem[(Alias * $2000) + Base + I] := B;
+    End;
+  End;
+End;
+
 { 3F Tigervision (8K) : banque 0..2 dans $1000-$17FF, derniere banque  }
 { ($1800-$1FFF) fixe. Commute sur ecriture a $0000-$003F.              }
 Procedure A2600_TigerSwitch(NewBank: Integer);
@@ -35729,6 +35829,39 @@ Begin
       A2600_E7_RAM256[A2600_E7_R256Bank, Lo And $FF] := V;
       Exit;
     End;
+    { 3E : ecriture sur fenetre RAM $1400-$17FF si mode RAM actif.   }
+    { Stocke dans la banque RAM courante et met a jour la fenetre de }
+    { lecture $1000-$13FF dans le shadow CPU6502_Mem.                }
+    If (A2600_Scheme = 12) And A2600_3E_RAMMode
+       And (Lo >= $400) And (Lo <= $7FF) Then Begin
+      I := (LongInt(A2600_3E_LowerRAM) * 1024) + (Lo And $3FF);
+      A2600_3E_RAM[I And $7FFF] := V;
+      { Mettre a jour les 8 aliases en lecture pour reflechir l ecriture.}
+      For BeamX := 0 To 7 Do Begin
+        CPU6502_Mem[(BeamX * $2000) + $1000 + (Lo And $3FF)] := V;
+        CPU6502_Mem[(BeamX * $2000) + $1400 + (Lo And $3FF)] := V;
+      End;
+      Exit;
+    End;
+    { 3E+ : ecriture sur moitie haute d un slot RAM ($X200-$X3FF).      }
+    { Slot s = Lo Shr 10 (taille 1K). Offset dans slot = Lo And $3FF.   }
+    { Si offset >= $200 et slot est RAM, ecrire dans banque RAM 512B.   }
+    If A2600_Scheme = 13 Then Begin
+      CurX := (Lo Shr 10) And 3;          { index slot 0..3 }
+      If A2600_3EP_SlotIsRAM[CurX] And ((Lo And $3FF) >= $200) Then Begin
+        I := (LongInt(A2600_3EP_SlotBank[CurX]) * 512)
+             + ((Lo And $3FF) - $200);
+        A2600_3E_RAM[I And $7FFF] := V;
+        { Mettre a jour les 8 aliases : moitie basse (read) + haute. }
+        For BeamX := 0 To 7 Do Begin
+          CPU6502_Mem[(BeamX * $2000) + $1000 + (CurX * $400)
+            + ((Lo And $3FF) - $200)] := V;
+          CPU6502_Mem[(BeamX * $2000) + $1000 + (CurX * $400)
+            + (Lo And $3FF)] := V;
+        End;
+        Exit;
+      End;
+    End;
     A2600_CheckHotspot(EA);
     Exit;
   End;
@@ -35736,6 +35869,34 @@ Begin
   If (A2600_Scheme = 10) And (EA <= $3F) Then Begin
     A2600_TigerSwitch(V);
     { Continue : ces adresses sont aussi TIA, on laisse tomber dans TIA }
+  End;
+  { 3E (Andrew Davie) : hotspots specifiques $003E (RAM bank) / $003F (ROM).}
+  If A2600_Scheme = 12 Then Begin
+    If EA = $003E Then Begin
+      A2600_3E_LowerRAM := V And $1F;     { 32 banques RAM max (5 bits) }
+      A2600_3E_RAMMode := True;
+      A2600_3E_RebuildLower;
+    End Else If EA = $003F Then Begin
+      A2600_3E_LowerROM := V And $0F;     { 16 banques ROM max (4 bits) }
+      A2600_3E_RAMMode := False;
+      A2600_3E_RebuildLower;
+    End;
+    { Continue : on laisse tomber dans TIA pour les autres adresses.   }
+  End;
+  { 3E+ (TJentzsch) : hotspots $003E (RAM) / $003F (ROM).                }
+  { Encodage val : slot = val And 3, banque = val Shr 2.                 }
+  If A2600_Scheme = 13 Then Begin
+    If EA = $003E Then Begin
+      I := V And 3;
+      A2600_3EP_SlotIsRAM[I] := True;
+      A2600_3EP_SlotBank[I] := (V Shr 2) And $3F;
+      A2600_3EP_RebuildSlot(I);
+    End Else If EA = $003F Then Begin
+      I := V And 3;
+      A2600_3EP_SlotIsRAM[I] := False;
+      A2600_3EP_SlotBank[I] := (V Shr 2) And $3F;
+      A2600_3EP_RebuildSlot(I);
+    End;
   End;
   If (EA And $0080) = 0 Then Begin
     { TIA write : decodage 6 bits sur le bus reel (A0-A5). Les adresses }
@@ -40546,6 +40707,18 @@ Begin NesActive := False;
     { F8SC/F6SC/F4SC : empreinte typique sur octets de RAM init.       }
     { On scanne les hotspots dans la ROM pour distinguer F8 vs E0/FE.  }
     A2600_Scheme := 0;
+    { Detection 3E+ prioritaire : signature "TJ" dans les 8 derniers   }
+    { octets de la ROM (convention Stella/TJentzsch).                  }
+    If A2600_ROMSize >= 8192 Then Begin
+      For Steps := A2600_ROMSize - 8 To A2600_ROMSize - 2 Do
+        If (Steps >= 0) And (Steps + 1 < A2600_ROMSize)
+           And (A2600_ROM[Steps] = $54)            { 'T' }
+           And (A2600_ROM[Steps + 1] = $4A) Then Begin   { 'J' }
+          A2600_Scheme := 13;
+          Break;
+        End;
+    End;
+    If A2600_Scheme <> 13 Then
     Case A2600_ROMSize Of
       8192: Begin
         A2600_Scheme := 1;                          { F8 par defaut }
@@ -40558,6 +40731,14 @@ Begin NesActive := False;
             A2600_Scheme := 9;                      { E0 Parker }
             Break;
           End;
+        { Detection 3E : pattern STA $3E (85 3E) au moins 2 fois. }
+        If A2600_Scheme = 1 Then Begin
+          NesPrgSize := 0;
+          For Steps := 0 To 8190 Do
+            If (A2600_ROM[Steps] = $85) And (A2600_ROM[Steps + 1] = $3E) Then
+              Inc(NesPrgSize);
+          If NesPrgSize >= 2 Then A2600_Scheme := 12;   { 3E }
+        End;
       End;
       16384: Begin
         A2600_Scheme := 2;                          { F6 par defaut }
@@ -40568,8 +40749,24 @@ Begin NesActive := False;
             A2600_Scheme := 11;                     { E7 M-Network }
             Break;
           End;
+        { Detection 3E : pattern STA $3E. }
+        If A2600_Scheme = 2 Then Begin
+          NesPrgSize := 0;
+          For Steps := 0 To 16382 Do
+            If (A2600_ROM[Steps] = $85) And (A2600_ROM[Steps + 1] = $3E) Then
+              Inc(NesPrgSize);
+          If NesPrgSize >= 2 Then A2600_Scheme := 12;
+        End;
       End;
-      32768: A2600_Scheme := 3;                     { F4 par defaut }
+      32768: Begin
+        A2600_Scheme := 3;                          { F4 par defaut }
+        { Detection 3E : pattern STA $3E. }
+        NesPrgSize := 0;
+        For Steps := 0 To 32766 Do
+          If (A2600_ROM[Steps] = $85) And (A2600_ROM[Steps + 1] = $3E) Then
+            Inc(NesPrgSize);
+        If NesPrgSize >= 2 Then A2600_Scheme := 12;
+      End;
       12288: A2600_Scheme := 7;                     { FA }
     End;
     { Mapper la derniere banque a $F000-$FFFF (les ROMs bankswitchees     }
@@ -40601,6 +40798,32 @@ Begin NesActive := False;
      A2600_E7_R256Bank := 0;
      A2600_E7_RebuildLower;
      A2600_E7_RebuildUpper;
+    End Else If A2600_Scheme = 12 Then Begin
+     { 3E : recalcul nb banques 2K (ROM) au lieu de 4K.                }
+     { Slot bas = banque 0 ROM par defaut, slot haut = derniere banque.}
+     A2600_BankCnt := A2600_ROMSize Div 2048;
+     If A2600_BankCnt < 1 Then A2600_BankCnt := 1;
+     A2600_3E_RAMMode := False;
+     A2600_3E_LowerROM := 0;
+     A2600_3E_LowerRAM := 0;
+     FillChar(A2600_3E_RAM, SizeOf(A2600_3E_RAM), 0);
+     A2600_3E_RebuildLower;
+     A2600_3E_RebuildUpper;
+    End Else If A2600_Scheme = 13 Then Begin
+     { 3E+ : banques ROM 1K. Init slots 0..3 = banques 0..3, ou les   }
+     { 4 dernieres banques si la ROM en a moins, pour que le vecteur   }
+     { reset (banque finale) tombe dans le slot 3.                     }
+     A2600_BankCnt := A2600_ROMSize Div 1024;
+     If A2600_BankCnt < 1 Then A2600_BankCnt := 1;
+     FillChar(A2600_3E_RAM, SizeOf(A2600_3E_RAM), 0);
+     For Steps := 0 To 3 Do Begin
+       A2600_3EP_SlotIsRAM[Steps] := False;
+       If A2600_BankCnt >= 4 Then
+         A2600_3EP_SlotBank[Steps] := A2600_BankCnt - 4 + Steps
+       Else
+         A2600_3EP_SlotBank[Steps] := Steps Mod A2600_BankCnt;
+       A2600_3EP_RebuildSlot(Steps);
+     End;
     End Else Begin
     For NesPrgSize := 0 To 4095 Do Begin
      CPU6502_Mem[$1000 + NesPrgSize] := A2600_ROM[(A2600_CurBank * 4096) + NesPrgSize];
