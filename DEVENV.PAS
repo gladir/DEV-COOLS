@@ -3328,6 +3328,7 @@ Var
  CPU6502_Halted : Boolean;
  CPU6502_ExitCode: Integer;
  CPU6502_Cycles : LongInt;
+ CPU6502_LastCyc: Integer;    { cycles de la derniere instruction       }
  CPU6502_Panel  : ^TEmulatorPanel;
  CPU6502_Variant: Integer;    { 0=AppleII 1=C64 2=Atari 3=NES 4=A2600 }
  { --- Etat NES complet (variant=3) ----------------------------------- }
@@ -34708,10 +34709,18 @@ End;
 Procedure CPU6502_Branch(Cond: Boolean);
 Var
   Off: ShortInt;
+  Target: Word;
 Begin
   Off := ShortInt(CPU6502_Mem[CPU6502_PC]);
   Inc(CPU6502_PC);
-  If Cond Then CPU6502_PC := CPU6502_PC + Off;
+  If Cond Then Begin
+    Target := CPU6502_PC + Off;
+    { +1 cycle si la branche est prise, +1 supplementaire si page crossing.}
+    Inc(CPU6502_LastCyc);
+    If (Target And $FF00) <> (CPU6502_PC And $FF00) Then
+      Inc(CPU6502_LastCyc);
+    CPU6502_PC := Target;
+  End;
 End;
 
 { Operations arithmetiques/logiques }
@@ -36031,10 +36040,16 @@ Begin
     $04, $06: Begin                             { INTIM }
       Handled := True;
       A2600_BusRead := Byte(A2600_TimerVal And $FF);
-      A2600_TimerExpired := False;              { lecture INTIM clear INSTAT bit 7 }
+      { RIOT 6532 : la lecture INTIM N EFFACE PAS le flag d underflow.   }
+      { Le flag bit 7 INSTAT reste set jusqu a la prochaine ecriture     }
+      { TIM1T/TIM8T/TIM64T/T1024T. Apres underflow, le timer continue a  }
+      { decrementer a 1 cycle/tick (deja gere par AfterInstr).           }
     End;
     $05, $07: Begin                             { INSTAT }
       Handled := True;
+      { INSTAT bit 7 = timer underflow flag. La lecture N EFFACE PAS le  }
+      { flag (contrairement a une croyance commune). Seule une ecriture  }
+      { TIMxT le clear (cf. case $14-$17 en ecriture RIOT).               }
       If A2600_TimerExpired Then A2600_BusRead := $80 Else A2600_BusRead := 0;
     End;
     $0C: Begin                                  { INPT4 - fire P0 }
@@ -36453,22 +36468,25 @@ Begin
   End;
 End;
 
-{ Approxime 3 cycles par instruction (moyenne 6507). 76 cycles par  }
-{ scanline. WSYNC : termine immediatement le scanline courant.      }
+{ Comptage de cycles precis par opcode via CPU6502_LastCyc (table          }
+{ CPU6502_CycTab + penalite branche prise). 76 cycles par scanline. WSYNC }
+{ termine immediatement le scanline courant.                              }
 Procedure A2600_AfterInstr;
-Var I: Integer; TimRd, StatRd: Byte;
+Var I, Cyc: Integer; TimRd, StatRd: Byte;
 Begin
+  Cyc := CPU6502_LastCyc;
+  If Cyc <= 0 Then Cyc := 3;   { fallback safety }
   Inc(A2600_LineInstr);
-  Inc(A2600_LineCyc, 3);
-  { Tick du pipeline HMOVE (3 ticks par instruction = 3 cycles CPU). }
-  If A2600_HMOVE_Running Then A2600_HMOVE_TickN(3);
+  Inc(A2600_LineCyc, Cyc);
+  { Tick du pipeline HMOVE : 1 tick par cycle CPU. }
+  If A2600_HMOVE_Running Then A2600_HMOVE_TickN(Cyc);
   { Latch INPT4/5 : capture appui transitoire entre 2 lectures. }
   If A2600_INPTLatchEn Then Begin
     If A2600_KeyFire Then A2600_INPT4Latch := True;
   End;
-  { Tick du timer RIOT (3 cycles par instruction). }
+  { Tick du timer RIOT (Cyc cycles par instruction). }
   If A2600_TimerInterval > 0 Then Begin
-    Dec(A2600_TimerCyc, 3);
+    Dec(A2600_TimerCyc, Cyc);
     While A2600_TimerCyc <= 0 Do Begin
       Dec(A2600_TimerVal);
       If A2600_TimerVal < 0 Then Begin
@@ -36598,6 +36616,28 @@ Begin
 End;
 
 {$PUSH}{$R-}{$Q-}
+{ Table de cycles 6502 NMOS (base, sans penalites page-crossing/branche). }
+{ Couvre opcodes officiels et indocumentes (NOPs, LAX, DCP, etc).         }
+Const
+  CPU6502_CycTab: Array[0..255] Of Byte = (
+  {     0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F }
+  {00:} 7, 6, 2, 8, 3, 3, 5, 5, 3, 2, 2, 2, 4, 4, 6, 6,
+  {10:} 2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7,
+  {20:} 6, 6, 2, 8, 3, 3, 5, 5, 4, 2, 2, 2, 4, 4, 6, 6,
+  {30:} 2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7,
+  {40:} 6, 6, 2, 8, 3, 3, 5, 5, 3, 2, 2, 2, 3, 4, 6, 6,
+  {50:} 2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7,
+  {60:} 6, 6, 2, 8, 3, 3, 5, 5, 4, 2, 2, 2, 5, 4, 6, 6,
+  {70:} 2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7,
+  {80:} 2, 6, 2, 6, 3, 3, 3, 3, 2, 2, 2, 2, 4, 4, 4, 4,
+  {90:} 2, 6, 2, 6, 4, 4, 4, 4, 2, 5, 2, 5, 5, 5, 5, 5,
+  {A0:} 2, 6, 2, 6, 3, 3, 3, 3, 2, 2, 2, 2, 4, 4, 4, 4,
+  {B0:} 2, 5, 2, 5, 4, 4, 4, 4, 2, 4, 2, 4, 4, 4, 4, 4,
+  {C0:} 2, 6, 2, 8, 3, 3, 5, 5, 2, 2, 2, 2, 4, 4, 6, 6,
+  {D0:} 2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7,
+  {E0:} 2, 6, 2, 8, 3, 3, 5, 5, 2, 2, 2, 2, 4, 4, 6, 6,
+  {F0:} 2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7);
+
 Procedure CPU6502_Step;
 Var
   Op, M, R: Byte;
@@ -36616,6 +36656,7 @@ Begin
   If CPU6502_TryTrap Then Exit;
 
   Op := CPU6502_Mem[CPU6502_PC];
+  CPU6502_LastCyc := CPU6502_CycTab[Op];
   Inc(CPU6502_PC);
   Case Op Of
     { ----- LDA ----- }
@@ -37029,6 +37070,27 @@ Begin
                CPU6502_SetNZ(CPU6502_X); End;
     { SBC alias }
     $EB: Begin EA := CPU6502_AmIMM; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
+    { JAM / KIL : halt and catch fire sur 6502 NMOS reel. Pour la       }
+    { robustesse de l emulateur (cas ou un kernel deborde une table de  }
+    { donnees), on les traite en NOP 1-octet silencieux.                }
+    $02, $12, $22, $32, $42, $52, $62, $72, $92, $B2, $D2, $F2: ;
+    { Famille instable - opcodes "magic value" dependants de la temp    }
+    { du die sur silicium reel. Traites en NOP avec consommation des   }
+    { octets d operande pour avancer PC correctement.                   }
+    { SHY abs,X / SHX abs,Y / SHA abs,Y / SHA (zp),Y / TAS abs,Y / LAS  }
+    $9C: Inc(CPU6502_PC, 2);                              { SHY abs,X }
+    $9E: Inc(CPU6502_PC, 2);                              { SHX abs,Y }
+    $9F: Inc(CPU6502_PC, 2);                              { SHA abs,Y }
+    $93: Inc(CPU6502_PC, 1);                              { SHA (zp),Y }
+    $9B: Inc(CPU6502_PC, 2);                              { TAS abs,Y }
+    $BB: Begin EA := CPU6502_AmABY;                       { LAS abs,Y }
+               M := CPU6502_Mem[EA] And CPU6502_S;
+               CPU6502_A := M; CPU6502_X := M; CPU6502_S := M;
+               CPU6502_SetNZ(M); End;
+    { XAA imm : magic value. Traite en AND imm sur A (approximation).   }
+    $8B: Begin EA := CPU6502_AmIMM;
+               CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+               CPU6502_SetNZ(CPU6502_A); End;
   Else
     EmuVScr_WriteStr(CPU6502_Panel^,
      '[opcode 6502 inconnu $' + M68K_HexN(Op, 2) +
