@@ -3460,6 +3460,17 @@ Var
  A2600_KeyEsc   : Boolean;
  A2600_KeyJoy   : Byte;        { bits : 0=haut 1=bas 2=gauche 3=droite   }
  A2600_KeyFire  : Boolean;
+ { Controleur Driving (Indy 500) sur le port P0 : encodeur rotatif }
+ { Gray code sur SWCHA bits D4-D5. Position 0..3 cyclique :         }
+ { 0 -> D5D4=00, 1 -> D5D4=01, 2 -> D5D4=11, 3 -> D5D4=10.          }
+ A2600_DrivingP0   : Boolean;  { mode controleur Driving actif }
+ A2600_DriveP0_Pos : Byte;     { position 0..3 du codeur Gray  }
+ A2600_DriveF4_Prev: Boolean;  { etat precedent F4 pour edge   }
+ { Booster Grip (Omega Race, Thrust) : second bouton "booster" sur }
+ { INPT1 (P0) / INPT3 (P1). D7=0 quand presse, D7=1 relache.       }
+ A2600_BoosterP0   : Boolean;  { mode Booster Grip actif sur P0 }
+ A2600_KeyBooster  : Boolean;  { touche B = booster P0 enfonce  }
+ A2600_BoostF5_Prev: Boolean;  { edge F5 pour toggle mode       }
  { Latches INPT4/INPT5 (VBLANK bit 6 = "I0-I5 latch enable").       }
  { Quand le latch est actif, un appui memorise INPTx bit 7 a 0      }
  { jusqu a ce que VBLANK.6 repasse a 0. Reproduit le hardware TIA.  }
@@ -36178,6 +36189,13 @@ Begin
                       Or (CPU6502_DataBus And $3F);
       $08, $09, $0A, $0B: Begin                 { INPT0..3 - paddles }
         I := (EA And $0F) - $08;
+        { Booster Grip : INPT1 (P0) et INPT3 (P1) sont reaffectes en   }
+        { boutons digitaux "booster". D7=0 quand presse (et non dump). }
+        If A2600_BoosterP0 And (I = 1) Then Begin
+          If A2600_KeyBooster And (Not A2600_PadDumped) Then
+            A2600_BusRead := (CPU6502_DataBus And $7F)
+          Else A2600_BusRead := $80 Or (CPU6502_DataBus And $7F);
+        End Else
         If A2600_PadDumped Then A2600_BusRead := (CPU6502_DataBus And $7F)
         Else If A2600_PadCharge[I] >= A2600_Paddle[I] Then
           A2600_BusRead := $80 Or (CPU6502_DataBus And $7F)
@@ -36210,10 +36228,22 @@ Begin
     $00: Begin                                  { SWCHA - joysticks }
       Handled := True;
       Joy := $FF;
-      If (A2600_KeyJoy And 1) <> 0 Then Joy := Joy And Not $10;
-      If (A2600_KeyJoy And 2) <> 0 Then Joy := Joy And Not $20;
-      If (A2600_KeyJoy And 4) <> 0 Then Joy := Joy And Not $40;
-      If (A2600_KeyJoy And 8) <> 0 Then Joy := Joy And Not $80;
+      If A2600_DrivingP0 Then Begin
+        { Controleur Driving Indy 500 : bits 4-5 = Gray code, bits 6-7 }
+        { (Left/Right joystick) restent relaches a 1 (controleur sans  }
+        { directions L/R). Bouton de tir reste sur INPT4.               }
+        Joy := Joy And Not $30;
+        Case A2600_DriveP0_Pos And 3 Of
+          1: Joy := Joy Or $10;
+          2: Joy := Joy Or $30;
+          3: Joy := Joy Or $20;
+        End;
+      End Else Begin
+        If (A2600_KeyJoy And 1) <> 0 Then Joy := Joy And Not $10;
+        If (A2600_KeyJoy And 2) <> 0 Then Joy := Joy And Not $20;
+        If (A2600_KeyJoy And 4) <> 0 Then Joy := Joy And Not $40;
+        If (A2600_KeyJoy And 8) <> 0 Then Joy := Joy And Not $80;
+      End;
       { Combiner avec output bits selon DDR : bits output = SWACHA_Out }
       Joy := (Joy And Not A2600_SWACNT) Or (A2600_SWACHA_Out And A2600_SWACNT);
       A2600_BusRead := Joy;
@@ -36769,6 +36799,12 @@ Begin
   A2600_SWBCNT := 0;
   A2600_SWACHA_Out := $FF;
   A2600_SWCHB_Out := $3F;
+  A2600_DrivingP0 := False;
+  A2600_DriveP0_Pos := 0;
+  A2600_DriveF4_Prev := False;
+  A2600_BoosterP0 := False;
+  A2600_KeyBooster := False;
+  A2600_BoostF5_Prev := False;
   FillChar(A2600_CartRAM, SizeOf(A2600_CartRAM), 0);
   FillChar(A2600_E7_RAM1K, SizeOf(A2600_E7_RAM1K), 0);
   FillChar(A2600_E7_RAM256, SizeOf(A2600_E7_RAM256), 0);
@@ -41010,25 +41046,63 @@ Begin NesActive := False;
        (GetAsyncKeyState($58) < 0) Then
      A2600_KeyFire := True;             { Espace/Enter/Ctrl/Z/X = tir }
     If GetAsyncKeyState($1B) < 0 Then A2600_KeyEsc := True;
+    { F4 = toggle controleur Driving (Indy 500) sur port P0,         }
+    { encodage Gray sur SWCHA bits D4-D5. Detection front montant.   }
+    If GetAsyncKeyState($73) < 0 Then Begin
+     If Not A2600_DriveF4_Prev Then Begin
+      A2600_DrivingP0 := Not A2600_DrivingP0;
+      A2600_DriveP0_Pos := 0;
+     End;
+     A2600_DriveF4_Prev := True;
+    End Else
+     A2600_DriveF4_Prev := False;
+    { F5 = toggle Booster Grip (Omega Race, Thrust). Touche B = bouton }
+    { booster (INPT1). Le fire principal reste sur INPT4.              }
+    If GetAsyncKeyState($74) < 0 Then Begin
+     If Not A2600_BoostF5_Prev Then
+      A2600_BoosterP0 := Not A2600_BoosterP0;
+     A2600_BoostF5_Prev := True;
+    End Else
+     A2600_BoostF5_Prev := False;
+    A2600_KeyBooster := A2600_BoosterP0 And (GetAsyncKeyState($42) < 0);
     {$ENDIF}
+    { Mode Driving : Left/Right font tourner la roue (1 cran Gray par }
+    { frame). Sens : Left = antihoraire, Right = horaire.             }
+    If A2600_DrivingP0 Then Begin
+     If (A2600_KeyJoy And 4) <> 0 Then
+      A2600_DriveP0_Pos := (A2600_DriveP0_Pos + 3) And 3;
+     If (A2600_KeyJoy And 8) <> 0 Then
+      A2600_DriveP0_Pos := (A2600_DriveP0_Pos + 1) And 3;
+    End;
     { Pour les jeux paddle : Left/Right deplacent le paddle 0.   }
     { 1 frame = 1 pas de 4 unites (0..255).                       }
-    If (A2600_KeyJoy And 4) <> 0 Then Begin
-      Dec(A2600_Paddle[0], 4);
-      If A2600_Paddle[0] < 0 Then A2600_Paddle[0] := 0;
-    End;
-    If (A2600_KeyJoy And 8) <> 0 Then Begin
-      Inc(A2600_Paddle[0], 4);
-      If A2600_Paddle[0] > 255 Then A2600_Paddle[0] := 255;
+    If Not A2600_DrivingP0 Then Begin
+     If (A2600_KeyJoy And 4) <> 0 Then Begin
+       Dec(A2600_Paddle[0], 4);
+       If A2600_Paddle[0] < 0 Then A2600_Paddle[0] := 0;
+     End;
+     If (A2600_KeyJoy And 8) <> 0 Then Begin
+       Inc(A2600_Paddle[0], 4);
+       If A2600_Paddle[0] > 255 Then A2600_Paddle[0] := 255;
+     End;
     End;
     { Mettre a jour CPU6502_Mem pour les LDA directs sur les ports.   }
     { RIOT I/O est mirrore aux 4 adresses ou bit12=0, bit7=1, bit9=1 :}
     { $0280, $0680, $0A80, $0E80 (+offset 0..$1F).                     }
     NesChrSize := $FF;
-    If (A2600_KeyJoy And 1) <> 0 Then NesChrSize := NesChrSize And Not $10;
-    If (A2600_KeyJoy And 2) <> 0 Then NesChrSize := NesChrSize And Not $20;
-    If (A2600_KeyJoy And 4) <> 0 Then NesChrSize := NesChrSize And Not $40;
-    If (A2600_KeyJoy And 8) <> 0 Then NesChrSize := NesChrSize And Not $80;
+    If A2600_DrivingP0 Then Begin
+      NesChrSize := NesChrSize And Not $30;
+      Case A2600_DriveP0_Pos And 3 Of
+        1: NesChrSize := NesChrSize Or $10;
+        2: NesChrSize := NesChrSize Or $30;
+        3: NesChrSize := NesChrSize Or $20;
+      End;
+    End Else Begin
+      If (A2600_KeyJoy And 1) <> 0 Then NesChrSize := NesChrSize And Not $10;
+      If (A2600_KeyJoy And 2) <> 0 Then NesChrSize := NesChrSize And Not $20;
+      If (A2600_KeyJoy And 4) <> 0 Then NesChrSize := NesChrSize And Not $40;
+      If (A2600_KeyJoy And 8) <> 0 Then NesChrSize := NesChrSize And Not $80;
+    End;
     For NesPrgBlocks := 0 To 3 Do Begin
      CPU6502_Mem[$0280 + NesPrgBlocks * $0400] := NesChrSize;    { SWCHA }
      CPU6502_Mem[$0282 + NesPrgBlocks * $0400] := $3F;           { SWCHB }
