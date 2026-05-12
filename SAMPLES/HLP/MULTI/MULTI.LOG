@@ -17,9 +17,10 @@ Scan: PART2.RTF
 Verification de la table de mappage...
 HC W1301: Contexte [MAP] introuvable: IDH_MISSING
 Generation du fichier .HLP: MULTI.HLP
-Fichier .HLP ecrit: 1813 octets.
+Compression |TOPIC : 534 -> 239 octets (44%)
+Fichier .HLP ecrit: 1530 octets.
 
-Topics: 3  Map: 4  Bytes RTF: 471  Bytes HLP: 1813
-Temps:    0.00 s
+Topics: 3  Map: 4  Bytes RTF: 471  Bytes HLP: 1530
+Temps:    0.01 s
 -----------------------------------------
 Erreurs: 0  Avertissements: 1

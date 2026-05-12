@@ -185,6 +185,9 @@ Var
  CtxUnresolved  : Integer;
  TotalRtfBytes  : LongInt;
  OutputBytes    : LongInt;
+ TopicRawBytes  : LongInt;   { Taille |TOPIC avant compression }
+ TopicCompBytes : LongInt;   { Taille |TOPIC apres compression }
+ CompressUsed   : Boolean;   { True si LZ77 reellement applique }
  StartTimeHi    : Word;
  StartTimeLo    : Word;
  StartDateLo    : Word;
@@ -882,6 +885,140 @@ Var TopicFileOfs:LongInt;
     TopicDataSize:LongInt;
     TopicOffsets:Array[1..MAX_TOPICS] Of LongInt;
 
+Type
+ PByteArr = ^TByteArr;
+ TByteArr = Array[0..0] Of Byte;
+
+{ ------------------------------------------------------------
+  LZ77 - Compression simple style WinHelp
+  ------------------------------------------------------------
+  Format de sortie :
+   - 4 octets : taille decompressee (LongInt LE)
+   - Suite de groupes de 9 octets max :
+       * 1 octet de flags (8 bits, LSB-first)
+       * Pour chaque bit a 1 : 1 octet litteral
+       * Pour chaque bit a 0 : 2 octets match
+                   octet 1 = (length-3) shl 4 | (offset shr 8)
+                   octet 2 = offset and $FF
+                   offset 1..4096, length 3..18
+  ------------------------------------------------------------ }
+
+Const
+ LZ_WIN_BITS   = 12;
+ LZ_WIN_SIZE   = 4096;     { 1 shl LZ_WIN_BITS }
+ LZ_WIN_MASK   = 4095;
+ LZ_MIN_MATCH  = 3;
+ LZ_MAX_MATCH  = 18;
+ LZ_HASH_SIZE  = 4096;
+
+Procedure LZ77Compress(Src:PByteArr;SrcLen:LongInt;
+                       Dst:PByteArr;Var DstLen:LongInt);
+Var
+ SrcPos,DstPos:LongInt;
+ Head:Array[0..LZ_HASH_SIZE-1] Of LongInt;
+ Prev:Array[0..LZ_WIN_SIZE-1] Of LongInt;
+ I,K,L,BestLen,BestOfs,Cand,Limit,MaxLen:LongInt;
+ H:LongInt;
+ FlagPos:LongInt;
+ FlagBit:Byte;
+ FlagVal:Byte;
+
+ Procedure EmitLiteral(B:Byte);
+ Begin
+  If FlagBit=0 Then Begin
+   FlagPos:=DstPos;
+   Dst^[DstPos]:=0;
+   Inc(DstPos);
+   FlagBit:=1;
+   FlagVal:=0;
+  End;
+  FlagVal:=FlagVal Or FlagBit;
+  Dst^[FlagPos]:=FlagVal;
+  Dst^[DstPos]:=B;
+  Inc(DstPos);
+  If FlagBit=128 Then FlagBit:=0 Else FlagBit:=FlagBit Shl 1;
+ End;
+
+ Procedure EmitMatch(Ofs,Len:LongInt);
+ Var L2:LongInt;
+ Begin
+  If FlagBit=0 Then Begin
+   FlagPos:=DstPos;
+   Dst^[DstPos]:=0;
+   Inc(DstPos);
+   FlagBit:=1;
+   FlagVal:=0;
+  End;
+  { bit reste a 0 = match }
+  Dst^[FlagPos]:=FlagVal;
+  L2:=Len-LZ_MIN_MATCH;            { 0..15 }
+  Dst^[DstPos]:=((L2 And $0F) Shl 4) Or ((Ofs Shr 8) And $0F);
+  Dst^[DstPos+1]:=Ofs And $FF;
+  Inc(DstPos,2);
+  If FlagBit=128 Then FlagBit:=0 Else FlagBit:=FlagBit Shl 1;
+ End;
+
+Begin
+ FillChar(Head,SizeOf(Head),$FF);  { -1 partout }
+ FillChar(Prev,SizeOf(Prev),$FF);
+ SrcPos:=0; DstPos:=0;
+ FlagPos:=0; FlagBit:=0; FlagVal:=0;
+
+ { Ecrire la taille originale en tete }
+ Dst^[0]:=SrcLen And $FF;
+ Dst^[1]:=(SrcLen Shr 8) And $FF;
+ Dst^[2]:=(SrcLen Shr 16) And $FF;
+ Dst^[3]:=(SrcLen Shr 24) And $FF;
+ DstPos:=4;
+
+ While SrcPos<SrcLen Do Begin
+  BestLen:=0; BestOfs:=0;
+  If SrcPos+LZ_MIN_MATCH<=SrcLen Then Begin
+   H:=((LongInt(Src^[SrcPos]) Shl 8) Xor
+       (LongInt(Src^[SrcPos+1]) Shl 4) Xor
+        LongInt(Src^[SrcPos+2])) And (LZ_HASH_SIZE-1);
+   Cand:=Head[H];
+   Limit:=SrcPos-LZ_WIN_SIZE;
+   If Limit<0 Then Limit:=0;
+   While(Cand>=Limit)And(Cand>=0)Do Begin
+    { Verifier le match }
+    MaxLen:=SrcLen-SrcPos;
+    If MaxLen>LZ_MAX_MATCH Then MaxLen:=LZ_MAX_MATCH;
+    L:=0;
+    While(L<MaxLen)And(Src^[Cand+L]=Src^[SrcPos+L])Do Inc(L);
+    If L>BestLen Then Begin
+     BestLen:=L;
+     BestOfs:=SrcPos-Cand;
+     If L>=LZ_MAX_MATCH Then Break;
+    End;
+    Cand:=Prev[Cand And LZ_WIN_MASK];
+   End;
+   { Inserer la position courante dans le hash }
+   Prev[SrcPos And LZ_WIN_MASK]:=Head[H];
+   Head[H]:=SrcPos;
+  End;
+  If BestLen>=LZ_MIN_MATCH Then Begin
+   EmitMatch(BestOfs,BestLen);
+   { Avancer et alimenter le hash sur les positions intermediaires }
+   For K:=1 To BestLen-1 Do Begin
+    I:=SrcPos+K;
+    If I+LZ_MIN_MATCH<=SrcLen Then Begin
+     H:=((LongInt(Src^[I]) Shl 8) Xor
+         (LongInt(Src^[I+1]) Shl 4) Xor
+          LongInt(Src^[I+2])) And (LZ_HASH_SIZE-1);
+     Prev[I And LZ_WIN_MASK]:=Head[H];
+     Head[H]:=I;
+    End;
+   End;
+   Inc(SrcPos,BestLen);
+  End Else Begin
+   EmitLiteral(Src^[SrcPos]);
+   Inc(SrcPos);
+  End;
+ End;
+ DstLen:=DstPos;
+End;
+
 Procedure CopyRtfBytes(Const Src:TStr255;StartOfs,Count:LongInt);
 Var F:File; Buf:Array[1..1024] Of Byte; NR,Need,Got:Word;
     Remain:LongInt; OldFM:Byte;
@@ -904,32 +1041,98 @@ Begin
  FileMode:=OldFM;
 End;
 
+Procedure LoadRtfRange(Const Src:TStr255;StartOfs,Count:LongInt;
+                       Buf:PByteArr;DstOfs:LongInt);
+Var F:File; Tmp:Array[1..1024] Of Byte; Need,Got:Word;
+    Remain:LongInt; OldFM:Byte; K:Integer;
+Begin
+ OldFM:=FileMode; FileMode:=0;
+ Assign(F,Src);
+ {$I-} Reset(F,1); {$I+}
+ If IOResult<>0 Then Begin FileMode:=OldFM; Exit; End;
+ Seek(F,StartOfs);
+ Remain:=Count;
+ While Remain>0 Do Begin
+  If Remain>1024 Then Need:=1024 Else Need:=Remain;
+  BlockRead(F,Tmp,Need,Got);
+  If Got=0 Then Break;
+  For K:=1 To Got Do Buf^[DstOfs+K-1]:=Tmp[K];
+  Inc(DstOfs,Got);
+  Dec(Remain,Got);
+ End;
+ Close(F);
+ FileMode:=OldFM;
+End;
+
 Procedure WriteTopicFile;
-Var I:Integer; Total,LocalOfs:LongInt;
-    TLink:Array[1..21] Of Byte;
+Var I:Integer; LocalOfs,RawTotal,CompSize:LongInt;
+    RawBuf,CompBuf:PByteArr;
+    UseCompression:Boolean;
+    FlagsByte:Byte;
 Begin
  TopicFileOfs:=OutputBytes;
- { Estimer la taille totale du contenu : pour chaque topic, 21 octets
-   de TOPICLINK + taille du RTF brut. }
- Total:=0;
+ UseCompression:=ProjCompress And Not OptNoCompress;
+
+ { Calculer la taille brute totale du fichier |TOPIC }
+ RawTotal:=0;
  For I:=1 To NumTopics Do
-  Total:=Total+21+Topics[I].Size;
- TopicDataSize:=Total;
- WriteFileHeader(Total);
+  RawTotal:=RawTotal+21+Topics[I].Size;
+ If RawTotal=0 Then RawTotal:=1;
+ TopicRawBytes:=RawTotal;
+
+ { Allouer le buffer brut et le remplir }
+ GetMem(RawBuf,RawTotal);
+ FillChar(RawBuf^,RawTotal,0);
  LocalOfs:=0;
  For I:=1 To NumTopics Do Begin
   TopicOffsets[I]:=LocalOfs;
-  { TOPICLINK header simplifie : type=2 (TOPIC), tailles, previous/next }
-  FillChar(TLink,SizeOf(TLink),0);
-  TLink[1]:=2;                              { RecordType = TOPICHEADER }
-  TLink[2]:=Topics[I].Size And $FF;
-  TLink[3]:=(Topics[I].Size Shr 8) And $FF;
-  TLink[4]:=(Topics[I].Size Shr 16) And $FF;
-  TLink[5]:=(Topics[I].Size Shr 24) And $FF;
-  WriteBytes(TLink,21);
-  CopyRtfBytes(RtfFiles[Topics[I].FileIdx].FullPath,Topics[I].Offset,Topics[I].Size);
+  RawBuf^[LocalOfs]:=2;
+  RawBuf^[LocalOfs+1]:=Topics[I].Size And $FF;
+  RawBuf^[LocalOfs+2]:=(Topics[I].Size Shr 8) And $FF;
+  RawBuf^[LocalOfs+3]:=(Topics[I].Size Shr 16) And $FF;
+  RawBuf^[LocalOfs+4]:=(Topics[I].Size Shr 24) And $FF;
+  LoadRtfRange(RtfFiles[Topics[I].FileIdx].FullPath,
+               Topics[I].Offset,Topics[I].Size,
+               RawBuf,LocalOfs+21);
   LocalOfs:=LocalOfs+21+Topics[I].Size;
  End;
+
+ If UseCompression Then Begin
+  { Buffer de sortie : au pire (SrcLen + SrcLen/8 + 16) }
+  GetMem(CompBuf,RawTotal+(RawTotal Shr 3)+64);
+  LZ77Compress(RawBuf,RawTotal,CompBuf,CompSize);
+  EmitVerbose('Compression |TOPIC : '+IntToStr(RawTotal)+' -> '+
+              IntToStr(CompSize)+' octets ('+
+              IntToStr((CompSize*100) Div RawTotal)+'%)');
+  { Si la compression gonfle, on retombe sur l'image brute }
+  If CompSize>=RawTotal Then Begin
+   EmitVerbose('  Compression non rentable, fichier stocke tel quel.');
+   FreeMem(CompBuf,RawTotal+(RawTotal Shr 3)+64);
+   UseCompression:=False;
+  End;
+ End;
+
+ If UseCompression Then Begin
+  TopicCompBytes:=CompSize;
+  CompressUsed:=True;
+  { En-tete fichier interne : on encode le flag de compression dans
+    FileFlags (bit 0 mis a 1 en plus du bit 2). }
+  FlagsByte:=4 Or 1;
+  WriteLong(CompSize+9);
+  WriteLong(CompSize);
+  WriteByte(FlagsByte);
+  BlockWrite(HlpF,CompBuf^,CompSize);
+  Inc(OutputBytes,CompSize);
+  FreeMem(CompBuf,RawTotal+(RawTotal Shr 3)+64);
+ End Else Begin
+  TopicCompBytes:=RawTotal;
+  WriteFileHeader(RawTotal);
+  BlockWrite(HlpF,RawBuf^,RawTotal);
+  Inc(OutputBytes,RawTotal);
+ End;
+
+ FreeMem(RawBuf,RawTotal);
+ TopicDataSize:=TopicCompBytes;
 End;
 
 { ---- Fichier interne |CTXOMAP : mapping contexte numerique -> topic ---- }
@@ -1235,6 +1438,7 @@ Begin
  ErrorCount:=0; WarnCount:=0;
  CtxResolved:=0; CtxUnresolved:=0;
  TotalRtfBytes:=0; OutputBytes:=0;
+ TopicRawBytes:=0; TopicCompBytes:=0; CompressUsed:=False;
 
  GetNowTicks(StartTicks);
 End;
@@ -1262,6 +1466,11 @@ Begin
  WriteLn('Macros [CONFIG]       : ',NumConfig);
  WriteLn('Octets RTF lus        : ',TotalRtfBytes);
  WriteLn('Octets HLP ecrits     : ',OutputBytes);
+ If CompressUsed And (TopicRawBytes>0) Then
+  WriteLn('Compression |TOPIC    : ',TopicRawBytes,' -> ',TopicCompBytes,
+          ' octets (',(TopicCompBytes*100) Div TopicRawBytes,'%)')
+ Else
+  WriteLn('Compression |TOPIC    : desactivee');
  WriteLn('Avertissements        : ',WarnCount);
  WriteLn('Erreurs               : ',ErrorCount);
  WriteLn('Temps total           : ',Elapsed:7:2,' s');

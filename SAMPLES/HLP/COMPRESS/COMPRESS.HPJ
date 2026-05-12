@@ -1,0 +1,9 @@
+[OPTIONS]
+TITLE=Test compression LZ77
+COMPRESS=TRUE
+
+[FILES]
+BIG.RTF
+
+[MAP]
+IDH_BIG=42

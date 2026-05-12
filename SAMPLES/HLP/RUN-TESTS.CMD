@@ -2,7 +2,7 @@
 REM ============================================================
 REM RUN-TESTS.CMD - Suite de tests pour le compilateur HC.PAS
 REM ============================================================
-setlocal enableextensions
+setlocal enableextensions enabledelayedexpansion
 set HC=%~dp0..\..\HC.EXE
 set PASS=0
 set FAIL=0
@@ -60,7 +60,7 @@ REM ---- TEST 6 : aide sans argument ----
 echo.
 echo [TEST 6] Aide sans argument
 "%HC%" > "%~dp0_HELP.OUT"
-findstr /C:"Usage" "%~dp0_HELP.OUT" >nul
+findstr /C:"Syntaxe" "%~dp0_HELP.OUT" >nul
 if errorlevel 1 ( echo   ECHEC: aide non affichee & set /a FAIL+=1 ) else ( echo   OK & set /a PASS+=1 )
 del "%~dp0_HELP.OUT" 2>nul
 
@@ -76,6 +76,21 @@ echo [TEST 8] /N option (pas de compression)
 pushd "%~dp0SIMPLE"
 "%HC%" /N /Q SIMPLE.HPJ
 if errorlevel 1 ( echo   ECHEC & set /a FAIL+=1 ) else ( echo   OK & set /a PASS+=1 )
+popd
+
+REM ---- TEST 9 : compression LZ77 effective ----
+echo.
+echo [TEST 9] COMPRESS - compression LZ77 reduit la taille
+pushd "%~dp0COMPRESS"
+"%HC%" /Q COMPRESS.HPJ
+if errorlevel 1 ( echo   ECHEC compilation & set /a FAIL+=1 & goto :t9end )
+for %%F in (COMPRESS.HLP) do set SZC=%%~zF
+"%HC%" /N /Q COMPRESS.HPJ
+for %%F in (COMPRESS.HLP) do set SZN=%%~zF
+echo   Avec compression : !SZC! octets
+echo   Sans compression : !SZN! octets
+if !SZC! LSS !SZN! ( echo   OK - compression effective & set /a PASS+=1 ) else ( echo   ECHEC: pas de gain & set /a FAIL+=1 )
+:t9end
 popd
 
 echo.
