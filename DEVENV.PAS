@@ -3404,6 +3404,14 @@ Var
  A2600_KeyEsc   : Boolean;
  A2600_KeyJoy   : Byte;        { bits : 0=haut 1=bas 2=gauche 3=droite   }
  A2600_KeyFire  : Boolean;
+ { Bankswitching : F8 (8K, 2 banques, hotspots $FFF8/$FFF9),             }
+ {                 F6 (16K, 4 banques, hotspots $FFF6..$FFF9),           }
+ {                 F4 (32K, 8 banques, hotspots $FFF4..$FFFB).           }
+ A2600_ROM      : Array[0..32767] Of Byte;   { image ROM complete        }
+ A2600_ROMSize  : LongInt;
+ A2600_BankCnt  : Integer;     { 1 / 2 / 4 / 8                           }
+ A2600_CurBank  : Integer;
+ A2600_HotLo    : Byte;        { $F8 (F8), $F6 (F6), $F4 (F4)            }
  { --- Etat emulateur Z80 (TRS-80, MSX, Adam) --- }
  Z80_Mem    : Array[0..$FFFF] Of Byte;
  Z80_A, Z80_F, Z80_B, Z80_C, Z80_D, Z80_E, Z80_H, Z80_L : Byte;
@@ -34410,6 +34418,7 @@ End;
 { Forward declarations pour les helpers TIA/RIOT (variant=4 A2600). }
 Procedure A2600_BusWrite(EA: Word; V: Byte); Forward;
 Function A2600_BusRead(EA: Word; Var Handled: Boolean): Byte; Forward;
+Procedure A2600_CheckHotspot(EA: Word); Forward;
 Function NesBus_Write(EA: Word; V: Byte): Boolean; Forward;
 
 Function CPU6502_Read(Addr: Word): Byte;
@@ -34542,21 +34551,33 @@ Begin
 End;
 
 Function CPU6502_AmABS: Word;
+Var W: Word;
 Begin
-  CPU6502_AmABS := CPU6502_Read16(CPU6502_PC);
+  W := CPU6502_Read16(CPU6502_PC);
+  CPU6502_AmABS := W;
   CPU6502_PC := CPU6502_PC + 2;
+  If (CPU6502_Variant = 4) And ((W And $1000) <> 0) Then
+    A2600_CheckHotspot(W);
 End;
 
 Function CPU6502_AmABX: Word;
+Var W: Word;
 Begin
-  CPU6502_AmABX := CPU6502_Read16(CPU6502_PC) + CPU6502_X;
+  W := CPU6502_Read16(CPU6502_PC) + CPU6502_X;
+  CPU6502_AmABX := W;
   CPU6502_PC := CPU6502_PC + 2;
+  If (CPU6502_Variant = 4) And ((W And $1000) <> 0) Then
+    A2600_CheckHotspot(W);
 End;
 
 Function CPU6502_AmABY: Word;
+Var W: Word;
 Begin
-  CPU6502_AmABY := CPU6502_Read16(CPU6502_PC) + CPU6502_Y;
+  W := CPU6502_Read16(CPU6502_PC) + CPU6502_Y;
+  CPU6502_AmABY := W;
   CPU6502_PC := CPU6502_PC + 2;
+  If (CPU6502_Variant = 4) And ((W And $1000) <> 0) Then
+    A2600_CheckHotspot(W);
 End;
 
 Function CPU6502_AmIZX: Word; { (zp,X) }
@@ -35371,6 +35392,41 @@ End;
 { Hook d ecriture pour cible 2600 (variant=4). Renvoie True si       }
 { l adresse est consommee par TIA/RIOT et doit court-circuiter le    }
 { stockage standard. Sinon stocke normalement.                        }
+
+{ Bankswitching F8/F6/F4 : copie la banque demandee dans $F000-$FFFF. }
+Procedure A2600_BankSwitch(NewBank: Integer);
+Var I: LongInt; Src: LongInt;
+Begin
+  If (NewBank < 0) Or (NewBank >= A2600_BankCnt) Then Exit;
+  If NewBank = A2600_CurBank Then Exit;
+  A2600_CurBank := NewBank;
+  Src := LongInt(NewBank) * 4096;
+  For I := 0 To 4095 Do
+    CPU6502_Mem[$F000 + I] := A2600_ROM[Src + I];
+End;
+
+{ Verifie un acces (R/W) sur un hotspot et commute la banque. }
+Procedure A2600_CheckHotspot(EA: Word);
+Var Lo: Word;
+Begin
+  If A2600_BankCnt <= 1 Then Exit;
+  Lo := EA And $0FFF;
+  Case A2600_BankCnt Of
+    2: Begin { F8 }
+      If Lo = $FF8 Then A2600_BankSwitch(0)
+      Else If Lo = $FF9 Then A2600_BankSwitch(1);
+    End;
+    4: Begin { F6 }
+      If (Lo >= $FF6) And (Lo <= $FF9) Then
+        A2600_BankSwitch(Lo - $FF6);
+    End;
+    8: Begin { F4 }
+      If (Lo >= $FF4) And (Lo <= $FFB) Then
+        A2600_BankSwitch(Lo - $FF4);
+    End;
+  End;
+End;
+
 Procedure A2600_BusWrite(EA: Word; V: Byte);
 Var
   R: Byte;
@@ -35381,8 +35437,8 @@ Begin
   { RIOT RAM = bit12=0 et bit7=1, bit9=0 ($0080-$00FF).              }
   { RIOT I/O/timer = bit12=0 et bit9=1 ($0280-$029F).                }
   If (EA And $1000) <> 0 Then Begin
-    { Ecriture en ROM : refusee silencieusement (pas d ecriture     }
-    { autorisee mais on garde l image pour mappers eventuels).      }
+    { Hotspots de bankswitching sur acces (lecture ou ecriture) }
+    A2600_CheckHotspot(EA);
     Exit;
   End;
   If (EA And $0080) = 0 Then Begin
@@ -35460,8 +35516,11 @@ Begin
     Exit;
   End;
   If (EA And $0200) = 0 Then Begin
-    { RIOT RAM ($0080-$00FF) }
+    { RIOT RAM ($0080-$00FF). On stocke aussi dans CPU6502_Mem car  }
+    { la plupart des opcodes (LDA, AND, CMP, INC...) accedent       }
+    { directement au tableau CPU6502_Mem.                           }
     A2600_RIOTRam[EA And $7F] := V;
+    CPU6502_Mem[$0080 Or (EA And $7F)] := V;
     Exit;
   End;
   { RIOT I/O / timer : ecritures ignorees (lectures gerees ailleurs) }
@@ -35652,6 +35711,13 @@ Begin
   FillChar(A2600_FB, SizeOf(A2600_FB), 0);
   FillChar(A2600_FBPrev, SizeOf(A2600_FBPrev), $FF);
   A2600_FBFirst := True;
+  { Ports RIOT I/O dans CPU6502_Mem pour que LDA fonctionne sans   }
+  { passer par le dispatcher.                                       }
+  CPU6502_Mem[$0280] := $FF;   { SWCHA - aucun joystick deplace }
+  CPU6502_Mem[$0282] := $3F;   { SWCHB - aucun switch console }
+  CPU6502_Mem[$0284] := 0;     { INTIM - timer toujours 0 }
+  CPU6502_Mem[$028C] := $80;   { INPT4 - bouton P0 relache }
+  CPU6502_Mem[$028D] := $80;   { INPT5 - bouton P1 relache }
 End;
 
 {$PUSH}{$R-}{$Q-}
@@ -35909,8 +35975,8 @@ Begin
                CPU6502_PC := CPU6502_Pop16; End;        { RTI }
     { ----- BRK/NOP ----- }
     $00: Begin                                          { BRK -> halt }
-           If CPU6502_Variant = 3 Then Begin
-             { NES : BRK = IRQ logiciel }
+           If (CPU6502_Variant = 3) Or (CPU6502_Variant = 4) Then Begin
+             { NES / 2600 : BRK = IRQ logiciel via vecteur $FFFE-$FFFF }
              Inc(CPU6502_PC);
              CPU6502_Push((CPU6502_PC Shr 8) And $FF);
              CPU6502_Push(CPU6502_PC And $FF);
@@ -36238,8 +36304,9 @@ Begin
   CPU6502_ExitCode := 0;
   CPU6502_Cycles := 0;
   { Sentinelle de fin : push d une adresse de halt sur la pile.       }
-  { En mode NES, $FFFE/$FFFF est le vecteur IRQ/BRK : ne pas ecraser. }
-  If CPU6502_Variant <> 3 Then Begin
+  { En mode NES (3) et Atari 2600 (4), $FFFE/$FFFF est le vecteur     }
+  { IRQ/BRK reel en ROM : ne pas ecraser.                              }
+  If (CPU6502_Variant <> 3) And (CPU6502_Variant <> 4) Then Begin
     CPU6502_Mem[$FFFE] := $00;
     CPU6502_Mem[$FFFF] := $00;
   End;
@@ -39508,19 +39575,47 @@ Begin NesActive := False;
   End
   Else If TargetCPU = '-CATARI2600' Then Begin
    CPU6502_Variant := 4;
-   { 4 KiB ROM mappee a $F000 sur 6507 (bus 13 bits). Les ROM de 2K
-     doivent etre mises en miroir a $F800-$FFFF, sinon le vecteur de
-     reset a $FFFC vaut 0 et la CPU execute un BRK aussitot. }
-   Loaded := CPU6502_LoadRaw(BinaryPath, $F000, 0);
+   { Atari 2600 : ROM mappee a $F000-$FFFF sur 6507 (bus 13 bits).      }
+   { Tailles supportees :                                                }
+   {   2K  -> 1 banque, miroir $F000-$F7FF dans $F800-$FFFF              }
+   {   4K  -> 1 banque                                                   }
+   {   8K  -> F8 (2 banques, hotspots $FFF8/$FFF9)                       }
+   {   16K -> F6 (4 banques, hotspots $FFF6..$FFF9)                      }
+   {   32K -> F4 (8 banques, hotspots $FFF4..$FFFB)                      }
+   FillChar(A2600_ROM, SizeOf(A2600_ROM), 0);
+   A2600_BankCnt := 1; A2600_CurBank := 0; A2600_ROMSize := 0;
+   Assign(NesFH, BinaryPath);
+   {$I-} Reset(NesFH, 1); {$I+}
+   If IOResult = 0 Then Begin
+    A2600_ROMSize := FileSize(NesFH);
+    If A2600_ROMSize > SizeOf(A2600_ROM) Then
+     A2600_ROMSize := SizeOf(A2600_ROM);
+    BlockRead(NesFH, A2600_ROM, A2600_ROMSize, NesBR);
+    Close(NesFH);
+    Loaded := NesBR > 0;
+   End Else Loaded := False;
    If Loaded Then Begin
-    AllZero := True;
-    For Steps := $F800 To $FFFF Do
-     If CPU6502_Mem[Steps] <> 0 Then Begin
-      AllZero := False; Break;
+    Case A2600_ROMSize Of
+      8192:  A2600_BankCnt := 2;   { F8 }
+      16384: A2600_BankCnt := 4;   { F6 }
+      32768: A2600_BankCnt := 8;   { F4 }
+    Else
+      A2600_BankCnt := 1;
+    End;
+    { Mapper la derniere banque a $F000-$FFFF (les ROMs bankswitchees     }
+    { placent typiquement leur vecteur reset dans la derniere banque).   }
+    A2600_CurBank := A2600_BankCnt - 1;
+    If A2600_ROMSize <= 2048 Then Begin
+     { 2K : copier deux fois }
+     For Steps := 0 To 2047 Do Begin
+      CPU6502_Mem[$F000 + Steps] := A2600_ROM[Steps];
+      CPU6502_Mem[$F800 + Steps] := A2600_ROM[Steps];
      End;
-    If AllZero Then
-     For Steps := 0 To $7FF Do
-      CPU6502_Mem[$F800 + Steps] := CPU6502_Mem[$F000 + Steps];
+    End Else Begin
+     For Steps := 0 To 4095 Do
+      CPU6502_Mem[$F000 + Steps] :=
+       A2600_ROM[(A2600_CurBank * 4096) + Steps];
+    End;
    End;
    EntryAddr16 := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
   End;
@@ -39608,22 +39703,41 @@ Begin NesActive := False;
    {$ENDIF}
    While (Not CPU6502_Halted) And (A2600_FrameNo < 36000) And
          (Not A2600_KeyEsc) Do Begin
-    { Drainer tampon clavier (Esc + manette) }
+    { Drainer tampon clavier (Esc) }
     While KeyPressed Do Begin
      NesChrSize := Ord(ReadKey);
      If NesChrSize = 27 Then A2600_KeyEsc := True;
-     If NesChrSize = 0 Then If KeyPressed Then Begin
-      NesChrSize := Ord(ReadKey);
-      Case NesChrSize Of
-       72: A2600_KeyJoy := A2600_KeyJoy Or 1;   { haut }
-       80: A2600_KeyJoy := A2600_KeyJoy Or 2;   { bas }
-       75: A2600_KeyJoy := A2600_KeyJoy Or 4;   { gauche }
-       77: A2600_KeyJoy := A2600_KeyJoy Or 8;   { droite }
-      End;
-     End;
-     If NesChrSize = 32 Then A2600_KeyFire := True;
+     If NesChrSize = 0 Then If KeyPressed Then NesChrSize := Ord(ReadKey);
     End;
     If A2600_KeyEsc Then Break;
+    { Lecture directe du clavier (joystick + tir) via Win32 :       }
+    { Fleches / WASD / Enter+Espace=tir.                            }
+    A2600_KeyJoy := 0;
+    A2600_KeyFire := False;
+    {$IFDEF WINDOWS}
+    If (GetAsyncKeyState($26) < 0) Or (GetAsyncKeyState($57) < 0) Then
+     A2600_KeyJoy := A2600_KeyJoy Or 1;  { Up    / W }
+    If (GetAsyncKeyState($28) < 0) Or (GetAsyncKeyState($53) < 0) Then
+     A2600_KeyJoy := A2600_KeyJoy Or 2;  { Down  / S }
+    If (GetAsyncKeyState($25) < 0) Or (GetAsyncKeyState($41) < 0) Then
+     A2600_KeyJoy := A2600_KeyJoy Or 4;  { Left  / A }
+    If (GetAsyncKeyState($27) < 0) Or (GetAsyncKeyState($44) < 0) Then
+     A2600_KeyJoy := A2600_KeyJoy Or 8;  { Right / D }
+    If (GetAsyncKeyState($20) < 0) Or (GetAsyncKeyState($0D) < 0) Or
+       (GetAsyncKeyState($11) < 0) Or (GetAsyncKeyState($5A) < 0) Or
+       (GetAsyncKeyState($58) < 0) Then
+     A2600_KeyFire := True;             { Espace/Enter/Ctrl/Z/X = tir }
+    If GetAsyncKeyState($1B) < 0 Then A2600_KeyEsc := True;
+    {$ENDIF}
+    { Mettre a jour CPU6502_Mem pour les LDA directs sur les ports }
+    NesChrSize := $FF;
+    If (A2600_KeyJoy And 1) <> 0 Then NesChrSize := NesChrSize And Not $10;
+    If (A2600_KeyJoy And 2) <> 0 Then NesChrSize := NesChrSize And Not $20;
+    If (A2600_KeyJoy And 4) <> 0 Then NesChrSize := NesChrSize And Not $40;
+    If (A2600_KeyJoy And 8) <> 0 Then NesChrSize := NesChrSize And Not $80;
+    CPU6502_Mem[$0280] := NesChrSize;
+    If A2600_KeyFire Then CPU6502_Mem[$028C] := 0
+    Else CPU6502_Mem[$028C] := $80;
     { Executer une trame : 262 scanlines * ~25 instr = ~6550 instr }
     A2600_ScanLine := 0;
     For NesPrgSize := 0 To 7000 Do Begin
@@ -39633,9 +39747,6 @@ Begin NesActive := False;
      Inc(Steps);
      A2600_AfterInstr;
     End;
-    { Decay des touches transitoires }
-    A2600_KeyJoy := 0;
-    A2600_KeyFire := False;
     DrawEmulatorPanel(P);
     Inc(A2600_FrameNo);
     {$IFDEF WINDOWS}
