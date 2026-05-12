@@ -3440,6 +3440,12 @@ Var
  A2600_KeyEsc   : Boolean;
  A2600_KeyJoy   : Byte;        { bits : 0=haut 1=bas 2=gauche 3=droite   }
  A2600_KeyFire  : Boolean;
+ { Latches INPT4/INPT5 (VBLANK bit 6 = "I0-I5 latch enable").       }
+ { Quand le latch est actif, un appui memorise INPTx bit 7 a 0      }
+ { jusqu a ce que VBLANK.6 repasse a 0. Reproduit le hardware TIA.  }
+ A2600_INPTLatchEn : Boolean;
+ A2600_INPT4Latch  : Boolean;  { True = bouton memorise comme appuye }
+ A2600_INPT5Latch  : Boolean;
  { Bankswitching : F8 (8K, 2 banques, hotspots $FFF8/$FFF9),             }
  {                 F6 (16K, 4 banques, hotspots $FFF6..$FFF9),           }
  {                 F4 (32K, 8 banques, hotspots $FFF4..$FFFB).           }
@@ -35671,7 +35677,16 @@ Begin
           A2600_LastX := -1;
         End Else A2600_VSYNCAct := False;
        End;
-      $01: A2600_VBLANKAct := (V And $02) <> 0;     { VBLANK }
+      $01: Begin
+        A2600_VBLANKAct := (V And $02) <> 0;        { VBLANK }
+        { bit 6 = latch enable INPT4/5 ; bit 6 -> 0 efface les latches }
+        If (V And $40) = 0 Then Begin
+          A2600_INPTLatchEn := False;
+          A2600_INPT4Latch := False;
+          A2600_INPT5Latch := False;
+        End Else
+          A2600_INPTLatchEn := True;
+      End;
       $02: A2600_WSYNCWait := True;                 { WSYNC }
       { RESPx/RESMx/RESBL : le faisceau au moment du verrouillage est }
       { a (LineCyc+3)*3 color-clocks (3 cycles CPU pendant STA zp),    }
@@ -35849,7 +35864,17 @@ Begin
     Handled := True;
     Case EA And $0F Of
       $00..$07: A2600_BusRead := A2600_TIA[$30 + (EA And $07)];
-      $0C, $0D: A2600_BusRead := $80;          { INPT4/5 (gere ailleurs) }
+      $0C: Begin                                { INPT4 - fire P0 }
+        If A2600_INPTLatchEn And A2600_KeyFire Then A2600_INPT4Latch := True;
+        If (A2600_INPTLatchEn And A2600_INPT4Latch) Or A2600_KeyFire Then
+          A2600_BusRead := 0
+        Else A2600_BusRead := $80;
+      End;
+      $0D: Begin                                { INPT5 - fire P1 }
+        If (A2600_INPTLatchEn And A2600_INPT5Latch) Then
+          A2600_BusRead := 0
+        Else A2600_BusRead := $80;
+      End;
     Else
       A2600_BusRead := 0;
     End;
@@ -35890,9 +35915,19 @@ Begin
     End;
     $0C: Begin                                  { INPT4 - fire P0 }
       Handled := True;
-      If A2600_KeyFire Then A2600_BusRead := 0 Else A2600_BusRead := $80;
+      If A2600_INPTLatchEn And A2600_KeyFire Then A2600_INPT4Latch := True;
+      If (A2600_INPTLatchEn And A2600_INPT4Latch) Or A2600_KeyFire Then
+        A2600_BusRead := 0
+      Else A2600_BusRead := $80;
     End;
-    $0D: Begin Handled := True; A2600_BusRead := $80; End; { INPT5 - fire P1 }
+    $0D: Begin                                  { INPT5 - fire P1 }
+      Handled := True;
+      { Pas de bouton P1 emule : reste relache, mais latch quand meme }
+      { gere pour conformite Stella si une touche est ajoutee.        }
+      If (A2600_INPTLatchEn And A2600_INPT5Latch) Then
+        A2600_BusRead := 0
+      Else A2600_BusRead := $80;
+    End;
   End;
 End;
 
@@ -36238,6 +36273,10 @@ Var I: Integer; TimRd, StatRd: Byte;
 Begin
   Inc(A2600_LineInstr);
   Inc(A2600_LineCyc, 3);
+  { Latch INPT4/5 : capture appui transitoire entre 2 lectures. }
+  If A2600_INPTLatchEn Then Begin
+    If A2600_KeyFire Then A2600_INPT4Latch := True;
+  End;
   { Tick du timer RIOT (3 cycles par instruction). }
   If A2600_TimerInterval > 0 Then Begin
     Dec(A2600_TimerCyc, 3);
@@ -36318,6 +36357,9 @@ Begin
   A2600_KeyEsc := False;
   A2600_KeyJoy := 0;
   A2600_KeyFire := False;
+  A2600_INPTLatchEn := False;
+  A2600_INPT4Latch := False;
+  A2600_INPT5Latch := False;
   A2600_TimerVal := 0;
   A2600_TimerInterval := 0;     { 0 = pas de timer arme }
   A2600_TimerCyc := 0;
