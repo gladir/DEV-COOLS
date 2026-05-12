@@ -3126,6 +3126,7 @@ Var
  TermY        : Integer;           { position Y commune du panneau   }
  TermWidth    : Integer;           { largeur commune du panneau      }
  TermHeight   : Integer;           { hauteur commune du panneau      }
+ TermZoomLvl  : Integer;           { 0=normal, +N=plus grand, -N=plus petit }
  { Panneau de liste d erreurs }
  ErrorList    : TErrorListPanel;
  { Dialogue de recherche/remplacement }
@@ -3379,6 +3380,30 @@ Var
  NesPpu_Latch    : Boolean;
  NesPpu_NameTable: Array[0..$3FF] Of Byte;
  NesPpu_Rendered : Boolean;
+ { --- Etat emulateur Atari 2600 / VCS (variant=4) --------------------- }
+ { TIA + RIOT minimaux : playfield (PF0/PF1/PF2), joueurs P0/P1,         }
+ { missiles M0/M1, balle BL, couleurs COLUPx/COLUPF/COLUBK, controle    }
+ { CTRLPF, miroirs REFPx, VSYNC/VBLANK, WSYNC, HMOVE, NUSIZ.            }
+ A2600_Active   : Boolean;
+ A2600_FB       : Array[0..191, 0..159] Of Byte; { palette idx (128 col) }
+ A2600_FBPrev   : Array[0..191, 0..159] Of Byte;
+ A2600_FBFirst  : Boolean;
+ A2600_TIA      : Array[0..$7F] Of Byte;          { etat registres TIA   }
+ A2600_RIOTRam  : Array[0..$7F] Of Byte;          { 128 octets RAM 6532  }
+ A2600_VSYNCAct : Boolean;
+ A2600_VBLANKAct: Boolean;
+ A2600_ScanLine : Integer;     { 0..261 (NTSC), reset par VSYNC          }
+ A2600_FrameNo  : LongInt;
+ A2600_WSYNCWait: Boolean;     { CPU bloque jusqu a la fin du scanline   }
+ A2600_LineCyc  : Integer;     { cycles CPU dans le scanline courant     }
+ A2600_LineInstr: Integer;     { instructions dans le scanline courant   }
+ A2600_P0X      : Integer;     { position pixel joueur 0 (0..159)        }
+ A2600_P1X      : Integer;
+ A2600_M0X, A2600_M1X, A2600_BLX : Integer;
+ A2600_HMP0, A2600_HMP1, A2600_HMM0, A2600_HMM1, A2600_HMBL : ShortInt;
+ A2600_KeyEsc   : Boolean;
+ A2600_KeyJoy   : Byte;        { bits : 0=haut 1=bas 2=gauche 3=droite   }
+ A2600_KeyFire  : Boolean;
  { --- Etat emulateur Z80 (TRS-80, MSX, Adam) --- }
  Z80_Mem    : Array[0..$FFFF] Of Byte;
  Z80_A, Z80_F, Z80_B, Z80_C, Z80_D, Z80_E, Z80_H, Z80_L : Byte;
@@ -17235,34 +17260,7 @@ Begin
  TP.HistoryPos := TP.NumberHistory + 1;
 End;
 
-{ --- Copie de fichier interne --- }
-
-Function TermCopyFile(Var TP: TTerminalPanel;
- Source, Target: String): Boolean;
-Var
- SourceFile, TargetFile: File;
- RecordsRead: Integer;
- Buffer: Array[1..1000] Of Byte;
-Begin
- TermCopyFile := False;
- Assign(SourceFile, Source);
- {$I-} Reset(SourceFile, 1); {$I+}
- If IOResult <> 0 Then Begin
-  TermAddLine(TP, 'Fichier source introuvable : ' + Source);
-  Exit;
- End;
- Assign(TargetFile, Target);
- {$I-} Rewrite(TargetFile, 1);
- BlockRead(SourceFile, Buffer, SizeOf(Buffer), RecordsRead);
- While RecordsRead > 0 Do Begin
-  BlockWrite(TargetFile, Buffer, RecordsRead);
-  BlockRead(SourceFile, Buffer, SizeOf(Buffer), RecordsRead);
- End;
- Close(SourceFile);
- Close(TargetFile);
- {$I+}
- TermCopyFile := True;
-End;
+{ --- Copie de fichier interne (definition apres helpers FAT) --- }
 
 { ============================================================
   ACCES FAT12/16 POUR LE TERMINAL INTEGRE
@@ -17929,6 +17927,316 @@ Begin
  Fat_FreeBytes := Free * LongInt(FatVol[Idx].SectorsPerCluster) * 512;
 End;
 
+{ ============================================================
+  ECRITURE FAT12/16 (creation de fichier dans une image montee)
+  ============================================================ }
+
+Function Fat_WriteSector(Idx: Byte; LBA: LongInt;
+ Var Buf: Array Of Byte): Boolean;
+Var BW: Word;
+Begin
+ Fat_WriteSector := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ If LBA < 0 Then Exit;
+ If LBA >= (EmuFloppySize[Idx] Div 512) Then Exit;
+ {$I-}
+ Seek(EmuFloppyFile[Idx], LBA * 512);
+ If IOResult <> 0 Then Exit;
+ BW := 0;
+ BlockWrite(EmuFloppyFile[Idx], Buf, 512, BW);
+ {$I+} If IOResult <> 0 Then Exit;
+ { Invalider le cache FAT si on ecrit sur le LBA cache }
+ If LBA = FatVol[Idx].CachedFatLBA Then
+  FatVol[Idx].CachedFatLBA := -1;
+ Fat_WriteSector := (BW = 512);
+End;
+
+{ Modifier un octet de la FAT et repercuter sur toutes les copies. }
+Function Fat_FATWriteByte(Idx: Byte; Offset: LongInt;
+ Val: Byte): Boolean;
+Var
+ Buf: Array[0..511] Of Byte;
+ K: Integer;
+ LBA, BaseLBA: LongInt;
+ Within: Word;
+Begin
+ Fat_FATWriteByte := False;
+ BaseLBA := FatVol[Idx].FATStart + (Offset Div 512);
+ Within  := Word(Offset Mod 512);
+ If Not Fat_ReadSector(Idx, BaseLBA, Buf) Then Exit;
+ Buf[Within] := Val;
+ For K := 0 To FatVol[Idx].NumFATs - 1 Do Begin
+  LBA := BaseLBA + LongInt(K) * FatVol[Idx].SectorsPerFAT;
+  If Not Fat_WriteSector(Idx, LBA, Buf) Then Exit;
+ End;
+ Fat_FATWriteByte := True;
+End;
+
+{ Ecrire la valeur 12 ou 16 bits dans la FAT pour le cluster Cl. }
+Function Fat_SetNextCluster(Idx: Byte; Cl, Val: LongInt): Boolean;
+Var
+ O: LongInt;
+ B1, B2: Byte;
+Begin
+ Fat_SetNextCluster := False;
+ If FatVol[Idx].FATType = 12 Then Begin
+  O := Cl + (Cl Div 2);
+  B1 := Fat_FATByte(Idx, O);
+  B2 := Fat_FATByte(Idx, O + 1);
+  If (Cl And 1) = 0 Then Begin
+   B1 := Byte(Val And $FF);
+   B2 := Byte((B2 And $F0) Or ((Val Shr 8) And $0F));
+  End Else Begin
+   B1 := Byte((B1 And $0F) Or ((Val Shl 4) And $F0));
+   B2 := Byte((Val Shr 4) And $FF);
+  End;
+  If Not Fat_FATWriteByte(Idx, O, B1) Then Exit;
+  If Not Fat_FATWriteByte(Idx, O + 1, B2) Then Exit;
+ End Else Begin
+  O := Cl * 2;
+  If Not Fat_FATWriteByte(Idx, O, Byte(Val And $FF)) Then Exit;
+  If Not Fat_FATWriteByte(Idx, O + 1,
+   Byte((Val Shr 8) And $FF)) Then Exit;
+ End;
+ Fat_SetNextCluster := True;
+End;
+
+{ Trouver un cluster libre et le marquer EOC. Renvoie 0 si plein. }
+Function Fat_AllocCluster(Idx: Byte): LongInt;
+Var
+ Cl: LongInt;
+ EOC: LongInt;
+Begin
+ Fat_AllocCluster := 0;
+ If FatVol[Idx].FATType = 12 Then EOC := $0FFF
+                              Else EOC := $FFFF;
+ For Cl := 2 To FatVol[Idx].ClusterCount + 1 Do
+  If Fat_NextCluster(Idx, Cl) = 0 Then Begin
+   If Fat_SetNextCluster(Idx, Cl, EOC) Then
+    Fat_AllocCluster := Cl;
+   Exit;
+  End;
+End;
+
+{ Convertir un nom en 11 octets 8.3 (espaces pad). Tronque base a 8 et
+  extension a 3 si necessaire. Retourne False si caracteres invalides. }
+Function Fat_MakeName11(Name: String;
+ Var N11: Array Of Byte): Boolean;
+Var
+ I, DotPos: Integer;
+ Base, Ext: String;
+ C: Char;
+Begin
+ Fat_MakeName11 := False;
+ Name := Fat_UpStr(Name);
+ If Length(Name) = 0 Then Exit;
+ DotPos := 0;
+ For I := Length(Name) DownTo 1 Do
+  If Name[I] = '.' Then Begin DotPos := I; Break; End;
+ If DotPos = 0 Then Begin
+  Base := Name; Ext := '';
+ End Else Begin
+  Base := Copy(Name, 1, DotPos - 1);
+  Ext  := Copy(Name, DotPos + 1, Length(Name) - DotPos);
+ End;
+ If Length(Base) = 0 Then Exit;
+ If Length(Base) > 8 Then Base := Copy(Base, 1, 8);
+ If Length(Ext)  > 3 Then Ext  := Copy(Ext,  1, 3);
+ For I := 0 To 10 Do N11[I] := Ord(' ');
+ For I := 1 To Length(Base) Do N11[I - 1] := Ord(Base[I]);
+ For I := 1 To Length(Ext)  Do N11[8 + I - 1] := Ord(Ext[I]);
+ For I := 0 To 10 Do Begin
+  C := Chr(N11[I]);
+  If (N11[I] < 32) Or (C = '"') Or (C = '*') Or (C = '+') Or
+     (C = ',') Or (C = '/') Or (C = ':') Or (C = ';') Or
+     (C = '<') Or (C = '=') Or (C = '>') Or (C = '?') Or
+     (C = '[') Or (C = '\') Or (C = ']') Or (C = '|') Then Exit;
+ End;
+ Fat_MakeName11 := True;
+End;
+
+{ Trouver un slot libre dans un repertoire (root ou cluster chain). }
+Function Fat_FindFreeSlot(Idx: Byte; IsRoot: Boolean; StartCl: LongInt;
+ Var SlotLBA: LongInt; Var SlotIdx: Integer): Boolean;
+Var
+ Buf: Array[0..511] Of Byte;
+ SecInClu, I: Integer;
+ Cur: LongInt;
+ S: LongInt;
+ RootCnt: Integer;
+ LBA: LongInt;
+ B0: Byte;
+Begin
+ Fat_FindFreeSlot := False;
+ If IsRoot Then Begin
+  RootCnt := 0;
+  For S := 0 To FatVol[Idx].RootDirSectors - 1 Do Begin
+   LBA := FatVol[Idx].RootStart + S;
+   If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+   For I := 0 To 15 Do Begin
+    If RootCnt >= FatVol[Idx].RootEntries Then Exit;
+    Inc(RootCnt);
+    B0 := Buf[I * 32];
+    If (B0 = 0) Or (B0 = $E5) Then Begin
+     SlotLBA := LBA;
+     SlotIdx := I;
+     Fat_FindFreeSlot := True;
+     Exit;
+    End;
+   End;
+  End;
+ End Else Begin
+  Cur := StartCl;
+  While (Cur >= 2) And (Not Fat_IsEOC(Idx, Cur)) Do Begin
+   For SecInClu := 0 To FatVol[Idx].SectorsPerCluster - 1 Do Begin
+    LBA := Fat_ClusterToLBA(Idx, Cur) + SecInClu;
+    If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+    For I := 0 To 15 Do Begin
+     B0 := Buf[I * 32];
+     If (B0 = 0) Or (B0 = $E5) Then Begin
+      SlotLBA := LBA;
+      SlotIdx := I;
+      Fat_FindFreeSlot := True;
+      Exit;
+     End;
+    End;
+   End;
+   Cur := Fat_NextCluster(Idx, Cur);
+  End;
+ End;
+End;
+
+{ Ecrire une entree 32 octets dans le slot indique. }
+Function Fat_WriteDirEntry(Idx: Byte; LBA: LongInt; SlotIdx: Integer;
+ Var N11: Array Of Byte; Attr: Byte; FirstClu: Word;
+ Size: LongInt): Boolean;
+Var
+ Buf: Array[0..511] Of Byte;
+ Off, I: Integer;
+Begin
+ Fat_WriteDirEntry := False;
+ If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+ Off := SlotIdx * 32;
+ For I := 0 To 10 Do Buf[Off + I] := N11[I];
+ Buf[Off + 11] := Attr;
+ For I := 12 To 21 Do Buf[Off + I] := 0;
+ Buf[Off + 22] := 0; Buf[Off + 23] := 0;   { time }
+ Buf[Off + 24] := 0; Buf[Off + 25] := 0;   { date }
+ Buf[Off + 26] := Byte(FirstClu And $FF);
+ Buf[Off + 27] := Byte((FirstClu Shr 8) And $FF);
+ Buf[Off + 28] := Byte(Size And $FF);
+ Buf[Off + 29] := Byte((Size Shr 8) And $FF);
+ Buf[Off + 30] := Byte((Size Shr 16) And $FF);
+ Buf[Off + 31] := Byte((Size Shr 24) And $FF);
+ Fat_WriteDirEntry := Fat_WriteSector(Idx, LBA, Buf);
+End;
+
+{ Creer un fichier dans le repertoire AbsParent du disque virtuel Idx,
+  avec le nom Leaf (8.3), en lisant les donnees depuis SrcPath (hote).
+  Retourne False et remplit ErrMsg en cas d echec. }
+Function Fat_WriteFileFromHost(Idx: Byte; AbsParent, Leaf: String;
+ SrcPath: String; Var ErrMsg: String): Boolean;
+Var
+ IsRoot: Boolean;
+ StartCl: LongInt;
+ N11: Array[0..10] Of Byte;
+ Attr: Byte;
+ ExClu: Word;
+ ExSize: LongInt;
+ SrcF: File;
+ BR: Word;
+ ClusterSize: LongInt;
+ ClBuf: Array[0..4095] Of Byte;
+ FirstClu, PrevClu, NewClu: LongInt;
+ SlotLBA: LongInt;
+ SlotIdx: Integer;
+ TotalSize: LongInt;
+ SecInClu: Integer;
+ LBA: LongInt;
+ SecBuf: Array[0..511] Of Byte;
+ J: Integer;
+Begin
+ Fat_WriteFileFromHost := False;
+ ErrMsg := '';
+ If Not FatVol[Idx].Mounted Then Begin
+  ErrMsg := 'Disque virtuel non monte';
+  Exit;
+ End;
+ ClusterSize := LongInt(FatVol[Idx].SectorsPerCluster) * 512;
+ If (ClusterSize <= 0) Or (ClusterSize > 4096) Then Begin
+  ErrMsg := 'Taille de cluster non supportee';
+  Exit;
+ End;
+ If Not Fat_MakeName11(Leaf, N11) Then Begin
+  ErrMsg := 'Nom de fichier 8.3 invalide : ' + Leaf;
+  Exit;
+ End;
+ If Not Fat_ResolveDir(Idx, AbsParent, IsRoot, StartCl) Then Begin
+  ErrMsg := 'Repertoire introuvable : ' + AbsParent;
+  Exit;
+ End;
+ If Fat_FindInDir(Idx, IsRoot, StartCl, Fat_UpStr(Leaf), Attr,
+  ExClu, ExSize) Then Begin
+  ErrMsg := 'Le fichier existe deja : ' + Leaf;
+  Exit;
+ End;
+ Assign(SrcF, SrcPath);
+ {$I-} Reset(SrcF, 1); {$I+}
+ If IOResult <> 0 Then Begin
+  ErrMsg := 'Source hote introuvable : ' + SrcPath;
+  Exit;
+ End;
+ FirstClu := 0;
+ PrevClu := 0;
+ TotalSize := 0;
+ Repeat
+  FillChar(ClBuf, ClusterSize, 0);
+  BR := 0;
+  {$I-} BlockRead(SrcF, ClBuf, ClusterSize, BR); {$I+}
+  If IOResult <> 0 Then Begin
+   ErrMsg := 'Erreur de lecture sur l hote';
+   Close(SrcF);
+   Exit;
+  End;
+  If BR = 0 Then Break;
+  NewClu := Fat_AllocCluster(Idx);
+  If NewClu = 0 Then Begin
+   ErrMsg := 'Disque virtuel plein';
+   Close(SrcF);
+   Exit;
+  End;
+  If FirstClu = 0 Then FirstClu := NewClu
+  Else If Not Fat_SetNextCluster(Idx, PrevClu, NewClu) Then Begin
+   ErrMsg := 'Erreur d ecriture FAT';
+   Close(SrcF);
+   Exit;
+  End;
+  PrevClu := NewClu;
+  For SecInClu := 0 To FatVol[Idx].SectorsPerCluster - 1 Do Begin
+   LBA := Fat_ClusterToLBA(Idx, NewClu) + SecInClu;
+   For J := 0 To 511 Do SecBuf[J] := ClBuf[SecInClu * 512 + J];
+   If Not Fat_WriteSector(Idx, LBA, SecBuf) Then Begin
+    ErrMsg := 'Erreur d ecriture des donnees';
+    Close(SrcF);
+    Exit;
+   End;
+  End;
+  Inc(TotalSize, BR);
+ Until BR < Word(ClusterSize);
+ Close(SrcF);
+ If Not Fat_FindFreeSlot(Idx, IsRoot, StartCl, SlotLBA, SlotIdx) Then
+ Begin
+  ErrMsg := 'Repertoire plein';
+  Exit;
+ End;
+ If Not Fat_WriteDirEntry(Idx, SlotLBA, SlotIdx, N11, $20,
+  Word(FirstClu), TotalSize) Then Begin
+  ErrMsg := 'Erreur d ecriture de l entree repertoire';
+  Exit;
+ End;
+ Fat_WriteFileFromHost := True;
+End;
+
 { Construire le chemin "X:\..." courant du terminal sur le disque virtuel }
 Function Term_VirtFullPath(Var TP: TTerminalPanel): String;
 Var
@@ -17994,6 +18302,171 @@ Begin
             Else AbsP := Fat_AbsPath(TP.VirtCwd, P);
   Term_ResolveVirtTarget := True;
  End;
+End;
+
+{ --- Copie de fichier interne (supporte disques virtuels) --- }
+
+Function TermCopyFile(Var TP: TTerminalPanel;
+ Source, Target: String): Boolean;
+Var
+ SourceFile, TargetFile: File;
+ RecordsRead: Integer;
+ Buffer: Array[1..1000] Of Byte;
+ SrcIdx, DstIdx: Byte;
+ SrcAbs, DstAbs: String;
+ SrcIsVirt, DstIsVirt: Boolean;
+ Attr: Byte;
+ SrcCluster: Word;
+ SrcSize: LongInt;
+ Cur: LongInt;
+ SecInClu, BaseSlash, I: Integer;
+ LBA, Remain: LongInt;
+ ToRead: Integer;
+ SBuf: Array[0..511] Of Byte;
+ TLast: Char;
+ ParentAbs, Leaf: String;
+ ErrMsg: String;
+ DstIsDir: Boolean;
+ DummyAttr: Byte;
+ DummyClu: Word;
+ DummySz: LongInt;
+ SrcBase: String;
+Begin
+ TermCopyFile := False;
+ { Si la cible se termine par ':' ou '\\' ou '/', ajouter le nom de
+   base de la source pour conserver le nom du fichier. }
+ If Length(Target) > 0 Then Begin
+  TLast := Target[Length(Target)];
+  If (TLast = ':') Or (TLast = '\') Or (TLast = '/') Then Begin
+   BaseSlash := 0;
+   For I := Length(Source) DownTo 1 Do
+    If (Source[I] = '\') Or (Source[I] = '/') Or
+       (Source[I] = ':') Then Begin
+     BaseSlash := I;
+     Break;
+    End;
+   Target := Target + Copy(Source, BaseSlash + 1,
+    Length(Source) - BaseSlash);
+  End;
+ End;
+ { Determiner si source/cible sont sur un disque virtuel }
+ SrcIsVirt := Term_ResolveVirtTarget(TP, Source, SrcIdx, SrcAbs);
+ DstIsVirt := Term_ResolveVirtTarget(TP, Target, DstIdx, DstAbs);
+ { ---- Cible sur disque virtuel : ecriture FAT ---- }
+ If DstIsVirt Then Begin
+  If SrcIsVirt Then Begin
+   TermAddLine(TP,
+    'Copie virtuel -> virtuel non supportee pour l instant.');
+   Exit;
+  End;
+  { Si la cible designe un repertoire (racine, '.', '..' ou entree
+    FAT avec attr repertoire), ajouter le basename de la source. }
+  DstIsDir := (DstAbs = '') Or (DstAbs = '\');
+  If Not DstIsDir Then
+   If Fat_FindPath(DstIdx, DstAbs, DummyAttr, DummyClu, DummySz) Then
+    DstIsDir := (DummyAttr And $10) <> 0;
+  If DstIsDir Then Begin
+   BaseSlash := 0;
+   For I := Length(Source) DownTo 1 Do
+    If (Source[I] = '\') Or (Source[I] = '/') Or
+       (Source[I] = ':') Then Begin
+     BaseSlash := I;
+     Break;
+    End;
+   SrcBase := Copy(Source, BaseSlash + 1,
+    Length(Source) - BaseSlash);
+   If SrcBase = '' Then Begin
+    TermAddLine(TP, 'Nom de fichier cible manquant.');
+    Exit;
+   End;
+   If (DstAbs = '') Or (DstAbs = '\') Then DstAbs := '\' + SrcBase
+   Else DstAbs := DstAbs + '\' + SrcBase;
+  End;
+  { Decouper DstAbs en parent + feuille }
+  ParentAbs := '\';
+  Leaf := '';
+  For I := Length(DstAbs) DownTo 1 Do
+   If DstAbs[I] = '\' Then Begin
+    If I = 1 Then ParentAbs := '\'
+             Else ParentAbs := Copy(DstAbs, 1, I - 1);
+    Leaf := Copy(DstAbs, I + 1, Length(DstAbs) - I);
+    Break;
+   End;
+  If Leaf = '' Then Begin
+   TermAddLine(TP, 'Nom de fichier cible manquant.');
+   Exit;
+  End;
+  If Fat_WriteFileFromHost(DstIdx, ParentAbs, Leaf, Source,
+   ErrMsg) Then Begin
+   TermCopyFile := True;
+   Exit;
+  End;
+  TermAddLine(TP, ErrMsg);
+  Exit;
+ End;
+ { ---- Source sur disque virtuel : lecture via FAT ---- }
+ If SrcIsVirt Then Begin
+  If Not Fat_FindPath(SrcIdx, SrcAbs, Attr, SrcCluster, SrcSize) Then
+  Begin
+   TermAddLine(TP, 'Fichier source introuvable : ' + Source);
+   Exit;
+  End;
+  If (Attr And $10) <> 0 Then Begin
+   TermAddLine(TP, Source + ' est un repertoire.');
+   Exit;
+  End;
+  Assign(TargetFile, Target);
+  {$I-} Rewrite(TargetFile, 1); {$I+}
+  If IOResult <> 0 Then Begin
+   TermAddLine(TP, 'Impossible de creer : ' + Target);
+   Exit;
+  End;
+  Cur := SrcCluster;
+  Remain := SrcSize;
+  While (Cur >= 2) And (Not Fat_IsEOC(SrcIdx, Cur)) And
+        (Remain > 0) Do Begin
+   For SecInClu := 0 To FatVol[SrcIdx].SectorsPerCluster - 1 Do Begin
+    If Remain <= 0 Then Break;
+    LBA := Fat_ClusterToLBA(SrcIdx, Cur) + SecInClu;
+    If Not Fat_ReadSector(SrcIdx, LBA, SBuf) Then Begin
+     TermAddLine(TP, 'Erreur de lecture sur l image');
+     Close(TargetFile);
+     Exit;
+    End;
+    If Remain > 512 Then ToRead := 512
+                    Else ToRead := Integer(Remain);
+    {$I-} BlockWrite(TargetFile, SBuf, ToRead); {$I+}
+    If IOResult <> 0 Then Begin
+     TermAddLine(TP, 'Erreur d ecriture : ' + Target);
+     Close(TargetFile);
+     Exit;
+    End;
+    Dec(Remain, ToRead);
+   End;
+   Cur := Fat_NextCluster(SrcIdx, Cur);
+  End;
+  Close(TargetFile);
+  TermCopyFile := True;
+  Exit;
+ End;
+ { Cas hote -> hote }
+ Assign(SourceFile, Source);
+ {$I-} Reset(SourceFile, 1); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'Fichier source introuvable : ' + Source);
+  Exit;
+ End;
+ Assign(TargetFile, Target);
+ {$I-} Rewrite(TargetFile, 1);
+ BlockRead(SourceFile, Buffer, SizeOf(Buffer), RecordsRead);
+ While RecordsRead > 0 Do Begin
+  BlockWrite(TargetFile, Buffer, RecordsRead);
+  BlockRead(SourceFile, Buffer, SizeOf(Buffer), RecordsRead);
+ End;
+ Close(SourceFile);
+ Close(TargetFile);
+ {$I+}
+ TermCopyFile := True;
 End;
 
 { ============================================================
@@ -18692,6 +19165,75 @@ Begin
  End;
 End;
 
+{ --- Sauvegarder l historique d affichage dans un fichier --- }
+
+Procedure TermSaveHistory(Var TP: TTerminalPanel);
+Var
+ F: Text;
+ N: PTermLine;
+ FName: String;
+ IOErr: Word;
+Begin
+ Case TP.Shell Of
+  SK_CMD:        FName := 'terminal-cmd.log';
+  SK_POWERSHELL: FName := 'terminal-ps.log';
+  SK_BASH:       FName := 'terminal-bash.log';
+  SK_AMIGADOS:   FName := 'terminal-amiga.log';
+ Else
+  FName := 'terminal.log';
+ End;
+ Assign(F, FName);
+ {$I-} Rewrite(F); {$I+}
+ IOErr := IOResult;
+ If IOErr <> 0 Then Begin
+  TermAddLine(TP, 'Erreur : impossible d''ouvrir ' + FName);
+  Exit;
+ End;
+ N := TP.HistHead;
+ While N <> Nil Do Begin
+  WriteLn(F, N^.S);
+  N := N^.Next;
+ End;
+ Close(F);
+ TermAddLine(TP, 'Historique sauve dans ' + FName +
+  ' (' + IntToStr(TP.HistCount) + ' lignes)');
+End;
+
+{ --- Zoom : agrandir/reduire la hauteur du panneau terminal --- }
+
+Procedure TermZoomCycle;
+Var
+ ScrH, BottomY, NewH: Integer;
+Begin
+ ScrH := GetScreenHeight;
+ Inc(TermZoomLvl);
+ If TermZoomLvl > 2 Then TermZoomLvl := 0;
+ Case TermZoomLvl Of
+  0: NewH := OUTPUT_HEIGHT;
+  1: NewH := OUTPUT_HEIGHT + 80;
+  2: NewH := OUTPUT_HEIGHT + 160;
+ End;
+ BottomY := ScrH - NewH - STATUSBAR_HEIGHT;
+ TermY := BottomY;
+ TermHeight := NewH;
+ FullRepaintNeeded := True;
+End;
+
+{ --- Restaurer la hauteur normale du terminal (niveau de zoom 0) --- }
+
+Procedure TermZoomReset;
+Var
+ ScrH, BottomY: Integer;
+Begin
+ If TermZoomLvl = 0 Then Exit;
+ ScrH := GetScreenHeight;
+ TermZoomLvl := 0;
+ BottomY := ScrH - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ TermY := BottomY;
+ TermHeight := OUTPUT_HEIGHT;
+ FullRepaintNeeded := True;
+End;
+
 { --- PWD --- }
 
 Procedure TermCmd_PWD(Var TP: TTerminalPanel);
@@ -19104,6 +19646,64 @@ Begin
  End;
 End;
 
+{ --- Nom du fichier d historique des commandes par shell --- }
+
+Function TermCmdHistFile(Kind: TShellKind): String;
+Begin
+ Case Kind Of
+  SK_CMD:        TermCmdHistFile := 'devenv-cmd.hist';
+  SK_POWERSHELL: TermCmdHistFile := 'devenv-ps.hist';
+  SK_BASH:       TermCmdHistFile := 'devenv-bash.hist';
+  SK_AMIGADOS:   TermCmdHistFile := 'devenv-amiga.hist';
+ Else
+  TermCmdHistFile := 'devenv-term.hist';
+ End;
+End;
+
+{ --- Charger l historique des commandes depuis le fichier --- }
+
+Procedure TermLoadCmdHistory(Var TP: TTerminalPanel);
+Var
+ F: Text;
+ FName, L: String;
+Begin
+ FName := TermCmdHistFile(TP.Shell);
+ Assign(F, FName);
+ {$I-} Reset(F); {$I+}
+ If IOResult <> 0 Then Exit;
+ While Not Eof(F) Do Begin
+  ReadLn(F, L);
+  If L = '' Then Continue;
+  If TP.NumberHistory >= MAX_TERM_HISTORY Then Begin
+   Move(TP.TermHistory[2], TP.TermHistory[1],
+    (MAX_TERM_HISTORY - 1) * SizeOf(TP.TermHistory[1]));
+   TP.TermHistory[MAX_TERM_HISTORY] := L;
+  End Else Begin
+   Inc(TP.NumberHistory);
+   TP.TermHistory[TP.NumberHistory] := L;
+  End;
+ End;
+ Close(F);
+ TP.HistoryPos := TP.NumberHistory + 1;
+End;
+
+{ --- Sauvegarder l historique des commandes dans le fichier --- }
+
+Procedure TermSaveCmdHistory(Var TP: TTerminalPanel);
+Var
+ F: Text;
+ FName: String;
+ I: Integer;
+Begin
+ FName := TermCmdHistFile(TP.Shell);
+ Assign(F, FName);
+ {$I-} Rewrite(F); {$I+}
+ If IOResult <> 0 Then Exit;
+ For I := 1 To TP.NumberHistory Do
+  WriteLn(F, TP.TermHistory[I]);
+ Close(F);
+End;
+
 { --- Initialiser un terminal (buffer seulement, pas le layout) --- }
 
 Procedure InitTerminalPanel(Var TP: TTerminalPanel;
@@ -19135,6 +19735,7 @@ Begin
  TP.NumberDirStack := 0;
  TP.VirtDrive := -1;
  TP.VirtCwd   := '\';
+ TermLoadCmdHistory(TP);
 End;
 
 { --- Initialiser le conteneur des deux terminaux --- }
@@ -19150,6 +19751,7 @@ Begin
  TermY := BottomY;
  TermWidth := ScrW - EXPLORER_WIDTH;
  TermHeight := OUTPUT_HEIGHT;
+ TermZoomLvl := 0;
  TermVisible := False;
  TermSelectOpen := False;
  TermSelectIdx := 1;
@@ -19412,6 +20014,23 @@ Begin
  SBY := TermY + 2;
  { Clic souris }
  If (Ev.Kind = EV_MOUSE_DOWN) Then Begin
+  { Clic droit dans la zone du terminal : menu contextuel }
+  If (Ev.MouseBtn = MB_RIGHT) And
+     (Ev.MouseX >= TermX) And
+     (Ev.MouseX < TermX + TermWidth) And
+     (Ev.MouseY >= TermY + TERM_TAB_HEIGHT) And
+     (Ev.MouseY < TermY + TermHeight) Then Begin
+   InitContextMenu(CtxMenu);
+   CtxMenu.X := Ev.MouseX;
+   CtxMenu.Y := Ev.MouseY;
+   CtxMenu.Width := 200;
+   AddContextItem(CtxMenu, 'Aide', 900);
+   AddContextItem(CtxMenu, 'Sauvegarder historiques', 901);
+   AddContextItem(CtxMenu, 'Zoom', 902);
+   CtxMenu.Visible := True;
+   DrawContextMenu(CtxMenu);
+   Exit;
+  End;
   { Si la liste deroulante est ouverte, verifier clic sur un item }
   If TermSelectOpen Then Begin
    { Item 1 : Invite de commandes }
@@ -24951,6 +25570,9 @@ Begin
   EmuPanelTitleFor := 'Emulateur';
 End;
 
+{ Forward : convertir une couleur 2600 (7 bits) en index EGA. }
+Function A2600_ColorToEga(C: Byte): Byte; Forward;
+
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel);
 Var
  GridX, GridY: Integer;
@@ -25013,6 +25635,41 @@ Begin
     End;
    End;
   NesFBFirst := False;
+  Exit;
+ End;
+ { Mode Atari 2600 : rendu pixel du framebuffer 160x192 -------------- }
+ If A2600_Active And (P.TargetCPU = '-CATARI2600') Then Begin
+  NesScale := 3;
+  GridW := 160 * NesScale;
+  GridH := 192 * NesScale;
+  P.PanelX := (ScrW - GridW) Div 2;
+  P.PanelY := 16;
+  GridX := P.PanelX;
+  GridY := P.PanelY + 22;
+  If A2600_FBFirst Then
+   DrawFilledRect(P.PanelX - 2, P.PanelY - 2,
+    P.PanelX + GridW + 2, P.PanelY + 22 + GridH + 2, CLR_BACKGROUND);
+  DrawFilledRect(P.PanelX, P.PanelY,
+   P.PanelX + GridW, P.PanelY + 20, CLR_TITLEBAR_ACTIVE);
+  Title := 'Atari 2600 PC=' + IntToStr(CPU6502_PC) +
+           ' A=' + IntToStr(CPU6502_A) +
+           ' F=' + IntToStr(A2600_FrameNo);
+  DrawText(P.PanelX + 6, P.PanelY + 4, Title, CLR_HIGHLIGHTTEXT);
+  DrawText(P.PanelX + GridW - 60, P.PanelY + 4,
+   '[Esc]', CLR_HIGHLIGHTTEXT);
+  For Sy := 0 To 191 Do
+   For Sx := 0 To 159 Do Begin
+    If A2600_FBFirst Or (A2600_FB[Sy, Sx] <> A2600_FBPrev[Sy, Sx]) Then
+    Begin
+     Cell.Bg := A2600_ColorToEga(A2600_FB[Sy, Sx]);
+     PixX := GridX + Sx * NesScale;
+     PixY := GridY + Sy * NesScale;
+     DrawFilledRect(PixX, PixY,
+      PixX + NesScale - 1, PixY + NesScale - 1, Cell.Bg);
+     A2600_FBPrev[Sy, Sx] := A2600_FB[Sy, Sx];
+    End;
+   End;
+  A2600_FBFirst := False;
   Exit;
  End;
  { Mode CoCo 3 : rendu pixel du framebuffer 256x200 ------------------- }
@@ -33750,13 +34407,30 @@ End;
 { Halt sur RTS hors-pile, BRK ($00) ou limite d instructions.                }
 { ========================================================================== }
 
+{ Forward declarations pour les helpers TIA/RIOT (variant=4 A2600). }
+Procedure A2600_BusWrite(EA: Word; V: Byte); Forward;
+Function A2600_BusRead(EA: Word; Var Handled: Boolean): Byte; Forward;
+Function NesBus_Write(EA: Word; V: Byte): Boolean; Forward;
+
 Function CPU6502_Read(Addr: Word): Byte;
+Var V: Byte; H: Boolean;
 Begin
+  If CPU6502_Variant = 4 Then Begin
+    V := A2600_BusRead(Addr, H);
+    If H Then Begin CPU6502_Read := V; Exit; End;
+  End;
   CPU6502_Read := CPU6502_Mem[Addr];
 End;
 
 Procedure CPU6502_Write(Addr: Word; V: Byte);
 Begin
+  If CPU6502_Variant = 4 Then Begin
+    A2600_BusWrite(Addr, V);
+    Exit;
+  End;
+  If CPU6502_Variant = 3 Then
+    If (((Addr >= $2000) And (Addr <= $4017)) Or (Addr >= $8000)) Then
+      If NesBus_Write(Addr, V) Then Exit;
   CPU6502_Mem[Addr] := V;
 End;
 
@@ -34666,6 +35340,320 @@ Begin
   CPU6502_Mem[EA] := V;
 End;
 
+{ ===== Atari 2600 : TIA + RIOT minimaux ============================ }
+
+{ Palette NTSC 2600 -> EGA 16 couleurs. La couleur 2600 est encodee  }
+{ par octet : bits 4-7 = teinte (16), bits 1-3 = luminance (8).      }
+Function A2600_ColorToEga(C: Byte): Byte;
+Const
+  Tbl: Array[0..15] Of Array[0..7] Of Byte = (
+   (0,  8,  8,  7,  7,  7, 15, 15),  { 0 gris            }
+   (0,  6,  6, 14, 14, 14, 14, 15),  { 1 or              }
+   (0,  6,  6, 14, 14, 14, 11, 15),  { 2 orange clair    }
+   (0,  4,  4, 12, 12, 12, 14, 15),  { 3 rouge orange    }
+   (0,  4,  4, 12, 12, 12, 13, 15),  { 4 rose-rouge      }
+   (0,  5,  5, 13, 13, 13, 13, 15),  { 5 violet          }
+   (0,  5,  1, 13, 13,  9,  9, 15),  { 6 bleu violet     }
+   (0,  1,  1,  9,  9,  9,  9, 15),  { 7 bleu            }
+   (0,  1,  1,  9,  9,  9, 11, 15),  { 8 bleu            }
+   (0,  3,  3, 11, 11, 11, 11, 15),  { 9 cyan            }
+   (0,  2,  3, 10, 11, 11, 11, 15),  { A turquoise       }
+   (0,  2,  2, 10, 10, 10, 10, 15),  { B vert            }
+   (0,  2,  2, 10, 10, 14, 14, 15),  { C vert jaune      }
+   (0,  6,  6, 14, 14, 14, 14, 15),  { D jaune           }
+   (0,  6,  6, 14, 14, 14, 11, 15),  { E orange          }
+   (0,  5,  5, 13, 13, 13, 13, 15)   { F rose            }
+  );
+Begin
+  A2600_ColorToEga := Tbl[(C Shr 4) And $0F, (C Shr 1) And $07];
+End;
+
+{ Hook d ecriture pour cible 2600 (variant=4). Renvoie True si       }
+{ l adresse est consommee par TIA/RIOT et doit court-circuiter le    }
+{ stockage standard. Sinon stocke normalement.                        }
+Procedure A2600_BusWrite(EA: Word; V: Byte);
+Var
+  R: Byte;
+  CurX: Integer;
+Begin
+  { Le 6507 a un bus 13 bits. ROM = bit12 set ($1000-$1FFF, miroir   }
+  { en haut). TIA = bit12=0 et bit7=0 ($0000-$007F + miroirs).       }
+  { RIOT RAM = bit12=0 et bit7=1, bit9=0 ($0080-$00FF).              }
+  { RIOT I/O/timer = bit12=0 et bit9=1 ($0280-$029F).                }
+  If (EA And $1000) <> 0 Then Begin
+    { Ecriture en ROM : refusee silencieusement (pas d ecriture     }
+    { autorisee mais on garde l image pour mappers eventuels).      }
+    Exit;
+  End;
+  If (EA And $0080) = 0 Then Begin
+    { TIA write }
+    R := EA And $7F;
+    A2600_TIA[R] := V;
+    Case R Of
+      $00: { VSYNC : bit 1 demarre une nouvelle trame }
+       Begin
+        If (V And $02) <> 0 Then Begin
+          A2600_VSYNCAct := True;
+          A2600_ScanLine := 0;
+        End Else A2600_VSYNCAct := False;
+       End;
+      $01: A2600_VBLANKAct := (V And $02) <> 0;     { VBLANK }
+      $02: A2600_WSYNCWait := True;                 { WSYNC }
+      $10: Begin                                    { RESP0 }
+        CurX := (A2600_LineCyc * 3) - 68;
+        If CurX < 0 Then CurX := 0;
+        If CurX > 159 Then CurX := 159;
+        A2600_P0X := CurX;
+       End;
+      $11: Begin                                    { RESP1 }
+        CurX := (A2600_LineCyc * 3) - 68;
+        If CurX < 0 Then CurX := 0;
+        If CurX > 159 Then CurX := 159;
+        A2600_P1X := CurX;
+       End;
+      $12: Begin                                    { RESM0 }
+        CurX := (A2600_LineCyc * 3) - 68;
+        If CurX < 0 Then CurX := 0;
+        If CurX > 159 Then CurX := 159;
+        A2600_M0X := CurX;
+       End;
+      $13: Begin                                    { RESM1 }
+        CurX := (A2600_LineCyc * 3) - 68;
+        If CurX < 0 Then CurX := 0;
+        If CurX > 159 Then CurX := 159;
+        A2600_M1X := CurX;
+       End;
+      $14: Begin                                    { RESBL }
+        CurX := (A2600_LineCyc * 3) - 68;
+        If CurX < 0 Then CurX := 0;
+        If CurX > 159 Then CurX := 159;
+        A2600_BLX := CurX;
+       End;
+      $20: A2600_HMP0 := ShortInt(V) Div 16;        { HMP0 nibble haut }
+      $21: A2600_HMP1 := ShortInt(V) Div 16;
+      $22: A2600_HMM0 := ShortInt(V) Div 16;
+      $23: A2600_HMM1 := ShortInt(V) Div 16;
+      $24: A2600_HMBL := ShortInt(V) Div 16;
+      $2A: Begin                                    { HMOVE }
+        A2600_P0X := A2600_P0X - A2600_HMP0;
+        A2600_P1X := A2600_P1X - A2600_HMP1;
+        A2600_M0X := A2600_M0X - A2600_HMM0;
+        A2600_M1X := A2600_M1X - A2600_HMM1;
+        A2600_BLX := A2600_BLX - A2600_HMBL;
+        If A2600_P0X < 0 Then A2600_P0X := A2600_P0X + 160;
+        If A2600_P0X > 159 Then A2600_P0X := A2600_P0X - 160;
+        If A2600_P1X < 0 Then A2600_P1X := A2600_P1X + 160;
+        If A2600_P1X > 159 Then A2600_P1X := A2600_P1X - 160;
+        If A2600_M0X < 0 Then A2600_M0X := A2600_M0X + 160;
+        If A2600_M0X > 159 Then A2600_M0X := A2600_M0X - 160;
+        If A2600_M1X < 0 Then A2600_M1X := A2600_M1X + 160;
+        If A2600_M1X > 159 Then A2600_M1X := A2600_M1X - 160;
+        If A2600_BLX < 0 Then A2600_BLX := A2600_BLX + 160;
+        If A2600_BLX > 159 Then A2600_BLX := A2600_BLX - 160;
+       End;
+      $2B: Begin                                    { HMCLR }
+        A2600_HMP0 := 0; A2600_HMP1 := 0;
+        A2600_HMM0 := 0; A2600_HMM1 := 0;
+        A2600_HMBL := 0;
+       End;
+    End;
+    Exit;
+  End;
+  If (EA And $0200) = 0 Then Begin
+    { RIOT RAM ($0080-$00FF) }
+    A2600_RIOTRam[EA And $7F] := V;
+    Exit;
+  End;
+  { RIOT I/O / timer : ecritures ignorees (lectures gerees ailleurs) }
+End;
+
+{ Lecture cote 2600 : pour les TIA reads ($30-$3D), on retourne 0    }
+{ (collisions non implementees). Pour RIOT, on retourne joystick.    }
+Function A2600_BusRead(EA: Word; Var Handled: Boolean): Byte;
+Var Joy: Byte;
+Begin
+  Handled := False;
+  A2600_BusRead := 0;
+  If (EA And $1000) <> 0 Then Exit;            { ROM passe }
+  If (EA And $0080) = 0 Then Begin             { TIA read }
+    Handled := True;
+    A2600_BusRead := 0;
+    Exit;
+  End;
+  If (EA And $0200) = 0 Then Begin             { RIOT RAM }
+    Handled := True;
+    A2600_BusRead := A2600_RIOTRam[EA And $7F];
+    Exit;
+  End;
+  { RIOT I/O / timer : $0280..$029F }
+  Case EA And $1F Of
+    $00: Begin                                  { SWCHA - joysticks }
+      Handled := True;
+      { Bits actifs bas : P0 haut/bas/gauche/droite = bits 4-7        }
+      Joy := $FF;
+      If (A2600_KeyJoy And 1) <> 0 Then Joy := Joy And Not $10;
+      If (A2600_KeyJoy And 2) <> 0 Then Joy := Joy And Not $20;
+      If (A2600_KeyJoy And 4) <> 0 Then Joy := Joy And Not $40;
+      If (A2600_KeyJoy And 8) <> 0 Then Joy := Joy And Not $80;
+      A2600_BusRead := Joy;
+    End;
+    $02: Begin Handled := True; A2600_BusRead := $3F; End; { SWCHB }
+    $0C: Begin                                  { INPT4 - fire P0 }
+      Handled := True;
+      If A2600_KeyFire Then A2600_BusRead := 0 Else A2600_BusRead := $80;
+    End;
+  End;
+End;
+
+{ Rendu d un scanline visible (0..191) dans A2600_FB. Le scanline 0 }
+{ correspond a la premiere ligne apres VBLANK off (approxime).      }
+Procedure A2600_RenderScanline(Y: Integer);
+Var
+  X, PfBit, HalfX: Integer;
+  PF0, PF1, PF2, CTRLPF: Byte;
+  COLUBK, COLUPF, COLUP0, COLUP1: Byte;
+  GRP0, GRP1: Byte;
+  REFP0, REFP1: Byte;
+  ENAM0, ENAM1, ENABL: Byte;
+  Pix, PfPix, P0Pix, P1Pix, M0Pix, M1Pix, BLPix: Byte;
+  PfIdx, PfBits: Integer;
+  Reflect, Score, Priority: Boolean;
+  BSize: Integer;
+  Tmp: Integer;
+Begin
+  If (Y < 0) Or (Y > 191) Then Exit;
+  COLUBK := A2600_TIA[$09];
+  COLUPF := A2600_TIA[$08];
+  COLUP0 := A2600_TIA[$06];
+  COLUP1 := A2600_TIA[$07];
+  PF0    := A2600_TIA[$0D];
+  PF1    := A2600_TIA[$0E];
+  PF2    := A2600_TIA[$0F];
+  CTRLPF := A2600_TIA[$0A];
+  GRP0   := A2600_TIA[$1B];
+  GRP1   := A2600_TIA[$1C];
+  REFP0  := A2600_TIA[$0B];
+  REFP1  := A2600_TIA[$0C];
+  ENAM0  := A2600_TIA[$1D];
+  ENAM1  := A2600_TIA[$1E];
+  ENABL  := A2600_TIA[$1F];
+  Reflect  := (CTRLPF And $01) <> 0;
+  Score    := (CTRLPF And $02) <> 0;
+  Priority := (CTRLPF And $04) <> 0;
+  BSize := 1 Shl ((CTRLPF Shr 4) And $03);
+  For X := 0 To 159 Do Begin
+    Pix := COLUBK;
+    { Playfield : 20 pixels chacun de 4 hardware-pixels. Cote gauche }
+    { puis cote droit (eventuellement reflete).                      }
+    HalfX := X Div 4;
+    If HalfX >= 20 Then Begin
+      If Reflect Then PfIdx := 39 - HalfX
+      Else PfIdx := HalfX - 20;
+    End Else PfIdx := HalfX;
+    PfBit := 0;
+    If PfIdx < 4 Then PfBit := (PF0 Shr (4 + PfIdx)) And 1
+    Else If PfIdx < 12 Then PfBit := (PF1 Shr (7 - (PfIdx - 4))) And 1
+    Else PfBit := (PF2 Shr (PfIdx - 12)) And 1;
+    PfPix := 0;
+    If PfBit <> 0 Then Begin
+      If Score Then Begin
+        If X < 80 Then PfPix := COLUP0 Else PfPix := COLUP1;
+      End Else PfPix := COLUPF;
+      Pix := PfPix;
+    End;
+    { Joueurs (sans nusiz : un seul exemplaire 8 px). }
+    P0Pix := 0;
+    Tmp := X - A2600_P0X;
+    If (Tmp >= 0) And (Tmp < 8) And (GRP0 <> 0) Then Begin
+      If (REFP0 And $08) <> 0 Then PfBits := (GRP0 Shr Tmp) And 1
+      Else PfBits := (GRP0 Shr (7 - Tmp)) And 1;
+      If PfBits <> 0 Then P0Pix := COLUP0;
+    End;
+    P1Pix := 0;
+    Tmp := X - A2600_P1X;
+    If (Tmp >= 0) And (Tmp < 8) And (GRP1 <> 0) Then Begin
+      If (REFP1 And $08) <> 0 Then PfBits := (GRP1 Shr Tmp) And 1
+      Else PfBits := (GRP1 Shr (7 - Tmp)) And 1;
+      If PfBits <> 0 Then P1Pix := COLUP1;
+    End;
+    { Missiles (1 pixel chacun, taille NUSIZ ignoree) }
+    M0Pix := 0;
+    If ((ENAM0 And $02) <> 0) And (X = A2600_M0X) Then M0Pix := COLUP0;
+    M1Pix := 0;
+    If ((ENAM1 And $02) <> 0) And (X = A2600_M1X) Then M1Pix := COLUP1;
+    { Balle (taille variable) }
+    BLPix := 0;
+    Tmp := X - A2600_BLX;
+    If ((ENABL And $02) <> 0) And (Tmp >= 0) And (Tmp < BSize) Then
+      BLPix := COLUPF;
+    { Priorite : par defaut joueurs > playfield > fond.              }
+    { Si Priority alors playfield/balle au-dessus des joueurs.       }
+    If Priority Then Begin
+      If P0Pix <> 0 Then Pix := P0Pix;
+      If M0Pix <> 0 Then Pix := M0Pix;
+      If P1Pix <> 0 Then Pix := P1Pix;
+      If M1Pix <> 0 Then Pix := M1Pix;
+      If PfPix <> 0 Then Pix := PfPix;
+      If BLPix <> 0 Then Pix := BLPix;
+    End Else Begin
+      If PfPix <> 0 Then Pix := PfPix;
+      If BLPix <> 0 Then Pix := BLPix;
+      If P0Pix <> 0 Then Pix := P0Pix;
+      If M0Pix <> 0 Then Pix := M0Pix;
+      If P1Pix <> 0 Then Pix := P1Pix;
+      If M1Pix <> 0 Then Pix := M1Pix;
+    End;
+    If A2600_VBLANKAct Then Pix := 0;
+    A2600_FB[Y, X] := Pix;
+  End;
+End;
+
+{ Avancer d une instruction au sens scanline (apres CPU6502_Step).  }
+{ Approxime 3 cycles par instruction (moyenne 6507). 76 cycles par  }
+{ scanline. WSYNC : termine immediatement le scanline courant.      }
+Procedure A2600_AfterInstr;
+Var YVis: Integer;
+Begin
+  Inc(A2600_LineInstr);
+  Inc(A2600_LineCyc, 3);
+  If A2600_WSYNCWait Or (A2600_LineCyc >= 76) Then Begin
+    { Fin de scanline : rendre la ligne visible si on est dans la    }
+    { fenetre. Scanlines NTSC : 3 VSYNC + 37 VBLANK + 192 visible +  }
+    { 30 overscan. On rend l index Y = ScanLine - 40.                }
+    A2600_WSYNCWait := False;
+    YVis := A2600_ScanLine - 40;
+    If (YVis >= 0) And (YVis <= 191) Then
+      A2600_RenderScanline(YVis);
+    Inc(A2600_ScanLine);
+    A2600_LineCyc := 0;
+    A2600_LineInstr := 0;
+  End;
+End;
+
+Procedure A2600_Reset;
+Var I: Integer;
+Begin
+  For I := 0 To $7F Do A2600_TIA[I] := 0;
+  For I := 0 To $7F Do A2600_RIOTRam[I] := 0;
+  A2600_VSYNCAct := False;
+  A2600_VBLANKAct := False;
+  A2600_ScanLine := 0;
+  A2600_FrameNo := 0;
+  A2600_WSYNCWait := False;
+  A2600_LineCyc := 0;
+  A2600_LineInstr := 0;
+  A2600_P0X := 0; A2600_P1X := 0;
+  A2600_M0X := 0; A2600_M1X := 0; A2600_BLX := 0;
+  A2600_HMP0 := 0; A2600_HMP1 := 0;
+  A2600_HMM0 := 0; A2600_HMM1 := 0; A2600_HMBL := 0;
+  A2600_KeyEsc := False;
+  A2600_KeyJoy := 0;
+  A2600_KeyFire := False;
+  FillChar(A2600_FB, SizeOf(A2600_FB), 0);
+  FillChar(A2600_FBPrev, SizeOf(A2600_FBPrev), $FF);
+  A2600_FBFirst := True;
+End;
+
 {$PUSH}{$R-}{$Q-}
 Procedure CPU6502_Step;
 Var
@@ -34727,32 +35715,21 @@ Begin
     $BC: Begin EA := CPU6502_AmABX; CPU6502_Y := NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_Y); End;
     { ----- STA ----- }
-    $85: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_A; End;
-    $95: Begin EA := CPU6502_AmZPX; CPU6502_Mem[EA] := CPU6502_A; End;
-    $8D: Begin EA := CPU6502_AmABS;
-               If Not NesBus_Write(EA, CPU6502_A) Then
-                 CPU6502_Mem[EA] := CPU6502_A;
-         End;
-    $9D: Begin EA := CPU6502_AmABX;
-               If Not NesBus_Write(EA, CPU6502_A) Then
-                 CPU6502_Mem[EA] := CPU6502_A; End;
-    $99: Begin EA := CPU6502_AmABY;
-               If Not NesBus_Write(EA, CPU6502_A) Then
-                 CPU6502_Mem[EA] := CPU6502_A; End;
-    $81: Begin EA := CPU6502_AmIZX; NesMemWrite(EA, CPU6502_A); End;
-    $91: Begin EA := CPU6502_AmIZY; NesMemWrite(EA, CPU6502_A); End;
+    $85: Begin EA := CPU6502_AmZP;  CPU6502_Write(EA, CPU6502_A); End;
+    $95: Begin EA := CPU6502_AmZPX; CPU6502_Write(EA, CPU6502_A); End;
+    $8D: Begin EA := CPU6502_AmABS; CPU6502_Write(EA, CPU6502_A); End;
+    $9D: Begin EA := CPU6502_AmABX; CPU6502_Write(EA, CPU6502_A); End;
+    $99: Begin EA := CPU6502_AmABY; CPU6502_Write(EA, CPU6502_A); End;
+    $81: Begin EA := CPU6502_AmIZX; CPU6502_Write(EA, CPU6502_A); End;
+    $91: Begin EA := CPU6502_AmIZY; CPU6502_Write(EA, CPU6502_A); End;
     { ----- STX ----- }
-    $86: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_X; End;
-    $96: Begin EA := CPU6502_AmZPY; CPU6502_Mem[EA] := CPU6502_X; End;
-    $8E: Begin EA := CPU6502_AmABS;
-               If Not NesBus_Write(EA, CPU6502_X) Then
-                 CPU6502_Mem[EA] := CPU6502_X; End;
+    $86: Begin EA := CPU6502_AmZP;  CPU6502_Write(EA, CPU6502_X); End;
+    $96: Begin EA := CPU6502_AmZPY; CPU6502_Write(EA, CPU6502_X); End;
+    $8E: Begin EA := CPU6502_AmABS; CPU6502_Write(EA, CPU6502_X); End;
     { ----- STY ----- }
-    $84: Begin EA := CPU6502_AmZP;  CPU6502_Mem[EA] := CPU6502_Y; End;
-    $94: Begin EA := CPU6502_AmZPX; CPU6502_Mem[EA] := CPU6502_Y; End;
-    $8C: Begin EA := CPU6502_AmABS;
-               If Not NesBus_Write(EA, CPU6502_Y) Then
-                 CPU6502_Mem[EA] := CPU6502_Y; End;
+    $84: Begin EA := CPU6502_AmZP;  CPU6502_Write(EA, CPU6502_Y); End;
+    $94: Begin EA := CPU6502_AmZPX; CPU6502_Write(EA, CPU6502_Y); End;
+    $8C: Begin EA := CPU6502_AmABS; CPU6502_Write(EA, CPU6502_Y); End;
     { ----- Transferts ----- }
     $AA: Begin CPU6502_X := CPU6502_A; CPU6502_SetNZ(CPU6502_X); End; { TAX }
     $A8: Begin CPU6502_Y := CPU6502_A; CPU6502_SetNZ(CPU6502_Y); End; { TAY }
@@ -38186,6 +39163,7 @@ Var
  EmuKeyLogF: Text;
  LogF_R: Text;
  Idx_R, KK_R: Integer;
+ AllZero: Boolean;
 Begin NesActive := False;
  InitEmulatorPanel(P);
  P.BinaryPath := BinaryPath;
@@ -38530,8 +39508,20 @@ Begin NesActive := False;
   End
   Else If TargetCPU = '-CATARI2600' Then Begin
    CPU6502_Variant := 4;
-   { 4 KiB ROM mappee a $F000 sur 6507 }
+   { 4 KiB ROM mappee a $F000 sur 6507 (bus 13 bits). Les ROM de 2K
+     doivent etre mises en miroir a $F800-$FFFF, sinon le vecteur de
+     reset a $FFFC vaut 0 et la CPU execute un BRK aussitot. }
    Loaded := CPU6502_LoadRaw(BinaryPath, $F000, 0);
+   If Loaded Then Begin
+    AllZero := True;
+    For Steps := $F800 To $FFFF Do
+     If CPU6502_Mem[Steps] <> 0 Then Begin
+      AllZero := False; Break;
+     End;
+    If AllZero Then
+     For Steps := 0 To $7FF Do
+      CPU6502_Mem[$F800 + Steps] := CPU6502_Mem[$F000 + Steps];
+   End;
    EntryAddr16 := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
   End;
   If Not Loaded Then Begin
@@ -38607,6 +39597,54 @@ Begin NesActive := False;
     {$ENDIF}
    End;
    NesActive := False;
+  End Else If TargetCPU = '-CATARI2600' Then Begin
+   { ----- Boucle Atari 2600 par trame (60 Hz approx.) ----- }
+   A2600_Active := True;
+   A2600_Reset;
+   { Premier rendu pour afficher le panneau }
+   DrawEmulatorPanel(P);
+   {$IFDEF WINDOWS}
+   EntryAddr := GetTimestamp;
+   {$ENDIF}
+   While (Not CPU6502_Halted) And (A2600_FrameNo < 36000) And
+         (Not A2600_KeyEsc) Do Begin
+    { Drainer tampon clavier (Esc + manette) }
+    While KeyPressed Do Begin
+     NesChrSize := Ord(ReadKey);
+     If NesChrSize = 27 Then A2600_KeyEsc := True;
+     If NesChrSize = 0 Then If KeyPressed Then Begin
+      NesChrSize := Ord(ReadKey);
+      Case NesChrSize Of
+       72: A2600_KeyJoy := A2600_KeyJoy Or 1;   { haut }
+       80: A2600_KeyJoy := A2600_KeyJoy Or 2;   { bas }
+       75: A2600_KeyJoy := A2600_KeyJoy Or 4;   { gauche }
+       77: A2600_KeyJoy := A2600_KeyJoy Or 8;   { droite }
+      End;
+     End;
+     If NesChrSize = 32 Then A2600_KeyFire := True;
+    End;
+    If A2600_KeyEsc Then Break;
+    { Executer une trame : 262 scanlines * ~25 instr = ~6550 instr }
+    A2600_ScanLine := 0;
+    For NesPrgSize := 0 To 7000 Do Begin
+     If CPU6502_Halted Then Break;
+     If A2600_ScanLine >= 262 Then Break;
+     CPU6502_Step;
+     Inc(Steps);
+     A2600_AfterInstr;
+    End;
+    { Decay des touches transitoires }
+    A2600_KeyJoy := 0;
+    A2600_KeyFire := False;
+    DrawEmulatorPanel(P);
+    Inc(A2600_FrameNo);
+    {$IFDEF WINDOWS}
+    NesChrSize := GetTimestamp - EntryAddr;
+    If NesChrSize < 16 Then WinSleep(16 - NesChrSize);
+    EntryAddr := GetTimestamp;
+    {$ENDIF}
+   End;
+   A2600_Active := False;
   End Else Begin
    While (Not CPU6502_Halted) And (Steps < 1000000) Do Begin
     CPU6502_Step;
@@ -38622,6 +39660,9 @@ Begin NesActive := False;
   Else If TargetCPU = '-CNES' Then
    EmuVScr_WriteStr(P, '[Emulation NES arretee : ' +
     IntToStr(Steps) + ' instr / ' + IntToStr(NesFrameNo) + ' trames]')
+  Else If TargetCPU = '-CATARI2600' Then
+   EmuVScr_WriteStr(P, '[Emulation A2600 arretee : ' +
+    IntToStr(Steps) + ' instr / ' + IntToStr(A2600_FrameNo) + ' trames]')
   Else
    EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
   P.CurFg := OldFg;
@@ -45798,6 +46839,19 @@ Begin
      Exit;
     End;
     Case CtxTag Of
+     900: Begin { Aide du terminal }
+      TermCmd_HELP(TermPanels[ActiveShell]);
+      TermPanels[ActiveShell].NeedRepaint := True;
+      FullRepaintNeeded := True;
+     End;
+     901: Begin { Sauvegarder l historique du terminal }
+      TermSaveHistory(TermPanels[ActiveShell]);
+      TermPanels[ActiveShell].NeedRepaint := True;
+      FullRepaintNeeded := True;
+     End;
+     902: Begin { Cycler le zoom du terminal }
+      TermZoomCycle;
+     End;
      311, 411: Begin { Ajouter un fichier }
       InitFileDialog(FileDlg, False);
       LoadDirectoryFiles(FileDlg);
@@ -46114,6 +47168,10 @@ Begin
     TermSelectOpen := False;
     FullRepaintNeeded := True;
    End;
+   { Clic hors du terminal (typiquement sur l editeur) : si le
+     terminal etait agrandi par zoom, le ramener a la hauteur
+     normale pour reveler l editeur. }
+   If TermVisible And (TermZoomLvl > 0) Then TermZoomReset;
   End;
  End;
  { Suivi du focus de l explorateur de solutions : un clic dans son
@@ -46599,5 +47657,9 @@ BEGIN
  InitBreakpointManager(BPMgr);
  InitDebugPanel(DbgPanel);
  Run;
+ TermSaveCmdHistory(TermPanels[SK_CMD]);
+ TermSaveCmdHistory(TermPanels[SK_POWERSHELL]);
+ TermSaveCmdHistory(TermPanels[SK_BASH]);
+ TermSaveCmdHistory(TermPanels[SK_AMIGADOS]);
  ShutdownGraphics;
 END.
