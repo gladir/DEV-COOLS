@@ -3466,6 +3466,13 @@ Var
  A2600_Paddle      : Array[0..3] Of Integer;   { position 0..255 }
  A2600_PadCharge   : Array[0..3] Of Integer;   { compteur scanlines }
  A2600_PadDumped   : Boolean;                  { VBLANK.7 = 1 }
+ { Detection PAL/NTSC : mesure scanlines entre 2 strobes VSYNC.    }
+ { NTSC = 262 lines, PAL = 312 lines. Seuil 285 = bascule PAL.     }
+ A2600_LinesPerFrame : Integer;                { 262 ou 312 }
+ A2600_PAL           : Boolean;
+ A2600_LastVsyncLine : Integer;                { ScanLine au dernier VSYNC start }
+ A2600_FrameLineHist : Array[0..3] Of Integer; { historique 4 frames }
+ A2600_FrameLineIdx  : Integer;
  { Bankswitching : F8 (8K, 2 banques, hotspots $FFF8/$FFF9),             }
  {                 F6 (16K, 4 banques, hotspots $FFF6..$FFF9),           }
  {                 F4 (32K, 8 banques, hotspots $FFF4..$FFFB).           }
@@ -35644,6 +35651,7 @@ Var
   R: Byte;
   CurX, BeamX: Integer;
   Lo: Word;
+  I: Integer;
 Begin
   { Le 6507 a un bus 13 bits. ROM = bit12 set ($1000-$1FFF, miroir   }
   { en haut). TIA = bit12=0 et bit7=0 ($0000-$007F + miroirs).       }
@@ -35692,6 +35700,28 @@ Begin
       $00: { VSYNC : bit 1 demarre une nouvelle trame }
        Begin
         If (V And $02) <> 0 Then Begin
+          { Transition 0->1 : nouvelle trame. Mesurer les scanlines     }
+          { entre 2 VSYNC successifs pour detecter PAL vs NTSC.         }
+          If Not A2600_VSYNCAct Then Begin
+            If A2600_LastVsyncLine >= 0 Then Begin
+              A2600_FrameLineHist[A2600_FrameLineIdx] := A2600_ScanLine;
+              A2600_FrameLineIdx := (A2600_FrameLineIdx + 1) And $03;
+              { Mediane simple : si 2+ frames > 285, basculer PAL. }
+              I := 0;
+              If A2600_FrameLineHist[0] > 285 Then Inc(I);
+              If A2600_FrameLineHist[1] > 285 Then Inc(I);
+              If A2600_FrameLineHist[2] > 285 Then Inc(I);
+              If A2600_FrameLineHist[3] > 285 Then Inc(I);
+              If I >= 2 Then Begin
+                A2600_PAL := True;
+                A2600_LinesPerFrame := 312;
+              End Else Begin
+                A2600_PAL := False;
+                A2600_LinesPerFrame := 262;
+              End;
+            End;
+            A2600_LastVsyncLine := A2600_ScanLine;
+          End;
           A2600_VSYNCAct := True;
           A2600_ScanLine := 0;
           A2600_VisLine := 0;
@@ -36474,6 +36504,12 @@ Begin
   A2600_PadCharge[0] := 0; A2600_PadCharge[1] := 0;
   A2600_PadCharge[2] := 0; A2600_PadCharge[3] := 0;
   A2600_PadDumped := True;
+  A2600_LinesPerFrame := 262;
+  A2600_PAL := False;
+  A2600_LastVsyncLine := -1;
+  A2600_FrameLineHist[0] := 0; A2600_FrameLineHist[1] := 0;
+  A2600_FrameLineHist[2] := 0; A2600_FrameLineHist[3] := 0;
+  A2600_FrameLineIdx := 0;
   A2600_TimerVal := 0;
   A2600_TimerInterval := 0;     { 0 = pas de timer arme }
   A2600_TimerCyc := 0;
@@ -40585,15 +40621,15 @@ Begin NesActive := False;
       CPU6502_Mem[$028C + NesPrgBlocks * $0400] := $80;          { INPT4 }
      CPU6502_Mem[$028D + NesPrgBlocks * $0400] := $80;           { INPT5 }
     End;
-    { Executer une trame : 262 scanlines * ~25 instr = ~6550 instr }
+    { Executer une trame : 262 (NTSC) ou 312 (PAL) scanlines. }
     A2600_ScanLine := 0;
     A2600_VisLine := 0;
     A2600_CurY := 0;
     A2600_LastX := -1;
     A2600_HMOVEComb := False;
-    For NesPrgSize := 0 To 7000 Do Begin
+    For NesPrgSize := 0 To 8500 Do Begin
      If CPU6502_Halted Then Break;
-     If A2600_ScanLine >= 262 Then Break;
+     If A2600_ScanLine >= A2600_LinesPerFrame Then Break;
      CPU6502_Step;
      Inc(Steps);
      A2600_AfterInstr;
@@ -40602,7 +40638,11 @@ Begin NesActive := False;
     Inc(A2600_FrameNo);
     {$IFDEF WINDOWS}
     NesChrSize := GetTimestamp - EntryAddr;
-    If NesChrSize < 16 Then WinSleep(16 - NesChrSize);
+    If A2600_PAL Then Begin
+      If NesChrSize < 20 Then WinSleep(20 - NesChrSize);   { 50 Hz }
+    End Else Begin
+      If NesChrSize < 16 Then WinSleep(16 - NesChrSize);   { 60 Hz }
+    End;
     EntryAddr := GetTimestamp;
     {$ENDIF}
    End;
