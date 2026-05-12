@@ -3425,6 +3425,10 @@ Var
  A2600_RESMP0, A2600_RESMP1 : Boolean;
  { HMOVE comb : barre noire 0..7 sur ligne courante apres HMOVE strobe }
  A2600_HMOVEComb: Boolean;
+ { Phantom HMOVE (Pesco/He-Man) : strobe HMOVE en partie visible        }
+ { d une scanline produit un "comb" decale a la position X du strobe.  }
+ { -1 = pas de phantom comb actif sur la ligne courante.                }
+ A2600_PhantomCombX: Integer;
  { Rendu cycle-accurate intra-scanline : dernier X rendu (-1 = aucun) }
  A2600_LastX    : Integer;
  A2600_CurY     : Integer;     { ligne visible en cours de rendu }
@@ -36053,9 +36057,14 @@ Begin
           A2600_HMOVEComb := True;                  { comb pixels 0..7 }
           A2600_HMOVE_Start;
         End Else Begin
-          { Late HMOVE : strobe en partie visible. Le motion counter  }
-          { sera arme au debut du prochain scanline.                  }
-          A2600_HMOVEPending := True;
+          { Late/phantom HMOVE (Pesco, He-Man) : strobe en partie     }
+          { visible. Le motion counter demarre IMMEDIATEMENT (pas     }
+          { defere) et un "comb" noir de 8 pixels apparait a la       }
+          { position courante du faisceau (decale selon le timing du  }
+          { strobe). HBLANK n est PAS prolonge sur la ligne suivante. }
+          A2600_PhantomCombX := (A2600_LineCyc * 3) - 68;
+          If A2600_PhantomCombX < 0 Then A2600_PhantomCombX := 0;
+          A2600_HMOVE_Start;
         End;
        End;
       $2B: Begin                                    { HMCLR }
@@ -36303,6 +36312,12 @@ Begin
     { pixel-enable est inhibe -> aucun objet visible et aucun        }
     { comparateur de collision ne se latche.                          }
     If A2600_HMOVEComb And (X < 8) Then Begin
+      A2600_FB[Y, X] := 0;
+    End Else If (A2600_PhantomCombX >= 0)
+       And (X >= A2600_PhantomCombX)
+       And (X < A2600_PhantomCombX + 8) Then Begin
+      { Phantom HMOVE comb : barre noire decalee a la position du   }
+      { strobe HMOVE tardif. Aucun sprite, aucune collision latchee.}
       A2600_FB[Y, X] := 0;
     End Else Begin
     Pix := COLUBK;
@@ -36687,6 +36702,7 @@ Begin
     { Nouvelle scanline : reset etat de rendu intra-ligne. }
     A2600_LastX := -1;
     A2600_HMOVEComb := False;
+    A2600_PhantomCombX := -1;
     A2600_CurY := A2600_VisLine;
     A2600_ResetScanlineLatches;
     { Appliquer un HMOVE differe (strobe en partie visible de la ligne }
@@ -36721,6 +36737,7 @@ Begin
   A2600_HMOVE_Running := False;
   A2600_HMOVE_Counter := 0;
   For I := 0 To 4 Do A2600_HMxx_Active[I] := False;
+  A2600_PhantomCombX := -1;
   A2600_GRP0_New := 0; A2600_GRP0_Old := 0;
   A2600_GRP1_New := 0; A2600_GRP1_Old := 0;
   A2600_ENABL_New := 0; A2600_ENABL_Old := 0;
@@ -40982,6 +40999,7 @@ Begin NesActive := False;
     { Si le jeu ne strobe pas VSYNC (jeu bug), repli sur LinesPerFrame.  }
     A2600_FrameReady := False;
     A2600_HMOVEComb := False;
+    A2600_PhantomCombX := -1;
     For NesPrgSize := 0 To 8500 Do Begin
      If CPU6502_Halted Then Break;
      If A2600_FrameReady Then Break;
