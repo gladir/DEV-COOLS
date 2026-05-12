@@ -3459,6 +3459,13 @@ Var
  A2600_INPTLatchEn : Boolean;
  A2600_INPT4Latch  : Boolean;  { True = bouton memorise comme appuye }
  A2600_INPT5Latch  : Boolean;
+ { Paddles : 4 potentiometres. Le condensateur INPTx se charge via R }
+ { (proportionnel a la position) quand VBLANK.7=0. Quand le seuil    }
+ { est atteint, INPTx bit 7 passe a 1. VBLANK.7=1 court-circuite et  }
+ { force INPTx bit 7 a 0 (dump cap).                                 }
+ A2600_Paddle      : Array[0..3] Of Integer;   { position 0..255 }
+ A2600_PadCharge   : Array[0..3] Of Integer;   { compteur scanlines }
+ A2600_PadDumped   : Boolean;                  { VBLANK.7 = 1 }
  { Bankswitching : F8 (8K, 2 banques, hotspots $FFF8/$FFF9),             }
  {                 F6 (16K, 4 banques, hotspots $FFF6..$FFF9),           }
  {                 F4 (32K, 8 banques, hotspots $FFF4..$FFFB).           }
@@ -35701,6 +35708,16 @@ Begin
           A2600_INPT5Latch := False;
         End Else
           A2600_INPTLatchEn := True;
+        { bit 7 = dump cap des paddles INPT0-INPT3. Quand actif, le }
+        { condensateur est court-circuite : INPTx bit 7 = 0 et le   }
+        { compteur de charge reste a 0. A la fin (bit 7 -> 0), le   }
+        { compteur reprend a chaque scanline jusqu au seuil.        }
+        If (V And $80) <> 0 Then Begin
+          A2600_PadDumped := True;
+          A2600_PadCharge[0] := 0; A2600_PadCharge[1] := 0;
+          A2600_PadCharge[2] := 0; A2600_PadCharge[3] := 0;
+        End Else
+          A2600_PadDumped := False;
       End;
       $02: A2600_WSYNCWait := True;                 { WSYNC }
       { RESPx/RESMx/RESBL : le faisceau au moment du verrouillage est }
@@ -35829,7 +35846,7 @@ End;
 { Lecture cote 2600 : pour les TIA reads ($30-$3D), on retourne 0    }
 { (collisions non implementees). Pour RIOT, on retourne joystick.    }
 Function A2600_BusRead(EA: Word; Var Handled: Boolean): Byte;
-Var Joy: Byte; Lo: Word;
+Var Joy: Byte; Lo: Word; I: Integer;
 Begin
   Handled := False;
   A2600_BusRead := 0;
@@ -35871,6 +35888,13 @@ Begin
     Handled := True;
     Case EA And $0F Of
       $00..$07: A2600_BusRead := A2600_TIA[$30 + (EA And $07)];
+      $08, $09, $0A, $0B: Begin                 { INPT0..3 - paddles }
+        I := (EA And $0F) - $08;
+        If A2600_PadDumped Then A2600_BusRead := 0
+        Else If A2600_PadCharge[I] >= A2600_Paddle[I] Then
+          A2600_BusRead := $80
+        Else A2600_BusRead := 0;
+      End;
       $0C: Begin                                { INPT4 - fire P0 }
         If A2600_INPTLatchEn And A2600_KeyFire Then A2600_INPT4Latch := True;
         If (A2600_INPTLatchEn And A2600_INPT4Latch) Or A2600_KeyFire Then
@@ -36374,6 +36398,13 @@ Begin
     Inc(A2600_ScanLine);
     A2600_LineCyc := 0;
     A2600_LineInstr := 0;
+    { Charge des paddles : 1 scanline = 1 increment tant que VBLANK.7=0. }
+    If Not A2600_PadDumped Then Begin
+      Inc(A2600_PadCharge[0]);
+      Inc(A2600_PadCharge[1]);
+      Inc(A2600_PadCharge[2]);
+      Inc(A2600_PadCharge[3]);
+    End;
     { Nouvelle scanline : reset etat de rendu intra-ligne. }
     A2600_LastX := -1;
     A2600_HMOVEComb := False;
@@ -36437,6 +36468,12 @@ Begin
   A2600_INPTLatchEn := False;
   A2600_INPT4Latch := False;
   A2600_INPT5Latch := False;
+  { Paddles : positions par defaut au centre, dump actif a froid. }
+  A2600_Paddle[0] := 128; A2600_Paddle[1] := 128;
+  A2600_Paddle[2] := 128; A2600_Paddle[3] := 128;
+  A2600_PadCharge[0] := 0; A2600_PadCharge[1] := 0;
+  A2600_PadCharge[2] := 0; A2600_PadCharge[3] := 0;
+  A2600_PadDumped := True;
   A2600_TimerVal := 0;
   A2600_TimerInterval := 0;     { 0 = pas de timer arme }
   A2600_TimerCyc := 0;
@@ -40520,6 +40557,16 @@ Begin NesActive := False;
      A2600_KeyFire := True;             { Espace/Enter/Ctrl/Z/X = tir }
     If GetAsyncKeyState($1B) < 0 Then A2600_KeyEsc := True;
     {$ENDIF}
+    { Pour les jeux paddle : Left/Right deplacent le paddle 0.   }
+    { 1 frame = 1 pas de 4 unites (0..255).                       }
+    If (A2600_KeyJoy And 4) <> 0 Then Begin
+      Dec(A2600_Paddle[0], 4);
+      If A2600_Paddle[0] < 0 Then A2600_Paddle[0] := 0;
+    End;
+    If (A2600_KeyJoy And 8) <> 0 Then Begin
+      Inc(A2600_Paddle[0], 4);
+      If A2600_Paddle[0] > 255 Then A2600_Paddle[0] := 255;
+    End;
     { Mettre a jour CPU6502_Mem pour les LDA directs sur les ports.   }
     { RIOT I/O est mirrore aux 4 adresses ou bit12=0, bit7=1, bit9=1 :}
     { $0280, $0680, $0A80, $0E80 (+offset 0..$1F).                     }
