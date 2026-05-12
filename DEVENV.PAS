@@ -35889,16 +35889,33 @@ Var
   P0Off, P1Off: Array[0..2] Of Integer;
   M0RX, M1RX: Integer;
 
+  { Pipeline TIA player : compteur 40-cycle / 160 color clocks.       }
+  { Pour chaque position de "start" (PxX + Offset[K]) modulo 160, le  }
+  { shift register emet 8 bits a la cadence 1/2/4 cc selon stretch.   }
   Function PlayerPixel(GR, REF: Byte; Stretch: Integer; Dx: Integer): Boolean;
-  Var Bit: Integer;
+  Var Bit, D: Integer;
   Begin
     PlayerPixel := False;
     If GR = 0 Then Exit;
-    If (Dx < 0) Or (Dx >= 8 * Stretch) Then Exit;
-    Bit := Dx Div Stretch;
+    { Wrap modulo 160 : sprite proche bord droit reapparait a gauche. }
+    D := Dx;
+    If D < 0 Then D := D + 160;
+    If D >= 160 Then D := D - 160;
+    If (D < 0) Or (D >= 8 * Stretch) Then Exit;
+    Bit := D Div Stretch;
     If (REF And $08) <> 0 Then Bit := Bit
     Else Bit := 7 - Bit;
     PlayerPixel := ((GR Shr Bit) And 1) <> 0;
+  End;
+
+  { Missile/balle : 1-8 cc actifs, avec wrap modulo 160. }
+  Function MissilePixel(Size, Dx: Integer): Boolean;
+  Var D: Integer;
+  Begin
+    D := Dx;
+    If D < 0 Then D := D + 160;
+    If D >= 160 Then D := D - 160;
+    MissilePixel := (D >= 0) And (D < Size);
   End;
 
 Begin
@@ -35998,18 +36015,18 @@ Begin
     If (ENAM0 And $02) <> 0 Then
       For K := 0 To P0Cnt - 1 Do Begin
         Dx := X - (M0RX + P0Off[K]);
-        If (Dx >= 0) And (Dx < M0Size) Then M0Pix := COLUP0;
+        If MissilePixel(M0Size, Dx) Then M0Pix := COLUP0;
       End;
     M1Pix := 0;
     If (ENAM1 And $02) <> 0 Then
       For K := 0 To P1Cnt - 1 Do Begin
         Dx := X - (M1RX + P1Off[K]);
-        If (Dx >= 0) And (Dx < M1Size) Then M1Pix := COLUP1;
+        If MissilePixel(M1Size, Dx) Then M1Pix := COLUP1;
       End;
-    { Balle (taille variable, pas de copies). }
+    { Balle (taille variable, pas de copies, wrap 160). }
     BLPix := 0;
     Tmp := X - A2600_BLX;
-    If ((ENABL And $02) <> 0) And (Tmp >= 0) And (Tmp < BSize) Then
+    If ((ENABL And $02) <> 0) And MissilePixel(BSize, Tmp) Then
       BLPix := COLUPF;
     { Priorite TIA (du plus faible au plus eleve, dernier ecrit gagne). }
     { Defaut    : BK < PF/BL < P1/M1 < P0/M0                            }
