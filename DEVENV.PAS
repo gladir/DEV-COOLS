@@ -3402,10 +3402,19 @@ Var
  A2600_P1X      : Integer;
  A2600_M0X, A2600_M1X, A2600_BLX : Integer;
  A2600_HMP0, A2600_HMP1, A2600_HMM0, A2600_HMM1, A2600_HMBL : ShortInt;
- { HMOVE differe : strobe en dehors de HBLANK -> applique au scanline }
- { suivant pendant son HBLANK (Stella-accurate "late HMOVE").         }
+ { HMOVE differe : strobe en partie visible -> declenche motion au }
+ { scanline suivant (Stella-accurate "late HMOVE").                }
  A2600_HMOVEPending  : Boolean;
- A2600_HMP0_P, A2600_HMP1_P, A2600_HMM0_P, A2600_HMM1_P, A2600_HMBL_P : ShortInt;
+ { Pipeline TIA HMOVE per-object cycle-accurate :                  }
+ {  - HMOVE_Counter : compteur 4-bit (0..15) qui s'incremente a    }
+ {    chaque tick (1 par cycle CPU).                               }
+ {  - HMxx_Active   : flag par objet (P0,P1,M0,M1,BL). Tant qu il  }
+ {    est True ET que Counter < |HMx|, l objet recoit un "extra    }
+ {    clock" (motion -1 dans le sens du signe). Une fois clear, le }
+ {    flag est LATCH False (ne reactive plus dans la meme passe).  }
+ A2600_HMOVE_Counter : Integer;
+ A2600_HMOVE_Running : Boolean;
+ A2600_HMxx_Active   : Array[0..4] Of Boolean;
  { Double-buffer GRP0/GRP1/ENABL pour VDELP0/VDELP1/VDELBL (2-line kernels) }
  A2600_GRP0_New, A2600_GRP0_Old : Byte;
  A2600_GRP1_New, A2600_GRP1_Old : Byte;
@@ -34498,6 +34507,8 @@ Procedure A2600_LatchPlayer(Which: Integer; BeamX: Integer); Forward;
 Procedure A2600_LatchMissile(Which: Integer; BeamX: Integer); Forward;
 Procedure A2600_LatchBall(BeamX: Integer); Forward;
 Procedure A2600_LatchAll(BeamX: Integer); Forward;
+Procedure A2600_HMOVE_Start; Forward;
+Procedure A2600_HMOVE_TickN(N: Integer); Forward;
 Function NesBus_Write(EA: Word; V: Byte): Boolean; Forward;
 
 Function CPU6502_Read(Addr: Word): Byte;
@@ -35754,48 +35765,26 @@ Begin
       $28: A2600_RESMP0 := (V And $02) <> 0;        { RESMP0 }
       $29: A2600_RESMP1 := (V And $02) <> 0;        { RESMP1 }
       $2A: Begin                                    { HMOVE }
-        { HMOVE doit etre strobe dans les 24 premiers cycles CPU du }
-        { scanline (avant que HBLANK se termine, cycle 23/24 ~= 68  }
-        { color clocks). Sinon, mouvement non applique.             }
+        { Pipeline cycle-accurate : arme le motion counter. Les ticks }
+        { sont appliques progressivement par AfterInstr pendant les   }
+        { ~22 cycles de HBLANK. HMx mid-HBLANK et HMCLR mid-HBLANK    }
+        { sont correctement geres par le tick loop (lecture LIVE).    }
         If A2600_LineCyc < 24 Then Begin
           A2600_HMOVEComb := True;                  { comb pixels 0..7 }
-          { Early HMOVE clock : strobe pendant HBLANK donne 8 clocks }
-          { de mouvement supplementaire (deplacement -8 de plus).    }
-          A2600_P0X := A2600_P0X - A2600_HMP0;
-          A2600_P1X := A2600_P1X - A2600_HMP1;
-          A2600_M0X := A2600_M0X - A2600_HMM0;
-          A2600_M1X := A2600_M1X - A2600_HMM1;
-          A2600_BLX := A2600_BLX - A2600_HMBL;
-          If A2600_P0X < 0 Then A2600_P0X := A2600_P0X + 160;
-          If A2600_P0X > 159 Then A2600_P0X := A2600_P0X - 160;
-          If A2600_P1X < 0 Then A2600_P1X := A2600_P1X + 160;
-          If A2600_P1X > 159 Then A2600_P1X := A2600_P1X - 160;
-          If A2600_M0X < 0 Then A2600_M0X := A2600_M0X + 160;
-          If A2600_M0X > 159 Then A2600_M0X := A2600_M0X - 160;
-          If A2600_M1X < 0 Then A2600_M1X := A2600_M1X + 160;
-          If A2600_M1X > 159 Then A2600_M1X := A2600_M1X - 160;
-          If A2600_BLX < 0 Then A2600_BLX := A2600_BLX + 160;
-          If A2600_BLX > 159 Then A2600_BLX := A2600_BLX - 160;
+          A2600_HMOVE_Start;
         End Else Begin
-          { Late HMOVE : strobe pendant la partie visible.            }
-          { Snapshot des HM* maintenant (les valeurs peuvent changer  }
-          { avant que le mouvement s applique au prochain HBLANK).    }
+          { Late HMOVE : strobe en partie visible. Le motion counter  }
+          { sera arme au debut du prochain scanline.                  }
           A2600_HMOVEPending := True;
-          A2600_HMP0_P := A2600_HMP0;
-          A2600_HMP1_P := A2600_HMP1;
-          A2600_HMM0_P := A2600_HMM0;
-          A2600_HMM1_P := A2600_HMM1;
-          A2600_HMBL_P := A2600_HMBL;
         End;
        End;
       $2B: Begin                                    { HMCLR }
         A2600_HMP0 := 0; A2600_HMP1 := 0;
         A2600_HMM0 := 0; A2600_HMM1 := 0;
         A2600_HMBL := 0;
-        { HMCLR efface aussi le snapshot d un HMOVE differe. }
-        A2600_HMP0_P := 0; A2600_HMP1_P := 0;
-        A2600_HMM0_P := 0; A2600_HMM1_P := 0;
-        A2600_HMBL_P := 0;
+        { HMCLR mid-HBLANK : avec HMx=0, le prochain tick voit HM=0,  }
+        { le comparateur "Counter <= |HM|" est faux, et chaque flag   }
+        { Active passe a False -> motion stoppee proprement.          }
        End;
       $2C: Begin                                    { CXCLR }
         A2600_TIA[$30] := 0; A2600_TIA[$31] := 0;
@@ -36284,6 +36273,62 @@ Begin
       A2600_RenderRange(A2600_CurY, A2600_LastX + 1, NewX - 1);
   If NewX - 1 > A2600_LastX Then A2600_LastX := NewX - 1;
 End;
+
+{ HMOVE pipeline per-object cycle-accurate.                               }
+{ Le strobe HMOVE arme HMOVE_Running. Chaque tick (1 par cycle CPU)       }
+{ incremente HMOVE_Counter et, pour chaque objet encore Active, applique  }
+{ un "extra clock" si Counter <= |HMx_live| (lecture LIVE chaque tick :   }
+{ une ecriture HMx mid-HBLANK affecte le comparateur). Quand Counter      }
+{ depasse, le flag Active passe a False et reste latche False jusqu au    }
+{ prochain HMOVE_Start.                                                   }
+Procedure A2600_HMOVE_Start;
+Var K: Integer;
+Begin
+  A2600_HMOVE_Running := True;
+  A2600_HMOVE_Counter := 0;
+  For K := 0 To 4 Do A2600_HMxx_Active[K] := True;
+End;
+
+Procedure A2600_HMOVE_TickN(N: Integer);
+Var T, K: Integer; HM: ShortInt; NewX: Integer;
+Begin
+  If Not A2600_HMOVE_Running Then Exit;
+  For T := 1 To N Do Begin
+    Inc(A2600_HMOVE_Counter);
+    If A2600_HMOVE_Counter > 15 Then Begin
+      A2600_HMOVE_Running := False;
+      Exit;
+    End;
+    For K := 0 To 4 Do Begin
+      If A2600_HMxx_Active[K] Then Begin
+        HM := 0; NewX := 0;
+        Case K Of
+          0: Begin HM := A2600_HMP0; NewX := A2600_P0X; End;
+          1: Begin HM := A2600_HMP1; NewX := A2600_P1X; End;
+          2: Begin HM := A2600_HMM0; NewX := A2600_M0X; End;
+          3: Begin HM := A2600_HMM1; NewX := A2600_M1X; End;
+          4: Begin HM := A2600_HMBL; NewX := A2600_BLX; End;
+        End;
+        If (HM > 0) And (A2600_HMOVE_Counter <= HM) Then Begin
+          Dec(NewX);
+          If NewX < 0 Then NewX := NewX + 160;
+        End Else If (HM < 0) And (A2600_HMOVE_Counter <= -HM) Then Begin
+          Inc(NewX);
+          If NewX > 159 Then NewX := NewX - 160;
+        End Else
+          A2600_HMxx_Active[K] := False;
+        Case K Of
+          0: A2600_P0X := NewX;
+          1: A2600_P1X := NewX;
+          2: A2600_M0X := NewX;
+          3: A2600_M1X := NewX;
+          4: A2600_BLX := NewX;
+        End;
+      End;
+    End;
+  End;
+End;
+
 { Approxime 3 cycles par instruction (moyenne 6507). 76 cycles par  }
 { scanline. WSYNC : termine immediatement le scanline courant.      }
 Procedure A2600_AfterInstr;
@@ -36291,6 +36336,8 @@ Var I: Integer; TimRd, StatRd: Byte;
 Begin
   Inc(A2600_LineInstr);
   Inc(A2600_LineCyc, 3);
+  { Tick du pipeline HMOVE (3 ticks par instruction = 3 cycles CPU). }
+  If A2600_HMOVE_Running Then A2600_HMOVE_TickN(3);
   { Latch INPT4/5 : capture appui transitoire entre 2 lectures. }
   If A2600_INPTLatchEn Then Begin
     If A2600_KeyFire Then A2600_INPT4Latch := True;
@@ -36333,26 +36380,12 @@ Begin
     A2600_CurY := A2600_VisLine;
     A2600_ResetScanlineLatches;
     { Appliquer un HMOVE differe (strobe en partie visible de la ligne }
-    { precedente). Mouvement pendant HBLANK du nouveau scanline avec   }
-    { comb visible.                                                    }
+    { precedente). Arme le motion counter ; ticks pendant les ~7       }
+    { instructions de HBLANK du nouveau scanline.                      }
     If A2600_HMOVEPending Then Begin
       A2600_HMOVEPending := False;
       A2600_HMOVEComb := True;
-      A2600_P0X := A2600_P0X - A2600_HMP0_P;
-      A2600_P1X := A2600_P1X - A2600_HMP1_P;
-      A2600_M0X := A2600_M0X - A2600_HMM0_P;
-      A2600_M1X := A2600_M1X - A2600_HMM1_P;
-      A2600_BLX := A2600_BLX - A2600_HMBL_P;
-      If A2600_P0X < 0 Then A2600_P0X := A2600_P0X + 160;
-      If A2600_P0X > 159 Then A2600_P0X := A2600_P0X - 160;
-      If A2600_P1X < 0 Then A2600_P1X := A2600_P1X + 160;
-      If A2600_P1X > 159 Then A2600_P1X := A2600_P1X - 160;
-      If A2600_M0X < 0 Then A2600_M0X := A2600_M0X + 160;
-      If A2600_M0X > 159 Then A2600_M0X := A2600_M0X - 160;
-      If A2600_M1X < 0 Then A2600_M1X := A2600_M1X + 160;
-      If A2600_M1X > 159 Then A2600_M1X := A2600_M1X - 160;
-      If A2600_BLX < 0 Then A2600_BLX := A2600_BLX + 160;
-      If A2600_BLX > 159 Then A2600_BLX := A2600_BLX - 160;
+      A2600_HMOVE_Start;
     End;
   End;
 End;
@@ -36375,8 +36408,9 @@ Begin
   A2600_HMP0 := 0; A2600_HMP1 := 0;
   A2600_HMM0 := 0; A2600_HMM1 := 0; A2600_HMBL := 0;
   A2600_HMOVEPending := False;
-  A2600_HMP0_P := 0; A2600_HMP1_P := 0;
-  A2600_HMM0_P := 0; A2600_HMM1_P := 0; A2600_HMBL_P := 0;
+  A2600_HMOVE_Running := False;
+  A2600_HMOVE_Counter := 0;
+  For I := 0 To 4 Do A2600_HMxx_Active[I] := False;
   A2600_GRP0_New := 0; A2600_GRP0_Old := 0;
   A2600_GRP1_New := 0; A2600_GRP1_Old := 0;
   A2600_ENABL_New := 0; A2600_ENABL_Old := 0;
