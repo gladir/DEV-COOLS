@@ -3329,6 +3329,7 @@ Var
  CPU6502_ExitCode: Integer;
  CPU6502_Cycles : LongInt;
  CPU6502_LastCyc: Integer;    { cycles de la derniere instruction       }
+ CPU6502_DataBus: Byte;       { dernier octet sur le data bus (open-bus)}
  CPU6502_Panel  : ^TEmulatorPanel;
  CPU6502_Variant: Integer;    { 0=AppleII 1=C64 2=Atari 3=NES 4=A2600 }
  { --- Etat NES complet (variant=3) ----------------------------------- }
@@ -34555,13 +34556,19 @@ Var V: Byte; H: Boolean;
 Begin
   If CPU6502_Variant = 4 Then Begin
     V := A2600_BusRead(Addr, H);
-    If H Then Begin CPU6502_Read := V; Exit; End;
+    If H Then Begin
+      CPU6502_DataBus := V;
+      CPU6502_Read := V;
+      Exit;
+    End;
   End;
-  CPU6502_Read := CPU6502_Mem[Addr];
+  CPU6502_DataBus := CPU6502_Mem[Addr];
+  CPU6502_Read := CPU6502_DataBus;
 End;
 
 Procedure CPU6502_Write(Addr: Word; V: Byte);
 Begin
+  CPU6502_DataBus := V;
   If CPU6502_Variant = 4 Then Begin
     A2600_BusWrite(Addr, V);
     Exit;
@@ -36159,27 +36166,30 @@ Begin
   If (EA And $0080) = 0 Then Begin             { TIA read }
     Handled := True;
     Case EA And $0F Of
-      $00..$07: A2600_BusRead := A2600_TIA[$30 + (EA And $07)];
+      $00..$07: { CXxx : TIA drive D7 et D6 seulement. D5..D0 = open bus }
+        A2600_BusRead := (A2600_TIA[$30 + (EA And $07)] And $C0)
+                      Or (CPU6502_DataBus And $3F);
       $08, $09, $0A, $0B: Begin                 { INPT0..3 - paddles }
         I := (EA And $0F) - $08;
-        If A2600_PadDumped Then A2600_BusRead := 0
+        If A2600_PadDumped Then A2600_BusRead := (CPU6502_DataBus And $7F)
         Else If A2600_PadCharge[I] >= A2600_Paddle[I] Then
-          A2600_BusRead := $80
-        Else A2600_BusRead := 0;
+          A2600_BusRead := $80 Or (CPU6502_DataBus And $7F)
+        Else A2600_BusRead := (CPU6502_DataBus And $7F);
       End;
       $0C: Begin                                { INPT4 - fire P0 }
         If A2600_INPTLatchEn And A2600_KeyFire Then A2600_INPT4Latch := True;
         If (A2600_INPTLatchEn And A2600_INPT4Latch) Or A2600_KeyFire Then
-          A2600_BusRead := 0
-        Else A2600_BusRead := $80;
+          A2600_BusRead := (CPU6502_DataBus And $7F)
+        Else A2600_BusRead := $80 Or (CPU6502_DataBus And $7F);
       End;
       $0D: Begin                                { INPT5 - fire P1 }
         If (A2600_INPTLatchEn And A2600_INPT5Latch) Then
-          A2600_BusRead := 0
-        Else A2600_BusRead := $80;
+          A2600_BusRead := (CPU6502_DataBus And $7F)
+        Else A2600_BusRead := $80 Or (CPU6502_DataBus And $7F);
       End;
     Else
-      A2600_BusRead := 0;
+      { $0E, $0F : non connecte -> pure open bus. }
+      A2600_BusRead := CPU6502_DataBus;
     End;
     Exit;
   End;
