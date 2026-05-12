@@ -1350,6 +1350,7 @@ Const
 
  { Terminal integre }
  MAX_TERM_LINES        = 200;     { lignes de buffer du terminal   }
+ MAX_TERM_HIST_LINES   = 5000;    { historique d affichage maxi    }
  TERM_LINE_HEIGHT      = 14;      { hauteur d une ligne en pixels  }
  TERM_CHAR_WIDTH       = 8;       { largeur d un caractere         }
  TERM_TAB_HEIGHT       = 22;      { hauteur de l onglet terminal   }
@@ -1358,6 +1359,8 @@ Const
  TERM_SELECT_WIDTH     = 180;     { largeur du selecteur deroulant }
  TERM_SELECT_HEIGHT    = 18;      { hauteur du selecteur ferme     }
  TERM_SELECT_ITEM_H    = 18;      { hauteur d un item dans la liste}
+ TERM_SCROLLBAR_WIDTH  = 14;      { largeur barre defilement term  }
+ TERM_SCROLL_BTN_H     = 14;      { hauteur boutons fleche scrollb }
 
  { Codes de retour }
  EXIT_OK               = 0;
@@ -1434,6 +1437,8 @@ Type
   EmuTarget       : TString;   { ex: '-CNES', '-CAMIGA', '-CC64'    }
   EmuFile         : TString;   { chemin du binaire a charger        }
   EmuArgs         : TString;   { arguments passes au programme emule}
+  DiskImg0        : TString;   { /DISK0:fichier.img -> unite A:     }
+  DiskImg1        : TString;   { /DISK1:fichier.img -> unite B:     }
  End;
 
  { Types d evenements }
@@ -2077,11 +2082,23 @@ Type
  { Type de shell du terminal }
  TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_AMIGADOS);
 
+ { Noeud de liste chainee pour l historique d affichage du terminal }
+ PTermLine = ^TTermLine;
+ TTermLine = Record
+  S    : String;
+  Prev : PTermLine;
+  Next : PTermLine;
+ End;
+
  { Terminal integre }
  TTerminalPanel = Record
   Lines     : Array[0..MAX_TERM_LINES - 1] Of String;
   LineCount : Integer;             { nombre de lignes dans le buffer}
-  ScrollTop : Integer;             { premiere ligne visible         }
+  ScrollTop : Integer;             { premiere ligne visible (legacy)}
+  HistHead  : PTermLine;           { tete de liste (plus ancien)    }
+  HistTail  : PTermLine;           { queue de liste (plus recent)   }
+  HistCount : LongInt;             { nombre de noeuds en liste      }
+  ScrollOffset: LongInt;           { 0=bas, N=remonte de N lignes   }
   InputLine : String;              { ligne de saisie en cours       }
   InputCol  : Integer;             { position du curseur de saisie  }
   PartialLine: String;             { fragment de ligne incomplete   }
@@ -2098,6 +2115,29 @@ Type
   HistoryPos: Integer;             { position courante dans l histo }
   DirStack  : Array[1..MAX_TERM_DIRSTACK] Of String;
   NumberDirStack: Integer;         { taille de la pile repertoires  }
+  VirtDrive : ShortInt;            { -1=hote, 0=A:, 1=B:            }
+  VirtCwd   : String;              { chemin courant sur disque virt }
+ End;
+
+ { Etat d un disque virtuel FAT12/16 monte via /DISK0 ou /DISK1 }
+ TFatVol = Record
+  Mounted        : Boolean;
+  FATType        : Byte;           { 12 ou 16                       }
+  BytesPerSector : Word;
+  SectorsPerCluster: Byte;
+  ReservedSectors: Word;
+  NumFATs        : Byte;
+  RootEntries    : Word;
+  TotalSectors   : LongInt;
+  SectorsPerFAT  : LongInt;
+  FATStart       : LongInt;
+  RootStart      : LongInt;
+  DataStart      : LongInt;
+  RootDirSectors : LongInt;
+  ClusterCount   : LongInt;
+  VolLabel       : String[11];
+  CachedFatLBA   : LongInt;
+  CachedFatBuf   : Array[0..511] Of Byte;
  End;
 
  { Severite d une erreur }
@@ -3149,6 +3189,18 @@ Var
  EmuIoBuf       : Array[0..2047] Of Byte; { buffer global pour AH=3F/40 (eviter stack overflow) }
  EmuFileName    : Array[5..31] Of String;
  EmuFileMode    : Array[5..31] Of Byte;  { 0=read 1=write 2=rw }
+ { --- Images disquettes A:/B: pour INT 13h (option /DISK0:/DISK1:) --- }
+ EmuFloppyOpen  : Array[0..1] Of Boolean;
+ EmuFloppyFile  : Array[0..1] Of File;
+ EmuFloppyName  : Array[0..1] Of String;
+ EmuFloppyCyls  : Array[0..1] Of Word;    { nb cylindres }
+ EmuFloppyHeads : Array[0..1] Of Byte;    { nb tetes (1 ou 2) }
+ EmuFloppySpt   : Array[0..1] Of Byte;    { secteurs par piste }
+ EmuFloppyType  : Array[0..1] Of Byte;    { code BIOS drive type }
+ EmuFloppySize  : Array[0..1] Of LongInt; { taille totale en octets }
+ EmuFloppyRO    : Array[0..1] Of Boolean; { ouvert en lecture seule  }
+ EmuFloppyMotor : Byte;                   { etat moteur drive ($40:$3F) }
+ FatVol         : Array[0..1] Of TFatVol; { volumes FAT12/16 montes  }
  EmuDtaSeg      : Word;
  EmuDtaOfs      : Word;
  EmuPspSeg      : Word;     { segment du PSP du programme courant }
@@ -3671,6 +3723,13 @@ Begin
  WriteLn('                 XXX = NES, AMIGA, ATARIST, C64, APPLEII,');
  WriteLn('                       ATARI400, ATARI800, ATARI2600, MSX,');
  WriteLn('                       TRS80, ADAM, COCO3, TO7, CRAY1, ...');
+ WriteLn('  /DISK0:img     Image disquette montee sur l unite A: (DOS)');
+ WriteLn('  /DISK1:img     Image disquette montee sur l unite B: (DOS)');
+ WriteLn('                 Formats: .IMG/.IMA brutes (160/180/320/360/720');
+ WriteLn('                          /1200/1440/2880 Ko).');
+ WriteLn('                 Le terminal CMD/PowerShell integre peut');
+ WriteLn('                 utiliser A: ou B: et les commandes DIR,');
+ WriteLn('                 TYPE, CD, VOL pour explorer l image (FAT12/16).');
  WriteLn('  -h             Afficher cette aide');
  WriteLn('  --help         Afficher cette aide');
  WriteLn;
@@ -3704,6 +3763,8 @@ Begin
  Opts.EmuTarget       := '';
  Opts.EmuFile         := '';
  Opts.EmuArgs         := '';
+ Opts.DiskImg0        := '';
+ Opts.DiskImg1        := '';
 End;
 
 { --- Analyse de la ligne de commande --- }
@@ -3779,6 +3840,28 @@ Begin
     FatalError('Fichier introuvable: ' + EmuFn);
    Opts.EmuFile := EmuFn;
    Opts.EmuMode := True;
+  End
+  Else If (Length(Arg) >= 7) And
+          ((Copy(Arg, 1, 7) = '/DISK0:') Or (Copy(Arg, 1, 7) = '/disk0:') Or
+           (Copy(Arg, 1, 7) = '-DISK0:') Or (Copy(Arg, 1, 7) = '-disk0:') Or
+           (Copy(Arg, 1, 7) = '/Disk0:') Or (Copy(Arg, 1, 7) = '-Disk0:')) Then Begin
+   EmuFn := Copy(Arg, 8, Length(Arg) - 7);
+   If EmuFn = '' Then
+    FatalError('Syntaxe /DISK0 attendue : /DISK0:fichier.img');
+   If Not FileExists(EmuFn) Then
+    FatalError('Image disque introuvable: ' + EmuFn);
+   Opts.DiskImg0 := EmuFn;
+  End
+  Else If (Length(Arg) >= 7) And
+          ((Copy(Arg, 1, 7) = '/DISK1:') Or (Copy(Arg, 1, 7) = '/disk1:') Or
+           (Copy(Arg, 1, 7) = '-DISK1:') Or (Copy(Arg, 1, 7) = '-disk1:') Or
+           (Copy(Arg, 1, 7) = '/Disk1:') Or (Copy(Arg, 1, 7) = '-Disk1:')) Then Begin
+   EmuFn := Copy(Arg, 8, Length(Arg) - 7);
+   If EmuFn = '' Then
+    FatalError('Syntaxe /DISK1 attendue : /DISK1:fichier.img');
+   If Not FileExists(EmuFn) Then
+    FatalError('Image disque introuvable: ' + EmuFn);
+   Opts.DiskImg1 := EmuFn;
   End
   Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
    FatalError('Option inconnue: ' + Arg)
@@ -16946,6 +17029,8 @@ End;
 { --- Ajouter une ligne au buffer du terminal --- }
 
 Procedure TermAddLine(Var TP: TTerminalPanel; S: String);
+Var
+ Node, Old: PTermLine;
 Begin
  If TP.LineCount < MAX_TERM_LINES Then Begin
   TP.Lines[TP.LineCount] := S;
@@ -16956,7 +17041,32 @@ Begin
    (MAX_TERM_LINES - 1) * SizeOf(String));
   TP.Lines[MAX_TERM_LINES - 1] := S;
  End;
- { Auto-scroll vers le bas }
+ { Ajouter aussi a la liste chainee (historique d affichage) }
+ New(Node);
+ Node^.S := S;
+ Node^.Prev := TP.HistTail;
+ Node^.Next := Nil;
+ If TP.HistTail <> Nil Then TP.HistTail^.Next := Node
+ Else TP.HistHead := Node;
+ TP.HistTail := Node;
+ Inc(TP.HistCount);
+ { Cap maximum : retirer la tete }
+ While TP.HistCount > MAX_TERM_HIST_LINES Do Begin
+  Old := TP.HistHead;
+  If Old = Nil Then Break;
+  TP.HistHead := Old^.Next;
+  If TP.HistHead <> Nil Then TP.HistHead^.Prev := Nil
+  Else TP.HistTail := Nil;
+  Dispose(Old);
+  Dec(TP.HistCount);
+ End;
+ { Si l utilisateur a remonte dans l historique, garder son point
+   de vue stable en suivant les nouvelles lignes. }
+ If TP.ScrollOffset > 0 Then Begin
+  Inc(TP.ScrollOffset);
+  If TP.ScrollOffset >= TP.HistCount Then
+   TP.ScrollOffset := TP.HistCount - 1;
+ End;
  TP.NeedRepaint := True;
 End;
 
@@ -17155,6 +17265,738 @@ Begin
 End;
 
 { ============================================================
+  ACCES FAT12/16 POUR LE TERMINAL INTEGRE
+  ============================================================
+  Les images montees via /DISK0 et /DISK1 sont lues directement
+  depuis EmuFloppyFile[]. Ces helpers fournissent une couche
+  read-only suffisante pour DIR / CD / TYPE / VOL. }
+
+Function Fat_ReadSector(Idx: Byte; LBA: LongInt;
+ Var Buf: Array Of Byte): Boolean;
+Var
+ BR: Word;
+Begin
+ Fat_ReadSector := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ If LBA < 0 Then Exit;
+ If LBA >= (EmuFloppySize[Idx] Div 512) Then Exit;
+ {$I-}
+ Seek(EmuFloppyFile[Idx], LBA * 512);
+ If IOResult <> 0 Then Exit;
+ BR := 0;
+ BlockRead(EmuFloppyFile[Idx], Buf, 512, BR);
+ {$I+} If IOResult <> 0 Then Exit;
+ Fat_ReadSector := (BR = 512);
+End;
+
+Function Fat_LE16(Var Buf: Array Of Byte; Off: Integer): Word;
+Begin
+ Fat_LE16 := Word(Buf[Off]) Or (Word(Buf[Off + 1]) Shl 8);
+End;
+
+Function Fat_LE32(Var Buf: Array Of Byte; Off: Integer): LongInt;
+Begin
+ Fat_LE32 := LongInt(Buf[Off]) +
+             LongInt(Buf[Off + 1]) * 256 +
+             LongInt(Buf[Off + 2]) * 65536 +
+             LongInt(Buf[Off + 3]) * 16777216;
+End;
+
+Procedure Fat_TryMount(Idx: Byte);
+Var
+ Buf: Array[0..511] Of Byte;
+ BPS: Word;
+ SPC: Byte;
+ TS16: Word;
+ TS32: LongInt;
+ SPF: Word;
+ V: TFatVol;
+ I: Integer;
+ C: Char;
+Begin
+ FillChar(V, SizeOf(V), 0);
+ V.Mounted := False;
+ V.CachedFatLBA := -1;
+ If Not EmuFloppyOpen[Idx] Then Begin
+  FatVol[Idx] := V;
+  Exit;
+ End;
+ If Not Fat_ReadSector(Idx, 0, Buf) Then Begin
+  FatVol[Idx] := V;
+  Exit;
+ End;
+ BPS := Fat_LE16(Buf, 11);
+ SPC := Buf[13];
+ If (BPS <> 512) Or (SPC = 0) Then Begin
+  FatVol[Idx] := V;
+  Exit;
+ End;
+ V.BytesPerSector   := BPS;
+ V.SectorsPerCluster := SPC;
+ V.ReservedSectors  := Fat_LE16(Buf, 14);
+ V.NumFATs          := Buf[16];
+ V.RootEntries      := Fat_LE16(Buf, 17);
+ TS16               := Fat_LE16(Buf, 19);
+ TS32               := Fat_LE32(Buf, 32);
+ If TS16 <> 0 Then V.TotalSectors := TS16
+              Else V.TotalSectors := TS32;
+ SPF                := Fat_LE16(Buf, 22);
+ V.SectorsPerFAT    := SPF;
+ If (V.NumFATs = 0) Or (V.ReservedSectors = 0) Or
+    (V.SectorsPerFAT = 0) Or (V.RootEntries = 0) Or
+    (V.TotalSectors = 0) Then Begin
+  FatVol[Idx] := V;
+  Exit;
+ End;
+ V.FATStart       := V.ReservedSectors;
+ V.RootStart      := V.FATStart + LongInt(V.NumFATs) * V.SectorsPerFAT;
+ V.RootDirSectors := (LongInt(V.RootEntries) * 32 + 511) Div 512;
+ V.DataStart      := V.RootStart + V.RootDirSectors;
+ V.ClusterCount   := (V.TotalSectors - (V.ReservedSectors +
+                       LongInt(V.NumFATs) * V.SectorsPerFAT +
+                       V.RootDirSectors)) Div V.SectorsPerCluster;
+ If V.ClusterCount < 4085 Then V.FATType := 12
+ Else If V.ClusterCount < 65525 Then V.FATType := 16
+ Else Begin
+  { FAT32 non supporte pour le moment }
+  FatVol[Idx] := V;
+  Exit;
+ End;
+ { Label de volume : champ a offset 43 du BPB (11 octets) }
+ V.VolLabel := '';
+ For I := 0 To 10 Do Begin
+  C := Chr(Buf[43 + I]);
+  If C = ' ' Then Continue;
+  If (Buf[43 + I] < 32) Or (Buf[43 + I] > 126) Then Begin
+   V.VolLabel := '';
+   Break;
+  End;
+  V.VolLabel := V.VolLabel + C;
+ End;
+ V.Mounted := True;
+ FatVol[Idx] := V;
+End;
+
+Function Fat_FATByte(Idx: Byte; Offset: LongInt): Byte;
+Var
+ LBA: LongInt;
+ Within: Word;
+Begin
+ Fat_FATByte := 0;
+ LBA := FatVol[Idx].FATStart + (Offset Div 512);
+ Within := Word(Offset Mod 512);
+ If LBA <> FatVol[Idx].CachedFatLBA Then Begin
+  If Not Fat_ReadSector(Idx, LBA, FatVol[Idx].CachedFatBuf) Then Exit;
+  FatVol[Idx].CachedFatLBA := LBA;
+ End;
+ Fat_FATByte := FatVol[Idx].CachedFatBuf[Within];
+End;
+
+Function Fat_NextCluster(Idx: Byte; Cl: LongInt): LongInt;
+Var
+ O: LongInt;
+ B1, B2: Byte;
+ V: LongInt;
+Begin
+ If FatVol[Idx].FATType = 12 Then Begin
+  O := Cl + (Cl Div 2);
+  B1 := Fat_FATByte(Idx, O);
+  B2 := Fat_FATByte(Idx, O + 1);
+  V := Word(B1) Or (Word(B2) Shl 8);
+  If (Cl And 1) <> 0 Then V := V Shr 4
+                     Else V := V And $0FFF;
+  Fat_NextCluster := V;
+ End Else Begin
+  O := Cl * 2;
+  Fat_NextCluster := Word(Fat_FATByte(Idx, O)) Or
+                     (Word(Fat_FATByte(Idx, O + 1)) Shl 8);
+ End;
+End;
+
+Function Fat_IsEOC(Idx: Byte; Cl: LongInt): Boolean;
+Begin
+ If FatVol[Idx].FATType = 12 Then Fat_IsEOC := Cl >= $0FF8
+ Else Fat_IsEOC := Cl >= $FFF8;
+End;
+
+Function Fat_ClusterToLBA(Idx: Byte; Cl: LongInt): LongInt;
+Begin
+ Fat_ClusterToLBA := FatVol[Idx].DataStart +
+   LongInt(Cl - 2) * FatVol[Idx].SectorsPerCluster;
+End;
+
+Function Fat_UpStr(S: String): String;
+Var I: Integer;
+Begin
+ For I := 1 To Length(S) Do
+  If S[I] In ['a'..'z'] Then S[I] := Chr(Ord(S[I]) - 32);
+ Fat_UpStr := S;
+End;
+
+{ Decoder un nom 8.3 a partir d une entree de repertoire (32 octets).
+  Renvoie '' si entree libre/effacee ou nom long VFAT. }
+Function Fat_EntryName(Var Buf: Array Of Byte; Off: Integer): String;
+Var
+ I: Integer;
+ N, E: String;
+ B: Byte;
+Begin
+ Fat_EntryName := '';
+ If (Buf[Off] = 0) Or (Buf[Off] = $E5) Then Exit;
+ If (Buf[Off + 11] And $0F) = $0F Then Exit;   { LFN }
+ N := '';
+ For I := 0 To 7 Do Begin
+  B := Buf[Off + I];
+  If B = 32 Then Continue;
+  If (B < 32) Or (B > 126) Then Exit;
+  N := N + Chr(B);
+ End;
+ E := '';
+ For I := 8 To 10 Do Begin
+  B := Buf[Off + 10 - (10 - I)]; { offsets 8..10 }
+  B := Buf[Off + I];
+  If B = 32 Then Continue;
+  If (B < 32) Or (B > 126) Then Exit;
+  E := E + Chr(B);
+ End;
+ { Premier byte $05 = caractere $E5 reel }
+ If Buf[Off] = $05 Then N[1] := Chr($E5);
+ If E <> '' Then Fat_EntryName := N + '.' + E
+            Else Fat_EntryName := N;
+End;
+
+Function Fat_EntryAttr(Var Buf: Array Of Byte; Off: Integer): Byte;
+Begin
+ Fat_EntryAttr := Buf[Off + 11];
+End;
+
+Function Fat_EntryCluster(Var Buf: Array Of Byte; Off: Integer): Word;
+Begin
+ Fat_EntryCluster := Fat_LE16(Buf, Off + 26);
+End;
+
+Function Fat_EntrySize(Var Buf: Array Of Byte; Off: Integer): LongInt;
+Begin
+ Fat_EntrySize := Fat_LE32(Buf, Off + 28);
+End;
+
+{ Decoder l etiquette de volume depuis le repertoire racine si elle
+  n a pas ete trouvee dans le BPB. }
+Procedure Fat_FindVolLabel(Idx: Byte);
+Var
+ Buf: Array[0..511] Of Byte;
+ S: LongInt;
+ I, Cnt, Attr: Integer;
+ LBA: LongInt;
+ N: String;
+ K: Integer;
+Begin
+ If Not FatVol[Idx].Mounted Then Exit;
+ Cnt := 0;
+ For S := 0 To FatVol[Idx].RootDirSectors - 1 Do Begin
+  LBA := FatVol[Idx].RootStart + S;
+  If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+  For I := 0 To 15 Do Begin
+   If Cnt >= FatVol[Idx].RootEntries Then Exit;
+   Inc(Cnt);
+   If Buf[I * 32] = 0 Then Exit;
+   If Buf[I * 32] = $E5 Then Continue;
+   Attr := Buf[I * 32 + 11];
+   If (Attr And $0F) = $0F Then Continue;   { LFN }
+   If (Attr And $08) <> 0 Then Begin
+    { Volume label }
+    N := '';
+    For K := 0 To 10 Do
+     If (Buf[I * 32 + K] >= 32) And (Buf[I * 32 + K] <= 126) Then
+      N := N + Chr(Buf[I * 32 + K]);
+    While (Length(N) > 0) And (N[Length(N)] = ' ') Do
+     N := Copy(N, 1, Length(N) - 1);
+    If N <> '' Then FatVol[Idx].VolLabel := N;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ Decouper un chemin '\AAA\BBB\CCC' en composantes UPPER. Le slash
+  '/' est aussi accepte. Renvoie le nombre de composantes (max 16). }
+Procedure Fat_SplitPath(P: String; Var N: Integer;
+ Var Parts: Array Of String);
+Var
+ I, Start: Integer;
+ Sub: String;
+Begin
+ N := 0;
+ I := 1;
+ While I <= Length(P) Do Begin
+  If (P[I] = '\') Or (P[I] = '/') Then Inc(I)
+  Else Begin
+   Start := I;
+   While (I <= Length(P)) And (P[I] <> '\') And (P[I] <> '/') Do
+    Inc(I);
+   Sub := Copy(P, Start, I - Start);
+   If N < 16 Then Begin
+    Parts[N] := Fat_UpStr(Sub);
+    Inc(N);
+   End;
+  End;
+ End;
+End;
+
+{ Resoudre Cwd + Rel -> chemin absolu (commencant par '\'). Gere
+  '.' et '..'. }
+Function Fat_AbsPath(Cwd, Rel: String): String;
+Var
+ Comb: String;
+ NParts: Integer;
+ Parts: Array[0..15] Of String;
+ OutP: String;
+ I: Integer;
+ NOut: Integer;
+ OutParts: Array[0..15] Of String;
+Begin
+ If (Rel <> '') And ((Rel[1] = '\') Or (Rel[1] = '/')) Then
+  Comb := Rel
+ Else Begin
+  If Cwd = '' Then Cwd := '\';
+  If Cwd[Length(Cwd)] = '\' Then Comb := Cwd + Rel
+  Else Comb := Cwd + '\' + Rel;
+ End;
+ Fat_SplitPath(Comb, NParts, Parts);
+ NOut := 0;
+ For I := 0 To NParts - 1 Do Begin
+  If Parts[I] = '.' Then Continue;
+  If Parts[I] = '..' Then Begin
+   If NOut > 0 Then Dec(NOut);
+   Continue;
+  End;
+  If NOut < 16 Then Begin
+   OutParts[NOut] := Parts[I];
+   Inc(NOut);
+  End;
+ End;
+ OutP := '\';
+ For I := 0 To NOut - 1 Do Begin
+  If I > 0 Then OutP := OutP + '\';
+  OutP := OutP + OutParts[I];
+ End;
+ If (Length(OutP) > 1) And (OutP[Length(OutP)] = '\') Then
+  OutP := Copy(OutP, 1, Length(OutP) - 1);
+ Fat_AbsPath := OutP;
+End;
+
+{ Chercher dans le repertoire de cluster StartCl (ou racine si IsRoot)
+  une entree de nom NameUp. Si trouve, renvoie True et remplit
+  Attr/Cluster/Size. }
+Function Fat_FindInDir(Idx: Byte; IsRoot: Boolean; StartCl: LongInt;
+ NameUp: String; Var Attr: Byte; Var Cluster: Word;
+ Var Size: LongInt): Boolean;
+Var
+ Buf: Array[0..511] Of Byte;
+ SecInClu, I: Integer;
+ EntName: String;
+ Cur: LongInt;
+ S: LongInt;
+ RootCnt: Integer;
+ LBA: LongInt;
+Begin
+ Fat_FindInDir := False;
+ If IsRoot Then Begin
+  RootCnt := 0;
+  For S := 0 To FatVol[Idx].RootDirSectors - 1 Do Begin
+   LBA := FatVol[Idx].RootStart + S;
+   If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+   For I := 0 To 15 Do Begin
+    If RootCnt >= FatVol[Idx].RootEntries Then Exit;
+    Inc(RootCnt);
+    If Buf[I * 32] = 0 Then Exit;
+    EntName := Fat_EntryName(Buf, I * 32);
+    If EntName = '' Then Continue;
+    If (Fat_EntryAttr(Buf, I * 32) And $08) <> 0 Then Continue;
+    If Fat_UpStr(EntName) = NameUp Then Begin
+     Attr    := Fat_EntryAttr(Buf, I * 32);
+     Cluster := Fat_EntryCluster(Buf, I * 32);
+     Size    := Fat_EntrySize(Buf, I * 32);
+     Fat_FindInDir := True;
+     Exit;
+    End;
+   End;
+  End;
+ End Else Begin
+  Cur := StartCl;
+  While (Cur >= 2) And (Not Fat_IsEOC(Idx, Cur)) Do Begin
+   For SecInClu := 0 To FatVol[Idx].SectorsPerCluster - 1 Do Begin
+    LBA := Fat_ClusterToLBA(Idx, Cur) + SecInClu;
+    If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+    For I := 0 To 15 Do Begin
+     If Buf[I * 32] = 0 Then Exit;
+     EntName := Fat_EntryName(Buf, I * 32);
+     If EntName = '' Then Continue;
+     If (Fat_EntryAttr(Buf, I * 32) And $08) <> 0 Then Continue;
+     If Fat_UpStr(EntName) = NameUp Then Begin
+      Attr    := Fat_EntryAttr(Buf, I * 32);
+      Cluster := Fat_EntryCluster(Buf, I * 32);
+      Size    := Fat_EntrySize(Buf, I * 32);
+      Fat_FindInDir := True;
+      Exit;
+     End;
+    End;
+   End;
+   Cur := Fat_NextCluster(Idx, Cur);
+  End;
+ End;
+End;
+
+{ Resoudre AbsPath (commencant par '\') vers un descripteur :
+  IsRoot=True si racine, sinon StartCl = cluster de depart. Si le
+  chemin n existe pas, renvoie False. SkipLast=True : on resout le
+  parent et OutName = nom final restant. }
+Function Fat_ResolveDir(Idx: Byte; AbsPath: String;
+ Var IsRoot: Boolean; Var StartCl: LongInt): Boolean;
+Var
+ NParts: Integer;
+ Parts: Array[0..15] Of String;
+ I: Integer;
+ Attr: Byte;
+ Cluster: Word;
+ Sz: LongInt;
+Begin
+ Fat_ResolveDir := False;
+ IsRoot  := True;
+ StartCl := 0;
+ If Not FatVol[Idx].Mounted Then Exit;
+ Fat_SplitPath(AbsPath, NParts, Parts);
+ For I := 0 To NParts - 1 Do Begin
+  If Not Fat_FindInDir(Idx, IsRoot, StartCl, Parts[I],
+   Attr, Cluster, Sz) Then Exit;
+  If (Attr And $10) = 0 Then Exit;  { pas un repertoire }
+  IsRoot  := False;
+  StartCl := Cluster;
+  If StartCl < 2 Then Begin
+   { ".." sur sous-rep racine -> retourner racine }
+   IsRoot := True;
+  End;
+ End;
+ Fat_ResolveDir := True;
+End;
+
+{ Resoudre un chemin de fichier : separe parent + nom feuille, puis
+  cherche le nom dans le parent. }
+Function Fat_FindPath(Idx: Byte; AbsPath: String;
+ Var Attr: Byte; Var Cluster: Word; Var Size: LongInt): Boolean;
+Var
+ NParts: Integer;
+ Parts: Array[0..15] Of String;
+ I: Integer;
+ ParentPath, Leaf: String;
+ IsRoot: Boolean;
+ StartCl: LongInt;
+Begin
+ Fat_FindPath := False;
+ If Not FatVol[Idx].Mounted Then Exit;
+ Fat_SplitPath(AbsPath, NParts, Parts);
+ If NParts = 0 Then Begin
+  Attr := $10;
+  Cluster := 0;
+  Size := 0;
+  Fat_FindPath := True;
+  Exit;
+ End;
+ ParentPath := '\';
+ For I := 0 To NParts - 2 Do Begin
+  If Length(ParentPath) > 1 Then ParentPath := ParentPath + '\';
+  ParentPath := ParentPath + Parts[I];
+ End;
+ Leaf := Parts[NParts - 1];
+ If Not Fat_ResolveDir(Idx, ParentPath, IsRoot, StartCl) Then Exit;
+ Fat_FindPath := Fat_FindInDir(Idx, IsRoot, StartCl, Leaf,
+  Attr, Cluster, Size);
+End;
+
+{ Iterer toutes les entrees d un repertoire (root ou cluster chain)
+  et accumuler les noms via TermAddLine pour la commande DIR. }
+Procedure Fat_ListDir(Idx: Byte; IsRoot: Boolean; StartCl: LongInt;
+ Var TP: TTerminalPanel; Style: Byte);
+{ Style : 0 = CMD (date taille nom), 1 = PowerShell }
+Var
+ Buf: Array[0..511] Of Byte;
+ SecInClu, I: Integer;
+ EntName, Line, S: String;
+ Cur: LongInt;
+ S2: LongInt;
+ RootCnt: Integer;
+ LBA: LongInt;
+ Attr: Byte;
+ Sz: LongInt;
+ T, D: Word;
+ Hr, Mn, Yr, Mo, Dy: Word;
+ TotalFiles, TotalDirs: LongInt;
+ TotalSize: LongInt;
+ Done: Boolean;
+ EntOff: Integer;
+Begin
+ TotalFiles := 0;
+ TotalDirs  := 0;
+ TotalSize  := 0;
+ Done := False;
+ If IsRoot Then Begin
+  RootCnt := 0;
+  For S2 := 0 To FatVol[Idx].RootDirSectors - 1 Do Begin
+   If Done Then Break;
+   LBA := FatVol[Idx].RootStart + S2;
+   If Not Fat_ReadSector(Idx, LBA, Buf) Then Break;
+   For I := 0 To 15 Do Begin
+    If RootCnt >= FatVol[Idx].RootEntries Then Begin
+     Done := True; Break;
+    End;
+    Inc(RootCnt);
+    EntOff := I * 32;
+    If Buf[EntOff] = 0 Then Begin Done := True; Break; End;
+    EntName := Fat_EntryName(Buf, EntOff);
+    If EntName = '' Then Continue;
+    Attr := Fat_EntryAttr(Buf, EntOff);
+    If (Attr And $08) <> 0 Then Continue;
+    Sz := Fat_EntrySize(Buf, EntOff);
+    T := Fat_LE16(Buf, EntOff + 22);
+    D := Fat_LE16(Buf, EntOff + 24);
+    Yr := ((D Shr 9) And $7F) + 1980;
+    Mo := (D Shr 5) And $0F;
+    Dy := D And $1F;
+    Hr := (T Shr 11) And $1F;
+    Mn := (T Shr 5)  And $3F;
+    Line := TermPadZeroLeft(Mo, 2) + '/' +
+            TermPadZeroLeft(Dy, 2) + '/' +
+            TermPadZeroLeft(Yr, 4) + '  ' +
+            TermPadZeroLeft(Hr, 2) + ':' +
+            TermPadZeroLeft(Mn, 2) + '    ';
+    If (Attr And $10) <> 0 Then Begin
+     Line := Line + '<DIR>          ' + EntName;
+     Inc(TotalDirs);
+    End Else Begin
+     Str(Sz, S);
+     While Length(S) < 14 Do S := ' ' + S;
+     Line := Line + S + ' ' + EntName;
+     Inc(TotalFiles);
+     Inc(TotalSize, Sz);
+    End;
+    TermAddLine(TP, Line);
+   End;
+  End;
+ End Else Begin
+  Cur := StartCl;
+  While (Cur >= 2) And (Not Fat_IsEOC(Idx, Cur)) And (Not Done) Do Begin
+   For SecInClu := 0 To FatVol[Idx].SectorsPerCluster - 1 Do Begin
+    If Done Then Break;
+    LBA := Fat_ClusterToLBA(Idx, Cur) + SecInClu;
+    If Not Fat_ReadSector(Idx, LBA, Buf) Then Begin
+     Done := True; Break;
+    End;
+    For I := 0 To 15 Do Begin
+     EntOff := I * 32;
+     If Buf[EntOff] = 0 Then Begin Done := True; Break; End;
+     EntName := Fat_EntryName(Buf, EntOff);
+     If EntName = '' Then Continue;
+     Attr := Fat_EntryAttr(Buf, EntOff);
+     If (Attr And $08) <> 0 Then Continue;
+     Sz := Fat_EntrySize(Buf, EntOff);
+     T := Fat_LE16(Buf, EntOff + 22);
+     D := Fat_LE16(Buf, EntOff + 24);
+     Yr := ((D Shr 9) And $7F) + 1980;
+     Mo := (D Shr 5) And $0F;
+     Dy := D And $1F;
+     Hr := (T Shr 11) And $1F;
+     Mn := (T Shr 5)  And $3F;
+     Line := TermPadZeroLeft(Mo, 2) + '/' +
+             TermPadZeroLeft(Dy, 2) + '/' +
+             TermPadZeroLeft(Yr, 4) + '  ' +
+             TermPadZeroLeft(Hr, 2) + ':' +
+             TermPadZeroLeft(Mn, 2) + '    ';
+     If (Attr And $10) <> 0 Then Begin
+      Line := Line + '<DIR>          ' + EntName;
+      Inc(TotalDirs);
+     End Else Begin
+      Str(Sz, S);
+      While Length(S) < 14 Do S := ' ' + S;
+      Line := Line + S + ' ' + EntName;
+      Inc(TotalFiles);
+      Inc(TotalSize, Sz);
+     End;
+     TermAddLine(TP, Line);
+    End;
+   End;
+   If Done Then Break;
+   Cur := Fat_NextCluster(Idx, Cur);
+  End;
+ End;
+ If Style = 0 Then Begin
+  Str(TotalFiles, S);
+  While Length(S) < 16 Do S := ' ' + S;
+  Str(TotalSize, Line);
+  While Length(Line) < 14 Do Line := ' ' + Line;
+  TermAddLine(TP, S + ' File(s)' + Line + ' bytes');
+  Str(TotalDirs, S);
+  While Length(S) < 16 Do S := ' ' + S;
+  TermAddLine(TP, S + ' Dir(s)');
+ End;
+End;
+
+{ Lire un fichier (cluster chain) et l afficher ligne par ligne sur
+  le terminal. Coupe sur CR/LF. Marque les fichiers binaires (octet
+  < 32 hors TAB/CR/LF) par un avertissement et arrete. }
+Procedure Fat_TypeFile(Idx: Byte; StartCl: LongInt; Size: LongInt;
+ Var TP: TTerminalPanel);
+Var
+ Buf: Array[0..511] Of Byte;
+ Cur: LongInt;
+ SecInClu, J: Integer;
+ LBA: LongInt;
+ Remain: LongInt;
+ ToRead: Integer;
+ B: Byte;
+ Line: String;
+ IsBin: Boolean;
+Begin
+ Cur := StartCl;
+ Remain := Size;
+ Line := '';
+ IsBin := False;
+ If (StartCl < 2) Or (Size <= 0) Then Exit;
+ While (Cur >= 2) And (Not Fat_IsEOC(Idx, Cur)) And
+       (Remain > 0) And (Not IsBin) Do Begin
+  For SecInClu := 0 To FatVol[Idx].SectorsPerCluster - 1 Do Begin
+   If Remain <= 0 Then Break;
+   LBA := Fat_ClusterToLBA(Idx, Cur) + SecInClu;
+   If Not Fat_ReadSector(Idx, LBA, Buf) Then Begin
+    TermAddLine(TP, 'Erreur de lecture sur l image');
+    Exit;
+   End;
+   If Remain > 512 Then ToRead := 512
+                   Else ToRead := Integer(Remain);
+   For J := 0 To ToRead - 1 Do Begin
+    B := Buf[J];
+    Case B Of
+     10: Begin
+      TermAddLine(TP, Line);
+      Line := '';
+     End;
+     13: ;       { ignore CR }
+      9: Begin
+      Line := Line + '    ';
+     End;
+     26: Begin   { EOF DOS }
+      If Line <> '' Then TermAddLine(TP, Line);
+      Exit;
+     End;
+    Else
+     If B < 32 Then Begin
+      IsBin := True;
+      Break;
+     End;
+     If Length(Line) >= 250 Then Begin
+      TermAddLine(TP, Line);
+      Line := '';
+     End;
+     Line := Line + Chr(B);
+    End;
+   End;
+   Dec(Remain, ToRead);
+   If IsBin Then Break;
+  End;
+  If IsBin Then Break;
+  Cur := Fat_NextCluster(Idx, Cur);
+ End;
+ If Line <> '' Then TermAddLine(TP, Line);
+ If IsBin Then
+  TermAddLine(TP, '(fichier binaire : affichage interrompu)');
+End;
+
+{ Calcul de l espace libre en octets sur le volume. }
+Function Fat_FreeBytes(Idx: Byte): LongInt;
+Var
+ Cl: LongInt;
+ V: LongInt;
+ Free: LongInt;
+ MaxCl: LongInt;
+Begin
+ Fat_FreeBytes := 0;
+ If Not FatVol[Idx].Mounted Then Exit;
+ Free := 0;
+ MaxCl := FatVol[Idx].ClusterCount + 1;
+ For Cl := 2 To MaxCl Do Begin
+  V := Fat_NextCluster(Idx, Cl);
+  If V = 0 Then Inc(Free);
+ End;
+ Fat_FreeBytes := Free * LongInt(FatVol[Idx].SectorsPerCluster) * 512;
+End;
+
+{ Construire le chemin "X:\..." courant du terminal sur le disque virtuel }
+Function Term_VirtFullPath(Var TP: TTerminalPanel): String;
+Var
+ DL: Char;
+Begin
+ If TP.VirtDrive = 0 Then DL := 'A'
+ Else If TP.VirtDrive = 1 Then DL := 'B'
+ Else DL := '?';
+ If (TP.VirtCwd = '') Or (TP.VirtCwd = '\') Then
+  Term_VirtFullPath := DL + ':\'
+ Else
+  Term_VirtFullPath := DL + ':' + TP.VirtCwd;
+End;
+
+{ Tenter de monter le volume si pas deja fait (lazy). }
+Procedure Term_VirtEnsureMounted(Idx: Byte);
+Begin
+ If EmuFloppyOpen[Idx] And (Not FatVol[Idx].Mounted) Then Begin
+  Fat_TryMount(Idx);
+  Fat_FindVolLabel(Idx);
+ End;
+End;
+
+{ Resoudre une cible (eventuellement prefixee A:/B:) en mode virtuel.
+  Retourne True si la cible designe une unite FAT montee, et remplit
+  Idx + AbsP (chemin absolu sur ce volume). P peut etre vide. }
+Function Term_ResolveVirtTarget(Var TP: TTerminalPanel; P: String;
+ Var Idx: Byte; Var AbsP: String): Boolean;
+Var
+ DL: Char;
+ Rest: String;
+ TIdx: Byte;
+ HasColon: Boolean;
+Begin
+ Term_ResolveVirtTarget := False;
+ HasColon := (Length(P) >= 2) And (P[2] = ':');
+ If HasColon Then Begin
+  DL := UpCase(P[1]);
+  Rest := Copy(P, 3, Length(P) - 2);
+  If (DL <> 'A') And (DL <> 'B') Then Exit;
+  If DL = 'A' Then TIdx := 0 Else TIdx := 1;
+  Term_VirtEnsureMounted(TIdx);
+  If Not FatVol[TIdx].Mounted Then Exit;
+  Idx := TIdx;
+  If Rest = '' Then Begin
+   { "A:" tout court : si TP est deja sur ce lecteur,
+     utiliser le cwd virtuel ; sinon racine. }
+   If TP.VirtDrive = Idx Then AbsP := TP.VirtCwd
+                          Else AbsP := '\';
+  End Else If Rest[1] = '\' Then Begin
+   AbsP := Rest;
+  End Else Begin
+   { "A:foo" : relatif au cwd si meme lecteur, sinon a la racine. }
+   If TP.VirtDrive = Idx Then AbsP := Fat_AbsPath(TP.VirtCwd, Rest)
+                          Else AbsP := Fat_AbsPath('\', Rest);
+  End;
+  Term_ResolveVirtTarget := True;
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  Idx := TP.VirtDrive;
+  If P = '' Then AbsP := TP.VirtCwd
+            Else AbsP := Fat_AbsPath(TP.VirtCwd, P);
+  Term_ResolveVirtTarget := True;
+ End;
+End;
+
+{ ============================================================
   COMMANDES INTERNES DU TERMINAL
   ============================================================ }
 
@@ -17163,9 +18005,35 @@ End;
 Procedure TermCmd_CD(Var TP: TTerminalPanel; ParamStr: String);
 Var
  Err: Word;
- FirstParam, Dir: String;
+ FirstParam, Dir, AbsP: String;
+ IsRoot: Boolean;
+ StartCl: LongInt;
+ Idx: Byte;
 Begin
  FirstParam := TermExtractParam(ParamStr, 1);
+ { Mode disque virtuel : naviguer dans le FAT image }
+ If TP.VirtDrive >= 0 Then Begin
+  Idx := TP.VirtDrive;
+  If Length(FirstParam) = 0 Then Begin
+   TermAddLine(TP, Term_VirtFullPath(TP));
+   Exit;
+  End;
+  { Si le parametre contient un lecteur (X:), on bascule. }
+  If (Length(FirstParam) >= 2) And (FirstParam[2] = ':') Then Begin
+   { Bascule de lecteur dans CD : seulement informer si X: != A: ou B: }
+   TermAddLine(TP,
+    'CD inter-lecteur non supporte ; utiliser X: directement.');
+   Exit;
+  End;
+  AbsP := Fat_AbsPath(TP.VirtCwd, FirstParam);
+  If Not Fat_ResolveDir(Idx, AbsP, IsRoot, StartCl) Then Begin
+   TermAddLine(TP,
+    'Le systeme ne trouve pas le chemin specifie.');
+   Exit;
+  End;
+  TP.VirtCwd := AbsP;
+  Exit;
+ End;
  If Length(FirstParam) > 0 Then Begin
   {$I-} ChDir(FirstParam); {$I+}
   Err := IOResult;
@@ -17186,11 +18054,23 @@ End;
 Procedure TermCmd_CLS(Var TP: TTerminalPanel);
 Var
  I: Integer;
+ N, NN: PTermLine;
 Begin
  For I := 0 To MAX_TERM_LINES - 1 Do
   TP.Lines[I] := '';
  TP.LineCount := 0;
  TP.ScrollTop := 0;
+ { Liberer la liste chainee }
+ N := TP.HistHead;
+ While N <> Nil Do Begin
+  NN := N^.Next;
+  Dispose(N);
+  N := NN;
+ End;
+ TP.HistHead := Nil;
+ TP.HistTail := Nil;
+ TP.HistCount := 0;
+ TP.ScrollOffset := 0;
  TP.NeedRepaint := True;
 End;
 
@@ -17206,8 +18086,41 @@ Var
  TotalFiles, TotalDirs: LongInt;
  TotalSize: LongInt;
  FirstParam: String;
+ Idx: Byte;
+ AbsP: String;
+ IsRoot: Boolean;
+ StartCl: LongInt;
+ Free: LongInt;
+ LblTxt: String;
 Begin
  FirstParam := TermExtractParam(ParamStr, 1);
+ { Mode disque virtuel : utiliser le FAT image (cwd ou cible explicite
+   prefixee A:/B:). }
+ If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
+  If Not Fat_ResolveDir(Idx, AbsP, IsRoot, StartCl) Then Begin
+   TermAddLine(TP,
+    'Le systeme ne trouve pas le chemin specifie.');
+   Exit;
+  End;
+  If FatVol[Idx].VolLabel <> '' Then
+   LblTxt := FatVol[Idx].VolLabel
+  Else
+   LblTxt := 'no label';
+  TermAddLine(TP, ' Volume in drive ' +
+   Chr(Ord('A') + Idx) + ' is ' + LblTxt);
+  TermAddLine(TP, '');
+  If (AbsP = '') Or (AbsP = '\') Then
+   TermAddLine(TP, ' Directory of ' + Chr(Ord('A') + Idx) + ':\')
+  Else
+   TermAddLine(TP, ' Directory of ' + Chr(Ord('A') + Idx) + ':' + AbsP);
+  TermAddLine(TP, '');
+  Fat_ListDir(Idx, IsRoot, StartCl, TP, 0);
+  Free := Fat_FreeBytes(Idx);
+  Str(Free, S);
+  While Length(S) < 14 Do S := ' ' + S;
+  TermAddLine(TP, '              ' + S + ' bytes free');
+  Exit;
+ End;
  If FirstParam = '' Then
   ShowDir := '*.*'
  Else
@@ -17259,8 +18172,34 @@ Var
  T: DateTime;
  ShowDir, S, Line: String;
  FirstParam: String;
+ Idx: Byte;
+ AbsP: String;
+ IsRoot: Boolean;
+ StartCl: LongInt;
 Begin
  FirstParam := TermExtractParam(ParamStr, 1);
+ If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
+  If Not Fat_ResolveDir(Idx, AbsP, IsRoot, StartCl) Then Begin
+   TermAddLine(TP,
+    'Get-ChildItem : Impossible de trouver le chemin ' + AbsP);
+   Exit;
+  End;
+  TermAddLine(TP, '');
+  If (AbsP = '') Or (AbsP = '\') Then
+   TermAddLine(TP,
+    '    Directory: ' + Chr(Ord('A') + Idx) + ':\')
+  Else
+   TermAddLine(TP,
+    '    Directory: ' + Chr(Ord('A') + Idx) + ':' + AbsP);
+  TermAddLine(TP, '');
+  TermAddLine(TP,
+   'Mode                 LastWriteTime         Length Name');
+  TermAddLine(TP,
+   '----                 -------------         ------ ----');
+  Fat_ListDir(Idx, IsRoot, StartCl, TP, 1);
+  TermAddLine(TP, '');
+  Exit;
+ End;
  If FirstParam = '' Then
   ShowDir := '*.*'
  Else
@@ -17564,10 +18503,28 @@ Var
  Err: Word;
  Handle: Text;
  CurrParam, CurrLine: String;
+ Idx: Byte;
+ AbsP: String;
+ Attr: Byte;
+ Cluster: Word;
+ Size: LongInt;
 Begin
  CurrParam := TermExtractParam(ParamStr, 1);
  If CurrParam = '' Then Begin
   TermAddLine(TP, 'Syntaxe : TYPE fichier');
+  Exit;
+ End;
+ If Term_ResolveVirtTarget(TP, CurrParam, Idx, AbsP) Then Begin
+  If Not Fat_FindPath(Idx, AbsP, Attr, Cluster, Size) Then Begin
+   TermAddLine(TP,
+    'Le systeme ne trouve pas le fichier specifie.');
+   Exit;
+  End;
+  If (Attr And $10) <> 0 Then Begin
+   TermAddLine(TP, 'Acces refuse : ' + AbsP + ' est un repertoire.');
+   Exit;
+  End;
+  Fat_TypeFile(Idx, Cluster, Size, TP);
   Exit;
  End;
  Assign(Handle, CurrParam);
@@ -17616,6 +18573,123 @@ Procedure TermCmd_VER(Var TP: TTerminalPanel);
 Begin
  TermAddLine(TP,
   'DEVENV Terminal integre v' + DEVENV_VERSION);
+End;
+
+{ --- VOL --- }
+
+Procedure TermCmd_VOL(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ DL: Char;
+ Lbl: String;
+ P: String;
+Begin
+ P := TermExtractParam(ParamStr, 1);
+ { Determiner le lecteur cible : argument explicite, ou lecteur courant }
+ If (Length(P) >= 2) And (P[2] = ':') Then
+  DL := UpCase(P[1])
+ Else If TP.VirtDrive = 0 Then DL := 'A'
+ Else If TP.VirtDrive = 1 Then DL := 'B'
+ Else DL := 'C';
+ If (DL = 'A') Or (DL = 'B') Then Begin
+  If DL = 'A' Then Idx := 0 Else Idx := 1;
+  Term_VirtEnsureMounted(Idx);
+  If Not EmuFloppyOpen[Idx] Then Begin
+   TermAddLine(TP,
+    'Le systeme ne peut pas trouver le lecteur specifie.');
+   Exit;
+  End;
+  If Not FatVol[Idx].Mounted Then Begin
+   TermAddLine(TP, ' Volume in drive ' + DL +
+    ' has no recognized file system.');
+   Exit;
+  End;
+  Lbl := FatVol[Idx].VolLabel;
+  If Lbl = '' Then
+   TermAddLine(TP, ' Volume in drive ' + DL + ' has no label.')
+  Else
+   TermAddLine(TP, ' Volume in drive ' + DL + ' is ' + Lbl);
+  TermAddLine(TP, ' Volume Serial Number is 0000-0000');
+  Exit;
+ End;
+ TermAddLine(TP, ' Volume in drive ' + DL + ' has no label.');
+ TermAddLine(TP, ' Volume Serial Number is 1234-5678');
+End;
+
+{ --- DF (Bash) : afficher les disquettes montees via /DISK0 et /DISK1 --- }
+
+Procedure TermCmd_DF(Var TP: TTerminalPanel);
+Var
+ Idx: Byte;
+ Total, Used, Free: LongInt;
+ TotalK, UsedK, FreeK: LongInt;
+ UsePct: Integer;
+ MountP, Fs, Src: String;
+ SizeS, UsedS, FreeS, PctS: String;
+
+ Function PadLeft(S: String; W: Integer): String;
+ Begin
+  While Length(S) < W Do S := ' ' + S;
+  PadLeft := S;
+ End;
+
+ Function PadRight(S: String; W: Integer): String;
+ Begin
+  While Length(S) < W Do S := S + ' ';
+  PadRight := S;
+ End;
+
+ Function FmtFs(Idx: Byte): String;
+ Begin
+  If Not FatVol[Idx].Mounted Then FmtFs := 'raw'
+  Else If FatVol[Idx].FATType = 12 Then FmtFs := 'vfat12'
+  Else If FatVol[Idx].FATType = 16 Then FmtFs := 'vfat16'
+  Else FmtFs := 'vfat';
+ End;
+
+Begin
+ TermAddLine(TP,
+  'Filesystem     1K-blocks      Used Available Use% Mounted on');
+ If (Not EmuFloppyOpen[0]) And (Not EmuFloppyOpen[1]) Then Begin
+  TermAddLine(TP,
+   '(aucune image montee ; utilisez /DISK0:img ou /DISK1:img)');
+  Exit;
+ End;
+ For Idx := 0 To 1 Do Begin
+  If Not EmuFloppyOpen[Idx] Then Continue;
+  Term_VirtEnsureMounted(Idx);
+  Total := EmuFloppySize[Idx];
+  If FatVol[Idx].Mounted Then Begin
+   Free := Fat_FreeBytes(Idx);
+   { L espace "utile" exclut zones reservees/FAT/root, mais pour rester
+     simple on rapporte Total et Free tels que vus par DF. }
+   If Free > Total Then Free := Total;
+   Used := Total - Free;
+  End Else Begin
+   Free := 0;
+   Used := Total;
+  End;
+  TotalK := Total Div 1024;
+  UsedK  := Used  Div 1024;
+  FreeK  := Free  Div 1024;
+  If Total > 0 Then
+   UsePct := Integer((LongInt(Used) * 100 + Total Div 2) Div Total)
+  Else
+   UsePct := 0;
+  If UsePct < 0 Then UsePct := 0;
+  If UsePct > 100 Then UsePct := 100;
+  Fs := FmtFs(Idx);
+  Src := EmuFloppyName[Idx];
+  If Src = '' Then Src := '(image)';
+  MountP := '/mnt/' + Chr(Ord('a') + Idx);
+  Str(TotalK, SizeS); SizeS := PadLeft(SizeS, 9);
+  Str(UsedK, UsedS);  UsedS := PadLeft(UsedS, 9);
+  Str(FreeK, FreeS);  FreeS := PadLeft(FreeS, 9);
+  Str(UsePct, PctS);  PctS := PadLeft(PctS + '%', 4);
+  TermAddLine(TP, PadRight(Fs, 14) + ' ' + SizeS + ' ' +
+   UsedS + ' ' + FreeS + ' ' + PctS + ' ' + MountP);
+  TermAddLine(TP, '  source: ' + Src);
+ End;
 End;
 
 { --- PWD --- }
@@ -17743,6 +18817,8 @@ Begin
   '  TYPE fichier     Afficher le contenu');
  TermAddLine(TP,
   '  VER              Version du terminal');
+ TermAddLine(TP,
+  '  VOL [X:]         Etiquette/serie du volume');
 End;
 
 { ============================================================
@@ -17761,6 +18837,44 @@ Begin
  { Changement de lecteur : A:, B:, C:, D:, ... }
  If (Length(CmdStr) = 2) And (CmdStr[2] = ':') And
   (CmdStr[1] In ['A'..'Z', 'a'..'z']) Then Begin
+  { Lecteurs virtuels A: et B: : sur image montee, on bascule le
+    terminal en mode disque virtuel. }
+  If UpCase(CmdStr[1]) = 'A' Then Begin
+   Term_VirtEnsureMounted(0);
+   If EmuFloppyOpen[0] And FatVol[0].Mounted Then Begin
+    TP.VirtDrive := 0;
+    If TP.VirtCwd = '' Then TP.VirtCwd := '\';
+    Exit;
+   End Else If EmuFloppyOpen[0] Then Begin
+    TermAddLine(TP, 'Volume A: monte mais format FAT non reconnu.');
+    Exit;
+   End Else Begin
+    TermAddLine(TP,
+     'Le systeme ne peut pas trouver le lecteur specifie.');
+    TermAddLine(TP,
+     '(Monter une image avec /DISK0:fichier.img au demarrage.)');
+    Exit;
+   End;
+  End;
+  If UpCase(CmdStr[1]) = 'B' Then Begin
+   Term_VirtEnsureMounted(1);
+   If EmuFloppyOpen[1] And FatVol[1].Mounted Then Begin
+    TP.VirtDrive := 1;
+    If TP.VirtCwd = '' Then TP.VirtCwd := '\';
+    Exit;
+   End Else If EmuFloppyOpen[1] Then Begin
+    TermAddLine(TP, 'Volume B: monte mais format FAT non reconnu.');
+    Exit;
+   End Else Begin
+    TermAddLine(TP,
+     'Le systeme ne peut pas trouver le lecteur specifie.');
+    TermAddLine(TP,
+     '(Monter une image avec /DISK1:fichier.img au demarrage.)');
+    Exit;
+   End;
+  End;
+  { Autres lecteurs : on revient au mode hote standard }
+  TP.VirtDrive := -1;
   {$I-}
   GetDir(Ord(UpCase(CmdStr[1])) - 64, PipeS);
   If PipeS <> '' Then ChDir(PipeS)
@@ -17815,6 +18929,8 @@ Begin
     TermCmd_POPD(TP)
    Else If CurrCmd = 'SET' Then
     TermCmd_SET(TP, ParamStr)
+   Else If CurrCmd = 'VOL' Then
+    TermCmd_VOL(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
    Else
@@ -17874,6 +18990,8 @@ Begin
     TermCmd_POPD(TP)
    Else If CurrCmd = 'SET' Then
     TermCmd_SET(TP, ParamStr)
+   Else If CurrCmd = 'VOL' Then
+    TermCmd_VOL(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or
     (CurrCmd = 'GET-HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
@@ -17914,6 +19032,8 @@ Begin
     TermCmd_POPD(TP)
    Else If CurrCmd = 'EXPORT' Then
     TermCmd_SET(TP, ParamStr)
+   Else If CurrCmd = 'DF' Then
+    TermCmd_DF(TP)
    Else If CurrCmd = 'HISTORY' Then
     TermCmd_HELP(TP)
    Else If CurrCmd = 'HELP' Then
@@ -17995,6 +19115,10 @@ Begin
   TP.Lines[I] := '';
  TP.LineCount := 0;
  TP.ScrollTop := 0;
+ TP.HistHead := Nil;
+ TP.HistTail := Nil;
+ TP.HistCount := 0;
+ TP.ScrollOffset := 0;
  TP.InputLine := '';
  TP.InputCol := 1;
  TP.PartialLine := '';
@@ -18009,6 +19133,8 @@ Begin
  TP.NumberHistory := 0;
  TP.HistoryPos := 0;
  TP.NumberDirStack := 0;
+ TP.VirtDrive := -1;
+ TP.VirtCwd   := '\';
 End;
 
 { --- Initialiser le conteneur des deux terminaux --- }
@@ -18041,11 +19167,17 @@ End;
 
 Procedure DrawTerminalPanel(Var TP: TTerminalPanel);
 Var
- I, YPos, VisLines, StartIdx: Integer;
+ I, YPos, VisLines: Integer;
  S, PromptStr, SelLabel: String;
  MaxCols: Integer;
  PX, PY, PW, PH: Integer;
  SBX, SBY: Integer;
+ SBarX, TextRight: Integer;
+ TrackTop, TrackBottom, TrackH: Integer;
+ ThumbY, ThumbH: Integer;
+ Node: PTermLine;
+ SkipBack: LongInt;
+ TextLines: LongInt;
 Begin
  If Not TermVisible Then Exit;
  PX := TermX;
@@ -18085,39 +19217,57 @@ Begin
  { Bordure du panneau }
  SetColor(CLR_BORDER);
  Rectangle(PX, PY, PX + PW - 1, PY + PH - 1);
- { Zone de texte }
+ { Zone de texte (reserver TERM_SCROLLBAR_WIDTH a droite) }
+ SBarX := PX + PW - TERM_SCROLLBAR_WIDTH - 1;
+ TextRight := SBarX - 1;
  VisLines := (PH - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
   Div TERM_LINE_HEIGHT;
  If VisLines < 1 Then VisLines := 1;
- MaxCols := (PW - 8) Div TERM_CHAR_WIDTH;
+ MaxCols := (TextRight - (PX + 4)) Div TERM_CHAR_WIDTH;
  If MaxCols < 10 Then MaxCols := 10;
- { Auto-scroll }
- If TP.LineCount > VisLines Then
-  TP.ScrollTop := TP.LineCount - VisLines
- Else
-  TP.ScrollTop := 0;
- { Afficher les lignes }
+ { Borner le decalage de defilement }
+ If TP.HistCount = 0 Then TP.ScrollOffset := 0
+ Else Begin
+  If TP.ScrollOffset < 0 Then TP.ScrollOffset := 0;
+  If TP.ScrollOffset > TP.HistCount - 1 Then
+   TP.ScrollOffset := TP.HistCount - 1;
+ End;
+ { Trouver le noeud le plus en haut de la fenetre visible.
+   Depuis le tail, reculer de (ScrollOffset + VisLines - 1) noeuds. }
+ Node := TP.HistTail;
+ SkipBack := TP.ScrollOffset + VisLines - 1;
+ While (SkipBack > 0) And (Node <> Nil) And (Node^.Prev <> Nil) Do Begin
+  Node := Node^.Prev;
+  Dec(SkipBack);
+ End;
+ { Afficher VisLines lignes en avant }
  SetColor(15);
  YPos := PY + TERM_TAB_HEIGHT + 2;
- StartIdx := TP.ScrollTop;
+ TextLines := 0;
  For I := 0 To VisLines - 1 Do Begin
-  If StartIdx + I < TP.LineCount Then Begin
-   S := TP.Lines[StartIdx + I];
+  If Node <> Nil Then Begin
+   S := Node^.S;
    If Length(S) > MaxCols Then
     S := Copy(S, 1, MaxCols);
    OutTextXY(PX + 4, YPos, S);
+   Node := Node^.Next;
+   Inc(TextLines);
   End;
   YPos := YPos + TERM_LINE_HEIGHT;
  End;
- { Ligne de saisie juste apres la derniere ligne affichee }
+ { Ligne de saisie : visible uniquement si on n est pas remonte
+   dans l historique (ScrollOffset = 0). Sinon on conserve la
+   ligne pour le prochain affichage. }
  SetColor(10);
- If TP.LineCount < VisLines Then
+ If TextLines < VisLines Then
   YPos := PY + TERM_TAB_HEIGHT + 2
-   + TP.LineCount * TERM_LINE_HEIGHT
+   + TextLines * TERM_LINE_HEIGHT
  Else
   YPos := PY + TERM_TAB_HEIGHT + 2
    + VisLines * TERM_LINE_HEIGHT;
  GetDir(0, PromptStr);
+ If TP.VirtDrive >= 0 Then
+  PromptStr := Term_VirtFullPath(TP);
  Case TP.Shell Of
   SK_POWERSHELL:
    PromptStr := 'PS ' + PromptStr + '> ' + TP.InputLine + '_';
@@ -18128,9 +19278,68 @@ Begin
  Else
   PromptStr := PromptStr + '> ' + TP.InputLine + '_';
  End;
+ If TP.ScrollOffset > 0 Then
+  PromptStr := '-- defilement (PgUp/PgDn pour naviguer) --';
  If Length(PromptStr) > MaxCols Then
   PromptStr := Copy(PromptStr, 1, MaxCols);
  OutTextXY(PX + 4, YPos, PromptStr);
+ { ===== Barre de defilement a droite ===== }
+ { Fond de la barre }
+ SetFillStyle(SolidFill, 7);
+ Bar(SBarX, PY + TERM_TAB_HEIGHT,
+  SBarX + TERM_SCROLLBAR_WIDTH - 1, PY + PH - 2);
+ { Bordure }
+ SetColor(CLR_BORDER);
+ Rectangle(SBarX, PY + TERM_TAB_HEIGHT,
+  SBarX + TERM_SCROLLBAR_WIDTH - 1, PY + PH - 2);
+ { Bouton fleche haut }
+ SetFillStyle(SolidFill, 8);
+ Bar(SBarX + 1, PY + TERM_TAB_HEIGHT + 1,
+  SBarX + TERM_SCROLLBAR_WIDTH - 2,
+  PY + TERM_TAB_HEIGHT + TERM_SCROLL_BTN_H - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(SBarX + 1, PY + TERM_TAB_HEIGHT + 1,
+  SBarX + TERM_SCROLLBAR_WIDTH - 2,
+  PY + TERM_TAB_HEIGHT + TERM_SCROLL_BTN_H - 1);
+ SetColor(15);
+ OutTextXY(SBarX + 3, PY + TERM_TAB_HEIGHT + 3, #30);
+ { Bouton fleche bas }
+ SetFillStyle(SolidFill, 8);
+ Bar(SBarX + 1, PY + PH - 2 - TERM_SCROLL_BTN_H,
+  SBarX + TERM_SCROLLBAR_WIDTH - 2, PY + PH - 3);
+ SetColor(CLR_BORDER);
+ Rectangle(SBarX + 1, PY + PH - 2 - TERM_SCROLL_BTN_H,
+  SBarX + TERM_SCROLLBAR_WIDTH - 2, PY + PH - 3);
+ SetColor(15);
+ OutTextXY(SBarX + 3, PY + PH - 1 - TERM_SCROLL_BTN_H + 2, #31);
+ { Zone du curseur (entre les deux fleches) }
+ TrackTop := PY + TERM_TAB_HEIGHT + TERM_SCROLL_BTN_H + 1;
+ TrackBottom := PY + PH - 3 - TERM_SCROLL_BTN_H;
+ TrackH := TrackBottom - TrackTop + 1;
+ If TrackH < 4 Then TrackH := 4;
+ { Curseur proportionnel : taille = VisLines / HistCount }
+ If TP.HistCount > VisLines Then Begin
+  ThumbH := (LongInt(VisLines) * TrackH) Div TP.HistCount;
+  If ThumbH < 8 Then ThumbH := 8;
+  If ThumbH > TrackH Then ThumbH := TrackH;
+  { Position : 0 (bas) -> bas du track, max -> haut du track }
+  { Position depuis le bas : ScrollOffset / (HistCount - VisLines) }
+  If TP.HistCount > VisLines Then
+   ThumbY := TrackBottom - ThumbH + 1
+    - (LongInt(TP.ScrollOffset) * (TrackH - ThumbH))
+      Div (TP.HistCount - VisLines)
+  Else
+   ThumbY := TrackTop;
+ End Else Begin
+  ThumbH := TrackH;
+  ThumbY := TrackTop;
+ End;
+ SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
+ Bar(SBarX + 2, ThumbY,
+  SBarX + TERM_SCROLLBAR_WIDTH - 3, ThumbY + ThumbH - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(SBarX + 2, ThumbY,
+  SBarX + TERM_SCROLLBAR_WIDTH - 3, ThumbY + ThumbH - 1);
  { Dessiner la liste deroulante PAR-DESSUS le texte }
  If TermSelectOpen Then Begin
   { Item 1 : Invite de commandes }
@@ -18309,6 +19518,50 @@ Begin
     TermSelectOpen := False;
     FullRepaintNeeded := True;
    End;
+   { Defilement via la barre a droite }
+   If (Ev.MouseX >= TermX + TermWidth - TERM_SCROLLBAR_WIDTH - 1)
+    And (Ev.MouseX < TermX + TermWidth - 1)
+    And (Ev.MouseY >= TermY + TERM_TAB_HEIGHT) Then Begin
+    { Bouton fleche haut : remonter d une ligne }
+    If Ev.MouseY < TermY + TERM_TAB_HEIGHT
+     + TERM_SCROLL_BTN_H Then Begin
+     If TP.ScrollOffset < TP.HistCount - 1 Then Begin
+      Inc(TP.ScrollOffset);
+      TP.NeedRepaint := True;
+      FullRepaintNeeded := True;
+     End;
+     Exit;
+    End;
+    { Bouton fleche bas : descendre d une ligne }
+    If Ev.MouseY >= TermY + TermHeight - 2
+     - TERM_SCROLL_BTN_H Then Begin
+     If TP.ScrollOffset > 0 Then Begin
+      Dec(TP.ScrollOffset);
+      TP.NeedRepaint := True;
+      FullRepaintNeeded := True;
+     End;
+     Exit;
+    End;
+    { Clic dans le track : page up/down selon position relative
+      au curseur (heuristique simple : moitie haute = remonter,
+      moitie basse = descendre, page = hauteur visible). }
+    If Ev.MouseY < (TermY + TERM_TAB_HEIGHT
+     + (TermHeight - TERM_TAB_HEIGHT) Div 2) Then Begin
+     TP.ScrollOffset := TP.ScrollOffset +
+      ((TermHeight - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
+       Div TERM_LINE_HEIGHT);
+     If TP.ScrollOffset > TP.HistCount - 1 Then
+      TP.ScrollOffset := TP.HistCount - 1;
+    End Else Begin
+     TP.ScrollOffset := TP.ScrollOffset -
+      ((TermHeight - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
+       Div TERM_LINE_HEIGHT);
+     If TP.ScrollOffset < 0 Then TP.ScrollOffset := 0;
+    End;
+    TP.NeedRepaint := True;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
    Exit;
   End;
  End;
@@ -18380,6 +19633,8 @@ Begin
    End;
    #13: Begin { Enter }
     GetDir(0, Dir);
+    { Toute saisie ramene la fenetre au bas de l historique }
+    TP.ScrollOffset := 0;
     Case TP.Shell Of
      SK_POWERSHELL:
       TermAddLine(TP, 'PS ' + Dir + '> ' + TP.InputLine);
@@ -18393,6 +19648,7 @@ Begin
     TermExecuteCommand(TP, TP.InputLine);
     TP.InputLine := '';
     TP.InputCol := 1;
+    TP.ScrollOffset := 0;
     TP.NeedRepaint := True;
    End;
    #27: ; { Echap : ne rien faire }
@@ -18426,6 +19682,25 @@ Begin
    End;
    TP.InputCol := Length(TP.InputLine) + 1;
    TP.NeedRepaint := True;
+  End;
+  { PageUp / PageDown : defilement de la fenetre d historique }
+  If Ev.KeyCode = $49 Then Begin { PgUp }
+   TP.ScrollOffset := TP.ScrollOffset +
+    ((TermHeight - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
+     Div TERM_LINE_HEIGHT);
+   If TP.ScrollOffset > TP.HistCount - 1 Then
+    TP.ScrollOffset := TP.HistCount - 1;
+   If TP.ScrollOffset < 0 Then TP.ScrollOffset := 0;
+   TP.NeedRepaint := True;
+   FullRepaintNeeded := True;
+  End
+  Else If Ev.KeyCode = $51 Then Begin { PgDn }
+   TP.ScrollOffset := TP.ScrollOffset -
+    ((TermHeight - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
+     Div TERM_LINE_HEIGHT);
+   If TP.ScrollOffset < 0 Then TP.ScrollOffset := 0;
+   TP.NeedRepaint := True;
+   FullRepaintNeeded := True;
   End;
  End;
 End;
@@ -27678,6 +28953,465 @@ Begin
  EmuMouseBtns := NewBtns And $07;
 End;
 
+{ ============================================================
+  Support des images disquettes A:/B: pour l emulateur DOS
+  ============================================================
+  Les images brutes (raw, .IMG/.IMA) sont supportees nativement.
+  La detection de geometrie repose sur la taille du fichier
+  (formats standards 160K..2.88M).
+  Les formats compresses (TeleDisk td, VHD dynamique, VMDK
+  sparse, VDI...) ne sont PAS supportes a ce stade : un
+  avertissement est emis et l unite reste fermee. }
+
+Procedure Emu_FloppyDetectGeom(Sz: LongInt;
+ Var Cyls: Word; Var Heads, Spt, BiosType: Byte);
+Begin
+ { Defaults : 1.44 Mo }
+ Cyls := 80; Heads := 2; Spt := 18; BiosType := 4;
+ Case Sz Of
+  163840: Begin   { 160K - SS DD 40T 8S }
+   Cyls := 40; Heads := 1; Spt := 8;  BiosType := 1;
+  End;
+  184320: Begin   { 180K - SS DD 40T 9S }
+   Cyls := 40; Heads := 1; Spt := 9;  BiosType := 1;
+  End;
+  327680: Begin   { 320K - DS DD 40T 8S }
+   Cyls := 40; Heads := 2; Spt := 8;  BiosType := 1;
+  End;
+  368640: Begin   { 360K - DS DD 40T 9S }
+   Cyls := 40; Heads := 2; Spt := 9;  BiosType := 1;
+  End;
+  737280: Begin   { 720K - 3.5 DD 80T 9S }
+   Cyls := 80; Heads := 2; Spt := 9;  BiosType := 3;
+  End;
+  1228800: Begin  { 1.2M - 5.25 HD 80T 15S }
+   Cyls := 80; Heads := 2; Spt := 15; BiosType := 2;
+  End;
+  1474560: Begin  { 1.44M - 3.5 HD 80T 18S }
+   Cyls := 80; Heads := 2; Spt := 18; BiosType := 4;
+  End;
+  2949120: Begin  { 2.88M - 3.5 ED 80T 36S }
+   Cyls := 80; Heads := 2; Spt := 36; BiosType := 6;
+  End;
+ Else
+  { Format non standard : tenter de deduire avec 2 tetes, 18 spt }
+  If (Sz Mod 512) = 0 Then Begin
+   Heads := 2; Spt := 18;
+   Cyls := Word((Sz Div 512) Div (LongInt(Heads) * Spt));
+   If Cyls = 0 Then Cyls := 80;
+   BiosType := 4;
+  End;
+ End;
+End;
+
+{ Detecter le format de l image en lisant les premiers octets.
+  Retourne True si raw (supporte), False si format compresse / non
+  reconnu (un message est imprime). }
+Function Emu_FloppyIsRaw(FName: String): Boolean;
+Var
+ F: File;
+ Buf: Array[0..511] Of Byte;
+ BR: Word;
+ Sig2: String;
+ Sig4: String;
+ I: Integer;
+Begin
+ Emu_FloppyIsRaw := False;
+ {$I-}
+ Assign(F, FName); Reset(F, 1);
+ If IOResult <> 0 Then Begin
+  WriteLn('DEVENV: impossible d ouvrir ', FName);
+  Exit;
+ End;
+ FillChar(Buf, SizeOf(Buf), 0);
+ BlockRead(F, Buf, SizeOf(Buf), BR);
+ Close(F);
+ {$I+} If IOResult <> 0 Then ;
+ If BR < 16 Then Begin
+  WriteLn('DEVENV: image trop petite : ', FName);
+  Exit;
+ End;
+ Sig2 := Chr(Buf[0]) + Chr(Buf[1]);
+ Sig4 := '';
+ For I := 0 To 3 Do Sig4 := Sig4 + Chr(Buf[I]);
+ { TeleDisk : 'TD' (non compresse) ou 'td' (LZHUF) }
+ If (Sig2 = 'TD') Or (Sig2 = 'td') Then Begin
+  WriteLn('DEVENV: format TeleDisk non supporte pour ', FName);
+  WriteLn('        Convertir en .IMG brut (ex: WTELEDSK / WTD2IMG).');
+  Exit;
+ End;
+ { VMDK descripteur ou sparse }
+ If (Sig4 = 'KDMV') Or (Copy(Sig4, 1, 4) = '# Di') Then Begin
+  WriteLn('DEVENV: format VMDK non supporte pour ', FName);
+  Exit;
+ End;
+ { VDI VirtualBox : signature texte au debut }
+ If (Copy(Sig4, 1, 4) = '<<< ') Then Begin
+  WriteLn('DEVENV: format VDI non supporte pour ', FName);
+  Exit;
+ End;
+ { QCOW (QEMU) }
+ If (Sig4 = 'QFI' + Chr($FB)) Then Begin
+  WriteLn('DEVENV: format QCOW non supporte pour ', FName);
+  Exit;
+ End;
+ { VHD : footer 'conectix' en fin de fichier. On suppose qu une image
+   floppy < 3 Mo ne sera pas VHD : on accepte comme raw. }
+ Emu_FloppyIsRaw := True;
+End;
+
+Procedure Emu_FloppyOpenOne(Idx: Byte; FName: String);
+Var
+ Sz: LongInt;
+Begin
+ EmuFloppyOpen[Idx]  := False;
+ EmuFloppyName[Idx]  := '';
+ EmuFloppySize[Idx]  := 0;
+ EmuFloppyCyls[Idx]  := 0;
+ EmuFloppyHeads[Idx] := 0;
+ EmuFloppySpt[Idx]   := 0;
+ EmuFloppyType[Idx]  := 0;
+ EmuFloppyRO[Idx]    := False;
+ If FName = '' Then Exit;
+ If Not Emu_FloppyIsRaw(FName) Then Exit;
+ {$I-}
+ Assign(EmuFloppyFile[Idx], FName);
+ FileMode := 2;          { read/write }
+ Reset(EmuFloppyFile[Idx], 1);
+ If IOResult <> 0 Then Begin
+  FileMode := 0;
+  Assign(EmuFloppyFile[Idx], FName);
+  Reset(EmuFloppyFile[Idx], 1);
+  If IOResult <> 0 Then Begin
+   FileMode := 0;
+   WriteLn('DEVENV: impossible d ouvrir l image disque : ', FName);
+   Exit;
+  End;
+  EmuFloppyRO[Idx] := True;
+ End;
+ FileMode := 0;
+ Sz := FileSize(EmuFloppyFile[Idx]);
+ {$I+} If IOResult <> 0 Then ;
+ EmuFloppyName[Idx] := FName;
+ EmuFloppySize[Idx] := Sz;
+ Emu_FloppyDetectGeom(Sz,
+  EmuFloppyCyls[Idx], EmuFloppyHeads[Idx],
+  EmuFloppySpt[Idx],  EmuFloppyType[Idx]);
+ EmuFloppyOpen[Idx] := True;
+End;
+
+Procedure Emu_FloppyOpenAll;
+Begin
+ EmuFloppyOpen[0] := False;
+ EmuFloppyOpen[1] := False;
+ EmuFloppyMotor := 0;
+ If Opts.DiskImg0 <> '' Then Emu_FloppyOpenOne(0, Opts.DiskImg0);
+ If Opts.DiskImg1 <> '' Then Emu_FloppyOpenOne(1, Opts.DiskImg1);
+ { Tenter le mount FAT pour les terminaux (DIR/TYPE/VOL/CD) }
+ FatVol[0].Mounted := False;
+ FatVol[1].Mounted := False;
+ If EmuFloppyOpen[0] Then Begin Fat_TryMount(0); Fat_FindVolLabel(0); End;
+ If EmuFloppyOpen[1] Then Begin Fat_TryMount(1); Fat_FindVolLabel(1); End;
+End;
+
+Procedure Emu_FloppyCloseAll;
+Begin
+ If EmuFloppyOpen[0] Then Begin
+  {$I-} Close(EmuFloppyFile[0]); {$I+} If IOResult <> 0 Then ;
+  EmuFloppyOpen[0] := False;
+ End;
+ If EmuFloppyOpen[1] Then Begin
+  {$I-} Close(EmuFloppyFile[1]); {$I+} If IOResult <> 0 Then ;
+  EmuFloppyOpen[1] := False;
+ End;
+End;
+
+{ Convertir un triplet CHS en LBA (offset secteur) selon la geometrie
+  de l unite Idx. Retourne -1 si CHS hors limites. }
+Function Emu_FloppyCHS2LBA(Idx: Byte; Cyl, Head, Sect: Word): LongInt;
+Begin
+ Emu_FloppyCHS2LBA := -1;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ If (Sect < 1) Or (Sect > EmuFloppySpt[Idx]) Then Exit;
+ If Head >= EmuFloppyHeads[Idx] Then Exit;
+ If Cyl  >= EmuFloppyCyls[Idx]  Then Exit;
+ Emu_FloppyCHS2LBA :=
+  ((LongInt(Cyl) * EmuFloppyHeads[Idx]) + Head) * EmuFloppySpt[Idx]
+  + (Sect - 1);
+End;
+
+{ Lire NSect secteurs depuis l image Idx vers la memoire emulee
+  ES:BX. Retourne le nombre de secteurs effectivement lus. }
+Function Emu_FloppyReadSectors(Var P: TEmulatorPanel; Idx: Byte;
+ LBA: LongInt; NSect: Byte; Seg, Ofs: Word): Byte;
+Var
+ SBuf: Array[0..511] Of Byte;
+ I, BR: Word;
+ N: Byte;
+ J: Integer;
+Begin
+ Emu_FloppyReadSectors := 0;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ N := 0;
+ While N < NSect Do Begin
+  If LBA + N >= (EmuFloppySize[Idx] Div 512) Then Break;
+  {$I-}
+  Seek(EmuFloppyFile[Idx], (LBA + N) * 512);
+  If IOResult <> 0 Then Break;
+  BR := 0;
+  BlockRead(EmuFloppyFile[Idx], SBuf, 512, BR);
+  {$I+} If IOResult <> 0 Then Break;
+  If BR < 512 Then
+   For J := BR To 511 Do SBuf[J] := 0;
+  For J := 0 To 511 Do
+   Emu_WriteByte(P.CPU, Seg, Word(Ofs + LongInt(N) * 512 + J), SBuf[J]);
+  Inc(N);
+  I := BR;       { eviter avertissement variable inutilisee }
+  If I = I Then ;
+ End;
+ Emu_FloppyReadSectors := N;
+End;
+
+{ Ecrire NSect secteurs depuis ES:BX vers l image Idx. Retourne le
+  nombre de secteurs effectivement ecrits. }
+Function Emu_FloppyWriteSectors(Var P: TEmulatorPanel; Idx: Byte;
+ LBA: LongInt; NSect: Byte; Seg, Ofs: Word): Byte;
+Var
+ SBuf: Array[0..511] Of Byte;
+ BW: Word;
+ N: Byte;
+ J: Integer;
+Begin
+ Emu_FloppyWriteSectors := 0;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ If EmuFloppyRO[Idx] Then Exit;
+ N := 0;
+ While N < NSect Do Begin
+  If LBA + N >= (EmuFloppySize[Idx] Div 512) Then Break;
+  For J := 0 To 511 Do
+   SBuf[J] := Emu_ReadByte(P.CPU, Seg, Word(Ofs + LongInt(N) * 512 + J));
+  {$I-}
+  Seek(EmuFloppyFile[Idx], (LBA + N) * 512);
+  If IOResult <> 0 Then Break;
+  BW := 0;
+  BlockWrite(EmuFloppyFile[Idx], SBuf, 512, BW);
+  {$I+} If IOResult <> 0 Then Break;
+  If BW < 512 Then Break;
+  Inc(N);
+ End;
+ Emu_FloppyWriteSectors := N;
+End;
+
+{ Compter le nombre d unites floppy disponibles (0..2). }
+Function Emu_FloppyCount: Byte;
+Var N: Byte;
+Begin
+ N := 0;
+ If EmuFloppyOpen[0] Then Inc(N);
+ If EmuFloppyOpen[1] Then Inc(N);
+ Emu_FloppyCount := N;
+End;
+
+{ ============================================================
+  INT 13h : BIOS Disk Services (floppy uniquement pour l instant)
+  ============================================================
+  DL = numero d unite (00=A:, 01=B:, 80=C:...). Services
+  supportes :
+   AH=00 Reset disk system
+   AH=01 Get status
+   AH=02 Read sectors  (CHS dans CH/CL/DH/DL, AL=N, ES:BX)
+   AH=03 Write sectors
+   AH=04 Verify sectors
+   AH=05 Format track (stub)
+   AH=08 Get drive parameters
+   AH=15 Get disk type
+   AH=16 Detect disk change
+   AH=17 Set DASD type
+   AH=18 Set media type for format
+  CF=0 et AH=00 si succes. CF=1 et AH=code d erreur sinon. }
+Var
+ EmuFloppyLastStatus: Array[0..1] Of Byte;
+
+Procedure Emu_Int13SetError(Var P: TEmulatorPanel; DL, Status: Byte);
+Begin
+ P.CPU.Regs.AH := Status;
+ If (DL And $7F) <= 1 Then EmuFloppyLastStatus[DL And $01] := Status;
+ Include(P.CPU.Flags.s, EFG_CF);
+End;
+
+Procedure Emu_Int13SetOK(Var P: TEmulatorPanel; DL: Byte);
+Begin
+ P.CPU.Regs.AH := 0;
+ If (DL And $7F) <= 1 Then EmuFloppyLastStatus[DL And $01] := 0;
+ Exclude(P.CPU.Flags.s, EFG_CF);
+End;
+
+Procedure Emu_DoInt13(Var P: TEmulatorPanel);
+Var
+ DL, AH, AL: Byte;
+ Cyl, Head, Sect: Word;
+ LBA: LongInt;
+ NSect, Done: Byte;
+ Idx: Byte;
+Begin
+ AH := P.CPU.Regs.AH;
+ AL := P.CPU.Regs.AL;
+ DL := P.CPU.Regs.DL;
+ { On ne gere que les unites floppy (DL bit 7 = 0, DL <= 1). }
+ If (DL And $80) <> 0 Then Begin
+  { Disque dur : non supporte. }
+  Emu_Int13SetError(P, DL, $01);   { 01 = invalid function }
+  P.CPU.Regs.AL := 0;
+  Exit;
+ End;
+ Idx := DL And $01;
+ If DL > 1 Then Begin
+  Emu_Int13SetError(P, DL, $80);   { 80 = timeout/no response }
+  P.CPU.Regs.AL := 0;
+  Exit;
+ End;
+ Case AH Of
+  $00: Begin   { Reset disk system }
+   Emu_Int13SetOK(P, DL);
+  End;
+  $01: Begin   { Get status of last operation }
+   P.CPU.Regs.AH := EmuFloppyLastStatus[Idx];
+   If EmuFloppyLastStatus[Idx] = 0 Then
+    Exclude(P.CPU.Flags.s, EFG_CF)
+   Else
+    Include(P.CPU.Flags.s, EFG_CF);
+  End;
+  $02: Begin   { Read sectors  AL=count, CH=cyl(low8), CL=cyl(hi2)|sec,
+                                DH=head, ES:BX -> buffer }
+   If Not EmuFloppyOpen[Idx] Then Begin
+    Emu_Int13SetError(P, DL, $80);
+    P.CPU.Regs.AL := 0;
+    Exit;
+   End;
+   NSect := AL;
+   Cyl   := (P.CPU.Regs.CX Shr 8) Or
+            ((P.CPU.Regs.CX And $00C0) Shl 2);
+   Sect  := P.CPU.Regs.CX And $003F;
+   Head  := P.CPU.Regs.DH;
+   LBA   := Emu_FloppyCHS2LBA(Idx, Cyl, Head, Sect);
+   If LBA < 0 Then Begin
+    Emu_Int13SetError(P, DL, $04);  { 04 = sector not found }
+    P.CPU.Regs.AL := 0;
+    Exit;
+   End;
+   Done := Emu_FloppyReadSectors(P, Idx, LBA, NSect,
+            P.CPU.Segs.ES, P.CPU.Regs.BX);
+   P.CPU.Regs.AL := Done;
+   If Done = NSect Then Emu_Int13SetOK(P, DL)
+   Else Emu_Int13SetError(P, DL, $04);
+  End;
+  $03: Begin   { Write sectors }
+   If Not EmuFloppyOpen[Idx] Then Begin
+    Emu_Int13SetError(P, DL, $80);
+    P.CPU.Regs.AL := 0;
+    Exit;
+   End;
+   If EmuFloppyRO[Idx] Then Begin
+    Emu_Int13SetError(P, DL, $03);  { 03 = write protected }
+    P.CPU.Regs.AL := 0;
+    Exit;
+   End;
+   NSect := AL;
+   Cyl   := (P.CPU.Regs.CX Shr 8) Or
+            ((P.CPU.Regs.CX And $00C0) Shl 2);
+   Sect  := P.CPU.Regs.CX And $003F;
+   Head  := P.CPU.Regs.DH;
+   LBA   := Emu_FloppyCHS2LBA(Idx, Cyl, Head, Sect);
+   If LBA < 0 Then Begin
+    Emu_Int13SetError(P, DL, $04);
+    P.CPU.Regs.AL := 0;
+    Exit;
+   End;
+   Done := Emu_FloppyWriteSectors(P, Idx, LBA, NSect,
+            P.CPU.Segs.ES, P.CPU.Regs.BX);
+   P.CPU.Regs.AL := Done;
+   If Done = NSect Then Emu_Int13SetOK(P, DL)
+   Else Emu_Int13SetError(P, DL, $04);
+  End;
+  $04: Begin   { Verify sectors : on valide simplement la plage }
+   If Not EmuFloppyOpen[Idx] Then Begin
+    Emu_Int13SetError(P, DL, $80);
+    P.CPU.Regs.AL := 0;
+    Exit;
+   End;
+   NSect := AL;
+   Cyl   := (P.CPU.Regs.CX Shr 8) Or
+            ((P.CPU.Regs.CX And $00C0) Shl 2);
+   Sect  := P.CPU.Regs.CX And $003F;
+   Head  := P.CPU.Regs.DH;
+   LBA   := Emu_FloppyCHS2LBA(Idx, Cyl, Head, Sect);
+   If LBA < 0 Then Begin
+    Emu_Int13SetError(P, DL, $04);
+    P.CPU.Regs.AL := 0;
+    Exit;
+   End;
+   If LBA + NSect > (EmuFloppySize[Idx] Div 512) Then Begin
+    Emu_Int13SetError(P, DL, $04);
+    P.CPU.Regs.AL := 0;
+    Exit;
+   End;
+   Emu_Int13SetOK(P, DL);
+  End;
+  $05: Begin   { Format track : stub - on accepte sans rien faire
+                 si l unite est ouverte en ecriture. }
+   If Not EmuFloppyOpen[Idx] Then
+    Emu_Int13SetError(P, DL, $80)
+   Else If EmuFloppyRO[Idx] Then
+    Emu_Int13SetError(P, DL, $03)
+   Else
+    Emu_Int13SetOK(P, DL);
+  End;
+  $08: Begin   { Get drive parameters }
+   If Not EmuFloppyOpen[Idx] Then Begin
+    Emu_Int13SetError(P, DL, $07);  { 07 = no drive }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.BX := 0;
+    P.CPU.Regs.CX := 0;
+    P.CPU.Regs.DX := Emu_FloppyCount;
+    Exit;
+   End;
+   P.CPU.Regs.BL := EmuFloppyType[Idx];
+   P.CPU.Regs.CH := Byte((EmuFloppyCyls[Idx] - 1) And $FF);
+   P.CPU.Regs.CL := Byte(((EmuFloppyCyls[Idx] - 1) Shr 2) And $C0)
+                 Or Byte(EmuFloppySpt[Idx] And $3F);
+   P.CPU.Regs.DH := EmuFloppyHeads[Idx] - 1;
+   P.CPU.Regs.DL := Emu_FloppyCount;
+   { ES:DI -> table de parametres : on laisse 0:0 (non utilisee) }
+   P.CPU.Segs.ES := 0;
+   P.CPU.Regs.DI := 0;
+   Emu_Int13SetOK(P, DL);
+  End;
+  $15: Begin   { Get disk type }
+   If Not EmuFloppyOpen[Idx] Then Begin
+    P.CPU.Regs.AH := 0;     { 00 = no disk present }
+   End Else If EmuFloppyType[Idx] >= 3 Then
+    P.CPU.Regs.AH := 2      { 02 = floppy with changeline (3.5") }
+   Else
+    P.CPU.Regs.AH := 1;     { 01 = floppy sans changeline (5.25") }
+   Exclude(P.CPU.Flags.s, EFG_CF);
+  End;
+  $16: Begin   { Detect disk change }
+   If Not EmuFloppyOpen[Idx] Then
+    Emu_Int13SetError(P, DL, $80)
+   Else Begin
+    P.CPU.Regs.AH := 0;     { 00 = pas de changement }
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $17, $18: Begin   { Set DASD / Set media type for format : stubs OK }
+   If EmuFloppyOpen[Idx] Then Emu_Int13SetOK(P, DL)
+   Else Emu_Int13SetError(P, DL, $80);
+  End;
+ Else
+  Emu_Int13SetError(P, DL, $01);  { 01 = invalid function }
+ End;
+End;
+
 Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte);
 Var LogF: Text;
  IvtSeg, IvtOfs: Word;
@@ -27697,10 +29431,18 @@ Begin
      Bit 0 = floppy installe, bits 5-4 = video initial (11b=80x25 color),
      bits 7-6 = nb FDD-1, bits 9-8 = nb serial. Valeur PC standard
      1 FDD + 80x25 color = $0021. }
-   P.CPU.Regs.AX := $0021;
+   Begin
+    Case Emu_FloppyCount Of
+     0: P.CPU.Regs.AX := $0020;   { aucun floppy }
+     2: P.CPU.Regs.AX := $0061;   { 2 floppies   }
+    Else
+     P.CPU.Regs.AX := $0021;      { 1 floppy (defaut) }
+    End;
+   End;
   $12:
    { Memory size en KB (640). }
    P.CPU.Regs.AX := 640;
+  $13: Emu_DoInt13(P);
   $16: Emu_DoInt16(P);
   $20: P.CPU.Fault := sfEndProgram;
   $27: P.CPU.Fault := sfEndProgram;
@@ -27767,10 +29509,19 @@ End;
 
 { Initialiser la BIOS Data Area minimale a 0040:0000. }
 Procedure Emu_InitBDA(Var P: TEmulatorPanel);
-Var I: Integer;
+Var I: Integer; EqLo: Byte;
 Begin
  For I := 0 To $FF Do Emu_WriteByte(P.CPU, $40, I, 0);
- Emu_WriteByte(P.CPU, $40, $10, $21);
+ { Equipement word (0040:0010), octet de poids faible :
+   bits 7-6 = nb FDD - 1, bits 5-4 = video (11b=80x25 color),
+   bit 0 = floppy installe. }
+ Case Emu_FloppyCount Of
+  0: EqLo := $20;
+  2: EqLo := $61;
+ Else
+  EqLo := $21;
+ End;
+ Emu_WriteByte(P.CPU, $40, $10, EqLo);
  Emu_WriteByte(P.CPU, $40, $13, $80);
  Emu_WriteByte(P.CPU, $40, $14, $02);
  Emu_WriteByte(P.CPU, $40, $1A, $1E);
@@ -44785,6 +46536,7 @@ BEGIN
  FileMode := 0;
  InitOptions(Opts);
  ParseCommandLine(Opts);
+ Emu_FloppyOpenAll;
  If Opts.Verbose Then
   ShowVersion;
  InitializeGraphics;
