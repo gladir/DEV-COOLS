@@ -3412,6 +3412,12 @@ Var
  A2600_BankCnt  : Integer;     { 1 / 2 / 4 / 8                           }
  A2600_CurBank  : Integer;
  A2600_HotLo    : Byte;        { $F8 (F8), $F6 (F6), $F4 (F4)            }
+ { Timer RIOT 6532 : valeur courante, intervalle (1/8/64/1024 cycles)   }
+ { et compteur de cycles restant avant le prochain decrement.           }
+ A2600_TimerVal     : Integer;
+ A2600_TimerInterval: Integer;
+ A2600_TimerCyc     : Integer;
+ A2600_TimerExpired : Boolean;
  { --- Etat emulateur Z80 (TRS-80, MSX, Adam) --- }
  Z80_Mem    : Array[0..$FFFF] Of Byte;
  Z80_A, Z80_F, Z80_B, Z80_C, Z80_D, Z80_E, Z80_H, Z80_L : Byte;
@@ -35395,14 +35401,20 @@ End;
 
 { Bankswitching F8/F6/F4 : copie la banque demandee dans $F000-$FFFF. }
 Procedure A2600_BankSwitch(NewBank: Integer);
-Var I: LongInt; Src: LongInt;
+Var I: LongInt; Src: LongInt; Alias: LongInt; B: Byte;
 Begin
   If (NewBank < 0) Or (NewBank >= A2600_BankCnt) Then Exit;
   If NewBank = A2600_CurBank Then Exit;
   A2600_CurBank := NewBank;
   Src := LongInt(NewBank) * 4096;
-  For I := 0 To 4095 Do
-    CPU6502_Mem[$F000 + I] := A2600_ROM[Src + I];
+  { Bus 13 bits du 6507 : ROM mirroree dans $1000,$3000,$5000,...$F000. }
+  { On copie la banque dans les 8 alias pour que les lectures directes  }
+  { (PC, EA absolu) fonctionnent quel que soit le miroir utilise.       }
+  For I := 0 To 4095 Do Begin
+    B := A2600_ROM[Src + I];
+    For Alias := 0 To 7 Do
+      CPU6502_Mem[(Alias * $2000) + $1000 + I] := B;
+  End;
 End;
 
 { Verifie un acces (R/W) sur un hotspot et commute la banque. }
@@ -35516,14 +35528,30 @@ Begin
     Exit;
   End;
   If (EA And $0200) = 0 Then Begin
-    { RIOT RAM ($0080-$00FF). On stocke aussi dans CPU6502_Mem car  }
-    { la plupart des opcodes (LDA, AND, CMP, INC...) accedent       }
-    { directement au tableau CPU6502_Mem.                           }
+    { RIOT RAM ($0080-$00FF). Mirroree par bus 13 bits aux 4 aliases }
+    { ou bit12=0, bit7=1, bit9=0 : $0080, $0180, $0480, $0580.       }
     A2600_RIOTRam[EA And $7F] := V;
     CPU6502_Mem[$0080 Or (EA And $7F)] := V;
+    CPU6502_Mem[$0180 Or (EA And $7F)] := V;
+    CPU6502_Mem[$0480 Or (EA And $7F)] := V;
+    CPU6502_Mem[$0580 Or (EA And $7F)] := V;
     Exit;
   End;
-  { RIOT I/O / timer : ecritures ignorees (lectures gerees ailleurs) }
+  { RIOT I/O / timer : ecritures TIM1T/TIM8T/TIM64T/T1024T.            }
+  { Adresses bit12=0, bit7=1, bit9=1 (mirroir). Bits 0-4 selectionnent }
+  { le registre. Apres ecriture la valeur est decrementee de 1 toutes  }
+  { les N cycles ; quand elle passe sous 0, decrement par 1 par cycle  }
+  { et bit 7 d'INSTAT a 1.                                              }
+  Case EA And $1F Of
+    $14: Begin A2600_TimerVal := V; A2600_TimerInterval := 1;
+               A2600_TimerCyc := 1; A2600_TimerExpired := False; End;
+    $15: Begin A2600_TimerVal := V; A2600_TimerInterval := 8;
+               A2600_TimerCyc := 8; A2600_TimerExpired := False; End;
+    $16: Begin A2600_TimerVal := V; A2600_TimerInterval := 64;
+               A2600_TimerCyc := 64; A2600_TimerExpired := False; End;
+    $17: Begin A2600_TimerVal := V; A2600_TimerInterval := 1024;
+               A2600_TimerCyc := 1024; A2600_TimerExpired := False; End;
+  End;
 End;
 
 { Lecture cote 2600 : pour les TIA reads ($30-$3D), on retourne 0    }
@@ -35671,10 +35699,30 @@ End;
 { Approxime 3 cycles par instruction (moyenne 6507). 76 cycles par  }
 { scanline. WSYNC : termine immediatement le scanline courant.      }
 Procedure A2600_AfterInstr;
-Var YVis: Integer;
+Var YVis: Integer; I: Integer; TimRd, StatRd: Byte;
 Begin
   Inc(A2600_LineInstr);
   Inc(A2600_LineCyc, 3);
+  { Tick du timer RIOT (3 cycles par instruction). }
+  If A2600_TimerInterval > 0 Then Begin
+    Dec(A2600_TimerCyc, 3);
+    While A2600_TimerCyc <= 0 Do Begin
+      Dec(A2600_TimerVal);
+      If A2600_TimerVal < 0 Then Begin
+        A2600_TimerExpired := True;
+        A2600_TimerVal := A2600_TimerVal And $FF;
+        A2600_TimerInterval := 1;   { passe en mode 1-cycle apres underflow }
+        Inc(A2600_TimerCyc, 1);
+      End Else
+        Inc(A2600_TimerCyc, A2600_TimerInterval);
+    End;
+    TimRd := Byte(A2600_TimerVal And $FF);
+    If A2600_TimerExpired Then StatRd := $80 Else StatRd := $00;
+    For I := 0 To 3 Do Begin
+      CPU6502_Mem[$0284 + I * $0400] := TimRd;     { INTIM }
+      CPU6502_Mem[$0285 + I * $0400] := StatRd;    { INSTAT }
+    End;
+  End;
   If A2600_WSYNCWait Or (A2600_LineCyc >= 76) Then Begin
     { Fin de scanline : rendre la ligne visible si on est dans la    }
     { fenetre. Scanlines NTSC : 3 VSYNC + 37 VBLANK + 192 visible +  }
@@ -35708,6 +35756,10 @@ Begin
   A2600_KeyEsc := False;
   A2600_KeyJoy := 0;
   A2600_KeyFire := False;
+  A2600_TimerVal := 0;
+  A2600_TimerInterval := 0;     { 0 = pas de timer arme }
+  A2600_TimerCyc := 0;
+  A2600_TimerExpired := False;
   FillChar(A2600_FB, SizeOf(A2600_FB), 0);
   FillChar(A2600_FBPrev, SizeOf(A2600_FBPrev), $FF);
   A2600_FBFirst := True;
@@ -39606,15 +39658,21 @@ Begin NesActive := False;
     { placent typiquement leur vecteur reset dans la derniere banque).   }
     A2600_CurBank := A2600_BankCnt - 1;
     If A2600_ROMSize <= 2048 Then Begin
-     { 2K : copier deux fois }
-     For Steps := 0 To 2047 Do Begin
-      CPU6502_Mem[$F000 + Steps] := A2600_ROM[Steps];
-      CPU6502_Mem[$F800 + Steps] := A2600_ROM[Steps];
-     End;
-    End Else Begin
-     For Steps := 0 To 4095 Do
-      CPU6502_Mem[$F000 + Steps] :=
-       A2600_ROM[(A2600_CurBank * 4096) + Steps];
+     { 2K : copier deux fois dans la banque pour faire 4K }
+     For Steps := 0 To 2047 Do
+      A2600_ROM[2048 + Steps] := A2600_ROM[Steps];
+    End;
+    { Mirrorer la banque active dans les 8 alias de bus 13 bits :  }
+    { $1xxx, $3xxx, $5xxx, $7xxx, $9xxx, $Bxxx, $Dxxx, $Fxxx.       }
+    For NesPrgSize := 0 To 4095 Do Begin
+     CPU6502_Mem[$1000 + NesPrgSize] := A2600_ROM[(A2600_CurBank * 4096) + NesPrgSize];
+     CPU6502_Mem[$3000 + NesPrgSize] := CPU6502_Mem[$1000 + NesPrgSize];
+     CPU6502_Mem[$5000 + NesPrgSize] := CPU6502_Mem[$1000 + NesPrgSize];
+     CPU6502_Mem[$7000 + NesPrgSize] := CPU6502_Mem[$1000 + NesPrgSize];
+     CPU6502_Mem[$9000 + NesPrgSize] := CPU6502_Mem[$1000 + NesPrgSize];
+     CPU6502_Mem[$B000 + NesPrgSize] := CPU6502_Mem[$1000 + NesPrgSize];
+     CPU6502_Mem[$D000 + NesPrgSize] := CPU6502_Mem[$1000 + NesPrgSize];
+     CPU6502_Mem[$F000 + NesPrgSize] := CPU6502_Mem[$1000 + NesPrgSize];
     End;
    End;
    EntryAddr16 := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
@@ -39729,15 +39787,24 @@ Begin NesActive := False;
      A2600_KeyFire := True;             { Espace/Enter/Ctrl/Z/X = tir }
     If GetAsyncKeyState($1B) < 0 Then A2600_KeyEsc := True;
     {$ENDIF}
-    { Mettre a jour CPU6502_Mem pour les LDA directs sur les ports }
+    { Mettre a jour CPU6502_Mem pour les LDA directs sur les ports.   }
+    { RIOT I/O est mirrore aux 4 adresses ou bit12=0, bit7=1, bit9=1 :}
+    { $0280, $0680, $0A80, $0E80 (+offset 0..$1F).                     }
     NesChrSize := $FF;
     If (A2600_KeyJoy And 1) <> 0 Then NesChrSize := NesChrSize And Not $10;
     If (A2600_KeyJoy And 2) <> 0 Then NesChrSize := NesChrSize And Not $20;
     If (A2600_KeyJoy And 4) <> 0 Then NesChrSize := NesChrSize And Not $40;
     If (A2600_KeyJoy And 8) <> 0 Then NesChrSize := NesChrSize And Not $80;
-    CPU6502_Mem[$0280] := NesChrSize;
-    If A2600_KeyFire Then CPU6502_Mem[$028C] := 0
-    Else CPU6502_Mem[$028C] := $80;
+    For NesPrgBlocks := 0 To 3 Do Begin
+     CPU6502_Mem[$0280 + NesPrgBlocks * $0400] := NesChrSize;    { SWCHA }
+     CPU6502_Mem[$0282 + NesPrgBlocks * $0400] := $3F;           { SWCHB }
+     CPU6502_Mem[$0284 + NesPrgBlocks * $0400] := 0;             { INTIM }
+     If A2600_KeyFire Then
+      CPU6502_Mem[$028C + NesPrgBlocks * $0400] := 0
+     Else
+      CPU6502_Mem[$028C + NesPrgBlocks * $0400] := $80;          { INPT4 }
+     CPU6502_Mem[$028D + NesPrgBlocks * $0400] := $80;           { INPT5 }
+    End;
     { Executer une trame : 262 scanlines * ~25 instr = ~6550 instr }
     A2600_ScanLine := 0;
     For NesPrgSize := 0 To 7000 Do Begin
