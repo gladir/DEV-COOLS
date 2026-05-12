@@ -1,0 +1,5 @@
+[OPTIONS]
+TITLE=Test mode silencieux
+
+[FILES]
+QUIET.RTF

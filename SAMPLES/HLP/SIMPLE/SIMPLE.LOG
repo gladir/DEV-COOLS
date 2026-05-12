@@ -1,0 +1,20 @@
+Microsoft Help Compiler clone (HC) v1.00
+Projet: samples\HLP\SIMPLE\SIMPLE.HPJ
+-----------------------------------------
+Compilation du projet : samples\HLP\SIMPLE\SIMPLE.HPJ
+Lecture du projet samples\HLP\SIMPLE\SIMPLE.HPJ...
+  Section [OPTIONS]
+  Section [FILES]
+  Section [MAP]
+Projet lu: 1 fichier(s), 2 map(s).
+Scan des fichiers source...
+Scan: SIMPLE.RTF
+  294 octets, topics cumules: 2
+Verification de la table de mappage...
+Generation du fichier .HLP: samples\HLP\SIMPLE\SIMPLE.HLP
+Fichier .HLP ecrit: 1554 octets.
+
+Topics: 2  Map: 2  Bytes RTF: 294  Bytes HLP: 1554
+Temps:    0.01 s
+-----------------------------------------
+Erreurs: 0  Avertissements: 0
