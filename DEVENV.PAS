@@ -34719,9 +34719,27 @@ Procedure CPU6502_DoADC(M: Byte);
 Var
   R: Word;
   A: Byte;
+  C, Lo, Hi, Bin: Integer;
 Begin
   A := CPU6502_A;
-  R := A + M + CPU6502_GetC;
+  C := CPU6502_GetC;
+  { Mode decimal (BCD) : honore par 6502/6507 NMOS. Pas par 2A03 (NES). }
+  If ((CPU6502_P And $08) <> 0) And (CPU6502_Variant <> 3) Then Begin
+    Lo := (A And $0F) + (M And $0F) + C;
+    If Lo > 9 Then Lo := Lo + 6;
+    Hi := (A Shr 4) + (M Shr 4) + (Lo Shr 4);
+    Bin := A + M + C;            { binaire pour Z }
+    CPU6502_SetZ((Bin And $FF) = 0);
+    { N et V calcules a partir de l add BCD intermediaire (NMOS quirk).}
+    CPU6502_SetN((Hi And $08) <> 0);
+    CPU6502_SetV((((Hi Shl 4) Xor A) And $80 <> 0) And
+                 ((A Xor M) And $80 = 0));
+    If Hi > 9 Then Hi := Hi + 6;
+    CPU6502_SetC(Hi > $0F);
+    CPU6502_A := ((Hi Shl 4) Or (Lo And $0F)) And $FF;
+    Exit;
+  End;
+  R := A + M + C;
   CPU6502_SetC(R > $FF);
   CPU6502_SetV(((A Xor M) And $80 = 0) And
                ((A Xor (R And $FF)) And $80 <> 0));
@@ -34730,7 +34748,28 @@ Begin
 End;
 
 Procedure CPU6502_DoSBC(M: Byte);
+Var
+  A: Byte;
+  C, Lo, Hi, Bin: Integer;
 Begin
+  { En mode BCD : calcul soustraction decimal, drapeaux N/V/Z/C bases  }
+  { sur le resultat binaire (NMOS).                                     }
+  If ((CPU6502_P And $08) <> 0) And (CPU6502_Variant <> 3) Then Begin
+    A := CPU6502_A;
+    C := CPU6502_GetC;             { 1 = no borrow }
+    Lo := (A And $0F) - (M And $0F) - (1 - C);
+    If Lo < 0 Then Lo := Lo - 6;
+    Hi := (A Shr 4) - (M Shr 4) - Ord(Lo < 0);
+    If Hi < 0 Then Hi := Hi - 6;
+    Bin := A - M - (1 - C);
+    CPU6502_SetC(Bin >= 0);
+    CPU6502_SetZ((Bin And $FF) = 0);
+    CPU6502_SetN((Bin And $80) <> 0);
+    CPU6502_SetV((((A Xor Bin) And $80) <> 0) And
+                 (((A Xor M) And $80) <> 0));
+    CPU6502_A := ((Hi And $0F) Shl 4) Or (Lo And $0F);
+    Exit;
+  End;
   CPU6502_DoADC(M Xor $FF);
 End;
 
@@ -35764,6 +35803,16 @@ Begin
           A2600_PadDumped := False;
       End;
       $02: A2600_WSYNCWait := True;                 { WSYNC }
+      $03: Begin                                    { RSYNC }
+        { Reset Horizontal Sync : remet le compteur horizontal TIA a 3 }
+        { color-clocks de la fin de ligne. La ligne courante est       }
+        { tronquee immediatement. Utilise par Cosmic Ark (starfield)   }
+        { et quelques demos. On termine le rendu visible jusqu au beam }
+        { courant puis on force la fin de scanline sur le prochain     }
+        { AfterInstr (LineCyc >= 76).                                  }
+        { Le pipeline HMOVE eventuellement en cours n est PAS reset.   }
+        A2600_LineCyc := 76;
+       End;
       { RESPx/RESMx/RESBL : le faisceau au moment du verrouillage est }
       { a (LineCyc+3)*3 color-clocks (3 cycles CPU pendant STA zp),    }
       { puis le TIA ajoute un delai de 5 color-clocks. HBLANK = 68.    }
@@ -36072,6 +36121,14 @@ Begin
   A2600_LatchAll(X1);
 
   For X := X0 To X1 Do Begin
+    { HBLANK etendu par HMOVE : pixels 0..7 totalement supprimes.    }
+    { Pas de calcul de sprite, pas de collisions latchees, pixel a 0.}
+    { Conforme au TIA : pendant l extension de 8 cycles CPU, le      }
+    { pixel-enable est inhibe -> aucun objet visible et aucun        }
+    { comparateur de collision ne se latche.                          }
+    If A2600_HMOVEComb And (X < 8) Then Begin
+      A2600_FB[Y, X] := 0;
+    End Else Begin
     Pix := COLUBK;
     HalfX := X Div 4;
     If HalfX >= 20 Then Begin
@@ -36175,9 +36232,8 @@ Begin
     If (M0Pix <> 0) And (M1Pix <> 0) Then
       A2600_TIA[$37] := A2600_TIA[$37] Or $40;            { CXPPMM : M0/M1 }
     If A2600_VBLANKAct Then Pix := 0;
-    { HMOVE comb : barre noire pixels 0..7 si HMOVE strobe sur cette ligne }
-    If A2600_HMOVEComb And (X < 8) Then Pix := 0;
     A2600_FB[Y, X] := Pix;
+    End;
   End;
 End;
 
