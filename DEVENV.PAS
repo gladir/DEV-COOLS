@@ -3402,6 +3402,10 @@ Var
  A2600_P1X      : Integer;
  A2600_M0X, A2600_M1X, A2600_BLX : Integer;
  A2600_HMP0, A2600_HMP1, A2600_HMM0, A2600_HMM1, A2600_HMBL : ShortInt;
+ { HMOVE differe : strobe en dehors de HBLANK -> applique au scanline }
+ { suivant pendant son HBLANK (Stella-accurate "late HMOVE").         }
+ A2600_HMOVEPending  : Boolean;
+ A2600_HMP0_P, A2600_HMP1_P, A2600_HMM0_P, A2600_HMM1_P, A2600_HMBL_P : ShortInt;
  { Double-buffer GRP0/GRP1/ENABL pour VDELP0/VDELP1/VDELBL (2-line kernels) }
  A2600_GRP0_New, A2600_GRP0_Old : Byte;
  A2600_GRP1_New, A2600_GRP1_Old : Byte;
@@ -35772,12 +35776,26 @@ Begin
           If A2600_M1X > 159 Then A2600_M1X := A2600_M1X - 160;
           If A2600_BLX < 0 Then A2600_BLX := A2600_BLX + 160;
           If A2600_BLX > 159 Then A2600_BLX := A2600_BLX - 160;
+        End Else Begin
+          { Late HMOVE : strobe pendant la partie visible.            }
+          { Snapshot des HM* maintenant (les valeurs peuvent changer  }
+          { avant que le mouvement s applique au prochain HBLANK).    }
+          A2600_HMOVEPending := True;
+          A2600_HMP0_P := A2600_HMP0;
+          A2600_HMP1_P := A2600_HMP1;
+          A2600_HMM0_P := A2600_HMM0;
+          A2600_HMM1_P := A2600_HMM1;
+          A2600_HMBL_P := A2600_HMBL;
         End;
        End;
       $2B: Begin                                    { HMCLR }
         A2600_HMP0 := 0; A2600_HMP1 := 0;
         A2600_HMM0 := 0; A2600_HMM1 := 0;
         A2600_HMBL := 0;
+        { HMCLR efface aussi le snapshot d un HMOVE differe. }
+        A2600_HMP0_P := 0; A2600_HMP1_P := 0;
+        A2600_HMM0_P := 0; A2600_HMM1_P := 0;
+        A2600_HMBL_P := 0;
        End;
       $2C: Begin                                    { CXCLR }
         A2600_TIA[$30] := 0; A2600_TIA[$31] := 0;
@@ -36314,6 +36332,28 @@ Begin
     A2600_HMOVEComb := False;
     A2600_CurY := A2600_VisLine;
     A2600_ResetScanlineLatches;
+    { Appliquer un HMOVE differe (strobe en partie visible de la ligne }
+    { precedente). Mouvement pendant HBLANK du nouveau scanline avec   }
+    { comb visible.                                                    }
+    If A2600_HMOVEPending Then Begin
+      A2600_HMOVEPending := False;
+      A2600_HMOVEComb := True;
+      A2600_P0X := A2600_P0X - A2600_HMP0_P;
+      A2600_P1X := A2600_P1X - A2600_HMP1_P;
+      A2600_M0X := A2600_M0X - A2600_HMM0_P;
+      A2600_M1X := A2600_M1X - A2600_HMM1_P;
+      A2600_BLX := A2600_BLX - A2600_HMBL_P;
+      If A2600_P0X < 0 Then A2600_P0X := A2600_P0X + 160;
+      If A2600_P0X > 159 Then A2600_P0X := A2600_P0X - 160;
+      If A2600_P1X < 0 Then A2600_P1X := A2600_P1X + 160;
+      If A2600_P1X > 159 Then A2600_P1X := A2600_P1X - 160;
+      If A2600_M0X < 0 Then A2600_M0X := A2600_M0X + 160;
+      If A2600_M0X > 159 Then A2600_M0X := A2600_M0X - 160;
+      If A2600_M1X < 0 Then A2600_M1X := A2600_M1X + 160;
+      If A2600_M1X > 159 Then A2600_M1X := A2600_M1X - 160;
+      If A2600_BLX < 0 Then A2600_BLX := A2600_BLX + 160;
+      If A2600_BLX > 159 Then A2600_BLX := A2600_BLX - 160;
+    End;
   End;
 End;
 
@@ -36334,6 +36374,9 @@ Begin
   A2600_M0X := 0; A2600_M1X := 0; A2600_BLX := 0;
   A2600_HMP0 := 0; A2600_HMP1 := 0;
   A2600_HMM0 := 0; A2600_HMM1 := 0; A2600_HMBL := 0;
+  A2600_HMOVEPending := False;
+  A2600_HMP0_P := 0; A2600_HMP1_P := 0;
+  A2600_HMM0_P := 0; A2600_HMM1_P := 0; A2600_HMBL_P := 0;
   A2600_GRP0_New := 0; A2600_GRP0_Old := 0;
   A2600_GRP1_New := 0; A2600_GRP1_Old := 0;
   A2600_ENABL_New := 0; A2600_ENABL_Old := 0;
