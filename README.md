@@ -423,6 +423,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>F77C86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Fortran 77 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
+		<tr>
+			<td><b>HC.PAS</b></td>
+			<td>Cette commande permet de lancer le Help Compiler (HC).</td>
+		</tr>
 	    <tr>
 			<td><b>HEXCOM.PAS</b></td>
 	        <td>Cette commande permet de charger un HEX (fichier de vidage hexadécimal) et en fait un fichier de format  «.COM».</td>
