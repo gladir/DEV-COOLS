@@ -3414,6 +3414,29 @@ Var
  { Rendu cycle-accurate intra-scanline : dernier X rendu (-1 = aucun) }
  A2600_LastX    : Integer;
  A2600_CurY     : Integer;     { ligne visible en cours de rendu }
+ { Latching au "start signal" pour P0/P1 : chaque copie (0..2) latche }
+ { ses parametres NUSIZ Stretch + REFPx au moment ou le beam croise   }
+ { sa position de depart. Reset au debut de chaque scanline.          }
+ A2600_P0Fired   : Array[0..2] Of Boolean;
+ A2600_P0LStart  : Array[0..2] Of Integer;
+ A2600_P0LStretch: Array[0..2] Of Integer;
+ A2600_P0LRefp   : Array[0..2] Of Byte;
+ A2600_P0LCnt    : Integer;
+ A2600_P1Fired   : Array[0..2] Of Boolean;
+ A2600_P1LStart  : Array[0..2] Of Integer;
+ A2600_P1LStretch: Array[0..2] Of Integer;
+ A2600_P1LRefp   : Array[0..2] Of Byte;
+ A2600_P1LCnt    : Integer;
+ { Missiles latchent leur size au start signal aussi }
+ A2600_M0Fired   : Array[0..2] Of Boolean;
+ A2600_M0LStart  : Array[0..2] Of Integer;
+ A2600_M0LSize   : Array[0..2] Of Integer;
+ A2600_M1Fired   : Array[0..2] Of Boolean;
+ A2600_M1LStart  : Array[0..2] Of Integer;
+ A2600_M1LSize   : Array[0..2] Of Integer;
+ A2600_BLFired   : Boolean;
+ A2600_BLLStart  : Integer;
+ A2600_BLLSize   : Integer;
  A2600_KeyEsc   : Boolean;
  A2600_KeyJoy   : Byte;        { bits : 0=haut 1=bas 2=gauche 3=droite   }
  A2600_KeyFire  : Boolean;
@@ -34460,6 +34483,11 @@ Procedure A2600_E0RebuildSlot(SlotIdx, BankIdx: Integer); Forward;
 Procedure A2600_TigerSwitch(NewBank: Integer); Forward;
 Procedure A2600_E7_RebuildLower; Forward;
 Procedure A2600_E7_RebuildUpper; Forward;
+Procedure A2600_ResetScanlineLatches; Forward;
+Procedure A2600_LatchPlayer(Which: Integer; BeamX: Integer); Forward;
+Procedure A2600_LatchMissile(Which: Integer; BeamX: Integer); Forward;
+Procedure A2600_LatchBall(BeamX: Integer); Forward;
+Procedure A2600_LatchAll(BeamX: Integer); Forward;
 Function NesBus_Write(EA: Word; V: Byte): Boolean; Forward;
 
 Function CPU6502_Read(Addr: Word): Byte;
@@ -35876,28 +35904,18 @@ Var
   PF0, PF1, PF2, CTRLPF: Byte;
   COLUBK, COLUPF, COLUP0, COLUP1: Byte;
   GRP0, GRP1: Byte;
-  REFP0, REFP1: Byte;
-  ENAM0, ENAM1, ENABL: Byte;
-  NUSIZ0, NUSIZ1: Byte;
+  ENABL: Byte;
+  ENAM0, ENAM1: Byte;
   Pix, PfPix, P0Pix, P1Pix, M0Pix, M1Pix, BLPix: Byte;
   PfIdx, PfBits: Integer;
   Reflect, Score, Priority: Boolean;
-  BSize, M0Size, M1Size: Integer;
-  P0Stretch, P1Stretch: Integer;
   Tmp, K, Dx: Integer;
-  P0Cnt, P1Cnt: Integer;
-  P0Off, P1Off: Array[0..2] Of Integer;
-  M0RX, M1RX: Integer;
 
-  { Pipeline TIA player : compteur 40-cycle / 160 color clocks.       }
-  { Pour chaque position de "start" (PxX + Offset[K]) modulo 160, le  }
-  { shift register emet 8 bits a la cadence 1/2/4 cc selon stretch.   }
   Function PlayerPixel(GR, REF: Byte; Stretch: Integer; Dx: Integer): Boolean;
   Var Bit, D: Integer;
   Begin
     PlayerPixel := False;
     If GR = 0 Then Exit;
-    { Wrap modulo 160 : sprite proche bord droit reapparait a gauche. }
     D := Dx;
     If D < 0 Then D := D + 160;
     If D >= 160 Then D := D - 160;
@@ -35908,7 +35926,6 @@ Var
     PlayerPixel := ((GR Shr Bit) And 1) <> 0;
   End;
 
-  { Missile/balle : 1-8 cc actifs, avec wrap modulo 160. }
   Function MissilePixel(Size, Dx: Integer): Boolean;
   Var D: Integer;
   Begin
@@ -35931,59 +35948,21 @@ Begin
   PF1    := A2600_TIA[$0E];
   PF2    := A2600_TIA[$0F];
   CTRLPF := A2600_TIA[$0A];
-  { VDELPx/VDELBL : selection buffer ancien/nouveau pour kernels 2-line }
   If A2600_VDELP0 Then GRP0 := A2600_GRP0_Old Else GRP0 := A2600_GRP0_New;
   If A2600_VDELP1 Then GRP1 := A2600_GRP1_Old Else GRP1 := A2600_GRP1_New;
   If A2600_VDELBL Then ENABL := A2600_ENABL_Old Else ENABL := A2600_ENABL_New;
-  REFP0  := A2600_TIA[$0B];
-  REFP1  := A2600_TIA[$0C];
   ENAM0  := A2600_TIA[$1D];
   ENAM1  := A2600_TIA[$1E];
-  NUSIZ0 := A2600_TIA[$04];
-  NUSIZ1 := A2600_TIA[$05];
   Reflect  := (CTRLPF And $01) <> 0;
   Score    := (CTRLPF And $02) <> 0;
   Priority := (CTRLPF And $04) <> 0;
-  BSize := 1 Shl ((CTRLPF Shr 4) And $03);
-  M0Size := 1 Shl ((NUSIZ0 Shr 4) And $03);
-  M1Size := 1 Shl ((NUSIZ1 Shr 4) And $03);
-  { NUSIZ player : 0=1x1, 1=2 copies close (gap 16), 2=2 medium (32), }
-  { 3=3 copies close, 4=2 wide (64), 5=1 double (2x), 6=3 medium,    }
-  { 7=1 quad (4x).                                                   }
-  P0Stretch := 1; P0Cnt := 1; P0Off[0] := 0;
-  Case NUSIZ0 And $07 Of
-    1: Begin P0Cnt := 2; P0Off[1] := 16; End;
-    2: Begin P0Cnt := 2; P0Off[1] := 32; End;
-    3: Begin P0Cnt := 3; P0Off[1] := 16; P0Off[2] := 32; End;
-    4: Begin P0Cnt := 2; P0Off[1] := 64; End;
-    5: P0Stretch := 2;
-    6: Begin P0Cnt := 3; P0Off[1] := 32; P0Off[2] := 64; End;
-    7: P0Stretch := 4;
-  End;
-  P1Stretch := 1; P1Cnt := 1; P1Off[0] := 0;
-  Case NUSIZ1 And $07 Of
-    1: Begin P1Cnt := 2; P1Off[1] := 16; End;
-    2: Begin P1Cnt := 2; P1Off[1] := 32; End;
-    3: Begin P1Cnt := 3; P1Off[1] := 16; P1Off[2] := 32; End;
-    4: Begin P1Cnt := 2; P1Off[1] := 64; End;
-    5: P1Stretch := 2;
-    6: Begin P1Cnt := 3; P1Off[1] := 32; P1Off[2] := 64; End;
-    7: P1Stretch := 4;
-  End;
-  { RESMPx : missile centre sur le joueur correspondant }
-  If A2600_RESMP0 Then M0RX := A2600_P0X + (P0Stretch * 4) - (M0Size Div 2)
-  Else M0RX := A2600_M0X;
-  If A2600_RESMP1 Then M1RX := A2600_P1X + (P1Stretch * 4) - (M1Size Div 2)
-  Else M1RX := A2600_M1X;
-  If M0RX < 0 Then M0RX := M0RX + 160;
-  If M0RX > 159 Then M0RX := M0RX - 160;
-  If M1RX < 0 Then M1RX := M1RX + 160;
-  If M1RX > 159 Then M1RX := M1RX - 160;
+
+  { Latcher tout objet dont le start signal tombe dans [X0..X1] }
+  { avec les valeurs TIA actuelles (pipeline cycle-accurate).   }
+  A2600_LatchAll(X1);
 
   For X := X0 To X1 Do Begin
     Pix := COLUBK;
-    { Playfield : 20 pixels chacun de 4 hardware-pixels. Cote gauche }
-    { puis cote droit (eventuellement reflete).                      }
     HalfX := X Div 4;
     If HalfX >= 20 Then Begin
       If Reflect Then PfIdx := 39 - HalfX
@@ -35999,35 +35978,42 @@ Begin
         If X < 80 Then PfPix := COLUP0 Else PfPix := COLUP1;
       End Else PfPix := COLUPF;
     End;
-    { Joueurs avec NUSIZ : iterer sur toutes les copies (OR matériel). }
+    { Joueurs : utiliser les valeurs LATCHEES au start signal. }
     P0Pix := 0;
-    For K := 0 To P0Cnt - 1 Do Begin
-      Dx := X - (A2600_P0X + P0Off[K]);
-      If PlayerPixel(GRP0, REFP0, P0Stretch, Dx) Then P0Pix := COLUP0;
-    End;
+    For K := 0 To A2600_P0LCnt - 1 Do
+      If A2600_P0Fired[K] Then Begin
+        Dx := X - A2600_P0LStart[K];
+        If PlayerPixel(GRP0, A2600_P0LRefp[K], A2600_P0LStretch[K], Dx)
+          Then P0Pix := COLUP0;
+      End;
     P1Pix := 0;
-    For K := 0 To P1Cnt - 1 Do Begin
-      Dx := X - (A2600_P1X + P1Off[K]);
-      If PlayerPixel(GRP1, REFP1, P1Stretch, Dx) Then P1Pix := COLUP1;
-    End;
-    { Missiles (taille NUSIZx bits 4-5, copies aux memes positions). }
+    For K := 0 To A2600_P1LCnt - 1 Do
+      If A2600_P1Fired[K] Then Begin
+        Dx := X - A2600_P1LStart[K];
+        If PlayerPixel(GRP1, A2600_P1LRefp[K], A2600_P1LStretch[K], Dx)
+          Then P1Pix := COLUP1;
+      End;
+    { Missiles : taille latchee, copies aux memes positions que P0/P1. }
     M0Pix := 0;
     If (ENAM0 And $02) <> 0 Then
-      For K := 0 To P0Cnt - 1 Do Begin
-        Dx := X - (M0RX + P0Off[K]);
-        If MissilePixel(M0Size, Dx) Then M0Pix := COLUP0;
-      End;
+      For K := 0 To A2600_P0LCnt - 1 Do
+        If A2600_M0Fired[K] Then Begin
+          Dx := X - A2600_M0LStart[K];
+          If MissilePixel(A2600_M0LSize[K], Dx) Then M0Pix := COLUP0;
+        End;
     M1Pix := 0;
     If (ENAM1 And $02) <> 0 Then
-      For K := 0 To P1Cnt - 1 Do Begin
-        Dx := X - (M1RX + P1Off[K]);
-        If MissilePixel(M1Size, Dx) Then M1Pix := COLUP1;
-      End;
-    { Balle (taille variable, pas de copies, wrap 160). }
+      For K := 0 To A2600_P1LCnt - 1 Do
+        If A2600_M1Fired[K] Then Begin
+          Dx := X - A2600_M1LStart[K];
+          If MissilePixel(A2600_M1LSize[K], Dx) Then M1Pix := COLUP1;
+        End;
+    { Balle : taille latchee. }
     BLPix := 0;
-    Tmp := X - A2600_BLX;
-    If ((ENABL And $02) <> 0) And MissilePixel(BSize, Tmp) Then
-      BLPix := COLUPF;
+    If A2600_BLFired And ((ENABL And $02) <> 0) Then Begin
+      Tmp := X - A2600_BLLStart;
+      If MissilePixel(A2600_BLLSize, Tmp) Then BLPix := COLUPF;
+    End;
     { Priorite TIA (du plus faible au plus eleve, dernier ecrit gagne). }
     { Defaut    : BK < PF/BL < P1/M1 < P0/M0                            }
     { Priorite  : BK < P1/M1 < P0/M0 < PF/BL                            }
@@ -36091,6 +36077,148 @@ Begin
   A2600_RenderRange(Y, 0, 159);
 End;
 
+{ Reset des latches au debut d un scanline (ou apres VSYNC). }
+Procedure A2600_ResetScanlineLatches;
+Var K: Integer;
+Begin
+  For K := 0 To 2 Do Begin
+    A2600_P0Fired[K] := False;
+    A2600_P1Fired[K] := False;
+    A2600_M0Fired[K] := False;
+    A2600_M1Fired[K] := False;
+  End;
+  A2600_BLFired := False;
+  A2600_P0LCnt := 0;
+  A2600_P1LCnt := 0;
+End;
+
+{ Latcher P0 : a chaque appel, on inspecte les copies (selon NUSIZ courant) }
+{ qui n ont pas encore "fire". Si leur start position <= BeamX et qu elles  }
+{ ne sont pas encore latchees, on latche les valeurs TIA actuelles.         }
+Procedure A2600_LatchPlayer(Which: Integer; BeamX: Integer);
+Var
+  K, Cnt, Stretch: Integer;
+  Off: Array[0..2] Of Integer;
+  NU, RF: Byte;
+  PxX: Integer;
+  Sx: Integer;
+Begin
+  If Which = 0 Then Begin
+    NU := A2600_TIA[$04]; RF := A2600_TIA[$0B]; PxX := A2600_P0X;
+  End Else Begin
+    NU := A2600_TIA[$05]; RF := A2600_TIA[$0C]; PxX := A2600_P1X;
+  End;
+  Cnt := 1; Stretch := 1;
+  Off[0] := 0; Off[1] := 0; Off[2] := 0;
+  Case NU And $07 Of
+    1: Begin Cnt := 2; Off[1] := 16; End;
+    2: Begin Cnt := 2; Off[1] := 32; End;
+    3: Begin Cnt := 3; Off[1] := 16; Off[2] := 32; End;
+    4: Begin Cnt := 2; Off[1] := 64; End;
+    5: Stretch := 2;
+    6: Begin Cnt := 3; Off[1] := 32; Off[2] := 64; End;
+    7: Stretch := 4;
+  End;
+  If Which = 0 Then Begin
+    If Cnt > A2600_P0LCnt Then A2600_P0LCnt := Cnt;
+  End Else Begin
+    If Cnt > A2600_P1LCnt Then A2600_P1LCnt := Cnt;
+  End;
+  For K := 0 To Cnt - 1 Do Begin
+    Sx := PxX + Off[K];
+    If Sx >= 160 Then Sx := Sx - 160;
+    If Sx < 0 Then Sx := Sx + 160;
+    { Une copie se latche au moment ou le faisceau franchit Sx. }
+    If Sx <= BeamX Then Begin
+      If Which = 0 Then Begin
+        If Not A2600_P0Fired[K] Then Begin
+          A2600_P0LStart[K] := Sx;
+          A2600_P0LStretch[K] := Stretch;
+          A2600_P0LRefp[K] := RF;
+          A2600_P0Fired[K] := True;
+        End;
+      End Else Begin
+        If Not A2600_P1Fired[K] Then Begin
+          A2600_P1LStart[K] := Sx;
+          A2600_P1LStretch[K] := Stretch;
+          A2600_P1LRefp[K] := RF;
+          A2600_P1Fired[K] := True;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ Latcher missiles : meme schema NUSIZ que joueurs, taille = 1/2/4/8. }
+Procedure A2600_LatchMissile(Which: Integer; BeamX: Integer);
+Var
+  K, Cnt, Stretch, Size: Integer;
+  Off: Array[0..2] Of Integer;
+  NU: Byte; PxX, MxX, Sx: Integer;
+  RESMP: Boolean;
+Begin
+  If Which = 0 Then Begin
+    NU := A2600_TIA[$04]; PxX := A2600_P0X; MxX := A2600_M0X;
+    RESMP := A2600_RESMP0;
+  End Else Begin
+    NU := A2600_TIA[$05]; PxX := A2600_P1X; MxX := A2600_M1X;
+    RESMP := A2600_RESMP1;
+  End;
+  Cnt := 1; Stretch := 1;
+  Off[0] := 0; Off[1] := 0; Off[2] := 0;
+  Case NU And $07 Of
+    1: Begin Cnt := 2; Off[1] := 16; End;
+    2: Begin Cnt := 2; Off[1] := 32; End;
+    3: Begin Cnt := 3; Off[1] := 16; Off[2] := 32; End;
+    4: Begin Cnt := 2; Off[1] := 64; End;
+    5: Stretch := 2;
+    6: Begin Cnt := 3; Off[1] := 32; Off[2] := 64; End;
+    7: Stretch := 4;
+  End;
+  Size := 1 Shl ((NU Shr 4) And $03);
+  If RESMP Then MxX := PxX + (Stretch * 4) - (Size Div 2);
+  For K := 0 To Cnt - 1 Do Begin
+    Sx := MxX + Off[K];
+    If Sx >= 160 Then Sx := Sx - 160;
+    If Sx < 0 Then Sx := Sx + 160;
+    If Sx <= BeamX Then Begin
+      If Which = 0 Then Begin
+        If Not A2600_M0Fired[K] Then Begin
+          A2600_M0LStart[K] := Sx;
+          A2600_M0LSize[K] := Size;
+          A2600_M0Fired[K] := True;
+        End;
+      End Else Begin
+        If Not A2600_M1Fired[K] Then Begin
+          A2600_M1LStart[K] := Sx;
+          A2600_M1LSize[K] := Size;
+          A2600_M1Fired[K] := True;
+        End;
+      End;
+    End;
+  End;
+End;
+
+Procedure A2600_LatchBall(BeamX: Integer);
+Begin
+  If (Not A2600_BLFired) And (A2600_BLX <= BeamX) Then Begin
+    A2600_BLLStart := A2600_BLX;
+    A2600_BLLSize := 1 Shl ((A2600_TIA[$0A] Shr 4) And $03);
+    A2600_BLFired := True;
+  End;
+End;
+
+{ Latche tous les objets pour le scanline courant. Appele au debut de    }
+{ scanline et avant chaque RenderRange si necessaire.                    }
+Procedure A2600_LatchAll(BeamX: Integer);
+Begin
+  A2600_LatchPlayer(0, BeamX);
+  A2600_LatchPlayer(1, BeamX);
+  A2600_LatchMissile(0, BeamX);
+  A2600_LatchMissile(1, BeamX);
+  A2600_LatchBall(BeamX);
+End;
+
 { Avancer le faisceau jusqu a NewX en rendant les pixels deja "passes". }
 { Appelee avant chaque ecriture TIA pour rendu cycle-accurate.         }
 Procedure A2600_AdvanceTo(NewX: Integer);
@@ -36146,6 +36274,7 @@ Begin
     A2600_LastX := -1;
     A2600_HMOVEComb := False;
     A2600_CurY := A2600_VisLine;
+    A2600_ResetScanlineLatches;
   End;
 End;
 
@@ -36174,6 +36303,8 @@ Begin
   A2600_HMOVEComb := False;
   A2600_LastX := -1;
   A2600_CurY := 0;
+  A2600_ResetScanlineLatches;
+  A2600_P0LCnt := 1; A2600_P1LCnt := 1;
   A2600_SWACNT := 0;
   A2600_SWBCNT := 0;
   A2600_SWACHA_Out := $FF;
