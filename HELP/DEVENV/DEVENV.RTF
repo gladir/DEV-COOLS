@@ -1,0 +1,269 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_INDEX}
+{\footnote $ Sommaire de l'aide de DEVENV}
+{\footnote K sommaire;index;accueil;aide}
+{\footnote + main:001}
+\b\fs28 Aide de DEVENV \par
+\b0\fs20 Clone de Visual Studio en mode graphique \par
+\par
+DEVENV est un environnement de developpement integre (IDE) qui imite
+l'apparence et le comportement de Microsoft Visual Studio. L'application
+fonctionne en mode graphique VGA et offre l'edition de code source,
+la compilation et l'emulation de plateformes anciennes.\par
+\par
+\b Rubriques principales :\b0\par
+\par
+- Syntaxe de la ligne de commande \par
+- Options disponibles \par
+- Langages de programmation supportes \par
+- Emulateurs integres \par
+- Format de solution (.SLN) \par
+- Montage d'images disquette \par
+- Raccourcis clavier \par
+- A propos de DEVENV \par
+\par
+Version : 1.00 - Copyright (C) 2026 Sylvain Maltais (GLADIR.com).\par
+\page
+
+{\footnote # IDH_SYNTAXE}
+{\footnote $ Syntaxe de la ligne de commande}
+{\footnote K syntaxe;ligne de commande;invocation}
+{\footnote + main:002}
+\b\fs24 Syntaxe \b0\fs20\par
+\par
+{\f1 DEVENV [solution.sln] [options]}\par
+\par
+\b Exemples typiques :\b0\par
+\par
+{\f1 DEVENV}\par
+   Lance l'IDE sans solution ouverte.\par
+\par
+{\f1 DEVENV MaSolution.sln}\par
+   Ouvre la solution specifiee au demarrage.\par
+\par
+{\f1 DEVENV -v MaSolution.sln}\par
+   Mode verbeux pour afficher les details de demarrage.\par
+\par
+{\f1 DEVENV -emu:NES,JEU.NES}\par
+   Lance directement l'emulateur NES sur un fichier ROM.\par
+\par
+{\f1 DEVENV /DISK0:DOS622.IMG}\par
+   Demarre avec une image disquette DOS montee sur A:.\par
+\par
+Voir aussi : Options, Emulateurs, Disquettes.\par
+\page
+
+{\footnote # IDH_OPTIONS}
+{\footnote $ Options disponibles}
+{\footnote K options;parametres;flags}
+{\footnote + main:003}
+\b\fs24 Options de la ligne de commande \b0\fs20\par
+\par
+\b -v\b0     Active le mode verbeux et affiche les details de demarrage.\par
+\b -d\b0     Active le mode debogage interne de l'IDE.\par
+\b -h\b0     Affiche cette aide.\par
+\b --help\b0 Affiche cette aide.\par
+\b -emu:XXX,fichier\b0   Lance directement l'emulateur XXX (NES, AMIGA,\par
+\tab ATARIST, C64, APPLEII, ATARI400, ATARI800, ATARI2600, MSX, TRS80,\par
+\tab ADAM, COCO3, TO7, CRAY1, ...) sur le fichier indique.\par
+\b /DISK0:image\b0  Monte une image disquette sur l'unite A: (DOS).\par
+\b /DISK1:image\b0  Monte une image disquette sur l'unite B: (DOS).\par
+\par
+Voir aussi : Mode verbeux, Mode debogage, Emulateurs, Disquettes.\par
+\page
+
+{\footnote # IDH_OPTION_V}
+{\footnote $ Option -v (mode verbeux)}
+{\footnote K mode verbeux;-v;verbose}
+\b\fs24 Option -v : Mode verbeux \b0\fs20\par
+\par
+L'option {\f1 -v} active le mode verbeux. DEVENV affiche alors des
+informations supplementaires pendant son demarrage :\par
+\par
+- Chargement de la configuration\par
+- Detection du materiel graphique\par
+- Initialisation des compilateurs integres\par
+- Chargement eventuel de la solution\par
+- Initialisation des emulateurs\par
+\par
+\b Exemple :\b0\par
+{\f1 DEVENV -v MaSolution.sln}\par
+\par
+Cette option est utile pour diagnostiquer un probleme de demarrage
+ou pour comprendre le comportement interne de l'IDE.\par
+\page
+
+{\footnote # IDH_OPTION_D}
+{\footnote $ Option -d (mode debogage interne)}
+{\footnote K mode debogage;-d;debug;diagnostic}
+\b\fs24 Option -d : Mode debogage interne \b0\fs20\par
+\par
+L'option {\f1 -d} active le mode de debogage interne de l'IDE lui-meme.
+Elle est destinee aux developpeurs de DEVENV pour traquer des problemes
+dans le code de l'IDE et non dans les programmes utilisateurs.\par
+\par
+Effets :\par
+- Affichage des messages internes du systeme de fenetrage \par
+- Trace des evenements souris et clavier \par
+- Statistiques d'allocation memoire \par
+\par
+Cette option est sans rapport avec le debogage de votre application.
+Pour deboguer votre propre code, ouvrez la solution dans l'IDE et
+utilisez les menus de la fenetre principale.\par
+\page
+
+{\footnote # IDH_OPTION_EMU}
+{\footnote $ Option -emu (lancement direct d'emulateur)}
+{\footnote K emulateur;emu;lancement direct;ROM}
+\b\fs24 Option -emu:XXX,fichier \b0\fs20\par
+\par
+L'option {\f1 -emu} permet de lancer immediatement un emulateur sans
+passer par l'interface graphique de l'IDE.\par
+\par
+\b Syntaxe :\b0\par
+{\f1 DEVENV -emu:CIBLE,FICHIER}\par
+\par
+\b Cibles disponibles :\b0\par
+- {\f1 NES}        - Console Nintendo Entertainment System\par
+- {\f1 AMIGA}      - Commodore Amiga\par
+- {\f1 ATARIST}    - Atari ST (68000)\par
+- {\f1 C64}        - Commodore 64\par
+- {\f1 APPLEII}    - Apple II\par
+- {\f1 ATARI400}   - Atari 400\par
+- {\f1 ATARI800}   - Atari 800\par
+- {\f1 ATARI2600}  - Atari 2600 (VCS)\par
+- {\f1 MSX}        - Famille MSX\par
+- {\f1 TRS80}      - TRS-80\par
+- {\f1 ADAM}       - Coleco Adam\par
+- {\f1 COCO3}      - TRS-80 Color Computer 3\par
+- {\f1 TO7}        - Thomson TO7\par
+- {\f1 CRAY1}      - Supercalculateur Cray-1\par
+\par
+\b Exemple :\b0\par
+{\f1 DEVENV -emu:NES,SUPER_MARIO.NES}\par
+\par
+Voir : Emulateurs (rubrique detaillee).\par
+\page
+
+{\footnote # IDH_OPTION_DISK}
+{\footnote $ Options /DISK0 et /DISK1}
+{\footnote K disquette;disk;image;A:;B:;DOS}
+\b\fs24 Options /DISK0 et /DISK1 \b0\fs20\par
+\par
+Ces options permettent de monter une image disquette qui sera
+accessible aux unites virtuelles A: (DISK0) et B: (DISK1) du
+terminal DOS integre a DEVENV.\par
+\par
+\b Syntaxe :\b0\par
+{\f1 DEVENV /DISK0:fichier.img}\par
+{\f1 DEVENV /DISK1:fichier.ima}\par
+\par
+\b Formats d'image supportes :\b0\par
+.IMG ou .IMA bruts, des tailles suivantes :\par
+\par
+- 160 Ko (180 secteurs)  - Disquette 5,25" simple face\par
+- 180 Ko                  - Disquette 5,25" simple face\par
+- 320 Ko / 360 Ko         - Disquette 5,25" double face\par
+- 720 Ko                  - Disquette 3,5" double densite\par
+- 1,2 Mo / 1,44 Mo        - Disquette 5,25"/3,5" haute densite\par
+- 2,88 Mo                 - Disquette 3,5" extra haute densite\par
+\par
+\b Systemes de fichiers reconnus :\b0\par
+FAT12 et FAT16. Les commandes {\f1 DIR}, {\f1 TYPE}, {\f1 CD} et
+{\f1 VOL} du terminal CMD/PowerShell integre fonctionnent sur ces
+unites pour explorer le contenu de l'image.\par
+\par
+\b Exemple :\b0\par
+{\f1 DEVENV /DISK0:DOS622.IMG /DISK1:MESDONNEES.IMG}\par
+\par
+Voir : Disquettes (rubrique detaillee).\par
+\page
+
+{\footnote # IDH_OPTION_HELP}
+{\footnote $ Options -h et --help}
+{\footnote K aide;help;-h;--help;-?}
+\b\fs24 Options -h, --help, -? \b0\fs20\par
+\par
+L'une des options {\f1 -h}, {\f1 --help}, {\f1 -?} ou {\f1 /?}
+provoque l'affichage de l'aide en ligne resumee de DEVENV et
+termine immediatement le programme avec un code de sortie 0.\par
+\par
+Pour la documentation detaillee, ouvrir le fichier DEVENV.HLP
+genere a partir de ce projet d'aide.\par
+\page
+
+{\footnote # IDH_SOLUTIONS}
+{\footnote $ Format de solution .SLN}
+{\footnote K solution;.SLN;projet;Visual Studio}
+{\footnote + main:004}
+\b\fs24 Format de solution .SLN \b0\fs20\par
+\par
+DEVENV ouvre les fichiers de solution au format Microsoft Visual
+Studio (extension {\f1 .SLN}). Une solution est un conteneur qui
+regroupe plusieurs projets de langages potentiellement differents.\par
+\par
+\b Exemple minimal de fichier .SLN :\b0\par
+\par
+{\f1 Microsoft Visual Studio Solution File, Format Version 12.00}\par
+{\f1 Project("\{...\}") = "MonProjet", "MonProjet.csproj", "\{...\}"}\par
+{\f1 EndProject}\par
+\par
+\b Pour ouvrir une solution :\b0\par
+{\f1 DEVENV MaSolution.sln}\par
+\par
+Voir : Langages supportes.\par
+\page
+
+{\footnote # IDH_RACCOURCIS}
+{\footnote $ Raccourcis clavier}
+{\footnote K raccourcis;touches;clavier;hotkeys}
+\b\fs24 Raccourcis clavier \b0\fs20\par
+\par
+\b F1\b0       Aide contextuelle\par
+\b F5\b0       Executer / Continuer le debogage\par
+\b F7\b0       Compiler la solution\par
+\b F9\b0       Basculer un point d'arret\par
+\b F10\b0      Pas a pas (sans entrer dans les fonctions)\par
+\b F11\b0      Pas a pas (entrer dans les fonctions)\par
+\b Ctrl+N\b0   Nouveau fichier\par
+\b Ctrl+O\b0   Ouvrir un fichier ou une solution\par
+\b Ctrl+S\b0   Sauvegarder le fichier courant\par
+\b Ctrl+F\b0   Rechercher\par
+\b Ctrl+H\b0   Remplacer\par
+\b Ctrl+G\b0   Aller a la ligne\par
+\b Ctrl+Z\b0   Annuler\par
+\b Ctrl+Y\b0   Refaire\par
+\b Alt+F4\b0   Quitter DEVENV\par
+\page
+
+{\footnote # IDH_APROPOS}
+{\footnote $ A propos de DEVENV}
+{\footnote K a propos;version;copyright;auteur}
+\b\fs24 A propos de DEVENV \b0\fs20\par
+\par
+\b DEVENV \b0 - Clone de Visual Studio en mode graphique\par
+\par
+Version : 1.00\par
+Auteur : Sylvain Maltais\par
+Site web : https://www.gladir.com/dev-cools\par
+Copyright (C) 2026 GLADIR. Tous droits reserves.\par
+Licence : MIT\par
+\par
+DEVENV fait partie du projet DEV-COOLS, un ensemble de plus de 300
+outils de developpement ecrits en Turbo Pascal / Free Pascal,
+incluant des compilateurs, des assembleurs, des desassembleurs et
+des emulateurs de plateformes historiques.\par
+\par
+\b Compilateurs integres :\b0\par
+- C#       (CSC)\par
+- VB.NET   (VBC)\par
+- Pascal   (TPC)\par
+\par
+\b Plateforme cible :\b0 Free Pascal 3.2 sous Windows.\par
+\par
+Pour signaler un bug ou suggerer une amelioration, ecrivez a :\par
+support@gladir.com\par
+\par
+}

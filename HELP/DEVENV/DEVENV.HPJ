@@ -1,0 +1,53 @@
+; ============================================================
+; DEVENV.HPJ - Projet d'aide Windows pour DEVENV
+; Clone de Visual Studio en mode graphique
+; Compilable avec HC.PAS (clone du Microsoft Help Compiler)
+; ============================================================
+
+[OPTIONS]
+TITLE=Aide de DEVENV - Clone de Visual Studio
+COPYRIGHT=(C) 2026 Sylvain Maltais - GLADIR.com
+COMPRESS=TRUE
+CONTENTS=IDH_INDEX
+WARNING=3
+LANGUAGE=0x40C
+REPORT=ON
+
+[FILES]
+DEVENV.RTF
+LANGAGES.RTF
+EMULATEURS.RTF
+
+[MAP]
+IDH_INDEX           = 1
+IDH_SYNTAXE         = 10
+IDH_OPTIONS         = 11
+IDH_OPTION_V        = 12
+IDH_OPTION_D        = 13
+IDH_OPTION_EMU      = 14
+IDH_OPTION_DISK     = 15
+IDH_OPTION_HELP     = 16
+IDH_LANGAGES        = 20
+IDH_LANG_CSHARP     = 21
+IDH_LANG_VBNET      = 22
+IDH_LANG_PASCAL     = 23
+IDH_EMULATEURS      = 30
+IDH_EMU_NES         = 31
+IDH_EMU_AMIGA       = 32
+IDH_EMU_ATARIST     = 33
+IDH_EMU_C64         = 34
+IDH_EMU_APPLEII     = 35
+IDH_EMU_TRS80       = 36
+IDH_EMU_COCO3       = 37
+IDH_EMU_CRAY1       = 38
+IDH_SOLUTIONS       = 40
+IDH_DISKETTES       = 50
+IDH_RACCOURCIS      = 60
+IDH_APROPOS         = 99
+
+[ALIAS]
+IDH_HELP=IDH_INDEX
+IDH_MAIN=IDH_INDEX
+
+[CONFIG]
+BrowseButtons()

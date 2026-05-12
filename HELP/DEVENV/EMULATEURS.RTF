@@ -1,0 +1,215 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_EMULATEURS}
+{\footnote $ Emulateurs integres}
+{\footnote K emulateurs;machines anciennes;retrocomputing}
+{\footnote + main:030}
+\b\fs24 Emulateurs integres a DEVENV \b0\fs20\par
+\par
+DEVENV embarque un ensemble d'emulateurs permettant d'executer des
+programmes pour des machines anciennes ou specifiques sans quitter
+l'IDE.\par
+\par
+\b Plateformes 8 bits :\b0\par
+- {\f1 NES}        - Nintendo Entertainment System (6502)\par
+- {\f1 C64}        - Commodore 64 (6510)\par
+- {\f1 APPLEII}    - Apple II (6502)\par
+- {\f1 ATARI400}   - Atari 400 (6502)\par
+- {\f1 ATARI800}   - Atari 800 (6502)\par
+- {\f1 ATARI2600}  - Atari 2600 / VCS (6507)\par
+- {\f1 MSX}        - MSX (Z80)\par
+- {\f1 TRS80}      - TRS-80 Model I/III (Z80)\par
+- {\f1 ADAM}       - Coleco Adam (Z80)\par
+- {\f1 COCO3}      - TRS-80 Color Computer 3 (6809E)\par
+- {\f1 TO7}        - Thomson TO7 (6809)\par
+\par
+\b Plateformes 16 bits :\b0\par
+- {\f1 AMIGA}      - Commodore Amiga (68000)\par
+- {\f1 ATARIST}    - Atari ST (68000)\par
+\par
+\b Supercalculateurs :\b0\par
+- {\f1 CRAY1}      - Cray-1 (architecture vectorielle)\par
+\par
+\b Invocation :\b0\par
+{\f1 DEVENV -emu:CIBLE,FICHIER}\par
+\par
+Voir les rubriques specifiques par plateforme.\par
+\page
+
+{\footnote # IDH_EMU_NES}
+{\footnote $ Emulateur NES}
+{\footnote K NES;Nintendo;6502;cartouche}
+\b\fs24 Emulateur Nintendo Entertainment System \b0\fs20\par
+\par
+\b Microprocesseur :\b0 6502 (variante Ricoh 2A03/2A07).\par
+\b Memoire :\b0 2 Ko de RAM + cartouche ROM.\par
+\b Formats accepte :\b0 {\f1 .NES} (en-tete iNES standard).\par
+\par
+\b Invocation :\b0\par
+{\f1 DEVENV -emu:NES,SUPER_MARIO.NES}\par
+\par
+L'emulateur ouvre une fenetre dediee qui affiche le rendu du PPU
+(Picture Processing Unit) et accepte les manettes virtuelles
+mappees sur le clavier :\par
+\par
+- Fleches : croix directionnelle\par
+- Z       : bouton A\par
+- X       : bouton B\par
+- Entree  : Start\par
+- Espace  : Select\par
+\page
+
+{\footnote # IDH_EMU_AMIGA}
+{\footnote $ Emulateur Amiga}
+{\footnote K Amiga;Commodore;68000;ADF;Workbench}
+\b\fs24 Emulateur Commodore Amiga \b0\fs20\par
+\par
+\b Microprocesseur :\b0 Motorola 68000 a 7 MHz.\par
+\b Memoire :\b0 512 Ko chip + 512 Ko fast (configurable).\par
+\b Formats accepte :\b0 {\f1 .ADF} (Amiga Disk File),\par
+\tab                  {\f1 .EXE} Amiga, {\f1 .HUNK}.\par
+\par
+\b Invocation :\b0\par
+{\f1 DEVENV -emu:AMIGA,WORKBENCH.ADF}\par
+\par
+L'emulateur reproduit le co-processeur graphique Denise (couleurs et
+sprites) et le synthetiseur Paula a 4 voix.\par
+\page
+
+{\footnote # IDH_EMU_ATARIST}
+{\footnote $ Emulateur Atari ST}
+{\footnote K Atari ST;ST;68000;GEM;TOS}
+\b\fs24 Emulateur Atari ST \b0\fs20\par
+\par
+\b Microprocesseur :\b0 Motorola 68000 a 8 MHz.\par
+\b Memoire :\b0 512 Ko a 4 Mo selon la configuration.\par
+\b Systeme :\b0 TOS / GEM.\par
+\b Formats accepte :\b0 {\f1 .ST} (image disquette), {\f1 .PRG}.\par
+\par
+\b Invocation :\b0\par
+{\f1 DEVENV -emu:ATARIST,DEMO.ST}\par
+\par
+L'environnement de bureau GEM est emule, permettant l'execution de
+programmes graphiques natifs du ST.\par
+\page
+
+{\footnote # IDH_EMU_C64}
+{\footnote $ Emulateur Commodore 64}
+{\footnote K C64;Commodore 64;6510;SID;BASIC V2}
+\b\fs24 Emulateur Commodore 64 \b0\fs20\par
+\par
+\b Microprocesseur :\b0 MOS 6510 (variante 6502) a 1 MHz.\par
+\b Memoire :\b0 64 Ko RAM + 20 Ko ROM (KERNAL, BASIC, character).\par
+\b Audio :\b0 Synthetiseur SID 6581 (3 voix).\par
+\b Formats accepte :\b0 {\f1 .PRG}, {\f1 .D64}, {\f1 .T64},\par
+\tab                  {\f1 .CRT}, {\f1 .TAP}.\par
+\par
+\b Invocation :\b0\par
+{\f1 DEVENV -emu:C64,JEU.PRG}\par
+\par
+Le BASIC V2 integre permet de saisir directement du code apres le
+prompt {\f1 READY.}\par
+\page
+
+{\footnote # IDH_EMU_APPLEII}
+{\footnote $ Emulateur Apple II}
+{\footnote K Apple II;Apple;6502;Applesoft;DOS 3.3}
+\b\fs24 Emulateur Apple II \b0\fs20\par
+\par
+\b Microprocesseur :\b0 MOS 6502 a 1 MHz.\par
+\b Memoire :\b0 48 Ko ou 64 Ko (selon le modele emule).\par
+\b Modes graphiques :\b0 Texte 40x24, Lo-Res 40x48, Hi-Res 280x192.\par
+\b Formats accepte :\b0 {\f1 .DSK}, {\f1 .NIB}, {\f1 .WOZ}.\par
+\par
+\b Invocation :\b0\par
+{\f1 DEVENV -emu:APPLEII,DISQUE.DSK}\par
+\par
+L'interpreteur Applesoft BASIC est disponible apres le prompt
+{\f1 ]}.\par
+\page
+
+{\footnote # IDH_EMU_TRS80}
+{\footnote $ Emulateur TRS-80}
+{\footnote K TRS-80;Tandy;Radio Shack;Z80;Model I;Model III}
+\b\fs24 Emulateur TRS-80 \b0\fs20\par
+\par
+\b Microprocesseur :\b0 Zilog Z80 a 1,77 ou 2,03 MHz.\par
+\b Memoire :\b0 16 Ko, 32 Ko ou 48 Ko selon la configuration.\par
+\b Modes :\b0 Model I et Model III.\par
+\b Formats accepte :\b0 {\f1 .CMD}, {\f1 .DSK}, {\f1 .JV1},\par
+\tab                  {\f1 .CAS}.\par
+\par
+\b Invocation :\b0\par
+{\f1 DEVENV -emu:TRS80,PROGRAMME.CMD}\par
+\par
+Le BASIC integre (Level I ou Level II selon le modele) est
+disponible des le demarrage.\par
+\page
+
+{\footnote # IDH_EMU_COCO3}
+{\footnote $ Emulateur CoCo 3}
+{\footnote K CoCo;Color Computer;COCO3;6809;Tandy;OS-9}
+\b\fs24 Emulateur TRS-80 Color Computer 3 \b0\fs20\par
+\par
+\b Microprocesseur :\b0 Motorola 6809E a 0,89 ou 1,79 MHz.\par
+\b Memoire :\b0 128 Ko ou 512 Ko.\par
+\b Modes graphiques :\b0 jusqu'a 640x225 en 16 couleurs.\par
+\b Formats accepte :\b0 {\f1 .CCC}, {\f1 .ROM}, {\f1 .DSK}.\par
+\par
+\b Invocation :\b0\par
+{\f1 DEVENV -emu:COCO3,LOGICIEL.CCC}\par
+\par
+L'Extended Color BASIC ou OS-9 Level II sont supportes selon le
+fichier d'image utilise.\par
+\page
+
+{\footnote # IDH_EMU_CRAY1}
+{\footnote $ Emulateur Cray-1}
+{\footnote K Cray;Cray-1;supercalculateur;vectoriel;COS}
+\b\fs24 Emulateur Cray-1 \b0\fs20\par
+\par
+\b Architecture :\b0 supercalculateur vectoriel 64 bits.\par
+\b Frequence :\b0 80 MHz (80 MFLOPS theoriques).\par
+\b Memoire principale :\b0 1 a 8 Mo.\par
+\b Systeme :\b0 COS (Cray Operating System).\par
+\par
+\b Invocation :\b0\par
+{\f1 DEVENV -emu:CRAY1,PROGRAMME.BIN}\par
+\par
+Cet emulateur est dedie a l'experimentation pedagogique sur les
+architectures vectorielles classiques. Il reproduit les huit
+registres vectoriels V0..V7 de 64 elements et le pipeline
+arithmetique a coupe vectorielle de la machine originale.\par
+\page
+
+{\footnote # IDH_DISKETTES}
+{\footnote $ Images disquette}
+{\footnote K disquette;diskette;image disque;FAT12;FAT16}
+\b\fs24 Images disquette montees \b0\fs20\par
+\par
+DEVENV peut monter jusqu'a deux images disquette qui apparaissent
+comme unites A: et B: dans le terminal CMD/PowerShell integre.\par
+\par
+\b Options de ligne de commande :\b0\par
+{\f1 /DISK0:fichier}  : monte l'image sur A:\par
+{\f1 /DISK1:fichier}  : monte l'image sur B:\par
+\par
+\b Tailles d'image reconnues :\b0\par
+- 160 Ko, 180 Ko : disquettes 5,25" SF\par
+- 320 Ko, 360 Ko : disquettes 5,25" DD\par
+- 720 Ko          : disquettes 3,5" DD\par
+- 1,2 Mo          : disquettes 5,25" HD\par
+- 1,44 Mo         : disquettes 3,5" HD\par
+- 2,88 Mo         : disquettes 3,5" ED\par
+\par
+\b Systemes de fichiers :\b0\par
+FAT12 et FAT16. Les commandes {\f1 DIR}, {\f1 TYPE}, {\f1 CD},
+{\f1 VOL}, {\f1 COPY} et {\f1 DEL} fonctionnent sur les unites
+montees. Le contenu reel des fichiers est lu/ecrit directement
+dans l'image, sans copie intermediaire.\par
+\par
+\b Exemple :\b0\par
+{\f1 DEVENV /DISK0:DOS622.IMG /DISK1:TRAVAIL.IMG}\par
+\par
+}

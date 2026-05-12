@@ -1,0 +1,97 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_LANGAGES}
+{\footnote $ Langages supportes}
+{\footnote K langages;compilateurs;programmation}
+{\footnote + main:020}
+\b\fs24 Langages de programmation supportes \b0\fs20\par
+\par
+DEVENV embarque trois compilateurs principaux integres a l'IDE.
+Selon l'extension du fichier ouvert, l'IDE selectionne automatiquement
+le compilateur approprie et active la coloration syntaxique adequate.\par
+\par
+\b C#       (.cs)  \b0 Compilateur {\f1 CSCW32} (Windows 32 bits)\par
+\tab               ou {\f1 CSC86} (DOS 16 bits)\par
+\par
+\b VB.NET   (.vb)  \b0 Compilateur {\f1 VBCW32} (Windows 32 bits)\par
+\tab               ou {\f1 VBC86} (DOS 16 bits)\par
+\par
+\b Pascal   (.pas) \b0 Compilateur {\f1 TPCW32} (Turbo Pascal 7 W32)\par
+\tab               ou {\f1 VAXPAS86} / {\f1 VAXPCW32}\par
+\par
+Voir les rubriques specifiques : C#, VB.NET, Pascal.\par
+\page
+
+{\footnote # IDH_LANG_CSHARP}
+{\footnote $ Langage C#}
+{\footnote K C#;csharp;CSC;CSCW32;.cs}
+\b\fs24 C# (Microsoft C-Sharp) \b0\fs20\par
+\par
+Extension : {\f1 .cs}\par
+Compilateur Windows : {\f1 CSCW32.EXE}\par
+Compilateur DOS : {\f1 CSC86.EXE}\par
+\par
+DEVENV reconnait les programmes C# et applique la coloration
+syntaxique des mots-cles, types, chaines et commentaires. La touche
+{\f1 F7} lance la compilation du projet courant en appelant CSCW32
+avec les options definies dans le fichier {\f1 .csproj}.\par
+\par
+\b Exemple minimal :\b0\par
+{\f1 using System;}\par
+{\f1 class Bonjour \{}\par
+{\f1     static void Main() \{}\par
+{\f1         Console.WriteLine("Bonjour le monde !");}\par
+{\f1     \}}\par
+{\f1 \}}\par
+\par
+Voir : Langages, Solution .SLN.\par
+\page
+
+{\footnote # IDH_LANG_VBNET}
+{\footnote $ Langage VB.NET}
+{\footnote K VB.NET;vbnet;VBC;VBCW32;.vb;basic}
+\b\fs24 VB.NET (Visual Basic .NET) \b0\fs20\par
+\par
+Extension : {\f1 .vb}\par
+Compilateur Windows : {\f1 VBCW32.EXE}\par
+Compilateur DOS : {\f1 VBC86.EXE}\par
+\par
+DEVENV traite les fichiers Visual Basic .NET avec une coloration
+syntaxique adaptee : mots-cles en bleu, chaines en rouge,
+commentaires en vert.\par
+\par
+\b Exemple minimal :\b0\par
+{\f1 Module Bonjour}\par
+{\f1     Sub Main()}\par
+{\f1         Console.WriteLine("Bonjour le monde !")}\par
+{\f1     End Sub}\par
+{\f1 End Module}\par
+\par
+Voir : Langages, Solution .SLN.\par
+\page
+
+{\footnote # IDH_LANG_PASCAL}
+{\footnote $ Langage Pascal}
+{\footnote K Pascal;Turbo Pascal;TPC;TPCW32;.pas;VAXPAS}
+\b\fs24 Pascal (Turbo Pascal / Free Pascal) \b0\fs20\par
+\par
+Extension : {\f1 .pas}\par
+Compilateurs Windows : {\f1 TPCW32.EXE} (Turbo Pascal 7),\par
+\tab                  {\f1 VAXPCW32.EXE} (VAX Pascal)\par
+Compilateur DOS : {\f1 VAXPAS86.EXE}\par
+\par
+Le mode Pascal est le mode privilegie de DEVENV puisque l'IDE
+lui-meme est ecrit en Turbo Pascal. Le compilateur Turbo Pascal 7
+est invoque par {\f1 F7}; il produit un {\f1 .EXE} DOS ou un
+{\f1 .EXE} Win32 selon le mode.\par
+\par
+\b Exemple minimal :\b0\par
+{\f1 Program Bonjour;}\par
+{\f1 Begin}\par
+{\f1   WriteLn('Bonjour le monde !');}\par
+{\f1 End.}\par
+\par
+Voir : Langages, Solution .SLN.\par
+\par
+}
