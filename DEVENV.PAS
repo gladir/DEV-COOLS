@@ -3393,6 +3393,7 @@ Var
  A2600_VSYNCAct : Boolean;
  A2600_VBLANKAct: Boolean;
  A2600_ScanLine : Integer;     { 0..261 (NTSC), reset par VSYNC          }
+ A2600_VisLine  : Integer;     { ligne visible (VBLANK off), 0..191      }
  A2600_FrameNo  : LongInt;
  A2600_WSYNCWait: Boolean;     { CPU bloque jusqu a la fin du scanline   }
  A2600_LineCyc  : Integer;     { cycles CPU dans le scanline courant     }
@@ -35463,6 +35464,7 @@ Begin
         If (V And $02) <> 0 Then Begin
           A2600_VSYNCAct := True;
           A2600_ScanLine := 0;
+          A2600_VisLine := 0;
         End Else A2600_VSYNCAct := False;
        End;
       $01: A2600_VBLANKAct := (V And $02) <> 0;     { VBLANK }
@@ -35699,7 +35701,7 @@ End;
 { Approxime 3 cycles par instruction (moyenne 6507). 76 cycles par  }
 { scanline. WSYNC : termine immediatement le scanline courant.      }
 Procedure A2600_AfterInstr;
-Var YVis: Integer; I: Integer; TimRd, StatRd: Byte;
+Var I: Integer; TimRd, StatRd: Byte;
 Begin
   Inc(A2600_LineInstr);
   Inc(A2600_LineCyc, 3);
@@ -35724,13 +35726,14 @@ Begin
     End;
   End;
   If A2600_WSYNCWait Or (A2600_LineCyc >= 76) Then Begin
-    { Fin de scanline : rendre la ligne visible si on est dans la    }
-    { fenetre. Scanlines NTSC : 3 VSYNC + 37 VBLANK + 192 visible +  }
-    { 30 overscan. On rend l index Y = ScanLine - 40.                }
+    { Fin de scanline : rendre la ligne visible si VBLANK off et si  }
+    { on n a pas encore depasse les 192 lignes affichables.          }
     A2600_WSYNCWait := False;
-    YVis := A2600_ScanLine - 40;
-    If (YVis >= 0) And (YVis <= 191) Then
-      A2600_RenderScanline(YVis);
+    If (Not A2600_VBLANKAct) And (Not A2600_VSYNCAct) Then Begin
+      If (A2600_VisLine >= 0) And (A2600_VisLine <= 191) Then
+        A2600_RenderScanline(A2600_VisLine);
+      Inc(A2600_VisLine);
+    End;
     Inc(A2600_ScanLine);
     A2600_LineCyc := 0;
     A2600_LineInstr := 0;
@@ -35747,6 +35750,7 @@ Begin
   A2600_ScanLine := 0;
   A2600_FrameNo := 0;
   A2600_WSYNCWait := False;
+  A2600_VisLine := 0;
   A2600_LineCyc := 0;
   A2600_LineInstr := 0;
   A2600_P0X := 0; A2600_P1X := 0;
@@ -39807,6 +39811,7 @@ Begin NesActive := False;
     End;
     { Executer une trame : 262 scanlines * ~25 instr = ~6550 instr }
     A2600_ScanLine := 0;
+    A2600_VisLine := 0;
     For NesPrgSize := 0 To 7000 Do Begin
      If CPU6502_Halted Then Break;
      If A2600_ScanLine >= 262 Then Break;
