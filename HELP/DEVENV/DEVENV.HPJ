@@ -18,6 +18,7 @@ DEVENV.RTF
 LANGAGES.RTF
 EMULATEURS.RTF
 ABAP.RTF
+ADA.RTF
 
 [MAP]
 IDH_INDEX           = 1
@@ -52,6 +53,23 @@ IDH_ABAP_17         = 2417
 IDH_ABAP_18         = 2418
 IDH_ABAP_19         = 2419
 IDH_ABAP_20         = 2420
+IDH_ADA_01          = 2501
+IDH_ADA_02          = 2502
+IDH_ADA_03          = 2503
+IDH_ADA_04          = 2504
+IDH_ADA_05          = 2505
+IDH_ADA_06          = 2506
+IDH_ADA_07          = 2507
+IDH_ADA_08          = 2508
+IDH_ADA_09          = 2509
+IDH_ADA_10          = 2510
+IDH_ADA_11          = 2511
+IDH_ADA_12          = 2512
+IDH_ADA_13          = 2513
+IDH_ADA_14          = 2514
+IDH_ADA_15          = 2515
+IDH_ADA_16          = 2516
+IDH_ADA_17          = 2517
 IDH_EMULATEURS      = 30
 IDH_EMU_NES         = 31
 IDH_EMU_AMIGA       = 32
