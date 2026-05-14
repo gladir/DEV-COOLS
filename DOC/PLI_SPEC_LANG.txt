@@ -1,0 +1,1336 @@
+==============================================================================
+  PLI_SPEC_LANG.txt
+  Specifications du langage de programmation PL/I (PL/1)
+  Reference au compilateur PLI86.PAS du projet DEV-COOLS
+==============================================================================
+
+Table des matieres
+------------------
+
+  1.  Introduction et historique
+  2.  Philosophie et caracteristiques
+  3.  Structure d un programme PL/I
+  4.  Lexique et conventions
+  5.  Types de donnees
+  6.  Declarations de variables
+  7.  Classes de stockage
+  8.  Operateurs et expressions
+  9.  Instructions de controle
+  10. Procedures et fonctions
+  11. Entrees/sorties
+  12. Pointeurs et structures
+  13. Tableaux
+  14. Conditions et gestion des exceptions
+  15. Preprocesseur
+  16. Le compilateur PLI86.PAS
+  17. Exemples complets
+  18. Differences avec C, COBOL et Fortran
+  19. Ressources dans le projet
+  20. Bibliographie
+
+==============================================================================
+  1. Introduction et historique
+==============================================================================
+
+  PL/I (Programming Language One, prononce "P-L-One") est un langage de
+  programmation generaliste developpe par IBM au debut des annees 1960.
+  Concu pour les ordinateurs mainframe IBM System/360, il visait a unifier
+  les domaines d application separes a l epoque par Fortran (calcul
+  scientifique), COBOL (gestion d entreprise) et l assembleur (programmation
+  systeme).
+
+  1.1 Genese
+  ----------
+
+  En 1963, IBM forma le comite "Advanced Language Development Committee"
+  (initialement appele FORTRAN III, puis NPL pour "New Programming Language")
+  compose de membres du groupe SHARE (utilisateurs scientifiques d IBM) et
+  GUIDE (utilisateurs commerciaux). Le langage devait remplacer Fortran et
+  COBOL avec une syntaxe unifiee.
+
+  En 1964, le langage fut renomme PL/I (le "I" est le chiffre romain "1").
+  La premiere implementation, PL/I F (F pour "FORTRAN level"), sortit en
+  1966 sur OS/360.
+
+  1.2 Evolution
+  -------------
+
+    - 1964 : Specification initiale (NPL)
+    - 1966 : PL/I F Compiler (IBM)
+    - 1970 : PL/I Optimizing Compiler et PL/I Checkout Compiler
+    - 1976 : ANSI X3.53 (PL/I standard)
+    - 1979 : Subset G (sous-ensemble general d ANSI)
+    - 1981 : PL/I pour DOS sur PC (Digital Research PL/I-86)
+    - 1987 : IBM PL/I pour MVS et VM
+    - 1994 : VisualAge PL/I (orientation objet)
+    - 1999 : Enterprise PL/I pour z/OS
+    - 2008 : ISO/IEC 6160:1979 retire, remplace par norme IBM
+    - 2010+ : Enterprise PL/I continue d evoluer sur z/OS
+
+  1.3 Implementations notables
+  ----------------------------
+
+    - IBM PL/I F        : premier compilateur, OS/360
+    - PL/I Optimizing   : compilateur optimisant, MVS
+    - PL/C (Cornell)    : compilateur educatif, recuperation d erreurs
+    - PL/M (Intel)      : sous-ensemble pour microprocesseurs (8080, 8086)
+    - DR PL/I-86        : Digital Research, CP/M-86 et MS-DOS
+    - IBM PL/I for OS/2 : 1994
+    - Enterprise PL/I   : z/OS moderne (toujours maintenu)
+    - Iron Spring PL/I  : implementation moderne pour Linux et OS/2
+
+  1.4 Influence
+  -------------
+
+  PL/I a influence de nombreux langages :
+
+    - C : structures, pointeurs, gestion explicite de la memoire
+    - Ada : exceptions, taches, attributs de type
+    - REXX : structures de controle, gestion d erreur
+    - PL/SQL : syntaxe BEGIN/END, declarations
+    - PL/M : version reduite pour Intel
+
+==============================================================================
+  2. Philosophie et caracteristiques
+==============================================================================
+
+  2.1 Principes de conception
+  ---------------------------
+
+  PL/I a ete concu autour de plusieurs principes fondamentaux :
+
+    - Universalite : un seul langage pour tous les domaines (scientifique,
+      gestion, systeme, temps reel).
+
+    - Defauts intelligents : si un attribut n est pas specifie, le
+      compilateur en choisit un raisonnable. Exemple :
+        DECLARE X;             /* implicite : FIXED BINARY(15,0) */
+
+    - Lisibilite : mots-cles anglais explicites (PROCEDURE, DECLARE,
+      RETURN, END...) plutot que symboles cryptiques.
+
+    - Modularite : programme structure en blocs imbriques avec portee
+      lexicale, procedures internes et externes.
+
+    - Extensibilite : nouveaux types et nouvelles operations definissables
+      via DECLARE et ENTRY.
+
+  2.2 Caracteristiques distinctives
+  ---------------------------------
+
+    - Types riches : entiers a precision arbitraire, decimaux, flottants
+      binaires et decimaux, chaines de caracteres et de bits a longueur
+      fixe ou variable, pointeurs typees, etiquettes.
+
+    - Conversions implicites : entre la plupart des types numeriques et
+      caracteres selon des regles definies.
+
+    - Gestion d exceptions : ON-units pour intercepter les conditions
+      (OVERFLOW, ZERODIVIDE, ENDFILE, ERROR...).
+
+    - Allocation dynamique : ALLOCATE et FREE pour memoire heap.
+
+    - Tableaux multidimensionnels : avec bornes definies par l utilisateur,
+      sections de tableaux, expressions tableau.
+
+    - Structures hierarchiques : DECLARE avec niveaux 1, 2, 3...
+
+    - Macroprocesseur integre : preprocesseur PL/I (%INCLUDE, %IF...).
+
+    - Multitache : TASK et EVENT pour parallelisme (sur mainframe).
+
+  2.3 Critiques et limitations
+  ----------------------------
+
+    - Complexite : tres grand nombre de fonctionnalites et de regles de
+      conversion implicite. Difficile a maitriser entierement.
+
+    - Taille du compilateur : les premieres implementations etaient
+      enormes pour l epoque, freinant l adoption hors mainframe.
+
+    - Verbosite : la syntaxe est plus longue que celle de C ou Pascal.
+
+    - Specifique IBM : malgre l ANSI, l implementation IBM reste la
+      reference de fait, limitant la portabilite.
+
+==============================================================================
+  3. Structure d un programme PL/I
+==============================================================================
+
+  3.1 Programme minimal
+  ---------------------
+
+  Un programme PL/I se compose d au moins une procedure principale
+  marquee OPTIONS(MAIN) :
+
+    HELLO: PROCEDURE OPTIONS(MAIN);
+       PUT LIST('Hello, World!');
+    END HELLO;
+
+  Le nom de la procedure (HELLO) est suivi de deux-points, puis du mot-cle
+  PROCEDURE (ou PROC). L attribut OPTIONS(MAIN) designe le point d entree.
+  Toute procedure se termine par END suivi du nom de la procedure (le nom
+  apres END est optionnel mais recommande).
+
+  3.2 Blocs et portee
+  -------------------
+
+  PL/I est un langage a blocs imbriques (block-structured) avec portee
+  lexicale. Les blocs sont introduits par :
+
+    - PROCEDURE / END : bloc-procedure (avec arguments et type retour)
+    - BEGIN     / END : bloc-begin (sans arguments, simple scope)
+
+  Exemple :
+
+    MAIN: PROCEDURE OPTIONS(MAIN);
+       DECLARE X FIXED BINARY(31);
+
+       SOUS: PROCEDURE(P) RETURNS(FIXED BINARY(31));
+          DECLARE P FIXED BINARY(31);
+          RETURN(P * 2);
+       END SOUS;
+
+       X = SOUS(21);
+       PUT LIST(X);          /* 42 */
+    END MAIN;
+
+  3.3 Commentaires
+  ----------------
+
+  Les commentaires PL/I utilisent /* ... */ comme en C, mais sans
+  imbrication possible dans la norme classique :
+
+    /* Ceci est un commentaire */
+    /* Commentaire
+       multi-lignes */
+
+  3.4 Etiquettes (labels)
+  -----------------------
+
+  Une instruction peut etre prefixee par une etiquette suivie de ":" :
+
+    BOUCLE: DO I = 1 TO 10;
+       PUT LIST(I);
+    END BOUCLE;
+
+  Les etiquettes servent de cibles pour GOTO, LEAVE et ITERATE, ainsi que
+  pour marquer la fin de blocs DO et IF.
+
+==============================================================================
+  4. Lexique et conventions
+==============================================================================
+
+  4.1 Identificateurs
+  -------------------
+
+  Un identificateur PL/I commence par une lettre (A-Z) et peut contenir
+  des lettres, chiffres (0-9) et le caractere "_" (souligne). La longueur
+  maximale depend de l implementation (31 caracteres pour PL/I optimizing,
+  100 pour Enterprise PL/I). PL/I est insensible a la casse : "Compteur"
+  et "COMPTEUR" sont identiques.
+
+  Exemples valides :
+    I, X, COMPTEUR, NOM_FICHIER, MA_VARIABLE_2
+
+  4.2 Mots-cles
+  -------------
+
+  Particularite : PL/I n a pas de mots reserves. Tous les mots-cles
+  (PROCEDURE, END, IF...) peuvent etre utilises comme identificateurs si
+  le contexte permet de les distinguer. En pratique on evite de le faire
+  pour la lisibilite.
+
+  Mots-cles principaux :
+
+    PROCEDURE  END        BEGIN      CALL       RETURN     RETURNS
+    DECLARE    DCL        IF         THEN       ELSE       DO
+    WHILE      UNTIL      TO         BY         BY         LEAVE
+    ITERATE    GOTO       GO         SELECT     WHEN       OTHERWISE
+    PUT        GET        LIST       EDIT       SKIP       PAGE
+    OPEN       CLOSE      READ       WRITE      REWRITE    DELETE
+    FIXED      FLOAT      BINARY     DECIMAL    CHARACTER  CHAR
+    BIT        VARYING    PICTURE    PIC        ENTRY      LABEL
+    POINTER    PTR        OFFSET     STATIC     AUTOMATIC  AUTO
+    BASED      CONTROLLED CTL        EXTERNAL   EXT        INTERNAL
+    ALLOCATE   ALLOC      FREE       NULL       ADDR
+    ON         REVERT     SIGNAL     CONDITION  OVERFLOW   ZERODIVIDE
+    ENDFILE    UNDEFINEDFILE         ERROR      FINISH
+    INITIAL    INIT       LIKE       UNION      LIKE       ALIGNED
+
+  4.3 Constantes
+  --------------
+
+  Numeriques entieres :
+    123        /* FIXED DECIMAL */
+    -45        /* FIXED DECIMAL signe */
+    +0
+    1234.56    /* FIXED DECIMAL avec partie fractionnaire */
+
+  Numeriques binaires :
+    101B       /* FIXED BINARY 5 */
+    1110B
+    0B
+    11.01B     /* FIXED BINARY avec fraction */
+
+  Numeriques en virgule flottante :
+    1.5E10     /* FLOAT DECIMAL */
+    -2.3E-5
+    1.0E0
+    1.0E10B    /* FLOAT BINARY (suffixe B) */
+
+  Chaines de caracteres :
+    'BONJOUR'                /* CHARACTER(7) */
+    'L''ETOILE'              /* apostrophe double pour echappement */
+    'A'                      /* CHARACTER(1) */
+    (3)'AB'                  /* repetition : 'ABABAB' */
+
+  Chaines de bits :
+    '1010'B                  /* BIT(4) */
+    '01'B
+    ''B                      /* BIT(0) chaine vide */
+    'F'B4                    /* hexadecimal sur 4 bits : 1111 */
+    'FF'BX                   /* hexadecimal : 11111111 */
+
+==============================================================================
+  5. Types de donnees
+==============================================================================
+
+  5.1 Types numeriques
+  --------------------
+
+  PL/I distingue plusieurs types numeriques par leur "base" (BINARY ou
+  DECIMAL), leur "echelle" (FIXED ou FLOAT) et leur "precision" :
+
+    FIXED BINARY(p,q)      : entier ou virgule fixe binaire
+                             p = nombre total de bits, q = bits fractionnaires
+                             Exemples :
+                               FIXED BINARY(15,0)   /* short, -32768..32767 */
+                               FIXED BINARY(31,0)   /* int, +/- 2^31 */
+                               FIXED BINARY(63,0)   /* long, +/- 2^63 */
+
+    FIXED DECIMAL(p,q)     : virgule fixe decimale (BCD packed)
+                             Exemple :
+                               FIXED DECIMAL(7,2)   /* 99999.99 */
+
+    FLOAT BINARY(p)        : virgule flottante binaire
+                             p = bits de precision
+                               FLOAT BINARY(21)     /* simple precision IEEE */
+                               FLOAT BINARY(53)     /* double precision IEEE */
+
+    FLOAT DECIMAL(p)       : virgule flottante decimale
+                               FLOAT DECIMAL(6)     /* simple precision */
+                               FLOAT DECIMAL(15)    /* double precision */
+
+  Defauts si non specifies :
+
+    DECLARE X FIXED;                    /* FIXED DECIMAL(5,0) */
+    DECLARE Y FLOAT;                    /* FLOAT DECIMAL(6)   */
+    DECLARE Z FIXED BINARY;             /* FIXED BINARY(15,0) */
+    DECLARE W FLOAT BINARY;             /* FLOAT BINARY(21)   */
+
+  5.2 Type CHARACTER
+  ------------------
+
+  Chaine de caracteres de longueur fixe ou variable :
+
+    DECLARE NOM       CHARACTER(20);              /* longueur fixe 20 */
+    DECLARE MESSAGE   CHARACTER(80) VARYING;      /* longueur variable, max 80 */
+    DECLARE INITIALE  CHARACTER(1);
+
+  Les chaines fixes sont remplies d espaces (blank-padded). Les chaines
+  VARYING stockent leur longueur courante en prefixe (mot 16 ou 32 bits).
+
+  5.3 Type BIT
+  ------------
+
+  Chaine de bits compactee :
+
+    DECLARE DRAPEAU      BIT(1);                  /* equivalent booleen */
+    DECLARE MASQUE       BIT(8);                  /* 8 bits packs */
+    DECLARE FLAGS        BIT(16) VARYING;
+
+  Les constantes booleennes sont '1'B (vrai) et '0'B (faux).
+
+  5.4 Type PICTURE
+  ----------------
+
+  Specification de format pour entree/sortie editees (comme COBOL) :
+
+    DECLARE PRIX     PICTURE '$$$,$$9.99';        /* 9999.99 -> $9,999.99 */
+    DECLARE CODE     PICTURE '9999';              /* exactement 4 chiffres */
+    DECLARE TEL      PICTURE 'A99-9999';          /* lettre + 6 chiffres */
+
+  Caracteres de specification :
+    9  : chiffre obligatoire
+    Z  : chiffre, zero a gauche supprime
+    *  : chiffre, zero a gauche remplace par *
+    .  : point decimal
+    ,  : separateur de milliers
+    $  : symbole monetaire flottant
+    A  : lettre alphabetique
+    X  : caractere quelconque
+    B  : espace
+    -  : signe negatif (flottant ou positionnel)
+    +  : signe positif (flottant ou positionnel)
+    CR : credit (suffixe pour valeur negative)
+    DB : debit (suffixe pour valeur negative)
+
+  5.5 Type POINTER et OFFSET
+  --------------------------
+
+    DECLARE PTR1 POINTER;
+    DECLARE OFF1 OFFSET(AREA1);
+    DECLARE AREA1 AREA(1024);
+
+  Un POINTER est une adresse memoire 16/32/64 bits selon l implementation.
+  Un OFFSET est un decalage dans une zone AREA, permettant des structures
+  relocatables.
+
+  5.6 Type LABEL
+  --------------
+
+  Variable contenant l adresse d une etiquette :
+
+    DECLARE L LABEL;
+    L = ETIQ1;
+    GOTO L;
+    ...
+    ETIQ1: PUT LIST('Saute ici');
+
+  5.7 Type ENTRY
+  --------------
+
+  Pointeur de procedure :
+
+    DECLARE FUNC ENTRY(FIXED BINARY) RETURNS(FIXED BINARY);
+    FUNC = MA_PROC;
+    X = FUNC(42);
+
+==============================================================================
+  6. Declarations de variables
+==============================================================================
+
+  6.1 Syntaxe DECLARE
+  -------------------
+
+  L instruction DECLARE (ou DCL) declare une ou plusieurs variables avec
+  leurs attributs :
+
+    DECLARE I              FIXED BINARY(31);
+    DECLARE NOM            CHARACTER(40) VARYING INITIAL('');
+    DECLARE (X, Y, Z)      FLOAT BINARY(53);
+    DECLARE PRIX           FIXED DECIMAL(7,2) INITIAL(99.95);
+    DECLARE TABLEAU(1:100) FIXED BINARY(31);
+
+  Les attributs peuvent inclure :
+
+    - Type        : FIXED, FLOAT, CHARACTER, BIT, POINTER...
+    - Precision   : (p), (p,q)
+    - Base        : BINARY ou DECIMAL
+    - Echelle     : FIXED ou FLOAT
+    - Longueur    : (n) pour CHAR et BIT
+    - VARYING     : longueur variable
+    - Stockage    : AUTOMATIC, STATIC, EXTERNAL, BASED, CONTROLLED
+    - Portee      : INTERNAL ou EXTERNAL
+    - Initialisation : INITIAL(valeur)
+    - Alignement  : ALIGNED ou UNALIGNED
+
+  6.2 Declarations factorisees
+  ----------------------------
+
+  Plusieurs variables avec attributs partages :
+
+    DECLARE 1 PERSONNE,
+              2 NOM       CHARACTER(40) VARYING,
+              2 PRENOM    CHARACTER(40) VARYING,
+              2 AGE       FIXED BINARY(15),
+              2 ADRESSE,
+                3 RUE     CHARACTER(60) VARYING,
+                3 VILLE   CHARACTER(40) VARYING,
+                3 CP      CHARACTER(10);
+
+  Les niveaux 1, 2, 3 indiquent l imbrication, similaire a COBOL.
+
+  6.3 Initialisation
+  ------------------
+
+    DECLARE I FIXED BINARY(31) INITIAL(0);
+    DECLARE PI FLOAT DECIMAL(15) INITIAL(3.141592653589793);
+    DECLARE NOM CHARACTER(20) INITIAL('INCONNU');
+    DECLARE T(10) FIXED BINARY(31) INITIAL((10)0);     /* tous a 0 */
+    DECLARE LISTE(5) FIXED BINARY(31) INITIAL(1,2,3,4,5);
+
+  6.4 LIKE : copie d attributs
+  ----------------------------
+
+    DECLARE 1 EMPLOYE LIKE PERSONNE,
+              2 SALAIRE FIXED DECIMAL(9,2);
+
+  EMPLOYE herite de tous les sous-elements de PERSONNE, plus ajoute
+  SALAIRE.
+
+==============================================================================
+  7. Classes de stockage
+==============================================================================
+
+  PL/I propose plusieurs classes de stockage definissant la duree de vie
+  et le mode d allocation d une variable.
+
+  7.1 AUTOMATIC (defaut dans une procedure)
+  -----------------------------------------
+
+  Allouee a l entree de la procedure, liberee a la sortie. Sur la pile.
+
+    DECLARE I FIXED BINARY(31) AUTOMATIC;
+
+  C est le comportement par defaut pour les variables locales.
+
+  7.2 STATIC
+  ----------
+
+  Allouee une seule fois au demarrage du programme. Conserve sa valeur
+  entre les appels de la procedure.
+
+    DECLARE COMPTEUR FIXED BINARY(31) STATIC INITIAL(0);
+
+  7.3 EXTERNAL
+  ------------
+
+  Variable partagee entre plusieurs unites de compilation. Equivalent du
+  "extern" du C.
+
+    DECLARE GLOBAL_VAR FIXED BINARY(31) EXTERNAL STATIC;
+
+  7.4 BASED
+  ---------
+
+  Variable accessible via un pointeur. N a pas de stockage propre :
+
+    DECLARE PTR POINTER;
+    DECLARE X FIXED BINARY(31) BASED(PTR);
+
+    ALLOCATE X;          /* alloue dynamiquement */
+    X = 42;              /* equivaut a PTR -> X = 42 */
+    FREE X;
+
+  7.5 CONTROLLED
+  --------------
+
+  Pile dynamique de variables : chaque ALLOCATE empile une nouvelle
+  occurrence, chaque FREE depile.
+
+    DECLARE STACK_VAR FIXED BINARY(31) CONTROLLED;
+
+    ALLOCATE STACK_VAR; STACK_VAR = 1;
+    ALLOCATE STACK_VAR; STACK_VAR = 2;
+    PUT LIST(STACK_VAR);     /* 2 */
+    FREE STACK_VAR;
+    PUT LIST(STACK_VAR);     /* 1 */
+
+==============================================================================
+  8. Operateurs et expressions
+==============================================================================
+
+  8.1 Operateurs arithmetiques
+  ----------------------------
+
+    +     addition
+    -     soustraction
+    *     multiplication
+    /     division
+    **    puissance (exponentiation)
+    -     negation unaire
+    +     identite unaire
+
+  8.2 Operateurs de comparaison
+  -----------------------------
+
+    =     egal a
+    ^=    different (peut aussi s ecrire !=, ~= ou ¬=)
+    <     inferieur a
+    <=    inferieur ou egal
+    >     superieur a
+    >=    superieur ou egal
+
+  Les operateurs de comparaison renvoient une chaine BIT(1) : '1'B (vrai)
+  ou '0'B (faux).
+
+  8.3 Operateurs logiques
+  -----------------------
+
+    &     ET logique (AND)
+    |     OU logique (OR)
+    ^     NON logique (NOT) - peut aussi s ecrire ~ ou ¬
+
+  Operandes : chaines BIT. Les operateurs s appliquent bit a bit, ce qui
+  donne aussi un ET/OU bit-a-bit pour les masques.
+
+  8.4 Operateur de concatenation
+  ------------------------------
+
+    ||    concatenation de chaines (CHARACTER ou BIT)
+
+  Exemple :
+    NOM_COMPLET = PRENOM || ' ' || NOM;
+
+  8.5 Precedence des operateurs
+  -----------------------------
+
+  De la plus haute a la plus basse :
+
+    1.  **               (puissance, droite a gauche)
+    2.  unaires + -  ^   (signe, NOT)
+    3.  *  /             (multiplication, division)
+    4.  +  -             (addition, soustraction)
+    5.  ||               (concatenation)
+    6.  <  <=  =  ^=  >=  >    (comparaisons)
+    7.  &                (AND)
+    8.  |                (OR)
+
+  8.6 Conversions implicites
+  --------------------------
+
+  PL/I convertit automatiquement les operandes selon des regles precises.
+  Exemples :
+
+    DECLARE I FIXED BINARY(15), F FLOAT BINARY(21), C CHARACTER(10);
+
+    F = I;          /* FIXED -> FLOAT */
+    I = '123';      /* CHAR  -> FIXED (parse) */
+    C = I;          /* FIXED -> CHAR  (format) */
+    C = '12' + 5;   /* CHAR converti en FIXED, addition, retour CHAR */
+
+  Cette conversion est tres puissante mais source de bugs subtils si
+  l on ne maitrise pas les regles.
+
+==============================================================================
+  9. Instructions de controle
+==============================================================================
+
+  9.1 Affectation
+  ---------------
+
+    X = 42;
+    A, B, C = 0;            /* affectation multiple */
+    TAB(*) = 0;             /* tous les elements */
+    NOM = 'BONJOUR';
+
+  9.2 IF / THEN / ELSE
+  --------------------
+
+    IF X > 0 THEN
+       PUT LIST('positif');
+    ELSE IF X < 0 THEN
+       PUT LIST('negatif');
+    ELSE
+       PUT LIST('nul');
+
+  Bloc multi-instructions :
+
+    IF X > 0 THEN DO;
+       Y = X * 2;
+       PUT LIST(Y);
+    END;
+
+  9.3 DO
+  ------
+
+  Boucle generale, plusieurs formes :
+
+  Boucle compteur :
+    DO I = 1 TO 10;
+       PUT LIST(I);
+    END;
+
+  Avec pas :
+    DO I = 0 TO 100 BY 5;
+       PUT LIST(I);
+    END;
+
+  Liste de valeurs :
+    DO J = 2, 4, 7, 11;
+       PUT LIST(J);
+    END;
+
+  WHILE :
+    DO WHILE(X > 0);
+       X = X - 1;
+    END;
+
+  UNTIL :
+    DO UNTIL(X = 0);
+       X = X - 1;
+    END;
+
+  Combinaison :
+    DO I = 1 TO 100 WHILE(TROUVE = '0'B);
+       /* boucle iterative avec condition de sortie */
+    END;
+
+  Repetition indefinie :
+    DO FOREVER;
+       /* equivaut a DO WHILE('1'B) */
+       IF FIN THEN LEAVE;
+    END;
+
+  9.4 LEAVE et ITERATE
+  --------------------
+
+  LEAVE : sort de la boucle (equiv. C break).
+  ITERATE : passe a l iteration suivante (equiv. C continue).
+
+    DO I = 1 TO 100;
+       IF I = 50 THEN LEAVE;
+       IF MOD(I,2) = 0 THEN ITERATE;
+       PUT LIST(I);
+    END;
+
+  9.5 SELECT (multi-branchement)
+  ------------------------------
+
+  Comme switch/case mais plus puissant :
+
+    SELECT(N);
+       WHEN(0)       PUT LIST('zero');
+       WHEN(1,2,3)   PUT LIST('petit');
+       WHEN(4 TO 9)  PUT LIST('moyen');
+       OTHERWISE     PUT LIST('grand');
+    END;
+
+  Version sans expression (suite de conditions) :
+
+    SELECT;
+       WHEN(X > 0)   PUT LIST('positif');
+       WHEN(X < 0)   PUT LIST('negatif');
+       OTHERWISE     PUT LIST('nul');
+    END;
+
+  9.6 GOTO
+  --------
+
+    GOTO ETIQ1;
+    ...
+    ETIQ1: PUT LIST('arrivee');
+
+  GOTO peut sortir d un bloc imbrique, declenchant le deroulement de la
+  pile (unwind).
+
+  9.7 CALL et RETURN
+  ------------------
+
+    CALL MA_PROCEDURE(X, Y);
+    Z = MA_FONCTION(X, Y);
+
+    RETURN;            /* dans procedure sans valeur */
+    RETURN(EXPR);      /* dans fonction */
+
+==============================================================================
+  10. Procedures et fonctions
+==============================================================================
+
+  10.1 Procedure simple
+  ---------------------
+
+    AFFICHE: PROCEDURE(MSG);
+       DECLARE MSG CHARACTER(*);
+       PUT LIST(MSG);
+    END AFFICHE;
+
+  L attribut CHARACTER(*) indique que la longueur sera celle de l argument
+  passe au moment de l appel.
+
+  10.2 Fonction (avec RETURNS)
+  ----------------------------
+
+    CARRE: PROCEDURE(X) RETURNS(FIXED BINARY(31));
+       DECLARE X FIXED BINARY(31);
+       RETURN(X * X);
+    END CARRE;
+
+    Y = CARRE(7);     /* Y = 49 */
+
+  10.3 Passage de parametres
+  --------------------------
+
+  Par defaut, les arguments sont passes par REFERENCE (alias). Pour passer
+  par valeur, on encadre l argument de parentheses, ce qui force la
+  creation d une copie :
+
+    CALL MAJ(X);       /* par reference - peut modifier X */
+    CALL MAJ((X));     /* par valeur - X protegee */
+
+  10.4 RECURSIVE
+  --------------
+
+  Procedures recursives explicitement marquees :
+
+    FACT: PROCEDURE(N) RECURSIVE RETURNS(FIXED BINARY(31));
+       DECLARE N FIXED BINARY(31);
+       IF N <= 1 THEN RETURN(1);
+       RETURN(N * FACT(N-1));
+    END FACT;
+
+  Sans RECURSIVE, les variables locales sont STATIC et l appel recursif
+  est non sur.
+
+  10.5 OPTIONS
+  ------------
+
+  Modificateurs sur la procedure :
+
+    OPTIONS(MAIN)       : procedure principale
+    OPTIONS(RECURSIVE)  : autorise la recursion
+    OPTIONS(REENTRANT)  : code reentrant (multitache)
+    OPTIONS(BYVALUE)    : passage par valeur par defaut
+    OPTIONS(LINKAGE(...))  : convention d appel (OPTLINK, STDCALL, etc.)
+
+==============================================================================
+  11. Entrees/sorties
+==============================================================================
+
+  11.1 PUT et GET
+  ---------------
+
+  Les instructions de base sont PUT (sortie) et GET (entree). Trois
+  modes :
+
+  Mode LIST (libre, separateurs automatiques) :
+
+    PUT LIST('X =', X, 'Y =', Y);
+    GET LIST(A, B, C);
+
+  Mode EDIT (format precis) :
+
+    PUT EDIT(NOM, AGE)(A(20), F(3));
+    GET EDIT(NOM, AGE)(A(20), F(3));
+
+  Mode DATA (nom=valeur) :
+
+    PUT DATA(X, Y, Z);          /* affiche X= ... Y= ... Z= ... ; */
+    GET DATA;                   /* lit ces affectations */
+
+  11.2 Format codes
+  -----------------
+
+    A(n)    : alphanumerique de largeur n
+    F(w,d)  : numerique de largeur w avec d decimales
+    E(w,d)  : flottant exponentiel
+    B(n)    : chaine de bits
+    P'...'  : picture
+    X(n)    : n espaces
+    SKIP    : saut de ligne
+    PAGE    : saut de page
+    COL(n)  : positionne en colonne n
+    R(label): repete le format defini a label
+
+  11.3 Fichiers
+  -------------
+
+    DECLARE F FILE INPUT RECORD;
+
+    OPEN FILE(F) TITLE('DONNEES.TXT');
+    READ FILE(F) INTO(BUFFER);
+    CLOSE FILE(F);
+
+  Attributs de FILE :
+
+    INPUT / OUTPUT / UPDATE
+    STREAM / RECORD
+    SEQUENTIAL / DIRECT / KEYED
+    PRINT
+    ENVIRONMENT(...)
+
+==============================================================================
+  12. Pointeurs et structures
+==============================================================================
+
+  12.1 Pointeurs
+  --------------
+
+    DECLARE P POINTER;
+    DECLARE X FIXED BINARY(31) BASED(P);
+
+    ALLOCATE X;
+    X = 42;            /* equivaut a P -> X = 42 */
+    FREE X;
+    P = NULL();        /* pointeur nul */
+
+  12.2 ADDR
+  ---------
+
+  Fonction integree retournant l adresse d une variable :
+
+    DECLARE I FIXED BINARY(31);
+    DECLARE P POINTER;
+    P = ADDR(I);
+
+  12.3 Structures auto-referentielles
+  -----------------------------------
+
+  Liste chainee :
+
+    DECLARE 1 NOEUD BASED(P),
+              2 VALEUR  FIXED BINARY(31),
+              2 SUIVANT POINTER;
+
+    DECLARE TETE POINTER INITIAL(NULL());
+    DECLARE P    POINTER;
+
+    ALLOCATE NOEUD SET(P);
+    P -> VALEUR = 42;
+    P -> SUIVANT = TETE;
+    TETE = P;
+
+==============================================================================
+  13. Tableaux
+==============================================================================
+
+  13.1 Declaration
+  ----------------
+
+    DECLARE T(10)        FIXED BINARY(31);       /* T(1) a T(10) */
+    DECLARE U(0:9)       FIXED BINARY(31);       /* U(0) a U(9)  */
+    DECLARE M(5,5)       FLOAT BINARY(21);       /* matrice 5x5  */
+    DECLARE V(-10:10)    FIXED BINARY(31);       /* indices negatifs */
+
+  Les indices par defaut commencent a 1.
+
+  13.2 Expressions sur tableaux
+  -----------------------------
+
+    DECLARE A(100), B(100), C(100) FIXED BINARY(31);
+
+    A = B;           /* copie element par element */
+    C = A + B;       /* somme element par element */
+    A = 0;           /* tous les elements a 0 */
+
+  13.3 Sections de tableaux
+  -------------------------
+
+    A(*) = 0;             /* tous les elements */
+    A(5:10) = B(1:6);     /* sous-section */
+    M(*, 3) = 1;          /* colonne 3 */
+    M(2, *) = 0;          /* ligne 2 */
+
+  13.4 Tableaux de structures
+  ---------------------------
+
+    DECLARE 1 EMPLOYES(100),
+              2 NOM CHARACTER(40) VARYING,
+              2 SALAIRE FIXED DECIMAL(9,2);
+
+    EMPLOYES(1).NOM = 'DUPONT';
+    EMPLOYES(1).SALAIRE = 35000.00;
+
+==============================================================================
+  14. Conditions et gestion des exceptions
+==============================================================================
+
+  14.1 ON-units
+  -------------
+
+  PL/I propose un mecanisme d exceptions appele "ON-units". Une instruction
+  ON definit ce qui doit etre execute quand une condition donnee se
+  produit :
+
+    ON OVERFLOW BEGIN;
+       PUT LIST('Depassement de capacite !');
+       STOP;
+    END;
+
+    ON ZERODIVIDE
+       PUT LIST('Division par zero !');
+
+    ON ENDFILE(F)
+       FIN_LECTURE = '1'B;
+
+  14.2 Conditions standard
+  ------------------------
+
+    OVERFLOW         : depassement de capacite arithmetique
+    UNDERFLOW        : sous-depassement flottant
+    ZERODIVIDE       : division par zero
+    SIZE             : perte de chiffres significatifs
+    STRINGSIZE       : depassement de chaine
+    SUBSCRIPTRANGE   : indice hors borne
+    CONVERSION       : erreur de conversion de donnees
+    ENDFILE(F)       : fin de fichier F
+    UNDEFINEDFILE(F) : fichier non defini
+    ERROR            : erreur generique
+    FINISH           : avant la fin du programme
+
+  Activation/desactivation prefixees aux instructions ou blocs :
+
+    (NOSUBSCRIPTRANGE):
+    MAIN: PROCEDURE OPTIONS(MAIN);
+       ...
+    END MAIN;
+
+    (SIZE, OVERFLOW):
+    DO I = 1 TO 100;
+       X = X * 2;
+    END;
+
+  14.3 SIGNAL
+  -----------
+
+  Declenche manuellement une condition :
+
+    SIGNAL CONDITION(MON_ERREUR);
+    SIGNAL OVERFLOW;
+
+  14.4 REVERT
+  -----------
+
+  Restaure le ON-unit precedent :
+
+    ON ERROR BEGIN; ... END;
+    ...
+    REVERT ERROR;       /* retourne au gestionnaire precedent */
+
+==============================================================================
+  15. Preprocesseur
+==============================================================================
+
+  PL/I integre un macroprocesseur puissant prefixe par "%".
+
+  15.1 Inclusion de fichiers
+  --------------------------
+
+    %INCLUDE 'CONSTANTES.INC';
+    %INCLUDE STDIO;
+
+  15.2 Variables et constantes du preprocesseur
+  ---------------------------------------------
+
+    %DECLARE TAILLE FIXED;
+    %TAILLE = 100;
+
+    DECLARE T(TAILLE) FIXED BINARY(31);   /* devient T(100) */
+
+  15.3 Conditionnelle
+  -------------------
+
+    %IF DEBUG = 1 %THEN
+       %DO;
+          PUT LIST('Mode debug');
+       %END;
+    %ELSE
+       %DO;
+          /* version production */
+       %END;
+
+  15.4 Iteration et procedures macro
+  ----------------------------------
+
+    %DO I = 1 TO 5;
+       PUT LIST('Iteration', I);
+    %END;
+
+    %PROCEDURE GENERATE_FIELD(NAME, TYPE);
+       DECLARE NAME TYPE;
+    %END GENERATE_FIELD;
+
+==============================================================================
+  16. Le compilateur PLI86.PAS
+==============================================================================
+
+  16.1 Vue d ensemble
+  -------------------
+
+  PLI86.PAS est un compilateur PL/I cible 8086/8088 ecrit en Turbo Pascal
+  et Free Pascal, integre au projet DEV-COOLS. Il produit du code source
+  assembleur compatible MASM/TASM, assemblable par les outils du projet
+  (ASM86.PAS, MASM.PAS).
+
+  Caracteristiques :
+
+    - Sous-ensemble pratique de PL/I oriente PC 16 bits
+    - Sortie texte assembleur 8086 (segments .CODE, .DATA, .BSS)
+    - Modeles memoire SMALL et COMPACT
+    - Liaison avec LIB.PAS et LINK.PAS pour produire un .COM ou .EXE
+
+  16.2 Types supportes
+  --------------------
+
+  PLI86.PAS reconnait les types suivants (codes internes) :
+
+    FIXED       : FIXED BINARY(15)  - entier 16 bits
+    FIXED(31)   : FIXED BINARY(31)  - entier 32 bits
+    FLOAT       : FLOAT BINARY      - flottant (stub a etoffer)
+    CHAR(n)     : chaine fixe       - tableau de n octets
+    CHAR(n) VARYING : chaine variable - prefixe de longueur 16 bits
+    BIT(n)      : champ de bits
+    LABEL       : etiquette PL/I
+    POINTER     : pointeur 16 bits (NEAR) ou 32 bits (FAR)
+    ENTRY       : pointeur de procedure
+
+  16.3 Classes de stockage
+  ------------------------
+
+    AUTOMATIC   : pile, frame BP (defaut)
+    STATIC      : segment .DATA
+    EXTERNAL    : import depuis autre unite
+    BASED       : acces via pointeur
+
+  16.4 Mots-cles reconnus
+  -----------------------
+
+  Le tableau interne KW_PROCEDURE..KW_END couvre les constructions
+  essentielles : PROCEDURE, END, BEGIN, CALL, RETURN, IF, THEN, ELSE,
+  DO, WHILE, UNTIL, TO, BY, LEAVE, ITERATE, GOTO, DECLARE, DCL, PUT,
+  GET, LIST, OPTIONS, MAIN, FIXED, FLOAT, BINARY, DECIMAL, CHAR,
+  CHARACTER, BIT, VARYING, POINTER, PTR, STATIC, AUTOMATIC, EXTERNAL,
+  BASED, INITIAL, ALLOCATE, FREE, NULL, ADDR.
+
+  16.5 Sortie assembleur
+  ----------------------
+
+  Le compilateur produit une sortie de la forme :
+
+    .MODEL SMALL
+    .STACK 1024
+    .DATA
+    _MSG    DB    'BONJOUR$'
+    _X      DW    0
+    .CODE
+    _MAIN:  MOV   AX, OFFSET _MSG
+            CALL  _PRINT
+            MOV   AH, 4Ch
+            INT   21h
+    _PRINT: ...
+
+  16.6 Pipeline de compilation
+  ----------------------------
+
+  Le pipeline typique avec PLI86.PAS :
+
+    1. PLI86.PAS         : compile .PLI -> .ASM
+    2. ASM86.PAS / MASM  : assemble .ASM -> .OBJ
+    3. LINK.PAS          : edite les liens .OBJ -> .EXE ou .COM
+
+  16.7 Utilisation
+  ----------------
+
+  Compilation du compilateur :
+
+    fpc -Mtp PLI86.PAS
+
+  Compilation d un programme PL/I :
+
+    PLI86 MONPRG.PLI
+    ASM86 MONPRG.ASM
+    LINK  MONPRG.OBJ
+
+==============================================================================
+  17. Exemples complets
+==============================================================================
+
+  17.1 Hello, World!
+  ------------------
+
+    HELLO: PROCEDURE OPTIONS(MAIN);
+       PUT LIST('Hello, World!');
+    END HELLO;
+
+  17.2 Factorielle recursive
+  --------------------------
+
+    FACTORIELLE: PROCEDURE OPTIONS(MAIN);
+
+       FACT: PROCEDURE(N) RECURSIVE RETURNS(FIXED BINARY(31));
+          DECLARE N FIXED BINARY(31);
+          IF N <= 1 THEN RETURN(1);
+          RETURN(N * FACT(N-1));
+       END FACT;
+
+       DECLARE I FIXED BINARY(31);
+       DO I = 1 TO 10;
+          PUT SKIP LIST(I, FACT(I));
+       END;
+
+    END FACTORIELLE;
+
+  17.3 Tri a bulles
+  -----------------
+
+    TRI: PROCEDURE OPTIONS(MAIN);
+       DECLARE T(10) FIXED BINARY(31)
+          INITIAL(5, 2, 8, 1, 9, 3, 7, 4, 6, 0);
+       DECLARE (I, J, TMP) FIXED BINARY(31);
+
+       DO I = 1 TO 9;
+          DO J = 1 TO 10 - I;
+             IF T(J) > T(J+1) THEN DO;
+                TMP    = T(J);
+                T(J)   = T(J+1);
+                T(J+1) = TMP;
+             END;
+          END;
+       END;
+
+       DO I = 1 TO 10;
+          PUT LIST(T(I));
+       END;
+    END TRI;
+
+  17.4 Lecture de fichier
+  -----------------------
+
+    LIRE: PROCEDURE OPTIONS(MAIN);
+       DECLARE F FILE INPUT STREAM;
+       DECLARE LIGNE CHARACTER(80) VARYING;
+       DECLARE FIN BIT(1) INITIAL('0'B);
+
+       ON ENDFILE(F) FIN = '1'B;
+
+       OPEN FILE(F) TITLE('DONNEES.TXT');
+       DO WHILE(^FIN);
+          GET FILE(F) EDIT(LIGNE)(A(80));
+          IF ^FIN THEN PUT SKIP LIST(LIGNE);
+       END;
+       CLOSE FILE(F);
+    END LIRE;
+
+  17.5 Liste chainee
+  ------------------
+
+    LISTE: PROCEDURE OPTIONS(MAIN);
+       DECLARE 1 NOEUD BASED(P),
+                 2 VALEUR FIXED BINARY(31),
+                 2 SUIV POINTER;
+
+       DECLARE (TETE, P, Q) POINTER;
+       DECLARE I FIXED BINARY(31);
+
+       TETE = NULL();
+       DO I = 1 TO 5;
+          ALLOCATE NOEUD SET(P);
+          P -> VALEUR = I * 10;
+          P -> SUIV   = TETE;
+          TETE = P;
+       END;
+
+       Q = TETE;
+       DO WHILE(Q ^= NULL());
+          PUT SKIP LIST(Q -> VALEUR);
+          Q = Q -> SUIV;
+       END;
+    END LISTE;
+
+==============================================================================
+  18. Differences avec C, COBOL et Fortran
+==============================================================================
+
+  18.1 PL/I vs C
+  --------------
+
+    Aspect              PL/I                  C
+    ------------------  --------------------  ----------------------
+    Casse               insensible            sensible
+    Type defaut         FIXED DECIMAL(5,0)    int
+    Chaines             type natif            tableau de char + '\0'
+    Tableaux            descripteur           pointeur
+    Exceptions          ON-units integres     setjmp/longjmp
+    Conversions         implicites largement  limitees, explicites
+    Allocation          ALLOCATE/FREE         malloc/free
+    Pointeurs           type POINTER          type *
+    Indices defaut      1                     0
+    Operateur affect    =                     =
+    Comparaison egal    =                     ==
+
+  18.2 PL/I vs COBOL
+  ------------------
+
+    Aspect              PL/I                  COBOL
+    ------------------  --------------------  ----------------------
+    Domaine             generaliste           gestion
+    Structure           blocs imbriques       divisions (4)
+    Declarations        DECLARE flexible      PICTURE clause
+    Boucles             DO unifie             PERFORM
+    Conditions          ON-units              imperative + check
+    Recursion           OUI                   non (avant 2002)
+    Format I/O          PUT EDIT / picture    PIC clause
+    Verbosite           moyenne               tres elevee
+
+  18.3 PL/I vs Fortran
+  --------------------
+
+    Aspect              PL/I                  Fortran (77)
+    ------------------  --------------------  ----------------------
+    Domaine             generaliste           scientifique
+    Recursion           OUI (RECURSIVE)       NON (avant Fortran 90)
+    Pointeurs           OUI                   NON (avant Fortran 90)
+    Chaines             types natifs          tableaux de char
+    Structures          DECLARE niveaux       TYPE (Fortran 90+)
+    Allocation dyn      OUI                   NON (avant Fortran 90)
+    Format I/O          plus riche            FORMAT statement
+    Bloc                BEGIN/END             pas de bloc local
+
+==============================================================================
+  19. Ressources dans le projet
+==============================================================================
+
+  Le projet DEV-COOLS contient les composants suivants lies a PL/I :
+
+    PLI86.PAS           : compilateur PL/I vers MASM 8086
+    ASM86.PAS, MASM.PAS : assembleurs cibles pour la sortie de PLI86
+    LINK.PAS            : editeur de liens .OBJ -> .EXE / .COM
+    LIB.PAS             : gestionnaire de bibliotheques .LIB
+
+  Outils connexes :
+
+    DISEXE.PAS, DISOBJ.PAS : desassembleurs pour les binaires produits
+    DEBUG.PAS              : debogueur DOS pour les executables
+
+  Documentation de reference :
+
+    DOC/PLI_SPEC_LANG.txt  : le present document
+    DOC/ASM_80386.txt      : informations sur l assembleur cible
+    DEVENV.HLP             : aide en ligne integree de l IDE
+
+==============================================================================
+  20. Bibliographie
+==============================================================================
+
+  Ouvrages historiques :
+
+    - Pollack, S.V. and Sterling, T.D., "A Guide to PL/I", Holt,
+      Rinehart and Winston, 1969.
+
+    - Hughes, Joan K., "PL/I Programming", John Wiley & Sons, 1973.
+
+    - Sturm, Eberhard, "The New PL/I", Vieweg+Teubner, 2009.
+
+    - Bates, R.J. and Douglas, M.L., "Programming Language One",
+      Prentice-Hall, 1970.
+
+  Standards :
+
+    - ANSI X3.53-1976 : American National Standard Programming Language PL/I.
+    - ISO 6160:1979   : Programming Language PL/I (retire).
+    - ISO 6522:1992   : Programming Language PL/I General-Purpose Subset.
+
+  Documentation IBM :
+
+    - "Enterprise PL/I for z/OS Language Reference" (SC27-1460).
+    - "Enterprise PL/I for z/OS Programming Guide"  (SC27-1457).
+    - "PL/I Optimizing Compiler Language Reference" (manuel historique).
+
+  Ressources web :
+
+    - https://www.iron-spring.com/        : Iron Spring PL/I
+    - https://www.kednos.com/             : Kednos PL/I (VMS)
+    - https://www.ibm.com/products/pli-compiler-zos
+    - https://en.wikipedia.org/wiki/PL/I
+
+  Implementations libres et historiques :
+
+    - PL/I-80 (Digital Research)  : CP/M 8 bits
+    - DR PL/I-86 (Digital Research) : DOS 16 bits
+    - Iron Spring PL/I (commercial mais demo gratuite) : Linux, OS/2
+
+==============================================================================
+  Fin du document PLI_SPEC_LANG.txt
+==============================================================================
