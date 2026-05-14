@@ -5621,7 +5621,7 @@ End;
 
 { Declaration anticipee : OpenHelpFile est defini apres CreateEditorWindow
   et FindEditorByFileName car il les utilise. }
-Procedure OpenHelpFile(BaseName: String); Forward;
+Procedure OpenHelpFile(BaseName: String; Context: String); Forward;
 
 Procedure ExecuteMenuItem(Var Item: TMenuItem);
 Var
@@ -5834,10 +5834,10 @@ Begin
         FullRepaintNeeded := True;
        End;
   901: Begin { Aide > Documentation en ligne }
-        OpenHelpFile('DEVENV.HLP');
+        OpenHelpFile('DEVENV.HLP', '');
        End;
   910: Begin { Aide > Raccourcis clavier }
-        OpenHelpFile('DEVENV.HLP');
+        OpenHelpFile('DEVENV.HLP', 'IDH_RACCOURCIS');
        End;
   911: Begin { Aide > Bienvenue : revenir a la page de demarrage }
         StartPage.Visible := True;
@@ -7523,8 +7523,8 @@ Begin
      If Skip Then Continue;
     End;
    End;
-   #13: ; { ignore }
-   #10: ; { ignore }
+   #13: ; { ignore - traite avec #10 }
+   #10: If Word <> '' Then AppendCh(' '); { CRLF source RTF = separateur de mots }
    #9: Begin
     FlushWord;
     CurX := ((CurX - HLPV_CONTENT_X) Div 64 + 1) * 64 + HLPV_CONTENT_X;
@@ -7795,7 +7795,7 @@ End;
     - .\
   Si l extension est .HLP : ouverture dans la visionneuse WinHelp dediee.
   Sinon : ouverture dans un editeur de texte (comportement historique). }
-Procedure OpenHelpFile(BaseName: String);
+Procedure OpenHelpFile(BaseName: String; Context: String);
 Var
  Candidates: Array[1..5] Of String;
  FN, ExeDir: String;
@@ -7828,7 +7828,7 @@ Begin
  { Pour les fichiers .HLP : visionneuse WinHelp dediee (rendu RTF
    formate, hyperliens cliquables, navigation par contexte). }
  If HlpvEndsWith(FN, '.HLP') Then Begin
-  HlpvShow(FN, '');
+  HlpvShow(FN, Context);
   Exit;
  End;
  If EditorReady And (WinMgr.ActiveIdx >= 0) And
