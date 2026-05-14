@@ -27,6 +27,8 @@ ALGOL58.RTF
 ALGOL60.RTF
 ALGOL68.RTF
 C.RTF
+PASCAL.RTF
+CPP.RTF
 
 [MAP]
 IDH_INDEX           = 1
@@ -228,6 +230,54 @@ IDH_C_23            = 3323
 IDH_C_24            = 3324
 IDH_C_25            = 3325
 IDH_C_26            = 3326
+IDH_PASCAL_01       = 3401
+IDH_PASCAL_02       = 3402
+IDH_PASCAL_03       = 3403
+IDH_PASCAL_04       = 3404
+IDH_PASCAL_05       = 3405
+IDH_PASCAL_06       = 3406
+IDH_PASCAL_07       = 3407
+IDH_PASCAL_08       = 3408
+IDH_PASCAL_09       = 3409
+IDH_PASCAL_10       = 3410
+IDH_PASCAL_11       = 3411
+IDH_PASCAL_12       = 3412
+IDH_PASCAL_13       = 3413
+IDH_PASCAL_14       = 3414
+IDH_PASCAL_15       = 3415
+IDH_PASCAL_16       = 3416
+IDH_PASCAL_17       = 3417
+IDH_PASCAL_18       = 3418
+IDH_PASCAL_19       = 3419
+IDH_PASCAL_20       = 3420
+IDH_PASCAL_21       = 3421
+IDH_PASCAL_22       = 3422
+IDH_PASCAL_23       = 3423
+IDH_PASCAL_24       = 3424
+IDH_CPP_01          = 3501
+IDH_CPP_02          = 3502
+IDH_CPP_03          = 3503
+IDH_CPP_04          = 3504
+IDH_CPP_05          = 3505
+IDH_CPP_06          = 3506
+IDH_CPP_07          = 3507
+IDH_CPP_08          = 3508
+IDH_CPP_09          = 3509
+IDH_CPP_10          = 3510
+IDH_CPP_11          = 3511
+IDH_CPP_12          = 3512
+IDH_CPP_13          = 3513
+IDH_CPP_14          = 3514
+IDH_CPP_15          = 3515
+IDH_CPP_16          = 3516
+IDH_CPP_17          = 3517
+IDH_CPP_18          = 3518
+IDH_CPP_19          = 3519
+IDH_CPP_20          = 3520
+IDH_CPP_21          = 3521
+IDH_CPP_22          = 3522
+IDH_CPP_23          = 3523
+IDH_CPP_24          = 3524
 IDH_EMULATEURS      = 30
 IDH_EMU_NES         = 31
 IDH_EMU_AMIGA       = 32
