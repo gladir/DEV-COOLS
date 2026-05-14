@@ -3049,6 +3049,10 @@ Type
   WinW, WinH    : Integer;       { taille fenetre debug             }
   WinVisible    : Boolean;       { fenetre debug affichee           }
   WinFocused    : Boolean;       { fenetre a le focus clavier       }
+  Dragging      : Boolean;       { drag titre en cours              }
+  Resizing      : Boolean;       { resize coin BD en cours          }
+  DragOfsX      : Integer;       { offset MX - WinX au drag start   }
+  DragOfsY      : Integer;       { offset MY - WinY au drag start   }
   ScrollOfs     : Integer;       { decalage scroll desassemblage    }
   NeedRepaint   : Boolean;       { redessiner au prochain tour      }
  End;
@@ -5388,6 +5392,7 @@ Procedure EmuDbg_OnBeforeStep6502; Forward;
 Procedure EmuDbg_OnBeforeStep8086; Forward;
 Procedure EmuDbg_RequestBreak(ACPU: TEmuDbgCPU); Forward;
 Function  EmuDbg_PollCrtBreak: Boolean; Forward;
+Procedure EmuDbg_DrawWindow; Forward;
 
 { Declarations anticipees du debogueur source (defini section TODO 29) }
 Procedure StartWithoutDebugging(Var BPM: TBreakpointManager;
@@ -49628,6 +49633,8 @@ Begin
   DrawOutputPanel(OutputPanel);
  End;
  DrawErrorList(ErrorList);
+ { Fenetre debogueur emulateur (par-dessus tout sauf menus et dialogues) }
+ If EmuDbg.WinVisible And (Not MenuActive) Then EmuDbg_DrawWindow;
  DrawStatusBar(StatusBar);
  { Dessiner le dialogue par-dessus si visible }
  If NewFileDlg.Base.Visible Then
@@ -49696,6 +49703,10 @@ Begin
  EmuDbg.WinY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + 16;
  EmuDbg.WinVisible := False;
  EmuDbg.WinFocused := False;
+ EmuDbg.Dragging   := False;
+ EmuDbg.Resizing   := False;
+ EmuDbg.DragOfsX   := 0;
+ EmuDbg.DragOfsY   := 0;
  EmuDbg.ScrollOfs := 0;
  EmuDbg.NeedRepaint := False;
 End;
@@ -50128,7 +50139,33 @@ Begin
  SetColor(11);
  OutTextXY(X + 4, Y + H - 18,
   'F5=Cont F9=BP F10=Over F11=Into Sh+F11=Out Sh+F5=Stop');
+ { Poignee de redimensionnement (coin bas-droite) }
+ SetColor(8);
+ Line(X + W - 10, Y + H - 2, X + W - 2, Y + H - 10);
+ Line(X + W -  7, Y + H - 2, X + W - 2, Y + H -  7);
+ Line(X + W -  4, Y + H - 2, X + W - 2, Y + H -  4);
  EmuDbg.NeedRepaint := False;
+End;
+
+{ --- Tester si une coordonnee est sur la barre de titre (hors X) --- }
+
+Function EmuDbg_HitTitleBar(MX, MY: Integer): Boolean;
+Begin
+ EmuDbg_HitTitleBar := EmuDbg.WinVisible And
+  (MX >= EmuDbg.WinX + 1) And
+  (MX < EmuDbg.WinX + EmuDbg.WinW - 60) And
+  (MY >= EmuDbg.WinY + 1) And (MY < EmuDbg.WinY + 14);
+End;
+
+{ --- Tester si une coordonnee est sur la poignee de resize BD --- }
+
+Function EmuDbg_HitResize(MX, MY: Integer): Boolean;
+Begin
+ EmuDbg_HitResize := EmuDbg.WinVisible And
+  (MX >= EmuDbg.WinX + EmuDbg.WinW - 12) And
+  (MX < EmuDbg.WinX + EmuDbg.WinW) And
+  (MY >= EmuDbg.WinY + EmuDbg.WinH - 12) And
+  (MY < EmuDbg.WinY + EmuDbg.WinH);
 End;
 
 { --- Tester si une coordonnee est dans la fenetre debug --- }
@@ -50158,6 +50195,8 @@ Begin
  EmuDbg.Paused := False;
  EmuDbg.ContinueReq := True;
  EmuDbg.BreakReq := False;
+ EmuDbg.Dragging := False;
+ EmuDbg.Resizing := False;
  EmuDbg.WinVisible := False;
 End;
 
@@ -50167,6 +50206,8 @@ Begin
  EmuDbg.Paused := False;
  EmuDbg.StepMode := ESM_NONE;
  EmuDbg.BreakReq := False;
+ EmuDbg.Dragging := False;
+ EmuDbg.Resizing := False;
  EmuDbg.WinVisible := False;
 End;
 
@@ -50232,6 +50273,9 @@ Function EmuDbg_HandleKey(Var Ev: TEvent): Boolean;
 Begin
  EmuDbg_HandleKey := False;
  If Not EmuDbg.Paused Then Exit;
+ { Si un menu deroulant est ouvert, le laisser traiter les touches
+   (Esc/fleches/Entree pour la navigation menu) et ne rien absorber. }
+ If MenuActive Then Exit;
  If Ev.Kind = EV_KEY_DOWN Then Begin
   Case Ev.KeyCode Of
    $3F: Begin EmuDbg_Continue;  EmuDbg_HandleKey := True; End; { F5 }
@@ -50242,28 +50286,89 @@ Begin
    $58: Begin EmuDbg_Stop;      EmuDbg_HandleKey := True; End; { Shift+F5 }
    $62: Begin EmuDbg_Continue;  EmuDbg_HandleKey := True; End; { Ctrl+F5 }
   End;
- End Else If Ev.Kind = EV_KEY_CHAR Then Begin
-  If Ev.KeyChar = #27 Then Begin
-   { Echap : continuer (laisse la pause sans tuer l emulation) }
-   EmuDbg_Continue;
-   EmuDbg_HandleKey := True;
-  End;
  End;
+ { Note : Echap (#27) n est PLUS traitee comme Continue car c est aussi
+   la touche standard pour fermer les menus deroulants ou les dialogues.
+   L utilisateur doit explicitement appuyer sur F5 pour reprendre. }
 End;
 
 { --- Gerer un evenement souris dans la fenetre debug. Renvoie True
       si l evenement a ete absorbe par la fenetre debug --- }
 
 Function EmuDbg_HandleMouse(Var Ev: TEvent): Boolean;
+Var
+ NewW, NewH: Integer;
 Begin
  EmuDbg_HandleMouse := False;
- If Not EmuDbg.WinVisible Then Exit;
- If Ev.Kind In [EV_MOUSE_DOWN, EV_MOUSE_UP, EV_MOUSE_DBLCLICK] Then Begin
-  If EmuDbg_HitCloseBox(Ev.MouseX, Ev.MouseY) Then Begin
-   If Ev.Kind = EV_MOUSE_DOWN Then EmuDbg_Continue;
+ If Not EmuDbg.WinVisible Then Begin
+  EmuDbg.Dragging := False;
+  EmuDbg.Resizing := False;
+  Exit;
+ End;
+ { Drag ou resize en cours : suivre la souris quelle que soit sa position }
+ If EmuDbg.Dragging Then Begin
+  If Ev.Kind = EV_MOUSE_MOVE Then Begin
+   EmuDbg.WinX := Ev.MouseX - EmuDbg.DragOfsX;
+   EmuDbg.WinY := Ev.MouseY - EmuDbg.DragOfsY;
+   If EmuDbg.WinX < 0 Then EmuDbg.WinX := 0;
+   If EmuDbg.WinY < 0 Then EmuDbg.WinY := 0;
+   FullRepaintNeeded := True;
+   EmuDbg_HandleMouse := True;
+   Exit;
+  End Else If Ev.Kind = EV_MOUSE_UP Then Begin
+   EmuDbg.Dragging := False;
    EmuDbg_HandleMouse := True;
    Exit;
   End;
+ End;
+ If EmuDbg.Resizing Then Begin
+  If Ev.Kind = EV_MOUSE_MOVE Then Begin
+   NewW := Ev.MouseX - EmuDbg.WinX + 1;
+   NewH := Ev.MouseY - EmuDbg.WinY + 1;
+   If NewW < 200 Then NewW := 200;
+   If NewH < 120 Then NewH := 120;
+   EmuDbg.WinW := NewW;
+   EmuDbg.WinH := NewH;
+   FullRepaintNeeded := True;
+   EmuDbg_HandleMouse := True;
+   Exit;
+  End Else If Ev.Kind = EV_MOUSE_UP Then Begin
+   EmuDbg.Resizing := False;
+   EmuDbg_HandleMouse := True;
+   Exit;
+  End;
+ End;
+ If Ev.Kind In [EV_MOUSE_DOWN, EV_MOUSE_UP, EV_MOUSE_DBLCLICK] Then Begin
+  { Close box : juste cacher (l emulateur reste en pause) }
+  If EmuDbg_HitCloseBox(Ev.MouseX, Ev.MouseY) Then Begin
+   If Ev.Kind = EV_MOUSE_DOWN Then Begin
+    EmuDbg.WinVisible := False;
+    FullRepaintNeeded := True;
+   End;
+   EmuDbg_HandleMouse := True;
+   Exit;
+  End;
+  { Coin BD : commencer un resize }
+  If EmuDbg_HitResize(Ev.MouseX, Ev.MouseY) Then Begin
+   If Ev.Kind = EV_MOUSE_DOWN Then Begin
+    EmuDbg.Resizing := True;
+    EmuDbg.WinFocused := True;
+   End;
+   EmuDbg_HandleMouse := True;
+   Exit;
+  End;
+  { Barre de titre : commencer un drag }
+  If EmuDbg_HitTitleBar(Ev.MouseX, Ev.MouseY) Then Begin
+   If Ev.Kind = EV_MOUSE_DOWN Then Begin
+    EmuDbg.Dragging := True;
+    EmuDbg.DragOfsX := Ev.MouseX - EmuDbg.WinX;
+    EmuDbg.DragOfsY := Ev.MouseY - EmuDbg.WinY;
+    EmuDbg.WinFocused := True;
+   End;
+   EmuDbg_HandleMouse := True;
+   Exit;
+  End;
+  { Corps de la fenetre : absorber pour ne pas activer autre chose }
   If EmuDbg_HitWindow(Ev.MouseX, Ev.MouseY) Then Begin
    EmuDbg.WinFocused := True;
    EmuDbg_HandleMouse := True;
@@ -50314,7 +50419,10 @@ Begin
    DrawAllWidgets;
    FullRepaintNeeded := False;
   End;
-  EmuDbg_DrawWindow;
+  { Ne pas redessiner la fenetre debug si un menu deroulant est ouvert :
+    cela ecraserait le menu. Le menu reste en avant-plan tant qu il est
+    ouvert ; il restaurera l arriere-plan a sa fermeture. }
+  If Not MenuActive Then EmuDbg_DrawWindow;
  End;
 End;
 
@@ -50336,6 +50444,17 @@ Begin
   EmuDbg.LastAddr := (LongInt(EmuDbg.LastCS) Shl 4) + EmuDbg.LastIP;
  End;
  EmuDbg_PumpPause;
+ { Sortie de pause : redessiner toute l interface puis le panneau
+   emulateur afin que la zone qui etait sous la fenetre debug soit
+   restauree avant de relancer la boucle CPU. Les emulateurs avec
+   framebuffer differentiel (NES, Atari 2600) doivent forcer un
+   repaint complet, sinon DrawEmulatorPanel ne redessine que les
+   pixels qui changent et la zone effacee reste vide. }
+ NesFBFirst    := True;
+ A2600_FBFirst := True;
+ FullRepaintNeeded := True;
+ DrawAllWidgets;
+ If EmuPanel.Base.Visible Then DrawEmulatorPanel(EmuPanel);
 End;
 
 { --- Hook a appeler AVANT chaque instruction CPU. Retourne True si
@@ -50668,12 +50787,56 @@ Begin
   Exit;
  End;
  If EmuPanel.Base.Visible Then Begin
-  HandleEmulatorPanelEvent(EmuPanel, Ev);
-  If Not EmuPanel.Base.Visible Then
-   FullRepaintNeeded := True
-  Else
-   DrawEmulatorPanel(EmuPanel);
-  Exit;
+  { Quand l emulateur est visible, il ne doit pas absorber les clics
+    sur la barre de menus, la toolbar, ni la fenetre du debogueur
+    emulateur. On laisse aussi passer Alt+lettre (raccourcis menu)
+    et les raccourcis globaux du debogueur. }
+  If Ev.Kind In [EV_MOUSE_DOWN, EV_MOUSE_UP, EV_MOUSE_MOVE,
+                  EV_MOUSE_DBLCLICK] Then Begin
+   If Ev.MouseY < MENUBAR_HEIGHT + TOOLBAR_HEIGHT Then Begin
+    { Clic sur barre de menus ou toolbar : laisser passer aux
+      gestionnaires standards plus bas. }
+   End Else If EmuDbg.WinVisible And
+              EmuDbg_HitWindow(Ev.MouseX, Ev.MouseY) Then Begin
+    { Clic sur la fenetre du debogueur : la PumpPause s en charge }
+   End Else Begin
+    HandleEmulatorPanelEvent(EmuPanel, Ev);
+    If Not EmuPanel.Base.Visible Then
+     FullRepaintNeeded := True
+    Else
+     DrawEmulatorPanel(EmuPanel);
+    Exit;
+   End;
+  End Else If Ev.Kind = EV_KEY_DOWN Then Begin
+   { Alt+lettre : laisser HandleMenuEvent ouvrir le menu correspondant.
+     Les scan codes Alt+lettre commencent par $11..$32 plage typique. }
+   { Aussi les F-keys de debogage (F5/F9/F10/F11/Shift+F11/Shift+F5/Ctrl+F5)
+     et la touche F1 (aide) doivent atteindre les handlers globaux. }
+   Case Ev.KeyCode Of
+    $3B, $3F, $40, $43, $44, $58, $62, $6B, $85, $87:
+     ; { Laisser passer aux raccourcis globaux }
+    $21, $12, $1E, $19, $22, $20, $18, $31, $17:
+     { Si Alt est tenu, c est un Alt+lettre ; sinon clavier emulateur.
+       Comme on ne sait pas l etat d Alt, on laisse passer en priorite
+       pour permettre l ouverture des menus. }
+     ;
+    Else Begin
+     HandleEmulatorPanelEvent(EmuPanel, Ev);
+     If Not EmuPanel.Base.Visible Then
+      FullRepaintNeeded := True
+     Else
+      DrawEmulatorPanel(EmuPanel);
+     Exit;
+    End;
+   End;
+  End Else Begin
+   HandleEmulatorPanelEvent(EmuPanel, Ev);
+   If Not EmuPanel.Base.Visible Then
+    FullRepaintNeeded := True
+   Else
+    DrawEmulatorPanel(EmuPanel);
+   Exit;
+  End;
  End;
  If GoToLineDlg.Base.Visible Then Begin
   HandleGoToLineEvent(GoToLineDlg,
