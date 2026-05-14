@@ -1,0 +1,2889 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_C_01}
+{\footnote $ C - PRESENTATION}
+{\footnote K C presentation;ANSI;C89;C90;K&R;langage C}
+\b\fs24 PRESENTATION \b0\fs20\par
+\par
+Le langage C a ete concu entre 1969 et 1973 par Dennis Ritchie\par
+aux Bell Labs pour la reecriture du systeme UNIX. Il a ete\par
+standardise une premiere fois en 1989 par l'ANSI (X3.159-1989,\par
+dit "C89") puis adopte par l'ISO en 1990 (ISO/IEC 9899:1990,\par
+dit "C90"). Des revisions ulterieures sont apparues : C99 (1999),\par
+C11 (2011), C17 (2018) et C23 (2024).\par
+\par
+C est un langage :\par
+\par
+{\f1   - Imperatif et structure par blocs}\par
+{\f1   - Compile, a typage statique faible}\par
+{\f1   - De bas niveau (acces direct a la memoire via pointeurs)}\par
+{\f1   - Sans gestion automatique de la memoire}\par
+{\f1   - Indifferent a la mise en page (free-form)}\par
+{\f1   - Sensible a la casse}\par
+\par
+Les compilateurs fournis dans ce projet implementent un sous-\par
+ensemble large de C89, suffisant pour la programmation systeme,\par
+les utilitaires en ligne de commande et l'enseignement. Les\par
+specificites de chaque compilateur (tailles d'entier, types\par
+disponibles, conventions d'appel) sont detaillees a la section\par
+22.\par
+\par
+Extensions de fichiers reconnues :\par
+\par
+{\f1   .c     Fichier source C}\par
+{\f1   .h     Fichier d'en-tete (header)}\par
+{\f1   .i     Fichier source pre-traite}\par
+{\f1   .o     Fichier objet (sortie d'assemblage)}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. STRUCTURE D'UN PROGRAMME}     {\uldb [Aller]}{\v IDH_C_02}\par
+{\f1  3. STRUCTURE LEXICALE}     {\uldb [Aller]}{\v IDH_C_03}\par
+{\f1  4. TYPES DE DONNEES}     {\uldb [Aller]}{\v IDH_C_04}\par
+{\f1  5. DECLARATIONS DE VARIABLES}     {\uldb [Aller]}{\v IDH_C_05}\par
+{\f1  6. OPERATEURS ET EXPRESSIONS}     {\uldb [Aller]}{\v IDH_C_06}\par
+{\f1  7. STRUCTURES DE CONTROLE}     {\uldb [Aller]}{\v IDH_C_07}\par
+{\f1  8. FONCTIONS}     {\uldb [Aller]}{\v IDH_C_08}\par
+{\f1  9. TABLEAUX}     {\uldb [Aller]}{\v IDH_C_09}\par
+{\f1 10. POINTEURS}     {\uldb [Aller]}{\v IDH_C_10}\par
+{\f1 11. STRUCTURES, UNIONS, ENUMERATIONS}     {\uldb [Aller]}{\v IDH_C_11}\par
+{\f1 12. PREPROCESSEUR}     {\uldb [Aller]}{\v IDH_C_12}\par
+{\f1 13. CHAINES DE CARACTERES}     {\uldb [Aller]}{\v IDH_C_13}\par
+{\f1 14. ENTREES / SORTIES STANDARD}     {\uldb [Aller]}{\v IDH_C_14}\par
+{\f1 15. BIBLIOTHEQUE STANDARD ANSI}     {\uldb [Aller]}{\v IDH_C_15}\par
+{\f1 16. ALLOCATION DYNAMIQUE}     {\uldb [Aller]}{\v IDH_C_16}\par
+{\f1 17. PORTEE, DUREE DE VIE ET LIAISON}     {\uldb [Aller]}{\v IDH_C_17}\par
+{\f1 18. ENTREES/SORTIES BAS NIVEAU (POSIX)}     {\uldb [Aller]}{\v IDH_C_18}\par
+{\f1 19. ASSERTIONS, ERREURS ET CODES DE SORTIE}     {\uldb [Aller]}{\v IDH_C_19}\par
+{\f1 20. EVOLUTIONS DU STANDARD}     {\uldb [Aller]}{\v IDH_C_20}\par
+{\f1 21. COMPILATION ET LIEN}     {\uldb [Aller]}{\v IDH_C_21}\par
+{\f1 22. COMPILATEURS DU PROJET}     {\uldb [Aller]}{\v IDH_C_22}\par
+{\f1 23. EXEMPLE COMPLET}     {\uldb [Aller]}{\v IDH_C_23}\par
+{\f1 24. TABLEAU DES FONCTIONS STANDARD}     {\uldb [Aller]}{\v IDH_C_24}\par
+{\f1 25. DEFINITIONS DETAILLEES DES FONCTIONS}     {\uldb [Aller]}{\v IDH_C_25}\par
+{\f1 26. REFERENCES}     {\uldb [Aller]}{\v IDH_C_26}\par
+\par
+{\uldb Suivant >>}{\v IDH_C_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_02}
+{\footnote $ C - STRUCTURE D'UN PROGRAMME}
+{\footnote K C structure programme;main;unite de traduction;translation unit}
+\b\fs24 STRUCTURE D'UN PROGRAMME \b0\fs20\par
+\par
+Un programme C est constitue d'une ou plusieurs unites de\par
+traduction (translation units). Chaque unite est compilee\par
+independamment et les fichiers objet resultants sont lies par\par
+l'editeur de liens pour former un executable.\par
+\par
+Toute unite contient au choix :\par
+\par
+{\f1   - Des directives du preprocesseur  (#include, #define, ...)}\par
+{\f1   - Des declarations de types         (typedef, struct, ...)}\par
+{\f1   - Des declarations globales         (variables, prototypes)}\par
+{\f1   - Des definitions de fonctions}\par
+\par
+Le point d'entree obligatoire d'un programme executable est la\par
+fonction main :\par
+\par
+{\f1   int main(void) \{}\par
+{\f1       /* corps du programme */}\par
+{\f1       return 0;}\par
+{\f1   \}}\par
+\par
+ou avec arguments :\par
+\par
+{\f1   int main(int argc, char *argv[]) \{}\par
+{\f1       return 0;}\par
+{\f1   \}}\par
+\par
+La valeur retournee par main devient le code de sortie du\par
+processus (0 = succes, non-zero = erreur).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_01}     {\uldb Suivant >>}{\v IDH_C_03}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_03}
+{\footnote $ C - STRUCTURE LEXICALE}
+{\footnote K C structure lexicale;identificateurs;mots reserves;litteraux;commentaires}
+\b\fs24 STRUCTURE LEXICALE \b0\fs20\par
+\par
+\par
+\b 3.1 Jeu de caracteres \b0\par
+\par
+C utilise par defaut le jeu source de base de l'ANSI : 26 lettres\par
+latines (majuscules et minuscules), 10 chiffres, le caractere de\par
+soulignement, et 29 signes de ponctuation. Les caracteres de\par
+controle utilises sont l'espace, la tabulation horizontale, la\par
+tabulation verticale, le saut de ligne et le saut de page.\par
+\par
+\par
+\b 3.2 Identificateurs \b0\par
+\par
+Un identificateur commence par une lettre ou un soulignement,\par
+suivi de lettres, chiffres ou soulignements. La casse est\par
+significative :\par
+\par
+{\f1   total      Total      _i      x1      lecture_buffer}\par
+\par
+Les identificateurs commencant par un soulignement sont reserves\par
+a l'implementation au niveau du fichier. La norme garantit la\par
+distinction sur au moins 31 caracteres pour les identificateurs\par
+internes et 6 caracteres (insensibles a la casse) pour les\par
+identificateurs externes (en C89).\par
+\par
+\par
+\b 3.3 Mots reserves \b0\par
+\par
+Les mots cles suivants ne peuvent etre utilises comme\par
+identificateurs :\par
+\par
+{\f1   auto       break      case       char       const}\par
+{\f1   continue   default    do         double     else}\par
+{\f1   enum       extern     float      for        goto}\par
+{\f1   if         int        long       register   return}\par
+{\f1   short      signed     sizeof     static     struct}\par
+{\f1   switch     typedef    union      unsigned   void}\par
+{\f1   volatile   while}\par
+\par
+Mots cles ajoutes en C99 : inline, restrict, _Bool, _Complex,\par
+_Imaginary.\par
+\par
+\par
+\b 3.4 Litteraux \b0\par
+\par
+Entiers :\par
+\par
+{\f1   42              decimal}\par
+{\f1   0x2A            hexadecimal (prefixe 0x ou 0X)}\par
+{\f1   052             octal       (prefixe 0)}\par
+{\f1   42L  42UL  42LL suffixes long, unsigned long, long long}\par
+\par
+Flottants :\par
+\par
+{\f1   3.14    .5     2.    1e10    1.5E-3    3.14f    3.14L}\par
+\par
+Caracteres :\par
+\par
+{\f1   'A'     '\\n'     '\\t'     '\\\\'     '\\''     '\\0'     '\\x1B'}\par
+\par
+Chaines :\par
+\par
+{\f1   "Bonjour"           "ligne 1\\nligne 2"}\par
+{\f1   "concatenation "    "automatique"     /* equivalent a un seul "..." */}\par
+\par
+\par
+\b 3.5 Commentaires \b0\par
+\par
+Style C (multi-lignes) :\par
+\par
+{\f1   /* Ceci est un commentaire}\par
+{\f1      sur plusieurs lignes */}\par
+\par
+Style C99 (fin de ligne, accepte par la plupart des C89 modernes) :\par
+\par
+{\f1   // commentaire de fin de ligne}\par
+\par
+Les commentaires ne peuvent pas etre imbriques.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_02}     {\uldb Suivant >>}{\v IDH_C_04}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_04}
+{\footnote $ C - TYPES DE DONNEES}
+{\footnote K C types donnees;char;int;short;long;float;double;void;qualificateurs;const;volatile}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+\par
+\b 4.1 Types entiers \b0\par
+\par
+{\f1   char            >= 8  bits   (signe ou non selon plateforme)}\par
+{\f1   signed char     >= 8  bits   (signe explicite)}\par
+{\f1   unsigned char   >= 8  bits   (non signe)}\par
+{\f1   short           >= 16 bits}\par
+{\f1   int             >= 16 bits, typiquement la "taille naturelle"}\par
+{\f1   long            >= 32 bits}\par
+{\f1   long long       >= 64 bits   (C99)}\par
+\par
+Variantes unsigned/signed disponibles pour short, int, long et\par
+long long.\par
+\par
+\par
+\b 4.2 Types flottants \b0\par
+\par
+{\f1   float           simple precision (>= 32 bits)}\par
+{\f1   double          double precision (>= 64 bits)}\par
+{\f1   long double     precision etendue (>= double)}\par
+\par
+\par
+\b 4.3 Type void \b0\par
+\par
+Type "vide" indiquant l'absence de valeur. Utilise comme :\par
+\par
+{\f1   - Type de retour d'une fonction qui ne retourne rien}\par
+{\f1   - Liste de parametres vide : int f(void);}\par
+{\f1   - Type generique de pointeur : void *p;}\par
+\par
+\par
+\b 4.4 Types derives \b0\par
+\par
+A partir des types de base, on construit :\par
+\par
+{\f1   Tableaux       int  v[10];}\par
+{\f1   Pointeurs      int *p;}\par
+{\f1   Fonctions      int f(int);}\par
+{\f1   Structures     struct point \{ int x, y; \};}\par
+{\f1   Unions         union  data  \{ int i; float f; \};}\par
+{\f1   Enumerations   enum   color \{ RED, GREEN, BLUE \};}\par
+\par
+\par
+\b 4.5 Qualificateurs de type \b0\par
+\par
+{\f1   const          La variable ne peut etre modifiee apres init.}\par
+{\f1   volatile       Le compilateur ne doit pas optimiser les acces.}\par
+{\f1   restrict       (C99) Pas d'aliasing via le pointeur.}\par
+\par
+\par
+\b 4.6 Conversions \b0\par
+\par
+Implicites (promotions, conversions usuelles arithmetiques) :\par
+\par
+{\f1   char/short  -> int  dans les expressions}\par
+{\f1   int   -> long, long -> long long}\par
+{\f1   entier -> flottant si l'autre operande est flottant}\par
+\par
+Explicites (cast) :\par
+\par
+{\f1   (int)3.14            -> 3}\par
+{\f1   (char *)0x1000       -> pointeur}\par
+{\f1   (void)expr           -> ignorer la valeur}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_03}     {\uldb Suivant >>}{\v IDH_C_05}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_05}
+{\footnote $ C - DECLARATIONS DE VARIABLES}
+{\footnote K C declarations variables;auto;static;extern;register}
+\b\fs24 DECLARATIONS DE VARIABLES \b0\fs20\par
+\par
+Forme generale :\par
+\par
+{\f1   [classe-stockage] [qualificateurs] type declarateur [, ...];}\par
+\par
+Exemples :\par
+\par
+{\f1   int           i, j, k;}\par
+{\f1   static int    compteur = 0;}\par
+{\f1   const double  PI = 3.14159265;}\par
+{\f1   extern char  *nom;}\par
+{\f1   register int  i;}\par
+{\f1   unsigned long size;}\par
+\par
+Classes de stockage :\par
+\par
+{\f1   auto      Par defaut pour variable locale (pile).}\par
+{\f1   static    Duree de vie = programme ; portee restreinte.}\par
+{\f1   extern    Reference une definition d'une autre unite.}\par
+{\f1   register  Indication d'allocation en registre (rare).}\par
+\par
+Une variable globale non initialisee est mise a zero. Une\par
+variable locale automatique a une valeur indeterminee.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_04}     {\uldb Suivant >>}{\v IDH_C_06}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_06}
+{\footnote $ C - OPERATEURS ET EXPRESSIONS}
+{\footnote K C operateurs;expressions;arithmetique;relationnel;logique;bit a bit;precedence;sizeof}
+\b\fs24 OPERATEURS ET EXPRESSIONS \b0\fs20\par
+\par
+\par
+\b 6.1 Operateurs arithmetiques \b0\par
+\par
+{\f1   +    addition          a + b}\par
+{\f1   -    soustraction      a - b   (ou unaire -a)}\par
+{\f1   *    multiplication    a * b}\par
+{\f1   /    division          a / b   (entiere si operandes entiers)}\par
+{\f1   %    modulo            a % b   (entier seulement)}\par
+{\f1   ++   incrementation    ++i  i++}\par
+{\f1   --   decrementation    --i  i--}\par
+\par
+\par
+\b 6.2 Operateurs relationnels et logiques \b0\par
+\par
+{\f1   ==  !=                 egalite, difference}\par
+{\f1   <   >   <=   >=        comparaisons}\par
+{\f1   &&  ||  !              ET / OU / NON logiques (court-circuit)}\par
+\par
+Les operandes "true" valent != 0. Les operateurs renvoient 0 ou 1.\par
+\par
+\par
+\b 6.3 Operateurs bit a bit \b0\par
+\par
+{\f1   &   ET binaire           a & b}\par
+{\f1   |   OU binaire           a | b}\par
+{\f1   ^   OU exclusif binaire  a ^ b}\par
+{\f1   ~   complement a 1       ~a}\par
+{\f1   <<  decalage gauche      a << n}\par
+{\f1   >>  decalage droite      a >> n  (arith. si signe)}\par
+\par
+\par
+\b 6.4 Operateurs d'affectation \b0\par
+\par
+{\f1   =                  affectation simple}\par
+{\f1   +=  -=  *=  /=  %=}\par
+{\f1   &=  |=  ^=  <<=  >>=}\par
+\par
+{\f1   Exemple : a += 5;  /* equivalent a a = a + 5 */}\par
+\par
+\par
+\b 6.5 Operateurs particuliers \b0\par
+\par
+{\f1   ?:           conditionnel ternaire}\par
+{\f1                cond ? expr_si_vrai : expr_si_faux}\par
+{\f1   ,            sequence d'expressions}\par
+{\f1   sizeof       taille en octets    sizeof(int)  sizeof x}\par
+{\f1   &  *         adresse / dereferencement}\par
+{\f1   .   ->       acces membre struct (valeur / pointeur)}\par
+{\f1   []           indexation tableau}\par
+{\f1   ()           appel de fonction}\par
+\par
+\par
+\b 6.6 Precedence des operateurs (la plus haute en premier) \b0\par
+\par
+{\f1    1.  ()  []  ->  .                           gauche-droite}\par
+{\f1    2.  !  ~  ++  --  +(unaire)  -(unaire)}\par
+{\f1        (cast)  *  &  sizeof                    droite-gauche}\par
+{\f1    3.  *  /  %                                 gauche-droite}\par
+{\f1    4.  +  -                                    gauche-droite}\par
+{\f1    5.  <<  >>                                  gauche-droite}\par
+{\f1    6.  <  <=  >  >=                            gauche-droite}\par
+{\f1    7.  ==  !=                                  gauche-droite}\par
+{\f1    8.  &                                       gauche-droite}\par
+{\f1    9.  ^                                       gauche-droite}\par
+{\f1   10.  |                                       gauche-droite}\par
+{\f1   11.  &&                                      gauche-droite}\par
+{\f1   12.  ||                                      gauche-droite}\par
+{\f1   13.  ?:                                      droite-gauche}\par
+{\f1   14.  =  +=  -=  *=  /=  %=  &=  ...          droite-gauche}\par
+{\f1   15.  ,                                       gauche-droite}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_05}     {\uldb Suivant >>}{\v IDH_C_07}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_07}
+{\footnote $ C - STRUCTURES DE CONTROLE}
+{\footnote K C structures controle;if;else;switch;while;do;for;break;continue;goto;return}
+\b\fs24 STRUCTURES DE CONTROLE \b0\fs20\par
+\par
+\par
+\b 7.1 Instruction if \b0\par
+\par
+{\f1   if (expression)}\par
+{\f1       instruction}\par
+{\f1   else}\par
+{\f1       autre_instruction}\par
+\par
+Le else s'attache au if le plus proche non encore associe.\par
+\par
+\par
+\b 7.2 Instruction switch \b0\par
+\par
+{\f1   switch (expression) \{}\par
+{\f1   case valeur1:}\par
+{\f1       instructions;}\par
+{\f1       break;}\par
+{\f1   case valeur2:}\par
+{\f1       instructions;}\par
+{\f1       break;}\par
+{\f1   default:}\par
+{\f1       instructions;}\par
+{\f1   \}}\par
+\par
+Sans break, l'execution "tombe" sur le case suivant\par
+(fall-through). L'expression de switch doit etre de type\par
+entier ; les valeurs des case sont des constantes entieres.\par
+\par
+\par
+\b 7.3 Boucle while \b0\par
+\par
+{\f1   while (expression)}\par
+{\f1       instruction}\par
+\par
+\par
+\b 7.4 Boucle do...while \b0\par
+\par
+{\f1   do}\par
+{\f1       instruction}\par
+{\f1   while (expression);}\par
+\par
+Le corps est execute au moins une fois.\par
+\par
+\par
+\b 7.5 Boucle for \b0\par
+\par
+{\f1   for (init; condition; iteration)}\par
+{\f1       instruction}\par
+\par
+Chacune des trois parties peut etre vide :\par
+\par
+{\f1   for (;;) \{ ... \}   /* boucle infinie */}\par
+\par
+\par
+\b 7.6 Branchements \b0\par
+\par
+{\f1   break       Sortir de la boucle ou switch courant.}\par
+{\f1   continue    Passer a l'iteration suivante.}\par
+{\f1   goto label  Saut inconditionnel a une etiquette de la}\par
+{\f1               meme fonction.}\par
+{\f1   return [e]  Quitter la fonction (avec valeur si non void).}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_06}     {\uldb Suivant >>}{\v IDH_C_08}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_08}
+{\footnote $ C - FONCTIONS}
+{\footnote K C fonctions;prototype;parametres;varargs;recursivite}
+\b\fs24 FONCTIONS \b0\fs20\par
+\par
+\par
+\b 8.1 Declaration et definition \b0\par
+\par
+Prototype (declaration) :\par
+\par
+{\f1   int  somme(int a, int b);}\par
+{\f1   void affiche(const char *msg);}\par
+{\f1   int  printf(const char *fmt, ...);}\par
+\par
+Definition :\par
+\par
+{\f1   int somme(int a, int b)}\par
+{\f1   \{}\par
+{\f1       return a + b;}\par
+{\f1   \}}\par
+\par
+\par
+\b 8.2 Passage des arguments \b0\par
+\par
+Les arguments sont passes par VALEUR. Pour modifier une variable\par
+de l'appelant, on passe son adresse :\par
+\par
+{\f1   void increment(int *p) \{ (*p)++; \}}\par
+{\f1   int  n = 5;}\par
+{\f1   increment(&n);   /* n vaut 6 */}\par
+\par
+\par
+\b 8.3 Tableaux comme arguments \b0\par
+\par
+Un tableau passe en argument se decompose en pointeur sur son\par
+premier element. Les deux formes suivantes sont equivalentes :\par
+\par
+{\f1   void f(int v[]);}\par
+{\f1   void f(int *v);}\par
+\par
+La taille du tableau doit etre transmise separement.\par
+\par
+\par
+\b 8.4 Fonctions a nombre variable d'arguments \b0\par
+\par
+Declarees avec ... et manipulees via <stdarg.h> :\par
+\par
+{\f1   #include <stdarg.h>}\par
+{\f1   int sum(int n, ...)}\par
+{\f1   \{}\par
+{\f1       va_list ap;}\par
+{\f1       int s = 0, i;}\par
+{\f1       va_start(ap, n);}\par
+{\f1       for (i = 0; i < n; i++)}\par
+{\f1           s += va_arg(ap, int);}\par
+{\f1       va_end(ap);}\par
+{\f1       return s;}\par
+{\f1   \}}\par
+\par
+\par
+\b 8.5 Recursivite \b0\par
+\par
+Les fonctions peuvent etre recursives directement ou\par
+indirectement (mutuelle). Chaque appel cree son propre cadre de\par
+pile avec ses propres variables locales.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_07}     {\uldb Suivant >>}{\v IDH_C_09}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_09}
+{\footnote $ C - TABLEAUX}
+{\footnote K C tableaux;array;dimensions;initialisation}
+\b\fs24 TABLEAUX \b0\fs20\par
+\par
+\par
+\b 9.1 Declaration \b0\par
+\par
+{\f1   int   v[10];                  /* 10 entiers, indices 0..9     */}\par
+{\f1   char  msg[] = "Bonjour";      /* taille deduite : 8 (avec \\0) */}\par
+{\f1   int   m[3][4];                /* matrice 3 lignes, 4 colonnes */}\par
+\par
+\par
+\b 9.2 Acces \b0\par
+\par
+{\f1   v[0]      premier element}\par
+{\f1   v[9]      dernier}\par
+{\f1   m[i][j]   element (i,j) d'une matrice}\par
+\par
+Aucun controle de borne n'est effectue a l'execution. Acceder a\par
+v[10] dans int v[10] est un comportement indefini.\par
+\par
+\par
+\b 9.3 Initialisation \b0\par
+\par
+{\f1   int v[5] = \{1, 2, 3, 4, 5\};}\par
+{\f1   int v[5] = \{0\};             /* tout a zero      */}\par
+{\f1   int m[2][3] = \{}\par
+{\f1       \{1, 2, 3\},}\par
+{\f1       \{4, 5, 6\}}\par
+{\f1   \};}\par
+\par
+\par
+\b 9.4 Tableaux et pointeurs \b0\par
+\par
+Pour un tableau v et un indice i :\par
+\par
+{\f1   v[i]   est equivalent a   *(v + i)}\par
+{\f1   &v[i]  est equivalent a   v + i}\par
+\par
+Le nom du tableau est converti en pointeur sur son premier\par
+element dans la plupart des contextes (sauf sizeof et &).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_08}     {\uldb Suivant >>}{\v IDH_C_10}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_10}
+{\footnote $ C - POINTEURS}
+{\footnote K C pointeurs;NULL;arithmetique pointeurs;malloc;free;reference}
+\b\fs24 POINTEURS \b0\fs20\par
+\par
+\par
+\b 10.1 Declaration et initialisation \b0\par
+\par
+{\f1   int  *p;            /* pointeur sur int                */}\par
+{\f1   int   n = 10;}\par
+{\f1   p = &n;             /* p pointe sur n                  */}\par
+{\f1   *p = 20;            /* modifie n                       */}\par
+\par
+\par
+\b 10.2 Pointeur NULL \b0\par
+\par
+La constante NULL (definie dans <stddef.h>) represente un\par
+pointeur "vers rien". Toute dereference de NULL est indefinie.\par
+\par
+{\f1   int *p = NULL;}\par
+{\f1   if (p != NULL) \{ ... \}}\par
+\par
+\par
+\b 10.3 Arithmetique des pointeurs \b0\par
+\par
+Pour un pointeur p de type T * et un entier n :\par
+\par
+{\f1   p + n     pointe n elements plus loin}\par
+{\f1   p - n     pointe n elements plus tot}\par
+{\f1   p1 - p2   nombre d'elements entre p1 et p2 (meme tableau)}\par
+\par
+Le pas est sizeof(T) octets.\par
+\par
+\par
+\b 10.4 Pointeurs et const \b0\par
+\par
+{\f1   const int *p;       /* pointeur vers entier const     */}\par
+{\f1   int * const p;      /* pointeur const vers entier     */}\par
+{\f1   const int * const p;/* tout est const                 */}\par
+\par
+\par
+\b 10.5 Pointeurs de fonction \b0\par
+\par
+{\f1   int (*pf)(int, int);    /* pointeur sur fonction       */}\par
+{\f1   pf = somme;}\par
+{\f1   printf("%d\\n", pf(3, 4));}\par
+\par
+\par
+\b 10.6 Allocation dynamique \b0\par
+\par
+Voir <stdlib.h> :\par
+\par
+{\f1   int *t = malloc(n * sizeof(int));}\par
+{\f1   if (t == NULL) \{ /* echec */ \}}\par
+{\f1   ...}\par
+{\f1   free(t);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_09}     {\uldb Suivant >>}{\v IDH_C_11}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_11}
+{\footnote $ C - STRUCTURES, UNIONS, ENUMERATIONS}
+{\footnote K C structures;union;enum;enumeration;typedef;champs de bits}
+\b\fs24 STRUCTURES, UNIONS, ENUMERATIONS \b0\fs20\par
+\par
+\par
+\b 11.1 Structures \b0\par
+\par
+{\f1   struct point \{}\par
+{\f1       int x;}\par
+{\f1       int y;}\par
+{\f1   \};}\par
+\par
+{\f1   struct point p1 = \{10, 20\};}\par
+{\f1   struct point p2 = \{ .x = 5, .y = 7 \};   /* designators C99 */}\par
+\par
+{\f1   p1.x = 30;}\par
+{\f1   printf("%d %d\\n", p1.x, p1.y);}\par
+\par
+Avec typedef :\par
+\par
+{\f1   typedef struct \{}\par
+{\f1       double r;}\par
+{\f1       double i;}\par
+{\f1   \} complex;}\par
+\par
+{\f1   complex c = \{1.0, -2.0\};}\par
+\par
+\par
+\b 11.2 Pointeurs sur structure \b0\par
+\par
+{\f1   struct point *pp = &p1;}\par
+{\f1   pp->x = 100;          /* equivalent a (*pp).x = 100 */}\par
+\par
+\par
+\b 11.3 Unions \b0\par
+\par
+Une union reserve un emplacement assez grand pour le plus gros\par
+de ses champs ; tous ses champs partagent le meme stockage.\par
+\par
+{\f1   union variant \{}\par
+{\f1       int    i;}\par
+{\f1       float  f;}\par
+{\f1       char   s[16];}\par
+{\f1   \};}\par
+\par
+\par
+\b 11.4 Enumerations \b0\par
+\par
+{\f1   enum couleur \{ ROUGE, VERT, BLEU \};          /* 0, 1, 2     */}\par
+{\f1   enum signal  \{ OK = 0, ERR = -1, WARN = 1 \};}\par
+\par
+Les valeurs sont des constantes entieres.\par
+\par
+\par
+\b 11.5 Champs de bits \b0\par
+\par
+{\f1   struct flags \{}\par
+{\f1       unsigned actif      : 1;}\par
+{\f1       unsigned mode       : 3;}\par
+{\f1       unsigned reserve    : 4;}\par
+{\f1   \};}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_10}     {\uldb Suivant >>}{\v IDH_C_12}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_12}
+{\footnote $ C - PREPROCESSEUR}
+{\footnote K C preprocesseur;define;include;ifdef;macros;__FILE__;__LINE__}
+\b\fs24 PREPROCESSEUR \b0\fs20\par
+\par
+Le preprocesseur traite le source AVANT la compilation. Toutes\par
+les directives commencent par # en colonne 1 (ou apres des\par
+espaces).\par
+\par
+\par
+\b 12.1 Inclusion de fichiers \b0\par
+\par
+{\f1   #include <stdio.h>      /* en-tete systeme */}\par
+{\f1   #include "monfich.h"    /* en-tete local   */}\par
+\par
+\par
+\b 12.2 Macros \b0\par
+\par
+Sans parametre :\par
+\par
+{\f1   #define PI       3.14159265}\par
+{\f1   #define BUFSIZE  1024}\par
+\par
+Avec parametres :\par
+\par
+{\f1   #define MAX(a,b)   ((a) > (b) ? (a) : (b))}\par
+{\f1   #define CARRE(x)   ((x) * (x))}\par
+\par
+\par
+\b 12.3 Compilation conditionnelle \b0\par
+\par
+{\f1   #ifdef  SYMBOLE      ... #endif}\par
+{\f1   #ifndef SYMBOLE      ... #endif}\par
+{\f1   #if    expression    ... #elif ...  #else ...  #endif}\par
+{\f1   #undef SYMBOLE}\par
+\par
+\par
+\b 12.4 Operateurs # et ## \b0\par
+\par
+{\f1   #x       transforme x en chaine ("nom")}\par
+{\f1   a##b     concatene les jetons a et b (collage)}\par
+\par
+\par
+\b 12.5 Macros predefinies \b0\par
+\par
+{\f1   __FILE__         nom du fichier source courant}\par
+{\f1   __LINE__         numero de ligne courant}\par
+{\f1   __DATE__         date de compilation     ("Apr 14 2026")}\par
+{\f1   __TIME__         heure de compilation    ("12:34:56")}\par
+{\f1   __STDC__         vaut 1 en mode ANSI strict}\par
+{\f1   __func__         (C99) nom de la fonction courante}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_11}     {\uldb Suivant >>}{\v IDH_C_13}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_13}
+{\footnote $ C - CHAINES DE CARACTERES}
+{\footnote K C chaines;string;strlen;strcpy;strcmp;strcat;memcpy}
+\b\fs24 CHAINES DE CARACTERES \b0\fs20\par
+\par
+Une chaine est un tableau de char termine par un octet nul '\\0'.\par
+\par
+{\f1   char s[] = "Bonjour";   /* \{ 'B','o','n','j','o','u','r','\\0' \} */}\par
+\par
+\par
+\b 13.1 Fonctions principales (<string.h>) \b0\par
+\par
+{\f1   size_t strlen(const char *s);}\par
+{\f1   char  *strcpy(char *dst, const char *src);}\par
+{\f1   char  *strncpy(char *dst, const char *src, size_t n);}\par
+{\f1   char  *strcat(char *dst, const char *src);}\par
+{\f1   int    strcmp(const char *a, const char *b);}\par
+{\f1   int    strncmp(const char *a, const char *b, size_t n);}\par
+{\f1   char  *strchr(const char *s, int c);}\par
+{\f1   char  *strstr(const char *s, const char *sub);}\par
+\par
+\par
+\b 13.2 Fonctions memoire \b0\par
+\par
+{\f1   void  *memcpy (void *dst, const void *src, size_t n);}\par
+{\f1   void  *memmove(void *dst, const void *src, size_t n);}\par
+{\f1   void  *memset (void *p, int c, size_t n);}\par
+{\f1   int    memcmp (const void *a, const void *b, size_t n);}\par
+\par
+\par
+\b 13.3 Conversions (<stdlib.h>) \b0\par
+\par
+{\f1   int    atoi (const char *s);}\par
+{\f1   long   atol (const char *s);}\par
+{\f1   double atof (const char *s);}\par
+{\f1   long   strtol(const char *s, char **endptr, int base);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_12}     {\uldb Suivant >>}{\v IDH_C_14}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_14}
+{\footnote $ C - ENTREES / SORTIES STANDARD}
+{\footnote K C entrees sorties;printf;scanf;fopen;fclose;fgetc;fputc;FILE}
+\b\fs24 ENTREES / SORTIES STANDARD \b0\fs20\par
+\par
+\par
+\b 14.1 Flux standard (<stdio.h>) \b0\par
+\par
+{\f1   stdin    entree standard       (clavier par defaut)}\par
+{\f1   stdout   sortie standard       (ecran par defaut)}\par
+{\f1   stderr   sortie d'erreur       (ecran, non bufferisee)}\par
+\par
+\par
+\b 14.2 Sortie formatee \b0\par
+\par
+{\f1   int printf (const char *fmt, ...);}\par
+{\f1   int fprintf(FILE *f, const char *fmt, ...);}\par
+{\f1   int sprintf(char *buf, const char *fmt, ...);}\par
+\par
+Specificateurs de format :\par
+\par
+{\f1   %d  %i      entier decimal signe}\par
+{\f1   %u          entier decimal non signe}\par
+{\f1   %o  %x  %X  octal / hexa minuscules / hexa majuscules}\par
+{\f1   %c          caractere}\par
+{\f1   %s          chaine}\par
+{\f1   %f  %e  %g  flottant decimal / scientifique / general}\par
+{\f1   %p          pointeur}\par
+{\f1   %%          litteral %}\par
+\par
+Modificateurs : largeur, precision, l (long), h (short),\par
+ll (long long, C99), drapeaux ('-' '+' ' ' '0' '#').\par
+\par
+\par
+\b 14.3 Entree formatee \b0\par
+\par
+{\f1   int scanf (const char *fmt, ...);}\par
+{\f1   int fscanf(FILE *f, const char *fmt, ...);}\par
+{\f1   int sscanf(const char *s, const char *fmt, ...);}\par
+\par
+\par
+\b 14.4 Acces aux fichiers \b0\par
+\par
+{\f1   FILE  *fopen (const char *path, const char *mode);}\par
+{\f1   int    fclose(FILE *f);}\par
+{\f1   int    fgetc (FILE *f);}\par
+{\f1   int    fputc (int c, FILE *f);}\par
+{\f1   char  *fgets (char *s, int n, FILE *f);}\par
+{\f1   int    fputs (const char *s, FILE *f);}\par
+{\f1   size_t fread (void *p, size_t sz, size_t n, FILE *f);}\par
+{\f1   size_t fwrite(const void *p, size_t sz, size_t n, FILE *f);}\par
+{\f1   int    fseek (FILE *f, long ofs, int whence);}\par
+{\f1   long   ftell (FILE *f);}\par
+{\f1   void   rewind(FILE *f);}\par
+{\f1   int    feof  (FILE *f);}\par
+{\f1   int    ferror(FILE *f);}\par
+\par
+Modes : "r" "w" "a" "r+" "w+" "a+" (ajouter "b" pour binaire).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_13}     {\uldb Suivant >>}{\v IDH_C_15}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_15}
+{\footnote $ C - BIBLIOTHEQUE STANDARD ANSI}
+{\footnote K C bibliotheque standard;ANSI;stdio.h;stdlib.h;string.h;math.h}
+\b\fs24 BIBLIOTHEQUE STANDARD ANSI \b0\fs20\par
+\par
+Selection des en-tetes les plus utilises :\par
+\par
+{\f1   <stddef.h>     types size_t, ptrdiff_t, constante NULL,}\par
+{\f1                  macro offsetof.}\par
+{\f1   <stdio.h>      entrees/sorties bufferisees (FILE *).}\par
+{\f1   <stdlib.h>     allocation memoire, conversions de chaines,}\par
+{\f1                  controle de processus (exit, atexit, system,}\par
+{\f1                  getenv).}\par
+{\f1   <string.h>     manipulation de chaines et de blocs memoire.}\par
+{\f1   <ctype.h>      tests sur caracteres (isalpha, isdigit, ...).}\par
+{\f1   <math.h>       fonctions mathematiques (sin, cos, sqrt, ...).}\par
+{\f1   <time.h>       date et heure (time, clock, strftime, ...).}\par
+{\f1   <assert.h>     macro assert(condition).}\par
+{\f1   <errno.h>      variable errno et codes d'erreur.}\par
+{\f1   <limits.h>     INT_MAX, CHAR_BIT, ... bornes des types.}\par
+{\f1   <float.h>      DBL_EPSILON, FLT_MAX, ... limites flottantes.}\par
+{\f1   <setjmp.h>     setjmp / longjmp (sauts non-locaux).}\par
+{\f1   <signal.h>     gestion des signaux.}\par
+{\f1   <stdarg.h>     listes d'arguments variables.}\par
+\par
+C99 ajoute notamment <stdbool.h>, <stdint.h>, <complex.h>,\par
+<tgmath.h>, <inttypes.h>.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_14}     {\uldb Suivant >>}{\v IDH_C_16}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_16}
+{\footnote $ C - ALLOCATION DYNAMIQUE}
+{\footnote K C allocation dynamique;malloc;calloc;realloc;free;memoire}
+\b\fs24 ALLOCATION DYNAMIQUE \b0\fs20\par
+\par
+{\f1   void  *malloc (size_t taille);}\par
+{\f1   void  *calloc (size_t n, size_t taille);   /* zero-initialise */}\par
+{\f1   void  *realloc(void *p, size_t nouvelle_taille);}\par
+{\f1   void   free   (void *p);}\par
+\par
+Regles fondamentales :\par
+\par
+{\f1   - Toujours tester la valeur retournee par malloc/calloc/realloc.}\par
+{\f1   - Chaque malloc doit avoir UN seul free correspondant.}\par
+{\f1   - free(NULL) est legal et ne fait rien.}\par
+{\f1   - L'acces a une zone apres free est un comportement indefini.}\par
+{\f1   - free deux fois la meme zone est un comportement indefini.}\par
+\par
+Exemple :\par
+\par
+{\f1   size_t n = 100;}\par
+{\f1   int *t = malloc(n * sizeof *t);}\par
+{\f1   if (!t) \{ perror("malloc"); exit(1); \}}\par
+{\f1   for (size_t i = 0; i < n; i++) t[i] = (int)i;}\par
+{\f1   free(t);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_15}     {\uldb Suivant >>}{\v IDH_C_17}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_17}
+{\footnote $ C - PORTEE, DUREE DE VIE ET LIAISON}
+{\footnote K C portee;duree de vie;liaison;linkage;static;extern}
+\b\fs24 PORTEE, DUREE DE VIE ET LIAISON \b0\fs20\par
+\par
+\par
+\b 17.1 Portees \b0\par
+\par
+{\f1   - Portee de bloc        : variable locale a un bloc \{ ... \}}\par
+{\f1   - Portee de fonction    : etiquettes goto}\par
+{\f1   - Portee de prototype   : parametres d'une declaration}\par
+{\f1   - Portee de fichier     : declarations hors fonction}\par
+\par
+\par
+\b 17.2 Durees de vie \b0\par
+\par
+{\f1   - Automatique : creee a l'entree du bloc, detruite a la}\par
+{\f1                   sortie (variables locales standard).}\par
+{\f1   - Statique    : duree de vie = programme (globales et}\par
+{\f1                   locales static).}\par
+{\f1   - Allouee     : controlee par malloc/free.}\par
+\par
+\par
+\b 17.3 Liaisons (linkage) \b0\par
+\par
+{\f1   - Externe  : visible depuis d'autres unites de traduction}\par
+{\f1                (fonctions par defaut, globales sans static).}\par
+{\f1   - Interne  : visible uniquement dans l'unite (declaration}\par
+{\f1                static au niveau fichier).}\par
+{\f1   - Sans liaison : locale a une fonction.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_16}     {\uldb Suivant >>}{\v IDH_C_18}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_18}
+{\footnote $ C - ENTREES/SORTIES BAS NIVEAU (POSIX)}
+{\footnote K C entrees sorties POSIX;open;close;read;write;lseek;fd}
+\b\fs24 ENTREES/SORTIES BAS NIVEAU (POSIX) \b0\fs20\par
+\par
+Non normalisees par C89, mais largement disponibles sur UNIX\par
+et compatibles. Definies dans <unistd.h> et <fcntl.h> :\par
+\par
+{\f1   int   open (const char *path, int flags, ...);}\par
+{\f1   int   close(int fd);}\par
+{\f1   ssize_t read (int fd, void *buf, size_t n);}\par
+{\f1   ssize_t write(int fd, const void *buf, size_t n);}\par
+{\f1   off_t lseek(int fd, off_t ofs, int whence);}\par
+\par
+Descripteurs predefinis :\par
+\par
+{\f1   0    STDIN_FILENO}\par
+{\f1   1    STDOUT_FILENO}\par
+{\f1   2    STDERR_FILENO}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_17}     {\uldb Suivant >>}{\v IDH_C_19}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_19}
+{\footnote $ C - ASSERTIONS, ERREURS ET CODES DE SORTIE}
+{\footnote K C assertions;errno;exit;abort;atexit;EXIT_SUCCESS;EXIT_FAILURE}
+\b\fs24 ASSERTIONS, ERREURS ET CODES DE SORTIE \b0\fs20\par
+\par
+\par
+\b 19.1 Assertions (<assert.h>) \b0\par
+\par
+{\f1   assert(condition);}\par
+\par
+Si la condition est fausse, le programme affiche un message\par
+sur stderr et appelle abort(). Definir NDEBUG avant l'inclusion\par
+de <assert.h> desactive toutes les assertions.\par
+\par
+\par
+\b 19.2 Codes d'erreur (<errno.h>) \b0\par
+\par
+La variable globale errno est positionnee par certaines fonctions\par
+de la bibliotheque pour indiquer la cause d'un echec. Codes\par
+classiques :\par
+\par
+{\f1   EDOM       argument hors domaine}\par
+{\f1   ERANGE     resultat hors limites}\par
+{\f1   EINVAL     argument invalide}\par
+{\f1   ENOMEM     plus de memoire}\par
+{\f1   ENOENT     fichier introuvable}\par
+{\f1   EACCES     permission refusee}\par
+\par
+\par
+\b 19.3 Sortie de programme \b0\par
+\par
+{\f1   exit(code);       termine le programme en lib??rant les flux}\par
+{\f1   _Exit(code);      termine sans appels atexit (C99)}\par
+{\f1   abort();          terminaison anormale (genere SIGABRT)}\par
+{\f1   atexit(fn);       enregistre une fonction a appeler a la sortie}\par
+\par
+Codes conventionnels :\par
+\par
+{\f1   EXIT_SUCCESS      succes (defini dans <stdlib.h>, vaut 0)}\par
+{\f1   EXIT_FAILURE      echec  (defini dans <stdlib.h>)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_18}     {\uldb Suivant >>}{\v IDH_C_20}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_20}
+{\footnote $ C - EVOLUTIONS DU STANDARD}
+{\footnote K C evolutions;C99;C11;C17;C23;standard}
+\b\fs24 EVOLUTIONS DU STANDARD \b0\fs20\par
+\par
+C99 - ISO/IEC 9899:1999\par
+{\f1   - Commentaires // de fin de ligne}\par
+{\f1   - Type long long et entiers de largeur fixe (<stdint.h>)}\par
+{\f1   - Type _Bool et en-tete <stdbool.h>}\par
+{\f1   - Initialiseurs designes : \{ .x = 1, .y = 2 \}}\par
+{\f1   - Composites litteraux : (struct point)\{1,2\}}\par
+{\f1   - Tableaux a longueur variable (VLA) : int v[n];}\par
+{\f1   - Fonctions inline}\par
+{\f1   - Variable __func__}\par
+{\f1   - <complex.h>, <tgmath.h>, <inttypes.h>}\par
+\par
+C11 - ISO/IEC 9899:2011\par
+{\f1   - _Static_assert, _Generic}\par
+{\f1   - Threads (<threads.h>), atomics (<stdatomic.h>)}\par
+{\f1   - Macros sans tableau a longueur variable obligatoire}\par
+{\f1   - Suppression de gets}\par
+\par
+C17 - ISO/IEC 9899:2018\par
+{\f1   - Corrections techniques uniquement (pas d'ajout}\par
+{\f1     significatif a C11).}\par
+\par
+C23 - ISO/IEC 9899:2024\par
+{\f1   - Mot cle bool, true, false integres}\par
+{\f1   - Litteraux binaires 0b...}\par
+{\f1   - Separateur de chiffres '}\par
+{\f1   - Attributs [[...]]}\par
+{\f1   - typeof, typeof_unqual}\par
+{\f1   - Bibliotheque <stdbit.h>}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_19}     {\uldb Suivant >>}{\v IDH_C_21}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_21}
+{\footnote $ C - COMPILATION ET LIEN}
+{\footnote K C compilation;lien;cpp;cc;as;ld;objet;executable}
+\b\fs24 COMPILATION ET LIEN \b0\fs20\par
+\par
+Pipeline classique d'un programme C :\par
+\par
+{\f1   source.c   --(preprocessing)-->  source.i}\par
+{\f1   source.i   --(compilation)--->   source.s   (assembleur)}\par
+{\f1   source.s   --(assembly)------>   source.o   (objet)}\par
+{\f1   source.o   --(linking)------->   programme  (executable)}\par
+\par
+Phases d'un compilateur C :\par
+\par
+{\f1   1. Trigraphes et concatenation des lignes de continuation}\par
+{\f1   2. Tokenisation}\par
+{\f1   3. Preprocessing (directives #)}\par
+{\f1   4. Conversion des litteraux et des chaines}\par
+{\f1   5. Concatenation des chaines adjacentes}\par
+{\f1   6. Analyse syntaxique et semantique}\par
+{\f1   7. Generation de code}\par
+{\f1   8. Edition de liens (resolution des symboles externes)}\par
+\par
+Outils GNU classiques :\par
+\par
+{\f1   cpp        preprocesseur seul}\par
+{\f1   cc1        compilateur (vers assembleur)}\par
+{\f1   as         assembleur}\par
+{\f1   ld         editeur de liens}\par
+{\f1   ar         creation de bibliotheques statiques (.a)}\par
+{\f1   nm         liste les symboles d'un fichier objet}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_20}     {\uldb Suivant >>}{\v IDH_C_22}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_22}
+{\footnote $ C - COMPILATEURS DU PROJET}
+{\footnote K C compilateurs projet;C.PAS;CC8086.PAS;CC09.PAS;CC6502.PAS;CCW32.PAS;CCJASMIN.PAS}
+\b\fs24 COMPILATEURS DU PROJET \b0\fs20\par
+\par
+\par
+\b 22.1 C.PAS \b0\par
+\par
+Tokeniseur / coloriseur syntaxique du langage C. Ne genere pas\par
+de code executable ; sert de base aux autres compilateurs et\par
+a l'editeur DEVENV pour la coloration syntaxique des fichiers\par
+.c et .h.\par
+\par
+\par
+\b 22.2 CC8086.PAS \b0\par
+\par
+Compilateur generant de l'assembleur 8086 (MASM .MODEL SMALL)\par
+pour MS-DOS. Cible un processeur Intel 8086 en mode reel 16\par
+bits. Sous-ensemble C89 implemente :\par
+\par
+{\f1   - Types : char, short, int (16 bits), long (32 bits)}\par
+{\f1   - Pointeurs near (16 bits, modele small)}\par
+{\f1   - Structures et unions}\par
+{\f1   - Tableaux uni- et bi-dimensionnels}\par
+{\f1   - Fonctions avec parametres et retour}\par
+{\f1   - Preprocesseur : #define, #include, #ifdef}\par
+{\f1   - Bibliotheque minimale : printf, scanf, exit}\par
+\par
+\par
+\b 22.3 CC09.PAS \b0\par
+\par
+Compilateur C vers assembleur Motorola 6809 (style EDTASM /\par
+TSC). Convient pour le developpement sur TRS-80 Color\par
+Computer, Dragon 32/64 et systemes OS-9. Pas de FPU : flottants\par
+en logiciel.\par
+\par
+\par
+\b 22.4 CC6502.PAS \b0\par
+\par
+Compilateur C vers assembleur MOS 6502 (style ca65 / cc65).\par
+Cible : Apple II, Commodore 64, Atari 800, NES, BBC Micro.\par
+Sous-ensemble C reduit (pas de long, pas de double).\par
+\par
+\par
+\b 22.5 CCW32.PAS \b0\par
+\par
+Compilateur C vers binaire Win32 PE 32 bits. Genere directement\par
+un executable .EXE Windows utilisant KERNEL32.DLL pour les\par
+sorties console et les appels systeme.\par
+\par
+\par
+\b 22.6 CCJASMIN.PAS \b0\par
+\par
+Compilateur experimental C vers JASMIN (assembleur JVM). Le\par
+fichier .j genere peut ensuite etre assemble en classfile .class\par
+pour la machine virtuelle Java.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_21}     {\uldb Suivant >>}{\v IDH_C_23}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_23}
+{\footnote $ C - EXEMPLE COMPLET}
+{\footnote K C exemple complet;Fibonacci;programme exemple}
+\b\fs24 EXEMPLE COMPLET \b0\fs20\par
+\par
+Programme calculant la suite de Fibonacci :\par
+\par
+{\f1   #include <stdio.h>}\par
+{\f1   #include <stdlib.h>}\par
+\par
+{\f1   long fib(int n)}\par
+{\f1   \{}\par
+{\f1       if (n < 2) return n;}\par
+{\f1       return fib(n - 1) + fib(n - 2);}\par
+{\f1   \}}\par
+\par
+{\f1   int main(int argc, char *argv[])}\par
+{\f1   \{}\par
+{\f1       int n = (argc > 1) ? atoi(argv[1]) : 10;}\par
+{\f1       int i;}\par
+\par
+{\f1       printf("Suite de Fibonacci jusqu'a F(%d) :\\n", n);}\par
+{\f1       for (i = 0; i <= n; i++)}\par
+{\f1           printf("  F(%2d) = %ld\\n", i, fib(i));}\par
+\par
+{\f1       return 0;}\par
+{\f1   \}}\par
+\par
+Compilation et execution sous DOS (CC8086) :\par
+\par
+{\f1   CC8086 fib.c}\par
+{\f1   MASM   fib.asm}\par
+{\f1   LINK   fib.obj}\par
+{\f1   fib 15}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_22}     {\uldb Suivant >>}{\v IDH_C_24}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_24}
+{\footnote $ C - TABLEAU DES FONCTIONS STANDARD}
+{\footnote K C tableau fonctions;liste fonctions standard;en-tetes}
+\b\fs24 TABLEAU DES FONCTIONS STANDARD \b0\fs20\par
+\par
+Cette section liste les fonctions de la bibliotheque standard\par
+ANSI C (C89/C90), regroupees par en-tete d'origine. Format :\par
+\par
+{\f1   Nom                 En-tete         Description}\par
+\par
+\par
+\b 24.1 <assert.h> \b0\par
+\par
+{\f1   assert              <assert.h>      Verifie une condition en debug ; sinon}\par
+{\f1                                       affiche un message et appelle abort().}\par
+\par
+\par
+\b 24.2 <ctype.h>  (classification et conversion de caracteres) \b0\par
+\par
+{\f1   isalnum             <ctype.h>       Vrai si lettre ou chiffre.}\par
+{\f1   isalpha             <ctype.h>       Vrai si lettre.}\par
+{\f1   iscntrl             <ctype.h>       Vrai si caractere de controle.}\par
+{\f1   isdigit             <ctype.h>       Vrai si chiffre 0..9.}\par
+{\f1   isgraph             <ctype.h>       Vrai si imprimable sauf espace.}\par
+{\f1   islower             <ctype.h>       Vrai si lettre minuscule.}\par
+{\f1   isprint             <ctype.h>       Vrai si caractere imprimable.}\par
+{\f1   ispunct             <ctype.h>       Vrai si ponctuation.}\par
+{\f1   isspace             <ctype.h>       Vrai si espace, tab, saut de ligne...}\par
+{\f1   isupper             <ctype.h>       Vrai si lettre majuscule.}\par
+{\f1   isxdigit            <ctype.h>       Vrai si chiffre hexadecimal.}\par
+{\f1   tolower             <ctype.h>       Convertit en minuscule.}\par
+{\f1   toupper             <ctype.h>       Convertit en majuscule.}\par
+\par
+\par
+\b 24.3 <errno.h> \b0\par
+\par
+{\f1   errno               <errno.h>       Variable contenant le dernier code}\par
+{\f1                                       d'erreur (macro lvalue).}\par
+\par
+\par
+\b 24.4 <locale.h> \b0\par
+\par
+{\f1   setlocale           <locale.h>      Selectionne la locale courante.}\par
+{\f1   localeconv          <locale.h>      Retourne les conventions numeriques.}\par
+\par
+\par
+\b 24.5 <math.h>  (fonctions mathematiques double) \b0\par
+\par
+{\f1   acos                <math.h>        Arc cosinus.}\par
+{\f1   asin                <math.h>        Arc sinus.}\par
+{\f1   atan                <math.h>        Arc tangente.}\par
+{\f1   atan2               <math.h>        Arc tangente de y/x (4 quadrants).}\par
+{\f1   ceil                <math.h>        Plafond (plus petit entier >= x).}\par
+{\f1   cos                 <math.h>        Cosinus.}\par
+{\f1   cosh                <math.h>        Cosinus hyperbolique.}\par
+{\f1   exp                 <math.h>        Exponentielle e^x.}\par
+{\f1   fabs                <math.h>        Valeur absolue flottante.}\par
+{\f1   floor               <math.h>        Plancher (plus grand entier <= x).}\par
+{\f1   fmod                <math.h>        Reste flottant de x/y.}\par
+{\f1   frexp               <math.h>        Decompose en mantisse * 2^exp.}\par
+{\f1   ldexp               <math.h>        Calcule x * 2^exp.}\par
+{\f1   log                 <math.h>        Logarithme naturel.}\par
+{\f1   log10               <math.h>        Logarithme decimal.}\par
+{\f1   modf                <math.h>        Separe partie entiere et fractionnaire.}\par
+{\f1   pow                 <math.h>        Puissance x^y.}\par
+{\f1   sin                 <math.h>        Sinus.}\par
+{\f1   sinh                <math.h>        Sinus hyperbolique.}\par
+{\f1   sqrt                <math.h>        Racine carree.}\par
+{\f1   tan                 <math.h>        Tangente.}\par
+{\f1   tanh                <math.h>        Tangente hyperbolique.}\par
+\par
+\par
+\b 24.6 <setjmp.h> \b0\par
+\par
+{\f1   setjmp              <setjmp.h>      Sauvegarde le contexte (saut non local).}\par
+{\f1   longjmp             <setjmp.h>      Restaure un contexte sauvegarde.}\par
+\par
+\par
+\b 24.7 <signal.h> \b0\par
+\par
+{\f1   signal              <signal.h>      Installe un gestionnaire de signal.}\par
+{\f1   raise               <signal.h>      Envoie un signal au processus courant.}\par
+\par
+\par
+\b 24.8 <stdarg.h>  (arguments variables) \b0\par
+\par
+{\f1   va_start            <stdarg.h>      Initialise une liste d'arguments.}\par
+{\f1   va_arg              <stdarg.h>      Extrait l'argument suivant.}\par
+{\f1   va_end              <stdarg.h>      Termine la liste.}\par
+{\f1   va_copy             <stdarg.h>      (C99) Duplique une liste va_list.}\par
+\par
+\par
+\b 24.9 <stdio.h>  (entrees / sorties bufferisees) \b0\par
+\par
+{\f1   clearerr            <stdio.h>       Efface les indicateurs d'erreur/EOF.}\par
+{\f1   fclose              <stdio.h>       Ferme un flux.}\par
+{\f1   feof                <stdio.h>       Teste l'indicateur de fin de fichier.}\par
+{\f1   ferror              <stdio.h>       Teste l'indicateur d'erreur.}\par
+{\f1   fflush              <stdio.h>       Vide le buffer de sortie.}\par
+{\f1   fgetc               <stdio.h>       Lit un caractere d'un flux.}\par
+{\f1   fgetpos             <stdio.h>       Sauvegarde la position courante.}\par
+{\f1   fgets               <stdio.h>       Lit une ligne (max n caracteres).}\par
+{\f1   fopen               <stdio.h>       Ouvre un fichier.}\par
+{\f1   fprintf             <stdio.h>       Sortie formatee vers un flux.}\par
+{\f1   fputc               <stdio.h>       Ecrit un caractere dans un flux.}\par
+{\f1   fputs               <stdio.h>       Ecrit une chaine dans un flux.}\par
+{\f1   fread               <stdio.h>       Lit un bloc binaire.}\par
+{\f1   freopen             <stdio.h>       Reouvre un flux sur un autre fichier.}\par
+{\f1   fscanf              <stdio.h>       Entree formatee depuis un flux.}\par
+{\f1   fseek               <stdio.h>       Positionne le curseur dans un flux.}\par
+{\f1   fsetpos             <stdio.h>       Restaure une position sauvegardee.}\par
+{\f1   ftell               <stdio.h>       Retourne la position courante.}\par
+{\f1   fwrite              <stdio.h>       Ecrit un bloc binaire.}\par
+{\f1   getc                <stdio.h>       Lit un caractere (souvent macro).}\par
+{\f1   getchar             <stdio.h>       Lit un caractere de stdin.}\par
+{\f1   gets                <stdio.h>       Lit une ligne de stdin (DEPRECIE).}\par
+{\f1   perror              <stdio.h>       Affiche message + erreur systeme.}\par
+{\f1   printf              <stdio.h>       Sortie formatee vers stdout.}\par
+{\f1   putc                <stdio.h>       Ecrit un caractere (souvent macro).}\par
+{\f1   putchar             <stdio.h>       Ecrit un caractere sur stdout.}\par
+{\f1   puts                <stdio.h>       Ecrit une chaine + \\n sur stdout.}\par
+{\f1   remove              <stdio.h>       Supprime un fichier.}\par
+{\f1   rename              <stdio.h>       Renomme un fichier.}\par
+{\f1   rewind              <stdio.h>       Repositionne au debut du flux.}\par
+{\f1   scanf               <stdio.h>       Entree formatee depuis stdin.}\par
+{\f1   setbuf              <stdio.h>       Definit le buffer d'un flux.}\par
+{\f1   setvbuf             <stdio.h>       Definit le mode de bufferisation.}\par
+{\f1   sprintf             <stdio.h>       Sortie formatee dans une chaine.}\par
+{\f1   sscanf              <stdio.h>       Entree formatee depuis une chaine.}\par
+{\f1   tmpfile             <stdio.h>       Cree un fichier temporaire.}\par
+{\f1   tmpnam              <stdio.h>       Genere un nom de fichier temporaire.}\par
+{\f1   ungetc              <stdio.h>       Remet un caractere dans le flux.}\par
+{\f1   vfprintf            <stdio.h>       fprintf avec va_list.}\par
+{\f1   vprintf             <stdio.h>       printf avec va_list.}\par
+{\f1   vsprintf            <stdio.h>       sprintf avec va_list.}\par
+\par
+\par
+\b 24.10 <stdlib.h>  (utilitaires generaux) \b0\par
+\par
+{\f1   abort               <stdlib.h>      Terminaison anormale (SIGABRT).}\par
+{\f1   abs                 <stdlib.h>      Valeur absolue d'un int.}\par
+{\f1   atexit              <stdlib.h>      Enregistre une fn appelee a exit.}\par
+{\f1   atof                <stdlib.h>      Convertit chaine en double.}\par
+{\f1   atoi                <stdlib.h>      Convertit chaine en int.}\par
+{\f1   atol                <stdlib.h>      Convertit chaine en long.}\par
+{\f1   bsearch             <stdlib.h>      Recherche dichotomique dans tableau trie.}\par
+{\f1   calloc              <stdlib.h>      Alloue et initialise a zero.}\par
+{\f1   div                 <stdlib.h>      Division entiere avec quotient et reste.}\par
+{\f1   exit                <stdlib.h>      Terminaison normale du programme.}\par
+{\f1   free                <stdlib.h>      Libere une zone allouee.}\par
+{\f1   getenv              <stdlib.h>      Lit une variable d'environnement.}\par
+{\f1   labs                <stdlib.h>      Valeur absolue d'un long.}\par
+{\f1   ldiv                <stdlib.h>      Division entiere (long).}\par
+{\f1   malloc              <stdlib.h>      Allocation dynamique de memoire.}\par
+{\f1   mblen               <stdlib.h>      Longueur d'un caractere multi-octet.}\par
+{\f1   mbstowcs            <stdlib.h>      Convertit chaine multi-oct en wchar.}\par
+{\f1   mbtowc              <stdlib.h>      Convertit un car. multi-oct en wchar.}\par
+{\f1   qsort               <stdlib.h>      Tri rapide d'un tableau.}\par
+{\f1   rand                <stdlib.h>      Genere un nombre pseudo-aleatoire.}\par
+{\f1   realloc             <stdlib.h>      Redimensionne une allocation.}\par
+{\f1   srand               <stdlib.h>      Initialise le generateur aleatoire.}\par
+{\f1   strtod              <stdlib.h>      Convertit chaine en double (parsing).}\par
+{\f1   strtol              <stdlib.h>      Convertit chaine en long avec base.}\par
+{\f1   strtoul             <stdlib.h>      Convertit chaine en unsigned long.}\par
+{\f1   system              <stdlib.h>      Execute une commande shell.}\par
+{\f1   wcstombs            <stdlib.h>      Convertit chaine wchar en multi-oct.}\par
+{\f1   wctomb              <stdlib.h>      Convertit wchar en multi-oct.}\par
+\par
+\par
+\b 24.11 <string.h>  (chaines et memoire) \b0\par
+\par
+{\f1   memchr              <string.h>      Recherche un octet dans un bloc.}\par
+{\f1   memcmp              <string.h>      Compare deux blocs memoire.}\par
+{\f1   memcpy              <string.h>      Copie un bloc (zones disjointes).}\par
+{\f1   memmove             <string.h>      Copie un bloc (zones recouvrantes OK).}\par
+{\f1   memset              <string.h>      Remplit un bloc avec une valeur.}\par
+{\f1   strcat              <string.h>      Concatene deux chaines.}\par
+{\f1   strchr              <string.h>      Premiere occurrence d'un caractere.}\par
+{\f1   strcmp              <string.h>      Compare deux chaines.}\par
+{\f1   strcoll             <string.h>      Compare selon la locale.}\par
+{\f1   strcpy              <string.h>      Copie une chaine.}\par
+{\f1   strcspn             <string.h>      Longueur du prefixe sans ces caracteres.}\par
+{\f1   strerror            <string.h>      Message d'erreur a partir d'un code.}\par
+{\f1   strlen              <string.h>      Longueur d'une chaine (sans \\0).}\par
+{\f1   strncat             <string.h>      Concatene au plus n caracteres.}\par
+{\f1   strncmp             <string.h>      Compare au plus n caracteres.}\par
+{\f1   strncpy             <string.h>      Copie au plus n caracteres.}\par
+{\f1   strpbrk             <string.h>      Premiere occurrence d'un car. d'un set.}\par
+{\f1   strrchr             <string.h>      Derniere occurrence d'un caractere.}\par
+{\f1   strspn              <string.h>      Longueur du prefixe avec ces caracteres.}\par
+{\f1   strstr              <string.h>      Recherche d'une sous-chaine.}\par
+{\f1   strtok              <string.h>      Decoupe une chaine en jetons.}\par
+{\f1   strxfrm             <string.h>      Transforme pour strcmp en locale.}\par
+\par
+\par
+\b 24.12 <time.h> \b0\par
+\par
+{\f1   asctime             <time.h>        Convertit struct tm en chaine.}\par
+{\f1   clock               <time.h>        Temps CPU consomme depuis le debut.}\par
+{\f1   ctime               <time.h>        Convertit time_t en chaine.}\par
+{\f1   difftime            <time.h>        Difference entre deux time_t.}\par
+{\f1   gmtime              <time.h>        time_t vers struct tm (UTC).}\par
+{\f1   localtime           <time.h>        time_t vers struct tm (locale).}\par
+{\f1   mktime              <time.h>        struct tm vers time_t.}\par
+{\f1   strftime            <time.h>        Formate une date dans une chaine.}\par
+{\f1   time                <time.h>        Retourne l'heure courante.}\par
+\par
+\par
+\b 24.13 Fonctions C99 et plus recentes (selection) \b0\par
+\par
+{\f1   snprintf            <stdio.h>       (C99) sprintf avec limite de taille.}\par
+{\f1   vsnprintf           <stdio.h>       (C99) vsprintf avec limite de taille.}\par
+{\f1   strtoll             <stdlib.h>      (C99) strtol pour long long.}\par
+{\f1   strtoull            <stdlib.h>      (C99) strtoul pour unsigned long long.}\par
+{\f1   llabs               <stdlib.h>      (C99) valeur absolue long long.}\par
+{\f1   lldiv               <stdlib.h>      (C99) division long long.}\par
+{\f1   atoll               <stdlib.h>      (C99) atoi pour long long.}\par
+{\f1   acosh               <math.h>        (C99) arc cosinus hyperbolique.}\par
+{\f1   asinh               <math.h>        (C99) arc sinus hyperbolique.}\par
+{\f1   atanh               <math.h>        (C99) arc tangente hyperbolique.}\par
+{\f1   cbrt                <math.h>        (C99) racine cubique.}\par
+{\f1   copysign            <math.h>        (C99) recopie le signe.}\par
+{\f1   erf                 <math.h>        (C99) fonction d'erreur.}\par
+{\f1   exp2                <math.h>        (C99) 2^x.}\par
+{\f1   expm1               <math.h>        (C99) exp(x) - 1, precis pres de 0.}\par
+{\f1   hypot               <math.h>        (C99) sqrt(x*x + y*y).}\par
+{\f1   log1p               <math.h>        (C99) log(1+x), precis pres de 0.}\par
+{\f1   log2                <math.h>        (C99) logarithme base 2.}\par
+{\f1   nearbyint           <math.h>        (C99) arrondi a l'entier (round mode).}\par
+{\f1   remainder           <math.h>        (C99) reste IEEE 754.}\par
+{\f1   round               <math.h>        (C99) arrondi a l'entier le plus proche.}\par
+{\f1   trunc               <math.h>        (C99) troncature vers zero.}\par
+\par
+\par
+\b 24.14 Fonctions POSIX courantes (non ANSI) \b0\par
+\par
+{\f1   open                <fcntl.h>       Ouvre un descripteur de fichier.}\par
+{\f1   close               <unistd.h>      Ferme un descripteur.}\par
+{\f1   read                <unistd.h>      Lit des octets bruts.}\par
+{\f1   write               <unistd.h>      Ecrit des octets bruts.}\par
+{\f1   lseek               <unistd.h>      Positionne dans un descripteur.}\par
+{\f1   unlink              <unistd.h>      Supprime un fichier.}\par
+{\f1   access              <unistd.h>      Teste l'accessibilite d'un fichier.}\par
+{\f1   stat                <sys/stat.h>    Recupere les attributs d'un fichier.}\par
+{\f1   fstat               <sys/stat.h>    stat sur un descripteur.}\par
+{\f1   chmod               <sys/stat.h>    Change les permissions.}\par
+{\f1   fork                <unistd.h>      Cree un processus fils.}\par
+{\f1   execv               <unistd.h>      Remplace le processus par un programme.}\par
+{\f1   wait                <sys/wait.h>    Attend la fin d'un fils.}\par
+{\f1   pipe                <unistd.h>      Cree un tube de communication.}\par
+{\f1   dup                 <unistd.h>      Duplique un descripteur.}\par
+{\f1   dup2                <unistd.h>      Duplique vers un descripteur donne.}\par
+\par
+Note : la liste C89 est exhaustive ; les listes C99 et POSIX sont\par
+une selection des fonctions les plus utilisees. Pour les details\par
+complets (signatures, codes d'erreur, comportements), se referer\par
+aux pages de manuel POSIX ou a la norme ISO C correspondante.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_23}     {\uldb Suivant >>}{\v IDH_C_25}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_25}
+{\footnote $ C - DEFINITIONS DETAILLEES DES FONCTIONS}
+{\footnote K C definitions fonctions;documentation fonctions;reference fonctions}
+\b\fs24 DEFINITIONS DETAILLEES DES FONCTIONS \b0\fs20\par
+\par
+Chaque fonction est presentee dans le format :\par
+\par
+{\f1   Description : role general.}\par
+{\f1   Syntaxe     : prototype ANSI.}\par
+{\f1   Parametres  : signification de chaque argument.}\par
+{\f1   Retour      : valeur retournee et conditions d'erreur.}\par
+{\f1   Exemple     : usage minimal.}\par
+\par
+\par
+\b 25.1 <assert.h> \b0\par
+\par
+assert\par
+{\f1   Description : Verifie une expression en mode debug. Si elle}\par
+{\f1                 est fausse, affiche un message diagnostique sur}\par
+{\f1                 stderr puis appelle abort(). Desactive si NDEBUG}\par
+{\f1                 est defini.}\par
+{\f1   Syntaxe     : void assert(int expression);}\par
+{\f1   Parametres  : expression - condition booleenne a verifier.}\par
+{\f1   Retour      : aucun (macro).}\par
+{\f1   Exemple     :}\par
+{\f1                 assert(p != NULL);}\par
+{\f1                 assert(n > 0 && n < 100);}\par
+\par
+\par
+\b 25.2 <ctype.h> \b0\par
+\par
+isalnum\par
+{\f1   Description : Teste si le caractere est alphanumerique.}\par
+{\f1   Syntaxe     : int isalnum(int c);}\par
+{\f1   Parametres  : c - caractere a tester (unsigned char ou EOF).}\par
+{\f1   Retour      : non zero si vrai, 0 sinon.}\par
+{\f1   Exemple     : if (isalnum(c)) putchar(c);}\par
+\par
+isalpha\par
+{\f1   Description : Teste si le caractere est une lettre.}\par
+{\f1   Syntaxe     : int isalpha(int c);}\par
+{\f1   Parametres  : c - caractere a tester.}\par
+{\f1   Retour      : non zero si lettre, 0 sinon.}\par
+{\f1   Exemple     : while (isalpha(*s)) s++;}\par
+\par
+iscntrl\par
+{\f1   Description : Teste si le caractere est un caractere de}\par
+{\f1                 controle (codes 0..31 et 127 en ASCII).}\par
+{\f1   Syntaxe     : int iscntrl(int c);}\par
+{\f1   Parametres  : c - caractere a tester.}\par
+{\f1   Retour      : non zero si controle, 0 sinon.}\par
+{\f1   Exemple     : if (iscntrl(c)) printf("^%c", c + '@');}\par
+\par
+isdigit\par
+{\f1   Description : Teste si le caractere est un chiffre 0..9.}\par
+{\f1   Syntaxe     : int isdigit(int c);}\par
+{\f1   Parametres  : c - caractere a tester.}\par
+{\f1   Retour      : non zero si chiffre, 0 sinon.}\par
+{\f1   Exemple     : while (isdigit(*p)) n = n*10 + (*p++ - '0');}\par
+\par
+isgraph\par
+{\f1   Description : Teste si le caractere est imprimable et non}\par
+{\f1                 espace.}\par
+{\f1   Syntaxe     : int isgraph(int c);}\par
+{\f1   Parametres  : c - caractere a tester.}\par
+{\f1   Retour      : non zero si vrai, 0 sinon.}\par
+{\f1   Exemple     : if (isgraph(c)) putchar(c);}\par
+\par
+islower\par
+{\f1   Description : Teste si le caractere est une minuscule.}\par
+{\f1   Syntaxe     : int islower(int c);}\par
+{\f1   Parametres  : c - caractere a tester.}\par
+{\f1   Retour      : non zero si minuscule, 0 sinon.}\par
+{\f1   Exemple     : if (islower(c)) c = toupper(c);}\par
+\par
+isprint\par
+{\f1   Description : Teste si le caractere est imprimable (espace}\par
+{\f1                 inclus).}\par
+{\f1   Syntaxe     : int isprint(int c);}\par
+{\f1   Parametres  : c - caractere a tester.}\par
+{\f1   Retour      : non zero si imprimable, 0 sinon.}\par
+{\f1   Exemple     : if (isprint(c)) putchar(c); else putchar('.');}\par
+\par
+ispunct\par
+{\f1   Description : Teste si le caractere est ponctuation}\par
+{\f1                 (imprimable, ni espace ni alphanumerique).}\par
+{\f1   Syntaxe     : int ispunct(int c);}\par
+{\f1   Parametres  : c - caractere a tester.}\par
+{\f1   Retour      : non zero si ponctuation, 0 sinon.}\par
+{\f1   Exemple     : if (ispunct(c)) ponct_count++;}\par
+\par
+isspace\par
+{\f1   Description : Teste si le caractere est un espace blanc}\par
+{\f1                 (' ', '\\t', '\\n', '\\v', '\\f', '\\r').}\par
+{\f1   Syntaxe     : int isspace(int c);}\par
+{\f1   Parametres  : c - caractere a tester.}\par
+{\f1   Retour      : non zero si espace blanc, 0 sinon.}\par
+{\f1   Exemple     : while (isspace(*p)) p++;}\par
+\par
+isupper\par
+{\f1   Description : Teste si le caractere est une majuscule.}\par
+{\f1   Syntaxe     : int isupper(int c);}\par
+{\f1   Parametres  : c - caractere a tester.}\par
+{\f1   Retour      : non zero si majuscule, 0 sinon.}\par
+{\f1   Exemple     : if (isupper(c)) c = tolower(c);}\par
+\par
+isxdigit\par
+{\f1   Description : Teste si le caractere est un chiffre}\par
+{\f1                 hexadecimal (0..9, a..f, A..F).}\par
+{\f1   Syntaxe     : int isxdigit(int c);}\par
+{\f1   Parametres  : c - caractere a tester.}\par
+{\f1   Retour      : non zero si hexa, 0 sinon.}\par
+{\f1   Exemple     : while (isxdigit(*p)) p++;}\par
+\par
+tolower\par
+{\f1   Description : Convertit une majuscule en minuscule.}\par
+{\f1   Syntaxe     : int tolower(int c);}\par
+{\f1   Parametres  : c - caractere a convertir.}\par
+{\f1   Retour      : caractere converti, ou c si pas majuscule.}\par
+{\f1   Exemple     : while (*s) \{ *s = tolower(*s); s++; \}}\par
+\par
+toupper\par
+{\f1   Description : Convertit une minuscule en majuscule.}\par
+{\f1   Syntaxe     : int toupper(int c);}\par
+{\f1   Parametres  : c - caractere a convertir.}\par
+{\f1   Retour      : caractere converti, ou c si pas minuscule.}\par
+{\f1   Exemple     : while (*s) \{ *s = toupper(*s); s++; \}}\par
+\par
+\par
+\b 25.3 <locale.h> \b0\par
+\par
+setlocale\par
+{\f1   Description : Selectionne ou interroge la locale courante.}\par
+{\f1   Syntaxe     : char *setlocale(int category, const char *locale);}\par
+{\f1   Parametres  : category - LC_ALL, LC_COLLATE, LC_CTYPE,}\par
+{\f1                            LC_MONETARY, LC_NUMERIC, LC_TIME.}\par
+{\f1                 locale   - nom ("C", "fr_FR.UTF-8", "" pour}\par
+{\f1                            valeur d'environnement, NULL pour}\par
+{\f1                            interroger).}\par
+{\f1   Retour      : chaine identifiant la locale ou NULL si echec.}\par
+{\f1   Exemple     : setlocale(LC_ALL, "");}\par
+\par
+localeconv\par
+{\f1   Description : Retourne les conventions numeriques et monetaires}\par
+{\f1                 de la locale courante.}\par
+{\f1   Syntaxe     : struct lconv *localeconv(void);}\par
+{\f1   Parametres  : aucun.}\par
+{\f1   Retour      : pointeur sur struct lconv statique.}\par
+{\f1   Exemple     :}\par
+{\f1                 struct lconv *p = localeconv();}\par
+{\f1                 printf("Decimal: %s\\n", p->decimal_point);}\par
+\par
+\par
+\b 25.4 <math.h> \b0\par
+\par
+Toutes les fonctions <math.h> de C89 prennent et retournent un\par
+double. En cas d'erreur de domaine, errno=EDOM et le resultat\par
+est implementation-defined. En cas d'erreur de plage, errno=\par
+ERANGE et le resultat est HUGE_VAL ou 0.\par
+\par
+acos\par
+{\f1   Description : Arc cosinus (radians) de x dans [-1, 1].}\par
+{\f1   Syntaxe     : double acos(double x);}\par
+{\f1   Parametres  : x - valeur dans [-1, 1].}\par
+{\f1   Retour      : angle dans [0, PI] en radians.}\par
+{\f1   Exemple     : double a = acos(0.5);   /* PI/3 */}\par
+\par
+asin\par
+{\f1   Description : Arc sinus (radians) de x dans [-1, 1].}\par
+{\f1   Syntaxe     : double asin(double x);}\par
+{\f1   Parametres  : x - valeur dans [-1, 1].}\par
+{\f1   Retour      : angle dans [-PI/2, PI/2].}\par
+{\f1   Exemple     : double a = asin(1.0);   /* PI/2 */}\par
+\par
+atan\par
+{\f1   Description : Arc tangente de x.}\par
+{\f1   Syntaxe     : double atan(double x);}\par
+{\f1   Parametres  : x - valeur reelle.}\par
+{\f1   Retour      : angle dans (-PI/2, PI/2).}\par
+{\f1   Exemple     : double a = atan(1.0);   /* PI/4 */}\par
+\par
+atan2\par
+{\f1   Description : Arc tangente de y/x sur les 4 quadrants.}\par
+{\f1   Syntaxe     : double atan2(double y, double x);}\par
+{\f1   Parametres  : y, x - coordonnees.}\par
+{\f1   Retour      : angle dans (-PI, PI].}\par
+{\f1   Exemple     : double a = atan2(1.0, 1.0);  /* PI/4 */}\par
+\par
+ceil\par
+{\f1   Description : Plafond : plus petit entier >= x.}\par
+{\f1   Syntaxe     : double ceil(double x);}\par
+{\f1   Parametres  : x - valeur reelle.}\par
+{\f1   Retour      : ceil(x).}\par
+{\f1   Exemple     : ceil(3.2)   /* 4.0 */}\par
+\par
+cos\par
+{\f1   Description : Cosinus de x exprime en radians.}\par
+{\f1   Syntaxe     : double cos(double x);}\par
+{\f1   Parametres  : x - angle en radians.}\par
+{\f1   Retour      : valeur dans [-1, 1].}\par
+{\f1   Exemple     : double c = cos(0.0);   /* 1.0 */}\par
+\par
+cosh\par
+{\f1   Description : Cosinus hyperbolique de x.}\par
+{\f1   Syntaxe     : double cosh(double x);}\par
+{\f1   Parametres  : x - valeur reelle.}\par
+{\f1   Retour      : (e^x + e^-x)/2.}\par
+{\f1   Exemple     : cosh(0.0)   /* 1.0 */}\par
+\par
+exp\par
+{\f1   Description : Exponentielle e^x.}\par
+{\f1   Syntaxe     : double exp(double x);}\par
+{\f1   Parametres  : x - exposant.}\par
+{\f1   Retour      : e^x.}\par
+{\f1   Exemple     : exp(1.0)   /* ~2.71828 */}\par
+\par
+fabs\par
+{\f1   Description : Valeur absolue d'un flottant.}\par
+{\f1   Syntaxe     : double fabs(double x);}\par
+{\f1   Parametres  : x - valeur reelle.}\par
+{\f1   Retour      : |x|.}\par
+{\f1   Exemple     : fabs(-3.5)  /* 3.5 */}\par
+\par
+floor\par
+{\f1   Description : Plancher : plus grand entier <= x.}\par
+{\f1   Syntaxe     : double floor(double x);}\par
+{\f1   Parametres  : x - valeur reelle.}\par
+{\f1   Retour      : floor(x).}\par
+{\f1   Exemple     : floor(3.7)  /* 3.0 */}\par
+\par
+fmod\par
+{\f1   Description : Reste flottant de x/y de meme signe que x.}\par
+{\f1   Syntaxe     : double fmod(double x, double y);}\par
+{\f1   Parametres  : x - numerateur. y - denominateur.}\par
+{\f1   Retour      : x - n*y avec n entier ; 0 si y=0 (erreur).}\par
+{\f1   Exemple     : fmod(5.3, 2.0)  /* 1.3 */}\par
+\par
+frexp\par
+{\f1   Description : Decompose x en mantisse f et exposant 2^e :}\par
+{\f1                 x = f * 2^e avec 0.5 <= |f| < 1.}\par
+{\f1   Syntaxe     : double frexp(double x, int *exp);}\par
+{\f1   Parametres  : x   - valeur. exp - sortie de l'exposant.}\par
+{\f1   Retour      : mantisse normalisee.}\par
+{\f1   Exemple     :}\par
+{\f1                 int e;}\par
+{\f1                 double m = frexp(8.0, &e);  /* m=0.5, e=4 */}\par
+\par
+ldexp\par
+{\f1   Description : Calcule x * 2^exp.}\par
+{\f1   Syntaxe     : double ldexp(double x, int exp);}\par
+{\f1   Parametres  : x - mantisse. exp - exposant.}\par
+{\f1   Retour      : x * 2^exp.}\par
+{\f1   Exemple     : ldexp(0.5, 4)  /* 8.0 */}\par
+\par
+log\par
+{\f1   Description : Logarithme naturel (base e).}\par
+{\f1   Syntaxe     : double log(double x);}\par
+{\f1   Parametres  : x - reel strictement positif.}\par
+{\f1   Retour      : ln(x).}\par
+{\f1   Exemple     : log(2.71828)  /* ~1.0 */}\par
+\par
+log10\par
+{\f1   Description : Logarithme decimal (base 10).}\par
+{\f1   Syntaxe     : double log10(double x);}\par
+{\f1   Parametres  : x - reel strictement positif.}\par
+{\f1   Retour      : log10(x).}\par
+{\f1   Exemple     : log10(1000.0)  /* 3.0 */}\par
+\par
+modf\par
+{\f1   Description : Separe la partie entiere et la partie}\par
+{\f1                 fractionnaire de x.}\par
+{\f1   Syntaxe     : double modf(double x, double *iptr);}\par
+{\f1   Parametres  : x    - valeur. iptr - sortie de la partie ent.}\par
+{\f1   Retour      : partie fractionnaire de meme signe que x.}\par
+{\f1   Exemple     :}\par
+{\f1                 double i, f = modf(3.75, &i);  /* i=3.0 f=0.75 */}\par
+\par
+pow\par
+{\f1   Description : Puissance x^y.}\par
+{\f1   Syntaxe     : double pow(double x, double y);}\par
+{\f1   Parametres  : x - base. y - exposant.}\par
+{\f1   Retour      : x^y. Erreur si x<0 et y non entier.}\par
+{\f1   Exemple     : pow(2.0, 10.0)  /* 1024.0 */}\par
+\par
+sin\par
+{\f1   Description : Sinus de x en radians.}\par
+{\f1   Syntaxe     : double sin(double x);}\par
+{\f1   Parametres  : x - angle en radians.}\par
+{\f1   Retour      : valeur dans [-1, 1].}\par
+{\f1   Exemple     : sin(0.0)  /* 0.0 */}\par
+\par
+sinh\par
+{\f1   Description : Sinus hyperbolique de x.}\par
+{\f1   Syntaxe     : double sinh(double x);}\par
+{\f1   Parametres  : x - valeur reelle.}\par
+{\f1   Retour      : (e^x - e^-x)/2.}\par
+{\f1   Exemple     : sinh(0.0)  /* 0.0 */}\par
+\par
+sqrt\par
+{\f1   Description : Racine carree non negative.}\par
+{\f1   Syntaxe     : double sqrt(double x);}\par
+{\f1   Parametres  : x - reel >= 0.}\par
+{\f1   Retour      : sqrt(x). Erreur si x<0.}\par
+{\f1   Exemple     : sqrt(2.0)  /* ~1.41421 */}\par
+\par
+tan\par
+{\f1   Description : Tangente de x en radians.}\par
+{\f1   Syntaxe     : double tan(double x);}\par
+{\f1   Parametres  : x - angle en radians.}\par
+{\f1   Retour      : tan(x).}\par
+{\f1   Exemple     : tan(0.0)  /* 0.0 */}\par
+\par
+tanh\par
+{\f1   Description : Tangente hyperbolique de x.}\par
+{\f1   Syntaxe     : double tanh(double x);}\par
+{\f1   Parametres  : x - valeur reelle.}\par
+{\f1   Retour      : tanh(x) dans (-1, 1).}\par
+{\f1   Exemple     : tanh(0.0)  /* 0.0 */}\par
+\par
+\par
+\b 25.5 <setjmp.h> \b0\par
+\par
+setjmp\par
+{\f1   Description : Sauvegarde l'environnement d'execution (pile,}\par
+{\f1                 registres) pour un saut non local ulterieur.}\par
+{\f1   Syntaxe     : int setjmp(jmp_buf env);}\par
+{\f1   Parametres  : env - tampon de sauvegarde.}\par
+{\f1   Retour      : 0 au premier appel ; non zero si revenu par}\par
+{\f1                 longjmp.}\par
+{\f1   Exemple     :}\par
+{\f1                 jmp_buf buf;}\par
+{\f1                 if (setjmp(buf) == 0) \{}\par
+{\f1                     /* code normal */}\par
+{\f1                     longjmp(buf, 1);}\par
+{\f1                 \} else \{}\par
+{\f1                     /* gestion d'erreur */}\par
+{\f1                 \}}\par
+\par
+longjmp\par
+{\f1   Description : Saut non local au point d'un setjmp precedent.}\par
+{\f1   Syntaxe     : void longjmp(jmp_buf env, int val);}\par
+{\f1   Parametres  : env - environnement sauvegarde par setjmp.}\par
+{\f1                 val - valeur retournee par setjmp (>=1).}\par
+{\f1   Retour      : ne revient pas.}\par
+{\f1   Exemple     : longjmp(buf, 1);}\par
+\par
+\par
+\b 25.6 <signal.h> \b0\par
+\par
+signal\par
+{\f1   Description : Installe un gestionnaire pour un signal.}\par
+{\f1   Syntaxe     : void (*signal(int sig, void (*func)(int)))(int);}\par
+{\f1   Parametres  : sig  - SIGINT, SIGTERM, SIGSEGV, ...}\par
+{\f1                 func - SIG_DFL, SIG_IGN ou fonction.}\par
+{\f1   Retour      : ancien gestionnaire ou SIG_ERR si erreur.}\par
+{\f1   Exemple     :}\par
+{\f1                 void handler(int s) \{ printf("signal %d\\n",s); \}}\par
+{\f1                 signal(SIGINT, handler);}\par
+\par
+raise\par
+{\f1   Description : Envoie un signal au processus courant.}\par
+{\f1   Syntaxe     : int raise(int sig);}\par
+{\f1   Parametres  : sig - numero du signal.}\par
+{\f1   Retour      : 0 si succes, non zero sinon.}\par
+{\f1   Exemple     : raise(SIGINT);}\par
+\par
+\par
+\b 25.7 <stdarg.h> \b0\par
+\par
+va_start\par
+{\f1   Description : Initialise une liste d'arguments variables.}\par
+{\f1   Syntaxe     : void va_start(va_list ap, last_named);}\par
+{\f1   Parametres  : ap         - liste a initialiser.}\par
+{\f1                 last_named - dernier parametre nomme.}\par
+{\f1   Retour      : aucun.}\par
+\par
+va_arg\par
+{\f1   Description : Recupere l'argument suivant et avance le}\par
+{\f1                 pointeur de liste.}\par
+{\f1   Syntaxe     : type va_arg(va_list ap, type);}\par
+{\f1   Parametres  : ap   - liste. type - type attendu.}\par
+{\f1   Retour      : valeur du type demande.}\par
+\par
+va_end\par
+{\f1   Description : Termine l'utilisation d'une liste d'arguments.}\par
+{\f1   Syntaxe     : void va_end(va_list ap);}\par
+{\f1   Parametres  : ap - liste a fermer.}\par
+{\f1   Retour      : aucun.}\par
+\par
+Exemple complet (somme d'un nombre variable d'entiers) :\par
+\par
+{\f1   int sum(int n, ...) \{}\par
+{\f1       va_list ap; int s = 0, i;}\par
+{\f1       va_start(ap, n);}\par
+{\f1       for (i = 0; i < n; i++) s += va_arg(ap, int);}\par
+{\f1       va_end(ap);}\par
+{\f1       return s;}\par
+{\f1   \}}\par
+\par
+\par
+\b 25.8 <stdio.h> \b0\par
+\par
+clearerr\par
+{\f1   Description : Efface les indicateurs d'erreur et EOF.}\par
+{\f1   Syntaxe     : void clearerr(FILE *stream);}\par
+{\f1   Parametres  : stream - flux concerne.}\par
+{\f1   Retour      : aucun.}\par
+{\f1   Exemple     : clearerr(fp);}\par
+\par
+fclose\par
+{\f1   Description : Ferme un flux ; vide ses buffers.}\par
+{\f1   Syntaxe     : int fclose(FILE *stream);}\par
+{\f1   Parametres  : stream - flux a fermer.}\par
+{\f1   Retour      : 0 si succes, EOF sinon.}\par
+{\f1   Exemple     : fclose(fp);}\par
+\par
+feof\par
+{\f1   Description : Teste si la fin de fichier a ete atteinte.}\par
+{\f1   Syntaxe     : int feof(FILE *stream);}\par
+{\f1   Parametres  : stream - flux.}\par
+{\f1   Retour      : non zero si EOF, 0 sinon.}\par
+{\f1   Exemple     : while (!feof(fp)) \{ ... \}}\par
+\par
+ferror\par
+{\f1   Description : Teste si une erreur est presente sur le flux.}\par
+{\f1   Syntaxe     : int ferror(FILE *stream);}\par
+{\f1   Parametres  : stream - flux.}\par
+{\f1   Retour      : non zero si erreur, 0 sinon.}\par
+{\f1   Exemple     : if (ferror(fp)) perror("read");}\par
+\par
+fflush\par
+{\f1   Description : Force l'ecriture du buffer de sortie.}\par
+{\f1   Syntaxe     : int fflush(FILE *stream);}\par
+{\f1   Parametres  : stream - flux (NULL = tous les flux sortie).}\par
+{\f1   Retour      : 0 si succes, EOF sinon.}\par
+{\f1   Exemple     : fflush(stdout);}\par
+\par
+fgetc\par
+{\f1   Description : Lit un caractere d'un flux.}\par
+{\f1   Syntaxe     : int fgetc(FILE *stream);}\par
+{\f1   Parametres  : stream - flux.}\par
+{\f1   Retour      : caractere lu (unsigned char) ou EOF.}\par
+{\f1   Exemple     : while ((c = fgetc(fp)) != EOF) putchar(c);}\par
+\par
+fgetpos\par
+{\f1   Description : Sauvegarde la position courante du flux.}\par
+{\f1   Syntaxe     : int fgetpos(FILE *stream, fpos_t *pos);}\par
+{\f1   Parametres  : stream - flux. pos - destination.}\par
+{\f1   Retour      : 0 si succes, non zero sinon.}\par
+{\f1   Exemple     : fpos_t p; fgetpos(fp, &p);}\par
+\par
+fgets\par
+{\f1   Description : Lit une ligne (jusqu'a n-1 caracteres ou '\\n').}\par
+{\f1   Syntaxe     : char *fgets(char *s, int n, FILE *stream);}\par
+{\f1   Parametres  : s - tampon. n - taille. stream - flux.}\par
+{\f1   Retour      : s en cas de succes, NULL en fin/erreur.}\par
+{\f1   Exemple     : fgets(buf, sizeof buf, stdin);}\par
+\par
+fopen\par
+{\f1   Description : Ouvre un fichier dans un mode donne.}\par
+{\f1   Syntaxe     : FILE *fopen(const char *path, const char *mode);}\par
+{\f1   Parametres  : path - chemin. mode - "r","w","a","r+","w+",}\par
+{\f1                        "a+", suffixe "b" pour binaire.}\par
+{\f1   Retour      : FILE * ou NULL si echec (errno positionne).}\par
+{\f1   Exemple     :}\par
+{\f1                 FILE *f = fopen("data.txt", "r");}\par
+{\f1                 if (!f) \{ perror("fopen"); exit(1); \}}\par
+\par
+fprintf\par
+{\f1   Description : Ecriture formatee dans un flux.}\par
+{\f1   Syntaxe     : int fprintf(FILE *stream, const char *fmt, ...);}\par
+{\f1   Parametres  : stream - flux. fmt - chaine de format.}\par
+{\f1   Retour      : nombre de caracteres ecrits, ou negatif si erreur.}\par
+{\f1   Exemple     : fprintf(stderr, "Erreur: %s\\n", msg);}\par
+\par
+fputc\par
+{\f1   Description : Ecrit un caractere dans un flux.}\par
+{\f1   Syntaxe     : int fputc(int c, FILE *stream);}\par
+{\f1   Parametres  : c - caractere. stream - flux.}\par
+{\f1   Retour      : c en cas de succes, EOF sinon.}\par
+{\f1   Exemple     : fputc('\\n', fp);}\par
+\par
+fputs\par
+{\f1   Description : Ecrit une chaine dans un flux (sans '\\n' ajoute).}\par
+{\f1   Syntaxe     : int fputs(const char *s, FILE *stream);}\par
+{\f1   Parametres  : s - chaine. stream - flux.}\par
+{\f1   Retour      : non negatif si succes, EOF sinon.}\par
+{\f1   Exemple     : fputs("Bonjour\\n", fp);}\par
+\par
+fread\par
+{\f1   Description : Lit n blocs binaires de taille sz.}\par
+{\f1   Syntaxe     : size_t fread(void *ptr, size_t sz, size_t n,}\par
+{\f1                               FILE *stream);}\par
+{\f1   Parametres  : ptr - destination. sz - taille d'un bloc.}\par
+{\f1                 n - nombre de blocs. stream - flux.}\par
+{\f1   Retour      : nombre de blocs effectivement lus.}\par
+{\f1   Exemple     : fread(buf, 1, sizeof buf, fp);}\par
+\par
+freopen\par
+{\f1   Description : Reouvre un flux sur un autre fichier.}\par
+{\f1   Syntaxe     : FILE *freopen(const char *path, const char *mode,}\par
+{\f1                               FILE *stream);}\par
+{\f1   Parametres  : path, mode - comme fopen. stream - flux existant.}\par
+{\f1   Retour      : stream en cas de succes, NULL sinon.}\par
+{\f1   Exemple     : freopen("out.txt", "w", stdout);}\par
+\par
+fscanf\par
+{\f1   Description : Entree formatee depuis un flux.}\par
+{\f1   Syntaxe     : int fscanf(FILE *stream, const char *fmt, ...);}\par
+{\f1   Parametres  : stream - flux. fmt - format. ... - pointeurs.}\par
+{\f1   Retour      : nombre de conversions reussies, ou EOF.}\par
+{\f1   Exemple     : fscanf(fp, "%d %d", &a, &b);}\par
+\par
+fseek\par
+{\f1   Description : Positionne le curseur dans un flux.}\par
+{\f1   Syntaxe     : int fseek(FILE *stream, long offset, int whence);}\par
+{\f1   Parametres  : stream - flux. offset - decalage.}\par
+{\f1                 whence - SEEK_SET, SEEK_CUR, SEEK_END.}\par
+{\f1   Retour      : 0 si succes, non zero sinon.}\par
+{\f1   Exemple     : fseek(fp, 0L, SEEK_END);}\par
+\par
+fsetpos\par
+{\f1   Description : Restaure une position sauvegardee par fgetpos.}\par
+{\f1   Syntaxe     : int fsetpos(FILE *stream, const fpos_t *pos);}\par
+{\f1   Parametres  : stream - flux. pos - position sauvegardee.}\par
+{\f1   Retour      : 0 si succes, non zero sinon.}\par
+{\f1   Exemple     : fsetpos(fp, &saved);}\par
+\par
+ftell\par
+{\f1   Description : Retourne la position courante du flux.}\par
+{\f1   Syntaxe     : long ftell(FILE *stream);}\par
+{\f1   Parametres  : stream - flux.}\par
+{\f1   Retour      : position en octets, -1L si erreur.}\par
+{\f1   Exemple     : long pos = ftell(fp);}\par
+\par
+fwrite\par
+{\f1   Description : Ecrit n blocs binaires de taille sz.}\par
+{\f1   Syntaxe     : size_t fwrite(const void *ptr, size_t sz,}\par
+{\f1                               size_t n, FILE *stream);}\par
+{\f1   Parametres  : ptr - source. sz - taille. n - nombre.}\par
+{\f1                 stream - flux.}\par
+{\f1   Retour      : nombre de blocs ecrits.}\par
+{\f1   Exemple     : fwrite(buf, sizeof(int), 100, fp);}\par
+\par
+getc\par
+{\f1   Description : Lit un caractere d'un flux (souvent macro).}\par
+{\f1   Syntaxe     : int getc(FILE *stream);}\par
+{\f1   Parametres  : stream - flux.}\par
+{\f1   Retour      : caractere ou EOF.}\par
+{\f1   Exemple     : c = getc(fp);}\par
+\par
+getchar\par
+{\f1   Description : Lit un caractere de stdin.}\par
+{\f1   Syntaxe     : int getchar(void);}\par
+{\f1   Parametres  : aucun.}\par
+{\f1   Retour      : caractere lu ou EOF.}\par
+{\f1   Exemple     : while ((c = getchar()) != EOF) putchar(c);}\par
+\par
+gets\par
+{\f1   Description : Lit une ligne de stdin (sans verification de}\par
+{\f1                 taille). DEPRECIE : utiliser fgets.}\par
+{\f1   Syntaxe     : char *gets(char *s);}\par
+{\f1   Parametres  : s - tampon (risque de debordement !).}\par
+{\f1   Retour      : s ou NULL.}\par
+{\f1   Exemple     : (a eviter)}\par
+\par
+perror\par
+{\f1   Description : Affiche un message d'erreur systeme sur stderr.}\par
+{\f1   Syntaxe     : void perror(const char *prefix);}\par
+{\f1   Parametres  : prefix - texte ajoute devant le message d'errno.}\par
+{\f1   Retour      : aucun.}\par
+{\f1   Exemple     : perror("fopen");}\par
+\par
+printf\par
+{\f1   Description : Sortie formatee vers stdout.}\par
+{\f1   Syntaxe     : int printf(const char *fmt, ...);}\par
+{\f1   Parametres  : fmt - format. ... - arguments.}\par
+{\f1   Retour      : nombre de caracteres ecrits, negatif si erreur.}\par
+{\f1   Exemple     : printf("Resultat: %d\\n", x);}\par
+\par
+putc\par
+{\f1   Description : Ecrit un caractere dans un flux (souvent macro).}\par
+{\f1   Syntaxe     : int putc(int c, FILE *stream);}\par
+{\f1   Parametres  : c - caractere. stream - flux.}\par
+{\f1   Retour      : c ou EOF.}\par
+{\f1   Exemple     : putc('\\n', fp);}\par
+\par
+putchar\par
+{\f1   Description : Ecrit un caractere sur stdout.}\par
+{\f1   Syntaxe     : int putchar(int c);}\par
+{\f1   Parametres  : c - caractere.}\par
+{\f1   Retour      : c ou EOF.}\par
+{\f1   Exemple     : putchar('A');}\par
+\par
+puts\par
+{\f1   Description : Ecrit une chaine + '\\n' sur stdout.}\par
+{\f1   Syntaxe     : int puts(const char *s);}\par
+{\f1   Parametres  : s - chaine.}\par
+{\f1   Retour      : non negatif si succes, EOF sinon.}\par
+{\f1   Exemple     : puts("Bonjour");}\par
+\par
+remove\par
+{\f1   Description : Supprime un fichier.}\par
+{\f1   Syntaxe     : int remove(const char *path);}\par
+{\f1   Parametres  : path - chemin du fichier.}\par
+{\f1   Retour      : 0 si succes, non zero sinon.}\par
+{\f1   Exemple     : remove("tmp.txt");}\par
+\par
+rename\par
+{\f1   Description : Renomme un fichier.}\par
+{\f1   Syntaxe     : int rename(const char *old, const char *new);}\par
+{\f1   Parametres  : old - ancien nom. new - nouveau nom.}\par
+{\f1   Retour      : 0 si succes, non zero sinon.}\par
+{\f1   Exemple     : rename("a.txt", "b.txt");}\par
+\par
+rewind\par
+{\f1   Description : Repositionne au debut du flux et efface erreurs.}\par
+{\f1   Syntaxe     : void rewind(FILE *stream);}\par
+{\f1   Parametres  : stream - flux.}\par
+{\f1   Retour      : aucun.}\par
+{\f1   Exemple     : rewind(fp);}\par
+\par
+scanf\par
+{\f1   Description : Entree formatee depuis stdin.}\par
+{\f1   Syntaxe     : int scanf(const char *fmt, ...);}\par
+{\f1   Parametres  : fmt - format. ... - pointeurs sur destinations.}\par
+{\f1   Retour      : nombre de conversions reussies, EOF en fin.}\par
+{\f1   Exemple     : scanf("%d", &n);}\par
+\par
+setbuf\par
+{\f1   Description : Definit le buffer d'un flux (NULL = aucun buf).}\par
+{\f1   Syntaxe     : void setbuf(FILE *stream, char *buf);}\par
+{\f1   Parametres  : stream - flux. buf - tampon de BUFSIZ ou NULL.}\par
+{\f1   Retour      : aucun.}\par
+{\f1   Exemple     : setbuf(stdout, NULL);}\par
+\par
+setvbuf\par
+{\f1   Description : Definit le mode de bufferisation.}\par
+{\f1   Syntaxe     : int setvbuf(FILE *stream, char *buf,}\par
+{\f1                             int mode, size_t size);}\par
+{\f1   Parametres  : mode - _IOFBF (full), _IOLBF (ligne), _IONBF.}\par
+{\f1   Retour      : 0 si succes, non zero sinon.}\par
+{\f1   Exemple     : setvbuf(stdout, NULL, _IOLBF, 0);}\par
+\par
+sprintf\par
+{\f1   Description : Ecriture formatee dans une chaine (sans limite).}\par
+{\f1   Syntaxe     : int sprintf(char *s, const char *fmt, ...);}\par
+{\f1   Parametres  : s - destination. fmt - format. ... - args.}\par
+{\f1   Retour      : nombre de caracteres ecrits (sans '\\0').}\par
+{\f1   Exemple     : sprintf(buf, "x=%d", n);}\par
+\par
+sscanf\par
+{\f1   Description : Entree formatee depuis une chaine.}\par
+{\f1   Syntaxe     : int sscanf(const char *s, const char *fmt, ...);}\par
+{\f1   Parametres  : s - source. fmt - format. ... - pointeurs.}\par
+{\f1   Retour      : nombre de conversions reussies, EOF en fin.}\par
+{\f1   Exemple     : sscanf("12 34", "%d %d", &a, &b);}\par
+\par
+tmpfile\par
+{\f1   Description : Cree un fichier temporaire (binaire "wb+")}\par
+{\f1                 supprime a la fermeture.}\par
+{\f1   Syntaxe     : FILE *tmpfile(void);}\par
+{\f1   Parametres  : aucun.}\par
+{\f1   Retour      : FILE * ou NULL si echec.}\par
+{\f1   Exemple     : FILE *t = tmpfile();}\par
+\par
+tmpnam\par
+{\f1   Description : Genere un nom de fichier temporaire unique.}\par
+{\f1   Syntaxe     : char *tmpnam(char *s);}\par
+{\f1   Parametres  : s - tampon de L_tmpnam octets, ou NULL.}\par
+{\f1   Retour      : pointeur sur le nom.}\par
+{\f1   Exemple     : char name[L_tmpnam]; tmpnam(name);}\par
+\par
+ungetc\par
+{\f1   Description : Remet un caractere dans le flux pour le}\par
+{\f1                 prochain fgetc.}\par
+{\f1   Syntaxe     : int ungetc(int c, FILE *stream);}\par
+{\f1   Parametres  : c - caractere a remettre. stream - flux.}\par
+{\f1   Retour      : c ou EOF.}\par
+{\f1   Exemple     : ungetc(c, fp);}\par
+\par
+vfprintf\par
+{\f1   Description : fprintf prenant une va_list.}\par
+{\f1   Syntaxe     : int vfprintf(FILE *stream, const char *fmt,}\par
+{\f1                              va_list ap);}\par
+{\f1   Parametres  : stream, fmt - comme fprintf. ap - va_list.}\par
+{\f1   Retour      : nombre de caracteres ecrits, negatif si erreur.}\par
+{\f1   Exemple     :}\par
+{\f1                 void log_err(const char *fmt, ...) \{}\par
+{\f1                     va_list ap; va_start(ap, fmt);}\par
+{\f1                     vfprintf(stderr, fmt, ap);}\par
+{\f1                     va_end(ap);}\par
+{\f1                 \}}\par
+\par
+vprintf\par
+{\f1   Description : printf prenant une va_list.}\par
+{\f1   Syntaxe     : int vprintf(const char *fmt, va_list ap);}\par
+{\f1   Parametres  : fmt - format. ap - liste.}\par
+{\f1   Retour      : nombre de caracteres ecrits.}\par
+{\f1   Exemple     : voir vfprintf.}\par
+\par
+vsprintf\par
+{\f1   Description : sprintf prenant une va_list.}\par
+{\f1   Syntaxe     : int vsprintf(char *s, const char *fmt, va_list ap);}\par
+{\f1   Parametres  : s, fmt, ap.}\par
+{\f1   Retour      : nombre de caracteres ecrits.}\par
+{\f1   Exemple     : voir vfprintf.}\par
+\par
+\par
+\b 25.9 <stdlib.h> \b0\par
+\par
+abort\par
+{\f1   Description : Termine immediatement le programme (SIGABRT).}\par
+{\f1   Syntaxe     : void abort(void);}\par
+{\f1   Parametres  : aucun.}\par
+{\f1   Retour      : ne revient pas.}\par
+{\f1   Exemple     : if (fatal) abort();}\par
+\par
+abs\par
+{\f1   Description : Valeur absolue d'un int.}\par
+{\f1   Syntaxe     : int abs(int n);}\par
+{\f1   Parametres  : n - entier signe.}\par
+{\f1   Retour      : |n|.}\par
+{\f1   Exemple     : abs(-7)  /* 7 */}\par
+\par
+atexit\par
+{\f1   Description : Enregistre une fonction appelee a exit().}\par
+{\f1   Syntaxe     : int atexit(void (*func)(void));}\par
+{\f1   Parametres  : func - fonction sans argument ni retour.}\par
+{\f1   Retour      : 0 si succes, non zero sinon.}\par
+{\f1   Exemple     : atexit(cleanup);}\par
+\par
+atof\par
+{\f1   Description : Convertit une chaine en double.}\par
+{\f1   Syntaxe     : double atof(const char *s);}\par
+{\f1   Parametres  : s - chaine numerique.}\par
+{\f1   Retour      : valeur double, 0.0 si invalide.}\par
+{\f1   Exemple     : double x = atof("3.14");}\par
+\par
+atoi\par
+{\f1   Description : Convertit une chaine en int.}\par
+{\f1   Syntaxe     : int atoi(const char *s);}\par
+{\f1   Parametres  : s - chaine numerique decimale.}\par
+{\f1   Retour      : valeur int, 0 si invalide.}\par
+{\f1   Exemple     : int n = atoi("42");}\par
+\par
+atol\par
+{\f1   Description : Convertit une chaine en long.}\par
+{\f1   Syntaxe     : long atol(const char *s);}\par
+{\f1   Parametres  : s - chaine numerique decimale.}\par
+{\f1   Retour      : valeur long, 0 si invalide.}\par
+{\f1   Exemple     : long n = atol("1000000");}\par
+\par
+bsearch\par
+{\f1   Description : Recherche dichotomique dans un tableau trie.}\par
+{\f1   Syntaxe     : void *bsearch(const void *key, const void *base,}\par
+{\f1                               size_t n, size_t sz,}\par
+{\f1                               int (*cmp)(const void *,}\par
+{\f1                                          const void *));}\par
+{\f1   Parametres  : key - cle. base - tableau. n - nb d'elements.}\par
+{\f1                 sz - taille d'un element. cmp - comparateur.}\par
+{\f1   Retour      : pointeur sur element trouve, NULL sinon.}\par
+{\f1   Exemple     :}\par
+{\f1                 int *p = bsearch(&k, t, n, sizeof(int), cmp);}\par
+\par
+calloc\par
+{\f1   Description : Alloue n*size octets initialises a zero.}\par
+{\f1   Syntaxe     : void *calloc(size_t n, size_t size);}\par
+{\f1   Parametres  : n - nombre. size - taille unitaire.}\par
+{\f1   Retour      : pointeur ou NULL si echec.}\par
+{\f1   Exemple     : int *t = calloc(100, sizeof *t);}\par
+\par
+div\par
+{\f1   Description : Division entiere avec quotient et reste.}\par
+{\f1   Syntaxe     : div_t div(int num, int denom);}\par
+{\f1   Parametres  : num - numerateur. denom - denominateur.}\par
+{\f1   Retour      : struct div_t \{ int quot, rem; \}.}\par
+{\f1   Exemple     : div_t r = div(17, 5);  /* quot=3 rem=2 */}\par
+\par
+exit\par
+{\f1   Description : Terminaison normale, vide les flux, appelle}\par
+{\f1                 les handlers atexit.}\par
+{\f1   Syntaxe     : void exit(int status);}\par
+{\f1   Parametres  : status - code de sortie (0 ou EXIT_SUCCESS,}\par
+{\f1                 EXIT_FAILURE).}\par
+{\f1   Retour      : ne revient pas.}\par
+{\f1   Exemple     : exit(EXIT_SUCCESS);}\par
+\par
+free\par
+{\f1   Description : Libere une zone allouee par malloc/calloc/realloc.}\par
+{\f1   Syntaxe     : void free(void *ptr);}\par
+{\f1   Parametres  : ptr - pointeur (NULL toleree).}\par
+{\f1   Retour      : aucun.}\par
+{\f1   Exemple     : free(p);}\par
+\par
+getenv\par
+{\f1   Description : Lit une variable d'environnement.}\par
+{\f1   Syntaxe     : char *getenv(const char *name);}\par
+{\f1   Parametres  : name - nom de la variable.}\par
+{\f1   Retour      : valeur (pointeur) ou NULL si absente.}\par
+{\f1   Exemple     : char *h = getenv("HOME");}\par
+\par
+labs\par
+{\f1   Description : Valeur absolue d'un long.}\par
+{\f1   Syntaxe     : long labs(long n);}\par
+{\f1   Parametres  : n - entier long.}\par
+{\f1   Retour      : |n|.}\par
+{\f1   Exemple     : labs(-100000L);}\par
+\par
+ldiv\par
+{\f1   Description : Division entiere (long) avec quot et reste.}\par
+{\f1   Syntaxe     : ldiv_t ldiv(long num, long denom);}\par
+{\f1   Parametres  : num, denom.}\par
+{\f1   Retour      : struct ldiv_t \{ long quot, rem; \}.}\par
+{\f1   Exemple     : ldiv_t r = ldiv(100L, 7L);}\par
+\par
+malloc\par
+{\f1   Description : Allocation dynamique non initialisee.}\par
+{\f1   Syntaxe     : void *malloc(size_t size);}\par
+{\f1   Parametres  : size - nombre d'octets.}\par
+{\f1   Retour      : pointeur ou NULL si echec.}\par
+{\f1   Exemple     : int *p = malloc(sizeof *p);}\par
+\par
+mblen\par
+{\f1   Description : Longueur en octets d'un caractere multi-octet.}\par
+{\f1   Syntaxe     : int mblen(const char *s, size_t n);}\par
+{\f1   Parametres  : s - chaine. n - max d'octets.}\par
+{\f1   Retour      : 1..n, 0 si '\\0', -1 si invalide.}\par
+{\f1   Exemple     : int l = mblen(s, MB_CUR_MAX);}\par
+\par
+mbstowcs\par
+{\f1   Description : Convertit chaine multi-octet en wchar_t.}\par
+{\f1   Syntaxe     : size_t mbstowcs(wchar_t *dst, const char *src,}\par
+{\f1                                 size_t n);}\par
+{\f1   Parametres  : dst, src, n.}\par
+{\f1   Retour      : nombre de wchar produits.}\par
+{\f1   Exemple     : mbstowcs(wbuf, "abc", 16);}\par
+\par
+mbtowc\par
+{\f1   Description : Convertit un caractere multi-octet en wchar_t.}\par
+{\f1   Syntaxe     : int mbtowc(wchar_t *pwc, const char *s, size_t n);}\par
+{\f1   Parametres  : pwc - destination. s - source. n - max octets.}\par
+{\f1   Retour      : nombre d'octets consommes.}\par
+\par
+qsort\par
+{\f1   Description : Tri rapide generique d'un tableau.}\par
+{\f1   Syntaxe     : void qsort(void *base, size_t n, size_t sz,}\par
+{\f1                            int (*cmp)(const void *,}\par
+{\f1                                       const void *));}\par
+{\f1   Parametres  : base - tableau. n - elements. sz - taille}\par
+{\f1                 unitaire. cmp - comparateur (-,0,+).}\par
+{\f1   Retour      : aucun.}\par
+{\f1   Exemple     :}\par
+{\f1                 int cmp(const void *a, const void *b) \{}\par
+{\f1                     return *(int *)a - *(int *)b;}\par
+{\f1                 \}}\par
+{\f1                 qsort(t, n, sizeof *t, cmp);}\par
+\par
+rand\par
+{\f1   Description : Generateur de nombres pseudo-aleatoires.}\par
+{\f1   Syntaxe     : int rand(void);}\par
+{\f1   Parametres  : aucun.}\par
+{\f1   Retour      : entier dans [0, RAND_MAX].}\par
+{\f1   Exemple     : int r = rand() % 100;}\par
+\par
+realloc\par
+{\f1   Description : Redimensionne une zone allouee. Le contenu}\par
+{\f1                 est preserve (jusqu'au min des deux tailles).}\par
+{\f1   Syntaxe     : void *realloc(void *ptr, size_t size);}\par
+{\f1   Parametres  : ptr - ancienne zone (NULL = comme malloc).}\par
+{\f1                 size - nouvelle taille.}\par
+{\f1   Retour      : nouvelle zone ou NULL (l'ancienne reste valide).}\par
+{\f1   Exemple     :}\par
+{\f1                 int *tmp = realloc(t, n2 * sizeof *t);}\par
+{\f1                 if (tmp) t = tmp;}\par
+\par
+srand\par
+{\f1   Description : Initialise le generateur de rand().}\par
+{\f1   Syntaxe     : void srand(unsigned int seed);}\par
+{\f1   Parametres  : seed - graine.}\par
+{\f1   Retour      : aucun.}\par
+{\f1   Exemple     : srand((unsigned)time(NULL));}\par
+\par
+strtod\par
+{\f1   Description : Convertit une chaine en double avec parsing.}\par
+{\f1   Syntaxe     : double strtod(const char *s, char **endptr);}\par
+{\f1   Parametres  : s - chaine. endptr - pointe sur le 1er car non}\par
+{\f1                 consomme (peut etre NULL).}\par
+{\f1   Retour      : valeur double ; HUGE_VAL en cas de overflow.}\par
+{\f1   Exemple     :}\par
+{\f1                 char *e;}\par
+{\f1                 double x = strtod("3.14xyz", &e);}\par
+\par
+strtol\par
+{\f1   Description : Convertit une chaine en long, base configurable.}\par
+{\f1   Syntaxe     : long strtol(const char *s, char **endptr,}\par
+{\f1                             int base);}\par
+{\f1   Parametres  : s - chaine. endptr - sortie. base - 0,2..36.}\par
+{\f1   Retour      : valeur long ; errno=ERANGE si overflow.}\par
+{\f1   Exemple     : long n = strtol("0xFF", NULL, 0);}\par
+\par
+strtoul\par
+{\f1   Description : Convertit une chaine en unsigned long.}\par
+{\f1   Syntaxe     : unsigned long strtoul(const char *s,}\par
+{\f1                                        char **endptr, int base);}\par
+{\f1   Parametres  : comme strtol.}\par
+{\f1   Retour      : valeur unsigned long.}\par
+{\f1   Exemple     : unsigned long u = strtoul("4000000000", NULL, 10);}\par
+\par
+system\par
+{\f1   Description : Execute une commande via le shell.}\par
+{\f1   Syntaxe     : int system(const char *command);}\par
+{\f1   Parametres  : command - chaine (NULL pour tester le shell).}\par
+{\f1   Retour      : code de retour (implementation-defined).}\par
+{\f1   Exemple     : system("ls -l");}\par
+\par
+wcstombs\par
+{\f1   Description : Convertit chaine wchar en multi-octet.}\par
+{\f1   Syntaxe     : size_t wcstombs(char *dst, const wchar_t *src,}\par
+{\f1                                 size_t n);}\par
+{\f1   Parametres  : dst, src, n.}\par
+{\f1   Retour      : nombre d'octets produits.}\par
+\par
+wctomb\par
+{\f1   Description : Convertit un wchar_t en multi-octet.}\par
+{\f1   Syntaxe     : int wctomb(char *s, wchar_t wc);}\par
+{\f1   Parametres  : s - destination. wc - caractere.}\par
+{\f1   Retour      : nombre d'octets ecrits ou -1.}\par
+\par
+\par
+\b 25.10 <string.h> \b0\par
+\par
+memchr\par
+{\f1   Description : Cherche un octet dans un bloc memoire.}\par
+{\f1   Syntaxe     : void *memchr(const void *s, int c, size_t n);}\par
+{\f1   Parametres  : s - bloc. c - octet. n - taille a examiner.}\par
+{\f1   Retour      : pointeur sur 1ere occurrence ou NULL.}\par
+{\f1   Exemple     : void *p = memchr(buf, 0, 256);}\par
+\par
+memcmp\par
+{\f1   Description : Compare deux blocs memoire octet par octet.}\par
+{\f1   Syntaxe     : int memcmp(const void *a, const void *b, size_t n);}\par
+{\f1   Parametres  : a, b - blocs. n - taille a comparer.}\par
+{\f1   Retour      : <0, 0 ou >0.}\par
+{\f1   Exemple     : if (memcmp(a, b, 16) == 0) ...}\par
+\par
+memcpy\par
+{\f1   Description : Copie n octets de src vers dst (NON recouvrants).}\par
+{\f1   Syntaxe     : void *memcpy(void *dst, const void *src, size_t n);}\par
+{\f1   Parametres  : dst, src, n.}\par
+{\f1   Retour      : dst.}\par
+{\f1   Exemple     : memcpy(dst, src, n);}\par
+\par
+memmove\par
+{\f1   Description : Copie n octets (zones eventuellement recouvr.).}\par
+{\f1   Syntaxe     : void *memmove(void *dst, const void *src, size_t n);}\par
+{\f1   Parametres  : dst, src, n.}\par
+{\f1   Retour      : dst.}\par
+{\f1   Exemple     : memmove(a+1, a, n);}\par
+\par
+memset\par
+{\f1   Description : Remplit n octets avec la valeur c.}\par
+{\f1   Syntaxe     : void *memset(void *s, int c, size_t n);}\par
+{\f1   Parametres  : s - bloc. c - octet. n - taille.}\par
+{\f1   Retour      : s.}\par
+{\f1   Exemple     : memset(buf, 0, sizeof buf);}\par
+\par
+strcat\par
+{\f1   Description : Concatene src a la fin de dst (dst doit avoir}\par
+{\f1                 la place).}\par
+{\f1   Syntaxe     : char *strcat(char *dst, const char *src);}\par
+{\f1   Parametres  : dst, src.}\par
+{\f1   Retour      : dst.}\par
+{\f1   Exemple     : strcat(buf, " suffix");}\par
+\par
+strchr\par
+{\f1   Description : Premiere occurrence de c dans s.}\par
+{\f1   Syntaxe     : char *strchr(const char *s, int c);}\par
+{\f1   Parametres  : s - chaine. c - caractere.}\par
+{\f1   Retour      : pointeur ou NULL si absent.}\par
+{\f1   Exemple     : char *p = strchr(s, '/');}\par
+\par
+strcmp\par
+{\f1   Description : Compare deux chaines lexicographiquement.}\par
+{\f1   Syntaxe     : int strcmp(const char *a, const char *b);}\par
+{\f1   Parametres  : a, b - chaines.}\par
+{\f1   Retour      : <0, 0 ou >0.}\par
+{\f1   Exemple     : if (strcmp(s, "exit") == 0) break;}\par
+\par
+strcoll\par
+{\f1   Description : Compare deux chaines selon la locale courante.}\par
+{\f1   Syntaxe     : int strcoll(const char *a, const char *b);}\par
+{\f1   Parametres  : a, b.}\par
+{\f1   Retour      : <0, 0 ou >0.}\par
+{\f1   Exemple     : strcoll("etre", "evidence");}\par
+\par
+strcpy\par
+{\f1   Description : Copie src dans dst (avec '\\0').}\par
+{\f1   Syntaxe     : char *strcpy(char *dst, const char *src);}\par
+{\f1   Parametres  : dst, src.}\par
+{\f1   Retour      : dst.}\par
+{\f1   Exemple     : strcpy(buf, "Bonjour");}\par
+\par
+strcspn\par
+{\f1   Description : Longueur du prefixe ne contenant AUCUN des}\par
+{\f1                 caracteres de reject.}\par
+{\f1   Syntaxe     : size_t strcspn(const char *s, const char *reject);}\par
+{\f1   Parametres  : s, reject.}\par
+{\f1   Retour      : longueur du prefixe.}\par
+{\f1   Exemple     : size_t n = strcspn(s, " \\t\\n");}\par
+\par
+strerror\par
+{\f1   Description : Message d'erreur correspondant a un code errno.}\par
+{\f1   Syntaxe     : char *strerror(int errnum);}\par
+{\f1   Parametres  : errnum - valeur de errno.}\par
+{\f1   Retour      : pointeur sur chaine statique.}\par
+{\f1   Exemple     : printf("%s\\n", strerror(errno));}\par
+\par
+strlen\par
+{\f1   Description : Longueur d'une chaine (sans le '\\0').}\par
+{\f1   Syntaxe     : size_t strlen(const char *s);}\par
+{\f1   Parametres  : s - chaine.}\par
+{\f1   Retour      : nombre d'octets avant '\\0'.}\par
+{\f1   Exemple     : size_t l = strlen("hello");  /* 5 */}\par
+\par
+strncat\par
+{\f1   Description : Concatene au plus n caracteres de src a dst.}\par
+{\f1   Syntaxe     : char *strncat(char *dst, const char *src, size_t n);}\par
+{\f1   Parametres  : dst, src, n.}\par
+{\f1   Retour      : dst (toujours termine par '\\0').}\par
+{\f1   Exemple     : strncat(buf, src, 10);}\par
+\par
+strncmp\par
+{\f1   Description : Compare au plus n caracteres.}\par
+{\f1   Syntaxe     : int strncmp(const char *a, const char *b, size_t n);}\par
+{\f1   Parametres  : a, b, n.}\par
+{\f1   Retour      : <0, 0 ou >0.}\par
+{\f1   Exemple     : if (strncmp(s, "http://", 7) == 0) ...}\par
+\par
+strncpy\par
+{\f1   Description : Copie au plus n caracteres. Si src plus court,}\par
+{\f1                 complete avec '\\0'. PAS toujours termine.}\par
+{\f1   Syntaxe     : char *strncpy(char *dst, const char *src, size_t n);}\par
+{\f1   Parametres  : dst, src, n.}\par
+{\f1   Retour      : dst.}\par
+{\f1   Exemple     :}\par
+{\f1                 strncpy(buf, src, sizeof buf);}\par
+{\f1                 buf[sizeof buf - 1] = '\\0';}\par
+\par
+strpbrk\par
+{\f1   Description : Premiere position contenant un caractere de set.}\par
+{\f1   Syntaxe     : char *strpbrk(const char *s, const char *set);}\par
+{\f1   Parametres  : s, set.}\par
+{\f1   Retour      : pointeur ou NULL.}\par
+{\f1   Exemple     : char *p = strpbrk(s, ",;");}\par
+\par
+strrchr\par
+{\f1   Description : Derniere occurrence de c dans s.}\par
+{\f1   Syntaxe     : char *strrchr(const char *s, int c);}\par
+{\f1   Parametres  : s, c.}\par
+{\f1   Retour      : pointeur ou NULL.}\par
+{\f1   Exemple     : char *ext = strrchr(name, '.');}\par
+\par
+strspn\par
+{\f1   Description : Longueur du prefixe ne contenant QUE les}\par
+{\f1                 caracteres de accept.}\par
+{\f1   Syntaxe     : size_t strspn(const char *s, const char *accept);}\par
+{\f1   Parametres  : s, accept.}\par
+{\f1   Retour      : longueur du prefixe.}\par
+{\f1   Exemple     : size_t n = strspn(s, "0123456789");}\par
+\par
+strstr\par
+{\f1   Description : Recherche d'une sous-chaine.}\par
+{\f1   Syntaxe     : char *strstr(const char *s, const char *sub);}\par
+{\f1   Parametres  : s - chaine. sub - sous-chaine.}\par
+{\f1   Retour      : pointeur ou NULL.}\par
+{\f1   Exemple     : if (strstr(s, "error")) ...}\par
+\par
+strtok\par
+{\f1   Description : Decoupe une chaine en jetons selon des}\par
+{\f1                 delimiteurs (modifie la chaine source !).}\par
+{\f1   Syntaxe     : char *strtok(char *s, const char *delim);}\par
+{\f1   Parametres  : s - chaine (NULL pour iterer). delim - liste.}\par
+{\f1   Retour      : pointeur sur jeton suivant ou NULL.}\par
+{\f1   Exemple     :}\par
+{\f1                 for (p = strtok(s, " ,"); p; p = strtok(NULL, " ,"))}\par
+{\f1                     puts(p);}\par
+\par
+strxfrm\par
+{\f1   Description : Transforme s selon la locale pour que strcmp}\par
+{\f1                 donne le meme resultat que strcoll.}\par
+{\f1   Syntaxe     : size_t strxfrm(char *dst, const char *src, size_t n);}\par
+{\f1   Parametres  : dst, src, n.}\par
+{\f1   Retour      : longueur necessaire (sans '\\0').}\par
+\par
+\par
+\b 25.11 <time.h> \b0\par
+\par
+asctime\par
+{\f1   Description : Convertit une struct tm en chaine lisible.}\par
+{\f1   Syntaxe     : char *asctime(const struct tm *tm);}\par
+{\f1   Parametres  : tm - date eclatee.}\par
+{\f1   Retour      : chaine "Sun Apr 14 12:34:56 2026\\n".}\par
+{\f1   Exemple     : printf("%s", asctime(localtime(&t)));}\par
+\par
+clock\par
+{\f1   Description : Temps CPU consomme depuis le debut du programme.}\par
+{\f1   Syntaxe     : clock_t clock(void);}\par
+{\f1   Parametres  : aucun.}\par
+{\f1   Retour      : clock_t (diviser par CLOCKS_PER_SEC pour}\par
+{\f1                 obtenir des secondes).}\par
+{\f1   Exemple     :}\par
+{\f1                 clock_t t0 = clock();}\par
+{\f1                 /* ... */}\par
+{\f1                 double s = (clock() - t0) / (double)CLOCKS_PER_SEC;}\par
+\par
+ctime\par
+{\f1   Description : Convertit time_t en chaine lisible (locale).}\par
+{\f1   Syntaxe     : char *ctime(const time_t *t);}\par
+{\f1   Parametres  : t - pointeur sur l'heure.}\par
+{\f1   Retour      : chaine equivalente a asctime(localtime(t)).}\par
+{\f1   Exemple     : printf("%s", ctime(&now));}\par
+\par
+difftime\par
+{\f1   Description : Difference entre deux time_t en secondes.}\par
+{\f1   Syntaxe     : double difftime(time_t t1, time_t t0);}\par
+{\f1   Parametres  : t1, t0.}\par
+{\f1   Retour      : t1 - t0 en secondes (double).}\par
+{\f1   Exemple     : double d = difftime(t_end, t_start);}\par
+\par
+gmtime\par
+{\f1   Description : Convertit time_t en struct tm UTC.}\par
+{\f1   Syntaxe     : struct tm *gmtime(const time_t *t);}\par
+{\f1   Parametres  : t.}\par
+{\f1   Retour      : pointeur sur struct tm statique.}\par
+{\f1   Exemple     : struct tm *u = gmtime(&now);}\par
+\par
+localtime\par
+{\f1   Description : Convertit time_t en struct tm locale.}\par
+{\f1   Syntaxe     : struct tm *localtime(const time_t *t);}\par
+{\f1   Parametres  : t.}\par
+{\f1   Retour      : pointeur sur struct tm statique.}\par
+{\f1   Exemple     : struct tm *l = localtime(&now);}\par
+\par
+mktime\par
+{\f1   Description : Convertit struct tm (locale) en time_t et}\par
+{\f1                 normalise les champs.}\par
+{\f1   Syntaxe     : time_t mktime(struct tm *tm);}\par
+{\f1   Parametres  : tm - date eclatee.}\par
+{\f1   Retour      : time_t ou -1 si impossible.}\par
+{\f1   Exemple     : time_t t = mktime(&tm);}\par
+\par
+strftime\par
+{\f1   Description : Formate une date dans une chaine selon un}\par
+{\f1                 modele "%Y-%m-%d %H:%M:%S" etc.}\par
+{\f1   Syntaxe     : size_t strftime(char *s, size_t max,}\par
+{\f1                                  const char *fmt,}\par
+{\f1                                  const struct tm *tm);}\par
+{\f1   Parametres  : s - tampon. max - taille. fmt - format.}\par
+{\f1                 tm - date.}\par
+{\f1   Retour      : longueur ecrite (sans '\\0') ou 0.}\par
+{\f1   Exemple     :}\par
+{\f1                 char buf[64];}\par
+{\f1                 strftime(buf, sizeof buf, "%F %T", localtime(&now));}\par
+\par
+time\par
+{\f1   Description : Retourne l'heure systeme courante (secondes}\par
+{\f1                 depuis l'epoque).}\par
+{\f1   Syntaxe     : time_t time(time_t *t);}\par
+{\f1   Parametres  : t - pointeur de sortie (peut etre NULL).}\par
+{\f1   Retour      : time_t ou (time_t)-1 si erreur.}\par
+{\f1   Exemple     : time_t now = time(NULL);}\par
+\par
+\par
+\b 25.12 Fonctions C99 et plus recentes \b0\par
+\par
+snprintf\par
+{\f1   Description : sprintf bornant l'ecriture a n octets ('\\0'}\par
+{\f1                 inclus). Recommandee a la place de sprintf.}\par
+{\f1   Syntaxe     : int snprintf(char *s, size_t n, const char *fmt, ...);}\par
+{\f1   Parametres  : s, n, fmt, ...}\par
+{\f1   Retour      : nombre de caracteres qui auraient ete ecrits}\par
+{\f1                 sans la troncature.}\par
+{\f1   Exemple     : snprintf(buf, sizeof buf, "x=%d", n);}\par
+\par
+vsnprintf\par
+{\f1   Description : snprintf prenant une va_list.}\par
+{\f1   Syntaxe     : int vsnprintf(char *s, size_t n, const char *fmt,}\par
+{\f1                               va_list ap);}\par
+{\f1   Parametres  : s, n, fmt, ap.}\par
+{\f1   Retour      : nb de caracteres souhaites.}\par
+\par
+strtoll\par
+{\f1   Description : strtol pour long long.}\par
+{\f1   Syntaxe     : long long strtoll(const char *s, char **endptr,}\par
+{\f1                                    int base);}\par
+{\f1   Retour      : valeur long long.}\par
+\par
+strtoull\par
+{\f1   Description : strtoul pour unsigned long long.}\par
+{\f1   Syntaxe     : unsigned long long strtoull(const char *s,}\par
+{\f1                                              char **endptr, int base);}\par
+\par
+llabs\par
+{\f1   Description : Valeur absolue d'un long long.}\par
+{\f1   Syntaxe     : long long llabs(long long n);}\par
+\par
+lldiv\par
+{\f1   Description : Division long long avec quot et reste.}\par
+{\f1   Syntaxe     : lldiv_t lldiv(long long num, long long denom);}\par
+\par
+atoll\par
+{\f1   Description : atoi pour long long.}\par
+{\f1   Syntaxe     : long long atoll(const char *s);}\par
+\par
+acosh, asinh, atanh\par
+{\f1   Description : Inverses hyperboliques.}\par
+{\f1   Syntaxe     : double acosh(double x);}\par
+{\f1                 double asinh(double x);}\par
+{\f1                 double atanh(double x);}\par
+\par
+cbrt\par
+{\f1   Description : Racine cubique.}\par
+{\f1   Syntaxe     : double cbrt(double x);}\par
+{\f1   Exemple     : cbrt(27.0)  /* 3.0 */}\par
+\par
+copysign\par
+{\f1   Description : Retourne |x| avec le signe de y.}\par
+{\f1   Syntaxe     : double copysign(double x, double y);}\par
+\par
+erf\par
+{\f1   Description : Fonction d'erreur gaussienne.}\par
+{\f1   Syntaxe     : double erf(double x);}\par
+\par
+exp2\par
+{\f1   Description : 2^x.}\par
+{\f1   Syntaxe     : double exp2(double x);}\par
+\par
+expm1\par
+{\f1   Description : exp(x) - 1, precis pres de 0.}\par
+{\f1   Syntaxe     : double expm1(double x);}\par
+\par
+hypot\par
+{\f1   Description : sqrt(x*x + y*y) sans overflow intermediaire.}\par
+{\f1   Syntaxe     : double hypot(double x, double y);}\par
+{\f1   Exemple     : hypot(3.0, 4.0)  /* 5.0 */}\par
+\par
+log1p\par
+{\f1   Description : log(1+x), precis pres de 0.}\par
+{\f1   Syntaxe     : double log1p(double x);}\par
+\par
+log2\par
+{\f1   Description : Logarithme base 2.}\par
+{\f1   Syntaxe     : double log2(double x);}\par
+\par
+nearbyint\par
+{\f1   Description : Arrondi a l'entier selon le mode courant (sans}\par
+{\f1                 exception "inexact").}\par
+{\f1   Syntaxe     : double nearbyint(double x);}\par
+\par
+remainder\par
+{\f1   Description : Reste IEEE 754 (mode "round to nearest even").}\par
+{\f1   Syntaxe     : double remainder(double x, double y);}\par
+\par
+round\par
+{\f1   Description : Arrondi a l'entier le plus proche (away from 0).}\par
+{\f1   Syntaxe     : double round(double x);}\par
+{\f1   Exemple     : round(2.5)  /* 3.0 */}\par
+\par
+trunc\par
+{\f1   Description : Troncature vers zero.}\par
+{\f1   Syntaxe     : double trunc(double x);}\par
+{\f1   Exemple     : trunc(-2.7)  /* -2.0 */}\par
+\par
+\par
+\b 25.13 Fonctions POSIX courantes \b0\par
+\par
+open\par
+{\f1   Description : Ouvre un descripteur de fichier bas niveau.}\par
+{\f1   Syntaxe     : int open(const char *path, int flags, ...);}\par
+{\f1   Parametres  : path - chemin. flags - O_RDONLY, O_WRONLY,}\par
+{\f1                 O_RDWR, O_CREAT, O_TRUNC, O_APPEND, ...}\par
+{\f1                 Mode (3e arg) requis si O_CREAT.}\par
+{\f1   Retour      : fd >= 0 ou -1 (errno).}\par
+{\f1   Exemple     : int fd = open("data", O_RDONLY);}\par
+\par
+close\par
+{\f1   Description : Ferme un descripteur.}\par
+{\f1   Syntaxe     : int close(int fd);}\par
+{\f1   Retour      : 0 ou -1.}\par
+{\f1   Exemple     : close(fd);}\par
+\par
+read\par
+{\f1   Description : Lit n octets bruts d'un descripteur.}\par
+{\f1   Syntaxe     : ssize_t read(int fd, void *buf, size_t n);}\par
+{\f1   Retour      : nb d'octets lus, 0 = EOF, -1 = erreur.}\par
+{\f1   Exemple     : ssize_t r = read(fd, buf, sizeof buf);}\par
+\par
+write\par
+{\f1   Description : Ecrit n octets bruts vers un descripteur.}\par
+{\f1   Syntaxe     : ssize_t write(int fd, const void *buf, size_t n);}\par
+{\f1   Retour      : nb d'octets ecrits ou -1.}\par
+{\f1   Exemple     : write(STDOUT_FILENO, "hi\\n", 3);}\par
+\par
+lseek\par
+{\f1   Description : Positionne le curseur d'un descripteur.}\par
+{\f1   Syntaxe     : off_t lseek(int fd, off_t offset, int whence);}\par
+{\f1   Parametres  : whence - SEEK_SET, SEEK_CUR, SEEK_END.}\par
+{\f1   Retour      : nouvelle position ou -1.}\par
+\par
+unlink\par
+{\f1   Description : Supprime un fichier (un lien).}\par
+{\f1   Syntaxe     : int unlink(const char *path);}\par
+{\f1   Retour      : 0 ou -1.}\par
+\par
+access\par
+{\f1   Description : Teste les droits sur un fichier.}\par
+{\f1   Syntaxe     : int access(const char *path, int mode);}\par
+{\f1   Parametres  : mode - F_OK, R_OK, W_OK, X_OK.}\par
+{\f1   Retour      : 0 si autorise, -1 sinon.}\par
+\par
+stat\par
+{\f1   Description : Recupere les attributs d'un fichier.}\par
+{\f1   Syntaxe     : int stat(const char *path, struct stat *buf);}\par
+{\f1   Retour      : 0 ou -1.}\par
+{\f1   Exemple     :}\par
+{\f1                 struct stat st;}\par
+{\f1                 if (stat("f", &st) == 0)}\par
+{\f1                     printf("size=%ld\\n", (long)st.st_size);}\par
+\par
+fstat\par
+{\f1   Description : stat() sur un descripteur ouvert.}\par
+{\f1   Syntaxe     : int fstat(int fd, struct stat *buf);}\par
+\par
+chmod\par
+{\f1   Description : Change les permissions d'un fichier.}\par
+{\f1   Syntaxe     : int chmod(const char *path, mode_t mode);}\par
+{\f1   Retour      : 0 ou -1.}\par
+\par
+fork\par
+{\f1   Description : Cree un processus fils (copie du parent).}\par
+{\f1   Syntaxe     : pid_t fork(void);}\par
+{\f1   Retour      : 0 dans le fils, pid du fils dans le parent,}\par
+{\f1                 -1 si echec.}\par
+\par
+execv, execl, execvp, ...\par
+{\f1   Description : Remplace l'image du processus courant par un}\par
+{\f1                 programme.}\par
+{\f1   Syntaxe     : int execv(const char *path, char *const argv[]);}\par
+{\f1   Retour      : ne revient pas si succes ; -1 si echec.}\par
+\par
+wait\par
+{\f1   Description : Attend la fin d'un processus fils.}\par
+{\f1   Syntaxe     : pid_t wait(int *status);}\par
+{\f1   Retour      : pid du fils ou -1.}\par
+\par
+pipe\par
+{\f1   Description : Cree une paire de descripteurs (tube).}\par
+{\f1   Syntaxe     : int pipe(int fd[2]);}\par
+{\f1   Parametres  : fd[0] = lecture, fd[1] = ecriture.}\par
+{\f1   Retour      : 0 ou -1.}\par
+\par
+dup\par
+{\f1   Description : Duplique un descripteur (plus petit fd libre).}\par
+{\f1   Syntaxe     : int dup(int oldfd);}\par
+{\f1   Retour      : nouveau fd ou -1.}\par
+\par
+dup2\par
+{\f1   Description : Duplique vers un descripteur donne (ferme}\par
+{\f1                 newfd si necessaire).}\par
+{\f1   Syntaxe     : int dup2(int oldfd, int newfd);}\par
+{\f1   Retour      : newfd ou -1.}\par
+{\f1   Exemple     : dup2(fd, STDOUT_FILENO);  /* rediriger stdout */}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_C_24}     {\uldb Suivant >>}{\v IDH_C_26}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_C_26}
+{\footnote $ C - REFERENCES}
+{\footnote K C references;bibliographie;K&R;Kernighan;Ritchie;ISO 9899}
+\b\fs24 REFERENCES \b0\fs20\par
+\par
+{\f1   - Brian W. Kernighan, Dennis M. Ritchie : "The C Programming}\par
+{\f1     Language" (1ere ed. 1978, 2eme ed. 1988). Prentice Hall.}\par
+{\f1     "K&R" - reference historique du langage.}\par
+\par
+{\f1   - ANSI X3.159-1989 : American National Standard for}\par
+{\f1     Programming Languages - C.}\par
+\par
+{\f1   - ISO/IEC 9899:1990 : Information technology - Programming}\par
+{\f1     languages - C (norme internationale equivalente).}\par
+\par
+{\f1   - ISO/IEC 9899:1999 (C99), 9899:2011 (C11), 9899:2018 (C17),}\par
+{\f1     9899:2024 (C23).}\par
+\par
+{\f1   - P. J. Plauger : "The Standard C Library" (1991). Prentice}\par
+{\f1     Hall. Implementation de reference de la bibliotheque.}\par
+\par
+{\f1   - Peter van der Linden : "Expert C Programming - Deep C}\par
+{\f1     Secrets" (1994). Prentice Hall. Etude approfondie des}\par
+{\f1     pieges classiques.}\par
+
+\par
+{\uldb << Precedent}{\v IDH_C_25}     {\uldb Table des matieres}{\v IDH_C_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

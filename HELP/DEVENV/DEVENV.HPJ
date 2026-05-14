@@ -26,6 +26,7 @@ RAKU.RTF
 ALGOL58.RTF
 ALGOL60.RTF
 ALGOL68.RTF
+C.RTF
 
 [MAP]
 IDH_INDEX           = 1
@@ -201,6 +202,32 @@ IDH_ALGOL68_21      = 3221
 IDH_ALGOL68_22      = 3222
 IDH_ALGOL68_23      = 3223
 IDH_ALGOL68_24      = 3224
+IDH_C_01            = 3301
+IDH_C_02            = 3302
+IDH_C_03            = 3303
+IDH_C_04            = 3304
+IDH_C_05            = 3305
+IDH_C_06            = 3306
+IDH_C_07            = 3307
+IDH_C_08            = 3308
+IDH_C_09            = 3309
+IDH_C_10            = 3310
+IDH_C_11            = 3311
+IDH_C_12            = 3312
+IDH_C_13            = 3313
+IDH_C_14            = 3314
+IDH_C_15            = 3315
+IDH_C_16            = 3316
+IDH_C_17            = 3317
+IDH_C_18            = 3318
+IDH_C_19            = 3319
+IDH_C_20            = 3320
+IDH_C_21            = 3321
+IDH_C_22            = 3322
+IDH_C_23            = 3323
+IDH_C_24            = 3324
+IDH_C_25            = 3325
+IDH_C_26            = 3326
 IDH_EMULATEURS      = 30
 IDH_EMU_NES         = 31
 IDH_EMU_AMIGA       = 32
