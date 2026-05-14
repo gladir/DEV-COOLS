@@ -1,0 +1,929 @@
+================================================================================
+                   SPECIFICATIONS DU LANGAGE DE PROGRAMMATION RUST
+================================================================================
+
+Document de reference pour l'integration dans le systeme d'aide DEVENV.HLP.
+Couvre Rust de la version 1.0 (mai 2015) jusqu'a l'edition 2024 et Rust 1.80+.
+Le projet DEV-COOLS contient le convertisseur ADA2RUST.PAS qui traduit du
+code Ada vers Rust.
+
+
+================================================================================
+1. Presentation generale
+================================================================================
+
+Rust est un langage de programmation systeme multiparadigme cree par Graydon
+Hoare en 2006 chez Mozilla Research. Annonce publiquement en 2010, version 1.0
+publiee en mai 2015. Aujourd'hui developpe par la Rust Foundation (depuis 2021).
+
+Objectifs de conception :
+- Securite memoire SANS ramasse-miettes (sans GC).
+- Concurrence sans data races verifiee a la compilation.
+- Performance comparable a C/C++ (zero-cost abstractions).
+- Ergonomie moderne (inference de type, pattern matching, generics).
+
+Historique :
+- 2006 : projet personnel de Graydon Hoare.
+- 2009 : sponsorise par Mozilla.
+- 2010 : premiere annonce publique.
+- 2012 : Rust 0.1.
+- 2015 : Rust 1.0, edition 2015 (mai).
+- 2018 : edition 2018 (NLL, async preview, ?, ergonomie modules).
+- 2019 : async/await stabilise (1.39).
+- 2021 : edition 2021 (closures disjoint capture, IntoIterator pour tableaux).
+- 2024 : edition 2024 (RPIT lifetimes, gen blocks preview, let chains stables).
+
+Caracteristiques distinctives :
+- Modele de propriete (ownership) avec emprunts (borrowing).
+- Lifetimes (durees de vie) verifiees statiquement par le borrow checker.
+- Traits (interfaces avec polymorphisme statique et dynamique).
+- Pattern matching exhaustif (match).
+- Macros declaratives (macro_rules!) et procedurales.
+- Cargo : gestionnaire de paquets et systeme de build integre.
+- crates.io : depot officiel.
+- Compilateur rustc base sur LLVM.
+- Edition Rust : 2015, 2018, 2021, 2024 (compatibilite ascendante garantie).
+
+Plate-formes : Linux, macOS, Windows, BSD, Android, iOS, WebAssembly, embarque
+(no_std), Redox OS, Fuchsia, etc. Cible utilise par le noyau Linux (depuis 6.1)
+et le noyau Windows.
+
+
+================================================================================
+2. Structure d'un programme Rust
+================================================================================
+
+Hello World :
+
+  fn main() {
+      println!("Bonjour le monde");
+  }
+
+Sauvegarde dans hello.rs, compilation et execution :
+  rustc hello.rs
+  ./hello
+
+Avec Cargo (recommande) :
+  cargo new bonjour
+  cd bonjour
+  cargo run
+
+Arborescence Cargo :
+  bonjour/
+    Cargo.toml         # manifeste : nom, version, dependances
+    src/
+      main.rs          # binaire principal
+      lib.rs           # bibliotheque (optionnel)
+
+Cargo.toml minimal :
+
+  [package]
+  name = "bonjour"
+  version = "0.1.0"
+  edition = "2024"
+
+  [dependencies]
+  serde = "1"
+
+
+================================================================================
+3. Caracteristiques lexicales
+================================================================================
+
+Jeu de caracteres : Unicode UTF-8 source obligatoire.
+
+Identificateurs : commencent par lettre Unicode ou _, suivis de lettres,
+chiffres, _. snake_case pour variables/fonctions, PascalCase pour types/traits,
+SCREAMING_SNAKE pour constantes.
+
+Mots reserves :
+  as       async    await    break    const    continue crate    dyn
+  else     enum     extern   false    fn       for      if       impl
+  in       let      loop     match    mod      move     mut      pub
+  ref      return   Self     self     static   struct   super    trait
+  true     try      type     unsafe   use      where    while
+
+Mots reserves futurs : abstract, become, box, do, final, macro, override,
+priv, typeof, unsized, virtual, yield.
+
+Litteraux :
+- Entiers : 42, 0xFF, 0o77, 0b1010, 1_000_000, 42i32, 42u64, 42usize
+- Flottants : 3.14, 3.14f32, 1.0e-10, 1_000.5
+- Booleens : true, false
+- Caracteres : 'a', '\n', '\u{00E9}'  (4 octets, point de code Unicode)
+- Chaines : "hello", "ligne\n", r"chemin\sans\echappement", r#"avec "quotes""#
+- Byte strings : b"raw", b'\xFF'
+- C strings (1.77+) : c"hello\0"
+
+Commentaires :
+  // ligne
+  /* bloc imbricable /* niveau 2 */ */
+  /// documentation de l'item suivant (extraite par rustdoc)
+  //! documentation du module/crate englobant
+
+
+================================================================================
+4. Types de donnees
+================================================================================
+
+4.1 Types scalaires
+
+  i8 i16 i32 i64 i128 isize          # entiers signes
+  u8 u16 u32 u64 u128 usize          # entiers non signes
+  f32 f64                            # flottants IEEE 754
+  bool                               # true / false
+  char                               # point de code Unicode (4 octets)
+  ()                                 # unit type
+
+Par defaut : i32 pour entiers, f64 pour flottants.
+
+4.2 Types composes
+
+  (i32, f64, char)                   # tuple
+  [i32; 5]                           # tableau de taille fixe
+  &[i32]                             # slice (taille dynamique, reference)
+  &str                               # string slice
+  String                             # chaine allouee sur le tas
+
+4.3 Structures
+
+  struct Point { x: f64, y: f64 }
+  struct Couleur(u8, u8, u8);        // tuple struct
+  struct Unit;                       // unit struct
+
+4.4 Enumerations (sum types algebriques)
+
+  enum Option<T> { Some(T), None }
+  enum Result<T, E> { Ok(T), Err(E) }
+  enum Forme {
+      Cercle(f64),
+      Rectangle { largeur: f64, hauteur: f64 },
+      Triangle(f64, f64, f64),
+  }
+
+4.5 References et pointeurs
+
+  &T                                 # reference partagee immuable
+  &mut T                             # reference exclusive mutable
+  *const T                           # pointeur brut (unsafe)
+  *mut T
+  Box<T>                             # heap allocation, ownership
+  Rc<T>                              # reference counting (mono-thread)
+  Arc<T>                             # reference counting atomique
+  RefCell<T> / Cell<T>               # mutabilite interieure
+
+4.6 Variables et constantes
+
+  let x = 42;                        // immuable par defaut
+  let mut y = 10;                    // mutable explicite
+  let x: i64 = 42;                   // type explicite
+  const PI: f64 = 3.14159;           // constante compile-time
+  static GLOBAL: i32 = 100;          // variable globale (immuable)
+  static mut COMPTEUR: i32 = 0;      // mutable (unsafe pour acceder)
+
+Shadowing autorise :
+  let x = 5;
+  let x = x + 1;                     // nouvelle liaison, type changeable
+  let x = "hello";                   // type different OK
+
+
+================================================================================
+5. Ownership, emprunts et lifetimes
+================================================================================
+
+5.1 Ownership (propriete)
+
+Regles fondamentales :
+- Chaque valeur a un unique proprietaire.
+- A la sortie du scope du proprietaire, la valeur est liberee (drop).
+- L'affectation transfere la propriete (move) pour les types non-Copy.
+
+  let s1 = String::from("hello");
+  let s2 = s1;                       // move : s1 invalide apres
+  // println!("{}", s1);             // erreur de compilation
+  let s3 = s2.clone();               // clone profond explicite
+
+Types Copy : tous les scalaires (i32, f64, bool, char), tuples de Copy,
+references partagees &T. Move = copie pour les Copy.
+
+5.2 Emprunts (borrowing)
+
+  fn lire(s: &String) { println!("{}", s); }       // emprunt partage
+  fn ajouter(s: &mut String) { s.push_str("!"); }  // emprunt exclusif
+
+Regles du borrow checker :
+- Soit une seule reference mutable, soit plusieurs references immuables, JAMAIS
+  les deux en meme temps.
+- Toute reference doit etre valide (pas de dangling pointers).
+
+5.3 Lifetimes (durees de vie)
+
+  fn plus_long<'a>(x: &'a str, y: &'a str) -> &'a str {
+      if x.len() > y.len() { x } else { y }
+  }
+
+  struct Citation<'a> {
+      texte: &'a str,
+  }
+
+Lifetime 'static : duree de vie du programme entier (literaux string par ex.).
+Lifetime elision rules (1.0+) : la plupart des cas simples ne necessitent pas
+d'annotation explicite.
+
+
+================================================================================
+6. Operateurs
+================================================================================
+
+Arithmetiques : + - * / %
+Affectation   : = += -= *= /= %= &= |= ^= <<= >>=
+Comparaison   : == != < > <= >=
+Logiques      : && || !
+Bit-a-bit     : & | ^ ! << >>
+References    : & &mut * (dereferencement)
+Plage         : ..  ..=  (1..10, 1..=10)
+Acces         : . []
+Cast          : as (let x = 3.14 as i32)
+Question mark : ? (propagation Result/Option)
+
+Pas de surcharge directe avec ces symboles, mais via traits std::ops :
+Add, Sub, Mul, Div, Index, Deref, etc.
+
+Precedence (du plus prioritaire au moins) :
+  1. Path (::)
+  2. Method calls, field access
+  3. Function calls, indexation
+  4. ? (try)
+  5. Unary - ! * & &mut
+  6. as
+  7. * / %
+  8. + -
+  9. << >>
+ 10. &
+ 11. ^
+ 12. |
+ 13. == != < > <= >=
+ 14. &&
+ 15. ||
+ 16. ..  ..=
+ 17. =  += etc.
+
+
+================================================================================
+7. Instructions et expressions
+================================================================================
+
+Rust est principalement une langage a expressions : la plupart des constructions
+retournent une valeur. Le bloc { ... } evalue a son expression finale (sans ;).
+
+if / else (expression) :
+  let max = if a > b { a } else { b };
+
+if let :
+  if let Some(v) = option { println!("{}", v); }
+
+while :
+  while cond { ... }
+
+while let :
+  while let Some(top) = pile.pop() { ... }
+
+loop (infinie, expression) :
+  let r = loop {
+      compteur += 1;
+      if compteur == 10 { break compteur * 2; }
+  };
+
+for :
+  for i in 0..10 { ... }
+  for elem in &vec { ... }
+  for (i, v) in vec.iter().enumerate() { ... }
+
+break / continue avec etiquettes :
+  'externe: for i in 0..n {
+      for j in 0..m {
+          if cond { break 'externe; }
+      }
+  }
+
+match (pattern matching exhaustif) :
+  match x {
+      0 => println!("zero"),
+      1 | 2 => println!("un ou deux"),
+      3..=9 => println!("petit"),
+      n if n < 0 => println!("negatif"),
+      _ => println!("autre"),
+  }
+
+  let r = match option {
+      Some(v) => v * 2,
+      None => 0,
+  };
+
+let-else (1.65+) :
+  let Some(v) = option else { return; };
+
+Question mark (?) :
+  fn lire() -> Result<String, std::io::Error> {
+      let mut s = String::new();
+      std::fs::File::open("a.txt")?.read_to_string(&mut s)?;
+      Ok(s)
+  }
+
+
+================================================================================
+8. Fonctions et fermetures
+================================================================================
+
+8.1 Fonctions
+
+  fn somme(a: i32, b: i32) -> i32 {
+      a + b                          // expression finale = valeur retour
+  }
+
+  fn afficher(s: &str) {             // retour () implicite
+      println!("{}", s);
+  }
+
+Retour anticipe : return expr;
+
+8.2 Fonctions generiques
+
+  fn max<T: PartialOrd>(a: T, b: T) -> T {
+      if a > b { a } else { b }
+  }
+
+  fn afficher<T>(x: T) where T: std::fmt::Display {
+      println!("{}", x);
+  }
+
+8.3 Fermetures (closures)
+
+  let ajouter = |a, b| a + b;
+  let carre = |x: i32| -> i32 { x * x };
+  let compter = || println!("appelee");
+
+Traits de fermeture :
+  Fn         lecture seule des captures (appelable plusieurs fois)
+  FnMut      capture mutable
+  FnOnce     consomme les captures (appelable une seule fois)
+
+  fn applique<F: Fn(i32) -> i32>(f: F, x: i32) -> i32 { f(x) }
+  fn applique_dyn(f: &dyn Fn(i32) -> i32, x: i32) -> i32 { f(x) }
+
+move keyword pour capturer par valeur :
+  let data = vec![1, 2, 3];
+  let c = move || println!("{:?}", data);
+
+
+================================================================================
+9. Traits et generics
+================================================================================
+
+9.1 Definition de trait
+
+  trait Animal {
+      fn nom(&self) -> String;
+      fn parler(&self) -> String { format!("{} dit quelque chose", self.nom()) }
+  }
+
+  struct Chien { nom: String }
+  impl Animal for Chien {
+      fn nom(&self) -> String { self.nom.clone() }
+      fn parler(&self) -> String { format!("{} dit Ouaf", self.nom) }
+  }
+
+9.2 Traits standards (derives)
+
+  #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Copy)]
+  struct Point { x: i32, y: i32 }
+
+Traits courants : Debug, Display, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
+Hash, Default, From/Into, AsRef, AsMut, Iterator, IntoIterator, Drop, Deref,
+Send, Sync.
+
+9.3 Polymorphisme statique (monomorphisation)
+
+  fn afficher<T: std::fmt::Display>(x: T) { ... }
+  fn afficher(x: impl std::fmt::Display) { ... }    // impl Trait
+
+9.4 Polymorphisme dynamique (dyn Trait)
+
+  let animaux: Vec<Box<dyn Animal>> = vec![
+      Box::new(Chien { nom: "Rex".into() }),
+      Box::new(Chat { nom: "Felix".into() }),
+  ];
+
+9.5 Object safety
+
+Pour etre utilisable en dyn Trait : pas de Self dans les retours, pas de
+generics sur les methodes, etc. (regles assouplies en 1.75+ avec async fn
+dans traits).
+
+9.6 Generic Associated Types (GAT, 1.65+)
+
+  trait LendingIterator {
+      type Item<'a> where Self: 'a;
+      fn next<'a>(&'a mut self) -> Option<Self::Item<'a>>;
+  }
+
+
+================================================================================
+10. Macros
+================================================================================
+
+10.1 Macros declaratives (macro_rules!)
+
+  macro_rules! carre {
+      ($x:expr) => { $x * $x };
+  }
+  let c = carre!(5);                 // 25
+
+10.2 Macros standards courantes
+
+  println!, print!, eprintln!, eprint!
+  format!                            // formate dans une String
+  write!, writeln!                   // ecrit dans un Writer
+  vec![1, 2, 3]                      // cree un Vec<i32>
+  assert!, assert_eq!, assert_ne!
+  panic!, todo!, unimplemented!, unreachable!
+  dbg!(expr)                         // print + return (debug)
+  include_str!, include_bytes!       // inclusion compile-time
+  cfg!, env!, option_env!
+
+10.3 Macros procedurales (crates separes)
+
+- #[derive(...)] custom
+- attribute macros (#[get], #[serde(...)])
+- function-like macros (sqlx::query!, html! de yew)
+
+
+================================================================================
+11. Gestion des erreurs
+================================================================================
+
+Pas d'exceptions. Deux mecanismes principaux :
+
+11.1 Erreurs recuperables : Result<T, E>
+
+  fn parser(s: &str) -> Result<i32, std::num::ParseIntError> {
+      s.parse::<i32>()
+  }
+
+  match parser("42") {
+      Ok(n) => println!("{}", n),
+      Err(e) => eprintln!("erreur: {}", e),
+  }
+
+Operateur ? : propagation automatique.
+  let n: i32 = parser(s)?;
+
+11.2 Erreurs irrecuperables : panic!
+
+  panic!("etat invalide");
+  let v: Vec<i32> = vec![];
+  v[0];                              // panique : index hors bornes
+
+11.3 Option<T>
+
+  fn premier(v: &Vec<i32>) -> Option<i32> {
+      if v.is_empty() { None } else { Some(v[0]) }
+  }
+
+Methodes : .unwrap(), .expect("msg"), .unwrap_or(0), .unwrap_or_else(|| ...),
+.map(|x| ...), .and_then(|x| ...), .ok_or(err), .ok_or_else(|| err).
+
+11.4 Crates populaires
+
+  anyhow      pour applications (erreurs dynamiques avec contexte)
+  thiserror   pour bibliotheques (derives sur enum d'erreurs)
+
+
+================================================================================
+12. Modules et systeme de paquets
+================================================================================
+
+12.1 Modules
+
+  mod reseau {
+      pub fn connecter() { ... }
+      mod prive { fn helper() { ... } }
+      pub mod client {
+          pub fn envoyer() { ... }
+      }
+  }
+
+  use reseau::client::envoyer;
+  use std::collections::{HashMap, HashSet};
+  use std::io::{self, Read, Write};
+  pub use reseau::client;            // re-export
+
+12.2 Visibilite
+
+  pub             public partout
+  pub(crate)      public dans le crate
+  pub(super)      public dans le module parent
+  pub(in path)    chemin specifique
+  (defaut)        prive au module
+
+12.3 Crates et Cargo
+
+Un crate = unite de compilation (binaire ou bibliotheque).
+Workspace = ensemble de crates partageant un Cargo.lock.
+
+  cargo new mon_projet               # nouveau binaire
+  cargo new --lib ma_lib             # nouvelle bibliotheque
+  cargo build                        # debug
+  cargo build --release              # optimise
+  cargo run                          # build + execute
+  cargo test                         # tests
+  cargo doc --open                   # documentation
+  cargo fmt                          # formattage (rustfmt)
+  cargo clippy                       # lints
+  cargo update                       # mettre a jour Cargo.lock
+  cargo publish                      # publier sur crates.io
+  cargo add serde                    # ajouter dependance
+  cargo install <bin>                # installer un binaire global
+
+
+================================================================================
+13. Concurrence et asynchrone
+================================================================================
+
+13.1 Threads OS
+
+  use std::thread;
+  let h = thread::spawn(|| {
+      println!("dans le thread");
+      42
+  });
+  let r = h.join().unwrap();
+
+13.2 Partage de donnees
+
+  use std::sync::{Arc, Mutex};
+  let compteur = Arc::new(Mutex::new(0));
+  let handles: Vec<_> = (0..10).map(|_| {
+      let c = Arc::clone(&compteur);
+      thread::spawn(move || { *c.lock().unwrap() += 1; })
+  }).collect();
+  for h in handles { h.join().unwrap(); }
+
+Send : valeur peut etre envoyee a un autre thread.
+Sync : reference partagee &T peut etre partagee entre threads.
+
+13.3 Channels (mpsc)
+
+  use std::sync::mpsc;
+  let (tx, rx) = mpsc::channel();
+  thread::spawn(move || tx.send(42).unwrap());
+  println!("{}", rx.recv().unwrap());
+
+13.4 Async / await (1.39+)
+
+  async fn telecharger(url: &str) -> Result<String, Box<dyn Error>> {
+      let resp = reqwest::get(url).await?.text().await?;
+      Ok(resp)
+  }
+
+  #[tokio::main]
+  async fn main() {
+      let r = telecharger("https://exemple.org").await;
+  }
+
+Runtimes : tokio (dominant), async-std, smol, embassy (embarque).
+Primitives : Future trait, .await, async block, join!, select!, spawn.
+
+
+================================================================================
+14. unsafe et FFI
+================================================================================
+
+14.1 Bloc unsafe
+
+  unsafe {
+      let r = &mut *(0xCAFEBABE as *mut u32);
+  }
+
+unsafe permet :
+- Dereferencer un pointeur brut.
+- Appeler une fonction unsafe / extern.
+- Acceder a un static mutable.
+- Implementer un trait unsafe.
+- Acceder a un champ d'union.
+
+14.2 FFI (Foreign Function Interface)
+
+  extern "C" {
+      fn abs(x: i32) -> i32;
+  }
+  unsafe { let r = abs(-5); }
+
+  #[no_mangle]
+  pub extern "C" fn somme(a: i32, b: i32) -> i32 { a + b }
+
+
+================================================================================
+15. Bibliotheque standard (selection)
+================================================================================
+
+- std::primitive  : i32, f64, bool, etc.
+- std::option, std::result : Option, Result.
+- std::vec : Vec<T>.
+- std::string : String.
+- std::collections : HashMap, HashSet, BTreeMap, BTreeSet, VecDeque,
+  LinkedList, BinaryHeap.
+- std::iter : Iterator, IntoIterator, FromIterator, adaptateurs (map, filter,
+  fold, collect, take, skip, chain, zip, enumerate, ...).
+- std::fmt : Display, Debug, format!.
+- std::io : Read, Write, BufReader, BufWriter, Stdin, Stdout.
+- std::fs : File, read_to_string, create_dir, remove_file.
+- std::path : Path, PathBuf.
+- std::thread, std::sync : threading et synchronisation.
+- std::process : Command, exit.
+- std::env : args, var.
+- std::time : Duration, Instant, SystemTime.
+- core et alloc : sous-ensemble pour no_std.
+
+
+================================================================================
+16. Tests et documentation
+================================================================================
+
+16.1 Tests unitaires
+
+  #[cfg(test)]
+  mod tests {
+      use super::*;
+      #[test]
+      fn test_somme() {
+          assert_eq!(somme(2, 3), 5);
+      }
+      #[test]
+      #[should_panic]
+      fn test_panique() { panic!("attendu"); }
+  }
+
+  cargo test
+  cargo test nom_test
+  cargo test -- --nocapture
+
+16.2 Tests d'integration
+
+  tests/integration.rs               # repertoire tests/ a cote de src/
+
+16.3 Tests de documentation (doctests)
+
+  /// Additionne deux entiers.
+  ///
+  /// # Exemples
+  ///
+  /// ```
+  /// assert_eq!(ma_lib::somme(2, 3), 5);
+  /// ```
+  pub fn somme(a: i32, b: i32) -> i32 { a + b }
+
+16.4 Benchmarks (nightly) ou criterion (stable)
+
+
+================================================================================
+17. Outils Rust du projet DEV-COOLS
+================================================================================
+
+17.1 RUST86.PAS - Compilateur Rust vers assembleur 8086
+
+RUST86.PAS est un compilateur Rust ciblant l'assembleur 8086 (MASM/TASM
+compatible). Auteur Sylvain Maltais, version 1.0 (2026). Construit en
+Turbo Pascal 7 / Free Pascal 3.2.
+
+Caracteristiques implementees :
+- fn, let / let mut, const, static.
+- Types scalaires : i8/i16/i32, u8/u16/u32, bool, char.
+- Structures struct et enum (sum types simples).
+- Blocs impl Type et impl Trait for Type avec methodes.
+- Traits avec methodes (polymorphisme statique).
+- Ownership et emprunts avec verrous d'emprunt simultanes (MAX_BORROW).
+- Annotations de duree de vie ('a, 'static) basiques.
+- Controle de flux : if / else, while, loop, for in range, match.
+- break / continue avec etiquettes ('label: loop).
+- Macros standards minimales : println!, print!, panic!.
+- Modules mod et use (importations limitees).
+- Genere du code 8086 reel avec prefixes _RSF_, _RSV_, _IMP_, _RSL_,
+  _RSK_, _RSRT_, _MOD_.
+- Runtime minimal pour panic, print, memcpy.
+
+Limitations : pas de Vec/String/HashMap dynamiques complets, pas de generics
+monomorphises etendus, pas de macros declaratives utilisateur (macro_rules!),
+pas d'async/await, pas de Box/Rc/Arc complets, pas de threads.
+
+17.2 ADA2RUST.PAS - Convertisseur Ada vers Rust
+
+Traduit un sous-ensemble d'Ada 95 vers du Rust moderne :
+- Procedures et fonctions Ada -> fn Rust.
+- Types scalaires Integer/Float -> i32/f64.
+- Packages Ada -> mod Rust.
+- Tableaux contraints -> [T; N].
+- Records -> struct.
+- Variants records -> enum.
+- Exceptions Ada -> Result<T, E>.
+- Generic packages -> generics et traits.
+
+Limitations : pas de support complet des tasks Ada (mappage approximatif vers
+thread::spawn), pas de Ada.Containers complet, pas de protected types.
+
+17.3 RUST2ADA.PAS - Convertisseur Rust vers Ada
+
+Traduction inverse d'un sous-ensemble Rust vers Ada 95.
+
+17.4 PAS2RUST.PAS - Convertisseur Pascal vers Rust
+
+Traduit du code Turbo Pascal / Free Pascal vers du Rust moderne :
+- Program / Unit -> crate / mod.
+- Procedure / Function -> fn (avec parametres var traduits en &mut).
+- Types Integer/LongInt/Real/Boolean/Char -> i32/i64/f64/bool/char.
+- String Pascal -> String Rust (chaines allouees).
+- Record -> struct.
+- Variant record -> enum.
+- Array[1..N] of T -> [T; N].
+- Pointer types -> Box<T>, Option<Box<T>>.
+- begin / end -> blocs { }.
+- if / while / for / case / repeat -> if / while / for / match / loop.
+
+17.5 RUST2PAS.PAS - Convertisseur Rust vers Pascal
+
+Traduit du code Rust vers du Pascal (Turbo Pascal / Free Pascal compatible)
+pour faciliter le portage entre les deux ecosystemes du projet DEV-COOLS.
+
+17.6 VB2RUST.PAS - Convertisseur Visual Basic vers Rust
+
+Traduit du code Visual Basic (VB6 / VB.NET classique) vers Rust :
+- Sub / Function -> fn.
+- Dim / Const -> let / const.
+- Types Integer/Long/Single/Double/String/Boolean -> i16/i32/f32/f64/String/bool.
+- Type ... End Type -> struct.
+- If / For / While / Do / Select Case -> if / for / while / loop / match.
+- ByRef -> &mut, ByVal -> par valeur.
+
+
+================================================================================
+18. Exemples de programmes
+================================================================================
+
+18.1 Hello World
+
+  fn main() {
+      println!("Bonjour le monde");
+  }
+
+18.2 Factorielle recursive et iterative
+
+  fn fact(n: u64) -> u64 {
+      if n <= 1 { 1 } else { n * fact(n - 1) }
+  }
+
+  fn fact_iter(n: u64) -> u64 {
+      (1..=n).product()
+  }
+
+18.3 Lecture d'un fichier
+
+  use std::fs;
+  fn main() -> std::io::Result<()> {
+      let contenu = fs::read_to_string("a.txt")?;
+      println!("{}", contenu);
+      Ok(())
+  }
+
+18.4 Iterators et collect
+
+  let v: Vec<i32> = (1..=10).collect();
+  let pairs: Vec<i32> = v.iter().filter(|&&x| x % 2 == 0).copied().collect();
+  let somme: i32 = v.iter().sum();
+  let carres: Vec<i32> = v.iter().map(|x| x * x).collect();
+
+18.5 Pattern matching sur enum
+
+  enum Forme { Cercle(f64), Rect(f64, f64) }
+
+  fn aire(f: Forme) -> f64 {
+      match f {
+          Forme::Cercle(r) => std::f64::consts::PI * r * r,
+          Forme::Rect(l, h) => l * h,
+      }
+  }
+
+18.6 HashMap mots frequents
+
+  use std::collections::HashMap;
+  let texte = "le chat le chien le chat";
+  let mut freq = HashMap::new();
+  for mot in texte.split_whitespace() {
+      *freq.entry(mot).or_insert(0) += 1;
+  }
+  println!("{:?}", freq);
+
+18.7 Threads et channels
+
+  use std::sync::mpsc;
+  use std::thread;
+  let (tx, rx) = mpsc::channel();
+  for i in 0..4 {
+      let tx = tx.clone();
+      thread::spawn(move || tx.send(i * i).unwrap());
+  }
+  drop(tx);
+  for v in rx { println!("{}", v); }
+
+18.8 Async/await avec tokio
+
+  #[tokio::main]
+  async fn main() -> Result<(), Box<dyn std::error::Error>> {
+      let resp = reqwest::get("https://exemple.org").await?;
+      let texte = resp.text().await?;
+      println!("{}", texte);
+      Ok(())
+  }
+
+
+================================================================================
+19. Bonnes pratiques
+================================================================================
+
+- Suivre le Rust API Guidelines et utiliser cargo fmt + cargo clippy.
+- Preferer les types Vec/String/&str/&[T] aux pointeurs bruts.
+- Marquer #[must_use] sur les retours qui ne doivent pas etre ignores.
+- Documenter les fonctions publiques avec /// et inclure des exemples.
+- Utiliser Result et ? plutot que panic! pour les erreurs recuperables.
+- Eviter unsafe sauf necessite absolue, encapsuler derriere des API sures.
+- Preferer iterators (map/filter/fold) aux boucles explicites pour la lisibilite.
+- Tester via #[test], cargo test et doctests.
+- Specifier l'edition dans Cargo.toml (edition = "2024").
+- Activer #![deny(warnings)] dans le CI ou utiliser cargo clippy -- -D warnings.
+
+
+================================================================================
+20. Ecosysteme et influence
+================================================================================
+
+Crates fondamentaux :
+- serde, serde_json : serialisation.
+- tokio, async-std : runtimes asynchrones.
+- reqwest, hyper, axum, actix-web, rocket : HTTP.
+- diesel, sqlx, sea-orm : bases de donnees.
+- clap : parsing arguments CLI.
+- regex : expressions regulieres.
+- rayon : parallelisme data-parallel.
+- crossbeam : primitives concurrentes.
+- anyhow, thiserror : gestion d'erreurs.
+- log, tracing : journalisation.
+- wasm-bindgen : interop WebAssembly.
+
+Outils :
+- rustup : installation et gestion des toolchains.
+- rustc : compilateur.
+- cargo : gestionnaire de paquets et build.
+- rustfmt : formattage.
+- clippy : linter.
+- rustdoc : generation de documentation.
+- miri : interpreteur pour detecter UB.
+- bindgen : generation de bindings C.
+- cbindgen : generation de bindings C depuis Rust.
+
+Influence :
+- Entrees : C++, ML/OCaml/Haskell, Erlang, Cyclone, Newsqueak.
+- Sorties : Swift (ownership influences), Carbon, Zig, Mojo, langages
+  modernes inspires.
+
+Adoption :
+- Noyau Linux (depuis 6.1, 2022).
+- Windows kernel (annonce 2023).
+- Firefox (Servo, Stylo, WebRender).
+- Discord, Dropbox, AWS, Cloudflare, Microsoft, Google, Meta.
+- Sondage StackOverflow : langage "le plus aime" plusieurs annees consecutives.
+
+
+================================================================================
+21. References
+================================================================================
+
+- The Rust Reference :
+  https://doc.rust-lang.org/reference/
+- The Rust Programming Language (livre officiel) :
+  https://doc.rust-lang.org/book/
+- Rust by Example :
+  https://doc.rust-lang.org/rust-by-example/
+- The Rustonomicon (unsafe et internals) :
+  https://doc.rust-lang.org/nomicon/
+- Async Book :
+  https://rust-lang.github.io/async-book/
+- crates.io : https://crates.io/
+- Rust API Guidelines : https://rust-lang.github.io/api-guidelines/
+- RFC repository : https://github.com/rust-lang/rfcs
+- Klabnik, S.; Nichols, C. : "The Rust Programming Language", No Starch Press.
+- Blandy, J.; Orendorff, J.; Tindall, L. : "Programming Rust", O'Reilly.
+- McNamara, T. : "Rust in Action", Manning.
+- Sharma, R. : "Hands-On Functional Programming in Rust".
+
+================================================================================
+                              FIN DU DOCUMENT
+================================================================================

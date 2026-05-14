@@ -1,0 +1,990 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_PYTHON_01}
+{\footnote $ Python - Presentation generale}
+{\footnote K Python presentation;Guido van Rossum;CWI;Monty Python;PEP 20;Zen of Python;historique versions;Python 3.13;CPython;PyPy}
+\b\fs24 Presentation generale \b0\fs20\par
+\par
+Python est un langage de programmation interprete, de haut niveau, dynamique\par
+et multiparadigme, concu par Guido van Rossum au CWI (Amsterdam) en 1989-1991.\par
+Le nom est inspire des Monty Python's Flying Circus, pas du serpent. Python\par
+met l'accent sur la lisibilite du code (PEP 8, "Zen of Python" PEP 20) et\par
+l'expressivite, en utilisant l'indentation comme structure syntaxique.\par
+\par
+Historique des versions :\par
+- 1991 : Python 0.9.0 (premiere release publique).\par
+- 1994 : Python 1.0 (lambda, map, filter, reduce).\par
+- 2000 : Python 2.0 (list comprehensions, garbage collector).\par
+- 2008 : Python 3.0 (print fonction, str Unicode par defaut, rupture).\par
+- 2010 : Python 2.7 (derniere version 2.x, fin de support 2020).\par
+- 2015 : Python 3.5 (async/await, type hints PEP 484).\par
+- 2016 : Python 3.6 (f-strings, variable annotations).\par
+- 2018 : Python 3.7 (dataclasses, ordered dicts officiels).\par
+- 2019 : Python 3.8 (walrus :=, positional-only /).\par
+- 2020 : Python 3.9 (dict |=, type hints natifs list[int]).\par
+- 2021 : Python 3.10 (match/case, parenthesized context managers).\par
+- 2022 : Python 3.11 (jusqu'a 60% plus rapide, ExceptionGroup, except*).\par
+- 2023 : Python 3.12 (type parameter syntax, f-string am??liores).\par
+- 2024 : Python 3.13 (REPL ameliore, GIL optionnel experimental).\par
+\par
+Caracteristiques distinctives :\par
+- Typage dynamique fort (duck typing).\par
+- Indentation significative (pas d'accolades).\par
+- Tout est objet, y compris les fonctions et les classes.\par
+- Gestion automatique de la memoire (refcount + GC cyclique).\par
+- Vaste bibliotheque standard ("batteries included").\par
+- Ecosysteme tres riche : NumPy, Pandas, Django, Flask, TensorFlow, PyTorch.\par
+- Multiplateforme (Windows, Linux, macOS, BSD, etc.).\par
+- Plusieurs implementations : CPython (reference), PyPy (JIT), Jython,\par
+{\f1   IronPython, MicroPython, GraalPy.}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. Structure d'un programme Python}     {\uldb [Aller]}{\v IDH_PYTHON_02}\par
+{\f1  3. Caracteristiques lexicales}     {\uldb [Aller]}{\v IDH_PYTHON_03}\par
+{\f1  4. Types de donnees}     {\uldb [Aller]}{\v IDH_PYTHON_04}\par
+{\f1  5. Operateurs}     {\uldb [Aller]}{\v IDH_PYTHON_05}\par
+{\f1  6. Instructions de controle}     {\uldb [Aller]}{\v IDH_PYTHON_06}\par
+{\f1  7. Fonctions}     {\uldb [Aller]}{\v IDH_PYTHON_07}\par
+{\f1  8. Classes et orientation objet}     {\uldb [Aller]}{\v IDH_PYTHON_08}\par
+{\f1  9. Modules et packages}     {\uldb [Aller]}{\v IDH_PYTHON_09}\par
+{\f1 10. Collections et iterateurs}     {\uldb [Aller]}{\v IDH_PYTHON_10}\par
+{\f1 11. Generateurs, iterateurs et async}     {\uldb [Aller]}{\v IDH_PYTHON_11}\par
+{\f1 12. Chaines de caracteres}     {\uldb [Aller]}{\v IDH_PYTHON_12}\par
+{\f1 13. Entrees/sorties et fichiers}     {\uldb [Aller]}{\v IDH_PYTHON_13}\par
+{\f1 14. Bibliotheque standard (modules courants)}     {\uldb [Aller]}{\v IDH_PYTHON_14}\par
+{\f1 15. Les compilateurs PYTHON86.PAS et PYTHCW32.PAS}     {\uldb [Aller]}{\v IDH_PYTHON_15}\par
+{\f1 16. Exemples de programmes}     {\uldb [Aller]}{\v IDH_PYTHON_16}\par
+{\f1 17. Bonnes pratiques (PEP 8, PEP 20)}     {\uldb [Aller]}{\v IDH_PYTHON_17}\par
+{\f1 18. Ecosysteme et influence}     {\uldb [Aller]}{\v IDH_PYTHON_18}\par
+{\f1 19. References}     {\uldb [Aller]}{\v IDH_PYTHON_19}\par
+\par
+{\uldb Suivant >>}{\v IDH_PYTHON_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_02}
+{\footnote $ Python - Structure d'un programme Python}
+{\footnote K Python structure programme;module;__main__;indentation;PEP 8;shebang;main}
+\b\fs24 Structure d'un programme Python \b0\fs20\par
+\par
+Hello World minimal :\par
+\par
+{\f1   print("Bonjour le monde")}\par
+\par
+Module structure typique :\par
+\par
+{\f1   #!/usr/bin/env python3}\par
+{\f1   """Documentation du module."""}\par
+{\f1   import os}\par
+{\f1   import sys}\par
+{\f1   from typing import List, Optional}\par
+\par
+{\f1   MAX_SIZE = 100}\par
+\par
+{\f1   def main() -> int:}\par
+{\f1       print("Bonjour")}\par
+{\f1       return 0}\par
+\par
+{\f1   if __name__ == "__main__":}\par
+{\f1       sys.exit(main())}\par
+\par
+Indentation : 4 espaces par niveau (PEP 8). Les tabulations sont autorisees\par
+mais deconseillees ; le melange tab/espace est interdit en Python 3.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_01}     {\uldb Suivant >>}{\v IDH_PYTHON_03}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_03}
+{\footnote $ Python - Caracteristiques lexicales}
+{\footnote K Python lexical;Unicode;identificateurs;snake_case;PascalCase;mots reserves;litteraux;f-strings;docstring;commentaires}
+\b\fs24 Caracteristiques lexicales \b0\fs20\par
+\par
+Jeu de caracteres : Unicode (UTF-8 par defaut, PEP 3131 autorise identificateurs\par
+non-ASCII).\par
+\par
+Identificateurs :\par
+- Sensibles a la casse.\par
+- Lettres Unicode, chiffres, underscore. Doivent commencer par lettre/_.\par
+- Convention : snake_case pour variables/fonctions, PascalCase pour classes,\par
+{\f1   UPPER_SNAKE pour constantes, _prefixe pour prive, __dunder__ pour special.}\par
+\par
+Mots reserves :\par
+{\f1   False  None  True  and  as  assert  async  await  break  class  continue}\par
+{\f1   def  del  elif  else  except  finally  for  from  global  if  import  in}\par
+{\f1   is  lambda  nonlocal  not  or  pass  raise  return  try  while  with  yield}\par
+{\f1   match  case  type  (3.10+/3.12+ : contextuels)}\par
+\par
+Litteraux :\par
+- Entiers : 42, 0xFF, 0o52, 0b101010, 1_000_000\par
+- Flottants : 3.14, 1.5e-3, 1_000.5\par
+- Complexes : 3+4j, 2j\par
+- Booleens : True, False\par
+- None\par
+- Chaines : "ab", 'ab', """multi-lignes""", '''ab'''\par
+- f-strings : f"x = \{x:.2f\}"\par
+- Raw strings : r"C:\\path"\par
+- Bytes : b"hello", rb"\\n"\par
+- Unicode escape : "\\u00E9", "\\N\{GREEK SMALL LETTER ALPHA\}"\par
+\par
+Commentaires :\par
+- Ligne : # commentaire\par
+- Docstring : """premier element d'un module/fonction/classe"""\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_02}     {\uldb Suivant >>}{\v IDH_PYTHON_04}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_04}
+{\footnote $ Python - Types de donnees}
+{\footnote K Python types donnees;int float complex bool;str bytes bytearray;list tuple range;dict set frozenset;None Ellipsis;type hints;PEP 484 526 585 695;variables;unpacking}
+\b\fs24 Types de donnees \b0\fs20\par
+\par
+4.1 Types numeriques\par
+\par
+{\f1   int      entier de taille arbitraire (precision illimitee)}\par
+{\f1   float    flottant double precision IEEE 754}\par
+{\f1   complex  nombre complexe (z.real, z.imag)}\par
+{\f1   bool     sous-classe d'int (True == 1, False == 0)}\par
+\par
+4.2 Sequences\par
+\par
+{\f1   str       chaine immuable Unicode}\par
+{\f1   bytes     sequence immuable d'octets}\par
+{\f1   bytearray sequence mutable d'octets}\par
+{\f1   list      [1, 2, 3] - mutable, ordonnee}\par
+{\f1   tuple     (1, 2, 3) - immuable, ordonnee}\par
+{\f1   range     range(0, 10, 2) - immuable, generatrice}\par
+\par
+4.3 Collections\par
+\par
+{\f1   set            \{1, 2, 3\} - ensemble mutable, non ordonne}\par
+{\f1   frozenset      ensemble immuable}\par
+{\f1   dict           \{"a": 1, "b": 2\} - dictionnaire (ordre d'insertion 3.7+)}\par
+\par
+4.4 Autres\par
+\par
+{\f1   None           singleton (type NoneType)}\par
+{\f1   Ellipsis       ... (utilise pour slices, type hints)}\par
+{\f1   NotImplemented retourne par __eq__ etc. quand non applicable}\par
+\par
+4.5 Type hints (PEP 484, 526, 585, 604, 695)\par
+\par
+{\f1   age: int = 30}\par
+{\f1   noms: list[str] = []}\par
+{\f1   table: dict[str, int] = \{\}}\par
+{\f1   resultat: int | None = None              # Python 3.10+}\par
+{\f1   def f(x: int, y: float = 1.0) -> str: ...}\par
+\par
+{\f1   # PEP 695 (Python 3.12+) : syntaxe native pour generics}\par
+{\f1   type Vector = list[float]}\par
+{\f1   def somme[T: (int, float)](xs: list[T]) -> T: ...}\par
+\par
+4.6 Variables et affectation\par
+\par
+{\f1   x = 10}\par
+{\f1   a, b = 1, 2                              # tuple unpacking}\par
+{\f1   a, b = b, a                              # echange}\par
+{\f1   first, *rest = [1, 2, 3, 4]              # rest = [2, 3, 4]}\par
+{\f1   d = \{"x": 1, "y": 2\}}\par
+{\f1   x, y = d.values()}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_03}     {\uldb Suivant >>}{\v IDH_PYTHON_05}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_05}
+{\footnote $ Python - Operateurs}
+{\footnote K Python operateurs;arithmetiques;// ** @;comparaison is in;and or not;bit-a-bit;walrus :=;ternaire;precedence}
+\b\fs24 Operateurs \b0\fs20\par
+\par
+Arithmetiques : + - * / // % ** @\par
+{\f1   (/ = division reelle, // = division entiere, ** = puissance, @ = matmul)}\par
+\par
+Comparaison   : == != < > <= >= is is not in not in\par
+Logiques      : and or not\par
+Bit-a-bit     : & | ^ ~ << >>\par
+Affectation   : = += -= *= /= //= %= **= &= |= ^= <<= >>= @= :=\par
+Walrus        : := (Python 3.8+, expression d'affectation)\par
+Conditionnel  : valeur_si_vrai if cond else valeur_si_faux\par
+Acces         : . [] ()\par
+\par
+Precedence (du moins prioritaire au plus) :\par
+{\f1   1. lambda}\par
+{\f1   2. if/else ternaire}\par
+{\f1   3. or}\par
+{\f1   4. and}\par
+{\f1   5. not}\par
+{\f1   6. in, not in, is, is not, <, <=, >, >=, !=, ==}\par
+{\f1   7. |}\par
+{\f1   8. ^}\par
+{\f1   9. &}\par
+{\f1  10. <<, >>}\par
+{\f1  11. +, -}\par
+{\f1  12. *, @, /, //, %}\par
+{\f1  13. +x, -x, ~x (unaires)}\par
+{\f1  14. **}\par
+{\f1  15. await x}\par
+{\f1  16. x[index], x[a:b], x.attr, f(args)}\par
+{\f1  17. (expr), [expr], \{expr\}, \{key: val\}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_04}     {\uldb Suivant >>}{\v IDH_PYTHON_06}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_06}
+{\footnote $ Python - Instructions de controle}
+{\footnote K Python controle;if elif else;while else;for else;break continue pass;match case;PEP 634;try except finally;ExceptionGroup;with context manager;raise;return yield}
+\b\fs24 Instructions de controle \b0\fs20\par
+\par
+6.1 if/elif/else\par
+\par
+{\f1   if x > 0:}\par
+{\f1       print("positif")}\par
+{\f1   elif x == 0:}\par
+{\f1       print("zero")}\par
+{\f1   else:}\par
+{\f1       print("negatif")}\par
+\par
+6.2 while\par
+\par
+{\f1   while cond:}\par
+{\f1       ...}\par
+{\f1   else:                          # execute si pas de break}\par
+{\f1       ...}\par
+\par
+6.3 for\par
+\par
+{\f1   for x in iterable:}\par
+{\f1       ...}\par
+{\f1   else:}\par
+{\f1       ...}\par
+\par
+{\f1   for i, v in enumerate(liste):}\par
+{\f1       ...}\par
+\par
+{\f1   for cle, val in dico.items():}\par
+{\f1       ...}\par
+\par
+6.4 break, continue, pass\par
+\par
+{\f1   for x in xs:}\par
+{\f1       if x < 0: continue}\par
+{\f1       if x > 100: break}\par
+{\f1       if x == 0: pass}\par
+\par
+6.5 match/case (Python 3.10+)\par
+\par
+{\f1   match commande.split():}\par
+{\f1       case ["quit"]:}\par
+{\f1           ...}\par
+{\f1       case ["go", direction]:}\par
+{\f1           aller(direction)}\par
+{\f1       case ["look"] | ["regarder"]:}\par
+{\f1           ...}\par
+{\f1       case [action, *params] if action in \{"prendre", "deposer"\}:}\par
+{\f1           ...}\par
+{\f1       case _:}\par
+{\f1           erreur()}\par
+\par
+Patterns supportes : litterales, capture, sequence, mapping, classe,\par
+disjonction (|), garde (if), wildcard (_).\par
+\par
+6.6 try / except / else / finally\par
+\par
+{\f1   try:}\par
+{\f1       x = int(s)}\par
+{\f1   except ValueError as e:}\par
+{\f1       print(f"erreur: \{e\}")}\par
+{\f1   except (TypeError, KeyError):}\par
+{\f1       ...}\par
+{\f1   else:                          # execute si pas d'exception}\par
+{\f1       ...}\par
+{\f1   finally:                       # toujours execute}\par
+{\f1       ...}\par
+\par
+Exception groups (Python 3.11+) :\par
+{\f1   try:}\par
+{\f1       ...}\par
+{\f1   except* TypeError as eg:}\par
+{\f1       ...}\par
+{\f1   except* ValueError as eg:}\par
+{\f1       ...}\par
+\par
+6.7 with (context manager)\par
+\par
+{\f1   with open("a.txt") as f:}\par
+{\f1       data = f.read()}\par
+\par
+{\f1   with open("a.txt") as f, open("b.txt", "w") as g:}\par
+{\f1       g.write(f.read())}\par
+\par
+6.8 raise\par
+\par
+{\f1   raise ValueError("message")}\par
+{\f1   raise IndexError("...") from autre_exception}\par
+\par
+6.9 return, yield, yield from\par
+\par
+{\f1   def f():}\par
+{\f1       return 42}\par
+\par
+{\f1   def gen():}\par
+{\f1       yield 1}\par
+{\f1       yield 2}\par
+{\f1       yield from autre_gen()}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_05}     {\uldb Suivant >>}{\v IDH_PYTHON_07}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_07}
+{\footnote $ Python - Fonctions}
+{\footnote K Python fonctions;def;parametres defaut;*args **kwargs;positional-only;keyword-only;lambda;decorateurs;map filter reduce}
+\b\fs24 Fonctions \b0\fs20\par
+\par
+{\f1   def somme(a, b):}\par
+{\f1       return a + b}\par
+\par
+{\f1   def saluer(nom, message="Bonjour"):       # parametre par defaut}\par
+{\f1       print(f"\{message\}, \{nom\}")}\par
+\par
+{\f1   def total(*args, **kwargs):                # *args = tuple, **kwargs = dict}\par
+{\f1       ...}\par
+\par
+{\f1   def positionnel_seul(a, b, /):             # / : positional-only (3.8+)}\par
+{\f1       ...}\par
+\par
+{\f1   def keyword_seul(*, a, b):                 # * : keyword-only}\par
+{\f1       ...}\par
+\par
+Lambda (fonctions anonymes a une expression) :\par
+\par
+{\f1   carre = lambda x: x * x}\par
+{\f1   sorted(liste, key=lambda p: p.age)}\par
+\par
+Decorateurs :\par
+\par
+{\f1   @cache}\par
+{\f1   @staticmethod}\par
+{\f1   @property}\par
+{\f1   def methode(self): ...}\par
+\par
+{\f1   # decorateur personnalise}\par
+{\f1   def chronometre(f):}\par
+{\f1       def wrapper(*args, **kwargs):}\par
+{\f1           import time}\par
+{\f1           t0 = time.time()}\par
+{\f1           r = f(*args, **kwargs)}\par
+{\f1           print(f"\{f.__name__\}: \{time.time()-t0:.3f\}s")}\par
+{\f1           return r}\par
+{\f1       return wrapper}\par
+\par
+{\f1   @chronometre}\par
+{\f1   def calcul(): ...}\par
+\par
+Fonctions d'ordre superieur : map, filter, sorted, any, all, reduce.\par
+\par
+{\f1   pairs = list(filter(lambda x: x % 2 == 0, range(10)))}\par
+{\f1   carres = list(map(lambda x: x*x, range(10)))}\par
+{\f1   total = sum(range(100))}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_06}     {\uldb Suivant >>}{\v IDH_PYTHON_08}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_08}
+{\footnote $ Python - Classes et orientation objet}
+{\footnote K Python classes objets;__init__;dunders;self;heritage;super;MRO;C3 linearization;property;dataclass;PEP 557;abc;abstractmethod}
+\b\fs24 Classes et orientation objet \b0\fs20\par
+\par
+{\f1   class Personne:}\par
+{\f1       """Une personne avec nom et age."""}\par
+\par
+{\f1       especes = "Homo sapiens"            # attribut de classe}\par
+\par
+{\f1       def __init__(self, nom: str, age: int):}\par
+{\f1           self.nom = nom}\par
+{\f1           self.age = age}\par
+\par
+{\f1       def saluer(self) -> str:}\par
+{\f1           return f"Bonjour, je suis \{self.nom\}"}\par
+\par
+{\f1       def __repr__(self) -> str:}\par
+{\f1           return f"Personne(\{self.nom!r\}, \{self.age\})"}\par
+\par
+{\f1       def __eq__(self, other) -> bool:}\par
+{\f1           return isinstance(other, Personne) and \\}\par
+{\f1                  (self.nom, self.age) == (other.nom, other.age)}\par
+\par
+Methodes speciales (dunders) :\par
+{\f1   __init__   __del__   __repr__  __str__  __format__}\par
+{\f1   __eq__     __ne__    __lt__    __le__   __gt__    __ge__}\par
+{\f1   __hash__   __bool__  __len__   __getitem__   __setitem__   __delitem__}\par
+{\f1   __iter__   __next__  __contains__}\par
+{\f1   __add__    __sub__   __mul__   __truediv__   __floordiv__  __mod__  __pow__}\par
+{\f1   __radd__   __iadd__  ...}\par
+{\f1   __call__   __enter__ __exit__}\par
+{\f1   __getattr__ __setattr__ __delattr__ __getattribute__}\par
+\par
+Heritage :\par
+\par
+{\f1   class Etudiant(Personne):}\par
+{\f1       def __init__(self, nom, age, ecole):}\par
+{\f1           super().__init__(nom, age)}\par
+{\f1           self.ecole = ecole}\par
+\par
+Heritage multiple et MRO (Method Resolution Order, C3 linearization) :\par
+\par
+{\f1   class A: pass}\par
+{\f1   class B(A): pass}\par
+{\f1   class C(A): pass}\par
+{\f1   class D(B, C): pass        # MRO : D -> B -> C -> A -> object}\par
+\par
+Proprietes :\par
+\par
+{\f1   class Compte:}\par
+{\f1       def __init__(self):}\par
+{\f1           self._solde = 0}\par
+{\f1       @property}\par
+{\f1       def solde(self):}\par
+{\f1           return self._solde}\par
+{\f1       @solde.setter}\par
+{\f1       def solde(self, v):}\par
+{\f1           if v < 0: raise ValueError}\par
+{\f1           self._solde = v}\par
+\par
+@dataclass (PEP 557, 3.7+) :\par
+\par
+{\f1   from dataclasses import dataclass, field}\par
+\par
+{\f1   @dataclass(frozen=True, slots=True)}\par
+{\f1   class Point:}\par
+{\f1       x: float}\par
+{\f1       y: float}\par
+{\f1       tags: list[str] = field(default_factory=list)}\par
+\par
+Classes abstraites (abc) :\par
+\par
+{\f1   from abc import ABC, abstractmethod}\par
+\par
+{\f1   class Forme(ABC):}\par
+{\f1       @abstractmethod}\par
+{\f1       def aire(self) -> float: ...}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_07}     {\uldb Suivant >>}{\v IDH_PYTHON_09}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_09}
+{\footnote $ Python - Modules et packages}
+{\footnote K Python modules packages;import;from import;__init__.py;namespace package;sys.path;pip;venv;poetry;uv}
+\b\fs24 Modules et packages \b0\fs20\par
+\par
+Import :\par
+\par
+{\f1   import math}\par
+{\f1   import math as m}\par
+{\f1   from math import sqrt, pi}\par
+{\f1   from math import *                       # deconseille}\par
+{\f1   from . import autre_module               # import relatif}\par
+{\f1   from ..parent import qqch                # import relatif niveau 2}\par
+\par
+Recherche de modules : sys.path (cwd, PYTHONPATH, repertoires standards,\par
+site-packages).\par
+\par
+Package : repertoire avec __init__.py (ou namespace package sans, PEP 420).\par
+\par
+{\f1   monpaquet/}\par
+{\f1     __init__.py}\par
+{\f1     module1.py}\par
+{\f1     sous/}\par
+{\f1       __init__.py}\par
+{\f1       module2.py}\par
+\par
+Programme principal :\par
+\par
+{\f1   if __name__ == "__main__":}\par
+{\f1       main()}\par
+\par
+Outils :\par
+- pip : gestion de paquets (PyPI).\par
+- venv : environnements virtuels (python -m venv .venv).\par
+- pyenv : multi-versions Python.\par
+- poetry, hatch, uv : outils modernes de gestion de projets.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_08}     {\uldb Suivant >>}{\v IDH_PYTHON_10}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_10}
+{\footnote $ Python - Collections et iterateurs}
+{\footnote K Python collections;list tuple dict set;methodes;comprehensions;defaultdict Counter OrderedDict deque namedtuple ChainMap}
+\b\fs24 Collections et iterateurs \b0\fs20\par
+\par
+10.1 Listes\par
+\par
+{\f1   liste = [1, 2, 3]}\par
+{\f1   liste.append(4)}\par
+{\f1   liste.extend([5, 6])}\par
+{\f1   liste.insert(0, 0)}\par
+{\f1   liste.pop()                     # dernier}\par
+{\f1   liste.pop(0)                    # premier}\par
+{\f1   liste.remove(3)}\par
+{\f1   liste.sort(); liste.reverse()}\par
+{\f1   copie = liste[:]}\par
+{\f1   inverse = liste[::-1]}\par
+{\f1   sub = liste[1:4]}\par
+\par
+10.2 Tuples\par
+\par
+{\f1   t = (1, 2, 3)}\par
+{\f1   t = 1, 2, 3                     # parentheses optionnelles}\par
+{\f1   x, y, z = t}\par
+{\f1   named = (1,)                    # tuple a un element}\par
+\par
+10.3 Dictionnaires\par
+\par
+{\f1   d = \{"a": 1, "b": 2\}}\par
+{\f1   d["c"] = 3}\par
+{\f1   d.get("x", 0)                   # avec valeur par defaut}\par
+{\f1   d.setdefault("y", []).append(1)}\par
+{\f1   for k, v in d.items(): ...}\par
+{\f1   d2 = d | \{"d": 4\}               # merge (3.9+)}\par
+\par
+10.4 Sets\par
+\par
+{\f1   s = \{1, 2, 3\}}\par
+{\f1   s.add(4)}\par
+{\f1   s.discard(2)}\par
+{\f1   union = s | \{5, 6\}}\par
+{\f1   inter = s & \{3, 4\}}\par
+{\f1   diff = s - \{1, 2\}}\par
+\par
+10.5 Comprehensions\par
+\par
+{\f1   carres = [x*x for x in range(10)]}\par
+{\f1   pairs = \{x for x in range(10) if x % 2 == 0\}}\par
+{\f1   d = \{x: x*x for x in range(10)\}}\par
+{\f1   generateur = (x*x for x in range(10))      # lazy}\par
+\par
+10.6 collections (bibliotheque standard)\par
+\par
+{\f1   from collections import (}\par
+{\f1       defaultdict, Counter, OrderedDict, deque, namedtuple, ChainMap}\par
+{\f1   )}\par
+{\f1   c = Counter("abracadabra")           # \{'a': 5, 'b': 2, 'r': 2, ...\}}\par
+{\f1   dd = defaultdict(list)}\par
+{\f1   dd["x"].append(1)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_09}     {\uldb Suivant >>}{\v IDH_PYTHON_11}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_11}
+{\footnote $ Python - Generateurs, iterateurs et async}
+{\footnote K Python generateurs iterateurs async;yield;yield from;StopIteration;itertools;asyncio;async await;PEP 492;async for;async generators}
+\b\fs24 Generateurs, iterateurs et async \b0\fs20\par
+\par
+Iterateur (protocole) :\par
+\par
+{\f1   class CompteAvebours:}\par
+{\f1       def __init__(self, n): self.n = n}\par
+{\f1       def __iter__(self): return self}\par
+{\f1       def __next__(self):}\par
+{\f1           if self.n <= 0: raise StopIteration}\par
+{\f1           self.n -= 1}\par
+{\f1           return self.n}\par
+\par
+Generateurs avec yield :\par
+\par
+{\f1   def pairs(n):}\par
+{\f1       for i in range(n):}\par
+{\f1           if i % 2 == 0:}\par
+{\f1               yield i}\par
+\par
+{\f1   def lecteur(f):}\par
+{\f1       while True:}\par
+{\f1           line = f.readline()}\par
+{\f1           if not line: return}\par
+{\f1           yield line.rstrip()}\par
+\par
+itertools (bibliotheque standard) :\par
+\par
+{\f1   from itertools import (}\par
+{\f1       count, cycle, repeat, chain, islice, takewhile, dropwhile,}\par
+{\f1       groupby, accumulate, product, permutations, combinations, tee}\par
+{\f1   )}\par
+\par
+async/await (PEP 492, 3.5+) :\par
+\par
+{\f1   import asyncio}\par
+\par
+{\f1   async def telecharger(url):}\par
+{\f1       reader, writer = await asyncio.open_connection(...)}\par
+{\f1       ...}\par
+{\f1       return data}\par
+\par
+{\f1   async def main():}\par
+{\f1       r1, r2 = await asyncio.gather(}\par
+{\f1           telecharger("a"), telecharger("b")}\par
+{\f1       )}\par
+\par
+{\f1   asyncio.run(main())}\par
+\par
+Async generators (3.6+) :\par
+\par
+{\f1   async def stream():}\par
+{\f1       for i in range(10):}\par
+{\f1           await asyncio.sleep(0.1)}\par
+{\f1           yield i}\par
+\par
+{\f1   async for x in stream(): ...}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_10}     {\uldb Suivant >>}{\v IDH_PYTHON_12}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_12}
+{\footnote $ Python - Chaines de caracteres}
+{\footnote K Python chaines;str methodes;split join replace;f-string formatage;str.format;encode decode;regex re;expressions regulieres}
+\b\fs24 Chaines de caracteres \b0\fs20\par
+\par
+Operations courantes :\par
+\par
+{\f1   s = "Bonjour le Monde"}\par
+{\f1   len(s)                  # 16}\par
+{\f1   s.upper(); s.lower(); s.title()}\par
+{\f1   s.strip(); s.lstrip(); s.rstrip()}\par
+{\f1   s.split(); s.split(",")}\par
+{\f1   ",".join(["a", "b", "c"])}\par
+{\f1   s.replace("le", "au")}\par
+{\f1   s.startswith("Bon"); s.endswith("e")}\par
+{\f1   s.find("le"); s.index("le")}\par
+{\f1   s.count("o")}\par
+{\f1   s[::-1]                 # inversion}\par
+\par
+Formatage :\par
+\par
+{\f1   # f-strings (3.6+, recommande)}\par
+{\f1   print(f"\{nom\} a \{age\} ans")}\par
+{\f1   print(f"\{x:.3f\}")}\par
+{\f1   print(f"\{x:>10\}")            # alignement}\par
+{\f1   print(f"\{x:_\}")              # separateur de milliers}\par
+{\f1   print(f"\{var=\}")             # debug : var=valeur (3.8+)}\par
+\par
+{\f1   # str.format()}\par
+{\f1   "\{0\} \{1\}".format(a, b)}\par
+{\f1   "\{nom\}".format(nom="Alice")}\par
+\par
+{\f1   # %-formatting (style C, legacy)}\par
+{\f1   "%d %s" % (10, "abc")}\par
+\par
+Encodage/decodage :\par
+\par
+{\f1   s.encode("utf-8")          # str -> bytes}\par
+{\f1   b.decode("utf-8")          # bytes -> str}\par
+\par
+Expressions regulieres (re) :\par
+\par
+{\f1   import re}\par
+{\f1   m = re.match(r"(\\d+)-(\\d+)", "10-20")}\par
+{\f1   if m: print(m.group(1), m.group(2))}\par
+{\f1   re.findall(r"\\d+", "a 10 b 20 c 30")    # ['10', '20', '30']}\par
+{\f1   re.sub(r"\\s+", " ", texte)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_11}     {\uldb Suivant >>}{\v IDH_PYTHON_13}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_13}
+{\footnote $ Python - Entrees/sorties et fichiers}
+{\footnote K Python entrees sorties fichiers;open;with;encoding utf-8;pathlib;Path;json csv pickle;tomllib;serialisation}
+\b\fs24 Entrees/sorties et fichiers \b0\fs20\par
+\par
+Console :\par
+\par
+{\f1   s = input("Nom ? ")}\par
+{\f1   print("a", "b", sep="-", end="\\n", file=sys.stderr)}\par
+\par
+Fichiers texte :\par
+\par
+{\f1   with open("a.txt", "r", encoding="utf-8") as f:}\par
+{\f1       contenu = f.read()}\par
+{\f1       # ou :}\par
+{\f1       for line in f: ...}\par
+\par
+{\f1   with open("b.txt", "w", encoding="utf-8") as f:}\par
+{\f1       f.write("...")}\par
+{\f1       print("...", file=f)}\par
+\par
+Modes : "r" lecture, "w" ecriture (ecrase), "a" ajout, "x" creation exclusive,\par
+"b" binaire, "+" mise a jour.\par
+\par
+Fichiers binaires :\par
+\par
+{\f1   with open("img.bin", "rb") as f:}\par
+{\f1       data = f.read(1024)}\par
+\par
+pathlib (recommande depuis Python 3.4) :\par
+\par
+{\f1   from pathlib import Path}\par
+{\f1   p = Path("dossier") / "fichier.txt"}\par
+{\f1   p.exists(); p.is_file(); p.is_dir()}\par
+{\f1   texte = p.read_text(encoding="utf-8")}\par
+{\f1   p.write_text("...", encoding="utf-8")}\par
+{\f1   for entry in Path(".").iterdir(): ...}\par
+{\f1   for f in Path(".").glob("**/*.py"): ...}\par
+\par
+Serialisation :\par
+- json : encodage/decodage JSON.\par
+- pickle : serialisation native Python (peu sur cross-langage).\par
+- csv : lecture/ecriture CSV.\par
+- xml.etree.ElementTree, tomllib (3.11+) : XML, TOML.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_12}     {\uldb Suivant >>}{\v IDH_PYTHON_14}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_14}
+{\footnote $ Python - Bibliotheque standard (modules courants)}
+{\footnote K Python bibliotheque standard;sys os pathlib;argparse logging;datetime;math random;collections itertools functools;json csv sqlite3;urllib socket;threading multiprocessing asyncio;unittest pytest;typing dataclasses enum}
+\b\fs24 Bibliotheque standard (modules courants) \b0\fs20\par
+\par
+- sys, os, os.path, pathlib : systeme.\par
+- argparse : analyse de la ligne de commande.\par
+- logging : journalisation.\par
+- datetime, time, calendar : dates et heures.\par
+- math, statistics, decimal, fractions, random, secrets : numerique.\par
+- re : expressions regulieres.\par
+- collections, itertools, functools : utilitaires.\par
+- json, csv, sqlite3, xml : donnees.\par
+- urllib, http, socket, ssl : reseau.\par
+- threading, multiprocessing, asyncio, concurrent.futures : concurrence.\par
+- subprocess, signal : processus.\par
+- unittest, doctest, pytest (externe) : tests.\par
+- typing, dataclasses, enum : typage et structures.\par
+- contextlib, weakref : utilitaires bas niveau.\par
+\par
+Total : ~200 modules dans la bibliotheque standard.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_13}     {\uldb Suivant >>}{\v IDH_PYTHON_15}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_15}
+{\footnote $ Python - Les compilateurs PYTHON86.PAS et PYTHCW32.PAS}
+{\footnote K Python compilateurs projet;PYTHON86.PAS;PYTHCW32.PAS;DOS 8086;Win32 PE;MASM;sous-ensemble}
+\b\fs24 Les compilateurs PYTHON86.PAS et PYTHCW32.PAS \b0\fs20\par
+\par
+PYTHON86.PAS :\par
+- Compilateur Python pour cible 8086 DOS (sous-ensemble Python 3.6).\par
+- Genere du code MASM compatible.\par
+- Supporte : int, float, str (ASCII), list, tuple, dict, if/while/for,\par
+{\f1   def, class, import (limite a quelques modules standard).}\par
+- Pas de generateurs/async, pas de comprehensions imbriquees complexes.\par
+- Runtime minimal : print, input, range, len, str, int, float.\par
+\par
+PYTHCW32.PAS :\par
+- Compilateur Python pour Windows 32 bits (PE executable).\par
+- Sous-ensemble Python 3.7+ : comprehensions, f-strings, dataclasses\par
+{\f1   simples, type hints (ignores a l'execution mais valides).}\par
+- Pas de async/await ni multiprocessing.\par
+- Generation native x86 sans passage par bytecode CPython.\par
+- Acces aux API Win32 via ctypes minimal.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_14}     {\uldb Suivant >>}{\v IDH_PYTHON_16}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_16}
+{\footnote $ Python - Exemples de programmes}
+{\footnote K Python exemples;Hello;factorielle;Fibonacci;Counter;asyncio;dataclass;lru_cache;memoization}
+\b\fs24 Exemples de programmes \b0\fs20\par
+\par
+16.1 Hello World\par
+\par
+{\f1   print("Bonjour le monde")}\par
+\par
+16.2 Factorielle recursive\par
+\par
+{\f1   def fact(n: int) -> int:}\par
+{\f1       return 1 if n <= 1 else n * fact(n - 1)}\par
+\par
+{\f1   print(fact(20))               # 2432902008176640000}\par
+\par
+16.3 Suite de Fibonacci (generateur)\par
+\par
+{\f1   def fib():}\par
+{\f1       a, b = 0, 1}\par
+{\f1       while True:}\par
+{\f1           yield a}\par
+{\f1           a, b = b, a + b}\par
+\par
+{\f1   from itertools import islice}\par
+{\f1   print(list(islice(fib(), 10)))    # [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]}\par
+\par
+16.4 Lecture d'un fichier, mots les plus frequents\par
+\par
+{\f1   from collections import Counter}\par
+{\f1   from pathlib import Path}\par
+{\f1   texte = Path("texte.txt").read_text(encoding="utf-8").lower()}\par
+{\f1   mots = texte.split()}\par
+{\f1   for mot, n in Counter(mots).most_common(10):}\par
+{\f1       print(f"\{mot:20s\} \{n\}")}\par
+\par
+16.5 Telechargement parallele (asyncio)\par
+\par
+{\f1   import asyncio, aiohttp}\par
+\par
+{\f1   async def get(url):}\par
+{\f1       async with aiohttp.ClientSession() as s:}\par
+{\f1           async with s.get(url) as r:}\par
+{\f1               return await r.text()}\par
+\par
+{\f1   async def main():}\par
+{\f1       urls = ["https://a.org", "https://b.org"]}\par
+{\f1       pages = await asyncio.gather(*[get(u) for u in urls])}\par
+{\f1       for p in pages: print(len(p))}\par
+\par
+{\f1   asyncio.run(main())}\par
+\par
+16.6 Classe avec dataclass\par
+\par
+{\f1   from dataclasses import dataclass}\par
+{\f1   from math import hypot}\par
+\par
+{\f1   @dataclass(frozen=True)}\par
+{\f1   class Point:}\par
+{\f1       x: float}\par
+{\f1       y: float}\par
+{\f1       def distance(self, autre: "Point") -> float:}\par
+{\f1           return hypot(self.x - autre.x, self.y - autre.y)}\par
+\par
+{\f1   a = Point(0, 0); b = Point(3, 4)}\par
+{\f1   print(a.distance(b))            # 5.0}\par
+\par
+16.7 Decorateur memoization\par
+\par
+{\f1   from functools import lru_cache}\par
+\par
+{\f1   @lru_cache(maxsize=None)}\par
+{\f1   def fib(n):}\par
+{\f1       return n if n < 2 else fib(n-1) + fib(n-2)}\par
+\par
+{\f1   print(fib(100))                 # quasi-instantane}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_15}     {\uldb Suivant >>}{\v IDH_PYTHON_17}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_17}
+{\footnote $ Python - Bonnes pratiques (PEP 8, PEP 20)}
+{\footnote K Python bonnes pratiques;PEP 8;PEP 20;PEP 257;Zen;black;ruff;flake8 pylint;mypy pyright;pytest}
+\b\fs24 Bonnes pratiques (PEP 8, PEP 20) \b0\fs20\par
+\par
+Zen of Python (PEP 20, "import this") :\par
+- Beautiful is better than ugly.\par
+- Explicit is better than implicit.\par
+- Simple is better than complex.\par
+- Readability counts.\par
+- There should be one-- and preferably only one --obvious way to do it.\par
+\par
+PEP 8 (style) :\par
+- Indentation : 4 espaces, pas de tabulations.\par
+- Longueur de ligne : 79 caracteres (99 acceptable).\par
+- snake_case pour fonctions/variables, PascalCase pour classes.\par
+- Espaces autour des operateurs binaires, pas autour de = dans les parametres.\par
+- Une instruction par ligne.\par
+- Docstrings (PEP 257) pour modules/classes/fonctions publiques.\par
+\par
+Outils :\par
+- black : formatage automatique.\par
+- ruff : linter et formatter ultra rapide (Rust).\par
+- flake8, pylint : linters.\par
+- mypy, pyright : verification de type statique.\par
+- pytest : framework de tests le plus utilise.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_16}     {\uldb Suivant >>}{\v IDH_PYTHON_18}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_18}
+{\footnote $ Python - Ecosysteme et influence}
+{\footnote K Python ecosysteme;NumPy Pandas SciPy;scikit-learn TensorFlow PyTorch JAX;Django Flask FastAPI;Tkinter PyQt;CPython PyPy Jython IronPython MicroPython GraalPy}
+\b\fs24 Ecosysteme et influence \b0\fs20\par
+\par
+Domaines d'usage majeurs :\par
+- Science des donnees / IA : NumPy, Pandas, SciPy, scikit-learn,\par
+{\f1   TensorFlow, PyTorch, JAX, Keras.}\par
+- Web : Django, Flask, FastAPI, Pyramid.\par
+- Automation / scripting / DevOps : Ansible, Fabric, Invoke.\par
+- Tests : pytest, hypothesis, tox.\par
+- Graphique / GUI : Tkinter, PyQt, PySide, Kivy, Pygame.\par
+- Analyse scientifique : SymPy, matplotlib, seaborn, plotly.\par
+- Education : tres present en enseignement (lycee, universite).\par
+\par
+Implementations alternatives :\par
+- CPython : reference, ecrite en C.\par
+- PyPy : interprete avec JIT (10x plus rapide sur du code pur Python).\par
+- Jython : sur JVM.\par
+- IronPython : sur .NET.\par
+- MicroPython, CircuitPython : pour microcontroleurs.\par
+- GraalPy : sur GraalVM.\par
+- Pyston, Cinder, mypyc : optimisations Meta/Facebook.\par
+\par
+Influences sortantes : Ruby, Go (un peu), Swift (par certains aspects),\par
+Julia, TypeScript (annotations).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_17}     {\uldb Suivant >>}{\v IDH_PYTHON_19}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PYTHON_19}
+{\footnote $ Python - References}
+{\footnote K Python references;PEP Index;documentation officielle;PEP 8 20 484 492 526 557 585 634 695;Lutz;Beazley;Ramalho;van Rossum}
+\b\fs24 References \b0\fs20\par
+\par
+- Documentation officielle : https://docs.python.org/3/\par
+- PEP Index : https://peps.python.org/\par
+- PEP 8 : Style Guide for Python Code.\par
+- PEP 20 : The Zen of Python.\par
+- PEP 484 : Type Hints.\par
+- PEP 492 : Coroutines with async and await syntax.\par
+- PEP 526 : Syntax for Variable Annotations.\par
+- PEP 557 : Data Classes.\par
+- PEP 585 : Type Hinting Generics In Standard Collections.\par
+- PEP 634/635/636 : Structural Pattern Matching (match/case).\par
+- PEP 695 : Type Parameter Syntax (Python 3.12).\par
+- Lutz, M. : "Learning Python", O'Reilly, 5eme ed. 2013.\par
+- Beazley, D.; Jones, B. : "Python Cookbook", O'Reilly, 3eme ed. 2013.\par
+- Ramalho, L. : "Fluent Python", O'Reilly, 2eme ed. 2022.\par
+- van Rossum, G. : "The History of Python" (blog historique).\par
+- Guttag, J. : "Introduction to Computation and Programming Using Python",\par
+{\f1   MIT Press.}\par
+\par
+{\f1                               FIN DU DOCUMENT}\par
+
+\par
+{\uldb << Precedent}{\v IDH_PYTHON_18}     {\uldb Table des matieres}{\v IDH_PYTHON_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

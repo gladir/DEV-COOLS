@@ -1,0 +1,730 @@
+================================================================================
+                  SPECIFICATIONS DU LANGAGE DE PROGRAMMATION C#
+================================================================================
+
+Document de reference pour l'integration dans le systeme d'aide DEVENV.HLP.
+Couvre C# 1.0 jusqu'a C# 12 (.NET 8, 2023), avec mention des nouveautes C# 13
+(.NET 9, 2024). Les compilateurs CSC86.PAS et CSCW32.PAS du projet DEV-COOLS
+implementent un sous-ensemble proche de C# 2.0/3.0.
+
+
+================================================================================
+1. Presentation generale
+================================================================================
+
+C# (prononce "C sharp") est un langage de programmation oriente objet,
+multiparadigme, concu par Anders Hejlsberg chez Microsoft entre 1999 et 2000.
+Initialement nomme "Cool" (C-like Object Oriented Language), il a ete annonce
+en juillet 2000 et standardise par ECMA-334 (decembre 2002) et ISO/IEC 23270.
+
+Historique des versions :
+- 2002 : C# 1.0 (.NET Framework 1.0).
+- 2005 : C# 2.0 (generics, methodes anonymes, iterators, types nullables).
+- 2007 : C# 3.0 (LINQ, lambda, var, types anonymes, methodes d'extension).
+- 2010 : C# 4.0 (dynamic, parametres optionnels/nommes, covariance/contravariance).
+- 2012 : C# 5.0 (async/await).
+- 2015 : C# 6.0 (interpolation de chaines, expression-bodied, nameof).
+- 2017 : C# 7.0-7.3 (tuples, deconstruction, pattern matching, ref locals).
+- 2019 : C# 8.0 (types nullables references, switch expressions, default
+  interface methods, async streams).
+- 2020 : C# 9.0 (records, init-only, top-level statements, pattern matching
+  ameliore).
+- 2021 : C# 10 (global usings, file-scoped namespaces, record struct).
+- 2022 : C# 11 (raw string literals, list patterns, required members,
+  generic math).
+- 2023 : C# 12 (primary constructors, collection expressions, alias any type).
+- 2024 : C# 13 (params collections, lock object, escape sequence \e).
+
+Caracteristiques distinctives :
+- Compile vers IL (CIL/MSIL), execute par CLR (.NET) ou Mono/.NET Core.
+- Typage statique fort avec inference de type (var).
+- Gestion automatique de la memoire (Garbage Collector generationnel).
+- Support de la programmation orientee objet, generique, fonctionnelle et
+  asynchrone.
+- Interoperabilite native avec C/C++ via P/Invoke.
+- Reflection complete a l'execution.
+- Pointeurs disponibles en mode unsafe.
+
+
+================================================================================
+2. Structure d'un programme C#
+================================================================================
+
+Programme classique :
+
+  using System;
+
+  namespace MonProgramme
+  {
+      class Program
+      {
+          static void Main(string[] args)
+          {
+              Console.WriteLine("Bonjour le monde");
+          }
+      }
+  }
+
+Top-level statements (C# 9+) :
+
+  using System;
+  Console.WriteLine("Bonjour le monde");
+
+File-scoped namespace (C# 10+) :
+
+  namespace MonProgramme;
+
+  class Program { ... }
+
+Global using (C# 10+) :
+
+  global using System;
+  global using System.Collections.Generic;
+
+
+================================================================================
+3. Caracteristiques lexicales
+================================================================================
+
+Jeu de caracteres : Unicode (UTF-8 par defaut pour le source).
+
+Identificateurs :
+- Sensibles a la casse.
+- Lettres Unicode, chiffres, underscore. Doivent commencer par lettre ou _.
+- Prefixe @ pour utiliser un mot reserve : @class, @if.
+
+Mots reserves (extrait) :
+  abstract  as  base  bool  break  byte  case  catch  char  checked  class
+  const  continue  decimal  default  delegate  do  double  else  enum  event
+  explicit  extern  false  finally  fixed  float  for  foreach  goto  if
+  implicit  in  int  interface  internal  is  lock  long  namespace  new
+  null  object  operator  out  override  params  private  protected  public
+  readonly  ref  return  sbyte  sealed  short  sizeof  stackalloc  static
+  string  struct  switch  this  throw  true  try  typeof  uint  ulong
+  unchecked  unsafe  ushort  using  virtual  void  volatile  while
+
+Mots contextuels (reserves seulement dans certains contextes) :
+  add  alias  ascending  async  await  by  descending  dynamic  equals  from
+  get  global  group  init  into  join  let  nameof  on  orderby  partial
+  record  remove  required  select  set  unmanaged  value  var  when  where
+  with  yield
+
+Litteraux :
+- Entiers : 42, 0xFF, 0b1010, 1_000_000
+- Suffixes : 42L (long), 42UL (ulong), 42U (uint)
+- Reels : 3.14, 1.5e-3, 3.14f (float), 3.14m (decimal), 3.14d (double)
+- Caracteres : 'A', '\n', '\u00E9', '\x41'
+- Chaines : "Bonjour", @"C:\Path", $"x = {x}", $@"..."
+- Raw strings (C# 11+) : """...""", """""...."""""
+- Booleens : true, false
+- null
+
+Commentaires :
+- Ligne : // commentaire
+- Bloc : /* ... */
+- XML doc : /// <summary>...</summary>
+
+
+================================================================================
+4. Types de donnees
+================================================================================
+
+4.1 Types valeur (struct)
+
+Types numeriques entiers :
+  sbyte    8 bits signe       -128..127
+  byte     8 bits non signe   0..255
+  short    16 bits signe      -32768..32767
+  ushort   16 bits non signe  0..65535
+  int      32 bits signe      -2^31..2^31-1
+  uint     32 bits non signe  0..2^32-1
+  long     64 bits signe      -2^63..2^63-1
+  ulong    64 bits non signe  0..2^64-1
+  nint     pointeur natif signe
+  nuint    pointeur natif non signe
+
+Types flottants :
+  float    IEEE 754 simple precision (32 bits, ~7 digits)
+  double   IEEE 754 double precision (64 bits, ~15-17 digits)
+  decimal  128 bits decimal exact (~28-29 digits, base 10)
+  Half     IEEE 754 demi-precision (16 bits, .NET 5+)
+
+Autres types valeur :
+  bool     true/false
+  char     UTF-16 (16 bits)
+  enum     enumeration
+  struct   structure utilisateur
+  tuple    (int, string) (C# 7+)
+
+4.2 Types reference
+
+  object   racine de tous les types
+  string   chaine immuable UTF-16
+  class    classe utilisateur
+  interface
+  delegate
+  array    int[], int[,], int[][]
+  dynamic  resolution liee a l'execution
+
+4.3 Types nullables
+
+Valeur nullable : int?, double? (Nullable<T>).
+Reference nullable (C# 8+) : string? (avec #nullable enable).
+
+  int? x = null;
+  string? nom = null;
+  int y = x ?? 0;             // operateur null-coalescing
+
+4.4 Inference de type
+
+  var i = 42;                 // int
+  var s = "hello";            // string
+  var liste = new List<int>(); // List<int>
+
+4.5 Constantes
+
+  const int MAX = 100;
+  const string VERSION = "1.0";
+
+
+================================================================================
+5. Operateurs
+================================================================================
+
+Arithmetiques  : + - * / % ++ --
+Affectation    : = += -= *= /= %= &= |= ^= <<= >>= ??=
+Comparaison    : == != < > <= >=
+Logiques       : && || ! ^
+Bit-a-bit      : & | ^ ~ << >>
+Acces          : . ?. ?[] ->
+Cast           : (type)expr, expr as Type, expr is Type
+Null           : ?? ??= ?. ?[]
+Ranges         : .. (1..5, ..3, 2..)
+Indexers       : ^ (^1 = depuis la fin)
+Lambda         : =>
+Pointeurs      : * & -> (mode unsafe)
+typeof, sizeof, nameof, default
+new, await, throw (expression)
+
+Precedence (du plus prioritaire au moins) :
+  1. .  ?.  []  ?[]  ()  new  typeof  sizeof  nameof  checked  unchecked
+  2. !  ~  ++  --  -unaire  +unaire  (T)
+  3. *  /  %
+  4. +  -
+  5. <<  >>
+  6. <  >  <=  >=  is  as
+  7. ==  !=
+  8. &
+  9. ^
+ 10. |
+ 11. &&
+ 12. ||
+ 13. ??
+ 14. ?:
+ 15. =  affectations  =>
+
+
+================================================================================
+6. Instructions de controle
+================================================================================
+
+if/else :
+  if (x > 0) { ... } else if (x == 0) { ... } else { ... }
+
+switch (instruction) :
+  switch (jour) {
+    case "Lun":
+    case "Mar": Console.WriteLine("Semaine"); break;
+    case "Sam":
+    case "Dim": Console.WriteLine("WE"); break;
+    default: throw new ArgumentException(); 
+  }
+
+switch expression (C# 8+) :
+  string nom = code switch {
+    1 => "Un", 2 => "Deux", _ => "Autre"
+  };
+
+Pattern matching (C# 7+, etendu en 8/9/10/11) :
+  if (obj is string s && s.Length > 0) { ... }
+  if (p is { Age: > 18, Nom: not null }) { ... }
+  var msg = shape switch {
+    Circle { Radius: > 0 } c => $"Cercle r={c.Radius}",
+    Square s when s.Side > 0 => $"Carre {s.Side}",
+    _ => "Inconnu"
+  };
+
+while / do-while :
+  while (cond) { ... }
+  do { ... } while (cond);
+
+for :
+  for (int i = 0; i < n; i++) { ... }
+
+foreach :
+  foreach (var item in collection) { ... }
+
+break / continue / return / goto :
+  for (...) { if (cond) break; if (cond2) continue; }
+  goto label; label: ...
+
+throw / try / catch / finally :
+  try {
+    ...
+  } catch (FileNotFoundException ex) {
+    ...
+  } catch (Exception ex) when (ex.Message.Length > 0) {
+    ...
+  } finally {
+    ...
+  }
+
+using (gestion deterministe IDisposable) :
+  using (var f = File.OpenRead("a.txt")) { ... }
+  using var f = File.OpenRead("a.txt");  // C# 8+ using declaration
+
+lock :
+  lock (objetVerrou) { /* section critique */ }
+
+checked / unchecked :
+  int r = checked(a * b);          // leve OverflowException
+  int r = unchecked(a * b);        // wrap silencieux
+
+yield (iterators, C# 2+) :
+  IEnumerable<int> Pairs(int n) {
+    for (int i = 0; i < n; i += 2) yield return i;
+  }
+
+
+================================================================================
+7. Classes et orientation objet
+================================================================================
+
+7.1 Definition de classe
+
+  public class Personne {
+    public string Nom { get; set; }
+    public int Age { get; init; }     // C# 9+ init-only
+
+    public Personne(string nom, int age) {
+      Nom = nom;
+      Age = age;
+    }
+
+    public override string ToString() => $"{Nom} ({Age})";
+  }
+
+7.2 Heritage et polymorphisme
+
+  public abstract class Forme {
+    public abstract double Aire();
+    public virtual string Nom() => "Forme";
+  }
+
+  public class Cercle : Forme {
+    public double Rayon { get; set; }
+    public override double Aire() => Math.PI * Rayon * Rayon;
+    public override string Nom() => "Cercle";
+  }
+
+Modificateurs d'acces : public, private, protected, internal,
+protected internal, private protected, file (C# 11+).
+
+Mots-cles : abstract, virtual, override, sealed, new, static, partial.
+
+7.3 Proprietes
+
+  public class Compteur {
+    private int _valeur;
+    public int Valeur {
+      get => _valeur;
+      set { if (value >= 0) _valeur = value; }
+    }
+    public int Suivant => _valeur + 1;     // expression-bodied
+  }
+
+Auto-properties : public int X { get; set; }
+Init-only : public int X { get; init; }
+Required (C# 11+) : public required string Nom { get; init; }
+
+7.4 Indexers
+
+  public class Tableau {
+    private int[] _data = new int[100];
+    public int this[int i] {
+      get => _data[i];
+      set => _data[i] = value;
+    }
+  }
+
+7.5 Constructeurs primaires (C# 12+)
+
+  public class Point(double x, double y) {
+    public double X => x;
+    public double Y => y;
+    public double Distance() => Math.Sqrt(x*x + y*y);
+  }
+
+7.6 Interfaces
+
+  public interface IComparable<T> {
+    int CompareTo(T autre);
+  }
+
+Default interface methods (C# 8+) :
+  public interface ILog {
+    void Log(string msg);
+    void LogErreur(string msg) => Log("ERREUR: " + msg);  // par defaut
+  }
+
+7.7 Structs
+
+  public struct Point { public int X, Y; }
+
+Readonly struct (C# 7.2+) :
+  public readonly struct Vector3 {
+    public readonly double X, Y, Z;
+  }
+
+Record struct (C# 10+) :
+  public record struct Coord(double Lat, double Lon);
+
+
+================================================================================
+8. Records (C# 9+)
+================================================================================
+
+Type immuable avec egalite de valeur et deconstruction automatiques.
+
+  public record Personne(string Nom, int Age);
+
+  var p1 = new Personne("Alice", 30);
+  var p2 = p1 with { Age = 31 };    // copie modifiee
+  bool eq = p1 == p2;                // false (egalite de valeur)
+
+Record class (par defaut) vs record struct (C# 10+).
+
+  public record class Voiture(string Marque, string Modele);
+  public record struct Couleur(byte R, byte G, byte B);
+
+
+================================================================================
+9. Generics
+================================================================================
+
+  public class Pile<T> {
+    private List<T> _items = new();
+    public void Push(T item) => _items.Add(item);
+    public T Pop() {
+      var x = _items[^1];
+      _items.RemoveAt(_items.Count - 1);
+      return x;
+    }
+  }
+
+Contraintes :
+  where T : class                  // type reference
+  where T : struct                 // type valeur
+  where T : new()                  // constructeur sans parametre
+  where T : Comparable             // type de base
+  where T : IComparable<T>         // interface
+  where T : notnull                // non nullable (C# 8+)
+  where T : unmanaged              // type non managed
+  where T : allows ref struct      // C# 13+
+
+Methodes generiques :
+  public static T Max<T>(T a, T b) where T : IComparable<T>
+    => a.CompareTo(b) > 0 ? a : b;
+
+Generic math (C# 11+, .NET 7+) :
+  public static T Somme<T>(IEnumerable<T> xs) where T : INumber<T>
+    => xs.Aggregate(T.Zero, (a, b) => a + b);
+
+
+================================================================================
+10. Delegates, evenements et lambdas
+================================================================================
+
+Delegate :
+  public delegate int Operation(int a, int b);
+  Operation add = (a, b) => a + b;
+  int r = add(2, 3);
+
+Func<>, Action<>, Predicate<> :
+  Func<int, int, int> mul = (a, b) => a * b;
+  Action<string> log = s => Console.WriteLine(s);
+  Predicate<int> pair = n => n % 2 == 0;
+
+Lambdas :
+  x => x * 2
+  (x, y) => x + y
+  (int x) => { return x * 2; }
+  static (x, y) => x + y       // C# 9+ static lambda
+
+Evenements :
+  public class Bouton {
+    public event EventHandler? Clic;
+    protected virtual void OnClic() => Clic?.Invoke(this, EventArgs.Empty);
+  }
+  bouton.Clic += (s, e) => Console.WriteLine("clique");
+
+
+================================================================================
+11. LINQ (Language Integrated Query, C# 3+)
+================================================================================
+
+Syntaxe methode :
+  var jeunes = personnes
+    .Where(p => p.Age < 30)
+    .OrderBy(p => p.Nom)
+    .Select(p => p.Nom)
+    .ToList();
+
+Syntaxe requete :
+  var jeunes = from p in personnes
+               where p.Age < 30
+               orderby p.Nom
+               select p.Nom;
+
+Operateurs : Where, Select, SelectMany, OrderBy, ThenBy, GroupBy, Join,
+GroupJoin, Distinct, Take, Skip, First, FirstOrDefault, Single, Any, All,
+Count, Sum, Min, Max, Average, Aggregate, Zip, Chunk (.NET 6+).
+
+
+================================================================================
+12. async / await (C# 5+)
+================================================================================
+
+  public async Task<string> TelechargerAsync(string url) {
+    using var client = new HttpClient();
+    var html = await client.GetStringAsync(url);
+    return html;
+  }
+
+  public async Task TraiterAsync() {
+    var html = await TelechargerAsync("https://exemple.org");
+    Console.WriteLine(html.Length);
+  }
+
+Types de retour : Task, Task<T>, ValueTask, ValueTask<T>, void (event handlers
+uniquement), IAsyncEnumerable<T> (C# 8+).
+
+Async streams (C# 8+) :
+  public async IAsyncEnumerable<int> StreamAsync() {
+    for (int i = 0; i < 10; i++) {
+      await Task.Delay(100);
+      yield return i;
+    }
+  }
+  await foreach (var x in StreamAsync()) Console.WriteLine(x);
+
+
+================================================================================
+13. Espaces de noms et organisation
+================================================================================
+
+  namespace MaSociete.MonProjet.Modele {
+    public class Client { ... }
+  }
+
+File-scoped namespace (C# 10+) :
+  namespace MaSociete.MonProjet.Modele;
+
+  public class Client { ... }
+
+using directive :
+  using System;
+  using static System.Math;        // import statique
+  using System.Collections.Generic;
+  using StringDict = System.Collections.Generic.Dictionary<string,string>;
+  global using System.Linq;        // C# 10+ : applique a tous les fichiers
+
+
+================================================================================
+14. Gestion de la memoire et bas niveau
+================================================================================
+
+Garbage Collector : generationnel (Gen 0/1/2, LOH), pas de delete explicite.
+IDisposable + using pour ressources non managees.
+
+Mode unsafe (pointeurs) :
+  unsafe void Inverser(int* p, int n) {
+    for (int i = 0, j = n - 1; i < j; i++, j--) {
+      (p[i], p[j]) = (p[j], p[i]);
+    }
+  }
+
+stackalloc :
+  Span<int> buf = stackalloc int[256];
+
+Span<T> et Memory<T> (C# 7.2+) : acces zero-copy a des tableaux/chaines.
+  ReadOnlySpan<char> s = "Bonjour".AsSpan();
+  ReadOnlySpan<char> deb = s[..3];   // "Bon"
+
+ref / in / out :
+  void Echange(ref int a, ref int b) { (a, b) = (b, a); }
+  int Calculer(in BigStruct s) { ... }      // C# 7.2+ ref readonly
+  bool TryParse(string s, out int r) { ... }
+
+
+================================================================================
+15. Attributs et reflection
+================================================================================
+
+  [Obsolete("Utilisez MaNouvelleAPI")]
+  public void AncienneAPI() { ... }
+
+  [Serializable]
+  public class Donnees { ... }
+
+Attribut personnalise :
+  [AttributeUsage(AttributeTargets.Method)]
+  public class TimerAttribute : Attribute {
+    public string Nom { get; }
+    public TimerAttribute(string nom) => Nom = nom;
+  }
+
+Reflection :
+  var t = typeof(Personne);
+  var props = t.GetProperties();
+  var m = t.GetMethod("ToString");
+
+
+================================================================================
+16. Les compilateurs CSC86.PAS et CSCW32.PAS
+================================================================================
+
+CSC86.PAS :
+- Compilateur C# pour cible 8086 DOS (sous-ensemble).
+- Genere du code MASM compatible.
+- Supporte un sous-ensemble C# 2.0 : classes, structs, methodes statiques,
+  if/while/for/foreach (sur tableaux), int/string/bool/char.
+- Pas de generics complets, pas de delegates, pas d'attributs.
+- Runtime minimal : Console.WriteLine, Console.ReadLine, conversion de base.
+
+CSCW32.PAS :
+- Compilateur C# pour Windows 32 bits (PE executable).
+- Sous-ensemble proche de C# 3.0 : generics simples, lambdas restreintes,
+  proprietes auto-implementees.
+- Pas de LINQ ni async/await.
+- Generation native x86 sans passage par CIL.
+- API Win32 directement accessible via DllImport.
+
+
+================================================================================
+17. Exemples de programmes
+================================================================================
+
+17.1 Hello World
+
+  using System;
+  Console.WriteLine("Bonjour le monde");
+
+17.2 Factorielle recursive
+
+  static long Fact(int n) => n <= 1 ? 1 : n * Fact(n - 1);
+  Console.WriteLine(Fact(10));   // 3628800
+
+17.3 Lecture/ecriture de fichier
+
+  using System.IO;
+  var lignes = File.ReadAllLines("entree.txt");
+  File.WriteAllLines("sortie.txt", lignes.Reverse());
+
+17.4 LINQ : top 3 mots les plus frequents
+
+  var freq = File.ReadAllText("texte.txt")
+    .Split(new[] { ' ', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+    .GroupBy(w => w.ToLower())
+    .OrderByDescending(g => g.Count())
+    .Take(3)
+    .Select(g => $"{g.Key} : {g.Count()}");
+  foreach (var s in freq) Console.WriteLine(s);
+
+17.5 Async : telechargements paralleles
+
+  using System.Net.Http;
+  static async Task Main() {
+    var urls = new[] { "https://a.org", "https://b.org" };
+    using var client = new HttpClient();
+    var taches = urls.Select(u => client.GetStringAsync(u));
+    var res = await Task.WhenAll(taches);
+    foreach (var s in res) Console.WriteLine(s.Length);
+  }
+
+17.6 Record et pattern matching
+
+  public record Forme;
+  public record Cercle(double Rayon) : Forme;
+  public record Rectangle(double L, double H) : Forme;
+
+  static double Aire(Forme f) => f switch {
+    Cercle c => Math.PI * c.Rayon * c.Rayon,
+    Rectangle r => r.L * r.H,
+    _ => 0
+  };
+
+
+================================================================================
+18. Bonnes pratiques
+================================================================================
+
+- Activer #nullable enable et eliminer les avertissements de reference nullable.
+- Preferer var quand le type est evident, sinon ecrire le type.
+- Utiliser readonly et init pour les champs/proprietes immuables.
+- Suivre PascalCase pour types/methodes/proprietes, camelCase pour locales et
+  parametres, _camelCase pour champs prives.
+- Utiliser using/await using systematiquement pour IDisposable/IAsyncDisposable.
+- Eviter les exceptions pour le controle de flux normal.
+- Preferer string.Format/interpolation a la concatenation pour la lisibilite.
+- Utiliser Span<T>/Memory<T> pour les buffers haute performance.
+- Documenter avec XML doc (///) pour les API publiques.
+- Activer les analyseurs Roslyn et configurer EditorConfig.
+
+
+================================================================================
+19. Ecosysteme et influence
+================================================================================
+
+Plateformes :
+- .NET Framework (Windows uniquement, 2002-2022 maintenance seulement).
+- .NET Core / .NET 5+ (cross-platform, Windows/Linux/macOS, depuis 2016).
+- Mono (Linux/macOS/Android/iOS, fusionne avec .NET).
+- Xamarin / .NET MAUI (mobile, desktop multi-plateforme).
+- Unity (jeux video, IL2CPP).
+- Blazor (WebAssembly et server-side web).
+
+Outils :
+- Compilateur Roslyn (C#/VB.NET, source-libre).
+- MSBuild, dotnet CLI.
+- Visual Studio, Visual Studio Code (C# Dev Kit), JetBrains Rider.
+- NuGet (gestion de paquets).
+
+Influence : C# a beaucoup emprunte a Java mais a depuis 2005 fortement
+influence Java en retour (generics, lambda, var, records, pattern matching,
+switch expressions). Influence aussi TypeScript (cree par Hejlsberg en 2012)
+et Kotlin.
+
+
+================================================================================
+20. References
+================================================================================
+
+- ECMA-334 : "C# Language Specification", ECMA International (editions
+  successives 2002, 2003, 2005, 2006, 2017, 2022).
+- ISO/IEC 23270 : "Information technology - Programming languages - C#".
+- Microsoft Learn : C# language reference et C# guide
+  (https://learn.microsoft.com/dotnet/csharp/).
+- Hejlsberg, A.; Torgersen, M.; Wiltamuth, S.; Golde, P. :
+  "The C# Programming Language", Addison-Wesley, 4eme ed. 2010.
+- Albahari, J.; Albahari, B. : "C# 12 in a Nutshell", O'Reilly, 2024.
+- Skeet, J. : "C# in Depth", Manning Publications, 4eme ed. 2019.
+- Richter, J. : "CLR via C#", Microsoft Press, 4eme ed. 2012.
+- Roslyn (compilateur source-libre) :
+  https://github.com/dotnet/roslyn.
+- Specification draft C# 13/14 :
+  https://github.com/dotnet/csharplang.
+
+================================================================================
+                              FIN DU DOCUMENT
+================================================================================

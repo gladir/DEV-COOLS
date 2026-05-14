@@ -1,0 +1,746 @@
+================================================================================
+                  SPECIFICATIONS DU LANGAGE DE PROGRAMMATION JAVA
+================================================================================
+
+Document de reference pour l'integration dans le systeme d'aide DEVENV.HLP.
+Couvre Java de 1.0 (1996) a Java 21 LTS (2023), avec mention des nouveautes
+Java 22/23. Les compilateurs JAVAC86.PAS et JAVACW32.PAS du projet DEV-COOLS
+implementent un sous-ensemble proche de Java 8.
+
+
+================================================================================
+1. Presentation generale
+================================================================================
+
+Java est un langage de programmation oriente objet, fortement typé, multiplate-
+forme, concu par James Gosling et son equipe chez Sun Microsystems entre 1991
+et 1995. Initialement nomme "Oak" pour des appareils domestiques intelligents,
+le langage a ete renomme Java et lance publiquement en mai 1995, popularise
+par sa devise "Write Once, Run Anywhere" grace a la machine virtuelle JVM.
+
+Historique des versions :
+- 1995 : JDK 1.0 (release publique).
+- 1997 : JDK 1.1 (inner classes, JavaBeans, JDBC, RMI).
+- 1998 : J2SE 1.2 (Swing, Collections Framework).
+- 2000 : J2SE 1.3 (HotSpot JVM).
+- 2002 : J2SE 1.4 (assertions, regex, NIO).
+- 2004 : J2SE 5.0 (generics, enum, autoboxing, varargs, annotations, foreach).
+- 2006 : Java SE 6.
+- 2011 : Java SE 7 (try-with-resources, diamond operator, multi-catch).
+- 2014 : Java SE 8 LTS (lambda, Stream API, java.time, default methods).
+- 2017 : Java SE 9 (modules JPMS / Project Jigsaw, JShell).
+- 2018 : Java SE 11 LTS (var local, HTTP client, removed Java EE modules).
+- 2021 : Java SE 17 LTS (records, sealed classes, pattern matching for instanceof,
+  text blocks).
+- 2023 : Java SE 21 LTS (virtual threads, record patterns, switch patterns).
+- 2024 : Java SE 22 / 23 (string templates preview, structured concurrency).
+
+Caracteristiques distinctives :
+- Compile vers bytecode portable execute par la JVM.
+- Garbage Collector generationnel et concurrent (G1, ZGC, Shenandoah).
+- Typage statique fort avec generics (depuis Java 5).
+- Modele de concurrence multithread integre (synchronized, java.util.concurrent).
+- Vaste bibliotheque standard et ecosysteme (Maven Central, Gradle).
+- Plates-formes Java SE, Java EE / Jakarta EE, Java ME, Android.
+- Plusieurs implementations : OpenJDK (reference), Oracle JDK, Eclipse Temurin,
+  GraalVM, Amazon Corretto, Azul Zulu, IBM Semeru.
+
+
+================================================================================
+2. Structure d'un programme Java
+================================================================================
+
+Hello World classique :
+
+  public class Hello {
+      public static void main(String[] args) {
+          System.out.println("Bonjour le monde");
+      }
+  }
+
+Le fichier doit s'appeler Hello.java (nom de la classe publique).
+
+Compilation et execution :
+  javac Hello.java        --> Hello.class
+  java Hello              --> Bonjour le monde
+
+Programme single-source (Java 11+) :
+  java Hello.java         --> execution directe sans compilation explicite
+
+Unnamed classes / instance main (preview Java 21+) :
+
+  void main() {
+      System.out.println("Bonjour le monde");
+  }
+
+
+================================================================================
+3. Caracteristiques lexicales
+================================================================================
+
+Jeu de caracteres : Unicode (UTF-16 en interne, UTF-8 pour les sources).
+
+Identificateurs :
+- Sensibles a la casse.
+- Lettres Unicode, chiffres, _ et $. Doivent commencer par lettre, _ ou $.
+- Convention : camelCase pour variables/methodes, PascalCase pour classes,
+  UPPER_SNAKE pour constantes.
+
+Mots reserves :
+  abstract  assert    boolean   break     byte      case      catch
+  char      class     const     continue  default   do        double
+  else      enum      extends   final     finally   float     for
+  goto      if        implements import   instanceof int       interface
+  long      native    new       package   private   protected public
+  return    short     static    strictfp  super     switch    synchronized
+  this      throw     throws    transient try       void      volatile
+  while
+
+Mots reserves contextuels (Java 9+) :
+  var (Java 10+), yield (Java 13+), record (Java 14+), sealed/permits/non-sealed
+  (Java 15+), when (Java 19+), exports/module/opens/provides/requires/uses/to/
+  transitive/with (Java 9+ modules).
+
+Litteraux :
+- Entiers : 42, 0xFF, 0b1010, 052 (octal), 1_000_000
+- Suffixes : 42L (long), 3.14f (float), 3.14 (double par defaut), 3.14d
+- Booleens : true, false
+- null
+- Caracteres : 'A', '\n', '\u00E9'
+- Chaines : "Bonjour", "\u00E9"
+- Text blocks (Java 15+) : """...""" multilignes
+
+Commentaires :
+- Ligne : // commentaire
+- Bloc : /* ... */
+- Javadoc : /** ... */ (genere documentation HTML via javadoc)
+
+
+================================================================================
+4. Types de donnees
+================================================================================
+
+4.1 Types primitifs (8 types, allocation pile)
+
+  boolean    true ou false
+  byte       8 bits signe       -128..127
+  short      16 bits signe      -32768..32767
+  char       16 bits non signe  0..65535 (UTF-16)
+  int        32 bits signe      -2^31..2^31-1
+  long       64 bits signe      -2^63..2^63-1
+  float      32 bits IEEE 754
+  double     64 bits IEEE 754
+
+Wrappers (boxing) : Boolean, Byte, Short, Character, Integer, Long, Float,
+Double. Autoboxing depuis Java 5.
+
+4.2 Types reference
+
+  Object               racine de la hierarchie
+  String               chaine immuable UTF-16
+  classes utilisateur
+  interfaces
+  enum                 enumerations (depuis Java 5)
+  tableaux             int[], String[], int[][]
+  records              (Java 14+/16 stable)
+
+4.3 Tableaux
+
+  int[] t = new int[10];
+  int[] u = {1, 2, 3, 4};
+  int[][] mat = new int[3][3];
+  String[] noms = new String[5];
+  t.length                       // attribut length
+  Arrays.sort(t);                // tri
+  Arrays.fill(t, 0);             // remplissage
+
+4.4 Inference de type local (Java 10+)
+
+  var i = 42;                    // int
+  var s = "hello";               // String
+  var liste = new ArrayList<Integer>();
+
+4.5 Constantes
+
+  static final int MAX = 100;
+  final double PI = 3.14159;
+  static final String VERSION = "1.0";
+
+
+================================================================================
+5. Operateurs
+================================================================================
+
+Arithmetiques : + - * / % ++ --
+Affectation   : = += -= *= /= %= &= |= ^= <<= >>= >>>=
+Comparaison   : == != < > <= >= instanceof
+Logiques      : && || ! ^
+Bit-a-bit     : & | ^ ~ << >> >>>     (>>> = decalage non signe)
+Ternaire      : cond ? a : b
+Cast          : (type) expr
+Acces         : . [] ()
+Concatenation : + sur String
+
+Precedence (du plus prioritaire au moins) :
+  1. ()  []  .  new  ++/--postfixe
+  2. ++/--prefixe  +/-unaires  ~  !  (cast)
+  3. *  /  %
+  4. +  -  (+ pour String)
+  5. <<  >>  >>>
+  6. <  <=  >  >=  instanceof
+  7. ==  !=
+  8. &
+  9. ^
+ 10. |
+ 11. &&
+ 12. ||
+ 13. ?:
+ 14. = += -= ...
+
+
+================================================================================
+6. Instructions de controle
+================================================================================
+
+if / else :
+  if (x > 0) { ... } else if (x == 0) { ... } else { ... }
+
+switch instruction (forme classique) :
+  switch (jour) {
+      case 1: case 7: System.out.println("WE"); break;
+      case 2: case 3: case 4: case 5: case 6:
+          System.out.println("Semaine"); break;
+      default: throw new IllegalArgumentException();
+  }
+
+switch expression (Java 14+) :
+  String nom = switch (code) {
+      case 1 -> "Un";
+      case 2 -> "Deux";
+      default -> "Autre";
+  };
+
+  int n = switch (code) {
+      case 1 -> 100;
+      case 2 -> { int x = calculer(); yield x * 2; }
+      default -> 0;
+  };
+
+Pattern matching pour switch (Java 21+) :
+  String description = switch (obj) {
+      case Integer i when i > 0 -> "entier positif " + i;
+      case Integer i -> "entier " + i;
+      case String s -> "chaine " + s;
+      case null -> "rien";
+      default -> "autre";
+  };
+
+while / do-while :
+  while (cond) { ... }
+  do { ... } while (cond);
+
+for classique :
+  for (int i = 0; i < n; i++) { ... }
+
+for-each (Java 5+) :
+  for (String s : liste) { ... }
+  for (int i : tableau) { ... }
+
+break, continue (avec etiquette possible) :
+  outer:
+  for (int i = 0; i < n; i++) {
+      for (int j = 0; j < m; j++) {
+          if (cond) break outer;
+          if (cond2) continue outer;
+      }
+  }
+
+return :
+  return;
+  return valeur;
+
+throw / try / catch / finally :
+  try {
+      ...
+  } catch (FileNotFoundException e) {
+      ...
+  } catch (IOException | SQLException e) {     // multi-catch (Java 7+)
+      ...
+  } finally {
+      ...
+  }
+
+try-with-resources (Java 7+) :
+  try (FileReader f = new FileReader("a.txt");
+       BufferedReader br = new BufferedReader(f)) {
+      String line = br.readLine();
+  } catch (IOException e) { ... }
+
+assert (Java 1.4+) :
+  assert x > 0;
+  assert x > 0 : "x doit etre positif";
+
+
+================================================================================
+7. Classes et orientation objet
+================================================================================
+
+7.1 Definition de classe
+
+  public class Personne {
+      private String nom;
+      private int age;
+
+      public Personne(String nom, int age) {
+          this.nom = nom;
+          this.age = age;
+      }
+
+      public String getNom() { return nom; }
+      public int getAge() { return age; }
+      public void setNom(String nom) { this.nom = nom; }
+
+      @Override
+      public String toString() {
+          return nom + " (" + age + ")";
+      }
+  }
+
+7.2 Heritage et polymorphisme
+
+  public abstract class Forme {
+      public abstract double aire();
+      public String nom() { return "Forme"; }
+  }
+
+  public class Cercle extends Forme {
+      private double rayon;
+      public Cercle(double r) { this.rayon = r; }
+      @Override public double aire() { return Math.PI * rayon * rayon; }
+      @Override public String nom() { return "Cercle"; }
+  }
+
+Modificateurs d'acces : public, private, protected, package-private (defaut).
+Mots-cles : abstract, final, static, synchronized, native, strictfp,
+volatile, transient.
+
+7.3 Interfaces
+
+  public interface Comparable<T> {
+      int compareTo(T autre);
+  }
+
+Default methods (Java 8+) :
+  public interface ILog {
+      void log(String msg);
+      default void logErreur(String msg) { log("ERREUR: " + msg); }
+      static ILog console() { return msg -> System.out.println(msg); }
+  }
+
+7.4 Classes internes et anonymes
+
+  public class Externe {
+      class Interne { ... }                    // inner class
+      static class Imbriquee { ... }           // static nested class
+      void m() {
+          class Locale { ... }                 // local class
+          Runnable r = new Runnable() {        // classe anonyme
+              public void run() { ... }
+          };
+      }
+  }
+
+7.5 Enumerations (Java 5+)
+
+  public enum Couleur {
+      ROUGE("R"), VERT("V"), BLEU("B");
+
+      private final String code;
+      Couleur(String code) { this.code = code; }
+      public String code() { return code; }
+  }
+
+7.6 Records (Java 14 preview, 16 stable)
+
+  public record Point(double x, double y) {
+      public double distance(Point autre) {
+          return Math.hypot(x - autre.x, y - autre.y);
+      }
+  }
+
+  // generes automatiquement : constructeur canonique, accesseurs,
+  // equals, hashCode, toString.
+
+7.7 Sealed classes (Java 17+)
+
+  public sealed interface Forme
+      permits Cercle, Rectangle, Triangle {}
+
+  public final class Cercle implements Forme { ... }
+  public final class Rectangle implements Forme { ... }
+  public non-sealed class Triangle implements Forme { ... }
+
+
+================================================================================
+8. Generics (Java 5+)
+================================================================================
+
+  public class Pile<T> {
+      private List<T> items = new ArrayList<>();
+      public void push(T item) { items.add(item); }
+      public T pop() {
+          return items.remove(items.size() - 1);
+      }
+  }
+
+Methodes generiques :
+  public static <T extends Comparable<T>> T max(T a, T b) {
+      return a.compareTo(b) > 0 ? a : b;
+  }
+
+Wildcards :
+  List<?>           liste de n'importe quel type (lecture seule)
+  List<? extends N> liste de N ou sous-type (upper bound)
+  List<? super N>   liste de N ou super-type (lower bound)
+
+Type erasure : les types generiques sont effaces a la compilation.
+ArrayList<String>  -->  ArrayList<Object> dans le bytecode.
+
+Diamond operator (Java 7+) :
+  Map<String, List<Integer>> m = new HashMap<>();
+
+
+================================================================================
+9. Lambdas et programmation fonctionnelle (Java 8+)
+================================================================================
+
+Syntaxes lambda :
+  x -> x * 2
+  (x, y) -> x + y
+  (int x) -> x * 2
+  () -> System.out.println("vide")
+  x -> { return x * 2; }
+
+Interfaces fonctionnelles (java.util.function) :
+  Function<T, R>        T -> R
+  BiFunction<T, U, R>   (T, U) -> R
+  Predicate<T>          T -> boolean
+  Consumer<T>           T -> void
+  Supplier<T>           () -> T
+  UnaryOperator<T>      T -> T
+  BinaryOperator<T>     (T, T) -> T
+
+References de methode :
+  String::length              equivalent a x -> x.length()
+  System.out::println         equivalent a x -> System.out.println(x)
+  Integer::parseInt           statique
+  ArrayList::new              constructeur
+
+Effectively final : les variables locales capturees par une lambda doivent
+etre final ou effectivement final (non reassignees).
+
+
+================================================================================
+10. Stream API (Java 8+)
+================================================================================
+
+Filtrage, transformation, agregation paresseux sur des collections :
+
+  List<Integer> nombres = List.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+
+  int sommePairsAuCarre = nombres.stream()
+      .filter(n -> n % 2 == 0)
+      .mapToInt(n -> n * n)
+      .sum();                                  // 220
+
+  Map<Boolean, List<Integer>> partition = nombres.stream()
+      .collect(Collectors.partitioningBy(n -> n > 5));
+
+Operations intermediaires : filter, map, mapToInt/Long/Double, flatMap, sorted,
+distinct, peek, limit, skip.
+
+Operations terminales : forEach, collect, reduce, count, anyMatch, allMatch,
+noneMatch, findFirst, findAny, min, max, sum, average, toArray, toList (Java 16+).
+
+Streams paralleles :
+  nombres.parallelStream().mapToInt(Integer::intValue).sum();
+
+
+================================================================================
+11. Collections Framework
+================================================================================
+
+Interfaces :
+  Collection
+   |-- List      : ArrayList, LinkedList, Vector, Stack
+   |-- Set       : HashSet, LinkedHashSet, TreeSet
+   |-- Queue     : LinkedList, PriorityQueue, ArrayDeque
+   |-- Deque     : ArrayDeque, LinkedList
+  Map
+   |-- HashMap, LinkedHashMap, TreeMap, Hashtable, ConcurrentHashMap
+
+Exemples :
+  List<String> liste = new ArrayList<>(List.of("a", "b", "c"));
+  Set<Integer> ensemble = new HashSet<>();
+  Map<String, Integer> dico = new HashMap<>();
+  Deque<Integer> pile = new ArrayDeque<>();
+
+Collections immuables (Java 9+) :
+  List.of(1, 2, 3);
+  Set.of("a", "b");
+  Map.of("k1", 1, "k2", 2);
+  Map.entry(...), Map.ofEntries(...);
+
+
+================================================================================
+12. Concurrence et threads
+================================================================================
+
+Thread classique :
+  Thread t = new Thread(() -> System.out.println("Hello"));
+  t.start();
+  t.join();
+
+Synchronisation :
+  public synchronized void incrementer() { ... }
+  synchronized (verrou) { ... }
+  volatile int compteur;
+
+java.util.concurrent (Java 5+) :
+  ExecutorService exec = Executors.newFixedThreadPool(4);
+  Future<Integer> f = exec.submit(() -> calculer());
+  Integer r = f.get();
+
+  CompletableFuture<String> cf = CompletableFuture
+      .supplyAsync(() -> telecharger())
+      .thenApply(String::toUpperCase)
+      .thenAccept(System.out::println);
+
+  AtomicInteger compteur = new AtomicInteger();
+  ConcurrentHashMap<String, Integer> map = new ConcurrentHashMap<>();
+
+Virtual threads (Java 21+) :
+  Thread.startVirtualThread(() -> { ... });
+
+  try (var exec = Executors.newVirtualThreadPerTaskExecutor()) {
+      exec.submit(() -> ...);
+  }
+
+
+================================================================================
+13. Packages et modules
+================================================================================
+
+Package :
+  package com.exemple.monprojet;
+
+  import java.util.List;
+  import java.util.*;
+  import static java.lang.Math.PI;
+  import static java.lang.Math.*;
+
+Modules (Java 9+, JPMS / Project Jigsaw) :
+
+  module com.exemple.monprojet {
+      requires java.base;             // implicite
+      requires java.sql;
+      exports com.exemple.monprojet.api;
+      opens com.exemple.monprojet.modele;
+      uses com.exemple.spi.Service;
+      provides com.exemple.spi.Service with
+          com.exemple.monprojet.impl.MonService;
+  }
+
+Outils :
+- javac, java, javadoc, jar.
+- jlink : creer un runtime sur mesure.
+- jmod, jdeps, jdeprscan.
+- jpackage : creer des installateurs natifs (Java 14+).
+
+
+================================================================================
+14. Bibliotheque standard (selection)
+================================================================================
+
+- java.lang : Object, String, StringBuilder, Math, System, Thread,
+  Throwable, Exception, RuntimeException, Class, Integer, etc.
+- java.util : List, Map, Set, Collections, Arrays, Optional, Random, Scanner.
+- java.util.stream : Stream, IntStream, Collectors.
+- java.util.concurrent : ExecutorService, CompletableFuture, Atomic*, locks.
+- java.io : File, InputStream, OutputStream, Reader, Writer.
+- java.nio.file : Path, Files (E/S modernes, depuis Java 7).
+- java.net : URL, URI, HttpClient (Java 11+).
+- java.time : LocalDate, LocalDateTime, ZonedDateTime, Duration, Period.
+- java.text : NumberFormat, DateFormat (legacy).
+- java.security, javax.crypto : cryptographie.
+- java.sql : JDBC.
+- java.lang.reflect : Reflection.
+- java.lang.invoke : MethodHandles (depuis Java 7).
+
+
+================================================================================
+15. Les compilateurs JAVAC86.PAS et JAVACW32.PAS
+================================================================================
+
+JAVAC86.PAS :
+- Compilateur Java pour cible 8086 DOS (sous-ensemble Java 1.4/5).
+- Genere du code MASM compatible au lieu de bytecode JVM.
+- Supporte : classes, interfaces, heritage simple, methodes statiques,
+  if/while/for/foreach, int/byte/short/long/float/double/char/boolean/String.
+- Pas de generics complets (effaces a la compilation, type erasure non
+  implementee).
+- Pas de reflection, pas de thread.
+- Runtime minimal : System.out.println, System.in.read, conversion de base.
+
+JAVACW32.PAS :
+- Compilateur Java pour Windows 32 bits (PE executable).
+- Sous-ensemble proche de Java 8 : lambda simples, Stream restreintes,
+  Collections (ArrayList, HashMap, HashSet).
+- Pas de modules JPMS ni de virtual threads.
+- Generation native x86 sans passage par bytecode .class.
+- Acces aux API Win32 via JNI minimal.
+- Voir aussi javacw32-string-concat-sim-notes et javacw32-static-methods-test07
+  dans la memoire repository.
+
+
+================================================================================
+16. Exemples de programmes
+================================================================================
+
+16.1 Hello World
+
+  public class Hello {
+      public static void main(String[] args) {
+          System.out.println("Bonjour le monde");
+      }
+  }
+
+16.2 Factorielle recursive
+
+  public class Fact {
+      public static long fact(int n) {
+          return n <= 1 ? 1 : n * fact(n - 1);
+      }
+      public static void main(String[] args) {
+          System.out.println(fact(20));        // 2432902008176640000
+      }
+  }
+
+16.3 Lecture d'un fichier (Java 11+)
+
+  import java.nio.file.*;
+  import java.util.List;
+
+  public class Lecture {
+      public static void main(String[] args) throws Exception {
+          List<String> lignes = Files.readAllLines(Path.of("a.txt"));
+          lignes.forEach(System.out::println);
+      }
+  }
+
+16.4 Stream : mots les plus frequents
+
+  Map<String, Long> top = Files.lines(Path.of("texte.txt"))
+      .flatMap(l -> Arrays.stream(l.toLowerCase().split("\\s+")))
+      .filter(w -> !w.isBlank())
+      .collect(Collectors.groupingBy(w -> w, Collectors.counting()))
+      .entrySet().stream()
+      .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+      .limit(10)
+      .collect(Collectors.toMap(
+          Map.Entry::getKey, Map.Entry::getValue,
+          (a, b) -> a, LinkedHashMap::new));
+
+16.5 Telechargement HTTP (Java 11+)
+
+  HttpClient client = HttpClient.newHttpClient();
+  HttpRequest req = HttpRequest.newBuilder(URI.create("https://exemple.org"))
+      .GET().build();
+  HttpResponse<String> resp = client.send(req,
+      HttpResponse.BodyHandlers.ofString());
+  System.out.println(resp.body());
+
+16.6 Record et pattern matching (Java 21+)
+
+  sealed interface Forme permits Cercle, Rectangle {}
+  record Cercle(double r) implements Forme {}
+  record Rectangle(double l, double h) implements Forme {}
+
+  static double aire(Forme f) {
+      return switch (f) {
+          case Cercle(double r) -> Math.PI * r * r;
+          case Rectangle(double l, double h) -> l * h;
+      };
+  }
+
+
+================================================================================
+17. Bonnes pratiques
+================================================================================
+
+- Suivre les conventions Oracle Code Conventions : camelCase, PascalCase,
+  UPPER_SNAKE pour constantes.
+- Utiliser Optional<T> au lieu de retourner null.
+- Preferer try-with-resources pour tout AutoCloseable.
+- Eviter raw types : utiliser List<Integer>, jamais List brut.
+- Preferer composition a heritage quand possible (Gang of Four).
+- Marquer final les champs immuables et les classes non destinees a
+  l'extension.
+- Utiliser @Override systematiquement.
+- Documenter les API publiques avec Javadoc /** */.
+- Utiliser SLF4J + Logback ou java.util.logging pour journaliser.
+- Tester avec JUnit 5, AssertJ, Mockito.
+- Outils : Maven ou Gradle pour la build, SpotBugs/Error Prone pour l'analyse
+  statique, Checkstyle pour le style.
+
+
+================================================================================
+18. Ecosysteme et influence
+================================================================================
+
+Plateformes :
+- Java SE (Standard Edition) : desktop, serveur, base.
+- Jakarta EE (anciennement Java EE, depuis 2017) : serveur d'applications.
+- Android : Dalvik puis ART, langage proche de Java 8 (puis Kotlin).
+- Java Card : cartes a puce.
+- Java ME : abandonne progressivement.
+
+Frameworks majeurs :
+- Spring, Spring Boot : injection de dependances, web, microservices.
+- Hibernate, JPA : ORM.
+- Jakarta EE : Jakarta Servlet, JAX-RS, JSF, CDI, EJB.
+- Quarkus, Micronaut, Helidon : frameworks natifs cloud (compatible GraalVM).
+- Apache Kafka, Cassandra, Hadoop, Spark, Lucene : Big Data.
+- Eclipse, IntelliJ IDEA, NetBeans : IDE majeurs.
+
+Implementations JVM :
+- HotSpot (OpenJDK reference).
+- OpenJ9 (IBM, ex-J9).
+- GraalVM (compilation native ahead-of-time, polyglotte).
+- Azul Zing (low latency).
+
+Influences entrantes : C++, Smalltalk, Objective-C, Eiffel.
+Influences sortantes : C#, Scala, Groovy, Kotlin, Clojure (JVM), TypeScript.
+
+
+================================================================================
+19. References
+================================================================================
+
+- Java Language Specification (JLS), edition courante, Oracle :
+  https://docs.oracle.com/javase/specs/
+- Java Virtual Machine Specification (JVMS).
+- OpenJDK : https://openjdk.org/
+- JEP Index (Java Enhancement Proposals) : https://openjdk.org/jeps/
+- Bloch, J. : "Effective Java", Addison-Wesley, 3eme ed. 2018.
+- Goetz, B. et al. : "Java Concurrency in Practice", Addison-Wesley, 2006.
+- Gosling, J.; Joy, B.; Steele, G.; Bracha, G.; Buckley, A.; Smith, D.;
+  Bierman, G. : "The Java Language Specification", Java SE edition courante.
+- Horstmann, C. : "Core Java" Volumes I et II, Pearson.
+- Sierra, K.; Bates, B. : "Head First Java", O'Reilly.
+- Tutoriels officiels Oracle :
+  https://docs.oracle.com/javase/tutorial/
+
+================================================================================
+                              FIN DU DOCUMENT
+================================================================================

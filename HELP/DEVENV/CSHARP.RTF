@@ -1,0 +1,843 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_CSHARP_01}
+{\footnote $ C# - Presentation generale}
+{\footnote K C# presentation;Anders Hejlsberg;Microsoft;ECMA-334;ISO 23270;CLR;.NET;Mono;C# 1.0;C# 12;C# 13;historique versions}
+\b\fs24 Presentation generale \b0\fs20\par
+\par
+C# (prononce "C sharp") est un langage de programmation oriente objet,\par
+multiparadigme, concu par Anders Hejlsberg chez Microsoft entre 1999 et 2000.\par
+Initialement nomme "Cool" (C-like Object Oriented Language), il a ete annonce\par
+en juillet 2000 et standardise par ECMA-334 (decembre 2002) et ISO/IEC 23270.\par
+\par
+Historique des versions :\par
+- 2002 : C# 1.0 (.NET Framework 1.0).\par
+- 2005 : C# 2.0 (generics, methodes anonymes, iterators, types nullables).\par
+- 2007 : C# 3.0 (LINQ, lambda, var, types anonymes, methodes d'extension).\par
+- 2010 : C# 4.0 (dynamic, parametres optionnels/nommes, covariance/contravariance).\par
+- 2012 : C# 5.0 (async/await).\par
+- 2015 : C# 6.0 (interpolation de chaines, expression-bodied, nameof).\par
+- 2017 : C# 7.0-7.3 (tuples, deconstruction, pattern matching, ref locals).\par
+- 2019 : C# 8.0 (types nullables references, switch expressions, default\par
+{\f1   interface methods, async streams).}\par
+- 2020 : C# 9.0 (records, init-only, top-level statements, pattern matching\par
+{\f1   ameliore).}\par
+- 2021 : C# 10 (global usings, file-scoped namespaces, record struct).\par
+- 2022 : C# 11 (raw string literals, list patterns, required members,\par
+{\f1   generic math).}\par
+- 2023 : C# 12 (primary constructors, collection expressions, alias any type).\par
+- 2024 : C# 13 (params collections, lock object, escape sequence \\e).\par
+\par
+Caracteristiques distinctives :\par
+- Compile vers IL (CIL/MSIL), execute par CLR (.NET) ou Mono/.NET Core.\par
+- Typage statique fort avec inference de type (var).\par
+- Gestion automatique de la memoire (Garbage Collector generationnel).\par
+- Support de la programmation orientee objet, generique, fonctionnelle et\par
+{\f1   asynchrone.}\par
+- Interoperabilite native avec C/C++ via P/Invoke.\par
+- Reflection complete a l'execution.\par
+- Pointeurs disponibles en mode unsafe.\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. Structure d'un programme C#}     {\uldb [Aller]}{\v IDH_CSHARP_02}\par
+{\f1  3. Caracteristiques lexicales}     {\uldb [Aller]}{\v IDH_CSHARP_03}\par
+{\f1  4. Types de donnees}     {\uldb [Aller]}{\v IDH_CSHARP_04}\par
+{\f1  5. Operateurs}     {\uldb [Aller]}{\v IDH_CSHARP_05}\par
+{\f1  6. Instructions de controle}     {\uldb [Aller]}{\v IDH_CSHARP_06}\par
+{\f1  7. Classes et orientation objet}     {\uldb [Aller]}{\v IDH_CSHARP_07}\par
+{\f1  8. Records (C# 9+)}     {\uldb [Aller]}{\v IDH_CSHARP_08}\par
+{\f1  9. Generics}     {\uldb [Aller]}{\v IDH_CSHARP_09}\par
+{\f1 10. Delegates, evenements et lambdas}     {\uldb [Aller]}{\v IDH_CSHARP_10}\par
+{\f1 11. LINQ (Language Integrated Query, C# 3+)}     {\uldb [Aller]}{\v IDH_CSHARP_11}\par
+{\f1 12. async / await (C# 5+)}     {\uldb [Aller]}{\v IDH_CSHARP_12}\par
+{\f1 13. Espaces de noms et organisation}     {\uldb [Aller]}{\v IDH_CSHARP_13}\par
+{\f1 14. Gestion de la memoire et bas niveau}     {\uldb [Aller]}{\v IDH_CSHARP_14}\par
+{\f1 15. Attributs et reflection}     {\uldb [Aller]}{\v IDH_CSHARP_15}\par
+{\f1 16. Les compilateurs CSC86.PAS et CSCW32.PAS}     {\uldb [Aller]}{\v IDH_CSHARP_16}\par
+{\f1 17. Exemples de programmes}     {\uldb [Aller]}{\v IDH_CSHARP_17}\par
+{\f1 18. Bonnes pratiques}     {\uldb [Aller]}{\v IDH_CSHARP_18}\par
+{\f1 19. Ecosysteme et influence}     {\uldb [Aller]}{\v IDH_CSHARP_19}\par
+{\f1 20. References}     {\uldb [Aller]}{\v IDH_CSHARP_20}\par
+\par
+{\uldb Suivant >>}{\v IDH_CSHARP_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_02}
+{\footnote $ C# - Structure d'un programme C#}
+{\footnote K C# structure programme;namespace;Main;using;top-level statements;file-scoped namespace;global using}
+\b\fs24 Structure d'un programme C# \b0\fs20\par
+\par
+Programme classique :\par
+\par
+{\f1   using System;}\par
+\par
+{\f1   namespace MonProgramme}\par
+{\f1   \{}\par
+{\f1       class Program}\par
+{\f1       \{}\par
+{\f1           static void Main(string[] args)}\par
+{\f1           \{}\par
+{\f1               Console.WriteLine("Bonjour le monde");}\par
+{\f1           \}}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+Top-level statements (C# 9+) :\par
+\par
+{\f1   using System;}\par
+{\f1   Console.WriteLine("Bonjour le monde");}\par
+\par
+File-scoped namespace (C# 10+) :\par
+\par
+{\f1   namespace MonProgramme;}\par
+\par
+{\f1   class Program \{ ... \}}\par
+\par
+Global using (C# 10+) :\par
+\par
+{\f1   global using System;}\par
+{\f1   global using System.Collections.Generic;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_01}     {\uldb Suivant >>}{\v IDH_CSHARP_03}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_03}
+{\footnote $ C# - Caracteristiques lexicales}
+{\footnote K C# lexical;Unicode;identificateurs;mots reserves;mots contextuels;litteraux;raw strings;commentaires XML doc}
+\b\fs24 Caracteristiques lexicales \b0\fs20\par
+\par
+Jeu de caracteres : Unicode (UTF-8 par defaut pour le source).\par
+\par
+Identificateurs :\par
+- Sensibles a la casse.\par
+- Lettres Unicode, chiffres, underscore. Doivent commencer par lettre ou _.\par
+- Prefixe @ pour utiliser un mot reserve : @class, @if.\par
+\par
+Mots reserves (extrait) :\par
+{\f1   abstract  as  base  bool  break  byte  case  catch  char  checked  class}\par
+{\f1   const  continue  decimal  default  delegate  do  double  else  enum  event}\par
+{\f1   explicit  extern  false  finally  fixed  float  for  foreach  goto  if}\par
+{\f1   implicit  in  int  interface  internal  is  lock  long  namespace  new}\par
+{\f1   null  object  operator  out  override  params  private  protected  public}\par
+{\f1   readonly  ref  return  sbyte  sealed  short  sizeof  stackalloc  static}\par
+{\f1   string  struct  switch  this  throw  true  try  typeof  uint  ulong}\par
+{\f1   unchecked  unsafe  ushort  using  virtual  void  volatile  while}\par
+\par
+Mots contextuels (reserves seulement dans certains contextes) :\par
+{\f1   add  alias  ascending  async  await  by  descending  dynamic  equals  from}\par
+{\f1   get  global  group  init  into  join  let  nameof  on  orderby  partial}\par
+{\f1   record  remove  required  select  set  unmanaged  value  var  when  where}\par
+{\f1   with  yield}\par
+\par
+Litteraux :\par
+- Entiers : 42, 0xFF, 0b1010, 1_000_000\par
+- Suffixes : 42L (long), 42UL (ulong), 42U (uint)\par
+- Reels : 3.14, 1.5e-3, 3.14f (float), 3.14m (decimal), 3.14d (double)\par
+- Caracteres : 'A', '\\n', '\\u00E9', '\\x41'\par
+- Chaines : "Bonjour", @"C:\\Path", $"x = \{x\}", $@"..."\par
+- Raw strings (C# 11+) : """...""", """""...."""""\par
+- Booleens : true, false\par
+- null\par
+\par
+Commentaires :\par
+- Ligne : // commentaire\par
+- Bloc : /* ... */\par
+- XML doc : /// <summary>...</summary>\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_02}     {\uldb Suivant >>}{\v IDH_CSHARP_04}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_04}
+{\footnote $ C# - Types de donnees}
+{\footnote K C# types donnees;sbyte byte short ushort int uint long ulong;nint nuint;float double decimal Half;bool char enum struct;object string class interface delegate;nullable;var;const}
+\b\fs24 Types de donnees \b0\fs20\par
+\par
+4.1 Types valeur (struct)\par
+\par
+Types numeriques entiers :\par
+{\f1   sbyte    8 bits signe       -128..127}\par
+{\f1   byte     8 bits non signe   0..255}\par
+{\f1   short    16 bits signe      -32768..32767}\par
+{\f1   ushort   16 bits non signe  0..65535}\par
+{\f1   int      32 bits signe      -2^31..2^31-1}\par
+{\f1   uint     32 bits non signe  0..2^32-1}\par
+{\f1   long     64 bits signe      -2^63..2^63-1}\par
+{\f1   ulong    64 bits non signe  0..2^64-1}\par
+{\f1   nint     pointeur natif signe}\par
+{\f1   nuint    pointeur natif non signe}\par
+\par
+Types flottants :\par
+{\f1   float    IEEE 754 simple precision (32 bits, ~7 digits)}\par
+{\f1   double   IEEE 754 double precision (64 bits, ~15-17 digits)}\par
+{\f1   decimal  128 bits decimal exact (~28-29 digits, base 10)}\par
+{\f1   Half     IEEE 754 demi-precision (16 bits, .NET 5+)}\par
+\par
+Autres types valeur :\par
+{\f1   bool     true/false}\par
+{\f1   char     UTF-16 (16 bits)}\par
+{\f1   enum     enumeration}\par
+{\f1   struct   structure utilisateur}\par
+{\f1   tuple    (int, string) (C# 7+)}\par
+\par
+4.2 Types reference\par
+\par
+{\f1   object   racine de tous les types}\par
+{\f1   string   chaine immuable UTF-16}\par
+{\f1   class    classe utilisateur}\par
+{\f1   interface}\par
+{\f1   delegate}\par
+{\f1   array    int[], int[,], int[][]}\par
+{\f1   dynamic  resolution liee a l'execution}\par
+\par
+4.3 Types nullables\par
+\par
+Valeur nullable : int?, double? (Nullable<T>).\par
+Reference nullable (C# 8+) : string? (avec #nullable enable).\par
+\par
+{\f1   int? x = null;}\par
+{\f1   string? nom = null;}\par
+{\f1   int y = x ?? 0;             // operateur null-coalescing}\par
+\par
+4.4 Inference de type\par
+\par
+{\f1   var i = 42;                 // int}\par
+{\f1   var s = "hello";            // string}\par
+{\f1   var liste = new List<int>(); // List<int>}\par
+\par
+4.5 Constantes\par
+\par
+{\f1   const int MAX = 100;}\par
+{\f1   const string VERSION = "1.0";}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_03}     {\uldb Suivant >>}{\v IDH_CSHARP_05}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_05}
+{\footnote $ C# - Operateurs}
+{\footnote K C# operateurs;arithmetiques;logiques;bit-a-bit;null-coalescing ??;range ..;pattern is as;lambda =>;precedence}
+\b\fs24 Operateurs \b0\fs20\par
+\par
+Arithmetiques  : + - * / % ++ --\par
+Affectation    : = += -= *= /= %= &= |= ^= <<= >>= ??=\par
+Comparaison    : == != < > <= >=\par
+Logiques       : && || ! ^\par
+Bit-a-bit      : & | ^ ~ << >>\par
+Acces          : . ?. ?[] ->\par
+Cast           : (type)expr, expr as Type, expr is Type\par
+Null           : ?? ??= ?. ?[]\par
+Ranges         : .. (1..5, ..3, 2..)\par
+Indexers       : ^ (^1 = depuis la fin)\par
+Lambda         : =>\par
+Pointeurs      : * & -> (mode unsafe)\par
+typeof, sizeof, nameof, default\par
+new, await, throw (expression)\par
+\par
+Precedence (du plus prioritaire au moins) :\par
+{\f1   1. .  ?.  []  ?[]  ()  new  typeof  sizeof  nameof  checked  unchecked}\par
+{\f1   2. !  ~  ++  --  -unaire  +unaire  (T)}\par
+{\f1   3. *  /  %}\par
+{\f1   4. +  -}\par
+{\f1   5. <<  >>}\par
+{\f1   6. <  >  <=  >=  is  as}\par
+{\f1   7. ==  !=}\par
+{\f1   8. &}\par
+{\f1   9. ^}\par
+{\f1  10. |}\par
+{\f1  11. &&}\par
+{\f1  12. ||}\par
+{\f1  13. ??}\par
+{\f1  14. ?:}\par
+{\f1  15. =  affectations  =>}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_04}     {\uldb Suivant >>}{\v IDH_CSHARP_06}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_06}
+{\footnote $ C# - Instructions de controle}
+{\footnote K C# controle;if else;switch;switch expression;pattern matching;while do for foreach;break continue return goto;try catch finally;using;lock;checked unchecked;yield}
+\b\fs24 Instructions de controle \b0\fs20\par
+\par
+if/else :\par
+{\f1   if (x > 0) \{ ... \} else if (x == 0) \{ ... \} else \{ ... \}}\par
+\par
+switch (instruction) :\par
+{\f1   switch (jour) \{}\par
+{\f1     case "Lun":}\par
+{\f1     case "Mar": Console.WriteLine("Semaine"); break;}\par
+{\f1     case "Sam":}\par
+{\f1     case "Dim": Console.WriteLine("WE"); break;}\par
+{\f1     default: throw new ArgumentException(); }\par
+{\f1   \}}\par
+\par
+switch expression (C# 8+) :\par
+{\f1   string nom = code switch \{}\par
+{\f1     1 => "Un", 2 => "Deux", _ => "Autre"}\par
+{\f1   \};}\par
+\par
+Pattern matching (C# 7+, etendu en 8/9/10/11) :\par
+{\f1   if (obj is string s && s.Length > 0) \{ ... \}}\par
+{\f1   if (p is \{ Age: > 18, Nom: not null \}) \{ ... \}}\par
+{\f1   var msg = shape switch \{}\par
+{\f1     Circle \{ Radius: > 0 \} c => $"Cercle r=\{c.Radius\}",}\par
+{\f1     Square s when s.Side > 0 => $"Carre \{s.Side\}",}\par
+{\f1     _ => "Inconnu"}\par
+{\f1   \};}\par
+\par
+while / do-while :\par
+{\f1   while (cond) \{ ... \}}\par
+{\f1   do \{ ... \} while (cond);}\par
+\par
+for :\par
+{\f1   for (int i = 0; i < n; i++) \{ ... \}}\par
+\par
+foreach :\par
+{\f1   foreach (var item in collection) \{ ... \}}\par
+\par
+break / continue / return / goto :\par
+{\f1   for (...) \{ if (cond) break; if (cond2) continue; \}}\par
+{\f1   goto label; label: ...}\par
+\par
+throw / try / catch / finally :\par
+{\f1   try \{}\par
+{\f1     ...}\par
+{\f1   \} catch (FileNotFoundException ex) \{}\par
+{\f1     ...}\par
+{\f1   \} catch (Exception ex) when (ex.Message.Length > 0) \{}\par
+{\f1     ...}\par
+{\f1   \} finally \{}\par
+{\f1     ...}\par
+{\f1   \}}\par
+\par
+using (gestion deterministe IDisposable) :\par
+{\f1   using (var f = File.OpenRead("a.txt")) \{ ... \}}\par
+{\f1   using var f = File.OpenRead("a.txt");  // C# 8+ using declaration}\par
+\par
+lock :\par
+{\f1   lock (objetVerrou) \{ /* section critique */ \}}\par
+\par
+checked / unchecked :\par
+{\f1   int r = checked(a * b);          // leve OverflowException}\par
+{\f1   int r = unchecked(a * b);        // wrap silencieux}\par
+\par
+yield (iterators, C# 2+) :\par
+{\f1   IEnumerable<int> Pairs(int n) \{}\par
+{\f1     for (int i = 0; i < n; i += 2) yield return i;}\par
+{\f1   \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_05}     {\uldb Suivant >>}{\v IDH_CSHARP_07}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_07}
+{\footnote $ C# - Classes et orientation objet}
+{\footnote K C# classes objets;heritage;polymorphisme;abstract virtual override sealed;proprietes;init-only;required;indexers;constructeurs primaires;interfaces;default interface methods;structs;readonly struct;record struct}
+\b\fs24 Classes et orientation objet \b0\fs20\par
+\par
+7.1 Definition de classe\par
+\par
+{\f1   public class Personne \{}\par
+{\f1     public string Nom \{ get; set; \}}\par
+{\f1     public int Age \{ get; init; \}     // C# 9+ init-only}\par
+\par
+{\f1     public Personne(string nom, int age) \{}\par
+{\f1       Nom = nom;}\par
+{\f1       Age = age;}\par
+{\f1     \}}\par
+\par
+{\f1     public override string ToString() => $"\{Nom\} (\{Age\})";}\par
+{\f1   \}}\par
+\par
+7.2 Heritage et polymorphisme\par
+\par
+{\f1   public abstract class Forme \{}\par
+{\f1     public abstract double Aire();}\par
+{\f1     public virtual string Nom() => "Forme";}\par
+{\f1   \}}\par
+\par
+{\f1   public class Cercle : Forme \{}\par
+{\f1     public double Rayon \{ get; set; \}}\par
+{\f1     public override double Aire() => Math.PI * Rayon * Rayon;}\par
+{\f1     public override string Nom() => "Cercle";}\par
+{\f1   \}}\par
+\par
+Modificateurs d'acces : public, private, protected, internal,\par
+protected internal, private protected, file (C# 11+).\par
+\par
+Mots-cles : abstract, virtual, override, sealed, new, static, partial.\par
+\par
+7.3 Proprietes\par
+\par
+{\f1   public class Compteur \{}\par
+{\f1     private int _valeur;}\par
+{\f1     public int Valeur \{}\par
+{\f1       get => _valeur;}\par
+{\f1       set \{ if (value >= 0) _valeur = value; \}}\par
+{\f1     \}}\par
+{\f1     public int Suivant => _valeur + 1;     // expression-bodied}\par
+{\f1   \}}\par
+\par
+Auto-properties : public int X \{ get; set; \}\par
+Init-only : public int X \{ get; init; \}\par
+Required (C# 11+) : public required string Nom \{ get; init; \}\par
+\par
+7.4 Indexers\par
+\par
+{\f1   public class Tableau \{}\par
+{\f1     private int[] _data = new int[100];}\par
+{\f1     public int this[int i] \{}\par
+{\f1       get => _data[i];}\par
+{\f1       set => _data[i] = value;}\par
+{\f1     \}}\par
+{\f1   \}}\par
+\par
+7.5 Constructeurs primaires (C# 12+)\par
+\par
+{\f1   public class Point(double x, double y) \{}\par
+{\f1     public double X => x;}\par
+{\f1     public double Y => y;}\par
+{\f1     public double Distance() => Math.Sqrt(x*x + y*y);}\par
+{\f1   \}}\par
+\par
+7.6 Interfaces\par
+\par
+{\f1   public interface IComparable<T> \{}\par
+{\f1     int CompareTo(T autre);}\par
+{\f1   \}}\par
+\par
+Default interface methods (C# 8+) :\par
+{\f1   public interface ILog \{}\par
+{\f1     void Log(string msg);}\par
+{\f1     void LogErreur(string msg) => Log("ERREUR: " + msg);  // par defaut}\par
+{\f1   \}}\par
+\par
+7.7 Structs\par
+\par
+{\f1   public struct Point \{ public int X, Y; \}}\par
+\par
+Readonly struct (C# 7.2+) :\par
+{\f1   public readonly struct Vector3 \{}\par
+{\f1     public readonly double X, Y, Z;}\par
+{\f1   \}}\par
+\par
+Record struct (C# 10+) :\par
+{\f1   public record struct Coord(double Lat, double Lon);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_06}     {\uldb Suivant >>}{\v IDH_CSHARP_08}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_08}
+{\footnote $ C# - Records (C# 9+)}
+{\footnote K C# records;immuable;egalite valeur;with expression;record class;record struct}
+\b\fs24 Records (C# 9+) \b0\fs20\par
+\par
+Type immuable avec egalite de valeur et deconstruction automatiques.\par
+\par
+{\f1   public record Personne(string Nom, int Age);}\par
+\par
+{\f1   var p1 = new Personne("Alice", 30);}\par
+{\f1   var p2 = p1 with \{ Age = 31 \};    // copie modifiee}\par
+{\f1   bool eq = p1 == p2;                // false (egalite de valeur)}\par
+\par
+Record class (par defaut) vs record struct (C# 10+).\par
+\par
+{\f1   public record class Voiture(string Marque, string Modele);}\par
+{\f1   public record struct Couleur(byte R, byte G, byte B);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_07}     {\uldb Suivant >>}{\v IDH_CSHARP_09}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_09}
+{\footnote $ C# - Generics}
+{\footnote K C# generics;classe generique;contraintes where;methode generique;generic math INumber}
+\b\fs24 Generics \b0\fs20\par
+\par
+{\f1   public class Pile<T> \{}\par
+{\f1     private List<T> _items = new();}\par
+{\f1     public void Push(T item) => _items.Add(item);}\par
+{\f1     public T Pop() \{}\par
+{\f1       var x = _items[^1];}\par
+{\f1       _items.RemoveAt(_items.Count - 1);}\par
+{\f1       return x;}\par
+{\f1     \}}\par
+{\f1   \}}\par
+\par
+Contraintes :\par
+{\f1   where T : class                  // type reference}\par
+{\f1   where T : struct                 // type valeur}\par
+{\f1   where T : new()                  // constructeur sans parametre}\par
+{\f1   where T : Comparable             // type de base}\par
+{\f1   where T : IComparable<T>         // interface}\par
+{\f1   where T : notnull                // non nullable (C# 8+)}\par
+{\f1   where T : unmanaged              // type non managed}\par
+{\f1   where T : allows ref struct      // C# 13+}\par
+\par
+Methodes generiques :\par
+{\f1   public static T Max<T>(T a, T b) where T : IComparable<T>}\par
+{\f1     => a.CompareTo(b) > 0 ? a : b;}\par
+\par
+Generic math (C# 11+, .NET 7+) :\par
+{\f1   public static T Somme<T>(IEnumerable<T> xs) where T : INumber<T>}\par
+{\f1     => xs.Aggregate(T.Zero, (a, b) => a + b);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_08}     {\uldb Suivant >>}{\v IDH_CSHARP_10}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_10}
+{\footnote $ C# - Delegates, evenements et lambdas}
+{\footnote K C# delegates evenements lambdas;delegate;Func Action Predicate;event;EventHandler;lambda expression}
+\b\fs24 Delegates, evenements et lambdas \b0\fs20\par
+\par
+Delegate :\par
+{\f1   public delegate int Operation(int a, int b);}\par
+{\f1   Operation add = (a, b) => a + b;}\par
+{\f1   int r = add(2, 3);}\par
+\par
+Func<>, Action<>, Predicate<> :\par
+{\f1   Func<int, int, int> mul = (a, b) => a * b;}\par
+{\f1   Action<string> log = s => Console.WriteLine(s);}\par
+{\f1   Predicate<int> pair = n => n % 2 == 0;}\par
+\par
+Lambdas :\par
+{\f1   x => x * 2}\par
+{\f1   (x, y) => x + y}\par
+{\f1   (int x) => \{ return x * 2; \}}\par
+{\f1   static (x, y) => x + y       // C# 9+ static lambda}\par
+\par
+Evenements :\par
+{\f1   public class Bouton \{}\par
+{\f1     public event EventHandler? Clic;}\par
+{\f1     protected virtual void OnClic() => Clic?.Invoke(this, EventArgs.Empty);}\par
+{\f1   \}}\par
+{\f1   bouton.Clic += (s, e) => Console.WriteLine("clique");}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_09}     {\uldb Suivant >>}{\v IDH_CSHARP_11}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_11}
+{\footnote $ C# - LINQ (Language Integrated Query, C# 3+)}
+{\footnote K C# LINQ;Language Integrated Query;Where Select OrderBy GroupBy Join;requete syntaxe methode;IEnumerable}
+\b\fs24 LINQ (Language Integrated Query, C# 3+) \b0\fs20\par
+\par
+Syntaxe methode :\par
+{\f1   var jeunes = personnes}\par
+{\f1     .Where(p => p.Age < 30)}\par
+{\f1     .OrderBy(p => p.Nom)}\par
+{\f1     .Select(p => p.Nom)}\par
+{\f1     .ToList();}\par
+\par
+Syntaxe requete :\par
+{\f1   var jeunes = from p in personnes}\par
+{\f1                where p.Age < 30}\par
+{\f1                orderby p.Nom}\par
+{\f1                select p.Nom;}\par
+\par
+Operateurs : Where, Select, SelectMany, OrderBy, ThenBy, GroupBy, Join,\par
+GroupJoin, Distinct, Take, Skip, First, FirstOrDefault, Single, Any, All,\par
+Count, Sum, Min, Max, Average, Aggregate, Zip, Chunk (.NET 6+).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_10}     {\uldb Suivant >>}{\v IDH_CSHARP_12}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_12}
+{\footnote $ C# - async / await (C# 5+)}
+{\footnote K C# async await;Task ValueTask;asynchrone;async streams;IAsyncEnumerable;HttpClient}
+\b\fs24 async / await (C# 5+) \b0\fs20\par
+\par
+{\f1   public async Task<string> TelechargerAsync(string url) \{}\par
+{\f1     using var client = new HttpClient();}\par
+{\f1     var html = await client.GetStringAsync(url);}\par
+{\f1     return html;}\par
+{\f1   \}}\par
+\par
+{\f1   public async Task TraiterAsync() \{}\par
+{\f1     var html = await TelechargerAsync("https://exemple.org");}\par
+{\f1     Console.WriteLine(html.Length);}\par
+{\f1   \}}\par
+\par
+Types de retour : Task, Task<T>, ValueTask, ValueTask<T>, void (event handlers\par
+uniquement), IAsyncEnumerable<T> (C# 8+).\par
+\par
+Async streams (C# 8+) :\par
+{\f1   public async IAsyncEnumerable<int> StreamAsync() \{}\par
+{\f1     for (int i = 0; i < 10; i++) \{}\par
+{\f1       await Task.Delay(100);}\par
+{\f1       yield return i;}\par
+{\f1     \}}\par
+{\f1   \}}\par
+{\f1   await foreach (var x in StreamAsync()) Console.WriteLine(x);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_11}     {\uldb Suivant >>}{\v IDH_CSHARP_13}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_13}
+{\footnote $ C# - Espaces de noms et organisation}
+{\footnote K C# namespaces;file-scoped namespace;using directive;using static;global using;alias}
+\b\fs24 Espaces de noms et organisation \b0\fs20\par
+\par
+{\f1   namespace MaSociete.MonProjet.Modele \{}\par
+{\f1     public class Client \{ ... \}}\par
+{\f1   \}}\par
+\par
+File-scoped namespace (C# 10+) :\par
+{\f1   namespace MaSociete.MonProjet.Modele;}\par
+\par
+{\f1   public class Client \{ ... \}}\par
+\par
+using directive :\par
+{\f1   using System;}\par
+{\f1   using static System.Math;        // import statique}\par
+{\f1   using System.Collections.Generic;}\par
+{\f1   using StringDict = System.Collections.Generic.Dictionary<string,string>;}\par
+{\f1   global using System.Linq;        // C# 10+ : applique a tous les fichiers}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_12}     {\uldb Suivant >>}{\v IDH_CSHARP_14}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_14}
+{\footnote $ C# - Gestion de la memoire et bas niveau}
+{\footnote K C# memoire bas niveau;Garbage Collector;IDisposable;unsafe;pointeurs;stackalloc;Span Memory;ref in out}
+\b\fs24 Gestion de la memoire et bas niveau \b0\fs20\par
+\par
+Garbage Collector : generationnel (Gen 0/1/2, LOH), pas de delete explicite.\par
+IDisposable + using pour ressources non managees.\par
+\par
+Mode unsafe (pointeurs) :\par
+{\f1   unsafe void Inverser(int* p, int n) \{}\par
+{\f1     for (int i = 0, j = n - 1; i < j; i++, j--) \{}\par
+{\f1       (p[i], p[j]) = (p[j], p[i]);}\par
+{\f1     \}}\par
+{\f1   \}}\par
+\par
+stackalloc :\par
+{\f1   Span<int> buf = stackalloc int[256];}\par
+\par
+Span<T> et Memory<T> (C# 7.2+) : acces zero-copy a des tableaux/chaines.\par
+{\f1   ReadOnlySpan<char> s = "Bonjour".AsSpan();}\par
+{\f1   ReadOnlySpan<char> deb = s[..3];   // "Bon"}\par
+\par
+ref / in / out :\par
+{\f1   void Echange(ref int a, ref int b) \{ (a, b) = (b, a); \}}\par
+{\f1   int Calculer(in BigStruct s) \{ ... \}      // C# 7.2+ ref readonly}\par
+{\f1   bool TryParse(string s, out int r) \{ ... \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_13}     {\uldb Suivant >>}{\v IDH_CSHARP_15}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_15}
+{\footnote $ C# - Attributs et reflection}
+{\footnote K C# attributs reflection;Obsolete;Serializable;AttributeUsage;typeof;GetType;reflection}
+\b\fs24 Attributs et reflection \b0\fs20\par
+\par
+{\f1   [Obsolete("Utilisez MaNouvelleAPI")]}\par
+{\f1   public void AncienneAPI() \{ ... \}}\par
+\par
+{\f1   [Serializable]}\par
+{\f1   public class Donnees \{ ... \}}\par
+\par
+Attribut personnalise :\par
+{\f1   [AttributeUsage(AttributeTargets.Method)]}\par
+{\f1   public class TimerAttribute : Attribute \{}\par
+{\f1     public string Nom \{ get; \}}\par
+{\f1     public TimerAttribute(string nom) => Nom = nom;}\par
+{\f1   \}}\par
+\par
+Reflection :\par
+{\f1   var t = typeof(Personne);}\par
+{\f1   var props = t.GetProperties();}\par
+{\f1   var m = t.GetMethod("ToString");}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_14}     {\uldb Suivant >>}{\v IDH_CSHARP_16}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_16}
+{\footnote $ C# - Les compilateurs CSC86.PAS et CSCW32.PAS}
+{\footnote K C# compilateurs projet;CSC86.PAS;CSCW32.PAS;DOS 8086;Win32 PE;MASM;DllImport}
+\b\fs24 Les compilateurs CSC86.PAS et CSCW32.PAS \b0\fs20\par
+\par
+CSC86.PAS :\par
+- Compilateur C# pour cible 8086 DOS (sous-ensemble).\par
+- Genere du code MASM compatible.\par
+- Supporte un sous-ensemble C# 2.0 : classes, structs, methodes statiques,\par
+{\f1   if/while/for/foreach (sur tableaux), int/string/bool/char.}\par
+- Pas de generics complets, pas de delegates, pas d'attributs.\par
+- Runtime minimal : Console.WriteLine, Console.ReadLine, conversion de base.\par
+\par
+CSCW32.PAS :\par
+- Compilateur C# pour Windows 32 bits (PE executable).\par
+- Sous-ensemble proche de C# 3.0 : generics simples, lambdas restreintes,\par
+{\f1   proprietes auto-implementees.}\par
+- Pas de LINQ ni async/await.\par
+- Generation native x86 sans passage par CIL.\par
+- API Win32 directement accessible via DllImport.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_15}     {\uldb Suivant >>}{\v IDH_CSHARP_17}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_17}
+{\footnote $ C# - Exemples de programmes}
+{\footnote K C# exemples;Hello;factorielle;fichier;LINQ;async parallele;records pattern matching}
+\b\fs24 Exemples de programmes \b0\fs20\par
+\par
+17.1 Hello World\par
+\par
+{\f1   using System;}\par
+{\f1   Console.WriteLine("Bonjour le monde");}\par
+\par
+17.2 Factorielle recursive\par
+\par
+{\f1   static long Fact(int n) => n <= 1 ? 1 : n * Fact(n - 1);}\par
+{\f1   Console.WriteLine(Fact(10));   // 3628800}\par
+\par
+17.3 Lecture/ecriture de fichier\par
+\par
+{\f1   using System.IO;}\par
+{\f1   var lignes = File.ReadAllLines("entree.txt");}\par
+{\f1   File.WriteAllLines("sortie.txt", lignes.Reverse());}\par
+\par
+17.4 LINQ : top 3 mots les plus frequents\par
+\par
+{\f1   var freq = File.ReadAllText("texte.txt")}\par
+{\f1     .Split(new[] \{ ' ', '\\n', '\\r' \}, StringSplitOptions.RemoveEmptyEntries)}\par
+{\f1     .GroupBy(w => w.ToLower())}\par
+{\f1     .OrderByDescending(g => g.Count())}\par
+{\f1     .Take(3)}\par
+{\f1     .Select(g => $"\{g.Key\} : \{g.Count()\}");}\par
+{\f1   foreach (var s in freq) Console.WriteLine(s);}\par
+\par
+17.5 Async : telechargements paralleles\par
+\par
+{\f1   using System.Net.Http;}\par
+{\f1   static async Task Main() \{}\par
+{\f1     var urls = new[] \{ "https://a.org", "https://b.org" \};}\par
+{\f1     using var client = new HttpClient();}\par
+{\f1     var taches = urls.Select(u => client.GetStringAsync(u));}\par
+{\f1     var res = await Task.WhenAll(taches);}\par
+{\f1     foreach (var s in res) Console.WriteLine(s.Length);}\par
+{\f1   \}}\par
+\par
+17.6 Record et pattern matching\par
+\par
+{\f1   public record Forme;}\par
+{\f1   public record Cercle(double Rayon) : Forme;}\par
+{\f1   public record Rectangle(double L, double H) : Forme;}\par
+\par
+{\f1   static double Aire(Forme f) => f switch \{}\par
+{\f1     Cercle c => Math.PI * c.Rayon * c.Rayon,}\par
+{\f1     Rectangle r => r.L * r.H,}\par
+{\f1     _ => 0}\par
+{\f1   \};}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_16}     {\uldb Suivant >>}{\v IDH_CSHARP_18}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_18}
+{\footnote $ C# - Bonnes pratiques}
+{\footnote K C# bonnes pratiques;nullable enable;var;PascalCase camelCase;XML doc;analyseurs Roslyn;EditorConfig}
+\b\fs24 Bonnes pratiques \b0\fs20\par
+\par
+- Activer #nullable enable et eliminer les avertissements de reference nullable.\par
+- Preferer var quand le type est evident, sinon ecrire le type.\par
+- Utiliser readonly et init pour les champs/proprietes immuables.\par
+- Suivre PascalCase pour types/methodes/proprietes, camelCase pour locales et\par
+{\f1   parametres, _camelCase pour champs prives.}\par
+- Utiliser using/await using systematiquement pour IDisposable/IAsyncDisposable.\par
+- Eviter les exceptions pour le controle de flux normal.\par
+- Preferer string.Format/interpolation a la concatenation pour la lisibilite.\par
+- Utiliser Span<T>/Memory<T> pour les buffers haute performance.\par
+- Documenter avec XML doc (///) pour les API publiques.\par
+- Activer les analyseurs Roslyn et configurer EditorConfig.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_17}     {\uldb Suivant >>}{\v IDH_CSHARP_19}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_19}
+{\footnote $ C# - Ecosysteme et influence}
+{\footnote K C# ecosysteme;.NET Framework;.NET Core;.NET 8;Mono;Xamarin;.NET MAUI;Unity;Blazor;Roslyn;NuGet;TypeScript;Kotlin}
+\b\fs24 Ecosysteme et influence \b0\fs20\par
+\par
+Plateformes :\par
+- .NET Framework (Windows uniquement, 2002-2022 maintenance seulement).\par
+- .NET Core / .NET 5+ (cross-platform, Windows/Linux/macOS, depuis 2016).\par
+- Mono (Linux/macOS/Android/iOS, fusionne avec .NET).\par
+- Xamarin / .NET MAUI (mobile, desktop multi-plateforme).\par
+- Unity (jeux video, IL2CPP).\par
+- Blazor (WebAssembly et server-side web).\par
+\par
+Outils :\par
+- Compilateur Roslyn (C#/VB.NET, source-libre).\par
+- MSBuild, dotnet CLI.\par
+- Visual Studio, Visual Studio Code (C# Dev Kit), JetBrains Rider.\par
+- NuGet (gestion de paquets).\par
+\par
+Influence : C# a beaucoup emprunte a Java mais a depuis 2005 fortement\par
+influence Java en retour (generics, lambda, var, records, pattern matching,\par
+switch expressions). Influence aussi TypeScript (cree par Hejlsberg en 2012)\par
+et Kotlin.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_18}     {\uldb Suivant >>}{\v IDH_CSHARP_20}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_CSHARP_20}
+{\footnote $ C# - References}
+{\footnote K C# references;ECMA-334;ISO 23270;Microsoft Learn;Hejlsberg;Albahari;Skeet;Richter;Roslyn}
+\b\fs24 References \b0\fs20\par
+\par
+- ECMA-334 : "C# Language Specification", ECMA International (editions\par
+{\f1   successives 2002, 2003, 2005, 2006, 2017, 2022).}\par
+- ISO/IEC 23270 : "Information technology - Programming languages - C#".\par
+- Microsoft Learn : C# language reference et C# guide\par
+{\f1   (https://learn.microsoft.com/dotnet/csharp/).}\par
+- Hejlsberg, A.; Torgersen, M.; Wiltamuth, S.; Golde, P. :\par
+{\f1   "The C# Programming Language", Addison-Wesley, 4eme ed. 2010.}\par
+- Albahari, J.; Albahari, B. : "C# 12 in a Nutshell", O'Reilly, 2024.\par
+- Skeet, J. : "C# in Depth", Manning Publications, 4eme ed. 2019.\par
+- Richter, J. : "CLR via C#", Microsoft Press, 4eme ed. 2012.\par
+- Roslyn (compilateur source-libre) :\par
+{\f1   https://github.com/dotnet/roslyn.}\par
+- Specification draft C# 13/14 :\par
+{\f1   https://github.com/dotnet/csharplang.}\par
+\par
+{\f1                               FIN DU DOCUMENT}\par
+
+\par
+{\uldb << Precedent}{\v IDH_CSHARP_19}     {\uldb Table des matieres}{\v IDH_CSHARP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

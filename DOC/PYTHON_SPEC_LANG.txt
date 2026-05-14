@@ -1,0 +1,883 @@
+================================================================================
+                  SPECIFICATIONS DU LANGAGE DE PROGRAMMATION PYTHON
+================================================================================
+
+Document de reference pour l'integration dans le systeme d'aide DEVENV.HLP.
+Couvre Python 3.x (3.0 a 3.13), avec mentions historiques de Python 2.
+Les compilateurs PYTHON86.PAS et PYTHCW32.PAS du projet DEV-COOLS
+implementent un sous-ensemble proche de Python 3.6.
+
+
+================================================================================
+1. Presentation generale
+================================================================================
+
+Python est un langage de programmation interprete, de haut niveau, dynamique
+et multiparadigme, concu par Guido van Rossum au CWI (Amsterdam) en 1989-1991.
+Le nom est inspire des Monty Python's Flying Circus, pas du serpent. Python
+met l'accent sur la lisibilite du code (PEP 8, "Zen of Python" PEP 20) et
+l'expressivite, en utilisant l'indentation comme structure syntaxique.
+
+Historique des versions :
+- 1991 : Python 0.9.0 (premiere release publique).
+- 1994 : Python 1.0 (lambda, map, filter, reduce).
+- 2000 : Python 2.0 (list comprehensions, garbage collector).
+- 2008 : Python 3.0 (print fonction, str Unicode par defaut, rupture).
+- 2010 : Python 2.7 (derniere version 2.x, fin de support 2020).
+- 2015 : Python 3.5 (async/await, type hints PEP 484).
+- 2016 : Python 3.6 (f-strings, variable annotations).
+- 2018 : Python 3.7 (dataclasses, ordered dicts officiels).
+- 2019 : Python 3.8 (walrus :=, positional-only /).
+- 2020 : Python 3.9 (dict |=, type hints natifs list[int]).
+- 2021 : Python 3.10 (match/case, parenthesized context managers).
+- 2022 : Python 3.11 (jusqu'a 60% plus rapide, ExceptionGroup, except*).
+- 2023 : Python 3.12 (type parameter syntax, f-string améliores).
+- 2024 : Python 3.13 (REPL ameliore, GIL optionnel experimental).
+
+Caracteristiques distinctives :
+- Typage dynamique fort (duck typing).
+- Indentation significative (pas d'accolades).
+- Tout est objet, y compris les fonctions et les classes.
+- Gestion automatique de la memoire (refcount + GC cyclique).
+- Vaste bibliotheque standard ("batteries included").
+- Ecosysteme tres riche : NumPy, Pandas, Django, Flask, TensorFlow, PyTorch.
+- Multiplateforme (Windows, Linux, macOS, BSD, etc.).
+- Plusieurs implementations : CPython (reference), PyPy (JIT), Jython,
+  IronPython, MicroPython, GraalPy.
+
+
+================================================================================
+2. Structure d'un programme Python
+================================================================================
+
+Hello World minimal :
+
+  print("Bonjour le monde")
+
+Module structure typique :
+
+  #!/usr/bin/env python3
+  """Documentation du module."""
+  import os
+  import sys
+  from typing import List, Optional
+
+  MAX_SIZE = 100
+
+  def main() -> int:
+      print("Bonjour")
+      return 0
+
+  if __name__ == "__main__":
+      sys.exit(main())
+
+Indentation : 4 espaces par niveau (PEP 8). Les tabulations sont autorisees
+mais deconseillees ; le melange tab/espace est interdit en Python 3.
+
+
+================================================================================
+3. Caracteristiques lexicales
+================================================================================
+
+Jeu de caracteres : Unicode (UTF-8 par defaut, PEP 3131 autorise identificateurs
+non-ASCII).
+
+Identificateurs :
+- Sensibles a la casse.
+- Lettres Unicode, chiffres, underscore. Doivent commencer par lettre/_.
+- Convention : snake_case pour variables/fonctions, PascalCase pour classes,
+  UPPER_SNAKE pour constantes, _prefixe pour prive, __dunder__ pour special.
+
+Mots reserves :
+  False  None  True  and  as  assert  async  await  break  class  continue
+  def  del  elif  else  except  finally  for  from  global  if  import  in
+  is  lambda  nonlocal  not  or  pass  raise  return  try  while  with  yield
+  match  case  type  (3.10+/3.12+ : contextuels)
+
+Litteraux :
+- Entiers : 42, 0xFF, 0o52, 0b101010, 1_000_000
+- Flottants : 3.14, 1.5e-3, 1_000.5
+- Complexes : 3+4j, 2j
+- Booleens : True, False
+- None
+- Chaines : "ab", 'ab', """multi-lignes""", '''ab'''
+- f-strings : f"x = {x:.2f}"
+- Raw strings : r"C:\path"
+- Bytes : b"hello", rb"\n"
+- Unicode escape : "\u00E9", "\N{GREEK SMALL LETTER ALPHA}"
+
+Commentaires :
+- Ligne : # commentaire
+- Docstring : """premier element d'un module/fonction/classe"""
+
+
+================================================================================
+4. Types de donnees
+================================================================================
+
+4.1 Types numeriques
+
+  int      entier de taille arbitraire (precision illimitee)
+  float    flottant double precision IEEE 754
+  complex  nombre complexe (z.real, z.imag)
+  bool     sous-classe d'int (True == 1, False == 0)
+
+4.2 Sequences
+
+  str       chaine immuable Unicode
+  bytes     sequence immuable d'octets
+  bytearray sequence mutable d'octets
+  list      [1, 2, 3] - mutable, ordonnee
+  tuple     (1, 2, 3) - immuable, ordonnee
+  range     range(0, 10, 2) - immuable, generatrice
+
+4.3 Collections
+
+  set            {1, 2, 3} - ensemble mutable, non ordonne
+  frozenset      ensemble immuable
+  dict           {"a": 1, "b": 2} - dictionnaire (ordre d'insertion 3.7+)
+
+4.4 Autres
+
+  None           singleton (type NoneType)
+  Ellipsis       ... (utilise pour slices, type hints)
+  NotImplemented retourne par __eq__ etc. quand non applicable
+
+4.5 Type hints (PEP 484, 526, 585, 604, 695)
+
+  age: int = 30
+  noms: list[str] = []
+  table: dict[str, int] = {}
+  resultat: int | None = None              # Python 3.10+
+  def f(x: int, y: float = 1.0) -> str: ...
+
+  # PEP 695 (Python 3.12+) : syntaxe native pour generics
+  type Vector = list[float]
+  def somme[T: (int, float)](xs: list[T]) -> T: ...
+
+4.6 Variables et affectation
+
+  x = 10
+  a, b = 1, 2                              # tuple unpacking
+  a, b = b, a                              # echange
+  first, *rest = [1, 2, 3, 4]              # rest = [2, 3, 4]
+  d = {"x": 1, "y": 2}
+  x, y = d.values()
+
+
+================================================================================
+5. Operateurs
+================================================================================
+
+Arithmetiques : + - * / // % ** @
+  (/ = division reelle, // = division entiere, ** = puissance, @ = matmul)
+
+Comparaison   : == != < > <= >= is is not in not in
+Logiques      : and or not
+Bit-a-bit     : & | ^ ~ << >>
+Affectation   : = += -= *= /= //= %= **= &= |= ^= <<= >>= @= :=
+Walrus        : := (Python 3.8+, expression d'affectation)
+Conditionnel  : valeur_si_vrai if cond else valeur_si_faux
+Acces         : . [] ()
+
+Precedence (du moins prioritaire au plus) :
+  1. lambda
+  2. if/else ternaire
+  3. or
+  4. and
+  5. not
+  6. in, not in, is, is not, <, <=, >, >=, !=, ==
+  7. |
+  8. ^
+  9. &
+ 10. <<, >>
+ 11. +, -
+ 12. *, @, /, //, %
+ 13. +x, -x, ~x (unaires)
+ 14. **
+ 15. await x
+ 16. x[index], x[a:b], x.attr, f(args)
+ 17. (expr), [expr], {expr}, {key: val}
+
+
+================================================================================
+6. Instructions de controle
+================================================================================
+
+6.1 if/elif/else
+
+  if x > 0:
+      print("positif")
+  elif x == 0:
+      print("zero")
+  else:
+      print("negatif")
+
+6.2 while
+
+  while cond:
+      ...
+  else:                          # execute si pas de break
+      ...
+
+6.3 for
+
+  for x in iterable:
+      ...
+  else:
+      ...
+
+  for i, v in enumerate(liste):
+      ...
+
+  for cle, val in dico.items():
+      ...
+
+6.4 break, continue, pass
+
+  for x in xs:
+      if x < 0: continue
+      if x > 100: break
+      if x == 0: pass
+
+6.5 match/case (Python 3.10+)
+
+  match commande.split():
+      case ["quit"]:
+          ...
+      case ["go", direction]:
+          aller(direction)
+      case ["look"] | ["regarder"]:
+          ...
+      case [action, *params] if action in {"prendre", "deposer"}:
+          ...
+      case _:
+          erreur()
+
+Patterns supportes : litterales, capture, sequence, mapping, classe,
+disjonction (|), garde (if), wildcard (_).
+
+6.6 try / except / else / finally
+
+  try:
+      x = int(s)
+  except ValueError as e:
+      print(f"erreur: {e}")
+  except (TypeError, KeyError):
+      ...
+  else:                          # execute si pas d'exception
+      ...
+  finally:                       # toujours execute
+      ...
+
+Exception groups (Python 3.11+) :
+  try:
+      ...
+  except* TypeError as eg:
+      ...
+  except* ValueError as eg:
+      ...
+
+6.7 with (context manager)
+
+  with open("a.txt") as f:
+      data = f.read()
+
+  with open("a.txt") as f, open("b.txt", "w") as g:
+      g.write(f.read())
+
+6.8 raise
+
+  raise ValueError("message")
+  raise IndexError("...") from autre_exception
+
+6.9 return, yield, yield from
+
+  def f():
+      return 42
+
+  def gen():
+      yield 1
+      yield 2
+      yield from autre_gen()
+
+
+================================================================================
+7. Fonctions
+================================================================================
+
+  def somme(a, b):
+      return a + b
+
+  def saluer(nom, message="Bonjour"):       # parametre par defaut
+      print(f"{message}, {nom}")
+
+  def total(*args, **kwargs):                # *args = tuple, **kwargs = dict
+      ...
+
+  def positionnel_seul(a, b, /):             # / : positional-only (3.8+)
+      ...
+
+  def keyword_seul(*, a, b):                 # * : keyword-only
+      ...
+
+Lambda (fonctions anonymes a une expression) :
+
+  carre = lambda x: x * x
+  sorted(liste, key=lambda p: p.age)
+
+Decorateurs :
+
+  @cache
+  @staticmethod
+  @property
+  def methode(self): ...
+
+  # decorateur personnalise
+  def chronometre(f):
+      def wrapper(*args, **kwargs):
+          import time
+          t0 = time.time()
+          r = f(*args, **kwargs)
+          print(f"{f.__name__}: {time.time()-t0:.3f}s")
+          return r
+      return wrapper
+
+  @chronometre
+  def calcul(): ...
+
+Fonctions d'ordre superieur : map, filter, sorted, any, all, reduce.
+
+  pairs = list(filter(lambda x: x % 2 == 0, range(10)))
+  carres = list(map(lambda x: x*x, range(10)))
+  total = sum(range(100))
+
+
+================================================================================
+8. Classes et orientation objet
+================================================================================
+
+  class Personne:
+      """Une personne avec nom et age."""
+
+      especes = "Homo sapiens"            # attribut de classe
+
+      def __init__(self, nom: str, age: int):
+          self.nom = nom
+          self.age = age
+
+      def saluer(self) -> str:
+          return f"Bonjour, je suis {self.nom}"
+
+      def __repr__(self) -> str:
+          return f"Personne({self.nom!r}, {self.age})"
+
+      def __eq__(self, other) -> bool:
+          return isinstance(other, Personne) and \
+                 (self.nom, self.age) == (other.nom, other.age)
+
+Methodes speciales (dunders) :
+  __init__   __del__   __repr__  __str__  __format__
+  __eq__     __ne__    __lt__    __le__   __gt__    __ge__
+  __hash__   __bool__  __len__   __getitem__   __setitem__   __delitem__
+  __iter__   __next__  __contains__
+  __add__    __sub__   __mul__   __truediv__   __floordiv__  __mod__  __pow__
+  __radd__   __iadd__  ...
+  __call__   __enter__ __exit__
+  __getattr__ __setattr__ __delattr__ __getattribute__
+
+Heritage :
+
+  class Etudiant(Personne):
+      def __init__(self, nom, age, ecole):
+          super().__init__(nom, age)
+          self.ecole = ecole
+
+Heritage multiple et MRO (Method Resolution Order, C3 linearization) :
+
+  class A: pass
+  class B(A): pass
+  class C(A): pass
+  class D(B, C): pass        # MRO : D -> B -> C -> A -> object
+
+Proprietes :
+
+  class Compte:
+      def __init__(self):
+          self._solde = 0
+      @property
+      def solde(self):
+          return self._solde
+      @solde.setter
+      def solde(self, v):
+          if v < 0: raise ValueError
+          self._solde = v
+
+@dataclass (PEP 557, 3.7+) :
+
+  from dataclasses import dataclass, field
+
+  @dataclass(frozen=True, slots=True)
+  class Point:
+      x: float
+      y: float
+      tags: list[str] = field(default_factory=list)
+
+Classes abstraites (abc) :
+
+  from abc import ABC, abstractmethod
+
+  class Forme(ABC):
+      @abstractmethod
+      def aire(self) -> float: ...
+
+
+================================================================================
+9. Modules et packages
+================================================================================
+
+Import :
+
+  import math
+  import math as m
+  from math import sqrt, pi
+  from math import *                       # deconseille
+  from . import autre_module               # import relatif
+  from ..parent import qqch                # import relatif niveau 2
+
+Recherche de modules : sys.path (cwd, PYTHONPATH, repertoires standards,
+site-packages).
+
+Package : repertoire avec __init__.py (ou namespace package sans, PEP 420).
+
+  monpaquet/
+    __init__.py
+    module1.py
+    sous/
+      __init__.py
+      module2.py
+
+Programme principal :
+
+  if __name__ == "__main__":
+      main()
+
+Outils :
+- pip : gestion de paquets (PyPI).
+- venv : environnements virtuels (python -m venv .venv).
+- pyenv : multi-versions Python.
+- poetry, hatch, uv : outils modernes de gestion de projets.
+
+
+================================================================================
+10. Collections et iterateurs
+================================================================================
+
+10.1 Listes
+
+  liste = [1, 2, 3]
+  liste.append(4)
+  liste.extend([5, 6])
+  liste.insert(0, 0)
+  liste.pop()                     # dernier
+  liste.pop(0)                    # premier
+  liste.remove(3)
+  liste.sort(); liste.reverse()
+  copie = liste[:]
+  inverse = liste[::-1]
+  sub = liste[1:4]
+
+10.2 Tuples
+
+  t = (1, 2, 3)
+  t = 1, 2, 3                     # parentheses optionnelles
+  x, y, z = t
+  named = (1,)                    # tuple a un element
+
+10.3 Dictionnaires
+
+  d = {"a": 1, "b": 2}
+  d["c"] = 3
+  d.get("x", 0)                   # avec valeur par defaut
+  d.setdefault("y", []).append(1)
+  for k, v in d.items(): ...
+  d2 = d | {"d": 4}               # merge (3.9+)
+
+10.4 Sets
+
+  s = {1, 2, 3}
+  s.add(4)
+  s.discard(2)
+  union = s | {5, 6}
+  inter = s & {3, 4}
+  diff = s - {1, 2}
+
+10.5 Comprehensions
+
+  carres = [x*x for x in range(10)]
+  pairs = {x for x in range(10) if x % 2 == 0}
+  d = {x: x*x for x in range(10)}
+  generateur = (x*x for x in range(10))      # lazy
+
+10.6 collections (bibliotheque standard)
+
+  from collections import (
+      defaultdict, Counter, OrderedDict, deque, namedtuple, ChainMap
+  )
+  c = Counter("abracadabra")           # {'a': 5, 'b': 2, 'r': 2, ...}
+  dd = defaultdict(list)
+  dd["x"].append(1)
+
+
+================================================================================
+11. Generateurs, iterateurs et async
+================================================================================
+
+Iterateur (protocole) :
+
+  class CompteAvebours:
+      def __init__(self, n): self.n = n
+      def __iter__(self): return self
+      def __next__(self):
+          if self.n <= 0: raise StopIteration
+          self.n -= 1
+          return self.n
+
+Generateurs avec yield :
+
+  def pairs(n):
+      for i in range(n):
+          if i % 2 == 0:
+              yield i
+
+  def lecteur(f):
+      while True:
+          line = f.readline()
+          if not line: return
+          yield line.rstrip()
+
+itertools (bibliotheque standard) :
+
+  from itertools import (
+      count, cycle, repeat, chain, islice, takewhile, dropwhile,
+      groupby, accumulate, product, permutations, combinations, tee
+  )
+
+async/await (PEP 492, 3.5+) :
+
+  import asyncio
+
+  async def telecharger(url):
+      reader, writer = await asyncio.open_connection(...)
+      ...
+      return data
+
+  async def main():
+      r1, r2 = await asyncio.gather(
+          telecharger("a"), telecharger("b")
+      )
+
+  asyncio.run(main())
+
+Async generators (3.6+) :
+
+  async def stream():
+      for i in range(10):
+          await asyncio.sleep(0.1)
+          yield i
+
+  async for x in stream(): ...
+
+
+================================================================================
+12. Chaines de caracteres
+================================================================================
+
+Operations courantes :
+
+  s = "Bonjour le Monde"
+  len(s)                  # 16
+  s.upper(); s.lower(); s.title()
+  s.strip(); s.lstrip(); s.rstrip()
+  s.split(); s.split(",")
+  ",".join(["a", "b", "c"])
+  s.replace("le", "au")
+  s.startswith("Bon"); s.endswith("e")
+  s.find("le"); s.index("le")
+  s.count("o")
+  s[::-1]                 # inversion
+
+Formatage :
+
+  # f-strings (3.6+, recommande)
+  print(f"{nom} a {age} ans")
+  print(f"{x:.3f}")
+  print(f"{x:>10}")            # alignement
+  print(f"{x:_}")              # separateur de milliers
+  print(f"{var=}")             # debug : var=valeur (3.8+)
+
+  # str.format()
+  "{0} {1}".format(a, b)
+  "{nom}".format(nom="Alice")
+
+  # %-formatting (style C, legacy)
+  "%d %s" % (10, "abc")
+
+Encodage/decodage :
+
+  s.encode("utf-8")          # str -> bytes
+  b.decode("utf-8")          # bytes -> str
+
+Expressions regulieres (re) :
+
+  import re
+  m = re.match(r"(\d+)-(\d+)", "10-20")
+  if m: print(m.group(1), m.group(2))
+  re.findall(r"\d+", "a 10 b 20 c 30")    # ['10', '20', '30']
+  re.sub(r"\s+", " ", texte)
+
+
+================================================================================
+13. Entrees/sorties et fichiers
+================================================================================
+
+Console :
+
+  s = input("Nom ? ")
+  print("a", "b", sep="-", end="\n", file=sys.stderr)
+
+Fichiers texte :
+
+  with open("a.txt", "r", encoding="utf-8") as f:
+      contenu = f.read()
+      # ou :
+      for line in f: ...
+
+  with open("b.txt", "w", encoding="utf-8") as f:
+      f.write("...")
+      print("...", file=f)
+
+Modes : "r" lecture, "w" ecriture (ecrase), "a" ajout, "x" creation exclusive,
+"b" binaire, "+" mise a jour.
+
+Fichiers binaires :
+
+  with open("img.bin", "rb") as f:
+      data = f.read(1024)
+
+pathlib (recommande depuis Python 3.4) :
+
+  from pathlib import Path
+  p = Path("dossier") / "fichier.txt"
+  p.exists(); p.is_file(); p.is_dir()
+  texte = p.read_text(encoding="utf-8")
+  p.write_text("...", encoding="utf-8")
+  for entry in Path(".").iterdir(): ...
+  for f in Path(".").glob("**/*.py"): ...
+
+Serialisation :
+- json : encodage/decodage JSON.
+- pickle : serialisation native Python (peu sur cross-langage).
+- csv : lecture/ecriture CSV.
+- xml.etree.ElementTree, tomllib (3.11+) : XML, TOML.
+
+
+================================================================================
+14. Bibliotheque standard (modules courants)
+================================================================================
+
+- sys, os, os.path, pathlib : systeme.
+- argparse : analyse de la ligne de commande.
+- logging : journalisation.
+- datetime, time, calendar : dates et heures.
+- math, statistics, decimal, fractions, random, secrets : numerique.
+- re : expressions regulieres.
+- collections, itertools, functools : utilitaires.
+- json, csv, sqlite3, xml : donnees.
+- urllib, http, socket, ssl : reseau.
+- threading, multiprocessing, asyncio, concurrent.futures : concurrence.
+- subprocess, signal : processus.
+- unittest, doctest, pytest (externe) : tests.
+- typing, dataclasses, enum : typage et structures.
+- contextlib, weakref : utilitaires bas niveau.
+
+Total : ~200 modules dans la bibliotheque standard.
+
+
+================================================================================
+15. Les compilateurs PYTHON86.PAS et PYTHCW32.PAS
+================================================================================
+
+PYTHON86.PAS :
+- Compilateur Python pour cible 8086 DOS (sous-ensemble Python 3.6).
+- Genere du code MASM compatible.
+- Supporte : int, float, str (ASCII), list, tuple, dict, if/while/for,
+  def, class, import (limite a quelques modules standard).
+- Pas de generateurs/async, pas de comprehensions imbriquees complexes.
+- Runtime minimal : print, input, range, len, str, int, float.
+
+PYTHCW32.PAS :
+- Compilateur Python pour Windows 32 bits (PE executable).
+- Sous-ensemble Python 3.7+ : comprehensions, f-strings, dataclasses
+  simples, type hints (ignores a l'execution mais valides).
+- Pas de async/await ni multiprocessing.
+- Generation native x86 sans passage par bytecode CPython.
+- Acces aux API Win32 via ctypes minimal.
+
+
+================================================================================
+16. Exemples de programmes
+================================================================================
+
+16.1 Hello World
+
+  print("Bonjour le monde")
+
+16.2 Factorielle recursive
+
+  def fact(n: int) -> int:
+      return 1 if n <= 1 else n * fact(n - 1)
+
+  print(fact(20))               # 2432902008176640000
+
+16.3 Suite de Fibonacci (generateur)
+
+  def fib():
+      a, b = 0, 1
+      while True:
+          yield a
+          a, b = b, a + b
+
+  from itertools import islice
+  print(list(islice(fib(), 10)))    # [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
+
+16.4 Lecture d'un fichier, mots les plus frequents
+
+  from collections import Counter
+  from pathlib import Path
+  texte = Path("texte.txt").read_text(encoding="utf-8").lower()
+  mots = texte.split()
+  for mot, n in Counter(mots).most_common(10):
+      print(f"{mot:20s} {n}")
+
+16.5 Telechargement parallele (asyncio)
+
+  import asyncio, aiohttp
+
+  async def get(url):
+      async with aiohttp.ClientSession() as s:
+          async with s.get(url) as r:
+              return await r.text()
+
+  async def main():
+      urls = ["https://a.org", "https://b.org"]
+      pages = await asyncio.gather(*[get(u) for u in urls])
+      for p in pages: print(len(p))
+
+  asyncio.run(main())
+
+16.6 Classe avec dataclass
+
+  from dataclasses import dataclass
+  from math import hypot
+
+  @dataclass(frozen=True)
+  class Point:
+      x: float
+      y: float
+      def distance(self, autre: "Point") -> float:
+          return hypot(self.x - autre.x, self.y - autre.y)
+
+  a = Point(0, 0); b = Point(3, 4)
+  print(a.distance(b))            # 5.0
+
+16.7 Decorateur memoization
+
+  from functools import lru_cache
+
+  @lru_cache(maxsize=None)
+  def fib(n):
+      return n if n < 2 else fib(n-1) + fib(n-2)
+
+  print(fib(100))                 # quasi-instantane
+
+
+================================================================================
+17. Bonnes pratiques (PEP 8, PEP 20)
+================================================================================
+
+Zen of Python (PEP 20, "import this") :
+- Beautiful is better than ugly.
+- Explicit is better than implicit.
+- Simple is better than complex.
+- Readability counts.
+- There should be one-- and preferably only one --obvious way to do it.
+
+PEP 8 (style) :
+- Indentation : 4 espaces, pas de tabulations.
+- Longueur de ligne : 79 caracteres (99 acceptable).
+- snake_case pour fonctions/variables, PascalCase pour classes.
+- Espaces autour des operateurs binaires, pas autour de = dans les parametres.
+- Une instruction par ligne.
+- Docstrings (PEP 257) pour modules/classes/fonctions publiques.
+
+Outils :
+- black : formatage automatique.
+- ruff : linter et formatter ultra rapide (Rust).
+- flake8, pylint : linters.
+- mypy, pyright : verification de type statique.
+- pytest : framework de tests le plus utilise.
+
+
+================================================================================
+18. Ecosysteme et influence
+================================================================================
+
+Domaines d'usage majeurs :
+- Science des donnees / IA : NumPy, Pandas, SciPy, scikit-learn,
+  TensorFlow, PyTorch, JAX, Keras.
+- Web : Django, Flask, FastAPI, Pyramid.
+- Automation / scripting / DevOps : Ansible, Fabric, Invoke.
+- Tests : pytest, hypothesis, tox.
+- Graphique / GUI : Tkinter, PyQt, PySide, Kivy, Pygame.
+- Analyse scientifique : SymPy, matplotlib, seaborn, plotly.
+- Education : tres present en enseignement (lycee, universite).
+
+Implementations alternatives :
+- CPython : reference, ecrite en C.
+- PyPy : interprete avec JIT (10x plus rapide sur du code pur Python).
+- Jython : sur JVM.
+- IronPython : sur .NET.
+- MicroPython, CircuitPython : pour microcontroleurs.
+- GraalPy : sur GraalVM.
+- Pyston, Cinder, mypyc : optimisations Meta/Facebook.
+
+Influences sortantes : Ruby, Go (un peu), Swift (par certains aspects),
+Julia, TypeScript (annotations).
+
+
+================================================================================
+19. References
+================================================================================
+
+- Documentation officielle : https://docs.python.org/3/
+- PEP Index : https://peps.python.org/
+- PEP 8 : Style Guide for Python Code.
+- PEP 20 : The Zen of Python.
+- PEP 484 : Type Hints.
+- PEP 492 : Coroutines with async and await syntax.
+- PEP 526 : Syntax for Variable Annotations.
+- PEP 557 : Data Classes.
+- PEP 585 : Type Hinting Generics In Standard Collections.
+- PEP 634/635/636 : Structural Pattern Matching (match/case).
+- PEP 695 : Type Parameter Syntax (Python 3.12).
+- Lutz, M. : "Learning Python", O'Reilly, 5eme ed. 2013.
+- Beazley, D.; Jones, B. : "Python Cookbook", O'Reilly, 3eme ed. 2013.
+- Ramalho, L. : "Fluent Python", O'Reilly, 2eme ed. 2022.
+- van Rossum, G. : "The History of Python" (blog historique).
+- Guttag, J. : "Introduction to Computation and Programming Using Python",
+  MIT Press.
+
+================================================================================
+                              FIN DU DOCUMENT
+================================================================================

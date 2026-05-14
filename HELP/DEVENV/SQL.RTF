@@ -1,0 +1,2177 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_SQL_01}
+{\footnote $ SQL - INTRODUCTION}
+{\footnote K SQL introduction;Transact-SQL;T-SQL;SQL Server;Codd;modele relationnel;ANSI SQL-86;ISO;SQL:1999;SQL:2023;Sybase}
+\b\fs24 INTRODUCTION \b0\fs20\par
+\par
+Transact-SQL (T-SQL) est l extension proprietaire de Microsoft\par
+du langage SQL standard (Structured Query Language). Il est\par
+le langage principal de Microsoft SQL Server et de Azure SQL\par
+Database. T-SQL ajoute au SQL standard des instructions de\par
+controle de flux, des variables locales, des fonctions\par
+integrees supplementaires, la gestion d erreurs structuree\par
+et des fonctionnalites de programmation procedurale.\par
+\par
+SQL a ete cree en 1970 par Edgar F. Codd chez IBM, base sur\par
+le modele relationnel. Le langage a ete normalise par l ANSI\par
+en 1986 (SQL-86) puis par l ISO. Les versions successives\par
+(SQL-89, SQL-92, SQL:1999, SQL:2003, SQL:2008, SQL:2011,\par
+SQL:2016, SQL:2023) ont progressivement enrichi le langage.\par
+\par
+Microsoft a introduit Transact-SQL avec SQL Server 1.0 en\par
+1989 (a l origine Sybase SQL Server). Depuis, T-SQL a evolue\par
+a chaque version de SQL Server : 6.5, 7.0, 2000, 2005, 2008,\par
+2012, 2014, 2016, 2017, 2019 et 2022.\par
+\par
+Le programme SQLCMD.PAS implemente un sous-ensemble\par
+substantiel de T-SQL en lisant directement les fichiers .MDF\par
+de SQL Server sans necessiter d instance SQL Server.\par
+\par
+Paradigme : declaratif (requetes), imperatif (controle de\par
+{\f1             flux T-SQL), ensembliste (operations sur les}\par
+{\f1             lignes)}\par
+Typage    : statique fort (chaque colonne a un type defini)\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. CONVENTIONS LEXICALES}     {\uldb [Aller]}{\v IDH_SQL_02}\par
+{\f1  3. TYPES DE DONNEES}     {\uldb [Aller]}{\v IDH_SQL_03}\par
+{\f1  4. EXPRESSIONS}     {\uldb [Aller]}{\v IDH_SQL_04}\par
+{\f1  5. OPERATEURS}     {\uldb [Aller]}{\v IDH_SQL_05}\par
+{\f1  6. INSTRUCTIONS DML (DATA MANIPULATION LANGUAGE)}     {\uldb [Aller]}{\v IDH_SQL_06}\par
+{\f1  7. INSTRUCTIONS DDL (DATA DEFINITION LANGUAGE)}     {\uldb [Aller]}{\v IDH_SQL_07}\par
+{\f1  8. INSTRUCTIONS DCL (DATA CONTROL LANGUAGE)}     {\uldb [Aller]}{\v IDH_SQL_08}\par
+{\f1  9. INSTRUCTIONS DE CONTROLE DE FLUX (T-SQL)}     {\uldb [Aller]}{\v IDH_SQL_09}\par
+{\f1 10. TRANSACTIONS}     {\uldb [Aller]}{\v IDH_SQL_10}\par
+{\f1 11. FONCTIONS INTEGREES}     {\uldb [Aller]}{\v IDH_SQL_11}\par
+{\f1 12. FONCTIONS D AGREGATION}     {\uldb [Aller]}{\v IDH_SQL_12}\par
+{\f1 13. FONCTIONS DE FENETRE (WINDOW FUNCTIONS)}     {\uldb [Aller]}{\v IDH_SQL_13}\par
+{\f1 14. SOUS-REQUETES ET EXPRESSIONS DE TABLE}     {\uldb [Aller]}{\v IDH_SQL_14}\par
+{\f1 15. JOINTURES}     {\uldb [Aller]}{\v IDH_SQL_15}\par
+{\f1 16. OPERATEURS ENSEMBLISTES}     {\uldb [Aller]}{\v IDH_SQL_16}\par
+{\f1 17. CURSEURS}     {\uldb [Aller]}{\v IDH_SQL_17}\par
+{\f1 18. PROCEDURES STOCKEES ET FONCTIONS UTILISATEUR}     {\uldb [Aller]}{\v IDH_SQL_18}\par
+{\f1 19. DECLENCHEURS (TRIGGERS)}     {\uldb [Aller]}{\v IDH_SQL_19}\par
+{\f1 20. GESTION DES ERREURS}     {\uldb [Aller]}{\v IDH_SQL_20}\par
+{\f1 21. FORMATS DE SORTIE (FOR XML / FOR JSON)}     {\uldb [Aller]}{\v IDH_SQL_21}\par
+{\f1 22. VARIABLES ET FONCTIONS SYSTEME}     {\uldb [Aller]}{\v IDH_SQL_22}\par
+{\f1 23. LIMITATIONS DE L IMPLEMENTATION SQLCMD.PAS}     {\uldb [Aller]}{\v IDH_SQL_23}\par
+{\f1 24. LIEN AVEC LE PROJET DEV-COOLS}     {\uldb [Aller]}{\v IDH_SQL_24}\par
+\par
+{\uldb Suivant >>}{\v IDH_SQL_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_02}
+{\footnote $ SQL - CONVENTIONS LEXICALES}
+{\footnote K SQL lexical;commentaires;identificateurs;mots reserves;litteraux;chaines;dates;NULL}
+\b\fs24 CONVENTIONS LEXICALES \b0\fs20\par
+\par
+2.1 Commentaires\par
+\par
+{\f1     -- commentaire sur une ligne (jusqu a la fin de ligne)}\par
+{\f1     /* commentaire sur}\par
+{\f1        plusieurs lignes */}\par
+\par
+{\f1     Les commentaires bloc peuvent etre imbriques :}\par
+{\f1     /* niveau 1 /* niveau 2 */ fin niveau 1 */}\par
+\par
+2.2 Identificateurs\par
+\par
+{\f1     Les identificateurs nomment les objets de la base :}\par
+{\f1     tables, colonnes, variables, procedures, fonctions, etc.}\par
+\par
+{\f1     Identificateurs reguliers :}\par
+{\f1       Commencent par une lettre (a-z, A-Z) ou un underscore (_),}\par
+{\f1       at (@) pour les variables, dieise (#) pour les objets}\par
+{\f1       temporaires, double dieise (##) pour les objets temporaires}\par
+{\f1       globaux.}\par
+{\f1       Suivis de lettres, chiffres, underscores, @ ou #.}\par
+{\f1       Longueur maximale : 128 caracteres.}\par
+{\f1       Non sensibles a la casse (selon la collation par defaut).}\par
+\par
+{\f1     Identificateurs delimites :}\par
+{\f1       [nom avec espaces]    -- crochets (specifique T-SQL)}\par
+{\f1       "nom avec espaces"    -- guillemets doubles (SQL standard)}\par
+\par
+{\f1     Exemples :}\par
+{\f1       NomTable     _compte     @variable     #temp}\par
+{\f1       ##global     [Nom Colonne]     "Schema"."Table"}\par
+\par
+2.3 Variables\par
+\par
+{\f1     Les variables locales commencent par @ :}\par
+{\f1       @nom_variable}\par
+\par
+{\f1     Les variables systeme commencent par @@ :}\par
+{\f1       @@ROWCOUNT  @@ERROR  @@IDENTITY  @@VERSION}\par
+\par
+{\f1     Les parametres de procedures stockees commencent par @ :}\par
+{\f1       @param1  @param2}\par
+\par
+2.4 Litteraux numeriques\par
+\par
+{\f1     Entiers          : 42, -17, 0}\par
+{\f1     Decimaux         : 3.14, -0.5, 123.456}\par
+{\f1     Scientifiques    : 1.5E3, 2.7E-4}\par
+{\f1     Hexadecimaux     : 0x1A2B, 0xFF}\par
+{\f1     Monetaires       : $12.50, -$99.99}\par
+\par
+2.5 Litteraux chaines\par
+\par
+{\f1     Chaines ANSI :}\par
+{\f1       'texte simple'}\par
+{\f1       'l''apostrophe est doublee'}\par
+{\f1       ''                          -- chaine vide}\par
+\par
+{\f1     Chaines Unicode :}\par
+{\f1       N'texte unicode'}\par
+{\f1       N'l''apostrophe est doublee'}\par
+\par
+{\f1     Chaines binaires :}\par
+{\f1       0x48656C6C6F                -- octets hexadecimaux}\par
+\par
+2.6 Mots-cles reserves\par
+\par
+{\f1     T-SQL comporte un grand nombre de mots-cles reserves.}\par
+{\f1     Les principaux sont :}\par
+\par
+{\f1     -- DML}\par
+{\f1     SELECT  INSERT  UPDATE  DELETE  MERGE  TRUNCATE}\par
+{\f1     BULK INSERT}\par
+\par
+{\f1     -- Clauses SELECT}\par
+{\f1     FROM  WHERE  GROUP BY  HAVING  ORDER BY}\par
+{\f1     TOP  DISTINCT  ALL  AS  INTO}\par
+\par
+{\f1     -- Jointures}\par
+{\f1     JOIN  INNER  LEFT  RIGHT  FULL  OUTER  CROSS}\par
+{\f1     ON  APPLY}\par
+\par
+{\f1     -- Operateurs ensemblistes}\par
+{\f1     UNION  INTERSECT  EXCEPT}\par
+\par
+{\f1     -- Predicats}\par
+{\f1     AND  OR  NOT  IN  EXISTS  BETWEEN  LIKE}\par
+{\f1     IS  NULL  SOME  ANY  ALL}\par
+\par
+{\f1     -- Expressions}\par
+{\f1     CASE  WHEN  THEN  ELSE  END}\par
+{\f1     CAST  CONVERT  TRY_CAST  TRY_CONVERT}\par
+{\f1     COLLATE  COALESCE  NULLIF  IIF  CHOOSE}\par
+\par
+{\f1     -- DDL}\par
+{\f1     CREATE  ALTER  DROP  TABLE  VIEW  INDEX}\par
+{\f1     PROCEDURE  FUNCTION  TRIGGER  DATABASE}\par
+{\f1     SCHEMA  SEQUENCE  TYPE  SYNONYM}\par
+{\f1     CONSTRAINT  PRIMARY KEY  FOREIGN KEY}\par
+{\f1     REFERENCES  UNIQUE  CHECK  DEFAULT}\par
+{\f1     IDENTITY  CLUSTERED  NONCLUSTERED}\par
+{\f1     COLUMNSTORE  IF EXISTS}\par
+\par
+{\f1     -- Controle de flux}\par
+{\f1     BEGIN  END  IF  ELSE  WHILE  BREAK  CONTINUE}\par
+{\f1     GOTO  RETURN  WAITFOR  THROW  TRY  CATCH}\par
+{\f1     RAISERROR  PRINT}\par
+\par
+{\f1     -- Transactions}\par
+{\f1     BEGIN TRAN  COMMIT  ROLLBACK  SAVE  TRANSACTION}\par
+\par
+{\f1     -- DCL}\par
+{\f1     GRANT  REVOKE  DENY}\par
+\par
+{\f1     -- Divers}\par
+{\f1     DECLARE  SET  USE  GO  EXEC  EXECUTE}\par
+{\f1     WITH  OVER  PARTITION BY  ROWS  RANGE}\par
+{\f1     PIVOT  UNPIVOT  OFFSET  FETCH  NEXT  ONLY}\par
+{\f1     PERCENT  TIES  OUTPUT  INSERTED  DELETED}\par
+{\f1     FOR  XML  JSON  PATH  RAW  AUTO}\par
+\par
+2.7 Sensibilite a la casse\par
+\par
+{\f1     Par defaut, T-SQL n est pas sensible a la casse pour les}\par
+{\f1     mots-cles et les identificateurs. Cependant, la}\par
+{\f1     sensibilite depend de la collation de la base :}\par
+\par
+{\f1     SQL_Latin1_General_CP1_CI_AS : insensible a la casse (CI)}\par
+{\f1     SQL_Latin1_General_CP1_CS_AS : sensible a la casse (CS)}\par
+\par
+{\f1     Les litteraux chaines respectent toujours la collation.}\par
+\par
+2.8 Separateur de batch\par
+\par
+{\f1     GO}\par
+{\f1       Separateur de batch (lots d instructions). Ce n est pas}\par
+{\f1       un mot-cle T-SQL mais une commande reconnue par les}\par
+{\f1       outils client (sqlcmd, SSMS). Chaque batch est compile}\par
+{\f1       et execute independamment.}\par
+\par
+{\f1     Le point-virgule (;) est le terminateur d instruction}\par
+{\f1     recommande :}\par
+{\f1       SELECT 1;}\par
+{\f1       SELECT 2;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_01}     {\uldb Suivant >>}{\v IDH_SQL_03}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_03}
+{\footnote $ SQL - TYPES DE DONNEES}
+{\footnote K SQL types donnees;INT BIGINT SMALLINT TINYINT;DECIMAL NUMERIC FLOAT REAL;CHAR VARCHAR NVARCHAR;DATE DATETIME DATETIME2;BIT;UNIQUEIDENTIFIER;XML}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+3.1 Types numeriques exacts\par
+\par
+{\f1     Type              Taille   Plage / Description}\par
+{\f1     ----------------  -------  --------------------------------}\par
+{\f1     BIT               1 bit    0 ou 1}\par
+{\f1     TINYINT           1 octet  0 a 255}\par
+{\f1     SMALLINT          2 octets -32768 a 32767}\par
+{\f1     INT               4 octets -2^31 a 2^31-1}\par
+{\f1     BIGINT            8 octets -2^63 a 2^63-1}\par
+{\f1     DECIMAL(p,s)      5-17 oct Precision p (1-38), echelle s}\par
+{\f1     NUMERIC(p,s)      5-17 oct Synonyme de DECIMAL}\par
+{\f1     SMALLMONEY        4 octets -214748.3648 a 214748.3647}\par
+{\f1     MONEY             8 octets -922337203685477.5808 a}\par
+{\f1                                 922337203685477.5807}\par
+\par
+3.2 Types numeriques approches\par
+\par
+{\f1     Type              Taille   Description}\par
+{\f1     ----------------  -------  --------------------------------}\par
+{\f1     REAL              4 octets IEEE 754 simple precision}\par
+{\f1     FLOAT [(n)]       4 ou 8   n=1-24: 4 oct, n=25-53: 8 oct}\par
+{\f1                       octets   IEEE 754 double par defaut}\par
+\par
+3.3 Types chaines de caracteres\par
+\par
+{\f1     Type              Taille     Description}\par
+{\f1     ----------------  ---------  ----------------------------}\par
+{\f1     CHAR(n)           n octets   Chaine fixe (1-8000)}\par
+{\f1     VARCHAR(n)        variable   Chaine variable (1-8000)}\par
+{\f1     VARCHAR(MAX)      variable   Jusqu a 2^31-1 octets}\par
+{\f1     TEXT              variable   Obsolete, remplace par}\par
+{\f1                                  VARCHAR(MAX)}\par
+\par
+{\f1     Les types CHAR/VARCHAR utilisent la page de code de la}\par
+{\f1     collation de la colonne (ex: Latin1, CP1252).}\par
+\par
+3.4 Types chaines Unicode\par
+\par
+{\f1     Type              Taille     Description}\par
+{\f1     ----------------  ---------  ----------------------------}\par
+{\f1     NCHAR(n)          2*n oct.   Unicode fixe (1-4000)}\par
+{\f1     NVARCHAR(n)       variable   Unicode variable (1-4000)}\par
+{\f1     NVARCHAR(MAX)     variable   Jusqu a 2^31-1 octets}\par
+{\f1     NTEXT             variable   Obsolete, remplace par}\par
+{\f1                                  NVARCHAR(MAX)}\par
+\par
+{\f1     Encodage : UTF-16 Little-Endian.}\par
+\par
+3.5 Types date et heure\par
+\par
+{\f1     Type              Taille   Description}\par
+{\f1     ----------------  -------  --------------------------------}\par
+{\f1     DATE              3 octets 0001-01-01 a 9999-12-31}\par
+{\f1     TIME(p)           3-5 oct. 00:00:00.0000000 a}\par
+{\f1                                23:59:59.9999999 (precision p)}\par
+{\f1     DATETIME          8 octets 1753-01-01 a 9999-12-31}\par
+{\f1                                Precision : 3.33 ms}\par
+{\f1     DATETIME2(p)      6-8 oct. 0001-01-01 a 9999-12-31}\par
+{\f1                                Precision : 100 ns (p=7)}\par
+{\f1     SMALLDATETIME     4 octets 1900-01-01 a 2079-06-06}\par
+{\f1                                Precision : 1 minute}\par
+{\f1     DATETIMEOFFSET(p) 8-10 oct DATETIME2 + fuseau horaire}\par
+{\f1                                (-14:00 a +14:00)}\par
+\par
+{\f1     Formats de litteraux :}\par
+{\f1       '2026-03-21'                  -- DATE (ISO 8601)}\par
+{\f1       '14:30:00'                    -- TIME}\par
+{\f1       '2026-03-21 14:30:00'         -- DATETIME}\par
+{\f1       '2026-03-21T14:30:00.123'     -- DATETIME2}\par
+{\f1       '2026-03-21 14:30:00 +02:00'  -- DATETIMEOFFSET}\par
+\par
+3.6 Types binaires\par
+\par
+{\f1     Type              Taille     Description}\par
+{\f1     ----------------  ---------  ----------------------------}\par
+{\f1     BINARY(n)         n octets   Binaire fixe (1-8000)}\par
+{\f1     VARBINARY(n)      variable   Binaire variable (1-8000)}\par
+{\f1     VARBINARY(MAX)    variable   Jusqu a 2^31-1 octets}\par
+{\f1     IMAGE             variable   Obsolete, remplace par}\par
+{\f1                                  VARBINARY(MAX)}\par
+{\f1     TIMESTAMP         8 octets   Synonyme de ROWVERSION}\par
+{\f1     ROWVERSION        8 octets   Valeur auto-incrementee}\par
+\par
+3.7 Types speciaux\par
+\par
+{\f1     Type               Taille    Description}\par
+{\f1     -----------------  --------  ----------------------------}\par
+{\f1     UNIQUEIDENTIFIER   16 octets GUID (ex: '6F9619FF-...')}\par
+{\f1     SQL_VARIANT        variable  Peut stocker la plupart des}\par
+{\f1                                  types de base}\par
+{\f1     XML                variable  Document ou fragment XML}\par
+{\f1     HIERARCHYID        variable  Position dans une hierarchie}\par
+{\f1     GEOGRAPHY          variable  Donnees geospatiales}\par
+{\f1     GEOMETRY           variable  Donnees geometriques planes}\par
+{\f1     TABLE              variable  Variable de type table}\par
+{\f1     CURSOR             -         Pointeur de curseur}\par
+\par
+3.8 Conversion de types\par
+\par
+{\f1     Conversion implicite :}\par
+{\f1       T-SQL convertit automatiquement certains types dans les}\par
+{\f1       expressions mixtes selon les regles de precedence :}\par
+{\f1         sql_variant > datetimeoffset > datetime2 > datetime >}\par
+{\f1         smalldatetime > date > time > float > real > decimal >}\par
+{\f1         money > smallmoney > bigint > int > smallint > tinyint >}\par
+{\f1         bit > nvarchar > nchar > varchar > char > varbinary >}\par
+{\f1         binary > uniqueidentifier}\par
+\par
+{\f1     Conversion explicite :}\par
+{\f1       CAST(expression AS type)}\par
+{\f1       CONVERT(type, expression [, style])}\par
+{\f1       TRY_CAST(expression AS type)      -- retourne NULL si echec}\par
+{\f1       TRY_CONVERT(type, expression)     -- retourne NULL si echec}\par
+\par
+{\f1     Exemples :}\par
+{\f1       CAST(42 AS VARCHAR(10))           -- '42'}\par
+{\f1       CAST('2026-03-21' AS DATE)        -- conversion de date}\par
+{\f1       CONVERT(VARCHAR, GETDATE(), 120)  -- format ISO}\par
+{\f1       TRY_CAST('abc' AS INT)            -- retourne NULL}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_02}     {\uldb Suivant >>}{\v IDH_SQL_04}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_04}
+{\footnote $ SQL - EXPRESSIONS}
+{\footnote K SQL expressions;CASE;COALESCE NULLIF;ISNULL;CAST CONVERT;TRY_CAST}
+\b\fs24 EXPRESSIONS \b0\fs20\par
+\par
+4.1 Expressions scalaires\par
+\par
+{\f1     Une expression scalaire produit une valeur unique :}\par
+\par
+{\f1     42                          -- litteraux}\par
+{\f1     'texte'}\par
+{\f1     @variable                   -- variable locale}\par
+{\f1     @@ROWCOUNT                  -- variable systeme}\par
+{\f1     nom_colonne                 -- reference de colonne}\par
+{\f1     table.colonne               -- reference qualifiee}\par
+{\f1     schema.table.colonne        -- reference completement qualifiee}\par
+{\f1     (expression)                -- parentheses}\par
+{\f1     fonction(args)              -- appel de fonction}\par
+{\f1     (SELECT expr FROM ...)      -- sous-requete scalaire}\par
+\par
+4.2 Expression CASE\par
+\par
+{\f1     Forme simple :}\par
+{\f1       CASE expression}\par
+{\f1         WHEN valeur1 THEN resultat1}\par
+{\f1         WHEN valeur2 THEN resultat2}\par
+{\f1         ...}\par
+{\f1         ELSE resultat_defaut}\par
+{\f1       END}\par
+\par
+{\f1     Forme recherchee :}\par
+{\f1       CASE}\par
+{\f1         WHEN condition1 THEN resultat1}\par
+{\f1         WHEN condition2 THEN resultat2}\par
+{\f1         ...}\par
+{\f1         ELSE resultat_defaut}\par
+{\f1       END}\par
+\par
+{\f1     Exemples :}\par
+{\f1       CASE status WHEN 'A' THEN 'Actif' ELSE 'Inactif' END}\par
+{\f1       CASE WHEN age >= 18 THEN 'Majeur' ELSE 'Mineur' END}\par
+\par
+4.3 Expression COALESCE et NULLIF\par
+\par
+{\f1     COALESCE(expr1, expr2, ..., exprN)}\par
+{\f1       Retourne la premiere expression non NULL.}\par
+{\f1       Equivalent a CASE WHEN expr1 IS NOT NULL THEN expr1}\par
+{\f1                         WHEN expr2 IS NOT NULL THEN expr2}\par
+{\f1                         ... END}\par
+\par
+{\f1     NULLIF(expr1, expr2)}\par
+{\f1       Retourne NULL si expr1 = expr2, sinon retourne expr1.}\par
+\par
+4.4 Expression IIF et CHOOSE\par
+\par
+{\f1     IIF(condition, valeur_vrai, valeur_faux)}\par
+{\f1       Equivalent a CASE WHEN condition THEN valeur_vrai}\par
+{\f1                         ELSE valeur_faux END}\par
+\par
+{\f1     CHOOSE(index, val1, val2, ..., valN)}\par
+{\f1       Retourne la valeur a la position index (base 1).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_03}     {\uldb Suivant >>}{\v IDH_SQL_05}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_05}
+{\footnote $ SQL - OPERATEURS}
+{\footnote K SQL operateurs;arithmetiques;comparaison;LIKE BETWEEN IN IS NULL;logiques AND OR NOT;concatenation +;bit-a-bit}
+\b\fs24 OPERATEURS \b0\fs20\par
+\par
+5.1 Operateurs arithmetiques\par
+\par
+{\f1     +   addition}\par
+{\f1     -   soustraction ou negation unaire}\par
+{\f1     *   multiplication}\par
+{\f1     /   division (entiere si les deux operandes sont entiers)}\par
+{\f1     %   modulo (reste de la division)}\par
+\par
+{\f1     Exemples :}\par
+{\f1       10 + 3       -- 13}\par
+{\f1       10 / 3       -- 3 (division entiere)}\par
+{\f1       10.0 / 3     -- 3.333... (division decimale)}\par
+{\f1       10 % 3       -- 1}\par
+\par
+5.2 Operateurs de comparaison\par
+\par
+{\f1     =    egalite}\par
+{\f1     <>   difference (SQL standard)}\par
+{\f1     !=   difference (non standard, accepte par T-SQL)}\par
+{\f1     <    inferieur strict}\par
+{\f1     >    superieur strict}\par
+{\f1     <=   inferieur ou egal}\par
+{\f1     >=   superieur ou egal}\par
+{\f1     !<   non inferieur (equivalent a >=, specifique T-SQL)}\par
+{\f1     !>   non superieur (equivalent a <=, specifique T-SQL)}\par
+\par
+5.3 Operateurs logiques\par
+\par
+{\f1     AND       ET logique}\par
+{\f1     OR        OU logique}\par
+{\f1     NOT       negation logique}\par
+\par
+{\f1     Logique tri-valuee SQL (TRUE, FALSE, UNKNOWN) :}\par
+{\f1       TRUE AND UNKNOWN  = UNKNOWN}\par
+{\f1       FALSE AND UNKNOWN = FALSE}\par
+{\f1       TRUE OR UNKNOWN   = TRUE}\par
+{\f1       FALSE OR UNKNOWN  = UNKNOWN}\par
+{\f1       NOT UNKNOWN       = UNKNOWN}\par
+\par
+{\f1     Les valeurs NULL produisent UNKNOWN dans les comparaisons :}\par
+{\f1       NULL = NULL       -- UNKNOWN (pas TRUE)}\par
+{\f1       NULL <> 1         -- UNKNOWN (pas TRUE)}\par
+{\f1       NULL IS NULL      -- TRUE}\par
+\par
+5.4 Operateurs de chaine\par
+\par
+{\f1     +   concatenation de chaines}\par
+{\f1       'Hello' + ' ' + 'World'  -- 'Hello World'}\par
+{\f1       NULL + 'texte'           -- NULL (propagation de NULL)}\par
+\par
+{\f1     CONCAT(str1, str2, ...)}\par
+{\f1       Concatenation avec gestion des NULLs :}\par
+{\f1       CONCAT(NULL, 'texte')    -- 'texte'}\par
+\par
+5.5 Operateurs d affectation\par
+\par
+{\f1     =    affectation simple}\par
+{\f1     +=   addition et affectation}\par
+{\f1     -=   soustraction et affectation}\par
+{\f1     *=   multiplication et affectation}\par
+{\f1     /=   division et affectation}\par
+{\f1     %=   modulo et affectation}\par
+{\f1     &=   ET bit a bit et affectation}\par
+{\f1     |=   OU bit a bit et affectation}\par
+{\f1     ^=   OU exclusif bit a bit et affectation}\par
+\par
+{\f1     Exemples :}\par
+{\f1       SET @x = 10}\par
+{\f1       SET @x += 5    -- @x vaut 15}\par
+\par
+5.6 Operateurs bit a bit\par
+\par
+{\f1     &    ET bit a bit}\par
+{\f1     |    OU bit a bit}\par
+{\f1     ^    OU exclusif bit a bit}\par
+{\f1     ~    complement bit a bit (unaire)}\par
+\par
+5.7 Predicats speciaux\par
+\par
+{\f1     expr IS NULL                -- teste si l expression est NULL}\par
+{\f1     expr IS NOT NULL            -- teste si l expression n est pas NULL}\par
+{\f1     expr BETWEEN a AND b        -- equivalent a expr >= a AND expr <= b}\par
+{\f1     expr NOT BETWEEN a AND b}\par
+{\f1     expr IN (val1, val2, ...)   -- teste l appartenance a une liste}\par
+{\f1     expr NOT IN (val1, ...)}\par
+{\f1     expr IN (SELECT ...)        -- teste l appartenance a un sous-ensemble}\par
+{\f1     EXISTS (SELECT ...)         -- teste si la sous-requete retourne}\par
+{\f1                                    au moins une ligne}\par
+{\f1     NOT EXISTS (SELECT ...)}\par
+{\f1     expr LIKE motif [ESCAPE car]}\par
+{\f1       Caracteres jokers du LIKE :}\par
+{\f1         %    : zero ou plusieurs caracteres}\par
+{\f1         _    : exactement un caractere}\par
+{\f1         [abc]  : un caractere parmi a, b ou c}\par
+{\f1         [a-z]  : un caractere dans la plage a-z}\par
+{\f1         [^abc] : un caractere qui n est ni a, ni b, ni c}\par
+\par
+{\f1       Exemples :}\par
+{\f1         nom LIKE 'Mart%'         -- commence par 'Mart'}\par
+{\f1         nom LIKE '_a%'           -- deuxieme caractere 'a'}\par
+{\f1         nom LIKE '[A-C]%'        -- commence par A, B ou C}\par
+{\f1         nom LIKE '%[_]%' ESCAPE '\\' -- contient un underscore}\par
+\par
+{\f1     expr ALL (SELECT ...)       -- TRUE si la condition est vraie}\par
+{\f1                                    pour toutes les valeurs}\par
+{\f1     expr ANY (SELECT ...)       -- TRUE si la condition est vraie}\par
+{\f1     expr SOME (SELECT ...)         pour au moins une valeur}\par
+\par
+5.8 Precedence des operateurs (du plus fort au plus faible)\par
+\par
+{\f1      1. ~ (complement bit a bit)}\par
+{\f1      2. * / %}\par
+{\f1      3. + - (arithmetiques)}\par
+{\f1      4. = <> < > <= >= != !< !>}\par
+{\f1      5. ^ (XOR bit a bit)}\par
+{\f1      6. & (ET bit a bit)}\par
+{\f1      7. | (OU bit a bit)}\par
+{\f1      8. NOT}\par
+{\f1      9. AND}\par
+{\f1     10. ALL ANY BETWEEN IN LIKE OR SOME}\par
+{\f1     11. = (affectation)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_04}     {\uldb Suivant >>}{\v IDH_SQL_06}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_06}
+{\footnote $ SQL - INSTRUCTIONS DML (DATA MANIPULATION LANGUAGE)}
+{\footnote K SQL DML;SELECT;INSERT;UPDATE;DELETE;MERGE;OUTPUT;TOP;ORDER BY;OFFSET FETCH}
+\b\fs24 INSTRUCTIONS DML (DATA MANIPULATION LANGUAGE) \b0\fs20\par
+\par
+6.1 SELECT\par
+\par
+{\f1     Syntaxe complete :}\par
+\par
+{\f1     [WITH cte AS (requete)]}\par
+{\f1     SELECT [ALL | DISTINCT]}\par
+{\f1            [TOP (n) [PERCENT] [WITH TIES]]}\par
+{\f1            liste_colonnes | *}\par
+{\f1     [INTO nouvelle_table]}\par
+{\f1     FROM source_table [AS alias]}\par
+{\f1          [WITH (hint_table)]}\par
+{\f1     [jointures]}\par
+{\f1     [WHERE condition]}\par
+{\f1     [GROUP BY colonnes [WITH ROLLUP | CUBE]}\par
+{\f1              | GROUPING SETS ((cols), ...)]}\par
+{\f1     [HAVING condition]}\par
+{\f1     [ORDER BY colonnes [ASC | DESC]}\par
+{\f1               [OFFSET n ROWS [FETCH NEXT m ROWS ONLY]]]}\par
+{\f1     [FOR XML PATH('element') | RAW | AUTO | EXPLICIT]}\par
+{\f1     [FOR JSON PATH | AUTO]}\par
+{\f1     [OPTION (query_hints)]}\par
+\par
+{\f1     Exemples :}\par
+\par
+{\f1     -- Requete simple}\par
+{\f1     SELECT nom, prenom, age FROM Employes WHERE age > 30}\par
+\par
+{\f1     -- Avec alias}\par
+{\f1     SELECT e.nom AS NomEmploye, d.nom AS NomDepartement}\par
+{\f1     FROM Employes e}\par
+{\f1     INNER JOIN Departements d ON e.dept_id = d.id}\par
+\par
+{\f1     -- Top 10 avec tri}\par
+{\f1     SELECT TOP 10 nom, salaire}\par
+{\f1     FROM Employes}\par
+{\f1     ORDER BY salaire DESC}\par
+\par
+{\f1     -- Pagination (SQL Server 2012+)}\par
+{\f1     SELECT nom, prenom}\par
+{\f1     FROM Employes}\par
+{\f1     ORDER BY nom}\par
+{\f1     OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY}\par
+\par
+{\f1     -- CTE (Common Table Expression)}\par
+{\f1     WITH VentesParRegion AS (}\par
+{\f1       SELECT region, SUM(montant) AS total}\par
+{\f1       FROM Ventes}\par
+{\f1       GROUP BY region}\par
+{\f1     )}\par
+{\f1     SELECT * FROM VentesParRegion WHERE total > 10000}\par
+\par
+{\f1     -- CTE recursive}\par
+{\f1     WITH Hierarchie AS (}\par
+{\f1       SELECT id, nom, manager_id, 0 AS niveau}\par
+{\f1       FROM Employes WHERE manager_id IS NULL}\par
+{\f1       UNION ALL}\par
+{\f1       SELECT e.id, e.nom, e.manager_id, h.niveau + 1}\par
+{\f1       FROM Employes e}\par
+{\f1       INNER JOIN Hierarchie h ON e.manager_id = h.id}\par
+{\f1     )}\par
+{\f1     SELECT * FROM Hierarchie}\par
+\par
+{\f1     -- SELECT INTO (creation de table)}\par
+{\f1     SELECT * INTO #TempEmployes FROM Employes WHERE actif = 1}\par
+\par
+6.2 INSERT\par
+\par
+{\f1     -- Insertion de valeurs explicites}\par
+{\f1     INSERT INTO table (col1, col2, col3)}\par
+{\f1     VALUES (val1, val2, val3)}\par
+\par
+{\f1     -- Insertion de plusieurs lignes (SQL Server 2008+)}\par
+{\f1     INSERT INTO table (col1, col2)}\par
+{\f1     VALUES (1, 'a'), (2, 'b'), (3, 'c')}\par
+\par
+{\f1     -- Insertion par requete}\par
+{\f1     INSERT INTO table (col1, col2)}\par
+{\f1     SELECT colA, colB FROM autre_table WHERE condition}\par
+\par
+{\f1     -- Insertion avec valeurs par defaut}\par
+{\f1     INSERT INTO table DEFAULT VALUES}\par
+\par
+{\f1     -- Insertion avec OUTPUT}\par
+{\f1     INSERT INTO table (col1, col2)}\par
+{\f1     OUTPUT INSERTED.id, INSERTED.col1}\par
+{\f1     VALUES (val1, val2)}\par
+\par
+{\f1     -- Insertion par execution de procedure}\par
+{\f1     INSERT INTO table}\par
+{\f1     EXEC nom_procedure @param1, @param2}\par
+\par
+6.3 UPDATE\par
+\par
+{\f1     -- Mise a jour simple}\par
+{\f1     UPDATE table}\par
+{\f1     SET col1 = val1, col2 = val2}\par
+{\f1     WHERE condition}\par
+\par
+{\f1     -- Mise a jour avec FROM (jointure, specifique T-SQL)}\par
+{\f1     UPDATE t}\par
+{\f1     SET t.col1 = s.valeur}\par
+{\f1     FROM table_cible t}\par
+{\f1     INNER JOIN table_source s ON t.id = s.id}\par
+{\f1     WHERE s.status = 'actif'}\par
+\par
+{\f1     -- Mise a jour avec TOP}\par
+{\f1     UPDATE TOP (100) table}\par
+{\f1     SET traite = 1}\par
+{\f1     WHERE traite = 0}\par
+\par
+{\f1     -- Mise a jour avec OUTPUT}\par
+{\f1     UPDATE table}\par
+{\f1     SET status = 'archive'}\par
+{\f1     OUTPUT DELETED.id, DELETED.status, INSERTED.status}\par
+{\f1     WHERE date_creation < '2020-01-01'}\par
+\par
+{\f1     -- Affectation composee}\par
+{\f1     UPDATE table SET compteur += 1 WHERE id = @id}\par
+\par
+6.4 DELETE\par
+\par
+{\f1     -- Suppression simple}\par
+{\f1     DELETE FROM table WHERE condition}\par
+\par
+{\f1     -- Suppression avec TOP}\par
+{\f1     DELETE TOP (1000) FROM table WHERE archive = 1}\par
+\par
+{\f1     -- Suppression avec FROM (jointure, specifique T-SQL)}\par
+{\f1     DELETE t}\par
+{\f1     FROM table_cible t}\par
+{\f1     INNER JOIN table_ref r ON t.ref_id = r.id}\par
+{\f1     WHERE r.expire = 1}\par
+\par
+{\f1     -- Suppression avec OUTPUT}\par
+{\f1     DELETE FROM table}\par
+{\f1     OUTPUT DELETED.*}\par
+{\f1     WHERE id = @id}\par
+\par
+6.5 TRUNCATE TABLE\par
+\par
+{\f1     TRUNCATE TABLE nom_table}\par
+\par
+{\f1     Supprime toutes les lignes de la table sans journaliser}\par
+{\f1     chaque suppression individuelle. Plus rapide que DELETE}\par
+{\f1     sans WHERE. Reinitialise les colonnes IDENTITY.}\par
+\par
+6.6 MERGE\par
+\par
+{\f1     MERGE INTO table_cible AS cible}\par
+{\f1     USING table_source AS source}\par
+{\f1     ON cible.id = source.id}\par
+{\f1     WHEN MATCHED THEN}\par
+{\f1       UPDATE SET cible.col1 = source.col1}\par
+{\f1     WHEN NOT MATCHED [BY TARGET] THEN}\par
+{\f1       INSERT (col1, col2) VALUES (source.col1, source.col2)}\par
+{\f1     WHEN NOT MATCHED BY SOURCE THEN}\par
+{\f1       DELETE}\par
+{\f1     OUTPUT $action, INSERTED.*, DELETED.*;}\par
+\par
+{\f1     L instruction MERGE permet de combiner INSERT, UPDATE et}\par
+{\f1     DELETE en une seule instruction basee sur une condition}\par
+{\f1     de correspondance.}\par
+\par
+6.7 BULK INSERT\par
+\par
+{\f1     BULK INSERT table}\par
+{\f1     FROM 'chemin\\fichier.csv'}\par
+{\f1     WITH (}\par
+{\f1       FIELDTERMINATOR = ',',}\par
+{\f1       ROWTERMINATOR = '\\n',}\par
+{\f1       FIRSTROW = 2,}\par
+{\f1       CODEPAGE = '65001',}\par
+{\f1       TABLOCK}\par
+{\f1     )}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_05}     {\uldb Suivant >>}{\v IDH_SQL_07}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_07}
+{\footnote $ SQL - INSTRUCTIONS DDL (DATA DEFINITION LANGUAGE)}
+{\footnote K SQL DDL;CREATE TABLE;ALTER TABLE;DROP;TRUNCATE;CREATE INDEX;CREATE VIEW;CREATE SCHEMA;contraintes PRIMARY KEY FOREIGN KEY CHECK UNIQUE DEFAULT}
+\b\fs24 INSTRUCTIONS DDL (DATA DEFINITION LANGUAGE) \b0\fs20\par
+\par
+7.1 CREATE TABLE\par
+\par
+{\f1     CREATE TABLE nom_schema.nom_table (}\par
+{\f1       col1 type [IDENTITY(seed, increment)]}\par
+{\f1                 [NOT NULL | NULL]}\par
+{\f1                 [PRIMARY KEY [CLUSTERED | NONCLUSTERED]]}\par
+{\f1                 [UNIQUE]}\par
+{\f1                 [DEFAULT valeur]}\par
+{\f1                 [CHECK (condition)]}\par
+{\f1                 [REFERENCES table_ref(col_ref)]}\par
+{\f1                 [COLLATE collation],}\par
+{\f1       col2 type ...,}\par
+{\f1       ...}\par
+{\f1       [CONSTRAINT nom_pk PRIMARY KEY [CLUSTERED] (col1, ...)],}\par
+{\f1       [CONSTRAINT nom_uq UNIQUE [NONCLUSTERED] (col1, ...)],}\par
+{\f1       [CONSTRAINT nom_fk FOREIGN KEY (col1)}\par
+{\f1                   REFERENCES table_ref(col_ref)}\par
+{\f1                   [ON DELETE CASCADE | SET NULL | NO ACTION]}\par
+{\f1                   [ON UPDATE CASCADE | SET NULL | NO ACTION]],}\par
+{\f1       [CONSTRAINT nom_ck CHECK (condition)],}\par
+{\f1       [CONSTRAINT nom_df DEFAULT valeur FOR col1]}\par
+{\f1     )}\par
+\par
+{\f1     Exemples :}\par
+\par
+{\f1     CREATE TABLE Employes (}\par
+{\f1       id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,}\par
+{\f1       nom NVARCHAR(100) NOT NULL,}\par
+{\f1       prenom NVARCHAR(100) NOT NULL,}\par
+{\f1       email VARCHAR(255) UNIQUE,}\par
+{\f1       date_embauche DATE DEFAULT GETDATE(),}\par
+{\f1       salaire DECIMAL(10,2) CHECK (salaire > 0),}\par
+{\f1       dept_id INT REFERENCES Departements(id)}\par
+{\f1     )}\par
+\par
+{\f1     -- Table temporaire locale}\par
+{\f1     CREATE TABLE #TempTable (id INT, valeur VARCHAR(100))}\par
+\par
+{\f1     -- Table temporaire globale}\par
+{\f1     CREATE TABLE ##GlobalTemp (id INT, valeur VARCHAR(100))}\par
+\par
+7.2 ALTER TABLE\par
+\par
+{\f1     ALTER TABLE table ADD colonne type [contraintes]}\par
+{\f1     ALTER TABLE table ALTER COLUMN col nouveau_type [NULL|NOT NULL]}\par
+{\f1     ALTER TABLE table DROP COLUMN colonne}\par
+{\f1     ALTER TABLE table ADD CONSTRAINT nom_contrainte ...}\par
+{\f1     ALTER TABLE table DROP CONSTRAINT nom_contrainte}\par
+{\f1     ALTER TABLE table ENABLE TRIGGER nom_trigger}\par
+{\f1     ALTER TABLE table DISABLE TRIGGER nom_trigger}\par
+\par
+{\f1     Exemples :}\par
+\par
+{\f1     ALTER TABLE Employes ADD telephone VARCHAR(20) NULL}\par
+{\f1     ALTER TABLE Employes ALTER COLUMN nom NVARCHAR(200) NOT NULL}\par
+{\f1     ALTER TABLE Employes DROP COLUMN telephone}\par
+\par
+7.3 DROP TABLE\par
+\par
+{\f1     DROP TABLE [IF EXISTS] nom_table}\par
+\par
+7.4 CREATE INDEX\par
+\par
+{\f1     CREATE [UNIQUE] [CLUSTERED | NONCLUSTERED] INDEX nom_index}\par
+{\f1     ON table (col1 [ASC|DESC], col2 [ASC|DESC], ...)}\par
+{\f1     [INCLUDE (col3, col4, ...)]}\par
+{\f1     [WHERE condition_filtre]}\par
+{\f1     [WITH (}\par
+{\f1       FILLFACTOR = n,}\par
+{\f1       PAD_INDEX = ON | OFF,}\par
+{\f1       ONLINE = ON | OFF,}\par
+{\f1       SORT_IN_TEMPDB = ON | OFF}\par
+{\f1     )]}\par
+\par
+{\f1     Exemples :}\par
+\par
+{\f1     CREATE INDEX IX_Emp_Nom ON Employes (nom)}\par
+{\f1     CREATE UNIQUE INDEX UX_Emp_Email ON Employes (email)}\par
+{\f1       WHERE email IS NOT NULL}\par
+{\f1     CREATE INDEX IX_Emp_Dept_Salaire ON Employes (dept_id, salaire DESC)}\par
+{\f1       INCLUDE (nom, prenom)}\par
+\par
+{\f1     -- Index columnstore (SQL Server 2012+)}\par
+{\f1     CREATE CLUSTERED COLUMNSTORE INDEX CCI_Ventes ON Ventes}\par
+{\f1     CREATE NONCLUSTERED COLUMNSTORE INDEX NCCI_Ventes}\par
+{\f1       ON Ventes (date_vente, montant, region)}\par
+\par
+7.5 ALTER INDEX\par
+\par
+{\f1     ALTER INDEX nom_index ON table REBUILD}\par
+{\f1     ALTER INDEX nom_index ON table REORGANIZE}\par
+{\f1     ALTER INDEX nom_index ON table DISABLE}\par
+{\f1     ALTER INDEX ALL ON table REBUILD}\par
+\par
+7.6 DROP INDEX\par
+\par
+{\f1     DROP INDEX [IF EXISTS] nom_index ON table}\par
+\par
+7.7 CREATE VIEW\par
+\par
+{\f1     CREATE [OR ALTER] VIEW nom_vue}\par
+{\f1     [WITH SCHEMABINDING]}\par
+{\f1     AS}\par
+{\f1       SELECT ...}\par
+{\f1     [WITH CHECK OPTION]}\par
+\par
+{\f1     Exemple :}\par
+\par
+{\f1     CREATE VIEW vw_EmployesActifs}\par
+{\f1     WITH SCHEMABINDING}\par
+{\f1     AS}\par
+{\f1       SELECT id, nom, prenom, dept_id}\par
+{\f1       FROM dbo.Employes}\par
+{\f1       WHERE actif = 1}\par
+\par
+7.8 CREATE PROCEDURE\par
+\par
+{\f1     CREATE [OR ALTER] PROCEDURE nom_procedure}\par
+{\f1       @param1 type [= valeur_defaut] [OUTPUT],}\par
+{\f1       @param2 type [= valeur_defaut]}\par
+{\f1     AS}\par
+{\f1     BEGIN}\par
+{\f1       -- corps de la procedure}\par
+{\f1     END}\par
+\par
+{\f1     Exemple :}\par
+\par
+{\f1     CREATE PROCEDURE sp_GetEmployes}\par
+{\f1       @dept_id INT,}\par
+{\f1       @count INT OUTPUT}\par
+{\f1     AS}\par
+{\f1     BEGIN}\par
+{\f1       SELECT * FROM Employes WHERE dept_id = @dept_id}\par
+{\f1       SET @count = @@ROWCOUNT}\par
+{\f1     END}\par
+\par
+7.9 CREATE FUNCTION\par
+\par
+{\f1     -- Fonction scalaire}\par
+{\f1     CREATE [OR ALTER] FUNCTION nom_fonction (}\par
+{\f1       @param1 type,}\par
+{\f1       @param2 type}\par
+{\f1     )}\par
+{\f1     RETURNS type_retour}\par
+{\f1     AS}\par
+{\f1     BEGIN}\par
+{\f1       DECLARE @resultat type_retour}\par
+{\f1       -- calculs}\par
+{\f1       RETURN @resultat}\par
+{\f1     END}\par
+\par
+{\f1     -- Fonction table en ligne}\par
+{\f1     CREATE FUNCTION fn_GetEmployes (@dept_id INT)}\par
+{\f1     RETURNS TABLE}\par
+{\f1     AS}\par
+{\f1     RETURN (}\par
+{\f1       SELECT * FROM Employes WHERE dept_id = @dept_id}\par
+{\f1     )}\par
+\par
+{\f1     -- Fonction table multi-instructions}\par
+{\f1     CREATE FUNCTION fn_Hierarchie (@id INT)}\par
+{\f1     RETURNS @result TABLE (id INT, nom NVARCHAR(100), niveau INT)}\par
+{\f1     AS}\par
+{\f1     BEGIN}\par
+{\f1       -- logique d insertion dans @result}\par
+{\f1       RETURN}\par
+{\f1     END}\par
+\par
+7.10 CREATE TRIGGER\par
+\par
+{\f1      CREATE [OR ALTER] TRIGGER nom_trigger}\par
+{\f1      ON table}\par
+{\f1      FOR | AFTER | INSTEAD OF [INSERT] [,] [UPDATE] [,] [DELETE]}\par
+{\f1      AS}\par
+{\f1      BEGIN}\par
+{\f1        -- corps du trigger}\par
+{\f1        -- Tables virtuelles : INSERTED, DELETED}\par
+{\f1      END}\par
+\par
+{\f1      Exemple :}\par
+\par
+{\f1      CREATE TRIGGER trg_AuditEmployes}\par
+{\f1      ON Employes}\par
+{\f1      AFTER UPDATE}\par
+{\f1      AS}\par
+{\f1      BEGIN}\par
+{\f1        INSERT INTO AuditLog (table_name, action, date_modif)}\par
+{\f1        SELECT 'Employes', 'UPDATE', GETDATE()}\par
+{\f1        FROM INSERTED}\par
+{\f1      END}\par
+\par
+7.11 Autres objets DDL\par
+\par
+{\f1      CREATE SCHEMA nom_schema}\par
+{\f1      CREATE SEQUENCE nom_sequence}\par
+{\f1        AS type START WITH n INCREMENT BY n}\par
+{\f1        [MINVALUE n] [MAXVALUE n] [CYCLE | NO CYCLE]}\par
+{\f1      CREATE TYPE nom_type FROM type_base [NOT NULL]}\par
+{\f1      CREATE TYPE nom_type AS TABLE (col type, ...)}\par
+{\f1      CREATE SYNONYM nom FOR objet_cible}\par
+{\f1      CREATE DATABASE nom_base}\par
+\par
+{\f1      DROP VIEW [IF EXISTS] nom_vue}\par
+{\f1      DROP PROCEDURE [IF EXISTS] nom_procedure}\par
+{\f1      DROP FUNCTION [IF EXISTS] nom_fonction}\par
+{\f1      DROP TRIGGER [IF EXISTS] nom_trigger}\par
+{\f1      DROP SCHEMA nom_schema}\par
+{\f1      DROP SEQUENCE nom_sequence}\par
+{\f1      DROP TYPE nom_type}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_06}     {\uldb Suivant >>}{\v IDH_SQL_08}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_08}
+{\footnote $ SQL - INSTRUCTIONS DCL (DATA CONTROL LANGUAGE)}
+{\footnote K SQL DCL;GRANT;REVOKE;DENY;permissions;roles}
+\b\fs24 INSTRUCTIONS DCL (DATA CONTROL LANGUAGE) \b0\fs20\par
+\par
+8.1 GRANT\par
+\par
+{\f1     GRANT permission ON objet TO principal}\par
+{\f1     GRANT permission TO role}\par
+\par
+{\f1     Permissions :}\par
+{\f1       SELECT, INSERT, UPDATE, DELETE, EXECUTE,}\par
+{\f1       ALTER, CONTROL, VIEW DEFINITION, REFERENCES,}\par
+{\f1       TAKE OWNERSHIP}\par
+\par
+{\f1     Exemples :}\par
+{\f1       GRANT SELECT ON dbo.Employes TO UtilisateurRH}\par
+{\f1       GRANT EXECUTE ON dbo.sp_GetEmployes TO AppRole}\par
+{\f1       GRANT SELECT, INSERT ON SCHEMA::dbo TO DeveloppeurRole}\par
+\par
+8.2 REVOKE\par
+\par
+{\f1     REVOKE permission ON objet FROM principal}\par
+\par
+{\f1     Exemple :}\par
+{\f1       REVOKE SELECT ON dbo.Employes FROM UtilisateurRH}\par
+\par
+8.3 DENY\par
+\par
+{\f1     DENY permission ON objet TO principal}\par
+\par
+{\f1     Exemple :}\par
+{\f1       DENY DELETE ON dbo.Employes TO StagiaireRole}\par
+\par
+{\f1     DENY a priorite sur GRANT : si un utilisateur a GRANT}\par
+{\f1     et DENY sur la meme permission, DENY l emporte.}\par
+\par
+8.4 Gestion des utilisateurs et roles\par
+\par
+{\f1     CREATE LOGIN nom WITH PASSWORD = 'mot_de_passe'}\par
+{\f1     CREATE USER nom FOR LOGIN nom_login}\par
+{\f1     ALTER ROLE nom_role ADD MEMBER nom_utilisateur}\par
+{\f1     ALTER ROLE nom_role DROP MEMBER nom_utilisateur}\par
+{\f1     ALTER LOGIN nom WITH PASSWORD = 'nouveau'}\par
+{\f1     DROP LOGIN nom}\par
+{\f1     DROP USER nom}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_07}     {\uldb Suivant >>}{\v IDH_SQL_09}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_09}
+{\footnote $ SQL - INSTRUCTIONS DE CONTROLE DE FLUX (T-SQL)}
+{\footnote K SQL controle flux T-SQL;DECLARE;SET;IF ELSE;WHILE;BREAK CONTINUE;BEGIN END;GOTO;RETURN;WAITFOR;PRINT;variables locales}
+\b\fs24 INSTRUCTIONS DE CONTROLE DE FLUX (T-SQL) \b0\fs20\par
+\par
+9.1 DECLARE (declaration de variables)\par
+\par
+{\f1     DECLARE @variable type [= valeur_initiale]}\par
+{\f1     DECLARE @v1 INT, @v2 VARCHAR(50), @v3 DATE}\par
+\par
+{\f1     -- Variable table}\par
+{\f1     DECLARE @table TABLE (}\par
+{\f1       id INT,}\par
+{\f1       nom NVARCHAR(100),}\par
+{\f1       valeur DECIMAL(10,2)}\par
+{\f1     )}\par
+\par
+9.2 SET et SELECT (affectation)\par
+\par
+{\f1     SET @variable = expression}\par
+{\f1     SELECT @variable = expression}\par
+\par
+{\f1     -- Affectation depuis une requete}\par
+{\f1     SELECT @nom = nom, @age = age}\par
+{\f1     FROM Employes}\par
+{\f1     WHERE id = @id}\par
+\par
+{\f1     Difference entre SET et SELECT :}\par
+{\f1     - SET affecte une seule variable a la fois}\par
+{\f1     - SELECT peut affecter plusieurs variables}\par
+{\f1     - SET leve une erreur si la sous-requete retourne}\par
+{\f1       plus d une ligne ; SELECT prend la derniere valeur}\par
+\par
+9.3 IF ... ELSE\par
+\par
+{\f1     IF condition}\par
+{\f1       instruction_ou_bloc}\par
+{\f1     [ELSE}\par
+{\f1       instruction_ou_bloc]}\par
+\par
+{\f1     Exemples :}\par
+{\f1       IF @age >= 18}\par
+{\f1         PRINT 'Majeur'}\par
+{\f1       ELSE}\par
+{\f1         PRINT 'Mineur'}\par
+\par
+{\f1       IF EXISTS (SELECT 1 FROM Employes WHERE id = @id)}\par
+{\f1       BEGIN}\par
+{\f1         UPDATE Employes SET actif = 1 WHERE id = @id}\par
+{\f1         PRINT 'Employe active'}\par
+{\f1       END}\par
+{\f1       ELSE}\par
+{\f1       BEGIN}\par
+{\f1         PRINT 'Employe non trouve'}\par
+{\f1       END}\par
+\par
+9.4 BEGIN ... END (blocs)\par
+\par
+{\f1     BEGIN}\par
+{\f1       instruction1}\par
+{\f1       instruction2}\par
+{\f1       ...}\par
+{\f1     END}\par
+\par
+{\f1     Les blocs sont necessaires quand IF, ELSE, WHILE}\par
+{\f1     contiennent plus d une instruction.}\par
+\par
+9.5 WHILE\par
+\par
+{\f1     WHILE condition}\par
+{\f1     BEGIN}\par
+{\f1       instructions}\par
+{\f1       [BREAK]}\par
+{\f1       [CONTINUE]}\par
+{\f1     END}\par
+\par
+{\f1     Exemple :}\par
+{\f1       DECLARE @i INT = 1}\par
+{\f1       WHILE @i <= 10}\par
+{\f1       BEGIN}\par
+{\f1         PRINT @i}\par
+{\f1         SET @i += 1}\par
+{\f1       END}\par
+\par
+9.6 BREAK et CONTINUE\par
+\par
+{\f1     BREAK     : sort de la boucle WHILE englobante}\par
+{\f1     CONTINUE  : passe a l iteration suivante}\par
+\par
+9.7 GOTO et labels\par
+\par
+{\f1     GOTO label_name}\par
+{\f1     label_name:}\par
+\par
+{\f1     Exemple :}\par
+{\f1       IF @erreur = 1 GOTO Nettoyage}\par
+{\f1       -- traitement normal}\par
+{\f1       Nettoyage:}\par
+{\f1       PRINT 'Nettoyage en cours'}\par
+\par
+9.8 RETURN\par
+\par
+{\f1     RETURN [valeur_entiere]}\par
+\par
+{\f1     Termine l execution du batch, de la procedure ou de la}\par
+{\f1     fonction. Pour les procedures, la valeur de retour est}\par
+{\f1     un entier (0 = succes par convention).}\par
+\par
+9.9 WAITFOR\par
+\par
+{\f1     WAITFOR DELAY 'hh:mm:ss'     -- pause de duree fixe}\par
+{\f1     WAITFOR TIME 'hh:mm:ss'      -- attente jusqu a une heure}\par
+\par
+{\f1     Exemples :}\par
+{\f1       WAITFOR DELAY '00:00:05'    -- pause de 5 secondes}\par
+{\f1       WAITFOR TIME '23:00:00'     -- attend 23 heures}\par
+\par
+9.10 PRINT\par
+\par
+{\f1      PRINT expression}\par
+\par
+{\f1      Affiche un message texte au client.}\par
+{\f1      Exemples :}\par
+{\f1        PRINT 'Traitement termine'}\par
+{\f1        PRINT 'Nombre de lignes : ' + CAST(@count AS VARCHAR)}\par
+\par
+9.11 EXEC / EXECUTE\par
+\par
+{\f1      EXEC nom_procedure @param1, @param2}\par
+{\f1      EXEC nom_procedure @param1 = valeur1, @param2 = valeur2}\par
+{\f1      EXEC @ret = nom_procedure @param1}\par
+\par
+{\f1      -- SQL dynamique}\par
+{\f1      EXEC('SELECT * FROM ' + @nom_table)}\par
+{\f1      EXEC sp_executesql N'SELECT * FROM table WHERE id = @p',}\par
+{\f1                         N'@p INT', @p = 42}\par
+\par
+9.12 USE et GO\par
+\par
+{\f1      USE nom_base    -- change la base de donnees courante}\par
+{\f1      GO              -- separateur de batch}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_08}     {\uldb Suivant >>}{\v IDH_SQL_10}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_10}
+{\footnote $ SQL - TRANSACTIONS}
+{\footnote K SQL transactions;BEGIN TRANSACTION;COMMIT;ROLLBACK;SAVE TRANSACTION;niveaux isolation;READ COMMITTED;SERIALIZABLE;SNAPSHOT;XACT_ABORT}
+\b\fs24 TRANSACTIONS \b0\fs20\par
+\par
+10.1 Transactions explicites\par
+\par
+{\f1      BEGIN TRANSACTION [nom_transaction]}\par
+{\f1      BEGIN TRAN [nom_transaction]}\par
+\par
+{\f1      COMMIT [TRANSACTION] [nom_transaction]}\par
+{\f1      COMMIT [TRAN] [nom_transaction]}\par
+\par
+{\f1      ROLLBACK [TRANSACTION] [nom_transaction | nom_savepoint]}\par
+{\f1      ROLLBACK [TRAN] [nom_transaction | nom_savepoint]}\par
+\par
+{\f1      SAVE TRANSACTION nom_savepoint}\par
+{\f1      SAVE TRAN nom_savepoint}\par
+\par
+{\f1      Exemple :}\par
+{\f1        BEGIN TRAN}\par
+{\f1          UPDATE Comptes SET solde -= 100 WHERE id = @source}\par
+{\f1          UPDATE Comptes SET solde += 100 WHERE id = @dest}\par
+{\f1          IF @@ERROR <> 0}\par
+{\f1            ROLLBACK TRAN}\par
+{\f1          ELSE}\par
+{\f1            COMMIT TRAN}\par
+\par
+10.2 Niveaux d isolation\par
+\par
+{\f1      SET TRANSACTION ISOLATION LEVEL niveau}\par
+\par
+{\f1      Niveaux disponibles :}\par
+{\f1        READ UNCOMMITTED  : lectures sales possibles (dirty reads)}\par
+{\f1        READ COMMITTED    : defaut, pas de lectures sales}\par
+{\f1        REPEATABLE READ   : pas de lectures non repetables}\par
+{\f1        SERIALIZABLE      : isolation maximale}\par
+{\f1        SNAPSHOT          : versionnement de lignes}\par
+\par
+{\f1      Hints de table equivalents :}\par
+{\f1        WITH (NOLOCK)     -- READ UNCOMMITTED}\par
+{\f1        WITH (HOLDLOCK)   -- SERIALIZABLE}\par
+{\f1        WITH (READPAST)   -- saute les lignes verrouillees}\par
+\par
+10.3 @@TRANCOUNT\par
+\par
+{\f1      @@TRANCOUNT retourne le niveau d imbrication des}\par
+{\f1      transactions. COMMIT decremente @@TRANCOUNT ; la}\par
+{\f1      transaction n est reellement validee que quand}\par
+{\f1      @@TRANCOUNT atteint 0.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_09}     {\uldb Suivant >>}{\v IDH_SQL_11}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_11}
+{\footnote $ SQL - FONCTIONS INTEGREES}
+{\footnote K SQL fonctions integrees;chaines LEN SUBSTRING REPLACE UPPER LOWER LTRIM RTRIM;dates GETDATE DATEADD DATEDIFF YEAR MONTH DAY;numeriques ABS ROUND CEILING FLOOR;conversion CAST CONVERT}
+\b\fs24 FONCTIONS INTEGREES \b0\fs20\par
+\par
+11.1 Fonctions de chaines\par
+\par
+{\f1      LEN(chaine)                  longueur (sans espaces fin)}\par
+{\f1      DATALENGTH(chaine)           taille en octets}\par
+{\f1      LEFT(chaine, n)              n premiers caracteres}\par
+{\f1      RIGHT(chaine, n)             n derniers caracteres}\par
+{\f1      SUBSTRING(chaine, debut, n)  sous-chaine}\par
+{\f1      CHARINDEX(cherche, chaine)   position de la premiere}\par
+{\f1                                   occurrence (base 1, 0 si absent)}\par
+{\f1      PATINDEX(motif, chaine)      position avec pattern LIKE}\par
+{\f1      REPLACE(chaine, ancien, nouveau)  remplacement}\par
+{\f1      STUFF(chaine, debut, n, ins) supprime n car. et insere ins}\par
+{\f1      UPPER(chaine)                majuscules}\par
+{\f1      LOWER(chaine)                minuscules}\par
+{\f1      LTRIM(chaine)                supprime espaces a gauche}\par
+{\f1      RTRIM(chaine)                supprime espaces a droite}\par
+{\f1      TRIM(chaine)                 supprime espaces des deux cotes}\par
+{\f1                                   (SQL Server 2017+)}\par
+{\f1      REVERSE(chaine)              inversion}\par
+{\f1      REPLICATE(chaine, n)         repetition n fois}\par
+{\f1      SPACE(n)                     n espaces}\par
+{\f1      STR(nombre [, long [, dec]]) nombre vers chaine}\par
+{\f1      CHAR(code)                   caractere ASCII}\par
+{\f1      ASCII(chaine)                code ASCII du premier caractere}\par
+{\f1      NCHAR(code)                  caractere Unicode}\par
+{\f1      UNICODE(chaine)              code Unicode du premier caractere}\par
+{\f1      CONCAT(s1, s2, ...)          concatenation (NULLs traites}\par
+{\f1                                   comme chaines vides)}\par
+{\f1      CONCAT_WS(sep, s1, s2, ...) concatenation avec separateur}\par
+{\f1      STRING_AGG(expr, sep)        agregation de chaines}\par
+{\f1      FORMAT(valeur, format)       formatage .NET}\par
+{\f1      QUOTENAME(chaine [, delim])  delimite un identificateur}\par
+{\f1      STRING_SPLIT(chaine, sep)    decoupe en lignes (table)}\par
+{\f1      STRING_ESCAPE(chaine, type)  echappe les caracteres speciaux}\par
+{\f1      TRANSLATE(chaine, cars, rpl) remplace caractere par caractere}\par
+\par
+11.2 Fonctions de date et heure\par
+\par
+{\f1      GETDATE()                    date/heure courante}\par
+{\f1      GETUTCDATE()                 date/heure UTC}\par
+{\f1      SYSDATETIME()                date/heure haute precision}\par
+{\f1      SYSUTCDATETIME()             date/heure UTC haute precision}\par
+{\f1      SYSDATETIMEOFFSET()          date/heure avec fuseau}\par
+\par
+{\f1      DATEADD(partie, n, date)     ajoute un intervalle}\par
+{\f1      DATEDIFF(partie, debut, fin) difference entre deux dates}\par
+{\f1      DATEDIFF_BIG(part, deb, fin) difference en BIGINT}\par
+{\f1      DATEPART(partie, date)       extrait une partie (entier)}\par
+{\f1      DATENAME(partie, date)       extrait une partie (chaine)}\par
+{\f1      YEAR(date)                   annee}\par
+{\f1      MONTH(date)                  mois (1-12)}\par
+{\f1      DAY(date)                    jour (1-31)}\par
+{\f1      EOMONTH(date [, mois])       dernier jour du mois}\par
+{\f1      ISDATE(expression)           teste si c est une date valide}\par
+{\f1      DATEFROMPARTS(y, m, d)       construit un DATE}\par
+{\f1      DATETIME2FROMPARTS(y,m,d,h,mn,s,f,p)  construit un DATETIME2}\par
+{\f1      SMALLDATETIMEFROMPARTS(y,m,d,h,mn)     construit un SMALLDATETIME}\par
+{\f1      DATETIMEFROMPARTS(y,m,d,h,mn,s,ms)     construit un DATETIME}\par
+{\f1      TIMEFROMPARTS(h, mn, s, f, p)          construit un TIME}\par
+{\f1      SWITCHOFFSET(dto, zone)      change le fuseau}\par
+\par
+{\f1      Parties de date (partie) :}\par
+{\f1        year (yy)    quarter (qq)  month (mm)    dayofyear (dy)}\par
+{\f1        day (dd)     week (wk)     weekday (dw)  hour (hh)}\par
+{\f1        minute (mi)  second (ss)   millisecond (ms)}\par
+{\f1        microsecond (mcs)          nanosecond (ns)}\par
+\par
+11.3 Fonctions mathematiques\par
+\par
+{\f1      ABS(n)              valeur absolue}\par
+{\f1      CEILING(n)          arrondi superieur}\par
+{\f1      FLOOR(n)            arrondi inferieur}\par
+{\f1      ROUND(n, d [, f])   arrondi a d decimales}\par
+{\f1                          (f<>0 : troncature au lieu d arrondi)}\par
+{\f1      SIGN(n)             signe (-1, 0 ou 1)}\par
+{\f1      POWER(n, p)         puissance}\par
+{\f1      SQRT(n)             racine carree}\par
+{\f1      SQUARE(n)           carre}\par
+{\f1      LOG(n)              logarithme naturel}\par
+{\f1      LOG10(n)            logarithme base 10}\par
+{\f1      LOG(n, base)        logarithme base quelconque}\par
+{\f1      EXP(n)              exponentielle}\par
+{\f1      PI()                pi (3.14159...)}\par
+{\f1      RAND([seed])        nombre aleatoire 0..1}\par
+{\f1      SIN(n)  COS(n)  TAN(n)    fonctions trigonometriques}\par
+{\f1      ASIN(n) ACOS(n) ATAN(n)   fonctions trigo inverses}\par
+{\f1      ATN2(y, x)                 arc tangente de y/x}\par
+{\f1      COT(n)                     cotangente}\par
+{\f1      DEGREES(radians)           conversion radians -> degres}\par
+{\f1      RADIANS(degres)            conversion degres -> radians}\par
+\par
+11.4 Fonctions de conversion\par
+\par
+{\f1      CAST(expr AS type)              conversion de type}\par
+{\f1      CONVERT(type, expr [, style])   conversion avec format}\par
+{\f1      TRY_CAST(expr AS type)          retourne NULL si echec}\par
+{\f1      TRY_CONVERT(type, expr)         retourne NULL si echec}\par
+{\f1      PARSE(chaine AS type [USING culture])}\par
+{\f1      TRY_PARSE(chaine AS type [USING culture])}\par
+\par
+{\f1      Styles de conversion courants (CONVERT) :}\par
+{\f1        0   : format par defaut}\par
+{\f1        1   : mm/dd/yy (US)}\par
+{\f1        3   : dd/mm/yy (Britannique)}\par
+{\f1        4   : dd.mm.yy (Allemand)}\par
+{\f1        20  : yyyy-mm-dd hh:mi:ss (ODBC canonique)}\par
+{\f1        120 : yyyy-mm-dd hh:mi:ss (ODBC canonique, 4 chiffres)}\par
+{\f1        121 : yyyy-mm-dd hh:mi:ss.mmm (ODBC, millisecondes)}\par
+{\f1        126 : yyyy-mm-ddThh:mi:ss.mmm (ISO 8601)}\par
+{\f1        127 : yyyy-mm-ddThh:mi:ss.mmmZ (ISO 8601 UTC)}\par
+\par
+11.5 Fonctions systeme\par
+\par
+{\f1      ISNULL(expr, remplacement)     remplace NULL}\par
+{\f1      COALESCE(expr1, expr2, ...)    premiere valeur non NULL}\par
+{\f1      NULLIF(expr1, expr2)           NULL si egal}\par
+{\f1      IIF(cond, vrai, faux)          if inline}\par
+{\f1      CHOOSE(index, v1, v2, ...)     selection par index}\par
+\par
+{\f1      NEWID()                        genere un GUID aleatoire}\par
+{\f1      NEWSEQUENTIALID()              GUID sequentiel}\par
+{\f1      OBJECT_ID('nom')               ID d un objet}\par
+{\f1      OBJECT_NAME(id)                nom d un objet}\par
+{\f1      DB_ID('nom')                   ID d une base}\par
+{\f1      DB_NAME([id])                  nom d une base}\par
+{\f1      SCHEMA_ID('nom')               ID d un schema}\par
+{\f1      SCHEMA_NAME([id])              nom d un schema}\par
+{\f1      COL_LENGTH('table', 'col')     longueur d une colonne}\par
+{\f1      COLUMNPROPERTY(...)            propriete d une colonne}\par
+{\f1      DATABASEPROPERTYEX(...)        propriete d une base}\par
+{\f1      SERVERPROPERTY(prop)           propriete du serveur}\par
+\par
+{\f1      HOST_NAME()                    nom de la machine client}\par
+{\f1      APP_NAME()                     nom de l application}\par
+{\f1      SUSER_NAME()                   nom du login}\par
+{\f1      SUSER_SNAME()                  nom du login (sysname)}\par
+{\f1      USER_NAME()                    nom de l utilisateur}\par
+{\f1      CURRENT_USER                   utilisateur courant}\par
+{\f1      SYSTEM_USER                    login systeme}\par
+{\f1      SESSION_USER                   utilisateur de session}\par
+{\f1      ORIGINAL_LOGIN()               login d origine}\par
+\par
+11.6 Fonctions JSON (SQL Server 2016+)\par
+\par
+{\f1      ISJSON(chaine)                 teste si JSON valide}\par
+{\f1      JSON_VALUE(json, chemin)       extrait une valeur scalaire}\par
+{\f1      JSON_QUERY(json, chemin)       extrait un objet/tableau}\par
+{\f1      JSON_MODIFY(json, chemin, val) modifie une valeur}\par
+{\f1      OPENJSON(json [, chemin])      parse en lignes/colonnes}\par
+\par
+{\f1      Exemples :}\par
+{\f1        SELECT JSON_VALUE(@json, '$.nom')}\par
+{\f1        SELECT * FROM OPENJSON(@json) WITH (}\par
+{\f1          nom NVARCHAR(100) '$.nom',}\par
+{\f1          age INT '$.age'}\par
+{\f1        )}\par
+\par
+11.7 Fonctions XML\par
+\par
+{\f1      FOR XML PATH('element')}\par
+{\f1      FOR XML RAW('row')}\par
+{\f1      FOR XML AUTO}\par
+{\f1      FOR XML EXPLICIT}\par
+\par
+{\f1      col.value('xpath', 'type')         extrait une valeur}\par
+{\f1      col.query('xpath')                 retourne un fragment XML}\par
+{\f1      col.exist('xpath')                 teste l existence}\par
+{\f1      col.nodes('xpath')                 decoupe en lignes}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_10}     {\uldb Suivant >>}{\v IDH_SQL_12}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_12}
+{\footnote $ SQL - FONCTIONS D AGREGATION}
+{\footnote K SQL agregation;COUNT SUM AVG MIN MAX;STDEV VAR;GROUP BY;HAVING;ROLLUP CUBE GROUPING SETS;DISTINCT}
+\b\fs24 FONCTIONS D AGREGATION \b0\fs20\par
+\par
+Les fonctions d agregation operent sur un ensemble de lignes\par
+et retournent une valeur unique.\par
+\par
+{\f1     COUNT(*)                  nombre de lignes}\par
+{\f1     COUNT(expression)         nombre de valeurs non NULL}\par
+{\f1     COUNT(DISTINCT expr)      nombre de valeurs distinctes}\par
+{\f1     SUM(expression)           somme}\par
+{\f1     AVG(expression)           moyenne}\par
+{\f1     MIN(expression)           minimum}\par
+{\f1     MAX(expression)           maximum}\par
+{\f1     STDEV(expression)         ecart-type (echantillon)}\par
+{\f1     STDEVP(expression)        ecart-type (population)}\par
+{\f1     VAR(expression)           variance (echantillon)}\par
+{\f1     VARP(expression)          variance (population)}\par
+{\f1     STRING_AGG(expr, sep)     concatenation de chaines}\par
+{\f1       [WITHIN GROUP (ORDER BY ...)]}\par
+{\f1     GROUPING(colonne)         0 si non aggrege, 1 si total}\par
+{\f1     GROUPING_ID(col1, col2)   bitmask des colonnes agregees}\par
+{\f1     CHECKSUM_AGG(expr)        checksum agregee}\par
+{\f1     COUNT_BIG(*)              comme COUNT mais retourne BIGINT}\par
+{\f1     APPROX_COUNT_DISTINCT(expr)  estimation de COUNT DISTINCT}\par
+\par
+{\f1     Les agregats ignorent les valeurs NULL (sauf COUNT(*)).}\par
+\par
+{\f1     GROUP BY avec ROLLUP, CUBE et GROUPING SETS :}\par
+\par
+{\f1     -- ROLLUP : sous-totaux hierarchiques}\par
+{\f1     SELECT dept, poste, SUM(salaire)}\par
+{\f1     FROM Employes}\par
+{\f1     GROUP BY ROLLUP (dept, poste)}\par
+\par
+{\f1     -- CUBE : toutes les combinaisons de sous-totaux}\par
+{\f1     SELECT dept, poste, SUM(salaire)}\par
+{\f1     FROM Employes}\par
+{\f1     GROUP BY CUBE (dept, poste)}\par
+\par
+{\f1     -- GROUPING SETS : combinaisons explicites}\par
+{\f1     SELECT dept, poste, SUM(salaire)}\par
+{\f1     FROM Employes}\par
+{\f1     GROUP BY GROUPING SETS ((dept, poste), (dept), ())}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_11}     {\uldb Suivant >>}{\v IDH_SQL_13}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_13}
+{\footnote $ SQL - FONCTIONS DE FENETRE (WINDOW FUNCTIONS)}
+{\footnote K SQL window functions;OVER PARTITION BY ORDER BY;ROW_NUMBER RANK DENSE_RANK NTILE;LEAD LAG FIRST_VALUE LAST_VALUE;ROWS RANGE BETWEEN}
+\b\fs24 FONCTIONS DE FENETRE (WINDOW FUNCTIONS) \b0\fs20\par
+\par
+Les fonctions de fenetre calculent une valeur pour chaque\par
+ligne en relation avec un ensemble de lignes (la fenetre).\par
+\par
+13.1 Fonctions de classement\par
+\par
+{\f1      ROW_NUMBER() OVER (}\par
+{\f1        [PARTITION BY colonnes]}\par
+{\f1        ORDER BY colonnes [ASC|DESC])}\par
+{\f1      Numero de ligne sequentiel (1, 2, 3, ...) sans doublons.}\par
+\par
+{\f1      RANK() OVER (...)}\par
+{\f1      Rang avec trous (ex: 1, 2, 2, 4).}\par
+\par
+{\f1      DENSE_RANK() OVER (...)}\par
+{\f1      Rang sans trous (ex: 1, 2, 2, 3).}\par
+\par
+{\f1      NTILE(n) OVER (...)}\par
+{\f1      Repartit les lignes en n groupes a peu pres egaux.}\par
+\par
+13.2 Fonctions de decalage\par
+\par
+{\f1      LAG(colonne [, offset [, defaut]])}\par
+{\f1        OVER ([PARTITION BY ...] ORDER BY ...)}\par
+{\f1      Valeur de la ligne precedente (offset par defaut = 1).}\par
+\par
+{\f1      LEAD(colonne [, offset [, defaut]])}\par
+{\f1        OVER ([PARTITION BY ...] ORDER BY ...)}\par
+{\f1      Valeur de la ligne suivante.}\par
+\par
+{\f1      FIRST_VALUE(colonne)}\par
+{\f1        OVER ([PARTITION BY ...] ORDER BY ... [frame])}\par
+{\f1      Premiere valeur de la fenetre.}\par
+\par
+{\f1      LAST_VALUE(colonne)}\par
+{\f1        OVER ([PARTITION BY ...] ORDER BY ... [frame])}\par
+{\f1      Derniere valeur de la fenetre.}\par
+\par
+13.3 Fonctions de distribution\par
+\par
+{\f1      PERCENT_RANK() OVER (...)}\par
+{\f1      Rang relatif : (RANK - 1) / (nombre de lignes - 1).}\par
+\par
+{\f1      CUME_DIST() OVER (...)}\par
+{\f1      Distribution cumulative.}\par
+\par
+{\f1      PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)}\par
+{\f1        OVER (PARTITION BY ...)}\par
+{\f1      Percentile continu (interpolation).}\par
+\par
+{\f1      PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)}\par
+{\f1        OVER (PARTITION BY ...)}\par
+{\f1      Percentile discret (valeur existante).}\par
+\par
+13.4 Agregats en fenetre\par
+\par
+{\f1      SUM(col) OVER ([PARTITION BY ...] [ORDER BY ...] [frame])}\par
+{\f1      AVG(col) OVER (...)}\par
+{\f1      COUNT(col) OVER (...)}\par
+{\f1      MIN(col) OVER (...)}\par
+{\f1      MAX(col) OVER (...)}\par
+\par
+{\f1      Exemple (somme cumulative) :}\par
+{\f1        SELECT date_vente, montant,}\par
+{\f1               SUM(montant) OVER (ORDER BY date_vente) AS cumul}\par
+{\f1        FROM Ventes}\par
+\par
+13.5 Clause de cadre (frame)\par
+\par
+{\f1      ROWS BETWEEN debut AND fin}\par
+{\f1      RANGE BETWEEN debut AND fin}\par
+\par
+{\f1      Bornes possibles :}\par
+{\f1        UNBOUNDED PRECEDING   -- debut de la partition}\par
+{\f1        n PRECEDING            -- n lignes avant}\par
+{\f1        CURRENT ROW            -- ligne courante}\par
+{\f1        n FOLLOWING            -- n lignes apres}\par
+{\f1        UNBOUNDED FOLLOWING   -- fin de la partition}\par
+\par
+{\f1      Exemples :}\par
+{\f1        -- Moyenne mobile sur 3 lignes}\par
+{\f1        AVG(montant) OVER (ORDER BY date_vente}\par
+{\f1          ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)}\par
+\par
+{\f1        -- Somme cumulative}\par
+{\f1        SUM(montant) OVER (ORDER BY date_vente}\par
+{\f1          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_12}     {\uldb Suivant >>}{\v IDH_SQL_14}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_14}
+{\footnote $ SQL - SOUS-REQUETES ET EXPRESSIONS DE TABLE}
+{\footnote K SQL sous-requetes CTE;subquery;EXISTS;IN ANY ALL;WITH;CTE;recursive CTE;table derivee}
+\b\fs24 SOUS-REQUETES ET EXPRESSIONS DE TABLE \b0\fs20\par
+\par
+14.1 Sous-requetes scalaires\par
+\par
+{\f1      Une sous-requete scalaire retourne une seule valeur :}\par
+\par
+{\f1      SELECT nom,}\par
+{\f1             (SELECT COUNT(*) FROM Commandes c}\par
+{\f1              WHERE c.client_id = cl.id) AS nb_commandes}\par
+{\f1      FROM Clients cl}\par
+\par
+14.2 Sous-requetes de table\par
+\par
+{\f1      Sous-requete dans la clause FROM :}\par
+\par
+{\f1      SELECT * FROM (}\par
+{\f1        SELECT nom, salaire,}\par
+{\f1               ROW_NUMBER() OVER (ORDER BY salaire DESC) AS rn}\par
+{\f1        FROM Employes}\par
+{\f1      ) sub}\par
+{\f1      WHERE sub.rn <= 10}\par
+\par
+14.3 Sous-requetes correlees\par
+\par
+{\f1      Sous-requete qui reference la requete externe :}\par
+\par
+{\f1      SELECT * FROM Employes e}\par
+{\f1      WHERE salaire > (}\par
+{\f1        SELECT AVG(salaire) FROM Employes}\par
+{\f1        WHERE dept_id = e.dept_id}\par
+{\f1      )}\par
+\par
+14.4 CTE (Common Table Expressions)\par
+\par
+{\f1      WITH nom_cte [(colonnes)] AS (}\par
+{\f1        requete_definition}\par
+{\f1      )}\par
+{\f1      SELECT ... FROM nom_cte}\par
+\par
+{\f1      -- CTE multiple}\par
+{\f1      WITH cte1 AS (...),}\par
+{\f1           cte2 AS (...)}\par
+{\f1      SELECT ... FROM cte1 JOIN cte2}\par
+\par
+{\f1      -- CTE recursive}\par
+{\f1      WITH cte_recursive AS (}\par
+{\f1        -- membre ancre}\par
+{\f1        SELECT id, nom, 0 AS niveau FROM Employes}\par
+{\f1        WHERE manager_id IS NULL}\par
+{\f1        UNION ALL}\par
+{\f1        -- membre recursif}\par
+{\f1        SELECT e.id, e.nom, r.niveau + 1}\par
+{\f1        FROM Employes e}\par
+{\f1        INNER JOIN cte_recursive r ON e.manager_id = r.id}\par
+{\f1      )}\par
+{\f1      SELECT * FROM cte_recursive}\par
+{\f1      OPTION (MAXRECURSION 100)}\par
+\par
+14.5 PIVOT et UNPIVOT\par
+\par
+{\f1      -- PIVOT : lignes vers colonnes}\par
+{\f1      SELECT *}\par
+{\f1      FROM (}\par
+{\f1        SELECT departement, trimestre, montant}\par
+{\f1        FROM Ventes}\par
+{\f1      ) src}\par
+{\f1      PIVOT (}\par
+{\f1        SUM(montant) FOR trimestre IN ([Q1], [Q2], [Q3], [Q4])}\par
+{\f1      ) pvt}\par
+\par
+{\f1      -- UNPIVOT : colonnes vers lignes}\par
+{\f1      SELECT departement, trimestre, montant}\par
+{\f1      FROM Ventes_Pivot}\par
+{\f1      UNPIVOT (}\par
+{\f1        montant FOR trimestre IN ([Q1], [Q2], [Q3], [Q4])}\par
+{\f1      ) unpvt}\par
+\par
+14.6 APPLY\par
+\par
+{\f1      CROSS APPLY : jointure laterale (lignes de gauche uniquement}\par
+{\f1      si la fonction retourne des lignes)}\par
+\par
+{\f1      OUTER APPLY : jointure laterale (toutes les lignes de gauche,}\par
+{\f1      NULLs si la fonction ne retourne rien)}\par
+\par
+{\f1      Exemples :}\par
+{\f1        SELECT e.nom, a.adresse}\par
+{\f1        FROM Employes e}\par
+{\f1        CROSS APPLY fn_GetAdresses(e.id) a}\par
+\par
+{\f1        SELECT e.nom, top3.montant}\par
+{\f1        FROM Employes e}\par
+{\f1        OUTER APPLY (}\par
+{\f1          SELECT TOP 3 montant FROM Ventes v}\par
+{\f1          WHERE v.employe_id = e.id}\par
+{\f1          ORDER BY montant DESC}\par
+{\f1        ) top3}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_13}     {\uldb Suivant >>}{\v IDH_SQL_15}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_15}
+{\footnote $ SQL - JOINTURES}
+{\footnote K SQL jointures;INNER JOIN;LEFT OUTER JOIN;RIGHT OUTER JOIN;FULL OUTER JOIN;CROSS JOIN;CROSS APPLY;OUTER APPLY;self-join}
+\b\fs24 JOINTURES \b0\fs20\par
+\par
+15.1 INNER JOIN\par
+\par
+{\f1      Retourne les lignes qui ont une correspondance dans les}\par
+{\f1      deux tables :}\par
+\par
+{\f1      SELECT e.nom, d.nom_departement}\par
+{\f1      FROM Employes e}\par
+{\f1      INNER JOIN Departements d ON e.dept_id = d.id}\par
+\par
+15.2 LEFT [OUTER] JOIN\par
+\par
+{\f1      Retourne toutes les lignes de la table de gauche et les}\par
+{\f1      correspondances de la table de droite (NULL si pas de}\par
+{\f1      correspondance) :}\par
+\par
+{\f1      SELECT e.nom, d.nom_departement}\par
+{\f1      FROM Employes e}\par
+{\f1      LEFT JOIN Departements d ON e.dept_id = d.id}\par
+\par
+15.3 RIGHT [OUTER] JOIN\par
+\par
+{\f1      Retourne toutes les lignes de la table de droite :}\par
+\par
+{\f1      SELECT e.nom, d.nom_departement}\par
+{\f1      FROM Employes e}\par
+{\f1      RIGHT JOIN Departements d ON e.dept_id = d.id}\par
+\par
+15.4 FULL [OUTER] JOIN\par
+\par
+{\f1      Retourne toutes les lignes des deux tables :}\par
+\par
+{\f1      SELECT e.nom, d.nom_departement}\par
+{\f1      FROM Employes e}\par
+{\f1      FULL OUTER JOIN Departements d ON e.dept_id = d.id}\par
+\par
+15.5 CROSS JOIN\par
+\par
+{\f1      Produit cartesien (chaque ligne combinee avec chaque}\par
+{\f1      ligne de l autre table) :}\par
+\par
+{\f1      SELECT a.lettre, b.chiffre}\par
+{\f1      FROM Lettres a CROSS JOIN Chiffres b}\par
+\par
+15.6 Self join\par
+\par
+{\f1      Jointure d une table avec elle-meme :}\par
+\par
+{\f1      SELECT e.nom AS employe, m.nom AS manager}\par
+{\f1      FROM Employes e}\par
+{\f1      LEFT JOIN Employes m ON e.manager_id = m.id}\par
+\par
+15.7 Jointures multiples\par
+\par
+{\f1      SELECT e.nom, d.nom_dept, p.nom_poste}\par
+{\f1      FROM Employes e}\par
+{\f1      INNER JOIN Departements d ON e.dept_id = d.id}\par
+{\f1      INNER JOIN Postes p ON e.poste_id = p.id}\par
+{\f1      WHERE d.actif = 1}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_14}     {\uldb Suivant >>}{\v IDH_SQL_16}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_16}
+{\footnote $ SQL - OPERATEURS ENSEMBLISTES}
+{\footnote K SQL ensemblistes;UNION;UNION ALL;INTERSECT;EXCEPT}
+\b\fs24 OPERATEURS ENSEMBLISTES \b0\fs20\par
+\par
+16.1 UNION\par
+\par
+{\f1      Combine les resultats de deux requetes en eliminant}\par
+{\f1      les doublons :}\par
+\par
+{\f1      SELECT nom FROM Clients}\par
+{\f1      UNION}\par
+{\f1      SELECT nom FROM Fournisseurs}\par
+\par
+16.2 UNION ALL\par
+\par
+{\f1      Combine les resultats sans eliminer les doublons :}\par
+\par
+{\f1      SELECT nom FROM Clients}\par
+{\f1      UNION ALL}\par
+{\f1      SELECT nom FROM Fournisseurs}\par
+\par
+16.3 INTERSECT\par
+\par
+{\f1      Retourne les lignes communes aux deux requetes :}\par
+\par
+{\f1      SELECT nom FROM Clients}\par
+{\f1      INTERSECT}\par
+{\f1      SELECT nom FROM Fournisseurs}\par
+\par
+16.4 EXCEPT\par
+\par
+{\f1      Retourne les lignes de la premiere requete qui ne}\par
+{\f1      sont pas dans la seconde :}\par
+\par
+{\f1      SELECT nom FROM Clients}\par
+{\f1      EXCEPT}\par
+{\f1      SELECT nom FROM Fournisseurs}\par
+\par
+{\f1      Regles communes :}\par
+{\f1      - Les requetes doivent avoir le meme nombre de colonnes}\par
+{\f1      - Les types doivent etre compatibles}\par
+{\f1      - L ORDER BY s applique au resultat final}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_15}     {\uldb Suivant >>}{\v IDH_SQL_17}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_17}
+{\footnote $ SQL - CURSEURS}
+{\footnote K SQL curseurs;DECLARE CURSOR;OPEN;FETCH;CLOSE;DEALLOCATE;STATIC DYNAMIC SCROLL FORWARD_ONLY}
+\b\fs24 CURSEURS \b0\fs20\par
+\par
+Les curseurs permettent le traitement ligne par ligne des\par
+resultats d une requete.\par
+\par
+{\f1     DECLARE nom_curseur CURSOR}\par
+{\f1       [LOCAL | GLOBAL]}\par
+{\f1       [FORWARD_ONLY | SCROLL]}\par
+{\f1       [STATIC | KEYSET | DYNAMIC | FAST_FORWARD]}\par
+{\f1       [READ_ONLY | SCROLL_LOCKS | OPTIMISTIC]}\par
+{\f1     FOR requete_select}\par
+{\f1     [FOR UPDATE [OF colonnes]]}\par
+\par
+{\f1     OPEN nom_curseur}\par
+{\f1     FETCH NEXT FROM nom_curseur INTO @var1, @var2, ...}\par
+{\f1     CLOSE nom_curseur}\par
+{\f1     DEALLOCATE nom_curseur}\par
+\par
+{\f1     @@FETCH_STATUS : 0 = succes, -1 = fin, -2 = ligne absente}\par
+\par
+{\f1     Exemple :}\par
+{\f1       DECLARE @nom NVARCHAR(100), @salaire DECIMAL(10,2)}\par
+{\f1       DECLARE cur_emp CURSOR FAST_FORWARD FOR}\par
+{\f1         SELECT nom, salaire FROM Employes WHERE dept_id = 1}\par
+{\f1       OPEN cur_emp}\par
+{\f1       FETCH NEXT FROM cur_emp INTO @nom, @salaire}\par
+{\f1       WHILE @@FETCH_STATUS = 0}\par
+{\f1       BEGIN}\par
+{\f1         PRINT @nom + ' : ' + CAST(@salaire AS VARCHAR)}\par
+{\f1         FETCH NEXT FROM cur_emp INTO @nom, @salaire}\par
+{\f1       END}\par
+{\f1       CLOSE cur_emp}\par
+{\f1       DEALLOCATE cur_emp}\par
+\par
+{\f1     Note : les curseurs sont generalement deconseilles au}\par
+{\f1     profit des operations ensemblistes plus performantes.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_16}     {\uldb Suivant >>}{\v IDH_SQL_18}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_18}
+{\footnote $ SQL - PROCEDURES STOCKEES ET FONCTIONS UTILISATEUR}
+{\footnote K SQL procedures stockees fonctions;CREATE PROCEDURE;EXECUTE EXEC;parametres OUTPUT;CREATE FUNCTION;scalar function;table-valued function;RETURNS}
+\b\fs24 PROCEDURES STOCKEES ET FONCTIONS UTILISATEUR \b0\fs20\par
+\par
+18.1 Procedures stockees\par
+\par
+{\f1      Creation :}\par
+{\f1        CREATE [OR ALTER] PROCEDURE nom}\par
+{\f1          @p1 type [= defaut] [OUTPUT],}\par
+{\f1          @p2 type [= defaut]}\par
+{\f1        AS}\par
+{\f1        BEGIN}\par
+{\f1          -- corps}\par
+{\f1        END}\par
+\par
+{\f1      Appel :}\par
+{\f1        EXEC nom @param1, @param2}\par
+{\f1        EXEC nom @p1 = valeur1, @p2 = valeur2}\par
+{\f1        DECLARE @ret INT}\par
+{\f1        EXEC @ret = nom @param1}\par
+\par
+{\f1      Procedures systeme courantes :}\par
+{\f1        sp_help 'nom_objet'           info sur un objet}\par
+{\f1        sp_helptext 'nom_procedure'   texte source}\par
+{\f1        sp_columns 'nom_table'        colonnes d une table}\par
+{\f1        sp_tables                     liste des tables}\par
+{\f1        sp_who                        sessions actives}\par
+{\f1        sp_executesql @sql, @params   SQL dynamique}\par
+\par
+18.2 Fonctions scalaires\par
+\par
+{\f1      CREATE FUNCTION fn_Nom (@p1 type, @p2 type)}\par
+{\f1      RETURNS type_retour}\par
+{\f1      AS}\par
+{\f1      BEGIN}\par
+{\f1        DECLARE @r type_retour}\par
+{\f1        SET @r = ...}\par
+{\f1        RETURN @r}\par
+{\f1      END}\par
+\par
+{\f1      Appel : SELECT dbo.fn_Nom(val1, val2)}\par
+\par
+18.3 Fonctions table en ligne (Inline TVF)\par
+\par
+{\f1      CREATE FUNCTION fn_Nom (@p1 type)}\par
+{\f1      RETURNS TABLE}\par
+{\f1      AS}\par
+{\f1      RETURN (}\par
+{\f1        SELECT col1, col2 FROM table WHERE col = @p1}\par
+{\f1      )}\par
+\par
+{\f1      Appel : SELECT * FROM dbo.fn_Nom(valeur)}\par
+\par
+18.4 Fonctions table multi-instructions (MSTVF)\par
+\par
+{\f1      CREATE FUNCTION fn_Nom (@p1 type)}\par
+{\f1      RETURNS @result TABLE (col1 type, col2 type)}\par
+{\f1      AS}\par
+{\f1      BEGIN}\par
+{\f1        INSERT INTO @result SELECT ... FROM ...}\par
+{\f1        RETURN}\par
+{\f1      END}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_17}     {\uldb Suivant >>}{\v IDH_SQL_19}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_19}
+{\footnote $ SQL - DECLENCHEURS (TRIGGERS)}
+{\footnote K SQL triggers declencheurs;CREATE TRIGGER;AFTER INSTEAD OF;INSERTED DELETED;DDL trigger;LOGON trigger}
+\b\fs24 DECLENCHEURS (TRIGGERS) \b0\fs20\par
+\par
+19.1 Triggers DML\par
+\par
+{\f1      CREATE TRIGGER nom ON table}\par
+{\f1      AFTER | INSTEAD OF [INSERT] [,] [UPDATE] [,] [DELETE]}\par
+{\f1      AS}\par
+{\f1      BEGIN}\par
+{\f1        -- Tables virtuelles disponibles :}\par
+{\f1        -- INSERTED : lignes inserees ou nouvelles valeurs}\par
+{\f1        -- DELETED  : lignes supprimees ou anciennes valeurs}\par
+{\f1      END}\par
+\par
+{\f1      Exemple (audit) :}\par
+{\f1        CREATE TRIGGER trg_Audit ON Employes}\par
+{\f1        AFTER INSERT, UPDATE, DELETE}\par
+{\f1        AS}\par
+{\f1        BEGIN}\par
+{\f1          INSERT INTO AuditLog (action, date_modif, details)}\par
+{\f1          SELECT}\par
+{\f1            CASE}\par
+{\f1              WHEN EXISTS(SELECT 1 FROM INSERTED) AND}\par
+{\f1                   EXISTS(SELECT 1 FROM DELETED) THEN 'UPDATE'}\par
+{\f1              WHEN EXISTS(SELECT 1 FROM INSERTED) THEN 'INSERT'}\par
+{\f1              ELSE 'DELETE'}\par
+{\f1            END,}\par
+{\f1            GETDATE(),}\par
+{\f1            (SELECT COUNT(*) FROM INSERTED)}\par
+{\f1        END}\par
+\par
+19.2 Triggers DDL\par
+\par
+{\f1      CREATE TRIGGER nom ON DATABASE}\par
+{\f1      FOR CREATE_TABLE, ALTER_TABLE, DROP_TABLE}\par
+{\f1      AS}\par
+{\f1      BEGIN}\par
+{\f1        -- EVENTDATA() retourne un XML decrivant l evenement}\par
+{\f1      END}\par
+\par
+19.3 INSTEAD OF triggers\par
+\par
+{\f1      Les triggers INSTEAD OF remplacent l action originale :}\par
+\par
+{\f1      CREATE TRIGGER trg_VueInsert ON ma_vue}\par
+{\f1      INSTEAD OF INSERT}\par
+{\f1      AS}\par
+{\f1      BEGIN}\par
+{\f1        INSERT INTO table_base}\par
+{\f1        SELECT col1, col2 FROM INSERTED}\par
+{\f1      END}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_18}     {\uldb Suivant >>}{\v IDH_SQL_20}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_20}
+{\footnote $ SQL - GESTION DES ERREURS}
+{\footnote K SQL gestion erreurs;TRY CATCH;THROW;RAISERROR;ERROR_NUMBER ERROR_MESSAGE ERROR_LINE;@@ERROR}
+\b\fs24 GESTION DES ERREURS \b0\fs20\par
+\par
+20.1 TRY ... CATCH\par
+\par
+{\f1      BEGIN TRY}\par
+{\f1        -- instructions susceptibles de lever une erreur}\par
+{\f1      END TRY}\par
+{\f1      BEGIN CATCH}\par
+{\f1        -- gestion de l erreur}\par
+{\f1        SELECT}\par
+{\f1          ERROR_NUMBER() AS numero,}\par
+{\f1          ERROR_SEVERITY() AS severite,}\par
+{\f1          ERROR_STATE() AS etat,}\par
+{\f1          ERROR_PROCEDURE() AS procedure_name,}\par
+{\f1          ERROR_LINE() AS ligne,}\par
+{\f1          ERROR_MESSAGE() AS message}\par
+{\f1      END CATCH}\par
+\par
+{\f1      Exemple complet :}\par
+{\f1        BEGIN TRY}\par
+{\f1          BEGIN TRAN}\par
+{\f1            UPDATE Comptes SET solde -= 100 WHERE id = @source}\par
+{\f1            UPDATE Comptes SET solde += 100 WHERE id = @dest}\par
+{\f1          COMMIT TRAN}\par
+{\f1        END TRY}\par
+{\f1        BEGIN CATCH}\par
+{\f1          IF @@TRANCOUNT > 0}\par
+{\f1            ROLLBACK TRAN}\par
+{\f1          THROW}\par
+{\f1        END CATCH}\par
+\par
+20.2 THROW\par
+\par
+{\f1      THROW [numero, message, state]}\par
+\par
+{\f1      Sans parametres, releve l erreur courante (dans CATCH).}\par
+{\f1      Avec parametres, leve une nouvelle erreur :}\par
+{\f1        THROW 50001, 'Erreur personnalisee', 1}\par
+\par
+{\f1      Le numero doit etre >= 50000 pour les erreurs utilisateur.}\par
+\par
+20.3 RAISERROR\par
+\par
+{\f1      RAISERROR (message, severity, state [, arguments])}\par
+\par
+{\f1      Severites :}\par
+{\f1        0-10  : messages informatifs}\par
+{\f1        11-16 : erreurs utilisateur (attrapees par TRY/CATCH)}\par
+{\f1        17-19 : erreurs de ressources}\par
+{\f1        20-25 : erreurs fatales (connexion terminee)}\par
+\par
+{\f1      Exemples :}\par
+{\f1        RAISERROR('Erreur : %s', 16, 1, @detail)}\par
+{\f1        RAISERROR(50001, 16, 1)  -- par numero de message}\par
+\par
+20.4 @@ERROR\par
+\par
+{\f1      Retourne le code d erreur de la derniere instruction.}\par
+{\f1      0 = pas d erreur. Valeur reintialisee apres chaque}\par
+{\f1      instruction.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_19}     {\uldb Suivant >>}{\v IDH_SQL_21}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_21}
+{\footnote $ SQL - FORMATS DE SORTIE (FOR XML / FOR JSON)}
+{\footnote K SQL XML JSON;FOR XML;PATH RAW AUTO EXPLICIT;FOR JSON;PATH AUTO;OPENJSON;OPENXML}
+\b\fs24 FORMATS DE SORTIE (FOR XML / FOR JSON) \b0\fs20\par
+\par
+21.1 FOR XML\par
+\par
+{\f1      SELECT colonnes FROM table FOR XML PATH('element')}\par
+{\f1      SELECT colonnes FROM table FOR XML RAW('row')}\par
+{\f1      SELECT colonnes FROM table FOR XML AUTO}\par
+{\f1      SELECT colonnes FROM table FOR XML EXPLICIT}\par
+\par
+{\f1      Options :}\par
+{\f1        , ROOT('racine')         element racine}\par
+{\f1        , ELEMENTS               colonnes comme elements}\par
+{\f1        , TYPE                   retourne un type XML}\par
+\par
+{\f1      Exemple :}\par
+{\f1        SELECT id AS '@id', nom, prenom}\par
+{\f1        FROM Employes}\par
+{\f1        FOR XML PATH('employe'), ROOT('employes'), TYPE}\par
+\par
+{\f1        Resultat :}\par
+{\f1        <employes>}\par
+{\f1          <employe id="1">}\par
+{\f1            <nom>Dupont</nom>}\par
+{\f1            <prenom>Jean</prenom>}\par
+{\f1          </employe>}\par
+{\f1        </employes>}\par
+\par
+21.2 FOR JSON\par
+\par
+{\f1      SELECT colonnes FROM table FOR JSON PATH}\par
+{\f1      SELECT colonnes FROM table FOR JSON AUTO}\par
+\par
+{\f1      Options :}\par
+{\f1        , ROOT('racine')         element racine}\par
+{\f1        , INCLUDE_NULL_VALUES    inclure les NULLs}\par
+{\f1        , WITHOUT_ARRAY_WRAPPER  pas de crochets [ ]}\par
+\par
+{\f1      Exemple :}\par
+{\f1        SELECT id, nom, prenom}\par
+{\f1        FROM Employes}\par
+{\f1        FOR JSON PATH, ROOT('employes')}\par
+\par
+{\f1        Resultat :}\par
+{\f1        \{"employes":[}\par
+{\f1          \{"id":1,"nom":"Dupont","prenom":"Jean"\},}\par
+{\f1          \{"id":2,"nom":"Martin","prenom":"Marie"\}}\par
+{\f1        ]\}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_20}     {\uldb Suivant >>}{\v IDH_SQL_22}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_22}
+{\footnote $ SQL - VARIABLES ET FONCTIONS SYSTEME}
+{\footnote K SQL exemples}
+\b\fs24 VARIABLES ET FONCTIONS SYSTEME \b0\fs20\par
+\par
+22.1 Variables systeme (@@)\par
+\par
+{\f1      @@ROWCOUNT        nombre de lignes affectees par la}\par
+{\f1                        derniere instruction}\par
+{\f1      @@ERROR           code d erreur de la derniere instruction}\par
+{\f1      @@IDENTITY        derniere valeur IDENTITY inseree}\par
+{\f1      @@TRANCOUNT       niveau d imbrication des transactions}\par
+{\f1      @@FETCH_STATUS    statut du dernier FETCH de curseur}\par
+{\f1      @@SPID            ID de la session courante}\par
+{\f1      @@VERSION         version de SQL Server}\par
+{\f1      @@SERVERNAME      nom du serveur}\par
+{\f1      @@DBTS            derniere valeur timestamp}\par
+{\f1      @@LANGUAGE        langue courante}\par
+{\f1      @@NESTLEVEL       niveau d imbrication des procedures}\par
+{\f1      @@MAX_CONNECTIONS nombre max de connexions}\par
+{\f1      @@LOCK_TIMEOUT    delai d attente de verrou}\par
+{\f1      @@DATEFIRST       premier jour de la semaine (1-7)}\par
+{\f1      @@OPTIONS         options SET actives (bitmask)}\par
+{\f1      @@TEXTSIZE        taille max des donnees TEXT retournees}\par
+{\f1      @@CURSOR_ROWS     nombre de lignes du dernier curseur}\par
+{\f1      @@PROCID          Object ID de la procedure courante}\par
+\par
+22.2 SCOPE_IDENTITY et IDENT_CURRENT\par
+\par
+{\f1      SCOPE_IDENTITY()}\par
+{\f1        Derniere valeur IDENTITY dans la portee courante.}\par
+{\f1        Plus fiable que @@IDENTITY (non affecte par les triggers).}\par
+\par
+{\f1      IDENT_CURRENT('nom_table')}\par
+{\f1        Derniere valeur IDENTITY de la table specifiee,}\par
+{\f1        toutes sessions confondues.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_21}     {\uldb Suivant >>}{\v IDH_SQL_23}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_23}
+{\footnote $ SQL - LIMITATIONS DE L IMPLEMENTATION SQLCMD.PAS}
+{\footnote K SQL SQLCMD limitations;SQLCMD.PAS;sous-ensemble;lecture MDF;contraintes implementation}
+\b\fs24 LIMITATIONS DE L IMPLEMENTATION SQLCMD.PAS \b0\fs20\par
+\par
+23.1 Lecture seule\par
+{\f1      SQLCMD.PAS lit les fichiers .MDF en mode lecture seule.}\par
+{\f1      Les instructions INSERT, UPDATE, DELETE et DDL ne}\par
+{\f1      modifient pas le fichier. Seules les requetes SELECT}\par
+{\f1      retournent des resultats reels a partir des donnees}\par
+{\f1      du fichier .MDF.}\par
+\par
+23.2 Pas de serveur reseau\par
+{\f1      SQLCMD.PAS n implemente pas le protocole TDS (Tabular}\par
+{\f1      Data Stream). Il fonctionne uniquement en ligne de}\par
+{\f1      commande locale, lisant directement les fichiers .MDF.}\par
+\par
+23.3 Types de donnees\par
+{\f1      Les types GEOGRAPHY, GEOMETRY, HIERARCHYID, XML et}\par
+{\f1      SQL_VARIANT ne sont pas entierement decodables. Ils}\par
+{\f1      sont affiches sous forme hexadecimale brute.}\par
+\par
+23.4 Compression\par
+{\f1      Les pages comprimees (ROW et PAGE compression) ne sont}\par
+{\f1      pas decodees. Les tables utilisant la compression sont}\par
+{\f1      signalees mais leur contenu n est pas lisible.}\par
+\par
+23.5 Index columnstore\par
+{\f1      Les index columnstore ne sont pas lus. Les tables ayant}\par
+{\f1      uniquement un index columnstore clustered ne sont pas}\par
+{\f1      accessibles.}\par
+\par
+23.6 Chiffrement\par
+{\f1      Les colonnes chiffrees (Always Encrypted) et le TDE}\par
+{\f1      (Transparent Data Encryption) ne sont pas supportes.}\par
+{\f1      Les fichiers MDF chiffres ne sont pas lisibles.}\par
+\par
+23.7 Memoire\par
+{\f1      La taille du buffer pool est limitee (Turbo Pascal :}\par
+{\f1      64 Ko segment, Free Pascal : memoire disponible).}\par
+{\f1      Les requetes sur de tres grandes tables peuvent echouer}\par
+{\f1      par manque de memoire pour le tri ou les jointures.}\par
+\par
+23.8 Jointures\par
+{\f1      Seuls les algorithmes Nested Loop et Hash Join de base}\par
+{\f1      sont implementes. Le Merge Join est implemente si les}\par
+{\f1      deux tables sont deja triees par la cle de jointure.}\par
+\par
+23.9 Fonctionnalites T-SQL non supportees\par
+{\f1      - Procedures CLR (.NET)}\par
+{\f1      - Extended stored procedures}\par
+{\f1      - Service Broker}\par
+{\f1      - Change Data Capture (CDC)}\par
+{\f1      - Linked servers et requetes distribuees}\par
+{\f1      - Full-text search}\par
+{\f1      - Always On / replication}\par
+{\f1      - In-Memory OLTP (Hekaton)}\par
+{\f1      - Temporal tables (tables temporelles systeme)}\par
+{\f1      - Graph tables}\par
+{\f1      - Ledger tables}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_SQL_22}     {\uldb Suivant >>}{\v IDH_SQL_24}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_SQL_24}
+{\footnote $ SQL - LIEN AVEC LE PROJET DEV-COOLS}
+{\footnote K SQL projet DEV-COOLS;CSV2SQL.PAS;DBF2SQL.PAS;SQLCMD.PAS;harddisk.sql;master.mdf}
+\b\fs24 LIEN AVEC LE PROJET DEV-COOLS \b0\fs20\par
+\par
+Le programme SQLCMD.PAS du projet DEV-COOLS implemente un\par
+clone de la commande sqlcmd de Microsoft SQL Server.\par
+\par
+Au lieu de se connecter a une instance SQL Server via le\par
+protocole TDS, il lit directement les fichiers .MDF en\par
+utilisant les specifications decrites dans DOC/MDF_FORMAT.txt.\par
+\par
+La feuille de route de SQLCMD.PAS couvre 30 TODOs :\par
+{\f1   - TODO 01-06 : Infrastructure MDF (pages, allocation maps,}\par
+{\f1     decodage des enregistrements, catalogue systeme, types)}\par
+{\f1   - TODO 07-14 : Parseur SQL (lexer, mots-cles, expressions,}\par
+{\f1     SELECT, INSERT/UPDATE/DELETE/MERGE, DDL, controle T-SQL, DCL)}\par
+{\f1   - TODO 15-18 : Moteur d execution (scans, jointures,}\par
+{\f1     agregation, fonctions de fenetre)}\par
+{\f1   - TODO 19-23 : Fonctions integrees (chaines, date/heure,}\par
+{\f1     math, conversion, JSON/XML)}\par
+{\f1   - TODO 24-25 : Index B-Tree et optimiseur de requetes}\par
+{\f1   - TODO 26-28 : Curseurs, procedures stockees, transactions}\par
+{\f1   - TODO 29-30 : Formatage de sortie et tests}\par
+\par
+Ce document sert de reference pour les TODOs 07 a 14 (parseur\par
+SQL) et 15 a 23 (moteur d execution et fonctions).\par
+\par
+{\f1   Fin du document - SQL_SPEC_LANG.txt}\par
+
+\par
+{\uldb << Precedent}{\v IDH_SQL_23}     {\uldb Table des matieres}{\v IDH_SQL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

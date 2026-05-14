@@ -1,0 +1,1048 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_RUST_01}
+{\footnote $ Rust - Presentation generale}
+{\footnote K Rust presentation;Graydon Hoare;Mozilla;Rust Foundation;historique versions;edition 2015 2018 2021 2024;rustc;LLVM;ownership;borrow checker;zero-cost abstractions}
+\b\fs24 Presentation generale \b0\fs20\par
+\par
+Rust est un langage de programmation systeme multiparadigme cree par Graydon\par
+Hoare en 2006 chez Mozilla Research. Annonce publiquement en 2010, version 1.0\par
+publiee en mai 2015. Aujourd'hui developpe par la Rust Foundation (depuis 2021).\par
+\par
+Objectifs de conception :\par
+- Securite memoire SANS ramasse-miettes (sans GC).\par
+- Concurrence sans data races verifiee a la compilation.\par
+- Performance comparable a C/C++ (zero-cost abstractions).\par
+- Ergonomie moderne (inference de type, pattern matching, generics).\par
+\par
+Historique :\par
+- 2006 : projet personnel de Graydon Hoare.\par
+- 2009 : sponsorise par Mozilla.\par
+- 2010 : premiere annonce publique.\par
+- 2012 : Rust 0.1.\par
+- 2015 : Rust 1.0, edition 2015 (mai).\par
+- 2018 : edition 2018 (NLL, async preview, ?, ergonomie modules).\par
+- 2019 : async/await stabilise (1.39).\par
+- 2021 : edition 2021 (closures disjoint capture, IntoIterator pour tableaux).\par
+- 2024 : edition 2024 (RPIT lifetimes, gen blocks preview, let chains stables).\par
+\par
+Caracteristiques distinctives :\par
+- Modele de propriete (ownership) avec emprunts (borrowing).\par
+- Lifetimes (durees de vie) verifiees statiquement par le borrow checker.\par
+- Traits (interfaces avec polymorphisme statique et dynamique).\par
+- Pattern matching exhaustif (match).\par
+- Macros declaratives (macro_rules!) et procedurales.\par
+- Cargo : gestionnaire de paquets et systeme de build integre.\par
+- crates.io : depot officiel.\par
+- Compilateur rustc base sur LLVM.\par
+- Edition Rust : 2015, 2018, 2021, 2024 (compatibilite ascendante garantie).\par
+\par
+Plate-formes : Linux, macOS, Windows, BSD, Android, iOS, WebAssembly, embarque\par
+(no_std), Redox OS, Fuchsia, etc. Cible utilise par le noyau Linux (depuis 6.1)\par
+et le noyau Windows.\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. Structure d'un programme Rust}     {\uldb [Aller]}{\v IDH_RUST_02}\par
+{\f1  3. Caracteristiques lexicales}     {\uldb [Aller]}{\v IDH_RUST_03}\par
+{\f1  4. Types de donnees}     {\uldb [Aller]}{\v IDH_RUST_04}\par
+{\f1  5. Ownership, emprunts et lifetimes}     {\uldb [Aller]}{\v IDH_RUST_05}\par
+{\f1  6. Operateurs}     {\uldb [Aller]}{\v IDH_RUST_06}\par
+{\f1  7. Instructions et expressions}     {\uldb [Aller]}{\v IDH_RUST_07}\par
+{\f1  8. Fonctions et fermetures}     {\uldb [Aller]}{\v IDH_RUST_08}\par
+{\f1  9. Traits et generics}     {\uldb [Aller]}{\v IDH_RUST_09}\par
+{\f1 10. Macros}     {\uldb [Aller]}{\v IDH_RUST_10}\par
+{\f1 11. Gestion des erreurs}     {\uldb [Aller]}{\v IDH_RUST_11}\par
+{\f1 12. Modules et systeme de paquets}     {\uldb [Aller]}{\v IDH_RUST_12}\par
+{\f1 13. Concurrence et asynchrone}     {\uldb [Aller]}{\v IDH_RUST_13}\par
+{\f1 14. unsafe et FFI}     {\uldb [Aller]}{\v IDH_RUST_14}\par
+{\f1 15. Bibliotheque standard (selection)}     {\uldb [Aller]}{\v IDH_RUST_15}\par
+{\f1 16. Tests et documentation}     {\uldb [Aller]}{\v IDH_RUST_16}\par
+{\f1 17. Outils Rust du projet DEV-COOLS}     {\uldb [Aller]}{\v IDH_RUST_17}\par
+{\f1 18. Exemples de programmes}     {\uldb [Aller]}{\v IDH_RUST_18}\par
+{\f1 19. Bonnes pratiques}     {\uldb [Aller]}{\v IDH_RUST_19}\par
+{\f1 20. Ecosysteme et influence}     {\uldb [Aller]}{\v IDH_RUST_20}\par
+{\f1 21. References}     {\uldb [Aller]}{\v IDH_RUST_21}\par
+\par
+{\uldb Suivant >>}{\v IDH_RUST_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_02}
+{\footnote $ Rust - Structure d'un programme Rust}
+{\footnote K Rust structure programme;Hello World;main fn;rustc;Cargo;Cargo.toml;crate;binaire bibliotheque}
+\b\fs24 Structure d'un programme Rust \b0\fs20\par
+\par
+Hello World :\par
+\par
+{\f1   fn main() \{}\par
+{\f1       println!("Bonjour le monde");}\par
+{\f1   \}}\par
+\par
+Sauvegarde dans hello.rs, compilation et execution :\par
+{\f1   rustc hello.rs}\par
+{\f1   ./hello}\par
+\par
+Avec Cargo (recommande) :\par
+{\f1   cargo new bonjour}\par
+{\f1   cd bonjour}\par
+{\f1   cargo run}\par
+\par
+Arborescence Cargo :\par
+{\f1   bonjour/}\par
+{\f1     Cargo.toml         # manifeste : nom, version, dependances}\par
+{\f1     src/}\par
+{\f1       main.rs          # binaire principal}\par
+{\f1       lib.rs           # bibliotheque (optionnel)}\par
+\par
+Cargo.toml minimal :\par
+\par
+{\f1   [package]}\par
+{\f1   name = "bonjour"}\par
+{\f1   version = "0.1.0"}\par
+{\f1   edition = "2024"}\par
+\par
+{\f1   [dependencies]}\par
+{\f1   serde = "1"}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_01}     {\uldb Suivant >>}{\v IDH_RUST_03}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_03}
+{\footnote $ Rust - Caracteristiques lexicales}
+{\footnote K Rust lexical;Unicode UTF-8;identificateurs;snake_case;PascalCase;mots reserves;litteraux;raw string;byte string;C string;commentaires;rustdoc}
+\b\fs24 Caracteristiques lexicales \b0\fs20\par
+\par
+Jeu de caracteres : Unicode UTF-8 source obligatoire.\par
+\par
+Identificateurs : commencent par lettre Unicode ou _, suivis de lettres,\par
+chiffres, _. snake_case pour variables/fonctions, PascalCase pour types/traits,\par
+SCREAMING_SNAKE pour constantes.\par
+\par
+Mots reserves :\par
+{\f1   as       async    await    break    const    continue crate    dyn}\par
+{\f1   else     enum     extern   false    fn       for      if       impl}\par
+{\f1   in       let      loop     match    mod      move     mut      pub}\par
+{\f1   ref      return   Self     self     static   struct   super    trait}\par
+{\f1   true     try      type     unsafe   use      where    while}\par
+\par
+Mots reserves futurs : abstract, become, box, do, final, macro, override,\par
+priv, typeof, unsized, virtual, yield.\par
+\par
+Litteraux :\par
+- Entiers : 42, 0xFF, 0o77, 0b1010, 1_000_000, 42i32, 42u64, 42usize\par
+- Flottants : 3.14, 3.14f32, 1.0e-10, 1_000.5\par
+- Booleens : true, false\par
+- Caracteres : 'a', '\\n', '\\u\{00E9\}'  (4 octets, point de code Unicode)\par
+- Chaines : "hello", "ligne\\n", r"chemin\\sans\\echappement", r#"avec "quotes""#\par
+- Byte strings : b"raw", b'\\xFF'\par
+- C strings (1.77+) : c"hello\\0"\par
+\par
+Commentaires :\par
+{\f1   // ligne}\par
+{\f1   /* bloc imbricable /* niveau 2 */ */}\par
+{\f1   /// documentation de l'item suivant (extraite par rustdoc)}\par
+{\f1   //! documentation du module/crate englobant}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_02}     {\uldb Suivant >>}{\v IDH_RUST_04}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_04}
+{\footnote $ Rust - Types de donnees}
+{\footnote K Rust types donnees;i8 i16 i32 i64 i128;u8 u16 u32 u64 u128;f32 f64;bool char;tuple;tableau;slice;str String;struct enum;Option Result;references;Box Rc Arc RefCell Cell;let mut const static;shadowing}
+\b\fs24 Types de donnees \b0\fs20\par
+\par
+4.1 Types scalaires\par
+\par
+{\f1   i8 i16 i32 i64 i128 isize          # entiers signes}\par
+{\f1   u8 u16 u32 u64 u128 usize          # entiers non signes}\par
+{\f1   f32 f64                            # flottants IEEE 754}\par
+{\f1   bool                               # true / false}\par
+{\f1   char                               # point de code Unicode (4 octets)}\par
+{\f1   ()                                 # unit type}\par
+\par
+Par defaut : i32 pour entiers, f64 pour flottants.\par
+\par
+4.2 Types composes\par
+\par
+{\f1   (i32, f64, char)                   # tuple}\par
+{\f1   [i32; 5]                           # tableau de taille fixe}\par
+{\f1   &[i32]                             # slice (taille dynamique, reference)}\par
+{\f1   &str                               # string slice}\par
+{\f1   String                             # chaine allouee sur le tas}\par
+\par
+4.3 Structures\par
+\par
+{\f1   struct Point \{ x: f64, y: f64 \}}\par
+{\f1   struct Couleur(u8, u8, u8);        // tuple struct}\par
+{\f1   struct Unit;                       // unit struct}\par
+\par
+4.4 Enumerations (sum types algebriques)\par
+\par
+{\f1   enum Option<T> \{ Some(T), None \}}\par
+{\f1   enum Result<T, E> \{ Ok(T), Err(E) \}}\par
+{\f1   enum Forme \{}\par
+{\f1       Cercle(f64),}\par
+{\f1       Rectangle \{ largeur: f64, hauteur: f64 \},}\par
+{\f1       Triangle(f64, f64, f64),}\par
+{\f1   \}}\par
+\par
+4.5 References et pointeurs\par
+\par
+{\f1   &T                                 # reference partagee immuable}\par
+{\f1   &mut T                             # reference exclusive mutable}\par
+{\f1   *const T                           # pointeur brut (unsafe)}\par
+{\f1   *mut T}\par
+{\f1   Box<T>                             # heap allocation, ownership}\par
+{\f1   Rc<T>                              # reference counting (mono-thread)}\par
+{\f1   Arc<T>                             # reference counting atomique}\par
+{\f1   RefCell<T> / Cell<T>               # mutabilite interieure}\par
+\par
+4.6 Variables et constantes\par
+\par
+{\f1   let x = 42;                        // immuable par defaut}\par
+{\f1   let mut y = 10;                    // mutable explicite}\par
+{\f1   let x: i64 = 42;                   // type explicite}\par
+{\f1   const PI: f64 = 3.14159;           // constante compile-time}\par
+{\f1   static GLOBAL: i32 = 100;          // variable globale (immuable)}\par
+{\f1   static mut COMPTEUR: i32 = 0;      // mutable (unsafe pour acceder)}\par
+\par
+Shadowing autorise :\par
+{\f1   let x = 5;}\par
+{\f1   let x = x + 1;                     // nouvelle liaison, type changeable}\par
+{\f1   let x = "hello";                   // type different OK}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_03}     {\uldb Suivant >>}{\v IDH_RUST_05}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_05}
+{\footnote $ Rust - Ownership, emprunts et lifetimes}
+{\footnote K Rust ownership emprunts lifetimes;move;clone;Copy;borrow checker;&T &mut T;lifetime;static;lifetime elision}
+\b\fs24 Ownership, emprunts et lifetimes \b0\fs20\par
+\par
+5.1 Ownership (propriete)\par
+\par
+Regles fondamentales :\par
+- Chaque valeur a un unique proprietaire.\par
+- A la sortie du scope du proprietaire, la valeur est liberee (drop).\par
+- L'affectation transfere la propriete (move) pour les types non-Copy.\par
+\par
+{\f1   let s1 = String::from("hello");}\par
+{\f1   let s2 = s1;                       // move : s1 invalide apres}\par
+{\f1   // println!("\{\}", s1);             // erreur de compilation}\par
+{\f1   let s3 = s2.clone();               // clone profond explicite}\par
+\par
+Types Copy : tous les scalaires (i32, f64, bool, char), tuples de Copy,\par
+references partagees &T. Move = copie pour les Copy.\par
+\par
+5.2 Emprunts (borrowing)\par
+\par
+{\f1   fn lire(s: &String) \{ println!("\{\}", s); \}       // emprunt partage}\par
+{\f1   fn ajouter(s: &mut String) \{ s.push_str("!"); \}  // emprunt exclusif}\par
+\par
+Regles du borrow checker :\par
+- Soit une seule reference mutable, soit plusieurs references immuables, JAMAIS\par
+{\f1   les deux en meme temps.}\par
+- Toute reference doit etre valide (pas de dangling pointers).\par
+\par
+5.3 Lifetimes (durees de vie)\par
+\par
+{\f1   fn plus_long<'a>(x: &'a str, y: &'a str) -> &'a str \{}\par
+{\f1       if x.len() > y.len() \{ x \} else \{ y \}}\par
+{\f1   \}}\par
+\par
+{\f1   struct Citation<'a> \{}\par
+{\f1       texte: &'a str,}\par
+{\f1   \}}\par
+\par
+Lifetime 'static : duree de vie du programme entier (literaux string par ex.).\par
+Lifetime elision rules (1.0+) : la plupart des cas simples ne necessitent pas\par
+d'annotation explicite.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_04}     {\uldb Suivant >>}{\v IDH_RUST_06}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_06}
+{\footnote $ Rust - Operateurs}
+{\footnote K Rust operateurs;arithmetiques;comparaison;logiques;bit-a-bit;references;plage ..  ..=;as cast;question mark;precedence;std::ops}
+\b\fs24 Operateurs \b0\fs20\par
+\par
+Arithmetiques : + - * / %\par
+Affectation   : = += -= *= /= %= &= |= ^= <<= >>=\par
+Comparaison   : == != < > <= >=\par
+Logiques      : && || !\par
+Bit-a-bit     : & | ^ ! << >>\par
+References    : & &mut * (dereferencement)\par
+Plage         : ..  ..=  (1..10, 1..=10)\par
+Acces         : . []\par
+Cast          : as (let x = 3.14 as i32)\par
+Question mark : ? (propagation Result/Option)\par
+\par
+Pas de surcharge directe avec ces symboles, mais via traits std::ops :\par
+Add, Sub, Mul, Div, Index, Deref, etc.\par
+\par
+Precedence (du plus prioritaire au moins) :\par
+{\f1   1. Path (::)}\par
+{\f1   2. Method calls, field access}\par
+{\f1   3. Function calls, indexation}\par
+{\f1   4. ? (try)}\par
+{\f1   5. Unary - ! * & &mut}\par
+{\f1   6. as}\par
+{\f1   7. * / %}\par
+{\f1   8. + -}\par
+{\f1   9. << >>}\par
+{\f1  10. &}\par
+{\f1  11. ^}\par
+{\f1  12. |}\par
+{\f1  13. == != < > <= >=}\par
+{\f1  14. &&}\par
+{\f1  15. ||}\par
+{\f1  16. ..  ..=}\par
+{\f1  17. =  += etc.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_05}     {\uldb Suivant >>}{\v IDH_RUST_07}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_07}
+{\footnote $ Rust - Instructions et expressions}
+{\footnote K Rust instructions expressions;if let;while let;loop;for;match;if let-else;break continue label;return;expression bloc;question mark}
+\b\fs24 Instructions et expressions \b0\fs20\par
+\par
+Rust est principalement une langage a expressions : la plupart des constructions\par
+retournent une valeur. Le bloc \{ ... \} evalue a son expression finale (sans ;).\par
+\par
+if / else (expression) :\par
+{\f1   let max = if a > b \{ a \} else \{ b \};}\par
+\par
+if let :\par
+{\f1   if let Some(v) = option \{ println!("\{\}", v); \}}\par
+\par
+while :\par
+{\f1   while cond \{ ... \}}\par
+\par
+while let :\par
+{\f1   while let Some(top) = pile.pop() \{ ... \}}\par
+\par
+loop (infinie, expression) :\par
+{\f1   let r = loop \{}\par
+{\f1       compteur += 1;}\par
+{\f1       if compteur == 10 \{ break compteur * 2; \}}\par
+{\f1   \};}\par
+\par
+for :\par
+{\f1   for i in 0..10 \{ ... \}}\par
+{\f1   for elem in &vec \{ ... \}}\par
+{\f1   for (i, v) in vec.iter().enumerate() \{ ... \}}\par
+\par
+break / continue avec etiquettes :\par
+{\f1   'externe: for i in 0..n \{}\par
+{\f1       for j in 0..m \{}\par
+{\f1           if cond \{ break 'externe; \}}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+match (pattern matching exhaustif) :\par
+{\f1   match x \{}\par
+{\f1       0 => println!("zero"),}\par
+{\f1       1 | 2 => println!("un ou deux"),}\par
+{\f1       3..=9 => println!("petit"),}\par
+{\f1       n if n < 0 => println!("negatif"),}\par
+{\f1       _ => println!("autre"),}\par
+{\f1   \}}\par
+\par
+{\f1   let r = match option \{}\par
+{\f1       Some(v) => v * 2,}\par
+{\f1       None => 0,}\par
+{\f1   \};}\par
+\par
+let-else (1.65+) :\par
+{\f1   let Some(v) = option else \{ return; \};}\par
+\par
+Question mark (?) :\par
+{\f1   fn lire() -> Result<String, std::io::Error> \{}\par
+{\f1       let mut s = String::new();}\par
+{\f1       std::fs::File::open("a.txt")?.read_to_string(&mut s)?;}\par
+{\f1       Ok(s)}\par
+{\f1   \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_06}     {\uldb Suivant >>}{\v IDH_RUST_08}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_08}
+{\footnote $ Rust - Fonctions et fermetures}
+{\footnote K Rust fonctions fermetures;fn;parametres;generics where;closures;Fn FnMut FnOnce;move;impl Trait}
+\b\fs24 Fonctions et fermetures \b0\fs20\par
+\par
+8.1 Fonctions\par
+\par
+{\f1   fn somme(a: i32, b: i32) -> i32 \{}\par
+{\f1       a + b                          // expression finale = valeur retour}\par
+{\f1   \}}\par
+\par
+{\f1   fn afficher(s: &str) \{             // retour () implicite}\par
+{\f1       println!("\{\}", s);}\par
+{\f1   \}}\par
+\par
+Retour anticipe : return expr;\par
+\par
+8.2 Fonctions generiques\par
+\par
+{\f1   fn max<T: PartialOrd>(a: T, b: T) -> T \{}\par
+{\f1       if a > b \{ a \} else \{ b \}}\par
+{\f1   \}}\par
+\par
+{\f1   fn afficher<T>(x: T) where T: std::fmt::Display \{}\par
+{\f1       println!("\{\}", x);}\par
+{\f1   \}}\par
+\par
+8.3 Fermetures (closures)\par
+\par
+{\f1   let ajouter = |a, b| a + b;}\par
+{\f1   let carre = |x: i32| -> i32 \{ x * x \};}\par
+{\f1   let compter = || println!("appelee");}\par
+\par
+Traits de fermeture :\par
+{\f1   Fn         lecture seule des captures (appelable plusieurs fois)}\par
+{\f1   FnMut      capture mutable}\par
+{\f1   FnOnce     consomme les captures (appelable une seule fois)}\par
+\par
+{\f1   fn applique<F: Fn(i32) -> i32>(f: F, x: i32) -> i32 \{ f(x) \}}\par
+{\f1   fn applique_dyn(f: &dyn Fn(i32) -> i32, x: i32) -> i32 \{ f(x) \}}\par
+\par
+move keyword pour capturer par valeur :\par
+{\f1   let data = vec![1, 2, 3];}\par
+{\f1   let c = move || println!("\{:?\}", data);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_07}     {\uldb Suivant >>}{\v IDH_RUST_09}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_09}
+{\footnote $ Rust - Traits et generics}
+{\footnote K Rust traits generics;trait impl;derive Debug Clone PartialEq Eq Hash Default Copy;Display From Into AsRef;Iterator IntoIterator;Send Sync;dyn Trait;object safety;GAT;Generic Associated Types}
+\b\fs24 Traits et generics \b0\fs20\par
+\par
+9.1 Definition de trait\par
+\par
+{\f1   trait Animal \{}\par
+{\f1       fn nom(&self) -> String;}\par
+{\f1       fn parler(&self) -> String \{ format!("\{\} dit quelque chose", self.nom()) \}}\par
+{\f1   \}}\par
+\par
+{\f1   struct Chien \{ nom: String \}}\par
+{\f1   impl Animal for Chien \{}\par
+{\f1       fn nom(&self) -> String \{ self.nom.clone() \}}\par
+{\f1       fn parler(&self) -> String \{ format!("\{\} dit Ouaf", self.nom) \}}\par
+{\f1   \}}\par
+\par
+9.2 Traits standards (derives)\par
+\par
+{\f1   #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Copy)]}\par
+{\f1   struct Point \{ x: i32, y: i32 \}}\par
+\par
+Traits courants : Debug, Display, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,\par
+Hash, Default, From/Into, AsRef, AsMut, Iterator, IntoIterator, Drop, Deref,\par
+Send, Sync.\par
+\par
+9.3 Polymorphisme statique (monomorphisation)\par
+\par
+{\f1   fn afficher<T: std::fmt::Display>(x: T) \{ ... \}}\par
+{\f1   fn afficher(x: impl std::fmt::Display) \{ ... \}    // impl Trait}\par
+\par
+9.4 Polymorphisme dynamique (dyn Trait)\par
+\par
+{\f1   let animaux: Vec<Box<dyn Animal>> = vec![}\par
+{\f1       Box::new(Chien \{ nom: "Rex".into() \}),}\par
+{\f1       Box::new(Chat \{ nom: "Felix".into() \}),}\par
+{\f1   ];}\par
+\par
+9.5 Object safety\par
+\par
+Pour etre utilisable en dyn Trait : pas de Self dans les retours, pas de\par
+generics sur les methodes, etc. (regles assouplies en 1.75+ avec async fn\par
+dans traits).\par
+\par
+9.6 Generic Associated Types (GAT, 1.65+)\par
+\par
+{\f1   trait LendingIterator \{}\par
+{\f1       type Item<'a> where Self: 'a;}\par
+{\f1       fn next<'a>(&'a mut self) -> Option<Self::Item<'a>>;}\par
+{\f1   \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_08}     {\uldb Suivant >>}{\v IDH_RUST_10}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_10}
+{\footnote $ Rust - Macros}
+{\footnote K Rust macros;macro_rules!;println! print! format! eprintln!;vec!;assert! assert_eq!;panic! todo! unimplemented!;dbg!;include_str!;cfg! env!;procedurales;derive;attribute macros}
+\b\fs24 Macros \b0\fs20\par
+\par
+10.1 Macros declaratives (macro_rules!)\par
+\par
+{\f1   macro_rules! carre \{}\par
+{\f1       ($x:expr) => \{ $x * $x \};}\par
+{\f1   \}}\par
+{\f1   let c = carre!(5);                 // 25}\par
+\par
+10.2 Macros standards courantes\par
+\par
+{\f1   println!, print!, eprintln!, eprint!}\par
+{\f1   format!                            // formate dans une String}\par
+{\f1   write!, writeln!                   // ecrit dans un Writer}\par
+{\f1   vec![1, 2, 3]                      // cree un Vec<i32>}\par
+{\f1   assert!, assert_eq!, assert_ne!}\par
+{\f1   panic!, todo!, unimplemented!, unreachable!}\par
+{\f1   dbg!(expr)                         // print + return (debug)}\par
+{\f1   include_str!, include_bytes!       // inclusion compile-time}\par
+{\f1   cfg!, env!, option_env!}\par
+\par
+10.3 Macros procedurales (crates separes)\par
+\par
+- #[derive(...)] custom\par
+- attribute macros (#[get], #[serde(...)])\par
+- function-like macros (sqlx::query!, html! de yew)\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_09}     {\uldb Suivant >>}{\v IDH_RUST_11}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_11}
+{\footnote $ Rust - Gestion des erreurs}
+{\footnote K Rust gestion erreurs;Result Ok Err;Option Some None;? operator try;panic!;unwrap expect;unwrap_or;map and_then;ok_or;anyhow thiserror}
+\b\fs24 Gestion des erreurs \b0\fs20\par
+\par
+Pas d'exceptions. Deux mecanismes principaux :\par
+\par
+11.1 Erreurs recuperables : Result<T, E>\par
+\par
+{\f1   fn parser(s: &str) -> Result<i32, std::num::ParseIntError> \{}\par
+{\f1       s.parse::<i32>()}\par
+{\f1   \}}\par
+\par
+{\f1   match parser("42") \{}\par
+{\f1       Ok(n) => println!("\{\}", n),}\par
+{\f1       Err(e) => eprintln!("erreur: \{\}", e),}\par
+{\f1   \}}\par
+\par
+Operateur ? : propagation automatique.\par
+{\f1   let n: i32 = parser(s)?;}\par
+\par
+11.2 Erreurs irrecuperables : panic!\par
+\par
+{\f1   panic!("etat invalide");}\par
+{\f1   let v: Vec<i32> = vec![];}\par
+{\f1   v[0];                              // panique : index hors bornes}\par
+\par
+11.3 Option<T>\par
+\par
+{\f1   fn premier(v: &Vec<i32>) -> Option<i32> \{}\par
+{\f1       if v.is_empty() \{ None \} else \{ Some(v[0]) \}}\par
+{\f1   \}}\par
+\par
+Methodes : .unwrap(), .expect("msg"), .unwrap_or(0), .unwrap_or_else(|| ...),\par
+.map(|x| ...), .and_then(|x| ...), .ok_or(err), .ok_or_else(|| err).\par
+\par
+11.4 Crates populaires\par
+\par
+{\f1   anyhow      pour applications (erreurs dynamiques avec contexte)}\par
+{\f1   thiserror   pour bibliotheques (derives sur enum d'erreurs)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_10}     {\uldb Suivant >>}{\v IDH_RUST_12}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_12}
+{\footnote $ Rust - Modules et systeme de paquets}
+{\footnote K Rust modules paquets;mod;use;pub pub(crate) pub(super);crate;Cargo;workspace;cargo build run test fmt clippy doc publish add install;crates.io}
+\b\fs24 Modules et systeme de paquets \b0\fs20\par
+\par
+12.1 Modules\par
+\par
+{\f1   mod reseau \{}\par
+{\f1       pub fn connecter() \{ ... \}}\par
+{\f1       mod prive \{ fn helper() \{ ... \} \}}\par
+{\f1       pub mod client \{}\par
+{\f1           pub fn envoyer() \{ ... \}}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+{\f1   use reseau::client::envoyer;}\par
+{\f1   use std::collections::\{HashMap, HashSet\};}\par
+{\f1   use std::io::\{self, Read, Write\};}\par
+{\f1   pub use reseau::client;            // re-export}\par
+\par
+12.2 Visibilite\par
+\par
+{\f1   pub             public partout}\par
+{\f1   pub(crate)      public dans le crate}\par
+{\f1   pub(super)      public dans le module parent}\par
+{\f1   pub(in path)    chemin specifique}\par
+{\f1   (defaut)        prive au module}\par
+\par
+12.3 Crates et Cargo\par
+\par
+Un crate = unite de compilation (binaire ou bibliotheque).\par
+Workspace = ensemble de crates partageant un Cargo.lock.\par
+\par
+{\f1   cargo new mon_projet               # nouveau binaire}\par
+{\f1   cargo new --lib ma_lib             # nouvelle bibliotheque}\par
+{\f1   cargo build                        # debug}\par
+{\f1   cargo build --release              # optimise}\par
+{\f1   cargo run                          # build + execute}\par
+{\f1   cargo test                         # tests}\par
+{\f1   cargo doc --open                   # documentation}\par
+{\f1   cargo fmt                          # formattage (rustfmt)}\par
+{\f1   cargo clippy                       # lints}\par
+{\f1   cargo update                       # mettre a jour Cargo.lock}\par
+{\f1   cargo publish                      # publier sur crates.io}\par
+{\f1   cargo add serde                    # ajouter dependance}\par
+{\f1   cargo install <bin>                # installer un binaire global}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_11}     {\uldb Suivant >>}{\v IDH_RUST_13}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_13}
+{\footnote $ Rust - Concurrence et asynchrone}
+{\footnote K Rust concurrence asynchrone;thread spawn;Arc Mutex;Send Sync;mpsc channel;async await;Future;tokio async-std smol embassy;join select}
+\b\fs24 Concurrence et asynchrone \b0\fs20\par
+\par
+13.1 Threads OS\par
+\par
+{\f1   use std::thread;}\par
+{\f1   let h = thread::spawn(|| \{}\par
+{\f1       println!("dans le thread");}\par
+{\f1       42}\par
+{\f1   \});}\par
+{\f1   let r = h.join().unwrap();}\par
+\par
+13.2 Partage de donnees\par
+\par
+{\f1   use std::sync::\{Arc, Mutex\};}\par
+{\f1   let compteur = Arc::new(Mutex::new(0));}\par
+{\f1   let handles: Vec<_> = (0..10).map(|_| \{}\par
+{\f1       let c = Arc::clone(&compteur);}\par
+{\f1       thread::spawn(move || \{ *c.lock().unwrap() += 1; \})}\par
+{\f1   \}).collect();}\par
+{\f1   for h in handles \{ h.join().unwrap(); \}}\par
+\par
+Send : valeur peut etre envoyee a un autre thread.\par
+Sync : reference partagee &T peut etre partagee entre threads.\par
+\par
+13.3 Channels (mpsc)\par
+\par
+{\f1   use std::sync::mpsc;}\par
+{\f1   let (tx, rx) = mpsc::channel();}\par
+{\f1   thread::spawn(move || tx.send(42).unwrap());}\par
+{\f1   println!("\{\}", rx.recv().unwrap());}\par
+\par
+13.4 Async / await (1.39+)\par
+\par
+{\f1   async fn telecharger(url: &str) -> Result<String, Box<dyn Error>> \{}\par
+{\f1       let resp = reqwest::get(url).await?.text().await?;}\par
+{\f1       Ok(resp)}\par
+{\f1   \}}\par
+\par
+{\f1   #[tokio::main]}\par
+{\f1   async fn main() \{}\par
+{\f1       let r = telecharger("https://exemple.org").await;}\par
+{\f1   \}}\par
+\par
+Runtimes : tokio (dominant), async-std, smol, embassy (embarque).\par
+Primitives : Future trait, .await, async block, join!, select!, spawn.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_12}     {\uldb Suivant >>}{\v IDH_RUST_14}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_14}
+{\footnote $ Rust - unsafe et FFI}
+{\footnote K Rust unsafe FFI;bloc unsafe;pointeur brut;extern C;no_mangle;static mut;union;trait unsafe;bindings}
+\b\fs24 unsafe et FFI \b0\fs20\par
+\par
+14.1 Bloc unsafe\par
+\par
+{\f1   unsafe \{}\par
+{\f1       let r = &mut *(0xCAFEBABE as *mut u32);}\par
+{\f1   \}}\par
+\par
+unsafe permet :\par
+- Dereferencer un pointeur brut.\par
+- Appeler une fonction unsafe / extern.\par
+- Acceder a un static mutable.\par
+- Implementer un trait unsafe.\par
+- Acceder a un champ d'union.\par
+\par
+14.2 FFI (Foreign Function Interface)\par
+\par
+{\f1   extern "C" \{}\par
+{\f1       fn abs(x: i32) -> i32;}\par
+{\f1   \}}\par
+{\f1   unsafe \{ let r = abs(-5); \}}\par
+\par
+{\f1   #[no_mangle]}\par
+{\f1   pub extern "C" fn somme(a: i32, b: i32) -> i32 \{ a + b \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_13}     {\uldb Suivant >>}{\v IDH_RUST_15}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_15}
+{\footnote $ Rust - Bibliotheque standard (selection)}
+{\footnote K Rust bibliotheque standard;std primitive;Option Result;Vec String;HashMap HashSet BTreeMap BTreeSet VecDeque BinaryHeap;Iterator;fmt Display Debug;io fs;path Path PathBuf;thread sync;process env;time Duration Instant;core alloc no_std}
+\b\fs24 Bibliotheque standard (selection) \b0\fs20\par
+\par
+- std::primitive  : i32, f64, bool, etc.\par
+- std::option, std::result : Option, Result.\par
+- std::vec : Vec<T>.\par
+- std::string : String.\par
+- std::collections : HashMap, HashSet, BTreeMap, BTreeSet, VecDeque,\par
+{\f1   LinkedList, BinaryHeap.}\par
+- std::iter : Iterator, IntoIterator, FromIterator, adaptateurs (map, filter,\par
+{\f1   fold, collect, take, skip, chain, zip, enumerate, ...).}\par
+- std::fmt : Display, Debug, format!.\par
+- std::io : Read, Write, BufReader, BufWriter, Stdin, Stdout.\par
+- std::fs : File, read_to_string, create_dir, remove_file.\par
+- std::path : Path, PathBuf.\par
+- std::thread, std::sync : threading et synchronisation.\par
+- std::process : Command, exit.\par
+- std::env : args, var.\par
+- std::time : Duration, Instant, SystemTime.\par
+- core et alloc : sous-ensemble pour no_std.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_14}     {\uldb Suivant >>}{\v IDH_RUST_16}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_16}
+{\footnote $ Rust - Tests et documentation}
+{\footnote K Rust tests documentation;cfg test;#[test] should_panic;cargo test;integration tests;doctests;rustdoc;criterion benchmark}
+\b\fs24 Tests et documentation \b0\fs20\par
+\par
+16.1 Tests unitaires\par
+\par
+{\f1   #[cfg(test)]}\par
+{\f1   mod tests \{}\par
+{\f1       use super::*;}\par
+{\f1       #[test]}\par
+{\f1       fn test_somme() \{}\par
+{\f1           assert_eq!(somme(2, 3), 5);}\par
+{\f1       \}}\par
+{\f1       #[test]}\par
+{\f1       #[should_panic]}\par
+{\f1       fn test_panique() \{ panic!("attendu"); \}}\par
+{\f1   \}}\par
+\par
+{\f1   cargo test}\par
+{\f1   cargo test nom_test}\par
+{\f1   cargo test -- --nocapture}\par
+\par
+16.2 Tests d'integration\par
+\par
+{\f1   tests/integration.rs               # repertoire tests/ a cote de src/}\par
+\par
+16.3 Tests de documentation (doctests)\par
+\par
+{\f1   /// Additionne deux entiers.}\par
+{\f1   ///}\par
+{\f1   /// # Exemples}\par
+{\f1   ///}\par
+{\f1   /// ```}\par
+{\f1   /// assert_eq!(ma_lib::somme(2, 3), 5);}\par
+{\f1   /// ```}\par
+{\f1   pub fn somme(a: i32, b: i32) -> i32 \{ a + b \}}\par
+\par
+16.4 Benchmarks (nightly) ou criterion (stable)\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_15}     {\uldb Suivant >>}{\v IDH_RUST_17}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_17}
+{\footnote $ Rust - Outils Rust du projet DEV-COOLS}
+{\footnote K Rust outils projet DEV-COOLS;RUST86.PAS compilateur 8086;ADA2RUST.PAS;RUST2ADA.PAS;PAS2RUST.PAS;RUST2PAS.PAS;VB2RUST.PAS;convertisseurs}
+\b\fs24 Outils Rust du projet DEV-COOLS \b0\fs20\par
+\par
+17.1 RUST86.PAS - Compilateur Rust vers assembleur 8086\par
+\par
+RUST86.PAS est un compilateur Rust ciblant l'assembleur 8086 (MASM/TASM\par
+compatible). Auteur Sylvain Maltais, version 1.0 (2026). Construit en\par
+Turbo Pascal 7 / Free Pascal 3.2.\par
+\par
+Caracteristiques implementees :\par
+- fn, let / let mut, const, static.\par
+- Types scalaires : i8/i16/i32, u8/u16/u32, bool, char.\par
+- Structures struct et enum (sum types simples).\par
+- Blocs impl Type et impl Trait for Type avec methodes.\par
+- Traits avec methodes (polymorphisme statique).\par
+- Ownership et emprunts avec verrous d'emprunt simultanes (MAX_BORROW).\par
+- Annotations de duree de vie ('a, 'static) basiques.\par
+- Controle de flux : if / else, while, loop, for in range, match.\par
+- break / continue avec etiquettes ('label: loop).\par
+- Macros standards minimales : println!, print!, panic!.\par
+- Modules mod et use (importations limitees).\par
+- Genere du code 8086 reel avec prefixes _RSF_, _RSV_, _IMP_, _RSL_,\par
+{\f1   _RSK_, _RSRT_, _MOD_.}\par
+- Runtime minimal pour panic, print, memcpy.\par
+\par
+Limitations : pas de Vec/String/HashMap dynamiques complets, pas de generics\par
+monomorphises etendus, pas de macros declaratives utilisateur (macro_rules!),\par
+pas d'async/await, pas de Box/Rc/Arc complets, pas de threads.\par
+\par
+17.2 ADA2RUST.PAS - Convertisseur Ada vers Rust\par
+\par
+Traduit un sous-ensemble d'Ada 95 vers du Rust moderne :\par
+- Procedures et fonctions Ada -> fn Rust.\par
+- Types scalaires Integer/Float -> i32/f64.\par
+- Packages Ada -> mod Rust.\par
+- Tableaux contraints -> [T; N].\par
+- Records -> struct.\par
+- Variants records -> enum.\par
+- Exceptions Ada -> Result<T, E>.\par
+- Generic packages -> generics et traits.\par
+\par
+Limitations : pas de support complet des tasks Ada (mappage approximatif vers\par
+thread::spawn), pas de Ada.Containers complet, pas de protected types.\par
+\par
+17.3 RUST2ADA.PAS - Convertisseur Rust vers Ada\par
+\par
+Traduction inverse d'un sous-ensemble Rust vers Ada 95.\par
+\par
+17.4 PAS2RUST.PAS - Convertisseur Pascal vers Rust\par
+\par
+Traduit du code Turbo Pascal / Free Pascal vers du Rust moderne :\par
+- Program / Unit -> crate / mod.\par
+- Procedure / Function -> fn (avec parametres var traduits en &mut).\par
+- Types Integer/LongInt/Real/Boolean/Char -> i32/i64/f64/bool/char.\par
+- String Pascal -> String Rust (chaines allouees).\par
+- Record -> struct.\par
+- Variant record -> enum.\par
+- Array[1..N] of T -> [T; N].\par
+- Pointer types -> Box<T>, Option<Box<T>>.\par
+- begin / end -> blocs \{ \}.\par
+- if / while / for / case / repeat -> if / while / for / match / loop.\par
+\par
+17.5 RUST2PAS.PAS - Convertisseur Rust vers Pascal\par
+\par
+Traduit du code Rust vers du Pascal (Turbo Pascal / Free Pascal compatible)\par
+pour faciliter le portage entre les deux ecosystemes du projet DEV-COOLS.\par
+\par
+17.6 VB2RUST.PAS - Convertisseur Visual Basic vers Rust\par
+\par
+Traduit du code Visual Basic (VB6 / VB.NET classique) vers Rust :\par
+- Sub / Function -> fn.\par
+- Dim / Const -> let / const.\par
+- Types Integer/Long/Single/Double/String/Boolean -> i16/i32/f32/f64/String/bool.\par
+- Type ... End Type -> struct.\par
+- If / For / While / Do / Select Case -> if / for / while / loop / match.\par
+- ByRef -> &mut, ByVal -> par valeur.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_16}     {\uldb Suivant >>}{\v IDH_RUST_18}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_18}
+{\footnote $ Rust - Exemples de programmes}
+{\footnote K Rust exemples;Hello;factorielle;lecture fichier;iterators collect;pattern matching;HashMap;threads channels;tokio async await}
+\b\fs24 Exemples de programmes \b0\fs20\par
+\par
+18.1 Hello World\par
+\par
+{\f1   fn main() \{}\par
+{\f1       println!("Bonjour le monde");}\par
+{\f1   \}}\par
+\par
+18.2 Factorielle recursive et iterative\par
+\par
+{\f1   fn fact(n: u64) -> u64 \{}\par
+{\f1       if n <= 1 \{ 1 \} else \{ n * fact(n - 1) \}}\par
+{\f1   \}}\par
+\par
+{\f1   fn fact_iter(n: u64) -> u64 \{}\par
+{\f1       (1..=n).product()}\par
+{\f1   \}}\par
+\par
+18.3 Lecture d'un fichier\par
+\par
+{\f1   use std::fs;}\par
+{\f1   fn main() -> std::io::Result<()> \{}\par
+{\f1       let contenu = fs::read_to_string("a.txt")?;}\par
+{\f1       println!("\{\}", contenu);}\par
+{\f1       Ok(())}\par
+{\f1   \}}\par
+\par
+18.4 Iterators et collect\par
+\par
+{\f1   let v: Vec<i32> = (1..=10).collect();}\par
+{\f1   let pairs: Vec<i32> = v.iter().filter(|&&x| x % 2 == 0).copied().collect();}\par
+{\f1   let somme: i32 = v.iter().sum();}\par
+{\f1   let carres: Vec<i32> = v.iter().map(|x| x * x).collect();}\par
+\par
+18.5 Pattern matching sur enum\par
+\par
+{\f1   enum Forme \{ Cercle(f64), Rect(f64, f64) \}}\par
+\par
+{\f1   fn aire(f: Forme) -> f64 \{}\par
+{\f1       match f \{}\par
+{\f1           Forme::Cercle(r) => std::f64::consts::PI * r * r,}\par
+{\f1           Forme::Rect(l, h) => l * h,}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+18.6 HashMap mots frequents\par
+\par
+{\f1   use std::collections::HashMap;}\par
+{\f1   let texte = "le chat le chien le chat";}\par
+{\f1   let mut freq = HashMap::new();}\par
+{\f1   for mot in texte.split_whitespace() \{}\par
+{\f1       *freq.entry(mot).or_insert(0) += 1;}\par
+{\f1   \}}\par
+{\f1   println!("\{:?\}", freq);}\par
+\par
+18.7 Threads et channels\par
+\par
+{\f1   use std::sync::mpsc;}\par
+{\f1   use std::thread;}\par
+{\f1   let (tx, rx) = mpsc::channel();}\par
+{\f1   for i in 0..4 \{}\par
+{\f1       let tx = tx.clone();}\par
+{\f1       thread::spawn(move || tx.send(i * i).unwrap());}\par
+{\f1   \}}\par
+{\f1   drop(tx);}\par
+{\f1   for v in rx \{ println!("\{\}", v); \}}\par
+\par
+18.8 Async/await avec tokio\par
+\par
+{\f1   #[tokio::main]}\par
+{\f1   async fn main() -> Result<(), Box<dyn std::error::Error>> \{}\par
+{\f1       let resp = reqwest::get("https://exemple.org").await?;}\par
+{\f1       let texte = resp.text().await?;}\par
+{\f1       println!("\{\}", texte);}\par
+{\f1       Ok(())}\par
+{\f1   \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_17}     {\uldb Suivant >>}{\v IDH_RUST_19}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_19}
+{\footnote $ Rust - Bonnes pratiques}
+{\footnote K Rust bonnes pratiques;API Guidelines;cargo fmt;cargo clippy;must_use;Result ?;eviter unsafe;iterators;edition 2024;deny warnings}
+\b\fs24 Bonnes pratiques \b0\fs20\par
+\par
+- Suivre le Rust API Guidelines et utiliser cargo fmt + cargo clippy.\par
+- Preferer les types Vec/String/&str/&[T] aux pointeurs bruts.\par
+- Marquer #[must_use] sur les retours qui ne doivent pas etre ignores.\par
+- Documenter les fonctions publiques avec /// et inclure des exemples.\par
+- Utiliser Result et ? plutot que panic! pour les erreurs recuperables.\par
+- Eviter unsafe sauf necessite absolue, encapsuler derriere des API sures.\par
+- Preferer iterators (map/filter/fold) aux boucles explicites pour la lisibilite.\par
+- Tester via #[test], cargo test et doctests.\par
+- Specifier l'edition dans Cargo.toml (edition = "2024").\par
+- Activer #![deny(warnings)] dans le CI ou utiliser cargo clippy -- -D warnings.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_18}     {\uldb Suivant >>}{\v IDH_RUST_20}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_20}
+{\footnote $ Rust - Ecosysteme et influence}
+{\footnote K Rust ecosysteme influence;serde tokio reqwest hyper axum actix-web rocket;diesel sqlx sea-orm;clap regex rayon crossbeam;anyhow thiserror;log tracing;wasm-bindgen;rustup rustc cargo rustfmt clippy rustdoc miri bindgen;Linux kernel;Windows kernel;Firefox Servo;Discord Dropbox AWS Cloudflare}
+\b\fs24 Ecosysteme et influence \b0\fs20\par
+\par
+Crates fondamentaux :\par
+- serde, serde_json : serialisation.\par
+- tokio, async-std : runtimes asynchrones.\par
+- reqwest, hyper, axum, actix-web, rocket : HTTP.\par
+- diesel, sqlx, sea-orm : bases de donnees.\par
+- clap : parsing arguments CLI.\par
+- regex : expressions regulieres.\par
+- rayon : parallelisme data-parallel.\par
+- crossbeam : primitives concurrentes.\par
+- anyhow, thiserror : gestion d'erreurs.\par
+- log, tracing : journalisation.\par
+- wasm-bindgen : interop WebAssembly.\par
+\par
+Outils :\par
+- rustup : installation et gestion des toolchains.\par
+- rustc : compilateur.\par
+- cargo : gestionnaire de paquets et build.\par
+- rustfmt : formattage.\par
+- clippy : linter.\par
+- rustdoc : generation de documentation.\par
+- miri : interpreteur pour detecter UB.\par
+- bindgen : generation de bindings C.\par
+- cbindgen : generation de bindings C depuis Rust.\par
+\par
+Influence :\par
+- Entrees : C++, ML/OCaml/Haskell, Erlang, Cyclone, Newsqueak.\par
+- Sorties : Swift (ownership influences), Carbon, Zig, Mojo, langages\par
+{\f1   modernes inspires.}\par
+\par
+Adoption :\par
+- Noyau Linux (depuis 6.1, 2022).\par
+- Windows kernel (annonce 2023).\par
+- Firefox (Servo, Stylo, WebRender).\par
+- Discord, Dropbox, AWS, Cloudflare, Microsoft, Google, Meta.\par
+- Sondage StackOverflow : langage "le plus aime" plusieurs annees consecutives.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_RUST_19}     {\uldb Suivant >>}{\v IDH_RUST_21}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_RUST_21}
+{\footnote $ Rust - References}
+{\footnote K Rust references;Rust Reference;Rust Programming Language livre;Rust by Example;Rustonomicon;Async Book;crates.io;API Guidelines;RFC;Klabnik Nichols;Blandy Orendorff;McNamara}
+\b\fs24 References \b0\fs20\par
+\par
+- The Rust Reference :\par
+{\f1   https://doc.rust-lang.org/reference/}\par
+- The Rust Programming Language (livre officiel) :\par
+{\f1   https://doc.rust-lang.org/book/}\par
+- Rust by Example :\par
+{\f1   https://doc.rust-lang.org/rust-by-example/}\par
+- The Rustonomicon (unsafe et internals) :\par
+{\f1   https://doc.rust-lang.org/nomicon/}\par
+- Async Book :\par
+{\f1   https://rust-lang.github.io/async-book/}\par
+- crates.io : https://crates.io/\par
+- Rust API Guidelines : https://rust-lang.github.io/api-guidelines/\par
+- RFC repository : https://github.com/rust-lang/rfcs\par
+- Klabnik, S.; Nichols, C. : "The Rust Programming Language", No Starch Press.\par
+- Blandy, J.; Orendorff, J.; Tindall, L. : "Programming Rust", O'Reilly.\par
+- McNamara, T. : "Rust in Action", Manning.\par
+- Sharma, R. : "Hands-On Functional Programming in Rust".\par
+\par
+{\f1                               FIN DU DOCUMENT}\par
+
+\par
+{\uldb << Precedent}{\v IDH_RUST_20}     {\uldb Table des matieres}{\v IDH_RUST_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

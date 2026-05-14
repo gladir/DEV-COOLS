@@ -1,0 +1,853 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_JAVA_01}
+{\footnote $ Java - Presentation generale}
+{\footnote K Java presentation;James Gosling;Sun Microsystems;Oak;JVM;Write Once Run Anywhere;historique versions;Java 21 LTS;OpenJDK;HotSpot;GraalVM}
+\b\fs24 Presentation generale \b0\fs20\par
+\par
+Java est un langage de programmation oriente objet, fortement typ??, multiplate-\par
+forme, concu par James Gosling et son equipe chez Sun Microsystems entre 1991\par
+et 1995. Initialement nomme "Oak" pour des appareils domestiques intelligents,\par
+le langage a ete renomme Java et lance publiquement en mai 1995, popularise\par
+par sa devise "Write Once, Run Anywhere" grace a la machine virtuelle JVM.\par
+\par
+Historique des versions :\par
+- 1995 : JDK 1.0 (release publique).\par
+- 1997 : JDK 1.1 (inner classes, JavaBeans, JDBC, RMI).\par
+- 1998 : J2SE 1.2 (Swing, Collections Framework).\par
+- 2000 : J2SE 1.3 (HotSpot JVM).\par
+- 2002 : J2SE 1.4 (assertions, regex, NIO).\par
+- 2004 : J2SE 5.0 (generics, enum, autoboxing, varargs, annotations, foreach).\par
+- 2006 : Java SE 6.\par
+- 2011 : Java SE 7 (try-with-resources, diamond operator, multi-catch).\par
+- 2014 : Java SE 8 LTS (lambda, Stream API, java.time, default methods).\par
+- 2017 : Java SE 9 (modules JPMS / Project Jigsaw, JShell).\par
+- 2018 : Java SE 11 LTS (var local, HTTP client, removed Java EE modules).\par
+- 2021 : Java SE 17 LTS (records, sealed classes, pattern matching for instanceof,\par
+{\f1   text blocks).}\par
+- 2023 : Java SE 21 LTS (virtual threads, record patterns, switch patterns).\par
+- 2024 : Java SE 22 / 23 (string templates preview, structured concurrency).\par
+\par
+Caracteristiques distinctives :\par
+- Compile vers bytecode portable execute par la JVM.\par
+- Garbage Collector generationnel et concurrent (G1, ZGC, Shenandoah).\par
+- Typage statique fort avec generics (depuis Java 5).\par
+- Modele de concurrence multithread integre (synchronized, java.util.concurrent).\par
+- Vaste bibliotheque standard et ecosysteme (Maven Central, Gradle).\par
+- Plates-formes Java SE, Java EE / Jakarta EE, Java ME, Android.\par
+- Plusieurs implementations : OpenJDK (reference), Oracle JDK, Eclipse Temurin,\par
+{\f1   GraalVM, Amazon Corretto, Azul Zulu, IBM Semeru.}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. Structure d'un programme Java}     {\uldb [Aller]}{\v IDH_JAVA_02}\par
+{\f1  3. Caracteristiques lexicales}     {\uldb [Aller]}{\v IDH_JAVA_03}\par
+{\f1  4. Types de donnees}     {\uldb [Aller]}{\v IDH_JAVA_04}\par
+{\f1  5. Operateurs}     {\uldb [Aller]}{\v IDH_JAVA_05}\par
+{\f1  6. Instructions de controle}     {\uldb [Aller]}{\v IDH_JAVA_06}\par
+{\f1  7. Classes et orientation objet}     {\uldb [Aller]}{\v IDH_JAVA_07}\par
+{\f1  8. Generics (Java 5+)}     {\uldb [Aller]}{\v IDH_JAVA_08}\par
+{\f1  9. Lambdas et programmation fonctionnelle (Java 8+)}     {\uldb [Aller]}{\v IDH_JAVA_09}\par
+{\f1 10. Stream API (Java 8+)}     {\uldb [Aller]}{\v IDH_JAVA_10}\par
+{\f1 11. Collections Framework}     {\uldb [Aller]}{\v IDH_JAVA_11}\par
+{\f1 12. Concurrence et threads}     {\uldb [Aller]}{\v IDH_JAVA_12}\par
+{\f1 13. Packages et modules}     {\uldb [Aller]}{\v IDH_JAVA_13}\par
+{\f1 14. Bibliotheque standard (selection)}     {\uldb [Aller]}{\v IDH_JAVA_14}\par
+{\f1 15. Les compilateurs JAVAC86.PAS et JAVACW32.PAS}     {\uldb [Aller]}{\v IDH_JAVA_15}\par
+{\f1 16. Exemples de programmes}     {\uldb [Aller]}{\v IDH_JAVA_16}\par
+{\f1 17. Bonnes pratiques}     {\uldb [Aller]}{\v IDH_JAVA_17}\par
+{\f1 18. Ecosysteme et influence}     {\uldb [Aller]}{\v IDH_JAVA_18}\par
+{\f1 19. References}     {\uldb [Aller]}{\v IDH_JAVA_19}\par
+\par
+{\uldb Suivant >>}{\v IDH_JAVA_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_02}
+{\footnote $ Java - Structure d'un programme Java}
+{\footnote K Java structure programme;Hello World;main;javac;java;single-source;unnamed classes;instance main}
+\b\fs24 Structure d'un programme Java \b0\fs20\par
+\par
+Hello World classique :\par
+\par
+{\f1   public class Hello \{}\par
+{\f1       public static void main(String[] args) \{}\par
+{\f1           System.out.println("Bonjour le monde");}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+Le fichier doit s'appeler Hello.java (nom de la classe publique).\par
+\par
+Compilation et execution :\par
+{\f1   javac Hello.java        --> Hello.class}\par
+{\f1   java Hello              --> Bonjour le monde}\par
+\par
+Programme single-source (Java 11+) :\par
+{\f1   java Hello.java         --> execution directe sans compilation explicite}\par
+\par
+Unnamed classes / instance main (preview Java 21+) :\par
+\par
+{\f1   void main() \{}\par
+{\f1       System.out.println("Bonjour le monde");}\par
+{\f1   \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_01}     {\uldb Suivant >>}{\v IDH_JAVA_03}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_03}
+{\footnote $ Java - Caracteristiques lexicales}
+{\footnote K Java lexical;Unicode;identificateurs;camelCase;PascalCase;mots reserves;var yield record sealed;litteraux;text blocks;commentaires;Javadoc}
+\b\fs24 Caracteristiques lexicales \b0\fs20\par
+\par
+Jeu de caracteres : Unicode (UTF-16 en interne, UTF-8 pour les sources).\par
+\par
+Identificateurs :\par
+- Sensibles a la casse.\par
+- Lettres Unicode, chiffres, _ et $. Doivent commencer par lettre, _ ou $.\par
+- Convention : camelCase pour variables/methodes, PascalCase pour classes,\par
+{\f1   UPPER_SNAKE pour constantes.}\par
+\par
+Mots reserves :\par
+{\f1   abstract  assert    boolean   break     byte      case      catch}\par
+{\f1   char      class     const     continue  default   do        double}\par
+{\f1   else      enum      extends   final     finally   float     for}\par
+{\f1   goto      if        implements import   instanceof int       interface}\par
+{\f1   long      native    new       package   private   protected public}\par
+{\f1   return    short     static    strictfp  super     switch    synchronized}\par
+{\f1   this      throw     throws    transient try       void      volatile}\par
+{\f1   while}\par
+\par
+Mots reserves contextuels (Java 9+) :\par
+{\f1   var (Java 10+), yield (Java 13+), record (Java 14+), sealed/permits/non-sealed}\par
+{\f1   (Java 15+), when (Java 19+), exports/module/opens/provides/requires/uses/to/}\par
+{\f1   transitive/with (Java 9+ modules).}\par
+\par
+Litteraux :\par
+- Entiers : 42, 0xFF, 0b1010, 052 (octal), 1_000_000\par
+- Suffixes : 42L (long), 3.14f (float), 3.14 (double par defaut), 3.14d\par
+- Booleens : true, false\par
+- null\par
+- Caracteres : 'A', '\\n', '\\u00E9'\par
+- Chaines : "Bonjour", "\\u00E9"\par
+- Text blocks (Java 15+) : """...""" multilignes\par
+\par
+Commentaires :\par
+- Ligne : // commentaire\par
+- Bloc : /* ... */\par
+- Javadoc : /** ... */ (genere documentation HTML via javadoc)\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_02}     {\uldb Suivant >>}{\v IDH_JAVA_04}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_04}
+{\footnote $ Java - Types de donnees}
+{\footnote K Java types donnees;primitifs;boolean byte short char int long float double;wrappers;autoboxing;Object String;tableaux;records;var inference;final constantes}
+\b\fs24 Types de donnees \b0\fs20\par
+\par
+4.1 Types primitifs (8 types, allocation pile)\par
+\par
+{\f1   boolean    true ou false}\par
+{\f1   byte       8 bits signe       -128..127}\par
+{\f1   short      16 bits signe      -32768..32767}\par
+{\f1   char       16 bits non signe  0..65535 (UTF-16)}\par
+{\f1   int        32 bits signe      -2^31..2^31-1}\par
+{\f1   long       64 bits signe      -2^63..2^63-1}\par
+{\f1   float      32 bits IEEE 754}\par
+{\f1   double     64 bits IEEE 754}\par
+\par
+Wrappers (boxing) : Boolean, Byte, Short, Character, Integer, Long, Float,\par
+Double. Autoboxing depuis Java 5.\par
+\par
+4.2 Types reference\par
+\par
+{\f1   Object               racine de la hierarchie}\par
+{\f1   String               chaine immuable UTF-16}\par
+{\f1   classes utilisateur}\par
+{\f1   interfaces}\par
+{\f1   enum                 enumerations (depuis Java 5)}\par
+{\f1   tableaux             int[], String[], int[][]}\par
+{\f1   records              (Java 14+/16 stable)}\par
+\par
+4.3 Tableaux\par
+\par
+{\f1   int[] t = new int[10];}\par
+{\f1   int[] u = \{1, 2, 3, 4\};}\par
+{\f1   int[][] mat = new int[3][3];}\par
+{\f1   String[] noms = new String[5];}\par
+{\f1   t.length                       // attribut length}\par
+{\f1   Arrays.sort(t);                // tri}\par
+{\f1   Arrays.fill(t, 0);             // remplissage}\par
+\par
+4.4 Inference de type local (Java 10+)\par
+\par
+{\f1   var i = 42;                    // int}\par
+{\f1   var s = "hello";               // String}\par
+{\f1   var liste = new ArrayList<Integer>();}\par
+\par
+4.5 Constantes\par
+\par
+{\f1   static final int MAX = 100;}\par
+{\f1   final double PI = 3.14159;}\par
+{\f1   static final String VERSION = "1.0";}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_03}     {\uldb Suivant >>}{\v IDH_JAVA_05}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_05}
+{\footnote $ Java - Operateurs}
+{\footnote K Java operateurs;arithmetiques;affectation composee;comparaison instanceof;logiques;bit-a-bit;>>>;ternaire;cast;concatenation String;precedence}
+\b\fs24 Operateurs \b0\fs20\par
+\par
+Arithmetiques : + - * / % ++ --\par
+Affectation   : = += -= *= /= %= &= |= ^= <<= >>= >>>=\par
+Comparaison   : == != < > <= >= instanceof\par
+Logiques      : && || ! ^\par
+Bit-a-bit     : & | ^ ~ << >> >>>     (>>> = decalage non signe)\par
+Ternaire      : cond ? a : b\par
+Cast          : (type) expr\par
+Acces         : . [] ()\par
+Concatenation : + sur String\par
+\par
+Precedence (du plus prioritaire au moins) :\par
+{\f1   1. ()  []  .  new  ++/--postfixe}\par
+{\f1   2. ++/--prefixe  +/-unaires  ~  !  (cast)}\par
+{\f1   3. *  /  %}\par
+{\f1   4. +  -  (+ pour String)}\par
+{\f1   5. <<  >>  >>>}\par
+{\f1   6. <  <=  >  >=  instanceof}\par
+{\f1   7. ==  !=}\par
+{\f1   8. &}\par
+{\f1   9. ^}\par
+{\f1  10. |}\par
+{\f1  11. &&}\par
+{\f1  12. ||}\par
+{\f1  13. ?:}\par
+{\f1  14. = += -= ...}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_04}     {\uldb Suivant >>}{\v IDH_JAVA_06}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_06}
+{\footnote $ Java - Instructions de controle}
+{\footnote K Java controle;if else;switch instruction;switch expression;yield;pattern matching switch;while do-while;for;for-each;break continue label;try catch finally;multi-catch;try-with-resources;assert;throw}
+\b\fs24 Instructions de controle \b0\fs20\par
+\par
+if / else :\par
+{\f1   if (x > 0) \{ ... \} else if (x == 0) \{ ... \} else \{ ... \}}\par
+\par
+switch instruction (forme classique) :\par
+{\f1   switch (jour) \{}\par
+{\f1       case 1: case 7: System.out.println("WE"); break;}\par
+{\f1       case 2: case 3: case 4: case 5: case 6:}\par
+{\f1           System.out.println("Semaine"); break;}\par
+{\f1       default: throw new IllegalArgumentException();}\par
+{\f1   \}}\par
+\par
+switch expression (Java 14+) :\par
+{\f1   String nom = switch (code) \{}\par
+{\f1       case 1 -> "Un";}\par
+{\f1       case 2 -> "Deux";}\par
+{\f1       default -> "Autre";}\par
+{\f1   \};}\par
+\par
+{\f1   int n = switch (code) \{}\par
+{\f1       case 1 -> 100;}\par
+{\f1       case 2 -> \{ int x = calculer(); yield x * 2; \}}\par
+{\f1       default -> 0;}\par
+{\f1   \};}\par
+\par
+Pattern matching pour switch (Java 21+) :\par
+{\f1   String description = switch (obj) \{}\par
+{\f1       case Integer i when i > 0 -> "entier positif " + i;}\par
+{\f1       case Integer i -> "entier " + i;}\par
+{\f1       case String s -> "chaine " + s;}\par
+{\f1       case null -> "rien";}\par
+{\f1       default -> "autre";}\par
+{\f1   \};}\par
+\par
+while / do-while :\par
+{\f1   while (cond) \{ ... \}}\par
+{\f1   do \{ ... \} while (cond);}\par
+\par
+for classique :\par
+{\f1   for (int i = 0; i < n; i++) \{ ... \}}\par
+\par
+for-each (Java 5+) :\par
+{\f1   for (String s : liste) \{ ... \}}\par
+{\f1   for (int i : tableau) \{ ... \}}\par
+\par
+break, continue (avec etiquette possible) :\par
+{\f1   outer:}\par
+{\f1   for (int i = 0; i < n; i++) \{}\par
+{\f1       for (int j = 0; j < m; j++) \{}\par
+{\f1           if (cond) break outer;}\par
+{\f1           if (cond2) continue outer;}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+return :\par
+{\f1   return;}\par
+{\f1   return valeur;}\par
+\par
+throw / try / catch / finally :\par
+{\f1   try \{}\par
+{\f1       ...}\par
+{\f1   \} catch (FileNotFoundException e) \{}\par
+{\f1       ...}\par
+{\f1   \} catch (IOException | SQLException e) \{     // multi-catch (Java 7+)}\par
+{\f1       ...}\par
+{\f1   \} finally \{}\par
+{\f1       ...}\par
+{\f1   \}}\par
+\par
+try-with-resources (Java 7+) :\par
+{\f1   try (FileReader f = new FileReader("a.txt");}\par
+{\f1        BufferedReader br = new BufferedReader(f)) \{}\par
+{\f1       String line = br.readLine();}\par
+{\f1   \} catch (IOException e) \{ ... \}}\par
+\par
+assert (Java 1.4+) :\par
+{\f1   assert x > 0;}\par
+{\f1   assert x > 0 : "x doit etre positif";}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_05}     {\uldb Suivant >>}{\v IDH_JAVA_07}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_07}
+{\footnote $ Java - Classes et orientation objet}
+{\footnote K Java classes objets;heritage;polymorphisme;abstract final static;interfaces;default methods;static methods;classes internes;anonymes;enum;records;sealed permits non-sealed;modificateurs acces}
+\b\fs24 Classes et orientation objet \b0\fs20\par
+\par
+7.1 Definition de classe\par
+\par
+{\f1   public class Personne \{}\par
+{\f1       private String nom;}\par
+{\f1       private int age;}\par
+\par
+{\f1       public Personne(String nom, int age) \{}\par
+{\f1           this.nom = nom;}\par
+{\f1           this.age = age;}\par
+{\f1       \}}\par
+\par
+{\f1       public String getNom() \{ return nom; \}}\par
+{\f1       public int getAge() \{ return age; \}}\par
+{\f1       public void setNom(String nom) \{ this.nom = nom; \}}\par
+\par
+{\f1       @Override}\par
+{\f1       public String toString() \{}\par
+{\f1           return nom + " (" + age + ")";}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+7.2 Heritage et polymorphisme\par
+\par
+{\f1   public abstract class Forme \{}\par
+{\f1       public abstract double aire();}\par
+{\f1       public String nom() \{ return "Forme"; \}}\par
+{\f1   \}}\par
+\par
+{\f1   public class Cercle extends Forme \{}\par
+{\f1       private double rayon;}\par
+{\f1       public Cercle(double r) \{ this.rayon = r; \}}\par
+{\f1       @Override public double aire() \{ return Math.PI * rayon * rayon; \}}\par
+{\f1       @Override public String nom() \{ return "Cercle"; \}}\par
+{\f1   \}}\par
+\par
+Modificateurs d'acces : public, private, protected, package-private (defaut).\par
+Mots-cles : abstract, final, static, synchronized, native, strictfp,\par
+volatile, transient.\par
+\par
+7.3 Interfaces\par
+\par
+{\f1   public interface Comparable<T> \{}\par
+{\f1       int compareTo(T autre);}\par
+{\f1   \}}\par
+\par
+Default methods (Java 8+) :\par
+{\f1   public interface ILog \{}\par
+{\f1       void log(String msg);}\par
+{\f1       default void logErreur(String msg) \{ log("ERREUR: " + msg); \}}\par
+{\f1       static ILog console() \{ return msg -> System.out.println(msg); \}}\par
+{\f1   \}}\par
+\par
+7.4 Classes internes et anonymes\par
+\par
+{\f1   public class Externe \{}\par
+{\f1       class Interne \{ ... \}                    // inner class}\par
+{\f1       static class Imbriquee \{ ... \}           // static nested class}\par
+{\f1       void m() \{}\par
+{\f1           class Locale \{ ... \}                 // local class}\par
+{\f1           Runnable r = new Runnable() \{        // classe anonyme}\par
+{\f1               public void run() \{ ... \}}\par
+{\f1           \};}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+7.5 Enumerations (Java 5+)\par
+\par
+{\f1   public enum Couleur \{}\par
+{\f1       ROUGE("R"), VERT("V"), BLEU("B");}\par
+\par
+{\f1       private final String code;}\par
+{\f1       Couleur(String code) \{ this.code = code; \}}\par
+{\f1       public String code() \{ return code; \}}\par
+{\f1   \}}\par
+\par
+7.6 Records (Java 14 preview, 16 stable)\par
+\par
+{\f1   public record Point(double x, double y) \{}\par
+{\f1       public double distance(Point autre) \{}\par
+{\f1           return Math.hypot(x - autre.x, y - autre.y);}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+{\f1   // generes automatiquement : constructeur canonique, accesseurs,}\par
+{\f1   // equals, hashCode, toString.}\par
+\par
+7.7 Sealed classes (Java 17+)\par
+\par
+{\f1   public sealed interface Forme}\par
+{\f1       permits Cercle, Rectangle, Triangle \{\}}\par
+\par
+{\f1   public final class Cercle implements Forme \{ ... \}}\par
+{\f1   public final class Rectangle implements Forme \{ ... \}}\par
+{\f1   public non-sealed class Triangle implements Forme \{ ... \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_06}     {\uldb Suivant >>}{\v IDH_JAVA_08}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_08}
+{\footnote $ Java - Generics (Java 5+)}
+{\footnote K Java generics;parametres type;methodes generiques;wildcards;extends super;type erasure;diamond operator;bounded type}
+\b\fs24 Generics (Java 5+) \b0\fs20\par
+\par
+{\f1   public class Pile<T> \{}\par
+{\f1       private List<T> items = new ArrayList<>();}\par
+{\f1       public void push(T item) \{ items.add(item); \}}\par
+{\f1       public T pop() \{}\par
+{\f1           return items.remove(items.size() - 1);}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+Methodes generiques :\par
+{\f1   public static <T extends Comparable<T>> T max(T a, T b) \{}\par
+{\f1       return a.compareTo(b) > 0 ? a : b;}\par
+{\f1   \}}\par
+\par
+Wildcards :\par
+{\f1   List<?>           liste de n'importe quel type (lecture seule)}\par
+{\f1   List<? extends N> liste de N ou sous-type (upper bound)}\par
+{\f1   List<? super N>   liste de N ou super-type (lower bound)}\par
+\par
+Type erasure : les types generiques sont effaces a la compilation.\par
+ArrayList<String>  -->  ArrayList<Object> dans le bytecode.\par
+\par
+Diamond operator (Java 7+) :\par
+{\f1   Map<String, List<Integer>> m = new HashMap<>();}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_07}     {\uldb Suivant >>}{\v IDH_JAVA_09}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_09}
+{\footnote $ Java - Lambdas et programmation fonctionnelle (Java 8+)}
+{\footnote K Java lambdas;programmation fonctionnelle;Function Predicate Consumer Supplier;BiFunction;UnaryOperator;references methode;effectively final;interfaces fonctionnelles;FunctionalInterface}
+\b\fs24 Lambdas et programmation fonctionnelle (Java 8+) \b0\fs20\par
+\par
+Syntaxes lambda :\par
+{\f1   x -> x * 2}\par
+{\f1   (x, y) -> x + y}\par
+{\f1   (int x) -> x * 2}\par
+{\f1   () -> System.out.println("vide")}\par
+{\f1   x -> \{ return x * 2; \}}\par
+\par
+Interfaces fonctionnelles (java.util.function) :\par
+{\f1   Function<T, R>        T -> R}\par
+{\f1   BiFunction<T, U, R>   (T, U) -> R}\par
+{\f1   Predicate<T>          T -> boolean}\par
+{\f1   Consumer<T>           T -> void}\par
+{\f1   Supplier<T>           () -> T}\par
+{\f1   UnaryOperator<T>      T -> T}\par
+{\f1   BinaryOperator<T>     (T, T) -> T}\par
+\par
+References de methode :\par
+{\f1   String::length              equivalent a x -> x.length()}\par
+{\f1   System.out::println         equivalent a x -> System.out.println(x)}\par
+{\f1   Integer::parseInt           statique}\par
+{\f1   ArrayList::new              constructeur}\par
+\par
+Effectively final : les variables locales capturees par une lambda doivent\par
+etre final ou effectivement final (non reassignees).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_08}     {\uldb Suivant >>}{\v IDH_JAVA_10}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_10}
+{\footnote $ Java - Stream API (Java 8+)}
+{\footnote K Java Stream API;filter map reduce collect;Collectors;parallelStream;mapToInt;flatMap;groupingBy partitioningBy;Optional;toList}
+\b\fs24 Stream API (Java 8+) \b0\fs20\par
+\par
+Filtrage, transformation, agregation paresseux sur des collections :\par
+\par
+{\f1   List<Integer> nombres = List.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);}\par
+\par
+{\f1   int sommePairsAuCarre = nombres.stream()}\par
+{\f1       .filter(n -> n % 2 == 0)}\par
+{\f1       .mapToInt(n -> n * n)}\par
+{\f1       .sum();                                  // 220}\par
+\par
+{\f1   Map<Boolean, List<Integer>> partition = nombres.stream()}\par
+{\f1       .collect(Collectors.partitioningBy(n -> n > 5));}\par
+\par
+Operations intermediaires : filter, map, mapToInt/Long/Double, flatMap, sorted,\par
+distinct, peek, limit, skip.\par
+\par
+Operations terminales : forEach, collect, reduce, count, anyMatch, allMatch,\par
+noneMatch, findFirst, findAny, min, max, sum, average, toArray, toList (Java 16+).\par
+\par
+Streams paralleles :\par
+{\f1   nombres.parallelStream().mapToInt(Integer::intValue).sum();}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_09}     {\uldb Suivant >>}{\v IDH_JAVA_11}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_11}
+{\footnote $ Java - Collections Framework}
+{\footnote K Java Collections Framework;List ArrayList LinkedList;Set HashSet TreeSet;Map HashMap TreeMap ConcurrentHashMap;Queue Deque;PriorityQueue ArrayDeque;collections immuables;List.of Set.of Map.of}
+\b\fs24 Collections Framework \b0\fs20\par
+\par
+Interfaces :\par
+{\f1   Collection}\par
+{\f1    |-- List      : ArrayList, LinkedList, Vector, Stack}\par
+{\f1    |-- Set       : HashSet, LinkedHashSet, TreeSet}\par
+{\f1    |-- Queue     : LinkedList, PriorityQueue, ArrayDeque}\par
+{\f1    |-- Deque     : ArrayDeque, LinkedList}\par
+{\f1   Map}\par
+{\f1    |-- HashMap, LinkedHashMap, TreeMap, Hashtable, ConcurrentHashMap}\par
+\par
+Exemples :\par
+{\f1   List<String> liste = new ArrayList<>(List.of("a", "b", "c"));}\par
+{\f1   Set<Integer> ensemble = new HashSet<>();}\par
+{\f1   Map<String, Integer> dico = new HashMap<>();}\par
+{\f1   Deque<Integer> pile = new ArrayDeque<>();}\par
+\par
+Collections immuables (Java 9+) :\par
+{\f1   List.of(1, 2, 3);}\par
+{\f1   Set.of("a", "b");}\par
+{\f1   Map.of("k1", 1, "k2", 2);}\par
+{\f1   Map.entry(...), Map.ofEntries(...);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_10}     {\uldb Suivant >>}{\v IDH_JAVA_12}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_12}
+{\footnote $ Java - Concurrence et threads}
+{\footnote K Java concurrence threads;Thread;synchronized volatile;Executor ExecutorService;Future CompletableFuture;atomic;ConcurrentHashMap;virtual threads;structured concurrency}
+\b\fs24 Concurrence et threads \b0\fs20\par
+\par
+Thread classique :\par
+{\f1   Thread t = new Thread(() -> System.out.println("Hello"));}\par
+{\f1   t.start();}\par
+{\f1   t.join();}\par
+\par
+Synchronisation :\par
+{\f1   public synchronized void incrementer() \{ ... \}}\par
+{\f1   synchronized (verrou) \{ ... \}}\par
+{\f1   volatile int compteur;}\par
+\par
+java.util.concurrent (Java 5+) :\par
+{\f1   ExecutorService exec = Executors.newFixedThreadPool(4);}\par
+{\f1   Future<Integer> f = exec.submit(() -> calculer());}\par
+{\f1   Integer r = f.get();}\par
+\par
+{\f1   CompletableFuture<String> cf = CompletableFuture}\par
+{\f1       .supplyAsync(() -> telecharger())}\par
+{\f1       .thenApply(String::toUpperCase)}\par
+{\f1       .thenAccept(System.out::println);}\par
+\par
+{\f1   AtomicInteger compteur = new AtomicInteger();}\par
+{\f1   ConcurrentHashMap<String, Integer> map = new ConcurrentHashMap<>();}\par
+\par
+Virtual threads (Java 21+) :\par
+{\f1   Thread.startVirtualThread(() -> \{ ... \});}\par
+\par
+{\f1   try (var exec = Executors.newVirtualThreadPerTaskExecutor()) \{}\par
+{\f1       exec.submit(() -> ...);}\par
+{\f1   \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_11}     {\uldb Suivant >>}{\v IDH_JAVA_13}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_13}
+{\footnote $ Java - Packages et modules}
+{\footnote K Java packages modules;package import;static import;JPMS Project Jigsaw;module-info;requires exports opens;uses provides;jlink jpackage jdeps}
+\b\fs24 Packages et modules \b0\fs20\par
+\par
+Package :\par
+{\f1   package com.exemple.monprojet;}\par
+\par
+{\f1   import java.util.List;}\par
+{\f1   import java.util.*;}\par
+{\f1   import static java.lang.Math.PI;}\par
+{\f1   import static java.lang.Math.*;}\par
+\par
+Modules (Java 9+, JPMS / Project Jigsaw) :\par
+\par
+{\f1   module com.exemple.monprojet \{}\par
+{\f1       requires java.base;             // implicite}\par
+{\f1       requires java.sql;}\par
+{\f1       exports com.exemple.monprojet.api;}\par
+{\f1       opens com.exemple.monprojet.modele;}\par
+{\f1       uses com.exemple.spi.Service;}\par
+{\f1       provides com.exemple.spi.Service with}\par
+{\f1           com.exemple.monprojet.impl.MonService;}\par
+{\f1   \}}\par
+\par
+Outils :\par
+- javac, java, javadoc, jar.\par
+- jlink : creer un runtime sur mesure.\par
+- jmod, jdeps, jdeprscan.\par
+- jpackage : creer des installateurs natifs (Java 14+).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_12}     {\uldb Suivant >>}{\v IDH_JAVA_14}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_14}
+{\footnote $ Java - Bibliotheque standard (selection)}
+{\footnote K Java bibliotheque standard;java.lang;java.util;java.io java.nio;java.net HttpClient;java.time;java.util.concurrent;java.sql JDBC;reflection;MethodHandles}
+\b\fs24 Bibliotheque standard (selection) \b0\fs20\par
+\par
+- java.lang : Object, String, StringBuilder, Math, System, Thread,\par
+{\f1   Throwable, Exception, RuntimeException, Class, Integer, etc.}\par
+- java.util : List, Map, Set, Collections, Arrays, Optional, Random, Scanner.\par
+- java.util.stream : Stream, IntStream, Collectors.\par
+- java.util.concurrent : ExecutorService, CompletableFuture, Atomic*, locks.\par
+- java.io : File, InputStream, OutputStream, Reader, Writer.\par
+- java.nio.file : Path, Files (E/S modernes, depuis Java 7).\par
+- java.net : URL, URI, HttpClient (Java 11+).\par
+- java.time : LocalDate, LocalDateTime, ZonedDateTime, Duration, Period.\par
+- java.text : NumberFormat, DateFormat (legacy).\par
+- java.security, javax.crypto : cryptographie.\par
+- java.sql : JDBC.\par
+- java.lang.reflect : Reflection.\par
+- java.lang.invoke : MethodHandles (depuis Java 7).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_13}     {\uldb Suivant >>}{\v IDH_JAVA_15}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_15}
+{\footnote $ Java - Les compilateurs JAVAC86.PAS et JAVACW32.PAS}
+{\footnote K Java compilateurs projet;JAVAC86.PAS;JAVACW32.PAS;DOS 8086;Win32 PE;MASM;sous-ensemble Java 1.4 5 8}
+\b\fs24 Les compilateurs JAVAC86.PAS et JAVACW32.PAS \b0\fs20\par
+\par
+JAVAC86.PAS :\par
+- Compilateur Java pour cible 8086 DOS (sous-ensemble Java 1.4/5).\par
+- Genere du code MASM compatible au lieu de bytecode JVM.\par
+- Supporte : classes, interfaces, heritage simple, methodes statiques,\par
+{\f1   if/while/for/foreach, int/byte/short/long/float/double/char/boolean/String.}\par
+- Pas de generics complets (effaces a la compilation, type erasure non\par
+{\f1   implementee).}\par
+- Pas de reflection, pas de thread.\par
+- Runtime minimal : System.out.println, System.in.read, conversion de base.\par
+\par
+JAVACW32.PAS :\par
+- Compilateur Java pour Windows 32 bits (PE executable).\par
+- Sous-ensemble proche de Java 8 : lambda simples, Stream restreintes,\par
+{\f1   Collections (ArrayList, HashMap, HashSet).}\par
+- Pas de modules JPMS ni de virtual threads.\par
+- Generation native x86 sans passage par bytecode .class.\par
+- Acces aux API Win32 via JNI minimal.\par
+- Voir aussi javacw32-string-concat-sim-notes et javacw32-static-methods-test07\par
+{\f1   dans la memoire repository.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_14}     {\uldb Suivant >>}{\v IDH_JAVA_16}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_16}
+{\footnote $ Java - Exemples de programmes}
+{\footnote K Java exemples;Hello;factorielle;lecture fichier;Stream;HttpClient;record pattern matching;sealed}
+\b\fs24 Exemples de programmes \b0\fs20\par
+\par
+16.1 Hello World\par
+\par
+{\f1   public class Hello \{}\par
+{\f1       public static void main(String[] args) \{}\par
+{\f1           System.out.println("Bonjour le monde");}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+16.2 Factorielle recursive\par
+\par
+{\f1   public class Fact \{}\par
+{\f1       public static long fact(int n) \{}\par
+{\f1           return n <= 1 ? 1 : n * fact(n - 1);}\par
+{\f1       \}}\par
+{\f1       public static void main(String[] args) \{}\par
+{\f1           System.out.println(fact(20));        // 2432902008176640000}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+16.3 Lecture d'un fichier (Java 11+)\par
+\par
+{\f1   import java.nio.file.*;}\par
+{\f1   import java.util.List;}\par
+\par
+{\f1   public class Lecture \{}\par
+{\f1       public static void main(String[] args) throws Exception \{}\par
+{\f1           List<String> lignes = Files.readAllLines(Path.of("a.txt"));}\par
+{\f1           lignes.forEach(System.out::println);}\par
+{\f1       \}}\par
+{\f1   \}}\par
+\par
+16.4 Stream : mots les plus frequents\par
+\par
+{\f1   Map<String, Long> top = Files.lines(Path.of("texte.txt"))}\par
+{\f1       .flatMap(l -> Arrays.stream(l.toLowerCase().split("\\\\s+")))}\par
+{\f1       .filter(w -> !w.isBlank())}\par
+{\f1       .collect(Collectors.groupingBy(w -> w, Collectors.counting()))}\par
+{\f1       .entrySet().stream()}\par
+{\f1       .sorted(Map.Entry.<String, Long>comparingByValue().reversed())}\par
+{\f1       .limit(10)}\par
+{\f1       .collect(Collectors.toMap(}\par
+{\f1           Map.Entry::getKey, Map.Entry::getValue,}\par
+{\f1           (a, b) -> a, LinkedHashMap::new));}\par
+\par
+16.5 Telechargement HTTP (Java 11+)\par
+\par
+{\f1   HttpClient client = HttpClient.newHttpClient();}\par
+{\f1   HttpRequest req = HttpRequest.newBuilder(URI.create("https://exemple.org"))}\par
+{\f1       .GET().build();}\par
+{\f1   HttpResponse<String> resp = client.send(req,}\par
+{\f1       HttpResponse.BodyHandlers.ofString());}\par
+{\f1   System.out.println(resp.body());}\par
+\par
+16.6 Record et pattern matching (Java 21+)\par
+\par
+{\f1   sealed interface Forme permits Cercle, Rectangle \{\}}\par
+{\f1   record Cercle(double r) implements Forme \{\}}\par
+{\f1   record Rectangle(double l, double h) implements Forme \{\}}\par
+\par
+{\f1   static double aire(Forme f) \{}\par
+{\f1       return switch (f) \{}\par
+{\f1           case Cercle(double r) -> Math.PI * r * r;}\par
+{\f1           case Rectangle(double l, double h) -> l * h;}\par
+{\f1       \};}\par
+{\f1   \}}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_15}     {\uldb Suivant >>}{\v IDH_JAVA_17}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_17}
+{\footnote $ Java - Bonnes pratiques}
+{\footnote K Java bonnes pratiques;conventions Oracle;Optional;try-with-resources;raw types;composition;Override;Javadoc;SLF4J;JUnit;Maven Gradle}
+\b\fs24 Bonnes pratiques \b0\fs20\par
+\par
+- Suivre les conventions Oracle Code Conventions : camelCase, PascalCase,\par
+{\f1   UPPER_SNAKE pour constantes.}\par
+- Utiliser Optional<T> au lieu de retourner null.\par
+- Preferer try-with-resources pour tout AutoCloseable.\par
+- Eviter raw types : utiliser List<Integer>, jamais List brut.\par
+- Preferer composition a heritage quand possible (Gang of Four).\par
+- Marquer final les champs immuables et les classes non destinees a\par
+{\f1   l'extension.}\par
+- Utiliser @Override systematiquement.\par
+- Documenter les API publiques avec Javadoc /** */.\par
+- Utiliser SLF4J + Logback ou java.util.logging pour journaliser.\par
+- Tester avec JUnit 5, AssertJ, Mockito.\par
+- Outils : Maven ou Gradle pour la build, SpotBugs/Error Prone pour l'analyse\par
+{\f1   statique, Checkstyle pour le style.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_16}     {\uldb Suivant >>}{\v IDH_JAVA_18}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_18}
+{\footnote $ Java - Ecosysteme et influence}
+{\footnote K Java ecosysteme;Java SE EE;Jakarta EE;Android;Spring Spring Boot;Hibernate JPA;Quarkus Micronaut;Apache Kafka Cassandra Hadoop Spark;IntelliJ Eclipse NetBeans;HotSpot OpenJ9 GraalVM Azul}
+\b\fs24 Ecosysteme et influence \b0\fs20\par
+\par
+Plateformes :\par
+- Java SE (Standard Edition) : desktop, serveur, base.\par
+- Jakarta EE (anciennement Java EE, depuis 2017) : serveur d'applications.\par
+- Android : Dalvik puis ART, langage proche de Java 8 (puis Kotlin).\par
+- Java Card : cartes a puce.\par
+- Java ME : abandonne progressivement.\par
+\par
+Frameworks majeurs :\par
+- Spring, Spring Boot : injection de dependances, web, microservices.\par
+- Hibernate, JPA : ORM.\par
+- Jakarta EE : Jakarta Servlet, JAX-RS, JSF, CDI, EJB.\par
+- Quarkus, Micronaut, Helidon : frameworks natifs cloud (compatible GraalVM).\par
+- Apache Kafka, Cassandra, Hadoop, Spark, Lucene : Big Data.\par
+- Eclipse, IntelliJ IDEA, NetBeans : IDE majeurs.\par
+\par
+Implementations JVM :\par
+- HotSpot (OpenJDK reference).\par
+- OpenJ9 (IBM, ex-J9).\par
+- GraalVM (compilation native ahead-of-time, polyglotte).\par
+- Azul Zing (low latency).\par
+\par
+Influences entrantes : C++, Smalltalk, Objective-C, Eiffel.\par
+Influences sortantes : C#, Scala, Groovy, Kotlin, Clojure (JVM), TypeScript.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JAVA_17}     {\uldb Suivant >>}{\v IDH_JAVA_19}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JAVA_19}
+{\footnote $ Java - References}
+{\footnote K Java references;JLS Java Language Specification;JVMS;OpenJDK;JEP;Bloch Effective Java;Goetz Concurrency in Practice;Horstmann Core Java;tutoriels Oracle}
+\b\fs24 References \b0\fs20\par
+\par
+- Java Language Specification (JLS), edition courante, Oracle :\par
+{\f1   https://docs.oracle.com/javase/specs/}\par
+- Java Virtual Machine Specification (JVMS).\par
+- OpenJDK : https://openjdk.org/\par
+- JEP Index (Java Enhancement Proposals) : https://openjdk.org/jeps/\par
+- Bloch, J. : "Effective Java", Addison-Wesley, 3eme ed. 2018.\par
+- Goetz, B. et al. : "Java Concurrency in Practice", Addison-Wesley, 2006.\par
+- Gosling, J.; Joy, B.; Steele, G.; Bracha, G.; Buckley, A.; Smith, D.;\par
+{\f1   Bierman, G. : "The Java Language Specification", Java SE edition courante.}\par
+- Horstmann, C. : "Core Java" Volumes I et II, Pearson.\par
+- Sierra, K.; Bates, B. : "Head First Java", O'Reilly.\par
+- Tutoriels officiels Oracle :\par
+{\f1   https://docs.oracle.com/javase/tutorial/}\par
+\par
+{\f1                               FIN DU DOCUMENT}\par
+
+\par
+{\uldb << Precedent}{\v IDH_JAVA_18}     {\uldb Table des matieres}{\v IDH_JAVA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}
