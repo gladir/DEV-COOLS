@@ -3012,7 +3012,8 @@ Type
  TEmuDbgCPU = (
   EDC_NONE,            { aucun emulateur actif                      }
   EDC_6502,            { NES, Atari2600 (CPU6502_*)                 }
-  EDC_8086             { DOS (Emu_StepOne / TEmulatorPanel.CPU)     }
+  EDC_8086,            { DOS (Emu_StepOne / TEmulatorPanel.CPU)     }
+  EDC_6809             { CoCo3 / Dragon / Thomson (M6809_*)         }
  );
 
  { Mode de pas a pas demande par l utilisateur }
@@ -5395,6 +5396,7 @@ Procedure EmuDbg_StepOut; Forward;
 Procedure EmuDbg_ToggleBPAtPC; Forward;
 Procedure EmuDbg_OnBeforeStep6502; Forward;
 Procedure EmuDbg_OnBeforeStep8086; Forward;
+Procedure EmuDbg_OnBeforeStep6809; Forward;
 Procedure EmuDbg_RequestBreak(ACPU: TEmuDbgCPU); Forward;
 Function  EmuDbg_PollCrtBreak: Boolean; Forward;
 Procedure EmuDbg_DrawWindow; Forward;
@@ -42655,6 +42657,9 @@ Begin NesActive := False;
   Steps := 0;
   If (TargetCPU = '-CCOCO3') And Coco3_Active Then Coco3_InitState;
   If (TargetCPU = '-CCOCO3') And Coco3_Active Then Begin
+   { Activer le debogueur 6809 pour la session CoCo3 }
+   EmuDbg.Active := True;
+   EmuDbg.CPU    := EDC_6809;
    { ----- Boucle CoCo 3 par trame (60 Hz) ----- }
    Coco3_FrameNo := 0;
    Coco3_FBFirst := True;
@@ -42664,10 +42669,19 @@ Begin NesActive := False;
    EntryAddr := GetTimestamp;
    NesKeyEsc := False;
    While (Not NesKeyEsc) And (Coco3_FrameNo < 36000) Do Begin
-    { Drainer tampon clavier (gestion ESC + injection matrice) }
+    { Drainer tampon clavier (gestion ESC + Ctrl+C/Break + injection matrice) }
     While KeyPressed Do Begin
      EntryAddr16 := Ord(ReadKey);
      If EntryAddr16 = 27 Then NesKeyEsc := True
+     Else If EntryAddr16 = 3 Then EmuDbg_RequestBreak(EDC_6809)
+     Else If EntryAddr16 = 0 Then Begin
+      If KeyPressed Then Begin
+       EntryAddr16 := Ord(ReadKey);
+       { scancode 0 = Ctrl+Break sur PC BIOS }
+       If EntryAddr16 = 0 Then EmuDbg_RequestBreak(EDC_6809);
+      End Else
+       EmuDbg_RequestBreak(EDC_6809);
+     End
      Else Coco3_PressKey(Chr(EntryAddr16 And $FF));
     End;
     If NesKeyEsc Then Break;
@@ -42676,6 +42690,7 @@ Begin NesActive := False;
     If Not M6809_Halted Then
      For Coco3InstrIdx := 0 To 4999 Do Begin
       If M6809_Halted Then Break;
+      EmuDbg_OnBeforeStep6809;
       M6809_Step;
       Inc(Steps);
       { Jalon 9 : HSYNC toutes les ~19 instructions (262 lignes/trame) }
@@ -42695,6 +42710,8 @@ Begin NesActive := False;
     {$ENDIF}
    End;
    Coco3_Active := False;
+   EmuDbg.Active := False;
+   EmuDbg.CPU    := EDC_NONE;
   End Else Begin
    While (Not M6809_Halted) And (Steps < 1000000) Do Begin
     M6809_Step;
@@ -49942,6 +49959,175 @@ Begin
  EmuDbg_Disasm6502 := S;
 End;
 
+{ --- Lecture securisee de memoire 6809 (via la map physique CPU) --- }
+
+Function EmuDbg_Mem6809(Addr: LongInt): Byte;
+Begin
+ EmuDbg_Mem6809 := M6809_Mem[Addr And $FFFF];
+End;
+
+{ --- Detecter si l opcode 6809 est un appel (BSR, LBSR, JSR ext/ind) --- }
+
+Function EmuDbg_IsCall6809(PC: Word): Boolean;
+Var
+ Op: Byte;
+Begin
+ Op := EmuDbg_Mem6809(PC);
+ EmuDbg_IsCall6809 :=
+  (Op = $8D) Or   { BSR rel8 }
+  (Op = $17) Or   { LBSR rel16 }
+  (Op = $9D) Or   { JSR direct }
+  (Op = $AD) Or   { JSR indexed }
+  (Op = $BD);     { JSR extended }
+End;
+
+{ --- Detecter si l opcode 6809 est un retour (RTS, RTI) --- }
+
+Function EmuDbg_IsRet6809(Op: Byte): Boolean;
+Begin
+ EmuDbg_IsRet6809 := (Op = $39) Or (Op = $3B);
+End;
+
+{ --- Mnemonique 6809 (table simplifiee couvrant les opcodes courants).
+      Retourne '???' pour les opcodes non reconnus. --- }
+
+Function EmuDbg_Mnem6809(Op: Byte): String;
+Var
+ Hi, Lo: Byte;
+ M: String;
+Const
+ InhTab: Array[0..15] Of String[5] = (
+  'NEG',  '?',    '?',    'COM',  'LSR',  '?',    'ROR',  'ASR',
+  'ASL',  'ROL',  'DEC',  '?',    'INC',  'TST',  'JMP',  'CLR'
+ );
+ ATab: Array[0..15] Of String[5] = (
+  'SUBA', 'CMPA', 'SBCA', 'SUBD', 'ANDA', 'BITA', 'LDA',  'STA',
+  'EORA', 'ADCA', 'ORA',  'ADDA', 'CMPX', 'JSR',  'LDX',  'STX'
+ );
+ BTab: Array[0..15] Of String[5] = (
+  'SUBB', 'CMPB', 'SBCB', 'ADDD', 'ANDB', 'BITB', 'LDB',  'STB',
+  'EORB', 'ADCB', 'ORB',  'ADDB', 'LDD',  'STD',  'LDU',  'STU'
+ );
+Begin
+ Hi := Op Shr 4;
+ Lo := Op And $F;
+ M := '???';
+ Case Hi Of
+  0: M := InhTab[Lo];                     { direct }
+  4: Begin M := InhTab[Lo];
+           If M <> '?' Then M := M + 'A'; { inherent A }
+     End;
+  5: Begin M := InhTab[Lo];
+           If M <> '?' Then M := M + 'B'; { inherent B }
+     End;
+  6,7: M := InhTab[Lo];                   { indexed / extended }
+  1: Case Op Of
+      $12: M := 'NOP';   $13: M := 'SYNC';  $16: M := 'LBRA';
+      $17: M := 'LBSR';  $19: M := 'DAA';   $1A: M := 'ORCC';
+      $1C: M := 'ANDCC'; $1D: M := 'SEX';   $1E: M := 'EXG';
+      $1F: M := 'TFR';   $10: M := 'PG2';   $11: M := 'PG3';
+     End;
+  2: Case Op Of
+      $20: M := 'BRA';   $21: M := 'BRN';   $22: M := 'BHI';
+      $23: M := 'BLS';   $24: M := 'BCC';   $25: M := 'BCS';
+      $26: M := 'BNE';   $27: M := 'BEQ';   $28: M := 'BVC';
+      $29: M := 'BVS';   $2A: M := 'BPL';   $2B: M := 'BMI';
+      $2C: M := 'BGE';   $2D: M := 'BLT';   $2E: M := 'BGT';
+      $2F: M := 'BLE';
+     End;
+  3: Case Op Of
+      $30: M := 'LEAX';  $31: M := 'LEAY';  $32: M := 'LEAS';
+      $33: M := 'LEAU';  $34: M := 'PSHS';  $35: M := 'PULS';
+      $36: M := 'PSHU';  $37: M := 'PULU';  $39: M := 'RTS';
+      $3A: M := 'ABX';   $3B: M := 'RTI';   $3C: M := 'CWAI';
+      $3D: M := 'MUL';   $3F: M := 'SWI';
+     End;
+  8,9,$A,$B: Begin                           { accumulateur A }
+   M := ATab[Lo];
+   If (Op = $8D) Then M := 'BSR';           { BSR rel8 }
+  End;
+  $C,$D,$E,$F: M := BTab[Lo];                { accumulateur B }
+ End;
+ EmuDbg_Mnem6809 := M;
+End;
+
+{ --- Taille en octets d une instruction 6809 (approximation : on
+      ignore l expansion postbyte indexee pour rester simple). --- }
+
+Function EmuDbg_Size6809(Op: Byte): Integer;
+Var
+ Hi, Lo: Byte;
+Begin
+ Hi := Op Shr 4;
+ Lo := Op And $F;
+ Case Op Of
+  $12,$13,$19,$1D,$39,$3A,$3B,$3D,$3F: EmuDbg_Size6809 := 1;
+  $10,$11: EmuDbg_Size6809 := 2; { page prefixes, approx }
+  $16,$17: EmuDbg_Size6809 := 3; { LBRA/LBSR rel16 }
+  $1A,$1C,$1E,$1F,$3C: EmuDbg_Size6809 := 2;
+  $34,$35,$36,$37: EmuDbg_Size6809 := 2; { push/pull }
+  Else Case Hi Of
+   0,9,$D: EmuDbg_Size6809 := 2;          { direct }
+   2: EmuDbg_Size6809 := 2;               { branches courtes }
+   3,$6,$A,$E: EmuDbg_Size6809 := 2;      { indexed (postbyte simple) }
+   4,5: EmuDbg_Size6809 := 1;             { inherent A/B }
+   7,$B,$F: EmuDbg_Size6809 := 3;         { extended }
+   8,$C: Begin
+    { Immediate : 8 ou 16 bits suivant l opcode }
+    Case Lo Of
+     3,$C,$E: EmuDbg_Size6809 := 3;       { 16-bit immediate }
+     Else     EmuDbg_Size6809 := 2;       { 8-bit immediate }
+    End;
+   End;
+   Else EmuDbg_Size6809 := 1;
+  End;
+ End;
+End;
+
+{ --- Desassembler une instruction 6809 a Addr. Affichage minimal :
+      adresse + jusqu a 3 octets + mnemonique + operande brut. --- }
+
+Function EmuDbg_Disasm6809(Addr: Word; Var Size: Integer): String;
+Var
+ Op, B1, B2: Byte;
+ S, Mn, Operand: String;
+Begin
+ Op := EmuDbg_Mem6809(Addr);
+ Size := EmuDbg_Size6809(Op);
+ If Size < 1 Then Size := 1;
+ Mn := EmuDbg_Mnem6809(Op);
+ Operand := '';
+ If Size = 2 Then Begin
+  B1 := EmuDbg_Mem6809((Addr + 1) And $FFFF);
+  { Branches courtes : afficher cible absolue }
+  If ((Op And $F0) = $20) Or (Op = $8D) Then
+   Operand := '$' + HexWord(Word(LongInt(Addr) + 2 + ShortInt(B1)))
+  Else
+   Operand := '$' + HexByte(B1);
+ End Else If Size = 3 Then Begin
+  B1 := EmuDbg_Mem6809((Addr + 1) And $FFFF);
+  B2 := EmuDbg_Mem6809((Addr + 2) And $FFFF);
+  { LBRA / LBSR : offset signe 16 bits relatif }
+  If (Op = $16) Or (Op = $17) Then
+   Operand := '$' + HexWord(Word(LongInt(Addr) + 3 +
+    SmallInt((LongInt(B1) Shl 8) Or B2)))
+  Else
+   Operand := '$' + HexWord((LongInt(B1) Shl 8) Or B2);
+ End;
+ S := HexWord(Addr) + '  ' + HexByte(Op);
+ If Size >= 2 Then
+  S := S + ' ' + HexByte(EmuDbg_Mem6809((Addr + 1) And $FFFF))
+ Else
+  S := S + '   ';
+ If Size >= 3 Then
+  S := S + ' ' + HexByte(EmuDbg_Mem6809((Addr + 2) And $FFFF))
+ Else
+  S := S + '   ';
+ S := S + '  ' + Mn;
+ If Operand <> '' Then S := S + ' ' + Operand;
+ EmuDbg_Disasm6809 := S;
+End;
+
 { --- Desassembler ligne 8086 a CS:IP (minimal : hex + mnemonique brut) --- }
 
 {$PUSH}{$Q-}{$R-}
@@ -50449,6 +50635,10 @@ Begin
     Else If ACPU = EDC_8086 Then Begin
      If LongInt(EmuPanel.CPU.Regs.SP) >= EmuDbg.StepSPRef Then
       EmuDbg_ShouldBreak := True;
+    End
+    Else If ACPU = EDC_6809 Then Begin
+     If LongInt(M6809_S) >= EmuDbg.StepSPRef Then
+      EmuDbg_ShouldBreak := True;
     End;
    End;
   ESM_OUT:
@@ -50459,6 +50649,10 @@ Begin
     End
     Else If ACPU = EDC_8086 Then Begin
      If LongInt(EmuPanel.CPU.Regs.SP) > EmuDbg.StepSPRef Then
+      EmuDbg_ShouldBreak := True;
+    End
+    Else If ACPU = EDC_6809 Then Begin
+     If LongInt(M6809_S) > EmuDbg.StepSPRef Then
       EmuDbg_ShouldBreak := True;
     End;
    End;
@@ -50496,6 +50690,7 @@ Begin
  Case EmuDbg.CPU Of
   EDC_6502: OutTextXY(X + 4, Y + 3, 'Debogueur 6502 - PAUSE');
   EDC_8086: OutTextXY(X + 4, Y + 3, 'Debogueur 8086 - PAUSE');
+  EDC_6809: OutTextXY(X + 4, Y + 3, 'Debogueur 6809 - PAUSE');
   Else      OutTextXY(X + 4, Y + 3, 'Debogueur emulateur');
  End;
  OutTextXY(X + W - 56, Y + 3, '[X]');
@@ -50530,6 +50725,20 @@ Begin
   OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
   S := 'IP=' + HexWord(EmuPanel.CPU.IP) +
        '  FL=' + HexWord(EmuPanel.CPU.Flags.Base);
+  OutTextXY(X + 6, LineY, S); Inc(LineY, 14);
+ End Else If EmuDbg.CPU = EDC_6809 Then Begin
+  S := 'PC=' + HexWord(M6809_PC) +
+       '  A='  + HexByte(M6809_A) +
+       '  B='  + HexByte(M6809_B) +
+       '  DP=' + HexByte(M6809_DP);
+  OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+  S := 'X=' + HexWord(M6809_X) +
+       '  Y=' + HexWord(M6809_Y) +
+       '  U=' + HexWord(M6809_U) +
+       '  S=' + HexWord(M6809_S);
+  OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+  S := 'CC=' + HexByte(M6809_CC) +
+       '  [E F H I N Z V C]';
   OutTextXY(X + 6, LineY, S); Inc(LineY, 14);
  End;
  { Separateur }
@@ -50605,6 +50814,29 @@ Begin
    Addr := Word(Addr + Sz);
    Inc(LineY, 10);
    If LineY > Y + H - 24 - DumpH Then Break;
+  End;
+ End Else If EmuDbg.CPU = EDC_6809 Then Begin
+  Addr := M6809_PC;
+  For I := 0 To EmuDbg.DisasmTopOfs - 1 Do Begin
+   EmuDbg_Disasm6809(Addr, Sz);
+   Addr := Word(Addr + Sz);
+  End;
+  For I := 0 To Lines - 1 Do Begin
+   If I < 64 Then EmuDbg.DisasmAddrs[I] := Addr;
+   If EmuDbg.DisasmTopOfs + I = EmuDbg.SelOfs Then Begin
+    SetColor(1);
+    Bar(X + 2, LineY - 1, X + W - 3, LineY + 8);
+   End;
+   If EmuDbg.DisasmTopOfs + I = 0 Then SetColor(11)
+   Else If EmuDbg_HasBP(Addr, EDC_6809) Then SetColor(12)
+   Else If EmuDbg.DisasmTopOfs + I = EmuDbg.SelOfs Then SetColor(15)
+   Else SetColor(7);
+   S := EmuDbg_Disasm6809(Addr, Sz);
+   If EmuDbg_HasBP(Addr, EDC_6809) Then S := '*' + S Else S := ' ' + S;
+   OutTextXY(X + 4, LineY, S);
+   Addr := Word(Addr + Sz);
+   Inc(LineY, 10);
+   If LineY > Y + H - 24 Then Break;
   End;
  End;
  { Dump hexa DS/SS (8086 uniquement) - style debogueur DOS classique }
@@ -50742,6 +50974,12 @@ Begin
    EmuDbg.StepSPRef := EmuPanel.CPU.Regs.SP;
   End Else
    EmuDbg.StepMode := ESM_INTO;
+ End Else If EmuDbg.CPU = EDC_6809 Then Begin
+  If EmuDbg_IsCall6809(M6809_PC) Then Begin
+   EmuDbg.StepMode := ESM_OVER;
+   EmuDbg.StepSPRef := M6809_S;
+  End Else
+   EmuDbg.StepMode := ESM_INTO;
  End Else
   EmuDbg.StepMode := ESM_INTO;
  EmuDbg.Paused := False;
@@ -50755,7 +50993,9 @@ Begin
  If EmuDbg.CPU = EDC_6502 Then
   EmuDbg.StepSPRef := CPU6502_S
  Else If EmuDbg.CPU = EDC_8086 Then
-  EmuDbg.StepSPRef := EmuPanel.CPU.Regs.SP;
+  EmuDbg.StepSPRef := EmuPanel.CPU.Regs.SP
+ Else If EmuDbg.CPU = EDC_6809 Then
+  EmuDbg.StepSPRef := M6809_S;
  EmuDbg.Paused := False;
  EmuDbg.ContinueReq := True;
  EmuDbg.BreakReq := False;
@@ -50775,13 +51015,17 @@ Begin
    EmuDbg_ToggleBP(CPU6502_PC, EDC_6502)
   Else If EmuDbg.CPU = EDC_8086 Then
    EmuDbg_ToggleBP((LongInt(EmuPanel.CPU.Segs.CS) Shl 4) +
-    EmuPanel.CPU.IP, EDC_8086);
+    EmuPanel.CPU.IP, EDC_8086)
+  Else If EmuDbg.CPU = EDC_6809 Then
+   EmuDbg_ToggleBP(M6809_PC, EDC_6809);
  End Else Begin
   Addr := EmuDbg.DisasmAddrs[VisIdx];
   If EmuDbg.CPU = EDC_6502 Then
    EmuDbg_ToggleBP(Addr, EDC_6502)
   Else If EmuDbg.CPU = EDC_8086 Then
-   EmuDbg_ToggleBP(Addr, EDC_8086);
+   EmuDbg_ToggleBP(Addr, EDC_8086)
+  Else If EmuDbg.CPU = EDC_6809 Then
+   EmuDbg_ToggleBP(Addr, EDC_6809);
  End;
  EmuDbg.NeedRepaint := True;
 End;
@@ -51004,7 +51248,9 @@ Begin
   EmuDbg.LastCS := EmuPanel.CPU.Segs.CS;
   EmuDbg.LastIP := EmuPanel.CPU.IP;
   EmuDbg.LastAddr := (LongInt(EmuDbg.LastCS) Shl 4) + EmuDbg.LastIP;
- End;
+ End
+ Else If ACPU = EDC_6809 Then
+  EmuDbg.LastAddr := M6809_PC;
  EmuDbg_PumpPause;
  { Sortie de pause : redessiner toute l interface puis le panneau
    emulateur afin que la zone qui etait sous la fenetre debug soit
@@ -51037,6 +51283,13 @@ Begin
  LinAddr := (LongInt(EmuPanel.CPU.Segs.CS) Shl 4) + EmuPanel.CPU.IP;
  If EmuDbg_ShouldBreak(EDC_8086, LinAddr) Then
   EmuDbg_EnterPause(EDC_8086);
+End;
+
+Procedure EmuDbg_OnBeforeStep6809;
+Begin
+ If Not EmuDbg.Active Then Exit;
+ If EmuDbg_ShouldBreak(EDC_6809, M6809_PC) Then
+  EmuDbg_EnterPause(EDC_6809);
 End;
 
 { --- Verifier dans le pump d emulateur si Ctrl+C/Ctrl+Break a ete pressee --- }
