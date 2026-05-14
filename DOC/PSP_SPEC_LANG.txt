@@ -1,0 +1,1260 @@
+==============================================================================
+  PSP_SPEC_LANG.txt
+  Specifications du langage de programmation PSP (Pascal Server Pages)
+  Reference aux compilateurs PSP86.PAS et PSPCW32.PAS du projet DEV-COOLS
+==============================================================================
+
+Table des matieres
+------------------
+
+  1.  Introduction
+  2.  Philosophie et inspiration ASP 3.0
+  3.  Structure d un fichier PSP
+  4.  Balises PSP
+  5.  Directives de page
+  6.  Lexique et conventions du Pascal embarque
+  7.  Types de donnees
+  8.  Declarations (const, var, type)
+  9.  Operateurs et expressions
+  10. Instructions de controle
+  11. Procedures et fonctions
+  12. Tableaux et records
+  13. Enumerations et ensembles
+  14. Chaines de caracteres
+  15. Bibliotheque standard
+  16. Sortie HTML (Write / WriteLn)
+  17. Objets COM (CreateObject)
+  18. Directives de compilation
+  19. Inclusions de fichiers
+  20. Gestion des erreurs
+  21. Compilateurs PSP86.PAS et PSPCW32.PAS
+  22. Cycle de developpement et deploiement
+  23. Exemples complets
+  24. Differences avec ASP 3.0 (VBScript / JScript)
+  25. Differences avec Pascal standard
+  26. Ressources dans le projet
+  27. Bibliographie
+
+==============================================================================
+  1. Introduction
+==============================================================================
+
+  PSP (Pascal Server Pages) est un langage de template cote serveur du
+  projet DEV-COOLS qui melange du HTML statique avec des blocs de code
+  Pascal inseres entre des balises de style ASP 3.0 : <% ... %>.
+
+  Le concept est directement inspire d Active Server Pages (Microsoft,
+  1996-2000) mais remplace VBScript ou JScript par un dialecte de Turbo
+  Pascal / Free Pascal. Cela permet a un developpeur Pascal d ecrire des
+  pages dynamiques sans changer de langage.
+
+  Le projet DEV-COOLS fournit deux compilateurs PSP :
+
+    - PSP86.PAS    : compilateur PSP vers assembleur 8086 (.ASM MASM),
+                     cible DOS 16 bits (mode CGI DOS, modele SMALL).
+    - PSPCW32.PAS  : compilateur PSP vers code natif Win32 (cible 32 bits).
+
+  Les deux compilateurs partagent la meme grammaire et la meme semantique,
+  seules les cibles d emission different. Un meme fichier .psp peut donc
+  etre compile pour DOS ou pour Windows.
+
+  Caracteristiques principales :
+
+    - Syntaxe Pascal a l interieur des balises <% %>.
+    - HTML libre a l exterieur des balises (envoye tel quel a la sortie).
+    - Expressions inline : <%= expr %> (equivalent de Response.Write).
+    - Includes : <!--#include file="..."--> et $I.
+    - Directives de compilation conditionnelle ($IFDEF, $IFNDEF, $ENDIF...).
+    - Bibliotheque standard simplifiee (Write, WriteLn, IntToStr, Length...).
+    - Support partiel des objets COM/OLE via CreateObject (PSPCW32).
+    - Mode CGI standard (sortie sur stdout, en-tete Content-Type a la charge
+      du developpeur).
+
+==============================================================================
+  2. Philosophie et inspiration ASP 3.0
+==============================================================================
+
+  2.1 Active Server Pages comme modele
+  ------------------------------------
+
+  ASP 3.0, sorti avec IIS 5.0 en 2000, popularisa un modele simple :
+
+    - Un fichier .asp contient du HTML.
+    - Des balises <% ... %> contiennent du code (VBScript ou JScript).
+    - Un script de page choisit le langage via <%@ Language="..." %>.
+    - Le serveur evalue le code et substitue son resultat dans la page.
+
+  PSP reprend exactement ce modele :
+
+    - Fichier .psp (Pascal Server Pages).
+    - Balises <% ... %> pour le code Pascal.
+    - <%= expression %> pour ecrire une expression directement.
+    - <%@ Language="PascalScript" %> reconnue (et generalement ignoree).
+
+  2.2 Pourquoi Pascal ?
+  ---------------------
+
+  Le choix de Pascal apporte plusieurs avantages par rapport a VBScript :
+
+    - Typage statique (les types sont verifies a la compilation).
+    - Structures de donnees riches (record, array, enum, set).
+    - Procedures et fonctions avec parametres typees.
+    - Compilation en code natif (pas d interpretation a chaque requete).
+    - Compatibilite source avec Turbo Pascal / Free Pascal pour les
+      bibliotheques existantes.
+
+  2.3 Modele d execution
+  ----------------------
+
+  Une page PSP se compile en executable autonome :
+
+    - PSP86  : .EXE DOS (mode CGI DOS). Le serveur web (par exemple WebDOS
+               sur un emulateur ou un serveur reel) lance l executable
+               qui ecrit la reponse HTML sur stdout.
+    - PSPCW32 : .EXE Win32. Lance par IIS, Apache ou tout serveur compatible
+               CGI 1.1.
+
+==============================================================================
+  3. Structure d un fichier PSP
+==============================================================================
+
+  3.1 Fichier minimal
+  -------------------
+
+    <html>
+      <head><title>Hello PSP</title></head>
+      <body>
+        <% begin
+             Write('Bonjour le monde !');
+           end. %>
+      </body>
+    </html>
+
+  Tout ce qui se trouve en dehors des balises <% %> est emis tel quel
+  comme HTML statique. A l interieur, le code Pascal est compile et
+  execute au lancement de la page.
+
+  3.2 Texte HTML statique
+  -----------------------
+
+  Le compilateur traite le HTML statique comme une suite de fragments
+  envoyes par des appels internes. Les caracteres < et > a l exterieur
+  des balises sont conserves tels quels (pas d echappement).
+
+  3.3 Position des blocs de code
+  ------------------------------
+
+  Un fichier PSP peut contenir plusieurs blocs de code separes par du
+  HTML. Toutes les declarations (var, const, type, procedure, function)
+  d un fichier participent au meme programme final, dans l ordre source.
+
+    <html>
+      <body>
+        <% var i: Integer; %>
+        <h1>Liste</h1>
+        <% for i := 1 to 10 do
+             WriteLn('<p>', i, '</p>'); %>
+      </body>
+    </html>
+
+  3.4 Programme principal
+  -----------------------
+
+  Le code Pascal peut etre soit :
+
+    - Une suite d instructions au niveau racine (cas le plus simple) :
+
+        <% begin
+             Write('Hello');
+           end. %>
+
+    - Un programme nomme avec la syntaxe Pascal classique :
+
+        <% program ma_page;
+           var i: Integer;
+           begin
+             for i := 1 to 5 do
+               WriteLn(i);
+           end. %>
+
+  Le mot-cle "program" et les sections "uses" sont reconnus mais
+  facultatifs.
+
+==============================================================================
+  4. Balises PSP
+==============================================================================
+
+  4.1 Bloc de code <% ... %>
+  --------------------------
+
+  Contient du code Pascal qui sera execute :
+
+    <% var nom: String;
+       begin
+         nom := 'Alice';
+         WriteLn('Bonjour ', nom);
+       end. %>
+
+  4.2 Expression inline <%= ... %>
+  --------------------------------
+
+  Ecrit la valeur d une expression directement dans la sortie HTML :
+
+    <p>L heure courante est <%= Now %></p>
+
+  Equivalent a :
+
+    <p>L heure courante est <% Write(Now); %></p>
+
+  4.3 Commentaire de page <%-- ... --%>
+  -------------------------------------
+
+  Reconnu par certaines variantes : le contenu est ignore et n est pas
+  envoye au client. (Selon implementation, on peut aussi utiliser les
+  commentaires Pascal { } et (* *) a l interieur de blocs <% %>.)
+
+  4.4 Directive de page <%@ ... %>
+  --------------------------------
+
+  Specifie des options pour la page entiere. Toujours en debut de fichier :
+
+    <%@ Language="PascalScript" %>
+    <%@ CodePage="65001" %>
+
+  Le compilateur reconnait l attribut Language mais ne change pas de
+  langage (PSP est toujours du Pascal). C est essentiellement un marqueur
+  de compatibilite avec ASP.
+
+  4.5 Include serveur <!--#include ... -->
+  ----------------------------------------
+
+    <!--#include file="header.psp" -->
+    <!--#include virtual="/inc/footer.psp" -->
+
+  Inclus le contenu d un autre fichier avant compilation.
+
+==============================================================================
+  5. Directives de page
+==============================================================================
+
+  Les directives <%@ ... %> reconnues :
+
+    @Language     : nom du langage de script (toujours Pascal en pratique)
+    @CodePage     : page de codes du fichier (1252, 65001 UTF-8, ...)
+    @LCID         : identificateur de locale
+    @EnableSessionState : active la session (sur cible serveur)
+
+  Exemple :
+
+    <%@ Language="PascalScript" CodePage="65001" %>
+
+  Le compilateur PSP86/PSPCW32 conserve ces directives a titre indicatif
+  mais ne modifie pas son comportement (le Pascal est compile, pas
+  interprete).
+
+==============================================================================
+  6. Lexique et conventions du Pascal embarque
+==============================================================================
+
+  6.1 Identificateurs
+  -------------------
+
+  Un identificateur commence par une lettre ou un souligne et peut
+  contenir des lettres, chiffres et soulignes. Le langage est insensible
+  a la casse, comme Pascal :
+
+    nom_variable    Compteur    _temp    XYZ123
+
+  6.2 Mots-cles
+  -------------
+
+  Les mots-cles principaux sont (ordre alphabetique) :
+
+    and       array     begin     boolean   case      char
+    const     div       do        downto    else      end
+    exit      file      for       forward   function  if
+    in        integer   label     mod       nil       not
+    of        or        procedure program   record    repeat
+    set       shl       shr       string    then      to
+    type      until     uses      var       while     with
+    write     writeln   xor
+
+  6.3 Commentaires
+  ----------------
+
+  Trois styles, comme en Turbo Pascal :
+
+    { commentaire avec accolades }
+    (* commentaire avec parentheses-etoiles *)
+    // commentaire jusqu en fin de ligne     (selon implementation)
+
+  Les directives compilateur sont des commentaires speciaux commencant
+  par "$" :
+
+    {$DEFINE DEBUG}
+    {$I header.inc}
+
+  6.4 Litteraux
+  -------------
+
+  Numeriques :
+
+    42            { entier decimal }
+    -100          { entier negatif }
+    $1A           { entier hexadecimal (26) }
+    %1010         { entier binaire (10) }
+    3.14          { reel (tronque en entier par defaut) }
+
+  Caracteres et chaines :
+
+    'A'           { caractere }
+    'Hello'       { chaine }
+    'L''ami'      { apostrophe doublee }
+    #10           { caractere par code ASCII (newline) }
+    #13#10        { CR + LF }
+    'Pre' + #9 + 'Post'   { concatenation }
+
+  Booleens et pointeur :
+
+    True      False     nil
+
+==============================================================================
+  7. Types de donnees
+==============================================================================
+
+  7.1 Types primitifs
+  -------------------
+
+  Les compilateurs PSP86 et PSPCW32 connaissent les types suivants
+  (indices internes TY_IDX_* dans PSP86.PAS) :
+
+    Integer     entier 16 bits signe        (-32768..32767 en DOS)
+    Word        entier 16 bits non signe    (0..65535)
+    Byte        entier 8 bits non signe     (0..255)
+    Char        caractere 8 bits ASCII
+    Boolean     valeur True / False
+    String      chaine ASCIIZ (jusqu a 255 caracteres en mode TP)
+    Real        flottant (tronque en entier dans le backend 8086)
+    Pointer     pointeur generique
+    Text        fichier texte (handle DOS)
+
+  Sur cible Win32, Integer est generalement 32 bits.
+
+  7.2 Types definis par l utilisateur
+  -----------------------------------
+
+  Tableaux :
+
+    type
+      TTab = array[1..10] of Integer;
+      TMat = array[0..2, 0..2] of Word;
+
+  Records :
+
+    type
+      TPoint = record
+        x, y: Integer;
+      end;
+
+  Enumerations :
+
+    type
+      TJour = (Lundi, Mardi, Mercredi, Jeudi, Vendredi, Samedi, Dimanche);
+
+  Ensembles :
+
+    type
+      TSetJours = set of TJour;
+
+  Sous-intervalles :
+
+    type
+      TDigit = 0..9;
+      TLettre = 'A'..'Z';
+
+  Pointeurs typees :
+
+    type
+      PInt = ^Integer;
+
+==============================================================================
+  8. Declarations (const, var, type)
+==============================================================================
+
+  8.1 Constantes
+  --------------
+
+    const
+      N      = 10;
+      PI     = 3.14159;
+      TITRE  = 'Page d accueil';
+
+  Constantes typees (avec valeur initiale) :
+
+    const
+      Buffer: array[1..5] of Integer = (10, 20, 30, 40, 50);
+
+  8.2 Variables
+  -------------
+
+    var
+      i, j   : Integer;
+      nom    : String;
+      total  : Word;
+      actif  : Boolean;
+      arr    : array[1..N] of Integer;
+
+  8.3 Types
+  ---------
+
+    type
+      TJour = (Lundi, Mardi, Mercredi, Jeudi, Vendredi, Samedi, Dimanche);
+      TPoint = record
+        x, y: Integer;
+      end;
+
+  Les sections const, var, type peuvent apparaitre plusieurs fois dans
+  un meme bloc <% %>, dans n importe quel ordre (mode Turbo Pascal).
+
+==============================================================================
+  9. Operateurs et expressions
+==============================================================================
+
+  9.1 Operateurs arithmetiques
+  ----------------------------
+
+    +    addition
+    -    soustraction
+    *    multiplication
+    /    division reelle
+    div  division entiere
+    mod  modulo
+
+  9.2 Operateurs relationnels
+  ---------------------------
+
+    =    egalite
+    <>   difference
+    <    inferieur
+    <=   inferieur ou egal
+    >    superieur
+    >=   superieur ou egal
+    in   appartenance a un ensemble
+
+  9.3 Operateurs logiques et bit-a-bit
+  ------------------------------------
+
+    and  ET logique / bit-a-bit
+    or   OU logique / bit-a-bit
+    xor  OU exclusif
+    not  NON logique / bit-a-bit
+    shl  decalage gauche
+    shr  decalage droite
+
+  9.4 Concatenation
+  -----------------
+
+    +    concatenation pour les chaines (operande String + String)
+
+  9.5 Precedence
+  --------------
+
+  De la plus haute a la plus basse :
+
+    1. not, @
+    2. *, /, div, mod, and, shl, shr
+    3. +, -, or, xor
+    4. =, <>, <, <=, >, >=, in
+
+==============================================================================
+  10. Instructions de controle
+==============================================================================
+
+  10.1 Affectation
+  ----------------
+
+    i := 42;
+    nom := 'Bob';
+
+  10.2 if / then / else
+  ---------------------
+
+    if x > 0 then
+      WriteLn('positif')
+    else if x < 0 then
+      WriteLn('negatif')
+    else
+      WriteLn('nul');
+
+  10.3 case
+  ---------
+
+    case jour of
+      Lundi, Mardi, Mercredi, Jeudi, Vendredi: WriteLn('Semaine');
+      Samedi, Dimanche: WriteLn('Weekend');
+    else
+      WriteLn('?');
+    end;
+
+  10.4 for / to / downto
+  ----------------------
+
+    for i := 1 to 10 do
+      WriteLn(i);
+
+    for i := 10 downto 1 do
+      WriteLn(i);
+
+  10.5 while
+  ----------
+
+    while x > 0 do
+      x := x - 1;
+
+  10.6 repeat / until
+  -------------------
+
+    repeat
+      x := x + 1;
+    until x >= 10;
+
+  10.7 with
+  ---------
+
+    with mon_point do
+    begin
+      x := 10;
+      y := 20;
+    end;
+
+  10.8 break, continue, exit
+  --------------------------
+
+  Le compilateur supporte exit (sortie immediate de la procedure courante)
+  et selon les versions break / continue pour les boucles.
+
+==============================================================================
+  11. Procedures et fonctions
+==============================================================================
+
+  11.1 Procedure
+  --------------
+
+    procedure SayHello;
+    begin
+      Write('Hello from proc');
+      WriteLn;
+    end;
+
+  11.2 Fonction
+  -------------
+
+    function Double(n: Integer): Integer;
+    begin
+      Double := n + n;
+    end;
+
+  Le nom de la fonction sert de variable de retour, comme en Turbo Pascal.
+  La variable speciale Result est aussi reconnue :
+
+    function Triple(n: Integer): Integer;
+    begin
+      Result := n * 3;
+    end;
+
+  11.3 Parametres
+  ---------------
+
+  Par valeur (defaut) :
+
+    procedure PrintNum(x: Integer);
+
+  Par reference (var) :
+
+    procedure Echange(var a, b: Integer);
+    var t: Integer;
+    begin
+      t := a; a := b; b := t;
+    end;
+
+  Plusieurs parametres du meme type :
+
+    function Add(a, b: Integer): Integer;
+    begin
+      Add := a + b;
+    end;
+
+  11.4 Variables locales
+  ----------------------
+
+    function Square(n: Integer): Integer;
+    var tmp: Integer;
+    begin
+      tmp := n * n;
+      Square := tmp;
+    end;
+
+  11.5 Exit
+  ---------
+
+    function AbsVal(n: Integer): Integer;
+    begin
+      if n < 0 then
+      begin
+        AbsVal := 0 - n;
+        Exit;
+      end;
+      AbsVal := n;
+    end;
+
+  11.6 Forward
+  ------------
+
+  Pour les procedures mutuellement recursives :
+
+    function Fwd(x: Integer): Integer; forward;
+
+    function Autre(x: Integer): Integer;
+    begin
+      Autre := Fwd(x) + 1;
+    end;
+
+    function Fwd(x: Integer): Integer;
+    begin
+      Fwd := x + 100;
+    end;
+
+==============================================================================
+  12. Tableaux et records
+==============================================================================
+
+  12.1 Tableaux statiques
+  -----------------------
+
+    var arr: array[1..5] of Integer;
+    arr[1] := 10;
+    arr[2] := 20;
+
+  Bornes arbitraires, indice de n importe quel type ordinal :
+
+    var notes: array['A'..'E'] of Integer;
+
+  12.2 Tableaux multidimensionnels
+  --------------------------------
+
+    var matrice: array[1..3, 1..3] of Integer;
+    matrice[2, 3] := 99;
+
+  12.3 Records
+  ------------
+
+    type
+      TPoint = record
+        x, y: Integer;
+      end;
+
+    var p: TPoint;
+    p.x := 10;
+    p.y := 20;
+
+  12.4 Fonctions intrinseques sur tableau
+  ---------------------------------------
+
+    Length(arr)    nombre d elements
+    Low(arr)       borne inferieure
+    High(arr)      borne superieure
+    SizeOf(arr)    taille en octets
+
+==============================================================================
+  13. Enumerations et ensembles
+==============================================================================
+
+  13.1 Enumerations
+  -----------------
+
+    type
+      TJour = (Lundi, Mardi, Mercredi, Jeudi,
+               Vendredi, Samedi, Dimanche);
+
+    var j: TJour;
+    j := Mardi;
+
+    if j = Lundi then ...
+
+  Les valeurs commencent a 0 (Lundi = 0, Mardi = 1, ...) et peuvent etre
+  converties via Ord :
+
+    Ord(Mercredi)    { retourne 2 }
+
+  13.2 Ensembles
+  --------------
+
+    type
+      TSetJours = set of TJour;
+
+    var ouvrables: TSetJours;
+    ouvrables := [Lundi, Mardi, Mercredi, Jeudi, Vendredi];
+
+    if j in ouvrables then
+      WriteLn('Jour ouvrable');
+
+==============================================================================
+  14. Chaines de caracteres
+==============================================================================
+
+  Le type String est une chaine de caracteres ASCIIZ avec une longueur
+  maximale fixe (255 par defaut, configurable).
+
+  14.1 Operations
+  ---------------
+
+    s1 := 'Hello, ';
+    s2 := 'World';
+    s3 := s1 + s2;            { concatenation }
+    n  := Length(s3);
+    c  := s3[1];              { acces par indice 1-based }
+
+  14.2 Fonctions standard
+  -----------------------
+
+    Length(s)               longueur
+    Copy(s, idx, count)     sous-chaine
+    Pos(sub, s)             position de sub dans s (0 si absent)
+    Concat(s1, s2, ...)     concatenation explicite
+    Chr(n)                  caractere de code n
+    Ord(c)                  code ASCII de c
+    UpCase(c)               majuscule
+    IntToStr(n)             entier vers chaine
+    StrToInt(s)             chaine vers entier
+    Trim(s)                 sans espaces aux extremites
+
+==============================================================================
+  15. Bibliotheque standard
+==============================================================================
+
+  Les compilateurs PSP86 et PSPCW32 fournissent un sous-ensemble de la
+  bibliotheque standard Turbo Pascal :
+
+  15.1 E/S
+  --------
+
+    Write(args...)          ecrit sans saut de ligne
+    WriteLn(args...)        ecrit puis saut de ligne
+    Read(var)               lit depuis stdin
+    ReadLn(var)             lit une ligne
+
+  15.2 Numerique
+  --------------
+
+    Abs(n)        Sqr(n)         Inc(v)         Dec(v)
+    Odd(n)        Pred(v)        Succ(v)        Random(n)
+
+  15.3 Chaines
+  ------------
+
+    Length, Copy, Pos, Concat, UpCase, Chr, Ord, IntToStr, StrToInt
+
+  15.4 Conversion et formatage
+  ----------------------------
+
+    Format(fmt, args)       formatage de type printf
+    Str(v, s)               variable vers chaine
+    Val(s, v, code)         chaine vers variable
+
+==============================================================================
+  16. Sortie HTML (Write / WriteLn)
+==============================================================================
+
+  Dans une page PSP, Write et WriteLn ecrivent directement dans le flux
+  de sortie HTTP (apres l en-tete Content-Type). Le tampon est envoye au
+  client a la fin de l execution (ou explicitement avec Flush).
+
+  Exemple :
+
+    <%
+      WriteLn('<h1>Liste de 1 a 5</h1>');
+      WriteLn('<ul>');
+      var i: Integer;
+      for i := 1 to 5 do
+        WriteLn('<li>', i, '</li>');
+      WriteLn('</ul>');
+    %>
+
+  Equivalent avec balises mixtes :
+
+    <h1>Liste de 1 a 5</h1>
+    <ul>
+    <% var i: Integer;
+       for i := 1 to 5 do %>
+      <li><%= i %></li>
+    </ul>
+
+  Note : il est de la responsabilite du developpeur d emettre l en-tete
+  CGI si necessaire :
+
+    WriteLn('Content-Type: text/html');
+    WriteLn;        { ligne vide separant en-tete et corps }
+    WriteLn('<html>...');
+
+==============================================================================
+  17. Objets COM (CreateObject)
+==============================================================================
+
+  Sur cible Win32 (PSPCW32), un support limite des objets COM/OLE
+  Automation est offert via CreateObject, similaire a ASP/VBScript.
+
+  17.1 Type Object
+  ----------------
+
+  Le type "Object" represente un dispatch IDispatch :
+
+    var
+      obj: Object;
+
+  17.2 CreateObject
+  -----------------
+
+    obj := CreateObject('Scripting.FileSystemObject');
+
+  Retourne nil si la creation echoue.
+
+  17.3 Liberation
+  ---------------
+
+    obj := nil;
+
+  Decremente le compteur de references COM.
+
+  17.4 Exemple complet
+  --------------------
+
+    <%
+      var obj: Object;
+      obj := CreateObject('Scripting.FileSystemObject');
+      if obj <> nil then
+      begin
+        WriteLn('<p style="color:green">Objet cree</p>');
+        obj := nil;
+      end
+      else
+        WriteLn('<p style="color:red">Echec</p>');
+    %>
+
+  L appel de methodes / proprietes via late-binding depend de la version
+  du compilateur.
+
+==============================================================================
+  18. Directives de compilation
+==============================================================================
+
+  Les directives sont des commentaires Pascal speciaux commencant par
+  "$" dans { } ou (* *).
+
+  18.1 Definition de symboles
+  ---------------------------
+
+    {$DEFINE TESTMODE}
+    {$UNDEF TESTMODE}
+
+  18.2 Compilation conditionnelle
+  -------------------------------
+
+    {$IFDEF TESTMODE}
+      WriteLn('Mode test actif');
+    {$ELSE}
+      WriteLn('Mode production');
+    {$ENDIF}
+
+    {$IFNDEF UNDEFINED_SYM}
+      WriteLn('Symbole non defini');
+    {$ENDIF}
+
+  18.3 Autres directives reconnues
+  --------------------------------
+
+    {$I fichier.inc}    inclusion (cf section 19)
+    {$H+} {$H-}         chaines longues / courtes
+    {$I+} {$I-}         verification des E/S
+    {$R+} {$R-}         verification des bornes
+
+==============================================================================
+  19. Inclusions de fichiers
+==============================================================================
+
+  19.1 Inclusion Pascal classique
+  -------------------------------
+
+    {$I test_inc.inc}
+
+  Le contenu du fichier .inc est insere a la place de la directive.
+
+  19.2 Inclusion ASP
+  ------------------
+
+    <!--#include file="header.psp" -->
+    <!--#include virtual="/inc/footer.psp" -->
+
+  19.3 Profondeur maximum
+  -----------------------
+
+  La constante MAX_INCLUDE du compilateur fixe la profondeur d inclusion
+  (8 par defaut en FPC). Les inclusions recursives sont detectees.
+
+==============================================================================
+  20. Gestion des erreurs
+==============================================================================
+
+  Le compilateur signale les erreurs avec un message du type :
+
+    test.psp(15,12): erreur: variable indefinie 'XYZ'
+
+  Codes d erreur principaux :
+
+    - Syntaxe : token inattendu, balise non fermee...
+    - Semantique : variable indefinie, type incompatible, ...
+    - Limites : trop de symboles (MAX_SYM), trop d imbrications...
+
+  En cours d execution, les erreurs (division par zero, indice hors
+  borne avec $R+) sont signalees par un message d erreur DOS / Win32.
+
+==============================================================================
+  21. Compilateurs PSP86.PAS et PSPCW32.PAS
+==============================================================================
+
+  21.1 PSP86.PAS
+  --------------
+
+    - Cible : assembleur 8086 MASM, modele SMALL, DOS 16 bits.
+    - Sortie : fichier .ASM autonome, assemblable par MASM ou TASM.
+    - Mode CGI DOS : sortie sur stdout.
+    - Types : Integer 16 bits, String[255], Real tronque.
+    - Limites (en mode FPC) :
+        MAX_SYM       = 2048 symboles
+        MAX_LABEL     = 2048 labels
+        MAX_DATA      = 512 entrees de donnees
+        MAX_INCLUDE   = 8 niveaux d inclusion
+        STACK_SIZE    = 1024 octets
+
+  Compilation du compilateur :
+
+    fpc -Mtp PSP86.PAS
+
+  Utilisation :
+
+    PSP86 page.psp -o page.asm
+    ASM86 page.asm
+    LINK  page.obj
+
+  21.2 PSPCW32.PAS
+  ----------------
+
+    - Cible : Win32 executable natif.
+    - Compatible IIS, Apache, mode CGI 1.1.
+    - Integer 32 bits, String typage Pascal.
+    - Support partiel COM/OLE via CreateObject.
+
+  Compilation du compilateur :
+
+    fpc -Mtp PSPCW32.PAS
+
+  Utilisation :
+
+    PSPCW32 page.psp
+
+  21.3 Prefixes de nommage ASM (PSP86)
+  ------------------------------------
+
+  Les symboles emis par PSP86.PAS sont prefixes pour eviter les
+  collisions :
+
+    _PSP_         variable globale
+    _PSPF_        fonction / procedure
+    _PSPK_        constante chaine litterale
+    _PSPRT_       routine runtime
+    _PSPL_        label interne
+    _PSPA_        tableau
+    _PSPR_        record
+    _PSPE_        enumeration
+    _PSPK_HTML_   fragment HTML statique
+    _PSPX_        gestionnaire d exception
+
+==============================================================================
+  22. Cycle de developpement et deploiement
+==============================================================================
+
+  22.1 Environnement DOS (PSP86)
+  ------------------------------
+
+    1. Editer page.psp dans un editeur (DEVENV).
+    2. Compiler avec PSP86 page.psp.
+    3. Assembler le .ASM avec ASM86 ou MASM.
+    4. Lier avec LINK pour obtenir un .EXE.
+    5. Deployer dans le repertoire CGI du serveur DOS.
+
+  22.2 Environnement Win32 (PSPCW32)
+  ----------------------------------
+
+    1. Editer page.psp.
+    2. Compiler avec PSPCW32 page.psp -> page.exe.
+    3. Copier page.exe dans le repertoire scripts de IIS / Apache.
+    4. Configurer le serveur pour autoriser l execution.
+
+  22.3 Cycle iteratif
+  -------------------
+
+  Comme le code est compile a l avance, chaque modification du .psp
+  necessite une recompilation. Cela contraste avec ASP classique qui
+  recompile a la volee. En contrepartie, l execution est plus rapide.
+
+==============================================================================
+  23. Exemples complets
+==============================================================================
+
+  23.1 Hello World
+  ----------------
+
+    <html>
+      <head><title>Hello PSP</title></head>
+      <body>
+        <% begin
+             Write('Bonjour le monde !');
+           end. %>
+      </body>
+    </html>
+
+  23.2 Compteur dynamique
+  -----------------------
+
+    <% var i: Integer; %>
+    <html>
+      <body>
+        <h1>Nombres de 1 a 10</h1>
+        <ul>
+        <% for i := 1 to 10 do %>
+          <li><%= i %></li>
+        </ul>
+      </body>
+    </html>
+
+  23.3 Tableau avec somme
+  -----------------------
+
+    <%
+      program test_array;
+      const N = 5;
+      var
+        arr: array[1..N] of Integer;
+        total, i: Integer;
+      begin
+        arr[1] := 10; arr[2] := 20; arr[3] := 30;
+        arr[4] := 40; arr[5] := 50;
+        total := 0;
+        for i := 1 to N do
+          total := total + arr[i];
+        WriteLn(total);    { 150 }
+      end.
+    %>
+
+  23.4 Fonctions et procedures
+  ----------------------------
+
+    <%
+      procedure SayHello;
+      begin
+        WriteLn('Hello from proc');
+      end;
+
+      function Add(a, b: Integer): Integer;
+      begin
+        Add := a + b;
+      end;
+
+      var r: Integer;
+    begin
+      SayHello;
+      r := Add(10, 20);
+      WriteLn(r);
+    end.
+    %>
+
+  23.5 COM/OLE (cible Win32)
+  --------------------------
+
+    <%@ Language="PascalScript" %>
+    <html>
+    <body>
+    <%
+      var obj: Object;
+    begin
+      obj := CreateObject('Scripting.FileSystemObject');
+      if obj <> nil then
+      begin
+        WriteLn('<p>Objet COM cree</p>');
+        obj := nil;
+      end
+      else
+        WriteLn('<p>Echec creation COM</p>');
+    end.
+    %>
+    </body>
+    </html>
+
+  23.6 Directives conditionnelles
+  -------------------------------
+
+    <%
+      {$DEFINE TESTMODE}
+      program test_dir;
+      var x: Integer;
+      begin
+        x := 100;
+        {$IFDEF TESTMODE}
+          WriteLn('Mode test : ', x);
+        {$ELSE}
+          WriteLn('Production');
+        {$ENDIF}
+      end.
+    %>
+
+==============================================================================
+  24. Differences avec ASP 3.0 (VBScript / JScript)
+==============================================================================
+
+  24.1 Langage
+  ------------
+
+    Aspect              PSP                 ASP 3.0 (VBScript)
+    ------------------  ------------------- ------------------
+    Langage             Pascal              VBScript / JScript
+    Typage              statique            dynamique
+    Compilation         AOT (binaire .EXE)  interpretee (a la volee)
+    Sortie              Write / WriteLn     Response.Write
+    Expression inline   <%= expr %>         <%= expr %>
+    Directive Language  <%@ Language=...%>  <%@ Language=...%>
+
+  24.2 Objets intrinseques
+  ------------------------
+
+  ASP fournit Request, Response, Server, Session, Application. PSP
+  ne fournit pas ces objets directement : le developpeur ecrit
+  directement sur stdout via Write/WriteLn.
+
+  Equivalences approximatives :
+
+    Response.Write x     -> Write(x)
+    Response.End         -> Exit (ou Halt)
+    Server.HTMLEncode    -> fonction utilisateur
+    Request.QueryString  -> ParamStr() ou variables d environnement
+
+==============================================================================
+  25. Differences avec Pascal standard
+==============================================================================
+
+  25.1 Particularites PSP
+  -----------------------
+
+    - Le programme peut commencer sans "program ... ; begin" ;
+      des instructions au niveau racine sont permises.
+    - Le HTML hors balises est emis automatiquement comme suite d appels
+      a une routine runtime cachee.
+    - Une page peut contenir plusieurs blocs <% %> qui partagent la
+      meme portee globale.
+    - <%= expr %> est un raccourci unique a PSP.
+    - Les directives ASP <%@ ... %> sont reconnues mais sans effet
+      fonctionnel (sauf @CodePage selon implementation).
+
+  25.2 Limitations vs Pascal complet
+  ----------------------------------
+
+    - Pas de support des objets (classes, methodes virtuelles) sur
+      PSP86 ; PSPCW32 offre un type Object limite a COM.
+    - Pas d unites Uses ; les routines doivent etre dans le fichier
+      ou inclues via {$I}.
+    - Real est tronque en entier sur PSP86 (8086 sans FPU).
+    - String limite a 255 caracteres en mode TP.
+
+==============================================================================
+  26. Ressources dans le projet
+==============================================================================
+
+  Compilateurs :
+
+    PSP86.PAS       compilateur PSP -> ASM 8086 (DOS 16 bits)
+    PSPCW32.PAS     compilateur PSP -> Win32 natif
+
+  Convertisseurs :
+
+    ASC2PSP.PAS     texte ASCII -> page PSP (template)
+    BIN2PSP.PAS     binaire -> page PSP (asset embarque)
+
+  Exemples (SAMPLES\PSP\) :
+
+    hello.psp                 Hello World minimal
+    test_arith.psp            arithmetique de base
+    test_array.psp            tableaux et fonctions intrinseques
+    test_case.psp             instruction case
+    test_com.psp              objet COM Scripting.FileSystemObject
+    test_com_dict.psp         dictionnaire COM
+    test_com_nil.psp          gestion de NIL avec CreateObject
+    test_comment.psp          styles de commentaires
+    test_const.psp            constantes typees
+    test_directives.psp       directives $DEFINE, $IFDEF, $I
+    test_enum.psp             enumerations
+    test_errors.psp           cas d erreur attendus
+    test_expr.psp             expressions et precedence
+    test_func.psp             procedures, fonctions, forward, Exit
+    test_if.psp               if/then/else
+    test_include.psp          inclusion .inc
+    test_inc.inc              fichier inclus
+    test_lex.psp              tokens du lexeur
+    test_loop.psp             for/while/repeat
+    test_record.psp           records
+    test_runtime.psp          bibliotheque runtime
+    test_scope.psp            portee des variables
+    test_stdlib.psp           appels de bibliotheque standard
+    test_str.psp              chaines de caracteres
+    test_string.psp           String operations
+    test_sym.psp              table des symboles
+    test_types.psp            tous les types primitifs
+    test_var.psp              declarations var
+    test_write.psp            Write / WriteLn variantes
+
+  Outils complementaires :
+
+    ASM86.PAS       assembleur 8086 pour la sortie de PSP86
+    MASM.PAS        assembleur Macro 8086
+    LINK.PAS        editeur de liens .OBJ -> .EXE
+    LIB.PAS         gestionnaire de bibliotheques
+
+==============================================================================
+  27. Bibliographie
+==============================================================================
+
+  Sur ASP 3.0 (modele d inspiration) :
+
+    - Microsoft Corporation, "Active Server Pages 3.0 Reference", 2000.
+    - Mitchell, Scott, "Designing Active Server Pages", O Reilly, 2000.
+    - Homer, Alex et al., "Professional Active Server Pages 3.0",
+      Wrox Press, 1999.
+
+  Sur Pascal (langage hote) :
+
+    - Jensen, Kathleen and Wirth, Niklaus, "Pascal User Manual and
+      Report", Springer-Verlag, 1974.
+    - Borland International, "Turbo Pascal 7.0 Language Guide", 1992.
+    - Free Pascal Team, "Free Pascal Reference Guide", 2024.
+
+  Sur CGI :
+
+    - RFC 3875 : The Common Gateway Interface (CGI) Version 1.1.
+
+  Documentation du projet :
+
+    DOC/PSP_SPEC_LANG.txt        le present document
+    DOC/PASCAL_SPEC_LANG.txt     specifications Pascal complet
+    DOC/ASP_SPEC_LANG.txt        specifications ASP (si present)
+    DEVENV.HLP                   aide en ligne integree
+
+==============================================================================
+  Fin du document PSP_SPEC_LANG.txt
+==============================================================================

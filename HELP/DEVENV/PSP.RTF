@@ -1,0 +1,1388 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_PSP_01}
+{\footnote $ PSP - Introduction}
+{\footnote K PSP introduction;Pascal Server Pages;DEV-COOLS;PSP86.PAS;PSPCW32.PAS;ASP 3.0;CGI;.psp}
+\b\fs24 Introduction \b0\fs20\par
+\par
+{\f1   PSP (Pascal Server Pages) est un langage de template cote serveur du}\par
+{\f1   projet DEV-COOLS qui melange du HTML statique avec des blocs de code}\par
+{\f1   Pascal inseres entre des balises de style ASP 3.0 : <% ... %>.}\par
+\par
+{\f1   Le concept est directement inspire d Active Server Pages (Microsoft,}\par
+{\f1   1996-2000) mais remplace VBScript ou JScript par un dialecte de Turbo}\par
+{\f1   Pascal / Free Pascal. Cela permet a un developpeur Pascal d ecrire des}\par
+{\f1   pages dynamiques sans changer de langage.}\par
+\par
+{\f1   Le projet DEV-COOLS fournit deux compilateurs PSP :}\par
+\par
+{\f1     - PSP86.PAS    : compilateur PSP vers assembleur 8086 (.ASM MASM),}\par
+{\f1                      cible DOS 16 bits (mode CGI DOS, modele SMALL).}\par
+{\f1     - PSPCW32.PAS  : compilateur PSP vers code natif Win32 (cible 32 bits).}\par
+\par
+{\f1   Les deux compilateurs partagent la meme grammaire et la meme semantique,}\par
+{\f1   seules les cibles d emission different. Un meme fichier .psp peut donc}\par
+{\f1   etre compile pour DOS ou pour Windows.}\par
+\par
+{\f1   Caracteristiques principales :}\par
+\par
+{\f1     - Syntaxe Pascal a l interieur des balises <% %>.}\par
+{\f1     - HTML libre a l exterieur des balises (envoye tel quel a la sortie).}\par
+{\f1     - Expressions inline : <%= expr %> (equivalent de Response.Write).}\par
+{\f1     - Includes : <!--#include file="..."--> et $I.}\par
+{\f1     - Directives de compilation conditionnelle ($IFDEF, $IFNDEF, $ENDIF...).}\par
+{\f1     - Bibliotheque standard simplifiee (Write, WriteLn, IntToStr, Length...).}\par
+{\f1     - Support partiel des objets COM/OLE via CreateObject (PSPCW32).}\par
+{\f1     - Mode CGI standard (sortie sur stdout, en-tete Content-Type a la charge}\par
+{\f1       du developpeur).}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. Philosophie et inspiration ASP 3.0}     {\uldb [Aller]}{\v IDH_PSP_02}\par
+{\f1  3. Structure d un fichier PSP}     {\uldb [Aller]}{\v IDH_PSP_03}\par
+{\f1  4. Balises PSP}     {\uldb [Aller]}{\v IDH_PSP_04}\par
+{\f1  5. Directives de page}     {\uldb [Aller]}{\v IDH_PSP_05}\par
+{\f1  6. Lexique et conventions du Pascal embarque}     {\uldb [Aller]}{\v IDH_PSP_06}\par
+{\f1  7. Types de donnees}     {\uldb [Aller]}{\v IDH_PSP_07}\par
+{\f1  8. Declarations (const, var, type)}     {\uldb [Aller]}{\v IDH_PSP_08}\par
+{\f1  9. Operateurs et expressions}     {\uldb [Aller]}{\v IDH_PSP_09}\par
+{\f1 10. Instructions de controle}     {\uldb [Aller]}{\v IDH_PSP_10}\par
+{\f1 11. Procedures et fonctions}     {\uldb [Aller]}{\v IDH_PSP_11}\par
+{\f1 12. Tableaux et records}     {\uldb [Aller]}{\v IDH_PSP_12}\par
+{\f1 13. Enumerations et ensembles}     {\uldb [Aller]}{\v IDH_PSP_13}\par
+{\f1 14. Chaines de caracteres}     {\uldb [Aller]}{\v IDH_PSP_14}\par
+{\f1 15. Bibliotheque standard}     {\uldb [Aller]}{\v IDH_PSP_15}\par
+{\f1 16. Sortie HTML (Write / WriteLn)}     {\uldb [Aller]}{\v IDH_PSP_16}\par
+{\f1 17. Objets COM (CreateObject)}     {\uldb [Aller]}{\v IDH_PSP_17}\par
+{\f1 18. Directives de compilation}     {\uldb [Aller]}{\v IDH_PSP_18}\par
+{\f1 19. Inclusions de fichiers}     {\uldb [Aller]}{\v IDH_PSP_19}\par
+{\f1 20. Gestion des erreurs}     {\uldb [Aller]}{\v IDH_PSP_20}\par
+{\f1 21. Compilateurs PSP86.PAS et PSPCW32.PAS}     {\uldb [Aller]}{\v IDH_PSP_21}\par
+{\f1 22. Cycle de developpement et deploiement}     {\uldb [Aller]}{\v IDH_PSP_22}\par
+{\f1 23. Exemples complets}     {\uldb [Aller]}{\v IDH_PSP_23}\par
+{\f1 24. Differences avec ASP 3.0 (VBScript / JScript)}     {\uldb [Aller]}{\v IDH_PSP_24}\par
+{\f1 25. Differences avec Pascal standard}     {\uldb [Aller]}{\v IDH_PSP_25}\par
+{\f1 26. Ressources dans le projet}     {\uldb [Aller]}{\v IDH_PSP_26}\par
+{\f1 27. Bibliographie}     {\uldb [Aller]}{\v IDH_PSP_27}\par
+\par
+{\uldb Suivant >>}{\v IDH_PSP_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_02}
+{\footnote $ PSP - Philosophie et inspiration ASP 3.0}
+{\footnote K PSP philosophie;ASP 3.0;Active Server Pages;VBScript JScript;Pascal Server Pages;modele execution;CGI DOS;IIS Apache}
+\b\fs24 Philosophie et inspiration ASP 3.0 \b0\fs20\par
+\par
+\par
+\b 2.1 Active Server Pages comme modele \b0\par
+\par
+{\f1   ASP 3.0, sorti avec IIS 5.0 en 2000, popularisa un modele simple :}\par
+\par
+{\f1     - Un fichier .asp contient du HTML.}\par
+{\f1     - Des balises <% ... %> contiennent du code (VBScript ou JScript).}\par
+{\f1     - Un script de page choisit le langage via <%@ Language="..." %>.}\par
+{\f1     - Le serveur evalue le code et substitue son resultat dans la page.}\par
+\par
+{\f1   PSP reprend exactement ce modele :}\par
+\par
+{\f1     - Fichier .psp (Pascal Server Pages).}\par
+{\f1     - Balises <% ... %> pour le code Pascal.}\par
+{\f1     - <%= expression %> pour ecrire une expression directement.}\par
+{\f1     - <%@ Language="PascalScript" %> reconnue (et generalement ignoree).}\par
+\par
+\par
+\b 2.2 Pourquoi Pascal ? \b0\par
+\par
+{\f1   Le choix de Pascal apporte plusieurs avantages par rapport a VBScript :}\par
+\par
+{\f1     - Typage statique (les types sont verifies a la compilation).}\par
+{\f1     - Structures de donnees riches (record, array, enum, set).}\par
+{\f1     - Procedures et fonctions avec parametres typees.}\par
+{\f1     - Compilation en code natif (pas d interpretation a chaque requete).}\par
+{\f1     - Compatibilite source avec Turbo Pascal / Free Pascal pour les}\par
+{\f1       bibliotheques existantes.}\par
+\par
+\par
+\b 2.3 Modele d execution \b0\par
+\par
+{\f1   Une page PSP se compile en executable autonome :}\par
+\par
+{\f1     - PSP86  : .EXE DOS (mode CGI DOS). Le serveur web (par exemple WebDOS}\par
+{\f1                sur un emulateur ou un serveur reel) lance l executable}\par
+{\f1                qui ecrit la reponse HTML sur stdout.}\par
+{\f1     - PSPCW32 : .EXE Win32. Lance par IIS, Apache ou tout serveur compatible}\par
+{\f1                CGI 1.1.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_01}     {\uldb Suivant >>}{\v IDH_PSP_03}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_03}
+{\footnote $ PSP - Structure d un fichier PSP}
+{\footnote K PSP structure fichier;HTML statique;blocs code;program;uses;ordre source}
+\b\fs24 Structure d un fichier PSP \b0\fs20\par
+\par
+\par
+\b 3.1 Fichier minimal \b0\par
+\par
+{\f1     <html>}\par
+{\f1       <head><title>Hello PSP</title></head>}\par
+{\f1       <body>}\par
+{\f1         <% begin}\par
+{\f1              Write('Bonjour le monde !');}\par
+{\f1            end. %>}\par
+{\f1       </body>}\par
+{\f1     </html>}\par
+\par
+{\f1   Tout ce qui se trouve en dehors des balises <% %> est emis tel quel}\par
+{\f1   comme HTML statique. A l interieur, le code Pascal est compile et}\par
+{\f1   execute au lancement de la page.}\par
+\par
+\par
+\b 3.2 Texte HTML statique \b0\par
+\par
+{\f1   Le compilateur traite le HTML statique comme une suite de fragments}\par
+{\f1   envoyes par des appels internes. Les caracteres < et > a l exterieur}\par
+{\f1   des balises sont conserves tels quels (pas d echappement).}\par
+\par
+\par
+\b 3.3 Position des blocs de code \b0\par
+\par
+{\f1   Un fichier PSP peut contenir plusieurs blocs de code separes par du}\par
+{\f1   HTML. Toutes les declarations (var, const, type, procedure, function)}\par
+{\f1   d un fichier participent au meme programme final, dans l ordre source.}\par
+\par
+{\f1     <html>}\par
+{\f1       <body>}\par
+{\f1         <% var i: Integer; %>}\par
+{\f1         <h1>Liste</h1>}\par
+{\f1         <% for i := 1 to 10 do}\par
+{\f1              WriteLn('<p>', i, '</p>'); %>}\par
+{\f1       </body>}\par
+{\f1     </html>}\par
+\par
+\par
+\b 3.4 Programme principal \b0\par
+\par
+{\f1   Le code Pascal peut etre soit :}\par
+\par
+{\f1     - Une suite d instructions au niveau racine (cas le plus simple) :}\par
+\par
+{\f1         <% begin}\par
+{\f1              Write('Hello');}\par
+{\f1            end. %>}\par
+\par
+{\f1     - Un programme nomme avec la syntaxe Pascal classique :}\par
+\par
+{\f1         <% program ma_page;}\par
+{\f1            var i: Integer;}\par
+{\f1            begin}\par
+{\f1              for i := 1 to 5 do}\par
+{\f1                WriteLn(i);}\par
+{\f1            end. %>}\par
+\par
+{\f1   Le mot-cle "program" et les sections "uses" sont reconnus mais}\par
+{\f1   facultatifs.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_02}     {\uldb Suivant >>}{\v IDH_PSP_04}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_04}
+{\footnote $ PSP - Balises PSP}
+{\footnote K PSP balises;<% %>;<%= %>;<%@ %>;<%-- --%>;include serveur;#include file virtual}
+\b\fs24 Balises PSP \b0\fs20\par
+\par
+\par
+\b 4.1 Bloc de code <% ... %> \b0\par
+\par
+{\f1   Contient du code Pascal qui sera execute :}\par
+\par
+{\f1     <% var nom: String;}\par
+{\f1        begin}\par
+{\f1          nom := 'Alice';}\par
+{\f1          WriteLn('Bonjour ', nom);}\par
+{\f1        end. %>}\par
+\par
+\par
+\b 4.2 Expression inline <%= ... %> \b0\par
+\par
+{\f1   Ecrit la valeur d une expression directement dans la sortie HTML :}\par
+\par
+{\f1     <p>L heure courante est <%= Now %></p>}\par
+\par
+{\f1   Equivalent a :}\par
+\par
+{\f1     <p>L heure courante est <% Write(Now); %></p>}\par
+\par
+\par
+\b 4.3 Commentaire de page <%-- ... --%> \b0\par
+\par
+{\f1   Reconnu par certaines variantes : le contenu est ignore et n est pas}\par
+{\f1   envoye au client. (Selon implementation, on peut aussi utiliser les}\par
+{\f1   commentaires Pascal \{ \} et (* *) a l interieur de blocs <% %>.)}\par
+\par
+\par
+\b 4.4 Directive de page <%@ ... %> \b0\par
+\par
+{\f1   Specifie des options pour la page entiere. Toujours en debut de fichier :}\par
+\par
+{\f1     <%@ Language="PascalScript" %>}\par
+{\f1     <%@ CodePage="65001" %>}\par
+\par
+{\f1   Le compilateur reconnait l attribut Language mais ne change pas de}\par
+{\f1   langage (PSP est toujours du Pascal). C est essentiellement un marqueur}\par
+{\f1   de compatibilite avec ASP.}\par
+\par
+\par
+\b 4.5 Include serveur <!--#include ... --> \b0\par
+\par
+{\f1     <!--#include file="header.psp" -->}\par
+{\f1     <!--#include virtual="/inc/footer.psp" -->}\par
+\par
+{\f1   Inclus le contenu d un autre fichier avant compilation.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_03}     {\uldb Suivant >>}{\v IDH_PSP_05}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_05}
+{\footnote $ PSP - Directives de page}
+{\footnote K PSP directives page;@Language PascalScript;@CodePage;@LCID;@EnableSessionState}
+\b\fs24 Directives de page \b0\fs20\par
+\par
+{\f1   Les directives <%@ ... %> reconnues :}\par
+\par
+{\f1     @Language     : nom du langage de script (toujours Pascal en pratique)}\par
+{\f1     @CodePage     : page de codes du fichier (1252, 65001 UTF-8, ...)}\par
+{\f1     @LCID         : identificateur de locale}\par
+{\f1     @EnableSessionState : active la session (sur cible serveur)}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     <%@ Language="PascalScript" CodePage="65001" %>}\par
+\par
+{\f1   Le compilateur PSP86/PSPCW32 conserve ces directives a titre indicatif}\par
+{\f1   mais ne modifie pas son comportement (le Pascal est compile, pas}\par
+{\f1   interprete).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_04}     {\uldb Suivant >>}{\v IDH_PSP_06}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_06}
+{\footnote $ PSP - Lexique et conventions du Pascal embarque}
+{\footnote K PSP lexique;identificateurs;mots-cles Pascal;commentaires { } (* *);litteraux #10 #13 $1A %1010;True False nil}
+\b\fs24 Lexique et conventions du Pascal embarque \b0\fs20\par
+\par
+\par
+\b 6.1 Identificateurs \b0\par
+\par
+{\f1   Un identificateur commence par une lettre ou un souligne et peut}\par
+{\f1   contenir des lettres, chiffres et soulignes. Le langage est insensible}\par
+{\f1   a la casse, comme Pascal :}\par
+\par
+{\f1     nom_variable    Compteur    _temp    XYZ123}\par
+\par
+\par
+\b 6.2 Mots-cles \b0\par
+\par
+{\f1   Les mots-cles principaux sont (ordre alphabetique) :}\par
+\par
+{\f1     and       array     begin     boolean   case      char}\par
+{\f1     const     div       do        downto    else      end}\par
+{\f1     exit      file      for       forward   function  if}\par
+{\f1     in        integer   label     mod       nil       not}\par
+{\f1     of        or        procedure program   record    repeat}\par
+{\f1     set       shl       shr       string    then      to}\par
+{\f1     type      until     uses      var       while     with}\par
+{\f1     write     writeln   xor}\par
+\par
+\par
+\b 6.3 Commentaires \b0\par
+\par
+{\f1   Trois styles, comme en Turbo Pascal :}\par
+\par
+{\f1     \{ commentaire avec accolades \}}\par
+{\f1     (* commentaire avec parentheses-etoiles *)}\par
+{\f1     // commentaire jusqu en fin de ligne     (selon implementation)}\par
+\par
+{\f1   Les directives compilateur sont des commentaires speciaux commencant}\par
+{\f1   par "$" :}\par
+\par
+{\f1     \{$DEFINE DEBUG\}}\par
+{\f1     \{$I header.inc\}}\par
+\par
+\par
+\b 6.4 Litteraux \b0\par
+\par
+{\f1   Numeriques :}\par
+\par
+{\f1     42            \{ entier decimal \}}\par
+{\f1     -100          \{ entier negatif \}}\par
+{\f1     $1A           \{ entier hexadecimal (26) \}}\par
+{\f1     %1010         \{ entier binaire (10) \}}\par
+{\f1     3.14          \{ reel (tronque en entier par defaut) \}}\par
+\par
+{\f1   Caracteres et chaines :}\par
+\par
+{\f1     'A'           \{ caractere \}}\par
+{\f1     'Hello'       \{ chaine \}}\par
+{\f1     'L''ami'      \{ apostrophe doublee \}}\par
+{\f1     #10           \{ caractere par code ASCII (newline) \}}\par
+{\f1     #13#10        \{ CR + LF \}}\par
+{\f1     'Pre' + #9 + 'Post'   \{ concatenation \}}\par
+\par
+{\f1   Booleens et pointeur :}\par
+\par
+{\f1     True      False     nil}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_05}     {\uldb Suivant >>}{\v IDH_PSP_07}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_07}
+{\footnote $ PSP - Types de donnees}
+{\footnote K PSP types donnees;Integer Word Byte Char Boolean String Real Pointer Text;array record enumeration set sous-intervalle pointeur typee}
+\b\fs24 Types de donnees \b0\fs20\par
+\par
+\par
+\b 7.1 Types primitifs \b0\par
+\par
+{\f1   Les compilateurs PSP86 et PSPCW32 connaissent les types suivants}\par
+{\f1   (indices internes TY_IDX_* dans PSP86.PAS) :}\par
+\par
+{\f1     Integer     entier 16 bits signe        (-32768..32767 en DOS)}\par
+{\f1     Word        entier 16 bits non signe    (0..65535)}\par
+{\f1     Byte        entier 8 bits non signe     (0..255)}\par
+{\f1     Char        caractere 8 bits ASCII}\par
+{\f1     Boolean     valeur True / False}\par
+{\f1     String      chaine ASCIIZ (jusqu a 255 caracteres en mode TP)}\par
+{\f1     Real        flottant (tronque en entier dans le backend 8086)}\par
+{\f1     Pointer     pointeur generique}\par
+{\f1     Text        fichier texte (handle DOS)}\par
+\par
+{\f1   Sur cible Win32, Integer est generalement 32 bits.}\par
+\par
+\par
+\b 7.2 Types definis par l utilisateur \b0\par
+\par
+{\f1   Tableaux :}\par
+\par
+{\f1     type}\par
+{\f1       TTab = array[1..10] of Integer;}\par
+{\f1       TMat = array[0..2, 0..2] of Word;}\par
+\par
+{\f1   Records :}\par
+\par
+{\f1     type}\par
+{\f1       TPoint = record}\par
+{\f1         x, y: Integer;}\par
+{\f1       end;}\par
+\par
+{\f1   Enumerations :}\par
+\par
+{\f1     type}\par
+{\f1       TJour = (Lundi, Mardi, Mercredi, Jeudi, Vendredi, Samedi, Dimanche);}\par
+\par
+{\f1   Ensembles :}\par
+\par
+{\f1     type}\par
+{\f1       TSetJours = set of TJour;}\par
+\par
+{\f1   Sous-intervalles :}\par
+\par
+{\f1     type}\par
+{\f1       TDigit = 0..9;}\par
+{\f1       TLettre = 'A'..'Z';}\par
+\par
+{\f1   Pointeurs typees :}\par
+\par
+{\f1     type}\par
+{\f1       PInt = ^Integer;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_06}     {\uldb Suivant >>}{\v IDH_PSP_08}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_08}
+{\footnote $ PSP - Declarations (const, var, type)}
+{\footnote K PSP declarations const var type;sections multiples;constantes typees;Turbo Pascal mode}
+\b\fs24 Declarations (const, var, type) \b0\fs20\par
+\par
+\par
+\b 8.1 Constantes \b0\par
+\par
+{\f1     const}\par
+{\f1       N      = 10;}\par
+{\f1       PI     = 3.14159;}\par
+{\f1       TITRE  = 'Page d accueil';}\par
+\par
+{\f1   Constantes typees (avec valeur initiale) :}\par
+\par
+{\f1     const}\par
+{\f1       Buffer: array[1..5] of Integer = (10, 20, 30, 40, 50);}\par
+\par
+\par
+\b 8.2 Variables \b0\par
+\par
+{\f1     var}\par
+{\f1       i, j   : Integer;}\par
+{\f1       nom    : String;}\par
+{\f1       total  : Word;}\par
+{\f1       actif  : Boolean;}\par
+{\f1       arr    : array[1..N] of Integer;}\par
+\par
+\par
+\b 8.3 Types \b0\par
+\par
+{\f1     type}\par
+{\f1       TJour = (Lundi, Mardi, Mercredi, Jeudi, Vendredi, Samedi, Dimanche);}\par
+{\f1       TPoint = record}\par
+{\f1         x, y: Integer;}\par
+{\f1       end;}\par
+\par
+{\f1   Les sections const, var, type peuvent apparaitre plusieurs fois dans}\par
+{\f1   un meme bloc <% %>, dans n importe quel ordre (mode Turbo Pascal).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_07}     {\uldb Suivant >>}{\v IDH_PSP_09}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_09}
+{\footnote $ PSP - Operateurs et expressions}
+{\footnote K PSP operateurs;arithmetiques + - * / div mod;relationnels = <> < <= > >= in;logiques and or xor not shl shr;concatenation +}
+\b\fs24 Operateurs et expressions \b0\fs20\par
+\par
+\par
+\b 9.1 Operateurs arithmetiques \b0\par
+\par
+{\f1     +    addition}\par
+{\f1     -    soustraction}\par
+{\f1     *    multiplication}\par
+{\f1     /    division reelle}\par
+{\f1     div  division entiere}\par
+{\f1     mod  modulo}\par
+\par
+\par
+\b 9.2 Operateurs relationnels \b0\par
+\par
+{\f1     =    egalite}\par
+{\f1     <>   difference}\par
+{\f1     <    inferieur}\par
+{\f1     <=   inferieur ou egal}\par
+{\f1     >    superieur}\par
+{\f1     >=   superieur ou egal}\par
+{\f1     in   appartenance a un ensemble}\par
+\par
+\par
+\b 9.3 Operateurs logiques et bit-a-bit \b0\par
+\par
+{\f1     and  ET logique / bit-a-bit}\par
+{\f1     or   OU logique / bit-a-bit}\par
+{\f1     xor  OU exclusif}\par
+{\f1     not  NON logique / bit-a-bit}\par
+{\f1     shl  decalage gauche}\par
+{\f1     shr  decalage droite}\par
+\par
+\par
+\b 9.4 Concatenation \b0\par
+\par
+{\f1     +    concatenation pour les chaines (operande String + String)}\par
+\par
+\par
+\b 9.5 Precedence \b0\par
+\par
+{\f1   De la plus haute a la plus basse :}\par
+\par
+{\f1     1. not, @}\par
+{\f1     2. *, /, div, mod, and, shl, shr}\par
+{\f1     3. +, -, or, xor}\par
+{\f1     4. =, <>, <, <=, >, >=, in}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_08}     {\uldb Suivant >>}{\v IDH_PSP_10}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_10}
+{\footnote $ PSP - Instructions de controle}
+{\footnote K PSP controle flux;affectation :=;if then else;case;for to downto;while;repeat until;with;break continue exit}
+\b\fs24 Instructions de controle \b0\fs20\par
+\par
+\par
+\b 10.1 Affectation \b0\par
+\par
+{\f1     i := 42;}\par
+{\f1     nom := 'Bob';}\par
+\par
+\par
+\b 10.2 if / then / else \b0\par
+\par
+{\f1     if x > 0 then}\par
+{\f1       WriteLn('positif')}\par
+{\f1     else if x < 0 then}\par
+{\f1       WriteLn('negatif')}\par
+{\f1     else}\par
+{\f1       WriteLn('nul');}\par
+\par
+\par
+\b 10.3 case \b0\par
+\par
+{\f1     case jour of}\par
+{\f1       Lundi, Mardi, Mercredi, Jeudi, Vendredi: WriteLn('Semaine');}\par
+{\f1       Samedi, Dimanche: WriteLn('Weekend');}\par
+{\f1     else}\par
+{\f1       WriteLn('?');}\par
+{\f1     end;}\par
+\par
+\par
+\b 10.4 for / to / downto \b0\par
+\par
+{\f1     for i := 1 to 10 do}\par
+{\f1       WriteLn(i);}\par
+\par
+{\f1     for i := 10 downto 1 do}\par
+{\f1       WriteLn(i);}\par
+\par
+\par
+\b 10.5 while \b0\par
+\par
+{\f1     while x > 0 do}\par
+{\f1       x := x - 1;}\par
+\par
+\par
+\b 10.6 repeat / until \b0\par
+\par
+{\f1     repeat}\par
+{\f1       x := x + 1;}\par
+{\f1     until x >= 10;}\par
+\par
+\par
+\b 10.7 with \b0\par
+\par
+{\f1     with mon_point do}\par
+{\f1     begin}\par
+{\f1       x := 10;}\par
+{\f1       y := 20;}\par
+{\f1     end;}\par
+\par
+\par
+\b 10.8 break, continue, exit \b0\par
+\par
+{\f1   Le compilateur supporte exit (sortie immediate de la procedure courante)}\par
+{\f1   et selon les versions break / continue pour les boucles.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_09}     {\uldb Suivant >>}{\v IDH_PSP_11}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_11}
+{\footnote $ PSP - Procedures et fonctions}
+{\footnote K PSP procedures fonctions;procedure;function Result;parametres valeur var;variables locales;Exit;forward}
+\b\fs24 Procedures et fonctions \b0\fs20\par
+\par
+\par
+\b 11.1 Procedure \b0\par
+\par
+{\f1     procedure SayHello;}\par
+{\f1     begin}\par
+{\f1       Write('Hello from proc');}\par
+{\f1       WriteLn;}\par
+{\f1     end;}\par
+\par
+\par
+\b 11.2 Fonction \b0\par
+\par
+{\f1     function Double(n: Integer): Integer;}\par
+{\f1     begin}\par
+{\f1       Double := n + n;}\par
+{\f1     end;}\par
+\par
+{\f1   Le nom de la fonction sert de variable de retour, comme en Turbo Pascal.}\par
+{\f1   La variable speciale Result est aussi reconnue :}\par
+\par
+{\f1     function Triple(n: Integer): Integer;}\par
+{\f1     begin}\par
+{\f1       Result := n * 3;}\par
+{\f1     end;}\par
+\par
+\par
+\b 11.3 Parametres \b0\par
+\par
+{\f1   Par valeur (defaut) :}\par
+\par
+{\f1     procedure PrintNum(x: Integer);}\par
+\par
+{\f1   Par reference (var) :}\par
+\par
+{\f1     procedure Echange(var a, b: Integer);}\par
+{\f1     var t: Integer;}\par
+{\f1     begin}\par
+{\f1       t := a; a := b; b := t;}\par
+{\f1     end;}\par
+\par
+{\f1   Plusieurs parametres du meme type :}\par
+\par
+{\f1     function Add(a, b: Integer): Integer;}\par
+{\f1     begin}\par
+{\f1       Add := a + b;}\par
+{\f1     end;}\par
+\par
+\par
+\b 11.4 Variables locales \b0\par
+\par
+{\f1     function Square(n: Integer): Integer;}\par
+{\f1     var tmp: Integer;}\par
+{\f1     begin}\par
+{\f1       tmp := n * n;}\par
+{\f1       Square := tmp;}\par
+{\f1     end;}\par
+\par
+\par
+\b 11.5 Exit \b0\par
+\par
+{\f1     function AbsVal(n: Integer): Integer;}\par
+{\f1     begin}\par
+{\f1       if n < 0 then}\par
+{\f1       begin}\par
+{\f1         AbsVal := 0 - n;}\par
+{\f1         Exit;}\par
+{\f1       end;}\par
+{\f1       AbsVal := n;}\par
+{\f1     end;}\par
+\par
+\par
+\b 11.6 Forward \b0\par
+\par
+{\f1   Pour les procedures mutuellement recursives :}\par
+\par
+{\f1     function Fwd(x: Integer): Integer; forward;}\par
+\par
+{\f1     function Autre(x: Integer): Integer;}\par
+{\f1     begin}\par
+{\f1       Autre := Fwd(x) + 1;}\par
+{\f1     end;}\par
+\par
+{\f1     function Fwd(x: Integer): Integer;}\par
+{\f1     begin}\par
+{\f1       Fwd := x + 100;}\par
+{\f1     end;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_10}     {\uldb Suivant >>}{\v IDH_PSP_12}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_12}
+{\footnote $ PSP - Tableaux et records}
+{\footnote K PSP tableaux records;array of;bornes;multidimensionnels;record;Length Low High SizeOf}
+\b\fs24 Tableaux et records \b0\fs20\par
+\par
+\par
+\b 12.1 Tableaux statiques \b0\par
+\par
+{\f1     var arr: array[1..5] of Integer;}\par
+{\f1     arr[1] := 10;}\par
+{\f1     arr[2] := 20;}\par
+\par
+{\f1   Bornes arbitraires, indice de n importe quel type ordinal :}\par
+\par
+{\f1     var notes: array['A'..'E'] of Integer;}\par
+\par
+\par
+\b 12.2 Tableaux multidimensionnels \b0\par
+\par
+{\f1     var matrice: array[1..3, 1..3] of Integer;}\par
+{\f1     matrice[2, 3] := 99;}\par
+\par
+\par
+\b 12.3 Records \b0\par
+\par
+{\f1     type}\par
+{\f1       TPoint = record}\par
+{\f1         x, y: Integer;}\par
+{\f1       end;}\par
+\par
+{\f1     var p: TPoint;}\par
+{\f1     p.x := 10;}\par
+{\f1     p.y := 20;}\par
+\par
+\par
+\b 12.4 Fonctions intrinseques sur tableau \b0\par
+\par
+{\f1     Length(arr)    nombre d elements}\par
+{\f1     Low(arr)       borne inferieure}\par
+{\f1     High(arr)      borne superieure}\par
+{\f1     SizeOf(arr)    taille en octets}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_11}     {\uldb Suivant >>}{\v IDH_PSP_13}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_13}
+{\footnote $ PSP - Enumerations et ensembles}
+{\footnote K PSP enumerations ensembles;type enum;Ord;set of;in;operations ensemblistes}
+\b\fs24 Enumerations et ensembles \b0\fs20\par
+\par
+\par
+\b 13.1 Enumerations \b0\par
+\par
+{\f1     type}\par
+{\f1       TJour = (Lundi, Mardi, Mercredi, Jeudi,}\par
+{\f1                Vendredi, Samedi, Dimanche);}\par
+\par
+{\f1     var j: TJour;}\par
+{\f1     j := Mardi;}\par
+\par
+{\f1     if j = Lundi then ...}\par
+\par
+{\f1   Les valeurs commencent a 0 (Lundi = 0, Mardi = 1, ...) et peuvent etre}\par
+{\f1   converties via Ord :}\par
+\par
+{\f1     Ord(Mercredi)    \{ retourne 2 \}}\par
+\par
+\par
+\b 13.2 Ensembles \b0\par
+\par
+{\f1     type}\par
+{\f1       TSetJours = set of TJour;}\par
+\par
+{\f1     var ouvrables: TSetJours;}\par
+{\f1     ouvrables := [Lundi, Mardi, Mercredi, Jeudi, Vendredi];}\par
+\par
+{\f1     if j in ouvrables then}\par
+{\f1       WriteLn('Jour ouvrable');}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_12}     {\uldb Suivant >>}{\v IDH_PSP_14}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_14}
+{\footnote $ PSP - Chaines de caracteres}
+{\footnote K PSP chaines;String;Length Copy Pos Concat Chr Ord UpCase IntToStr StrToInt Trim}
+\b\fs24 Chaines de caracteres \b0\fs20\par
+\par
+{\f1   Le type String est une chaine de caracteres ASCIIZ avec une longueur}\par
+{\f1   maximale fixe (255 par defaut, configurable).}\par
+\par
+\par
+\b 14.1 Operations \b0\par
+\par
+{\f1     s1 := 'Hello, ';}\par
+{\f1     s2 := 'World';}\par
+{\f1     s3 := s1 + s2;            \{ concatenation \}}\par
+{\f1     n  := Length(s3);}\par
+{\f1     c  := s3[1];              \{ acces par indice 1-based \}}\par
+\par
+\par
+\b 14.2 Fonctions standard \b0\par
+\par
+{\f1     Length(s)               longueur}\par
+{\f1     Copy(s, idx, count)     sous-chaine}\par
+{\f1     Pos(sub, s)             position de sub dans s (0 si absent)}\par
+{\f1     Concat(s1, s2, ...)     concatenation explicite}\par
+{\f1     Chr(n)                  caractere de code n}\par
+{\f1     Ord(c)                  code ASCII de c}\par
+{\f1     UpCase(c)               majuscule}\par
+{\f1     IntToStr(n)             entier vers chaine}\par
+{\f1     StrToInt(s)             chaine vers entier}\par
+{\f1     Trim(s)                 sans espaces aux extremites}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_13}     {\uldb Suivant >>}{\v IDH_PSP_15}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_15}
+{\footnote $ PSP - Bibliotheque standard}
+{\footnote K PSP bibliotheque standard;Write WriteLn Read ReadLn;Abs Sqr Inc Dec Odd Pred Succ Random;Format Str Val}
+\b\fs24 Bibliotheque standard \b0\fs20\par
+\par
+{\f1   Les compilateurs PSP86 et PSPCW32 fournissent un sous-ensemble de la}\par
+{\f1   bibliotheque standard Turbo Pascal :}\par
+\par
+\par
+\b 15.1 E/S \b0\par
+\par
+{\f1     Write(args...)          ecrit sans saut de ligne}\par
+{\f1     WriteLn(args...)        ecrit puis saut de ligne}\par
+{\f1     Read(var)               lit depuis stdin}\par
+{\f1     ReadLn(var)             lit une ligne}\par
+\par
+\par
+\b 15.2 Numerique \b0\par
+\par
+{\f1     Abs(n)        Sqr(n)         Inc(v)         Dec(v)}\par
+{\f1     Odd(n)        Pred(v)        Succ(v)        Random(n)}\par
+\par
+\par
+\b 15.3 Chaines \b0\par
+\par
+{\f1     Length, Copy, Pos, Concat, UpCase, Chr, Ord, IntToStr, StrToInt}\par
+\par
+\par
+\b 15.4 Conversion et formatage \b0\par
+\par
+{\f1     Format(fmt, args)       formatage de type printf}\par
+{\f1     Str(v, s)               variable vers chaine}\par
+{\f1     Val(s, v, code)         chaine vers variable}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_14}     {\uldb Suivant >>}{\v IDH_PSP_16}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_16}
+{\footnote $ PSP - Sortie HTML (Write / WriteLn)}
+{\footnote K PSP sortie HTML;Write WriteLn;Content-Type;flux HTTP;balises mixtes}
+\b\fs24 Sortie HTML (Write / WriteLn) \b0\fs20\par
+\par
+{\f1   Dans une page PSP, Write et WriteLn ecrivent directement dans le flux}\par
+{\f1   de sortie HTTP (apres l en-tete Content-Type). Le tampon est envoye au}\par
+{\f1   client a la fin de l execution (ou explicitement avec Flush).}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     <%}\par
+{\f1       WriteLn('<h1>Liste de 1 a 5</h1>');}\par
+{\f1       WriteLn('<ul>');}\par
+{\f1       var i: Integer;}\par
+{\f1       for i := 1 to 5 do}\par
+{\f1         WriteLn('<li>', i, '</li>');}\par
+{\f1       WriteLn('</ul>');}\par
+{\f1     %>}\par
+\par
+{\f1   Equivalent avec balises mixtes :}\par
+\par
+{\f1     <h1>Liste de 1 a 5</h1>}\par
+{\f1     <ul>}\par
+{\f1     <% var i: Integer;}\par
+{\f1        for i := 1 to 5 do %>}\par
+{\f1       <li><%= i %></li>}\par
+{\f1     </ul>}\par
+\par
+{\f1   Note : il est de la responsabilite du developpeur d emettre l en-tete}\par
+{\f1   CGI si necessaire :}\par
+\par
+{\f1     WriteLn('Content-Type: text/html');}\par
+{\f1     WriteLn;        \{ ligne vide separant en-tete et corps \}}\par
+{\f1     WriteLn('<html>...');}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_15}     {\uldb Suivant >>}{\v IDH_PSP_17}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_17}
+{\footnote $ PSP - Objets COM (CreateObject)}
+{\footnote K PSP COM OLE;CreateObject;Object;IDispatch;Scripting.FileSystemObject;PSPCW32 Win32;late-binding}
+\b\fs24 Objets COM (CreateObject) \b0\fs20\par
+\par
+{\f1   Sur cible Win32 (PSPCW32), un support limite des objets COM/OLE}\par
+{\f1   Automation est offert via CreateObject, similaire a ASP/VBScript.}\par
+\par
+\par
+\b 17.1 Type Object \b0\par
+\par
+{\f1   Le type "Object" represente un dispatch IDispatch :}\par
+\par
+{\f1     var}\par
+{\f1       obj: Object;}\par
+\par
+\par
+\b 17.2 CreateObject \b0\par
+\par
+{\f1     obj := CreateObject('Scripting.FileSystemObject');}\par
+\par
+{\f1   Retourne nil si la creation echoue.}\par
+\par
+\par
+\b 17.3 Liberation \b0\par
+\par
+{\f1     obj := nil;}\par
+\par
+{\f1   Decremente le compteur de references COM.}\par
+\par
+\par
+\b 17.4 Exemple complet \b0\par
+\par
+{\f1     <%}\par
+{\f1       var obj: Object;}\par
+{\f1       obj := CreateObject('Scripting.FileSystemObject');}\par
+{\f1       if obj <> nil then}\par
+{\f1       begin}\par
+{\f1         WriteLn('<p style="color:green">Objet cree</p>');}\par
+{\f1         obj := nil;}\par
+{\f1       end}\par
+{\f1       else}\par
+{\f1         WriteLn('<p style="color:red">Echec</p>');}\par
+{\f1     %>}\par
+\par
+{\f1   L appel de methodes / proprietes via late-binding depend de la version}\par
+{\f1   du compilateur.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_16}     {\uldb Suivant >>}{\v IDH_PSP_18}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_18}
+{\footnote $ PSP - Directives de compilation}
+{\footnote K PSP directives compilation;$DEFINE $UNDEF;$IFDEF $IFNDEF $ELSE $ENDIF;$H $I $R}
+\b\fs24 Directives de compilation \b0\fs20\par
+\par
+{\f1   Les directives sont des commentaires Pascal speciaux commencant par}\par
+{\f1   "$" dans \{ \} ou (* *).}\par
+\par
+\par
+\b 18.1 Definition de symboles \b0\par
+\par
+{\f1     \{$DEFINE TESTMODE\}}\par
+{\f1     \{$UNDEF TESTMODE\}}\par
+\par
+\par
+\b 18.2 Compilation conditionnelle \b0\par
+\par
+{\f1     \{$IFDEF TESTMODE\}}\par
+{\f1       WriteLn('Mode test actif');}\par
+{\f1     \{$ELSE\}}\par
+{\f1       WriteLn('Mode production');}\par
+{\f1     \{$ENDIF\}}\par
+\par
+{\f1     \{$IFNDEF UNDEFINED_SYM\}}\par
+{\f1       WriteLn('Symbole non defini');}\par
+{\f1     \{$ENDIF\}}\par
+\par
+\par
+\b 18.3 Autres directives reconnues \b0\par
+\par
+{\f1     \{$I fichier.inc\}    inclusion (cf section 19)}\par
+{\f1     \{$H+\} \{$H-\}         chaines longues / courtes}\par
+{\f1     \{$I+\} \{$I-\}         verification des E/S}\par
+{\f1     \{$R+\} \{$R-\}         verification des bornes}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_17}     {\uldb Suivant >>}{\v IDH_PSP_19}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_19}
+{\footnote $ PSP - Inclusions de fichiers}
+{\footnote K PSP inclusions;$I fichier.inc;#include file virtual;MAX_INCLUDE profondeur;recursion detectee}
+\b\fs24 Inclusions de fichiers \b0\fs20\par
+\par
+\par
+\b 19.1 Inclusion Pascal classique \b0\par
+\par
+{\f1     \{$I test_inc.inc\}}\par
+\par
+{\f1   Le contenu du fichier .inc est insere a la place de la directive.}\par
+\par
+\par
+\b 19.2 Inclusion ASP \b0\par
+\par
+{\f1     <!--#include file="header.psp" -->}\par
+{\f1     <!--#include virtual="/inc/footer.psp" -->}\par
+\par
+\par
+\b 19.3 Profondeur maximum \b0\par
+\par
+{\f1   La constante MAX_INCLUDE du compilateur fixe la profondeur d inclusion}\par
+{\f1   (8 par defaut en FPC). Les inclusions recursives sont detectees.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_18}     {\uldb Suivant >>}{\v IDH_PSP_20}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_20}
+{\footnote $ PSP - Gestion des erreurs}
+{\footnote K PSP erreurs;diagnostics ligne colonne;syntaxe semantique;limites MAX_SYM;division zero;indice borne $R}
+\b\fs24 Gestion des erreurs \b0\fs20\par
+\par
+{\f1   Le compilateur signale les erreurs avec un message du type :}\par
+\par
+{\f1     test.psp(15,12): erreur: variable indefinie 'XYZ'}\par
+\par
+{\f1   Codes d erreur principaux :}\par
+\par
+{\f1     - Syntaxe : token inattendu, balise non fermee...}\par
+{\f1     - Semantique : variable indefinie, type incompatible, ...}\par
+{\f1     - Limites : trop de symboles (MAX_SYM), trop d imbrications...}\par
+\par
+{\f1   En cours d execution, les erreurs (division par zero, indice hors}\par
+{\f1   borne avec $R+) sont signalees par un message d erreur DOS / Win32.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_19}     {\uldb Suivant >>}{\v IDH_PSP_21}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_21}
+{\footnote $ PSP - Compilateurs PSP86.PAS et PSPCW32.PAS}
+{\footnote K PSP86 PSPCW32 compilateurs;cible 8086 MASM SMALL;Win32 natif;prefixes _PSP_ _PSPF_ _PSPK_ _PSPRT_ _PSPL_ _PSPA_ _PSPR_ _PSPE_ _PSPK_HTML_ _PSPX_;MAX_SYM 2048}
+\b\fs24 Compilateurs PSP86.PAS et PSPCW32.PAS \b0\fs20\par
+\par
+\par
+\b 21.1 PSP86.PAS \b0\par
+\par
+{\f1     - Cible : assembleur 8086 MASM, modele SMALL, DOS 16 bits.}\par
+{\f1     - Sortie : fichier .ASM autonome, assemblable par MASM ou TASM.}\par
+{\f1     - Mode CGI DOS : sortie sur stdout.}\par
+{\f1     - Types : Integer 16 bits, String[255], Real tronque.}\par
+{\f1     - Limites (en mode FPC) :}\par
+{\f1         MAX_SYM       = 2048 symboles}\par
+{\f1         MAX_LABEL     = 2048 labels}\par
+{\f1         MAX_DATA      = 512 entrees de donnees}\par
+{\f1         MAX_INCLUDE   = 8 niveaux d inclusion}\par
+{\f1         STACK_SIZE    = 1024 octets}\par
+\par
+{\f1   Compilation du compilateur :}\par
+\par
+{\f1     fpc -Mtp PSP86.PAS}\par
+\par
+{\f1   Utilisation :}\par
+\par
+{\f1     PSP86 page.psp -o page.asm}\par
+{\f1     ASM86 page.asm}\par
+{\f1     LINK  page.obj}\par
+\par
+\par
+\b 21.2 PSPCW32.PAS \b0\par
+\par
+{\f1     - Cible : Win32 executable natif.}\par
+{\f1     - Compatible IIS, Apache, mode CGI 1.1.}\par
+{\f1     - Integer 32 bits, String typage Pascal.}\par
+{\f1     - Support partiel COM/OLE via CreateObject.}\par
+\par
+{\f1   Compilation du compilateur :}\par
+\par
+{\f1     fpc -Mtp PSPCW32.PAS}\par
+\par
+{\f1   Utilisation :}\par
+\par
+{\f1     PSPCW32 page.psp}\par
+\par
+\par
+\b 21.3 Prefixes de nommage ASM (PSP86) \b0\par
+\par
+{\f1   Les symboles emis par PSP86.PAS sont prefixes pour eviter les}\par
+{\f1   collisions :}\par
+\par
+{\f1     _PSP_         variable globale}\par
+{\f1     _PSPF_        fonction / procedure}\par
+{\f1     _PSPK_        constante chaine litterale}\par
+{\f1     _PSPRT_       routine runtime}\par
+{\f1     _PSPL_        label interne}\par
+{\f1     _PSPA_        tableau}\par
+{\f1     _PSPR_        record}\par
+{\f1     _PSPE_        enumeration}\par
+{\f1     _PSPK_HTML_   fragment HTML statique}\par
+{\f1     _PSPX_        gestionnaire d exception}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_20}     {\uldb Suivant >>}{\v IDH_PSP_22}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_22}
+{\footnote $ PSP - Cycle de developpement et deploiement}
+{\footnote K PSP deploiement;DOS CGI;Win32 IIS Apache;ASM86 LINK;cycle compilation iteratif}
+\b\fs24 Cycle de developpement et deploiement \b0\fs20\par
+\par
+\par
+\b 22.1 Environnement DOS (PSP86) \b0\par
+\par
+{\f1     1. Editer page.psp dans un editeur (DEVENV).}\par
+{\f1     2. Compiler avec PSP86 page.psp.}\par
+{\f1     3. Assembler le .ASM avec ASM86 ou MASM.}\par
+{\f1     4. Lier avec LINK pour obtenir un .EXE.}\par
+{\f1     5. Deployer dans le repertoire CGI du serveur DOS.}\par
+\par
+\par
+\b 22.2 Environnement Win32 (PSPCW32) \b0\par
+\par
+{\f1     1. Editer page.psp.}\par
+{\f1     2. Compiler avec PSPCW32 page.psp -> page.exe.}\par
+{\f1     3. Copier page.exe dans le repertoire scripts de IIS / Apache.}\par
+{\f1     4. Configurer le serveur pour autoriser l execution.}\par
+\par
+\par
+\b 22.3 Cycle iteratif \b0\par
+\par
+{\f1   Comme le code est compile a l avance, chaque modification du .psp}\par
+{\f1   necessite une recompilation. Cela contraste avec ASP classique qui}\par
+{\f1   recompile a la volee. En contrepartie, l execution est plus rapide.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_21}     {\uldb Suivant >>}{\v IDH_PSP_23}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_23}
+{\footnote $ PSP - Exemples complets}
+{\footnote K PSP exemples;Hello World;compteur;tableau somme;procedures fonctions;COM CreateObject;directives conditionnelles}
+\b\fs24 Exemples complets \b0\fs20\par
+\par
+\par
+\b 23.1 Hello World \b0\par
+\par
+{\f1     <html>}\par
+{\f1       <head><title>Hello PSP</title></head>}\par
+{\f1       <body>}\par
+{\f1         <% begin}\par
+{\f1              Write('Bonjour le monde !');}\par
+{\f1            end. %>}\par
+{\f1       </body>}\par
+{\f1     </html>}\par
+\par
+\par
+\b 23.2 Compteur dynamique \b0\par
+\par
+{\f1     <% var i: Integer; %>}\par
+{\f1     <html>}\par
+{\f1       <body>}\par
+{\f1         <h1>Nombres de 1 a 10</h1>}\par
+{\f1         <ul>}\par
+{\f1         <% for i := 1 to 10 do %>}\par
+{\f1           <li><%= i %></li>}\par
+{\f1         </ul>}\par
+{\f1       </body>}\par
+{\f1     </html>}\par
+\par
+\par
+\b 23.3 Tableau avec somme \b0\par
+\par
+{\f1     <%}\par
+{\f1       program test_array;}\par
+{\f1       const N = 5;}\par
+{\f1       var}\par
+{\f1         arr: array[1..N] of Integer;}\par
+{\f1         total, i: Integer;}\par
+{\f1       begin}\par
+{\f1         arr[1] := 10; arr[2] := 20; arr[3] := 30;}\par
+{\f1         arr[4] := 40; arr[5] := 50;}\par
+{\f1         total := 0;}\par
+{\f1         for i := 1 to N do}\par
+{\f1           total := total + arr[i];}\par
+{\f1         WriteLn(total);    \{ 150 \}}\par
+{\f1       end.}\par
+{\f1     %>}\par
+\par
+\par
+\b 23.4 Fonctions et procedures \b0\par
+\par
+{\f1     <%}\par
+{\f1       procedure SayHello;}\par
+{\f1       begin}\par
+{\f1         WriteLn('Hello from proc');}\par
+{\f1       end;}\par
+\par
+{\f1       function Add(a, b: Integer): Integer;}\par
+{\f1       begin}\par
+{\f1         Add := a + b;}\par
+{\f1       end;}\par
+\par
+{\f1       var r: Integer;}\par
+{\f1     begin}\par
+{\f1       SayHello;}\par
+{\f1       r := Add(10, 20);}\par
+{\f1       WriteLn(r);}\par
+{\f1     end.}\par
+{\f1     %>}\par
+\par
+\par
+\b 23.5 COM/OLE (cible Win32) \b0\par
+\par
+{\f1     <%@ Language="PascalScript" %>}\par
+{\f1     <html>}\par
+{\f1     <body>}\par
+{\f1     <%}\par
+{\f1       var obj: Object;}\par
+{\f1     begin}\par
+{\f1       obj := CreateObject('Scripting.FileSystemObject');}\par
+{\f1       if obj <> nil then}\par
+{\f1       begin}\par
+{\f1         WriteLn('<p>Objet COM cree</p>');}\par
+{\f1         obj := nil;}\par
+{\f1       end}\par
+{\f1       else}\par
+{\f1         WriteLn('<p>Echec creation COM</p>');}\par
+{\f1     end.}\par
+{\f1     %>}\par
+{\f1     </body>}\par
+{\f1     </html>}\par
+\par
+\par
+\b 23.6 Directives conditionnelles \b0\par
+\par
+{\f1     <%}\par
+{\f1       \{$DEFINE TESTMODE\}}\par
+{\f1       program test_dir;}\par
+{\f1       var x: Integer;}\par
+{\f1       begin}\par
+{\f1         x := 100;}\par
+{\f1         \{$IFDEF TESTMODE\}}\par
+{\f1           WriteLn('Mode test : ', x);}\par
+{\f1         \{$ELSE\}}\par
+{\f1           WriteLn('Production');}\par
+{\f1         \{$ENDIF\}}\par
+{\f1       end.}\par
+{\f1     %>}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_22}     {\uldb Suivant >>}{\v IDH_PSP_24}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_24}
+{\footnote $ PSP - Differences avec ASP 3.0 (VBScript / JScript)}
+{\footnote K PSP vs ASP 3.0;Pascal vs VBScript JScript;AOT vs interprete;Response.Write;objets intrinseques Request Response Server Session Application}
+\b\fs24 Differences avec ASP 3.0 (VBScript / JScript) \b0\fs20\par
+\par
+\par
+\b 24.1 Langage \b0\par
+\par
+{\f1     Aspect              PSP                 ASP 3.0 (VBScript)}\par
+{\f1     ------------------  ------------------- ------------------}\par
+{\f1     Langage             Pascal              VBScript / JScript}\par
+{\f1     Typage              statique            dynamique}\par
+{\f1     Compilation         AOT (binaire .EXE)  interpretee (a la volee)}\par
+{\f1     Sortie              Write / WriteLn     Response.Write}\par
+{\f1     Expression inline   <%= expr %>         <%= expr %>}\par
+{\f1     Directive Language  <%@ Language=...%>  <%@ Language=...%>}\par
+\par
+\par
+\b 24.2 Objets intrinseques \b0\par
+\par
+{\f1   ASP fournit Request, Response, Server, Session, Application. PSP}\par
+{\f1   ne fournit pas ces objets directement : le developpeur ecrit}\par
+{\f1   directement sur stdout via Write/WriteLn.}\par
+\par
+{\f1   Equivalences approximatives :}\par
+\par
+{\f1     Response.Write x     -> Write(x)}\par
+{\f1     Response.End         -> Exit (ou Halt)}\par
+{\f1     Server.HTMLEncode    -> fonction utilisateur}\par
+{\f1     Request.QueryString  -> ParamStr() ou variables d environnement}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_23}     {\uldb Suivant >>}{\v IDH_PSP_25}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_25}
+{\footnote $ PSP - Differences avec Pascal standard}
+{\footnote K PSP vs Pascal standard;blocs <% %> portee globale;HTML emis automatiquement;<%= raccourci;limitations Real;Object COM only}
+\b\fs24 Differences avec Pascal standard \b0\fs20\par
+\par
+\par
+\b 25.1 Particularites PSP \b0\par
+\par
+{\f1     - Le programme peut commencer sans "program ... ; begin" ;}\par
+{\f1       des instructions au niveau racine sont permises.}\par
+{\f1     - Le HTML hors balises est emis automatiquement comme suite d appels}\par
+{\f1       a une routine runtime cachee.}\par
+{\f1     - Une page peut contenir plusieurs blocs <% %> qui partagent la}\par
+{\f1       meme portee globale.}\par
+{\f1     - <%= expr %> est un raccourci unique a PSP.}\par
+{\f1     - Les directives ASP <%@ ... %> sont reconnues mais sans effet}\par
+{\f1       fonctionnel (sauf @CodePage selon implementation).}\par
+\par
+\par
+\b 25.2 Limitations vs Pascal complet \b0\par
+\par
+{\f1     - Pas de support des objets (classes, methodes virtuelles) sur}\par
+{\f1       PSP86 ; PSPCW32 offre un type Object limite a COM.}\par
+{\f1     - Pas d unites Uses ; les routines doivent etre dans le fichier}\par
+{\f1       ou inclues via \{$I\}.}\par
+{\f1     - Real est tronque en entier sur PSP86 (8086 sans FPU).}\par
+{\f1     - String limite a 255 caracteres en mode TP.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_24}     {\uldb Suivant >>}{\v IDH_PSP_26}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_26}
+{\footnote $ PSP - Ressources dans le projet}
+{\footnote K PSP ressources projet;PSP86.PAS;PSPCW32.PAS;ASC2PSP.PAS;BIN2PSP.PAS;SAMPLES PSP;hello test_arith test_array test_case test_com test_func test_loop test_record test_string}
+\b\fs24 Ressources dans le projet \b0\fs20\par
+\par
+{\f1   Compilateurs :}\par
+\par
+{\f1     PSP86.PAS       compilateur PSP -> ASM 8086 (DOS 16 bits)}\par
+{\f1     PSPCW32.PAS     compilateur PSP -> Win32 natif}\par
+\par
+{\f1   Convertisseurs :}\par
+\par
+{\f1     ASC2PSP.PAS     texte ASCII -> page PSP (template)}\par
+{\f1     BIN2PSP.PAS     binaire -> page PSP (asset embarque)}\par
+\par
+{\f1   Exemples (SAMPLES\\PSP\\) :}\par
+\par
+{\f1     hello.psp                 Hello World minimal}\par
+{\f1     test_arith.psp            arithmetique de base}\par
+{\f1     test_array.psp            tableaux et fonctions intrinseques}\par
+{\f1     test_case.psp             instruction case}\par
+{\f1     test_com.psp              objet COM Scripting.FileSystemObject}\par
+{\f1     test_com_dict.psp         dictionnaire COM}\par
+{\f1     test_com_nil.psp          gestion de NIL avec CreateObject}\par
+{\f1     test_comment.psp          styles de commentaires}\par
+{\f1     test_const.psp            constantes typees}\par
+{\f1     test_directives.psp       directives $DEFINE, $IFDEF, $I}\par
+{\f1     test_enum.psp             enumerations}\par
+{\f1     test_errors.psp           cas d erreur attendus}\par
+{\f1     test_expr.psp             expressions et precedence}\par
+{\f1     test_func.psp             procedures, fonctions, forward, Exit}\par
+{\f1     test_if.psp               if/then/else}\par
+{\f1     test_include.psp          inclusion .inc}\par
+{\f1     test_inc.inc              fichier inclus}\par
+{\f1     test_lex.psp              tokens du lexeur}\par
+{\f1     test_loop.psp             for/while/repeat}\par
+{\f1     test_record.psp           records}\par
+{\f1     test_runtime.psp          bibliotheque runtime}\par
+{\f1     test_scope.psp            portee des variables}\par
+{\f1     test_stdlib.psp           appels de bibliotheque standard}\par
+{\f1     test_str.psp              chaines de caracteres}\par
+{\f1     test_string.psp           String operations}\par
+{\f1     test_sym.psp              table des symboles}\par
+{\f1     test_types.psp            tous les types primitifs}\par
+{\f1     test_var.psp              declarations var}\par
+{\f1     test_write.psp            Write / WriteLn variantes}\par
+\par
+{\f1   Outils complementaires :}\par
+\par
+{\f1     ASM86.PAS       assembleur 8086 pour la sortie de PSP86}\par
+{\f1     MASM.PAS        assembleur Macro 8086}\par
+{\f1     LINK.PAS        editeur de liens .OBJ -> .EXE}\par
+{\f1     LIB.PAS         gestionnaire de bibliotheques}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PSP_25}     {\uldb Suivant >>}{\v IDH_PSP_27}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PSP_27}
+{\footnote $ PSP - Bibliographie}
+{\footnote K PSP bibliographie;ASP 3.0 Microsoft;Mitchell;Homer;Pascal Wirth Jensen;Turbo Pascal 7;Free Pascal;RFC 3875 CGI}
+\b\fs24 Bibliographie \b0\fs20\par
+\par
+{\f1   Sur ASP 3.0 (modele d inspiration) :}\par
+\par
+{\f1     - Microsoft Corporation, "Active Server Pages 3.0 Reference", 2000.}\par
+{\f1     - Mitchell, Scott, "Designing Active Server Pages", O Reilly, 2000.}\par
+{\f1     - Homer, Alex et al., "Professional Active Server Pages 3.0",}\par
+{\f1       Wrox Press, 1999.}\par
+\par
+{\f1   Sur Pascal (langage hote) :}\par
+\par
+{\f1     - Jensen, Kathleen and Wirth, Niklaus, "Pascal User Manual and}\par
+{\f1       Report", Springer-Verlag, 1974.}\par
+{\f1     - Borland International, "Turbo Pascal 7.0 Language Guide", 1992.}\par
+{\f1     - Free Pascal Team, "Free Pascal Reference Guide", 2024.}\par
+\par
+{\f1   Sur CGI :}\par
+\par
+{\f1     - RFC 3875 : The Common Gateway Interface (CGI) Version 1.1.}\par
+\par
+{\f1   Documentation du projet :}\par
+\par
+{\f1     DOC/PSP_SPEC_LANG.txt        le present document}\par
+{\f1     DOC/PASCAL_SPEC_LANG.txt     specifications Pascal complet}\par
+{\f1     DOC/ASP_SPEC_LANG.txt        specifications ASP (si present)}\par
+{\f1     DEVENV.HLP                   aide en ligne integree}\par
+\par
+{\f1   Fin du document PSP_SPEC_LANG.txt}\par
+
+\par
+{\uldb << Precedent}{\v IDH_PSP_26}     {\uldb Table des matieres}{\v IDH_PSP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

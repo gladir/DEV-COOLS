@@ -1,0 +1,1429 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_PLI_01}
+{\footnote $ PL/I - Introduction et historique}
+{\footnote K PL/I introduction;PL/1;IBM 1964;NPL;System/360;ANSI X3.53;PL/M;DR PL/I-86;Enterprise PL/I}
+\b\fs24 Introduction et historique \b0\fs20\par
+\par
+{\f1   PL/I (Programming Language One, prononce "P-L-One") est un langage de}\par
+{\f1   programmation generaliste developpe par IBM au debut des annees 1960.}\par
+{\f1   Concu pour les ordinateurs mainframe IBM System/360, il visait a unifier}\par
+{\f1   les domaines d application separes a l epoque par Fortran (calcul}\par
+{\f1   scientifique), COBOL (gestion d entreprise) et l assembleur (programmation}\par
+{\f1   systeme).}\par
+\par
+\par
+\b 1.1 Genese \b0\par
+\par
+{\f1   En 1963, IBM forma le comite "Advanced Language Development Committee"}\par
+{\f1   (initialement appele FORTRAN III, puis NPL pour "New Programming Language")}\par
+{\f1   compose de membres du groupe SHARE (utilisateurs scientifiques d IBM) et}\par
+{\f1   GUIDE (utilisateurs commerciaux). Le langage devait remplacer Fortran et}\par
+{\f1   COBOL avec une syntaxe unifiee.}\par
+\par
+{\f1   En 1964, le langage fut renomme PL/I (le "I" est le chiffre romain "1").}\par
+{\f1   La premiere implementation, PL/I F (F pour "FORTRAN level"), sortit en}\par
+{\f1   1966 sur OS/360.}\par
+\par
+\par
+\b 1.2 Evolution \b0\par
+\par
+{\f1     - 1964 : Specification initiale (NPL)}\par
+{\f1     - 1966 : PL/I F Compiler (IBM)}\par
+{\f1     - 1970 : PL/I Optimizing Compiler et PL/I Checkout Compiler}\par
+{\f1     - 1976 : ANSI X3.53 (PL/I standard)}\par
+{\f1     - 1979 : Subset G (sous-ensemble general d ANSI)}\par
+{\f1     - 1981 : PL/I pour DOS sur PC (Digital Research PL/I-86)}\par
+{\f1     - 1987 : IBM PL/I pour MVS et VM}\par
+{\f1     - 1994 : VisualAge PL/I (orientation objet)}\par
+{\f1     - 1999 : Enterprise PL/I pour z/OS}\par
+{\f1     - 2008 : ISO/IEC 6160:1979 retire, remplace par norme IBM}\par
+{\f1     - 2010+ : Enterprise PL/I continue d evoluer sur z/OS}\par
+\par
+\par
+\b 1.3 Implementations notables \b0\par
+\par
+{\f1     - IBM PL/I F        : premier compilateur, OS/360}\par
+{\f1     - PL/I Optimizing   : compilateur optimisant, MVS}\par
+{\f1     - PL/C (Cornell)    : compilateur educatif, recuperation d erreurs}\par
+{\f1     - PL/M (Intel)      : sous-ensemble pour microprocesseurs (8080, 8086)}\par
+{\f1     - DR PL/I-86        : Digital Research, CP/M-86 et MS-DOS}\par
+{\f1     - IBM PL/I for OS/2 : 1994}\par
+{\f1     - Enterprise PL/I   : z/OS moderne (toujours maintenu)}\par
+{\f1     - Iron Spring PL/I  : implementation moderne pour Linux et OS/2}\par
+\par
+\par
+\b 1.4 Influence \b0\par
+\par
+{\f1   PL/I a influence de nombreux langages :}\par
+\par
+{\f1     - C : structures, pointeurs, gestion explicite de la memoire}\par
+{\f1     - Ada : exceptions, taches, attributs de type}\par
+{\f1     - REXX : structures de controle, gestion d erreur}\par
+{\f1     - PL/SQL : syntaxe BEGIN/END, declarations}\par
+{\f1     - PL/M : version reduite pour Intel}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. Philosophie et caracteristiques}     {\uldb [Aller]}{\v IDH_PLI_02}\par
+{\f1  3. Structure d un programme PL/I}     {\uldb [Aller]}{\v IDH_PLI_03}\par
+{\f1  4. Lexique et conventions}     {\uldb [Aller]}{\v IDH_PLI_04}\par
+{\f1  5. Types de donnees}     {\uldb [Aller]}{\v IDH_PLI_05}\par
+{\f1  6. Declarations de variables}     {\uldb [Aller]}{\v IDH_PLI_06}\par
+{\f1  7. Classes de stockage}     {\uldb [Aller]}{\v IDH_PLI_07}\par
+{\f1  8. Operateurs et expressions}     {\uldb [Aller]}{\v IDH_PLI_08}\par
+{\f1  9. Instructions de controle}     {\uldb [Aller]}{\v IDH_PLI_09}\par
+{\f1 10. Procedures et fonctions}     {\uldb [Aller]}{\v IDH_PLI_10}\par
+{\f1 11. Entrees/sorties}     {\uldb [Aller]}{\v IDH_PLI_11}\par
+{\f1 12. Pointeurs et structures}     {\uldb [Aller]}{\v IDH_PLI_12}\par
+{\f1 13. Tableaux}     {\uldb [Aller]}{\v IDH_PLI_13}\par
+{\f1 14. Conditions et gestion des exceptions}     {\uldb [Aller]}{\v IDH_PLI_14}\par
+{\f1 15. Preprocesseur}     {\uldb [Aller]}{\v IDH_PLI_15}\par
+{\f1 16. Le compilateur PLI86.PAS}     {\uldb [Aller]}{\v IDH_PLI_16}\par
+{\f1 17. Exemples complets}     {\uldb [Aller]}{\v IDH_PLI_17}\par
+{\f1 18. Differences avec C, COBOL et Fortran}     {\uldb [Aller]}{\v IDH_PLI_18}\par
+{\f1 19. Ressources dans le projet}     {\uldb [Aller]}{\v IDH_PLI_19}\par
+{\f1 20. Bibliographie}     {\uldb [Aller]}{\v IDH_PLI_20}\par
+\par
+{\uldb Suivant >>}{\v IDH_PLI_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_02}
+{\footnote $ PL/I - Philosophie et caracteristiques}
+{\footnote K PL/I philosophie;universalite;defauts intelligents;lisibilite;modularite;extensibilite;conversions implicites;ON-units}
+\b\fs24 Philosophie et caracteristiques \b0\fs20\par
+\par
+\par
+\b 2.1 Principes de conception \b0\par
+\par
+{\f1   PL/I a ete concu autour de plusieurs principes fondamentaux :}\par
+\par
+{\f1     - Universalite : un seul langage pour tous les domaines (scientifique,}\par
+{\f1       gestion, systeme, temps reel).}\par
+\par
+{\f1     - Defauts intelligents : si un attribut n est pas specifie, le}\par
+{\f1       compilateur en choisit un raisonnable. Exemple :}\par
+{\f1         DECLARE X;             /* implicite : FIXED BINARY(15,0) */}\par
+\par
+{\f1     - Lisibilite : mots-cles anglais explicites (PROCEDURE, DECLARE,}\par
+{\f1       RETURN, END...) plutot que symboles cryptiques.}\par
+\par
+{\f1     - Modularite : programme structure en blocs imbriques avec portee}\par
+{\f1       lexicale, procedures internes et externes.}\par
+\par
+{\f1     - Extensibilite : nouveaux types et nouvelles operations definissables}\par
+{\f1       via DECLARE et ENTRY.}\par
+\par
+\par
+\b 2.2 Caracteristiques distinctives \b0\par
+\par
+{\f1     - Types riches : entiers a precision arbitraire, decimaux, flottants}\par
+{\f1       binaires et decimaux, chaines de caracteres et de bits a longueur}\par
+{\f1       fixe ou variable, pointeurs typees, etiquettes.}\par
+\par
+{\f1     - Conversions implicites : entre la plupart des types numeriques et}\par
+{\f1       caracteres selon des regles definies.}\par
+\par
+{\f1     - Gestion d exceptions : ON-units pour intercepter les conditions}\par
+{\f1       (OVERFLOW, ZERODIVIDE, ENDFILE, ERROR...).}\par
+\par
+{\f1     - Allocation dynamique : ALLOCATE et FREE pour memoire heap.}\par
+\par
+{\f1     - Tableaux multidimensionnels : avec bornes definies par l utilisateur,}\par
+{\f1       sections de tableaux, expressions tableau.}\par
+\par
+{\f1     - Structures hierarchiques : DECLARE avec niveaux 1, 2, 3...}\par
+\par
+{\f1     - Macroprocesseur integre : preprocesseur PL/I (%INCLUDE, %IF...).}\par
+\par
+{\f1     - Multitache : TASK et EVENT pour parallelisme (sur mainframe).}\par
+\par
+\par
+\b 2.3 Critiques et limitations \b0\par
+\par
+{\f1     - Complexite : tres grand nombre de fonctionnalites et de regles de}\par
+{\f1       conversion implicite. Difficile a maitriser entierement.}\par
+\par
+{\f1     - Taille du compilateur : les premieres implementations etaient}\par
+{\f1       enormes pour l epoque, freinant l adoption hors mainframe.}\par
+\par
+{\f1     - Verbosite : la syntaxe est plus longue que celle de C ou Pascal.}\par
+\par
+{\f1     - Specifique IBM : malgre l ANSI, l implementation IBM reste la}\par
+{\f1       reference de fait, limitant la portabilite.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_01}     {\uldb Suivant >>}{\v IDH_PLI_03}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_03}
+{\footnote $ PL/I - Structure d un programme PL/I}
+{\footnote K PL/I structure programme;PROCEDURE OPTIONS(MAIN);BEGIN END;blocs imbriques;portee lexicale;commentaires;etiquettes labels}
+\b\fs24 Structure d un programme PL/I \b0\fs20\par
+\par
+\par
+\b 3.1 Programme minimal \b0\par
+\par
+{\f1   Un programme PL/I se compose d au moins une procedure principale}\par
+{\f1   marquee OPTIONS(MAIN) :}\par
+\par
+{\f1     HELLO: PROCEDURE OPTIONS(MAIN);}\par
+{\f1        PUT LIST('Hello, World!');}\par
+{\f1     END HELLO;}\par
+\par
+{\f1   Le nom de la procedure (HELLO) est suivi de deux-points, puis du mot-cle}\par
+{\f1   PROCEDURE (ou PROC). L attribut OPTIONS(MAIN) designe le point d entree.}\par
+{\f1   Toute procedure se termine par END suivi du nom de la procedure (le nom}\par
+{\f1   apres END est optionnel mais recommande).}\par
+\par
+\par
+\b 3.2 Blocs et portee \b0\par
+\par
+{\f1   PL/I est un langage a blocs imbriques (block-structured) avec portee}\par
+{\f1   lexicale. Les blocs sont introduits par :}\par
+\par
+{\f1     - PROCEDURE / END : bloc-procedure (avec arguments et type retour)}\par
+{\f1     - BEGIN     / END : bloc-begin (sans arguments, simple scope)}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     MAIN: PROCEDURE OPTIONS(MAIN);}\par
+{\f1        DECLARE X FIXED BINARY(31);}\par
+\par
+{\f1        SOUS: PROCEDURE(P) RETURNS(FIXED BINARY(31));}\par
+{\f1           DECLARE P FIXED BINARY(31);}\par
+{\f1           RETURN(P * 2);}\par
+{\f1        END SOUS;}\par
+\par
+{\f1        X = SOUS(21);}\par
+{\f1        PUT LIST(X);          /* 42 */}\par
+{\f1     END MAIN;}\par
+\par
+\par
+\b 3.3 Commentaires \b0\par
+\par
+{\f1   Les commentaires PL/I utilisent /* ... */ comme en C, mais sans}\par
+{\f1   imbrication possible dans la norme classique :}\par
+\par
+{\f1     /* Ceci est un commentaire */}\par
+{\f1     /* Commentaire}\par
+{\f1        multi-lignes */}\par
+\par
+\par
+\b 3.4 Etiquettes (labels) \b0\par
+\par
+{\f1   Une instruction peut etre prefixee par une etiquette suivie de ":" :}\par
+\par
+{\f1     BOUCLE: DO I = 1 TO 10;}\par
+{\f1        PUT LIST(I);}\par
+{\f1     END BOUCLE;}\par
+\par
+{\f1   Les etiquettes servent de cibles pour GOTO, LEAVE et ITERATE, ainsi que}\par
+{\f1   pour marquer la fin de blocs DO et IF.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_02}     {\uldb Suivant >>}{\v IDH_PLI_04}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_04}
+{\footnote $ PL/I - Lexique et conventions}
+{\footnote K PL/I lexique;identificateurs;mots-cles non reserves;constantes numeriques;constantes binaires B;chaines apostrophes;chaines bits}
+\b\fs24 Lexique et conventions \b0\fs20\par
+\par
+\par
+\b 4.1 Identificateurs \b0\par
+\par
+{\f1   Un identificateur PL/I commence par une lettre (A-Z) et peut contenir}\par
+{\f1   des lettres, chiffres (0-9) et le caractere "_" (souligne). La longueur}\par
+{\f1   maximale depend de l implementation (31 caracteres pour PL/I optimizing,}\par
+{\f1   100 pour Enterprise PL/I). PL/I est insensible a la casse : "Compteur"}\par
+{\f1   et "COMPTEUR" sont identiques.}\par
+\par
+{\f1   Exemples valides :}\par
+{\f1     I, X, COMPTEUR, NOM_FICHIER, MA_VARIABLE_2}\par
+\par
+\par
+\b 4.2 Mots-cles \b0\par
+\par
+{\f1   Particularite : PL/I n a pas de mots reserves. Tous les mots-cles}\par
+{\f1   (PROCEDURE, END, IF...) peuvent etre utilises comme identificateurs si}\par
+{\f1   le contexte permet de les distinguer. En pratique on evite de le faire}\par
+{\f1   pour la lisibilite.}\par
+\par
+{\f1   Mots-cles principaux :}\par
+\par
+{\f1     PROCEDURE  END        BEGIN      CALL       RETURN     RETURNS}\par
+{\f1     DECLARE    DCL        IF         THEN       ELSE       DO}\par
+{\f1     WHILE      UNTIL      TO         BY         BY         LEAVE}\par
+{\f1     ITERATE    GOTO       GO         SELECT     WHEN       OTHERWISE}\par
+{\f1     PUT        GET        LIST       EDIT       SKIP       PAGE}\par
+{\f1     OPEN       CLOSE      READ       WRITE      REWRITE    DELETE}\par
+{\f1     FIXED      FLOAT      BINARY     DECIMAL    CHARACTER  CHAR}\par
+{\f1     BIT        VARYING    PICTURE    PIC        ENTRY      LABEL}\par
+{\f1     POINTER    PTR        OFFSET     STATIC     AUTOMATIC  AUTO}\par
+{\f1     BASED      CONTROLLED CTL        EXTERNAL   EXT        INTERNAL}\par
+{\f1     ALLOCATE   ALLOC      FREE       NULL       ADDR}\par
+{\f1     ON         REVERT     SIGNAL     CONDITION  OVERFLOW   ZERODIVIDE}\par
+{\f1     ENDFILE    UNDEFINEDFILE         ERROR      FINISH}\par
+{\f1     INITIAL    INIT       LIKE       UNION      LIKE       ALIGNED}\par
+\par
+\par
+\b 4.3 Constantes \b0\par
+\par
+{\f1   Numeriques entieres :}\par
+{\f1     123        /* FIXED DECIMAL */}\par
+{\f1     -45        /* FIXED DECIMAL signe */}\par
+{\f1     +0}\par
+{\f1     1234.56    /* FIXED DECIMAL avec partie fractionnaire */}\par
+\par
+{\f1   Numeriques binaires :}\par
+{\f1     101B       /* FIXED BINARY 5 */}\par
+{\f1     1110B}\par
+{\f1     0B}\par
+{\f1     11.01B     /* FIXED BINARY avec fraction */}\par
+\par
+{\f1   Numeriques en virgule flottante :}\par
+{\f1     1.5E10     /* FLOAT DECIMAL */}\par
+{\f1     -2.3E-5}\par
+{\f1     1.0E0}\par
+{\f1     1.0E10B    /* FLOAT BINARY (suffixe B) */}\par
+\par
+{\f1   Chaines de caracteres :}\par
+{\f1     'BONJOUR'                /* CHARACTER(7) */}\par
+{\f1     'L''ETOILE'              /* apostrophe double pour echappement */}\par
+{\f1     'A'                      /* CHARACTER(1) */}\par
+{\f1     (3)'AB'                  /* repetition : 'ABABAB' */}\par
+\par
+{\f1   Chaines de bits :}\par
+{\f1     '1010'B                  /* BIT(4) */}\par
+{\f1     '01'B}\par
+{\f1     ''B                      /* BIT(0) chaine vide */}\par
+{\f1     'F'B4                    /* hexadecimal sur 4 bits : 1111 */}\par
+{\f1     'FF'BX                   /* hexadecimal : 11111111 */}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_03}     {\uldb Suivant >>}{\v IDH_PLI_05}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_05}
+{\footnote $ PL/I - Types de donnees}
+{\footnote K PL/I types donnees;FIXED BINARY;FIXED DECIMAL;FLOAT BINARY;FLOAT DECIMAL;CHARACTER VARYING;BIT;PICTURE;POINTER OFFSET;LABEL;ENTRY}
+\b\fs24 Types de donnees \b0\fs20\par
+\par
+\par
+\b 5.1 Types numeriques \b0\par
+\par
+{\f1   PL/I distingue plusieurs types numeriques par leur "base" (BINARY ou}\par
+{\f1   DECIMAL), leur "echelle" (FIXED ou FLOAT) et leur "precision" :}\par
+\par
+{\f1     FIXED BINARY(p,q)      : entier ou virgule fixe binaire}\par
+{\f1                              p = nombre total de bits, q = bits fractionnaires}\par
+{\f1                              Exemples :}\par
+{\f1                                FIXED BINARY(15,0)   /* short, -32768..32767 */}\par
+{\f1                                FIXED BINARY(31,0)   /* int, +/- 2^31 */}\par
+{\f1                                FIXED BINARY(63,0)   /* long, +/- 2^63 */}\par
+\par
+{\f1     FIXED DECIMAL(p,q)     : virgule fixe decimale (BCD packed)}\par
+{\f1                              Exemple :}\par
+{\f1                                FIXED DECIMAL(7,2)   /* 99999.99 */}\par
+\par
+{\f1     FLOAT BINARY(p)        : virgule flottante binaire}\par
+{\f1                              p = bits de precision}\par
+{\f1                                FLOAT BINARY(21)     /* simple precision IEEE */}\par
+{\f1                                FLOAT BINARY(53)     /* double precision IEEE */}\par
+\par
+{\f1     FLOAT DECIMAL(p)       : virgule flottante decimale}\par
+{\f1                                FLOAT DECIMAL(6)     /* simple precision */}\par
+{\f1                                FLOAT DECIMAL(15)    /* double precision */}\par
+\par
+{\f1   Defauts si non specifies :}\par
+\par
+{\f1     DECLARE X FIXED;                    /* FIXED DECIMAL(5,0) */}\par
+{\f1     DECLARE Y FLOAT;                    /* FLOAT DECIMAL(6)   */}\par
+{\f1     DECLARE Z FIXED BINARY;             /* FIXED BINARY(15,0) */}\par
+{\f1     DECLARE W FLOAT BINARY;             /* FLOAT BINARY(21)   */}\par
+\par
+\par
+\b 5.2 Type CHARACTER \b0\par
+\par
+{\f1   Chaine de caracteres de longueur fixe ou variable :}\par
+\par
+{\f1     DECLARE NOM       CHARACTER(20);              /* longueur fixe 20 */}\par
+{\f1     DECLARE MESSAGE   CHARACTER(80) VARYING;      /* longueur variable, max 80 */}\par
+{\f1     DECLARE INITIALE  CHARACTER(1);}\par
+\par
+{\f1   Les chaines fixes sont remplies d espaces (blank-padded). Les chaines}\par
+{\f1   VARYING stockent leur longueur courante en prefixe (mot 16 ou 32 bits).}\par
+\par
+\par
+\b 5.3 Type BIT \b0\par
+\par
+{\f1   Chaine de bits compactee :}\par
+\par
+{\f1     DECLARE DRAPEAU      BIT(1);                  /* equivalent booleen */}\par
+{\f1     DECLARE MASQUE       BIT(8);                  /* 8 bits packs */}\par
+{\f1     DECLARE FLAGS        BIT(16) VARYING;}\par
+\par
+{\f1   Les constantes booleennes sont '1'B (vrai) et '0'B (faux).}\par
+\par
+\par
+\b 5.4 Type PICTURE \b0\par
+\par
+{\f1   Specification de format pour entree/sortie editees (comme COBOL) :}\par
+\par
+{\f1     DECLARE PRIX     PICTURE '$$$,$$9.99';        /* 9999.99 -> $9,999.99 */}\par
+{\f1     DECLARE CODE     PICTURE '9999';              /* exactement 4 chiffres */}\par
+{\f1     DECLARE TEL      PICTURE 'A99-9999';          /* lettre + 6 chiffres */}\par
+\par
+{\f1   Caracteres de specification :}\par
+{\f1     9  : chiffre obligatoire}\par
+{\f1     Z  : chiffre, zero a gauche supprime}\par
+{\f1     *  : chiffre, zero a gauche remplace par *}\par
+{\f1     .  : point decimal}\par
+{\f1     ,  : separateur de milliers}\par
+{\f1     $  : symbole monetaire flottant}\par
+{\f1     A  : lettre alphabetique}\par
+{\f1     X  : caractere quelconque}\par
+{\f1     B  : espace}\par
+{\f1     -  : signe negatif (flottant ou positionnel)}\par
+{\f1     +  : signe positif (flottant ou positionnel)}\par
+{\f1     CR : credit (suffixe pour valeur negative)}\par
+{\f1     DB : debit (suffixe pour valeur negative)}\par
+\par
+\par
+\b 5.5 Type POINTER et OFFSET \b0\par
+\par
+{\f1     DECLARE PTR1 POINTER;}\par
+{\f1     DECLARE OFF1 OFFSET(AREA1);}\par
+{\f1     DECLARE AREA1 AREA(1024);}\par
+\par
+{\f1   Un POINTER est une adresse memoire 16/32/64 bits selon l implementation.}\par
+{\f1   Un OFFSET est un decalage dans une zone AREA, permettant des structures}\par
+{\f1   relocatables.}\par
+\par
+\par
+\b 5.6 Type LABEL \b0\par
+\par
+{\f1   Variable contenant l adresse d une etiquette :}\par
+\par
+{\f1     DECLARE L LABEL;}\par
+{\f1     L = ETIQ1;}\par
+{\f1     GOTO L;}\par
+{\f1     ...}\par
+{\f1     ETIQ1: PUT LIST('Saute ici');}\par
+\par
+\par
+\b 5.7 Type ENTRY \b0\par
+\par
+{\f1   Pointeur de procedure :}\par
+\par
+{\f1     DECLARE FUNC ENTRY(FIXED BINARY) RETURNS(FIXED BINARY);}\par
+{\f1     FUNC = MA_PROC;}\par
+{\f1     X = FUNC(42);}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_04}     {\uldb Suivant >>}{\v IDH_PLI_06}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_06}
+{\footnote $ PL/I - Declarations de variables}
+{\footnote K PL/I DECLARE DCL;attributs;declarations factorisees;niveaux 1 2 3;INITIAL;LIKE;ALIGNED}
+\b\fs24 Declarations de variables \b0\fs20\par
+\par
+\par
+\b 6.1 Syntaxe DECLARE \b0\par
+\par
+{\f1   L instruction DECLARE (ou DCL) declare une ou plusieurs variables avec}\par
+{\f1   leurs attributs :}\par
+\par
+{\f1     DECLARE I              FIXED BINARY(31);}\par
+{\f1     DECLARE NOM            CHARACTER(40) VARYING INITIAL('');}\par
+{\f1     DECLARE (X, Y, Z)      FLOAT BINARY(53);}\par
+{\f1     DECLARE PRIX           FIXED DECIMAL(7,2) INITIAL(99.95);}\par
+{\f1     DECLARE TABLEAU(1:100) FIXED BINARY(31);}\par
+\par
+{\f1   Les attributs peuvent inclure :}\par
+\par
+{\f1     - Type        : FIXED, FLOAT, CHARACTER, BIT, POINTER...}\par
+{\f1     - Precision   : (p), (p,q)}\par
+{\f1     - Base        : BINARY ou DECIMAL}\par
+{\f1     - Echelle     : FIXED ou FLOAT}\par
+{\f1     - Longueur    : (n) pour CHAR et BIT}\par
+{\f1     - VARYING     : longueur variable}\par
+{\f1     - Stockage    : AUTOMATIC, STATIC, EXTERNAL, BASED, CONTROLLED}\par
+{\f1     - Portee      : INTERNAL ou EXTERNAL}\par
+{\f1     - Initialisation : INITIAL(valeur)}\par
+{\f1     - Alignement  : ALIGNED ou UNALIGNED}\par
+\par
+\par
+\b 6.2 Declarations factorisees \b0\par
+\par
+{\f1   Plusieurs variables avec attributs partages :}\par
+\par
+{\f1     DECLARE 1 PERSONNE,}\par
+{\f1               2 NOM       CHARACTER(40) VARYING,}\par
+{\f1               2 PRENOM    CHARACTER(40) VARYING,}\par
+{\f1               2 AGE       FIXED BINARY(15),}\par
+{\f1               2 ADRESSE,}\par
+{\f1                 3 RUE     CHARACTER(60) VARYING,}\par
+{\f1                 3 VILLE   CHARACTER(40) VARYING,}\par
+{\f1                 3 CP      CHARACTER(10);}\par
+\par
+{\f1   Les niveaux 1, 2, 3 indiquent l imbrication, similaire a COBOL.}\par
+\par
+\par
+\b 6.3 Initialisation \b0\par
+\par
+{\f1     DECLARE I FIXED BINARY(31) INITIAL(0);}\par
+{\f1     DECLARE PI FLOAT DECIMAL(15) INITIAL(3.141592653589793);}\par
+{\f1     DECLARE NOM CHARACTER(20) INITIAL('INCONNU');}\par
+{\f1     DECLARE T(10) FIXED BINARY(31) INITIAL((10)0);     /* tous a 0 */}\par
+{\f1     DECLARE LISTE(5) FIXED BINARY(31) INITIAL(1,2,3,4,5);}\par
+\par
+\par
+\b 6.4 LIKE : copie d attributs \b0\par
+\par
+{\f1     DECLARE 1 EMPLOYE LIKE PERSONNE,}\par
+{\f1               2 SALAIRE FIXED DECIMAL(9,2);}\par
+\par
+{\f1   EMPLOYE herite de tous les sous-elements de PERSONNE, plus ajoute}\par
+{\f1   SALAIRE.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_05}     {\uldb Suivant >>}{\v IDH_PLI_07}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_07}
+{\footnote $ PL/I - Classes de stockage}
+{\footnote K PL/I classes stockage;AUTOMATIC;STATIC;EXTERNAL;BASED;CONTROLLED;ALLOCATE FREE;pile heap}
+\b\fs24 Classes de stockage \b0\fs20\par
+\par
+{\f1   PL/I propose plusieurs classes de stockage definissant la duree de vie}\par
+{\f1   et le mode d allocation d une variable.}\par
+\par
+\par
+\b 7.1 AUTOMATIC (defaut dans une procedure) \b0\par
+\par
+{\f1   Allouee a l entree de la procedure, liberee a la sortie. Sur la pile.}\par
+\par
+{\f1     DECLARE I FIXED BINARY(31) AUTOMATIC;}\par
+\par
+{\f1   C est le comportement par defaut pour les variables locales.}\par
+\par
+\par
+\b 7.2 STATIC \b0\par
+\par
+{\f1   Allouee une seule fois au demarrage du programme. Conserve sa valeur}\par
+{\f1   entre les appels de la procedure.}\par
+\par
+{\f1     DECLARE COMPTEUR FIXED BINARY(31) STATIC INITIAL(0);}\par
+\par
+\par
+\b 7.3 EXTERNAL \b0\par
+\par
+{\f1   Variable partagee entre plusieurs unites de compilation. Equivalent du}\par
+{\f1   "extern" du C.}\par
+\par
+{\f1     DECLARE GLOBAL_VAR FIXED BINARY(31) EXTERNAL STATIC;}\par
+\par
+\par
+\b 7.4 BASED \b0\par
+\par
+{\f1   Variable accessible via un pointeur. N a pas de stockage propre :}\par
+\par
+{\f1     DECLARE PTR POINTER;}\par
+{\f1     DECLARE X FIXED BINARY(31) BASED(PTR);}\par
+\par
+{\f1     ALLOCATE X;          /* alloue dynamiquement */}\par
+{\f1     X = 42;              /* equivaut a PTR -> X = 42 */}\par
+{\f1     FREE X;}\par
+\par
+\par
+\b 7.5 CONTROLLED \b0\par
+\par
+{\f1   Pile dynamique de variables : chaque ALLOCATE empile une nouvelle}\par
+{\f1   occurrence, chaque FREE depile.}\par
+\par
+{\f1     DECLARE STACK_VAR FIXED BINARY(31) CONTROLLED;}\par
+\par
+{\f1     ALLOCATE STACK_VAR; STACK_VAR = 1;}\par
+{\f1     ALLOCATE STACK_VAR; STACK_VAR = 2;}\par
+{\f1     PUT LIST(STACK_VAR);     /* 2 */}\par
+{\f1     FREE STACK_VAR;}\par
+{\f1     PUT LIST(STACK_VAR);     /* 1 */}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_06}     {\uldb Suivant >>}{\v IDH_PLI_08}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_08}
+{\footnote $ PL/I - Operateurs et expressions}
+{\footnote K PL/I operateurs;arithmetiques;puissance **;comparaison =;^= != ~=;logiques & | ^;concatenation ||;precedence;conversions implicites}
+\b\fs24 Operateurs et expressions \b0\fs20\par
+\par
+\par
+\b 8.1 Operateurs arithmetiques \b0\par
+\par
+{\f1     +     addition}\par
+{\f1     -     soustraction}\par
+{\f1     *     multiplication}\par
+{\f1     /     division}\par
+{\f1     **    puissance (exponentiation)}\par
+{\f1     -     negation unaire}\par
+{\f1     +     identite unaire}\par
+\par
+\par
+\b 8.2 Operateurs de comparaison \b0\par
+\par
+{\f1     =     egal a}\par
+{\f1     ^=    different (peut aussi s ecrire !=, ~= ou ??=)}\par
+{\f1     <     inferieur a}\par
+{\f1     <=    inferieur ou egal}\par
+{\f1     >     superieur a}\par
+{\f1     >=    superieur ou egal}\par
+\par
+{\f1   Les operateurs de comparaison renvoient une chaine BIT(1) : '1'B (vrai)}\par
+{\f1   ou '0'B (faux).}\par
+\par
+\par
+\b 8.3 Operateurs logiques \b0\par
+\par
+{\f1     &     ET logique (AND)}\par
+{\f1     |     OU logique (OR)}\par
+{\f1     ^     NON logique (NOT) - peut aussi s ecrire ~ ou ??}\par
+\par
+{\f1   Operandes : chaines BIT. Les operateurs s appliquent bit a bit, ce qui}\par
+{\f1   donne aussi un ET/OU bit-a-bit pour les masques.}\par
+\par
+\par
+\b 8.4 Operateur de concatenation \b0\par
+\par
+{\f1     ||    concatenation de chaines (CHARACTER ou BIT)}\par
+\par
+{\f1   Exemple :}\par
+{\f1     NOM_COMPLET = PRENOM || ' ' || NOM;}\par
+\par
+\par
+\b 8.5 Precedence des operateurs \b0\par
+\par
+{\f1   De la plus haute a la plus basse :}\par
+\par
+{\f1     1.  **               (puissance, droite a gauche)}\par
+{\f1     2.  unaires + -  ^   (signe, NOT)}\par
+{\f1     3.  *  /             (multiplication, division)}\par
+{\f1     4.  +  -             (addition, soustraction)}\par
+{\f1     5.  ||               (concatenation)}\par
+{\f1     6.  <  <=  =  ^=  >=  >    (comparaisons)}\par
+{\f1     7.  &                (AND)}\par
+{\f1     8.  |                (OR)}\par
+\par
+\par
+\b 8.6 Conversions implicites \b0\par
+\par
+{\f1   PL/I convertit automatiquement les operandes selon des regles precises.}\par
+{\f1   Exemples :}\par
+\par
+{\f1     DECLARE I FIXED BINARY(15), F FLOAT BINARY(21), C CHARACTER(10);}\par
+\par
+{\f1     F = I;          /* FIXED -> FLOAT */}\par
+{\f1     I = '123';      /* CHAR  -> FIXED (parse) */}\par
+{\f1     C = I;          /* FIXED -> CHAR  (format) */}\par
+{\f1     C = '12' + 5;   /* CHAR converti en FIXED, addition, retour CHAR */}\par
+\par
+{\f1   Cette conversion est tres puissante mais source de bugs subtils si}\par
+{\f1   l on ne maitrise pas les regles.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_07}     {\uldb Suivant >>}{\v IDH_PLI_09}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_09}
+{\footnote $ PL/I - Instructions de controle}
+{\footnote K PL/I controle flux;affectation multiple;IF THEN ELSE;DO TO BY WHILE UNTIL FOREVER;LEAVE ITERATE;SELECT WHEN OTHERWISE;GOTO;CALL RETURN}
+\b\fs24 Instructions de controle \b0\fs20\par
+\par
+\par
+\b 9.1 Affectation \b0\par
+\par
+{\f1     X = 42;}\par
+{\f1     A, B, C = 0;            /* affectation multiple */}\par
+{\f1     TAB(*) = 0;             /* tous les elements */}\par
+{\f1     NOM = 'BONJOUR';}\par
+\par
+\par
+\b 9.2 IF / THEN / ELSE \b0\par
+\par
+{\f1     IF X > 0 THEN}\par
+{\f1        PUT LIST('positif');}\par
+{\f1     ELSE IF X < 0 THEN}\par
+{\f1        PUT LIST('negatif');}\par
+{\f1     ELSE}\par
+{\f1        PUT LIST('nul');}\par
+\par
+{\f1   Bloc multi-instructions :}\par
+\par
+{\f1     IF X > 0 THEN DO;}\par
+{\f1        Y = X * 2;}\par
+{\f1        PUT LIST(Y);}\par
+{\f1     END;}\par
+\par
+\par
+\b 9.3 DO \b0\par
+\par
+{\f1   Boucle generale, plusieurs formes :}\par
+\par
+{\f1   Boucle compteur :}\par
+{\f1     DO I = 1 TO 10;}\par
+{\f1        PUT LIST(I);}\par
+{\f1     END;}\par
+\par
+{\f1   Avec pas :}\par
+{\f1     DO I = 0 TO 100 BY 5;}\par
+{\f1        PUT LIST(I);}\par
+{\f1     END;}\par
+\par
+{\f1   Liste de valeurs :}\par
+{\f1     DO J = 2, 4, 7, 11;}\par
+{\f1        PUT LIST(J);}\par
+{\f1     END;}\par
+\par
+{\f1   WHILE :}\par
+{\f1     DO WHILE(X > 0);}\par
+{\f1        X = X - 1;}\par
+{\f1     END;}\par
+\par
+{\f1   UNTIL :}\par
+{\f1     DO UNTIL(X = 0);}\par
+{\f1        X = X - 1;}\par
+{\f1     END;}\par
+\par
+{\f1   Combinaison :}\par
+{\f1     DO I = 1 TO 100 WHILE(TROUVE = '0'B);}\par
+{\f1        /* boucle iterative avec condition de sortie */}\par
+{\f1     END;}\par
+\par
+{\f1   Repetition indefinie :}\par
+{\f1     DO FOREVER;}\par
+{\f1        /* equivaut a DO WHILE('1'B) */}\par
+{\f1        IF FIN THEN LEAVE;}\par
+{\f1     END;}\par
+\par
+\par
+\b 9.4 LEAVE et ITERATE \b0\par
+\par
+{\f1   LEAVE : sort de la boucle (equiv. C break).}\par
+{\f1   ITERATE : passe a l iteration suivante (equiv. C continue).}\par
+\par
+{\f1     DO I = 1 TO 100;}\par
+{\f1        IF I = 50 THEN LEAVE;}\par
+{\f1        IF MOD(I,2) = 0 THEN ITERATE;}\par
+{\f1        PUT LIST(I);}\par
+{\f1     END;}\par
+\par
+\par
+\b 9.5 SELECT (multi-branchement) \b0\par
+\par
+{\f1   Comme switch/case mais plus puissant :}\par
+\par
+{\f1     SELECT(N);}\par
+{\f1        WHEN(0)       PUT LIST('zero');}\par
+{\f1        WHEN(1,2,3)   PUT LIST('petit');}\par
+{\f1        WHEN(4 TO 9)  PUT LIST('moyen');}\par
+{\f1        OTHERWISE     PUT LIST('grand');}\par
+{\f1     END;}\par
+\par
+{\f1   Version sans expression (suite de conditions) :}\par
+\par
+{\f1     SELECT;}\par
+{\f1        WHEN(X > 0)   PUT LIST('positif');}\par
+{\f1        WHEN(X < 0)   PUT LIST('negatif');}\par
+{\f1        OTHERWISE     PUT LIST('nul');}\par
+{\f1     END;}\par
+\par
+\par
+\b 9.6 GOTO \b0\par
+\par
+{\f1     GOTO ETIQ1;}\par
+{\f1     ...}\par
+{\f1     ETIQ1: PUT LIST('arrivee');}\par
+\par
+{\f1   GOTO peut sortir d un bloc imbrique, declenchant le deroulement de la}\par
+{\f1   pile (unwind).}\par
+\par
+\par
+\b 9.7 CALL et RETURN \b0\par
+\par
+{\f1     CALL MA_PROCEDURE(X, Y);}\par
+{\f1     Z = MA_FONCTION(X, Y);}\par
+\par
+{\f1     RETURN;            /* dans procedure sans valeur */}\par
+{\f1     RETURN(EXPR);      /* dans fonction */}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_08}     {\uldb Suivant >>}{\v IDH_PLI_10}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_10}
+{\footnote $ PL/I - Procedures et fonctions}
+{\footnote K PL/I procedures fonctions;PROCEDURE RETURNS;passage parametres reference valeur;RECURSIVE;OPTIONS MAIN REENTRANT BYVALUE LINKAGE}
+\b\fs24 Procedures et fonctions \b0\fs20\par
+\par
+\par
+\b 10.1 Procedure simple \b0\par
+\par
+{\f1     AFFICHE: PROCEDURE(MSG);}\par
+{\f1        DECLARE MSG CHARACTER(*);}\par
+{\f1        PUT LIST(MSG);}\par
+{\f1     END AFFICHE;}\par
+\par
+{\f1   L attribut CHARACTER(*) indique que la longueur sera celle de l argument}\par
+{\f1   passe au moment de l appel.}\par
+\par
+\par
+\b 10.2 Fonction (avec RETURNS) \b0\par
+\par
+{\f1     CARRE: PROCEDURE(X) RETURNS(FIXED BINARY(31));}\par
+{\f1        DECLARE X FIXED BINARY(31);}\par
+{\f1        RETURN(X * X);}\par
+{\f1     END CARRE;}\par
+\par
+{\f1     Y = CARRE(7);     /* Y = 49 */}\par
+\par
+\par
+\b 10.3 Passage de parametres \b0\par
+\par
+{\f1   Par defaut, les arguments sont passes par REFERENCE (alias). Pour passer}\par
+{\f1   par valeur, on encadre l argument de parentheses, ce qui force la}\par
+{\f1   creation d une copie :}\par
+\par
+{\f1     CALL MAJ(X);       /* par reference - peut modifier X */}\par
+{\f1     CALL MAJ((X));     /* par valeur - X protegee */}\par
+\par
+\par
+\b 10.4 RECURSIVE \b0\par
+\par
+{\f1   Procedures recursives explicitement marquees :}\par
+\par
+{\f1     FACT: PROCEDURE(N) RECURSIVE RETURNS(FIXED BINARY(31));}\par
+{\f1        DECLARE N FIXED BINARY(31);}\par
+{\f1        IF N <= 1 THEN RETURN(1);}\par
+{\f1        RETURN(N * FACT(N-1));}\par
+{\f1     END FACT;}\par
+\par
+{\f1   Sans RECURSIVE, les variables locales sont STATIC et l appel recursif}\par
+{\f1   est non sur.}\par
+\par
+\par
+\b 10.5 OPTIONS \b0\par
+\par
+{\f1   Modificateurs sur la procedure :}\par
+\par
+{\f1     OPTIONS(MAIN)       : procedure principale}\par
+{\f1     OPTIONS(RECURSIVE)  : autorise la recursion}\par
+{\f1     OPTIONS(REENTRANT)  : code reentrant (multitache)}\par
+{\f1     OPTIONS(BYVALUE)    : passage par valeur par defaut}\par
+{\f1     OPTIONS(LINKAGE(...))  : convention d appel (OPTLINK, STDCALL, etc.)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_09}     {\uldb Suivant >>}{\v IDH_PLI_11}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_11}
+{\footnote $ PL/I - Entrees/sorties}
+{\footnote K PL/I entrees sorties;PUT GET LIST EDIT DATA;format A F E B P X SKIP PAGE COL;FILE INPUT OUTPUT;STREAM RECORD;OPEN CLOSE READ WRITE}
+\b\fs24 Entrees/sorties \b0\fs20\par
+\par
+\par
+\b 11.1 PUT et GET \b0\par
+\par
+{\f1   Les instructions de base sont PUT (sortie) et GET (entree). Trois}\par
+{\f1   modes :}\par
+\par
+{\f1   Mode LIST (libre, separateurs automatiques) :}\par
+\par
+{\f1     PUT LIST('X =', X, 'Y =', Y);}\par
+{\f1     GET LIST(A, B, C);}\par
+\par
+{\f1   Mode EDIT (format precis) :}\par
+\par
+{\f1     PUT EDIT(NOM, AGE)(A(20), F(3));}\par
+{\f1     GET EDIT(NOM, AGE)(A(20), F(3));}\par
+\par
+{\f1   Mode DATA (nom=valeur) :}\par
+\par
+{\f1     PUT DATA(X, Y, Z);          /* affiche X= ... Y= ... Z= ... ; */}\par
+{\f1     GET DATA;                   /* lit ces affectations */}\par
+\par
+\par
+\b 11.2 Format codes \b0\par
+\par
+{\f1     A(n)    : alphanumerique de largeur n}\par
+{\f1     F(w,d)  : numerique de largeur w avec d decimales}\par
+{\f1     E(w,d)  : flottant exponentiel}\par
+{\f1     B(n)    : chaine de bits}\par
+{\f1     P'...'  : picture}\par
+{\f1     X(n)    : n espaces}\par
+{\f1     SKIP    : saut de ligne}\par
+{\f1     PAGE    : saut de page}\par
+{\f1     COL(n)  : positionne en colonne n}\par
+{\f1     R(label): repete le format defini a label}\par
+\par
+\par
+\b 11.3 Fichiers \b0\par
+\par
+{\f1     DECLARE F FILE INPUT RECORD;}\par
+\par
+{\f1     OPEN FILE(F) TITLE('DONNEES.TXT');}\par
+{\f1     READ FILE(F) INTO(BUFFER);}\par
+{\f1     CLOSE FILE(F);}\par
+\par
+{\f1   Attributs de FILE :}\par
+\par
+{\f1     INPUT / OUTPUT / UPDATE}\par
+{\f1     STREAM / RECORD}\par
+{\f1     SEQUENTIAL / DIRECT / KEYED}\par
+{\f1     PRINT}\par
+{\f1     ENVIRONMENT(...)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_10}     {\uldb Suivant >>}{\v IDH_PLI_12}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_12}
+{\footnote $ PL/I - Pointeurs et structures}
+{\footnote K PL/I pointeurs structures;POINTER NULL;ADDR;BASED;ALLOCATE SET;structures auto-referentielles;liste chainee}
+\b\fs24 Pointeurs et structures \b0\fs20\par
+\par
+\par
+\b 12.1 Pointeurs \b0\par
+\par
+{\f1     DECLARE P POINTER;}\par
+{\f1     DECLARE X FIXED BINARY(31) BASED(P);}\par
+\par
+{\f1     ALLOCATE X;}\par
+{\f1     X = 42;            /* equivaut a P -> X = 42 */}\par
+{\f1     FREE X;}\par
+{\f1     P = NULL();        /* pointeur nul */}\par
+\par
+\par
+\b 12.2 ADDR \b0\par
+\par
+{\f1   Fonction integree retournant l adresse d une variable :}\par
+\par
+{\f1     DECLARE I FIXED BINARY(31);}\par
+{\f1     DECLARE P POINTER;}\par
+{\f1     P = ADDR(I);}\par
+\par
+\par
+\b 12.3 Structures auto-referentielles \b0\par
+\par
+{\f1   Liste chainee :}\par
+\par
+{\f1     DECLARE 1 NOEUD BASED(P),}\par
+{\f1               2 VALEUR  FIXED BINARY(31),}\par
+{\f1               2 SUIVANT POINTER;}\par
+\par
+{\f1     DECLARE TETE POINTER INITIAL(NULL());}\par
+{\f1     DECLARE P    POINTER;}\par
+\par
+{\f1     ALLOCATE NOEUD SET(P);}\par
+{\f1     P -> VALEUR = 42;}\par
+{\f1     P -> SUIVANT = TETE;}\par
+{\f1     TETE = P;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_11}     {\uldb Suivant >>}{\v IDH_PLI_13}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_13}
+{\footnote $ PL/I - Tableaux}
+{\footnote K PL/I tableaux;dimensions;indices;sections de tableaux;expressions tableau;matrice;tableaux structures}
+\b\fs24 Tableaux \b0\fs20\par
+\par
+\par
+\b 13.1 Declaration \b0\par
+\par
+{\f1     DECLARE T(10)        FIXED BINARY(31);       /* T(1) a T(10) */}\par
+{\f1     DECLARE U(0:9)       FIXED BINARY(31);       /* U(0) a U(9)  */}\par
+{\f1     DECLARE M(5,5)       FLOAT BINARY(21);       /* matrice 5x5  */}\par
+{\f1     DECLARE V(-10:10)    FIXED BINARY(31);       /* indices negatifs */}\par
+\par
+{\f1   Les indices par defaut commencent a 1.}\par
+\par
+\par
+\b 13.2 Expressions sur tableaux \b0\par
+\par
+{\f1     DECLARE A(100), B(100), C(100) FIXED BINARY(31);}\par
+\par
+{\f1     A = B;           /* copie element par element */}\par
+{\f1     C = A + B;       /* somme element par element */}\par
+{\f1     A = 0;           /* tous les elements a 0 */}\par
+\par
+\par
+\b 13.3 Sections de tableaux \b0\par
+\par
+{\f1     A(*) = 0;             /* tous les elements */}\par
+{\f1     A(5:10) = B(1:6);     /* sous-section */}\par
+{\f1     M(*, 3) = 1;          /* colonne 3 */}\par
+{\f1     M(2, *) = 0;          /* ligne 2 */}\par
+\par
+\par
+\b 13.4 Tableaux de structures \b0\par
+\par
+{\f1     DECLARE 1 EMPLOYES(100),}\par
+{\f1               2 NOM CHARACTER(40) VARYING,}\par
+{\f1               2 SALAIRE FIXED DECIMAL(9,2);}\par
+\par
+{\f1     EMPLOYES(1).NOM = 'DUPONT';}\par
+{\f1     EMPLOYES(1).SALAIRE = 35000.00;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_12}     {\uldb Suivant >>}{\v IDH_PLI_14}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_14}
+{\footnote $ PL/I - Conditions et gestion des exceptions}
+{\footnote K PL/I exceptions;ON-units;OVERFLOW UNDERFLOW ZERODIVIDE SIZE STRINGSIZE SUBSCRIPTRANGE CONVERSION ENDFILE ERROR FINISH;SIGNAL;REVERT}
+\b\fs24 Conditions et gestion des exceptions \b0\fs20\par
+\par
+\par
+\b 14.1 ON-units \b0\par
+\par
+{\f1   PL/I propose un mecanisme d exceptions appele "ON-units". Une instruction}\par
+{\f1   ON definit ce qui doit etre execute quand une condition donnee se}\par
+{\f1   produit :}\par
+\par
+{\f1     ON OVERFLOW BEGIN;}\par
+{\f1        PUT LIST('Depassement de capacite !');}\par
+{\f1        STOP;}\par
+{\f1     END;}\par
+\par
+{\f1     ON ZERODIVIDE}\par
+{\f1        PUT LIST('Division par zero !');}\par
+\par
+{\f1     ON ENDFILE(F)}\par
+{\f1        FIN_LECTURE = '1'B;}\par
+\par
+\par
+\b 14.2 Conditions standard \b0\par
+\par
+{\f1     OVERFLOW         : depassement de capacite arithmetique}\par
+{\f1     UNDERFLOW        : sous-depassement flottant}\par
+{\f1     ZERODIVIDE       : division par zero}\par
+{\f1     SIZE             : perte de chiffres significatifs}\par
+{\f1     STRINGSIZE       : depassement de chaine}\par
+{\f1     SUBSCRIPTRANGE   : indice hors borne}\par
+{\f1     CONVERSION       : erreur de conversion de donnees}\par
+{\f1     ENDFILE(F)       : fin de fichier F}\par
+{\f1     UNDEFINEDFILE(F) : fichier non defini}\par
+{\f1     ERROR            : erreur generique}\par
+{\f1     FINISH           : avant la fin du programme}\par
+\par
+{\f1   Activation/desactivation prefixees aux instructions ou blocs :}\par
+\par
+{\f1     (NOSUBSCRIPTRANGE):}\par
+{\f1     MAIN: PROCEDURE OPTIONS(MAIN);}\par
+{\f1        ...}\par
+{\f1     END MAIN;}\par
+\par
+{\f1     (SIZE, OVERFLOW):}\par
+{\f1     DO I = 1 TO 100;}\par
+{\f1        X = X * 2;}\par
+{\f1     END;}\par
+\par
+\par
+\b 14.3 SIGNAL \b0\par
+\par
+{\f1   Declenche manuellement une condition :}\par
+\par
+{\f1     SIGNAL CONDITION(MON_ERREUR);}\par
+{\f1     SIGNAL OVERFLOW;}\par
+\par
+\par
+\b 14.4 REVERT \b0\par
+\par
+{\f1   Restaure le ON-unit precedent :}\par
+\par
+{\f1     ON ERROR BEGIN; ... END;}\par
+{\f1     ...}\par
+{\f1     REVERT ERROR;       /* retourne au gestionnaire precedent */}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_13}     {\uldb Suivant >>}{\v IDH_PLI_15}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_15}
+{\footnote $ PL/I - Preprocesseur}
+{\footnote K PL/I preprocesseur;%INCLUDE;%DECLARE;%IF %THEN %ELSE;%DO;%PROCEDURE;macros}
+\b\fs24 Preprocesseur \b0\fs20\par
+\par
+{\f1   PL/I integre un macroprocesseur puissant prefixe par "%".}\par
+\par
+\par
+\b 15.1 Inclusion de fichiers \b0\par
+\par
+{\f1     %INCLUDE 'CONSTANTES.INC';}\par
+{\f1     %INCLUDE STDIO;}\par
+\par
+\par
+\b 15.2 Variables et constantes du preprocesseur \b0\par
+\par
+{\f1     %DECLARE TAILLE FIXED;}\par
+{\f1     %TAILLE = 100;}\par
+\par
+{\f1     DECLARE T(TAILLE) FIXED BINARY(31);   /* devient T(100) */}\par
+\par
+\par
+\b 15.3 Conditionnelle \b0\par
+\par
+{\f1     %IF DEBUG = 1 %THEN}\par
+{\f1        %DO;}\par
+{\f1           PUT LIST('Mode debug');}\par
+{\f1        %END;}\par
+{\f1     %ELSE}\par
+{\f1        %DO;}\par
+{\f1           /* version production */}\par
+{\f1        %END;}\par
+\par
+\par
+\b 15.4 Iteration et procedures macro \b0\par
+\par
+{\f1     %DO I = 1 TO 5;}\par
+{\f1        PUT LIST('Iteration', I);}\par
+{\f1     %END;}\par
+\par
+{\f1     %PROCEDURE GENERATE_FIELD(NAME, TYPE);}\par
+{\f1        DECLARE NAME TYPE;}\par
+{\f1     %END GENERATE_FIELD;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_14}     {\uldb Suivant >>}{\v IDH_PLI_16}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_16}
+{\footnote $ PL/I - Le compilateur PLI86.PAS}
+{\footnote K PLI86.PAS;compilateur PL/I 8086;sortie MASM TASM;projet DEV-COOLS;modeles memoire SMALL COMPACT;pipeline assemblage liens}
+\b\fs24 Le compilateur PLI86.PAS \b0\fs20\par
+\par
+\par
+\b 16.1 Vue d ensemble \b0\par
+\par
+{\f1   PLI86.PAS est un compilateur PL/I cible 8086/8088 ecrit en Turbo Pascal}\par
+{\f1   et Free Pascal, integre au projet DEV-COOLS. Il produit du code source}\par
+{\f1   assembleur compatible MASM/TASM, assemblable par les outils du projet}\par
+{\f1   (ASM86.PAS, MASM.PAS).}\par
+\par
+{\f1   Caracteristiques :}\par
+\par
+{\f1     - Sous-ensemble pratique de PL/I oriente PC 16 bits}\par
+{\f1     - Sortie texte assembleur 8086 (segments .CODE, .DATA, .BSS)}\par
+{\f1     - Modeles memoire SMALL et COMPACT}\par
+{\f1     - Liaison avec LIB.PAS et LINK.PAS pour produire un .COM ou .EXE}\par
+\par
+\par
+\b 16.2 Types supportes \b0\par
+\par
+{\f1   PLI86.PAS reconnait les types suivants (codes internes) :}\par
+\par
+{\f1     FIXED       : FIXED BINARY(15)  - entier 16 bits}\par
+{\f1     FIXED(31)   : FIXED BINARY(31)  - entier 32 bits}\par
+{\f1     FLOAT       : FLOAT BINARY      - flottant (stub a etoffer)}\par
+{\f1     CHAR(n)     : chaine fixe       - tableau de n octets}\par
+{\f1     CHAR(n) VARYING : chaine variable - prefixe de longueur 16 bits}\par
+{\f1     BIT(n)      : champ de bits}\par
+{\f1     LABEL       : etiquette PL/I}\par
+{\f1     POINTER     : pointeur 16 bits (NEAR) ou 32 bits (FAR)}\par
+{\f1     ENTRY       : pointeur de procedure}\par
+\par
+\par
+\b 16.3 Classes de stockage \b0\par
+\par
+{\f1     AUTOMATIC   : pile, frame BP (defaut)}\par
+{\f1     STATIC      : segment .DATA}\par
+{\f1     EXTERNAL    : import depuis autre unite}\par
+{\f1     BASED       : acces via pointeur}\par
+\par
+\par
+\b 16.4 Mots-cles reconnus \b0\par
+\par
+{\f1   Le tableau interne KW_PROCEDURE..KW_END couvre les constructions}\par
+{\f1   essentielles : PROCEDURE, END, BEGIN, CALL, RETURN, IF, THEN, ELSE,}\par
+{\f1   DO, WHILE, UNTIL, TO, BY, LEAVE, ITERATE, GOTO, DECLARE, DCL, PUT,}\par
+{\f1   GET, LIST, OPTIONS, MAIN, FIXED, FLOAT, BINARY, DECIMAL, CHAR,}\par
+{\f1   CHARACTER, BIT, VARYING, POINTER, PTR, STATIC, AUTOMATIC, EXTERNAL,}\par
+{\f1   BASED, INITIAL, ALLOCATE, FREE, NULL, ADDR.}\par
+\par
+\par
+\b 16.5 Sortie assembleur \b0\par
+\par
+{\f1   Le compilateur produit une sortie de la forme :}\par
+\par
+{\f1     .MODEL SMALL}\par
+{\f1     .STACK 1024}\par
+{\f1     .DATA}\par
+{\f1     _MSG    DB    'BONJOUR$'}\par
+{\f1     _X      DW    0}\par
+{\f1     .CODE}\par
+{\f1     _MAIN:  MOV   AX, OFFSET _MSG}\par
+{\f1             CALL  _PRINT}\par
+{\f1             MOV   AH, 4Ch}\par
+{\f1             INT   21h}\par
+{\f1     _PRINT: ...}\par
+\par
+\par
+\b 16.6 Pipeline de compilation \b0\par
+\par
+{\f1   Le pipeline typique avec PLI86.PAS :}\par
+\par
+{\f1     1. PLI86.PAS         : compile .PLI -> .ASM}\par
+{\f1     2. ASM86.PAS / MASM  : assemble .ASM -> .OBJ}\par
+{\f1     3. LINK.PAS          : edite les liens .OBJ -> .EXE ou .COM}\par
+\par
+\par
+\b 16.7 Utilisation \b0\par
+\par
+{\f1   Compilation du compilateur :}\par
+\par
+{\f1     fpc -Mtp PLI86.PAS}\par
+\par
+{\f1   Compilation d un programme PL/I :}\par
+\par
+{\f1     PLI86 MONPRG.PLI}\par
+{\f1     ASM86 MONPRG.ASM}\par
+{\f1     LINK  MONPRG.OBJ}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_15}     {\uldb Suivant >>}{\v IDH_PLI_17}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_17}
+{\footnote $ PL/I - Exemples complets}
+{\footnote K PL/I exemples;Hello World;factorielle recursive;tri a bulles;lecture fichier;liste chainee}
+\b\fs24 Exemples complets \b0\fs20\par
+\par
+\par
+\b 17.1 Hello, World! \b0\par
+\par
+{\f1     HELLO: PROCEDURE OPTIONS(MAIN);}\par
+{\f1        PUT LIST('Hello, World!');}\par
+{\f1     END HELLO;}\par
+\par
+\par
+\b 17.2 Factorielle recursive \b0\par
+\par
+{\f1     FACTORIELLE: PROCEDURE OPTIONS(MAIN);}\par
+\par
+{\f1        FACT: PROCEDURE(N) RECURSIVE RETURNS(FIXED BINARY(31));}\par
+{\f1           DECLARE N FIXED BINARY(31);}\par
+{\f1           IF N <= 1 THEN RETURN(1);}\par
+{\f1           RETURN(N * FACT(N-1));}\par
+{\f1        END FACT;}\par
+\par
+{\f1        DECLARE I FIXED BINARY(31);}\par
+{\f1        DO I = 1 TO 10;}\par
+{\f1           PUT SKIP LIST(I, FACT(I));}\par
+{\f1        END;}\par
+\par
+{\f1     END FACTORIELLE;}\par
+\par
+\par
+\b 17.3 Tri a bulles \b0\par
+\par
+{\f1     TRI: PROCEDURE OPTIONS(MAIN);}\par
+{\f1        DECLARE T(10) FIXED BINARY(31)}\par
+{\f1           INITIAL(5, 2, 8, 1, 9, 3, 7, 4, 6, 0);}\par
+{\f1        DECLARE (I, J, TMP) FIXED BINARY(31);}\par
+\par
+{\f1        DO I = 1 TO 9;}\par
+{\f1           DO J = 1 TO 10 - I;}\par
+{\f1              IF T(J) > T(J+1) THEN DO;}\par
+{\f1                 TMP    = T(J);}\par
+{\f1                 T(J)   = T(J+1);}\par
+{\f1                 T(J+1) = TMP;}\par
+{\f1              END;}\par
+{\f1           END;}\par
+{\f1        END;}\par
+\par
+{\f1        DO I = 1 TO 10;}\par
+{\f1           PUT LIST(T(I));}\par
+{\f1        END;}\par
+{\f1     END TRI;}\par
+\par
+\par
+\b 17.4 Lecture de fichier \b0\par
+\par
+{\f1     LIRE: PROCEDURE OPTIONS(MAIN);}\par
+{\f1        DECLARE F FILE INPUT STREAM;}\par
+{\f1        DECLARE LIGNE CHARACTER(80) VARYING;}\par
+{\f1        DECLARE FIN BIT(1) INITIAL('0'B);}\par
+\par
+{\f1        ON ENDFILE(F) FIN = '1'B;}\par
+\par
+{\f1        OPEN FILE(F) TITLE('DONNEES.TXT');}\par
+{\f1        DO WHILE(^FIN);}\par
+{\f1           GET FILE(F) EDIT(LIGNE)(A(80));}\par
+{\f1           IF ^FIN THEN PUT SKIP LIST(LIGNE);}\par
+{\f1        END;}\par
+{\f1        CLOSE FILE(F);}\par
+{\f1     END LIRE;}\par
+\par
+\par
+\b 17.5 Liste chainee \b0\par
+\par
+{\f1     LISTE: PROCEDURE OPTIONS(MAIN);}\par
+{\f1        DECLARE 1 NOEUD BASED(P),}\par
+{\f1                  2 VALEUR FIXED BINARY(31),}\par
+{\f1                  2 SUIV POINTER;}\par
+\par
+{\f1        DECLARE (TETE, P, Q) POINTER;}\par
+{\f1        DECLARE I FIXED BINARY(31);}\par
+\par
+{\f1        TETE = NULL();}\par
+{\f1        DO I = 1 TO 5;}\par
+{\f1           ALLOCATE NOEUD SET(P);}\par
+{\f1           P -> VALEUR = I * 10;}\par
+{\f1           P -> SUIV   = TETE;}\par
+{\f1           TETE = P;}\par
+{\f1        END;}\par
+\par
+{\f1        Q = TETE;}\par
+{\f1        DO WHILE(Q ^= NULL());}\par
+{\f1           PUT SKIP LIST(Q -> VALEUR);}\par
+{\f1           Q = Q -> SUIV;}\par
+{\f1        END;}\par
+{\f1     END LISTE;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_16}     {\uldb Suivant >>}{\v IDH_PLI_18}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_18}
+{\footnote $ PL/I - Differences avec C, COBOL et Fortran}
+{\footnote K PL/I differences;PL/I vs C;PL/I vs COBOL;PL/I vs Fortran;comparaison langages}
+\b\fs24 Differences avec C, COBOL et Fortran \b0\fs20\par
+\par
+\par
+\b 18.1 PL/I vs C \b0\par
+\par
+{\f1     Aspect              PL/I                  C}\par
+{\f1     ------------------  --------------------  ----------------------}\par
+{\f1     Casse               insensible            sensible}\par
+{\f1     Type defaut         FIXED DECIMAL(5,0)    int}\par
+{\f1     Chaines             type natif            tableau de char + '\\0'}\par
+{\f1     Tableaux            descripteur           pointeur}\par
+{\f1     Exceptions          ON-units integres     setjmp/longjmp}\par
+{\f1     Conversions         implicites largement  limitees, explicites}\par
+{\f1     Allocation          ALLOCATE/FREE         malloc/free}\par
+{\f1     Pointeurs           type POINTER          type *}\par
+{\f1     Indices defaut      1                     0}\par
+{\f1     Operateur affect    =                     =}\par
+{\f1     Comparaison egal    =                     ==}\par
+\par
+\par
+\b 18.2 PL/I vs COBOL \b0\par
+\par
+{\f1     Aspect              PL/I                  COBOL}\par
+{\f1     ------------------  --------------------  ----------------------}\par
+{\f1     Domaine             generaliste           gestion}\par
+{\f1     Structure           blocs imbriques       divisions (4)}\par
+{\f1     Declarations        DECLARE flexible      PICTURE clause}\par
+{\f1     Boucles             DO unifie             PERFORM}\par
+{\f1     Conditions          ON-units              imperative + check}\par
+{\f1     Recursion           OUI                   non (avant 2002)}\par
+{\f1     Format I/O          PUT EDIT / picture    PIC clause}\par
+{\f1     Verbosite           moyenne               tres elevee}\par
+\par
+\par
+\b 18.3 PL/I vs Fortran \b0\par
+\par
+{\f1     Aspect              PL/I                  Fortran (77)}\par
+{\f1     ------------------  --------------------  ----------------------}\par
+{\f1     Domaine             generaliste           scientifique}\par
+{\f1     Recursion           OUI (RECURSIVE)       NON (avant Fortran 90)}\par
+{\f1     Pointeurs           OUI                   NON (avant Fortran 90)}\par
+{\f1     Chaines             types natifs          tableaux de char}\par
+{\f1     Structures          DECLARE niveaux       TYPE (Fortran 90+)}\par
+{\f1     Allocation dyn      OUI                   NON (avant Fortran 90)}\par
+{\f1     Format I/O          plus riche            FORMAT statement}\par
+{\f1     Bloc                BEGIN/END             pas de bloc local}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_17}     {\uldb Suivant >>}{\v IDH_PLI_19}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_19}
+{\footnote $ PL/I - Ressources dans le projet}
+{\footnote K PL/I ressources projet;PLI86.PAS;ASM86.PAS;MASM.PAS;LINK.PAS;LIB.PAS;DISEXE.PAS;DEBUG.PAS}
+\b\fs24 Ressources dans le projet \b0\fs20\par
+\par
+{\f1   Le projet DEV-COOLS contient les composants suivants lies a PL/I :}\par
+\par
+{\f1     PLI86.PAS           : compilateur PL/I vers MASM 8086}\par
+{\f1     ASM86.PAS, MASM.PAS : assembleurs cibles pour la sortie de PLI86}\par
+{\f1     LINK.PAS            : editeur de liens .OBJ -> .EXE / .COM}\par
+{\f1     LIB.PAS             : gestionnaire de bibliotheques .LIB}\par
+\par
+{\f1   Outils connexes :}\par
+\par
+{\f1     DISEXE.PAS, DISOBJ.PAS : desassembleurs pour les binaires produits}\par
+{\f1     DEBUG.PAS              : debogueur DOS pour les executables}\par
+\par
+{\f1   Documentation de reference :}\par
+\par
+{\f1     DOC/PLI_SPEC_LANG.txt  : le present document}\par
+{\f1     DOC/ASM_80386.txt      : informations sur l assembleur cible}\par
+{\f1     DEVENV.HLP             : aide en ligne integree de l IDE}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PLI_18}     {\uldb Suivant >>}{\v IDH_PLI_20}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PLI_20}
+{\footnote $ PL/I - Bibliographie}
+{\footnote K PL/I bibliographie;ANSI X3.53;ISO 6160;ISO 6522;Pollack Sterling;Hughes;Sturm;IBM Enterprise PL/I;Iron Spring PL/I;Kednos PL/I}
+\b\fs24 Bibliographie \b0\fs20\par
+\par
+{\f1   Ouvrages historiques :}\par
+\par
+{\f1     - Pollack, S.V. and Sterling, T.D., "A Guide to PL/I", Holt,}\par
+{\f1       Rinehart and Winston, 1969.}\par
+\par
+{\f1     - Hughes, Joan K., "PL/I Programming", John Wiley & Sons, 1973.}\par
+\par
+{\f1     - Sturm, Eberhard, "The New PL/I", Vieweg+Teubner, 2009.}\par
+\par
+{\f1     - Bates, R.J. and Douglas, M.L., "Programming Language One",}\par
+{\f1       Prentice-Hall, 1970.}\par
+\par
+{\f1   Standards :}\par
+\par
+{\f1     - ANSI X3.53-1976 : American National Standard Programming Language PL/I.}\par
+{\f1     - ISO 6160:1979   : Programming Language PL/I (retire).}\par
+{\f1     - ISO 6522:1992   : Programming Language PL/I General-Purpose Subset.}\par
+\par
+{\f1   Documentation IBM :}\par
+\par
+{\f1     - "Enterprise PL/I for z/OS Language Reference" (SC27-1460).}\par
+{\f1     - "Enterprise PL/I for z/OS Programming Guide"  (SC27-1457).}\par
+{\f1     - "PL/I Optimizing Compiler Language Reference" (manuel historique).}\par
+\par
+{\f1   Ressources web :}\par
+\par
+{\f1     - https://www.iron-spring.com/        : Iron Spring PL/I}\par
+{\f1     - https://www.kednos.com/             : Kednos PL/I (VMS)}\par
+{\f1     - https://www.ibm.com/products/pli-compiler-zos}\par
+{\f1     - https://en.wikipedia.org/wiki/PL/I}\par
+\par
+{\f1   Implementations libres et historiques :}\par
+\par
+{\f1     - PL/I-80 (Digital Research)  : CP/M 8 bits}\par
+{\f1     - DR PL/I-86 (Digital Research) : DOS 16 bits}\par
+{\f1     - Iron Spring PL/I (commercial mais demo gratuite) : Linux, OS/2}\par
+\par
+{\f1   Fin du document PLI_SPEC_LANG.txt}\par
+
+\par
+{\uldb << Precedent}{\v IDH_PLI_19}     {\uldb Table des matieres}{\v IDH_PLI_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

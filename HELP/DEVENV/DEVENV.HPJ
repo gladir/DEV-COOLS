@@ -46,6 +46,7 @@ ASM68000.RTF
 ASM80386.RTF
 JASMIN.RTF
 PLI.RTF
+PSP.RTF
 
 [MAP]
 IDH_INDEX           = 1
@@ -612,6 +613,33 @@ IDH_PLI_17          = 5217
 IDH_PLI_18          = 5218
 IDH_PLI_19          = 5219
 IDH_PLI_20          = 5220
+IDH_PSP_01          = 5301
+IDH_PSP_02          = 5302
+IDH_PSP_03          = 5303
+IDH_PSP_04          = 5304
+IDH_PSP_05          = 5305
+IDH_PSP_06          = 5306
+IDH_PSP_07          = 5307
+IDH_PSP_08          = 5308
+IDH_PSP_09          = 5309
+IDH_PSP_10          = 5310
+IDH_PSP_11          = 5311
+IDH_PSP_12          = 5312
+IDH_PSP_13          = 5313
+IDH_PSP_14          = 5314
+IDH_PSP_15          = 5315
+IDH_PSP_16          = 5316
+IDH_PSP_17          = 5317
+IDH_PSP_18          = 5318
+IDH_PSP_19          = 5319
+IDH_PSP_20          = 5320
+IDH_PSP_21          = 5321
+IDH_PSP_22          = 5322
+IDH_PSP_23          = 5323
+IDH_PSP_24          = 5324
+IDH_PSP_25          = 5325
+IDH_PSP_26          = 5326
+IDH_PSP_27          = 5327
 IDH_EMULATEURS      = 30
 IDH_EMU_NES         = 31
 IDH_EMU_AMIGA       = 32
