@@ -1,0 +1,2760 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_ABAP_01}
+{\footnote $ ABAP - STRUCTURE D'UN PROGRAMME ABAP}
+{\footnote K ABAP structure;REPORT;PROGRAM;INCLUDE}
+\b\fs24 STRUCTURE D'UN PROGRAMME ABAP \b0\fs20\par
+\par
+\par
+\b 1.1 Introduction \b0\par
+\par
+ABAP (Advanced Business Application Programming) est le langage de\par
+programmation proprietaire developpe par SAP AG pour personnaliser et\par
+etendre les fonctionnalites des systemes SAP. Depuis sa creation en\par
+1983, ABAP a evolue d'un simple langage de generation de rapports\par
+vers un langage de programmation complet supportant les paradigmes\par
+procedural et oriente objet.\par
+\par
+Un programme ABAP est une unite de code stockee dans la base de donnees\par
+du systeme SAP, et non dans des fichiers externes comme la plupart des\par
+langages de programmation. Cette architecture permet une integration\par
+etroite avec le systeme de transport SAP, facilitant le deploiement\par
+des developpements entre les environnements (developpement, qualite,\par
+production).\par
+\par
+Chaque instruction ABAP se termine obligatoirement par un point (.).\par
+Ce point joue le role de delimiteur d'instruction, similaire au\par
+point-virgule dans d'autres langages comme C ou Java. Les instructions\par
+peuvent s'etendre sur plusieurs lignes sans caractere de continuation\par
+particulier, ce qui ameliore la lisibilite du code pour les instructions\par
+complexes.\par
+\par
+ABAP n'est pas sensible a la casse : les mots-cles, les noms de variables\par
+et les identificateurs peuvent etre ecrits en majuscules, minuscules ou\par
+en casse mixte. Cependant, par convention, les mots-cles ABAP sont\par
+generalement ecrits en majuscules pour les distinguer des identificateurs\par
+definis par le programmeur.\par
+\par
+L'editeur ABAP integre a l'environnement SAP GUI offre des fonctionnalites\par
+avancees comme la coloration syntaxique, la verification en temps reel,\par
+et l'acces direct au dictionnaire de donnees (DDIC) pour consulter les\par
+definitions de tables et de types.\par
+\par
+\par
+\b 1.2 Types de programmes \b0\par
+\par
+Le systeme SAP distingue plusieurs types de programmes ABAP, chacun\par
+ayant un role specifique dans l'architecture applicative. Le choix du\par
+type de programme depend de la nature de l'application a developper\par
+et de son mode d'interaction avec l'utilisateur.\par
+\par
+{\f1   Type         Description}\par
+{\f1   -----------  ----------------------------------------------------------}\par
+{\f1   REPORT       Programme de type rapport (liste), executable directement.}\par
+{\f1                C'est le type le plus courant pour les developpements Z.}\par
+{\f1   PROGRAM      Programme executable similaire a REPORT, souvent utilise}\par
+{\f1                pour les programmes sans sortie de liste standard.}\par
+{\f1   INCLUDE      Module de code reutilisable, insere dans d'autres programmes.}\par
+{\f1                Ne peut pas etre execute seul.}\par
+{\f1   MODULE POOL  Programme de dialogue (ecrans dynpro), type M.}\par
+{\f1                Utilise pour les transactions avec plusieurs ecrans.}\par
+{\f1   FUNCTION     Groupe de fonctions contenant des modules de fonction.}\par
+{\f1                Stocke dans des groupes de fonctions.}\par
+{\f1   CLASS POOL   Classe globale ABAP Objects, type K.}\par
+\par
+Les programmes REPORT constituent le type le plus frequemment utilise\par
+pour les developpements specifiques. Ils sont concus pour extraire des\par
+donnees de la base de donnees, les traiter et les presenter sous forme\par
+de liste a l'utilisateur. Les rapports peuvent etre executes directement\par
+via la transaction SE38 ou SE80, ou associes a un code de transaction\par
+personnalise.\par
+\par
+Les programmes INCLUDE servent a structurer le code en unites logiques\par
+reutilisables. Contrairement aux autres types de programmes, un INCLUDE\par
+ne peut pas etre execute de maniere autonome ; il doit etre incorpore\par
+dans un programme principal via l'instruction INCLUDE. Cette approche\par
+favorise la maintenance du code en separant les declarations de types,\par
+les definitions de donnees et les sous-programmes dans des fichiers\par
+distincts.\par
+\par
+Les MODULE POOL sont utilises pour les applications de dialogue\par
+necessitant une interface utilisateur graphique avec plusieurs ecrans\par
+(dynpro). Ces programmes implementent la logique metier derriere les\par
+transactions SAP et gerent les interactions complexes avec l'utilisateur\par
+a travers des enchainements d'ecrans.\par
+\par
+Les groupes de fonctions encapsulent des modules de fonction reutilisables.\par
+Un module de fonction est une unite de code independante, avec une\par
+interface bien definie (parametres d'importation, d'exportation, de\par
+modification et exceptions). Les modules de fonction peuvent etre\par
+appeles depuis n'importe quel programme ABAP ou exposes comme services\par
+RFC (Remote Function Call) pour les integrations systeme.\par
+\par
+Les CLASS POOL contiennent les definitions de classes globales ABAP\par
+Objects. Ces classes sont accessibles depuis tous les programmes du\par
+systeme et constituent la base de la programmation orientee objet en\par
+ABAP. Elles supportent l'heritage, l'encapsulation, le polymorphisme\par
+et les interfaces.\par
+\par
+\par
+\b 1.3 Structure generale \b0\par
+\par
+Un programme ABAP bien structure suit une organisation logique qui\par
+facilite la comprehension, la maintenance et l'evolution du code.\par
+Cette structure n'est pas imposee par le compilateur mais represente\par
+une convention de programmation largement adoptee par la communaute\par
+SAP.\par
+\par
+Un programme ABAP se compose generalement de plusieurs zones :\par
+\par
+{\f1   +-------------------------------------------+}\par
+{\f1   | 1. Instruction d'ouverture (REPORT/PROGRAM)}\par
+{\f1   +-------------------------------------------+}\par
+{\f1   | 2. Zone de declarations globales (DATA, TYPES, CONSTANTS...)}\par
+{\f1   +-------------------------------------------+}\par
+{\f1   | 3. Zone d'ecran de selection (PARAMETERS, SELECT-OPTIONS)}\par
+{\f1   +-------------------------------------------+}\par
+{\f1   | 4. Zone d'evenements (INITIALIZATION, START-OF-SELECTION...)}\par
+{\f1   +-------------------------------------------+}\par
+{\f1   | 5. Sous-programmes (FORM...ENDFORM)}\par
+{\f1   +-------------------------------------------+}\par
+\par
+L'ordre de ces zones est important : les declarations doivent\par
+preceder leur utilisation. Bien que certains compilateurs ABAP tolerent\par
+des declarations tardives, il est fortement recommande de grouper\par
+toutes les declarations en debut de programme pour une meilleure\par
+lisibilite.\par
+\par
+La zone d'ouverture contient l'instruction REPORT ou PROGRAM qui\par
+identifie le programme et definit ses proprietes globales comme la\par
+classe de messages ou le format de la liste de sortie.\par
+\par
+La zone de declarations regroupe toutes les definitions de types\par
+personnalises (TYPES), les declarations de variables (DATA), les\par
+constantes (CONSTANTS) et les structures complexes. Cette zone peut\par
+egalement contenir les declarations de tables internes et de ranges.\par
+\par
+La zone d'ecran de selection definit les parametres de saisie que\par
+l'utilisateur devra renseigner avant l'execution du rapport. Ces\par
+elements incluent les champs simples (PARAMETERS) et les intervalles\par
+de selection (SELECT-OPTIONS).\par
+\par
+La zone d'evenements contient les blocs de code associes aux differents\par
+evenements du cycle de vie du programme (INITIALIZATION, AT SELECTION-\par
+SCREEN, START-OF-SELECTION, etc.). Chaque evenement declenche\par
+l'execution du code correspondant a un moment precis.\par
+\par
+La zone des sous-programmes (FORM...ENDFORM) regroupe les procedures\par
+locales au programme. Ces sous-programmes permettent de structurer\par
+la logique metier en unites fonctionnelles reutilisables au sein du\par
+meme programme.\par
+\par
+\par
+\b 1.4 Instruction REPORT \b0\par
+\par
+L'instruction REPORT est la pierre angulaire de tout programme de type\par
+rapport en ABAP. Elle doit apparaitre comme premiere instruction\par
+executable du programme et definit les caracteristiques globales de\par
+l'application.\par
+\par
+Le nom du programme specifie dans l'instruction REPORT doit correspondre\par
+exactement au nom technique du programme stocke dans le Repository SAP.\par
+Cette coherence est verifiee par le systeme lors de l'activation du\par
+programme.\par
+\par
+{\f1   Syntaxe complete :}\par
+\par
+{\f1     REPORT nom_programme}\par
+{\f1       [MESSAGE-ID classe_messages]}\par
+{\f1       [NO STANDARD PAGE HEADING]}\par
+{\f1       [LINE-SIZE largeur]}\par
+{\f1       [LINE-COUNT hauteur[(reserve)]]}\par
+{\f1       [DEFINING DATABASE nom_ldb].}\par
+\par
+{\f1   Options :}\par
+\par
+{\f1     MESSAGE-ID             : Classe de messages pour les instructions MESSAGE.}\par
+{\f1     NO STANDARD PAGE HEADING : Supprime l'en-tete de page standard SAP.}\par
+{\f1     LINE-SIZE              : Largeur de la liste en caracteres (max 1023).}\par
+{\f1     LINE-COUNT             : Nombre de lignes par page et lignes reservees}\par
+{\f1                              pour le pied de page.}\par
+{\f1     DEFINING DATABASE      : Associe une base de donnees logique (LDB).}\par
+\par
+L'option MESSAGE-ID est particulierement importante pour les programmes\par
+qui utilisent l'instruction MESSAGE pour afficher des messages a\par
+l'utilisateur. La classe de messages (par exemple ZMV) regroupe les\par
+textes de messages dans le Repository et facilite leur maintenance\par
+et leur traduction.\par
+\par
+L'option NO STANDARD PAGE HEADING desactive l'en-tete de page automatique\par
+que SAP genere par defaut. Cet en-tete contient le titre du rapport,\par
+le nom du systeme, la date et l'heure. En desactivant cet en-tete, le\par
+developpeur peut creer son propre en-tete personnalise via l'evenement\par
+TOP-OF-PAGE.\par
+\par
+Les options LINE-SIZE et LINE-COUNT controlent les dimensions de la\par
+liste de sortie. LINE-SIZE definit la largeur maximale en caracteres\par
+(par defaut 83), tandis que LINE-COUNT specifie le nombre de lignes\par
+par page et optionnellement le nombre de lignes reservees pour le\par
+pied de page.\par
+\par
+{\f1   Exemples :}\par
+\par
+{\f1     REPORT ZMONPROG.}\par
+\par
+{\f1     REPORT ZRAPPORT_VENTES MESSAGE-ID ZMV}\par
+{\f1                            NO STANDARD PAGE HEADING}\par
+{\f1                            LINE-SIZE 132}\par
+{\f1                            LINE-COUNT 65(3).}\par
+\par
+Dans le second exemple, le rapport utilise une largeur de 132 caracteres\par
+(format paysage), 65 lignes par page dont 3 sont reservees pour un\par
+eventuel pied de page.\par
+\par
+\par
+\b 1.5 Instruction PROGRAM \b0\par
+\par
+L'instruction PROGRAM est fonctionnellement similaire a REPORT mais\par
+son utilisation est generalement reservee aux programmes qui ne\par
+produisent pas de sortie de liste standard. Elle est souvent employee\par
+dans les programmes d'arriere-plan (batch), les programmes de\par
+traitement de donnees ou les programmes auxiliaires.\par
+\par
+Historiquement, REPORT etait destine aux programmes interactifs avec\par
+sortie liste, tandis que PROGRAM convenait mieux aux traitements batch.\par
+Aujourd'hui, cette distinction est moins stricte et les deux\par
+instructions peuvent etre utilisees de maniere interchangeable dans\par
+la plupart des cas.\par
+\par
+{\f1   Syntaxe :}\par
+\par
+{\f1     PROGRAM nom_programme [MESSAGE-ID classe_messages].}\par
+\par
+L'instruction PROGRAM accepte moins d'options que REPORT car elle ne\par
+presuppose pas une sortie liste. Les options relatives au formatage\par
+de la liste (LINE-SIZE, LINE-COUNT, NO STANDARD PAGE HEADING) ne sont\par
+donc pas disponibles.\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     PROGRAM ZMONPROGRAMME MESSAGE-ID ZM.}\par
+\par
+Dans la pratique moderne, REPORT est utilise pour la grande majorite\par
+des developpements, meme pour les programmes batch, car il offre plus\par
+de flexibilite pour la gestion des messages et la sortie eventuelle\par
+d'informations de suivi.\par
+\par
+\par
+\b 1.6 Convention de nommage \b0\par
+\par
+Les conventions de nommage en SAP jouent un role crucial pour\par
+distinguer les objets standards des developpements specifiques\par
+(customizing) et pour maintenir une organisation coherente du code.\par
+Ces conventions sont parfois imposees par le systeme et parfois\par
+recommandees comme bonnes pratiques.\par
+\par
+Dans un systeme SAP, les objets client (developpements specifiques)\par
+commencent par Y ou Z. Cette regle est appliquee par le systeme SAP\par
+lors de la creation de nouveaux objets dans l'espace de noms client.\par
+Les lettres Y et Z ont ete reservees par SAP pour garantir qu'aucun\par
+objet standard n'entrera jamais en conflit avec les developpements\par
+specifiques lors des mises a niveau du systeme.\par
+\par
+{\f1   - ZRAP_COMMANDES  : Rapport sur les commandes}\par
+{\f1   - ZCLI_FOURNISSEUR : Classe fournisseur}\par
+{\f1   - ZFM_CALCUL_TVA  : Groupe de fonctions pour la TVA}\par
+\par
+Les noms sans prefixe Y/Z sont reserves aux objets standards SAP.\par
+Modifier ces objets (a l'exception des user-exits et des BAdI prevus\par
+a cet effet) constitue une modification du standard et peut entrainer\par
+des problemes lors des mises a niveau.\par
+\par
+Au-dela du prefixe Y/Z, de nombreuses organisations adoptent des\par
+conventions internes pour structurer leurs noms d'objets. Une convention\par
+courante inclut :\par
+\par
+{\f1   - Un prefixe d'application (ex: ZSD_ pour Sales & Distribution)}\par
+{\f1   - Un indicateur de type d'objet (ex: _R pour rapport, _F pour fonction)}\par
+{\f1   - Un nom descriptif en anglais ou dans la langue locale}\par
+\par
+Par exemple : ZSD_R_SALES_ANALYSIS pourrait designer un rapport\par
+d'analyse des ventes dans le module SD.\par
+\par
+Pour les variables locales, les conventions SAP recommandent des\par
+prefixes indiquant la portee et le type :\par
+\par
+{\f1   - gv_ : variable globale (global variable)}\par
+{\f1   - lv_ : variable locale (local variable)}\par
+{\f1   - gt_ : table interne globale (global table)}\par
+{\f1   - lt_ : table interne locale (local table)}\par
+{\f1   - gs_ : structure globale (global structure)}\par
+{\f1   - ls_ : structure locale (local structure)}\par
+{\f1   - gc_ : constante globale (global constant)}\par
+{\f1   - p_  : parametre d'ecran de selection}\par
+{\f1   - s_  : select-option}\par
+\par
+\par
+\b 1.7 Exemple complet \b0\par
+\par
+Voici un exemple de programme ABAP complet illustrant la structure\par
+et les bonnes pratiques de codage. Ce programme demonstratif charge\par
+une liste de clients et l'affiche a l'ecran en fonction des criteres\par
+de selection saisis par l'utilisateur.\par
+\par
+L'exemple montre l'organisation typique d'un rapport ABAP avec ses\par
+differentes zones clairement delimitees par des commentaires. Cette\par
+structure facilite la navigation dans le code et la maintenance\par
+future du programme.\par
+\par
+{\f1     *----------------------------------------------------------------------*}\par
+{\f1     * Programme : ZEXEMPLE_STRUCTURE}\par
+{\f1     * Auteur    : Developpeur SAP}\par
+{\f1     * Date      : 2024}\par
+{\f1     * Description : Exemple de structure d'un programme ABAP}\par
+{\f1     *----------------------------------------------------------------------*}\par
+{\f1     REPORT ZEXEMPLE_STRUCTURE MESSAGE-ID ZM}\par
+{\f1                               NO STANDARD PAGE HEADING}\par
+{\f1                               LINE-SIZE 80.}\par
+\par
+{\f1     *----------------------------------------------------------------------*}\par
+{\f1     * Declarations globales}\par
+{\f1     *----------------------------------------------------------------------*}\par
+{\f1     TYPES: BEGIN OF ty_client,}\par
+{\f1              numero TYPE I,}\par
+{\f1              nom    TYPE C LENGTH 30,}\par
+{\f1              ville  TYPE C LENGTH 20,}\par
+{\f1            END OF ty_client.}\par
+\par
+{\f1     DATA: gv_compteur TYPE I,}\par
+{\f1           gt_clients  TYPE TABLE OF ty_client,}\par
+{\f1           gs_client   TYPE ty_client.}\par
+\par
+{\f1     CONSTANTS: gc_max_clients TYPE I VALUE 100.}\par
+\par
+{\f1     *----------------------------------------------------------------------*}\par
+{\f1     * Ecran de selection}\par
+{\f1     *----------------------------------------------------------------------*}\par
+{\f1     PARAMETERS: p_ville TYPE C LENGTH 20.}\par
+\par
+{\f1     *----------------------------------------------------------------------*}\par
+{\f1     * Evenement INITIALIZATION}\par
+{\f1     *----------------------------------------------------------------------*}\par
+{\f1     INITIALIZATION.}\par
+{\f1       p_ville = 'PARIS'.}\par
+\par
+{\f1     *----------------------------------------------------------------------*}\par
+{\f1     * Evenement START-OF-SELECTION (traitement principal)}\par
+{\f1     *----------------------------------------------------------------------*}\par
+{\f1     START-OF-SELECTION.}\par
+{\f1       PERFORM charger_donnees.}\par
+{\f1       PERFORM afficher_liste.}\par
+\par
+{\f1     *----------------------------------------------------------------------*}\par
+{\f1     * Sous-programmes}\par
+{\f1     *----------------------------------------------------------------------*}\par
+{\f1     FORM charger_donnees.}\par
+{\f1       " Chargement des donnees (simulation)}\par
+{\f1       gs_client-numero = 1.}\par
+{\f1       gs_client-nom = 'Dupont'.}\par
+{\f1       gs_client-ville = p_ville.}\par
+{\f1       APPEND gs_client TO gt_clients.}\par
+{\f1     ENDFORM.}\par
+\par
+{\f1     FORM afficher_liste.}\par
+{\f1       LOOP AT gt_clients INTO gs_client.}\par
+{\f1         WRITE: / gs_client-numero, gs_client-nom, gs_client-ville.}\par
+{\f1       ENDLOOP.}\par
+{\f1     ENDFORM.}\par
+\par
+Dans cet exemple, on remarque plusieurs elements importants :\par
+\par
+- L'en-tete de programme documente l'auteur, la date et la finalite\par
+{\f1   du programme.}\par
+- Les declarations TYPES definissent des structures personnalisees\par
+{\f1   avant leur utilisation dans DATA.}\par
+- Les noms de variables suivent les conventions (gv_ pour les\par
+{\f1   variables globales, gt_ pour les tables, gs_ pour les structures).}\par
+- L'evenement INITIALIZATION initialise les valeurs par defaut\par
+{\f1   avant l'affichage de l'ecran de selection.}\par
+- Le traitement principal est encapsule dans des sous-programmes\par
+{\f1   (FORM) pour une meilleure structuration.}\par
+\par
+\par
+\b 1.8 Instruction INCLUDE \b0\par
+\par
+L'instruction INCLUDE est un mecanisme fondamental pour la modularisation\par
+du code ABAP. Elle permet d'inserer le contenu d'un programme INCLUDE\par
+a l'emplacement de l'instruction, comme si le code etait directement\par
+ecrit a cet endroit. Cette technique favorise la modularite et la\par
+reutilisation du code entre plusieurs programmes.\par
+\par
+Lors de la compilation, le systeme SAP remplace chaque instruction\par
+INCLUDE par le contenu du programme reference. Cette operation est\par
+transparente pour le developpeur et n'a aucun impact sur les\par
+performances d'execution.\par
+\par
+{\f1   Syntaxe :}\par
+\par
+{\f1     INCLUDE nom_include.}\par
+\par
+Un programme de type INCLUDE (type I) ne peut pas etre execute de\par
+maniere autonome. Il ne contient generalement pas d'instruction\par
+REPORT ou PROGRAM et se compose uniquement de declarations ou de\par
+sous-programmes destines a etre incorpores dans d'autres programmes.\par
+\par
+{\f1   Exemple d'utilisation :}\par
+\par
+{\f1     REPORT ZMONPROG.}\par
+{\f1     INCLUDE ZMONPROG_TYPES.    " Declarations de types}\par
+{\f1     INCLUDE ZMONPROG_DATA.     " Declarations de donnees}\par
+{\f1     INCLUDE ZMONPROG_FORMS.    " Sous-programmes}\par
+\par
+L'utilisation d'INCLUDEs permet de diviser un programme volumineux\par
+en plusieurs fichiers logiques, facilitant le travail collaboratif\par
+et la maintenance. Chaque developpeur peut travailler sur un INCLUDE\par
+different sans risquer de conflits.\par
+\par
+SAP a etabli des conventions de nommage pour les INCLUDEs qui sont\par
+largement adoptees dans les programmes standards et recommandees pour\par
+les developpements specifiques :\par
+\par
+{\f1   Convention SAP pour les includes :}\par
+{\f1     - nom_TOP : Declarations globales (types, donnees, constantes)}\par
+{\f1     - nom_FXX : Sous-programmes (F01, F02, ...)}\par
+{\f1     - nom_IXX : Modules PBO/PAI (I01, I02, ...)}\par
+{\f1     - nom_OXX : Modules PBO (O01, O02, ...)}\par
+{\f1     - nom_EXX : Evenements (E01, E02, ...)}\par
+\par
+Par exemple, un programme ZMM_COMMANDES pourrait avoir les INCLUDEs\par
+suivants :\par
+{\f1     - ZMM_COMMANDES_TOP : Declarations globales}\par
+{\f1     - ZMM_COMMANDES_F01 : Sous-programmes de lecture des donnees}\par
+{\f1     - ZMM_COMMANDES_F02 : Sous-programmes d'affichage}\par
+{\f1     - ZMM_COMMANDES_E01 : Gestion des evenements utilisateur}\par
+\par
+Cette organisation permet de localiser rapidement le code recherche\par
+et facilite grandement la maintenance des applications complexes.\par
+\par
+\par
+\b 1.9 Ordre d'execution \b0\par
+\par
+La comprehension de l'ordre d'execution des evenements est essentielle\par
+pour developper des programmes ABAP corrects et efficaces. Contrairement\par
+a de nombreux langages ou le code s'execute sequentiellement du debut\par
+a la fin, ABAP utilise un modele evenementiel ou differents blocs de\par
+code sont declenches a des moments specifiques du cycle de vie du\par
+programme.\par
+\par
+L'execution d'un programme ABAP de type rapport suit un ordre precis\par
+qui peut etre decompose en plusieurs phases :\par
+\par
+{\f1   1. Chargement du programme en memoire}\par
+{\f1   2. Execution du bloc LOAD-OF-PROGRAM (si present)}\par
+{\f1   3. Execution du bloc INITIALIZATION}\par
+{\f1   4. Affichage de l'ecran de selection}\par
+{\f1   5. Execution du bloc AT SELECTION-SCREEN}\par
+{\f1   6. Execution du bloc START-OF-SELECTION}\par
+{\f1   7. Execution du bloc END-OF-SELECTION}\par
+{\f1   8. Fin du programme}\par
+\par
+Examinons chaque phase en detail :\par
+\par
+Phase 1 - Chargement : Le systeme charge le programme compile depuis\par
+la base de donnees vers la memoire de travail. Les variables sont\par
+initialisees a leurs valeurs par defaut.\par
+\par
+Phase 2 - LOAD-OF-PROGRAM : Cet evenement est rarement utilise. Il\par
+est declenche une seule fois lors du premier chargement du programme\par
+dans une session utilisateur.\par
+\par
+Phase 3 - INITIALIZATION : C'est le premier bloc execute dans le\par
+flux normal. Il permet d'initialiser les valeurs par defaut des\par
+parametres d'ecran de selection et de preparer l'environnement\par
+d'execution. Les valeurs affectees aux parametres dans ce bloc\par
+apparaitront comme valeurs par defaut a l'ecran.\par
+\par
+Phase 4 - Ecran de selection : Le systeme affiche l'ecran de selection\par
+(s'il existe) et attend la saisie de l'utilisateur. L'utilisateur\par
+remplit les criteres et appuie sur Executer (F8).\par
+\par
+Phase 5 - AT SELECTION-SCREEN : Ce bloc est declenche apres que\par
+l'utilisateur a valide l'ecran de selection. Il permet de valider\par
+les saisies, d'afficher des messages d'erreur ou de modifier les\par
+valeurs avant le traitement principal.\par
+\par
+Phase 6 - START-OF-SELECTION : C'est le coeur du programme. Ce bloc\par
+contient la logique principale : lecture des donnees, traitements,\par
+calculs et preparation de la sortie. Pour les rapports utilisant une\par
+base de donnees logique (LDB), c'est a ce moment que les donnees\par
+sont lues.\par
+\par
+Phase 7 - END-OF-SELECTION : Ce bloc est execute apres la fin de\par
+START-OF-SELECTION. Il est utilise pour les traitements finaux comme\par
+le calcul des totaux, l'affichage des statistiques ou la generation\par
+de la sortie finale.\par
+\par
+Phase 8 - Fin : Le programme se termine et libere les ressources\par
+memoire.\par
+\par
+Dans un programme simple sans evenements declares explicitement, le\par
+code est execute sequentiellement comme s'il etait contenu dans un\par
+bloc START-OF-SELECTION implicite. Cela permet d'ecrire des\par
+programmes simples sans se soucier des evenements.\par
+\par
+Il existe d'autres evenements specifiques a certains contextes :\par
+{\f1     - TOP-OF-PAGE : En-tete de chaque nouvelle page de liste}\par
+{\f1     - END-OF-PAGE : Pied de page}\par
+{\f1     - AT LINE-SELECTION : Action double-clic sur une ligne}\par
+{\f1     - AT USER-COMMAND : Action sur un bouton ou menu personnalise}\par
+{\f1     - AT PFnn : Action sur une touche de fonction}\par
+\par
+La maitrise de ces evenements permet de creer des rapports interactifs\par
+offrant une experience utilisateur riche et intuitive.\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_02}
+{\footnote $ ABAP - COMMENTAIRES}
+{\footnote K ABAP commentaires}
+\b\fs24 COMMENTAIRES \b0\fs20\par
+\par
+ABAP supporte deux styles de commentaires :\par
+\par
+{\f1   - Commentaire ligne entiere  : le caractere * en colonne 1}\par
+{\f1   - Commentaire en fin de ligne : le caractere " n'importe ou}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     * Ceci est un commentaire ligne entiere}\par
+{\f1     DATA gv_x TYPE I.   " Commentaire en fin de ligne}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_03}
+{\footnote $ ABAP - TYPES DE DONNEES}
+{\footnote K ABAP types;DATA;TYPES;CHAR;INT;PACKED;STRING}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+\par
+\b 3.1 Introduction aux types de donnees ABAP \b0\par
+\par
+Le systeme de types ABAP est un element fondamental du langage qui\par
+determine comment les donnees sont stockees, manipulees et converties.\par
+Une bonne comprehension des types de donnees est essentielle pour\par
+developper des applications ABAP efficaces et eviter les erreurs de\par
+conversion ou de perte de precision.\par
+\par
+ABAP distingue deux grandes categories de types de donnees :\par
+\par
+{\f1   - Les types elementaires (scalaires) : types de base pour stocker}\par
+{\f1     des valeurs simples comme des nombres, des chaines de caracteres,}\par
+{\f1     des dates ou des heures.}\par
+\par
+{\f1   - Les types complexes : structures et tables internes qui permettent}\par
+{\f1     de regrouper plusieurs valeurs sous un meme identificateur.}\par
+\par
+Le typage en ABAP est statique : le type d'une variable est defini a\par
+la compilation et ne peut pas changer pendant l'execution. Cependant,\par
+ABAP effectue automatiquement des conversions implicites entre types\par
+compatibles, ce qui peut parfois entrainer des resultats inattendus\par
+si le programmeur n'est pas vigilant.\par
+\par
+\par
+\b 3.2 Vue d'ensemble des types elementaires \b0\par
+\par
+Voici un tableau recapitulatif des principaux types elementaires ABAP :\par
+\par
+{\f1   Type     Description                  Taille     Valeur initiale}\par
+{\f1   -------  ---------------------------  ---------  ----------------}\par
+{\f1   I        Entier 32 bits signe         4 octets   0}\par
+{\f1   INT8     Entier 64 bits signe         8 octets   0}\par
+{\f1   F        Nombre a virgule flottante   8 octets   0.0}\par
+{\f1   DECFLOAT16 Decimal flottant 16 chif.  8 octets   0.0}\par
+{\f1   DECFLOAT34 Decimal flottant 34 chif.  16 octets  0.0}\par
+{\f1   C        Chaine de caracteres fixe    n octets   espaces}\par
+{\f1   N        Chaine numerique             n octets   '0...0'}\par
+{\f1   D        Date (AAAAMMJJ)              8 octets   '00000000'}\par
+{\f1   T        Heure (HHMMSS)               6 octets   '000000'}\par
+{\f1   P        Decimal compacte (BCD)       1-16 oct.  0}\par
+{\f1   STRING   Chaine longueur variable     variable   '' (vide)}\par
+{\f1   XSTRING  Chaine binaire variable      variable   '' (vide)}\par
+{\f1   X        Chaine hexadecimale fixe     n octets   '00...00'}\par
+\par
+Chaque type possede des caracteristiques specifiques qui le rendent\par
+adapte a certains usages. Le choix du type appropriet est crucial pour\par
+la performance et l'integrite des donnees dans les applications SAP.\par
+\par
+\par
+\b 3.3 Type I - Entiers \b0\par
+\par
+Le type I represente un entier signe sur 32 bits. C'est le type\par
+numerique le plus couramment utilise pour les compteurs, les indices\par
+de boucles et les calculs avec des nombres entiers.\par
+\par
+Caracteristiques :\par
+{\f1   - Stockage : 4 octets (32 bits)}\par
+{\f1   - Valeur minimale : -2 147 483 648 (-2^31)}\par
+{\f1   - Valeur maximale :  2 147 483 647 (2^31 - 1)}\par
+{\f1   - Valeur initiale : 0}\par
+{\f1   - Precision : exacte (pas d'erreur d'arrondi)}\par
+\par
+Le type I est adapte pour :\par
+{\f1   - Les compteurs et indices de boucles}\par
+{\f1   - Les calculs arithmetiques entiers}\par
+{\f1   - Le stockage de quantites discretes}\par
+{\f1   - Les references a des numeros de ligne ou d'enregistrement}\par
+\par
+Exemples de declarations :\par
+\par
+{\f1     DATA gv_compteur TYPE I.}\par
+{\f1     DATA gv_index TYPE I VALUE 1.}\par
+{\f1     DATA gv_quantite TYPE I VALUE 100.}\par
+\par
+Attention : les depassements de capacite (overflow) ne sont pas\par
+detectes automatiquement en ABAP standard. Un calcul depassant les\par
+limites du type I peut produire des resultats incorrects sans lever\par
+d'exception.\par
+\par
+Depuis ABAP 7.40, le type INT8 (entier 64 bits) est disponible pour\par
+les besoins de tres grands nombres entiers, avec une plage allant de\par
+-9 223 372 036 854 775 808 a 9 223 372 036 854 775 807.\par
+\par
+\par
+\b 3.4 Type F - Nombres a virgule flottante \b0\par
+\par
+Le type F represente un nombre a virgule flottante en double precision\par
+selon la norme IEEE 754. Il est utilise pour les calculs scientifiques\par
+ou les situations necessitant une grande plage de valeurs.\par
+\par
+Caracteristiques :\par
+{\f1   - Stockage : 8 octets (64 bits)}\par
+{\f1   - Precision : environ 15-16 chiffres significatifs}\par
+{\f1   - Plage : de 2.2E-308 a 1.8E+308 (en valeur absolue)}\par
+{\f1   - Valeur initiale : 0.0}\par
+{\f1   - Notation : decimale ou scientifique (1.5E10)}\par
+\par
+Le type F est adapte pour :\par
+{\f1   - Les calculs scientifiques}\par
+{\f1   - Les applications necessitant une tres grande plage de valeurs}\par
+{\f1   - Les calculs ou une precision approximative est acceptable}\par
+\par
+Exemples de declarations :\par
+\par
+{\f1     DATA gv_pi TYPE F VALUE '3.14159265358979'.}\par
+{\f1     DATA gv_vitesse_lumiere TYPE F VALUE '2.998E8'.}\par
+{\f1     DATA gv_masse TYPE F.}\par
+\par
+Attention importante : le type F utilise une representation binaire\par
+qui ne peut pas representer exactement certains nombres decimaux.\par
+Par exemple, 0.1 en base 10 ne peut pas etre represente exactement\par
+en virgule flottante binaire. Pour les calculs financiers ou les\par
+montants monetaires, il faut absolument utiliser le type P (decimal\par
+compacte) qui garantit une precision decimale exacte.\par
+\par
+{\f1     " Exemple de perte de precision avec F}\par
+{\f1     DATA: gv_f TYPE F,}\par
+{\f1           gv_p TYPE P DECIMALS 2.}\par
+{\f1     gv_f = '0.1'.}\par
+{\f1     gv_p = '0.1'.}\par
+{\f1     " gv_f peut contenir 0.09999999999... au lieu de 0.1 exactement}\par
+{\f1     " gv_p contient exactement 0.10}\par
+\par
+\par
+\b 3.5 Types DECFLOAT16 et DECFLOAT34 - Decimaux flottants \b0\par
+\par
+Introduits dans les versions recentes d'ABAP, les types DECFLOAT16 et\par
+DECFLOAT34 offrent une representation decimale flottante selon la\par
+norme IEEE 754-2008. Contrairement au type F (binaire flottant), ces\par
+types representent exactement les nombres decimaux.\par
+\par
+Caracteristiques de DECFLOAT16 :\par
+{\f1   - Stockage : 8 octets}\par
+{\f1   - Precision : 16 chiffres decimaux significatifs}\par
+{\f1   - Plage : de 10^-383 a 10^384}\par
+\par
+Caracteristiques de DECFLOAT34 :\par
+{\f1   - Stockage : 16 octets}\par
+{\f1   - Precision : 34 chiffres decimaux significatifs}\par
+{\f1   - Plage : de 10^-6143 a 10^6144}\par
+\par
+Ces types sont particulierement adaptes pour :\par
+{\f1   - Les calculs financiers de haute precision}\par
+{\f1   - Les applications scientifiques necessitant une precision decimale}\par
+{\f1   - Le stockage de montants monetaires avec une grande precision}\par
+\par
+Exemple :\par
+\par
+{\f1     DATA gv_montant_precise TYPE DECFLOAT34.}\par
+{\f1     gv_montant_precise = '123456789012345678901234.5678901234'.}\par
+\par
+\par
+\b 3.6 Type C - Chaines de caracteres a longueur fixe \b0\par
+\par
+Le type C represente une chaine de caracteres a longueur fixe. C'est\par
+l'un des types les plus utilises en ABAP, notamment pour les champs\par
+de base de donnees et les zones d'ecran.\par
+\par
+Caracteristiques :\par
+{\f1   - Longueur : de 1 a 262 143 caracteres}\par
+{\f1   - Stockage : 1 octet par caractere (en code page simple)}\par
+{\f1   - Valeur initiale : espaces (blancs)}\par
+{\f1   - Remplissage : espaces a droite si la valeur est plus courte}\par
+\par
+Le type C est adapte pour :\par
+{\f1   - Les champs de base de donnees}\par
+{\f1   - Les noms, descriptions et libelles}\par
+{\f1   - Les codes et identifiants de longueur fixe}\par
+{\f1   - L'interaction avec les ecrans dynpro}\par
+\par
+Syntaxes de declaration :\par
+\par
+{\f1     " Syntaxe standard avec LENGTH}\par
+{\f1     DATA gv_nom TYPE C LENGTH 30.}\par
+{\f1     DATA gv_code TYPE C LENGTH 10.}\par
+\par
+{\f1     " Syntaxe courte avec parentheses}\par
+{\f1     DATA gv_nom(30) TYPE C.}\par
+{\f1     DATA gv_code(10).           " TYPE C est implicite}\par
+\par
+{\f1     " Avec valeur initiale}\par
+{\f1     DATA gv_pays TYPE C LENGTH 3 VALUE 'FRA'.}\par
+\par
+Comportement important : les comparaisons de chaines de type C\par
+ignorent les espaces de fin (trailing spaces). Ainsi, 'ABC' et\par
+'ABC   ' sont consideres comme egaux lors d'une comparaison.\par
+\par
+Le type C ne gere pas les caracteres Unicode multi-octets de maniere\par
+native. Pour les applications Unicode, le nombre de caracteres peut\par
+differer du nombre d'octets utilises.\par
+\par
+\par
+\b 3.7 Type N - Chaines numeriques \b0\par
+\par
+Le type N represente une chaine de caracteres contenant uniquement\par
+des chiffres (0-9). Il est utilise pour les codes numeriques qui\par
+doivent conserver les zeros en tete, comme les numeros de document,\par
+les codes postaux ou les numeros de compte.\par
+\par
+Caracteristiques :\par
+{\f1   - Longueur : de 1 a 262 143 caracteres}\par
+{\f1   - Caracteres autorises : uniquement 0-9}\par
+{\f1   - Valeur initiale : '0...0' (zeros)}\par
+{\f1   - Remplissage : zeros a gauche (padding)}\par
+\par
+Le type N est adapte pour :\par
+{\f1   - Les numeros de document SAP (VBELN, EBELN, etc.)}\par
+{\f1   - Les codes postaux}\par
+{\f1   - Les numeros de compte bancaire}\par
+{\f1   - Tout code numerique devant conserver ses zeros}\par
+\par
+Exemples de declarations :\par
+\par
+{\f1     DATA gv_numero_doc TYPE N LENGTH 10.}\par
+{\f1     DATA gv_code_postal TYPE N LENGTH 5 VALUE '75001'.}\par
+{\f1     DATA gv_matricule(8) TYPE N.}\par
+\par
+Comportement specifique : lors d'une affectation numerique a un\par
+champ de type N, la valeur est automatiquement convertie en chaine\par
+et completee par des zeros a gauche.\par
+\par
+{\f1     DATA gv_doc TYPE N LENGTH 10.}\par
+{\f1     gv_doc = 123.}\par
+{\f1     " gv_doc contient '0000000123'}\par
+\par
+Le type N peut etre utilise dans des operations arithmetiques, mais\par
+il est converti implicitement en entier pour le calcul, puis le\par
+resultat est reconverti en chaine numerique.\par
+\par
+\par
+\b 3.8 Type D - Dates \b0\par
+\par
+Le type D represente une date au format AAAAMMJJ (annee sur 4 chiffres,\par
+mois sur 2 chiffres, jour sur 2 chiffres). C'est le type standard\par
+pour manipuler les dates dans les applications SAP.\par
+\par
+Caracteristiques :\par
+{\f1   - Longueur fixe : 8 caracteres}\par
+{\f1   - Format : AAAAMMJJ (ex: '20240315' pour le 15 mars 2024)}\par
+{\f1   - Valeur initiale : '00000000'}\par
+{\f1   - Stockage : 8 octets}\par
+\par
+Le type D est adapte pour :\par
+{\f1   - Les dates de documents (date de facture, de livraison, etc.)}\par
+{\f1   - Les dates d'echeance et de validite}\par
+{\f1   - Les calculs de duree en jours}\par
+{\f1   - La comparaison de dates}\par
+\par
+Exemples de declarations :\par
+\par
+{\f1     DATA gv_date_jour TYPE D.}\par
+{\f1     DATA gv_date_debut TYPE D VALUE '20240101'.}\par
+{\f1     DATA gv_date_fin TYPE D.}\par
+\par
+{\f1     " Initialisation avec la date systeme}\par
+{\f1     gv_date_jour = sy-datum.}\par
+\par
+Calculs sur les dates : ABAP permet d'effectuer des operations\par
+arithmetiques sur les dates. L'addition ou la soustraction de nombres\par
+entiers ajoute ou retire des jours.\par
+\par
+{\f1     DATA: gv_date TYPE D,}\par
+{\f1           gv_jours_delta TYPE I.}\par
+{\f1     gv_date = sy-datum.}\par
+{\f1     gv_date = gv_date + 30.      " Date dans 30 jours}\par
+{\f1     gv_jours_delta = gv_date_fin - gv_date_debut.  " Nombre de jours}\par
+\par
+La variable systeme sy-datum contient toujours la date du jour au\par
+format D. D'autres variables systeme liees aux dates incluent :\par
+{\f1   - sy-datlo : date locale du systeme}\par
+{\f1   - sy-datfm : format d'affichage des dates configure pour l'utilisateur}\par
+\par
+\par
+\b 3.9 Type T - Heures \b0\par
+\par
+Le type T represente une heure au format HHMMSS (heures sur 2 chiffres,\par
+minutes sur 2 chiffres, secondes sur 2 chiffres). Il complement le\par
+type D pour la gestion complete des horodatages.\par
+\par
+Caracteristiques :\par
+{\f1   - Longueur fixe : 6 caracteres}\par
+{\f1   - Format : HHMMSS (ex: '143055' pour 14:30:55)}\par
+{\f1   - Plage : de '000000' a '235959'}\par
+{\f1   - Valeur initiale : '000000'}\par
+{\f1   - Stockage : 6 octets}\par
+\par
+Le type T est adapte pour :\par
+{\f1   - Les heures de debut et fin de processus}\par
+{\f1   - L'horodatage des documents}\par
+{\f1   - Le calcul de durees en secondes}\par
+{\f1   - La planification d'evenements}\par
+\par
+Exemples de declarations :\par
+\par
+{\f1     DATA gv_heure TYPE T.}\par
+{\f1     DATA gv_heure_debut TYPE T VALUE '080000'.}\par
+{\f1     DATA gv_heure_fin TYPE T.}\par
+\par
+{\f1     " Initialisation avec l'heure systeme}\par
+{\f1     gv_heure = sy-uzeit.}\par
+\par
+Calculs sur les heures : comme pour les dates, on peut effectuer des\par
+operations arithmetiques sur les heures. L'addition ou soustraction\par
+de nombres entiers ajoute ou retire des secondes.\par
+\par
+{\f1     DATA: gv_heure TYPE T,}\par
+{\f1           gv_secondes TYPE I.}\par
+{\f1     gv_heure = sy-uzeit.}\par
+{\f1     gv_heure = gv_heure + 3600.   " Heure + 1 heure (3600 secondes)}\par
+{\f1     gv_secondes = gv_heure_fin - gv_heure_debut.  " Duree en secondes}\par
+\par
+La variable systeme sy-uzeit contient toujours l'heure courante au\par
+format T. La variable sy-timlo contient l'heure locale du systeme.\par
+\par
+\par
+\b 3.10 Type P - Nombres decimaux compactes (BCD) \b0\par
+\par
+Le type P represente un nombre decimal a precision fixe en format\par
+BCD (Binary Coded Decimal). C'est le type recommande pour tous les\par
+calculs financiers et monetaires car il garantit une precision\par
+decimale exacte, sans erreur d'arrondi.\par
+\par
+Caracteristiques :\par
+{\f1   - Longueur : de 1 a 16 octets (1 a 31 chiffres)}\par
+{\f1   - Decimales : de 0 a 14}\par
+{\f1   - Valeur initiale : 0}\par
+{\f1   - Stockage : chaque octet contient 2 chiffres decimaux}\par
+\par
+Le type P est adapte pour :\par
+{\f1   - Les montants financiers et monetaires}\par
+{\f1   - Les prix et quantites}\par
+{\f1   - Les pourcentages et taux}\par
+{\f1   - Tout calcul necessitant une precision decimale exacte}\par
+\par
+Syntaxe de declaration :\par
+\par
+{\f1     DATA variable TYPE P [LENGTH longueur] DECIMALS nb_decimales.}\par
+\par
+Exemples :\par
+\par
+{\f1     DATA gv_montant TYPE P DECIMALS 2.}\par
+{\f1     DATA gv_prix TYPE P LENGTH 8 DECIMALS 2.}\par
+{\f1     DATA gv_quantite TYPE P DECIMALS 3 VALUE '123.456'.}\par
+{\f1     DATA gv_pourcentage TYPE P LENGTH 4 DECIMALS 2.}\par
+\par
+Relation entre longueur et nombre de chiffres :\par
+{\f1   - Longueur 1 octet  : 1 chiffre + signe}\par
+{\f1   - Longueur 2 octets : 3 chiffres}\par
+{\f1   - Longueur 4 octets : 7 chiffres}\par
+{\f1   - Longueur 8 octets : 15 chiffres}\par
+{\f1   - Longueur 16 octets : 31 chiffres}\par
+\par
+La precision decimale est garantie dans les limites de la longueur\par
+declaree. Les calculs internes utilisent une precision intermediaire\par
+plus elevee pour eviter les pertes de precision.\par
+\par
+{\f1     " Comparaison F vs P pour calcul financier}\par
+{\f1     DATA: gv_f TYPE F,}\par
+{\f1           gv_p TYPE P DECIMALS 2.}\par
+{\f1     gv_f = '0.1' * 3.}\par
+{\f1     gv_p = '0.1' * 3.}\par
+{\f1     " gv_p = 0.30 exactement}\par
+{\f1     " gv_f peut contenir 0.30000000000000004...}\par
+\par
+\par
+\b 3.11 Types STRING et XSTRING - Chaines a longueur variable \b0\par
+\par
+Les types STRING et XSTRING representent des chaines de caracteres\par
+et des donnees binaires a longueur variable. Contrairement aux types\par
+C et X a longueur fixe, ces types ajustent dynamiquement leur taille\par
+en fonction du contenu.\par
+\par
+Type STRING :\par
+{\f1   - Longueur : variable, jusqu'a 2 Go theorique}\par
+{\f1   - Contenu : caracteres texte}\par
+{\f1   - Valeur initiale : chaine vide ''}\par
+{\f1   - Stockage : reference + donnees}\par
+\par
+Le type STRING est adapte pour :\par
+{\f1   - Les textes de longueur variable ou inconnue}\par
+{\f1   - Le contenu de fichiers texte}\par
+{\f1   - Les messages et logs}\par
+{\f1   - La manipulation de texte dynamique}\par
+\par
+Type XSTRING :\par
+{\f1   - Longueur : variable, jusqu'a 2 Go theorique}\par
+{\f1   - Contenu : donnees binaires (octets)}\par
+{\f1   - Valeur initiale : chaine vide ''}\par
+{\f1   - Stockage : reference + donnees}\par
+\par
+Le type XSTRING est adapte pour :\par
+{\f1   - Les fichiers binaires (images, PDF, etc.)}\par
+{\f1   - Les donnees cryptees}\par
+{\f1   - Les flux de communication}\par
+{\f1   - Tout contenu non-textuel}\par
+\par
+Exemples de declarations :\par
+\par
+{\f1     DATA gv_texte TYPE STRING.}\par
+{\f1     DATA gv_message TYPE STRING VALUE 'Bonjour le monde'.}\par
+{\f1     DATA gv_fichier TYPE XSTRING.}\par
+\par
+Manipulation de STRING :\par
+\par
+{\f1     DATA: gv_str1 TYPE STRING VALUE 'Hello',}\par
+{\f1           gv_str2 TYPE STRING VALUE 'World',}\par
+{\f1           gv_result TYPE STRING.}\par
+\par
+{\f1     " Concatenation avec &&}\par
+{\f1     gv_result = gv_str1 && ' ' && gv_str2.  " 'Hello World'}\par
+\par
+{\f1     " Longueur avec strlen()}\par
+{\f1     DATA lv_len TYPE I.}\par
+{\f1     lv_len = strlen( gv_result ).            " 11}\par
+\par
+{\f1     " Recherche avec find()}\par
+{\f1     DATA lv_pos TYPE I.}\par
+{\f1     lv_pos = find( val = gv_result sub = 'World' ).  " 6}\par
+\par
+Contrairement au type C, le type STRING ne contient pas d'espaces\par
+de remplissage (padding). La longueur correspond exactement au\par
+contenu reel de la chaine.\par
+\par
+\par
+\b 3.12 Type X - Chaines hexadecimales a longueur fixe \b0\par
+\par
+Le type X represente une chaine de donnees binaires (hexadecimales)\par
+a longueur fixe. Chaque octet est represente par deux caracteres\par
+hexadecimaux (0-9, A-F).\par
+\par
+Caracteristiques :\par
+{\f1   - Longueur : de 1 a 65 535 octets}\par
+{\f1   - Contenu : octets bruts}\par
+{\f1   - Valeur initiale : '00...00' (zeros)}\par
+{\f1   - Notation : hexadecimale ('FF', '0A', etc.)}\par
+\par
+Le type X est adapte pour :\par
+{\f1   - Les tampons de donnees fixes}\par
+{\f1   - Les masques binaires et flags}\par
+{\f1   - L'interaction avec des API bas niveau}\par
+{\f1   - Le stockage de donnees binaires de taille connue}\par
+\par
+Exemples :\par
+\par
+{\f1     DATA gv_octet TYPE X LENGTH 1.}\par
+{\f1     DATA gv_buffer TYPE X LENGTH 256.}\par
+{\f1     DATA gv_header TYPE X LENGTH 4 VALUE 'DEADBEEF'.}\par
+\par
+Les operations bit-a-bit peuvent etre effectuees sur les types X :\par
+\par
+{\f1     DATA: gv_a TYPE X LENGTH 1 VALUE 'F0',}\par
+{\f1           gv_b TYPE X LENGTH 1 VALUE '0F',}\par
+{\f1           gv_result TYPE X LENGTH 1.}\par
+\par
+{\f1     " Les operations bit-a-bit necessitent des fonctions specifiques}\par
+{\f1     " ou des traitements octet par octet}\par
+\par
+\par
+\b 3.13 Conversions entre types \b0\par
+\par
+ABAP effectue automatiquement des conversions implicites entre types\par
+compatibles lors des affectations. Cependant, certaines conversions\par
+peuvent entrainer des pertes de donnees ou de precision.\par
+\par
+Regles de conversion principales :\par
+\par
+{\f1   De       Vers     Comportement}\par
+{\f1   -------  -------  ------------------------------------------}\par
+{\f1   I        C/N      Conversion en chaine numerique}\par
+{\f1   C/N      I        Extraction de la valeur numerique}\par
+{\f1   I        P        Conversion exacte (si capacite suffisante)}\par
+{\f1   P        I        Troncature des decimales}\par
+{\f1   F        P        Arrondi aux decimales de P}\par
+{\f1   P        F        Conversion (possible perte de precision)}\par
+{\f1   D        C        Copie directe de la representation AAAAMMJJ}\par
+{\f1   C        D        Interpretation comme date (doit etre valide)}\par
+{\f1   T        C        Copie directe de la representation HHMMSS}\par
+{\f1   C        T        Interpretation comme heure (doit etre valide)}\par
+\par
+Exemples de conversions :\par
+\par
+{\f1     DATA: gv_i TYPE I,}\par
+{\f1           gv_c TYPE C LENGTH 10,}\par
+{\f1           gv_n TYPE N LENGTH 10,}\par
+{\f1           gv_p TYPE P DECIMALS 2,}\par
+{\f1           gv_f TYPE F.}\par
+\par
+{\f1     " Entier vers chaine}\par
+{\f1     gv_i = 42.}\par
+{\f1     gv_c = gv_i.           " gv_c = '        42'}\par
+{\f1     gv_n = gv_i.           " gv_n = '0000000042'}\par
+\par
+{\f1     " Chaine vers entier}\par
+{\f1     gv_c = '123'.}\par
+{\f1     gv_i = gv_c.           " gv_i = 123}\par
+\par
+{\f1     " Decimal vers entier (troncature)}\par
+{\f1     gv_p = '3.75'.}\par
+{\f1     gv_i = gv_p.           " gv_i = 3 (pas d'arrondi)}\par
+\par
+{\f1     " Flottant vers decimal (arrondi)}\par
+{\f1     gv_f = '3.456789'.}\par
+{\f1     gv_p = gv_f.           " gv_p = 3.46 (arrondi a 2 decimales)}\par
+\par
+Pour les conversions explicites et un meilleur controle, utiliser\par
+l'operateur CONV introduit dans ABAP 7.40 :\par
+\par
+{\f1     DATA(lv_string) = CONV string( gv_i ).}\par
+{\f1     DATA(lv_int) = CONV i( '123' ).}\par
+\par
+\par
+\b 3.14 Types de reference et types complexes \b0\par
+\par
+Au-dela des types elementaires, ABAP supporte des types plus complexes\par
+pour structurer les donnees :\par
+\par
+Types structures :\par
+{\f1   Les structures regroupent plusieurs champs de types differents sous}\par
+{\f1   un meme identificateur. Elles sont definies avec TYPES...BEGIN OF}\par
+{\f1   ou DATA...BEGIN OF.}\par
+\par
+Tables internes :\par
+{\f1   Les tables internes sont des tableaux dynamiques pouvant contenir}\par
+{\f1   plusieurs lignes du meme type. Elles sont essentielles pour le}\par
+{\f1   traitement de collections de donnees en ABAP.}\par
+\par
+Types reference :\par
+{\f1   Les types reference pointent vers des objets ou des donnees stockes}\par
+{\f1   ailleurs en memoire. Ils incluent :}\par
+{\f1   - REF TO data : reference a des donnees}\par
+{\f1   - REF TO class : reference a des objets}\par
+\par
+Ces types complexes seront detailles dans les sections suivantes\par
+(Declarations de donnees, Tables internes, ABAP Objects).\par
+\par
+\par
+\b 3.15 Bonnes pratiques pour le choix des types \b0\par
+\par
+Le choix du type de donnees appropriet est crucial pour la performance,\par
+la precision et la maintenabilite du code ABAP :\par
+\par
+Pour les nombres entiers :\par
+{\f1   - Utiliser I pour les compteurs, indices et petits nombres}\par
+{\f1   - Utiliser INT8 pour les tres grands nombres entiers}\par
+\par
+Pour les nombres decimaux :\par
+{\f1   - Toujours utiliser P pour les montants financiers}\par
+{\f1   - Utiliser F uniquement pour les calculs scientifiques}\par
+{\f1   - Considerer DECFLOAT pour une haute precision decimale}\par
+\par
+Pour les chaines de caracteres :\par
+{\f1   - Utiliser C pour les champs de longueur fixe connue}\par
+{\f1   - Utiliser STRING pour les textes de longueur variable}\par
+{\f1   - Utiliser N pour les codes numeriques avec zeros en tete}\par
+\par
+Pour les dates et heures :\par
+{\f1   - Utiliser D et T pour les dates et heures separees}\par
+{\f1   - Combiner D et T pour les horodatages complets}\par
+{\f1   - Considerer les types TIMESTAMP pour les besoins de precision}\par
+\par
+Pour les donnees binaires :\par
+{\f1   - Utiliser X pour les tampons de taille fixe}\par
+{\f1   - Utiliser XSTRING pour les donnees binaires de taille variable}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_04}
+{\footnote $ ABAP - DECLARATIONS DE DONNEES}
+{\footnote K ABAP declarations;DATA;TYPES;CONSTANTS;FIELD-SYMBOLS}
+\b\fs24 DECLARATIONS DE DONNEES \b0\fs20\par
+\par
+\par
+\b 4.1 Introduction aux declarations de donnees \b0\par
+\par
+La declaration des donnees est une etape fondamentale dans tout programme\par
+ABAP. Elle permet de definir les variables, les constantes, les structures\par
+et les tables internes qui seront utilisees pour stocker et manipuler les\par
+informations pendant l'execution du programme.\par
+\par
+En ABAP, toutes les declarations doivent apparaitre avant les instructions\par
+executables. Cette contrainte assure une separation claire entre la\par
+definition des ressources et leur utilisation, ce qui facilite la\par
+comprehension et la maintenance du code.\par
+\par
+Le systeme de declaration ABAP offre plusieurs mecanismes complementaires :\par
+\par
+{\f1   - Declaration explicite avec TYPE : specifier directement le type de}\par
+{\f1     donnees souhaite pour une variable.}\par
+\par
+{\f1   - Declaration par reference avec LIKE : reprendre le type d'une autre}\par
+{\f1     variable ou d'un champ du dictionnaire de donnees.}\par
+\par
+{\f1   - Declaration de types personnalises avec TYPES : creer des types}\par
+{\f1     reutilisables dans tout le programme.}\par
+\par
+{\f1   - Declaration de constantes avec CONSTANTS : definir des valeurs}\par
+{\f1     immuables accessibles globalement.}\par
+\par
+Le choix entre ces mecanismes depend du contexte et des besoins de\par
+reutilisabilite. Une bonne pratique consiste a definir des types\par
+personnalises pour les structures frequemment utilisees, et a utiliser\par
+LIKE pour referencer les elements du dictionnaire de donnees SAP.\par
+\par
+\par
+\b 4.2 Instruction DATA - Declaration de variables \b0\par
+\par
+L'instruction DATA est le mecanisme principal pour declarer des variables\par
+en ABAP. Elle alloue de la memoire pour stocker une valeur et associe un\par
+nom symbolique a cette zone de memoire.\par
+\par
+Syntaxe complete :\par
+\par
+{\f1   DATA nom TYPE type [LENGTH longueur] [DECIMALS decimales]}\par
+{\f1        [VALUE valeur_initiale] [READ-ONLY].}\par
+\par
+Elements de la syntaxe :\par
+{\f1   - nom : identifiant unique de la variable (max 30 caracteres)}\par
+{\f1   - TYPE type : specification du type de donnees}\par
+{\f1   - LENGTH longueur : taille pour les types C, N, X (optionnel)}\par
+{\f1   - DECIMALS decimales : nombre de decimales pour le type P (optionnel)}\par
+{\f1   - VALUE valeur : valeur initiale (optionnel)}\par
+{\f1   - READ-ONLY : empeche la modification directe (optionnel, classes)}\par
+\par
+Regles de nommage recommandees (conventions SAP) :\par
+{\f1   - gv_ : variable globale (Global Variable)}\par
+{\f1   - lv_ : variable locale (Local Variable)}\par
+{\f1   - pv_ : parametre de fonction (Parameter Variable)}\par
+{\f1   - cv_ : variable de retour (Changing Variable)}\par
+\par
+Exemples de declarations simples :\par
+\par
+{\f1     " Entier avec valeur initiale}\par
+{\f1     DATA gv_compteur TYPE I VALUE 0.}\par
+\par
+{\f1     " Chaine de caracteres avec longueur explicite}\par
+{\f1     DATA gv_nom TYPE C LENGTH 30.}\par
+\par
+{\f1     " Nombre decimal avec precision}\par
+{\f1     DATA gv_prix TYPE P LENGTH 8 DECIMALS 2.}\par
+\par
+{\f1     " Chaine de longueur variable}\par
+{\f1     DATA gv_texte TYPE STRING.}\par
+\par
+{\f1     " Date et heure}\par
+{\f1     DATA gv_date TYPE D VALUE sy-datum.}\par
+{\f1     DATA gv_heure TYPE T.}\par
+\par
+{\f1     " Reference au dictionnaire de donnees}\par
+{\f1     DATA gv_client TYPE kunnr.    " Numero client SAP}\par
+{\f1     DATA gv_montant TYPE wrbtr.   " Montant en devise}\par
+\par
+Initialisation automatique : toute variable declaree sans clause VALUE\par
+recoit automatiquement la valeur initiale de son type (0 pour les nombres,\par
+espaces pour les chaines, '00000000' pour les dates, etc.).\par
+\par
+Portee des variables : une variable declaree avec DATA au niveau du\par
+programme (hors des procedures) est globale et accessible depuis tout\par
+le programme. Une variable declaree dans une procedure (FORM, METHOD,\par
+FUNCTION) est locale a cette procedure.\par
+\par
+\par
+\b 4.3 Declaration chainee - Syntaxe avec deux-points \b0\par
+\par
+La declaration chainee permet de declarer plusieurs variables en une\par
+seule instruction DATA, en utilisant le caractere deux-points (:) apres\par
+le mot-cle et des virgules pour separer les declarations.\par
+\par
+Syntaxe :\par
+\par
+{\f1   DATA: nom1 TYPE type1 [options1],}\par
+{\f1         nom2 TYPE type2 [options2],}\par
+{\f1         ...}\par
+{\f1         nomN TYPE typeN [optionsN].}\par
+\par
+Cette syntaxe est particulierement utile pour :\par
+{\f1   - Regrouper les declarations par theme ou fonction}\par
+{\f1   - Reduire la repetition du mot-cle DATA}\par
+{\f1   - Ameliorer la lisibilite du code}\par
+\par
+Exemple detaille :\par
+\par
+{\f1     " Declarations groupees par fonction}\par
+{\f1     DATA: " Variables de travail}\par
+{\f1           lv_index    TYPE I,}\par
+{\f1           lv_longueur TYPE I,}\par
+{\f1           lv_position TYPE I,}\par
+\par
+{\f1           " Variables de resultat}\par
+{\f1           lv_total    TYPE P DECIMALS 2,}\par
+{\f1           lv_moyenne  TYPE F,}\par
+\par
+{\f1           " Indicateurs}\par
+{\f1           lv_trouve   TYPE ABAP_BOOL,}\par
+{\f1           lv_erreur   TYPE ABAP_BOOL VALUE abap_false.}\par
+\par
+Bonnes pratiques pour les declarations chainees :\par
+{\f1   - Aligner les noms de variables pour une meilleure lisibilite}\par
+{\f1   - Grouper les variables par fonction ou par type}\par
+{\f1   - Ajouter des commentaires pour documenter les groupes}\par
+{\f1   - Limiter le nombre de variables par chaine (max 10-15)}\par
+\par
+Declaration avec BEGIN OF - END OF integree :\par
+\par
+La syntaxe chainee permet aussi de declarer directement des structures :\par
+\par
+{\f1     DATA: BEGIN OF ls_donnees,}\par
+{\f1             id    TYPE I,}\par
+{\f1             nom   TYPE C LENGTH 30,}\par
+{\f1             actif TYPE ABAP_BOOL,}\par
+{\f1           END OF ls_donnees.}\par
+\par
+Cette forme est equivalente a definir un type puis declarer une variable\par
+de ce type, mais sans creer de type reutilisable.\par
+\par
+\par
+\b 4.4 Instruction CONSTANTS - Declaration de constantes \b0\par
+\par
+L'instruction CONSTANTS permet de declarer des valeurs immuables qui ne\par
+peuvent pas etre modifiees pendant l'execution du programme. L'utilisation\par
+de constantes ameliore la lisibilite et la maintenabilite du code.\par
+\par
+Syntaxe :\par
+\par
+{\f1   CONSTANTS nom TYPE type VALUE valeur.}\par
+\par
+Regles de nommage recommandees :\par
+{\f1   - gc_ : constante globale (Global Constant)}\par
+{\f1   - lc_ : constante locale (Local Constant)}\par
+{\f1   - c_  : forme abregee acceptable}\par
+\par
+Avantages des constantes :\par
+{\f1   - Centralisation des valeurs fixes}\par
+{\f1   - Modification facile (un seul endroit)}\par
+{\f1   - Documentation du code (noms significatifs)}\par
+{\f1   - Detection des erreurs a la compilation}\par
+\par
+Exemples de declarations de constantes :\par
+\par
+{\f1     " Constantes mathematiques}\par
+{\f1     CONSTANTS gc_pi TYPE F VALUE '3.14159265358979'.}\par
+{\f1     CONSTANTS gc_e  TYPE F VALUE '2.71828182845904'.}\par
+\par
+{\f1     " Limites et seuils}\par
+{\f1     CONSTANTS gc_max_lignes TYPE I VALUE 1000.}\par
+{\f1     CONSTANTS gc_taux_tva   TYPE P DECIMALS 2 VALUE '20.00'.}\par
+\par
+{\f1     " Codes et statuts}\par
+{\f1     CONSTANTS gc_statut_actif   TYPE C LENGTH 1 VALUE 'A'.}\par
+{\f1     CONSTANTS gc_statut_inactif TYPE C LENGTH 1 VALUE 'I'.}\par
+{\f1     CONSTANTS gc_statut_bloque  TYPE C LENGTH 1 VALUE 'B'.}\par
+\par
+{\f1     " Messages}\par
+{\f1     CONSTANTS gc_msg_erreur TYPE STRING VALUE 'Une erreur est survenue'.}\par
+\par
+Declaration chainee de constantes :\par
+\par
+{\f1     CONSTANTS: gc_lundi    TYPE I VALUE 1,}\par
+{\f1                gc_mardi    TYPE I VALUE 2,}\par
+{\f1                gc_mercredi TYPE I VALUE 3,}\par
+{\f1                gc_jeudi    TYPE I VALUE 4,}\par
+{\f1                gc_vendredi TYPE I VALUE 5,}\par
+{\f1                gc_samedi   TYPE I VALUE 6,}\par
+{\f1                gc_dimanche TYPE I VALUE 7.}\par
+\par
+Constantes de structure :\par
+\par
+Les constantes peuvent aussi etre des structures avec des valeurs\par
+predefinies pour chaque champ :\par
+\par
+{\f1     CONSTANTS: BEGIN OF gc_defaut,}\par
+{\f1                  taille TYPE I VALUE 100,}\par
+{\f1                  format TYPE C LENGTH 3 VALUE 'PDF',}\par
+{\f1                  actif  TYPE ABAP_BOOL VALUE abap_true,}\par
+{\f1                END OF gc_defaut.}\par
+\par
+\par
+\b 4.5 Declaration par reference - LIKE et TYPE REF TO \b0\par
+\par
+La clause LIKE permet de declarer une variable en reprenant le type\par
+d'une autre variable existante ou d'un element du dictionnaire de\par
+donnees SAP (tables, structures, elements de donnees).\par
+\par
+Syntaxe avec LIKE :\par
+\par
+{\f1   DATA nom LIKE reference.}\par
+\par
+Cas d'utilisation de LIKE :\par
+{\f1   - Copier le type d'une variable locale}\par
+{\f1   - Referencer un champ d'une table du dictionnaire}\par
+{\f1   - Assurer la coherence avec les structures existantes}\par
+\par
+Exemples :\par
+\par
+{\f1     " Reference a une variable locale}\par
+{\f1     DATA gv_original TYPE I.}\par
+{\f1     DATA gv_copie LIKE gv_original.}\par
+\par
+{\f1     " Reference a un champ de table du dictionnaire}\par
+{\f1     DATA gv_numero_client LIKE kna1-kunnr.}\par
+{\f1     DATA gv_nom_client LIKE kna1-name1.}\par
+{\f1     DATA gv_montant LIKE bseg-wrbtr.}\par
+\par
+{\f1     " Reference a la ligne d'une table}\par
+{\f1     DATA gt_clients LIKE TABLE OF kna1.}\par
+{\f1     DATA gs_client LIKE LINE OF gt_clients.}\par
+\par
+TYPE vs LIKE - Differences et recommandations :\par
+\par
+{\f1   - TYPE : reference a un type de donnees abstrait (type elementaire,}\par
+{\f1     type defini avec TYPES, element de donnees du dictionnaire).}\par
+\par
+{\f1   - LIKE : reference a un objet de donnees concret (variable, champ}\par
+{\f1     de table, structure).}\par
+\par
+Recommandation moderne : depuis ABAP 7.40, il est preferable d'utiliser\par
+TYPE plutot que LIKE pour la plupart des cas. LIKE reste utile pour\par
+referencer des champs de tables du dictionnaire ou pour copier le type\par
+d'une variable dynamiquement determinee.\par
+\par
+Types reference - TYPE REF TO :\par
+\par
+Pour travailler avec des references (pointeurs), ABAP utilise la\par
+syntaxe TYPE REF TO :\par
+\par
+{\f1     " Reference a un objet}\par
+{\f1     DATA lo_client TYPE REF TO zcl_client.}\par
+\par
+{\f1     " Reference a des donnees}\par
+{\f1     DATA lr_donnees TYPE REF TO ty_donnees.}\par
+{\f1     DATA lr_table TYPE REF TO DATA.      " Reference generique}\par
+\par
+\par
+\b 4.6 Instruction TYPES - Definition de types personnalises \b0\par
+\par
+L'instruction TYPES permet de creer des definitions de types\par
+reutilisables dans tout le programme. Ces types peuvent etre des\par
+types elementaires, des structures ou des types de tables.\par
+\par
+Syntaxe pour types elementaires :\par
+\par
+{\f1   TYPES nom TYPE type_de_base [LENGTH longueur] [DECIMALS decimales].}\par
+\par
+Exemples :\par
+\par
+{\f1     " Types elementaires personnalises}\par
+{\f1     TYPES ty_montant TYPE P LENGTH 15 DECIMALS 2.}\par
+{\f1     TYPES ty_code TYPE C LENGTH 10.}\par
+{\f1     TYPES ty_description TYPE STRING.}\par
+\par
+Syntaxe pour types structures :\par
+\par
+{\f1   TYPES: BEGIN OF nom_structure,}\par
+{\f1            champ1 TYPE type1,}\par
+{\f1            champ2 TYPE type2,}\par
+{\f1            ...}\par
+{\f1          END OF nom_structure.}\par
+\par
+Exemple complet de structure :\par
+\par
+{\f1     " Definition d'un type structure}\par
+{\f1     TYPES: BEGIN OF ty_employe,}\par
+{\f1              matricule TYPE N LENGTH 8,}\par
+{\f1              nom       TYPE C LENGTH 40,}\par
+{\f1              prenom    TYPE C LENGTH 30,}\par
+{\f1              service   TYPE C LENGTH 4,}\par
+{\f1              salaire   TYPE P LENGTH 8 DECIMALS 2,}\par
+{\f1              date_embauche TYPE D,}\par
+{\f1              actif     TYPE ABAP_BOOL,}\par
+{\f1            END OF ty_employe.}\par
+\par
+{\f1     " Declaration de variables utilisant ce type}\par
+{\f1     DATA gs_employe TYPE ty_employe.}\par
+{\f1     DATA gt_employes TYPE TABLE OF ty_employe.}\par
+{\f1     DATA gs_backup TYPE ty_employe.}\par
+\par
+Structures imbriquees :\par
+\par
+Les structures peuvent contenir d'autres structures pour modeliser\par
+des donnees complexes :\par
+\par
+{\f1     TYPES: BEGIN OF ty_adresse,}\par
+{\f1              rue        TYPE C LENGTH 60,}\par
+{\f1              code_postal TYPE N LENGTH 5,}\par
+{\f1              ville      TYPE C LENGTH 40,}\par
+{\f1              pays       TYPE C LENGTH 3,}\par
+{\f1            END OF ty_adresse.}\par
+\par
+{\f1     TYPES: BEGIN OF ty_client_complet,}\par
+{\f1              numero     TYPE N LENGTH 10,}\par
+{\f1              nom        TYPE C LENGTH 60,}\par
+{\f1              adresse_facturation TYPE ty_adresse,}\par
+{\f1              adresse_livraison   TYPE ty_adresse,}\par
+{\f1              telephone  TYPE C LENGTH 15,}\par
+{\f1              email      TYPE C LENGTH 60,}\par
+{\f1            END OF ty_client_complet.}\par
+\par
+Inclusion de structures avec INCLUDE :\par
+\par
+Pour eviter la duplication, on peut inclure une structure dans une\par
+autre avec la clause INCLUDE :\par
+\par
+{\f1     TYPES: BEGIN OF ty_personne,}\par
+{\f1              nom    TYPE C LENGTH 40,}\par
+{\f1              prenom TYPE C LENGTH 30,}\par
+{\f1            END OF ty_personne.}\par
+\par
+{\f1     TYPES: BEGIN OF ty_employe_v2.}\par
+{\f1              INCLUDE TYPE ty_personne.}\par
+{\f1     TYPES:   matricule TYPE N LENGTH 8,}\par
+{\f1              service   TYPE C LENGTH 4,}\par
+{\f1            END OF ty_employe_v2.}\par
+\par
+\par
+\b 4.7 Structures - Definition et utilisation detaillee \b0\par
+\par
+Les structures sont des types de donnees composes qui regroupent\par
+plusieurs champs de types differents sous un meme identificateur.\par
+Elles sont essentielles pour modeliser des entites metier complexes.\par
+\par
+Declaration directe avec DATA BEGIN OF :\par
+\par
+{\f1     DATA: BEGIN OF gs_commande,}\par
+{\f1             numero      TYPE N LENGTH 10,}\par
+{\f1             date        TYPE D,}\par
+{\f1             client      TYPE N LENGTH 10,}\par
+{\f1             montant_ht  TYPE P DECIMALS 2,}\par
+{\f1             tva         TYPE P DECIMALS 2,}\par
+{\f1             montant_ttc TYPE P DECIMALS 2,}\par
+{\f1             statut      TYPE C LENGTH 2,}\par
+{\f1           END OF gs_commande.}\par
+\par
+Acces aux champs d'une structure :\par
+\par
+L'acces aux champs individuels se fait avec le tiret (-) :\par
+\par
+{\f1     gs_commande-numero = '0000000001'.}\par
+{\f1     gs_commande-date = sy-datum.}\par
+{\f1     gs_commande-client = '0000123456'.}\par
+{\f1     gs_commande-montant_ht = '1000.00'.}\par
+{\f1     gs_commande-tva = gs_commande-montant_ht * '0.20'.}\par
+{\f1     gs_commande-montant_ttc = gs_commande-montant_ht + gs_commande-tva.}\par
+\par
+Affectation complete de structure :\par
+\par
+On peut affecter une structure entiere a une autre du meme type :\par
+\par
+{\f1     DATA gs_copie LIKE gs_commande.}\par
+{\f1     gs_copie = gs_commande.          " Copie complete}\par
+\par
+Ou utiliser MOVE-CORRESPONDING pour copier les champs de meme nom :\par
+\par
+{\f1     DATA: BEGIN OF gs_resume,}\par
+{\f1             numero TYPE N LENGTH 10,}\par
+{\f1             montant_ttc TYPE P DECIMALS 2,}\par
+{\f1           END OF gs_resume.}\par
+\par
+{\f1     MOVE-CORRESPONDING gs_commande TO gs_resume.}\par
+\par
+Initialisation des structures :\par
+\par
+{\f1     " Reinitialiser tous les champs a leur valeur initiale}\par
+{\f1     CLEAR gs_commande.}\par
+\par
+{\f1     " Reinitialiser un champ specifique}\par
+{\f1     CLEAR gs_commande-statut.}\par
+\par
+{\f1     " Verifier si une structure est initiale}\par
+{\f1     IF gs_commande IS INITIAL.}\par
+{\f1       WRITE: / 'La structure est vide'.}\par
+{\f1     ENDIF.}\par
+\par
+\par
+\b 4.8 Tables internes - Declaration et types de tables \b0\par
+\par
+Les tables internes sont des structures de donnees dynamiques qui\par
+permettent de stocker plusieurs lignes du meme type. Elles sont\par
+fondamentales pour le traitement de collections de donnees en ABAP.\par
+\par
+Types de tables internes :\par
+\par
+ABAP supporte trois types principaux de tables internes, chacun\par
+optimise pour des usages specifiques :\par
+\par
+{\f1   1. TABLE STANDARD (par defaut) :}\par
+{\f1      - Acces sequentiel ou par index}\par
+{\f1      - Insertion rapide (a la fin)}\par
+{\f1      - Recherche lineaire O(n)}\par
+{\f1      - Adaptee aux petites collections}\par
+\par
+{\f1   2. SORTED TABLE :}\par
+{\f1      - Toujours triee selon une cle}\par
+{\f1      - Recherche binaire O(log n)}\par
+{\f1      - Insertion triee automatique}\par
+{\f1      - Adaptee aux recherches frequentes}\par
+\par
+{\f1   3. HASHED TABLE :}\par
+{\f1      - Acces par cle unique (hash)}\par
+{\f1      - Recherche O(1) par cle}\par
+{\f1      - Pas d'acces par index}\par
+{\f1      - Adaptee aux grandes collections avec cle unique}\par
+\par
+Syntaxe de declaration :\par
+\par
+{\f1     " Table standard (defaut)}\par
+{\f1     DATA gt_donnees TYPE TABLE OF ty_ligne.}\par
+{\f1     DATA gt_clients TYPE STANDARD TABLE OF ty_client.}\par
+\par
+{\f1     " Table triee avec cle}\par
+{\f1     DATA gt_employes TYPE SORTED TABLE OF ty_employe}\par
+{\f1                      WITH UNIQUE KEY matricule.}\par
+\par
+{\f1     " Table avec cle non unique}\par
+{\f1     DATA gt_commandes TYPE SORTED TABLE OF ty_commande}\par
+{\f1                       WITH NON-UNIQUE KEY client.}\par
+\par
+{\f1     " Table hashee avec cle unique}\par
+{\f1     DATA gt_index TYPE HASHED TABLE OF ty_index}\par
+{\f1                   WITH UNIQUE KEY code.}\par
+\par
+Declaration complete avec toutes les options :\par
+\par
+{\f1     TYPES: BEGIN OF ty_article,}\par
+{\f1              numero TYPE N LENGTH 10,}\par
+{\f1              designation TYPE C LENGTH 40,}\par
+{\f1              prix TYPE P DECIMALS 2,}\par
+{\f1              stock TYPE I,}\par
+{\f1            END OF ty_article.}\par
+\par
+{\f1     DATA gt_articles TYPE TABLE OF ty_article}\par
+{\f1          WITH HEADER LINE             " (obsolete mais supporte)}\par
+{\f1          WITH KEY numero.}\par
+\par
+Syntaxe moderne (ABAP 7.40+) :\par
+\par
+{\f1     DATA gt_articles TYPE SORTED TABLE OF ty_article}\par
+{\f1          WITH UNIQUE KEY numero}\par
+{\f1          WITH NON-UNIQUE SORTED KEY k_prix COMPONENTS prix.}\par
+\par
+Declaration avec LIKE TABLE OF :\par
+\par
+{\f1     DATA gt_clients_vip LIKE TABLE OF gs_client.}\par
+{\f1     DATA gt_copie LIKE gt_clients.}\par
+\par
+\par
+\b 4.9 Field-symbols et references de donnees \b0\par
+\par
+Les field-symbols sont des pointeurs symboliques vers des zones de\par
+memoire. Ils permettent d'acceder a des donnees de maniere dynamique\par
+sans copier les valeurs.\par
+\par
+Declaration de field-symbols :\par
+\par
+{\f1     FIELD-SYMBOLS <fs_ligne> TYPE ty_ligne.}\par
+{\f1     FIELD-SYMBOLS <fs_champ> TYPE ANY.}\par
+{\f1     FIELD-SYMBOLS <fs_table> TYPE ANY TABLE.}\par
+\par
+Affectation avec ASSIGN :\par
+\par
+{\f1     DATA gv_valeur TYPE I VALUE 42.}\par
+{\f1     FIELD-SYMBOLS <fs_val> TYPE I.}\par
+\par
+{\f1     ASSIGN gv_valeur TO <fs_val>.}\par
+{\f1     <fs_val> = 100.          " Modifie gv_valeur directement}\par
+{\f1     WRITE: / gv_valeur.      " Affiche 100}\par
+\par
+Utilisation avec les tables internes :\par
+\par
+{\f1     LOOP AT gt_clients ASSIGNING FIELD-SYMBOL(<fs_client>).}\par
+{\f1       <fs_client>-statut = 'A'.    " Modification directe}\par
+{\f1     ENDLOOP.}\par
+\par
+Verification d'affectation :\par
+\par
+{\f1     IF <fs_val> IS ASSIGNED.}\par
+{\f1       " Le field-symbol pointe vers une donnee valide}\par
+{\f1     ENDIF.}\par
+\par
+{\f1     UNASSIGN <fs_val>.       " Libere l'affectation}\par
+\par
+References de donnees avec GET REFERENCE :\par
+\par
+{\f1     DATA lr_ref TYPE REF TO ty_client.}\par
+{\f1     DATA ls_client TYPE ty_client.}\par
+\par
+{\f1     GET REFERENCE OF ls_client INTO lr_ref.}\par
+\par
+{\f1     " Acces via la reference}\par
+{\f1     lr_ref->nom = 'Dupont'.}\par
+\par
+\par
+\b 4.10 Ecran de selection - PARAMETERS et SELECT-OPTIONS \b0\par
+\par
+L'ecran de selection permet de definir des parametres d'entree que\par
+l'utilisateur peut renseigner avant l'execution d'un report. C'est\par
+une fonctionnalite essentielle des programmes de type REPORT.\par
+\par
+Instruction PARAMETERS :\par
+\par
+{\f1   PARAMETERS nom TYPE type [DEFAULT valeur] [options].}\par
+\par
+Options principales de PARAMETERS :\par
+{\f1   - DEFAULT valeur : valeur par defaut}\par
+{\f1   - OBLIGATORY : saisie obligatoire}\par
+{\f1   - LOWER CASE : accepte les minuscules}\par
+{\f1   - AS CHECKBOX : affiche comme case a cocher}\par
+{\f1   - RADIOBUTTON GROUP grp : bouton radio dans un groupe}\par
+{\f1   - MODIF ID id : identifiant pour modification dynamique}\par
+{\f1   - NO-DISPLAY : parametre cache}\par
+\par
+Exemples de PARAMETERS :\par
+\par
+{\f1     " Parametre simple avec valeur par defaut}\par
+{\f1     PARAMETERS p_societe TYPE bukrs DEFAULT '1000'.}\par
+\par
+{\f1     " Parametre obligatoire}\par
+{\f1     PARAMETERS p_date TYPE sy-datum OBLIGATORY.}\par
+\par
+{\f1     " Case a cocher}\par
+{\f1     PARAMETERS p_actif AS CHECKBOX DEFAULT 'X'.}\par
+\par
+{\f1     " Boutons radio}\par
+{\f1     PARAMETERS: p_opt1 RADIOBUTTON GROUP grp1 DEFAULT 'X',}\par
+{\f1                 p_opt2 RADIOBUTTON GROUP grp1,}\par
+{\f1                 p_opt3 RADIOBUTTON GROUP grp1.}\par
+\par
+{\f1     " Parametre avec liste de valeurs (recherche F4)}\par
+{\f1     PARAMETERS p_client TYPE kunnr MATCHCODE OBJECT zsh_client.}\par
+\par
+Instruction SELECT-OPTIONS :\par
+\par
+{\f1   SELECT-OPTIONS nom FOR variable [options].}\par
+\par
+Les SELECT-OPTIONS permettent de definir des plages de valeurs\par
+(intervals) pour les selections. Le systeme cree automatiquement\par
+une table interne avec les champs SIGN, OPTION, LOW et HIGH.\par
+\par
+Structure d'une ligne SELECT-OPTIONS :\par
+{\f1   - SIGN : 'I' (Include) ou 'E' (Exclude)}\par
+{\f1   - OPTION : 'EQ', 'NE', 'GT', 'LT', 'GE', 'LE', 'BT' (Between), etc.}\par
+{\f1   - LOW : valeur basse de l'intervalle}\par
+{\f1   - HIGH : valeur haute de l'intervalle (pour BT)}\par
+\par
+Exemples de SELECT-OPTIONS :\par
+\par
+{\f1     " Variable de reference pour SELECT-OPTIONS}\par
+{\f1     TABLES: kna1.    " Ou: DATA gv_kunnr TYPE kna1-kunnr.}\par
+\par
+{\f1     " Selection de numeros de clients}\par
+{\f1     SELECT-OPTIONS s_kunnr FOR kna1-kunnr.}\par
+\par
+{\f1     " Selection de dates}\par
+{\f1     SELECT-OPTIONS s_date FOR sy-datum DEFAULT sy-datum.}\par
+\par
+{\f1     " Selection avec options}\par
+{\f1     SELECT-OPTIONS s_bukrs FOR t001-bukrs NO-EXTENSION}\par
+{\f1                                           NO INTERVALS.}\par
+\par
+Utilisation dans les requetes SELECT :\par
+\par
+{\f1     SELECT * FROM kna1}\par
+{\f1       WHERE kunnr IN s_kunnr}\par
+{\f1         AND land1 = p_pays}\par
+{\f1       INTO TABLE gt_clients.}\par
+\par
+\par
+\b 4.11 Variables systeme - Structure SY \b0\par
+\par
+ABAP fournit une structure systeme SY (alias SYST) contenant des\par
+informations sur le contexte d'execution. Ces champs sont en lecture\par
+seule et mis a jour automatiquement par le systeme.\par
+\par
+Champs SY frequemment utilises :\par
+\par
+{\f1   Champ         Type     Description}\par
+{\f1   ------------  -------  ------------------------------------------}\par
+{\f1   sy-subrc      I        Code retour de la derniere operation}\par
+{\f1   sy-datum      D        Date systeme (AAAAMMJJ)}\par
+{\f1   sy-uzeit      T        Heure systeme (HHMMSS)}\par
+{\f1   sy-uname      C(12)    Nom de l'utilisateur connecte}\par
+{\f1   sy-langu      C(1)     Langue de connexion}\par
+{\f1   sy-mandt      C(3)     Mandant de connexion}\par
+{\f1   sy-sysid      C(8)     Identifiant du systeme SAP}\par
+{\f1   sy-host       C(32)    Nom du serveur d'application}\par
+{\f1   sy-index      I        Index de boucle (DO, WHILE)}\par
+{\f1   sy-tabix      I        Index de ligne dans une table interne}\par
+{\f1   sy-dbcnt      I        Nombre de lignes traitees par SELECT}\par
+{\f1   sy-msgid      C(20)    Classe du dernier message}\par
+{\f1   sy-msgno      N(3)     Numero du dernier message}\par
+{\f1   sy-msgty      C(1)     Type du dernier message (E/W/I/S)}\par
+{\f1   sy-msgv1-v4   C(50)    Variables du dernier message}\par
+{\f1   sy-repid      C(40)    Nom du programme en cours}\par
+{\f1   sy-tcode      C(20)    Code transaction en cours}\par
+{\f1   sy-dynnr      N(4)     Numero d'ecran courant}\par
+{\f1   sy-batch      C(1)     'X' si execution en batch}\par
+\par
+Exemples d'utilisation :\par
+\par
+{\f1     " Verification du code retour}\par
+{\f1     READ TABLE gt_clients WITH KEY numero = lv_num INTO gs_client.}\par
+{\f1     IF sy-subrc = 0.}\par
+{\f1       WRITE: / 'Client trouve:', gs_client-nom.}\par
+{\f1     ELSE.}\par
+{\f1       WRITE: / 'Client non trouve'.}\par
+{\f1     ENDIF.}\par
+\par
+{\f1     " Utilisation de la date et heure systeme}\par
+{\f1     gs_log-date_creation = sy-datum.}\par
+{\f1     gs_log-heure_creation = sy-uzeit.}\par
+{\f1     gs_log-utilisateur = sy-uname.}\par
+\par
+{\f1     " Index de boucle}\par
+{\f1     DO 10 TIMES.}\par
+{\f1       WRITE: / 'Iteration:', sy-index.}\par
+{\f1     ENDDO.}\par
+\par
+{\f1     " Index de table}\par
+{\f1     LOOP AT gt_articles INTO gs_article.}\par
+{\f1       gs_article-ligne = sy-tabix.}\par
+{\f1     ENDLOOP.}\par
+\par
+\par
+\b 4.12 Bonnes pratiques pour les declarations \b0\par
+\par
+Conventions de nommage recommandees :\par
+\par
+{\f1   Prefixe  Signification          Exemple}\par
+{\f1   -------  ---------------------  ----------------}\par
+{\f1   gv_      Variable globale       gv_compteur}\par
+{\f1   lv_      Variable locale        lv_index}\par
+{\f1   gs_      Structure globale      gs_client}\par
+{\f1   ls_      Structure locale       ls_donnees}\par
+{\f1   gt_      Table globale          gt_resultats}\par
+{\f1   lt_      Table locale           lt_temp}\par
+{\f1   gf_      Flag/booleen global    gf_traite}\par
+{\f1   lf_      Flag/booleen local     lf_erreur}\par
+{\f1   gc_      Constante globale      gc_max}\par
+{\f1   lc_      Constante locale       lc_taille}\par
+{\f1   lo_      Objet local            lo_document}\par
+{\f1   go_      Objet global           go_application}\par
+{\f1   lr_      Reference locale       lr_donnees}\par
+{\f1   gr_      Reference globale      gr_contexte}\par
+\par
+Types personnalises :\par
+\par
+{\f1   Prefixe  Signification          Exemple}\par
+{\f1   -------  ---------------------  ----------------}\par
+{\f1   ty_      Type structure         ty_client}\par
+{\f1   tt_      Type table             tt_clients}\par
+{\f1   tr_      Type range             tr_numeros}\par
+\par
+Organisation des declarations :\par
+\par
+Pour une meilleure lisibilite, organiser les declarations dans\par
+l'ordre suivant :\par
+\par
+{\f1     1. TYPES (definitions de types personnalises)}\par
+{\f1     2. CONSTANTS (constantes)}\par
+{\f1     3. DATA (variables et structures simples)}\par
+{\f1     4. DATA (tables internes)}\par
+{\f1     5. FIELD-SYMBOLS (symboles de champ)}\par
+{\f1     6. PARAMETERS et SELECT-OPTIONS (ecran de selection)}\par
+\par
+Exemple d'organisation :\par
+\par
+{\f1     "======================================}\par
+{\f1     " Types personnalises}\par
+{\f1     "======================================}\par
+{\f1     TYPES: BEGIN OF ty_resultat,}\par
+{\f1              code TYPE N LENGTH 10,}\par
+{\f1              valeur TYPE P DECIMALS 2,}\par
+{\f1            END OF ty_resultat.}\par
+{\f1     TYPES tt_resultats TYPE TABLE OF ty_resultat.}\par
+\par
+{\f1     "======================================}\par
+{\f1     " Constantes}\par
+{\f1     "======================================}\par
+{\f1     CONSTANTS: gc_max_lignes TYPE I VALUE 1000,}\par
+{\f1                gc_version TYPE C LENGTH 5 VALUE '1.0.0'.}\par
+\par
+{\f1     "======================================}\par
+{\f1     " Variables globales}\par
+{\f1     "======================================}\par
+{\f1     DATA: gv_compteur TYPE I,}\par
+{\f1           gv_total TYPE P DECIMALS 2,}\par
+{\f1           gs_resultat TYPE ty_resultat.}\par
+\par
+{\f1     "======================================}\par
+{\f1     " Tables internes}\par
+{\f1     "======================================}\par
+{\f1     DATA: gt_resultats TYPE tt_resultats,}\par
+{\f1           gt_erreurs TYPE TABLE OF bapiret2.}\par
+\par
+{\f1     "======================================}\par
+{\f1     " Ecran de selection}\par
+{\f1     "======================================}\par
+{\f1     PARAMETERS p_annee TYPE gjahr OBLIGATORY.}\par
+{\f1     SELECT-OPTIONS s_bukrs FOR t001-bukrs.}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_05}
+{\footnote $ ABAP - OPERATEURS}
+{\footnote K ABAP operateurs}
+\b\fs24 OPERATEURS \b0\fs20\par
+\par
+\par
+\b 5.1 Operateurs arithmetiques \b0\par
+\par
+{\f1   Symbole  Mot-cle  Description}\par
+{\f1   -------  -------  ---------------------}\par
+{\f1   +                 Addition}\par
+{\f1   -                 Soustraction}\par
+{\f1   *                 Multiplication}\par
+{\f1   /                 Division}\par
+{\f1            DIV      Division entiere}\par
+{\f1            MOD      Modulo (reste)}\par
+\par
+\par
+\b 5.2 Operateurs de comparaison \b0\par
+\par
+{\f1   Symbole  Mot-cle  Description}\par
+{\f1   -------  -------  ---------------------}\par
+{\f1   =        EQ       Egal}\par
+{\f1   <>       NE       Different}\par
+{\f1   <        LT       Inferieur}\par
+{\f1   >        GT       Superieur}\par
+{\f1   <=       LE       Inferieur ou egal}\par
+{\f1   >=       GE       Superieur ou egal}\par
+\par
+{\f1   Les operateurs symboliques (=, <>, <, >, <=, >=) et les mots-cles}\par
+{\f1   verbaux (EQ, NE, LT, GT, LE, GE) sont interchangeables.}\par
+\par
+\par
+\b 5.3 Operateurs logiques \b0\par
+\par
+{\f1   Mot-cle  Description}\par
+{\f1   -------  ---------------------}\par
+{\f1   AND      ET logique}\par
+{\f1   OR       OU logique}\par
+{\f1   NOT      Negation logique}\par
+\par
+\par
+\b 5.4 Predicats speciaux \b0\par
+\par
+{\f1   Expression                Description}\par
+{\f1   ------------------------  ---------------------------------}\par
+{\f1   var IS INITIAL            Vrai si var a sa valeur initiale}\par
+{\f1   var IS NOT INITIAL        Vrai si var n'est pas initiale}\par
+{\f1   var IS BOUND              Vrai si var est liee}\par
+{\f1   var BETWEEN lo AND hi     Vrai si lo <= var <= hi}\par
+{\f1   var IN range              Vrai si var appartient a range}\par
+\par
+\par
+\b 5.5 Concatenation de chaines \b0\par
+\par
+{\f1   Symbole  Description}\par
+{\f1   -------  ---------------------}\par
+{\f1   &&       Concatenation de chaines}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_06}
+{\footnote $ ABAP - EXPRESSIONS ET AFFECTATIONS}
+{\footnote K ABAP expressions;affectations;COMPUTE;MOVE}
+\b\fs24 EXPRESSIONS ET AFFECTATIONS \b0\fs20\par
+\par
+\par
+\b 6.1 Affectation directe \b0\par
+\par
+{\f1   variable = expression.}\par
+\par
+{\f1   Exemples :}\par
+\par
+{\f1     gv_total = gv_a + gv_b.}\par
+{\f1     gv_result = ( gv_x * gv_y ) / gv_z.}\par
+{\f1     gv_reste = gv_a MOD gv_b.}\par
+\par
+\par
+\b 6.2 Instruction COMPUTE \b0\par
+\par
+{\f1   COMPUTE variable = expression.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     COMPUTE gv_somme = gv_a + gv_b + gv_c.}\par
+\par
+\par
+\b 6.3 Instruction MOVE \b0\par
+\par
+{\f1   MOVE source TO destination.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     MOVE gv_ancien TO gv_nouveau.}\par
+{\f1     MOVE 42 TO gv_nombre.}\par
+\par
+\par
+\b 6.4 Operations arithmetiques verbales \b0\par
+\par
+{\f1   ADD valeur TO variable.}\par
+{\f1   ADD val1 TO val2 GIVING resultat.}\par
+\par
+{\f1   SUBTRACT valeur FROM variable.}\par
+\par
+{\f1   MULTIPLY variable BY valeur.}\par
+\par
+{\f1   DIVIDE variable BY valeur.}\par
+\par
+{\f1   Exemples :}\par
+\par
+{\f1     ADD 1 TO gv_compteur.}\par
+{\f1     SUBTRACT gv_taxe FROM gv_prix.}\par
+{\f1     MULTIPLY gv_quantite BY gv_prix_unitaire.}\par
+{\f1     DIVIDE gv_total BY gv_nombre.}\par
+\par
+\par
+\b 6.5 Instruction CLEAR \b0\par
+\par
+{\f1   CLEAR variable.}\par
+\par
+{\f1   Remet la variable a sa valeur initiale :}\par
+{\f1   - TYPE I, P, F : 0}\par
+{\f1   - TYPE C, N    : espaces / zeros}\par
+{\f1   - TYPE STRING  : chaine vide}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_07}
+{\footnote $ ABAP - STRUCTURES DE CONTROLE}
+{\footnote K ABAP controle;IF;CASE;DO;WHILE;LOOP;EXIT;CONTINUE}
+\b\fs24 STRUCTURES DE CONTROLE \b0\fs20\par
+\par
+\par
+\b 7.1 IF / ELSEIF / ELSE / ENDIF \b0\par
+\par
+{\f1   IF condition.}\par
+{\f1     instructions.}\par
+{\f1   [ELSEIF condition.}\par
+{\f1     instructions.]}\par
+{\f1   [ELSE.}\par
+{\f1     instructions.]}\par
+{\f1   ENDIF.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     IF gv_note >= 16.}\par
+{\f1       WRITE 'Tres bien'.}\par
+{\f1     ELSEIF gv_note >= 12.}\par
+{\f1       WRITE 'Bien'.}\par
+{\f1     ELSEIF gv_note >= 10.}\par
+{\f1       WRITE 'Passable'.}\par
+{\f1     ELSE.}\par
+{\f1       WRITE 'Insuffisant'.}\par
+{\f1     ENDIF.}\par
+\par
+\par
+\b 7.2 CASE / WHEN / ENDCASE \b0\par
+\par
+{\f1   CASE variable.}\par
+{\f1     WHEN valeur1 [OR valeur2].}\par
+{\f1       instructions.}\par
+{\f1     WHEN valeur3.}\par
+{\f1       instructions.}\par
+{\f1     WHEN OTHERS.}\par
+{\f1       instructions.}\par
+{\f1   ENDCASE.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     CASE gv_jour.}\par
+{\f1       WHEN 1.}\par
+{\f1         WRITE 'Lundi'.}\par
+{\f1       WHEN 6 OR 7.}\par
+{\f1         WRITE 'Week-end'.}\par
+{\f1       WHEN OTHERS.}\par
+{\f1         WRITE 'Autre jour'.}\par
+{\f1     ENDCASE.}\par
+\par
+\par
+\b 7.3 WHILE / ENDWHILE \b0\par
+\par
+{\f1   WHILE condition.}\par
+{\f1     instructions.}\par
+{\f1   ENDWHILE.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     DATA gv_i TYPE I VALUE 1.}\par
+{\f1     WHILE gv_i <= 10.}\par
+{\f1       WRITE gv_i.}\par
+{\f1       gv_i = gv_i + 1.}\par
+{\f1     ENDWHILE.}\par
+\par
+\par
+\b 7.4 DO / ENDDO \b0\par
+\par
+{\f1   DO [n TIMES].}\par
+{\f1     instructions.}\par
+{\f1   ENDDO.}\par
+\par
+{\f1   Sans n TIMES, la boucle est infinie (utiliser EXIT pour sortir).}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     DO 5 TIMES.}\par
+{\f1       WRITE sy-index.}\par
+{\f1     ENDDO.}\par
+\par
+\par
+\b 7.5 Controle de boucle \b0\par
+\par
+{\f1   EXIT.        " Sort de la boucle courante}\par
+{\f1   CONTINUE.    " Passe a l'iteration suivante}\par
+{\f1   CHECK cond.  " Si condition fausse, passe a l'iteration suivante}\par
+\par
+{\f1   Exemples :}\par
+\par
+{\f1     DO 100 TIMES.}\par
+{\f1       CHECK sy-index MOD 2 = 0.    " Seulement les pairs}\par
+{\f1       WRITE sy-index.}\par
+{\f1       IF sy-index > 20.}\par
+{\f1         EXIT.                       " Sort apres 20}\par
+{\f1       ENDIF.}\par
+{\f1     ENDDO.}\par
+\par
+\par
+\b 7.6 Controle du programme \b0\par
+\par
+{\f1   STOP.        " Arrete le programme}\par
+{\f1   RETURN.      " Retourne du sous-programme courant}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_08}
+{\footnote $ ABAP - SOUS-PROGRAMMES (FORM / PERFORM)}
+{\footnote K ABAP FORM;PERFORM;ENDFORM;sous-programmes}
+\b\fs24 SOUS-PROGRAMMES (FORM / PERFORM) \b0\fs20\par
+\par
+\par
+\b 8.1 Definition d'un sous-programme \b0\par
+\par
+{\f1   FORM nom [USING     p1 [TYPE t1] p2 [TYPE t2] ...]}\par
+{\f1            [CHANGING  p1 [TYPE t1] p2 [TYPE t2] ...]}\par
+{\f1            [TABLES    t1 [TYPE t1] ...].}\par
+{\f1     instructions.}\par
+{\f1   ENDFORM.}\par
+\par
+{\f1   - USING    : parametres passes par valeur}\par
+{\f1   - CHANGING : parametres passes par reference}\par
+{\f1   - TABLES   : parametres de type table interne}\par
+\par
+\par
+\b 8.2 Appel d'un sous-programme \b0\par
+\par
+{\f1   PERFORM nom [USING     arg1 arg2 ...]}\par
+{\f1               [CHANGING  arg1 arg2 ...]}\par
+{\f1               [TABLES    tab1 ...].}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     PERFORM calculer USING gv_a gv_b CHANGING gv_resultat.}\par
+\par
+{\f1     FORM calculer USING p_a TYPE I p_b TYPE I}\par
+{\f1                   CHANGING p_res TYPE I.}\par
+{\f1       p_res = p_a + p_b.}\par
+{\f1     ENDFORM.}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_09}
+{\footnote $ ABAP - MODULES DE FONCTION (FUNCTION)}
+{\footnote K ABAP FUNCTION;modules de fonction}
+\b\fs24 MODULES DE FONCTION (FUNCTION) \b0\fs20\par
+\par
+{\f1   FUNCTION nom_fonction.}\par
+{\f1     instructions.}\par
+{\f1   ENDFUNCTION.}\par
+\par
+{\f1   CALL FUNCTION 'nom_fonction'}\par
+{\f1     [EXPORTING  param1 = val1]}\par
+{\f1     [IMPORTING  param2 = var2]}\par
+{\f1     [TABLES     tab1   = itab1]}\par
+{\f1     [EXCEPTIONS exc1   = n].}\par
+\par
+{\f1   IF sy-subrc <> 0.}\par
+{\f1     " Gestion de l'erreur}\par
+{\f1   ENDIF.}\par
+\par
+{\f1   Remarque : Les modules de fonction sont des stubs dans cette}\par
+{\f1   implementation. L'appel est reconnu syntaxiquement et SY-SUBRC}\par
+{\f1   est mis a 0.}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_10}
+{\footnote $ ABAP - OPERATIONS D'ENTREE/SORTIE}
+{\footnote K ABAP IO;WRITE;READ;OPEN DATASET}
+\b\fs24 OPERATIONS D'ENTREE/SORTIE \b0\fs20\par
+\par
+\par
+\b 10.1 Instruction WRITE \b0\par
+\par
+{\f1   WRITE expression.}\par
+{\f1   WRITE: expr1, expr2, expr3.}\par
+\par
+{\f1   Types de sorties :}\par
+{\f1   - Chaine litterale  : WRITE 'Bonjour'.}\par
+{\f1   - Variable entiere  : WRITE gv_nombre.}\par
+{\f1   - Variable chaine   : WRITE gv_nom.}\par
+{\f1   - Saut de ligne     : WRITE /.}\par
+\par
+{\f1   Modificateurs :}\par
+{\f1   - LEFT-JUSTIFIED    : Aligne a gauche}\par
+{\f1   - RIGHT-JUSTIFIED   : Aligne a droite}\par
+{\f1   - NO-GAP            : Supprime l'espace automatique}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     WRITE: 'Nom:', gv_nom, / 'Age:', gv_age.}\par
+\par
+\par
+\b 10.2 Instruction SKIP \b0\par
+\par
+{\f1   SKIP [n].}\par
+\par
+{\f1   Saute n lignes (1 par defaut).}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     WRITE 'Premiere partie'.}\par
+{\f1     SKIP 2.}\par
+{\f1     WRITE 'Deuxieme partie'.}\par
+\par
+\par
+\b 10.3 Instruction NEW-LINE \b0\par
+\par
+{\f1   NEW-LINE.}\par
+\par
+{\f1   Force un retour a la ligne.}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_11}
+{\footnote $ ABAP - OPERATIONS SUR LES CHAINES}
+{\footnote K ABAP chaines;CONCATENATE;SPLIT;SHIFT;REPLACE;STRLEN}
+\b\fs24 OPERATIONS SUR LES CHAINES \b0\fs20\par
+\par
+\par
+\b 11.1 CONCATENATE \b0\par
+\par
+{\f1   CONCATENATE source1 source2 ... INTO destination}\par
+{\f1               [SEPARATED BY separateur].}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     CONCATENATE gv_prenom ' ' gv_nom INTO gv_nom_complet.}\par
+{\f1     CONCATENATE 'A' 'B' 'C' INTO gv_abc SEPARATED BY '-'.}\par
+{\f1     " Resultat : 'A-B-C'}\par
+\par
+\par
+\b 11.2 SPLIT \b0\par
+\par
+{\f1   SPLIT source AT separateur INTO dest1 dest2 ...}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     DATA: gv_part1 TYPE C LENGTH 20,}\par
+{\f1           gv_part2 TYPE C LENGTH 20.}\par
+{\f1     SPLIT 'Hello World' AT ' ' INTO gv_part1 gv_part2.}\par
+\par
+\par
+\b 11.3 SHIFT \b0\par
+\par
+{\f1   SHIFT variable [LEFT|RIGHT] [BY n PLACES] [CIRCULAR].}\par
+\par
+{\f1   Exemples :}\par
+\par
+{\f1     SHIFT gv_texte LEFT BY 3 PLACES.}\par
+{\f1     SHIFT gv_texte RIGHT CIRCULAR.}\par
+\par
+\par
+\b 11.4 REPLACE \b0\par
+\par
+{\f1   REPLACE [ALL OCCURRENCES OF|FIRST OCCURRENCE OF]}\par
+{\f1           ancien IN variable WITH nouveau.}\par
+\par
+{\f1   Exemples :}\par
+\par
+{\f1     REPLACE 'X' IN gv_texte WITH 'Y'.}\par
+{\f1     REPLACE ALL OCCURRENCES OF 'a' IN gv_texte WITH 'A'.}\par
+\par
+\par
+\b 11.5 TRANSLATE \b0\par
+\par
+{\f1   TRANSLATE variable TO UPPER CASE.}\par
+{\f1   TRANSLATE variable TO LOWER CASE.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     DATA gv_msg TYPE C LENGTH 20 VALUE 'Bonjour'.}\par
+{\f1     TRANSLATE gv_msg TO UPPER CASE.}\par
+{\f1     " Resultat : 'BONJOUR'}\par
+\par
+\par
+\b 11.6 CONDENSE \b0\par
+\par
+{\f1   CONDENSE variable [NO-GAPS].}\par
+\par
+{\f1   Supprime les espaces en debut/fin. Avec NO-GAPS, supprime}\par
+{\f1   aussi les espaces internes.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     DATA gv_txt TYPE C LENGTH 30 VALUE '  Hello   World  '.}\par
+{\f1     CONDENSE gv_txt.           " Resultat : 'Hello World'}\par
+{\f1     CONDENSE gv_txt NO-GAPS.   " Resultat : 'HelloWorld'}\par
+\par
+\par
+\b 11.7 FIND \b0\par
+\par
+{\f1   FIND [FIRST OCCURRENCE OF|ALL OCCURRENCES OF]}\par
+{\f1        motif IN variable}\par
+{\f1        [MATCH OFFSET off] [MATCH LENGTH len].}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     DATA gv_off TYPE I.}\par
+{\f1     FIND 'World' IN 'Hello World' MATCH OFFSET gv_off.}\par
+{\f1     " gv_off = 6, sy-subrc = 0}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_12}
+{\footnote $ ABAP - TABLES INTERNES}
+{\footnote K ABAP tables internes;APPEND;READ TABLE;LOOP AT}
+\b\fs24 TABLES INTERNES \b0\fs20\par
+\par
+\par
+\b 12.1 Declaration \b0\par
+\par
+{\f1   DATA itab TYPE TABLE OF type_ligne.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     TYPES: BEGIN OF ty_ligne,}\par
+{\f1              nom  TYPE C LENGTH 20,}\par
+{\f1              age  TYPE I,}\par
+{\f1            END OF ty_ligne.}\par
+{\f1     DATA gt_personnes TYPE TABLE OF ty_ligne.}\par
+\par
+\par
+\b 12.2 APPEND (ajout en fin) \b0\par
+\par
+{\f1   APPEND [work_area TO] itab.}\par
+{\f1   APPEND valeur TO itab.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     DATA gs_pers TYPE ty_ligne.}\par
+{\f1     gs_pers-nom = 'Dupont'.}\par
+{\f1     gs_pers-age = 35.}\par
+{\f1     APPEND gs_pers TO gt_personnes.}\par
+\par
+\par
+\b 12.3 LOOP AT (parcours) \b0\par
+\par
+{\f1   LOOP AT itab [INTO work_area] [WHERE condition].}\par
+{\f1     instructions.}\par
+{\f1   ENDLOOP.}\par
+\par
+{\f1   La variable systeme SY-TABIX contient l'index courant.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     LOOP AT gt_personnes INTO gs_pers.}\par
+{\f1       WRITE: gs_pers-nom, gs_pers-age.}\par
+{\f1     ENDLOOP.}\par
+\par
+\par
+\b 12.4 READ TABLE (lecture par index ou cle) \b0\par
+\par
+{\f1   READ TABLE itab INTO work_area INDEX n.}\par
+{\f1   READ TABLE itab INTO work_area WITH KEY champ = valeur.}\par
+\par
+{\f1   SY-SUBRC = 0 si trouve, 4 sinon.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     READ TABLE gt_personnes INTO gs_pers INDEX 1.}\par
+{\f1     IF sy-subrc = 0.}\par
+{\f1       WRITE gs_pers-nom.}\par
+{\f1     ENDIF.}\par
+\par
+\par
+\b 12.5 SORT (tri) \b0\par
+\par
+{\f1   SORT itab [BY champ] [ASCENDING|DESCENDING].}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     SORT gt_personnes BY nom ASCENDING.}\par
+\par
+\par
+\b 12.6 DELETE (suppression) \b0\par
+\par
+{\f1   DELETE itab INDEX n.}\par
+{\f1   DELETE itab [WHERE condition].}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     DELETE gt_personnes INDEX 3.}\par
+\par
+\par
+\b 12.7 REFRESH (reinitialisation) \b0\par
+\par
+{\f1   REFRESH itab.}\par
+\par
+{\f1   Vide completement la table interne.}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_13}
+{\footnote $ ABAP - OPERATIONS DE BASE DE DONNEES}
+{\footnote K ABAP base de donnees;SELECT;INSERT;UPDATE;DELETE;OpenSQL}
+\b\fs24 OPERATIONS DE BASE DE DONNEES \b0\fs20\par
+\par
+{\f1   Remarque : Les operations de base de donnees sont reconnues}\par
+{\f1   syntaxiquement mais fonctionnent comme des stubs (pas de}\par
+{\f1   connexion reelle a une base de donnees).}\par
+\par
+\par
+\b 13.1 SELECT \b0\par
+\par
+{\f1   SELECT [SINGLE] champs FROM table}\par
+{\f1     [INTO variable|INTO CORRESPONDING FIELDS OF variable]}\par
+{\f1     [INTO TABLE itab]}\par
+{\f1     [WHERE condition]}\par
+{\f1     [ORDER BY champ]}\par
+{\f1     [UP TO n ROWS].}\par
+{\f1   [ENDSELECT.]}\par
+\par
+{\f1   SY-SUBRC = 0 si des lignes sont trouvees, 4 sinon.}\par
+{\f1   SY-DBCNT contient le nombre de lignes traitees.}\par
+\par
+{\f1   Exemple (syntaxe reconnue) :}\par
+\par
+{\f1     SELECT SINGLE * FROM mara INTO gs_material}\par
+{\f1       WHERE matnr = '000001'.}\par
+{\f1     IF sy-subrc = 0.}\par
+{\f1       WRITE gs_material-matnr.}\par
+{\f1     ENDIF.}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_14}
+{\footnote $ ABAP - EVENEMENTS}
+{\footnote K ABAP evenements;INITIALIZATION;START-OF-SELECTION}
+\b\fs24 EVENEMENTS \b0\fs20\par
+\par
+Les evenements permettent de structurer le flux d'execution d'un\par
+programme ABAP de type report.\par
+\par
+\par
+\b 14.1 START-OF-SELECTION \b0\par
+\par
+{\f1   START-OF-SELECTION.}\par
+{\f1     instructions.}\par
+\par
+{\f1   Evenement principal execute apres l'ecran de selection.}\par
+\par
+\par
+\b 14.2 END-OF-SELECTION \b0\par
+\par
+{\f1   END-OF-SELECTION.}\par
+{\f1     instructions.}\par
+\par
+{\f1   Execute apres le traitement de toutes les donnees.}\par
+\par
+\par
+\b 14.3 TOP-OF-PAGE \b0\par
+\par
+{\f1   TOP-OF-PAGE.}\par
+{\f1     instructions.}\par
+\par
+{\f1   Execute au debut de chaque nouvelle page.}\par
+\par
+\par
+\b 14.4 END-OF-PAGE \b0\par
+\par
+{\f1   END-OF-PAGE.}\par
+{\f1     instructions.}\par
+\par
+{\f1   Execute a la fin de chaque page.}\par
+\par
+\par
+\b 14.5 AT LINE-SELECTION \b0\par
+\par
+{\f1   AT LINE-SELECTION.}\par
+{\f1     instructions.}\par
+\par
+{\f1   Execute lorsque l'utilisateur selectionne une ligne.}\par
+\par
+\par
+\b 14.6 AT USER-COMMAND \b0\par
+\par
+{\f1   AT USER-COMMAND.}\par
+{\f1     instructions.}\par
+\par
+{\f1   Execute lorsque l'utilisateur active une commande.}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_15}
+{\footnote $ ABAP - ECRAN DE SELECTION}
+{\footnote K ABAP ecran de selection;PARAMETERS;SELECT-OPTIONS}
+\b\fs24 ECRAN DE SELECTION \b0\fs20\par
+\par
+\par
+\b 15.1 PARAMETERS \b0\par
+\par
+{\f1   PARAMETERS nom TYPE type [DEFAULT valeur].}\par
+\par
+{\f1   Definit un champ de saisie sur l'ecran de selection.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     PARAMETERS: p_annee TYPE I DEFAULT 2024,}\par
+{\f1                 p_nom   TYPE C LENGTH 30.}\par
+\par
+\par
+\b 15.2 SELECT-OPTIONS \b0\par
+\par
+{\f1   SELECT-OPTIONS nom FOR variable.}\par
+\par
+{\f1   Definit un intervalle de selection (LOW et HIGH).}\par
+{\f1   Cree automatiquement les variables nom-LOW et nom-HIGH.}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     DATA gv_date TYPE D.}\par
+{\f1     SELECT-OPTIONS s_date FOR gv_date.}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_16}
+{\footnote $ ABAP - GESTION DES EXCEPTIONS}
+{\footnote K ABAP exceptions;TRY;CATCH;RAISE}
+\b\fs24 GESTION DES EXCEPTIONS \b0\fs20\par
+\par
+{\f1   TRY.}\par
+{\f1     instructions.}\par
+{\f1   CATCH cx_exception [INTO variable].}\par
+{\f1     instructions.}\par
+{\f1   [CLEANUP.}\par
+{\f1     instructions.]}\par
+{\f1   ENDTRY.}\par
+\par
+{\f1   RAISE EXCEPTION TYPE cx_exception.}\par
+\par
+{\f1   Remarque : La gestion des exceptions est reconnue syntaxiquement.}\par
+{\f1   Les blocs TRY/CATCH/CLEANUP/ENDTRY sont analyses mais le}\par
+{\f1   mecanisme d'exception reelle n'est pas implemente.}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_17}
+{\footnote $ ABAP - VARIABLES SYSTEME}
+{\footnote K ABAP variables systeme;sy-subrc;sy-datum;sy-uname}
+\b\fs24 VARIABLES SYSTEME \b0\fs20\par
+\par
+Les variables systeme sont prefixees par SY- et sont accessibles\par
+en lecture dans tout le programme.\par
+\par
+{\f1   Variable     Type  Description}\par
+{\f1   -----------  ----  ------------------------------------}\par
+{\f1   SY-SUBRC     I     Code retour de la derniere operation}\par
+{\f1   SY-TABIX     I     Index courant dans LOOP AT}\par
+{\f1   SY-DBCNT     I     Nombre de lignes DB traitees}\par
+{\f1   SY-INDEX     I     Index d'iteration DO/WHILE}\par
+{\f1   SY-LANGU     C(1)  Langue de connexion ('E' par defaut)}\par
+\par
+{\f1   Valeurs de SY-SUBRC :}\par
+{\f1   - 0 : Operation reussie}\par
+{\f1   - 4 : Enregistrement non trouve (READ TABLE, SELECT)}\par
+{\f1   - 8 : Erreur (condition non remplie)}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_18}
+{\footnote $ ABAP - FONCTIONS INTEGREES}
+{\footnote K ABAP fonctions integrees;STRLEN;ABS;ROUND;SUBSTRING}
+\b\fs24 FONCTIONS INTEGREES \b0\fs20\par
+\par
+{\f1   Fonction   Description                    Exemple}\par
+{\f1   ---------  ----------------------------   ---------------------------}\par
+{\f1   STRLEN     Longueur d'une chaine          gv_len = STRLEN( gv_txt ).}\par
+{\f1   ABS        Valeur absolue d'un entier     gv_abs = ABS( gv_num ).}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_19}
+{\footnote $ ABAP - MOTS-CLES RESERVES}
+{\footnote K ABAP mots-cles reserves}
+\b\fs24 MOTS-CLES RESERVES \b0\fs20\par
+\par
+Le langage ABAP tel qu'implemente reconnait 151 mots-cles :\par
+\par
+{\f1   Groupe                    Mots-cles}\par
+{\f1   ------------------------  -------------------------------------------}\par
+{\f1   Programme                 REPORT, PROGRAM}\par
+\par
+{\f1   Declarations              DATA, TYPES, CONSTANTS, CLASS-DATA,}\par
+{\f1                             TYPE, VALUE, DEFAULT, LIKE, LENGTH,}\par
+{\f1                             DECIMALS, BEGIN, END, OF, TABLE, WITH,}\par
+{\f1                             KEY}\par
+\par
+{\f1   Controle                  IF, ELSEIF, ELSE, ENDIF,}\par
+{\f1                             CASE, WHEN, OTHERS, ENDCASE,}\par
+{\f1                             WHILE, ENDWHILE, DO, TIMES, ENDDO,}\par
+{\f1                             LOOP, AT, INTO, ENDLOOP,}\par
+{\f1                             EXIT, CONTINUE, CHECK, STOP, RETURN}\par
+\par
+{\f1   Sous-programmes           FORM, ENDFORM, PERFORM,}\par
+{\f1                             USING, CHANGING, TABLES}\par
+\par
+{\f1   Fonctions                 FUNCTION, ENDFUNCTION, CALL,}\par
+{\f1                             EXPORTING, IMPORTING, RAISING,}\par
+{\f1                             EXCEPTIONS}\par
+\par
+{\f1   Sortie                    WRITE, SKIP, LINE, NEW-LINE,}\par
+{\f1                             LEFT-JUSTIFIED, RIGHT-JUSTIFIED,}\par
+{\f1                             NO-GAP}\par
+\par
+{\f1   Affectation               MOVE, TO, MOVE-CORRESPONDING,}\par
+{\f1                             COMPUTE, ADD, SUBTRACT, MULTIPLY,}\par
+{\f1                             BY, DIVIDE, FROM, GIVING}\par
+\par
+{\f1   Tables                    APPEND, INSERT, DELETE, MODIFY,}\par
+{\f1                             READ, SORT, COLLECT, SINGLE}\par
+\par
+{\f1   Chaines                   CONCATENATE, SPLIT, SHIFT, REPLACE,}\par
+{\f1                             TRANSLATE, CONDENSE, FIND,}\par
+{\f1                             LEFT, RIGHT, UPPER, LOWER, NO-GAPS,}\par
+{\f1                             MATCH, OFFSET, OCCURRENCE, OCCURRENCES,}\par
+{\f1                             SEPARATED, CIRCULAR, PLACES,}\par
+{\f1                             ALL, FIRST}\par
+\par
+{\f1   Base de donnees           SELECT, WHERE, CORRESPONDING, FIELDS,}\par
+{\f1                             ENDSELECT, ORDER, ROWS}\par
+\par
+{\f1   Variables                 CLEAR, REFRESH, FREE}\par
+\par
+{\f1   Comparaison               EQ, NE, LT, GT, LE, GE,}\par
+{\f1                             BETWEEN, IN, AND, OR, NOT,}\par
+{\f1                             IS, INITIAL, BOUND}\par
+\par
+{\f1   Tri                       ASCENDING, DESCENDING, INDEX}\par
+\par
+{\f1   Evenements                START-OF-SELECTION, END-OF-SELECTION,}\par
+{\f1                             TOP-OF-PAGE, END-OF-PAGE,}\par
+{\f1                             AT LINE-SELECTION, AT USER-COMMAND}\par
+\par
+{\f1   Selection                 PARAMETERS, SELECT-OPTIONS}\par
+\par
+{\f1   Operateurs                MOD, DIV}\par
+\par
+{\f1   Classes (stub)            CLASS, ENDCLASS, METHOD, ENDMETHOD,}\par
+{\f1                             PUBLIC, PRIVATE, PROTECTED}\par
+\par
+{\f1   Exceptions (stub)         TRY, CATCH, CLEANUP, ENDTRY,}\par
+{\f1                             RAISE, EXCEPTION}\par
+\par
+{\f1   Fonctions integrees       STRLEN, ABS}\par
+\par
+{\f1   Divers                    MESSAGE-ID}\par
+\par
+\par
+\page
+
+{\footnote # IDH_ABAP_20}
+{\footnote $ ABAP - GRAMMAIRE BNF SIMPLIFIEE}
+{\footnote K ABAP grammaire BNF}
+\b\fs24 GRAMMAIRE BNF SIMPLIFIEE \b0\fs20\par
+\par
+{\f1   <programme>    ::= <en-tete> <declarations> <instructions>}\par
+\par
+{\f1   <en-tete>      ::= REPORT <ident> [MESSAGE-ID <ident>] '.'}\par
+{\f1                     | PROGRAM <ident> '.'}\par
+\par
+{\f1   <declarations> ::= \{ <declaration> \}}\par
+\par
+{\f1   <declaration>  ::= DATA ':' <liste-var> '.'}\par
+{\f1                     | DATA <une-var> '.'}\par
+{\f1                     | CONSTANTS ':' <liste-const> '.'}\par
+{\f1                     | CONSTANTS <une-const> '.'}\par
+{\f1                     | TYPES ':' <liste-type> '.'}\par
+\par
+{\f1   <une-var>      ::= <ident> ['(' <entier> ')']}\par
+{\f1                       [TYPE <type> | LIKE <ident>]}\par
+{\f1                       [LENGTH <entier>]}\par
+{\f1                       [DECIMALS <entier>]}\par
+{\f1                       [VALUE <literal>]}\par
+\par
+{\f1   <type>         ::= I | F | C | N | D | T | P | STRING | XSTRING}\par
+{\f1                     | TABLE OF <type>}\par
+{\f1                     | BEGIN OF <ident> ',' <champs> END OF <ident>}\par
+\par
+{\f1   <instructions> ::= \{ <instruction> '.' \}}\par
+\par
+{\f1   <instruction>  ::= <affectation>}\par
+{\f1                     | <if-stmt>}\par
+{\f1                     | <case-stmt>}\par
+{\f1                     | <while-stmt>}\par
+{\f1                     | <do-stmt>}\par
+{\f1                     | <loop-stmt>}\par
+{\f1                     | <write-stmt>}\par
+{\f1                     | <perform-stmt>}\par
+{\f1                     | <form-decl>}\par
+{\f1                     | <move-stmt>}\par
+{\f1                     | <clear-stmt>}\par
+{\f1                     | <arith-stmt>}\par
+{\f1                     | <string-stmt>}\par
+{\f1                     | <table-stmt>}\par
+{\f1                     | <select-stmt>}\par
+{\f1                     | <event-stmt>}\par
+{\f1                     | <try-stmt>}\par
+{\f1                     | ...}\par
+\par
+{\f1   <affectation>  ::= <ident> '=' <expression> '.'}\par
+{\f1                     | COMPUTE <ident> '=' <expression> '.'}\par
+{\f1                     | MOVE <expr> TO <ident> '.'}\par
+\par
+{\f1   <expression>   ::= <or-expr>}\par
+{\f1   <or-expr>      ::= <and-expr> \{ OR <and-expr> \}}\par
+{\f1   <and-expr>     ::= <not-expr> \{ AND <not-expr> \}}\par
+{\f1   <not-expr>     ::= [NOT] <compare>}\par
+{\f1   <compare>      ::= <add-expr> [<comp-op> <add-expr>]}\par
+{\f1                     | <add-expr> BETWEEN <add-expr> AND <add-expr>}\par
+{\f1                     | <add-expr> IS [NOT] INITIAL}\par
+{\f1                     | <add-expr> IS BOUND}\par
+{\f1                     | <add-expr> IN <ident>}\par
+{\f1   <comp-op>      ::= '=' | '<>' | '<' | '>' | '<=' | '>='}\par
+{\f1                     | EQ | NE | LT | GT | LE | GE}\par
+{\f1   <add-expr>     ::= <mul-expr> \{ ('+' | '-') <mul-expr> \}}\par
+{\f1   <mul-expr>     ::= <unary> \{ ('*' | '/' | DIV | MOD) <unary> \}}\par
+{\f1   <unary>        ::= ['-'] <primary>}\par
+{\f1   <primary>      ::= <entier> | <reel> | <chaine>}\par
+{\f1                     | <ident> ['-' <ident>]}\par
+{\f1                     | STRLEN '(' <expr> ')'}\par
+{\f1                     | ABS '(' <expr> ')'}\par
+{\f1                     | '(' <expression> ')'}\par
+\par
+{\f1   <if-stmt>      ::= IF <expression> '.'}\par
+{\f1                         <instructions>}\par
+{\f1                       \{ ELSEIF <expression> '.'}\par
+{\f1                         <instructions> \}}\par
+{\f1                       [ ELSE '.'}\par
+{\f1                         <instructions> ]}\par
+{\f1                       ENDIF '.'}\par
+\par
+{\f1   <case-stmt>    ::= CASE <ident> '.'}\par
+{\f1                       \{ WHEN <valeur> [OR <valeur>] '.'}\par
+{\f1                         <instructions> \}}\par
+{\f1                       [ WHEN OTHERS '.'}\par
+{\f1                         <instructions> ]}\par
+{\f1                       ENDCASE '.'}\par
+\par
+{\f1   <while-stmt>   ::= WHILE <expression> '.'}\par
+{\f1                         <instructions>}\par
+{\f1                       ENDWHILE '.'}\par
+\par
+{\f1   <do-stmt>      ::= DO [<entier> TIMES] '.'}\par
+{\f1                         <instructions>}\par
+{\f1                       ENDDO '.'}\par
+\par
+{\f1   <loop-stmt>    ::= LOOP AT <ident> [INTO <ident>]}\par
+{\f1                         [WHERE <expression>] '.'}\par
+{\f1                         <instructions>}\par
+{\f1                       ENDLOOP '.'}\par
+\par
+{\f1   <write-stmt>   ::= WRITE [':'] <write-item> \{',' <write-item>\} '.'}\par
+{\f1   <write-item>   ::= <expression> | '/'}\par
+\par
+{\f1   <perform-stmt> ::= PERFORM <ident>}\par
+{\f1                         [USING <expr> \{ <expr> \}]}\par
+{\f1                         [CHANGING <ident> \{ <ident> \}] '.'}\par
+\par
+{\f1   <form-decl>    ::= FORM <ident>}\par
+{\f1                         [USING <param> \{ <param> \}]}\par
+{\f1                         [CHANGING <param> \{ <param> \}] '.'}\par
+{\f1                         <instructions>}\par
+{\f1                       ENDFORM '.'}\par
+\par
+{\f1   <param>        ::= <ident> [TYPE <type>]}\par
+\par
+{\f1   <entier>       ::= chiffre \{ chiffre \}}\par
+{\f1   <reel>         ::= chiffre \{ chiffre \} '.' chiffre \{ chiffre \}}\par
+{\f1   <chaine>       ::= "'" \{ caractere \} "'"}\par
+{\f1   <ident>        ::= lettre \{ lettre | chiffre | '_' | '-' \}}\par
+\par
+\par
+
+}

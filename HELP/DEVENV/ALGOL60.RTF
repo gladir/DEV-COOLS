@@ -1,0 +1,775 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_ALGOL60_01}
+{\footnote $ Algol 60 - INTRODUCTION}
+{\footnote K Algol 60 introduction;Naur;Revised Report}
+\b\fs24 INTRODUCTION \b0\fs20\par
+\par
+{\f1   Algol 60 (ALGOrithmic Language 1960) est un langage de}\par
+{\f1   programmation concu par un comite international en 1960.}\par
+{\f1   Il a ete publie dans le "Report on the Algorithmic Language}\par
+{\f1   ALGOL 60" puis revise en 1963 dans le "Revised Report".}\par
+\par
+{\f1   Algol 60 est un langage imperatif, structure par blocs,}\par
+{\f1   a typage statique. Il a introduit de nombreux concepts}\par
+{\f1   fondamentaux en informatique :}\par
+\par
+{\f1     - Structure de blocs (BEGIN / END) avec portee lexicale}\par
+{\f1     - Appel par nom (call by name) et appel par valeur}\par
+{\f1     - Recursivite des procedures}\par
+{\f1     - Expressions conditionnelles (IF/THEN/ELSE comme expression)}\par
+{\f1     - Boucle FOR generalisee (STEP/UNTIL, WHILE, listes)}\par
+{\f1     - Grammaire formelle en notation BNF (Backus-Naur Form)}\par
+\par
+{\f1   Algol 60 a directement influence Pascal, C, Simula, ALGOL 68,}\par
+{\f1   et la plupart des langages structures modernes.}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. STRUCTURE LEXICALE}     {\uldb [Aller]}{\v IDH_ALGOL60_02}\par
+{\f1  3. TYPES DE DONNEES}     {\uldb [Aller]}{\v IDH_ALGOL60_03}\par
+{\f1  4. DECLARATIONS}     {\uldb [Aller]}{\v IDH_ALGOL60_04}\par
+{\f1  5. EXPRESSIONS}     {\uldb [Aller]}{\v IDH_ALGOL60_05}\par
+{\f1  6. INSTRUCTIONS}     {\uldb [Aller]}{\v IDH_ALGOL60_06}\par
+{\f1  7. PROCEDURES}     {\uldb [Aller]}{\v IDH_ALGOL60_07}\par
+{\f1  8. TABLEAUX}     {\uldb [Aller]}{\v IDH_ALGOL60_08}\par
+{\f1  9. BLOCS ET PORTEE}     {\uldb [Aller]}{\v IDH_ALGOL60_09}\par
+{\f1 10. ENTREES / SORTIES}     {\uldb [Aller]}{\v IDH_ALGOL60_10}\par
+{\f1 11. STRUCTURE D'UN PROGRAMME}     {\uldb [Aller]}{\v IDH_ALGOL60_11}\par
+{\f1 12. DIFFERENCES AVEC ALGOL 58}     {\uldb [Aller]}{\v IDH_ALGOL60_12}\par
+{\f1 13. LIMITATIONS CONNUES}     {\uldb [Aller]}{\v IDH_ALGOL60_13}\par
+{\f1 14. REFERENCES}     {\uldb [Aller]}{\v IDH_ALGOL60_14}\par
+\par
+{\uldb Suivant >>}{\v IDH_ALGOL60_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_02}
+{\footnote $ Algol 60 - STRUCTURE LEXICALE}
+{\footnote K Algol 60 lexical;identificateurs;litteraux;mots-cles}
+\b\fs24 STRUCTURE LEXICALE \b0\fs20\par
+\par
+2.1 Jeu de caracteres\par
+\par
+{\f1   Le langage utilise les lettres (a-z, A-Z), les chiffres (0-9)}\par
+{\f1   et des symboles speciaux. Les mots-cles sont reserves.}\par
+\par
+2.2 Identificateurs\par
+\par
+{\f1   Un identificateur commence par une lettre et peut contenir}\par
+{\f1   des lettres et des chiffres. La casse n'est pas significative}\par
+{\f1   dans le langage d'origine.}\par
+\par
+{\f1   Exemples : x, compteur, MatriceA, i1}\par
+\par
+2.3 Mots-cles reserves\par
+\par
+{\f1   Les mots-cles du langage sont :}\par
+\par
+{\f1     BEGIN      END        IF         THEN       ELSE}\par
+{\f1     FOR        DO         STEP       UNTIL      WHILE}\par
+{\f1     GO         TO         GOTO       SWITCH     VALUE}\par
+{\f1     OWN        BOOLEAN    INTEGER    REAL       ARRAY}\par
+{\f1     PROCEDURE  STRING     LABEL      COMMENT    TRUE}\par
+{\f1     FALSE}\par
+\par
+{\f1   Notes :}\par
+{\f1     - GOTO peut s'ecrire GO TO (en deux mots)}\par
+{\f1     - COMMENT introduit un commentaire jusqu'au prochain ;}\par
+\par
+2.4 Commentaires\par
+\par
+{\f1   Deux formes de commentaires :}\par
+\par
+{\f1     comment texte libre ;}\par
+{\f1       Le mot-cle COMMENT suivi de texte jusqu'au point-virgule.}\par
+\par
+{\f1     BEGIN texte libre ;}\par
+{\f1       Le texte entre BEGIN et le premier point-virgule est}\par
+{\f1       traite comme un commentaire implicite (convention}\par
+{\f1       du Revised Report).}\par
+\par
+2.5 Constantes litterales\par
+\par
+{\f1   Entiers :     0, 42, 1024, 32767}\par
+{\f1   Reels :       3.14, 0.5, 6.022|10|23}\par
+{\f1                 (la notation |10| represente la puissance de 10)}\par
+{\f1   Booleens :    TRUE, FALSE}\par
+{\f1   Chaines :     `Hello` (entre guillemets inverses ou backticks)}\par
+{\f1                 Note : les chaines ne sont pas un type de base}\par
+{\f1                 dans le Revised Report ; elles sont une extension}\par
+{\f1                 pour les entrees/sorties.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_01}     {\uldb Suivant >>}{\v IDH_ALGOL60_03}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_03}
+{\footnote $ Algol 60 - TYPES DE DONNEES}
+{\footnote K Algol 60 types;integer;real;Boolean}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+3.1 Types primitifs\par
+\par
+{\f1   INTEGER   Entier signe (16 bits dans cette implementation,}\par
+{\f1             intervalle -32768 a 32767)}\par
+{\f1   REAL      Nombre reel a virgule flottante}\par
+{\f1             (dans cette implementation : tronque vers entier 16 bits)}\par
+{\f1   BOOLEAN   Valeur logique TRUE (1) ou FALSE (0)}\par
+\par
+3.2 Types speciaux\par
+\par
+{\f1   LABEL     Adresse de code (etiquette de saut)}\par
+{\f1   STRING    Chaine de caracteres (type de parametre uniquement)}\par
+{\f1   SWITCH    Tableau d'etiquettes (expression designationnelle)}\par
+{\f1   PROCEDURE Type de sous-programme}\par
+\par
+3.3 Pas de types utilisateur\par
+\par
+{\f1   Algol 60 ne possede pas de mecanisme pour definir des types}\par
+{\f1   structures (pas de RECORD, pas d'ENUM, pas de TYPE).}\par
+{\f1   Les seuls types disponibles sont les types primitifs ci-dessus.}\par
+\par
+3.4 Conversions de type\par
+\par
+{\f1   La conversion implicite INTEGER vers REAL est autorisee.}\par
+{\f1   La conversion REAL vers INTEGER se fait par troncature.}\par
+{\f1   Pas de conversion implicite entre BOOLEAN et les types}\par
+{\f1   numeriques.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_02}     {\uldb Suivant >>}{\v IDH_ALGOL60_04}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_04}
+{\footnote $ Algol 60 - DECLARATIONS}
+{\footnote K Algol 60 declarations;own;array;procedure;switch}
+\b\fs24 DECLARATIONS \b0\fs20\par
+\par
+4.1 Declaration de variables\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     <type> <identificateur> [, <identificateur>]* ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     INTEGER x;}\par
+{\f1     INTEGER a, b, c;}\par
+{\f1     REAL pi;}\par
+{\f1     BOOLEAN flag;}\par
+\par
+4.2 Declaration de tableaux\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     [<type>] ARRAY <id>[<borne_inf>:<borne_sup>] ;}\par
+\par
+{\f1   Les bornes sont des expressions entieres evaluees a l'entree}\par
+{\f1   du bloc contenant. Plusieurs dimensions sont possibles.}\par
+\par
+{\f1   Exemples :}\par
+{\f1     INTEGER ARRAY a[1:10];}\par
+{\f1     REAL ARRAY matrice[1:n, 1:m];}\par
+{\f1     ARRAY v[0:99];}\par
+\par
+{\f1   Notes :}\par
+{\f1     - Les bornes peuvent etre des expressions quelconques}\par
+{\f1     - L'indice est base sur les bornes declarees (pas force a 0)}\par
+{\f1     - Acces : a[i] ou matrice[i, j]}\par
+\par
+4.3 Declaration de procedures\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     [<type>] PROCEDURE <nom>(<params>); [VALUE <params>;]}\par
+{\f1       [<specifications>;]}\par
+{\f1       <corps> ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     PROCEDURE afficher(x); INTEGER x;}\par
+{\f1     BEGIN}\par
+{\f1       outinteger(1, x)}\par
+{\f1     END;}\par
+\par
+{\f1     INTEGER PROCEDURE carre(n); INTEGER n;}\par
+{\f1       carre := n * n;}\par
+\par
+{\f1     INTEGER PROCEDURE facto(n); INTEGER n;}\par
+{\f1       facto := IF n <= 1 THEN 1 ELSE n * facto(n - 1);}\par
+\par
+{\f1   Notes :}\par
+{\f1     - Les procedures sans type sont comme void en C}\par
+{\f1     - Les procedures typees (INTEGER PROCEDURE, REAL PROCEDURE,}\par
+{\f1       BOOLEAN PROCEDURE) retournent une valeur}\par
+{\f1     - La valeur de retour est assignee au nom de la procedure :}\par
+{\f1       facto := expression}\par
+{\f1     - La recursivite est supportee nativement}\par
+\par
+4.4 Declaration SWITCH (aiguillage)\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     SWITCH <nom> := <label1>, <label2>, ... ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     SWITCH choix := L1, L2, L3;}\par
+\par
+{\f1   Le switch definit une liste ordonnee d'etiquettes.}\par
+{\f1   L'acces se fait par indice (base 1) : choix[2] designe L2.}\par
+\par
+4.5 Variables OWN (statiques)\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     OWN <type> <identificateur> ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     OWN INTEGER compteur;}\par
+{\f1     OWN REAL accumulateur;}\par
+{\f1     OWN INTEGER ARRAY historique[1:100];}\par
+\par
+{\f1   Les variables OWN conservent leur valeur entre les appels}\par
+{\f1   successifs de la procedure qui les contient. Elles sont}\par
+{\f1   equivalentes aux variables static en C.}\par
+\par
+4.6 Declaration d'etiquettes\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     <nom> : <instruction>}\par
+\par
+{\f1   Exemples :}\par
+{\f1     debut: x := 0;}\par
+{\f1     fin: outstring(1, `termine`);}\par
+\par
+{\f1   Les etiquettes sont locales au bloc qui les contient.}\par
+\par
+4.7 Portee des declarations\par
+\par
+{\f1   Les declarations sont locales au bloc (BEGIN/END) dans}\par
+{\f1   lequel elles apparaissent. Algol 60 utilise la portee}\par
+{\f1   lexicale statique (static scoping) : les references aux}\par
+{\f1   identificateurs sont resolues en remontant les blocs}\par
+{\f1   englobants au moment de la compilation.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_03}     {\uldb Suivant >>}{\v IDH_ALGOL60_05}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_05}
+{\footnote $ Algol 60 - EXPRESSIONS}
+{\footnote K Algol 60 expressions;arithmetiques;booleennes;conditionnelles}
+\b\fs24 EXPRESSIONS \b0\fs20\par
+\par
+5.1 Expressions arithmetiques\par
+\par
+{\f1   Operateurs arithmetiques :}\par
+{\f1     +     Addition}\par
+{\f1     -     Soustraction (binaire) ou negation (unaire)}\par
+{\f1     *     Multiplication}\par
+{\f1     /     Division (reelle)}\par
+{\f1     div   Division entiere (quotient tronque)}\par
+{\f1     ^     Puissance (ou ** comme notation alternative)}\par
+\par
+{\f1   Precedence (du plus fort au plus faible) :}\par
+{\f1     1. Unaire +, -}\par
+{\f1     2. ^ (puissance, associativite a droite)}\par
+{\f1     3. *, /, div}\par
+{\f1     4. +, - (binaire)}\par
+\par
+{\f1   Exemples :}\par
+{\f1     a + b * c         ->  a + (b * c)}\par
+{\f1     2 ^ 3 ^ 2         ->  2 ^ (3 ^ 2) = 512  (associativite droite)}\par
+{\f1     17 - 5 * 2         ->  17 - (5 * 2) = 7}\par
+{\f1     10 div 3           ->  3}\par
+\par
+5.2 Expressions relationnelles\par
+\par
+{\f1   Operateurs de comparaison :}\par
+{\f1     <     Inferieur}\par
+{\f1     <=    Inferieur ou egal}\par
+{\f1     =     Egal}\par
+{\f1     >=    Superieur ou egal}\par
+{\f1     >     Superieur}\par
+{\f1     !=    Different (ou <> dans certaines notations)}\par
+\par
+{\f1   Le resultat est de type BOOLEAN (TRUE ou FALSE).}\par
+\par
+5.3 Expressions booleennes\par
+\par
+{\f1   Operateurs logiques :}\par
+{\f1     NOT    Negation logique (ou ~)}\par
+{\f1     AND    Conjonction logique (ou /\\)}\par
+{\f1     OR     Disjonction logique (ou \\/)}\par
+{\f1     IMPL   Implication logique (a IMPL b = NOT a OR b)}\par
+{\f1     EQUIV  Equivalence logique (a EQUIV b = (a AND b) OR (NOT a AND NOT b))}\par
+\par
+{\f1   Precedence (du plus fort au plus faible) :}\par
+{\f1     1. NOT}\par
+{\f1     2. AND}\par
+{\f1     3. OR}\par
+{\f1     4. IMPL}\par
+{\f1     5. EQUIV}\par
+\par
+{\f1   Evaluation en court-circuit :}\par
+{\f1     - AND : si le premier operande est FALSE, le second}\par
+{\f1       n'est pas evalue}\par
+{\f1     - OR : si le premier operande est TRUE, le second}\par
+{\f1       n'est pas evalue}\par
+\par
+5.4 Expression conditionnelle\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     IF <condition> THEN <expression1> ELSE <expression2>}\par
+\par
+{\f1   Retourne expression1 si la condition est vraie,}\par
+{\f1   expression2 sinon. Peut etre de type INTEGER, REAL ou BOOLEAN.}\par
+\par
+{\f1   Exemples :}\par
+{\f1     m := IF x > y THEN x ELSE y;}\par
+{\f1     signe := IF n > 0 THEN 1 ELSE IF n < 0 THEN -1 ELSE 0;}\par
+\par
+{\f1   Note : contrairement a l'instruction IF, l'expression}\par
+{\f1   conditionnelle DOIT avoir une clause ELSE.}\par
+\par
+5.5 Expressions designationnelles\par
+\par
+{\f1   Une expression designationnelle est une expression dont la}\par
+{\f1   valeur est une etiquette (LABEL). Elle peut etre :}\par
+\par
+{\f1     - Un nom d'etiquette : L1}\par
+{\f1     - Un element de switch : choix[i]}\par
+{\f1     - Une expression conditionnelle d'etiquettes :}\par
+{\f1       IF b THEN L1 ELSE L2}\par
+\par
+{\f1   Utilisee avec GOTO pour les sauts conditionels :}\par
+{\f1     GOTO IF b THEN L1 ELSE L2;}\par
+{\f1     GOTO choix[n];}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_04}     {\uldb Suivant >>}{\v IDH_ALGOL60_06}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_06}
+{\footnote $ Algol 60 - INSTRUCTIONS}
+{\footnote K Algol 60 instructions;assignment;goto;if;for;while;step;until}
+\b\fs24 INSTRUCTIONS \b0\fs20\par
+\par
+6.1 Affectation\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     <variable> := <expression>}\par
+\par
+{\f1   Exemples :}\par
+{\f1     x := 42;}\par
+{\f1     a[i] := b[j] + 1;}\par
+\par
+{\f1   Affectation multiple :}\par
+{\f1     a := b := c := 0;}\par
+{\f1     (evalue l'expression une fois, affecte de droite a gauche)}\par
+\par
+6.2 Instruction conditionnelle (IF/THEN/ELSE)\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     IF <condition> THEN <instruction>}\par
+{\f1     IF <condition> THEN <instruction> ELSE <instruction>}\par
+\par
+{\f1   Exemples :}\par
+{\f1     IF x < 0 THEN x := -x;}\par
+{\f1     IF x > y THEN}\par
+{\f1       outstring(1, `plus grand`)}\par
+{\f1     ELSE}\par
+{\f1       outstring(1, `plus petit`);}\par
+\par
+{\f1   Ambiguite du "dangling else" : la clause ELSE se lie au}\par
+{\f1   IF le plus proche non encore ferme.}\par
+\par
+6.3 Boucle FOR\par
+\par
+{\f1   La boucle FOR en Algol 60 est tres generalisee. Le corps}\par
+{\f1   de la boucle est execute pour chaque element de la liste.}\par
+\par
+{\f1   Forme STEP/UNTIL :}\par
+{\f1     FOR <var> := <debut> STEP <pas> UNTIL <fin> DO <instruction>}\par
+\par
+{\f1   Forme WHILE :}\par
+{\f1     FOR <var> := <expression> WHILE <condition> DO <instruction>}\par
+\par
+{\f1   Forme par liste :}\par
+{\f1     FOR <var> := <elem1>, <elem2>, ... DO <instruction>}\par
+\par
+{\f1   Forme mixte :}\par
+{\f1     FOR <var> := <elem1>, <debut> STEP <pas> UNTIL <fin>,}\par
+{\f1                  <expr> WHILE <cond> DO <instruction>}\par
+\par
+{\f1   Exemples :}\par
+{\f1     FOR i := 1 STEP 1 UNTIL 10 DO outinteger(1, i);}\par
+{\f1     FOR i := 10 STEP -1 UNTIL 1 DO outinteger(1, i);}\par
+{\f1     FOR i := 2, 4, 6, 8 DO outinteger(1, i);}\par
+{\f1     FOR i := i WHILE i <= 100 DO i := i * 2;}\par
+\par
+6.4 GOTO et etiquettes\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     GOTO <etiquette>}\par
+{\f1     GO TO <etiquette>    (synonyme en deux mots)}\par
+{\f1     GOTO <expression designationnelle>}\par
+\par
+{\f1   Exemples :}\par
+{\f1     GOTO fin;}\par
+{\f1     GO TO debut;}\par
+{\f1     GOTO choix[n];}\par
+{\f1     GOTO IF b THEN L1 ELSE L2;}\par
+\par
+{\f1   Restrictions : un GOTO ne peut pas sauter a l'interieur}\par
+{\f1   d'un bloc depuis l'exterieur. On ne peut sauter que vers}\par
+{\f1   un bloc englobant ou au meme niveau.}\par
+\par
+6.5 Instruction composee et bloc\par
+\par
+{\f1   Instruction composee :}\par
+{\f1     BEGIN <instruction>; <instruction>; ... END}\par
+\par
+{\f1   Bloc :}\par
+{\f1     BEGIN <declarations>; <instructions> END}\par
+\par
+{\f1   Les declarations doivent preceder les instructions dans}\par
+{\f1   un bloc. Le point-virgule separe les instructions (il}\par
+{\f1   n'est pas un terminateur mais un separateur).}\par
+\par
+6.6 Instruction vide\par
+\par
+{\f1   Le point-virgule seul constitue une instruction vide,}\par
+{\f1   utile comme cible d'etiquette :}\par
+{\f1     fin: ;}\par
+\par
+6.7 Appel de procedure\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     <nom>(<argument1>, <argument2>, ...)}\par
+{\f1     <nom>                    (sans arguments)}\par
+\par
+{\f1   Exemples :}\par
+{\f1     afficher(42);}\par
+{\f1     compteur;}\par
+{\f1     outinteger(1, x + y);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_05}     {\uldb Suivant >>}{\v IDH_ALGOL60_07}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_07}
+{\footnote $ Algol 60 - PROCEDURES}
+{\footnote K Algol 60 procedures;value;name;call by name;call by value;recursion}
+\b\fs24 PROCEDURES \b0\fs20\par
+\par
+7.1 Passage des parametres\par
+\par
+{\f1   Algol 60 definit deux modes de passage :}\par
+\par
+{\f1   a) Par valeur (VALUE) :}\par
+{\f1      L'argument est evalue une fois et copie dans le parametre}\par
+{\f1      formel. Le parametre se comporte comme une variable locale.}\par
+\par
+{\f1      INTEGER PROCEDURE f(x); VALUE x; INTEGER x;}\par
+{\f1        f := x * x;}\par
+\par
+{\f1   b) Par nom (defaut, call by name) :}\par
+{\f1      L'argument n'est pas evalue immediatement. A chaque acces}\par
+{\f1      au parametre formel, l'expression de l'argument est}\par
+{\f1      reevaluee dans l'environnement de l'appelant.}\par
+\par
+{\f1      Ceci permet le "Jensen's device" :}\par
+{\f1        INTEGER PROCEDURE somme(k, lo, hi, expr);}\par
+{\f1          VALUE lo, hi;}\par
+{\f1          INTEGER k, lo, hi, expr;}\par
+{\f1        BEGIN}\par
+{\f1          INTEGER s;}\par
+{\f1          s := 0;}\par
+{\f1          FOR k := lo STEP 1 UNTIL hi DO}\par
+{\f1            s := s + expr;}\par
+{\f1          somme := s}\par
+{\f1        END;}\par
+\par
+{\f1        s := somme(i, 1, n, a[i]);}\par
+\par
+{\f1      Ici, a[i] est reevalue a chaque iteration car i change,}\par
+{\f1      et l'expression utilise la valeur courante de i car k}\par
+{\f1      et i sont le meme (parametres par nom).}\par
+\par
+{\f1   c) Implementation des thunks :}\par
+{\f1      Le passage par nom est implemente par des thunks :}\par
+{\f1      des sous-routines anonymes generees par le compilateur}\par
+{\f1      qui evaluent l'expression de l'argument dans le}\par
+{\f1      contexte de l'appelant.}\par
+\par
+7.2 Valeur de retour\par
+\par
+{\f1   Les procedures typees (INTEGER PROCEDURE, REAL PROCEDURE,}\par
+{\f1   BOOLEAN PROCEDURE) retournent une valeur. La valeur de}\par
+{\f1   retour est assignee au nom de la procedure dans le corps :}\par
+\par
+{\f1     INTEGER PROCEDURE max(a, b); VALUE a, b; INTEGER a, b;}\par
+{\f1       max := IF a > b THEN a ELSE b;}\par
+\par
+7.3 Procedures recursives\par
+\par
+{\f1   Algol 60 supporte nativement la recursivite. La pile}\par
+{\f1   d'execution gere automatiquement les cadres d'activation}\par
+{\f1   successifs.}\par
+\par
+{\f1     INTEGER PROCEDURE facto(n); VALUE n; INTEGER n;}\par
+{\f1       facto := IF n <= 1 THEN 1 ELSE n * facto(n - 1);}\par
+\par
+7.4 Procedures comme parametres\par
+\par
+{\f1   Une procedure peut etre passee en parametre a une autre :}\par
+\par
+{\f1     PROCEDURE appliquer(f, x); PROCEDURE f; INTEGER x;}\par
+{\f1       f(x);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_06}     {\uldb Suivant >>}{\v IDH_ALGOL60_08}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_08}
+{\footnote $ Algol 60 - TABLEAUX}
+{\footnote K Algol 60 tableaux;array;bornes;dimensions}
+\b\fs24 TABLEAUX \b0\fs20\par
+\par
+8.1 Declaration\par
+\par
+{\f1   Les tableaux sont declares avec le mot-cle ARRAY et des}\par
+{\f1   bornes (borne_inf : borne_sup) pour chaque dimension :}\par
+\par
+{\f1     INTEGER ARRAY a[1:100];}\par
+{\f1     REAL ARRAY mat[1:n, 1:m];}\par
+\par
+{\f1   Les bornes sont des expressions entieres evaluees au}\par
+{\f1   moment de l'entree dans le bloc contenant.}\par
+\par
+8.2 Acces par indice\par
+\par
+{\f1   Acces unidimensionnel : a[i]}\par
+{\f1   Acces multidimensionnel : mat[i, j]}\par
+\par
+{\f1   L'indice commence a la borne inferieure declaree (pas}\par
+{\f1   necessairement 0 ou 1).}\par
+\par
+8.3 Tableaux a bornes dynamiques\par
+\par
+{\f1   Les bornes des tableaux peuvent etre des parametres ou des}\par
+{\f1   variables, permettant des tableaux de taille variable :}\par
+\par
+{\f1     PROCEDURE traiter(n); VALUE n; INTEGER n;}\par
+{\f1     BEGIN}\par
+{\f1       INTEGER ARRAY temp[1:n];}\par
+{\f1       ...}\par
+{\f1     END;}\par
+\par
+8.4 Tableaux en parametres\par
+\par
+{\f1   Un tableau peut etre passe en parametre a une procedure.}\par
+{\f1   Le passage se fait par reference (adresse du tableau).}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_07}     {\uldb Suivant >>}{\v IDH_ALGOL60_09}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_09}
+{\footnote $ Algol 60 - BLOCS ET PORTEE}
+{\footnote K Algol 60 blocs;portee;scope;begin;end}
+\b\fs24 BLOCS ET PORTEE \b0\fs20\par
+\par
+9.1 Structure de bloc\par
+\par
+{\f1   Un programme Algol 60 est un bloc. Chaque bloc est delimite}\par
+{\f1   par BEGIN et END et peut contenir des declarations suivies}\par
+{\f1   d'instructions.}\par
+\par
+{\f1     BEGIN}\par
+{\f1       INTEGER x;    comment declaration ;}\par
+{\f1       x := 10;      comment instruction ;}\par
+{\f1       BEGIN}\par
+{\f1         INTEGER y;   comment declaration locale ;}\par
+{\f1         y := x + 1}\par
+{\f1       END}\par
+{\f1     END}\par
+\par
+9.2 Portee lexicale\par
+\par
+{\f1   Les declarations sont locales au bloc englobant. La}\par
+{\f1   recherche d'un identificateur remonte les blocs englobants}\par
+{\f1   (portee lexicale statique, static scoping).}\par
+\par
+{\f1   Un identificateur local masque un identificateur de meme}\par
+{\f1   nom dans un bloc englobant (shadowing).}\par
+\par
+9.3 Duree de vie\par
+\par
+{\f1   Variables locales : creees a l'entree du bloc, detruites}\par
+{\f1   a la sortie. Allouees sur la pile.}\par
+\par
+{\f1   Variables OWN : duree de vie du programme entier. Allouees}\par
+{\f1   dans le segment de donnees statiques.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_08}     {\uldb Suivant >>}{\v IDH_ALGOL60_10}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_10}
+{\footnote $ Algol 60 - ENTREES / SORTIES}
+{\footnote K Algol 60 entrees sorties;read;write;input;output}
+\b\fs24 ENTREES / SORTIES \b0\fs20\par
+\par
+{\f1   Le Revised Report d'Algol 60 ne definit pas de mecanisme}\par
+{\f1   standard d'entrees/sorties. Chaque implementation fournit}\par
+{\f1   ses propres intrinsics.}\par
+\par
+{\f1   Les intrinsics fournis par cette implementation sont :}\par
+\par
+{\f1     outinteger(canal, n)     Ecrire l'entier n sur le canal}\par
+{\f1     outreal(canal, x)        Ecrire le reel x sur le canal}\par
+{\f1     outstring(canal, s)      Ecrire la chaine s sur le canal}\par
+{\f1     outboolean(canal, b)     Ecrire TRUE ou FALSE sur le canal}\par
+{\f1     ininteger(canal)         Lire un entier depuis le canal}\par
+{\f1     inreal(canal)            Lire un reel depuis le canal}\par
+{\f1     inchar(canal)            Lire un caractere depuis le canal}\par
+{\f1     print(args)              Raccourci pour outstring sur canal 1}\par
+\par
+{\f1   Canaux :}\par
+{\f1     1 = sortie standard (STDOUT)}\par
+{\f1     2 = sortie d'erreur (STDERR)}\par
+\par
+{\f1   Fonctions mathematiques intrinseques :}\par
+{\f1     abs(n)      Valeur absolue}\par
+{\f1     sign(n)     Signe (-1, 0, ou 1)}\par
+{\f1     entier(x)   Partie entiere (floor)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_09}     {\uldb Suivant >>}{\v IDH_ALGOL60_11}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_11}
+{\footnote $ Algol 60 - STRUCTURE D'UN PROGRAMME}
+{\footnote K Algol 60 structure programme;main;source}
+\b\fs24 STRUCTURE D'UN PROGRAMME \b0\fs20\par
+\par
+{\f1   Un programme Algol 60 est un bloc principal termine par}\par
+{\f1   un point :}\par
+\par
+{\f1     comment Mon programme Algol 60 ;}\par
+{\f1     BEGIN}\par
+{\f1       <declarations> ;}\par
+{\f1       <instructions>}\par
+{\f1     END.}\par
+\par
+{\f1   Notes :}\par
+{\f1     - Le point final (.) marque la fin du programme}\par
+{\f1     - Le point-virgule (;) est un separateur d'instructions,}\par
+{\f1       pas un terminateur}\par
+{\f1     - Les declarations precedent les instructions dans}\par
+{\f1       chaque bloc}\par
+{\f1     - Un commentaire d'en-tete peut preceder le BEGIN}\par
+\par
+{\f1   Exemple complet :}\par
+\par
+{\f1     comment Programme de demonstration Algol 60 ;}\par
+{\f1     BEGIN}\par
+{\f1       INTEGER x, y;}\par
+{\f1       INTEGER PROCEDURE carre(n); INTEGER n;}\par
+{\f1         carre := n * n;}\par
+\par
+{\f1       x := 5;}\par
+{\f1       y := carre(x);}\par
+{\f1       outstring(1, `carre de 5 = `);}\par
+{\f1       outinteger(1, y)}\par
+{\f1     END.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_10}     {\uldb Suivant >>}{\v IDH_ALGOL60_12}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_12}
+{\footnote $ Algol 60 - DIFFERENCES AVEC ALGOL 58}
+{\footnote K Algol 60 differences Algol 58;evolution}
+\b\fs24 DIFFERENCES AVEC ALGOL 58 \b0\fs20\par
+\par
+{\f1   Algol 60 a apporte des ameliorations significatives par}\par
+{\f1   rapport a Algol 58 (IAL) :}\par
+\par
+{\f1     - Structure de blocs (BEGIN/END) avec portee lexicale}\par
+{\f1     - Types de donnees explicites (INTEGER, REAL, BOOLEAN)}\par
+{\f1     - Appel par nom comme mecanisme par defaut}\par
+{\f1     - Mot-cle VALUE pour specifier le passage par valeur}\par
+{\f1     - Variables OWN (persistance entre appels)}\par
+{\f1     - Boucle FOR generalisee (STEP/UNTIL, WHILE, listes)}\par
+{\f1     - Expressions conditionnelles (IF/THEN/ELSE comme valeur)}\par
+{\f1     - Recursivite pleinement supportee}\par
+{\f1     - Grammaire formelle en BNF}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_11}     {\uldb Suivant >>}{\v IDH_ALGOL60_13}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_13}
+{\footnote $ Algol 60 - LIMITATIONS CONNUES}
+{\footnote K Algol 60 limitations;compilateur}
+\b\fs24 LIMITATIONS CONNUES \b0\fs20\par
+\par
+{\f1   Le langage Algol 60 standard presente les limitations}\par
+{\f1   suivantes :}\par
+\par
+{\f1     - Pas de types utilisateur (pas de structures/records)}\par
+{\f1     - Pas de systeme de modules ou d'importation}\par
+{\f1     - Pas d'entrees/sorties standardisees}\par
+{\f1     - Pas de gestion d'erreurs ou d'exceptions}\par
+{\f1     - Pas de pointeurs ou d'allocation dynamique explicite}\par
+{\f1     - Pas de types enumeres}\par
+{\f1     - Pas de gestion de fichiers}\par
+{\f1     - Les chaines ne sont pas un type de premiere classe}\par
+{\f1     - L'appel par nom peut etre couteux en performance}\par
+\par
+{\f1   Limitations specifiques a cette implementation :}\par
+{\f1     - Les reels sont tronques vers des entiers 16 bits}\par
+{\f1     - Les entiers sont limites a 16 bits signes}\par
+{\f1     - Pas de virgule flottante materielle (8086 sans 8087)}\par
+{\f1     - Les tableaux multidimensionnels sont linearises}\par
+{\f1       en row-major order}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_12}     {\uldb Suivant >>}{\v IDH_ALGOL60_14}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL60_14}
+{\footnote $ Algol 60 - REFERENCES}
+{\footnote K Algol 60 references;bibliographie;BNF}
+\b\fs24 REFERENCES \b0\fs20\par
+\par
+{\f1   [1] J.W. Backus et al., "Report on the Algorithmic Language}\par
+{\f1       ALGOL 60", Communications of the ACM, vol. 3, no. 5,}\par
+{\f1       mai 1960.}\par
+\par
+{\f1   [2] P. Naur (editeur), "Revised Report on the Algorithmic}\par
+{\f1       Language ALGOL 60", Communications of the ACM, vol. 6,}\par
+{\f1       no. 1, janvier 1963.}\par
+\par
+{\f1   [3] D.E. Knuth, "The Remaining Trouble Spots in ALGOL 60",}\par
+{\f1       Communications of the ACM, vol. 10, no. 10, 1967.}\par
+\par
+{\f1   [4] E.W. Dijkstra, "Algol 60 Translation", Supplement to}\par
+{\f1       the ALGOL Bulletin, 1961.}\par
+\par
+{\f1   Fin du document - Specifications du langage Algol 60}\par
+
+\par
+{\uldb << Precedent}{\v IDH_ALGOL60_13}     {\uldb Table des matieres}{\v IDH_ALGOL60_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

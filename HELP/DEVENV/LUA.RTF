@@ -1,0 +1,590 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_LUA_01}
+{\footnote $ Lua - INTRODUCTION}
+{\footnote K Lua introduction;histoire;Ierusalimschy;5.3}
+\b\fs24 INTRODUCTION \b0\fs20\par
+\par
+{\f1    Lua est un langage de programmation leger, extensible, a typage}\par
+{\f1    dynamique, concu pour l integration et le scripting. LUA86 implemente}\par
+{\f1    un sous-ensemble substantiel de Lua 5.3 ciblant le jeu d instructions}\par
+{\f1    8086 en mode reel DOS 16 bits.}\par
+\par
+{\f1    Reference : Roberto Ierusalimschy, Luiz Henrique de Figueiredo,}\par
+{\f1                Waldemar Celes - ?? Lua 5.3 Reference Manual ??}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. CONVENTIONS LEXICALES}     {\uldb [Aller]}{\v IDH_LUA_02}\par
+{\f1  3. TYPES ET VALEURS}     {\uldb [Aller]}{\v IDH_LUA_03}\par
+{\f1  4. VARIABLES ET PORTEE}     {\uldb [Aller]}{\v IDH_LUA_04}\par
+{\f1  5. OPERATEURS}     {\uldb [Aller]}{\v IDH_LUA_05}\par
+{\f1  6. INSTRUCTIONS}     {\uldb [Aller]}{\v IDH_LUA_06}\par
+{\f1  7. FONCTIONS}     {\uldb [Aller]}{\v IDH_LUA_07}\par
+{\f1  8. TABLES}     {\uldb [Aller]}{\v IDH_LUA_08}\par
+{\f1  9. METATABLES}     {\uldb [Aller]}{\v IDH_LUA_09}\par
+{\f1 10. BIBLIOTHEQUES STANDARD}     {\uldb [Aller]}{\v IDH_LUA_10}\par
+{\f1 11. GESTION DES ERREURS}     {\uldb [Aller]}{\v IDH_LUA_11}\par
+{\f1 12. LIMITES D IMPLEMENTATION LUA86}     {\uldb [Aller]}{\v IDH_LUA_12}\par
+{\f1 13. CIBLE DE COMPILATION}     {\uldb [Aller]}{\v IDH_LUA_13}\par
+\par
+{\uldb Suivant >>}{\v IDH_LUA_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_LUA_02}
+{\footnote $ Lua - CONVENTIONS LEXICALES}
+{\footnote K Lua lexical;commentaires;identificateurs;litteraux;chaines}
+\b\fs24 CONVENTIONS LEXICALES \b0\fs20\par
+\par
+{\f1    2.1 Commentaires}\par
+{\f1        -- commentaire court jusqu a fin de ligne}\par
+{\f1        --[[ commentaire long multi-ligne ]]}\par
+{\f1        --[=[ commentaire long avec niveau d egalite ]=]}\par
+\par
+{\f1    2.2 Identificateurs}\par
+{\f1        Commencent par une lettre ou underscore (_), suivis de lettres,}\par
+{\f1        chiffres ou underscores. Sensibles a la casse.}\par
+{\f1        Exemples : x  _total  myVar  i2  _ENV}\par
+\par
+{\f1    2.3 Mots-cles reserves (21)}\par
+{\f1        and       break     do        else      elseif}\par
+{\f1        end       false     for       function  goto}\par
+{\f1        if        in        local     nil       not}\par
+{\f1        or        repeat    return    then      true}\par
+{\f1        until     while}\par
+\par
+{\f1    2.4 Chaines de caracteres}\par
+{\f1        Delimiteurs : guillemets simples 'abc' ou doubles "abc"}\par
+{\f1        Sequences d echappement :}\par
+{\f1          \\n (saut de ligne)    \\t (tabulation)    \\r (retour chariot)}\par
+{\f1          \\\\ (backslash)        \\" (guillemet)     \\' (apostrophe)}\par
+{\f1          \\a (alerte)           \\b (retour arriere)}\par
+{\f1          \\f (saut de page)     \\v (tab verticale)}\par
+{\f1          \\0 (octet nul)        \\xNN (hexadecimal)}\par
+{\f1        Chaines longues : [[texte]] ou [=[texte]=] (multi-ligne, pas}\par
+{\f1        d echappement)}\par
+\par
+{\f1    2.5 Litteraux numeriques}\par
+{\f1        Entiers decimaux : 0, 42, 65535}\par
+{\f1        Entiers hexadecimaux : 0xFF, 0XFF}\par
+{\f1        Flottants : 3.14, 1.5e3 (tronques en entier 16 bits)}\par
+{\f1        Limitation : les nombres sont des entiers signes 16 bits}\par
+{\f1          (-32768 a 32767), les flottants sont arrondis (trunc).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_LUA_01}     {\uldb Suivant >>}{\v IDH_LUA_03}     {\uldb Table des matieres}{\v IDH_LUA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_LUA_03}
+{\footnote $ Lua - TYPES ET VALEURS}
+{\footnote K Lua types;valeurs;nil;boolean;number;string;table;function}
+\b\fs24 TYPES ET VALEURS \b0\fs20\par
+\par
+{\f1    Lua est un langage a typage dynamique. Les variables n ont pas de}\par
+{\f1    type ; seules les valeurs en ont un.}\par
+\par
+{\f1    3.1 nil}\par
+{\f1        Type ayant une seule valeur : nil. Represente l absence de valeur.}\par
+{\f1        Representation interne : 0 (mot de 16 bits).}\par
+\par
+{\f1    3.2 boolean}\par
+{\f1        Deux valeurs : true et false.}\par
+{\f1        Representation : true = 1, false = 0.}\par
+{\f1        Regle de verite Lua : nil et false sont faux, toute autre valeur}\par
+{\f1        est vraie (y compris 0 et la chaine vide "").}\par
+\par
+{\f1    3.3 number}\par
+{\f1        Entier signe 16 bits (-32768 a 32767).}\par
+{\f1        Limitation LUA86 : pas de nombres flottants natifs. Les litteraux}\par
+{\f1        flottants sont tronques en entiers. math.pi vaut 3.}\par
+\par
+{\f1    3.4 string}\par
+{\f1        Sequence d octets immutable terminee par un octet nul.}\par
+{\f1        Representation : pointeur vers les donnees dans le segment DATA.}\par
+{\f1        Longueur : operateur # ou string.len().}\par
+\par
+{\f1    3.5 table}\par
+{\f1        Structure associative universelle de Lua. Sert de tableau, de}\par
+{\f1        dictionnaire, d objet, de module, etc.}\par
+{\f1        Representation memoire LUA86 (bloc de 512 octets) :}\par
+{\f1          [0]      : count (partie tableau, word)}\par
+{\f1          [2..251] : elements tableau (125 words max)}\par
+{\f1          [252]    : n_pairs (partie hash, word)}\par
+{\f1          [254..507] : paires cle/valeur hash (63 paires max)}\par
+{\f1          [508]    : pointeur metatable (word, 0 si aucune)}\par
+{\f1        Indices tableau base 1 (comme en Lua standard).}\par
+\par
+{\f1    3.6 function}\par
+{\f1        Valeur de premiere classe. Representee par un pointeur de code.}\par
+{\f1        Fonctions nommees, anonymes, closures et methodes supportees.}\par
+\par
+{\f1    3.7 userdata}\par
+{\f1        Type stub. Represente par un pointeur (word). Utilisation limitee.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_LUA_02}     {\uldb Suivant >>}{\v IDH_LUA_04}     {\uldb Table des matieres}{\v IDH_LUA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_LUA_04}
+{\footnote $ Lua - VARIABLES ET PORTEE}
+{\footnote K Lua variables;portee;local;global;scope}
+\b\fs24 VARIABLES ET PORTEE \b0\fs20\par
+\par
+{\f1    4.1 Variables locales}\par
+{\f1        Declarees avec le mot-cle ?? local ??.}\par
+{\f1        Portee : du point de declaration a la fin du bloc englobant.}\par
+{\f1        Stockage : pile (acces [BP-offset]).}\par
+{\f1          local x = 10}\par
+{\f1          local a, b, c = 1, 2, 3}\par
+{\f1          local y          -- vaut nil}\par
+\par
+{\f1    4.2 Variables globales}\par
+{\f1        Toute variable non declaree locale est globale.}\par
+{\f1        Stockage : segment DATA (label _LUAV_nom).}\par
+{\f1        Implicitement creee a la premiere utilisation.}\par
+\par
+{\f1    4.3 Upvalues (closures)}\par
+{\f1        Variable d une portee englobante capturee par une fonction interne.}\par
+{\f1        Representees par des cellules DATA (_LUAU_nom).}\par
+{\f1        Limitation : un seul niveau de capture recommande.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_LUA_03}     {\uldb Suivant >>}{\v IDH_LUA_05}     {\uldb Table des matieres}{\v IDH_LUA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_LUA_05}
+{\footnote $ Lua - OPERATEURS}
+{\footnote K Lua operateurs;arithmetiques;comparaison;logiques;concatenation}
+\b\fs24 OPERATEURS \b0\fs20\par
+\par
+{\f1    5.1 Operateurs arithmetiques}\par
+{\f1        +   addition}\par
+{\f1        -   soustraction (binaire) ou negation (unaire)}\par
+{\f1        *   multiplication}\par
+{\f1        /   division entiere (quotient)}\par
+{\f1        //  division entiere (quotient, arrondi vers -infini)}\par
+{\f1        %   modulo (reste de la division)}\par
+{\f1        ^   puissance (associatif a droite)}\par
+\par
+{\f1    5.2 Operateurs de comparaison}\par
+{\f1        ==  egalite}\par
+{\f1        ~=  difference}\par
+{\f1        <   inferieur strict}\par
+{\f1        >   superieur strict}\par
+{\f1        <=  inferieur ou egal}\par
+{\f1        >=  superieur ou egal}\par
+{\f1        Comparaison de chaines : lexicographique via STRCMP.}\par
+\par
+{\f1    5.3 Operateurs logiques}\par
+{\f1        and   ET logique (court-circuit, retourne une valeur)}\par
+{\f1        or    OU logique (court-circuit, retourne une valeur)}\par
+{\f1        not   negation logique (retourne true ou false)}\par
+{\f1        Court-circuit : ?? and ?? retourne le premier operande si faux,}\par
+{\f1        sinon le second. ?? or ?? retourne le premier si vrai, sinon le}\par
+{\f1        second.}\par
+\par
+{\f1    5.4 Operateur de concatenation}\par
+{\f1        ..  concatenation de chaines (cree une nouvelle chaine)}\par
+\par
+{\f1    5.5 Operateur de longueur}\par
+{\f1        #   longueur d une chaine (nombre d octets) ou d une table}\par
+{\f1            (nombre d elements dans la partie tableau)}\par
+\par
+{\f1    5.6 Precedence des operateurs (du plus faible au plus fort)}\par
+{\f1          1. or}\par
+{\f1          2. and}\par
+{\f1          3. < > <= >= ~= ==}\par
+{\f1          4. | (bitwise or, stub)}\par
+{\f1          5. ~ (bitwise xor, stub)}\par
+{\f1          6. & (bitwise and, stub)}\par
+{\f1          7. << >> (decalages, stub)}\par
+{\f1          8. .. (concatenation, associatif a droite)}\par
+{\f1          9. + -}\par
+{\f1         10. * / // %}\par
+{\f1         11. not  #  - (unaires)}\par
+{\f1         12. ^ (puissance, associatif a droite)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_LUA_04}     {\uldb Suivant >>}{\v IDH_LUA_06}     {\uldb Table des matieres}{\v IDH_LUA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_LUA_06}
+{\footnote $ Lua - INSTRUCTIONS}
+{\footnote K Lua instructions;if;while;for;repeat;goto;break;return}
+\b\fs24 INSTRUCTIONS \b0\fs20\par
+\par
+{\f1    6.1 Affectation}\par
+{\f1        var = expr}\par
+{\f1        var1, var2 = expr1, expr2   (affectation multiple)}\par
+{\f1        t[k] = v                    (affectation de table)}\par
+{\f1        Les valeurs excedentaires sont ignorees ; les manquantes}\par
+{\f1        valent nil.}\par
+\par
+{\f1    6.2 Bloc}\par
+{\f1        do stmts end}\par
+{\f1        Un bloc cree une nouvelle portee pour les variables locales.}\par
+\par
+{\f1    6.3 Instruction if}\par
+{\f1        if cond then}\par
+{\f1          stmts}\par
+{\f1        elseif cond then}\par
+{\f1          stmts}\par
+{\f1        else}\par
+{\f1          stmts}\par
+{\f1        end}\par
+{\f1        Regle de verite : nil et false sont faux, tout le reste est vrai.}\par
+\par
+{\f1    6.4 Boucle while}\par
+{\f1        while cond do}\par
+{\f1          stmts}\par
+{\f1        end}\par
+\par
+{\f1    6.5 Boucle repeat}\par
+{\f1        repeat}\par
+{\f1          stmts}\par
+{\f1        until cond}\par
+{\f1        Les variables locales du bloc sont visibles dans la condition.}\par
+\par
+{\f1    6.6 Boucle for numerique}\par
+{\f1        for var = debut, fin [, pas] do}\par
+{\f1          stmts}\par
+{\f1        end}\par
+{\f1        La variable de boucle est locale et non modifiable. Le pas}\par
+{\f1        par defaut est 1.}\par
+\par
+{\f1    6.7 Boucle for generique}\par
+{\f1        for k, v in pairs(t) do stmts end     -- toutes les cles}\par
+{\f1        for i, v in ipairs(t) do stmts end    -- indices entiers 1..#t}\par
+{\f1        next(t, k) : fonction d iteration de base.}\par
+\par
+{\f1    6.8 break}\par
+{\f1        Sort de la boucle englobante (while, repeat, for).}\par
+\par
+{\f1    6.9 goto et labels}\par
+{\f1        ::label::          -- declaration de label}\par
+{\f1        goto label         -- saut vers le label}\par
+{\f1        Restriction : ne peut sauter dans un bloc interne.}\par
+\par
+{\f1    6.10 return}\par
+{\f1         return [expr1 [, expr2 ...]]}\par
+{\f1         Retour multiple : premiere valeur dans AX, les suivantes sur}\par
+{\f1         la pile. Nombre de retours dans CX.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_LUA_05}     {\uldb Suivant >>}{\v IDH_LUA_07}     {\uldb Table des matieres}{\v IDH_LUA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_LUA_07}
+{\footnote $ Lua - FONCTIONS}
+{\footnote K Lua fonctions;function;closure;varargs;multiple return}
+\b\fs24 FONCTIONS \b0\fs20\par
+\par
+{\f1    7.1 Declaration}\par
+{\f1        function nom(params)       -- fonction globale}\par
+{\f1          stmts}\par
+{\f1        end}\par
+\par
+{\f1        local function nom(params) -- fonction locale}\par
+{\f1          stmts}\par
+{\f1        end}\par
+\par
+{\f1    7.2 Fonction anonyme}\par
+{\f1        function(params) stmts end}\par
+{\f1        Expression evaluant a une valeur de type function.}\par
+\par
+{\f1    7.3 Parametres}\par
+{\f1        Parametres nommes : function f(a, b, c)}\par
+{\f1        Parametres excedentaires ignores ; manquants valent nil.}\par
+{\f1        Varargs : function f(a, ...) -- ... collecte les args restants}\par
+{\f1          select('#', ...) : nombre de varargs}\par
+{\f1          select(n, ...) : n-ieme vararg}\par
+\par
+{\f1    7.4 Valeur de retour}\par
+{\f1        return expr1, expr2, ...}\par
+{\f1        Retour multiple (max 8 valeurs par defaut).}\par
+{\f1        return sans valeur retourne nil.}\par
+\par
+{\f1    7.5 Appel de fonction}\par
+{\f1        nom(args)          -- appel direct}\par
+{\f1        expr(args)         -- appel indirect (pointeur de fonction)}\par
+{\f1        obj:methode(args)  -- sucre pour obj.methode(obj, args)}\par
+\par
+{\f1    7.6 Appel terminal (tail call)}\par
+{\f1        return f(args) : optimise en JMP (pas de nouveau cadre de pile).}\par
+\par
+{\f1    7.7 Convention d appel}\par
+{\f1        cdecl 16 bits : arguments empiles de droite a gauche.}\par
+{\f1        Prologue : PUSH BP / MOV BP,SP / SUB SP, taille_locales}\par
+{\f1        Epilogue : MOV SP,BP / POP BP / RET}\par
+{\f1        L appelant nettoie la pile apres le retour.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_LUA_06}     {\uldb Suivant >>}{\v IDH_LUA_08}     {\uldb Table des matieres}{\v IDH_LUA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_LUA_08}
+{\footnote $ Lua - TABLES}
+{\footnote K Lua tables;array;dictionary;constructor}
+\b\fs24 TABLES \b0\fs20\par
+\par
+{\f1    8.1 Constructeurs}\par
+{\f1        \{\}                     -- table vide}\par
+{\f1        \{10, 20, 30\}           -- partie tableau (indices 1, 2, 3)}\par
+{\f1        \{x = 1, y = 2\}        -- partie hash (cles chaines)}\par
+{\f1        \{10, x = 1, [e] = v\}  -- mixte}\par
+\par
+{\f1    8.2 Acces}\par
+{\f1        t[i]       -- acces par indice (base 1)}\par
+{\f1        t.champ    -- sucre pour t["champ"]}\par
+\par
+{\f1    8.3 Affectation}\par
+{\f1        t[k] = v   -- affecte la valeur v a la cle k}\par
+{\f1        t.champ = v}\par
+\par
+{\f1    8.4 Longueur}\par
+{\f1        #t : nombre d elements dans la partie tableau.}\par
+\par
+{\f1    8.5 Fonctions table}\par
+{\f1        table.insert(t, v)       -- insere v a la fin}\par
+{\f1        table.remove(t, pos)     -- supprime l element a la position}\par
+{\f1        table.concat(t, sep)     -- joint les elements en chaine}\par
+{\f1        table.sort(t [, comp])   -- tri a bulles in-place}\par
+{\f1        table.unpack(t)          -- retour multiple des elements}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_LUA_07}     {\uldb Suivant >>}{\v IDH_LUA_09}     {\uldb Table des matieres}{\v IDH_LUA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_LUA_09}
+{\footnote $ Lua - METATABLES}
+{\footnote K Lua metatables;__index;__newindex;__add;metamethods}
+\b\fs24 METATABLES \b0\fs20\par
+\par
+{\f1    9.1 setmetatable(t, mt) / getmetatable(t)}\par
+{\f1        Chaque table peut avoir une metatable associee.}\par
+\par
+{\f1    9.2 Metamethodes arithmetiques}\par
+{\f1        __add __sub __mul __div __mod __pow __unm}\par
+\par
+{\f1    9.3 Metamethodes de comparaison}\par
+{\f1        __eq __lt __le}\par
+\par
+{\f1    9.4 Metamethodes speciales}\par
+{\f1        __concat : surcharge de l operateur ..}\par
+{\f1        __len    : surcharge de l operateur #}\par
+{\f1        __index  : acces a une cle absente (table ou fonction)}\par
+{\f1        __newindex : affectation a une cle absente}\par
+{\f1        __call   : appel d une table comme fonction}\par
+{\f1        __tostring : conversion en chaine (pour tostring et print)}\par
+\par
+{\f1    9.5 rawget(t, k) / rawset(t, k, v)}\par
+{\f1        Acces direct sans passer par les metamethodes.}\par
+\par
+{\f1    9.6 Limitation}\par
+{\f1        Un seul niveau de delegation (pas de chaine de metatables).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_LUA_08}     {\uldb Suivant >>}{\v IDH_LUA_10}     {\uldb Table des matieres}{\v IDH_LUA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_LUA_10}
+{\footnote $ Lua - BIBLIOTHEQUES STANDARD}
+{\footnote K Lua bibliotheques standard;math;string;table;io;os}
+\b\fs24 BIBLIOTHEQUES STANDARD \b0\fs20\par
+\par
+{\f1     10.1 Fonctions globales}\par
+{\f1          print(...)          : affiche les arguments separes par \\t, \\n final}\par
+{\f1          type(x)             : retourne la chaine du type ("nil", "number", ...)}\par
+{\f1          tostring(x)         : convertit en chaine}\par
+{\f1          tonumber(s)         : convertit en nombre}\par
+{\f1          assert(v [, msg])   : erreur si v est nil ou false}\par
+{\f1          error(msg [, level]): leve une erreur}\par
+{\f1          pcall(f, ...)       : appel protege -> true+retours ou false+msg}\par
+{\f1          xpcall(f, msgh, ...): appel protege avec handler de message}\par
+{\f1          select(n, ...)      : n-ieme vararg ou nombre de varargs}\par
+{\f1          pairs(t)            : iterateur sur toutes les cles d une table}\par
+{\f1          ipairs(t)           : iterateur sur les indices entiers 1..#t}\par
+{\f1          next(t, k)          : cle/valeur suivantes dans la table}\par
+{\f1          rawget(t, k)        : acces table sans metamethode}\par
+{\f1          rawset(t, k, v)     : affectation table sans metamethode}\par
+{\f1          setmetatable(t, mt) : associe une metatable}\par
+{\f1          getmetatable(t)     : retourne la metatable}\par
+\par
+{\f1     10.2 Bibliotheque string}\par
+{\f1          string.len(s)            : longueur en octets}\par
+{\f1          string.sub(s, i [, j])   : sous-chaine}\par
+{\f1          string.byte(s [, i])     : code octet du caractere}\par
+{\f1          string.char(n1, ...)     : chaine a partir de codes}\par
+{\f1          string.rep(s, n)         : repetition n fois}\par
+{\f1          string.reverse(s)        : inversion}\par
+{\f1          string.upper(s)          : majuscules}\par
+{\f1          string.lower(s)          : minuscules}\par
+{\f1          string.find(s, pattern)  : recherche (litterale basique)}\par
+{\f1          string.gsub(s, pat, rep) : remplacement premiere occurrence}\par
+{\f1          string.format(fmt, ...)  : formatage (%d %s %%)}\par
+{\f1          Limitation : les patterns Lua (%d, %a, etc.) ne sont pas}\par
+{\f1          implementes ; la recherche est purement litterale.}\par
+\par
+{\f1     10.3 Bibliotheque math}\par
+{\f1          math.abs(n)             : valeur absolue}\par
+{\f1          math.max(a, b)          : maximum}\par
+{\f1          math.min(a, b)          : minimum}\par
+{\f1          math.floor(n)           : pass-through (deja entier)}\par
+{\f1          math.ceil(n)            : pass-through}\par
+{\f1          math.sqrt(n)            : racine carree entiere (Newton-Raphson)}\par
+{\f1          math.random([m [, n]])  : nombre pseudo-aleatoire (LCG 16 bits)}\par
+{\f1          math.randomseed(n)      : initialise la graine}\par
+{\f1          math.pi                 : 3 (troncature entiere)}\par
+{\f1          math.huge               : 32767}\par
+{\f1          math.maxinteger         : 32767}\par
+{\f1          math.mininteger         : -32768}\par
+{\f1          math.tointeger(n)       : pass-through}\par
+{\f1          math.type(n)            : "integer"}\par
+\par
+{\f1     10.4 Bibliotheque table}\par
+{\f1          table.insert(t, v)       : insere a la fin}\par
+{\f1          table.remove(t [, pos])  : supprime et retourne l element}\par
+{\f1          table.concat(t [, sep])  : joint les elements}\par
+{\f1          table.sort(t [, comp])   : tri a bulles}\par
+{\f1          table.unpack(t)          : retour multiple des elements}\par
+{\f1          table.move : stub + avertissement}\par
+{\f1          table.pack : stub + avertissement}\par
+\par
+{\f1     10.5 Bibliotheque os}\par
+{\f1          os.clock()               : approximation en secondes}\par
+{\f1          os.exit([code])          : termine le programme}\par
+{\f1          os.time()                : stub (retourne 0)}\par
+{\f1          os.date()                : stub}\par
+{\f1          os.execute(cmd)          : stub}\par
+\par
+{\f1     10.6 Bibliotheque io}\par
+{\f1          io.write(...)            : ecriture sans \\n ni separateurs}\par
+{\f1          io.read("*l")            : lecture d une ligne}\par
+{\f1          io.read("*n")            : lecture d un nombre}\par
+{\f1          io.read("*a")            : stub + avertissement}\par
+{\f1          io.open, io.close        : stubs + avertissement}\par
+\par
+{\f1     10.7 Bibliotheque coroutine}\par
+{\f1          coroutine.create(f)      : cree une coroutine}\par
+{\f1          coroutine.resume(co, ...) : reprend l execution}\par
+{\f1          coroutine.yield(...)     : suspend l execution}\par
+{\f1          coroutine.status(co)     : "running"/"suspended"/"dead"/"normal"}\par
+{\f1          coroutine.wrap(f)        : cree un iterateur}\par
+{\f1          coroutine.isyieldable()  : test si yield possible}\par
+{\f1          Limitation : pile fixe de 512 octets par coroutine,}\par
+{\f1          maximum 4 coroutines simultanees.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_LUA_09}     {\uldb Suivant >>}{\v IDH_LUA_11}     {\uldb Table des matieres}{\v IDH_LUA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_LUA_11}
+{\footnote $ Lua - GESTION DES ERREURS}
+{\footnote K Lua erreurs;pcall;error;xpcall;assert}
+\b\fs24 GESTION DES ERREURS \b0\fs20\par
+\par
+{\f1     11.1 error(msg [, level])}\par
+{\f1          Leve une erreur avec le message donne. Si un handler pcall}\par
+{\f1          est actif, le controle est transfere a celui-ci. Sinon,}\par
+{\f1          le programme affiche le message et se termine avec code 1.}\par
+\par
+{\f1     11.2 pcall(f, arg1, ...)}\par
+{\f1          Appelle f en mode protege.}\par
+{\f1          Retourne true + valeurs de retour de f en cas de succes.}\par
+{\f1          Retourne false + message d erreur en cas d erreur.}\par
+\par
+{\f1     11.3 xpcall(f, msgh, arg1, ...)}\par
+{\f1          Comme pcall, mais appelle msgh(msg) sur le message d erreur}\par
+{\f1          avant de le retourner.}\par
+\par
+{\f1     11.4 assert(v [, msg])}\par
+{\f1          Si v est nil ou false, appelle error(msg).}\par
+{\f1          Sinon retourne v et tous les arguments supplementaires.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_LUA_10}     {\uldb Suivant >>}{\v IDH_LUA_12}     {\uldb Table des matieres}{\v IDH_LUA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_LUA_12}
+{\footnote $ Lua - LIMITES D IMPLEMENTATION LUA86}
+{\footnote K Lua limites;implementation;LUA86;sous-ensemble}
+\b\fs24 LIMITES D IMPLEMENTATION LUA86 \b0\fs20\par
+\par
+{\f1     12.1 Nombres}\par
+{\f1          Entiers signes 16 bits uniquement (-32768 a 32767).}\par
+{\f1          Pas de nombres flottants IEEE 754. Les litteraux flottants}\par
+{\f1          sont tronques. Les operations a virgule flottante ne sont}\par
+{\f1          pas disponibles.}\par
+\par
+{\f1     12.2 Memoire}\par
+{\f1          Pile : 1024 octets par defaut (configurable STACK_SIZE).}\par
+{\f1          Heap statique : 4096 octets pour l allocation dynamique.}\par
+{\f1          Segment DATA : variables globales, constantes chaines.}\par
+\par
+{\f1     12.3 Symboles}\par
+{\f1          Maximum 2048 symboles (Free Pascal) ou 100 (Turbo Pascal).}\par
+{\f1          Maximum 64 portees imbriquees.}\par
+{\f1          Maximum 32 parametres par fonction.}\par
+{\f1          Maximum 32 upvalues par closure.}\par
+\par
+{\f1     12.4 Tables}\par
+{\f1          Maximum 125 elements en partie tableau.}\par
+{\f1          Maximum 63 paires en partie hash.}\par
+{\f1          Bloc fixe de 512 octets par table.}\par
+\par
+{\f1     12.5 Retours multiples}\par
+{\f1          Maximum 8 valeurs de retour.}\par
+\par
+{\f1     12.6 Coroutines}\par
+{\f1          Maximum 4 coroutines simultanees.}\par
+{\f1          Pile fixe de 512 octets par coroutine.}\par
+\par
+{\f1     12.7 Fonctionnalites non supportees}\par
+{\f1          - Nombres flottants IEEE 754}\par
+{\f1          - Patterns Lua complets (string.gmatch, patterns %d %a etc.)}\par
+{\f1          - Operateurs bitwise natifs (|, &, ~, <<, >>)}\par
+{\f1          - Chaines de metatables (un seul niveau)}\par
+{\f1          - Gestion avancee de fichiers (io.open complet)}\par
+{\f1          - Module require/module}\par
+{\f1          - Environnements (_ENV avance)}\par
+{\f1          - Finalisation __gc}\par
+{\f1          - Weak tables}\par
+{\f1          - Debug library}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_LUA_11}     {\uldb Suivant >>}{\v IDH_LUA_13}     {\uldb Table des matieres}{\v IDH_LUA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_LUA_13}
+{\footnote $ Lua - CIBLE DE COMPILATION}
+{\footnote K Lua cible compilation;8086;DOS;assembleur;backend}
+\b\fs24 CIBLE DE COMPILATION \b0\fs20\par
+\par
+{\f1     13.1 Architecture}\par
+{\f1          Processeur Intel 8086 en mode reel 16 bits.}\par
+{\f1          Modele memoire : SMALL (.MODEL SMALL).}\par
+{\f1          Systeme d exploitation : MS-DOS.}\par
+{\f1          Appels systeme : INT 21h.}\par
+\par
+{\f1     13.2 Format de sortie}\par
+{\f1          Assembleur compatible MASM (.ASM).}\par
+{\f1          Segments : _TEXT (code) et _DATA (donnees).}\par
+{\f1          Point d entree : _LUAF_main.}\par
+{\f1          Pile : .STACK directive.}\par
+\par
+{\f1     13.3 Conventions de nommage ASM}\par
+{\f1          _LUAV_   : variable globale}\par
+{\f1          _LUAF_   : fonction}\par
+{\f1          _LUAK_   : constante chaine litterale}\par
+{\f1          _LUART_  : routine runtime}\par
+{\f1          _LUAL_   : label de saut interne}\par
+{\f1          _LUAT_   : table donnees}\par
+{\f1          _LUAU_   : upvalue}\par
+{\f1          _LUAX_   : handler d erreur}\par
+{\f1          _LUAC_   : coroutines}\par
+
+\par
+{\uldb << Precedent}{\v IDH_LUA_12}     {\uldb Table des matieres}{\v IDH_LUA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

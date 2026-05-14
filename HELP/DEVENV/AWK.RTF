@@ -1,0 +1,957 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_AWK_01}
+{\footnote $ AWK - PRESENTATION}
+{\footnote K AWK presentation;introduction;Aho;Weinberger;Kernighan}
+\b\fs24 PRESENTATION \b0\fs20\par
+\par
+AWK est un langage de programmation concu pour le traitement de\par
+fichiers texte et l'extraction de donnees. Il a ete cree en 1977\par
+par Alfred Aho, Peter Weinberger et Brian Kernighan aux\par
+laboratoires Bell. Son nom provient des initiales de ses\par
+trois auteurs.\par
+\par
+AWK est un langage interpretatif de haut niveau, oriente vers le\par
+traitement ligne par ligne de fichiers structures en champs. Il\par
+combine des capacites de recherche de motifs (pattern matching)\par
+avec des actions programmables, offrant un outil puissant pour\par
+la transformation de donnees.\par
+\par
+Le compilateur AWK86 implemente un sous-ensemble substantiel du\par
+langage AWK tel que defini par le standard POSIX, en ciblant le\par
+processeur Intel 8086 via la generation d'assembleur MASM\par
+compatible DOS 16 bits.\par
+\par
+Paradigme : imperatif, oriente donnees, traitement de texte\par
+Typage    : dynamique (nombres, chaines, tableaux associatifs)\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. STRUCTURE D'UN PROGRAMME}     {\uldb [Aller]}{\v IDH_AWK_02}\par
+{\f1  3. CONVENTIONS LEXICALES}     {\uldb [Aller]}{\v IDH_AWK_03}\par
+{\f1  4. TYPES DE DONNEES}     {\uldb [Aller]}{\v IDH_AWK_04}\par
+{\f1  5. VARIABLES PREDEFINIES}     {\uldb [Aller]}{\v IDH_AWK_05}\par
+{\f1  6. OPERATEURS}     {\uldb [Aller]}{\v IDH_AWK_06}\par
+{\f1  7. INSTRUCTIONS ET STRUCTURES DE CONTROLE}     {\uldb [Aller]}{\v IDH_AWK_07}\par
+{\f1  8. FONCTIONS PREDEFINIES}     {\uldb [Aller]}{\v IDH_AWK_08}\par
+{\f1  9. FONCTIONS UTILISATEUR}     {\uldb [Aller]}{\v IDH_AWK_09}\par
+{\f1 10. TABLEAUX ASSOCIATIFS}     {\uldb [Aller]}{\v IDH_AWK_10}\par
+{\f1 11. ENTREES / SORTIES ET REDIRECTIONS}     {\uldb [Aller]}{\v IDH_AWK_11}\par
+{\f1 12. EXPRESSIONS REGULIERES}     {\uldb [Aller]}{\v IDH_AWK_12}\par
+{\f1 13. LIMITATIONS DE L'IMPLEMENTATION}     {\uldb [Aller]}{\v IDH_AWK_13}\par
+{\f1 14. CIBLE DE COMPILATION}     {\uldb [Aller]}{\v IDH_AWK_14}\par
+\par
+{\uldb Suivant >>}{\v IDH_AWK_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_02}
+{\footnote $ AWK - STRUCTURE D'UN PROGRAMME}
+{\footnote K AWK structure programme;BEGIN;END;pattern;action}
+\b\fs24 STRUCTURE D'UN PROGRAMME \b0\fs20\par
+\par
+Un programme AWK est constitue d'une sequence de regles de la\par
+forme :\par
+\par
+{\f1     motif \{ action \}}\par
+\par
+Chaque regle est evaluee pour chaque ligne d'entree. Si le motif\par
+correspond a la ligne courante, l'action associee est executee.\par
+\par
+2.1 Forme generale\par
+\par
+{\f1     Un programme AWK peut contenir :}\par
+\par
+{\f1     - Des regles BEGIN      : executees avant la lecture de l'entree}\par
+{\f1     - Des regles pattern    : executees pour chaque ligne d'entree}\par
+{\f1     - Des regles END        : executees apres la lecture de l'entree}\par
+{\f1     - Des fonctions         : definitions de fonctions utilisateur}\par
+\par
+{\f1     Exemple complet :}\par
+\par
+{\f1         BEGIN \{ FS = ":" ; print "Debut" \}}\par
+\par
+{\f1         /error/ \{ erreurs++ \}}\par
+\par
+{\f1         NR > 10 \{ print "Ligne", NR, $0 \}}\par
+\par
+{\f1         END \{ print "Total erreurs:", erreurs \}}\par
+\par
+2.2 Regles BEGIN et END\par
+\par
+{\f1     Les blocs BEGIN sont executes une seule fois avant la lecture}\par
+{\f1     de la premiere ligne d'entree. Ils servent a initialiser les}\par
+{\f1     variables, definir les separateurs, afficher des en-tetes.}\par
+\par
+{\f1         BEGIN \{ FS = "," ; OFS = "\\t" \}}\par
+\par
+{\f1     Les blocs END sont executes une seule fois apres la lecture de}\par
+{\f1     toutes les lignes d'entree. Ils servent a afficher des totaux,}\par
+{\f1     des bilans, ou des resultats finaux.}\par
+\par
+{\f1         END \{ print "Lignes traitees:", NR \}}\par
+\par
+2.3 Regles pattern-action\par
+\par
+{\f1     Si le motif est omis, l'action s'execute pour chaque ligne :}\par
+\par
+{\f1         \{ print $1 \}}\par
+\par
+{\f1     Si l'action est omise, la ligne entiere est affichee :}\par
+\par
+{\f1         /motif/}\par
+\par
+2.4 Separateurs d'instructions\par
+\par
+{\f1     Les instructions dans un bloc sont separees par des points-}\par
+{\f1     virgules (;) ou des sauts de ligne :}\par
+\par
+{\f1         \{ x = 1; y = 2; print x + y \}}\par
+\par
+{\f1         \{}\par
+{\f1             x = 1}\par
+{\f1             y = 2}\par
+{\f1             print x + y}\par
+{\f1         \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_AWK_01}     {\uldb Suivant >>}{\v IDH_AWK_03}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_03}
+{\footnote $ AWK - CONVENTIONS LEXICALES}
+{\footnote K AWK lexical;identificateurs;commentaires;litteraux}
+\b\fs24 CONVENTIONS LEXICALES \b0\fs20\par
+\par
+3.1 Commentaires\par
+{\f1     Un commentaire commence par le caractere # et s'etend jusqu'a}\par
+{\f1     la fin de la ligne :}\par
+\par
+{\f1         # Ceci est un commentaire}\par
+{\f1         x = 42  # commentaire en fin de ligne}\par
+\par
+3.2 Identificateurs\par
+{\f1     Un identificateur commence par une lettre (a-z, A-Z) ou un}\par
+{\f1     underscore (_), suivi de lettres, chiffres (0-9) ou}\par
+{\f1     underscores. Les identificateurs sont sensibles a la casse.}\par
+\par
+{\f1     Exemples : x  total  my_var  NR  _temp  compteur2}\par
+\par
+3.3 Mots-cles reserves\par
+{\f1     Les mots-cles suivants sont reserves et ne peuvent pas etre}\par
+{\f1     utilises comme noms de variables ou de fonctions :}\par
+\par
+{\f1         BEGIN       END         BEGINFILE}\par
+{\f1         break       continue    delete}\par
+{\f1         do          else        exit}\par
+{\f1         for         function    getline}\par
+{\f1         if          in          next}\par
+{\f1         nextfile    print       printf}\par
+{\f1         return      while}\par
+\par
+3.4 Chaines de caracteres\par
+{\f1     Les chaines sont delimitees par des guillemets doubles :}\par
+\par
+{\f1         "Bonjour le monde"}\par
+{\f1         ""}\par
+{\f1         "Ligne 1\\nLigne 2"}\par
+\par
+{\f1     Sequences d'echappement supportees :}\par
+{\f1       \\n  saut de ligne           \\t  tabulation horizontale}\par
+{\f1       \\r  retour chariot          \\\\  backslash}\par
+{\f1       \\"  guillemet double        \\a  alerte (bip)}\par
+{\f1       \\b  retour arriere          \\f  saut de page}\par
+{\f1       \\v  tabulation verticale    \\0  octet nul}\par
+{\f1       \\/  slash (dans les regex)}\par
+\par
+3.5 Litteraux numeriques\par
+{\f1     Entiers decimaux    : 0, 42, 255, 32767}\par
+{\f1     Entiers octaux      : 0377 (prefixe 0)}\par
+{\f1     Entiers hexadecimaux: 0xFF, 0x1A (prefixe 0x ou 0X)}\par
+{\f1     Flottants           : 3.14, 1.5e3, 2.0E-4}\par
+\par
+{\f1     Limitation AWK86 : les nombres sont stockes en entiers signes}\par
+{\f1     16 bits (-32768 a 32767). Les litteraux flottants sont tronques}\par
+{\f1     en entiers.}\par
+\par
+3.6 Expressions regulieres\par
+{\f1     Les expressions regulieres sont delimitees par des slashs :}\par
+\par
+{\f1         /motif/}\par
+{\f1         /^debut/}\par
+{\f1         /fin$/}\par
+{\f1         /[0-9]+/}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_AWK_02}     {\uldb Suivant >>}{\v IDH_AWK_04}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_04}
+{\footnote $ AWK - TYPES DE DONNEES}
+{\footnote K AWK types;chaine;numerique;tableau associatif}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+AWK est un langage a typage dynamique. Les variables n'ont pas de\par
+type declare ; la conversion entre types est automatique selon le\par
+contexte d'utilisation.\par
+\par
+4.1 Nombres (number)\par
+{\f1     Entiers signes 16 bits dans AWK86 (-32768 a 32767).}\par
+{\f1     Un contexte arithmetique force la conversion de chaines en}\par
+{\f1     nombres : la chaine "42abc" donne 42, "abc" donne 0.}\par
+\par
+{\f1     Representation interne : mot de 16 bits (DW).}\par
+\par
+4.2 Chaines de caracteres (string)\par
+{\f1     Sequences d'octets terminees par un octet nul.}\par
+{\f1     Longueur maximale : 255 caracteres (MAX_STR).}\par
+{\f1     Un contexte de chaine force la conversion de nombres en leur}\par
+{\f1     representation decimale.}\par
+\par
+{\f1     Representation interne : pointeur vers le segment DATA.}\par
+\par
+4.3 Non initialise (uninitialized)\par
+{\f1     Une variable non initialisee vaut 0 dans un contexte numerique}\par
+{\f1     et "" (chaine vide) dans un contexte de chaine.}\par
+\par
+4.4 Expressions regulieres (regexp)\par
+{\f1     Motifs de recherche delimites par /.../ utilises dans les}\par
+{\f1     comparaisons de motifs et les fonctions de chaines.}\par
+\par
+4.5 Tableaux associatifs (array)\par
+{\f1     Collections de paires cle-valeur ou les cles sont des chaines.}\par
+{\f1     Les tableaux ne sont pas declares ; ils sont crees implicitement}\par
+{\f1     lors de la premiere affectation. Voir section 10.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_AWK_03}     {\uldb Suivant >>}{\v IDH_AWK_05}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_05}
+{\footnote $ AWK - VARIABLES PREDEFINIES}
+{\footnote K AWK variables predefinies;NR;NF;FS;OFS;ORS;FILENAME;RS}
+\b\fs24 VARIABLES PREDEFINIES \b0\fs20\par
+\par
+AWK fournit un ensemble de variables predefinies accessibles en\par
+lecture et en ecriture. Les variables marquees (R/W) peuvent etre\par
+modifiees ; celles marquees (R) sont en lecture seule.\par
+\par
+5.1 Variables de champs et d'enregistrement\par
+\par
+{\f1     $0        (R/W)  Ligne d'entree courante (enregistrement complet)}\par
+{\f1     $1..$NF   (R/W)  Champs individuels de la ligne courante}\par
+{\f1     NR        (R)    Nombre total de lignes lues depuis le debut}\par
+{\f1     NF        (R)    Nombre de champs dans la ligne courante}\par
+{\f1     FNR       (R)    Numero de ligne dans le fichier courant}\par
+{\f1     FILENAME  (R)    Nom du fichier d'entree courant}\par
+\par
+{\f1     Exemple :}\par
+{\f1         \{ print NR, $1, $NF \}}\par
+\par
+5.2 Separateurs\par
+\par
+{\f1     FS        (R/W)  Separateur de champs en entree}\par
+{\f1                      Defaut : espace et tabulation}\par
+{\f1                      Peut etre un caractere ou une expression reguliere}\par
+{\f1     RS        (R/W)  Separateur d'enregistrements en entree}\par
+{\f1                      Defaut : saut de ligne (\\n)}\par
+{\f1     OFS       (R/W)  Separateur de champs en sortie}\par
+{\f1                      Defaut : espace}\par
+{\f1                      Utilise par print entre les arguments separes}\par
+{\f1                      par des virgules}\par
+{\f1     ORS       (R/W)  Separateur d'enregistrements en sortie}\par
+{\f1                      Defaut : saut de ligne (\\n)}\par
+\par
+{\f1     Exemple :}\par
+{\f1         BEGIN \{ FS = ":" ; OFS = "\\t" \}}\par
+{\f1         \{ print $1, $3 \}}\par
+\par
+5.3 Variables de correspondance de motifs\par
+\par
+{\f1     RSTART    (R)    Position de debut de la derniere correspondance}\par
+{\f1                      etablie par match() (1-base)}\par
+{\f1     RLENGTH   (R)    Longueur de la derniere correspondance etablie}\par
+{\f1                      par match() (-1 si pas de correspondance)}\par
+\par
+5.4 Variables de programme\par
+\par
+{\f1     ARGC      (R)    Nombre d'arguments de la ligne de commande}\par
+{\f1     ARGV      (R)    Tableau des arguments de la ligne de commande}\par
+{\f1     SUBSEP    (R/W)  Separateur de sous-indices pour les tableaux}\par
+{\f1                      multi-dimensionnels (defaut : "\\034")}\par
+\par
+5.5 Variables de formatage\par
+\par
+{\f1     OFMT      (R/W)  Format de sortie pour les nombres}\par
+{\f1                      Defaut : "%.6g"}\par
+{\f1     CONVFMT   (R/W)  Format de conversion nombre vers chaine}\par
+{\f1                      Defaut : "%.6g"}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_AWK_04}     {\uldb Suivant >>}{\v IDH_AWK_06}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_06}
+{\footnote $ AWK - OPERATEURS}
+{\footnote K AWK operateurs;arithmetiques;comparaison;logiques;chaine}
+\b\fs24 OPERATEURS \b0\fs20\par
+\par
+6.1 Operateurs arithmetiques\par
+{\f1         +       addition}\par
+{\f1         -       soustraction}\par
+{\f1         *       multiplication}\par
+{\f1         /       division entiere}\par
+{\f1         %       modulo (reste de la division)}\par
+{\f1         ^       exponentiation (puissance)}\par
+\par
+{\f1     Exemple :}\par
+{\f1         \{ print 2 ^ 10 \}       # affiche 1024}\par
+{\f1         \{ print 17 % 5 \}       # affiche 2}\par
+\par
+6.2 Operateurs d'affectation\par
+{\f1         =       affectation simple}\par
+{\f1         +=      addition et affectation}\par
+{\f1         -=      soustraction et affectation}\par
+{\f1         *=      multiplication et affectation}\par
+{\f1         /=      division et affectation}\par
+{\f1         %=      modulo et affectation}\par
+{\f1         ^=      exponentiation et affectation}\par
+\par
+{\f1     Exemple :}\par
+{\f1         \{ total += $1 \}}\par
+\par
+6.3 Operateurs d'increment et de decrement\par
+{\f1         ++      pre-increment}\par
+{\f1         --      pre-decrement}\par
+\par
+{\f1     Exemple :}\par
+{\f1         \{ ++compteur \}}\par
+\par
+6.4 Operateurs de comparaison\par
+{\f1         ==      egal a}\par
+{\f1         !=      different de}\par
+{\f1         <       inferieur a}\par
+{\f1         <=      inferieur ou egal a}\par
+{\f1         >       superieur a}\par
+{\f1         >=      superieur ou egal a}\par
+\par
+6.5 Operateurs logiques\par
+{\f1         &&      ET logique (evaluation court-circuit)}\par
+{\f1         ||      OU logique (evaluation court-circuit)}\par
+{\f1         !       NON logique (negation)}\par
+\par
+{\f1     Exemple :}\par
+{\f1         NR > 5 && NR < 20 \{ print \}}\par
+\par
+6.6 Operateurs de correspondance de motifs\par
+{\f1         ~       correspond au motif (match)}\par
+{\f1         !~      ne correspond pas au motif (not match)}\par
+\par
+{\f1     Exemple :}\par
+{\f1         $1 ~ /^[A-Z]/ \{ print "Majuscule:", $1 \}}\par
+{\f1         $0 !~ /error/ \{ print "OK:", $0 \}}\par
+\par
+6.7 Operateur de reference de champ\par
+{\f1         $       reference de champ ($0, $1, $NF, $expr)}\par
+\par
+{\f1     Exemple :}\par
+{\f1         \{ print $(NF-1) \}      # avant-dernier champ}\par
+\par
+6.8 Operateur ternaire\par
+{\f1         condition ? valeur_vraie : valeur_fausse}\par
+\par
+{\f1     Exemple :}\par
+{\f1         \{ print (x > 0 ? "positif" : "negatif") \}}\par
+\par
+6.9 Operateur d'appartenance a un tableau\par
+{\f1         cle in tableau}\par
+\par
+{\f1     Exemple :}\par
+{\f1         if ("nom" in tab) print tab["nom"]}\par
+\par
+6.10 Concatenation de chaines\par
+{\f1      La concatenation est implicite par juxtaposition :}\par
+\par
+{\f1         \{ s = "Hello" " " "World" ; print s \}}\par
+\par
+6.11 Operateurs unaires\par
+{\f1         +       plus unaire}\par
+{\f1         -       moins unaire (negation)}\par
+\par
+6.12 Precedence des operateurs (du plus faible au plus fort)\par
+{\f1       1.  = += -= *= /= %= ^=        (affectation)}\par
+{\f1       2.  ? :                         (ternaire)}\par
+{\f1       3.  ||                          (OU logique)}\par
+{\f1       4.  &&                          (ET logique)}\par
+{\f1       5.  in                          (appartenance tableau)}\par
+{\f1       6.  ~ !~                        (correspondance motif)}\par
+{\f1       7.  == != < <= > >=             (comparaison)}\par
+{\f1       8.  concatenation               (juxtaposition)}\par
+{\f1       9.  + -                         (addition, soustraction)}\par
+{\f1      10.  * / %                       (multiplication, division)}\par
+{\f1      11.  ^                           (exponentiation, associatif a droite)}\par
+{\f1      12.  ! + - ++ -- $               (unaires et reference champ)}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_AWK_05}     {\uldb Suivant >>}{\v IDH_AWK_07}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_07}
+{\footnote $ AWK - INSTRUCTIONS ET STRUCTURES DE CONTROLE}
+{\footnote K AWK instructions;if;while;for;do;next;exit;getline}
+\b\fs24 INSTRUCTIONS ET STRUCTURES DE CONTROLE \b0\fs20\par
+\par
+7.1 Instruction conditionnelle (if / else)\par
+\par
+{\f1     if (condition) instruction}\par
+{\f1     if (condition) instruction else instruction}\par
+\par
+{\f1     Exemple :}\par
+{\f1         if (NF > 3) \{}\par
+{\f1             print "Beaucoup de champs"}\par
+{\f1         \} else \{}\par
+{\f1             print "Peu de champs"}\par
+{\f1         \}}\par
+\par
+7.2 Boucle while\par
+\par
+{\f1     while (condition) instruction}\par
+\par
+{\f1     Exemple :}\par
+{\f1         i = 1}\par
+{\f1         while (i <= 10) \{}\par
+{\f1             print i}\par
+{\f1             i++}\par
+{\f1         \}}\par
+\par
+7.3 Boucle do-while\par
+\par
+{\f1     do instruction while (condition)}\par
+\par
+{\f1     Exemple :}\par
+{\f1         i = 1}\par
+{\f1         do \{}\par
+{\f1             print i}\par
+{\f1             i++}\par
+{\f1         \} while (i <= 10)}\par
+\par
+7.4 Boucle for (style C)\par
+\par
+{\f1     for (initialisation; condition; increment) instruction}\par
+\par
+{\f1     Exemple :}\par
+{\f1         for (i = 1; i <= NF; i++) \{}\par
+{\f1             print i, $i}\par
+{\f1         \}}\par
+\par
+7.5 Boucle for-in (iteration sur un tableau)\par
+\par
+{\f1     for (variable in tableau) instruction}\par
+\par
+{\f1     L'ordre d'iteration n'est pas garanti.}\par
+\par
+{\f1     Exemple :}\par
+{\f1         for (cle in tab) \{}\par
+{\f1             print cle, tab[cle]}\par
+{\f1         \}}\par
+\par
+7.6 Instructions de controle de boucle\par
+\par
+{\f1     break       Sortie immediate de la boucle englobante}\par
+{\f1     continue    Passe a l'iteration suivante}\par
+\par
+{\f1     Exemple :}\par
+{\f1         for (i = 1; i <= 100; i++) \{}\par
+{\f1             if (i % 7 == 0) continue}\par
+{\f1             if (i > 50) break}\par
+{\f1             print i}\par
+{\f1         \}}\par
+\par
+7.7 Instructions de controle de flux\par
+\par
+{\f1     next        Arrete le traitement de la ligne courante et}\par
+{\f1                 passe a la ligne suivante}\par
+{\f1     nextfile    Arrete le traitement du fichier courant et}\par
+{\f1                 passe au fichier suivant}\par
+{\f1     exit [code] Termine le programme avec le code de sortie}\par
+{\f1                 optionnel (defaut : 0). Les blocs END sont}\par
+{\f1                 executes avant la sortie.}\par
+\par
+{\f1     Exemple :}\par
+{\f1         /^#/ \{ next \}          # ignorer les commentaires}\par
+{\f1         NR > 1000 \{ exit 0 \}  # arreter apres 1000 lignes}\par
+\par
+7.8 Bloc d'instructions\par
+\par
+{\f1     Un bloc est une sequence d'instructions entre accolades :}\par
+\par
+{\f1         \{ instruction1; instruction2; ... \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_AWK_06}     {\uldb Suivant >>}{\v IDH_AWK_08}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_08}
+{\footnote $ AWK - FONCTIONS PREDEFINIES}
+{\footnote K AWK fonctions predefinies;length;substr;split;sprintf;sub;gsub}
+\b\fs24 FONCTIONS PREDEFINIES \b0\fs20\par
+\par
+8.1 Fonctions de chaines\par
+\par
+{\f1     length([s])}\par
+{\f1         Retourne la longueur de la chaine s.}\par
+{\f1         Sans argument, retourne la longueur de $0.}\par
+\par
+{\f1         print length("Bonjour")     # 7}\par
+\par
+{\f1     substr(s, debut [, longueur])}\par
+{\f1         Retourne une sous-chaine de s commencant a la position}\par
+{\f1         debut (1-base). Si longueur est omise, retourne jusqu'a}\par
+{\f1         la fin de la chaine.}\par
+\par
+{\f1         print substr("ABCDEF", 2, 3)   # BCD}\par
+\par
+{\f1     index(s, sous_chaine)}\par
+{\f1         Retourne la position de la premiere occurrence de}\par
+{\f1         sous_chaine dans s (1-base). Retourne 0 si non trouve.}\par
+\par
+{\f1         print index("Bonjour", "jour")  # 4}\par
+\par
+{\f1     split(s, tableau [, separateur])}\par
+{\f1         Decoupe la chaine s en elements stockes dans tableau,}\par
+{\f1         en utilisant separateur (defaut : FS). Retourne le}\par
+{\f1         nombre d'elements.}\par
+\par
+{\f1         n = split("a:b:c", arr, ":")}\par
+{\f1         # arr[1]="a", arr[2]="b", arr[3]="c", n=3}\par
+\par
+{\f1     sub(regex, remplacement [, cible])}\par
+{\f1         Remplace la premiere occurrence de regex dans cible}\par
+{\f1         (defaut : $0) par remplacement. Retourne le nombre}\par
+{\f1         de substitutions effectuees (0 ou 1).}\par
+\par
+{\f1         sub(/ancien/, "nouveau")}\par
+\par
+{\f1     gsub(regex, remplacement [, cible])}\par
+{\f1         Remplace toutes les occurrences de regex dans cible}\par
+{\f1         (defaut : $0) par remplacement. Retourne le nombre}\par
+{\f1         de substitutions effectuees.}\par
+\par
+{\f1         gsub(/[ \\t]+/, " ")     # compresser les espaces}\par
+\par
+{\f1     match(s, regex)}\par
+{\f1         Recherche la premiere occurrence de regex dans s.}\par
+{\f1         Retourne la position de debut (1-base) ou 0 si non}\par
+{\f1         trouve. Met a jour RSTART et RLENGTH.}\par
+\par
+{\f1         if (match($0, /[0-9]+/))}\par
+{\f1             print substr($0, RSTART, RLENGTH)}\par
+\par
+{\f1     tolower(s)}\par
+{\f1         Retourne une copie de s avec toutes les lettres}\par
+{\f1         majuscules converties en minuscules.}\par
+\par
+{\f1         print tolower("BONJOUR")    # bonjour}\par
+\par
+{\f1     toupper(s)}\par
+{\f1         Retourne une copie de s avec toutes les lettres}\par
+{\f1         minuscules converties en majuscules.}\par
+\par
+{\f1         print toupper("bonjour")    # BONJOUR}\par
+\par
+{\f1     sprintf(format, expr, ...)}\par
+{\f1         Retourne une chaine formatee selon le format printf.}\par
+\par
+{\f1         s = sprintf("%-10s %5d", nom, age)}\par
+\par
+8.2 Fonctions mathematiques\par
+\par
+{\f1     int(x)}\par
+{\f1         Retourne la partie entiere de x (troncature vers zero).}\par
+\par
+{\f1         print int(3.9)      # 3}\par
+{\f1         print int(-3.9)     # -3}\par
+\par
+{\f1     sqrt(x)}\par
+{\f1         Retourne la racine carree de x.}\par
+\par
+{\f1         print sqrt(144)     # 12}\par
+\par
+{\f1     sin(x)}\par
+{\f1         Retourne le sinus de x (x en radians).}\par
+\par
+{\f1     cos(x)}\par
+{\f1         Retourne le cosinus de x (x en radians).}\par
+\par
+{\f1     atan2(y, x)}\par
+{\f1         Retourne l'arctangente de y/x en radians, dans}\par
+{\f1         l'intervalle [-pi, pi].}\par
+\par
+{\f1     exp(x)}\par
+{\f1         Retourne e eleve a la puissance x (approximation).}\par
+\par
+{\f1     log(x)}\par
+{\f1         Retourne le logarithme naturel de x (approximation).}\par
+\par
+{\f1     rand()}\par
+{\f1         Retourne un nombre pseudo-aleatoire entre 0 et 1.}\par
+\par
+{\f1     srand([graine])}\par
+{\f1         Initialise le generateur de nombres aleatoires avec}\par
+{\f1         la graine specifiee. Sans argument, utilise l'heure}\par
+{\f1         courante. Retourne la graine precedente.}\par
+\par
+{\f1         Exemple :}\par
+{\f1             BEGIN \{ srand() \}}\par
+{\f1             \{ print int(rand() * 100) \}}\par
+\par
+8.3 Fonctions d'entree/sortie\par
+\par
+{\f1     print [expr, ...]}\par
+{\f1         Affiche les expressions separees par OFS, suivies de}\par
+{\f1         ORS. Sans argument, affiche $0.}\par
+\par
+{\f1         print $1, $2, $3}\par
+\par
+{\f1     printf(format, expr, ...)}\par
+{\f1         Affichage formate. Les specificateurs de format suivants}\par
+{\f1         sont supportes :}\par
+{\f1           %d    entier decimal}\par
+{\f1           %s    chaine de caracteres}\par
+{\f1           %x    entier hexadecimal}\par
+{\f1           %o    entier octal}\par
+{\f1           %c    caractere}\par
+{\f1           %%    caractere pourcentage litteral}\par
+{\f1         Modificateurs : largeur de champ, alignement a gauche (-)}\par
+\par
+{\f1         printf("%-20s %5d\\n", nom, valeur)}\par
+\par
+{\f1     getline [var]}\par
+{\f1         Lit la prochaine ligne d'entree. Sans argument, met a}\par
+{\f1         jour $0 et les champs $1..$NF. Avec un argument, stocke}\par
+{\f1         la ligne dans var sans modifier $0.}\par
+\par
+{\f1         getline ligne < "fichier.txt"}\par
+\par
+{\f1     close(fichier)}\par
+{\f1         Ferme le fichier ou la commande ouverte precedemment.}\par
+\par
+{\f1     fflush([fichier])}\par
+{\f1         Vide le tampon de sortie du fichier specifie.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_AWK_07}     {\uldb Suivant >>}{\v IDH_AWK_09}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_09}
+{\footnote $ AWK - FONCTIONS UTILISATEUR}
+{\footnote K AWK fonctions utilisateur;function;return}
+\b\fs24 FONCTIONS UTILISATEUR \b0\fs20\par
+\par
+9.1 Declaration\par
+\par
+{\f1     Les fonctions utilisateur sont declarees avec le mot-cle}\par
+{\f1     function :}\par
+\par
+{\f1         function nom(param1, param2, ...) \{}\par
+{\f1             corps}\par
+{\f1             return valeur}\par
+{\f1         \}}\par
+\par
+{\f1     Les fonctions peuvent etre declarees n'importe ou dans le}\par
+{\f1     programme (avant ou apres leur utilisation).}\par
+\par
+9.2 Parametres\par
+\par
+{\f1     Les parametres sont passes par valeur. Le nombre maximum}\par
+{\f1     de parametres est de 32 (MAX_PARAM).}\par
+\par
+{\f1     Les variables locales sont declarees comme parametres}\par
+{\f1     supplementaires (convention AWK standard) :}\par
+\par
+{\f1         function ma_fonction(param1, param2,    i, j, temp) \{}\par
+{\f1             # i, j et temp sont des variables locales}\par
+{\f1         \}}\par
+\par
+9.3 Valeur de retour\par
+\par
+{\f1     L'instruction return termine la fonction et retourne une}\par
+{\f1     valeur optionnelle. Si return est omis ou sans valeur, la}\par
+{\f1     fonction retourne 0.}\par
+\par
+{\f1         function carre(x) \{}\par
+{\f1             return x * x}\par
+{\f1         \}}\par
+\par
+9.4 Recursivite\par
+\par
+{\f1     Les fonctions peuvent s'appeler elles-memes recursivement.}\par
+\par
+{\f1         function factorielle(n) \{}\par
+{\f1             if (n <= 1) return 1}\par
+{\f1             return n * factorielle(n - 1)}\par
+{\f1         \}}\par
+\par
+{\f1         function fibonacci(n) \{}\par
+{\f1             if (n <= 1) return n}\par
+{\f1             return fibonacci(n - 1) + fibonacci(n - 2)}\par
+{\f1         \}}\par
+\par
+9.5 Portee des variables\par
+\par
+{\f1     Les variables dans AWK sont globales par defaut. Les seules}\par
+{\f1     variables locales sont les parametres de la fonction (y}\par
+{\f1     compris les parametres supplementaires servant de locales).}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_AWK_08}     {\uldb Suivant >>}{\v IDH_AWK_10}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_10}
+{\footnote $ AWK - TABLEAUX ASSOCIATIFS}
+{\footnote K AWK tableaux associatifs;in;delete}
+\b\fs24 TABLEAUX ASSOCIATIFS \b0\fs20\par
+\par
+10.1 Generalites\par
+\par
+{\f1     Les tableaux AWK sont des collections associatives (tables de}\par
+{\f1     hachage) ou les indices sont des chaines de caracteres. Ils}\par
+{\f1     ne sont pas declares ; ils sont crees implicitement lors de}\par
+{\f1     la premiere utilisation.}\par
+\par
+10.2 Affectation et acces\par
+\par
+{\f1         tab["cle"] = valeur}\par
+{\f1         print tab["cle"]}\par
+\par
+{\f1     Un indice numerique est automatiquement converti en chaine :}\par
+\par
+{\f1         tab[1] = "premier"     # equivalent a tab["1"]}\par
+\par
+10.3 Test d'appartenance\par
+\par
+{\f1     L'operateur in teste si une cle existe dans un tableau sans}\par
+{\f1     creer d'entree :}\par
+\par
+{\f1         if ("cle" in tab) print "existe"}\par
+\par
+10.4 Suppression\par
+\par
+{\f1     L'instruction delete supprime un element ou un tableau entier :}\par
+\par
+{\f1         delete tab["cle"]      # supprime un element}\par
+{\f1         delete tab             # supprime tout le tableau}\par
+\par
+10.5 Parcours\par
+\par
+{\f1     La boucle for-in permet de parcourir toutes les cles d'un}\par
+{\f1     tableau. L'ordre de parcours n'est pas garanti.}\par
+\par
+{\f1         for (cle in tab) \{}\par
+{\f1             print cle, tab[cle]}\par
+{\f1         \}}\par
+\par
+10.6 Tableaux multi-dimensionnels\par
+\par
+{\f1     AWK simule les tableaux multi-dimensionnels en concatenant}\par
+{\f1     les indices avec SUBSEP (defaut : "\\034") :}\par
+\par
+{\f1         tab[i, j] = valeur     # equivalent a tab[i SUBSEP j]}\par
+\par
+{\f1     Le test d'appartenance utilise la meme syntaxe :}\par
+\par
+{\f1         if ((i, j) in tab) print tab[i, j]}\par
+\par
+10.7 Limitations AWK86\par
+\par
+{\f1     Chaque tableau peut contenir au maximum 64 paires cle-valeur}\par
+{\f1     (MAX_HASH_PAIRS). Les cles sont des chaines de caracteres.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_AWK_09}     {\uldb Suivant >>}{\v IDH_AWK_11}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_11}
+{\footnote $ AWK - ENTREES / SORTIES ET REDIRECTIONS}
+{\footnote K AWK entrees sorties;print;printf;redirection;pipe}
+\b\fs24 ENTREES / SORTIES ET REDIRECTIONS \b0\fs20\par
+\par
+11.1 Entree standard\par
+\par
+{\f1     Par defaut, AWK lit l'entree ligne par ligne depuis stdin ou}\par
+{\f1     depuis les fichiers passes en arguments sur la ligne de}\par
+{\f1     commande. Chaque ligne est decoupee en champs selon FS.}\par
+\par
+11.2 Fichiers multiples\par
+\par
+{\f1     AWK traite les fichiers d'entree sequentiellement. Les}\par
+{\f1     variables FILENAME et FNR permettent de distinguer les}\par
+{\f1     fichiers.}\par
+\par
+{\f1         \{ print FILENAME, FNR, $0 \}}\par
+\par
+11.3 Instruction getline\par
+\par
+{\f1     getline permet de lire une ligne supplementaire :}\par
+\par
+{\f1         getline              # lit dans $0 depuis l'entree courante}\par
+{\f1         getline var          # lit dans var depuis l'entree courante}\par
+{\f1         getline var < "f"    # lit dans var depuis le fichier "f"}\par
+\par
+11.4 Redirection de sortie\par
+\par
+{\f1     La sortie de print et printf peut etre redirigee :}\par
+\par
+{\f1         print "texte" > "fichier.txt"     # ecriture (ecrasement)}\par
+{\f1         print "texte" >> "fichier.txt"    # ajout (append)}\par
+\par
+11.5 Instruction close\par
+\par
+{\f1     Les fichiers ouverts doivent etre fermes avec close() :}\par
+\par
+{\f1         close("fichier.txt")}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_AWK_10}     {\uldb Suivant >>}{\v IDH_AWK_12}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_12}
+{\footnote $ AWK - EXPRESSIONS REGULIERES}
+{\footnote K AWK expressions regulieres;regex;ERE}
+\b\fs24 EXPRESSIONS REGULIERES \b0\fs20\par
+\par
+12.1 Syntaxe\par
+\par
+{\f1     Les expressions regulieres sont delimitees par des slashs :}\par
+\par
+{\f1         /motif/}\par
+\par
+12.2 Metacaracteres supportes\par
+\par
+{\f1         .       N'importe quel caractere}\par
+{\f1         ^       Debut de chaine}\par
+{\f1         $       Fin de chaine}\par
+{\f1         *       Zero ou plus du caractere precedent}\par
+{\f1         +       Un ou plus du caractere precedent}\par
+{\f1         ?       Zero ou un du caractere precedent}\par
+{\f1         [...]   Classe de caracteres}\par
+{\f1         [^...]  Classe de caracteres inversee}\par
+{\f1         |       Alternance (ou)}\par
+{\f1         (...)   Groupement}\par
+{\f1         \\       Echappement du caractere suivant}\par
+\par
+12.3 Classes de caracteres\par
+\par
+{\f1         [abc]       a, b ou c}\par
+{\f1         [a-z]       Lettre minuscule}\par
+{\f1         [A-Z]       Lettre majuscule}\par
+{\f1         [0-9]       Chiffre}\par
+{\f1         [a-zA-Z]    Lettre quelconque}\par
+{\f1         [^0-9]      Tout sauf un chiffre}\par
+\par
+12.4 Utilisation dans les motifs\par
+\par
+{\f1     Comme motif de regle :}\par
+{\f1         /^[0-9]/ \{ print "Commence par un chiffre" \}}\par
+\par
+{\f1     Avec les operateurs de correspondance :}\par
+{\f1         $1 ~ /^[A-Z]/ \{ print "Majuscule" \}}\par
+\par
+{\f1     Dans les fonctions de chaines :}\par
+{\f1         gsub(/[[:space:]]+/, " ")}\par
+{\f1         if (match($0, /[0-9]+/)) print RSTART}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_AWK_11}     {\uldb Suivant >>}{\v IDH_AWK_13}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_13}
+{\footnote $ AWK - LIMITATIONS DE L'IMPLEMENTATION}
+{\footnote K AWK limitations;implementation}
+\b\fs24 LIMITATIONS DE L'IMPLEMENTATION \b0\fs20\par
+\par
+13.1 Limitations numeriques\par
+{\f1      - Entiers signes 16 bits uniquement (-32768 a 32767)}\par
+{\f1      - Pas de nombres flottants natifs (tronques en entiers)}\par
+{\f1      - Les fonctions mathematiques utilisent des approximations}\par
+{\f1        entieres pour sin, cos, exp, log}\par
+\par
+13.2 Limitations de chaines\par
+{\f1      - Longueur maximale de chaine : 255 caracteres (MAX_STR)}\par
+\par
+13.3 Limitations de tableaux\par
+{\f1      - Maximum 64 paires cle-valeur par tableau (MAX_HASH_PAIRS)}\par
+{\f1      - Maximum 64 champs par enregistrement (MAX_FIELDS)}\par
+\par
+13.4 Limitations de programme\par
+{\f1      - Maximum 64 regles pattern-action (MAX_RULES)}\par
+{\f1      - Maximum 32 parametres par fonction (MAX_PARAM)}\par
+{\f1      - Maximum 16 niveaux d'imbrication de boucles (MAX_LOOP_NEST)}\par
+{\f1      - Maximum 16 variables initialisees par -v (MAX_INIT_VARS)}\par
+{\f1      - Maximum 30 erreurs de compilation (FPC), 3 (Turbo Pascal)}\par
+\par
+13.5 Limitations d'architecture\par
+{\f1      - Pile de 1024 octets (STACK_SIZE)}\par
+{\f1      - Modele memoire SMALL (64 Ko code + 64 Ko donnees)}\par
+{\f1      - Pas de support des tubes (pipes)}\par
+{\f1      - system() retourne 0 (non implemente)}\par
+\par
+13.6 Fonctions non supportees ou partielles\par
+{\f1      - system()   : retourne toujours 0}\par
+{\f1      - fflush()   : stub (pas de tampon en DOS)}\par
+{\f1      - mktime()   : non implemente}\par
+{\f1      - strftime() : non implemente}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_AWK_12}     {\uldb Suivant >>}{\v IDH_AWK_14}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_AWK_14}
+{\footnote $ AWK - CIBLE DE COMPILATION}
+{\footnote K AWK cible compilation;backend}
+\b\fs24 CIBLE DE COMPILATION \b0\fs20\par
+\par
+14.1 Architecture\par
+{\f1      Processeur Intel 8086 en mode reel 16 bits.}\par
+{\f1      Modele memoire : SMALL (.MODEL SMALL).}\par
+{\f1      Systeme d'exploitation : MS-DOS.}\par
+{\f1      Appels systeme : INT 21h.}\par
+\par
+14.2 Format de sortie\par
+{\f1      Assembleur compatible MASM (.ASM).}\par
+{\f1      Segments : _TEXT (code) et _DATA (donnees).}\par
+{\f1      Pile : .STACK 1024.}\par
+\par
+14.3 Conventions de nommage ASM\par
+{\f1      _AWV_    : variable utilisateur}\par
+{\f1      _AWF_    : fonction utilisateur}\par
+{\f1      _AWK_    : constante chaine litterale}\par
+{\f1      _AWRT_   : routine runtime}\par
+{\f1      _AWL_    : label de saut interne}\par
+{\f1      _AWA_    : tableau associatif}\par
+{\f1      _AWP_    : donnees de motif (pattern)}\par
+{\f1      _AWR_    : regle pattern-action}\par
+\par
+14.4 Options de la ligne de commande\par
+{\f1      -F sep       Definir le separateur de champs (FS)}\par
+{\f1      -v var=val   Initialiser une variable avant BEGIN}\par
+{\f1      -d           Mode debug (affichage des tokens)}\par
+{\f1      -w           Activer les avertissements}\par
+{\f1      -h, --help   Afficher l'aide}\par
+{\f1      --verbose    Mode verbeux (banniere et statistiques)}\par
+\par
+14.5 Compilation et execution\par
+{\f1      Le compilateur AWK86.PAS genere un fichier .ASM a partir}\par
+{\f1      du code source AWK. Ce fichier est ensuite assemble avec}\par
+{\f1      MASM et lie avec LINK pour produire un executable DOS.}\par
+\par
+{\f1      Exemple :}\par
+{\f1          AWK86 programme.awk}\par
+{\f1          MASM programme.asm;}\par
+{\f1          LINK programme.obj;}\par
+{\f1          programme.exe < donnees.txt}\par
+
+\par
+{\uldb << Precedent}{\v IDH_AWK_13}     {\uldb Table des matieres}{\v IDH_AWK_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

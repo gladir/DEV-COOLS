@@ -1,0 +1,1171 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_ALGOL68_01}
+{\footnote $ Algol 68 - STRUCTURE D'UN PROGRAMME ALGOL 68}
+{\footnote K Algol 68 structure programme;begin;end;source;IFIP}
+\b\fs24 STRUCTURE D'UN PROGRAMME ALGOL 68 \b0\fs20\par
+\par
+Un programme Algol 68 est constitue d une clause serie englobante,\par
+delimitee par BEGIN ... END ou ( ... ).\par
+\par
+{\f1   Exemple minimal :}\par
+\par
+{\f1     BEGIN}\par
+{\f1       print(("Hello, World!", newline))}\par
+{\f1     END}\par
+\par
+Le point d entree est la premiere clause serie. Il n y a pas de\par
+procedure principale explicite comme en C ou Pascal.\par
+\par
+Les unites (instructions et expressions) sont separees par des\par
+points-virgules (;), appeles ?? go-on symbols ??.\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. COMMENTAIRES ET PRAGMATS}     {\uldb [Aller]}{\v IDH_ALGOL68_02}\par
+{\f1  3. CONVENTIONS LEXICALES}     {\uldb [Aller]}{\v IDH_ALGOL68_03}\par
+{\f1  4. DENOTATIONS (LITTERAUX)}     {\uldb [Aller]}{\v IDH_ALGOL68_04}\par
+{\f1  5. MODES (TYPES DE DONNEES)}     {\uldb [Aller]}{\v IDH_ALGOL68_05}\par
+{\f1  6. SYSTEME DE MODES ET COERCITIONS}     {\uldb [Aller]}{\v IDH_ALGOL68_06}\par
+{\f1  7. OPERATEURS ET PRIORITES}     {\uldb [Aller]}{\v IDH_ALGOL68_07}\par
+{\f1  8. DECLARATIONS D IDENTITE ET DE VARIABLE}     {\uldb [Aller]}{\v IDH_ALGOL68_08}\par
+{\f1  9. EXPRESSIONS ET FORMULES}     {\uldb [Aller]}{\v IDH_ALGOL68_09}\par
+{\f1 10. CLAUSES FERMEES ET CLAUSES SERIE}     {\uldb [Aller]}{\v IDH_ALGOL68_10}\par
+{\f1 11. CLAUSES CONDITIONNELLES (IF ET CASE)}     {\uldb [Aller]}{\v IDH_ALGOL68_11}\par
+{\f1 12. CLAUSES REPETITIVES (BOUCLES)}     {\uldb [Aller]}{\v IDH_ALGOL68_12}\par
+{\f1 13. STRUCTURES (STRUCT)}     {\uldb [Aller]}{\v IDH_ALGOL68_13}\par
+{\f1 14. REFERENCES ET AFFECTATIONS (REF)}     {\uldb [Aller]}{\v IDH_ALGOL68_14}\par
+{\f1 15. TABLEAUX ET TRANCHES (ROW)}     {\uldb [Aller]}{\v IDH_ALGOL68_15}\par
+{\f1 16. PROCEDURES (PROC)}     {\uldb [Aller]}{\v IDH_ALGOL68_16}\par
+{\f1 17. DEFINITIONS D OPERATEURS (OP ET PRIO)}     {\uldb [Aller]}{\v IDH_ALGOL68_17}\par
+{\f1 18. MODES UNIS (UNION) ET CLAUSES DE CONFORMITE}     {\uldb [Aller]}{\v IDH_ALGOL68_18}\par
+{\f1 19. CLAUSES COLLATERALES ET PARALLELES}     {\uldb [Aller]}{\v IDH_ALGOL68_19}\par
+{\f1 20. TRANSPUT (ENTREES/SORTIES)}     {\uldb [Aller]}{\v IDH_ALGOL68_20}\par
+{\f1 21. SYMBOLES ET PORTEES}     {\uldb [Aller]}{\v IDH_ALGOL68_21}\par
+{\f1 22. RUNTIME MINIMAL}     {\uldb [Aller]}{\v IDH_ALGOL68_22}\par
+{\f1 23. MOTS RESERVES (BOLD WORDS)}     {\uldb [Aller]}{\v IDH_ALGOL68_23}\par
+{\f1 24. GRAMMAIRE BNF}     {\uldb [Aller]}{\v IDH_ALGOL68_24}\par
+\par
+{\uldb Suivant >>}{\v IDH_ALGOL68_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_02}
+{\footnote $ Algol 68 - COMMENTAIRES ET PRAGMATS}
+{\footnote K Algol 68 commentaires;pragmats;co;comment;pr}
+\b\fs24 COMMENTAIRES ET PRAGMATS \b0\fs20\par
+\par
+Algol 68 supporte trois formes de commentaires :\par
+\par
+{\f1   - CO ... CO        commentaire entre mots gras CO}\par
+{\f1   - COMMENT ... COMMENT   forme longue}\par
+{\f1   - # ... #          commentaire entre dieses}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     CO Ceci est un commentaire CO}\par
+{\f1     COMMENT Un autre commentaire COMMENT}\par
+{\f1     # Commentaire court #}\par
+\par
+Les pragmats (directives au compilateur) :\par
+\par
+{\f1   - PR ... PR        pragmat entre mots gras PR}\par
+{\f1   - PRAGMAT ... PRAGMAT   forme longue}\par
+\par
+Les commentaires et pragmats peuvent apparaitre entre deux tokens\par
+quelconques et ne modifient pas la semantique du programme.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_01}     {\uldb Suivant >>}{\v IDH_ALGOL68_03}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_03}
+{\footnote $ Algol 68 - CONVENTIONS LEXICALES}
+{\footnote K Algol 68 lexical;identificateurs;litteraux;casse}
+\b\fs24 CONVENTIONS LEXICALES \b0\fs20\par
+\par
+{\f1   3.1 Identificateurs}\par
+{\f1       Commencent par une lettre, suivis de lettres, chiffres ou}\par
+{\f1       underscores. Sensibles a la casse.}\par
+\par
+{\f1       Exemples : x, somme, mon_tableau, i2}\par
+\par
+{\f1   3.2 Mots gras (bold words)}\par
+{\f1       Ecrits en majuscules : BEGIN, END, IF, THEN, ELSE, etc.}\par
+{\f1       Ils ne sont pas des identificateurs et ne peuvent pas etre}\par
+{\f1       redefinis par le programmeur.}\par
+\par
+{\f1   3.3 Symboles speciaux}\par
+\par
+{\f1       Symbole   Signification}\par
+{\f1       --------  -------------------------------------------}\par
+{\f1       :=        Affectation (becomes)}\par
+{\f1       =:        Affectation inversee (assignation inversee)}\par
+{\f1       ;         Separateur d unites (go-on symbol)}\par
+{\f1       ,         Separateur de liste}\par
+{\f1       (         Parenthese ouvrante}\par
+{\f1       )         Parenthese fermante}\par
+{\f1       [         Crochet ouvrant (sous-indice)}\par
+{\f1       ]         Crochet fermant}\par
+{\f1       :         Separateur de bornes ou label}\par
+{\f1       +*        Operateur imaginaire (I pour COMPL)}\par
+{\f1       +:=       Plus et assignation (plusab)}\par
+{\f1       -:=       Moins et assignation (minusab)}\par
+{\f1       *:=       Fois et assignation (timesab)}\par
+{\f1       /:=       Divise et assignation (divab)}\par
+\par
+{\f1   3.4 Denotations numeriques}\par
+{\f1       Entiers : 0, 42, 65535}\par
+{\f1       Entiers en base : 2r1010, 8r77, 16rFF (radix r digits)}\par
+{\f1       Reels : 3.14, 1.5e-3, .5e2}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_02}     {\uldb Suivant >>}{\v IDH_ALGOL68_04}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_04}
+{\footnote $ Algol 68 - DENOTATIONS (LITTERAUX)}
+{\footnote K Algol 68 denotations;litteraux;int;real;bool;string;format}
+\b\fs24 DENOTATIONS (LITTERAUX) \b0\fs20\par
+\par
+Les denotations sont les valeurs litterales du langage.\par
+\par
+{\f1   4.1 Denotation entiere (INT denotation)}\par
+{\f1       Suite de chiffres decimaux : 0 .. 65535}\par
+{\f1       Notation en base : <base>r<digits>}\par
+{\f1         Exemples : 2r1010 (= 10), 8r77 (= 63), 16rFF (= 255)}\par
+\par
+{\f1   4.2 Denotation reelle (REAL denotation)}\par
+{\f1       Nombre a virgule flottante : 3.14, 1.5e-3, .5e2}\par
+{\f1       Note : dans cette implementation, les reels sont tronques}\par
+{\f1       en entiers (stub).}\par
+\par
+{\f1   4.3 Denotation booleenne (BOOL denotation)}\par
+{\f1       TRUE  : valeur vraie (1)}\par
+{\f1       FALSE : valeur fausse (0)}\par
+\par
+{\f1   4.4 Denotation de caractere (CHAR denotation)}\par
+{\f1       Un caractere entre guillemets doubles : "a", "Z", "5"}\par
+{\f1       Guillemet echappe par doublement : """"}\par
+\par
+{\f1   4.5 Denotation de chaine (STRING denotation)}\par
+{\f1       Suite de caracteres entre guillemets doubles : "abc", "Hello"}\par
+{\f1       Guillemets echappes par doublement : "il dit ""bonjour"""}\par
+{\f1       Concatenation implicite de chaines adjacentes.}\par
+\par
+{\f1   4.6 Denotation vide (VOID)}\par
+{\f1       SKIP : valeur indefinie du mode VOID}\par
+{\f1       EMPTY : union vide}\par
+\par
+{\f1   4.7 Reference nulle}\par
+{\f1       NIL : reference nulle, compatible avec tout mode REF M}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_03}     {\uldb Suivant >>}{\v IDH_ALGOL68_05}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_05}
+{\footnote $ Algol 68 - MODES (TYPES DE DONNEES)}
+{\footnote K Algol 68 modes;types;INT;REAL;BOOL;CHAR;STRING;VOID}
+\b\fs24 MODES (TYPES DE DONNEES) \b0\fs20\par
+\par
+Algol 68 appelle ?? modes ?? ce que la plupart des langages appellent\par
+?? types ??. Chaque valeur possede un mode.\par
+\par
+{\f1   5.1 Modes primitifs}\par
+\par
+{\f1   Mode     Description                  Taille     Valeur initiale}\par
+{\f1   -------  ---------------------------  ---------  ----------------}\par
+{\f1   INT      Entier 16 bits signe         2 octets   0}\par
+{\f1   REAL     Nombre reel (stub entier)    2 octets   0}\par
+{\f1   BOOL     Booleen (TRUE/FALSE)         1 octet    FALSE}\par
+{\f1   CHAR     Caractere ASCII              1 octet    espace}\par
+{\f1   BITS     Motif binaire 16 bits        2 octets   0}\par
+{\f1   BYTES    Tableau d octets             2 octets   (ptr)}\par
+{\f1   COMPL    Nombre complexe (re, im)     4 octets   (0, 0)}\par
+{\f1   STRING   Chaine dynamique             2 octets   (ptr)}\par
+{\f1   VOID     Absence de valeur            0 octets   -}\par
+\par
+{\f1   5.2 Modes composes}\par
+\par
+{\f1   Mode           Description}\par
+{\f1   -------------  -------------------------------------------}\par
+{\f1   STRUCT(...)    Structure : agr??gat de champs nommes}\par
+{\f1   UNION(...)     Mode uni : une valeur parmi plusieurs modes}\par
+{\f1   REF MODE       Reference (pointeur) vers un mode}\par
+{\f1   PROC(...)MODE  Procedure avec parametres et resultat}\par
+{\f1   [lo:hi] MODE   Tableau (rangee) d elements}\par
+{\f1   ROW MODE       Rangee d elements}\par
+\par
+{\f1   5.3 Declaration de mode}\par
+{\f1       MODE POINT = STRUCT(INT x, INT y);}\par
+{\f1       MODE NOMBRE = UNION(INT, REAL);}\par
+{\f1       MODE myint = INT;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_04}     {\uldb Suivant >>}{\v IDH_ALGOL68_06}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_06}
+{\footnote $ Algol 68 - SYSTEME DE MODES ET COERCITIONS}
+{\footnote K Algol 68 systeme modes;coercitions;deproceduring;dereferencing;widening}
+\b\fs24 SYSTEME DE MODES ET COERCITIONS \b0\fs20\par
+\par
+Algol 68 applique automatiquement des coercitions pour convertir\par
+les valeurs d un mode a un autre dans certains contextes.\par
+\par
+{\f1   6.1 Dereferencement (dereferencing)}\par
+{\f1       REF M -> M}\par
+{\f1       Suivre automatiquement un pointeur pour obtenir sa valeur.}\par
+\par
+{\f1   6.2 Deproceduration (deproceduring)}\par
+{\f1       PROC M -> M}\par
+{\f1       Appeler automatiquement une procedure sans parametres.}\par
+\par
+{\f1   6.3 Elargissement (widening)}\par
+{\f1       INT -> REAL       (promotion numerique)}\par
+{\f1       CHAR -> INT       (code ASCII)}\par
+{\f1       BOOL -> INT       (TRUE=1, FALSE=0)}\par
+{\f1       INT -> COMPL      (partie reelle, im=0)}\par
+{\f1       INT <-> BITS      (reinterpretation binaire)}\par
+\par
+{\f1   6.4 Mise en rangee (rowing)}\par
+{\f1       M -> ROW M}\par
+{\f1       Creer un tableau d un seul element a partir d une valeur.}\par
+{\f1       CHAR -> STRING    (chaine d un caractere)}\par
+\par
+{\f1   6.5 Unification (uniting)}\par
+{\f1       M -> UNION(M, ...)}\par
+{\f1       Stocker une valeur dans un mode uni avec son discriminant.}\par
+\par
+{\f1   6.6 Vidage (voiding)}\par
+{\f1       M -> VOID}\par
+{\f1       Ignorer le resultat d une expression.}\par
+\par
+{\f1   Ordre canonique des coercitions :}\par
+{\f1     deref -> deproc -> widen -> row -> unite -> void}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_05}     {\uldb Suivant >>}{\v IDH_ALGOL68_07}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_07}
+{\footnote $ Algol 68 - OPERATEURS ET PRIORITES}
+{\footnote K Algol 68 operateurs;priorites;monadiques;dyadiques}
+\b\fs24 OPERATEURS ET PRIORITES \b0\fs20\par
+\par
+Les operateurs Algol 68 ont des niveaux de priorite de 1 (plus faible)\par
+a 9 (plus fort).\par
+\par
+{\f1   7.1 Operateurs dyadiques (binaires)}\par
+\par
+{\f1   Prio  Operateurs              Description}\par
+{\f1   ----  ----------------------  ----------------------------------}\par
+{\f1   1     OR                      Ou logique (court-circuit)}\par
+{\f1   2     AND                     Et logique (court-circuit)}\par
+{\f1   3     = /= < <= > >=          Comparaison}\par
+{\f1   4     + -                     Addition, soustraction}\par
+{\f1   5     * / OVER MOD            Multiplication, division, modulo}\par
+{\f1   6     **                      Exponentiation}\par
+{\f1   8     SHL SHR ELEM UP DOWN    Decalage, test de bit}\par
+{\f1   9     +* I                    Construction COMPL (imaginaire)}\par
+\par
+{\f1   7.2 Operateurs monadiques (unaires)}\par
+\par
+{\f1   Prio  Operateurs                      Description}\par
+{\f1   ----  ------------------------------  --------------------------}\par
+{\f1   7     NOT ABS ARG BIN CONJ IM LENG    Operateurs unaires}\par
+{\f1         LEVEL ODD RE REPR ROUND}\par
+{\f1         SHORTEN SIGN}\par
+\par
+{\f1   Operateur  Description                  Exemple}\par
+{\f1   ---------  ---------------------------  ---------------------}\par
+{\f1   ABS        Valeur absolue               ABS -42 = 42}\par
+{\f1   ODD        Test de parite               ODD 7 = TRUE}\par
+{\f1   SIGN       Extraction du signe          SIGN -5 = -1}\par
+{\f1   NOT        Negation logique             NOT TRUE = FALSE}\par
+{\f1   BIN        Conversion INT -> BITS       BIN 255}\par
+{\f1   -          Negation arithmetique        -42}\par
+\par
+{\f1   7.3 Operateurs d affectation composes}\par
+\par
+{\f1   Operateur  Equivalent          Description}\par
+{\f1   ---------  ------------------  -------------------------}\par
+{\f1   +:=        x := x + y         Plus et assigne}\par
+{\f1   -:=        x := x - y         Moins et assigne}\par
+{\f1   *:=        x := x * y         Fois et assigne}\par
+{\f1   /:=        x := x / y         Divise et assigne}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_06}     {\uldb Suivant >>}{\v IDH_ALGOL68_08}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_08}
+{\footnote $ Algol 68 - DECLARATIONS D IDENTITE ET DE VARIABLE}
+{\footnote K Algol 68 declarations identite;variable;LOC;HEAP}
+\b\fs24 DECLARATIONS D IDENTITE ET DE VARIABLE \b0\fs20\par
+\par
+{\f1   8.1 Declaration d identite (constante)}\par
+{\f1       MODE nom = valeur;}\par
+\par
+{\f1       Exemples :}\par
+{\f1         INT answer = 42;}\par
+{\f1         STRING greeting = "Hello";}\par
+{\f1         BOOL flag = TRUE;}\par
+\par
+{\f1   8.2 Declaration de variable}\par
+{\f1       MODE nom := valeur;}\par
+\par
+{\f1       La forme abregee ?? INT x := 42 ?? cree implicitement un}\par
+{\f1       REF INT local initialise a 42.}\par
+\par
+{\f1       Forme longue : REF INT x = LOC INT := 42;}\par
+\par
+{\f1   8.3 Allocation locale (LOC)}\par
+{\f1       LOC MODE : allocation sur la pile dans le cadre courant.}\par
+{\f1       Adresse relative a BP : [BP - offset]}\par
+\par
+{\f1   8.4 Allocation dynamique (HEAP)}\par
+{\f1       HEAP MODE : allocation sur le tas.}\par
+{\f1       Appel a la routine runtime _A68RT_ALLOC.}\par
+\par
+{\f1   8.5 Declarations multiples}\par
+{\f1       INT a = 1, b = 2, c = 3;}\par
+\par
+{\f1   8.6 Declaration REF explicite}\par
+{\f1       REF INT p = x;}\par
+{\f1       p est un alias (meme adresse) vers la variable x.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_07}     {\uldb Suivant >>}{\v IDH_ALGOL68_09}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_09}
+{\footnote $ Algol 68 - EXPRESSIONS ET FORMULES}
+{\footnote K Algol 68 expressions;formules;unitaires}
+\b\fs24 EXPRESSIONS ET FORMULES \b0\fs20\par
+\par
+{\f1   9.1 Expressions primaires}\par
+{\f1       - Denotation (litteral)}\par
+{\f1       - Identificateur (recherche dans la table des symboles)}\par
+{\f1       - Clause fermee : (expr) ou BEGIN expr END}\par
+{\f1       - Appel de procedure : nom(args)}\par
+{\f1       - Selection de champ : champ OF structure}\par
+{\f1       - Indexation de tableau : tableau[indice]}\par
+{\f1       - Tranche de tableau : tableau[lo:up]}\par
+{\f1       - SKIP (valeur indefinie) et NIL (reference nulle)}\par
+\par
+{\f1   9.2 Formules}\par
+{\f1       Les formules sont des expressions composees d operateurs et}\par
+{\f1       d operandes, analysees par descente de Pratt avec priorites 1 a 9.}\par
+\par
+{\f1       Exemples :}\par
+{\f1         a + b * c          CO priorite : * avant + CO}\par
+{\f1         ABS x + SIGN y     CO unaires avant binaires CO}\par
+{\f1         x = 5 AND y > 0    CO comparaison puis logique CO}\par
+\par
+{\f1   9.3 Affectation}\par
+{\f1       destination := source}\par
+{\f1       La destination doit etre de mode REF M.}\par
+\par
+{\f1       Affectation inversee : source =: destination}\par
+\par
+{\f1   9.4 Test d identite}\par
+{\f1       expr1 IS expr2      (meme reference)}\par
+{\f1       expr1 ISNT expr2    (references differentes)}\par
+{\f1       expr IS NIL          (test de reference nulle)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_08}     {\uldb Suivant >>}{\v IDH_ALGOL68_10}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_10}
+{\footnote $ Algol 68 - CLAUSES FERMEES ET CLAUSES SERIE}
+{\footnote K Algol 68 clauses fermees;serie;BEGIN;END}
+\b\fs24 CLAUSES FERMEES ET CLAUSES SERIE \b0\fs20\par
+\par
+{\f1   10.1 Clause fermee (closed clause)}\par
+{\f1        BEGIN suite_d_unites END}\par
+{\f1        ( suite_d_unites )}\par
+\par
+{\f1        Ouvre une nouvelle portee lexicale. La valeur de la clause}\par
+{\f1        est la valeur de la derniere unite.}\par
+\par
+{\f1        Exemple :}\par
+{\f1          INT r := BEGIN INT x := 5; x + 1 END   CO r = 6 CO}\par
+\par
+{\f1   10.2 Clause serie (serial clause)}\par
+{\f1        Suite d unites separees par des points-virgules.}\par
+{\f1        La valeur est celle de la derniere unite.}\par
+\par
+{\f1        Exemple :}\par
+{\f1          INT a := 1; INT b := 2; a + b   CO valeur = 3 CO}\par
+\par
+{\f1   10.3 Labels (etiquettes)}\par
+{\f1        etiquette: unite}\par
+{\f1        GO TO etiquette  ou  GOTO etiquette}\par
+\par
+{\f1        Exemple :}\par
+{\f1          boucle: x +:= 1;}\par
+{\f1          IF x < 10 THEN GOTO boucle FI}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_09}     {\uldb Suivant >>}{\v IDH_ALGOL68_11}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_11}
+{\footnote $ Algol 68 - CLAUSES CONDITIONNELLES (IF ET CASE)}
+{\footnote K Algol 68 conditionnelles;IF;CASE;THEN;ELSE;FI;ESAC}
+\b\fs24 CLAUSES CONDITIONNELLES (IF ET CASE) \b0\fs20\par
+\par
+{\f1   11.1 Clause IF}\par
+\par
+{\f1        IF condition THEN}\par
+{\f1          unites_vrai}\par
+{\f1        ELIF condition THEN}\par
+{\f1          unites_elif}\par
+{\f1        ELSE}\par
+{\f1          unites_faux}\par
+{\f1        FI}\par
+\par
+{\f1        Forme abregee : (condition | val_vrai | val_faux)}\par
+\par
+{\f1        Exemple :}\par
+{\f1          IF note >= 90 THEN}\par
+{\f1            print(("Excellent", newline))}\par
+{\f1          ELIF note >= 70 THEN}\par
+{\f1            print(("Bien", newline))}\par
+{\f1          ELSE}\par
+{\f1            print(("Echec", newline))}\par
+{\f1          FI}\par
+\par
+{\f1        La clause IF peut etre utilisee comme expression :}\par
+{\f1          INT x = IF cond THEN 1 ELSE 2 FI}\par
+\par
+{\f1   11.2 Clause CASE}\par
+\par
+{\f1        CASE expression IN}\par
+{\f1          unite1,}\par
+{\f1          unite2,}\par
+{\f1          unite3}\par
+{\f1        OUT}\par
+{\f1          unite_defaut}\par
+{\f1        ESAC}\par
+\par
+{\f1        Forme abregee : (expr | val1, val2, ... | defaut)}\par
+\par
+{\f1        L expression doit etre de mode INT.}\par
+{\f1        La selection est 1-basee : 1 -> unite1, 2 -> unite2, etc.}\par
+{\f1        La clause OUT est executee si aucune valeur ne correspond.}\par
+\par
+{\f1        Exemple :}\par
+{\f1          CASE jour IN}\par
+{\f1            print(("Lundi", newline)),}\par
+{\f1            print(("Mardi", newline)),}\par
+{\f1            print(("Mercredi", newline))}\par
+{\f1          OUT}\par
+{\f1            print(("Autre jour", newline))}\par
+{\f1          ESAC}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_10}     {\uldb Suivant >>}{\v IDH_ALGOL68_12}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_12}
+{\footnote $ Algol 68 - CLAUSES REPETITIVES (BOUCLES)}
+{\footnote K Algol 68 boucles;FOR;FROM;TO;BY;WHILE;DO;OD}
+\b\fs24 CLAUSES REPETITIVES (BOUCLES) \b0\fs20\par
+\par
+Forme generale :\par
+\par
+{\f1   FOR ident FROM debut TO fin BY pas WHILE condition DO}\par
+{\f1     unites}\par
+{\f1   OD}\par
+\par
+Tous les mots-cles sauf DO et OD sont optionnels.\par
+\par
+{\f1   12.1 FOR ident}\par
+{\f1        Variable de boucle locale, de mode INT, non modifiable dans}\par
+{\f1        le corps. Si absent, pas de variable de boucle.}\par
+\par
+{\f1   12.2 FROM debut}\par
+{\f1        Valeur initiale (defaut 1).}\par
+\par
+{\f1   12.3 TO fin}\par
+{\f1        Borne superieure. Si absent, la boucle est potentiellement}\par
+{\f1        infinie (sauf WHILE).}\par
+\par
+{\f1   12.4 BY pas}\par
+{\f1        Increment a chaque iteration (defaut 1). Peut etre negatif.}\par
+\par
+{\f1   12.5 WHILE condition}\par
+{\f1        Condition testee avant chaque iteration. Permet des boucles}\par
+{\f1        WHILE pures : WHILE cond DO ... OD}\par
+\par
+{\f1   Exemples :}\par
+\par
+{\f1     CO Boucle FOR classique CO}\par
+{\f1     FOR i FROM 1 TO 10 DO}\par
+{\f1       print((i, newline))}\par
+{\f1     OD}\par
+\par
+{\f1     CO Boucle avec pas CO}\par
+{\f1     FOR k FROM 1 TO 10 BY 2 DO}\par
+{\f1       print((k, " "))}\par
+{\f1     OD}\par
+\par
+{\f1     CO Boucle WHILE pure CO}\par
+{\f1     INT n := 100;}\par
+{\f1     WHILE n > 1 DO}\par
+{\f1       n := n OVER 2}\par
+{\f1     OD}\par
+\par
+{\f1     CO Boucle FOR avec WHILE CO}\par
+{\f1     INT total := 0;}\par
+{\f1     FOR n FROM 1 TO 100 WHILE total < 50 DO}\par
+{\f1       total +:= n}\par
+{\f1     OD}\par
+\par
+{\f1     CO Boucle infinie CO}\par
+{\f1     DO ... OD}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_11}     {\uldb Suivant >>}{\v IDH_ALGOL68_13}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_13}
+{\footnote $ Algol 68 - STRUCTURES (STRUCT)}
+{\footnote K Algol 68 structures;STRUCT;champs}
+\b\fs24 STRUCTURES (STRUCT) \b0\fs20\par
+\par
+{\f1   13.1 Declaration de mode structure}\par
+{\f1        MODE POINT = STRUCT(INT x, INT y);}\par
+{\f1        MODE VEC3 = STRUCT(INT a, INT b, INT c);}\par
+\par
+{\f1        La taille d une structure est la somme des tailles de ses champs.}\par
+\par
+{\f1   13.2 Constructeur de structure}\par
+{\f1        POINT p := POINT(3, 7);}\par
+{\f1        VEC3 v := VEC3(10, 20, 30);}\par
+\par
+{\f1   13.3 Selection de champ (OF)}\par
+{\f1        INT px := x OF p;}\par
+{\f1        INT vc := c OF v;}\par
+\par
+{\f1        L operateur OF accede a un champ par un offset fixe depuis}\par
+{\f1        le debut de la structure.}\par
+\par
+{\f1   13.4 Structures imbriquees}\par
+{\f1        MODE RECT = STRUCT(POINT tl, POINT br);}\par
+{\f1        Acces chaine : x OF tl OF rect}\par
+\par
+{\f1   13.5 Affectation de structure}\par
+{\f1        Copie champ par champ ou par bloc (REP MOVSW).}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_12}     {\uldb Suivant >>}{\v IDH_ALGOL68_14}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_14}
+{\footnote $ Algol 68 - REFERENCES ET AFFECTATIONS (REF)}
+{\footnote K Algol 68 references;affectations;REF;pointeurs}
+\b\fs24 REFERENCES ET AFFECTATIONS (REF) \b0\fs20\par
+\par
+{\f1   14.1 REF MODE}\par
+{\f1        Reference (pointeur) vers un objet de mode MODE.}\par
+{\f1        Toute variable est implicitement un REF.}\par
+\par
+{\f1   14.2 Affectation}\par
+{\f1        x := 42          CO affectation standard CO}\par
+{\f1        99 =: z          CO affectation inversee CO}\par
+\par
+{\f1   14.3 LOC (allocation locale)}\par
+{\f1        LOC INT : allocation sur la pile dans le cadre courant.}\par
+\par
+{\f1   14.4 HEAP (allocation dynamique)}\par
+{\f1        HEAP INT : allocation sur le tas via _A68RT_ALLOC.}\par
+\par
+{\f1   14.5 REF REF MODE}\par
+{\f1        Double indirection (reference vers reference).}\par
+\par
+{\f1   14.6 NIL}\par
+{\f1        Reference nulle, compatible avec tout REF M.}\par
+\par
+{\f1   14.7 Test d identite}\par
+{\f1        a IS b       CO meme reference (meme adresse) CO}\par
+{\f1        a ISNT b     CO references differentes CO}\par
+{\f1        p IS NIL     CO test de reference nulle CO}\par
+{\f1        p ISNT NIL}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_13}     {\uldb Suivant >>}{\v IDH_ALGOL68_15}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_15}
+{\footnote $ Algol 68 - TABLEAUX ET TRANCHES (ROW)}
+{\footnote K Algol 68 tableaux;ROW;tranches;indexation;bornes}
+\b\fs24 TABLEAUX ET TRANCHES (ROW) \b0\fs20\par
+\par
+{\f1   15.1 Declaration de tableau}\par
+{\f1        [1:10] INT a          CO tableau de 10 entiers CO}\par
+{\f1        [1:5] INT b := (10, 20, 30, 40, 50)}\par
+\par
+{\f1        Les bornes sont flexibles (pas seulement 0 ou 1).}\par
+\par
+{\f1   15.2 Descripteur de tableau}\par
+{\f1        Chaque tableau possede un descripteur :}\par
+{\f1        (lwb, upb, taille_elem, ptr_data)}\par
+\par
+{\f1   15.3 Acces par index}\par
+{\f1        a[3]      CO troisieme element CO}\par
+\par
+{\f1        Verification de bornes a l execution : erreur si hors limites.}\par
+\par
+{\f1   15.4 Tranche (trimming)}\par
+{\f1        a[2:4]    CO sous-tableau a[2], a[3], a[4] CO}\par
+\par
+{\f1        Memes donnees, bornes modifiees.}\par
+\par
+{\f1   15.5 Bornes LWB et UPB}\par
+{\f1        LWB a     CO borne inferieure CO}\par
+{\f1        UPB a     CO borne superieure CO}\par
+\par
+{\f1   15.6 STRING comme tableau}\par
+{\f1        STRING est equivalent a un tableau flexible de CHAR : [1:n] CHAR}\par
+\par
+{\f1        STRING msg = "Algol 68";}\par
+{\f1        STRING sub = msg[1:5];        CO tranche CO}\par
+{\f1        STRING s3 = s1 + s2;          CO concatenation CO}\par
+\par
+{\f1   15.7 Constructeur de rangee}\par
+{\f1        (1, 2, 3) en contexte de rowing.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_14}     {\uldb Suivant >>}{\v IDH_ALGOL68_16}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_16}
+{\footnote $ Algol 68 - PROCEDURES (PROC)}
+{\footnote K Algol 68 procedures;PROC;parametres;retour}
+\b\fs24 PROCEDURES (PROC) \b0\fs20\par
+\par
+{\f1   16.1 Declaration de procedure}\par
+{\f1        PROC nom = (params) MODE : corps;}\par
+\par
+{\f1        Exemples :}\par
+{\f1          PROC double = (INT x) INT : x + x;}\par
+{\f1          PROC add = (INT a, INT b) INT : a + b;}\par
+{\f1          PROC greet = () VOID : print(("Bonjour", newline));}\par
+\par
+{\f1   16.2 Procedure VOID}\par
+{\f1        Procedure sans valeur de retour :}\par
+{\f1        PROC noop = () VOID : SKIP;}\par
+\par
+{\f1   16.3 Parametres}\par
+{\f1        Par valeur : copie sur la pile.}\par
+{\f1        Par reference (REF) : passage d adresse.}\par
+\par
+{\f1   16.4 Valeur de retour}\par
+{\f1        Le resultat d une procedure est la valeur de la derniere}\par
+{\f1        expression de son corps (dans AX).}\par
+\par
+{\f1   16.5 Recursion}\par
+{\f1        Supportee naturellement via la pile.}\par
+\par
+{\f1        PROC factorial = (INT n) INT :}\par
+{\f1          IF n = 0 THEN 1 ELSE n * factorial(n - 1) FI;}\par
+\par
+{\f1        PROC fib = (INT n) INT :}\par
+{\f1          IF n <= 1 THEN n ELSE fib(n - 1) + fib(n - 2) FI;}\par
+\par
+{\f1   16.6 Procedures comme valeurs de premier ordre}\par
+{\f1        PROC(INT)INT f = ma_proc;}\par
+{\f1        Variables de type PROC : pointeur de code.}\par
+{\f1        Appel indirect possible.}\par
+\par
+{\f1   16.7 Convention d appel}\par
+{\f1        cdecl 16 bits : arguments empiles de gauche a droite.}\par
+{\f1        Prologue : PUSH BP / MOV BP,SP / SUB SP, taille_locales}\par
+{\f1        Epilogue : MOV SP,BP / POP BP / RET}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_15}     {\uldb Suivant >>}{\v IDH_ALGOL68_17}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_17}
+{\footnote $ Algol 68 - DEFINITIONS D OPERATEURS (OP ET PRIO)}
+{\footnote K Algol 68 operateurs definis;OP;PRIO;surcharge}
+\b\fs24 DEFINITIONS D OPERATEURS (OP ET PRIO) \b0\fs20\par
+\par
+{\f1   17.1 Operateur dyadique}\par
+{\f1        OP ADDX = (INT a, INT b) INT : a + b + 1;}\par
+{\f1        INT r := 10 ADDX 20;   CO r = 31 CO}\par
+\par
+{\f1   17.2 Operateur monadique}\par
+{\f1        OP DBL = (INT x) INT : x + x;}\par
+{\f1        INT r := DBL 7;        CO r = 14 CO}\par
+\par
+{\f1   17.3 Declaration de priorite}\par
+{\f1        PRIO MYMUL = 5;}\par
+{\f1        OP MYMUL = (INT a, INT b) INT : a * b;}\par
+\par
+{\f1        Les priorites vont de 1 (faible) a 9 (fort).}\par
+\par
+{\f1   17.4 Surcharge d operateurs}\par
+{\f1        Un meme symbole peut etre defini pour differents modes}\par
+{\f1        d operandes. La resolution se fait par le mode des operandes.}\par
+\par
+{\f1   17.5 Operateurs d affectation}\par
+{\f1        OP +:= = (REF INT a, INT b) REF INT : ...}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_16}     {\uldb Suivant >>}{\v IDH_ALGOL68_18}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_18}
+{\footnote $ Algol 68 - MODES UNIS (UNION) ET CLAUSES DE CONFORMITE}
+{\footnote K Algol 68 unions;UNION;CASE conformite}
+\b\fs24 MODES UNIS (UNION) ET CLAUSES DE CONFORMITE \b0\fs20\par
+\par
+{\f1   18.1 Declaration de mode UNION}\par
+{\f1        MODE NOMBRE = UNION(INT, REAL);}\par
+\par
+{\f1        Un mode uni peut contenir une valeur de l un des modes}\par
+{\f1        alternatifs.}\par
+\par
+{\f1   18.2 Representation interne}\par
+{\f1        Discriminant (mot de 16 bits) + donnees (taille = max des}\par
+{\f1        alternatives).}\par
+\par
+{\f1   18.3 Unification (coercition)}\par
+{\f1        INT -> UNION(INT, REAL) : stocker la valeur avec son}\par
+{\f1        discriminant.}\par
+\par
+{\f1   18.4 Clause de conformite}\par
+{\f1        CASE expr IN}\par
+{\f1          (INT i) : utiliser i,}\par
+{\f1          (REAL r) : utiliser r}\par
+{\f1        OUT}\par
+{\f1          traitement par defaut}\par
+{\f1        ESAC}\par
+\par
+{\f1        Chaque alternative lie un identificateur local au contenu}\par
+{\f1        extrait de l union.}\par
+\par
+{\f1   18.5 EMPTY}\par
+{\f1        Union vide (aucune alternative selectionnee).}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_17}     {\uldb Suivant >>}{\v IDH_ALGOL68_19}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_19}
+{\footnote $ Algol 68 - CLAUSES COLLATERALES ET PARALLELES}
+{\footnote K Algol 68 collaterales;paralleles;PAR}
+\b\fs24 CLAUSES COLLATERALES ET PARALLELES \b0\fs20\par
+\par
+{\f1   19.1 Clause collaterale}\par
+{\f1        (unite1, unite2, unite3)}\par
+\par
+{\f1        Les unites sont evaluees dans un ordre indefini.}\par
+{\f1        En pratique, evaluation de gauche a droite.}\par
+{\f1        Utilisee pour les constructeurs de rangees et structures.}\par
+\par
+{\f1   19.2 Clause parallele}\par
+{\f1        PAR(unite1, unite2, unite3)}\par
+{\f1        PAR BEGIN tache1, tache2 END}\par
+\par
+{\f1        Non supportee sur DOS 8086 mono-tache.}\par
+{\f1        Avertissement emis : evaluation sequentielle.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_18}     {\uldb Suivant >>}{\v IDH_ALGOL68_20}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_20}
+{\footnote $ Algol 68 - TRANSPUT (ENTREES/SORTIES)}
+{\footnote K Algol 68 transput;entrees;sorties;read;print;put;get}
+\b\fs24 TRANSPUT (ENTREES/SORTIES) \b0\fs20\par
+\par
+{\f1   20.1 print}\par
+{\f1        print((args))}\par
+{\f1        Ecriture sur stdout. Accepte une liste heterogene.}\par
+\par
+{\f1        Exemples :}\par
+{\f1          print(("Hello, World!", newline));}\par
+{\f1          print(("x = ", x, newline));}\par
+{\f1          print((msg, ": ", val, " ", flag, newline));}\par
+\par
+{\f1        Types supportes dans print :}\par
+{\f1          INT    -> conversion decimale}\par
+{\f1          CHAR   -> caractere unique}\par
+{\f1          STRING -> chaine de caracteres}\par
+{\f1          BOOL   -> "TRUE" ou "FALSE"}\par
+\par
+{\f1   20.2 read}\par
+{\f1        read((args))}\par
+{\f1        Lecture depuis stdin.}\par
+\par
+{\f1        Exemples :}\par
+{\f1          read((x));}\par
+{\f1          read((x, y));}\par
+\par
+{\f1   20.3 Procedures standard de transput}\par
+\par
+{\f1        Procedure    Description}\par
+{\f1        -----------  -----------------------------------------}\par
+{\f1        print        Ecriture formatee sur stdout}\par
+{\f1        read         Lecture depuis stdin}\par
+{\f1        newline      Ecrire un saut de ligne (CR+LF)}\par
+{\f1        newpage      Ecrire un saut de page (FF)}\par
+{\f1        space        Ecrire un espace}\par
+{\f1        whole        Formater un entier avec largeur}\par
+{\f1        fixed        Formater un reel avec decimales}\par
+\par
+{\f1   20.4 Fichiers}\par
+{\f1        open, close, get, put (interface simplifiee).}\par
+\par
+{\f1   20.5 Fichiers standard}\par
+{\f1        stand in    : entree standard (stdin)}\par
+{\f1        stand out   : sortie standard (stdout)}\par
+{\f1        stand error : sortie d erreur (stderr)}\par
+{\f1        stand back  : fichier arriere}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_19}     {\uldb Suivant >>}{\v IDH_ALGOL68_21}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_21}
+{\footnote $ Algol 68 - SYMBOLES ET PORTEES}
+{\footnote K Algol 68 symboles;portee;scope;identification}
+\b\fs24 SYMBOLES ET PORTEES \b0\fs20\par
+\par
+{\f1   21.1 Portees lexicales (scopes)}\par
+{\f1        Chaque clause fermee (BEGIN...END ou (...)) ouvre une}\par
+{\f1        nouvelle portee. Les declarations dans une portee ne sont}\par
+{\f1        pas visibles a l exterieur.}\par
+\par
+{\f1        BEGIN}\par
+{\f1          INT x := 5;      CO x visible ici CO}\par
+{\f1          BEGIN}\par
+{\f1            INT y := x + 1; CO x et y visibles ici CO}\par
+{\f1          END;}\par
+{\f1          CO y n est plus visible ici CO}\par
+{\f1        END}\par
+\par
+{\f1   21.2 Table des symboles}\par
+{\f1        Chaque symbole possede : nom, nom decore (mangled), genre,}\par
+{\f1        mode, offset, niveau de portee, attributs (param, heap, loc).}\par
+\par
+{\f1        Genres de symboles :}\par
+{\f1          SK_IDENT   Identite (constante)}\par
+{\f1          SK_VAR     Variable (REF)}\par
+{\f1          SK_PROC    Procedure}\par
+{\f1          SK_OP      Operateur}\par
+{\f1          SK_MODE    Type (mode)}\par
+{\f1          SK_LABEL   Etiquette}\par
+{\f1          SK_PRIO    Priorite d operateur}\par
+\par
+{\f1   21.3 Symboles predefinis (61 symboles standard)}\par
+\par
+{\f1        Categorie          Symboles}\par
+{\f1        -----------------  ------------------------------------------}\par
+{\f1        E/S                print, read, newline, newpage, space,}\par
+{\f1                           backspace}\par
+{\f1        Transput           put, get, open, close, associate, create,}\par
+{\f1                           establish}\par
+{\f1        Operateurs         abs, odd, sign, entier, round, repr,}\par
+{\f1                           leng, shorten, bin, elem, level, re,}\par
+{\f1                           im, conj, arg}\par
+{\f1        Math               sqrt, exp, ln, sin, cos, tan, arcsin,}\par
+{\f1                           arccos, arctan}\par
+{\f1        Chaines            whole, fixed, float, char in string,}\par
+{\f1                           string in string}\par
+{\f1        Constantes         max int, max real, small real, pi,}\par
+{\f1                           blank, flip, flop}\par
+{\f1        Fichiers           stand in, stand out, stand error,}\par
+{\f1                           stand back}\par
+{\f1        Divers             random, next random, stop}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_20}     {\uldb Suivant >>}{\v IDH_ALGOL68_22}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_22}
+{\footnote $ Algol 68 - RUNTIME MINIMAL}
+{\footnote K Algol 68 runtime;minimal;bibliotheque}
+\b\fs24 RUNTIME MINIMAL \b0\fs20\par
+\par
+Le compilateur AL68C86 genere des appels a un ensemble de routines\par
+runtime assembleur 8086, emises dans le segment de code.\par
+\par
+{\f1   Routine               Description}\par
+{\f1   --------------------  ------------------------------------------}\par
+{\f1   _A68RT_PRINT          Ecriture bloc sur handle (INT 21h AH=40h)}\par
+{\f1   _A68RT_PRINTLN        Ecriture chaine + CR+LF sur stdout}\par
+{\f1   _A68RT_STRLEN         Longueur d une chaine ASCIIZ -> AX}\par
+{\f1   _A68RT_PRINTINT       Entier signe -> ASCII + ecriture stdout}\par
+{\f1   _A68RT_PRINTBOOL      Ecrire TRUE ou FALSE}\par
+{\f1   _A68RT_READINT        Lecture chaine + conversion -> AX}\par
+{\f1   _A68RT_READCHAR       Lecture d un caractere (INT 21h AH=01h)}\par
+{\f1   _A68RT_READLINE       Lecture d une ligne stdin}\par
+{\f1   _A68RT_NUMTOSTR       Entier -> chaine ASCII (itoa)}\par
+{\f1   _A68RT_STRTONUM       Chaine ASCII -> entier (atoi)}\par
+{\f1   _A68RT_CONCAT         Concatenation de deux STRING -> AX=ptr}\par
+{\f1   _A68RT_STRCMP          Comparaison de chaines -> drapeaux ZF/CF}\par
+{\f1   _A68RT_STRTRIM        Tranche de chaine -> AX=ptr}\par
+{\f1   _A68RT_ALLOC          Allocation sur le tas -> AX=ptr}\par
+{\f1   _A68RT_POWER          Exponentiation entiere -> AX}\par
+{\f1   _A68RT_ABS            Valeur absolue -> AX}\par
+{\f1   _A68RT_ODD            Test de parite -> AX=0|1}\par
+{\f1   _A68RT_SIGN           Signe -> AX=-1|0|1}\par
+{\f1   _A68RT_CHKIDX         Verification de bornes de tableau}\par
+{\f1   _A68RT_CHKNIL         Verification de reference nulle}\par
+{\f1   _A68RT_PANIC          Message d erreur + terminaison (exit 1)}\par
+\par
+{\f1   Donnees runtime :}\par
+{\f1     _A68_HEAP      : tas statique de 4096 octets}\par
+{\f1     _A68_HEAPTOP   : pointeur sommet du tas}\par
+{\f1     _A68_CRLF      : constante CR+LF (13, 10, 0)}\par
+{\f1     _A68_STRBUF    : tampon de travail pour les chaines}\par
+{\f1     _A68_STRPOOL   : pool de chaines dynamiques}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_21}     {\uldb Suivant >>}{\v IDH_ALGOL68_23}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_23}
+{\footnote $ Algol 68 - MOTS RESERVES (BOLD WORDS)}
+{\footnote K Algol 68 mots reserves;bold words;keywords}
+\b\fs24 MOTS RESERVES (BOLD WORDS) \b0\fs20\par
+\par
+Le langage Algol 68 tel qu implemente reconnait les mots gras\par
+suivants (ecrits en majuscules) :\par
+\par
+{\f1   Groupe                    Mots-cles}\par
+{\f1   ------------------------  -------------------------------------------}\par
+{\f1   Delimiteurs de blocs      BEGIN, END}\par
+\par
+{\f1   Conditionnelles           IF, THEN, ELIF, ELSE, FI}\par
+\par
+{\f1   Cas                       CASE, IN, OUT, ESAC}\par
+\par
+{\f1   Boucles                   FOR, FROM, TO, DOWNTO, BY,}\par
+{\f1                             WHILE, DO, OD}\par
+\par
+{\f1   Procedures                PROC}\par
+\par
+{\f1   Operateurs                OP, PRIO}\par
+\par
+{\f1   Modes (types)             MODE, STRUCT, UNION, REF,}\par
+{\f1                             LOC, HEAP}\par
+\par
+{\f1   Modes primitifs           INT, REAL, BOOL, CHAR, BITS,}\par
+{\f1                             BYTES, COMPL, STRING, VOID}\par
+\par
+{\f1   Constantes speciales      TRUE, FALSE, NIL, SKIP, EMPTY}\par
+\par
+{\f1   Operateurs standard       AND, OR, NOT, OF, AT, IS, ISNT,}\par
+{\f1                             ABS, ARG, BIN, CONJ, IM, LENG,}\par
+{\f1                             LEVEL, ODD, RE, REPR, ROUND,}\par
+{\f1                             SHORTEN, SIGN, OVER, MOD,}\par
+{\f1                             SHL, SHR, ELEM, UP, DOWN,}\par
+{\f1                             LWB, UPB}\par
+\par
+{\f1   Saut                      GO TO, GOTO}\par
+\par
+{\f1   Parallele                 PAR}\par
+\par
+{\f1   Commentaires              CO, COMMENT}\par
+\par
+{\f1   Pragmats                  PR, PRAGMAT}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_22}     {\uldb Suivant >>}{\v IDH_ALGOL68_24}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ALGOL68_24}
+{\footnote $ Algol 68 - GRAMMAIRE BNF}
+{\footnote K Algol 68 grammaire BNF;syntaxe;Van Wijngaarden}
+\b\fs24 GRAMMAIRE BNF \b0\fs20\par
+\par
+{\f1   <programme>    ::= <clause-fermee>}\par
+\par
+{\f1   <clause-fermee>}\par
+{\f1                  ::= BEGIN <clause-serie> END}\par
+{\f1                    | '(' <clause-serie> ')'}\par
+\par
+{\f1   <clause-serie> ::= \{ <declaration> ';' \} <unite>}\par
+{\f1                       \{ ';' <unite> \}}\par
+\par
+{\f1   <declaration>  ::= <decl-identite>}\par
+{\f1                    | <decl-variable>}\par
+{\f1                    | <decl-mode>}\par
+{\f1                    | <decl-proc>}\par
+{\f1                    | <decl-op>}\par
+{\f1                    | <decl-prio>}\par
+{\f1                    | <label>}\par
+\par
+{\f1   <decl-identite>}\par
+{\f1                  ::= <mode> <ident> '=' <unite>}\par
+{\f1                       \{ ',' <ident> '=' <unite> \}}\par
+\par
+{\f1   <decl-variable>}\par
+{\f1                  ::= <mode> <ident> ':=' <unite>}\par
+{\f1                       \{ ',' <ident> ':=' <unite> \}}\par
+{\f1                    | REF <mode> <ident> '=' LOC <mode> ':=' <unite>}\par
+{\f1                    | HEAP <mode> <ident>}\par
+\par
+{\f1   <decl-mode>    ::= MODE <ident> '=' <mode-ind>}\par
+\par
+{\f1   <decl-proc>    ::= PROC <ident> '=' '(' <params> ')' <mode> ':'}\par
+{\f1                         <unite>}\par
+\par
+{\f1   <decl-op>      ::= OP <op-symbole> '=' '(' <params> ')' <mode> ':'}\par
+{\f1                         <unite>}\par
+\par
+{\f1   <decl-prio>    ::= PRIO <op-symbole> '=' <entier>}\par
+\par
+{\f1   <label>        ::= <ident> ':'}\par
+\par
+{\f1   <mode-ind>     ::= INT | REAL | BOOL | CHAR | BITS | BYTES}\par
+{\f1                    | COMPL | STRING | VOID}\par
+{\f1                    | STRUCT '(' <champs> ')'}\par
+{\f1                    | UNION '(' <modes-liste> ')'}\par
+{\f1                    | REF <mode-ind>}\par
+{\f1                    | PROC '(' <modes-liste> ')' <mode-ind>}\par
+{\f1                    | '[' <unite> ':' <unite> ']' <mode-ind>}\par
+{\f1                    | <ident>}\par
+\par
+{\f1   <champs>       ::= <mode-ind> <ident>}\par
+{\f1                       \{ ',' <mode-ind> <ident> \}}\par
+\par
+{\f1   <modes-liste>  ::= <mode-ind> \{ ',' <mode-ind> \}}\par
+\par
+{\f1   <params>       ::= <mode-ind> <ident>}\par
+{\f1                       \{ ',' <mode-ind> <ident> \}}\par
+{\f1                    |  CO vide CO}\par
+\par
+{\f1   <unite>        ::= <formule>}\par
+{\f1                    | <affectation>}\par
+{\f1                    | <clause-fermee>}\par
+{\f1                    | <clause-cond>}\par
+{\f1                    | <clause-cas>}\par
+{\f1                    | <clause-boucle>}\par
+{\f1                    | <clause-collat>}\par
+{\f1                    | SKIP | NIL | EMPTY}\par
+{\f1                    | GO TO <ident> | GOTO <ident>}\par
+\par
+{\f1   <affectation>  ::= <destination> ':=' <unite>}\par
+{\f1                    | <unite> '=:' <destination>}\par
+\par
+{\f1   <destination>  ::= <ident>}\par
+{\f1                    | <selection>}\par
+{\f1                    | <indexation>}\par
+\par
+{\f1   <formule>      ::= <monadique> <operande>}\par
+{\f1                    | <operande> <dyadique> <operande>}\par
+{\f1                    | <operande>}\par
+\par
+{\f1   <operande>     ::= <primaire> \{ <dyadique> <primaire> \}}\par
+\par
+{\f1   <primaire>     ::= <denotation>}\par
+{\f1                    | <ident>}\par
+{\f1                    | <ident> '(' <args> ')'}\par
+{\f1                    | <champ> OF <primaire>}\par
+{\f1                    | <primaire> '[' <indice> ']'}\par
+{\f1                    | <primaire> '[' <unite> ':' <unite> ']'}\par
+{\f1                    | '(' <unite> ')'}\par
+\par
+{\f1   <args>         ::= <unite> \{ ',' <unite> \}}\par
+\par
+{\f1   <indice>       ::= <unite>}\par
+\par
+{\f1   <selection>    ::= <ident> OF <primaire>}\par
+\par
+{\f1   <indexation>   ::= <primaire> '[' <indice> ']'}\par
+\par
+{\f1   <clause-cond>  ::= IF <unite> THEN <clause-serie>}\par
+{\f1                       \{ ELIF <unite> THEN <clause-serie> \}}\par
+{\f1                       [ ELSE <clause-serie> ] FI}\par
+{\f1                    | '(' <unite> '|' <unite> '|' <unite> ')'}\par
+\par
+{\f1   <clause-cas>   ::= CASE <unite> IN <unite> \{ ',' <unite> \}}\par
+{\f1                       [ OUT <clause-serie> ] ESAC}\par
+{\f1                    | '(' <unite> '|' <unite> \{ ',' <unite> \}}\par
+{\f1                       [ '|' <unite> ] ')'}\par
+\par
+{\f1   <clause-conform>}\par
+{\f1                  ::= CASE <unite> IN}\par
+{\f1                       '(' <mode-ind> <ident> ')' ':' <unite>}\par
+{\f1                       \{ ',' '(' <mode-ind> <ident> ')' ':' <unite> \}}\par
+{\f1                       [ OUT <clause-serie> ] ESAC}\par
+\par
+{\f1   <clause-boucle>}\par
+{\f1                  ::= [ FOR <ident> ]}\par
+{\f1                      [ FROM <unite> ]}\par
+{\f1                      [ TO <unite> | DOWNTO <unite> ]}\par
+{\f1                      [ BY <unite> ]}\par
+{\f1                      [ WHILE <unite> ]}\par
+{\f1                      DO <clause-serie> OD}\par
+\par
+{\f1   <clause-collat>}\par
+{\f1                  ::= '(' <unite> ',' <unite> \{ ',' <unite> \} ')'}\par
+{\f1                    | PAR '(' <unite> \{ ',' <unite> \} ')'}\par
+\par
+{\f1   <monadique>    ::= NOT | ABS | ARG | BIN | CONJ | IM | LENG}\par
+{\f1                    | LEVEL | ODD | RE | REPR | ROUND | SHORTEN}\par
+{\f1                    | SIGN | '-' | <op-symbole>}\par
+\par
+{\f1   <dyadique>     ::= '+' | '-' | '*' | '/' | OVER | MOD | '**'}\par
+{\f1                    | '=' | '/=' | '<' | '<=' | '>' | '>='}\par
+{\f1                    | AND | OR | SHL | SHR | ELEM | UP | DOWN}\par
+{\f1                    | '+*' | I | <op-symbole>}\par
+\par
+{\f1   <denotation>   ::= <entier> | <reel> | <chaine> | <caractere>}\par
+{\f1                    | TRUE | FALSE}\par
+\par
+{\f1   <entier>       ::= chiffre \{ chiffre \}}\par
+{\f1                    | <base> 'r' <chiffres-base>}\par
+\par
+{\f1   <reel>         ::= chiffre \{ chiffre \} '.' chiffre \{ chiffre \}}\par
+{\f1                       [ ('e' | 'E') ['+' | '-'] chiffre \{ chiffre \} ]}\par
+\par
+{\f1   <chaine>       ::= '"' \{ caractere | '""' \} '"'}\par
+\par
+{\f1   <caractere>    ::= '"' un_caractere '"'}\par
+\par
+{\f1   <ident>        ::= lettre \{ lettre | chiffre | '_' \}}\par
+\par
+{\f1   <op-symbole>   ::= lettre_majuscule \{ lettre_majuscule \}}\par
+\par
+\par
+FIN DU DOCUMENT\par
+
+\par
+{\uldb << Precedent}{\v IDH_ALGOL68_23}     {\uldb Table des matieres}{\v IDH_ALGOL68_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

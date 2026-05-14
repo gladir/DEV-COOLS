@@ -1,0 +1,2596 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_PHP_01}
+{\footnote $ PHP - SYNTAXE DE BASE}
+{\footnote K PHP syntaxe;balises;commentaires;casse}
+\b\fs24 SYNTAXE DE BASE \b0\fs20\par
+\par
+\par
+\b 1.1 Balises PHP \b0\par
+\par
+{\f1   Le code PHP est delimite par des balises :}\par
+\par
+{\f1     <?php ... ?>          Balise standard (recommandee)}\par
+{\f1     <?= expr ?>           Balise courte d'affichage (echo)}\par
+\par
+\par
+\b 1.2 Instructions et separateurs \b0\par
+\par
+{\f1   Chaque instruction se termine par un point-virgule :}\par
+\par
+{\f1     $x = 10;}\par
+{\f1     echo "Bonjour";}\par
+\par
+\par
+\b 1.3 Commentaires \b0\par
+\par
+{\f1     // Commentaire sur une ligne}\par
+{\f1     # Commentaire sur une ligne (style shell)}\par
+{\f1     /* Commentaire}\par
+{\f1        sur plusieurs lignes */}\par
+{\f1     /** Commentaire de documentation (PHPDoc) */}\par
+\par
+\par
+\b 1.4 Sensibilite a la casse \b0\par
+\par
+{\f1   Les noms de variables sont sensibles a la casse :}\par
+\par
+{\f1     $nom et $Nom sont deux variables differentes.}\par
+\par
+{\f1   Les mots-clefs, noms de fonctions et noms de classes ne sont}\par
+{\f1   pas sensibles a la casse :}\par
+\par
+{\f1     echo, ECHO, Echo sont equivalents.}\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. TYPES DE DONNEES}     {\uldb [Aller]}{\v IDH_PHP_02}\par
+{\f1  3. VARIABLES ET CONSTANTES}     {\uldb [Aller]}{\v IDH_PHP_03}\par
+{\f1  4. OPERATEURS}     {\uldb [Aller]}{\v IDH_PHP_04}\par
+{\f1  5. STRUCTURES DE CONTROLE}     {\uldb [Aller]}{\v IDH_PHP_05}\par
+{\f1  6. FONCTIONS}     {\uldb [Aller]}{\v IDH_PHP_06}\par
+{\f1  7. CHAINES DE CARACTERES}     {\uldb [Aller]}{\v IDH_PHP_07}\par
+{\f1  8. TABLEAUX}     {\uldb [Aller]}{\v IDH_PHP_08}\par
+{\f1  9. CLASSES ET OBJETS}     {\uldb [Aller]}{\v IDH_PHP_09}\par
+{\f1 10. ESPACES DE NOMS (NAMESPACES)}     {\uldb [Aller]}{\v IDH_PHP_10}\par
+{\f1 11. GESTION DES ERREURS ET EXCEPTIONS}     {\uldb [Aller]}{\v IDH_PHP_11}\par
+{\f1 12. FONCTIONS INTEGREES PRINCIPALES}     {\uldb [Aller]}{\v IDH_PHP_12}\par
+{\f1 13. PROGRAMMATION ORIENTEE WEB}     {\uldb [Aller]}{\v IDH_PHP_13}\par
+{\f1 14. FONCTIONS AVANCEES}     {\uldb [Aller]}{\v IDH_PHP_14}\par
+{\f1 15. BASE DE DONNEES (PDO)}     {\uldb [Aller]}{\v IDH_PHP_15}\par
+{\f1 16. MOTS-CLEFS RESERVES}     {\uldb [Aller]}{\v IDH_PHP_16}\par
+{\f1 17. CONVENTIONS ET STANDARDS}     {\uldb [Aller]}{\v IDH_PHP_17}\par
+{\f1 18. REFERENCE DES FONCTIONS PHP PAR VERSION}     {\uldb [Aller]}{\v IDH_PHP_18}\par
+\par
+{\uldb Suivant >>}{\v IDH_PHP_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_02}
+{\footnote $ PHP - TYPES DE DONNEES}
+{\footnote K PHP types;bool;int;float;string;array;object;null;mixed}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+\par
+\b 2.1 Types scalaires \b0\par
+\par
+{\f1   Type         Description                    Exemple}\par
+{\f1   -------      ---------------------------    ----------------}\par
+{\f1   bool         Booleen                        true, false}\par
+{\f1   int          Entier                         42, 0x1A, 0b1010, 0o17}\par
+{\f1   float        Nombre a virgule flottante     3.14, 1.2e3}\par
+{\f1   string       Chaine de caracteres           "texte", 'texte'}\par
+\par
+\par
+\b 2.2 Types composes \b0\par
+\par
+{\f1   Type         Description}\par
+{\f1   -------      ---------------------------}\par
+{\f1   array        Tableau ordonne / associatif}\par
+{\f1   object       Instance de classe}\par
+{\f1   callable     Fonction appelable}\par
+{\f1   iterable     Tableau ou objet Traversable}\par
+\par
+\par
+\b 2.3 Types speciaux \b0\par
+\par
+{\f1   Type         Description}\par
+{\f1   -------      ---------------------------}\par
+{\f1   resource     Reference a une ressource externe}\par
+{\f1   null         Absence de valeur}\par
+{\f1   never        Fonction qui ne retourne jamais (PHP 8.1)}\par
+{\f1   void         Fonction sans valeur de retour}\par
+{\f1   mixed        Tout type (PHP 8.0)}\par
+\par
+\par
+\b 2.4 Verification de type \b0\par
+\par
+{\f1     gettype($var)            Retourne le type sous forme de chaine}\par
+{\f1     is_int($var)             Verifie si entier}\par
+{\f1     is_float($var)           Verifie si flottant}\par
+{\f1     is_string($var)          Verifie si chaine}\par
+{\f1     is_bool($var)            Verifie si booleen}\par
+{\f1     is_array($var)           Verifie si tableau}\par
+{\f1     is_object($var)          Verifie si objet}\par
+{\f1     is_null($var)            Verifie si null}\par
+{\f1     is_numeric($var)         Verifie si numerique}\par
+{\f1     isset($var)              Verifie si defini et non null}\par
+{\f1     empty($var)              Verifie si vide}\par
+{\f1     var_dump($var)           Affiche le type et la valeur}\par
+\par
+\par
+\b 2.5 Transtypage (cast) \b0\par
+\par
+{\f1     (int) $var               Convertir en entier}\par
+{\f1     (float) $var             Convertir en flottant}\par
+{\f1     (string) $var            Convertir en chaine}\par
+{\f1     (bool) $var              Convertir en booleen}\par
+{\f1     (array) $var             Convertir en tableau}\par
+{\f1     (object) $var            Convertir en objet}\par
+{\f1     intval($var)             Convertir en entier (fonction)}\par
+{\f1     floatval($var)           Convertir en flottant (fonction)}\par
+{\f1     strval($var)             Convertir en chaine (fonction)}\par
+{\f1     settype($var, "type")    Changer le type de la variable}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_01}     {\uldb Suivant >>}{\v IDH_PHP_03}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_03}
+{\footnote $ PHP - VARIABLES ET CONSTANTES}
+{\footnote K PHP variables;constantes;portee;global;static;define}
+\b\fs24 VARIABLES ET CONSTANTES \b0\fs20\par
+\par
+\par
+\b 3.1 Variables \b0\par
+\par
+{\f1   Les variables commencent par le signe dollar ($) :}\par
+\par
+{\f1     $nom = "PHP";}\par
+{\f1     $age = 30;}\par
+{\f1     $pi  = 3.14159;}\par
+\par
+{\f1   Les noms de variables doivent commencer par une lettre ou un}\par
+{\f1   underscore, suivis de lettres, chiffres ou underscores.}\par
+\par
+\par
+\b 3.2 Variables variables \b0\par
+\par
+{\f1     $nom = "langage";}\par
+{\f1     $$nom = "PHP";       // equivalent a $langage = "PHP"}\par
+\par
+\par
+\b 3.3 Variables predefinies (superglobales) \b0\par
+\par
+{\f1   Variable         Description}\par
+{\f1   -------          -------------------------------------------}\par
+{\f1   $GLOBALS         Toutes les variables globales}\par
+{\f1   $_SERVER         Informations du serveur et de l'execution}\par
+{\f1   $_GET            Variables HTTP GET}\par
+{\f1   $_POST           Variables HTTP POST}\par
+{\f1   $_FILES          Fichiers envoyes par HTTP}\par
+{\f1   $_COOKIE         Cookies HTTP}\par
+{\f1   $_SESSION        Variables de session}\par
+{\f1   $_REQUEST        Contenu de $_GET, $_POST et $_COOKIE}\par
+{\f1   $_ENV            Variables d'environnement}\par
+\par
+\par
+\b 3.4 Constantes \b0\par
+\par
+{\f1     define("NOM", valeur);           Definir une constante}\par
+{\f1     const NOM = valeur;              Definir une constante (classe/global)}\par
+\par
+{\f1   Constantes predefinies :}\par
+\par
+{\f1     PHP_VERSION       Version de PHP}\par
+{\f1     PHP_INT_MAX       Entier maximum}\par
+{\f1     PHP_INT_MIN       Entier minimum}\par
+{\f1     PHP_INT_SIZE      Taille d'un entier en octets}\par
+{\f1     PHP_FLOAT_MAX     Flottant maximum}\par
+{\f1     PHP_FLOAT_MIN     Flottant minimum positif}\par
+{\f1     PHP_EOL           Fin de ligne du systeme}\par
+{\f1     PHP_OS            Systeme d'exploitation}\par
+{\f1     PHP_SAPI          Interface serveur utilisee}\par
+{\f1     DIRECTORY_SEPARATOR  Separateur de repertoire (/ ou \\)}\par
+{\f1     PATH_SEPARATOR    Separateur de chemin (: ou ;)}\par
+{\f1     TRUE              Booleen vrai}\par
+{\f1     FALSE             Booleen faux}\par
+{\f1     NULL              Valeur nulle}\par
+{\f1     PHP_MAJOR_VERSION Version majeure}\par
+{\f1     PHP_MINOR_VERSION Version mineure}\par
+{\f1     INF               Infini}\par
+{\f1     NAN               Not a Number}\par
+{\f1     E_ERROR           Erreur fatale}\par
+{\f1     E_WARNING         Avertissement}\par
+{\f1     E_NOTICE          Notification}\par
+{\f1     E_DEPRECATED      Fonctionnalite obsolete}\par
+\par
+\par
+\b 3.5 Portee des variables \b0\par
+\par
+{\f1   Par defaut, les variables ont une portee locale a la fonction.}\par
+{\f1   Pour acceder a une variable globale dans une fonction :}\par
+\par
+{\f1     $x = 10;}\par
+{\f1     function test() \{}\par
+{\f1         global $x;       // Acces a la variable globale}\par
+{\f1         echo $x;}\par
+{\f1     \}}\par
+\par
+{\f1   Le mot-clef static conserve la valeur entre les appels :}\par
+\par
+{\f1     function compteur() \{}\par
+{\f1         static $n = 0;}\par
+{\f1         $n++;}\par
+{\f1         return $n;}\par
+{\f1     \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_02}     {\uldb Suivant >>}{\v IDH_PHP_04}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_04}
+{\footnote $ PHP - OPERATEURS}
+{\footnote K PHP operateurs;arithmetiques;comparaison;logiques;chaines;tableau}
+\b\fs24 OPERATEURS \b0\fs20\par
+\par
+\par
+\b 4.1 Operateurs arithmetiques \b0\par
+\par
+{\f1   Operateur    Description             Exemple}\par
+{\f1   ---------    --------------------    -----------}\par
+{\f1   +            Addition                $a + $b}\par
+{\f1   -            Soustraction            $a - $b}\par
+{\f1   *            Multiplication          $a * $b}\par
+{\f1   /            Division                $a / $b}\par
+{\f1   %            Modulo                  $a % $b}\par
+{\f1   **           Exponentiation          $a ** $b}\par
+\par
+\par
+\b 4.2 Operateurs d'affectation \b0\par
+\par
+{\f1   Operateur    Description}\par
+{\f1   ---------    --------------------}\par
+{\f1   =            Affectation simple}\par
+{\f1   +=           Addition et affectation}\par
+{\f1   -=           Soustraction et affectation}\par
+{\f1   *=           Multiplication et affectation}\par
+{\f1   /=           Division et affectation}\par
+{\f1   %=           Modulo et affectation}\par
+{\f1   **=          Exponentiation et affectation}\par
+{\f1   .=           Concatenation et affectation}\par
+{\f1   ??=          Affectation si null (PHP 7.4)}\par
+\par
+\par
+\b 4.3 Operateurs de comparaison \b0\par
+\par
+{\f1   Operateur    Description                     Exemple}\par
+{\f1   ---------    ----------------------------    -----------}\par
+{\f1   ==           Egal (avec conversion)          $a == $b}\par
+{\f1   ===          Identique (type et valeur)      $a === $b}\par
+{\f1   !=           Different                       $a != $b}\par
+{\f1   <>           Different                       $a <> $b}\par
+{\f1   !==          Non identique                   $a !== $b}\par
+{\f1   <            Inferieur                       $a < $b}\par
+{\f1   >            Superieur                       $a > $b}\par
+{\f1   <=           Inferieur ou egal               $a <= $b}\par
+{\f1   >=           Superieur ou egal               $a >= $b}\par
+{\f1   <=>          Comparaison combinee            $a <=> $b}\par
+\par
+{\f1   L'operateur <=> (spaceship) retourne -1, 0 ou 1.}\par
+\par
+\par
+\b 4.4 Operateurs logiques \b0\par
+\par
+{\f1   Operateur    Description}\par
+{\f1   ---------    --------------------}\par
+{\f1   &&           ET logique}\par
+{\f1   ||           OU logique}\par
+{\f1   !            NON logique}\par
+{\f1   and          ET logique (priorite basse)}\par
+{\f1   or           OU logique (priorite basse)}\par
+{\f1   xor          OU exclusif}\par
+\par
+\par
+\b 4.5 Operateurs bit a bit \b0\par
+\par
+{\f1   Operateur    Description}\par
+{\f1   ---------    --------------------}\par
+{\f1   &            ET bit a bit}\par
+{\f1   |            OU bit a bit}\par
+{\f1   ^            XOR bit a bit}\par
+{\f1   ~            NON bit a bit}\par
+{\f1   <<           Decalage a gauche}\par
+{\f1   >>           Decalage a droite}\par
+\par
+\par
+\b 4.6 Operateurs de chaine \b0\par
+\par
+{\f1   Operateur    Description}\par
+{\f1   ---------    --------------------}\par
+{\f1   .            Concatenation}\par
+{\f1   .=           Concatenation et affectation}\par
+\par
+\par
+\b 4.7 Operateurs d'incrementation \b0\par
+\par
+{\f1   Operateur    Description}\par
+{\f1   ---------    --------------------}\par
+{\f1   ++$a         Pre-incrementation}\par
+{\f1   $a++         Post-incrementation}\par
+{\f1   --$a         Pre-decrementation}\par
+{\f1   $a--         Post-decrementation}\par
+\par
+\par
+\b 4.8 Operateurs speciaux \b0\par
+\par
+{\f1   Operateur    Description}\par
+{\f1   ---------    ----------------------------------------}\par
+{\f1   ?:           Operateur ternaire}\par
+{\f1   ??           Coalescence nulle (PHP 7.0)}\par
+{\f1   ?->          Appel de methode null-safe (PHP 8.0)}\par
+{\f1   @            Suppression d'erreur}\par
+{\f1   =>           Separateur clef/valeur dans un tableau}\par
+{\f1   ->           Acces a un membre d'objet}\par
+{\f1   ::           Operateur de resolution de portee}\par
+{\f1   ...          Operateur de decomposition (splat)}\par
+{\f1   instanceof   Verification de type d'objet}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_03}     {\uldb Suivant >>}{\v IDH_PHP_05}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_05}
+{\footnote $ PHP - STRUCTURES DE CONTROLE}
+{\footnote K PHP structures controle;if;switch;while;for;foreach;break;continue;match}
+\b\fs24 STRUCTURES DE CONTROLE \b0\fs20\par
+\par
+\par
+\b 5.1 Conditions \b0\par
+\par
+{\f1   if / elseif / else :}\par
+\par
+{\f1     if ($a > $b) \{}\par
+{\f1         echo "a est plus grand";}\par
+{\f1     \} elseif ($a == $b) \{}\par
+{\f1         echo "a est egal a b";}\par
+{\f1     \} else \{}\par
+{\f1         echo "b est plus grand";}\par
+{\f1     \}}\par
+\par
+{\f1   switch :}\par
+\par
+{\f1     switch ($couleur) \{}\par
+{\f1         case "rouge":}\par
+{\f1             echo "Rouge";}\par
+{\f1             break;}\par
+{\f1         case "bleu":}\par
+{\f1             echo "Bleu";}\par
+{\f1             break;}\par
+{\f1         default:}\par
+{\f1             echo "Autre";}\par
+{\f1             break;}\par
+{\f1     \}}\par
+\par
+{\f1   match (PHP 8.0) :}\par
+\par
+{\f1     $resultat = match ($code) \{}\par
+{\f1         200     => "OK",}\par
+{\f1         404     => "Non trouve",}\par
+{\f1         500     => "Erreur serveur",}\par
+{\f1         default => "Inconnu",}\par
+{\f1     \};}\par
+\par
+\par
+\b 5.2 Boucles \b0\par
+\par
+{\f1   while :}\par
+\par
+{\f1     while ($i < 10) \{}\par
+{\f1         echo $i;}\par
+{\f1         $i++;}\par
+{\f1     \}}\par
+\par
+{\f1   do...while :}\par
+\par
+{\f1     do \{}\par
+{\f1         echo $i;}\par
+{\f1         $i++;}\par
+{\f1     \} while ($i < 10);}\par
+\par
+{\f1   for :}\par
+\par
+{\f1     for ($i = 0; $i < 10; $i++) \{}\par
+{\f1         echo $i;}\par
+{\f1     \}}\par
+\par
+{\f1   foreach :}\par
+\par
+{\f1     foreach ($tableau as $valeur) \{}\par
+{\f1         echo $valeur;}\par
+{\f1     \}}\par
+\par
+{\f1     foreach ($tableau as $clef => $valeur) \{}\par
+{\f1         echo "$clef : $valeur";}\par
+{\f1     \}}\par
+\par
+\par
+\b 5.3 Controle de boucle \b0\par
+\par
+{\f1     break;           Sortir de la boucle}\par
+{\f1     break N;         Sortir de N niveaux de boucles}\par
+{\f1     continue;        Passer a l'iteration suivante}\par
+{\f1     continue N;      Passer a l'iteration suivante de N niveaux}\par
+\par
+\par
+\b 5.4 Inclusion de fichiers \b0\par
+\par
+{\f1     include "fichier.php";         Inclure (avertissement si absent)}\par
+{\f1     include_once "fichier.php";    Inclure une seule fois}\par
+{\f1     require "fichier.php";         Inclure (erreur fatale si absent)}\par
+{\f1     require_once "fichier.php";    Inclure une seule fois (erreur fatale)}\par
+\par
+\par
+\b 5.5 Syntaxe alternative \b0\par
+\par
+{\f1   PHP supporte une syntaxe alternative pour les structures de}\par
+{\f1   controle, utile dans les gabarits HTML :}\par
+\par
+{\f1     if ($cond):}\par
+{\f1         ...}\par
+{\f1     elseif ($cond2):}\par
+{\f1         ...}\par
+{\f1     else:}\par
+{\f1         ...}\par
+{\f1     endif;}\par
+\par
+{\f1     while ($cond):}\par
+{\f1         ...}\par
+{\f1     endwhile;}\par
+\par
+{\f1     for (...):}\par
+{\f1         ...}\par
+{\f1     endfor;}\par
+\par
+{\f1     foreach ($arr as $v):}\par
+{\f1         ...}\par
+{\f1     endforeach;}\par
+\par
+{\f1     switch ($v):}\par
+{\f1         ...}\par
+{\f1     endswitch;}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_04}     {\uldb Suivant >>}{\v IDH_PHP_06}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_06}
+{\footnote $ PHP - FONCTIONS}
+{\footnote K PHP fonctions;arguments;valeur retour;variadic;type hint;fleche}
+\b\fs24 FONCTIONS \b0\fs20\par
+\par
+\par
+\b 6.1 Declaration de fonction \b0\par
+\par
+{\f1     function nom($param1, $param2) \{}\par
+{\f1         // corps de la fonction}\par
+{\f1         return $resultat;}\par
+{\f1     \}}\par
+\par
+\par
+\b 6.2 Parametres par defaut \b0\par
+\par
+{\f1     function saluer($nom = "monde") \{}\par
+{\f1         echo "Bonjour $nom";}\par
+{\f1     \}}\par
+\par
+\par
+\b 6.3 Declaration de type (type hints) \b0\par
+\par
+{\f1     function additionner(int $a, int $b): int \{}\par
+{\f1         return $a + $b;}\par
+{\f1     \}}\par
+\par
+{\f1   Types acceptes pour les parametres et le retour :}\par
+\par
+{\f1     int, float, string, bool, array, callable, iterable,}\par
+{\f1     object, mixed, void, never, null, false, true,}\par
+{\f1     self, parent, static, NomDeClasse, ?Type (nullable)}\par
+\par
+\par
+\b 6.4 Types d'union et d'intersection (PHP 8.0 / 8.1) \b0\par
+\par
+{\f1     function traiter(int|string $valeur): int|false \{}\par
+{\f1         // ...}\par
+{\f1     \}}\par
+\par
+{\f1     function filtrer(Iterator&Countable $collection): void \{}\par
+{\f1         // ...}\par
+{\f1     \}}\par
+\par
+\par
+\b 6.5 Passage par reference \b0\par
+\par
+{\f1     function doubler(&$valeur) \{}\par
+{\f1         $valeur *= 2;}\par
+{\f1     \}}\par
+\par
+{\f1     $x = 5;}\par
+{\f1     doubler($x);    // $x vaut maintenant 10}\par
+\par
+\par
+\b 6.6 Nombre variable d'arguments \b0\par
+\par
+{\f1     function somme(int ...$nombres): int \{}\par
+{\f1         return array_sum($nombres);}\par
+{\f1     \}}\par
+\par
+{\f1     somme(1, 2, 3);    // 6}\par
+\par
+\par
+\b 6.7 Arguments nommes (PHP 8.0) \b0\par
+\par
+{\f1     function creerUtilisateur(string $nom, int $age, string $ville) \{}\par
+{\f1         // ...}\par
+{\f1     \}}\par
+\par
+{\f1     creerUtilisateur(nom: "Alice", age: 30, ville: "Paris");}\par
+\par
+\par
+\b 6.8 Fonctions anonymes (closures) \b0\par
+\par
+{\f1     $saluer = function($nom) \{}\par
+{\f1         echo "Bonjour $nom";}\par
+{\f1     \};}\par
+\par
+{\f1     $saluer("Alice");}\par
+\par
+{\f1   Capture de variables :}\par
+\par
+{\f1     $message = "Bonjour";}\par
+{\f1     $fn = function($nom) use ($message) \{}\par
+{\f1         echo "$message $nom";}\par
+{\f1     \};}\par
+\par
+\par
+\b 6.9 Fonctions flechees (PHP 7.4) \b0\par
+\par
+{\f1     $double = fn($x) => $x * 2;}\par
+\par
+{\f1   Les fonctions flechees capturent automatiquement les variables}\par
+{\f1   du scope parent par valeur.}\par
+\par
+\par
+\b 6.10 Fonctions de premiere classe (PHP 8.1) \b0\par
+\par
+{\f1     $fn = strlen(...);}\par
+{\f1     echo $fn("test");    // 4}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_05}     {\uldb Suivant >>}{\v IDH_PHP_07}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_07}
+{\footnote $ PHP - CHAINES DE CARACTERES}
+{\footnote K PHP chaines;simple;double;heredoc;nowdoc;concatenation}
+\b\fs24 CHAINES DE CARACTERES \b0\fs20\par
+\par
+\par
+\b 7.1 Types de chaines \b0\par
+\par
+{\f1   Guillemets simples (pas d'interpolation) :}\par
+\par
+{\f1     $s = 'Texte litteral avec \\'apostrophe\\'';}\par
+\par
+{\f1   Guillemets doubles (interpolation de variables) :}\par
+\par
+{\f1     $nom = "PHP";}\par
+{\f1     $s = "Bonjour $nom";}\par
+{\f1     $s = "Version \{$tableau['clef']\}";}\par
+\par
+{\f1   Heredoc (interpolation) :}\par
+\par
+{\f1     $texte = <<<EOT}\par
+{\f1     Texte sur}\par
+{\f1     plusieurs lignes avec $variable}\par
+{\f1     EOT;}\par
+\par
+{\f1   Nowdoc (pas d'interpolation) :}\par
+\par
+{\f1     $texte = <<<'EOT'}\par
+{\f1     Texte litteral sur}\par
+{\f1     plusieurs lignes}\par
+{\f1     EOT;}\par
+\par
+\par
+\b 7.2 Fonctions de chaines principales \b0\par
+\par
+{\f1   Fonction             Description}\par
+{\f1   ---------------      -------------------------------------------}\par
+{\f1   strlen($s)           Longueur de la chaine}\par
+{\f1   strtolower($s)       Convertir en minuscules}\par
+{\f1   strtoupper($s)       Convertir en majuscules}\par
+{\f1   trim($s)             Supprimer les espaces en debut et fin}\par
+{\f1   ltrim($s)            Supprimer les espaces en debut}\par
+{\f1   rtrim($s)            Supprimer les espaces en fin}\par
+{\f1   substr($s, $d, $l)   Extraire une sous-chaine}\par
+{\f1   strpos($s, $c)       Position d'une sous-chaine}\par
+{\f1   str_replace($c,$r,$s) Remplacer dans une chaine}\par
+{\f1   str_contains($s,$c)  Verifier si contient (PHP 8.0)}\par
+{\f1   str_starts_with($s,$p) Verifier le debut (PHP 8.0)}\par
+{\f1   str_ends_with($s,$p)   Verifier la fin (PHP 8.0)}\par
+{\f1   explode($d, $s)      Decouper en tableau}\par
+{\f1   implode($d, $a)      Joindre un tableau en chaine}\par
+{\f1   sprintf($fmt, ...)   Formatage de chaine}\par
+{\f1   number_format($n)    Formatage de nombre}\par
+{\f1   str_repeat($s, $n)   Repeter une chaine}\par
+{\f1   str_pad($s,$l,$c,$t) Completer une chaine}\par
+{\f1   ucfirst($s)          Premiere lettre en majuscule}\par
+{\f1   lcfirst($s)          Premiere lettre en minuscule}\par
+{\f1   ucwords($s)          Premiere lettre de chaque mot en majuscule}\par
+{\f1   nl2br($s)            Convertir les retours a la ligne en <br>}\par
+{\f1   htmlspecialchars($s) Echapper les caracteres HTML}\par
+{\f1   htmlentities($s)     Convertir en entites HTML}\par
+{\f1   strip_tags($s)       Supprimer les balises HTML}\par
+{\f1   md5($s)              Hachage MD5}\par
+{\f1   sha1($s)             Hachage SHA1}\par
+{\f1   base64_encode($s)    Encodage Base64}\par
+{\f1   base64_decode($s)    Decodage Base64}\par
+{\f1   urlencode($s)        Encodage URL}\par
+{\f1   urldecode($s)        Decodage URL}\par
+{\f1   json_encode($v)      Encodage JSON}\par
+{\f1   json_decode($s)      Decodage JSON}\par
+\par
+\par
+\b 7.3 Expressions regulieres (PCRE) \b0\par
+\par
+{\f1     preg_match($motif, $sujet, $resultats)}\par
+{\f1     preg_match_all($motif, $sujet, $resultats)}\par
+{\f1     preg_replace($motif, $remplacement, $sujet)}\par
+{\f1     preg_split($motif, $sujet)}\par
+\par
+{\f1   Exemple :}\par
+\par
+{\f1     if (preg_match('/^[a-z]+$/i', $chaine)) \{}\par
+{\f1         echo "Que des lettres";}\par
+{\f1     \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_06}     {\uldb Suivant >>}{\v IDH_PHP_08}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_08}
+{\footnote $ PHP - TABLEAUX}
+{\footnote K PHP tableaux;indexe;associatif;multidimensionnel;foreach}
+\b\fs24 TABLEAUX \b0\fs20\par
+\par
+\par
+\b 8.1 Creation de tableaux \b0\par
+\par
+{\f1   Tableaux indexes :}\par
+\par
+{\f1     $fruits = ["pomme", "banane", "cerise"];}\par
+{\f1     $fruits = array("pomme", "banane", "cerise");}\par
+\par
+{\f1   Tableaux associatifs :}\par
+\par
+{\f1     $personne = [}\par
+{\f1         "nom"  => "Alice",}\par
+{\f1         "age"  => 30,}\par
+{\f1         "ville" => "Paris"}\par
+{\f1     ];}\par
+\par
+\par
+\b 8.2 Acces aux elements \b0\par
+\par
+{\f1     $fruits[0]             Premier element}\par
+{\f1     $personne["nom"]       Acces par clef}\par
+{\f1     $fruits[] = "orange";  Ajouter un element}\par
+\par
+\par
+\b 8.3 Decomposition de tableaux \b0\par
+\par
+{\f1     [$a, $b, $c] = [1, 2, 3];}\par
+{\f1     ["nom" => $nom, "age" => $age] = $personne;}\par
+{\f1     [, , $troisieme] = $tableau;    // Ignorer des elements}\par
+\par
+\par
+\b 8.4 Operateur de decomposition (spread) \b0\par
+\par
+{\f1     $a = [1, 2, 3];}\par
+{\f1     $b = [0, ...$a, 4];    // [0, 1, 2, 3, 4]}\par
+\par
+\par
+\b 8.5 Fonctions de tableaux principales \b0\par
+\par
+{\f1   Fonction                  Description}\par
+{\f1   ----------------------    -------------------------------------------}\par
+{\f1   count($a)                 Nombre d'elements}\par
+{\f1   sizeof($a)                Alias de count}\par
+{\f1   array_push($a, $v)        Ajouter a la fin}\par
+{\f1   array_pop($a)             Retirer le dernier element}\par
+{\f1   array_shift($a)           Retirer le premier element}\par
+{\f1   array_unshift($a, $v)     Ajouter au debut}\par
+{\f1   array_merge($a, $b)       Fusionner des tableaux}\par
+{\f1   array_slice($a, $d, $l)   Extraire une portion}\par
+{\f1   array_splice($a,$d,$l,$r) Remplacer une portion}\par
+{\f1   array_keys($a)            Obtenir les clefs}\par
+{\f1   array_values($a)          Obtenir les valeurs}\par
+{\f1   array_key_exists($k, $a)  Verifier si une clef existe}\par
+{\f1   in_array($v, $a)          Verifier si une valeur existe}\par
+{\f1   array_search($v, $a)      Chercher une valeur}\par
+{\f1   array_unique($a)          Supprimer les doublons}\par
+{\f1   array_reverse($a)         Inverser l'ordre}\par
+{\f1   array_flip($a)            Echanger clefs et valeurs}\par
+{\f1   array_map($fn, $a)        Appliquer une fonction}\par
+{\f1   array_filter($a, $fn)     Filtrer les elements}\par
+{\f1   array_reduce($a, $fn)     Reduire a une seule valeur}\par
+{\f1   array_walk($a, $fn)       Appliquer une fonction (en place)}\par
+{\f1   array_column($a, $col)    Extraire une colonne}\par
+{\f1   array_combine($k, $v)     Creer depuis clefs et valeurs}\par
+{\f1   sort($a)                  Trier par valeur}\par
+{\f1   rsort($a)                 Trier par valeur (decroissant)}\par
+{\f1   asort($a)                 Trier par valeur (conserver clefs)}\par
+{\f1   arsort($a)                Trier par valeur decroissant (clefs)}\par
+{\f1   ksort($a)                 Trier par clef}\par
+{\f1   krsort($a)                Trier par clef (decroissant)}\par
+{\f1   usort($a, $fn)            Trier avec fonction personnalisee}\par
+{\f1   array_chunk($a, $n)       Decouper en sous-tableaux}\par
+{\f1   array_fill($d, $n, $v)    Remplir un tableau}\par
+{\f1   array_diff($a, $b)        Difference entre tableaux}\par
+{\f1   array_intersect($a, $b)   Intersection de tableaux}\par
+{\f1   compact('var1', 'var2')   Creer un tableau depuis des variables}\par
+{\f1   extract($a)               Creer des variables depuis un tableau}\par
+{\f1   list($a, $b) = $arr       Affecter depuis un tableau}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_07}     {\uldb Suivant >>}{\v IDH_PHP_09}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_09}
+{\footnote $ PHP - CLASSES ET OBJETS}
+{\footnote K PHP classes;objets;heritage;interface;trait;abstract;final;visibilite}
+\b\fs24 CLASSES ET OBJETS \b0\fs20\par
+\par
+\par
+\b 9.1 Declaration de classe \b0\par
+\par
+{\f1     class NomDeClasse \{}\par
+{\f1         // Proprietes}\par
+{\f1         public string $nom;}\par
+{\f1         protected int $age;}\par
+{\f1         private float $solde;}\par
+\par
+{\f1         // Constante de classe}\par
+{\f1         public const VERSION = "1.0";}\par
+\par
+{\f1         // Constructeur}\par
+{\f1         public function __construct(string $nom, int $age) \{}\par
+{\f1             $this->nom = $nom;}\par
+{\f1             $this->age = $age;}\par
+{\f1         \}}\par
+\par
+{\f1         // Methode}\par
+{\f1         public function saluer(): string \{}\par
+{\f1             return "Bonjour, je suis \{$this->nom\}";}\par
+{\f1         \}}\par
+{\f1     \}}\par
+\par
+\par
+\b 9.2 Promotion de proprietes du constructeur (PHP 8.0) \b0\par
+\par
+{\f1     class Utilisateur \{}\par
+{\f1         public function __construct(}\par
+{\f1             public string $nom,}\par
+{\f1             protected int $age,}\par
+{\f1             private string $email = ""}\par
+{\f1         ) \{\}}\par
+{\f1     \}}\par
+\par
+\par
+\b 9.3 Instanciation \b0\par
+\par
+{\f1     $objet = new NomDeClasse("Alice", 30);}\par
+{\f1     echo $objet->nom;}\par
+{\f1     echo $objet->saluer();}\par
+{\f1     echo NomDeClasse::VERSION;}\par
+\par
+\par
+\b 9.4 Heritage \b0\par
+\par
+{\f1     class Animal \{}\par
+{\f1         public function __construct(}\par
+{\f1             protected string $nom}\par
+{\f1         ) \{\}}\par
+\par
+{\f1         public function parler(): string \{}\par
+{\f1             return "...";}\par
+{\f1         \}}\par
+{\f1     \}}\par
+\par
+{\f1     class Chat extends Animal \{}\par
+{\f1         public function parler(): string \{}\par
+{\f1             return "Miaou";}\par
+{\f1         \}}\par
+{\f1     \}}\par
+\par
+{\f1   PHP ne supporte que l'heritage simple (une seule classe parente).}\par
+{\f1   Le mot-clef final empeche l'heritage ou la surcharge :}\par
+\par
+{\f1     final class ClasseFinale \{ \}}\par
+{\f1     class Base \{}\par
+{\f1         final public function methode() \{ \}}\par
+{\f1     \}}\par
+\par
+\par
+\b 9.5 Classes et methodes abstraites \b0\par
+\par
+{\f1     abstract class Forme \{}\par
+{\f1         abstract public function aire(): float;}\par
+\par
+{\f1         public function decrire(): string \{}\par
+{\f1             return "Je suis une forme d'aire " . $this->aire();}\par
+{\f1         \}}\par
+{\f1     \}}\par
+\par
+{\f1     class Cercle extends Forme \{}\par
+{\f1         public function __construct(private float $rayon) \{\}}\par
+\par
+{\f1         public function aire(): float \{}\par
+{\f1             return M_PI * $this->rayon ** 2;}\par
+{\f1         \}}\par
+{\f1     \}}\par
+\par
+\par
+\b 9.6 Interfaces \b0\par
+\par
+{\f1     interface Affichable \{}\par
+{\f1         public function afficher(): string;}\par
+{\f1     \}}\par
+\par
+{\f1     interface Serialisable \{}\par
+{\f1         public function serialiser(): string;}\par
+{\f1     \}}\par
+\par
+{\f1     class Document implements Affichable, Serialisable \{}\par
+{\f1         public function afficher(): string \{ /* ... */ \}}\par
+{\f1         public function serialiser(): string \{ /* ... */ \}}\par
+{\f1     \}}\par
+\par
+{\f1   Une classe peut implementer plusieurs interfaces.}\par
+\par
+\par
+\b 9.7 Traits \b0\par
+\par
+{\f1     trait Horodatable \{}\par
+{\f1         public DateTime $creeA;}\par
+\par
+{\f1         public function initialiserDate(): void \{}\par
+{\f1             $this->creeA = new DateTime();}\par
+{\f1         \}}\par
+{\f1     \}}\par
+\par
+{\f1     trait Journalisable \{}\par
+{\f1         public function journal(string $msg): void \{}\par
+{\f1             echo "[LOG] $msg";}\par
+{\f1         \}}\par
+{\f1     \}}\par
+\par
+{\f1     class Commande \{}\par
+{\f1         use Horodatable, Journalisable;}\par
+{\f1     \}}\par
+\par
+{\f1   Resolution de conflit entre traits :}\par
+\par
+{\f1     class MaClasse \{}\par
+{\f1         use TraitA, TraitB \{}\par
+{\f1             TraitA::methode insteadof TraitB;}\par
+{\f1             TraitB::methode as methodeB;}\par
+{\f1         \}}\par
+{\f1     \}}\par
+\par
+\par
+\b 9.8 Visibilite \b0\par
+\par
+{\f1   Modificateur    Acces}\par
+{\f1   ------------    -------------------------------------------}\par
+{\f1   public          Accessible de partout}\par
+{\f1   protected       Accessible dans la classe et ses enfants}\par
+{\f1   private         Accessible uniquement dans la classe}\par
+{\f1   readonly        Propriete en lecture seule (PHP 8.1)}\par
+\par
+\par
+\b 9.9 Proprietes et methodes statiques \b0\par
+\par
+{\f1     class Compteur \{}\par
+{\f1         private static int $nombre = 0;}\par
+\par
+{\f1         public static function incrementer(): void \{}\par
+{\f1             self::$nombre++;}\par
+{\f1         \}}\par
+\par
+{\f1         public static function obtenir(): int \{}\par
+{\f1             return self::$nombre;}\par
+{\f1         \}}\par
+{\f1     \}}\par
+\par
+{\f1     Compteur::incrementer();}\par
+{\f1     echo Compteur::obtenir();}\par
+\par
+\par
+\b 9.10 Methodes magiques \b0\par
+\par
+{\f1   Methode              Declenchee quand}\par
+{\f1   ----------------     -------------------------------------------}\par
+{\f1   __construct()        L'objet est cree}\par
+{\f1   __destruct()         L'objet est detruit}\par
+{\f1   __get($nom)          Acces a une propriete inaccessible}\par
+{\f1   __set($nom, $val)    Ecriture sur une propriete inaccessible}\par
+{\f1   __isset($nom)        isset() sur une propriete inaccessible}\par
+{\f1   __unset($nom)        unset() sur une propriete inaccessible}\par
+{\f1   __call($nom, $args)  Appel d'une methode inaccessible}\par
+{\f1   __callStatic($n,$a)  Appel statique d'une methode inaccessible}\par
+{\f1   __toString()         Conversion en chaine}\par
+{\f1   __invoke(...)        L'objet est utilise comme fonction}\par
+{\f1   __clone()            L'objet est clone}\par
+{\f1   __debugInfo()        var_dump() est appele sur l'objet}\par
+{\f1   __serialize()        Serialisation de l'objet}\par
+{\f1   __unserialize($d)    Deserialisation de l'objet}\par
+{\f1   __sleep()            Avant serialisation (obsolete)}\par
+{\f1   __wakeup()           Apres deserialisation (obsolete)}\par
+\par
+\par
+\b 9.11 Enumerations (PHP 8.1) \b0\par
+\par
+{\f1   Enumeration simple (sans valeur) :}\par
+\par
+{\f1     enum Couleur \{}\par
+{\f1         case Rouge;}\par
+{\f1         case Vert;}\par
+{\f1         case Bleu;}\par
+{\f1     \}}\par
+\par
+{\f1     $c = Couleur::Rouge;}\par
+\par
+{\f1   Enumeration avec valeur (backed enum) :}\par
+\par
+{\f1     enum Statut: string \{}\par
+{\f1         case Actif = "actif";}\par
+{\f1         case Inactif = "inactif";}\par
+{\f1         case Suspendu = "suspendu";}\par
+{\f1     \}}\par
+\par
+{\f1     $s = Statut::Actif;}\par
+{\f1     echo $s->value;             // "actif"}\par
+{\f1     $s = Statut::from("actif"); // Statut::Actif}\par
+\par
+{\f1   Les enumerations peuvent implementer des interfaces et utiliser}\par
+{\f1   des traits. Elles ne peuvent pas etre instanciees avec new.}\par
+\par
+\par
+\b 9.12 Classes en lecture seule (PHP 8.2) \b0\par
+\par
+{\f1     readonly class Point \{}\par
+{\f1         public function __construct(}\par
+{\f1             public float $x,}\par
+{\f1             public float $y}\par
+{\f1         ) \{\}}\par
+{\f1     \}}\par
+\par
+{\f1   Toutes les proprietes sont automatiquement readonly.}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_08}     {\uldb Suivant >>}{\v IDH_PHP_10}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_10}
+{\footnote $ PHP - ESPACES DE NOMS (NAMESPACES)}
+{\footnote K PHP namespaces;use;as;\\;sous-espace}
+\b\fs24 ESPACES DE NOMS (NAMESPACES) \b0\fs20\par
+\par
+\par
+\b 10.1 Declaration \b0\par
+\par
+{\f1     namespace App\\Models;}\par
+\par
+{\f1     class Utilisateur \{}\par
+{\f1         // ...}\par
+{\f1     \}}\par
+\par
+\par
+\b 10.2 Utilisation \b0\par
+\par
+{\f1     use App\\Models\\Utilisateur;}\par
+{\f1     use App\\Models\\Utilisateur as User;}\par
+{\f1     use App\\Services\\\{ServiceA, ServiceB\};}\par
+\par
+{\f1     use function App\\Helpers\\formater;}\par
+{\f1     use const App\\Config\\VERSION;}\par
+\par
+\par
+\b 10.3 Resolution de noms \b0\par
+\par
+{\f1   Type               Exemple}\par
+{\f1   ------             ----------------------------------}\par
+{\f1   Non qualifie       Classe             (resolution relative)}\par
+{\f1   Qualifie           SousEspace\\Classe  (resolution relative)}\par
+{\f1   Pleinement         \\App\\Models\\Classe (resolution absolue)}\par
+{\f1   qualifie}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_09}     {\uldb Suivant >>}{\v IDH_PHP_11}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_11}
+{\footnote $ PHP - GESTION DES ERREURS ET EXCEPTIONS}
+{\footnote K PHP erreurs;exceptions;try;catch;throw;finally}
+\b\fs24 GESTION DES ERREURS ET EXCEPTIONS \b0\fs20\par
+\par
+\par
+\b 11.1 Exceptions \b0\par
+\par
+{\f1     try \{}\par
+{\f1         if ($diviseur == 0) \{}\par
+{\f1             throw new DivisionByZeroError("Division par zero");}\par
+{\f1         \}}\par
+{\f1         $resultat = $dividende / $diviseur;}\par
+{\f1     \} catch (DivisionByZeroError $e) \{}\par
+{\f1         echo "Erreur : " . $e->getMessage();}\par
+{\f1     \} catch (TypeError | ValueError $e) \{}\par
+{\f1         echo "Erreur de type : " . $e->getMessage();}\par
+{\f1     \} finally \{}\par
+{\f1         echo "Bloc toujours execute";}\par
+{\f1     \}}\par
+\par
+\par
+\b 11.2 Hierarchie des exceptions \b0\par
+\par
+{\f1     Throwable (interface)}\par
+{\f1     +-- Error}\par
+{\f1     |   +-- ArithmeticError}\par
+{\f1     |   |   +-- DivisionByZeroError}\par
+{\f1     |   +-- TypeError}\par
+{\f1     |   +-- ValueError}\par
+{\f1     |   +-- UnhandledMatchError}\par
+{\f1     |   +-- FiberError}\par
+{\f1     +-- Exception}\par
+{\f1         +-- RuntimeException}\par
+{\f1         |   +-- OverflowException}\par
+{\f1         |   +-- UnderflowException}\par
+{\f1         |   +-- OutOfBoundsException}\par
+{\f1         +-- LogicException}\par
+{\f1         |   +-- InvalidArgumentException}\par
+{\f1         |   +-- LengthException}\par
+{\f1         |   +-- OutOfRangeException}\par
+{\f1         |   +-- BadMethodCallException}\par
+{\f1         |   +-- DomainException}\par
+{\f1         +-- BadFunctionCallException}\par
+\par
+\par
+\b 11.3 Exceptions personnalisees \b0\par
+\par
+{\f1     class MonException extends RuntimeException \{}\par
+{\f1         public function __construct(}\par
+{\f1             string $message,}\par
+{\f1             private array $contexte = [],}\par
+{\f1             int $code = 0,}\par
+{\f1             ?\\Throwable $precedente = null}\par
+{\f1         ) \{}\par
+{\f1             parent::__construct($message, $code, $precedente);}\par
+{\f1         \}}\par
+\par
+{\f1         public function getContexte(): array \{}\par
+{\f1             return $this->contexte;}\par
+{\f1         \}}\par
+{\f1     \}}\par
+\par
+\par
+\b 11.4 Gestion des erreurs \b0\par
+\par
+{\f1     error_reporting(E_ALL);}\par
+{\f1     set_error_handler(function($niveau, $message, $fichier, $ligne) \{}\par
+{\f1         throw new ErrorException($message, 0, $niveau, $fichier, $ligne);}\par
+{\f1     \});}\par
+\par
+{\f1     set_exception_handler(function(Throwable $e) \{}\par
+{\f1         echo "Exception non capturee : " . $e->getMessage();}\par
+{\f1     \});}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_10}     {\uldb Suivant >>}{\v IDH_PHP_12}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_12}
+{\footnote $ PHP - FONCTIONS INTEGREES PRINCIPALES}
+{\footnote K PHP fonctions integrees;chaine;tableau;math;date;fichier}
+\b\fs24 FONCTIONS INTEGREES PRINCIPALES \b0\fs20\par
+\par
+\par
+\b 12.1 Fonctions mathematiques \b0\par
+\par
+{\f1   Fonction           Description}\par
+{\f1   ---------------    -------------------------------------------}\par
+{\f1   abs($n)            Valeur absolue}\par
+{\f1   ceil($n)           Arrondi superieur}\par
+{\f1   floor($n)          Arrondi inferieur}\par
+{\f1   round($n, $p)      Arrondi a la precision donnee}\par
+{\f1   max($a, $b)        Maximum}\par
+{\f1   min($a, $b)        Minimum}\par
+{\f1   pow($b, $e)        Puissance}\par
+{\f1   sqrt($n)           Racine carree}\par
+{\f1   log($n)            Logarithme naturel}\par
+{\f1   log10($n)          Logarithme base 10}\par
+{\f1   rand($min, $max)   Nombre aleatoire}\par
+{\f1   mt_rand($min,$max) Nombre aleatoire (Mersenne Twister)}\par
+{\f1   random_int($m,$n)  Nombre aleatoire cryptographique}\par
+{\f1   pi()               Valeur de Pi}\par
+{\f1   fmod($a, $b)       Modulo flottant}\par
+{\f1   intdiv($a, $b)     Division entiere}\par
+{\f1   M_PI               Constante Pi}\par
+{\f1   M_E                Constante e}\par
+\par
+\par
+\b 12.2 Fonctions de date et heure \b0\par
+\par
+{\f1   Fonction                Description}\par
+{\f1   ---------------------   -------------------------------------------}\par
+{\f1   time()                  Timestamp Unix actuel}\par
+{\f1   date($format, $t)       Formater une date}\par
+{\f1   mktime(h,m,s,M,j,A)    Creer un timestamp}\par
+{\f1   strtotime($s)           Convertir une chaine en timestamp}\par
+{\f1   microtime(true)         Temps en microsecondes}\par
+{\f1   checkdate($m, $j, $a)   Verifier une date}\par
+\par
+{\f1   Classe DateTime :}\par
+\par
+{\f1     $dt = new DateTime("2024-01-15");}\par
+{\f1     $dt = new DateTime("now");}\par
+{\f1     echo $dt->format("Y-m-d H:i:s");}\par
+{\f1     $dt->modify("+1 day");}\par
+{\f1     $diff = $dt1->diff($dt2);}\par
+\par
+{\f1   Classe DateTimeImmutable :}\par
+\par
+{\f1     $dt = new DateTimeImmutable("now");}\par
+{\f1     $dt2 = $dt->modify("+1 hour");   // $dt n'est pas modifie}\par
+\par
+\par
+\b 12.3 Fonctions de fichiers \b0\par
+\par
+{\f1   Fonction                    Description}\par
+{\f1   -------------------------   -------------------------------------------}\par
+{\f1   file_get_contents($f)       Lire un fichier entier}\par
+{\f1   file_put_contents($f, $d)   Ecrire dans un fichier}\par
+{\f1   file($f)                    Lire un fichier en tableau de lignes}\par
+{\f1   fopen($f, $mode)            Ouvrir un fichier}\par
+{\f1   fclose($h)                  Fermer un fichier}\par
+{\f1   fread($h, $len)             Lire des octets}\par
+{\f1   fwrite($h, $data)           Ecrire des octets}\par
+{\f1   fgets($h)                   Lire une ligne}\par
+{\f1   feof($h)                    Verifier la fin de fichier}\par
+{\f1   fseek($h, $pos)             Deplacer le curseur}\par
+{\f1   ftell($h)                   Position du curseur}\par
+{\f1   rewind($h)                  Remettre le curseur au debut}\par
+{\f1   file_exists($f)             Verifier si le fichier existe}\par
+{\f1   is_file($f)                 Verifier si c'est un fichier}\par
+{\f1   is_dir($f)                  Verifier si c'est un repertoire}\par
+{\f1   mkdir($dir, $mode)          Creer un repertoire}\par
+{\f1   rmdir($dir)                 Supprimer un repertoire}\par
+{\f1   unlink($f)                  Supprimer un fichier}\par
+{\f1   rename($ancien, $nouveau)   Renommer/deplacer}\par
+{\f1   copy($source, $dest)        Copier un fichier}\par
+{\f1   glob($motif)                Rechercher des fichiers par motif}\par
+{\f1   filesize($f)                Taille du fichier}\par
+{\f1   filetype($f)                Type du fichier}\par
+{\f1   pathinfo($f)                Informations sur le chemin}\par
+{\f1   basename($f)                Nom du fichier}\par
+{\f1   dirname($f)                 Repertoire du fichier}\par
+{\f1   realpath($f)                Chemin absolu resolu}\par
+{\f1   tempnam($dir, $prefix)      Creer un fichier temporaire}\par
+{\f1   scandir($dir)               Lister le contenu d'un repertoire}\par
+\par
+{\f1   Modes d'ouverture :}\par
+\par
+{\f1     "r"    Lecture seule}\par
+{\f1     "w"    Ecriture seule (ecrase)}\par
+{\f1     "a"    Ecriture en ajout}\par
+{\f1     "x"    Creation et ecriture (erreur si existe)}\par
+{\f1     "r+"   Lecture et ecriture}\par
+{\f1     "w+"   Lecture et ecriture (ecrase)}\par
+{\f1     "a+"   Lecture et ecriture en ajout}\par
+{\f1     "b"    Mode binaire (ajoute a un autre mode)}\par
+\par
+\par
+\b 12.4 Fonctions de sortie \b0\par
+\par
+{\f1     echo $expr;              Afficher une ou plusieurs chaines}\par
+{\f1     print $expr;             Afficher une chaine (retourne 1)}\par
+{\f1     var_dump($var);          Afficher type et valeur}\par
+{\f1     print_r($var);           Afficher de maniere lisible}\par
+{\f1     var_export($var, true);  Retourner sous forme de code PHP}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_11}     {\uldb Suivant >>}{\v IDH_PHP_13}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_13}
+{\footnote $ PHP - PROGRAMMATION ORIENTEE WEB}
+{\footnote K PHP web;GET;POST;COOKIE;SESSION;header;form}
+\b\fs24 PROGRAMMATION ORIENTEE WEB \b0\fs20\par
+\par
+\par
+\b 13.1 En-tetes HTTP \b0\par
+\par
+{\f1     header("Content-Type: text/html; charset=UTF-8");}\par
+{\f1     header("Location: /nouvelle-page.php");}\par
+{\f1     header("HTTP/1.1 404 Not Found");}\par
+{\f1     http_response_code(200);}\par
+\par
+\par
+\b 13.2 Sessions \b0\par
+\par
+{\f1     session_start();}\par
+{\f1     $_SESSION["utilisateur"] = "Alice";}\par
+{\f1     echo $_SESSION["utilisateur"];}\par
+{\f1     session_destroy();}\par
+\par
+\par
+\b 13.3 Cookies \b0\par
+\par
+{\f1     setcookie("nom", "valeur", time() + 3600, "/");}\par
+{\f1     echo $_COOKIE["nom"];}\par
+\par
+\par
+\b 13.4 Recuperation de donnees \b0\par
+\par
+{\f1     // Donnees GET (URL : ?nom=Alice&age=30)}\par
+{\f1     $nom = $_GET["nom"];}\par
+\par
+{\f1     // Donnees POST (formulaire)}\par
+{\f1     $nom = $_POST["nom"];}\par
+\par
+{\f1     // Filtrage et validation}\par
+{\f1     $email = filter_input(INPUT_POST, "email", FILTER_VALIDATE_EMAIL);}\par
+{\f1     $age = filter_var($_POST["age"], FILTER_VALIDATE_INT);}\par
+\par
+\par
+\b 13.5 Envoi de fichiers \b0\par
+\par
+{\f1     // Fichier envoye via formulaire (enctype="multipart/form-data")}\par
+{\f1     $fichier = $_FILES["document"];}\par
+{\f1     $fichier["name"]       // Nom original}\par
+{\f1     $fichier["type"]       // Type MIME}\par
+{\f1     $fichier["size"]       // Taille en octets}\par
+{\f1     $fichier["tmp_name"]   // Chemin temporaire}\par
+{\f1     $fichier["error"]      // Code d'erreur}\par
+\par
+{\f1     move_uploaded_file($fichier["tmp_name"], "/chemin/destination");}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_12}     {\uldb Suivant >>}{\v IDH_PHP_14}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_14}
+{\footnote $ PHP - FONCTIONS AVANCEES}
+{\footnote K PHP avancees;closure;generateur;yield;reflection;attribut}
+\b\fs24 FONCTIONS AVANCEES \b0\fs20\par
+\par
+\par
+\b 14.1 Generateurs \b0\par
+\par
+{\f1     function fibonacci(): Generator \{}\par
+{\f1         [$a, $b] = [0, 1];}\par
+{\f1         while (true) \{}\par
+{\f1             yield $a;}\par
+{\f1             [$a, $b] = [$b, $a + $b];}\par
+{\f1         \}}\par
+{\f1     \}}\par
+\par
+{\f1     foreach (fibonacci() as $nombre) \{}\par
+{\f1         if ($nombre > 100) break;}\par
+{\f1         echo $nombre . " ";}\par
+{\f1     \}}\par
+\par
+{\f1     yield $clef => $valeur;    Retourner une paire clef/valeur}\par
+{\f1     yield from $iterable;      Deleguer a un autre generateur}\par
+\par
+\par
+\b 14.2 Fibres (PHP 8.1) \b0\par
+\par
+{\f1     $fibre = new Fiber(function (): void \{}\par
+{\f1         $valeur = Fiber::suspend("suspendu");}\par
+{\f1         echo "Recu : $valeur";}\par
+{\f1     \});}\par
+\par
+{\f1     $resultat = $fibre->start();     // "suspendu"}\par
+{\f1     $fibre->resume("bonjour");       // "Recu : bonjour"}\par
+\par
+\par
+\b 14.3 Attributs (PHP 8.0) \b0\par
+\par
+{\f1     #[Attribute]}\par
+{\f1     class Route \{}\par
+{\f1         public function __construct(}\par
+{\f1             public string $chemin,}\par
+{\f1             public string $methode = "GET"}\par
+{\f1         ) \{\}}\par
+{\f1     \}}\par
+\par
+{\f1     #[Route("/utilisateurs", methode: "POST")]}\par
+{\f1     function creerUtilisateur() \{ /* ... */ \}}\par
+\par
+{\f1     // Lire les attributs par reflexion}\par
+{\f1     $ref = new ReflectionFunction('creerUtilisateur');}\par
+{\f1     $attrs = $ref->getAttributes(Route::class);}\par
+{\f1     $route = $attrs[0]->newInstance();}\par
+\par
+\par
+\b 14.4 Clonage d'objets \b0\par
+\par
+{\f1     $copie = clone $objet;}\par
+\par
+{\f1   La methode magique __clone() est appelee apres le clonage}\par
+{\f1   pour permettre la copie profonde.}\par
+\par
+\par
+\b 14.5 Comparaison d'objets \b0\par
+\par
+{\f1     $a == $b     Meme classe et memes proprietes}\par
+{\f1     $a === $b    Meme instance (meme reference)}\par
+\par
+\par
+\b 14.6 Chargement automatique (Autoloading) \b0\par
+\par
+{\f1     spl_autoload_register(function (string $classe) \{}\par
+{\f1         $fichier = __DIR__ . '/' . str_replace('\\\\', '/', $classe) . '.php';}\par
+{\f1         if (file_exists($fichier)) \{}\par
+{\f1             require $fichier;}\par
+{\f1         \}}\par
+{\f1     \});}\par
+\par
+{\f1   En pratique, le standard PSR-4 et Composer sont utilises :}\par
+\par
+{\f1     // composer.json}\par
+{\f1     \{}\par
+{\f1         "autoload": \{}\par
+{\f1             "psr-4": \{}\par
+{\f1                 "App\\\\": "src/"}\par
+{\f1             \}}\par
+{\f1         \}}\par
+{\f1     \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_13}     {\uldb Suivant >>}{\v IDH_PHP_15}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_15}
+{\footnote $ PHP - BASE DE DONNEES (PDO)}
+{\footnote K PHP PDO;base de donnees;MySQL;PostgreSQL;prepared statement}
+\b\fs24 BASE DE DONNEES (PDO) \b0\fs20\par
+\par
+\par
+\b 15.1 Connexion \b0\par
+\par
+{\f1     $pdo = new PDO(}\par
+{\f1         "mysql:host=localhost;dbname=mabase;charset=utf8mb4",}\par
+{\f1         "utilisateur",}\par
+{\f1         "motdepasse",}\par
+{\f1         [}\par
+{\f1             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,}\par
+{\f1             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,}\par
+{\f1             PDO::ATTR_EMULATE_PREPARES => false,}\par
+{\f1         ]}\par
+{\f1     );}\par
+\par
+\par
+\b 15.2 Requetes preparees \b0\par
+\par
+{\f1     // Parametres nommes}\par
+{\f1     $stmt = $pdo->prepare("SELECT * FROM users WHERE id = :id");}\par
+{\f1     $stmt->execute(["id" => 42]);}\par
+{\f1     $user = $stmt->fetch();}\par
+\par
+{\f1     // Parametres positionnels}\par
+{\f1     $stmt = $pdo->prepare("SELECT * FROM users WHERE age > ?");}\par
+{\f1     $stmt->execute([18]);}\par
+{\f1     $users = $stmt->fetchAll();}\par
+\par
+\par
+\b 15.3 Insertion et modification \b0\par
+\par
+{\f1     $stmt = $pdo->prepare(}\par
+{\f1         "INSERT INTO users (nom, email) VALUES (:nom, :email)"}\par
+{\f1     );}\par
+{\f1     $stmt->execute(["nom" => "Alice", "email" => "alice@exemple.fr"]);}\par
+{\f1     $id = $pdo->lastInsertId();}\par
+\par
+\par
+\b 15.4 Transactions \b0\par
+\par
+{\f1     $pdo->beginTransaction();}\par
+{\f1     try \{}\par
+{\f1         $pdo->exec("UPDATE comptes SET solde = solde - 100 WHERE id = 1");}\par
+{\f1         $pdo->exec("UPDATE comptes SET solde = solde + 100 WHERE id = 2");}\par
+{\f1         $pdo->commit();}\par
+{\f1     \} catch (Exception $e) \{}\par
+{\f1         $pdo->rollBack();}\par
+{\f1         throw $e;}\par
+{\f1     \}}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_14}     {\uldb Suivant >>}{\v IDH_PHP_16}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_16}
+{\footnote $ PHP - MOTS-CLEFS RESERVES}
+{\footnote K PHP mots-clefs reserves;keywords}
+\b\fs24 MOTS-CLEFS RESERVES \b0\fs20\par
+\par
+{\f1   abstract    and          array       as           break}\par
+{\f1   callable    case         catch       class        clone}\par
+{\f1   const       continue     declare     default      do}\par
+{\f1   echo        else         elseif      empty        enddeclare}\par
+{\f1   endfor      endforeach   endif       endswitch    endwhile}\par
+{\f1   enum        eval         exit        extends      false}\par
+{\f1   final       finally      fn          for          foreach}\par
+{\f1   function    global       goto        if           implements}\par
+{\f1   include     include_once instanceof  insteadof    interface}\par
+{\f1   isset       list         match       namespace    new}\par
+{\f1   null        or           print       private      protected}\par
+{\f1   public      readonly     require     require_once return}\par
+{\f1   static      switch       throw       trait        true}\par
+{\f1   try         unset        use         var          while}\par
+{\f1   xor         yield        yield from}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_15}     {\uldb Suivant >>}{\v IDH_PHP_17}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_17}
+{\footnote $ PHP - CONVENTIONS ET STANDARDS}
+{\footnote K PHP conventions;PSR;standards;coding style}
+\b\fs24 CONVENTIONS ET STANDARDS \b0\fs20\par
+\par
+\par
+\b 17.1 Standards PSR (PHP-FIG) \b0\par
+\par
+{\f1   PSR-1    Standard de codage de base}\par
+{\f1   PSR-4    Chargement automatique (Autoloading)}\par
+{\f1   PSR-7    Interfaces de messages HTTP}\par
+{\f1   PSR-11   Interface de conteneur}\par
+{\f1   PSR-12   Guide de style de codage etendu}\par
+{\f1   PSR-15   Gestionnaires de requetes HTTP serveur}\par
+\par
+\par
+\b 17.2 Conventions de nommage \b0\par
+\par
+{\f1   Element              Convention          Exemple}\par
+{\f1   ----------------     ----------------    ----------------}\par
+{\f1   Classes              PascalCase          MaClasse}\par
+{\f1   Methodes/Fonctions   camelCase           maMethode()}\par
+{\f1   Variables            camelCase           $maVariable}\par
+{\f1   Constantes           MAJUSCULES          MA_CONSTANTE}\par
+{\f1   Espaces de noms      PascalCase          App\\Models}\par
+\par
+\par
+\b 17.3 Outils courants \b0\par
+\par
+{\f1   Outil                Description}\par
+{\f1   ----------------     -------------------------------------------}\par
+{\f1   Composer             Gestionnaire de dependances}\par
+{\f1   PHPUnit              Framework de tests unitaires}\par
+{\f1   PHPStan / Psalm      Analyse statique}\par
+{\f1   PHP-CS-Fixer         Correction automatique de style}\par
+{\f1   Xdebug               Debogueur et profileur}\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_PHP_16}     {\uldb Suivant >>}{\v IDH_PHP_18}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_PHP_18}
+{\footnote $ PHP - REFERENCE DES FONCTIONS PHP PAR VERSION}
+{\footnote K PHP reference fonctions;version;historique;PHP 5;PHP 7;PHP 8}
+\b\fs24 REFERENCE DES FONCTIONS PHP PAR VERSION \b0\fs20\par
+\par
+{\f1   Cette section liste les fonctions integrees de PHP classees par la}\par
+{\f1   version dans laquelle elles ont ete introduites. Chaque fonction est}\par
+{\f1   accompagnee d'une breve description.}\par
+\par
+\par
+\b 18.1 Fonctions introduites en PHP 3 \b0\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   abs                               Valeur absolue}\par
+{\f1   acos                              Arc cosinus}\par
+{\f1   addcslashes                       Ajouter des barres obliques inverses C}\par
+{\f1   addslashes                        Ajouter des barres obliques inverses}\par
+{\f1   array                             Creer un tableau}\par
+{\f1   array_count_values                Compter les valeurs d'un tableau}\par
+{\f1   array_flip                        Echanger les clefs et les valeurs}\par
+{\f1   array_keys                        Retourner les clefs d'un tableau}\par
+{\f1   array_merge                       Fusionner des tableaux}\par
+{\f1   array_pad                         Completer un tableau avec une valeur}\par
+{\f1   array_pop                         Retirer le dernier element}\par
+{\f1   array_push                        Ajouter des elements a la fin}\par
+{\f1   array_reverse                     Inverser l'ordre des elements}\par
+{\f1   array_shift                       Retirer le premier element}\par
+{\f1   array_slice                       Extraire une portion}\par
+{\f1   array_splice                      Remplacer une portion}\par
+{\f1   array_unique                      Supprimer les doublons}\par
+{\f1   array_unshift                     Ajouter des elements au debut}\par
+{\f1   array_values                      Retourner les valeurs}\par
+{\f1   array_walk                        Appliquer une fonction a chaque element}\par
+{\f1   arsort                            Trier par valeur decroissante (clefs)}\par
+{\f1   asin                              Arc sinus}\par
+{\f1   asort                             Trier par valeur (conserver les clefs)}\par
+{\f1   atan                              Arc tangente}\par
+{\f1   atan2                             Arc tangente de deux variables}\par
+{\f1   base64_decode                     Decoder en Base64}\par
+{\f1   base64_encode                     Encoder en Base64}\par
+{\f1   base_convert                      Convertir un nombre entre bases}\par
+{\f1   basename                          Nom de base d'un chemin}\par
+{\f1   bin2hex                           Convertir binaire en hexadecimal}\par
+{\f1   bindec                            Convertir binaire en decimal}\par
+{\f1   ceil                              Arrondi superieur}\par
+{\f1   checkdate                         Verifier une date}\par
+{\f1   checkdnsrr                        Verifier un enregistrement DNS}\par
+{\f1   chgrp                             Changer le groupe d'un fichier}\par
+{\f1   chmod                             Changer les permissions}\par
+{\f1   chop                              Alias de rtrim}\par
+{\f1   chown                             Changer le proprietaire}\par
+{\f1   chr                               Retourner un caractere par son code ASCII}\par
+{\f1   chunk_split                       Decouper une chaine en morceaux}\par
+{\f1   clearstatcache                    Vider le cache de stat}\par
+{\f1   closedir                          Fermer un descripteur de repertoire}\par
+{\f1   closelog                          Fermer la connexion au journal systeme}\par
+{\f1   compact                           Creer un tableau depuis des variables}\par
+{\f1   copy                              Copier un fichier}\par
+{\f1   cos                               Cosinus}\par
+{\f1   count                             Compter les elements}\par
+{\f1   crypt                             Hachage de chaine (unidirectionnel)}\par
+{\f1   current                           Element courant d'un tableau}\par
+{\f1   date                              Formater une date/heure locale}\par
+{\f1   dba_close                         Fermer une base de donnees DBA}\par
+{\f1   dba_delete                        Supprimer une entree DBA}\par
+{\f1   dba_exists                        Verifier si une clef existe dans DBA}\par
+{\f1   dba_fetch                         Lire une entree DBA}\par
+{\f1   dba_firstkey                      Premiere clef DBA}\par
+{\f1   dba_insert                        Inserer une entree DBA}\par
+{\f1   dba_nextkey                       Clef suivante DBA}\par
+{\f1   dba_open                          Ouvrir une base DBA}\par
+{\f1   dba_optimize                      Optimiser une base DBA}\par
+{\f1   dba_replace                       Remplacer une entree DBA}\par
+{\f1   dba_sync                          Synchroniser une base DBA}\par
+{\f1   dbmclose                          Fermer une base DBM}\par
+{\f1   dbmdelete                         Supprimer d'une base DBM}\par
+{\f1   dbmexists                         Verifier l'existence dans une base DBM}\par
+{\f1   dbmfetch                          Lire depuis une base DBM}\par
+{\f1   dbmfirstkey                       Premiere clef d'une base DBM}\par
+{\f1   dbminsert                         Inserer dans une base DBM}\par
+{\f1   dbmnextkey                        Clef suivante d'une base DBM}\par
+{\f1   dbmopen                           Ouvrir une base DBM}\par
+{\f1   dbmreplace                        Remplacer dans une base DBM}\par
+{\f1   decbin                            Convertir decimal en binaire}\par
+{\f1   dechex                            Convertir decimal en hexadecimal}\par
+{\f1   decoct                            Convertir decimal en octal}\par
+{\f1   define                            Definir une constante}\par
+{\f1   defined                           Verifier si une constante existe}\par
+{\f1   die                               Afficher un message et terminer}\par
+{\f1   dir                               Classe de repertoire}\par
+{\f1   dirname                           Repertoire parent d'un chemin}\par
+{\f1   dl                                Charger une extension PHP}\par
+{\f1   doubleval                         Alias de floatval}\par
+{\f1   each                              Paire clef/valeur courante (obsolete)}\par
+{\f1   echo                              Afficher une ou plusieurs chaines}\par
+{\f1   empty                             Verifier si une variable est vide}\par
+{\f1   end                               Dernier element d'un tableau}\par
+{\f1   ereg                              Expression reguliere POSIX (obsolete)}\par
+{\f1   ereg_replace                      Remplacement POSIX (obsolete)}\par
+{\f1   eregi                             Expression reguliere POSIX insensible}\par
+{\f1   eregi_replace                     Remplacement POSIX insensible}\par
+{\f1   error_log                         Envoyer un message d'erreur}\par
+{\f1   error_reporting                   Definir le niveau de rapport d'erreurs}\par
+{\f1   escapeshellarg                    Echapper un argument shell}\par
+{\f1   escapeshellcmd                    Echapper une commande shell}\par
+{\f1   eval                              Evaluer une chaine comme code PHP}\par
+{\f1   exec                              Executer une commande externe}\par
+{\f1   exit                              Afficher un message et terminer}\par
+{\f1   exp                               Exponentielle}\par
+{\f1   explode                           Decouper une chaine en tableau}\par
+{\f1   extract                           Importer des variables depuis un tableau}\par
+{\f1   fclose                            Fermer un fichier}\par
+{\f1   feof                              Verifier la fin de fichier}\par
+{\f1   fgetc                             Lire un caractere}\par
+{\f1   fgets                             Lire une ligne}\par
+{\f1   fgetss                            Lire une ligne et supprimer les balises}\par
+{\f1   file                              Lire un fichier en tableau de lignes}\par
+{\f1   file_exists                       Verifier si un fichier existe}\par
+{\f1   fileatime                         Date du dernier acces}\par
+{\f1   filectime                         Date de changement d'inode}\par
+{\f1   filegroup                         Groupe du fichier}\par
+{\f1   fileinode                         Numero d'inode}\par
+{\f1   filemtime                         Date de derniere modification}\par
+{\f1   fileowner                         Proprietaire du fichier}\par
+{\f1   fileperms                         Permissions du fichier}\par
+{\f1   filesize                          Taille du fichier}\par
+{\f1   filetype                          Type du fichier}\par
+{\f1   flock                             Verrou consultatif sur un fichier}\par
+{\f1   floor                             Arrondi inferieur}\par
+{\f1   flush                             Vider le tampon de sortie}\par
+{\f1   fopen                             Ouvrir un fichier ou une URL}\par
+{\f1   fpassthru                         Afficher le reste d'un fichier}\par
+{\f1   fputs                             Alias de fwrite}\par
+{\f1   fread                             Lire des octets depuis un fichier}\par
+{\f1   fseek                             Deplacer le curseur}\par
+{\f1   fsockopen                         Ouvrir une connexion reseau}\par
+{\f1   ftell                             Position du curseur}\par
+{\f1   ftruncate                         Tronquer un fichier}\par
+{\f1   function_exists                   Verifier si une fonction existe}\par
+{\f1   fwrite                            Ecrire dans un fichier}\par
+{\f1   getallheaders                     Obtenir les en-tetes HTTP}\par
+{\f1   getdate                           Obtenir des informations de date}\par
+{\f1   getenv                            Obtenir une variable d'environnement}\par
+{\f1   gethostbyaddr                     Nom d'hote par adresse IP}\par
+{\f1   gethostbyname                     Adresse IP par nom d'hote}\par
+{\f1   gethostbynamel                    Liste d'adresses IP par nom d'hote}\par
+{\f1   getimagesize                      Dimensions d'une image}\par
+{\f1   getlastmod                        Date de derniere modification du script}\par
+{\f1   getmxrr                           Obtenir les enregistrements MX}\par
+{\f1   getmyinode                        Inode du script courant}\par
+{\f1   getmypid                          PID du processus PHP}\par
+{\f1   getmyuid                          UID du proprietaire du script}\par
+{\f1   getprotobyname                    Numero de protocole par nom}\par
+{\f1   getprotobynumber                  Nom de protocole par numero}\par
+{\f1   getrandmax                        Valeur maximale de rand}\par
+{\f1   getrusage                         Utilisation des ressources}\par
+{\f1   getservbyname                     Numero de port par service}\par
+{\f1   getservbyport                     Nom de service par port}\par
+{\f1   gettext                           Traduction d'un message}\par
+{\f1   gettype                           Type d'une variable}\par
+{\f1   gmdate                            Formater une date/heure GMT}\par
+{\f1   gmmktime                          Timestamp UNIX pour une date GMT}\par
+{\f1   gmstrftime                        Formater une date GMT selon la locale}\par
+{\f1   header                            Envoyer un en-tete HTTP}\par
+{\f1   hexdec                            Convertir hexadecimal en decimal}\par
+{\f1   htmlentities                      Convertir en entites HTML}\par
+{\f1   htmlspecialchars                   Echapper les caracteres speciaux HTML}\par
+{\f1   imap_append                       Ajouter un message IMAP}\par
+{\f1   imap_base64                       Decoder en Base64 (IMAP)}\par
+{\f1   imap_body                         Corps d'un message IMAP}\par
+{\f1   imap_check                        Verifier la boite IMAP}\par
+{\f1   imap_close                        Fermer une connexion IMAP}\par
+{\f1   imap_createmailbox                Creer une boite IMAP}\par
+{\f1   imap_delete                       Marquer un message pour suppression}\par
+{\f1   imap_deletemailbox                Supprimer une boite IMAP}\par
+{\f1   imap_expunge                      Purger les messages marques}\par
+{\f1   imap_fetchbody                    Lire une partie d'un message}\par
+{\f1   imap_fetchstructure               Structure d'un message}\par
+{\f1   imap_header                       En-tete d'un message (alias)}\par
+{\f1   imap_headers                      Liste des en-tetes de messages}\par
+{\f1   imap_listmailbox                  Liste des boites aux lettres}\par
+{\f1   imap_mail_copy                    Copier un message}\par
+{\f1   imap_mail_move                    Deplacer un message}\par
+{\f1   imap_num_msg                      Nombre de messages}\par
+{\f1   imap_num_recent                   Nombre de messages recents}\par
+{\f1   imap_open                         Ouvrir une connexion IMAP}\par
+{\f1   imap_ping                         Verifier la connexion IMAP}\par
+{\f1   imap_renamemailbox                Renommer une boite IMAP}\par
+{\f1   imap_reopen                       Rouvrir une connexion IMAP}\par
+{\f1   imap_subscribe                    S'abonner a une boite}\par
+{\f1   imap_undelete                     Annuler la suppression}\par
+{\f1   imap_unsubscribe                  Se desabonner d'une boite}\par
+{\f1   implode                           Joindre des elements en chaine}\par
+{\f1   in_array                          Verifier si une valeur existe}\par
+{\f1   intval                            Convertir en entier}\par
+{\f1   is_array                          Verifier si c'est un tableau}\par
+{\f1   is_bool                           Verifier si c'est un booleen}\par
+{\f1   is_dir                            Verifier si c'est un repertoire}\par
+{\f1   is_double                         Alias de is_float}\par
+{\f1   is_executable                     Verifier si executable}\par
+{\f1   is_file                           Verifier si c'est un fichier}\par
+{\f1   is_float                          Verifier si c'est un flottant}\par
+{\f1   is_int                            Verifier si c'est un entier}\par
+{\f1   is_integer                        Alias de is_int}\par
+{\f1   is_link                           Verifier si c'est un lien symbolique}\par
+{\f1   is_long                           Alias de is_int}\par
+{\f1   is_object                         Verifier si c'est un objet}\par
+{\f1   is_readable                       Verifier si lisible}\par
+{\f1   is_real                           Alias de is_float}\par
+{\f1   is_string                         Verifier si c'est une chaine}\par
+{\f1   is_writeable                      Verifier si accessible en ecriture}\par
+{\f1   isset                             Verifier si defini et non null}\par
+{\f1   join                              Alias de implode}\par
+{\f1   key                               Clef courante d'un tableau}\par
+{\f1   krsort                            Trier par clef decroissante}\par
+{\f1   ksort                             Trier par clef}\par
+{\f1   ldap_add                          Ajouter une entree LDAP}\par
+{\f1   ldap_bind                         Liaison LDAP}\par
+{\f1   ldap_close                        Fermer une connexion LDAP}\par
+{\f1   ldap_connect                      Ouvrir une connexion LDAP}\par
+{\f1   ldap_count_entries                Compter les entrees LDAP}\par
+{\f1   ldap_delete                       Supprimer une entree LDAP}\par
+{\f1   ldap_first_attribute              Premier attribut LDAP}\par
+{\f1   ldap_first_entry                  Premiere entree LDAP}\par
+{\f1   ldap_free_result                  Liberer le resultat LDAP}\par
+{\f1   ldap_get_attributes               Obtenir les attributs LDAP}\par
+{\f1   ldap_get_dn                       Obtenir le DN LDAP}\par
+{\f1   ldap_get_entries                   Obtenir les entrees LDAP}\par
+{\f1   ldap_get_values                   Obtenir les valeurs LDAP}\par
+{\f1   ldap_list                         Recherche a un niveau LDAP}\par
+{\f1   ldap_modify                       Modifier une entree LDAP}\par
+{\f1   ldap_next_attribute               Attribut suivant LDAP}\par
+{\f1   ldap_next_entry                   Entree suivante LDAP}\par
+{\f1   ldap_read                         Lire une entree LDAP}\par
+{\f1   ldap_search                       Recherche dans LDAP}\par
+{\f1   ldap_unbind                       Delier une connexion LDAP}\par
+{\f1   leak                              Fuir de la memoire (debug)}\par
+{\f1   link                              Creer un lien physique}\par
+{\f1   linkinfo                          Informations sur un lien}\par
+{\f1   list                              Assigner des variables depuis un tableau}\par
+{\f1   log                               Logarithme naturel}\par
+{\f1   log10                             Logarithme base 10}\par
+{\f1   lstat                             Statistiques d'un lien symbolique}\par
+{\f1   ltrim                             Supprimer les espaces en debut}\par
+{\f1   mail                              Envoyer un courriel}\par
+{\f1   max                               Valeur maximale}\par
+{\f1   md5                               Hachage MD5}\par
+{\f1   metaphone                         Clef metaphone d'une chaine}\par
+{\f1   microtime                         Temps en microsecondes}\par
+{\f1   min                               Valeur minimale}\par
+{\f1   mkdir                             Creer un repertoire}\par
+{\f1   mktime                            Creer un timestamp UNIX}\par
+{\f1   msql_affected_rows                Lignes affectees mSQL}\par
+{\f1   msql_close                        Fermer une connexion mSQL}\par
+{\f1   msql_connect                      Ouvrir une connexion mSQL}\par
+{\f1   msql_create_db                    Creer une base mSQL}\par
+{\f1   msql_data_seek                    Deplacer le curseur mSQL}\par
+{\f1   msql_dbname                       Nom de la base mSQL}\par
+{\f1   msql_drop_db                      Supprimer une base mSQL}\par
+{\f1   msql_fetch_array                  Lire une ligne mSQL en tableau}\par
+{\f1   msql_fetch_field                  Informations d'un champ mSQL}\par
+{\f1   msql_fetch_object                 Lire une ligne mSQL en objet}\par
+{\f1   msql_fetch_row                    Lire une ligne mSQL}\par
+{\f1   msql_fieldflags                   Drapeaux d'un champ mSQL}\par
+{\f1   msql_fieldlen                     Longueur d'un champ mSQL}\par
+{\f1   msql_fieldname                    Nom d'un champ mSQL}\par
+{\f1   msql_fieldtable                   Table d'un champ mSQL}\par
+{\f1   msql_fieldtype                    Type d'un champ mSQL}\par
+{\f1   msql_free_result                  Liberer le resultat mSQL}\par
+{\f1   msql_list_dbs                     Lister les bases mSQL}\par
+{\f1   msql_list_fields                  Lister les champs mSQL}\par
+{\f1   msql_list_tables                  Lister les tables mSQL}\par
+{\f1   msql_num_fields                   Nombre de champs mSQL}\par
+{\f1   msql_num_rows                     Nombre de lignes mSQL}\par
+{\f1   msql_numfields                    Alias de msql_num_fields}\par
+{\f1   msql_numrows                      Alias de msql_num_rows}\par
+{\f1   msql_pconnect                     Connexion persistante mSQL}\par
+{\f1   msql_query                        Executer une requete mSQL}\par
+{\f1   msql_regcase                      Expression reguliere insensible}\par
+{\f1   msql_result                       Resultat mSQL}\par
+{\f1   msql_select_db                    Selectionner une base mSQL}\par
+{\f1   msql_tablename                    Nom d'une table mSQL}\par
+{\f1   mt_getrandmax                     Valeur maximale Mersenne Twister}\par
+{\f1   mt_rand                           Nombre aleatoire Mersenne Twister}\par
+{\f1   mt_srand                          Initialiser Mersenne Twister}\par
+{\f1   mysql_affected_rows               Lignes affectees MySQL}\par
+{\f1   mysql_close                       Fermer une connexion MySQL}\par
+{\f1   mysql_connect                     Ouvrir une connexion MySQL}\par
+{\f1   mysql_create_db                   Creer une base MySQL}\par
+{\f1   mysql_data_seek                   Deplacer le curseur MySQL}\par
+{\f1   mysql_db_query                    Requete sur une base MySQL}\par
+{\f1   mysql_drop_db                     Supprimer une base MySQL}\par
+{\f1   mysql_errno                       Code d'erreur MySQL}\par
+{\f1   mysql_error                       Message d'erreur MySQL}\par
+{\f1   mysql_fetch_array                 Lire une ligne en tableau MySQL}\par
+{\f1   mysql_fetch_field                 Informations d'un champ MySQL}\par
+{\f1   mysql_fetch_lengths               Longueurs des champs MySQL}\par
+{\f1   mysql_fetch_object                Lire une ligne en objet MySQL}\par
+{\f1   mysql_fetch_row                   Lire une ligne MySQL}\par
+{\f1   mysql_field_flags                 Drapeaux d'un champ MySQL}\par
+{\f1   mysql_field_len                   Longueur d'un champ MySQL}\par
+{\f1   mysql_field_name                  Nom d'un champ MySQL}\par
+{\f1   mysql_field_seek                  Deplacer le curseur de champ MySQL}\par
+{\f1   mysql_field_table                 Table d'un champ MySQL}\par
+{\f1   mysql_field_type                  Type d'un champ MySQL}\par
+{\f1   mysql_free_result                 Liberer le resultat MySQL}\par
+{\f1   mysql_insert_id                   Dernier identifiant insere MySQL}\par
+{\f1   mysql_list_dbs                    Lister les bases MySQL}\par
+{\f1   mysql_list_fields                 Lister les champs MySQL}\par
+{\f1   mysql_list_tables                 Lister les tables MySQL}\par
+{\f1   mysql_num_fields                  Nombre de champs MySQL}\par
+{\f1   mysql_num_rows                    Nombre de lignes MySQL}\par
+{\f1   mysql_pconnect                    Connexion persistante MySQL}\par
+{\f1   mysql_query                       Executer une requete MySQL}\par
+{\f1   mysql_result                      Resultat MySQL}\par
+{\f1   mysql_select_db                   Selectionner une base MySQL}\par
+{\f1   mysql_tablename                   Nom d'une table MySQL}\par
+{\f1   next                              Avancer le pointeur de tableau}\par
+{\f1   nl2br                             Convertir retours a la ligne en <br>}\par
+{\f1   number_format                     Formater un nombre}\par
+{\f1   octdec                            Convertir octal en decimal}\par
+{\f1   opendir                           Ouvrir un repertoire}\par
+{\f1   openlog                           Ouvrir la connexion au journal}\par
+{\f1   ord                               Code ASCII d'un caractere}\par
+{\f1   pack                              Empaqueter des donnees en chaine binaire}\par
+{\f1   parse_str                         Analyser une chaine de requete}\par
+{\f1   parse_url                         Analyser une URL}\par
+{\f1   passthru                          Executer et afficher la sortie brute}\par
+{\f1   pathinfo                          Informations sur un chemin}\par
+{\f1   pclose                            Fermer un processus pipe}\par
+{\f1   phpinfo                           Afficher les informations PHP}\par
+{\f1   phpversion                        Version de PHP}\par
+{\f1   pi                                Valeur de Pi}\par
+{\f1   popen                             Ouvrir un processus pipe}\par
+{\f1   pos                               Alias de current}\par
+{\f1   pow                               Puissance}\par
+{\f1   preg_match                        Expression reguliere PCRE}\par
+{\f1   preg_match_all                    Toutes les correspondances PCRE}\par
+{\f1   preg_replace                      Remplacement par expression reguliere}\par
+{\f1   preg_split                        Decouper par expression reguliere}\par
+{\f1   prev                              Reculer le pointeur de tableau}\par
+{\f1   print                             Afficher une chaine}\par
+{\f1   print_r                           Afficher de maniere lisible}\par
+{\f1   printf                            Afficher une chaine formatee}\par
+{\f1   putenv                            Definir une variable d'environnement}\par
+{\f1   quoted_printable_decode           Decoder quoted-printable}\par
+{\f1   quotemeta                         Echapper les meta-caracteres}\par
+{\f1   rand                              Nombre aleatoire}\par
+{\f1   range                             Creer un tableau d'intervalle}\par
+{\f1   rawurldecode                      Decoder une URL (RFC 3986)}\par
+{\f1   rawurlencode                      Encoder une URL (RFC 3986)}\par
+{\f1   readdir                           Lire une entree de repertoire}\par
+{\f1   readfile                          Lire et afficher un fichier}\par
+{\f1   readlink                          Cible d'un lien symbolique}\par
+{\f1   register_shutdown_function        Enregistrer une fonction d'arret}\par
+{\f1   rename                            Renommer un fichier}\par
+{\f1   reset                             Reinitialiser le pointeur de tableau}\par
+{\f1   rewind                            Remettre le curseur au debut}\par
+{\f1   rewinddir                         Reinitialiser un repertoire}\par
+{\f1   rmdir                             Supprimer un repertoire}\par
+{\f1   round                             Arrondir un nombre}\par
+{\f1   rsort                             Trier par valeur decroissante}\par
+{\f1   rtrim                             Supprimer les espaces en fin}\par
+{\f1   serialize                         Serialiser une valeur}\par
+{\f1   set_error_handler                 Definir un gestionnaire d'erreurs}\par
+{\f1   set_time_limit                    Definir la duree maximale d'execution}\par
+{\f1   setcookie                         Definir un cookie}\par
+{\f1   setlocale                         Definir la locale}\par
+{\f1   settype                           Changer le type d'une variable}\par
+{\f1   sha1                              Hachage SHA-1}\par
+{\f1   shuffle                           Melanger un tableau}\par
+{\f1   similar_text                      Similarite entre deux chaines}\par
+{\f1   sin                               Sinus}\par
+{\f1   sizeof                            Alias de count}\par
+{\f1   sleep                             Mettre en pause (secondes)}\par
+{\f1   snmpget                           Obtenir une valeur SNMP}\par
+{\f1   snmpset                           Definir une valeur SNMP}\par
+{\f1   snmpwalk                          Parcourir l'arbre SNMP}\par
+{\f1   sort                              Trier un tableau par valeur}\par
+{\f1   soundex                           Clef soundex d'une chaine}\par
+{\f1   split                             Decouper par expression reguliere POSIX}\par
+{\f1   sprintf                           Retourner une chaine formatee}\par
+{\f1   sql_regcase                       Expression reguliere insensible (SQL)}\par
+{\f1   sqrt                              Racine carree}\par
+{\f1   srand                             Initialiser le generateur aleatoire}\par
+{\f1   stat                              Statistiques d'un fichier}\par
+{\f1   str_pad                           Completer une chaine}\par
+{\f1   str_repeat                        Repeter une chaine}\par
+{\f1   str_replace                       Remplacer dans une chaine}\par
+{\f1   strcasecmp                        Comparaison insensible a la casse}\par
+{\f1   strchr                            Alias de strstr}\par
+{\f1   strcmp                             Comparaison de chaines}\par
+{\f1   strcspn                           Longueur sans caracteres donnes}\par
+{\f1   strftime                          Formater selon la locale}\par
+{\f1   strip_tags                        Supprimer les balises HTML/PHP}\par
+{\f1   stripcslashes                     Supprimer les barres obliques C}\par
+{\f1   stripslashes                      Supprimer les barres obliques}\par
+{\f1   strlen                            Longueur d'une chaine}\par
+{\f1   strpos                            Position d'une sous-chaine}\par
+{\f1   strrchr                           Derniere occurrence d'un caractere}\par
+{\f1   strrev                            Inverser une chaine}\par
+{\f1   strrpos                           Derniere position d'une sous-chaine}\par
+{\f1   strspn                            Longueur avec caracteres donnes}\par
+{\f1   strstr                            Premiere occurrence d'une sous-chaine}\par
+{\f1   strtok                            Decouper en jetons}\par
+{\f1   strtolower                        Convertir en minuscules}\par
+{\f1   strtoupper                        Convertir en majuscules}\par
+{\f1   strtr                             Traduire des caracteres}\par
+{\f1   strval                            Convertir en chaine}\par
+{\f1   substr                            Extraire une sous-chaine}\par
+{\f1   symlink                           Creer un lien symbolique}\par
+{\f1   syslog                            Ecrire dans le journal systeme}\par
+{\f1   system                            Executer une commande externe}\par
+{\f1   tan                               Tangente}\par
+{\f1   tempnam                           Creer un nom de fichier temporaire}\par
+{\f1   time                              Timestamp UNIX courant}\par
+{\f1   touch                             Modifier la date d'un fichier}\par
+{\f1   trim                              Supprimer les espaces en debut et fin}\par
+{\f1   uasort                            Trier par valeur personnalisee (clefs)}\par
+{\f1   ucfirst                           Premiere lettre en majuscule}\par
+{\f1   ucwords                           Premiere lettre de chaque mot en maj.}\par
+{\f1   uksort                            Trier par clef personnalisee}\par
+{\f1   umask                             Definir le masque de creation}\par
+{\f1   uniqid                            Identifiant unique}\par
+{\f1   unlink                            Supprimer un fichier}\par
+{\f1   unpack                            Depaqueter des donnees binaires}\par
+{\f1   unserialize                       Deserialiser une valeur}\par
+{\f1   unset                             Detruire une variable}\par
+{\f1   urldecode                         Decoder une URL}\par
+{\f1   urlencode                         Encoder une URL}\par
+{\f1   usleep                            Mettre en pause (microsecondes)}\par
+{\f1   usort                             Trier par fonction personnalisee}\par
+{\f1   var_dump                          Afficher type et valeur}\par
+{\f1   virtual                           Sous-requete Apache}\par
+{\f1   wordwrap                          Retour a la ligne automatique}\par
+\par
+\par
+\b 18.2 Fonctions introduites en PHP 4 \b0\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   array_chunk                       Decouper en sous-tableaux}\par
+{\f1   array_combine                     Creer depuis clefs et valeurs}\par
+{\f1   array_diff                        Difference entre tableaux}\par
+{\f1   array_diff_assoc                  Difference avec comparaison de clefs}\par
+{\f1   array_fill                        Remplir un tableau}\par
+{\f1   array_filter                      Filtrer les elements}\par
+{\f1   array_intersect                   Intersection de tableaux}\par
+{\f1   array_intersect_assoc             Intersection avec comparaison de clefs}\par
+{\f1   array_key_exists                  Verifier si une clef existe}\par
+{\f1   array_map                         Appliquer une fonction}\par
+{\f1   array_multisort                   Trier plusieurs tableaux}\par
+{\f1   array_reduce                      Reduire a une seule valeur}\par
+{\f1   array_search                      Chercher une valeur}\par
+{\f1   array_sum                         Somme des valeurs}\par
+{\f1   array_walk_recursive              Appliquer recursivement une fonction}\par
+{\f1   assert                            Verifier une assertion}\par
+{\f1   assert_options                    Options d'assertion}\par
+{\f1   call_user_func                    Appeler une fonction utilisateur}\par
+{\f1   call_user_func_array              Appeler avec un tableau d'arguments}\par
+{\f1   class_exists                      Verifier si une classe existe}\par
+{\f1   constant                          Retourner la valeur d'une constante}\par
+{\f1   count_chars                       Compter les caracteres}\par
+{\f1   crc32                             Somme de controle CRC32}\par
+{\f1   create_function                   Creer une fonction anonyme (obsolete)}\par
+{\f1   ctype_alnum                       Verifier alphanumerique}\par
+{\f1   ctype_alpha                       Verifier alphabetique}\par
+{\f1   ctype_cntrl                       Verifier caractere de controle}\par
+{\f1   ctype_digit                       Verifier chiffre}\par
+{\f1   ctype_graph                       Verifier caractere imprimable (sauf espace)}\par
+{\f1   ctype_lower                       Verifier minuscule}\par
+{\f1   ctype_print                       Verifier caractere imprimable}\par
+{\f1   ctype_punct                       Verifier ponctuation}\par
+{\f1   ctype_space                       Verifier espace}\par
+{\f1   ctype_upper                       Verifier majuscule}\par
+{\f1   ctype_xdigit                      Verifier chiffre hexadecimal}\par
+{\f1   debug_backtrace                   Obtenir la pile d'appels}\par
+{\f1   debug_zval_refcount               Compter les references d'une variable}\par
+{\f1   error_get_last                    Derniere erreur survenue}\par
+{\f1   floatval                          Convertir en flottant}\par
+{\f1   foreach                           Structure de boucle (mot-clef)}\par
+{\f1   get_browser                       Obtenir les capacites du navigateur}\par
+{\f1   get_class                         Nom de la classe d'un objet}\par
+{\f1   get_class_methods                 Methodes d'une classe}\par
+{\f1   get_class_vars                    Proprietes d'une classe}\par
+{\f1   get_current_user                  Proprietaire du script courant}\par
+{\f1   get_defined_constants             Constantes definies}\par
+{\f1   get_defined_functions             Fonctions definies}\par
+{\f1   get_defined_vars                  Variables definies}\par
+{\f1   get_extension_funcs               Fonctions d'une extension}\par
+{\f1   get_html_translation_table        Table de traduction HTML}\par
+{\f1   get_include_path                  Chemin d'inclusion}\par
+{\f1   get_loaded_extensions             Extensions chargees}\par
+{\f1   get_magic_quotes_gpc              Etat des guillemets magiques (obsolete)}\par
+{\f1   get_meta_tags                     Meta-balises d'un fichier HTML}\par
+{\f1   get_object_vars                   Proprietes d'un objet}\par
+{\f1   get_parent_class                  Classe parente}\par
+{\f1   get_resource_type                 Type d'une ressource}\par
+{\f1   getallheaders                     En-tetes de la requete HTTP}\par
+{\f1   getcwd                            Repertoire courant}\par
+{\f1   glob                              Rechercher des fichiers par motif}\par
+{\f1   headers_list                      Liste des en-tetes envoyes}\par
+{\f1   headers_sent                      Verifier si les en-tetes sont envoyes}\par
+{\f1   highlight_file                    Coloration syntaxique d'un fichier}\par
+{\f1   highlight_string                  Coloration syntaxique d'une chaine}\par
+{\f1   html_entity_decode                Decoder les entites HTML}\par
+{\f1   http_build_query                  Construire une chaine de requete}\par
+{\f1   ignore_user_abort                 Ignorer la deconnexion du client}\par
+{\f1   image_type_to_mime_type           Type MIME d'un type d'image}\par
+{\f1   import_request_variables          Importer les variables de requete}\par
+{\f1   ini_get                           Obtenir une directive de configuration}\par
+{\f1   ini_get_all                       Obtenir toutes les directives}\par
+{\f1   ini_restore                       Restaurer une directive}\par
+{\f1   ini_set                           Definir une directive}\par
+{\f1   ip2long                           Convertir une adresse IP en entier}\par
+{\f1   is_a                              Verifier si un objet est d'une classe}\par
+{\f1   is_callable                       Verifier si c'est appelable}\par
+{\f1   is_finite                         Verifier si fini}\par
+{\f1   is_infinite                       Verifier si infini}\par
+{\f1   is_nan                            Verifier si NaN}\par
+{\f1   is_null                           Verifier si null}\par
+{\f1   is_numeric                        Verifier si numerique}\par
+{\f1   is_resource                       Verifier si c'est une ressource}\par
+{\f1   is_subclass_of                    Verifier si c'est une sous-classe}\par
+{\f1   is_uploaded_file                  Verifier si c'est un fichier envoye}\par
+{\f1   is_writable                       Verifier si accessible en ecriture}\par
+{\f1   key_exists                        Alias de array_key_exists}\par
+{\f1   localeconv                        Informations de locale numerique}\par
+{\f1   long2ip                           Convertir un entier en adresse IP}\par
+{\f1   method_exists                     Verifier si une methode existe}\par
+{\f1   money_format                      Formater un montant monetaire}\par
+{\f1   move_uploaded_file                Deplacer un fichier envoye}\par
+{\f1   natcasesort                       Tri naturel insensible a la casse}\par
+{\f1   natsort                           Tri naturel}\par
+{\f1   nl_langinfo                       Informations de locale}\par
+{\f1   number_format                     Formater un nombre}\par
+{\f1   ob_clean                          Vider le tampon de sortie}\par
+{\f1   ob_end_clean                      Terminer et vider le tampon}\par
+{\f1   ob_end_flush                      Terminer et envoyer le tampon}\par
+{\f1   ob_flush                          Envoyer le contenu du tampon}\par
+{\f1   ob_get_contents                   Contenu du tampon de sortie}\par
+{\f1   ob_get_length                     Longueur du tampon de sortie}\par
+{\f1   ob_get_level                      Niveau d'imbrication des tampons}\par
+{\f1   ob_implicit_flush                 Vidage implicite du tampon}\par
+{\f1   ob_start                          Demarrer le tampon de sortie}\par
+{\f1   output_add_rewrite_var            Ajouter une variable de reecriture}\par
+{\f1   output_reset_rewrite_vars         Reinitialiser les variables de reecriture}\par
+{\f1   parse_ini_file                    Analyser un fichier INI}\par
+{\f1   pathinfo                          Informations sur un chemin}\par
+{\f1   php_sapi_name                     Nom de l'interface SAPI}\par
+{\f1   php_uname                         Informations sur le systeme}\par
+{\f1   preg_grep                         Filtrer un tableau par motif PCRE}\par
+{\f1   preg_quote                        Echapper les caracteres PCRE}\par
+{\f1   preg_replace_callback             Remplacement PCRE avec fonction}\par
+{\f1   property_exists                   Verifier si une propriete existe}\par
+{\f1   quoted_printable_encode           Encoder en quoted-printable}\par
+{\f1   rawurldecode                      Decoder une URL brute}\par
+{\f1   rawurlencode                      Encoder une URL brute}\par
+{\f1   restore_error_handler             Restaurer le gestionnaire d'erreurs}\par
+{\f1   restore_include_path              Restaurer le chemin d'inclusion}\par
+{\f1   scandir                           Lister le contenu d'un repertoire}\par
+{\f1   session_cache_expire              Delai d'expiration du cache de session}\par
+{\f1   session_cache_limiter             Limiteur de cache de session}\par
+{\f1   session_decode                    Decoder les donnees de session}\par
+{\f1   session_destroy                   Detruire une session}\par
+{\f1   session_encode                    Encoder les donnees de session}\par
+{\f1   session_get_cookie_params         Parametres du cookie de session}\par
+{\f1   session_id                        Identifiant de session}\par
+{\f1   session_is_registered             Session enregistree (obsolete)}\par
+{\f1   session_module_name               Module de gestion de session}\par
+{\f1   session_name                      Nom de la session}\par
+{\f1   session_regenerate_id             Regenerer l'identifiant de session}\par
+{\f1   session_register                  Enregistrer une variable de session}\par
+{\f1   session_save_path                 Chemin de sauvegarde des sessions}\par
+{\f1   session_set_cookie_params         Definir les parametres du cookie}\par
+{\f1   session_set_save_handler          Definir le gestionnaire de sauvegarde}\par
+{\f1   session_start                     Demarrer une session}\par
+{\f1   session_unregister                Desenregistrer une variable de session}\par
+{\f1   session_unset                     Supprimer les variables de session}\par
+{\f1   session_write_close               Ecrire et fermer la session}\par
+{\f1   set_exception_handler             Definir le gestionnaire d'exceptions}\par
+{\f1   set_include_path                  Definir le chemin d'inclusion}\par
+{\f1   setrawcookie                      Definir un cookie brut}\par
+{\f1   sha1_file                         Hachage SHA-1 d'un fichier}\par
+{\f1   show_source                       Alias de highlight_file}\par
+{\f1   sizeof                            Alias de count}\par
+{\f1   socket_get_status                 Etat d'une connexion socket}\par
+{\f1   socket_set_blocking               Definir le mode blocage}\par
+{\f1   socket_set_timeout                Definir le delai d'attente}\par
+{\f1   sprintf                           Retourner une chaine formatee}\par
+{\f1   sscanf                            Analyser une chaine formatee}\par
+{\f1   str_ireplace                      Remplacement insensible a la casse}\par
+{\f1   str_rot13                         Appliquer ROT13}\par
+{\f1   str_shuffle                       Melanger les caracteres}\par
+{\f1   str_split                         Decouper en tableau de caracteres}\par
+{\f1   str_word_count                    Compter les mots}\par
+{\f1   strcoll                           Comparaison basee sur la locale}\par
+{\f1   stream_context_create             Creer un contexte de flux}\par
+{\f1   stream_context_get_options        Options d'un contexte de flux}\par
+{\f1   stream_context_set_option         Definir une option de contexte}\par
+{\f1   stream_context_set_params         Definir les parametres de contexte}\par
+{\f1   stream_filter_append              Ajouter un filtre de flux}\par
+{\f1   stream_filter_prepend             Inserer un filtre de flux}\par
+{\f1   stream_get_meta_data              Meta-donnees d'un flux}\par
+{\f1   stream_register_wrapper           Enregistrer un wrapper de flux}\par
+{\f1   stream_set_blocking               Definir le mode blocage d'un flux}\par
+{\f1   stream_set_timeout                Definir le delai d'un flux}\par
+{\f1   stream_set_write_buffer           Definir le tampon d'ecriture}\par
+{\f1   stripos                           Position insensible a la casse}\par
+{\f1   stristr                           Sous-chaine insensible a la casse}\par
+{\f1   strncasecmp                       Comparaison insensible (N caracteres)}\par
+{\f1   strncmp                           Comparaison (N caracteres)}\par
+{\f1   strpbrk                           Premiere occurrence d'un jeu}\par
+{\f1   strripos                          Derniere position insensible}\par
+{\f1   strtolower                        Convertir en minuscules}\par
+{\f1   strtoupper                        Convertir en majuscules}\par
+{\f1   substr_compare                    Comparer des sous-chaines}\par
+{\f1   substr_count                      Compter les occurrences}\par
+{\f1   substr_replace                    Remplacer une sous-chaine}\par
+{\f1   token_get_all                     Analyse lexicale d'un code PHP}\par
+{\f1   token_name                        Nom d'un jeton PHP}\par
+{\f1   trigger_error                     Declencher une erreur utilisateur}\par
+{\f1   trim                              Supprimer les espaces en debut et fin}\par
+{\f1   uasort                            Trier par valeur personnalisee (clefs)}\par
+{\f1   uksort                            Trier par clef personnalisee}\par
+{\f1   user_error                        Alias de trigger_error}\par
+{\f1   usort                             Trier par fonction personnalisee}\par
+{\f1   var_export                        Exporter une variable en code PHP}\par
+{\f1   version_compare                   Comparer deux versions PHP}\par
+{\f1   vprintf                           Afficher une chaine formatee (tableau)}\par
+{\f1   vsprintf                          Retourner une chaine formatee (tableau)}\par
+\par
+\par
+\b 18.3 Fonctions introduites en PHP 5 \b0\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   __autoload                        Chargement automatique de classes (obsolete)}\par
+{\f1   array_column                      Extraire une colonne d'un tableau}\par
+{\f1   array_diff_key                    Difference par clefs}\par
+{\f1   array_diff_uassoc                 Difference avec fonction de comparaison}\par
+{\f1   array_diff_ukey                   Difference de clefs avec fonction}\par
+{\f1   array_fill_keys                   Remplir un tableau avec des clefs}\par
+{\f1   array_intersect_key               Intersection par clefs}\par
+{\f1   array_intersect_uassoc            Intersection avec fonction}\par
+{\f1   array_intersect_ukey              Intersection de clefs avec fonction}\par
+{\f1   array_product                     Produit des valeurs}\par
+{\f1   array_replace                     Remplacer les elements}\par
+{\f1   array_replace_recursive           Remplacer recursivement}\par
+{\f1   array_walk_recursive              Appliquer recursivement une fonction}\par
+{\f1   class_alias                       Creer un alias de classe}\par
+{\f1   class_implements                  Interfaces implementees}\par
+{\f1   class_parents                     Classes parentes}\par
+{\f1   clone                             Cloner un objet (mot-clef)}\par
+{\f1   count_chars                       Compter les caracteres}\par
+{\f1   curl_close                        Fermer une session cURL}\par
+{\f1   curl_copy_handle                  Copier un gestionnaire cURL}\par
+{\f1   curl_errno                        Code d'erreur cURL}\par
+{\f1   curl_error                        Message d'erreur cURL}\par
+{\f1   curl_exec                         Executer une session cURL}\par
+{\f1   curl_getinfo                      Informations sur le transfert cURL}\par
+{\f1   curl_init                         Initialiser cURL}\par
+{\f1   curl_multi_add_handle             Ajouter un gestionnaire multi-cURL}\par
+{\f1   curl_multi_close                  Fermer un gestionnaire multi-cURL}\par
+{\f1   curl_multi_exec                   Executer les transferts multi-cURL}\par
+{\f1   curl_multi_getcontent             Contenu multi-cURL}\par
+{\f1   curl_multi_info_read              Informations multi-cURL}\par
+{\f1   curl_multi_init                   Initialiser multi-cURL}\par
+{\f1   curl_multi_remove_handle          Retirer un gestionnaire multi-cURL}\par
+{\f1   curl_multi_select                 Attendre une activite multi-cURL}\par
+{\f1   curl_setopt                       Definir une option cURL}\par
+{\f1   curl_setopt_array                 Definir des options cURL}\par
+{\f1   curl_version                      Version de cURL}\par
+{\f1   date_create                       Creer un objet DateTime}\par
+{\f1   date_date_set                     Definir la date}\par
+{\f1   date_default_timezone_get         Fuseau horaire par defaut}\par
+{\f1   date_default_timezone_set         Definir le fuseau horaire par defaut}\par
+{\f1   date_diff                         Difference entre deux dates}\par
+{\f1   date_format                       Formater une date}\par
+{\f1   date_isodate_set                  Definir la date ISO}\par
+{\f1   date_modify                       Modifier une date}\par
+{\f1   date_offset_get                   Decalage du fuseau horaire}\par
+{\f1   date_parse                        Analyser une chaine de date}\par
+{\f1   date_sun_info                     Informations sur le lever/coucher}\par
+{\f1   date_sunrise                      Heure du lever du soleil}\par
+{\f1   date_sunset                       Heure du coucher du soleil}\par
+{\f1   date_time_set                     Definir l'heure}\par
+{\f1   date_timestamp_get                Obtenir le timestamp}\par
+{\f1   date_timestamp_set                Definir le timestamp}\par
+{\f1   date_timezone_get                 Obtenir le fuseau horaire}\par
+{\f1   date_timezone_set                 Definir le fuseau horaire}\par
+{\f1   debug_print_backtrace             Afficher la pile d'appels}\par
+{\f1   dns_check_record                  Verifier un enregistrement DNS}\par
+{\f1   dns_get_mx                        Obtenir les enregistrements MX}\par
+{\f1   dns_get_record                    Obtenir les enregistrements DNS}\par
+{\f1   dom_import_simplexml              Importer un noeud SimpleXML dans DOM}\par
+{\f1   file_get_contents                 Lire un fichier entier en chaine}\par
+{\f1   file_put_contents                 Ecrire dans un fichier}\par
+{\f1   filter_has_var                    Verifier si une variable existe}\par
+{\f1   filter_id                         Identifiant d'un filtre}\par
+{\f1   filter_input                      Filtrer une variable externe}\par
+{\f1   filter_input_array                Filtrer des variables externes}\par
+{\f1   filter_list                       Liste des filtres disponibles}\par
+{\f1   filter_var                        Filtrer une variable}\par
+{\f1   filter_var_array                  Filtrer des variables}\par
+{\f1   ftp_alloc                         Allouer de l'espace FTP}\par
+{\f1   ftp_cdup                          Remonter d'un repertoire FTP}\par
+{\f1   ftp_chdir                         Changer de repertoire FTP}\par
+{\f1   ftp_chmod                         Changer les permissions FTP}\par
+{\f1   ftp_close                         Fermer une connexion FTP}\par
+{\f1   ftp_connect                       Ouvrir une connexion FTP}\par
+{\f1   ftp_delete                        Supprimer un fichier FTP}\par
+{\f1   ftp_fget                          Telecharger dans un fichier FTP}\par
+{\f1   ftp_fput                          Envoyer depuis un fichier FTP}\par
+{\f1   ftp_get                           Telecharger un fichier FTP}\par
+{\f1   ftp_login                         Se connecter au serveur FTP}\par
+{\f1   ftp_mdtm                          Date de modification FTP}\par
+{\f1   ftp_mkdir                         Creer un repertoire FTP}\par
+{\f1   ftp_nb_continue                   Continuer un transfert non-bloquant}\par
+{\f1   ftp_nb_fget                       Telecharger non-bloquant dans fichier}\par
+{\f1   ftp_nb_fput                       Envoyer non-bloquant depuis fichier}\par
+{\f1   ftp_nb_get                        Telecharger non-bloquant FTP}\par
+{\f1   ftp_nb_put                        Envoyer non-bloquant FTP}\par
+{\f1   ftp_nlist                         Lister un repertoire FTP}\par
+{\f1   ftp_pasv                          Mode passif FTP}\par
+{\f1   ftp_put                           Envoyer un fichier FTP}\par
+{\f1   ftp_pwd                           Repertoire courant FTP}\par
+{\f1   ftp_quit                          Alias de ftp_close}\par
+{\f1   ftp_raw                           Commande brute FTP}\par
+{\f1   ftp_rawlist                       Liste detaillee FTP}\par
+{\f1   ftp_rename                        Renommer un fichier FTP}\par
+{\f1   ftp_rmdir                         Supprimer un repertoire FTP}\par
+{\f1   ftp_set_option                    Definir une option FTP}\par
+{\f1   ftp_site                          Commande SITE FTP}\par
+{\f1   ftp_size                          Taille d'un fichier FTP}\par
+{\f1   ftp_ssl_connect                   Connexion FTP securisee}\par
+{\f1   ftp_systype                       Type de systeme FTP}\par
+{\f1   func_get_arg                      Obtenir un argument de fonction}\par
+{\f1   func_get_args                     Obtenir tous les arguments}\par
+{\f1   func_num_args                     Nombre d'arguments}\par
+{\f1   gc_collect_cycles                 Forcer la collecte des cycles}\par
+{\f1   gc_disable                        Desactiver le ramasse-miettes}\par
+{\f1   gc_enable                         Activer le ramasse-miettes}\par
+{\f1   gc_enabled                        Verifier si le ramasse-miettes est actif}\par
+{\f1   hash                              Calculer un condensat}\par
+{\f1   hash_algos                        Algorithmes de hachage disponibles}\par
+{\f1   hash_file                         Condensat d'un fichier}\par
+{\f1   hash_final                        Finaliser un contexte de hachage}\par
+{\f1   hash_hmac                         HMAC d'une chaine}\par
+{\f1   hash_hmac_file                    HMAC d'un fichier}\par
+{\f1   hash_init                         Initialiser un contexte de hachage}\par
+{\f1   hash_update                       Mettre a jour un contexte de hachage}\par
+{\f1   hash_update_file                  MAJ d'un contexte depuis un fichier}\par
+{\f1   hash_update_stream                MAJ d'un contexte depuis un flux}\par
+{\f1   iconv                             Convertir l'encodage d'une chaine}\par
+{\f1   iconv_get_encoding                Obtenir l'encodage iconv}\par
+{\f1   iconv_mime_decode                 Decoder un en-tete MIME}\par
+{\f1   iconv_mime_decode_headers         Decoder des en-tetes MIME}\par
+{\f1   iconv_mime_encode                 Encoder un en-tete MIME}\par
+{\f1   iconv_set_encoding                Definir l'encodage iconv}\par
+{\f1   iconv_strlen                      Longueur d'une chaine (iconv)}\par
+{\f1   iconv_strpos                      Position dans une chaine (iconv)}\par
+{\f1   iconv_strrpos                     Derniere position (iconv)}\par
+{\f1   iconv_substr                      Sous-chaine (iconv)}\par
+{\f1   idate                             Formater une date en entier}\par
+{\f1   interface_exists                   Verifier si une interface existe}\par
+{\f1   is_a                              Verifier le type d'un objet}\par
+{\f1   json_decode                       Decoder une chaine JSON}\par
+{\f1   json_encode                       Encoder en JSON}\par
+{\f1   json_last_error                   Derniere erreur JSON}\par
+{\f1   json_last_error_msg               Message de la derniere erreur JSON}\par
+{\f1   lcfirst                           Premiere lettre en minuscule}\par
+{\f1   mb_check_encoding                 Verifier un encodage}\par
+{\f1   mb_convert_case                   Convertir la casse (multi-octets)}\par
+{\f1   mb_convert_encoding               Convertir l'encodage}\par
+{\f1   mb_detect_encoding                Detecter l'encodage}\par
+{\f1   mb_detect_order                   Ordre de detection d'encodage}\par
+{\f1   mb_encode_mimeheader              Encoder un en-tete MIME}\par
+{\f1   mb_internal_encoding              Encodage interne}\par
+{\f1   mb_language                       Langue pour les courriels}\par
+{\f1   mb_output_handler                 Gestionnaire de sortie multi-octets}\par
+{\f1   mb_parse_str                      Analyser une chaine (multi-octets)}\par
+{\f1   mb_preferred_mime_name            Nom MIME prefere d'un encodage}\par
+{\f1   mb_regex_encoding                 Encodage des expressions regulieres}\par
+{\f1   mb_send_mail                      Envoyer un courriel encode}\par
+{\f1   mb_strlen                         Longueur (multi-octets)}\par
+{\f1   mb_strpos                         Position (multi-octets)}\par
+{\f1   mb_strrpos                        Derniere position (multi-octets)}\par
+{\f1   mb_strtolower                     Minuscules (multi-octets)}\par
+{\f1   mb_strtoupper                     Majuscules (multi-octets)}\par
+{\f1   mb_strwidth                       Largeur d'une chaine}\par
+{\f1   mb_substitute_character            Caractere de substitution}\par
+{\f1   mb_substr                         Sous-chaine (multi-octets)}\par
+{\f1   mb_substr_count                   Compter les occurrences (multi-octets)}\par
+{\f1   mysqli_affected_rows              Lignes affectees MySQLi}\par
+{\f1   mysqli_close                      Fermer une connexion MySQLi}\par
+{\f1   mysqli_connect                    Ouvrir une connexion MySQLi}\par
+{\f1   mysqli_connect_errno              Code d'erreur de connexion MySQLi}\par
+{\f1   mysqli_connect_error              Message d'erreur de connexion MySQLi}\par
+{\f1   mysqli_errno                      Code d'erreur MySQLi}\par
+{\f1   mysqli_error                      Message d'erreur MySQLi}\par
+{\f1   mysqli_fetch_all                  Toutes les lignes MySQLi}\par
+{\f1   mysqli_fetch_array                Lire une ligne en tableau MySQLi}\par
+{\f1   mysqli_fetch_assoc                Lire une ligne associative MySQLi}\par
+{\f1   mysqli_fetch_field                Informations d'un champ MySQLi}\par
+{\f1   mysqli_fetch_object               Lire une ligne en objet MySQLi}\par
+{\f1   mysqli_fetch_row                  Lire une ligne MySQLi}\par
+{\f1   mysqli_free_result                Liberer le resultat MySQLi}\par
+{\f1   mysqli_insert_id                  Dernier identifiant MySQLi}\par
+{\f1   mysqli_num_fields                 Nombre de champs MySQLi}\par
+{\f1   mysqli_num_rows                   Nombre de lignes MySQLi}\par
+{\f1   mysqli_prepare                    Preparer une requete MySQLi}\par
+{\f1   mysqli_query                      Executer une requete MySQLi}\par
+{\f1   mysqli_real_escape_string         Echapper une chaine MySQLi}\par
+{\f1   mysqli_real_connect               Connexion MySQLi avancee}\par
+{\f1   mysqli_select_db                  Selectionner une base MySQLi}\par
+{\f1   mysqli_set_charset                Definir le jeu de caracteres MySQLi}\par
+{\f1   mysqli_stmt_bind_param            Lier des parametres MySQLi}\par
+{\f1   mysqli_stmt_bind_result           Lier les resultats MySQLi}\par
+{\f1   mysqli_stmt_close                 Fermer une requete preparee MySQLi}\par
+{\f1   mysqli_stmt_execute               Executer une requete preparee MySQLi}\par
+{\f1   mysqli_stmt_fetch                 Lire le resultat prepare MySQLi}\par
+{\f1   number_format                     Formater un nombre}\par
+{\f1   password_hash                     Hacher un mot de passe (5.5)}\par
+{\f1   password_needs_rehash             Verifier si rehachage necessaire (5.5)}\par
+{\f1   password_verify                   Verifier un mot de passe (5.5)}\par
+{\f1   pdo_drivers                       Pilotes PDO disponibles}\par
+{\f1   php_strip_whitespace              Supprimer les commentaires et espaces}\par
+{\f1   preg_last_error                   Derniere erreur PCRE}\par
+{\f1   property_exists                   Verifier si une propriete existe}\par
+{\f1   realpath                          Chemin absolu resolu}\par
+{\f1   register_tick_function            Enregistrer une fonction tick}\par
+{\f1   restore_exception_handler         Restaurer le gestionnaire d'exceptions}\par
+{\f1   set_exception_handler             Definir le gestionnaire d'exceptions}\par
+{\f1   simplexml_import_dom              Importer un noeud DOM dans SimpleXML}\par
+{\f1   simplexml_load_file               Charger un fichier XML}\par
+{\f1   simplexml_load_string             Charger une chaine XML}\par
+{\f1   spl_autoload                      Chargement automatique par defaut}\par
+{\f1   spl_autoload_call                 Appeler les fonctions d'autoload}\par
+{\f1   spl_autoload_extensions           Extensions d'autoload}\par
+{\f1   spl_autoload_functions            Fonctions d'autoload enregistrees}\par
+{\f1   spl_autoload_register             Enregistrer une fonction d'autoload}\par
+{\f1   spl_autoload_unregister           Desenregistrer une fonction d'autoload}\par
+{\f1   spl_classes                       Classes SPL disponibles}\par
+{\f1   spl_object_hash                   Identifiant unique d'un objet}\par
+{\f1   str_getcsv                        Analyser une chaine CSV}\par
+{\f1   stream_copy_to_stream             Copier un flux vers un autre}\par
+{\f1   stream_get_contents               Lire le reste d'un flux}\par
+{\f1   stream_get_line                   Lire une ligne d'un flux}\par
+{\f1   stream_get_transports             Transports de flux disponibles}\par
+{\f1   stream_get_wrappers               Wrappers de flux disponibles}\par
+{\f1   stream_is_local                   Verifier si un flux est local}\par
+{\f1   stream_resolve_include_path       Resoudre un chemin d'inclusion}\par
+{\f1   stream_select                     Attendre une activite sur des flux}\par
+{\f1   stream_set_chunk_size             Definir la taille des morceaux}\par
+{\f1   stream_socket_accept              Accepter une connexion socket}\par
+{\f1   stream_socket_client              Ouvrir un socket client}\par
+{\f1   stream_socket_enable_crypto       Activer le chiffrement}\par
+{\f1   stream_socket_get_name            Nom d'un socket}\par
+{\f1   stream_socket_pair                Creer une paire de sockets}\par
+{\f1   stream_socket_recvfrom            Recevoir depuis un socket}\par
+{\f1   stream_socket_sendto              Envoyer vers un socket}\par
+{\f1   stream_socket_server              Ouvrir un socket serveur}\par
+{\f1   stream_socket_shutdown            Fermer un socket}\par
+{\f1   stream_wrapper_register           Enregistrer un wrapper de flux}\par
+{\f1   stream_wrapper_restore            Restaurer un wrapper de flux}\par
+{\f1   stream_wrapper_unregister         Desenregistrer un wrapper de flux}\par
+{\f1   sys_get_temp_dir                  Repertoire temporaire du systeme}\par
+{\f1   time_nanosleep                    Pause en nanosecondes}\par
+{\f1   time_sleep_until                  Pause jusqu'a un moment}\par
+{\f1   timezone_abbreviations_list       Abreviations de fuseaux horaires}\par
+{\f1   timezone_identifiers_list         Identifiants de fuseaux horaires}\par
+{\f1   timezone_name_from_abbr           Nom de fuseau depuis abreviation}\par
+{\f1   timezone_name_get                 Nom du fuseau horaire}\par
+{\f1   timezone_offset_get               Decalage du fuseau horaire}\par
+{\f1   timezone_open                     Ouvrir un fuseau horaire}\par
+{\f1   timezone_transitions_get          Transitions d'un fuseau horaire}\par
+{\f1   trait_exists                      Verifier si un trait existe (5.4)}\par
+{\f1   unregister_tick_function          Desenregistrer une fonction tick}\par
+\par
+\par
+\b 18.4 Fonctions introduites en PHP 7 \b0\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   array_column                      Extraire une colonne (ameliore en 7.0)}\par
+{\f1   dirname                           Niveaux de profondeur (ameliore en 7.0)}\par
+{\f1   error_clear_last                  Effacer la derniere erreur (7.0)}\par
+{\f1   get_defined_functions             Exclure les fonctions internes (7.0)}\par
+{\f1   getenv                            Sans argument (7.1)}\par
+{\f1   hrtime                            Temps haute resolution (7.3)}\par
+{\f1   intdiv                            Division entiere (7.0)}\par
+{\f1   is_countable                      Verifier si denombrable (7.3)}\par
+{\f1   is_iterable                       Verifier si iterable (7.1)}\par
+{\f1   openssl_cipher_iv_length          Longueur de l'IV (ameliore en 7.1)}\par
+{\f1   openssl_decrypt                   Dechiffrer des donnees OpenSSL}\par
+{\f1   openssl_encrypt                   Chiffrer des donnees OpenSSL}\par
+{\f1   openssl_get_cipher_methods        Methodes de chiffrement disponibles}\par
+{\f1   openssl_get_md_methods            Methodes de condensat disponibles}\par
+{\f1   password_algos                    Algorithmes de hachage disponibles (7.4)}\par
+{\f1   preg_last_error_msg               Message de la derniere erreur PCRE (7.0)}\par
+{\f1   random_bytes                      Octets aleatoires cryptographiques (7.0)}\par
+{\f1   random_int                        Entier aleatoire cryptographique (7.0)}\par
+{\f1   session_create_id                 Creer un identifiant de session (7.1)}\par
+{\f1   session_gc                        Ramasse-miettes de sessions (7.1)}\par
+{\f1   spl_object_id                     Identifiant entier d'un objet (7.2)}\par
+{\f1   array_key_first                   Premiere clef d'un tableau (7.3)}\par
+{\f1   array_key_last                    Derniere clef d'un tableau (7.3)}\par
+{\f1   gc_mem_caches                     Liberer la memoire du cache (7.0)}\par
+{\f1   gc_status                         Statut du ramasse-miettes (7.3)}\par
+{\f1   pcntl_async_signals               Gestion asynchrone des signaux (7.1)}\par
+{\f1   pcntl_signal_get_handler          Obtenir le gestionnaire de signal (7.1)}\par
+{\f1   socket_addrinfo_bind              Lier une adresse (7.2)}\par
+{\f1   socket_addrinfo_connect           Connecter une adresse (7.2)}\par
+{\f1   socket_addrinfo_explain           Expliquer une adresse (7.2)}\par
+{\f1   socket_addrinfo_lookup            Chercher une adresse (7.2)}\par
+{\f1   socket_export_stream              Exporter un socket en flux (7.0)}\par
+\par
+{\f1   Fonctions liees aux types (PHP 7.0+) :}\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   intdiv                            Division entiere}\par
+{\f1   preg_replace_callback_array       Remplacements PCRE multiples (7.0)}\par
+{\f1   random_bytes                      Octets pseudo-aleatoires securises}\par
+{\f1   random_int                        Entier pseudo-aleatoire securise}\par
+\par
+{\f1   Fonctions liees a la cryptographie (PHP 7.2+) :}\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   sodium_bin2base64                 Encoder en Base64 (Sodium)}\par
+{\f1   sodium_bin2hex                    Encoder en hexadecimal (Sodium)}\par
+{\f1   sodium_compare                    Comparaison constante}\par
+{\f1   sodium_crypto_aead_chacha20poly1305_decrypt   Dechiffrer ChaCha20-Poly1305}\par
+{\f1   sodium_crypto_aead_chacha20poly1305_encrypt   Chiffrer ChaCha20-Poly1305}\par
+{\f1   sodium_crypto_auth                Authentifier un message}\par
+{\f1   sodium_crypto_auth_verify         Verifier l'authentification}\par
+{\f1   sodium_crypto_box                 Chiffrer a clef publique}\par
+{\f1   sodium_crypto_box_keypair         Generer une paire de clefs}\par
+{\f1   sodium_crypto_box_open            Dechiffrer a clef publique}\par
+{\f1   sodium_crypto_box_publickey       Extraire la clef publique}\par
+{\f1   sodium_crypto_box_seal            Chiffrer anonymement}\par
+{\f1   sodium_crypto_box_seal_open       Dechiffrer anonymement}\par
+{\f1   sodium_crypto_box_secretkey       Extraire la clef secrete}\par
+{\f1   sodium_crypto_box_seed_keypair    Paire de clefs depuis graine}\par
+{\f1   sodium_crypto_generichash         Condensat generique (BLAKE2b)}\par
+{\f1   sodium_crypto_generichash_final   Finaliser un condensat generique}\par
+{\f1   sodium_crypto_generichash_init    Initialiser un condensat generique}\par
+{\f1   sodium_crypto_generichash_update  Mettre a jour un condensat}\par
+{\f1   sodium_crypto_kdf_derive_from_key Deriver une clef}\par
+{\f1   sodium_crypto_kdf_keygen          Generer une clef de derivation}\par
+{\f1   sodium_crypto_pwhash              Hacher un mot de passe (Argon2)}\par
+{\f1   sodium_crypto_pwhash_str          Chaine de hachage de mot de passe}\par
+{\f1   sodium_crypto_pwhash_str_verify   Verifier un mot de passe hache}\par
+{\f1   sodium_crypto_scalarmult          Multiplication scalaire}\par
+{\f1   sodium_crypto_secretbox           Chiffrer a clef secrete}\par
+{\f1   sodium_crypto_secretbox_keygen    Generer une clef secrete}\par
+{\f1   sodium_crypto_secretbox_open      Dechiffrer a clef secrete}\par
+{\f1   sodium_crypto_shorthash           Condensat court (SipHash-2-4)}\par
+{\f1   sodium_crypto_shorthash_keygen    Generer une clef SipHash}\par
+{\f1   sodium_crypto_sign                Signer un message}\par
+{\f1   sodium_crypto_sign_detached       Signature detachee}\par
+{\f1   sodium_crypto_sign_ed25519_pk_to_curve25519   Convertir clef Ed25519}\par
+{\f1   sodium_crypto_sign_ed25519_sk_to_curve25519   Convertir clef Ed25519}\par
+{\f1   sodium_crypto_sign_keypair        Generer une paire de clefs de signature}\par
+{\f1   sodium_crypto_sign_open           Ouvrir un message signe}\par
+{\f1   sodium_crypto_sign_publickey      Extraire la clef publique de signature}\par
+{\f1   sodium_crypto_sign_secretkey      Extraire la clef secrete de signature}\par
+{\f1   sodium_crypto_sign_seed_keypair   Paire de clefs depuis graine}\par
+{\f1   sodium_crypto_sign_verify_detached Verifier une signature detachee}\par
+{\f1   sodium_crypto_stream              Flux de clef}\par
+{\f1   sodium_crypto_stream_keygen       Generer une clef de flux}\par
+{\f1   sodium_crypto_stream_xor          Chiffrement par flux}\par
+{\f1   sodium_hex2bin                    Decoder depuis hexadecimal}\par
+{\f1   sodium_increment                  Incrementer un nombre}\par
+{\f1   sodium_memcmp                     Comparaison en temps constant}\par
+{\f1   sodium_memzero                    Effacer la memoire}\par
+{\f1   sodium_pad                        Remplir un tampon}\par
+{\f1   sodium_unpad                      Supprimer le remplissage}\par
+\par
+{\f1   Fonctions liees aux tableaux (PHP 7.3+) :}\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   array_key_first                   Premiere clef d'un tableau}\par
+{\f1   array_key_last                    Derniere clef d'un tableau}\par
+\par
+{\f1   Fonctions liees aux references faibles (PHP 7.4) :}\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   WeakReference::create             Creer une reference faible}\par
+\par
+\par
+\b 18.5 Fonctions introduites en PHP 8 \b0\par
+\par
+{\f1   PHP 8.0 :}\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   fdiv                              Division flottante securisee}\par
+{\f1   get_debug_type                    Type de debogage d'une variable}\par
+{\f1   get_resource_id                   Identifiant d'une ressource}\par
+{\f1   array_is_list                     Verifier si c'est une liste (8.1)}\par
+{\f1   preg_last_error_msg               Message d'erreur PCRE}\par
+{\f1   str_contains                      Verifier si une chaine contient}\par
+{\f1   str_starts_with                   Verifier si commence par}\par
+{\f1   str_ends_with                     Verifier si termine par}\par
+{\f1   match                             Expression match (mot-clef)}\par
+{\f1   nullsafe                          Operateur ?-> (mot-clef)}\par
+{\f1   PhpToken::tokenize                Analyse lexicale objet}\par
+\par
+{\f1   PHP 8.1 :}\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   array_is_list                     Verifier si un tableau est une liste}\par
+{\f1   enum_exists                       Verifier si une enumeration existe}\par
+{\f1   fiber_get_status                  Obtenir le statut d'une fibre}\par
+{\f1   Fiber::start                      Demarrer une fibre}\par
+{\f1   Fiber::resume                     Reprendre une fibre}\par
+{\f1   Fiber::suspend                    Suspendre une fibre}\par
+{\f1   Fiber::getReturn                  Retour d'une fibre}\par
+{\f1   Fiber::isStarted                  Fibre demarree}\par
+{\f1   Fiber::isRunning                  Fibre en cours}\par
+{\f1   Fiber::isSuspended                Fibre suspendue}\par
+{\f1   Fiber::isTerminated               Fibre terminee}\par
+{\f1   fsync                             Synchroniser un fichier sur disque}\par
+{\f1   fdatasync                         Synchroniser les donnees sur disque}\par
+{\f1   sodium_crypto_stream_xchacha20    Flux XChaCha20}\par
+{\f1   sodium_crypto_stream_xchacha20_keygen  Generer clef XChaCha20}\par
+{\f1   sodium_crypto_stream_xchacha20_xor     Chiffrement XChaCha20}\par
+\par
+{\f1   PHP 8.2 :}\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   curl_upkeep                       Maintenance de la connexion cURL}\par
+{\f1   ini_parse_quantity                Analyser une quantite INI}\par
+{\f1   memory_reset_peak_usage           Reinitialiser le pic memoire}\par
+{\f1   mysqli_execute_query              Executer une requete preparee MySQLi}\par
+{\f1   openssl_cipher_key_length         Longueur de clef de chiffrement}\par
+{\f1   sodium_crypto_stream_xchacha20_xor_ic  Chiffrement XChaCha20 avec compteur}\par
+\par
+{\f1   PHP 8.3 :}\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   json_validate                     Valider une chaine JSON}\par
+{\f1   mb_str_pad                        Completer une chaine (multi-octets)}\par
+{\f1   override                          Attribut #[\\Override] (mot-clef)}\par
+{\f1   str_increment                     Incrementer une chaine alphanumerique}\par
+{\f1   str_decrement                     Decrementer une chaine alphanumerique}\par
+{\f1   DatePeriod::createFromISO8601String Creer depuis une chaine ISO 8601}\par
+{\f1   DOMDocument::createEmpty          Creer un document DOM vide (8.4)}\par
+{\f1   DOMDocument::createFromFile       Creer depuis un fichier (8.4)}\par
+{\f1   DOMDocument::createFromString     Creer depuis une chaine (8.4)}\par
+{\f1   ldap_connect_wallet               Connexion LDAP avec portefeuille}\par
+{\f1   ldap_exop_sync                    Operation etendue LDAP synchrone}\par
+{\f1   Randomizer::getBytesFromString    Octets depuis une chaine (Random)}\par
+{\f1   Randomizer::getFloat              Flottant aleatoire (Random)}\par
+{\f1   Randomizer::nextFloat             Prochain flottant (Random)}\par
+{\f1   stream_context_set_options        Definir les options de contexte}\par
+\par
+{\f1   PHP 8.4 :}\par
+\par
+{\f1   Fonction                          Description}\par
+{\f1   --------------------------------  -------------------------------------------}\par
+{\f1   array_all                         Verifier si tous satisfont}\par
+{\f1   array_any                         Verifier si au moins un satisfait}\par
+{\f1   array_find                        Trouver le premier element}\par
+{\f1   array_find_key                    Trouver la premiere clef}\par
+{\f1   bcfloor                           Arrondi inferieur (BC Math)}\par
+{\f1   bcceil                            Arrondi superieur (BC Math)}\par
+{\f1   bcround                           Arrondir (BC Math)}\par
+{\f1   bcdivmod                          Division et modulo (BC Math)}\par
+{\f1   grapheme_str_split                Decouper en graphemes}\par
+{\f1   http_get_last_response_headers    Derniers en-tetes de reponse HTTP}\par
+{\f1   http_clear_last_response_headers  Effacer les en-tetes de reponse}\par
+{\f1   intl_get_error_code               Code d'erreur ICU}\par
+{\f1   intl_get_error_message            Message d'erreur ICU}\par
+{\f1   mb_ltrim                          Supprimer en debut (multi-octets)}\par
+{\f1   mb_rtrim                          Supprimer en fin (multi-octets)}\par
+{\f1   mb_trim                           Supprimer debut et fin (multi-octets)}\par
+{\f1   mb_ucfirst                        Premiere lettre en majuscule (mb)}\par
+{\f1   mb_lcfirst                        Premiere lettre en minuscule (mb)}\par
+{\f1   Randomizer::pickArrayKeys         Clefs aleatoires d'un tableau}\par
+{\f1   request_parse_body                Analyser le corps de la requete}\par
+{\f1   round                             Nouveaux modes d'arrondi}\par
+{\f1   ReflectionConstant::__construct   Reflexion sur les constantes}\par
+{\f1   ReflectionConstant::getName       Nom d'une constante}\par
+{\f1   ReflectionConstant::getNamespaceName  Espace de noms d'une constante}\par
+{\f1   ReflectionConstant::getShortName  Nom court d'une constante}\par
+{\f1   ReflectionConstant::getValue      Valeur d'une constante}\par
+{\f1   ReflectionConstant::isDeprecated  Constante obsolete}\par
+{\f1   XMLReader::fromStream             Lire depuis un flux XML}\par
+{\f1   XMLReader::fromString             Lire depuis une chaine XML}\par
+{\f1   XMLReader::fromUri                Lire depuis une URI XML}\par
+\par
+{\f1   FIN DU DOCUMENT}\par
+
+\par
+{\uldb << Precedent}{\v IDH_PHP_17}     {\uldb Table des matieres}{\v IDH_PHP_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

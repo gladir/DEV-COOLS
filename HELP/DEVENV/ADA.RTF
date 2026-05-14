@@ -1,0 +1,1763 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_ADA_01}
+{\footnote $ Ada - INTRODUCTION}
+{\footnote K Ada introduction;histoire;ISO 8652}
+\b\fs24 INTRODUCTION \b0\fs20\par
+\par
+{\f1   Ada est un langage de programmation imperatif, fortement}\par
+{\f1   type, modulaire et concurrent, concu a l'origine pour les}\par
+{\f1   systemes embarques et temps reel. Il doit son nom a Ada}\par
+{\f1   Lovelace, consideree comme la premiere programmeuse.}\par
+\par
+{\f1   Le langage a ete commande par le Departement de la Defense}\par
+{\f1   des Etats-Unis (DoD) dans les annees 1970 pour unifier}\par
+{\f1   les langages utilises dans les systemes embarques militaires.}\par
+{\f1   L'equipe dirigee par Jean Ichbiah chez CII-Honeywell Bull}\par
+{\f1   a remporte le concours de conception en 1979.}\par
+\par
+{\f1   Ada a connu plusieurs revisions majeures :}\par
+\par
+{\f1     - Ada 83 (ISO 8652:1987) : Version initiale. Langage}\par
+{\f1       imperatif, fortement type, avec paquetages, generiques,}\par
+{\f1       taches (concurrence), gestion des exceptions.}\par
+\par
+{\f1     - Ada 95 (ISO 8652:1995) : Ajout de la programmation}\par
+{\f1       orientee objet (types etiquetes, heritage, polymorphisme,}\par
+{\f1       interfaces), types proteges, annexes specialisees}\par
+{\f1       (temps reel, systemes distribues, systemes d'information).}\par
+\par
+{\f1     - Ada 2005 (ISO 8652:2005) : Interfaces multiples, type}\par
+{\f1       d'acces anonyme ameliore, notation prefixee pour les}\par
+{\f1       appels, conteneurs standards (Ada.Containers),}\par
+{\f1       iterateurs.}\par
+\par
+{\f1     - Ada 2012 (ISO 8652:2012) : Programmation par contrat}\par
+{\f1       (Pre, Post, Type_Invariant), expressions conditionnelles}\par
+{\f1       et quantifiees, iterateurs generalises, sous-programmes}\par
+{\f1       d'expression.}\par
+\par
+{\f1     - Ada 2022 (ISO 8652:2023) : Gestion legere des}\par
+{\f1       parallelismes, types a image personnalisee, operateur}\par
+{\f1       delta pour aggregats, clauses de reduction, filtres}\par
+{\f1       d'iterateurs, declaration d'objets etendus.}\par
+\par
+{\f1   Ada est reconnu pour sa fiabilite, sa lisibilite et sa}\par
+{\f1   capacite a detecter les erreurs des la compilation. Il est}\par
+{\f1   utilise dans l'avionique, le spatial, le ferroviaire, la}\par
+{\f1   defense et les systemes critiques.}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. STRUCTURE LEXICALE}     {\uldb [Aller]}{\v IDH_ADA_02}\par
+{\f1  3. TYPES DE DONNEES}     {\uldb [Aller]}{\v IDH_ADA_03}\par
+{\f1  4. DECLARATIONS}     {\uldb [Aller]}{\v IDH_ADA_04}\par
+{\f1  5. EXPRESSIONS}     {\uldb [Aller]}{\v IDH_ADA_05}\par
+{\f1  6. INSTRUCTIONS}     {\uldb [Aller]}{\v IDH_ADA_06}\par
+{\f1  7. SOUS-PROGRAMMES (PROCEDURES ET FONCTIONS)}     {\uldb [Aller]}{\v IDH_ADA_07}\par
+{\f1  8. PAQUETAGES (PACKAGES)}     {\uldb [Aller]}{\v IDH_ADA_08}\par
+{\f1  9. GENERIQUES (GENERICS)}     {\uldb [Aller]}{\v IDH_ADA_09}\par
+{\f1 10. GESTION DES EXCEPTIONS}     {\uldb [Aller]}{\v IDH_ADA_10}\par
+{\f1 11. TACHES ET CONCURRENCE (TASKING)}     {\uldb [Aller]}{\v IDH_ADA_11}\par
+{\f1 12. PROGRAMMATION ORIENTEE OBJET (ADA 95+)}     {\uldb [Aller]}{\v IDH_ADA_12}\par
+{\f1 13. BIBLIOTHEQUE STANDARD ET CONTENEURS (ADA 2005+)}     {\uldb [Aller]}{\v IDH_ADA_13}\par
+{\f1 14. CONTRATS ET ASPECTS (ADA 2012+)}     {\uldb [Aller]}{\v IDH_ADA_14}\par
+{\f1 15. NOUVEAUTES ADA 2022}     {\uldb [Aller]}{\v IDH_ADA_15}\par
+{\f1 16. DIFFERENCES ENTRE LES VERSIONS}     {\uldb [Aller]}{\v IDH_ADA_16}\par
+{\f1 17. REFERENCES}     {\uldb [Aller]}{\v IDH_ADA_17}\par
+\par
+{\uldb Suivant >>}{\v IDH_ADA_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_02}
+{\footnote $ Ada - STRUCTURE LEXICALE}
+{\footnote K Ada lexical;identificateurs;litteraux}
+\b\fs24 STRUCTURE LEXICALE \b0\fs20\par
+\par
+2.1 Jeu de caracteres\par
+\par
+{\f1   Ada utilise le jeu de caracteres Latin-1 (ISO 8859-1).}\par
+{\f1   A partir d'Ada 2005, le jeu Unicode est supporte pour}\par
+{\f1   les identificateurs et les chaines de caracteres.}\par
+\par
+{\f1   Le langage n'est PAS sensible a la casse :}\par
+{\f1     Variable, VARIABLE et variable sont identiques.}\par
+\par
+2.2 Identificateurs\par
+\par
+{\f1   Un identificateur commence par une lettre et peut contenir}\par
+{\f1   des lettres, des chiffres et le caractere souligne (_).}\par
+{\f1   Le souligne ne peut pas apparaitre en debut, en fin ou}\par
+{\f1   en double consecutif.}\par
+\par
+{\f1   Exemples : Compteur, Ma_Variable, X1, Taux_De_Change}\par
+\par
+2.3 Mots-cles reserves (Ada 83)\par
+\par
+{\f1   Les mots-cles suivants sont reserves dans Ada 83 :}\par
+\par
+{\f1     ABORT       ABS         ACCEPT      ACCESS}\par
+{\f1     ALL         AND         ARRAY       AT}\par
+{\f1     BEGIN       BODY        CASE        CONSTANT}\par
+{\f1     DECLARE     DELAY       DELTA       DIGITS}\par
+{\f1     DO          ELSE        ELSIF       END}\par
+{\f1     ENTRY       EXCEPTION   EXIT        FOR}\par
+{\f1     FUNCTION    GENERIC     GOTO        IF}\par
+{\f1     IN          IS          LIMITED     LOOP}\par
+{\f1     MOD         NEW         NOT         NULL}\par
+{\f1     OF          OR          OTHERS      OUT}\par
+{\f1     PACKAGE     PRAGMA      PRIVATE     PROCEDURE}\par
+{\f1     RAISE       RANGE       RECORD      REM}\par
+{\f1     RENAMES     RETURN      REVERSE     SELECT}\par
+{\f1     SEPARATE    SUBTYPE     TASK        TERMINATE}\par
+{\f1     THEN        TYPE        USE         WHEN}\par
+{\f1     WHILE       WITH        XOR}\par
+\par
+{\f1   Mots-cles ajoutes par Ada 95 :}\par
+{\f1     ABSTRACT    ALIASED     PROTECTED   REQUEUE}\par
+{\f1     TAGGED      UNTIL}\par
+\par
+{\f1   Mots-cles ajoutes par Ada 2005 :}\par
+{\f1     INTERFACE   OVERRIDING  SYNCHRONIZED}\par
+\par
+{\f1   Mots-cles ajoutes par Ada 2012 :}\par
+{\f1     SOME}\par
+\par
+{\f1   Mots-cles ajoutes par Ada 2022 :}\par
+{\f1     PARALLEL    REDUCE}\par
+\par
+2.4 Commentaires\par
+\par
+{\f1   Les commentaires commencent par deux tirets (--) et}\par
+{\f1   s'etendent jusqu'a la fin de la ligne :}\par
+\par
+{\f1     -- Ceci est un commentaire}\par
+{\f1     X := 42;  -- commentaire en fin de ligne}\par
+\par
+{\f1   Ada ne possede pas de commentaires multi-lignes.}\par
+\par
+2.5 Constantes litterales\par
+\par
+{\f1   Entiers :       0, 42, 1_000_000, 16#FF#, 2#1010_0011#,}\par
+{\f1                   8#177#}\par
+{\f1                   (les souligne sont des separateurs visuels,}\par
+{\f1                    les bases 2 a 16 sont supportees)}\par
+\par
+{\f1   Reels :         3.14, 0.5, 2.99_792_458E+08, 1.0E-6}\par
+\par
+{\f1   Caracteres :    'A', ' ', '''  (entre apostrophes simples)}\par
+\par
+{\f1   Chaines :       "Hello", "Ada ""95"""}\par
+{\f1                   (entre guillemets doubles, le guillemet}\par
+{\f1                    s'echappe en le doublant)}\par
+\par
+{\f1   Booleens :      True, False (pas des mots-cles, mais des}\par
+{\f1                   valeurs du type predefini Boolean)}\par
+\par
+2.6 Separateurs et delimiteurs\par
+\par
+{\f1   Operateurs et delimiteurs :}\par
+{\f1     &       *       +       -       .       /}\par
+{\f1     <       =       >       |       =>      ..}\par
+{\f1     **      :=      /=      >=      <=      <<}\par
+{\f1     >>      <>      (       )       ,       ;}\par
+{\f1     :       '}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_01}     {\uldb Suivant >>}{\v IDH_ADA_03}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_03}
+{\footnote $ Ada - TYPES DE DONNEES}
+{\footnote K Ada types;Integer;Float;Boolean;record;array;access}
+\b\fs24 TYPES DE DONNEES \b0\fs20\par
+\par
+{\f1   Ada possede un systeme de types riche et fortement type.}\par
+{\f1   Tout objet a un type et les conversions implicites sont}\par
+{\f1   tres limitees.}\par
+\par
+3.1 Types scalaires\par
+\par
+{\f1   a) Types entiers :}\par
+\par
+{\f1     type Index is range 1 .. 100;}\par
+{\f1     type Compteur is range 0 .. 999_999;}\par
+\par
+{\f1     Types predefinis :}\par
+{\f1       Integer       Entier signe (au moins 16 bits)}\par
+{\f1       Natural       Sous-type de Integer (>= 0)}\par
+{\f1       Positive      Sous-type de Integer (>= 1)}\par
+{\f1       Long_Integer  Entier signe etendu (optionnel)}\par
+\par
+{\f1   b) Types modulaires (non signes, Ada 95+) :}\par
+\par
+{\f1     type Octet is mod 256;       -- 0 .. 255}\par
+{\f1     type Mot is mod 2**16;       -- 0 .. 65535}\par
+\par
+{\f1     L'arithmetique modulaire boucle automatiquement}\par
+{\f1     (wrap-around) et ne leve pas d'exception de debordement.}\par
+\par
+{\f1   c) Types a virgule flottante :}\par
+\par
+{\f1     type Temperature is digits 6;}\par
+{\f1     type Haute_Precision is digits 15 range -1.0 .. 1.0;}\par
+\par
+{\f1     Types predefinis :}\par
+{\f1       Float         Flottant simple precision}\par
+{\f1       Long_Float    Flottant double precision (optionnel)}\par
+\par
+{\f1   d) Types a virgule fixe :}\par
+\par
+{\f1     type Volt is delta 0.01 range -100.0 .. 100.0;}\par
+{\f1     type Duree is delta 0.001 digits 9}\par
+{\f1       range 0.0 .. 86_400.0;   -- virgule fixe decimale}\par
+\par
+{\f1   e) Types enumeres :}\par
+\par
+{\f1     type Couleur is (Rouge, Vert, Bleu);}\par
+{\f1     type Jour is (Lundi, Mardi, Mercredi, Jeudi,}\par
+{\f1                   Vendredi, Samedi, Dimanche);}\par
+\par
+{\f1     Types predefinis :}\par
+{\f1       Boolean       (False, True)}\par
+{\f1       Character     (256 valeurs Latin-1)}\par
+{\f1       Wide_Character (65536 valeurs, Ada 95+)}\par
+\par
+{\f1   f) Type caractere :}\par
+\par
+{\f1     Le type Character est un type enumere predefini}\par
+{\f1     correspondant au jeu Latin-1. Les litteraux caracteres}\par
+{\f1     sont entre apostrophes : 'A', '0', ' '.}\par
+\par
+3.2 Types composites\par
+\par
+{\f1   a) Types tableau (array) :}\par
+\par
+{\f1     -- Tableau contraint}\par
+{\f1     type Vecteur is array (1 .. 3) of Float;}\par
+{\f1     type Matrice is array (1 .. 3, 1 .. 3) of Float;}\par
+{\f1     type Table is array (Jour) of Natural;}\par
+\par
+{\f1     -- Tableau non contraint}\par
+{\f1     type Chaine is array (Positive range <>) of Character;}\par
+\par
+{\f1     Types predefinis :}\par
+{\f1       String        array (Positive range <>) of Character}\par
+\par
+{\f1   b) Types enregistrement (record) :}\par
+\par
+{\f1     type Point is record}\par
+{\f1       X : Float;}\par
+{\f1       Y : Float;}\par
+{\f1     end record;}\par
+\par
+{\f1     type Personne is record}\par
+{\f1       Nom    : String (1 .. 50);}\par
+{\f1       Age    : Natural;}\par
+{\f1       Actif  : Boolean := True;  -- valeur par defaut}\par
+{\f1     end record;}\par
+\par
+{\f1   c) Enregistrements a discriminant :}\par
+\par
+{\f1     type Tampon (Taille : Positive) is record}\par
+{\f1       Contenu : String (1 .. Taille);}\par
+{\f1       Dernier : Natural := 0;}\par
+{\f1     end record;}\par
+\par
+{\f1   d) Enregistrements a variante (discriminated) :}\par
+\par
+{\f1     type Figure (Forme : Type_Forme) is record}\par
+{\f1       case Forme is}\par
+{\f1         when Cercle =>}\par
+{\f1           Rayon : Float;}\par
+{\f1         when Rectangle =>}\par
+{\f1           Largeur : Float;}\par
+{\f1           Hauteur : Float;}\par
+{\f1         when Triangle =>}\par
+{\f1           Base   : Float;}\par
+{\f1           Cote_A : Float;}\par
+{\f1           Cote_B : Float;}\par
+{\f1       end case;}\par
+{\f1     end record;}\par
+\par
+3.3 Types d'acces (pointeurs)\par
+\par
+{\f1   type Ptr_Entier is access Integer;}\par
+{\f1   type Ptr_Noeud is access Noeud;}\par
+\par
+{\f1   P : Ptr_Entier := new Integer'(42);}\par
+\par
+{\f1   Ada 95 ajoute les niveaux d'accessibilite et les}\par
+{\f1   types d'acces a des sous-programmes :}\par
+\par
+{\f1     type Ptr_Fonction is access function (X : Integer)}\par
+{\f1       return Integer;}\par
+\par
+{\f1   Ada 2005 ajoute les types d'acces anonymes :}\par
+\par
+{\f1     procedure Traiter (P : access Integer);}\par
+{\f1     type Noeud is record}\par
+{\f1       Valeur  : Integer;}\par
+{\f1       Suivant : access Noeud;  -- acces anonyme}\par
+{\f1     end record;}\par
+\par
+3.4 Types prives et limites\par
+\par
+{\f1   Les types prives cachent leur implementation :}\par
+\par
+{\f1     package Pile is}\par
+{\f1       type Pile_T is private;}\par
+{\f1       procedure Empiler (S : in out Pile_T; V : Integer);}\par
+{\f1       function  Depiler (S : in out Pile_T) return Integer;}\par
+{\f1     private}\par
+{\f1       type Pile_T is record}\par
+{\f1         Donnees : array (1 .. 100) of Integer;}\par
+{\f1         Sommet  : Natural := 0;}\par
+{\f1       end record;}\par
+{\f1     end Pile;}\par
+\par
+{\f1   Les types limites (limited) interdisent l'affectation}\par
+{\f1   et la comparaison d'egalite :}\par
+\par
+{\f1     type Fichier is limited private;}\par
+\par
+3.5 Sous-types et contraintes\par
+\par
+{\f1   Un sous-type restreint les valeurs d'un type existant :}\par
+\par
+{\f1     subtype Jour_Ouvrable is Jour range Lundi .. Vendredi;}\par
+{\f1     subtype Petit_Entier is Integer range -128 .. 127;}\par
+{\f1     subtype Indice is Positive range 1 .. 100;}\par
+\par
+{\f1   La violation d'une contrainte leve l'exception}\par
+{\f1   Constraint_Error a l'execution.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_02}     {\uldb Suivant >>}{\v IDH_ADA_04}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_04}
+{\footnote $ Ada - DECLARATIONS}
+{\footnote K Ada declarations;type;subtype;variable;constant}
+\b\fs24 DECLARATIONS \b0\fs20\par
+\par
+4.1 Declaration de variables\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     <nom> [, <nom>]* : <type> [:= <expression>] ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     X : Integer;}\par
+{\f1     A, B, C : Float := 0.0;}\par
+{\f1     Nom : String (1 .. 20);}\par
+{\f1     Trouve : Boolean := False;}\par
+\par
+4.2 Declaration de constantes\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     <nom> : constant [<type>] := <expression> ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     Pi : constant Float := 3.14159_26535;}\par
+{\f1     Max : constant := 1000;  -- constante nommee universelle}\par
+{\f1     Taille : constant Positive := 256;}\par
+\par
+4.3 Declaration de types\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     type <nom> is <definition_de_type> ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     type Mois is range 1 .. 12;}\par
+{\f1     type Direction is (Nord, Sud, Est, Ouest);}\par
+{\f1     type Grille is array (1 .. 8, 1 .. 8) of Integer;}\par
+\par
+4.4 Declaration de sous-types\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     subtype <nom> is <type> [range <debut> .. <fin>] ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     subtype Naturel is Integer range 0 .. Integer'Last;}\par
+{\f1     subtype Indice is Integer range 1 .. 10;}\par
+\par
+4.5 Declaration de renommage\par
+\par
+{\f1   Ada permet de renommer des entites pour la lisibilite :}\par
+\par
+{\f1     Longueur : Float renames Vecteur.X;}\par
+{\f1     procedure Ecrire (S : String) renames Ada.Text_IO.Put_Line;}\par
+{\f1     package TIO renames Ada.Text_IO;}\par
+\par
+4.6 Declaration de nombre\par
+\par
+{\f1   Les nombres nommes sont des constantes universelles :}\par
+\par
+{\f1     Bits_Par_Octet : constant := 8;}\par
+{\f1     Taille_Page    : constant := 4 * 1024;}\par
+\par
+{\f1   Ils n'ont pas de type specifique et sont remplaces}\par
+{\f1   a la compilation.}\par
+\par
+4.7 Attributs\par
+\par
+{\f1   Les attributs fournissent des informations sur les types}\par
+{\f1   et les objets. Syntaxe : <nom>'<attribut>}\par
+\par
+{\f1   Attributs courants :}\par
+{\f1     T'First       Premiere valeur du type T}\par
+{\f1     T'Last        Derniere valeur du type T}\par
+{\f1     T'Range       Equivalent a T'First .. T'Last}\par
+{\f1     T'Size        Taille en bits du type T}\par
+{\f1     T'Length      Nombre d'elements (pour les tableaux)}\par
+{\f1     T'Image(V)    Representation en chaine de la valeur V}\par
+{\f1     T'Value(S)    Valeur du type T a partir de la chaine S}\par
+{\f1     T'Succ(V)     Successeur de V dans le type T}\par
+{\f1     T'Pred(V)     Predecesseur de V dans le type T}\par
+{\f1     T'Pos(V)      Position ordinale de V}\par
+{\f1     T'Val(N)      Valeur a la position N}\par
+{\f1     T'Min(A, B)   Minimum de A et B}\par
+{\f1     T'Max(A, B)   Maximum de A et B}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_03}     {\uldb Suivant >>}{\v IDH_ADA_05}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_05}
+{\footnote $ Ada - EXPRESSIONS}
+{\footnote K Ada expressions;operateurs}
+\b\fs24 EXPRESSIONS \b0\fs20\par
+\par
+5.1 Expressions arithmetiques\par
+\par
+{\f1   Operateurs arithmetiques :}\par
+{\f1     +       Addition (ou unaire positif)}\par
+{\f1     -       Soustraction (ou negation)}\par
+{\f1     *       Multiplication}\par
+{\f1     /       Division}\par
+{\f1     **      Puissance (exposant entier naturel)}\par
+{\f1     MOD     Modulo (resultat du signe du diviseur)}\par
+{\f1     REM     Reste (resultat du signe du dividende)}\par
+{\f1     ABS     Valeur absolue (unaire)}\par
+\par
+{\f1   Precedence (du plus fort au plus faible) :}\par
+{\f1     1. ** , ABS, NOT}\par
+{\f1     2. *, /, MOD, REM}\par
+{\f1     3. +, - (unaire)}\par
+{\f1     4. +, -, & (binaire)}\par
+\par
+{\f1   Exemples :}\par
+{\f1     X + Y * Z         =>  X + (Y * Z)}\par
+{\f1     2 ** 10            =>  1024}\par
+{\f1     -17 MOD 5          =>  3}\par
+{\f1     -17 REM 5          =>  -2}\par
+\par
+5.2 Operateurs relationnels\par
+\par
+{\f1     =       Egal}\par
+{\f1     /=      Different}\par
+{\f1     <       Inferieur}\par
+{\f1     <=      Inferieur ou egal}\par
+{\f1     >       Superieur}\par
+{\f1     >=      Superieur ou egal}\par
+\par
+{\f1   Les comparaisons de tableaux et d'enregistrements sont}\par
+{\f1   effectuees composant par composant.}\par
+\par
+{\f1   L'operateur IN teste l'appartenance :}\par
+{\f1     X in 1 .. 10}\par
+{\f1     C in 'A' .. 'Z'}\par
+{\f1     J in Jour_Ouvrable}\par
+\par
+{\f1   Ada 2012 ajoute les tests d'appartenance multiples :}\par
+{\f1     X in 1 | 3 | 5 | 7}\par
+\par
+5.3 Operateurs logiques\par
+\par
+{\f1     AND       Conjonction logique}\par
+{\f1     OR        Disjonction logique}\par
+{\f1     XOR       Ou exclusif}\par
+{\f1     NOT       Negation logique}\par
+\par
+{\f1   Evaluation en court-circuit (Ada 83+) :}\par
+{\f1     AND THEN    Conjonction avec court-circuit}\par
+{\f1     OR ELSE     Disjonction avec court-circuit}\par
+\par
+{\f1   Exemples :}\par
+{\f1     if X /= 0 and then Y / X > Seuil then ...}\par
+{\f1     if P = null or else P.Valeur = 0 then ...}\par
+\par
+5.4 Operateur de concatenation\par
+\par
+{\f1     &       Concatenation de tableaux et de chaines}\par
+\par
+{\f1   Exemples :}\par
+{\f1     "Hello" & " " & "World"       =>  "Hello World"}\par
+{\f1     S & Character'('!')           =>  ajout d'un caractere}\par
+\par
+5.5 Expressions conditionnelles (Ada 2012+)\par
+\par
+{\f1   Expression if :}\par
+{\f1     V := (if X > 0 then X else -X);}\par
+\par
+{\f1   Expression case :}\par
+{\f1     Texte := (case Jour is}\par
+{\f1                 when Lundi .. Vendredi => "Ouvrable",}\par
+{\f1                 when Samedi | Dimanche => "Weekend");}\par
+\par
+5.6 Expressions quantifiees (Ada 2012+)\par
+\par
+{\f1   Quantificateur universel :}\par
+{\f1     (for all I in 1 .. N => Tab(I) > 0)}\par
+\par
+{\f1   Quantificateur existentiel :}\par
+{\f1     (for some I in 1 .. N => Tab(I) = Cible)}\par
+\par
+5.7 Aggregats\par
+\par
+{\f1   Les aggregats construisent des valeurs composites :}\par
+\par
+{\f1   Aggregats de tableau :}\par
+{\f1     V : Vecteur := (1.0, 2.0, 3.0);}\par
+{\f1     V : Vecteur := (others => 0.0);}\par
+{\f1     V : Vecteur := (1 => 1.0, 2 | 3 => 0.0);}\par
+\par
+{\f1   Aggregats de record :}\par
+{\f1     P : Point := (X => 1.0, Y => 2.0);}\par
+{\f1     P : Point := (1.0, 2.0);  -- notation positionnelle}\par
+\par
+{\f1   Ada 2022 ajoute les aggregats delta :}\par
+{\f1     P2 : Point := (P with delta X => 3.0);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_04}     {\uldb Suivant >>}{\v IDH_ADA_06}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_06}
+{\footnote $ Ada - INSTRUCTIONS}
+{\footnote K Ada instructions;if;case;loop;for;while;exit;return}
+\b\fs24 INSTRUCTIONS \b0\fs20\par
+\par
+6.1 Affectation\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     <variable> := <expression> ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     X := 42;}\par
+{\f1     Tab(I) := Tab(I) + 1;}\par
+{\f1     P.X := 3.14;}\par
+\par
+6.2 Instruction conditionnelle (if)\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     if <condition> then}\par
+{\f1       <instructions>}\par
+{\f1     [elsif <condition> then}\par
+{\f1       <instructions>]*}\par
+{\f1     [else}\par
+{\f1       <instructions>]}\par
+{\f1     end if;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     if X > 0 then}\par
+{\f1       Put_Line ("Positif");}\par
+{\f1     elsif X = 0 then}\par
+{\f1       Put_Line ("Zero");}\par
+{\f1     else}\par
+{\f1       Put_Line ("Negatif");}\par
+{\f1     end if;}\par
+\par
+{\f1   Notes :}\par
+{\f1     - Le mot-cle est ELSIF (et non ELSEIF ni ELSE IF)}\par
+{\f1     - L'instruction se termine toujours par END IF}\par
+{\f1     - Pas d'ambiguite du dangling else}\par
+\par
+6.3 Instruction de selection (case)\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     case <expression> is}\par
+{\f1       when <choix> => <instructions>}\par
+{\f1       [when <choix> => <instructions>]*}\par
+{\f1       [when others  => <instructions>]}\par
+{\f1     end case;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     case Commande is}\par
+{\f1       when 'A' | 'a'  => Ajouter;}\par
+{\f1       when 'S' | 's'  => Supprimer;}\par
+{\f1       when 'Q' | 'q'  => Quitter;}\par
+{\f1       when others      => Put_Line ("Invalide");}\par
+{\f1     end case;}\par
+\par
+{\f1     case Jour is}\par
+{\f1       when Lundi .. Vendredi =>}\par
+{\f1         Travailler;}\par
+{\f1       when Samedi | Dimanche =>}\par
+{\f1         Se_Reposer;}\par
+{\f1     end case;}\par
+\par
+{\f1   Notes :}\par
+{\f1     - Tous les cas possibles doivent etre couverts}\par
+{\f1     - Le compilateur verifie l'exhaustivite des choix}\par
+{\f1     - OTHERS couvre les cas restants}\par
+\par
+6.4 Boucle simple (loop)\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     [<nom> :] loop}\par
+{\f1       <instructions>}\par
+{\f1       exit [<nom>] [when <condition>] ;}\par
+{\f1     end loop [<nom>] ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     loop}\par
+{\f1       Get (C);}\par
+{\f1       exit when C = 'Q';}\par
+{\f1       Traiter (C);}\par
+{\f1     end loop;}\par
+\par
+6.5 Boucle while\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     [<nom> :] while <condition> loop}\par
+{\f1       <instructions>}\par
+{\f1     end loop [<nom>] ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     while N > 0 loop}\par
+{\f1       S := S + N;}\par
+{\f1       N := N - 1;}\par
+{\f1     end loop;}\par
+\par
+6.6 Boucle for\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     [<nom> :] for <var> in [reverse] <intervalle> loop}\par
+{\f1       <instructions>}\par
+{\f1     end loop [<nom>] ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     for I in 1 .. 10 loop}\par
+{\f1       Put (Integer'Image (I));}\par
+{\f1     end loop;}\par
+\par
+{\f1     for J in reverse 1 .. 10 loop}\par
+{\f1       Tab(J) := 0;}\par
+{\f1     end loop;}\par
+\par
+{\f1     for C in Character range 'A' .. 'Z' loop}\par
+{\f1       Put (C);}\par
+{\f1     end loop;}\par
+\par
+{\f1     for D in Jour loop   -- parcourt toutes les valeurs}\par
+{\f1       Put_Line (Jour'Image (D));}\par
+{\f1     end loop;}\par
+\par
+{\f1   Ada 2012 ajoute les iterateurs generalises :}\par
+{\f1     for E of Tab loop       -- iteration sur les elements}\par
+{\f1       E := E * 2;}\par
+{\f1     end loop;}\par
+\par
+{\f1     for C of Ma_Liste loop  -- sur un conteneur}\par
+{\f1       Put_Line (C);}\par
+{\f1     end loop;}\par
+\par
+{\f1   Ada 2022 ajoute les filtres d'iterateurs :}\par
+{\f1     for I in 1 .. 100 when I mod 2 = 0 loop}\par
+{\f1       Put (Integer'Image (I));   -- nombres pairs}\par
+{\f1     end loop;}\par
+\par
+6.7 Instruction de bloc (declare)\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     [<nom> :] declare}\par
+{\f1       <declarations>}\par
+{\f1     begin}\par
+{\f1       <instructions>}\par
+{\f1     end [<nom>] ;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     declare}\par
+{\f1       Temp : Integer;}\par
+{\f1     begin}\par
+{\f1       Temp := A;}\par
+{\f1       A := B;}\par
+{\f1       B := Temp;}\par
+{\f1     end;}\par
+\par
+6.8 Instruction nulle\par
+\par
+{\f1     null;}\par
+\par
+{\f1   L'instruction nulle ne fait rien. Elle est utile comme}\par
+{\f1   corps vide ou dans les branches d'un case :}\par
+\par
+{\f1     when others => null;}\par
+\par
+6.9 Instruction goto\par
+\par
+{\f1     goto <etiquette>;}\par
+\par
+{\f1   L'etiquette est declaree entre doubles chevrons :}\par
+{\f1     <<Recommencer>>}\par
+\par
+{\f1   L'utilisation du goto est deconseillee en Ada, les}\par
+{\f1   structures de controle etant suffisamment expressives.}\par
+\par
+6.10 Instruction return\par
+\par
+{\f1     return;               -- dans une procedure}\par
+{\f1     return <expression>;  -- dans une fonction}\par
+\par
+{\f1   Ada 2005 ajoute les retours etendus :}\par
+{\f1     return R : Type_Resultat do}\par
+{\f1       R.Champ := Valeur;}\par
+{\f1     end return;}\par
+\par
+6.11 Instruction raise\par
+\par
+{\f1     raise Constraint_Error;}\par
+{\f1     raise Mon_Exception;}\par
+{\f1     raise Mon_Exception with "message d'erreur";  -- Ada 2005}\par
+\par
+{\f1   L'instruction raise sans argument releve l'exception}\par
+{\f1   courante dans un gestionnaire d'exceptions.}\par
+\par
+6.12 Instruction delay\par
+\par
+{\f1     delay 1.5;            -- attente relative (secondes)}\par
+{\f1     delay until Heure;    -- attente absolue (Ada 95)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_05}     {\uldb Suivant >>}{\v IDH_ADA_07}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_07}
+{\footnote $ Ada - SOUS-PROGRAMMES (PROCEDURES ET FONCTIONS)}
+{\footnote K Ada procedures;fonctions;sous-programmes}
+\b\fs24 SOUS-PROGRAMMES (PROCEDURES ET FONCTIONS) \b0\fs20\par
+\par
+7.1 Procedures\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     procedure <nom> [(<parametres>)] is}\par
+{\f1       [<declarations>]}\par
+{\f1     begin}\par
+{\f1       <instructions>}\par
+{\f1     end <nom>;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     procedure Saluer is}\par
+{\f1     begin}\par
+{\f1       Put_Line ("Bonjour !");}\par
+{\f1     end Saluer;}\par
+\par
+{\f1     procedure Echanger (A, B : in out Integer) is}\par
+{\f1       Temp : Integer := A;}\par
+{\f1     begin}\par
+{\f1       A := B;}\par
+{\f1       B := Temp;}\par
+{\f1     end Echanger;}\par
+\par
+7.2 Fonctions\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     function <nom> [(<parametres>)] return <type> is}\par
+{\f1       [<declarations>]}\par
+{\f1     begin}\par
+{\f1       <instructions>}\par
+{\f1       return <expression>;}\par
+{\f1     end <nom>;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     function Carre (N : Integer) return Integer is}\par
+{\f1     begin}\par
+{\f1       return N * N;}\par
+{\f1     end Carre;}\par
+\par
+{\f1     function Max (A, B : Integer) return Integer is}\par
+{\f1     begin}\par
+{\f1       return (if A > B then A else B);  -- Ada 2012}\par
+{\f1     end Max;}\par
+\par
+{\f1   Ada 2012 ajoute les fonctions d'expression :}\par
+{\f1     function Carre (N : Integer) return Integer is (N * N);}\par
+\par
+7.3 Modes de passage des parametres\par
+\par
+{\f1   Ada definit trois modes de passage (quatre a partir}\par
+{\f1   d'Ada 2012) :}\par
+\par
+{\f1     IN        Lecture seule (defaut). Le parametre formel}\par
+{\f1               est une constante initialisee par l'argument.}\par
+\par
+{\f1     OUT       Ecriture. Le parametre formel est une variable}\par
+{\f1               non initialisee, utilisee pour retourner une}\par
+{\f1               valeur a l'appelant.}\par
+\par
+{\f1     IN OUT    Lecture et ecriture. Le parametre formel est}\par
+{\f1               une variable initialisee par l'argument et}\par
+{\f1               dont la valeur finale est retournee.}\par
+\par
+{\f1     ACCESS    (Ada 95+) Passage par pointeur explicite.}\par
+\par
+{\f1   Exemples :}\par
+{\f1     procedure Lire (Valeur : out Integer);}\par
+{\f1     procedure Incrementer (N : in out Integer);}\par
+{\f1     procedure Afficher (Msg : in String);}\par
+{\f1     procedure Traiter (P : access Noeud);}\par
+\par
+{\f1   Notes :}\par
+{\f1     - Ada choisit le mecanisme (copie ou reference) selon}\par
+{\f1       le type et la taille des parametres}\par
+{\f1     - Les types etiquetes et les taches sont toujours passes}\par
+{\f1       par reference}\par
+{\f1     - Les scalaires sont passes par copie}\par
+\par
+7.4 Parametres par defaut\par
+\par
+{\f1     procedure Ouvrir (Nom  : String;}\par
+{\f1                       Mode : Mode_Fichier := Lecture);}\par
+\par
+{\f1   Les parametres avec valeur par defaut peuvent etre}\par
+{\f1   omis lors de l'appel.}\par
+\par
+7.5 Appel avec notation nommee\par
+\par
+{\f1     Ouvrir (Mode => Ecriture, Nom => "sortie.txt");}\par
+\par
+{\f1   La notation nommee permet de specifier les arguments}\par
+{\f1   dans un ordre quelconque.}\par
+\par
+7.6 Surcharge (overloading)\par
+\par
+{\f1   Ada permet la surcharge des sous-programmes : plusieurs}\par
+{\f1   sous-programmes peuvent avoir le meme nom si leurs}\par
+{\f1   profils (types des parametres et/ou type de retour)}\par
+{\f1   different :}\par
+\par
+{\f1     function "+" (A, B : Vecteur) return Vecteur;}\par
+{\f1     function "+" (A : Vecteur; S : Float) return Vecteur;}\par
+\par
+{\f1   La surcharge s'applique aussi aux operateurs.}\par
+\par
+7.7 Sous-programmes separes\par
+\par
+{\f1   Un sous-programme peut etre compile separement :}\par
+\par
+{\f1     procedure Corps_Principal is separate;}\par
+\par
+{\f1   Le corps est dans un fichier separe :}\par
+\par
+{\f1     separate (Paquetage_Parent)}\par
+{\f1     procedure Corps_Principal is}\par
+{\f1     begin}\par
+{\f1       ...}\par
+{\f1     end Corps_Principal;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_06}     {\uldb Suivant >>}{\v IDH_ADA_08}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_08}
+{\footnote $ Ada - PAQUETAGES (PACKAGES)}
+{\footnote K Ada paquetages;packages;with;use}
+\b\fs24 PAQUETAGES (PACKAGES) \b0\fs20\par
+\par
+{\f1   Les paquetages sont le mecanisme de modularite d'Ada.}\par
+{\f1   Ils encapsulent des types, des variables, des constantes}\par
+{\f1   et des sous-programmes.}\par
+\par
+8.1 Specification de paquetage\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     package <nom> is}\par
+{\f1       <declarations publiques>}\par
+{\f1     [private}\par
+{\f1       <declarations privees>]}\par
+{\f1     end <nom>;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     package Mathematiques is}\par
+{\f1       Pi : constant Float := 3.14159_26535;}\par
+{\f1       function Sinus (X : Float) return Float;}\par
+{\f1       function Cosinus (X : Float) return Float;}\par
+{\f1     end Mathematiques;}\par
+\par
+8.2 Corps de paquetage\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     package body <nom> is}\par
+{\f1       <declarations et corps>}\par
+{\f1     [begin}\par
+{\f1       <instructions d'initialisation>]}\par
+{\f1     end <nom>;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     package body Mathematiques is}\par
+{\f1       function Sinus (X : Float) return Float is}\par
+{\f1       begin}\par
+{\f1         ...}\par
+{\f1       end Sinus;}\par
+\par
+{\f1       function Cosinus (X : Float) return Float is}\par
+{\f1       begin}\par
+{\f1         ...}\par
+{\f1       end Cosinus;}\par
+{\f1     end Mathematiques;}\par
+\par
+8.3 Clause with et use\par
+\par
+{\f1   La clause WITH rend un paquetage visible.}\par
+{\f1   La clause USE rend ses declarations directement}\par
+{\f1   accessibles sans prefixe.}\par
+\par
+{\f1     with Ada.Text_IO;}\par
+{\f1     with Ada.Integer_Text_IO; use Ada.Integer_Text_IO;}\par
+\par
+{\f1     procedure Demo is}\par
+{\f1     begin}\par
+{\f1       Ada.Text_IO.Put_Line ("Avec prefixe");}\par
+{\f1       Put (42);  -- sans prefixe grace a USE}\par
+{\f1     end Demo;}\par
+\par
+8.4 Paquetages enfants (child packages, Ada 95+)\par
+\par
+{\f1   Ada 95 permet d'etendre les paquetages avec des enfants :}\par
+\par
+{\f1     package Mathematiques.Trigonometrie is}\par
+{\f1       function Tangente (X : Float) return Float;}\par
+{\f1     end Mathematiques.Trigonometrie;}\par
+\par
+{\f1   Les paquetages enfants ont acces a la partie privee}\par
+{\f1   de leur parent si declares comme enfant prive :}\par
+\par
+{\f1     private package Mathematiques.Interne is}\par
+{\f1       ...}\par
+{\f1     end Mathematiques.Interne;}\par
+\par
+8.5 Paquetages predefinis\par
+\par
+{\f1   Ada fournit une hierarchie de paquetages standards :}\par
+\par
+{\f1     Ada.Text_IO           Entrees/sorties texte}\par
+{\f1     Ada.Integer_Text_IO   E/S d'entiers}\par
+{\f1     Ada.Float_Text_IO     E/S de flottants}\par
+{\f1     Ada.Strings           Manipulation de chaines}\par
+{\f1     Ada.Strings.Fixed     Chaines de taille fixe}\par
+{\f1     Ada.Strings.Unbounded Chaines de taille variable}\par
+{\f1     Ada.Numerics          Constantes mathematiques}\par
+{\f1     Ada.Numerics.Elementary_Functions  Sin, Cos, Sqrt...}\par
+{\f1     Ada.Calendar          Date et heure}\par
+{\f1     Ada.Exceptions        Manipulation des exceptions}\par
+{\f1     Ada.Containers        Conteneurs (Ada 2005+)}\par
+{\f1     Ada.Command_Line      Arguments de la ligne de commande}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_07}     {\uldb Suivant >>}{\v IDH_ADA_09}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_09}
+{\footnote $ Ada - GENERIQUES (GENERICS)}
+{\footnote K Ada generiques;generics;template}
+\b\fs24 GENERIQUES (GENERICS) \b0\fs20\par
+\par
+{\f1   Les generiques permettent d'ecrire du code parametrable}\par
+{\f1   par des types et des sous-programmes.}\par
+\par
+9.1 Paquetages generiques\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     generic}\par
+{\f1       <parametres generiques>}\par
+{\f1     package <nom> is}\par
+{\f1       ...}\par
+{\f1     end <nom>;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     generic}\par
+{\f1       type Element is private;}\par
+{\f1       type Indice is (<>);}\par
+{\f1     package Pile_Generique is}\par
+{\f1       type Pile is private;}\par
+{\f1       procedure Empiler (S : in out Pile; V : Element);}\par
+{\f1       function  Depiler (S : in out Pile) return Element;}\par
+{\f1       function  Est_Vide (S : Pile) return Boolean;}\par
+{\f1     private}\par
+{\f1       type Tableau is array (Indice) of Element;}\par
+{\f1       type Pile is record}\par
+{\f1         Donnees : Tableau;}\par
+{\f1         Sommet  : Natural := 0;}\par
+{\f1       end record;}\par
+{\f1     end Pile_Generique;}\par
+\par
+9.2 Sous-programmes generiques\par
+\par
+{\f1     generic}\par
+{\f1       type T is private;}\par
+{\f1       with function "<" (A, B : T) return Boolean is <>;}\par
+{\f1     procedure Tri_Generique (Tab : in out Tableau_T);}\par
+\par
+9.3 Instanciation\par
+\par
+{\f1     package Pile_Entiers is new Pile_Generique}\par
+{\f1       (Element => Integer, Indice => Positive);}\par
+\par
+{\f1     procedure Trier_Entiers is new Tri_Generique}\par
+{\f1       (T => Integer);}\par
+\par
+9.4 Parametres generiques formels\par
+\par
+{\f1   Types generiques formels :}\par
+{\f1     type T is private;           -- tout type non limite}\par
+{\f1     type T is limited private;   -- tout type}\par
+{\f1     type T is (<>);              -- type discret}\par
+{\f1     type T is range <>;          -- type entier}\par
+{\f1     type T is digits <>;         -- type flottant}\par
+{\f1     type T is delta <>;          -- type a virgule fixe}\par
+{\f1     type T is mod <>;            -- type modulaire (Ada 95)}\par
+{\f1     type T is tagged private;    -- type etiquete (Ada 95)}\par
+{\f1     type T is new Parent with private; -- derive (Ada 95)}\par
+{\f1     type T is access S;          -- type d'acces}\par
+\par
+{\f1   Sous-programmes generiques formels :}\par
+{\f1     with function F (X : T) return T;}\par
+{\f1     with procedure P (X : in out T);}\par
+{\f1     with function "+" (A, B : T) return T is <>;}\par
+\par
+{\f1   Paquetages generiques formels (Ada 95+) :}\par
+{\f1     with package P is new Q (<>);}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_08}     {\uldb Suivant >>}{\v IDH_ADA_10}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_10}
+{\footnote $ Ada - GESTION DES EXCEPTIONS}
+{\footnote K Ada exceptions;raise;exception handler}
+\b\fs24 GESTION DES EXCEPTIONS \b0\fs20\par
+\par
+{\f1   Les exceptions sont le mecanisme de gestion des erreurs}\par
+{\f1   en Ada. Elles sont declarees, levees et gerees.}\par
+\par
+10.1 Declaration d'exceptions\par
+\par
+{\f1     Mon_Exception : exception;}\par
+{\f1     Erreur_Donnees : exception;}\par
+\par
+{\f1   Exceptions predefinies :}\par
+{\f1     Constraint_Error    Violation de contrainte (debordement,}\par
+{\f1                         indice hors bornes, division par zero)}\par
+{\f1     Program_Error       Erreur de programmation (fin de}\par
+{\f1                         fonction sans return, elaboration}\par
+{\f1                         circulaire)}\par
+{\f1     Storage_Error       Memoire insuffisante}\par
+{\f1     Tasking_Error       Erreur de tache}\par
+\par
+10.2 Lever une exception\par
+\par
+{\f1     raise Mon_Exception;}\par
+{\f1     raise Constraint_Error;}\par
+{\f1     raise Erreur_Donnees with "Valeur invalide";  -- Ada 2005}\par
+\par
+10.3 Gerer les exceptions\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     begin}\par
+{\f1       <instructions>}\par
+{\f1     exception}\par
+{\f1       when <nom_exception> =>}\par
+{\f1         <instructions de traitement>}\par
+{\f1       when others =>}\par
+{\f1         <traitement par defaut>}\par
+{\f1     end;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     begin}\par
+{\f1       Resultat := A / B;}\par
+{\f1     exception}\par
+{\f1       when Constraint_Error =>}\par
+{\f1         Put_Line ("Division par zero !");}\par
+{\f1         Resultat := 0;}\par
+{\f1       when others =>}\par
+{\f1         Put_Line ("Erreur inattendue");}\par
+{\f1         raise;  -- relever l'exception}\par
+{\f1     end;}\par
+\par
+10.4 Informations sur les exceptions (Ada 95+)\par
+\par
+{\f1   Le paquetage Ada.Exceptions fournit des informations :}\par
+\par
+{\f1     when E : others =>}\par
+{\f1       Put_Line (Ada.Exceptions.Exception_Name (E));}\par
+{\f1       Put_Line (Ada.Exceptions.Exception_Message (E));}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_09}     {\uldb Suivant >>}{\v IDH_ADA_11}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_11}
+{\footnote $ Ada - TACHES ET CONCURRENCE (TASKING)}
+{\footnote K Ada taches;tasking;rendezvous;protected}
+\b\fs24 TACHES ET CONCURRENCE (TASKING) \b0\fs20\par
+\par
+{\f1   Ada integre la concurrence directement dans le langage}\par
+{\f1   depuis Ada 83. Les taches sont des unites d'execution}\par
+{\f1   concurrentes.}\par
+\par
+11.1 Declaration de tache\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     task <nom> is}\par
+{\f1       [entry <nom_entree> [(<parametres>)];]*}\par
+{\f1     end <nom>;}\par
+\par
+{\f1     task body <nom> is}\par
+{\f1       [<declarations>]}\par
+{\f1     begin}\par
+{\f1       <instructions>}\par
+{\f1     end <nom>;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     task Producteur;}\par
+\par
+{\f1     task body Producteur is}\par
+{\f1     begin}\par
+{\f1       for I in 1 .. 10 loop}\par
+{\f1         Tampon.Deposer (I);}\par
+{\f1       end loop;}\par
+{\f1     end Producteur;}\par
+\par
+11.2 Entrees et rendez-vous\par
+\par
+{\f1   Les taches communiquent par rendez-vous via des entrees :}\par
+\par
+{\f1     task Serveur is}\par
+{\f1       entry Requete (Donnee : in Integer;}\par
+{\f1                      Reponse : out Integer);}\par
+{\f1     end Serveur;}\par
+\par
+{\f1     task body Serveur is}\par
+{\f1     begin}\par
+{\f1       loop}\par
+{\f1         accept Requete (Donnee : in Integer;}\par
+{\f1                         Reponse : out Integer) do}\par
+{\f1           Reponse := Traiter (Donnee);}\par
+{\f1         end Requete;}\par
+{\f1       end loop;}\par
+{\f1     end Serveur;}\par
+\par
+{\f1   Appel depuis une autre tache :}\par
+{\f1     Serveur.Requete (42, R);}\par
+\par
+11.3 Instruction select\par
+\par
+{\f1   Le select permet d'attendre plusieurs entrees :}\par
+\par
+{\f1     select}\par
+{\f1       accept Lire (V : out Integer) do}\par
+{\f1         V := Valeur;}\par
+{\f1       end Lire;}\par
+{\f1     or}\par
+{\f1       accept Ecrire (V : in Integer) do}\par
+{\f1         Valeur := V;}\par
+{\f1       end Ecrire;}\par
+{\f1     or}\par
+{\f1       delay 5.0;}\par
+{\f1       Put_Line ("Timeout");}\par
+{\f1     or}\par
+{\f1       terminate;}\par
+{\f1     end select;}\par
+\par
+11.4 Types proteges (Ada 95+)\par
+\par
+{\f1   Les types proteges fournissent un acces concurrent}\par
+{\f1   securise aux donnees partagees :}\par
+\par
+{\f1     protected type Compteur is}\par
+{\f1       procedure Incrementer;}\par
+{\f1       function  Valeur return Integer;}\par
+{\f1       entry     Attendre_Zero;}\par
+{\f1     private}\par
+{\f1       N : Integer := 0;}\par
+{\f1     end Compteur;}\par
+\par
+{\f1     protected body Compteur is}\par
+{\f1       procedure Incrementer is}\par
+{\f1       begin}\par
+{\f1         N := N + 1;}\par
+{\f1       end Incrementer;}\par
+\par
+{\f1       function Valeur return Integer is}\par
+{\f1       begin}\par
+{\f1         return N;}\par
+{\f1       end Valeur;}\par
+\par
+{\f1       entry Attendre_Zero when N = 0 is}\par
+{\f1       begin}\par
+{\f1         null;}\par
+{\f1       end Attendre_Zero;}\par
+{\f1     end Compteur;}\par
+\par
+{\f1   Notes :}\par
+{\f1     - Les fonctions protegees permettent un acces}\par
+{\f1       concurrent en lecture}\par
+{\f1     - Les procedures protegees garantissent un acces}\par
+{\f1       exclusif en ecriture}\par
+{\f1     - Les entrees protegees ont une barriere booleenne}\par
+{\f1       qui doit etre vraie pour que l'appel soit accepte}\par
+\par
+11.5 Instruction requeue (Ada 95+)\par
+\par
+{\f1     entry Traiter (D : Integer) when Pret is}\par
+{\f1     begin}\par
+{\f1       if Besoin_Attente then}\par
+{\f1         requeue File_Attente;}\par
+{\f1       end if;}\par
+{\f1     end Traiter;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_10}     {\uldb Suivant >>}{\v IDH_ADA_12}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_12}
+{\footnote $ Ada - PROGRAMMATION ORIENTEE OBJET (ADA 95+)}
+{\footnote K Ada objet;tagged;classwide;heritage}
+\b\fs24 PROGRAMMATION ORIENTEE OBJET (ADA 95+) \b0\fs20\par
+\par
+{\f1   Ada 95 introduit la programmation orientee objet avec}\par
+{\f1   les types etiquetes (tagged types).}\par
+\par
+12.1 Types etiquetes (tagged types)\par
+\par
+{\f1     type Forme is tagged record}\par
+{\f1       X : Float;}\par
+{\f1       Y : Float;}\par
+{\f1     end record;}\par
+\par
+{\f1     function Aire (F : Forme) return Float;}\par
+\par
+12.2 Derivation et heritage\par
+\par
+{\f1     type Cercle is new Forme with record}\par
+{\f1       Rayon : Float;}\par
+{\f1     end record;}\par
+\par
+{\f1     overriding}\par
+{\f1     function Aire (C : Cercle) return Float;}\par
+\par
+{\f1     type Rectangle is new Forme with record}\par
+{\f1       Largeur : Float;}\par
+{\f1       Hauteur : Float;}\par
+{\f1     end record;}\par
+\par
+{\f1     overriding}\par
+{\f1     function Aire (R : Rectangle) return Float;}\par
+\par
+12.3 Polymorphisme (dispatch)\par
+\par
+{\f1   Le type de classe (class-wide type) permet le}\par
+{\f1   polymorphisme dynamique :}\par
+\par
+{\f1     procedure Afficher_Aire (F : Forme'Class) is}\par
+{\f1     begin}\par
+{\f1       Put_Line ("Aire = " & Float'Image (Aire (F)));}\par
+{\f1     end Afficher_Aire;}\par
+\par
+{\f1   L'appel Afficher_Aire effectue un dispatch dynamique}\par
+{\f1   sur la primitive Aire en fonction du type reel de F.}\par
+\par
+12.4 Types abstraits\par
+\par
+{\f1     type Vehicule is abstract tagged record}\par
+{\f1       Vitesse : Float;}\par
+{\f1     end record;}\par
+\par
+{\f1     function Description (V : Vehicule) return String}\par
+{\f1       is abstract;}\par
+\par
+{\f1   Un type abstrait ne peut pas etre instancie directement.}\par
+{\f1   Les sous-programmes abstraits doivent etre surdefinis}\par
+{\f1   dans les types derives.}\par
+\par
+12.5 Interfaces (Ada 2005+)\par
+\par
+{\f1     type Imprimable is interface;}\par
+{\f1     procedure Imprimer (Obj : Imprimable) is abstract;}\par
+\par
+{\f1     type Serialisable is interface;}\par
+{\f1     procedure Serialiser (Obj : Serialisable) is abstract;}\par
+\par
+{\f1     type Document is new Forme}\par
+{\f1       and Imprimable}\par
+{\f1       and Serialisable with record}\par
+{\f1       Titre : String (1 .. 80);}\par
+{\f1     end record;}\par
+\par
+{\f1   Les interfaces permettent l'heritage multiple de}\par
+{\f1   specifications (pas d'heritage multiple d'implementation).}\par
+\par
+12.6 Notation prefixee (Ada 2005+)\par
+\par
+{\f1   Ada 2005 permet la notation objet.methode :}\par
+\par
+{\f1     Obj.Methode (Args);}\par
+{\f1     -- equivalent a : Methode (Obj, Args);}\par
+\par
+12.7 Mot-cle overriding (Ada 2005+)\par
+\par
+{\f1     overriding}\par
+{\f1     procedure Dessiner (C : Cercle);}\par
+\par
+{\f1     not overriding}\par
+{\f1     procedure Tourner (C : in out Cercle; Angle : Float);}\par
+\par
+{\f1   Le compilateur verifie que la declaration est coherente}\par
+{\f1   avec l'intention du programmeur.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_11}     {\uldb Suivant >>}{\v IDH_ADA_13}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_13}
+{\footnote $ Ada - BIBLIOTHEQUE STANDARD ET CONTENEURS (ADA 2005+)}
+{\footnote K Ada bibliotheque standard;conteneurs;Ada.Containers}
+\b\fs24 BIBLIOTHEQUE STANDARD ET CONTENEURS (ADA 2005+) \b0\fs20\par
+\par
+13.1 Conteneurs generiques (Ada.Containers)\par
+\par
+{\f1   Ada 2005 introduit une bibliotheque de conteneurs :}\par
+\par
+{\f1     Ada.Containers.Vectors}\par
+{\f1       Tableau dynamique a acces indexe.}\par
+\par
+{\f1     Ada.Containers.Doubly_Linked_Lists}\par
+{\f1       Liste doublement chainee.}\par
+\par
+{\f1     Ada.Containers.Hashed_Maps}\par
+{\f1       Table de hachage (dictionnaire).}\par
+\par
+{\f1     Ada.Containers.Ordered_Maps}\par
+{\f1       Arbre de recherche (dictionnaire ordonne).}\par
+\par
+{\f1     Ada.Containers.Hashed_Sets}\par
+{\f1       Ensemble avec hachage.}\par
+\par
+{\f1     Ada.Containers.Ordered_Sets}\par
+{\f1       Ensemble ordonne.}\par
+\par
+{\f1   Exemple d'utilisation :}\par
+\par
+{\f1     with Ada.Containers.Vectors;}\par
+\par
+{\f1     package Entiers is new Ada.Containers.Vectors}\par
+{\f1       (Index_Type   => Natural,}\par
+{\f1        Element_Type => Integer);}\par
+\par
+{\f1     V : Entiers.Vector;}\par
+\par
+{\f1     V.Append (42);}\par
+{\f1     V.Append (17);}\par
+{\f1     for E of V loop}\par
+{\f1       Put_Line (Integer'Image (E));}\par
+{\f1     end loop;}\par
+\par
+13.2 Chaines de caracteres\par
+\par
+{\f1     Ada.Strings.Fixed        Chaines de taille fixe}\par
+{\f1     Ada.Strings.Bounded      Chaines de taille bornee}\par
+{\f1     Ada.Strings.Unbounded    Chaines de taille illimitee}\par
+{\f1     Ada.Strings.Maps         Tables de correspondance}\par
+{\f1     Ada.Strings.Maps.Constants  Tables predefinies}\par
+\par
+{\f1   Exemple :}\par
+{\f1     with Ada.Strings.Unbounded;}\par
+{\f1     use Ada.Strings.Unbounded;}\par
+\par
+{\f1     S : Unbounded_String := To_Unbounded_String ("Hello");}\par
+{\f1     S := S & " World";}\par
+{\f1     Put_Line (To_String (S));}\par
+\par
+13.3 Entrees/Sorties\par
+\par
+{\f1     Ada.Text_IO               E/S texte}\par
+{\f1     Ada.Text_IO.Integer_IO    E/S d'entiers}\par
+{\f1     Ada.Text_IO.Float_IO      E/S de flottants}\par
+{\f1     Ada.Text_IO.Enumeration_IO  E/S d'enumeres}\par
+{\f1     Ada.Sequential_IO         E/S sequentielles}\par
+{\f1     Ada.Direct_IO             E/S a acces direct}\par
+{\f1     Ada.Streams.Stream_IO     E/S par flux (Ada 95+)}\par
+\par
+{\f1   Exemple (console) :}\par
+{\f1     with Ada.Text_IO; use Ada.Text_IO;}\par
+\par
+{\f1     Put ("Entrez un nombre : ");}\par
+{\f1     Get_Line (Ligne);}\par
+{\f1     Put_Line ("Vous avez entre : " & Ligne);}\par
+\par
+13.3.1 Ada.Text_IO - Operations sur fichiers\par
+\par
+{\f1   Le paquetage Ada.Text_IO definit un type File_Type pour}\par
+{\f1   les operations sur fichiers texte. Les modes disponibles sont}\par
+{\f1   In_File (lecture), Out_File (ecriture) et Append_File (ajout).}\par
+\par
+{\f1   Types et constantes :}\par
+{\f1     type File_Type is limited private;}\par
+{\f1     type File_Mode is (In_File, Out_File, Append_File);}\par
+\par
+{\f1   Operations principales :}\par
+\par
+{\f1     procedure Create (File : in out File_Type;}\par
+{\f1                       Mode : in File_Mode := Out_File;}\par
+{\f1                       Name : in String := "");}\par
+{\f1     -- Cree un nouveau fichier et l'ouvre dans le mode specifie.}\par
+\par
+{\f1     procedure Open (File : in out File_Type;}\par
+{\f1                     Mode : in File_Mode;}\par
+{\f1                     Name : in String);}\par
+{\f1     -- Ouvre un fichier existant dans le mode specifie.}\par
+\par
+{\f1     procedure Close (File : in out File_Type);}\par
+{\f1     -- Ferme le fichier.}\par
+\par
+{\f1     procedure Put (File : in File_Type; Item : in String);}\par
+{\f1     -- Ecrit une chaine dans le fichier.}\par
+\par
+{\f1     procedure Put_Line (File : in File_Type; Item : in String);}\par
+{\f1     -- Ecrit une chaine suivie d'un saut de ligne dans le fichier.}\par
+\par
+{\f1     procedure Get_Line (File : in File_Type;}\par
+{\f1                         Item : out String;}\par
+{\f1                         Last : out Natural);}\par
+{\f1     -- Lit une ligne du fichier dans Item, Last = longueur lue.}\par
+\par
+{\f1     procedure New_Line (File : in File_Type;}\par
+{\f1                         Spacing : in Positive_Count := 1);}\par
+{\f1     -- Ecrit des sauts de ligne dans le fichier.}\par
+\par
+{\f1   Exemple (fichier) :}\par
+{\f1     with Ada.Text_IO; use Ada.Text_IO;}\par
+\par
+{\f1     procedure Ecrire_Fichier is}\par
+{\f1        F : File_Type;}\par
+{\f1     begin}\par
+{\f1        Create (F, Out_File, "resultat.txt");}\par
+{\f1        Put_Line (F, "Premiere ligne");}\par
+{\f1        Put_Line (F, "Deuxieme ligne");}\par
+{\f1        Close (F);}\par
+{\f1     end Ecrire_Fichier;}\par
+\par
+{\f1     procedure Lire_Fichier is}\par
+{\f1        F    : File_Type;}\par
+{\f1        Buf  : String (1 .. 255);}\par
+{\f1        Last : Natural;}\par
+{\f1     begin}\par
+{\f1        Open (F, In_File, "resultat.txt");}\par
+{\f1        while not End_Of_File (F) loop}\par
+{\f1           Get_Line (F, Buf, Last);}\par
+{\f1           Put_Line (Buf (1 .. Last));}\par
+{\f1        end loop;}\par
+{\f1        Close (F);}\par
+{\f1     end Lire_Fichier;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_12}     {\uldb Suivant >>}{\v IDH_ADA_14}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_14}
+{\footnote $ Ada - CONTRATS ET ASPECTS (ADA 2012+)}
+{\footnote K Ada contrats;aspects;Pre;Post}
+\b\fs24 CONTRATS ET ASPECTS (ADA 2012+) \b0\fs20\par
+\par
+{\f1   Ada 2012 introduit la programmation par contrat,}\par
+{\f1   permettant de specifier formellement le comportement}\par
+{\f1   attendu des sous-programmes et des types.}\par
+\par
+14.1 Preconditions et postconditions\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     function F (X : T) return T}\par
+{\f1       with Pre  => <condition_prealable>,}\par
+{\f1            Post => <condition_posterieure>;}\par
+\par
+{\f1   Exemples :}\par
+{\f1     function Racine_Carree (X : Float) return Float}\par
+{\f1       with Pre  => X >= 0.0,}\par
+{\f1            Post => Racine_Carree'Result >= 0.0}\par
+{\f1                    and then abs (Racine_Carree'Result ** 2}\par
+{\f1                                  - X) < 0.001;}\par
+\par
+{\f1     procedure Empiler (S : in out Pile; V : Integer)}\par
+{\f1       with Pre  => not Est_Pleine (S),}\par
+{\f1            Post => Sommet (S) = V}\par
+{\f1                    and Taille (S) = Taille (S)'Old + 1;}\par
+\par
+14.2 Invariants de type\par
+\par
+{\f1     type Compteur is private}\par
+{\f1       with Type_Invariant => Verifier (Compteur);}\par
+\par
+{\f1     function Verifier (C : Compteur) return Boolean;}\par
+\par
+{\f1   L'invariant est verifie apres chaque operation publique}\par
+{\f1   qui modifie un objet du type.}\par
+\par
+14.3 Predicats de sous-type\par
+\par
+{\f1   Predicats statiques (verifies a la compilation) :}\par
+{\f1     subtype Pair is Integer}\par
+{\f1       with Static_Predicate => Pair mod 2 = 0;}\par
+\par
+{\f1   Predicats dynamiques (verifies a l'execution) :}\par
+{\f1     subtype Valide is String}\par
+{\f1       with Dynamic_Predicate =>}\par
+{\f1         Valide'Length > 0}\par
+{\f1         and Valide (Valide'First) /= ' ';}\par
+\par
+14.4 Valeurs par defaut initiales\par
+\par
+{\f1     type Tableau is array (1 .. 10) of Integer}\par
+{\f1       with Default_Component_Value => 0;}\par
+\par
+{\f1     type Enreg is record}\par
+{\f1       X : Integer;}\par
+{\f1     end record}\par
+{\f1       with Default_Value => (X => 0);  -- Ada 2022}\par
+\par
+14.5 Aspects de representation\par
+\par
+{\f1   Les aspects permettent de controler la representation}\par
+{\f1   en memoire :}\par
+\par
+{\f1     type Registre is record}\par
+{\f1       Actif  : Boolean;}\par
+{\f1       Code   : Integer range 0 .. 15;}\par
+{\f1       Donnee : Integer range 0 .. 255;}\par
+{\f1     end record}\par
+{\f1       with Size => 16;}\par
+\par
+{\f1     for Registre use record}\par
+{\f1       Actif  at 0 range 0 .. 0;}\par
+{\f1       Code   at 0 range 1 .. 4;}\par
+{\f1       Donnee at 0 range 5 .. 12;}\par
+{\f1     end record;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_13}     {\uldb Suivant >>}{\v IDH_ADA_15}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_15}
+{\footnote $ Ada - NOUVEAUTES ADA 2022}
+{\footnote K Ada 2022;nouveautes}
+\b\fs24 NOUVEAUTES ADA 2022 \b0\fs20\par
+\par
+{\f1   Ada 2022 (ISO/IEC 8652:2023) apporte des ameliorations}\par
+{\f1   significatives a la productivite et a l'expressivite.}\par
+\par
+15.1 Parallelisme leger\par
+\par
+{\f1   Boucles paralleles :}\par
+{\f1     parallel}\par
+{\f1     for I in 1 .. N loop}\par
+{\f1       Tab(I) := Calculer (I);}\par
+{\f1     end loop;}\par
+\par
+{\f1   Blocs paralleles :}\par
+{\f1     parallel do}\par
+{\f1       Tache_A;}\par
+{\f1     and}\par
+{\f1       Tache_B;}\par
+{\f1     and}\par
+{\f1       Tache_C;}\par
+{\f1     end do;}\par
+\par
+15.2 Agregats delta\par
+\par
+{\f1   Modification partielle d'un agregat :}\par
+{\f1     P2 := (P1 with delta X => 3.0);}\par
+\par
+{\f1   Pour les tableaux :}\par
+{\f1     T2 := (T1 with delta 1 => 42, 5 => 99);}\par
+\par
+15.3 Operateur de reduction\par
+\par
+{\f1   Syntaxe :}\par
+{\f1     (for I in 1 .. N => <combinaison>)}\par
+\par
+{\f1   Exemples :}\par
+{\f1     Somme := [for I in 1 .. N => "+" (Tab(I), 0)];}\par
+{\f1     -- ou avec la notation de reduction :}\par
+{\f1     Somme := (for I in Tab'Range => <0, @> + Tab(I));}\par
+\par
+15.4 Filtres d'iterateurs\par
+\par
+{\f1     for I in 1 .. 100 when I mod 3 = 0 loop}\par
+{\f1       Put (Integer'Image (I));  -- multiples de 3}\par
+{\f1     end loop;}\par
+\par
+{\f1     Pairs := [for E of Tab when E mod 2 = 0 => E];}\par
+\par
+15.5 Declare expressions\par
+\par
+{\f1     X := (declare}\par
+{\f1             T : constant Float := Calculer;}\par
+{\f1           begin}\par
+{\f1             T * T + 2.0 * T + 1.0);}\par
+\par
+15.6 Image personnalisee\par
+\par
+{\f1     type Direction is (Nord, Sud, Est, Ouest)}\par
+{\f1       with Put_Image => Afficher_Direction;}\par
+\par
+{\f1     procedure Afficher_Direction}\par
+{\f1       (Buffer : in out Ada.Strings.Text_Buffers.Root_Buffer_Type'Class;}\par
+{\f1        D      : Direction);}\par
+\par
+15.7 Agregats de conteneurs\par
+\par
+{\f1     V : Vector := [1, 2, 3, 4, 5];}\par
+{\f1     M : Map := [1 => "un", 2 => "deux", 3 => "trois"];}\par
+\par
+15.8 Renommage d'objets declares\par
+\par
+{\f1     Obj : T renames Expr;  -- expression quelconque}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_14}     {\uldb Suivant >>}{\v IDH_ADA_16}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_16}
+{\footnote $ Ada - DIFFERENCES ENTRE LES VERSIONS}
+{\footnote K Ada versions;Ada 83;Ada 95;Ada 2005;Ada 2012;Ada 2022}
+\b\fs24 DIFFERENCES ENTRE LES VERSIONS \b0\fs20\par
+\par
+16.1 Ada 83 (version initiale)\par
+\par
+{\f1   Le langage original fournit :}\par
+{\f1     - Typage fort avec sous-types et contraintes}\par
+{\f1     - Paquetages pour la modularite et l'encapsulation}\par
+{\f1     - Generiques pour la programmation generique}\par
+{\f1     - Taches pour la programmation concurrente}\par
+{\f1     - Gestion structuree des exceptions}\par
+{\f1     - Compilation separee avec controle de coherence}\par
+{\f1     - Representation bas niveau (clauses de representation)}\par
+{\f1     - Pragmas pour les directives au compilateur}\par
+\par
+16.2 Ajouts d'Ada 95\par
+\par
+{\f1   Principaux ajouts par rapport a Ada 83 :}\par
+{\f1     - Types etiquetes (tagged) et heritage}\par
+{\f1     - Polymorphisme dynamique (dispatch)}\par
+{\f1     - Types abstraits}\par
+{\f1     - Paquetages enfants (hierarchie)}\par
+{\f1     - Types proteges (concurrence securisee)}\par
+{\f1     - Types modulaires (entiers non signes)}\par
+{\f1     - Types d'acces a des sous-programmes}\par
+{\f1     - Annexes specialisees (temps reel, distribue,}\par
+{\f1       systemes d'information, securite, numerique)}\par
+{\f1     - ALIASED et acces general}\par
+{\f1     - Instruction REQUEUE}\par
+\par
+16.3 Ajouts d'Ada 2005\par
+\par
+{\f1   Principaux ajouts par rapport a Ada 95 :}\par
+{\f1     - Interfaces multiples}\par
+{\f1     - Notation prefixee (Obj.Methode)}\par
+{\f1     - Types d'acces anonymes ameliores}\par
+{\f1     - Mot-cle OVERRIDING / NOT OVERRIDING}\par
+{\f1     - Conteneurs standards (Ada.Containers)}\par
+{\f1     - Retours etendus (extended return)}\par
+{\f1     - raise avec message}\par
+{\f1     - Paquetage Ada.Directories (systeme de fichiers)}\par
+{\f1     - Ameliorations du temps reel (EDF, minuteries)}\par
+\par
+16.4 Ajouts d'Ada 2012\par
+\par
+{\f1   Principaux ajouts par rapport a Ada 2005 :}\par
+{\f1     - Preconditions (Pre) et postconditions (Post)}\par
+{\f1     - Invariants de type (Type_Invariant)}\par
+{\f1     - Predicats de sous-type (Static_Predicate,}\par
+{\f1       Dynamic_Predicate)}\par
+{\f1     - Expressions conditionnelles (if et case)}\par
+{\f1     - Expressions quantifiees (for all, for some)}\par
+{\f1     - Fonctions d'expression}\par
+{\f1     - Iterateurs generalises (for ... of)}\par
+{\f1     - Valeurs par defaut des composants de tableaux}\par
+{\f1     - Aspect Default_Component_Value}\par
+{\f1     - Multiprocesseurs (System.Multiprocessors)}\par
+\par
+16.5 Ajouts d'Ada 2022\par
+\par
+{\f1   Principaux ajouts par rapport a Ada 2012 :}\par
+{\f1     - Parallelisme leger (parallel loops/blocks)}\par
+{\f1     - Agregats delta (with delta)}\par
+{\f1     - Operateur de reduction}\par
+{\f1     - Filtres d'iterateurs (when dans les boucles for)}\par
+{\f1     - Declare expressions}\par
+{\f1     - Image personnalisee (Put_Image)}\par
+{\f1     - Agregats de conteneurs (notation [])}\par
+{\f1     - Renommage d'objets declares}\par
+{\f1     - Ameliorations de la gestion des acces}\par
+{\f1     - Ameliorations des contrats (Global, Nonblocking)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_ADA_15}     {\uldb Suivant >>}{\v IDH_ADA_17}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_ADA_17}
+{\footnote $ Ada - REFERENCES}
+{\footnote K Ada references;bibliographie}
+\b\fs24 REFERENCES \b0\fs20\par
+\par
+{\f1   [1] ISO/IEC 8652:1987 - Ada Programming Language}\par
+{\f1       (Ada 83), premiere norme internationale.}\par
+\par
+{\f1   [2] ISO/IEC 8652:1995 - Ada Programming Language}\par
+{\f1       (Ada 95), revision majeure avec POO.}\par
+\par
+{\f1   [3] ISO/IEC 8652:1995/Amd 1:2007 - Ada 2005,}\par
+{\f1       amendement technique.}\par
+\par
+{\f1   [4] ISO/IEC 8652:2012 - Ada Programming Language}\par
+{\f1       (Ada 2012), programmation par contrat.}\par
+\par
+{\f1   [5] ISO/IEC 8652:2023 - Ada Programming Language}\par
+{\f1       (Ada 2022), parallelisme et agregats.}\par
+\par
+{\f1   [6] J.G.P. Barnes, "Programming in Ada 2012",}\par
+{\f1       Cambridge University Press, 2014.}\par
+\par
+{\f1   [7] S.T. Taft, R.A. Duff, R.L. Brukardt, E. Ploedereder,}\par
+{\f1       P. Leroy (eds), "Ada 2005 Reference Manual",}\par
+{\f1       Springer, LNCS 4348, 2006.}\par
+\par
+{\f1   [8] S.T. Taft et al. (eds), "Ada 2012 Reference Manual",}\par
+{\f1       Springer, LNCS 8339, 2014.}\par
+\par
+{\f1   [9] Ada Resource Association, "Ada Information Clearinghouse",}\par
+{\f1       http://www.adaic.org}\par
+\par
+{\f1   Fin du document - Specifications du langage Ada}\par
+
+\par
+{\uldb << Precedent}{\v IDH_ADA_16}     {\uldb Table des matieres}{\v IDH_ADA_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}
