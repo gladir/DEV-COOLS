@@ -2123,6 +2123,8 @@ Type
  { Etat d un disque virtuel FAT12/16 monte via /DISK0 ou /DISK1 }
  TFatVol = Record
   Mounted        : Boolean;
+  IsD64          : Boolean;        { image Commodore 64 .D64        }
+  D64Tracks      : Byte;           { nombre de pistes (35 ou 40)    }
   FATType        : Byte;           { 12 ou 16                       }
   BytesPerSector : Word;
   SectorsPerCluster: Byte;
@@ -18609,6 +18611,96 @@ Begin
              LongInt(Buf[Off + 3]) * 16777216;
 End;
 
+{ --- Format image Commodore 64 (.D64) : 35 ou 40 pistes, secteurs
+      de 256 octets, nombre variable par piste (17..21). ----------- }
+
+Const
+ D64_SectorCount: Array[1..40] Of Byte = (
+  21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,
+  19,19,19,19,19,19,19,
+  18,18,18,18,18,18,
+  17,17,17,17,17,
+  17,17,17,17,17);
+ D64_SectorOfs: Array[1..40] Of Word = (
+  0,21,42,63,84,105,126,147,168,189,210,231,252,273,294,315,336,
+  357,376,395,414,433,452,471,
+  490,508,526,544,562,580,
+  598,615,632,649,666,
+  683,700,717,734,751);
+ D64_KindName: Array[0..15] Of String[3] = (
+  'DEL','SEQ','PRG','USR','REL','EL?','EQ?','RG?',
+  'SR?','EL?','L??','Q??','G??','R??','L??','???');
+
+Function D64_SectorOffset(Track, Sector: Word): LongInt;
+Begin
+ If (Track < 1) Or (Track > 40) Or
+    (Sector >= D64_SectorCount[Track]) Then
+  D64_SectorOffset := -1
+ Else
+  D64_SectorOffset := (LongInt(D64_SectorOfs[Track]) +
+                       LongInt(Sector)) Shl 8;
+End;
+
+Function D64_ReadSector(Idx: Byte; Track, Sector: Word;
+ Var Buf: Array Of Byte): Boolean;
+Var
+ Ofs: LongInt;
+ BR: Word;
+Begin
+ D64_ReadSector := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ Ofs := D64_SectorOffset(Track, Sector);
+ If Ofs < 0 Then Exit;
+ If Ofs + 256 > EmuFloppySize[Idx] Then Exit;
+ {$I-}
+ Seek(EmuFloppyFile[Idx], Ofs);
+ If IOResult <> 0 Then Exit;
+ BR := 0;
+ BlockRead(EmuFloppyFile[Idx], Buf, 256, BR);
+ {$I+} If IOResult <> 0 Then Exit;
+ D64_ReadSector := (BR = 256);
+End;
+
+{ Convertir un caractere PETSCII screen-padding ($A0) en espace, et
+  filtrer les codes non imprimables. }
+Function D64_PetsciiToAscii(B: Byte): Char;
+Begin
+ If B = $A0 Then D64_PetsciiToAscii := ' '
+ Else If (B >= 32) And (B < 127) Then D64_PetsciiToAscii := Chr(B)
+ Else If (B >= 193) And (B <= 218) Then
+  D64_PetsciiToAscii := Chr(B - 193 + Ord('a'))
+ Else D64_PetsciiToAscii := '.';
+End;
+
+Function D64_TryMount(Idx: Byte; Var V: TFatVol): Boolean;
+Var
+ Buf: Array[0..255] Of Byte;
+ I: Integer;
+ Sz: LongInt;
+Begin
+ D64_TryMount := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ Sz := EmuFloppySize[Idx];
+ { Tailles supportees : 35 pistes (174848/175531) ou 40 (196608/197376) }
+ If (Sz <> 174848) And (Sz <> 175531) And
+    (Sz <> 196608) And (Sz <> 197376) Then Exit;
+ If Sz >= 196608 Then V.D64Tracks := 40 Else V.D64Tracks := 35;
+ { Lire le BAM : piste 18, secteur 0 }
+ If Not D64_ReadSector(Idx, 18, 0, Buf) Then Exit;
+ { Extraire le nom du disque (offset 144..159) avec padding $A0 }
+ V.VolLabel := '';
+ For I := 0 To 15 Do Begin
+  If Buf[144 + I] = $A0 Then Break;
+  V.VolLabel := V.VolLabel + D64_PetsciiToAscii(Buf[144 + I]);
+ End;
+ While (V.VolLabel <> '') And
+       (V.VolLabel[Length(V.VolLabel)] = ' ') Do
+  V.VolLabel := Copy(V.VolLabel, 1, Length(V.VolLabel) - 1);
+ V.IsD64 := True;
+ V.Mounted := True;
+ D64_TryMount := True;
+End;
+
 Procedure Fat_TryMount(Idx: Byte);
 Var
  Buf: Array[0..511] Of Byte;
@@ -18625,6 +18717,11 @@ Begin
  V.Mounted := False;
  V.CachedFatLBA := -1;
  If Not EmuFloppyOpen[Idx] Then Begin
+  FatVol[Idx] := V;
+  Exit;
+ End;
+ { Essayer d abord le format Commodore 64 (.D64) }
+ If D64_TryMount(Idx, V) Then Begin
   FatVol[Idx] := V;
   Exit;
  End;
@@ -19234,6 +19331,76 @@ Begin
   If V = 0 Then Inc(Free);
  End;
  Fat_FreeBytes := Free * LongInt(FatVol[Idx].SectorsPerCluster) * 512;
+End;
+
+{ --- Lister le repertoire d une image .D64 dans le terminal --- }
+
+Procedure D64_ListDir(Idx: Byte; Var TP: TTerminalPanel);
+Var
+ Buf: Array[0..255] Of Byte;
+ NextT, NextS: Byte;
+ BAM: Array[0..255] Of Byte;
+ E, I, FreeBlk: Integer;
+ Name: String;
+ Blocks: Word;
+ Kind: Byte;
+ KFlag: Char;
+ KStr: String;
+ Line, S: String;
+Begin
+ If Not FatVol[Idx].Mounted Then Exit;
+ If Not FatVol[Idx].IsD64 Then Exit;
+ If Not D64_ReadSector(Idx, 18, 0, BAM) Then Exit;
+ { Entete : titre du disque + ID + DOS type }
+ Name := '"';
+ For I := 0 To 15 Do
+  Name := Name + D64_PetsciiToAscii(BAM[144 + I]);
+ { Trim trailing $A0 padding (deja converti en espaces) }
+ While (Length(Name) > 1) And (Name[Length(Name)] = ' ') Do
+  Name := Copy(Name, 1, Length(Name) - 1);
+ Name := Name + '"';
+ S := '';
+ For I := 0 To 1 Do S := S + D64_PetsciiToAscii(BAM[162 + I]);
+ Line := '0 ' + Name + ' ' + S + ' ';
+ For I := 0 To 1 Do Line := Line + D64_PetsciiToAscii(BAM[165 + I]);
+ TermAddLine(TP, Line);
+ { Parcourir la chaine du repertoire a partir de l entree dans le BAM
+   (offsets 0/1 = piste/secteur du premier secteur de directory). Les
+   images standard pointent vers 18:1. }
+ NextT := BAM[0];
+ NextS := BAM[1];
+ If (NextT = 0) Or (NextT > 40) Then Begin
+  NextT := 18;
+  NextS := 1;
+ End;
+ While (NextT <> 0) And D64_ReadSector(Idx, NextT, NextS, Buf) Do Begin
+  NextT := Buf[0];
+  NextS := Buf[1];
+  For E := 0 To 7 Do Begin
+   I := 2 + E * 32;
+   Kind := Buf[I];
+   If Kind = 0 Then Continue;
+   { Nom : 16 octets en PETSCII (terminateur $A0 + padding) }
+   Name := '"';
+   FreeBlk := 0;
+   While (FreeBlk < 16) And (Buf[I + 3 + FreeBlk] <> $A0) Do Begin
+    Name := Name + D64_PetsciiToAscii(Buf[I + 3 + FreeBlk]);
+    Inc(FreeBlk);
+   End;
+   Name := Name + '"';
+   Blocks := Word(Buf[I + 28]) Or (Word(Buf[I + 29]) Shl 8);
+   KStr := D64_KindName[Kind And 15];
+   If (Kind And $80) <> 0 Then KFlag := ' ' Else KFlag := '*';
+   Str(Blocks, S);
+   While Length(S) < 4 Do S := ' ' + S;
+   TermAddLine(TP, S + ' ' + Name + ' ' + KFlag + ' ' + KStr);
+  End;
+ End;
+ { Blocks libres = somme des compteurs FAT (offsets 4, 8, 12, ...) }
+ FreeBlk := 0;
+ For I := 1 To 35 Do Inc(FreeBlk, BAM[4 + (I - 1) * 4]);
+ Str(FreeBlk, S);
+ TermAddLine(TP, S + ' BLOCKS FREE.');
 End;
 
 { ============================================================
@@ -19879,6 +20046,11 @@ Begin
  { Mode disque virtuel : utiliser le FAT image (cwd ou cible explicite
    prefixee A:/B:). }
  If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
+  { Image Commodore 64 (.D64) : listage natif CBM DOS. }
+  If FatVol[Idx].IsD64 Then Begin
+   D64_ListDir(Idx, TP);
+   Exit;
+  End;
   If Not Fat_ResolveDir(Idx, AbsP, IsRoot, StartCl) Then Begin
    TermAddLine(TP,
     'Le systeme ne trouve pas le chemin specifie.');
@@ -19961,6 +20133,10 @@ Var
 Begin
  FirstParam := TermExtractParam(ParamStr, 1);
  If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
+  If FatVol[Idx].IsD64 Then Begin
+   D64_ListDir(Idx, TP);
+   Exit;
+  End;
   If Not Fat_ResolveDir(Idx, AbsP, IsRoot, StartCl) Then Begin
    TermAddLine(TP,
     'Get-ChildItem : Impossible de trouver le chemin ' + AbsP);
@@ -20043,8 +20219,16 @@ Var
  ShowDir, S, Line: String;
  FirstParam: String;
  TotalSize: LongInt;
+ Idx: Byte;
+ AbsP: String;
 Begin
  FirstParam := TermExtractParam(ParamStr, 1);
+ If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
+  If FatVol[Idx].IsD64 Then Begin
+   D64_ListDir(Idx, TP);
+   Exit;
+  End;
+ End;
  If FirstParam = '' Then
   ShowDir := '*.*'
  Else
@@ -20099,8 +20283,16 @@ Var
  ShowDir, S: String;
  FirstParam: String;
  TotalFiles, TotalDirs: LongInt;
+ Idx: Byte;
+ AbsP: String;
 Begin
  FirstParam := TermExtractParam(ParamStr, 1);
+ If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
+  If FatVol[Idx].IsD64 Then Begin
+   D64_ListDir(Idx, TP);
+   Exit;
+  End;
+ End;
  If FirstParam = '' Then
   ShowDir := '*.*'
  Else
@@ -51260,6 +51452,8 @@ Begin
    pixels qui changent et la zone effacee reste vide. }
  NesFBFirst    := True;
  A2600_FBFirst := True;
+ Coco3_FBFirst := True;
+ FillChar(Coco3_FBPrev, SizeOf(Coco3_FBPrev), $FF);
  FullRepaintNeeded := True;
  DrawAllWidgets;
  If EmuPanel.Base.Visible Then DrawEmulatorPanel(EmuPanel);
