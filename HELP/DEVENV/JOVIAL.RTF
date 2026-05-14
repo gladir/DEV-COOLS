@@ -1,0 +1,627 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_JOVIAL_01}
+{\footnote $ JOVIAL - Presentation generale}
+{\footnote K JOVIAL presentation;Jules Schwartz;SDC;System Development Corporation;SAGE;IAL;ALGOL 58;USAF;DoD;MIL-STD-1589;J3;J73}
+\b\fs24 Presentation generale \b0\fs20\par
+\par
+JOVIAL est l'acronyme de "Jules' Own Version of the International Algorithmic\par
+Language", concu en 1959-1960 par Jules I. Schwartz et son equipe a System\par
+Development Corporation (SDC) a partir d'un dialecte derive d'ALGOL 58 nomme\par
+"International Algebraic Language" (IAL). Le langage a ete adopte par l'US Air\par
+Force comme langage standard pour le developpement des systemes de defense\par
+embarques (commande/controle, navigation, radar, avionique).\par
+\par
+Historique :\par
+- 1959-1960 : conception initiale JOVIAL chez SDC pour le projet SAGE.\par
+- 1961-1965 : JOVIAL J1, J2 deployes sur ordinateurs AN/FSQ-7, IBM 7090.\par
+- 1967 : JOVIAL J3 standardise par l'USAF.\par
+- 1973 : JOVIAL J73 inclus dans MIL-STD-1589 (revisions A en 1976, B en 1979,\par
+{\f1   C en 1984).}\par
+- 1984 : MIL-STD-1589C, derniere revision officielle DoD.\par
+- 1980-1990 : utilise pour B-1B, B-2, F-15, F-16, F-117, F-18, AWACS, U-2,\par
+{\f1   systemes de defense aerienne (NORAD), missiles de croisiere.}\par
+- Depuis 1997 : Ada designe comme successeur DoD, mais JOVIAL reste maintenu\par
+{\f1   pour systemes existants (F-16 jusque dans les annees 2010+).}\par
+\par
+Caracteristiques distinctives :\par
+- Langage compile a typage statique fort, oriente systemes temps reel embarques.\par
+- Structures de donnees orientees bit/mot (TABLE, ENTRY, ITEM, OVERLAY).\par
+- Controle precis de la representation memoire (PACKED, MEDIUM, DENSE).\par
+- Support natif des nombres a virgule fixe (FIXED) crucial pour systemes\par
+{\f1   sans FPU (avionique annees 1960-1980).}\par
+- Modules compilables separement (COMPOOL : pool de definitions partagees).\par
+- Syntaxe inspiree d'ALGOL mais plus "industrielle" (mots-cles complets,\par
+{\f1   point-virgule terminal, BEGIN/END remplaces par START/TERM dans certains}\par
+{\f1   dialectes).}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. Structure d'un programme JOVIAL}     {\uldb [Aller]}{\v IDH_JOVIAL_02}\par
+{\f1  3. Caracteristiques lexicales}     {\uldb [Aller]}{\v IDH_JOVIAL_03}\par
+{\f1  4. Types de donnees}     {\uldb [Aller]}{\v IDH_JOVIAL_04}\par
+{\f1  5. Operateurs}     {\uldb [Aller]}{\v IDH_JOVIAL_05}\par
+{\f1  6. Instructions de controle}     {\uldb [Aller]}{\v IDH_JOVIAL_06}\par
+{\f1  7. Procedures et fonctions}     {\uldb [Aller]}{\v IDH_JOVIAL_07}\par
+{\f1  8. COMPOOL (modules de declarations partagees)}     {\uldb [Aller]}{\v IDH_JOVIAL_08}\par
+{\f1  9. Entrees/sorties}     {\uldb [Aller]}{\v IDH_JOVIAL_09}\par
+{\f1 10. Adressage et acces materiel}     {\uldb [Aller]}{\v IDH_JOVIAL_10}\par
+{\f1 11. Gestion du temps reel et bas niveau}     {\uldb [Aller]}{\v IDH_JOVIAL_11}\par
+{\f1 12. JOVIAL J73 vs J3 vs J3B}     {\uldb [Aller]}{\v IDH_JOVIAL_12}\par
+{\f1 13. Compilateurs JOVIAL dans le projet DEV-COOLS}     {\uldb [Aller]}{\v IDH_JOVIAL_13}\par
+{\f1 14. Exemples de programmes}     {\uldb [Aller]}{\v IDH_JOVIAL_14}\par
+{\f1 15. Influence et heritage}     {\uldb [Aller]}{\v IDH_JOVIAL_15}\par
+{\f1 16. References}     {\uldb [Aller]}{\v IDH_JOVIAL_16}\par
+\par
+{\uldb Suivant >>}{\v IDH_JOVIAL_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_02}
+{\footnote $ JOVIAL - Structure d'un programme JOVIAL}
+{\footnote K JOVIAL structure programme;PROGRAM;PROC;START;TERM;BEGIN;END;COMPOOL;commentaires}
+\b\fs24 Structure d'un programme JOVIAL \b0\fs20\par
+\par
+Un programme JOVIAL J73 typique se compose de :\par
+- 0 ou plusieurs COMPOOL (declarations partagees, similaire aux "INCLUDE").\par
+- 1 unite de compilation : PROGRAM ou PROCEDURE (subroutine reutilisable).\par
+- Une section declarative (TYPE, ITEM, TABLE, CONSTANT, OVERLAY).\par
+- Une section executable delimitee par START ... TERM.\par
+\par
+Forme generale :\par
+\par
+{\f1   START}\par
+{\f1    "declarations"}\par
+{\f1    ITEM I  INTEGER 16 U;}\par
+{\f1    ITEM X  FLOATING;}\par
+{\f1    "instructions"}\par
+{\f1    X = 1.5;}\par
+{\f1    I = 10;}\par
+{\f1   TERM}\par
+\par
+Pour une unite nommee :\par
+\par
+{\f1   PROC CALCUL (A : INTEGER 32 S; B : FLOATING) U;}\par
+{\f1    BEGIN}\par
+{\f1     "..."}\par
+{\f1    END}\par
+\par
+Le mot reserve PROGRAM introduit le programme principal :\par
+\par
+{\f1   PROGRAM MON_AVION;}\par
+{\f1    ITEM ALT  INTEGER 16 S;}\par
+{\f1    START}\par
+{\f1     ALT = 1000;}\par
+{\f1    TERM}\par
+{\f1   END}\par
+\par
+Commentaires :\par
+- Style classique : commence par " et termine par " (chaines de Hollerith).\par
+{\f1   Exemple : " ceci est un commentaire "}\par
+- J73 : %...% ou /*...*/ selon implementation.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_01}     {\uldb Suivant >>}{\v IDH_JOVIAL_03}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_03}
+{\footnote $ JOVIAL - Caracteristiques lexicales}
+{\footnote K JOVIAL lexical;identificateurs;mots reserves;litteraux;hexadecimal;octal;binaire;FIXED;FLOATING}
+\b\fs24 Caracteristiques lexicales \b0\fs20\par
+\par
+Jeu de caracteres : ASCII 7 bits historique, ISO-8859-1 en J73/I.\par
+\par
+Identificateurs :\par
+- Commencent par une lettre, suivis de lettres, chiffres ou apostrophes ('').\par
+- Sensibles a la casse selon implementation (souvent insensibles en J73).\par
+- Longueur maximale typique : 31 caracteres.\par
+\par
+Mots reserves (extrait) :\par
+{\f1   ABS  ALL  AND  ARRAY  BEGIN  BIT  BYTE  CASE  CONSTANT  CHAR  DEF}\par
+{\f1   DEFINE  DO  ELSE  END  ENTRY  EQ  EXIT  FALSE  FIXED  FLOAT  FLOATING}\par
+{\f1   FOR  FROM  GOTO  IF  IN  INLINE  INPUT  INTEGER  ITEM  LABEL  LOC}\par
+{\f1   MOD  NOT  OR  OUTPUT  OVERLAY  POINTER  PROC  PROGRAM  REF  REP}\par
+{\f1   RETURN  ROUND  SIGNED  START  STATUS  STEP  STOP  STRING  TABLE}\par
+{\f1   TERM  THEN  TIMES  TRUE  TYPE  UNSIGNED  UNTIL  WHILE  XOR}\par
+\par
+Litteraux :\par
+- Entiers decimaux : 42, -17, +255\par
+- Entiers binaires : 0B101010\par
+- Entiers octaux : 0O52\par
+- Entiers hexadecimaux : 0H2A\par
+- Reels flottants : 3.14, 1.5E-3, 6.022E23\par
+- Reels a virgule fixe : 3.14F (suffixe F pour FIXED)\par
+- Booleens : TRUE, FALSE\par
+- Chaines : 'BONJOUR' (apostrophes simples)\par
+- Caracteres : 'A' (avec qualificateur CHAR)\par
+- Constantes typees : V'12'B (binaire), V'1A'H (hexa), V'377'O (octal)\par
+\par
+Separateurs : espace, tabulation, fin de ligne, point-virgule ;\par
+Operateur d'affectation : = (un seul signe egal, contrairement a := d'ALGOL).\par
+Operateur de comparaison egal : EQ ou == selon dialecte.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_02}     {\uldb Suivant >>}{\v IDH_JOVIAL_04}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_04}
+{\footnote $ JOVIAL - Types de donnees}
+{\footnote K JOVIAL types;ITEM;TABLE;OVERLAY;INTEGER;FLOATING;FIXED;BIT;CHAR;STATUS;POINTER;BOOLEAN;DENSE;MEDIUM;PARALLEL;SERIAL;DEFINE;CONSTANT}
+\b\fs24 Types de donnees \b0\fs20\par
+\par
+JOVIAL distingue les "items" (donnees scalaires) des "tables" (structures\par
+agregees).\par
+\par
+4.1 Types scalaires (ITEM)\par
+\par
+{\f1   INTEGER n S      "entier signe de n bits (S = signed)"}\par
+{\f1   INTEGER n U      "entier non signe de n bits (U = unsigned)"}\par
+{\f1   FLOATING n       "flottant simple precision, n bits mantisse"}\par
+{\f1   FIXED n m S      "virgule fixe : n bits total, m bits fractionnaires, signe"}\par
+{\f1   BIT n            "champ de n bits"}\par
+{\f1   CHAR n           "chaine de n caracteres"}\par
+{\f1   STATUS (A, B, C) "enumeration : equivalent ENUM"}\par
+{\f1   POINTER          "adresse / reference"}\par
+{\f1   BOOLEAN          "TRUE/FALSE"}\par
+\par
+Exemples :\par
+{\f1   ITEM ALTITUDE   INTEGER 16 S;}\par
+{\f1   ITEM CAP        FIXED 16 8 U;       " 8.8 fixed point 0..255.99 "}\par
+{\f1   ITEM ACTIF      BIT 1;}\par
+{\f1   ITEM NOM        CHAR 20;}\par
+{\f1   ITEM ETAT       STATUS (V'INIT', V'RUN', V'STOP');}\par
+\par
+4.2 Tables (TABLE)\par
+\par
+Une TABLE est une collection structuree d'items. Elle peut etre :\par
+- DENSE : items empaquetes au bit pres (compact).\par
+- MEDIUM : items alignes sur frontieres de mot.\par
+- PARALLEL : organisation par colonnes (un tableau par item).\par
+- SERIAL : organisation par lignes (record-of-array).\par
+\par
+{\f1   TABLE PISTES (100) DENSE;}\par
+{\f1    BEGIN}\par
+{\f1     ITEM ID       INTEGER 16 U;}\par
+{\f1     ITEM X        FIXED 24 12 S;}\par
+{\f1     ITEM Y        FIXED 24 12 S;}\par
+{\f1     ITEM ACTIVE   BIT 1;}\par
+{\f1    END}\par
+\par
+Acces : PISTES.X(5) ou X(PISTES,5) selon dialecte.\par
+\par
+4.3 OVERLAY\par
+\par
+Permet la reinterpretation d'une zone memoire :\par
+\par
+{\f1   OVERLAY MOT WITH BYTE_HI : BYTE 8;}\par
+{\f1                   BYTE_LO : BYTE 8;}\par
+\par
+4.4 DEFINE (type alias / macro)\par
+\par
+{\f1   DEFINE PI 3.14159265;}\par
+{\f1   DEFINE MASK_5 V'1F'H;}\par
+\par
+4.5 Constantes\par
+\par
+{\f1   CONSTANT MAX_PISTES INTEGER 16 U = 100;}\par
+{\f1   CONSTANT VERSION    CHAR 8 = 'J73-2024';}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_03}     {\uldb Suivant >>}{\v IDH_JOVIAL_05}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_05}
+{\footnote $ JOVIAL - Operateurs}
+{\footnote K JOVIAL operateurs;arithmetique;relationnel;EQ NQ LS LQ GR GQ;logique;AND OR NOT XOR;bit-a-bit;BAND BOR BXOR;SHL SHR;precedence}
+\b\fs24 Operateurs \b0\fs20\par
+\par
+Arithmetiques : + - * / MOD ABS\par
+Relationnels  : EQ NQ LS LQ GR GQ   (ou == != < <= > >=)\par
+Logiques      : AND OR NOT XOR EQV\par
+Bit-a-bit     : BAND BOR BNOT BXOR\par
+Decalage      : SHL n, SHR n, SHRA n (arithmetique)\par
+Affectation   : =\par
+\par
+Precedence (du plus prioritaire au moins) :\par
+{\f1   1. NOT BNOT unaire}\par
+{\f1   2. * / MOD BAND}\par
+{\f1   3. + - BOR BXOR}\par
+{\f1   4. SHL SHR}\par
+{\f1   5. EQ NQ LS LQ GR GQ}\par
+{\f1   6. AND}\par
+{\f1   7. OR XOR EQV}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_04}     {\uldb Suivant >>}{\v IDH_JOVIAL_06}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_06}
+{\footnote $ JOVIAL - Instructions de controle}
+{\footnote K JOVIAL controle;IF THEN ELSE;CASE;FOR STEP UNTIL;WHILE;GOTO;EXIT;STOP;RETURN}
+\b\fs24 Instructions de controle \b0\fs20\par
+\par
+6.1 Affectation\par
+{\f1   X = 10;}\par
+{\f1   PISTES.X(I) = PISTES.X(I) + DX;}\par
+\par
+6.2 IF/THEN/ELSE\par
+{\f1   IF X GR 0 THEN}\par
+{\f1    Y = 1;}\par
+{\f1   ELSE}\par
+{\f1    Y = -1;}\par
+\par
+Forme bloc :\par
+{\f1   IF COND THEN}\par
+{\f1    BEGIN}\par
+{\f1     "..."}\par
+{\f1    END}\par
+{\f1   ELSE}\par
+{\f1    BEGIN}\par
+{\f1     "..."}\par
+{\f1    END}\par
+\par
+6.3 CASE (instruction multibranche)\par
+{\f1   CASE MODE OF}\par
+{\f1    BEGIN}\par
+{\f1     (V'INIT'): INITIALISER();}\par
+{\f1     (V'RUN'):  EXECUTER();}\par
+{\f1     (V'STOP'): ARRETER();}\par
+{\f1     DEFAULT:   ERREUR();}\par
+{\f1    END}\par
+\par
+6.4 FOR (boucle iterative)\par
+{\f1   FOR I = 1 STEP 1 UNTIL 100 DO}\par
+{\f1    BEGIN}\par
+{\f1     SOMME = SOMME + T(I);}\par
+{\f1    END}\par
+\par
+{\f1   FOR I = 0, I+2 WHILE I LS 100 DO ...}\par
+\par
+6.5 WHILE\par
+{\f1   WHILE COND DO}\par
+{\f1    BEGIN}\par
+{\f1     "..."}\par
+{\f1    END}\par
+\par
+6.6 GOTO / Label\par
+{\f1   ETIQUETTE.}\par
+{\f1    X = X + 1;}\par
+{\f1    IF X LS 10 THEN GOTO ETIQUETTE;}\par
+\par
+6.7 EXIT et STOP\par
+{\f1   EXIT;    " sortie de boucle "}\par
+{\f1   STOP;    " arret du programme "}\par
+\par
+6.8 RETURN\par
+{\f1   RETURN;}\par
+{\f1   RETURN VALEUR;   " dans une fonction "}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_05}     {\uldb Suivant >>}{\v IDH_JOVIAL_07}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_07}
+{\footnote $ JOVIAL - Procedures et fonctions}
+{\footnote K JOVIAL procedures;PROC;RETURNS;parametres;IN OUT INOUT;appel}
+\b\fs24 Procedures et fonctions \b0\fs20\par
+\par
+Definition :\par
+{\f1   PROC NOM (P1 : INTEGER 16 S; P2 : FLOATING) RETURNS (FLOATING);}\par
+{\f1    BEGIN}\par
+{\f1     ITEM TEMP FLOATING;}\par
+{\f1     TEMP = P1 * P2;}\par
+{\f1     RETURN TEMP;}\par
+{\f1    END}\par
+\par
+Sans valeur de retour :\par
+{\f1   PROC AFFICHE (MSG : CHAR 80);}\par
+{\f1    BEGIN}\par
+{\f1     OUTPUT MSG;}\par
+{\f1    END}\par
+\par
+Modes de passage :\par
+- IN     : valeur (par defaut pour types simples).\par
+- OUT    : sortie (variable assignee par la procedure).\par
+- INOUT  : entree-sortie (reference).\par
+\par
+{\f1   PROC ECHANGE (INOUT A : INTEGER 16; INOUT B : INTEGER 16);}\par
+{\f1    BEGIN}\par
+{\f1     ITEM T INTEGER 16;}\par
+{\f1     T = A;  A = B;  B = T;}\par
+{\f1    END}\par
+\par
+Appel :\par
+{\f1   RES = NOM(10, 3.14);}\par
+{\f1   AFFICHE('BONJOUR');}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_06}     {\uldb Suivant >>}{\v IDH_JOVIAL_08}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_08}
+{\footnote $ JOVIAL - COMPOOL (modules de declarations partagees)}
+{\footnote K JOVIAL COMPOOL;modules;declarations partagees;USES;compilation separee}
+\b\fs24 COMPOOL (modules de declarations partagees) \b0\fs20\par
+\par
+Un COMPOOL contient des declarations communes a plusieurs unites de compilation\par
+(equivalent des fichiers en-tete .h en C, ou des MODULE INTERFACE en Modula-2).\par
+\par
+{\f1   COMPOOL AVIONIQUE;}\par
+{\f1    CONSTANT MAX_ALT INTEGER 16 U = 60000;}\par
+{\f1    TYPE COORD = TABLE PARALLEL;}\par
+{\f1     ITEM LAT  FIXED 32 24 S;}\par
+{\f1     ITEM LON  FIXED 32 24 S;}\par
+{\f1     ITEM ALT  INTEGER 16 S;}\par
+{\f1    END}\par
+{\f1    ITEM POSITION_AVION COORD;}\par
+{\f1   END_COMPOOL}\par
+\par
+Utilisation :\par
+{\f1   PROGRAM PILOTAGE;}\par
+{\f1    USES AVIONIQUE;}\par
+{\f1    START}\par
+{\f1     POSITION_AVION.ALT = 10000;}\par
+{\f1    TERM}\par
+{\f1   END}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_07}     {\uldb Suivant >>}{\v IDH_JOVIAL_09}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_09}
+{\footnote $ JOVIAL - Entrees/sorties}
+{\footnote K JOVIAL entrees sorties;INPUT;OUTPUT;registres memoire-mappes;LOC}
+\b\fs24 Entrees/sorties \b0\fs20\par
+\par
+JOVIAL n'a pas de bibliotheque standard d'E/S aussi etendue qu'Ada ou C, mais\par
+fournit des primitives :\par
+\par
+{\f1   INPUT  VAR1, VAR2;}\par
+{\f1   OUTPUT 'RESULTAT = ', X;}\par
+\par
+Pour les systemes embarques temps reel, les E/S sont generalement realisees\par
+par lecture/ecriture directe de registres memoire-mappes :\par
+\par
+{\f1   ITEM REG_CAPTEUR INTEGER 16 U LOC V'FFFA00'H;}\par
+{\f1   VALEUR = REG_CAPTEUR;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_08}     {\uldb Suivant >>}{\v IDH_JOVIAL_10}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_10}
+{\footnote $ JOVIAL - Adressage et acces materiel}
+{\footnote K JOVIAL adressage;LOC;REF;pointeurs;@;dereferencement;bas niveau}
+\b\fs24 Adressage et acces materiel \b0\fs20\par
+\par
+JOVIAL est concu pour la programmation systeme/embarquee :\par
+- LOC : specifie l'adresse absolue d'un item.\par
+- REF : type pointeur typed.\par
+- @  : operateur d'adresse (similaire a & en C).\par
+- $  : operateur de dereferencement.\par
+\par
+{\f1   ITEM TIMER INTEGER 32 U LOC V'F00010'H;}\par
+{\f1   ITEM PT REF INTEGER 16;}\par
+{\f1   PT = @VARIABLE;}\par
+{\f1   $PT = 42;}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_09}     {\uldb Suivant >>}{\v IDH_JOVIAL_11}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_11}
+{\footnote $ JOVIAL - Gestion du temps reel et bas niveau}
+{\footnote K JOVIAL temps reel;INTERRUPT;INLINE assembleur;sections atomiques;embarque}
+\b\fs24 Gestion du temps reel et bas niveau \b0\fs20\par
+\par
+J73 supporte :\par
+- Routines d'interruption : INTERRUPT keyword (selon implementation).\par
+- Sections atomiques : INLINE assembleur.\par
+- Synchronisation : selon RTOS hote (pas dans le standard).\par
+\par
+Bloc en assembleur :\par
+{\f1   INLINE}\par
+{\f1    $0E         " PUSH CS "}\par
+{\f1    $1F         " POP DS "}\par
+{\f1   END_INLINE}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_10}     {\uldb Suivant >>}{\v IDH_JOVIAL_12}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_12}
+{\footnote $ JOVIAL - JOVIAL J73 vs J3 vs J3B}
+{\footnote K JOVIAL dialectes;J3;J3B Burroughs;J73 MIL-STD-1589;J73/I;evolution}
+\b\fs24 JOVIAL J73 vs J3 vs J3B \b0\fs20\par
+\par
+JOVIAL J3 (1967) :\par
+- Premiere version DoD standardisee.\par
+- Types : INTEGER, FLOATING, HOLLERITH, BOOLEAN, STATUS.\par
+- Pas de COMPOOL portable, pas de modularisation forte.\par
+\par
+JOVIAL J3B (Burroughs, 1969) :\par
+- Extension proprietaire avec tables paralleles.\par
+- Optimisation pour processeurs Burroughs B7700.\par
+\par
+JOVIAL J73 (MIL-STD-1589, 1973-1984) :\par
+- Standard DoD final.\par
+- Types parametrables (INTEGER n S/U).\par
+- FIXED point arithmetique.\par
+- Procedures avec parametres typed.\par
+- Compilation separee via COMPOOL.\par
+- Block structure ALGOL-like complete.\par
+\par
+JOVIAL J73/I (1980+) :\par
+- Version pour ordinateurs internationaux ISO 8859.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_11}     {\uldb Suivant >>}{\v IDH_JOVIAL_13}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_13}
+{\footnote $ JOVIAL - Compilateurs JOVIAL dans le projet DEV-COOLS}
+{\footnote K JOVIAL compilateurs projet;JOVIAL86.PAS;JOVCW32.PAS;DOS 8086;Win32 PE;MASM;FIXED point Q-format}
+\b\fs24 Compilateurs JOVIAL dans le projet DEV-COOLS \b0\fs20\par
+\par
+JOVIAL86.PAS :\par
+- Compilateur JOVIAL pour cible 8086 (DOS .COM/.EXE).\par
+- Mode memoire SMALL et LARGE.\par
+- Sortie assembleur MASM-compatible.\par
+- Sous-ensemble J73 sans COMPOOL externe (compilation monolithique).\par
+- Types : INTEGER 8/16/32, FLOATING, BIT, CHAR, STATUS.\par
+- Tables DENSE/MEDIUM, OVERLAY.\par
+\par
+JOVCW32.PAS :\par
+- Compilateur JOVIAL pour Windows 32 bits (PE executable).\par
+- Cible : Win32 console, API minimal.\par
+- Supporte FIXED point en emulation logicielle (Q-format).\par
+- Generation directe x86-32 sans passage par MASM.\par
+- COMPOOL en un fichier (multi-COMPOOL non supporte).\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_12}     {\uldb Suivant >>}{\v IDH_JOVIAL_14}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_14}
+{\footnote $ JOVIAL - Exemples de programmes}
+{\footnote K JOVIAL exemples;Hello;somme tableau;factorielle;registre materiel;machine etats;STATUS CASE}
+\b\fs24 Exemples de programmes \b0\fs20\par
+\par
+14.1 Hello World\par
+\par
+{\f1   PROGRAM HELLO;}\par
+{\f1    START}\par
+{\f1     OUTPUT 'BONJOUR LE MONDE';}\par
+{\f1    TERM}\par
+{\f1   END}\par
+\par
+14.2 Somme d'un tableau\par
+\par
+{\f1   PROGRAM SOMTAB;}\par
+{\f1    ITEM I       INTEGER 16 U;}\par
+{\f1    ITEM SOMME   INTEGER 32 S;}\par
+{\f1    TABLE T (10) DENSE;}\par
+{\f1     BEGIN}\par
+{\f1      ITEM V INTEGER 16 S;}\par
+{\f1     END}\par
+{\f1    START}\par
+{\f1     FOR I = 1 STEP 1 UNTIL 10 DO}\par
+{\f1      BEGIN}\par
+{\f1       T.V(I) = I * I;}\par
+{\f1      END}\par
+{\f1     SOMME = 0;}\par
+{\f1     FOR I = 1 STEP 1 UNTIL 10 DO}\par
+{\f1      BEGIN}\par
+{\f1       SOMME = SOMME + T.V(I);}\par
+{\f1      END}\par
+{\f1     OUTPUT 'SOMME = ', SOMME;}\par
+{\f1    TERM}\par
+{\f1   END}\par
+\par
+14.3 Factorielle recursive\par
+\par
+{\f1   PROC FACT (N : INTEGER 16 U) RETURNS (INTEGER 32 U);}\par
+{\f1    BEGIN}\par
+{\f1     IF N LQ 1 THEN}\par
+{\f1      RETURN 1;}\par
+{\f1     ELSE}\par
+{\f1      RETURN N * FACT(N-1);}\par
+{\f1    END}\par
+\par
+14.4 Lecture d'un registre materiel\par
+\par
+{\f1   PROGRAM LIRE_ADC;}\par
+{\f1    ITEM ADC_REG  INTEGER 16 U LOC V'FFE000'H;}\par
+{\f1    ITEM VALEUR   INTEGER 16 U;}\par
+{\f1    START}\par
+{\f1     VALEUR = ADC_REG;}\par
+{\f1     OUTPUT 'CAPTEUR = ', VALEUR;}\par
+{\f1    TERM}\par
+{\f1   END}\par
+\par
+14.5 Machine a etats avec STATUS et CASE\par
+\par
+{\f1   PROGRAM CONTROLEUR;}\par
+{\f1    ITEM ETAT  STATUS (V'INIT', V'ARME', V'TIRE', V'STOP');}\par
+{\f1    START}\par
+{\f1     ETAT = V'INIT';}\par
+{\f1     WHILE ETAT NQ V'STOP' DO}\par
+{\f1      BEGIN}\par
+{\f1       CASE ETAT OF}\par
+{\f1        BEGIN}\par
+{\f1         (V'INIT'): ETAT = V'ARME';}\par
+{\f1         (V'ARME'): ETAT = V'TIRE';}\par
+{\f1         (V'TIRE'): ETAT = V'STOP';}\par
+{\f1        END}\par
+{\f1      END}\par
+{\f1    TERM}\par
+{\f1   END}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_13}     {\uldb Suivant >>}{\v IDH_JOVIAL_15}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_15}
+{\footnote $ JOVIAL - Influence et heritage}
+{\footnote K JOVIAL influence;CMS-2;TACPOL;Ada;SPARK;F-16;B-1B;B-52;AWACS;DDC-I;SEA}
+\b\fs24 Influence et heritage \b0\fs20\par
+\par
+JOVIAL a directement influence :\par
+- CMS-2 (US Navy, derive de JOVIAL J3).\par
+- TACPOL (US Army).\par
+- Ada (1983) : structure ALGOL-like, typage fort, compilation modulaire, support\par
+{\f1   temps reel - tous ces traits sont issus de l'experience JOVIAL DoD.}\par
+- SPARK (sous-ensemble Ada formel pour systemes critiques).\par
+\par
+Aujourd'hui (annees 2020) JOVIAL est encore utilise pour la maintenance de :\par
+- F-16 Fighting Falcon (avionique).\par
+- B-1B Lancer.\par
+- B-52 Stratofortress (mises a jour avioniques).\par
+- C-130 Hercules.\par
+- AWACS.\par
+- Certains systemes NORAD.\par
+\par
+Outils modernes :\par
+- DDC-I JOVIAL Compiler (J73, support 32/64 bits, integration TASKING).\par
+- Software Engineering Associates (SEA) JOVIAL toolchain.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_14}     {\uldb Suivant >>}{\v IDH_JOVIAL_16}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_JOVIAL_16}
+{\footnote $ JOVIAL - References}
+{\footnote K JOVIAL references;bibliographie;MIL-STD-1589C;Shaw;Schwartz;Sammet;HOLWG;AFSCM 300-9}
+\b\fs24 References \b0\fs20\par
+\par
+- MIL-STD-1589C : "JOVIAL (J73), Department of Defense Standard", US DoD, 1984.\par
+- Shaw, Christopher J. : "JOVIAL: A Programming Language for Real-Time\par
+{\f1   Command Systems", Annual Review in Automatic Programming, 1963.}\par
+- Schwartz, Jules I. : "The Development of JOVIAL", ACM SIGPLAN Notices, 1981.\par
+- "JOVIAL J73 Programmer's Reference Manual", DDC-I, 1990.\par
+- Sammet, Jean E. : "Programming Languages: History and Fundamentals",\par
+{\f1   Prentice-Hall, 1969 (chapitres sur JOVIAL).}\par
+- DoD HOLWG (High Order Language Working Group) reports, 1975-1978.\par
+- AFSCM 300-9 : "JOVIAL J3 Compiler Manual", US Air Force, 1968.\par
+\par
+{\f1                               FIN DU DOCUMENT}\par
+
+\par
+{\uldb << Precedent}{\v IDH_JOVIAL_15}     {\uldb Table des matieres}{\v IDH_JOVIAL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

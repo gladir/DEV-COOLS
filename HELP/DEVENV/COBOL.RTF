@@ -1,0 +1,1195 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0\fswiss Helvetica;}{\f1\fmodern Courier New;}}
+
+{\footnote # IDH_COBOL_01}
+{\footnote $ COBOL - PRESENTATION}
+{\footnote K COBOL presentation;CODASYL;Grace Hopper;FLOW-MATIC;DoD;ANSI;ISO 1989;COBOL-85;COBOL-2002;COBOL-2014;COBOL-2023}
+\b\fs24 PRESENTATION \b0\fs20\par
+\par
+COBOL (COmmon Business-Oriented Language) a ete defini en\par
+1959-1960 par le comite CODASYL (Conference on Data Systems\par
+Languages), sous l'impulsion du Department of Defense\par
+americain. Grace Hopper en est la figure tutelaire ; son\par
+langage FLOW-MATIC (1955-1959) est l'ancetre direct.\par
+\par
+COBOL est concu pour les applications de gestion :\par
+traitement de fichiers, etats imprimes, transactions\par
+bancaires, paie, comptabilite. Il privilegie :\par
+\par
+{\f1   - La lisibilite : syntaxe quasi-anglaise verbeuse}\par
+{\f1   - L'auto-documentation : declarations explicites}\par
+{\f1   - La portabilite : standardisation precoce}\par
+{\f1   - Le traitement de donnees structurees : PICTURE,}\par
+{\f1     COPY books, REDEFINES, OCCURS}\par
+{\f1   - L'arithmetique decimale exacte : type COMP-3 packed}\par
+\par
+COBOL est un langage :\par
+\par
+{\f1   - Compile, a typage statique}\par
+{\f1   - Imperatif et structure (procedurale)}\par
+{\f1   - Oriente fichiers et enregistrements}\par
+{\f1   - INSENSIBLE a la casse (mots-cles MAJUSCULES par}\par
+{\f1     convention)}\par
+{\f1   - Avec mise en page traditionnellement EN COLONNES}\par
+{\f1     (format ANSI fixe ou format libre selon dialecte)}\par
+{\f1   - Avec arithmetique decimale native}\par
+\par
+Versions et standards :\par
+\par
+{\f1   - COBOL-60     : premiere specification CODASYL}\par
+{\f1   - COBOL-68     : ANSI X3.23-1968 (standardisation)}\par
+{\f1   - COBOL-74     : ANSI X3.23-1974 (CALL, COPY etendus)}\par
+{\f1   - COBOL-85     : ANSI X3.23-1985 (structuration,}\par
+{\f1                    EVALUATE, references)}\par
+{\f1   - COBOL-2002   : ISO/IEC 1989:2002 (objets, exceptions,}\par
+{\f1                    format libre, types nationaux)}\par
+{\f1   - COBOL-2014   : ISO/IEC 1989:2014 (revisions et clarifs)}\par
+{\f1   - COBOL-2023   : ISO/IEC 1989:2023 (recente)}\par
+\par
+Dialectes principaux :\par
+{\f1   - IBM COBOL (Enterprise COBOL, OS/390, z/OS)}\par
+{\f1   - Micro Focus COBOL}\par
+{\f1   - GnuCOBOL (open source, ex OpenCOBOL)}\par
+{\f1   - Visual COBOL, Fujitsu NetCOBOL, ACUCOBOL}\par
+\par
+Extensions de fichiers reconnues :\par
+\par
+{\f1   .cob, .cbl   programme COBOL}\par
+{\f1   .cpy         copy book (include)}\par
+{\f1   .dat         donnees}\par
+{\f1   .lst         listing}\par
+\par
+\par
+\par
+\b Sections suivantes : \b0\par
+\par
+{\f1  2. STRUCTURE D'UN PROGRAMME}     {\uldb [Aller]}{\v IDH_COBOL_02}\par
+{\f1  3. STRUCTURE LEXICALE}     {\uldb [Aller]}{\v IDH_COBOL_03}\par
+{\f1  4. TYPES DE DONNEES (PICTURE)}     {\uldb [Aller]}{\v IDH_COBOL_04}\par
+{\f1  5. PROCEDURE DIVISION - INSTRUCTIONS DE BASE}     {\uldb [Aller]}{\v IDH_COBOL_05}\par
+{\f1  6. STRUCTURES DE CONTROLE}     {\uldb [Aller]}{\v IDH_COBOL_06}\par
+{\f1  7. GESTION DE FICHIERS}     {\uldb [Aller]}{\v IDH_COBOL_07}\par
+{\f1  8. SOUS-PROGRAMMES}     {\uldb [Aller]}{\v IDH_COBOL_08}\par
+{\f1  9. COPY ET REPLACE}     {\uldb [Aller]}{\v IDH_COBOL_09}\par
+{\f1 10. ARITHMETIQUE DECIMALE}     {\uldb [Aller]}{\v IDH_COBOL_10}\par
+{\f1 11. TRI ET FUSION}     {\uldb [Aller]}{\v IDH_COBOL_11}\par
+{\f1 12. RAPPORTS - REPORT WRITER (optionnel)}     {\uldb [Aller]}{\v IDH_COBOL_12}\par
+{\f1 13. COBOL-85 - STRUCTURATION}     {\uldb [Aller]}{\v IDH_COBOL_13}\par
+{\f1 14. COBOL-2002 - OBJETS ET EXTENSIONS}     {\uldb [Aller]}{\v IDH_COBOL_14}\par
+{\f1 15. COMPILATEURS DU PROJET}     {\uldb [Aller]}{\v IDH_COBOL_15}\par
+{\f1 16. EXEMPLES}     {\uldb [Aller]}{\v IDH_COBOL_16}\par
+{\f1 17. INFLUENCE ET PERENNITE}     {\uldb [Aller]}{\v IDH_COBOL_17}\par
+{\f1 18. REFERENCES}     {\uldb [Aller]}{\v IDH_COBOL_18}\par
+\par
+{\uldb Suivant >>}{\v IDH_COBOL_02}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_02}
+{\footnote $ COBOL - STRUCTURE D'UN PROGRAMME}
+{\footnote K COBOL structure programme;IDENTIFICATION DIVISION;ENVIRONMENT DIVISION;DATA DIVISION;PROCEDURE DIVISION;PROGRAM-ID;FILE-CONTROL;LINKAGE SECTION;WORKING-STORAGE}
+\b\fs24 STRUCTURE D'UN PROGRAMME \b0\fs20\par
+\par
+Un programme COBOL est structure en quatre DIVISIONS dans\par
+un ordre fixe :\par
+\par
+{\f1   IDENTIFICATION DIVISION    (obligatoire)}\par
+{\f1   ENVIRONMENT DIVISION       (optionnelle)}\par
+{\f1   DATA DIVISION              (optionnelle)}\par
+{\f1   PROCEDURE DIVISION         (obligatoire)}\par
+\par
+\par
+\b 2.1 Exemple complet \b0\par
+\par
+{\f1   IDENTIFICATION DIVISION.}\par
+{\f1   PROGRAM-ID. BONJOUR.}\par
+{\f1   AUTHOR. SYLVAIN.}\par
+\par
+{\f1   ENVIRONMENT DIVISION.}\par
+{\f1   CONFIGURATION SECTION.}\par
+{\f1   SOURCE-COMPUTER. IBM-PC.}\par
+\par
+{\f1   DATA DIVISION.}\par
+{\f1   WORKING-STORAGE SECTION.}\par
+{\f1   01 WS-MESSAGE PIC X(20) VALUE "Bonjour, monde!".}\par
+\par
+{\f1   PROCEDURE DIVISION.}\par
+{\f1   MAIN-PARA.}\par
+{\f1     DISPLAY WS-MESSAGE.}\par
+{\f1     STOP RUN.}\par
+\par
+\par
+\b 2.2 IDENTIFICATION DIVISION \b0\par
+\par
+Decrit le programme (metadonnees) :\par
+\par
+{\f1   IDENTIFICATION DIVISION.}\par
+{\f1   PROGRAM-ID. MONPROG.}\par
+{\f1   AUTHOR. JEAN DUPONT.}\par
+{\f1   DATE-WRITTEN. 14/05/2026.}\par
+{\f1   DATE-COMPILED.}\par
+{\f1   REMARKS. Programme exemple.}\par
+\par
+\par
+\b 2.3 ENVIRONMENT DIVISION \b0\par
+\par
+Decrit l'environnement materiel/logiciel :\par
+\par
+{\f1   ENVIRONMENT DIVISION.}\par
+{\f1   CONFIGURATION SECTION.}\par
+{\f1     SOURCE-COMPUTER. IBM-PC.}\par
+{\f1     OBJECT-COMPUTER. IBM-PC.}\par
+{\f1   INPUT-OUTPUT SECTION.}\par
+{\f1     FILE-CONTROL.}\par
+{\f1       SELECT CLIENTS ASSIGN TO "CLIENTS.DAT"}\par
+{\f1         ORGANIZATION IS INDEXED}\par
+{\f1         ACCESS MODE  IS DYNAMIC}\par
+{\f1         RECORD KEY   IS CLI-CODE.}\par
+\par
+\par
+\b 2.4 DATA DIVISION \b0\par
+\par
+Declare toutes les donnees :\par
+\par
+{\f1   DATA DIVISION.}\par
+{\f1   FILE SECTION.}\par
+{\f1     FD CLIENTS.}\par
+{\f1     01 CLIENT-REC.}\par
+{\f1        05 CLI-CODE    PIC 9(5).}\par
+{\f1        05 CLI-NOM     PIC X(30).}\par
+{\f1        05 CLI-SOLDE   PIC S9(7)V99 COMP-3.}\par
+\par
+{\f1   WORKING-STORAGE SECTION.}\par
+{\f1     01 WS-COMPTEUR    PIC 9(4) VALUE ZERO.}\par
+{\f1     01 WS-TOTAL       PIC 9(9)V99 VALUE ZERO.}\par
+\par
+{\f1   LINKAGE SECTION.}\par
+{\f1     01 LK-PARAM       PIC X(80).}\par
+\par
+\par
+\b 2.5 PROCEDURE DIVISION \b0\par
+\par
+Contient le code executable :\par
+\par
+{\f1   PROCEDURE DIVISION [USING LK-PARAM].}\par
+{\f1   MAIN-PARA.}\par
+{\f1     PERFORM INIT-PARA.}\par
+{\f1     PERFORM TRAIT-PARA UNTIL FIN-FICHIER.}\par
+{\f1     PERFORM FIN-PARA.}\par
+{\f1     STOP RUN.}\par
+\par
+{\f1   INIT-PARA.}\par
+{\f1     OPEN INPUT CLIENTS.}\par
+\par
+{\f1   TRAIT-PARA.}\par
+{\f1     READ CLIENTS AT END MOVE "OUI" TO FIN-FICHIER.}\par
+\par
+{\f1   FIN-PARA.}\par
+{\f1     CLOSE CLIENTS.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_01}     {\uldb Suivant >>}{\v IDH_COBOL_03}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_03}
+{\footnote $ COBOL - STRUCTURE LEXICALE}
+{\footnote K COBOL structure lexicale;format colonnes;ANSI fixe;zone A;zone B;format libre;commentaires;insensible casse;mots reserves;figurative ZERO SPACE HIGH-VALUE}
+\b\fs24 STRUCTURE LEXICALE \b0\fs20\par
+\par
+\par
+\b 3.1 Format des lignes (ANSI fixe) \b0\par
+\par
+Le format historique a colonnes fixes :\par
+\par
+{\f1   Col 1-6   : numero de sequence (ignore)}\par
+{\f1   Col 7     : indicateur :}\par
+{\f1               ' '  ligne normale}\par
+{\f1               '*'  commentaire}\par
+{\f1               '/'  saut de page + commentaire}\par
+{\f1               '-'  continuation}\par
+{\f1               'D'  ligne de debug (mode DEBUGGING)}\par
+{\f1   Col 8-11  : zone A (en-tetes : DIVISION, SECTION,}\par
+{\f1               paragraphes, niveau 01, FD)}\par
+{\f1   Col 12-72 : zone B (instructions, niveaux > 01)}\par
+{\f1   Col 73-80 : identification (ignore)}\par
+\par
+Format libre (depuis COBOL-2002) :\par
+toute colonne, le `*>` introduit un commentaire de fin\par
+de ligne, `*` en debut commente la ligne.\par
+\par
+\par
+\b 3.2 Casse \b0\par
+\par
+COBOL est INSENSIBLE a la casse. Par convention :\par
+{\f1   - Mots reserves    : MAJUSCULES}\par
+{\f1   - Variables maison : MAJUSCULES (souvent) ou Pascal}\par
+{\f1   - Litteraux        : tels quels}\par
+\par
+\par
+\b 3.3 Commentaires \b0\par
+\par
+{\f1   * Commentaire ligne entiere (col 7 = '*')}\par
+{\f1   *> commentaire de fin de ligne (COBOL-2002+)}\par
+\par
+\par
+\b 3.4 Identificateurs \b0\par
+\par
+Lettres, chiffres et tirets (`-`), commencant par une\par
+lettre, max 30 caracteres. Le tiret est un caractere\par
+ordinaire (PAS un operateur).\par
+\par
+{\f1   CLIENT-NOM           valide}\par
+{\f1   WS-TOTAL-HT          valide}\par
+{\f1   COMPTE_BANCAIRE      souvent invalide (underscore)}\par
+{\f1   1ERLIGNE             invalide (commence par chiffre)}\par
+\par
+\par
+\b 3.5 Mots reserves (extrait COBOL-85, ~ 400 mots) \b0\par
+\par
+{\f1   ACCEPT, ADD, ALL, ALPHABETIC, ALSO, ALTER, AND,}\par
+{\f1   ANY, ARE, AREA, ASCENDING, ASSIGN, AT, AUTHOR,}\par
+{\f1   BEFORE, BLOCK, BY, CALL, CANCEL, CHARACTER, CLOSE,}\par
+{\f1   COBOL, CODE, COLUMN, COMMA, COMP, COMPUTE, COPY,}\par
+{\f1   CORRESPONDING, COUNT, DATA, DATE, DAY, DEBUG, DECLARATIVES,}\par
+{\f1   DELETE, DELIMITED, DEPENDING, DESCENDING, DISPLAY, DIVIDE,}\par
+{\f1   DIVISION, ELSE, END, ENVIRONMENT, EQUAL, EVALUATE, EXIT,}\par
+{\f1   EXTEND, FD, FILE, FILLER, FROM, GIVING, GO, GREATER, IF,}\par
+{\f1   IN, INDEXED, INITIALIZE, INPUT, INSPECT, INTO, IS, JUST,}\par
+{\f1   KEY, LABEL, LESS, LINKAGE, LOCAL-STORAGE (2002), MOVE,}\par
+{\f1   MULTIPLY, NEXT, NOT, NUMERIC, OCCURS, OF, OPEN, OR,}\par
+{\f1   ORGANIZATION, OUTPUT, PERFORM, PIC, PICTURE, POINTER,}\par
+{\f1   PROCEDURE, PROGRAM-ID, READ, RECORD, REDEFINES, REPLACING,}\par
+{\f1   REWRITE, ROUNDED, SEARCH, SECTION, SELECT, SENTENCE, SET,}\par
+{\f1   SIGN, SIZE, SORT, SPACE, STANDARD, START, STOP, STRING,}\par
+{\f1   SUBTRACT, SYMBOLIC, TIMES, TO, UNSTRING, UNTIL, UPON, USE,}\par
+{\f1   USING, VALUE, VARYING, WHEN, WORKING-STORAGE, WRITE, ZERO}\par
+\par
+\par
+\b 3.6 Literaux \b0\par
+\par
+{\f1   - Numerique   : 42, -3.14, +1000, 0}\par
+{\f1   - Alphanum.   : "Bonjour"  ou  'Bonjour'}\par
+{\f1   - Figurative  : ZERO, ZEROS, ZEROES, SPACE, SPACES,}\par
+{\f1                   HIGH-VALUE, HIGH-VALUES, LOW-VALUE,}\par
+{\f1                   LOW-VALUES, QUOTE, QUOTES, ALL "X"}\par
+{\f1   - Booleen     : pas de type natif (utiliser 88-niveau)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_02}     {\uldb Suivant >>}{\v IDH_COBOL_04}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_04}
+{\footnote $ COBOL - TYPES DE DONNEES (PICTURE)}
+{\footnote K COBOL types donnees;PICTURE;PIC;USAGE;DISPLAY;COMP;COMP-3;COMP-5;packed decimal;niveaux;01 88 77 66;OCCURS;REDEFINES;RENAMES;nom-condition}
+\b\fs24 TYPES DE DONNEES (PICTURE) \b0\fs20\par
+\par
+COBOL ne possede pas de "types" au sens classique. Toute\par
+variable est decrite par une CLAUSE PICTURE (ou PIC) qui\par
+specifie sa forme : nombre de caracteres, signe, decimales,\par
+formatage d'affichage.\par
+\par
+\par
+\b 4.1 Symboles PICTURE \b0\par
+\par
+{\f1   9    chiffre 0-9}\par
+{\f1   A    lettre alphabetique}\par
+{\f1   X    caractere alphanumerique}\par
+{\f1   V    point decimal implicite (non stocke)}\par
+{\f1   S    signe (presence du signe)}\par
+{\f1   P    decalage decimal implicite}\par
+{\f1   Z    chiffre avec suppression de zero (en sortie)}\par
+{\f1   ,    virgule (en sortie)}\par
+{\f1   .    point (en sortie)}\par
+{\f1   $    symbole monetaire (en sortie)}\par
+{\f1   +    -    signe explicite (en sortie)}\par
+{\f1   *    asterisque de protection (en sortie)}\par
+{\f1   CR   credit (en sortie, code comptable)}\par
+{\f1   DB   debit (en sortie, code comptable)}\par
+{\f1   BS0  espace / barre / zero (en sortie)}\par
+\par
+\par
+\b 4.2 Exemples \b0\par
+\par
+{\f1   PIC X(10)               10 caracteres alphanumeriques}\par
+{\f1   PIC 9(5)                5 chiffres entiers}\par
+{\f1   PIC 9(7)V99             7 entiers + 2 decimales (9 chiffres)}\par
+{\f1   PIC S9(5)V99 COMP-3     packed decimal signe}\par
+{\f1   PIC A(20)               20 lettres}\par
+{\f1   PIC $$$,$$9.99          montant avec format}\par
+{\f1   PIC --9.99              signe negatif suppress}\par
+{\f1   PIC Z(5)9               5 chiffres + 1, zero suppress}\par
+\par
+\par
+\b 4.3 Clauses USAGE \b0\par
+\par
+Specifie la representation interne :\par
+\par
+{\f1   DISPLAY        ASCII/EBCDIC (defaut), 1 octet/digit}\par
+{\f1   COMP, COMP-4   binaire (BINARY)}\par
+{\f1   COMP-1         flottant simple precision}\par
+{\f1   COMP-2         flottant double precision}\par
+{\f1   COMP-3         packed decimal (2 digits/octet + signe)}\par
+{\f1   COMP-5         binaire natif (taille hote)}\par
+{\f1   POINTER        pointeur (COBOL-85+)}\par
+{\f1   INDEX          variable d'indexation (SET, SEARCH)}\par
+\par
+\par
+\b 4.4 Niveaux de structure \b0\par
+\par
+Les enregistrements sont hierarchiques, avec NUMEROS DE\par
+NIVEAU 01-49 :\par
+\par
+{\f1   01 CLIENT.}\par
+{\f1      05 CLI-CODE       PIC 9(5).}\par
+{\f1      05 CLI-NOM-ADR.}\par
+{\f1         10 CLI-NOM     PIC X(30).}\par
+{\f1         10 CLI-ADR     PIC X(50).}\par
+{\f1      05 CLI-SOLDE      PIC S9(7)V99 COMP-3.}\par
+\par
+Niveaux speciaux :\par
+{\f1   01     : top-level}\par
+{\f1   02-49  : sous-elements}\par
+{\f1   66     : RENAMES (alias d'une zone)}\par
+{\f1   77     : variable simple WORKING-STORAGE (sans structure)}\par
+{\f1   88     : nom-condition (booleen logique sur valeur)}\par
+\par
+\par
+\b 4.5 Noms-condition (88) \b0\par
+\par
+{\f1   01 WS-STATUS    PIC X VALUE "A".}\par
+{\f1      88 ACTIF     VALUE "A".}\par
+{\f1      88 INACTIF   VALUE "I".}\par
+{\f1      88 CLOTURE   VALUE "C".}\par
+\par
+Puis :  IF ACTIF ...   ou   SET ACTIF TO TRUE.\par
+\par
+\par
+\b 4.6 OCCURS (tableaux) \b0\par
+\par
+{\f1   01 TABLEAU.}\par
+{\f1      05 ELEMENT OCCURS 100 TIMES.}\par
+{\f1         10 EL-CODE   PIC 9(3).}\par
+{\f1         10 EL-NOM    PIC X(20).}\par
+\par
+Tableaux a taille variable (OCCURS DEPENDING ON) :\par
+\par
+{\f1   05 N-ELEM PIC 99.}\par
+{\f1   05 ELEM OCCURS 1 TO 99 TIMES DEPENDING ON N-ELEM}\par
+{\f1      INDEXED BY IDX.}\par
+{\f1      10 EL-VAL PIC 9(5).}\par
+\par
+\par
+\b 4.7 REDEFINES \b0\par
+\par
+Superpose plusieurs declarations sur la meme zone memoire :\par
+\par
+{\f1   01 DONNEE.}\par
+{\f1      05 D-CHAR    PIC X(8).}\par
+{\f1      05 D-NUM REDEFINES D-CHAR    PIC 9(8).}\par
+\par
+\par
+\b 4.8 RENAMES (66) \b0\par
+\par
+{\f1   66 PRENOM-NOM RENAMES CLI-NOM THRU CLI-ADR.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_03}     {\uldb Suivant >>}{\v IDH_COBOL_05}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_05}
+{\footnote $ COBOL - PROCEDURE DIVISION - INSTRUCTIONS DE BASE}
+{\footnote K COBOL instructions base;MOVE;DISPLAY;ACCEPT;COMPUTE;ADD;SUBTRACT;MULTIPLY;DIVIDE;STRING;UNSTRING;INSPECT;INITIALIZE}
+\b\fs24 PROCEDURE DIVISION - INSTRUCTIONS DE BASE \b0\fs20\par
+\par
+\par
+\b 5.1 MOVE - affectation \b0\par
+\par
+{\f1   MOVE 0 TO WS-COMPTEUR.}\par
+{\f1   MOVE "Inconnu" TO WS-NOM.}\par
+{\f1   MOVE CLI-NOM TO WS-NOM.}\par
+{\f1   MOVE CORRESPONDING REC-A TO REC-B.}\par
+{\f1   MOVE SPACES TO WS-LIGNE.}\par
+{\f1   MOVE ZEROS  TO WS-TOTAL.}\par
+\par
+\par
+\b 5.2 DISPLAY / ACCEPT - I/O console \b0\par
+\par
+{\f1   DISPLAY "Resultat: " WS-TOTAL.}\par
+{\f1   DISPLAY "Valeur: " X UPON CONSOLE.}\par
+{\f1   ACCEPT WS-INPUT.}\par
+{\f1   ACCEPT WS-DATE FROM DATE.       (* AAMMJJ *)}\par
+{\f1   ACCEPT WS-TIME FROM TIME.       (* HHMMSScc *)}\par
+\par
+\par
+\b 5.3 COMPUTE - calcul algebrique \b0\par
+\par
+{\f1   COMPUTE WS-TOTAL = WS-PRIX * WS-QTE.}\par
+{\f1   COMPUTE WS-MOY ROUNDED = WS-SOMME / WS-N.}\par
+\par
+\par
+\b 5.4 ADD / SUBTRACT / MULTIPLY / DIVIDE \b0\par
+\par
+{\f1   ADD 1 TO WS-COMPTEUR.}\par
+{\f1   ADD WS-A WS-B GIVING WS-C.}\par
+{\f1   SUBTRACT WS-DEDUCTION FROM WS-BRUT GIVING WS-NET.}\par
+{\f1   MULTIPLY WS-PRIX BY WS-QTE GIVING WS-TOTAL.}\par
+{\f1   DIVIDE WS-SOMME BY WS-N GIVING WS-MOY ROUNDED.}\par
+{\f1   DIVIDE 7 INTO WS-X GIVING WS-Q REMAINDER WS-R.}\par
+\par
+\par
+\b 5.5 STRING / UNSTRING \b0\par
+\par
+Concatenation :\par
+\par
+{\f1   STRING "Bonjour " DELIMITED BY SIZE}\par
+{\f1          WS-NOM    DELIMITED BY SPACES}\par
+{\f1          INTO      WS-MESSAGE.}\par
+\par
+Decoupage :\par
+\par
+{\f1   UNSTRING WS-LIGNE DELIMITED BY ","}\par
+{\f1     INTO WS-CHAMP1 WS-CHAMP2 WS-CHAMP3.}\par
+\par
+\par
+\b 5.6 INSPECT \b0\par
+\par
+Comptage et remplacement de caracteres :\par
+\par
+{\f1   INSPECT WS-TEXTE TALLYING WS-N FOR ALL "A".}\par
+{\f1   INSPECT WS-TEXTE REPLACING ALL "X" BY "Y".}\par
+\par
+\par
+\b 5.7 INITIALIZE \b0\par
+\par
+Met les zones a leur valeur par defaut (zero pour numerique,\par
+espace pour alphanumerique) :\par
+\par
+{\f1   INITIALIZE CLIENT-REC.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_04}     {\uldb Suivant >>}{\v IDH_COBOL_06}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_06}
+{\footnote $ COBOL - STRUCTURES DE CONTROLE}
+{\footnote K COBOL structures controle;IF;ELSE;END-IF;EVALUATE;WHEN OTHER;PERFORM;TIMES;UNTIL;VARYING;inline;GO TO;CONTINUE;EXIT;STOP RUN}
+\b\fs24 STRUCTURES DE CONTROLE \b0\fs20\par
+\par
+\par
+\b 6.1 IF / ELSE / END-IF \b0\par
+\par
+{\f1   IF WS-AGE >= 18}\par
+{\f1     DISPLAY "Majeur"}\par
+{\f1   ELSE}\par
+{\f1     DISPLAY "Mineur"}\par
+{\f1   END-IF.}\par
+\par
+Avec conditions multiples :\par
+\par
+{\f1   IF WS-A > 0 AND WS-B < 100}\par
+{\f1     PERFORM TRAIT-PARA}\par
+{\f1   END-IF.}\par
+\par
+\par
+\b 6.2 EVALUATE - selection multiple (COBOL-85) \b0\par
+\par
+Equivalent du switch/case :\par
+\par
+{\f1   EVALUATE WS-CODE}\par
+{\f1     WHEN "A"     DISPLAY "Actif"}\par
+{\f1     WHEN "I"     DISPLAY "Inactif"}\par
+{\f1     WHEN "C" "F" DISPLAY "Clos ou Ferme"}\par
+{\f1     WHEN 1 THRU 9 DISPLAY "Numerique"}\par
+{\f1     WHEN OTHER   DISPLAY "Inconnu"}\par
+{\f1   END-EVALUATE.}\par
+\par
+EVALUATE supporte plusieurs sujets paralleles :\par
+\par
+{\f1   EVALUATE WS-AGE ALSO WS-SEXE}\par
+{\f1     WHEN < 18  ALSO "F"  DISPLAY "Fille"}\par
+{\f1     WHEN < 18  ALSO "M"  DISPLAY "Garcon"}\par
+{\f1     WHEN OTHER ALSO ANY  DISPLAY "Adulte"}\par
+{\f1   END-EVALUATE.}\par
+\par
+\par
+\b 6.3 PERFORM - boucles et appels de paragraphe \b0\par
+\par
+Appel simple :\par
+\par
+{\f1   PERFORM INIT-PARA.}\par
+\par
+Boucle TIMES :\par
+\par
+{\f1   PERFORM AFFICHE-PARA 10 TIMES.}\par
+\par
+Boucle UNTIL :\par
+\par
+{\f1   PERFORM LIRE-PARA UNTIL FIN-FICHIER = "OUI".}\par
+\par
+Boucle VARYING :\par
+\par
+{\f1   PERFORM TRAITE-PARA}\par
+{\f1     VARYING I FROM 1 BY 1 UNTIL I > 100.}\par
+\par
+Boucle inline (COBOL-85) :\par
+\par
+{\f1   PERFORM VARYING I FROM 1 BY 1 UNTIL I > 10}\par
+{\f1     DISPLAY I}\par
+{\f1     COMPUTE WS-TOTAL = WS-TOTAL + I}\par
+{\f1   END-PERFORM.}\par
+\par
+PERFORM PARA-A THRU PARA-Z : execute la sequence.\par
+\par
+\par
+\b 6.4 GO TO \b0\par
+\par
+Existe mais deconseille (style structure 1985+) :\par
+\par
+{\f1   GO TO TRAIT-PARA.}\par
+{\f1   GO TO PARA-A PARA-B PARA-C DEPENDING ON WS-CODE.}\par
+\par
+\par
+\b 6.5 CONTINUE / NEXT SENTENCE \b0\par
+\par
+{\f1   CONTINUE.                (* ne fait rien *)}\par
+{\f1   NEXT SENTENCE.           (* saute a apres le point *)}\par
+\par
+\par
+\b 6.6 EXIT \b0\par
+\par
+{\f1   EXIT.                    (* sortie de paragraphe *)}\par
+{\f1   EXIT PERFORM.            (* sortie de boucle inline *)}\par
+{\f1   EXIT PROGRAM.            (* retour au programme appelant *)}\par
+{\f1   STOP RUN.                (* fin du programme *)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_05}     {\uldb Suivant >>}{\v IDH_COBOL_07}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_07}
+{\footnote $ COBOL - GESTION DE FICHIERS}
+{\footnote K COBOL fichiers;SEQUENTIAL;RELATIVE;INDEXED;LINE SEQUENTIAL;SELECT;ASSIGN;FD;OPEN;READ;WRITE;REWRITE;DELETE;START;FILE STATUS}
+\b\fs24 GESTION DE FICHIERS \b0\fs20\par
+\par
+\par
+\b 7.1 Organisations \b0\par
+\par
+{\f1   SEQUENTIAL   sequentielle (lecture/ecriture en ordre)}\par
+{\f1   RELATIVE     relative (acces par numero d'enregistrement)}\par
+{\f1   INDEXED      indexee (acces par cle, type VSAM/B-tree)}\par
+{\f1   LINE SEQUENTIAL  fichier texte (ligne par ligne)}\par
+\par
+\par
+\b 7.2 SELECT / ASSIGN \b0\par
+\par
+{\f1   SELECT CLIENTS ASSIGN TO "CLIENTS.DAT"}\par
+{\f1     ORGANIZATION IS INDEXED}\par
+{\f1     ACCESS MODE  IS DYNAMIC}\par
+{\f1     RECORD KEY   IS CLI-CODE}\par
+{\f1     ALTERNATE RECORD KEY IS CLI-NOM WITH DUPLICATES}\par
+{\f1     FILE STATUS  IS WS-FS-CLI.}\par
+\par
+\par
+\b 7.3 FD - description du fichier \b0\par
+\par
+{\f1   FILE SECTION.}\par
+{\f1   FD CLIENTS}\par
+{\f1      RECORD CONTAINS 80 CHARACTERS}\par
+{\f1      LABEL RECORDS ARE STANDARD.}\par
+{\f1   01 CLIENT-REC.}\par
+{\f1      05 CLI-CODE    PIC 9(5).}\par
+{\f1      05 CLI-NOM     PIC X(30).}\par
+{\f1      05 CLI-ADR     PIC X(45).}\par
+\par
+\par
+\b 7.4 OPEN / CLOSE \b0\par
+\par
+{\f1   OPEN INPUT CLIENTS.}\par
+{\f1   OPEN OUTPUT RESULTATS.}\par
+{\f1   OPEN I-O CLIENTS.}\par
+{\f1   OPEN EXTEND JOURNAL.    (* append *)}\par
+{\f1   CLOSE CLIENTS RESULTATS.}\par
+\par
+\par
+\b 7.5 READ / WRITE / REWRITE / DELETE \b0\par
+\par
+{\f1   READ CLIENTS NEXT}\par
+{\f1     AT END MOVE "OUI" TO FIN-FICHIER}\par
+{\f1     NOT AT END PERFORM TRAITE-PARA}\par
+{\f1   END-READ.}\par
+\par
+{\f1   READ CLIENTS KEY IS CLI-CODE}\par
+{\f1     INVALID KEY DISPLAY "Non trouve"}\par
+{\f1   END-READ.}\par
+\par
+{\f1   WRITE CLIENT-REC.}\par
+{\f1   WRITE CLIENT-REC FROM WS-NEW-CLIENT.}\par
+\par
+{\f1   REWRITE CLIENT-REC.       (* maj en place, I-O ou indexed *)}\par
+\par
+{\f1   DELETE CLIENTS RECORD.}\par
+\par
+\par
+\b 7.6 START \b0\par
+\par
+Positionnement sur un indexe :\par
+\par
+{\f1   START CLIENTS KEY IS >= CLI-CODE}\par
+{\f1     INVALID KEY MOVE "OUI" TO FIN}\par
+{\f1   END-START.}\par
+\par
+\par
+\b 7.7 FILE STATUS \b0\par
+\par
+Code retour standard apres chaque operation :\par
+\par
+{\f1   00  OK}\par
+{\f1   10  fin de fichier}\par
+{\f1   22  cle dupliquee}\par
+{\f1   23  cle introuvable}\par
+{\f1   35  fichier inexistant}\par
+{\f1   9x  erreurs systeme}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_06}     {\uldb Suivant >>}{\v IDH_COBOL_08}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_08}
+{\footnote $ COBOL - SOUS-PROGRAMMES}
+{\footnote K COBOL sous-programmes;CALL;USING;BY REFERENCE;BY CONTENT;BY VALUE;LINKAGE SECTION;EXIT PROGRAM;GOBACK;CANCEL}
+\b\fs24 SOUS-PROGRAMMES \b0\fs20\par
+\par
+\par
+\b 8.1 CALL \b0\par
+\par
+Appel d'un programme externe :\par
+\par
+{\f1   CALL "SOUSPROG" USING WS-PARAM1 WS-PARAM2.}\par
+\par
+Avec gestion d'erreur :\par
+\par
+{\f1   CALL "SOUSPROG" USING WS-PARAM}\par
+{\f1     ON EXCEPTION DISPLAY "Erreur de chargement"}\par
+{\f1     NOT ON EXCEPTION CONTINUE}\par
+{\f1   END-CALL.}\par
+\par
+\par
+\b 8.2 LINKAGE SECTION \b0\par
+\par
+Le sous-programme declare les parametres dans LINKAGE :\par
+\par
+{\f1   IDENTIFICATION DIVISION.}\par
+{\f1   PROGRAM-ID. SOUSPROG.}\par
+\par
+{\f1   DATA DIVISION.}\par
+{\f1   LINKAGE SECTION.}\par
+{\f1   01 LK-INPUT   PIC X(80).}\par
+{\f1   01 LK-OUTPUT  PIC 9(5).}\par
+\par
+{\f1   PROCEDURE DIVISION USING LK-INPUT LK-OUTPUT.}\par
+{\f1     ...}\par
+{\f1     EXIT PROGRAM.}\par
+\par
+\par
+\b 8.3 BY REFERENCE / BY CONTENT / BY VALUE \b0\par
+\par
+{\f1   CALL "P" USING BY REFERENCE WS-X       (* defaut, *X *)}\par
+{\f1                  BY CONTENT   WS-Y       (* copie *)}\par
+{\f1                  BY VALUE     5.}\par
+\par
+\par
+\b 8.4 GOBACK / EXIT PROGRAM / STOP RUN \b0\par
+\par
+{\f1   EXIT PROGRAM.   (* retour normal au appelant *)}\par
+{\f1   GOBACK.         (* retour propre, equivalent moderne *)}\par
+{\f1   STOP RUN.       (* fin du processus entier *)}\par
+\par
+\par
+\b 8.5 CANCEL \b0\par
+\par
+{\f1   CANCEL "SOUSPROG".    (* libere et reinitialise *)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_07}     {\uldb Suivant >>}{\v IDH_COBOL_09}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_09}
+{\footnote $ COBOL - COPY ET REPLACE}
+{\footnote K COBOL COPY;COPY book;REPLACING;REPLACE;inclusion}
+\b\fs24 COPY ET REPLACE \b0\fs20\par
+\par
+\par
+\b 9.1 COPY \b0\par
+\par
+Inclusion d'un copy book (analogue a #include) :\par
+\par
+{\f1   WORKING-STORAGE SECTION.}\par
+{\f1   COPY "CLIENT-REC.CPY".}\par
+\par
+\par
+\b 9.2 COPY REPLACING \b0\par
+\par
+{\f1   COPY "RECORD.CPY" REPLACING ==:PREFIX:== BY ==CLI==.}\par
+\par
+Substitue toutes les occurrences du masque `:PREFIX:`\par
+par `CLI` lors de l'inclusion.\par
+\par
+\par
+\b 9.3 REPLACE \b0\par
+\par
+Substitution sur tout le source :\par
+\par
+{\f1   REPLACE ==WS== BY ==WORK-==.}\par
+{\f1   ...}\par
+{\f1   REPLACE OFF.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_08}     {\uldb Suivant >>}{\v IDH_COBOL_10}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_10}
+{\footnote $ COBOL - ARITHMETIQUE DECIMALE}
+{\footnote K COBOL arithmetique decimale;precision exacte;COMP-3 packed;ROUNDED;ON SIZE ERROR;fonctions intrinseques;FUNCTION;SUM;MAX;SQRT;CURRENT-DATE;NUMVAL;UPPER-CASE;LENGTH}
+\b\fs24 ARITHMETIQUE DECIMALE \b0\fs20\par
+\par
+\par
+\b 10.1 Precision exacte \b0\par
+\par
+COBOL effectue les calculs en decimal (pas en binaire),\par
+ce qui evite les erreurs d'arrondi classiques des `float` :\par
+\par
+{\f1   01 WS-PRIX     PIC 9(5)V99 VALUE 19.99.}\par
+{\f1   01 WS-QTE      PIC 9(3)    VALUE 7.}\par
+{\f1   01 WS-TOTAL    PIC 9(7)V99.}\par
+{\f1   ...}\par
+{\f1   COMPUTE WS-TOTAL = WS-PRIX * WS-QTE.}\par
+{\f1   *> WS-TOTAL = 139.93 EXACTEMENT}\par
+\par
+\par
+\b 10.2 COMP-3 (packed decimal) \b0\par
+\par
+Chaque digit = 4 bits. Plus compact et plus rapide qu'un\par
+DISPLAY :\par
+\par
+{\f1   01 WS-MONTANT  PIC S9(9)V99 COMP-3.   (* 6 octets *)}\par
+\par
+\par
+\b 10.3 ROUNDED et SIZE ERROR \b0\par
+\par
+{\f1   COMPUTE WS-MOY ROUNDED = WS-T / WS-N}\par
+{\f1     ON SIZE ERROR PERFORM ERREUR-PARA}\par
+{\f1   END-COMPUTE.}\par
+\par
+\par
+\b 10.4 Fonctions intrinseques (COBOL-85+) \b0\par
+\par
+{\f1   FUNCTION SUM(TBL(1) TBL(2) TBL(3))}\par
+{\f1   FUNCTION MAX(WS-A WS-B WS-C)}\par
+{\f1   FUNCTION SQRT(WS-X)}\par
+{\f1   FUNCTION CURRENT-DATE              YYYYMMDDHHMMSSCC...}\par
+{\f1   FUNCTION NUMVAL("123.45")}\par
+{\f1   FUNCTION UPPER-CASE(WS-NOM)}\par
+{\f1   FUNCTION LENGTH(WS-CHAINE)}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_09}     {\uldb Suivant >>}{\v IDH_COBOL_11}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_11}
+{\footnote $ COBOL - TRI ET FUSION}
+{\footnote K COBOL tri fusion;SORT;MERGE;ASCENDING KEY;DESCENDING KEY;INPUT PROCEDURE;OUTPUT PROCEDURE}
+\b\fs24 TRI ET FUSION \b0\fs20\par
+\par
+{\f1   SORT WORK-FILE}\par
+{\f1     ON ASCENDING KEY WK-CODE}\par
+{\f1     ON DESCENDING KEY WK-DATE}\par
+{\f1     USING INPUT-FILE}\par
+{\f1     GIVING OUTPUT-FILE.}\par
+\par
+Avec procedures input/output :\par
+\par
+{\f1   SORT WORK-FILE}\par
+{\f1     ON ASCENDING KEY WK-CLE}\par
+{\f1     INPUT PROCEDURE IS ALIM-PARA}\par
+{\f1     OUTPUT PROCEDURE IS SORT-PARA.}\par
+\par
+{\f1   MERGE WORK-FILE}\par
+{\f1     ON ASCENDING KEY WK-CLE}\par
+{\f1     USING FIC-A FIC-B}\par
+{\f1     GIVING RESULTAT.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_10}     {\uldb Suivant >>}{\v IDH_COBOL_12}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_12}
+{\footnote $ COBOL - RAPPORTS - REPORT WRITER (optionnel)}
+{\footnote K COBOL Report Writer;REPORT SECTION;RD;INITIATE;GENERATE;TERMINATE}
+\b\fs24 RAPPORTS - REPORT WRITER (optionnel) \b0\fs20\par
+\par
+COBOL inclut une facilite de generation d'etats imprimes :\par
+\par
+{\f1   REPORT SECTION.}\par
+{\f1   RD ETAT-MENSUEL}\par
+{\f1      CONTROLS ARE FINAL CLI-CODE}\par
+{\f1      PAGE LIMIT IS 66 LINES}\par
+{\f1      HEADING 1}\par
+{\f1      FIRST DETAIL 5}\par
+{\f1      LAST DETAIL 60}\par
+{\f1      FOOTING 63.}\par
+\par
+{\f1   01 TYPE PAGE HEADING.}\par
+{\f1      ...}\par
+{\f1   01 LIGNE TYPE DETAIL.}\par
+{\f1      ...}\par
+\par
+Puis dans PROCEDURE DIVISION : INITIATE, GENERATE, TERMINATE.\par
+\par
+(Beaucoup d'installations ignorent Report Writer.)\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_11}     {\uldb Suivant >>}{\v IDH_COBOL_13}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_13}
+{\footnote $ COBOL - COBOL-85 - STRUCTURATION}
+{\footnote K COBOL-85 structuration;scope terminators;END-IF;END-PERFORM;END-EVALUATE;END-READ}
+\b\fs24 COBOL-85 - STRUCTURATION \b0\fs20\par
+\par
+COBOL-85 introduit les terminateurs explicites\par
+(scope terminators) qui permettent une vraie programmation\par
+structuree :\par
+\par
+{\f1   END-IF, END-PERFORM, END-EVALUATE, END-READ, END-WRITE,}\par
+{\f1   END-CALL, END-COMPUTE, END-ADD, END-SUBTRACT, END-MULTIPLY,}\par
+{\f1   END-DIVIDE, END-STRING, END-UNSTRING, END-SEARCH, END-START}\par
+\par
+Avant 1985, chaque instruction se terminait par un point,\par
+ce qui interdisait l'imbrication propre des IF.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_12}     {\uldb Suivant >>}{\v IDH_COBOL_14}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_14}
+{\footnote $ COBOL - COBOL-2002 - OBJETS ET EXTENSIONS}
+{\footnote K COBOL-2002 objets;CLASS-ID;METHOD-ID;FACTORY;OBJECT;format libre;NATIONAL;Unicode UTF-16;POINTER;ALLOCATE;FREE;exceptions}
+\b\fs24 COBOL-2002 - OBJETS ET EXTENSIONS \b0\fs20\par
+\par
+COBOL-2002 introduit (mais peu utilise) :\par
+\par
+\par
+\b 14.1 Programmation orientee objet \b0\par
+\par
+{\f1   CLASS-ID. PERSONNE INHERITS BASE.}\par
+\par
+{\f1   IDENTIFICATION DIVISION.}\par
+{\f1   FACTORY.}\par
+\par
+{\f1   OBJECT.}\par
+{\f1   DATA DIVISION.}\par
+{\f1     WORKING-STORAGE SECTION.}\par
+{\f1     01 NOM       PIC X(30).}\par
+\par
+{\f1   PROCEDURE DIVISION.}\par
+{\f1     METHOD-ID. SET-NOM.}\par
+{\f1     DATA DIVISION.}\par
+{\f1     LINKAGE SECTION.}\par
+{\f1     01 LK-NOM PIC X(30).}\par
+{\f1     PROCEDURE DIVISION USING LK-NOM.}\par
+{\f1       MOVE LK-NOM TO NOM.}\par
+{\f1     END METHOD SET-NOM.}\par
+{\f1   END OBJECT.}\par
+{\f1   END CLASS PERSONNE.}\par
+\par
+\par
+\b 14.2 Format libre \b0\par
+\par
+Plus de contraintes de colonnes 7-72.\par
+\par
+\par
+\b 14.3 Types nationaux (Unicode) \b0\par
+\par
+{\f1   PIC N(20)    USAGE NATIONAL.    (* UTF-16 *)}\par
+\par
+\par
+\b 14.4 Pointeurs et allocation \b0\par
+\par
+{\f1   01 PTR  USAGE POINTER.}\par
+{\f1   ALLOCATE 100 CHARACTERS RETURNING PTR.}\par
+{\f1   FREE PTR.}\par
+\par
+\par
+\b 14.5 Exceptions \b0\par
+\par
+{\f1   >>BEGIN}\par
+{\f1     statements}\par
+{\f1   >>EXCEPTION}\par
+{\f1     WHEN EC-IO-INVALID-KEY ...}\par
+{\f1   >>END}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_13}     {\uldb Suivant >>}{\v IDH_COBOL_15}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_15}
+{\footnote $ COBOL - COMPILATEURS DU PROJET}
+{\footnote K COBOL compilateurs projet;COBOL86.PAS;COBOLW32.PAS;MS-DOS;Win32 PE;LARGE;MASM}
+\b\fs24 COMPILATEURS DU PROJET \b0\fs20\par
+\par
+\par
+\b 15.1 COBOL86.PAS \b0\par
+\par
+{\f1   Cible             : MS-DOS, assembleur MASM .MODEL LARGE}\par
+{\f1   Modele memoire    : LARGE (multi-segments 64KO)}\par
+{\f1   Dialecte          : COBOL-85 sous-ensemble}\par
+{\f1   Sortie            : fichier .ASM, MASM compatible}\par
+\par
+{\f1   Fonctionnalites :}\par
+{\f1     - 4 DIVISIONS standard}\par
+{\f1     - WORKING-STORAGE et LINKAGE SECTION}\par
+{\f1     - PICTURE complet (9, X, A, V, S, P, edition)}\par
+{\f1     - USAGE : DISPLAY, COMP, COMP-3, COMP-5}\par
+{\f1     - Niveaux 01-49, 77, 88}\par
+{\f1     - OCCURS et OCCURS DEPENDING ON, REDEFINES}\par
+{\f1     - MOVE, COMPUTE, ADD, SUBTRACT, MULTIPLY, DIVIDE}\par
+{\f1     - DISPLAY, ACCEPT}\par
+{\f1     - PERFORM (simple, TIMES, UNTIL, VARYING, inline)}\par
+{\f1     - IF/ELSE/END-IF, EVALUATE/END-EVALUATE}\par
+{\f1     - STRING, UNSTRING, INSPECT}\par
+{\f1     - Fichiers SEQUENTIAL, LINE SEQUENTIAL, INDEXED}\par
+{\f1     - CALL/USING (BY REFERENCE, BY CONTENT)}\par
+{\f1     - COPY (sans REPLACING)}\par
+\par
+{\f1   Limitations :}\par
+{\f1     - Pas d'OO (CLASS-ID, METHOD-ID)}\par
+{\f1     - Pas de Report Writer}\par
+{\f1     - Pas de types nationaux (UTF-16)}\par
+{\f1     - Pas de SORT/MERGE}\par
+{\f1     - Pas de >>EXCEPTION (2002)}\par
+\par
+\par
+\b 15.2 COBOLW32.PAS \b0\par
+\par
+{\f1   Cible             : Win32 PE}\par
+{\f1   Modele memoire    : flat 32-bit}\par
+{\f1   Dialecte          : COBOL-85 + extensions COBOL-2002}\par
+{\f1   Sortie            : fichier .EXE Win32}\par
+\par
+{\f1   Fonctionnalites supplementaires vs COBOL86 :}\par
+{\f1     - Format libre}\par
+{\f1     - Types nationaux (NATIONAL, UTF-16)}\par
+{\f1     - POINTER, ALLOCATE/FREE}\par
+{\f1     - Fonctions intrinseques (LENGTH, UPPER-CASE,}\par
+{\f1       LOWER-CASE, NUMVAL, CURRENT-DATE, etc.)}\par
+{\f1     - SORT et MERGE}\par
+{\f1     - COPY ... REPLACING}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_14}     {\uldb Suivant >>}{\v IDH_COBOL_16}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_16}
+{\footnote $ COBOL - EXEMPLES}
+{\footnote K COBOL exemples;Hello World;boucle PERFORM VARYING;Factorielle;lecture fichier;sous-programme}
+\b\fs24 EXEMPLES \b0\fs20\par
+\par
+\par
+\b 16.1 Hello World \b0\par
+\par
+{\f1   IDENTIFICATION DIVISION.}\par
+{\f1   PROGRAM-ID. HELLO.}\par
+{\f1   PROCEDURE DIVISION.}\par
+{\f1     DISPLAY "Hello, World!".}\par
+{\f1     STOP RUN.}\par
+\par
+\par
+\b 16.2 Boucle avec compteur \b0\par
+\par
+{\f1   IDENTIFICATION DIVISION.}\par
+{\f1   PROGRAM-ID. COMPTE.}\par
+\par
+{\f1   DATA DIVISION.}\par
+{\f1   WORKING-STORAGE SECTION.}\par
+{\f1   01 WS-I    PIC 9(3).}\par
+\par
+{\f1   PROCEDURE DIVISION.}\par
+{\f1   MAIN.}\par
+{\f1     PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > 10}\par
+{\f1       DISPLAY "Valeur: " WS-I}\par
+{\f1     END-PERFORM.}\par
+{\f1     STOP RUN.}\par
+\par
+\par
+\b 16.3 Factorielle \b0\par
+\par
+{\f1   IDENTIFICATION DIVISION.}\par
+{\f1   PROGRAM-ID. FACT.}\par
+\par
+{\f1   DATA DIVISION.}\par
+{\f1   WORKING-STORAGE SECTION.}\par
+{\f1   01 WS-N         PIC 9(2)  VALUE 10.}\par
+{\f1   01 WS-I         PIC 9(2).}\par
+{\f1   01 WS-RESULT    PIC 9(15) VALUE 1.}\par
+\par
+{\f1   PROCEDURE DIVISION.}\par
+{\f1   MAIN.}\par
+{\f1     PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-N}\par
+{\f1       COMPUTE WS-RESULT = WS-RESULT * WS-I}\par
+{\f1     END-PERFORM.}\par
+{\f1     DISPLAY WS-N "! = " WS-RESULT.}\par
+{\f1     STOP RUN.}\par
+\par
+\par
+\b 16.4 Lecture de fichier \b0\par
+\par
+{\f1   IDENTIFICATION DIVISION.}\par
+{\f1   PROGRAM-ID. LIRE-CLI.}\par
+\par
+{\f1   ENVIRONMENT DIVISION.}\par
+{\f1   INPUT-OUTPUT SECTION.}\par
+{\f1   FILE-CONTROL.}\par
+{\f1     SELECT CLIENTS ASSIGN TO "CLIENTS.DAT"}\par
+{\f1       ORGANIZATION IS LINE SEQUENTIAL}\par
+{\f1       FILE STATUS  IS WS-FS.}\par
+\par
+{\f1   DATA DIVISION.}\par
+{\f1   FILE SECTION.}\par
+{\f1   FD CLIENTS.}\par
+{\f1   01 CLI-REC.}\par
+{\f1      05 CLI-CODE   PIC 9(5).}\par
+{\f1      05 CLI-NOM    PIC X(30).}\par
+{\f1      05 CLI-SOLDE  PIC 9(7)V99.}\par
+\par
+{\f1   WORKING-STORAGE SECTION.}\par
+{\f1   01 WS-FS         PIC 99 VALUE 0.}\par
+{\f1   01 WS-EOF        PIC X  VALUE "N".}\par
+{\f1      88 FIN        VALUE "O".}\par
+{\f1   01 WS-TOTAL      PIC 9(9)V99 VALUE 0.}\par
+\par
+{\f1   PROCEDURE DIVISION.}\par
+{\f1   MAIN.}\par
+{\f1     OPEN INPUT CLIENTS.}\par
+{\f1     PERFORM UNTIL FIN}\par
+{\f1       READ CLIENTS}\par
+{\f1         AT END SET FIN TO TRUE}\par
+{\f1         NOT AT END}\par
+{\f1           DISPLAY CLI-CODE " " CLI-NOM " " CLI-SOLDE}\par
+{\f1           ADD CLI-SOLDE TO WS-TOTAL}\par
+{\f1       END-READ}\par
+{\f1     END-PERFORM.}\par
+{\f1     CLOSE CLIENTS.}\par
+{\f1     DISPLAY "Total des soldes: " WS-TOTAL.}\par
+{\f1     STOP RUN.}\par
+\par
+\par
+\b 16.5 Sous-programme appele \b0\par
+\par
+Programme principal :\par
+\par
+{\f1   IDENTIFICATION DIVISION.}\par
+{\f1   PROGRAM-ID. PRINCIPAL.}\par
+\par
+{\f1   DATA DIVISION.}\par
+{\f1   WORKING-STORAGE SECTION.}\par
+{\f1   01 WS-A   PIC 9(5)   VALUE 15.}\par
+{\f1   01 WS-B   PIC 9(5)   VALUE 27.}\par
+{\f1   01 WS-R   PIC 9(6).}\par
+\par
+{\f1   PROCEDURE DIVISION.}\par
+{\f1     CALL "SOMME" USING WS-A WS-B WS-R.}\par
+{\f1     DISPLAY WS-A " + " WS-B " = " WS-R.}\par
+{\f1     STOP RUN.}\par
+\par
+Sous-programme SOMME :\par
+\par
+{\f1   IDENTIFICATION DIVISION.}\par
+{\f1   PROGRAM-ID. SOMME.}\par
+\par
+{\f1   DATA DIVISION.}\par
+{\f1   LINKAGE SECTION.}\par
+{\f1   01 LK-A    PIC 9(5).}\par
+{\f1   01 LK-B    PIC 9(5).}\par
+{\f1   01 LK-R    PIC 9(6).}\par
+\par
+{\f1   PROCEDURE DIVISION USING LK-A LK-B LK-R.}\par
+{\f1     COMPUTE LK-R = LK-A + LK-B.}\par
+{\f1     EXIT PROGRAM.}\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_15}     {\uldb Suivant >>}{\v IDH_COBOL_17}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_17}
+{\footnote $ COBOL - INFLUENCE ET PERENNITE}
+{\footnote K COBOL influence perennite;legacy;banque;assurance;mainframe;GnuCOBOL;Micro Focus;IBM Enterprise COBOL;modernisation}
+\b\fs24 INFLUENCE ET PERENNITE \b0\fs20\par
+\par
+COBOL reste l'un des langages les plus deployes au monde\par
+en volume de code execute. Estimations :\par
+\par
+{\f1   - 200 a 250 milliards de lignes de COBOL en production}\par
+{\f1   - 70% des transactions bancaires mondiales (estimation}\par
+{\f1     Reuters/Gartner) passent par du COBOL}\par
+{\f1   - Domaine : banque, assurance, gouvernements,}\par
+{\f1     transport (reservations), grande distribution}\par
+\par
+Particularites perpetuees :\par
+\par
+{\f1   - Standard ISO actif (revision 2023)}\par
+{\f1   - Compilateurs modernes : GnuCOBOL, IBM Enterprise}\par
+{\f1     COBOL for z/OS, Micro Focus Visual COBOL}\par
+{\f1   - Modernisation : interop Java, .NET, REST/JSON}\par
+{\f1   - Migration cobol -> Java : projets controverses, le}\par
+{\f1     COBOL souvent prefere pour la stabilite}\par
+\par
+Influence sur d'autres langages : limitee. COBOL est lui-meme\par
+peu inspire par d'autres ; son lexique anglais a influence\par
+SQL (mots-cles type SELECT, FROM, WHERE) et BASIC.\par
+\par
+\par
+\par
+{\uldb << Precedent}{\v IDH_COBOL_16}     {\uldb Suivant >>}{\v IDH_COBOL_18}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+\page
+
+{\footnote # IDH_COBOL_18}
+{\footnote $ COBOL - REFERENCES}
+{\footnote K COBOL references;bibliographie;ANSI X3.23;ISO 1989;Murach;Stern;Sammet;GnuCOBOL}
+\b\fs24 REFERENCES \b0\fs20\par
+\par
+{\f1   - ANSI X3.23-1985 "Programming Language COBOL".}\par
+{\f1   - ISO/IEC 1989:2002 "COBOL".}\par
+{\f1   - ISO/IEC 1989:2014 "COBOL".}\par
+{\f1   - ISO/IEC 1989:2023 "COBOL" (derniere revision).}\par
+\par
+{\f1   - Murach, M.           "Mike Murach's Structured COBOL",}\par
+{\f1                          Murach Publishing, 1997.}\par
+{\f1   - Stern, N. & Stern R. "Structured COBOL Programming",}\par
+{\f1                          Wiley, 11e ed., 2017.}\par
+{\f1   - Sammet, J.E.         "Programming Languages: History}\par
+{\f1                          and Fundamentals", Prentice-Hall,}\par
+{\f1                          1969. (Histoire du CODASYL.)}\par
+\par
+{\f1   - GnuCOBOL             https://gnucobol.sourceforge.io}\par
+{\f1   - IBM Enterprise COBOL https://www.ibm.com/cobol}\par
+{\f1   - Micro Focus Visual COBOL}\par
+{\f1                          https://www.microfocus.com/cobol}\par
+{\f1   - "The COBOL 2014 Standard", J. Klein, BCS, 2014.}\par
+
+\par
+{\uldb << Precedent}{\v IDH_COBOL_17}     {\uldb Table des matieres}{\v IDH_COBOL_01}     {\uldb Retour aux langages}{\v IDH_LANGAGES}\par
+}

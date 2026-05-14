@@ -1,0 +1,1093 @@
+COBOL - Specifications du langage
+============================================================
+Compilateurs : COBOL86.PAS  (COBOL vers assembleur 8086)
+               COBOLW32.PAS (COBOL vers Win32 PE)
+Reference   : ISO/IEC 1989:2014 - COBOL standard.
+              "COBOL-85 ANS X3.23-1985", American National
+              Standards Institute, 1985.
+              "Programming the IBM 1401", Daley, 1962
+              (premier livre COBOL).
+Version     : 1.0 - 2026
+
+============================================================
+1. PRESENTATION
+============================================================
+
+COBOL (COmmon Business-Oriented Language) a ete defini en
+1959-1960 par le comite CODASYL (Conference on Data Systems
+Languages), sous l'impulsion du Department of Defense
+americain. Grace Hopper en est la figure tutelaire ; son
+langage FLOW-MATIC (1955-1959) est l'ancetre direct.
+
+COBOL est concu pour les applications de gestion :
+traitement de fichiers, etats imprimes, transactions
+bancaires, paie, comptabilite. Il privilegie :
+
+  - La lisibilite : syntaxe quasi-anglaise verbeuse
+  - L'auto-documentation : declarations explicites
+  - La portabilite : standardisation precoce
+  - Le traitement de donnees structurees : PICTURE,
+    COPY books, REDEFINES, OCCURS
+  - L'arithmetique decimale exacte : type COMP-3 packed
+
+COBOL est un langage :
+
+  - Compile, a typage statique
+  - Imperatif et structure (procedurale)
+  - Oriente fichiers et enregistrements
+  - INSENSIBLE a la casse (mots-cles MAJUSCULES par
+    convention)
+  - Avec mise en page traditionnellement EN COLONNES
+    (format ANSI fixe ou format libre selon dialecte)
+  - Avec arithmetique decimale native
+
+Versions et standards :
+
+  - COBOL-60     : premiere specification CODASYL
+  - COBOL-68     : ANSI X3.23-1968 (standardisation)
+  - COBOL-74     : ANSI X3.23-1974 (CALL, COPY etendus)
+  - COBOL-85     : ANSI X3.23-1985 (structuration,
+                   EVALUATE, references)
+  - COBOL-2002   : ISO/IEC 1989:2002 (objets, exceptions,
+                   format libre, types nationaux)
+  - COBOL-2014   : ISO/IEC 1989:2014 (revisions et clarifs)
+  - COBOL-2023   : ISO/IEC 1989:2023 (recente)
+
+Dialectes principaux :
+  - IBM COBOL (Enterprise COBOL, OS/390, z/OS)
+  - Micro Focus COBOL
+  - GnuCOBOL (open source, ex OpenCOBOL)
+  - Visual COBOL, Fujitsu NetCOBOL, ACUCOBOL
+
+Extensions de fichiers reconnues :
+
+  .cob, .cbl   programme COBOL
+  .cpy         copy book (include)
+  .dat         donnees
+  .lst         listing
+
+
+============================================================
+2. STRUCTURE D'UN PROGRAMME
+============================================================
+
+Un programme COBOL est structure en quatre DIVISIONS dans
+un ordre fixe :
+
+  IDENTIFICATION DIVISION    (obligatoire)
+  ENVIRONMENT DIVISION       (optionnelle)
+  DATA DIVISION              (optionnelle)
+  PROCEDURE DIVISION         (obligatoire)
+
+2.1 Exemple complet
+-------------------
+
+  IDENTIFICATION DIVISION.
+  PROGRAM-ID. BONJOUR.
+  AUTHOR. SYLVAIN.
+
+  ENVIRONMENT DIVISION.
+  CONFIGURATION SECTION.
+  SOURCE-COMPUTER. IBM-PC.
+
+  DATA DIVISION.
+  WORKING-STORAGE SECTION.
+  01 WS-MESSAGE PIC X(20) VALUE "Bonjour, monde!".
+
+  PROCEDURE DIVISION.
+  MAIN-PARA.
+    DISPLAY WS-MESSAGE.
+    STOP RUN.
+
+2.2 IDENTIFICATION DIVISION
+---------------------------
+
+Decrit le programme (metadonnees) :
+
+  IDENTIFICATION DIVISION.
+  PROGRAM-ID. MONPROG.
+  AUTHOR. JEAN DUPONT.
+  DATE-WRITTEN. 14/05/2026.
+  DATE-COMPILED.
+  REMARKS. Programme exemple.
+
+2.3 ENVIRONMENT DIVISION
+------------------------
+
+Decrit l'environnement materiel/logiciel :
+
+  ENVIRONMENT DIVISION.
+  CONFIGURATION SECTION.
+    SOURCE-COMPUTER. IBM-PC.
+    OBJECT-COMPUTER. IBM-PC.
+  INPUT-OUTPUT SECTION.
+    FILE-CONTROL.
+      SELECT CLIENTS ASSIGN TO "CLIENTS.DAT"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE  IS DYNAMIC
+        RECORD KEY   IS CLI-CODE.
+
+2.4 DATA DIVISION
+-----------------
+
+Declare toutes les donnees :
+
+  DATA DIVISION.
+  FILE SECTION.
+    FD CLIENTS.
+    01 CLIENT-REC.
+       05 CLI-CODE    PIC 9(5).
+       05 CLI-NOM     PIC X(30).
+       05 CLI-SOLDE   PIC S9(7)V99 COMP-3.
+
+  WORKING-STORAGE SECTION.
+    01 WS-COMPTEUR    PIC 9(4) VALUE ZERO.
+    01 WS-TOTAL       PIC 9(9)V99 VALUE ZERO.
+
+  LINKAGE SECTION.
+    01 LK-PARAM       PIC X(80).
+
+2.5 PROCEDURE DIVISION
+----------------------
+
+Contient le code executable :
+
+  PROCEDURE DIVISION [USING LK-PARAM].
+  MAIN-PARA.
+    PERFORM INIT-PARA.
+    PERFORM TRAIT-PARA UNTIL FIN-FICHIER.
+    PERFORM FIN-PARA.
+    STOP RUN.
+
+  INIT-PARA.
+    OPEN INPUT CLIENTS.
+
+  TRAIT-PARA.
+    READ CLIENTS AT END MOVE "OUI" TO FIN-FICHIER.
+
+  FIN-PARA.
+    CLOSE CLIENTS.
+
+
+============================================================
+3. STRUCTURE LEXICALE
+============================================================
+
+3.1 Format des lignes (ANSI fixe)
+---------------------------------
+
+Le format historique a colonnes fixes :
+
+  Col 1-6   : numero de sequence (ignore)
+  Col 7     : indicateur :
+              ' '  ligne normale
+              '*'  commentaire
+              '/'  saut de page + commentaire
+              '-'  continuation
+              'D'  ligne de debug (mode DEBUGGING)
+  Col 8-11  : zone A (en-tetes : DIVISION, SECTION,
+              paragraphes, niveau 01, FD)
+  Col 12-72 : zone B (instructions, niveaux > 01)
+  Col 73-80 : identification (ignore)
+
+Format libre (depuis COBOL-2002) :
+toute colonne, le `*>` introduit un commentaire de fin
+de ligne, `*` en debut commente la ligne.
+
+3.2 Casse
+---------
+
+COBOL est INSENSIBLE a la casse. Par convention :
+  - Mots reserves    : MAJUSCULES
+  - Variables maison : MAJUSCULES (souvent) ou Pascal
+  - Litteraux        : tels quels
+
+3.3 Commentaires
+----------------
+
+  * Commentaire ligne entiere (col 7 = '*')
+  *> commentaire de fin de ligne (COBOL-2002+)
+
+3.4 Identificateurs
+-------------------
+
+Lettres, chiffres et tirets (`-`), commencant par une
+lettre, max 30 caracteres. Le tiret est un caractere
+ordinaire (PAS un operateur).
+
+  CLIENT-NOM           valide
+  WS-TOTAL-HT          valide
+  COMPTE_BANCAIRE      souvent invalide (underscore)
+  1ERLIGNE             invalide (commence par chiffre)
+
+3.5 Mots reserves (extrait COBOL-85, ~ 400 mots)
+------------------------------------------------
+
+  ACCEPT, ADD, ALL, ALPHABETIC, ALSO, ALTER, AND,
+  ANY, ARE, AREA, ASCENDING, ASSIGN, AT, AUTHOR,
+  BEFORE, BLOCK, BY, CALL, CANCEL, CHARACTER, CLOSE,
+  COBOL, CODE, COLUMN, COMMA, COMP, COMPUTE, COPY,
+  CORRESPONDING, COUNT, DATA, DATE, DAY, DEBUG, DECLARATIVES,
+  DELETE, DELIMITED, DEPENDING, DESCENDING, DISPLAY, DIVIDE,
+  DIVISION, ELSE, END, ENVIRONMENT, EQUAL, EVALUATE, EXIT,
+  EXTEND, FD, FILE, FILLER, FROM, GIVING, GO, GREATER, IF,
+  IN, INDEXED, INITIALIZE, INPUT, INSPECT, INTO, IS, JUST,
+  KEY, LABEL, LESS, LINKAGE, LOCAL-STORAGE (2002), MOVE,
+  MULTIPLY, NEXT, NOT, NUMERIC, OCCURS, OF, OPEN, OR,
+  ORGANIZATION, OUTPUT, PERFORM, PIC, PICTURE, POINTER,
+  PROCEDURE, PROGRAM-ID, READ, RECORD, REDEFINES, REPLACING,
+  REWRITE, ROUNDED, SEARCH, SECTION, SELECT, SENTENCE, SET,
+  SIGN, SIZE, SORT, SPACE, STANDARD, START, STOP, STRING,
+  SUBTRACT, SYMBOLIC, TIMES, TO, UNSTRING, UNTIL, UPON, USE,
+  USING, VALUE, VARYING, WHEN, WORKING-STORAGE, WRITE, ZERO
+
+3.6 Literaux
+------------
+
+  - Numerique   : 42, -3.14, +1000, 0
+  - Alphanum.   : "Bonjour"  ou  'Bonjour'
+  - Figurative  : ZERO, ZEROS, ZEROES, SPACE, SPACES,
+                  HIGH-VALUE, HIGH-VALUES, LOW-VALUE,
+                  LOW-VALUES, QUOTE, QUOTES, ALL "X"
+  - Booleen     : pas de type natif (utiliser 88-niveau)
+
+
+============================================================
+4. TYPES DE DONNEES (PICTURE)
+============================================================
+
+COBOL ne possede pas de "types" au sens classique. Toute
+variable est decrite par une CLAUSE PICTURE (ou PIC) qui
+specifie sa forme : nombre de caracteres, signe, decimales,
+formatage d'affichage.
+
+4.1 Symboles PICTURE
+--------------------
+
+  9    chiffre 0-9
+  A    lettre alphabetique
+  X    caractere alphanumerique
+  V    point decimal implicite (non stocke)
+  S    signe (presence du signe)
+  P    decalage decimal implicite
+  Z    chiffre avec suppression de zero (en sortie)
+  ,    virgule (en sortie)
+  .    point (en sortie)
+  $    symbole monetaire (en sortie)
+  +    -    signe explicite (en sortie)
+  *    asterisque de protection (en sortie)
+  CR   credit (en sortie, code comptable)
+  DB   debit (en sortie, code comptable)
+  BS0  espace / barre / zero (en sortie)
+
+4.2 Exemples
+------------
+
+  PIC X(10)               10 caracteres alphanumeriques
+  PIC 9(5)                5 chiffres entiers
+  PIC 9(7)V99             7 entiers + 2 decimales (9 chiffres)
+  PIC S9(5)V99 COMP-3     packed decimal signe
+  PIC A(20)               20 lettres
+  PIC $$$,$$9.99          montant avec format
+  PIC --9.99              signe negatif suppress
+  PIC Z(5)9               5 chiffres + 1, zero suppress
+
+4.3 Clauses USAGE
+-----------------
+
+Specifie la representation interne :
+
+  DISPLAY        ASCII/EBCDIC (defaut), 1 octet/digit
+  COMP, COMP-4   binaire (BINARY)
+  COMP-1         flottant simple precision
+  COMP-2         flottant double precision
+  COMP-3         packed decimal (2 digits/octet + signe)
+  COMP-5         binaire natif (taille hote)
+  POINTER        pointeur (COBOL-85+)
+  INDEX          variable d'indexation (SET, SEARCH)
+
+4.4 Niveaux de structure
+------------------------
+
+Les enregistrements sont hierarchiques, avec NUMEROS DE
+NIVEAU 01-49 :
+
+  01 CLIENT.
+     05 CLI-CODE       PIC 9(5).
+     05 CLI-NOM-ADR.
+        10 CLI-NOM     PIC X(30).
+        10 CLI-ADR     PIC X(50).
+     05 CLI-SOLDE      PIC S9(7)V99 COMP-3.
+
+Niveaux speciaux :
+  01     : top-level
+  02-49  : sous-elements
+  66     : RENAMES (alias d'une zone)
+  77     : variable simple WORKING-STORAGE (sans structure)
+  88     : nom-condition (booleen logique sur valeur)
+
+4.5 Noms-condition (88)
+-----------------------
+
+  01 WS-STATUS    PIC X VALUE "A".
+     88 ACTIF     VALUE "A".
+     88 INACTIF   VALUE "I".
+     88 CLOTURE   VALUE "C".
+
+Puis :  IF ACTIF ...   ou   SET ACTIF TO TRUE.
+
+4.6 OCCURS (tableaux)
+---------------------
+
+  01 TABLEAU.
+     05 ELEMENT OCCURS 100 TIMES.
+        10 EL-CODE   PIC 9(3).
+        10 EL-NOM    PIC X(20).
+
+Tableaux a taille variable (OCCURS DEPENDING ON) :
+
+  05 N-ELEM PIC 99.
+  05 ELEM OCCURS 1 TO 99 TIMES DEPENDING ON N-ELEM
+     INDEXED BY IDX.
+     10 EL-VAL PIC 9(5).
+
+4.7 REDEFINES
+-------------
+
+Superpose plusieurs declarations sur la meme zone memoire :
+
+  01 DONNEE.
+     05 D-CHAR    PIC X(8).
+     05 D-NUM REDEFINES D-CHAR    PIC 9(8).
+
+4.8 RENAMES (66)
+----------------
+
+  66 PRENOM-NOM RENAMES CLI-NOM THRU CLI-ADR.
+
+
+============================================================
+5. PROCEDURE DIVISION - INSTRUCTIONS DE BASE
+============================================================
+
+5.1 MOVE - affectation
+----------------------
+
+  MOVE 0 TO WS-COMPTEUR.
+  MOVE "Inconnu" TO WS-NOM.
+  MOVE CLI-NOM TO WS-NOM.
+  MOVE CORRESPONDING REC-A TO REC-B.
+  MOVE SPACES TO WS-LIGNE.
+  MOVE ZEROS  TO WS-TOTAL.
+
+5.2 DISPLAY / ACCEPT - I/O console
+----------------------------------
+
+  DISPLAY "Resultat: " WS-TOTAL.
+  DISPLAY "Valeur: " X UPON CONSOLE.
+  ACCEPT WS-INPUT.
+  ACCEPT WS-DATE FROM DATE.       (* AAMMJJ *)
+  ACCEPT WS-TIME FROM TIME.       (* HHMMSScc *)
+
+5.3 COMPUTE - calcul algebrique
+-------------------------------
+
+  COMPUTE WS-TOTAL = WS-PRIX * WS-QTE.
+  COMPUTE WS-MOY ROUNDED = WS-SOMME / WS-N.
+
+5.4 ADD / SUBTRACT / MULTIPLY / DIVIDE
+--------------------------------------
+
+  ADD 1 TO WS-COMPTEUR.
+  ADD WS-A WS-B GIVING WS-C.
+  SUBTRACT WS-DEDUCTION FROM WS-BRUT GIVING WS-NET.
+  MULTIPLY WS-PRIX BY WS-QTE GIVING WS-TOTAL.
+  DIVIDE WS-SOMME BY WS-N GIVING WS-MOY ROUNDED.
+  DIVIDE 7 INTO WS-X GIVING WS-Q REMAINDER WS-R.
+
+5.5 STRING / UNSTRING
+---------------------
+
+Concatenation :
+
+  STRING "Bonjour " DELIMITED BY SIZE
+         WS-NOM    DELIMITED BY SPACES
+         INTO      WS-MESSAGE.
+
+Decoupage :
+
+  UNSTRING WS-LIGNE DELIMITED BY ","
+    INTO WS-CHAMP1 WS-CHAMP2 WS-CHAMP3.
+
+5.6 INSPECT
+-----------
+
+Comptage et remplacement de caracteres :
+
+  INSPECT WS-TEXTE TALLYING WS-N FOR ALL "A".
+  INSPECT WS-TEXTE REPLACING ALL "X" BY "Y".
+
+5.7 INITIALIZE
+--------------
+
+Met les zones a leur valeur par defaut (zero pour numerique,
+espace pour alphanumerique) :
+
+  INITIALIZE CLIENT-REC.
+
+
+============================================================
+6. STRUCTURES DE CONTROLE
+============================================================
+
+6.1 IF / ELSE / END-IF
+----------------------
+
+  IF WS-AGE >= 18
+    DISPLAY "Majeur"
+  ELSE
+    DISPLAY "Mineur"
+  END-IF.
+
+Avec conditions multiples :
+
+  IF WS-A > 0 AND WS-B < 100
+    PERFORM TRAIT-PARA
+  END-IF.
+
+6.2 EVALUATE - selection multiple (COBOL-85)
+--------------------------------------------
+
+Equivalent du switch/case :
+
+  EVALUATE WS-CODE
+    WHEN "A"     DISPLAY "Actif"
+    WHEN "I"     DISPLAY "Inactif"
+    WHEN "C" "F" DISPLAY "Clos ou Ferme"
+    WHEN 1 THRU 9 DISPLAY "Numerique"
+    WHEN OTHER   DISPLAY "Inconnu"
+  END-EVALUATE.
+
+EVALUATE supporte plusieurs sujets paralleles :
+
+  EVALUATE WS-AGE ALSO WS-SEXE
+    WHEN < 18  ALSO "F"  DISPLAY "Fille"
+    WHEN < 18  ALSO "M"  DISPLAY "Garcon"
+    WHEN OTHER ALSO ANY  DISPLAY "Adulte"
+  END-EVALUATE.
+
+6.3 PERFORM - boucles et appels de paragraphe
+---------------------------------------------
+
+Appel simple :
+
+  PERFORM INIT-PARA.
+
+Boucle TIMES :
+
+  PERFORM AFFICHE-PARA 10 TIMES.
+
+Boucle UNTIL :
+
+  PERFORM LIRE-PARA UNTIL FIN-FICHIER = "OUI".
+
+Boucle VARYING :
+
+  PERFORM TRAITE-PARA
+    VARYING I FROM 1 BY 1 UNTIL I > 100.
+
+Boucle inline (COBOL-85) :
+
+  PERFORM VARYING I FROM 1 BY 1 UNTIL I > 10
+    DISPLAY I
+    COMPUTE WS-TOTAL = WS-TOTAL + I
+  END-PERFORM.
+
+PERFORM PARA-A THRU PARA-Z : execute la sequence.
+
+6.4 GO TO
+---------
+
+Existe mais deconseille (style structure 1985+) :
+
+  GO TO TRAIT-PARA.
+  GO TO PARA-A PARA-B PARA-C DEPENDING ON WS-CODE.
+
+6.5 CONTINUE / NEXT SENTENCE
+----------------------------
+
+  CONTINUE.                (* ne fait rien *)
+  NEXT SENTENCE.           (* saute a apres le point *)
+
+6.6 EXIT
+--------
+
+  EXIT.                    (* sortie de paragraphe *)
+  EXIT PERFORM.            (* sortie de boucle inline *)
+  EXIT PROGRAM.            (* retour au programme appelant *)
+  STOP RUN.                (* fin du programme *)
+
+
+============================================================
+7. GESTION DE FICHIERS
+============================================================
+
+7.1 Organisations
+-----------------
+
+  SEQUENTIAL   sequentielle (lecture/ecriture en ordre)
+  RELATIVE     relative (acces par numero d'enregistrement)
+  INDEXED      indexee (acces par cle, type VSAM/B-tree)
+  LINE SEQUENTIAL  fichier texte (ligne par ligne)
+
+7.2 SELECT / ASSIGN
+-------------------
+
+  SELECT CLIENTS ASSIGN TO "CLIENTS.DAT"
+    ORGANIZATION IS INDEXED
+    ACCESS MODE  IS DYNAMIC
+    RECORD KEY   IS CLI-CODE
+    ALTERNATE RECORD KEY IS CLI-NOM WITH DUPLICATES
+    FILE STATUS  IS WS-FS-CLI.
+
+7.3 FD - description du fichier
+-------------------------------
+
+  FILE SECTION.
+  FD CLIENTS
+     RECORD CONTAINS 80 CHARACTERS
+     LABEL RECORDS ARE STANDARD.
+  01 CLIENT-REC.
+     05 CLI-CODE    PIC 9(5).
+     05 CLI-NOM     PIC X(30).
+     05 CLI-ADR     PIC X(45).
+
+7.4 OPEN / CLOSE
+----------------
+
+  OPEN INPUT CLIENTS.
+  OPEN OUTPUT RESULTATS.
+  OPEN I-O CLIENTS.
+  OPEN EXTEND JOURNAL.    (* append *)
+  CLOSE CLIENTS RESULTATS.
+
+7.5 READ / WRITE / REWRITE / DELETE
+-----------------------------------
+
+  READ CLIENTS NEXT
+    AT END MOVE "OUI" TO FIN-FICHIER
+    NOT AT END PERFORM TRAITE-PARA
+  END-READ.
+
+  READ CLIENTS KEY IS CLI-CODE
+    INVALID KEY DISPLAY "Non trouve"
+  END-READ.
+
+  WRITE CLIENT-REC.
+  WRITE CLIENT-REC FROM WS-NEW-CLIENT.
+
+  REWRITE CLIENT-REC.       (* maj en place, I-O ou indexed *)
+
+  DELETE CLIENTS RECORD.
+
+7.6 START
+---------
+
+Positionnement sur un indexe :
+
+  START CLIENTS KEY IS >= CLI-CODE
+    INVALID KEY MOVE "OUI" TO FIN
+  END-START.
+
+7.7 FILE STATUS
+---------------
+
+Code retour standard apres chaque operation :
+
+  00  OK
+  10  fin de fichier
+  22  cle dupliquee
+  23  cle introuvable
+  35  fichier inexistant
+  9x  erreurs systeme
+
+
+============================================================
+8. SOUS-PROGRAMMES
+============================================================
+
+8.1 CALL
+--------
+
+Appel d'un programme externe :
+
+  CALL "SOUSPROG" USING WS-PARAM1 WS-PARAM2.
+
+Avec gestion d'erreur :
+
+  CALL "SOUSPROG" USING WS-PARAM
+    ON EXCEPTION DISPLAY "Erreur de chargement"
+    NOT ON EXCEPTION CONTINUE
+  END-CALL.
+
+8.2 LINKAGE SECTION
+-------------------
+
+Le sous-programme declare les parametres dans LINKAGE :
+
+  IDENTIFICATION DIVISION.
+  PROGRAM-ID. SOUSPROG.
+
+  DATA DIVISION.
+  LINKAGE SECTION.
+  01 LK-INPUT   PIC X(80).
+  01 LK-OUTPUT  PIC 9(5).
+
+  PROCEDURE DIVISION USING LK-INPUT LK-OUTPUT.
+    ...
+    EXIT PROGRAM.
+
+8.3 BY REFERENCE / BY CONTENT / BY VALUE
+----------------------------------------
+
+  CALL "P" USING BY REFERENCE WS-X       (* defaut, *X *)
+                 BY CONTENT   WS-Y       (* copie *)
+                 BY VALUE     5.
+
+8.4 GOBACK / EXIT PROGRAM / STOP RUN
+------------------------------------
+
+  EXIT PROGRAM.   (* retour normal au appelant *)
+  GOBACK.         (* retour propre, equivalent moderne *)
+  STOP RUN.       (* fin du processus entier *)
+
+8.5 CANCEL
+----------
+
+  CANCEL "SOUSPROG".    (* libere et reinitialise *)
+
+
+============================================================
+9. COPY ET REPLACE
+============================================================
+
+9.1 COPY
+--------
+
+Inclusion d'un copy book (analogue a #include) :
+
+  WORKING-STORAGE SECTION.
+  COPY "CLIENT-REC.CPY".
+
+9.2 COPY REPLACING
+------------------
+
+  COPY "RECORD.CPY" REPLACING ==:PREFIX:== BY ==CLI==.
+
+Substitue toutes les occurrences du masque `:PREFIX:`
+par `CLI` lors de l'inclusion.
+
+9.3 REPLACE
+-----------
+
+Substitution sur tout le source :
+
+  REPLACE ==WS== BY ==WORK-==.
+  ...
+  REPLACE OFF.
+
+
+============================================================
+10. ARITHMETIQUE DECIMALE
+============================================================
+
+10.1 Precision exacte
+---------------------
+
+COBOL effectue les calculs en decimal (pas en binaire),
+ce qui evite les erreurs d'arrondi classiques des `float` :
+
+  01 WS-PRIX     PIC 9(5)V99 VALUE 19.99.
+  01 WS-QTE      PIC 9(3)    VALUE 7.
+  01 WS-TOTAL    PIC 9(7)V99.
+  ...
+  COMPUTE WS-TOTAL = WS-PRIX * WS-QTE.
+  *> WS-TOTAL = 139.93 EXACTEMENT
+
+10.2 COMP-3 (packed decimal)
+----------------------------
+
+Chaque digit = 4 bits. Plus compact et plus rapide qu'un
+DISPLAY :
+
+  01 WS-MONTANT  PIC S9(9)V99 COMP-3.   (* 6 octets *)
+
+10.3 ROUNDED et SIZE ERROR
+--------------------------
+
+  COMPUTE WS-MOY ROUNDED = WS-T / WS-N
+    ON SIZE ERROR PERFORM ERREUR-PARA
+  END-COMPUTE.
+
+10.4 Fonctions intrinseques (COBOL-85+)
+---------------------------------------
+
+  FUNCTION SUM(TBL(1) TBL(2) TBL(3))
+  FUNCTION MAX(WS-A WS-B WS-C)
+  FUNCTION SQRT(WS-X)
+  FUNCTION CURRENT-DATE              YYYYMMDDHHMMSSCC...
+  FUNCTION NUMVAL("123.45")
+  FUNCTION UPPER-CASE(WS-NOM)
+  FUNCTION LENGTH(WS-CHAINE)
+
+
+============================================================
+11. TRI ET FUSION
+============================================================
+
+  SORT WORK-FILE
+    ON ASCENDING KEY WK-CODE
+    ON DESCENDING KEY WK-DATE
+    USING INPUT-FILE
+    GIVING OUTPUT-FILE.
+
+Avec procedures input/output :
+
+  SORT WORK-FILE
+    ON ASCENDING KEY WK-CLE
+    INPUT PROCEDURE IS ALIM-PARA
+    OUTPUT PROCEDURE IS SORT-PARA.
+
+  MERGE WORK-FILE
+    ON ASCENDING KEY WK-CLE
+    USING FIC-A FIC-B
+    GIVING RESULTAT.
+
+
+============================================================
+12. RAPPORTS - REPORT WRITER (optionnel)
+============================================================
+
+COBOL inclut une facilite de generation d'etats imprimes :
+
+  REPORT SECTION.
+  RD ETAT-MENSUEL
+     CONTROLS ARE FINAL CLI-CODE
+     PAGE LIMIT IS 66 LINES
+     HEADING 1
+     FIRST DETAIL 5
+     LAST DETAIL 60
+     FOOTING 63.
+
+  01 TYPE PAGE HEADING.
+     ...
+  01 LIGNE TYPE DETAIL.
+     ...
+
+Puis dans PROCEDURE DIVISION : INITIATE, GENERATE, TERMINATE.
+
+(Beaucoup d'installations ignorent Report Writer.)
+
+
+============================================================
+13. COBOL-85 - STRUCTURATION
+============================================================
+
+COBOL-85 introduit les terminateurs explicites
+(scope terminators) qui permettent une vraie programmation
+structuree :
+
+  END-IF, END-PERFORM, END-EVALUATE, END-READ, END-WRITE,
+  END-CALL, END-COMPUTE, END-ADD, END-SUBTRACT, END-MULTIPLY,
+  END-DIVIDE, END-STRING, END-UNSTRING, END-SEARCH, END-START
+
+Avant 1985, chaque instruction se terminait par un point,
+ce qui interdisait l'imbrication propre des IF.
+
+
+============================================================
+14. COBOL-2002 - OBJETS ET EXTENSIONS
+============================================================
+
+COBOL-2002 introduit (mais peu utilise) :
+
+14.1 Programmation orientee objet
+---------------------------------
+
+  CLASS-ID. PERSONNE INHERITS BASE.
+
+  IDENTIFICATION DIVISION.
+  FACTORY.
+
+  OBJECT.
+  DATA DIVISION.
+    WORKING-STORAGE SECTION.
+    01 NOM       PIC X(30).
+
+  PROCEDURE DIVISION.
+    METHOD-ID. SET-NOM.
+    DATA DIVISION.
+    LINKAGE SECTION.
+    01 LK-NOM PIC X(30).
+    PROCEDURE DIVISION USING LK-NOM.
+      MOVE LK-NOM TO NOM.
+    END METHOD SET-NOM.
+  END OBJECT.
+  END CLASS PERSONNE.
+
+14.2 Format libre
+-----------------
+
+Plus de contraintes de colonnes 7-72.
+
+14.3 Types nationaux (Unicode)
+------------------------------
+
+  PIC N(20)    USAGE NATIONAL.    (* UTF-16 *)
+
+14.4 Pointeurs et allocation
+----------------------------
+
+  01 PTR  USAGE POINTER.
+  ALLOCATE 100 CHARACTERS RETURNING PTR.
+  FREE PTR.
+
+14.5 Exceptions
+---------------
+
+  >>BEGIN
+    statements
+  >>EXCEPTION
+    WHEN EC-IO-INVALID-KEY ...
+  >>END
+
+
+============================================================
+15. COMPILATEURS DU PROJET
+============================================================
+
+15.1 COBOL86.PAS
+----------------
+
+  Cible             : MS-DOS, assembleur MASM .MODEL LARGE
+  Modele memoire    : LARGE (multi-segments 64KO)
+  Dialecte          : COBOL-85 sous-ensemble
+  Sortie            : fichier .ASM, MASM compatible
+
+  Fonctionnalites :
+    - 4 DIVISIONS standard
+    - WORKING-STORAGE et LINKAGE SECTION
+    - PICTURE complet (9, X, A, V, S, P, edition)
+    - USAGE : DISPLAY, COMP, COMP-3, COMP-5
+    - Niveaux 01-49, 77, 88
+    - OCCURS et OCCURS DEPENDING ON, REDEFINES
+    - MOVE, COMPUTE, ADD, SUBTRACT, MULTIPLY, DIVIDE
+    - DISPLAY, ACCEPT
+    - PERFORM (simple, TIMES, UNTIL, VARYING, inline)
+    - IF/ELSE/END-IF, EVALUATE/END-EVALUATE
+    - STRING, UNSTRING, INSPECT
+    - Fichiers SEQUENTIAL, LINE SEQUENTIAL, INDEXED
+    - CALL/USING (BY REFERENCE, BY CONTENT)
+    - COPY (sans REPLACING)
+
+  Limitations :
+    - Pas d'OO (CLASS-ID, METHOD-ID)
+    - Pas de Report Writer
+    - Pas de types nationaux (UTF-16)
+    - Pas de SORT/MERGE
+    - Pas de >>EXCEPTION (2002)
+
+15.2 COBOLW32.PAS
+-----------------
+
+  Cible             : Win32 PE
+  Modele memoire    : flat 32-bit
+  Dialecte          : COBOL-85 + extensions COBOL-2002
+  Sortie            : fichier .EXE Win32
+
+  Fonctionnalites supplementaires vs COBOL86 :
+    - Format libre
+    - Types nationaux (NATIONAL, UTF-16)
+    - POINTER, ALLOCATE/FREE
+    - Fonctions intrinseques (LENGTH, UPPER-CASE,
+      LOWER-CASE, NUMVAL, CURRENT-DATE, etc.)
+    - SORT et MERGE
+    - COPY ... REPLACING
+
+
+============================================================
+16. EXEMPLES
+============================================================
+
+16.1 Hello World
+----------------
+
+  IDENTIFICATION DIVISION.
+  PROGRAM-ID. HELLO.
+  PROCEDURE DIVISION.
+    DISPLAY "Hello, World!".
+    STOP RUN.
+
+16.2 Boucle avec compteur
+-------------------------
+
+  IDENTIFICATION DIVISION.
+  PROGRAM-ID. COMPTE.
+
+  DATA DIVISION.
+  WORKING-STORAGE SECTION.
+  01 WS-I    PIC 9(3).
+
+  PROCEDURE DIVISION.
+  MAIN.
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > 10
+      DISPLAY "Valeur: " WS-I
+    END-PERFORM.
+    STOP RUN.
+
+16.3 Factorielle
+----------------
+
+  IDENTIFICATION DIVISION.
+  PROGRAM-ID. FACT.
+
+  DATA DIVISION.
+  WORKING-STORAGE SECTION.
+  01 WS-N         PIC 9(2)  VALUE 10.
+  01 WS-I         PIC 9(2).
+  01 WS-RESULT    PIC 9(15) VALUE 1.
+
+  PROCEDURE DIVISION.
+  MAIN.
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-N
+      COMPUTE WS-RESULT = WS-RESULT * WS-I
+    END-PERFORM.
+    DISPLAY WS-N "! = " WS-RESULT.
+    STOP RUN.
+
+16.4 Lecture de fichier
+-----------------------
+
+  IDENTIFICATION DIVISION.
+  PROGRAM-ID. LIRE-CLI.
+
+  ENVIRONMENT DIVISION.
+  INPUT-OUTPUT SECTION.
+  FILE-CONTROL.
+    SELECT CLIENTS ASSIGN TO "CLIENTS.DAT"
+      ORGANIZATION IS LINE SEQUENTIAL
+      FILE STATUS  IS WS-FS.
+
+  DATA DIVISION.
+  FILE SECTION.
+  FD CLIENTS.
+  01 CLI-REC.
+     05 CLI-CODE   PIC 9(5).
+     05 CLI-NOM    PIC X(30).
+     05 CLI-SOLDE  PIC 9(7)V99.
+
+  WORKING-STORAGE SECTION.
+  01 WS-FS         PIC 99 VALUE 0.
+  01 WS-EOF        PIC X  VALUE "N".
+     88 FIN        VALUE "O".
+  01 WS-TOTAL      PIC 9(9)V99 VALUE 0.
+
+  PROCEDURE DIVISION.
+  MAIN.
+    OPEN INPUT CLIENTS.
+    PERFORM UNTIL FIN
+      READ CLIENTS
+        AT END SET FIN TO TRUE
+        NOT AT END
+          DISPLAY CLI-CODE " " CLI-NOM " " CLI-SOLDE
+          ADD CLI-SOLDE TO WS-TOTAL
+      END-READ
+    END-PERFORM.
+    CLOSE CLIENTS.
+    DISPLAY "Total des soldes: " WS-TOTAL.
+    STOP RUN.
+
+16.5 Sous-programme appele
+--------------------------
+
+Programme principal :
+
+  IDENTIFICATION DIVISION.
+  PROGRAM-ID. PRINCIPAL.
+
+  DATA DIVISION.
+  WORKING-STORAGE SECTION.
+  01 WS-A   PIC 9(5)   VALUE 15.
+  01 WS-B   PIC 9(5)   VALUE 27.
+  01 WS-R   PIC 9(6).
+
+  PROCEDURE DIVISION.
+    CALL "SOMME" USING WS-A WS-B WS-R.
+    DISPLAY WS-A " + " WS-B " = " WS-R.
+    STOP RUN.
+
+Sous-programme SOMME :
+
+  IDENTIFICATION DIVISION.
+  PROGRAM-ID. SOMME.
+
+  DATA DIVISION.
+  LINKAGE SECTION.
+  01 LK-A    PIC 9(5).
+  01 LK-B    PIC 9(5).
+  01 LK-R    PIC 9(6).
+
+  PROCEDURE DIVISION USING LK-A LK-B LK-R.
+    COMPUTE LK-R = LK-A + LK-B.
+    EXIT PROGRAM.
+
+
+============================================================
+17. INFLUENCE ET PERENNITE
+============================================================
+
+COBOL reste l'un des langages les plus deployes au monde
+en volume de code execute. Estimations :
+
+  - 200 a 250 milliards de lignes de COBOL en production
+  - 70% des transactions bancaires mondiales (estimation
+    Reuters/Gartner) passent par du COBOL
+  - Domaine : banque, assurance, gouvernements,
+    transport (reservations), grande distribution
+
+Particularites perpetuees :
+
+  - Standard ISO actif (revision 2023)
+  - Compilateurs modernes : GnuCOBOL, IBM Enterprise
+    COBOL for z/OS, Micro Focus Visual COBOL
+  - Modernisation : interop Java, .NET, REST/JSON
+  - Migration cobol -> Java : projets controverses, le
+    COBOL souvent prefere pour la stabilite
+
+Influence sur d'autres langages : limitee. COBOL est lui-meme
+peu inspire par d'autres ; son lexique anglais a influence
+SQL (mots-cles type SELECT, FROM, WHERE) et BASIC.
+
+
+============================================================
+18. REFERENCES
+============================================================
+
+  - ANSI X3.23-1985 "Programming Language COBOL".
+  - ISO/IEC 1989:2002 "COBOL".
+  - ISO/IEC 1989:2014 "COBOL".
+  - ISO/IEC 1989:2023 "COBOL" (derniere revision).
+
+  - Murach, M.           "Mike Murach's Structured COBOL",
+                         Murach Publishing, 1997.
+  - Stern, N. & Stern R. "Structured COBOL Programming",
+                         Wiley, 11e ed., 2017.
+  - Sammet, J.E.         "Programming Languages: History
+                         and Fundamentals", Prentice-Hall,
+                         1969. (Histoire du CODASYL.)
+
+  - GnuCOBOL             https://gnucobol.sourceforge.io
+  - IBM Enterprise COBOL https://www.ibm.com/cobol
+  - Micro Focus Visual COBOL
+                         https://www.microfocus.com/cobol
+  - "The COBOL 2014 Standard", J. Klein, BCS, 2014.

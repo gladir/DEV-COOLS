@@ -1,0 +1,538 @@
+================================================================================
+                  SPECIFICATIONS DU LANGAGE DE PROGRAMMATION JOVIAL
+================================================================================
+
+Document de reference pour l'integration dans le systeme d'aide DEVENV.HLP.
+Couvre JOVIAL J3, J3B, J73 (MIL-STD-1589) et J73/I, avec mentions historiques
+de JOVIAL J1, J2 et JOVIAL/I. Les compilateurs du projet DEV-COOLS
+(JOVIAL86.PAS et JOVCW32.PAS) implementent un sous-ensemble proche de J73.
+
+
+================================================================================
+1. Presentation generale
+================================================================================
+
+JOVIAL est l'acronyme de "Jules' Own Version of the International Algorithmic
+Language", concu en 1959-1960 par Jules I. Schwartz et son equipe a System
+Development Corporation (SDC) a partir d'un dialecte derive d'ALGOL 58 nomme
+"International Algebraic Language" (IAL). Le langage a ete adopte par l'US Air
+Force comme langage standard pour le developpement des systemes de defense
+embarques (commande/controle, navigation, radar, avionique).
+
+Historique :
+- 1959-1960 : conception initiale JOVIAL chez SDC pour le projet SAGE.
+- 1961-1965 : JOVIAL J1, J2 deployes sur ordinateurs AN/FSQ-7, IBM 7090.
+- 1967 : JOVIAL J3 standardise par l'USAF.
+- 1973 : JOVIAL J73 inclus dans MIL-STD-1589 (revisions A en 1976, B en 1979,
+  C en 1984).
+- 1984 : MIL-STD-1589C, derniere revision officielle DoD.
+- 1980-1990 : utilise pour B-1B, B-2, F-15, F-16, F-117, F-18, AWACS, U-2,
+  systemes de defense aerienne (NORAD), missiles de croisiere.
+- Depuis 1997 : Ada designe comme successeur DoD, mais JOVIAL reste maintenu
+  pour systemes existants (F-16 jusque dans les annees 2010+).
+
+Caracteristiques distinctives :
+- Langage compile a typage statique fort, oriente systemes temps reel embarques.
+- Structures de donnees orientees bit/mot (TABLE, ENTRY, ITEM, OVERLAY).
+- Controle precis de la representation memoire (PACKED, MEDIUM, DENSE).
+- Support natif des nombres a virgule fixe (FIXED) crucial pour systemes
+  sans FPU (avionique annees 1960-1980).
+- Modules compilables separement (COMPOOL : pool de definitions partagees).
+- Syntaxe inspiree d'ALGOL mais plus "industrielle" (mots-cles complets,
+  point-virgule terminal, BEGIN/END remplaces par START/TERM dans certains
+  dialectes).
+
+
+================================================================================
+2. Structure d'un programme JOVIAL
+================================================================================
+
+Un programme JOVIAL J73 typique se compose de :
+- 0 ou plusieurs COMPOOL (declarations partagees, similaire aux "INCLUDE").
+- 1 unite de compilation : PROGRAM ou PROCEDURE (subroutine reutilisable).
+- Une section declarative (TYPE, ITEM, TABLE, CONSTANT, OVERLAY).
+- Une section executable delimitee par START ... TERM.
+
+Forme generale :
+
+  START
+   "declarations"
+   ITEM I  INTEGER 16 U;
+   ITEM X  FLOATING;
+   "instructions"
+   X = 1.5;
+   I = 10;
+  TERM
+
+Pour une unite nommee :
+
+  PROC CALCUL (A : INTEGER 32 S; B : FLOATING) U;
+   BEGIN
+    "..."
+   END
+
+Le mot reserve PROGRAM introduit le programme principal :
+
+  PROGRAM MON_AVION;
+   ITEM ALT  INTEGER 16 S;
+   START
+    ALT = 1000;
+   TERM
+  END
+
+Commentaires :
+- Style classique : commence par " et termine par " (chaines de Hollerith).
+  Exemple : " ceci est un commentaire "
+- J73 : %...% ou /*...*/ selon implementation.
+
+
+================================================================================
+3. Caracteristiques lexicales
+================================================================================
+
+Jeu de caracteres : ASCII 7 bits historique, ISO-8859-1 en J73/I.
+
+Identificateurs :
+- Commencent par une lettre, suivis de lettres, chiffres ou apostrophes ('').
+- Sensibles a la casse selon implementation (souvent insensibles en J73).
+- Longueur maximale typique : 31 caracteres.
+
+Mots reserves (extrait) :
+  ABS  ALL  AND  ARRAY  BEGIN  BIT  BYTE  CASE  CONSTANT  CHAR  DEF
+  DEFINE  DO  ELSE  END  ENTRY  EQ  EXIT  FALSE  FIXED  FLOAT  FLOATING
+  FOR  FROM  GOTO  IF  IN  INLINE  INPUT  INTEGER  ITEM  LABEL  LOC
+  MOD  NOT  OR  OUTPUT  OVERLAY  POINTER  PROC  PROGRAM  REF  REP
+  RETURN  ROUND  SIGNED  START  STATUS  STEP  STOP  STRING  TABLE
+  TERM  THEN  TIMES  TRUE  TYPE  UNSIGNED  UNTIL  WHILE  XOR
+
+Litteraux :
+- Entiers decimaux : 42, -17, +255
+- Entiers binaires : 0B101010
+- Entiers octaux : 0O52
+- Entiers hexadecimaux : 0H2A
+- Reels flottants : 3.14, 1.5E-3, 6.022E23
+- Reels a virgule fixe : 3.14F (suffixe F pour FIXED)
+- Booleens : TRUE, FALSE
+- Chaines : 'BONJOUR' (apostrophes simples)
+- Caracteres : 'A' (avec qualificateur CHAR)
+- Constantes typees : V'12'B (binaire), V'1A'H (hexa), V'377'O (octal)
+
+Separateurs : espace, tabulation, fin de ligne, point-virgule ;
+Operateur d'affectation : = (un seul signe egal, contrairement a := d'ALGOL).
+Operateur de comparaison egal : EQ ou == selon dialecte.
+
+
+================================================================================
+4. Types de donnees
+================================================================================
+
+JOVIAL distingue les "items" (donnees scalaires) des "tables" (structures
+agregees).
+
+4.1 Types scalaires (ITEM)
+
+  INTEGER n S      "entier signe de n bits (S = signed)"
+  INTEGER n U      "entier non signe de n bits (U = unsigned)"
+  FLOATING n       "flottant simple precision, n bits mantisse"
+  FIXED n m S      "virgule fixe : n bits total, m bits fractionnaires, signe"
+  BIT n            "champ de n bits"
+  CHAR n           "chaine de n caracteres"
+  STATUS (A, B, C) "enumeration : equivalent ENUM"
+  POINTER          "adresse / reference"
+  BOOLEAN          "TRUE/FALSE"
+
+Exemples :
+  ITEM ALTITUDE   INTEGER 16 S;
+  ITEM CAP        FIXED 16 8 U;       " 8.8 fixed point 0..255.99 "
+  ITEM ACTIF      BIT 1;
+  ITEM NOM        CHAR 20;
+  ITEM ETAT       STATUS (V'INIT', V'RUN', V'STOP');
+
+4.2 Tables (TABLE)
+
+Une TABLE est une collection structuree d'items. Elle peut etre :
+- DENSE : items empaquetes au bit pres (compact).
+- MEDIUM : items alignes sur frontieres de mot.
+- PARALLEL : organisation par colonnes (un tableau par item).
+- SERIAL : organisation par lignes (record-of-array).
+
+  TABLE PISTES (100) DENSE;
+   BEGIN
+    ITEM ID       INTEGER 16 U;
+    ITEM X        FIXED 24 12 S;
+    ITEM Y        FIXED 24 12 S;
+    ITEM ACTIVE   BIT 1;
+   END
+
+Acces : PISTES.X(5) ou X(PISTES,5) selon dialecte.
+
+4.3 OVERLAY
+
+Permet la reinterpretation d'une zone memoire :
+
+  OVERLAY MOT WITH BYTE_HI : BYTE 8;
+                  BYTE_LO : BYTE 8;
+
+4.4 DEFINE (type alias / macro)
+
+  DEFINE PI 3.14159265;
+  DEFINE MASK_5 V'1F'H;
+
+4.5 Constantes
+
+  CONSTANT MAX_PISTES INTEGER 16 U = 100;
+  CONSTANT VERSION    CHAR 8 = 'J73-2024';
+
+
+================================================================================
+5. Operateurs
+================================================================================
+
+Arithmetiques : + - * / MOD ABS
+Relationnels  : EQ NQ LS LQ GR GQ   (ou == != < <= > >=)
+Logiques      : AND OR NOT XOR EQV
+Bit-a-bit     : BAND BOR BNOT BXOR
+Decalage      : SHL n, SHR n, SHRA n (arithmetique)
+Affectation   : =
+
+Precedence (du plus prioritaire au moins) :
+  1. NOT BNOT unaire
+  2. * / MOD BAND
+  3. + - BOR BXOR
+  4. SHL SHR
+  5. EQ NQ LS LQ GR GQ
+  6. AND
+  7. OR XOR EQV
+
+
+================================================================================
+6. Instructions de controle
+================================================================================
+
+6.1 Affectation
+  X = 10;
+  PISTES.X(I) = PISTES.X(I) + DX;
+
+6.2 IF/THEN/ELSE
+  IF X GR 0 THEN
+   Y = 1;
+  ELSE
+   Y = -1;
+
+Forme bloc :
+  IF COND THEN
+   BEGIN
+    "..."
+   END
+  ELSE
+   BEGIN
+    "..."
+   END
+
+6.3 CASE (instruction multibranche)
+  CASE MODE OF
+   BEGIN
+    (V'INIT'): INITIALISER();
+    (V'RUN'):  EXECUTER();
+    (V'STOP'): ARRETER();
+    DEFAULT:   ERREUR();
+   END
+
+6.4 FOR (boucle iterative)
+  FOR I = 1 STEP 1 UNTIL 100 DO
+   BEGIN
+    SOMME = SOMME + T(I);
+   END
+
+  FOR I = 0, I+2 WHILE I LS 100 DO ...
+
+6.5 WHILE
+  WHILE COND DO
+   BEGIN
+    "..."
+   END
+
+6.6 GOTO / Label
+  ETIQUETTE.
+   X = X + 1;
+   IF X LS 10 THEN GOTO ETIQUETTE;
+
+6.7 EXIT et STOP
+  EXIT;    " sortie de boucle "
+  STOP;    " arret du programme "
+
+6.8 RETURN
+  RETURN;
+  RETURN VALEUR;   " dans une fonction "
+
+
+================================================================================
+7. Procedures et fonctions
+================================================================================
+
+Definition :
+  PROC NOM (P1 : INTEGER 16 S; P2 : FLOATING) RETURNS (FLOATING);
+   BEGIN
+    ITEM TEMP FLOATING;
+    TEMP = P1 * P2;
+    RETURN TEMP;
+   END
+
+Sans valeur de retour :
+  PROC AFFICHE (MSG : CHAR 80);
+   BEGIN
+    OUTPUT MSG;
+   END
+
+Modes de passage :
+- IN     : valeur (par defaut pour types simples).
+- OUT    : sortie (variable assignee par la procedure).
+- INOUT  : entree-sortie (reference).
+
+  PROC ECHANGE (INOUT A : INTEGER 16; INOUT B : INTEGER 16);
+   BEGIN
+    ITEM T INTEGER 16;
+    T = A;  A = B;  B = T;
+   END
+
+Appel :
+  RES = NOM(10, 3.14);
+  AFFICHE('BONJOUR');
+
+
+================================================================================
+8. COMPOOL (modules de declarations partagees)
+================================================================================
+
+Un COMPOOL contient des declarations communes a plusieurs unites de compilation
+(equivalent des fichiers en-tete .h en C, ou des MODULE INTERFACE en Modula-2).
+
+  COMPOOL AVIONIQUE;
+   CONSTANT MAX_ALT INTEGER 16 U = 60000;
+   TYPE COORD = TABLE PARALLEL;
+    ITEM LAT  FIXED 32 24 S;
+    ITEM LON  FIXED 32 24 S;
+    ITEM ALT  INTEGER 16 S;
+   END
+   ITEM POSITION_AVION COORD;
+  END_COMPOOL
+
+Utilisation :
+  PROGRAM PILOTAGE;
+   USES AVIONIQUE;
+   START
+    POSITION_AVION.ALT = 10000;
+   TERM
+  END
+
+
+================================================================================
+9. Entrees/sorties
+================================================================================
+
+JOVIAL n'a pas de bibliotheque standard d'E/S aussi etendue qu'Ada ou C, mais
+fournit des primitives :
+
+  INPUT  VAR1, VAR2;
+  OUTPUT 'RESULTAT = ', X;
+
+Pour les systemes embarques temps reel, les E/S sont generalement realisees
+par lecture/ecriture directe de registres memoire-mappes :
+
+  ITEM REG_CAPTEUR INTEGER 16 U LOC V'FFFA00'H;
+  VALEUR = REG_CAPTEUR;
+
+
+================================================================================
+10. Adressage et acces materiel
+================================================================================
+
+JOVIAL est concu pour la programmation systeme/embarquee :
+- LOC : specifie l'adresse absolue d'un item.
+- REF : type pointeur typed.
+- @  : operateur d'adresse (similaire a & en C).
+- $  : operateur de dereferencement.
+
+  ITEM TIMER INTEGER 32 U LOC V'F00010'H;
+  ITEM PT REF INTEGER 16;
+  PT = @VARIABLE;
+  $PT = 42;
+
+
+================================================================================
+11. Gestion du temps reel et bas niveau
+================================================================================
+
+J73 supporte :
+- Routines d'interruption : INTERRUPT keyword (selon implementation).
+- Sections atomiques : INLINE assembleur.
+- Synchronisation : selon RTOS hote (pas dans le standard).
+
+Bloc en assembleur :
+  INLINE
+   $0E         " PUSH CS "
+   $1F         " POP DS "
+  END_INLINE
+
+
+================================================================================
+12. JOVIAL J73 vs J3 vs J3B
+================================================================================
+
+JOVIAL J3 (1967) :
+- Premiere version DoD standardisee.
+- Types : INTEGER, FLOATING, HOLLERITH, BOOLEAN, STATUS.
+- Pas de COMPOOL portable, pas de modularisation forte.
+
+JOVIAL J3B (Burroughs, 1969) :
+- Extension proprietaire avec tables paralleles.
+- Optimisation pour processeurs Burroughs B7700.
+
+JOVIAL J73 (MIL-STD-1589, 1973-1984) :
+- Standard DoD final.
+- Types parametrables (INTEGER n S/U).
+- FIXED point arithmetique.
+- Procedures avec parametres typed.
+- Compilation separee via COMPOOL.
+- Block structure ALGOL-like complete.
+
+JOVIAL J73/I (1980+) :
+- Version pour ordinateurs internationaux ISO 8859.
+
+
+================================================================================
+13. Compilateurs JOVIAL dans le projet DEV-COOLS
+================================================================================
+
+JOVIAL86.PAS :
+- Compilateur JOVIAL pour cible 8086 (DOS .COM/.EXE).
+- Mode memoire SMALL et LARGE.
+- Sortie assembleur MASM-compatible.
+- Sous-ensemble J73 sans COMPOOL externe (compilation monolithique).
+- Types : INTEGER 8/16/32, FLOATING, BIT, CHAR, STATUS.
+- Tables DENSE/MEDIUM, OVERLAY.
+
+JOVCW32.PAS :
+- Compilateur JOVIAL pour Windows 32 bits (PE executable).
+- Cible : Win32 console, API minimal.
+- Supporte FIXED point en emulation logicielle (Q-format).
+- Generation directe x86-32 sans passage par MASM.
+- COMPOOL en un fichier (multi-COMPOOL non supporte).
+
+
+================================================================================
+14. Exemples de programmes
+================================================================================
+
+14.1 Hello World
+
+  PROGRAM HELLO;
+   START
+    OUTPUT 'BONJOUR LE MONDE';
+   TERM
+  END
+
+14.2 Somme d'un tableau
+
+  PROGRAM SOMTAB;
+   ITEM I       INTEGER 16 U;
+   ITEM SOMME   INTEGER 32 S;
+   TABLE T (10) DENSE;
+    BEGIN
+     ITEM V INTEGER 16 S;
+    END
+   START
+    FOR I = 1 STEP 1 UNTIL 10 DO
+     BEGIN
+      T.V(I) = I * I;
+     END
+    SOMME = 0;
+    FOR I = 1 STEP 1 UNTIL 10 DO
+     BEGIN
+      SOMME = SOMME + T.V(I);
+     END
+    OUTPUT 'SOMME = ', SOMME;
+   TERM
+  END
+
+14.3 Factorielle recursive
+
+  PROC FACT (N : INTEGER 16 U) RETURNS (INTEGER 32 U);
+   BEGIN
+    IF N LQ 1 THEN
+     RETURN 1;
+    ELSE
+     RETURN N * FACT(N-1);
+   END
+
+14.4 Lecture d'un registre materiel
+
+  PROGRAM LIRE_ADC;
+   ITEM ADC_REG  INTEGER 16 U LOC V'FFE000'H;
+   ITEM VALEUR   INTEGER 16 U;
+   START
+    VALEUR = ADC_REG;
+    OUTPUT 'CAPTEUR = ', VALEUR;
+   TERM
+  END
+
+14.5 Machine a etats avec STATUS et CASE
+
+  PROGRAM CONTROLEUR;
+   ITEM ETAT  STATUS (V'INIT', V'ARME', V'TIRE', V'STOP');
+   START
+    ETAT = V'INIT';
+    WHILE ETAT NQ V'STOP' DO
+     BEGIN
+      CASE ETAT OF
+       BEGIN
+        (V'INIT'): ETAT = V'ARME';
+        (V'ARME'): ETAT = V'TIRE';
+        (V'TIRE'): ETAT = V'STOP';
+       END
+     END
+   TERM
+  END
+
+
+================================================================================
+15. Influence et heritage
+================================================================================
+
+JOVIAL a directement influence :
+- CMS-2 (US Navy, derive de JOVIAL J3).
+- TACPOL (US Army).
+- Ada (1983) : structure ALGOL-like, typage fort, compilation modulaire, support
+  temps reel - tous ces traits sont issus de l'experience JOVIAL DoD.
+- SPARK (sous-ensemble Ada formel pour systemes critiques).
+
+Aujourd'hui (annees 2020) JOVIAL est encore utilise pour la maintenance de :
+- F-16 Fighting Falcon (avionique).
+- B-1B Lancer.
+- B-52 Stratofortress (mises a jour avioniques).
+- C-130 Hercules.
+- AWACS.
+- Certains systemes NORAD.
+
+Outils modernes :
+- DDC-I JOVIAL Compiler (J73, support 32/64 bits, integration TASKING).
+- Software Engineering Associates (SEA) JOVIAL toolchain.
+
+
+================================================================================
+16. References
+================================================================================
+
+- MIL-STD-1589C : "JOVIAL (J73), Department of Defense Standard", US DoD, 1984.
+- Shaw, Christopher J. : "JOVIAL: A Programming Language for Real-Time
+  Command Systems", Annual Review in Automatic Programming, 1963.
+- Schwartz, Jules I. : "The Development of JOVIAL", ACM SIGPLAN Notices, 1981.
+- "JOVIAL J73 Programmer's Reference Manual", DDC-I, 1990.
+- Sammet, Jean E. : "Programming Languages: History and Fundamentals",
+  Prentice-Hall, 1969 (chapitres sur JOVIAL).
+- DoD HOLWG (High Order Language Working Group) reports, 1975-1978.
+- AFSCM 300-9 : "JOVIAL J3 Compiler Manual", US Air Force, 1968.
+
+================================================================================
+                              FIN DU DOCUMENT
+================================================================================
