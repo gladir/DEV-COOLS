@@ -1,4 +1,4 @@
-﻿{ @author: Sylvain Maltais (support@gladir.com)
+{ @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @version: 1.00
   @website(https://www.gladir.com/dev-cools)
@@ -1012,6 +1012,7 @@ Const
  { Limites des signets et points d arret }
  MAX_BOOKMARKS         = 128;
  MAX_BREAKPOINTS       = 256;
+ MAX_EMU_BP            = 64;     { points d arret machine emulateur }
 
  { Limites des erreurs et resultats de recherche }
  MAX_ERRORS            = 1024;
@@ -2997,6 +2998,61 @@ Type
   NeedRepaint  : Boolean;          { doit etre redessine            }
  End;
 
+ { ============================================================
+   Debogueur d emulateur (NES/6502, Atari2600, DOS/8086, etc.)
+   ------------------------------------------------------------
+   Permet la pause d execution sur Ctrl+Break/Ctrl+C avec une
+   fenetre de deboguage affichant l etat CPU + desassemblage,
+   pas a pas (F10/F11/Shift+F11), points d arret (F9),
+   Continuer (F5), Demarrer sans debogage (Ctrl+F5),
+   Arreter (Shift+F5).
+   ============================================================ }
+
+ { CPU cible pour le debogueur emulateur }
+ TEmuDbgCPU = (
+  EDC_NONE,            { aucun emulateur actif                      }
+  EDC_6502,            { NES, Atari2600 (CPU6502_*)                 }
+  EDC_8086             { DOS (Emu_StepOne / TEmulatorPanel.CPU)     }
+ );
+
+ { Mode de pas a pas demande par l utilisateur }
+ TEmuStepMode = (
+  ESM_NONE,            { pas en mode step                           }
+  ESM_INTO,            { F11 : entrer dans appel                    }
+  ESM_OVER,            { F10 : passer par-dessus (CALL/JSR)         }
+  ESM_OUT              { Shift+F11 : sortir (jusqu a RET/RTS)       }
+ );
+
+ { Point d arret machine (adresse absolue dans la memoire CPU) }
+ TEmuBP = Record
+  Addr     : LongInt;            { adresse lineaire 32 bits         }
+  CPU      : TEmuDbgCPU;         { CPU concerne                     }
+  Enabled  : Boolean;            { point actif                      }
+  HitCount : LongInt;            { compteur de passages             }
+ End;
+
+ { Etat global du debogueur emulateur }
+ TEmuDebugger = Record
+  Active        : Boolean;       { emulateur en cours d execution   }
+  Paused        : Boolean;       { execution en pause               }
+  BreakReq      : Boolean;       { demande de pause (Ctrl+Break)    }
+  ContinueReq   : Boolean;       { F5 : reprendre                   }
+  StopReq       : Boolean;       { Shift+F5 : arret total           }
+  StepMode      : TEmuStepMode;  { mode de pas a pas en cours       }
+  StepSPRef     : LongInt;       { SP de reference (over/out)       }
+  CPU           : TEmuDbgCPU;    { CPU presentement en debogage     }
+  LastAddr      : LongInt;       { derniere adresse interrompue     }
+  LastCS, LastIP: Word;          { CS:IP au moment de la pause 8086 }
+  BPCount       : Integer;       { nombre de breakpoints definis    }
+  BPs           : Array[0..MAX_EMU_BP - 1] Of TEmuBP;
+  WinX, WinY    : Integer;       { position fenetre debug           }
+  WinW, WinH    : Integer;       { taille fenetre debug             }
+  WinVisible    : Boolean;       { fenetre debug affichee           }
+  WinFocused    : Boolean;       { fenetre a le focus clavier       }
+  ScrollOfs     : Integer;       { decalage scroll desassemblage    }
+  NeedRepaint   : Boolean;       { redessiner au prochain tour      }
+ End;
+
  { Mode d insertion }
  TInsertMode = (
   IM_INSERT,           { mode insertion                             }
@@ -3163,6 +3219,8 @@ Var
  BPMgr          : TBreakpointManager;
  { Panneau de debogage }
  DbgPanel       : TDebugPanel;
+ { Debogueur d emulateur (NES/6502, DOS/8086, ...) }
+ EmuDbg         : TEmuDebugger;
  { Barre d etat }
  StatusBar      : TStatusBar;
  { Liste des fichiers recents }
@@ -5318,6 +5376,29 @@ Procedure DrawAllWidgets; Forward;
 { Declaration anticipee : HandleStartDebugging est defini plus loin }
 Procedure HandleStartDebugging; Forward;
 
+{ Declarations anticipees du debogueur emulateur (defini pres de la fin) }
+Procedure EmuDbg_Init; Forward;
+Procedure EmuDbg_Continue; Forward;
+Procedure EmuDbg_Stop; Forward;
+Procedure EmuDbg_StepInto; Forward;
+Procedure EmuDbg_StepOver; Forward;
+Procedure EmuDbg_StepOut; Forward;
+Procedure EmuDbg_ToggleBPAtPC; Forward;
+Procedure EmuDbg_OnBeforeStep6502; Forward;
+Procedure EmuDbg_OnBeforeStep8086; Forward;
+Procedure EmuDbg_RequestBreak(ACPU: TEmuDbgCPU); Forward;
+Function  EmuDbg_PollCrtBreak: Boolean; Forward;
+
+{ Declarations anticipees du debogueur source (defini section TODO 29) }
+Procedure StartWithoutDebugging(Var BPM: TBreakpointManager;
+ Var OP: TOutputPanel); Forward;
+Procedure StopDebugging(Var BPM: TBreakpointManager;
+ Var OP: TOutputPanel); Forward;
+Procedure StepOver(Var BPM: TBreakpointManager;
+ Var OP: TOutputPanel); Forward;
+Procedure StepInto(Var BPM: TBreakpointManager;
+ Var OP: TOutputPanel); Forward;
+
 { Declarations anticipees pour le menu contextuel }
 Procedure InitContextMenu(Var CM: TContextMenu); Forward;
 Procedure AddContextItem(Var CM: TContextMenu; ACaption: String;
@@ -5801,7 +5882,35 @@ Begin
         End;
         FullRepaintNeeded := True;
        End;
-  600: HandleStartDebugging; { Demarrer le debogage (F5) }
+  600: Begin { Demarrer le debogage (F5) }
+        If EmuDbg.Paused Then EmuDbg_Continue
+        Else HandleStartDebugging;
+       End;
+  601: Begin { Demarrer sans debogage (Ctrl+F5) }
+        If EmuDbg.Paused Then EmuDbg_Continue
+        Else StartWithoutDebugging(BPMgr, OutputPanel);
+       End;
+  610: Begin { Point d arret (F9) }
+        If EmuDbg.Active Or EmuDbg.Paused Then Begin
+         EmuDbg_ToggleBPAtPC;
+         FullRepaintNeeded := True;
+        End;
+       End;
+  620: Begin { Pas a pas principal (F10) }
+        If EmuDbg.Paused Then EmuDbg_StepOver
+        Else StepOver(BPMgr, OutputPanel);
+       End;
+  621: Begin { Pas a pas detaille (F11) }
+        If EmuDbg.Paused Then EmuDbg_StepInto
+        Else StepInto(BPMgr, OutputPanel);
+       End;
+  622: Begin { Pas a pas sortant (Shift+F11) }
+        If EmuDbg.Paused Then EmuDbg_StepOut;
+       End;
+  630: Begin { Arreter le debogage (Shift+F5) }
+        If EmuDbg.Active Or EmuDbg.Paused Then EmuDbg_Stop
+        Else StopDebugging(BPMgr, OutputPanel);
+       End;
   700: Begin { Options... }
         ShowOptionsDialog(OptionsDlg);
         FullRepaintNeeded := True;
@@ -42151,16 +42260,27 @@ Begin NesActive := False;
    NesKeyEsc := False;
    NesFBFirst := True;
    FillChar(NesFBPrev, SizeOf(NesFBPrev), $FF);
+   { Activer le debogueur d emulateur en mode 6502 }
+   EmuDbg.Active := True;
+   EmuDbg.CPU    := EDC_6502;
    { Premier rendu pour afficher le panneau }
    DrawEmulatorPanel(P);
    EntryAddr := GetTimestamp;
    While (Not CPU6502_Halted) And (NesFrameNo < NesFrameLimit) And
          (Not NesKeyEsc) Do Begin
-    { Drainer tampon clavier (gestion ESC + activation focus) }
+    { Drainer tampon clavier (gestion ESC + Ctrl+C/Break + activation focus) }
     While KeyPressed Do Begin
      NesChrSize := Ord(ReadKey);
      If NesChrSize = 27 Then NesKeyEsc := True;
-     If NesChrSize = 0 Then If KeyPressed Then ReadKey;
+     If NesChrSize = 3  Then EmuDbg_RequestBreak(EDC_6502);
+     If NesChrSize = 0 Then Begin
+      If KeyPressed Then Begin
+       NesChrSize := Ord(ReadKey);
+       { scancode 0 = Ctrl+Break sur PC BIOS }
+       If NesChrSize = 0 Then EmuDbg_RequestBreak(EDC_6502);
+      End Else
+       EmuDbg_RequestBreak(EDC_6502);
+     End;
     End;
     If NesKeyEsc Then Break;
     { Lire etat manette pour cette trame }
@@ -42171,6 +42291,7 @@ Begin NesActive := False;
     { Phase visible : ~80% des instructions (scanlines 0..239) }
     For NesPrgSize := 0 To (NesInstrPerFrame * 4 Div 5) - 1 Do Begin
      If CPU6502_Halted Then Break;
+     EmuDbg_OnBeforeStep6502;
      CPU6502_Step;
      Inc(Steps);
     End;
@@ -42183,6 +42304,7 @@ Begin NesActive := False;
     { Phase vblank : ~20% des instructions restantes }
     For NesPrgSize := 0 To (NesInstrPerFrame Div 5) - 1 Do Begin
      If CPU6502_Halted Then Break;
+     EmuDbg_OnBeforeStep6502;
      CPU6502_Step;
      Inc(Steps);
     End;
@@ -42197,10 +42319,15 @@ Begin NesActive := False;
     {$ENDIF}
    End;
    NesActive := False;
+   EmuDbg.Active := False;
+   EmuDbg.CPU    := EDC_NONE;
   End Else If TargetCPU = '-CATARI2600' Then Begin
    { ----- Boucle Atari 2600 par trame (60 Hz approx.) ----- }
    A2600_Active := True;
    A2600_Reset;
+   { Activer le debogueur d emulateur en mode 6502 }
+   EmuDbg.Active := True;
+   EmuDbg.CPU    := EDC_6502;
    { Premier rendu pour afficher le panneau }
    DrawEmulatorPanel(P);
    {$IFDEF WINDOWS}
@@ -42208,11 +42335,18 @@ Begin NesActive := False;
    {$ENDIF}
    While (Not CPU6502_Halted) And (A2600_FrameNo < 36000) And
          (Not A2600_KeyEsc) Do Begin
-    { Drainer tampon clavier (Esc) }
+    { Drainer tampon clavier (Esc + Ctrl+C/Break) }
     While KeyPressed Do Begin
      NesChrSize := Ord(ReadKey);
      If NesChrSize = 27 Then A2600_KeyEsc := True;
-     If NesChrSize = 0 Then If KeyPressed Then NesChrSize := Ord(ReadKey);
+     If NesChrSize = 3  Then EmuDbg_RequestBreak(EDC_6502);
+     If NesChrSize = 0 Then Begin
+      If KeyPressed Then Begin
+       NesChrSize := Ord(ReadKey);
+       If NesChrSize = 0 Then EmuDbg_RequestBreak(EDC_6502);
+      End Else
+       EmuDbg_RequestBreak(EDC_6502);
+     End;
     End;
     If A2600_KeyEsc Then Break;
     { Lecture directe du clavier (joystick + tir) via Win32 :       }
@@ -42317,6 +42451,7 @@ Begin NesActive := False;
        A2600_LastX := -1;
        Break;
      End;
+     EmuDbg_OnBeforeStep6502;
      CPU6502_Step;
      Inc(Steps);
      A2600_AfterInstr;
@@ -42334,6 +42469,8 @@ Begin NesActive := False;
     {$ENDIF}
    End;
    A2600_Active := False;
+   EmuDbg.Active := False;
+   EmuDbg.CPU    := EDC_NONE;
   End Else Begin
    While (Not CPU6502_Halted) And (Steps < 1000000) Do Begin
     CPU6502_Step;
@@ -42736,6 +42873,9 @@ Begin NesActive := False;
    invisible plusieurs secondes selon la charge. }
  DrawEmulatorPanel(P);
  EmuLastDraw := GetTimestamp;
+ { Activer le debogueur d emulateur en mode 8086 }
+ EmuDbg.Active := True;
+ EmuDbg.CPU    := EDC_8086;
  { Boucle infinie : seuls ESC, une faute (opcode invalide, etc.) ou
    sfEndProgram (INT 21h AH=4Ch) terminent l emulation. }
  While P.CPU.Fault = sfNone Do Begin
@@ -42791,6 +42931,7 @@ Begin NesActive := False;
     0x00/0x20 (donnees ou instructions ADD/AND repetees).
     L emulateur s arrete uniquement sur ESC, faute CPU ou INT 21h AH=4Ch. }
   EmuTraceIdx := (EmuTraceIdx + 1) And $1FFF;
+  EmuDbg_OnBeforeStep8086;
   Emu_StepOne(P);
   Inc(Steps);
   { --- IRQ mat?rielles --- }
@@ -42828,12 +42969,16 @@ Begin NesActive := False;
         P.StatusMsg := 'Emulation interrompue par utilisateur';
         Break;
        End;
-       { Pousser directement dans le buffer BIOS pour minimiser
-         la latence. INT 16h y lit en priorite. }
-       Emu_PushBiosKey(P, EmuKey_AsciiToScan(EmuPumpEv.KeyChar),
-         Byte(EmuPumpEv.KeyChar));
-       EmuIrqPending := EmuIrqPending Or $02;
-       P.NeedRepaint := True;
+       If EmuPumpEv.KeyChar = #3 Then Begin
+        EmuDbg_RequestBreak(EDC_8086);
+       End Else Begin
+        { Pousser directement dans le buffer BIOS pour minimiser
+          la latence. INT 16h y lit en priorite. }
+        Emu_PushBiosKey(P, EmuKey_AsciiToScan(EmuPumpEv.KeyChar),
+          Byte(EmuPumpEv.KeyChar));
+        EmuIrqPending := EmuIrqPending Or $02;
+        P.NeedRepaint := True;
+       End;
       End;
      EV_KEY_DOWN:
       Begin
@@ -43000,6 +43145,8 @@ Begin NesActive := False;
  If P.StatusMsg = '' Then
   P.StatusMsg := 'Phase 2 (1) : ' + Emu_FaultText(P.Fault);
  P.Running := False;
+ EmuDbg.Active := False;
+ EmuDbg.CPU    := EDC_NONE;
  Emu_Done(P.CPU);
 End;
 
@@ -49501,6 +49648,757 @@ Begin
   DrawOptionsDialog(OptionsDlg);
 End;
 
+{ ============================================================
+  DEBOGUEUR EMULATEUR : implementation
+  ------------------------------------------------------------
+  Permet la pause de l execution sur Ctrl+Break/Ctrl+C, l affichage
+  d une fenetre superposee avec opcodes + desassemblage + registres,
+  les pas a pas F10/F11/Shift+F11, points d arret F9, et la reprise
+  via F5 / Ctrl+F5 / Shift+F5.
+  ============================================================ }
+
+{ Forward : DispatchEvent est defini juste apres ce bloc. EmuDbg_PumpPause
+  l appelle pour preserver l interactivite de l IDE pendant la pause. }
+Procedure DispatchEvent(Var Ev: TEvent); Forward;
+
+{ Declarations anticipees des variables CPU referencees ci-dessous :
+  CPU6502_PC, CPU6502_A, ... et P : TEmulatorPanel sont deja declares
+  comme globales plus haut dans le fichier. }
+
+{ --- Initialiser le debogueur emulateur --- }
+
+Procedure EmuDbg_Init;
+Var
+ I: Integer;
+Begin
+ EmuDbg.Active := False;
+ EmuDbg.Paused := False;
+ EmuDbg.BreakReq := False;
+ EmuDbg.ContinueReq := False;
+ EmuDbg.StopReq := False;
+ EmuDbg.StepMode := ESM_NONE;
+ EmuDbg.StepSPRef := 0;
+ EmuDbg.CPU := EDC_NONE;
+ EmuDbg.LastAddr := 0;
+ EmuDbg.LastCS := 0;
+ EmuDbg.LastIP := 0;
+ EmuDbg.BPCount := 0;
+ For I := 0 To MAX_EMU_BP - 1 Do Begin
+  EmuDbg.BPs[I].Addr := 0;
+  EmuDbg.BPs[I].CPU := EDC_NONE;
+  EmuDbg.BPs[I].Enabled := False;
+  EmuDbg.BPs[I].HitCount := 0;
+ End;
+ { Fenetre debug a droite, sous la toolbar }
+ EmuDbg.WinW := 360;
+ EmuDbg.WinH := 320;
+ EmuDbg.WinX := 80;
+ EmuDbg.WinY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + 16;
+ EmuDbg.WinVisible := False;
+ EmuDbg.WinFocused := False;
+ EmuDbg.ScrollOfs := 0;
+ EmuDbg.NeedRepaint := False;
+End;
+
+{ --- Demander une pause depuis l interieur d une boucle d emulateur --- }
+
+Procedure EmuDbg_RequestBreak(ACPU: TEmuDbgCPU);
+Begin
+ EmuDbg.Active := True;
+ EmuDbg.CPU := ACPU;
+ EmuDbg.BreakReq := True;
+End;
+
+{ --- Rechercher un point d arret machine --- }
+
+Function EmuDbg_FindBP(Addr: LongInt; ACPU: TEmuDbgCPU): Integer;
+Var
+ I: Integer;
+Begin
+ EmuDbg_FindBP := -1;
+ For I := 0 To EmuDbg.BPCount - 1 Do
+  If (EmuDbg.BPs[I].Addr = Addr) And
+     (EmuDbg.BPs[I].CPU = ACPU) Then Begin
+   EmuDbg_FindBP := I;
+   Exit;
+  End;
+End;
+
+{ --- Tester si une adresse correspond a un BP actif --- }
+
+Function EmuDbg_HasBP(Addr: LongInt; ACPU: TEmuDbgCPU): Boolean;
+Var
+ Idx: Integer;
+Begin
+ Idx := EmuDbg_FindBP(Addr, ACPU);
+ EmuDbg_HasBP := (Idx >= 0) And EmuDbg.BPs[Idx].Enabled;
+End;
+
+{ --- Ajouter un point d arret machine --- }
+
+Procedure EmuDbg_AddBP(Addr: LongInt; ACPU: TEmuDbgCPU);
+Begin
+ If EmuDbg_FindBP(Addr, ACPU) >= 0 Then Exit;
+ If EmuDbg.BPCount >= MAX_EMU_BP Then Exit;
+ EmuDbg.BPs[EmuDbg.BPCount].Addr := Addr;
+ EmuDbg.BPs[EmuDbg.BPCount].CPU := ACPU;
+ EmuDbg.BPs[EmuDbg.BPCount].Enabled := True;
+ EmuDbg.BPs[EmuDbg.BPCount].HitCount := 0;
+ Inc(EmuDbg.BPCount);
+End;
+
+{ --- Supprimer un point d arret machine --- }
+
+Procedure EmuDbg_RemoveBP(Addr: LongInt; ACPU: TEmuDbgCPU);
+Var
+ Idx, I: Integer;
+Begin
+ Idx := EmuDbg_FindBP(Addr, ACPU);
+ If Idx < 0 Then Exit;
+ For I := Idx To EmuDbg.BPCount - 2 Do
+  EmuDbg.BPs[I] := EmuDbg.BPs[I + 1];
+ Dec(EmuDbg.BPCount);
+End;
+
+{ --- Basculer un point d arret machine --- }
+
+Procedure EmuDbg_ToggleBP(Addr: LongInt; ACPU: TEmuDbgCPU);
+Begin
+ If EmuDbg_FindBP(Addr, ACPU) >= 0 Then
+  EmuDbg_RemoveBP(Addr, ACPU)
+ Else
+  EmuDbg_AddBP(Addr, ACPU);
+ EmuDbg.NeedRepaint := True;
+End;
+
+{ --- Table mnemonique 6502 minimale (officiels + alias courants) --- }
+
+Function EmuDbg_Mnem6502(Op: Byte): String;
+Begin
+ Case Op Of
+  $00: EmuDbg_Mnem6502 := 'BRK';
+  $01,$05,$09,$0D,$11,$15,$19,$1D: EmuDbg_Mnem6502 := 'ORA';
+  $06,$0A,$0E,$16,$1E: EmuDbg_Mnem6502 := 'ASL';
+  $08: EmuDbg_Mnem6502 := 'PHP';
+  $10: EmuDbg_Mnem6502 := 'BPL';
+  $18: EmuDbg_Mnem6502 := 'CLC';
+  $20: EmuDbg_Mnem6502 := 'JSR';
+  $21,$25,$29,$2D,$31,$35,$39,$3D: EmuDbg_Mnem6502 := 'AND';
+  $24,$2C: EmuDbg_Mnem6502 := 'BIT';
+  $26,$2A,$2E,$36,$3E: EmuDbg_Mnem6502 := 'ROL';
+  $28: EmuDbg_Mnem6502 := 'PLP';
+  $30: EmuDbg_Mnem6502 := 'BMI';
+  $38: EmuDbg_Mnem6502 := 'SEC';
+  $40: EmuDbg_Mnem6502 := 'RTI';
+  $41,$45,$49,$4D,$51,$55,$59,$5D: EmuDbg_Mnem6502 := 'EOR';
+  $46,$4A,$4E,$56,$5E: EmuDbg_Mnem6502 := 'LSR';
+  $48: EmuDbg_Mnem6502 := 'PHA';
+  $4C,$6C: EmuDbg_Mnem6502 := 'JMP';
+  $50: EmuDbg_Mnem6502 := 'BVC';
+  $58: EmuDbg_Mnem6502 := 'CLI';
+  $60: EmuDbg_Mnem6502 := 'RTS';
+  $61,$65,$69,$6D,$71,$75,$79,$7D: EmuDbg_Mnem6502 := 'ADC';
+  $66,$6A,$6E,$76,$7E: EmuDbg_Mnem6502 := 'ROR';
+  $68: EmuDbg_Mnem6502 := 'PLA';
+  $70: EmuDbg_Mnem6502 := 'BVS';
+  $78: EmuDbg_Mnem6502 := 'SEI';
+  $81,$85,$8D,$91,$95,$99,$9D: EmuDbg_Mnem6502 := 'STA';
+  $84,$8C,$94: EmuDbg_Mnem6502 := 'STY';
+  $86,$8E,$96: EmuDbg_Mnem6502 := 'STX';
+  $88: EmuDbg_Mnem6502 := 'DEY';
+  $8A: EmuDbg_Mnem6502 := 'TXA';
+  $90: EmuDbg_Mnem6502 := 'BCC';
+  $98: EmuDbg_Mnem6502 := 'TYA';
+  $9A: EmuDbg_Mnem6502 := 'TXS';
+  $A0,$A4,$AC,$B4,$BC: EmuDbg_Mnem6502 := 'LDY';
+  $A1,$A5,$A9,$AD,$B1,$B5,$B9,$BD: EmuDbg_Mnem6502 := 'LDA';
+  $A2,$A6,$AE,$B6,$BE: EmuDbg_Mnem6502 := 'LDX';
+  $A8: EmuDbg_Mnem6502 := 'TAY';
+  $AA: EmuDbg_Mnem6502 := 'TAX';
+  $B0: EmuDbg_Mnem6502 := 'BCS';
+  $B8: EmuDbg_Mnem6502 := 'CLV';
+  $BA: EmuDbg_Mnem6502 := 'TSX';
+  $C0,$C4,$CC: EmuDbg_Mnem6502 := 'CPY';
+  $C1,$C5,$C9,$CD,$D1,$D5,$D9,$DD: EmuDbg_Mnem6502 := 'CMP';
+  $C6,$CE,$D6,$DE: EmuDbg_Mnem6502 := 'DEC';
+  $C8: EmuDbg_Mnem6502 := 'INY';
+  $CA: EmuDbg_Mnem6502 := 'DEX';
+  $D0: EmuDbg_Mnem6502 := 'BNE';
+  $D8: EmuDbg_Mnem6502 := 'CLD';
+  $E0,$E4,$EC: EmuDbg_Mnem6502 := 'CPX';
+  $E1,$E5,$E9,$ED,$F1,$F5,$F9,$FD: EmuDbg_Mnem6502 := 'SBC';
+  $E6,$EE,$F6,$FE: EmuDbg_Mnem6502 := 'INC';
+  $E8: EmuDbg_Mnem6502 := 'INX';
+  $EA: EmuDbg_Mnem6502 := 'NOP';
+  $F0: EmuDbg_Mnem6502 := 'BEQ';
+  $F8: EmuDbg_Mnem6502 := 'SED';
+ Else
+  EmuDbg_Mnem6502 := '???';
+ End;
+End;
+
+{ --- Taille d une instruction 6502 (1, 2 ou 3 octets) --- }
+
+Function EmuDbg_Size6502(Op: Byte): Integer;
+Begin
+ { Implicit / accumulateur : 1 octet }
+ Case Op Of
+  $00,$08,$0A,$18,$28,$2A,$38,$40,$48,$4A,$58,$60,$68,$6A,
+  $78,$88,$8A,$98,$9A,$A8,$AA,$B8,$BA,$C8,$CA,$D8,$E8,$EA,$F8:
+   EmuDbg_Size6502 := 1;
+  { Absolu / absolu indirect / absolu indexe : 3 octets }
+  $0D,$0E,$19,$1D,$1E,$20,$2C,$2D,$2E,$39,$3D,$3E,$4C,$4D,$4E,
+  $59,$5D,$5E,$6C,$6D,$6E,$79,$7D,$7E,$8C,$8D,$8E,$99,$9D,
+  $AC,$AD,$AE,$B9,$BC,$BD,$BE,$CC,$CD,$CE,$D9,$DD,$DE,
+  $EC,$ED,$EE,$F9,$FD,$FE:
+   EmuDbg_Size6502 := 3;
+  Else
+   { Tous les autres (immediat, zero-page, branches relatives) : 2 octets }
+   EmuDbg_Size6502 := 2;
+ End;
+End;
+
+{ --- Detecter si l opcode 6502 est un appel de sous-programme (JSR) --- }
+
+Function EmuDbg_IsCall6502(Op: Byte): Boolean;
+Begin
+ EmuDbg_IsCall6502 := (Op = $20);
+End;
+
+{ --- Detecter si l opcode 6502 est un retour (RTS, RTI) --- }
+
+Function EmuDbg_IsRet6502(Op: Byte): Boolean;
+Begin
+ EmuDbg_IsRet6502 := (Op = $60) Or (Op = $40);
+End;
+
+{ --- Lecture securisee de memoire 6502 --- }
+
+Function EmuDbg_Mem6502(Addr: LongInt): Byte;
+Begin
+ EmuDbg_Mem6502 := CPU6502_Mem[Addr And $FFFF];
+End;
+
+{ --- Desassembler une instruction 6502 a Addr --- }
+
+Function EmuDbg_Disasm6502(Addr: Word; Var Size: Integer): String;
+Var
+ Op, B1, B2: Byte;
+ S, Mn, Operand: String;
+Begin
+ Op := EmuDbg_Mem6502(Addr);
+ Size := EmuDbg_Size6502(Op);
+ Mn := EmuDbg_Mnem6502(Op);
+ Operand := '';
+ If Size = 1 Then Operand := ''
+ Else If Size = 2 Then Begin
+  B1 := EmuDbg_Mem6502((Addr + 1) And $FFFF);
+  { Branche relative : afficher l adresse cible }
+  Case Op Of
+   $10,$30,$50,$70,$90,$B0,$D0,$F0:
+    Operand := '$' + HexWord(Word(LongInt(Addr) + 2 + ShortInt(B1)));
+   Else
+    Operand := '#$' + HexByte(B1);
+  End;
+ End Else Begin
+  B1 := EmuDbg_Mem6502((Addr + 1) And $FFFF);
+  B2 := EmuDbg_Mem6502((Addr + 2) And $FFFF);
+  Operand := '$' + HexWord(B1 Or (LongInt(B2) Shl 8));
+ End;
+ S := HexWord(Addr) + '  ' + HexByte(Op);
+ If Size >= 2 Then
+  S := S + ' ' + HexByte(EmuDbg_Mem6502((Addr + 1) And $FFFF))
+ Else
+  S := S + '   ';
+ If Size >= 3 Then
+  S := S + ' ' + HexByte(EmuDbg_Mem6502((Addr + 2) And $FFFF))
+ Else
+  S := S + '   ';
+ S := S + '  ' + Mn;
+ If Operand <> '' Then S := S + ' ' + Operand;
+ EmuDbg_Disasm6502 := S;
+End;
+
+{ --- Desassembler ligne 8086 a CS:IP (minimal : hex + mnemonique brut) --- }
+
+Function EmuDbg_Disasm8086(Seg, Ofs: Word; Var Size: Integer): String;
+Var
+ B0, B1, B2: Byte;
+ S, Mn: String;
+Begin
+ B0 := Emu_ReadByte(EmuPanel.CPU, Seg, Ofs);
+ B1 := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + 1));
+ B2 := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + 2));
+ { Detection minimaliste des instructions clefs pour le debogage.
+   Le decodage exhaustif est fait par Emu_StepOne lui-meme ; ici on
+   ne fournit qu un repere visuel. }
+ Size := 1;
+ Case B0 Of
+  $90: Mn := 'NOP';
+  $C3: Mn := 'RET';
+  $CB: Mn := 'RETF';
+  $CC: Mn := 'INT 3';
+  $CD: Begin Mn := 'INT $' + HexByte(B1); Size := 2; End;
+  $CF: Mn := 'IRET';
+  $E8: Begin Mn := 'CALL near'; Size := 3; End;
+  $E9: Begin Mn := 'JMP near'; Size := 3; End;
+  $EA: Begin Mn := 'JMP far'; Size := 5; End;
+  $EB: Begin Mn := 'JMP short'; Size := 2; End;
+  $9A: Begin Mn := 'CALL far'; Size := 5; End;
+  $F4: Mn := 'HLT';
+  $FA: Mn := 'CLI';
+  $FB: Mn := 'STI';
+  $FC: Mn := 'CLD';
+  $FD: Mn := 'STD';
+  $50..$57: Mn := 'PUSH r16';
+  $58..$5F: Mn := 'POP r16';
+  $40..$47: Mn := 'INC r16';
+  $48..$4F: Mn := 'DEC r16';
+  $70..$7F: Begin Mn := 'Jcc short'; Size := 2; End;
+  $B0..$BF: If B0 < $B8 Then Begin Mn := 'MOV r8,imm'; Size := 2; End
+            Else Begin Mn := 'MOV r16,imm'; Size := 3; End;
+  Else Mn := 'DB';
+ End;
+ S := HexWord(Seg) + ':' + HexWord(Ofs) + '  ' + HexByte(B0);
+ If Size >= 2 Then S := S + ' ' + HexByte(B1) Else S := S + '   ';
+ If Size >= 3 Then S := S + ' ' + HexByte(B2) Else S := S + '   ';
+ S := S + '  ' + Mn;
+ EmuDbg_Disasm8086 := S;
+End;
+
+{ --- Tester si l instruction 8086 a CS:IP est un appel (CALL) --- }
+
+Function EmuDbg_IsCall8086(Seg, Ofs: Word): Boolean;
+Var
+ B0, B1: Byte;
+ R: Boolean;
+Begin
+ B0 := Emu_ReadByte(EmuPanel.CPU, Seg, Ofs);
+ R := (B0 = $E8) Or (B0 = $9A);
+ If (Not R) And (B0 = $FF) Then Begin
+  B1 := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + 1));
+  { Sous-opcode 010/011 = CALL r/m / CALL m16:16 }
+  R := ((B1 Shr 3) And 7) In [2, 3];
+ End;
+ EmuDbg_IsCall8086 := R;
+End;
+
+{ --- Decision de pause avant l instruction suivante --- }
+
+Function EmuDbg_ShouldBreak(ACPU: TEmuDbgCPU; Addr: LongInt): Boolean;
+Begin
+ EmuDbg_ShouldBreak := False;
+ If EmuDbg.BreakReq Then Begin
+  EmuDbg_ShouldBreak := True;
+  Exit;
+ End;
+ If EmuDbg_HasBP(Addr, ACPU) Then Begin
+  EmuDbg_ShouldBreak := True;
+  Exit;
+ End;
+ Case EmuDbg.StepMode Of
+  ESM_INTO: EmuDbg_ShouldBreak := True;
+  ESM_OVER:
+   { Pause uniquement quand on est revenu au niveau de SP de reference
+     ou au-dessus (apres un eventuel RTS/RET du sous-appel) }
+   Begin
+    If ACPU = EDC_6502 Then Begin
+     If LongInt(CPU6502_S) >= EmuDbg.StepSPRef Then
+      EmuDbg_ShouldBreak := True;
+    End
+    Else If ACPU = EDC_8086 Then Begin
+     If LongInt(EmuPanel.CPU.Regs.SP) >= EmuDbg.StepSPRef Then
+      EmuDbg_ShouldBreak := True;
+    End;
+   End;
+  ESM_OUT:
+   Begin
+    If ACPU = EDC_6502 Then Begin
+     If LongInt(CPU6502_S) > EmuDbg.StepSPRef Then
+      EmuDbg_ShouldBreak := True;
+    End
+    Else If ACPU = EDC_8086 Then Begin
+     If LongInt(EmuPanel.CPU.Regs.SP) > EmuDbg.StepSPRef Then
+      EmuDbg_ShouldBreak := True;
+    End;
+   End;
+ End;
+End;
+
+{ --- Dessiner la fenetre de deboguage --- }
+
+Procedure EmuDbg_DrawWindow;
+Var
+ X, Y, W, H, LineY: Integer;
+ I, Sz: Integer;
+ PC, Addr: Word;
+ Lines: Integer;
+ S: String;
+Begin
+ If Not EmuDbg.WinVisible Then Exit;
+ X := EmuDbg.WinX;
+ Y := EmuDbg.WinY;
+ W := EmuDbg.WinW;
+ H := EmuDbg.WinH;
+ { Fond }
+ SetColor(0);
+ Bar(X, Y, X + W - 1, Y + H - 1);
+ { Bordure }
+ SetColor(15);
+ Rectangle(X, Y, X + W - 1, Y + H - 1);
+ { Barre de titre }
+ SetColor(1);
+ Bar(X + 1, Y + 1, X + W - 2, Y + 14);
+ SetColor(15);
+ Case EmuDbg.CPU Of
+  EDC_6502: OutTextXY(X + 4, Y + 3, 'Debogueur 6502 - PAUSE');
+  EDC_8086: OutTextXY(X + 4, Y + 3, 'Debogueur 8086 - PAUSE');
+  Else      OutTextXY(X + 4, Y + 3, 'Debogueur emulateur');
+ End;
+ OutTextXY(X + W - 56, Y + 3, '[X]');
+ { Etat des registres }
+ LineY := Y + 18;
+ SetColor(14);
+ If EmuDbg.CPU = EDC_6502 Then Begin
+  S := 'PC=' + HexWord(CPU6502_PC) +
+       '  A=' + HexByte(CPU6502_A) +
+       '  X=' + HexByte(CPU6502_X) +
+       '  Y=' + HexByte(CPU6502_Y);
+  OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+  S := 'SP=' + HexByte(CPU6502_S) +
+       '  P=' + HexByte(CPU6502_P) +
+       '  [N V - B D I Z C]';
+  OutTextXY(X + 6, LineY, S); Inc(LineY, 14);
+ End Else If EmuDbg.CPU = EDC_8086 Then Begin
+  S := 'AX=' + HexWord(EmuPanel.CPU.Regs.AX) +
+       '  BX=' + HexWord(EmuPanel.CPU.Regs.BX) +
+       '  CX=' + HexWord(EmuPanel.CPU.Regs.CX) +
+       '  DX=' + HexWord(EmuPanel.CPU.Regs.DX);
+  OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+  S := 'SI=' + HexWord(EmuPanel.CPU.Regs.SI) +
+       '  DI=' + HexWord(EmuPanel.CPU.Regs.DI) +
+       '  BP=' + HexWord(EmuPanel.CPU.Regs.BP) +
+       '  SP=' + HexWord(EmuPanel.CPU.Regs.SP);
+  OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+  S := 'CS=' + HexWord(EmuPanel.CPU.Segs.CS) +
+       '  DS=' + HexWord(EmuPanel.CPU.Segs.DS) +
+       '  ES=' + HexWord(EmuPanel.CPU.Segs.ES) +
+       '  SS=' + HexWord(EmuPanel.CPU.Segs.SS);
+  OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+  S := 'IP=' + HexWord(EmuPanel.CPU.IP) +
+       '  FL=' + HexWord(EmuPanel.CPU.Flags.Base);
+  OutTextXY(X + 6, LineY, S); Inc(LineY, 14);
+ End;
+ { Separateur }
+ SetColor(8);
+ Line(X + 4, LineY, X + W - 4, LineY);
+ Inc(LineY, 4);
+ { Desassemblage (jusqu a 12 lignes a partir du PC) }
+ SetColor(7);
+ Lines := (Y + H - LineY - 24) Div 10;
+ If Lines > 16 Then Lines := 16;
+ If EmuDbg.CPU = EDC_6502 Then Begin
+  Addr := CPU6502_PC;
+  For I := 0 To Lines - 1 Do Begin
+   If I = 0 Then SetColor(11)
+   Else If EmuDbg_HasBP(Addr, EDC_6502) Then SetColor(12)
+   Else SetColor(7);
+   S := EmuDbg_Disasm6502(Addr, Sz);
+   If EmuDbg_HasBP(Addr, EDC_6502) Then S := '*' + S Else S := ' ' + S;
+   OutTextXY(X + 4, LineY, S);
+   Addr := Word(Addr + Sz);
+   Inc(LineY, 10);
+   If LineY > Y + H - 24 Then Break;
+  End;
+ End Else If EmuDbg.CPU = EDC_8086 Then Begin
+  Addr := EmuPanel.CPU.IP;
+  For I := 0 To Lines - 1 Do Begin
+   If I = 0 Then SetColor(11)
+   Else If EmuDbg_HasBP((LongInt(EmuPanel.CPU.Segs.CS) Shl 4) +
+                        Addr, EDC_8086) Then SetColor(12)
+   Else SetColor(7);
+   S := EmuDbg_Disasm8086(EmuPanel.CPU.Segs.CS, Addr, Sz);
+   OutTextXY(X + 4, LineY, S);
+   Addr := Word(Addr + Sz);
+   Inc(LineY, 10);
+   If LineY > Y + H - 24 Then Break;
+  End;
+ End;
+ { Aide raccourcis en bas }
+ SetColor(11);
+ OutTextXY(X + 4, Y + H - 18,
+  'F5=Cont F9=BP F10=Over F11=Into Sh+F11=Out Sh+F5=Stop');
+ EmuDbg.NeedRepaint := False;
+End;
+
+{ --- Tester si une coordonnee est dans la fenetre debug --- }
+
+Function EmuDbg_HitWindow(MX, MY: Integer): Boolean;
+Begin
+ EmuDbg_HitWindow := EmuDbg.WinVisible And
+  (MX >= EmuDbg.WinX) And (MX < EmuDbg.WinX + EmuDbg.WinW) And
+  (MY >= EmuDbg.WinY) And (MY < EmuDbg.WinY + EmuDbg.WinH);
+End;
+
+{ --- Tester clic sur le bouton de fermeture [X] de la fenetre debug --- }
+
+Function EmuDbg_HitCloseBox(MX, MY: Integer): Boolean;
+Begin
+ EmuDbg_HitCloseBox := EmuDbg.WinVisible And
+  (MX >= EmuDbg.WinX + EmuDbg.WinW - 58) And
+  (MX < EmuDbg.WinX + EmuDbg.WinW - 4) And
+  (MY >= EmuDbg.WinY + 1) And (MY < EmuDbg.WinY + 14);
+End;
+
+{ --- Commandes utilisateur (Continuer / Stop / Step) --- }
+
+Procedure EmuDbg_Continue;
+Begin
+ EmuDbg.StepMode := ESM_NONE;
+ EmuDbg.Paused := False;
+ EmuDbg.ContinueReq := True;
+ EmuDbg.BreakReq := False;
+ EmuDbg.WinVisible := False;
+End;
+
+Procedure EmuDbg_Stop;
+Begin
+ EmuDbg.StopReq := True;
+ EmuDbg.Paused := False;
+ EmuDbg.StepMode := ESM_NONE;
+ EmuDbg.BreakReq := False;
+ EmuDbg.WinVisible := False;
+End;
+
+Procedure EmuDbg_StepInto;
+Begin
+ EmuDbg.StepMode := ESM_INTO;
+ EmuDbg.Paused := False;
+ EmuDbg.ContinueReq := True;
+ EmuDbg.BreakReq := False;
+End;
+
+Procedure EmuDbg_StepOver;
+Var
+ Op0: Byte;
+Begin
+ { Si l instruction courante est un CALL/JSR, attendre le retour
+   au meme niveau de pile ; sinon equivalent step-into. }
+ If EmuDbg.CPU = EDC_6502 Then Begin
+  Op0 := EmuDbg_Mem6502(CPU6502_PC);
+  If EmuDbg_IsCall6502(Op0) Then Begin
+   EmuDbg.StepMode := ESM_OVER;
+   EmuDbg.StepSPRef := CPU6502_S;
+  End Else
+   EmuDbg.StepMode := ESM_INTO;
+ End Else If EmuDbg.CPU = EDC_8086 Then Begin
+  If EmuDbg_IsCall8086(EmuPanel.CPU.Segs.CS, EmuPanel.CPU.IP) Then Begin
+   EmuDbg.StepMode := ESM_OVER;
+   EmuDbg.StepSPRef := EmuPanel.CPU.Regs.SP;
+  End Else
+   EmuDbg.StepMode := ESM_INTO;
+ End Else
+  EmuDbg.StepMode := ESM_INTO;
+ EmuDbg.Paused := False;
+ EmuDbg.ContinueReq := True;
+ EmuDbg.BreakReq := False;
+End;
+
+Procedure EmuDbg_StepOut;
+Begin
+ EmuDbg.StepMode := ESM_OUT;
+ If EmuDbg.CPU = EDC_6502 Then
+  EmuDbg.StepSPRef := CPU6502_S
+ Else If EmuDbg.CPU = EDC_8086 Then
+  EmuDbg.StepSPRef := EmuPanel.CPU.Regs.SP;
+ EmuDbg.Paused := False;
+ EmuDbg.ContinueReq := True;
+ EmuDbg.BreakReq := False;
+End;
+
+Procedure EmuDbg_ToggleBPAtPC;
+Begin
+ If EmuDbg.CPU = EDC_6502 Then
+  EmuDbg_ToggleBP(CPU6502_PC, EDC_6502)
+ Else If EmuDbg.CPU = EDC_8086 Then
+  EmuDbg_ToggleBP((LongInt(EmuPanel.CPU.Segs.CS) Shl 4) +
+   EmuPanel.CPU.IP, EDC_8086);
+ EmuDbg.NeedRepaint := True;
+End;
+
+{ --- Gerer une touche pendant la pause. Retourne True si consomme. --- }
+
+Function EmuDbg_HandleKey(Var Ev: TEvent): Boolean;
+Begin
+ EmuDbg_HandleKey := False;
+ If Not EmuDbg.Paused Then Exit;
+ If Ev.Kind = EV_KEY_DOWN Then Begin
+  Case Ev.KeyCode Of
+   $3F: Begin EmuDbg_Continue;  EmuDbg_HandleKey := True; End; { F5 }
+   $43: Begin EmuDbg_ToggleBPAtPC; EmuDbg_HandleKey := True; End; { F9 }
+   $44: Begin EmuDbg_StepOver;  EmuDbg_HandleKey := True; End; { F10 }
+   $85: Begin EmuDbg_StepInto;  EmuDbg_HandleKey := True; End; { F11 }
+   $87: Begin EmuDbg_StepOut;   EmuDbg_HandleKey := True; End; { Shift+F11 }
+   $58: Begin EmuDbg_Stop;      EmuDbg_HandleKey := True; End; { Shift+F5 }
+   $62: Begin EmuDbg_Continue;  EmuDbg_HandleKey := True; End; { Ctrl+F5 }
+  End;
+ End Else If Ev.Kind = EV_KEY_CHAR Then Begin
+  If Ev.KeyChar = #27 Then Begin
+   { Echap : continuer (laisse la pause sans tuer l emulation) }
+   EmuDbg_Continue;
+   EmuDbg_HandleKey := True;
+  End;
+ End;
+End;
+
+{ --- Gerer un evenement souris dans la fenetre debug. Renvoie True
+      si l evenement a ete absorbe par la fenetre debug --- }
+
+Function EmuDbg_HandleMouse(Var Ev: TEvent): Boolean;
+Begin
+ EmuDbg_HandleMouse := False;
+ If Not EmuDbg.WinVisible Then Exit;
+ If Ev.Kind In [EV_MOUSE_DOWN, EV_MOUSE_UP, EV_MOUSE_DBLCLICK] Then Begin
+  If EmuDbg_HitCloseBox(Ev.MouseX, Ev.MouseY) Then Begin
+   If Ev.Kind = EV_MOUSE_DOWN Then EmuDbg_Continue;
+   EmuDbg_HandleMouse := True;
+   Exit;
+  End;
+  If EmuDbg_HitWindow(Ev.MouseX, Ev.MouseY) Then Begin
+   EmuDbg.WinFocused := True;
+   EmuDbg_HandleMouse := True;
+   Exit;
+  End Else Begin
+   EmuDbg.WinFocused := False;
+   { Laisser passer aux autres fenetres }
+  End;
+ End;
+End;
+
+{ --- Boucle de pump pendant la pause : preserve l interactivite de
+      l IDE (menus, autres fenetres) tant que l utilisateur n a pas
+      relance via F5/F10/F11/Shift+F11/Shift+F5. --- }
+
+Procedure EmuDbg_PumpPause;
+Var
+ Ev: TEvent;
+Begin
+ EmuDbg.WinVisible := True;
+ EmuDbg.WinFocused := True;
+ EmuDbg.NeedRepaint := True;
+ FullRepaintNeeded := True;
+ DrawAllWidgets;
+ EmuDbg_DrawWindow;
+ While EmuDbg.Paused And (Not EmuDbg.ContinueReq) And
+       (Not EmuDbg.StopReq) Do Begin
+  PollEvents(Ev);
+  If Ev.Kind = EV_NONE Then Begin
+   { Pas d evenement : on reste idle. Pas de Sleep car le pump host
+     gere deja le pacing. }
+   Continue;
+  End;
+  { Priorite : la fenetre debug consomme F5/F9/F10/F11/Shift+F5/F11 }
+  If EmuDbg_HandleKey(Ev) Then Begin
+   EmuDbg_DrawWindow;
+   Continue;
+  End;
+  { Souris dans la fenetre debug : absorber }
+  If EmuDbg_HandleMouse(Ev) Then Begin
+   EmuDbg_DrawWindow;
+   Continue;
+  End;
+  { Sinon laisser le dispatcher normal traiter l evenement (menus,
+    autres fenetres, etc.) pour preserver l interactivite. }
+  DispatchEvent(Ev);
+  If FullRepaintNeeded Then Begin
+   DrawAllWidgets;
+   FullRepaintNeeded := False;
+  End;
+  EmuDbg_DrawWindow;
+ End;
+End;
+
+{ --- Entrer en pause : appele par les hooks pre-step des emulateurs --- }
+
+Procedure EmuDbg_EnterPause(ACPU: TEmuDbgCPU);
+Begin
+ EmuDbg.Active := True;
+ EmuDbg.CPU := ACPU;
+ EmuDbg.Paused := True;
+ EmuDbg.BreakReq := False;
+ EmuDbg.ContinueReq := False;
+ EmuDbg.StepMode := ESM_NONE;
+ If ACPU = EDC_6502 Then
+  EmuDbg.LastAddr := CPU6502_PC
+ Else If ACPU = EDC_8086 Then Begin
+  EmuDbg.LastCS := EmuPanel.CPU.Segs.CS;
+  EmuDbg.LastIP := EmuPanel.CPU.IP;
+  EmuDbg.LastAddr := (LongInt(EmuDbg.LastCS) Shl 4) + EmuDbg.LastIP;
+ End;
+ EmuDbg_PumpPause;
+End;
+
+{ --- Hook a appeler AVANT chaque instruction CPU. Retourne True si
+      l execution doit etre suspendue (gestion deja faite). --- }
+
+Procedure EmuDbg_OnBeforeStep6502;
+Begin
+ If Not EmuDbg.Active Then Exit;
+ If EmuDbg_ShouldBreak(EDC_6502, CPU6502_PC) Then
+  EmuDbg_EnterPause(EDC_6502);
+End;
+
+Procedure EmuDbg_OnBeforeStep8086;
+Var
+ LinAddr: LongInt;
+Begin
+ If Not EmuDbg.Active Then Exit;
+ LinAddr := (LongInt(EmuPanel.CPU.Segs.CS) Shl 4) + EmuPanel.CPU.IP;
+ If EmuDbg_ShouldBreak(EDC_8086, LinAddr) Then
+  EmuDbg_EnterPause(EDC_8086);
+End;
+
+{ --- Verifier dans le pump d emulateur si Ctrl+C/Ctrl+Break a ete pressee --- }
+
+Function EmuDbg_IsBreakKey(Var Ev: TEvent): Boolean;
+Begin
+ EmuDbg_IsBreakKey := False;
+ If Ev.Kind = EV_KEY_CHAR Then Begin
+  { #3 = Ctrl+C ; certains hotes envoient aussi #0 pour Ctrl+Break. }
+  If Ev.KeyChar = #3 Then EmuDbg_IsBreakKey := True;
+ End Else If Ev.Kind = EV_KEY_DOWN Then Begin
+  { Ctrl+Break en mode etendu : scan code = $00 et KeyChar = #0.
+    Certains terminaux mappent aussi $46 (ScrLk+Ctrl). }
+  If (Ev.KeyCode = 0) Or (Ev.KeyCode = $46) Then
+   EmuDbg_IsBreakKey := True;
+ End;
+End;
+
+{ --- Drainer le buffer Crt (KeyPressed/ReadKey) pour detecter Ctrl+C
+      ou Ctrl+Break depuis les boucles emulateur qui n utilisent pas
+      le pump d evenements DEVENV. Retourne True si une demande de
+      pause a ete enregistree. --- }
+
+Function EmuDbg_PollCrtBreak: Boolean;
+Var
+ C: Char;
+Begin
+ EmuDbg_PollCrtBreak := False;
+ If KeyPressed Then Begin
+  C := ReadKey;
+  If C = #3 Then Begin
+   EmuDbg_PollCrtBreak := True;
+  End Else If C = #0 Then Begin
+   If KeyPressed Then Begin
+    C := ReadKey;
+    { Scan code 0 = Ctrl+Break sur PC BIOS }
+    If C = #0 Then EmuDbg_PollCrtBreak := True;
+   End Else
+    EmuDbg_PollCrtBreak := True;
+  End;
+ End;
+End;
+
 { --- Traiter un evenement global --- }
 
 Procedure DispatchEvent(Var Ev: TEvent);
@@ -49625,12 +50523,42 @@ Begin
     OpenHelpFile('DEVENV.HLP', '');
     Exit;
    End;
-   $3F: Begin { F5 : demarrer le debogage }
-    HandleStartDebugging;
+   $3F: Begin { F5 : continuer (debogueur en pause) ou demarrer }
+    If EmuDbg.Paused Then EmuDbg_Continue
+    Else HandleStartDebugging;
     Exit;
    End;
    $40: Begin { F6 : generer la solution }
     HandleStartDebugging;
+    Exit;
+   End;
+   $43: Begin { F9 : basculer point d arret machine si emulateur actif }
+    If EmuDbg.Active Or EmuDbg.Paused Then Begin
+     EmuDbg_ToggleBPAtPC;
+     FullRepaintNeeded := True;
+    End;
+    Exit;
+   End;
+   $44: Begin { F10 : pas a pas principal (Step Over) }
+    If EmuDbg.Paused Then EmuDbg_StepOver;
+    Exit;
+   End;
+   $85: Begin { F11 : pas a pas detaille (Step Into) }
+    If EmuDbg.Paused Then EmuDbg_StepInto;
+    Exit;
+   End;
+   $87: Begin { Shift+F11 : pas a pas sortant (Step Out) }
+    If EmuDbg.Paused Then EmuDbg_StepOut;
+    Exit;
+   End;
+   $58: Begin { Shift+F5 : arreter le debogage }
+    If EmuDbg.Active Or EmuDbg.Paused Then EmuDbg_Stop
+    Else StopDebugging(BPMgr, OutputPanel);
+    Exit;
+   End;
+   $62: Begin { Ctrl+F5 : demarrer sans debogage }
+    If EmuDbg.Paused Then EmuDbg_Continue
+    Else StartWithoutDebugging(BPMgr, OutputPanel);
     Exit;
    End;
   End;
@@ -49990,6 +50918,7 @@ Begin
  LoadMRUList(MRUList);
  InitStartPage(StartPage);
  InitTerminals;
+ EmuDbg_Init;
  TerminalHasFocus := False;
  QuitRequested := False;
  FullRepaintNeeded := False;
