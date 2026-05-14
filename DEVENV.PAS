@@ -3054,6 +3054,11 @@ Type
   DragOfsX      : Integer;       { offset MX - WinX au drag start   }
   DragOfsY      : Integer;       { offset MY - WinY au drag start   }
   ScrollOfs     : Integer;       { decalage scroll desassemblage    }
+  DisasmTopOfs  : LongInt;       { 1ere instr visible: offset / PC  }
+  SelOfs        : LongInt;       { ligne selectionnee: offset / PC  }
+  DisasmLines   : Integer;       { nb de lignes visibles (cache)    }
+  DisasmAddrs   : Array[0..63] Of LongInt; { adresses des lignes    }
+  DataOfs       : Word;          { offset courant du dump DS        }
   NeedRepaint   : Boolean;       { redessiner au prochain tour      }
  End;
 
@@ -31605,6 +31610,7 @@ End;
 
 { --- Executer une instruction 8086 --- }
 
+{$PUSH}{$Q-}{$R-}
 Procedure Emu_StepOne(Var P: TEmulatorPanel);
 Var
  OpCode, ModRM, AluOp: Byte;
@@ -33010,6 +33016,7 @@ Begin
  End;
  If ResetSegOvr Then P.CPU.HasSegOvr := False;
 End;
+{$POP}
 
 { --- Texte descriptif d un code de fin --- }
 
@@ -49708,6 +49715,11 @@ Begin
  EmuDbg.DragOfsX   := 0;
  EmuDbg.DragOfsY   := 0;
  EmuDbg.ScrollOfs := 0;
+ EmuDbg.DisasmTopOfs := 0;
+ EmuDbg.SelOfs := 0;
+ EmuDbg.DisasmLines := 0;
+ For I := 0 To 63 Do EmuDbg.DisasmAddrs[I] := 0;
+ EmuDbg.DataOfs := 0;
  EmuDbg.NeedRepaint := False;
 End;
 
@@ -49932,50 +49944,467 @@ End;
 
 { --- Desassembler ligne 8086 a CS:IP (minimal : hex + mnemonique brut) --- }
 
-Function EmuDbg_Disasm8086(Seg, Ofs: Word; Var Size: Integer): String;
+{$PUSH}{$Q-}{$R-}
+
+{ --- ModRM 16 bits : retourne l operande memoire/registre et fait
+      avancer Sz (octets consommes apres l opcode incluant ModRM). --- }
+
+Function EmuDbg_DecodeModRM16(Seg, Ofs: Word; IsWord: Boolean;
+ Var Sz: Integer): String;
+Const
+ R8N : Array[0..7] Of String[3] = ('AL','CL','DL','BL','AH','CH','DH','BH');
+ R16N: Array[0..7] Of String[3] = ('AX','CX','DX','BX','SP','BP','SI','DI');
+ EAM : Array[0..7] Of String[8] =
+  ('[BX+SI]','[BX+DI]','[BP+SI]','[BP+DI]','[SI]','[DI]','[BP]','[BX]');
 Var
- B0, B1, B2: Byte;
- S, Mn: String;
+ B, MdR, RegM, RM: Byte;
+ Disp: Word;
+ D8: ShortInt;
+ ExtraOfs: Integer;
+ R: String;
 Begin
- B0 := Emu_ReadByte(EmuPanel.CPU, Seg, Ofs);
- B1 := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + 1));
- B2 := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + 2));
- { Detection minimaliste des instructions clefs pour le debogage.
-   Le decodage exhaustif est fait par Emu_StepOne lui-meme ; ici on
-   ne fournit qu un repere visuel. }
- Size := 1;
- Case B0 Of
-  $90: Mn := 'NOP';
-  $C3: Mn := 'RET';
-  $CB: Mn := 'RETF';
-  $CC: Mn := 'INT 3';
-  $CD: Begin Mn := 'INT $' + HexByte(B1); Size := 2; End;
-  $CF: Mn := 'IRET';
-  $E8: Begin Mn := 'CALL near'; Size := 3; End;
-  $E9: Begin Mn := 'JMP near'; Size := 3; End;
-  $EA: Begin Mn := 'JMP far'; Size := 5; End;
-  $EB: Begin Mn := 'JMP short'; Size := 2; End;
-  $9A: Begin Mn := 'CALL far'; Size := 5; End;
-  $F4: Mn := 'HLT';
-  $FA: Mn := 'CLI';
-  $FB: Mn := 'STI';
-  $FC: Mn := 'CLD';
-  $FD: Mn := 'STD';
-  $50..$57: Mn := 'PUSH r16';
-  $58..$5F: Mn := 'POP r16';
-  $40..$47: Mn := 'INC r16';
-  $48..$4F: Mn := 'DEC r16';
-  $70..$7F: Begin Mn := 'Jcc short'; Size := 2; End;
-  $B0..$BF: If B0 < $B8 Then Begin Mn := 'MOV r8,imm'; Size := 2; End
-            Else Begin Mn := 'MOV r16,imm'; Size := 3; End;
-  Else Mn := 'DB';
+ B := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Sz));
+ MdR := B Shr 6;
+ RegM := (B Shr 3) And 7;
+ RM := B And 7;
+ Inc(Sz);
+ ExtraOfs := Sz;
+ Case MdR Of
+  0: Begin
+   If RM = 6 Then Begin
+    Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + ExtraOfs)) Or
+           (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + ExtraOfs + 1))) Shl 8);
+    Inc(Sz, 2);
+    R := '[$' + HexWord(Disp) + ']';
+   End Else
+    R := EAM[RM];
+  End;
+  1: Begin
+   D8 := ShortInt(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + ExtraOfs)));
+   Inc(Sz);
+   If D8 >= 0 Then
+    R := Copy(EAM[RM], 1, Length(EAM[RM]) - 1) +
+     '+$' + HexByte(Byte(D8)) + ']'
+   Else
+    R := Copy(EAM[RM], 1, Length(EAM[RM]) - 1) +
+     '-$' + HexByte(Byte(-D8)) + ']';
+  End;
+  2: Begin
+   Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + ExtraOfs)) Or
+          (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + ExtraOfs + 1))) Shl 8);
+   Inc(Sz, 2);
+   R := Copy(EAM[RM], 1, Length(EAM[RM]) - 1) +
+    '+$' + HexWord(Disp) + ']';
+  End;
+  Else { 3 } Begin
+   If IsWord Then R := R16N[RM]
+   Else R := R8N[RM];
+  End;
  End;
- S := HexWord(Seg) + ':' + HexWord(Ofs) + '  ' + HexByte(B0);
- If Size >= 2 Then S := S + ' ' + HexByte(B1) Else S := S + '   ';
- If Size >= 3 Then S := S + ' ' + HexByte(B2) Else S := S + '   ';
- S := S + '  ' + Mn;
- EmuDbg_Disasm8086 := S;
+ { Pour la commodite : exposer aussi RegM dans la string (suffixe special) }
+ EmuDbg_DecodeModRM16 := R + '|' + Char(48 + RegM);
 End;
+
+{ --- Desassembleur 8086 : decode taille + mnemonique. La taille est
+      toujours correcte (indispensable pour la navigation du listing).
+      Les operandes sont decodes pour les opcodes courants. --- }
+
+Function EmuDbg_Disasm8086(Seg, Ofs: Word; Var Size: Integer): String;
+Const
+ R8N : Array[0..7] Of String[3] = ('AL','CL','DL','BL','AH','CH','DH','BH');
+ R16N: Array[0..7] Of String[3] = ('AX','CX','DX','BX','SP','BP','SI','DI');
+ SRN : Array[0..3] Of String[3] = ('ES','CS','SS','DS');
+ ALU : Array[0..7] Of String[4] =
+  ('ADD','OR','ADC','SBB','AND','SUB','XOR','CMP');
+ JCC : Array[0..15] Of String[4] =
+  ('JO','JNO','JB','JNB','JZ','JNZ','JBE','JA',
+   'JS','JNS','JP','JNP','JL','JGE','JLE','JG');
+ SHIFTN: Array[0..7] Of String[4] =
+  ('ROL','ROR','RCL','RCR','SHL','SHR','???','SAR');
+ GRP1: Array[0..7] Of String[4] =
+  ('TEST','???','NOT','NEG','MUL','IMUL','DIV','IDIV');
+Var
+ B0, B1: Byte;
+ OpStart: Integer;     { offset relatif a Ofs ou commence l opcode      }
+ Prefix: String;
+ Mn, Op: String;
+ W, D, S, RegBit: Boolean;
+ RegM: Byte;
+ Disp: Word;
+ D8: ShortInt;
+ D16: SmallInt;
+ SubOp: Byte;
+ BytesS: String;
+ Tmp: String;
+ P: Integer;
+ BPos: Integer;
+ BAlu: Byte;
+ BB: Byte;
+ I: Integer;
+Begin
+ Size := 0;
+ OpStart := 0;
+ Prefix := '';
+ { --- Avaler les prefixes (segment / REP / LOCK) --- }
+ Repeat
+  B0 := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size));
+  Case B0 Of
+   $26: Prefix := Prefix + 'ES:';
+   $2E: Prefix := Prefix + 'CS:';
+   $36: Prefix := Prefix + 'SS:';
+   $3E: Prefix := Prefix + 'DS:';
+   $F0: Prefix := Prefix + 'LOCK ';
+   $F2: Prefix := Prefix + 'REPNE ';
+   $F3: Prefix := Prefix + 'REP ';
+   Else Break;
+  End;
+  Inc(Size);
+  Inc(OpStart);
+  If Size > 4 Then Break;
+ Until False;
+ B0 := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size));
+ Inc(Size);
+ Mn := '???'; Op := '';
+ { --- Decodage principal --- }
+ If B0 <= $3F Then Begin
+  { ALU r/m, r ; r, r/m ; AL/AX, imm }
+  BAlu := B0 Shr 3;
+  Case BAlu Of
+   0,1,2,3,4,5,6,7: Begin
+    Mn := ALU[BAlu];
+    Case B0 And 7 Of
+     0,1,2,3: Begin
+      W := (B0 And 1) <> 0;
+      D := (B0 And 2) <> 0;
+      Op := EmuDbg_DecodeModRM16(Seg, Ofs, W, Size);
+      P := Pos('|', Op); RegM := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+      If W Then Tmp := R16N[RegM] Else Tmp := R8N[RegM];
+      If D Then Op := Tmp + ',' + Op Else Op := Op + ',' + Tmp;
+     End;
+     4: Begin Op := 'AL,$' +
+       HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size))); Inc(Size); End;
+     5: Begin
+      Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+             (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+      Op := 'AX,$' + HexWord(Disp); Inc(Size, 2);
+     End;
+     6: Begin Mn := 'PUSH'; Op := SRN[BAlu]; End;
+     7: Begin Mn := 'POP'; Op := SRN[BAlu];
+      If BAlu = 1 Then Begin Mn := '???'; Op := ''; End; { POP CS invalide }
+     End;
+    End;
+   End;
+  End;
+ End Else If (B0 >= $40) And (B0 <= $47) Then Begin
+  Mn := 'INC'; Op := R16N[B0 - $40];
+ End Else If (B0 >= $48) And (B0 <= $4F) Then Begin
+  Mn := 'DEC'; Op := R16N[B0 - $48];
+ End Else If (B0 >= $50) And (B0 <= $57) Then Begin
+  Mn := 'PUSH'; Op := R16N[B0 - $50];
+ End Else If (B0 >= $58) And (B0 <= $5F) Then Begin
+  Mn := 'POP'; Op := R16N[B0 - $58];
+ End Else If B0 = $60 Then Mn := 'PUSHA'
+   Else If B0 = $61 Then Mn := 'POPA'
+   Else If B0 = $68 Then Begin
+    Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+           (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+    Mn := 'PUSH'; Op := '$' + HexWord(Disp); Inc(Size, 2);
+   End Else If B0 = $6A Then Begin
+    Mn := 'PUSH'; Op := '$' +
+     HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size))); Inc(Size);
+   End Else If (B0 >= $70) And (B0 <= $7F) Then Begin
+    D8 := ShortInt(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)));
+    Inc(Size);
+    Mn := JCC[B0 - $70];
+    Op := '$' + HexWord(Word((LongInt(Ofs) + Size + D8) And $FFFF));
+   End Else If (B0 >= $80) And (B0 <= $83) Then Begin
+    W := (B0 And 1) <> 0;
+    S := (B0 And 2) <> 0;
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, W, Size);
+    P := Pos('|', Op); SubOp := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Mn := ALU[SubOp];
+    If W And (Not S) Then Begin
+     Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+            (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+     Op := Op + ',$' + HexWord(Disp); Inc(Size, 2);
+    End Else Begin
+     Op := Op + ',$' +
+      HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)));
+     Inc(Size);
+    End;
+   End Else If (B0 = $84) Or (B0 = $85) Then Begin
+    W := (B0 And 1) <> 0;
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, W, Size);
+    P := Pos('|', Op); RegM := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Mn := 'TEST';
+    If W Then Op := Op + ',' + R16N[RegM] Else Op := Op + ',' + R8N[RegM];
+   End Else If (B0 = $86) Or (B0 = $87) Then Begin
+    W := (B0 And 1) <> 0;
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, W, Size);
+    P := Pos('|', Op); RegM := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Mn := 'XCHG';
+    If W Then Op := Op + ',' + R16N[RegM] Else Op := Op + ',' + R8N[RegM];
+   End Else If (B0 >= $88) And (B0 <= $8B) Then Begin
+    W := (B0 And 1) <> 0;
+    D := (B0 And 2) <> 0;
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, W, Size);
+    P := Pos('|', Op); RegM := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Mn := 'MOV';
+    If W Then Tmp := R16N[RegM] Else Tmp := R8N[RegM];
+    If D Then Op := Tmp + ',' + Op Else Op := Op + ',' + Tmp;
+   End Else If B0 = $8C Then Begin
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, True, Size);
+    P := Pos('|', Op); RegM := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Mn := 'MOV'; Op := Op + ',' + SRN[RegM And 3];
+   End Else If B0 = $8D Then Begin
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, True, Size);
+    P := Pos('|', Op); RegM := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Mn := 'LEA'; Op := R16N[RegM] + ',' + Op;
+   End Else If B0 = $8E Then Begin
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, True, Size);
+    P := Pos('|', Op); RegM := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Mn := 'MOV'; Op := SRN[RegM And 3] + ',' + Op;
+   End Else If B0 = $8F Then Begin
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, True, Size);
+    P := Pos('|', Op); Op := Copy(Op, 1, P - 1);
+    Mn := 'POP';
+   End Else If B0 = $90 Then Mn := 'NOP'
+   Else If (B0 >= $91) And (B0 <= $97) Then Begin
+    Mn := 'XCHG'; Op := 'AX,' + R16N[B0 - $90];
+   End Else If B0 = $98 Then Mn := 'CBW'
+   Else If B0 = $99 Then Mn := 'CWD'
+   Else If B0 = $9A Then Begin
+    Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+           (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+    Inc(Size, 2);
+    Op := '$' + HexWord(
+     Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+     (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8)) +
+     ':$' + HexWord(Disp);
+    Inc(Size, 2);
+    Mn := 'CALL FAR';
+   End Else If B0 = $9B Then Mn := 'WAIT'
+   Else If B0 = $9C Then Mn := 'PUSHF'
+   Else If B0 = $9D Then Mn := 'POPF'
+   Else If B0 = $9E Then Mn := 'SAHF'
+   Else If B0 = $9F Then Mn := 'LAHF'
+   Else If (B0 >= $A0) And (B0 <= $A3) Then Begin
+    Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+           (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+    Inc(Size, 2);
+    Mn := 'MOV';
+    W := (B0 And 1) <> 0;
+    If B0 < $A2 Then Begin
+     If W Then Op := 'AX,[$' + HexWord(Disp) + ']'
+     Else Op := 'AL,[$' + HexWord(Disp) + ']';
+    End Else Begin
+     If W Then Op := '[$' + HexWord(Disp) + '],AX'
+     Else Op := '[$' + HexWord(Disp) + '],AL';
+    End;
+   End Else If B0 = $A4 Then Mn := 'MOVSB'
+   Else If B0 = $A5 Then Mn := 'MOVSW'
+   Else If B0 = $A6 Then Mn := 'CMPSB'
+   Else If B0 = $A7 Then Mn := 'CMPSW'
+   Else If B0 = $A8 Then Begin
+    Mn := 'TEST'; Op := 'AL,$' +
+     HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size))); Inc(Size);
+   End Else If B0 = $A9 Then Begin
+    Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+           (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+    Mn := 'TEST'; Op := 'AX,$' + HexWord(Disp); Inc(Size, 2);
+   End Else If B0 = $AA Then Mn := 'STOSB'
+   Else If B0 = $AB Then Mn := 'STOSW'
+   Else If B0 = $AC Then Mn := 'LODSB'
+   Else If B0 = $AD Then Mn := 'LODSW'
+   Else If B0 = $AE Then Mn := 'SCASB'
+   Else If B0 = $AF Then Mn := 'SCASW'
+   Else If (B0 >= $B0) And (B0 <= $B7) Then Begin
+    Mn := 'MOV'; Op := R8N[B0 - $B0] + ',$' +
+     HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size))); Inc(Size);
+   End Else If (B0 >= $B8) And (B0 <= $BF) Then Begin
+    Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+           (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+    Mn := 'MOV'; Op := R16N[B0 - $B8] + ',$' + HexWord(Disp); Inc(Size, 2);
+   End Else If (B0 = $C0) Or (B0 = $C1) Then Begin
+    W := (B0 And 1) <> 0;
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, W, Size);
+    P := Pos('|', Op); SubOp := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Mn := SHIFTN[SubOp];
+    Op := Op + ',$' +
+     HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size))); Inc(Size);
+   End Else If B0 = $C2 Then Begin
+    Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+           (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+    Mn := 'RET'; Op := '$' + HexWord(Disp); Inc(Size, 2);
+   End Else If B0 = $C3 Then Mn := 'RET'
+   Else If B0 = $C4 Then Begin
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, True, Size);
+    P := Pos('|', Op); RegM := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Mn := 'LES'; Op := R16N[RegM] + ',' + Op;
+   End Else If B0 = $C5 Then Begin
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, True, Size);
+    P := Pos('|', Op); RegM := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Mn := 'LDS'; Op := R16N[RegM] + ',' + Op;
+   End Else If B0 = $C6 Then Begin
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, False, Size);
+    P := Pos('|', Op); Op := Copy(Op, 1, P - 1);
+    Mn := 'MOV'; Op := Op + ',$' +
+     HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size))); Inc(Size);
+   End Else If B0 = $C7 Then Begin
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, True, Size);
+    P := Pos('|', Op); Op := Copy(Op, 1, P - 1);
+    Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+           (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+    Mn := 'MOV'; Op := Op + ',$' + HexWord(Disp); Inc(Size, 2);
+   End Else If B0 = $C8 Then Begin
+    Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+           (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+    Inc(Size, 2);
+    Mn := 'ENTER'; Op := '$' + HexWord(Disp) + ',$' +
+     HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size))); Inc(Size);
+   End Else If B0 = $C9 Then Mn := 'LEAVE'
+   Else If B0 = $CA Then Begin
+    Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+           (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+    Mn := 'RETF'; Op := '$' + HexWord(Disp); Inc(Size, 2);
+   End Else If B0 = $CB Then Mn := 'RETF'
+   Else If B0 = $CC Then Mn := 'INT3'
+   Else If B0 = $CD Then Begin
+    Mn := 'INT'; Op := '$' +
+     HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size))); Inc(Size);
+   End Else If B0 = $CE Then Mn := 'INTO'
+   Else If B0 = $CF Then Mn := 'IRET'
+   Else If (B0 >= $D0) And (B0 <= $D3) Then Begin
+    W := (B0 And 1) <> 0;
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, W, Size);
+    P := Pos('|', Op); SubOp := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Mn := SHIFTN[SubOp];
+    If (B0 And 2) = 0 Then Op := Op + ',1' Else Op := Op + ',CL';
+   End Else If B0 = $D4 Then Begin
+    Mn := 'AAM'; Op := '$' +
+     HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size))); Inc(Size);
+   End Else If B0 = $D5 Then Begin
+    Mn := 'AAD'; Op := '$' +
+     HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size))); Inc(Size);
+   End Else If B0 = $D6 Then Mn := 'SALC'
+   Else If B0 = $D7 Then Mn := 'XLAT'
+   Else If (B0 >= $D8) And (B0 <= $DF) Then Begin
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, True, Size);
+    P := Pos('|', Op); Op := Copy(Op, 1, P - 1);
+    Mn := 'ESC'; Op := HexByte(B0) + ',' + Op;
+   End Else If B0 = $E0 Then Begin
+    D8 := ShortInt(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)));
+    Inc(Size);
+    Mn := 'LOOPNZ'; Op := '$' + HexWord(Word((LongInt(Ofs) + Size + D8) And $FFFF));
+   End Else If B0 = $E1 Then Begin
+    D8 := ShortInt(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)));
+    Inc(Size);
+    Mn := 'LOOPZ'; Op := '$' + HexWord(Word((LongInt(Ofs) + Size + D8) And $FFFF));
+   End Else If B0 = $E2 Then Begin
+    D8 := ShortInt(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)));
+    Inc(Size);
+    Mn := 'LOOP'; Op := '$' + HexWord(Word((LongInt(Ofs) + Size + D8) And $FFFF));
+   End Else If B0 = $E3 Then Begin
+    D8 := ShortInt(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)));
+    Inc(Size);
+    Mn := 'JCXZ'; Op := '$' + HexWord(Word((LongInt(Ofs) + Size + D8) And $FFFF));
+   End Else If (B0 = $E4) Or (B0 = $E5) Then Begin
+    Mn := 'IN';
+    If B0 = $E4 Then Op := 'AL,$' Else Op := 'AX,$';
+    Op := Op + HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)));
+    Inc(Size);
+   End Else If (B0 = $E6) Or (B0 = $E7) Then Begin
+    Mn := 'OUT'; Op := '$' +
+     HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)));
+    Inc(Size);
+    If B0 = $E6 Then Op := Op + ',AL' Else Op := Op + ',AX';
+   End Else If B0 = $E8 Then Begin
+    D16 := SmallInt(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+     (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8));
+    Inc(Size, 2);
+    Mn := 'CALL'; Op := '$' + HexWord(Word((LongInt(Ofs) + Size + D16) And $FFFF));
+   End Else If B0 = $E9 Then Begin
+    D16 := SmallInt(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+     (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8));
+    Inc(Size, 2);
+    Mn := 'JMP'; Op := '$' + HexWord(Word((LongInt(Ofs) + Size + D16) And $FFFF));
+   End Else If B0 = $EA Then Begin
+    Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+           (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+    Inc(Size, 2);
+    Op := '$' + HexWord(
+     Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+     (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8)) +
+     ':$' + HexWord(Disp);
+    Inc(Size, 2);
+    Mn := 'JMP FAR';
+   End Else If B0 = $EB Then Begin
+    D8 := ShortInt(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)));
+    Inc(Size);
+    Mn := 'JMP'; Op := '$' + HexWord(Word((LongInt(Ofs) + Size + D8) And $FFFF));
+   End Else If B0 = $EC Then Begin Mn := 'IN'; Op := 'AL,DX'; End
+   Else If B0 = $ED Then Begin Mn := 'IN'; Op := 'AX,DX'; End
+   Else If B0 = $EE Then Begin Mn := 'OUT'; Op := 'DX,AL'; End
+   Else If B0 = $EF Then Begin Mn := 'OUT'; Op := 'DX,AX'; End
+   Else If B0 = $F4 Then Mn := 'HLT'
+   Else If B0 = $F5 Then Mn := 'CMC'
+   Else If (B0 = $F6) Or (B0 = $F7) Then Begin
+    W := (B0 And 1) <> 0;
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, W, Size);
+    P := Pos('|', Op); SubOp := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Mn := GRP1[SubOp];
+    If SubOp In [0, 1] Then Begin
+     If W Then Begin
+      Disp := Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size)) Or
+             (Word(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size + 1))) Shl 8);
+      Op := Op + ',$' + HexWord(Disp); Inc(Size, 2);
+     End Else Begin
+      Op := Op + ',$' +
+       HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + Size))); Inc(Size);
+     End;
+    End;
+   End Else If B0 = $F8 Then Mn := 'CLC'
+   Else If B0 = $F9 Then Mn := 'STC'
+   Else If B0 = $FA Then Mn := 'CLI'
+   Else If B0 = $FB Then Mn := 'STI'
+   Else If B0 = $FC Then Mn := 'CLD'
+   Else If B0 = $FD Then Mn := 'STD'
+   Else If B0 = $FE Then Begin
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, False, Size);
+    P := Pos('|', Op); SubOp := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Case SubOp Of
+     0: Mn := 'INC';
+     1: Mn := 'DEC';
+     Else Mn := 'DB';
+    End;
+   End Else If B0 = $FF Then Begin
+    Op := EmuDbg_DecodeModRM16(Seg, Ofs, True, Size);
+    P := Pos('|', Op); SubOp := Byte(Op[P+1]) - 48; Op := Copy(Op, 1, P - 1);
+    Case SubOp Of
+     0: Mn := 'INC';
+     1: Mn := 'DEC';
+     2: Mn := 'CALL';
+     3: Mn := 'CALL FAR';
+     4: Mn := 'JMP';
+     5: Mn := 'JMP FAR';
+     6: Mn := 'PUSH';
+     Else Mn := 'DB';
+    End;
+   End Else Begin
+    Mn := 'DB'; Op := '$' + HexByte(B0);
+   End;
+ { --- Construire la chaine de sortie : ADDR  bytes  PREFIX MN OP --- }
+ BytesS := '';
+ For I := 0 To Size - 1 Do Begin
+  If I = 4 Then Begin BytesS := BytesS + '..'; Break; End;
+  BytesS := BytesS + HexByte(Emu_ReadByte(EmuPanel.CPU, Seg, Word(Ofs + I)));
+ End;
+ While Length(BytesS) < 10 Do BytesS := BytesS + ' ';
+ EmuDbg_Disasm8086 := HexWord(Seg) + ':' + HexWord(Ofs) + ' ' + BytesS +
+  ' ' + Prefix + Mn + ' ' + Op;
+End;
+
+{$POP}
 
 { --- Tester si l instruction 8086 a CS:IP est un appel (CALL) --- }
 
@@ -50041,10 +50470,13 @@ End;
 Procedure EmuDbg_DrawWindow;
 Var
  X, Y, W, H, LineY: Integer;
- I, Sz: Integer;
+ I, J, Sz: Integer;
  PC, Addr: Word;
  Lines: Integer;
- S: String;
+ S, Hex, Ascii: String;
+ DumpRows, DumpH, DumpY: Integer;
+ DumpSeg, DumpStart: Word;
+ B: Byte;
 Begin
  If Not EmuDbg.WinVisible Then Exit;
  X := EmuDbg.WinX;
@@ -50104,15 +50536,44 @@ Begin
  SetColor(8);
  Line(X + 4, LineY, X + W - 4, LineY);
  Inc(LineY, 4);
- { Desassemblage (jusqu a 12 lignes a partir du PC) }
+ { Desassemblage (jusqu a 16 lignes a partir du PC + DisasmTopOfs) }
  SetColor(7);
- Lines := (Y + H - LineY - 24) Div 10;
+ { Reserver de l espace en bas pour un dump hexa DS/SS (8086 uniquement) }
+ If EmuDbg.CPU = EDC_8086 Then Begin
+  DumpRows := 6;       { 3 lignes DS + 3 lignes SS }
+  DumpH := DumpRows * 10 + 6;
+ End Else Begin
+  DumpRows := 0;
+  DumpH := 0;
+ End;
+ Lines := (Y + H - LineY - 24 - DumpH) Div 10;
  If Lines > 16 Then Lines := 16;
+ If Lines < 1 Then Lines := 1;
+ EmuDbg.DisasmLines := Lines;
+ { Ajuster SelOfs / DisasmTopOfs pour rester coherents }
+ If EmuDbg.SelOfs < 0 Then EmuDbg.SelOfs := 0;
+ If EmuDbg.DisasmTopOfs < 0 Then EmuDbg.DisasmTopOfs := 0;
+ If EmuDbg.SelOfs < EmuDbg.DisasmTopOfs Then
+  EmuDbg.DisasmTopOfs := EmuDbg.SelOfs;
+ If EmuDbg.SelOfs >= EmuDbg.DisasmTopOfs + Lines Then
+  EmuDbg.DisasmTopOfs := EmuDbg.SelOfs - Lines + 1;
  If EmuDbg.CPU = EDC_6502 Then Begin
   Addr := CPU6502_PC;
+  { Avancer jusqu a la 1ere ligne visible (DisasmTopOfs instructions) }
+  For I := 0 To EmuDbg.DisasmTopOfs - 1 Do Begin
+   EmuDbg_Disasm6502(Addr, Sz);
+   Addr := Word(Addr + Sz);
+  End;
   For I := 0 To Lines - 1 Do Begin
-   If I = 0 Then SetColor(11)
-   Else If EmuDbg_HasBP(Addr, EDC_6502) Then SetColor(12)
+   If I < 64 Then EmuDbg.DisasmAddrs[I] := Addr;
+   If EmuDbg.DisasmTopOfs + I = EmuDbg.SelOfs Then Begin
+    { Surligner la ligne selectionnee }
+    SetColor(1);
+    Bar(X + 2, LineY - 1, X + W - 3, LineY + 8);
+   End;
+   If EmuDbg.DisasmTopOfs + I = 0 Then SetColor(11)            { PC }
+   Else If EmuDbg_HasBP(Addr, EDC_6502) Then SetColor(12)      { BP }
+   Else If EmuDbg.DisasmTopOfs + I = EmuDbg.SelOfs Then SetColor(15)
    Else SetColor(7);
    S := EmuDbg_Disasm6502(Addr, Sz);
    If EmuDbg_HasBP(Addr, EDC_6502) Then S := '*' + S Else S := ' ' + S;
@@ -50123,22 +50584,65 @@ Begin
   End;
  End Else If EmuDbg.CPU = EDC_8086 Then Begin
   Addr := EmuPanel.CPU.IP;
+  For I := 0 To EmuDbg.DisasmTopOfs - 1 Do Begin
+   EmuDbg_Disasm8086(EmuPanel.CPU.Segs.CS, Addr, Sz);
+   Addr := Word(Addr + Sz);
+  End;
   For I := 0 To Lines - 1 Do Begin
-   If I = 0 Then SetColor(11)
+   If I < 64 Then EmuDbg.DisasmAddrs[I] :=
+    (LongInt(EmuPanel.CPU.Segs.CS) Shl 4) + Addr;
+   If EmuDbg.DisasmTopOfs + I = EmuDbg.SelOfs Then Begin
+    SetColor(1);
+    Bar(X + 2, LineY - 1, X + W - 3, LineY + 8);
+   End;
+   If EmuDbg.DisasmTopOfs + I = 0 Then SetColor(11)
    Else If EmuDbg_HasBP((LongInt(EmuPanel.CPU.Segs.CS) Shl 4) +
                         Addr, EDC_8086) Then SetColor(12)
+   Else If EmuDbg.DisasmTopOfs + I = EmuDbg.SelOfs Then SetColor(15)
    Else SetColor(7);
    S := EmuDbg_Disasm8086(EmuPanel.CPU.Segs.CS, Addr, Sz);
    OutTextXY(X + 4, LineY, S);
    Addr := Word(Addr + Sz);
    Inc(LineY, 10);
-   If LineY > Y + H - 24 Then Break;
+   If LineY > Y + H - 24 - DumpH Then Break;
+  End;
+ End;
+ { Dump hexa DS/SS (8086 uniquement) - style debogueur DOS classique }
+ If (EmuDbg.CPU = EDC_8086) And (DumpRows > 0) Then Begin
+  DumpY := Y + H - 24 - DumpH + 2;
+  SetColor(8);
+  Line(X + 4, DumpY - 2, X + W - 4, DumpY - 2);
+  For I := 0 To DumpRows - 1 Do Begin
+   If I < (DumpRows Div 2) Then Begin
+    DumpSeg := EmuPanel.CPU.Segs.DS;
+    DumpStart := Word(EmuDbg.DataOfs + I * 8);
+    SetColor(7);
+    S := 'ds:' + HexWord(DumpStart);
+   End Else Begin
+    DumpSeg := EmuPanel.CPU.Segs.SS;
+    DumpStart := Word(EmuPanel.CPU.Regs.SP +
+                      (I - (DumpRows Div 2)) * 8);
+    SetColor(10);
+    S := 'ss:' + HexWord(DumpStart);
+   End;
+   Hex := '';
+   Ascii := '';
+   For J := 0 To 7 Do Begin
+    B := Emu_ReadByte(EmuPanel.CPU, DumpSeg,
+                      Word(DumpStart + J));
+    Hex := Hex + HexByte(B) + ' ';
+    If (B >= 32) And (B < 127) Then
+     Ascii := Ascii + Chr(B)
+    Else
+     Ascii := Ascii + '.';
+   End;
+   OutTextXY(X + 4, DumpY + I * 10, S + ' ' + Hex + ' ' + Ascii);
   End;
  End;
  { Aide raccourcis en bas }
  SetColor(11);
  OutTextXY(X + 4, Y + H - 18,
-  'F5=Cont F9=BP F10=Over F11=Into Sh+F11=Out Sh+F5=Stop');
+  'F5=Cont F9=BP F10=Over F11=Into +/-=Scroll Sh+F5=Stop');
  { Poignee de redimensionnement (coin bas-droite) }
  SetColor(8);
  Line(X + W - 10, Y + H - 2, X + W - 2, Y + H - 10);
@@ -50258,24 +50762,43 @@ Begin
 End;
 
 Procedure EmuDbg_ToggleBPAtPC;
+Var
+ VisIdx: LongInt;
+ Addr: LongInt;
 Begin
- If EmuDbg.CPU = EDC_6502 Then
-  EmuDbg_ToggleBP(CPU6502_PC, EDC_6502)
- Else If EmuDbg.CPU = EDC_8086 Then
-  EmuDbg_ToggleBP((LongInt(EmuPanel.CPU.Segs.CS) Shl 4) +
-   EmuPanel.CPU.IP, EDC_8086);
+ { Si SelOfs == 0, on cible le PC courant (comportement classique).
+   Sinon, on cible la ligne actuellement selectionnee dans le listing. }
+ VisIdx := EmuDbg.SelOfs - EmuDbg.DisasmTopOfs;
+ If (VisIdx < 0) Or (VisIdx > 63) Then Begin
+  { Fallback : PC courant }
+  If EmuDbg.CPU = EDC_6502 Then
+   EmuDbg_ToggleBP(CPU6502_PC, EDC_6502)
+  Else If EmuDbg.CPU = EDC_8086 Then
+   EmuDbg_ToggleBP((LongInt(EmuPanel.CPU.Segs.CS) Shl 4) +
+    EmuPanel.CPU.IP, EDC_8086);
+ End Else Begin
+  Addr := EmuDbg.DisasmAddrs[VisIdx];
+  If EmuDbg.CPU = EDC_6502 Then
+   EmuDbg_ToggleBP(Addr, EDC_6502)
+  Else If EmuDbg.CPU = EDC_8086 Then
+   EmuDbg_ToggleBP(Addr, EDC_8086);
+ End;
  EmuDbg.NeedRepaint := True;
 End;
 
 { --- Gerer une touche pendant la pause. Retourne True si consomme. --- }
 
 Function EmuDbg_HandleKey(Var Ev: TEvent): Boolean;
+Var
+ L: Integer;
 Begin
  EmuDbg_HandleKey := False;
  If Not EmuDbg.Paused Then Exit;
  { Si un menu deroulant est ouvert, le laisser traiter les touches
    (Esc/fleches/Entree pour la navigation menu) et ne rien absorber. }
  If MenuActive Then Exit;
+ L := EmuDbg.DisasmLines;
+ If L < 1 Then L := 1;
  If Ev.Kind = EV_KEY_DOWN Then Begin
   Case Ev.KeyCode Of
    $3F: Begin EmuDbg_Continue;  EmuDbg_HandleKey := True; End; { F5 }
@@ -50285,6 +50808,36 @@ Begin
    $87: Begin EmuDbg_StepOut;   EmuDbg_HandleKey := True; End; { Shift+F11 }
    $58: Begin EmuDbg_Stop;      EmuDbg_HandleKey := True; End; { Shift+F5 }
    $62: Begin EmuDbg_Continue;  EmuDbg_HandleKey := True; End; { Ctrl+F5 }
+   $48: Begin { Fleche haut : selection precedente }
+    If EmuDbg.SelOfs > 0 Then Dec(EmuDbg.SelOfs);
+    EmuDbg_HandleKey := True;
+   End;
+   $50: Begin { Fleche bas : selection suivante }
+    Inc(EmuDbg.SelOfs);
+    EmuDbg_HandleKey := True;
+   End;
+   $49: Begin { Page Up : reculer d une page }
+    EmuDbg.SelOfs := EmuDbg.SelOfs - L;
+    If EmuDbg.SelOfs < 0 Then EmuDbg.SelOfs := 0;
+    EmuDbg_HandleKey := True;
+   End;
+   $51: Begin { Page Down : avancer d une page }
+    EmuDbg.SelOfs := EmuDbg.SelOfs + L;
+    EmuDbg_HandleKey := True;
+   End;
+   $47: Begin { Home : retour au PC }
+    EmuDbg.SelOfs := 0;
+    EmuDbg.DisasmTopOfs := 0;
+    EmuDbg_HandleKey := True;
+   End;
+  End;
+  { Defilement du dump DS via '+' / '-' (huit octets par cran) }
+  If Ev.KeyChar = '+' Then Begin
+   EmuDbg.DataOfs := Word(EmuDbg.DataOfs + 8);
+   EmuDbg_HandleKey := True;
+  End Else If Ev.KeyChar = '-' Then Begin
+   EmuDbg.DataOfs := Word(EmuDbg.DataOfs - 8);
+   EmuDbg_HandleKey := True;
   End;
  End;
  { Note : Echap (#27) n est PLUS traitee comme Continue car c est aussi
@@ -50395,7 +50948,7 @@ Begin
  DrawAllWidgets;
  EmuDbg_DrawWindow;
  While EmuDbg.Paused And (Not EmuDbg.ContinueReq) And
-       (Not EmuDbg.StopReq) Do Begin
+       (Not EmuDbg.StopReq) And (Not QuitRequested) Do Begin
   PollEvents(Ev);
   If Ev.Kind = EV_NONE Then Begin
    { Pas d evenement : on reste idle. Pas de Sleep car le pump host
@@ -50424,6 +50977,12 @@ Begin
     ouvert ; il restaurera l arriere-plan a sa fermeture. }
   If Not MenuActive Then EmuDbg_DrawWindow;
  End;
+ { Si l utilisateur a demande de quitter pendant la pause (Alt+X /
+   Alt+F4), forcer l arret de l emulateur pour sortir proprement. }
+ If QuitRequested Then Begin
+  EmuDbg.StopReq := True;
+  EmuDbg.Paused := False;
+ End;
 End;
 
 { --- Entrer en pause : appele par les hooks pre-step des emulateurs --- }
@@ -50436,6 +50995,9 @@ Begin
  EmuDbg.BreakReq := False;
  EmuDbg.ContinueReq := False;
  EmuDbg.StepMode := ESM_NONE;
+ { Reinitialiser le curseur du listing sur l instruction courante }
+ EmuDbg.SelOfs := 0;
+ EmuDbg.DisasmTopOfs := 0;
  If ACPU = EDC_6502 Then
   EmuDbg.LastAddr := CPU6502_PC
  Else If ACPU = EDC_8086 Then Begin
